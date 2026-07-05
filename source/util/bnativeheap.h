@@ -1,0 +1,43 @@
+/*
+ *  Copyright (C) 2012-2025  The BoxedWine Team
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License
+ *  along with this program; if not, write to the Free Software
+ *  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ */
+
+#ifndef __BNATIVEHEAP_H__
+#define __BNATIVEHEAP_H__
+
+class BNativeHeap {
+public:
+	~BNativeHeap() {
+		freeAll();
+	}
+
+	void* alloc(U32 len, U32* blockSize = nullptr);
+	void free(void* p);
+	void freeAll();
+	bool containsAddress(void* p);
+
+	U32 delayedFree = 0; // millis before the memory can be recycles
+    bool isCodeMemory = false;
+	std::function<void(void*, U32)> delayedFreeCallback;
+private:
+	std::unordered_map<U32, std::deque<void*>> buckets;
+	std::vector<void*> blocks;
+	BHashTable<U8*, U32> largeBlocks;
+	BHashTable<U8*, U32> delayedFreeLargeBlocks;
+};
+
+#endif

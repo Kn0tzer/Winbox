@@ -1,0 +1,121 @@
+#!/bin/bash
+# build-games.sh — cross-compile the bundled games to 64-bit Windows PE with
+# mingw-w64. Output .exe land next to this script; build-prefix64.sh copies them
+# into prefix64.zip so the in-browser app launcher (wine64.html "Games" row) can
+# run them against the pre-booted prefix.
+#
+# Requires: x86_64-w64-mingw32-gcc (brew install mingw-w64).
+#
+# snake.exe / tetris.exe are self-contained Win32+GDI sources in src/ (the proven
+# render path under the emulator — same as notepad/winemine: RegisterClass /
+# CreateWindow / PeekMessage loop / double-buffered BitBlt).
+#
+# doom.exe is built SEPARATELY from doomgeneric (GPLv2, https://github.com/ozkl/
+# doomgeneric) using its Win32 GDI backend (doomgeneric_win.c) — see the comment
+# block at the bottom for the exact command. It is NOT rebuilt here because it
+# needs the doomgeneric checkout; the prebuilt doom.exe + the freely-
+# redistributable shareware doom1.wad are committed alongside it.
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+CC=x86_64-w64-mingw32-gcc
+command -v "$CC" >/dev/null || { echo "ERROR: $CC not found (brew install mingw-w64)" >&2; exit 1; }
+
+for g in snake tetris clipset clipget; do
+  echo "=== building $g.exe ==="
+  "$CC" -O2 -std=gnu11 -mwindows "$HERE/src/$g.c" -o "$HERE/$g.exe" -lgdi32 -luser32
+  file "$HERE/$g.exe"
+done
+echo "=== done (snake.exe, tetris.exe, clipset.exe, clipget.exe) ==="
+
+# --- doom.exe (run once, from a doomgeneric checkout) -----------------------
+# git clone --depth 1 https://github.com/ozkl/doomgeneric
+# cd doomgeneric/doomgeneric
+#
+# REQUIRED PATCH to doomgeneric_win.c DG_Init() before building, or doom.exe
+# dies at startup with "Window Creation Failed!" under Boxedwine's wine64 + the
+# WM-less XWire X server (CreateWindowExA returns NULL). Upstream registers the
+# class and creates the window with hInstance=0 and CW_USEDEFAULT position; wine
+# rejects that here. Two edits (matching the working snake/tetris pattern):
+#   1. add `HINSTANCE hInst = GetModuleHandle(NULL);` and set `wc.hInstance = hInst;`
+#   2. in CreateWindowExA: use position (0, 0) instead of (CW_USEDEFAULT,
+#      CW_USEDEFAULT), and pass hInst for the hInstance arg (9th-from-last).
+# i.e. CreateWindowExA(0, windowClassName, windowTitle, WS_OVERLAPPEDWINDOW,
+#                      0, 0, rect.right-rect.left, rect.bottom-rect.top,
+#                      0, 0, hInst, 0);
+# (Verify: the built doom.exe must import GetModuleHandleA — objdump -p.)
+#
+# REQUIRED PATCH #2 — TIMER/DRAW, or DOOM stalls right after the
+# "I_InitGraphics: Auto-scaling factor: 2" console line and NEVER draws a frame
+# (canvas stuck on the boot splash). DOOM spins in TryRunTics() (d_loop.c)
+# waiting for the ms clock to advance a tic via I_Sleep(1); under wine64 the
+# blocking Sleep + a clock that doesn't advance during the spin = infinite wait,
+# never reaching DG_DrawFrame. Four edits:
+#   a) doomgeneric_win.c DG_GetTicksMs(): return REAL wall-clock ms backed by
+#      QueryPerformanceCounter/QueryPerformanceFrequency (NOT GetTickCount, which
+#      was stuck under the emulator), with a monotonic floor so it can never go
+#      backwards or stall. See dg_realMs() in doomgeneric_win.c. (SUPERSEDES the
+#      old +1-per-call floor, which advanced every call → game ran UNPACED/too
+#      fast → menu/movement uncontrollable.)
+#   a2) doomgeneric_win.c add DG_PaceFrame() (declared in doomgeneric.h) and call
+#      it at the TOP of doomgeneric_Tick() in d_main.c. It busy-polls dg_realMs()
+#      (the REAL clock — never a blocking Sleep) until ~1000/35 ms have elapsed
+#      since the previous frame, capping the loop to ~35 fps. This restores input
+#      pacing WITHOUT re-introducing the TryRunTics stall (pacing is per-frame in
+#      the outer loop, not inside the spin). Also `#include "doomgeneric.h"` in
+#      d_main.c for the DG_PaceFrame declaration.
+#   b) doomgeneric_win.c DG_SleepMs(uint32_t ms): make it a NO-OP `(void)ms;`
+#      (don't block the TryRunTics spin; the QPC clock advances on its own).
+#   c) doomgeneric_win.c DG_DrawFrame(): REMOVE the `SwapBuffers(s_Hdc);` line.
+#      This build has no GL pixel format (no -lopengl32); SwapBuffers drags the
+#      window into the GLX path ("emscripten GL immediate mode emulation") so the
+#      StretchDIBits blit no longer surfaces as a GDI PutImage/CopyArea the XWire
+#      server presents.
+#   d) d_main.c D_DoomLoop(): move the I_SetWindowTitle/I_GraphicsCheckCommandLine/
+#      I_SetGrabMouseCallback/I_InitGraphics/I_EnableLoadingDisk block to BEFORE the
+#      first TryRunTics(); and in doomgeneric_Tick() force `screenvisible = true;`
+#      then call `D_Display();` unconditionally (drop the `if (screenvisible)` gate).
+#
+# REQUIRED PATCH #3 — MOUSE (M4): the doomgeneric WIN32 backend had NO mouse
+# handling, so mouse look/fire didn't work. Added:
+#   - doomgeneric_win.c: a mouse accumulator (s_MouseButtons/DX/DY) fed by
+#     wndProc cases WM_MOUSEMOVE (relative-from-center) + WM_{L,R,M}BUTTON{DOWN,UP}
+#     (button bits: 1=left/fire, 2=right, 4=middle), and an exported
+#     DG_GetMouse(buttons,dx,dy) that hands DOOM one sample/frame.
+#   - doomgeneric.h: declare DG_GetMouse (and DG_PaceFrame from patch #2).
+#   - i_video.c: set `usemouse = 1` (was 0).
+#   - i_input.c: after the key drain, call DG_GetMouse and D_PostEvent an
+#     ev_mouse (data1=buttons, data2=+dx*4, data3=-dy*4 — DOOM's convention).
+# Verified in-browser: DOOM's 3D view turns when the mouse moves. The whole
+# patch set is scripted in apply_patches.py (kept beside this note in the
+# doomgeneric checkout — recreate from the diffs above if the checkout is gone).
+# (Patched checkout was at /tmp/doomgeneric_build — may be gone; reclone + reapply.)
+# SRC="dummy.c am_map.c doomdef.c doomstat.c dstrings.c d_event.c d_items.c \
+#   d_iwad.c d_loop.c d_main.c d_mode.c d_net.c f_finale.c f_wipe.c g_game.c \
+#   hu_lib.c hu_stuff.c info.c i_cdmus.c i_endoom.c i_joystick.c i_scale.c \
+#   i_sound.c i_system.c i_timer.c memio.c m_argv.c m_bbox.c m_cheat.c m_config.c \
+#   m_controls.c m_fixed.c m_menu.c m_misc.c m_random.c p_ceilng.c p_doors.c \
+#   p_enemy.c p_floor.c p_inter.c p_lights.c p_map.c p_maputl.c p_mobj.c \
+#   p_plats.c p_pspr.c p_saveg.c p_setup.c p_sight.c p_spec.c p_switch.c \
+#   p_telept.c p_tick.c p_user.c r_bsp.c r_data.c r_draw.c r_main.c r_plane.c \
+#   r_segs.c r_sky.c r_things.c s_sound.c sha1.c sounds.c statdump.c st_lib.c \
+#   st_stuff.c tables.c v_video.c wi_stuff.c w_checksum.c w_file.c w_main.c \
+#   w_wad.c z_zone.c w_file_stdc.c i_input.c i_video.c doomgeneric.c \
+#   doomgeneric_win.c"
+# x86_64-w64-mingw32-gcc -O2 -std=gnu11 -DNORMALUNIX -DFEATURE_SOUND -w -I. \
+#   $SRC i_winsound.c -o doom.exe -lgdi32 -luser32 -lwinmm
+# (-std=gnu11 because doom's `boolean { false, true }` enum clashes with C23
+#  keywords.)
+#
+# SOUND (M5, 2026-07-04): build with -DFEATURE_SOUND + src/i_winsound.c (copied
+# into the checkout) — a waveOut sfx mixer (8ch, S16 stereo 11025 Hz) feeding
+# winmm -> winealsa -> libasound(plug) -> pcm_oss -> /dev/dsp -> WebAudio.
+# Music is intentionally silent (MIDI needs a synth). Console shows
+# "i_winsound: waveOut mixer up" on boot when working.
+#
+# THE WHOLE PATCH SET IS NOW SCRIPTED: src/doom_apply_patches.py applies
+# patches #1-3 to a fresh doomgeneric clone and dies loudly on upstream drift:
+#   git clone --depth 1 https://github.com/ozkl/doomgeneric
+#   python3 src/doom_apply_patches.py doomgeneric/doomgeneric
+#   cp src/i_winsound.c doomgeneric/doomgeneric/
+# shareware WAD (freely redistributable by id Software):
+#   doom1.wad  md5 f0cefca49926d00903cf57551d901abe  (~4.2 MB)

@@ -1,0 +1,37 @@
+# The work/ dir holds raw docker-extracted artifacts (large, reproducible via
+# README). Commit only the source and the usable root/ tree.
+work/*.so.6
+work/ld-linux-x86-64.so.2
+work/hello_glibc
+work/hello_static
+# Compiled probe binaries in work/ are reproducible from their .c via the
+# README docker one-liner; commit only the sources. The usable copies live in
+# root/bin/. (Anything without an extension here is a compiled ELF.)
+work/probe2
+work/modret
+work/fprobe
+work/fprobe2
+work/fprobe3
+work/fpstress
+work/dirprobe
+# usefoo/libfoo: the versioned 2-DSO test (commit the .c/.map sources; the
+# compiled ELFs live in root/bin/usefoo + root/lib/libfoo.so).
+work/usefoo
+work/libfoo.so
+# Raw docker-extracted third-party binaries (busybox, coreutils ls, distro
+# .so libs). Reproduce with: docker run --platform linux/amd64 debian:bookworm-slim
+# (see README). The usable copies that probes need live in root/bin.
+work/extract/
+# Dynamic GNU `ls` bundle + its versioned deps (libselinux, libpcre2): large
+# redistributables, reproduced on demand via the README recipe. Not committed.
+work/lsbundle/
+root/bin/ls_dyn
+root/lib/x86_64-linux-gnu/libselinux.so.1
+root/lib/x86_64-linux-gnu/libpcre2-8.so.0
+# Wine64 + glibc rootfs zips (200MB+) built by build-wine64-zip.sh from the
+# committed boxedwine64/wine64-debian:bookworm docker image. Reproduce on demand;
+# never commit the zips or the intermediate staging tree.
+dist/
+
+# Split rootfs assets for the Pages Release (built by split-rootfs.sh; huge).
+pages-assets/

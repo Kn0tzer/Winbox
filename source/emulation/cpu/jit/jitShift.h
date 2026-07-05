@@ -1,0 +1,903 @@
+/*
+ *  Copyright (C) 2012-2025  The BoxedWine Team
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License
+ *  along with this program; if not, write to the Free Software
+ *  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ */
+
+#include "../normal/normal_shift.h"
+void Jit::dynamic_rol8_reg_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_CFOF;
+    } else {
+        dynamic_RI(op, JitWidth::b8, &Jit::rolValue, FLAGS_NULL);
+    }
+}
+void Jit::dynamic_rol8_mem_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_CFOF;
+    } else {
+        dynamic_MI(op, JitWidth::b8, &Jit::rolValue, FLAGS_NULL);
+    }
+}
+void Jit::dynamic_rol8cl_reg_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_NULL;
+    } else {
+        dynamic_R_Cl(op, JitWidth::b8, &Jit::rolReg, FLAGS_NULL);
+    }
+}
+void Jit::dynamic_rol8cl_mem_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_NULL;
+    } else {
+        dynamic_M_Cl(op, JitWidth::b8, &Jit::rolReg, FLAGS_NULL);
+    }
+}
+void Jit::dynamic_rol16_reg_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_CFOF;
+    } else {
+        dynamic_RI(op, JitWidth::b16, &Jit::rolValue, FLAGS_NULL);
+    }
+}
+void Jit::dynamic_rol16_mem_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_CFOF;
+    } else {
+        dynamic_MI(op, JitWidth::b16, &Jit::rolValue, FLAGS_NULL);
+    }
+}
+void Jit::dynamic_rol16cl_reg_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_NULL;
+    } else {
+        dynamic_R_Cl(op, JitWidth::b16, &Jit::rolReg, FLAGS_NULL);
+    }
+}
+void Jit::dynamic_rol16cl_mem_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_NULL;
+    } else {
+        dynamic_M_Cl(op, JitWidth::b16, &Jit::rolReg, FLAGS_NULL);
+    }
+}
+
+void Jit::writeRol32Flags(RegPtr reg) {
+    RegPtr flags = getFlagsInTmp();
+
+    // cpu->setCF(result & 1);
+    RegPtr tmp = getTmpReg();
+    andValue(JitWidth::b32, flags, ~CF);
+    andValueWithDest(JitWidth::b32, tmp, reg, CF);
+    orReg(JitWidth::b32, flags, tmp);
+
+    // cpu->setOF((result & 1) ^ (result >> 31));
+    RegPtr tmp2 = getTmpReg();
+    shrValueWithDest(JitWidth::b32, tmp2, reg, 31);
+    xorReg(JitWidth::b32, tmp, tmp2);
+    shlValue(JitWidth::b32, tmp, 11);
+    andValue(JitWidth::b32, flags, ~OF);
+    orReg(JitWidth::b32, flags, tmp);
+
+    tmp = nullptr;
+    tmp2 = nullptr;
+    writeFlags(flags);
+    flags = nullptr;
+
+    currentLazyFlags = FLAGS_CFOF;
+    storeLazyFlagType(FLAGS_CFOF);
+}
+
+void Jit::dynamic_rol32_reg_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        // op->imm already masked                
+        RegPtr reg = getReg(op->reg);
+        rolValue(JitWidth::b32, reg, op->imm);
+        writeRol32Flags(reg);        
+    } else {
+        dynamic_RI(op, JitWidth::b32, &Jit::rolValue, FLAGS_NULL);
+    }    
+}
+void Jit::dynamic_rol32_mem_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        // op->imm already masked                
+        RegPtr result = readWriteMem(JitWidth::b32, calculateEaa(op), [op, this](RegPtr reg) {
+            rolValue(JitWidth::b32, reg, op->imm);           
+        });
+        writeRol32Flags(result);
+    } else {
+        dynamic_MI(op, JitWidth::b32, &Jit::rolValue, FLAGS_NULL);
+    }
+}
+void Jit::dynamic_rol32cl_reg_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {                        
+        RegPtr src = getReadOnlyReg8(1, false, 1);
+        IfTest(JitWidth::b8, src, 0x1f); {
+            RegPtr reg = getReg(op->reg);
+            rolReg(JitWidth::b32, reg, src);
+            writeRol32Flags(reg);
+        } EndIf();
+        currentLazyFlags = FLAGS_NULL; // can't know for sure that cl wasn't 0
+    } else {
+        dynamic_R_Cl(op, JitWidth::b32, &Jit::rolReg, FLAGS_NULL);
+    }
+}
+void Jit::dynamic_rol32cl_mem_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+
+        RegPtr src = getReadOnlyReg8(1, false, 1);
+        IfTest(JitWidth::b8, src, 0x1f); {
+            RegPtr reg = readWriteMem(JitWidth::b32, calculateEaa(op), [src, this](RegPtr reg) {
+                rolReg(JitWidth::b32, reg, src);
+            });            
+            writeRol32Flags(reg);
+        } EndIf();
+        currentLazyFlags = FLAGS_NULL; // can't know for sure that cl wasn't 0
+    } else {
+        dynamic_M_Cl(op, JitWidth::b32, &Jit::rolReg, FLAGS_NULL);
+    }
+}
+void Jit::dynamic_ror8_reg_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_CFOF;
+    } else {
+        dynamic_RI(op, JitWidth::b8, &Jit::rorValue, FLAGS_NULL);
+    }
+}
+void Jit::dynamic_ror8_mem_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_CFOF;
+    } else {
+        dynamic_MI(op, JitWidth::b8, &Jit::rorValue, FLAGS_NULL);
+    }
+}
+void Jit::dynamic_ror8cl_reg_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_NULL;
+    } else {
+        dynamic_R_Cl(op, JitWidth::b8, &Jit::rorReg, FLAGS_NULL);
+    }
+}
+void Jit::dynamic_ror8cl_mem_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_NULL;
+    } else {
+        dynamic_M_Cl(op, JitWidth::b8, &Jit::rorReg, FLAGS_NULL);
+    }
+}
+void Jit::dynamic_ror16_reg_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_CFOF;
+    } else {
+        dynamic_RI(op, JitWidth::b16, &Jit::rorValue, FLAGS_NULL);
+    }
+}
+void Jit::dynamic_ror16_mem_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_CFOF;
+    } else {
+        dynamic_MI(op, JitWidth::b16, &Jit::rorValue, FLAGS_NULL);
+    }
+}
+void Jit::dynamic_ror16cl_reg_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_NULL;
+    } else {
+        dynamic_R_Cl(op, JitWidth::b16, &Jit::rorReg, FLAGS_NULL);
+    }
+}
+void Jit::dynamic_ror16cl_mem_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_NULL;
+    } else {
+        dynamic_M_Cl(op, JitWidth::b16, &Jit::rorReg, FLAGS_NULL);
+    }
+}
+
+void Jit::writeRor32Flags(RegPtr reg) {
+    RegPtr flags = getFlagsInTmp();
+    RegPtr tmp = getTmpReg();
+    mov(JitWidth::b32, tmp, reg);
+
+    // cpu->setOF((result ^ (result << 1)) & 0x80000000);
+    RegPtr tmp2 = getTmpReg();
+    mov(JitWidth::b32, tmp2, reg);
+    shlValue(JitWidth::b32, tmp2, 1);
+    xorReg(JitWidth::b32, tmp2, tmp);
+    shrValue(JitWidth::b32, tmp2, 31);
+    shlValue(JitWidth::b32, tmp2, 11);
+    andValue(JitWidth::b32, flags, ~OF);
+    orReg(JitWidth::b32, flags, tmp2);
+
+    // cpu->setCF(result & 0x80000000);
+    andValue(JitWidth::b32, flags, ~CF);
+    shrValue(JitWidth::b32, tmp, 31);
+    orReg(JitWidth::b32, flags, tmp);
+
+    tmp = nullptr;
+    tmp2 = nullptr;
+
+    writeFlags(flags);
+    flags = nullptr;
+
+    currentLazyFlags = FLAGS_CFOF;
+    storeLazyFlagType(FLAGS_CFOF);
+}
+
+void Jit::dynamic_ror32_reg_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        // op->imm already masked                
+        RegPtr reg = getReg(op->reg);
+        rorValue(JitWidth::b32, reg, op->imm);
+
+        writeRor32Flags(reg);
+    } else {
+        dynamic_RI(op, JitWidth::b32, &Jit::rorValue, FLAGS_NULL);
+    }
+}
+void Jit::dynamic_ror32_mem_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        // op->imm already masked                
+        RegPtr reg = readWriteMem(JitWidth::b32, calculateEaa(op), [op, this](RegPtr reg) {
+            rorValue(JitWidth::b32, reg, op->imm);
+        });
+
+        writeRor32Flags(reg);
+    } else {
+        dynamic_MI(op, JitWidth::b32, &Jit::rorValue, FLAGS_NULL);
+    }
+}
+void Jit::dynamic_ror32cl_reg_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {        
+        RegPtr src = getReadOnlyReg8(1, false, 1);
+        IfTest(JitWidth::b8, src, 0x1f); {
+            RegPtr reg = getReg(op->reg);
+            rorReg(JitWidth::b32, reg, src);
+
+            writeRor32Flags(reg);
+        } EndIf();
+        currentLazyFlags = FLAGS_NULL; // can't know for sure that cl wasn't 0
+    } else {
+        dynamic_R_Cl(op, JitWidth::b32, &Jit::rorReg, FLAGS_NULL);
+    }
+}
+void Jit::dynamic_ror32cl_mem_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        RegPtr src = getReadOnlyReg8(1, false, 1);
+
+        IfTest(JitWidth::b8, src, 0x1f); {
+            RegPtr reg = readWriteMem(JitWidth::b32, calculateEaa(op), [src, this](RegPtr reg) {
+                rorReg(JitWidth::b32, reg, src);
+            });
+
+            writeRor32Flags(reg);
+        } EndIf();
+        currentLazyFlags = FLAGS_NULL; // can't know for sure that cl wasn't 0
+    } else {
+        dynamic_M_Cl(op, JitWidth::b32, &Jit::rorReg, FLAGS_NULL);
+    }
+}
+void Jit::dynamic_rcl8_reg_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_CFOF;
+    } else {
+        dynamic_RI(op, JitWidth::b8, nullptr, FLAGS_NULL, true, false, nullptr, &Jit::rclValue);
+    }
+}
+void Jit::dynamic_rcl8_mem_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_CFOF;
+    } else {
+        dynamic_MI(op, JitWidth::b8, nullptr, FLAGS_NULL, true, false, nullptr, &Jit::rclValue);
+    }
+}
+void Jit::dynamic_rcl8cl_reg_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_NULL;
+    } else {
+        dynamic_R_Cl(op, JitWidth::b8, nullptr, FLAGS_NULL, &Jit::rclReg);
+    }
+}
+void Jit::dynamic_rcl8cl_mem_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_NULL;
+    } else {
+        dynamic_M_Cl(op, JitWidth::b8, nullptr, FLAGS_NULL, &Jit::rclReg);
+    }
+}
+void Jit::dynamic_rcl16_reg_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_CFOF;
+    } else {
+        dynamic_RI(op, JitWidth::b16, nullptr, FLAGS_NULL, true, false, nullptr, &Jit::rclValue);
+    }
+}
+void Jit::dynamic_rcl16_mem_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_CFOF;
+    } else {
+        dynamic_MI(op, JitWidth::b16, nullptr, FLAGS_NULL, true, false, nullptr, &Jit::rclValue);
+    }
+}
+void Jit::dynamic_rcl16cl_reg_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_NULL;
+    } else {
+        dynamic_R_Cl(op, JitWidth::b16, nullptr, FLAGS_NULL, &Jit::rclReg);
+    }
+}
+void Jit::dynamic_rcl16cl_mem_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_NULL;
+    } else {
+        dynamic_M_Cl(op, JitWidth::b16, nullptr, FLAGS_NULL, &Jit::rclReg);
+    }
+}
+
+void Jit::writeRcl32Flags(RegPtr reg, RegPtr cf) {
+    RegPtr flags = getFlagsInTmp();
+
+    // cpu->setCF(((var1 >> (32 - var2)) & 1));
+    andValue(JitWidth::b32, flags, ~CF);
+    orReg(JitWidth::b32, flags, cf);
+
+    // cpu->setOF((cpu->flags & CF) ^ (result >> 31));
+    RegPtr tmp = getTmpReg();
+    shrValueWithDest(JitWidth::b32, tmp, reg, 31);
+    xorReg(JitWidth::b32, tmp, cf);
+    shlValue(JitWidth::b32, tmp, 11);
+    andValue(JitWidth::b32, flags, ~OF);
+    orReg(JitWidth::b32, flags, tmp);
+
+    tmp = nullptr;
+    writeFlags(flags);
+    flags = nullptr;
+
+    currentLazyFlags = FLAGS_CFOF;
+    storeLazyFlagType(FLAGS_CFOF);
+}
+
+void Jit::dynamic_rcl32_reg_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        // op->imm already masked
+        RegPtr oldCF = getCF();
+        RegPtr reg = getReg(op->reg);
+        RegPtr cf = getTmpReg();
+
+        // cpu->setCF(((var1 >> (32 - var2)) & 1));
+        shrValueWithDest(JitWidth::b32, cf, reg, 32 - op->imm);
+        andValue(JitWidth::b32, cf, 1);
+
+        rclValue(JitWidth::b32, reg, op->imm, oldCF);
+        writeRcl32Flags(reg, cf);
+    } else {
+        dynamic_RI(op, JitWidth::b32, nullptr, FLAGS_NULL, true, false, nullptr, &Jit::rclValue);
+    }
+}
+void Jit::dynamic_rcl32_mem_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        // op->imm already masked
+        /*
+        // readWriteMem will hold onto 3 tmp regs, including the value passsed in
+        // rclValue call getCF which can use up to 2 tmp regs
+        // since we need to hold onto the original value (Reg cf), this puts us over the 5 tmp reg budget
+        RegPtr cf = getTmpReg();
+        RegPtr reg = readWriteMem(JitWidth::b32, calculateEaa(op), [cf, op, this](RegPtr reg) {
+            mov(JitWidth::b32, cf, reg);
+            rclValue(JitWidth::b32, reg, op->imm);
+        });
+
+        // cpu->setCF(((var1 >> (32 - var2)) & 1));        
+        shrValue(JitWidth::b32, cf, 32 - op->imm);
+        andValue(JitWidth::b32, cf, 1);
+
+        writeRcl32Flags(reg, cf);
+        */
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_NONE;
+    } else {
+        dynamic_MI(op, JitWidth::b32, nullptr, FLAGS_NULL, true, false, nullptr, &Jit::rclValue);
+    }
+}
+void Jit::dynamic_rcl32cl_reg_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        RegPtr oldCF = getCF(); // jit code expects certain tmp regs to be available, so do this first
+        RegPtr src = getReadOnlyReg8(1, false, 1);
+        IfTest(JitWidth::b8, src, 0x1f); {         
+            RegPtr reg = getReg(op->reg);
+            RegPtr cf = getTmpReg();
+            RegPtr count = getTmpReg();
+
+            // cpu->setCF(((var1 >> (32 - var2)) & 1));            
+            mov(JitWidth::b32, cf, reg);
+            mov(JitWidth::b32, count, src);
+            andValue(JitWidth::b32, count, 0x1f);
+
+            rclReg(JitWidth::b32, reg, src, oldCF);
+            oldCF = nullptr;
+            RegPtr tmp = getTmpReg();
+            movValue(JitWidth::b32, tmp, 32);
+            subReg(JitWidth::b32, tmp, count);
+            shrReg(JitWidth::b32, cf, tmp);
+            tmp = nullptr;
+            count = nullptr;
+            andValue(JitWidth::b32, cf, 1);
+
+            writeRcl32Flags(reg, cf);
+        } EndIf();
+        currentLazyFlags = FLAGS_NULL; // can't know for sure that cl wasn't 0
+    } else {
+        dynamic_R_Cl(op, JitWidth::b32, nullptr, FLAGS_NULL, &Jit::rclReg);
+    }
+}
+void Jit::dynamic_rcl32cl_mem_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_NONE;
+    } else {
+        dynamic_M_Cl(op, JitWidth::b32, nullptr, FLAGS_NULL, &Jit::rclReg);
+    }
+}
+void Jit::dynamic_rcr8_reg_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_CFOF;
+    } else {
+        dynamic_RI(op, JitWidth::b8, nullptr, FLAGS_NULL, true, false, nullptr, &Jit::rcrValue);
+    }
+}
+void Jit::dynamic_rcr8_mem_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_CFOF;
+    } else {
+        dynamic_MI(op, JitWidth::b8, nullptr, FLAGS_NULL, true, false, nullptr, &Jit::rcrValue);
+    }
+}
+void Jit::dynamic_rcr8cl_reg_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_NULL;
+    } else {
+        dynamic_R_Cl(op, JitWidth::b8, nullptr, FLAGS_NULL, &Jit::rcrReg);
+    }
+}
+void Jit::dynamic_rcr8cl_mem_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_NULL;
+    } else {
+        dynamic_M_Cl(op, JitWidth::b8, nullptr, FLAGS_NULL, &Jit::rcrReg);
+    }
+}
+void Jit::dynamic_rcr16_reg_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_CFOF;
+    } else {
+        dynamic_RI(op, JitWidth::b16, nullptr, FLAGS_NULL, true, false, nullptr, &Jit::rcrValue);
+    }
+}
+void Jit::dynamic_rcr16_mem_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_CFOF;
+    } else {
+        dynamic_MI(op, JitWidth::b16, nullptr, FLAGS_NULL, true, false, nullptr, &Jit::rcrValue);
+    }
+}
+void Jit::dynamic_rcr16cl_reg_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_NULL;
+    } else {
+        dynamic_R_Cl(op, JitWidth::b16, nullptr, FLAGS_NULL, &Jit::rcrReg);
+    }
+}
+void Jit::dynamic_rcr16cl_mem_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_NULL;
+    } else {
+        dynamic_M_Cl(op, JitWidth::b16, nullptr, FLAGS_NULL, &Jit::rcrReg);
+    }
+}
+
+void Jit::writeRcr32Flags(RegPtr reg, RegPtr cf) {
+    RegPtr flags = getFlagsInTmp();
+
+    // cpu->setCF((var1 >> (var2 - 1)) & 1);    
+    andValue(JitWidth::b32, flags, ~CF);
+    orReg(JitWidth::b32, flags, cf);
+
+    // cpu->setOF((result ^ (result << 1)) & 0x80000000);
+    RegPtr tmp = getTmpReg();
+    mov(JitWidth::b32, tmp, reg);
+    shlValue(JitWidth::b32, tmp, 1);
+    xorReg(JitWidth::b32, tmp, reg);
+    shrValue(JitWidth::b32, tmp, 31);
+    shlValue(JitWidth::b32, tmp, 11);
+    andValue(JitWidth::b32, flags, ~OF);
+    orReg(JitWidth::b32, flags, tmp);
+
+    tmp = nullptr;
+    writeFlags(flags);
+    flags = nullptr;
+
+    currentLazyFlags = FLAGS_CFOF;
+    storeLazyFlagType(FLAGS_CFOF);
+}
+
+void Jit::dynamic_rcr32_reg_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        // op->imm already masked
+        RegPtr oldCF = getCF();
+        RegPtr reg = getReg(op->reg);
+        RegPtr cf = getTmpReg();
+
+        // cpu->setCF((var1 >> (var2 - 1)) & 1);
+        shrValueWithDest(JitWidth::b32, cf, reg, op->imm - 1);
+        andValue(JitWidth::b32, cf, 1);
+
+        rcrValue(JitWidth::b32, reg, op->imm, oldCF);
+        writeRcr32Flags(reg, cf);
+    } else {
+        dynamic_RI(op, JitWidth::b32, nullptr, FLAGS_NULL, true, false, nullptr, &Jit::rcrValue);
+    }
+}
+void Jit::dynamic_rcr32_mem_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_CFOF;
+    } else {
+        dynamic_MI(op, JitWidth::b32, nullptr, FLAGS_NULL, true, false, nullptr, &Jit::rcrValue);
+    }
+}
+void Jit::dynamic_rcr32cl_reg_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        RegPtr oldCF = getCF(); // jit code expects certain tmp regs to be available, so do this first
+        RegPtr src = getReadOnlyReg8(1, false, 1);
+        IfTest(JitWidth::b8, src, 0x1f); {
+            RegPtr reg = getReg(op->reg);
+            RegPtr cf = getTmpReg();
+            RegPtr count = getTmpReg();
+
+            // cpu->setCF((var1 >> (var2 - 1)) & 1);
+            mov(JitWidth::b32, cf, reg);
+            mov(JitWidth::b32, count, src);
+            andValue(JitWidth::b32, count, 0x1f);
+            rcrReg(JitWidth::b32, reg, src, oldCF);
+            oldCF = nullptr;
+
+            subValue(JitWidth::b32, count, 1);
+            shrReg(JitWidth::b32, cf, count);
+            count = nullptr;
+            andValue(JitWidth::b32, cf, 1);
+
+            writeRcr32Flags(reg, cf);
+        } EndIf();
+        currentLazyFlags = FLAGS_NULL; // can't know for sure that cl wasn't 0
+    } else {
+        dynamic_R_Cl(op, JitWidth::b32, nullptr, FLAGS_NULL, &Jit::rcrReg);
+    }
+}
+void Jit::dynamic_rcr32cl_mem_op(DecodedOp* op) {
+    if (op->needsToSetFlags(cpu) & (CF | OF)) {
+        emulateSingleOp();
+        currentLazyFlags = FLAGS_NULL;
+    } else {
+        dynamic_M_Cl(op, JitWidth::b32, nullptr, FLAGS_NULL, &Jit::rcrReg);
+    }
+}
+void Jit::dynamic_shl8_reg_op(DecodedOp* op) {
+    dynamic_RI(op, JitWidth::b8, &Jit::shlValue, FLAGS_SHL8);
+}
+void Jit::dynamic_shl8_mem_op(DecodedOp* op) {
+    dynamic_MI(op, JitWidth::b8, &Jit::shlValue, FLAGS_SHL8);
+}
+void Jit::dynamic_shl8cl_reg_op(DecodedOp* op) {
+    dynamic_R_Cl(op, JitWidth::b8, &Jit::shlReg, FLAGS_SHL8);
+}
+void Jit::dynamic_shl8cl_mem_op(DecodedOp* op) {
+    dynamic_M_Cl(op, JitWidth::b8, &Jit::shlReg, FLAGS_SHL8);
+}
+void Jit::dynamic_shl16_reg_op(DecodedOp* op) {
+    dynamic_RI(op, JitWidth::b16, &Jit::shlValue, FLAGS_SHL16);
+}
+void Jit::dynamic_shl16_mem_op(DecodedOp* op) {
+    dynamic_MI(op, JitWidth::b16, &Jit::shlValue, FLAGS_SHL16);
+}
+void Jit::dynamic_shl16cl_reg_op(DecodedOp* op) {
+    dynamic_R_Cl(op, JitWidth::b16, &Jit::shlReg, FLAGS_SHL16);
+}
+void Jit::dynamic_shl16cl_mem_op(DecodedOp* op) {
+    dynamic_M_Cl(op, JitWidth::b16, &Jit::shlReg, FLAGS_SHL16);
+}
+void Jit::dynamic_shl32_reg_op(DecodedOp* op) {
+    dynamic_RI(op, JitWidth::b32, &Jit::shlValue, FLAGS_SHL32);
+}
+void Jit::dynamic_shl32_mem_op(DecodedOp* op) {
+    dynamic_MI(op, JitWidth::b32, &Jit::shlValue, FLAGS_SHL32);
+}
+void Jit::dynamic_shl32cl_reg_op(DecodedOp* op) {
+    dynamic_R_Cl(op, JitWidth::b32, &Jit::shlReg, FLAGS_SHL32);
+}
+void Jit::dynamic_shl32cl_mem_op(DecodedOp* op) {
+    dynamic_M_Cl(op, JitWidth::b32, &Jit::shlReg, FLAGS_SHL32);
+}
+void Jit::dynamic_shr8_reg_op(DecodedOp* op) {
+    dynamic_RI(op, JitWidth::b8, &Jit::shrValue, FLAGS_SHR8);
+}
+void Jit::dynamic_shr8_mem_op(DecodedOp* op) {
+    dynamic_MI(op, JitWidth::b8, &Jit::shrValue, FLAGS_SHR8);
+}
+void Jit::dynamic_shr8cl_reg_op(DecodedOp* op) {
+    dynamic_R_Cl(op, JitWidth::b8, &Jit::shrReg, FLAGS_SHR8);
+}
+void Jit::dynamic_shr8cl_mem_op(DecodedOp* op) {
+    dynamic_M_Cl(op, JitWidth::b8, &Jit::shrReg, FLAGS_SHR8);
+}
+void Jit::dynamic_shr16_reg_op(DecodedOp* op) {
+    dynamic_RI(op, JitWidth::b16, &Jit::shrValue, FLAGS_SHR16);
+}
+void Jit::dynamic_shr16_mem_op(DecodedOp* op) {
+    dynamic_MI(op, JitWidth::b16, &Jit::shrValue, FLAGS_SHR16);
+}
+void Jit::dynamic_shr16cl_reg_op(DecodedOp* op) {
+    dynamic_R_Cl(op, JitWidth::b16, &Jit::shrReg, FLAGS_SHR16);
+}
+void Jit::dynamic_shr16cl_mem_op(DecodedOp* op) {
+    dynamic_M_Cl(op, JitWidth::b16, &Jit::shrReg, FLAGS_SHR16);
+}
+void Jit::dynamic_shr32_reg_op(DecodedOp* op) {
+    dynamic_RI(op, JitWidth::b32, &Jit::shrValue, FLAGS_SHR32);
+}
+void Jit::dynamic_shr32_mem_op(DecodedOp* op) {
+    dynamic_MI(op, JitWidth::b32, &Jit::shrValue, FLAGS_SHR32);
+}
+void Jit::dynamic_shr32cl_reg_op(DecodedOp* op) {
+    dynamic_R_Cl(op, JitWidth::b32, &Jit::shrReg, FLAGS_SHR32);
+}
+void Jit::dynamic_shr32cl_mem_op(DecodedOp* op) {
+    dynamic_M_Cl(op, JitWidth::b32, &Jit::shrReg, FLAGS_SHR32);
+}
+void Jit::dynamic_sar8_reg_op(DecodedOp* op) {
+    dynamic_RI(op, JitWidth::b8, &Jit::sarValue, FLAGS_SAR8);
+}
+void Jit::dynamic_sar8_mem_op(DecodedOp* op) {
+    dynamic_MI(op, JitWidth::b8, &Jit::sarValue, FLAGS_SAR8);
+}
+void Jit::dynamic_sar8cl_reg_op(DecodedOp* op) {
+    dynamic_R_Cl(op, JitWidth::b8, &Jit::sarReg, FLAGS_SAR8);
+}
+void Jit::dynamic_sar8cl_mem_op(DecodedOp* op) {
+    dynamic_M_Cl(op, JitWidth::b8, &Jit::sarReg, FLAGS_SAR8);
+}
+void Jit::dynamic_sar16_reg_op(DecodedOp* op) {
+    dynamic_RI(op, JitWidth::b16, &Jit::sarValue, FLAGS_SAR16);
+}
+void Jit::dynamic_sar16_mem_op(DecodedOp* op) {
+    dynamic_MI(op, JitWidth::b16, &Jit::sarValue, FLAGS_SAR16);
+}
+void Jit::dynamic_sar16cl_reg_op(DecodedOp* op) {
+    dynamic_R_Cl(op, JitWidth::b16, &Jit::sarReg, FLAGS_SAR16);
+}
+void Jit::dynamic_sar16cl_mem_op(DecodedOp* op) {
+    dynamic_M_Cl(op, JitWidth::b16, &Jit::sarReg, FLAGS_SAR16);
+}
+void Jit::dynamic_sar32_reg_op(DecodedOp* op) {
+    dynamic_RI(op, JitWidth::b32, &Jit::sarValue, FLAGS_SAR32);
+}
+void Jit::dynamic_sar32_mem_op(DecodedOp* op) {
+    dynamic_MI(op, JitWidth::b32, &Jit::sarValue, FLAGS_SAR32);
+}
+void Jit::dynamic_sar32cl_reg_op(DecodedOp* op) {
+    dynamic_R_Cl(op, JitWidth::b32, &Jit::sarReg, FLAGS_SAR32);
+}
+void Jit::dynamic_sar32cl_mem_op(DecodedOp* op) {
+    dynamic_M_Cl(op, JitWidth::b32, &Jit::sarReg, FLAGS_SAR32);
+}
+
+void Jit::dshift(DecodedOp* op, JitWidth width, InstRegRegImm callback, LazyFlagType flagType) {
+    const LazyFlags* flags = lazyFlags[flagType];
+    RegPtr dest = getReg(op->reg);
+    RegPtr src2 = op->reg == op->rm ? dest : getReadOnlyReg(op->rm);
+    U32 needsToSetFlags = op->needsToSetFlags(cpu);
+
+    if (needsToSetFlags) {
+        storeLazyFlagType(flagType);
+        currentLazyFlags = flagType;
+        if (flags && flags->usesSrc(needsToSetFlags)) {
+            storeLazyFlagsSrc(op->imm);
+        }
+        if (flags && flags->usesDst(needsToSetFlags)) {
+            storeLazyFlagsDest(dest);
+        }
+    }
+    (this->*callback)(width, dest, src2, op->imm);
+    if (flags && flags->usesResult(needsToSetFlags)) {
+        storeLazyFlagsResult(dest);
+    }
+}
+
+void Jit::dshiftM(DecodedOp* op, JitWidth width, InstRegRegImm callback, LazyFlagType flagType) {
+    const LazyFlags* flags = lazyFlags[flagType];
+    RegPtr src2 = getReadOnlyReg(op->reg);
+    U32 needsToSetFlags = op->needsToSetFlags(cpu);
+
+    if (needsToSetFlags) {
+        storeLazyFlagType(flagType);
+        currentLazyFlags = flagType;
+        if (flags && flags->usesSrc(needsToSetFlags)) {
+            storeLazyFlagsSrc(op->imm);
+        }
+    }
+
+    readWriteMem(width, calculateEaa(op), [needsToSetFlags, flags, src2, op, width, callback, this](RegPtr value) {
+        if (flags && flags->usesDst(needsToSetFlags)) {
+            storeLazyFlagsDest(value);
+        }
+        (this->*callback)(width, value, src2, op->imm);
+        if (flags && flags->usesResult(needsToSetFlags)) {
+            storeLazyFlagsResult(value);
+        }
+    });
+}
+
+void Jit::dynamic_dshlr16r16(DecodedOp* op) {
+    dshift(op, JitWidth::b16, &Jit::shldValue, FLAGS_DSHL16);
+}
+void Jit::dynamic_dshle16r16(DecodedOp* op) {
+    dshiftM(op, JitWidth::b16, &Jit::shldValue, FLAGS_DSHL16);
+}
+void Jit::dynamic_dshlr32r32(DecodedOp* op) {
+    dshift(op, JitWidth::b32, &Jit::shldValue, FLAGS_DSHL32);
+}
+void Jit::dynamic_dshle32r32(DecodedOp* op) {
+    dshiftM(op, JitWidth::b32, &Jit::shldValue, FLAGS_DSHL32);
+}
+void Jit::dshiftClM(DecodedOp* op, JitWidth width, InstRegRegCl callback, LazyFlagType flagType) {
+    const LazyFlags* flags = lazyFlags[flagType];
+    U32 needsToSetFlags = op->needsToSetFlags(cpu);
+
+    if (needsToSetFlags) {
+        RegPtr src;
+
+        if (!doesShiftNeedToMask()) {
+            src = getReg(1);
+        } else {
+            src = getTmpReg8(1, false, 1);
+
+            andValue(JitWidth::b32, src, 0x1f);
+        }
+        If(JitWidth::b8, src); {
+            storeLazyFlagType(flagType);
+            if (flags && flags->usesSrc(needsToSetFlags)) {
+                storeLazyFlagsSrc(src);
+            }
+            readWriteMem(width, calculateEaa(op), [src, needsToSetFlags, flags, op, width, callback, this](RegPtr value) {
+                if (flags && flags->usesDst(needsToSetFlags)) {
+                    storeLazyFlagsDest(value);
+                }
+                (this->*callback)(width, value, getReadOnlyReg(op->reg), src);
+                if (flags && flags->usesResult(needsToSetFlags)) {
+                    storeLazyFlagsResult(value);
+                }
+            });
+        } EndIf();
+        currentLazyFlags = FLAGS_NULL;
+    } else {
+        readWriteMem(width, calculateEaa(op), [op, width, callback, this](RegPtr value) {
+            (this->*callback)(width, value, getReadOnlyReg(op->reg), getReadOnlyReg(1, true, 1));
+        });
+    }
+}
+void Jit::dshiftCl(DecodedOp* op, JitWidth width, InstRegRegCl callback, LazyFlagType flagType) {
+    const LazyFlags* flags = lazyFlags[flagType];
+    U32 needsToSetFlags = op->needsToSetFlags(cpu);
+
+    if (needsToSetFlags) {
+        RegPtr src;
+
+        if (!doesShiftNeedToMask()) {
+            src = getReg(1);
+        } else {
+            src = getTmpReg8(1, false, 1);
+
+            andValue(JitWidth::b32, src, 0x1f);
+        }
+        
+        If(JitWidth::b8, src); {
+            RegPtr dest = getReg(op->reg);
+            RegPtr src2 = op->reg == op->rm ? dest : getReadOnlyReg(op->rm);
+
+            storeLazyFlagType(flagType);
+            if (flags && flags->usesSrc(needsToSetFlags)) {
+                storeLazyFlagsSrc(src);
+            }
+            if (flags && flags->usesDst(needsToSetFlags)) {
+                storeLazyFlagsDest(dest);
+            }
+            (this->*callback)(width, dest, src2, src);
+            if (flags && flags->usesResult(needsToSetFlags)) {
+                storeLazyFlagsResult(dest);
+            }
+        } EndIf();
+        currentLazyFlags = FLAGS_NULL;
+    } else {
+        (this->*callback)(width, getReg(op->reg), getReadOnlyReg(op->rm), getReadOnlyReg(1, true, 1));
+    }
+}
+
+void Jit::dynamic_dshlclr16r16(DecodedOp* op) {
+    dshiftCl(op, JitWidth::b16, &Jit::shldReg, FLAGS_DSHL16);
+}
+void Jit::dynamic_dshlcle16r16(DecodedOp* op) {
+    dshiftClM(op, JitWidth::b16, &Jit::shldReg, FLAGS_DSHL16);
+}
+void Jit::dynamic_dshlclr32r32(DecodedOp* op) {
+    dshiftCl(op, JitWidth::b32, &Jit::shldReg, FLAGS_DSHL32);
+}
+void Jit::dynamic_dshlcle32r32(DecodedOp* op) {
+    dshiftClM(op, JitWidth::b32, &Jit::shldReg, FLAGS_DSHL32);
+}
+void Jit::dynamic_dshrr16r16(DecodedOp* op) {
+    dshift(op, JitWidth::b16, &Jit::shrdValue, FLAGS_DSHR16);
+}
+void Jit::dynamic_dshre16r16(DecodedOp* op) {
+    dshiftM(op, JitWidth::b16, &Jit::shrdValue, FLAGS_DSHR16);
+}
+void Jit::dynamic_dshrr32r32(DecodedOp* op) {
+    dshift(op, JitWidth::b32, &Jit::shrdValue, FLAGS_DSHR32);
+}
+void Jit::dynamic_dshre32r32(DecodedOp* op) {
+    dshiftM(op, JitWidth::b32, &Jit::shrdValue, FLAGS_DSHR32);
+}
+void Jit::dynamic_dshrclr16r16(DecodedOp* op) {
+    dshiftCl(op, JitWidth::b16, &Jit::shrdReg, FLAGS_DSHR16);
+}
+void Jit::dynamic_dshrcle16r16(DecodedOp* op) {
+    dshiftClM(op, JitWidth::b16, &Jit::shrdReg, FLAGS_DSHR16);
+}
+void Jit::dynamic_dshrclr32r32(DecodedOp* op) {
+    dshiftCl(op, JitWidth::b32, &Jit::shrdReg, FLAGS_DSHR32);
+}
+void Jit::dynamic_dshrcle32r32(DecodedOp* op) {
+    dshiftClM(op, JitWidth::b32, &Jit::shrdReg, FLAGS_DSHR32);
+}

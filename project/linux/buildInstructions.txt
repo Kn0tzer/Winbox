@@ -1,0 +1,12 @@
+On Ubuntu 20.04/Raspberry Pi the follow packages need to be installed
+
+build-essential (might already be installed)
+libsdl2-dev
+libssl-dev
+libminizip-dev
+libcurl4-openssl-dev
+
+On other platforms, you need to make sure you have gcc version 13 or higher.
+
+To build all you have to do is type in the project/linux directory
+make

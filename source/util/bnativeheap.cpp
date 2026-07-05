@@ -1,0 +1,186 @@
+/*
+ *  Copyright (C) 2012-2025  The BoxedWine Team
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License
+ *  along with this program; if not, write to the Free Software
+ *  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ */
+
+#include "boxedwine.h"
+#include "bnativeheap.h"
+
+#define BNATIVEHEAD_64K_BLOCK_SIZE (64 * 1024)
+
+static int powerOf2(U32 requestedSize) {
+    U32 powerOf2Size = 1;
+	U32 size = 2;
+    while (size < requestedSize) {
+		size <<= 1;
+        powerOf2Size++;
+    }
+    return powerOf2Size;
+}
+
+void BNativeHeap::freeAll() {
+	for (auto& block : blocks) {
+		Platform::releaseNativeMemory(block, BNATIVEHEAD_64K_BLOCK_SIZE);
+	}
+	blocks.clear();
+	buckets.clear();
+	for (auto& it : largeBlocks) {
+		Platform::releaseNativeMemory(it.key, it.value);
+	}
+	largeBlocks.clear();
+	for (auto& it : delayedFreeLargeBlocks) {
+		Platform::releaseNativeMemory(it.key, *((U32*)it.key));
+	}
+	delayedFreeLargeBlocks.clear();	
+}
+
+bool BNativeHeap::containsAddress(void* p) {
+	for (void* block : blocks) {
+		U8* address = (U8*)block;
+		if (p >= address && p < address + BNATIVEHEAD_64K_BLOCK_SIZE) {
+			return true;
+		}
+	}
+	for (auto& it : largeBlocks) {
+		if (p >= it.key && p < it.key + it.value) {
+			return true;
+		}
+	}
+	for (auto& it : delayedFreeLargeBlocks) {
+		if (p >= it.key && p < it.key + *(U32*)it.key) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void* BNativeHeap::alloc(U32 len, U32* blockSize) {
+	U32 index = powerOf2(len + 4);
+	if (index < 4) {
+		index = 4;
+	}
+	U32 size = 1 << index;
+	for (auto it = delayedFreeLargeBlocks.begin(); it != delayedFreeLargeBlocks.end();) {
+		if (it->value < KSystem::getMilliesSinceStart() - delayedFree) {
+			if (delayedFreeCallback) {
+				delayedFreeCallback(it->key, *((U32*)it->key));
+			}
+			Platform::releaseNativeMemory(it->key, *((U32*)it->key));
+			delayedFreeLargeBlocks.remove(it->key);
+			it = delayedFreeLargeBlocks.begin();
+		}
+		if (it != delayedFreeLargeBlocks.end()) {
+			it++;
+		}
+	}
+	if (size >= BNATIVEHEAD_64K_BLOCK_SIZE) {
+		U32 count = (len + 4 + BNATIVEHEAD_64K_BLOCK_SIZE - 1) / BNATIVEHEAD_64K_BLOCK_SIZE;
+		
+		U8* result = Platform::alloc64kBlock(count, isCodeMemory);
+        if (isCodeMemory) {
+            Platform::writeCodeToMemory(result, 4, [result, count]() {
+                *((U32*)result) = count * BNATIVEHEAD_64K_BLOCK_SIZE;
+            });
+        } else {
+            *((U32*)result) = count * BNATIVEHEAD_64K_BLOCK_SIZE;
+        }
+		largeBlocks.set(result, count * BNATIVEHEAD_64K_BLOCK_SIZE);
+		if (blockSize) {
+			*blockSize = BNATIVEHEAD_64K_BLOCK_SIZE * count - 4;
+		}
+		return result + 4;
+	}
+	if (buckets.contains(index) && buckets[index].size()) {
+		void* result = buckets[index].back();
+		U32* pInfo = (U32*)result;
+		pInfo--;
+		bool isDelayedFree = *pInfo < KSystem::getMilliesSinceStart() - delayedFree;
+
+		if (!delayedFree || isDelayedFree) {
+			if (isDelayedFree && delayedFreeCallback) {
+				delayedFreeCallback(pInfo, len + 4);
+			}
+
+			buckets[index].pop_back();
+            if (isCodeMemory) {
+                Platform::writeCodeToMemory(pInfo, len + 4, [index, pInfo, result, len]() {
+                    memset(result, 0, len);
+                    *pInfo = index;
+                });
+            } else {
+                memset(result, 0, len);
+                *pInfo = index;
+            }
+            U32* address = ((U32*)result) - 1;
+            if (isCodeMemory) {
+                Platform::writeCodeToMemory(address, 4, [address, index]() {
+                    *address = index;
+                });
+            } else {
+                *address = index;
+            }
+			if (blockSize) {
+				*blockSize = size - 4;
+			}
+			return result;
+		}
+	}
+	U8* address = Platform::alloc64kBlock(1, isCodeMemory);
+
+	blocks.push_back(address);
+
+	for (U8* start = address; start < address + BNATIVEHEAD_64K_BLOCK_SIZE; start += size) {
+        // on mac, you can't write to mmap'd memory that was allocated for a JIT without unprotecting it
+        if (isCodeMemory) {
+            Platform::writeCodeToMemory(start, 4, [start, index, this]() {
+                *((U32*)start) = delayedFree ? 0 : index;
+            });
+        } else {
+            *((U32*)start) = delayedFree ? 0 : index;
+        }
+		buckets[index].push_back(start + 4);
+	}
+	return alloc(len, blockSize);
+}
+
+void BNativeHeap::free(void* address) {
+	if (!address) {
+		return;
+	}
+	U32 index = *(((U32*)address) - 1);
+	if (index >= BNATIVEHEAD_64K_BLOCK_SIZE) {
+		U8* rawAddress = ((U8*)address) - 4;
+		if (delayedFree) {
+			delayedFreeLargeBlocks.set(rawAddress, KSystem::getMilliesSinceStart());
+		} else {
+			Platform::releaseNativeMemory(rawAddress, index);
+		}
+		largeBlocks.remove(rawAddress);
+		return;
+	}
+	if (delayedFree) {
+		U32* pTime = (U32*)address;
+		pTime--;
+        if (isCodeMemory) {
+            Platform::writeCodeToMemory(pTime, 4, [pTime]() {
+                *pTime = KSystem::getMilliesSinceStart();
+            });
+        } else {
+            *pTime = KSystem::getMilliesSinceStart();
+        }
+	}
+	buckets[index].push_front(address);
+}

@@ -1,0 +1,157 @@
+/*
+ *  Copyright (C) 2012-2025  The BoxedWine Team
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License
+ *  along with this program; if not, write to the Free Software
+ *  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ */
+
+#include "boxedwine.h"
+#ifdef BOXEDWINE_MULTI_THREADED
+#if !defined(BOXEDWINE_DISABLE_UI) && !defined(__TEST)
+#include "../../ui/mainui.h"
+#endif
+#include "knativesystem.h"
+#include "devfb.h"
+#include "../../x11/x11.h"
+#include "platformOpenGL.h"
+#ifdef BOXEDWINE_GUEST_X64
+#include "../../x11wire/xwirepresent.h"
+#endif
+
+U32 getNextTimer();
+void runTimers();
+
+extern std::atomic<int> platformThreadCount;
+extern U32 exceptionCount;
+extern U32 dynamicCodeExceptionCount;
+static U32 lastTitleUpdate = 0;
+
+static thread_local bool isMainThread;
+
+static BString getSize(int pages)
+{
+    pages *= 4;
+    if (pages < 2048) {
+        return BString::valueOf(pages) + B("KB");
+    }
+    if (pages < 2048 * 1024) {
+        return BString::valueOf(pages / 1024) + B("MB");
+    }
+    return BString::valueOf(pages / 1024 / 1024) + B("GB");
+}
+extern int allocatedRamPages;
+
+bool isMainthread() {
+    return isMainThread;
+}
+bool doMainLoop() {
+    isMainThread = true;
+    while (platformThreadCount) {
+        U32 timeout = 5000;
+        U32 t = KSystem::getMilliesSinceStart();
+
+        if (KSystem::killTime) {
+            if (KSystem::killTime <= t) {
+                KSystem::killTime = 0;
+                KSystem::killTime2 = KSystem::getMilliesSinceStart() + 30000;
+                KNativeSystem::forceShutdown();
+            }
+            if (t - KSystem::killTime < timeout) {
+                timeout = t - KSystem::killTime;
+            }
+        }
+        if (KSystem::killTime2) {
+            if (KSystem::killTime2 <= t) {
+                klog("Forced Shutdown failed, now doing a hard exit");
+                return true;
+            }
+            if (t - KSystem::killTime2 < timeout) {
+                timeout = t - KSystem::killTime2;
+            }
+        }
+        XServer* server = XServer::getServer(true);
+        if (server) {
+            server->isDisplayDirty = true; // a bit of a hack, sometimes popups in Basstour get missed and don't draw
+            server->draw();
+            timeout = 17;
+        }
+#ifdef BOXEDWINE_GUEST_X64
+        // Present the in-process X11 wire server's latest frame + pump host input
+        // (Phase 2c). Cap the wait so we stay responsive while a window is up.
+        tickXWirePresent();
+        if (g_xwirePresentSink) {
+            timeout = 17;
+        }
+#endif
+        if (flipFB()) {
+            timeout = 17;
+        }
+#if !defined(BOXEDWINE_DISABLE_UI) && !defined(__TEST)
+        else if (uiIsRunning()) {
+            timeout = 33;
+        }
+#endif
+        U32 nextTimer = getNextTimer();
+        if (nextTimer == 0) {
+            runTimers();
+        } else if (nextTimer < timeout) {
+            timeout = nextTimer;
+        }
+        KNativeSystem::tick();
+#ifdef BOXEDWINE_RECORDER
+        if (Player::instance || Recorder::instance) {
+            KNativeSystem::getCurrentInput()->waitForEvent(10);
+            BOXEDWINE_RECORDER_RUN_SLICE();
+        } else  {
+            KNativeSystem::getCurrentInput()->waitForEvent(timeout);
+        }
+#else
+        KNativeSystem::getCurrentInput()->waitForEvent(timeout);
+#endif    
+#if !defined(BOXEDWINE_DISABLE_UI) && !defined(__TEST)
+        if (uiIsRunning()) {
+            uiLoop();
+        }
+#endif                
+        if (lastTitleUpdate+5000 < t) {            
+            lastTitleUpdate = t;
+            BString title;
+            if (KSystem::title.length()) {
+                title = KSystem::title;
+#if defined(_DEBUG)
+                title.append(" ");
+                title.append(getSize(allocatedRamPages));
+#endif
+            } else {
+                title = B("BoxedWine " BOXEDWINE_VERSION_DISPLAY " ");
+                title.append(getSize(allocatedRamPages));
+            }
+
+            KNativeSystem::getScreen()->setTitle(title);
+        }
+        if (!KNativeSystem::getCurrentInput()->processEvents()) {
+            return true;
+        }
+    };
+    return true;
+}
+
+void waitForProcessToFinish(const KProcessPtr& process, KThread* thread) {
+    BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(KSystem::processesCond);
+    while (!process->isTerminated()) {
+        BOXEDWINE_CONDITION_WAIT(KSystem::processesCond);
+    }
+}
+
+#endif

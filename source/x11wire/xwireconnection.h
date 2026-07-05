@@ -1,0 +1,273 @@
+/*
+ *  Copyright (C) 2012-2025  The BoxedWine Team
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ */
+
+#ifndef __XWIRECONNECTION_H__
+#define __XWIRECONNECTION_H__
+
+#include "boxedwine.h"
+#include "kunixsocket.h"
+#include "xwirepresent.h"
+
+#include <memory>
+#include <unordered_map>
+#include <vector>
+#include <array>
+#include <string>
+#include <utility>
+
+class XWireConnection;
+
+// The server-side peer of wine's X11 client socket. Its only job is to forward
+// the "peer wrote" edge into the owning XWireConnection so the request stream is
+// parsed synchronously on the writing (guest) thread.
+class XWireServerSocket : public KUnixSocketObject {
+public:
+    XWireServerSocket(U32 domain, U32 type, U32 protocol)
+        : KUnixSocketObject(domain, type, protocol) {}
+    void onPeerWrote() override;
+    bool isXWire() override { return true; }
+
+    // Non-blocking drain of this server peer's own recvBuffer (the bytes wine
+    // wrote). Returns 0 when empty. Unlike readNative it never blocks — onData()
+    // runs on the guest's writing thread and must not park.
+    U32 readNativeNonBlocking(U8* buffer, U32 len);
+
+    std::weak_ptr<XWireConnection> owner;
+};
+
+// One connected X11 client (e.g. notepad's libX11). Owns the wire-protocol state
+// machine: connection setup, resource tracking, request dispatch, and event
+// generation. Replies and events are written back to the client socket via the
+// server peer's writeNative (which lands in the client's recvBuffer + wakes any
+// poll/epoll/read blocked on it).
+class XWireConnection : public std::enable_shared_from_this<XWireConnection> {
+public:
+    XWireConnection(const std::shared_ptr<KUnixSocketObject>& client,
+                    const std::shared_ptr<XWireServerSocket>& serverPeer);
+
+    // Guest process that opened this connection (KProcess id captured at
+    // connect time — acceptConnection runs on the connecting guest's thread).
+    // XWireServer::dropAppByPid uses it to tear down ALL of a killed app's
+    // connections/windows at once: one app opens several X connections (winex11
+    // opens one per thread), each with its own resource-id base, so a single
+    // base does not identify the whole app. 0 = unknown.
+    uint32_t ownerPid = 0;
+    // This connection's resource-id base (0 until the handshake assigns it).
+    uint32_t idBase() const { return clientIdBase; }
+
+    // Drain the server peer's recvBuffer and process as many complete requests
+    // as are available. Called from XWireServerSocket::onPeerWrote.
+    void onData();
+
+    // Push an input/structure event onto the client (called from the SDL input
+    // pump). Honors the per-window event mask.
+    void sendExpose(uint32_t window, uint16_t x, uint16_t y, uint16_t w, uint16_t h);
+
+    // Tell the client its window holds the keyboard focus (FocusIn, code 9).
+    // Without it wine's window never activates its input queue, so KeyPress
+    // events we deliver are ignored even though they arrive. Sent when a window
+    // maps; GetInputFocus is also answered with the present window (not root).
+    void sendFocusIn(uint32_t window);
+
+    // MapNotify (code 19) — winex11 selects StructureNotifyMask and blocks its
+    // message pump until it sees the window become viewable. Sent on X_MapWindow.
+    void sendMapNotify(uint32_t window);
+
+    // ReparentNotify (21): winex11 reparents its GL child drawable into the HWND and
+    // BLOCKS its message pump (StructureNotifyMask) waiting for this confirmation —
+    // the same map-state machine as MapNotify. wined3d's WINDOWED Present needs the
+    // resulting on-screen GLX child drawable, so without this the present parks
+    // forever (THE D3D-Present hang). Sent on X_ReparentWindow (opcode 7, previously
+    // dropped as "unhandled"). Mirrors sendMapNotify.
+    void sendReparentNotify(uint32_t window, uint32_t parent, int16_t x, int16_t y,
+                            bool overrideRedirect);
+
+    // ConfigureNotify (22): winex11 ALSO selects StructureNotifyMask and blocks its
+    // message pump after a ConfigureWindow waiting for this confirmation of the new
+    // geometry. wined3d's windowed Present reconfigures the D3D window, so without
+    // this the present's internal message wait parks forever (the D3D-Present hang).
+    // Sent on X_ConfigureWindow, mirroring sendMapNotify.
+    void sendConfigureNotify(uint32_t window, int16_t x, int16_t y,
+                             uint16_t w, uint16_t h);
+
+    // NoExpose (14): X11 sends this on a CopyArea/CopyPlane whose GC has
+    // graphics_exposures=True (the default) when the copy was fully satisfied (no
+    // obscured source). winex11's blit-via-pixmap present path waits for it; without
+    // it the present's message pump can park. Sent after X_CopyArea (drawable=dst).
+    void sendNoExpose(uint32_t drawable);
+
+    // PropertyNotify (28): X11 sends this to clients selecting PropertyChangeMask on
+    // a window when one of its properties is changed/deleted. winex11 selects
+    // PropertyChangeMask on its top-levels and its window-state/activation machinery
+    // (and wined3d's present) can park its message pump waiting for a PropertyNotify
+    // that confirms a property write — which XWire stored but never notified. state:
+    // 0=NewValue, 1=Deleted. Sent after X_ChangeProperty / X_DeleteProperty.
+    void sendPropertyNotify(uint32_t window, uint32_t atom, uint8_t state);
+
+    // Emit an EnterNotify/LeaveNotify crossing event (code 7/8). winex11 selects
+    // for EnterWindowMask and uses the crossing to associate the pointer with
+    // the window; without it clicks are mishandled (they defocus the edit and
+    // menus never track). Sent the first time the pointer is over the presented
+    // window. Mirrors the 32-bit XWindow::crossingNotify.
+    void sendCrossing(uint32_t window, bool enter, int16_t x, int16_t y);
+
+    // Drain any queued host input to the client and flush, even with no incoming
+    // request. Called by XWireServer::pumpInput from the main-thread present tick
+    // so an idle app still receives keystrokes/clicks. flushReplies' writeNative
+    // path is the thread-safe client-wakeup (same as onPeerWrote).
+    void pumpInputAndFlush() { deliverInputEvents(); flushReplies(); }
+
+    // Tell this connection's client it lost a selection (SelectionClear, code
+    // 29) — sent when the HOST clipboard takes over so wine stops preferring
+    // its own internal clipboard. `selectionName` is interned into this
+    // connection's atom table (atom ids are per-connection). Called from the
+    // main-thread pump (XWireServer::pumpInput) and flushes immediately.
+    void sendSelectionClear(uint32_t ownerWindow, const std::string& selectionName);
+
+private:
+    // ---- wire helpers ----
+    void writeToClient(const void* data, uint32_t len);
+    void flushReplies();
+    void sendError(uint8_t code, uint16_t seq, uint32_t badValue, uint8_t majorOp, uint16_t minorOp);
+    // #67: RandR display enumeration — reply with one fixed 1024×768 monitor so wine
+    // sees a display output and wined3d's windowed Present converges (see .cpp).
+    void handleRandr(const uint8_t* req, uint32_t len);
+
+    bool handshakeDone = false;
+    bool bigEndian = false;             // client byte order
+    uint16_t sequence = 0;              // last-processed request sequence
+
+    // Pending outbound bytes, flushed to the socket in one shot per onData().
+    std::vector<uint8_t> out;
+
+    // Inbound assembly buffer (a request may straddle recvBuffer chunks).
+    std::vector<uint8_t> in;
+
+    // Per-request zero-padded dispatch scratch (see onData). Reused across
+    // requests to avoid per-request allocation. REQ_SCRATCH_FLOOR is >= the
+    // largest fixed request-header offset any handler reads (X11 core requests
+    // are at most 32 header bytes; 64 leaves margin), so an undersized request
+    // never reads past the assembled bytes into uninitialized memory.
+    static constexpr uint32_t REQ_SCRATCH_FLOOR = 64;
+    // Extra zero bytes appended after the request so a handler whose over-read is
+    // driven by an in-request sub-length byte (max 255 entries * 2 bytes wide)
+    // cannot run past the allocation even on a malformed request.
+    static constexpr uint32_t REQ_SCRATCH_GUARD = 1024;
+    std::vector<uint8_t> reqScratch;
+
+    // ---- resource model ----
+    // The window/drawable registry is SERVER-GLOBAL (XWireServer::windows),
+    // because X resource ids are shared across all client connections and
+    // winex11 creates vs. draws a window on different connections. Atoms stay
+    // local — they're only round-tripped within a connection here.
+
+    // Decode an X PutImage payload into the target window's backing framebuffer
+    // (in the server registry) and, if it's the presented window, push the full
+    // image to the host sink.
+    void blitPutImage(uint32_t drawable, uint8_t format, uint8_t depth,
+                      int16_t dstX, int16_t dstY, uint16_t w, uint16_t h,
+                      const uint8_t* data, uint32_t dataBytes);
+
+    // X_CopyArea pixmap->window: copy the (srcX,srcY,w,h) rect out of the source
+    // pixmap's fb into the destination window's fb at (dstX,dstY), then present.
+    // This is winex11's StretchDIBits/blit-via-pixmap path (DOOM renders every
+    // frame this way). No-op if src isn't a known pixmap or dst isn't a window.
+    void copyAreaPixmapToWindow(uint32_t srcId, uint32_t dstId,
+                                int16_t srcX, int16_t srcY,
+                                int16_t dstX, int16_t dstY,
+                                uint16_t w, uint16_t h);
+
+    // Render X core text (PolyText/ImageText) into a window's text-overlay buffer
+    // using the GC's foreground (and background, for ImageText). y is the X text
+    // BASELINE. blitTextItems draws a whole PolyText item list with one lock +
+    // one present. Both no-op for an unknown/pixmap drawable.
+    void blitText(uint32_t drawable, uint32_t gc, int16_t x, int16_t y,
+                  const std::string& chars, bool imageText);
+    void blitTextItems(uint32_t drawable, uint32_t gc, int16_t y,
+                       const std::vector<std::pair<int16_t, std::string>>& items);
+
+    // X core DRAWING primitives (M14) — line/rect/poly into the window
+    // framebuffer in the GC's foreground colour. taskmgr and many GDI apps
+    // draw control borders, graph grids, and bar-graph bars with these; without
+    // them the app's paint fails and it exits. All no-op for an unknown/pixmap/
+    // root drawable, take regMutex internally, and schedulePresent() once.
+    // Rects are {x,y,w,h}; segments are {x1,y1,x2,y2}.
+    void drawFillRectangles(uint32_t drawable, uint32_t gc,
+                            const std::vector<std::array<int16_t,4>>& rects);
+    void drawRectangleOutlines(uint32_t drawable, uint32_t gc,
+                               const std::vector<std::array<int16_t,4>>& rects);
+    void drawSegments(uint32_t drawable, uint32_t gc,
+                      const std::vector<std::array<int16_t,4>>& segs);
+    void drawPolyline(uint32_t drawable, uint32_t gc,
+                      const std::vector<std::pair<int16_t,int16_t>>& pts, bool connect);
+    void fillPolygon(uint32_t drawable, uint32_t gc,
+                     const std::vector<std::pair<int16_t,int16_t>>& pts);
+
+    // Host input -> X11 wire events (Phase 2c input path).
+    void deliverInputEvents();
+    void sendInputEvent(uint8_t code, uint32_t window, const XWireInputEvent& ev,
+                        int16_t winX, int16_t winY);
+    std::unordered_map<std::string, uint32_t> atoms;   // name -> atom id
+    std::unordered_map<uint32_t, std::string> atomNames;
+    uint32_t nextAtom = 1;
+
+    uint32_t rootWindow = 0;
+    uint32_t rootVisual = 0;
+    uint32_t rootColormap = 0;
+    uint32_t clientIdBase = 0;
+    uint32_t clientIdMask = 0;
+
+    // Pointer-button mask (Button1Mask=1<<8 ...) tracked across input events so
+    // motion during a drag and the press/release sequence report the correct
+    // logical button state, like the 32-bit XServer path.
+    uint32_t buttonState = 0;
+
+    // The window the pointer has "entered" (we sent EnterNotify for). 0 = none.
+    // We send a crossing the first time input lands so winex11 associates the
+    // pointer with the window before any click.
+    uint32_t enteredWindow = 0;
+
+    // The window we last sent FocusIn for (via X_SetInputFocus). Tracked so a
+    // click that re-focuses the same window doesn't thrash FocusIn every time.
+    uint32_t lastFocus = 0;
+
+    // The macOS window has been created/shown for this connection.
+    bool windowShown = false;
+    uint16_t screenWidth = 1024;
+    uint16_t screenHeight = 768;
+
+    std::weak_ptr<KUnixSocketObject> client;
+    // STRONG ref: nothing else keeps the server-side peer alive. The guest's
+    // client socket only holds it through a weak connection ptr, and
+    // serverPeer->owner is weak. If this were weak too, the XWireServerSocket
+    // would be destroyed the instant acceptConnection() returned, leaving the
+    // guest's X socket with an expired peer (not writable, no parser) — winex11
+    // then polls, sees no peer, and shutdown()+close()s the display. The
+    // XWireServer::connections vector keeps the XWireConnection (and thus this
+    // peer) alive for the lifetime of the connection.
+    std::shared_ptr<XWireServerSocket> serverPeer;
+
+    uint32_t internAtom(const std::string& name, bool onlyIfExists);
+    // Atom id -> name for THIS connection ("" if unknown). Predefined X atoms
+    // (PRIMARY=1, ATOM=4, STRING=31, ...) are seeded in the constructor.
+    std::string atomName(uint32_t atom) const;
+    // Stable cross-connection key for a selection atom: its name, or a
+    // connection-qualified fallback for atoms we can't name.
+    std::string selectionKey(uint32_t atom) const;
+    void processOneRequest(const uint8_t* req, uint32_t len);
+    void doHandshake();
+    void ensureWindow();
+};
+
+#endif
