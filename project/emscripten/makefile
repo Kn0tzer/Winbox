@@ -227,7 +227,7 @@ LDFLAGS = -O3 $(FS_LDFLAGS) -s USE_SDL=2 -s USE_ZLIB=1 -fwasm-exceptions -s INIT
 #	$(CC) $(TEST_OBJS) -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/$(TARGET_EXEC): $(ALL)
-	@$(CC) $(ALL) -o $@ $(LDFLAGS)
+	@$(CXX) $(ALL) -o $@ $(LDFLAGS)
 ifneq ($(strip $(ASSET_FILES)),)
 	@for asset in $(ASSET_FILES); do \
 		if [ -e "$$asset" ]; then cp "$$asset" "$(BUILD_DIR)/"; fi; \

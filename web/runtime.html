@@ -1,0 +1,41 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>Wine runtime</title><style>body{margin:0;background:#080c11;color:#acbfd2;font:12px system-ui}#status{padding:10px}canvas{display:block;max-width:100%;margin:auto}#output{display:none}</style></head><body><div id="status">Loading…</div><progress id="progress" hidden></progress><span id="spinner" hidden></span><canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas><canvas id="gl64canvas" width="1024" height="1024" hidden></canvas><textarea id="output" readonly></textarea>
+<script type="module">
+import { getPackage } from '../storage.mjs';
+import { safePath, checkEntries } from '../files.mjs';
+const query = new URLSearchParams(location.search);
+const id = query.get('installation');
+const pkg = id && id !== 'demo' ? await getPackage(id) : null;
+const send = (type, data) => parent.postMessage({ wine: true, type, data }, location.origin);
+window.bwRuntimeStatus = text => send('status', text);
+window.bwRuntimeLog = text => send('log', text);
+window.bwGpuFrame = json => send('gpu', JSON.parse(json));
+if (pkg) {
+  checkEntries(pkg.files);
+  const exe = safePath(query.get('exe') || '');
+  if (!pkg.files.some(f => f.path === exe)) throw new Error('Executable is absent from package');
+  const args = JSON.parse(query.get('args') || '[]');
+  if (!Array.isArray(args) || args.length > 32 || args.some(a => typeof a !== 'string' || a.length > 4096 || /[\x00-\x1f]/.test(a))) throw new Error('Invalid program arguments');
+  window.bwProgramArgv = ['Z:\\home\\username\\apps\\' + exe.replaceAll('/', '\\'), ...args];
+  window.bwWorkingDirectory = '/home/username/apps/' + exe.split('/').slice(0, -1).join('/');
+  window.bwPrepareFilesystem = async FS => {
+    // Install missing base files only: writable persisted changes/saves take priority.
+    for (const file of pkg.files) {
+      const dest = '/root/home/username/apps/' + safePath(file.path);
+      try { FS.lstat(dest); continue; } catch {}
+      FS.mkdirTree(dest.slice(0, dest.lastIndexOf('/')));
+      FS.writeFile(dest, new Uint8Array(await file.blob.arrayBuffer()));
+    }
+  };
+}
+const script = document.createElement('script');
+script.src = 'wine64-launcher.js';
+script.onerror = () => send('status', 'Runtime loader download failed');
+document.body.append(script);
+if (query.get('gpu') === '1') {
+  const timer = setInterval(() => {
+    if (!window.bwRuntime?.ready()) return;
+    clearInterval(timer);
+    window.bwRuntime.call('bw64_gpu_capture', ['number'], [1]);
+  }, 100);
+}
+</script></body></html>

@@ -71,6 +71,7 @@
 #include <cstdio>
 #include <string>
 #include <mutex>
+#include <cmath>
 
 #ifdef __EMSCRIPTEN__
 // Emscripten's -sLEGACY_GL_EMULATION supplies most fixed-function entry points,
@@ -835,6 +836,8 @@ size_t texImageBytes(GLsizei w, GLsizei h, GLenum format, GLenum type) {
 
 } // namespace
 
+#include "gl64webgpu.h"
+
 U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     std::lock_guard<std::recursive_mutex> lk(g_glMutex);
 
@@ -855,6 +858,10 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     if (argsAddr) {
         cpu->memory->memcpyFromGuest(&args, argsAddr, sizeof(args));
     }
+
+#ifdef __EMSCRIPTEN__
+    bwGpuCapture(cpu, fnId, args);
+#endif
 
     switch (fnId) {
         // fnId 0 is the guest libGL's load-time witness (an __attribute__((constructor))

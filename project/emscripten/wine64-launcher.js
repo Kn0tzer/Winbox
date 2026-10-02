@@ -155,7 +155,8 @@
     var spinnerElement = document.getElementById("spinner");
 
     function setStatusText(text) {
-        if (statusElement) statusElement.innerHTML = text;
+        if (statusElement) statusElement.textContent = text;
+        if (window.bwRuntimeStatus) window.bwRuntimeStatus(text);
     }
 
     // The env every prefix-using process shares. Identical HOME / WINEPREFIX /
@@ -194,7 +195,9 @@
     // argv for running a Windows/guest program under wine64: [wine64, tok, ...].
     function wineProgArgv(prog) {
         var argv = [WINE64];
-        (prog || "").split(/\s+/).forEach(function (tok) { if (tok.length) argv.push(tok); });
+        // The uploaded argv belongs only to the requested app, never helpers.
+        var tokens = (prog === PROG && window.bwProgramArgv) || (prog || "").split(/\s+/).filter(Boolean);
+        tokens.forEach(function (tok) { argv.push(tok); });
         return argv;
     }
 
@@ -205,6 +208,7 @@
         // it, so the bare --version / ?boot=1 paths stay byte-for-byte unchanged.
         if (USE_PREFIX) args.push("-zip", PREFIX_ZIP);
         if (NOVIDEO) args.push("-novideo");
+        if (window.bwWorkingDirectory) args.push("-w", window.bwWorkingDirectory);
 
         if (DO_BOOT) {
             // Full prefix bring-up + wineserver handshake.
@@ -762,7 +766,9 @@
                 // Restore persisted user files into the writable MEMFS layer
                 // BEFORE main() runs (we still hold the loadWine64Fs run
                 // dependency), so the guest's very first VFS scan sees them.
-                return restorePersistedFiles();
+                return restorePersistedFiles().then(function () {
+                    if (window.bwPrepareFilesystem) return window.bwPrepareFilesystem(getFS());
+                });
             })
             .then(function () {
                 if (els.progress) els.progress.hidden = true;
@@ -819,6 +825,7 @@
         window.Module = {
             arguments: [],
             canvas: canvas,
+            bwGpuFrame: function (json) { if (window.bwGpuFrame) window.bwGpuFrame(json); },
             preRun: [function () {
                 // Inside preRun the `Module` identifier is the LIVE Emscripten
                 // module (the one that actually owns FS / run dependencies), which
@@ -839,14 +846,17 @@
             print: function () {
                 var text = Array.prototype.slice.call(arguments).join(" ");
                 console.log(text);
+                if (window.bwRuntimeLog) window.bwRuntimeLog(text);
                 if (els.output) { els.output.value += text + "\n"; els.output.scrollTop = els.output.scrollHeight; }
             },
             printErr: function () {
                 var text = Array.prototype.slice.call(arguments).join(" ");
                 console.error(text);
+                if (window.bwRuntimeLog) window.bwRuntimeLog(text);
                 if (els.output) { els.output.value += text + "\n"; els.output.scrollTop = els.output.scrollHeight; }
             },
             setStatus: function (text) { if (text) setStatusText(text); },
+            onRuntimeInitialized: function () { runtimeInitialized = true; },
             totalDependencies: 0,
             monitorRunDependencies: function () {}
         };
@@ -915,9 +925,10 @@
     //   int bw64_session_ready()                       -> 1 once boot captured ctx
     //   int bw64_spawn(argvJoined, envJoined)          -> 1 if a process scheduled
     // argv/env are '\n'-joined strings (no '\n' ever appears in our paths/values).
+    var runtimeInitialized = false;
     function callExport(name, argTypes, args) {
         var M = liveModule || window.Module;
-        if (!M || typeof M.ccall !== "function") return null;
+        if (!runtimeInitialized || !M || typeof M.ccall !== "function") return null;
         try { return M.ccall(name, "number", argTypes, args); }
         catch (e) { console.warn("ccall " + name + " failed: " + e); return null; }
     }
@@ -1158,8 +1169,8 @@
     // very first VFS scan (no post-boot cache registration needed) and shadow
     // the zip contents naturally. ?persist=0 disables both halves.
     var PERSIST = param("persist") !== "0";
-    var PERSIST_DB = "bw64persist", PERSIST_STORE = "files";
-    var PERSIST_FILE_CAP = 16 * 1024 * 1024;       // skip single files above this
+    var PERSIST_DB = "bw64persist-wine-" + (param("installation") || "demo"), PERSIST_STORE = "files";
+    var PERSIST_FILE_CAP = 256 * 1024 * 1024;       // skip single files above this
     var PERSIST_SKIP = { ".bw64clip.txt": 1, ".bw64clip.out": 1, ".bw64clip.tmp": 1 };
     var persistManifest = {};                      // path -> mtimeMs:size signature
 
@@ -1196,6 +1207,7 @@
                     if (!c) return;
                     var path = String(c.key);
                     var rec = c.value;
+                    if (!path.startsWith(HOME_IN_MEMFS + "/") || path.split("/").some(function(p) { return p === ".."; })) { c.continue(); return; }
                     try {
                         mkdirTreeHost(FS, path.slice(0, path.lastIndexOf("/")));
                         FS.writeFile(path, rec.data);
@@ -1223,7 +1235,7 @@
             if (PERSIST_SKIP[name]) continue;
             var p = dir + "/" + name;
             var st;
-            try { st = FS.stat(p); } catch (e) { continue; }
+            try { st = FS.lstat(p); } catch (e) { continue; }
             if (FS.isDir(st.mode)) persistWalk(FS, p, out);
             else if (FS.isFile(st.mode) && st.size <= PERSIST_FILE_CAP) {
                 out[p] = (st.mtime && st.mtime.getTime ? st.mtime.getTime() : Number(st.mtime) || 0) + ":" + st.size;
@@ -1303,6 +1315,7 @@
         console.error("wine64-launcher unhandledrejection:", ev.reason);
         setStatusText("Boot failed: " + (ev.reason && ev.reason.message ? ev.reason.message : ev.reason));
     });
+    window.bwRuntime = { fs: getFS, ready: sessionReady, call: callExport };
     if (window.setActiveApp) try { window.setActiveApp(PROG || "--version"); } catch (e) {}
     bootWine();
 })();
