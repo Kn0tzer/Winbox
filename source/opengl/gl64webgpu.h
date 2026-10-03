@@ -24,7 +24,8 @@ void bwGpuCapture(CPU64* cpu, U64 fn, const GL64Args& args) {
         return;
     }
     if (fn < 200 || fn == GL64_fn_traceProc || fn == GL64_fn_glGetError ||
-        fn == GL64_fn_glGetString || fn == GL64_fn_glGetIntegerv || fn == GL64_fn_glGetFloatv) return;
+        fn == GL64_fn_glGetString || fn == GL64_fn_glGetIntegerv || fn == GL64_fn_glGetFloatv ||
+        fn == GL64_fn_glVersionMode) return;
     if (bwGpuCommandCount >= 100000) { bwGpuOverflow = true; return; }
     if (bwGpuCommandCount++) bwGpuCommands << ',';
     bwGpuCommands << '[' << fn;

@@ -145,6 +145,7 @@
 #define X64_SYS_gettimeofday      96
 #define X64_SYS_getrusage         98
 #define X64_SYS_sysinfo           99
+#define X64_SYS_times             100
 #define X64_SYS_getppid           110
 #define X64_SYS_getpgrp           111
 #define X64_SYS_getpgid           121
@@ -1366,7 +1367,9 @@ static U64 sys_fstat64(CPU64* cpu, U64 fd, U64 statbuf) {
     if (!cpu->thread || !cpu->thread->process) return (U64)-K_ENOSYS;
     if (!statbuf) return (U64)-K_EFAULT;
     KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
-    if (!fdesc) return (U64)-9; // -EBADF
+    if (!fdesc) {
+        return (U64)-9; // -EBADF
+    }
     // Reach for the underlying KFile to ask the FsNode for metadata.
     std::shared_ptr<KFile> kfile = std::dynamic_pointer_cast<KFile>(fdesc->kobject);
     U64 size = 0;
@@ -1378,7 +1381,7 @@ static U64 sys_fstat64(CPU64* cpu, U64 fd, U64 statbuf) {
         if (kfile->openFile->node) {
             mode  = kfile->openFile->node->getMode();
             ino   = kfile->openFile->node->id;
-            mtime = (U64)kfile->openFile->node->lastModified();
+            mtime = (U64)kfile->openFile->node->lastModified() / 1000; // ms -> Linux seconds
         }
     } else {
         // Non-file kobject (socket/pipe): claim S_IFCHR so callers don't
@@ -2754,6 +2757,7 @@ static const char* x64SyscallName(U64 nr) {
         case 96: return "gettimeofday";
         case 98: return "getrusage";
         case 99: return "sysinfo";
+        case 100: return "times";
         case 102: return "getuid";
         case 105: return "setuid";
         case 106: return "setgid";
@@ -3088,7 +3092,8 @@ void ksyscall64(CPU64* cpu) {
             break;
         case X64_SYS_getcwd: {
             // getcwd(buf, size) — copy current directory string out. Returns
-            // a pointer to buf on success, -ERANGE if size is too small.
+            // the byte count including NUL on success (the libc wrapper
+            // returns a pointer), -ERANGE if size is too small.
             if (!a1 || a2 == 0) { ret = (U64)-K_EFAULT; break; }
             // No-process standalone runner: default cwd to "/".
             BString cwd = (cpu->thread && cpu->thread->process)
@@ -3097,7 +3102,7 @@ void ksyscall64(CPU64* cpu) {
             U64 need = (U64)cwd.length() + 1;
             if (need > a2) { ret = (U64)-34; /* -ERANGE */ break; }
             cpu->memory->memcpyToGuest(a1, cwd.c_str(), need);
-            ret = a1;
+            ret = need;
             break;
         }
         case X64_SYS_fcntl: {
@@ -4252,6 +4257,14 @@ void ksyscall64(CPU64* cpu) {
             if (a2) cpu->memory->memsetGuest(a2, 0, 144);
             ret = 0;
             break;
+        case X64_SYS_times: {
+            // times(&tms): struct tms is 4x clock_t = 32 bytes on x86_64.
+            // Zero the accounting fields; return USER_HZ (100) ticks since an
+            // arbitrary point so Mono/Unity startup timing moves forward.
+            if (a1) cpu->memory->memsetGuest(a1, 0, 32);
+            ret = KSystem::getSystemTimeAsMicroSeconds() / 10000ULL;
+            break;
+        }
         case X64_SYS_sysinfo:
             // struct sysinfo — zero-fill the standard 64-byte layout.
             // ld-linux doesn't actually read these; some binaries call it

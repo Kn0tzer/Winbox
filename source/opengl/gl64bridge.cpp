@@ -1086,6 +1086,13 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             // strings when we return 0.
             return 0;
         }
+        case GL64_fn_glVersionMode: {
+            // Which GL profile the guest shim advertises. BW64_GLVERSION=3*
+            // opts D3D11 experiments into 3.2 core strings; default stays 2.1
+            // so the proven D3D9-era path is untouched.
+            const char* v = getenv("BW64_GLVERSION");
+            return (U64)((v && v[0] == '3') ? 32 : 21);
+        }
         case GL64_fn_glGetIntegerv: {
             if (g_glContext && args.a[1]) {
                 GLenum pname = (GLenum)ai(args,0);

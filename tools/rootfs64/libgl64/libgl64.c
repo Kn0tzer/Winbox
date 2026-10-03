@@ -221,7 +221,10 @@ enum {
     GL64_fn_glGetQueryObjectiv,
     GL64_fn_glGetQueryObjectuiv,
     GL64_fn_glGetQueryObjectui64v,
-    GL64_fn_glQueryCounter
+    GL64_fn_glQueryCounter,
+
+    // version mode (must match source/opengl/gl64bridge_abi.h)
+    GL64_fn_glVersionMode = 620
 };
 
 // ---- the trap ---------------------------------------------------------------
@@ -431,6 +434,18 @@ API void glHint(GLenum t, GLenum m){ GL64Args a={{0}}; a.a[0]=t; a.a[1]=m; (void
 API void glFlush(void) { (void)gl64_trap(GL64_fn_glFlush,0); }
 API void glFinish(void){ (void)gl64_trap(GL64_fn_glFinish,0); }
 API GLenum glGetError(void){ return (GLenum)gl64_trap(GL64_fn_glGetError,0); }
+// Version mode: ask the host which GL profile to advertise. The host reads
+// BW64_GLVERSION ("3*" -> 32, else 21); cached after the first query. This
+// keeps D3D9-era apps on the proven 2.1 strings while D3D11 experiments opt
+// into 3.2 core via ?glversion=3.2 — without any guest-libc dependency.
+static int gl_version_mode(void) {
+    static int cached = 0; // 0 = unknown, else 21 or 32
+    if (!cached) {
+        uint64_t m = gl64_trap(GL64_fn_glVersionMode, 0);
+        cached = (m == 32) ? 32 : 21;
+    }
+    return cached;
+}
 API const GLubyte* glGetString(GLenum name) {
     // Host returns the real string only as a host pointer (unusable in-guest),
     // so it returns 0 and we hand back our own stable strings.
@@ -442,8 +457,14 @@ API const GLubyte* glGetString(GLenum name) {
     // needs to emit a draw. With an EMPTY extension string wined3d concluded the
     // driver had no usable feature set and never issued DrawPrimitive (the clear
     // showed, the triangle never did). These all map onto WebGL2/GLES3 features.
+    static const GLubyte* version21 = (const GLubyte*)"2.1 Boxedwine64";
+    static const GLubyte* version32 = (const GLubyte*)"3.2 Boxedwine64";
     static const GLubyte* version  = (const GLubyte*)"2.1 Boxedwine64";
+    static const GLubyte* slv12    = (const GLubyte*)"1.20";
+    static const GLubyte* slv15    = (const GLubyte*)"1.50";
     static const GLubyte* slv      = (const GLubyte*)"1.20";
+    if (gl_version_mode() == 32) { version = version32; slv = slv15; }
+    else { version = version21; slv = slv12; }
     // The monolithic GL_EXTENSIONS string (legacy/compat path). Must list the same
     // extensions as g_extList[] below (the core-profile glGetStringi path) so both
     // wined3d code paths see the same feature set.

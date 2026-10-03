@@ -181,10 +181,12 @@
             // calling thread — no worker thread to wait on.
             "WINE_D3D_CONFIG=csmt=0x0"
         ];
-        // TEMP D3D bring-up: ?winedbg=<channels> sets WINEDEBUG for the reload
-        // (?session=0) path so we can see loaddll/d3d failures. Remove before ship.
+        // Opt-in Wine diagnostics; captured at boot for all session processes.
         var wd = param("winedbg");
         if (wd) e.push("WINEDEBUG=" + wd);
+        if (param("monodebug") === "1") {
+            e.push("MONO_LOG_LEVEL=debug", "MONO_LOG_MASK=" + (param("monomask") || "asm"));
+        }
         return e;
         // NOTE: WINEDEBUG added here does NOT reach in-session app spawns — those
         // use the CAPTURED BOOT env (g_sessionCtx.env in wine64session.cpp), not
@@ -832,13 +834,28 @@
                 // is NOT necessarily === window.Module. Capture it so loadFilesystem
                 // and the FS writes target the real object.
                 liveModule = (typeof Module !== "undefined") ? Module : window.Module;
-                // Host-side GL trace (read via getenv in gl64bridge.cpp). Emscripten
-                // getenv() reads Module.ENV; set it before main() runs.
-                try { liveModule["ENV"] = liveModule["ENV"] || {}; liveModule["ENV"]["BW64_GLTRACE"] = (param("gltrace") || "1"); } catch (e) {}
-                // ?ripsample=1 turns on the guest RIP sampler + heartbeat (every ~2s
-                // dump each live thread's instruction-delta + rip + module) — used to
-                // locate where the D3D Present() thread spins/blocks. Off by default.
-                try { if (param("ripsample") === "1") { liveModule["ENV"]["BW64_RIPSAMPLE"] = "1"; liveModule["ENV"]["BW64_RIPSAMPLE_HB"] = "1"; } } catch (e) {}
+                // Emscripten libc reads the generated global ENV object, not
+                // Module.ENV. Set it before getEnvStrings caches the environment.
+                // Diagnostic flags are opt-in, fixed names (never arbitrary env).
+                ENV["BW64_GLTRACE"] = param("gltrace") || "1";
+                if (param("ripsample") === "1") {
+                    ENV["BW64_RIPSAMPLE"] = "1";
+                    ENV["BW64_RIPSAMPLE_HB"] = "1";
+                }
+                if (param("wildjump") === "1") ENV["BW64_WILDJUMP"] = "1";
+                if (param("dlltrace") === "1") ENV["BW64_DLLTRACE"] = "1";
+                if (param("filemap") === "1") ENV["BW64_FMMAP"] = "1";
+                if (param("unimpldump") === "1") ENV["BW64_UNIMPLDUMP"] = "1";
+                if (param("dumpaddr")) ENV["BW64_DUMPADDR"] = param("dumpaddr");
+                // LD_BIND_NOW=1 forces eager PLT resolution in guest ld-linux.
+                // Workaround probe for lazy-bind failures (unrelocated .got.plt
+                // slots observed as wild jumps, e.g. libgcc_s _Unwind_Find_FDE).
+                // Costs startup time; correctness first, optimize later.
+                if (param("bindnow") === "1") ENV["LD_BIND_NOW"] = "1";
+                // BW64_GLVERSION selects the GL profile the guest shim reports
+                // (?glversion=3.2 opts D3D11 experiments into 3.2 core strings;
+                // default 2.1 keeps the proven D3D9 path untouched).
+                if (param("glversion")) ENV["BW64_GLVERSION"] = param("glversion");
                 // Hold main() until the rootfs is in the VFS.
                 liveModule["addRunDependency"]("loadWine64Fs");
                 loadFilesystem(els);

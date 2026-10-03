@@ -6244,6 +6244,152 @@ int runX64SelfTest() {
         });
     }
 
+    // Linux getcwd syscall returns a byte count including NUL, not a pointer.
+    // Mono/Unity also query their current directory during initialization.
+    for (U8 size : {1, 2, 16}) {
+        std::vector<U8> code = {
+            0x48, 0x89, 0xE7,                 // mov rdi, rsp
+            0xBE, size, 0, 0, 0,              // mov esi, size
+            0xB8, 79, 0, 0, 0,                // mov eax, SYS_getcwd
+            0x0F, 0x05,
+        };
+        runAndCheck(r, "getcwd returns length including NUL / ERANGE", withExit(code), [size](CPU64& c) {
+            if (size == 1) return c.reg[X64_R15].u64 == (U64)(S64)-34;
+            return c.reg[X64_R15].u64 == 2 && c.memory->readb(STACK_TOP - 16) == '/' &&
+                   c.memory->readb(STACK_TOP - 15) == 0;
+        });
+    }
+
+    // PREFETCH/PREFETCHW are cache hints, including for unmapped addresses.
+    for (U8 modrm : {0x03, 0x4B, 0x8B}) {
+        KMemory64 mem(nullptr);
+        mem.mmapAnonymousFixed(CODE_BASE, 0x1000, 7);
+        CPU64 cpu(&mem);
+        cpu.rip = CODE_BASE;
+        cpu.reg[X64_RBX].setU64(0xDEAD0000);
+        cpu.rflags = X64_CF | X64_ZF | X64_OF | 2;
+        std::vector<U8> code = {0x0F, 0x0D, modrm};
+        if ((modrm & 0xC0) == 0x40) code.push_back(0x14);
+        if ((modrm & 0xC0) == 0x80) code.insert(code.end(), {0x14, 0, 0, 0});
+        loadCode(mem, CODE_BASE, code);
+        cpu.runBounded(1);
+        bool ok = cpu.instructionCount == 1 && cpu.rip == CODE_BASE + code.size() &&
+                  cpu.rflags == (X64_CF | X64_ZF | X64_OF | 2) && cpu.reg[X64_RBX].u64 == 0xDEAD0000;
+        printf("  %s: PREFETCH(W) decodes displacement without memory access (%02x)\n", ok ? "PASS" : "FAIL", modrm);
+        ok ? r.passed++ : r.failed++;
+    }
+
+    // Unity startup regressions: exercise step() through its generated dispatch,
+    // not a helper that bypasses decoding. Sentinels catch lost SIMD lanes.
+    for (U16 cleanup : {0, 8, 256}) {
+        KMemory64 mem(nullptr);
+        mem.mmapAnonymousFixed(CODE_BASE, 0x1000, 7);
+        mem.mmapAnonymousFixed(STACK_TOP - 0x1000, 0x1000, 3);
+        loadCode(mem, CODE_BASE, {0xC2, (U8)cleanup, (U8)(cleanup >> 8)});
+        const U64 sp = STACK_TOP - 512;
+        mem.writeq(sp, CODE_BASE + 32);
+        CPU64 cpu(&mem);
+        cpu.rip = CODE_BASE;
+        cpu.reg[X64_RSP].setU64(sp);
+        cpu.runBounded(1);
+        bool ok = cpu.instructionCount == 1 && cpu.rip == CODE_BASE + 32 &&
+                  cpu.reg[X64_RSP].u64 == sp + 8 + cleanup;
+        printf("  %s: RET imm16 dispatch/stack cleanup %u\n", ok ? "PASS" : "FAIL", cleanup);
+        ok ? r.passed++ : r.failed++;
+    }
+    for (U8 opcode : {0x52, 0x53}) {
+        for (bool scalar : {false, true}) {
+            for (bool fromMemory : {false, true}) {
+                KMemory64 mem(nullptr);
+                mem.mmapAnonymousFixed(CODE_BASE, 0x1000, 7);
+                CPU64 cpu(&mem);
+                cpu.rip = CODE_BASE;
+                // {4, 16, 64, 256}: all reciprocal/sqrt results are exact.
+                cpu.xmm[0].lo = 0x4180000040800000ULL;
+                cpu.xmm[0].hi = 0x4380000042800000ULL;
+                cpu.xmm[1].lo = 0xDEADBEEF01234567ULL;
+                cpu.xmm[1].hi = 0xFEDCBA9876543210ULL;
+                std::vector<U8> code;
+                if (scalar) code.push_back(0xF3);
+                code.insert(code.end(), {0x0F, opcode, (U8)(fromMemory ? 0x08 : 0xC8)});
+                if (fromMemory) {
+                    // m32 at the page boundary: the scalar form must not read m64.
+                    U64 addr = scalar ? CODE_BASE + 0xFFC : CODE_BASE + 0xFE0;
+                    cpu.reg[X64_RAX].setU64(addr);
+                    mem.writed(addr, (U32)cpu.xmm[0].lo);
+                    if (!scalar) {
+                        mem.writeq(addr, cpu.xmm[0].lo);
+                        mem.writeq(addr + 8, cpu.xmm[0].hi);
+                    }
+                }
+                loadCode(mem, CODE_BASE, code);
+                bool sqrt = opcode == 0x52;
+                U64 expectedLo = scalar
+                    ? 0xDEADBEEF00000000ULL | (sqrt ? 0x3F000000u : 0x3E800000u)
+                    : (sqrt ? 0x3E8000003F000000ULL : 0x3D8000003E800000ULL);
+                U64 expectedHi = scalar ? 0xFEDCBA9876543210ULL
+                    : (sqrt ? 0x3D8000003E000000ULL : 0x3B8000003C800000ULL);
+                cpu.runBounded(1);
+                bool ok = cpu.instructionCount == 1 && cpu.rip == CODE_BASE + code.size() &&
+                          cpu.xmm[1].lo == expectedLo && cpu.xmm[1].hi == expectedHi;
+                printf("  %s: %s%s %s preserves all SIMD lanes\n", ok ? "PASS" : "FAIL",
+                       sqrt ? "RSQRT" : "RCP", scalar ? "SS" : "PS", fromMemory ? "memory" : "register");
+                ok ? r.passed++ : r.failed++;
+            }
+        }
+    }
+    for (bool wide : {false, true}) {
+        for (bool equal : {false, true}) {
+            KMemory64 mem(nullptr);
+            mem.mmapAnonymousFixed(CODE_BASE, 0x1000, 7);
+            CPU64 cpu(&mem);
+            cpu.rip = CODE_BASE;
+            cpu.reg[X64_RSI].setU64(CODE_BASE + 0x800);
+            U64 lo = wide ? 0x1111111122222222ULL : 0x2222222211111111ULL;
+            mem.writeq(CODE_BASE + 0x800, lo);
+            mem.writeq(CODE_BASE + 0x808, 0x3333333344444444ULL);
+            cpu.reg[X64_RAX].setU64(equal ? (wide ? lo : 0x11111111ULL) : 0);
+            cpu.reg[X64_RDX].setU64(equal ? (wide ? 0x3333333344444444ULL : 0x22222222ULL) : 0);
+            cpu.reg[X64_RBX].setU64(0xAAAAAAAA55555555ULL);
+            cpu.reg[X64_RCX].setU64(0xBBBBBBBB66666666ULL);
+            const U32 flags = X64_CF | X64_PF | X64_AF | X64_SF | X64_OF | 2;
+            cpu.rflags = flags | (equal ? 0 : X64_ZF);
+            std::vector<U8> code = {0xF0};
+            if (wide) code.push_back(0x48);
+            code.insert(code.end(), {0x0F, 0xC7, 0x0E}); // lock cmpxchg{8,16}b [rsi]
+            loadCode(mem, CODE_BASE, code);
+            cpu.runBounded(1);
+            bool ok = cpu.instructionCount == 1 && cpu.rip == CODE_BASE + code.size() &&
+                      cpu.rflags == (flags | (equal ? X64_ZF : 0));
+            if (equal) {
+                ok = ok && mem.readq(CODE_BASE + 0x800) ==
+                    (wide ? 0xAAAAAAAA55555555ULL : 0x6666666655555555ULL);
+                if (wide) ok = ok && mem.readq(CODE_BASE + 0x808) == 0xBBBBBBBB66666666ULL;
+            } else {
+                ok = ok && cpu.reg[X64_RAX].u64 == (wide ? lo : 0x11111111ULL) &&
+                    cpu.reg[X64_RDX].u64 == (wide ? 0x3333333344444444ULL : 0x22222222ULL) &&
+                    mem.readq(CODE_BASE + 0x800) == lo;
+            }
+            printf("  %s: CMPXCHG%uB %s changes only ZF\n", ok ? "PASS" : "FAIL", wide ? 16 : 8, equal ? "equal" : "unequal");
+            ok ? r.passed++ : r.failed++;
+        }
+    }
+    {
+        KMemory64 mem(nullptr);
+        mem.mmapAnonymousFixed(CODE_BASE, 0x1000, 7);
+        loadCode(mem, CODE_BASE, {0xF3, 0x0F, 0x5A, 0xC8}); // cvtss2sd xmm1, xmm0
+        CPU64 cpu(&mem);
+        cpu.rip = CODE_BASE;
+        cpu.xmm[0].lo = 0x40800000; // 4.0f
+        cpu.xmm[1].hi = 0xDEADBEEF12345678ULL;
+        cpu.runBounded(1);
+        bool ok = cpu.instructionCount == 1 && cpu.rip == CODE_BASE + 4 &&
+                  cpu.xmm[1].lo == 0x4010000000000000ULL &&
+                  cpu.xmm[1].hi == 0xDEADBEEF12345678ULL;
+        printf("  %s: CVTSS2SD converts and preserves upper qword\n", ok ? "PASS" : "FAIL");
+        ok ? r.passed++ : r.failed++;
+    }
+
     printf("=== self-test summary: %d passed, %d failed ===\n\n", r.passed, r.failed);
     return r.failed == 0 ? 0 : 1;
 }

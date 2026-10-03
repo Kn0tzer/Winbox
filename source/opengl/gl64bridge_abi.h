@@ -266,6 +266,12 @@ enum {
     GL64_fn_glGetQueryObjectui64v,      // (id, pname, out params* (64-bit))
     GL64_fn_glQueryCounter,             // (id, target)
 
+    // --- version mode. Guest shim asks the host which GL profile to
+    //     advertise (host reads BW64_GLVERSION; "3*" -> 32, else 21), so
+    //     D3D9-era apps keep the proven 2.1 strings while D3D11 experiments
+    //     opt into 3.2 core. No guest libc dependency involved. ---
+    GL64_fn_glVersionMode = 620,        // () -> 21 or 32
+
     GL64_fn__MAX
 };
 
