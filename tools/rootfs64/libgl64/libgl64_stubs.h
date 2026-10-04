@@ -101,9 +101,11 @@ GLSTUB(glGetTexGenfv)
 GLSTUB(glGetTexGeniv)
 GLSTUB(glGetTexImage)
 GLSTUB(glGetTexLevelParameterfv)
-GLSTUB(glGetTexLevelParameteriv)
+// A2: glGetTexLevelParameteriv / glGetTexParameteriv / glReadBuffer now have REAL
+// wrappers in libgl64.c (they were the gl64_noop stubs that let wined3d believe
+// it had read texture/render-target state it never received). Removed here so the
+// GLSTUB(void) signatures do not conflict with the real prototypes.
 GLSTUB(glGetTexParameterfv)
-GLSTUB(glGetTexParameteriv)
 GLSTUB(glIndexd)
 GLSTUB(glIndexdv)
 GLSTUB(glIndexf)
@@ -196,7 +198,6 @@ GLSTUB(glRasterPos4i)
 GLSTUB(glRasterPos4iv)
 GLSTUB(glRasterPos4s)
 GLSTUB(glRasterPos4sv)
-GLSTUB(glReadBuffer)
 GLSTUB(glReadPixels)
 GLSTUB(glRectd)
 GLSTUB(glRectdv)

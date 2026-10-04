@@ -6,6 +6,11 @@ const url = process.env.WINE_URL || `http://127.0.0.1:${server.address().port}/`
 const GAME_DIR = process.env.GAME_DIR || '/tmp/stage/baldi';
 const GAME_ARGS = JSON.parse(process.env.GAME_ARGS || '["-screen-width","640","-screen-height","480","-screen-fullscreen","0"]');
 await mkdir('test-results', { recursive: true });
+// TAG namespaces every artifact this run writes (baldi-<tag>-console.log, …) so
+// two agents probing the same dist concurrently cannot clobber each other's
+// evidence. Unset keeps the historical baldi-*.log names.
+const TAG = process.env.TAG ? '-' + process.env.TAG : '';
+const art = name => 'test-results/baldi' + TAG + '-' + name;
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/local/bin/chromium', headless: true, args: ['--no-sandbox', '--enable-unsafe-webgpu', '--enable-unsafe-swiftshader', '--use-angle=vulkan', '--use-vulkan=swiftshader', '--enable-features=Vulkan', '--disable-dev-shm-usage'] });
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
 const errors = [], logs = [];
@@ -41,7 +46,7 @@ async function waitForGuest(predicate, description) {
     if (guestFailure) throw new Error(guestFailure);
     if (errors.length) throw new Error(errors.join('\n'));
     if (await page.evaluate(predicate)) return;
-    await writeFile('test-results/baldi-console.log', logs.join('\n').slice(-200000));
+    await writeFile(art('console.log'), logs.join('\n').slice(-2000000));
     await page.waitForTimeout(1000);
   }
   throw new Error(`Timed out waiting for ${description} after ${bootTimeout}ms`);
@@ -67,8 +72,8 @@ try {
   console.log('MAPPED');
   // Screenshot immediately: the browser has died during the post-map soak
   // before (no artifacts), so capture the mapped window first, then soak.
-  await page.screenshot({ path: 'test-results/baldi-early.png', fullPage: true }).catch(() => {});
-  await frameElement.screenshot({ path: 'test-results/baldi-frame-early.png' }).catch(() => {});
+  await page.screenshot({ path: art('early.png'), fullPage: true }).catch(() => {});
+  await frameElement.screenshot({ path: art('frame-early.png') }).catch(() => {});
   console.log('STATUS', await page.locator('#status').textContent().catch(() => '(no status)'));
   const soakSecs = Number(process.env.SOAK_SECS || 120);
   for (let i = 0; i < soakSecs; i++) {
@@ -76,11 +81,11 @@ try {
     await page.waitForTimeout(1000);
     // Keep a running console capture: the file otherwise freezes at MAPPED
     // and post-map guest activity (the actual game init) is lost.
-    if (i % 10 === 9) await writeFile('test-results/baldi-console.log', logs.join('\n').slice(-500000)).catch(() => {});
+    if (i % 10 === 9) await writeFile(art('console.log'), logs.join('\n').slice(-2000000)).catch(() => {});
   }
-  await writeFile('test-results/baldi-console.log', logs.join('\n').slice(-500000)).catch(() => {});
-  await page.screenshot({ path: 'test-results/baldi.png', fullPage: true });
-  await frameElement.screenshot({ path: 'test-results/baldi-frame.png' });
+  await writeFile(art('console.log'), logs.join('\n').slice(-2000000)).catch(() => {});
+  await page.screenshot({ path: art('shot.png'), fullPage: true });
+  await frameElement.screenshot({ path: art('frame.png') });
   console.log('STATUS', await page.locator('#status').textContent());
   console.log('RUNTIME', await page.evaluate(() => document.getElementById('runtimeStatus').textContent));
   console.log('ERRORS', JSON.stringify(errors));
@@ -90,14 +95,38 @@ try {
   try {
     const runtime = page.frames().find(f => f.url().includes('/runtime/'));
     if (runtime) {
-      const text = await runtime.evaluate(() => {
+      const text = await runtime.evaluate(async () => {
+        // FS.readFile()'s return type varies with the Emscripten version, the
+        // `encoding` option, and whether the launcher installed an async FS proxy
+        // (a Promise). Normalise all three, or TextDecoder("[object Object]") eats
+        // the very evidence (Unity's player.log) this probe exists to capture.
+        const asText0 = (raw, max = 12000) => {
+          if (raw == null) return '(null)';
+          if (typeof raw === 'string') return raw.slice(-max);
+          if (raw instanceof ArrayBuffer) return new TextDecoder().decode(new Uint8Array(raw)).slice(-max);
+          if (ArrayBuffer.isView(raw)) return new TextDecoder().decode(new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength)).slice(-max);
+          if (typeof raw.length === 'number') return new TextDecoder().decode(new Uint8Array(raw)).slice(-max);
+          if (raw.data != null) return asText0(raw.data, max);
+          return '(unreadable: ' + Object.prototype.toString.call(raw) + ')';
+        };
+        const err = (e) => (e && (e.name + '/' + (e.message !== undefined ? e.message : e.errno))) || String(e);
+        const P = '/root/home/username/apps/player.log';
+        const notes = [];
         try {
           const FS = window.bwRuntime?.fs?.();
-          const raw = FS.readFile('/root/home/username/apps/player.log');
-          return new TextDecoder().decode(raw).slice(-12000);
-        } catch (e) { return 'player.log unreadable: ' + String(e && e.message || e); }
+          if (!FS) return 'player.log unreadable: no FS in runtime frame';
+          try { const st = await FS.stat(P); notes.push('stat size=' + (st && st.size)); }
+          catch (e) { notes.push('stat: ' + err(e)); }
+          for (const opts of [{ encoding: 'utf8' }, undefined]) {
+            try {
+              const v = await FS.readFile(P, opts);
+              return asText0(v) + (notes.length ? '\n[probe] ' + notes.join(' | ') : '');
+            } catch (e) { notes.push('readFile(' + JSON.stringify(opts) + '): ' + err(e)); }
+          }
+          return 'player.log unreadable: ' + notes.join(' | ');
+        } catch (e) { return 'player.log unreadable: ' + err(e); }
       });
-      await writeFile('test-results/baldi-player.log', String(text));
+      await writeFile(art('player.log'), String(text));
       console.log('PLAYERLOG', String(text).slice(-3000));
     }
   } catch (e) { console.log('PLAYERLOG-ERR', String(e.message || e).slice(0, 200)); }
@@ -109,6 +138,20 @@ try {
     const runtime = page.frames().find(f => f.url().includes('/runtime/'));
     if (runtime) {
       const probe = await runtime.evaluate(() => {
+        const asBytes = (raw) => (typeof raw === 'string') ? new TextEncoder().encode(raw)
+          : (raw instanceof ArrayBuffer) ? new Uint8Array(raw)
+          : ArrayBuffer.isView(raw) ? new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength)
+          : new Uint8Array(raw);
+        const asText = (raw, max = 12000) => asText0(raw, max);
+        function asText0(raw, max) {
+          if (raw == null) return '(null)';
+          if (typeof raw === 'string') return raw.slice(-max);
+          if (raw instanceof ArrayBuffer) return new TextDecoder().decode(new Uint8Array(raw)).slice(-max);
+          if (ArrayBuffer.isView(raw)) return new TextDecoder().decode(new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength)).slice(-max);
+          if (typeof raw.length === 'number') return new TextDecoder().decode(new Uint8Array(raw)).slice(-max);
+          if (raw.data != null) return asText0(raw.data, max);
+          return '(unreadable: ' + Object.prototype.toString.call(raw) + ')';
+        }
         const out = {};
         const FS = window.bwRuntime?.fs?.();
         if (!FS) return { nofs: true };
@@ -117,8 +160,12 @@ try {
         out.roots = roots.slice(0, 20);
         for (const p of ['/root/home/username/apps/BALDI_Data/Managed/mscorlib.dll', '/root/home/username/apps/BALDI_Data/boot.config', '/root/home/username/apps/player.log']) {
           try {
-            const data = FS.readFile(p);
-            out[p] = p.endsWith('.dll') ? { size: data.length, header: Array.from(data.slice(0, 16)) } : new TextDecoder().decode(data).slice(-12000);
+            const data = FS.readFile(p, { encoding: 'binary' });
+            const bytes = (typeof data === 'string') ? new TextEncoder().encode(data)
+                         : (data instanceof ArrayBuffer) ? new Uint8Array(data)
+                         : ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+                         : new Uint8Array(data);
+            out[p] = p.endsWith('.dll') ? { size: bytes.length, header: Array.from(bytes.slice(0, 16)) } : asText(data);
           } catch (e) { out[p] = String(e.message || e); }
         }
         try {
@@ -146,16 +193,16 @@ try {
         } catch (ex) { out.lowerr = String(ex && ex.message || ex); }
         return out;
       });
-      await writeFile('test-results/baldi-probe.json', JSON.stringify(probe, null, 2));
+      await writeFile(art('probe.json'), JSON.stringify(probe, null, 2));
       for (const [path, text] of Object.entries(probe)) {
-        if (path.endsWith('/player.log') && typeof text === 'string') await writeFile('test-results/baldi-player.log', text);
+        if (path.endsWith('/player.log') && typeof text === 'string') await writeFile(art('player.log'), text);
       }
       console.log('PROBE', JSON.stringify(probe).slice(0, 8000));
     }
   } catch {}
-  try { await page.screenshot({ path: 'test-results/baldi-fail.png', fullPage: true }); } catch {}
+  try { await page.screenshot({ path: art('fail.png'), fullPage: true }); } catch {}
 } finally {
-  await writeFile('test-results/baldi-console.log', logs.join('\n').slice(-200000));
-  await writeFile('test-results/baldi-errors.json', JSON.stringify(errors, null, 2));
+  await writeFile(art('console.log'), logs.join('\n').slice(-2000000));
+  await writeFile(art('errors.json'), JSON.stringify(errors, null, 2));
   await browser.close(); server?.close();
 }

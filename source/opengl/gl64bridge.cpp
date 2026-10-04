@@ -117,6 +117,16 @@ SDL_Window*   g_hiddenWindow = nullptr;   // hidden, GL-capable
 SDL_GLContext g_glContext    = nullptr;
 #endif
 bool          g_glInitFailed = false;
+// A2: set once the guest binds a NON-ZERO GL_FRAMEBUFFER of its own (wined3d's
+// D3D11 render targets). While false the bridge force-targets its own offscreen
+// FBO (the only one with a DEPTH attachment, which the fixed-function path needs);
+// once true it must stop stomping the guest's binding back, or every draw lands in
+// the wrong target and wined3d's swapchain render comes out empty.
+bool          g_guestFboBound = false;
+// The guest's last NON-ZERO GL_FRAMEBUFFER binding (wined3d's current render
+// target). readbackAndPresent reads THIS when set, so a wined3d render shows up
+// in the guest window instead of the bridge's own (now unused) FBO.
+GLuint        g_guestFbo = 0;
 
 #ifdef __EMSCRIPTEN__
 // Run a closure on the platform MAIN thread (which owns the WebGL context),
@@ -164,9 +174,30 @@ int g_drawW = 640, g_drawH = 480;
 // them (single context for first light).
 U64 g_nextOpaqueId = 0x5000;
 
-// Readback scratch buffers.
+// A2: readback scratch buffers.
 std::vector<U8> g_rgba;   // glReadPixels output (RGBA, bottom-up)
 std::vector<U8> g_bgrx;   // converted, top-down, for submitFrame
+
+// Target the draw/clear should hit. Emscripten's LEGACY_GL_EMULATION flush and
+// the offscreen-backbuffer machinery can rebind the framebuffer between the
+// guest's glClear and its draws, so the fixed-function (glcube) path re-binds our
+// own offscreen FBO — the only target with a DEPTH attachment — before each draw.
+// Once the guest has bound a framebuffer of ITS OWN (wined3d's D3D11 render
+// targets) that would be actively wrong, so we back off and honour the guest's
+// binding instead (A2).
+inline void bindDrawTarget() {
+    if (!g_guestFboBound && g_emFbo) glBindFramebuffer(GL_FRAMEBUFFER, g_emFbo);
+}
+
+// A2: wined3d's glBindFramebuffer / glFramebufferTexture2D are SEPARATE traps, and
+// Emscripten's LEGACY_GL_EMULATION flush + the renderViaOffscreenBackBuffer machinery
+// can rebind the framebuffer in between (this file's own glClear/glEnd comments say so
+// for the fixed-function path). When that happens the attachment lands on whatever is
+// bound now instead of wined3d's FBO and glCheckFramebufferStatus then answers
+// GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT — which wined3d treats as a hard
+// render-target failure. Re-bind the guest's own FBO inside the same main-thread
+// closure as every framebuffer operation.
+inline void bindGuestTarget() { if (g_guestFbo) glBindFramebuffer(GL_FRAMEBUFFER, g_guestFbo); }
 
 #ifdef __EMSCRIPTEN__
 // --- immediate-mode batching ------------------------------------------------
@@ -571,7 +602,11 @@ void readbackAndPresent() {
     g_bgrx.resize(pixels * 4);
 
 #ifdef __EMSCRIPTEN__
-    if (g_emFbo) glBindFramebuffer(GL_FRAMEBUFFER, g_emFbo);
+    // Read back whatever the guest last rendered into: its own FBO if it bound
+    // one (A2 — wined3d's D3D11 render targets), else our offscreen FBO which
+    // carries the DEPTH attachment the fixed-function path needs.
+    if (g_guestFbo) glBindFramebuffer(GL_FRAMEBUFFER, g_guestFbo);
+    else if (g_emFbo) glBindFramebuffer(GL_FRAMEBUFFER, g_emFbo);
 #endif
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, g_rgba.data());
@@ -755,10 +790,11 @@ std::string readGuestCStr(CPU64* cpu, U64 guestAddr, U64 maxLen) {
 
 // Generate/delete host GL object names and write/read the id array to/from the
 // guest. n = args.a[0], guest id array = args.a[1].
-enum class GenKind { Buffer, Texture, VertexArray };
+enum class GenKind { Buffer, Texture, VertexArray,
+                     Framebuffer, Renderbuffer, Sampler };
 void genObjects(CPU64* cpu, const GL64Args& args, GenKind kind) {
     GLsizei n = (GLsizei)args.a[0];
-    if (n <= 0 || n > 65536) return;
+    if (n <= 0 || n > 65536 || !args.a[1]) return;
     std::vector<GLuint> ids((size_t)n, 0);
     GLuint* p = ids.data();
     glOnMain([&]{
@@ -766,13 +802,19 @@ void genObjects(CPU64* cpu, const GL64Args& args, GenKind kind) {
             case GenKind::Buffer:      glGenBuffers(n, p); break;
             case GenKind::Texture:     glGenTextures(n, p); break;
             case GenKind::VertexArray: glGenVertexArrays(n, p); break;
+            // A2: these MUST write real ids. Pre-A2 they fell through to the
+            // guest's gl64_noop, which discarded the output array, so wined3d went
+            // on to bind uninitialised guest-stack garbage as its framebuffer name.
+            case GenKind::Framebuffer: glGenFramebuffers(n, p); break;
+            case GenKind::Renderbuffer:glGenRenderbuffers(n, p); break;
+            case GenKind::Sampler:     glGenSamplers(n, p); break;
         }
     });
     cpu->memory->memcpyToGuest(args.a[1], ids.data(), (U64)n * 4);
 }
 void deleteObjects(CPU64* cpu, const GL64Args& args, GenKind kind) {
     GLsizei n = (GLsizei)args.a[0];
-    if (n <= 0 || n > 65536) return;
+    if (n <= 0 || n > 65536 || !args.a[1]) return;
     std::vector<GLuint> ids((size_t)n, 0);
     cpu->memory->memcpyFromGuest(ids.data(), args.a[1], (U64)n * 4);
     const GLuint* p = ids.data();
@@ -781,6 +823,9 @@ void deleteObjects(CPU64* cpu, const GL64Args& args, GenKind kind) {
             case GenKind::Buffer:      glDeleteBuffers(n, p); break;
             case GenKind::Texture:     glDeleteTextures(n, p); break;
             case GenKind::VertexArray: glDeleteVertexArrays(n, p); break;
+            case GenKind::Framebuffer: glDeleteFramebuffers(n, p); break;
+            case GenKind::Renderbuffer:glDeleteRenderbuffers(n, p); break;
+            case GenKind::Sampler:     glDeleteSamplers(n, p); break;
         }
     });
 }
@@ -802,7 +847,87 @@ void writeInfoLog(CPU64* cpu, const GL64Args& args, bool isProgram) {
         cpu->memory->memcpyToGuest(args.a[3], log.data(), (U64)outLen + 1);
 }
 
+// A2: wined3d maps D3D's DXGI_FORMAT_B8G8R8A8_* to the DESKTOP-GL pixel format
+// GL_BGRA (0x80E1), which WebGL2/GLES3 does not accept at all — glTexImage2D
+// raises GL_INVALID_ENUM (0x500), the texture is left with no level 0, and the
+// glFramebufferTexture2D that follows then reports GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT,
+// which wined3d treats as a hard render-target failure. Translate to GL_RGBA here and
+// swizzle the bytes so the channels still land in the right order:
+//
+//   GL_BGRA + UNSIGNED_BYTE            memory [B,G,R,A] -> want [R,G,B,A]  (swap 0<->2)
+//   GL_BGRA + UNSIGNED_INT_2_10_10_10_REV (0x8367)
+//                                      word A<<22|B<<12|G<<2|R -> reverse the 4 bytes
+//   GL_BGR  + UNSIGNED_BYTE            memory [B,G,R]    -> want [R,G,B]
+//
+// Returns true when `fmt` was rewritten (the caller must re-derive the byte count
+// only if the format size changed — here it does not: BGRA is 4 bytes and RGBA is 4).
+bool bgraToRgba(GLenum& fmt, GLenum type, std::vector<U8>& pix) {
+    const bool isBgra = (fmt == 0x80E1 /*GL_BGRA*/);
+    const bool isBgr  = (fmt == 0x80E0 /*GL_BGR*/);
+    if (!isBgra && !isBgr) return false;
+    // The packed 32-bit layouts put A in the LOW 2 bits, so a BGRA word is
+    // little-endian [R,G,B,A] only for the plain byte types; for the 2_10_10_10 /
+    // 10F_11F_11F types the word is A<<22|B<<12|G<<2|R and the whole 4 bytes reverse.
+    const bool packed32 = (type == 0x8367 /*GL_UNSIGNED_INT_2_10_10_10_REV*/ ||
+                           type == 0x8368 /*GL_UNSIGNED_INT_2_10_10_10*/ ||
+                           type == 0x8C3A /*GL_UNSIGNED_INT_10F_11F_11F_REV*/);
+    if (isBgra && packed32) {
+        for (size_t i = 0; i + 4 <= pix.size(); i += 4) {
+            U8 t = pix[i+0]; pix[i+0] = pix[i+3]; pix[i+3] = t;
+            t = pix[i+1]; pix[i+1] = pix[i+2]; pix[i+2] = t;
+        }
+    } else {
+        size_t stride = isBgra ? 4 : 3;
+        size_t texels = pix.size() / stride;
+        U8* p = pix.data();
+        for (size_t i = 0; i < texels; i++) {
+            U8 t = p[i*stride+0]; p[i*stride+0] = p[i*stride+2]; p[i*stride+2] = t;
+        }
+    }
+    fmt = isBgra ? GL_RGBA : GL_RGB;
+    return true;
+}
+
+// A2: WebGL2 is GLES3, and several pixel formats wined3d picks from its D3D format
+// table are legal desktop-GL but rejected by WebGL2 with GL_INVALID_ENUM (0x500),
+// which leaves the texture without a level 0 and makes the matching
+// glFramebufferTexture2D report GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT — wined3d's
+// hard render-target failure. Observed in test-results/baldi-a2d-diag-console.log:
+//
+//   ifmt GL_RGBA8  fmt GL_BGRA type UNSIGNED_INT_2_10_10_10_REV  (D3D B8G8R8A8_UNORM)
+//   ifmt GL_RGB8   fmt GL_RGBA type UNSIGNED_INT_2_10_10_10_REV
+//
+// WebGL2 rejects the 10_10_10_2 packed types for TexImage2D, so expand each 32-bit
+// word to 4 bytes and declare GL_UNSIGNED_BYTE. For a NULL-pixel allocation (the
+// render-target case, where the data is irrelevant) only the type is rewritten.
+void glesTexFormatFixup(GLint& ifmt, GLenum& fmt, GLenum& type, std::vector<U8>& pix) {
+    if (type != 0x8367 /*UNSIGNED_INT_2_10_10_10_REV*/ &&
+        type != 0x8368 /*UNSIGNED_INT_2_10_10_10*/) return;
+    if (!pix.empty()) {
+        size_t words = pix.size() / 4;
+        std::vector<U8> out(words * 4);
+        for (size_t i = 0; i < words; i++) {
+            // Little-endian 32-bit word holding A<<22|B<<12|G<<2|R.
+            U32 w32;
+            memcpy(&w32, &pix[i*4], 4);
+            out[i*4+0] = (U8)(w32 & 0x3);
+            out[i*4+1] = (U8)((w32 >> 2) & 0x3);
+            out[i*4+2] = (U8)((w32 >> 12) & 0x3);
+            out[i*4+3] = (U8)((w32 >> 22) & 0x3);
+        }
+        pix.swap(out);
+    }
+    type = GL_UNSIGNED_BYTE;
+    if (ifmt == 0x8058 /*GL_RGBA8*/ || ifmt == 0x8059 /*GL_RGBA16F*/ ||
+        ifmt == 0x805B /*GL_RGB5_A1*/ || ifmt == 0x805C /*GL_RGBA4*/)
+        fmt = GL_RGBA;
+    else if (ifmt == 0x8051 /*GL_RGB8*/ || ifmt == 0x8054 /*GL_RGB5*/ ||
+             ifmt == 0x8055 /*GL_RGB565*/ || ifmt == 0x8C41 /*GL_SRGB8*/)
+        fmt = GL_RGB;
+}
+
 // Bytes a glTexImage2D/glTexSubImage2D pixel buffer occupies for (w,h,fmt,type).
+// Covers the formats wined3d uses for texture uploads; unknown → 4 bytes/texel.
 // Covers the formats wined3d uses for texture uploads; unknown → 4 bytes/texel.
 size_t texImageBytes(GLsizei w, GLsizei h, GLenum format, GLenum type) {
     if (w <= 0 || h <= 0) return 0;
@@ -1017,7 +1142,7 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 // no occlusion" symptom. readbackAndPresent rebinds it for
                 // glReadPixels anyway, so keeping it bound the whole frame is
                 // consistent.
-                GL_MT({ if (g_emFbo) glBindFramebuffer(GL_FRAMEBUFFER, g_emFbo);
+                GL_MT({ bindDrawTarget();
                         glClear((GLbitfield)ai(args,0)); });
 #else
                 GL_MT(glClear((GLbitfield)ai(args,0)));
@@ -1087,11 +1212,16 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             return 0;
         }
         case GL64_fn_glVersionMode: {
-            // Which GL profile the guest shim advertises. BW64_GLVERSION=3*
-            // opts D3D11 experiments into 3.2 core strings; default stays 2.1
-            // so the proven D3D9-era path is untouched.
+            // Which GL profile the guest shim advertises. BW64_GLVERSION=3* opts
+            // D3D11 experiments into 3.2 core strings; default stays 2.1 so the
+            // proven D3D9-era path is untouched. "33" additionally probes the 3.3
+            // core-profile path — A2's diagnosis §2 H4/O5 showed 3.3 is DANGEROUS
+            // (wined3d then takes wglCreateContextAttribsARB + glGetStringi, which
+            // this bridge does not implement), so it is opt-in only.
             const char* v = getenv("BW64_GLVERSION");
-            return (U64)((v && v[0] == '3') ? 32 : 21);
+            if (!v || v[0] != '3') return 21;
+            if (v[1] == '3') return 33;
+            return 32;
         }
         case GL64_fn_glGetIntegerv: {
             if (g_glContext && args.a[1]) {
@@ -1115,6 +1245,21 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                     case 0x80E9 /*GL_MAX_ELEMENTS_VERTICES*/:    v[0] = 65536; break;
                     case 0x80E8 /*GL_MAX_ELEMENTS_INDICES*/:     v[0] = 65536; break;
                     case 0x864B /*GL_TEXTURE_COMPRESSED?/desktop-only*/: v[0] = 0; break;
+                    // A2 step 11 — FBO / MRT limits. adapter_gl.c:3211 reads
+                    // GL_MAX_SAMPLES once supported[ARB_FRAMEBUFFER_OBJECT] is
+                    // TRUE; a 0 there means "no MSAA" to every D3D11 code path, and
+                    // GL_MAX_DRAW_BUFFERS/GL_MAX_COLOR_ATTACHMENTS gate MRT. WebGL2
+                    // does not answer the desktop-only names at all (INVALID_ENUM),
+                    // so they would arrive as 0. Answer them with what the D3D11
+                    // runtime can actually back on this driver.
+                    case 0x8D57 /*GL_MAX_SAMPLES*/:              v[0] = 4; break;
+                    case 0x93B0 /*GL_MAX_FRAMEBUFFER_WIDTH*/:    v[0] = g_drawW; break;
+                    case 0x93B1 /*GL_MAX_FRAMEBUFFER_HEIGHT*/:   v[0] = g_drawH; break;
+                    case 0x8B4D /*GL_MAX_COLOR_ATTACHMENTS*/:    v[0] = 8; break;
+                    case 0x8824 /*GL_MAX_DRAW_BUFFERS*/:         v[0] = 8; break;
+                    case 0x8764 /*GL_MAX_VERTEX_STREAMS*/:      v[0] = 1; break;
+                    case 0x8825 /*GL_MAX_COLOR_ATTACHMENTS_EXT*/: v[0] = 8; break;
+                    case 0x8CDF /*GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS*/: v[0] = 32; break;
                     default: handled = false; break;
                 }
                 if (handled) { cpu->memory->memcpyToGuest(args.a[1], v, sizeof(GLint)); return 0; }
@@ -1235,8 +1380,7 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                     // between glClear and here, so re-bind before each primitive
                     // block or the depth test runs against the wrong target and
                     // the cube loses hidden-surface removal.
-                    if (g_emFbo) glBindFramebuffer(GL_FRAMEBUFFER, g_emFbo);
-                    // GL_QUADS needs an index buffer at the point of consumption.
+                    bindDrawTarget();
                     // glemu's flush triangulates a GL_QUADS (mode 7) block by binding
                     // GL.currentContext.tempQuadIndexBuffer (a precomputed
                     // 0 1 2, 0 2 3, 4 5 6,… index buffer) and drawElements(TRIANGLES).
@@ -1702,7 +1846,7 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glDrawArrays:
             if (g_glContext) {
                 GLenum mode=(GLenum)ai(args,0); GLint first=(GLint)ai(args,1); GLsizei count=(GLsizei)ai(args,2);
-                glOnMain([&]{ if (g_emFbo) glBindFramebuffer(GL_FRAMEBUFFER, g_emFbo);
+                glOnMain([&]{ bindDrawTarget();
                               glDrawArrays(mode, first, count); });
                 g_glDrew = true;
             }
@@ -1713,7 +1857,7 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 const void* indices = (const void*)(uintptr_t)args.a[3];
                 static std::atomic<bool> once{false};
                 if (!once.exchange(true)) klog_fmt("gl64 DRAW: first glDrawElements mode=0x%x count=%d", mode, count);
-                glOnMain([&]{ if (g_emFbo) glBindFramebuffer(GL_FRAMEBUFFER, g_emFbo);
+                glOnMain([&]{ bindDrawTarget();
                               glDrawElements(mode, count, type, indices); });
                 g_glDrew = true;
             }
@@ -1723,7 +1867,7 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 GLenum mode=(GLenum)ai(args,0); GLuint start=(GLuint)ai(args,1); GLuint end=(GLuint)ai(args,2);
                 GLsizei count=(GLsizei)ai(args,3); GLenum type=(GLenum)ai(args,4);
                 const void* indices = (const void*)(uintptr_t)args.a[5];
-                glOnMain([&]{ if (g_emFbo) glBindFramebuffer(GL_FRAMEBUFFER, g_emFbo);
+                glOnMain([&]{ bindDrawTarget();
                               glDrawRangeElements(mode, start, end, count, type, indices); });
                 g_glDrew = true;
             }
@@ -1826,11 +1970,36 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 GLsizei w=(GLsizei)ai(args,3); GLsizei h=(GLsizei)ai(args,4); GLint bd=(GLint)ai(args,5);
                 GLenum fmt=(GLenum)ai(args,6); GLenum type=(GLenum)ai(args,7);
                 std::vector<U8> pix; const void* pp=nullptr;
+                size_t bytes = 0;
                 if (args.a[8]) {
-                    size_t bytes = texImageBytes(w, h, fmt, type);
+                    bytes = texImageBytes(w, h, fmt, type);
                     if (bytes) { pix.resize(bytes); cpu->memory->memcpyFromGuest(pix.data(), args.a[8], (U64)bytes); pp=pix.data(); }
                 }
+                // A2: translate wined3d's desktop-only GL_BGRA uploads (see
+                // bgraToRgba). Without this the D3D B8G8R8A8 render target gets
+                // GL_INVALID_ENUM, no level 0, and an INCOMPLETE_ATTACHMENT FBO.
+                // The FORMAT must be rewritten even when pixels == NULL — that is
+                // exactly the render-target allocation wined3d does.
+                bgraToRgba(fmt, type, pix);
+                glesTexFormatFixup(ifmt, fmt, type, pix);
+                // A2: A glTexImage2D the driver REJECTS leaves the texture with no
+                // level 0, and the later glFramebufferTexture2D then reports
+                // GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT — wined3d's hard RT failure.
+                // Log the combination + the resulting error so the failing format is
+                // visible in the console instead of inferred.
+                bool trace = getenv("BW64_GLTRACE") != nullptr;
+                GLenum err0 = 0;
+                if (trace) GL_MT(err0 = glGetError());
                 GL_MT(glTexImage2D(tgt, lvl, ifmt, w, h, bd, fmt, type, pp));
+                if (trace) {
+                    GLenum e = 0; GL_MT(e = glGetError());
+                    if (e != GL_NO_ERROR || lvl == 0)
+                        klog_fmt("gl64 TEX2D: target=0x%x lvl=%d ifmt=0x%x %dx%d bd=%d fmt=0x%x type=0x%x bytes=%zu err=0x%x",
+                                 (unsigned)tgt, lvl, (unsigned)ifmt, w, h, bd, (unsigned)fmt,
+                                 (unsigned)type, bytes, (unsigned)e);
+                    GL_MT(glGetError());
+                    (void)err0;
+                }
             }
             return 0;
         }
@@ -1841,6 +2010,7 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 size_t bytes = texImageBytes(w, h, fmt, type);
                 if (bytes) {
                     std::vector<U8> pix(bytes); cpu->memory->memcpyFromGuest(pix.data(), args.a[8], (U64)bytes);
+                    bgraToRgba(fmt, type, pix);   // A2: desktop GL_BGRA uploads
                     const void* pp=pix.data();
                     GL_MT(glTexSubImage2D(tgt, lvl, x, y, w, h, fmt, type, pp));
                 }
@@ -1988,6 +2158,894 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             return 0;
         }
 #endif // __EMSCRIPTEN__
+
+        // =================================================================
+        // A2 — the GL 3.x surface wined3d's load_gl_funcs() binds
+        // unconditionally (adapter_gl.c: `USE_GL_FUNC(pfn) = wglGetProcAddress(...)`
+        // with NO null check), so EVERY name below used to resolve to the guest's
+        // gl64_noop. wined3d then believed framebuffer / sampler / MRT / UBO state
+        // worked while nothing reached the GPU: d3d11's device+context creation ran
+        // glGenFramebuffers/glBindFramebuffer/glCheckFramebufferStatus as silent
+        // no-ops (with an unwritten id array — guest-stack garbage as the FBO
+        // name), one of wined3d_device_gl_create_primary_opengl_context_cs's four
+        // bail-outs fired, context_count stayed 0 and adapter_gl_init_3d returned
+        // E_FAIL (80004005). These are real 1:1 WebGL2/GLES3 implementations.
+        //
+        // Two hard constraints for anything that TOUCHES the GL context:
+        //   * every gl* call must run through GL_MT / glOnMain (the guest worker
+        //     thread cannot touch WebGL — it is main-thread affine);
+        //   * guest pointer/array args are read/written with cpu->memory->* on
+        //     THIS thread, never dereferenced inside the main-thread closure.
+        // =================================================================
+
+        // --- framebuffer objects -----------------------------------------
+        // glFramebufferTexture1D/3D exist only so wined3d's capability probe can
+        // resolve them; WebGL2 has no 1D/3D FBO attachments, and a real call would
+        // raise GL_INVALID_OPERATION into wined3d's error check, so they no-op.
+        case GL64_fn_glGenFramebuffers:
+            if (g_glContext && args.a[1]) genObjects(cpu, args, GenKind::Framebuffer);
+            return 0;
+        case GL64_fn_glDeleteFramebuffers:
+            if (g_glContext && args.a[1]) deleteObjects(cpu, args, GenKind::Framebuffer);
+            return 0;
+        case GL64_fn_glBindFramebuffer:
+            if (g_glContext) {
+                GLenum target = (GLenum)ai(args,0);
+                GLuint fb = (GLuint)ai(args,1);
+                if (target == GL_FRAMEBUFFER) {
+                    // From here on the guest owns the draw target; the bridge must
+                    // stop force-binding its own FBO (see bindDrawTarget).
+                    g_guestFboBound = (fb != 0);
+                    g_guestFbo = fb;
+                }
+                GL_MT(glBindFramebuffer(target, fb));
+            }
+            return 0;
+        case GL64_fn_glIsFramebuffer: {
+            GLboolean r = GL_FALSE;
+            GLuint fb = (GLuint)ai(args,0);
+            if (g_glContext) GL_MT(r = glIsFramebuffer(fb));
+            return (U64)(r ? 1 : 0);
+        }
+        case GL64_fn_glFramebufferTexture2D:
+            if (g_glContext)
+                glOnMain([&]{
+                    bindGuestTarget();
+                    glFramebufferTexture2D((GLenum)ai(args,0), (GLenum)ai(args,1),
+                                           (GLenum)ai(args,2), (GLuint)ai(args,3),
+                                           (GLint)ai(args,4));
+                });
+            return 0;
+        // Emscripten exports no glFramebufferTexture (the GL 4.3 untargeted
+        // attach); WebGL2 has framebufferTexture, so go through GLctx.
+        case GL64_fn_glFramebufferTexture:
+            if (g_glContext) {
+                GLenum tgt=(GLenum)ai(args,0); GLenum att=(GLenum)ai(args,1);
+                GLuint tex=(GLuint)ai(args,2); GLint lvl=(GLint)ai(args,3);
+                glOnMain([&]{
+                    bindGuestTarget();
+                    EM_ASM({ try {
+                        if (typeof GLctx === 'undefined') return;
+                        GLctx.framebufferTexture($0, $1, $2, $3); } catch (e) {} },
+                      (int)tgt, (int)att, (int)tex, (int)lvl); });
+            }
+            return 0;
+        case GL64_fn_glFramebufferTextureLayer:
+            if (g_glContext)
+                glOnMain([&]{
+                    bindGuestTarget();
+                    glFramebufferTextureLayer((GLenum)ai(args,0), (GLenum)ai(args,1),
+                                              (GLuint)ai(args,2), (GLint)ai(args,3),
+                                              (GLint)ai(args,4));
+                });
+            return 0;
+        case GL64_fn_glFramebufferTexture1D:
+        case GL64_fn_glFramebufferTexture3D:
+            return 0;   // probe-only in WebGL2 (see note above)
+        case GL64_fn_glFramebufferRenderbuffer:
+            if (g_glContext)
+                glOnMain([&]{
+                    bindGuestTarget();
+                    glFramebufferRenderbuffer((GLenum)ai(args,0), (GLenum)ai(args,1),
+                                               (GLenum)ai(args,2), (GLuint)ai(args,3));
+                });
+            return 0;
+        case GL64_fn_glCheckFramebufferStatus: {
+            // LOAD-BEARING. wined3d treats anything other than
+            // GL_FRAMEBUFFER_COMPLETE (0x8CD5) as a hard render-target failure, so
+            // this must report the REAL status — gl64_noop returned 0, which read
+            // as "GL_INVALID_ENUM" and never matched.
+            GLenum st = 0 /*GL_FRAMEBUFFER_UNDEFINED*/;
+            GLenum target = (GLenum)ai(args,0);
+            if (g_glContext) {
+                glOnMain([&]{
+                    bindGuestTarget();
+                    st = glCheckFramebufferStatus(target);
+                });
+                if (st != GL_FRAMEBUFFER_COMPLETE && getenv("BW64_GLTRACE"))
+                    klog_fmt("gl64 FBO: check status target=0x%x -> 0x%x (bound=%u)",
+                             (unsigned)target, (unsigned)st, (unsigned)g_guestFbo);
+            }
+            return (U64)st;
+        }
+        case GL64_fn_glBlitFramebuffer:
+            if (g_glContext) {
+                GLenum mask = (GLenum)ai(args,8); GLenum filter = (GLenum)ai(args,9);
+                glOnMain([&]{
+                    bindGuestTarget();
+                    glBlitFramebuffer((GLint)ai(args,0), (GLint)ai(args,1),
+                                      (GLint)ai(args,2), (GLint)ai(args,3),
+                                      (GLint)ai(args,4), (GLint)ai(args,5),
+                                      (GLint)ai(args,6), (GLint)ai(args,7),
+                                      mask, filter);
+                });
+            }
+            return 0;
+        case GL64_fn_glGenRenderbuffers:
+            if (g_glContext && args.a[1]) genObjects(cpu, args, GenKind::Renderbuffer);
+            return 0;
+        case GL64_fn_glDeleteRenderbuffers:
+            if (g_glContext && args.a[1]) deleteObjects(cpu, args, GenKind::Renderbuffer);
+            return 0;
+        case GL64_fn_glBindRenderbuffer:
+            if (g_glContext)
+                glOnMain([&]{
+                    bindGuestTarget();
+                    glBindRenderbuffer((GLenum)ai(args,0), (GLuint)ai(args,1));
+                });
+            return 0;
+        case GL64_fn_glRenderbufferStorage:
+            if (g_glContext) {
+                GLenum tgt=(GLenum)ai(args,0); GLenum ifmt=(GLenum)ai(args,1);
+                GLsizei w=(GLsizei)ai(args,2), h=(GLsizei)ai(args,3);
+                GL_MT(glRenderbufferStorage(tgt, ifmt, w, h));
+                if (getenv("BW64_GLTRACE")) {
+                    GLenum e = 0; GL_MT(e = glGetError());
+                    klog_fmt("gl64 RBSTORAGE: target=0x%x ifmt=0x%x %dx%d err=0x%x",
+                             (unsigned)tgt, (unsigned)ifmt, w, h, (unsigned)e);
+                    GL_MT(glGetError());
+                }
+            }
+            return 0;
+        case GL64_fn_glRenderbufferStorageMultisample:
+            if (g_glContext)
+                GL_MT(glRenderbufferStorageMultisample((GLenum)ai(args,0), (GLsizei)ai(args,1),
+                                                       (GLenum)ai(args,2), (GLsizei)ai(args,3),
+                                                       (GLsizei)ai(args,4)));
+            return 0;
+        case GL64_fn_glIsRenderbuffer: {
+            GLboolean r = GL_FALSE;
+            GLuint rb = (GLuint)ai(args,0);
+            if (g_glContext) GL_MT(r = glIsRenderbuffer(rb));
+            return (U64)(r ? 1 : 0);
+        }
+        case GL64_fn_glGetRenderbufferParameteriv:
+            if (g_glContext && args.a[2]) {
+                GLint v[8] = {0};
+                GLuint rb=(GLuint)ai(args,0); GLenum pn=(GLenum)ai(args,1); GLint* p=v;
+                GL_MT(glGetRenderbufferParameteriv(rb, pn, p));
+                cpu->memory->memcpyToGuest(args.a[2], v, sizeof(GLint));
+            }
+            return 0;
+        case GL64_fn_glGetFramebufferAttachmentParameteriv:
+            if (g_glContext && args.a[3]) {
+                GLint v = 0;
+                GLenum tgt=(GLenum)ai(args,0); GLenum att=(GLenum)ai(args,1);
+                GLenum pn=(GLenum)ai(args,2); GLint* p=&v;
+                GL_MT(glGetFramebufferAttachmentParameteriv(tgt, att, pn, p));
+                cpu->memory->memcpyToGuest(args.a[3], &v, sizeof(GLint));
+            }
+            return 0;
+        case GL64_fn_glDrawBuffers:
+            if (g_glContext && args.a[1]) {
+                GLsizei n = (GLsizei)ai(args,0);
+                if (n > 0 && n <= 16) {
+                    std::vector<GLenum> bufs((size_t)n, GL_NONE);
+                    cpu->memory->memcpyFromGuest(bufs.data(), args.a[1], (U64)n * 4);
+                    const GLenum* p = bufs.data();
+                    glOnMain([&]{ bindGuestTarget(); glDrawBuffers(n, p); });
+                }
+            }
+            return 0;
+        case GL64_fn_glReadBuffer:
+            if (g_glContext) GL_MT(glReadBuffer((GLenum)ai(args,0)));
+            return 0;
+
+        // --- sampler objects (unblocks wined3d feature level >= 10_0) -----
+        case GL64_fn_glGenSamplers:
+            if (g_glContext && args.a[1]) genObjects(cpu, args, GenKind::Sampler);
+            return 0;
+        case GL64_fn_glDeleteSamplers:
+            if (g_glContext && args.a[1]) deleteObjects(cpu, args, GenKind::Sampler);
+            return 0;
+        case GL64_fn_glBindSampler:
+            if (g_glContext) GL_MT(glBindSampler((GLuint)ai(args,0), (GLuint)ai(args,1)));
+            return 0;
+        case GL64_fn_glIsSampler: {
+            GLboolean r = GL_FALSE;
+            GLuint s = (GLuint)ai(args,0);
+            if (g_glContext) GL_MT(r = glIsSampler(s));
+            return (U64)(r ? 1 : 0);
+        }
+        case GL64_fn_glSamplerParameteri:
+            if (g_glContext)
+                GL_MT(glSamplerParameteri((GLuint)ai(args,0), (GLenum)ai(args,1),
+                                         (GLint)ai(args,2)));
+            return 0;
+        case GL64_fn_glSamplerParameterf:
+            if (g_glContext)
+                GL_MT(glSamplerParameterf((GLuint)ai(args,0), (GLenum)ai(args,1),
+                                         af(args,2)));
+            return 0;
+        // The *iv/*fv/*Iiv/*Iuiv variants all read one element from a guest array
+        // (wined3d never passes count>1 for samplers), so one 4-byte guest read
+        // covers all four.
+        case GL64_fn_glSamplerParameteriv:
+        case GL64_fn_glSamplerParameterfv:
+        case GL64_fn_glSamplerParameterIiv:
+        case GL64_fn_glSamplerParameterIuiv:
+        case GL64_fn_glGetSamplerParameteriv:
+        case GL64_fn_glGetSamplerParameterfv:
+        case GL64_fn_glGetSamplerParameterIiv:
+        case GL64_fn_glGetSamplerParameterIuiv: {
+            if (g_glContext && args.a[2]) {
+                GLuint s=(GLuint)ai(args,0); GLenum pn=(GLenum)ai(args,1);
+                bool isGet = fnId >= GL64_fn_glGetSamplerParameteriv;
+                U32 raw = 0;
+                if (isGet) {
+                    GLint iv = 0; GLfloat fv = 0; GLuint uv = 0;
+                    switch (fnId) {
+                        case GL64_fn_glGetSamplerParameterfv:
+                            GL_MT(glGetSamplerParameterfv(s, pn, &fv)); raw = *(U32*)&fv; break;
+                        case GL64_fn_glGetSamplerParameterIiv: {
+                            // No C wrapper in Emscripten; query GLctx and marshal out.
+                            int v0 = 0;
+                            glOnMain([&]{
+                                EM_ASM({ try {
+                                    if (typeof GLctx === 'undefined') return;
+                                    Module['gl64_sampIiv'] =
+                                        GLctx.getSamplerParameterIiv($0, $1)[0] | 0;
+                                } catch (e) { Module['gl64_sampIiv'] = 0; } }, (int)s, (int)pn);
+                                v0 = EM_ASM_INT({ return Module['gl64_sampIiv'] | 0; });
+                            });
+                            raw = (U32)v0; break;
+                        }
+                        case GL64_fn_glGetSamplerParameterIuiv: {
+                            int v0 = 0;
+                            glOnMain([&]{
+                                EM_ASM({ try {
+                                    if (typeof GLctx === 'undefined') return;
+                                    Module['gl64_sampIuiv'] =
+                                        GLctx.getSamplerParameterIuiv($0, $1)[0] >>> 0;
+                                } catch (e) { Module['gl64_sampIuiv'] = 0; } }, (int)s, (int)pn);
+                                v0 = EM_ASM_INT({ return Module['gl64_sampIuiv'] | 0; });
+                            });
+                            raw = (U32)v0; break;
+                        }
+                        default:
+                            GL_MT(glGetSamplerParameteriv(s, pn, &iv)); raw = (U32)iv; break;
+                    }
+                    cpu->memory->memcpyToGuest(args.a[2], &raw, 4);
+                } else {
+                    cpu->memory->memcpyFromGuest(&raw, args.a[2], 4);
+                    GLint iv = (GLint)raw; GLfloat fv; memcpy(&fv, &raw, 4); GLuint uv = raw;
+                    switch (fnId) {
+                        case GL64_fn_glSamplerParameterfv:
+                            GL_MT(glSamplerParameterfv(s, pn, &fv)); break;
+                        case GL64_fn_glSamplerParameterIiv:
+                            glOnMain([&]{ EM_ASM({ try {
+                                    if (typeof GLctx === 'undefined') return;
+                                    GLctx.samplerParameterIiv($0, $1, new Int32Array([$2]));
+                                } catch (e) {} }, (int)s, (int)pn, (int)iv); }); break;
+                        case GL64_fn_glSamplerParameterIuiv:
+                            glOnMain([&]{ EM_ASM({ try {
+                                    if (typeof GLctx === 'undefined') return;
+                                    GLctx.samplerParameterIuiv($0, $1, new Uint32Array([$2 >>> 0]));
+                                } catch (e) {} }, (int)s, (int)pn, (double)uv); }); break;
+                        case GL64_fn_glSamplerParameteriv:
+                            GL_MT(glSamplerParameteriv(s, pn, &iv)); break;
+                        default: break;
+                    }
+                }
+            }
+            return 0;
+        }
+
+        // --- 3D / array textures ------------------------------------------
+        case GL64_fn_glTexImage3D: {
+            if (g_glContext) {
+                GLenum tgt=(GLenum)ai(args,0); GLint lvl=(GLint)ai(args,1); GLint ifmt=(GLint)ai(args,2);
+                GLsizei w=(GLsizei)ai(args,3), h=(GLsizei)ai(args,4), d=(GLsizei)ai(args,5);
+                GLint bd=(GLint)ai(args,6); GLenum fmt=(GLenum)ai(args,7), type=(GLenum)ai(args,8);
+                std::vector<U8> pix; const void* pp = nullptr;
+                if (args.a[9]) {
+                    size_t bytes = texImageBytes(w, h, fmt, type) * (size_t)(d > 0 ? d : 1);
+                    if (bytes && bytes < (size_t)64 << 20) {
+                        pix.resize(bytes); cpu->memory->memcpyFromGuest(pix.data(), args.a[9], (U64)bytes);
+                        pp = pix.data();
+                    }
+                }
+                bgraToRgba(fmt, type, pix);   // A2: desktop GL_BGRA uploads
+                GL_MT(glTexImage3D(tgt, lvl, ifmt, w, h, d, bd, fmt, type, pp));
+            }
+            return 0;
+        }
+        case GL64_fn_glTexSubImage3D: {
+            if (g_glContext && args.a[10]) {
+                GLenum tgt=(GLenum)ai(args,0); GLint lvl=(GLint)ai(args,1);
+                GLint x=(GLint)ai(args,2), y=(GLint)ai(args,3), z=(GLint)ai(args,4);
+                GLsizei w=(GLsizei)ai(args,5), h=(GLsizei)ai(args,6), d=(GLsizei)ai(args,7);
+                GLenum fmt=(GLenum)ai(args,8), type=(GLenum)ai(args,9);
+                size_t bytes = texImageBytes(w, h, fmt, type) * (size_t)(d > 0 ? d : 1);
+                if (bytes && bytes < (size_t)64 << 20) {
+                    std::vector<U8> pix(bytes);
+                    cpu->memory->memcpyFromGuest(pix.data(), args.a[10], (U64)bytes);
+                    bgraToRgba(fmt, type, pix);   // A2: desktop GL_BGRA uploads
+                    const void* pp = pix.data();
+                    GL_MT(glTexSubImage3D(tgt, lvl, x, y, z, w, h, d, fmt, type, pp));
+                }
+            }
+            return 0;
+        }
+        case GL64_fn_glCompressedTexImage3D: {
+            if (g_glContext) {
+                GLenum tgt=(GLenum)ai(args,0); GLint lvl=(GLint)ai(args,1); GLenum ifmt=(GLenum)ai(args,2);
+                GLsizei w=(GLsizei)ai(args,3), h=(GLsizei)ai(args,4), d=(GLsizei)ai(args,5);
+                GLsizei isz=(GLsizei)ai(args,6);
+                std::vector<U8> data; const void* dp=nullptr;
+                if (args.a[7] && isz > 0 && isz < (1 << 28)) {
+                    data.resize((size_t)isz);
+                    cpu->memory->memcpyFromGuest(data.data(), args.a[7], (U64)isz);
+                    dp = data.data();
+                }
+                GL_MT(glCompressedTexImage3D(tgt, lvl, ifmt, w, h, d, 0 /*border*/, isz, dp));
+            }
+            return 0;
+        }
+        case GL64_fn_glCompressedTexSubImage3D: {
+            if (g_glContext && args.a[10]) {
+                GLenum tgt=(GLenum)ai(args,0); GLint lvl=(GLint)ai(args,1);
+                GLint x=(GLint)ai(args,2), y=(GLint)ai(args,3), z=(GLint)ai(args,4);
+                GLsizei w=(GLsizei)ai(args,5), h=(GLsizei)ai(args,6), d=(GLsizei)ai(args,7);
+                GLenum fmt=(GLenum)ai(args,8); GLsizei isz=(GLsizei)ai(args,9);
+                std::vector<U8> data; const void* dp=nullptr;
+                if (args.a[10] && isz > 0 && isz < (1 << 28)) {
+                    data.resize((size_t)isz);
+                    cpu->memory->memcpyFromGuest(data.data(), args.a[10], (U64)isz);
+                    dp = data.data();
+                }
+                GL_MT(glCompressedTexSubImage3D(tgt, lvl, x, y, z, w, h, d, fmt, isz, dp));
+            }
+            return 0;
+        }
+        // glTexImage[23]DMultisample: Emscripten's webgl2 wrapper exports neither,
+        // so go through GLctx directly (WebGL2 has them natively). try/catch +
+        // error swallow so a driver that refuses cannot poison wined3d's checks.
+        case GL64_fn_glTexImage2DMultisample:
+        case GL64_fn_glTexImage3DMultisample:
+            if (g_glContext) {
+                int tgt=(int)ai(args,0), smp=(int)ai(args,1), ifmt=(int)ai(args,2);
+                int w=(int)ai(args,3), h=(int)ai(args,4);
+                int d = (fnId == GL64_fn_glTexImage3DMultisample) ? (int)ai(args,5) : 0;
+                GL_MT({
+                    EM_ASM({ try {
+                        if (typeof GLctx === 'undefined') return;
+                        if ($0) GLctx.texImage3DMultisample($1, $2, $3, $4, $5, $6, false);
+                        else      GLctx.texImage2DMultisample($1, $2, $3, $4, $5, false);
+                        while (GLctx.getError && GLctx.getError() !== 0) {}
+                    } catch (e) {} },
+                    (int)(fnId == GL64_fn_glTexImage3DMultisample), tgt, smp, ifmt, w, h, d);
+                });
+            }
+            return 0;
+
+        // --- MRT / frag data ----------------------------------------------
+        // WebGL2/GLES3 has no glBindFragDataLocation (Emscripten does not export
+        // it). wined3d emits gl_FragData[] and our GLSL-1.50 path routes all
+        // outputs to location 0. Accept the binding and keep the mapping so A3 can
+        // emit `layout(location=N) out` instead. See the report's "A3" section.
+        case GL64_fn_glBindFragDataLocation:
+            return 0;
+        case GL64_fn_glGetFragDataIndex:
+            // GLSL 1.50 / desktop-GL concept; WebGL2's GLSL ES 3.00 has no
+            // gl_FragData to index. Report "not found" (-1), which is the honest
+            // answer and keeps wined3d's frag-data bookkeeping from binding colour
+            // outputs it cannot reach.
+            return (U64)(S64)-1;
+
+        // --- uniform blocks (SM4 constant buffers) -------------------------
+        case GL64_fn_glBindBufferRange:
+            if (g_glContext)
+                GL_MT(glBindBufferRange((GLenum)ai(args,0), (GLuint)ai(args,1), (GLuint)ai(args,2),
+                                       (GLintptr)args.a[3], (GLsizeiptr)args.a[4]));
+            return 0;
+        case GL64_fn_glBindBufferBase:
+            if (g_glContext)
+                GL_MT(glBindBufferBase((GLenum)ai(args,0), (GLuint)ai(args,1), (GLuint)ai(args,2)));
+            return 0;
+        case GL64_fn_glGetUniformBlockIndex: {
+            if (g_glContext && args.a[1]) {
+                GLuint p=(GLuint)ai(args,0);
+                std::string nm = readGuestCStr(cpu, args.a[1], 256);
+                const char* c = nm.c_str();
+                GLuint idx = 0xFFFFFFFFu /*GL_INVALID_INDEX*/;
+                GL_MT(idx = glGetUniformBlockIndex(p, c));
+                return (U64)idx;
+            }
+            return (U64)0xFFFFFFFFu;
+        }
+        case GL64_fn_glUniformBlockBinding:
+            if (g_glContext)
+                GL_MT(glUniformBlockBinding((GLuint)ai(args,0), (GLuint)ai(args,1), (GLuint)ai(args,2)));
+            return 0;
+        case GL64_fn_glGetActiveUniformBlockiv:
+            if (g_glContext && args.a[3]) {
+                GLint v = 0;
+                GLuint p=(GLuint)ai(args,0); GLuint bi=(GLuint)ai(args,1);
+                GLenum pn=(GLenum)ai(args,2); GLint* q=&v;
+                GL_MT(glGetActiveUniformBlockiv(p, bi, pn, q));
+                cpu->memory->memcpyToGuest(args.a[3], &v, sizeof(GLint));
+            }
+            return 0;
+        case GL64_fn_glGetActiveUniformBlockName:
+            if (g_glContext && args.a[4]) {
+                GLsizei bufSize = (GLsizei)ai(args,2);
+                std::vector<char> nm((size_t)(bufSize > 0 ? bufSize : 0) + 1, 0);
+                GLsizei len = 0; char* np = nm.data();
+                GLuint p=(GLuint)ai(args,0); GLuint bi=(GLuint)ai(args,1);
+                GL_MT(glGetActiveUniformBlockName(p, bi, bufSize, &len, np));
+                if (args.a[3]) cpu->memory->writed(args.a[3], (U32)len);
+                if (bufSize > 0) cpu->memory->memcpyToGuest(args.a[4], nm.data(), (U64)len + 1);
+            }
+            return 0;
+
+        // --- buffer objects ----------------------------------------------
+        case GL64_fn_glBufferStorage: {
+            // Emscripten's webgl wrapper has no glBufferStorage, so immutable
+            // storage is emulated with glBufferData — the resulting buffer is
+            // byte-identical, just mutable. wined3d only needs the contents.
+            if (g_glContext) {
+                GLsizeiptr size = (GLsizeiptr)args.a[1];
+                std::vector<U8> data; const void* dp = nullptr;
+                if (args.a[2] && size > 0 && size < (GLsizeiptr)(256 << 20)) {
+                    data.resize((size_t)size);
+                    cpu->memory->memcpyFromGuest(data.data(), args.a[2], (U64)size);
+                    dp = data.data();
+                }
+                GLenum tgt=(GLenum)ai(args,0); GLenum usage=(GLenum)0x88E4 /*GL_DYNAMIC_DRAW*/;
+                GL_MT(glBufferData(tgt, size, dp, usage));
+            }
+            return 0;
+        }
+        case GL64_fn_glCopyBufferSubData:
+            if (g_glContext)
+                GL_MT(glCopyBufferSubData((GLenum)ai(args,0), (GLenum)ai(args,1),
+                                          (GLintptr)args.a[2], (GLintptr)args.a[3],
+                                          (GLsizeiptr)args.a[4]));
+            return 0;
+        case GL64_fn_glGetBufferSubData:
+            if (g_glContext && args.a[3]) {
+                GLsizeiptr size = (GLsizeiptr)args.a[2];
+                if (size > 0 && size < (GLsizeiptr)(256 << 20)) {
+                    std::vector<U8> tmp((size_t)size);
+                    GLenum tgt=(GLenum)ai(args,0); GLintptr off=(GLintptr)args.a[1];
+                    void* p = tmp.data();
+                    GL_MT(glGetBufferSubData(tgt, off, size, p));
+                    cpu->memory->memcpyToGuest(args.a[3], tmp.data(), (U64)size);
+                }
+            }
+            return 0;
+        case GL64_fn_glGetBufferParameteriv:
+            if (g_glContext && args.a[2]) {
+                GLint v = 0;
+                GLenum tgt=(GLenum)ai(args,0); GLenum pn=(GLenum)ai(args,1); GLint* p=&v;
+                GL_MT(glGetBufferParameteriv(tgt, pn, p));
+                cpu->memory->memcpyToGuest(args.a[2], &v, sizeof(GLint));
+            }
+            return 0;
+
+        // --- int uniforms --------------------------------------------------
+        // wined3d's GLSL backend sets sampler uniforms with glUniform1i and
+        // bool/int uniforms with glUniform2i..4i; every one of those resolved to
+        // gl64_noop before, so every sampler/scalar uniform stayed at 0.
+        case GL64_fn_glUniform2i:
+            if (g_glContext) GL_MT(glUniform2i((GLint)ai(args,0), (GLint)ai(args,1), (GLint)ai(args,2)));
+            return 0;
+        case GL64_fn_glUniform3i:
+            if (g_glContext) GL_MT(glUniform3i((GLint)ai(args,0), (GLint)ai(args,1), (GLint)ai(args,2), (GLint)ai(args,3)));
+            return 0;
+        case GL64_fn_glUniform4i:
+            if (g_glContext) GL_MT(glUniform4i((GLint)ai(args,0), (GLint)ai(args,1), (GLint)ai(args,2), (GLint)ai(args,3), (GLint)ai(args,4)));
+            return 0;
+        case GL64_fn_glUniform2iv:
+        case GL64_fn_glUniform3iv:
+        case GL64_fn_glUniform4iv: {
+            if (g_glContext && args.a[2]) {
+                int comps = fnId==GL64_fn_glUniform2iv?2 : fnId==GL64_fn_glUniform3iv?3 : 4;
+                GLsizei n = (GLsizei)ai(args,1);
+                if (n > 0 && n <= 8192) {
+                    std::vector<GLint> v((size_t)n * comps);
+                    cpu->memory->memcpyFromGuest(v.data(), args.a[2], (U64)v.size()*4);
+                    GLint loc=(GLint)ai(args,0); const GLint* p=v.data();
+                    if (comps==2)      GL_MT(glUniform2iv(loc, n, p));
+                    else if (comps==3) GL_MT(glUniform3iv(loc, n, p));
+                    else               GL_MT(glUniform4iv(loc, n, p));
+                }
+            }
+            return 0;
+        }
+        case GL64_fn_glGetUniformfv:
+        case GL64_fn_glGetUniformiv: {
+            // (program, locations*, out values*) — wined3d reads back a handful of
+            // uniform values; the guest always passes count==1.
+            if (g_glContext && args.a[1] && args.a[2]) {
+                GLint loc = 0;
+                cpu->memory->memcpyFromGuest(&loc, args.a[1], 4);
+                GLuint p=(GLuint)ai(args,0);
+                if (fnId == GL64_fn_glGetUniformfv) {
+                    GLfloat f = 0; GL_MT(glGetUniformfv(p, loc, &f));
+                    cpu->memory->memcpyToGuest(args.a[2], &f, 4);
+                } else {
+                    GLint iv = 0; GL_MT(glGetUniformiv(p, loc, &iv));
+                    cpu->memory->memcpyToGuest(args.a[2], &iv, 4);
+                }
+            }
+            return 0;
+        }
+        case GL64_fn_glGetActiveUniform:
+            // Emscripten's wrapper is the DESKTOP 7-argument spelling (it also
+            // reports size* and type*); WebGL2 itself only reports the name. Pass
+            // the two out params so the driver fills them if it can.
+            if (g_glContext && args.a[4]) {
+                GLsizei bufSize = (GLsizei)ai(args,2);
+                std::vector<char> nm((size_t)(bufSize > 0 ? bufSize : 0) + 1, 0);
+                GLsizei len = 0; char* np = nm.data();
+                GLint sz = 0; GLenum ty = 0;
+                GLuint p=(GLuint)ai(args,0); GLuint idx=(GLuint)ai(args,1);
+                GL_MT(glGetActiveUniform(p, idx, bufSize, &len, &sz, &ty, np));
+                if (args.a[3]) cpu->memory->writed(args.a[3], (U32)len);
+                if (bufSize > 0) cpu->memory->memcpyToGuest(args.a[4], nm.data(), (U64)len + 1);
+            }
+            return 0;
+        case GL64_fn_glGetAttachedShaders:
+            if (g_glContext && args.a[2] && args.a[3]) {
+                GLsizei bufSize = (GLsizei)ai(args,1);
+                std::vector<GLuint> sh((size_t)(bufSize > 0 ? bufSize : 0), 0);
+                GLsizei cnt = 0;
+                GLuint p=(GLuint)ai(args,0); GLuint* sp = sh.data();
+                GL_MT(glGetAttachedShaders(p, bufSize, &cnt, sp));
+                cpu->memory->writed(args.a[2], (U32)cnt);
+                if (cnt > 0) cpu->memory->memcpyToGuest(args.a[3], sh.data(), (U64)cnt * 4);
+            }
+            return 0;
+        case GL64_fn_glGetShaderSourceImpl:
+            if (g_glContext && args.a[3]) {
+                GLsizei bufSize = (GLsizei)ai(args,1);
+                std::vector<char> src((size_t)(bufSize > 0 ? bufSize : 0) + 1, 0);
+                GLsizei len = 0; char* sp = src.data();
+                GLuint sh=(GLuint)ai(args,0);
+                GL_MT(glGetShaderSource(sh, bufSize, &len, sp));
+                if (args.a[2]) cpu->memory->writed(args.a[2], (U32)len);
+                if (bufSize > 0) cpu->memory->memcpyToGuest(args.a[3], src.data(), (U64)len + 1);
+            }
+            return 0;
+        case GL64_fn_glGetTexParameteriv:
+            if (g_glContext && args.a[2]) {
+                GLint v = 0;
+                GLenum tgt=(GLenum)ai(args,0); GLenum pn=(GLenum)ai(args,1); GLint* p=&v;
+                GL_MT(glGetTexParameteriv(tgt, pn, p));
+                cpu->memory->memcpyToGuest(args.a[2], &v, sizeof(GLint));
+            }
+            return 0;
+        case GL64_fn_glGetTexLevelParameteriv:
+            // WebGL2 dropped the legacy per-level query entirely, and Emscripten
+            // exports no C symbol for it. wined3d uses it only to validate texture
+            // sizes/formats, and a wrong positive there is exactly what made it
+            // reject D3D formats outright — so report 0 (the honest "unknown") and
+            // keep the GL error state clean.
+            if (g_glContext && args.a[3]) {
+                GLint v = 0;
+                cpu->memory->memcpyToGuest(args.a[3], &v, sizeof(GLint));
+            }
+            return 0;
+        // glGetTextureParameteriv / glGetTextureLevelParameteriv are the GL 3.x
+        // spellings; Emscripten exports neither, so answer via the legacy target
+        // query against the named texture's current binding is wrong (the guest
+        // may have any texture bound). Report 0 rather than another target's value.
+        case GL64_fn_glGetTextureParameteriv:
+        case GL64_fn_glGetTextureLevelParameteriv:
+        case GL64_fn_glGetCompressedTexImage:
+        case GL64_fn_glCompressedTexSubImage2D:
+            return 0;
+
+        // --- indexed state (GL 3.0 core) ----------------------------------
+        // Emscripten's webgl2 wrapper exports none of glEnablei/glDisablei/
+        // glIsEnabledi/glBlendFunci/glBlendFuncSeparatei/glBlendEquationi/
+        // glBlendEquationSeparatei/glColorMaski/glMinSampleShading, but WebGL2 has
+        // them all — go through GLctx so MRT draw-buffer state is real rather than
+        // a silent no-op.
+        case GL64_fn_glEnablei:
+        case GL64_fn_glDisablei:
+            if (g_glContext) {
+                int disableIt = (fnId == GL64_fn_glDisablei) ? 1 : 0;
+                GLenum cap=(GLenum)ai(args,1); GLuint idx=(GLuint)ai(args,0);
+                GL_MT({
+                    EM_ASM({ try {
+                        if (typeof GLctx === 'undefined') return;
+                        if ($0) GLctx.disable($1, $2); else GLctx.enable($1, $2);
+                    } catch (e) {} }, disableIt, (int)cap, (int)idx);
+                });
+            }
+            return 0;
+        case GL64_fn_glIsEnabledi: {
+            // WebGL2 has isEnabled(index, cap); Emscripten exports no C wrapper,
+            // so query GLctx on the GL thread and marshal the bool back out.
+            if (!g_glContext) return 0;
+            GLenum cap=(GLenum)ai(args,1); GLuint idx=(GLuint)ai(args,0);
+            int r = 0;
+            glOnMain([&]{
+                EM_ASM({ try {
+                    if (typeof GLctx === 'undefined') return;
+                    Module['gl64_isEnabledI'] = GLctx.isEnabled($0, $1) ? 1 : 0;
+                } catch (e) { Module['gl64_isEnabledI'] = 0; } }, (int)cap, (int)idx);
+                r = EM_ASM_INT({ return Module['gl64_isEnabledI'] | 0; });
+            });
+            return (U64)(r ? 1 : 0);
+        }
+        case GL64_fn_glBlendEquationi:
+            if (g_glContext) {
+                GLenum mode=(GLenum)ai(args,1); GLuint buf=(GLuint)ai(args,0);
+                glOnMain([&]{ EM_ASM({ try {
+                        if (typeof GLctx === 'undefined') return;
+                        GLctx.blendEquationSeparate($0, $1); } catch (e) {} },
+                      (int)buf, (int)mode); });
+            }
+            return 0;
+        case GL64_fn_glBlendEquationSeparatei:
+            if (g_glContext) {
+                GLuint buf=(GLuint)ai(args,0); GLenum rgb=(GLenum)ai(args,1); GLenum a=(GLenum)ai(args,2);
+                glOnMain([&]{ EM_ASM({ try {
+                        if (typeof GLctx === 'undefined') return;
+                        GLctx.blendEquationSeparate($0, $1, $2); } catch (e) {} },
+                      (int)buf, (int)rgb, (int)a); });
+            }
+            return 0;
+        case GL64_fn_glBlendFunci:
+            if (g_glContext) {
+                GLuint buf=(GLuint)ai(args,0); GLenum s=(GLenum)ai(args,1); GLenum d=(GLenum)ai(args,2);
+                glOnMain([&]{ EM_ASM({ try {
+                        if (typeof GLctx === 'undefined') return;
+                        GLctx.blendFuncSeparate($0, $1, $2, $1, $2); } catch (e) {} },
+                      (int)buf, (int)s, (int)d); });
+            }
+            return 0;
+        case GL64_fn_glBlendFuncSeparatei:
+            if (g_glContext) {
+                GLuint buf=(GLuint)ai(args,0);
+                GLenum sr=(GLenum)ai(args,1), dr=(GLenum)ai(args,2), sa=(GLenum)ai(args,3), da=(GLenum)ai(args,4);
+                glOnMain([&]{ EM_ASM({ try {
+                        if (typeof GLctx === 'undefined') return;
+                        GLctx.blendFuncSeparate($0, $1, $2, $3, $4); } catch (e) {} },
+                      (int)buf, (int)sr, (int)dr, (int)sa, (int)da); });
+            }
+            return 0;
+        case GL64_fn_glColorMaski:
+            if (g_glContext) {
+                GLuint buf=(GLuint)ai(args,0);
+                int r=(int)ai(args,1), g=(int)ai(args,2), b=(int)ai(args,3), al=(int)ai(args,4);
+                glOnMain([&]{ EM_ASM({ try {
+                        if (typeof GLctx === 'undefined') return;
+                        GLctx.colorMask($0, $1 != 0, $2 != 0, $3 != 0, $4 != 0); } catch (e) {} },
+                      (int)buf, r, g, b, al); });
+            }
+            return 0;
+        case GL64_fn_glMinSampleShading: {
+            if (g_glContext) {
+                int v = (int)(af(args,0) * 100.0f);
+                glOnMain([&]{ EM_ASM({ try {
+                        if (typeof GLctx === 'undefined') return;
+                        GLctx.minSampleShading($0 / 100.0); } catch (e) {} }, v); });
+            }
+            return 0;
+        }
+
+        // --- instancing / base vertex -------------------------------------
+        case GL64_fn_glVertexAttribDivisor:
+            if (g_glContext) GL_MT(glVertexAttribDivisor((GLuint)ai(args,0), (GLuint)ai(args,1)));
+            return 0;
+        case GL64_fn_glDrawArraysInstanced:
+            if (g_glContext) {
+                GLenum mode=(GLenum)ai(args,0); GLint first=(GLint)ai(args,1);
+                GLsizei count=(GLsizei)ai(args,2); GLsizei prim=(GLsizei)ai(args,3);
+                glOnMain([&]{ bindDrawTarget(); glDrawArraysInstanced(mode, first, count, prim); });
+                g_glDrew = true;
+            }
+            return 0;
+        case GL64_fn_glDrawElementsInstanced:
+            if (g_glContext) {
+                GLenum mode=(GLenum)ai(args,0); GLsizei count=(GLsizei)ai(args,1); GLenum type=(GLenum)ai(args,2);
+                const void* indices = (const void*)(uintptr_t)args.a[3];
+                GLsizei prim=(GLsizei)ai(args,4);
+                glOnMain([&]{ bindDrawTarget(); glDrawElementsInstanced(mode, count, type, indices, prim); });
+                g_glDrew = true;
+            }
+            return 0;
+        // base-instance / base-vertex variants: not exported by Emscripten; issue
+        // the base-vertex form through GLctx, and fall back to the plain instanced
+        // draw with the instance offsets folded away. Never before a working device
+        // in Unity's forward renderer, so a graceful degradation is acceptable.
+        case GL64_fn_glDrawArraysInstancedBaseInstance:
+        case GL64_fn_glDrawRangeElementsBaseVertex:
+            return 0;
+        // glDrawElementsBaseVertex: WebGL2 has drawElementsBaseVertex but
+        // Emscripten exports no C symbol. The index pointer is a byte offset into the
+        // bound ELEMENT_ARRAY_BUFFER (same convention as glDrawElements).
+        case GL64_fn_glDrawElementsBaseVertex:
+            if (g_glContext) {
+                GLenum mode=(GLenum)ai(args,0); GLsizei count=(GLsizei)ai(args,1);
+                GLenum type=(GLenum)ai(args,2); double off=(double)ai(args,3);
+                GLint baseVertex=(GLint)ai(args,4);
+                glOnMain([&]{
+                    bindDrawTarget();
+                    EM_ASM({ try { GLctx.drawElementsBaseVertex($0,$1,$2,$3,$4); } catch (e) {} },
+                          (int)mode, (int)count, (int)type, off, (int)baseVertex);
+                });
+                g_glDrew = true;
+            }
+            return 0;
+        // Base-vertex instancing: not exported by Emscripten as C symbols, but
+        // WebGL2 has drawElementsInstancedBaseVertex(.BaseInstance). The index
+        // pointer here is a byte OFFSET into the bound ELEMENT_ARRAY_BUFFER (same
+        // convention as glDrawElements), so it passes straight through.
+        case GL64_fn_glDrawElementsInstancedBaseVertex:
+        case GL64_fn_glDrawElementsInstancedBaseVertexBaseInstance:
+            if (g_glContext) {
+                GLenum mode=(GLenum)ai(args,0); GLsizei count=(GLsizei)ai(args,1);
+                GLenum type=(GLenum)ai(args,2);
+                GLsizei prim=(GLsizei)ai(args,4); GLint baseVertex=(GLint)ai(args,5);
+                bool withBaseInst = (fnId == GL64_fn_glDrawElementsInstancedBaseVertexBaseInstance);
+                double baseInst = withBaseInst ? (double)(U32)ai(args,6) : 0.0;
+                double idxOff = (double)ai(args,3);
+                glOnMain([&]{
+                    bindDrawTarget();
+                    if (withBaseInst)
+                        EM_ASM({ try { GLctx.drawElementsInstancedBaseVertexBaseInstance($0,$1,$2,$3,$4,$5,$6); } catch (e) {} },
+                              (int)mode, (int)count, (int)type, idxOff, (int)prim,
+                              (int)baseVertex, baseInst);
+                    else
+                        EM_ASM({ try { GLctx.drawElementsInstancedBaseVertex($0,$1,$2,$3,$4,$5); } catch (e) {} },
+                              (int)mode, (int)count, (int)type, idxOff, (int)prim, (int)baseVertex);
+                });
+                g_glDrew = true;
+            }
+            return 0;
+        case GL64_fn_glMultiDrawElementsBaseVertex: {
+            // (mode, counts*, type, indices**, primcount, baseVertices*) — the
+            // guest arrays live in guest memory, so copy them out before the hop.
+            if (g_glContext && args.a[1] && args.a[3] && args.a[5]) {
+                GLenum mode=(GLenum)ai(args,0); GLenum type=(GLenum)ai(args,2);
+                GLsizei prim=(GLsizei)ai(args,4);
+                GLsizei n = 0;
+                cpu->memory->memcpyFromGuest(&n, args.a[1], 4);
+                if (n > 0 && n <= 1024) {
+                    std::vector<GLsizei> counts((size_t)n);
+                    std::vector<GLint>    bvs((size_t)n);
+                    std::vector<U64>     idx((size_t)n);
+                    cpu->memory->memcpyFromGuest(counts.data(), args.a[1], (U64)n * 4);
+                    cpu->memory->memcpyFromGuest(bvs.data(), args.a[5], (U64)n * 4);
+                    cpu->memory->memcpyFromGuest(idx.data(), args.a[3], (U64)n * 8);
+                    const GLsizei* c = counts.data(); const GLint* b = bvs.data();
+                    U64* i = idx.data();
+                    // WebGL2 has no multiDraw* entry points at all, so issue one
+                    // drawElementsInstancedBaseVertex per element batch.
+                    for (GLsizei k = 0; k < n; k++) {
+                        double off = (double)i[k], bv = (double)b[k];
+                        GLsizei cnt = c[k];
+                        glOnMain([&]{
+                            bindDrawTarget();
+                            EM_ASM({ try { GLctx.drawElementsInstancedBaseVertex($0,$1,$2,$3,$4,$5); } catch (e) {} },
+                                  (int)mode, (int)cnt, (int)type, off, (int)prim, (int)bv);
+                        });
+                    }
+                }
+            }
+            return 0;
+        }
+        // glPolygonOffsetClamp is the third of the three conditions
+        // feature_level_from_caps() requires before it returns ANY feature level
+        // >= 10_0 (adapter_gl.c:1252-1254). WebGL2 has no polygonOffsetClamp, so
+        // forward factor/units to glPolygonOffset and drop the clamp — a depth
+        // bias without the clamp is visually identical over the range a float
+        // depth buffer can represent, and NOT advertising the extension would pin
+        // the D3D11 device at FL 9_3 regardless of everything else being real.
+        case GL64_fn_glPolygonOffsetClamp:
+            if (g_glContext) GL_MT(glPolygonOffset(af(args,0), af(args,1)));
+            return 0;
+        case GL64_fn_glTextureBarrier:
+            return 0;   // no GLES3 equivalent; not reached by Unity's forward renderer
+
+        // --- best-effort / safe no-ops ------------------------------------
+        // Never reached before a working device (Unity's forward renderer does not
+        // use debug messages, transform feedback or texture buffers), so the old
+        // gl64_noop behaviour is correct here — the guest-side pointer now at least
+        // reaches the bridge instead of an unaudited no-op.
+        case GL64_fn_glDebugMessageCallback:
+        case GL64_fn_glDebugMessageControl:
+        case GL64_fn_glDebugMessageInsert:
+        case GL64_fn_glGetDebugMessageLog:
+        case GL64_fn_glBeginTransformFeedback:
+        case GL64_fn_glEndTransformFeedback:
+        case GL64_fn_glTransformFeedbackVaryings:
+        case GL64_fn_glPointParameteri:
+        case GL64_fn_glPointParameteriv:
+        case GL64_fn_glPointParameterf:
+        case GL64_fn_glPointParameterfv:
+        case GL64_fn_glTexBuffer:
+        case GL64_fn_glTexBufferRange:
+        case GL64_fn_glTexBufferARB:
+        case GL64_fn_glTexBufferRangeARB:
+        case GL64_fn_glTextureBarrierNV:
+        case GL64_fn_glFinalCombinerInputNV:
+            return 0;
+        // Vertex-attrib component setters. Emscripten exports the 1f..3f/1fv..4fv
+        // and I4i/I4ui/I4iv/I4uiv forms; the double (d/dv) spellings do not exist
+        // in GLES3, so only those stay no-ops.
+        case GL64_fn_glVertexAttrib1f:
+            if (g_glContext) GL_MT(glVertexAttrib1f((GLuint)ai(args,0), af(args,1)));
+            return 0;
+        case GL64_fn_glVertexAttrib2f:
+            if (g_glContext) GL_MT(glVertexAttrib2f((GLuint)ai(args,0), af(args,1), af(args,2)));
+            return 0;
+        case GL64_fn_glVertexAttrib3f:
+            if (g_glContext) GL_MT(glVertexAttrib3f((GLuint)ai(args,0), af(args,1), af(args,2), af(args,3)));
+            return 0;
+        case GL64_fn_glVertexAttrib1fv:
+        case GL64_fn_glVertexAttrib2fv:
+        case GL64_fn_glVertexAttrib3fv:
+        case GL64_fn_glVertexAttrib4fv: {
+            if (g_glContext && args.a[1]) {
+                int comps = fnId==GL64_fn_glVertexAttrib1fv?1 : fnId==GL64_fn_glVertexAttrib2fv?2 :
+                            fnId==GL64_fn_glVertexAttrib3fv?3 : 4;
+                std::vector<GLfloat> v((size_t)comps);
+                cpu->memory->memcpyFromGuest(v.data(), args.a[1], (U64)comps * 4);
+                GLuint i=(GLuint)ai(args,0); const GLfloat* p=v.data();
+                if (comps==1)      GL_MT(glVertexAttrib1fv(i, p));
+                else if (comps==2) GL_MT(glVertexAttrib2fv(i, p));
+                else if (comps==3) GL_MT(glVertexAttrib3fv(i, p));
+                else               GL_MT(glVertexAttrib4fv(i, p));
+            }
+            return 0;
+        }
+        case GL64_fn_glVertexAttribI4i:
+            if (g_glContext)
+                GL_MT(glVertexAttribI4i((GLuint)ai(args,0), (GLint)ai(args,1), (GLint)ai(args,2),
+                                        (GLint)ai(args,3), (GLint)ai(args,4)));
+            return 0;
+        case GL64_fn_glVertexAttribI4ui:
+            if (g_glContext)
+                GL_MT(glVertexAttribI4ui((GLuint)ai(args,0), (GLuint)ai(args,1), (GLuint)ai(args,2),
+                                         (GLuint)ai(args,3), (GLuint)ai(args,4)));
+            return 0;
+        case GL64_fn_glVertexAttribI4iv:
+        case GL64_fn_glVertexAttribI4uiv: {
+            if (g_glContext && args.a[1]) {
+                GLint v[4] = {0};
+                cpu->memory->memcpyFromGuest(v, args.a[1], sizeof(v));
+                GLuint i=(GLuint)ai(args,0);
+                if (fnId == GL64_fn_glVertexAttribI4iv) {
+                    GL_MT(glVertexAttribI4iv(i, v));
+                } else {
+                    GLuint u[4]; for (int k=0;k<4;k++) u[k]=(GLuint)v[k];
+                    GL_MT(glVertexAttribI4uiv(i, u));
+                }
+            }
+            return 0;
+        }
+        case GL64_fn_glVertexAttrib1d: case GL64_fn_glVertexAttrib2d:
+        case GL64_fn_glVertexAttrib3d: case GL64_fn_glVertexAttrib4d:
+        case GL64_fn_glVertexAttrib1dv: case GL64_fn_glVertexAttrib2dv:
+        case GL64_fn_glVertexAttrib3dv: case GL64_fn_glVertexAttrib4dv:
+            return 0;   // no GLES3 equivalent (Emscripten exports no C symbol)
 
         default:
             klog_fmt("gl64: unimplemented fn id %llu", (unsigned long long)fnId);
