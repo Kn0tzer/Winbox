@@ -65,6 +65,8 @@
 #include <SDL_opengl.h>
 #endif
 #include <vector>
+#include <map>
+#include <tuple>
 #include <thread>
 #include <atomic>
 #include <cstring>
@@ -749,6 +751,14 @@ std::string translateGlslToEs300(const std::string& srcIn, bool isFragment) {
     return src;
 }
 
+// Desktop rectangle storage/attachments have no WebGL2 target. Back them with
+// 2D storage; rectangle shader sampling (unnormalized coordinates) is a separate
+// translation concern and is not advertised as native WebGL2 support.
+GLenum hostTextureTarget(GLenum target) {
+    return target == 0x84F5 /*GL_TEXTURE_RECTANGLE*/ || target == 0x0DE0 /*GL_TEXTURE_1D*/
+        ? GL_TEXTURE_2D : target;
+}
+
 // Is this glTexParameter pname valid in WebGL2/GLES3? wined3d also sets several
 // desktop-GL-only ones that would raise GL_INVALID_ENUM; we drop those.
 bool texParamSupported(GLenum pname) {
@@ -768,6 +778,28 @@ bool texParamSupported(GLenum pname) {
         default:
             return false;   // GL_TEXTURE_LOD_BIAS, GENERATE_MIPMAP, BORDER_COLOR, …
     }
+}
+
+// Metadata is recorded only after a successful native allocation, since WebGL2
+// has no desktop per-level texture query. Accessed on the GL-owning thread.
+struct TextureLevel { GLint width, height, internalFormat; };
+std::map<std::tuple<GLuint, GLenum, GLint>, TextureLevel> g_textureLevels;
+GLenum g_allocationError = GL_NO_ERROR;
+void recordBridgeError(GLenum error) {
+    if (error && !g_allocationError) g_allocationError = error;
+}
+// Desktop pack layout: alignment applies to rows, skips are relative to the
+// caller's destination, and the last row has no trailing padding requirement.
+size_t packedReadStride(GLsizei width, GLint rowLength, GLint alignment) {
+    size_t bytes = (size_t)(rowLength > 0 ? rowLength : width) * 4;
+    return (bytes + alignment - 1) & ~(size_t)(alignment - 1);
+}
+GLuint boundTexture(GLenum target) {
+    GLint id = 0;
+    GLenum binding = GL_TEXTURE_BINDING_2D;
+    if (target >= 0x8515 && target <= 0x851A) binding = GL_TEXTURE_BINDING_CUBE_MAP;
+    glGetIntegerv(binding, &id);
+    return (GLuint)id;
 }
 
 // Read a NUL-terminated C string from guest memory, capped at `maxLen` bytes.
@@ -821,7 +853,15 @@ void deleteObjects(CPU64* cpu, const GL64Args& args, GenKind kind) {
     glOnMain([&]{
         switch (kind) {
             case GenKind::Buffer:      glDeleteBuffers(n, p); break;
-            case GenKind::Texture:     glDeleteTextures(n, p); break;
+            case GenKind::Texture:
+                glDeleteTextures(n, p);
+                for (GLsizei i=0;i<n;++i) {
+                    for (auto it=g_textureLevels.begin();it!=g_textureLevels.end();) {
+                        if (std::get<0>(it->first)==p[i]) it=g_textureLevels.erase(it);
+                        else ++it;
+                    }
+                }
+                break;
             case GenKind::VertexArray: glDeleteVertexArrays(n, p); break;
             case GenKind::Framebuffer: glDeleteFramebuffers(n, p); break;
             case GenKind::Renderbuffer:glDeleteRenderbuffers(n, p); break;
@@ -855,8 +895,7 @@ void writeInfoLog(CPU64* cpu, const GL64Args& args, bool isProgram) {
 // swizzle the bytes so the channels still land in the right order:
 //
 //   GL_BGRA + UNSIGNED_BYTE            memory [B,G,R,A] -> want [R,G,B,A]  (swap 0<->2)
-//   GL_BGRA + UNSIGNED_INT_2_10_10_10_REV (0x8367)
-//                                      word A<<22|B<<12|G<<2|R -> reverse the 4 bytes
+// Packed types are unpacked/swizzled by glesTexFormatFixup below.
 //   GL_BGR  + UNSIGNED_BYTE            memory [B,G,R]    -> want [R,G,B]
 //
 // Returns true when `fmt` was rewritten (the caller must re-derive the byte count
@@ -865,18 +904,10 @@ bool bgraToRgba(GLenum& fmt, GLenum type, std::vector<U8>& pix) {
     const bool isBgra = (fmt == 0x80E1 /*GL_BGRA*/);
     const bool isBgr  = (fmt == 0x80E0 /*GL_BGR*/);
     if (!isBgra && !isBgr) return false;
-    // The packed 32-bit layouts put A in the LOW 2 bits, so a BGRA word is
-    // little-endian [R,G,B,A] only for the plain byte types; for the 2_10_10_10 /
-    // 10F_11F_11F types the word is A<<22|B<<12|G<<2|R and the whole 4 bytes reverse.
-    const bool packed32 = (type == 0x8367 /*GL_UNSIGNED_INT_2_10_10_10_REV*/ ||
-                           type == 0x8368 /*GL_UNSIGNED_INT_2_10_10_10*/ ||
-                           type == 0x8C3A /*GL_UNSIGNED_INT_10F_11F_11F_REV*/);
-    if (isBgra && packed32) {
-        for (size_t i = 0; i + 4 <= pix.size(); i += 4) {
-            U8 t = pix[i+0]; pix[i+0] = pix[i+3]; pix[i+3] = t;
-            t = pix[i+1]; pix[i+1] = pix[i+2]; pix[i+2] = t;
-        }
-    } else {
+    // Packed types must be unpacked before swapping channels. Their enum values
+    // and bit layouts are NOT interchangeable (0x8367 is 8_8_8_8_REV).
+    if (type != GL_UNSIGNED_BYTE) return false;
+    {
         size_t stride = isBgra ? 4 : 3;
         size_t texels = pix.size() / stride;
         U8* p = pix.data();
@@ -888,42 +919,95 @@ bool bgraToRgba(GLenum& fmt, GLenum type, std::vector<U8>& pix) {
     return true;
 }
 
-// A2: WebGL2 is GLES3, and several pixel formats wined3d picks from its D3D format
-// table are legal desktop-GL but rejected by WebGL2 with GL_INVALID_ENUM (0x500),
-// which leaves the texture without a level 0 and makes the matching
-// glFramebufferTexture2D report GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT — wined3d's
-// hard render-target failure. Observed in test-results/baldi-a2d-diag-console.log:
-//
-//   ifmt GL_RGBA8  fmt GL_BGRA type UNSIGNED_INT_2_10_10_10_REV  (D3D B8G8R8A8_UNORM)
-//   ifmt GL_RGB8   fmt GL_RGBA type UNSIGNED_INT_2_10_10_10_REV
-//
-// WebGL2 rejects the 10_10_10_2 packed types for TexImage2D, so expand each 32-bit
-// word to 4 bytes and declare GL_UNSIGNED_BYTE. For a NULL-pixel allocation (the
-// render-target case, where the data is irrelevant) only the type is rewritten.
+// Convert desktop-only packed/legacy layouts to GLES3 storage tuples. Unlike
+// the inherited A2 fixup, retain RGB10_A2's native 2_10_10_10_REV representation,
+// scale each packed component by its actual bit width, and swap BGRA channels
+// AFTER unpacking. Empty pixel vectors still need valid allocation formats.
+// Regression vectors: test-results/baldi-a3-pixel-test.py.
 void glesTexFormatFixup(GLint& ifmt, GLenum& fmt, GLenum& type, std::vector<U8>& pix) {
-    if (type != 0x8367 /*UNSIGNED_INT_2_10_10_10_REV*/ &&
-        type != 0x8368 /*UNSIGNED_INT_2_10_10_10*/) return;
-    if (!pix.empty()) {
-        size_t words = pix.size() / 4;
-        std::vector<U8> out(words * 4);
-        for (size_t i = 0; i < words; i++) {
-            // Little-endian 32-bit word holding A<<22|B<<12|G<<2|R.
-            U32 w32;
-            memcpy(&w32, &pix[i*4], 4);
-            out[i*4+0] = (U8)(w32 & 0x3);
-            out[i*4+1] = (U8)((w32 >> 2) & 0x3);
-            out[i*4+2] = (U8)((w32 >> 12) & 0x3);
-            out[i*4+3] = (U8)((w32 >> 22) & 0x3);
+    // WebGL2 accepts RGB10_A2 + RGBA + UNSIGNED_INT_2_10_10_10_REV
+    // natively. The inherited fixup changed its type to BYTE, making it invalid.
+    if (ifmt == 0x8059 && fmt == GL_RGBA && type == 0x8368) return;
+    if (ifmt == 0x8059 && fmt == GL_RGBA && type == GL_UNSIGNED_BYTE) {
+        std::vector<U8> packed(pix.size());
+        for (size_t i = 0; i + 4 <= pix.size(); i += 4) {
+            U32 word = ((U32)pix[i] * 1023 + 127) / 255 |
+                (((U32)pix[i+1] * 1023 + 127) / 255) << 10 |
+                (((U32)pix[i+2] * 1023 + 127) / 255) << 20 |
+                (((U32)pix[i+3] * 3 + 127) / 255) << 30;
+            memcpy(packed.data() + i, &word, 4);
+        }
+        pix.swap(packed);
+        type = 0x8368;
+        return;
+    }
+    if (type == 0x1403 /*UNSIGNED_SHORT*/ && fmt == 0x1909 /*LUMINANCE*/ && ifmt == 0x8042 /*LUMINANCE16*/) {
+        // Keep 16-bit normalized precision in native R16_EXT storage when the
+        // browser exposes EXT_texture_norm16; no fallback claim of support.
+        fmt = 0x1903; ifmt = 0x822A;
+        return;
+    }
+    // Legacy ALPHA/LUMINANCE storage is absent from GLES3. Expand to RGBA8
+    // with the desktop sampling values rather than retaining invalid enums.
+    if (type == GL_UNSIGNED_BYTE && (fmt == 0x1906 || fmt == 0x1909 || fmt == 0x190A)) {
+        size_t stride = fmt == 0x190A ? 2 : 1;
+        std::vector<U8> out(pix.size() / stride * 4);
+        for (size_t i = 0; i < pix.size() / stride; ++i) {
+            U8 lum = fmt == 0x1906 ? 255 : pix[i * stride];
+            U8 alpha = fmt == 0x1906 ? pix[i] : (stride == 2 ? pix[i * stride + 1] : 255);
+            out[i*4] = out[i*4+1] = out[i*4+2] = lum;
+            out[i*4+3] = alpha;
         }
         pix.swap(out);
-    }
-    type = GL_UNSIGNED_BYTE;
-    if (ifmt == 0x8058 /*GL_RGBA8*/ || ifmt == 0x8059 /*GL_RGBA16F*/ ||
-        ifmt == 0x805B /*GL_RGB5_A1*/ || ifmt == 0x805C /*GL_RGBA4*/)
         fmt = GL_RGBA;
-    else if (ifmt == 0x8051 /*GL_RGB8*/ || ifmt == 0x8054 /*GL_RGB5*/ ||
-             ifmt == 0x8055 /*GL_RGB565*/ || ifmt == 0x8C41 /*GL_SRGB8*/)
-        fmt = GL_RGB;
+        ifmt = 0x8058;
+        return;
+    }
+    int bits[4] = {0, 0, 0, 0};
+    int shifts[4] = {0, 0, 0, 0};
+    size_t stride = 0;
+    int components = 4;
+    switch (type) {
+        case 0x8363: stride=2; components=3; bits[0]=5; bits[1]=6; bits[2]=5;
+            shifts[0]=11; shifts[1]=5; break; // 5_6_5
+        case 0x8035: stride=4; bits[0]=bits[1]=bits[2]=bits[3]=8;
+            shifts[0]=24; shifts[1]=16; shifts[2]=8; break; // 8_8_8_8
+        case 0x8367: stride=4; bits[0]=bits[1]=bits[2]=bits[3]=8;
+            shifts[1]=8; shifts[2]=16; shifts[3]=24; break; // 8_8_8_8_REV
+        case 0x8368: stride=4; bits[0]=bits[1]=bits[2]=10; bits[3]=2;
+            shifts[1]=10; shifts[2]=20; shifts[3]=30; break; // 2_10_10_10_REV
+        case 0x8036: stride=4; bits[0]=bits[1]=bits[2]=10; bits[3]=2;
+            shifts[0]=22; shifts[1]=12; shifts[2]=2; break; // 10_10_10_2
+        case 0x8365: stride=2; bits[0]=bits[1]=bits[2]=bits[3]=4;
+            shifts[1]=4; shifts[2]=8; shifts[3]=12; break; // 4_4_4_4_REV
+        case 0x8366: stride=2; bits[0]=bits[1]=bits[2]=5; bits[3]=1;
+            shifts[1]=5; shifts[2]=10; shifts[3]=15; break; // 1_5_5_5_REV
+        case 0x8032: stride=1; components=3; bits[0]=3; bits[1]=3; bits[2]=2;
+            shifts[0]=5; shifts[1]=2; break; // 3_3_2
+        default: return;
+    }
+    bool rgbStorage = ifmt == 0x8050 /*RGB5*/ || ifmt == 0x8051 /*RGB8*/ ||
+                      ifmt == 0x804F /*RGB4*/ || ifmt == 0x2A10 /*R3_G3_B2*/ || ifmt == 0x8C41;
+    int outComponents = rgbStorage ? 3 : components;
+    std::vector<U8> out(pix.size() / stride * outComponents);
+    for (size_t i = 0; i < pix.size() / stride; ++i) {
+        U32 word = 0;
+        memcpy(&word, pix.data() + i * stride, stride);
+        U8 rgba[4] = {0, 0, 0, 255};
+        for (int c = 0; c < components; ++c) {
+            U32 mask = (1u << bits[c]) - 1;
+            rgba[c] = (U8)((((word >> shifts[c]) & mask) * 255 + mask / 2) / mask);
+        }
+        if (fmt == 0x80E1 || fmt == 0x80E0) std::swap(rgba[0], rgba[2]);
+        memcpy(out.data() + i * outComponents, rgba, outComponents);
+    }
+    pix.swap(out);
+    fmt = outComponents == 3 ? GL_RGB : GL_RGBA;
+    type = GL_UNSIGNED_BYTE;
+    if (rgbStorage && ifmt != 0x8C41) ifmt = 0x8051; // emulate legacy RGB precision
+    // BGRA 8_8_8_8_REV -> bytes can also feed RGB10_A2; finish packing after
+    // unpack/swizzle, not just when the ORIGINAL input type was BYTE.
+    if (ifmt == 0x8059) glesTexFormatFixup(ifmt, fmt, type, pix);
 }
 
 // Bytes a glTexImage2D/glTexSubImage2D pixel buffer occupies for (w,h,fmt,type).
@@ -949,8 +1033,16 @@ size_t texImageBytes(GLsizei w, GLsizei h, GLenum format, GLenum type) {
         case 0x8034 /*GL_UNSIGNED_SHORT_5_5_5_1*/:
             // packed 16-bit types fold all components into 2 bytes/texel
             return (size_t)w * h * 2;
+        case 0x8365 /*GL_UNSIGNED_SHORT_4_4_4_4_REV*/:
+        case 0x8366 /*GL_UNSIGNED_SHORT_1_5_5_5_REV*/:
+        case 0x8364 /*GL_UNSIGNED_SHORT_5_6_5_REV*/:
+            return (size_t)w * h * 2;
+        case 0x8032 /*GL_UNSIGNED_BYTE_3_3_2*/:
+            return (size_t)w * h;
         case 0x8035 /*GL_UNSIGNED_INT_8_8_8_8*/:
-        case 0x8368 /*GL_UNSIGNED_INT_8_8_8_8_REV*/:
+        case 0x8367 /*GL_UNSIGNED_INT_8_8_8_8_REV*/:
+        case 0x8368 /*GL_UNSIGNED_INT_2_10_10_10_REV*/:
+        case 0x8036 /*GL_UNSIGNED_INT_10_10_10_2*/:
             return (size_t)w * h * 4;
         case GL_UNSIGNED_INT: case GL_INT: case GL_FLOAT: bytesPerComp = 4; break;
         default: bytesPerComp = 1; break;
@@ -1188,7 +1280,14 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glGetError: {
             if (!g_glContext) return 0;
             U64 err = 0;
-            GL_MT(err = glGetError());
+#ifdef __EMSCRIPTEN__
+            GL_MT({
+                if (g_allocationError) { err=g_allocationError; g_allocationError=GL_NO_ERROR; }
+                else err=glGetError();
+            });
+#else
+            GL_MT(err=glGetError());
+#endif
             // Log the first handful of NONZERO GL errors with the recent fnId
             // context, so a CreateDevice cap failure (D3DERR_NOTAVAILABLE) that
             // stems from a GL error is visible. g_lastFnIds is a tiny ring updated
@@ -1255,11 +1354,10 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                     case 0x8D57 /*GL_MAX_SAMPLES*/:              v[0] = 4; break;
                     case 0x93B0 /*GL_MAX_FRAMEBUFFER_WIDTH*/:    v[0] = g_drawW; break;
                     case 0x93B1 /*GL_MAX_FRAMEBUFFER_HEIGHT*/:   v[0] = g_drawH; break;
-                    case 0x8B4D /*GL_MAX_COLOR_ATTACHMENTS*/:    v[0] = 8; break;
+                    case 0x8CDF /*GL_MAX_COLOR_ATTACHMENTS*/:    v[0] = 8; break;
                     case 0x8824 /*GL_MAX_DRAW_BUFFERS*/:         v[0] = 8; break;
                     case 0x8764 /*GL_MAX_VERTEX_STREAMS*/:      v[0] = 1; break;
-                    case 0x8825 /*GL_MAX_COLOR_ATTACHMENTS_EXT*/: v[0] = 8; break;
-                    case 0x8CDF /*GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS*/: v[0] = 32; break;
+                    case 0x8B4D /*GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS*/: v[0] = 32; break;
                     default: handled = false; break;
                 }
                 if (handled) { cpu->memory->memcpyToGuest(args.a[1], v, sizeof(GLint)); return 0; }
@@ -1942,7 +2040,7 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             if (g_glContext && args.a[1]) genObjects(cpu, args, GenKind::Texture);
             return 0;
         case GL64_fn_glBindTexture:
-            if (g_glContext) GL_MT(glBindTexture((GLenum)ai(args,0), (GLuint)ai(args,1)));
+            if (g_glContext) GL_MT(glBindTexture(hostTextureTarget((GLenum)ai(args,0)), (GLuint)ai(args,1)));
             return 0;
         case GL64_fn_glDeleteTextures:
             if (g_glContext && args.a[1]) deleteObjects(cpu, args, GenKind::Texture);
@@ -1955,13 +2053,13 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glTexParameteri:
             if (g_glContext) {
                 GLenum pn = (GLenum)ai(args,1);
-                if (texParamSupported(pn)) GL_MT(glTexParameteri((GLenum)ai(args,0), pn, (GLint)ai(args,2)));
+                if (texParamSupported(pn)) GL_MT(glTexParameteri(hostTextureTarget((GLenum)ai(args,0)), pn, (GLint)ai(args,2)));
             }
             return 0;
         case GL64_fn_glTexParameterf:
             if (g_glContext) {
                 GLenum pn = (GLenum)ai(args,1);
-                if (texParamSupported(pn)) GL_MT(glTexParameterf((GLenum)ai(args,0), pn, af(args,2)));
+                if (texParamSupported(pn)) GL_MT(glTexParameterf(hostTextureTarget((GLenum)ai(args,0)), pn, af(args,2)));
             }
             return 0;
         case GL64_fn_glTexImage2D: {
@@ -1982,6 +2080,13 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 // exactly the render-target allocation wined3d does.
                 bgraToRgba(fmt, type, pix);
                 glesTexFormatFixup(ifmt, fmt, type, pix);
+                // Desktop permits several NULL-data allocation type/format
+                // combinations GLES3 rejects. Select the canonical storage tuple;
+                // this does not replace unsupported storage with a fake format.
+                if (!args.a[8]) {
+                    if (ifmt == 0x822F || ifmt == 0x8230) { fmt=0x8227; type=GL_FLOAT; }
+                    if (ifmt == 0x8F96 || ifmt == 0x8F97) { fmt=ifmt == 0x8F96 ? GL_RGB : GL_RGBA; type=GL_BYTE; }
+                }
                 // A2: A glTexImage2D the driver REJECTS leaves the texture with no
                 // level 0, and the later glFramebufferTexture2D then reports
                 // GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT — wined3d's hard RT failure.
@@ -1990,9 +2095,17 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 bool trace = getenv("BW64_GLTRACE") != nullptr;
                 GLenum err0 = 0;
                 if (trace) GL_MT(err0 = glGetError());
-                GL_MT(glTexImage2D(tgt, lvl, ifmt, w, h, bd, fmt, type, pp));
+                pp = pix.empty() ? nullptr : pix.data(); // conversion may reallocate
+                GLenum allocationError = 0;
+                glOnMain([&]{
+                    glTexImage2D(hostTextureTarget(tgt), lvl, ifmt, w, h, bd, fmt, type, pp);
+                    allocationError = glGetError();
+                    if (allocationError && !trace && !g_allocationError) g_allocationError=allocationError;
+                    if (!allocationError)
+                        g_textureLevels[{boundTexture(tgt), tgt, lvl}] = {w, h, ifmt};
+                });
                 if (trace) {
-                    GLenum e = 0; GL_MT(e = glGetError());
+                    GLenum e = allocationError;
                     if (e != GL_NO_ERROR || lvl == 0)
                         klog_fmt("gl64 TEX2D: target=0x%x lvl=%d ifmt=0x%x %dx%d bd=%d fmt=0x%x type=0x%x bytes=%zu err=0x%x",
                                  (unsigned)tgt, lvl, (unsigned)ifmt, w, h, bd, (unsigned)fmt,
@@ -2012,13 +2125,13 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                     std::vector<U8> pix(bytes); cpu->memory->memcpyFromGuest(pix.data(), args.a[8], (U64)bytes);
                     bgraToRgba(fmt, type, pix);   // A2: desktop GL_BGRA uploads
                     const void* pp=pix.data();
-                    GL_MT(glTexSubImage2D(tgt, lvl, x, y, w, h, fmt, type, pp));
+                    GL_MT(glTexSubImage2D(hostTextureTarget(tgt), lvl, x, y, w, h, fmt, type, pp));
                 }
             }
             return 0;
         }
         case GL64_fn_glGenerateMipmap:
-            if (g_glContext) GL_MT(glGenerateMipmap((GLenum)ai(args,0)));
+            if (g_glContext) GL_MT(glGenerateMipmap(hostTextureTarget((GLenum)ai(args,0))));
             return 0;
         case GL64_fn_glCompressedTexImage2D: {
             if (g_glContext) {
@@ -2027,7 +2140,7 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 GLsizei isz=(GLsizei)ai(args,6);
                 std::vector<U8> data; const void* dp=nullptr;
                 if (args.a[7] && isz>0) { data.resize((size_t)isz); cpu->memory->memcpyFromGuest(data.data(), args.a[7], (U64)isz); dp=data.data(); }
-                GL_MT(glCompressedTexImage2D(tgt, lvl, ifmt, w, h, bd, isz, dp));
+                GL_MT(glCompressedTexImage2D(hostTextureTarget(tgt), lvl, ifmt, w, h, bd, isz, dp));
             }
             return 0;
         }
@@ -2179,9 +2292,8 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // =================================================================
 
         // --- framebuffer objects -----------------------------------------
-        // glFramebufferTexture1D/3D exist only so wined3d's capability probe can
-        // resolve them; WebGL2 has no 1D/3D FBO attachments, and a real call would
-        // raise GL_INVALID_OPERATION into wined3d's error check, so they no-op.
+        // Desktop 1D storage is emulated as width x 1 2D; desktop 3D slice
+        // attachments map to WebGL2 framebufferTextureLayer.
         case GL64_fn_glGenFramebuffers:
             if (g_glContext && args.a[1]) genObjects(cpu, args, GenKind::Framebuffer);
             return 0;
@@ -2212,8 +2324,12 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 glOnMain([&]{
                     bindGuestTarget();
                     glFramebufferTexture2D((GLenum)ai(args,0), (GLenum)ai(args,1),
-                                           (GLenum)ai(args,2), (GLuint)ai(args,3),
+                                           hostTextureTarget((GLenum)ai(args,2)), (GLuint)ai(args,3),
                                            (GLint)ai(args,4));
+                    if (getenv("BW64_GLTRACE"))
+                        klog_fmt("gl64 ATTACH2D: fbo=%u target=0x%x att=0x%x textarget=0x%x tex=%u level=%d",
+                                 g_guestFbo, (unsigned)ai(args,0), (unsigned)ai(args,1),
+                                 (unsigned)ai(args,2), (unsigned)ai(args,3), (int)ai(args,4));
                 });
             return 0;
         // Emscripten exports no glFramebufferTexture (the GL 4.3 untargeted
@@ -2240,8 +2356,19 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 });
             return 0;
         case GL64_fn_glFramebufferTexture1D:
+            if (g_glContext) glOnMain([&]{
+                bindGuestTarget();
+                glFramebufferTexture2D((GLenum)ai(args,0), (GLenum)ai(args,1),
+                                       GL_TEXTURE_2D, (GLuint)ai(args,3), (GLint)ai(args,4));
+            });
+            return 0;
         case GL64_fn_glFramebufferTexture3D:
-            return 0;   // probe-only in WebGL2 (see note above)
+            if (g_glContext) glOnMain([&]{
+                bindGuestTarget();
+                glFramebufferTextureLayer((GLenum)ai(args,0), (GLenum)ai(args,1),
+                                          (GLuint)ai(args,3), (GLint)ai(args,4), (GLint)ai(args,5));
+            });
+            return 0;
         case GL64_fn_glFramebufferRenderbuffer:
             if (g_glContext)
                 glOnMain([&]{
@@ -2261,6 +2388,21 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 glOnMain([&]{
                     bindGuestTarget();
                     st = glCheckFramebufferStatus(target);
+                    if (getenv("BW64_GLTRACE")) {
+                        GLint bound = 0;
+                        glGetIntegerv(target == GL_READ_FRAMEBUFFER ? GL_READ_FRAMEBUFFER_BINDING : GL_DRAW_FRAMEBUFFER_BINDING, &bound);
+                        if (bound) {
+                            const GLenum attachments[] = {GL_COLOR_ATTACHMENT0, GL_DEPTH_ATTACHMENT, GL_STENCIL_ATTACHMENT};
+                            for (GLenum att : attachments) {
+                                GLint type = 0, name = 0;
+                                glGetFramebufferAttachmentParameteriv(target, att, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &type);
+                                if (type != GL_NONE)
+                                    glGetFramebufferAttachmentParameteriv(target, att, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &name);
+                                klog_fmt("gl64 FBO_ATTACH: bound=%d att=0x%x type=0x%x name=%d status=0x%x",
+                                         bound, (unsigned)att, (unsigned)type, name, (unsigned)st);
+                            }
+                        }
+                    }
                 });
                 if (st != GL_FRAMEBUFFER_COMPLETE && getenv("BW64_GLTRACE"))
                     klog_fmt("gl64 FBO: check status target=0x%x -> 0x%x (bound=%u)",
@@ -2465,8 +2607,19 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                         pp = pix.data();
                     }
                 }
-                bgraToRgba(fmt, type, pix);   // A2: desktop GL_BGRA uploads
+                bgraToRgba(fmt, type, pix);
+                glesTexFormatFixup(ifmt, fmt, type, pix);
+                if (!args.a[9]) {
+                    if (ifmt == 0x822F || ifmt == 0x8230) { fmt=0x8227; type=GL_FLOAT; }
+                    if (ifmt == 0x8F96 || ifmt == 0x8F97) { fmt=ifmt == 0x8F96 ? GL_RGB : GL_RGBA; type=GL_BYTE; }
+                }
+                pp = pix.empty() ? nullptr : pix.data();
                 GL_MT(glTexImage3D(tgt, lvl, ifmt, w, h, d, bd, fmt, type, pp));
+                if (getenv("BW64_GLTRACE")) {
+                    GLenum e = 0; GL_MT(e = glGetError());
+                    klog_fmt("gl64 TEX3D: target=0x%x lvl=%d ifmt=0x%x %dx%dx%d fmt=0x%x type=0x%x err=0x%x",
+                             (unsigned)tgt, lvl, (unsigned)ifmt, w, h, d, (unsigned)fmt, (unsigned)type, (unsigned)e);
+                }
             }
             return 0;
         }
@@ -2733,21 +2886,126 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             if (g_glContext && args.a[2]) {
                 GLint v = 0;
                 GLenum tgt=(GLenum)ai(args,0); GLenum pn=(GLenum)ai(args,1); GLint* p=&v;
-                GL_MT(glGetTexParameteriv(tgt, pn, p));
+                GL_MT(glGetTexParameteriv(hostTextureTarget(tgt), pn, p));
                 cpu->memory->memcpyToGuest(args.a[2], &v, sizeof(GLint));
             }
             return 0;
         case GL64_fn_glGetTexLevelParameteriv:
-            // WebGL2 dropped the legacy per-level query entirely, and Emscripten
-            // exports no C symbol for it. wined3d uses it only to validate texture
-            // sizes/formats, and a wrong positive there is exactly what made it
-            // reject D3D formats outright — so report 0 (the honest "unknown") and
-            // keep the GL error state clean.
             if (g_glContext && args.a[3]) {
                 GLint v = 0;
+                GLenum target=(GLenum)ai(args,0), pname=(GLenum)ai(args,2);
+                glOnMain([&]{
+                    auto it = g_textureLevels.find({boundTexture(target), target, (GLint)ai(args,1)});
+                    if (it == g_textureLevels.end()) return;
+                    const auto& level = it->second;
+                    if (pname == 0x1000) v = level.width;
+                    else if (pname == 0x1001) v = level.height;
+                    else if (pname == 0x1003) v = level.internalFormat;
+                    else if (pname >= 0x805C && pname <= 0x805F && level.internalFormat == GL_RGBA8) v = 8;
+                    else if (pname == 0x805C && level.internalFormat == GL_R16F) v = 16;
+                    if (getenv("BW64_GLTRACE")) klog_fmt("gl64 TEXQUERY: target=0x%x pname=0x%x -> %d", target, pname, v);
+                });
                 cpu->memory->memcpyToGuest(args.a[3], &v, sizeof(GLint));
             }
             return 0;
+        case GL64_fn_glReadPixels:
+        case GL64_fn_glGetTexImage: {
+            bool texture = fnId == GL64_fn_glGetTexImage;
+            U64 guest = args.a[texture ? 4 : 6];
+            if (!g_glContext) return 0;
+            GLenum fmt=(GLenum)ai(args,texture ? 2 : 4), type=(GLenum)ai(args,texture ? 3 : 5);
+            // Functional Wine probes read RGBA/BGRA bytes (8888_REV has the
+            // same byte layout). Other readback representations remain unsupported.
+            if ((fmt != GL_RGBA && fmt != 0x80E1) || (type != GL_UNSIGNED_BYTE && type != 0x8367)) {
+                GL_MT(recordBridgeError(GL_INVALID_ENUM));
+                return 0;
+            }
+            GLint x=texture ? 0 : (GLint)ai(args,0), y=texture ? 0 : (GLint)ai(args,1);
+            GLsizei w=texture ? 0 : (GLsizei)ai(args,2), h=texture ? 0 : (GLsizei)ai(args,3);
+            std::vector<U8> pixels;
+            GLenum error = 0;
+            GLint pack=4, pbo=0, row=0, skipRows=0, skipPixels=0;
+            glOnMain([&]{
+                GLuint scratch=0;
+                GLint savedRead=0, savedDraw=0;
+                auto fail = [&](GLenum e) { error=e; recordBridgeError(e); };
+                if (texture) {
+                    GLenum target=(GLenum)ai(args,0);
+                    if (hostTextureTarget(target) != GL_TEXTURE_2D && !(target >= 0x8515 && target <= 0x851A)) {
+                        fail(GL_INVALID_ENUM);
+                        return;
+                    }
+                    auto it=g_textureLevels.find({boundTexture(target), target, (GLint)ai(args,1)});
+                    if (it == g_textureLevels.end()) { fail(GL_INVALID_OPERATION); return; }
+                    w=it->second.width; h=it->second.height;
+                    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &savedRead);
+                    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &savedDraw);
+                    glGenFramebuffers(1, &scratch);
+                    glBindFramebuffer(GL_READ_FRAMEBUFFER, scratch);
+                    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                           hostTextureTarget(target), boundTexture(target), (GLint)ai(args,1));
+                }
+                if (w < 0 || h < 0) fail(GL_INVALID_VALUE);
+                else if ((U64)w * h > (16u << 20)) fail(GL_OUT_OF_MEMORY);
+                else if (w > 0 && h > 0) {
+                    glGetIntegerv(GL_PACK_ALIGNMENT, &pack);
+                    glGetIntegerv(GL_PACK_ROW_LENGTH, &row);
+                    glGetIntegerv(GL_PACK_SKIP_ROWS, &skipRows);
+                    glGetIntegerv(GL_PACK_SKIP_PIXELS, &skipPixels);
+                    glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &pbo);
+                    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+                    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+                    glPixelStorei(GL_PACK_SKIP_ROWS, 0);
+                    glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
+                    pixels.resize((size_t)w * h * 4);
+                    glReadPixels(x,y,w,h,GL_RGBA,GL_UNSIGNED_BYTE,pixels.data());
+                    error=glGetError();
+                    if (error) recordBridgeError(error);
+                    glPixelStorei(GL_PACK_ALIGNMENT,pack);
+                    glPixelStorei(GL_PACK_ROW_LENGTH,row);
+                    glPixelStorei(GL_PACK_SKIP_ROWS,skipRows);
+                    glPixelStorei(GL_PACK_SKIP_PIXELS,skipPixels);
+                    glBindBuffer(GL_PIXEL_PACK_BUFFER,pbo);
+                }
+                if (texture) {
+                    glBindFramebuffer(GL_READ_FRAMEBUFFER,savedRead);
+                    glBindFramebuffer(GL_DRAW_FRAMEBUFFER,savedDraw);
+                    if (scratch) glDeleteFramebuffers(1,&scratch);
+                }
+            });
+            if (fmt == 0x80E1) for (size_t i=0;i+4<=pixels.size();i+=4) std::swap(pixels[i],pixels[i+2]);
+            if (!error && !pixels.empty()) {
+                size_t stride=packedReadStride(w,row,pack);
+                U64 start=(U64)skipRows*stride+(U64)skipPixels*4;
+                U64 end=start+(U64)(h-1)*stride+(U64)w*4;
+                if (pbo) {
+                    glOnMain([&]{
+                        GLint capacity=0;
+                        glGetBufferParameteriv(GL_PIXEL_PACK_BUFFER,GL_BUFFER_SIZE,&capacity);
+                        if (guest > (U64)capacity || end > (U64)capacity-guest) {
+                            error=GL_INVALID_OPERATION;
+                            recordBridgeError(error);
+                            return;
+                        }
+                        for (GLsizei y0=0;y0<h;++y0)
+                            glBufferSubData(GL_PIXEL_PACK_BUFFER,(GLintptr)(guest+start+(U64)y0*stride),
+                                            (GLsizeiptr)w*4,pixels.data()+(size_t)y0*w*4);
+                        error=glGetError();
+                        if (error) recordBridgeError(error);
+                    });
+                } else if (guest && guest <= UINT64_MAX-end) {
+                    for (GLsizei y0=0;y0<h;++y0)
+                        cpu->memory->memcpyToGuest(guest+start+(U64)y0*stride,
+                                                  pixels.data()+(size_t)y0*w*4,(U64)w*4);
+                } else {
+                    error=GL_INVALID_OPERATION;
+                    GL_MT(recordBridgeError(error));
+                }
+            }
+            if (getenv("BW64_GLTRACE")) klog_fmt("gl64 READBACK: texture=%d %dx%d bytes=%zu err=0x%x",texture,w,h,pixels.size(),error);
+            return 0;
+        }
         // glGetTextureParameteriv / glGetTextureLevelParameteriv are the GL 3.x
         // spellings; Emscripten exports neither, so answer via the legacy target
         // query against the named texture's current binding is wrong (the guest

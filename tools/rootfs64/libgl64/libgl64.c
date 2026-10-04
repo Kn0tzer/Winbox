@@ -362,7 +362,9 @@ enum {
     GL64_fn_glPolygonOffsetClamp = 840,
     GL64_fn_glDrawElementsInstancedBaseVertex,
     GL64_fn_glMultiDrawElementsBaseVertex,
-    GL64_fn_glTextureBarrier
+    GL64_fn_glTextureBarrier,
+    GL64_fn_glReadPixels = 850,
+    GL64_fn_glGetTexImage = 851
 };
 
 // ---- the trap ---------------------------------------------------------------
@@ -893,6 +895,15 @@ API void glLineWidth(GLfloat w){ GL64Args a={{0}}; a.a[0]=F2U(w); (void)gl64_tra
 API void glPixelStorei(GLenum pname, GLint param){ GL64Args a={{0}}; a.a[0]=pname; a.a[1]=(uint64_t)(uint32_t)param; (void)gl64_trap(GL64_fn_glPixelStorei,&a); }
 API void glSampleCoverage(GLfloat value, GLboolean invert){ GL64Args a={{0}}; a.a[0]=F2U(value); a.a[1]=invert; (void)gl64_trap(GL64_fn_glSampleCoverage,&a); }
 
+API void glReadPixels(GLint x, GLint y, GLsizei w, GLsizei h, GLenum fmt, GLenum type, void* pixels){
+    GL64Args a={{0}}; a.a[0]=(uint32_t)x; a.a[1]=(uint32_t)y; a.a[2]=(uint32_t)w; a.a[3]=(uint32_t)h; a.a[4]=fmt; a.a[5]=type; a.a[6]=(uintptr_t)pixels;
+    (void)gl64_trap(GL64_fn_glReadPixels,&a);
+}
+API void glGetTexImage(GLenum target, GLint level, GLenum fmt, GLenum type, void* pixels){
+    GL64Args a={{0}}; a.a[0]=target; a.a[1]=(uint32_t)level; a.a[2]=fmt; a.a[3]=type; a.a[4]=(uintptr_t)pixels;
+    (void)gl64_trap(GL64_fn_glGetTexImage,&a);
+}
+
 // --- textures ---
 API void glActiveTexture(GLenum texture){ GL64Args a={{0}}; a.a[0]=texture; (void)gl64_trap(GL64_fn_glActiveTexture,&a); }
 API void glGenTextures(GLsizei n, GLuint* textures){ GL64Args a={{0}}; a.a[0]=(uint64_t)(uint32_t)n; a.a[1]=(uint64_t)(uintptr_t)textures; (void)gl64_trap(GL64_fn_glGenTextures,&a); }
@@ -903,6 +914,10 @@ API void glTexParameterf(GLenum target, GLenum pname, GLfloat param){ GL64Args a
 API void glTexImage2D(GLenum target, GLint level, GLint ifmt, GLsizei w, GLsizei h, GLint border, GLenum fmt, GLenum type, const void* pixels){
     GL64Args a={{0}}; a.a[0]=target; a.a[1]=(uint64_t)(uint32_t)level; a.a[2]=(uint64_t)(uint32_t)ifmt; a.a[3]=(uint64_t)(uint32_t)w; a.a[4]=(uint64_t)(uint32_t)h; a.a[5]=(uint64_t)(uint32_t)border; a.a[6]=fmt; a.a[7]=type; a.a[8]=(uint64_t)(uintptr_t)pixels;
     (void)gl64_trap(GL64_fn_glTexImage2D,&a);
+}
+// WebGL2 has no 1D textures; hostTextureTarget maps GL_TEXTURE_1D to 2D.
+API void glTexImage1D(GLenum target, GLint level, GLint ifmt, GLsizei w, GLint border, GLenum fmt, GLenum type, const void* pixels){
+    glTexImage2D(target, level, ifmt, w, 1, border, fmt, type, pixels);
 }
 API void glTexSubImage2D(GLenum target, GLint level, GLint x, GLint y, GLsizei w, GLsizei h, GLenum fmt, GLenum type, const void* pixels){
     GL64Args a={{0}}; a.a[0]=target; a.a[1]=(uint64_t)(uint32_t)level; a.a[2]=(uint64_t)(uint32_t)x; a.a[3]=(uint64_t)(uint32_t)y; a.a[4]=(uint64_t)(uint32_t)w; a.a[5]=(uint64_t)(uint32_t)h; a.a[6]=fmt; a.a[7]=type; a.a[8]=(uint64_t)(uintptr_t)pixels;
@@ -981,7 +996,7 @@ API void glBindFramebuffer(GLenum target, GLuint fb){ GL64Args a={{0}}; a.a[0]=t
 API GLboolean glIsFramebuffer(GLuint fb){ GL64Args a={{0}}; a.a[0]=fb; return (GLboolean)gl64_trap(GL64_fn_glIsFramebuffer,&a); }
 API void glFramebufferTexture1D(GLenum t, GLenum att, GLenum tt, GLuint tex, GLint lvl){ GL64Args a={{0}}; a.a[0]=t; a.a[1]=att; a.a[2]=tt; a.a[3]=tex; a.a[4]=(uint64_t)(uint32_t)lvl; (void)gl64_trap(GL64_fn_glFramebufferTexture1D,&a); }
 API void glFramebufferTexture2D(GLenum t, GLenum att, GLenum tt, GLuint tex, GLint lvl){ GL64Args a={{0}}; a.a[0]=t; a.a[1]=att; a.a[2]=tt; a.a[3]=tex; a.a[4]=(uint64_t)(uint32_t)lvl; (void)gl64_trap(GL64_fn_glFramebufferTexture2D,&a); }
-API void glFramebufferTexture3D(GLenum t, GLenum att, GLenum tt, GLuint tex, GLint z){ GL64Args a={{0}}; a.a[0]=t; a.a[1]=att; a.a[2]=tt; a.a[3]=tex; a.a[4]=(uint64_t)(uint32_t)z; (void)gl64_trap(GL64_fn_glFramebufferTexture3D,&a); }
+API void glFramebufferTexture3D(GLenum t, GLenum att, GLenum tt, GLuint tex, GLint lvl, GLint z){ GL64Args a={{0}}; a.a[0]=t; a.a[1]=att; a.a[2]=tt; a.a[3]=tex; a.a[4]=(uint64_t)(uint32_t)lvl; a.a[5]=(uint64_t)(uint32_t)z; (void)gl64_trap(GL64_fn_glFramebufferTexture3D,&a); }
 API void glFramebufferTexture(GLenum t, GLenum att, GLuint tex, GLint lvl){ GL64Args a={{0}}; a.a[0]=t; a.a[1]=att; a.a[2]=tex; a.a[3]=(uint64_t)(uint32_t)lvl; (void)gl64_trap(GL64_fn_glFramebufferTexture,&a); }
 API void glFramebufferTextureLayer(GLenum t, GLenum att, GLuint tex, GLint lvl, GLint layer){ GL64Args a={{0}}; a.a[0]=t; a.a[1]=att; a.a[2]=tex; a.a[3]=(uint64_t)(uint32_t)lvl; a.a[4]=(uint64_t)(uint32_t)layer; (void)gl64_trap(GL64_fn_glFramebufferTextureLayer,&a); }
 API void glFramebufferRenderbuffer(GLenum t, GLenum att, GLenum rbt, GLuint rb){ GL64Args a={{0}}; a.a[0]=t; a.a[1]=att; a.a[2]=rbt; a.a[3]=rb; (void)gl64_trap(GL64_fn_glFramebufferRenderbuffer,&a); }
@@ -1010,7 +1025,7 @@ API void glBindFramebufferEXT(GLenum t, GLuint fb){ glBindFramebuffer(t, fb); }
 API GLboolean glIsFramebufferEXT(GLuint fb){ return glIsFramebuffer(fb); }
 API void glFramebufferTexture1DEXT(GLenum t, GLenum a, GLenum tt, GLuint tex, GLint l){ glFramebufferTexture1D(t,a,tt,tex,l); }
 API void glFramebufferTexture2DEXT(GLenum t, GLenum a, GLenum tt, GLuint tex, GLint l){ glFramebufferTexture2D(t,a,tt,tex,l); }
-API void glFramebufferTexture3DEXT(GLenum t, GLenum a, GLenum tt, GLuint tex, GLint z){ glFramebufferTexture3D(t,a,tt,tex,z); }
+API void glFramebufferTexture3DEXT(GLenum t, GLenum a, GLenum tt, GLuint tex, GLint lvl, GLint z){ glFramebufferTexture3D(t,a,tt,tex,lvl,z); }
 API void glFramebufferRenderbufferEXT(GLenum t, GLenum a, GLenum rbt, GLuint rb){ glFramebufferRenderbuffer(t,a,rbt,rb); }
 API GLenum glCheckFramebufferStatusEXT(GLenum t){ return glCheckFramebufferStatus(t); }
 API void glBlitFramebufferEXT(GLint a0,GLint a1,GLint a2,GLint a3,GLint a4,GLint a5,GLint a6,GLint a7,GLbitfield m,GLenum f){ glBlitFramebuffer(a0,a1,a2,a3,a4,a5,a6,a7,m,f); }
@@ -1245,8 +1260,8 @@ static const struct procEntry g_procs[] = {
     E(glScissor), E(glPolygonOffset), E(glPolygonMode), E(glDepthRange),
     E(glLineWidth), E(glPixelStorei), E(glSampleCoverage),
     E(glActiveTexture), E(glGenTextures), E(glBindTexture), E(glDeleteTextures),
-    E(glTexParameteri), E(glTexParameterf), E(glTexImage2D), E(glTexSubImage2D),
-    E(glGenerateMipmap), E(glCompressedTexImage2D), E(glGetStringi),
+    E(glTexParameteri), E(glTexParameterf), E(glTexImage1D), E(glTexImage2D), E(glTexSubImage2D),
+    E(glGenerateMipmap), E(glCompressedTexImage2D), E(glGetStringi), E(glReadPixels), E(glGetTexImage),
     // --- ARB_sync + queries (wined3d Present/flush + occlusion) ---
     E(glFenceSync), E(glClientWaitSync), E(glWaitSync), E(glDeleteSync),
     E(glIsSync), E(glGetSynciv),

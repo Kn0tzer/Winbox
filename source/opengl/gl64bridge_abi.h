@@ -292,7 +292,7 @@ enum {
     GL64_fn_glIsFramebuffer,            // (fb) -> GLboolean
     GL64_fn_glFramebufferTexture1D,     // (target, attachment, textarget, tex, level)  [probe only]
     GL64_fn_glFramebufferTexture2D,     // (target, attachment, textarget, tex, level)
-    GL64_fn_glFramebufferTexture3D,     // (target, attachment, textarget, tex, zoff)  [probe only]
+    GL64_fn_glFramebufferTexture3D,     // (target, attachment, textarget, tex, level, zoff)
     GL64_fn_glFramebufferTexture,       // (target, attachment, tex, level)
     GL64_fn_glFramebufferTextureLayer,  // (target, attachment, tex, level, layer)
     GL64_fn_glFramebufferRenderbuffer,  // (target, attachment, rb_target, rb)
@@ -435,6 +435,10 @@ enum {
     GL64_fn_glDrawElementsInstancedBaseVertex, // (mode,count,type,indices*,primcount,baseVertex)
     GL64_fn_glMultiDrawElementsBaseVertex, // (mode,count*,type,indices**,primcount,baseVertex*)
     GL64_fn_glTextureBarrier,            // ()
+
+    // A3 functional adapter probes (append-only).
+    GL64_fn_glReadPixels = 850,        // (x,y,w,h,format,type,pixels*)
+    GL64_fn_glGetTexImage = 851,       // (target,level,format,type,pixels*)
 
     GL64_fn__MAX
 };
