@@ -9,6 +9,20 @@ const send = (type, data) => parent.postMessage({ wine: true, type, data }, loca
 window.bwRuntimeStatus = text => send('status', text);
 window.bwRuntimeLog = text => send('log', text);
 window.bwGpuFrame = json => send('gpu', JSON.parse(json));
+// C1 naga observation lane (?naga=1, default OFF — contract /tmp/c1-contract.md):
+// wrap WebGL2RenderingContext.prototype.shaderSource to capture the post-bridge
+// ES 3.00 guest shader sources, lift them to GLSL 450 and shadow-translate to
+// WGSL. Fire-and-forget dynamic import (lazy: zero extra bytes when OFF, 2 MB
+// naga_bg.wasm only at the first captured shader); it resolves in ms while the
+// launcher still has a rootfs download + wine boot ahead of it, so the wrap is
+// installed long before wined3d's first shader. Failure logs once and leaves
+// ANGLE untouched — this lane never changes the render path.
+if (query.get('naga') === '1') {
+  import('../naga-rt.mjs').then(m => m.installNagaCapture()).catch(err => {
+    console.warn('naga: module load failed — ANGLE fallback active', err);
+    window.bwRuntimeLog('naga: module load failed — ANGLE fallback active');
+  });
+}
 if (pkg) {
   checkEntries(pkg.files);
   const exe = safePath(query.get('exe') || '');
