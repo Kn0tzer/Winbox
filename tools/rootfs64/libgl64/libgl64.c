@@ -367,7 +367,10 @@ enum {
     GL64_fn_glGetTexImage = 851,
     GL64_fn_glTexStorage2D = 852,
     GL64_fn_glTexStorage3D = 853,
-    GL64_fn_glTexStorage1D = 854
+    GL64_fn_glTexStorage1D = 854,
+    GL64_fn_glTexStorage2DMultisample = 855,
+    GL64_fn_glTexStorage3DMultisample = 856,
+    GL64_fn_glGetMultisamplefv = 857
 };
 
 // ---- the trap ---------------------------------------------------------------
@@ -623,7 +626,7 @@ API const GLubyte* glGetString(GLenum name) {
     // (adapter_gl.c lists ARB_SAMPLER_OBJECTS at min GL 3.3), so without it
     // D3D11's requested 11_0 is refused and wined3d_device_create() fails.
     static const GLubyte* exts     = (const GLubyte*)
-        "GL_ARB_multitexture GL_ARB_vertex_buffer_object GL_ARB_texture_non_power_of_two GL_ARB_shader_objects GL_ARB_shading_language_100 GL_ARB_vertex_shader GL_ARB_fragment_shader GL_ARB_sampler_objects GL_ARB_framebuffer_object GL_ARB_uniform_buffer_object GL_ARB_draw_buffers GL_ARB_instanced_arrays GL_ARB_polygon_offset_clamp GL_ARB_draw_buffers_blend GL_ARB_texture_cube_map_array";
+        "GL_ARB_multitexture GL_ARB_vertex_buffer_object GL_ARB_texture_non_power_of_two GL_ARB_shader_objects GL_ARB_shading_language_100 GL_ARB_vertex_shader GL_ARB_fragment_shader GL_ARB_sampler_objects GL_ARB_framebuffer_object GL_ARB_uniform_buffer_object GL_ARB_draw_buffers GL_ARB_instanced_arrays GL_ARB_polygon_offset_clamp GL_ARB_draw_buffers_blend GL_ARB_texture_cube_map_array GL_ARB_texture_storage GL_ARB_texture_storage_multisample";
     (void)gl64_trap(GL64_fn_glGetString, 0);
     switch (name) {
         case 0x1F00: return vendor;    // GL_VENDOR
@@ -667,6 +670,12 @@ static const char* const g_extList[] = {
     // glTexImage3D on GL_TEXTURE_CUBE_MAP_ARRAY).
     "GL_ARB_polygon_offset_clamp","GL_ARB_draw_buffers_blend",
     "GL_ARB_texture_cube_map_array",
+    // C10: texture_storage (+_multisample) are now REAL on the host
+    // (TexStorage1D/2D/3D via glTexStorage; 2D/3DMS via the identical
+    // immutable multisample allocation). Advertising them lets wined3d keep
+    // ARB_texture_multisample instead of disabling it for "immutable storage
+    // is not supported" — verified against adapter_gl.c:3663.
+    "GL_ARB_texture_storage","GL_ARB_texture_storage_multisample",
 };
 #define G_EXT_COUNT ((int)(sizeof(g_extList)/sizeof(g_extList[0])))
 
@@ -1092,6 +1101,15 @@ API void glTexStorage3D(GLenum t, GLsizei levels, GLenum ifmt, GLsizei w, GLsize
     GL64Args a={{0}}; a.a[0]=t; a.a[1]=(uint64_t)(uint32_t)levels; a.a[2]=ifmt; a.a[3]=(uint64_t)(uint32_t)w; a.a[4]=(uint64_t)(uint32_t)h; a.a[5]=(uint64_t)(uint32_t)d; (void)gl64_trap(GL64_fn_glTexStorage3D,&a); }
 API void glTexStorage1D(GLenum t, GLsizei levels, GLenum ifmt, GLsizei w){
     GL64Args a={{0}}; a.a[0]=t; a.a[1]=(uint64_t)(uint32_t)levels; a.a[2]=ifmt; a.a[3]=(uint64_t)(uint32_t)w; (void)gl64_trap(GL64_fn_glTexStorage1D,&a); }
+// C10: multisample immutable storage (see ABI note). Same guest ABI shape as
+// the TexImage*Multisample wrappers; the host backs them with the identical
+// immutable multisample allocation.
+API void glTexStorage2DMultisample(GLenum t, GLsizei samples, GLenum ifmt, GLsizei w, GLsizei h, GLboolean fixed){
+    GL64Args a={{0}}; a.a[0]=t; a.a[1]=(uint64_t)(uint32_t)samples; a.a[2]=ifmt; a.a[3]=(uint64_t)(uint32_t)w; a.a[4]=(uint64_t)(uint32_t)h; a.a[5]=fixed; (void)gl64_trap(GL64_fn_glTexStorage2DMultisample,&a); }
+API void glTexStorage3DMultisample(GLenum t, GLsizei samples, GLenum ifmt, GLsizei w, GLsizei h, GLsizei d, GLboolean fixed){
+    GL64Args a={{0}}; a.a[0]=t; a.a[1]=(uint64_t)(uint32_t)samples; a.a[2]=ifmt; a.a[3]=(uint64_t)(uint32_t)w; a.a[4]=(uint64_t)(uint32_t)h; a.a[5]=(uint64_t)(uint32_t)d; a.a[6]=fixed; (void)gl64_trap(GL64_fn_glTexStorage3DMultisample,&a); }
+API void glGetMultisamplefv(GLenum pname, GLuint index, GLfloat* values){
+    GL64Args a={{0}}; a.a[0]=pname; a.a[1]=index; a.a[2]=(uint64_t)(uintptr_t)values; (void)gl64_trap(GL64_fn_glGetMultisamplefv,&a); }
 
 // --- MRT / frag-data / uniform blocks / buffer objects ---
 API void glBindFragDataLocation(GLuint p, GLuint color, const GLchar* name){ GL64Args a={{0}}; a.a[0]=p; a.a[1]=color; a.a[2]=(uint64_t)(uintptr_t)name; (void)gl64_trap(GL64_fn_glBindFragDataLocation,&a); }
@@ -1311,6 +1329,7 @@ static const struct procEntry g_procs[] = {
     E(glCompressedTexSubImage3D), E(glTexImage3DEXT), E(glCompressedTexImage3DARB),
     E(glTexImage2DMultisample), E(glTexImage3DMultisample),
     E(glTexStorage2D), E(glTexStorage3D), E(glTexStorage1D),
+    E(glTexStorage2DMultisample), E(glTexStorage3DMultisample), E(glGetMultisamplefv),
     E(glBindFragDataLocation), E(glGetFragDataIndex), E(glBindBufferRange),
     E(glBindBufferBase), E(glGetUniformBlockIndex), E(glUniformBlockBinding),
     E(glGetActiveUniformBlockiv), E(glGetActiveUniformBlockName), E(glBufferStorage),

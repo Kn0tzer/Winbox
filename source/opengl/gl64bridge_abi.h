@@ -448,6 +448,15 @@ enum {
     GL64_fn_glTexStorage3D = 853,      // (target,levels,ifmt,w,h,d)
     GL64_fn_glTexStorage1D = 854,      // (target,levels,ifmt,w) -> w x 1 2D
 
+    // C10: multisample immutable storage (append-only). Wine disables the
+    // whole ARB_texture_multisample extension when glTexStorage2DMultisample
+    // resolves NULL. WebGL2 has no texStorage*Multisample entry points, but
+    // texImage*Multisample allocates identical immutable multisample storage,
+    // so the host routes there honestly (same drivers, same errors).
+    GL64_fn_glTexStorage2DMultisample = 855, // (target,samples,ifmt,w,h,fixed)
+    GL64_fn_glTexStorage3DMultisample = 856, // (target,samples,ifmt,w,h,d,fixed)
+    GL64_fn_glGetMultisamplefv = 857,  // (pname,index,values* -> 2 floats)
+
     GL64_fn__MAX
 };
 

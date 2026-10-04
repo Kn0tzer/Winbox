@@ -2918,11 +2918,16 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // error swallow so a driver that refuses cannot poison wined3d's checks.
         case GL64_fn_glTexImage2DMultisample:
         case GL64_fn_glTexImage3DMultisample:
+        case GL64_fn_glTexStorage2DMultisample:
+        case GL64_fn_glTexStorage3DMultisample:
             if (g_glContext) {
+                // C10: TexStorage*Multisample shares TexImage*Multisample's arg
+                // layout and immutable-storage semantics exactly; one path backs
+                // both honestly (same driver call, same errors, same metadata).
                 int tgt=(int)ai(args,0), smp=(int)ai(args,1), ifmt=(int)ai(args,2);
                 int w=(int)ai(args,3), h=(int)ai(args,4);
-                int d = (fnId == GL64_fn_glTexImage3DMultisample) ? (int)ai(args,5) : 0;
-                bool is3D = (fnId == GL64_fn_glTexImage3DMultisample);
+                int d = (fnId == GL64_fn_glTexImage3DMultisample || fnId == GL64_fn_glTexStorage3DMultisample) ? (int)ai(args,5) : 0;
+                bool is3D = (fnId == GL64_fn_glTexImage3DMultisample || fnId == GL64_fn_glTexStorage3DMultisample);
                 bool trace = getenv("BW64_GLTRACE") != nullptr;
                 GLenum e = 0; GLuint boundId = 0;
                 glOnMain([&]{
@@ -2990,6 +2995,24 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                              (unsigned)tgt, levels, (unsigned)ifmt, w, h, d,
                              boundId, (unsigned)e);
                 else if (!e) GL_MT(glGetError()); // drain stale state
+            }
+            return 0;
+        }
+        case GL64_fn_glGetMultisamplefv: {
+            // C10: WebGL2 has getMultisamplefv but Emscripten exports no C
+            // symbol — query GLctx on the GL thread (2 floats: sample offsets).
+            if (g_glContext && args.a[2]) {
+                GLenum pname=(GLenum)ai(args,0); GLuint idx=(GLuint)ai(args,1);
+                float v[2] = {0, 0};
+                float* vp = v;
+                glOnMain([&]{
+                    EM_ASM({ try {
+                        if (typeof GLctx === 'undefined') return;
+                        var r = GLctx.getMultisamplefv($0, $1);
+                        if (r && r.length >= 2) { HEAPF32[$2 >> 2] = r[0]; HEAPF32[($2 + 4) >> 2] = r[1]; }
+                    } catch (e) {} }, (int)pname, (int)idx, (int)(uintptr_t)vp);
+                });
+                cpu->memory->memcpyToGuest(args.a[2], v, sizeof(v));
             }
             return 0;
         }
