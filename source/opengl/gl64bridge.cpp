@@ -1335,18 +1335,36 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             SDL_GL_MakeCurrent(g_hiddenWindow, g_glContext);
 #endif
             // WASM: the context is re-made-current per op inside glOnMain.
+            // C8: timestamp every make-current — with destroy + swap markers
+            // this captures a full adapter-init restart (the loop's skeleton).
+            if (getenv("BW64_GLTRACE"))
+                klog_fmt("gl64 PHASE: make-current t=%.1fs drawable=%u",
+                         bridgeElapsedSec(), (unsigned)args.a[0]);
             return 1;
         }
-        case GL64_fn_glXSwapBuffers:
+        case GL64_fn_glXSwapBuffers: {
+            // C8: report whether any draw happened since the previous swap.
+            // Draws-without-swaps means the guest renders into buffers that
+            // never present (the current Baldi state); swaps-without-draws
+            // would mean empty presents.
+#ifdef __EMSCRIPTEN__
+            bool drew = g_glDrew.exchange(false);
+#else
+            bool drew = false;
+#endif
             if (g_glContext) {
                 // glFlush + readback both touch GL — run them together on the
                 // GL-owning thread so the FBO is bound and flushed in one hop.
                 glOnMain([&]{ glFlush(); readbackAndPresent(); });
             }
             if (getenv("BW64_GLTRACE"))
-                klog_fmt("gl64 PHASE: swap t=%.1fs", bridgeElapsedSec());
+                klog_fmt("gl64 PHASE: swap t=%.1fs drew=%d", bridgeElapsedSec(), drew ? 1 : 0);
             return 0;
+        }
         case GL64_fn_glXDestroyContext:
+            // C8: timestamp destroys — pass teardown is destroy + re-create.
+            if (getenv("BW64_GLTRACE"))
+                klog_fmt("gl64 PHASE: destroy-context t=%.1fs", bridgeElapsedSec());
             return 0; // keep the single context alive for first light
         case GL64_fn_glXGetCurrentContext:
             return g_glContext ? g_nextOpaqueId : 0;
