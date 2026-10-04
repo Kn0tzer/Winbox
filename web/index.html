@@ -7,6 +7,7 @@
 <section class="panel" aria-labelledby="libraryTitle"><h2 id="libraryTitle">01 / Bring an app</h2>
 <div id="drop" tabindex="0" role="button" aria-label="Choose or drop a Windows application folder"><strong>Drop a folder here</strong><span>Keep the EXE, DLLs and assets together</span></div>
 <div class="buttons"><button id="folderButton">Choose folder</button><button id="zipButton">Import ZIP / EXE</button></div>
+<h3>Built-in games</h3><p class="small">Bundled archives are fetched with range requests and imported through the same ZIP pipeline as a drop. They stay in this device's storage.</p><div id="gameCatalog" class="catalog"></div>
 <input id="folderInput" type="file" webkitdirectory multiple hidden><input id="zipInput" type="file" accept=".zip,.exe" hidden><input id="patchInput" type="file" accept=".zip" hidden><input id="restoreInput" type="file" accept=".zip" hidden>
 <label for="library">Installed folders</label><select id="library"><option value="">Select an installation</option></select>
 <label for="executable">Executable</label><select id="executable"><option value="">Import a folder first</option></select>

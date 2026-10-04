@@ -1,9 +1,29 @@
-import { cp, mkdir, copyFile, readFile } from 'node:fs/promises';
+import { cp, mkdir, copyFile, readFile, rm, symlink, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 const root = resolve(import.meta.dirname, '../..');
 const out = resolve(root, process.env.WINE_BUILD_OUT || 'dist');
 await mkdir(out, { recursive: true });
-for (const name of ['index.html', 'style.css', 'app.mjs', 'files.mjs', 'storage.mjs', 'webgpu.mjs', 'shader.mjs']) await copyFile(resolve(root, 'web', name), resolve(out, name));
+for (const name of ['index.html', 'style.css', 'app.mjs', 'files.mjs', 'games.mjs', 'storage.mjs', 'webgpu.mjs', 'shader.mjs']) await copyFile(resolve(root, 'web', name), resolve(out, name));
+// Built-in game archives are staged under /games so the launcher catalog can
+// range-fetch them. WINE_GAMES_DIR selects the source; WINE_GAMES_COPY=1 copies
+// the archives instead of linking them (link is the default: they are 100+ MB).
+const gamesOut = resolve(out, 'games');
+async function findGames() {
+  for (const dir of [process.env.WINE_GAMES_DIR, '/home/ubuntu/kn0tzer/wine/games', resolve(root, 'web/games')].filter(Boolean)) {
+    try { await stat(resolve(dir, 'baldi.zip')); return dir; } catch { /* try the next source */ }
+  }
+  return null;
+}
+const gamesSrc = await findGames();
+if (gamesSrc) {
+  await rm(gamesOut, { recursive: true, force: true });
+  if (process.env.WINE_GAMES_COPY === '1') await cp(gamesSrc, gamesOut, { recursive: true });
+  else await symlink(gamesSrc, gamesOut, 'dir');
+  console.log(`Built-in games: ${gamesOut} -> ${gamesSrc} (${process.env.WINE_GAMES_COPY === '1' ? 'copied' : 'linked'})`);
+} else {
+  console.warn('Built-in games: no archive source found; the launcher catalog will report its card as unavailable.');
+}
+
 await mkdir(resolve(out, 'vendor'), { recursive: true });
 await cp(resolve(root, 'node_modules/@zip.js/zip.js'), resolve(out, 'vendor/zip'), { recursive: true, dereference: true });
 await cp(resolve(root, 'node_modules/naga-wasm/dist'), resolve(out, 'vendor/naga'), { recursive: true });

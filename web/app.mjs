@@ -2,7 +2,8 @@ import { fromFiles, fromDrop, fromZip, makeZip, peArchitecture, safePath, checkE
 import { listPackages, getPackage, savePackage, deletePackage, overlay } from './storage.mjs';
 import { createRenderer } from './webgpu.mjs';
 import { toWGSL } from './shader.mjs';
-/** @type {(id: string) => HTMLElement & {value: string, disabled: boolean, files: FileList, add(option: HTMLOptionElement): void}} */
+import { builtinGames, fetchGameArchive, formatBytes } from './games.mjs';
+/** @type {(id: string) => HTMLElement & {value: string, disabled: boolean, files: FileList, options: HTMLOptionsCollection, add(option: HTMLOptionElement): void}} */
 const $=id=>/** @type {any} */(document.getElementById(id));
 let selected=null,iframe=null,renderer=null,busy=false;
 const report=text=>{$('status').textContent=text;};
@@ -19,12 +20,55 @@ async function select(id){
   for(const control of ['patch','export','restore','remove'])$(control).disabled=!selected;
   $('start').disabled=!selected||!$('executable').value;
 }
-async function install(files,name){
+async function install(files,name,game){
   checkEntries(files);
   if(!files.some(f=>/\.exe$/i.test(f.path)))throw new Error('No .exe was found in the folder');
   const pkg={id:crypto.randomUUID(),name:name||'Imported folder',files,created:new Date().toISOString()};
   await savePackage(pkg);await navigator.storage.persist?.();await refresh(pkg.id);
-  report(`Imported ${files.length} files. Select the executable and press Start.`);
+  if(!game)return report(`Imported ${files.length} files. Select the executable and press Start.`);
+  // Preselect the game's entry point, but keep the picker authoritative: any
+  // other .exe in the package stays selectable and overrides this choice.
+  const offered=Array.from($('executable').options,o=>o.value);
+  if(!offered.includes(game.exe))throw new Error(`${game.exe} is absent from the downloaded archive`);
+  $('executable').value=game.exe;$('start').disabled=false;
+  const args=$('arguments').value.trim();
+  if(game.args&&(!args||args==='[]'))$('arguments').value=JSON.stringify(game.args);
+  report(`Imported ${game.title}: ${files.length} files, ${game.exe} selected. Override in the picker if needed, then press Start.`);
+}
+function renderCatalog(){
+  for(const game of builtinGames){
+    const card=document.createElement('button');
+    card.type='button';card.className='gamecard';card.dataset.game=game.id;
+    const title=document.createElement('strong');title.textContent=game.title;
+    const meta=document.createElement('span');meta.className='gamemeta';meta.textContent=`${game.engine} · ${game.note}`;
+    const bar=document.createElement('span');bar.className='bar';
+    const fill=document.createElement('i');bar.append(fill);
+    const state=document.createElement('span');state.className='gamestate';state.textContent='Download and install on this device';
+    card.append(title,meta,bar,state);
+    card.onclick=()=>guard(()=>importGame(game,card));
+    $('gameCatalog').append(card);
+  }
+}
+async function importGame(game,card){
+  if(card.disabled)return;
+  card.disabled=true;card.setAttribute('aria-busy','true');
+  const state=card.querySelector('.gamestate'),fill=card.querySelector('.bar>i');
+  const idle=state.textContent;
+  const meter=(received,total)=>{
+    const pct=total?Math.min(100,Math.round(received/total*100)):0;
+    fill.style.width=pct+'%';
+    state.textContent=total?`Downloading ${formatBytes(received)} / ${formatBytes(total)} (${pct}%)`:`Downloading ${formatBytes(received)}`;
+    report(`${game.title}: downloading ${pct}%`);
+  };
+  try{
+    const blob=await fetchGameArchive(game,meter);
+    fill.style.width='100%';state.textContent=`Extracting ${formatBytes(blob.size)}…`;report(`Extracting ${game.title}…`);
+    await install(await fromZip(blob),game.title,game);
+    state.textContent='Installed';card.classList.add('done');
+  }catch(e){
+    fill.style.width='0%';state.textContent='Import failed: '+(e.message||e);
+    throw e;
+  }finally{card.disabled=false;card.removeAttribute('aria-busy');if(state.textContent==='Download and install on this device')state.textContent=idle;}
 }
 function persistenceDb(id){return 'bw64persist-wine-'+id;}
 async function storedFiles(id){
@@ -88,4 +132,6 @@ $('hlsl').onclick=()=>guard(()=>compile('hlsl',$('shaderSource').value));
 $('spirv').onchange=()=>guard(async()=>{const file=$('spirv').files[0];if(file)await compile('spirv',new Uint8Array(await file.arrayBuffer()));});
 $('capability').textContent=crossOriginIsolated&&typeof SharedArrayBuffer!=='undefined'?'WASM threads ready · '+(navigator.gpu?'WebGPU detected':'WebGL2'):'Missing cross-origin isolation';
 await refresh();
+renderCatalog();
 window.wineLibrary={getPackage,listPackages};
+window.wineGames={catalog:builtinGames,install:(id)=>guard(()=>importGame(builtinGames.find(g=>g.id===id),document.querySelector(`[data-game="${id}"]`)))};
