@@ -5,6 +5,7 @@ import { toWGSL } from './shader.mjs';
 import { builtinGames, fetchGameArchive, formatBytes } from './games.mjs';
 /** @type {(id: string) => HTMLElement & {value: string, disabled: boolean, files: FileList, options: HTMLOptionsCollection, add(option: HTMLOptionElement): void}} */
 const $=id=>/** @type {any} */(document.getElementById(id));
+const IDLE_CARD_STATE='Download and install on this device';
 let selected=null,iframe=null,renderer=null,busy=false;
 const report=text=>{$('status').textContent=text;};
 function log(text){$('log').textContent=($('log').textContent+'\n'+text).slice(-48000);}
@@ -23,13 +24,15 @@ async function select(id){
 async function install(files,name,game){
   checkEntries(files);
   if(!files.some(f=>/\.exe$/i.test(f.path)))throw new Error('No .exe was found in the folder');
+  // Validate the catalog entry point before anything is persisted: an archive
+  // that lacks it must fail cleanly, without storing a package that cannot be
+  // started (and without leaving a duplicate behind on every retry).
+  if(game&&!files.some(f=>f.path===game.exe))throw new Error(`${game.exe} is absent from the downloaded archive`);
   const pkg={id:crypto.randomUUID(),name:name||'Imported folder',files,created:new Date().toISOString()};
   await savePackage(pkg);await navigator.storage.persist?.();await refresh(pkg.id);
   if(!game)return report(`Imported ${files.length} files. Select the executable and press Start.`);
   // Preselect the game's entry point, but keep the picker authoritative: any
   // other .exe in the package stays selectable and overrides this choice.
-  const offered=Array.from($('executable').options,o=>o.value);
-  if(!offered.includes(game.exe))throw new Error(`${game.exe} is absent from the downloaded archive`);
   $('executable').value=game.exe;$('start').disabled=false;
   const args=$('arguments').value.trim();
   if(game.args&&(!args||args==='[]'))$('arguments').value=JSON.stringify(game.args);
@@ -43,32 +46,42 @@ function renderCatalog(){
     const meta=document.createElement('span');meta.className='gamemeta';meta.textContent=`${game.engine} · ${game.note}`;
     const bar=document.createElement('span');bar.className='bar';
     const fill=document.createElement('i');bar.append(fill);
-    const state=document.createElement('span');state.className='gamestate';state.textContent='Download and install on this device';
+    const state=document.createElement('span');state.className='gamestate';state.textContent=IDLE_CARD_STATE;
     card.append(title,meta,bar,state);
     card.onclick=()=>guard(()=>importGame(game,card));
     $('gameCatalog').append(card);
   }
 }
 async function importGame(game,card){
-  if(card.disabled)return;
-  card.disabled=true;card.setAttribute('aria-busy','true');
+  const IDLE=IDLE_CARD_STATE;
+  if(!card||!game||card.disabled)return;
   const state=card.querySelector('.gamestate'),fill=card.querySelector('.bar>i');
-  const idle=state.textContent;
   const meter=(received,total)=>{
     const pct=total?Math.min(100,Math.round(received/total*100)):0;
     fill.style.width=pct+'%';
     state.textContent=total?`Downloading ${formatBytes(received)} / ${formatBytes(total)} (${pct}%)`:`Downloading ${formatBytes(received)}`;
     report(`${game.title}: downloading ${pct}%`);
   };
+  // Every path below leaves through the finally, which owns the card state:
+  // aria-busy, disabled and the meter are restored here so a failed or
+  // superseded import cannot leave the card wedged mid-download.
+  card.disabled=true;card.setAttribute('aria-busy','true');
+  let installed=false,failure=null;
   try{
     const blob=await fetchGameArchive(game,meter);
     fill.style.width='100%';state.textContent=`Extracting ${formatBytes(blob.size)}…`;report(`Extracting ${game.title}…`);
     await install(await fromZip(blob),game.title,game);
-    state.textContent='Installed';card.classList.add('done');
+    installed=true;state.textContent='Installed';card.classList.add('done');
   }catch(e){
-    fill.style.width='0%';state.textContent='Import failed: '+(e.message||e);
-    throw e;
-  }finally{card.disabled=false;card.removeAttribute('aria-busy');if(state.textContent==='Download and install on this device')state.textContent=idle;}
+    failure=e;throw e;
+  }finally{
+    card.disabled=false;card.removeAttribute('aria-busy');
+    if(installed){state.textContent='Installed';card.classList.add('done');}
+    else{
+      card.classList.remove('done');fill.style.width='0%';
+      state.textContent=failure&&/cancelled by a newer request/.test(failure.message||'')?IDLE:'Import failed: '+(failure?failure.message||failure:'unknown error');
+    }
+  }
 }
 function persistenceDb(id){return 'bw64persist-wine-'+id;}
 async function storedFiles(id){
