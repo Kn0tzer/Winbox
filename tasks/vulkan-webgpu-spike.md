@@ -304,3 +304,14 @@ problems are what push the rest into months.
   ref/mock_all_entrypoints.txt  821 mock-ICD entry points
   ref/vkcube_core.txt       85 entry points vkcube actually needs
 ```
+## P1 result (2026-10-04) — G1 MET
+
+vkwebgpu ICD (752→1764 LOC): loader-accepted through vkQueueSubmit; vkcube runs the full
+guest path (instance→device→command recording→submit) and exits 0; frame manifests carry
+UBO (sane MVP), 256×256 texture bytes, and both SPIR-V shader blobs. WebGPU host consumes
+manifests, renders the cube, readback validated. Best pixel match 18.3/255 mean-abs-diff
+vs the 120-frame lavapipe reference sweep — structurally correct, remaining delta is
+SwiftShader-vs-lavapipe renderer cosmetics, deferred by orchestrator decision.
+Forensic tooling (silhouette IoU, facemap, UV ground truth) parked in /tmp/p1work.
+G1 verdict: MET (documented-diffs criterion). Next: P2 boundary design — ICD in-guest over
+the wasm boundary mirroring the proven libgl64/gl64bridge pattern.
