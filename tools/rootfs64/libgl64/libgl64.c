@@ -364,7 +364,10 @@ enum {
     GL64_fn_glMultiDrawElementsBaseVertex,
     GL64_fn_glTextureBarrier,
     GL64_fn_glReadPixels = 850,
-    GL64_fn_glGetTexImage = 851
+    GL64_fn_glGetTexImage = 851,
+    GL64_fn_glTexStorage2D = 852,
+    GL64_fn_glTexStorage3D = 853,
+    GL64_fn_glTexStorage1D = 854
 };
 
 // ---- the trap ---------------------------------------------------------------
@@ -1080,6 +1083,15 @@ API void glTexImage2DMultisample(GLenum t, GLsizei s, GLenum i, GLsizei w, GLsiz
     GL64Args a={{0}}; a.a[0]=t; a.a[1]=(uint64_t)(uint32_t)s; a.a[2]=i; a.a[3]=(uint64_t)(uint32_t)w; a.a[4]=(uint64_t)(uint32_t)h; a.a[5]=fixed; (void)gl64_trap(GL64_fn_glTexImage2DMultisample,&a); }
 API void glTexImage3DMultisample(GLenum t, GLsizei s, GLenum i, GLsizei w, GLsizei h, GLsizei d, GLboolean fixed){
     GL64Args a={{0}}; a.a[0]=t; a.a[1]=(uint64_t)(uint32_t)s; a.a[2]=i; a.a[3]=(uint64_t)(uint32_t)w; a.a[4]=(uint64_t)(uint32_t)h; a.a[5]=(uint64_t)(uint32_t)d; a.a[6]=fixed; (void)gl64_trap(GL64_fn_glTexImage3DMultisample,&a); }
+// C7: immutable storage. Wine allocates depth/stencil probe textures via
+// glTexStorage*; previously PROC MISS -> gl64_noop, so attachments referenced
+// storage that never existed (and the calls were invisible in the trace).
+API void glTexStorage2D(GLenum t, GLsizei levels, GLenum ifmt, GLsizei w, GLsizei h){
+    GL64Args a={{0}}; a.a[0]=t; a.a[1]=(uint64_t)(uint32_t)levels; a.a[2]=ifmt; a.a[3]=(uint64_t)(uint32_t)w; a.a[4]=(uint64_t)(uint32_t)h; (void)gl64_trap(GL64_fn_glTexStorage2D,&a); }
+API void glTexStorage3D(GLenum t, GLsizei levels, GLenum ifmt, GLsizei w, GLsizei h, GLsizei d){
+    GL64Args a={{0}}; a.a[0]=t; a.a[1]=(uint64_t)(uint32_t)levels; a.a[2]=ifmt; a.a[3]=(uint64_t)(uint32_t)w; a.a[4]=(uint64_t)(uint32_t)h; a.a[5]=(uint64_t)(uint32_t)d; (void)gl64_trap(GL64_fn_glTexStorage3D,&a); }
+API void glTexStorage1D(GLenum t, GLsizei levels, GLenum ifmt, GLsizei w){
+    GL64Args a={{0}}; a.a[0]=t; a.a[1]=(uint64_t)(uint32_t)levels; a.a[2]=ifmt; a.a[3]=(uint64_t)(uint32_t)w; (void)gl64_trap(GL64_fn_glTexStorage1D,&a); }
 
 // --- MRT / frag-data / uniform blocks / buffer objects ---
 API void glBindFragDataLocation(GLuint p, GLuint color, const GLchar* name){ GL64Args a={{0}}; a.a[0]=p; a.a[1]=color; a.a[2]=(uint64_t)(uintptr_t)name; (void)gl64_trap(GL64_fn_glBindFragDataLocation,&a); }
@@ -1298,6 +1310,7 @@ static const struct procEntry g_procs[] = {
     E(glTexImage3D), E(glTexSubImage3D), E(glCompressedTexImage3D),
     E(glCompressedTexSubImage3D), E(glTexImage3DEXT), E(glCompressedTexImage3DARB),
     E(glTexImage2DMultisample), E(glTexImage3DMultisample),
+    E(glTexStorage2D), E(glTexStorage3D), E(glTexStorage1D),
     E(glBindFragDataLocation), E(glGetFragDataIndex), E(glBindBufferRange),
     E(glBindBufferBase), E(glGetUniformBlockIndex), E(glUniformBlockBinding),
     E(glGetActiveUniformBlockiv), E(glGetActiveUniformBlockName), E(glBufferStorage),

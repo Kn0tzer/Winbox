@@ -74,6 +74,7 @@
 #include <string>
 #include <mutex>
 #include <cmath>
+#include <chrono>
 
 #ifdef __EMSCRIPTEN__
 // Emscripten's -sLEGACY_GL_EMULATION supplies most fixed-function entry points,
@@ -649,6 +650,18 @@ void readFloats(CPU64* cpu, U64 guestAddr, float* out, int count) {
 U64 g_lastFnIds[8] = {0};
 int g_lastFnIdx = 0;
 
+// C7: adapter-init phase clock + proc-burst tracker. steady_clock seconds
+// since the first bridge call; trace-gated PHASE markers discriminate a
+// RESTARTING sweep (identical sequences repeating at fresh timestamps = loop,
+// e.g. Unity retrying D3D11CreateDevice) from a STALLED one (one sequence
+// with growing gaps = hang, e.g. waiting on a fence/swap that never signals).
+double bridgeElapsedSec() {
+    static std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+}
+bool g_procBurstOpen = false;
+U64 g_procBurstCount = 0;
+
 #ifdef __EMSCRIPTEN__
 // True once any draw has hit our offscreen FBO this frame — lets the swap path
 // know a programmable-pipeline frame was produced (vs. the immediate-mode path).
@@ -810,6 +823,8 @@ GLuint boundTexture(GLenum target) {
     if (target >= 0x8515 && target <= 0x851A) binding = GL_TEXTURE_BINDING_CUBE_MAP;
     else if (target == 0x806F /*GL_TEXTURE_3D*/) binding = GL_TEXTURE_BINDING_3D;
     else if (target == 0x8C1A /*GL_TEXTURE_2D_ARRAY*/) binding = 0x8C1D /*GL_TEXTURE_BINDING_2D_ARRAY*/;
+    else if (target == 0x9100 /*GL_TEXTURE_2D_MULTISAMPLE*/) binding = 0x9104 /*GL_TEXTURE_BINDING_2D_MULTISAMPLE*/;
+    else if (target == 0x9102 /*GL_TEXTURE_2D_MULTISAMPLE_ARRAY*/) binding = 0x9106 /*GL_TEXTURE_BINDING_2D_MULTISAMPLE_ARRAY*/;
     glGetIntegerv(binding, &id);
     return (GLuint)id;
 }
@@ -1189,6 +1204,20 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     if (const char* gt = getenv("BW64_GLTRACE")) {
         if (gt[0] == '2')
             klog_fmt("gl64: call fnId=%llu", (unsigned long long)fnId);
+        // C7: proc-resolution bursts mark wined3d adapter (re-)init: every
+        // init re-resolves ~500 GL names through glXGetProcAddressARB. A burst
+        // START after a long gap = a fresh adapter init (loop iteration).
+        if (fnId == GL64_fn_traceProc) {
+            if (!g_procBurstOpen) {
+                g_procBurstOpen = true; g_procBurstCount = 0;
+                klog_fmt("gl64 PHASE: proc-burst start t=%.1fs", bridgeElapsedSec());
+            }
+            g_procBurstCount++;
+        } else if (g_procBurstOpen) {
+            g_procBurstOpen = false;
+            klog_fmt("gl64 PHASE: proc-burst end t=%.1fs n=%llu",
+                     bridgeElapsedSec(), (unsigned long long)g_procBurstCount);
+        }
     }
     GL64Args args = {};
     if (argsAddr) {
@@ -1281,6 +1310,8 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glXCreateContext:
         case GL64_fn_glXCreateContextAttribsARB:
             ensureContext();
+            if (getenv("BW64_GLTRACE"))
+                klog_fmt("gl64 PHASE: create-context t=%.1fs", bridgeElapsedSec());
             return ++g_nextOpaqueId; // opaque GLXContext
         case GL64_fn_glXMakeCurrent:
         case GL64_fn_glXMakeContextCurrent: {
@@ -1312,6 +1343,8 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 // GL-owning thread so the FBO is bound and flushed in one hop.
                 glOnMain([&]{ glFlush(); readbackAndPresent(); });
             }
+            if (getenv("BW64_GLTRACE"))
+                klog_fmt("gl64 PHASE: swap t=%.1fs", bridgeElapsedSec());
             return 0;
         case GL64_fn_glXDestroyContext:
             return 0; // keep the single context alive for first light
@@ -2236,9 +2269,9 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 if (trace) {
                     GLenum e = allocationError;
                     if (e != GL_NO_ERROR || lvl == 0)
-                        klog_fmt("gl64 TEX2D: target=0x%x lvl=%d ifmt=0x%x %dx%d bd=%d fmt=0x%x type=0x%x bytes=%zu err=0x%x",
+                        klog_fmt("gl64 TEX2D: target=0x%x lvl=%d ifmt=0x%x %dx%d bd=%d fmt=0x%x type=0x%x bytes=%zu err=0x%x tex=%u",
                                  (unsigned)tgt, lvl, (unsigned)ifmt, w, h, bd, (unsigned)fmt,
-                                 (unsigned)type, bytes, (unsigned)e);
+                                 (unsigned)type, bytes, (unsigned)e, boundId);
                     GL_MT(glGetError());
                     (void)err0;
                 }
@@ -2557,8 +2590,8 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                     }
                 });
                 if (st != GL_FRAMEBUFFER_COMPLETE && getenv("BW64_GLTRACE"))
-                    klog_fmt("gl64 FBO: check status target=0x%x -> 0x%x (bound=%u)",
-                             (unsigned)target, (unsigned)st, (unsigned)g_guestFbo);
+                    klog_fmt("gl64 FBO: check status target=0x%x -> 0x%x (bound=%u t=%.1fs)",
+                             (unsigned)target, (unsigned)st, (unsigned)g_guestFbo, bridgeElapsedSec());
             }
             return (U64)st;
         }
@@ -2614,12 +2647,29 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 else if (!rbErr) GL_MT(glGetError()); // drain stale state
             }
             return 0;
-        case GL64_fn_glRenderbufferStorageMultisample:
-            if (g_glContext)
-                GL_MT(glRenderbufferStorageMultisample((GLenum)ai(args,0), (GLsizei)ai(args,1),
-                                                       (GLenum)ai(args,2), (GLsizei)ai(args,3),
-                                                       (GLsizei)ai(args,4)));
+        case GL64_fn_glRenderbufferStorageMultisample: {
+            // C7: record the format like the single-sample path so multisample
+            // depth/stencil attachments resolve in FBO diagnostics.
+            if (g_glContext) {
+                GLenum tgt=(GLenum)ai(args,0); GLsizei smp=(GLsizei)ai(args,1);
+                GLenum ifmt=(GLenum)ai(args,2);
+                GLsizei w=(GLsizei)ai(args,3), h=(GLsizei)ai(args,4);
+                bool trace = getenv("BW64_GLTRACE") != nullptr;
+                GLenum e = 0;
+                glOnMain([&]{
+                    GLint boundRb = 0;
+                    glGetIntegerv(GL_RENDERBUFFER_BINDING, &boundRb);
+                    glRenderbufferStorageMultisample(tgt, smp, ifmt, w, h);
+                    e = glGetError();
+                    if (!e && boundRb) g_renderbufferInfo[(GLuint)boundRb] = ifmt;
+                    if (e && !trace && !g_allocationError) g_allocationError = e;
+                });
+                if (trace)
+                    klog_fmt("gl64 RBSTOR-MS: target=0x%x samples=%d ifmt=0x%x %dx%d err=0x%x",
+                             (unsigned)tgt, smp, (unsigned)ifmt, w, h, (unsigned)e);
+            }
             return 0;
+        }
         case GL64_fn_glIsRenderbuffer: {
             GLboolean r = GL_FALSE;
             GLuint rb = (GLuint)ai(args,0);
@@ -2791,8 +2841,8 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                         if (lvl == 0) g_textureInfo[boundId] = tl;
                     }
                     if (getenv("BW64_GLTRACE"))
-                        klog_fmt("gl64 TEX3D: target=0x%x lvl=%d ifmt=0x%x %dx%dx%d fmt=0x%x type=0x%x err=0x%x",
-                                 (unsigned)tgt, lvl, (unsigned)ifmt, w, h, d, (unsigned)fmt, (unsigned)type, (unsigned)e);
+                        klog_fmt("gl64 TEX3D: target=0x%x lvl=%d ifmt=0x%x %dx%dx%d fmt=0x%x type=0x%x err=0x%x tex=%u",
+                                 (unsigned)tgt, lvl, (unsigned)ifmt, w, h, d, (unsigned)fmt, (unsigned)type, (unsigned)e, boundId);
                 });
             }
             return 0;
@@ -2854,17 +2904,77 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 int tgt=(int)ai(args,0), smp=(int)ai(args,1), ifmt=(int)ai(args,2);
                 int w=(int)ai(args,3), h=(int)ai(args,4);
                 int d = (fnId == GL64_fn_glTexImage3DMultisample) ? (int)ai(args,5) : 0;
-                GL_MT({
+                bool is3D = (fnId == GL64_fn_glTexImage3DMultisample);
+                bool trace = getenv("BW64_GLTRACE") != nullptr;
+                GLenum e = 0; GLuint boundId = 0;
+                glOnMain([&]{
+                    boundId = boundTexture((GLenum)tgt);
                     EM_ASM({ try {
                         if (typeof GLctx === 'undefined') return;
                         if ($0) GLctx.texImage3DMultisample($1, $2, $3, $4, $5, $6, false);
                         else      GLctx.texImage2DMultisample($1, $2, $3, $4, $5, false);
-                        while (GLctx.getError && GLctx.getError() !== 0) {}
                     } catch (e) {} },
-                    (int)(fnId == GL64_fn_glTexImage3DMultisample), tgt, smp, ifmt, w, h, d);
+                    (int)is3D, tgt, smp, ifmt, w, h, d);
+                    e = glGetError();
+                    if (e && !trace && !g_allocationError) g_allocationError = e;
+                    if (!e) {
+                        TextureLevel tl{(GLint)w, (GLint)h, (GLint)(is3D ? d : 1), (GLint)ifmt};
+                        g_textureLevels[{boundId, (GLenum)tgt, 0}] = tl;
+                        g_textureInfo[boundId] = tl;
+                    }
                 });
+                if (trace)
+                    klog_fmt("gl64 TEXMS: %s target=0x%x samples=%d ifmt=0x%x %dx%dx%d tex=%u err=0x%x",
+                             is3D ? "3D" : "2D", tgt, smp, ifmt, w, h, d, boundId, (unsigned)e);
             }
             return 0;
+
+        // C7: immutable storage. Wine allocates depth/stencil probe textures
+        // via glTexStorage*; previously these were PROC MISS no-ops, so FBO
+        // attachments referenced storage that never existed (and the calls
+        // were invisible in the trace). Real calls + metadata on success;
+        // driver rejections (unsized/stencil/compressed-ifmt) fail honestly.
+        // Runs inside glOnMain on the context-owning thread, so Emscripten's
+        // async variants execute inline and the captured error is the call's.
+        case GL64_fn_glTexStorage2D:
+        case GL64_fn_glTexStorage3D:
+        case GL64_fn_glTexStorage1D: {
+            if (g_glContext) {
+                bool is3D = (fnId == GL64_fn_glTexStorage3D);
+                bool is1D = (fnId == GL64_fn_glTexStorage1D);
+                GLenum tgt=(GLenum)ai(args,0); GLsizei levels=(GLsizei)ai(args,1);
+                GLint ifmt=(GLint)ai(args,2);
+                GLsizei w=(GLsizei)ai(args,3);
+                GLsizei h=is1D ? 1 : (GLsizei)ai(args,4);
+                GLsizei d=is3D ? (GLsizei)ai(args,5) : 1;
+                if (levels < 1) levels = 1; if (levels > 16) levels = 16;
+                bool trace = getenv("BW64_GLTRACE") != nullptr;
+                GLenum e = 0; GLuint boundId = 0;
+                glOnMain([&]{
+                    boundId = boundTexture(tgt);
+                    if (is3D) glTexStorage3D(tgt, levels, ifmt, w, h, d);
+                    else glTexStorage2D(hostTextureTarget(tgt), levels, ifmt, w, h);
+                    e = glGetError();
+                    if (e && !trace && !g_allocationError) g_allocationError = e;
+                    if (!e) {
+                        for (GLint l = 0; l < levels; l++) {
+                            int ww = w >> l, hh = h >> l, dd = d >> l;
+                            if (ww < 1) ww = 1; if (hh < 1) hh = 1; if (dd < 1) dd = 1;
+                            TextureLevel tl{ww, hh, dd, ifmt};
+                            g_textureLevels[{boundId, tgt, l}] = tl;
+                            if (l == 0) g_textureInfo[boundId] = tl;
+                        }
+                    }
+                });
+                if (trace)
+                    klog_fmt("gl64 TEXSTOR: %s target=0x%x levels=%d ifmt=0x%x %dx%dx%d tex=%u err=0x%x",
+                             is3D ? "3D" : (is1D ? "1D" : "2D"),
+                             (unsigned)tgt, levels, (unsigned)ifmt, w, h, d,
+                             boundId, (unsigned)e);
+                else if (!e) GL_MT(glGetError()); // drain stale state
+            }
+            return 0;
+        }
 
         // --- MRT / frag data ----------------------------------------------
         // WebGL2/GLES3 has no glBindFragDataLocation (Emscripten does not export

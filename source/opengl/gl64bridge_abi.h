@@ -440,6 +440,14 @@ enum {
     GL64_fn_glReadPixels = 850,        // (x,y,w,h,format,type,pixels*)
     GL64_fn_glGetTexImage = 851,       // (target,level,format,type,pixels*)
 
+    // C7: immutable storage (append-only). Wine allocates depth/stencil probe
+    // textures via glTexStorage*; unimplemented they were silent no-ops, so
+    // attachments referenced storage that never existed (and the calls were
+    // invisible in the trace).
+    GL64_fn_glTexStorage2D = 852,      // (target,levels,ifmt,w,h)
+    GL64_fn_glTexStorage3D = 853,      // (target,levels,ifmt,w,h,d)
+    GL64_fn_glTexStorage1D = 854,      // (target,levels,ifmt,w) -> w x 1 2D
+
     GL64_fn__MAX
 };
 
