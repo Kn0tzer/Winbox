@@ -1282,7 +1282,7 @@ static U64 sys_pwrite64(CPU64* cpu, U64 fd, U64 buf, U64 count, U64 offset) {
 // guest memory. Field offsets match the canonical glibc/kernel layout for
 // __NR_fstat / __NR_newfstatat result buffers on x86-64.
 static void writeStatBuf64(KMemory64* mem, U64 addr, U64 size, U32 mode,
-                            U64 ino, U32 uid, U32 gid, U64 mtime) {
+                            U64 ino, U32 uid, U32 gid, U64 mtime, U64 rdev) {
     U8 buf[144];
     std::memset(buf, 0, sizeof(buf));
     auto put64 = [&](U32 off, U64 v) { std::memcpy(buf + off, &v, 8); };
@@ -1294,7 +1294,12 @@ static void writeStatBuf64(KMemory64* mem, U64 addr, U64 size, U32 mode,
     put32(28, uid);           // st_uid
     put32(32, gid);           // st_gid
     put32(36, 0);             // __pad0
-    put64(40, 0);             // st_rdev
+    put64(40, rdev);          // st_rdev — REAL device id. Wine's ntdll debug init
+                              // (dlls/ntdll/unix/debug.c init_options) disables ALL
+                              // debug output when fstat(2) is a char device whose
+                              // st_rdev equals /dev/null's — with the old hardcoded 0
+                              // that guard tripped for /dev/tty0 and WINEDEBUG was
+                              // silently ignored in every guest process (O2).
     put64(48, size);          // st_size
     put64(56, 4096);          // st_blksize
     put64(64, (size + 511) / 512); // st_blocks (512-byte units)
@@ -1330,7 +1335,7 @@ static U64 sys_stat_path64(CPU64* cpu, U64 pathAddr, U64 statbuf, bool followSym
     U32 mode  = node->getMode();
     U64 ino   = node->id;
     U64 mtime = node->lastModified() / 1000; // ms → seconds
-    writeStatBuf64(cpu->memory, statbuf, size, mode, ino, 1000, 1000, mtime);
+    writeStatBuf64(cpu->memory, statbuf, size, mode, ino, 1000, 1000, mtime, node->rdev);
     return 0;
 }
 
@@ -1388,7 +1393,12 @@ static U64 sys_fstat64(CPU64* cpu, U64 fd, U64 statbuf) {
         // assume seekable.
         mode = 0020666;
     }
-    writeStatBuf64(cpu->memory, statbuf, size, mode, ino, 1000, 1000, mtime);
+    // Real st_rdev for device nodes (tty0 etc.); 0 for regular files/pipes —
+    // identical to the old behavior except for char/block devices. Without the
+    // node's rdev, wine's debug init mistakes tty fds for /dev/null and drops
+    // every WINEDEBUG channel (see writeStatBuf64's st_rdev note).
+    U64 rdev = (kfile && kfile->openFile && kfile->openFile->node) ? kfile->openFile->node->rdev : 0;
+    writeStatBuf64(cpu->memory, statbuf, size, mode, ino, 1000, 1000, mtime, rdev);
     return 0;
 }
 

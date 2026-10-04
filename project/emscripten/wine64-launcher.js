@@ -188,10 +188,12 @@
             e.push("MONO_LOG_LEVEL=debug", "MONO_LOG_MASK=" + (param("monomask") || "asm"));
         }
         return e;
-        // NOTE: WINEDEBUG added here does NOT reach in-session app spawns — those
-        // use the CAPTURED BOOT env (g_sessionCtx.env in wine64session.cpp), not
-        // this JS env. To trace a spawned app, WINEDEBUG must be set at BOOT time
-        // (the ?session=0 reload path / the boot env), not on prefixEnv().
+        // O2 env plumbing: this env is passed BOTH at boot (-env argv -> the
+        // boot process, whose env StartUpArgs::apply() captures into
+        // g_sessionCtx.env in wine64session.cpp) AND per in-session spawn
+        // (bw64_spawn's envJoined). The C bridge (mergeSpawnEnv, wine64session.cpp)
+        // merges the spawn env OVER the captured boot env, so WINEDEBUG set here
+        // reaches spawned guest processes even though they inherit the boot env.
     }
 
     // argv for running a Windows/guest program under wine64: [wine64, tok, ...].
@@ -856,6 +858,10 @@
                 // (?glversion=3.2 opts D3D11 experiments into 3.2 core strings;
                 // default 2.1 keeps the proven D3D9 path untouched).
                 if (param("glversion")) ENV["BW64_GLVERSION"] = param("glversion");
+                // BW64_ENVDUMP (?envedump=1, O2 diagnosis): syscall64.cpp dumps the
+                // FULL envp of every guest execve — proves whether WINEDEBUG etc.
+                // survive the boot -env argv -> execve chain.
+                if (param("envedump") === "1") ENV["BW64_ENVDUMP"] = "1";
                 // Hold main() until the rootfs is in the VFS.
                 liveModule["addRunDependency"]("loadWine64Fs");
                 loadFilesystem(els);

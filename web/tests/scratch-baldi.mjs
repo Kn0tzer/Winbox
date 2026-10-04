@@ -23,10 +23,16 @@ page.on('console', m => {
   if (/CPU64: exit_group syscall, status=[1-9]/.test(text) && text.includes('apps\\' + (process.env.GAME_EXE || 'BALDI.exe'))) guestFailure ||= text;
 });
 const bootTimeout = Number(process.env.GAME_BOOT_TIMEOUT || 300000);
-await page.addInitScript(({ debug, sample, eager, monoMask, bindnow, glversion, gltrace }) => {
+await page.addInitScript(({ debug, winedbgChannels, envedump, sample, eager, monoMask, bindnow, glversion, gltrace }) => {
   if (!location.pathname.endsWith('/runtime/index.html')) return;
   const url = new URL(location.href);
-  if (debug) url.searchParams.set('winedbg', debug);
+  // WINEDBG_CHANNELS (O2 lane) takes precedence over WINEDEBUG: both map to the
+  // launcher's ?winedbg param, which prefixEnv() turns into WINEDEBUG for the
+  // boot env AND the per-spawn env (bw64_spawn -> mergeSpawnEnv in
+  // wine64session.cpp merges it over the boot-captured g_sessionCtx.env).
+  const winedbg = winedbgChannels || debug;
+  if (winedbg) url.searchParams.set('winedbg', winedbg);
+  if (envedump) url.searchParams.set('envedump', '1');
   if (sample) url.searchParams.set('ripsample', '1');
   if (eager) url.searchParams.set('lazy', '0');
   url.searchParams.set('wildjump', '1');
@@ -39,7 +45,7 @@ await page.addInitScript(({ debug, sample, eager, monoMask, bindnow, glversion, 
   if (gltrace) url.searchParams.set('gltrace', gltrace);
   if (monoMask) url.searchParams.set('monomask', monoMask);
   history.replaceState(null, '', url);
-}, { debug: process.env.WINEDEBUG, sample: process.env.RIP_SAMPLE === '1', eager: process.env.EAGER_ROOTFS === '1', monoMask: process.env.MONO_LOG_MASK, bindnow: process.env.BIND_NOW === '1', glversion: process.env.GL_VERSION || '', gltrace: process.env.GL_TRACE || '' });
+}, { debug: process.env.WINEDEBUG, winedbgChannels: process.env.WINEDBG_CHANNELS || '', envedump: process.env.ENVDUMP === '1', sample: process.env.RIP_SAMPLE === '1', eager: process.env.EAGER_ROOTFS === '1', monoMask: process.env.MONO_LOG_MASK, bindnow: process.env.BIND_NOW === '1', glversion: process.env.GL_VERSION || '', gltrace: process.env.GL_TRACE || '' });
 async function waitForGuest(predicate, description) {
   const deadline = Date.now() + bootTimeout;
   while (Date.now() < deadline) {
