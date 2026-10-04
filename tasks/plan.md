@@ -95,3 +95,25 @@ Do not rebase onto 32-bit upstreams: this repo's goal is 64-bit guests
   byte-count thresholds (a finished cryptprobe result is 62 bytes);
   scratch-baldi screenshots immediately after map + rolling console capture
   + SOAK_SECS + always dump player.log.
+
+## Phase: Modern-game completion (2026-10-04, orchestration)
+
+Fleet: Kilo/Space Bunny (primary), Experiential/glm-5.3-flash-abliterated + tokenharbor
+deepseek/qwen (fallbacks). TokenBom and Kilo hy3/nex shelved (probe failures). Single C++
+writer lane (A) and single web-UI writer lane (B); orchestrator owns commits, deploys,
+and tasks/plan.md.
+
+- A1 (diagnose, no code): gltrace=2 Baldi run; identify the exact wined3d requirement that
+  fails D3D11CreateDevice; rank root-cause hypotheses; list minimal GL procs/behaviors to
+  implement. Output: test-results/baldi-d3d11-diagnosis.md.
+- A2 (fix, C++ lane): implement A1's minimal list in gl64bridge.cpp (+cpu64 if needed);
+  rebuild wasm64-mt; re-run Baldi probe. Pass = GfxDevice init succeeds and rendered
+  gameplay verified (screenshot + input), not a mapped window.
+- B1 (web UI lane): built-in games catalog (games/baldi.zip) in app.mjs/index.html, Baldi
+  probe buttons, games-catalog e2e probe reaching MAPPED. No C++ edits.
+- B2 (reliability): fix 4+ consecutive boot hang (worker teardown).
+- C1 (after A2): wire wined3d guest GLSL through Naga->WGSL in the runtime path (D3D9
+  triangle as first consumer), fallback to ANGLE GLSL1 on Naga rejection.
+- D1 (after C1): grow WebGPU bridge coverage from PROC MISS/trace data.
+- Orchestrator: commit per lane on review, deploy to /home/ubuntu/kn0tzer/wine + Caddy only
+  after passing evidence, verify live at kn0tzer.work.gd/wine. Never push.
