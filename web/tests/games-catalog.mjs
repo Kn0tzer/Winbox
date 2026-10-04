@@ -12,8 +12,9 @@ const url = process.env.WINE_URL || `http://127.0.0.1:${server.address().port}/`
 const PROFILE = process.env.WINE_PROFILE || '/tmp/wineprof-games';
 const BROWSER_ARGS = ['--no-sandbox', '--enable-unsafe-webgpu', '--enable-unsafe-swiftshader', '--use-angle=vulkan', '--use-vulkan=swiftshader', '--enable-features=Vulkan', '--disable-dev-shm-usage'];
 const IMPORT_TIMEOUT = Number(process.env.IMPORT_TIMEOUT || 1500000);
+const IDLE_CARD_TEXT = 'Download and install on this device';
 const BOOT_TIMEOUT = Number(process.env.BOOT_TIMEOUT || 900000);
-const errors = [], consoleErrors = [], logs = [];
+const errors = [], consoleErrors = [], logs = [], gameRequests = [];
 let context, page, crashed;
 await mkdir('test-results', { recursive: true });
 await rm(PROFILE, { recursive: true, force: true }); // fresh IndexedDB
@@ -22,6 +23,10 @@ page = context.pages()[0] || await context.newPage();
 page.on('pageerror', e => errors.push(e.message));
 page.on('crash', () => { crashed = 'page crashed'; });
 page.on('console', m => { logs.push(m.type() + ': ' + m.text()); if (m.type() === 'error') consoleErrors.push(m.text()); });
+// Every byte of the archive arrives through /games; counting those requests is
+// how the reload leg proves the package came back from IndexedDB instead of a
+// second download.
+page.on('request', r => { if (r.url().includes('/games/')) gameRequests.push(r.url()); });
 // Mirror the Baldi probe's guest environment: the GL shim profile and the
 // jump/filemap workarounds the Unity boot path is known to reach MAPPED with.
 await page.addInitScript(({ glversion, wildjump, filemap, monodebug, diag }) => {
@@ -80,12 +85,43 @@ try {
   assert.ok(imported.files > 100 && imported.bytes > 400e6, 'package persisted: ' + JSON.stringify(imported));
   assert.match(await card.textContent(), /Installed/);
   console.log('package:', JSON.stringify(imported));
+  const downloadsDuringImport = gameRequests.length;
+  assert.ok(downloadsDuringImport > 1, 'range-fetched archive, not one GET: ' + downloadsDuringImport + ' requests');
   // The picker stays authoritative: another EXE can be chosen instead.
   await page.selectOption('#executable', 'UnityCrashHandler64.exe');
   assert.equal(await page.locator('#executable').inputValue(), 'UnityCrashHandler64.exe');
   await page.selectOption('#executable', 'BALDI.exe');
   assert.equal(await page.locator('#executable').inputValue(), 'BALDI.exe');
   await page.screenshot({ path: 'test-results/games-catalog-imported.png', fullPage: true });
+  // Reload persistence, mirroring web/tests/upload.mjs:50-63. The package must
+  // be listed and playable straight out of IndexedDB - no second 131 MB fetch.
+  await page.reload();
+  await page.waitForFunction(() => window.wineLibrary && window.wineGames, {}, { timeout: 60000 });
+  const persisted = await page.evaluate(async () => {
+    const all = await window.wineLibrary.listPackages();
+    const p = all[0];
+    return { count: all.length, id: p.id, files: p.files.length, bytes: p.files.reduce((n, f) => n + f.size, 0), exes: p.files.filter(f => /\.exe$/i.test(f.path)).map(f => f.path) };
+  });
+  assert.equal(persisted.count, 1, 'the imported package survived the reload');
+  assert.equal(persisted.files, imported.files);
+  assert.equal(persisted.bytes, imported.bytes, 'persisted package is byte-identical');
+  assert.ok(persisted.exes.includes('BALDI.exe'), 'BALDI.exe stored in the persisted package');
+  assert.equal(gameRequests.length, downloadsDuringImport, 'reload must not refetch the archive');
+  assert.equal(await page.locator('#library').inputValue(), '', 'nothing preselected before a pick');
+  await page.selectOption('#library', persisted.id);
+  await page.waitForFunction(() => !document.getElementById('start').disabled, {}, { timeout: 180000 });
+  const offered = await page.evaluate(() => Array.from(document.getElementById('executable').options, o => o.value));
+  assert.ok(offered.includes('BALDI.exe'), 'BALDI.exe offered after reload: ' + offered.length + ' EXEs');
+  assert.ok(offered.includes('UnityCrashHandler64.exe'), 'other archive EXEs offered after reload');
+  // A reloaded package has no remembered entry point, so the picker (not the
+  // catalog) decides what runs - pick BALDI.exe the way a returning user would.
+  await page.selectOption('#executable', 'BALDI.exe');
+  assert.equal(await page.locator('#executable').inputValue(), 'BALDI.exe');
+  assert.ok((await card.textContent()).includes(IDLE_CARD_TEXT), 'card returns to its idle state after reload');
+  await page.screenshot({ path: 'test-results/games-catalog-reloaded.png', fullPage: true });
+  console.log('reload persistence OK: IndexedDB package listed, no refetch');
+  // Launch arguments are per-session, not persisted with the package.
+  await page.locator('#arguments').fill(JSON.stringify(await page.evaluate(() => window.wineGames.catalog[0].args)));
   await page.click('#start');
   const frameElement = page.locator('iframe');
   await frameElement.waitFor({ timeout: 60000 });

@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 const root = resolve(import.meta.dirname, '../..');
 const out = resolve(root, process.env.WINE_BUILD_OUT || 'dist');
 await mkdir(out, { recursive: true });
-for (const name of ['index.html', 'style.css', 'app.mjs', 'files.mjs', 'games.mjs', 'storage.mjs', 'webgpu.mjs', 'shader.mjs']) await copyFile(resolve(root, 'web', name), resolve(out, name));
+for (const name of ['index.html', 'style.css', 'app.mjs', 'files.mjs', 'games.mjs', 'storage.mjs', 'webgpu.mjs', 'shader.mjs', 'naga-rt.mjs']) await copyFile(resolve(root, 'web', name), resolve(out, name));
 // Built-in game archives are staged under /games so the launcher catalog can
 // range-fetch them. WINE_GAMES_DIR selects the source; WINE_GAMES_COPY=1 copies
 // the archives instead of linking them (link is the default: they are 100+ MB).
@@ -15,8 +15,11 @@ async function findGames() {
   return null;
 }
 const gamesSrc = await findGames();
+// Always drop the previous staging first, including the no-source branch: a
+// stale dist/games left behind by an earlier build would still serve an old
+// (or truncated) archive while this build reports the catalog as unavailable.
+await rm(gamesOut, { recursive: true, force: true });
 if (gamesSrc) {
-  await rm(gamesOut, { recursive: true, force: true });
   if (process.env.WINE_GAMES_COPY === '1') await cp(gamesSrc, gamesOut, { recursive: true });
   else await symlink(gamesSrc, gamesOut, 'dir');
   console.log(`Built-in games: ${gamesOut} -> ${gamesSrc} (${process.env.WINE_GAMES_COPY === '1' ? 'copied' : 'linked'})`);

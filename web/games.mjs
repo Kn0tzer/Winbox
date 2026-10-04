@@ -28,6 +28,14 @@ function contentLength(res) {
   const n = Number(res.headers.get('Content-Length'));
   return Number.isSafeInteger(n) && n > 0 ? n : 0;
 }
+// One download per archive at a time. A second request for the same game
+// aborts the in-flight one, so a double click cannot leave two range loops
+// racing for the same 100+ MB stream (or the first one reporting stale
+// progress over the newer card).
+const inFlight = new Map();
+function superseded(title) {
+  return new Error(`${title}: download cancelled by a newer request`);
+}
 /**
  * Downloads a built-in archive, preferring byte ranges and falling back to one
  * streaming GET. onProgress(receivedBytes, totalBytes) drives the card meter.
@@ -36,8 +44,24 @@ function contentLength(res) {
  * @param {(received: number, total: number) => void} [onProgress]
  */
 export async function fetchGameArchive(game, onProgress = () => {}) {
+  const key = game.archive || String(game.id || game.title);
+  const previous = inFlight.get(key);
+  if (previous) previous.abort();
+  const controller = new AbortController();
+  inFlight.set(key, controller);
+  const { signal } = controller;
+  try {
+    return await stream(game, onProgress, signal);
+  } catch (e) {
+    if (signal.aborted) throw superseded(game.title);
+    throw e;
+  } finally {
+    if (inFlight.get(key) === controller) inFlight.delete(key);
+  }
+}
+async function stream(game, onProgress, signal) {
   const url = new URL(game.archive, location.href).href;
-  const probe = await fetch(url, { method: 'HEAD' });
+  const probe = await fetch(url, { method: 'HEAD', signal });
   if (!probe.ok) throw new Error(`${game.title}: archive unavailable (HTTP ${probe.status})`);
   const total = contentLength(probe) || game.size || 0;
   const parts = [];
@@ -45,7 +69,7 @@ export async function fetchGameArchive(game, onProgress = () => {}) {
   if (probe.headers.get('Accept-Ranges') === 'bytes' && total) {
     for (let start = 0; start < total; start += CHUNK) {
       const end = Math.min(start + CHUNK, total) - 1;
-      const res = await fetch(url, { headers: { Range: `bytes=${start}-${end}` } });
+      const res = await fetch(url, { headers: { Range: `bytes=${start}-${end}` }, signal });
       if (res.status !== 206) throw new Error('Archive host ignored the range request');
       const buffer = await res.arrayBuffer();
       if (buffer.byteLength !== end - start + 1) throw new Error('Short range response');
@@ -54,7 +78,7 @@ export async function fetchGameArchive(game, onProgress = () => {}) {
       onProgress(received, total);
     }
   } else {
-    const res = await fetch(url);
+    const res = await fetch(url, { signal });
     if (!res.ok) throw new Error(`${game.title}: archive unavailable (HTTP ${res.status})`);
     if (!res.body) { const blob = await res.blob(); onProgress(blob.size, blob.size); return blob; }
     const reader = res.body.getReader();
