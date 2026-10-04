@@ -782,24 +782,139 @@ bool texParamSupported(GLenum pname) {
 
 // Metadata is recorded only after a successful native allocation, since WebGL2
 // has no desktop per-level texture query. Accessed on the GL-owning thread.
-struct TextureLevel { GLint width, height, internalFormat; };
+struct TextureLevel { GLint width, height, depth, internalFormat; };
 std::map<std::tuple<GLuint, GLenum, GLint>, TextureLevel> g_textureLevels;
+// Reverse index texture-name -> last known storage, for FBO attachment
+// diagnostics (at check time we know the object NAME but not its target).
+std::map<GLuint, TextureLevel> g_textureInfo;
+// Renderbuffer-name -> internal format, recorded on successful storage.
+std::map<GLuint, GLenum> g_renderbufferInfo;
 GLenum g_allocationError = GL_NO_ERROR;
 void recordBridgeError(GLenum error) {
     if (error && !g_allocationError) g_allocationError = error;
 }
 // Desktop pack layout: alignment applies to rows, skips are relative to the
 // caller's destination, and the last row has no trailing padding requirement.
-size_t packedReadStride(GLsizei width, GLint rowLength, GLint alignment) {
-    size_t bytes = (size_t)(rowLength > 0 ? rowLength : width) * 4;
-    return (bytes + alignment - 1) & ~(size_t)(alignment - 1);
+size_t packedReadStride(GLsizei width, GLint rowLength, GLint alignment, size_t bpt) {
+    if (alignment < 1) alignment = 1;
+    size_t bytes = (size_t)(rowLength > 0 ? rowLength : width) * bpt;
+    return (bytes + (size_t)alignment - 1) & ~((size_t)alignment - 1);
 }
 GLuint boundTexture(GLenum target) {
     GLint id = 0;
     GLenum binding = GL_TEXTURE_BINDING_2D;
+    // Resolve the binding query matching the guest target. Desktop-only
+    // targets (rectangle/1D) are backed by 2D storage; 3D and 2D-array have
+    // their own bindings — answering with the 2D binding made every 3D
+    // metadata lookup miss (and every 3D readback fail INVALID_OPERATION).
     if (target >= 0x8515 && target <= 0x851A) binding = GL_TEXTURE_BINDING_CUBE_MAP;
+    else if (target == 0x806F /*GL_TEXTURE_3D*/) binding = GL_TEXTURE_BINDING_3D;
+    else if (target == 0x8C1A /*GL_TEXTURE_2D_ARRAY*/) binding = 0x8C1D /*GL_TEXTURE_BINDING_2D_ARRAY*/;
     glGetIntegerv(binding, &id);
     return (GLuint)id;
+}
+
+// Component bit widths of a sized internal format, for texture level queries
+// (GL_TEXTURE_RED_SIZE etc.). Returns false for unknown/compressed formats.
+bool sizedFormatBits(GLint ifmt, int& r, int& g, int& b, int& a, int& d, int& s) {
+    r = g = b = a = d = s = 0;
+    switch (ifmt) {
+        case 0x8229: r = 8; return true;                                  // R8
+        case 0x822A: r = 16; return true;                                 // R16
+        case 0x822B: r = g = 8; return true;                              // RG8
+        case 0x822C: r = g = 8; return true;                              // RG8I/UI-ish (bits only)
+        case 0x822D: r = 16; return true;                                 // R16F
+        case 0x822E: r = 32; return true;                                 // R32F
+        case 0x822F: r = g = 16; return true;                             // RG16F
+        case 0x8230: r = g = 32; return true;                             // RG32F
+        case 0x8058: r = g = b = a = 8; return true;                      // RGBA8
+        case 0x8051: r = g = b = 8; return true;                          // RGB8
+        case 0x8D62: r = 5; g = 6; b = 5; return true;                     // RGB565
+        case 0x8056: r = g = b = a = 4; return true;                       // RGBA4
+        case 0x8057: r = g = b = 5; a = 1; return true;                    // RGB5_A1
+        case 0x8059: r = g = b = 10; a = 2; return true;                  // RGB10_A2
+        case 0x881A: r = g = b = a = 16; return true;                      // RGBA16F
+        case 0x8814: r = g = b = a = 32; return true;                      // RGBA32F
+        case 0x881B: r = g = b = 16; return true;                         // RGB16F
+        case 0x8815: r = g = b = 32; return true;                          // RGB32F
+        case 0x8C3A: r = g = 11; b = 10; return true;                      // R11F_G11F_B10F
+        case 0x8C3B: r = g = b = 9; return true;                           // RGB9_E5 (shared exp; bits approx)
+        case 0x81A5: d = 16; return true;                                  // DEPTH_COMPONENT16
+        case 0x81A6: d = 24; return true;                                  // DEPTH_COMPONENT24
+        case 0x81A7: d = 32; return true;                                  // DEPTH_COMPONENT32
+        case 0x8CAC: d = 32; return true;                                  // DEPTH_COMPONENT32F
+        case 0x88F0: d = 24; s = 8; return true;                           // DEPTH24_STENCIL8
+        case 0x8CAD: d = 32; s = 8; return true;                           // DEPTH32F_STENCIL8
+        case 0x8D48: s = 8; return true;                                   // STENCIL_INDEX8
+        default: break;
+    }
+    // SNORM blocks: same widths as their UNORM siblings.
+    if ((ifmt >= 0x8F94 && ifmt <= 0x8F9B)) {
+        switch (ifmt) {
+            case 0x8F94: case 0x8F98: r = (ifmt == 0x8F94) ? 8 : 16; return true;
+            case 0x8F95: case 0x8F99: r = g = (ifmt == 0x8F95) ? 8 : 16; return true;
+            case 0x8F96: r = g = b = 8; return true;
+            case 0x8F97: r = g = b = a = 8; return true;
+            case 0x8F9A: r = g = b = 16; return true;
+            case 0x8F9B: r = g = b = a = 16; return true;
+            default: break;
+        }
+    }
+    return false;
+}
+
+// Sized float internal formats need a float upload tuple. Wine sometimes
+// issues them with RGBA/UNSIGNED_BYTE pixels (capability probes); WebGL2
+// rejects that with INVALID_OPERATION, leaving no level 0 and an
+// INCOMPLETE_ATTACHMENT FBO. Upconvert bytes to floats in software and set
+// the canonical (format, FLOAT) tuple. Returns true when rewritten.
+bool canonicalFloatTuple(GLint ifmt, GLenum& fmt, GLenum& type, std::vector<U8>& pix) {
+    if (type != GL_UNSIGNED_BYTE) return false;
+    // Only 3/4-channel byte sources (Wine's RGBA probe layout); 1/2-channel
+    // sources already match their R/RG internal formats.
+    if (fmt != GL_RGBA && fmt != GL_RGB && fmt != 0x80E1 && fmt != 0x80E0) return false;
+    GLenum want = GL_NONE;
+    int comps = 0;
+    switch (ifmt) {
+        case 0x822D: case 0x822E: want = 0x1903; comps = 1; break;         // R16F/R32F -> RED
+        case 0x822F: case 0x8230: want = 0x8227; comps = 2; break;          // RG16F/RG32F -> RG
+        case 0x881A: case 0x8814: want = GL_RGBA; comps = 4; break;        // RGBA16F/32F
+        case 0x881B: case 0x8815: want = GL_RGB; comps = 3; break;         // RGB16F/32F
+        case 0x8C3A: case 0x8C3B: want = GL_RGB; comps = 3; break;         // R11F_G11F_B10F/RGB9_E5
+        default: return false;
+    }
+    // Source pixels are RGBA or RGB bytes (Wine's probe layout); pick the
+    // first `comps` channels of each texel.
+    int srcComps = (fmt == GL_RGB || fmt == 0x80E0) ? 3 : 4;
+    size_t texels = pix.size() / (size_t)srcComps;
+    std::vector<U8> out(texels * comps * 4);
+    float* dst = (float*)out.data();
+    for (size_t i = 0; i < texels; i++)
+        for (int c = 0; c < comps; c++)
+            dst[i * comps + c] = pix[i * srcComps + c] / 255.0f;
+    pix.swap(out);
+    fmt = want;
+    type = GL_FLOAT;
+    return true;
+}
+
+// Legacy unsized internal formats have no WebGL2 renderbuffer storage.
+// Desktop GL defines their renderability via the base format; back them with
+// RGBA8 (the standard emulation). Sized-but-not-renderable formats (float,
+// SNORM, sRGB-plain, packed-float) are left to fail honestly — mapping those
+// would lie about device capabilities.
+bool renderbufferStorageFixup(GLenum& ifmt) {
+    switch (ifmt) {
+        case 0x2A10 /*R3_G3_B2*/:
+        case 0x803C /*ALPHA8*/: case 0x803B /*ALPHA4*/:
+        case 0x8040 /*LUMINANCE8*/: case 0x8042 /*LUMINANCE16*/:
+        case 0x8043 /*LUMINANCE4_ALPHA4*/: case 0x8045 /*LUMINANCE8_ALPHA8*/:
+        case 0x804F /*RGB4*/: case 0x8050 /*RGB5*/:
+            ifmt = 0x8058 /*RGBA8*/;
+            return true;
+        default:
+            return false;
+    }
 }
 
 // Read a NUL-terminated C string from guest memory, capped at `maxLen` bytes.
@@ -860,11 +975,15 @@ void deleteObjects(CPU64* cpu, const GL64Args& args, GenKind kind) {
                         if (std::get<0>(it->first)==p[i]) it=g_textureLevels.erase(it);
                         else ++it;
                     }
+                    g_textureInfo.erase(p[i]);
                 }
                 break;
             case GenKind::VertexArray: glDeleteVertexArrays(n, p); break;
             case GenKind::Framebuffer: glDeleteFramebuffers(n, p); break;
-            case GenKind::Renderbuffer:glDeleteRenderbuffers(n, p); break;
+            case GenKind::Renderbuffer:
+                glDeleteRenderbuffers(n, p);
+                for (GLsizei i = 0; i < n; ++i) g_renderbufferInfo.erase(p[i]);
+                break;
             case GenKind::Sampler:     glDeleteSamplers(n, p); break;
         }
     });
@@ -2083,10 +2202,15 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 // Desktop permits several NULL-data allocation type/format
                 // combinations GLES3 rejects. Select the canonical storage tuple;
                 // this does not replace unsupported storage with a fake format.
+                // Sized float formats with BYTE pixels also need the canonical
+                // (format, FLOAT) tuple + software upconversion, with or without
+                // pixels (C6: R16F/RG16F/RGBA16F probes failed INVALID_OPERATION).
                 if (!args.a[8]) {
                     if (ifmt == 0x822F || ifmt == 0x8230) { fmt=0x8227; type=GL_FLOAT; }
                     if (ifmt == 0x8F96 || ifmt == 0x8F97) { fmt=ifmt == 0x8F96 ? GL_RGB : GL_RGBA; type=GL_BYTE; }
                 }
+                if (canonicalFloatTuple(ifmt, fmt, type, pix) && getenv("BW64_GLTRACE"))
+                    klog_fmt("gl64 TEX2D: float upconvert ifmt=0x%x %dx%d", (unsigned)ifmt, w, h);
                 // A2: A glTexImage2D the driver REJECTS leaves the texture with no
                 // level 0, and the later glFramebufferTexture2D then reports
                 // GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT — wined3d's hard RT failure.
@@ -2097,12 +2221,17 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 if (trace) GL_MT(err0 = glGetError());
                 pp = pix.empty() ? nullptr : pix.data(); // conversion may reallocate
                 GLenum allocationError = 0;
+                GLuint boundId = 0;
                 glOnMain([&]{
+                    boundId = boundTexture(tgt);
                     glTexImage2D(hostTextureTarget(tgt), lvl, ifmt, w, h, bd, fmt, type, pp);
                     allocationError = glGetError();
                     if (allocationError && !trace && !g_allocationError) g_allocationError=allocationError;
-                    if (!allocationError)
-                        g_textureLevels[{boundTexture(tgt), tgt, lvl}] = {w, h, ifmt};
+                    if (!allocationError) {
+                        TextureLevel tl{w, h, 1, ifmt};
+                        g_textureLevels[{boundId, tgt, lvl}] = tl;
+                        if (lvl == 0) g_textureInfo[boundId] = tl;
+                    }
                 });
                 if (trace) {
                     GLenum e = allocationError;
@@ -2326,10 +2455,15 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                     glFramebufferTexture2D((GLenum)ai(args,0), (GLenum)ai(args,1),
                                            hostTextureTarget((GLenum)ai(args,2)), (GLuint)ai(args,3),
                                            (GLint)ai(args,4));
-                    if (getenv("BW64_GLTRACE"))
-                        klog_fmt("gl64 ATTACH2D: fbo=%u target=0x%x att=0x%x textarget=0x%x tex=%u level=%d",
+                    if (getenv("BW64_GLTRACE")) {
+                        GLint storage = 0;
+                        auto ti = g_textureInfo.find((GLuint)ai(args,3));
+                        if (ti != g_textureInfo.end()) storage = ti->second.internalFormat;
+                        klog_fmt("gl64 ATTACH2D: fbo=%u target=0x%x att=0x%x textarget=0x%x tex=%u level=%d storage=0x%x",
                                  g_guestFbo, (unsigned)ai(args,0), (unsigned)ai(args,1),
-                                 (unsigned)ai(args,2), (unsigned)ai(args,3), (int)ai(args,4));
+                                 (unsigned)ai(args,2), (unsigned)ai(args,3), (int)ai(args,4),
+                                 (unsigned)storage);
+                    }
                 });
             return 0;
         // Emscripten exports no glFramebufferTexture (the GL 4.3 untargeted
@@ -2392,14 +2526,32 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                         GLint bound = 0;
                         glGetIntegerv(target == GL_READ_FRAMEBUFFER ? GL_READ_FRAMEBUFFER_BINDING : GL_DRAW_FRAMEBUFFER_BINDING, &bound);
                         if (bound) {
-                            const GLenum attachments[] = {GL_COLOR_ATTACHMENT0, GL_DEPTH_ATTACHMENT, GL_STENCIL_ATTACHMENT};
+                            // C6: classify INCOMPLETE_ATTACHMENT per attachment —
+                            // print every color slot (MRT uses 1..7) plus
+                            // depth/stencil, with the storage format resolved
+                            // from our allocation records (format+type per call).
+                            const GLenum attachments[] = {
+                                GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1,
+                                GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3,
+                                GL_COLOR_ATTACHMENT4, GL_COLOR_ATTACHMENT5,
+                                GL_COLOR_ATTACHMENT6, GL_COLOR_ATTACHMENT7,
+                                GL_DEPTH_ATTACHMENT, GL_STENCIL_ATTACHMENT };
                             for (GLenum att : attachments) {
                                 GLint type = 0, name = 0;
                                 glGetFramebufferAttachmentParameteriv(target, att, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &type);
                                 if (type != GL_NONE)
                                     glGetFramebufferAttachmentParameteriv(target, att, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &name);
-                                klog_fmt("gl64 FBO_ATTACH: bound=%d att=0x%x type=0x%x name=%d status=0x%x",
-                                         bound, (unsigned)att, (unsigned)type, name, (unsigned)st);
+                                if (type == GL_NONE && st == GL_FRAMEBUFFER_COMPLETE) continue;
+                                GLint storage = 0;
+                                if (type == GL_TEXTURE) {
+                                    auto ti = g_textureInfo.find((GLuint)name);
+                                    if (ti != g_textureInfo.end()) storage = ti->second.internalFormat;
+                                } else if (type == GL_RENDERBUFFER) {
+                                    auto ri = g_renderbufferInfo.find((GLuint)name);
+                                    if (ri != g_renderbufferInfo.end()) storage = (GLint)ri->second;
+                                }
+                                klog_fmt("gl64 FBO_ATTACH: bound=%d att=0x%x type=0x%x name=%d storage=0x%x status=0x%x",
+                                         bound, (unsigned)att, (unsigned)type, name, (unsigned)storage, (unsigned)st);
                             }
                         }
                     }
@@ -2440,13 +2592,26 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             if (g_glContext) {
                 GLenum tgt=(GLenum)ai(args,0); GLenum ifmt=(GLenum)ai(args,1);
                 GLsizei w=(GLsizei)ai(args,2), h=(GLsizei)ai(args,3);
-                GL_MT(glRenderbufferStorage(tgt, ifmt, w, h));
-                if (getenv("BW64_GLTRACE")) {
-                    GLenum e = 0; GL_MT(e = glGetError());
-                    klog_fmt("gl64 RBSTORAGE: target=0x%x ifmt=0x%x %dx%d err=0x%x",
-                             (unsigned)tgt, (unsigned)ifmt, w, h, (unsigned)e);
-                    GL_MT(glGetError());
-                }
+                // C6: legacy unsized internal formats (RGB4/5, ALPHA8,
+                // LUMINANCE*) have no WebGL2 storage — back with RGBA8.
+                // Sized-but-not-renderable (float/SNORM/sRGB-plain) still fail
+                // honestly so capability probes see real device limits.
+                bool remapped = renderbufferStorageFixup(ifmt);
+                bool trace = getenv("BW64_GLTRACE") != nullptr;
+                GLenum rbErr = 0;
+                glOnMain([&]{
+                    GLint boundRb = 0;
+                    glGetIntegerv(GL_RENDERBUFFER_BINDING, &boundRb);
+                    glRenderbufferStorage(tgt, ifmt, w, h);
+                    rbErr = glGetError();
+                    if (!rbErr && boundRb) g_renderbufferInfo[(GLuint)boundRb] = ifmt;
+                });
+                if (rbErr && !trace && !g_allocationError) g_allocationError = rbErr;
+                if (trace)
+                    klog_fmt("gl64 RBSTORAGE: target=0x%x ifmt=0x%x%s %dx%d err=0x%x",
+                             (unsigned)ai(args,1), (unsigned)ifmt,
+                             remapped ? " (remapped->RGBA8)" : "", w, h, (unsigned)rbErr);
+                else if (!rbErr) GL_MT(glGetError()); // drain stale state
             }
             return 0;
         case GL64_fn_glRenderbufferStorageMultisample:
@@ -2613,13 +2778,22 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                     if (ifmt == 0x822F || ifmt == 0x8230) { fmt=0x8227; type=GL_FLOAT; }
                     if (ifmt == 0x8F96 || ifmt == 0x8F97) { fmt=ifmt == 0x8F96 ? GL_RGB : GL_RGBA; type=GL_BYTE; }
                 }
+                canonicalFloatTuple(ifmt, fmt, type, pix);
                 pp = pix.empty() ? nullptr : pix.data();
-                GL_MT(glTexImage3D(tgt, lvl, ifmt, w, h, d, bd, fmt, type, pp));
-                if (getenv("BW64_GLTRACE")) {
-                    GLenum e = 0; GL_MT(e = glGetError());
-                    klog_fmt("gl64 TEX3D: target=0x%x lvl=%d ifmt=0x%x %dx%dx%d fmt=0x%x type=0x%x err=0x%x",
-                             (unsigned)tgt, lvl, (unsigned)ifmt, w, h, d, (unsigned)fmt, (unsigned)type, (unsigned)e);
-                }
+                glOnMain([&]{
+                    GLuint boundId = boundTexture(tgt);
+                    glTexImage3D(tgt, lvl, ifmt, w, h, d, bd, fmt, type, pp);
+                    GLenum e = glGetError();
+                    if (e && !getenv("BW64_GLTRACE") && !g_allocationError) g_allocationError = e;
+                    if (!e) {
+                        TextureLevel tl{w, h, d, ifmt};
+                        g_textureLevels[{boundId, tgt, lvl}] = tl;
+                        if (lvl == 0) g_textureInfo[boundId] = tl;
+                    }
+                    if (getenv("BW64_GLTRACE"))
+                        klog_fmt("gl64 TEX3D: target=0x%x lvl=%d ifmt=0x%x %dx%dx%d fmt=0x%x type=0x%x err=0x%x",
+                                 (unsigned)tgt, lvl, (unsigned)ifmt, w, h, d, (unsigned)fmt, (unsigned)type, (unsigned)e);
+                });
             }
             return 0;
         }
@@ -2893,19 +3067,55 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glGetTexLevelParameteriv:
             if (g_glContext && args.a[3]) {
                 GLint v = 0;
+                bool found = false;
+                GLenum err = GL_NO_ERROR;
                 GLenum target=(GLenum)ai(args,0), pname=(GLenum)ai(args,2);
+                GLint level=(GLint)ai(args,1);
                 glOnMain([&]{
-                    auto it = g_textureLevels.find({boundTexture(target), target, (GLint)ai(args,1)});
-                    if (it == g_textureLevels.end()) return;
-                    const auto& level = it->second;
-                    if (pname == 0x1000) v = level.width;
-                    else if (pname == 0x1001) v = level.height;
-                    else if (pname == 0x1003) v = level.internalFormat;
-                    else if (pname >= 0x805C && pname <= 0x805F && level.internalFormat == GL_RGBA8) v = 8;
-                    else if (pname == 0x805C && level.internalFormat == GL_R16F) v = 16;
-                    if (getenv("BW64_GLTRACE")) klog_fmt("gl64 TEXQUERY: target=0x%x pname=0x%x -> %d", target, pname, v);
+                    auto it = g_textureLevels.find({boundTexture(target), target, level});
+                    // Mip levels inherit the base allocation (halved per level);
+                    // fall back to level 0's record when the exact level was
+                    // never uploaded (Wine probes mip completeness this way).
+                    const TextureLevel* lp = nullptr;
+                    int lod = 0;
+                    if (it != g_textureLevels.end()) { lp = &it->second; lod = 0; }
+                    else if (level > 0 && level <= 16) {
+                        auto b = g_textureLevels.find({boundTexture(target), target, 0});
+                        if (b != g_textureLevels.end()) { lp = &b->second; lod = level; }
+                    }
+                    if (!lp) { err = GL_INVALID_VALUE; return; } // unknown storage, no false zero
+                    const auto& lvl = *lp;
+                    int w = lvl.width >> lod, h = lvl.height >> lod, d = lvl.depth >> lod;
+                    if (w < 1) w = 1; if (h < 1) h = 1; if (d < 1) d = 1;
+                    int r = 0, g = 0, b = 0, a = 0, dp = 0, s = 0;
+                    bool bits = sizedFormatBits(lvl.internalFormat, r, g, b, a, dp, s);
+                    // Legacy Luminance/Alpha expansions allocated as RGBA8.
+                    if (!bits && lvl.internalFormat == 0x8058) { r = g = b = a = 8; bits = true; }
+                    switch (pname) {
+                        case 0x1000: v = w; found = true; break;            // WIDTH
+                        case 0x1001: v = h; found = true; break;            // HEIGHT
+                        case 0x1003: v = lvl.internalFormat; found = true; break; // INTERNAL_FORMAT
+                        case 0x1002: v = (lvl.depth > 1) ? d : 0; found = true; break; // DEPTH
+                        case 0x805C: v = r; found = true; break;            // RED_SIZE
+                        case 0x805D: v = g; found = true; break;            // GREEN_SIZE
+                        case 0x805E: v = b; found = true; break;            // BLUE_SIZE
+                        case 0x805F: v = a; found = true; break;            // ALPHA_SIZE
+                        case 0x8060: v = dp; found = true; break;           // DEPTH_SIZE
+                        case 0x8061: v = s; found = true; break;            // STENCIL_SIZE
+                        case 0x86A0: v = (dp || s) ? 1 : 0; found = true; break; // SHARED_SIZE
+                        case 0x8C3E: {                                     // COMPRESSED_IMAGE_SIZE
+                            int bpp = (r + g + b + a + dp + s + 7) / 8;
+                            if (bpp < 1) bpp = 4;
+                            v = w * h * (lvl.depth > 1 ? d : 1) * bpp;
+                            found = true;
+                            break;
+                        }
+                        default: err = GL_INVALID_ENUM; break;
+                    }
+                    if (getenv("BW64_GLTRACE")) klog_fmt("gl64 TEXQUERY: target=0x%x lvl=%d pname=0x%x -> %d%s", target, level, pname, v, bits ? "" : " (unknown-bits)");
                 });
-                cpu->memory->memcpyToGuest(args.a[3], &v, sizeof(GLint));
+                if (found) cpu->memory->memcpyToGuest(args.a[3], &v, sizeof(GLint));
+                else if (err) GL_MT(recordBridgeError(err)); // honest error, guest memory untouched
             }
             return 0;
         case GL64_fn_glReadPixels:
@@ -2914,15 +3124,36 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             U64 guest = args.a[texture ? 4 : 6];
             if (!g_glContext) return 0;
             GLenum fmt=(GLenum)ai(args,texture ? 2 : 4), type=(GLenum)ai(args,texture ? 3 : 5);
-            // Functional Wine probes read RGBA/BGRA bytes (8888_REV has the
-            // same byte layout). Other readback representations remain unsupported.
-            if ((fmt != GL_RGBA && fmt != 0x80E1) || (type != GL_UNSIGNED_BYTE && type != 0x8367)) {
+            GLenum target = texture ? (GLenum)ai(args,0) : 0;
+            GLint level = texture ? (GLint)ai(args,1) : 0;
+            // C6: read back through RGBA/UBYTE (universally readable) and
+            // convert in software to the requested color representation, so
+            // float/integer Wine probes get data instead of a GL error. Depth
+            // textures read through the depth attachment. Anything else fails
+            // honestly with INVALID_ENUM.
+            bool colorFmt = (fmt == GL_RGBA || fmt == 0x80E1 || fmt == GL_RGB ||
+                             fmt == 0x80E0 || fmt == 0x8227 || fmt == 0x1903);
+            bool colorType = (type == GL_UNSIGNED_BYTE || type == 0x8367 || type == 0x8368 ||
+                              type == GL_BYTE || type == GL_UNSIGNED_SHORT || type == GL_SHORT ||
+                              type == GL_UNSIGNED_INT || type == GL_INT || type == GL_FLOAT ||
+                              type == 0x140B /*HALF_FLOAT*/);
+            bool depthReq = (fmt == 0x1902 /*DEPTH_COMPONENT*/ &&
+                             (type == GL_FLOAT || type == GL_UNSIGNED_INT || type == GL_UNSIGNED_SHORT));
+            bool stencilReq = (fmt == 0x190D /*STENCIL_INDEX*/ && type == GL_UNSIGNED_BYTE);
+            if ((colorFmt && !colorType) || (!colorFmt && !depthReq && !stencilReq)) {
                 GL_MT(recordBridgeError(GL_INVALID_ENUM));
+                if (getenv("BW64_GLTRACE"))
+                    klog_fmt("gl64 READBACK: texture=%d target=0x%x fmt=0x%x type=0x%x unsupported -> INVALID_ENUM",
+                             texture, (unsigned)target, (unsigned)fmt, (unsigned)type);
                 return 0;
             }
             GLint x=texture ? 0 : (GLint)ai(args,0), y=texture ? 0 : (GLint)ai(args,1);
             GLsizei w=texture ? 0 : (GLsizei)ai(args,2), h=texture ? 0 : (GLsizei)ai(args,3);
-            std::vector<U8> pixels;
+            GLsizei depth = 1;
+            bool isDepthTex = false;
+            bool directDepth = !texture && (depthReq || stencilReq); // framebuffer depth/stencil: raw pixels
+            std::vector<U8> pixels;   // RGBA/UBYTE source (color) or raw depth/stencil
+            std::vector<U8> out;      // converted destination image
             GLenum error = 0;
             GLint pack=4, pbo=0, row=0, skipRows=0, skipPixels=0;
             glOnMain([&]{
@@ -2930,23 +3161,44 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 GLint savedRead=0, savedDraw=0;
                 auto fail = [&](GLenum e) { error=e; recordBridgeError(e); };
                 if (texture) {
-                    GLenum target=(GLenum)ai(args,0);
-                    if (hostTextureTarget(target) != GL_TEXTURE_2D && !(target >= 0x8515 && target <= 0x851A)) {
-                        fail(GL_INVALID_ENUM);
-                        return;
-                    }
-                    auto it=g_textureLevels.find({boundTexture(target), target, (GLint)ai(args,1)});
+                    bool is3D = (target == 0x806F);
+                    bool isCube = (target >= 0x8515 && target <= 0x851A);
+                    bool is2D = (hostTextureTarget(target) == GL_TEXTURE_2D);
+                    if (!is3D && !isCube && !is2D) { fail(GL_INVALID_ENUM); return; }
+                    auto it=g_textureLevels.find({boundTexture(target), target, level});
                     if (it == g_textureLevels.end()) { fail(GL_INVALID_OPERATION); return; }
                     w=it->second.width; h=it->second.height;
+                    depth = (is3D && it->second.depth > 1) ? it->second.depth : 1;
+                    int dd = 0, ds = 0;
+                    { int rr = 0, gg = 0, bb = 0, aa = 0;
+                      sizedFormatBits(it->second.internalFormat, rr, gg, bb, aa, dd, ds); }
+                    isDepthTex = (dd || ds);
+                    if ((depthReq || stencilReq) && !isDepthTex) { fail(GL_INVALID_OPERATION); return; }
+                    if (!depthReq && !stencilReq && isDepthTex) { fail(GL_INVALID_OPERATION); return; }
+                    GLuint texName = boundTexture(target);
                     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &savedRead);
                     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &savedDraw);
                     glGenFramebuffers(1, &scratch);
                     glBindFramebuffer(GL_READ_FRAMEBUFFER, scratch);
-                    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                                           hostTextureTarget(target), boundTexture(target), (GLint)ai(args,1));
+                    if (isDepthTex) {
+                        if (is3D) { fail(GL_INVALID_OPERATION); }
+                        else {
+                            glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                                                   hostTextureTarget(target), texName, level);
+                        }
+                    } else if (!is3D) {
+                        glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                               hostTextureTarget(target), texName, level);
+                    }
+                    if (error) {
+                        glBindFramebuffer(GL_READ_FRAMEBUFFER,savedRead);
+                        glBindFramebuffer(GL_DRAW_FRAMEBUFFER,savedDraw);
+                        if (scratch) glDeleteFramebuffers(1,&scratch);
+                        return;
+                    }
                 }
                 if (w < 0 || h < 0) fail(GL_INVALID_VALUE);
-                else if ((U64)w * h > (16u << 20)) fail(GL_OUT_OF_MEMORY);
+                else if ((U64)w * h * (U64)(depth > 0 ? depth : 1) > (16u << 20)) fail(GL_OUT_OF_MEMORY);
                 else if (w > 0 && h > 0) {
                     glGetIntegerv(GL_PACK_ALIGNMENT, &pack);
                     glGetIntegerv(GL_PACK_ROW_LENGTH, &row);
@@ -2958,9 +3210,42 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                     glPixelStorei(GL_PACK_ROW_LENGTH, 0);
                     glPixelStorei(GL_PACK_SKIP_ROWS, 0);
                     glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
-                    pixels.resize((size_t)w * h * 4);
-                    glReadPixels(x,y,w,h,GL_RGBA,GL_UNSIGNED_BYTE,pixels.data());
-                    error=glGetError();
+                    if (isDepthTex && (depthReq || stencilReq)) {
+                        if (depthReq) {
+                            std::vector<float> f((size_t)w * h, 0);
+                            glReadPixels(x,y,w,h,0x1902,GL_FLOAT,f.data());
+                            error=glGetError();
+                            if (!error) {
+                                pixels.resize((size_t)w * h * 4);
+                                memcpy(pixels.data(), f.data(), pixels.size());
+                            }
+                        } else {
+                            pixels.resize((size_t)w * h);
+                            glReadPixels(x,y,w,h,0x190D,GL_UNSIGNED_BYTE,pixels.data());
+                            error=glGetError();
+                        }
+                    } else if (texture && target == 0x806F) {
+                        pixels.resize((size_t)w * h * depth * 4);
+                        for (GLsizei z = 0; z < depth && !error; z++) {
+                            GLuint texName = boundTexture(target);
+                            glFramebufferTextureLayer(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                                      texName, level, z);
+                            glReadPixels(x,y,w,h,GL_RGBA,GL_UNSIGNED_BYTE,
+                                         pixels.data() + (size_t)z * w * h * 4);
+                            error=glGetError();
+                        }
+                    } else if (!texture && (depthReq || stencilReq)) {
+                        // Framebuffer depth/stencil readback: direct, since the
+                        // default/read FBO owns a real depth buffer.
+                        size_t el = (type == GL_UNSIGNED_SHORT) ? 2 : (stencilReq ? 1 : 4);
+                        pixels.resize((size_t)w * h * el);
+                        glReadPixels(x,y,w,h,fmt,type,pixels.data());
+                        error=glGetError();
+                    } else {
+                        pixels.resize((size_t)w * h * 4);
+                        glReadPixels(x,y,w,h,GL_RGBA,GL_UNSIGNED_BYTE,pixels.data());
+                        error=glGetError();
+                    }
                     if (error) recordBridgeError(error);
                     glPixelStorei(GL_PACK_ALIGNMENT,pack);
                     glPixelStorei(GL_PACK_ROW_LENGTH,row);
@@ -2974,11 +3259,84 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                     if (scratch) glDeleteFramebuffers(1,&scratch);
                 }
             });
-            if (fmt == 0x80E1) for (size_t i=0;i+4<=pixels.size();i+=4) std::swap(pixels[i],pixels[i+2]);
+            // Software conversion from the RGBA/UBYTE (or raw depth) source
+            // to the requested representation.
+            size_t dstBpt = 4; // bytes per texel in `out`
             if (!error && !pixels.empty()) {
-                size_t stride=packedReadStride(w,row,pack);
-                U64 start=(U64)skipRows*stride+(U64)skipPixels*4;
-                U64 end=start+(U64)(h-1)*stride+(U64)w*4;
+                if (directDepth) {
+                    // Already in the requested representation (direct read).
+                    dstBpt = stencilReq ? 1 : (type == GL_UNSIGNED_SHORT ? 2 : 4);
+                    out.swap(pixels);
+                } else if (isDepthTex) {
+                    if (depthReq) {
+                        size_t n = (size_t)w * h;
+                        if (type == GL_FLOAT) { dstBpt = 4; out.resize(n * 4); memcpy(out.data(), pixels.data(), n * 4); }
+                        else if (type == GL_UNSIGNED_INT) {
+                            dstBpt = 4; out.resize(n * 4);
+                            float* f = (float*)pixels.data(); U32* d = (U32*)out.data();
+                            for (size_t i = 0; i < n; i++) d[i] = (U32)(f[i] * 4294967295.0);
+                        } else { dstBpt = 2; out.resize(n * 2); // UNSIGNED_SHORT
+                            float* f = (float*)pixels.data(); U16* d = (U16*)out.data();
+                            for (size_t i = 0; i < n; i++) d[i] = (U16)(f[i] * 65535.0f); }
+                    } else { dstBpt = 1; out.swap(pixels); } // STENCIL_INDEX/UBYTE direct
+                } else {
+                    int comps = (fmt == GL_RGBA || fmt == 0x80E1) ? 4 :
+                                (fmt == GL_RGB || fmt == 0x80E0) ? 3 :
+                                (fmt == 0x8227) ? 2 : 1;
+                    size_t texels = pixels.size() / 4; // RGBA source texels (all slices concatenated)
+                    size_t typeSize = (type == GL_UNSIGNED_BYTE || type == GL_BYTE) ? 1 :
+                                      (type == GL_UNSIGNED_SHORT || type == GL_SHORT || type == 0x140B) ? 2 : 4;
+                    if (type == 0x8367 || type == 0x8368) typeSize = 4; // packed REV: one word
+                    dstBpt = (type == 0x8367 || type == 0x8368) ? 4 : (size_t)comps * typeSize;
+                    out.resize(texels * dstBpt);
+                    bool bgra = (fmt == 0x80E1 || fmt == 0x80E0);
+                    for (size_t i = 0; i < texels; i++) {
+                        U8 r = pixels[i*4], g = pixels[i*4+1], b = pixels[i*4+2], a = pixels[i*4+3];
+                        U8 ch[4] = {r, g, b, a};
+                        if (bgra) { ch[0] = b; ch[2] = r; }
+                        U8* dp = out.data() + i * dstBpt;
+                        if (type == GL_UNSIGNED_BYTE || type == 0x8367 || type == 0x8368) {
+                            if (type == GL_UNSIGNED_BYTE) memcpy(dp, ch, comps);
+                            else { U32 w32 = (U32)ch[0] | ((U32)ch[1] << 8) | ((U32)ch[2] << 16) | ((U32)ch[3] << 24);
+                                memcpy(dp, &w32, 4); }
+                        } else if (type == GL_FLOAT) {
+                            float* f = (float*)dp;
+                            for (int c = 0; c < comps; c++) f[c] = ch[c] / 255.0f;
+                        } else if (type == 0x140B) { // HALF_FLOAT
+                            U16* hh = (U16*)dp;
+                            for (int c = 0; c < comps; c++) {
+                                float fv = ch[c] / 255.0f;
+                                U32 u; memcpy(&u, &fv, 4);
+                                int e = ((u >> 23) & 0xFF) - 112;
+                                if (e <= 0) hh[c] = 0;
+                                else if (e >= 31) hh[c] = 0x7BFF;
+                                else hh[c] = (U16)(((u >> 13) & 0x3FF) | ((U16)e << 10) | ((u >> 16) & 0x8000));
+                            }
+                        } else if (type == GL_BYTE) {
+                            S8* s = (S8*)dp;
+                            for (int c = 0; c < comps; c++) s[c] = (S8)(ch[c] - 128);
+                        } else if (type == GL_UNSIGNED_SHORT) {
+                            U16* s = (U16*)dp;
+                            for (int c = 0; c < comps; c++) s[c] = (U16)(ch[c] * 257);
+                        } else if (type == GL_SHORT) {
+                            S16* s = (S16*)dp;
+                            for (int c = 0; c < comps; c++) s[c] = (S16)(ch[c] * 257 - 32768);
+                        } else if (type == GL_UNSIGNED_INT) {
+                            U32* s = (U32*)dp;
+                            for (int c = 0; c < comps; c++) s[c] = (U32)ch[c] * 16843009u;
+                        } else { // GL_INT
+                            S32* s = (S32*)dp;
+                            for (int c = 0; c < comps; c++) s[c] = (S32)((U32)ch[c] * 16843009u - 2147483648u);
+                        }
+                    }
+                }
+            }
+            if (!error && !out.empty()) {
+                size_t stride = packedReadStride(w, row, pack, dstBpt);
+                U64 start=(U64)skipRows*stride+(U64)skipPixels*dstBpt;
+                U64 end=start+(U64)(h-1)*stride+(U64)w*dstBpt;
+                if (texture && target == 0x806F)
+                    end = start + (U64)(depth - 1) * ((U64)h * stride) + (U64)(h-1)*stride + (U64)w*dstBpt;
                 if (pbo) {
                     glOnMain([&]{
                         GLint capacity=0;
@@ -2988,22 +3346,39 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                             recordBridgeError(error);
                             return;
                         }
-                        for (GLsizei y0=0;y0<h;++y0)
-                            glBufferSubData(GL_PIXEL_PACK_BUFFER,(GLintptr)(guest+start+(U64)y0*stride),
-                                            (GLsizeiptr)w*4,pixels.data()+(size_t)y0*w*4);
+                        if (texture && target == 0x806F) {
+                            size_t slice = (size_t)w * h * dstBpt;
+                            for (GLsizei z = 0; z < depth; z++)
+                                for (GLsizei y0=0;y0<h;++y0)
+                                    glBufferSubData(GL_PIXEL_PACK_BUFFER,
+                                                    (GLintptr)(guest+(U64)z*(U64)h*stride+start+(U64)y0*stride),
+                                                    (GLsizeiptr)w*dstBpt,out.data()+(size_t)z*slice+(size_t)y0*w*dstBpt);
+                        } else {
+                            for (GLsizei y0=0;y0<h;++y0)
+                                glBufferSubData(GL_PIXEL_PACK_BUFFER,(GLintptr)(guest+start+(U64)y0*stride),
+                                                (GLsizeiptr)w*dstBpt,out.data()+(size_t)y0*w*dstBpt);
+                        }
                         error=glGetError();
                         if (error) recordBridgeError(error);
                     });
                 } else if (guest && guest <= UINT64_MAX-end) {
-                    for (GLsizei y0=0;y0<h;++y0)
-                        cpu->memory->memcpyToGuest(guest+start+(U64)y0*stride,
-                                                  pixels.data()+(size_t)y0*w*4,(U64)w*4);
+                    if (texture && target == 0x806F) {
+                        size_t slice = (size_t)w * h * dstBpt;
+                        for (GLsizei z = 0; z < depth; z++)
+                            for (GLsizei y0=0;y0<h;++y0)
+                                cpu->memory->memcpyToGuest(guest+(U64)z*(U64)h*stride+start+(U64)y0*stride,
+                                                          out.data()+(size_t)z*slice+(size_t)y0*w*dstBpt,(U64)w*dstBpt);
+                    } else {
+                        for (GLsizei y0=0;y0<h;++y0)
+                            cpu->memory->memcpyToGuest(guest+start+(U64)y0*stride,
+                                                      out.data()+(size_t)y0*w*dstBpt,(U64)w*dstBpt);
+                    }
                 } else {
                     error=GL_INVALID_OPERATION;
                     GL_MT(recordBridgeError(error));
                 }
             }
-            if (getenv("BW64_GLTRACE")) klog_fmt("gl64 READBACK: texture=%d %dx%d bytes=%zu err=0x%x",texture,w,h,pixels.size(),error);
+            if (getenv("BW64_GLTRACE")) klog_fmt("gl64 READBACK: texture=%d target=0x%x %dx%dx%d fmt=0x%x type=0x%x bytes=%zu err=0x%x",texture,(unsigned)target,w,h,depth,(unsigned)fmt,(unsigned)type,out.size(),error);
             return 0;
         }
         // glGetTextureParameteriv / glGetTextureLevelParameteriv are the GL 3.x
