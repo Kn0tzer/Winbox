@@ -40,7 +40,7 @@ function superseded(title) {
  * Downloads a built-in archive, preferring byte ranges and falling back to one
  * streaming GET. onProgress(receivedBytes, totalBytes) drives the card meter.
  * The result is a Blob, exactly what the ZIP file input would have produced.
- * @param {{archive: string, size?: number, title: string}} game
+ * @param {{id?: string, archive: string, size?: number, title: string}} game
  * @param {(received: number, total: number) => void} [onProgress]
  */
 export async function fetchGameArchive(game, onProgress = () => {}) {
