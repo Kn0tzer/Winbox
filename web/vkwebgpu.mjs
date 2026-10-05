@@ -1007,10 +1007,26 @@ export function decodeV2Frame(records, counters = {}) {
 // ---------------------------------------------------------------------------
 export function rewritePushConstantsWGSL(wgsl) {
   let pushBlocks = 0;
-  const code = String(wgsl).replace(
+  let code = String(wgsl).replace(
     /(?:@group\(\d+\)\s*@binding\(\d+\)\s*)?var<\s*(?:push_constant|immediate)\s*>/g,
     () => { pushBlocks++; return '@group(' + V2_PUSH_GROUP + ') @binding(' + V2_PUSH_BINDING + ') var<uniform>'; }
   );
+  // DXVK D3D9 shaders use @id(12)/@id(1) overrides for spec_state (alpha-test
+  // func, fog, point sprites). The native bridge does not capture
+  // VkSpecializationInfo, so overrides default to 0; the unbound spec_state
+  // (zero-filled) gives alpha func 0 = NEVER -> all fragments discarded.
+  // Hardcode safe defaults: id 12 = 1 (use overrides), id 1 = 0xE00000
+  // (dword1 with alpha func 7 = ALWAYS in bits [21:24], other features off).
+  // TODO: use real VkSpecializationInfo when the bridge captures it.
+  if (code.indexOf('@id(12)') >= 0) {
+    // Replace @id overrides with consts, preserving the declared names.
+    code = code.replace(/@id\(12\)\s*override\s+(\w+)\s*:\s*u32\s*=\s*0u;/g,
+      'const $1: u32 = 1u;');
+    code = code.replace(/@id\(1\)\s*override\s+(\w+)\s*:\s*u32\s*=\s*0u;/g,
+      'const $1: u32 = 14680064u;');
+    code = code.replace(/@id\(2\)\s*override\s+(\w+)\s*:\s*u32\s*=\s*0u;/g,
+      'const $1: u32 = 0u;');
+  }
   return { code, pushBlocks };
 }
 
@@ -1168,8 +1184,20 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   const snapshot = () => ({ ...stats, ...shaders.stats });
   let destroyed = false;
   let resizeObs = null;
+  // Track the canvas size the observer has seen. render() updates this
+  // synchronously when IT resizes the canvas, so the observer's async fire
+  // (initial observation or render()'s own resize) is ignored; only a real
+  // external resize triggers onResize(). Without this, the observer fires
+  // during render()'s awaits and invalidateTargets() destroys in-flight
+  // textures ("destroyed texture used in a submit").
+  let obsW = canvas.width, obsH = canvas.height;
   if (typeof ResizeObserver !== 'undefined' && onResize) {
-    resizeObs = new ResizeObserver(() => { try { onResize(); } catch { /* never throw at the observer */ } });
+    resizeObs = new ResizeObserver(() => { try {
+      if (canvas.width !== obsW || canvas.height !== obsH) {
+        obsW = canvas.width; obsH = canvas.height;
+        onResize();
+      }
+    } catch { /* never throw at the observer */ } });
     try { resizeObs.observe(canvas); } catch { /* ignore */ }
   }
 
@@ -1417,7 +1445,13 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
           if (b && b.kind === 1) {
             bufHex = b.obj;
             // Offset-qualified: one VkBuffer may back several uniform ranges.
-            bytes = F.buffers.get(bufHex + ':' + (b.bufOff || '0')) || F.buffers.get(bufHex);
+            // The GPU buffer cache (gpuBufferFor) is keyed by bufHex, so the
+            // qualified key must become the cache key - otherwise a different
+            // range of the same VkBuffer poisons the cache for this binding.
+            const qkey = bufHex + ':' + (b.bufOff || '0');
+            bytes = F.buffers.get(qkey);
+            if (bytes) bufHex = qkey;
+            else bytes = F.buffers.get(bufHex);
           }
           else if (b && b.kind === 4) { bufHex = 'inline:' + group + ':' + d.binding + ':' + k; bytes = inlineMap.get(group + ':' + d.binding); }
           // Missing uniform data: substitute a zero buffer large enough for any
@@ -1454,6 +1488,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     F.texCache.clear(); F.bufCache.clear(); F.sampCache.clear(); F.live.length = 0;
     if (canvas.width !== frame.width || canvas.height !== frame.height) {
       canvas.width = frame.width; canvas.height = frame.height;
+      obsW = frame.width; obsH = frame.height;
     }
 
     let presentTex = null, presentW = frame.width, presentH = frame.height, lastClear = [0, 0, 0, 1];
