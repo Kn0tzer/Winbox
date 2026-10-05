@@ -5895,6 +5895,12 @@ bool CPU64::buildBlock(U64 startRip, BBlock& b) {
 }
 
 U32 CPU64::execBlock(const BBlock& b, U64 maxInsn) {
+    // Threaded-interpreter tier: BW64_THREADED=1 selects computed-goto
+    // dispatch over the same BRec stream (execBlockThreaded below). Default
+    // is the switch (tier 1.5); tier 1 is step().
+    static const bool thrEnabled = (std::getenv("BW64_THREADED") &&
+                                        std::getenv("BW64_THREADED")[0] == '1');
+    if (thrEnabled) return execBlockThreaded(b, maxInsn);
     U32 executed = 0;
     for (U16 i = 0; i < b.n && executed < maxInsn; i++) {
         const BRec& rec = b.recs[i];
@@ -6120,6 +6126,362 @@ U32 CPU64::execBlock(const BBlock& b, U64 maxInsn) {
     return executed;
 }
 
+// ---- Threaded-interpreter tier (BW64_THREADED=1) ----
+// Same predecoded BRec stream as execBlock, dispatched by computed
+// goto ("threaded code") instead of the switch. Each handler ends with
+// its OWN indirect dispatch jump, so the CPU's indirect-branch
+// predictor learns per-handler targets; the switch has a single dispatch
+// site where all opcodes alias. Handler bodies are verbatim copies of
+// execBlock's cases (generated, not hand-transcribed) - semantics are
+// identical by construction; only dispatch differs. Invalidation is
+// unchanged: same BBlock cache, same per-record page-generation checks
+// in the same positions as execBlock (a guest store can rewrite later
+// bytes of the block being executed).
+U32 CPU64::execBlockThreaded(const BBlock& b, U64 maxInsn) {
+    if (b.n == 0 || maxInsn == 0) return 0;
+    static_assert(BK_IMUL_3OP == 18, "BKind order changed: update thrDispatch table");
+    // Static: label addresses are compile-time constants; the table is
+    // built once, not on every block execution (2M+ executions per
+    // benchmark loop - 19 stores each would be measurable).
+    static const void* thrDispatch[19] = {
+        &&thr_MOV_RM_R,
+        &&thr_MOV_R_RM,
+        &&thr_ALU_RM_R,
+        &&thr_ALU_R_RM,
+        &&thr_ALU_RM_IMM,
+        &&thr_SHIFT_IMM,
+        &&thr_IMUL_R_RM,
+        &&thr_JCC8,
+        &&thr_TEST_RM_R,
+        &&thr_LEA,
+        &&thr_MOV_RM_IMM,
+        &&thr_MOV_R_IMM,
+        &&thr_PUSH,
+        &&thr_POP,
+        &&thr_STRING,
+        &&thr_ALU_ACC_IMM,
+        &&thr_MOVX,
+        &&thr_IMUL_1OP,
+        &&thr_IMUL_3OP,
+    };
+    U32 executed = 0;
+    U16 i = 0;
+#define THR_NEXT() do { \
+        executed++; \
+        if (KMemory64::blockPageGenOf(b.page0) != b.gen0 || \
+            KMemory64::blockPageGenOf(b.page1) != b.gen1) goto thr_done; \
+        if (++i >= b.n || executed >= maxInsn) goto thr_done; \
+        goto *thrDispatch[b.recs[i].kind]; \
+    } while (0)
+    goto *thrDispatch[b.recs[0].kind];
+thr_MOV_RM_R: {
+        const BRec& rec = b.recs[i];
+        bool rexPresent = rec.rexPresent != 0;
+        U32 size = rec.size;
+
+        ModRM m = resolveRecipe(rec.mr);
+        U64 src = (size == 4) ? (U64)reg[m.regField].u32 : reg[m.regField].u64;
+        storeRM(m, size, src, rexPresent);
+        rip += rec.len;
+        THR_NEXT();
+
+    }
+thr_MOV_R_RM: {
+        const BRec& rec = b.recs[i];
+        bool rexPresent = rec.rexPresent != 0;
+        U32 size = rec.size;
+
+        ModRM m = resolveRecipe(rec.mr);
+        U64 val = loadRM(m, size, rexPresent);
+        if (size == 4) reg[m.regField].setU32((U32)val);
+        else reg[m.regField].setU64(val);
+        rip += rec.len;
+        THR_NEXT();
+
+    }
+thr_ALU_RM_R: {
+        const BRec& rec = b.recs[i];
+        bool rexPresent = rec.rexPresent != 0;
+        U32 size = rec.size;
+
+        ModRM m = resolveRecipe(rec.mr);
+        U64 a = loadRM(m, size, rexPresent);
+        U64 bv = (size == 1) ? readReg8(m.regField, rexPresent)
+        : (size == 2) ? (U64)reg[m.regField].u16
+        : (size == 4) ? (U64)reg[m.regField].u32 : reg[m.regField].u64;
+        runAlu(rec.sub, size, true, a, bv, m, rexPresent);
+        rip += rec.len;
+        THR_NEXT();
+
+    }
+thr_ALU_R_RM: {
+        const BRec& rec = b.recs[i];
+        bool rexPresent = rec.rexPresent != 0;
+        U32 size = rec.size;
+
+        ModRM m = resolveRecipe(rec.mr);
+        U64 a = (size == 1) ? readReg8(m.regField, rexPresent)
+        : (size == 2) ? (U64)reg[m.regField].u16
+        : (size == 4) ? (U64)reg[m.regField].u32 : reg[m.regField].u64;
+        U64 bv = loadRM(m, size, rexPresent);
+        runAlu(rec.sub, size, false, a, bv, m, rexPresent);
+        rip += rec.len;
+        THR_NEXT();
+
+    }
+thr_ALU_RM_IMM: {
+        const BRec& rec = b.recs[i];
+        bool rexPresent = rec.rexPresent != 0;
+        U32 size = rec.size;
+
+        ModRM m = resolveRecipe(rec.mr);
+        U64 a = loadRM(m, size, rexPresent);
+        runAlu(rec.sub, size, true, a, rec.imm, m, rexPresent);
+        rip += rec.len;
+        THR_NEXT();
+
+    }
+thr_SHIFT_IMM: {
+        const BRec& rec = b.recs[i];
+        bool rexPresent = rec.rexPresent != 0;
+        U32 size = rec.size;
+
+        ModRM m = resolveRecipe(rec.mr);
+        U8 count = (U8)rec.imm;
+        U64 v = loadRM(m, size, rexPresent);
+        U64 res = doShift(rflags, rec.sub, v, count, size);
+        if (count != 0) storeRM(m, size, res, rexPresent);
+        else if (size == 4 && m.isReg) reg[m.rmIndex].setU32((U32)v);
+        rip += rec.len;
+        THR_NEXT();
+
+    }
+thr_IMUL_R_RM: {
+        const BRec& rec = b.recs[i];
+        bool rexPresent = rec.rexPresent != 0;
+        U32 size = rec.size;
+
+        ModRM m = resolveRecipe(rec.mr);
+        U64 a = (size == 2) ? (U64)reg[m.regField].u16
+        : (size == 4) ? (U64)reg[m.regField].u32 : reg[m.regField].u64;
+        U64 bv = loadRM(m, size, rexPresent);
+        S64 sa, sb;
+        if (size == 2) { sa = (S64)(S16)a; sb = (S64)(S16)bv; }
+        else if (size == 4) { sa = (S64)(S32)a; sb = (S64)(S32)bv; }
+        else { sa = (S64)a; sb = (S64)bv; }
+        S64 res = sa * sb;
+        bool overflow;
+        if (size == 2) overflow = (res != (S64)(S16)res);
+        else if (size == 4) overflow = (res != (S64)(S32)res);
+        else { __int128 r128 = (__int128)sa * (__int128)sb; overflow = (r128 != (__int128)res); }
+        rflags &= ~(X64_CF | X64_OF);
+        if (overflow) rflags |= X64_CF | X64_OF;
+        if (size == 2) reg[m.regField].setU16((U16)res);
+        else if (size == 4) reg[m.regField].setU32((U32)res);
+        else reg[m.regField].setU64(res);
+        rip += rec.len;
+        THR_NEXT();
+
+    }
+thr_JCC8: {
+        const BRec& rec = b.recs[i];
+        bool rexPresent = rec.rexPresent != 0;
+        U32 size = rec.size;
+
+        rip += rec.len;
+        if (evalCC(rec.sub)) rip += (U64)(S64)rec.jccDelta;
+        executed++;
+        goto thr_done;
+
+    }
+thr_TEST_RM_R: {
+        const BRec& rec = b.recs[i];
+        bool rexPresent = rec.rexPresent != 0;
+        U32 size = rec.size;
+
+        ModRM m = resolveRecipe(rec.mr);
+        U64 a = loadRM(m, size, rexPresent);
+        U64 bv = (size == 1) ? readReg8(m.regField, rexPresent)
+        : (size == 2) ? (U64)reg[m.regField].u16
+        : (size == 4) ? (U64)reg[m.regField].u32 : reg[m.regField].u64;
+        flagsLogic(rflags, a & bv, size);
+        rip += rec.len;
+        THR_NEXT();
+
+    }
+thr_LEA: {
+        const BRec& rec = b.recs[i];
+        bool rexPresent = rec.rexPresent != 0;
+        U32 size = rec.size;
+
+        ModRM m = resolveRecipe(rec.mr);
+        if (size == 4) reg[m.regField].setU32((U32)m.effAddr);
+        else reg[m.regField].setU64(m.effAddr);
+        rip += rec.len;
+        THR_NEXT();
+
+    }
+thr_MOV_RM_IMM: {
+        const BRec& rec = b.recs[i];
+        bool rexPresent = rec.rexPresent != 0;
+        U32 size = rec.size;
+
+        ModRM m = resolveRecipe(rec.mr);
+        storeRM(m, size, rec.imm, rexPresent);
+        rip += rec.len;
+        THR_NEXT();
+
+    }
+thr_MOV_R_IMM: {
+        const BRec& rec = b.recs[i];
+        bool rexPresent = rec.rexPresent != 0;
+        U32 size = rec.size;
+
+        if (size == 4) reg[rec.sub].setU32((U32)rec.imm);
+        else reg[rec.sub].setU64(rec.imm);
+        rip += rec.len;
+        THR_NEXT();
+
+    }
+thr_PUSH: {
+        const BRec& rec = b.recs[i];
+        bool rexPresent = rec.rexPresent != 0;
+        U32 size = rec.size;
+
+        push64(reg[rec.sub].u64);
+        rip += rec.len;
+        THR_NEXT();
+
+    }
+thr_POP: {
+        const BRec& rec = b.recs[i];
+        bool rexPresent = rec.rexPresent != 0;
+        U32 size = rec.size;
+
+        reg[rec.sub].setU64(pop64());
+        rip += rec.len;
+        THR_NEXT();
+
+    }
+thr_STRING: {
+        const BRec& rec = b.recs[i];
+        bool rexPresent = rec.rexPresent != 0;
+        U32 size = rec.size;
+
+        // Same implementation as the single-step dispatcher (runStringOp
+        // is shared), so block execution matches step() exactly.
+        runStringOp(rec.sub, rec.size, rec.rep, rec.asize32);
+        rip += rec.len;
+        THR_NEXT();
+
+    }
+thr_ALU_ACC_IMM: {
+        const BRec& rec = b.recs[i];
+        bool rexPresent = rec.rexPresent != 0;
+        U32 size = rec.size;
+
+        // ALU ACC, imm (sub 0..7) and TEST ACC, imm (sub 8, flags-only).
+        // 8-bit reads/writes AL directly (no ModRM, so no high-byte rule).
+        U64 a = (size == 1) ? (U64)reg[X64_RAX].u8
+        : (size == 2) ? (U64)reg[X64_RAX].u16
+        : (size == 4) ? (U64)reg[X64_RAX].u32 : reg[X64_RAX].u64;
+        if (rec.sub == 8) {
+        flagsLogic(rflags, a & rec.imm, size);
+        } else {
+        ModRM fake;
+        fake.isReg = true; fake.rmIndex = X64_RAX; fake.regField = 0;
+        runAlu(rec.sub, size, true, a, rec.imm, fake, rexPresent);
+        }
+        rip += rec.len;
+        THR_NEXT();
+
+    }
+thr_MOVX: {
+        const BRec& rec = b.recs[i];
+        bool rexPresent = rec.rexPresent != 0;
+        U32 size = rec.size;
+
+        // MOVZX/MOVSX r, r/m (sub 0=zx8,1=zx16,2=sx8,3=sx16). No flags.
+        ModRM m = resolveRecipe(rec.mr);
+        U32 srcSize = (rec.sub == 0 || rec.sub == 2) ? 1 : 2;
+        U64 raw = loadRM(m, srcSize, rexPresent);
+        U64 v = (rec.sub >= 2)
+        ? (U64)(S64)((srcSize == 1) ? (S8)raw : (S16)raw)
+        : raw;
+        if (size == 2) reg[m.regField].setU16((U16)v);
+        else if (size == 4) reg[m.regField].setU32((U32)v);
+        else reg[m.regField].setU64(v);
+        rip += rec.len;
+        THR_NEXT();
+
+    }
+thr_IMUL_1OP: {
+        const BRec& rec = b.recs[i];
+        bool rexPresent = rec.rexPresent != 0;
+        U32 size = rec.size;
+
+        // One-operand IMUL r/m (F6/F7 /5): RDX:RAX (or DX:AX, EDX:EAX,
+        // AX for 8-bit) = RAX * r/m, signed. CF=OF on overflow.
+        ModRM m = resolveRecipe(rec.mr);
+        U64 src = loadRM(m, size, rexPresent);
+        bool overflow = false;
+        if (size == 1) {
+        S16 prod = (S16)(S8)reg[X64_RAX].u8 * (S16)(S8)src;
+        reg[X64_RAX].setU16((U16)prod);
+        overflow = ((S8)(prod & 0xFF) != prod);
+        } else if (size == 2) {
+        S32 prod = (S32)(S16)reg[X64_RAX].u16 * (S32)(S16)(U16)src;
+        reg[X64_RAX].setU16((U16)prod);
+        reg[X64_RDX].setU16((U16)(prod >> 16));
+        overflow = ((S16)(U16)prod != prod);
+        } else if (size == 4) {
+        S64 prod = (S64)(S32)reg[X64_RAX].u32 * (S64)(S32)(U32)src;
+        reg[X64_RAX].setU64((U64)(U32)prod);
+        reg[X64_RDX].setU64((U64)(U32)((U64)prod >> 32));
+        overflow = ((S32)(U32)prod != prod);
+        } else {
+        __int128 p = (__int128)(S64)reg[X64_RAX].u64 * (__int128)(S64)src;
+        U64 lo = (U64)p, hi = (U64)(p >> 64);
+        reg[X64_RAX].setU64(lo);
+        reg[X64_RDX].setU64(hi);
+        overflow = ((S64)lo != p);
+        }
+        rflags &= ~(X64_CF | X64_OF);
+        if (overflow) rflags |= (X64_CF | X64_OF);
+        rip += rec.len;
+        THR_NEXT();
+
+    }
+thr_IMUL_3OP: {
+        const BRec& rec = b.recs[i];
+        bool rexPresent = rec.rexPresent != 0;
+        U32 size = rec.size;
+
+        // IMUL r, r/m, imm: signed multiply, overflow iff the full
+        // product does not fit the operand width. CF=OF on overflow.
+        ModRM m = resolveRecipe(rec.mr);
+        U64 src = loadRM(m, size, rexPresent);
+        S64 sa = (size == 2) ? (S64)(S16)src
+        : (size == 4) ? (S64)(S32)src : (S64)src;
+        S64 imm = (S64)rec.imm; // already sign-extended at build
+        S64 r = sa * imm;
+        bool overflow;
+        if (size == 2) overflow = (r != (S64)(S16)r);
+        else if (size == 4) overflow = (r != (S64)(S32)r);
+        else { __int128 r128 = (__int128)sa * (__int128)imm; overflow = (r128 != (__int128)r); }
+        rflags &= ~(X64_CF | X64_OF);
+        if (overflow) rflags |= X64_CF | X64_OF;
+        if (size == 2) reg[m.regField].setU16((U16)r);
+        else if (size == 4) reg[m.regField].setU32((U32)r);
+        else reg[m.regField].setU64((U64)r);
+        rip += rec.len;
+        THR_NEXT();
+
+    }
+thr_done:
+    return executed;
+#undef THR_NEXT
+}
 // ---- Phase-1 JIT hook (see include/jit64.h). Gated on BW64_JIT=1 so default
 // behavior is unchanged. Compiles the JIT plan for the block at RIP, validates
 // it, then executes via the interpreter's execBlock (same BBlock builder the
@@ -6233,6 +6595,11 @@ void CPU64::freeJit() {
 }
 
 U32 CPU64::tryBlockStep(U64 maxInsn) {
+    // BW64_NOBLOCK=1: benchmark/diagnostic escape hatch. Skip the block
+    // cache entirely so runBounded falls through to step() (tier 1).
+    static const bool noBlock = (std::getenv("BW64_NOBLOCK") &&
+                                     std::getenv("BW64_NOBLOCK")[0] == '1');
+    if (noBlock) return 0;
     U64 r = rip;
     U32 neg = (U32)((r ^ (r >> 10)) & 1023);
     if (blockNegCache[neg] == r) return 0;

@@ -22,6 +22,8 @@
 
 #ifdef BOXEDWINE_GUEST_X64
 extern int runX64SelfTest();
+extern int runX64BenchDispatch(int which, int reps);
+extern int runX64FuzzThreaded(int which, int nseeds);
 extern "C" int runX64RunElf(const char* path);
 #endif
 #ifndef BOXEDWINE_DISABLE_UI
@@ -219,6 +221,32 @@ int boxedmain(int argc, const char **argv) {
     for (int i = 1; i < argc; i++) {
         if (argv[i] && std::string(argv[i]) == "--x64-selftest") {
             return runX64SelfTest();
+        }
+        if (argv[i] && std::string(argv[i]) == "--x64-bench-dispatch") {
+            // --x64-bench-dispatch <step|block> [reps]
+            int which = 1, reps = 3, used = 0;
+            if (i + 1 < argc && argv[i + 1] && argv[i + 1][0] != '-') {
+                std::string w = argv[i + 1];
+                which = (w == "step") ? 0 : 1; used++;
+            }
+            if (i + 1 + used < argc && argv[i + 1 + used] && argv[i + 1 + used][0] != '-') {
+                reps = std::atoi(argv[i + 1 + used]);
+                if (reps < 1) reps = 1; if (reps > 25) reps = 25;
+            }
+            return runX64BenchDispatch(which, reps);
+        }
+        if (argv[i] && std::string(argv[i]) == "--x64-fuzz-threaded") {
+            // --x64-fuzz-threaded <step|block> <seeds>
+            int which = 1, seeds = 200, used = 0;
+            if (i + 1 < argc && argv[i + 1] && argv[i + 1][0] != '-') {
+                std::string w = argv[i + 1];
+                which = (w == "step") ? 0 : 1; used++;
+            }
+            if (i + 1 + used < argc && argv[i + 1 + used] && argv[i + 1 + used][0] != '-') {
+                seeds = std::atoi(argv[i + 1 + used]);
+                if (seeds < 1) seeds = 1;
+            }
+            return runX64FuzzThreaded(which, seeds);
         }
         if (argv[i] && std::string(argv[i]) == "--x64-run-elf") {
             // Optional next arg = ELF path on host disk. Without it the

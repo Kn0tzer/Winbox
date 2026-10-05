@@ -34,7 +34,7 @@ case "$SELFTEST_ONLY" in
 esac
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: JOBS must be positive." >&2; exit 2; }
 
-echo "=== [1/3] native phase-1 unit tests (g++ gate) ==="
+echo "=== [1/4] native phase-1 unit tests (g++ gate) ==="
 mkdir -p "$BUILD_TMP"
 BUILD_TMP="$BUILD_TMP/lifetime" bash "$REPO/scripts/test-jit-lifetime.sh"
 g++ -std=c++17 -Wall -Wextra -DBOXEDWINE_GUEST_X64=1 \
@@ -71,7 +71,7 @@ if [ -n "$SELFTEST_ONLY" ]; then
     exit 0
 fi
 
-echo "=== [2/3] wasm64-selftest build (emcc) ==="
+echo "=== [2/4] wasm64-selftest build (emcc) ==="
 command -v emcc >/dev/null || {
     echo "ERROR: emcc not found. Activate the Emscripten SDK first (emsdk_env.sh)." >&2
     exit 1
@@ -91,11 +91,11 @@ JS_CJS="${JS%.js}.cjs"
 # Emscripten 6 does not mirror Node's environment unless NODE_HOST_ENV is set.
 # Forward only these two test controls before the guest calls getenv().
 {
-    printf '%s\n' 'var Module = { preRun: function() { ENV.BW64_JIT = process.env.BW64_JIT || "0"; ENV.BW64_JIT_VERIFY = process.env.BW64_JIT_VERIFY || "0"; } };'
+    printf '%s\n' 'var Module = { preRun: function() { ENV.BW64_JIT = process.env.BW64_JIT || "0"; ENV.BW64_JIT_VERIFY = process.env.BW64_JIT_VERIFY || "0"; ENV.BW64_THREADED = process.env.BW64_THREADED || "0"; } };'
     cat "$JS"
 } > "$JS_CJS"
 
-echo "=== [3/3] smoke run: interpreter vs BW64_JIT=1 (outputs must match) ==="
+echo "=== [3/4] smoke run: interpreter vs BW64_JIT=1 (outputs must match) ==="
 if ! BW64_JIT=0 BW64_JIT_VERIFY=0 node "$JS_CJS" --x64-selftest > "$BUILD_TMP/selftest_interp.log" 2>&1; then
     echo "FAIL: interpreter self-test; see $BUILD_TMP/selftest_interp.log" >&2
     exit 1
@@ -111,6 +111,17 @@ if diff -u "$BUILD_TMP/selftest_interp.log" "$BUILD_TMP/selftest_jit_results.log
     echo "OK: BW64_JIT=1 output identical to interpreter baseline."
 else
     echo "FAIL: JIT output differs from interpreter baseline (see diff above)." >&2
+    exit 1
+fi
+echo "=== [4/4] threaded-tier smoke: BW64_THREADED=1 (must match interpreter) ==="
+if ! BW64_THREADED=1 node "$JS_CJS" --x64-selftest > "$BUILD_TMP/selftest_threaded.log" 2>&1; then
+    echo "FAIL: threaded self-test; see $BUILD_TMP/selftest_threaded.log" >&2
+    exit 1
+fi
+if diff -u "$BUILD_TMP/selftest_interp.log" "$BUILD_TMP/selftest_threaded.log"; then
+    echo "OK: BW64_THREADED=1 output identical to interpreter baseline."
+else
+    echo "FAIL: threaded output differs from interpreter baseline (see diff above)." >&2
     exit 1
 fi
 echo "build-jit-wasm.sh: all gates passed."

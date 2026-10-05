@@ -219,6 +219,9 @@ public:
     U32 tryWasmExec(struct Jit64Block& block, U32 nOps);
     struct Jit64State* jit() { return m_jit; }
     const struct Jit64State* jit() const { return m_jit; }
+#ifdef BOXEDWINE_BLOCK_EXEC
+    U64  blockExecCount() const { return blockStatsExec; } // diagnostic: blocks run via tryBlockStep
+#endif
     void ensureJit();
     void freeJit();
     // Owned JIT state (nullptr until first BW64_JIT=1 use). Forward-declared
@@ -313,6 +316,7 @@ private:
     ModRM resolveRecipe(const BRecipe& r);
     bool buildBlock(U64 startRip, BBlock& b);
     U32  execBlock(const BBlock& b, U64 maxInsn = ~0ULL); // instructions executed
+    U32  execBlockThreaded(const BBlock& b, U64 maxInsn = ~0ULL); // threaded dispatch tier
     U32  tryBlockStep(U64 maxInsn = ~0ULL); // probe/build/exec; 0 = interpret
 #endif
 
