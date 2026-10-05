@@ -439,6 +439,9 @@ U32 jit64EmitNew(std::vector<U8>& body, const Jit64Op& op) {
         return emitStringGen(body, op);
     case J64_LEA:
         return emitLeaGen(body, op);
+    case J64_PUSH:
+    case J64_POP:
+        return emitStackGen(body, op);
     default:
         return 0xFE;
     }
@@ -547,7 +550,9 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             bool memAlu = op.kind == J64_ALU_RM_R || op.kind == J64_ALU_R_RM ||
                           op.kind == J64_ALU_RM_IMM || op.kind == J64_TEST_RM_R;
             bool memLea = op.kind == J64_LEA;
-            if ((!memAlu && !memLea) || !widthOk) return false;
+            bool memStack = (op.kind == J64_PUSH && op.sub == 2) ||
+                            (op.kind == J64_POP && op.sub == 1);
+            if ((!memAlu && !memLea && !memStack) || !widthOk) return false;
             if (op.ea.seg != 0) return false; // FS/GS: interpreter-only
             if (op.ea.baseReg != 0xFF && op.ea.baseReg >= 16) return false;
             if (op.ea.idxReg != 0xFF && op.ea.idxReg >= 16) return false;
@@ -570,6 +575,17 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             // LEA r, m: r/m always names memory (reg form is #UD at decode);
             // the destination is the ModRM reg field.
             if (op.sub != 0 || op.regField >= 16) return false;
+            break;
+        case J64_PUSH:
+            // sub 0 = reg (50-57), 1 = imm (68/6A), 2 = r/m (FF /6).
+            // Always 64-bit; the stack address comes from the RSP local.
+            if (op.sub > 2 || op.regField >= 16) return false;
+            if (op.sub == 2 && !op.isMem && op.rmIndex >= 16) return false;
+            break;
+        case J64_POP:
+            // sub 0 = reg (58-5F), 1 = r/m (8F /0). Always 64-bit.
+            if (op.sub > 1 || op.regField >= 16) return false;
+            if (op.sub == 1 && !op.isMem && op.rmIndex >= 16) return false;
             break;
         case J64_ALU_RM_R:
         case J64_ALU_R_RM:
@@ -707,6 +723,14 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             // String ops update RSI/RDI/RCX in their locals; the epilogue
             // store-back publishes them. emitStringGen returns 0xFF.
             emitStringGen(body, op);
+            break;
+        }
+        case J64_PUSH:
+        case J64_POP: {
+            // Stack ops update RSP in its local inline (fault ordering
+            // mirrors cpu64.cpp); the epilogue store-back publishes it.
+            // emitStackGen returns 0xFF.
+            emitStackGen(body, op);
             break;
         }
         default: {

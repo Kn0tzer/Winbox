@@ -277,17 +277,41 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
         return false;
     }
 
-    // PUSH r64 / POP r64.
+    // PUSH r64 (50+rd) / POP r64 (58+rd). Always 64-bit in long mode:
+    // the interpreter (cpu64.cpp dsp_0/dsp_1) ignores the 0x66 operand-size
+    // override on near push/pop of GPRs, so the decoder sets size=8
+    // unconditionally. sub: 0 = register form (imm and r/m forms below
+    // use sub 1/2).
     if (op >= 0x50 && op <= 0x57) {
         out.kind = J64_PUSH;
+        out.sub = 0;
+        out.size = 8;
         out.regField = (U8)((op - 0x50) | ((p.rex & 0x01) ? 0x08 : 0));
         out.len = (U8)(opOff + 1);
         return true;
     }
     if (op >= 0x58 && op <= 0x5F) {
         out.kind = J64_POP;
+        out.sub = 0;
+        out.size = 8;
         out.regField = (U8)((op - 0x58) | ((p.rex & 0x01) ? 0x08 : 0));
         out.len = (U8)(opOff + 1);
+        return true;
+    }
+    // PUSH imm8 (6A) / PUSH imm32 sign-extended (68). Always a 64-bit push
+    // in long mode (cpu64.cpp dsp_22); the immediate is sign-extended to
+    // 64 bits at decode. Segment pushes (06/0E/16/1E/0F A0/A8) are #UD in
+    // the interpreter and stay unknown here.
+    if (op == 0x68 || op == 0x6A) {
+        U32 isz = (op == 0x6A) ? 1 : 4;
+        if (opOff + 1 + isz > byteCount) return false;
+        S64 imm = (op == 0x6A) ? (S64)(S8)bytes[opOff + 1]
+                               : (S64)(S32)readU32(bytes + opOff + 1);
+        out.kind = J64_PUSH;
+        out.sub = 1; // immediate form
+        out.size = 8;
+        out.imm = (U64)imm;
+        out.len = (U8)(opOff + 1 + isz);
         return true;
     }
     // MOV r, imm.
@@ -467,6 +491,38 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
         out.regField = rf; out.rmIndex = ri; out.isMem = hm;
         return true;
     }
+    // PUSH r/m64 (FF /6). Always 64-bit in long mode (cpu64.cpp: the /6
+    // sub-op does loadRM(m, 8) then push64). mod==3 is the register-direct
+    // form (isMem=false); otherwise the EA is decoded (pre-instruction
+    // register values, mirroring decodeModRM in cpu64.cpp).
+    if (op == 0xFF) {
+        U8 rf; bool rr; U8 ri; bool hm;
+        U32 ml = scanModRM(bytes + opOff + 1, byteCount - (opOff + 1), p, rf, rr, ri, hm);
+        if (!ml || (rf & 0x7) != 6) return false;
+        out.kind = J64_PUSH;
+        out.sub = 2; // r/m form
+        out.size = 8;
+        out.len = (U8)(opOff + 1 + ml);
+        out.regField = rf; out.rmIndex = ri; out.isMem = hm;
+        if (hm) decodeEA(bytes + opOff + 1, p, ripBase + opOff + 1, 0, out.ea);
+        return true;
+    }
+    // POP r/m64 (8F /0). Always 64-bit in long mode (cpu64.cpp dsp_34:
+    // pop64 then storeRM(m, 8)). The EA is computed at decode time from
+    // pre-instruction registers (decodeModRM runs before pop64 in the
+    // interpreter), so RSP-relative EAs use the old RSP.
+    if (op == 0x8F) {
+        U8 rf; bool rr; U8 ri; bool hm;
+        U32 ml = scanModRM(bytes + opOff + 1, byteCount - (opOff + 1), p, rf, rr, ri, hm);
+        if (!ml || (rf & 0x7) != 0) return false;
+        out.kind = J64_POP;
+        out.sub = 1; // r/m form (sub 0 = register form from 58-5F)
+        out.size = 8;
+        out.len = (U8)(opOff + 1 + ml);
+        out.regField = rf; out.rmIndex = ri; out.isMem = hm;
+        if (hm) decodeEA(bytes + opOff + 1, p, ripBase + opOff + 1, 0, out.ea);
+        return true;
+    }
     // 69/6B: three-operand IMUL r, r/m, imm. 6B takes a sign-extended imm8;
     // 69 takes imm16 under 0x66 else imm32 (sign-extended for 64-bit).
     if (op == 0x69 || op == 0x6B) {
@@ -624,11 +680,18 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16) {
         if (op.size != 1 && op.size != 2 && op.size != 4 && op.size != 8) return;
         op.plan = JIT64_FAST;
         return;
+    case J64_PUSH:
+    case J64_POP:
+        // Near PUSH/POP are always 64-bit in long mode (the interpreter
+        // ignores 0x66); the decoder sets size=8 unconditionally. 0x66
+        // forms stay fallback via the generic osize16 guard above.
+        if (op.size != 8) return;
+        if (op.kind == J64_PUSH ? op.sub > 2 : op.sub > 1) return;
+        op.plan = JIT64_FAST;
+        return;
     case J64_TEST_RM_R:
     case J64_MOV_RM_IMM:
     case J64_MOV_R_IMM:
-    case J64_PUSH:
-    case J64_POP:
     case J64_CALL_REL:
     case J64_JMP_REL:
     case J64_JCC:
@@ -766,6 +829,11 @@ bool jit64BlockMayStore(const Jit64Op* ops, U32 nOps) {
             break;
         case J64_PUSH:
             return true; // stack store; a pathological rsp could hit code
+        case J64_POP:
+            // POP r/m (8F /0, mod!=3) stores to guest memory via storeRM;
+            // same hazard as PUSH. Register POPs only touch wasm locals.
+            if (op.isMem) return true;
+            break;
         default:
             break;
         }

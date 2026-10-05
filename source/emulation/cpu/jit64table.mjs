@@ -208,4 +208,35 @@ export const EMITTERS = [
       note: "the value IS the effective address; no memory is read",
     },
   },
+  {
+    func: "emitStackGen",
+    template: "stack",
+    kinds: ["J64_PUSH", "J64_POP"],
+    encoding:
+      "PUSH: 0x50-0x57 r64 (sub 0), 0x68/0x6A imm32/imm8 sign-extended " +
+      "(sub 1), 0xFF /6 r/m64 (sub 2). POP: 0x58-0x5F r64 (sub 0), " +
+      "0x8F /0 r/m64 (sub 1). Always 64-bit in long mode - the " +
+      "interpreter ignores 0x66 on near PUSH/POP, and 32-bit forms do " +
+      "not exist in 64-bit mode. Segment pushes (06/0E/16/1E/0F A0/A8) " +
+      "are #UD in the interpreter and stay unknown in the decoder. " +
+      "EA via emitEA for r/m memory forms (SIB/RIP-relative/0x67/seg; " +
+      "FS/GS-segment EAs stay interpreter-only via the classifier).",
+    operands:
+      "size 8 only. PUSH reg reads the source register BEFORE touching " +
+      "RSP (PUSH RSP pushes the old RSP). PUSH r/m reads the r/m operand " +
+      "first (mod==3: register, else [EA]). POP r/m uses the decode-time " +
+      "EA, computed from pre-instruction registers (RSP-relative EAs " +
+      "see the old RSP).",
+    flags: {
+      writes: [],
+      preserves: "all RFLAGS bits - PUSH/POP never touch flags",
+      note: "fault ordering mirrors cpu64.cpp exactly. PUSH reg: RSP-=8 " +
+            "then write [RSP]. PUSH imm: write [RSP-8] then RSP-=8. " +
+            "PUSH r/m: read r/m, RSP-=8, write [RSP]. POP reg: read " +
+            "[RSP], RSP+=8, write reg. POP r/m: read [RSP], RSP+=8, " +
+            "write r/m. (Reads return 0 and writes commit on unmapped " +
+            "pages, so the ORDER of RSP update vs memory access is the " +
+            "observable contract.)",
+    },
+  },
 ];

@@ -1015,3 +1015,73 @@ U32 emitLeaGen(Bytes& body, const Jit64Op& op) {
     local(body, 0x21, L_R);
     return op.regField;
 }
+
+U32 emitStackGen(Bytes& body, const Jit64Op& op) {
+    constexpr U32 L_RSP = 5; // X64_RSP == 4; GPR local index = reg + 1
+    if (op.kind == J64_PUSH) {
+        if (op.sub == 0) {
+            // PUSH reg: snapshot the source first (PUSH RSP pushes
+            // the OLD rsp), then RSP -= 8, then [RSP] = value.
+            local(body, 0x20, op.regField + 1);
+            local(body, 0x21, L_A);
+            local(body, 0x20, L_RSP);
+            i64Const(body, 8);
+            body.push_back(0x7D); // i64.sub
+            local(body, 0x21, L_RSP);
+            emitMemWrite(body, L_RSP, L_A, 8);
+        } else if (op.sub == 1) {
+            // PUSH imm: the interpreter writes [RSP-8] BEFORE
+            // updating RSP (dsp_22).
+            local(body, 0x20, L_RSP);
+            i64Const(body, 8);
+            body.push_back(0x7D); // i64.sub
+            local(body, 0x21, L_T1);
+            i64Const(body, (S64)op.imm); // sign-extended at decode
+            local(body, 0x21, L_A);
+            emitMemWrite(body, L_T1, L_A, 8);
+            local(body, 0x20, L_T1);
+            local(body, 0x21, L_RSP);
+        } else {
+            // PUSH r/m: read the operand first (register, or
+            // [decode-time EA]), then RSP -= 8, then [RSP] = value.
+            if (op.isMem) {
+                emitEA(body, op); // L_T1 = effective address
+                emitMemRead(body, L_T1, 8); // L_R = [EA]
+                local(body, 0x20, L_R);
+            } else {
+                local(body, 0x20, op.rmIndex + 1);
+            }
+            local(body, 0x21, L_A);
+            local(body, 0x20, L_RSP);
+            i64Const(body, 8);
+            body.push_back(0x7D); // i64.sub
+            local(body, 0x21, L_RSP);
+            emitMemWrite(body, L_RSP, L_A, 8);
+        }
+    } else {
+        // POP. The r/m EA (if any) is decode-time, from
+        // pre-instruction registers: compute it BEFORE the RSP
+        // update so RSP-relative EAs see the old RSP.
+        if (op.sub == 1 && op.isMem) emitEA(body, op); // L_T1 = EA
+        emitMemRead(body, L_RSP, 8); // L_R = [RSP]
+        local(body, 0x20, L_RSP);
+        i64Const(body, 8);
+        body.push_back(0x7C); // i64.add
+        local(body, 0x21, L_RSP);
+        local(body, 0x20, L_R);
+        local(body, 0x21, L_A);
+        if (op.sub == 0) {
+            // POP reg: reg = v (POP RSP overwrites the +8).
+            local(body, 0x20, L_A);
+            local(body, 0x21, op.regField + 1);
+        } else if (op.isMem) {
+            // POP r/m (memory): [EA] = v.
+            emitMemWrite(body, L_T1, L_A, 8);
+        } else {
+            // POP r/m (register-direct): reg = v.
+            local(body, 0x20, L_A);
+            local(body, 0x21, op.rmIndex + 1);
+        }
+    }
+    return 0xFF;
+}

@@ -1027,6 +1027,97 @@ function genLea(e) {
 }`;
 }
 
+// "stack" template: PUSH/POP (emitStackGen).
+// Always 64-bit. RSP is GPR local 5 (X64_RSP == 4; GPR local index = reg+1).
+// The order of the RSP update vs the memory access mirrors cpu64.cpp exactly
+// (reads return 0 and writes commit on unmapped pages, so the ORDER is the
+// observable contract):
+//   PUSH reg (sub 0): push64: value = old reg contents (PUSH RSP pushes the
+//                     old RSP), RSP -= 8, [RSP] = value.
+//   PUSH imm (sub 1): dsp_22: [RSP-8] = imm FIRST, then RSP -= 8.
+//   PUSH r/m (sub 2): v = loadRM(m, 8); push64(v): read r/m (register or
+//                     [decode-time EA]), RSP -= 8, [RSP] = v.
+//   POP reg  (sub 0): v = readq(RSP); RSP += 8; reg = v. (POP RSP: the
+//                     popped value overwrites the incremented RSP.)
+//   POP r/m  (sub 1): v = pop64(); storeRM(m, 8, v): the EA is decode-time
+//                     (pre-instruction registers), so emitEA runs BEFORE the
+//                     RSP update; then v = [RSP], RSP += 8, r/m = v.
+// No flags are touched. Returns 0xFF: RSP is updated inline in its local
+// and the epilogue store-back publishes it.
+function genStack(e) {
+  const L = [];
+  L.push(`U32 ${e.func}(Bytes& body, const Jit64Op& op) {`);
+  L.push(`    constexpr U32 L_RSP = 5; // X64_RSP == 4; GPR local index = reg + 1`);
+  L.push(`    if (op.kind == J64_PUSH) {`);
+  L.push(`        if (op.sub == 0) {`);
+  L.push(`            // PUSH reg: snapshot the source first (PUSH RSP pushes`);
+  L.push(`            // the OLD rsp), then RSP -= 8, then [RSP] = value.`);
+  L.push(`            local(body, 0x20, op.regField + 1);`);
+  L.push(`            local(body, 0x21, L_A);`);
+  L.push(`            local(body, 0x20, L_RSP);`);
+  L.push(`            i64Const(body, 8);`);
+  L.push(`            body.push_back(0x7D); // i64.sub`);
+  L.push(`            local(body, 0x21, L_RSP);`);
+  L.push(`            emitMemWrite(body, L_RSP, L_A, 8);`);
+  L.push(`        } else if (op.sub == 1) {`);
+  L.push(`            // PUSH imm: the interpreter writes [RSP-8] BEFORE`);
+  L.push(`            // updating RSP (dsp_22).`);
+  L.push(`            local(body, 0x20, L_RSP);`);
+  L.push(`            i64Const(body, 8);`);
+  L.push(`            body.push_back(0x7D); // i64.sub`);
+  L.push(`            local(body, 0x21, L_T1);`);
+  L.push(`            i64Const(body, (S64)op.imm); // sign-extended at decode`);
+  L.push(`            local(body, 0x21, L_A);`);
+  L.push(`            emitMemWrite(body, L_T1, L_A, 8);`);
+  L.push(`            local(body, 0x20, L_T1);`);
+  L.push(`            local(body, 0x21, L_RSP);`);
+  L.push(`        } else {`);
+  L.push(`            // PUSH r/m: read the operand first (register, or`);
+  L.push(`            // [decode-time EA]), then RSP -= 8, then [RSP] = value.`);
+  L.push(`            if (op.isMem) {`);
+  L.push(`                emitEA(body, op); // L_T1 = effective address`);
+  L.push(`                emitMemRead(body, L_T1, 8); // L_R = [EA]`);
+  L.push(`                local(body, 0x20, L_R);`);
+  L.push(`            } else {`);
+  L.push(`                local(body, 0x20, op.rmIndex + 1);`);
+  L.push(`            }`);
+  L.push(`            local(body, 0x21, L_A);`);
+  L.push(`            local(body, 0x20, L_RSP);`);
+  L.push(`            i64Const(body, 8);`);
+  L.push(`            body.push_back(0x7D); // i64.sub`);
+  L.push(`            local(body, 0x21, L_RSP);`);
+  L.push(`            emitMemWrite(body, L_RSP, L_A, 8);`);
+  L.push(`        }`);
+  L.push(`    } else {`);
+  L.push(`        // POP. The r/m EA (if any) is decode-time, from`);
+  L.push(`        // pre-instruction registers: compute it BEFORE the RSP`);
+  L.push(`        // update so RSP-relative EAs see the old RSP.`);
+  L.push(`        if (op.sub == 1 && op.isMem) emitEA(body, op); // L_T1 = EA`);
+  L.push(`        emitMemRead(body, L_RSP, 8); // L_R = [RSP]`);
+  L.push(`        local(body, 0x20, L_RSP);`);
+  L.push(`        i64Const(body, 8);`);
+  L.push(`        body.push_back(0x7C); // i64.add`);
+  L.push(`        local(body, 0x21, L_RSP);`);
+  L.push(`        local(body, 0x20, L_R);`);
+  L.push(`        local(body, 0x21, L_A);`);
+  L.push(`        if (op.sub == 0) {`);
+  L.push(`            // POP reg: reg = v (POP RSP overwrites the +8).`);
+  L.push(`            local(body, 0x20, L_A);`);
+  L.push(`            local(body, 0x21, op.regField + 1);`);
+  L.push(`        } else if (op.isMem) {`);
+  L.push(`            // POP r/m (memory): [EA] = v.`);
+  L.push(`            emitMemWrite(body, L_T1, L_A, 8);`);
+  L.push(`        } else {`);
+  L.push(`            // POP r/m (register-direct): reg = v.`);
+  L.push(`            local(body, 0x20, L_A);`);
+  L.push(`            local(body, 0x21, op.rmIndex + 1);`);
+  L.push(`        }`);
+  L.push(`    }`);
+  L.push(`    return 0xFF;`);
+  L.push(`}`);
+  return L.join("\n");
+}
+
 // "string" template: string
 function genString(e) {
   return `U32 ${e.func}(Bytes& body, const Jit64Op& op) {
@@ -1189,7 +1280,7 @@ function genString(e) {
 }`;
 }
 
-const TEMPLATES = { alu: (e) => (e.mem ? genAluMem(e) : genAlu(e)), shift: genShift, rotate: genRotate, imul2: genImul2, imul1: genImul1, imul3: genImul3, movx: genMovx, string: genString, lea: genLea };
+const TEMPLATES = { alu: (e) => (e.mem ? genAluMem(e) : genAlu(e)), shift: genShift, rotate: genRotate, imul2: genImul2, imul1: genImul1, imul3: genImul3, movx: genMovx, string: genString, lea: genLea, stack: genStack };
 
 function generate() {
   const out = [];

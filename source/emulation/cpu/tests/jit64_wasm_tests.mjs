@@ -1835,3 +1835,200 @@ for (const [name, code] of [
 ]) {
   test(`whole-block fallback rejects ${name}`, () => assert.equal(emit(code).result.status, 2));
 }
+// --- PUSH/POP differential fuzz vs the interpreter model ---
+// Reference model transcribed from cpu64.cpp:
+//   push64 (dsp_0):    RSP -= 8, then write [RSP] = value
+//   PUSH imm (dsp_22): write [RSP-8] = imm, then RSP -= 8
+//   PUSH r/m (FF /6):  v = loadRM(m,8); push64(v)
+//   pop64 (dsp_1):     v = read [RSP]; RSP += 8
+//   POP r/m (dsp_34):  v = pop64(); storeRM(m,8,v)
+// The r/m EA is decode-time (pre-instruction registers), like the
+// interpreter's decodeModRM which runs before any RSP update.
+// Memory: reads of unmapped bytes return 0, writes commit (makeGuestMem
+// matches KMemory64's observable behavior).
+function refStack(form, regs, mem, o) {
+  const RSP = 4;
+  if (form === 'push_reg') {
+    const v = regs[o.reg];
+    regs[RSP] = (regs[RSP] - 8n) & mask64;
+    mem.write(regs[RSP], 8, v);
+  } else if (form === 'push_imm') {
+    const sp = (regs[RSP] - 8n) & mask64;
+    mem.write(sp, 8, o.imm);
+    regs[RSP] = sp;
+  } else if (form === 'push_rm') {
+    const v = o.isMem ? mem.read(o.ea, 8) : regs[o.rm];
+    regs[RSP] = (regs[RSP] - 8n) & mask64;
+    mem.write(regs[RSP], 8, v);
+  } else if (form === 'pop_reg') {
+    const v = mem.read(regs[RSP], 8);
+    regs[RSP] = (regs[RSP] + 8n) & mask64;
+    regs[o.reg] = v;
+  } else { // pop_rm
+    const v = mem.read(regs[RSP], 8);
+    regs[RSP] = (regs[RSP] + 8n) & mask64;
+    if (o.isMem) mem.write(o.ea, 8, v);
+    else regs[o.rm] = v;
+  }
+}
+
+function encStack({ form, reg = 0, rm = 0, isMem = false, base = 0, disp = 0, imm = 0n }) {
+  const code = [];
+  const rexB = r => (r >= 8 ? [0x41] : []);
+  if (form === 'push_reg') code.push(...rexB(reg), 0x50 + (reg & 7));
+  else if (form === 'pop_reg') code.push(...rexB(reg), 0x58 + (reg & 7));
+  else if (form === 'push_imm8') code.push(0x6A, Number(imm & 0xFFn));
+  else if (form === 'push_imm32') code.push(0x68, ...little(imm & 0xFFFFFFFFn, 4));
+  else {
+    const opcode = form === 'push_rm' ? 0xFF : 0x8F;
+    const ext = form === 'push_rm' ? 6 : 0;
+    if (isMem) {
+      // mod=1 [base + disp8]; base=4 (RSP) needs a SIB byte.
+      if (base >= 8) code.push(0x41); // REX.B
+      if ((base & 7) === 4) code.push(opcode, 0x40 | (ext << 3) | 0x04, 0x24, disp & 0xFF);
+      else code.push(opcode, 0x40 | (ext << 3) | (base & 7), disp & 0xFF);
+    } else {
+      code.push(...rexB(rm), opcode, 0xC0 | (ext << 3) | (rm & 7));
+    }
+  }
+  return code;
+}
+
+// Adversarial stack addresses: normal, page boundaries, zero, top.
+function pickStackAddr(rand) {
+  const choices = [0x10000n, 0xFFF8n, 0x1000n, 0x0FF8n, 0x1008n, 0x1FF8n,
+                   0n, 0xFFFFFFFFFFFFFFF8n, 0x7FFFFFFFFFFFF000n];
+  if (rand() < 0.7) return choices[Math.floor(rand() * choices.length)];
+  return r64fuzz(rand) & ~7n; // 8-aligned random
+}
+
+test('PUSH RSP pushes the old RSP value', async () => {
+  const regs = baseRegs(); regs[4] = 0x10000n;
+  const out = await runAluMem([0x54], { regs: [...regs], rflags: 0x202, memInit: new Map() });
+  assert.equal(out.regs[4], 0xFFF8n, 'RSP decremented');
+  assert.equal(out.guestMem.read(0xFFF8n, 8), 0x10000n, '[RSP] = old RSP');
+  assert.equal(out.rflags, 0x202, 'flags preserved');
+});
+
+test('POP RSP loads the popped value (discards the +8)', async () => {
+  const regs = baseRegs(); regs[4] = 0xFFF8n;
+  const memInit = new Map();
+  const val = 0x123456789ABCDEF0n;
+  for (let b = 0; b < 8; b++) memInit.set(0xFFF8n + BigInt(b), Number((val >> BigInt(8 * b)) & 0xFFn));
+  const out = await runAluMem([0x5C], { regs: [...regs], rflags: 0x202, memInit });
+  assert.equal(out.regs[4], val, 'RSP = popped value');
+  assert.equal(out.rflags, 0x202, 'flags preserved');
+});
+
+test('PUSH [RSP] uses the decode-time EA', async () => {
+  // PUSH qword [rsp]: EA = old RSP; v = [old RSP]; [old RSP - 8] = v.
+  const regs = baseRegs(); regs[4] = 0x10000n;
+  const memInit = new Map();
+  const val = 0xDEADBEEFCAFEBABEn;
+  for (let b = 0; b < 8; b++) memInit.set(0x10000n + BigInt(b), Number((val >> BigInt(8 * b)) & 0xFFn));
+  const out = await runAluMem([0xFF, 0x74, 0x24, 0x00], { regs: [...regs], rflags: 0x202, memInit });
+  assert.equal(out.regs[4], 0xFFF8n, 'RSP decremented');
+  assert.equal(out.guestMem.read(0xFFF8n, 8), val, '[RSP-8] = old [RSP]');
+  assert.equal(out.rflags, 0x202, 'flags preserved');
+});
+
+test('POP [RSP] uses the decode-time EA', async () => {
+  // POP qword [rsp]: EA = old RSP; v = [old RSP]; RSP += 8; [old RSP] = v.
+  const regs = baseRegs(); regs[4] = 0x10000n;
+  const memInit = new Map();
+  const val = 0x1122334455667788n;
+  for (let b = 0; b < 8; b++) memInit.set(0x10000n + BigInt(b), Number((val >> BigInt(8 * b)) & 0xFFn));
+  const out = await runAluMem([0x8F, 0x04, 0x24], { regs: [...regs], rflags: 0x202, memInit });
+  assert.equal(out.regs[4], 0x10008n, 'RSP incremented');
+  assert.equal(out.guestMem.read(0x10000n, 8), val, '[old RSP] = popped value');
+  assert.equal(out.rflags, 0x202, 'flags preserved');
+});
+
+test('PUSH then POP round-trips through unmapped stack', async () => {
+  const regs = baseRegs(); regs[4] = 0x20000n; regs[0] = 0x42n;
+  const out = await runAluMem([0x50, 0x5B], { regs: [...regs], rflags: 0x202, memInit: new Map() });
+  assert.equal(out.regs[4], 0x20000n, 'RSP restored');
+  assert.equal(out.regs[3], 0x42n, 'RBX = pushed RAX');
+  assert.equal(out.regs[0], 0x42n, 'RAX untouched');
+  assert.equal(out.rflags, 0x202, 'flags preserved');
+});
+
+test('POP from unmapped stack yields zero', async () => {
+  const regs = baseRegs(); regs[4] = 0x30000n;
+  const out = await runAluMem([0x58], { regs: [...regs], rflags: 0x202, memInit: new Map() });
+  assert.equal(out.regs[0], 0n, 'unmapped read = 0');
+  assert.equal(out.regs[4], 0x30008n, 'RSP incremented');
+  assert.equal(out.rflags, 0x202, 'flags preserved');
+});
+
+test('PUSH imm8/imm32 sign-extend and push 8 bytes', async () => {
+  const regs = baseRegs(); regs[4] = 0x10000n;
+  // 6A FE = PUSH -2; 68 00 00 00 80 = PUSH 0x80000000 (sign-extended)
+  const out = await runAluMem([0x6A, 0xFE, 0x68, 0x00, 0x00, 0x00, 0x80],
+    { regs: [...regs], rflags: 0x202, memInit: new Map() });
+  assert.equal(out.regs[4], 0xFFF0n, 'RSP decremented twice');
+  assert.equal(out.guestMem.read(0xFFF8n, 8), 0xFFFFFFFFFFFFFFFEn, '[RSP+8] = -2');
+  assert.equal(out.guestMem.read(0xFFF0n, 8), 0xFFFFFFFF80000000n, '[RSP] = sign-extended 0x80000000');
+  assert.equal(out.rflags, 0x202, 'flags preserved');
+});
+
+test('fuzz PUSH/POP vs reference (600 cases)', async () => {
+  const rand = makeRand(0x5757AC4);
+  const forms = ['push_reg', 'push_reg', 'pop_reg', 'pop_reg',
+                 'push_imm8', 'push_imm32', 'push_rm', 'pop_rm'];
+  const flagSets = [0x202, 0x246, 0x8D5, 0xFFFFFFFF, 0x0, 0x202 | 0x400];
+  for (let i = 0; i < 600; i++) {
+    const form = forms[Math.floor(rand() * forms.length)];
+    const regs = Array.from({ length: 16 }, () => advVal(rand));
+    // RSP: adversarial — page boundaries, zero, huge, or aliased to another reg.
+    const rspPick = rand();
+    if (rspPick < 0.35) regs[4] = pickStackAddr(rand);
+    else if (rspPick < 0.45) regs[4] = regs[Math.floor(rand() * 16)];
+    let reg = 0, rm = 0, isMem = false, base = 0, disp = 0, imm = 0n, ea = 0n;
+    if (form === 'push_reg' || form === 'pop_reg') {
+      reg = Math.floor(rand() * 16);
+      if (rand() < 0.25) reg = 4; // RSP aliasing
+    } else if (form === 'push_imm8' || form === 'push_imm32') {
+      const v = Math.floor(rand() * 0x100000000) - 0x80000000;
+      imm = form === 'push_imm8'
+        ? BigInt.asIntN(64, BigInt.asIntN(8, BigInt(v & 0xFF)))
+        : BigInt.asIntN(64, BigInt.asIntN(32, BigInt(v)));
+    } else {
+      isMem = rand() < 0.6;
+      if (isMem) {
+        base = Math.floor(rand() * 8);
+        if (rand() < 0.3) base = 4; // RSP-relative EA: decode-time semantics
+        disp = Math.floor(rand() * 256) - 128;
+        if (rand() < 0.5) regs[base] = pickStackAddr(rand);
+        ea = (regs[base] + BigInt(disp)) & mask64; // pre-instruction regs
+      } else {
+        rm = Math.floor(rand() * 16);
+        if (rand() < 0.25) rm = 4;
+      }
+    }
+    const code = encStack({ form, reg, rm, isMem, base, disp, imm });
+    const rflags = flagSets[Math.floor(rand() * flagSets.length)];
+    // Reference.
+    const refRegs = [...regs];
+    const refMem = makeGuestMem();
+    const stackLo = (regs[4] - 64n) & mask64;
+    for (let b = 0; b < 128; b++) refMem.bytes.set((stackLo + BigInt(b)) & mask64, Math.floor(rand() * 256));
+    if (isMem) for (let b = 0; b < 8; b++) refMem.bytes.set((ea + BigInt(b)) & mask64, Math.floor(rand() * 256));
+    const memInit = new Map(refMem.bytes);
+    const refForm = (form === 'push_imm8' || form === 'push_imm32') ? 'push_imm' : form;
+    refStack(refForm, refRegs, refMem, { reg, rm, isMem, ea, imm });
+    // Wasm under test.
+    const out = await runAluMem(code, { regs: [...regs], rflags, memInit });
+    const tag = `fuzzStack i=${i} form=${form}`;
+    assert.deepEqual(out.regs, refRegs, `${tag} GPRs`);
+    assert.equal(out.rflags, rflags >>> 0, `${tag} RFLAGS preserved`);
+    assert.equal(out.ripOut, (0x12345678ABCDEFF0n + BigInt(code.length)) & mask64, `${tag} RIP`);
+    assert.equal(out.reserved, 0xA5A5A5A5, `${tag} reserved`);
+    const refKeys = [...refMem.bytes.keys()].map(String).sort();
+    const outKeys = [...out.guestMem.bytes.keys()].map(String).sort();
+    assert.deepEqual(outKeys, refKeys, `${tag} written addresses`);
+    for (const k of refKeys) {
+      assert.equal(out.guestMem.bytes.get(BigInt(k)), refMem.bytes.get(BigInt(k)), `${tag} mem[${k}]`);
+    }
+  }
+}, 120000);

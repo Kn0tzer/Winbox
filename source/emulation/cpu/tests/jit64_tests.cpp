@@ -206,6 +206,89 @@ static void testEaDecode() {
     CHECK(!r.isMem && r.ea.baseReg == 0xFF && !r.ea.ripRel, "ea: reg form has no EA");
 }
 
+static void testStackDecode() {
+    // PUSH/POP are always 64-bit in long mode (the interpreter ignores
+    // 0x66); the decoder sets size=8 unconditionally.
+    // 50+rd: PUSH reg (sub 0).
+    Jit64Op a = dec(0x400000, {0x50});
+    CHECK(a.kind == J64_PUSH && a.sub == 0 && a.size == 8 && a.regField == 0 && a.len == 1,
+          "50: kind=%d sub=%d size=%d", a.kind, a.sub, a.size);
+    // 41 57: PUSH r15 (REX.B).
+    Jit64Op b = dec(0x400000, {0x41, 0x57});
+    CHECK(b.kind == J64_PUSH && b.regField == 15 && b.len == 2, "4157: rf=%d", b.regField);
+    // 66 50: 0x66 ignored for size (still 8), but the osize16 guard keeps
+    // it fallback (conservative; the interpreter handles it as 64-bit).
+    {
+        Jit64Op o;
+        bool ok = jit64DecodeOne(0x400000, (const U8[]){0x66, 0x50}, 2, o);
+        CHECK(ok && o.kind == J64_PUSH && o.size == 8, "6650: size=%d", o.size);
+        jit64Classify(o, false, true);
+        CHECK(o.plan == JIT64_FALLBACK, "6650 must stay fallback");
+    }
+    // 58+rd: POP reg (sub 0).
+    Jit64Op c = dec(0x400000, {0x5F});
+    CHECK(c.kind == J64_POP && c.sub == 0 && c.size == 8 && c.regField == 7 && c.len == 1,
+          "5F: kind=%d sub=%d", c.kind, c.sub);
+    // 6A ib: PUSH imm8 sign-extended.
+    Jit64Op d = dec(0x400000, {0x6A, 0xFE});
+    CHECK(d.kind == J64_PUSH && d.sub == 1 && d.size == 8 && d.len == 2 &&
+          d.imm == 0xFFFFFFFFFFFFFFFEULL, "6A: imm=0x%llx", (unsigned long long)d.imm);
+    // 68 id: PUSH imm32 sign-extended.
+    Jit64Op e = dec(0x400000, {0x68, 0x00, 0x00, 0x00, 0x80});
+    CHECK(e.kind == J64_PUSH && e.sub == 1 && e.len == 5 &&
+          e.imm == 0xFFFFFFFF80000000ULL, "68: imm=0x%llx", (unsigned long long)e.imm);
+    // FF /6 mod=3: PUSH reg (register-direct r/m).
+    Jit64Op f = dec(0x400000, {0xFF, 0xF3}); // mod=3, reg=6, rm=3 (RBX)
+    CHECK(f.kind == J64_PUSH && f.sub == 2 && f.size == 8 && !f.isMem &&
+          f.rmIndex == 3 && f.len == 2, "FFF3: sub=%d mem=%d rm=%d", f.sub, f.isMem, f.rmIndex);
+    // FF /6 mod!=3: PUSH [rax+0x10].
+    Jit64Op g = dec(0x400000, {0xFF, 0x70, 0x10});
+    CHECK(g.kind == J64_PUSH && g.sub == 2 && g.isMem && g.len == 3,
+          "FF70: sub=%d mem=%d", g.sub, g.isMem);
+    CHECK(g.ea.baseReg == 0 && g.ea.disp == 16, "FF70: ea base=%d disp=%lld",
+          g.ea.baseReg, (long long)g.ea.disp);
+    // FF /0 is INC, not PUSH: must not decode as J64_PUSH.
+    {
+        Jit64Op o;
+        bool ok = jit64DecodeOne(0x400000, (const U8[]){0xFF, 0xC0}, 2, o);
+        CHECK(!ok || o.kind != J64_PUSH, "FF /0 must not decode as PUSH");
+    }
+    // 8F /0 mod=3: POP reg (register-direct r/m).
+    Jit64Op h = dec(0x400000, {0x8F, 0xC5}); // mod=3, reg=0, rm=5 (RBP)
+    CHECK(h.kind == J64_POP && h.sub == 1 && h.size == 8 && !h.isMem &&
+          h.rmIndex == 5 && h.len == 2, "8FC5: sub=%d mem=%d rm=%d", h.sub, h.isMem, h.rmIndex);
+    // 8F /0 mod!=3: POP [rbx].
+    Jit64Op i = dec(0x400000, {0x8F, 0x03});
+    CHECK(i.kind == J64_POP && i.sub == 1 && i.isMem && i.len == 2,
+          "8F03: sub=%d mem=%d", i.sub, i.isMem);
+    CHECK(i.ea.baseReg == 3, "8F03: ea base=%d", i.ea.baseReg);
+    // 8F /1: not POP: must not decode as J64_POP.
+    {
+        Jit64Op o;
+        bool ok = jit64DecodeOne(0x400000, (const U8[]){0x8F, 0xC8}, 2, o);
+        CHECK(!ok || o.kind != J64_POP, "8F /1 must not decode as POP");
+    }
+    // Segment pushes are #UD in the interpreter: stay unknown.
+    {
+        Jit64Op o;
+        bool ok = jit64DecodeOne(0x400000, (const U8[]){0x06}, 1, o);
+        CHECK(!ok || o.kind == J64_UNKNOWN, "06 (PUSH ES) must stay unknown");
+    }
+    // LOCK on PUSH stays interpreter-only.
+    {
+        Jit64Op o;
+        bool ok = jit64DecodeOne(0x400000, (const U8[]){0xF0, 0x50}, 2, o);
+        CHECK(ok && o.kind == J64_PUSH, "F050 must decode");
+        jit64Classify(o, true, false);
+        CHECK(o.plan == JIT64_FALLBACK, "F050 LOCK must be fallback");
+    }
+    // REX.W PUSH/POP are FAST (the common case).
+    {
+        Jit64Op o = dec(0x400000, {0x48, 0x50});
+        CHECK(o.plan == JIT64_FAST && o.size == 8, "4850: plan=%d", o.plan);
+    }
+}
+
 static void testMiscFast() {
     // 48 8D 35 1A 00 00 00   lea rsi, [rip+0x1A]
     Jit64Op a = dec(0x400000, {0x48, 0x8D, 0x35, 0x1A, 0x00, 0x00, 0x00});
@@ -627,6 +710,7 @@ int main() {
     testMovForms();
     testAluForms();
     testEaDecode();
+    testStackDecode();
     testMiscFast();
     testFallbackRules();
     testCompileStream();
