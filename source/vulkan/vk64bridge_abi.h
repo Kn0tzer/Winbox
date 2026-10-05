@@ -263,6 +263,10 @@ enum {
     VK64_fn_vkCreateDescriptorUpdateTemplate,     // (device, pCreateInfo*, pAllocator, out VkDescriptorUpdateTemplate*) -> template object
     VK64_fn_vkDestroyDescriptorUpdateTemplate,    // (device, template, pAllocator)
     VK64_fn_vkUpdateDescriptorSetWithTemplate,    // (device, set, template, pData)
+    VK64_fn_vkCmdBeginRenderPass2,                // (cmdBuf, pBeginInfo*, pDependencyInfo*) -> records render pass begin
+    VK64_fn_vkCmdBeginRenderPass2KHR,             // alias
+    VK64_fn_vkCmdEndRenderPass2,                  // (cmdBuf, pDependencyInfo*) -> records render pass end
+    VK64_fn_vkCmdEndRenderPass2KHR,               // alias
     VK64_fn__MAX
 };
 

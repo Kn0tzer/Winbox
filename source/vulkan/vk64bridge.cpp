@@ -213,6 +213,10 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkBeginCommandBuffer,                 "vkBeginCommandBuffer")\
     X(VK64_fn_vkEndCommandBuffer,                   "vkEndCommandBuffer")  \
     X(VK64_fn_vkCmdBeginRenderPass,                 "vkCmdBeginRenderPass")\
+    X(VK64_fn_vkCmdBeginRenderPass2,                "vkCmdBeginRenderPass2")\
+    X(VK64_fn_vkCmdBeginRenderPass2KHR,             "vkCmdBeginRenderPass2KHR")\
+    X(VK64_fn_vkCmdEndRenderPass2,                  "vkCmdEndRenderPass2")\
+    X(VK64_fn_vkCmdEndRenderPass2KHR,               "vkCmdEndRenderPass2KHR")\
     X(VK64_fn_vkCmdBindPipeline,                    "vkCmdBindPipeline")   \
     X(VK64_fn_vkCmdBindDescriptorSets,              "vkCmdBindDescriptorSets") \
     X(VK64_fn_vkCmdSetViewport,                     "vkCmdSetViewport")    \
@@ -3206,6 +3210,38 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkCmdEndRenderPass: {
         CmdBuf* cb = cbOf(args.a[0], "vkCmdEndRenderPass");
+        Cmd c;
+        c.kind = CMD_END_RP;
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdBeginRenderPass2:
+    case VK64_fn_vkCmdBeginRenderPass2KHR: {
+        // (cmdBuf, pRenderPassBegin*, pSubpassBeginInfo*) — v2 has extra dependency
+        // info in pNext; the begin info itself is identical to v1.
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdBeginRenderPass2");
+        VkRenderPassBeginInfo bi = {};
+        if (!cb || !readStruct(args.a[1], bi)) return 0;
+        Cmd c;
+        c.kind = CMD_BEGIN_RP;
+        c.a = bi.renderPass;
+        c.b = bi.framebuffer;
+        std::vector<VkClearValue> clears;
+        readArray(bi.pClearValues, bi.clearValueCount ? (bi.clearValueCount > 2 ? 2 : bi.clearValueCount) : 0, clears);
+        if (clears.size() > 0) {
+            c.f[0] = clears[0].color.float32[0];
+            c.f[1] = clears[0].color.float32[1];
+            c.f[2] = clears[0].color.float32[2];
+            c.f[3] = clears[0].color.float32[3];
+        }
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdEndRenderPass2:
+    case VK64_fn_vkCmdEndRenderPass2KHR: {
+        // (cmdBuf, pSubpassEndInfo*)
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdEndRenderPass2");
+        if (!cb) return 0;
         Cmd c;
         c.kind = CMD_END_RP;
         pushCmd(cb, c);

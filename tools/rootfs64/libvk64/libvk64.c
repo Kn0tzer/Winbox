@@ -197,6 +197,10 @@ enum {
     VK64_fn_vkCreateDescriptorUpdateTemplate,
     VK64_fn_vkDestroyDescriptorUpdateTemplate,
     VK64_fn_vkUpdateDescriptorSetWithTemplate,
+    VK64_fn_vkCmdBeginRenderPass2,
+    VK64_fn_vkCmdBeginRenderPass2KHR,
+    VK64_fn_vkCmdEndRenderPass2,
+    VK64_fn_vkCmdEndRenderPass2KHR,
 
     VK64_fn__MAX
 };
@@ -709,6 +713,22 @@ API void vkCmdEndRenderPass(VkCommandBuffer cb) {
     VK64Args a = {{0}}; a.a[0] = cb;
     (void)vk64_trap(VK64_fn_vkCmdEndRenderPass, &a);
 }
+API void vkCmdBeginRenderPass2(VkCommandBuffer cb, const void* bi, const void* di) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = P(bi); a.a[2] = P(di);
+    (void)vk64_trap(VK64_fn_vkCmdBeginRenderPass2, &a);
+}
+API void vkCmdBeginRenderPass2KHR(VkCommandBuffer cb, const void* bi, const void* di) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = P(bi); a.a[2] = P(di);
+    (void)vk64_trap(VK64_fn_vkCmdBeginRenderPass2KHR, &a);
+}
+API void vkCmdEndRenderPass2(VkCommandBuffer cb, const void* di) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = P(di);
+    (void)vk64_trap(VK64_fn_vkCmdEndRenderPass2, &a);
+}
+API void vkCmdEndRenderPass2KHR(VkCommandBuffer cb, const void* di) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = P(di);
+    (void)vk64_trap(VK64_fn_vkCmdEndRenderPass2KHR, &a);
+}
 API void vkCmdBindPipeline(VkCommandBuffer cb, uint32_t bindPoint, VkPipeline p) {
     VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = bindPoint; a.a[2] = p;
     (void)vk64_trap(VK64_fn_vkCmdBindPipeline, &a);
@@ -950,6 +970,10 @@ static const struct procEntry g_procs[] = {
     E(vkCreateDescriptorUpdateTemplate, VK64_fn_vkCreateDescriptorUpdateTemplate),
     E(vkDestroyDescriptorUpdateTemplate, VK64_fn_vkDestroyDescriptorUpdateTemplate),
     E(vkUpdateDescriptorSetWithTemplate, VK64_fn_vkUpdateDescriptorSetWithTemplate),
+    E(vkCmdBeginRenderPass2, VK64_fn_vkCmdBeginRenderPass2),
+    E(vkCmdBeginRenderPass2KHR, VK64_fn_vkCmdBeginRenderPass2KHR),
+    E(vkCmdEndRenderPass2, VK64_fn_vkCmdEndRenderPass2),
+    E(vkCmdEndRenderPass2KHR, VK64_fn_vkCmdEndRenderPass2KHR),
     E(vkQueuePresentKHR, VK64_fn_vkQueuePresentKHR),
 };
 #undef E
@@ -1160,12 +1184,8 @@ TAIL(vkCmdSetVertexInputEXT)
 TAIL(vkCmdDrawIndirectCountKHR)
 TAIL(vkCmdBeginConditionalRenderingEXT)
 TAIL(vkCmdEndConditionalRenderingEXT)
-TAIL(vkCmdBeginRenderPass2KHR)
-TAIL(vkCmdBeginRenderPass2)
 TAIL(vkCmdNextSubpass2KHR)
 TAIL(vkCmdNextSubpass2)
-TAIL(vkCmdEndRenderPass2KHR)
-TAIL(vkCmdEndRenderPass2)
 TAIL(vkCmdDrawIndirectByteCountEXT)
 TAIL(vkCmdBindVertexBuffers2)
 TAIL(vkCmdBindVertexBuffers2KHR)
