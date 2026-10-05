@@ -472,6 +472,20 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
   const v2state = { chunksReceived: 0, framesReceived: 0, rendered: 0,
     droppedConsumer: 0, chunkGaps: 0, rejected: 0 };
   let renderer2 = null, starting2 = null, pump2 = Promise.resolve();
+  // Pump coalescing: the bridge hops every queued frame's chunks on present
+  // via separate proxied calls. Chaining pump2.then() per frame lets the
+  // microtask run between chunk deliveries, rendering a stale intermediate
+  // frame before the presented frame arrives (canvas size thrash).
+  // Coalesce onto a macrotask so takeLatest() sees the full present batch.
+  let pumpQueued = false;
+  function queuePump() {
+    if (pumpQueued) return;
+    pumpQueued = true;
+    setTimeout(() => {
+      pumpQueued = false;
+      pump2 = pump2.then(() => pumpChunks());
+    }, 0);
+  }
 
   // Canvas-resize hook: frames recorded at the old size would misconfigure
   // the targets, so the queue drains and the targets are invalidated; the
@@ -567,7 +581,7 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
     v2state.framesReceived++;
     v2queue.push(decoded); // drop-oldest past V2_QUEUE_CAP
     v2state.droppedConsumer = v2queue.dropped;
-    pump2 = pump2.then(() => pumpChunks());
+    queuePump();
     return pump2;
   }
 
