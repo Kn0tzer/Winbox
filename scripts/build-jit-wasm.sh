@@ -36,6 +36,7 @@ esac
 
 echo "=== [1/3] native phase-1 unit tests (g++ gate) ==="
 mkdir -p "$BUILD_TMP"
+BUILD_TMP="$BUILD_TMP/lifetime" bash "$REPO/scripts/test-jit-lifetime.sh"
 g++ -std=c++17 -Wall -Wextra -DBOXEDWINE_GUEST_X64=1 \
     -I"$REPO/include" \
     "$REPO/source/emulation/cpu/jit64.cpp" \
