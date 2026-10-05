@@ -196,6 +196,10 @@ private:
 // Runtime flag: BW64_JIT=1 enables the JIT path; anything else (or unset)
 // keeps the interpreter. Cached after first read (zero cost when off).
 bool jit64Enabled();
+// §14.3: true if any op in the block may store to guest memory (conservative
+// over-approximation; see jit64.cpp). Used to decline the wasm vehicle for
+// self-modifying-risk blocks.
+bool jit64BlockMayStore(const Jit64Op* ops, U32 nOps);
 
 // Per-CPU JIT state owned by CPU64 (pointer to keep cpu64.h lean; defined
 // here so cpu64.cpp can hold it by pointer without exposing internals).

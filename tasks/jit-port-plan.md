@@ -957,13 +957,45 @@ pool.
 
 Upstream's cache could return a stale block when a newly compiled block
 overlapped an existing one (jump into the middle), executing the wrong code.
-OUR STATUS: CHECK. Our block cache is keyed on startRip + page generations
-(section 3.1), and tryJitStep cross-checks bb.n == n with per-record
-lengths. The case to verify: a block whose bytes overlap (but do not start
-at) a cached block's range after the underlying page is rewritten -- the
-page generation bump must invalidate. Add a targeted test: compile block at
-RIP X, rewrite the page so a new block starts at X+2 overlapping the old
-range, and assert the old entry is never entered.
+OUR STATUS: RESOLVED (2026-10-05). Proven by
+source/emulation/cpu/tests/jit64_invalidate_tests.cpp, wired into
+scripts/build-jit-wasm.sh [1/4]: 4 scenarios x 3 tiers (tier 1 pure
+interpreter via BW64_NOBLOCK=1 as baseline; tier 1.5 block cache; tier 2
+threaded), outputs required byte-identical:
+
+- T1 rewrite inside a cached block's range, re-enter at block start --
+  new bytes execute (gen bump invalidates; stale would replay old imm).
+- T2 the prescribed case: block cached at RIP X, page rewritten so a new
+  block starts at X+2 overlapping the old range -- new block executes,
+  old entry never entered (startRip keying + gen check).
+- T3 within-block self-modification: the block's own store rewrites a
+  later instruction's bytes -- execBlock/execBlockThreaded stop at the
+  next record via the per-record generation check (stale would use the
+  old immediate).
+- T4 block spanning two pages, rewrite on the second page -- page1
+  generation snapshot invalidates.
+
+Sensitivity verified: with noteGuestWrite/Range neutered, T1/T3/T4 fail
+with exactly the stale values (eax=5/0, ebx=7) while T2 still passes
+(overlap keying is structural, not generation-dependent).
+
+Design note (audited, no change needed): invalidation is page-granularity
+via generation counters, not precise ranges. Writes funnel through
+KMemory64::writeb/w/d/q -> memcpyToGuest/writeb slow path ->
+noteGuestWrite(Range); block pages are barred from the data-TLB fast path
+(k64DTlbInsert refuses them) and registration calls k64DTlbInvalidateAll,
+so no write can bypass the bump. Page-slot aliasing (4096 slots) can only
+cause spurious rebuilds, never missed invalidations.
+
+REAL BUG FOUND AND FIXED (wasm vehicle): tryWasmExec ran the whole module
+with no mid-block generation checks, so a within-block self-modifying
+store would execute stale later ops -- a divergence from the interpreter
+that execBlock's per-record check prevents. Fix: jit64BlockMayStore()
+(jit64.cpp, declared in jit64.h) conservatively detects any op that may
+store to guest memory (mem-form MOV/ALU/SHIFT, MOVS/STOS, PUSH); tryJitStep
+declines the wasm vehicle for such blocks. The execBlock vehicle (with
+per-record checks) is used instead. Store-free blocks still use the wasm
+vehicle (WASM64 sentinel in the smoke gate still fires: blocks=20).
 
 ### 14.4 Module batching -- Firefox OOM at ~20k modules
 

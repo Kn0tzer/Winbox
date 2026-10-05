@@ -56,6 +56,44 @@ g++ -std=c++17 -Wall -Wextra -DBOXEDWINE_GUEST_X64=1 -DJIT64_GEN_VERIFY=1 \
     "$REPO/source/emulation/cpu/tests/jit64_gen_tests.cpp" \
     -o "$BUILD_TMP/jit64_gen_tests"
 "$BUILD_TMP/jit64_gen_tests"
+# Plan section 14.3: block-overlap invalidation. Caches a block, rewrites
+# guest memory inside / overlapping / across its range (plus a within-block
+# self-modifying store and a cross-page block), and re-executes on all three
+# native tiers, differentially against the pure interpreter. A sensitivity
+# check (noteGuestWrite neutered) was verified to fail T1/T3/T4, so this gate
+# is not vacuous.
+echo "--- jit64 block-invalidation tests (section 14.3) ---"
+# NOTE: -ffunction-sections/-fdata-sections are load-bearing here: fpu.cpp
+# also implements 32-bit-KMemory FPU helpers (FSTENV/FRSTOR/...) that must be
+# dead-stripped by --gc-sections at link time.
+g++ -std=c++20 -DBOXEDWINE_GUEST_X64=1 -ffunction-sections -fdata-sections -c \
+    -I"$REPO/include" -I"$REPO/lib/simde" \
+    "$REPO/source/emulation/cpu/common/fpu.cpp" -o "$BUILD_TMP/inv_fpu.o"
+mkdir -p "$BUILD_TMP/softfloat"
+for sf in "$REPO"/lib/softfloat/source/*.c "$REPO"/lib/softfloat/source/8086-SSE/*.c; do
+    obj="$BUILD_TMP/softfloat/$(basename "$sf" .c).o"
+    [ -f "$obj" ] || gcc -O1 -c -I"$REPO/lib/softfloat/source/include" \
+        -I"$REPO/lib/softfloat/source" -I"$REPO/lib/softfloat/source/8086-SSE" \
+        "$sf" -o "$obj"
+done
+g++ -std=c++20 -Wall -Wextra -DBOXEDWINE_GUEST_X64=1 -DBOXEDWINE_BLOCK_EXEC=1 \
+    -DBOXEDWINE_BLOCK_CACHE_INFRA=1 -ffunction-sections -fdata-sections \
+    -I"$REPO/include" -I"$REPO/lib/simde" -I"$REPO/lib/softfloat/source/include" \
+    "$REPO/source/emulation/cpu/cpu64.cpp" \
+    "$REPO/source/emulation/cpu/jit64.cpp" \
+    "$REPO/source/emulation/cpu/jit64wasm.cpp" \
+    "$REPO/source/kernel/kmemory64.cpp" \
+    "$REPO/source/util/bstring.cpp" \
+    "$BUILD_TMP/inv_fpu.o" "$BUILD_TMP"/softfloat/*.o \
+    "$REPO/source/emulation/cpu/tests/jit64_invalidate_tests.cpp" \
+    -Wl,--gc-sections -o "$BUILD_TMP/jit64_invalidate_tests" > "$BUILD_TMP/inv_build.log" 2>&1 || \
+    { echo "FAIL: invalidate-test build failed; see $BUILD_TMP/inv_build.log" >&2; exit 1; }
+BW64_NOBLOCK=1 "$BUILD_TMP/jit64_invalidate_tests" > "$BUILD_TMP/inv_tier1.log"
+"$BUILD_TMP/jit64_invalidate_tests" > "$BUILD_TMP/inv_tier15.log"
+BW64_THREADED=1 "$BUILD_TMP/jit64_invalidate_tests" > "$BUILD_TMP/inv_tier2.log"
+cmp -s "$BUILD_TMP/inv_tier1.log" "$BUILD_TMP/inv_tier15.log" || { echo "FAIL: tier 1.5 invalidation output differs from interpreter baseline" >&2; exit 1; }
+cmp -s "$BUILD_TMP/inv_tier1.log" "$BUILD_TMP/inv_tier2.log" || { echo "FAIL: tier 2 invalidation output differs from interpreter baseline" >&2; exit 1; }
+echo "OK: block-invalidation tests pass identically on tiers 1 / 1.5 / 2."
 command -v node >/dev/null || { echo "ERROR: node not found." >&2; exit 1; }
 g++ -std=c++17 -Wall -Wextra -DBOXEDWINE_GUEST_X64=1 \
     -I"$REPO/include" \

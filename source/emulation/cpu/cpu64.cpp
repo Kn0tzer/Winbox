@@ -6570,8 +6570,13 @@ U32 CPU64::tryJitStep(U64 maxInsn) {
     // execBlock below would stop at maxInsn). Falls back to the interpreter
     // vehicle for rejected blocks, transient instantiate failures, and
     // native builds (where the glue is a no-op).
+    // Section 14.3: never take the wasm vehicle for a block that may store
+    // to guest memory -- the module has no mid-block generation checks, so
+    // a store into the block's own code range would execute stale later ops
+    // (see jit64BlockMayStore). The execBlock vehicle stops at the next
+    // record instead.
     U32 done = 0;
-    if (hit && maxInsn >= n) done = tryWasmExec(*hit, n);
+    if (hit && maxInsn >= n && !jit64BlockMayStore(ops, n)) done = tryWasmExec(*hit, n);
     if (done) {
         m_jit->wasmBlocks++;
         m_jit->wasmInsns += done;

@@ -733,6 +733,40 @@ void Jit64BlockCache::clear() {
     m_lookups = m_hits = m_inserts = 0;
 }
 
+// §14.3: the wasm module executes a whole block with no mid-block page-
+// generation checks -- unlike execBlock/execBlockThreaded, which stop at the
+// next record after a guest store bumps a page generation. If a block stores
+// into its own code range, the module would run stale immediates/decoding
+// for the later ops (the store itself goes through jit64MemWrite and does
+// bump the generation, but nothing re-checks it mid-module). Decline the
+// wasm vehicle for any block that may store to guest memory; the execBlock
+// vehicle (with per-record checks) stays correct. Conservative by design:
+// a precise "store targets our own pages" test is impossible statically for
+// register-indirect stores, and correctness outranks the phase-2 vehicle.
+bool jit64BlockMayStore(const Jit64Op* ops, U32 nOps) {
+    if (!ops) return true;
+    for (U32 i = 0; i < nOps; i++) {
+        const Jit64Op& op = ops[i];
+        switch (op.kind) {
+        case J64_MOV_RM_R:
+        case J64_ALU_RM_R:
+        case J64_ALU_RM_IMM:
+        case J64_SHIFT_IMM:
+        case J64_MOV_RM_IMM:
+            if (op.isMem) return true;
+            break;
+        case J64_STRING:
+            if (op.sub == 0 || op.sub == 1) return true; // MOVS/STOS store
+            break;
+        case J64_PUSH:
+            return true; // stack store; a pathological rsp could hit code
+        default:
+            break;
+        }
+    }
+    return false;
+}
+
 U32 jit64EmitPlanText(const Jit64Block& b, char* buf, U32 bufSize) {
     if (!buf || bufSize == 0) return 0;
     U32 used = 0;
