@@ -247,13 +247,18 @@ across concurrent activations (assert via instrumentation, not by inspection).
   rewritten against `cpu64`?
 
 
-## 6. Phase 1 status (lane-jit — DONE, committed on `lane-jit`)
+## 6. Decoder/cache framework status (committed on `lane-jit`)
 
-**Scope delivered.** Phase-1 JIT framework for `CPU64`: a self-contained
+The earlier lane called this framework "Phase 1". That label is separate
+from the original Phase 1 in §4, which requires a wasm 64-bit value model
+and its full execution gates. Completing the decoder/cache framework did
+not complete that original milestone. See §7 for the current verified state.
+
+**Scope delivered.** JIT decoder/cache framework for `CPU64`: a self-contained
 x86-64 decoder + classifier (`Jit64Op` IR), a block cache keyed on
 `startRip` + page generations, and a runtime flag — all behind `BW64_JIT=1`,
-default behavior unchanged. No wasm is emitted yet: a "compiled block" in
-phase 1 is a validated + ranked copy of the decode plan with a per-record
+default behavior unchanged. CPU64 does not dispatch emitted wasm yet: a
+"compiled block" in this framework is a validated + ranked copy of the decode plan with a per-record
 fast/fallback dispatch plan. `jit64EmitPlanText()` serializes that plan in a
 stable text form the phase-2 wasm emitter will consume.
 
@@ -265,7 +270,7 @@ stable text form the phase-2 wasm emitter will consume.
 | `source/emulation/cpu/jit64.cpp` | Decoder (prefix/REX/ModRM/SIB scan), classifier, stream compiler, 512-slot open-addressed block cache |
 | `source/emulation/cpu/tests/jit64_tests.cpp` | Native unit tests (`g++ -std=c++17 -DBOXEDWINE_GUEST_X64=1`); **113 passed, 0 failed** |
 | `source/emulation/cpu/tests/profile_opcodes.py` | Profile evidence generator (capstone; 64-bit PEs only) |
-| `scripts/build-jit-wasm.sh` | Phase-1 wasm build driver — **prepared, NOT run** (no emcc on this host) |
+| `scripts/build-jit-wasm.sh` | Native, emitted-module, and wasm execution gates; verified with the SDK at `/opt/emsdk` (see §7) |
 | `include/cpu64.h` / `source/emulation/cpu/cpu64.cpp` | `CPU64::tryJitStep()` hook wired into `run()`/`runBounded()` ahead of `tryBlockStep()`; `Jit64State` owned per-CPU |
 | `project/emscripten/makefile` | `EMULATION_SOURCES` prunes `source/emulation/cpu/tests/` (own `main()`) from the emcc glob; `jit64.cpp` auto-globbed, `BOXEDWINE_GUEST_X64`-gated |
 
@@ -328,9 +333,70 @@ g++ -std=c++17 -Wall -Wextra -DBOXEDWINE_GUEST_X64=1 -Iinclude \
 python3 source/emulation/cpu/tests/profile_opcodes.py <64-bit exe>...
 ```
 
-**Deferred to phase 2** (per the phased plan): the wasm opcode emitter
-(`wasmEmitter`-style binary writer), module instantiation/table-index glue,
-inline-TLB fast path, and the `BW64_JIT=1` vs interpreter A/B timing gate on
-the `wasm64-selftest`/`wasm64-runelf` targets. `scripts/build-jit-wasm.sh`
-already encodes the phase-1 gates (native tests → emcc build → node smoke run
-with output diff); extend it with emitter build + timing comparison in phase 2.
+**Still deferred:** broader wasm opcode emission, runtime module
+instantiation/table-index glue, the inline-TLB fast path, and interpreter/JIT
+timing gates on the selftest/runelf fixtures. The initial standalone MOV
+emitter and verified execution gates are described below.
+
+## 7. Verified continuation, 2026-10-05
+
+The build driver now runs the real JIT framework under Emscripten 6.0.9
+and Node 22.22.3. Earlier driver settings omitted `BOXEDWINE_BLOCK_EXEC`
+and `BOXEDWINE_BLOCK_CACHE_INFRA`; with those settings, `BW64_JIT=1`
+could pass an output comparison while the JIT never ran. The corrected
+driver uses an isolated build directory, enables both macros, limits make
+to two jobs by default, handles the repository's ESM/CommonJS boundary,
+and forwards only the two JIT test controls into the guest environment.
+The JIT run must report nonzero executed blocks and instructions.
+
+Two execution regressions were demonstrated failing before their fixes:
+`runBounded(1)` ran extra records from a decoded block, and a store patching
+a later instruction in the same block still ran the old immediate. Block
+execution now honors the remaining instruction budget and rechecks page
+generations after each record. The full wasm smoke suite passes in both
+modes: **258 passed, 0 failed**, with **30 JIT blocks / 76 instructions**
+observed in the shared program cases. Test output matches byte-for-byte
+after removing the one JIT statistics line. The native decoder/cache suite
+also passes **113/113**. This is correctness evidence, not a speedup result.
+
+`include/jit64wasm.h` and `source/emulation/cpu/jit64wasm.cpp` add the first
+standalone binary emitter. Its `execute(state_ptr: i32)` imports
+`env.memory`; its staging ABI contains sixteen i64 GPRs, an i64 guest RIP,
+and preserved flags. The ABI is separate from CPU64's C++ object layout.
+The supported subset is register-direct MOV and immediate MOV at 32/64-bit
+operand widths. The emitter rejects the entire block for memory operands,
+MOVZX, flag-changing operations, unsupported prefixes, and other kinds.
+CPU64 still executes through `execBlock`; it does not instantiate or call
+these modules yet. No wasm table ownership or threaded imports are installed.
+
+The emitted modules pass **22 Node validation/execution tests**, covering
+all sixteen registers, high halves, signed LEB boundary values, both
+register MOV encodings, 32-bit zero extension, C7 sign extension, RIP
+wraparound, flags preservation, and whole-block rejection. The RED emitter
+stub produced 15 positive-case failures; the implemented emitter passes
+all 22. The binary encoding uses the baseline instruction forms in the
+[WebAssembly instruction specification](https://webassembly.github.io/spec/core/binary/instructions.html).
+
+Run the gates with:
+
+```sh
+source /opt/emsdk/emsdk_env.sh
+JOBS=2 BUILD_TMP=/tmp/bw64-jit-build bash scripts/build-jit-wasm.sh
+# --selftest-only runs native decoder tests and standalone wasm-module tests
+# without rebuilding the Emscripten host.
+```
+
+Progress against the **original** milestones is estimated by delivered
+components, not elapsed time. None of the original milestone gates is
+complete yet:
+
+| Original milestone | Estimate | Remaining gate / major missing component |
+| --- | ---: | --- |
+| 0: baseline and scaffolding | ~50% | Cinebench baseline, original on/off configuration gate, and vendored Binaryen validation |
+| 1: 64-bit value model | ~15% | CPU64 runtime state bridge/helper mode, full wasm arithmetic suites and ELF equivalence |
+| 2: arithmetic and inline TLB | ~5% | Arithmetic/guest-memory codegen, helpers/TLB and measured >1.5× fixture speedup |
+| 3: flags and control flow | 0% | Wasm flags/branches and the original correctness/speed gates |
+| 4: cache, invalidation and merging | ~15% | Wasm table ownership, module merging/batch policy and sustained hit/leak/invalidation gates |
+| 5: full op coverage | 0% | Wasm coverage beyond register MOV and the Cinebench/dynamic-fallback gates |
+| 6: offline cache pipeline | 0% | Recording, persistence, replay and merged-cache validation |
+| 7: multithreaded JIT | 0% | Shared table/activation ownership and concurrent relocation fixture |
