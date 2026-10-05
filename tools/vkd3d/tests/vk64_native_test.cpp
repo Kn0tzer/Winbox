@@ -77,6 +77,8 @@ void vkCmdBindPipeline(U64, U32, U64);
 void vkCmdBindDescriptorSets(U64, U32, U64, U32, U32, const U64*, U32, const U32*);
 int vkCreateGraphicsPipelines(U64, U64, U32, const void*, const void*, void*);
 void vkCmdBindVertexBuffers2(U64, U32, U32, const U64*, const U64*, const U64*, const U64*);
+void vkCmdUpdateBuffer(U64, U64, U64, U64, const void*);
+void vkUpdateDescriptorSets(U64, U32, const void*, U32, const void*);
 void vkCmdBindVertexBuffers2EXT(U64, U32, U32, const U64*, const U64*, const U64*, const U64*);
 }
 int main() {
@@ -358,6 +360,64 @@ int main() {
     }
     assert(depthPasses == 1);
     g_v2Pending.clear();
+    // vkCmdUpdateBuffer: DXVK uploads small uniforms with this (notably the
+    // D3D9 fixed-function VS constant buffer). The payload must be captured
+    // at record time and written into guest memory at submit, so
+    // readGuestRange -- and the BUFFER_DATA manifest record -- carries real
+    // data instead of zeros.
+    assert(vkGetDeviceProcAddr(0, "vkCmdUpdateBuffer") ==
+           reinterpret_cast<void(*)()>(vkCmdUpdateBuffer));
+    U64 uniformMemoryId; auto* uniformMemory = createObj<DeviceMemory>(K_MEMORY, uniformMemoryId);
+    uniformMemory->size = 256; uniformMemory->va = memory.mmapReserveAndMap(256, 3);
+    U64 uniformId; auto* uniform = createObj<Buffer>(K_BUFFER, uniformId);
+    uniform->size = 256; uniform->mem = uniformMemoryId; uniform->memOff = 0;
+    U64 updateCbId; auto* updateCb = createObj<CmdBuf>(K_CMDBUF, updateCbId);
+    U8 upayload[16]; for (U32 i = 0; i < 16; ++i) upayload[i] = (U8)(0xA0 + i);
+    memory.memcpyToGuest(3072, upayload, sizeof(upayload));
+    vkCmdUpdateBuffer(updateCbId, uniformId, 32, sizeof(upayload), (void*)3072);
+    assert(lastTrap == VK64_fn_vkCmdUpdateBuffer);
+    assert(updateCb->cmds.size() == 1);
+    const Cmd& uc = updateCb->cmds.back();
+    assert(uc.kind == CMD_UPDATE_BUF && uc.updBuf == uniformId && uc.updOff == 32);
+    assert(uc.updBytes.size() == sizeof(upayload) &&
+           memcmp(uc.updBytes.data(), upayload, sizeof(upayload)) == 0);
+    // Clobber the guest source after recording: the command holds its own copy.
+    memset(upayload, 0, sizeof(upayload));
+    memory.memcpyToGuest(3072, upayload, sizeof(upayload));
+    assert(memory.bytes[uniformMemory->va + 32] == 0); // untouched until submit-time execution
+    execUpdateBuf(uc);
+    for (U32 i = 0; i < 16; ++i) assert(memory.bytes[uniformMemory->va + 32 + i] == (U8)(0xA0 + i));
+    assert(memory.bytes[uniformMemory->va + 31] == 0 && memory.bytes[uniformMemory->va + 48] == 0);
+    auto ub = readGuestRange(uniformMemoryId, 0, 256); // the manifest path
+    assert(ub.size() == 256);
+    for (U32 i = 0; i < 16; ++i) assert(ub[32 + i] == (U8)(0xA0 + i));
+    puts("PASS: vkCmdUpdateBuffer record-time capture and submit-time write");
+    // Descriptor buffer offset: VkDescriptorBufferInfo::offset must be honored
+    // when capturing uniform data. DXVK sub-allocates D3D9 constants inside one
+    // VkBuffer (D3D9ConstantBuffer::Alloc) and binds each range with its own
+    // offset; reading from offset 0 captured zeros for every uniform.
+    U64 offMemId; auto* offMem = createObj<DeviceMemory>(K_MEMORY, offMemId);
+    offMem->size = 256; offMem->va = memory.mmapReserveAndMap(256, 3);
+    U64 offBufId; auto* offBuf = createObj<Buffer>(K_BUFFER, offBufId);
+    offBuf->size = 256; offBuf->mem = offMemId; offBuf->memOff = 0;
+    for (U32 i = 0; i < 256; ++i) memory.bytes[offMem->va + i] = (U8)i;
+    U64 offSetId; auto* offSet = createObj<DescSet>(K_SET, offSetId);
+    VkDescriptorBufferInfo dbi{}; dbi.buffer = offBufId; dbi.offset = 64; dbi.range = 32;
+    memory.memcpyToGuest(3072, &dbi, sizeof(dbi));
+    VkWriteDescriptorSet wds{};
+    wds.dstSet = offSetId; wds.dstBinding = 0; wds.descriptorCount = 1;
+    wds.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    wds.pBufferInfo = 3072;
+    memory.memcpyToGuest(3136, &wds, sizeof(wds));
+    vkUpdateDescriptorSets(deviceId, 1, (void*)3136, 0, nullptr);
+    assert(offSet->nbind == 1);
+    const Binding& ob = offSet->binds[0];
+    assert(ob.obj == offBufId && ob.range == 32 && ob.bufOff == 64);
+    // The serialize path reads buf->memOff + b.bufOff: verify those bytes.
+    auto ob2 = readGuestRange(offMemId, offBuf->memOff + ob.bufOff, ob.range);
+    assert(ob2.size() == 32);
+    for (U32 i = 0; i < 32; ++i) assert(ob2[i] == (U8)(64 + i));
+    puts("PASS: descriptor buffer offset honored in uniform capture");
     auto cleanupIds = dynamicCb->dynamicObjects;
     dropObj(dynamicCbId);
     for (auto id : cleanupIds) assert(!g_objs.count(id));

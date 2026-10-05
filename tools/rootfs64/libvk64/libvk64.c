@@ -211,6 +211,7 @@ enum {
     VK64_fn_vkCmdBeginRenderingKHR,
     VK64_fn_vkCmdEndRendering,
     VK64_fn_vkCmdEndRenderingKHR,
+    VK64_fn_vkCmdUpdateBuffer,
 
     VK64_fn_vkFlushMappedMemoryRanges = 800,
     VK64_fn_vkInvalidateMappedMemoryRanges,
@@ -872,6 +873,12 @@ API void vkCmdPushConstants(VkCommandBuffer cb, VkPipelineLayout layout, VkFlags
     a.a[0] = cb; a.a[1] = layout; a.a[2] = stageFlags; a.a[3] = offset; a.a[4] = size; a.a[5] = P(values);
     (void)vk64_trap(VK64_fn_vkCmdPushConstants, &a);
 }
+API void vkCmdUpdateBuffer(VkCommandBuffer cb, VkBuffer dst, uint64_t off,
+                           uint64_t size, const void* data) {
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = dst; a.a[2] = off; a.a[3] = size; a.a[4] = P(data);
+    (void)vk64_trap(VK64_fn_vkCmdUpdateBuffer, &a);
+}
 API void vkCmdPipelineBarrier(VkCommandBuffer cb, VkFlags srcStage, VkFlags dstStage,
                               VkFlags depFlags, uint32_t nmc, const void* pmc,
                               uint32_t nbc, const void* pbc, uint32_t nic, const void* pic) {
@@ -1062,6 +1069,7 @@ static const struct procEntry g_procs[] = {
     E(vkCmdBindVertexBuffers2EXT, VK64_fn_vkCmdBindVertexBuffers2),
     E(vkCmdBindIndexBuffer, VK64_fn_vkCmdBindIndexBuffer),
     E(vkCmdPushConstants, VK64_fn_vkCmdPushConstants),
+    E(vkCmdUpdateBuffer, VK64_fn_vkCmdUpdateBuffer),
     E(vkCmdPipelineBarrier, VK64_fn_vkCmdPipelineBarrier),
     E(vkCmdCopyBufferToImage, VK64_fn_vkCmdCopyBufferToImage),
     // --- frame boundary ---
@@ -1248,7 +1256,6 @@ TAIL(vkCmdBlitImage2KHR)
 TAIL(vkCmdCopyImageToBuffer)
 TAIL(vkCmdCopyBufferToImage2)
 TAIL(vkCmdCopyBufferToImage2KHR)
-TAIL(vkCmdUpdateBuffer)
 TAIL(vkCmdFillBuffer)
 TAIL(vkCmdClearColorImage)
 TAIL(vkCmdClearAttachments)

@@ -228,6 +228,7 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkCmdBeginRenderingKHR,             "vkCmdBeginRenderingKHR")\
     X(VK64_fn_vkCmdEndRendering,                  "vkCmdEndRendering")\
     X(VK64_fn_vkCmdEndRenderingKHR,               "vkCmdEndRenderingKHR")\
+    X(VK64_fn_vkCmdUpdateBuffer,                  "vkCmdUpdateBuffer")\
     X(VK64_fn_vkCmdBindPipeline,                    "vkCmdBindPipeline")   \
     X(VK64_fn_vkCmdBindDescriptorSets,              "vkCmdBindDescriptorSets") \
     X(VK64_fn_vkCmdSetViewport,                     "vkCmdSetViewport")    \
@@ -383,7 +384,10 @@ const U32 VK64_MAX_PUSH_BYTES = 256;   // matches limits.maxPushConstantsSize
 // indexing). The elements themselves stay in the flat Binding array — the
 // per-element payload schema is P3 work — but the INDEX and COUNT are recorded
 // now so the schema has something honest to read.
-struct Binding { U32 binding = 0, type = 0, dstArrayElement = 0, count = 1; U64 obj = 0, range = 0; };
+struct Binding { U32 binding = 0, type = 0, dstArrayElement = 0, count = 1; U64 obj = 0, range = 0;
+                 U64 bufOff = 0; }; // VkDescriptorBufferInfo::offset: DXVK sub-allocates
+                 // uniforms (D3D9ConstantBuffer::Alloc) and binds each range with its own
+                 // offset; dropping it made every uniform capture read from offset 0.
 
 struct Instance : Obj { U64 phys[4] = {0,0,0,0}; U32 physCount = 0; };
 struct PhysDev  : Obj { U64 instance = 0; };
@@ -464,7 +468,7 @@ struct Swapchain : Obj { U32 w = 0, h = 0, format = 0, nimg = 0, cur = 0; U64 im
 enum CmdKind : U32 {
     CMD_BEGIN_RP, CMD_END_RP, CMD_BIND_PIPE, CMD_BIND_SETS, CMD_VIEWPORT,
     CMD_SCISSOR, CMD_DRAW, CMD_DRAW_INDEXED, CMD_BARRIER, CMD_COPY_B2I, CMD_PUSH_CONST,
-    CMD_BIND_VB, CMD_BIND_IB
+    CMD_BIND_VB, CMD_BIND_IB, CMD_UPDATE_BUF
 };
 struct Copy {
     U64 srcBuffer = 0, dstImage = 0, bufOff = 0;
@@ -485,6 +489,13 @@ struct Cmd {
     // corner case.
     U32 pcOffset = 0, pcSize = 0, pcStageFlags = 0;
     U8  pcBytes[VK64_MAX_PUSH_BYTES] = {0};
+    // vkCmdUpdateBuffer: transfer-write into a buffer. Payload copied out
+    // of guest memory at record time; executed into guest memory at submit
+    // (transfer semantics), before the frame is serialized, so
+    // readGuestRange sees the updated bytes. DXVK uploads D3D9
+    // fixed-function VS constants with this.
+    U64 updBuf = 0, updOff = 0;
+    std::vector<U8> updBytes;
     // Indexed draw + G2 replay capture: vertexOffset for the draw, and the
     // resolved NDC positions / linear RGBA colors (capCount vertices) baked
     // for the procedural replay shader when the layout is understood.
@@ -688,6 +699,20 @@ void emitFrameNow() {
 // Source and destination are BOTH guest ranges, so this is one
 // memcpyFromGuest/memcpyToGuest per row.
 // ---------------------------------------------------------------------------
+// vkCmdUpdateBuffer execution: the transfer write lands in guest memory at
+// submit time, exactly like a real implementation would make it visible.
+// Bounds are clamped defensively; a short write still updates its prefix.
+void execUpdateBuf(const Cmd& k) {
+    Buffer* b = objOf<Buffer>(k.updBuf, K_BUFFER, "vkCmdUpdateBuffer");
+    if (!b || !b->mem || k.updBytes.empty()) return;
+    DeviceMemory* m = objOf<DeviceMemory>(b->mem, K_MEMORY, "vkCmdUpdateBuffer");
+    if (!m || !m->va) return;
+    U64 off = b->memOff + k.updOff;
+    U64 n = (U64)k.updBytes.size();
+    if (off >= m->size) return;
+    if (off + n > m->size) n = m->size - off;
+    g_mem->memcpyToGuest(m->va + off, k.updBytes.data(), n);
+}
 void execCopy(const Copy& r) {
     Buffer* src = objOf<Buffer>(r.srcBuffer, K_BUFFER, "copyBufferToImage");
     Image*  dst = objOf<Image>(r.dstImage, K_IMAGE, "copyBufferToImage");
@@ -1401,7 +1426,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 if (b.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
                     b.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
                     Buffer* buf = objOf<Buffer>(b.obj, K_BUFFER, "vkQueueSubmit");
-                    if (buf) emitBufferData(b.obj, buf->memOff, b.range ? b.range : buf->size);
+                    if (buf) emitBufferData(b.obj, buf->memOff + b.bufOff, b.range ? b.range : buf->size);
                 } else if (b.type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
                            b.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ||
                            b.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
@@ -3071,6 +3096,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 readStruct(w.pBufferInfo, bi);
                 b->obj = bi.buffer;
                 b->range = bi.range;
+                b->bufOff = bi.offset;
             } else if (w.descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
                 // Inline UBO: the bytes live in the write's pNext
                 // (VkWriteDescriptorSetInlineUniformBlock), not in a buffer. Keep
@@ -3164,8 +3190,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 b->count = 1;
                 if (te.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
                     te.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
-                    U64 buf = rd64(dAddr); U64 range = rd64(dAddr + 16);
-                    b->obj = buf; b->range = range;
+                    U64 buf = rd64(dAddr); U64 off = rd64(dAddr + 8); U64 range = rd64(dAddr + 16);
+                    b->obj = buf; b->range = range; b->bufOff = off;
                 } else if (te.type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
                            te.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
                     U64 view = rd64(dAddr + 8);
@@ -3618,6 +3644,32 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         pushCmd(cb, c);
         return 0;
     }
+    case VK64_fn_vkCmdUpdateBuffer: {
+        /* (cmdBuf, dstBuffer, dstOffset, dataSize, pData). DXVK uploads
+         * small uniforms with this -- notably the D3D9 fixed-function VS
+         * constant buffer -- so this used to be a hard stop: the call fell
+         * into the benign tail and the manifest carried zeros for every
+         * uniform updated this way. The payload is copied out of guest
+         * memory at record time and written back at submit (transfer
+         * semantics), before serialization reads the buffer. */
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdUpdateBuffer");
+        if (!cb) return 0;
+        U64 size = args.a[3];
+        if (!args.a[4] || !size) return 0;
+        if (size > 65536) {
+            klog_fmt("vk64: vkCmdUpdateBuffer %llu bytes truncated to 65536 (spec max)",
+                     (unsigned long long)size);
+            size = 65536;
+        }
+        Cmd c;
+        c.kind = CMD_UPDATE_BUF;
+        c.updBuf = args.a[1];
+        c.updOff = args.a[2];
+        c.updBytes.resize((size_t)size);
+        g_mem->memcpyFromGuest(c.updBytes.data(), args.a[4], size);
+        pushCmd(cb, c);
+        return 0;
+    }
     case VK64_fn_vkCmdPipelineBarrier: {
         /* WebGPU pass encoding makes colour/depth layout transitions implicit,
          * so the barrier is dropped — but an ordering marker is kept so submit
@@ -3694,6 +3746,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 // Eager copy execution, against the guest memory both sides of
                 // the copy live in (P1 ran these first at submit too).
                 for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
+                for (const Cmd& k : cb->cmds) if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
                 frames.push_back({cb, cbId});
             }
         }
@@ -3748,6 +3801,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 CmdBuf* cb = cbOf((U64)cbi.commandBuffer, "vkQueueSubmit2");
                 if (!cb) continue;
                 for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
+                for (const Cmd& k : cb->cmds) if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
                 frames.push_back({cb, (U64)cbi.commandBuffer});
             }
         }
