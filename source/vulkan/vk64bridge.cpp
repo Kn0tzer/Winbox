@@ -1476,6 +1476,12 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 }
                 p.f32(k.f[0]); p.f32(k.f[1]); p.f32(k.f[2]); p.f32(k.f[3]);
                 p.f32((float)k.clearDepth); p.u32(0);
+                // Optional attachment identity tail, paired with the updated
+                // decoder. Image identity links render and sampled view aliases.
+                for (U32 i = 0; i < rfb->natt; ++i) {
+                    auto* view = objOf<ImageView>(rfb->views[i], K_IMAGEVIEW, "vkQueueSubmit");
+                    p.u64(rfb->views[i]); p.u64(view ? view->image : 0);
+                }
             });
         };
 

@@ -12,6 +12,7 @@ import {
   parseV2Chunk, V2FrameAssembler, V2FrameQueue, decodeV2Frame,
   rewritePushConstantsWGSL, scanWgslResources, v2PickSampleCount,
   v2TextureFormat, v2VertexFormat, v2Hex64,
+  v2TargetKey, v2ImageTargetKey, v2ImageKnown, V2_UNKNOWN_IMAGE,
 } from '../vkwebgpu.mjs';
 
 // --- LE fixture writer (mirrors the C++ ChunkWriter) ---
@@ -43,7 +44,8 @@ function dxvkFrame(frameNo = 7) {
     new W().u64(0x11).u64(0x22).u32(800).u32(600).u32(2).buf(),
     new W().u32(44).u32(1).u32(0).u32(4).u32(0).buf(),   // B8G8R8A8_UNORM, clear, store, 4x, colour
     new W().u32(129).u32(1).u32(1).u32(4).u32(1).buf(),  // D24S8, clear, discard, 4x, depth
-    new W().f32(0.1).f32(0.2).f32(0.3).f32(1).f32(1).u32(0).buf()
+    new W().f32(0.1).f32(0.2).f32(0.3).f32(1).f32(1).u32(0).buf(),
+    new W().u64(0xc0ffee).u64(0x1111).u64(0xdead).u64(0x2222).buf() // per-attachment {viewId, imageId} identity tail
   )));
   R.push(rec(V2_REC.SHADER, cat(new W().u8(0).u8(0).u16(0).buf(), vsHash, new W().u32(4).buf(), new Uint8Array([1, 2, 3, 4]))));
   R.push(rec(V2_REC.SHADER, cat(new W().u8(1).u8(0).u16(0).buf(), fsHash, new W().u32(4).buf(), new Uint8Array([5, 6, 7, 8]))));
@@ -161,7 +163,33 @@ test('a DXVK-shaped frame decodes to the render model', () => {
   assert.equal(pass.attachments.length, 2);
   assert.equal(pass.attachments[0].samples, 4, 'MSAA sample count survives the hop');
   assert.equal(pass.attachments[1].isDepth, 1);
+  assert.equal(pass.attachments[0].viewId, '0000000000c0ffee', 'attachment view identity survives the hop');
+  assert.equal(pass.attachments[0].imageId, '0000000000001111');
+  assert.equal(pass.attachments[1].viewId, '000000000000dead');
+  assert.equal(pass.attachments[1].imageId, '0000000000002222');
+  // Alias join: the sampled view 0x9e9 resolves to the same image as the colour attachment.
+  assert.equal(frame.views.get('00000000000009e9'), pass.attachments[0].imageId);
   assert.deepEqual(pass.clearColor, [0.10000000149011612, 0.20000000298023224, 0.30000001192092896, 1]);
+
+test('render-target cache keys alias by VkImage identity', () => {
+  const frame = decodeV2Frame(frameRecords(dxvkFrame()));
+  const [pass] = frame.passes;
+  const [colour, depth] = pass.attachments;
+  // Identity-keyed: the fixture tail names image 0x1111 (colour) and 0x2222 (depth).
+  assert.equal(v2TargetKey(colour.imageId, 800, 600, 1, false), 'img:0000000000001111');
+  assert.equal(v2TargetKey(depth.imageId, 800, 600, 4, true), 'imgd:0000000000002222');
+  assert.equal(v2ImageTargetKey('0000000000001111', false), 'img:0000000000001111');
+  // Same image, different geometry or naming view -> same key: that is the alias.
+  assert.equal(v2TargetKey('0000000000001111', 1024, 768, 1, false), 'img:0000000000001111');
+  assert.equal(v2TargetKey('0000000000001111', 800, 600, 4, false), 'img:0000000000001111');
+  // Unknown identity falls back to the geometry keys, byte-identical to the old scheme.
+  assert.equal(v2TargetKey(V2_UNKNOWN_IMAGE, 800, 600, 1, false), 'c800x600x1');
+  assert.equal(v2TargetKey(undefined, 800, 600, 4, false), 'c800x600x4');
+  assert.equal(v2TargetKey('0000000000000000', 800, 600, 4, true), 'd800x600x4');
+  assert.equal(v2TargetKey(null, 800, 600, 4, false), 'c800x600x4', 'MSAA texture stays geometry-keyed');
+  assert.ok(!v2ImageKnown(V2_UNKNOWN_IMAGE) && !v2ImageKnown(undefined) && !v2ImageKnown(null));
+  assert.ok(v2ImageKnown('0000000000001111'));
+});
 
   assert.equal(frame.shaders.size, 2);
   assert.ok(frame.shaders.has('59496e6684bf0791'));

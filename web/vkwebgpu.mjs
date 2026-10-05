@@ -831,6 +831,13 @@ export function decodeV2Frame(records, counters = {}) {
         }
         const clearColor = [r.f32(), r.f32(), r.f32(), r.f32()];
         const clearDepth = r.f32(), clearStencil = r.u32();
+        // Attachment identity tail: one {viewId, imageId} u64 pair per
+        // attachment, in attachment order. The image identity links render
+        // attachments to the sampled-image aliases in frame.views.
+        for (let a = 0; a < natt; a++) {
+          attachments[a].viewId = v2Hex64(r.u64());
+          attachments[a].imageId = v2Hex64(r.u64());
+        }
         r.done('RP_BEGIN');
         pass = { rpId, fbId, w, h, attachments, clearColor, clearDepth, clearStencil, ops: [] };
         frame.passes.push(pass);
@@ -1019,6 +1026,26 @@ export function scanWgslResources(wgsl) {
 // present path already use. Requested counts above 1 clamp to 4.
 export function v2PickSampleCount(requested) { return requested > 1 ? 4 : 1; }
 
+// The RP_BEGIN attachment-identity tail (schema v2) carries the VkImage id
+// as a 16-char hex string; all-zero means the native side could not resolve it.
+export const V2_UNKNOWN_IMAGE = '0000000000000000';
+export function v2ImageKnown(imageId) {
+  return typeof imageId === 'string' && imageId !== V2_UNKNOWN_IMAGE;
+}
+// Render-target cache key for one attachment. A known VkImage identity keys
+// by image so a later pass sampling the same image aliases the texture that
+// was rendered into (sampled-image alias replay); otherwise the geometry key
+// is used, byte-identical to the pre-identity scheme. Guest image ids are
+// never recycled (monotonic allocator in vk64bridge.cpp), so identity keys
+// stay valid across frames like the geometry keys.
+export function v2ImageTargetKey(imageId, isDepth) {
+  return (isDepth ? 'imgd:' : 'img:') + imageId;
+}
+export function v2TargetKey(imageId, w, h, samples, isDepth) {
+  if (v2ImageKnown(imageId)) return v2ImageTargetKey(imageId, isDepth);
+  return (isDepth ? 'd' : 'c') + w + 'x' + h + 'x' + samples;
+}
+
 // ---------------------------------------------------------------------------
 // createVkRenderer2 — the schema-v2 page-tier renderer.
 //
@@ -1059,10 +1086,10 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
 
   const shaders = createShaderCache({ translate, log });
   const pipelines = new Map();   // pipeId:msN -> { pipeline, layouts, decls, hasPush, slotOf, maxGroup, key }
-  const targets = new Map();     // targetKey -> GPUTexture (invalidated on resize)
+  const targets = new Map();     // targetKey -> GPUTexture (invalidated on resize; img:/imgd: keys alias by VkImage)
   const stats = {
     frames: 0, rendered: 0, skips: 0, unknownFormats: 0, unsupported: 0,
-    litPixels: 0, paintedPixels: 0, totalPixels: 0, width: 0, height: 0,
+    litPixels: 0, paintedPixels: 0, totalPixels: 0, width: 0, height: 0, aliased: 0,
   };
   const snapshot = () => ({ ...stats, ...shaders.stats });
   let destroyed = false;
@@ -1280,8 +1307,15 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
         for (let k = 0; k < d.arrayCount; k++) {
           const b = bindingForElement(bindings, d.binding, k);
           const imgHex = b && b.kind === 2 ? F.views.get(b.obj) : null;
-          const img = imgHex && F.images.get(imgHex);
-          views.push((img ? gpuTextureFor(imgHex, img) : blankTex()).createView());
+          // Sampled-image alias replay: when this VkImage was a render target
+          // earlier in the frame, sample the texture actually rendered into —
+          // its IMAGE_DATA record carries the view->image link but no pixels.
+          const aliasTex = v2ImageKnown(imgHex)
+            ? (targets.get(v2ImageTargetKey(imgHex, false)) || targets.get(v2ImageTargetKey(imgHex, true)))
+            : null;
+          if (aliasTex) stats.aliased++;
+          const img = !aliasTex && imgHex && F.images.get(imgHex);
+          views.push(aliasTex ? aliasTex.createView() : (img ? gpuTextureFor(imgHex, img) : blankTex()).createView());
         }
         entries.push({ binding: d.binding, resource: d.arrayCount > 1 ? views : views[0] });
       } else if (t === 'sampler' || t === 'sampler_comparison') {
@@ -1340,18 +1374,25 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       let depthView = null;
       for (const a of p.attachments) {
         const samples = v2PickSampleCount(a.samples || 1);
+        // Known VkImage identity: the single-sample (resolve) target is keyed
+        // by image so a later pass sampling it aliases the rendered texture.
+        // The multisampled texture itself stays geometry-keyed.
+        const knownImage = v2ImageKnown(a.imageId);
+        const texBinding = knownImage ? GPUTextureUsage.TEXTURE_BINDING : 0;
         if (a.isDepth) {
-          const tex = target(`d${p.w}x${p.h}x${samples}`, {
-            size: [p.w, p.h], sampleCount: samples, format: 'depth24plus', usage: GPUTextureUsage.RENDER_ATTACHMENT,
+          const tex = target(v2TargetKey(a.imageId, p.w, p.h, samples, true), {
+            size: [p.w, p.h], sampleCount: samples, format: 'depth24plus',
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | texBinding,
           });
           depthView = tex.createView();
         } else {
-          const single = target(`c${p.w}x${p.h}x1`, {
-            size: [p.w, p.h], format, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+          const single = target(v2TargetKey(a.imageId, p.w, p.h, 1, false), {
+            size: [p.w, p.h], format,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | texBinding,
           });
           let view = single.createView(), resolveTarget;
           if (samples > 1) {
-            const ms = target(`c${p.w}x${p.h}x${samples}`, {
+            const ms = target(v2TargetKey(null, p.w, p.h, samples, false), {
               size: [p.w, p.h], sampleCount: samples, format, usage: GPUTextureUsage.RENDER_ATTACHMENT,
             });
             view = ms.createView(); resolveTarget = single.createView();

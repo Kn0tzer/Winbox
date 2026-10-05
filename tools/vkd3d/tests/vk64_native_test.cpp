@@ -74,6 +74,7 @@ void vkCmdDraw(U64, U32, U32, U32, U32);
 void vkCmdBeginRendering(U64, const void*);
 void vkCmdEndRendering(U64);
 void vkCmdBindPipeline(U64, U32, U64);
+void vkCmdBindDescriptorSets(U64, U32, U64, U32, U32, const U64*, U32, const U32*);
 int vkCreateGraphicsPipelines(U64, U64, U32, const void*, const void*, void*);
 void vkCmdBindVertexBuffers2(U64, U32, U32, const U64*, const U64*, const U64*, const U64*);
 void vkCmdBindVertexBuffers2EXT(U64, U32, U32, const U64*, const U64*, const U64*, const U64*);
@@ -171,6 +172,11 @@ int main() {
     image->format = 44; image->samples = 4;
     U64 viewId; auto* view = createObj<ImageView>(K_IMAGEVIEW, viewId);
     view->image = imageId; view->format = 44; view->aspect = 1;
+    U64 sampledViewId; auto* sampledView = createObj<ImageView>(K_IMAGEVIEW, sampledViewId);
+    sampledView->image = imageId; sampledView->format = 44; sampledView->aspect = 1;
+    U64 sampledSetId; auto* sampledSet = createObj<DescSet>(K_SET, sampledSetId);
+    sampledSet->nbind = 1; sampledSet->binds[0].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    sampledSet->binds[0].obj = sampledViewId; sampledSet->binds[0].count = 1;
     U8 attachment[72] = {}, rendering[72] = {};
     auto put32 = [](U8* bytes, size_t at, U32 value) { memcpy(bytes + at, &value, 4); };
     auto put64 = [](U8* bytes, size_t at, U64 value) { memcpy(bytes + at, &value, 8); };
@@ -182,16 +188,19 @@ int main() {
     memory.memcpyToGuest(1536, attachment, sizeof(attachment));
     memory.memcpyToGuest(1664, rendering, sizeof(rendering));
     vkCmdBeginRendering(dynamicCbId, (void*)1664);
+    memory.writeq(1792, sampledSetId);
+    vkCmdBindDescriptorSets(dynamicCbId, 0, 0, 0, 1, (U64*)1792, 0, nullptr);
     vkCmdDraw(dynamicCbId, 3, 1, 0, 0); vkCmdEndRendering(dynamicCbId);
     serializeSubmitV2({{dynamicCb, dynamicCbId}});
     assert(!g_v2Pending.empty());
-    unsigned rpBegins = 0;
+    unsigned rpBegins = 0, aliasRecords = 0;
     for (const auto& chunk : g_v2Pending.back().chunks) {
         for (size_t at = 16; at < chunk.size();) {
             U32 type, len; memcpy(&type, chunk.data() + at, 4); memcpy(&len, chunk.data() + at + 4, 4);
             assert(at + 8 + len <= chunk.size());
             if (type == V2_RP_BEGIN) {
                 ++rpBegins;
+                assert(len == 88); // Existing fields plus one view/image identity pair.
                 U32 count, format, load, store, samples;
                 memcpy(&count, chunk.data() + at + 8 + 24, 4);
                 memcpy(&format, chunk.data() + at + 8 + 28, 4);
@@ -200,11 +209,22 @@ int main() {
                 memcpy(&samples, chunk.data() + at + 8 + 40, 4);
                 assert(count == 1 && format == 44 && load == 1 && store == 0 && samples == 4);
                 assert(memcmp(chunk.data() + at + 8 + 48, clear, 16) == 0);
+                U64 attachmentView, attachmentImage;
+                memcpy(&attachmentView, chunk.data() + at + 8 + 72, 8);
+                memcpy(&attachmentImage, chunk.data() + at + 8 + 80, 8);
+                assert(attachmentView == viewId && attachmentImage == imageId);
+            }
+            if (type == V2_IMAGE_DATA) {
+                ++aliasRecords;
+                U64 sampledView, sampledImage;
+                memcpy(&sampledView, chunk.data() + at + 8, 8);
+                memcpy(&sampledImage, chunk.data() + at + 16, 8);
+                assert(sampledView == sampledViewId && sampledView != viewId && sampledImage == imageId);
             }
             at += 8 + len;
         }
     }
-    assert(rpBegins == 1); // Dynamic rendering must not silently drop RP_BEGIN.
+    assert(rpBegins == 1 && aliasRecords == 1); // Views differ, image identity joins them.
     g_v2Pending.clear();
     const auto syntheticIds = dynamicCb->dynamicObjects;
     resetCmdBuf(dynamicCb);
@@ -320,6 +340,24 @@ int main() {
     assert(dynamicFb->natt == 2 && dynamicFb->views[1] == depthViewId);
     assert(dynamicRp->formats[1] == 126 && dynamicRp->samples[1] == 4);
     assert(begin.clearDepth == 0.375 && dynamicRp->loadOps[1] == 1 && dynamicRp->storeOps[1] == 1);
+    vkCmdDraw(dynamicCbId, 3, 1, 0, 0); vkCmdEndRendering(dynamicCbId);
+    serializeSubmitV2({{dynamicCb, dynamicCbId}});
+    unsigned depthPasses = 0;
+    for (const auto& chunk : g_v2Pending.back().chunks) {
+        for (size_t at = 16; at < chunk.size();) {
+            U32 type, len; memcpy(&type, chunk.data() + at, 4); memcpy(&len, chunk.data() + at + 4, 4);
+            if (type == V2_RP_BEGIN) {
+                ++depthPasses;
+                assert(len == 124); // 28 + 2*20 + 24 + 2*16.
+                const U8* tail = chunk.data() + at + 8 + 92;
+                U64 ids[4]; memcpy(ids, tail, sizeof(ids));
+                assert(ids[0] == viewId && ids[1] == imageId && ids[2] == depthViewId && ids[3] == depthImageId);
+            }
+            at += 8 + len;
+        }
+    }
+    assert(depthPasses == 1);
+    g_v2Pending.clear();
     auto cleanupIds = dynamicCb->dynamicObjects;
     dropObj(dynamicCbId);
     for (auto id : cleanupIds) assert(!g_objs.count(id));
