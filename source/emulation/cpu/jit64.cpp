@@ -149,9 +149,10 @@ static U32 scanModRM(const U8* bytes, U32 byteCount, const PrefixInfo& p,
     } else if (mod == 0x2) {
         if (byteCount < len + 4) return 0;
         len += 4;
-    } else if (mod == 0x0 && rm == 0x4) {
-        // SIB with no base (mod==0, base==5): disp32 follows
-        // len is 2 here (modrm+sib)
+    } else if (mod == 0x0 && rm == 0x4 && (bytes[1] & 0x7) == 0x5) {
+        // SIB with no base (mod==0, SIB base field==5): disp32 follows.
+        // len is 2 here (modrm+sib); a SIB *with* a base has no disp32.
+        // (The interpreter's decodeModRM checks baseF==5, not rm==4.)
         if (byteCount < len + 4) return 0;
         len += 4;
     }
@@ -162,8 +163,59 @@ static U32 readU32(const U8* b) {
     return (U32)b[0] | ((U32)b[1] << 8) | ((U32)b[2] << 16) | ((U32)b[3] << 24);
 }
 
+// Decode the full effective-address form of a memory ModRM (addressing
+// fields only, no EA computation: base/index registers are read at
+// runtime). Mirrors CPU64::decodeModRM field-for-field, including its
+// quirks: RIP-relative (mod=0,rm=5) returns before the 0x67 mask and
+// before FS/GS handling, so asize32/seg are ignored for it.
+// `b` points at the ModRM byte; lengths were validated by scanModRM.
+// `modrmGuestAddr` is the absolute guest address of the ModRM byte;
+// `trailingImm` is the immediate length after ModRM/SIB/disp (for RIP-rel).
+static void decodeEA(const U8* b, const PrefixInfo& p, U64 modrmGuestAddr,
+                     U32 trailingImm, Jit64MemEA& ea) {
+    ea = Jit64MemEA();
+    U8 modrm = b[0];
+    U8 mod = (modrm >> 6) & 0x3;
+    U8 rm = modrm & 0x7;
+    ea.asize32 = p.asize32;
+    ea.seg = p.seg;
+    if (mod == 0x0 && rm == 0x5) {
+        // RIP-relative disp32. Materialize the absolute target now: the
+        // emitter folds it to a single i64.const.
+        S32 disp32 = (S32)readU32(b + 1);
+        ea.ripRel = true;
+        ea.ripRelTarget = modrmGuestAddr + 5 + trailingImm + (U64)(S64)disp32;
+        return;
+    }
+    U32 pos = 1;
+    if (rm == 0x4) {
+        U8 sib = b[1];
+        pos = 2;
+        ea.scale = (U8)((sib >> 6) & 0x3);
+        U8 idxF = (sib >> 3) & 0x7;
+        U8 baseF = sib & 0x7;
+        bool rexX = (p.rex & 0x02) != 0;
+        bool rexB = (p.rex & 0x01) != 0;
+        // Index field 100 with no REX.X: no index. With REX.X it is R12.
+        if (!(idxF == 0x4 && !rexX))
+            ea.idxReg = (U8)(idxF | (rexX ? 0x08 : 0));
+        // Base field 101 with mod==0: disp32-only, no base register.
+        if (!(baseF == 0x5 && mod == 0x0))
+            ea.baseReg = (U8)(baseF | (rexB ? 0x08 : 0));
+    } else {
+        ea.baseReg = (U8)(rm | ((p.rex & 0x01) ? 0x08 : 0));
+    }
+    if (mod == 0x1) {
+        ea.disp = (S64)(S8)b[pos];
+    } else if (mod == 0x2) {
+        ea.disp = (S64)(S32)readU32(b + pos);
+    } else if (mod == 0x0 && rm == 0x4 && ea.baseReg == 0xFF) {
+        // SIB disp32-only (baseF==5, mod==0).
+        ea.disp = (S64)(S32)readU32(b + pos);
+    }
+}
+
 bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
-    (void)ripBase;
     out = Jit64Op();
     if (!bytes || byteCount == 0) return false;
     PrefixInfo p;
@@ -280,6 +332,7 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
         out.size = (form & 1) ? size : 1;
         out.len = (U8)(opOff + 1 + ml);
         out.regField = rf; out.rmIndex = ri; out.isMem = hm;
+        if (hm) decodeEA(bytes + opOff + 1, p, ripBase + opOff + 1, 0, out.ea);
         return true;
     }
     // ALU ACC, imm (04/05, 0C/0D, 14/15, 1C/1D, 24/25, 2C/2D, 34/35, 3C/3D).
@@ -342,6 +395,7 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
         out.size = isz;
         out.len = (U8)(opOff + 1 + ml + trailing);
         out.regField = rf; out.rmIndex = ri; out.isMem = hm;
+        if (hm) decodeEA(bytes + opOff + 1, p, ripBase + opOff + 1, trailing, out.ea);
         return true;
     }
     // TEST r/m, r (0x84 is the 8-bit form; 0x66/REX.W ignored).
@@ -353,6 +407,7 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
         out.size = (op == 0x84) ? 1 : size;
         out.len = (U8)(opOff + 1 + ml);
         out.regField = rf; out.rmIndex = ri; out.isMem = hm;
+        if (hm) decodeEA(bytes + opOff + 1, p, ripBase + opOff + 1, 0, out.ea);
         return true;
     }
     // LEA.
@@ -523,6 +578,10 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16) {
         op.plan = JIT64_FAST;
         return;
     }
+    // FS/GS-segment memory operands stay interpreter-only: the segment
+    // bases live on the CPU object, not in Jit64WasmState. (String ops
+    // ignore seg like the interpreter, and are exempt above.)
+    if (op.isMem && op.ea.seg != 0) return;
     if (hasLockOrRep) return; // LOCK/REP on non-string ops: interpreter-only
     // osize16 means "0x66 selected a 16-bit operand size" (the caller masks
     // out the redundant-0x66-with-REX.W case, where the size stays 64-bit).

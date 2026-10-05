@@ -97,7 +97,9 @@ for (const [name, code] of [
   ['empty block', []],
   ['guest-memory MOV', [0x48, 0x89, 0x00]],
   ['16-bit MOV', [0x66, 0xB8, 0x42, 0]], ['REP prefix', [0xF3, 0xB8, 0x42, 0, 0, 0]],
-  ['memory ADD', [0x48, 0x01, 0x00]],
+  ['FS-segment memory ADD', [0x64, 0x48, 0x01, 0x00]],
+  ['GS-segment memory ADD', [0x65, 0x48, 0x01, 0x00]],
+  ['LOCK memory ADD', [0xF0, 0x48, 0x01, 0x00]],
   ['unsupported suffix after MOV', [...movabs(0, 1n), 0x48, 0xC1, 0x20, 0x04]],
   ['block longer than 24 operations', Array.from({ length: 25 }, () => movabs(0, 1n)).flat()],
 ]) {
@@ -285,6 +287,371 @@ test('mixed MOV+ADD block', async () => {
   const { r, flags } = refAlu(0, 7n, 8n, 8);
   const out = await runAlu(code, regs, 0x202);
   expectAlu(out, 0x202, flags, code.length, got => assert.equal(got[0], r));
+});
+
+// --- Memory-operand ALU (mirrors decodeEA + emitAluMem; fixture ripBase=0) ---
+
+// 8-bit register read/write with the x86-64 high-byte rule (mirrors
+// byteRegParts/emitReadByte/emitWriteByte).
+function memRegRead(regs, idx, size, rexPresent) {
+  if (size === 1) {
+    let phys = idx, shift = 0n;
+    if (!rexPresent && idx >= 4 && idx <= 7) { phys = idx - 4; shift = 8n; }
+    return (regs[phys] >> shift) & 0xFFn;
+  }
+  const mask = size === 8 ? mask64 : (1n << BigInt(size * 8)) - 1n;
+  return regs[idx] & mask;
+}
+function memRegWrite(regs, idx, size, val, rexPresent) {
+  if (size === 1) {
+    let phys = idx, shift = 0n;
+    if (!rexPresent && idx >= 4 && idx <= 7) { phys = idx - 4; shift = 8n; }
+    regs[phys] = (regs[phys] & ~(0xFFn << shift)) | ((val & 0xFFn) << shift);
+  } else if (size === 2) {
+    regs[idx] = (regs[idx] & ~0xFFFFn) | (val & 0xFFFFn);
+  } else {
+    regs[idx] = val & mask64; // 32-bit: val already masked, zero-extends
+  }
+  regs[idx] &= mask64;
+}
+
+// Effective address from decoded EA params (mirrors emitEA's i64 math).
+function computeEA(ea, regs) {
+  if (ea.ripRel) return ea.ripRelTarget & mask64;
+  let a = ea.baseReg === 0xFF ? 0n : regs[ea.baseReg];
+  if (ea.idxReg !== 0xFF) a = (a + ((regs[ea.idxReg] << BigInt(ea.scale)) & mask64)) & mask64;
+  a = (a + (ea.disp & mask64)) & mask64;
+  if (ea.asize32) a &= 0xFFFFFFFFn;
+  return a;
+}
+
+// Encode a memory-operand ALU/TEST instruction.
+// form: 'rm_r' | 'r_rm' | 'rm_imm' | 'test'; sub: 0..7; size: 1|2|4|8.
+// eaKind: 'base' | 'disp8' | 'disp32' | 'sib' | 'sib32' | 'riprel'.
+// Returns { code, ea, reg, imm, rexPresent, trailingImm }.
+function encAluMem({ form, sub, size, reg = 0, imm = 0, eaKind = 'base', base = 0, idx = 1, scale = 0, disp = 0, asize32 = false, immOp = 0 }) {
+  let rex = 0;
+  if (size === 8) rex |= 0x08;
+  if (reg >= 8) rex |= 0x04;
+  const needB = eaKind !== 'riprel' && base >= 8;
+  const needX = (eaKind === 'sib' || eaKind === 'sib32') && idx >= 8;
+  if (needB) rex |= 0x01;
+  if (needX) rex |= 0x02;
+  // 8-bit high-byte registers (4..7) forbid REX; bump to low regs instead.
+  let r = reg;
+  if (size === 1 && !rex && r >= 4 && r <= 7 && (needB || needX || size === 8)) r = 0;
+  const rexPresent = rex !== 0;
+  if (size === 1 && r >= 4 && r <= 7) { /* high-byte: rex must be 0 */ }
+  let effRex = rex;
+  if (size === 1 && r >= 4 && r <= 7) effRex = 0; // high-byte rule: drop REX
+  const code = [];
+  if (asize32) code.push(0x67);
+  if (size === 2) code.push(0x66);
+  if (effRex) code.push(0x40 | effRex);
+  const prefixLen = code.length;
+  let op;
+  if (form === 'rm_r') op = 0x00 | (sub << 3) | (size > 1 ? 1 : 0);
+  else if (form === 'r_rm') op = 0x02 | (sub << 3) | (size > 1 ? 1 : 0);
+  else if (form === 'test') op = size === 1 ? 0x84 : 0x85;
+  else op = immOp; // rm_imm: 0x80 | 0x81 | 0x83
+  code.push(op);
+  const modrmPos = prefixLen + 1;
+  let mod, rm;
+  const dispBytes = [];
+  const sibBytes = [];
+  if (eaKind === 'riprel') { mod = 0; rm = 5; }
+  else if (eaKind === 'sib' || eaKind === 'sib32') {
+    rm = 4;
+    const noBase = eaKind === 'sib32';
+    mod = noBase ? 0 : disp !== 0 ? (disp >= -128 && disp <= 127 ? 1 : 2) : 0;
+    sibBytes.push((scale << 6) | ((idx & 7) << 3) | (noBase ? 5 : (base & 7)));
+  } else {
+    rm = base & 7;
+    mod = eaKind === 'disp8' ? 1 : eaKind === 'disp32' ? 2 : 0;
+  }
+  if (mod === 1) dispBytes.push(disp & 0xFF);
+  if (mod === 2 || eaKind === 'riprel' || eaKind === 'sib32') dispBytes.push(...little(BigInt(disp) & 0xFFFFFFFFn, 4));
+  const regF = form === 'rm_imm' ? sub : (r & 7);
+  code.push((mod << 6) | (regF << 3) | rm, ...sibBytes, ...dispBytes);
+  let trailingImm = 0;
+  let immVal = 0n;
+  if (form === 'rm_imm') {
+    if (op === 0x80 || op === 0x83) {
+      code.push(Number(BigInt(imm) & 0xFFn)); trailingImm = 1;
+      immVal = BigInt.asIntN(64, BigInt.asIntN(8, BigInt(imm)));
+    } else {
+      const n = size === 2 ? 2 : 4; trailingImm = n;
+      code.push(...little(BigInt(imm) & (n === 2 ? 0xFFFFn : 0xFFFFFFFFn), n));
+      immVal = n === 2 ? BigInt(imm) & 0xFFFFn : size === 8 ? BigInt.asIntN(64, BigInt.asIntN(32, BigInt(imm))) : BigInt(imm) & 0xFFFFFFFFn;
+    }
+  }
+  // Expected EA params (fixture ripBase=0).
+  const ea = { ripRel: false, ripRelTarget: 0n, baseReg: 0xFF, idxReg: 0xFF, scale: 0, disp: 0n, asize32, seg: 0 };
+  if (eaKind === 'riprel') {
+    ea.ripRel = true;
+    ea.ripRelTarget = (BigInt(modrmPos) + 5n + BigInt(trailingImm) + BigInt.asIntN(64, BigInt.asIntN(32, BigInt(disp)))) & mask64;
+  } else {
+    if (eaKind === 'sib' || eaKind === 'sib32') {
+      ea.scale = scale;
+      if (!(eaKind === 'sib32')) ea.baseReg = base;
+      if (!((idx & 7) === 4 && !(effRex & 0x02))) ea.idxReg = idx;
+    } else {
+      ea.baseReg = base;
+    }
+    ea.disp = BigInt(disp) & mask64; // sign-extended below via asIntN
+    if (mod === 1) ea.disp = BigInt.asIntN(64, BigInt.asIntN(8, BigInt(disp))) & mask64;
+    else if (mod === 2 || eaKind === 'sib32') ea.disp = BigInt.asIntN(64, BigInt.asIntN(32, BigInt(disp))) & mask64;
+    else ea.disp = 0n;
+  }
+  return { code, ea, reg: r, imm: immVal, rexPresent: effRex !== 0, form, sub, size };
+}
+
+// Run one memory-ALU instruction against real memRead/memWrite imports.
+async function runAluMem(code, { regs, rflags = 0x202, memInit = new Map(), rip = 0x12345678ABCDEFF0n, ptr = 512 }) {
+  const { result, path } = emit(code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(WebAssembly.validate(readFileSync(path)), 'emitted module must validate');
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const guestMem = makeGuestMem();
+  for (const [k, v] of memInit) guestMem.bytes.set(k, v);
+  const view = new DataView(memory.buffer);
+  regs.forEach((v, i) => view.setBigUint64(ptr + i * 8, v, true));
+  view.setBigUint64(ptr + 128, rip, true);
+  view.setUint32(ptr + 136, rflags >>> 0, true);
+  view.setUint32(ptr + 140, 0xA5A5A5A5, true);
+  const { instance } = await WebAssembly.instantiate(readFileSync(path), stringEnv(memory, guestMem));
+  instance.exports.execute(ptr);
+  return {
+    regs: Array.from({ length: 16 }, (_, i) => view.getBigUint64(ptr + i * 8, true)),
+    rflags: view.getUint32(ptr + 136, true),
+    ripOut: view.getBigUint64(ptr + 128, true),
+    reserved: view.getUint32(ptr + 140, true),
+    guestMem,
+  };
+}
+
+// Differential check: wasm vs JS reference model.
+async function checkAluMem(enc, { regs, rflags = 0x202, memInit = new Map(), rip = 0x12345678ABCDEFF0n }) {
+  const { form, sub, size } = enc;
+  const refRegs = [...regs];
+  const refMem = makeGuestMem();
+  for (const [k, v] of memInit) refMem.bytes.set(k, v);
+  const eaAddr = computeEA(enc.ea, refRegs);
+  const mask = size === 8 ? mask64 : (1n << BigInt(size * 8)) - 1n;
+  const memVal = refMem.read(eaAddr, size);
+  const effSub = form === 'test' ? 4 : sub;
+  let a, b;
+  if (form === 'r_rm') { a = memRegRead(refRegs, enc.reg, size, enc.rexPresent); b = memVal; }
+  else { a = memVal; b = form === 'rm_imm' ? enc.imm & mask : memRegRead(refRegs, enc.reg, size, enc.rexPresent); }
+  const carryIn = (sub === 2 || sub === 3) && (rflags & 1) ? 1n : 0n;
+  const { r, flags } = refAlu(effSub, a, b, size, carryIn);
+  const refFlags = ((BigInt(rflags) & ~0x8D5n) | flags) & 0xFFFFFFFFn;
+  const isWrite = form !== 'test' && sub !== 7;
+  if (isWrite) {
+    if (form === 'r_rm') memRegWrite(refRegs, enc.reg, size, r, enc.rexPresent);
+    else refMem.write(eaAddr, size, r);
+  }
+  const out = await runAluMem(enc.code, { regs: [...regs], rflags, memInit, rip });
+  assert.deepEqual(out.regs, refRegs, 'GPRs');
+  assert.equal(BigInt(out.rflags), refFlags, 'RFLAGS');
+  assert.equal(out.ripOut, (rip + BigInt(enc.code.length)) & mask64, 'RIP');
+  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+  const refKeys = [...refMem.bytes.keys()].map(String).sort();
+  const outKeys = [...out.guestMem.bytes.keys()].map(String).sort();
+  assert.deepEqual(outKeys, refKeys, 'written addresses');
+  for (const k of refKeys) assert.equal(out.guestMem.bytes.get(BigInt(k)), refMem.bytes.get(BigInt(k)), `mem[${k}]`);
+}
+
+const ALU_SBASE = 0x10000n;
+function aluMemInit(base, arr) {
+  const m = new Map();
+  arr.forEach((v, i) => m.set(base + BigInt(i), v));
+  return m;
+}
+
+const pick = (rng, arr) => arr[Math.floor(rng() * arr.length) % arr.length];
+
+// Adversarial 64-bit values: zero, +-1, sign/width boundaries, high addresses.
+function advVal(rng) {
+  return pick(rng, [
+    0n, 1n, 0xFFFFFFFFFFFFFFFFn, 0xFFFFFFFFFFFFFFFEn,
+    0x8000000000000000n, 0x7FFFFFFFFFFFFFFFn,
+    0x00000000FFFFFFFFn, 0x0000000100000000n,
+    0xFFFFFFFF00000000n, 0x00000000000000FFn, 0x000000000000FF00n,
+    BigInt(Math.floor(rng() * 2 ** 32)) << 32n | BigInt(Math.floor(rng() * 2 ** 32)),
+  ]);
+}
+
+// Random EA description covering all addressing forms, including adversarial
+// ones (page boundaries, 0x67 wrap, SIB edge cases, RIP-relative).
+function randomEA(rng) {
+  const kind = pick(rng, ['base', 'base', 'disp8', 'disp32', 'sib', 'sib', 'sib32', 'riprel']);
+  const asize32 = rng() < 0.25;
+  if (kind === 'riprel') {
+    // disp32 adversarial: small, page-boundary, negative, huge.
+    const disp = pick(rng, [0, 8, -8, 0x1000, -0x1000, 0x7FFFFFFF, -0x80000000, Math.floor(rng() * 2 ** 32) - 2 ** 31]);
+    return { eaKind: 'riprel', disp, asize32: false };
+  }
+  if (kind === 'sib32') {
+    const idx = pick(rng, [0, 1, 4, 7, 8, 12, 15]);
+    const disp = pick(rng, [0, 0x1000, -0x1000, 0x7FFFFFFF, Math.floor(rng() * 2 ** 32) - 2 ** 31]);
+    return { eaKind: 'sib32', base: 0, idx, scale: pick(rng, [0, 1, 2, 3]), disp, asize32 };
+  }
+  if (kind === 'sib') {
+    // base&7==5 with mod=0 needs disp32 (that's the sib32 kind); avoid it here.
+    const base = pick(rng, [0, 1, 4, 7, 8, 12, 15]);
+    const idx = pick(rng, [0, 1, 2, 4, 7, 8, 12, 15]);
+    const disp = pick(rng, [0, 1, -1, 127, -128, 0x1000, -0x1000, 0x1234, -0x1234]);
+    return { eaKind: 'sib', base, idx, scale: pick(rng, [0, 1, 2, 3]), disp, asize32 };
+  }
+  // base / disp8 / disp32: avoid (base&7)==5 with mod=0 (that's riprel,
+  // so no r13), and avoid rsp/r12 (base&7==4) which needs a SIB byte.
+  const base = pick(rng, [0, 1, 2, 3, 6, 7, 8, 9, 14, 15]);
+  const disp = kind === 'base' ? 0 : pick(rng, [1, -1, 127, -128, 0x1000, -0x1000, 0x7FFFFFFF, -0x80000000]);
+  return { eaKind: kind, base, disp, asize32 };
+}
+
+test('fuzz memory ALU vs reference (600 cases)', async () => {
+  const rng = mulberry32(0xC0FFEE);
+  const forms = ['rm_r', 'r_rm', 'rm_imm', 'test'];
+  const sizes = [1, 2, 4, 8];
+  for (let i = 0; i < 600; i++) {
+    const form = pick(rng, forms);
+    const sub = form === 'test' ? 0 : Math.floor(rng() * 8);
+    const size = pick(rng, sizes);
+    const reg = Math.floor(rng() * 16);
+    const ea = randomEA(rng);
+    // 8-bit high-byte registers (4..7) cannot combine with REX (needed for
+    // base/idx >= 8); the encoder bumps them, so just avoid here.
+    const needRexForEA = (ea.base ?? 0) >= 8 || (ea.idx ?? 0) >= 8 || size === 8;
+    const effReg = (size === 1 && reg >= 4 && reg <= 7 && needRexForEA) ? reg - 4 : reg;
+    let immOp = 0, imm = 0;
+    if (form === 'rm_imm') {
+      immOp = pick(rng, [0x80, 0x83, 0x83, 0x81]);
+      if (size === 1) immOp = 0x80;
+      else if (immOp === 0x80) immOp = 0x83; // 0x80 is 8-bit only
+      if (size === 2 && immOp === 0x81) immOp = 0x83; // keep it simple
+      imm = pick(rng, [0, 1, -1, 127, -128, 0x7F, 0x80, 0xFF, 0x1234, -0x1234]);
+    }
+    const enc = encAluMem({ form, sub, size, reg: effReg, imm, eaKind: ea.eaKind, base: ea.base ?? 0, idx: ea.idx ?? 1, scale: ea.scale ?? 0, disp: ea.disp ?? 0, asize32: ea.asize32, immOp });
+    // Registers: adversarial values; base/index regs get plausible addresses
+    // sometimes, adversarial (page-boundary, huge) other times.
+    const regs = Array.from({ length: 16 }, () => advVal(rng));
+    const eaForInit = enc.ea;
+    const targetHint = computeEA(eaForInit, regs);
+    // Memory: initialize the target bytes (and only those) with adversarial data.
+    const memInit = new Map();
+    const initVal = advVal(rng) & (size === 8 ? mask64 : (1n << BigInt(size * 8)) - 1n);
+    for (let b = 0; b < size; b++) memInit.set((targetHint + BigInt(b)) & mask64, Number((initVal >> BigInt(8 * b)) & 0xFFn));
+    const rflags = pick(rng, [0x202, 0x203, 0x8D5, 0x246, 0x202 | 0x800]);
+    await checkAluMem(enc, { regs, rflags, memInit });
+  }
+}, 120000);
+
+test('CMP [mem],r64 and TEST r64,[mem] write nothing', async () => {
+  const regs = baseRegs(); regs[0] = ALU_SBASE; regs[1] = 0xFFFFFFFFFFFFFFFFn;
+  const memInit = aluMemInit(ALU_SBASE, [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+  const before = [...regs];
+  await checkAluMem(encAluMem({ form: 'rm_r', sub: 7, size: 8, reg: 1, eaKind: 'base', base: 0 }),
+    { regs, rflags: 0x202, memInit });
+  // Memory must be unchanged by CMP; regs unchanged too.
+  const out = await runAluMem(encAluMem({ form: 'test', sub: 0, size: 8, reg: 1, eaKind: 'base', base: 0 }).code,
+    { regs: [...before], rflags: 0x202, memInit });
+  assert.deepEqual(out.regs, before, 'TEST writes no register');
+  assert.deepEqual([...out.guestMem.bytes.keys()], [...memInit.keys()], 'TEST writes no memory');
+});
+
+test('ADC/SBB [mem],r64 fold the incoming carry', async () => {
+  for (const cf of [0, 1]) {
+    const regs = baseRegs(); regs[0] = ALU_SBASE; regs[1] = 5n;
+    const memInit = aluMemInit(ALU_SBASE, [0xFF, 0, 0, 0, 0, 0, 0, 0]);
+    const rflags = 0x202 | cf;
+    await checkAluMem(encAluMem({ form: 'rm_r', sub: 2, size: 8, reg: 1, eaKind: 'base', base: 0 }),
+      { regs, rflags, memInit });
+    await checkAluMem(encAluMem({ form: 'rm_r', sub: 3, size: 8, reg: 1, eaKind: 'base', base: 0 }),
+      { regs, rflags, memInit });
+  }
+});
+
+test('immediate-to-memory ADD/SUB/AND/OR/XOR', async () => {
+  const regs = baseRegs(); regs[0] = ALU_SBASE;
+  for (const [sub, immOp, imm] of [[0, 0x83, 5], [5, 0x83, -3], [4, 0x80, 0xF0], [6, 0x81, 0x12345678], [1, 0x81, -1]]) {
+    const size = immOp === 0x80 ? 1 : 8;
+    const memInit = aluMemInit(ALU_SBASE, [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
+    await checkAluMem(encAluMem({ form: 'rm_imm', sub, size, eaKind: 'base', base: 0, imm, immOp }),
+      { regs, rflags: 0x202, memInit });
+  }
+});
+
+test('16-bit and 8-bit memory ALU', async () => {
+  const regs = baseRegs(); regs[0] = ALU_SBASE; regs[1] = 0x1234n; regs[2] = 0xABn;
+  const memInit = aluMemInit(ALU_SBASE, [0xFF, 0x00, 0x11, 0x22]);
+  await checkAluMem(encAluMem({ form: 'rm_r', sub: 0, size: 2, reg: 1, eaKind: 'base', base: 0 }),
+    { regs, rflags: 0x202, memInit });
+  await checkAluMem(encAluMem({ form: 'r_rm', sub: 4, size: 2, reg: 1, eaKind: 'disp8', base: 0, disp: 2 }),
+    { regs, rflags: 0x202, memInit });
+  // 8-bit with high-byte register (AH).
+  await checkAluMem(encAluMem({ form: 'rm_r', sub: 6, size: 1, reg: 4, eaKind: 'base', base: 0 }),
+    { regs, rflags: 0x202, memInit });
+  // 8-bit r8b (REX, low byte).
+  await checkAluMem(encAluMem({ form: 'r_rm', sub: 0, size: 1, reg: 8, eaKind: 'base', base: 0 }),
+    { regs, rflags: 0x202, memInit });
+});
+
+test('SIB and displacement addressing', async () => {
+  const regs = baseRegs();
+  regs[0] = ALU_SBASE; regs[1] = 0x100n; regs[2] = 0x10n;
+  const memInit = aluMemInit(ALU_SBASE + 0x100n * 4n + 0x10n - 8n, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+  // [rax + rcx*4 + 0x10], disp8 variant
+  await checkAluMem(encAluMem({ form: 'rm_r', sub: 0, size: 8, reg: 3, eaKind: 'sib', base: 0, idx: 1, scale: 2, disp: 0x10 }),
+    { regs, rflags: 0x202, memInit });
+  // [rbx + rdx*2 - 16]
+  regs[3] = ALU_SBASE + 0x200n; regs[4] = 0x50n;
+  const memInit2 = aluMemInit(ALU_SBASE + 0x200n + 0x50n * 2n - 16n, [0xAA, 0xBB, 0xCC, 0xDD]);
+  await checkAluMem(encAluMem({ form: 'r_rm', sub: 5, size: 4, reg: 5, eaKind: 'sib', base: 3, idx: 4, scale: 1, disp: -16 }),
+    { regs, rflags: 0x202, memInit: memInit2 });
+  // disp32-only [0x1000]
+  const memInit3 = aluMemInit(0x1000n, [7, 7, 7, 7]);
+  await checkAluMem(encAluMem({ form: 'rm_r', sub: 1, size: 4, reg: 6, eaKind: 'sib32', disp: 0x1000 }),
+    { regs, rflags: 0x202, memInit: memInit3 });
+});
+
+test('RIP-relative memory ALU (fixture ripBase=0)', async () => {
+  const regs = baseRegs(); regs[1] = 0x42n;
+  // add [rip+0x100], rax: target = len + 0x100 (ripBase=0).
+  const enc = encAluMem({ form: 'rm_r', sub: 0, size: 8, reg: 1, eaKind: 'riprel', disp: 0x100 });
+  const target = enc.ea.ripRelTarget;
+  const memInit = aluMemInit(target, [1, 0, 0, 0, 0, 0, 0, 0]);
+  await checkAluMem(enc, { regs, rflags: 0x202, memInit });
+  // sub [rip-0x10], 5 with trailing imm (tests the trailingImm term).
+  const enc2 = encAluMem({ form: 'rm_imm', sub: 5, size: 8, eaKind: 'riprel', disp: -0x10, imm: 5, immOp: 0x83 });
+  const target2 = enc2.ea.ripRelTarget;
+  const memInit2 = aluMemInit(target2, [10, 0, 0, 0, 0, 0, 0, 0]);
+  await checkAluMem(enc2, { regs, rflags: 0x202, memInit: memInit2 });
+});
+
+test('0x67 address-size wraps the EA to 32 bits', async () => {
+  const regs = baseRegs();
+  regs[0] = 0x1_00010000n; // low 32 bits = 0x10000
+  const memInit = aluMemInit(0x10000n, [0xFF, 0xFF, 0xFF, 0xFF]);
+  await checkAluMem(encAluMem({ form: 'rm_r', sub: 4, size: 4, reg: 1, eaKind: 'base', base: 0, asize32: true }),
+    { regs, rflags: 0x202, memInit });
+});
+
+test('unmapped read returns 0 then write commits (fault ordering)', async () => {
+  const regs = baseRegs(); regs[0] = 0xDEAD0000n; regs[1] = 1n;
+  // Read from an address never initialized: reference reads 0, adds 1, writes 1.
+  await checkAluMem(encAluMem({ form: 'rm_r', sub: 0, size: 8, reg: 1, eaKind: 'base', base: 0 }),
+    { regs, rflags: 0x202, memInit: new Map() });
+});
+
+test('ADD [mem],r64 / SUB r64,[mem] round-trip', async () => {
+  const regs = baseRegs(); regs[0] = ALU_SBASE; regs[1] = 0x1122334455667788n;
+  const memInit = aluMemInit(ALU_SBASE, [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+  await checkAluMem(encAluMem({ form: 'rm_r', sub: 0, size: 8, reg: 1, eaKind: 'base', base: 0 }),
+    { regs, rflags: 0x202, memInit });
+  await checkAluMem(encAluMem({ form: 'r_rm', sub: 5, size: 8, reg: 1, eaKind: 'base', base: 0 }),
+    { regs, rflags: 0x202, memInit });
 });
 
 // --- Shift reference model (mirrors cpu64.cpp doShift; count pre-masked) ---

@@ -827,3 +827,98 @@ still-deferred V128/MXCSR project). There is no hot x87 loop to win.
 - The wasm emitter's default arm rejects unknown kinds, so even a future
   accidental inclusion degrades to whole-block rejection, never to silent
   f64 miscompilation. Native test `x87NeverJitted` pins the boundary.
+
+
+## 13. Design: memory-operand ALU emission, 2026-10-05
+
+Memory-operand ALU (`op [mem], reg` / `op reg, [mem]` / `op [mem], imm`,
+sizes 1/2/4/8) is the highest-value remaining emitter group: real code is
+dominated by r/m-with-memory forms (the phase-1 profile ranks `89`, `8B`,
+`83`, `85`, `31`, `39`, `01` in the top 20). Design decisions, made before
+emitting:
+
+### 1. Effective-address computation: decode-time EA description, runtime i64 math
+
+`scanModRM` (jit64.cpp) only computes ModRM/SIB/disp *lengths*. The emitter
+needs the full addressing form, so the decoder gains a `decodeEA` helper
+that mirrors `CPU64::decodeModRM` (cpu64.cpp:196) field-for-field and fills
+a new `Jit64MemEA` struct on `Jit64Op` (only meaningful when `isMem`):
+
+- `ripRel` + `ripRelTarget`: mod=0,rm=5. The target is materialized at
+  decode time as `modrmGuestAddr + 5 + trailingImm + (S64)disp32`, where
+  `modrmGuestAddr = ripBase + opOff + 1`. In production `ripBase` is the
+  real block RIP (tryJitStep); the Node fixture uses ripBase=0, so
+  RIP-relative tests must expect the fixture-base target. The interpreter
+  quirk is transcribed exactly: RIP-relative returns *before* the 0x67
+  mask and *before* FS/GS handling (cpu64.cpp:214-222), so `asize32` and
+  `seg` are ignored for RIP-relative.
+- `baseReg`/`idxReg` (0-15, 0xFF = none), `scale` (0-3), `disp` (S64,
+  sign-extended): SIB decoded per the interpreter -- idxF==4 with no
+  REX.X means "no index" (with REX.X it is R12); baseF==5 with mod==0
+  means disp32-only (no base). mod=1: disp8; mod=2 (or SIB-no-base):
+  disp32. Non-SIB base = rm | REX.B.
+- `asize32` (0x67): EA masked to 32 bits *after* base+index+disp wrap
+  (mod 2^64), exactly as the interpreter does.
+- `seg` (0, 0x64 FS, 0x65 GS): recorded; the emitter rejects seg != 0
+  (interpreter-only). ES/CS/SS/DS overrides are no-ops in long mode and
+  never recorded (matching `consumePrefixes`).
+
+Runtime EA in wasm (all i64, wrapping): `base + (idx << scale) + disp`,
+then `& 0xFFFFFFFF` under 0x67. Base/index come from the GPR locals;
+RIP-relative is a single `i64.const`. FS/GS bases live on the CPU object,
+not in `Jit64WasmState`, which is why seg-prefixed forms stay rejected.
+
+### 2. Read-modify-write via the string-op helpers; fault ordering
+
+The emitted code calls the existing `env.memRead`/`env.memWrite` imports
+(`emitMemRead`/`emitMemWrite`), which reach `KMemory64::readb/w/d/q` and
+`writeb/w/d/q` -- the exact accessors the interpreter `loadRM`/`storeRM`
+use. Fault/commit semantics are identical by construction:
+`KMemory64::readb` returns 0 for unmapped pages (kmemory64.cpp:690, no
+throw); writes commit on demand and funnel through `noteGuestWrite`, so
+the block-page generation contract from section 11 applies unchanged.
+
+Fault ordering matches the interpreter `dsp_6`/`dsp_7` sequence:
+`loadRM` (read) -> `runAlu` (compute + flags) -> `storeRM` (write). The
+emitter does memRead -> ALU compute + `emitFlags` -> memWrite in the same
+order. Since reads cannot throw, the only observable ordering is
+read-before-write, which both paths share. (A write to an unmapped page
+commits it -- same as the interpreter.)
+
+### 3. LOCK prefix: stays interpreter-only (existing boundary)
+
+`jit64Classify` already returns FALLBACK for `hasLockOrRep` on non-string
+ops, so `lock add/or/and/... [mem], reg` never classifies FAST and the
+interpreter keeps its `cpu64AtomicLockFor` serialization (glibc futex /
+lock words). No new atomicity machinery in the emitter; the boundary is
+unchanged.
+
+### 4. CMP/TEST first, then RMW, then immediate-to-memory
+
+- `J64_TEST_RM_R` (84/85) and CMP (sub==7): read-only. memRead -> flags
+  via the AND (TEST) / SUB (CMP) path -> no writeback. Simplest; done first.
+- `J64_ALU_RM_R` forms 0/1 (`op [mem], reg`): memRead -> L_A, reg ->
+  L_B, compute, memWrite.
+- `J64_ALU_R_RM` forms 2/3 (`op reg, [mem]`): reg -> L_A, memRead ->
+  L_B, compute, publish L_R to the dest reg (8/16-bit via the existing
+  inline RMW helpers, 32/64 via the caller GPR-local publish).
+- `J64_ALU_RM_IMM` (80/81/83, dest always r/m): memRead -> L_A,
+  decode-time imm -> L_B, compute, memWrite. (80 is 8-bit-only; 83 is
+  imm8 sign-extended; 81 is imm16/32/64 per size -- all already in
+  `op.imm` from the existing decoder.)
+
+The ALU compute core (`emitAluCompute`: L_A/L_B in, L_R + `emitFlags`
+out) and the ADC/SBB carry fold are factored out of `emitAlu` so the
+register and memory paths share them. No flag-semantics duplication.
+
+### Soundness notes
+
+- The `tryJitStep` cross-check (`bb.n == n`, per-record lengths) is
+  unaffected: the decoder produces the same op boundaries; only new
+  fields are added to `Jit64Op`. `buildBlock`/`execBlock` already handle
+  memory ALU (existing interpreter records), so no BKind changes.
+- Within-block staleness (a memory ALU writing the block own code
+  page) is the accepted `execBlock` staleness from section 11.
+- The emitter validates EA fields defensively (`seg == 0`, reg indices
+  < 16 or 0xFF, scale <= 3) even though classify already filtered LOCK;
+  a malformed op degrades to whole-block rejection, never to a wrong EA.

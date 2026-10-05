@@ -85,6 +85,22 @@ enum Jit64Kind : U8 {
     J64_UNKNOWN = 255
 };
 
+// Effective-address description for isMem ops, mirroring CPU64::decodeModRM
+// (source/emulation/cpu/cpu64.cpp) field-for-field. Filled by the decoder
+// for memory-operand ALU/TEST kinds (J64_ALU_RM_R, J64_ALU_R_RM,
+// J64_ALU_RM_IMM, J64_TEST_RM_R); meaningless when !isMem. See
+// tasks/jit-port-plan.md section 13 for the design.
+struct Jit64MemEA {
+    bool ripRel = false;  // mod=0,rm=5: EA is the absolute ripRelTarget
+    U64 ripRelTarget = 0; // decode-time constant (no 0x67 mask, no seg: quirk)
+    U8 baseReg = 0xFF;    // 0..15, or 0xFF if none (SIB disp32-only)
+    U8 idxReg = 0xFF;     // 0..15, or 0xFF if none (idxF==4 && !REX.X)
+    U8 scale = 0;         // 0..3 (SIB shift count)
+    S64 disp = 0;         // sign-extended displacement
+    bool asize32 = false; // 0x67: mask EA to 32 bits after base+idx+disp wrap
+    U8 seg = 0;           // 0, 0x64 (FS), 0x65 (GS); emitter rejects seg != 0
+};
+
 // One decoded guest instruction in JIT IR.
 struct Jit64Op {
     Jit64Kind kind = J64_UNKNOWN;
@@ -99,6 +115,7 @@ struct Jit64Op {
     U8 rep = 0;         // REP prefix: 0, 0xF2 or 0xF3 (J64_STRING only)
     bool asize32 = false; // 0x67 address-size prefix (J64_STRING only)
     bool rexPresent = false; // any REX prefix byte (8-bit high-byte vs SPL/... rule)
+    Jit64MemEA ea;        // effective address (valid only when isMem)
     Jit64OpcodeClass plan = JIT64_FALLBACK;
 };
 

@@ -2,6 +2,12 @@
 #include "jit64wasm.h"
 
 #ifdef BOXEDWINE_GUEST_X64
+// Forward declarations for the global memory helpers, defined after the
+// anonymous namespace below (they wrap the env.memRead/memWrite imports).
+// The anonymous-namespace ALU emitter calls them for memory-operand ALU.
+void emitMemRead(std::vector<U8>& body, U32 addrLocal, U32 size);
+void emitMemWrite(std::vector<U8>& body, U32 addrLocal, U32 valLocal, U32 size);
+
 namespace {
 using Bytes = std::vector<U8>;
 
@@ -282,6 +288,43 @@ void emitReadOperand(Bytes& body, const Jit64Op& op, U32 idx, U32 destLocal) {
     }
 }
 
+// Fold the incoming carry (CF as 0/1) into L_B for ADC/SBB, width-masked.
+// L_B must already hold the width-masked rhs.
+void emitAluCarryFold(Bytes& body, U64 mask) {
+    local(body, 0x20, L_B);
+    local(body, 0x20, L_RFLAGS);
+    i32Const(body, 1);
+    body.push_back(0x71); // i32.and -> incoming CF as 0/1
+    body.push_back(0xAD); // i64.extend_i32_u
+    body.push_back(0x7C); // i64.add
+    i64Const(body, mask);
+    body.push_back(0x83); // width-mask the rhs+carry
+    local(body, 0x21, L_B);
+}
+
+// ALU compute core shared by the register and memory paths: L_A/L_B hold
+// width-masked operands on entry; computes L_R = L_A <effSub> L_B
+// (width-masked) and emits the flags. Mirrors cpu64.cpp runAlu.
+void emitAluCompute(Bytes& body, U8 effSub, bool isLogic, U64 mask, U64 sb) {
+    local(body, 0x20, L_A);
+    local(body, 0x20, L_B);
+    switch (effSub) {
+    case 0:
+    case 2: body.push_back(0x7C); break; // i64.add
+    case 3:
+    case 5:
+    case 7: body.push_back(0x7D); break; // i64.sub
+    case 4: body.push_back(0x83); break; // i64.and
+    case 1: body.push_back(0x84); break; // i64.or
+    case 6: body.push_back(0x85); break; // i64.xor
+    default: break; // unreachable: filtered by the acceptance check
+    }
+    i64Const(body, mask);
+    body.push_back(0x83);
+    local(body, 0x21, L_R);
+    emitFlags(body, effSub, sb, isLogic);
+}
+
 // Emit one register-direct ALU/TEST op. Returns the destination GPR index,
 // or 0xFF when the op writes no register (TEST/CMP) or when the write-back
 // was done inline (8/16-bit RMW). Caller publishes L_R for 32/64-bit.
@@ -308,39 +351,97 @@ U32 emitAlu(Bytes& body, const Jit64Op& op) {
                          ? op.regField : op.rmIndex;
         emitReadOperand(body, op, srcReg, L_B);
     }
-    if (op.sub == 2 || op.sub == 3) {
-        local(body, 0x20, L_B);
-        local(body, 0x20, L_RFLAGS);
-        i32Const(body, 1);
-        body.push_back(0x71); // i32.and -> incoming CF as 0/1
-        body.push_back(0xAD); // i64.extend_i32_u
-        body.push_back(0x7C); // i64.add
-        i64Const(body, mask);
-        body.push_back(0x83); // width-mask the rhs+carry
-        local(body, 0x21, L_B);
-    }
-    // L_R = L_A <op> L_B, width-masked.
-    local(body, 0x20, L_A);
-    local(body, 0x20, L_B);
-    switch (effSub) {
-    case 0:
-    case 2: body.push_back(0x7C); break; // i64.add
-    case 3:
-    case 5:
-    case 7: body.push_back(0x7D); break; // i64.sub
-    case 4: body.push_back(0x83); break; // i64.and
-    case 1: body.push_back(0x84); break; // i64.or
-    case 6: body.push_back(0x85); break; // i64.xor
-    default: return 0xFF; // unreachable: filtered by the acceptance check
-    }
-    i64Const(body, mask);
-    body.push_back(0x83);
-    local(body, 0x21, L_R);
-    emitFlags(body, effSub, sb, isLogic);
+    if (op.sub == 2 || op.sub == 3) emitAluCarryFold(body, mask);
+    emitAluCompute(body, effSub, isLogic, mask, sb);
     if (isTest || op.sub == 7) return 0xFF; // TEST/CMP write no register
     if (op.size == 1) { emitWriteByte(body, op, destReg, L_R); return 0xFF; }
     if (op.size == 2) { emitWriteWord(body, destReg, L_R); return 0xFF; }
     return destReg;
+}
+
+// Compute the guest effective address described by op.ea into L_T1.
+// Mirrors CPU64::decodeModRM (the decoder precomputed the fields; see
+// tasks/jit-port-plan.md section 13). All i64 math wraps mod 2^64, exactly
+// like the interpreter's U64 arithmetic.
+void emitEA(Bytes& body, const Jit64Op& op) {
+    const Jit64MemEA& ea = op.ea;
+    if (ea.ripRel) {
+        // Decode-time constant (no 0x67 mask, no seg: interpreter quirk).
+        i64Const(body, ea.ripRelTarget);
+        local(body, 0x21, L_T1);
+        return;
+    }
+    if (ea.baseReg == 0xFF) i64Const(body, 0);
+    else local(body, 0x20, ea.baseReg + 1);
+    if (ea.idxReg != 0xFF) {
+        local(body, 0x20, ea.idxReg + 1);
+        if (ea.scale) {
+            i64Const(body, ea.scale);
+            body.push_back(0x86); // i64.shl (0x7E is i64.mul!)
+        }
+        body.push_back(0x7C); // i64.add
+    }
+    if (ea.disp != 0) {
+        i64Const(body, (U64)ea.disp); // signed LEB: sign-extended disp
+        body.push_back(0x7C); // i64.add
+    }
+    if (ea.asize32) {
+        i64Const(body, 0xFFFFFFFFULL);
+        body.push_back(0x83); // i64.and: 0x67 masks after base+idx+disp wrap
+    }
+    local(body, 0x21, L_T1);
+}
+
+// Emit one memory-operand ALU/TEST op. The EA goes to L_T1; the memory
+// value travels through emitMemRead (result in L_R, then moved to L_A/L_B).
+// Read/compute/write order matches the interpreter's loadRM -> runAlu ->
+// storeRM, and the memory helpers are the same KMemory64 accessors, so
+// fault/commit semantics match by construction. Returns the destination
+// GPR index when the op writes a register (J64_ALU_R_RM 32/64-bit; the
+// caller publishes L_R), else 0xFF (memory writeback done inline via
+// emitMemWrite, or TEST/CMP which write nothing).
+U32 emitAluMem(Bytes& body, const Jit64Op& op) {
+    const bool isTest = (op.kind == J64_TEST_RM_R);
+    const bool isLogic = isTest || op.sub == 1 || op.sub == 4 || op.sub == 6;
+    const U8 effSub = isTest ? 4 : op.sub; // TEST computes flags like AND
+    const U64 mask = widthMask(op.size);
+    const U64 sb = widthSB(op.size);
+    emitEA(body, op); // L_T1 = effective address
+    if (op.kind == J64_ALU_R_RM) {
+        // op reg, [mem]: L_A = reg (dest old value), L_B = mem.
+        emitReadOperand(body, op, op.regField, L_A);
+        emitMemRead(body, L_T1, op.size); // -> L_R (zero-extended)
+        local(body, 0x20, L_R);
+        i64Const(body, mask);
+        body.push_back(0x83);
+        local(body, 0x21, L_B);
+    } else {
+        // op [mem], reg / op [mem], imm / TEST [mem], reg:
+        // L_A = mem (dest old value), L_B = reg or imm.
+        emitMemRead(body, L_T1, op.size); // -> L_R (zero-extended)
+        local(body, 0x20, L_R);
+        i64Const(body, mask);
+        body.push_back(0x83);
+        local(body, 0x21, L_A);
+        if (op.kind == J64_ALU_RM_IMM) {
+            i64Const(body, op.imm & mask);
+            local(body, 0x21, L_B);
+        } else {
+            emitReadOperand(body, op, op.regField, L_B);
+        }
+    }
+    if (op.sub == 2 || op.sub == 3) emitAluCarryFold(body, mask);
+    emitAluCompute(body, effSub, isLogic, mask, sb);
+    if (isTest || op.sub == 7) return 0xFF; // TEST/CMP write nothing
+    if (op.kind == J64_ALU_R_RM) {
+        // Destination is the register.
+        if (op.size == 1) { emitWriteByte(body, op, op.regField, L_R); return 0xFF; }
+        if (op.size == 2) { emitWriteWord(body, op.regField, L_R); return 0xFF; }
+        return op.regField; // caller publishes L_R (32-bit zero-extends via L_R)
+    }
+    // Destination is memory: write back through the imported helper.
+    emitMemWrite(body, L_T1, L_R, op.size);
+    return 0xFF;
 }
 
 // Emit one register-direct SHL/SHR/SAR (0xC1 /4,/5,/7; /6 aliases /4).
@@ -1396,7 +1497,18 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             if (op.isMem || (op.size != 1 && op.size != 2 && op.size != 4 && op.size != 8)) return false;
             if (op.sub > 3) return false;
             if (op.rep != 0 && op.rep != 0xF2 && op.rep != 0xF3) return false;
-        } else if (op.isMem || !widthOk) {
+        } else if (op.isMem) {
+            // Memory operands are only accepted for ALU/TEST kinds; the EA
+            // fields are validated defensively (a malformed EA degrades to
+            // whole-block rejection, never to a wrong address).
+            bool memAlu = op.kind == J64_ALU_RM_R || op.kind == J64_ALU_R_RM ||
+                          op.kind == J64_ALU_RM_IMM || op.kind == J64_TEST_RM_R;
+            if (!memAlu || !widthOk) return false;
+            if (op.ea.seg != 0) return false; // FS/GS: interpreter-only
+            if (op.ea.baseReg != 0xFF && op.ea.baseReg >= 16) return false;
+            if (op.ea.idxReg != 0xFF && op.ea.idxReg >= 16) return false;
+            if (op.ea.scale > 3) return false;
+        } else if (!widthOk) {
             return false;
         }
         switch (op.kind) {
@@ -1413,10 +1525,12 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
         case J64_ALU_RM_R:
         case J64_ALU_R_RM:
         case J64_TEST_RM_R:
-            if (op.regField >= 16 || op.rmIndex >= 16 || op.sub > 7) return false;
+            if (op.regField >= 16 || op.sub > 7) return false;
+            if (!op.isMem && op.rmIndex >= 16) return false;
             break;
         case J64_ALU_RM_IMM:
-            if (op.rmIndex >= 16 || op.sub > 7) return false;
+            if (op.sub > 7) return false;
+            if (!op.isMem && op.rmIndex >= 16) return false;
             break;
         case J64_ALU_ACC_IMM:
             if (op.sub > 8) return false; // sub 8 = TEST acc,imm
@@ -1537,10 +1651,12 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             break;
         }
         default: {
-            // Register-direct ALU/TEST: emitAlu leaves the result in L_R;
-            // publish it to the GPR local so the final store-back writes it
-            // (and later ops in the block observe it).
-            U32 written = emitAlu(body, op);
+            // Memory-operand ALU/TEST go through emitAluMem (EA in L_T1,
+            // memory via the imported helpers); register-direct ALU/TEST
+            // through emitAlu. Both leave the result in L_R; publish it to
+            // the GPR local so the final store-back writes it (and later
+            // ops in the block observe it).
+            U32 written = op.isMem ? emitAluMem(body, op) : emitAlu(body, op);
             if (written != 0xFF) {
                 local(body, 0x20, L_R);
                 local(body, 0x21, written + 1);

@@ -122,6 +122,90 @@ static void testAluForms() {
     CHECK(i.plan == JIT64_FAST, "85 plan fallback");
 }
 
+static void testEaDecode() {
+    // 48 01 00          add [rax], rax
+    Jit64Op a = dec(0x400000, {0x48, 0x01, 0x00});
+    CHECK(a.kind == J64_ALU_RM_R && a.isMem && a.size == 8 && a.len == 3, "ea: kind=%d mem=%d", a.kind, a.isMem);
+    CHECK(a.plan == JIT64_FAST, "ea: mem ALU plan fallback");
+    CHECK(!a.ea.ripRel && a.ea.baseReg == 0 && a.ea.idxReg == 0xFF &&
+          a.ea.scale == 0 && a.ea.disp == 0 && !a.ea.asize32 && a.ea.seg == 0,
+          "ea: [rax] base=%d idx=%d", a.ea.baseReg, a.ea.idxReg);
+    // 48 03 8C 90 10 00 00 00   add rcx, [rax + rdx*4 + 0x10]
+    Jit64Op b = dec(0x400000, {0x48, 0x03, 0x8C, 0x90, 0x10, 0x00, 0x00, 0x00});
+    CHECK(b.kind == J64_ALU_R_RM && b.isMem && b.len == 8, "ea: SIB kind=%d len=%d", b.kind, b.len);
+    CHECK(b.ea.baseReg == 0 && b.ea.idxReg == 2 && b.ea.scale == 2 && b.ea.disp == 0x10,
+          "ea: SIB base=%d idx=%d scale=%d disp=%lld", b.ea.baseReg, b.ea.idxReg, b.ea.scale, b.ea.disp);
+    CHECK(b.plan == JIT64_FAST, "ea: SIB plan fallback");
+    // 48 03 0D 78 56 34 12   add rcx, [rip + 0x12345678]  (RIP-relative)
+    Jit64Op c = dec(0x400000, {0x48, 0x03, 0x0D, 0x78, 0x56, 0x34, 0x12});
+    CHECK(c.isMem && c.len == 7 && c.ea.ripRel, "ea: riprel mem=%d rel=%d", c.isMem, c.ea.ripRel);
+    CHECK(c.ea.ripRelTarget == 0x400007ULL + 0x12345678ULL, "ea: riprel target=0x%llx", c.ea.ripRelTarget);
+    CHECK(c.plan == JIT64_FAST, "ea: riprel plan fallback");
+    // 48 81 2D 78 56 34 12 05 00 00 00   sub [rip+disp32], 5 (imm after disp)
+    Jit64Op d = dec(0x400000, {0x48, 0x81, 0x2D, 0x78, 0x56, 0x34, 0x12, 0x05, 0x00, 0x00, 0x00});
+    CHECK(d.kind == J64_ALU_RM_IMM && d.isMem && d.sub == 5 && d.imm == 5 && d.len == 11,
+          "ea: 81rip kind=%d sub=%d imm=%llu len=%d", d.kind, d.sub, d.imm, d.len);
+    CHECK(d.ea.ripRel && d.ea.ripRelTarget == 0x40000BULL + 0x12345678ULL,
+          "ea: 81rip target=0x%llx", d.ea.ripRelTarget);
+    // 48 03 0C 25 00 10 00 00   add rcx, [0x1000]  (SIB disp32-only: no base/index)
+    Jit64Op e = dec(0x400000, {0x48, 0x03, 0x0C, 0x25, 0x00, 0x10, 0x00, 0x00});
+    CHECK(e.isMem && e.len == 8 && e.ea.baseReg == 0xFF && e.ea.idxReg == 0xFF &&
+          e.ea.disp == 0x1000, "ea: sib32 base=%d idx=%d disp=%lld",
+          e.ea.baseReg, e.ea.idxReg, e.ea.disp);
+    // 48 03 4C 48 F0   add rcx, [rax + rcx*2 - 16]  (SIB + disp8)
+    Jit64Op f = dec(0x400000, {0x48, 0x03, 0x4C, 0x48, 0xF0});
+    CHECK(f.isMem && f.len == 5 && f.ea.baseReg == 0 && f.ea.idxReg == 1 &&
+          f.ea.scale == 1 && f.ea.disp == -16, "ea: sibd8 disp=%lld", f.ea.disp);
+    // 48 03 88 34 12 00 00   add rcx, [rax + 0x1234]  (mod=2 disp32, no SIB)
+    Jit64Op g = dec(0x400000, {0x48, 0x03, 0x88, 0x34, 0x12, 0x00, 0x00});
+    CHECK(g.isMem && g.len == 7 && g.ea.baseReg == 0 && g.ea.disp == 0x1234,
+          "ea: d32 disp=%lld", g.ea.disp);
+    // 67 48 03 00   add rcx, [eax]  (0x67 address-size)
+    Jit64Op h = dec(0x400000, {0x67, 0x48, 0x03, 0x00});
+    CHECK(h.isMem && h.ea.asize32 && h.ea.baseReg == 0, "ea: 0x67 asize=%d", h.ea.asize32);
+    CHECK(h.plan == JIT64_FAST, "ea: 0x67 plan fallback");
+    // 64 48 03 00   add rcx, fs:[rax]  -> interpreter-only
+    Jit64Op i = dec(0x400000, {0x64, 0x48, 0x03, 0x00});
+    CHECK(i.isMem && i.ea.seg == 0x64, "ea: FS seg=0x%x", i.ea.seg);
+    CHECK(i.plan == JIT64_FALLBACK, "ea: FS must be fallback");
+    // 65 48 03 00   add rcx, gs:[rax]  -> interpreter-only
+    Jit64Op j = dec(0x400000, {0x65, 0x48, 0x03, 0x00});
+    CHECK(j.isMem && j.ea.seg == 0x65 && j.plan == JIT64_FALLBACK, "ea: GS seg/fallback");
+    // 4A 03 0C 24   add rcx, [rsp + r12]  (REX.X: idxF=4 means R12)
+    Jit64Op k = dec(0x400000, {0x4A, 0x03, 0x0C, 0x24});
+    CHECK(k.isMem && k.ea.baseReg == 4 && k.ea.idxReg == 12 && k.ea.scale == 0,
+          "ea: REX.X base=%d idx=%d", k.ea.baseReg, k.ea.idxReg);
+    // 49 03 08   add rcx, [r8]  (REX.B extends the base)
+    Jit64Op l = dec(0x400000, {0x49, 0x03, 0x08});
+    CHECK(l.isMem && l.ea.baseReg == 8, "ea: REX.B base=%d", l.ea.baseReg);
+    // 85 00   test [rax], eax  (read-only memory TEST)
+    Jit64Op m = dec(0x400000, {0x85, 0x00});
+    CHECK(m.kind == J64_TEST_RM_R && m.isMem && m.size == 4 && m.ea.baseReg == 0,
+          "ea: TEST kind=%d mem=%d", m.kind, m.isMem);
+    CHECK(m.plan == JIT64_FAST, "ea: TEST plan fallback");
+    // 83 00 05   add dword [rax], 5  (immediate-to-memory)
+    Jit64Op n = dec(0x400000, {0x83, 0x00, 0x05});
+    CHECK(n.kind == J64_ALU_RM_IMM && n.isMem && n.sub == 0 && n.imm == 5 &&
+          n.len == 3 && n.ea.baseReg == 0, "ea: 83mem sub=%d imm=%llu", n.sub, n.imm);
+    CHECK(n.plan == JIT64_FAST, "ea: 83mem plan fallback");
+    // 80 30 07   xor byte [rax], 7
+    Jit64Op o = dec(0x400000, {0x80, 0x30, 0x07});
+    CHECK(o.kind == J64_ALU_RM_IMM && o.isMem && o.size == 1 && o.sub == 6 && o.imm == 7,
+          "ea: 80mem size=%d sub=%d", o.size, o.sub);
+    // 66 01 00   add [rax], ax  (16-bit memory ALU)
+    Jit64Op p16 = dec(0x400000, {0x66, 0x01, 0x00});
+    CHECK(p16.isMem && p16.size == 2 && p16.len == 3 && p16.ea.baseReg == 0,
+          "ea: 16bit size=%d", p16.size);
+    CHECK(p16.plan == JIT64_FAST, "ea: 16bit plan fallback");
+    // F0 48 01 00   lock add [rax], rax  -> interpreter-only (atomicity)
+    Jit64Op q = dec(0x400000, {0xF0, 0x48, 0x01, 0x00});
+    jit64Classify(q, true, false);
+    CHECK(q.plan == JIT64_FALLBACK, "ea: LOCK mem ALU must be fallback");
+    // Register-direct forms still produce no EA.
+    Jit64Op r = dec(0x400000, {0x48, 0x01, 0xC8});
+    CHECK(!r.isMem && r.ea.baseReg == 0xFF && !r.ea.ripRel, "ea: reg form has no EA");
+}
+
 static void testMiscFast() {
     // 48 8D 35 1A 00 00 00   lea rsi, [rip+0x1A]
     Jit64Op a = dec(0x400000, {0x48, 0x8D, 0x35, 0x1A, 0x00, 0x00, 0x00});
@@ -542,6 +626,7 @@ int main() {
     testCoverageTable();
     testMovForms();
     testAluForms();
+    testEaDecode();
     testMiscFast();
     testFallbackRules();
     testCompileStream();
