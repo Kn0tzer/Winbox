@@ -83,6 +83,9 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <set>
+#include <tuple>
+#include <deque>
 
 namespace {
 
@@ -242,7 +245,6 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkCmdDrawIndexed,                          "vkCmdDrawIndexed") \
     X(VK64_fn_vkCmdBindVertexBuffers,                     "vkCmdBindVertexBuffers") \
     X(VK64_fn_vkCmdBindIndexBuffer,                       "vkCmdBindIndexBuffer")
-
 #define VK64_NAME_ENTRY(id, nm) { (U64)(id), nm },
 const struct { U64 id; const char* name; } g_fnNames[] = { VK64_FN_LIST(VK64_NAME_ENTRY) };
 #undef VK64_NAME_ENTRY
@@ -419,6 +421,7 @@ struct Pipeline : Obj {
 struct RenderPass : Obj {
     U32 natt = 0, formats[VK64_MAX_ATTACH] = {0}, loadOps[VK64_MAX_ATTACH] = {0},
         storeOps[VK64_MAX_ATTACH] = {0}, depthFmt = 0;
+    U32 samples[VK64_MAX_ATTACH] = {0};   // v2: per-attachment MSAA sample count
 };
 struct Framebuffer : Obj { U64 rp = 0; U32 natt = 0; U64 views[VK64_MAX_ATTACH] = {0}; U32 w = 0, h = 0; };
 struct Swapchain : Obj { U32 w = 0, h = 0, format = 0, nimg = 0, cur = 0; U64 imgs[8] = {0}; };
@@ -429,7 +432,8 @@ struct Swapchain : Obj { U32 w = 0, h = 0, format = 0, nimg = 0, cur = 0; U64 im
 // --- given).
 enum CmdKind : U32 {
     CMD_BEGIN_RP, CMD_END_RP, CMD_BIND_PIPE, CMD_BIND_SETS, CMD_VIEWPORT,
-    CMD_SCISSOR, CMD_DRAW, CMD_DRAW_INDEXED, CMD_BARRIER, CMD_COPY_B2I, CMD_PUSH_CONST
+    CMD_SCISSOR, CMD_DRAW, CMD_DRAW_INDEXED, CMD_BARRIER, CMD_COPY_B2I, CMD_PUSH_CONST,
+    CMD_BIND_VB, CMD_BIND_IB
 };
 struct Copy {
     U64 srcBuffer = 0, dstImage = 0, bufOff = 0;
@@ -459,11 +463,12 @@ struct CmdBuf : Obj {
     U64  sets[VK64_MAX_SETS] = {0};
     float vp[6] = {0}, sci[4] = {0};
     bool haveVp = false, haveSci = false;
-    // G2: current vertex/index buffer binds (DXVK rebinds per draw).
-    U64  vtxBuf[VK64_MAX_VERT_BINDINGS] = {0};
-    U64  vtxOff[VK64_MAX_VERT_BINDINGS] = {0};
-    U64  idxBuf = 0, idxOff = 0;
-    U32  idxType = 0;   /* 0 = UINT16, 1 = UINT32 */
+    // v2: vertex/index buffer tables (DXVK draws indexed almost exclusively).
+    U64  vbs[VK64_MAX_VERT_BINDINGS] = {0};
+    U64  vbOff[VK64_MAX_VERT_BINDINGS] = {0};
+    U32  nvb = 0;
+    U64  ib = 0, ibOff = 0;
+    U32  ibType = 0;   // 0 = uint16, 1 = uint32
 };
 CmdBuf* cbOf(U64 id, const char* who) { return objOf<CmdBuf>(id, K_CMDBUF, who); }
 
@@ -697,12 +702,12 @@ bool captureIndexedDraw(CmdBuf* cb, Cmd& c) {
     if (posAi < 0 || colAi < 0) return false;
     U32 posBind = pipe->vaBinding[posAi], colBind = pipe->vaBinding[colAi];
     if (posBind >= VK64_MAX_VERT_BINDINGS || colBind >= VK64_MAX_VERT_BINDINGS) return false;
-    Buffer* pbuf = objOf<Buffer>(cb->vtxBuf[posBind], K_BUFFER, "capDraw");
-    Buffer* cbuf = objOf<Buffer>(cb->vtxBuf[colBind], K_BUFFER, "capDraw");
-    Buffer* ibuf = objOf<Buffer>(cb->idxBuf, K_BUFFER, "capDraw");
+    Buffer* pbuf = objOf<Buffer>(cb->vbs[posBind], K_BUFFER, "capDraw");
+    Buffer* cbuf = objOf<Buffer>(cb->vbs[colBind], K_BUFFER, "capDraw");
+    Buffer* ibuf = objOf<Buffer>(cb->ib, K_BUFFER, "capDraw");
     if (!pbuf || !cbuf || !ibuf || !pbuf->mem || !cbuf->mem || !ibuf->mem) return false;
-    U32 idxSize = (cb->idxType == 1) ? 4 : 2;
-    std::vector<U8> idxBytes = readGuestRange(ibuf->mem, ibuf->memOff + cb->idxOff + (U64)firstIndex * idxSize,
+    U32 idxSize = (cb->ibType == 1) ? 4 : 2;
+    std::vector<U8> idxBytes = readGuestRange(ibuf->mem, ibuf->memOff + cb->ibOff + (U64)firstIndex * idxSize,
                                               (U64)indexCount * idxSize);
     if (idxBytes.size() < (size_t)indexCount * idxSize) return false;
     // Resolve vertex ids (firstIndex + vertexOffset) so the baked arrays are in
@@ -723,8 +728,8 @@ bool captureIndexedDraw(CmdBuf* cb, Cmd& c) {
     if (!pstride || !cstride) return false;
     U64 pNeed = (U64)maxV * pstride + pipe->vaOffset[posAi] + 16;
     U64 cNeed = (U64)maxV * cstride + pipe->vaOffset[colAi] + 4;
-    std::vector<U8> pbytes = readGuestRange(pbuf->mem, pbuf->memOff + cb->vtxOff[posBind], pNeed);
-    std::vector<U8> cbytes = readGuestRange(cbuf->mem, cbuf->memOff + cb->vtxOff[colBind], cNeed);
+    std::vector<U8> pbytes = readGuestRange(pbuf->mem, pbuf->memOff + cb->vbOff[posBind], pNeed);
+    std::vector<U8> cbytes = readGuestRange(cbuf->mem, cbuf->memOff + cb->vbOff[colBind], cNeed);
     if (pbytes.size() < pNeed || cbytes.size() < cNeed) return false;
     // RHW pixel -> NDC bake needs the viewport DXVK set for this draw.
     if (!cb->haveVp || cb->vp[2] <= 0 || cb->vp[3] <= 0) return false;
@@ -1098,6 +1103,413 @@ void serializeSubmit(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                  vs ? "yes" : "no", fs ? "yes" : "no",
                  uboBytes.size(), tw, th, texBytes.size(), (unsigned)pipe->nva,
                  (unsigned)pushes.size(), j.size());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Schema v2: binary framed records (tasks/schema-v2.md sections 2-3).
+//
+// v1 hops one JSON string per present; v2 streams binary records across one
+// MAIN_THREAD_EM_ASM per CHUNK (1 MiB cap). The hop moves (ptr,len,flags) —
+// three ints — and the JS body copies the bytes once; there is no UTF-8
+// decode, no JSON.parse, and no base64 on either side. FRAME_BEGIN is emitted
+// at the first submit-with-draw after a present, FRAME_END seals at present,
+// so a frame is present-to-present no matter how many submits it spans.
+//
+// BW64_VKSCHEMA=1 selects the v1 JSON emitter verbatim (serializeSubmit +
+// window.bwVkFrame); the default is v2.
+// ---------------------------------------------------------------------------
+inline bool vkSchemaV2() {
+    static int v = -1;
+    if (v < 0) {
+        const char* e = getenv("BW64_VKSCHEMA");
+        v = (e && e[0] == '1' && e[1] == '\0') ? 0 : 1;
+    }
+    return v != 0;
+}
+inline bool vkDumpV2() {
+    static int cached = -1;
+    if (cached < 0) { const char* t = getenv("BW64_VKDUMP"); cached = (t && t[0] == '1' && t[1] == '\0') ? 1 : 0; }
+    return cached != 0;
+}
+
+enum V2Rec : U32 {
+    V2_FRAME_BEGIN = 0x01, V2_FRAME_END = 0x02,
+    V2_RP_BEGIN = 0x03, V2_RP_END = 0x04,
+    V2_SHADER = 0x05, V2_PIPELINE = 0x06,
+    V2_BIND_SETS = 0x07, V2_DESC_SET = 0x08,
+    V2_BUFFER_DATA = 0x09, V2_IMAGE_DATA = 0x0A, V2_SAMPLER = 0x0B,
+    V2_PUSH = 0x0C, V2_VIEWPORT = 0x0D, V2_SCISSOR = 0x0E,
+    V2_VERTEX_BIND = 0x0F, V2_INDEX_BIND = 0x10, V2_DRAW = 0x11,
+    V2_INLINE_BYTES = 0x12,
+};
+const U32 V2_CHUNK_MAGIC = 0x46324B56u;   // 'VK2F' little-endian: bytes 56 4B 32 46
+const U32 V2_CHUNK_VERSION = 2;
+const size_t V2_CHUNK_CAP = 1024 * 1024;  // seal before a record that would overflow
+const U32 V2_PRODUCER_CHUNK_RING = 8;     // drop oldest COMPLETE frame past this
+
+struct ChunkWriter {
+    std::vector<U8> b;
+    void u8(U32 v)  { b.push_back((U8)v); }
+    void u16(U32 v) { b.push_back((U8)v); b.push_back((U8)(v >> 8)); }
+    void u32(U32 v) { for (int i = 0; i < 4; i++) b.push_back((U8)(v >> (8 * i))); }
+    void u64(U64 v) { for (int i = 0; i < 8; i++) b.push_back((U8)(v >> (8 * i))); }
+    void f32(float v) { U32 u; memcpy(&u, &v, 4); u32(u); }
+    void bytes(const U8* p, size_t n) { if (p && n) b.insert(b.end(), p, p + n); }
+    void bytes(const std::vector<U8>& v) { bytes(v.data(), v.size()); }
+};
+
+// One frame under construction: an open chunk plus sealed chunks. Records never
+// straddle chunks; a single oversize record gets a chunk of its own.
+struct V2FrameAsm {
+    ChunkWriter cur;
+    std::vector<std::vector<U8>> sealed;
+    U32* hist = nullptr;   // optional per-frame record-type histogram (BW64_VKDUMP=1)
+    void openChunk(U32 seq) {
+        cur.b.clear();
+        // 16-byte header per tasks/schema-v2.md §2.3: magic, version, flags,
+        // seq, reserved. (flags bit0 = MORE is patched at byte 6 in
+        // v2QueueFrame.)
+        cur.u32(V2_CHUNK_MAGIC); cur.u16(V2_CHUNK_VERSION); cur.u16(0); cur.u32(seq);
+        cur.u32(0);
+    }
+    void sealChunk() {
+        if (cur.b.size() > 16) sealed.push_back(cur.b);
+        cur.b.clear();
+    }
+    void emitRec(U32 type, const std::vector<U8>& payload, U32& seq) {
+        size_t need = 8 + payload.size();
+        if (cur.b.size() + need > V2_CHUNK_CAP && cur.b.size() > 16) {
+            sealChunk();
+            openChunk(seq++);
+        }
+        cur.u16(type); cur.u16(0); cur.u32((U32)payload.size());
+        cur.bytes(payload);
+        if (hist && type < 32) hist[type]++;
+    }
+};
+
+struct V2DoneFrame { std::vector<std::vector<U8>> chunks; };
+std::deque<V2DoneFrame> g_v2Pending;   // complete frames awaiting the present hop
+U32 g_v2ChunkSeq = 0;
+U64 g_v2DroppedProducer = 0;
+
+void v2QueueFrame(V2FrameAsm& fa) {
+    fa.sealChunk();
+    if (fa.sealed.empty()) return;
+    // MORE flag on every chunk but the last (byte 6 = flags low byte).
+    for (size_t i = 0; i + 1 < fa.sealed.size(); i++) fa.sealed[i][6] |= 1;
+    size_t chunks = 0;
+    for (const auto& f : g_v2Pending) chunks += f.chunks.size();
+    while (chunks + fa.sealed.size() > V2_PRODUCER_CHUNK_RING && !g_v2Pending.empty()) {
+        chunks -= g_v2Pending.front().chunks.size();
+        g_v2Pending.pop_front();
+        g_v2DroppedProducer++;
+        klog_fmt("vk64: v2 producer ring full, dropped oldest frame (total dropped=%llu)",
+                 (unsigned long long)g_v2DroppedProducer);
+    }
+    V2DoneFrame done;
+    done.chunks = std::move(fa.sealed);
+    g_v2Pending.push_back(std::move(done));
+}
+
+void hopV2ToPage() {
+#ifdef __EMSCRIPTEN__
+    for (const auto& f : g_v2Pending) {
+        for (const auto& chunk : f.chunks) {
+            const U8* ptr = chunk.data();
+            U32 len = (U32)chunk.size();
+            MAIN_THREAD_EM_ASM({
+                if (globalThis.window && window.bwVkChunk) {
+                    try {
+                        // One memcpy: a subarray view is unsafe to retain because
+                        // wasm memory growth detaches every live view.
+                        const bytes = new Uint8Array(Module.HEAPU8.buffer, $0, $1).slice();
+                        window.bwVkChunk(bytes, $2);
+                    } catch (e) { console.warn('vk64: bwVkChunk failed', e); }
+                }
+            }, ptr, len, (U32)0);
+        }
+    }
+#else
+    if (!g_v2Pending.empty())
+        klog_fmt("vk64: v2 hop skipped (not an emscripten build): %u queued frames dropped",
+                 (unsigned)g_v2Pending.size());
+#endif
+    g_v2Pending.clear();
+}
+
+// Submit-time v2 frame reconstruction: the same walk as serializeSubmit, but
+// the frame is a stream of binary records instead of one JSON string, and it
+// covers the DXVK-shaped calls v1 never modelled (descriptor sets with arrays,
+// indexed draws, vertex/index binds, per-attachment MSAA, the render-pass
+// graph). One v2 frame per submit-with-draw, queued for the present hop.
+void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
+    for (const auto& fr : frames) {
+        CmdBuf* st = fr.first;
+        U64 fbId = 0;
+        for (const Cmd& k : st->cmds) if (k.kind == CMD_BEGIN_RP) { fbId = k.b; break; }
+        Framebuffer* fb = objOf<Framebuffer>(fbId, K_FRAMEBUFFER, "vkQueueSubmit");
+        if (!fb) { klog_fmt("vk64: submit(v2): frame %u has no framebuffer, skipped", g_frameNo); continue; }
+        bool anyDraw = false;
+        for (const Cmd& k : st->cmds)
+            if (k.kind == CMD_DRAW || k.kind == CMD_DRAW_INDEXED) { anyDraw = true; break; }
+        if (!anyDraw) { klog_fmt("vk64: submit(v2): frame %u without draw, skipped", g_frameNo); continue; }
+
+        V2FrameAsm fa;
+        U32 hist[32] = {0};
+        if (vkDumpV2()) fa.hist = hist;
+        fa.openChunk(g_v2ChunkSeq++);
+
+        auto emit = [&](U32 type, auto&& fill) {
+            ChunkWriter p;
+            fill(p);
+            fa.emitRec(type, p.b, g_v2ChunkSeq);
+        };
+
+        // Per-frame dedup: a set bound twice or a buffer referenced by ten
+        // draws crosses once.
+        std::set<U64> shaderDone, samplerDone, imageDone;
+        std::set<std::tuple<U64,U64,U64>> bufDone;
+
+        auto emitShader = [&](ShaderModule* sm, U32 stage) {
+            if (!sm || !sm->hash || !shaderDone.insert(sm->hash).second) return;
+            emit(V2_SHADER, [&](ChunkWriter& p) {
+                p.u8(stage); p.u8(0); p.u16(0);
+                p.u64(sm->hash); p.u32((U32)sm->code.size()); p.bytes(sm->code);
+            });
+        };
+        auto emitBufferData = [&](U64 bufId, U64 memOff, U64 len) {
+            if (!bufId || !len) return;
+            if (!bufDone.insert(std::make_tuple(bufId, memOff, len)).second) return;
+            Buffer* b = objOf<Buffer>(bufId, K_BUFFER, "vkQueueSubmit");
+            if (!b || !b->mem) return;
+            std::vector<U8> bytes = readGuestRange(b->mem, memOff, len);
+            if (bytes.empty()) return;
+            emit(V2_BUFFER_DATA, [&](ChunkWriter& p) {
+                p.u64(bufId); p.u64(memOff); p.u32((U32)bytes.size()); p.bytes(bytes);
+            });
+        };
+        auto emitSampler = [&](U64 id) {
+            if (!id || !samplerDone.insert(id).second) return;
+            Sampler* s = objOf<Sampler>(id, K_SAMPLER, "vkQueueSubmit");
+            if (!s) return;
+            emit(V2_SAMPLER, [&](ChunkWriter& p) {
+                p.u64(id);
+                p.u32(s->mag); p.u32(s->min); p.u32(s->mipmap);
+                p.u32(s->addrU); p.u32(s->addrV); p.f32(s->maxAniso);
+            });
+        };
+        auto emitImageData = [&](U64 viewId) {
+            ImageView* view = objOf<ImageView>(viewId, K_IMAGEVIEW, "vkQueueSubmit");
+            if (!view || !view->image) return;
+            if (!imageDone.insert(view->image).second) return;
+            Image* tex = objOf<Image>(view->image, K_IMAGE, "vkQueueSubmit");
+            if (!tex) return;
+            std::vector<U8> bytes;
+            if (tex->mem && tex->pixBytes) bytes = readGuestRange(tex->mem, tex->memOff, tex->pixBytes);
+            emit(V2_IMAGE_DATA, [&](ChunkWriter& p) {
+                // viewId first: the page's DESC_SET bindings name image VIEWS,
+                // while this record is deduped per image, so the record carries
+                // the view->image link the page needs.
+                p.u64(viewId); p.u64(view->image); p.u32(tex->w); p.u32(tex->h); p.u32(tex->format);
+                p.u32((U32)bytes.size()); p.bytes(bytes);
+            });
+        };
+        auto emitDescSet = [&](U32 setIndex, U64 setId) {
+            DescSet* s = objOf<DescSet>(setId, K_SET, "vkQueueSubmit");
+            if (!s) return;
+            emit(V2_DESC_SET, [&](ChunkWriter& p) {
+                p.u8(setIndex); p.u8(s->nbind); p.u16(0); p.u64(s->layout);
+                for (U32 i = 0; i < s->nbind; i++) {
+                    const Binding& b = s->binds[i];
+                    U32 kind = 0;
+                    switch (b.type) {
+                        case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+                        case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER: kind = 1; break;
+                        case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+                        case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+                        case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: kind = 2; break;
+                        case VK_DESCRIPTOR_TYPE_SAMPLER: kind = 3; break;
+                        case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK: kind = 4; break;
+                        default: break;
+                    }
+                    p.u32(b.binding); p.u32(b.type); p.u32(b.dstArrayElement); p.u32(b.count);
+                    p.u8(kind); p.u8(0); p.u16(0);
+                    p.u64(b.obj); p.u64(b.range);
+                }
+            });
+            for (U32 i = 0; i < s->nbind; i++) {
+                const Binding& b = s->binds[i];
+                if (b.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
+                    b.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+                    Buffer* buf = objOf<Buffer>(b.obj, K_BUFFER, "vkQueueSubmit");
+                    if (buf) emitBufferData(b.obj, buf->memOff, b.range ? b.range : buf->size);
+                } else if (b.type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
+                           b.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ||
+                           b.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+                    emitImageData(b.obj);    // b.obj = image view id (see vkUpdateDescriptorSets)
+                    emitSampler(b.range);    // b.range = sampler id
+                } else if (b.type == VK_DESCRIPTOR_TYPE_SAMPLER) {
+                    emitSampler(b.obj);
+                } else if (b.type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
+                    // b.obj = guest VA of the inline bytes, b.range = size.
+                    if (b.obj && b.range) {
+                        std::vector<U8> bytes((size_t)b.range);
+                        g_mem->memcpyFromGuest(bytes.data(), b.obj, b.range);
+                        emit(V2_INLINE_BYTES, [&](ChunkWriter& p) {
+                            p.u8(setIndex); p.u8(0); p.u16(0);
+                            p.u32(b.binding); p.u32(b.dstArrayElement); p.u32((U32)bytes.size());
+                            p.bytes(bytes);
+                        });
+                    }
+                }
+            }
+        };
+        auto emitPipeline = [&](U64 pipeId) {
+            Pipeline* pipe = objOf<Pipeline>(pipeId, K_PIPELINE, "vkQueueSubmit");
+            if (!pipe) return;
+            ShaderModule* vs = pipe->vs ? objOf<ShaderModule>(pipe->vs, K_SHADER, "vkQueueSubmit") : nullptr;
+            ShaderModule* fs = pipe->fs ? objOf<ShaderModule>(pipe->fs, K_SHADER, "vkQueueSubmit") : nullptr;
+            emitShader(vs, 0);
+            emitShader(fs, 1);
+            emit(V2_PIPELINE, [&](ChunkWriter& p) {
+                p.u64(pipeId);
+                p.u64(vs ? vs->hash : 0); p.u64(fs ? fs->hash : 0);
+                p.u32(pipe->topology); p.u32(pipe->cull); p.u32(pipe->front);
+                p.u32(pipe->depthTest); p.u32(pipe->depthWrite); p.u32(pipe->depthOp);
+                p.u32(pipe->blend);
+                p.u32(pipe->nvb); p.u32(pipe->nva);
+                for (U32 i = 0; i < pipe->nvb; i++) {
+                    p.u32(i); p.u32(pipe->vbStride[i]); p.u32(pipe->vbInputRate[i]);
+                }
+                for (U32 i = 0; i < pipe->nva; i++) {
+                    p.u32(pipe->vaLocation[i]); p.u32(pipe->vaBinding[i]);
+                    p.u32(pipe->vaFormat[i]); p.u32(pipe->vaOffset[i]);
+                }
+            });
+        };
+        auto emitRpBegin = [&](const Cmd& k) {
+            Framebuffer* rfb = objOf<Framebuffer>(k.b, K_FRAMEBUFFER, "vkQueueSubmit");
+            RenderPass* rrp = rfb ? objOf<RenderPass>(rfb->rp, K_RENDERPASS, "vkQueueSubmit") : nullptr;
+            if (!rfb || !rrp) return;
+            emit(V2_RP_BEGIN, [&](ChunkWriter& p) {
+                p.u64(k.a); p.u64(k.b); p.u32(rfb->w); p.u32(rfb->h); p.u32(rfb->natt);
+                for (U32 i = 0; i < rfb->natt; i++) {
+                    ImageView* v = objOf<ImageView>(rfb->views[i], K_IMAGEVIEW, "vkQueueSubmit");
+                    p.u32(rrp->formats[i]); p.u32(rrp->loadOps[i]); p.u32(rrp->storeOps[i]);
+                    p.u32(rrp->samples[i] ? rrp->samples[i] : 1);
+                    p.u32(v && (v->aspect & 0x2u) ? 1 : 0);
+                }
+                p.f32(k.f[0]); p.f32(k.f[1]); p.f32(k.f[2]); p.f32(k.f[3]);
+                p.f32((float)k.clearDepth); p.u32(0);
+            });
+        };
+
+        // FRAME_BEGIN. The overflow flag is consumed here, like v1.
+        bool ovf = g_frameOverflow;
+        g_frameOverflow = false;
+        emit(V2_FRAME_BEGIN, [&](ChunkWriter& p) {
+            p.u32(g_frameNo); p.u32(fb->w); p.u32(fb->h); p.u32(ovf ? 1 : 0);
+        });
+
+        U32 nDraw = 0, nPush = 0;
+        for (const Cmd& k : st->cmds) {
+            switch (k.kind) {
+                case CMD_BEGIN_RP: emitRpBegin(k); break;
+                case CMD_END_RP:   emit(V2_RP_END, [](ChunkWriter&) {}); break;
+                case CMD_BIND_PIPE: emitPipeline(k.a); break;
+                case CMD_BIND_SETS: {
+                    U32 first = (U32)k.a, count = (U32)k.b;
+                    if (first >= VK64_MAX_SETS) break;
+                    if (first + count > VK64_MAX_SETS) count = VK64_MAX_SETS - first;
+                    emit(V2_BIND_SETS, [&](ChunkWriter& p) {
+                        p.u8(first); p.u8(count); p.u16(0);
+                        for (U32 i = 0; i < count; i++) p.u64(st->sets[first + i]);
+                    });
+                    for (U32 i = 0; i < count; i++)
+                        if (st->sets[first + i]) emitDescSet(first + i, st->sets[first + i]);
+                    break;
+                }
+                case CMD_VIEWPORT:
+                    emit(V2_VIEWPORT, [&](ChunkWriter& p) {
+                        for (int i = 0; i < 6; i++) p.f32(k.f[i]);
+                    });
+                    break;
+                case CMD_SCISSOR:
+                    emit(V2_SCISSOR, [&](ChunkWriter& p) {
+                        p.u32((U32)(int32_t)k.f[0]); p.u32((U32)(int32_t)k.f[1]);
+                        p.u32((U32)(int32_t)k.f[2]); p.u32((U32)(int32_t)k.f[3]);
+                    });
+                    break;
+                case CMD_PUSH_CONST:
+                    nPush++;
+                    emit(V2_PUSH, [&](ChunkWriter& p) {
+                        p.u32(k.pcOffset); p.u32(k.pcSize); p.u32(k.pcStageFlags);
+                        p.bytes(k.pcBytes, k.pcSize);
+                    });
+                    break;
+                case CMD_BIND_VB: {
+                    emit(V2_VERTEX_BIND, [&](ChunkWriter& p) {
+                        p.u8(st->nvb); p.u8(0); p.u16(0);
+                        for (U32 i = 0; i < st->nvb; i++) {
+                            p.u32(i); p.u64(st->vbs[i]); p.u64(st->vbOff[i]);
+                        }
+                    });
+                    for (U32 i = 0; i < st->nvb; i++) {
+                        Buffer* vb = objOf<Buffer>(st->vbs[i], K_BUFFER, "vkQueueSubmit");
+                        if (vb && vb->size) emitBufferData(st->vbs[i], vb->memOff, vb->size);
+                    }
+                    break;
+                }
+                case CMD_BIND_IB: {
+                    emit(V2_INDEX_BIND, [&](ChunkWriter& p) {
+                        p.u64(st->ib); p.u64(st->ibOff); p.u32(st->ibType);
+                    });
+                    Buffer* ib = objOf<Buffer>(st->ib, K_BUFFER, "vkQueueSubmit");
+                    if (ib && ib->size) emitBufferData(st->ib, ib->memOff, ib->size);
+                    break;
+                }
+                case CMD_DRAW:
+                    nDraw++;
+                    emit(V2_DRAW, [&](ChunkWriter& p) {
+                        p.u32((U32)k.a); p.u32((U32)k.b); p.u32((U32)k.c); p.u32((U32)k.d);
+                        p.u8(0); p.u8(0); p.u16(0);
+                        p.u32(0); p.u32(0); p.u32(0);
+                    });
+                    break;
+                case CMD_DRAW_INDEXED:
+                    nDraw++;
+                    emit(V2_DRAW, [&](ChunkWriter& p) {
+                        p.u32(0); p.u32((U32)k.b); p.u32(0); p.u32((U32)k.d);
+                        p.u8(1); p.u8(0); p.u16(0);
+                        p.u32((U32)k.a); p.u32((U32)k.c); p.u32((U32)(int32_t)k.copy.ox);
+                    });
+                    break;
+                default: break;   // barriers, copies (eagerly executed at submit)
+            }
+        }
+
+        emit(V2_FRAME_END, [&](ChunkWriter& p) { p.u32(g_frameNo); });
+        v2QueueFrame(fa);
+
+        const V2DoneFrame& qd = g_v2Pending.back();
+        size_t totalBytes = 0;
+        for (const auto& c : qd.chunks) totalBytes += c.size();
+        klog_fmt("vk64: FRAME %u built (v2): %ux%u draws=%u pushes=%u chunks=%u bytes=%zu",
+                 g_frameNo, fb->w, fb->h, (unsigned)nDraw, (unsigned)nPush,
+                 (unsigned)qd.chunks.size(), totalBytes);
+        if (vkDumpV2()) {
+            std::string dump = "vk64: FRAME " + std::to_string(g_frameNo) + " v2 records:";
+            const char* names[] = { "?", "FRAME_BEGIN", "FRAME_END", "RP_BEGIN", "RP_END",
+                "SHADER", "PIPELINE", "BIND_SETS", "DESC_SET", "BUFFER_DATA", "IMAGE_DATA",
+                "SAMPLER", "PUSH", "VIEWPORT", "SCISSOR", "VERTEX_BIND", "INDEX_BIND",
+                "DRAW", "INLINE_BYTES" };
+            for (U32 t = 1; t < 19; t++)
+                if (hist[t]) { dump += " "; dump += names[t]; dump += "=" + std::to_string(hist[t]); }
+            klog_fmt("%s", dump.c_str());
+        }
+        g_frameNo++;
     }
 }
 
@@ -2244,6 +2656,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             rp->formats[i] = atts[i].format;
             rp->loadOps[i] = atts[i].loadOp;
             rp->storeOps[i] = atts[i].storeOp;
+            rp->samples[i] = atts[i].samples;
         }
         if (atts.size() > 1) rp->depthFmt = atts[1].format;
         wr64(args.a[3], id);
@@ -2679,6 +3092,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         cb->pipe = 0;
         cb->haveVp = cb->haveSci = false;
         memset(cb->sets, 0, sizeof(cb->sets));
+        memset(cb->vbs, 0, sizeof(cb->vbs));
+        memset(cb->vbOff, 0, sizeof(cb->vbOff));
+        cb->nvb = 0;
+        cb->ib = 0; cb->ibOff = 0; cb->ibType = 0;
         return VK_SUCCESS;
     }
     case VK64_fn_vkEndCommandBuffer: {
@@ -2797,16 +3214,25 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         if (!args.a[3] || !args.a[4] || !count || first >= VK64_MAX_VERT_BINDINGS) return 0;
         if (first + count > VK64_MAX_VERT_BINDINGS) count = VK64_MAX_VERT_BINDINGS - first;
         for (U32 i = 0; i < count; i++) {
-            cb->vtxBuf[first + i] = g_mem->readq(args.a[3] + (U64)i * 8);
-            cb->vtxOff[first + i] = g_mem->readq(args.a[4] + (U64)i * 8);
+            cb->vbs[first + i] = rd64(args.a[3] + (U64)i * 8);
+            cb->vbOff[first + i] = rd64(args.a[4] + (U64)i * 8);
         }
+        U32 end = first + count;
+        if (end > cb->nvb) cb->nvb = end;
+        Cmd c;
+        c.kind = CMD_BIND_VB;
+        c.a = first; c.b = count;
+        pushCmd(cb, c);
         return 0;
     }
     case VK64_fn_vkCmdBindIndexBuffer: {
         // (cmdBuf, buffer, offset, indexType)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdBindIndexBuffer");
         if (!cb) return 0;
-        cb->idxBuf = args.a[1]; cb->idxOff = args.a[2]; cb->idxType = (U32)args.a[3];
+        cb->ib = args.a[1]; cb->ibOff = args.a[2]; cb->ibType = (U32)args.a[3];
+        Cmd c;
+        c.kind = CMD_BIND_IB;
+        pushCmd(cb, c);
         return 0;
     }
     case VK64_fn_vkCmdDrawIndexed: {
@@ -2819,6 +3245,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         c.b = args.a[2];   // instanceCount
         c.c = args.a[3];   // firstIndex
         c.diVertexOffset = (int32_t)(U32)args.a[4];
+        c.copy.ox = (int32_t)args.a[4];  // vertexOffset (signed; rides the Copy spare for v2)
         c.d = args.a[5];   // firstInstance
         captureIndexedDraw(cb, c);
         pushCmd(cb, c);
@@ -2929,7 +3356,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             }
         }
         klog_fmt("vk64: vkQueueSubmit(%u batches, %u command buffers)", (unsigned)n, (unsigned)frames.size());
-        serializeSubmit(frames);
+        if (vkSchemaV2()) serializeSubmitV2(frames); else serializeSubmit(frames);
         if (args.a[3]) { Fence* f = objOf<Fence>(args.a[3], K_FENCE, "vkQueueSubmit"); if (f) f->signalled = 1; }
         return VK_SUCCESS;
     }
@@ -2950,10 +3377,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             // guest sees is still complete.)
             if (pi.pResults) wr32(pi.pResults + (U64)i * 4, VK_SUCCESS);
         }
-        // THE frame handoff: one MAIN_THREAD_EM_ASM per frame. P1 wrote the
-        // manifest to a file and appended a present.log line; here the manifest
-        // that submit already serialized is what crosses into the page.
-        emitFrameNow();
+        // THE frame handoff. v1: the one JSON manifest submit built, hopped as
+        // a string. v2: every queued frame's chunks, one MAIN_THREAD_EM_ASM per
+        // chunk; the producer ring already dropped the oldest frames past its
+        // cap, so this never carries a backlog.
+        if (vkSchemaV2()) hopV2ToPage(); else emitFrameNow();
         return VK_SUCCESS;
     }
 
