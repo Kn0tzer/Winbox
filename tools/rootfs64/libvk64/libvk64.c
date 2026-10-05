@@ -109,6 +109,7 @@ enum {
     VK64_fn_vkCreateRenderPass,
     VK64_fn_vkCreateFramebuffer,
     VK64_fn_vkCreateGraphicsPipelines,
+    VK64_fn_vkCreateComputePipelines,
     VK64_fn_vkCreatePipelineLayout,
     VK64_fn_vkCreateDescriptorSetLayout,
     VK64_fn_vkCreateDescriptorPool,
@@ -540,6 +541,11 @@ API VkResult vkCreateGraphicsPipelines(VkDevice dev, VkPipelineCache cache, uint
                                       const void* cis, const void* alloc, VkPipeline* out) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = cache; a.a[2] = n; a.a[3] = P(cis); a.a[4] = P(alloc); a.a[5] = P(out);
     return (VkResult)vk64_trap(VK64_fn_vkCreateGraphicsPipelines, &a);
+}
+API VkResult vkCreateComputePipelines(VkDevice dev, VkPipelineCache cache, uint32_t n,
+                                     const void* cis, const void* alloc, VkPipeline* out) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = cache; a.a[2] = n; a.a[3] = P(cis); a.a[4] = P(alloc); a.a[5] = P(out);
+    return (VkResult)vk64_trap(VK64_fn_vkCreateComputePipelines, &a);
 }
 API VkResult vkCreatePipelineLayout(VkDevice dev, const void* ci, const void* alloc, VkPipelineLayout* out) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
@@ -1007,6 +1013,7 @@ static const struct procEntry g_procs[] = {
     E(vkCreateRenderPass, VK64_fn_vkCreateRenderPass),
     E(vkCreateFramebuffer, VK64_fn_vkCreateFramebuffer),
     E(vkCreateGraphicsPipelines, VK64_fn_vkCreateGraphicsPipelines),
+    E(vkCreateComputePipelines, VK64_fn_vkCreateComputePipelines),
     E(vkCreatePipelineLayout, VK64_fn_vkCreatePipelineLayout),
     E(vkCreateDescriptorSetLayout, VK64_fn_vkCreateDescriptorSetLayout),
     E(vkCreateDescriptorPool, VK64_fn_vkCreateDescriptorPool),
@@ -1234,7 +1241,6 @@ TAIL(vkSetEvent)
 TAIL(vkResetEvent)
 TAIL(vkCreateQueryPool)
 TAIL(vkDestroyQueryPool)
-TAIL(vkCreateComputePipelines)
 TAIL(vkGetPipelineLayoutSupport)
 TAIL(vkQueueBindSparse)
 TAIL(vkCmdDrawIndexedIndirect)

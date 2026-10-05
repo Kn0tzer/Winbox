@@ -176,6 +176,7 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkCreateRenderPass,                   "vkCreateRenderPass")  \
     X(VK64_fn_vkCreateFramebuffer,                  "vkCreateFramebuffer") \
     X(VK64_fn_vkCreateGraphicsPipelines,            "vkCreateGraphicsPipelines") \
+    X(VK64_fn_vkCreateComputePipelines,             "vkCreateComputePipelines") \
     X(VK64_fn_vkCreatePipelineLayout,               "vkCreatePipelineLayout") \
     X(VK64_fn_vkCreateDescriptorSetLayout,          "vkCreateDescriptorSetLayout") \
     X(VK64_fn_vkCreateDescriptorPool,               "vkCreateDescriptorPool") \
@@ -451,7 +452,7 @@ struct Pipeline : Obj {
     U32 vaFormat[VK64_MAX_VERT_ATTRIBS] = {0};
     U32 vaOffset[VK64_MAX_VERT_ATTRIBS] = {0};
     U32 vaLocation[VK64_MAX_VERT_ATTRIBS] = {0};
-    U64 vs = 0, fs = 0, layout = 0, rp = 0;
+    U64 vs = 0, fs = 0, cs = 0, layout = 0, rp = 0;
 };
 struct RenderPass : Obj {
     U32 natt = 0, formats[VK64_MAX_ATTACH] = {0}, loadOps[VK64_MAX_ATTACH] = {0},
@@ -1933,6 +1934,12 @@ inline void fillVulkan12Features(VkPhysicalDeviceVulkan12Features& f) {
     f.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
     f.runtimeDescriptorArray = VK_TRUE;
     f.samplerMirrorClampToEdge = VK_TRUE;   // vkd3d-proton hard gate (device.c:2636)
+    // vkd3d-proton bindless hard gate (state.c:8352). Same advertisement-only
+    // caveat as the divisor/push_descriptor entries: the clear/triangle probes
+    // never exercise real bindless heaps; page-side support is follow-up.
+    f.shaderStorageTexelBufferArrayNonUniformIndexing = VK_TRUE;
+    f.shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
+    f.descriptorBindingVariableDescriptorCount = VK_TRUE;
 }
 inline void fillVulkan11Features(VkPhysicalDeviceVulkan11Features& f) {
     f.storageBuffer16BitAccess = VK_TRUE;
@@ -2034,9 +2041,11 @@ void walkProperties2(U64 pNextAddr) {
                 p.maxUpdateAfterBindDescriptorsInAllPools = 1024;
                 p.maxPerStageDescriptorUpdateAfterBindSamplers = 16;
                 p.maxPerStageDescriptorUpdateAfterBindUniformBuffers = 16;
-                p.maxPerStageDescriptorUpdateAfterBindStorageBuffers = 4;
-                p.maxPerStageDescriptorUpdateAfterBindSampledImages = 16;
-                p.maxPerStageDescriptorUpdateAfterBindStorageImages = 4;
+                /* vkd3d legacy bindless requires >= 1M (VKD3D_MIN_VIEW_DESCRIPTOR_COUNT);
+                   same advertisement-only caveat as above */
+                p.maxPerStageDescriptorUpdateAfterBindStorageBuffers = 1000000;
+                p.maxPerStageDescriptorUpdateAfterBindSampledImages = 1000000;
+                p.maxPerStageDescriptorUpdateAfterBindStorageImages = 1000000;
                 p.maxPerStageDescriptorUpdateAfterBindInputAttachments = 4;
                 p.maxPerStageUpdateAfterBindResources = 128;
                 p.maxDescriptorSetUpdateAfterBindSamplers = 1024;
@@ -2124,9 +2133,11 @@ void walkProperties2(U64 pNextAddr) {
                 p.maxUpdateAfterBindDescriptorsInAllPools = 1024;
                 p.maxPerStageDescriptorUpdateAfterBindSamplers = 16;
                 p.maxPerStageDescriptorUpdateAfterBindUniformBuffers = 16;
-                p.maxPerStageDescriptorUpdateAfterBindStorageBuffers = 4;
-                p.maxPerStageDescriptorUpdateAfterBindSampledImages = 16;
-                p.maxPerStageDescriptorUpdateAfterBindStorageImages = 4;
+                /* vkd3d legacy bindless requires >= 1M (VKD3D_MIN_VIEW_DESCRIPTOR_COUNT);
+                   same advertisement-only caveat as above */
+                p.maxPerStageDescriptorUpdateAfterBindStorageBuffers = 1000000;
+                p.maxPerStageDescriptorUpdateAfterBindSampledImages = 1000000;
+                p.maxPerStageDescriptorUpdateAfterBindStorageImages = 1000000;
                 p.maxPerStageDescriptorUpdateAfterBindInputAttachments = 4;
                 p.maxPerStageUpdateAfterBindResources = 128;
                 p.maxDescriptorSetUpdateAfterBindSamplers = 1024;
@@ -2363,7 +2374,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         p.linearTilingFeatures = (VkFormatFeatureFlags)(VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
             VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
             VK_FORMAT_FEATURE_TRANSFER_DST_BIT);
-        p.optimalTilingFeatures = p.linearTilingFeatures;
+        p.optimalTilingFeatures = (VkFormatFeatureFlags)(p.linearTilingFeatures |
+            VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
         p.bufferFeatures = (VkFormatFeatureFlags)(VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT |
             VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT | VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT);
         writeStruct(args.a[2], p);
@@ -2378,7 +2390,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
             VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT);
         p2.formatProperties.linearTilingFeatures = img;
-        p2.formatProperties.optimalTilingFeatures = img;
+        p2.formatProperties.optimalTilingFeatures = (VkFormatFeatureFlags)(img |
+            VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
         p2.formatProperties.bufferFeatures = (VkFormatFeatureFlags)(
             VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT | VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT |
             VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT);
@@ -2390,7 +2403,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 // _2 flag values match v1 on the low bits; add color/depth targets.
                 const VkFormatFeatureFlags2 img2 = (VkFormatFeatureFlags2)((U64)img | 0x3800ull);
                 p3.linearTilingFeatures = img2;
-                p3.optimalTilingFeatures = img2;
+                p3.optimalTilingFeatures = (VkFormatFeatureFlags2)((U64)img2 |
+                    (U64)VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | (U64)VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
                 p3.bufferFeatures = (VkFormatFeatureFlags2)p2.formatProperties.bufferFeatures;
                 g_mem->memcpyToGuest(cur, &p3, sizeof(p3));
             }
@@ -2961,6 +2975,26 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             }
             p->layout = ci.layout;
             p->rp = ci.renderPass;
+            wr64(args.a[5] + (U64)i * 8, id);
+        }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateComputePipelines: {
+        // (device, cache, n, pCreateInfos*, pAllocator, out VkPipeline*)
+        // vkd3d-proton builds internal compute pipelines (clear-UAV ops) during
+        // device creation; without this the benign stub returns -2 and
+        // D3D12CreateDevice fails E_OUTOFMEMORY. Capture is minimal: the
+        // compute shader module + layout, enough for the page tier to key on.
+        U32 n = (U32)args.a[2];
+        if (!objOf<Device>(args.a[0], K_DEVICE, "vkCreateComputePipelines") || !n || !args.a[3] || !args.a[5])
+            return VK_ERROR_INITIALIZATION_FAILED;
+        for (U32 i = 0; i < n; i++) {
+            VkComputePipelineCreateInfo ci = {};
+            g_mem->memcpyFromGuest(&ci, args.a[3] + (U64)i * sizeof(ci), sizeof(ci));
+            U64 id = 0;
+            Pipeline* pl = createObj<Pipeline>(K_PIPELINE, id);
+            pl->cs = ci.stage.module;
+            pl->layout = ci.layout;
             wr64(args.a[5] + (U64)i * 8, id);
         }
         return VK_SUCCESS;
