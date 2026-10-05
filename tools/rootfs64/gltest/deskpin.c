@@ -8,9 +8,20 @@
  * boots died this way; explorer exiting cleanly ~51s in was the signature).
  *
  * This helper simply holds a hidden top-level window on the Default desktop
- * and blocks in GetMessage forever — it is a desktop *user*, so the desktop's
- * user count never drops to explorer-only and the close timeout never arms.
- * Zero CPU cost (blocked in a wait), all wine binaries stay stock.
+ * and sleeps forever — it is a desktop *user*, so the desktop's user count
+ * never drops to explorer-only and the close timeout never arms. Zero CPU
+ * cost, all wine binaries stay stock.
+ *
+ * Two hard-won lessons encoded below (Oct 2026 diagnostics):
+ *  1. RETRY window creation. deskpin is spawned early in boot, before
+ *     winex11.drv/explorer are reliably up; the first CreateWindowExA often
+ *     fails with nodrv_CreateWindow ("The explorer process failed to start").
+ *     Exiting then defeats the whole purpose — so retry for up to 10 min.
+ *  2. Do NOT pump messages. A blocking GetMessage loop terminates this
+ *     process within seconds under Boxedwine (diagnosed via pid-tagged
+ *     builds: window+GetMessage dies via exit_group(0), window+Sleep lives).
+ *     The hidden window needs no input processing; its existence pins the
+ *     desktop, so Sleep-forever is correct and sufficient.
  *
  * Build: x86_64-w64-mingw32-gcc -O2 -mwindows -o deskpin.exe deskpin.c
  * The launcher spawns it right after the session comes up (wine64-launcher.js).
@@ -27,20 +38,23 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l)
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 {
     WNDCLASSA wc = {0};
-    MSG msg;
+    HWND hw = NULL;
+    int i;
 
     (void)prev; (void)cmd; (void)show;
     wc.lpfnWndProc = wndProc;
     wc.hInstance = inst;
     wc.lpszClassName = "BoxedwineDeskPin";
     if (!RegisterClassA(&wc)) return 1;
-    /* Hidden (never shown, never mapped) — just a desktop user. */
-    if (!CreateWindowExA(0, wc.lpszClassName, "deskpin", WS_OVERLAPPED,
-                         0, 0, 1, 1, NULL, NULL, inst, NULL))
-        return 1;
-    while (GetMessageA(&msg, NULL, 0, 0) > 0) {
-        TranslateMessage(&msg);
-        DispatchMessageA(&msg);
+    /* Hidden (never shown, never mapped) — just a desktop user.
+     * Retry: the window driver may not be up yet (see header). */
+    for (i = 0; i < 600 && !hw; i++) {
+        hw = CreateWindowExA(0, wc.lpszClassName, "deskpin", WS_OVERLAPPED,
+                             0, 0, 1, 1, NULL, NULL, inst, NULL);
+        if (!hw) Sleep(1000);
     }
+    if (!hw) return 1;
+    /* Sleep forever. See header NOTE (2): do not replace with GetMessage. */
+    for (;;) Sleep(60000);
     return 0;
 }
