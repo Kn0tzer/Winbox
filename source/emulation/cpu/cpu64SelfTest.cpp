@@ -12,6 +12,7 @@
 #ifdef BOXEDWINE_GUEST_X64
 
 #include "cpu64.h"
+#include "jit64.h"
 #include "kmemory64.h"
 #include "../../kernel/loader/loader64.h"
 
@@ -36,6 +37,8 @@ constexpr U64 STACK_TOP = 0x800000;
 struct TestResult {
     int passed = 0;
     int failed = 0;
+    U64 jitBlocks = 0;
+    U64 jitInsns = 0;
 };
 
 void loadCode(KMemory64& mem, U64 addr, const std::vector<U8>& bytes) {
@@ -63,6 +66,10 @@ void runAndCheck(TestResult& r, const char* name,
     // peg the host. cpu.run() has an unbounded while-loop and would hang.
     const U64 INSN_LIMIT = 200000;
     cpu.runBounded(INSN_LIMIT);
+    if (cpu.jit()) {
+        r.jitBlocks += cpu.jit()->blocksExecuted;
+        r.jitInsns += cpu.jit()->insnsFast;
+    }
     bool hung = (!cpu.yield && cpu.instructionCount >= INSN_LIMIT);
     if (hung) {
         printf("  TIMEOUT: %s  (final RIP=0x%llx instr=%llu RAX=0x%llx R15=0x%llx)\n",
@@ -6390,6 +6397,48 @@ int runX64SelfTest() {
         ok ? r.passed++ : r.failed++;
     }
 
+    // The bounded runner must stop before the remaining records of a cached
+    // block change registers. This matters for scheduler slices as well as
+    // instruction-by-instruction tests.
+    {
+        KMemory64 mem(nullptr);
+        mem.mmapAnonymousFixed(CODE_BASE, 0x1000, 7);
+        loadCode(mem, CODE_BASE, {
+            0xB8, 0x42, 0x00, 0x00, 0x00, // mov eax, 0x42
+            0xB9, 0x99, 0x00, 0x00, 0x00, // mov ecx, 0x99
+            0x31, 0xD2,                   // xor edx, edx
+            0x74, 0x00,                   // jz next instruction
+        });
+        CPU64 cpu(&mem);
+        cpu.rip = CODE_BASE;
+        cpu.reg[X64_RCX].setU64(0x1122334455667788ULL);
+        cpu.reg[X64_RDX].setU64(0x8877665544332211ULL);
+        U64 ran = cpu.runBounded(1);
+        bool ok = ran == 1 && cpu.instructionCount == 1 && cpu.rip == CODE_BASE + 5 &&
+                  cpu.reg[X64_RAX].u64 == 0x42 &&
+                  cpu.reg[X64_RCX].u64 == 0x1122334455667788ULL &&
+                  cpu.reg[X64_RDX].u64 == 0x8877665544332211ULL;
+        printf("  %s: runBounded stops within a decoded block\n", ok ? "PASS" : "FAIL");
+        ok ? r.passed++ : r.failed++;
+    }
+
+    // A store may patch a later instruction in the very block being executed.
+    // Re-decoding only on the next block entry would run the old immediate.
+    runAndCheck(r, "store patches a later instruction in the same block", withExit({
+        0xC7, 0x05, 0x01, 0x00, 0x00, 0x00, // mov dword [rip+1], 0x99
+        0x99, 0x00, 0x00, 0x00,
+        0xB8, 0x42, 0x00, 0x00, 0x00,       // mov eax, 0x42 (patched to 0x99)
+    }), [](CPU64& c) { return c.reg[X64_R15].u64 == 0x99; });
+
+    const char* requireJit = std::getenv("BW64_JIT_VERIFY");
+    if (requireJit && std::strcmp(requireJit, "1") == 0) {
+        printf("JIT64: blocks=%llu insns=%llu\n",
+               (unsigned long long)r.jitBlocks, (unsigned long long)r.jitInsns);
+        if (!r.jitBlocks || !r.jitInsns) {
+            printf("  FAIL: required JIT path did not execute any blocks\n");
+            r.failed++;
+        }
+    }
     printf("=== self-test summary: %d passed, %d failed ===\n\n", r.passed, r.failed);
     return r.failed == 0 ? 0 : 1;
 }

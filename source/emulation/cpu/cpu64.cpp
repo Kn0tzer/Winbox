@@ -5796,9 +5796,9 @@ bool CPU64::buildBlock(U64 startRip, BBlock& b) {
     return true;
 }
 
-U32 CPU64::execBlock(const BBlock& b) {
+U32 CPU64::execBlock(const BBlock& b, U64 maxInsn) {
     U32 executed = 0;
-    for (U16 i = 0; i < b.n; i++) {
+    for (U16 i = 0; i < b.n && executed < maxInsn; i++) {
         const BRec& rec = b.recs[i];
         bool rexPresent = rec.rexPresent != 0;
         U32 size = rec.size;
@@ -5914,6 +5914,10 @@ U32 CPU64::execBlock(const BBlock& b) {
         }
         }
         executed++;
+        // A guest store can rewrite a later instruction in this block. Stop
+        // at the next RIP so the runner decodes the updated bytes immediately.
+        if (KMemory64::blockPageGenOf(b.page0) != b.gen0 ||
+            KMemory64::blockPageGenOf(b.page1) != b.gen1) break;
     }
     return executed;
 }
@@ -5925,7 +5929,7 @@ U32 CPU64::execBlock(const BBlock& b) {
 // replaces the execBlock call with wasm-module execution of the emitted plan.
 // The hook lives INSIDE the BOXEDWINE_BLOCK_EXEC section because it reuses
 // BBlock/execBlock/page-gen validity; without that infra it returns 0.
-U32 CPU64::tryJitStep() {
+U32 CPU64::tryJitStep(U64 maxInsn) {
     if (!jit64Enabled()) return 0;
     if (!m_jit) ensureJit();
     U64 r = rip;
@@ -5953,7 +5957,7 @@ U32 CPU64::tryJitStep() {
         hit = m_jit->cache.insert(r, bb.page0, bb.gen0, bb.page1, bb.gen1, ops, n);
         m_jit->blocksCompiled++;
     }
-    U32 done = execBlock(bb);
+    U32 done = execBlock(bb, maxInsn);
     m_jit->blocksExecuted++;
     m_jit->insnsFast += done;
     return done;
@@ -5970,7 +5974,7 @@ void CPU64::freeJit() {
     m_jit = nullptr;
 }
 
-U32 CPU64::tryBlockStep() {
+U32 CPU64::tryBlockStep(U64 maxInsn) {
     U64 r = rip;
     U32 neg = (U32)((r ^ (r >> 10)) & 1023);
     if (blockNegCache[neg] == r) return 0;
@@ -5992,7 +5996,7 @@ U32 CPU64::tryBlockStep() {
     if (b.startRip == r) {
         if (KMemory64::blockPageGenOf(b.page0) == b.gen0 &&
             KMemory64::blockPageGenOf(b.page1) == b.gen1) {
-            U32 n = execBlock(b);
+            U32 n = execBlock(b, maxInsn);
             blockStatsExec++;
             blockStatsInsn += n;
             return n;
@@ -6003,7 +6007,7 @@ U32 CPU64::tryBlockStep() {
         blockNegCache[neg] = r;
         return 0;
     }
-    U32 n = execBlock(b);
+    U32 n = execBlock(b, maxInsn);
     blockStatsExec++;
     blockStatsInsn += n;
     return n;
@@ -6036,13 +6040,13 @@ U64 CPU64::runBounded(U64 maxInsn) {
 #ifdef BOXEDWINE_BLOCK_EXEC
         {
             // Phase-1 JIT fast path (active only when BW64_JIT=1; no-op otherwise).
-            U32 jn = tryJitStep();
+            U32 jn = tryJitStep(maxInsn - ran);
             if (jn) {
                 instructionCount += jn;
                 ran += jn;
                 continue;
             }
-            U32 bn = tryBlockStep();
+            U32 bn = tryBlockStep(maxInsn - ran);
             if (bn) {
                 instructionCount += bn;
                 ran += bn;
