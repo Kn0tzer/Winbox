@@ -260,6 +260,9 @@ enum {
 
     VK64_fn_vkQueueSubmit2,                       // (queue, nSubmits, pSubmitInfo2*, fence) -> builds the frame manifest
     VK64_fn_vkQueueSubmit2KHR,                    // (queue, nSubmits, pSubmitInfo2*, fence) -> alias
+    VK64_fn_vkCreateDescriptorUpdateTemplate,     // (device, pCreateInfo*, pAllocator, out VkDescriptorUpdateTemplate*) -> template object
+    VK64_fn_vkDestroyDescriptorUpdateTemplate,    // (device, template, pAllocator)
+    VK64_fn_vkUpdateDescriptorSetWithTemplate,    // (device, set, template, pData)
     VK64_fn__MAX
 };
 

@@ -5989,6 +5989,29 @@ typedef struct VkSubmitInfo2 {
     uint64_t pSignalSemaphoreInfos;
 } VkSubmitInfo2;
 
+typedef struct VkDescriptorUpdateTemplateEntry {
+    uint32_t dstBinding;
+    uint32_t dstArrayElement;
+    uint32_t descriptorCount;
+    uint32_t descriptorType;
+    uint64_t offset;
+    uint64_t stride;
+} VkDescriptorUpdateTemplateEntry;
+
+typedef struct VkDescriptorUpdateTemplateCreateInfo {
+    VkStructureType sType;
+    uint64_t pNext;
+    uint32_t flags;
+    uint32_t descriptorUpdateEntryCount;
+    uint64_t pDescriptorUpdateEntries;
+    uint32_t templateType;
+    uint64_t descriptorSetLayout;
+    uint32_t pipelineBindPoint;
+    uint64_t pipelineLayout;
+    uint32_t set;
+    uint32_t _pad;
+} VkDescriptorUpdateTemplateCreateInfo;
+
 typedef struct VkMappedMemoryRange {
     VkStructureType    sType;
     uint64_t pNext;

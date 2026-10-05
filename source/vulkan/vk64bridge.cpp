@@ -224,6 +224,9 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkQueueSubmit,                        "vkQueueSubmit")       \
     X(VK64_fn_vkQueueSubmit2,                       "vkQueueSubmit2")      \
     X(VK64_fn_vkQueueSubmit2KHR,                    "vkQueueSubmit2KHR")   \
+    X(VK64_fn_vkCreateDescriptorUpdateTemplate,     "vkCreateDescriptorUpdateTemplate") \
+    X(VK64_fn_vkDestroyDescriptorUpdateTemplate,    "vkDestroyDescriptorUpdateTemplate") \
+    X(VK64_fn_vkUpdateDescriptorSetWithTemplate,    "vkUpdateDescriptorSetWithTemplate") \
     X(VK64_fn_vkQueuePresentKHR,                    "vkQueuePresentKHR")   \
     X(VK64_fn_vkEnumerateInstanceVersion,           "vkEnumerateInstanceVersion") \
     X(VK64_fn_vkGetPhysicalDeviceProperties2,       "vkGetPhysicalDeviceProperties2") \
@@ -307,7 +310,7 @@ enum ObjKind : U32 {
     K_INSTANCE = 1, K_PHYSDEV, K_DEVICE, K_QUEUE, K_CMDPOOL, K_CMDBUF, K_MEMORY,
     K_BUFFER, K_IMAGE, K_IMAGEVIEW, K_BUFFERVIEW, K_SAMPLER, K_SHADER, K_SETLAYOUT, K_SET,
     K_PIPELAYOUT, K_PIPELINE, K_RENDERPASS, K_FRAMEBUFFER, K_PIPECACHE,
-    K_DESCPOOL, K_FENCE, K_SEMAPHORE, K_SWAPCHAIN, K_SURFACE
+    K_DESCPOOL, K_FENCE, K_SEMAPHORE, K_SWAPCHAIN, K_SURFACE, K_TEMPLATE
 };
 struct Obj {
     U32 kind = 0;
@@ -404,6 +407,8 @@ struct ShaderModule : Obj {
 };
 struct DescSetLayout : Obj { U32 nbind = 0; Binding binds[VK64_MAX_BINDINGS]; };
 struct DescSet : Obj { U64 layout = 0; U32 nbind = 0; Binding binds[VK64_MAX_BINDINGS]; };
+struct TmplEntry { U32 binding = 0, arrayElement = 0, count = 0, type = 0; U64 offset = 0, stride = 0; };
+struct DescTemplate : Obj { U32 nentry = 0; TmplEntry entries[VK64_MAX_BINDINGS]; };
 struct PipelineLayout : Obj { U32 nsets = 0; U64 sets[VK64_MAX_SETS]; };
 // The vertex input layout, recorded at pipeline creation (audit P2-NOW item 5).
 // This is the one dropped-at-creation field that is not merely informative: with
@@ -3006,6 +3011,77 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                     readStruct(w.pImageInfo, ii);
                     b->obj = ii.imageView;
                     b->range = ii.sampler;
+                }
+            }
+        }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateDescriptorUpdateTemplate: {
+        // (device, pCreateInfo*, pAllocator, out VkDescriptorUpdateTemplate*)
+        VkDescriptorUpdateTemplateCreateInfo ci = {};
+        if (!readStruct(args.a[1], ci)) return VK_ERROR_INITIALIZATION_FAILED;
+        if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = newId();
+        DescTemplate* t = createObj<DescTemplate>(K_TEMPLATE, id);
+        std::vector<VkDescriptorUpdateTemplateEntry> entries;
+        readArray(ci.pDescriptorUpdateEntries, ci.descriptorUpdateEntryCount, entries);
+        for (auto& e : entries) {
+            if (t->nentry >= VK64_MAX_BINDINGS) break;
+            TmplEntry& te = t->entries[t->nentry++];
+            te.binding = e.dstBinding; te.arrayElement = e.dstArrayElement;
+            te.count = e.descriptorCount; te.type = e.descriptorType;
+            te.offset = e.offset; te.stride = e.stride;
+        }
+        wr64(args.a[3], id);
+        klog_fmt("vk64: vkCreateDescriptorUpdateTemplate -> 0x%llx (%u entries)",
+                 (unsigned long long)id, (unsigned)t->nentry);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkDestroyDescriptorUpdateTemplate: {
+        // (device, template, pAllocator)
+        DescTemplate* t = objOf<DescTemplate>(args.a[1], K_TEMPLATE, "vkDestroyDescriptorUpdateTemplate");
+        if (t) destroyObj(t);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkUpdateDescriptorSetWithTemplate: {
+        // (device, descriptorSet, descriptorUpdateTemplate, pData)
+        DescSet* s = objOf<DescSet>(args.a[1], K_SET, "vkUpdateDescriptorSetWithTemplate");
+        DescTemplate* t = objOf<DescTemplate>(args.a[2], K_TEMPLATE, "vkUpdateDescriptorSetWithTemplate");
+        if (!s || !t || !args.a[3]) return VK_SUCCESS;
+        U64 dataBase = args.a[3];
+        for (U32 ei = 0; ei < t->nentry; ei++) {
+            const TmplEntry& te = t->entries[ei];
+            for (U32 i = 0; i < te.count; i++) {
+                U64 dAddr = dataBase + te.offset + (U64)i * te.stride;
+                U32 binding = te.binding;
+                U32 elem = te.arrayElement + i;
+                if (binding >= VK64_MAX_BINDINGS) continue;
+                Binding* b = nullptr;
+                for (U32 k = 0; k < s->nbind; k++)
+                    if (s->binds[k].binding == binding) { b = &s->binds[k]; break; }
+                if (!b) {
+                    if (s->nbind >= VK64_MAX_BINDINGS) continue;
+                    b = &s->binds[s->nbind++];
+                    b->binding = binding;
+                }
+                b->type = te.type;
+                b->dstArrayElement = elem;
+                b->count = 1;
+                if (te.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
+                    te.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+                    U64 buf = rd64(dAddr); U64 range = rd64(dAddr + 16);
+                    b->obj = buf; b->range = range;
+                } else if (te.type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
+                           te.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
+                    U64 view = rd64(dAddr + 8);
+                    b->obj = view; b->range = 0;
+                } else if (te.type == VK_DESCRIPTOR_TYPE_SAMPLER) {
+                    U64 samp = rd64(dAddr);
+                    b->obj = samp; b->range = 0;
+                } else if (te.type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER ||
+                           te.type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER) {
+                    U64 bv = rd64(dAddr);
+                    b->obj = bv; b->range = 0;
                 }
             }
         }

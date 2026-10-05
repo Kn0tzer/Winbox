@@ -194,6 +194,9 @@ enum {
     VK64_fn_vkCmdBindIndexBuffer,
     VK64_fn_vkQueueSubmit2,
     VK64_fn_vkQueueSubmit2KHR,
+    VK64_fn_vkCreateDescriptorUpdateTemplate,
+    VK64_fn_vkDestroyDescriptorUpdateTemplate,
+    VK64_fn_vkUpdateDescriptorSetWithTemplate,
 
     VK64_fn__MAX
 };
@@ -791,6 +794,18 @@ API VkResult vkQueueSubmit2KHR(VkQueue q, uint32_t n, const void* submits, VkFen
     VK64Args a = {{0}}; a.a[0] = q; a.a[1] = n; a.a[2] = P(submits); a.a[3] = fence;
     return (VkResult)vk64_trap(VK64_fn_vkQueueSubmit2KHR, &a);
 }
+API VkResult vkCreateDescriptorUpdateTemplate(VkDevice dev, const void* ci, const void* alloc, void* out) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
+    return (VkResult)vk64_trap(VK64_fn_vkCreateDescriptorUpdateTemplate, &a);
+}
+API void vkDestroyDescriptorUpdateTemplate(VkDevice dev, uint64_t t, const void* alloc) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = t; a.a[2] = P(alloc);
+    (void)vk64_trap(VK64_fn_vkDestroyDescriptorUpdateTemplate, &a);
+}
+API void vkUpdateDescriptorSetWithTemplate(VkDevice dev, uint64_t set, uint64_t templ, const void* data) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = set; a.a[2] = templ; a.a[3] = P(data);
+    (void)vk64_trap(VK64_fn_vkUpdateDescriptorSetWithTemplate, &a);
+}
 
 // ===========================================================================
 // G. Global (no instance): instance version
@@ -932,6 +947,9 @@ static const struct procEntry g_procs[] = {
     E(vkQueueSubmit, VK64_fn_vkQueueSubmit),
     E(vkQueueSubmit2, VK64_fn_vkQueueSubmit2),
     E(vkQueueSubmit2KHR, VK64_fn_vkQueueSubmit2KHR),
+    E(vkCreateDescriptorUpdateTemplate, VK64_fn_vkCreateDescriptorUpdateTemplate),
+    E(vkDestroyDescriptorUpdateTemplate, VK64_fn_vkDestroyDescriptorUpdateTemplate),
+    E(vkUpdateDescriptorSetWithTemplate, VK64_fn_vkUpdateDescriptorSetWithTemplate),
     E(vkQueuePresentKHR, VK64_fn_vkQueuePresentKHR),
 };
 #undef E
@@ -1158,7 +1176,4 @@ TAIL(vkCreateSamplerYcbcrConversion)
 TAIL(vkDestroySamplerYcbcrConversion)
 TAIL(vkGetDescriptorSetLayoutSupport)
 TAIL(vkGetDescriptorSetLayoutSupportKHR)
-TAIL(vkCreateDescriptorUpdateTemplate)
-TAIL(vkDestroyDescriptorUpdateTemplate)
-TAIL(vkUpdateDescriptorSetWithTemplate)
 #undef TAIL
