@@ -3330,10 +3330,20 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             }
         }
         klog_fmt("vk64: BEGIN_RENDERING view=0x%llx", (unsigned long long)fbView);
+        // Dynamic rendering has no VkFramebuffer; synthesize one wrapping the
+        // image view so the frame builder finds it via objOf(K_FRAMEBUFFER).
+        U64 fbId = 0;
+        if (fbView) {
+            Framebuffer* fb = createObj<Framebuffer>(K_FRAMEBUFFER, fbId);
+            fb->natt = 1;
+            fb->views[0] = fbView;
+            fb->w = ri.renderAreaWidth;
+            fb->h = ri.renderAreaHeight;
+        }
         Cmd c;
         c.kind = CMD_BEGIN_RP;
         c.a = 0;  // no render pass object in dynamic rendering
-        c.b = fbView;  // image view as framebuffer identifier
+        c.b = fbId;  // synthetic framebuffer ID
         // TODO: extract clear values from attachments
         pushCmd(cb, c);
         return 0;
