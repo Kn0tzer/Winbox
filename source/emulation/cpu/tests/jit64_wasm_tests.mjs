@@ -21,13 +21,14 @@ function emit(code) {
   return { result, path: path + '.wasm' };
 }
 
-async function check(code, changed, rip = 0x12345678ABCDEFF0n) {
+async function check(code, changed, rip = 0x12345678ABCDEFF0n, ptr = 512) {
   const { result, path } = emit(code);
   assert.equal(result.status, 0, result.stderr);
   const module = readFileSync(path);
   assert.ok(WebAssembly.validate(module), 'emitted module must validate');
   const memory = new WebAssembly.Memory({ initial: 1 });
-  const ptr = 512; // distinguish wasm host pointer from guest RIP
+  // Distinguish the wasm host pointer from guest RIP; unaligned host state
+  // pointers are legal too (the wasm alignment immediate is only a hint).
   const view = new DataView(memory.buffer);
   const before = Array.from({ length: 16 }, (_, i) => 0xFEDCBA9876543200n + BigInt(i));
   before.forEach((v, i) => view.setBigUint64(ptr + i * 8, v, true));
@@ -64,12 +65,29 @@ test('C7 imm32 sign-extends for a 64-bit register destination', () => check(
 test('C7 imm32 zero-extends for a 32-bit register destination', () => check(
   [0x41, 0xC7, 0xC0, 0x80, 0xFF, 0xFF, 0xFF], regs => { regs[8] = 0xFFFFFF80n; }));
 test('RIP advancement wraps modulo 64 bits', () => check(movabs(0, 1n), regs => { regs[0] = 1n; }, mask64 - 3n));
+test('state at the end of imported memory stays in bounds', () => check(
+  movabs(0, 7n), regs => { regs[0] = 7n; }, 0n, 65536 - 144));
+test('unaligned state pointer executes correctly', () => check(
+  movabs(0, 9n), regs => { regs[0] = 9n; }, 0n, 513));
+test('out-of-bounds state traps before modifying any guest state', async () => {
+  const { result, path } = emit(movabs(0, 1n));
+  assert.equal(result.status, 0, result.stderr);
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const bytes = new Uint8Array(memory.buffer);
+  bytes.fill(0xA5);
+  const { instance } = await WebAssembly.instantiate(readFileSync(path), { env: { memory } });
+  for (const ptr of [65536 - 128, -1, -128]) {
+    assert.throws(() => instance.exports.execute(ptr), WebAssembly.RuntimeError);
+    assert.ok(bytes.every(value => value === 0xA5), 'trap must leave memory unchanged');
+  }
+});
 
 for (const [name, code] of [
   ['empty block', []], ['flag-changing XOR', [0x31, 0xC0]],
   ['guest-memory MOV', [0x48, 0x89, 0x00]], ['MOVZX source width', [0x0F, 0xB6, 0xC0]],
   ['16-bit MOV', [0x66, 0xB8, 0x42, 0]], ['REP prefix', [0xF3, 0xB8, 0x42, 0, 0, 0]],
   ['unsupported suffix after MOV', [...movabs(0, 1n), 0x31, 0xC9]],
+  ['block longer than 24 operations', Array.from({ length: 25 }, () => movabs(0, 1n)).flat()],
 ]) {
   test(`whole-block fallback rejects ${name}`, () => assert.equal(emit(code).result.status, 2));
 }
