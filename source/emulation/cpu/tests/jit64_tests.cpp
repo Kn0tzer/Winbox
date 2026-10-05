@@ -325,6 +325,44 @@ static void testWasmGlue() {
     CHECK(b4->wasmIndex == -1, "clear must reset wasmIndex, got %d", b4->wasmIndex);
 }
 
+// Compile a byte stream into a block and run the wasm emitter on it.
+static bool emitOk(std::vector<U8> b) {
+    Jit64Op ops[24];
+    U32 n = jit64CompileStream(0x400000, b.data(), (U32)b.size(), ops, 24, true);
+    if (!n) return false;
+    U32 consumed = 0;
+    for (U32 i = 0; i < n; i++) consumed += ops[i].len;
+    if (consumed != b.size()) return false;
+    Jit64Block block;
+    block.ops.assign(ops, ops + n);
+    std::vector<U8> module;
+    return jit64EmitWasm(block, module) && !module.empty();
+}
+
+static void testShiftEmission() {
+    // SHL/SHR/SAR (sub 4/5/7) 32/64-bit register-direct: accepted.
+    CHECK(emitOk({0x48, 0xC1, 0xE0, 0x04}), "shl rax,4 rejected");
+    CHECK(emitOk({0xC1, 0xE0, 0x04}), "shl eax,4 rejected");
+    CHECK(emitOk({0x48, 0xC1, 0xE8, 0x01}), "shr rax,1 rejected");
+    CHECK(emitOk({0x48, 0xC1, 0xF8, 0x01}), "sar rax,1 rejected");
+    CHECK(emitOk({0xC1, 0xE8, 0x1F}), "shr eax,31 rejected");
+    // /6 aliases SHL: accepted.
+    CHECK(emitOk({0x48, 0xC1, 0xF0, 0x04}), "shl(/6) rax,4 rejected");
+    // Count 0 is a no-op but still accepted (emits prologue/epilogue only).
+    CHECK(emitOk({0x48, 0xC1, 0xE0, 0x00}), "shl rax,0 rejected");
+    // Rotates (ROL/ROR/RCL/RCR, sub 0..3): rejected, interpreter fallback.
+    CHECK(!emitOk({0x48, 0xC1, 0xC0, 0x04}), "rol rax,4 accepted");
+    CHECK(!emitOk({0x48, 0xC1, 0xC8, 0x04}), "ror rax,4 accepted");
+    CHECK(!emitOk({0x48, 0xC1, 0xD0, 0x04}), "rcl rax,4 accepted");
+    CHECK(!emitOk({0x48, 0xC1, 0xD8, 0x04}), "rcr rax,4 accepted");
+    // Memory shift: rejected.
+    CHECK(!emitOk({0x48, 0xC1, 0x20, 0x04}), "shl [rax],4 accepted");
+    // Shift mixed with ALU in one block: accepted.
+    CHECK(emitOk({0x48, 0xC1, 0xE0, 0x04, 0x48, 0x01, 0xC8}), "shl+add block rejected");
+    // Rotate poisons the whole block.
+    CHECK(!emitOk({0x48, 0xC1, 0xE0, 0x04, 0x48, 0xC1, 0xC8, 0x04}), "shl+ror block accepted");
+}
+
 int main() {
     printf("jit64 phase-1 unit tests\n");
     testCoverageTable();
@@ -338,6 +376,7 @@ int main() {
     testJitFlag();
     testWasmStateBridge();
     testWasmGlue();
+    testShiftEmission();
     printf("  %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

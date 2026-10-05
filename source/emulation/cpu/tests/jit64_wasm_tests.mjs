@@ -87,8 +87,10 @@ for (const [name, code] of [
   ['guest-memory MOV', [0x48, 0x89, 0x00]], ['MOVZX source width', [0x0F, 0xB6, 0xC0]],
   ['16-bit MOV', [0x66, 0xB8, 0x42, 0]], ['REP prefix', [0xF3, 0xB8, 0x42, 0, 0, 0]],
   ['16-bit ADD', [0x66, 0x01, 0xC0]], ['memory ADD', [0x48, 0x01, 0x00]],
-  ['shift group', [0x48, 0xC1, 0xE0, 0x04]], ['IMUL', [0x48, 0x0F, 0xAF, 0xC3]],
-  ['unsupported suffix after MOV', [...movabs(0, 1n), 0x48, 0xC1, 0xE0, 0x04]],
+  ['rotate group (ROL)', [0x48, 0xC1, 0xC0, 0x04]], ['rotate group (ROR)', [0x48, 0xC1, 0xC8, 0x04]],
+  ['rotate group (RCL)', [0x48, 0xC1, 0xD0, 0x04]], ['rotate group (RCR)', [0x48, 0xC1, 0xD8, 0x04]],
+  ['IMUL', [0x48, 0x0F, 0xAF, 0xC3]],
+  ['unsupported suffix after MOV', [...movabs(0, 1n), 0x48, 0xC1, 0xC8, 0x04]],
   ['block longer than 24 operations', Array.from({ length: 25 }, () => movabs(0, 1n)).flat()],
 ]) {
   test(`whole-block fallback rejects ${name}`, () => assert.equal(emit(code).result.status, 2));
@@ -275,4 +277,144 @@ test('mixed MOV+ADD block', async () => {
   const { r, flags } = refAlu(0, 7n, 8n, 8);
   const out = await runAlu(code, regs, 0x202);
   expectAlu(out, 0x202, flags, code.length, got => assert.equal(got[0], r));
+});
+
+// --- Shift reference model (mirrors cpu64.cpp doShift; count pre-masked) ---
+const SHIFT_MASK = 0x8C5;
+function refShift(sub, v, count, width, rflagsIn) {
+  const mask = width === 4 ? 0xFFFFFFFFn : mask64;
+  const sb = 1n << BigInt(width * 8 - 1);
+  const wbits = BigInt(width * 8);
+  v &= mask;
+  if (count === 0n) return { r: v, flags: BigInt(rflagsIn) & BigInt(SHIFT_MASK) };
+  let r, cf;
+  if (sub === 4 || sub === 6) {          // SHL
+    cf = (v >> (wbits - count)) & 1n;
+    r = (v << count) & mask;
+  } else if (sub === 5) {                // SHR
+    cf = (v >> (count - 1n)) & 1n;
+    r = (v >> count) & mask;
+  } else {                               // SAR: arithmetic shift of sign-extended value
+    cf = (v >> (count - 1n)) & 1n;
+    const signed = (v & sb) ? v - (1n << wbits) : v;
+    r = (signed >> count) & mask;        // BigInt >> is arithmetic
+  }
+  let of = 0n;
+  if (count === 1n) {
+    if (sub === 4 || sub === 6) of = (((r & sb) ? 1n : 0n) ^ cf) & 1n;
+    else if (sub === 5) of = (v & sb) ? 1n : 0n;
+  }
+  const zf = r === 0n ? 1n : 0n, sf = (r & sb) ? 1n : 0n;
+  let q = Number(r & 0xFFn); q ^= q >> 4; q ^= q >> 2; q ^= q >> 1;
+  const pf = (q & 1) === 0 ? 1n : 0n;
+  return { r, flags: cf | (pf << 2n) | (zf << 6n) | (sf << 7n) | (of << 11n) };
+}
+
+function expectShift(out, initFlags, newBits, codeLen, changed) {
+  assert.equal(out.rflags, (((initFlags & ~SHIFT_MASK) | Number(newBits)) >>> 0), 'rflags');
+  assert.equal(out.ripOut, (0x12345678ABCDEFF0n + BigInt(codeLen)) & mask64, 'RIP advances');
+  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+  changed(out.regs);
+}
+
+test('SHL r64 by 4 shifts out CF and zeroes', async () => {
+  const regs = baseRegs(); regs[0] = 0xF000000000000000n;
+  const { r, flags } = refShift(4, regs[0], 4n, 8, 0x202);
+  assert.equal(flags & 0x8C5n, 0x1n | 0x40n | 0x4n, 'CF+ZF+PF set, OF clear');
+  const out = await runAlu([0x48, 0xC1, modrm(4, 0), 0x04], regs, 0x202);
+  expectShift(out, 0x202, flags, 4, got => assert.equal(got[0], r));
+});
+
+test('SHL r64 by 1 sets OF from MSB xor CF', async () => {
+  const regs = baseRegs(); regs[0] = 0x4000000000000000n;
+  const { r, flags } = refShift(4, regs[0], 1n, 8, 0x202);
+  assert.equal(flags & 0x8C5n, 0x800n | 0x80n | 0x4n, 'OF+SF+PF set');
+  const out = await runAlu([0x48, 0xC1, modrm(4, 0), 0x01], regs, 0x202);
+  expectShift(out, 0x202, flags, 4, got => assert.equal(got[0], r));
+});
+
+test('SHR r64 by 1 shifts into CF, OF is old MSB', async () => {
+  const regs = baseRegs(); regs[0] = 0x8000000000000001n;
+  const { r, flags } = refShift(5, regs[0], 1n, 8, 0x202);
+  assert.equal(flags & 0x8C5n, 0x1n | 0x800n | 0x4n, 'CF+OF+PF set');
+  const out = await runAlu([0x48, 0xC1, modrm(5, 0), 0x01], regs, 0x202);
+  expectShift(out, 0x202, flags, 4, got => assert.equal(got[0], r));
+});
+
+test('SAR r64 by 1 sign-extends and clears OF', async () => {
+  const regs = baseRegs(); regs[0] = 0x8000000000000000n;
+  const { r, flags } = refShift(7, regs[0], 1n, 8, 0x202);
+  assert.equal(r, 0xC000000000000000n);
+  assert.equal(flags & 0x8C5n, 0x80n | 0x4n, 'only SF+PF set');
+  const out = await runAlu([0x48, 0xC1, modrm(7, 0), 0x01], regs, 0x202);
+  expectShift(out, 0x202, flags, 4, got => assert.equal(got[0], r));
+});
+
+test('SAR r64 by 63 of -1 stays -1 with CF set', async () => {
+  const regs = baseRegs(); regs[0] = mask64;
+  const { r, flags } = refShift(7, regs[0], 63n, 8, 0x202);
+  assert.equal(r, mask64);
+  assert.equal(flags & 0x8C5n, 0x1n | 0x80n | 0x4n, 'CF+SF+PF set');
+  const out = await runAlu([0x48, 0xC1, modrm(7, 0), 0x3F], regs, 0x202);
+  expectShift(out, 0x202, flags, 4, got => assert.equal(got[0], r));
+});
+
+test('SHL r32 uses 32-bit width, flags and zero-extension', async () => {
+  const regs = baseRegs(); regs[0] = 0x80000001n;
+  const { r, flags } = refShift(4, regs[0], 1n, 4, 0x202);
+  assert.equal(r, 0x2n);
+  assert.equal(flags & 0x8C5n, 0x1n | 0x800n, 'CF+OF set');
+  const out = await runAlu([0xC1, modrm(4, 0), 0x01], regs, 0x202);
+  expectShift(out, 0x202, flags, 3, got => assert.equal(got[0], r));
+});
+
+test('SAR r32 sign-extends from 32 bits', async () => {
+  const regs = baseRegs(); regs[0] = 0x80000000n;
+  const { r, flags } = refShift(7, regs[0], 1n, 4, 0x202);
+  assert.equal(r, 0xC0000000n);
+  const out = await runAlu([0xC1, modrm(7, 0), 0x01], regs, 0x202);
+  expectShift(out, 0x202, flags, 3, got => assert.equal(got[0], r));
+});
+
+test('shift by 0 is a no-op preserving value and flags', async () => {
+  const regs = baseRegs(); regs[0] = 0x123n;
+  const out = await runAlu([0x48, 0xC1, modrm(4, 0), 0x00], regs, 0x8C5);
+  assert.equal(out.rflags, 0x8C5, 'flags untouched');
+  assert.equal(out.regs[0], 0x123n, 'value untouched');
+});
+
+test('shift preserves AF and non-shift RFLAGS bits', async () => {
+  const regs = baseRegs(); regs[0] = 1n;
+  const { flags } = refShift(4, regs[0], 1n, 8, 0xA5B5);
+  const out = await runAlu([0x48, 0xC1, modrm(4, 0), 0x01], regs, 0xA5B5);
+  expectShift(out, 0xA5B5, flags, 4, () => {});
+  assert.equal(out.rflags & 0x10, 0x10, 'AF preserved');
+});
+
+test('SHL /6 alias behaves like /4', async () => {
+  const regs = baseRegs(); regs[0] = 0x4000000000000000n;
+  const { r, flags } = refShift(6, regs[0], 1n, 8, 0x202);
+  const out = await runAlu([0x48, 0xC1, modrm(6, 0), 0x01], regs, 0x202);
+  expectShift(out, 0x202, flags, 4, got => assert.equal(got[0], r));
+});
+
+test('shift on extended register r8', async () => {
+  const regs = baseRegs(); regs[8] = 3n;
+  const { r, flags } = refShift(4, regs[8], 2n, 8, 0x202);
+  const out = await runAlu([0x49, 0xC1, modrm(4, 0), 0x02], regs, 0x202);
+  expectShift(out, 0x202, flags, 4, got => {
+    assert.equal(got[8], r);
+    assert.equal(got[0], regs[0], 'rax untouched');
+  });
+});
+
+test('mixed shift+ALU block observes shift result', async () => {
+  const regs = baseRegs(); regs[0] = 1n; regs[3] = 0n;
+  const code = [0x48, 0xC1, modrm(4, 0), 0x03, 0x48, 0x01, modrm(3, 0)];
+  const s = refShift(4, 1n, 3n, 8, 0x202);
+  const a = refAlu(0, s.r, 0n, 8);
+  const out = await runAlu(code, regs, 0x202);
+  // Final flags come from the ADD; check the value chain instead.
+  assert.equal(out.regs[0], a.r, 'add saw the shifted value');
+  assert.equal(out.rflags & 0x8C5, Number(a.flags & 0x8D5n) & 0x8C5, 'ADD flags');
 });

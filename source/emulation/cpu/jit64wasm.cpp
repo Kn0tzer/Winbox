@@ -55,6 +55,10 @@ void section(Bytes& module, U8 id, const Bytes& contents) {
 constexpr U32 F_CF = 0, F_PF = 2, F_AF = 4, F_ZF = 6, F_SF = 7, F_OF = 11;
 constexpr U32 F_ALU_MASK = (1u << F_CF) | (1u << F_PF) | (1u << F_AF) |
                           (1u << F_ZF) | (1u << F_SF) | (1u << F_OF); // 0x8D5
+// Shift flag bits written by SHL/SHR/SAR: CF/PF/ZF/SF/OF. AF is NOT touched
+// by shifts (unlike ALU ops), so it stays out of the merge mask.
+constexpr U32 F_SHIFT_MASK = (1u << F_CF) | (1u << F_PF) |
+                             (1u << F_ZF) | (1u << F_SF) | (1u << F_OF); // 0x8C5
 
 // Module locals: 0 = state ptr param, 1..16 = i64 GPRs, 17 = i64 RIP,
 // 18 = i32 RFLAGS, 19..23 = i64 scratch (A, B, R, flag bits, parity temp).
@@ -139,7 +143,7 @@ void emitFlags(Bytes& body, U8 sub, U64 sb, bool isLogic) {
         local(body, 0x20, L_P);
         local(body, 0x20, L_P);
         i64Const(body, s);
-        body.push_back(0x87); // i64.shr_u
+        body.push_back(0x88); // i64.shr_u
         body.push_back(0x85); // i64.xor
         local(body, 0x21, L_P);
     }
@@ -228,6 +232,140 @@ U32 emitAlu(Bytes& body, const Jit64Op& op) {
     if (isTest || op.sub == 7) return 0xFF; // TEST/CMP write no register
     return destReg;
 }
+
+// Emit one register-direct SHL/SHR/SAR (0xC1 /4,/5,/7; /6 aliases /4).
+// Returns the destination GPR index, or 0xFF when the op is a no-op.
+// Mirrors cpu64.cpp doShift exactly for the non-rotate cases: count == 0
+// leaves the value and all flags untouched; otherwise CF is the last bit
+// shifted out, OF is defined only for count == 1 (SHL: MSB(result) XOR CF;
+// SHR: old MSB; SAR: 0), and SZP is set from the result. AF and all other
+// RFLAGS bits are preserved.
+U32 emitShift(Bytes& body, const Jit64Op& op) {
+    const U64 count = op.imm; // already masked to 0x1F/0x3F at decode
+    if (count == 0) return 0xFF; // no-op: value and flags untouched
+    const U32 destReg = op.rmIndex;
+    const U64 mask = op.size == 4 ? 0xFFFFFFFFULL : 0xFFFFFFFFFFFFFFFFULL;
+    const U64 sb = op.size == 4 ? 0x80000000ULL : 0x8000000000000000ULL;
+    const U64 wbits = op.size == 4 ? 32 : 64;
+    const U8 sub = op.sub == 6 ? 4 : op.sub; // /6 aliases SHL
+    // L_A = width-masked operand.
+    local(body, 0x20, destReg + 1);
+    if (op.size == 4) {
+        i64Const(body, mask);
+        body.push_back(0x83); // i64.and
+    }
+    local(body, 0x21, L_A);
+    // L_R = shift result. The shift amount is pushed after any
+    // sign-extension so the operand stack stays [value, amount].
+    local(body, 0x20, L_A);
+    if (sub == 4) {
+        i64Const(body, count);
+        body.push_back(0x86); // i64.shl
+        if (op.size == 4) {
+            i64Const(body, mask);
+            body.push_back(0x83);
+        }
+    } else if (sub == 5) {
+        i64Const(body, count);
+        body.push_back(0x88); // i64.shr_u (L_A already width-masked)
+    } else { // SAR: sign-extend, arithmetic shift, mask.
+        if (op.size == 4) {
+            i64Const(body, 32);
+            body.push_back(0x86); // i64.shl
+            i64Const(body, 32);
+            body.push_back(0x87); // i64.shr_s
+        }
+        i64Const(body, count);
+        body.push_back(0x87); // i64.shr_s
+        if (op.size == 4) {
+            i64Const(body, mask);
+            body.push_back(0x83);
+        }
+    }
+    local(body, 0x21, L_R);
+    // Flags: L_F accumulates the five shift flag bits.
+    i64Const(body, 0);
+    local(body, 0x21, L_F);
+    // CF: SHL: (v >> (wbits - count)) & 1; SHR/SAR: (v >> (count - 1)) & 1.
+    // Stash the 0/1 bit in L_P: the SHL count==1 OF formula needs it below.
+    local(body, 0x20, L_A);
+    i64Const(body, sub == 4 ? wbits - count : count - 1);
+    body.push_back(0x88); // i64.shr_u
+    i64Const(body, 1);
+    body.push_back(0x83); // i64.and
+    local(body, 0x21, L_P);
+    local(body, 0x20, L_P);
+    body.push_back(0xA7); // i32.wrap_i64
+    orFlagBit(body, F_CF);
+    // OF: only defined for count == 1 (the bit stays 0 otherwise, matching
+    // the interpreter clearing OF for count > 1).
+    if (count == 1) {
+        if (sub == 4) {
+            // OF = MSB(result) XOR CF.
+            local(body, 0x20, L_R);
+            i64Const(body, sb);
+            body.push_back(0x83);
+            i64Const(body, 0);
+            body.push_back(0x52); // i64.ne -> i32
+            local(body, 0x20, L_P);
+            body.push_back(0xA7); // i32.wrap_i64
+            body.push_back(0x73); // i32.xor
+            orFlagBit(body, F_OF);
+        } else if (sub == 5) {
+            // OF = old MSB.
+            local(body, 0x20, L_A);
+            i64Const(body, sb);
+            body.push_back(0x83);
+            i64Const(body, 0);
+            body.push_back(0x52); // i64.ne -> i32
+            orFlagBit(body, F_OF);
+        }
+        // SAR: OF = 0, nothing to emit.
+    }
+    // ZF.
+    local(body, 0x20, L_R);
+    body.push_back(0x50); // i64.eqz
+    orFlagBit(body, F_ZF);
+    // SF.
+    local(body, 0x20, L_R);
+    i64Const(body, sb);
+    body.push_back(0x83);
+    i64Const(body, 0);
+    body.push_back(0x52);
+    orFlagBit(body, F_SF);
+    // PF: even parity of the low byte; PF = ((folded & 1) ^ 1).
+    local(body, 0x20, L_R);
+    i64Const(body, 0xFF);
+    body.push_back(0x83);
+    local(body, 0x21, L_P);
+    const U32 shifts[] = {4, 2, 1};
+    for (U32 s : shifts) {
+        local(body, 0x20, L_P);
+        local(body, 0x20, L_P);
+        i64Const(body, s);
+        body.push_back(0x88); // i64.shr_u
+        body.push_back(0x85); // i64.xor
+        local(body, 0x21, L_P);
+    }
+    local(body, 0x20, L_P);
+    i64Const(body, 1);
+    body.push_back(0x83); // & 1
+    i64Const(body, 1);
+    body.push_back(0x85); // ^ 1
+    body.push_back(0xA7); // i32.wrap_i64: test results are i32
+    orFlagBit(body, F_PF);
+    // rflags = (rflags & ~SHIFT_MASK) | (i32)L_F; AF and the rest preserved.
+    local(body, 0x20, L_RFLAGS);
+    i32Const(body, F_SHIFT_MASK);
+    body.push_back(0x72); // i32.or
+    i32Const(body, F_SHIFT_MASK);
+    body.push_back(0x73); // i32.xor
+    local(body, 0x20, L_F);
+    body.push_back(0xA7); // i32.wrap_i64
+    body.push_back(0x72); // i32.or
+    local(body, 0x21, L_RFLAGS);
+    return destReg;
+}
 } // namespace
 
 void jit64WasmStateInit(Jit64WasmState& state, const U64 gpr[16], U64 rip, U32 rflags) {
@@ -272,8 +410,12 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
         case J64_ALU_ACC_IMM:
             if (op.sub > 7) return false;
             break;
+        case J64_SHIFT_IMM:
+            // SHL/SHR/SAR only; rotates (ROL/ROR/RCL/RCR) stay rejected.
+            if (op.rmIndex >= 16 || (op.sub != 4 && op.sub != 5 && op.sub != 6 && op.sub != 7)) return false;
+            break;
         default:
-            return false; // MOVZX, shifts, control flow, and the rest
+            return false; // MOVZX, rotates, control flow, and the rest
         }
         byteCount += op.len;
     }
@@ -313,6 +455,17 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
                 body.push_back(0x83); // i64.and, x86 32-bit zero extension
             }
             local(body, 0x21, dest + 1);
+            break;
+        }
+        case J64_SHIFT_IMM: {
+            // Register-direct SHL/SHR/SAR: emitShift leaves the result in
+            // L_R; publish it to the GPR local so the final store-back
+            // writes it (count == 0 returns 0xFF: a pure no-op).
+            U32 written = emitShift(body, op);
+            if (written != 0xFF) {
+                local(body, 0x20, L_R);
+                local(body, 0x21, written + 1);
+            }
             break;
         }
         default: {
