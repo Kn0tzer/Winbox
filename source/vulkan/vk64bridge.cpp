@@ -3187,14 +3187,16 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkEndCommandBuffer: {
         CmdBuf* cb = cbOf(args.a[0], "vkEndCommandBuffer");
-        klog_fmt("vk64: vkEndCommandBuffer cb=0x%llx ncmd=%u", (unsigned long long)args.a[0], cb ? (unsigned)cb->cmds.size() : 0);
+        if (vkTrace()) klog_fmt("vk64: vkEndCommandBuffer ncmd=%u", cb ? (unsigned)cb->cmds.size() : 0);
         return VK_SUCCESS;
     }
     case VK64_fn_vkCmdBeginRenderPass: {
         // (cmdBuf, pRenderPassBegin* (clear values!), contents)
+        klog_fmt("vk64: BEGIN_RP_CALLED cb=0x%llx", (unsigned long long)args.a[0]);
         CmdBuf* cb = cbOf(args.a[0], "vkCmdBeginRenderPass");
         VkRenderPassBeginInfo bi = {};
-        if (!cb || !readStruct(args.a[1], bi)) return 0;
+        if (!cb || !readStruct(args.a[1], bi)) { klog("vk64: BEGIN_RP_FAILED"); return 0; }
+        klog_fmt("vk64: BEGIN_RP fb=0x%llx", (unsigned long long)bi.framebuffer);
         Cmd c;
         c.kind = CMD_BEGIN_RP;
         c.a = bi.renderPass;
@@ -3409,9 +3411,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkCmdDrawIndexed: {
         // (cmdBuf, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance)
-        klog_fmt("vk64: DRAW_CALLED cb=0x%llx", (unsigned long long)args.a[0]);
         CmdBuf* cb = cbOf(args.a[0], "vkCmdDrawIndexed");
-        if (!cb) { klog("vk64: DRAW_CB_NULL"); return 0; }
+        if (!cb) return 0;
         Cmd c;
         c.kind = CMD_DRAW_INDEXED;
         c.a = args.a[1];   // indexCount
