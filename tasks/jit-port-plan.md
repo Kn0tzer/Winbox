@@ -245,3 +245,92 @@ across concurrent activations (assert via instrumentation, not by inspection).
 - Is `patch.diff` already-applied work intended to stay, or was it staged for a different effort?
 - Are the PR's new tests (`testWasmJitBatch`, `testWasmJitModuleBroker`) to be ported as-is, or
   rewritten against `cpu64`?
+
+
+## 6. Phase 1 status (lane-jit — DONE, committed on `lane-jit`)
+
+**Scope delivered.** Phase-1 JIT framework for `CPU64`: a self-contained
+x86-64 decoder + classifier (`Jit64Op` IR), a block cache keyed on
+`startRip` + page generations, and a runtime flag — all behind `BW64_JIT=1`,
+default behavior unchanged. No wasm is emitted yet: a "compiled block" in
+phase 1 is a validated + ranked copy of the decode plan with a per-record
+fast/fallback dispatch plan. `jit64EmitPlanText()` serializes that plan in a
+stable text form the phase-2 wasm emitter will consume.
+
+**Files (all in the `lane-jit` worktree):**
+
+| File | Role |
+| --- | --- |
+| `include/jit64.h` | Public API: `Jit64Op`/`Jit64Block`, `jit64DecodeOne`, `jit64Classify`, `jit64CompileStream`, `Jit64BlockCache`, `jit64Enabled()`, `jit64EmitPlanText` |
+| `source/emulation/cpu/jit64.cpp` | Decoder (prefix/REX/ModRM/SIB scan), classifier, stream compiler, 512-slot open-addressed block cache |
+| `source/emulation/cpu/tests/jit64_tests.cpp` | Native unit tests (`g++ -std=c++17 -DBOXEDWINE_GUEST_X64=1`); **113 passed, 0 failed** |
+| `source/emulation/cpu/tests/profile_opcodes.py` | Profile evidence generator (capstone; 64-bit PEs only) |
+| `scripts/build-jit-wasm.sh` | Phase-1 wasm build driver — **prepared, NOT run** (no emcc on this host) |
+| `include/cpu64.h` / `source/emulation/cpu/cpu64.cpp` | `CPU64::tryJitStep()` hook wired into `run()`/`runBounded()` ahead of `tryBlockStep()`; `Jit64State` owned per-CPU |
+| `project/emscripten/makefile` | `EMULATION_SOURCES` prunes `source/emulation/cpu/tests/` (own `main()`) from the emcc glob; `jit64.cpp` auto-globbed, `BOXEDWINE_GUEST_X64`-gated |
+
+**Design (per §3.1 "recommend the former with a thin adapter").** Built on
+`cpu64`'s own `BBlock`/`BRec` IR, not the 32-bit `DecodedOp` pipeline.
+`tryJitStep()` compiles the JIT plan for the block at RIP, then **validates it
+against the interpreter's `buildBlock`** (record count + every instruction
+length must agree — decoder-drift guard) and executes via the interpreter's
+`execBlock`, so semantics are bit-identical by construction. **Whole-block
+fallback rule:** if any record in the block classifies fallback (LOCK/REP/
+`66h` prefixes, 8-bit ALU forms, SYSCALL, unknown opcodes), the entire block
+stays on the interpreter path. Cache validity reuses the `BOXEDWINE_BLOCK_EXEC`
+page-generation contract (`blockPageRegister`/`blockPageGenOf`).
+
+**Top-20 opcode profile (evidence).** Static disassembly of 83,376
+instructions from real x86-64 guest binaries in this repo —
+`tools/rootfs64/games/doom.exe` (59.9k), `tetris`/`snake`, the `gltest` suite
+(`glcube`/`gltri`/`msgloop`/`sleepprobe`), `tools/dxvk/tri9/tri9.exe` — via
+`profile_opcodes.py` (capstone linear sweep; opcode counted *after*
+legacy/REX prefixes; NOP padding `90`/`0F1F` — 8,384 insns — excluded from
+ranking; PUSH/POP register rows and `MOV r,imm` grouped as classes
+`50..57`/`58..5F`/`B8..BF`). `HxD64.exe` was excluded: its `.text` is
+dominated by zero padding / non-code patterns a linear sweep cannot
+distinguish (26% decoded as opcode `00`). doom.exe alone yields 59.9k insns
+vs the 62.4k cited in the original analysis, corroborating the method.
+Reproduced 2026-10-05 on the lane host (capstone 5.0.7).
+
+Top-20 opcodes in the JIT fast set (share of all 83,376 instructions):
+
+| # | opcode | share | # | opcode | share |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `89` MOV r/m,r | 11.2% | 11 | `C1` SHIFT r/m,imm8 | 2.3% |
+| 2 | `8B` MOV r,r/m | 10.1% | 12 | `E9` JMP rel32 | 2.2% |
+| 3 | `83` ALU r/m,imm8 | 6.7% | 13 | `74` JZ rel8 | 2.0% |
+| 4 | `E8` CALL rel32 | 6.0% | 14 | `39` CMP r/m,r | 2.0% |
+| 5 | `8D` LEA | 5.4% | 15 | `0FB6` MOVZX r,r/m8 | 1.9% |
+| 6 | `58..5F` POP r64 | 3.6% | 16 | `C7` MOV r/m,imm32 | 1.8% |
+| 7 | `B8..BF` MOV r,imm | 3.1% | 17 | `75` JNZ rel8 | 1.7% |
+| 8 | `85` TEST r/m,r | 3.0% | 18 | `C3` RET | 1.7% |
+| 9 | `50..57` PUSH r64 | 2.8% | 19 | `0F84` JZ rel32 | 1.2% |
+| 10 | `31` XOR r/m,r | 2.4% | 20 | `01` ADD r/m,r | 1.2% |
+
+The phase-1 fast set covers **80.2% of padding-excluded static
+instructions** (top-20 rows above: 72.2% of all 83,376 instructions).
+By raw byte rank, positions 19–20 are `FF` (INC/DEC/indirect call, 1.7%) and
+8-bit `00` (1.4%), which are correctly *not* in the fast set; `0F84` and `01`
+are the next-fastest fast opcodes, hence table rows 19/20. `0F85`/`29`
+remain fast in the classifier but fell just outside this corpus's top-20, so
+they carry no coverage-table row. The authoritative table is
+`jit64CoveredOpcodes()` in `source/emulation/cpu/jit64.cpp`; the unit test
+asserts its rank order against this profile.
+
+**Verification (all on the lane host):**
+
+```
+g++ -std=c++17 -Wall -Wextra -DBOXEDWINE_GUEST_X64=1 -Iinclude \
+    source/emulation/cpu/jit64.cpp source/emulation/cpu/tests/jit64_tests.cpp \
+    -o /tmp/jit64test/jit64_tests && /tmp/jit64test/jit64_tests
+# -> 113 passed, 0 failed, zero warnings
+python3 source/emulation/cpu/tests/profile_opcodes.py <64-bit exe>...
+```
+
+**Deferred to phase 2** (per the phased plan): the wasm opcode emitter
+(`wasmEmitter`-style binary writer), module instantiation/table-index glue,
+inline-TLB fast path, and the `BW64_JIT=1` vs interpreter A/B timing gate on
+the `wasm64-selftest`/`wasm64-runelf` targets. `scripts/build-jit-wasm.sh`
+already encodes the phase-1 gates (native tests → emcc build → node smoke run
+with output diff); extend it with emitter build + timing comparison in phase 2.

@@ -205,6 +205,22 @@ public:
     void push64(U64 value);
     U64  pop64();
 
+    // ---- Phase-1 JIT hook (source/emulation/cpu/jit64.cpp, include/jit64.h).
+    // tryJitStep() is the JIT fast-path attempt, called from run()/runBounded()
+    // when BW64_JIT=1. Returns instructions executed, or 0 to fall back to
+    // the interpreter. Default behavior (BW64_JIT unset) is unchanged: the
+    // hook is never entered. Phase 1 compiles the block plan and validates
+    // it against the interpreter BBlock path, then executes via execBlock so
+    // semantics stay bit-identical; phase 2 will emit wasm from the plan.
+    U32 tryJitStep();
+    struct Jit64State* jit() { return m_jit; }
+    const struct Jit64State* jit() const { return m_jit; }
+    void ensureJit();
+    void freeJit();
+    // Owned JIT state (nullptr until first BW64_JIT=1 use). Forward-declared
+    // in jit64.h; included via cpu64.cpp only, keeping this header light.
+    struct Jit64State* m_jit = nullptr;
+
 private:
     U32 step();
 
