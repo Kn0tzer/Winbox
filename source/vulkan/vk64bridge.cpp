@@ -1245,7 +1245,8 @@ void hopV2ToPage() {
                     try {
                         // One memcpy: a subarray view is unsafe to retain because
                         // wasm memory growth detaches every live view.
-                        const bytes = new Uint8Array(Module.HEAPU8.buffer, $0, $1).slice();
+                        // Use HEAPU8 directly (Module.HEAPU8 may not be in scope).
+                        const bytes = new Uint8Array(HEAPU8.buffer, $0, $1).slice();
                         window.bwVkChunk(bytes, $2);
                     } catch (e) { console.warn('vk64: bwVkChunk failed', e); }
                 }
