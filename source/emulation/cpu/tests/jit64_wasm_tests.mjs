@@ -83,11 +83,196 @@ test('out-of-bounds state traps before modifying any guest state', async () => {
 });
 
 for (const [name, code] of [
-  ['empty block', []], ['flag-changing XOR', [0x31, 0xC0]],
+  ['empty block', []],
   ['guest-memory MOV', [0x48, 0x89, 0x00]], ['MOVZX source width', [0x0F, 0xB6, 0xC0]],
   ['16-bit MOV', [0x66, 0xB8, 0x42, 0]], ['REP prefix', [0xF3, 0xB8, 0x42, 0, 0, 0]],
-  ['unsupported suffix after MOV', [...movabs(0, 1n), 0x31, 0xC9]],
+  ['16-bit ADD', [0x66, 0x01, 0xC0]], ['memory ADD', [0x48, 0x01, 0x00]],
+  ['shift group', [0x48, 0xC1, 0xE0, 0x04]], ['IMUL', [0x48, 0x0F, 0xAF, 0xC3]],
+  ['unsupported suffix after MOV', [...movabs(0, 1n), 0x48, 0xC1, 0xE0, 0x04]],
   ['block longer than 24 operations', Array.from({ length: 25 }, () => movabs(0, 1n)).flat()],
 ]) {
   test(`whole-block fallback rejects ${name}`, () => assert.equal(emit(code).result.status, 2));
 }
+
+// --- ALU reference model (mirrors cpu64.cpp flagsAdd/flagsSub/flagsLogic) ---
+const ALU_MASK = 0x8D5;
+function refAlu(sub, a, b, width, carryIn = 0n) {
+  const mask = width === 4 ? 0xFFFFFFFFn : mask64;
+  const sb = 1n << BigInt(width * 8 - 1);
+  a &= mask; b &= mask;
+  const isAdd = sub === 0 || sub === 2, isSub = sub === 3 || sub === 5 || sub === 7;
+  const isLogic = !isAdd && !isSub;
+  if (sub === 2 || sub === 3) b = (b + carryIn) & mask;
+  let r, cf = 0n, of = 0n, af = 0n;
+  if (isAdd) {
+    r = (a + b) & mask;
+    cf = r < a ? 1n : 0n;
+    of = (((~(a ^ b)) & (a ^ r)) & sb) ? 1n : 0n;
+  } else if (isSub) {
+    r = (a - b) & mask;
+    cf = a < b ? 1n : 0n;
+    of = (((a ^ b) & (a ^ r)) & sb) ? 1n : 0n;
+  } else {
+    r = (sub === 1 ? a | b : sub === 4 ? a & b : a ^ b) & mask;
+  }
+  if (!isLogic) af = ((a ^ b ^ r) & 0x10n) ? 1n : 0n;
+  const zf = r === 0n ? 1n : 0n, sf = (r & sb) ? 1n : 0n;
+  let p = Number(r & 0xFFn); p ^= p >> 4; p ^= p >> 2; p ^= p >> 1;
+  const pf = (p & 1) === 0 ? 1n : 0n;
+  return { r, flags: cf | (pf << 2n) | (af << 4n) | (zf << 6n) | (sf << 7n) | (of << 11n) };
+}
+
+async function runAlu(code, regs, rflags, rip = 0x12345678ABCDEFF0n, ptr = 512) {
+  const { result, path } = emit(code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(WebAssembly.validate(readFileSync(path)), 'emitted module must validate');
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const view = new DataView(memory.buffer);
+  regs.forEach((v, i) => view.setBigUint64(ptr + i * 8, v, true));
+  view.setBigUint64(ptr + 128, rip, true);
+  view.setUint32(ptr + 136, rflags >>> 0, true);
+  view.setUint32(ptr + 140, 0xA5A5A5A5, true);
+  const { instance } = await WebAssembly.instantiate(readFileSync(path), { env: { memory } });
+  instance.exports.execute(ptr);
+  return {
+    regs: Array.from({ length: 16 }, (_, i) => view.getBigUint64(ptr + i * 8, true)),
+    rflags: view.getUint32(ptr + 136, true),
+    ripOut: view.getBigUint64(ptr + 128, true),
+    reserved: view.getUint32(ptr + 140, true),
+  };
+}
+
+const baseRegs = () => Array.from({ length: 16 }, (_, i) => 0xFEDCBA9876543200n + BigInt(i));
+const modrm = (reg, rm) => 0xC0 | (reg << 3) | rm;
+function expectAlu(out, initFlags, newBits, codeLen, changed) {
+  assert.equal(out.rflags, (((initFlags & ~ALU_MASK) | Number(newBits)) >>> 0), 'rflags');
+  assert.equal(out.ripOut, (0x12345678ABCDEFF0n + BigInt(codeLen)) & mask64, 'RIP advances');
+  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+  changed(out.regs);
+}
+
+test('ADD r64,r64 wraps with carry out', async () => {
+  const regs = baseRegs(); regs[0] = mask64; regs[3] = 1n;
+  const { r, flags } = refAlu(0, regs[0], regs[3], 8);
+  assert.equal(flags & 0x8D5n, 0x1n | 0x40n | 0x4n | 0x10n, 'CF+ZF+PF+AF set');
+  const out = await runAlu([0x48, 0x01, modrm(3, 0)], regs, 0x202);
+  expectAlu(out, 0x202, flags, 3, got => {
+    assert.equal(got[0], r);
+    assert.equal(got[3], 1n, 'source register untouched');
+  });
+});
+
+test('ADD r32,r32 uses 32-bit flags and zero-extends', async () => {
+  const regs = baseRegs(); regs[0] = 0x80000000n; regs[3] = 0x80000000n;
+  const { r, flags } = refAlu(0, regs[0], regs[3], 4);
+  assert.equal(flags & 0x8D5n, 0x1n | 0x40n | 0x4n | 0x800n, 'CF+ZF+PF+OF set');
+  const out = await runAlu([0x01, modrm(3, 0)], regs, 0x202);
+  expectAlu(out, 0x202, flags, 2, got => assert.equal(got[0], r));
+});
+
+test('SUB r64,r64 borrows', async () => {
+  const regs = baseRegs(); regs[0] = 0n; regs[3] = 1n;
+  const { r, flags } = refAlu(5, regs[0], regs[3], 8);
+  assert.equal(flags & 0x8D5n, 0x1n | 0x80n | 0x10n | 0x4n, 'CF+SF+AF+PF set');
+  const out = await runAlu([0x48, 0x29, modrm(3, 0)], regs, 0x202);
+  expectAlu(out, 0x202, flags, 3, got => assert.equal(got[0], r));
+});
+
+test('XOR r64,r64 self-zeroes with logic flags', async () => {
+  const regs = baseRegs(); regs[0] = 0x123456789ABCDEF0n;
+  const { r, flags } = refAlu(6, regs[0], regs[0], 8);
+  assert.equal(flags & 0x8D5n, 0x40n | 0x4n, 'only ZF+PF set');
+  const out = await runAlu([0x48, 0x31, modrm(0, 0)], regs, 0x8D5);
+  expectAlu(out, 0x8D5, flags, 3, got => assert.equal(got[0], r));
+});
+
+test('AND/OR r64,r64 clear CF/OF/AF', async () => {
+  const regs = baseRegs(); regs[0] = 0xF0F0F0F0F0F0F0F0n; regs[3] = 0x0FF00FF00FF00FF0n;
+  for (const [op, sub] of [[0x21, 4], [0x09, 1]]) {
+    const { r, flags } = refAlu(sub, regs[0], regs[3], 8);
+    assert.equal(flags & 0x811n, 0n, 'CF/OF/AF clear');
+    const out = await runAlu([0x48, op, modrm(3, 0)], [...regs], 0x8D5);
+    expectAlu(out, 0x8D5, flags, 3, got => assert.equal(got[0], r));
+  }
+});
+
+test('ADD r64,imm32 sign-extends the immediate', async () => {
+  const regs = baseRegs(); regs[0] = 5n;
+  const imm = 0xFFFFFFFFFFFFFFFBn; // -5
+  const { r, flags } = refAlu(0, regs[0], imm, 8);
+  const out = await runAlu([0x48, 0x81, modrm(0, 0), 0xFB, 0xFF, 0xFF, 0xFF], regs, 0x202);
+  expectAlu(out, 0x202, flags, 7, got => assert.equal(got[0], r));
+});
+
+test('ADD r64,imm8 sign-extends and SUB r64,imm8 borrows', async () => {
+  const regs = baseRegs(); regs[0] = 0n;
+  let m = refAlu(0, regs[0], 0xFFFFFFFFFFFFFFFFn, 8); // +(-1)
+  let out = await runAlu([0x48, 0x83, modrm(0, 0), 0xFF], regs, 0x202);
+  expectAlu(out, 0x202, m.flags, 4, got => assert.equal(got[0], m.r));
+  m = refAlu(5, regs[0], 1n, 8);
+  out = await runAlu([0x48, 0x83, modrm(5, 0), 0x01], [...regs], 0x202);
+  expectAlu(out, 0x202, m.flags, 4, got => assert.equal(got[0], m.r));
+});
+
+test('ADD rax,imm32 accumulator form', async () => {
+  const regs = baseRegs(); regs[0] = 0x7FFFFFFFFFFFFFFFn;
+  const { r, flags } = refAlu(0, regs[0], 1n, 8);
+  assert.equal(flags & 0x8D5n, 0x800n | 0x80n | 0x10n | 0x4n, 'OF+SF+AF+PF set');
+  const out = await runAlu([0x48, 0x05, 0x01, 0x00, 0x00, 0x00], regs, 0x202);
+  expectAlu(out, 0x202, flags, 6, got => assert.equal(got[0], r));
+});
+
+test('CMP r64,r64 writes no register', async () => {
+  const regs = baseRegs(); regs[0] = 10n; regs[3] = 10n;
+  const { flags } = refAlu(7, regs[0], regs[3], 8);
+  const out = await runAlu([0x48, 0x39, modrm(3, 0)], regs, 0x202);
+  expectAlu(out, 0x202, flags, 3, got => {
+    assert.equal(got[0], 10n, 'CMP leaves the destination alone');
+    assert.equal(got[3], 10n);
+  });
+});
+
+test('TEST r64,r64 writes no register', async () => {
+  const regs = baseRegs(); regs[0] = 0xF0F0n; regs[3] = 0x0F0Fn;
+  const { flags } = refAlu(4, regs[0], regs[3], 8);
+  const out = await runAlu([0x48, 0x85, modrm(3, 0)], regs, 0x202);
+  expectAlu(out, 0x202, flags, 3, got => {
+    assert.equal(got[0], 0xF0F0n, 'TEST leaves the destination alone');
+  });
+});
+
+test('ADC/SBB fold the incoming carry', async () => {
+  const regs = baseRegs(); regs[0] = mask64; regs[3] = 0n;
+  let m = refAlu(2, regs[0], regs[3], 8, 1n);
+  let out = await runAlu([0x48, 0x11, modrm(3, 0)], [...regs], 0x203);
+  expectAlu(out, 0x203, m.flags, 3, got => assert.equal(got[0], m.r));
+  regs[0] = 5n; regs[3] = 5n;
+  m = refAlu(3, regs[0], regs[3], 8, 1n);
+  out = await runAlu([0x48, 0x19, modrm(3, 0)], [...regs], 0x203);
+  expectAlu(out, 0x203, m.flags, 3, got => assert.equal(got[0], m.r));
+});
+
+test('ALU on extended registers (r8/r9)', async () => {
+  const regs = baseRegs(); regs[8] = 2n; regs[9] = 3n;
+  const { r, flags } = refAlu(0, regs[9], regs[8], 8);
+  const out = await runAlu([0x4D, 0x01, modrm(0, 1)], regs, 0x202); // add r9, r8
+  expectAlu(out, 0x202, flags, 3, got => {
+    assert.equal(got[9], r);
+    assert.equal(got[8], 2n);
+  });
+});
+
+test('ALU preserves non-written RFLAGS bits', async () => {
+  const regs = baseRegs(); regs[0] = 1n;
+  const { flags } = refAlu(6, regs[0], regs[0], 8);
+  const out = await runAlu([0x48, 0x31, modrm(0, 0)], regs, 0xA5A5A5A5);
+  expectAlu(out, 0xA5A5A5A5, flags, 3, () => {});
+});
+
+test('mixed MOV+ADD block', async () => {
+  const regs = baseRegs(); regs[3] = 8n;
+  const code = [...movabs(0, 7n), 0x48, 0x01, modrm(3, 0)];
+  const { r, flags } = refAlu(0, 7n, 8n, 8);
+  const out = await runAlu(code, regs, 0x202);
+  expectAlu(out, 0x202, flags, code.length, got => assert.equal(got[0], r));
+});

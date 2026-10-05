@@ -393,10 +393,44 @@ complete yet:
 | Original milestone | Estimate | Remaining gate / major missing component |
 | --- | ---: | --- |
 | 0: baseline and scaffolding | ~50% | Cinebench baseline, original on/off configuration gate, and vendored Binaryen validation |
-| 1: 64-bit value model | ~15% | CPU64 runtime state bridge/helper mode, full wasm arithmetic suites and ELF equivalence |
-| 2: arithmetic and inline TLB | ~5% | Arithmetic/guest-memory codegen, helpers/TLB and measured >1.5× fixture speedup |
-| 3: flags and control flow | 0% | Wasm flags/branches and the original correctness/speed gates |
+| 1: 64-bit value model | ~30% | State bridge API + tests landed; still missing runtime instantiation glue, full wasm arithmetic suites and ELF equivalence |
+| 2: arithmetic and inline TLB | ~20% | Register ALU codegen landed; still missing guest-memory codegen, helpers/TLB and measured >1.5× fixture speedup |
+| 3: flags and control flow | ~10% | Eager ALU flags landed and interpreter-exact; still missing branches/control flow and the original speed gates |
 | 4: cache, invalidation and merging | ~15% | Wasm table ownership, module merging/batch policy and sustained hit/leak/invalidation gates |
-| 5: full op coverage | 0% | Wasm coverage beyond register MOV and the Cinebench/dynamic-fallback gates |
+| 5: full op coverage | ~10% | ALU+MOV covered; still missing shifts, IMUL, string ops, FPU/SIMD and the Cinebench/dynamic-fallback gates |
 | 6: offline cache pipeline | 0% | Recording, persistence, replay and merged-cache validation |
 | 7: multithreaded JIT | 0% | Shared table/activation ownership and concurrent relocation fixture |
+
+## 8. Verified continuation, 2026-10-05 (ALU + state bridge)
+
+`include/jit64wasm.h` gains the dependency-free state bridge
+`jit64WasmStateInit`/`jit64WasmStateRead` (plain GPR/RIP/RFLAGS triple <->
+staging struct; `cpu64.cpp` will pass `cpu->reg[i].u64` / `cpu->rip` /
+`cpu->rflags` once the runtime instantiation glue exists). Native harness:
+**151 passed, 0 failed** (113 phase-1 + 38 new marshal checks), zero
+warnings; `scripts/build-jit-wasm.sh` links `jit64wasm.cpp` into the gate.
+
+The emitter now covers register-direct ALU: ADD/ADC/SUB/SBB/AND/OR/XOR/CMP/
+TEST (`/0`..`/7`, r/m-r, r-r/m, r/m-imm and acc-imm forms, 32/64-bit) with
+eager, interpreter-exact flag computation. Flags mirror `cpu64.cpp`
+`flagsAdd`/`flagsSub`/`flagsLogic` bit-for-bit (CF/OF/AF formulas, SZP on the
+masked result, AF cleared for logic ops, non-written RFLAGS bits preserved);
+a new i32 RFLAGS local is loaded/stored around the existing GPR/RIP traffic.
+Two emitter bugs were demonstrated failing before their fixes: `orFlagBit`
+used `i64.and` (0x83) instead of `i64.or` (0x84), and the ALU result was
+stored straight to guest memory where the final store-back clobbered it with
+the stale GPR local (results now publish through the GPR local, so later ops
+in the block observe them). MOVZX stays rejected via an explicit `sub != 0`
+check on the MOV kinds.
+
+Node suite: **43 passed, 0 failed** (26 previous + 17 new), including a JS
+reference model of the interpreter flag formulas and 15 ALU execution tests
+(operand directions, imm8/imm32/acc forms, 32-bit zero-extension + 32-bit
+flags, CMP/TEST writing no register, ADC/SBB carry-in, extended registers,
+RFLAGS preservation, mixed MOV+ALU blocks). Whole-block rejection still pins
+the boundaries: empty blocks, guest-memory operands, MOVZX, 16-bit operand
+size, REP prefix, shifts, IMUL, >24 ops.
+
+Still deferred: runtime module instantiation/table-index glue
+(`boxedwine_wasm_instantiate_runtime_batch`), the inline-TLB fast path,
+shifts/IMUL/string-op/FPU emission, and interpreter/JIT timing gates.

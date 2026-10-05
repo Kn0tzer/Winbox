@@ -40,6 +40,7 @@ BUILD_TMP="$BUILD_TMP/lifetime" bash "$REPO/scripts/test-jit-lifetime.sh"
 g++ -std=c++17 -Wall -Wextra -DBOXEDWINE_GUEST_X64=1 \
     -I"$REPO/include" \
     "$REPO/source/emulation/cpu/jit64.cpp" \
+    "$REPO/source/emulation/cpu/jit64wasm.cpp" \
     "$REPO/source/emulation/cpu/tests/jit64_tests.cpp" \
     -o "$BUILD_TMP/jit64_tests"
 "$BUILD_TMP/jit64_tests"

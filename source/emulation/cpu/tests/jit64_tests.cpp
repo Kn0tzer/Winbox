@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "../../../../include/jit64.h"
+#include "../../../../include/jit64wasm.h"
 
 static int g_pass = 0, g_fail = 0;
 
@@ -259,6 +260,37 @@ static void testJitFlag() {
     CHECK(a == b, "jit64Enabled not stable");
 }
 
+static void testWasmStateBridge() {
+    // The staging ABI is the exact copy the runtime will hand to execute().
+    U64 gpr[16];
+    for (U32 i = 0; i < 16; i++) gpr[i] = 0xFEDCBA9876543210ULL + (U64)i * 0x0101010101010101ULL;
+    Jit64WasmState st{};
+    jit64WasmStateInit(st, gpr, 0x123456789ABCDEF0ULL, 0x8D5);
+    CHECK(st.reserved == 0, "marshal reserved=%u", st.reserved);
+    for (U32 i = 0; i < 16; i++)
+        CHECK(st.gpr[i] == gpr[i], "marshal gpr[%u]", i);
+    CHECK(st.rip == 0x123456789ABCDEF0ULL, "marshal rip");
+    CHECK(st.rflags == 0x8D5, "marshal rflags");
+    // Register order follows the x86-64 encoding (RAX=0 .. R15=15).
+    U64 order[16] = {};
+    order[0] = 0xAAAAAAAAAAAAAAAAULL;   // RAX
+    order[15] = 0xBBBBBBBBBBBBBBBBULL;  // R15
+    jit64WasmStateInit(st, order, 0, 0);
+    CHECK(st.gpr[0] == 0xAAAAAAAAAAAAAAAAULL && st.gpr[15] == 0xBBBBBBBBBBBBBBBBULL,
+          "marshal register order");
+    // Mutate through the struct (as the wasm module would) and read back.
+    jit64WasmStateInit(st, gpr, 0x123456789ABCDEF0ULL, 0x202);
+    for (U32 i = 0; i < 16; i++) st.gpr[i] ^= 0xFFFFFFFFFFFFFFFFULL;
+    st.rip += 7;
+    st.rflags = 0xA5A5A5A5;
+    U64 out[16]; U64 rip = 0; U32 flags = 0;
+    jit64WasmStateRead(st, out, rip, flags);
+    for (U32 i = 0; i < 16; i++)
+        CHECK(out[i] == (gpr[i] ^ 0xFFFFFFFFFFFFFFFFULL), "unmarshal gpr[%u]", i);
+    CHECK(rip == 0x123456789ABCDEF7ULL, "unmarshal rip=0x%llx", rip);
+    CHECK(flags == 0xA5A5A5A5, "unmarshal flags=0x%x", flags);
+}
+
 int main() {
     printf("jit64 phase-1 unit tests\n");
     testCoverageTable();
@@ -270,6 +302,7 @@ int main() {
     testBlockCache();
     testPlanText();
     testJitFlag();
+    testWasmStateBridge();
     printf("  %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
