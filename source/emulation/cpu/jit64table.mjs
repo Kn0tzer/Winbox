@@ -11,9 +11,10 @@
 //   func:     generated C++ function name, e.g. "emitAluGen".
 //   template: composition pattern implemented by the generator
 //             ("alu", "shift", "rotate", "imul2", "imul1", "imul3",
-//              "movx", "string", "lea", "stack", "mov8", "cbw").
-//   mem:      for the "alu" template: false = register-direct (emitAlu
-//             shape), true = memory-operand (emitAluMem shape).
+//              "movx", "string", "lea", "stack", "mov8", "grp3", "cbw").
+//   mem:      for the "alu"/"shift"/"rotate" templates: false =
+//             register-direct, true = memory-operand (separate mem
+//             emitter; EA via emitEA, fault ordering load->compute->store).
 //   kinds:    Jit64Kind values the emitter handles.
 //   encoding: decode contract (opcode, ModRM.reg extension, prefixes
 //             REX/0x66/0x67, REX.W/B) — documentation; the real decoder
@@ -127,6 +128,49 @@ export const EMITTERS = [
       preserves: "SZP/AF and all other RFLAGS bits (F_CFOF_MASK merge)",
       note: "count==0: no-op (flags untouched); 32-bit count==0 still " +
             "zero-extends. OF defined only for count==1.",
+    },
+  },
+  {
+    func: "emitShiftMemGen",
+    template: "shift",
+    mem: true,
+    kinds: ["J64_SHIFT_IMM"],
+    encoding:
+      "SHL/SHR/SAR r/m,1 (0xD1 /4,/5,/7) and r/m,imm8 (0xC1 /4,/5,/7) " +
+      "with ModRM mod != 3. D1 count is implicit 1; C1 count in imm8 " +
+      "(masked 0x1F/0x3F at decode). REX.W selects 64-bit, 0x66 16-bit. " +
+      "EA via emitEA.",
+    operands:
+      "sizes 1/2/4/8, memory operand; fault ordering: memRead before " +
+      "compute+flags, memWrite after (interpreter's loadRM/doShift/" +
+      "storeRM order).",
+    flags: {
+      writes: ["CF", "OF", "ZF", "SF", "PF"],
+      preserves: "AF and all other RFLAGS bits (F_SHIFT_MASK merge)",
+      note: "count==0 (C1 only): no-op, flags untouched; 32-bit " +
+            "count==0 still zero-extends via memWrite. OF defined " +
+            "only for count==1 (D1 always).",
+    },
+  },
+  {
+    func: "emitRotateMemGen",
+    template: "rotate",
+    mem: true,
+    kinds: ["J64_SHIFT_IMM"],
+    encoding:
+      "ROL/ROR/RCL/RCR r/m,1 (0xD1 /0../3) and r/m,imm8 (0xC1 /0../3) " +
+      "with ModRM mod != 3. D1 count is implicit 1; C1 count in imm8 " +
+      "(masked 0x1F/0x3F at decode). REX.W selects 64-bit, 0x66 16-bit. " +
+      "EA via emitEA.",
+    operands:
+      "sizes 1/2/4/8, memory operand; fault ordering: memRead before " +
+      "compute+flags, memWrite after.",
+    flags: {
+      writes: ["CF", "OF"],
+      preserves: "SZP/AF and all other RFLAGS bits (F_CFOF_MASK merge)",
+      note: "count==0 (C1 only): no-op, flags untouched; 32-bit " +
+            "count==0 still zero-extends via memWrite. OF defined " +
+            "only for count==1 (D1 always).",
     },
   },
   {

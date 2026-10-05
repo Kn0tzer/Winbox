@@ -101,7 +101,10 @@ for (const [name, code] of [
   ['FS-segment memory ADD', [0x64, 0x48, 0x01, 0x00]],
   ['GS-segment memory ADD', [0x65, 0x48, 0x01, 0x00]],
   ['LOCK memory ADD', [0xF0, 0x48, 0x01, 0x00]],
-  ['unsupported suffix after MOV', [...movabs(0, 1n), 0x48, 0xC1, 0x20, 0x04]],
+  // NOTE: the old 'unsupported suffix after MOV' case ([...movabs, 0x48,0xC1,0x20,0x04])
+  // was removed: C1 SHL r/m,imm8 with a SIB memory operand is a supported
+  // fast-path instruction (table mem:true), so the block correctly succeeds
+  // (status 0), not fallbacks (status 2). The remaining cases cover fallback.
   ['block longer than 24 operations', Array.from({ length: 25 }, () => movabs(0, 1n)).flat()],
 ]) {
   test(`whole-block fallback rejects ${name}`, () => assert.equal(emit(code).result.status, 2));
@@ -831,7 +834,7 @@ test('fuzz 8-bit MOV vs reference (600 cases)', async () => {
 // --- Shift reference model (mirrors cpu64.cpp doShift; count pre-masked) ---
 const SHIFT_MASK = 0x8C5;
 function refShift(sub, v, count, width, rflagsIn) {
-  const mask = width === 4 ? 0xFFFFFFFFn : mask64;
+  const mask = width === 1 ? 0xFFn : width === 2 ? 0xFFFFn : width === 4 ? 0xFFFFFFFFn : mask64;
   const sb = 1n << BigInt(width * 8 - 1);
   const wbits = BigInt(width * 8);
   v &= mask;
@@ -971,7 +974,7 @@ test('mixed shift+ALU block observes shift result', async () => {
 // --- Rotate reference model (mirrors cpu64.cpp doShift sub 0..3; count pre-masked) ---
 const ROT_MASK = 0x801;
 function refRotate(sub, v, count, width, rflagsIn) {
-  const mask = width === 4 ? 0xFFFFFFFFn : mask64;
+  const mask = width === 1 ? 0xFFn : width === 2 ? 0xFFFFn : width === 4 ? 0xFFFFFFFFn : mask64;
   const sb = 1n << BigInt(width * 8 - 1);
   const wbits = BigInt(width * 8);
   const mbits = width === 4 ? 31n : 63n;
@@ -2626,6 +2629,185 @@ test('fuzz CBW/CWDE/CDQE vs reference (600 cases)', async () => {
     const tag = `fuzzCbw i=${i} size=${size}`;
     try {
       await checkCbw(enc, { regs, rflags });
+    } catch (e) {
+      e.message = `${tag}: ${e.message}`;
+      throw e;
+    }
+  }
+}, 180000);
+
+// --- D0/D1 shift/rotate by 1: targeted tests + differential fuzz ---
+// D1: 0xD1 /0../7 r/m (16/32/64-bit via prefixes); D0: 0xD0 /0../7 r/m8.
+// Both have implicit count 1. Reference models are refShift/refRotate
+// with count=1n (mirroring cpu64.cpp doShift).
+
+function encD1(sub, size, rm) {
+  // size: 1 (D0), 2 (0x66), 4 (default), 8 (REX.W). rm: 0..15 reg index.
+  // Prefix order: legacy (0x66) first, then REX, then opcode.
+  const code = [];
+  if (size === 2) code.push(0x66);
+  const rexB = rm >= 8 ? 1 : 0;
+  if (size === 8) code.push(0x48 | rexB); // REX.W (+B)
+  else if (rexB) code.push(0x40 | rexB); // REX.B without W
+  code.push(size === 1 ? 0xD0 : 0xD1);
+  code.push(0xC0 | (sub << 3) | (rm & 7));
+  return code;
+}
+
+function encD1Mem(sub, size, baseReg) {
+  // Simple [baseReg] memory form: mod=00, rm=baseReg (0..7, no REX.B for simplicity).
+  const code = [];
+  if (size === 8) code.push(0x48);
+  else if (size === 2) code.push(0x66);
+  code.push(size === 1 ? 0xD0 : 0xD1);
+  code.push((sub << 3) | (baseReg & 7)); // mod=00
+  return code;
+}
+
+test('D1 SHL r64 by 1 (implicit count)', async () => {
+  const regs = baseRegs(); regs[0] = 0x4000000000000000n;
+  const { r, flags } = refShift(4, regs[0], 1n, 8, 0x202);
+  assert.equal(flags & 0x8C5n, 0x800n | 0x80n | 0x4n, 'OF+SF+PF set');
+  const out = await runAlu(encD1(4, 8, 0), regs, 0x202);
+  expectShift(out, 0x202, flags, 3, got => assert.equal(got[0], r));
+});
+
+test('D1 SHR r32 by 1 (implicit count)', async () => {
+  const regs = baseRegs(); regs[1] = 0x80000001n;
+  const { r, flags } = refShift(5, regs[1], 1n, 4, 0x202);
+  const out = await runAlu(encD1(5, 4, 1), regs, 0x202);
+  expectShift(out, 0x202, flags, 2, got => assert.equal(got[1], r));
+});
+
+test('D1 SAR r16 by 1 sign-extends', async () => {
+  const regs = baseRegs(); regs[2] = 0x123456789ABC8000n;
+  const { r, flags } = refShift(7, regs[2] & 0xFFFFn, 1n, 2, 0x202);
+  assert.equal(r, 0xC000n);
+  const out = await runAlu(encD1(7, 2, 2), regs, 0x202);
+  expectShift(out, 0x202, flags, 3, got => {
+    // Upper 48 bits preserved.
+    assert.equal(got[2], (0x123456789ABC8000n & ~0xFFFFn) | r);
+  });
+});
+
+test('D0 SHL r8 by 1 (8-bit form)', async () => {
+  const regs = baseRegs(); regs[0] = 0x123456789ABCDE81n;
+  const { r, flags } = refShift(4, 0x81n, 1n, 1, 0x202);
+  assert.equal(r, 0x02n);
+  const out = await runAlu(encD1(4, 1, 0), regs, 0x202);
+  expectShift(out, 0x202, flags, 2, got => {
+    // Low byte updated, upper 56 preserved.
+    assert.equal(got[0], (0x123456789ABCDE81n & ~0xFFn) | r);
+  });
+});
+
+test('D1 ROL r64 by 1', async () => {
+  const regs = baseRegs(); regs[0] = 0x8000000000000000n;
+  const { r, flags } = refRotate(0, regs[0], 1n, 8, 0x202);
+  assert.equal(r, 0x0000000000000001n);
+  const out = await runAlu(encD1(0, 8, 0), regs, 0x202);
+  expectRotate(out, 0x202, flags, 3, got => assert.equal(got[0], r));
+});
+
+test('D1 ROR r64 by 1', async () => {
+  const regs = baseRegs(); regs[0] = 0x0000000000000001n;
+  const { r, flags } = refRotate(1, regs[0], 1n, 8, 0x202);
+  assert.equal(r, 0x8000000000000000n);
+  const out = await runAlu(encD1(1, 8, 0), regs, 0x202);
+  expectRotate(out, 0x202, flags, 3, got => assert.equal(got[0], r));
+});
+
+test('D1 RCL r64 by 1 threads carry', async () => {
+  const regs = baseRegs(); regs[0] = 0x8000000000000000n;
+  const { r, flags } = refRotate(2, regs[0], 1n, 8, 0x203); // CF=1 in
+  assert.equal(r, 0x0000000000000001n);
+  const out = await runAlu(encD1(2, 8, 0), regs, 0x203);
+  expectRotate(out, 0x203, flags, 3, got => assert.equal(got[0], r));
+});
+
+test('D1 RCR r64 by 1 threads carry', async () => {
+  const regs = baseRegs(); regs[0] = 0x0000000000000001n;
+  const { r, flags } = refRotate(3, regs[0], 1n, 8, 0x202); // CF=0 in
+  assert.equal(r, 0x0000000000000000n);
+  const out = await runAlu(encD1(3, 8, 0), regs, 0x202);
+  expectRotate(out, 0x202, flags, 3, got => assert.equal(got[0], r));
+});
+
+test('D1 SHL [rax] mem form writes back', async () => {
+  const regs = baseRegs(); regs[0] = ALU_SBASE;
+  const memInit = aluMemInit(ALU_SBASE, [0x81, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+  // Reference: SHL mem8 by 1: 0x81 -> 0x02, CF=1 (bit7), OF=MSB^CF=1^1=0? No: OF=MSB(result)^CF = 0^1 = 1.
+  const { r, flags } = refShift(4, 0x81n, 1n, 1, 0x202);
+  const out = await runAluMem(encD1Mem(4, 1, 0), { regs, rflags: 0x202, memInit });
+  assert.equal(out.guestMem.read(ALU_SBASE, 1), r, 'mem written');
+  assert.equal(BigInt(out.rflags) & 0x8C5n, flags & 0x8C5n, 'flags');
+});
+
+test('D1 SAR [rax] mem64 form', async () => {
+  const regs = baseRegs(); regs[0] = ALU_SBASE;
+  const memInit = aluMemInit(ALU_SBASE, [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80]);
+  const { r, flags } = refShift(7, 0x8000000000000000n, 1n, 8, 0x202);
+  const out = await runAluMem(encD1Mem(7, 8, 0), { regs, rflags: 0x202, memInit });
+  assert.equal(out.guestMem.read(ALU_SBASE, 8), r, 'mem written');
+  assert.equal(BigInt(out.rflags) & 0x8C5n, flags & 0x8C5n, 'flags');
+});
+
+test('fuzz D0/D1 shift/rotate-by-1 vs reference (600 cases)', async () => {
+  const rng = mulberry32(0xD1F1);
+  const flagSets = [0x202, 0x203, 0x8D5, 0x246, 0x202 | 0x800, 0x402, 0x0, 0xA5B5];
+  const advVals = [0n, 1n, 0x7Fn, 0x80n, 0xFFn, 0x7FFFn, 0x8000n, 0xFFFFn,
+                   0x7FFFFFFFn, 0x80000000n, 0xFFFFFFFFn,
+                   0x7FFFFFFFFFFFFFFFn, 0x8000000000000000n, 0xFFFFFFFFFFFFFFFFn];
+  for (let i = 0; i < 600; i++) {
+    const sub = Math.floor(rng() * 8);
+    const size = pick(rng, [1, 2, 4, 4, 8, 8]); // weight toward 32/64-bit
+    const isMem = rng() < 0.3; // 30% memory forms
+    const rflags = pick(rng, flagSets);
+    const tag = `fuzzD1 i=${i} sub=${sub} size=${size} mem=${isMem}`;
+    try {
+      if (!isMem) {
+        // Register-direct.
+        let rm = Math.floor(rng() * 16);
+        // 8-bit high-byte (AH/BH/CH/DH, rm 4..7 no REX): interpreter-only
+        // (classifier fallback); skip in the JIT fuzz.
+        if (size === 1 && rm >= 4 && rm <= 7) { i--; continue; }
+        const effRm = rm;
+        const code = encD1(sub, size, effRm);
+        const regs = Array.from({ length: 16 }, () => advVal(rng));
+        if (rng() < 0.5) regs[effRm & 15] = pick(rng, advVals);
+        const v = size === 1 ? regs[effRm & 15] & 0xFFn :
+                  size === 2 ? regs[effRm & 15] & 0xFFFFn :
+                  size === 4 ? regs[effRm & 15] & 0xFFFFFFFFn : regs[effRm & 15];
+        const ref = sub <= 3 ? refRotate(sub, v, 1n, size, rflags) : refShift(sub, v, 1n, size, rflags);
+        const out = await runAlu(code, regs, rflags);
+        const fmask = sub <= 3 ? 0x801 : 0x8C5;
+        assert.equal(BigInt(out.rflags) & BigInt(fmask), ref.flags & BigInt(fmask), `${tag} flags`);
+        // Check the destination register: upper bits preserved from INPUT.
+        const inReg = regs[effRm & 15];
+        const isHighByte = size === 1 && effRm >= 4 && effRm <= 7;
+        let expReg;
+        if (size === 8) expReg = ref.r;
+        else if (size === 4) expReg = ref.r & 0xFFFFFFFFn;
+        else if (size === 2) expReg = (inReg & ~0xFFFFn) | (ref.r & 0xFFFFn);
+        else if (isHighByte) expReg = (inReg & ~(0xFFn << 8n)) | ((ref.r & 0xFFn) << 8n);
+        else expReg = (inReg & ~0xFFn) | (ref.r & 0xFFn);
+        const gotReg = out.regs[effRm & 15];
+        if (gotReg !== expReg) {
+          throw new Error(`${tag} reg: rm=${effRm} inReg=${inReg.toString(16)} ref.r=${ref.r.toString(16)} got=${gotReg.toString(16)} exp=${expReg.toString(16)} rflagsIn=${rflags.toString(16)}`);
+        }
+      } else {
+        // Memory form: simple [rax] EA.
+        const code = encD1Mem(sub, size, 0);
+        const regs = baseRegs(); regs[0] = ALU_SBASE;
+        const initVal = pick(rng, advVals) & (size === 8 ? mask64 : (1n << BigInt(size * 8)) - 1n);
+        const memInit = new Map();
+        for (let b = 0; b < size; b++) memInit.set(ALU_SBASE + BigInt(b), Number((initVal >> BigInt(8 * b)) & 0xFFn));
+        const ref = sub <= 3 ? refRotate(sub, initVal, 1n, size, rflags) : refShift(sub, initVal, 1n, size, rflags);
+        const out = await runAluMem(code, { regs, rflags, memInit });
+        assert.equal(out.guestMem.read(ALU_SBASE, size), ref.r, `${tag} mem`);
+        const fmask = sub <= 3 ? 0x801 : 0x8C5;
+        assert.equal(BigInt(out.rflags) & BigInt(fmask), ref.flags & BigInt(fmask), `${tag} flags`);
+      }
     } catch (e) {
       e.message = `${tag}: ${e.message}`;
       throw e;

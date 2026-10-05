@@ -427,6 +427,8 @@ U32 jit64EmitNew(std::vector<U8>& body, const Jit64Op& op) {
         if (op.isMem) return emitAluMemGen(body, op);
         return emitAluGen(body, op);
     case J64_SHIFT_IMM:
+        if (op.isMem)
+            return op.sub <= 3 ? emitRotateMemGen(body, op) : emitShiftMemGen(body, op);
         return op.sub <= 3 ? emitRotateGen(body, op) : emitShiftGen(body, op);
     case J64_IMUL_R_RM:
         return emitImulGen(body, op);
@@ -574,7 +576,8 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             bool memMov8 = (op.kind == J64_MOV_RM_R || op.kind == J64_MOV_R_RM) &&
                            op.size == 1;
             bool memGrp3 = op.kind == J64_GRP3;
-            if ((!memAlu && !memLea && !memStack && !memMov8 && !memGrp3) || !widthOk) return false;
+            bool memShift = op.kind == J64_SHIFT_IMM;
+            if ((!memAlu && !memLea && !memStack && !memMov8 && !memGrp3 && !memShift) || !widthOk) return false;
             if (op.ea.seg != 0) return false; // FS/GS: interpreter-only
             if (op.ea.baseReg != 0xFF && op.ea.baseReg >= 16) return false;
             if (op.ea.idxReg != 0xFF && op.ea.idxReg >= 16) return false;
@@ -627,8 +630,11 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             if (op.sub > 8) return false; // sub 8 = TEST acc,imm
             break;
         case J64_SHIFT_IMM:
-            // SHL/SHR/SAR (/4,/5,/6,/7) and rotates (/0../3), 0xC1 only.
-            if (op.rmIndex >= 16 || op.sub > 7) return false;
+            // SHL/SHR/SAR (/4,/5,/6,/7) and rotates (/0../3): 0xC1 (imm8)
+            // and 0xD1 (implicit 1). Memory forms need the decoder-filled
+            // EA (C1-mem and D1-mem both fill it now).
+            if (op.sub > 7) return false;
+            if (!op.isMem && op.rmIndex >= 16) return false;
             break;
         case J64_IMUL_R_RM:
             // Two-operand IMUL r, r/m (0F AF), register-direct only.
@@ -719,7 +725,13 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             // store-back writes it (and later ops observe it). A 0xFF return
             // is the 64-bit count==0 pure no-op (32-bit count==0 still
             // zero-extends via L_R and returns the register).
-            U32 written = (op.sub <= 3) ? emitRotateGen(body, op) : emitShiftGen(body, op);
+            // Memory forms: the mem emitters store back themselves and
+            // always return 0xFF (no register writeback).
+            U32 written;
+            if (op.isMem)
+                written = (op.sub <= 3) ? emitRotateMemGen(body, op) : emitShiftMemGen(body, op);
+            else
+                written = (op.sub <= 3) ? emitRotateGen(body, op) : emitShiftGen(body, op);
             if (written != 0xFF) {
                 local(body, 0x20, L_R);
                 local(body, 0x21, written + 1);

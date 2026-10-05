@@ -5776,6 +5776,17 @@ bool CPU64::buildBlock(U64 startRip, BBlock& b) {
             U8 count = fetchByte(r + opOff + 1 + rec.mr.length);
             rec.imm = count & ((rec.size == 8) ? 0x3F : 0x1F);
             rec.len = (U8)(opOff + 1 + rec.mr.length + 1);
+        } else if (op == 0xD0 || op == 0xD1) {
+            // D0/D1: shift/rotate by implicit 1. D0 is 8-bit, D1 takes the
+            // operand size. Same sub-ops as C0/C1; no immediate byte. The
+            // BK_SHIFT_IMM execBlock/threaded handlers take the count from
+            // rec.imm, so this flows through unchanged.
+            rec.size = (op == 0xD0) ? 1 : size;
+            if (!decodeModRMRecipe(r + opOff + 1, p, 0, rec.mr)) break;
+            rec.kind = BK_SHIFT_IMM;
+            rec.sub = rec.mr.regField & 0x7;
+            rec.imm = 1;
+            rec.len = (U8)(opOff + 1 + rec.mr.length);
         } else if (op == 0x0F && fetchByte(r + opOff + 1) == 0xAF) {
             if (!decodeModRMRecipe(r + opOff + 2, p, 0, rec.mr)) break;
             rec.kind = BK_IMUL_R_RM;

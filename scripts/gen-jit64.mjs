@@ -353,6 +353,134 @@ function genShift(e) {
 }`;
 }
 
+// "shift" template, mem=true: memory-operand SHL/SHR/SAR (emitShiftMem shape).
+// EA via emitEA; fault ordering is load -> compute+flags -> store, mirroring
+// the interpreter's loadRM/doShift/storeRM. The count comes from op.imm
+// (D1: implicit 1; C1: imm8 masked at decode).
+function genShiftMem(e) {
+  return `U32 ${e.func}(Bytes& body, const Jit64Op& op) {
+    const U64 count = op.imm;
+    const U64 mask = widthMask(op.size);
+    const U64 sb = widthSB(op.size);
+    const U64 wbits = (U64)op.size * 8;
+    const U8 sub = op.sub == 6 ? 4 : op.sub; // /6 aliases SHL
+    emitEA(body, op); // L_T1 = effective address
+    // L_A = width-masked memory operand. emitMemRead faults on unmapped
+    // pages exactly like the interpreter's loadRM.
+    emitMemRead(body, L_T1, op.size); // -> L_R (zero-extended)
+    local(body, 0x20, L_R);
+    i64Const(body, mask);
+    body.push_back(0x83); // i64.and
+    local(body, 0x21, L_A);
+    if (count == 0) {
+        // Interpreter: count==0 never stores to memory (the 32-bit
+        // zero-extend on count==0 applies to registers only). Pure no-op;
+        // flags untouched.
+        return 0xFF;
+    }
+    // L_R = shift result. Same computation as the register-direct path.
+    local(body, 0x20, L_A);
+    if (sub == 4) {
+        i64Const(body, count);
+        body.push_back(0x86); // i64.shl
+    } else if (sub == 5) {
+        i64Const(body, count);
+        body.push_back(0x88); // i64.shr_u (L_A already width-masked)
+    } else { // SAR: sign-extend the width, arithmetic shift, mask.
+        emitSext(body, op.size);
+        i64Const(body, count);
+        body.push_back(0x87); // i64.shr_s
+    }
+    i64Const(body, mask);
+    body.push_back(0x83); // width-mask the result
+    local(body, 0x21, L_R);
+    // Flags: L_F accumulates the five shift flag bits (same as genShift).
+    i64Const(body, 0);
+    local(body, 0x21, L_F);
+    // CF: SHL: (v >> (wbits - count)) & 1; SHR/SAR: (v >> (count - 1)) & 1.
+    local(body, 0x20, L_A);
+    i64Const(body, sub == 4 ? wbits - count : count - 1);
+    body.push_back(0x88); // i64.shr_u
+    i64Const(body, 1);
+    body.push_back(0x83); // i64.and
+    local(body, 0x21, L_P);
+    local(body, 0x20, L_P);
+    body.push_back(0xA7); // i32.wrap_i64
+    orFlagBit(body, F_CF);
+    // OF: only defined for count == 1 (D1 always; the bit stays 0
+    // otherwise, matching the interpreter clearing OF for count > 1).
+    if (count == 1) {
+        if (sub == 4) {
+            // OF = MSB(result) XOR CF.
+            local(body, 0x20, L_R);
+            i64Const(body, sb);
+            body.push_back(0x83);
+            i64Const(body, 0);
+            body.push_back(0x52); // i64.ne -> i32
+            local(body, 0x20, L_P);
+            body.push_back(0xA7); // i32.wrap_i64
+            body.push_back(0x73); // i32.xor
+            orFlagBit(body, F_OF);
+        } else if (sub == 5) {
+            // OF = old MSB.
+            local(body, 0x20, L_A);
+            i64Const(body, sb);
+            body.push_back(0x83);
+            i64Const(body, 0);
+            body.push_back(0x52);
+            orFlagBit(body, F_OF);
+        }
+        // SAR: OF = 0, nothing to emit.
+    }
+    // ZF.
+    local(body, 0x20, L_R);
+    body.push_back(0x50); // i64.eqz
+    orFlagBit(body, F_ZF);
+    // SF.
+    local(body, 0x20, L_R);
+    i64Const(body, sb);
+    body.push_back(0x83);
+    i64Const(body, 0);
+    body.push_back(0x52);
+    orFlagBit(body, F_SF);
+    // PF: even parity of the low byte; PF = ((folded & 1) ^ 1).
+    local(body, 0x20, L_R);
+    i64Const(body, 0xFF);
+    body.push_back(0x83);
+    local(body, 0x21, L_P);
+    const U32 shifts[] = {4, 2, 1};
+    for (U32 s : shifts) {
+        local(body, 0x20, L_P);
+        local(body, 0x20, L_P);
+        i64Const(body, s);
+        body.push_back(0x88); // i64.shr_u
+        body.push_back(0x85); // i64.xor
+        local(body, 0x21, L_P);
+    }
+    local(body, 0x20, L_P);
+    i64Const(body, 1);
+    body.push_back(0x83); // & 1
+    i64Const(body, 1);
+    body.push_back(0x85); // ^ 1
+    body.push_back(0xA7); // i32.wrap_i64
+    orFlagBit(body, F_PF);
+    // rflags = (rflags & ~SHIFT_MASK) | (i32)L_F; AF and the rest preserved.
+    local(body, 0x20, L_RFLAGS);
+    i32Const(body, F_SHIFT_MASK);
+    body.push_back(0x72); // i32.or
+    i32Const(body, F_SHIFT_MASK);
+    body.push_back(0x73); // i32.xor
+    local(body, 0x20, L_F);
+    body.push_back(0xA7); // i32.wrap_i64
+    body.push_back(0x72); // i32.or
+    local(body, 0x21, L_RFLAGS);
+    // Store back to memory (faults on unmapped, like the interpreter's
+    // storeRM). No register writeback.
+    emitMemWrite(body, L_T1, L_R, op.size);
+    return 0xFF;
+}`;
+}
+
 // "rotate" template: register-direct ROL/ROR/RCL/RCR (emitRotate shape).
 function genRotate(e) {
   return `U32 ${e.func}(Bytes& body, const Jit64Op& op) {
@@ -528,6 +656,189 @@ function genRotate(e) {
     if (op.size == 1) { emitWriteByte(body, op, destReg, L_R); return 0xFF; }
     if (op.size == 2) { emitWriteWord(body, destReg, L_R); return 0xFF; }
     return destReg;
+}`;
+}
+
+// "rotate" template, mem=true: memory-operand ROL/ROR/RCL/RCR
+// (emitRotateMem shape). EA via emitEA; fault ordering is load ->
+// compute+flags -> store, mirroring the interpreter's loadRM/doShift/
+// storeRM. The count comes from op.imm (D1: implicit 1; C1: imm8 masked
+// at decode).
+function genRotateMem(e) {
+  return `U32 ${e.func}(Bytes& body, const Jit64Op& op) {
+    const U64 count = op.imm;
+    const U64 mask = widthMask(op.size);
+    const U64 sb = widthSB(op.size);
+    const U64 wbits = (U64)op.size * 8;
+    const U8 sub = op.sub; // 0=ROL, 1=ROR, 2=RCL, 3=RCR
+    emitEA(body, op); // L_T1 = effective address
+    // L_A = width-masked memory operand. emitMemRead faults on unmapped
+    // pages exactly like the interpreter's loadRM.
+    emitMemRead(body, L_T1, op.size); // -> L_R (zero-extended)
+    local(body, 0x20, L_R);
+    i64Const(body, mask);
+    body.push_back(0x83); // i64.and
+    local(body, 0x21, L_A);
+    if (count == 0) {
+        // Interpreter: count==0 never stores to memory (the 32-bit
+        // zero-extend on count==0 applies to registers only). Pure no-op;
+        // flags untouched.
+        return 0xFF;
+    }
+    if (sub == 0 || sub == 1) {
+        // ROL/ROR: single rotate; c == count here (count already masked).
+        const U64 c = count % wbits;
+        local(body, 0x20, L_A);
+        if (sub == 0) { // ROL: (v << c) | (v >> (wbits - c))
+            i64Const(body, c);
+            body.push_back(0x86); // i64.shl
+            local(body, 0x20, L_A);
+            i64Const(body, wbits - c);
+            body.push_back(0x88); // i64.shr_u
+        } else { // ROR: (v >> c) | (v << (wbits - c))
+            i64Const(body, c);
+            body.push_back(0x88); // i64.shr_u
+            local(body, 0x20, L_A);
+            i64Const(body, wbits - c);
+            body.push_back(0x86); // i64.shl
+        }
+        body.push_back(0x84); // i64.or
+        i64Const(body, mask);
+        body.push_back(0x83); // width-mask
+        local(body, 0x21, L_R);
+        // CF: ROL: result & 1; ROR: (result & sb) != 0. Stash as i64 0/1 in L_P.
+        local(body, 0x20, L_R);
+        if (sub == 0) {
+            i64Const(body, 1);
+            body.push_back(0x83); // i64.and -> 0/1
+        } else {
+            i64Const(body, sb);
+            body.push_back(0x83);
+            i64Const(body, 0);
+            body.push_back(0x52); // i64.ne -> i32
+            body.push_back(0xAD); // i64.extend_i32_u
+        }
+        local(body, 0x21, L_P);
+    } else {
+        // RCL/RCR: rotate through carry, count iterations. The loop threads
+        // the carry in L_P (incoming CF first) and the counter in L_B; L_R
+        // holds the running result. L_A is free after the L_R init below.
+        local(body, 0x20, L_RFLAGS);
+        i32Const(body, 1);
+        body.push_back(0x71); // i32.and -> incoming CF as 0/1
+        body.push_back(0xAD); // i64.extend_i32_u
+        local(body, 0x21, L_P);
+        local(body, 0x20, L_A);
+        local(body, 0x21, L_R);
+        i64Const(body, count);
+        local(body, 0x21, L_B);
+        body.push_back(0x02); body.push_back(0x40); // block $done
+        body.push_back(0x03); body.push_back(0x40); // loop $l
+        local(body, 0x20, L_B);
+        body.push_back(0x50); // i64.eqz
+        body.push_back(0x0D); body.push_back(0x01); // br_if 1 ($done)
+        if (sub == 2) { // RCL
+            // newCf = (L_R & sb) != 0, stashed in L_A as i64 0/1.
+            local(body, 0x20, L_R);
+            i64Const(body, sb);
+            body.push_back(0x83);
+            i64Const(body, 0);
+            body.push_back(0x52); // i64.ne
+            body.push_back(0xAD); // i64.extend_i32_u
+            local(body, 0x21, L_A);
+            // L_R = ((L_R << 1) | L_P) & mask.
+            local(body, 0x20, L_R);
+            i64Const(body, 1);
+            body.push_back(0x86); // i64.shl
+            local(body, 0x20, L_P);
+            body.push_back(0x84); // i64.or
+            i64Const(body, mask);
+            body.push_back(0x83); // width-mask
+            local(body, 0x21, L_R);
+            // Carry = newCf.
+            local(body, 0x20, L_A);
+            local(body, 0x21, L_P);
+        } else { // RCR
+            // newCf = L_R & 1, stashed in L_A.
+            local(body, 0x20, L_R);
+            i64Const(body, 1);
+            body.push_back(0x83);
+            local(body, 0x21, L_A);
+            // L_R = (L_R >>u 1) | (L_P * sb); & mask for 32-bit.
+            local(body, 0x20, L_R);
+            i64Const(body, 1);
+            body.push_back(0x88); // i64.shr_u
+            local(body, 0x20, L_P);
+            i64Const(body, sb);
+            body.push_back(0x7E); // i64.mul: 0 or sb
+            body.push_back(0x84); // i64.or
+            i64Const(body, mask);
+            body.push_back(0x83); // width-mask
+            local(body, 0x21, L_R);
+            local(body, 0x20, L_A);
+            local(body, 0x21, L_P);
+        }
+        local(body, 0x20, L_B);
+        i64Const(body, 1);
+        body.push_back(0x7D); // i64.sub
+        local(body, 0x21, L_B);
+        body.push_back(0x0C); body.push_back(0x00); // br 0 ($l)
+        body.push_back(0x0B); // end loop
+        body.push_back(0x0B); // end block
+    }
+    // Flags: L_F accumulates CF and OF only (same as genRotate).
+    i64Const(body, 0);
+    local(body, 0x21, L_F);
+    local(body, 0x20, L_P);
+    body.push_back(0xA7); // i32.wrap_i64
+    orFlagBit(body, F_CF);
+    // OF: only defined for count == 1 (D1 always; stays 0 otherwise,
+    // matching the interpreter clearing OF for count > 1).
+    if (count == 1) {
+        if (sub == 0 || sub == 2) {
+            // OF = MSB(result) XOR CF.
+            local(body, 0x20, L_R);
+            i64Const(body, sb);
+            body.push_back(0x83);
+            i64Const(body, 0);
+            body.push_back(0x52); // i64.ne -> i32
+            local(body, 0x20, L_P);
+            body.push_back(0xA7); // i32.wrap_i64
+            body.push_back(0x73); // i32.xor
+            orFlagBit(body, F_OF);
+        } else {
+            // OF = MSB(result) XOR MSB(result<<1).
+            local(body, 0x20, L_R);
+            i64Const(body, sb);
+            body.push_back(0x83);
+            i64Const(body, 0);
+            body.push_back(0x52); // i64.ne -> i32
+            local(body, 0x20, L_R);
+            i64Const(body, 1);
+            body.push_back(0x86); // i64.shl
+            i64Const(body, sb);
+            body.push_back(0x83);
+            i64Const(body, 0);
+            body.push_back(0x52); // i64.ne -> i32
+            body.push_back(0x73); // i32.xor
+            orFlagBit(body, F_OF);
+        }
+    }
+    // rflags = (rflags & ~mask) | (i32)L_F; SZP/AF and the rest preserved.
+    U32 rotMask = (count == 1) ? F_CFOF_MASK : (1u << F_CF);
+    local(body, 0x20, L_RFLAGS);
+    i32Const(body, rotMask);
+    body.push_back(0x72); // i32.or
+    i32Const(body, rotMask);
+    body.push_back(0x73); // i32.xor
+    local(body, 0x20, L_F);
+    body.push_back(0xA7); // i32.wrap_i64
+    body.push_back(0x72); // i32.or
+    local(body, 0x21, L_RFLAGS);
+    // Store back to memory (faults on unmapped, like the interpreter's
+    // storeRM). No register writeback.
+    emitMemWrite(body, L_T1, L_R, op.size);
+    return 0xFF;
 }`;
 }
 
@@ -1573,7 +1884,7 @@ function genCbw(e) {
 }`;
 }
 
-const TEMPLATES = { alu: (e) => (e.mem ? genAluMem(e) : genAlu(e)), shift: genShift, rotate: genRotate, imul2: genImul2, imul1: genImul1, imul3: genImul3, movx: genMovx, string: genString, lea: genLea, stack: genStack, mov8: genMov8, grp3: genGrp3, cbw: genCbw };
+const TEMPLATES = { alu: (e) => (e.mem ? genAluMem(e) : genAlu(e)), shift: (e) => (e.mem ? genShiftMem(e) : genShift(e)), rotate: (e) => (e.mem ? genRotateMem(e) : genRotate(e)), imul2: genImul2, imul1: genImul1, imul3: genImul3, movx: genMovx, string: genString, lea: genLea, stack: genStack, mov8: genMov8, grp3: genGrp3, cbw: genCbw };
 
 function generate() {
   const out = [];

@@ -35,7 +35,7 @@ static Jit64Op dec(U64 base, std::vector<U8> b) {
 static void testCoverageTable() {
     U32 n = 0;
     const Jit64CoveredOpcode* t = jit64CoveredOpcodes(&n);
-    CHECK(n == 24, "coverage table has %u entries, want 24", n);
+    CHECK(n == 25, "coverage table has %u entries, want 25", n);
     CHECK(t != nullptr, "coverage table null");
     // Spot-check rank order matches the profile.
     CHECK(t[0].op == 0x89, "rank1 op=0x%02x want 0x89", t[0].op);
@@ -698,12 +698,12 @@ static void testShiftEmission() {
     // Count 0 is a no-op but still accepted (emits prologue/epilogue only).
     CHECK(emitOk({0x48, 0xC1, 0xE0, 0x00}), "shl rax,0 rejected");
     // Rotates (ROL/ROR/RCL/RCR, sub 0..3): accepted (see testRotateEmission).
-    // Memory shift: rejected.
-    CHECK(!emitOk({0x48, 0xC1, 0x20, 0x04}), "shl [rax],4 accepted");
+    // Memory shift: accepted (D1 round added mem emitters; C1-mem uses them too).
+    CHECK(emitOk({0x48, 0xC1, 0x20, 0x04}), "shl [rax],4 rejected");
     // Shift mixed with ALU in one block: accepted.
     CHECK(emitOk({0x48, 0xC1, 0xE0, 0x04, 0x48, 0x01, 0xC8}), "shl+add block rejected");
-    // Memory rotate still poisons the whole block.
-    CHECK(!emitOk({0x48, 0xC1, 0xE0, 0x04, 0x48, 0xC1, 0x20, 0x04}), "shl+ror-mem block accepted");
+    // Memory shift no longer poisons the block (mem emitters added).
+    CHECK(emitOk({0x48, 0xC1, 0xE0, 0x04, 0x48, 0xC1, 0x20, 0x04}), "shl+ror-mem block rejected");
 }
 
 static void testRotateEmission() {
@@ -715,8 +715,8 @@ static void testRotateEmission() {
     CHECK(emitOk({0x48, 0xC1, 0xD8, 0x3F}), "rcr rax,63 rejected");
     // Count 0 accepted (no-op with 32-bit zero-extend semantics).
     CHECK(emitOk({0x48, 0xC1, 0xC0, 0x00}), "rol rax,0 rejected");
-    // Memory rotate: rejected.
-    CHECK(!emitOk({0x48, 0xC1, 0x00, 0x04}), "rol [rax],4 accepted");
+    // Memory rotate: accepted (D1 round added mem emitters).
+    CHECK(emitOk({0x48, 0xC1, 0x00, 0x04}), "rol [rax],4 rejected");
     // Rotate mixed with ALU in one block: accepted.
     CHECK(emitOk({0x48, 0xC1, 0xC0, 0x04, 0x48, 0x01, 0xC8}), "rol+add block rejected");
 }
