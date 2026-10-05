@@ -3001,12 +3001,18 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkCreatePipelineLayout: {
         VkPipelineLayoutCreateInfo ci = {};
-        if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        klog_fmt("vk64: vkCreatePipelineLayout trap reached (real wrapper, not benign)");
+        if (!readStruct(args.a[1], ci) || !args.a[3]) {
+            klog_fmt("vk64: vkCreatePipelineLayout FAILED: readOk=%d outNull=%d",
+                     (int)(readStruct(args.a[1], ci)), (int)(!args.a[3]));
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
         U64 id = 0;
         PipelineLayout* l = createObj<PipelineLayout>(K_PIPELAYOUT, id);
         l->nsets = ci.setLayoutCount > VK64_MAX_SETS ? VK64_MAX_SETS : ci.setLayoutCount;
         for (U32 i = 0; i < l->nsets; i++) l->sets[i] = rd64(ci.pSetLayouts + (U64)i * 8);
         wr64(args.a[3], id);
+        klog_fmt("vk64: vkCreatePipelineLayout OK: id=%llu nsets=%u", (unsigned long long)id, (unsigned)l->nsets);
         return VK_SUCCESS;
     }
     case VK64_fn_vkCreateDescriptorSetLayout: {
