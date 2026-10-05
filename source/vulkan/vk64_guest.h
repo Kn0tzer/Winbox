@@ -6529,6 +6529,24 @@ typedef struct VkRenderPassBeginInfo {
     uint64_t pClearValues;
 } VkRenderPassBeginInfo;
 
+typedef struct VkPhysicalDeviceSubgroupProperties {
+    VkStructureType           sType;
+    uint64_t pNext;
+    uint32_t                  subgroupSize;
+    VkShaderStageFlags        supportedStages;
+    VkSubgroupFeatureFlags    supportedOperations;
+    VkBool32                  quadOperationsInAllStages;
+} VkPhysicalDeviceSubgroupProperties;
+
+typedef struct VkPhysicalDevice16BitStorageFeatures {
+    VkStructureType    sType;
+    uint64_t pNext;
+    VkBool32           storageBuffer16BitAccess;
+    VkBool32           uniformAndStorageBuffer16BitAccess;
+    VkBool32           storagePushConstant16;
+    VkBool32           storageInputOutput16;
+} VkPhysicalDevice16BitStorageFeatures;
+
 typedef struct VkMemoryDedicatedAllocateInfo {
     VkStructureType    sType;
     uint64_t pNext;
@@ -6589,6 +6607,16 @@ typedef struct VkPhysicalDeviceMemoryProperties2 {
     VkPhysicalDeviceMemoryProperties    memoryProperties;
 } VkPhysicalDeviceMemoryProperties2;
 
+typedef struct VkPhysicalDeviceIDProperties {
+    VkStructureType    sType;
+    uint64_t pNext;
+    uint8_t            deviceUUID[VK_UUID_SIZE];
+    uint8_t            driverUUID[VK_UUID_SIZE];
+    uint8_t            deviceLUID[VK_LUID_SIZE];
+    uint32_t           deviceNodeMask;
+    VkBool32           deviceLUIDValid;
+} VkPhysicalDeviceIDProperties;
+
 typedef struct VkPhysicalDeviceVulkan11Features {
     VkStructureType    sType;
     uint64_t pNext;
@@ -6605,6 +6633,26 @@ typedef struct VkPhysicalDeviceVulkan11Features {
     VkBool32           samplerYcbcrConversion;
     VkBool32           shaderDrawParameters;
 } VkPhysicalDeviceVulkan11Features;
+
+typedef struct VkPhysicalDeviceVulkan11Properties {
+    VkStructureType            sType;
+    uint64_t pNext;
+    uint8_t                    deviceUUID[VK_UUID_SIZE];
+    uint8_t                    driverUUID[VK_UUID_SIZE];
+    uint8_t                    deviceLUID[VK_LUID_SIZE];
+    uint32_t                   deviceNodeMask;
+    VkBool32                   deviceLUIDValid;
+    uint32_t                   subgroupSize;
+    VkShaderStageFlags         subgroupSupportedStages;
+    VkSubgroupFeatureFlags     subgroupSupportedOperations;
+    VkBool32                   subgroupQuadOperationsInAllStages;
+    VkPointClippingBehavior    pointClippingBehavior;
+    uint32_t                   maxMultiviewViewCount;
+    uint32_t                   maxMultiviewInstanceIndex;
+    VkBool32                   protectedNoFault;
+    uint32_t                   maxPerSetDescriptors;
+    VkDeviceSize               maxMemoryAllocationSize;
+} VkPhysicalDeviceVulkan11Properties;
 
 typedef struct VkPhysicalDeviceVulkan12Features {
     VkStructureType    sType;
@@ -6658,6 +6706,70 @@ typedef struct VkPhysicalDeviceVulkan12Features {
     VkBool32           subgroupBroadcastDynamicId;
 } VkPhysicalDeviceVulkan12Features;
 
+typedef struct VkConformanceVersion {
+    uint8_t    major;
+    uint8_t    minor;
+    uint8_t    subminor;
+    uint8_t    patch;
+} VkConformanceVersion;
+
+typedef struct VkPhysicalDeviceVulkan12Properties {
+    VkStructureType                      sType;
+    uint64_t pNext;
+    VkDriverId                           driverID;
+    char                                 driverName[VK_MAX_DRIVER_NAME_SIZE];
+    char                                 driverInfo[VK_MAX_DRIVER_INFO_SIZE];
+    VkConformanceVersion                 conformanceVersion;
+    VkShaderFloatControlsIndependence    denormBehaviorIndependence;
+    VkShaderFloatControlsIndependence    roundingModeIndependence;
+    VkBool32                             shaderSignedZeroInfNanPreserveFloat16;
+    VkBool32                             shaderSignedZeroInfNanPreserveFloat32;
+    VkBool32                             shaderSignedZeroInfNanPreserveFloat64;
+    VkBool32                             shaderDenormPreserveFloat16;
+    VkBool32                             shaderDenormPreserveFloat32;
+    VkBool32                             shaderDenormPreserveFloat64;
+    VkBool32                             shaderDenormFlushToZeroFloat16;
+    VkBool32                             shaderDenormFlushToZeroFloat32;
+    VkBool32                             shaderDenormFlushToZeroFloat64;
+    VkBool32                             shaderRoundingModeRTEFloat16;
+    VkBool32                             shaderRoundingModeRTEFloat32;
+    VkBool32                             shaderRoundingModeRTEFloat64;
+    VkBool32                             shaderRoundingModeRTZFloat16;
+    VkBool32                             shaderRoundingModeRTZFloat32;
+    VkBool32                             shaderRoundingModeRTZFloat64;
+    uint32_t                             maxUpdateAfterBindDescriptorsInAllPools;
+    VkBool32                             shaderUniformBufferArrayNonUniformIndexingNative;
+    VkBool32                             shaderSampledImageArrayNonUniformIndexingNative;
+    VkBool32                             shaderStorageBufferArrayNonUniformIndexingNative;
+    VkBool32                             shaderStorageImageArrayNonUniformIndexingNative;
+    VkBool32                             shaderInputAttachmentArrayNonUniformIndexingNative;
+    VkBool32                             robustBufferAccessUpdateAfterBind;
+    VkBool32                             quadDivergentImplicitLod;
+    uint32_t                             maxPerStageDescriptorUpdateAfterBindSamplers;
+    uint32_t                             maxPerStageDescriptorUpdateAfterBindUniformBuffers;
+    uint32_t                             maxPerStageDescriptorUpdateAfterBindStorageBuffers;
+    uint32_t                             maxPerStageDescriptorUpdateAfterBindSampledImages;
+    uint32_t                             maxPerStageDescriptorUpdateAfterBindStorageImages;
+    uint32_t                             maxPerStageDescriptorUpdateAfterBindInputAttachments;
+    uint32_t                             maxPerStageUpdateAfterBindResources;
+    uint32_t                             maxDescriptorSetUpdateAfterBindSamplers;
+    uint32_t                             maxDescriptorSetUpdateAfterBindUniformBuffers;
+    uint32_t                             maxDescriptorSetUpdateAfterBindUniformBuffersDynamic;
+    uint32_t                             maxDescriptorSetUpdateAfterBindStorageBuffers;
+    uint32_t                             maxDescriptorSetUpdateAfterBindStorageBuffersDynamic;
+    uint32_t                             maxDescriptorSetUpdateAfterBindSampledImages;
+    uint32_t                             maxDescriptorSetUpdateAfterBindStorageImages;
+    uint32_t                             maxDescriptorSetUpdateAfterBindInputAttachments;
+    VkResolveModeFlags                   supportedDepthResolveModes;
+    VkResolveModeFlags                   supportedStencilResolveModes;
+    VkBool32                             independentResolveNone;
+    VkBool32                             independentResolve;
+    VkBool32                             filterMinmaxSingleComponentFormats;
+    VkBool32                             filterMinmaxImageComponentMapping;
+    uint64_t                             maxTimelineSemaphoreValueDifference;
+    VkSampleCountFlags                   framebufferIntegerColorSampleCounts;
+} VkPhysicalDeviceVulkan12Properties;
+
 typedef struct VkRenderPassCreateInfo2 {
     VkStructureType                    sType;
     uint64_t pNext;
@@ -6671,6 +6783,112 @@ typedef struct VkRenderPassCreateInfo2 {
     uint32_t                           correlatedViewMaskCount;
     uint64_t pCorrelatedViewMasks;
 } VkRenderPassCreateInfo2;
+
+typedef struct VkPhysicalDevice8BitStorageFeatures {
+    VkStructureType    sType;
+    uint64_t pNext;
+    VkBool32           storageBuffer8BitAccess;
+    VkBool32           uniformAndStorageBuffer8BitAccess;
+    VkBool32           storagePushConstant8;
+} VkPhysicalDevice8BitStorageFeatures;
+
+typedef struct VkPhysicalDeviceShaderFloat16Int8Features {
+    VkStructureType    sType;
+    uint64_t pNext;
+    VkBool32           shaderFloat16;
+    VkBool32           shaderInt8;
+} VkPhysicalDeviceShaderFloat16Int8Features;
+
+typedef struct VkPhysicalDeviceDescriptorIndexingFeatures {
+    VkStructureType    sType;
+    uint64_t pNext;
+    VkBool32           shaderInputAttachmentArrayDynamicIndexing;
+    VkBool32           shaderUniformTexelBufferArrayDynamicIndexing;
+    VkBool32           shaderStorageTexelBufferArrayDynamicIndexing;
+    VkBool32           shaderUniformBufferArrayNonUniformIndexing;
+    VkBool32           shaderSampledImageArrayNonUniformIndexing;
+    VkBool32           shaderStorageBufferArrayNonUniformIndexing;
+    VkBool32           shaderStorageImageArrayNonUniformIndexing;
+    VkBool32           shaderInputAttachmentArrayNonUniformIndexing;
+    VkBool32           shaderUniformTexelBufferArrayNonUniformIndexing;
+    VkBool32           shaderStorageTexelBufferArrayNonUniformIndexing;
+    VkBool32           descriptorBindingUniformBufferUpdateAfterBind;
+    VkBool32           descriptorBindingSampledImageUpdateAfterBind;
+    VkBool32           descriptorBindingStorageImageUpdateAfterBind;
+    VkBool32           descriptorBindingStorageBufferUpdateAfterBind;
+    VkBool32           descriptorBindingUniformTexelBufferUpdateAfterBind;
+    VkBool32           descriptorBindingStorageTexelBufferUpdateAfterBind;
+    VkBool32           descriptorBindingUpdateUnusedWhilePending;
+    VkBool32           descriptorBindingPartiallyBound;
+    VkBool32           descriptorBindingVariableDescriptorCount;
+    VkBool32           runtimeDescriptorArray;
+} VkPhysicalDeviceDescriptorIndexingFeatures;
+
+typedef struct VkPhysicalDeviceDescriptorIndexingProperties {
+    VkStructureType    sType;
+    uint64_t pNext;
+    uint32_t           maxUpdateAfterBindDescriptorsInAllPools;
+    VkBool32           shaderUniformBufferArrayNonUniformIndexingNative;
+    VkBool32           shaderSampledImageArrayNonUniformIndexingNative;
+    VkBool32           shaderStorageBufferArrayNonUniformIndexingNative;
+    VkBool32           shaderStorageImageArrayNonUniformIndexingNative;
+    VkBool32           shaderInputAttachmentArrayNonUniformIndexingNative;
+    VkBool32           robustBufferAccessUpdateAfterBind;
+    VkBool32           quadDivergentImplicitLod;
+    uint32_t           maxPerStageDescriptorUpdateAfterBindSamplers;
+    uint32_t           maxPerStageDescriptorUpdateAfterBindUniformBuffers;
+    uint32_t           maxPerStageDescriptorUpdateAfterBindStorageBuffers;
+    uint32_t           maxPerStageDescriptorUpdateAfterBindSampledImages;
+    uint32_t           maxPerStageDescriptorUpdateAfterBindStorageImages;
+    uint32_t           maxPerStageDescriptorUpdateAfterBindInputAttachments;
+    uint32_t           maxPerStageUpdateAfterBindResources;
+    uint32_t           maxDescriptorSetUpdateAfterBindSamplers;
+    uint32_t           maxDescriptorSetUpdateAfterBindUniformBuffers;
+    uint32_t           maxDescriptorSetUpdateAfterBindUniformBuffersDynamic;
+    uint32_t           maxDescriptorSetUpdateAfterBindStorageBuffers;
+    uint32_t           maxDescriptorSetUpdateAfterBindStorageBuffersDynamic;
+    uint32_t           maxDescriptorSetUpdateAfterBindSampledImages;
+    uint32_t           maxDescriptorSetUpdateAfterBindStorageImages;
+    uint32_t           maxDescriptorSetUpdateAfterBindInputAttachments;
+} VkPhysicalDeviceDescriptorIndexingProperties;
+
+typedef struct VkPhysicalDeviceScalarBlockLayoutFeatures {
+    VkStructureType    sType;
+    uint64_t pNext;
+    VkBool32           scalarBlockLayout;
+} VkPhysicalDeviceScalarBlockLayoutFeatures;
+
+typedef struct VkSemaphoreTypeCreateInfo {
+    VkStructureType    sType;
+    uint64_t pNext;
+    VkSemaphoreType    semaphoreType;
+    uint64_t           initialValue;
+} VkSemaphoreTypeCreateInfo;
+
+typedef struct VkTimelineSemaphoreSubmitInfo {
+    VkStructureType    sType;
+    uint64_t pNext;
+    uint32_t           waitSemaphoreValueCount;
+    uint64_t pWaitSemaphoreValues;
+    uint32_t           signalSemaphoreValueCount;
+    uint64_t pSignalSemaphoreValues;
+} VkTimelineSemaphoreSubmitInfo;
+
+typedef struct VkSemaphoreWaitInfo {
+    VkStructureType         sType;
+    uint64_t pNext;
+    VkSemaphoreWaitFlags    flags;
+    uint32_t                semaphoreCount;
+    uint64_t pSemaphores;
+    uint64_t pValues;
+} VkSemaphoreWaitInfo;
+
+typedef struct VkSemaphoreSignalInfo {
+    VkStructureType    sType;
+    uint64_t pNext;
+    VkSemaphore        semaphore;
+    uint64_t           value;
+} VkSemaphoreSignalInfo;
 
 typedef struct VkPhysicalDeviceVulkan13Features {
     VkStructureType    sType;
@@ -6691,6 +6909,13 @@ typedef struct VkPhysicalDeviceVulkan13Features {
     VkBool32           shaderIntegerDotProduct;
     VkBool32           maintenance4;
 } VkPhysicalDeviceVulkan13Features;
+
+typedef struct VkWriteDescriptorSetInlineUniformBlock {
+    VkStructureType    sType;
+    uint64_t pNext;
+    uint32_t           dataSize;
+    uint64_t pData;
+} VkWriteDescriptorSetInlineUniformBlock;
 
 typedef struct VkPhysicalDeviceVulkan14Features {
     VkStructureType    sType;
@@ -6717,6 +6942,29 @@ typedef struct VkPhysicalDeviceVulkan14Features {
     VkBool32           hostImageCopy;
     VkBool32           pushDescriptor;
 } VkPhysicalDeviceVulkan14Features;
+
+typedef struct VkPhysicalDeviceMaintenance5Features {
+    VkStructureType    sType;
+    uint64_t pNext;
+    VkBool32           maintenance5;
+} VkPhysicalDeviceMaintenance5Features;
+
+typedef struct VkPhysicalDeviceMaintenance5Properties {
+    VkStructureType    sType;
+    uint64_t pNext;
+    VkBool32           earlyFragmentMultisampleCoverageAfterSampleCounting;
+    VkBool32           earlyFragmentSampleMaskTestBeforeSampleCounting;
+    VkBool32           depthStencilSwizzleOneSupport;
+    VkBool32           polygonModePointSize;
+    VkBool32           nonStrictSinglePixelWideLinesUseParallelogram;
+    VkBool32           nonStrictWideLinesUseParallelogram;
+} VkPhysicalDeviceMaintenance5Properties;
+
+typedef struct VkPhysicalDeviceMaintenance6Features {
+    VkStructureType    sType;
+    uint64_t pNext;
+    VkBool32           maintenance6;
+} VkPhysicalDeviceMaintenance6Features;
 
 typedef struct VkSurfaceCapabilitiesKHR {
     uint32_t                         minImageCount;
@@ -6785,6 +7033,42 @@ typedef struct VkSurfaceFormat2KHR {
     uint64_t pNext;
     VkSurfaceFormatKHR    surfaceFormat;
 } VkSurfaceFormat2KHR;
+
+typedef struct VkPhysicalDeviceTransformFeedbackFeaturesEXT {
+    VkStructureType    sType;
+    uint64_t pNext;
+    VkBool32           transformFeedback;
+    VkBool32           geometryStreams;
+} VkPhysicalDeviceTransformFeedbackFeaturesEXT;
+
+typedef struct VkPhysicalDeviceTransformFeedbackPropertiesEXT {
+    VkStructureType    sType;
+    uint64_t pNext;
+    uint32_t           maxTransformFeedbackStreams;
+    uint32_t           maxTransformFeedbackBuffers;
+    VkDeviceSize       maxTransformFeedbackBufferSize;
+    uint32_t           maxTransformFeedbackStreamDataSize;
+    uint32_t           maxTransformFeedbackBufferDataSize;
+    uint32_t           maxTransformFeedbackBufferDataStride;
+    VkBool32           transformFeedbackQueries;
+    VkBool32           transformFeedbackStreamsLinesTriangles;
+    VkBool32           transformFeedbackRasterizationStreamSelect;
+    VkBool32           transformFeedbackDraw;
+} VkPhysicalDeviceTransformFeedbackPropertiesEXT;
+
+typedef struct VkPhysicalDeviceDepthClipEnableFeaturesEXT {
+    VkStructureType    sType;
+    uint64_t pNext;
+    VkBool32           depthClipEnable;
+} VkPhysicalDeviceDepthClipEnableFeaturesEXT;
+
+typedef struct VkPhysicalDeviceRobustness2FeaturesEXT {
+    VkStructureType    sType;
+    uint64_t pNext;
+    VkBool32           robustBufferAccess2;
+    VkBool32           robustImageAccess2;
+    VkBool32           nullDescriptor;
+} VkPhysicalDeviceRobustness2FeaturesEXT;
 
 // --- layout guards: any drift in the source header breaks the boundary ---
 static_assert(sizeof(VkPhysicalDeviceProperties) == 824, "VkPhysicalDeviceProperties layout drifted from x86-64 guest ABI");

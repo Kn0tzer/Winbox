@@ -219,6 +219,19 @@ enum {
     VK64_fn_vkQueueWaitIdle,                         // (queue)
     VK64_fn_vkCreateHeadlessSurfaceEXT,              // (instance, pCreateInfo*, pAllocator, out VkSurfaceKHR*)
 
+    // --- P2-NOW block (audit items 1-6). Also NOT part of the 85, but these are
+    // --- the calls a DXVK-on-wine workload cannot get past without: the Win32
+    // --- surface path (d3d11.dll -> vulkan-1.dll -> winevulkan -> this shim
+    // --- creates a Win32 surface, never a headless one), the timeline-semaphore
+    // --- quartet (DXVK puts a u64 wait/signal fence on EVERY command-list flush,
+    // --- dxvk_context.cpp), and vkCmdPushConstants (DXVK pushes constants
+    // --- per-draw for essentially everything).
+    VK64_fn_vkCreateWin32SurfaceKHR,                 // (instance, pCreateInfo*, pAllocator, out VkSurfaceKHR*)
+    VK64_fn_vkGetSemaphoreCounterValue,              // (device, semaphore, out u64*)
+    VK64_fn_vkWaitSemaphores,                        // (device, pWaitInfo*, timeout)
+    VK64_fn_vkSignalSemaphore,                       // (device, pSignalInfo*)
+    VK64_fn_vkCmdPushConstants,                      // (cmdBuf, layout, stageFlags, offset, size, pValues)
+
     VK64_fn__MAX
 };
 

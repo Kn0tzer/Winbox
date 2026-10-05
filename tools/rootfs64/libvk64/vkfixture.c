@@ -80,6 +80,35 @@
 static int g_steps = 0;
 static void step(const char* what) { printf("vkfix: ok  %s\n", what); g_steps++; fflush(stdout); }
 
+/* A FAIL inside the DXVK-shaped probe must end the run the same way every other
+ * failure does (RESULT 1), so the gate cannot read a green run that skipped it. */
+#define PROBE_FAIL(...) do {                                                  \
+        printf("vkfix: FAIL dxvk-probe: ");                                  \
+        printf(__VA_ARGS__);                                                 \
+        printf("\n");                                                        \
+        printf("vkfix: RESULT 1\n");                                         \
+        fflush(stdout);                                                      \
+        return 1;                                                            \
+    } while (0)
+#define NEED(cond, ...) do { if (!(cond)) PROBE_FAIL(__VA_ARGS__); } while (0)
+
+/* The in-tree vk/ headers carry no platform-surface declarations (there is no
+ * vulkan_win32.h in the tree), exactly as the bridge's own comment says. So the
+ * Win32 create-info is declared here in guest layout — sType u32, pad, pNext,
+ * flags, hwnd — for the probe to pass a realistic pointer. The host mints an id
+ * without reading it, and NOT reading it is what makes the boundary free of any
+ * platform header. The sType value comes from the real header, not by hand. */
+typedef struct VkWin32SurfaceCreateInfoKHR_local {
+    VkStructureType sType;
+    const void* pNext;
+    VkFlags flags;
+    void* hwnd;
+} VkWin32SurfaceCreateInfoKHR_local;
+/* Likewise PFN_vkCreateWin32SurfaceKHR lives in the platform header, so the probe
+ * declares the one function-pointer type it needs. */
+typedef VkResult (VKAPI_PTR *PFN_vkCreateWin32SurfaceKHR)(
+    VkInstance, const VkWin32SurfaceCreateInfoKHR_local*, const VkAllocationCallbacks*, VkSurfaceKHR*);
+
 /* Every entry point is resolved through vkGetInstanceProcAddr, exactly like a
  * loader-shaped caller (vkcube does the same). Declarations first, then R() only
  * ASSIGNS, so resolving the same entry point twice (teardown re-resolves several)
@@ -110,6 +139,7 @@ static PFN_vkCmdCopyBufferToImage pCmdCopyBufferToImage;
 static PFN_vkCmdDraw pCmdDraw;
 static PFN_vkCmdEndRenderPass pCmdEndRenderPass;
 static PFN_vkCmdPipelineBarrier pCmdPipelineBarrier;
+static PFN_vkCmdPushConstants pCmdPushConstants;
 static PFN_vkCmdSetScissor pCmdSetScissor;
 static PFN_vkCmdSetViewport pCmdSetViewport;
 static PFN_vkCreateBuffer pCreateBuffer;
@@ -169,8 +199,302 @@ static PFN_vkQueueSubmit pQueueSubmit;
 static PFN_vkUnmapMemory pUnmapMemory;
 static PFN_vkUpdateDescriptorSets pUpdateDescriptorSets;
 static PFN_vkWaitForFences pWaitForFences;
+/* the DXVK-shaped init probe's own resolutions */
+static PFN_vkCreateWin32SurfaceKHR pCreateWin32SurfaceKHR;
+static PFN_vkGetSemaphoreCounterValue pGetSemaphoreCounterValue;
+static PFN_vkWaitSemaphores pWaitSemaphores;
+static PFN_vkSignalSemaphore pSignalSemaphore;
+static PFN_vkGetPhysicalDeviceFeatures pGetPhysicalDeviceFeatures;
+static PFN_vkGetPhysicalDeviceFeatures2 pGetPhysicalDeviceFeatures2;
+static PFN_vkGetPhysicalDeviceProperties2 pGetPhysicalDeviceProperties2;
+static PFN_vkCreateSemaphore pCreateSemaphore;
+static PFN_vkDestroySemaphore pDestroySemaphore;
 
 #define R(type, name, inst) do { name = (PFN_##type)vkfix_must(gipa((inst), #type), #type); } while (0)
+
+/* ---------------------------------------------------------------------------
+ * probe_dxvk_init — DXVK's own admission sequence, run against the boundary.
+ *
+ * Four things, in DXVK's order, each of which used to be a hard wall:
+ *   1. isCompatible(): apiVersion >= 1.3, instance has VK_KHR_surface +
+ *      VK_KHR_win32_surface, device advertises the required extension set.
+ *   2. isSuitable(): the core bits and the whole Features2 pNext chain read
+ *      back as supported (the host must WALK the chain, not ignore it).
+ *   3. createDevice() with every one of those extensions + the full feature
+ *      blob — which must succeed and hand back a live device.
+ *   4. The first command-list flush's tracking fence: a TIMELINE semaphore,
+ *      signalled through vkQueueSubmit's pNext, read with
+ *      vkGetSemaphoreCounterValue, waited on with vkWaitSemaphores, plus the
+ *      host-signalled path. DXVK does this on every flush.
+ *   5. vkCreateWin32SurfaceKHR — the surface a wine-hosted DXVK must build a
+ *      swapchain on.
+ *
+ * Returns 0 when every check held. Prints one 'vkfix: ok  dxvk: …' per step.
+ * ------------------------------------------------------------------------- */
+static int probe_dxvk_init(VkInstance instance, VkPhysicalDevice pd) {
+    printf("vkfix: dxvk-probe: begin\n");
+    fflush(stdout);
+
+    /* --- 1a. apiVersion ---------------------------------------------------- */
+    PFN_vkGetPhysicalDeviceProperties pProps =
+        (PFN_vkGetPhysicalDeviceProperties)vkfix_must(gipa(instance, "vkGetPhysicalDeviceProperties"),
+                                                      "vkGetPhysicalDeviceProperties");
+    VkPhysicalDeviceProperties pdp;
+    pProps(pd, &pdp);
+    NEED(pdp.apiVersion >= VK_API_VERSION_1_3,
+         "apiVersion %u.%u.%u < 1.3 — DXVK skips the adapter outright",
+         VK_VERSION_MAJOR(pdp.apiVersion), VK_VERSION_MINOR(pdp.apiVersion), VK_VERSION_PATCH(pdp.apiVersion));
+
+    /* --- 1b. instance extensions ------------------------------------------ */
+    PFN_vkEnumerateInstanceExtensionProperties pInstExts =
+        (PFN_vkEnumerateInstanceExtensionProperties)vkfix_must(
+            gipa(NULL, "vkEnumerateInstanceExtensionProperties"), "vkEnumerateInstanceExtensionProperties");
+    uint32_t nie = 0;
+    pInstExts(NULL, &nie, NULL);
+    VkExtensionProperties ie[32];
+    if (nie > 32) nie = 32;
+    pInstExts(NULL, &nie, ie);
+    for (uint32_t i = 0; i < nie; i++)
+        if (strcmp(ie[i].extensionName, VK_KHR_SURFACE_EXTENSION_NAME) == 0 ||
+            strcmp(ie[i].extensionName, "VK_KHR_win32_surface") == 0) goto have_inst_exts;
+    PROBE_FAIL("no VK_KHR_surface / VK_KHR_win32_surface: winevulkan has no surface to create");
+have_inst_exts:
+    printf("vkfix: ok  dxvk: apiVersion %u.%u.%u + surface extensions\n",
+           VK_VERSION_MAJOR(pdp.apiVersion), VK_VERSION_MINOR(pdp.apiVersion), VK_VERSION_PATCH(pdp.apiVersion));
+
+    /* --- 1c. the required DEVICE extension set ----------------------------- */
+    static const char* const kReq[] = {
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME, "VK_KHR_maintenance5", "VK_KHR_load_store_op_none",
+        VK_EXT_ROBUSTNESS_2_EXTENSION_NAME, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME,
+        VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME,
+    };
+    PFN_vkEnumerateDeviceExtensionProperties pDevExts =
+        (PFN_vkEnumerateDeviceExtensionProperties)vkfix_must(
+            gipa(instance, "vkEnumerateDeviceExtensionProperties"), "vkEnumerateDeviceExtensionProperties");
+    uint32_t nde2 = 0;
+    pDevExts(pd, NULL, &nde2, NULL);
+    VkExtensionProperties de2[32];
+    if (nde2 > 32) nde2 = 32;
+    pDevExts(pd, NULL, &nde2, de2);
+    for (unsigned k = 0; k < sizeof(kReq) / sizeof(kReq[0]); k++) {
+        int found = 0;
+        for (uint32_t i = 0; i < nde2; i++)
+            if (strcmp(de2[i].extensionName, kReq[k]) == 0) { found = 1; break; }
+        NEED(found, "required device extension '%s' is not advertised", kReq[k]);
+    }
+    printf("vkfix: ok  dxvk: %u/%u required device extensions advertised\n",
+           (unsigned)(sizeof(kReq) / sizeof(kReq[0])), (unsigned)nde2);
+
+    /* --- 2a. the core bits isSuitable() reads ----------------------------- */
+    R(vkGetPhysicalDeviceFeatures, pGetPhysicalDeviceFeatures, instance);
+    VkPhysicalDeviceFeatures core;
+    memset(&core, 0, sizeof(core));
+    pGetPhysicalDeviceFeatures(pd, &core);
+    NEED(core.imageCubeArray, "core feature imageCubeArray is FALSE (D3D11 cube arrays)");
+    NEED(core.independentBlend, "core feature independentBlend is FALSE (D3D11 blend targets)");
+    NEED(core.shaderInt64, "core feature shaderInt64 is FALSE");
+    NEED(core.shaderFloat64, "core feature shaderFloat64 is FALSE");
+    NEED(core.robustBufferAccess && core.fullDrawIndexUint32, "core robustBufferAccess/fullDrawIndexUint32 FALSE");
+
+    /* --- 2b. the Features2 pNext chain ------------------------------------
+     * Every struct here is chained exactly as DXVK chains them, and every bit
+     * is asserted afterwards: the host has to WALK the chain and write the
+     * answers back into this same buffer, because that is where DXVK reads them
+     * from. A walker that only fills the root struct leaves all of this zero. */
+    VkPhysicalDeviceRobustness2FeaturesEXT r2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT };
+    VkPhysicalDeviceTransformFeedbackFeaturesEXT tf = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT };
+    VkPhysicalDeviceDescriptorIndexingFeatures di = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES };
+    VkPhysicalDeviceShaderFloat16Int8Features f16 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES };
+    VkPhysicalDevice16BitStorageFeatures s16 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES };
+    VkPhysicalDevice8BitStorageFeatures s8 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES };
+    VkPhysicalDeviceScalarBlockLayoutFeatures sbl = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES };
+    VkPhysicalDeviceDepthClipEnableFeaturesEXT dce = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT };
+    VkPhysicalDeviceMaintenance5Features m5 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES };
+    VkPhysicalDeviceMaintenance6Features m6 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_6_FEATURES };
+    VkPhysicalDeviceVulkan12Features v12 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
+    /* chained oldest-last, exactly like every Vulkan loader-built chain */
+    di.pNext = &tf; tf.pNext = &sbl; sbl.pNext = &s16; s16.pNext = &s8; s8.pNext = &f16;
+    f16.pNext = &m5; m5.pNext = &m6; m6.pNext = &dce; dce.pNext = &v12; v12.pNext = &r2;
+    VkPhysicalDeviceFeatures2 feat2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &di };
+    R(vkGetPhysicalDeviceFeatures2, pGetPhysicalDeviceFeatures2, instance);
+    pGetPhysicalDeviceFeatures2(pd, &feat2);
+    NEED(r2.nullDescriptor, "robustness2.nullDescriptor FALSE — DXVK 'will not run without' it");
+    NEED(r2.robustBufferAccess2 && r2.robustImageAccess2, "robustness2 robust*2 FALSE");
+    NEED(m5.maintenance5, "maintenance5 FALSE");
+    NEED(m6.maintenance6, "maintenance6 FALSE");
+    NEED(tf.transformFeedback && tf.geometryStreams, "transformFeedback/geometryStreams FALSE");
+    NEED(di.descriptorBindingPartiallyBound && di.runtimeDescriptorArray,
+         "descriptor-indexing partiallyBound/runtimeDescriptorArray FALSE");
+    NEED(di.descriptorBindingUniformBufferUpdateAfterBind,
+         "descriptor-indexing update-after-bind FALSE");
+    NEED(f16.shaderFloat16 && f16.shaderInt8, "shaderFloat16/shaderInt8 FALSE");
+    NEED(s16.storageBuffer16BitAccess && s16.uniformAndStorageBuffer16BitAccess, "16-bit storage FALSE");
+    NEED(s8.storageBuffer8BitAccess && s8.uniformAndStorageBuffer8BitAccess, "8-bit storage FALSE");
+    NEED(sbl.scalarBlockLayout, "scalarBlockLayout FALSE");
+    NEED(dce.depthClipEnable, "depthClipEnable FALSE");
+    NEED(v12.timelineSemaphore, "Vulkan12.timelineSemaphore FALSE — DXVK's per-flush fence would die");
+    NEED(v12.descriptorIndexing, "Vulkan12.descriptorIndexing FALSE");
+    NEED(!v12.bufferDeviceAddress, "Vulkan12.bufferDeviceAddress TRUE is unproven — must stay off until the BDA audit");
+
+    /* --- 2c. the Properties2 chain ----------------------------------------
+     * Zeros degrade gracefully here, EXCEPT the update-after-bind limits:
+     * DXVK refuses descriptor-indexing layouts above them, so advertising the
+     * features above with a zero limit is a self-contradictory device. */
+    VkPhysicalDeviceIDProperties idp = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES };
+    VkPhysicalDeviceSubgroupProperties sgp = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES };
+    VkPhysicalDeviceDescriptorIndexingProperties dip = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES };
+    VkPhysicalDeviceTransformFeedbackPropertiesEXT tfp = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT };
+    VkPhysicalDeviceMaintenance5Properties m5p = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_PROPERTIES };
+    VkPhysicalDeviceVulkan11Properties v11p = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES };
+    VkPhysicalDeviceVulkan12Properties v12p = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES };
+    sgp.pNext = &idp; idp.pNext = &v11p; v11p.pNext = &dip; dip.pNext = &tfp; tfp.pNext = &m5p; m5p.pNext = &v12p;
+    VkPhysicalDeviceProperties2 prop2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &sgp };
+    R(vkGetPhysicalDeviceProperties2, pGetPhysicalDeviceProperties2, instance);
+    pGetPhysicalDeviceProperties2(pd, &prop2);
+    NEED(dip.maxDescriptorSetUpdateAfterBindUniformBuffers > 0 &&
+         dip.maxPerStageDescriptorUpdateAfterBindUniformBuffers > 0,
+         "descriptor-indexing update-after-bind limits are zero — the features above contradict them");
+    NEED(dip.maxUpdateAfterBindDescriptorsInAllPools > 0, "maxUpdateAfterBindDescriptorsInAllPools is zero");
+    NEED(tfp.maxTransformFeedbackStreams > 0 && tfp.maxTransformFeedbackBufferSize > 0,
+         "transform-feedback properties are zero");
+    NEED(sgp.subgroupSize >= 4 && sgp.subgroupSize <= 128, "subgroupSize %u out of range", (unsigned)sgp.subgroupSize);
+    NEED(v11p.subgroupSize >= 4, "VkPhysicalDeviceVulkan11Properties.subgroupSize %u zero", (unsigned)v11p.subgroupSize);
+    printf("vkfix: ok  dxvk: features2 + properties2 pNext chains walked (%u updateAfterBind UBOs, subgroup %u)\n",
+           (unsigned)dip.maxDescriptorSetUpdateAfterBindUniformBuffers, (unsigned)sgp.subgroupSize);
+
+    /* --- 3. createDevice with every extension and the full feature blob ---- */
+    float prio = 1.0f;
+    VkDeviceQueueCreateInfo qci = { .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                                   .queueFamilyIndex = 0, .queueCount = 1, .pQueuePriorities = &prio };
+    VkPhysicalDeviceFeatures enabled = core;
+    VkPhysicalDeviceFeatures2 e12 = feat2;                 /* the same chain, TRUE now */
+    VkDeviceCreateInfo dci = { .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &e12,
+                               .queueCreateInfoCount = 1, .pQueueCreateInfos = &qci,
+                               .enabledExtensionCount = nde2, .ppEnabledExtensionNames = (const char* const*)de2,
+                               .pEnabledFeatures = &enabled };
+    R(vkCreateDevice, pCreateDevice, instance);
+    VkDevice dev = VK_NULL_HANDLE;
+    CHK(pCreateDevice(pd, &dci, NULL, &dev));
+    NEED(dev != VK_NULL_HANDLE, "vkCreateDevice with the full DXVK caps returned a null device");
+    R(vkGetDeviceQueue, pGetDeviceQueue, instance);
+    VkQueue q = VK_NULL_HANDLE;
+    pGetDeviceQueue(dev, 0, 0, &q);
+    NEED(q != VK_NULL_HANDLE, "null queue from the DXVK-shaped device");
+    step("dxvk: device created with the full extension + feature set");
+
+    /* --- 4. the timeline-semaphore tracking fence -------------------------
+     * DXVK puts a u64 wait/signal on every command-list flush. A submit with
+     * no command buffer is legal and is the smallest thing that exercises the
+     * submit pNext, so this is the whole flush path with the frame payload
+     * left out. */
+    R(vkCreateSemaphore, pCreateSemaphore, instance);
+    VkSemaphoreTypeCreateInfo stci = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                                       .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE, .initialValue = 0 };
+    VkSemaphoreCreateInfo sci = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &stci };
+    VkSemaphore tl = VK_NULL_HANDLE;
+    CHK(pCreateSemaphore(dev, &sci, NULL, &tl));
+    R(vkGetSemaphoreCounterValue, pGetSemaphoreCounterValue, instance);
+    uint64_t value = 0xdeadbeef;
+    CHK(pGetSemaphoreCounterValue(dev, tl, &value));
+    NEED(value == 0, "fresh timeline semaphore counter is %llu, want 0", (unsigned long long)value);
+
+    uint64_t signalTo[1] = { 7 };
+    VkTimelineSemaphoreSubmitInfo tsi = { .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+                                          .signalSemaphoreValueCount = 1, .pSignalSemaphoreValues = signalTo };
+    VkSemaphore oneSem[1] = { tl };
+    VkSubmitInfo flush = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = &tsi,
+                           .signalSemaphoreCount = 1, .pSignalSemaphores = oneSem };
+    R(vkQueueSubmit, pQueueSubmit, instance);
+    CHK(pQueueSubmit(q, 1, &flush, VK_NULL_HANDLE));
+    CHK(pGetSemaphoreCounterValue(dev, tl, &value));
+    NEED(value == 7, "counter is %llu after a submit signalling 7", (unsigned long long)value);
+
+    uint64_t wantVal[1] = { 7 };
+    const VkSemaphore ws[1] = { tl };
+    VkSemaphoreWaitInfo wi = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+                               .semaphoreCount = 1, .pSemaphores = ws, .pValues = wantVal };
+    R(vkWaitSemaphores, pWaitSemaphores, instance);
+    CHK(pWaitSemaphores(dev, &wi, UINT64_MAX));
+
+    /* A value the queue has not reached, with timeout 0: the spec answer is
+     * VK_TIMEOUT, and asserting it is what proves the emulation is not just
+     * returning SUCCESS to everything. */
+    wantVal[0] = 11;
+    NEED(pWaitSemaphores(dev, &wi, 0) == VK_TIMEOUT,
+         "vkWaitSemaphores for an unreached value with timeout 0 did not return VK_TIMEOUT");
+    R(vkSignalSemaphore, pSignalSemaphore, instance);
+    VkSemaphoreSignalInfo sgi = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO, .semaphore = tl, .value = 11 };
+    CHK(pSignalSemaphore(dev, &sgi));
+    CHK(pGetSemaphoreCounterValue(dev, tl, &value));
+    NEED(value == 11, "counter is %llu after vkSignalSemaphore(11)", (unsigned long long)value);
+    CHK(pWaitSemaphores(dev, &wi, 0));
+
+    /* wait+signal in one submit, the shape DXVK's flush actually has */
+    uint64_t waitVals[1] = { 11 }, sigVals[1] = { 20 };
+    VkTimelineSemaphoreSubmitInfo tsi2 = { .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+                                           .waitSemaphoreValueCount = 1, .pWaitSemaphoreValues = waitVals,
+                                           .signalSemaphoreValueCount = 1, .pSignalSemaphoreValues = sigVals };
+    VkSubmitInfo flush2 = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = &tsi2,
+                            .waitSemaphoreCount = 1, .pWaitSemaphores = oneSem,
+                            .signalSemaphoreCount = 1, .pSignalSemaphores = oneSem };
+    CHK(pQueueSubmit(q, 1, &flush2, VK_NULL_HANDLE));
+    CHK(pGetSemaphoreCounterValue(dev, tl, &value));
+    NEED(value == 20, "counter is %llu after a wait 11 / signal 20 submit", (unsigned long long)value);
+    printf("vkfix: ok  dxvk: timeline semaphore signal/wait/getCounter agree (counter %llu)\n",
+           (unsigned long long)value);
+    step("dxvk: timeline semaphore create-with-type, submit pNext, wait, signal, counter");
+
+    /* --- 5. the Win32 surface winevulkan needs ---------------------------- */
+    R(vkCreateWin32SurfaceKHR, pCreateWin32SurfaceKHR, instance);
+    VkWin32SurfaceCreateInfoKHR_local wsci = {
+        .sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
+        .flags = 0, .hwnd = (void*)(uintptr_t)0x1234
+    };
+    VkSurfaceKHR win32 = VK_NULL_HANDLE;
+    CHK(pCreateWin32SurfaceKHR(instance, &wsci, NULL, &win32));
+    NEED(win32 != VK_NULL_HANDLE, "vkCreateWin32SurfaceKHR returned a null surface");
+    /* and it must answer like any other surface, or the swapchain path stalls.
+     * Resolved HERE, not via the file-scope pGetPhysicalDeviceSurface*: the
+     * probe runs before main() resolves those, and calling the still-NULL
+     * pointer is a guest segfault, not a graceful FAIL. */
+    PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR wCaps =
+        (PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR)vkfix_must(
+            gipa(instance, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR"),
+            "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
+    PFN_vkGetPhysicalDeviceSurfaceFormatsKHR wFmts =
+        (PFN_vkGetPhysicalDeviceSurfaceFormatsKHR)vkfix_must(
+            gipa(instance, "vkGetPhysicalDeviceSurfaceFormatsKHR"),
+            "vkGetPhysicalDeviceSurfaceFormatsKHR");
+    PFN_vkGetPhysicalDeviceSurfaceSupportKHR wSup =
+        (PFN_vkGetPhysicalDeviceSurfaceSupportKHR)vkfix_must(
+            gipa(instance, "vkGetPhysicalDeviceSurfaceSupportKHR"),
+            "vkGetPhysicalDeviceSurfaceSupportKHR");
+    VkSurfaceCapabilitiesKHR wcaps;
+    CHK(wCaps(pd, win32, &wcaps));
+    uint32_t nsf = 0;
+    CHK(wFmts(pd, win32, &nsf, NULL));
+    VkSurfaceFormatKHR wfmt[8];
+    if (nsf > 8) nsf = 8;
+    CHK(wFmts(pd, win32, &nsf, wfmt));
+    VkBool32 supported = VK_FALSE;
+    CHK(wSup(pd, 0, win32, &supported));
+    NEED(supported, "vkGetPhysicalDeviceSurfaceSupportKHR says the win32 surface cannot present");
+    printf("vkfix: ok  dxvk: win32 surface 0x%llx (%u format(s), presentable)\n",
+           (unsigned long long)win32, (unsigned)nsf);
+    step("dxvk: vkCreateWin32SurfaceKHR + surface queries");
+
+    /* --- teardown, so the trap log shows the whole probe ------------------- */
+    R(vkDestroySemaphore, pDestroySemaphore, instance);
+    pDestroySemaphore(dev, tl, NULL);
+    PFN_vkDestroySurfaceKHR pDestroySurface =
+        (PFN_vkDestroySurfaceKHR)vkfix_must(gipa(instance, "vkDestroySurfaceKHR"), "vkDestroySurfaceKHR");
+    pDestroySurface(instance, win32, NULL);
+    R(vkDestroyDevice, pDestroyDevice, instance);
+    pDestroyDevice(dev, NULL);
+    printf("vkfix: dxvk-probe: PASS\n");
+    fflush(stdout);
+    return 0;
+}
 
 int main(int argc, char** argv) {
     unsigned width = 64, height = 64;
@@ -272,6 +596,20 @@ int main(int argc, char** argv) {
     printf("\n");
     fflush(stdout);
     step("physical device queries");
+
+    /* ---- 3b. DXVK-shaped init probe (audit P2-NOW items 1-4) --------------
+     *
+     * DXVK gates itself twice before it will touch a device
+     * (dxvk_adapter.cpp / dxvk_device_info.h). isCompatible() reads apiVersion
+     * and scans the reported extension lists; isSuitable() then reads the
+     * feature structs back OUT of the same pNext buffer it passed in. Either
+     * check failing means "Skipping: Device does not support required feature"
+     * and then "No adapters found" — a silent zero-adapter world, not an error.
+     *
+     * So this reproduces that gate exactly, and then does what DXVK's first
+     * command-list flush does: a timeline semaphore create/signal/wait. No D3D,
+     * no window, no d3d11.dll — just the boundary behaviour DXVK needs. */
+    if (probe_dxvk_init(instance, pd) != 0) return 1;
 
     /* ---- 4. device + queue --------------------------------------------- */
     const char* dev_exts[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
@@ -667,13 +1005,22 @@ int main(int argc, char** argv) {
     pCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     R(vkCmdBindDescriptorSets, pCmdBindDescriptorSets, instance);
     pCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descSet, 0, NULL);
+    /* Push constants. vkcube never pushes any, so this call used to be absent
+     * from the boundary entirely — and DXVK pushes them per-draw for nearly
+     * everything, so without it the record path cannot describe a DXVK frame.
+     * 16 bytes at offset 0: inside maxPushConstantsSize, and non-zero so the
+     * manifest's base64 blob is distinguishable from "nothing pushed". */
+    float push[4] = { 0.5f, 0.25f, 0.125f, 1.0f };
+    R(vkCmdPushConstants, pCmdPushConstants, instance);
+    pCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                      0, sizeof(push), push);
     R(vkCmdDraw, pCmdDraw, instance);
     pCmdDraw(cmd, 36, 1, 0, 0);
     R(vkCmdEndRenderPass, pCmdEndRenderPass, instance);
     pCmdEndRenderPass(cmd);
     R(vkEndCommandBuffer, pEndCommandBuffer, instance);
     CHK(pEndCommandBuffer(cmd));
-    step("record: copy, barrier, renderPass, viewport, scissor, pipeline, sets, draw(36)");
+    step("record: copy, barrier, renderPass, viewport, scissor, pipeline, sets, pushConstants, draw(36)");
 
     R(vkCreateFence, pCreateFence, instance);
     VkFenceCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };

@@ -307,6 +307,13 @@ try {
     'vkGetPhysicalDeviceProperties2'];
   const p2NowTrapped = p2Now.filter(n => uniq.includes(n));
   summary.p2NowEntryPoints = `${p2NowTrapped.length}/${p2Now.length}`;
+  // The P2-NOW boundary additions are part of the gate, not a nicety: each one is
+  // a wall DXVK hits before a triangle, and each falls silently into the benign
+  // tail if it regresses. The trap floor rises with them.
+  summary.p2NowGreen = summary.dxvkProbe && summary.dxvkTimeline && summary.dxvkWin32
+    && summary.vertexLayout && summary.pushConstants
+    && summary.p2NowEntryPoints === `${p2Now.length}/${p2Now.length}`
+    && summary.trapCalls >= 105;
 
   await writeFile(art('summary.json'), JSON.stringify(summary, null, 2));
   console.log('=== VK SUMMARY ===');
@@ -318,15 +325,7 @@ try {
   console.log('--- vk64/vkfix log (tail) ---');
   console.log(vkLines.slice(-120).join('\n'));
   if (summary.fixtureResult !== 0 || !witness || !summary.pageTierGreen) process.exitCode = 1;
-  // The P2-NOW boundary additions are part of the gate, not a nicety: each one is
-  // a wall DXVK hits before a triangle, and each falls silently into the benign
-  // tail if it regresses. The trap floor rises with them.
-  const p2NowGreen = summary.dxvkProbe && summary.dxvkTimeline && summary.dxvkWin32
-    && summary.vertexLayout && summary.pushConstants
-    && summary.p2NowEntryPoints === `${p2Now.length}/${p2Now.length}`
-    && summary.trapCalls >= 105;
-  summary.p2NowGreen = p2NowGreen;
-  if (!p2NowGreen) {
+  if (!summary.p2NowGreen) {
     console.log('P2-NOW GATE RED', JSON.stringify({
       dxvkProbe: summary.dxvkProbe, dxvkTimeline: summary.dxvkTimeline, dxvkWin32: summary.dxvkWin32,
       vertexLayout: summary.vertexLayout, pushConstants: summary.pushConstants,

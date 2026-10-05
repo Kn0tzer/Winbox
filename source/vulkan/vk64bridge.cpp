@@ -225,7 +225,12 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkGetFenceStatus,                     "vkGetFenceStatus")    \
     X(VK64_fn_vkResetCommandPool,                   "vkResetCommandPool")  \
     X(VK64_fn_vkQueueWaitIdle,                      "vkQueueWaitIdle")     \
-    X(VK64_fn_vkCreateHeadlessSurfaceEXT,           "vkCreateHeadlessSurfaceEXT")
+    X(VK64_fn_vkCreateHeadlessSurfaceEXT,           "vkCreateHeadlessSurfaceEXT") \
+    X(VK64_fn_vkCreateWin32SurfaceKHR,              "vkCreateWin32SurfaceKHR") \
+    X(VK64_fn_vkGetSemaphoreCounterValue,           "vkGetSemaphoreCounterValue") \
+    X(VK64_fn_vkWaitSemaphores,                     "vkWaitSemaphores")    \
+    X(VK64_fn_vkSignalSemaphore,                    "vkSignalSemaphore")   \
+    X(VK64_fn_vkCmdPushConstants,                   "vkCmdPushConstants")
 
 #define VK64_NAME_ENTRY(id, nm) { (U64)(id), nm },
 const struct { U64 id; const char* name; } g_fnNames[] = { VK64_FN_LIST(VK64_NAME_ENTRY) };
@@ -333,8 +338,15 @@ void dropObj(U64 id) {
 // ---------------------------------------------------------------------------
 const U32 VK64_MAX_SETS = 8, VK64_MAX_BINDINGS = 8, VK64_MAX_ATTACH = 4, VK64_MAX_DRAWS = 64;
 const U32 VK64_MAX_CMDS = 4096;
+const U32 VK64_MAX_VERT_BINDINGS = 4, VK64_MAX_VERT_ATTRIBS = 16;
+const U32 VK64_MAX_PUSH_BYTES = 256;   // matches limits.maxPushConstantsSize
 
-struct Binding { U32 binding = 0, type = 0; U64 obj = 0, range = 0; };
+// dstArrayElement + count, so a descriptor ARRAY write is not silently collapsed
+// to its first element (audit §f: DXVK writes texture arrays for descriptor
+// indexing). The elements themselves stay in the flat Binding array — the
+// per-element payload schema is P3 work — but the INDEX and COUNT are recorded
+// now so the schema has something honest to read.
+struct Binding { U32 binding = 0, type = 0, dstArrayElement = 0, count = 1; U64 obj = 0, range = 0; };
 
 struct Instance : Obj { U64 phys[4] = {0,0,0,0}; U32 physCount = 0; };
 struct PhysDev  : Obj { U64 instance = 0; };
@@ -345,7 +357,18 @@ struct PipelineCache : Obj {};
 struct DescPool  : Obj {};
 struct Surface   : Obj {};
 struct Fence     : Obj { int signalled = 0; };
-struct Semaphore : Obj { int signalled = 0; };
+// Timeline semaphores (audit P2-NOW item 3). DXVK puts a u64 wait/signal fence
+// on EVERY command-list flush, so the counter is not optional bookkeeping: it is
+// the only thing that makes vkQueueSubmit's VkTimelineSemaphoreSubmitInfo
+// meaningful. Under immediate execution the counter is HONEST — everything a
+// submit waits for has already run, and everything it signals is already done —
+// so signal is a monotone max and a wait either succeeds (value reached) or,
+// with timeout 0 against a value the queue has not reached, returns VK_TIMEOUT.
+struct Semaphore : Obj {
+    int signalled = 0;          /* binary semaphores keep the old flag */
+    int isTimeline = 0;
+    U64  counter = 0;
+};
 struct DeviceMemory : Obj { U64 size = 0, va = 0; U32 memIndex = 0; };
 struct Buffer : Obj { U64 size = 0, mem = 0, memOff = 0; U32 usage = 0; };
 struct Image  : Obj {
@@ -366,8 +389,19 @@ struct ShaderModule : Obj {
 struct DescSetLayout : Obj { U32 nbind = 0; Binding binds[VK64_MAX_BINDINGS]; };
 struct DescSet : Obj { U64 layout = 0; U32 nbind = 0; Binding binds[VK64_MAX_BINDINGS]; };
 struct PipelineLayout : Obj { U32 nsets = 0; U64 sets[VK64_MAX_SETS]; };
+// The vertex input layout, recorded at pipeline creation (audit P2-NOW item 5).
+// This is the one dropped-at-creation field that is not merely informative: with
+// no binding/attribute descriptions there is no way to build a vertex buffer
+// layout, so NOTHING rasterizes. DXVK needs it exactly as much as vkcube did.
 struct Pipeline : Obj {
     U32 topology = 0, cull = 0, front = 0, depthTest = 0, depthWrite = 0, depthOp = 0, blend = 0;
+    U32 nvb = 0, nva = 0;
+    U32 vbStride[VK64_MAX_VERT_BINDINGS] = {0};
+    U32 vbInputRate[VK64_MAX_VERT_BINDINGS] = {0};    /* 0 = per vertex, 1 = per instance */
+    U32 vaBinding[VK64_MAX_VERT_ATTRIBS] = {0};       /* VkVertexInputAttributeDescription */
+    U32 vaFormat[VK64_MAX_VERT_ATTRIBS] = {0};
+    U32 vaOffset[VK64_MAX_VERT_ATTRIBS] = {0};
+    U32 vaLocation[VK64_MAX_VERT_ATTRIBS] = {0};
     U64 vs = 0, fs = 0, layout = 0, rp = 0;
 };
 struct RenderPass : Obj {
@@ -383,7 +417,7 @@ struct Swapchain : Obj { U32 w = 0, h = 0, format = 0, nimg = 0, cur = 0; U64 im
 // --- given).
 enum CmdKind : U32 {
     CMD_BEGIN_RP, CMD_END_RP, CMD_BIND_PIPE, CMD_BIND_SETS, CMD_VIEWPORT,
-    CMD_SCISSOR, CMD_DRAW, CMD_BARRIER, CMD_COPY_B2I
+    CMD_SCISSOR, CMD_DRAW, CMD_BARRIER, CMD_COPY_B2I, CMD_PUSH_CONST
 };
 struct Copy {
     U64 srcBuffer = 0, dstImage = 0, bufOff = 0;
@@ -395,6 +429,11 @@ struct Cmd {
     float f[8] = {0};
     double clearDepth = 1.0;
     Copy  copy;
+    // Push constants: the recorded bytes, byte-offset preserved. DXVK pushes
+    // constants per-draw for essentially everything, so this is a hot path, not a
+    // corner case.
+    U32 pcOffset = 0, pcSize = 0, pcStageFlags = 0;
+    U8  pcBytes[VK64_MAX_PUSH_BYTES] = {0};
 };
 struct CmdBuf : Obj {
     std::vector<Cmd> cmds;
@@ -629,6 +668,7 @@ void serializeSubmit(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         float clear[4] = {0, 0, 0, 1};
         double clearDepth = 1.0;
         std::vector<std::pair<U32, U32>> draws;   // vertexCount, firstVertex
+        std::vector<const Cmd*> pushes;           // in order: offset + bytes matter
         for (const Cmd& k : st->cmds) {
             switch (k.kind) {
                 case CMD_BEGIN_RP:
@@ -640,6 +680,7 @@ void serializeSubmit(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     break;
                 case CMD_VIEWPORT: vp = k.f; break;
                 case CMD_SCISSOR:  sci = k.f; break;
+                case CMD_PUSH_CONST: pushes.push_back(&k); break;
                 case CMD_DRAW:
                     if (draws.size() < VK64_MAX_DRAWS) draws.push_back({(U32)k.a, (U32)k.c});
                     break;
@@ -722,6 +763,38 @@ void serializeSubmit(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                  samp ? samp->mag : 0, samp ? samp->min : 0, samp ? samp->mipmap : 0,
                  samp ? samp->addrU : 0, samp ? samp->addrV : 0, samp ? (double)samp->maxAniso : 1.0);
         j += buf;
+        // The vertex input layout, straight off the recorded pipeline. Additive:
+        // a consumer that predates these keys (host/p1render.mjs) ignores them and
+        // vkcube's own frame still renders exactly as before.
+        j += "\"vertexLayout\":{\"bindings\":[";
+        for (U32 i = 0; i < pipe->nvb; i++) {
+            if (i) j += ",";
+            snprintf(buf, sizeof buf, "{\"binding\":%u,\"stride\":%u,\"inputRate\":%u}",
+                     i, pipe->vbStride[i], pipe->vbInputRate[i]);
+            j += buf;
+        }
+        j += "],\"attributes\":[";
+        for (U32 i = 0; i < pipe->nva; i++) {
+            if (i) j += ",";
+            snprintf(buf, sizeof buf,
+                     "{\"location\":%u,\"binding\":%u,\"format\":%u,\"offset\":%u}",
+                     pipe->vaLocation[i], pipe->vaBinding[i], pipe->vaFormat[i], pipe->vaOffset[i]);
+            j += buf;
+        }
+        j += "]},";
+        // Push constants: one entry per recorded push, base64 bytes + the byte
+        // offset they land at, so a consumer can overlay them per draw.
+        j += "\"pushConstants\":[";
+        for (size_t i = 0; i < pushes.size(); i++) {
+            if (i) j += ",";
+            snprintf(buf, sizeof buf, "{\"offset\":%u,\"size\":%u,\"stageFlags\":%u,",
+                     pushes[i]->pcOffset, pushes[i]->pcSize, pushes[i]->pcStageFlags);
+            j += buf;
+            std::vector<U8> bytes(pushes[i]->pcBytes, pushes[i]->pcBytes + pushes[i]->pcSize);
+            jsonBlob(j, "bytes", bytes);
+            j += "}";
+        }
+        j += "],";
         j += "\"draws\":[";
         for (size_t i = 0; i < draws.size(); i++) {
             if (i) j += ",";
@@ -737,10 +810,12 @@ void serializeSubmit(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         if (!g_pendingFrame.empty()) emitFrameNow();
         g_pendingFrame = j;
         g_frameOverflow = false;
-        klog_fmt("vk64: FRAME %u built: %ux%u draws=%u vs=%s fs=%s ubo=%zuB tex=%ux%u(%zuB) json=%zuB",
+        klog_fmt("vk64: FRAME %u built: %ux%u draws=%u vs=%s fs=%s ubo=%zuB tex=%ux%u(%zuB) "
+                 "vtxAttrs=%u pushes=%u json=%zuB",
                  g_frameNo, fb->w, fb->h, (unsigned)draws.size(),
                  vs ? "yes" : "no", fs ? "yes" : "no",
-                 uboBytes.size(), tw, th, texBytes.size(), j.size());
+                 uboBytes.size(), tw, th, texBytes.size(), (unsigned)pipe->nva,
+                 (unsigned)pushes.size(), j.size());
     }
 }
 
@@ -748,7 +823,7 @@ void serializeSubmit(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
 // Physical device: one == one WebGPU adapter (P1 section 1.2 table row 2).
 // ---------------------------------------------------------------------------
 const char* GPU_NAME = "VKWGPU WebGPU Virtual Device";
-const U32  g_icd_api_version = VK_API_VERSION_1_1;
+const U32  g_icd_api_version = VK_API_VERSION_1_3;
 
 void fillProperties(VkPhysicalDeviceProperties* p) {
     memset(p, 0, sizeof(*p));
@@ -809,8 +884,355 @@ void fillProperties(VkPhysicalDeviceProperties* p) {
 }
 
 const char* const g_inst_exts[] = {
-    "VK_KHR_surface", "VK_KHR_xcb_surface", "VK_KHR_xlib_surface", "VK_EXT_headless_surface",
+    "VK_KHR_surface", "VK_KHR_win32_surface", "VK_KHR_xcb_surface",
+    "VK_KHR_xlib_surface", "VK_EXT_headless_surface", "VK_EXT_debug_utils",
 };
+
+// The DXVK-required DEVICE extension set. Advertising an extension is pure
+// reporting here: vkCreateDevice stays lenient about names it does not know, so
+// this changes only what DXVK's isSuitable()/createDevice() decides to enable —
+// but that is the whole init wall (audit P2-NOW item 1): with only
+// VK_KHR_swapchain present, DXVK skips the adapter with "Device does not
+// support required feature" and never reaches a triangle.
+//
+// Every name here is either behaviour-free for us (load_store_op_none,
+// depth_clip_enable, maintenance5/6 — the recorder already treats load/store and
+// cull conservatively) or has its behaviour implemented alongside (robustness2
+// nullDescriptor -> a Binding may legitimately stay unbound; transform_feedback
+// -> the Xfb query/write calls fall into the benign tail). VK_KHR_maintenance6 is
+// present for DXVK >= 2.7.1 / master; a 2.4.x pin simply never asks for it.
+const char* const g_dev_exts[] = {
+    "VK_KHR_swapchain",
+    "VK_KHR_maintenance5",
+    "VK_KHR_maintenance6",
+    "VK_KHR_load_store_op_none",
+    "VK_EXT_robustness2",           // HARD requirement (nullDescriptor + robustBufferAccess2)
+    "VK_EXT_transform_feedback",    // D3D10/11 stream output
+    "VK_EXT_depth_clip_enable",
+};
+
+// Core bits BOTH Features handlers set. DXVK's isSuitable() reads these out of
+// the same struct we hand back, so a FALSE here is an adapter skip. geometryShader
+// / tessellationShader stay FALSE on purpose: nothing in the manifest schema
+// carries those stages yet, and DXVK only probes them.
+void fillCoreFeatures(VkPhysicalDeviceFeatures* f) {
+    memset(f, 0, sizeof(*f));
+    f->robustBufferAccess = VK_TRUE;
+    f->fullDrawIndexUint32 = VK_TRUE;
+    f->imageCubeArray = VK_TRUE;        /* D3D11 cube arrays */
+    f->independentBlend = VK_TRUE;      /* D3D11 independent blend targets */
+    f->shaderInt64 = VK_TRUE;           /* wiki: 64-bit int types required */
+    f->shaderFloat64 = VK_TRUE;         /* d3d11 double-precision shaders exist */
+    f->shaderStorageImageExtendedFormats = VK_TRUE;
+    f->shaderStorageImageReadWithoutFormat = VK_TRUE;
+    f->shaderStorageImageWriteWithoutFormat = VK_TRUE;
+    f->shaderClipDistance = VK_TRUE;
+    f->samplerAnisotropy = VK_TRUE;
+    f->geometryShader = VK_FALSE;       /* WebGPU has no geometry stage */
+    f->tessellationShader = VK_FALSE;
+    f->fragmentStoresAndAtomics = VK_TRUE;
+    f->vertexPipelineStoresAndAtomics = VK_TRUE;
+}
+
+// ---------------------------------------------------------------------------
+// Features2 / Properties2 pNext walkers (audit P2-NOW items 1-2).
+//
+// DXVK does not call the core 1.0 getters when it wants to know what the device
+// supports: it chains a VkPhysicalDeviceFeatures2 with ~15 feature structs and
+// reads each VkBool32 back out of the SAME buffer it passed in. Before these
+// walkers existed every chained struct stayed at whatever the guest left there
+// (zero), so every required feature read "unsupported" even with the extension
+// advertised. So the walkers are load-bearing, not decoration.
+//
+// Contract: unknown sTypes are SKIPPED, never rejected — a newer DXVK chaining a
+// struct we do not model must still get a device. pNext sits at offset 8 in every
+// VkStructureType-headed struct (sType u32 + 4 pad + ptr), which the generated
+// header's static_asserts and probe_caps both pin.
+// ---------------------------------------------------------------------------
+// One arm of the Features2 walk: read the struct out of guest memory, let the
+// fill function set the bits, write it back. The guest handed us this buffer, so
+// writing it back is the only place an answer can go — and it is where DXVK
+// reads it from.
+#define SET_FEATURES(addr, fn, T)                                             \
+    do {                                                                       \
+        if ((addr) && g_mem) {                                                 \
+            T f_ = {};                                                         \
+            g_mem->memcpyFromGuest(&f_, (addr), sizeof(f_));                   \
+            fn(f_);                                                            \
+            g_mem->memcpyToGuest((addr), &f_, sizeof(f_));                     \
+        }                                                                      \
+    } while (0)
+inline void fillRobustness2(VkPhysicalDeviceRobustness2FeaturesEXT& f) {
+    f.robustBufferAccess2 = VK_TRUE;
+    f.robustImageAccess2 = VK_TRUE;
+    f.nullDescriptor = VK_TRUE;
+}
+inline void fillMaintenance5(VkPhysicalDeviceMaintenance5Features& f) {
+        f.maintenance5 = VK_TRUE;
+}
+inline void fillMaintenance6(VkPhysicalDeviceMaintenance6Features& f) {
+        f.maintenance6 = VK_TRUE;
+}
+inline void fillTransformFeedback(VkPhysicalDeviceTransformFeedbackFeaturesEXT& f) {
+    f.transformFeedback = VK_TRUE;
+    f.geometryStreams = VK_TRUE;
+}
+inline void fillDescriptorIndexing(VkPhysicalDeviceDescriptorIndexingFeatures& f) {
+    f.shaderInputAttachmentArrayDynamicIndexing = VK_TRUE;
+    f.shaderUniformTexelBufferArrayDynamicIndexing = VK_TRUE;
+    f.shaderStorageTexelBufferArrayDynamicIndexing = VK_TRUE;
+    f.shaderUniformBufferArrayNonUniformIndexing = VK_TRUE;
+    f.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+    f.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
+    f.shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
+    f.shaderInputAttachmentArrayNonUniformIndexing = VK_TRUE;
+    f.shaderUniformTexelBufferArrayNonUniformIndexing = VK_TRUE;
+    f.shaderStorageTexelBufferArrayNonUniformIndexing = VK_TRUE;
+    f.descriptorBindingUniformBufferUpdateAfterBind = VK_TRUE;
+    f.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+    f.descriptorBindingStorageImageUpdateAfterBind = VK_TRUE;
+    f.descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE;
+    f.descriptorBindingUniformTexelBufferUpdateAfterBind = VK_TRUE;
+    f.descriptorBindingStorageTexelBufferUpdateAfterBind = VK_TRUE;
+    f.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
+    f.descriptorBindingPartiallyBound = VK_TRUE;
+    f.descriptorBindingVariableDescriptorCount = VK_TRUE;
+    f.runtimeDescriptorArray = VK_TRUE;
+}
+inline void fillFloat16Int8(VkPhysicalDeviceShaderFloat16Int8Features& f) {
+        f.shaderFloat16 = VK_TRUE;
+    f.shaderInt8 = VK_TRUE;
+}
+inline void fillStorage16(VkPhysicalDevice16BitStorageFeatures& f) {
+    f.storageBuffer16BitAccess = VK_TRUE;
+    f.uniformAndStorageBuffer16BitAccess = VK_TRUE;
+    f.storagePushConstant16 = VK_TRUE;
+    f.storageInputOutput16 = VK_TRUE;
+}
+inline void fillStorage8(VkPhysicalDevice8BitStorageFeatures& f) {
+    f.storageBuffer8BitAccess = VK_TRUE;
+    f.uniformAndStorageBuffer8BitAccess = VK_TRUE;
+    f.storagePushConstant8 = VK_TRUE;
+}
+inline void fillScalarBlockLayout(VkPhysicalDeviceScalarBlockLayoutFeatures& f) {
+        f.scalarBlockLayout = VK_TRUE;
+}
+inline void fillDepthClipEnable(VkPhysicalDeviceDepthClipEnableFeaturesEXT& f) {
+        f.depthClipEnable = VK_TRUE;
+}
+inline void fillVulkan12Features(VkPhysicalDeviceVulkan12Features& f) {
+    // timelineSemaphore is emulated honestly under immediate execution (u64
+    // counter per semaphore; a wait for a value the queue already ran past
+    // returns SUCCESS, and a wait for a FUTURE value with timeout 0 returns
+    // VK_TIMEOUT). bufferDeviceAddress stays FALSE until the P3 BDA audit proves
+    // DXVK never consumes it: the benign tail returns an error CODE, and if DXVK
+    // treated that as an address it would be catastrophic, not cosmetic.
+    f.timelineSemaphore = VK_TRUE;
+    f.bufferDeviceAddress = VK_FALSE;
+    f.descriptorIndexing = VK_TRUE;
+    f.shaderInputAttachmentArrayDynamicIndexing = VK_TRUE;
+    f.shaderUniformTexelBufferArrayDynamicIndexing = VK_TRUE;
+    f.shaderStorageTexelBufferArrayDynamicIndexing = VK_TRUE;
+    f.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+    f.shaderUniformBufferArrayNonUniformIndexing = VK_TRUE;
+    f.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
+    f.shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
+    f.descriptorBindingPartiallyBound = VK_TRUE;
+    f.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
+    f.runtimeDescriptorArray = VK_TRUE;
+}
+inline void fillVulkan11Features(VkPhysicalDeviceVulkan11Features& f) {
+    f.storageBuffer16BitAccess = VK_TRUE;
+    f.uniformAndStorageBuffer16BitAccess = VK_TRUE;
+    f.storagePushConstant16 = VK_TRUE;
+    f.multiview = VK_TRUE;
+    f.multiviewGeometryShader = VK_FALSE;
+    f.multiviewTessellationShader = VK_FALSE;
+    f.variablePointers = VK_TRUE;
+    f.variablePointersStorageBuffer = VK_TRUE;
+    f.protectedMemory = VK_FALSE;
+}
+
+void walkFeatures2(U64 pNextAddr) {
+    for (U64 cur = pNextAddr; cur && g_mem;) {
+        U32 sType = g_mem->readd(cur);
+        switch (sType) {
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT:
+                SET_FEATURES(cur, fillRobustness2, VkPhysicalDeviceRobustness2FeaturesEXT); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES:
+                SET_FEATURES(cur, fillMaintenance5, VkPhysicalDeviceMaintenance5Features); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_6_FEATURES:
+                SET_FEATURES(cur, fillMaintenance6, VkPhysicalDeviceMaintenance6Features); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT:
+                SET_FEATURES(cur, fillTransformFeedback, VkPhysicalDeviceTransformFeedbackFeaturesEXT); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES:
+                SET_FEATURES(cur, fillDescriptorIndexing, VkPhysicalDeviceDescriptorIndexingFeatures); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES:
+                SET_FEATURES(cur, fillFloat16Int8, VkPhysicalDeviceShaderFloat16Int8Features); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES:
+                SET_FEATURES(cur, fillStorage16, VkPhysicalDevice16BitStorageFeatures); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES:
+                SET_FEATURES(cur, fillStorage8, VkPhysicalDevice8BitStorageFeatures); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES:
+                SET_FEATURES(cur, fillScalarBlockLayout, VkPhysicalDeviceScalarBlockLayoutFeatures); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT:
+                SET_FEATURES(cur, fillDepthClipEnable, VkPhysicalDeviceDepthClipEnableFeaturesEXT); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES:
+                SET_FEATURES(cur, fillVulkan12Features, VkPhysicalDeviceVulkan12Features); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES:
+                SET_FEATURES(cur, fillVulkan11Features, VkPhysicalDeviceVulkan11Features); break;
+            default:
+                klog_fmt("vk64: Features2 pNext sType=%u not modeled, left as the guest set it",
+                         (unsigned)sType);
+                break;
+        }
+        cur = g_mem->readq(cur + 8);      /* pNext is at offset 8 in every struct */
+    }
+}
+
+// Properties2 side. Zeros degrade gracefully (a consumer clamps to them), EXCEPT
+// the maxDescriptorSetUpdateAfterBind* limits: DXVK refuses descriptor-indexing
+// layouts above them, so advertising the features above with a zero limit would
+// make the device self-contradictory.
+void walkProperties2(U64 pNextAddr) {
+    // A stable, non-zero device UUID. DXVK's per-adapter matching (and D3DKMT's
+    // driverID workarounds) key off this; a constant is fine because there is
+    // exactly one adapter, and it is stable across runs.
+    static const U8 uuid[VK_UUID_SIZE] = {
+        0x56, 0x4B, 0x57, 0x47, 0x50, 0x55, 0x21, 0x01,   /* 'VKWGPU' + version */
+        0x56, 0x4B, 0x57, 0x47, 0x50, 0x55, 0x21, 0x02,
+    };
+    for (U64 cur = pNextAddr; cur && g_mem;) {
+        U32 sType = g_mem->readd(cur);
+        switch (sType) {
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES: {
+                VkPhysicalDeviceIDProperties p = {};
+                g_mem->memcpyFromGuest(&p, cur, sizeof(p));
+                memcpy(p.deviceUUID, uuid, VK_UUID_SIZE);
+                p.deviceNodeMask = 1;
+                g_mem->memcpyToGuest(cur, &p, sizeof(p));
+                break;
+            }
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES: {
+                VkPhysicalDeviceSubgroupProperties p = {};
+                g_mem->memcpyFromGuest(&p, cur, sizeof(p));
+                p.subgroupSize = 32;          /* warp-shaped, like every real ICD */
+                p.supportedStages = 0xffffffffu;
+                p.supportedOperations = 0xffffffffu;
+                p.quadOperationsInAllStages = VK_TRUE;
+                g_mem->memcpyToGuest(cur, &p, sizeof(p));
+                break;
+            }
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_PROPERTIES: {
+                VkPhysicalDeviceMaintenance5Properties p = {};
+                g_mem->memcpyFromGuest(&p, cur, sizeof(p));
+                p.earlyFragmentMultisampleCoverageAfterSampleCounting = VK_TRUE;
+                p.earlyFragmentSampleMaskTestBeforeSampleCounting = VK_TRUE;
+                p.polygonModePointSize = VK_TRUE;
+                g_mem->memcpyToGuest(cur, &p, sizeof(p));
+                break;
+            }
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES: {
+                VkPhysicalDeviceDescriptorIndexingProperties p = {};
+                g_mem->memcpyFromGuest(&p, cur, sizeof(p));
+                p.maxUpdateAfterBindDescriptorsInAllPools = 1024;
+                p.maxPerStageDescriptorUpdateAfterBindSamplers = 16;
+                p.maxPerStageDescriptorUpdateAfterBindUniformBuffers = 16;
+                p.maxPerStageDescriptorUpdateAfterBindStorageBuffers = 4;
+                p.maxPerStageDescriptorUpdateAfterBindSampledImages = 16;
+                p.maxPerStageDescriptorUpdateAfterBindStorageImages = 4;
+                p.maxPerStageDescriptorUpdateAfterBindInputAttachments = 4;
+                p.maxPerStageUpdateAfterBindResources = 128;
+                p.maxDescriptorSetUpdateAfterBindSamplers = 1024;
+                p.maxDescriptorSetUpdateAfterBindUniformBuffers = 1024;
+                p.maxDescriptorSetUpdateAfterBindUniformBuffersDynamic = 64;
+                p.maxDescriptorSetUpdateAfterBindStorageBuffers = 1024;
+                p.maxDescriptorSetUpdateAfterBindStorageBuffersDynamic = 64;
+                p.maxDescriptorSetUpdateAfterBindSampledImages = 1024;
+                p.maxDescriptorSetUpdateAfterBindStorageImages = 1024;
+                p.maxDescriptorSetUpdateAfterBindInputAttachments = 16;
+                g_mem->memcpyToGuest(cur, &p, sizeof(p));
+                break;
+            }
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT: {
+                VkPhysicalDeviceTransformFeedbackPropertiesEXT p = {};
+                g_mem->memcpyFromGuest(&p, cur, sizeof(p));
+                p.maxTransformFeedbackStreams = 4;
+                p.maxTransformFeedbackBuffers = 4;
+                p.maxTransformFeedbackBufferSize = 1ull << 27;
+                p.maxTransformFeedbackStreamDataSize = 4096;
+                p.maxTransformFeedbackBufferDataSize = 4096;
+                p.maxTransformFeedbackBufferDataStride = 256;
+                p.transformFeedbackQueries = VK_TRUE;
+                p.transformFeedbackStreamsLinesTriangles = VK_TRUE;
+                p.transformFeedbackDraw = VK_TRUE;
+                g_mem->memcpyToGuest(cur, &p, sizeof(p));
+                break;
+            }
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES: {
+                VkPhysicalDeviceVulkan11Properties p = {};
+                g_mem->memcpyFromGuest(&p, cur, sizeof(p));
+                memcpy(p.deviceUUID, uuid, VK_UUID_SIZE);
+                p.deviceNodeMask = 1;
+                p.subgroupSize = 32;
+                p.subgroupSupportedStages = 0xffffffffu;
+                p.subgroupSupportedOperations = 0xffffffffu;
+                p.subgroupQuadOperationsInAllStages = VK_TRUE;
+                p.pointClippingBehavior = VK_POINT_CLIPPING_BEHAVIOR_ALL_CLIP_PLANES;
+                p.maxMultiviewViewCount = 6;
+                p.maxMultiviewInstanceIndex = 0xFFFFFFFFu;
+                p.maxPerSetDescriptors = 1024;
+                p.maxMemoryAllocationSize = 2ull * 1024 * 1024 * 1024;
+                g_mem->memcpyToGuest(cur, &p, sizeof(p));
+                break;
+            }
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES: {
+                VkPhysicalDeviceVulkan12Properties p = {};
+                g_mem->memcpyFromGuest(&p, cur, sizeof(p));
+                p.driverID = VK_DRIVER_ID_MESA_LLVMPIPE;
+                p.driverName[0] = 'b';
+                p.driverName[1] = 'o';
+                p.driverName[2] = 'x';
+                p.driverName[3] = 'e';
+                p.driverName[4] = 'd';
+                p.driverName[5] = 'w';
+                p.driverName[6] = 'i';
+                p.driverName[7] = 'n';
+                p.driverName[8] = 'e';
+                p.driverInfo[0] = 'v';
+                p.driverInfo[1] = 'k';
+                p.driverInfo[2] = '6';
+                p.driverInfo[3] = '4';
+                /* descriptor-indexing limits, mirroring the properties2 arm */
+                p.maxUpdateAfterBindDescriptorsInAllPools = 1024;
+                p.maxPerStageDescriptorUpdateAfterBindSamplers = 16;
+                p.maxPerStageDescriptorUpdateAfterBindUniformBuffers = 16;
+                p.maxPerStageDescriptorUpdateAfterBindStorageBuffers = 4;
+                p.maxPerStageDescriptorUpdateAfterBindSampledImages = 16;
+                p.maxPerStageDescriptorUpdateAfterBindStorageImages = 4;
+                p.maxPerStageDescriptorUpdateAfterBindInputAttachments = 4;
+                p.maxPerStageUpdateAfterBindResources = 128;
+                p.maxDescriptorSetUpdateAfterBindSamplers = 1024;
+                p.maxDescriptorSetUpdateAfterBindUniformBuffers = 1024;
+                p.maxDescriptorSetUpdateAfterBindUniformBuffersDynamic = 64;
+                p.maxDescriptorSetUpdateAfterBindStorageBuffers = 1024;
+                p.maxDescriptorSetUpdateAfterBindStorageBuffersDynamic = 64;
+                p.maxDescriptorSetUpdateAfterBindSampledImages = 1024;
+                p.maxDescriptorSetUpdateAfterBindStorageImages = 1024;
+                p.maxDescriptorSetUpdateAfterBindInputAttachments = 16;
+                p.maxTimelineSemaphoreValueDifference = 0xFFFFFFFFull;
+                p.framebufferIntegerColorSampleCounts = VK_SAMPLE_COUNT_1_BIT;
+                g_mem->memcpyToGuest(cur, &p, sizeof(p));
+                break;
+            }
+            default:
+                klog_fmt("vk64: Properties2 pNext sType=%u not modeled, left as the guest set it",
+                         (unsigned)sType);
+                break;
+        }
+        cur = g_mem->readq(cur + 8);
+    }
+}
 
 void fillMemoryProperties(VkPhysicalDeviceMemoryProperties* p) {
     memset(p, 0, sizeof(*p));
@@ -922,9 +1344,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         return c < n ? VK_INCOMPLETE : VK_SUCCESS;
     }
     case VK64_fn_vkEnumerateDeviceExtensionProperties: {
-        // (physDev, pLayerName*, pCount*, pProperties*)
-        static const char* exts[] = { "VK_KHR_swapchain" };
-        const U32 n = 1;
+        // (physDev, pLayerName*, out pCount*, out pProperties*)
+        const U32 n = (U32)(sizeof(g_dev_exts) / sizeof(g_dev_exts[0]));
         if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
         std::string layer = guestStr(args.a[1]);
         if (!layer.empty()) klog_fmt("vk64: device layer '%s' requested; we have none", layer.c_str());
@@ -934,8 +1355,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         std::vector<VkExtensionProperties> props((size_t)(c ? c : 1));
         for (U32 i = 0; i < c; i++) {
             memset(&props[i], 0, sizeof(props[i]));
-            strncpy(props[i].extensionName, exts[i], VK_MAX_EXTENSION_NAME_SIZE - 1);
-            props[i].specVersion = VK_API_VERSION_1_1;
+            strncpy(props[i].extensionName, g_dev_exts[i], VK_MAX_EXTENSION_NAME_SIZE - 1);
+            props[i].specVersion = VK_API_VERSION_1_3;
         }
         writeArray(args.a[3], props, c);
         wr32(args.a[2], c);
@@ -957,39 +1378,25 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         if (!readStruct(args.a[1], p2)) return VK_ERROR_INITIALIZATION_FAILED;
         fillProperties(&p2.properties);
         writeStruct(args.a[1], p2);
+        // The chained structs are filled IN PLACE, after the root struct is
+        // written: the guest passes one buffer for the root and the chain, and
+        // reads the chain back out of it.
+        walkProperties2(p2.pNext);
         return VK_SUCCESS;
     }
     case VK64_fn_vkGetPhysicalDeviceFeatures: {
         if (!args.a[1]) return VK_ERROR_INITIALIZATION_FAILED;
         VkPhysicalDeviceFeatures f = {};
-        f.robustBufferAccess = VK_TRUE;
-        f.fullDrawIndexUint32 = VK_TRUE;
-        f.shaderStorageImageExtendedFormats = VK_TRUE;
-        f.shaderStorageImageReadWithoutFormat = VK_TRUE;
-        f.shaderStorageImageWriteWithoutFormat = VK_TRUE;
-        f.shaderClipDistance = VK_TRUE;
-        f.samplerAnisotropy = VK_TRUE;
-        f.geometryShader = VK_FALSE;      /* WebGPU has no geometry stage */
-        f.tessellationShader = VK_FALSE;
-        f.fragmentStoresAndAtomics = VK_TRUE;
-        f.vertexPipelineStoresAndAtomics = VK_TRUE;
+        fillCoreFeatures(&f);
         writeStruct(args.a[1], f);
         return VK_SUCCESS;
     }
     case VK64_fn_vkGetPhysicalDeviceFeatures2: {
         VkPhysicalDeviceFeatures2 f2 = {};
         if (!readStruct(args.a[1], f2)) return VK_ERROR_INITIALIZATION_FAILED;
-        memset(&f2.features, 0, sizeof(f2.features));
-        f2.features.robustBufferAccess = VK_TRUE;
-        f2.features.fullDrawIndexUint32 = VK_TRUE;
-        f2.features.shaderStorageImageExtendedFormats = VK_TRUE;
-        f2.features.shaderStorageImageReadWithoutFormat = VK_TRUE;
-        f2.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
-        f2.features.shaderClipDistance = VK_TRUE;
-        f2.features.samplerAnisotropy = VK_TRUE;
-        f2.features.fragmentStoresAndAtomics = VK_TRUE;
-        f2.features.vertexPipelineStoresAndAtomics = VK_TRUE;
+        fillCoreFeatures(&f2.features);
         writeStruct(args.a[1], f2);
+        walkFeatures2(f2.pNext);
         return VK_SUCCESS;
     }
     case VK64_fn_vkGetPhysicalDeviceMemoryProperties: {
@@ -1248,11 +1655,25 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         return VK_SUCCESS;
     }
     case VK64_fn_vkCreateXcbSurfaceKHR:
+    case VK64_fn_vkCreateWin32SurfaceKHR:
     case VK64_fn_vkCreateHeadlessSurfaceEXT: {
         // (instance, pCreateInfo*, pAllocator, out VkSurfaceKHR*)
+        //
+        // Win32 is the arm a DXVK-on-wine guest actually needs: d3d11.dll reaches
+        // vulkan-1.dll, winevulkan calls dlopen("libvulkan.so.1") — which is us —
+        // and then creates a WIN32 surface for the window winevulkan owns. Without
+        // this arm there is no swapchain, period (audit §d).
+        //
+        // As with xcb and headless, the create-info is NOT read: the in-tree
+        // vk/ headers carry no platform-surface declarations at all (no
+        // VkWin32SurfaceCreateInfoKHR to widen), and there is no windowing system
+        // behind the handle anyway — the id is the whole surface. Nothing needs
+        // hwnd/pNext, and skipping the read is also what keeps the shim free of a
+        // platform header.
         if (!objOf<Instance>(args.a[0], K_INSTANCE, "vkCreateSurfaceKHR") || !args.a[3])
             return VK_ERROR_INITIALIZATION_FAILED;
         wr64(args.a[3], createSurface());
+        klog_fmt("vk64: %s -> surface id minted", fnName(fnId));
         return VK_SUCCESS;
     }
     case VK64_fn_vkCreateSwapchainKHR: {
@@ -1393,6 +1814,31 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             p->depthTest = ds.depthTestEnable;
             p->depthWrite = ds.depthWriteEnable;
             p->depthOp = ds.depthCompareOp;
+            // pVertexInputState: binding + attribute descriptions. Recorded
+            // because the consumer cannot infer any of it — the draw call carries
+            // no format, no stride and no offset — and without it there is no
+            // vertex layout to build and nothing rasterizes.
+            VkPipelineVertexInputStateCreateInfo vi = {};
+            if (readStruct(ci.pVertexInputState, vi)) {
+                p->nvb = vi.vertexBindingDescriptionCount > VK64_MAX_VERT_BINDINGS
+                             ? VK64_MAX_VERT_BINDINGS : vi.vertexBindingDescriptionCount;
+                p->nva = vi.vertexAttributeDescriptionCount > VK64_MAX_VERT_ATTRIBS
+                             ? VK64_MAX_VERT_ATTRIBS : vi.vertexAttributeDescriptionCount;
+                std::vector<VkVertexInputBindingDescription> vbs;
+                readArray(vi.pVertexBindingDescriptions, p->nvb, vbs);
+                for (U32 b = 0; b < vbs.size(); b++) {
+                    p->vbStride[b] = vbs[b].stride;
+                    p->vbInputRate[b] = vbs[b].inputRate;
+                }
+                std::vector<VkVertexInputAttributeDescription> vas;
+                readArray(vi.pVertexAttributeDescriptions, p->nva, vas);
+                for (U32 a = 0; a < vas.size(); a++) {
+                    p->vaLocation[a] = vas[a].location;
+                    p->vaBinding[a] = vas[a].binding;
+                    p->vaFormat[a] = vas[a].format;
+                    p->vaOffset[a] = vas[a].offset;
+                }
+            }
             std::vector<VkPipelineColorBlendAttachmentState> blends;
             readArray(cbs.pAttachments, cbs.attachmentCount ? 1 : 0, blends);
             p->blend = (!blends.empty() && blends[0].blendEnable) ? 1 : 0;
@@ -1477,11 +1923,64 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         return VK_SUCCESS;
     }
     case VK64_fn_vkCreateSemaphore: {
-        if (!objOf<Device>(args.a[0], K_DEVICE, "vkCreateSemaphore") || !args.a[3])
+        VkSemaphoreCreateInfo ci = {};
+        if (!objOf<Device>(args.a[0], K_DEVICE, "vkCreateSemaphore") ||
+            !readStruct(args.a[1], ci) || !args.a[3])
             return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
-        createObj<Semaphore>(K_SEMAPHORE, id);
+        Semaphore* s = createObj<Semaphore>(K_SEMAPHORE, id);
+        // Timeline detection: VkSemaphoreTypeCreateInfo hangs off
+        // VkSemaphoreCreateInfo::pNext, and the walker must not stop at the first
+        // unknown sType (a guest may chain something else first).
+        for (U64 cur = ci.pNext; cur && g_mem;) {
+            if (g_mem->readd(cur) == VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO) {
+                VkSemaphoreTypeCreateInfo ti = {};
+                g_mem->memcpyFromGuest(&ti, cur, sizeof(ti));
+                s->isTimeline = (ti.semaphoreType == VK_SEMAPHORE_TYPE_TIMELINE) ? 1 : 0;
+                s->counter = ti.initialValue;
+                break;
+            }
+            cur = g_mem->readq(cur + 8);
+        }
         wr64(args.a[3], id);
+        klog_fmt("vk64: vkCreateSemaphore%s%s",
+                 s->isTimeline ? " (timeline" : "", s->isTimeline ? ")" : "");
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetSemaphoreCounterValue: {
+        // (device, semaphore, out u64*)
+        Semaphore* s = objOf<Semaphore>(args.a[1], K_SEMAPHORE, "vkGetSemaphoreCounterValue");
+        if (!s || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        wr64(args.a[2], s->counter);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkWaitSemaphores: {
+        // (device, pWaitInfo*, timeout)
+        VkSemaphoreWaitInfo wi = {};
+        if (!readStruct(args.a[1], wi)) return VK_ERROR_INITIALIZATION_FAILED;
+        for (U32 i = 0; i < wi.semaphoreCount; i++) {
+            U64 semId = rd64(wi.pSemaphores + (U64)i * 8);
+            U64 want  = rd64(wi.pValues + (U64)i * 8);
+            Semaphore* s = objOf<Semaphore>(semId, K_SEMAPHORE, "vkWaitSemaphores");
+            if (!s) return VK_ERROR_INITIALIZATION_FAILED;
+            if (s->counter < want) {
+                // A value the queue has not reached yet. timeout == 0 means
+                // "don't block", and the spec answer there is VK_TIMEOUT, not a
+                // lie; any other timeout blocks, and since execution is immediate
+                // the value is as good as reached — bump it forward, monotonically.
+                if (!args.a[2]) return VK_TIMEOUT;
+                s->counter = want;
+            }
+        }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkSignalSemaphore: {
+        // (device, pSignalInfo*)
+        VkSemaphoreSignalInfo si = {};
+        if (!readStruct(args.a[1], si)) return VK_ERROR_INITIALIZATION_FAILED;
+        Semaphore* s = objOf<Semaphore>(si.semaphore, K_SEMAPHORE, "vkSignalSemaphore");
+        if (!s) return VK_ERROR_INITIALIZATION_FAILED;
+        if (si.value > s->counter) s->counter = si.value;   /* monotonic */
         return VK_SUCCESS;
     }
 
@@ -1564,19 +2063,59 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 b = &s->binds[s->nbind++];
                 b->binding = w.dstBinding;
             }
+            // Fidelity: the write's own descriptorType (not the set layout's) and
+            // its ARRAY GEOMETRY. A DXVK caller writes descriptor arrays and
+            // partial-overlap ranges (dstArrayElement/count), and collapsing those
+            // to "element 0 of binding N" makes the recorded set a different set
+            // from the one the app declared. The element payloads stay in the flat
+            // Binding table for now (schema v2 is P3); index and count are honest
+            // today so that table can grow without re-reading the guest.
             b->type = w.descriptorType;
+            b->dstArrayElement = w.dstArrayElement;
+            b->count = w.descriptorCount ? w.descriptorCount : 1;
             if (w.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
                 w.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
                 VkDescriptorBufferInfo bi = {};
                 readStruct(w.pBufferInfo, bi);
                 b->obj = bi.buffer;
                 b->range = bi.range;
-            } else {
-                // sampled/combined image (and sampler-only): keep view + sampler
+            } else if (w.descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
+                // Inline UBO: the bytes live in the write's pNext
+                // (VkWriteDescriptorSetInlineUniformBlock), not in a buffer. Keep
+                // the data pointer so the binding is not mistaken for a null one.
+                for (U64 cur = w.pNext; cur && g_mem;) {
+                    if (g_mem->readd(cur) == VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK) {
+                        VkWriteDescriptorSetInlineUniformBlock ib = {};
+                        g_mem->memcpyFromGuest(&ib, cur, sizeof(ib));
+                        b->obj = ib.pData;
+                        b->range = ib.dataSize;
+                        break;
+                    }
+                    cur = g_mem->readq(cur + 8);
+                }
+            } else if (w.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
+                       w.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ||
+                       w.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER) {
+                // image-only / sampler-only: keep the one handle each names, so a
+                // storage image is not misreported as a sampled image
                 VkDescriptorImageInfo ii = {};
                 readStruct(w.pImageInfo, ii);
                 b->obj = ii.imageView;
                 b->range = ii.sampler;
+            } else {
+                // combined image sampler (and texel buffers, which share the
+                // VkDescriptorBufferInfo shape)
+                if (w.pBufferInfo) {
+                    VkDescriptorBufferInfo bi = {};
+                    readStruct(w.pBufferInfo, bi);
+                    b->obj = bi.buffer;
+                    b->range = bi.range;
+                } else {
+                    VkDescriptorImageInfo ii = {};
+                    readStruct(w.pImageInfo, ii);
+                    b->obj = ii.imageView;
+                    b->range = ii.sampler;
+                }
             }
         }
         return VK_SUCCESS;
@@ -1774,6 +2313,31 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         pushCmd(cb, c);
         return 0;
     }
+    case VK64_fn_vkCmdPushConstants: {
+        /* (cmdBuf, layout, stageFlags, offset, size, pValues). DXVK pushes
+         * constants per-draw for nearly everything, so this used to be a hard
+         * stop: the call fell into the benign tail and the manifest carried no
+         * per-draw constants at all. The bytes are copied out of guest memory now,
+         * with the byte OFFSET kept, because a push is an overlay into a
+         * push-constant range rather than a replacement of it. */
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdPushConstants");
+        if (!cb) return 0;
+        U32 off = (U32)args.a[3], size = (U32)args.a[4];
+        if (!args.a[5] || !size) return 0;
+        if (size > VK64_MAX_PUSH_BYTES) {
+            klog_fmt("vk64: vkCmdPushConstants %u bytes truncated to %u (maxPushConstantsSize)",
+                     (unsigned)size, (unsigned)VK64_MAX_PUSH_BYTES);
+            size = VK64_MAX_PUSH_BYTES;
+        }
+        Cmd c;
+        c.kind = CMD_PUSH_CONST;
+        c.pcOffset = off;
+        c.pcSize = size;
+        c.pcStageFlags = (U32)args.a[2];
+        g_mem->memcpyFromGuest(c.pcBytes, args.a[5], size);
+        pushCmd(cb, c);
+        return 0;
+    }
     case VK64_fn_vkCmdPipelineBarrier: {
         /* WebGPU pass encoding makes colour/depth layout transitions implicit,
          * so the barrier is dropped — but an ordering marker is kept so submit
@@ -1813,12 +2377,36 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     // E. Frame boundary (2 of the 85)
     // =====================================================================
     case VK64_fn_vkQueueSubmit: {
-        // (queue, nSubmits, pSubmits*, fence)
+        // (queue, nSubmits, pSubmits*)
         U32 n = (U32)args.a[1];
         std::vector<VkSubmitInfo> sis;
         readArray(args.a[2], n, sis);
         std::vector<std::pair<CmdBuf*, U64>> frames;
         for (U32 i = 0; i < n; i++) {
+            // VkTimelineSemaphoreSubmitInfo in pNext: the per-batch wait/signal
+            // VALUES that make a u64 semaphore mean anything. DXVK writes one of
+            // these on every flush (its tracking fence), so ignoring the chain
+            // means the counter never moves and every later wait reads stale.
+            for (U64 cur = sis[i].pNext; cur && g_mem;) {
+                if (g_mem->readd(cur) == VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO) {
+                    VkTimelineSemaphoreSubmitInfo ti = {};
+                    g_mem->memcpyFromGuest(&ti, cur, sizeof(ti));
+                    for (U32 w = 0; w < ti.waitSemaphoreValueCount; w++) {
+                        U64 semId = rd64(sis[i].pWaitSemaphores + (U64)w * 8);
+                        U64 want  = rd64(ti.pWaitSemaphoreValues + (U64)w * 8);
+                        Semaphore* s = objOf<Semaphore>(semId, K_SEMAPHORE, "vkQueueSubmit");
+                        if (s && s->counter < want) s->counter = want;
+                    }
+                    for (U32 sg = 0; sg < ti.signalSemaphoreValueCount; sg++) {
+                        U64 semId = rd64(sis[i].pSignalSemaphores + (U64)sg * 8);
+                        U64 val   = rd64(ti.pSignalSemaphoreValues + (U64)sg * 8);
+                        Semaphore* s = objOf<Semaphore>(semId, K_SEMAPHORE, "vkQueueSubmit");
+                        if (s && val > s->counter) s->counter = val;
+                    }
+                    break;
+                }
+                cur = g_mem->readq(cur + 8);
+            }
             for (U32 c = 0; c < sis[i].commandBufferCount; c++) {
                 U64 cbId = rd64(sis[i].pCommandBuffers + (U64)c * 8);
                 CmdBuf* cb = cbOf(cbId, "vkQueueSubmit");
@@ -1844,6 +2432,12 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             klog_fmt("vk64: vkQueuePresentKHR swapchain=0x%llx image=%u %ux%u -> presents frame %u",
                      (unsigned long long)scId, (unsigned)rd32(pi.pImageIndices + (U64)i * 4),
                      sc ? sc->w : 0, sc ? sc->h : 0, g_frameNo ? g_frameNo - 1 : 0);
+            // One result PER SWAPCHAIN, always VK_SUCCESS. Not writing this is
+            // what produces a phantom device-loss cascade in a DXVK-shaped caller:
+            // it reads the array back and finds whatever was on the stack. (And
+            // write it even for a swapchain we did not resolve, so the count the
+            // guest sees is still complete.)
+            if (pi.pResults) wr32(pi.pResults + (U64)i * 4, VK_SUCCESS);
         }
         // THE frame handoff: one MAIN_THREAD_EM_ASM per frame. P1 wrote the
         // manifest to a file and appended a present.log line; here the manifest

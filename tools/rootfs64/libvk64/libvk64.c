@@ -168,6 +168,15 @@ enum {
     VK64_fn_vkQueueWaitIdle,
     VK64_fn_vkCreateHeadlessSurfaceEXT,
 
+    // P2-NOW block: the Win32 surface a wine-hosted DXVK creates, the
+    // timeline-semaphore quartet its per-flush tracking fence needs, and
+    // vkCmdPushConstants. Same list, same order, as vk64bridge_abi.h.
+    VK64_fn_vkCreateWin32SurfaceKHR,
+    VK64_fn_vkGetSemaphoreCounterValue,
+    VK64_fn_vkWaitSemaphores,
+    VK64_fn_vkSignalSemaphore,
+    VK64_fn_vkCmdPushConstants,
+
     VK64_fn__MAX
 };
 
@@ -397,6 +406,15 @@ API VkResult vkCreateHeadlessSurfaceEXT(VkInstance inst, const void* ci, const v
     VK64Args a = {{0}}; a.a[0] = inst; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
     return (VkResult)vk64_trap(VK64_fn_vkCreateHeadlessSurfaceEXT, &a);
 }
+/* The surface a wine-hosted DXVK actually creates: d3d11.dll -> vulkan-1.dll ->
+ * winevulkan -> dlopen("libvulkan.so.1") == us, and the window belongs to
+ * winevulkan, so it asks for a WIN32 surface. hwnd and the create-info travel as
+ * an opaque guest pointer; the host mints an id without reading them (there is no
+ * windowing system behind the handle, same as the xcb/headless arms). */
+API VkResult vkCreateWin32SurfaceKHR(VkInstance inst, const void* ci, const void* alloc, VkSurfaceKHR* out) {
+    VK64Args a = {{0}}; a.a[0] = inst; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
+    return (VkResult)vk64_trap(VK64_fn_vkCreateWin32SurfaceKHR, &a);
+}
 API VkResult vkCreateSwapchainKHR(VkDevice dev, const void* ci, const void* alloc, VkSwapchainKHR* out) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
     return (VkResult)vk64_trap(VK64_fn_vkCreateSwapchainKHR, &a);
@@ -461,6 +479,22 @@ API VkResult vkCreateFence(VkDevice dev, const void* ci, const void* alloc, VkFe
 API VkResult vkCreateSemaphore(VkDevice dev, const void* ci, const void* alloc, VkSemaphore* out) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
     return (VkResult)vk64_trap(VK64_fn_vkCreateSemaphore, &a);
+}
+// The timeline-semaphore quartet. DXVK signals a u64 fence on every
+// command-list flush and reads it back with vkGetSemaphoreCounterValue, so
+// without these three the first flush dies in the benign tail. The wait/signal
+// info structs are opaque guest pointers, as everywhere else in this shim.
+API VkResult vkGetSemaphoreCounterValue(VkDevice dev, VkSemaphore sem, uint64_t* out) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = sem; a.a[2] = P(out);
+    return (VkResult)vk64_trap(VK64_fn_vkGetSemaphoreCounterValue, &a);
+}
+API VkResult vkWaitSemaphores(VkDevice dev, const void* waitInfo, uint64_t timeout) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(waitInfo); a.a[2] = timeout;
+    return (VkResult)vk64_trap(VK64_fn_vkWaitSemaphores, &a);
+}
+API VkResult vkSignalSemaphore(VkDevice dev, const void* signalInfo) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(signalInfo);
+    return (VkResult)vk64_trap(VK64_fn_vkSignalSemaphore, &a);
 }
 
 // ===========================================================================
@@ -630,6 +664,12 @@ API void vkCmdDraw(VkCommandBuffer cb, uint32_t vertexCount, uint32_t instanceCo
     a.a[0] = cb; a.a[1] = vertexCount; a.a[2] = instanceCount; a.a[3] = firstVertex; a.a[4] = firstInstance;
     (void)vk64_trap(VK64_fn_vkCmdDraw, &a);
 }
+API void vkCmdPushConstants(VkCommandBuffer cb, VkPipelineLayout layout, VkFlags stageFlags,
+                            uint32_t offset, uint32_t size, const void* values) {
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = layout; a.a[2] = stageFlags; a.a[3] = offset; a.a[4] = size; a.a[5] = P(values);
+    (void)vk64_trap(VK64_fn_vkCmdPushConstants, &a);
+}
 API void vkCmdPipelineBarrier(VkCommandBuffer cb, VkFlags srcStage, VkFlags dstStage,
                               VkFlags depFlags, uint32_t nmc, const void* pmc,
                               uint32_t nbc, const void* pbc, uint32_t nic, const void* pic) {
@@ -719,6 +759,7 @@ static const struct procEntry g_procs[] = {
     E(vkCreateDevice, VK64_fn_vkCreateDevice),
     E(vkCreateXcbSurfaceKHR, VK64_fn_vkCreateXcbSurfaceKHR),
     E(vkCreateHeadlessSurfaceEXT, VK64_fn_vkCreateHeadlessSurfaceEXT),
+    E(vkCreateWin32SurfaceKHR, VK64_fn_vkCreateWin32SurfaceKHR),
     E(vkCreateSwapchainKHR, VK64_fn_vkCreateSwapchainKHR),
     E(vkCreateCommandPool, VK64_fn_vkCreateCommandPool),
     E(vkCreateBuffer, VK64_fn_vkCreateBuffer),
@@ -735,6 +776,9 @@ static const struct procEntry g_procs[] = {
     E(vkCreatePipelineCache, VK64_fn_vkCreatePipelineCache),
     E(vkCreateFence, VK64_fn_vkCreateFence),
     E(vkCreateSemaphore, VK64_fn_vkCreateSemaphore),
+    E(vkGetSemaphoreCounterValue, VK64_fn_vkGetSemaphoreCounterValue),
+    E(vkWaitSemaphores, VK64_fn_vkWaitSemaphores),
+    E(vkSignalSemaphore, VK64_fn_vkSignalSemaphore),
     // --- allocation / binding / update / map ---
     E(vkAllocateMemory, VK64_fn_vkAllocateMemory),
     E(vkAllocateCommandBuffers, VK64_fn_vkAllocateCommandBuffers),
@@ -774,6 +818,7 @@ static const struct procEntry g_procs[] = {
     E(vkCmdSetViewport, VK64_fn_vkCmdSetViewport),
     E(vkCmdSetScissor, VK64_fn_vkCmdSetScissor),
     E(vkCmdDraw, VK64_fn_vkCmdDraw),
+    E(vkCmdPushConstants, VK64_fn_vkCmdPushConstants),
     E(vkCmdPipelineBarrier, VK64_fn_vkCmdPipelineBarrier),
     E(vkCmdCopyBufferToImage, VK64_fn_vkCmdCopyBufferToImage),
     // --- frame boundary ---
@@ -935,7 +980,6 @@ TAIL(vkCmdPipelineBarrier2KHR)
 TAIL(vkCmdBindIndexBuffer)
 TAIL(vkCmdBindIndexBuffer2)
 TAIL(vkCmdBindIndexBuffer2KHR)
-TAIL(vkCmdPushConstants)
 TAIL(vkCmdPushConstants2)
 TAIL(vkCmdPushConstants2KHR)
 TAIL(vkCmdDrawIndexed)

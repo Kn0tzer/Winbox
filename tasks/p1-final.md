@@ -534,6 +534,103 @@ pre-existing boot/shutdown noise — the identical signature occurs in
 
 ---
 
+## 2.12 SPIR-V route decision (2026-10-05 — P2-NOW item 7)
+
+**Decision: stay on naga, and — only if the dxc corpus needs it — carry a
+maintained naga spv-in patch in-tree. NOT an upstream upgrade (there is nothing
+to upgrade to), NOT spirv-webgpu-transform, NOT a new translator.**
+
+### The audit's §(e) diagnosis was wrong on both counts, and the correction changes the answer
+
+§2.10 unknown #2 and the adversarial audit attributed `InvalidId(40)` to
+fragment derivatives (`OpDPdx`/`OpDPdy`) plus `OpImageSampleExplicitLod`.
+Re-checked offline against the CURRENT UPSTREAM naga source:
+
+| audit claim | check | result |
+|---|---|---|
+| `OpImageSampleExplicitLod` (opcode 87) | SPIR-V opcode 87 is `OpImageSampleImplicitLod`; ExplicitLod is 88 | wrong opcode (off by one) |
+| derivatives block the import | `naga-30.0.1/src/front/spv/next_block.rs:2341` implements `Op::DPdx` (`DPdxFine`/`DPdxCoarse` beside it) | derivatives are **supported** |
+| an upstream fix might exist | `cargo add naga` → `Adding naga v30.0.1 (available: v30.0.1)` — 30.0.1 **is** the newest published naga, and it is the version the vendored wasm carries. The repo's "newer" npm dep `naga-wasm@30.2.0` reports `nagaVersion = "30.0.1"` and fails identically | no upstream fix to wait for |
+
+What actually fails is the **provenance of the combined image sampler**:
+
+```
+frag: OpTypeImage x1  OpTypeSampledImage x1  OpSampledImage x0
+      OpImageSampleImplicitLod x1  OpLoad x8  OpDPdx x1  OpDPdy x1
+vert: OpTypeImage x0  OpTypeSampledImage x0  OpSampledImage x0   -> translates clean
+```
+
+The fragment samples through `OpLoad %37 %40 %39`, i.e. it loads an
+`OpTypeSampledImage` and hands the loaded id straight to the sample instruction.
+naga's `lookup_sampled_image` has exactly **one** writer —
+`parse_image_couple` (`front/spv/image.rs:243`), reached only from
+`Op::SampledImage` (`front/spv/next_block.rs:1325`) — so both the LOD branch
+(`image.rs:539`) and the main path (`image.rs:628`) look id 40 up in a table it
+was never inserted into, and `LookupHelper::lookup` (`front/spv/mod.rs:169`)
+returns `Error::InvalidId(40)`.
+
+Two offline bisects confirm the sampled image is the whole story, not a
+co-factor:
+
+| experiment | result |
+|---|---|
+| build naga 30.0.1 from source, translate P1's pair | `invalid id %40` — the bug is in upstream, not in the vendored wasm build |
+| delete the `OpLoad %37 %40 %39`, retarget its uses to the global `%39` | still fails, now `invalid id %39` |
+| rewrite opcode 87 → 86 (implicit ⇒ implicit) | still fails, now `invalid id %46` (the implicit-LOD load) |
+
+The vertex shader translates because it contains no image at all. So the trigger
+is **"this module samples a texture"**, not "this module uses derivatives" — a
+narrow, single-lookup provenance gap, and the reachable question for DXVK is
+whether dxc ever emits `OpSampledImage` (in which case dxc shaders may sail
+through this path) or the loaded-`OpTypeSampledImage` form.
+
+### Why each route wins or loses
+
+- **Upstream naga fix — dead.** 30.0.1 is the newest release and still fails.
+  "Check upstream first" was the cheapest option and it is now closed, with
+  evidence rather than a guess.
+- **spirv-webgpu-transform — not a translator.** `SPIRVWebGPUTransforms` is an
+  **MLIR/LLVM dialect pass** (`lib/Dialect/SPIRV/Transforms/`): it downlevels
+  SPIR-V capability constructs (1.3+ → the WebGPU-safe subset, descriptor
+  indexing, …) and still emits SPIR-V, so naga is required afterwards anyway.
+  It cannot fix `InvalidId`, which is present in the WebGPU-safe subset too
+  (SPIR-V 1.0, `OpTypeSampledImage` is core). It is a possible P4 complement for
+  dxc's 1.3+ constructs, never a replacement.
+- **spirv-cross-wasm (SPIR-V→GLSL) + naga glsl-in — worse coverage, double the
+  failure surface.** Nothing is vendored (no `spirv*` anywhere in the tree, not in
+  `node_modules`), so it needs a fresh emscripten build; and it makes GLSL — which
+  has no representation for the things DXVK's pixel shaders actually carry (spec
+  constants for per-draw specialization, descriptor-indexing decorations, Xfb,
+  subgroup ops) — the intermediate language. It would convert modules naga
+  handles today and still need naga for the constructs it does not.
+- **New in-house translator — no.** This is the whole reason naga is in the tree.
+- **Maintained naga spv-in patch — the fallback, and it is small.** The fix is to
+  register `OpLoad`-of-`OpTypeSampledImage` results into `lookup_sampled_image`
+  (a change local to the front end, ~tens of lines). The cost is not the patch, it
+  is the maintenance surface: a forked Rust crate plus a `cargo` +
+  `wasm32-wasi`/wasm-bindgen build in-tree. Both cargo and crates.io are
+  reachable from this box (`cargo add naga` resolves), so this is a
+  do-it-next-session cost, not a blocked one.
+
+### What P3 does, in order
+
+1. **Get the dxc corpus entry** — one dxc-compiled DXVK vertex+pixel pair. This is
+   the only input that cannot be manufactured here: there is no dxc, no DXVK
+   binary and no game in this environment, which is the offline constraint the
+   audit flagged and it still stands. G2 condition (5) stays blocked on it.
+2. **Count `OpSampledImage` vs loaded `OpTypeSampledImage` in it.** That single
+   number decides between "naga as-is works for DXVK's pixel shaders" and
+   "fork naga". Do not fork before this measurement — the answer is one grep.
+3. Only then: patch `lookup_sampled_image`, rebuild `web/vendor/naga`, and re-run
+   the page-tier gate on both the vkcube pair and the dxc pair.
+
+Meanwhile the boundary side is unaffected: §2.5 already established that the
+SPIR-V bytes cross as an opaque base64 blob in the manifest and are converted in
+the page (`web/shader.mjs` → `vendor/naga`). Nothing about the route changes the
+ABI, the frame schema, or the trap.
+
+---
+
 # PART 3 — evidence index
 
 ```
