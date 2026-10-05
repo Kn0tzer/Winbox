@@ -777,6 +777,15 @@ const V2_VERT_FORMAT = {
   100: 'float32', 103: 'float32x2', 106: 'float32x3', 109: 'float32x4',
   37: 'unorm8x4', 16: 'unorm8x2', 64: 'unorm10-10-10-2',
   83: 'float16x2', 97: 'float16x4', 77: 'unorm16x2', 91: 'unorm16x4',
+  // 44 = VK_FORMAT_B8G8R8A8_UNORM. WebGPU has no BGRA vertex format; map to
+  // unorm8x4. Caveat: R/B channels swap vs Vulkan component order.
+  44: 'unorm8x4',
+};
+// Byte size of each V2_VERT_FORMAT entry, for minimum-stride computation.
+const V2_VERT_FORMAT_SIZE = {
+  'float32': 4, 'float32x2': 8, 'float32x3': 12, 'float32x4': 16,
+  'unorm8x2': 2, 'unorm8x4': 4, 'unorm10-10-10-2': 4,
+  'float16x2': 4, 'float16x4': 8, 'unorm16x2': 4, 'unorm16x4': 8,
 };
 export function v2VertexFormat(vkFormat) { return V2_VERT_FORMAT[vkFormat] || null; }
 const V2_TOPOLOGY = { 0: 'point-list', 1: 'line-list', 2: 'line-strip', 3: 'triangle-list', 4: 'triangle-strip' };
@@ -1020,6 +1029,66 @@ export function scanWgslResources(wgsl) {
   }
   return out;
 }
+// WGSL uniform-address-space size computation, for padding short buffers.
+// wgslUniformSizes returns a Map from "group:binding" to the byte size of the
+// uniform struct declared there. Pure and testable.
+export function wgslUniformSizes(wgsl) {
+  const structs = new Map();
+  const structRe = /struct\s+(\w+)\s*\{([^}]*)\}/g;
+  let m;
+  while ((m = structRe.exec(wgsl))) {
+    const fields = [];
+    for (const part of m[2].split(",")) {
+      const fm = /(\w+)\s*:\s*([^,;@]+)/.exec(part.trim());
+      if (fm) fields.push({ name: fm[1], type: fm[2].trim() });
+    }
+    structs.set(m[1], fields);
+  }
+  const out = new Map();
+  const declRe = /@group\((\d+)\)\s*@binding\((\d+)\)\s*var<uniform>\s*\w+\s*:\s*([^;]+);/g;
+  while ((m = declRe.exec(wgsl))) {
+    const t = wgslTypeLayout(m[3].trim(), structs);
+    if (t) out.set(m[1] + ":" + m[2], t.size);
+  }
+  return out;
+}
+
+// Returns {size, align} for a WGSL type in the uniform address space.
+function wgslTypeLayout(type, structs) {
+  const scalar = { f32: 4, i32: 4, u32: 4, bool: 4 };
+  if (scalar[type]) return { size: 4, align: 4 };
+  let vm = /^vec(\d)<\s*(\w+)\s*>$/.exec(type);
+  if (vm) {
+    const n = +vm[1];
+    if (n === 2) return { size: 8, align: 8 };
+    return { size: 16, align: 16 }; // vec3/vec4
+  }
+  let mm = /^mat(\d)x(\d)<\s*\w+\s*>$/.exec(type);
+  if (mm) {
+    const cols = +mm[1]; // each column is a vec aligned to 16
+    return { size: cols * 16, align: 16 };
+  }
+  let am = /^array<\s*([^,]+?)\s*,\s*(\d+)\s*>$/.exec(type);
+  if (am) {
+    const el = wgslTypeLayout(am[1].trim(), structs);
+    if (!el) return null;
+    const stride = Math.ceil(el.size / el.align) * el.align;
+    return { size: stride * (+am[2]), align: el.align };
+  }
+  const fields = structs.get(type);
+  if (fields) {
+    let offset = 0, maxAlign = 16;
+    for (const f of fields) {
+      const t = wgslTypeLayout(f.type, structs);
+      if (!t) return null;
+      maxAlign = Math.max(maxAlign, t.align);
+      offset = Math.ceil(offset / t.align) * t.align + t.size;
+    }
+    const size = Math.ceil(offset / maxAlign) * maxAlign;
+    return { size, align: maxAlign };
+  }
+  return null;
+}
 
 // MSAA: WebGPU guarantees sampleCount 1 and 4; a DXVK multisampled target
 // resolves through a 4x texture into the single-sample target the readback and
@@ -1213,6 +1282,12 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       if (!prior) uniqueDeclarations.set(key, decl);
     }
     const decls = [...uniqueDeclarations.values()];
+    // Uniform block sizes from the WGSL, so short buffers can be padded.
+    const uniformSizes = wgslUniformSizes(vsR.code + "\n" + fsR.code);
+    for (const d of decls) if (d.addr === "uniform") {
+      const s = uniformSizes.get(d.group + ":" + d.binding);
+      if (s) d.minSize = s;
+    }
     const byGroup = new Map();
     for (const d of decls) {
       if (d.group > 2 && !(d.group === V2_PUSH_GROUP && d.binding === V2_PUSH_BINDING && d.addr === 'uniform')) {
@@ -1242,14 +1317,18 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     const slotOf = new Map(); // vulkan binding number -> vertex slot
     for (const vb of pipe.vb) {
       const attributes = [];
+      let minStride = 0;
       for (const va of pipe.va) {
         if (va.binding !== vb.binding) continue;
         const vf = v2VertexFormat(va.format);
         if (!vf) { stats.unsupported++; return { skip: 'vertex-format:' + va.format }; }
         attributes.push({ shaderLocation: va.location, offset: va.offset, format: vf });
+        minStride = Math.max(minStride, va.offset + (V2_VERT_FORMAT_SIZE[vf] || 4));
       }
       slotOf.set(vb.binding, buffers.length);
-      buffers.push({ arrayStride: Math.max(1, vb.stride), stepMode: vb.inputRate ? 'instance' : 'vertex', attributes });
+      const stride = Math.max(vb.stride, minStride, 4);
+      const arrayStride = Math.ceil(stride / 4) * 4;
+      buffers.push({ arrayStride, stepMode: vb.inputRate ? 'instance' : 'vertex', attributes });
     }
 
     device.pushErrorScope('validation');
@@ -1332,7 +1411,16 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
           let bytes = null, bufHex = null;
           if (b && b.kind === 1) { bufHex = b.obj; bytes = F.buffers.get(bufHex); }
           else if (b && b.kind === 4) { bufHex = 'inline:' + group + ':' + d.binding + ':' + k; bytes = inlineMap.get(group + ':' + d.binding); }
-          if (!bytes) { bytes = new Uint8Array(16); bufHex = 'zero:' + group + ':' + d.binding + ':' + k; }
+          // Missing uniform data: substitute a zero buffer large enough for any
+          // practical uniform block (WebGPU validates against the shader's struct).
+          if (!bytes) { bytes = new Uint8Array(4096); bufHex = 'zero:' + group + ':' + d.binding + ':' + k; }
+          // Pad short buffers to the shader-declared uniform block size.
+          if (d.minSize && bytes.length < d.minSize) {
+            const padded = new Uint8Array(d.minSize);
+            padded.set(bytes);
+            bytes = padded;
+            bufHex += ':pad' + d.minSize;
+          }
           return { buffer: gpuBufferFor(bufHex, bytes, (isStorage ? GPUBufferUsage.STORAGE : GPUBufferUsage.UNIFORM) | GPUBufferUsage.COPY_DST) };
         };
         if (d.arrayCount > 1) {
@@ -1364,6 +1452,9 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     const groupCache = new Map(); // per-frame: pipeKey|setIndex|ver -> GPUBindGroup
     const pushBuf = device.createBuffer({ size: V2_PUSH_SIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     F.live.push(pushBuf);
+    // Dummy vertex buffer for pipeline slots the guest leaves unbound (null buffer).
+    const dummyVb = device.createBuffer({ size: 4096, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+    F.live.push(dummyVb);
 
     for (const p of frame.passes) {
       // --- targets for this pass (MSAA-aware) ---
@@ -1477,6 +1568,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
               }
               passEnc.setBindGroup(V2_PUSH_GROUP, pg);
             }
+            const vbSet = new Set();
             for (const vb of st.vbinds) {
               const slot = st.pipeRec.slotOf.get(vb.binding);
               if (slot === undefined) continue;
@@ -1484,6 +1576,11 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
               if (!bytes) continue;
               const gpu = gpuBufferFor(vb.buf, bytes, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST);
               passEnc.setVertexBuffer(slot, gpu, Math.min(vb.offset, gpu.size));
+              vbSet.add(slot);
+            }
+            // Slots the guest left unbound (null buffer) still need a buffer.
+            for (const slot of st.pipeRec.slotOf.values()) {
+              if (!vbSet.has(slot)) passEnc.setVertexBuffer(slot, dummyVb, 0);
             }
             let indexed = op.indexed;
             if (indexed && st.ibind) {
