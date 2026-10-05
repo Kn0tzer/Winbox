@@ -64,7 +64,11 @@ CPU64::CPU64(KMemory64* memory) : memory(memory) {
     fpu.FINIT();
 }
 
-CPU64::~CPU64() = default;
+CPU64::~CPU64() {
+    // State ownership is independent of BOXEDWINE_BLOCK_EXEC: freeJit() is
+    // compiled only with that gate, so release the complete type here.
+    delete m_jit;
+}
 
 void CPU64::cloneRegistersFrom(const CPU64* from) {
     for (int i = 0; i < X64_REG_COUNT; i++) {
