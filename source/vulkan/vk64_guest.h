@@ -6037,7 +6037,6 @@ typedef struct VkRenderingInfo {
     uint32_t layerCount;
     uint32_t viewMask;
     uint32_t colorAttachmentCount;
-    uint32_t _pad;
     uint64_t pColorAttachments;
     uint64_t pDepthAttachment;
     uint64_t pStencilAttachment;
