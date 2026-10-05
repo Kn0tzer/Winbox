@@ -1,0 +1,1865 @@
+/*
+ *  Copyright (C) 2012-2025  The Boxedwine Team
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ */
+
+// Host side of the 64-bit Vulkan bridge — see vk64bridge.h / vk64bridge_abi.h.
+//
+// This is the P2 successor of the P1 native ICD (/tmp/p1work/icd/vkwebgpu_icd.c,
+// 1764 LOC, proven by driving the real Vulkan loader 1.3.275 + vkcube to a clean
+// exit 0 through it). The object tables, the command recording, the eager
+// copyBufferToImage execution and the submit-time frame reconstruction are ported
+// essentially verbatim. THREE things change, and only three:
+//
+//   1. There is no Vulkan LOADER in the guest and no ICD .so. The guest shim
+//      (tools/rootfs64/libvk64/libvk64.c) IS the API surface: it exports the 85
+//      vk* entry points plus vkGetInstanceProcAddr/vkGetDeviceProcAddr, each of
+//      which packs a VK64Args block and traps here on VK64_SYSCALL_NR. So the
+//      12 LOOKUP_REQUIRED_GIPA entry points, the negotiate handshake, the
+//      VK_LOADER_DATA member-0 rule and the ICD JSON manifest are all gone — the
+//      loader contract is vacuous. See tasks/p1-final.md PART 2 section 2.0.
+//
+//   2. Memory is GUEST memory, not host malloc. KMemory64 is a soft MMU (a
+//      per-4KiB-page backing store; getRamPtr() returns nullptr whenever a range
+//      crosses a page boundary), so there is no flat host pointer to hand a
+//      guest write into. vkAllocateMemory therefore maps through
+//      KMemory64::mmapReserveAndMap and vkMapMemory returns that GUEST VA;
+//      everything that needs the bytes copies them with memcpyFromGuest /
+//      memcpyToGuest. (tasks/p1-final.md section 2.4.)
+//
+//   3. The sink is one MAIN_THREAD_EM_ASM hop per frame into the page, not a
+//      file tree. P1 wrote icd/vkwgpu_stream/frameNNNN.json + sidecar .bin/.spv
+//      files that a separate node+chromium process read; P2 emits the SAME
+//      manifest schema (tasks/p1-final.md section 2.6 — host/p1render.mjs stays
+//      a valid reference consumer) with the sidecar payloads inlined as base64,
+//      because there is no filesystem between the wasm host and the page.
+//
+// Everything runs inline on the calling guest thread (no main-thread hop per
+// call): Vulkan already separates recording from submission, so the command
+// buffer IS the batching boundary, and only the per-frame handoff hops.
+
+#include "boxedwine.h"
+
+#ifdef BOXEDWINE_VULKAN64
+
+#include "vk64bridge.h"
+#include "vk64bridge_abi.h"
+#include "cpu64.h"
+#include "kmemory64.h"
+#include "kprocess.h"
+
+// Vulkan core types, for STRUCT LAYOUTS, enums and constants only.
+//
+// This header is GENERATED from source/vulkan/vk/vulkan_core.h by
+// tools/vulkan/gen/gen_vk64_guest.py and is NOT vulkan_core.h itself, because
+// this file copies structs out of x86-64 GUEST memory while compiling into the
+// wasm32 Emscripten build: in-tree, a `const void* pNext` /
+// `const char* const* ppEnabledExtensionNames` / `const VkCommandBuffer*
+// pCommandBuffers` member is FOUR bytes here and EIGHT in the guest, so every
+// field after the first pointer would be read from the wrong offset. The
+// generated header declares the same structs with every pointer/handle member
+// widened to uint64_t, which IS the x86-64 layout — verified by diffing
+// sizeof/offsetof of 69 structs/offsets against the real header on an LP64 host,
+// and guarded by the static_asserts inside the generated header itself.
+#include "vk64_guest.h"
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+#endif
+
+#include <vector>
+#include <unordered_map>
+#include <string>
+#include <mutex>
+#include <cstring>
+#include <cstdio>
+#include <cstdlib>
+
+namespace {
+
+// ---------------------------------------------------------------------------
+// Diagnostics
+// ---------------------------------------------------------------------------
+// BW64_VKTRACE=1 logs every trapped entry point by name; =2 is unlimited.
+//
+// getenv() is unreliable on guest worker threads in the pthread build
+// (Module.ENV is not always wired to workers), so the env var alone cannot be
+// the gate for "the trap log proves calls crossed the boundary". The first
+// g_freeTraceCalls calls are therefore ALWAYS logged: that budget covers a whole
+// bring-up sequence (P1's loader_tally needed 12 calls to reach vkQueueSubmit;
+// vkcube's whole setup is ~40), which makes the evidence independent of env
+// plumbing.
+// BW64_VKFRAME=1 additionally dumps the full frame manifest JSON.
+int  g_traceEnv     = 0;
+bool g_traceEnvInit = false;
+U64  g_tracedCalls  = 0;
+const U64 g_freeTraceCalls = 256;
+
+inline bool vkTrace() {
+    if (!g_traceEnvInit) {
+        const char* t = getenv("BW64_VKTRACE");
+        g_traceEnv = t ? (t[0] == '2' ? 2 : 1) : 0;
+        g_traceEnvInit = true;
+    }
+    return g_traceEnv != 0 || g_tracedCalls < g_freeTraceCalls;
+}
+// 0 = off, 1 = on with the payload-elision cap, 2 = on, never elide.
+inline int vkDumpFrames() {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* t = getenv("BW64_VKFRAME");
+        cached = (!t || !t[0] || t[0] == '0') ? 0 : (t[0] == '2' ? 2 : 1);
+    }
+    return cached;
+}
+// Above this, the manifest's base64 payloads are stripped from the log.
+const size_t kManifestLogCap = 64 * 1024;
+
+// ---------------------------------------------------------------------------
+// Function-id name table (trace only). MUST stay in sync with
+// vk64bridge_abi.h — the guest shim carries the same enum.
+// ---------------------------------------------------------------------------
+#define VK64_FN_LIST(X)                                                      \
+    X(VK64_fn_witness,                              "witness")                \
+    X(VK64_fn_unimplemented,                        "unimplemented")          \
+    X(VK64_fn_traceProc,                            "traceProc")              \
+    X(VK64_fn_vkEnumerateInstanceExtensionProperties,"vkEnumerateInstanceExtensionProperties") \
+    X(VK64_fn_vkEnumerateInstanceLayerProperties,   "vkEnumerateInstanceLayerProperties")       \
+    X(VK64_fn_vkEnumeratePhysicalDevices,           "vkEnumeratePhysicalDevices")               \
+    X(VK64_fn_vkEnumerateDeviceExtensionProperties, "vkEnumerateDeviceExtensionProperties")     \
+    X(VK64_fn_vkGetPhysicalDeviceProperties,        "vkGetPhysicalDeviceProperties")            \
+    X(VK64_fn_vkGetPhysicalDeviceFeatures,          "vkGetPhysicalDeviceFeatures")              \
+    X(VK64_fn_vkGetPhysicalDeviceMemoryProperties,  "vkGetPhysicalDeviceMemoryProperties")        \
+    X(VK64_fn_vkGetPhysicalDeviceQueueFamilyProperties,"vkGetPhysicalDeviceQueueFamilyProperties")\
+    X(VK64_fn_vkGetPhysicalDeviceFormatProperties,  "vkGetPhysicalDeviceFormatProperties")      \
+    X(VK64_fn_vkGetPhysicalDeviceSurfaceCapabilitiesKHR,"vkGetPhysicalDeviceSurfaceCapabilitiesKHR") \
+    X(VK64_fn_vkGetPhysicalDeviceSurfaceFormatsKHR, "vkGetPhysicalDeviceSurfaceFormatsKHR")     \
+    X(VK64_fn_vkGetPhysicalDeviceSurfacePresentModesKHR,"vkGetPhysicalDeviceSurfacePresentModesKHR") \
+    X(VK64_fn_vkGetPhysicalDeviceSurfaceSupportKHR, "vkGetPhysicalDeviceSurfaceSupportKHR")     \
+    X(VK64_fn_vkGetDeviceQueue,                     "vkGetDeviceQueue")       \
+    X(VK64_fn_vkGetBufferMemoryRequirements,        "vkGetBufferMemoryRequirements") \
+    X(VK64_fn_vkGetImageMemoryRequirements,         "vkGetImageMemoryRequirements")  \
+    X(VK64_fn_vkGetImageSubresourceLayout,          "vkGetImageSubresourceLayout")   \
+    X(VK64_fn_vkGetSwapchainImagesKHR,              "vkGetSwapchainImagesKHR")       \
+    X(VK64_fn_vkAcquireNextImageKHR,                "vkAcquireNextImageKHR")         \
+    X(VK64_fn_vkGetPastPresentationTimingGOOGLE,    "vkGetPastPresentationTimingGOOGLE") \
+    X(VK64_fn_vkResetFences,                        "vkResetFences")       \
+    X(VK64_fn_vkWaitForFences,                      "vkWaitForFences")     \
+    X(VK64_fn_vkDeviceWaitIdle,                     "vkDeviceWaitIdle")    \
+    X(VK64_fn_vkResetCommandBuffer,                 "vkResetCommandBuffer")\
+    X(VK64_fn_vkFreeCommandBuffers,                 "vkFreeCommandBuffers")\
+    X(VK64_fn_vkCreateInstance,                     "vkCreateInstance")    \
+    X(VK64_fn_vkCreateDevice,                       "vkCreateDevice")      \
+    X(VK64_fn_vkCreateXcbSurfaceKHR,                "vkCreateXcbSurfaceKHR") \
+    X(VK64_fn_vkCreateSwapchainKHR,                 "vkCreateSwapchainKHR") \
+    X(VK64_fn_vkCreateCommandPool,                  "vkCreateCommandPool") \
+    X(VK64_fn_vkCreateBuffer,                       "vkCreateBuffer")      \
+    X(VK64_fn_vkCreateImage,                        "vkCreateImage")       \
+    X(VK64_fn_vkCreateImageView,                    "vkCreateImageView")   \
+    X(VK64_fn_vkCreateSampler,                      "vkCreateSampler")     \
+    X(VK64_fn_vkCreateRenderPass,                   "vkCreateRenderPass")  \
+    X(VK64_fn_vkCreateFramebuffer,                  "vkCreateFramebuffer") \
+    X(VK64_fn_vkCreateGraphicsPipelines,            "vkCreateGraphicsPipelines") \
+    X(VK64_fn_vkCreatePipelineLayout,               "vkCreatePipelineLayout") \
+    X(VK64_fn_vkCreateDescriptorSetLayout,          "vkCreateDescriptorSetLayout") \
+    X(VK64_fn_vkCreateDescriptorPool,               "vkCreateDescriptorPool") \
+    X(VK64_fn_vkCreateShaderModule,                 "vkCreateShaderModule") \
+    X(VK64_fn_vkCreatePipelineCache,                "vkCreatePipelineCache") \
+    X(VK64_fn_vkCreateFence,                        "vkCreateFence")       \
+    X(VK64_fn_vkCreateSemaphore,                    "vkCreateSemaphore")   \
+    X(VK64_fn_vkAllocateMemory,                     "vkAllocateMemory")    \
+    X(VK64_fn_vkAllocateCommandBuffers,             "vkAllocateCommandBuffers") \
+    X(VK64_fn_vkAllocateDescriptorSets,             "vkAllocateDescriptorSets") \
+    X(VK64_fn_vkBindBufferMemory,                   "vkBindBufferMemory")  \
+    X(VK64_fn_vkBindImageMemory,                    "vkBindImageMemory")   \
+    X(VK64_fn_vkUpdateDescriptorSets,               "vkUpdateDescriptorSets") \
+    X(VK64_fn_vkMapMemory,                          "vkMapMemory")         \
+    X(VK64_fn_vkUnmapMemory,                        "vkUnmapMemory")       \
+    X(VK64_fn_vkDestroyInstance,                    "vkDestroyInstance")   \
+    X(VK64_fn_vkDestroyDevice,                      "vkDestroyDevice")     \
+    X(VK64_fn_vkDestroySurfaceKHR,                  "vkDestroySurfaceKHR") \
+    X(VK64_fn_vkDestroySwapchainKHR,                "vkDestroySwapchainKHR") \
+    X(VK64_fn_vkDestroyCommandPool,                 "vkDestroyCommandPool") \
+    X(VK64_fn_vkDestroyBuffer,                      "vkDestroyBuffer")     \
+    X(VK64_fn_vkDestroyImage,                       "vkDestroyImage")      \
+    X(VK64_fn_vkDestroyImageView,                   "vkDestroyImageView")  \
+    X(VK64_fn_vkDestroySampler,                     "vkDestroySampler")    \
+    X(VK64_fn_vkDestroyRenderPass,                  "vkDestroyRenderPass") \
+    X(VK64_fn_vkDestroyFramebuffer,                 "vkDestroyFramebuffer")\
+    X(VK64_fn_vkDestroyPipeline,                    "vkDestroyPipeline")   \
+    X(VK64_fn_vkDestroyPipelineLayout,              "vkDestroyPipelineLayout") \
+    X(VK64_fn_vkDestroyDescriptorSetLayout,         "vkDestroyDescriptorSetLayout") \
+    X(VK64_fn_vkDestroyDescriptorPool,              "vkDestroyDescriptorPool") \
+    X(VK64_fn_vkDestroyShaderModule,                "vkDestroyShaderModule") \
+    X(VK64_fn_vkDestroyPipelineCache,               "vkDestroyPipelineCache") \
+    X(VK64_fn_vkDestroyFence,                       "vkDestroyFence")      \
+    X(VK64_fn_vkDestroySemaphore,                   "vkDestroySemaphore")  \
+    X(VK64_fn_vkFreeMemory,                         "vkFreeMemory")        \
+    X(VK64_fn_vkBeginCommandBuffer,                 "vkBeginCommandBuffer")\
+    X(VK64_fn_vkEndCommandBuffer,                   "vkEndCommandBuffer")  \
+    X(VK64_fn_vkCmdBeginRenderPass,                 "vkCmdBeginRenderPass")\
+    X(VK64_fn_vkCmdBindPipeline,                    "vkCmdBindPipeline")   \
+    X(VK64_fn_vkCmdBindDescriptorSets,              "vkCmdBindDescriptorSets") \
+    X(VK64_fn_vkCmdSetViewport,                     "vkCmdSetViewport")    \
+    X(VK64_fn_vkCmdSetScissor,                      "vkCmdSetScissor")     \
+    X(VK64_fn_vkCmdDraw,                            "vkCmdDraw")           \
+    X(VK64_fn_vkCmdPipelineBarrier,                 "vkCmdPipelineBarrier")\
+    X(VK64_fn_vkCmdCopyBufferToImage,               "vkCmdCopyBufferToImage") \
+    X(VK64_fn_vkCmdEndRenderPass,                   "vkCmdEndRenderPass")  \
+    X(VK64_fn_vkQueueSubmit,                        "vkQueueSubmit")       \
+    X(VK64_fn_vkQueuePresentKHR,                    "vkQueuePresentKHR")   \
+    X(VK64_fn_vkEnumerateInstanceVersion,           "vkEnumerateInstanceVersion") \
+    X(VK64_fn_vkGetPhysicalDeviceProperties2,       "vkGetPhysicalDeviceProperties2") \
+    X(VK64_fn_vkGetPhysicalDeviceFeatures2,         "vkGetPhysicalDeviceFeatures2") \
+    X(VK64_fn_vkGetPhysicalDeviceMemoryProperties2, "vkGetPhysicalDeviceMemoryProperties2") \
+    X(VK64_fn_vkGetPhysicalDeviceQueueFamilyProperties2,"vkGetPhysicalDeviceQueueFamilyProperties2") \
+    X(VK64_fn_vkGetFenceStatus,                     "vkGetFenceStatus")    \
+    X(VK64_fn_vkResetCommandPool,                   "vkResetCommandPool")  \
+    X(VK64_fn_vkQueueWaitIdle,                      "vkQueueWaitIdle")     \
+    X(VK64_fn_vkCreateHeadlessSurfaceEXT,           "vkCreateHeadlessSurfaceEXT")
+
+#define VK64_NAME_ENTRY(id, nm) { (U64)(id), nm },
+const struct { U64 id; const char* name; } g_fnNames[] = { VK64_FN_LIST(VK64_NAME_ENTRY) };
+#undef VK64_NAME_ENTRY
+const char* fnName(U64 id) {
+    for (const auto& e : g_fnNames) if (e.id == id) return e.name;
+    return "?";
+}
+
+std::recursive_mutex g_vkMutex;   // one bridge per process; every trap serializes
+KMemory64* g_mem = nullptr;       // guest memory of the calling thread's process
+
+// ---------------------------------------------------------------------------
+// Guest memory helpers. EVERY guest pointer arrives here as a VA and is only
+// ever read/written through these.
+// ---------------------------------------------------------------------------
+template <class T> inline bool readStruct(U64 addr, T& out) {
+    if (!addr || !g_mem) return false;
+    g_mem->memcpyFromGuest(&out, addr, sizeof(T));
+    return true;
+}
+template <class T> inline void writeStruct(U64 addr, const T& in) {
+    if (addr && g_mem) g_mem->memcpyToGuest(addr, &in, sizeof(T));
+}
+template <class T> inline void readArray(U64 addr, U32 count, std::vector<T>& out) {
+    out.clear();
+    if (!addr || !g_mem || !count) return;
+    out.resize(count);
+    g_mem->memcpyFromGuest(out.data(), addr, sizeof(T) * (size_t)count);
+}
+template <class T> inline void writeArray(U64 addr, const std::vector<T>& in, U32 count) {
+    if (addr && g_mem && count) g_mem->memcpyToGuest(addr, in.data(), sizeof(T) * (size_t)count);
+}
+inline U32  rd32(U64 a) { return (a && g_mem) ? g_mem->readd(a) : 0; }
+inline void wr32(U64 a, U32 v) { if (a && g_mem) g_mem->writed(a, v); }
+inline U64  rd64(U64 a) { return (a && g_mem) ? g_mem->readq(a) : 0; }
+inline void wr64(U64 a, U64 v) { if (a && g_mem) g_mem->writeq(a, v); }
+inline std::string guestStr(U64 addr, size_t maxLen = 512) {
+    std::string s;
+    if (!addr || !g_mem) return s;
+    for (size_t i = 0; i < maxLen; i++) {
+        U8 c = g_mem->readb(addr + i);
+        if (!c) break;
+        s.push_back((char)c);
+    }
+    return s;
+}
+
+// ---------------------------------------------------------------------------
+// Opaque handle registry.
+//
+// Vulkan handles are opaque to the guest, and P1 (which handed out real host
+// pointers) could only validate them with a magic word read through a possibly
+// freed pointer. Here every handle is an integer id into a live-object table,
+// so a stale or bogus handle from the guest is a lookup miss — logged, benign
+// return, no fault. (tasks/p1-final.md section 2.0 property 2.)
+// ---------------------------------------------------------------------------
+enum ObjKind : U32 {
+    K_INSTANCE = 1, K_PHYSDEV, K_DEVICE, K_QUEUE, K_CMDPOOL, K_CMDBUF, K_MEMORY,
+    K_BUFFER, K_IMAGE, K_IMAGEVIEW, K_SAMPLER, K_SHADER, K_SETLAYOUT, K_SET,
+    K_PIPELAYOUT, K_PIPELINE, K_RENDERPASS, K_FRAMEBUFFER, K_PIPECACHE,
+    K_DESCPOOL, K_FENCE, K_SEMAPHORE, K_SWAPCHAIN, K_SURFACE
+};
+struct Obj {
+    U32 kind = 0;
+    U64 magic = 0;
+};
+const U64 OBJ_MAGIC = 0x564B4F42ull;   // 'VKOB'
+
+std::unordered_map<U64, Obj*> g_objs;
+U64 g_nextId = 0x564B0100;
+
+template <class T> T* createObj(U32 kind, U64& idOut) {
+    T* o = new T();
+    o->kind = kind;
+    o->magic = OBJ_MAGIC;
+    idOut = g_nextId++;
+    g_objs[idOut] = o;
+    return o;
+}
+Obj* findObj(U64 id, U32 kind) {
+    if (!id) return nullptr;
+    auto it = g_objs.find(id);
+    if (it == g_objs.end()) return nullptr;
+    Obj* o = it->second;
+    if (!o || o->magic != OBJ_MAGIC || o->kind != kind) return nullptr;
+    return o;
+}
+template <class T> T* objOf(U64 id, U32 kind, const char* who) {
+    Obj* o = findObj(id, kind);
+    if (!o) klog_fmt("vk64: %s: bad/stale handle 0x%llx", who, (unsigned long long)id);
+    return (T*)o;
+}
+void dropObj(U64 id) {
+    auto it = g_objs.find(id);
+    if (it == g_objs.end()) return;
+    delete it->second;
+    g_objs.erase(it);
+}
+
+// ---------------------------------------------------------------------------
+// Object bodies (ported from P1's DECL_NONDISP set; the create-info fields P1
+// recorded are the same fields P2 records — that is what lets submit rebuild a
+// complete frame manifest without the app re-stating anything).
+// ---------------------------------------------------------------------------
+const U32 VK64_MAX_SETS = 8, VK64_MAX_BINDINGS = 8, VK64_MAX_ATTACH = 4, VK64_MAX_DRAWS = 64;
+const U32 VK64_MAX_CMDS = 4096;
+
+struct Binding { U32 binding = 0, type = 0; U64 obj = 0, range = 0; };
+
+struct Instance : Obj { U64 phys[4] = {0,0,0,0}; U32 physCount = 0; };
+struct PhysDev  : Obj { U64 instance = 0; };
+struct Device   : Obj { U64 physDev = 0, queue = 0; };
+struct Queue    : Obj { U64 device = 0; };
+struct CmdPool  : Obj { U32 queueFamily = 0; };
+struct PipelineCache : Obj {};
+struct DescPool  : Obj {};
+struct Surface   : Obj {};
+struct Fence     : Obj { int signalled = 0; };
+struct Semaphore : Obj { int signalled = 0; };
+struct DeviceMemory : Obj { U64 size = 0, va = 0; U32 memIndex = 0; };
+struct Buffer : Obj { U64 size = 0, mem = 0, memOff = 0; U32 usage = 0; };
+struct Image  : Obj {
+    U32 w = 0, h = 0, d = 0, layers = 0, mips = 0, format = 0, tiling = 0, usage = 0, samples = 0;
+    U64 mem = 0, memOff = 0, pixBytes = 0;
+    int copied = 0;                 // a staging copyBufferToImage landed here
+};
+struct ImageView : Obj { U64 image = 0; U32 format = 0, aspect = 0; };
+struct Sampler : Obj { U32 mag = 0, min = 0, mipmap = 0, addrU = 0, addrV = 0, addrW = 0; float maxAniso = 1.0f; };
+struct ShaderModule : Obj {
+    U32 stageHint = 0;
+    U64 hash = 0;
+    std::vector<U8> code;           // retained: vkcube destroys the module right
+                                   // after pipeline creation (legal), so destroy
+                                   // is a refcount drop (P1 section 1.2).
+    int destroyed = 0;
+};
+struct DescSetLayout : Obj { U32 nbind = 0; Binding binds[VK64_MAX_BINDINGS]; };
+struct DescSet : Obj { U64 layout = 0; U32 nbind = 0; Binding binds[VK64_MAX_BINDINGS]; };
+struct PipelineLayout : Obj { U32 nsets = 0; U64 sets[VK64_MAX_SETS]; };
+struct Pipeline : Obj {
+    U32 topology = 0, cull = 0, front = 0, depthTest = 0, depthWrite = 0, depthOp = 0, blend = 0;
+    U64 vs = 0, fs = 0, layout = 0, rp = 0;
+};
+struct RenderPass : Obj {
+    U32 natt = 0, formats[VK64_MAX_ATTACH] = {0}, loadOps[VK64_MAX_ATTACH] = {0},
+        storeOps[VK64_MAX_ATTACH] = {0}, depthFmt = 0;
+};
+struct Framebuffer : Obj { U64 rp = 0; U32 natt = 0; U64 views[VK64_MAX_ATTACH] = {0}; U32 w = 0, h = 0; };
+struct Swapchain : Obj { U32 w = 0, h = 0, format = 0, nimg = 0, cur = 0; U64 imgs[8] = {0}; };
+
+// --- command recording (P1's P1_Cmd / P1_CbState, with the copy record moved
+// --- out of P1's process-global array into the command that recorded it, so a
+// --- submit only executes the copies belonging to the command buffers it was
+// --- given).
+enum CmdKind : U32 {
+    CMD_BEGIN_RP, CMD_END_RP, CMD_BIND_PIPE, CMD_BIND_SETS, CMD_VIEWPORT,
+    CMD_SCISSOR, CMD_DRAW, CMD_BARRIER, CMD_COPY_B2I
+};
+struct Copy {
+    U64 srcBuffer = 0, dstImage = 0, bufOff = 0;
+    U32 rowLen = 0, imgH = 0; int32_t ox = 0, oy = 0; U32 w = 0, h = 0;
+};
+struct Cmd {
+    U32 kind = 0;
+    U64 a = 0, b = 0, c = 0, d = 0;
+    float f[8] = {0};
+    double clearDepth = 1.0;
+    Copy  copy;
+};
+struct CmdBuf : Obj {
+    std::vector<Cmd> cmds;
+    U64  pipe = 0;
+    U64  sets[VK64_MAX_SETS] = {0};
+    float vp[6] = {0}, sci[4] = {0};
+    bool haveVp = false, haveSci = false;
+};
+CmdBuf* cbOf(U64 id, const char* who) { return objOf<CmdBuf>(id, K_CMDBUF, who); }
+
+// The frame serializer is defined above the switch; forward declaration so
+// pushCmd can flag overflow.
+bool g_frameOverflow = false;
+void pushCmd(CmdBuf* st, const Cmd& c) {
+    if (!st) return;
+    if (st->cmds.size() >= VK64_MAX_CMDS) { g_frameOverflow = true; return; }
+    st->cmds.push_back(c);
+}
+
+// ---------------------------------------------------------------------------
+// Format helpers (P1's fmt_bpp / fmt_name, unchanged)
+// ---------------------------------------------------------------------------
+U32 fmt_bpp(U32 f) {
+    switch (f) {
+        case VK_FORMAT_R8_UNORM: case VK_FORMAT_R8_SNORM: case VK_FORMAT_R8_UINT:
+        case VK_FORMAT_R8_SINT: case VK_FORMAT_S8_UINT: return 1;
+        case VK_FORMAT_R8G8_UNORM: case VK_FORMAT_R16_UNORM: case VK_FORMAT_R16_SFLOAT:
+        case VK_FORMAT_R5G6B5_UNORM_PACK16: case VK_FORMAT_B5G5R5A1_UNORM_PACK16:
+        case VK_FORMAT_R4G4B4A4_UNORM_PACK16: case VK_FORMAT_D16_UNORM: return 2;
+        case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_SRGB:
+        case VK_FORMAT_B8G8R8A8_UNORM: case VK_FORMAT_B8G8R8A8_SRGB:
+        case VK_FORMAT_R32_SFLOAT: case VK_FORMAT_R32_UINT: case VK_FORMAT_R32_SINT:
+        case VK_FORMAT_D24_UNORM_S8_UINT: case VK_FORMAT_D32_SFLOAT:
+        case VK_FORMAT_B10G11R11_UFLOAT_PACK32: return 4;
+        case VK_FORMAT_R16G16_SFLOAT: case VK_FORMAT_R16G16B16A16_SFLOAT: return 8;
+        case VK_FORMAT_R32G32_SFLOAT: return 8;
+        case VK_FORMAT_R32G32B32A32_SFLOAT: return 16;
+        default: return 4;
+    }
+}
+const char* fmt_name(U32 f) {
+    switch (f) {
+        case VK_FORMAT_B8G8R8A8_UNORM: return "B8G8R8A8_UNORM";
+        case VK_FORMAT_R8G8B8A8_UNORM: return "R8G8B8A8_UNORM";
+        case VK_FORMAT_R8G8B8A8_SRGB: return "R8G8B8A8_SRGB";
+        case VK_FORMAT_D16_UNORM: return "D16_UNORM";
+        case VK_FORMAT_D24_UNORM_S8_UINT: return "D24S8";
+        default: return "UNKNOWN";
+    }
+}
+U64 blob_hash(const U8* p, size_t n) {
+    U64 h = 5381;
+    for (size_t i = 0; i < n; i++) h = h * 33 + p[i];
+    return h;
+}
+
+// ---------------------------------------------------------------------------
+// Frame manifest. P1's schema (tasks/p1-final.md section 1.3) with the sidecar
+// payloads inlined base64: there is no filesystem between wasm and the page.
+// ---------------------------------------------------------------------------
+U32 g_frameNo = 0;
+std::string g_pendingFrame;          // built by submit, hopped by present
+U32 g_lastPresented = 0;
+
+std::string b64(const U8* data, size_t n) {
+    static const char* T = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((n + 2) / 3) * 4);
+    size_t i = 0;
+    for (; i + 2 < n; i += 3) {
+        U32 v = ((U32)data[i] << 16) | ((U32)data[i+1] << 8) | data[i+2];
+        out += T[(v >> 18) & 63]; out += T[(v >> 12) & 63];
+        out += T[(v >> 6) & 63];  out += T[v & 63];
+    }
+    if (i < n) {
+        U32 v = (U32)data[i] << 16;
+        bool two = (i + 1 < n);
+        if (two) v |= (U32)data[i+1] << 8;
+        out += T[(v >> 18) & 63]; out += T[(v >> 12) & 63];
+        out += two ? T[(v >> 6) & 63] : '=';
+        out += '=';
+    }
+    return out;
+}
+void jsonBlob(std::string& out, const char* key, const std::vector<U8>& bytes) {
+    char num[32];
+    snprintf(num, sizeof num, "%llu", (unsigned long long)bytes.size());
+    out += '"'; out += key; out += "\":{\"size\":";
+    out += num; out += ",\"b64\":\"";
+    out += b64(bytes.data(), bytes.size());
+    out += "\"}";
+}
+// P1 wrote a sidecar unconditionally (empty file when the source was missing);
+// here an absent source is a null so the consumer can tell "no UBO" from
+// "zero-length UBO".
+void jsonBlobOrNull(std::string& out, const char* key, const std::vector<U8>& bytes, bool present) {
+    if (!present) { out += '"'; out += key; out += "\":null"; return; }
+    jsonBlob(out, key, bytes);
+}
+std::string jsonFloats(const float* v, int n) {
+    char buf[64];
+    std::string s = "[";
+    for (int i = 0; i < n; i++) {
+        if (i) s += ",";
+        snprintf(buf, sizeof buf, "%g", (double)v[i]);
+        s += buf;
+    }
+    return s + "]";
+}
+
+void hopFrameToPage(const std::string& json) {
+#ifdef __EMSCRIPTEN__
+    // One hop per frame. The page side (web/runtime.html window.bwVkFrame) is
+    // not wired yet in this lane, so the JS body is defensive: a missing sink
+    // must not fault the guest.
+    MAIN_THREAD_EM_ASM({
+        if (globalThis.window && window.bwVkFrame) {
+            try { window.bwVkFrame(UTF8ToString($0)); } catch (e) { console.warn('vk64: bwVkFrame failed', e); }
+        }
+    }, json.c_str());
+#else
+    (void)json;
+#endif
+}
+
+void emitFrameNow() {
+    if (g_pendingFrame.empty()) return;
+    std::string json = g_pendingFrame;
+    g_pendingFrame.clear();
+    g_lastPresented = g_frameNo ? g_frameNo - 1 : 0;
+    hopFrameToPage(json);
+    // Log the manifest. It is the frame payload a WebGPU consumer needs, so it is
+    // worth having in the host log as evidence — and a SMALL frame is cheap
+    // enough that it is always logged, with no env var and no frontend wiring.
+    // Above the cap the base64 payloads are stripped (the scalars stay) because a
+    // vkcube-sized texture would otherwise be ~360KB per frame; BW64_VKFRAME=1
+    // logs big frames elided and =2 logs them whole.
+    int want = vkDumpFrames();
+    if ((int)json.size() <= (int)kManifestLogCap) want = 2;
+    if (want) {
+        if (want == 2 || json.size() <= kManifestLogCap) {
+            klog_fmt("vk64: FRAME-JSON %s", json.c_str());
+        } else {
+            // Same schema, payload elided: enough to prove the frame crossed and
+            // to read every scalar, without the megabytes.
+            std::string elided = json;
+            const char* keys[] = { "\"pixels\":{", "\"spv\":{" };
+            for (const char* k : keys) {
+                size_t at = 0;
+                while ((at = elided.find(k, at)) != std::string::npos) {
+                    size_t b64 = elided.find("\"b64\":\"", at);
+                    if (b64 == std::string::npos) break;
+                    size_t end = elided.find('"', b64 + 7);
+                    if (end == std::string::npos) break;
+                    elided.replace(b64 + 7, end - (b64 + 7), "<elided>");
+                    at = end;
+                }
+            }
+            klog_fmt("vk64: FRAME-JSON (payload elided, %zu bytes -> %zu; set BW64_VKFRAME=2 for the full frame) %s",
+                     json.size(), elided.size(), elided.c_str());
+        }
+    }
+    g_frameNo++;
+}
+
+// ---------------------------------------------------------------------------
+// Eager copyBufferToImage execution (P1's exec_copies, per-command-buffer now).
+// Source and destination are BOTH guest ranges, so this is one
+// memcpyFromGuest/memcpyToGuest per row.
+// ---------------------------------------------------------------------------
+void execCopy(const Copy& r) {
+    Buffer* src = objOf<Buffer>(r.srcBuffer, K_BUFFER, "copyBufferToImage");
+    Image*  dst = objOf<Image>(r.dstImage, K_IMAGE, "copyBufferToImage");
+    if (!src || !dst) return;
+    DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "copyBufferToImage");
+    DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "copyBufferToImage");
+    if (!smem || !dmem || !smem->va || !dmem->va) return;
+    dst->copied = 1;
+    U32 bpp = fmt_bpp(dst->format);
+    if (!bpp || !r.w || !r.h) return;
+    size_t rowBytes = (size_t)r.w * bpp;
+    size_t srcRow  = r.rowLen ? (size_t)r.rowLen * bpp : rowBytes;
+    if (srcRow < rowBytes) srcRow = rowBytes;
+    U64 srcBase = smem->va + src->memOff + r.bufOff;
+    U64 dstBase = dmem->va + dst->memOff + ((size_t)r.oy * dst->w + r.ox) * bpp;
+    if (srcBase + (U64)srcRow * r.h > smem->va + smem->size) return;
+    if (dstBase + (U64)rowBytes * r.h > dmem->va + dmem->size) return;
+    std::vector<U8> tmp(rowBytes);
+    for (U32 y = 0; y < r.h; y++) {
+        g_mem->memcpyFromGuest(tmp.data(), srcBase + (U64)y * srcRow, rowBytes);
+        g_mem->memcpyToGuest(dstBase + (U64)y * (U64)dst->w * bpp, tmp.data(), rowBytes);
+    }
+}
+
+std::vector<U8> readGuestRange(U64 memId, U64 memOff, U64 bytes) {
+    std::vector<U8> out;
+    DeviceMemory* m = objOf<DeviceMemory>(memId, K_MEMORY, "readGuestRange");
+    if (!m || !m->va || !bytes) return out;
+    if (memOff >= m->size) return out;
+    if (memOff + bytes > m->size) bytes = m->size - memOff;
+    out.resize((size_t)bytes);
+    g_mem->memcpyFromGuest(out.data(), m->va + memOff, bytes);
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Submit-time frame reconstruction (P1's vkQueueSubmit body, file I/O replaced
+// by the in-memory manifest serializer).
+// ---------------------------------------------------------------------------
+void resolveFrame(CmdBuf* st, U64* uboOut, U64* uboSize, U64* viewOut, U64* sampOut) {
+    *uboOut = 0; *uboSize = 0; *viewOut = 0; *sampOut = 0;
+    DescSet* s0 = st->sets[0] ? objOf<DescSet>(st->sets[0], K_SET, "resolveFrame") : nullptr;
+    if (!s0) return;
+    for (U32 i = 0; i < s0->nbind; i++) {
+        if (s0->binds[i].binding == 0 && s0->binds[i].obj) { *uboOut = s0->binds[i].obj; *uboSize = s0->binds[i].range; }
+        if (s0->binds[i].binding == 1 && s0->binds[i].obj) { *viewOut = s0->binds[i].obj; *sampOut = s0->binds[i].range; }
+    }
+}
+
+void serializeSubmit(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
+    for (const auto& fr : frames) {
+        CmdBuf* st = fr.first;
+        // the recorded framebuffer id lives in the BEGIN_RP command
+        U64 fbId = 0;
+        for (const Cmd& k : st->cmds) if (k.kind == CMD_BEGIN_RP) { fbId = k.b; break; }
+        Framebuffer* fb = objOf<Framebuffer>(fbId, K_FRAMEBUFFER, "vkQueueSubmit");
+        if (!fb) { klog_fmt("vk64: submit: frame %u has no framebuffer, skipped", g_frameNo); continue; }
+
+        Pipeline* pipe = nullptr;
+        const float* vp = nullptr;
+        const float* sci = nullptr;
+        float clear[4] = {0, 0, 0, 1};
+        double clearDepth = 1.0;
+        std::vector<std::pair<U32, U32>> draws;   // vertexCount, firstVertex
+        for (const Cmd& k : st->cmds) {
+            switch (k.kind) {
+                case CMD_BEGIN_RP:
+                    memcpy(clear, k.f, sizeof(clear));
+                    clearDepth = k.clearDepth;
+                    break;
+                case CMD_BIND_PIPE:
+                    pipe = objOf<Pipeline>(k.a, K_PIPELINE, "vkQueueSubmit");
+                    break;
+                case CMD_VIEWPORT: vp = k.f; break;
+                case CMD_SCISSOR:  sci = k.f; break;
+                case CMD_DRAW:
+                    if (draws.size() < VK64_MAX_DRAWS) draws.push_back({(U32)k.a, (U32)k.c});
+                    break;
+                default: break;
+            }
+        }
+        if (!pipe || draws.empty()) {
+            klog_fmt("vk64: submit: frame %u without draw (pipe=0x%llx draws=%u), skipped",
+                     g_frameNo, (unsigned long long)(pipe ? 0 : 0), (unsigned)draws.size());
+            continue;
+        }
+
+        U64 uboId = 0, uboSize = 0, viewId = 0, sampId = 0;
+        resolveFrame(st, &uboId, &uboSize, &viewId, &sampId);
+        Buffer* ubo = uboId ? objOf<Buffer>(uboId, K_BUFFER, "vkQueueSubmit") : nullptr;
+        Sampler* samp = sampId ? objOf<Sampler>(sampId, K_SAMPLER, "vkQueueSubmit") : nullptr;
+        ImageView* view = viewId ? objOf<ImageView>(viewId, K_IMAGEVIEW, "vkQueueSubmit") : nullptr;
+        Image* tex = view ? objOf<Image>(view->image, K_IMAGE, "vkQueueSubmit") : nullptr;
+        ShaderModule* vs = pipe->vs ? objOf<ShaderModule>(pipe->vs, K_SHADER, "vkQueueSubmit") : nullptr;
+        ShaderModule* fs = pipe->fs ? objOf<ShaderModule>(pipe->fs, K_SHADER, "vkQueueSubmit") : nullptr;
+
+        // UBO bytes: descriptor-set-0 binding 0, clamped to the allocation.
+        std::vector<U8> uboBytes;
+        bool haveUbo = false;
+        if (ubo && ubo->mem) {
+            uboBytes = readGuestRange(ubo->mem, ubo->memOff, uboSize ? uboSize : ubo->size);
+            haveUbo = !uboBytes.empty();
+        }
+        // Texture bytes: the staging path (a recorded copy landed in the image's
+        // bound memory) and the linear path (guest wrote them through
+        // vkGetImageSubresourceLayout / vkMapMemory) are now the same guest
+        // range; P1's 'copied' flag only decides which of the two it reports.
+        std::vector<U8> texBytes;
+        bool haveTex = false;
+        U32 tw = 0, th = 0;
+        if (tex) {
+            tw = tex->w; th = tex->h;
+            if (tex->mem) {
+                texBytes = readGuestRange(tex->mem, tex->memOff, tex->pixBytes);
+                haveTex = !texBytes.empty();
+            }
+        }
+
+        std::string j = "{";
+        char buf[512];
+        snprintf(buf, sizeof buf, "\"frame\":%u,\"width\":%u,\"height\":%u,\"overflow\":%s,",
+                 g_frameNo, fb->w, fb->h, g_frameOverflow ? "true" : "false");
+        j += buf;
+        snprintf(buf, sizeof buf, "\"colorFormat\":\"%s\",", fmt_name(fb->natt && view ? (U32)view->format : 0));
+        j += buf;
+        j += "\"clearColor\":" + jsonFloats(clear, 4) + ",";
+        snprintf(buf, sizeof buf, "\"clearDepth\":%g,", clearDepth);
+        j += buf;
+        j += "\"viewport\":"; j += vp ? jsonFloats(vp, 6) : "null"; j += ",";
+        j += "\"scissor\":";  j += sci ? jsonFloats(sci, 4) : "null"; j += ",";
+        snprintf(buf, sizeof buf, "\"cull\":%u,\"front\":%u,\"depthTest\":%u,\"depthWrite\":%u,\"depthOp\":%u,",
+                 pipe->cull, pipe->front, pipe->depthTest, pipe->depthWrite, pipe->depthOp);
+        j += buf;
+        if (vs) {
+            char sh[40];
+            snprintf(sh, sizeof sh, "%016llx", (unsigned long long)vs->hash);
+            j += "\"vs\":{\"hash\":\""; j += sh; j += "\",";
+            jsonBlob(j, "spv", vs->code); j += ",";
+        } else j += "\"vs\":null,";
+        if (fs) {
+            char sh[40];
+            snprintf(sh, sizeof sh, "%016llx", (unsigned long long)fs->hash);
+            j += "\"fs\":{\"hash\":\""; j += sh; j += "\",";
+            jsonBlob(j, "spv", fs->code); j += ",";
+        } else j += "\"fs\":null,";
+        jsonBlobOrNull(j, "ubo", uboBytes, haveUbo);
+        j += ",";
+        snprintf(buf, sizeof buf, "\"texture\":{\"w\":%u,\"h\":%u,\"format\":\"%s\",\"staged\":%s,",
+                 tw, th, tex ? fmt_name(tex->format) : "UNKNOWN", (tex && tex->copied) ? "true" : "false");
+        j += buf;
+        jsonBlobOrNull(j, "pixels", texBytes, haveTex);
+        j += "},";
+        snprintf(buf, sizeof buf,
+                 "\"sampler\":{\"mag\":%u,\"min\":%u,\"mipmap\":%u,\"addrU\":%u,\"addrV\":%u,\"maxAniso\":%g},",
+                 samp ? samp->mag : 0, samp ? samp->min : 0, samp ? samp->mipmap : 0,
+                 samp ? samp->addrU : 0, samp ? samp->addrV : 0, samp ? (double)samp->maxAniso : 1.0);
+        j += buf;
+        j += "\"draws\":[";
+        for (size_t i = 0; i < draws.size(); i++) {
+            if (i) j += ",";
+            snprintf(buf, sizeof buf, "{\"vertexCount\":%u,\"firstVertex\":%u}", draws[i].first, draws[i].second);
+            j += buf;
+        }
+        j += "]}";
+
+        // P1 wrote one manifest per submit-with-draw and let present.log tie the
+        // present to it. Here the manifest is BUILT at submit and HOPPED at
+        // present; if a second submit-with-draw arrives before any present, the
+        // stale one is flushed first so no frame is silently dropped.
+        if (!g_pendingFrame.empty()) emitFrameNow();
+        g_pendingFrame = j;
+        g_frameOverflow = false;
+        klog_fmt("vk64: FRAME %u built: %ux%u draws=%u vs=%s fs=%s ubo=%zuB tex=%ux%u(%zuB) json=%zuB",
+                 g_frameNo, fb->w, fb->h, (unsigned)draws.size(),
+                 vs ? "yes" : "no", fs ? "yes" : "no",
+                 uboBytes.size(), tw, th, texBytes.size(), j.size());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Physical device: one == one WebGPU adapter (P1 section 1.2 table row 2).
+// ---------------------------------------------------------------------------
+const char* GPU_NAME = "VKWGPU WebGPU Virtual Device";
+const U32  g_icd_api_version = VK_API_VERSION_1_1;
+
+void fillProperties(VkPhysicalDeviceProperties* p) {
+    memset(p, 0, sizeof(*p));
+    p->apiVersion = g_icd_api_version;
+    p->driverVersion = 1;
+    p->vendorID = 0x1A2B3C4D;      /* synthetic, as in P1 */
+    p->deviceID = 0x0000ABCD;
+    p->deviceType = VK_PHYSICAL_DEVICE_TYPE_OTHER;
+    strncpy(p->deviceName, GPU_NAME, VK_MAX_PHYSICAL_DEVICE_NAME_SIZE - 1);
+    /* llvmpipe-ish geometry: Boxedwine guests assume a real GPU */
+    VkPhysicalDeviceLimits& L = p->limits;
+    L.maxImageDimension1D = 16384; L.maxImageDimension2D = 16384; L.maxImageDimension3D = 2048;
+    L.maxImageDimensionCube = 16384; L.maxImageArrayLayers = 2048;
+    L.maxTexelBufferElements = 1 << 27; L.maxUniformBufferRange = 65536;
+    L.maxStorageBufferRange = 1 << 30; L.maxPushConstantsSize = 256;
+    L.maxMemoryAllocationCount = 4096; L.maxSamplerAllocationCount = 4000;
+    L.bufferImageGranularity = 1; L.sparseAddressSpaceSize = 0;
+    L.maxBoundDescriptorSets = 4; L.maxPerStageDescriptorSamplers = 16;
+    L.maxPerStageDescriptorUniformBuffers = 16; L.maxPerStageDescriptorStorageBuffers = 4;
+    L.maxPerStageDescriptorSampledImages = 16; L.maxPerStageDescriptorStorageImages = 4;
+    L.maxPerStageDescriptorInputAttachments = 4;
+    L.maxPerStageResources = 128; L.maxDescriptorSetSamplers = 16;
+    L.maxDescriptorSetUniformBuffers = 16; L.maxDescriptorSetUniformBuffersDynamic = 8;
+    L.maxDescriptorSetStorageBuffers = 4; L.maxDescriptorSetStorageBuffersDynamic = 4;
+    L.maxDescriptorSetSampledImages = 16; L.maxDescriptorSetStorageImages = 4;
+    L.maxDescriptorSetInputAttachments = 4;
+    L.maxVertexInputAttributes = 16; L.maxVertexInputBindings = 16;
+    L.maxVertexInputAttributeOffset = 2047; L.maxVertexInputBindingStride = 2048;
+    L.maxVertexOutputComponents = 64; L.maxTessellationGenerationLevel = 64;
+    L.maxTessellationPatchSize = 32;
+    L.maxFragmentInputComponents = 64; L.maxFragmentOutputAttachments = 4;
+    L.maxFragmentDualSrcAttachments = 0; L.maxFragmentCombinedOutputResources = 4;
+    L.maxComputeSharedMemorySize = 16384;
+    L.maxComputeWorkGroupCount[0] = L.maxComputeWorkGroupCount[1] = L.maxComputeWorkGroupCount[2] = 65535;
+    L.maxComputeWorkGroupInvocations = 128;
+    L.maxComputeWorkGroupSize[0] = 128; L.maxComputeWorkGroupSize[1] = 128; L.maxComputeWorkGroupSize[2] = 64;
+    L.subPixelPrecisionBits = 8; L.subTexelPrecisionBits = 8; L.mipmapPrecisionBits = 8;
+    L.maxDrawIndexedIndexValue = 0xFFFFFFFFu; L.maxDrawIndirectCount = 0xFFFFFFFFu;
+    L.maxSamplerLodBias = 2.0f; L.maxSamplerAnisotropy = 16.0f;
+    L.maxViewports = 16;
+    L.maxViewportDimensions[0] = 4096; L.maxViewportDimensions[1] = 4096;
+    L.viewportBoundsRange[0] = -8192.0f; L.viewportBoundsRange[1] = 8191.0f;
+    L.viewportSubPixelBits = 0; L.minMemoryMapAlignment = 4096;
+    L.minTexelBufferOffsetAlignment = 256; L.minUniformBufferOffsetAlignment = 256;
+    L.minStorageBufferOffsetAlignment = 256; L.minTexelOffset = -8; L.maxTexelOffset = 7;
+    L.minTexelGatherOffset = -8; L.maxTexelGatherOffset = 7;
+    L.minInterpolationOffset = -0.5f; L.maxInterpolationOffset = 0.5f;
+    L.subPixelInterpolationOffsetBits = 4; L.maxFramebufferWidth = 16384; L.maxFramebufferHeight = 16384;
+    L.maxFramebufferLayers = 2048; L.maxColorAttachments = 8; L.maxSampleMaskWords = 1;
+    L.maxClipDistances = 8; L.maxCullDistances = 8; L.maxCombinedClipAndCullDistances = 8;
+    L.discreteQueuePriorities = 2;
+    L.pointSizeRange[0] = 1.0f; L.pointSizeRange[1] = 64.0f;
+    L.lineWidthRange[0] = 1.0f; L.lineWidthRange[1] = 1.0f;
+    L.pointSizeGranularity = 0.0f; L.lineWidthGranularity = 0.0f;
+    L.strictLines = VK_TRUE; L.standardSampleLocations = VK_TRUE;
+    L.optimalBufferCopyOffsetAlignment = 1; L.optimalBufferCopyRowPitchAlignment = 1;
+    L.nonCoherentAtomSize = 64;
+}
+
+const char* const g_inst_exts[] = {
+    "VK_KHR_surface", "VK_KHR_xcb_surface", "VK_KHR_xlib_surface", "VK_EXT_headless_surface",
+};
+
+void fillMemoryProperties(VkPhysicalDeviceMemoryProperties* p) {
+    memset(p, 0, sizeof(*p));
+    p->memoryHeapCount = 2;
+    p->memoryHeaps[0].size = 2ull * 1024 * 1024 * 1024;
+    p->memoryHeaps[0].flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT;
+    p->memoryHeaps[1].size = 4ull * 1024 * 1024 * 1024;
+    p->memoryHeaps[1].flags = 0;
+    p->memoryTypeCount = 4;
+    for (U32 i = 0; i < 4; i++) {
+        p->memoryTypes[i].heapIndex = i < 2 ? 0 : 1;
+        p->memoryTypes[i].propertyFlags =
+            (i == 0) ? (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+                      : (i == 1 ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+                                : (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
+    }
+}
+
+// Create a surface: there is no windowing system behind it (P1 section 1.4), so
+// the handle is just an id. Both the xcb and the headless EXT path land here,
+// which is what lets a guest run with no X server at all.
+U64 createSurface() {
+    U64 id = 0;
+    createObj<Surface>(K_SURFACE, id);
+    return id;
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Entry point from ksyscall64.
+// ---------------------------------------------------------------------------
+U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
+    std::lock_guard<std::recursive_mutex> lk(g_vkMutex);
+    g_mem = cpu ? cpu->memory : nullptr;
+
+    if (fnId == VK64_fn_witness) {
+        // The guest shim's constructor. Proves the guest dlopen()ed THIS
+        // libvulkan.so.1 (tasks/p1-final.md unknown #1) before any real call.
+        klog("vk64: FIRST trap - guest libvulkan.so.1 mapped (witness fnId=0)");
+        return 0;
+    }
+    if (fnId == VK64_fn_unimplemented) {
+        // (name*) — the guest shim's benign stub for a vk* we do not implement.
+        // This is the P1 loader_tally worklist, still recording what a real guest
+        // actually asks for.
+        VK64Args a0 = {};
+        if (argsAddr && g_mem) g_mem->memcpyFromGuest(&a0, argsAddr, sizeof(a0));
+        klog_fmt("vk64: asked-for (unimplemented): %s", guestStr(a0.a[0]).c_str());
+        return (U64)(int64_t)VK_ERROR_FEATURE_NOT_PRESENT;
+    }
+    if (fnId == VK64_fn_traceProc) {
+        VK64Args a0 = {};
+        if (argsAddr && g_mem) g_mem->memcpyFromGuest(&a0, argsAddr, sizeof(a0));
+        klog_fmt("vk64: gipa %s: %s", a0.a[1] ? "HIT " : "MISS", guestStr(a0.a[0]).c_str());
+        return 0;
+    }
+
+    if (vkTrace()) { klog_fmt("vk64: trap %s", fnName(fnId)); g_tracedCalls++; }
+
+    VK64Args args = {};
+    if (argsAddr && g_mem) g_mem->memcpyFromGuest(&args, argsAddr, sizeof(args));
+
+    switch (fnId) {
+    // =====================================================================
+    // B. Queries and state answers (25 of the 85)
+    // =====================================================================
+    case VK64_fn_vkEnumerateInstanceVersion:
+        wr32(args.a[0], g_icd_api_version);
+        return VK_SUCCESS;
+
+    case VK64_fn_vkEnumerateInstanceExtensionProperties: {
+        // (layerName*, pCount*, pProperties*)
+        const U32 n = (U32)(sizeof(g_inst_exts) / sizeof(g_inst_exts[0]));
+        if (!args.a[1]) return VK_ERROR_INITIALIZATION_FAILED;
+        std::string layer = guestStr(args.a[0]);
+        if (!layer.empty()) klog_fmt("vk64: layer '%s' requested; we have none", layer.c_str());
+        if (!args.a[2]) { wr32(args.a[1], n); return VK_SUCCESS; }
+        U32 want = rd32(args.a[1]);
+        U32 c = want < n ? want : n;
+        std::vector<VkExtensionProperties> props((size_t)(c ? c : 1));
+        for (U32 i = 0; i < c; i++) {
+            memset(&props[i], 0, sizeof(props[i]));
+            strncpy(props[i].extensionName, g_inst_exts[i], VK_MAX_EXTENSION_NAME_SIZE - 1);
+            props[i].specVersion = VK_API_VERSION_1_1;
+        }
+        writeArray(args.a[2], props, c);
+        wr32(args.a[1], c);
+        return c < n ? VK_INCOMPLETE : VK_SUCCESS;
+    }
+    case VK64_fn_vkEnumerateInstanceLayerProperties:
+        if (!args.a[0]) return VK_ERROR_INITIALIZATION_FAILED;
+        wr32(args.a[0], 0);
+        return VK_SUCCESS;
+
+    case VK64_fn_vkEnumeratePhysicalDevices: {
+        // (instance, pCount*, pPhysDevs*)
+        Instance* inst = objOf<Instance>(args.a[0], K_INSTANCE, "vkEnumeratePhysicalDevices");
+        if (!inst || !args.a[1]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 n = inst->physCount;
+        if (!args.a[2]) { wr32(args.a[1], n); return VK_SUCCESS; }
+        U32 want = rd32(args.a[1]);
+        U32 c = want < n ? want : n;
+        std::vector<U64> devs((size_t)(c ? c : 1));
+        for (U32 i = 0; i < c; i++) devs[i] = inst->phys[i];
+        writeArray(args.a[2], devs, c);
+        wr32(args.a[1], c);
+        return c < n ? VK_INCOMPLETE : VK_SUCCESS;
+    }
+    case VK64_fn_vkEnumerateDeviceExtensionProperties: {
+        // (physDev, pLayerName*, pCount*, pProperties*)
+        static const char* exts[] = { "VK_KHR_swapchain" };
+        const U32 n = 1;
+        if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        std::string layer = guestStr(args.a[1]);
+        if (!layer.empty()) klog_fmt("vk64: device layer '%s' requested; we have none", layer.c_str());
+        if (!args.a[3]) { wr32(args.a[2], n); return VK_SUCCESS; }
+        U32 want = rd32(args.a[2]);
+        U32 c = want < n ? want : n;
+        std::vector<VkExtensionProperties> props((size_t)(c ? c : 1));
+        for (U32 i = 0; i < c; i++) {
+            memset(&props[i], 0, sizeof(props[i]));
+            strncpy(props[i].extensionName, exts[i], VK_MAX_EXTENSION_NAME_SIZE - 1);
+            props[i].specVersion = VK_API_VERSION_1_1;
+        }
+        writeArray(args.a[3], props, c);
+        wr32(args.a[2], c);
+        return c < n ? VK_INCOMPLETE : VK_SUCCESS;
+    }
+    case VK64_fn_vkGetPhysicalDeviceProperties: {
+        // (physDev, out VkPhysicalDeviceProperties)  [real limits, as P1]
+        if (!objOf<PhysDev>(args.a[0], K_PHYSDEV, "vkGetPhysicalDeviceProperties") || !args.a[1])
+            return VK_ERROR_INITIALIZATION_FAILED;
+        VkPhysicalDeviceProperties p;
+        fillProperties(&p);
+        writeStruct(args.a[1], p);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetPhysicalDeviceProperties2: {
+        if (!objOf<PhysDev>(args.a[0], K_PHYSDEV, "vkGetPhysicalDeviceProperties2") || !args.a[1])
+            return VK_ERROR_INITIALIZATION_FAILED;
+        VkPhysicalDeviceProperties2 p2 = {};
+        if (!readStruct(args.a[1], p2)) return VK_ERROR_INITIALIZATION_FAILED;
+        fillProperties(&p2.properties);
+        writeStruct(args.a[1], p2);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetPhysicalDeviceFeatures: {
+        if (!args.a[1]) return VK_ERROR_INITIALIZATION_FAILED;
+        VkPhysicalDeviceFeatures f = {};
+        f.robustBufferAccess = VK_TRUE;
+        f.fullDrawIndexUint32 = VK_TRUE;
+        f.shaderStorageImageExtendedFormats = VK_TRUE;
+        f.shaderStorageImageReadWithoutFormat = VK_TRUE;
+        f.shaderStorageImageWriteWithoutFormat = VK_TRUE;
+        f.shaderClipDistance = VK_TRUE;
+        f.samplerAnisotropy = VK_TRUE;
+        f.geometryShader = VK_FALSE;      /* WebGPU has no geometry stage */
+        f.tessellationShader = VK_FALSE;
+        f.fragmentStoresAndAtomics = VK_TRUE;
+        f.vertexPipelineStoresAndAtomics = VK_TRUE;
+        writeStruct(args.a[1], f);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetPhysicalDeviceFeatures2: {
+        VkPhysicalDeviceFeatures2 f2 = {};
+        if (!readStruct(args.a[1], f2)) return VK_ERROR_INITIALIZATION_FAILED;
+        memset(&f2.features, 0, sizeof(f2.features));
+        f2.features.robustBufferAccess = VK_TRUE;
+        f2.features.fullDrawIndexUint32 = VK_TRUE;
+        f2.features.shaderStorageImageExtendedFormats = VK_TRUE;
+        f2.features.shaderStorageImageReadWithoutFormat = VK_TRUE;
+        f2.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
+        f2.features.shaderClipDistance = VK_TRUE;
+        f2.features.samplerAnisotropy = VK_TRUE;
+        f2.features.fragmentStoresAndAtomics = VK_TRUE;
+        f2.features.vertexPipelineStoresAndAtomics = VK_TRUE;
+        writeStruct(args.a[1], f2);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetPhysicalDeviceMemoryProperties: {
+        if (!args.a[1]) return VK_ERROR_INITIALIZATION_FAILED;
+        VkPhysicalDeviceMemoryProperties p;
+        fillMemoryProperties(&p);
+        writeStruct(args.a[1], p);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetPhysicalDeviceMemoryProperties2: {
+        VkPhysicalDeviceMemoryProperties2 p2 = {};
+        if (!readStruct(args.a[1], p2)) return VK_ERROR_INITIALIZATION_FAILED;
+        fillMemoryProperties(&p2.memoryProperties);
+        writeStruct(args.a[1], p2);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetPhysicalDeviceQueueFamilyProperties:
+    case VK64_fn_vkGetPhysicalDeviceQueueFamilyProperties2: {
+        bool v2 = (fnId == VK64_fn_vkGetPhysicalDeviceQueueFamilyProperties2);
+        U64 countAddr = args.a[1], arrAddr = args.a[2];
+        const U32 fams = 1;   /* one universal graphics+compute+transfer family */
+        if (!countAddr) return VK_ERROR_INITIALIZATION_FAILED;
+        if (!arrAddr) { wr32(countAddr, fams); return VK_SUCCESS; }
+        U32 want = rd32(countAddr);
+        U32 c = want < fams ? want : fams;
+        VkQueueFamilyProperties q = {};
+        q.queueFlags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT;
+        q.queueCount = 1;
+        q.timestampValidBits = 64;
+        q.minImageTransferGranularity = VkExtent3D{1, 1, 1};
+        if (v2) {
+            VkQueueFamilyProperties2 q2 = {};
+            if (!readStruct(arrAddr, q2)) return VK_ERROR_INITIALIZATION_FAILED;
+            q2.queueFamilyProperties = q;
+            writeStruct(arrAddr, q2);
+        } else {
+            writeStruct(arrAddr, q);
+        }
+        wr32(countAddr, c);
+        return c < fams ? VK_INCOMPLETE : VK_SUCCESS;
+    }
+    case VK64_fn_vkGetPhysicalDeviceFormatProperties: {
+        // (physDev, format, out VkFormatProperties)
+        if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        VkFormatProperties p = {};
+        p.linearTilingFeatures = (VkFormatFeatureFlags)(VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+            VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
+            VK_FORMAT_FEATURE_TRANSFER_DST_BIT);
+        p.optimalTilingFeatures = p.linearTilingFeatures;
+        p.bufferFeatures = (VkFormatFeatureFlags)(VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT |
+            VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT | VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT);
+        writeStruct(args.a[2], p);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetPhysicalDeviceSurfaceCapabilitiesKHR: {
+        if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        VkSurfaceCapabilitiesKHR c = {};
+        c.minImageCount = 1; c.maxImageCount = 3;
+        /* currentExtent undefined => the app's --width/--height are honoured */
+        c.currentExtent = VkExtent2D{0xFFFFFFFFu, 0xFFFFFFFFu};
+        c.minImageExtent = VkExtent2D{1, 1};
+        c.maxImageExtent = VkExtent2D{16384, 16384};
+        c.maxImageArrayLayers = 1;
+        c.supportedTransforms = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+        c.currentTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+        c.supportedCompositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+        c.supportedUsageFlags = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        writeStruct(args.a[2], c);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetPhysicalDeviceSurfaceFormatsKHR: {
+        if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        const VkSurfaceFormatKHR f = { VK_FORMAT_B8G8R8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR };
+        if (!args.a[3]) { wr32(args.a[2], 1); return VK_SUCCESS; }
+        if (rd32(args.a[2]) < 1) { wr32(args.a[2], 1); return VK_INCOMPLETE; }
+        writeStruct(args.a[3], f);
+        wr32(args.a[2], 1);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetPhysicalDeviceSurfacePresentModesKHR: {
+        if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (!args.a[3]) { wr32(args.a[2], 1); return VK_SUCCESS; }
+        if (rd32(args.a[2]) < 1) { wr32(args.a[2], 1); return VK_INCOMPLETE; }
+        wr32(args.a[3], VK_PRESENT_MODE_FIFO_KHR);
+        wr32(args.a[2], 1);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetPhysicalDeviceSurfaceSupportKHR:
+        wr32(args.a[3], VK_TRUE);
+        return VK_SUCCESS;
+
+    case VK64_fn_vkGetDeviceQueue: {
+        // (device, family, index, out VkQueue*)
+        Device* dev = objOf<Device>(args.a[0], K_DEVICE, "vkGetDeviceQueue");
+        if (!dev || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        wr64(args.a[3], dev->queue);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetBufferMemoryRequirements: {
+        Buffer* b = objOf<Buffer>(args.a[1], K_BUFFER, "vkGetBufferMemoryRequirements");
+        if (!b || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        VkMemoryRequirements r = {};
+        r.size = b->size ? ((b->size + 255) & ~(U64)255) : 0;
+        r.alignment = 256;
+        r.memoryTypeBits = 0xF;
+        writeStruct(args.a[2], r);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetImageMemoryRequirements: {
+        Image* im = objOf<Image>(args.a[1], K_IMAGE, "vkGetImageMemoryRequirements");
+        if (!im || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 px = (U64)im->w * im->h * (im->d ? im->d : 1) * (im->layers ? im->layers : 1) * fmt_bpp(im->format);
+        VkMemoryRequirements r = {};
+        r.size = (px + 255) & ~(U64)255;
+        r.alignment = 256;
+        r.memoryTypeBits = 0xF;
+        writeStruct(args.a[2], r);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetImageSubresourceLayout: {
+        // Must report the GUEST address: the guest then addresses the mapped
+        // range directly and its stores land in the page buffers, so the copy
+        // happens later, once, where the GPU needs the pixels
+        // (tasks/p1-final.md section 2.4).
+        Image* im = objOf<Image>(args.a[1], K_IMAGE, "vkGetImageSubresourceLayout");
+        if (!im || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        DeviceMemory* m = im->mem ? objOf<DeviceMemory>(im->mem, K_MEMORY, "vkGetImageSubresourceLayout") : nullptr;
+        U32 bpp = fmt_bpp(im->format);
+        VkSubresourceLayout l = {};
+        l.offset = m ? (m->va + im->memOff) : 0;      /* VkDeviceSize: GUEST VA */
+        l.size = (size_t)im->w * im->h * bpp;
+        l.rowPitch = (size_t)im->w * bpp;
+        l.arrayPitch = l.size;
+        l.depthPitch = l.size;
+        writeStruct(args.a[3], l);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetSwapchainImagesKHR: {
+        Swapchain* sc = objOf<Swapchain>(args.a[1], K_SWAPCHAIN, "vkGetSwapchainImagesKHR");
+        if (!sc || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (!args.a[3]) { wr32(args.a[2], sc->nimg); return VK_SUCCESS; }
+        U32 want = rd32(args.a[2]);
+        U32 c = want < sc->nimg ? want : sc->nimg;
+        std::vector<U64> imgs((size_t)(c ? c : 1));
+        for (U32 i = 0; i < c; i++) imgs[i] = sc->imgs[i];
+        writeArray(args.a[3], imgs, c);
+        wr32(args.a[2], c);
+        return c < sc->nimg ? VK_INCOMPLETE : VK_SUCCESS;
+    }
+    case VK64_fn_vkAcquireNextImageKHR: {
+        // (device, swapchain, timeout, sem, fence, out u32*)
+        Swapchain* sc = objOf<Swapchain>(args.a[1], K_SWAPCHAIN, "vkAcquireNextImageKHR");
+        if (!sc) return VK_ERROR_INITIALIZATION_FAILED;
+        sc->cur = (sc->cur + 1) % (sc->nimg ? sc->nimg : 1);
+        wr32(args.a[5], sc->cur);
+        if (args.a[3]) { Semaphore* s = objOf<Semaphore>(args.a[3], K_SEMAPHORE, "vkAcquireNextImageKHR"); if (s) s->signalled = 1; }
+        if (args.a[4]) { Fence* f = objOf<Fence>(args.a[4], K_FENCE, "vkAcquireNextImageKHR"); if (f) f->signalled = 1; }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetPastPresentationTimingGOOGLE:
+        if (args.a[2]) wr32(args.a[2], 0);   /* no timestamps */
+        return VK_SUCCESS;
+
+    case VK64_fn_vkResetFences: {
+        U32 n = (U32)args.a[1];
+        for (U32 i = 0; i < n; i++) {
+            Fence* f = objOf<Fence>(rd64(args.a[2] + (U64)i * 8), K_FENCE, "vkResetFences");
+            if (f) f->signalled = 0;
+        }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkWaitForFences: {
+        /* Everything executes synchronously at submit, so a fence is always
+         * already signalled (P1 section 1.2 "Sync"). That is what keeps an app's
+         * Present wait loop from spinning forever. */
+        U32 n = (U32)args.a[1];
+        for (U32 i = 0; i < n; i++) {
+            Fence* f = objOf<Fence>(rd64(args.a[2] + (U64)i * 8), K_FENCE, "vkWaitForFences");
+            if (f) f->signalled = 1;
+        }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetFenceStatus: {
+        Fence* f = objOf<Fence>(args.a[1], K_FENCE, "vkGetFenceStatus");
+        if (!f) return VK_ERROR_INITIALIZATION_FAILED;
+        return f->signalled ? VK_SUCCESS : VK_NOT_READY;
+    }
+    case VK64_fn_vkDeviceWaitIdle:
+    case VK64_fn_vkQueueWaitIdle:
+        return VK_SUCCESS;
+
+    case VK64_fn_vkResetCommandBuffer: {
+        CmdBuf* cb = cbOf(args.a[0], "vkResetCommandBuffer");
+        if (cb) {
+            cb->cmds.clear();
+            cb->pipe = 0;
+            cb->haveVp = cb->haveSci = false;
+            memset(cb->sets, 0, sizeof(cb->sets));
+        }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkResetCommandPool:
+        for (auto& kv : g_objs)
+            if (kv.second->kind == K_CMDBUF) ((CmdBuf*)kv.second)->cmds.clear();
+        return VK_SUCCESS;
+    case VK64_fn_vkFreeCommandBuffers: {
+        U32 n = (U32)args.a[2];
+        for (U32 i = 0; i < n; i++) dropObj(rd64(args.a[3] + (U64)i * 8));
+        return VK_SUCCESS;
+    }
+
+    // =====================================================================
+    // C1. Creates (19 of the 85)
+    // =====================================================================
+    case VK64_fn_vkCreateInstance: {
+        VkInstanceCreateInfo ci = {};
+        if (!readStruct(args.a[0], ci) || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        // Lenient about extensions, exactly as P1 was: an unknown instance
+        // extension is logged, not rejected, so a guest that asks for something
+        // extra still gets an instance instead of an early exit.
+        for (U32 i = 0; i < ci.enabledExtensionCount && ci.ppEnabledExtensionNames; i++)
+            klog_fmt("vk64: vkCreateInstance: extension '%s'",
+                     guestStr(rd64(ci.ppEnabledExtensionNames + (U64)i * 8)).c_str());
+        VkApplicationInfo ai = {};
+        readStruct(ci.pApplicationInfo, ai);
+        U64 instId = 0;
+        Instance* inst = createObj<Instance>(K_INSTANCE, instId);
+        // One physical device per instance == one WebGPU adapter. It is owned by
+        // the instance and torn down with it (P1 did the same).
+        U64 pdId = 0;
+        PhysDev* pd = createObj<PhysDev>(K_PHYSDEV, pdId);
+        pd->instance = instId;
+        inst->phys[0] = pdId;
+        inst->physCount = 1;
+        wr64(args.a[2], instId);
+        klog_fmt("vk64: vkCreateInstance ok (apiVersion=%u, %u ext) instance=0x%llx",
+                 (unsigned)ai.apiVersion, (unsigned)ci.enabledExtensionCount,
+                 (unsigned long long)instId);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateDevice: {
+        // (physDev, pCreateInfo*, pAllocator, out VkDevice*)
+        VkDeviceCreateInfo ci = {};
+        PhysDev* pd = objOf<PhysDev>(args.a[0], K_PHYSDEV, "vkCreateDevice");
+        if (!pd || !readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (!ci.queueCreateInfoCount) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 devId = 0, qId = 0;
+        Device* dev = createObj<Device>(K_DEVICE, devId);
+        // Rule: queues are created by vkCreateDevice; the getter only fetches.
+        Queue* q = createObj<Queue>(K_QUEUE, qId);
+        dev->physDev = args.a[0];
+        dev->queue = qId;
+        q->device = devId;
+        wr64(args.a[3], devId);
+        klog_fmt("vk64: vkCreateDevice ok (%u queue families requested)", (unsigned)ci.queueCreateInfoCount);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateXcbSurfaceKHR:
+    case VK64_fn_vkCreateHeadlessSurfaceEXT: {
+        // (instance, pCreateInfo*, pAllocator, out VkSurfaceKHR*)
+        if (!objOf<Instance>(args.a[0], K_INSTANCE, "vkCreateSurfaceKHR") || !args.a[3])
+            return VK_ERROR_INITIALIZATION_FAILED;
+        wr64(args.a[3], createSurface());
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateSwapchainKHR: {
+        VkSwapchainCreateInfoKHR ci = {};
+        if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 scId = 0;
+        Swapchain* sc = createObj<Swapchain>(K_SWAPCHAIN, scId);
+        sc->w = ci.imageExtent.width;
+        sc->h = ci.imageExtent.height;
+        sc->format = ci.imageFormat;
+        sc->nimg = ci.minImageCount < 2 ? 2 : (ci.minImageCount > 8 ? 8 : ci.minImageCount);
+        sc->cur = 0;
+        for (U32 i = 0; i < sc->nimg; i++) {
+            U64 imId = 0;
+            Image* im = createObj<Image>(K_IMAGE, imId);
+            im->w = sc->w; im->h = sc->h; im->d = 1; im->layers = 1; im->mips = 1;
+            im->format = sc->format; im->tiling = VK_IMAGE_TILING_OPTIMAL;
+            im->usage = ci.imageUsage; im->samples = 1;
+            sc->imgs[i] = imId;
+        }
+        wr64(args.a[3], scId);
+        klog_fmt("vk64: vkCreateSwapchainKHR %ux%u fmt=%u nimg=%u", sc->w, sc->h, sc->format, sc->nimg);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateCommandPool: {
+        VkCommandPoolCreateInfo ci = {};
+        if (!objOf<Device>(args.a[0], K_DEVICE, "vkCreateCommandPool") || !readStruct(args.a[1], ci) || !args.a[3])
+            return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        CmdPool* p = createObj<CmdPool>(K_CMDPOOL, id);
+        p->queueFamily = ci.queueFamilyIndex;
+        wr64(args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateBuffer: {
+        VkBufferCreateInfo ci = {};
+        if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (!ci.size) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        Buffer* b = createObj<Buffer>(K_BUFFER, id);
+        b->size = ci.size;
+        b->usage = ci.usage;
+        wr64(args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateImage: {
+        VkImageCreateInfo ci = {};
+        if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        Image* im = createObj<Image>(K_IMAGE, id);
+        im->w = ci.extent.width; im->h = ci.extent.height; im->d = ci.extent.depth;
+        im->layers = ci.arrayLayers ? ci.arrayLayers : 1;
+        im->mips = ci.mipLevels ? ci.mipLevels : 1;
+        im->format = ci.format; im->tiling = ci.tiling; im->usage = ci.usage;
+        im->samples = ci.samples;
+        wr64(args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateImageView: {
+        VkImageViewCreateInfo ci = {};
+        if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        Image* src = objOf<Image>(ci.image, K_IMAGE, "vkCreateImageView");
+        if (!src) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        ImageView* v = createObj<ImageView>(K_IMAGEVIEW, id);
+        v->image = ci.image;
+        v->format = ci.format ? ci.format : src->format;
+        v->aspect = ci.subresourceRange.aspectMask;
+        wr64(args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateSampler: {
+        VkSamplerCreateInfo ci = {};
+        if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        Sampler* s = createObj<Sampler>(K_SAMPLER, id);
+        s->mag = ci.magFilter; s->min = ci.minFilter; s->mipmap = ci.mipmapMode;
+        s->addrU = ci.addressModeU; s->addrV = ci.addressModeV; s->addrW = ci.addressModeW;
+        s->maxAniso = ci.maxAnisotropy;
+        wr64(args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateRenderPass: {
+        VkRenderPassCreateInfo ci = {};
+        if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        RenderPass* rp = createObj<RenderPass>(K_RENDERPASS, id);
+        rp->natt = ci.attachmentCount > VK64_MAX_ATTACH ? VK64_MAX_ATTACH : ci.attachmentCount;
+        std::vector<VkAttachmentDescription> atts;
+        readArray(ci.pAttachments, rp->natt, atts);
+        for (U32 i = 0; i < atts.size(); i++) {
+            rp->formats[i] = atts[i].format;
+            rp->loadOps[i] = atts[i].loadOp;
+            rp->storeOps[i] = atts[i].storeOp;
+        }
+        if (atts.size() > 1) rp->depthFmt = atts[1].format;
+        wr64(args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateFramebuffer: {
+        VkFramebufferCreateInfo ci = {};
+        if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        Framebuffer* fb = createObj<Framebuffer>(K_FRAMEBUFFER, id);
+        fb->rp = ci.renderPass;
+        fb->natt = ci.attachmentCount > VK64_MAX_ATTACH ? VK64_MAX_ATTACH : ci.attachmentCount;
+        std::vector<VkImageView> views;
+        readArray(ci.pAttachments, fb->natt, views);
+        for (U32 i = 0; i < views.size(); i++) fb->views[i] = views[i];
+        fb->w = ci.width; fb->h = ci.height;
+        wr64(args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateGraphicsPipelines: {
+        // (device, cache, n, pCreateInfos*, pAllocator, out VkPipeline*)
+        U32 n = (U32)args.a[2];
+        if (!objOf<Device>(args.a[0], K_DEVICE, "vkCreateGraphicsPipelines") || !n || !args.a[3] || !args.a[5])
+            return VK_ERROR_INITIALIZATION_FAILED;
+        std::vector<VkGraphicsPipelineCreateInfo> cis;
+        readArray(args.a[3], n, cis);
+        for (U32 i = 0; i < n; i++) {
+            const VkGraphicsPipelineCreateInfo& ci = cis[i];
+            U64 id = 0;
+            Pipeline* p = createObj<Pipeline>(K_PIPELINE, id);
+            // Each pXxxState is a guest VA: read the sub-state structs out one
+            // at a time (they are small and fixed).
+            VkPipelineInputAssemblyStateCreateInfo ia = {};
+            VkPipelineRasterizationStateCreateInfo rs = {};
+            VkPipelineDepthStencilStateCreateInfo ds = {};
+            VkPipelineColorBlendStateCreateInfo cbs = {};
+            readStruct(ci.pInputAssemblyState, ia);
+            readStruct(ci.pRasterizationState, rs);
+            readStruct(ci.pDepthStencilState, ds);
+            readStruct(ci.pColorBlendState, cbs);
+            p->topology = ia.topology;
+            p->cull = rs.cullMode;
+            p->front = rs.frontFace;
+            p->depthTest = ds.depthTestEnable;
+            p->depthWrite = ds.depthWriteEnable;
+            p->depthOp = ds.depthCompareOp;
+            std::vector<VkPipelineColorBlendAttachmentState> blends;
+            readArray(cbs.pAttachments, cbs.attachmentCount ? 1 : 0, blends);
+            p->blend = (!blends.empty() && blends[0].blendEnable) ? 1 : 0;
+            std::vector<VkPipelineShaderStageCreateInfo> stages;
+            readArray(ci.pStages, ci.stageCount, stages);
+            for (const VkPipelineShaderStageCreateInfo& st : stages) {
+                if (st.stage == VK_SHADER_STAGE_VERTEX_BIT) p->vs = st.module;
+                if (st.stage == VK_SHADER_STAGE_FRAGMENT_BIT) p->fs = st.module;
+            }
+            p->layout = ci.layout;
+            p->rp = ci.renderPass;
+            wr64(args.a[5] + (U64)i * 8, id);
+        }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreatePipelineLayout: {
+        VkPipelineLayoutCreateInfo ci = {};
+        if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        PipelineLayout* l = createObj<PipelineLayout>(K_PIPELAYOUT, id);
+        l->nsets = ci.setLayoutCount > VK64_MAX_SETS ? VK64_MAX_SETS : ci.setLayoutCount;
+        for (U32 i = 0; i < l->nsets; i++) l->sets[i] = rd64(ci.pSetLayouts + (U64)i * 8);
+        wr64(args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateDescriptorSetLayout: {
+        VkDescriptorSetLayoutCreateInfo ci = {};
+        if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        DescSetLayout* l = createObj<DescSetLayout>(K_SETLAYOUT, id);
+        l->nbind = ci.bindingCount > VK64_MAX_BINDINGS ? VK64_MAX_BINDINGS : ci.bindingCount;
+        std::vector<VkDescriptorSetLayoutBinding> binds;
+        readArray(ci.pBindings, l->nbind, binds);
+        for (U32 i = 0; i < binds.size(); i++) {
+            l->binds[i].binding = binds[i].binding;
+            l->binds[i].type = binds[i].descriptorType;
+        }
+        wr64(args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateDescriptorPool: {
+        if (!objOf<Device>(args.a[0], K_DEVICE, "vkCreateDescriptorPool") || !args.a[3])
+            return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        createObj<DescPool>(K_DESCPOOL, id);
+        wr64(args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateShaderModule: {
+        VkShaderModuleCreateInfo ci = {};
+        if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (!ci.codeSize || !ci.pCode) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        ShaderModule* m = createObj<ShaderModule>(K_SHADER, id);
+        // One memcpyFromGuest of the SPIR-V words; dedupe by the same djb2 hash
+        // P1 used for its .spv filenames, and KEEP the words (destroy is a
+        // refcount drop — vkcube destroys both modules right after pipeline
+        // creation, which is legal).
+        m->code.resize((size_t)ci.codeSize);
+        g_mem->memcpyFromGuest(m->code.data(), ci.pCode, ci.codeSize);
+        m->hash = blob_hash(m->code.data(), m->code.size());
+        wr64(args.a[3], id);
+        klog_fmt("vk64: vkCreateShaderModule %llu bytes (hash %016llx)",
+                 (unsigned long long)ci.codeSize, (unsigned long long)m->hash);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreatePipelineCache: {
+        if (!objOf<Device>(args.a[0], K_DEVICE, "vkCreatePipelineCache") || !args.a[3])
+            return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        createObj<PipelineCache>(K_PIPECACHE, id);
+        wr64(args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateFence: {
+        VkFenceCreateInfo ci = {};
+        if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        Fence* f = createObj<Fence>(K_FENCE, id);
+        f->signalled = (ci.flags & VK_FENCE_CREATE_SIGNALED_BIT) ? 1 : 0;
+        wr64(args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateSemaphore: {
+        if (!objOf<Device>(args.a[0], K_DEVICE, "vkCreateSemaphore") || !args.a[3])
+            return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        createObj<Semaphore>(K_SEMAPHORE, id);
+        wr64(args.a[3], id);
+        return VK_SUCCESS;
+    }
+
+    // =====================================================================
+    // C2. Allocation / binding / update / map (8 of the 85)
+    // =====================================================================
+    case VK64_fn_vkAllocateMemory: {
+        VkMemoryAllocateInfo ai = {};
+        if (!objOf<Device>(args.a[0], K_DEVICE, "vkAllocateMemory") || !readStruct(args.a[1], ai) || !args.a[3])
+            return VK_ERROR_INITIALIZATION_FAILED;
+        if (!ai.allocationSize) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        DeviceMemory* m = createObj<DeviceMemory>(K_MEMORY, id);
+        m->size = ai.allocationSize;
+        m->memIndex = ai.memoryTypeIndex;
+        // GUEST memory, not host malloc: the guest's stores go through the
+        // CPU64 store path into K64Page buffers and cannot write to a wasm-heap
+        // address, so the only substrate a guest-visible map can use is the
+        // kernel's own mapper (tasks/p1-final.md section 2.4).
+        m->va = g_mem->mmapReserveAndMap(ai.allocationSize, K_PROT_READ | K_PROT_WRITE);
+        wr64(args.a[3], id);
+        klog_fmt("vk64: vkAllocateMemory %llu bytes -> guest va 0x%llx (type %u)",
+                 (unsigned long long)m->size, (unsigned long long)m->va, (unsigned)m->memIndex);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkAllocateCommandBuffers: {
+        VkCommandBufferAllocateInfo ai = {};
+        if (!readStruct(args.a[1], ai) || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        for (U32 i = 0; i < ai.commandBufferCount; i++) {
+            U64 id = 0;
+            createObj<CmdBuf>(K_CMDBUF, id);
+            wr64(args.a[2] + (U64)i * 8, id);
+        }
+        klog_fmt("vk64: vkAllocateCommandBuffers x%u", (unsigned)ai.commandBufferCount);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkAllocateDescriptorSets: {
+        VkDescriptorSetAllocateInfo ai = {};
+        if (!readStruct(args.a[1], ai) || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        for (U32 i = 0; i < ai.descriptorSetCount; i++) {
+            U64 id = 0;
+            DescSet* s = createObj<DescSet>(K_SET, id);
+            s->layout = rd64(ai.pSetLayouts + (U64)i * 8);
+            wr64(args.a[2] + (U64)i * 8, id);
+        }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkBindBufferMemory: {
+        Buffer* b = objOf<Buffer>(args.a[1], K_BUFFER, "vkBindBufferMemory");
+        DeviceMemory* m = objOf<DeviceMemory>(args.a[2], K_MEMORY, "vkBindBufferMemory");
+        if (!b || !m) return VK_ERROR_INITIALIZATION_FAILED;
+        if (args.a[3] >= m->size) return VK_ERROR_INITIALIZATION_FAILED;
+        b->mem = args.a[2];
+        b->memOff = args.a[3];
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkBindImageMemory: {
+        Image* im = objOf<Image>(args.a[1], K_IMAGE, "vkBindImageMemory");
+        DeviceMemory* m = objOf<DeviceMemory>(args.a[2], K_MEMORY, "vkBindImageMemory");
+        if (!im || !m) return VK_ERROR_INITIALIZATION_FAILED;
+        im->mem = args.a[2];
+        im->memOff = args.a[3];
+        im->pixBytes = (U64)im->w * im->h * (im->d ? im->d : 1) * (im->layers ? im->layers : 1) * fmt_bpp(im->format);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkUpdateDescriptorSets: {
+        // (device, nWrite, pWrites*, nCopy, pCopies*)
+        U32 nw = (U32)args.a[1];
+        std::vector<VkWriteDescriptorSet> writes;
+        readArray(args.a[2], nw, writes);
+        for (U32 i = 0; i < nw; i++) {
+            const VkWriteDescriptorSet& w = writes[i];
+            DescSet* s = objOf<DescSet>(w.dstSet, K_SET, "vkUpdateDescriptorSets");
+            if (!s || w.dstBinding >= VK64_MAX_BINDINGS) continue;
+            Binding* b = nullptr;
+            for (U32 k = 0; k < s->nbind; k++)
+                if (s->binds[k].binding == w.dstBinding) { b = &s->binds[k]; break; }
+            if (!b) {
+                if (s->nbind >= VK64_MAX_BINDINGS) continue;
+                b = &s->binds[s->nbind++];
+                b->binding = w.dstBinding;
+            }
+            b->type = w.descriptorType;
+            if (w.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
+                w.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+                VkDescriptorBufferInfo bi = {};
+                readStruct(w.pBufferInfo, bi);
+                b->obj = bi.buffer;
+                b->range = bi.range;
+            } else {
+                // sampled/combined image (and sampler-only): keep view + sampler
+                VkDescriptorImageInfo ii = {};
+                readStruct(w.pImageInfo, ii);
+                b->obj = ii.imageView;
+                b->range = ii.sampler;
+            }
+        }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkMapMemory: {
+        // (device, memory, offset, size, flags, out void**) -> the GUEST VA, so
+        // the guest addresses its own pages directly.
+        DeviceMemory* m = objOf<DeviceMemory>(args.a[1], K_MEMORY, "vkMapMemory");
+        if (!m || !args.a[5]) return VK_ERROR_MEMORY_MAP_FAILED;
+        if (args.a[2] > m->size) return VK_ERROR_MEMORY_MAP_FAILED;
+        wr64(args.a[5], m->va + args.a[2]);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkUnmapMemory:
+        return VK_SUCCESS;   /* nothing to release: it is ordinary guest memory */
+
+    // =====================================================================
+    // C3. Destroys (20 of the 85)
+    // =====================================================================
+    case VK64_fn_vkDestroyInstance: {
+        Instance* inst = objOf<Instance>(args.a[0], K_INSTANCE, "vkDestroyInstance");
+        if (inst) {
+            for (U32 i = 0; i < inst->physCount; i++) dropObj(inst->phys[i]);
+            dropObj(args.a[0]);
+        }
+        return 0;
+    }
+    case VK64_fn_vkDestroyDevice: {
+        Device* dev = objOf<Device>(args.a[0], K_DEVICE, "vkDestroyDevice");
+        if (dev) {
+            U64 q = dev->queue;
+            dropObj(args.a[0]);
+            dropObj(q);
+        }
+        return 0;
+    }
+    case VK64_fn_vkDestroySurfaceKHR:      dropObj(args.a[1]); return 0;
+    case VK64_fn_vkDestroyCommandPool:     dropObj(args.a[1]); return 0;
+    case VK64_fn_vkDestroyBuffer:          dropObj(args.a[1]); return 0;
+    case VK64_fn_vkDestroyImage:           dropObj(args.a[1]); return 0;
+    case VK64_fn_vkDestroyImageView:       dropObj(args.a[1]); return 0;
+    case VK64_fn_vkDestroySampler:         dropObj(args.a[1]); return 0;
+    case VK64_fn_vkDestroyRenderPass:      dropObj(args.a[1]); return 0;
+    case VK64_fn_vkDestroyFramebuffer:     dropObj(args.a[1]); return 0;
+    case VK64_fn_vkDestroyPipeline:        dropObj(args.a[1]); return 0;
+    case VK64_fn_vkDestroyPipelineLayout:  dropObj(args.a[1]); return 0;
+    case VK64_fn_vkDestroyDescriptorSetLayout: dropObj(args.a[1]); return 0;
+    case VK64_fn_vkDestroyDescriptorPool:  dropObj(args.a[1]); return 0;
+    case VK64_fn_vkDestroyPipelineCache:   dropObj(args.a[1]); return 0;
+    case VK64_fn_vkDestroyFence:           dropObj(args.a[1]); return 0;
+    case VK64_fn_vkDestroySemaphore:       dropObj(args.a[1]); return 0;
+    case VK64_fn_vkDestroyShaderModule: {
+        // Retain the SPIR-V words: pipelines created from this module are still
+        // live and vkcube destroys the module immediately after
+        // vkCreateGraphicsPipelines (legal). This is the bounded, deliberate
+        // leak P1 documented; the bytes stay reachable through the pipeline.
+        ShaderModule* m = objOf<ShaderModule>(args.a[1], K_SHADER, "vkDestroyShaderModule");
+        if (m) m->destroyed++;
+        return 0;
+    }
+    case VK64_fn_vkDestroySwapchainKHR: {
+        Swapchain* sc = objOf<Swapchain>(args.a[1], K_SWAPCHAIN, "vkDestroySwapchainKHR");
+        if (sc) {
+            for (U32 i = 0; i < sc->nimg; i++) dropObj(sc->imgs[i]);
+            dropObj(args.a[1]);
+        }
+        return 0;
+    }
+    case VK64_fn_vkFreeMemory: {
+        DeviceMemory* m = objOf<DeviceMemory>(args.a[1], K_MEMORY, "vkFreeMemory");
+        if (m) {
+            if (m->va) g_mem->munmap(m->va, m->size);
+            dropObj(args.a[1]);
+        }
+        return 0;
+    }
+
+    // =====================================================================
+    // D. Command recording (11 of the 85)
+    // =====================================================================
+    case VK64_fn_vkBeginCommandBuffer: {
+        CmdBuf* cb = cbOf(args.a[0], "vkBeginCommandBuffer");
+        if (!cb) return VK_ERROR_INITIALIZATION_FAILED;
+        cb->cmds.clear();
+        cb->pipe = 0;
+        cb->haveVp = cb->haveSci = false;
+        memset(cb->sets, 0, sizeof(cb->sets));
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkEndCommandBuffer: {
+        CmdBuf* cb = cbOf(args.a[0], "vkEndCommandBuffer");
+        klog_fmt("vk64: vkEndCommandBuffer ncmd=%u", cb ? (unsigned)cb->cmds.size() : 0);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCmdBeginRenderPass: {
+        // (cmdBuf, pRenderPassBegin* (clear values!), contents)
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdBeginRenderPass");
+        VkRenderPassBeginInfo bi = {};
+        if (!cb || !readStruct(args.a[1], bi)) return 0;
+        Cmd c;
+        c.kind = CMD_BEGIN_RP;
+        c.a = bi.renderPass;
+        c.b = bi.framebuffer;
+        // pClearValues is a guest VA: colour first, then depth/stencil (P1 read
+        // index 0 as colour and index 1 as depth).
+        std::vector<VkClearValue> clears;
+        readArray(bi.pClearValues, bi.clearValueCount ? (bi.clearValueCount > 2 ? 2 : bi.clearValueCount) : 0, clears);
+        if (clears.size() > 0) {
+            c.f[0] = clears[0].color.float32[0];
+            c.f[1] = clears[0].color.float32[1];
+            c.f[2] = clears[0].color.float32[2];
+            c.f[3] = clears[0].color.float32[3];
+        }
+        if (clears.size() > 1) c.clearDepth = clears[1].depthStencil.depth;
+        else c.clearDepth = 1.0;
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdEndRenderPass: {
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdEndRenderPass");
+        Cmd c;
+        c.kind = CMD_END_RP;
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdBindPipeline: {
+        // (cmdBuf, bindPoint, pipeline)
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdBindPipeline");
+        if (!cb) return 0;
+        Cmd c;
+        c.kind = CMD_BIND_PIPE;
+        c.a = args.a[2];
+        cb->pipe = args.a[2];
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdBindDescriptorSets: {
+        // (cmdBuf, bindPoint, layout, firstSet, setCount, pSets*, nDyn, pDynOffsets*)
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdBindDescriptorSets");
+        if (!cb) return 0;
+        U32 firstSet = (U32)args.a[3];
+        U32 setCount = (U32)args.a[4];
+        if (setCount > VK64_MAX_SETS) setCount = VK64_MAX_SETS;
+        for (U32 i = 0; i < setCount; i++) {
+            U64 set = rd64(args.a[5] + (U64)i * 8);
+            if (firstSet + i < VK64_MAX_SETS) cb->sets[firstSet + i] = set;
+        }
+        Cmd c;
+        c.kind = CMD_BIND_SETS;
+        c.a = firstSet;
+        c.b = setCount;
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdSetViewport: {
+        // (cmdBuf, first, count, pViewports*)
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdSetViewport");
+        std::vector<VkViewport> vps;
+        readArray(args.a[3], (U32)args.a[2], vps);
+        if (!cb || vps.empty()) return 0;
+        Cmd c;
+        c.kind = CMD_VIEWPORT;
+        c.f[0] = vps[0].x; c.f[1] = vps[0].y; c.f[2] = vps[0].width; c.f[3] = vps[0].height;
+        c.f[4] = vps[0].minDepth; c.f[5] = vps[0].maxDepth;
+        memcpy(cb->vp, c.f, sizeof(cb->vp));
+        cb->haveVp = true;
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdSetScissor: {
+        // (cmdBuf, first, count, pScissors*)
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdSetScissor");
+        std::vector<VkRect2D> scs;
+        readArray(args.a[3], (U32)args.a[2], scs);
+        if (!cb || scs.empty()) return 0;
+        Cmd c;
+        c.kind = CMD_SCISSOR;
+        c.f[0] = (float)scs[0].offset.x; c.f[1] = (float)scs[0].offset.y;
+        c.f[2] = (float)scs[0].extent.width; c.f[3] = (float)scs[0].extent.height;
+        memcpy(cb->sci, c.f, sizeof(cb->sci));
+        cb->haveSci = true;
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdDraw: {
+        // (cmdBuf, vertexCount, instanceCount, firstVertex, firstInstance)
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdDraw");
+        if (!cb) return 0;
+        Cmd c;
+        c.kind = CMD_DRAW;
+        c.a = args.a[1];   // vertexCount
+        c.b = args.a[2];   // instanceCount
+        c.c = args.a[3];   // firstVertex
+        c.d = args.a[4];   // firstInstance
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdPipelineBarrier: {
+        /* WebGPU pass encoding makes colour/depth layout transitions implicit,
+         * so the barrier is dropped — but an ordering marker is kept so submit
+         * preserves relative order (P1 section 1.4). */
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdPipelineBarrier");
+        Cmd c;
+        c.kind = CMD_BARRIER;
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdCopyBufferToImage: {
+        // (cmdBuf, srcBuffer, dstImage, layout, nRegions, pRegions*)
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdCopyBufferToImage");
+        U32 nreg = (U32)args.a[4];
+        std::vector<VkBufferImageCopy> regs;
+        readArray(args.a[5], nreg, regs);
+        if (!cb) return 0;
+        for (U32 i = 0; i < regs.size(); i++) {
+            Cmd c;
+            c.kind = CMD_COPY_B2I;
+            c.a = args.a[1]; c.b = args.a[2]; c.c = nreg;
+            c.copy.srcBuffer = args.a[1];
+            c.copy.dstImage = args.a[2];
+            c.copy.bufOff = regs[i].bufferOffset;
+            c.copy.rowLen = regs[i].bufferRowLength;
+            c.copy.imgH = regs[i].bufferImageHeight;
+            c.copy.ox = regs[i].imageOffset.x;
+            c.copy.oy = regs[i].imageOffset.y;
+            c.copy.w = regs[i].imageExtent.width;
+            c.copy.h = regs[i].imageExtent.height;
+            pushCmd(cb, c);
+        }
+        return 0;
+    }
+
+    // =====================================================================
+    // E. Frame boundary (2 of the 85)
+    // =====================================================================
+    case VK64_fn_vkQueueSubmit: {
+        // (queue, nSubmits, pSubmits*, fence)
+        U32 n = (U32)args.a[1];
+        std::vector<VkSubmitInfo> sis;
+        readArray(args.a[2], n, sis);
+        std::vector<std::pair<CmdBuf*, U64>> frames;
+        for (U32 i = 0; i < n; i++) {
+            for (U32 c = 0; c < sis[i].commandBufferCount; c++) {
+                U64 cbId = rd64(sis[i].pCommandBuffers + (U64)c * 8);
+                CmdBuf* cb = cbOf(cbId, "vkQueueSubmit");
+                if (!cb) continue;
+                // Eager copy execution, against the guest memory both sides of
+                // the copy live in (P1 ran these first at submit too).
+                for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
+                frames.push_back({cb, cbId});
+            }
+        }
+        klog_fmt("vk64: vkQueueSubmit(%u batches, %u command buffers)", (unsigned)n, (unsigned)frames.size());
+        serializeSubmit(frames);
+        if (args.a[3]) { Fence* f = objOf<Fence>(args.a[3], K_FENCE, "vkQueueSubmit"); if (f) f->signalled = 1; }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkQueuePresentKHR: {
+        // (queue, pPresentInfo*)
+        VkPresentInfoKHR pi = {};
+        if (!readStruct(args.a[1], pi)) return VK_ERROR_INITIALIZATION_FAILED;
+        for (U32 i = 0; i < pi.swapchainCount; i++) {
+            U64 scId = rd64(pi.pSwapchains + (U64)i * 8);
+            Swapchain* sc = objOf<Swapchain>(scId, K_SWAPCHAIN, "vkQueuePresentKHR");
+            klog_fmt("vk64: vkQueuePresentKHR swapchain=0x%llx image=%u %ux%u -> presents frame %u",
+                     (unsigned long long)scId, (unsigned)rd32(pi.pImageIndices + (U64)i * 4),
+                     sc ? sc->w : 0, sc ? sc->h : 0, g_frameNo ? g_frameNo - 1 : 0);
+        }
+        // THE frame handoff: one MAIN_THREAD_EM_ASM per frame. P1 wrote the
+        // manifest to a file and appended a present.log line; here the manifest
+        // that submit already serialized is what crosses into the page.
+        emitFrameNow();
+        return VK_SUCCESS;
+    }
+
+    default:
+        // Benign-error tail. This is what turned P1's original
+        // "Segmentation fault" into a clean exit 0 (P1 section 1.4) and it is
+        // what keeps an un-ported entry point harmless here too.
+        klog_fmt("vk64: unimplemented fnId=%llu (%s) -> benign error",
+                 (unsigned long long)fnId, fnName(fnId));
+        return (U64)(int64_t)VK_ERROR_FEATURE_NOT_PRESENT;
+    }
+}
+
+#endif // BOXEDWINE_VULKAN64

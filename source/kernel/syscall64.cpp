@@ -24,6 +24,10 @@
 #include "../opengl/gl64bridge.h"
 #include "../opengl/gl64bridge_abi.h"
 #endif
+#ifdef BOXEDWINE_VULKAN64
+#include "../vulkan/vk64bridge.h"
+#include "../vulkan/vk64bridge_abi.h"
+#endif
 
 // x86-64 Linux syscall numbers used here. The canonical table lives in
 // arch/x86/entry/syscalls/syscall_64.tbl in the Linux source; the values
@@ -2918,6 +2922,13 @@ void ksyscall64(CPU64* cpu) {
             // Private guest->host OpenGL trap (see source/opengl/gl64bridge*).
             // RDI=fn id, RSI=guest VA of GL64Args. Result goes back in RAX.
             ret = gl64Bridge(cpu, a1, a2);
+            break;
+#endif
+#ifdef BOXEDWINE_VULKAN64
+        case VK64_SYSCALL_NR:
+            // Private guest->host Vulkan trap (see source/vulkan/vk64bridge*).
+            // RDI=fn id, RSI=guest VA of VK64Args. Result goes back in RAX.
+            ret = vk64Bridge(cpu, a1, a2);
             break;
 #endif
         case X64_SYS_write:
