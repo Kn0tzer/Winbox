@@ -87,10 +87,7 @@ for (const [name, code] of [
   ['guest-memory MOV', [0x48, 0x89, 0x00]], ['MOVZX source width', [0x0F, 0xB6, 0xC0]],
   ['16-bit MOV', [0x66, 0xB8, 0x42, 0]], ['REP prefix', [0xF3, 0xB8, 0x42, 0, 0, 0]],
   ['16-bit ADD', [0x66, 0x01, 0xC0]], ['memory ADD', [0x48, 0x01, 0x00]],
-  ['rotate group (ROL)', [0x48, 0xC1, 0xC0, 0x04]], ['rotate group (ROR)', [0x48, 0xC1, 0xC8, 0x04]],
-  ['rotate group (RCL)', [0x48, 0xC1, 0xD0, 0x04]], ['rotate group (RCR)', [0x48, 0xC1, 0xD8, 0x04]],
-  ['IMUL', [0x48, 0x0F, 0xAF, 0xC3]],
-  ['unsupported suffix after MOV', [...movabs(0, 1n), 0x48, 0xC1, 0xC8, 0x04]],
+  ['unsupported suffix after MOV', [...movabs(0, 1n), 0x48, 0xC1, 0x20, 0x04]],
   ['block longer than 24 operations', Array.from({ length: 25 }, () => movabs(0, 1n)).flat()],
 ]) {
   test(`whole-block fallback rejects ${name}`, () => assert.equal(emit(code).result.status, 2));
@@ -417,4 +414,216 @@ test('mixed shift+ALU block observes shift result', async () => {
   // Final flags come from the ADD; check the value chain instead.
   assert.equal(out.regs[0], a.r, 'add saw the shifted value');
   assert.equal(out.rflags & 0x8C5, Number(a.flags & 0x8D5n) & 0x8C5, 'ADD flags');
+});
+
+// --- Rotate reference model (mirrors cpu64.cpp doShift sub 0..3; count pre-masked) ---
+const ROT_MASK = 0x801;
+function refRotate(sub, v, count, width, rflagsIn) {
+  const mask = width === 4 ? 0xFFFFFFFFn : mask64;
+  const sb = 1n << BigInt(width * 8 - 1);
+  const wbits = BigInt(width * 8);
+  const mbits = width === 4 ? 31n : 63n;
+  v &= mask;
+  const c = count & mbits; // decoder pre-masks, but mirror it
+  if (c === 0n) return { r: v, flags: BigInt(rflagsIn) }; // flags untouched
+  let r, cf, of = 0n;
+  if (sub === 0) { // ROL
+    r = ((v << c) | (v >> (wbits - c))) & mask;
+    cf = (v >> (wbits - c)) & 1n;
+    if (c === 1n) of = (((r & sb) ? 1n : 0n) ^ cf) & 1n;
+  } else if (sub === 1) { // ROR
+    r = ((v >> c) | (v << (wbits - c))) & mask;
+    cf = (v >> (c - 1n)) & 1n;
+    if (c === 1n) of = (((r & sb) ? 1n : 0n) ^ ((r >> (wbits - 2n)) & 1n)) & 1n;
+  } else if (sub === 2) { // RCL: loop-carried carry
+    cf = BigInt(rflagsIn) & 1n;
+    r = v;
+    for (let i = 0n; i < c; i++) {
+      const ncf = (r & sb) ? 1n : 0n;
+      r = ((r << 1n) | cf) & mask;
+      cf = ncf;
+    }
+    if (c === 1n) of = (((r & sb) ? 1n : 0n) ^ cf) & 1n;
+  } else { // RCR
+    cf = BigInt(rflagsIn) & 1n;
+    r = v;
+    for (let i = 0n; i < c; i++) {
+      const ncf = r & 1n;
+      r = ((r >> 1n) | (cf << (wbits - 1n))) & mask;
+      cf = ncf;
+    }
+    if (c === 1n) of = (((r & sb) ? 1n : 0n) ^ ((r >> (wbits - 2n)) & 1n)) & 1n;
+  }
+  // OF is only defined for count==1; otherwise it is preserved.
+  const fmask = c === 1n ? ~0x801n : ~0x001n;
+  return { r, flags: (BigInt(rflagsIn) & fmask) | cf | (of << 11n) };
+}
+
+function expectRotate(out, initFlags, newBits, codeLen, changed) {
+  assert.equal(out.rflags, (((initFlags & ~ROT_MASK) | Number(newBits)) >>> 0), 'rflags');
+  assert.equal(out.ripOut, (0x12345678ABCDEFF0n + BigInt(codeLen)) & mask64, 'RIP advances');
+  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+  changed(out.regs);
+}
+
+// --- IMUL reference model (two-operand 0F AF; mirrors cpu64.cpp BK_IMUL_R_RM) ---
+const IMUL_MASK = 0x801;
+function refImul(a, b, width) {
+  const mask = width === 4 ? 0xFFFFFFFFn : mask64;
+  const wbits = BigInt(width * 8);
+  const sb = 1n << (wbits - 1n);
+  // Sign-extend operands to the operation width, then to BigInt full precision.
+  let sa = a & mask, sbv = b & mask;
+  sa = (sa & sb) ? sa - (1n << wbits) : sa;
+  sbv = (sbv & sb) ? sbv - (1n << wbits) : sbv;
+  const prod = sa * sbv;
+  const r = prod & mask;
+  // Overflow iff the full product differs from its sign-extended low half.
+  let rs = r & mask;
+  rs = (rs & sb) ? rs - (1n << wbits) : rs;
+  const ovf = prod !== rs ? 1n : 0n;
+  return { r, flags: ovf ? 0x801n : 0n };
+}
+
+function expectImul(out, initFlags, newBits, codeLen, changed) {
+  assert.equal(out.rflags, (((initFlags & ~IMUL_MASK) | Number(newBits)) >>> 0), 'rflags');
+  assert.equal(out.ripOut, (0x12345678ABCDEFF0n + BigInt(codeLen)) & mask64, 'RIP advances');
+  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+  changed(out.regs);
+}
+
+// ===== Rotate execution tests (0xC1 /0../3) =====
+
+test('ROL r64 by 1 rotates MSB into CF and LSB', async () => {
+  const regs = baseRegs(); regs[0] = 0x8000000000000001n;
+  const { r, flags } = refRotate(0, regs[0], 1n, 8, 0x202);
+  assert.equal(r, 0x0000000000000003n);
+  assert.equal(flags & 0x801n, 0x801n, 'CF+OF set');
+  const out = await runAlu([0x48, 0xC1, modrm(0, 0), 0x01], regs, 0x202);
+  expectRotate(out, 0x202, flags, 4, got => assert.equal(got[0], r));
+});
+
+test('ROL r64 by 4, OF preserved when count!=1', async () => {
+  const regs = baseRegs(); regs[0] = 0x123456789ABCDEF0n;
+  const { r, flags } = refRotate(0, regs[0], 4n, 8, 0xADB5);
+  const out = await runAlu([0x48, 0xC1, modrm(0, 0), 0x04], regs, 0xADB5);
+  expectRotate(out, 0xADB5, flags, 4, got => {
+    assert.equal(got[0], r);
+    assert.equal(out.rflags & 0x800, 0x800, 'OF preserved from input (count!=1)');
+  });
+});
+
+test('ROR r64 by 1 shifts LSB into CF', async () => {
+  const regs = baseRegs(); regs[0] = 0x8000000000000001n;
+  const { r, flags } = refRotate(1, regs[0], 1n, 8, 0x202);
+  assert.equal(r, 0xC000000000000000n);
+  const out = await runAlu([0x48, 0xC1, modrm(1, 0), 0x01], regs, 0x202);
+  expectRotate(out, 0x202, flags, 4, got => assert.equal(got[0], r));
+});
+
+test('RCL r64 by 1 threads carry through CF', async () => {
+  const regs = baseRegs(); regs[0] = 0x8000000000000000n;
+  // CF=1 in: bit0 becomes 1, MSB goes to CF.
+  const { r, flags } = refRotate(2, regs[0], 1n, 8, 0x203);
+  assert.equal(r, 0x0000000000000001n);
+  assert.equal(flags & 1n, 1n, 'CF set from old MSB');
+  const out = await runAlu([0x48, 0xC1, modrm(2, 0), 0x01], regs, 0x203);
+  expectRotate(out, 0x203, flags, 4, got => assert.equal(got[0], r));
+});
+
+test('RCR r64 by 1 threads carry through CF', async () => {
+  const regs = baseRegs(); regs[0] = 0x0000000000000001n;
+  const { r, flags } = refRotate(3, regs[0], 1n, 8, 0x202);
+  assert.equal(r, 0x0000000000000000n);
+  assert.equal(flags & 1n, 1n, 'CF set from old LSB');
+  const out = await runAlu([0x48, 0xC1, modrm(3, 0), 0x01], regs, 0x202);
+  expectRotate(out, 0x202, flags, 4, got => assert.equal(got[0], r));
+});
+
+test('ROL r32 by 1 zero-extends and uses 32-bit width', async () => {
+  const regs = baseRegs(); regs[0] = 0xDEADBEEF80000001n;
+  const { r, flags } = refRotate(0, regs[0], 1n, 4, 0x202);
+  assert.equal(r, 0x00000003n); // ROL(0x80000001,1): bit31->CF, bit0=1
+  const out = await runAlu([0xC1, modrm(0, 0), 0x01], regs, 0x202);
+  expectRotate(out, 0x202, flags, 3, got => assert.equal(got[0], r));
+});
+
+test('rotate by 0 leaves value and flags untouched', async () => {
+  const regs = baseRegs(); regs[0] = 0x123456789ABCDEF0n;
+  for (const sub of [0, 1, 2, 3]) {
+    const { r, flags } = refRotate(sub, regs[0], 0n, 8, 0xA5B5);
+    assert.equal(r, regs[0]);
+    assert.equal(flags, 0xA5B5n);
+    const out = await runAlu([0x48, 0xC1, modrm(sub, 0), 0x00], regs, 0xA5B5);
+    expectRotate(out, 0xA5B5, flags, 4, got => assert.equal(got[0], r));
+  }
+});
+
+test('RCL r64 by 63 iterates the full carry chain', async () => {
+  const regs = baseRegs(); regs[0] = 0xFFFFFFFFFFFFFFFFn;
+  const { r, flags } = refRotate(2, regs[0], 63n, 8, 0x202);
+  const out = await runAlu([0x48, 0xC1, modrm(2, 0), 0x3F], regs, 0x202);
+  expectRotate(out, 0x202, flags, 4, got => assert.equal(got[0], r));
+});
+
+test('rotate preserves SZP/AF (only CF/OF change)', async () => {
+  const regs = baseRegs(); regs[0] = 0x8000000000000000n;
+  const { flags } = refRotate(0, regs[0], 1n, 8, 0xA5B5);
+  const out = await runAlu([0x48, 0xC1, modrm(0, 0), 0x01], regs, 0xA5B5);
+  assert.equal(out.rflags & ~0x801, 0xA5B5 & ~0x801, 'SZP/AF preserved');
+  assert.equal(out.rflags & 0x801, Number(flags & 0x801n), 'CF/OF from rotate');
+});
+
+// ===== IMUL execution tests (0F AF) =====
+
+test('IMUL r64,r64 without overflow clears CF/OF', async () => {
+  const regs = baseRegs(); regs[2] = 6n; regs[5] = 7n;
+  const { r, flags } = refImul(6n, 7n, 8);
+  assert.equal(r, 42n); assert.equal(flags, 0n);
+  const out = await runAlu([0x48, 0x0F, 0xAF, modrm(2, 5)], regs, 0xA5B5);
+  expectImul(out, 0xA5B5, flags, 4, got => {
+    assert.equal(got[2], 42n, 'rdx = 6*7');
+    assert.equal(got[5], 7n, 'rbp untouched');
+  });
+});
+
+test('IMUL r64,r64 overflow sets CF and OF', async () => {
+  const regs = baseRegs(); regs[2] = 0x7000000000000000n; regs[5] = 2n;
+  const { r, flags } = refImul(0x7000000000000000n, 2n, 8);
+  assert.equal(r, 0xE000000000000000n); assert.equal(flags, 0x801n);
+  const out = await runAlu([0x48, 0x0F, 0xAF, modrm(2, 5)], regs, 0x202);
+  expectImul(out, 0x202, flags, 4, got => assert.equal(got[2], r));
+});
+
+test('IMUL r64,r64 INT64_MIN * -1 overflows', async () => {
+  const regs = baseRegs(); regs[2] = 0x8000000000000000n; regs[5] = 0xFFFFFFFFFFFFFFFFn;
+  const { r, flags } = refImul(0x8000000000000000n, 0xFFFFFFFFFFFFFFFFn, 8);
+  assert.equal(r, 0x8000000000000000n); assert.equal(flags, 0x801n);
+  const out = await runAlu([0x48, 0x0F, 0xAF, modrm(2, 5)], regs, 0x202);
+  expectImul(out, 0x202, flags, 4, got => assert.equal(got[2], r));
+});
+
+test('IMUL r32,r32 sign-extends and detects 32-bit overflow', async () => {
+  const regs = baseRegs(); regs[2] = 0xDEADBEEF00010000n; regs[5] = 0x0000000000020000n;
+  const { r, flags } = refImul(0x10000n, 0x20000n, 4);
+  assert.equal(r, 0x00000000n); // 2^32 truncated to 0
+  assert.equal(flags, 0x801n, '2^32 does not fit in i32');
+  const out = await runAlu([0x0F, 0xAF, modrm(2, 5)], regs, 0x202);
+  expectImul(out, 0x202, flags, 3, got => assert.equal(got[2], r));
+});
+
+test('IMUL r32,r32 negative operands without overflow', async () => {
+  const regs = baseRegs(); regs[2] = 0xFFFFFFFFFFFFFFF6n; regs[5] = 0x0000000000000007n;
+  const { r, flags } = refImul(0xFFFFFFF6n, 7n, 4); // (-10) * 7 = -70
+  assert.equal(r, 0xFFFFFFBAn); assert.equal(flags, 0n);
+  const out = await runAlu([0x0F, 0xAF, modrm(2, 5)], regs, 0xA5B5);
+  expectImul(out, 0xA5B5, flags, 3, got => assert.equal(got[2], r));
+});
+
+test('IMUL preserves SZP/AF, only CF/OF change', async () => {
+  const regs = baseRegs(); regs[2] = 3n; regs[5] = 4n;
+  const out = await runAlu([0x48, 0x0F, 0xAF, modrm(2, 5)], regs, 0xA5B5);
+  assert.equal(out.rflags & ~0x801, 0xA5B5 & ~0x801, 'SZP/AF preserved');
+  assert.equal(out.rflags & 0x801, 0, 'no overflow');
+  assert.equal(out.regs[2], 12n);
 });

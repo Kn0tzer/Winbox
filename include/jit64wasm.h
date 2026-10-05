@@ -28,9 +28,12 @@ void jit64WasmStateRead(const Jit64WasmState& state, U64 gpr[16], U64& rip, U32&
 // 32/64-bit MOV and immediate MOV, plus register-direct ALU (ADD/ADC/SUB/
 // SBB/AND/OR/XOR/CMP/TEST, /0../7, r/m-r, r-r/m, r/m-imm and acc-imm forms)
 // with eager, interpreter-exact flag computation (CF/PF/AF/ZF/SF/OF; other
-// RFLAGS bits preserved). Advances RIP, zero-extends 32-bit destinations.
-// Rejects the entire block for any unsupported op/operand. On rejection,
-// clears output.
+// RFLAGS bits preserved), register-direct SHL/SHR/SAR and ROL/ROR/RCL/RCR
+// (0xC1 /0../7, interpreter-exact flags; rotates write only CF/OF), and
+// register-direct two-operand IMUL (0F AF, CF/OF set iff the signed result
+// does not fit). Advances RIP, zero-extends 32-bit destinations (including
+// on shift/rotate-by-0, matching the interpreter). Rejects the entire block
+// for any unsupported op/operand. On rejection, clears output.
 bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output);
 
 // Runtime module instantiation: the table-index glue (cf. PR #151's

@@ -350,17 +350,39 @@ static void testShiftEmission() {
     CHECK(emitOk({0x48, 0xC1, 0xF0, 0x04}), "shl(/6) rax,4 rejected");
     // Count 0 is a no-op but still accepted (emits prologue/epilogue only).
     CHECK(emitOk({0x48, 0xC1, 0xE0, 0x00}), "shl rax,0 rejected");
-    // Rotates (ROL/ROR/RCL/RCR, sub 0..3): rejected, interpreter fallback.
-    CHECK(!emitOk({0x48, 0xC1, 0xC0, 0x04}), "rol rax,4 accepted");
-    CHECK(!emitOk({0x48, 0xC1, 0xC8, 0x04}), "ror rax,4 accepted");
-    CHECK(!emitOk({0x48, 0xC1, 0xD0, 0x04}), "rcl rax,4 accepted");
-    CHECK(!emitOk({0x48, 0xC1, 0xD8, 0x04}), "rcr rax,4 accepted");
+    // Rotates (ROL/ROR/RCL/RCR, sub 0..3): accepted (see testRotateEmission).
     // Memory shift: rejected.
     CHECK(!emitOk({0x48, 0xC1, 0x20, 0x04}), "shl [rax],4 accepted");
     // Shift mixed with ALU in one block: accepted.
     CHECK(emitOk({0x48, 0xC1, 0xE0, 0x04, 0x48, 0x01, 0xC8}), "shl+add block rejected");
-    // Rotate poisons the whole block.
-    CHECK(!emitOk({0x48, 0xC1, 0xE0, 0x04, 0x48, 0xC1, 0xC8, 0x04}), "shl+ror block accepted");
+    // Memory rotate still poisons the whole block.
+    CHECK(!emitOk({0x48, 0xC1, 0xE0, 0x04, 0x48, 0xC1, 0x20, 0x04}), "shl+ror-mem block accepted");
+}
+
+static void testRotateEmission() {
+    // ROL/ROR/RCL/RCR (sub 0..3) 32/64-bit register-direct: accepted.
+    CHECK(emitOk({0x48, 0xC1, 0xC0, 0x04}), "rol rax,4 rejected");
+    CHECK(emitOk({0xC1, 0xC0, 0x04}), "rol eax,4 rejected");
+    CHECK(emitOk({0x48, 0xC1, 0xC8, 0x01}), "ror rax,1 rejected");
+    CHECK(emitOk({0x48, 0xC1, 0xD0, 0x01}), "rcl rax,1 rejected");
+    CHECK(emitOk({0x48, 0xC1, 0xD8, 0x3F}), "rcr rax,63 rejected");
+    // Count 0 accepted (no-op with 32-bit zero-extend semantics).
+    CHECK(emitOk({0x48, 0xC1, 0xC0, 0x00}), "rol rax,0 rejected");
+    // Memory rotate: rejected.
+    CHECK(!emitOk({0x48, 0xC1, 0x00, 0x04}), "rol [rax],4 accepted");
+    // Rotate mixed with ALU in one block: accepted.
+    CHECK(emitOk({0x48, 0xC1, 0xC0, 0x04, 0x48, 0x01, 0xC8}), "rol+add block rejected");
+}
+
+static void testImulEmission() {
+    // Two-operand IMUL (0F AF) 32/64-bit register-direct: accepted.
+    CHECK(emitOk({0x48, 0x0F, 0xAF, 0xD5}), "imul rdx,rbp rejected");
+    CHECK(emitOk({0x0F, 0xAF, 0xD5}), "imul edx,ebp rejected");
+    CHECK(emitOk({0x4D, 0x0F, 0xAF, 0xC8}), "imul r9,r8 rejected");
+    // Memory IMUL: rejected.
+    CHECK(!emitOk({0x48, 0x0F, 0xAF, 0x15}), "imul rdx,[rip] accepted");
+    // IMUL mixed with ALU/rotate in one block: accepted.
+    CHECK(emitOk({0x48, 0x0F, 0xAF, 0xD5, 0x48, 0xC1, 0xC0, 0x01}), "imul+rol block rejected");
 }
 
 int main() {
@@ -377,6 +399,8 @@ int main() {
     testWasmStateBridge();
     testWasmGlue();
     testShiftEmission();
+    testRotateEmission();
+    testImulEmission();
     printf("  %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
