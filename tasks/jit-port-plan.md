@@ -479,3 +479,36 @@ tests), zero warnings. `test-jit-lifetime.sh` passes in both modes.
 `scripts/build-jit-wasm.sh` runs the emscripten selftest with
 `BW64_JIT=1 BW64_JIT_VERIFY=1` and asserts a nonzero `WASM64:` sentinel; the
 `BW64_JIT=1` smoke must stay byte-identical to the interpreter baseline.
+
+## 10. Verified continuation, 2026-10-05 (SHL/SHR/SAR emission)
+
+The emitter now covers register-direct SHL/SHR/SAR (`0xC1` `/4`, `/5`,
+`/7`; `/6` aliases `/4`; 32/64-bit) with eager, interpreter-exact flags
+mirroring `cpu64.cpp` `doShift`: count == 0 is a pure no-op (value and all
+flags untouched, nothing emitted); otherwise CF is the last bit shifted
+out, OF is defined only for count == 1 (SHL: MSB(result) XOR CF; SHR: old
+MSB; SAR: 0), and SZP is set from the result. AF is NOT touched by shifts
+(shift merge mask `0x8C5`, unlike the ALU `0x8D5`), and all other RFLAGS
+bits are preserved. Rotates (ROL/ROR/RCL/RCR, `/0`..`/3`) stay explicitly
+rejected, as do memory shifts; the whole-block rejection boundary is
+unchanged otherwise.
+
+Two emitter bugs were demonstrated failing before their fixes:
+`i64.shr_s` (`0x87`) and `i64.shr_u` (`0x88`) were swapped throughout
+(validation passes either way, semantics silently wrong — the pre-existing
+PF fold in `emitFlags` had the same latent swap, benign there since the
+folded value is < 256); and the SAR 32-bit path pushed the shift amount
+before sign-extension, scrambling the operand stack (`shr_s` shifted by
+the sign-extended value instead of the count).
+
+Native harness: **173 passed, 0 failed** (159 + 14 new emission
+accept/reject checks), zero warnings. Node suite: **58 passed, 0 failed**
+(43 + 15 new), including a JS reference model of `doShift` and execution
+tests covering CF/OF edges, 32-bit width + zero-extension, count-0 no-op,
+AF preservation, `/6` alias, extended registers, and a mixed shift+ALU
+block. Selftest **258 passed, 0 failed**; `BW64_JIT=1` smoke stays
+byte-identical with `WASM64: blocks=21 insns=49` (was 20/47 — shift ops in
+the smoke workload now jitted).
+
+Still deferred: rotates, IMUL, string ops, FPU emission; per-block
+instantiation overhead measurement (phase-4 batching decision).
