@@ -170,7 +170,7 @@ static PFN_vkUnmapMemory pUnmapMemory;
 static PFN_vkUpdateDescriptorSets pUpdateDescriptorSets;
 static PFN_vkWaitForFences pWaitForFences;
 
-#define R(type, name, inst) do { name = (PFN_##type)vkfix_must(gipa((inst), #name), #name); } while (0)
+#define R(type, name, inst) do { name = (PFN_##type)vkfix_must(gipa((inst), #type), #type); } while (0)
 
 int main(int argc, char** argv) {
     unsigned width = 64, height = 64;
