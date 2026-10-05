@@ -1526,7 +1526,54 @@ function genString(e) {
 }`;
 }
 
-const TEMPLATES = { alu: (e) => (e.mem ? genAluMem(e) : genAlu(e)), shift: genShift, rotate: genRotate, imul2: genImul2, imul1: genImul1, imul3: genImul3, movx: genMovx, string: genString, lea: genLea, stack: genStack, mov8: genMov8, grp3: genGrp3 };
+// "cbw" template: CBW/CWDE/CDQE (emitCbwGen).
+// 0x98: sign-extend AL->AX (16-bit/CBW), AX->EAX (32-bit/CWDE),
+// EAX->RAX (64-bit/CDQE). Mirrors cpu64.cpp dsp_20 exactly: no flags are
+// touched, no memory is accessed, RAX is the only operand. RAX is GPR
+// local 1 (X64_RAX == 0; GPR local index = reg + 1).
+// Returns 0 (RAX) for 32/64-bit (epilogue publishes L_R), 0xFF for 16-bit
+// (emitWriteWord does the RMW inline, preserving the upper 48 bits).
+function genCbw(e) {
+  return `U32 ${e.func}(Bytes& body, const Jit64Op& op) {
+    // RAX is the only operand; the value is already in GPR local 1.
+    if (op.size == 2) {
+        // CBW: AL -> AX, upper 48 bits of RAX preserved (setU16).
+        local(body, 0x20, 1); // RAX
+        i64Const(body, 0xFF);
+        body.push_back(0x83); // i64.and: AL
+        local(body, 0x21, L_R);
+        local(body, 0x20, L_R);
+        emitSext(body, 1); // sign-extend 8 -> 64 (low 16 are the result)
+        local(body, 0x21, L_R);
+        emitWriteWord(body, 0, L_R); // low 16 bits, upper 48 kept
+        return 0xFF;
+    }
+    if (op.size == 4) {
+        // CWDE: AX -> EAX, then zero-extended to 64 (setU64 of the
+        // 32-bit sign extension).
+        emitReadWord(body, 0, L_R); // L_R = AX (0..65535)
+        local(body, 0x20, L_R);
+        emitSext(body, 2); // sign-extend 16 -> 64
+        local(body, 0x21, L_R);
+        local(body, 0x20, L_R);
+        i64Const(body, 0xFFFFFFFFULL);
+        body.push_back(0x83); // i64.and: keep low 32 (zero-extend)
+        local(body, 0x21, L_R);
+        return 0; // RAX
+    }
+    // CDQE (size == 8): EAX -> RAX sign extension.
+    local(body, 0x20, 1); // RAX
+    i64Const(body, 0xFFFFFFFFULL);
+    body.push_back(0x83); // i64.and: EAX
+    local(body, 0x21, L_R);
+    local(body, 0x20, L_R);
+    emitSext(body, 4); // sign-extend 32 -> 64
+    local(body, 0x21, L_R);
+    return 0; // RAX
+}`;
+}
+
+const TEMPLATES = { alu: (e) => (e.mem ? genAluMem(e) : genAlu(e)), shift: genShift, rotate: genRotate, imul2: genImul2, imul1: genImul1, imul3: genImul3, movx: genMovx, string: genString, lea: genLea, stack: genStack, mov8: genMov8, grp3: genGrp3, cbw: genCbw };
 
 function generate() {
   const out = [];

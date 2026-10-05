@@ -2529,3 +2529,106 @@ test('fuzz F6/F7 group 3 vs reference (600 cases)', async () => {
     }
   }
 }, 180000);
+
+// ---- CBW/CWDE/CDQE (0x98) ----
+// Pure RAX transform; no ModRM, no flags, no memory. The reference model
+// mirrors cpu64.cpp dsp_20 exactly.
+function encCbw(size) {
+  const code = [];
+  if (size === 2) code.push(0x66);
+  if (size === 8) code.push(0x48); // REX.W
+  code.push(0x98);
+  return { code, size };
+}
+
+async function checkCbw(enc, { regs, rflags = 0x202, rip = 0x12345678ABCDEFF0n }) {
+  const { size } = enc;
+  const refRegs = [...regs];
+  const rax = refRegs[0];
+  // Sign-extend via (v ^ signBit) - signBit (BigInt-safe; ~mask does not
+  // sign-extend with infinite-precision BigInt).
+  if (size === 2) {
+    // CBW: AL -> AX, upper 48 of RAX preserved (setU16).
+    const al = rax & 0xFFn;
+    const sext16 = ((al ^ 0x80n) - 0x80n) & 0xFFFFn;
+    refRegs[0] = (rax & ~0xFFFFn) | sext16;
+  } else if (size === 4) {
+    // CWDE: AX -> EAX sign-extended, then zero-extended to 64.
+    const ax = rax & 0xFFFFn;
+    const sext32 = ((ax ^ 0x8000n) - 0x8000n) & 0xFFFFFFFFn;
+    refRegs[0] = sext32;
+  } else {
+    // CDQE: EAX -> RAX sign-extended.
+    const eax = rax & 0xFFFFFFFFn;
+    refRegs[0] = (((eax ^ 0x80000000n) - 0x80000000n) & mask64);
+  }
+  const out = await runAluMem(enc.code, { regs: [...regs], rflags, rip });
+  assert.deepEqual(out.regs, refRegs, 'GPRs');
+  assert.equal(BigInt(out.rflags), BigInt(rflags) & 0xFFFFFFFFn, 'RFLAGS preserved');
+  assert.equal(out.ripOut, (rip + BigInt(enc.code.length)) & mask64, 'RIP');
+  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+}
+
+test('CBW (66 98): AL->AX sign extension, upper 48 preserved', async () => {
+  // AL=0x80 -> AX=0xFF80, upper 48 of RAX untouched.
+  const regs = baseRegs(); regs[0] = 0x123456789ABC0080n;
+  await checkCbw(encCbw(2), { regs });
+  // AL=0x7F -> AX=0x007F (positive stays).
+  const regs2 = baseRegs(); regs2[0] = 0xFFFFFFFFFFFF007Fn;
+  await checkCbw(encCbw(2), { regs: regs2 });
+  // AL=0xFF -> AX=0xFFFF.
+  const regs3 = baseRegs(); regs3[0] = 0x00000000000000FFn;
+  await checkCbw(encCbw(2), { regs: regs3 });
+});
+
+test('CWDE (98): AX->EAX sign extension, zero-extended to 64', async () => {
+  // AX=0x8000 -> EAX=0xFFFF8000, RAX=0x00000000FFFF8000.
+  const regs = baseRegs(); regs[0] = 0x1234567880001234n;
+  await checkCbw(encCbw(4), { regs });
+  // AX=0x7FFF -> EAX=0x00007FFF.
+  const regs2 = baseRegs(); regs2[0] = 0xFFFFFFFFFFFF7FFFn;
+  await checkCbw(encCbw(4), { regs: regs2 });
+});
+
+test('CDQE (48 98): EAX->RAX sign extension', async () => {
+  // EAX=0x80000000 -> RAX=0xFFFFFFFF80000000.
+  const regs = baseRegs(); regs[0] = 0x1234567880000000n;
+  await checkCbw(encCbw(8), { regs });
+  // EAX=0x7FFFFFFF -> RAX=0x000000007FFFFFFF.
+  const regs2 = baseRegs(); regs2[0] = 0xFFFFFFFF7FFFFFFFn;
+  await checkCbw(encCbw(8), { regs: regs2 });
+});
+
+test('CBW/CWDE/CDQE: RFLAGS preserved across flag sets', async () => {
+  const flagSets = [0x202, 0x8D5, 0x0, 0xFFFFFFFF];
+  for (const rflags of flagSets) {
+    const regs = baseRegs(); regs[0] = 0xDEADBEEF80n;
+    await checkCbw(encCbw(2), { regs, rflags });
+    await checkCbw(encCbw(4), { regs: baseRegs(), rflags });
+    await checkCbw(encCbw(8), { regs: baseRegs(), rflags });
+  }
+});
+
+test('fuzz CBW/CWDE/CDQE vs reference (600 cases)', async () => {
+  const rng = mulberry32(0x98CB);
+  const flagSets = [0x202, 0x203, 0x8D5, 0x246, 0x202 | 0x800, 0x402, 0x0];
+  const advVals = [0n, 1n, 0x7Fn, 0x80n, 0xFFn, 0x7FFFn, 0x8000n, 0xFFFFn,
+                   0x7FFFFFFFn, 0x80000000n, 0xFFFFFFFFn, 0xFFFFFFFFFFFFFFFFn];
+  for (let i = 0; i < 600; i++) {
+    const size = pick(rng, [2, 4, 4, 8, 8]);
+    const enc = encCbw(size);
+    const regs = Array.from({ length: 16 }, () => advVal(rng));
+    // Bias RAX toward sign-boundary values.
+    if (rng() < 0.6) regs[0] = pick(rng, advVals);
+    // Randomize upper bits of RAX to prove the 16-bit preserve / 32-bit zero-extend.
+    if (rng() < 0.5) regs[0] = (regs[0] & 0xFFFFFFFFn) | (BigInt(Math.floor(rng() * 0x100000000)) << 32n);
+    const rflags = pick(rng, flagSets);
+    const tag = `fuzzCbw i=${i} size=${size}`;
+    try {
+      await checkCbw(enc, { regs, rflags });
+    } catch (e) {
+      e.message = `${tag}: ${e.message}`;
+      throw e;
+    }
+  }
+}, 180000);

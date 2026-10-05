@@ -35,7 +35,7 @@ static Jit64Op dec(U64 base, std::vector<U8> b) {
 static void testCoverageTable() {
     U32 n = 0;
     const Jit64CoveredOpcode* t = jit64CoveredOpcodes(&n);
-    CHECK(n == 23, "coverage table has %u entries, want 23", n);
+    CHECK(n == 24, "coverage table has %u entries, want 24", n);
     CHECK(t != nullptr, "coverage table null");
     // Spot-check rank order matches the profile.
     CHECK(t[0].op == 0x89, "rank1 op=0x%02x want 0x89", t[0].op);
@@ -52,6 +52,7 @@ static void testCoverageTable() {
     CHECK(t[20].op == 0x63, "rank21 op=0x%02x want 0x63 (MOVSXD)", t[20].op);
     CHECK(t[21].op == 0x88, "rank22 op=0x%02x want 0x88 (MOV r/m8,r8)", t[21].op);
     CHECK(t[22].op == 0xF7 && t[22].kind == J64_GRP3, "rank23 want F7/GRP3 got %02x/%d", t[22].op, (int)t[22].kind);
+    CHECK(t[23].op == 0x98 && t[23].kind == J64_CBW, "rank24 want 98/CBW got %02x/%d", t[23].op, (int)t[23].kind);
 }
 
 static void testMovForms() {
@@ -485,6 +486,21 @@ static void testFallbackRules() {
     CHECK(c9.kind == J64_GRP3 && c9.sub == 4 && c9.size == 1 && c9.len == 2,
           "F6 /4: kind=%d sub=%d", c9.kind, c9.sub);
     CHECK(c9.plan == JIT64_FAST, "F6 /4 plan fallback");
+    // 98                cwde (AX -> EAX, default 32-bit)
+    Jit64Op cbw1 = dec(0x400000, {0x98});
+    CHECK(cbw1.kind == J64_CBW && cbw1.size == 4 && cbw1.len == 1,
+          "98: kind=%d size=%d len=%d", cbw1.kind, cbw1.size, cbw1.len);
+    CHECK(cbw1.plan == JIT64_FAST, "98 plan fallback");
+    // 66 98             cbw (AL -> AX, 16-bit)
+    Jit64Op cbw2 = dec(0x400000, {0x66, 0x98});
+    CHECK(cbw2.kind == J64_CBW && cbw2.size == 2 && cbw2.len == 2,
+          "66 98: kind=%d size=%d len=%d", cbw2.kind, cbw2.size, cbw2.len);
+    CHECK(cbw2.plan == JIT64_FAST, "66 98 plan fallback");
+    // 48 98             cdqe (EAX -> RAX, 64-bit)
+    Jit64Op cbw3 = dec(0x400000, {0x48, 0x98});
+    CHECK(cbw3.kind == J64_CBW && cbw3.size == 8 && cbw3.len == 2,
+          "48 98: kind=%d size=%d len=%d", cbw3.kind, cbw3.size, cbw3.len);
+    CHECK(cbw3.plan == JIT64_FAST, "48 98 plan fallback");
     // 6B C0 05          imul eax, eax, 5
     Jit64Op c10 = dec(0x400000, {0x6B, 0xC0, 0x05});
     CHECK(c10.kind == J64_IMUL_3OP && c10.size == 4 && c10.imm == 5 && c10.len == 3,

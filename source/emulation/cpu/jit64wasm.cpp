@@ -449,6 +449,8 @@ U32 jit64EmitNew(std::vector<U8>& body, const Jit64Op& op) {
         return 0xFE; // 4/8-bit MOV keeps the hand-written emitter
     case J64_GRP3:
         return emitGrp3Gen(body, op);
+    case J64_CBW:
+        return emitCbwGen(body, op);
     default:
         return 0xFE;
     }
@@ -542,6 +544,10 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
         case J64_IMUL_3OP:
         case J64_GRP3:
             widthOk = (op.size == 1 || op.size == 2 || op.size == 4 || op.size == 8);
+            break;
+        case J64_CBW:
+            // CBW/CWDE/CDQE: 16/32/64-bit all valid.
+            widthOk = (op.size == 2 || op.size == 4 || op.size == 8);
             break;
         default:
             widthOk = (op.size == 4 || op.size == 8);
@@ -649,6 +655,12 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             // defensively. rmIndex is 0xFF for memory forms.
             if (op.sub != 0 && op.sub != 2 && op.sub != 3 && op.sub != 4) return false;
             if (!op.isMem && op.rmIndex >= 16) return false;
+            break;
+        case J64_CBW:
+            // CBW/CWDE/CDQE (0x98): pure RAX transform, no ModRM, no flags,
+            // no memory. Sizes 2/4/8 only (the decoder sets size from the
+            // prefixes; the classifier already rejected anything else).
+            if (op.size != 2 && op.size != 4 && op.size != 8) return false;
             break;
         case J64_STRING:
             break; // validated above
@@ -759,6 +771,16 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             // everything inline (TEST, MUL, memory forms, 8/16-bit
             // writebacks), else the destination GPR for L_R.
             U32 written = emitGrp3Gen(body, op);
+            if (written != 0xFF) {
+                local(body, 0x20, L_R);
+                local(body, 0x21, written + 1);
+            }
+            break;
+        }
+        case J64_CBW: {
+            // CBW/CWDE/CDQE: emitCbwGen returns 0xFF for 16-bit (inline
+            // RMW via emitWriteWord), else 0 (RAX) for L_R publish.
+            U32 written = emitCbwGen(body, op);
             if (written != 0xFF) {
                 local(body, 0x20, L_R);
                 local(body, 0x21, written + 1);

@@ -1302,3 +1302,41 @@ U32 emitMov8Gen(Bytes& body, const Jit64Op& op) {
     }
     return 0xFF;
 }
+
+U32 emitCbwGen(Bytes& body, const Jit64Op& op) {
+    // RAX is the only operand; the value is already in GPR local 1.
+    if (op.size == 2) {
+        // CBW: AL -> AX, upper 48 bits of RAX preserved (setU16).
+        local(body, 0x20, 1); // RAX
+        i64Const(body, 0xFF);
+        body.push_back(0x83); // i64.and: AL
+        local(body, 0x21, L_R);
+        local(body, 0x20, L_R);
+        emitSext(body, 1); // sign-extend 8 -> 64 (low 16 are the result)
+        local(body, 0x21, L_R);
+        emitWriteWord(body, 0, L_R); // low 16 bits, upper 48 kept
+        return 0xFF;
+    }
+    if (op.size == 4) {
+        // CWDE: AX -> EAX, then zero-extended to 64 (setU64 of the
+        // 32-bit sign extension).
+        emitReadWord(body, 0, L_R); // L_R = AX (0..65535)
+        local(body, 0x20, L_R);
+        emitSext(body, 2); // sign-extend 16 -> 64
+        local(body, 0x21, L_R);
+        local(body, 0x20, L_R);
+        i64Const(body, 0xFFFFFFFFULL);
+        body.push_back(0x83); // i64.and: keep low 32 (zero-extend)
+        local(body, 0x21, L_R);
+        return 0; // RAX
+    }
+    // CDQE (size == 8): EAX -> RAX sign extension.
+    local(body, 0x20, 1); // RAX
+    i64Const(body, 0xFFFFFFFFULL);
+    body.push_back(0x83); // i64.and: EAX
+    local(body, 0x21, L_R);
+    local(body, 0x20, L_R);
+    emitSext(body, 4); // sign-extend 32 -> 64
+    local(body, 0x21, L_R);
+    return 0; // RAX
+}

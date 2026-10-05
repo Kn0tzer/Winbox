@@ -283,7 +283,8 @@ private:
         BK_ALU_RM_IMM, BK_SHIFT_IMM, BK_IMUL_R_RM, BK_JCC8,
         BK_TEST_RM_R, BK_LEA, BK_MOV_RM_IMM, BK_MOV_R_IMM, BK_PUSH, BK_POP,
         BK_STRING, BK_ALU_ACC_IMM, BK_MOVX, BK_IMUL_1OP, BK_IMUL_3OP,
-        BK_GRP3 // F6/F7 group 3: sub = ModRM reg field (0=TEST,2=NOT,3=NEG,4=MUL)
+        BK_GRP3, // F6/F7 group 3: sub = ModRM reg field (0=TEST,2=NOT,3=NEG,4=MUL)
+        BK_CBW // 0x98 CBW/CWDE/CDQE: sign-extend AL->AX/AX->EAX/EAX->RAX
     };
     struct BRec {
         U8  kind = 0;

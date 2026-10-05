@@ -11,7 +11,7 @@
 //   func:     generated C++ function name, e.g. "emitAluGen".
 //   template: composition pattern implemented by the generator
 //             ("alu", "shift", "rotate", "imul2", "imul1", "imul3",
-//              "movx", "string", "lea", "stack", "mov8").
+//              "movx", "string", "lea", "stack", "mov8", "cbw").
 //   mem:      for the "alu" template: false = register-direct (emitAlu
 //             shape), true = memory-operand (emitAluMem shape).
 //   kinds:    Jit64Kind values the emitter handles.
@@ -291,6 +291,24 @@ export const EMITTERS = [
             "8A mem: byte = [EA] (may fault), then writeReg8. The EA " +
             "itself is computed from pre-instruction registers at " +
             "decode time, like the interpreter's decodeModRM.",
+    },
+  },
+  {
+    func: "emitCbwGen",
+    template: "cbw",
+    kinds: ["J64_CBW"],
+    encoding:
+      "CBW/CWDE/CDQE (0x98): no ModRM, no immediate. 0x66 selects 16-bit " +
+      "(CBW: AL->AX), default is 32-bit (CWDE: AX->EAX), REX.W selects " +
+      "64-bit (CDQE: EAX->RAX). Pure RAX transform.",
+    operands:
+      "sizes 2/4/8, implicit RAX operand only.",
+    flags: {
+      writes: [],
+      preserves: "all RFLAGS bits - CBW/CWDE/CDQE never touch flags",
+      note: "16-bit: setU16 (upper 48 preserved); 32-bit: sign-extend " +
+            "AX to 32 then zero-extend to 64; 64-bit: sign-extend EAX " +
+            "to 64. Mirrors cpu64.cpp dsp_20 exactly.",
     },
   },
 ];

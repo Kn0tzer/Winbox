@@ -5899,6 +5899,14 @@ bool CPU64::buildBlock(U64 startRip, BBlock& b) {
             b.n++;
             r += rec.len;
             break;                                  // terminator
+        } else if (op == 0x98) {
+            // CBW/CWDE/CDQE: sign-extend AL->AX (16-bit), AX->EAX (32-bit),
+            // EAX->RAX (64-bit). All three sizes decode in blocks (the
+            // interpreter's dsp_20 handles all three); rec.size already holds
+            // rexW ? 8 : (osize16 ? 2 : 4). Pure RAX transform: no ModRM,
+            // no flags, no memory, no faults.
+            rec.kind = BK_CBW;
+            rec.len = (U8)(opOff + 1);
         } else {
             break;                                  // unsupported → end block here
         }
@@ -6193,6 +6201,16 @@ U32 CPU64::execBlock(const BBlock& b, U64 maxInsn) {
             executed++;
             return executed;
         }
+        case BK_CBW: {
+            // CBW/CWDE/CDQE (0x98): mirrors cpu64.cpp dsp_20 exactly.
+            // Sign-extend AL->AX (16-bit, upper 48 preserved), AX->EAX
+            // (32-bit, zero-extended to 64), EAX->RAX (64-bit). No flags.
+            if (size == 2) reg[X64_RAX].setU16((U16)(S16)(S8)reg[X64_RAX].u8);
+            else if (size == 4) reg[X64_RAX].setU64((U64)(U32)(S32)(S16)reg[X64_RAX].u16);
+            else reg[X64_RAX].setU64((U64)(S64)(S32)reg[X64_RAX].u32);
+            rip += rec.len;
+            break;
+        }
         }
         executed++;
         // A guest store can rewrite a later instruction in this block. Stop
@@ -6220,7 +6238,7 @@ U32 CPU64::execBlockThreaded(const BBlock& b, U64 maxInsn) {
     // Static: label addresses are compile-time constants; the table is
     // built once, not on every block execution (2M+ executions per
     // benchmark loop - 19 stores each would be measurable).
-    static const void* thrDispatch[20] = {
+    static const void* thrDispatch[21] = {
         &&thr_MOV_RM_R,
         &&thr_MOV_R_RM,
         &&thr_ALU_RM_R,
@@ -6241,6 +6259,7 @@ U32 CPU64::execBlockThreaded(const BBlock& b, U64 maxInsn) {
         &&thr_IMUL_1OP,
         &&thr_IMUL_3OP,
         &&thr_GRP3,
+        &&thr_CBW,
     };
     U32 executed = 0;
     U16 i = 0;
@@ -6604,6 +6623,18 @@ thr_IMUL_3OP: {
         if (size == 2) reg[m.regField].setU16((U16)r);
         else if (size == 4) reg[m.regField].setU32((U32)r);
         else reg[m.regField].setU64((U64)r);
+        rip += rec.len;
+        THR_NEXT();
+
+    }
+thr_CBW: {
+        const BRec& rec = b.recs[i];
+        U32 size = rec.size;
+
+        // CBW/CWDE/CDQE (0x98): mirrors cpu64.cpp dsp_20 exactly.
+        if (size == 2) reg[X64_RAX].setU16((U16)(S16)(S8)reg[X64_RAX].u8);
+        else if (size == 4) reg[X64_RAX].setU64((U64)(U32)(S32)(S16)reg[X64_RAX].u16);
+        else reg[X64_RAX].setU64((U64)(S64)(S32)reg[X64_RAX].u32);
         rip += rec.len;
         THR_NEXT();
 

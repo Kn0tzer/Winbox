@@ -88,6 +88,9 @@ enum Jit64Kind : U8 {
                         // are interpreter-only (their #DE path delivers a
                         // host SIGFPE with exact register state, which the
                         // straight-line wasm block model cannot represent).
+    J64_CBW = 27,       // 0x98 CBW/CWDE/CDQE: sign-extend AL->AX (16),
+                        // AX->EAX (32), EAX->RAX (64). Pure RAX
+                        // transform; no flags, no memory, no faults.
     J64_UNKNOWN = 255
 };
 
