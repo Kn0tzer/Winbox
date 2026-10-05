@@ -248,6 +248,7 @@ int main() {
     vkCmdDraw(dynamicCbId, 3, 1, 0, 0); vkCmdEndRendering(dynamicCbId);
     serializeSubmitV2({{dynamicCb, dynamicCbId}});
     std::vector<U32> emittedStrides;
+    std::vector<U64> emittedPipelineIds;
     std::vector<U64> emittedOffsets;
     unsigned bufferRecords = 0;
     for (const auto& chunk : g_v2Pending.back().chunks) {
@@ -256,6 +257,7 @@ int main() {
             const U8* p = chunk.data() + at + 8;
             if (type == V2_PIPELINE) {
                 U32 stride; memcpy(&stride, p + 64, 4); emittedStrides.push_back(stride);
+                U64 id; memcpy(&id, p, 8); emittedPipelineIds.push_back(id);
             }
             if (type == V2_VERTEX_BIND) {
                 U64 offset; memcpy(&offset, p + 16, 8); emittedOffsets.push_back(offset);
@@ -270,6 +272,32 @@ int main() {
     assert((emittedStrides == std::vector<U32>{20, 24}));
     assert((emittedOffsets == std::vector<U64>{8, 16}));
     assert(bufferRecords == 1); // Same data transfers once, while binding state stays per command.
+    assert(emittedPipelineIds.size() == 2 && emittedPipelineIds[0] != emittedPipelineIds[1]);
+    assert(emittedPipelineIds[0] != pipelineId && emittedPipelineIds[1] != pipelineId);
+    auto readPipelineIds = [&]() {
+        std::vector<U64> ids;
+        for (const auto& chunk : g_v2Pending.back().chunks) {
+            for (size_t at = 16; at < chunk.size();) {
+                U32 type, len; memcpy(&type, chunk.data() + at, 4); memcpy(&len, chunk.data() + at + 4, 4);
+                if (type == V2_PIPELINE) { U64 id; memcpy(&id, chunk.data() + at + 8, 8); ids.push_back(id); }
+                at += 8 + len;
+            }
+        }
+        return ids;
+    };
+    // Reusing a recording in a future frame must reuse both identities, so
+    // consumer pipeline caches stay correct and bounded by the layouts used.
+    serializeSubmitV2({{dynamicCb, dynamicCbId}});
+    assert(readPipelineIds() == emittedPipelineIds);
+    memory.writeq(1832, 20);
+    vkCmdBindVertexBuffers2(dynamicCbId, 0, 1, (U64*)1800, (U64*)1816, nullptr, (U64*)1832);
+    vkCmdDraw(dynamicCbId, 3, 1, 0, 0);
+    serializeSubmitV2({{dynamicCb, dynamicCbId}});
+    assert((readPipelineIds() == std::vector<U64>{emittedPipelineIds[0], emittedPipelineIds[1], emittedPipelineIds[0]}));
+    pipeline->dynamicVertexStride = false;
+    serializeSubmitV2({{dynamicCb, dynamicCbId}});
+    assert((readPipelineIds() == std::vector<U64>{pipelineId}));
+    pipeline->dynamicVertexStride = true;
     resetCmdBuf(dynamicCb);
     assert(!dynamicCb->vbHasStride[0] && !dynamicCb->vbStride[0]);
     g_v2Pending.clear();

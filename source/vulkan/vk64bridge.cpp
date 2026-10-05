@@ -76,6 +76,7 @@
 #include <emscripten/emscripten.h>
 #endif
 
+#include <algorithm>
 #include <vector>
 #include <unordered_map>
 #include <string>
@@ -436,6 +437,10 @@ struct Pipeline : Obj {
     U32 topology = 0, cull = 0, front = 0, depthTest = 0, depthWrite = 0, depthOp = 0, blend = 0;
     U32 nvb = 0, nva = 0;
     bool dynamicVertexStride = false;
+    struct VertexStrideVariant { std::vector<U32> strides; U64 id; };
+    // The page caches pipelines by ID across frames. Dynamic layouts require
+    // distinct IDs; keep the exact keys with the originating pipeline lifetime.
+    std::vector<VertexStrideVariant> vertexStrideVariants;
     U32 vbStride[VK64_MAX_VERT_BINDINGS] = {0};
     U32 vbInputRate[VK64_MAX_VERT_BINDINGS] = {0};    /* 0 = per vertex, 1 = per instance */
     U32 vaBinding[VK64_MAX_VERT_ATTRIBS] = {0};       /* VkVertexInputAttributeDescription */
@@ -1428,15 +1433,28 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             ShaderModule* fs = pipe->fs ? objOf<ShaderModule>(pipe->fs, K_SHADER, "vkQueueSubmit") : nullptr;
             emitShader(vs, 0);
             emitShader(fs, 1);
+            U64 serializedId = pipeId;
+            std::vector<U32> effectiveStrides;
+            for (U32 i = 0; i < pipe->nvb; ++i)
+                effectiveStrides.push_back(pipe->dynamicVertexStride && vertexHasStride[i]
+                    ? vertexStrides[i] : pipe->vbStride[i]);
+            if (pipe->dynamicVertexStride) {
+                auto variant = std::find_if(pipe->vertexStrideVariants.begin(), pipe->vertexStrideVariants.end(),
+                    [&](const Pipeline::VertexStrideVariant& v) { return v.strides == effectiveStrides; });
+                if (variant == pipe->vertexStrideVariants.end()) {
+                    serializedId = g_nextId++; // Shared allocator prevents collisions with guest handles.
+                    pipe->vertexStrideVariants.push_back({effectiveStrides, serializedId});
+                } else serializedId = variant->id;
+            }
             emit(V2_PIPELINE, [&](ChunkWriter& p) {
-                p.u64(pipeId);
+                p.u64(serializedId);
                 p.u64(vs ? vs->hash : 0); p.u64(fs ? fs->hash : 0);
                 p.u32(pipe->topology); p.u32(pipe->cull); p.u32(pipe->front);
                 p.u32(pipe->depthTest); p.u32(pipe->depthWrite); p.u32(pipe->depthOp);
                 p.u32(pipe->blend);
                 p.u32(pipe->nvb); p.u32(pipe->nva);
                 for (U32 i = 0; i < pipe->nvb; i++) {
-                    p.u32(i); p.u32(pipe->dynamicVertexStride && vertexHasStride[i] ? vertexStrides[i] : pipe->vbStride[i]); p.u32(pipe->vbInputRate[i]);
+                    p.u32(i); p.u32(effectiveStrides[i]); p.u32(pipe->vbInputRate[i]);
                 }
                 for (U32 i = 0; i < pipe->nva; i++) {
                     p.u32(pipe->vaLocation[i]); p.u32(pipe->vaBinding[i]);
