@@ -108,7 +108,7 @@ try {
   if (!keyFnExists) throw new Error('bw64_xwire_key not exported by this wasm build');
 
   const spawn = await page.evaluate(() => window.bwRuntime.call('bw64_spawn', ['string', 'string'],
-    ['/usr/lib/wine/wine64\nZ:\\home\\username\\tri9input.exe', 'BW64_VKTRACE=2\nBW64_VKFRAME=1\nWINEDLLOVERRIDES=d3d9=n\nLD_LIBRARY_PATH=/home/username']));
+    ['/usr/lib/wine/wine64\nZ:\\home\\username\\tri9input.exe', 'BW64_VKTRACE=0\nBW64_VKFRAME=0\nWINEDLLOVERRIDES=d3d9=n\nLD_LIBRARY_PATH=/home/username']));
   console.log('SPAWN', spawn);
   const drainUntil = Date.now() + 60000;
   while (Date.now() < drainUntil && !logs.some(l => /spawning.*tri9input/.test(l))) await page.waitForTimeout(1000);
