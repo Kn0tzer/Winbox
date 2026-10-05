@@ -38,6 +38,15 @@ void jit64WasmStateRead(const Jit64WasmState& state, U64 gpr[16], U64& rip, U32&
 // for any unsupported op/operand. On rejection, clears output.
 bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output);
 
+#ifdef JIT64_GEN_VERIFY
+// Byte-identical migration test hooks (defined in jit64wasm.cpp).
+// jit64EmitOld emits one op with the hand-written emitter, jit64EmitNew
+// with the table-generated one. Return 0xFE when the kind has no emitter
+// in that set (the test skips such ops).
+U32 jit64EmitOld(std::vector<U8>& body, const Jit64Op& op);
+U32 jit64EmitNew(std::vector<U8>& body, const Jit64Op& op);
+#endif
+
 // Runtime module instantiation: the table-index glue (cf. PR #151's
 // boxedwine_wasm_instantiate_runtime_batch, single-module form; batching and
 // merging remain phase-4 work). Instantiates an emitted module against the

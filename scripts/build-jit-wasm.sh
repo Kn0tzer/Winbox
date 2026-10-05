@@ -44,6 +44,18 @@ g++ -std=c++17 -Wall -Wextra -DBOXEDWINE_GUEST_X64=1 \
     "$REPO/source/emulation/cpu/tests/jit64_tests.cpp" \
     -o "$BUILD_TMP/jit64_tests"
 "$BUILD_TMP/jit64_tests"
+# Byte-identical migration gate: the table-generated emitters must produce
+# byte-identical wasm output to the hand-written ones they replace
+# (see source/emulation/cpu/jit64table.mjs). The generated .inc must also
+# be in sync with the table.
+node "$REPO/scripts/gen-jit64.mjs" --check
+g++ -std=c++17 -Wall -Wextra -DBOXEDWINE_GUEST_X64=1 -DJIT64_GEN_VERIFY=1 \
+    -I"$REPO/include" \
+    "$REPO/source/emulation/cpu/jit64.cpp" \
+    "$REPO/source/emulation/cpu/jit64wasm.cpp" \
+    "$REPO/source/emulation/cpu/tests/jit64_gen_tests.cpp" \
+    -o "$BUILD_TMP/jit64_gen_tests"
+"$BUILD_TMP/jit64_gen_tests"
 command -v node >/dev/null || { echo "ERROR: node not found." >&2; exit 1; }
 g++ -std=c++17 -Wall -Wextra -DBOXEDWINE_GUEST_X64=1 \
     -I"$REPO/include" \

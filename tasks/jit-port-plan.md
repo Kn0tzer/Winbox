@@ -922,3 +922,123 @@ register and memory paths share them. No flag-semantics duplication.
 - The emitter validates EA fields defensively (`seg == 0`, reg indices
   < 16 or 0xFF, scale <= 3) even though classify already filtered LOCK;
   a malformed op degrades to whole-block rejection, never to a wrong EA.
+
+## 14. Hardening checklist: BoxedWine wasm-JIT bug catalog (2026-10-05)
+
+Upstream BoxedWine (danoon2/Boxedwine, master) ships a real, active wasm JIT
+that independently converged on our exact architecture (module-per-block,
+wasmTable-index dispatch, Emscripten memory + helper imports, lazy flags).
+Its commit history is a catalog of the failure modes of this architecture.
+Each item below is triaged against OUR design (eager flags, fixed locals,
+single-module-per-block). Items marked CHECK need verification; items marked
+FUTURE are phase-4 work.
+
+### 14.1 Cross-block lazy-flag preservation
+
+Upstream uses lazy flags: flag computation is deferred, and a bug let a
+stale CF leak across a block boundary into Wine's heap manager, corrupting
+allocations. OUR STATUS: NOT APPLICABLE BY DESIGN. We compute all flags
+eagerly per instruction (emitFlags, emitAluCompute) and merge them into
+the RFLAGS local before the next op emits. There is no deferred flag state
+to leak. The x87 decision (section 12) stands: no lazy evaluation anywhere.
+
+### 14.2 Scratch-pool exhaustion
+
+Upstream allocates scratch wasm locals from a pool; pool exhaustion reused
+a live scratch, silently corrupting a branch decision. OUR STATUS: NOT
+APPLICABLE BY DESIGN, WITH A CONSTRAINT. Our scratch locals are statically
+assigned (L_A/L_B/L_R/L_F/L_P/L_T1/L_T2/L_STEP/L_CNT, see the jit64wasm.cpp
+header comment). No pool, no exhaustion. CONSTRAINT: any new emitter that
+needs scratch MUST take it from the fixed assignment and document the
+liveness (which locals are live at each point); never introduce a dynamic
+pool.
+
+### 14.3 Block-overlap invalidation
+
+Upstream's cache could return a stale block when a newly compiled block
+overlapped an existing one (jump into the middle), executing the wrong code.
+OUR STATUS: CHECK. Our block cache is keyed on startRip + page generations
+(section 3.1), and tryJitStep cross-checks bb.n == n with per-record
+lengths. The case to verify: a block whose bytes overlap (but do not start
+at) a cached block's range after the underlying page is rewritten -- the
+page generation bump must invalidate. Add a targeted test: compile block at
+RIP X, rewrite the page so a new block starts at X+2 overlapping the old
+range, and assert the old entry is never entered.
+
+### 14.4 Module batching -- Firefox OOM at ~20k modules
+
+Upstream emitted one wasm module per JIT block; Firefox ran out of memory
+around 20,000 modules and they had to batch multiple blocks per module
+(wasmModuleMerger, wasmJitBatchPolicy). OUR STATUS: FUTURE (phase 4).
+We currently emit one module per block and instantiate synchronously. The
+measured instantiation cost is ~48us/block (section 10); a module-count
+ceiling has not been hit in testing, but any long-running workload will
+eventually need batching. When batching lands, the policy to port is
+theirs: batch cold blocks, keep hot blocks solo for faster compile.
+
+## 15. Design: table-driven emitter pivot (2026-10-05, project decision)
+
+Hand-rolling one wasm emitter per instruction group does not scale, and
+copy-pasting an existing x86-64 to wasm emitter is not viable (survey:
+v86 is 32-bit-only; CheerpX closed; Remill needs LLVM in-browser; FEX has
+no wasm backend; QEMU wasm-TCG experimental + GPL; BoxedWine's own wasm
+JIT is 32-bit-only and itself hand-rolled per group). v86 -- the most mature
+project in this space -- does not hand-write emitters either: it generates
+them from a semantics table (gen/x86_table.js). We do the same.
+
+### 15.1 What the table covers
+
+The table (source/emulation/cpu/jit64table.mjs) drives the EMITTER
+(jit64wasm.cpp per-group emit functions), not the decoder
+(jit64DecodeOne stays hand-written; it is complete for the proven groups
+and its gates are green). Each table entry:
+
+- func: generated C++ function name (e.g. emitAluGen).
+- template: composition pattern in the generator (alu, shift,
+  rotate, imul2, imul1, imul3, movx, string).
+- kinds: the Jit64Kind values the emitter handles.
+- decode: decode patterns (opcode, ModRM.reg extension, prefixes
+  REX/0x66/0x67, REX.W/B) -- documentation of the contract plus the
+  corpus schema for the byte-identical test.
+- operands: operand spec per role (sizes 8/16/32/64; reg-direct with
+  the AH/BH/CH/DH-vs-REX byte rule; ModRM r/m reg-or-memory; immediates).
+- flags: flag behavior (which flags are written, result width, what is
+  preserved).
+- params: template-specific varying parts (e.g. for alu: per-kind
+  dest/srcB selection, isTest expression).
+
+New coverage becomes table rows (+ a new template only when the
+composition is truly novel), not hand-written functions.
+
+### 15.2 Generator decision
+
+GENERATE C++ into source/emulation/cpu/jit64gen.inc, included into
+jit64wasm.cpp's anonymous namespace. The generator is
+scripts/gen-jit64.mjs (Node, matching the repo's JS tooling); the table
+is a JS module (v86's x86_table.js pattern). The .inc is checked in;
+regeneration must be byte-clean (verified by script).
+
+Alternatives considered and rejected:
+- Separate jit64gen.cpp TU: the generated functions need the
+  anonymous-namespace primitives (uleb, i32Const, emitFlags,
+  emitAluCompute, emitEA, operand accessors, ...); a separate TU
+  would force moving ~15 functions out of the anonymous namespace --
+  wider churn for no benefit.
+- Runtime-interpreted table (emitter reads rows at block-compile time):
+  branchier emission path, harder to review, and no C++-level
+  byte-identical guarantee.
+- Micro-op IR (fully declarative compute sequences): a bigger design
+  than the task calls for; templates with parameters capture the real
+  variation (operand wiring, flag modes) at lower risk.
+
+### 15.3 The byte-identical bar (non-negotiable)
+
+Migration is one group at a time: generate the group's emitter, then prove
+the generated wasm bytes are BYTE-IDENTICAL to the hand-written emitter's
+output over a broad corpus (random valid Jit64Ops per group +
+decode-driven ops via jit64DecodeOne on random bytes), via
+source/emulation/cpu/tests/jit64_gen_tests.cpp (native, wired into
+scripts/build-jit-wasm.sh). Only then is the hand-written emitter
+replaced. Per-op identity implies block identity (the dispatch mapping is
+unchanged); the full gates (native/wasm/selftest/smoke/fuzz) then prove
+the integrated behavior.
