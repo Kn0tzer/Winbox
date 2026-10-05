@@ -3409,8 +3409,9 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkCmdDrawIndexed: {
         // (cmdBuf, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance)
+        klog_fmt("vk64: DRAW_CALLED cb=0x%llx", (unsigned long long)args.a[0]);
         CmdBuf* cb = cbOf(args.a[0], "vkCmdDrawIndexed");
-        if (!cb) return 0;
+        if (!cb) { klog("vk64: DRAW_CB_NULL"); return 0; }
         Cmd c;
         c.kind = CMD_DRAW_INDEXED;
         c.a = args.a[1];   // indexCount
