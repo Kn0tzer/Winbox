@@ -409,6 +409,7 @@ function evalLane(inner, xs) {
       }
       case SOP.SDiv: {
         if (k !== 'sint' || big(xs[1]) === 0n) return null;
+        /** @param {bigint} v @returns {bigint} */
         const si = v => { v = wrapU(v); const h = (M + 1n) >> 1n; return v >= h ? v - (M + 1n) : v; };
         return { kind: k, width: w, value: wrapU(si(big(xs[0])) / si(big(xs[1]))) };
       }
@@ -421,11 +422,13 @@ function evalLane(inner, xs) {
       }
       case SOP.SRem: {
         if (k !== 'sint' || big(xs[1]) === 0n) return null;
+        /** @param {bigint} v @returns {bigint} */
         const si = v => { v = wrapU(v); const h = (M + 1n) >> 1n; return v >= h ? v - (M + 1n) : v; };
         return { kind: k, width: w, value: wrapU(si(big(xs[0])) % si(big(xs[1]))) };
       }
       case SOP.SMod: {
         if (k !== 'sint' || big(xs[1]) === 0n) return null;
+        /** @param {bigint} v @returns {bigint} */
         const si = v => { v = wrapU(v); const h = (M + 1n) >> 1n; return v >= h ? v - (M + 1n) : v; };
         const a = si(big(xs[0])), b = si(big(xs[1]));
         let r = a % b;
@@ -456,6 +459,7 @@ function evalLane(inner, xs) {
       }
       case SOP.ShiftRightArithmetic: {
         if (k !== 'sint') return null;
+        /** @param {bigint} v @returns {bigint} */
         const si = v => { v = wrapU(v); const h = (M + 1n) >> 1n; return v >= h ? v - (M + 1n) : v; };
         const s = big(xs[1]) & 63n;
         return { kind: k, width: w, value: wrapU(si(big(xs[0])) >> s) };

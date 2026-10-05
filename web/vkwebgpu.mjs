@@ -1039,6 +1039,10 @@ export function v2PickSampleCount(requested) { return requested > 1 ? 4 : 1; }
 // format, a second push block) is counted and the frame skipped — the v1
 // discipline.
 // ---------------------------------------------------------------------------
+/**
+ * @param {HTMLCanvasElement} canvas
+ * @param {{translate?: (from: string, source: Uint8Array, stage: string) => Promise<string>, log?: (msg: string) => void, onResize?: () => void}} [options]
+ */
 export async function createVkRenderer2(canvas, { translate, log = defaultLog, onResize } = {}) {
   if (!navigator.gpu) throw new Error('WebGPU is unavailable');
   const adapter = await navigator.gpu.requestAdapter();
@@ -1136,6 +1140,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     return t;
   };
 
+  /** @returns {GPUBindGroupLayoutEntry | null} */
   function layoutEntryFor(decl) {
     const vis = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT;
     const t = decl.type;
@@ -1154,7 +1159,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       return { binding: decl.binding, visibility: vis, buffer: { type: ro ? 'read-only-storage' : 'storage' } };
     }
     const sm = /texture_storage_\w+<\s*([\w-]+)\s*,\s*(\w+)/.exec(t);
-    if (sm) return { binding: decl.binding, visibility: vis, storageTexture: { access: sm[2].includes('write') ? 'write-only' : 'read-only', format: sm[1], viewDimension: '2d' } };
+    if (sm) return { binding: decl.binding, visibility: vis, storageTexture: { access: sm[2].includes('write') ? 'write-only' : 'read-only', format: /** @type {GPUTextureFormat} */ (sm[1]), viewDimension: '2d' } };
     return null;
   }
 
@@ -1183,6 +1188,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     const maxGroup = Math.max(0, ...byGroup.keys(), hasPush ? V2_PUSH_GROUP : 0);
     const layouts = [];
     for (let g = 0; g <= maxGroup; g++) {
+      /** @type {GPUBindGroupLayoutEntry[]} */
       const entries = [];
       for (const d of byGroup.get(g) || []) {
         const e = layoutEntryFor(d);
@@ -1195,6 +1201,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     }
 
     // Vertex input state from the PIPELINE record's layout tables.
+    /** @type {GPUVertexBufferLayout[]} */
     const buffers = [];
     const slotOf = new Map(); // vulkan binding number -> vertex slot
     for (const vb of pipe.vb) {
@@ -1319,6 +1326,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       // --- targets for this pass (MSAA-aware) ---
       let passSamples = 1;
       for (const a of p.attachments) passSamples = Math.max(passSamples, v2PickSampleCount(a.samples || 1));
+      /** @type {GPURenderPassColorAttachment[]} */
       const colorAttachments = [];
       let depthView = null;
       for (const a of p.attachments) {
