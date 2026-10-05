@@ -267,6 +267,12 @@ enum {
     VK64_fn_vkCmdBeginRenderPass2KHR,             // alias
     VK64_fn_vkCmdEndRenderPass2,                  // (cmdBuf, pDependencyInfo*) -> records render pass end
     VK64_fn_vkCmdEndRenderPass2KHR,               // alias
+    VK64_fn_vkCmdPipelineBarrier2,               // (cmdBuf, pDependencyInfo*) -> records barrier
+    VK64_fn_vkCmdPipelineBarrier2KHR,            // alias
+    VK64_fn_vkCmdPushConstants2,                 // (cmdBuf, pPushConstantsInfo*) -> records push constants
+    VK64_fn_vkCmdPushConstants2KHR,              // alias
+    VK64_fn_vkCmdBindIndexBuffer2,               // (cmdBuf, buffer, offset, size, indexType) -> binds index buffer
+    VK64_fn_vkCmdBindIndexBuffer2KHR,            // alias
     VK64_fn__MAX
 };
 

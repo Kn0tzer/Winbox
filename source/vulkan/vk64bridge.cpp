@@ -217,6 +217,12 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkCmdBeginRenderPass2KHR,             "vkCmdBeginRenderPass2KHR")\
     X(VK64_fn_vkCmdEndRenderPass2,                  "vkCmdEndRenderPass2")\
     X(VK64_fn_vkCmdEndRenderPass2KHR,               "vkCmdEndRenderPass2KHR")\
+    X(VK64_fn_vkCmdPipelineBarrier2,               "vkCmdPipelineBarrier2")\
+    X(VK64_fn_vkCmdPipelineBarrier2KHR,            "vkCmdPipelineBarrier2KHR")\
+    X(VK64_fn_vkCmdPushConstants2,                 "vkCmdPushConstants2")\
+    X(VK64_fn_vkCmdPushConstants2KHR,              "vkCmdPushConstants2KHR")\
+    X(VK64_fn_vkCmdBindIndexBuffer2,               "vkCmdBindIndexBuffer2")\
+    X(VK64_fn_vkCmdBindIndexBuffer2KHR,            "vkCmdBindIndexBuffer2KHR")\
     X(VK64_fn_vkCmdBindPipeline,                    "vkCmdBindPipeline")   \
     X(VK64_fn_vkCmdBindDescriptorSets,              "vkCmdBindDescriptorSets") \
     X(VK64_fn_vkCmdSetViewport,                     "vkCmdSetViewport")    \
@@ -3244,6 +3250,59 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         if (!cb) return 0;
         Cmd c;
         c.kind = CMD_END_RP;
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdPipelineBarrier2:
+    case VK64_fn_vkCmdPipelineBarrier2KHR: {
+        // (cmdBuf, pDependencyInfo*) — v2 barrier. For our purposes, barriers
+        // are no-ops (we execute synchronously), but we record the call so the
+        // command buffer is not empty and DXVK's state tracking works.
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdPipelineBarrier2");
+        if (!cb) return 0;
+        Cmd c;
+        c.kind = CMD_BARRIER;
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdPushConstants2:
+    case VK64_fn_vkCmdPushConstants2KHR: {
+        // (cmdBuf, pPushConstantsInfo*) — VkPushConstantsInfo has layout,
+        // stageFlags, offset, size, pValues. We extract and record like v1.
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdPushConstants2");
+        if (!cb || !args.a[1]) return 0;
+        // VkPushConstantsInfo: sType(0), pNext(8), layout(16), stageFlags(24),
+        // offset(28), size(32), pValues(40)
+        U64 layout = rd64(args.a[1] + 16);
+        U32 stageFlags = rd32(args.a[1] + 24);
+        U32 offset = rd32(args.a[1] + 28);
+        U32 size = rd32(args.a[1] + 32);
+        U64 pValues = rd64(args.a[1] + 40);
+        Cmd c;
+        c.kind = CMD_PUSH_CONST;
+        c.a = layout;
+        c.pcStageFlags = stageFlags;
+        c.pcOffset = offset;
+        c.pcSize = size > VK64_MAX_PUSH_BYTES ? VK64_MAX_PUSH_BYTES : size;
+        if (pValues && c.pcSize) g_mem->memcpyFromGuest(c.pcBytes, pValues, c.pcSize);
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdBindIndexBuffer2:
+    case VK64_fn_vkCmdBindIndexBuffer2KHR: {
+        // (cmdBuf, buffer, offset, size, indexType) — v2 adds size param.
+        // For our purposes, size is informational; we bind like v1.
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdBindIndexBuffer2");
+        if (!cb) return 0;
+        cb->ib = args.a[1];
+        cb->ibOff = args.a[2];
+        // args.a[3] is size (ignored), args.a[4] is indexType
+        cb->ibType = (U32)args.a[4] == 1 ? 1 : 0;  // 1 = UINT32, 0 = UINT16
+        Cmd c;
+        c.kind = CMD_BIND_IB;
+        c.a = cb->ib;
+        c.b = cb->ibOff;
+        c.c = cb->ibType;
         pushCmd(cb, c);
         return 0;
     }

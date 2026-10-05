@@ -201,6 +201,12 @@ enum {
     VK64_fn_vkCmdBeginRenderPass2KHR,
     VK64_fn_vkCmdEndRenderPass2,
     VK64_fn_vkCmdEndRenderPass2KHR,
+    VK64_fn_vkCmdPipelineBarrier2,
+    VK64_fn_vkCmdPipelineBarrier2KHR,
+    VK64_fn_vkCmdPushConstants2,
+    VK64_fn_vkCmdPushConstants2KHR,
+    VK64_fn_vkCmdBindIndexBuffer2,
+    VK64_fn_vkCmdBindIndexBuffer2KHR,
 
     VK64_fn__MAX
 };
@@ -729,6 +735,30 @@ API void vkCmdEndRenderPass2KHR(VkCommandBuffer cb, const void* di) {
     VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = P(di);
     (void)vk64_trap(VK64_fn_vkCmdEndRenderPass2KHR, &a);
 }
+API void vkCmdPipelineBarrier2(VkCommandBuffer cb, const void* di) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = P(di);
+    (void)vk64_trap(VK64_fn_vkCmdPipelineBarrier2, &a);
+}
+API void vkCmdPipelineBarrier2KHR(VkCommandBuffer cb, const void* di) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = P(di);
+    (void)vk64_trap(VK64_fn_vkCmdPipelineBarrier2KHR, &a);
+}
+API void vkCmdPushConstants2(VkCommandBuffer cb, const void* info) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = P(info);
+    (void)vk64_trap(VK64_fn_vkCmdPushConstants2, &a);
+}
+API void vkCmdPushConstants2KHR(VkCommandBuffer cb, const void* info) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = P(info);
+    (void)vk64_trap(VK64_fn_vkCmdPushConstants2KHR, &a);
+}
+API void vkCmdBindIndexBuffer2(VkCommandBuffer cb, uint64_t buf, uint64_t off, uint64_t size, uint32_t idxType) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = buf; a.a[2] = off; a.a[3] = size; a.a[4] = idxType;
+    (void)vk64_trap(VK64_fn_vkCmdBindIndexBuffer2, &a);
+}
+API void vkCmdBindIndexBuffer2KHR(VkCommandBuffer cb, uint64_t buf, uint64_t off, uint64_t size, uint32_t idxType) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = buf; a.a[2] = off; a.a[3] = size; a.a[4] = idxType;
+    (void)vk64_trap(VK64_fn_vkCmdBindIndexBuffer2KHR, &a);
+}
 API void vkCmdBindPipeline(VkCommandBuffer cb, uint32_t bindPoint, VkPipeline p) {
     VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = bindPoint; a.a[2] = p;
     (void)vk64_trap(VK64_fn_vkCmdBindPipeline, &a);
@@ -974,6 +1004,12 @@ static const struct procEntry g_procs[] = {
     E(vkCmdBeginRenderPass2KHR, VK64_fn_vkCmdBeginRenderPass2KHR),
     E(vkCmdEndRenderPass2, VK64_fn_vkCmdEndRenderPass2),
     E(vkCmdEndRenderPass2KHR, VK64_fn_vkCmdEndRenderPass2KHR),
+    E(vkCmdPipelineBarrier2, VK64_fn_vkCmdPipelineBarrier2),
+    E(vkCmdPipelineBarrier2KHR, VK64_fn_vkCmdPipelineBarrier2KHR),
+    E(vkCmdPushConstants2, VK64_fn_vkCmdPushConstants2),
+    E(vkCmdPushConstants2KHR, VK64_fn_vkCmdPushConstants2KHR),
+    E(vkCmdBindIndexBuffer2, VK64_fn_vkCmdBindIndexBuffer2),
+    E(vkCmdBindIndexBuffer2KHR, VK64_fn_vkCmdBindIndexBuffer2KHR),
     E(vkQueuePresentKHR, VK64_fn_vkQueuePresentKHR),
 };
 #undef E
@@ -1120,12 +1156,6 @@ TAIL(vkDestroyQueryPool)
 TAIL(vkCreateComputePipelines)
 TAIL(vkGetPipelineLayoutSupport)
 TAIL(vkQueueBindSparse)
-TAIL(vkCmdPipelineBarrier2)
-TAIL(vkCmdPipelineBarrier2KHR)
-TAIL(vkCmdBindIndexBuffer2)
-TAIL(vkCmdBindIndexBuffer2KHR)
-TAIL(vkCmdPushConstants2)
-TAIL(vkCmdPushConstants2KHR)
 TAIL(vkCmdDrawIndexedIndirect)
 TAIL(vkCmdDrawIndirect)
 TAIL(vkCmdDrawIndirectCount)
