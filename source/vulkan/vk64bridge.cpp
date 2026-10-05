@@ -3021,7 +3021,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         VkDescriptorUpdateTemplateCreateInfo ci = {};
         if (!readStruct(args.a[1], ci)) return VK_ERROR_INITIALIZATION_FAILED;
         if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
-        U64 id = newId();
+        U64 id = 0;
         DescTemplate* t = createObj<DescTemplate>(K_TEMPLATE, id);
         std::vector<VkDescriptorUpdateTemplateEntry> entries;
         readArray(ci.pDescriptorUpdateEntries, ci.descriptorUpdateEntryCount, entries);
@@ -3039,8 +3039,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkDestroyDescriptorUpdateTemplate: {
         // (device, template, pAllocator)
-        DescTemplate* t = objOf<DescTemplate>(args.a[1], K_TEMPLATE, "vkDestroyDescriptorUpdateTemplate");
-        if (t) destroyObj(t);
+        dropObj(args.a[1]);
         return VK_SUCCESS;
     }
     case VK64_fn_vkUpdateDescriptorSetWithTemplate: {
