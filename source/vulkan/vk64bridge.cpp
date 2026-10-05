@@ -1729,6 +1729,12 @@ const char* const g_dev_exts[] = {
     "VK_EXT_robustness2",           // HARD requirement (nullDescriptor + robustBufferAccess2)
     "VK_EXT_transform_feedback",    // D3D10/11 stream output
     "VK_EXT_depth_clip_enable",
+    // D3D12 (vkd3d-proton) device-creation gates. CAVEAT: advertised so
+    // vkd3d_init_device_caps passes; the clear/triangle probes never exercise
+    // real divisor/push-descriptor behavior. Actual usage needs page-side
+    // replay support -- follow-up, not built here.
+    "VK_EXT_vertex_attribute_divisor",
+    "VK_KHR_push_descriptor",
 };
 
 // Core bits BOTH Features handlers set. DXVK's isSuitable() reads these out of
@@ -1797,6 +1803,72 @@ inline void fillTransformFeedback(VkPhysicalDeviceTransformFeedbackFeaturesEXT& 
     f.transformFeedback = VK_TRUE;
     f.geometryStreams = VK_TRUE;
 }
+// vk64_guest.h (the trimmed Vulkan header this TU builds against) does not
+// define VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT or
+// VkPhysicalDeviceVulkan13Properties. Local mirrors with the exact canonical
+// layout (source/vulkan/vk/vulkan_core.h); static_asserts pin it.
+struct Vk64VertexAttributeDivisorFeaturesEXT {
+    VkStructureType sType;
+    U64             pNext; // uint64_t, not void*: matches the 64-bit guest layout (cf. vk64_guest.h)
+    VkBool32        vertexAttributeInstanceRateDivisor;
+    VkBool32        vertexAttributeInstanceRateZeroDivisor;
+};
+struct Vk64Vulkan13Properties {
+    VkStructureType sType;
+    U64             pNext; // uint64_t, not void*: matches the 64-bit guest layout (cf. vk64_guest.h)
+    U32 minSubgroupSize, maxSubgroupSize, maxComputeWorkgroupSubgroups;
+    U32 requiredSubgroupSizeStages; // VkShaderStageFlags
+    U32 maxInlineUniformBlockSize, maxPerStageDescriptorInlineUniformBlocks;
+    U32 maxPerStageDescriptorUpdateAfterBindInlineUniformBlocks;
+    U32 maxDescriptorSetInlineUniformBlocks;
+    U32 maxDescriptorSetUpdateAfterBindInlineUniformBlocks;
+    U32 maxInlineUniformTotalSize;
+    VkBool32 integerDotProduct8BitUnsignedAccelerated;
+    VkBool32 integerDotProduct8BitSignedAccelerated;
+    VkBool32 integerDotProduct8BitMixedSignednessAccelerated;
+    VkBool32 integerDotProduct4x8BitPackedUnsignedAccelerated;
+    VkBool32 integerDotProduct4x8BitPackedSignedAccelerated;
+    VkBool32 integerDotProduct4x8BitPackedMixedSignednessAccelerated;
+    VkBool32 integerDotProduct16BitUnsignedAccelerated;
+    VkBool32 integerDotProduct16BitSignedAccelerated;
+    VkBool32 integerDotProduct16BitMixedSignednessAccelerated;
+    VkBool32 integerDotProduct32BitUnsignedAccelerated;
+    VkBool32 integerDotProduct32BitSignedAccelerated;
+    VkBool32 integerDotProduct32BitMixedSignednessAccelerated;
+    VkBool32 integerDotProduct64BitUnsignedAccelerated;
+    VkBool32 integerDotProduct64BitSignedAccelerated;
+    VkBool32 integerDotProduct64BitMixedSignednessAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating8BitUnsignedAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating8BitSignedAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating8BitMixedSignednessAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating4x8BitPackedUnsignedAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating4x8BitPackedSignedAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating4x8BitPackedMixedSignednessAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating16BitUnsignedAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating16BitSignedAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating16BitMixedSignednessAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating32BitUnsignedAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating32BitSignedAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating32BitMixedSignednessAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating64BitUnsignedAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating64BitSignedAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating64BitMixedSignednessAccelerated;
+    U64 storageTexelBufferOffsetAlignmentBytes;      // VkDeviceSize
+    VkBool32 storageTexelBufferOffsetSingleTexelAlignment;
+    U64 uniformTexelBufferOffsetAlignmentBytes;      // VkDeviceSize
+    VkBool32 uniformTexelBufferOffsetSingleTexelAlignment;
+    U64 maxBufferSize;                               // VkDeviceSize
+};
+static_assert(sizeof(Vk64VertexAttributeDivisorFeaturesEXT) == 24,
+              "divisor features mirror layout");
+static_assert(sizeof(Vk64Vulkan13Properties) == 216,
+              "1.3 properties mirror layout");
+// vkd3d-proton device-creation gate (device.c:2495): requires BOTH divisor
+// features. Same advertisement-only caveat as g_dev_exts above.
+inline void fillVertexAttributeDivisor(Vk64VertexAttributeDivisorFeaturesEXT& f) {
+    f.vertexAttributeInstanceRateDivisor = VK_TRUE;
+    f.vertexAttributeInstanceRateZeroDivisor = VK_TRUE;
+}
 inline void fillDescriptorIndexing(VkPhysicalDeviceDescriptorIndexingFeatures& f) {
     f.shaderInputAttachmentArrayDynamicIndexing = VK_TRUE;
     f.shaderUniformTexelBufferArrayDynamicIndexing = VK_TRUE;
@@ -1860,6 +1932,7 @@ inline void fillVulkan12Features(VkPhysicalDeviceVulkan12Features& f) {
     f.descriptorBindingPartiallyBound = VK_TRUE;
     f.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
     f.runtimeDescriptorArray = VK_TRUE;
+    f.samplerMirrorClampToEdge = VK_TRUE;   // vkd3d-proton hard gate (device.c:2636)
 }
 inline void fillVulkan11Features(VkPhysicalDeviceVulkan11Features& f) {
     f.storageBuffer16BitAccess = VK_TRUE;
@@ -1870,6 +1943,7 @@ inline void fillVulkan11Features(VkPhysicalDeviceVulkan11Features& f) {
     f.multiviewTessellationShader = VK_FALSE;
     f.variablePointers = VK_TRUE;
     f.variablePointersStorageBuffer = VK_TRUE;
+    f.shaderDrawParameters = VK_TRUE;       // vkd3d-proton hard gate (device.c:2658)
     f.protectedMemory = VK_FALSE;
 }
 
@@ -1885,6 +1959,8 @@ void walkFeatures2(U64 pNextAddr) {
                 SET_FEATURES(cur, fillMaintenance6, VkPhysicalDeviceMaintenance6Features); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT:
                 SET_FEATURES(cur, fillTransformFeedback, VkPhysicalDeviceTransformFeedbackFeaturesEXT); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT:
+                SET_FEATURES(cur, fillVertexAttributeDivisor, Vk64VertexAttributeDivisorFeaturesEXT); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES:
                 SET_FEATURES(cur, fillDescriptorIndexing, VkPhysicalDeviceDescriptorIndexingFeatures); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES:
@@ -2013,6 +2089,17 @@ void walkProperties2(U64 pNextAddr) {
                 p.maxMultiviewInstanceIndex = 0xFFFFFFFFu;
                 p.maxPerSetDescriptors = 1024;
                 p.maxMemoryAllocationSize = 2ull * 1024 * 1024 * 1024;
+                g_mem->memcpyToGuest(cur, &p, sizeof(p));
+                break;
+            }
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES: {
+                Vk64Vulkan13Properties p = {};
+                g_mem->memcpyFromGuest(&p, cur, sizeof(p));
+                // vkd3d-proton single-texel-alignment gate (device.c:2520):
+                // storageTexelBufferOffsetSingleTexelAlignment ||
+                // storageTexelBufferOffsetAlignmentBytes == 1 (same for uniform).
+                p.storageTexelBufferOffsetSingleTexelAlignment = VK_TRUE;
+                p.uniformTexelBufferOffsetSingleTexelAlignment = VK_TRUE;
                 g_mem->memcpyToGuest(cur, &p, sizeof(p));
                 break;
             }
@@ -2182,6 +2269,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         if (!args.a[3]) { wr32(args.a[2], n); return VK_SUCCESS; }
         U32 want = rd32(args.a[2]);
         U32 c = want < n ? want : n;
+
         std::vector<VkExtensionProperties> props((size_t)(c ? c : 1));
         for (U32 i = 0; i < c; i++) {
             memset(&props[i], 0, sizeof(props[i]));
