@@ -96,7 +96,8 @@ test('out-of-bounds state traps before modifying any guest state', async () => {
 for (const [name, code] of [
   ['empty block', []],
   ['guest-memory MOV', [0x48, 0x89, 0x00]],
-  ['16-bit MOV', [0x66, 0xB8, 0x42, 0]], ['REP prefix', [0xF3, 0xB8, 0x42, 0, 0, 0]],
+  ['16-bit MOV', [0x66, 0xB8, 0x42, 0]], ['16-bit MOVSXD', [0x66, 0x63, 0xC0]],
+  ['REP prefix', [0xF3, 0xB8, 0x42, 0, 0, 0]],
   ['FS-segment memory ADD', [0x64, 0x48, 0x01, 0x00]],
   ['GS-segment memory ADD', [0x65, 0x48, 0x01, 0x00]],
   ['LOCK memory ADD', [0xF0, 0x48, 0x01, 0x00]],
@@ -1631,6 +1632,65 @@ test('fuzz MOVX vs reference (240 cases)', async () => {
     const got = out.regs;
     for (let g = 0; g < 16; g++) assert.equal(got[g], exp[g], `fuzzMovx i=${i} GPR${g}`);
     assert.equal(out.rflags, 0x202, `fuzzMovx i=${i} flags preserved`);
+  }
+});
+
+// --- MOVSXD (0x63) emission: 32-bit source sign-extended (sub 4) ---
+async function checkMovsxd(destSize, rexW, srcIdx, srcVal) {
+  const regs = baseRegs();
+  regs[srcIdx] = srcVal;
+  const d = 0;
+  let v = BigInt.asIntN(32, srcVal & 0xFFFFFFFFn);
+  v = BigInt.asUintN(64, v);
+  const code = [];
+  const rex = (rexW ? 0x08 : 0) | (srcIdx >= 8 ? 0x01 : 0);
+  if (rex) code.push(0x40 | rex);
+  code.push(0x63, modrm(d, srcIdx & 7));
+  const out = await runAlu(code, regs, 0x202);
+  const exp = [...regs];
+  exp[d] = destSize === 4 ? v & 0xFFFFFFFFn : v;
+  expectAlu(out, 0x202, 0n, code.length, got => {
+    for (let i = 0; i < 16; i++) assert.equal(got[i], exp[i], `GPR ${i}`);
+  });
+  assert.equal(out.rflags, 0x202, 'MOVSXD preserves flags');
+}
+for (const srcVal of [0n, 1n, 0x7FFFFFFFn, 0x80000000n, 0xFFFFFFFFn, 0xDEADBEEF80000001n, 0x1234567800000000n]) {
+  for (const [ds, rw] of [[4, false], [8, true]]) {
+    test(`MOVSXD src=0x${srcVal.toString(16)} dest${ds * 8}`, async () => {
+      await checkMovsxd(ds, rw, 1, srcVal);
+    });
+  }
+}
+test('MOVSXD dest==src aliasing (movsxd rax, eax)', async () => {
+  await checkMovsxd(4, false, 0, 0xFFFFFFFFFF800005n);
+});
+test('MOVSXD high source register (movsxd r8, r9d)', async () => {
+  await checkMovsxd(8, true, 9, 0xA5A5A5A5FFFFFFFFn);
+});
+
+test('fuzz MOVSXD vs reference (600 cases)', async () => {
+  const rand = makeRand(0x635E);
+  for (let i = 0; i < 600; i++) {
+    const destSize = rand() < 0.5 ? 4 : 8;
+    const d = Math.floor(rand() * 16), s = Math.floor(rand() * 16);
+    const code = [];
+    const rex = (destSize === 8 ? 0x08 : 0) | (d >= 8 ? 0x04 : 0) | (s >= 8 ? 0x01 : 0);
+    if (rex) code.push(0x40 | rex);
+    code.push(0x63, 0xC0 | ((d & 7) << 3) | (s & 7));
+    const regs = baseRegs();
+    for (let r = 0; r < 16; r++) regs[r] = r64fuzz(rand);
+    // Adversarial sign-boundary low-32 values on a fixed cadence.
+    if (i % 7 === 0) regs[s] = [0n, 1n, 0x7FFFFFFFn, 0x80000000n, 0xFFFFFFFFn][i % 5];
+    const initFlags = Math.floor(rand() * 0x100000);
+    let v = BigInt.asIntN(32, regs[s] & 0xFFFFFFFFn);
+    v = BigInt.asUintN(64, v);
+    const out = await runAlu(code, regs, initFlags);
+    const exp = [...regs];
+    exp[d] = destSize === 4 ? v & 0xFFFFFFFFn : v;
+    const got = out.regs;
+    for (let g = 0; g < 16; g++) assert.equal(got[g], exp[g], `fuzzMovsxd i=${i} GPR${g}`);
+    assert.equal(out.rflags, initFlags >>> 0, `fuzzMovsxd i=${i} flags preserved`);
+    assert.equal(out.reserved, 0xA5A5A5A5, `fuzzMovsxd i=${i} ABI reserved`);
   }
 });
 

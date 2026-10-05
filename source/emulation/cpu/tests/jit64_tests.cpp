@@ -35,7 +35,7 @@ static Jit64Op dec(U64 base, std::vector<U8> b) {
 static void testCoverageTable() {
     U32 n = 0;
     const Jit64CoveredOpcode* t = jit64CoveredOpcodes(&n);
-    CHECK(n == 20, "coverage table has %u entries, want 20", n);
+    CHECK(n == 21, "coverage table has %u entries, want 21", n);
     CHECK(t != nullptr, "coverage table null");
     // Spot-check rank order matches the profile.
     CHECK(t[0].op == 0x89, "rank1 op=0x%02x want 0x89", t[0].op);
@@ -49,6 +49,7 @@ static void testCoverageTable() {
     CHECK(t[10].op == 0xC1, "rank11 op=0x%02x want 0xC1", t[10].op);
     CHECK(t[14].op == 0x0F && t[14].op2 == 0xB6, "rank15 want 0FB6 got %02x/%02x", t[14].op, t[14].op2);
     CHECK(t[18].op == 0x0F && t[18].op2 == 0x84, "rank19 want 0F84 got %02x/%02x", t[18].op, t[18].op2);
+    CHECK(t[20].op == 0x63, "rank21 op=0x%02x want 0x63 (MOVSXD)", t[20].op);
 }
 
 static void testMovForms() {
@@ -88,6 +89,41 @@ static void testMovForms() {
     // 0F BF C0          movsx eax, ax  (J64_MOVX, sub 3=sx16)
     Jit64Op f4 = dec(0x400000, {0x0F, 0xBF, 0xC0});
     CHECK(f4.kind == J64_MOVX && f4.sub == 3, "0FBF: kind=%d sub=%d", f4.kind, f4.sub);
+    // 63 C0              movsxd eax, eax  (J64_MOVX, sub 4=sxd32)
+    Jit64Op g = dec(0x400000, {0x63, 0xC0});
+    CHECK(g.kind == J64_MOVX && g.sub == 4 && g.size == 4 && g.len == 2,
+          "63: kind=%d sub=%d size=%d len=%d", g.kind, g.sub, g.size, g.len);
+    CHECK(g.regField == 0 && g.rmIndex == 0 && !g.isMem, "63: rf=%d rm=%d mem=%d",
+          g.regField, g.rmIndex, g.isMem);
+    CHECK(g.plan == JIT64_FAST, "63 plan fallback");
+    // 48 63 CA          movsxd rcx, edx  (REX.W: 64-bit sign-extend)
+    Jit64Op g2 = dec(0x400000, {0x48, 0x63, 0xCA});
+    CHECK(g2.kind == J64_MOVX && g2.sub == 4 && g2.size == 8 && g2.len == 3,
+          "4863: sub=%d size=%d len=%d", g2.sub, g2.size, g2.len);
+    CHECK(g2.regField == 1 && g2.rmIndex == 2, "4863: rf=%d rm=%d", g2.regField, g2.rmIndex);
+    CHECK(g2.plan == JIT64_FAST, "4863 plan fallback");
+    // 41 63 C8          movsxd rcx, r8d  (REX.B extends the source)
+    Jit64Op g3 = dec(0x400000, {0x41, 0x63, 0xC8});
+    CHECK(g3.rmIndex == 8 && g3.regField == 1 && g3.size == 4,
+          "4163: rm=%d rf=%d size=%d", g3.rmIndex, g3.regField, g3.size);
+    // 4D 63 C0          movsxd r8, r8d  (REX.W+B)
+    Jit64Op g3b = dec(0x400000, {0x4D, 0x63, 0xC0});
+    CHECK(g3b.regField == 8 && g3b.rmIndex == 8 && g3b.size == 8,
+          "4D63: rf=%d rm=%d size=%d", g3b.regField, g3b.rmIndex, g3b.size);
+    // 66 63 C0          movsxd (0x66): decoded as 32-bit (the interpreter
+    // ignores 0x66) but stays fallback via the classifier's osize16 guard.
+    {
+        Jit64Op o; bool ok = jit64DecodeOne(0x400000, (const U8[]){0x66, 0x63, 0xC0}, 3, o);
+        CHECK(ok && o.kind == J64_MOVX && o.sub == 4 && o.size == 4,
+              "6663: kind=%d sub=%d size=%d", o.kind, o.sub, o.size);
+        jit64Classify(o, false, true);
+        CHECK(o.plan == JIT64_FALLBACK, "6663 must stay fallback (osize16 guard)");
+    }
+    // 63 03              movsxd eax, dword [rbx]: mem form decodes (isMem)
+    // but stays interpreter-only (register-direct only at emission).
+    Jit64Op g4 = dec(0x400000, {0x63, 0x03});
+    CHECK(g4.kind == J64_MOVX && g4.sub == 4 && g4.isMem && g4.len == 2,
+          "63mem: kind=%d sub=%d mem=%d len=%d", g4.kind, g4.sub, g4.isMem, g4.len);
 }
 
 static void testAluForms() {

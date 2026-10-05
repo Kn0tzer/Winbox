@@ -366,9 +366,10 @@ void emitEA(Bytes& body, const Jit64Op& op) {
 // sign-extended to 64 bits, the wrapped 64-bit product is stored
 // (zero-extended for 32-bit), and CF/OF are set iff the signed result does
 // not fit in the operand width. All other flags are preserved (SF/ZF/AF/PF
-// Emit one register-direct MOVZX/MOVSX (0F B6/B7/BE/BF). sub: 0=zx8,
-// 1=zx16, 2=sx8, 3=sx16. No flags affected. Returns the destination GPR
-// index, or 0xFF when the write-back was done inline (16-bit RMW).
+// Emit one register-direct MOVZX/MOVSX (0F B6/B7/BE/BF) or MOVSXD (0x63).
+// sub: 0=zx8, 1=zx16, 2=sx8, 3=sx16, 4=sxd32. No flags affected. Returns
+// the destination GPR index, or 0xFF when the write-back was done inline
+// (16-bit RMW).
 // Mirrors cpu64.cpp BK_MOVX: 16-bit dest preserves the upper 48 bits,
 
 // Emit one register-direct one-operand IMUL (F6/F7 /5). Writes RDX:RAX
@@ -609,9 +610,11 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             if (op.regField >= 16 || op.rmIndex >= 16) return false;
             break;
         case J64_MOVX:
-            // MOVZX/MOVSX r, r/m, register-direct only.
-            if (op.sub > 3 || op.regField >= 16 || op.rmIndex >= 16) return false;
+            // MOVZX/MOVSX r, r/m (sub 0-3) and MOVSXD r, r/m32 (sub 4),
+            // register-direct only.
+            if (op.sub > 4 || op.regField >= 16 || op.rmIndex >= 16) return false;
             if (op.size == 1) return false; // destination is never 8-bit
+            if (op.sub == 4 && op.size == 2) return false; // MOVSXD: 32/64-bit dest only
             break;
         case J64_IMUL_1OP:
             // One-operand IMUL r/m (F6/F7 /5), register-direct only.

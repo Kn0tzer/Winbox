@@ -815,11 +815,19 @@ U32 emitImul3Gen(Bytes& body, const Jit64Op& op) {
 U32 emitMovxGen(Bytes& body, const Jit64Op& op) {
     const U32 destReg = op.regField;
     const U32 srcReg = op.rmIndex;
-    const U8 srcSize = (op.sub == 0 || op.sub == 2) ? 1 : 2;
+    const U8 srcSize = (op.sub == 0 || op.sub == 2) ? 1 : (op.sub == 4 ? 4 : 2);
     const bool isSigned = op.sub >= 2;
     // L_R = extended source value.
     if (srcSize == 1) emitReadByte(body, op, srcReg, L_R);
-    else emitReadWord(body, srcReg, L_R);
+    else if (srcSize == 2) emitReadWord(body, srcReg, L_R);
+    else {
+        // MOVSXD (sub 4): 32-bit source; the register holds the operand in
+        // its low 32 bits (the interpreter's loadRM(m, 4)).
+        local(body, 0x20, srcReg + 1);
+        i64Const(body, 0xFFFFFFFFULL);
+        body.push_back(0x83); // i64.and
+        local(body, 0x21, L_R);
+    }
     if (isSigned) {
         local(body, 0x20, L_R);
         emitSext(body, srcSize);
@@ -831,7 +839,8 @@ U32 emitMovxGen(Bytes& body, const Jit64Op& op) {
         return 0xFF;
     }
     // 32/64-bit: the value already fits (zero-extended by construction for
-    // MOVZX; low 32 bits of the sign extension for MOVSX); publish via L_R.
+    // MOVZX; low 32 bits of the sign extension for MOVSX/MOVSXD); publish
+    // via L_R.
     if (op.size == 4 && isSigned) {
         local(body, 0x20, L_R);
         i64Const(body, 0xFFFFFFFFULL);

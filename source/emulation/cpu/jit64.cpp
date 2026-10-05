@@ -60,6 +60,7 @@ static const Jit64CoveredOpcode kCovered[] = {
     { "C3 RET",            0xC3, 0x00, J64_RET },         // 18 (1.7%)
     { "0F84 JZ rel32",     0x0F, 0x84, J64_JCC },         // 19 (1.2%)
     { "01 ADD r/m,r",      0x01, 0x00, J64_ALU_RM_R },    // 20 (1.2%)
+    { "63 MOVSXD",         0x63, 0x00, J64_MOVX },        // 21 (1.3% doom.exe; sub 4)
     // NOTE: 0F85 (JNZ rel32) and 29 (SUB r/m,r) stay FAST in jit64Classify but
     // fell just outside this corpus's top-20, so they have no table row. FF
     // (INC/DEC/indirect CALL) and 00 (8-bit ADD) rank 19-20 by byte but are
@@ -446,6 +447,24 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
         decodeEA(bytes + opOff + 1, p, ripBase + opOff + 1, 0, out.ea);
         return true;
     }
+    // MOVSXD r, r/m32 (0x63): sub 4 of the J64_MOVX family. With REX.W the
+    // 32-bit source is sign-extended to 64 bits; without, it is a 32-bit
+    // copy (setU32). The interpreter (cpu64.cpp dsp_40) ignores 0x66 and
+    // always loads 32 bits, so the decoder sets size 4/8 unconditionally;
+    // the classifier's osize16 guard keeps 0x66 forms on the interpreter.
+    // Register-direct only at emission (mirrors the 0F MOVX scope); memory
+    // forms decode (isMem) but stay fallback via jit64EmitWasm acceptance.
+    if (op == 0x63) {
+        U8 rf; bool rr; U8 ri; bool hm;
+        U32 ml = scanModRM(bytes + opOff + 1, byteCount - (opOff + 1), p, rf, rr, ri, hm);
+        if (!ml) return false;
+        out.kind = J64_MOVX;
+        out.sub = 4; // MOVSXD: 32-bit source, sign-extended
+        out.size = rexW ? 8 : 4;
+        out.len = (U8)(opOff + 1 + ml);
+        out.regField = rf; out.rmIndex = ri; out.isMem = hm;
+        return true;
+    }
     // MOV r/m, imm (C6 /0, C7 /0).
     if (op == 0xC6 || op == 0xC7) {
         if (op == 0xC6) return false; // 8-bit: fallback
@@ -652,9 +671,10 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16) {
         op.plan = JIT64_FAST;
         return;
     case J64_MOVX:
-        // MOVZX/MOVSX r, r/m (register-direct only at emission).
+        // MOVZX/MOVSX r, r/m (sub 0-3) and MOVSXD r, r/m32 (sub 4);
+        // register-direct only at emission.
         if (op.size != 2 && op.size != 4 && op.size != 8) return;
-        if (op.sub > 3) return;
+        if (op.sub > 4) return;
         op.plan = JIT64_FAST;
         return;
     case J64_ALU_RM_R:

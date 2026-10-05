@@ -169,12 +169,12 @@ export const EMITTERS = [
     func: "emitMovxGen",
     template: "movx",
     kinds: ["J64_MOVX"],
-    encoding: "MOVZX: 0x0F 0xB6 (r/m8) / 0x0F 0xB7 (r/m16); MOVSX: 0x0F 0xBE / 0x0F 0xBF. REX.W/0x66 select dest size.",
-    operands: "sizes 2/4/8 dest, 1/2 src; register-direct; 8-bit src follows AH/BH/CH/DH-vs-REX.",
+    encoding: "MOVZX: 0x0F 0xB6 (r/m8) / 0x0F 0xB7 (r/m16); MOVSX: 0x0F 0xBE / 0x0F 0xBF; MOVSXD: 0x63 /r (r/m32). REX.W/0x66 select dest size.",
+    operands: "sizes 2/4/8 dest, 1/2/4 src; register-direct; 8-bit src follows AH/BH/CH/DH-vs-REX.",
     flags: {
       writes: [],
       preserves: "all RFLAGS bits (flags untouched)",
-      note: "sub: 0=MOVZX8, 1=MOVZX16, 2=MOVSX8, 3=MOVSX16",
+      note: "sub: 0=MOVZX8, 1=MOVZX16, 2=MOVSX8, 3=MOVSX16, 4=MOVSXD (32-bit src, sign-extended; dest 4/8 only)",
     },
   },
   {

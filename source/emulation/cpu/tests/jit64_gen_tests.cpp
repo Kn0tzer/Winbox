@@ -348,21 +348,23 @@ static void corpusDecodeImul() {
     }
 }
 
-// Direct: MOVX (sub 0-3), String (sub 0-3, rep, asize32).
+// Direct: MOVX (sub 0-4; 4=MOVSXD), String (sub 0-3, rep, asize32).
 static void corpusDirectMovx() {
-    const U8 subs[] = { 0, 1, 2, 3 };
+    const U8 subs[] = { 0, 1, 2, 3, 4 };
     const U8 sizes[] = { 2, 4, 8 };
     for (int iter = 0; iter < 1500; iter++) {
         Jit64Op op;
         op.kind = J64_MOVX;
-        op.sub = subs[nextRand() % 4];
+        op.sub = subs[nextRand() % 5];
         op.size = sizes[nextRand() % 3];
+        if (op.sub == 4 && op.size == 2)
+            op.size = (nextRand() % 2) ? 4 : 8; // MOVSXD: 32/64-bit dest only
         op.regField = (U8)(nextRand() % 16);
         op.rmIndex = (U8)(nextRand() % 16);
         op.rexPresent = (nextRand() % 2) != 0;
         op.isMem = false;
         // 8-bit src high-byte stress.
-        U8 srcSize = (op.sub == 0 || op.sub == 2) ? 1 : 2;
+        U8 srcSize = (op.sub == 0 || op.sub == 2) ? 1 : (op.sub == 4 ? 4 : 2);
         if (srcSize == 1 && (nextRand() % 2))
             op.rmIndex = (U8)(4 + nextRand() % 4);
         checkOp(op, "direct-movx");
@@ -374,9 +376,13 @@ static void corpusDecodeMovx() {
         U8 bytes[8];
         U32 n = 0;
         if (nextRand() % 2) bytes[n++] = (U8)(0x40 | (nextRand() & 0x0F));
-        U32 which = (U32)(nextRand() % 4);
-        bytes[n++] = 0x0F;
-        bytes[n++] = (U8)(0xB6 + which); // B6/B7/BE/BF
+        if (nextRand() % 5 == 4) {
+            bytes[n++] = 0x63; // MOVSXD /r (sub 4)
+        } else {
+            U32 which = (U32)(nextRand() % 4);
+            bytes[n++] = 0x0F;
+            bytes[n++] = (U8)(0xB6 + which); // B6/B7/BE/BF
+        }
         bytes[n++] = (U8)(0xC0 | (nextRand() & 0x3F));
         Jit64Op op;
         if (!jit64DecodeOne(0x1000, bytes, n, op)) continue;
