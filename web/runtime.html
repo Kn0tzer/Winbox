@@ -9,6 +9,25 @@ const send = (type, data) => parent.postMessage({ wine: true, type, data }, loca
 window.bwRuntimeStatus = text => send('status', text);
 window.bwRuntimeLog = text => send('log', text);
 window.bwGpuFrame = json => send('gpu', JSON.parse(json));
+// vk64 page tier (tasks/p1-final.md §2.9): the Vulkan bridge hops ONE frame
+// manifest per present into window.bwVkFrame, which becomes a 'vk' message to
+// the app shell — the sibling of the 'gpu' branch. The string is forwarded
+// unparsed on purpose: web/vkwebgpu.mjs owns decoding (and the host manifest's
+// missing '}' on its vs/fs wrapper objects is repaired there, not here, so a
+// guest frame can never fault this bridge).
+window.bwVkFrame = json => send('vk', json);
+// When THIS page is the top-level one (window.parent === window — the scratch-vk
+// probe drives /runtime/index.html directly) there is no app shell to own the
+// renderer, so the page hosts the page tier itself: the tier module is imported
+// lazily on the first frame (same fire-and-forget shape as the ?naga=1 lane) and
+// every frame after it is queued inside the module.
+if (window.parent === window) window.addEventListener('message', e => {
+  if (e.origin !== location.origin || e.data?.wine !== true || e.data.type !== 'vk') return;
+  window.bwVkTierReady ||= import('../vkwebgpu.mjs')
+    .then(m => (window.bwVkTier = m.installVkPageTier()))
+    .catch(err => { window.bwVkTierReady = null; console.warn('vk64: page tier module load failed', err); window.bwRuntimeLog('vk64: page tier module load failed — ' + (err.message || err)); });
+  window.bwVkTierReady.then(tier => tier.frame(e.data.data)).catch(() => {});
+});
 // C1 naga observation lane (?naga=1, default OFF — contract /tmp/c1-contract.md):
 // wrap WebGL2RenderingContext.prototype.shaderSource to capture the post-bridge
 // ES 3.00 guest shader sources, lift them to GLSL 450 and shadow-translate to

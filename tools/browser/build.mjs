@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 const root = resolve(import.meta.dirname, '../..');
 const out = resolve(root, process.env.WINE_BUILD_OUT || 'dist');
 await mkdir(out, { recursive: true });
-for (const name of ['index.html', 'style.css', 'app.mjs', 'files.mjs', 'games.mjs', 'storage.mjs', 'webgpu.mjs', 'shader.mjs', 'naga-rt.mjs']) await copyFile(resolve(root, 'web', name), resolve(out, name));
+for (const name of ['index.html', 'style.css', 'app.mjs', 'files.mjs', 'games.mjs', 'storage.mjs', 'webgpu.mjs', 'shader.mjs', 'naga-rt.mjs', 'vkwebgpu.mjs']) await copyFile(resolve(root, 'web', name), resolve(out, name));
 // Built-in game archives are staged under /games so the launcher catalog can
 // range-fetch them. WINE_GAMES_DIR selects the source; WINE_GAMES_COPY=1 copies
 // the archives instead of linking them (link is the default: they are 100+ MB).

@@ -120,6 +120,10 @@ window.addEventListener('message',e=>{
   if(type==='status')$('runtimeStatus').textContent=String(data);
   if(type==='log'){log(String(data));if(String(data).includes('first window mapped'))report('Guest window mapped. Rendering…');}
   if(type==='gpu'&&renderer){try{const result=renderer.render(data);report(`Real guest OpenGL → WebGPU · ${result.frames} frames`);}catch(err){log('WebGPU fallback: '+err.message);console.warn('WebGPU fallback: '+err.message);report('Unsupported WebGPU command; showing upstream WebGL rendering.');renderer.destroy();renderer=null;$('gpuCanvas')?.remove();}}
+  // vk64 page tier (tasks/p1-final.md §2.9): the sibling of the 'gpu' branch. The
+  // guest's Vulkan frame manifest is rendered by web/vkwebgpu.mjs into its own
+  // canvas; any error falls back to the upstream rendering exactly like 'gpu'.
+  if(type==='vk'){const ready=window.bwVkTierReady||(window.bwVkTierReady=import('./vkwebgpu.mjs').then(m=>(window.bwVkTier=m.installVkPageTier())));ready.then(t=>t.frame(data)).then(()=>report(`Real guest Vulkan → WebGPU · ${window.bwVkStats?.().rendered||0} frames`)).catch(err=>{log('WebGPU Vulkan fallback: '+err.message);console.warn('WebGPU Vulkan fallback: '+err.message);report('Unsupported Vulkan frame; showing upstream rendering.');});}
 });
 $('folderButton').onclick=()=>$('folderInput').click();$('zipButton').onclick=()=>$('zipInput').click();
 $('folderInput').onchange=()=>guard(async()=>{report('Importing folder…');const files=await fromFiles($('folderInput').files);const name=$('folderInput').files[0]?.webkitRelativePath.split('/')[0];await install(files,name);$('folderInput').value='';});
