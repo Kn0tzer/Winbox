@@ -34,6 +34,12 @@
 # BOTH zips (the same both-paths trick the libGL.so.1 staging uses), and the
 # fixture goes to usr/bin/ in wine64.zip (that zip owns the usr/ tree).
 #
+# ICD manifest (--stage also writes this): usr/share/vulkan/icd.d/
+# vkwebgpu_icd.json pointing at the shim with api_version 1.3. No loader exists
+# in the guest and winevulkan dlopens libvulkan.so.1 directly (no ICD lookup),
+# so this manifest is for completeness — any real Vulkan loader that shows up
+# finds THIS library through the standard JSON path instead of failing.
+#
 # Usage:
 #   tools/rootfs64/buildvk.sh                 # build the shim + fixture
 #   tools/rootfs64/buildvk.sh --stage         # build, then inject into the zips
@@ -200,7 +206,18 @@ if [ "$DO_STAGE" = 1 ]; then
         [ -f "$GZ" ] || { echo "error: $GZ missing (build the rootfs zips first)" >&2; exit 1; }
         [ -f "$WZ" ] || { echo "error: $WZ missing (build the rootfs zips first)" >&2; exit 1; }
         STAGE="$ZD/vk-stage"
-        rm -rf "$STAGE"; mkdir -p "$STAGE/lib/x86_64-linux-gnu" "$STAGE/usr/lib/x86_64-linux-gnu" "$STAGE/usr/bin"
+        rm -rf "$STAGE"; mkdir -p "$STAGE/lib/x86_64-linux-gnu" "$STAGE/usr/lib/x86_64-linux-gnu" "$STAGE/usr/bin" "$STAGE/usr/share/vulkan/icd.d"
+        # The ICD manifest (see the header comment): library_path is absolute so
+        # it resolves no matter which layer of the overlay owns the file.
+        cat > "$STAGE/usr/share/vulkan/icd.d/vkwebgpu_icd.json" <<'JSON'
+{
+    "file_format_version": "1.0.0",
+    "ICD": {
+        "library_path": "/usr/lib/x86_64-linux-gnu/libvulkan.so.1",
+        "api_version": "1.3"
+    }
+}
+JSON
         # Both library paths, in BOTH zips — the guest's loader probes
         # /lib/x86_64-linux-gnu and /usr/lib/x86_64-linux-gnu (and /lib, /usr/lib)
         # and the two zips are layered, so writing both entries into both zips
@@ -214,9 +231,13 @@ if [ "$DO_STAGE" = 1 ]; then
         # The fixture: usr/bin/ is owned by wine64.zip.
         cp "$SRC/vkfixture" "$STAGE/usr/bin/vkfixture"
         ( cd "$STAGE" && zip -q "$WZ" usr/bin/vkfixture )
+        # The ICD manifest goes in BOTH zips (same both-layers reasoning as the
+        # .so: whichever layer a loader searches first, the manifest is there).
+        ( cd "$STAGE" && zip -q "$GZ" usr/share/vulkan/icd.d/vkwebgpu_icd.json )
+        ( cd "$STAGE" && zip -q "$WZ" usr/share/vulkan/icd.d/vkwebgpu_icd.json )
         rm -rf "$STAGE"
-        echo "--- $GZ ---"; unzip -l "$GZ" | grep -E "libvulkan|vkfixture" || true
-        echo "--- $WZ ---"; unzip -l "$WZ" | grep -E "libvulkan|vkfixture" || true
+        echo "--- $GZ ---"; unzip -l "$GZ" | grep -E "libvulkan|vkfixture|icd.d" || true
+        echo "--- $WZ ---"; unzip -l "$WZ" | grep -E "libvulkan|vkfixture|icd.d" || true
     done
     echo "=== staged. rerun web/tests/scratch-vk.mjs to run the fixture ==="
 fi
