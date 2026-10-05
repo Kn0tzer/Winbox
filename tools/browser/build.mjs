@@ -40,4 +40,8 @@ await mkdir(resolve(out, 'vendor/slang'), { recursive: true });
 for (const name of ['slang-wasm.js', 'slang-wasm.wasm', 'interface.d.ts']) await copyFile(resolve(root, 'tools/browser/slang', name), resolve(out, 'vendor/slang', name));
 await cp(resolve(root, 'tools/browser/slang/third-party-notices'), resolve(out, 'vendor/slang/third-party-notices'), { recursive: true });
 await cp(resolve(root, 'web/vendor'), resolve(out, 'vendor'), { recursive: true });
+// SPIR-V pre-pass (tools/spirvfix): web/shader.mjs imports
+// '../tools/spirvfix/spirvfix.mjs', which the browser resolves to
+// /tools/spirvfix/ when dist is the document root.
+await cp(resolve(root, 'tools/spirvfix'), resolve(out, 'tools/spirvfix'), { recursive: true });
 console.log(`Browser export: ${out}`);
