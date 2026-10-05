@@ -124,6 +124,9 @@ window.addEventListener('message',e=>{
   // guest's Vulkan frame manifest is rendered by web/vkwebgpu.mjs into its own
   // canvas; any error falls back to the upstream rendering exactly like 'gpu'.
   if(type==='vk'){const ready=window.bwVkTierReady||(window.bwVkTierReady=import('./vkwebgpu.mjs').then(m=>(window.bwVkTier=m.installVkPageTier())));ready.then(t=>t.frame(data)).then(()=>report(`Real guest Vulkan → WebGPU · ${window.bwVkStats?.().rendered||0} frames`)).catch(err=>{log('WebGPU Vulkan fallback: '+err.message);console.warn('WebGPU Vulkan fallback: '+err.message);report('Unsupported Vulkan frame; showing upstream rendering.');});}
+  // Schema v2 (tasks/schema-v2.md): binary chunks arrive via window.bwVkChunk
+  // in the runtime page; the tier queues them (drop-oldest, latest-frame-wins).
+  if(type==='vk2'){const ready=window.bwVkTierReady||(window.bwVkTierReady=import('./vkwebgpu.mjs').then(m=>(window.bwVkTier=m.installVkPageTier())));ready.then(t=>t.chunk(data.bytes, data.flags)).then(()=>report(`Real guest Vulkan → WebGPU · ${window.bwVkStats?.().v2?.rendered||0} v2 frames`)).catch(err=>{log('WebGPU Vulkan fallback: '+err.message);console.warn('WebGPU Vulkan fallback: '+err.message);report('Unsupported Vulkan frame; showing upstream rendering.');});}
 });
 $('folderButton').onclick=()=>$('folderInput').click();$('zipButton').onclick=()=>$('zipInput').click();
 $('folderInput').onchange=()=>guard(async()=>{report('Importing folder…');const files=await fromFiles($('folderInput').files);const name=$('folderInput').files[0]?.webkitRelativePath.split('/')[0];await install(files,name);$('folderInput').value='';});

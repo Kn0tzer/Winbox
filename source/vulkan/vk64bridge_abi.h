@@ -231,6 +231,9 @@ enum {
     VK64_fn_vkWaitSemaphores,                        // (device, pWaitInfo*, timeout)
     VK64_fn_vkSignalSemaphore,                       // (device, pSignalInfo*)
     VK64_fn_vkCmdPushConstants,                      // (cmdBuf, layout, stageFlags, offset, size, pValues)
+    VK64_fn_vkCmdDrawIndexed,                        // (cmdBuf, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance)
+    VK64_fn_vkCmdBindVertexBuffers,                  // (cmdBuf, firstBinding, bindingCount, pBuffers*, pOffsets*)
+    VK64_fn_vkCmdBindIndexBuffer,                    // (cmdBuf, buffer, offset, indexType)
 
     VK64_fn__MAX
 };
