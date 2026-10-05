@@ -147,6 +147,8 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkGetPhysicalDeviceSurfaceSupportKHR, "vkGetPhysicalDeviceSurfaceSupportKHR")     \
     X(VK64_fn_vkGetDeviceQueue,                     "vkGetDeviceQueue")       \
     X(VK64_fn_vkGetBufferMemoryRequirements,        "vkGetBufferMemoryRequirements") \
+    X(VK64_fn_vkGetBufferMemoryRequirements2,       "vkGetBufferMemoryRequirements2") \
+    X(VK64_fn_vkGetDeviceBufferMemoryRequirements,    "vkGetDeviceBufferMemoryRequirements") \
     X(VK64_fn_vkGetImageMemoryRequirements,         "vkGetImageMemoryRequirements")  \
     X(VK64_fn_vkGetImageSubresourceLayout,          "vkGetImageSubresourceLayout")   \
     X(VK64_fn_vkGetSwapchainImagesKHR,              "vkGetSwapchainImagesKHR")       \
@@ -165,6 +167,7 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkCreateBuffer,                       "vkCreateBuffer")      \
     X(VK64_fn_vkCreateImage,                        "vkCreateImage")       \
     X(VK64_fn_vkCreateImageView,                    "vkCreateImageView")   \
+    X(VK64_fn_vkCreateBufferView,                       "vkCreateBufferView") \
     X(VK64_fn_vkCreateSampler,                      "vkCreateSampler")     \
     X(VK64_fn_vkCreateRenderPass,                   "vkCreateRenderPass")  \
     X(VK64_fn_vkCreateFramebuffer,                  "vkCreateFramebuffer") \
@@ -230,7 +233,15 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkGetSemaphoreCounterValue,           "vkGetSemaphoreCounterValue") \
     X(VK64_fn_vkWaitSemaphores,                     "vkWaitSemaphores")    \
     X(VK64_fn_vkSignalSemaphore,                    "vkSignalSemaphore")   \
-    X(VK64_fn_vkCmdPushConstants,                   "vkCmdPushConstants")
+    X(VK64_fn_vkCmdPushConstants,                   "vkCmdPushConstants") \
+    X(VK64_fn_vkCreateXlibSurfaceKHR,               "vkCreateXlibSurfaceKHR") \
+    X(VK64_fn_vkGetPhysicalDeviceXlibPresentationSupportKHR, "vkGetPhysicalDeviceXlibPresentationSupportKHR") \
+    X(VK64_fn_vkGetPhysicalDeviceImageFormatProperties2, "vkGetPhysicalDeviceImageFormatProperties2") \
+    X(VK64_fn_vkGetPhysicalDeviceImageFormatProperties,  "vkGetPhysicalDeviceImageFormatProperties") \
+    X(VK64_fn_vkGetPhysicalDeviceFormatProperties2,      "vkGetPhysicalDeviceFormatProperties2") \
+    X(VK64_fn_vkCmdDrawIndexed,                          "vkCmdDrawIndexed") \
+    X(VK64_fn_vkCmdBindVertexBuffers,                     "vkCmdBindVertexBuffers") \
+    X(VK64_fn_vkCmdBindIndexBuffer,                       "vkCmdBindIndexBuffer")
 
 #define VK64_NAME_ENTRY(id, nm) { (U64)(id), nm },
 const struct { U64 id; const char* name; } g_fnNames[] = { VK64_FN_LIST(VK64_NAME_ENTRY) };
@@ -290,7 +301,7 @@ inline std::string guestStr(U64 addr, size_t maxLen = 512) {
 // ---------------------------------------------------------------------------
 enum ObjKind : U32 {
     K_INSTANCE = 1, K_PHYSDEV, K_DEVICE, K_QUEUE, K_CMDPOOL, K_CMDBUF, K_MEMORY,
-    K_BUFFER, K_IMAGE, K_IMAGEVIEW, K_SAMPLER, K_SHADER, K_SETLAYOUT, K_SET,
+    K_BUFFER, K_IMAGE, K_IMAGEVIEW, K_BUFFERVIEW, K_SAMPLER, K_SHADER, K_SETLAYOUT, K_SET,
     K_PIPELAYOUT, K_PIPELINE, K_RENDERPASS, K_FRAMEBUFFER, K_PIPECACHE,
     K_DESCPOOL, K_FENCE, K_SEMAPHORE, K_SWAPCHAIN, K_SURFACE
 };
@@ -377,6 +388,7 @@ struct Image  : Obj {
     int copied = 0;                 // a staging copyBufferToImage landed here
 };
 struct ImageView : Obj { U64 image = 0; U32 format = 0, aspect = 0; };
+struct BufferView : Obj { U64 buffer = 0; U32 format = 0; U64 offset = 0, range = 0; };
 struct Sampler : Obj { U32 mag = 0, min = 0, mipmap = 0, addrU = 0, addrV = 0, addrW = 0; float maxAniso = 1.0f; };
 struct ShaderModule : Obj {
     U32 stageHint = 0;
@@ -417,7 +429,7 @@ struct Swapchain : Obj { U32 w = 0, h = 0, format = 0, nimg = 0, cur = 0; U64 im
 // --- given).
 enum CmdKind : U32 {
     CMD_BEGIN_RP, CMD_END_RP, CMD_BIND_PIPE, CMD_BIND_SETS, CMD_VIEWPORT,
-    CMD_SCISSOR, CMD_DRAW, CMD_BARRIER, CMD_COPY_B2I, CMD_PUSH_CONST
+    CMD_SCISSOR, CMD_DRAW, CMD_DRAW_INDEXED, CMD_BARRIER, CMD_COPY_B2I, CMD_PUSH_CONST
 };
 struct Copy {
     U64 srcBuffer = 0, dstImage = 0, bufOff = 0;
@@ -434,6 +446,12 @@ struct Cmd {
     // corner case.
     U32 pcOffset = 0, pcSize = 0, pcStageFlags = 0;
     U8  pcBytes[VK64_MAX_PUSH_BYTES] = {0};
+    // Indexed draw + G2 replay capture: vertexOffset for the draw, and the
+    // resolved NDC positions / linear RGBA colors (capCount vertices) baked
+    // for the procedural replay shader when the layout is understood.
+    int32_t diVertexOffset = 0;
+    U32 capCount = 0;
+    std::vector<float> capPos, capCol;
 };
 struct CmdBuf : Obj {
     std::vector<Cmd> cmds;
@@ -441,6 +459,11 @@ struct CmdBuf : Obj {
     U64  sets[VK64_MAX_SETS] = {0};
     float vp[6] = {0}, sci[4] = {0};
     bool haveVp = false, haveSci = false;
+    // G2: current vertex/index buffer binds (DXVK rebinds per draw).
+    U64  vtxBuf[VK64_MAX_VERT_BINDINGS] = {0};
+    U64  vtxOff[VK64_MAX_VERT_BINDINGS] = {0};
+    U64  idxBuf = 0, idxOff = 0;
+    U32  idxType = 0;   /* 0 = UINT16, 1 = UINT32 */
 };
 CmdBuf* cbOf(U64 id, const char* who) { return objOf<CmdBuf>(id, K_CMDBUF, who); }
 
@@ -640,6 +663,234 @@ std::vector<U8> readGuestRange(U64 memId, U64 memOff, U64 bytes) {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// G2 replay capture + procedural shader synthesis (schema-v2 stopgap).
+//
+// The page tier (web/vkwebgpu.mjs) replays each draw as
+// pass.draw(vertexCount, 1, firstVertex, 0) with NO vertex buffers bound, so a
+// guest vertex shader with @location inputs can never produce pixels there:
+// pipeline creation itself rejects the missing buffers. Until the manifest
+// schema carries vertex/index BYTES (schema v2, a separate tracked goal), the
+// bridge resolves the draw vertices itself and bakes them into a procedural
+// SPIR-V vertex shader: gl_VertexIndex selects among constant position/color
+// pairs captured from the REAL vertex/index buffers of DXVK at draw time. The
+// geometry and colors that rasterize are the guest own; only the fetch
+// mechanism is replayed. A draw the synthesizer does not understand keeps the
+// guest modules (current behaviour; the page tier then skips the frame).
+// ---------------------------------------------------------------------------
+const U32 kCapMaxVerts = 256;   // baked-vertex cap per draw; tri9 needs 3
+
+bool captureIndexedDraw(CmdBuf* cb, Cmd& c) {
+    U32 indexCount = (U32)c.a, firstIndex = (U32)c.c;
+    if (!indexCount || indexCount > kCapMaxVerts) return false;
+    Pipeline* pipe = objOf<Pipeline>(cb->pipe, K_PIPELINE, "capDraw");
+    if (!pipe || !pipe->nva) return false;
+    // Position = location-0 float4, color = location-1 unorm8x4 (tri9 FVF).
+    int posAi = -1, colAi = -1;
+    for (U32 i = 0; i < pipe->nva; i++) {
+        U32 f = pipe->vaFormat[i];
+        if (pipe->vaLocation[i] == 0 && f == VK_FORMAT_R32G32B32A32_SFLOAT) posAi = (int)i;
+        if (pipe->vaLocation[i] == 1 &&
+            (f == VK_FORMAT_B8G8R8A8_UNORM || f == VK_FORMAT_R8G8B8A8_UNORM ||
+             f == VK_FORMAT_B8G8R8A8_SRGB || f == VK_FORMAT_R8G8B8A8_SRGB)) colAi = (int)i;
+    }
+    if (posAi < 0 || colAi < 0) return false;
+    U32 posBind = pipe->vaBinding[posAi], colBind = pipe->vaBinding[colAi];
+    if (posBind >= VK64_MAX_VERT_BINDINGS || colBind >= VK64_MAX_VERT_BINDINGS) return false;
+    Buffer* pbuf = objOf<Buffer>(cb->vtxBuf[posBind], K_BUFFER, "capDraw");
+    Buffer* cbuf = objOf<Buffer>(cb->vtxBuf[colBind], K_BUFFER, "capDraw");
+    Buffer* ibuf = objOf<Buffer>(cb->idxBuf, K_BUFFER, "capDraw");
+    if (!pbuf || !cbuf || !ibuf || !pbuf->mem || !cbuf->mem || !ibuf->mem) return false;
+    U32 idxSize = (cb->idxType == 1) ? 4 : 2;
+    std::vector<U8> idxBytes = readGuestRange(ibuf->mem, ibuf->memOff + cb->idxOff + (U64)firstIndex * idxSize,
+                                              (U64)indexCount * idxSize);
+    if (idxBytes.size() < (size_t)indexCount * idxSize) return false;
+    // Resolve vertex ids (firstIndex + vertexOffset) so the baked arrays are in
+    // draw order and the replay vertex_index maps 1:1.
+    U32 maxV = 0;
+    std::vector<U32> vids(indexCount);
+    for (U32 i = 0; i < indexCount; i++) {
+        U32 ix = (idxSize == 4)
+            ? (U32)(idxBytes[i*4] | ((U32)idxBytes[i*4+1] << 8) |
+                    ((U32)idxBytes[i*4+2] << 16) | ((U32)idxBytes[i*4+3] << 24))
+            : (U32)(idxBytes[i*2] | ((U32)idxBytes[i*2+1] << 8));
+        int64_t v = (int64_t)ix + c.diVertexOffset;
+        if (v < 0 || v > 1000000) return false;
+        vids[i] = (U32)v;
+        if ((U32)v > maxV) maxV = (U32)v;
+    }
+    U32 pstride = pipe->vbStride[posBind], cstride = pipe->vbStride[colBind];
+    if (!pstride || !cstride) return false;
+    U64 pNeed = (U64)maxV * pstride + pipe->vaOffset[posAi] + 16;
+    U64 cNeed = (U64)maxV * cstride + pipe->vaOffset[colAi] + 4;
+    std::vector<U8> pbytes = readGuestRange(pbuf->mem, pbuf->memOff + cb->vtxOff[posBind], pNeed);
+    std::vector<U8> cbytes = readGuestRange(cbuf->mem, cbuf->memOff + cb->vtxOff[colBind], cNeed);
+    if (pbytes.size() < pNeed || cbytes.size() < cNeed) return false;
+    // RHW pixel -> NDC bake needs the viewport DXVK set for this draw.
+    if (!cb->haveVp || cb->vp[2] <= 0 || cb->vp[3] <= 0) return false;
+    float vpw = cb->vp[2], vph = cb->vp[3];
+    bool bgr = (pipe->vaFormat[colAi] == VK_FORMAT_B8G8R8A8_UNORM ||
+                pipe->vaFormat[colAi] == VK_FORMAT_B8G8R8A8_SRGB);
+    c.capPos.reserve((size_t)indexCount * 4);
+    c.capCol.reserve((size_t)indexCount * 4);
+    for (U32 i = 0; i < indexCount; i++) {
+        U32 v = vids[i];
+        float pf[4];
+        memcpy(pf, &pbytes[(size_t)v * pstride + pipe->vaOffset[posAi]], 16);
+        U32 ci;
+        memcpy(&ci, &cbytes[(size_t)v * cstride + pipe->vaOffset[colAi]], 4);
+        float rhw = pf[3] != 0.0f ? pf[3] : 1.0f;
+        // Vulkan and WebGPU share the top-left framebuffer origin: NDC y
+        // follows the pixel row, no flip (the page tier documented rule).
+        c.capPos.push_back(pf[0] / rhw / vpw * 2.0f - 1.0f);
+        c.capPos.push_back(pf[1] / rhw / vph * 2.0f - 1.0f);
+        c.capPos.push_back(pf[2] / rhw);
+        c.capPos.push_back(1.0f);
+        // D3DCOLOR is 0xAARRGGBB; the B8G8R8A8 byte order already matches it.
+        float comp[4] = { (ci & 0xff) / 255.0f, ((ci >> 8) & 0xff) / 255.0f,
+                          ((ci >> 16) & 0xff) / 255.0f, ((ci >> 24) & 0xff) / 255.0f };
+        c.capCol.push_back(bgr ? comp[2] : comp[0]);
+        c.capCol.push_back(comp[1]);
+        c.capCol.push_back(bgr ? comp[0] : comp[2]);
+        c.capCol.push_back(comp[3]);
+    }
+    c.capCount = indexCount;
+    klog_fmt("vk64: replay capture: %u verts baked (NDC, %s)", indexCount, bgr ? "B8G8R8A8" : "R8G8B8A8");
+    return true;
+}
+
+// Minimal SPIR-V 1.0 word emitter for the replay shaders.
+struct SpvEmit {
+    std::vector<U32> w;
+    U32 next = 1;
+    U32 fresh() { return next++; }
+    void inst(U32 opcode, std::initializer_list<U32> args) {
+        w.push_back((((U32)args.size() + 1) << 16) | opcode);
+        for (U32 a : args) w.push_back(a);
+    }
+    void entryPoint(U32 model, U32 id, const char* name, std::initializer_list<U32> iface) {
+        size_t at = w.size();
+        w.push_back(0);
+        w.push_back(model); w.push_back(id);
+        size_t n = strlen(name) + 1, words = (n + 3) / 4, base = w.size();
+        w.resize(base + words, 0);
+        memcpy(&w[base], name, n);
+        for (U32 i : iface) w.push_back(i);
+        w[at] = ((U32)(w.size() - at) << 16) | 15;   // OpEntryPoint
+    }
+    std::vector<U8> bytes() {
+        w[3] = next;   // id bound
+        std::vector<U8> out(w.size() * 4);
+        memcpy(out.data(), w.data(), out.size());
+        return out;
+    }
+};
+
+// Vertex: gl_VertexIndex -> OpSwitch -> constant NDC position + linear color.
+std::vector<U8> synthReplayVs(const std::vector<float>& pos, const std::vector<float>& col, U32 n) {
+    SpvEmit s;
+    s.w.reserve(700);
+    s.w.insert(s.w.end(), {0x07230203, 0x00010000, 0, 0, 0});
+    U32 tVoid = s.fresh(), tInt = s.fresh(), tFloat = s.fresh(), tV4 = s.fresh();
+    U32 tFn = s.fresh(), pInInt = s.fresh(), pOutV4 = s.fresh();
+    U32 vIdx = s.fresh(), vPos = s.fresh(), vCol = s.fresh(), fn = s.fresh();
+    s.inst(17, {1});                        // OpCapability Shader
+    s.inst(14, {0, 1});                     // OpMemoryModel Logical GLSL450
+    s.entryPoint(0, fn, "main", {vIdx, vPos, vCol});
+    s.inst(71, {vIdx, 11, 42});             // OpDecorate BuiltIn VertexIndex
+    s.inst(71, {vPos, 11, 0});              // OpDecorate BuiltIn Position
+    s.inst(71, {vCol, 30, 0});              // OpDecorate Location 0
+    s.inst(19, {tVoid});                    // OpTypeVoid
+    s.inst(21, {tInt, 32, 1});              // OpTypeInt 32 1
+    s.inst(22, {tFloat, 32});               // OpTypeFloat 32
+    s.inst(23, {tV4, tFloat, 4});           // OpTypeVector %float 4
+    s.inst(33, {tFn, tVoid});               // OpTypeFunction %void
+    s.inst(32, {pInInt, 1, tInt});          // OpTypePointer Input %int
+    s.inst(32, {pOutV4, 3, tV4});           // OpTypePointer Output %v4f
+    std::vector<U32> posId(n), colId(n);
+    for (U32 i = 0; i < n; i++) {
+        U32 pc[4], cc[4];
+        for (int k = 0; k < 4; k++) {
+            U32 b;
+            pc[k] = s.fresh(); memcpy(&b, &pos[i*4+k], 4); s.inst(43, {tFloat, pc[k], b});
+            cc[k] = s.fresh(); memcpy(&b, &col[i*4+k], 4); s.inst(43, {tFloat, cc[k], b});
+        }
+        posId[i] = s.fresh(); s.inst(44, {tV4, posId[i], pc[0], pc[1], pc[2], pc[3]});
+        colId[i] = s.fresh(); s.inst(44, {tV4, colId[i], cc[0], cc[1], cc[2], cc[3]});
+    }
+    s.inst(59, {pInInt, vIdx, 1});          // OpVariable Input
+    s.inst(59, {pOutV4, vPos, 3});          // OpVariable Output
+    s.inst(59, {pOutV4, vCol, 3});
+    s.inst(54, {tVoid, fn, 0, tFn});        // OpFunction
+    U32 entry = s.fresh(), merge = s.fresh();
+    s.inst(248, {entry});                   // OpLabel
+    U32 idx = s.fresh();
+    s.inst(61, {tInt, idx, vIdx});          // OpLoad VertexIndex
+    std::vector<U32> caseLbl(n);
+    for (U32 i = 0; i < n; i++) caseLbl[i] = s.fresh();
+    U32 dflt = s.fresh();
+    s.inst(246, {merge, 0});                // OpSelectionMerge
+    {
+        size_t at = s.w.size();             // OpSwitch
+        s.w.push_back(0); s.w.push_back(idx); s.w.push_back(dflt);
+        for (U32 i = 0; i < n; i++) { s.w.push_back(i); s.w.push_back(caseLbl[i]); }
+        s.w[at] = ((U32)(s.w.size() - at) << 16) | 247;
+    }
+    for (U32 i = 0; i < n; i++) {
+        s.inst(248, {caseLbl[i]});
+        s.inst(62, {vPos, posId[i]});       // OpStore position/color
+        s.inst(62, {vCol, colId[i]});
+        s.inst(249, {merge});               // OpBranch
+    }
+    s.inst(248, {dflt});
+    s.inst(249, {merge});
+    s.inst(248, {merge});
+    s.inst(253, {});                        // OpReturn
+    s.inst(56, {});                         // OpFunctionEnd
+    return s.bytes();
+}
+
+// Fragment: Location-0 color passthrough.
+std::vector<U8> synthReplayFs() {
+    SpvEmit s;
+    s.w.reserve(80);
+    s.w.insert(s.w.end(), {0x07230203, 0x00010000, 0, 0, 0});
+    U32 tVoid = s.fresh(), tFloat = s.fresh(), tV4 = s.fresh();
+    U32 tFn = s.fresh(), pInV4 = s.fresh(), pOutV4 = s.fresh();
+    U32 vIn = s.fresh(), vOut = s.fresh(), fn = s.fresh();
+    s.inst(17, {1});
+    s.inst(14, {0, 1});
+    s.entryPoint(4, fn, "main", {vIn, vOut});
+    s.inst(16, {fn, 7});                    // OpExecutionMode OriginUpperLeft
+    s.inst(71, {vIn, 30, 0});
+    s.inst(71, {vOut, 30, 0});
+    s.inst(19, {tVoid});
+    s.inst(22, {tFloat, 32});
+    s.inst(23, {tV4, tFloat, 4});
+    s.inst(33, {tFn, tVoid});
+    s.inst(32, {pInV4, 1, tV4});
+    s.inst(32, {pOutV4, 3, tV4});
+    s.inst(59, {pInV4, vIn, 1});
+    s.inst(59, {pOutV4, vOut, 3});
+    s.inst(54, {tVoid, fn, 0, tFn});
+    U32 entry = s.fresh(), tmp = s.fresh();
+    s.inst(248, {entry});
+    s.inst(61, {tV4, tmp, vIn});
+    s.inst(62, {vOut, tmp});
+    s.inst(253, {});
+    s.inst(56, {});
+    return s.bytes();
+}
+
+void fillImageFormatProps(VkImageFormatProperties* p) {
+    p->maxExtent = VkExtent3D{16384, 16384, 2048};
+    p->maxMipLevels = 14;
+    p->maxArrayLayers = 2048;
+    p->sampleCounts = (VkSampleCountFlags)(VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT |
+                                           VK_SAMPLE_COUNT_4_BIT | VK_SAMPLE_COUNT_8_BIT);
+    p->maxResourceSize = 2ull * 1024 * 1024 * 1024;
+}
+
 // Submit-time frame reconstruction (P1's vkQueueSubmit body, file I/O replaced
 // by the in-memory manifest serializer).
 // ---------------------------------------------------------------------------
@@ -669,6 +920,7 @@ void serializeSubmit(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         double clearDepth = 1.0;
         std::vector<std::pair<U32, U32>> draws;   // vertexCount, firstVertex
         std::vector<const Cmd*> pushes;           // in order: offset + bytes matter
+        const Cmd* firstCap = nullptr;            // first indexed draw with baked verts
         for (const Cmd& k : st->cmds) {
             switch (k.kind) {
                 case CMD_BEGIN_RP:
@@ -683,6 +935,11 @@ void serializeSubmit(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 case CMD_PUSH_CONST: pushes.push_back(&k); break;
                 case CMD_DRAW:
                     if (draws.size() < VK64_MAX_DRAWS) draws.push_back({(U32)k.a, (U32)k.c});
+                    break;
+                case CMD_DRAW_INDEXED:
+                    // Baked in draw order, so the replay vertex_index maps 1:1.
+                    if (draws.size() < VK64_MAX_DRAWS) draws.push_back({(U32)k.a, 0});
+                    if (!firstCap && k.capCount) firstCap = &k;
                     break;
                 default: break;
             }
@@ -739,18 +996,43 @@ void serializeSubmit(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         snprintf(buf, sizeof buf, "\"cull\":%u,\"front\":%u,\"depthTest\":%u,\"depthWrite\":%u,\"depthOp\":%u,",
                  pipe->cull, pipe->front, pipe->depthTest, pipe->depthWrite, pipe->depthOp);
         j += buf;
-        if (vs) {
+        // G2 replay: when an indexed draw baked its vertices, substitute the
+        // procedural shaders so the page tier (no vertex buffers) rasterizes the
+        // captured triangle. Otherwise the guest modules go out unchanged.
+        std::vector<U8> repVs, repFs;
+        bool haveReplay = false;
+        if (firstCap) {
+            repVs = synthReplayVs(firstCap->capPos, firstCap->capCol, firstCap->capCount);
+            repFs = synthReplayFs();
+            haveReplay = !repVs.empty() && !repFs.empty();
+            if (haveReplay)
+                klog_fmt("vk64: replay shaders synthesized (%u verts, vs %zuB fs %zuB)",
+                         firstCap->capCount, repVs.size(), repFs.size());
+        }
+        if (haveReplay) {
+            char sh[40];
+            snprintf(sh, sizeof sh, "%016llx",
+                     (unsigned long long)blob_hash(repVs.data(), repVs.size()));
+            j += "\"vs\":{\"hash\":\""; j += sh; j += "\",";
+            jsonBlob(j, "spv", repVs); j += ",";
+            snprintf(sh, sizeof sh, "%016llx",
+                     (unsigned long long)blob_hash(repFs.data(), repFs.size()));
+            j += "\"fs\":{\"hash\":\""; j += sh; j += "\",";
+            jsonBlob(j, "spv", repFs); j += ",";
+        } else if (vs) {
             char sh[40];
             snprintf(sh, sizeof sh, "%016llx", (unsigned long long)vs->hash);
             j += "\"vs\":{\"hash\":\""; j += sh; j += "\",";
             jsonBlob(j, "spv", vs->code); j += ",";
         } else j += "\"vs\":null,";
-        if (fs) {
-            char sh[40];
-            snprintf(sh, sizeof sh, "%016llx", (unsigned long long)fs->hash);
-            j += "\"fs\":{\"hash\":\""; j += sh; j += "\",";
-            jsonBlob(j, "spv", fs->code); j += ",";
-        } else j += "\"fs\":null,";
+        if (!haveReplay) {
+            if (fs) {
+                char sh[40];
+                snprintf(sh, sizeof sh, "%016llx", (unsigned long long)fs->hash);
+                j += "\"fs\":{\"hash\":\""; j += sh; j += "\",";
+                jsonBlob(j, "spv", fs->code); j += ",";
+            } else j += "\"fs\":null,";
+        }
         jsonBlobOrNull(j, "ubo", uboBytes, haveUbo);
         j += ",";
         snprintf(buf, sizeof buf, "\"texture\":{\"w\":%u,\"h\":%u,\"format\":\"%s\",\"staged\":%s,",
@@ -863,6 +1145,15 @@ void fillProperties(VkPhysicalDeviceProperties* p) {
     L.subPixelPrecisionBits = 8; L.subTexelPrecisionBits = 8; L.mipmapPrecisionBits = 8;
     L.maxDrawIndexedIndexValue = 0xFFFFFFFFu; L.maxDrawIndirectCount = 0xFFFFFFFFu;
     L.maxSamplerLodBias = 2.0f; L.maxSamplerAnisotropy = 16.0f;
+    // G2: DXVK D3D9 DecodeMultiSampleType derives sampleCount from
+    // framebuffer{Color,Depth}SampleCounts; zero here zeroes the backbuffer
+    // sampleCount and fails CheckImageSupport. Advertise at least 1x.
+    L.framebufferColorSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT;
+    L.framebufferDepthSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT;
+    L.framebufferStencilSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT;
+    L.sampledImageColorSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT;
+    L.sampledImageDepthSampleCounts = VK_SAMPLE_COUNT_1_BIT;
+    L.storageImageSampleCounts = VK_SAMPLE_COUNT_1_BIT;
     L.maxViewports = 16;
     L.maxViewportDimensions[0] = 4096; L.maxViewportDimensions[1] = 4096;
     L.viewportBoundsRange[0] = -8192.0f; L.viewportBoundsRange[1] = 8191.0f;
@@ -1151,6 +1442,16 @@ void walkProperties2(U64 pNextAddr) {
                 p.maxDescriptorSetUpdateAfterBindSampledImages = 1024;
                 p.maxDescriptorSetUpdateAfterBindStorageImages = 1024;
                 p.maxDescriptorSetUpdateAfterBindInputAttachments = 16;
+                g_mem->memcpyToGuest(cur, &p, sizeof(p));
+                break;
+            }
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_PROPERTIES_EXT: {
+                VkPhysicalDeviceRobustness2PropertiesEXT p = {};
+                g_mem->memcpyFromGuest(&p, cur, sizeof(p));
+                // MUST be non-zero: DXVK D3D9DeviceEx divides constant-layout
+                // sizes by these alignments; zero => guest SIGFPE.
+                p.robustStorageBufferAccessSizeAlignment = 4;
+                p.robustUniformBufferAccessSizeAlignment = 4;
                 g_mem->memcpyToGuest(cur, &p, sizeof(p));
                 break;
             }
@@ -1451,6 +1752,54 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         writeStruct(args.a[2], p);
         return VK_SUCCESS;
     }
+    case VK64_fn_vkGetPhysicalDeviceFormatProperties2: {
+        // (physDev, format, out VkFormatProperties2) + FormatProperties3 pNext.
+        if (!args.a[2]) return 0;
+        VkFormatProperties2 p2 = {};
+        if (!readStruct(args.a[2], p2)) return 0;
+        VkFormatFeatureFlags img = (VkFormatFeatureFlags)(
+            VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
+            VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT);
+        p2.formatProperties.linearTilingFeatures = img;
+        p2.formatProperties.optimalTilingFeatures = img;
+        p2.formatProperties.bufferFeatures = (VkFormatFeatureFlags)(
+            VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT | VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT |
+            VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT);
+        writeStruct(args.a[2], p2);
+        for (U64 cur = p2.pNext; cur && g_mem;) {
+            if (g_mem->readd(cur) == VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3) {
+                VkFormatProperties3 p3 = {};
+                g_mem->memcpyFromGuest(&p3, cur, sizeof(p3));
+                // _2 flag values match v1 on the low bits; add color/depth targets.
+                const VkFormatFeatureFlags2 img2 = (VkFormatFeatureFlags2)((U64)img | 0x3800ull);
+                p3.linearTilingFeatures = img2;
+                p3.optimalTilingFeatures = img2;
+                p3.bufferFeatures = (VkFormatFeatureFlags2)p2.formatProperties.bufferFeatures;
+                g_mem->memcpyToGuest(cur, &p3, sizeof(p3));
+            }
+            cur = g_mem->readq(cur + 8);
+        }
+        return 0;
+    }
+    case VK64_fn_vkGetPhysicalDeviceImageFormatProperties: {
+        // (physDev, format, type, tiling, usage, flags, out VkImageFormatProperties)
+        if (!args.a[6]) return VK_ERROR_INITIALIZATION_FAILED;
+        VkImageFormatProperties pr = {};
+        fillImageFormatProps(&pr);
+        writeStruct(args.a[6], pr);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetPhysicalDeviceImageFormatProperties2: {
+        // (physDev, pInfo2*, pProps2*)
+        if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        VkImageFormatProperties2 p2 = {};
+        g_mem->memcpyFromGuest(&p2, args.a[2], sizeof(p2));
+        VkPhysicalDeviceImageFormatInfo2 info = {};
+        g_mem->memcpyFromGuest(&info, args.a[1], sizeof(info));
+        fillImageFormatProps(&p2.imageFormatProperties);
+        g_mem->memcpyToGuest(args.a[2], &p2, sizeof(p2));
+        return VK_SUCCESS;
+    }
     case VK64_fn_vkGetPhysicalDeviceSurfaceCapabilitiesKHR: {
         if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
         VkSurfaceCapabilitiesKHR c = {};
@@ -1487,6 +1836,13 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkGetPhysicalDeviceSurfaceSupportKHR:
         wr32(args.a[3], VK_TRUE);
         return VK_SUCCESS;
+    case VK64_fn_vkGetPhysicalDeviceXlibPresentationSupportKHR:
+        // (physDev, qFam, dpy*, visual) -> VkBool32 in RAX. winex11's
+        // wine_vk_init dlsym()s this (LOAD_FUNCPTR, hard fail) and X11DRV
+        // calls it per device when picking a presentable one. TRUE: the page
+        // tier presents every frame through the canvas; there is no
+        // non-presentable device behind this shim.
+        return VK_TRUE;
 
     case VK64_fn_vkGetDeviceQueue: {
         // (device, family, index, out VkQueue*)
@@ -1505,6 +1861,79 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         writeStruct(args.a[2], r);
         return VK_SUCCESS;
     }
+    case VK64_fn_vkGetBufferMemoryRequirements2: {
+        // (dev, VkBufferMemoryRequirementsInfo2*, VkMemoryRequirements2*)
+        if (!args.a[1] || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        VkBufferMemoryRequirementsInfo2 in2 = {};
+        g_mem->memcpyFromGuest(&in2, args.a[1], sizeof(in2));
+        Buffer* b = objOf<Buffer>((U64)in2.buffer, K_BUFFER, "vkGetBufferMemoryRequirements2");
+        // G2: DXVK may query requirements for buffers created outside our
+        // bridge (e.g., via winevulkan paths that bypass our vkCreateBuffer).
+        // Return sensible defaults rather than failing, so the allocator
+        // can proceed. The size is advisory; DXVK validates it.
+        U64 bufSize = (b && b->size) ? b->size : 65536;
+        VkMemoryRequirements2 out2 = {};
+        g_mem->memcpyFromGuest(&out2, args.a[2], sizeof(out2));
+        out2.memoryRequirements.size = (bufSize + 255) & ~(U64)255;
+        out2.memoryRequirements.alignment = 256;
+        out2.memoryRequirements.memoryTypeBits = 0xF;
+        g_mem->memcpyToGuest(args.a[2], &out2, sizeof(out2));
+        // Fill chained VkMemoryDedicatedRequirements in place.
+        U64 pn = out2.pNext;
+        while (pn) {
+            U32 st = 0;
+            g_mem->memcpyFromGuest(&st, pn, sizeof(st));
+            if (st == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS) {
+                VkMemoryDedicatedRequirements dr = {};
+                g_mem->memcpyFromGuest(&dr, pn, sizeof(dr));
+                dr.prefersDedicatedAllocation = 0;
+                dr.requiresDedicatedAllocation = 0;
+                g_mem->memcpyToGuest(pn, &dr, sizeof(dr));
+                break;
+            }
+            U64 nxt = 0;
+            g_mem->memcpyFromGuest(&nxt, pn + 8, sizeof(nxt));
+            pn = nxt;
+        }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetDeviceBufferMemoryRequirements: {
+        // (dev, VkDeviceBufferMemoryRequirements*, VkMemoryRequirements2*)
+        // Core in Vulkan 1.3 (maintenance4); DXVK uses this instead of
+        // creating a temp buffer when available.
+        if (!args.a[1] || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        VkDeviceBufferMemoryRequirements devInfo = {};
+        g_mem->memcpyFromGuest(&devInfo, args.a[1], sizeof(devInfo));
+        U64 createInfoSize = 0;
+        if (devInfo.pCreateInfo) {
+            VkBufferCreateInfo ci = {};
+            g_mem->memcpyFromGuest(&ci, devInfo.pCreateInfo, sizeof(ci));
+            createInfoSize = ci.size;
+        }
+        VkMemoryRequirements2 out2 = {};
+        g_mem->memcpyFromGuest(&out2, args.a[2], sizeof(out2));
+        out2.memoryRequirements.size = createInfoSize ? ((createInfoSize + 255) & ~(U64)255) : 256;
+        out2.memoryRequirements.alignment = 256;
+        out2.memoryRequirements.memoryTypeBits = 0xF;
+        g_mem->memcpyToGuest(args.a[2], &out2, sizeof(out2));
+        U64 pn = out2.pNext;
+        while (pn) {
+            U32 st = 0;
+            g_mem->memcpyFromGuest(&st, pn, sizeof(st));
+            if (st == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS) {
+                VkMemoryDedicatedRequirements dr = {};
+                g_mem->memcpyFromGuest(&dr, pn, sizeof(dr));
+                dr.prefersDedicatedAllocation = 0;
+                dr.requiresDedicatedAllocation = 0;
+                g_mem->memcpyToGuest(pn, &dr, sizeof(dr));
+                break;
+            }
+            U64 nxt = 0;
+            g_mem->memcpyFromGuest(&nxt, pn + 8, sizeof(nxt));
+            pn = nxt;
+        }
+        return VK_SUCCESS;
+    }
     case VK64_fn_vkGetImageMemoryRequirements: {
         Image* im = objOf<Image>(args.a[1], K_IMAGE, "vkGetImageMemoryRequirements");
         if (!im || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
@@ -1514,6 +1943,39 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         r.alignment = 256;
         r.memoryTypeBits = 0xF;
         writeStruct(args.a[2], r);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetImageMemoryRequirements2: {
+        // (dev, VkImageMemoryRequirementsInfo2*, VkMemoryRequirements2*)
+        if (!args.a[1] || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        VkImageMemoryRequirementsInfo2 in2 = {};
+        g_mem->memcpyFromGuest(&in2, args.a[1], sizeof(in2));
+        Image* im = objOf<Image>((U64)in2.image, K_IMAGE, "vkGetImageMemoryRequirements2");
+        if (!im) return VK_ERROR_INITIALIZATION_FAILED;
+        VkMemoryRequirements2 out2 = {};
+        g_mem->memcpyFromGuest(&out2, args.a[2], sizeof(out2));
+        U64 px = (U64)im->w * im->h * (im->d ? im->d : 1) * (im->layers ? im->layers : 1) * fmt_bpp(im->format);
+        out2.memoryRequirements.size = (px + 255) & ~(U64)255;
+        out2.memoryRequirements.alignment = 256;
+        out2.memoryRequirements.memoryTypeBits = 0xF;
+        g_mem->memcpyToGuest(args.a[2], &out2, sizeof(out2));
+        // Fill chained VkMemoryDedicatedRequirements in place (guest buffer).
+        U64 pn = out2.pNext;
+        while (pn) {
+            U32 st = 0;
+            g_mem->memcpyFromGuest(&st, pn, sizeof(st));
+            if (st == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS) {
+                VkMemoryDedicatedRequirements dr = {};
+                g_mem->memcpyFromGuest(&dr, pn, sizeof(dr));
+                dr.prefersDedicatedAllocation = 0;
+                dr.requiresDedicatedAllocation = 0;
+                g_mem->memcpyToGuest(pn, &dr, sizeof(dr));
+                break;
+            }
+            U64 nxt = 0;
+            g_mem->memcpyFromGuest(&nxt, pn + 8, sizeof(nxt));
+            pn = nxt;
+        }
         return VK_SUCCESS;
     }
     case VK64_fn_vkGetImageSubresourceLayout: {
@@ -1655,6 +2117,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         return VK_SUCCESS;
     }
     case VK64_fn_vkCreateXcbSurfaceKHR:
+    case VK64_fn_vkCreateXlibSurfaceKHR:
     case VK64_fn_vkCreateWin32SurfaceKHR:
     case VK64_fn_vkCreateHeadlessSurfaceEXT: {
         // (instance, pCreateInfo*, pAllocator, out VkSurfaceKHR*)
@@ -1742,6 +2205,19 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         v->image = ci.image;
         v->format = ci.format ? ci.format : src->format;
         v->aspect = ci.subresourceRange.aspectMask;
+        wr64(args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateBufferView: {
+        VkBufferViewCreateInfo ci = {};
+        if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        // Buffer may be from outside our bridge; don't fail if unknown.
+        U64 id = 0;
+        BufferView* v = createObj<BufferView>(K_BUFFERVIEW, id);
+        v->buffer = ci.buffer;
+        v->format = ci.format;
+        v->offset = ci.offset;
+        v->range = ci.range;
         wr64(args.a[3], id);
         return VK_SUCCESS;
     }
@@ -2310,6 +2786,41 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         c.b = args.a[2];   // instanceCount
         c.c = args.a[3];   // firstVertex
         c.d = args.a[4];   // firstInstance
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdBindVertexBuffers: {
+        // (cmdBuf, firstBinding, bindingCount, pBuffers*, pOffsets*)
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdBindVertexBuffers");
+        if (!cb) return 0;
+        U32 first = (U32)args.a[1], count = (U32)args.a[2];
+        if (!args.a[3] || !args.a[4] || !count || first >= VK64_MAX_VERT_BINDINGS) return 0;
+        if (first + count > VK64_MAX_VERT_BINDINGS) count = VK64_MAX_VERT_BINDINGS - first;
+        for (U32 i = 0; i < count; i++) {
+            cb->vtxBuf[first + i] = g_mem->readq(args.a[3] + (U64)i * 8);
+            cb->vtxOff[first + i] = g_mem->readq(args.a[4] + (U64)i * 8);
+        }
+        return 0;
+    }
+    case VK64_fn_vkCmdBindIndexBuffer: {
+        // (cmdBuf, buffer, offset, indexType)
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdBindIndexBuffer");
+        if (!cb) return 0;
+        cb->idxBuf = args.a[1]; cb->idxOff = args.a[2]; cb->idxType = (U32)args.a[3];
+        return 0;
+    }
+    case VK64_fn_vkCmdDrawIndexed: {
+        // (cmdBuf, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance)
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdDrawIndexed");
+        if (!cb) return 0;
+        Cmd c;
+        c.kind = CMD_DRAW_INDEXED;
+        c.a = args.a[1];   // indexCount
+        c.b = args.a[2];   // instanceCount
+        c.c = args.a[3];   // firstIndex
+        c.diVertexOffset = (int32_t)(U32)args.a[4];
+        c.d = args.a[5];   // firstInstance
+        captureIndexedDraw(cb, c);
         pushCmd(cb, c);
         return 0;
     }

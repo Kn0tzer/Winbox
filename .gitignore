@@ -58,3 +58,9 @@ project/mac-xcode/build_*/
 /s[0-9]*.png
 /s_*.png
 /saveas_*.png
+node_modules/
+/core/
+project/emscripten/build-wasm.log
+tools/browser/zig/
+tools/browser/slang/
+tools/browser/disasm/

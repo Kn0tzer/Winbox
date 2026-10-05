@@ -30,6 +30,19 @@ export async function toWGSL(from, source, stage='vertex', entryPoint='main') {
   if(from==='spirv') {
     if(!(source instanceof Uint8Array)||source.byteLength<20||source.byteLength%4) throw new Error('Invalid SPIR-V byte length');
     if(new DataView(source.buffer,source.byteOffset,source.byteLength).getUint32(0,true)!==0x07230203) throw new Error('Invalid SPIR-V magic');
+    // Pre-pass (tools/spirvfix/spirvfix.mjs): rewrite the module patterns
+    // naga's spv-in rejects — combined-sampler loads (InvalidId) and spec
+    // constants (UnsupportedInstruction) — before handing bytes to naga.
+    // Byte-identical passthrough when nothing applies. Dynamic import because
+    // the pre-pass lives outside web/: layouts that don't ship it (dist
+    // without tools/spirvfix) keep today's pass-through behavior with a
+    // warning instead of breaking module load.
+    try {
+      const { applySpirvFix } = await import('../tools/spirvfix/spirvfix.mjs');
+      source = applySpirvFix(source).bytes;
+    } catch(e) {
+      console.warn('spirvfix pre-pass unavailable, passing SPIR-V through unmodified:', e?.message || e);
+    }
     return translate({from:'spirv',to:'wgsl',source});
   }
   if(from!=='glsl') throw new Error('Unknown shader language');

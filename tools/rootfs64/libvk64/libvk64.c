@@ -82,7 +82,10 @@ enum {
     VK64_fn_vkGetPhysicalDeviceSurfaceSupportKHR,
     VK64_fn_vkGetDeviceQueue,
     VK64_fn_vkGetBufferMemoryRequirements,
+    VK64_fn_vkGetBufferMemoryRequirements2,
+    VK64_fn_vkGetDeviceBufferMemoryRequirements,
     VK64_fn_vkGetImageMemoryRequirements,
+    VK64_fn_vkGetImageMemoryRequirements2,
     VK64_fn_vkGetImageSubresourceLayout,
     VK64_fn_vkGetSwapchainImagesKHR,
     VK64_fn_vkAcquireNextImageKHR,
@@ -101,6 +104,7 @@ enum {
     VK64_fn_vkCreateBuffer,
     VK64_fn_vkCreateImage,
     VK64_fn_vkCreateImageView,
+    VK64_fn_vkCreateBufferView,
     VK64_fn_vkCreateSampler,
     VK64_fn_vkCreateRenderPass,
     VK64_fn_vkCreateFramebuffer,
@@ -177,6 +181,18 @@ enum {
     VK64_fn_vkSignalSemaphore,
     VK64_fn_vkCmdPushConstants,
 
+    // G2 (DXVK-on-wine): wine 8.x's winex11 Vulkan init dlsym()s these two with
+    // LOAD_FUNCPTR (hard fail). Same append-only order as vk64bridge_abi.h.
+    VK64_fn_vkCreateXlibSurfaceKHR,
+    VK64_fn_vkGetPhysicalDeviceXlibPresentationSupportKHR,
+
+    VK64_fn_vkGetPhysicalDeviceImageFormatProperties2,
+    VK64_fn_vkGetPhysicalDeviceImageFormatProperties,
+    VK64_fn_vkGetPhysicalDeviceFormatProperties2,
+    VK64_fn_vkCmdDrawIndexed,
+    VK64_fn_vkCmdBindVertexBuffers,
+    VK64_fn_vkCmdBindIndexBuffer,
+
     VK64_fn__MAX
 };
 
@@ -236,6 +252,7 @@ typedef VkHandle VkDeviceMemory;
 typedef VkHandle VkBuffer;
 typedef VkHandle VkImage;
 typedef VkHandle VkImageView;
+typedef VkHandle VkBufferView;
 typedef VkHandle VkSampler;
 typedef VkHandle VkShaderModule;
 typedef VkHandle VkDescriptorSetLayout;
@@ -333,9 +350,21 @@ API void vkGetBufferMemoryRequirements(VkDevice dev, VkBuffer buf, void* r) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = buf; a.a[2] = P(r);
     (void)vk64_trap(VK64_fn_vkGetBufferMemoryRequirements, &a);
 }
+API void vkGetBufferMemoryRequirements2(VkDevice dev, const void* info, void* r) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(info); a.a[2] = P(r);
+    (void)vk64_trap(VK64_fn_vkGetBufferMemoryRequirements2, &a);
+}
+API void vkGetDeviceBufferMemoryRequirements(VkDevice dev, const void* info, void* r) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(info); a.a[2] = P(r);
+    (void)vk64_trap(VK64_fn_vkGetDeviceBufferMemoryRequirements, &a);
+}
 API void vkGetImageMemoryRequirements(VkDevice dev, VkImage img, void* r) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = img; a.a[2] = P(r);
     (void)vk64_trap(VK64_fn_vkGetImageMemoryRequirements, &a);
+}
+API void vkGetImageMemoryRequirements2(VkDevice dev, const void* info, void* r) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(info); a.a[2] = P(r);
+    (void)vk64_trap(VK64_fn_vkGetImageMemoryRequirements2, &a);
 }
 API void vkGetImageSubresourceLayout(VkDevice dev, VkImage img, const void* sub, void* layout) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = img; a.a[2] = P(sub); a.a[3] = P(layout);
@@ -402,6 +431,39 @@ API VkResult vkCreateXcbSurfaceKHR(VkInstance inst, const void* ci, const void* 
     VK64Args a = {{0}}; a.a[0] = inst; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
     return (VkResult)vk64_trap(VK64_fn_vkCreateXcbSurfaceKHR, &a);
 }
+/* The surface wine 8.x's winex11 Vulkan init asks for: X11DRV substitutes
+ * VK_KHR_win32_surface -> VK_KHR_xlib_surface and builds its host-side surface
+ * with vkCreateXlibSurfaceKHR through libvulkan.so.1 (== us). Same mint-an-id
+ * arm as xcb/win32/headless: the create-info is never read. */
+API VkResult vkCreateXlibSurfaceKHR(VkInstance inst, const void* ci, const void* alloc, VkSurfaceKHR* out) {
+    VK64Args a = {{0}}; a.a[0] = inst; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
+    return (VkResult)vk64_trap(VK64_fn_vkCreateXlibSurfaceKHR, &a);
+}
+/* Returns VkBool32 (not VkResult): TRUE, every queue family presents through
+ * the page tier's canvas. */
+API VkBool32 vkGetPhysicalDeviceXlibPresentationSupportKHR(VkPhysicalDevice pd, uint32_t qfam, const void* dpy, unsigned long visual) {
+    VK64Args a = {{0}}; a.a[0] = pd; a.a[1] = qfam; a.a[2] = P(dpy); a.a[3] = (uint64_t)visual;
+    return (VkBool32)vk64_trap(VK64_fn_vkGetPhysicalDeviceXlibPresentationSupportKHR, &a);
+}
+/* DXVK's D3D9SwapChainEx::CreateBackBuffers gates every texture on
+ * vkGetPhysicalDeviceImageFormatProperties2 (via DxvkAdapter::getFormatLimits):
+ * a missing entry point used to fail the whole device. The create-info is
+ * trusted; the limits are the bridge's advertised caps. */
+API VkResult vkGetPhysicalDeviceImageFormatProperties2(VkPhysicalDevice pd, const void* info, void* props) {
+    VK64Args a = {{0}}; a.a[0] = pd; a.a[1] = P(info); a.a[2] = P(props);
+    return (VkResult)vk64_trap(VK64_fn_vkGetPhysicalDeviceImageFormatProperties2, &a);
+}
+API VkResult vkGetPhysicalDeviceImageFormatProperties(VkPhysicalDevice pd, uint32_t format, uint32_t type,
+        uint32_t tiling, uint32_t usage, uint32_t flags, void* props) {
+    VK64Args a = {{0}}; a.a[0] = pd; a.a[1] = format; a.a[2] = type; a.a[3] = tiling;
+    a.a[4] = usage; a.a[5] = flags; a.a[6] = P(props);
+    return (VkResult)vk64_trap(VK64_fn_vkGetPhysicalDeviceImageFormatProperties, &a);
+}
+/* DXVK's getFormatFeatures reads VkFormatProperties3 off this call's pNext. */
+API void vkGetPhysicalDeviceFormatProperties2(VkPhysicalDevice pd, uint32_t format, void* props) {
+    VK64Args a = {{0}}; a.a[0] = pd; a.a[1] = format; a.a[2] = P(props);
+    (void)vk64_trap(VK64_fn_vkGetPhysicalDeviceFormatProperties2, &a);
+}
 API VkResult vkCreateHeadlessSurfaceEXT(VkInstance inst, const void* ci, const void* alloc, VkSurfaceKHR* out) {
     VK64Args a = {{0}}; a.a[0] = inst; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
     return (VkResult)vk64_trap(VK64_fn_vkCreateHeadlessSurfaceEXT, &a);
@@ -434,6 +496,10 @@ API VkResult vkCreateImage(VkDevice dev, const void* ci, const void* alloc, VkIm
 API VkResult vkCreateImageView(VkDevice dev, const void* ci, const void* alloc, VkImageView* out) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
     return (VkResult)vk64_trap(VK64_fn_vkCreateImageView, &a);
+}
+API VkResult vkCreateBufferView(VkDevice dev, const void* ci, const void* alloc, VkBufferView* out) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
+    return (VkResult)vk64_trap(VK64_fn_vkCreateBufferView, &a);
 }
 API VkResult vkCreateSampler(VkDevice dev, const void* ci, const void* alloc, VkSampler* out) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
@@ -664,6 +730,25 @@ API void vkCmdDraw(VkCommandBuffer cb, uint32_t vertexCount, uint32_t instanceCo
     a.a[0] = cb; a.a[1] = vertexCount; a.a[2] = instanceCount; a.a[3] = firstVertex; a.a[4] = firstInstance;
     (void)vk64_trap(VK64_fn_vkCmdDraw, &a);
 }
+/* DXVK draws ~100% indexed: without this the manifest carries no draws. */
+API void vkCmdDrawIndexed(VkCommandBuffer cb, uint32_t indexCount, uint32_t instanceCount,
+                          uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance) {
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = indexCount; a.a[2] = instanceCount; a.a[3] = firstIndex;
+    a.a[4] = (uint64_t)vertexOffset; a.a[5] = firstInstance;
+    (void)vk64_trap(VK64_fn_vkCmdDrawIndexed, &a);
+}
+API void vkCmdBindVertexBuffers(VkCommandBuffer cb, uint32_t firstBinding, uint32_t bindingCount,
+                                const VkBuffer* buffers, const uint64_t* offsets) {
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = firstBinding; a.a[2] = bindingCount; a.a[3] = P(buffers); a.a[4] = P(offsets);
+    (void)vk64_trap(VK64_fn_vkCmdBindVertexBuffers, &a);
+}
+API void vkCmdBindIndexBuffer(VkCommandBuffer cb, VkBuffer buffer, uint64_t offset, uint32_t indexType) {
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = buffer; a.a[2] = offset; a.a[3] = indexType;
+    (void)vk64_trap(VK64_fn_vkCmdBindIndexBuffer, &a);
+}
 API void vkCmdPushConstants(VkCommandBuffer cb, VkPipelineLayout layout, VkFlags stageFlags,
                             uint32_t offset, uint32_t size, const void* values) {
     VK64Args a = {{0}};
@@ -736,13 +821,20 @@ static const struct procEntry g_procs[] = {
     E(vkGetPhysicalDeviceQueueFamilyProperties, VK64_fn_vkGetPhysicalDeviceQueueFamilyProperties),
     E(vkGetPhysicalDeviceQueueFamilyProperties2, VK64_fn_vkGetPhysicalDeviceQueueFamilyProperties2),
     E(vkGetPhysicalDeviceFormatProperties, VK64_fn_vkGetPhysicalDeviceFormatProperties),
+    E(vkGetPhysicalDeviceFormatProperties2, VK64_fn_vkGetPhysicalDeviceFormatProperties2),
+    E(vkGetPhysicalDeviceImageFormatProperties, VK64_fn_vkGetPhysicalDeviceImageFormatProperties),
+    E(vkGetPhysicalDeviceImageFormatProperties2, VK64_fn_vkGetPhysicalDeviceImageFormatProperties2),
     E(vkGetPhysicalDeviceSurfaceCapabilitiesKHR, VK64_fn_vkGetPhysicalDeviceSurfaceCapabilitiesKHR),
     E(vkGetPhysicalDeviceSurfaceFormatsKHR, VK64_fn_vkGetPhysicalDeviceSurfaceFormatsKHR),
     E(vkGetPhysicalDeviceSurfacePresentModesKHR, VK64_fn_vkGetPhysicalDeviceSurfacePresentModesKHR),
     E(vkGetPhysicalDeviceSurfaceSupportKHR, VK64_fn_vkGetPhysicalDeviceSurfaceSupportKHR),
+    E(vkGetPhysicalDeviceXlibPresentationSupportKHR, VK64_fn_vkGetPhysicalDeviceXlibPresentationSupportKHR),
     E(vkGetDeviceQueue, VK64_fn_vkGetDeviceQueue),
     E(vkGetBufferMemoryRequirements, VK64_fn_vkGetBufferMemoryRequirements),
+    E(vkGetBufferMemoryRequirements2, VK64_fn_vkGetBufferMemoryRequirements2),
+    E(vkGetDeviceBufferMemoryRequirements, VK64_fn_vkGetDeviceBufferMemoryRequirements),
     E(vkGetImageMemoryRequirements, VK64_fn_vkGetImageMemoryRequirements),
+    E(vkGetImageMemoryRequirements2, VK64_fn_vkGetImageMemoryRequirements2),
     E(vkGetImageSubresourceLayout, VK64_fn_vkGetImageSubresourceLayout),
     E(vkGetSwapchainImagesKHR, VK64_fn_vkGetSwapchainImagesKHR),
     E(vkAcquireNextImageKHR, VK64_fn_vkAcquireNextImageKHR),
@@ -758,6 +850,7 @@ static const struct procEntry g_procs[] = {
     // --- creates ---
     E(vkCreateDevice, VK64_fn_vkCreateDevice),
     E(vkCreateXcbSurfaceKHR, VK64_fn_vkCreateXcbSurfaceKHR),
+    E(vkCreateXlibSurfaceKHR, VK64_fn_vkCreateXlibSurfaceKHR),
     E(vkCreateHeadlessSurfaceEXT, VK64_fn_vkCreateHeadlessSurfaceEXT),
     E(vkCreateWin32SurfaceKHR, VK64_fn_vkCreateWin32SurfaceKHR),
     E(vkCreateSwapchainKHR, VK64_fn_vkCreateSwapchainKHR),
@@ -765,6 +858,7 @@ static const struct procEntry g_procs[] = {
     E(vkCreateBuffer, VK64_fn_vkCreateBuffer),
     E(vkCreateImage, VK64_fn_vkCreateImage),
     E(vkCreateImageView, VK64_fn_vkCreateImageView),
+    E(vkCreateBufferView, VK64_fn_vkCreateBufferView),
     E(vkCreateSampler, VK64_fn_vkCreateSampler),
     E(vkCreateRenderPass, VK64_fn_vkCreateRenderPass),
     E(vkCreateFramebuffer, VK64_fn_vkCreateFramebuffer),
@@ -818,6 +912,9 @@ static const struct procEntry g_procs[] = {
     E(vkCmdSetViewport, VK64_fn_vkCmdSetViewport),
     E(vkCmdSetScissor, VK64_fn_vkCmdSetScissor),
     E(vkCmdDraw, VK64_fn_vkCmdDraw),
+    E(vkCmdDrawIndexed, VK64_fn_vkCmdDrawIndexed),
+    E(vkCmdBindVertexBuffers, VK64_fn_vkCmdBindVertexBuffers),
+    E(vkCmdBindIndexBuffer, VK64_fn_vkCmdBindIndexBuffer),
     E(vkCmdPushConstants, VK64_fn_vkCmdPushConstants),
     E(vkCmdPipelineBarrier, VK64_fn_vkCmdPipelineBarrier),
     E(vkCmdCopyBufferToImage, VK64_fn_vkCmdCopyBufferToImage),
@@ -914,10 +1011,8 @@ API unsigned vk_icdNegotiateLoaderICDInterfaceVersion(unsigned* pVersion) {
 #define TAIL(n) API void* n(void) { return vk64_benign(#n); }
 TAIL(vkGetBufferDeviceAddress)
 TAIL(vkGetBufferDeviceAddressKHR)
-TAIL(vkGetBufferMemoryRequirements2)
 TAIL(vkGetBufferMemoryRequirements2KHR)
 TAIL(vkGetBufferOpaqueCaptureAddressKHR)
-TAIL(vkGetDeviceBufferMemoryRequirements)
 TAIL(vkGetDeviceImageMemoryRequirements)
 TAIL(vkGetDeviceImageSparseMemoryRequirements)
 TAIL(vkGetDeviceImageSubresourceLayout)
@@ -928,7 +1023,6 @@ TAIL(vkGetDeviceGroupSurfacePresentModesKHR)
 TAIL(vkGetEventStatus)
 TAIL(vkGetFenceStatus2)
 TAIL(vkGetFenceStatus2KHR)
-TAIL(vkGetImageMemoryRequirements2)
 TAIL(vkGetImageMemoryRequirements2KHR)
 TAIL(vkGetImageSparseMemoryRequirements)
 TAIL(vkGetImageSubresourceLayout2)
@@ -957,7 +1051,6 @@ TAIL(vkGetDeviceMemoryCommitment)
 TAIL(vkFlushMappedMemoryRanges)
 TAIL(vkInvalidateMappedMemoryRanges)
 TAIL(vkFreeDescriptorSets)
-TAIL(vkCreateBufferView)
 TAIL(vkDestroyBufferView)
 TAIL(vkSetDebugUtilsObjectNameEXT)
 TAIL(vkSetDebugUtilsObjectTagEXT)
@@ -977,12 +1070,10 @@ TAIL(vkQueueSubmit2)
 TAIL(vkQueueSubmit2KHR)
 TAIL(vkCmdPipelineBarrier2)
 TAIL(vkCmdPipelineBarrier2KHR)
-TAIL(vkCmdBindIndexBuffer)
 TAIL(vkCmdBindIndexBuffer2)
 TAIL(vkCmdBindIndexBuffer2KHR)
 TAIL(vkCmdPushConstants2)
 TAIL(vkCmdPushConstants2KHR)
-TAIL(vkCmdDrawIndexed)
 TAIL(vkCmdDrawIndexedIndirect)
 TAIL(vkCmdDrawIndirect)
 TAIL(vkCmdDrawIndirectCount)
@@ -1048,7 +1139,6 @@ TAIL(vkCmdNextSubpass2)
 TAIL(vkCmdEndRenderPass2KHR)
 TAIL(vkCmdEndRenderPass2)
 TAIL(vkCmdDrawIndirectByteCountEXT)
-TAIL(vkCmdBindVertexBuffers)
 TAIL(vkCmdBindVertexBuffers2)
 TAIL(vkCmdBindVertexBuffers2KHR)
 TAIL(vkTrimCommandPoolKHR)

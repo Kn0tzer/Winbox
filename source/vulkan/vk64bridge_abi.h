@@ -120,7 +120,10 @@ enum {
     VK64_fn_vkGetPhysicalDeviceSurfaceSupportKHR,         // (physDev, qFam, surface, out VkBool32*)
     VK64_fn_vkGetDeviceQueue,                        // (device, family, index, out VkQueue*)
     VK64_fn_vkGetBufferMemoryRequirements,           // (device, buffer, out VkMemoryRequirements)
+    VK64_fn_vkGetBufferMemoryRequirements2,          // (device, info2, out VkMemoryRequirements2)
+    VK64_fn_vkGetDeviceBufferMemoryRequirements,     // (device, pInfo, out VkMemoryRequirements2)
     VK64_fn_vkGetImageMemoryRequirements,            // (device, image, out VkMemoryRequirements)
+    VK64_fn_vkGetImageMemoryRequirements2,           // (device, info2, out VkMemoryRequirements2)
     VK64_fn_vkGetImageSubresourceLayout,             // (device, image, pSubresource*, out VkSubresourceLayout)
     VK64_fn_vkGetSwapchainImagesKHR,                 // (device, swapchain, out pCount*, out VkImage*)
     VK64_fn_vkAcquireNextImageKHR,                   // (device, swapchain, timeout, sem, fence, out u32*)
@@ -140,6 +143,7 @@ enum {
     VK64_fn_vkCreateBuffer,                          // (device, pCreateInfo*, pAllocator, out VkBuffer*)
     VK64_fn_vkCreateImage,                           // (device, pCreateInfo*, pAllocator, out VkImage*)
     VK64_fn_vkCreateImageView,                       // (device, pCreateInfo*, pAllocator, out VkImageView*)
+    VK64_fn_vkCreateBufferView,                       // (device, pCreateInfo*, pAllocator, out VkBufferView*)
     VK64_fn_vkCreateSampler,                         // (device, pCreateInfo*, pAllocator, out VkSampler*)
     VK64_fn_vkCreateRenderPass,                      // (device, pCreateInfo*, pAllocator, out VkRenderPass*)
     VK64_fn_vkCreateFramebuffer,                     // (device, pCreateInfo*, pAllocator, out VkFramebuffer*)
@@ -231,6 +235,28 @@ enum {
     VK64_fn_vkWaitSemaphores,                        // (device, pWaitInfo*, timeout)
     VK64_fn_vkSignalSemaphore,                       // (device, pSignalInfo*)
     VK64_fn_vkCmdPushConstants,                      // (cmdBuf, layout, stageFlags, offset, size, pValues)
+
+    // --- G2 (DXVK-on-wine): wine 8.x's winex11 Vulkan init (wine_vk_init in
+    // --- dlls/winex11.drv/vulkan.c) dlopen()s this shim as libvulkan.so.1 and
+    // --- dlsym()s both names below with LOAD_FUNCPTR (hard fail: silent
+    // --- dlclose, then winevulkan's init_vulkan reports "Failed to load Wine
+    // --- graphics driver supporting Vulkan" and DXVK never gets
+    // --- VK_KHR_surface). Same append-only order as libvk64.c.
+    VK64_fn_vkCreateXlibSurfaceKHR,                // (instance, pCreateInfo*, pAllocator, out VkSurfaceKHR*)
+    VK64_fn_vkGetPhysicalDeviceXlibPresentationSupportKHR, // (physDev, qFam, dpy*, visual) -> VkBool32
+
+    // --- G2 round 2: DXVK's D3D9SwapChainEx::CreateBackBuffers gates every
+    // --- texture on vkGetPhysicalDeviceImageFormatProperties2 (benign stub =>
+    // --- zero maxExtent => "D3D9: Cannot create texture"); DXVK's
+    // --- getFormatFeatures reads VkFormatProperties3 off the FormatProperties2
+    // --- pNext chain; and DXVK draws ~100% indexed, so the binds + the indexed
+    // --- draw must be recorded for the manifest to carry any draw at all.
+    VK64_fn_vkGetPhysicalDeviceImageFormatProperties2, // (physDev, pInfo2*, pProps2*) -> VkResult
+    VK64_fn_vkGetPhysicalDeviceImageFormatProperties,  // (physDev, fmt, type, tiling, usage, flags, pProps*) -> VkResult
+    VK64_fn_vkGetPhysicalDeviceFormatProperties2,      // (physDev, format, pProps2*) -> void
+    VK64_fn_vkCmdDrawIndexed,             // (cmdBuf, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance)
+    VK64_fn_vkCmdBindVertexBuffers,        // (cmdBuf, firstBinding, bindingCount, pBuffers*, pOffsets*)
+    VK64_fn_vkCmdBindIndexBuffer,           // (cmdBuf, buffer, offset, indexType)
 
     VK64_fn__MAX
 };

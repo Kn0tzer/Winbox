@@ -5676,6 +5676,20 @@ typedef struct VkFormatProperties {
     VkFormatFeatureFlags    bufferFeatures;
 } VkFormatProperties;
 
+typedef uint64_t VkFormatFeatureFlags2;
+typedef struct VkFormatProperties2 {
+    VkStructureType    sType;
+    uint64_t pNext;
+    VkFormatProperties formatProperties;
+} VkFormatProperties2;
+typedef struct VkFormatProperties3 {
+    VkStructureType       sType;
+    uint64_t pNext;
+    VkFormatFeatureFlags2 linearTilingFeatures;
+    VkFormatFeatureFlags2 optimalTilingFeatures;
+    VkFormatFeatureFlags2 bufferFeatures;
+} VkFormatProperties3;
+
 typedef struct VkImageFormatProperties {
     VkExtent3D            maxExtent;
     uint32_t              maxMipLevels;
@@ -6567,6 +6581,31 @@ typedef struct VkMemoryRequirements2 {
     VkMemoryRequirements    memoryRequirements;
 } VkMemoryRequirements2;
 
+typedef struct VkImageMemoryRequirementsInfo2 {
+    VkStructureType    sType;
+    uint64_t pNext;
+    uint64_t           image;
+} VkImageMemoryRequirementsInfo2;
+
+typedef struct VkBufferMemoryRequirementsInfo2 {
+    VkStructureType    sType;
+    uint64_t pNext;
+    uint64_t           buffer;
+} VkBufferMemoryRequirementsInfo2;
+
+typedef struct VkDeviceBufferMemoryRequirements {
+    VkStructureType    sType;
+    uint64_t pNext;
+    uint64_t           pCreateInfo;  // const VkBufferCreateInfo*
+} VkDeviceBufferMemoryRequirements;
+
+typedef struct VkMemoryDedicatedRequirements {
+    VkStructureType    sType;
+    uint64_t pNext;
+    uint32_t           prefersDedicatedAllocation;
+    uint32_t           requiresDedicatedAllocation;
+} VkMemoryDedicatedRequirements;
+
 typedef struct VkPhysicalDeviceFeatures2 {
     VkStructureType             sType;
     uint64_t pNext;
@@ -7069,6 +7108,13 @@ typedef struct VkPhysicalDeviceRobustness2FeaturesEXT {
     VkBool32           robustImageAccess2;
     VkBool32           nullDescriptor;
 } VkPhysicalDeviceRobustness2FeaturesEXT;
+
+typedef struct VkPhysicalDeviceRobustness2PropertiesEXT {
+    VkStructureType    sType;
+    uint64_t pNext;
+    VkDeviceSize       robustStorageBufferAccessSizeAlignment;
+    VkDeviceSize       robustUniformBufferAccessSizeAlignment;
+} VkPhysicalDeviceRobustness2PropertiesEXT;
 
 // --- layout guards: any drift in the source header breaks the boundary ---
 static_assert(sizeof(VkPhysicalDeviceProperties) == 824, "VkPhysicalDeviceProperties layout drifted from x86-64 guest ABI");

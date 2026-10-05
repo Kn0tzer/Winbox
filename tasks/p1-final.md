@@ -662,3 +662,30 @@ VKWGPU_TRACE=1 VKWGPU_STREAMDIR=$PWD/icd/vkwgpu_stream \
   ./tools/usr/bin/vkcube --c 4 --width 400 --height 400      # exits 0, 4 manifests
 DISPLAY=:97 node host/p1render.mjs icd/vkwgpu_stream frame0002 final-cube.png
 ```
+## 2.13 G2 status (2026-10-05 -- DXVK D3D9 tri9 bring-up)
+
+**Status: RED.** DXVK D3D9 device initialization now completes through buffer/image
+creation; blocked on async submission thread hang.
+
+### Probe progression (r3 -> r26)
+
+- r3 (86 traps): VkPhysicalDeviceRobustness2PropertiesEXT zero alignments -> div-by-zero. Fixed.
+- r11 (93 traps): Zero framebuffer sample counts -> CheckImageSupport FALSE. Fixed.
+- r13 (131 traps): Missing vkGetImageMemoryRequirements2 (was TAIL stub). Implemented.
+- r20 (150 traps): Missing vkGetDeviceBufferMemoryRequirements (Vulkan 1.3 maintenance4). Implemented.
+- r25 (150 traps): Missing vkCreateBufferView (was TAIL stub). Implemented.
+- r26 (129 traps): HANG. Zero vkQueueSubmit traps; worker thread never processes queue.
+
+### Changes (within G2 lane)
+
+- source/vulkan/vk64bridge.cpp: robustness2 alignments, sample-count limits,
+  4 new handlers, K_BUFFERVIEW/BufferView struct
+- source/vulkan/vk64bridge_abi.h, vk64_guest.h: 4 fnIds, 4 structs
+- tools/rootfs64/libvk64/libvk64.c: 4 shim functions, proc table entries
+
+### Current blocker
+
+DXVK DxvkSubmissionQueue worker thread never calls vkQueueSubmit after
+DxvkDevice::submitCommandList queues work. 10 successful proc-addr resolutions,
+0 calls. Suspected wasm pthread condition-variable issue.
+Next: verify pthread CVs in Emscripten build, or patch DXVK for sync submission.
