@@ -445,6 +445,19 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
         out.len = (U8)(opOff + 1);
         return true;
     }
+    // x87 FPU escape (D8-DF): interpreter-only by design (plan section 12 --
+    // the 64-bit guest mandates 80-bit SoftFloat; wasm f64 emission is
+    // provably not bit-exact). Decode the exact length via ModRM so the
+    // stream truncates precisely here; the op never enters a JIT plan.
+    if (op >= 0xD8 && op <= 0xDF) {
+        U8 rf; bool rr; U8 ri; bool hm;
+        U32 ml = scanModRM(bytes + opOff + 1, byteCount - (opOff + 1), p, rf, rr, ri, hm);
+        if (!ml) return false;
+        out.kind = J64_FPU;
+        out.len = (U8)(opOff + 1 + ml);
+        out.regField = rf; out.rmIndex = ri; out.isMem = hm;
+        return true;
+    }
     return false;
 }
 
@@ -500,6 +513,7 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16) {
         op.plan = JIT64_FAST;
         return;
     case J64_SYSCALL:
+    case J64_FPU: // x87: interpreter-only by design (plan section 12); never fast
     case J64_UNKNOWN:
     default:
         return;
@@ -517,6 +531,7 @@ U32 jit64CompileStream(U64 ripBase, const U8* bytes, U32 byteCount,
         PrefixInfo p;
         scanPrefixes(bytes + off, byteCount - off, p);
         if (!jit64DecodeOne(ripBase + off, bytes + off, byteCount - off, op)) break;
+        if (op.kind == J64_FPU) break; // x87 is interpreter-only (plan section 12); truncate, keep the fast prefix
         if (op.len == 0) break;
         jit64Classify(op, p.lock || p.rep != 0, p.osize16);
         opsOut[n++] = op;

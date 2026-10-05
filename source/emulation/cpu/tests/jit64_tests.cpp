@@ -434,6 +434,50 @@ static void testStringEmission() {
     CHECK(!emitOk({0xA4, 0xAC}), "movsb+lodsb block accepted");
 }
 
+static void testX87NeverJitted() {
+    // x87 (D8-DF) is interpreter-only by design (plan section 12: the 64-bit
+    // guest mandates 80-bit SoftFloat; wasm f64 emission is provably not
+    // bit-exact). It must decode to J64_FPU, classify fallback, truncate the
+    // compile stream, and never be accepted by the wasm emitter.
+    Jit64Op op;
+    // Register forms (mod==11).
+    CHECK(decodeOne({0xD9, 0xE0}, op) && op.kind == J64_FPU && op.len == 2, "fchs decode");
+    CHECK(decodeOne({0xD9, 0xC0}, op) && op.kind == J64_FPU && op.len == 2, "fld st0 decode");
+    CHECK(decodeOne({0xDD, 0xD8}, op) && op.kind == J64_FPU && op.len == 2, "fstp st0 decode");
+    CHECK(decodeOne({0xDE, 0xC0}, op) && op.kind == J64_FPU && op.len == 2, "faddp decode");
+    CHECK(decodeOne({0xD9, 0xE8}, op) && op.kind == J64_FPU && op.len == 2, "fld1 decode");
+    CHECK(decodeOne({0xDA, 0xE9}, op) && op.kind == J64_FPU && op.len == 2, "fucompp decode");
+    CHECK(decodeOne({0xDF, 0xE0}, op) && op.kind == J64_FPU && op.len == 2, "fnstsw ax decode");
+    CHECK(decodeOne({0xDC, 0xC8}, op) && op.kind == J64_FPU && op.len == 2, "fmul st0 decode");
+    // Memory forms: [rax], [disp32], [rax+rcx*2+disp32] (SIB).
+    CHECK(decodeOne({0xD8, 0x00}, op) && op.kind == J64_FPU && op.len == 2 && op.isMem, "fadd m32 decode");
+    CHECK(decodeOne({0xD9, 0x38}, op) && op.kind == J64_FPU && op.len == 2 && op.isMem, "fstp m32 decode");
+    CHECK(decodeOne({0xDD, 0x1D, 0x78, 0x56, 0x34, 0x12}, op) && op.kind == J64_FPU && op.len == 6 && op.isMem, "fstp m64 disp32 decode");
+    CHECK(decodeOne({0xDB, 0x2D, 0x78, 0x56, 0x34, 0x12}, op) && op.kind == J64_FPU && op.len == 6 && op.isMem, "fist m32 disp32 decode");
+    CHECK(decodeOne({0xDF, 0x28}, op) && op.kind == J64_FPU && op.len == 2 && op.isMem, "fild m64 decode");
+    CHECK(decodeOne({0xD8, 0x84, 0x48, 0x78, 0x56, 0x34, 0x12}, op) && op.kind == J64_FPU && op.len == 7 && op.isMem, "fadd sib decode");
+    // Truncated x87 (ModRM cut off) must not decode.
+    CHECK(!decodeOne({0xD8}, op), "lone D8 decoded");
+    CHECK(!decodeOne({0xD8, 0x84, 0x48}, op), "truncated sib x87 decoded");
+    // Classification: always fallback, even without hostile prefixes.
+    CHECK(decodeOne({0xD9, 0xE0}, op) && op.kind == J64_FPU, "fchs re-decode");
+    jit64Classify(op, false, false);
+    CHECK(op.plan == JIT64_FALLBACK, "x87 classified fast");
+    // Stream truncation: the fast prefix survives, the x87 op is excluded.
+    {
+        const U8 prog[] = {0x48, 0x89, 0xC8, 0x48, 0x01, 0xC8, 0xD9, 0xE0, 0x48, 0x89, 0xD0};
+        Jit64Op ops[8];
+        U32 n = jit64CompileStream(0x400000, prog, sizeof(prog), ops, 8, false);
+        CHECK(n == 2, "x87 trunc n=%u want 2", n);
+        CHECK(ops[0].kind == J64_MOV_RM_R && ops[0].plan == JIT64_FAST, "x87 trunc op0 kind=%d", ops[0].kind);
+        CHECK(ops[1].kind == J64_ALU_RM_R && ops[1].plan == JIT64_FAST, "x87 trunc op1 kind=%d", ops[1].kind);
+    }
+    // Emitter boundary: any byte stream containing x87 is rejected wholesale.
+    CHECK(!emitOk({0xD9, 0xE0}), "fchs block accepted");
+    CHECK(!emitOk({0x48, 0x89, 0xC8, 0xD9, 0xE0}), "mov+fchs block accepted");
+    CHECK(!emitOk({0xD8, 0x00}), "fadd m32 block accepted");
+}
+
 int main() {
     printf("jit64 phase-1 unit tests\\n");
     testCoverageTable();
@@ -451,6 +495,7 @@ int main() {
     testRotateEmission();
     testImulEmission();
     testStringEmission();
+    testX87NeverJitted();
     printf("  %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

@@ -78,6 +78,7 @@ enum Jit64Kind : U8 {
     J64_NOP = 19,       // 0x90 (+ 0F 1F multi-byte NOP if seen)
     J64_SYSCALL = 20,   // 0F 05 — always fallback (block terminator)
     J64_STRING = 21,    // A4-A7/AA/AB/AE/AF: sub 0=MOVS,1=STOS,2=CMPS,3=SCAS
+    J64_FPU = 22,       // D8-DF x87: interpreter-only by design (80-bit SoftFloat); never JIT64_FAST
     J64_UNKNOWN = 255
 };
 

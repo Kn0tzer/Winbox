@@ -510,7 +510,7 @@ block. Selftest **258 passed, 0 failed**; `BW64_JIT=1` smoke stays
 byte-identical with `WASM64: blocks=21 insns=49` (was 20/47 — shift ops in
 the smoke workload now jitted).
 
-Still deferred: string ops, FPU emission.
+Still deferred: FPU emission -- now decided: x87 stays interpreter-only by design (see section 12).
 
 ### 2026-10-05: rotates + IMUL (d853f18)
 
@@ -662,3 +662,130 @@ uses with such constants (F_ALU_MASK=0x8D5 in emitFlags, F_SHIFT_MASK, rotMask,
 F_CFOF_MASK). Fixed to proper signed LEB128, mirroring i64Const. The string-op
 REP early-exit (i32.const 0x40 for ZF) exposed it: the br_if never fired until
 the fix. All gates green after the fix (native 212, Node 81 incl. 300-case fuzz).
+
+## 12. Design: x87 FPU stays interpreter-only (decision, 2026-10-05)
+
+**Verdict: no wasm emission for x87. The D8-DF opcodes decode to an explicit
+`J64_FPU` kind that always classifies `JIT64_FALLBACK`; `jit64CompileStream`
+truncates the block there, so the fast prefix still jits and the x87 op
+single-steps on the interpreter. This is a deliberate design boundary, not a
+gap: emitting x87 as wasm f64 is provably wrong, and emitting it correctly is
+provably pointless.**
+
+### The four design questions, answered
+
+1. **x87 register-stack model.** The interpreter keeps `FPU::regs[9]` as
+   `extFloat80_t` (80-bit extended, explicit integer bit), plus a
+   `regCache[9]` double fast-path, `isRegCached[9]`, `tags[9]`, `top`,
+   `cw`, `sw`, `round` (`source/emulation/cpu/common/fpu.{h,cpp}`). Any
+   wasm model would have to shadow all of it (the dual representation is
+   load-bearing: `FLD_I64` never populates the cache, `FCHS` has a
+   zero special-case on the cached path, compares read the double view).
+
+2. **Rounding mode.** `KSystem::useF64 = false` for `BOXEDWINE_GUEST_X64`
+   (`source/kernel/ksystem.cpp:146`); the comment there is explicit: the
+   64-bit guest mandates the full SoftFloat 80-bit path (glibc
+   `__printf_fp` spills true `long double` via `FSTP m80`). Arithmetic
+   (`FADD/FSUB/FMUL/FDIV` and the R-variants) is `extF80_add/sub/mul/div`
+   under `softfloat_roundingMode` from CW bits 10-11. wasm `f64.add` is
+   round-to-nearest-even on 53-bit mantissas -- a different operation.
+
+3. **Precision control / status word / tags.** PC bits are honored inside
+   the softfloat conversions; C0/C1/C2/C3 are written by compares
+   (`cpu64_fpu_set_c012_3`), `FCHS`/`FABS` (C1=0), `FTST`, `FXAM`;
+   `FNSTSW`/`FNSTCW` expose `sw`/`cw` to the guest. An emitter would have
+   to track all of it eagerly -- there is no lazy corner to hide in,
+   because the guest can observe the status word after any x87 op.
+
+4. **Bit-exactness.** Disproven for f64 emission by construction (witness
+   below). sNaN/qNaN: the interpreter does not distinguish them in
+   compares (`std::isnan` on the double view); arithmetic NaN propagation
+   follows Berkeley SoftFloat (8086-SSE specialization). Any f64 emitter
+   would inherit the host engines NaN propagation instead.
+
+## 12. Design: x87 FPU stays interpreter-only (decision, 2026-10-05)
+
+**Verdict: no wasm emission for x87. The D8-DF opcodes decode to an explicit
+`J64_FPU` kind that always classifies `JIT64_FALLBACK`; `jit64CompileStream`
+truncates the block there, so the fast prefix still jits and the x87 op
+single-steps on the interpreter. This is a deliberate design boundary, not a
+gap: emitting x87 as wasm f64 is provably wrong, and emitting it correctly is
+provably pointless.**
+
+### The four design questions, answered
+
+1. **x87 register-stack model.** The interpreter keeps `FPU::regs[9]` as
+   `extFloat80_t` (80-bit extended, explicit integer bit), plus a
+   `regCache[9]` double fast-path, `isRegCached[9]`, `tags[9]`, `top`,
+   `cw`, `sw`, `round` (`source/emulation/cpu/common/fpu.{h,cpp}`). Any
+   wasm model would have to shadow all of it (the dual representation is
+   load-bearing: `FLD_I64` never populates the cache, `FCHS` has a
+   zero special-case on the cached path, compares read the double view).
+
+2. **Rounding mode.** `KSystem::useF64 = false` for `BOXEDWINE_GUEST_X64`
+   (`source/kernel/ksystem.cpp:146`); the comment there is explicit: the
+   64-bit guest mandates the full SoftFloat 80-bit path (glibc
+   `__printf_fp` spills true `long double` via `FSTP m80`). Arithmetic
+   (`FADD/FSUB/FMUL/FDIV` and the R-variants) is `extF80_add/sub/mul/div`
+   under `softfloat_roundingMode` from CW bits 10-11. wasm `f64.add` is
+   round-to-nearest-even on 53-bit mantissas -- a different operation.
+
+3. **Precision control / status word / tags.** PC bits are honored inside
+   the softfloat conversions; C0/C1/C2/C3 are written by compares
+   (`cpu64_fpu_set_c012_3`), `FCHS`/`FABS` (C1=0), `FTST`, `FXAM`;
+   `FNSTSW`/`FNSTCW` expose `sw`/`cw` to the guest. An emitter would have
+   to track all of it eagerly -- there is no lazy corner to hide in,
+   because the guest can observe the status word after any x87 op.
+
+4. **Bit-exactness.** Disproven for f64 emission by construction (witness
+   below). sNaN/qNaN: the interpreter does not distinguish them in
+   compares (`std::isnan` on the double view); arithmetic NaN propagation
+   follows Berkeley SoftFloat (8086-SSE specialization). Any f64 emitter
+   would inherit the host engine's NaN propagation instead.
+
+### Divergence witness (repo SoftFloat vs wasm f64.add)
+
+`a = 1.0`, `b = 0x1.0000000000002p-53` (= 2^-53 + 2^-70, exactly
+representable). True sum S = 1 + 2^-53 + 2^-70 sits 2^-70 above the
+double midpoint M = 1 + 2^-53:
+
+- wasm `f64.add`: correctly-rounded direct sum. S > M rounds up to
+  `1 + 2^-52` (`0x3ff0000000000001`).
+- interpreter: `f64_to_extF80` (exact), `extF80_add` rounds S to the
+  64-bit mantissa grid -> lands exactly on M, `extF80_to_f64`
+  round-nearest-even on the exact midpoint -> ties-to-even -> `1.0`
+  (`0x3ff0000000000000`).
+
+Verified with the repo's own SoftFloat sources (`/tmp/dblround.cpp`
+repro): `via80 = 0x3ff0000000000000`, `direct = 0x3ff0000000000001`,
+`DIVERGE: YES`. Double rounding is not a theoretical concern; it fires
+on ordinary-looking inputs.
+
+### Decision matrix
+
+| Approach | Bit-exact | Faster than interp | Effort |
+|---|---|---|---|
+| Interpreter-only (chosen) | yes (by construction) | n/a (baseline) | ~0 |
+| Host-import softfloat per op | yes | no -- wasm->host call per op is slower than the interpreter's direct C++ call | medium |
+| f64 in wasm | **no (witness above)** | yes | medium |
+| softfloat-in-wasm | yes | maybe | huge (port ~10k lines of SoftFloat into the emitter) |
+
+### Frequency (capstone linear sweep, 2026-10-05)
+
+doom.exe: 1/59,899 (0.0017%); tetris.exe: 1/3,128 (0.032%);
+tri9.exe: 21/8,287 (0.25%, CRT/printf paths). x87 is statistically
+negligible in 64-bit code; real FP work is SSE/SSE2 (separate,
+still-deferred V128/MXCSR project). There is no hot x87 loop to win.
+
+### Boundary mechanics
+
+- `J64_FPU` (`jit64.h`): decoded from D8-DF via `scanModRM` for exact
+  length; `jit64Classify` leaves it `JIT64_FALLBACK` (default arm).
+- `jit64CompileStream` truncates at `J64_FPU` (does not include it), so a
+  block's fast prefix still jits; the x87 op and everything after run on
+  the interpreter's single-step path (`dsp_59`), exactly as before this
+  change. `buildBlock`/`execBlock` never see x87 either (both break at
+  unsupported opcodes), so the `tryJitStep` cross-check is unaffected.
+- The wasm emitter's default arm rejects unknown kinds, so even a future
+  accidental inclusion degrades to whole-block rejection, never to silent
+  f64 miscompilation. Native test `x87NeverJitted` pins the boundary.
