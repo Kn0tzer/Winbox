@@ -278,17 +278,21 @@ private:
     enum BKind : U8 {
         BK_MOV_RM_R, BK_MOV_R_RM, BK_ALU_RM_R, BK_ALU_R_RM,
         BK_ALU_RM_IMM, BK_SHIFT_IMM, BK_IMUL_R_RM, BK_JCC8,
-        BK_TEST_RM_R, BK_LEA, BK_MOV_RM_IMM, BK_MOV_R_IMM, BK_PUSH, BK_POP
+        BK_TEST_RM_R, BK_LEA, BK_MOV_RM_IMM, BK_MOV_R_IMM, BK_PUSH, BK_POP,
+        BK_STRING
     };
     struct BRec {
         U8  kind = 0;
-        U8  size = 4;          // operand size (4/8 only in v1)
-        U8  sub = 0;           // aluOp / shift sub-op / jcc condition
+        U8  size = 4;          // operand size (1/2/4/8; string ops use 1/2/4)
+        U8  sub = 0;           // aluOp / shift sub-op / jcc condition /
+                               // string op (0=MOVS,1=STOS,2=CMPS,3=SCAS)
         U8  rexPresent = 0;
         U8  len = 0;           // full instruction byte length
         BRecipe mr;
         U64 imm = 0;           // finalized immediate (sign/mask applied at build)
         S32 jccDelta = 0;
+        U8  rep = 0;           // REP prefix for BK_STRING (0/0xF2/0xF3)
+        bool asize32 = false;  // 0x67 prefix for BK_STRING
     };
     static constexpr U32 BBLOCK_MAX_RECS = 24;
     struct BBlock {
@@ -338,6 +342,12 @@ private:
     // depending on destIsRM). CMP discards the result.
     void runAlu(U8 aluOp, U32 size, bool destIsRM, U64 lhs, U64 rhs,
                 const ModRM& m, bool rexPresentLocal);
+
+    // String ops (MOVS/STOS/CMPS/SCAS). Factored from dsp_43/dsp_44; the
+    // single-step dispatcher and execBlock's BK_STRING case share it, so
+    // jitted and interpreted execution are identical by construction.
+    // sub: 0=MOVS, 1=STOS, 2=CMPS, 3=SCAS.
+    void runStringOp(U8 sub, U32 size, U8 rep, bool asize32);
 
     // Evaluate a 4-bit condition code (Jcc/CMOVcc/SETcc share the same
     // encoding: 0=O 1=NO 2=B 3=AE 4=E 5=NE 6=BE 7=A 8=S 9=NS A=P B=NP

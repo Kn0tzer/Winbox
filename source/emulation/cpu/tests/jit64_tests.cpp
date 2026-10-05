@@ -385,8 +385,57 @@ static void testImulEmission() {
     CHECK(emitOk({0x48, 0x0F, 0xAF, 0xD5, 0x48, 0xC1, 0xC0, 0x01}), "imul+rol block rejected");
 }
 
+static bool decodeOne(const std::vector<U8>& b, Jit64Op& op) {
+    return jit64DecodeOne(0x400000, b.data(), (U32)b.size(), op);
+}
+
+static void testStringEmission() {
+    Jit64Op op;
+    // MOVS/STOS decode: kind, sub, size, len.
+    CHECK(decodeOne({0xA4}, op) && op.kind == J64_STRING && op.sub == 0 && op.size == 1 && op.len == 1, "movsb decode");
+    CHECK(decodeOne({0xA5}, op) && op.kind == J64_STRING && op.sub == 0 && op.size == 4 && op.len == 1, "movsd decode");
+    CHECK(decodeOne({0x66, 0xA5}, op) && op.kind == J64_STRING && op.sub == 0 && op.size == 2 && op.len == 2, "movsw decode");
+    CHECK(decodeOne({0xAA}, op) && op.kind == J64_STRING && op.sub == 1 && op.size == 1, "stosb decode");
+    CHECK(decodeOne({0xAB}, op) && op.kind == J64_STRING && op.sub == 1 && op.size == 4, "stosd decode");
+    CHECK(decodeOne({0xA6}, op) && op.kind == J64_STRING && op.sub == 2 && op.size == 1, "cmpsb decode");
+    CHECK(decodeOne({0xA7}, op) && op.kind == J64_STRING && op.sub == 2 && op.size == 4, "cmpsd decode");
+    CHECK(decodeOne({0xAE}, op) && op.kind == J64_STRING && op.sub == 3 && op.size == 1, "scasb decode");
+    CHECK(decodeOne({0xAF}, op) && op.kind == J64_STRING && op.sub == 3 && op.size == 4, "scasd decode");
+    // REP/REPE/REPNE and 0x67 decode into the op.
+    CHECK(decodeOne({0xF3, 0xA4}, op) && op.kind == J64_STRING && op.rep == 0xF3 && op.len == 2, "rep movsb decode");
+    CHECK(decodeOne({0xF3, 0xA6}, op) && op.kind == J64_STRING && op.rep == 0xF3, "repe cmpsb decode");
+    CHECK(decodeOne({0xF2, 0xAE}, op) && op.kind == J64_STRING && op.rep == 0xF2, "repne scasb decode");
+    CHECK(decodeOne({0x67, 0xA5}, op) && op.kind == J64_STRING && op.asize32 && op.len == 2, "67 movsd decode");
+    CHECK(decodeOne({0xF3, 0x67, 0xAB}, op) && op.kind == J64_STRING && op.rep == 0xF3 && op.asize32 && op.len == 3, "rep67 stosd decode");
+    // REX.W selects 8-byte size (opSize), matching the interpreter.
+    CHECK(decodeOne({0x48, 0xA5}, op) && op.kind == J64_STRING && op.size == 8 && op.len == 2, "rex.w movsq decode");
+    CHECK(decodeOne({0xF3, 0x48, 0xAB}, op) && op.kind == J64_STRING && op.sub == 1 && op.size == 8 && op.rep == 0xF3, "rep rex.w stosq decode");
+    // LODS (AC/AD) is unimplemented by the interpreter: stays unknown.
+    CHECK(!decodeOne({0xAC}, op) || op.kind != J64_STRING, "lodsb decoded as string");
+    CHECK(!decodeOne({0xAD}, op) || op.kind != J64_STRING, "lodsd decoded as string");
+    // A8/A9 are TEST, not string ops.
+    CHECK(!decodeOne({0xA8, 0x01}, op) || op.kind != J64_STRING, "test al decoded as string");
+    // LOCK+string is rejected (falls back to the interpreter).
+    CHECK(!decodeOne({0xF0, 0xA4}, op) || op.kind != J64_STRING, "lock movsb decoded as string");
+    // Emission accept/reject.
+    CHECK(emitOk({0xA4}), "movsb rejected");
+    CHECK(emitOk({0xF3, 0xA5}), "rep movsd rejected");
+    CHECK(emitOk({0xF3, 0xAB}), "rep stosd rejected");
+    CHECK(emitOk({0xF3, 0x48, 0xAB}), "rep stosq rejected");
+    CHECK(emitOk({0xF3, 0xA6}), "repe cmpsb rejected");
+    CHECK(emitOk({0xF2, 0xAF}), "repne scasd rejected");
+    CHECK(emitOk({0x67, 0xA5}), "67 movsd rejected");
+    CHECK(emitOk({0x66, 0xAB}), "movsw rejected");
+    // String op mixed with ALU in one block: accepted.
+    CHECK(emitOk({0xA4, 0x48, 0x01, 0xC8}), "movsb+add block rejected");
+    CHECK(emitOk({0xF3, 0xA5, 0x48, 0x01, 0xC8}), "rep movsd+add block rejected");
+    // LODS poisons the block (unknown op).
+    CHECK(!emitOk({0xAC}), "lodsb block accepted");
+    CHECK(!emitOk({0xA4, 0xAC}), "movsb+lodsb block accepted");
+}
+
 int main() {
-    printf("jit64 phase-1 unit tests\n");
+    printf("jit64 phase-1 unit tests\\n");
     testCoverageTable();
     testMovForms();
     testAluForms();
@@ -401,6 +450,7 @@ int main() {
     testShiftEmission();
     testRotateEmission();
     testImulEmission();
+    testStringEmission();
     printf("  %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

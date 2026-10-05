@@ -382,6 +382,24 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
         out.regField = rf; out.rmIndex = ri; out.isMem = hm;
         return true;
     }
+    // String ops: MOVS (A4/A5), CMPS (A6/A7), STOS (AA/AB), SCAS (AE/AF).
+    // A8/A9 are TEST AL/AX,imm (not string ops); AC/AD are LODS, which the
+    // interpreter does not implement (must stay #UD via fallback); LOCK is
+    // rejected (the interpreter ignores it, so fallback preserves behavior).
+    // Segment prefixes are ignored, matching dsp_43/dsp_44 (they never
+    // consult p.seg); REX.W selects 8-byte size via opSize, like the
+    // interpreter.
+    if (((op >= 0xA4 && op <= 0xA7) || op == 0xAA || op == 0xAB ||
+         op == 0xAE || op == 0xAF) && !p.lock) {
+        U8 sub = (op <= 0xA5) ? 0 : (op <= 0xA7) ? 2 : (op <= 0xAB) ? 1 : 3;
+        out.kind = J64_STRING;
+        out.sub = sub;
+        out.size = ((op & 1) == 0) ? 1 : (p.rex & 0x08) ? 8 : (p.osize16 ? 2 : 4);
+        out.rep = p.rep;
+        out.asize32 = p.asize32;
+        out.len = (U8)(opOff + 1);
+        return true;
+    }
     // Control flow.
     if (op == 0xE8) {
         if (opOff + 5 > byteCount) return false;
@@ -432,6 +450,17 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
 
 void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16) {
     op.plan = JIT64_FALLBACK;
+    if (op.kind == J64_STRING) {
+        // REP and 0x66/0x67/REX.W are legitimate string-op prefixes (decoded
+        // into op.rep/op.size/op.asize32); LOCK was already excluded at decode.
+        // F2 (REPNE) only affects CMPS/SCAS, but the interpreter treats any
+        // nonzero rep as REP for MOVS/STOS, so all encodings are accepted.
+        if (op.sub > 3) return;
+        if (op.size != 1 && op.size != 2 && op.size != 4 && op.size != 8) return;
+        if (op.rep != 0 && op.rep != 0xF2 && op.rep != 0xF3) return;
+        op.plan = JIT64_FAST;
+        return;
+    }
     if (hasLockOrRep || osize16) return; // phase-1 rule: prefixes force fallback
     switch (op.kind) {
     case J64_MOV_RM_R:

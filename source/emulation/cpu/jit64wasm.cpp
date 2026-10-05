@@ -14,8 +14,17 @@ void uleb(Bytes& bytes, U32 value) {
 }
 
 void i32Const(Bytes& bytes, U32 value) {
-    bytes.push_back(0x41); // i32.const
-    uleb(bytes, value);
+    bytes.push_back(0x41); // i32.const (signed LEB128)
+    const bool negative = (value >> 31) != 0;
+    for (;;) {
+        U8 part = value & 0x7F;
+        value >>= 7;
+        if (negative) value |= 0xFE000000u;
+        bool last = (value == 0 && !(part & 0x40)) ||
+                    (value == ~0u && (part & 0x40));
+        bytes.push_back(part | (last ? 0 : 0x80));
+        if (last) return;
+    }
 }
 
 // Interpret the U64 bit pattern as signed, without implementation-defined
@@ -66,9 +75,13 @@ constexpr U32 F_CFOF_MASK = (1u << F_CF) | (1u << F_OF); // 0x801
 
 // Module locals: 0 = state ptr param, 1..16 = i64 GPRs, 17 = i64 RIP,
 // 18 = i32 RFLAGS, 19..25 = i64 scratch (A, B, R, flag bits, parity/carry
-// temp, plus T1/T2 for the 64-bit IMUL 128-bit product limbs).
+// temp, plus T1/T2 for the 64-bit IMUL 128-bit product limbs), 26..27 =
+// i64 string-op scratch (STEP: DF-selected +/-size; CNT: REP counter).
 constexpr U32 L_RFLAGS = 18, L_A = 19, L_B = 20, L_R = 21, L_F = 22, L_P = 23;
-constexpr U32 L_T1 = 24, L_T2 = 25;
+constexpr U32 L_T1 = 24, L_T2 = 25, L_STEP = 26, L_CNT = 27;
+// Function indices in the emitted module: the two mem imports first, then
+// the defined execute().
+constexpr U32 F_MEMREAD = 0, F_MEMWRITE = 1;
 
 // OR the stack-top 0/1 value, shifted left by `shift`, into L_F. The
 // value comes from a comparison/test operator, which yields i32.
@@ -771,13 +784,228 @@ void jit64WasmStateRead(const Jit64WasmState& state, U64 gpr[16], U64& rip, U32&
     rflags = state.rflags;
 }
 
+// Emit a call to env.memRead(addrLocal, size): splits the i64 address to
+// lo/hi i32s, passes the size and the memScratch address, then loads the
+// 64-bit result into L_R. All import params are i32 (no BigInt dependence).
+void emitMemRead(Bytes& body, U32 addrLocal, U32 size) {
+    local(body, 0x20, addrLocal);
+    body.push_back(0xA7); // i32.wrap_i64 (lo)
+    local(body, 0x20, addrLocal);
+    i64Const(body, 32);
+    body.push_back(0x88); // i64.shr_u
+    body.push_back(0xA7); // i32.wrap_i64 (hi)
+    i32Const(body, size);
+    local(body, 0x20, 0); // state ptr
+    i32Const(body, (U32)offsetof(Jit64WasmState, memScratch));
+    body.push_back(0x6A); // i32.add (retPtr)
+    body.push_back(0x10); // call
+    uleb(body, F_MEMREAD);
+    local(body, 0x20, 0);
+    memoryOp(body, 0x29, 3, (U32)offsetof(Jit64WasmState, memScratch)); // i64.load
+    local(body, 0x21, L_R);
+}
+
+// Emit a call to env.memWrite(addrLocal, valLocal, size).
+void emitMemWrite(Bytes& body, U32 addrLocal, U32 valLocal, U32 size) {
+    local(body, 0x20, addrLocal);
+    body.push_back(0xA7); // lo
+    local(body, 0x20, addrLocal);
+    i64Const(body, 32);
+    body.push_back(0x88); // i64.shr_u
+    body.push_back(0xA7); // hi
+    i32Const(body, size);
+    local(body, 0x20, valLocal);
+    body.push_back(0xA7); // valLo
+    local(body, 0x20, valLocal);
+    i64Const(body, 32);
+    body.push_back(0x88); // i64.shr_u
+    body.push_back(0xA7); // valHi
+    body.push_back(0x10); // call
+    uleb(body, F_MEMWRITE);
+}
+
+// Emit one string op (MOVS/STOS/CMPS/SCAS). Returns 0xFF: RSI/RDI/RCX are
+// updated in their locals and published by the epilogue's store-back.
+// Mirrors CPU64::runStringOp exactly: DF (bit 10) selects the +/-size step,
+// the effective address is masked to 32 bits under 0x67 but the register
+// update is full 64-bit wrapping, REP takes its count from RCX (masked
+// under 0x67), CMPS/SCAS set flags through the SUB path and honor
+// REPE/REPNE early exit. Memory goes through the imported helpers so the
+// host's KMemory64 accessors (fault/commit/generation semantics) apply.
+U32 emitString(Bytes& body, const Jit64Op& op) {
+    const U32 size = op.size; // 1, 2, or 4
+    const U32 sub = op.sub;   // 0=MOVS, 1=STOS, 2=CMPS, 3=SCAS
+    const bool isStos = (sub == 1);
+    const bool isScas = (sub == 3);
+    const bool isMovsStos = (sub <= 1);
+    const U64 mask = size == 1 ? 0xFFULL : size == 2 ? 0xFFFFULL :
+                       size == 4 ? 0xFFFFFFFFULL : 0xFFFFFFFFFFFFFFFFULL;
+    const U64 sb = (U64)1 << (size * 8 - 1);
+    const U32 RSI = 6 + 1, RDI = 7 + 1, RCX = 1 + 1, RAX = 0 + 1;
+
+    // L_CNT = rep ? RCX : 1 (masked to 32 bits under 0x67).
+    if (op.rep == 0) {
+        i64Const(body, 1);
+    } else {
+        local(body, 0x20, RCX);
+        if (op.asize32) {
+            i64Const(body, 0xFFFFFFFFULL);
+            body.push_back(0x83); // i64.and
+        }
+    }
+    local(body, 0x21, L_CNT);
+
+    // L_STEP = DF ? -size : +size.
+    local(body, 0x20, L_RFLAGS);
+    i32Const(body, 0x400); // X64_DF
+    body.push_back(0x71);  // i32.and
+    body.push_back(0x45);  // i32.eqz
+    body.push_back(0x04);  // if
+    body.push_back(0x7E);  //   result i64
+    i64Const(body, size);
+    body.push_back(0x05);  // else
+    i64Const(body, (U64)(-(S64)size));
+    body.push_back(0x0B);  // end
+    local(body, 0x21, L_STEP);
+
+    body.push_back(0x02); body.push_back(0x40); // block $done
+    body.push_back(0x03); body.push_back(0x40); // loop $rep
+    local(body, 0x20, L_CNT);
+    body.push_back(0x50); // i64.eqz
+    body.push_back(0x0D); body.push_back(0x01); // br_if 1 ($done)
+    local(body, 0x20, L_CNT);
+    i64Const(body, 1);
+    body.push_back(0x7D); // i64.sub
+    local(body, 0x21, L_CNT);
+
+    if (isMovsStos) {
+        // dst = RDI (& 0xFFFFFFFF under 0x67) -> L_A.
+        local(body, 0x20, RDI);
+        if (op.asize32) {
+            i64Const(body, 0xFFFFFFFFULL);
+            body.push_back(0x83);
+        }
+        local(body, 0x21, L_A);
+        if (isStos) {
+            local(body, 0x20, RAX);
+            i64Const(body, mask);
+            body.push_back(0x83);
+            local(body, 0x21, L_R);
+        } else {
+            local(body, 0x20, RSI);
+            if (op.asize32) {
+                i64Const(body, 0xFFFFFFFFULL);
+                body.push_back(0x83);
+            }
+            local(body, 0x21, L_A);
+            emitMemRead(body, L_A, size); // -> L_R
+            local(body, 0x20, RDI);
+            if (op.asize32) {
+                i64Const(body, 0xFFFFFFFFULL);
+                body.push_back(0x83);
+            }
+            local(body, 0x21, L_A);
+        }
+        emitMemWrite(body, L_A, L_R, size);
+        if (!isStos) {
+            local(body, 0x20, RSI);
+            local(body, 0x20, L_STEP);
+            body.push_back(0x7C); // i64.add
+            local(body, 0x21, RSI);
+        }
+        local(body, 0x20, RDI);
+        local(body, 0x20, L_STEP);
+        body.push_back(0x7C);
+        local(body, 0x21, RDI);
+    } else {
+        // lhs -> L_A.
+        if (isScas) {
+            local(body, 0x20, RAX);
+            i64Const(body, mask);
+            body.push_back(0x83);
+            local(body, 0x21, L_A);
+        } else {
+            local(body, 0x20, RSI);
+            if (op.asize32) {
+                i64Const(body, 0xFFFFFFFFULL);
+                body.push_back(0x83);
+            }
+            local(body, 0x21, L_P); // temp addr (L_P is emitFlags scratch)
+            emitMemRead(body, L_P, size); // -> L_R
+            local(body, 0x20, L_R);
+            local(body, 0x21, L_A);
+        }
+        // rhs = mem[RDI (& mask)] -> L_B.
+        local(body, 0x20, RDI);
+        if (op.asize32) {
+            i64Const(body, 0xFFFFFFFFULL);
+            body.push_back(0x83);
+        }
+        local(body, 0x21, L_P); // temp addr
+        emitMemRead(body, L_P, size); // -> L_R
+        local(body, 0x20, L_R);
+        local(body, 0x21, L_B);
+        // L_R = (L_A - L_B) & mask; flags through the SUB path.
+        local(body, 0x20, L_A);
+        local(body, 0x20, L_B);
+        body.push_back(0x7D); // i64.sub
+        i64Const(body, mask);
+        body.push_back(0x83);
+        local(body, 0x21, L_R);
+        emitFlags(body, 5, sb, false);
+        if (!isScas) {
+            local(body, 0x20, RSI);
+            local(body, 0x20, L_STEP);
+            body.push_back(0x7C);
+            local(body, 0x21, RSI);
+        }
+        local(body, 0x20, RDI);
+        local(body, 0x20, L_STEP);
+        body.push_back(0x7C);
+        local(body, 0x21, RDI);
+        // REP early exit on ZF.
+        if (op.rep == 0xF3) { // REPE: break if !ZF
+            local(body, 0x20, L_RFLAGS);
+            i32Const(body, 0x40); // ZF
+            body.push_back(0x71); // i32.and
+            body.push_back(0x45); // i32.eqz
+            body.push_back(0x0D); body.push_back(0x01); // br_if 1
+        } else if (op.rep == 0xF2) { // REPNE: break if ZF
+            local(body, 0x20, L_RFLAGS);
+            i32Const(body, 0x40);
+            body.push_back(0x71);
+            body.push_back(0x0D); body.push_back(0x01); // br_if 1
+        }
+    }
+
+    body.push_back(0x0C); body.push_back(0x00); // br 0 ($rep)
+    body.push_back(0x0B); // end loop
+    body.push_back(0x0B); // end block
+
+    // REP updates RCX: MOVS/STOS leave 0, CMPS/SCAS leave the remainder.
+    if (op.rep != 0) {
+        if (isMovsStos) i64Const(body, 0);
+        else local(body, 0x20, L_CNT);
+        local(body, 0x21, RCX);
+    }
+    return 0xFF;
+}
+
 bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
     output.clear();
     if (block.ops.empty() || block.ops.size() > 24) return false;
     U32 byteCount = 0;
     for (const auto& op : block.ops) {
-        if (op.plan != JIT64_FAST || op.isMem ||
-            (op.size != 4 && op.size != 8) || !op.len || op.len > 15) return false;
+        if (op.plan != JIT64_FAST || !op.len || op.len > 15) return false;
+        if (op.kind == J64_STRING) {
+            // String ops use 1/2/4/8-byte operands and touch memory through
+            // the imported helpers (never raw linear memory).
+            if (op.isMem || (op.size != 1 && op.size != 2 && op.size != 4 && op.size != 8)) return false;
+            if (op.sub > 3) return false;
+            if (op.rep != 0 && op.rep != 0xF2 && op.rep != 0xF3) return false;
+        } else if (op.isMem || (op.size != 4 && op.size != 8)) {
+            return false;
+        }
         switch (op.kind) {
         case J64_MOV_R_IMM:
             if (op.regField >= 16) return false;
@@ -808,6 +1036,8 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             // Two-operand IMUL r, r/m (0F AF), register-direct only.
             if (op.regField >= 16 || op.rmIndex >= 16) return false;
             break;
+        case J64_STRING:
+            break; // validated above
         default:
             return false; // MOVZX, control flow, and the rest
         }
@@ -817,7 +1047,7 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
     // Param local 0 is the wasm32 host pointer. Locals 1..16 are i64 guest
     // GPRs, 17 the i64 guest RIP, 18 the i32 RFLAGS, 19..25 i64 scratch.
     // Guest values are never wasm host addresses.
-    Bytes body = {3, 17, 0x7E, 1, 0x7F, 7, 0x7E};
+    Bytes body = {3, 17, 0x7E, 1, 0x7F, 9, 0x7E}; // +L_STEP/L_CNT
     for (U32 reg = 0; reg < 16; reg++) {
         local(body, 0x20, 0);
         memoryOp(body, 0x29, 3, reg * 8); // i64.load
@@ -874,6 +1104,12 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             }
             break;
         }
+        case J64_STRING: {
+            // String ops update RSI/RDI/RCX in their locals; the epilogue
+            // store-back publishes them. emitString returns 0xFF.
+            emitString(body, op);
+            break;
+        }
         default: {
             // Register-direct ALU/TEST: emitAlu leaves the result in L_R;
             // publish it to the GPR local so the final store-back writes it
@@ -904,10 +1140,22 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
     body.push_back(0x0B); // end execute
 
     Bytes module = {0, 0x61, 0x73, 0x6D, 1, 0, 0, 0};
-    section(module, 1, {1, 0x60, 1, 0x7F, 0}); // (i32) -> ()
-    section(module, 2, {1, 3, 'e', 'n', 'v', 6, 'm', 'e', 'm', 'o', 'r', 'y', 2, 0, 1});
-    section(module, 3, {1, 0}); // one function, type 0
-    section(module, 7, {1, 7, 'e', 'x', 'e', 'c', 'u', 't', 'e', 0, 0});
+    // Type section: 0: (i32)->() [execute], 1: (i32 x4)->() [memRead],
+    // 2: (i32 x5)->() [memWrite].
+    Bytes types = {3,
+        0x60, 1, 0x7F, 0,
+        0x60, 4, 0x7F, 0x7F, 0x7F, 0x7F, 0,
+        0x60, 5, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0};
+    section(module, 1, types);
+    // Import section: env.memory, env.memRead (func 0, type 1),
+    // env.memWrite (func 1, type 2).
+    Bytes imports = {3,
+        3, 'e', 'n', 'v', 6, 'm', 'e', 'm', 'o', 'r', 'y', 2, 0, 1,
+        3, 'e', 'n', 'v', 7, 'm', 'e', 'm', 'R', 'e', 'a', 'd', 0, 1,
+        3, 'e', 'n', 'v', 8, 'm', 'e', 'm', 'W', 'r', 'i', 't', 'e', 0, 2};
+    section(module, 2, imports);
+    section(module, 3, {1, 0}); // one function, type 0 (function index 2)
+    section(module, 7, {1, 7, 'e', 'x', 'e', 'c', 'u', 't', 'e', 0, 2}); // export func 2
     Bytes code = {1};
     uleb(code, (U32)body.size());
     code.insert(code.end(), body.begin(), body.end());

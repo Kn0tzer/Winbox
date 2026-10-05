@@ -11,10 +11,12 @@ struct Jit64WasmState {
     U64 rip;
     U32 rflags;
     U32 reserved;
+    U64 memScratch; // 8-byte scratch for the memRead import's result
 };
 static_assert(offsetof(Jit64WasmState, rip) == 128, "wasm guest RIP offset");
 static_assert(offsetof(Jit64WasmState, rflags) == 136, "wasm guest flags offset");
-static_assert(sizeof(Jit64WasmState) == 144, "wasm guest state size");
+static_assert(offsetof(Jit64WasmState, memScratch) == 144, "wasm mem scratch offset");
+static_assert(sizeof(Jit64WasmState) == 152, "wasm guest state size");
 
 // State bridge (non-optimizing plumbing): copy a plain GPR/RIP/RFLAGS triple
 // into the staging struct before execute(), and back out after. Keeps the
@@ -47,15 +49,24 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output);
 // WebAssembly.Instance in source/emulation/cpu/jit64wasm_runtime.cpp; on
 // native builds they are inline no-ops (instantiate returns -1) so cpu64.cpp
 // links without the runtime TU.
+class KMemory64; // forward: the header stays dependency-free
+
 #ifdef __EMSCRIPTEN__
 int jit64WasmInstantiate(const U8* bytes, U32 byteCount);
 void jit64WasmCall(int tableIndex, U32 statePtr);
 void jit64WasmRelease(int tableIndex);
+// Routes the emitted module's memRead/memWrite imports at `mem` for the
+// duration of the next synchronous jit64WasmCall. tryWasmExec sets this to
+// its own address space before the call and clears it after. Thread-local:
+// wasm execution never yields, so the import always observes the setter's
+// thread.
+void jit64WasmSetActiveMem(KMemory64* mem);
 inline bool jit64WasmAvailable() { return true; }
 #else
 inline int jit64WasmInstantiate(const U8*, U32) { return -1; }
 inline void jit64WasmCall(int, U32) {}
 inline void jit64WasmRelease(int) {}
+inline void jit64WasmSetActiveMem(KMemory64*) {}
 inline bool jit64WasmAvailable() { return false; }
 #endif
 

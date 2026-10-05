@@ -14,6 +14,17 @@ const mask64 = (1n << 64n) - 1n;
 const little = (value, count) => Array.from({ length: count }, (_, i) => Number((value >> BigInt(8 * i)) & 255n));
 const movabs = (reg, value) => [reg >= 8 ? 0x49 : 0x48, 0xB8 + reg % 8, ...little(value, 8)];
 
+// Import object for emitted modules. memRead/memWrite are required imports
+// (string ops); the stubs throw so a non-string test that touches them fails
+// loudly instead of silently.
+function baseEnv(memory) {
+  return { env: {
+    memory,
+    memRead: () => { throw new Error('memRead called by non-string test'); },
+    memWrite: () => { throw new Error('memWrite called by non-string test'); },
+  } };
+}
+
 function emit(code) {
   const path = join(dir, String(sequence++));
   writeFileSync(path + '.bin', new Uint8Array(code));
@@ -35,7 +46,7 @@ async function check(code, changed, rip = 0x12345678ABCDEFF0n, ptr = 512) {
   view.setBigUint64(ptr + 128, rip, true);
   view.setUint32(ptr + 136, 0x8D7, true);
   view.setUint32(ptr + 140, 0xA5A5A5A5, true);
-  const { instance } = await WebAssembly.instantiate(module, { env: { memory } });
+  const { instance } = await WebAssembly.instantiate(module, baseEnv(memory));
   instance.exports.execute(ptr);
   const expected = [...before];
   changed(expected);
@@ -75,7 +86,7 @@ test('out-of-bounds state traps before modifying any guest state', async () => {
   const memory = new WebAssembly.Memory({ initial: 1 });
   const bytes = new Uint8Array(memory.buffer);
   bytes.fill(0xA5);
-  const { instance } = await WebAssembly.instantiate(readFileSync(path), { env: { memory } });
+  const { instance } = await WebAssembly.instantiate(readFileSync(path), baseEnv(memory));
   for (const ptr of [65536 - 128, -1, -128]) {
     assert.throws(() => instance.exports.execute(ptr), WebAssembly.RuntimeError);
     assert.ok(bytes.every(value => value === 0xA5), 'trap must leave memory unchanged');
@@ -96,7 +107,7 @@ for (const [name, code] of [
 // --- ALU reference model (mirrors cpu64.cpp flagsAdd/flagsSub/flagsLogic) ---
 const ALU_MASK = 0x8D5;
 function refAlu(sub, a, b, width, carryIn = 0n) {
-  const mask = width === 4 ? 0xFFFFFFFFn : mask64;
+  const mask = width === 8 ? mask64 : (1n << BigInt(width * 8)) - 1n;
   const sb = 1n << BigInt(width * 8 - 1);
   a &= mask; b &= mask;
   const isAdd = sub === 0 || sub === 2, isSub = sub === 3 || sub === 5 || sub === 7;
@@ -131,7 +142,7 @@ async function runAlu(code, regs, rflags, rip = 0x12345678ABCDEFF0n, ptr = 512) 
   view.setBigUint64(ptr + 128, rip, true);
   view.setUint32(ptr + 136, rflags >>> 0, true);
   view.setUint32(ptr + 140, 0xA5A5A5A5, true);
-  const { instance } = await WebAssembly.instantiate(readFileSync(path), { env: { memory } });
+  const { instance } = await WebAssembly.instantiate(readFileSync(path), baseEnv(memory));
   instance.exports.execute(ptr);
   return {
     regs: Array.from({ length: 16 }, (_, i) => view.getBigUint64(ptr + i * 8, true)),
@@ -626,4 +637,263 @@ test('IMUL preserves SZP/AF, only CF/OF change', async () => {
   assert.equal(out.rflags & ~0x801, 0xA5B5 & ~0x801, 'SZP/AF preserved');
   assert.equal(out.rflags & 0x801, 0, 'no overflow');
   assert.equal(out.regs[2], 12n);
+});
+// --- String-op tests (memory-touching emission) ---
+
+// Guest memory model: sparse byte map; unmapped reads return 0, matching
+// KMemory64::readb. Writes commit (populate the map).
+function makeGuestMem() {
+  const bytes = new Map(); // BigInt addr -> Number byte
+  return {
+    read(addr, size) {
+      let v = 0n;
+      for (let i = 0; i < size; i++) v |= BigInt(bytes.get(addr + BigInt(i)) || 0) << BigInt(8 * i);
+      return v;
+    },
+    write(addr, size, val) {
+      for (let i = 0; i < size; i++) bytes.set(addr + BigInt(i), Number((val >> BigInt(8 * i)) & 0xFFn));
+    },
+    clone() {
+      const c = makeGuestMem();
+      for (const [k, v] of bytes) c.bytes.set(k, v);
+      return c;
+    },
+    bytes,
+  };
+}
+
+// Import object for string-op modules: real memRead/memWrite backed by the
+// JS guest memory. Protocol: (addrLo, addrHi, size, retPtr) and
+// (addrLo, addrHi, size, valLo, valHi); memRead writes 8 bytes to retPtr.
+function stringEnv(memory, guestMem) {
+  const view = new DataView(memory.buffer);
+  const u32 = n => Number(BigInt.asUintN(32, BigInt(n)));
+  return { env: {
+    memory,
+    memRead: (addrLo, addrHi, size, retPtr) => {
+      const addr = (BigInt(u32(addrHi)) << 32n) | BigInt(u32(addrLo));
+      view.setBigUint64(retPtr, guestMem.read(addr, size), true);
+    },
+    memWrite: (addrLo, addrHi, size, valLo, valHi) => {
+      const addr = (BigInt(u32(addrHi)) << 32n) | BigInt(u32(addrLo));
+      const val = (BigInt(u32(valHi)) << 32n) | BigInt(u32(valLo));
+      guestMem.write(addr, size, val);
+    },
+  } };
+}
+
+// JS reference model of CPU64::runStringOp (transcribed from cpu64.cpp).
+// regs: array of 16 BigInts, modified in place. Returns new rflags (Number).
+function refString(sub, size, rep, asize32, regs, rflags, guestMem) {
+  const DF = 0x400n, ALU_MASK = 0x8D5n;
+  const sizeMask = (1n << BigInt(size * 8)) - 1n;
+  let flags = BigInt(rflags);
+  const step = (flags & DF) ? -BigInt(size) : BigInt(size);
+  const eff = a => asize32 ? a & 0xFFFFFFFFn : a & mask64;
+  const readM = a => guestMem.read(eff(a), size);
+  const writeM = (a, v) => guestMem.write(eff(a), size, v & sizeMask);
+  if (sub <= 1) {
+    const isStos = sub === 1;
+    let count = rep !== 0 ? regs[1] : 1n;
+    if (asize32) count &= 0xFFFFFFFFn;
+    // while (count--) { ... }
+    for (;;) {
+      const old = count; count = (count - 1n) & mask64;
+      if (old === 0n) break;
+      const val = isStos ? regs[0] & sizeMask : readM(regs[6]);
+      writeM(regs[7], val);
+      if (!isStos) regs[6] = (regs[6] + step) & mask64;
+      regs[7] = (regs[7] + step) & mask64;
+    }
+    if (rep !== 0) regs[1] = 0n;
+  } else {
+    const isScas = sub === 3;
+    let count = rep !== 0 ? regs[1] : 1n;
+    if (asize32) count &= 0xFFFFFFFFn;
+    while (count > 0n) {
+      count--;
+      const lhs = isScas ? regs[0] & sizeMask : readM(regs[6]);
+      const rhs = readM(regs[7]);
+      const { flags: nf } = refAlu(5, lhs, rhs, size);
+      flags = (flags & ~ALU_MASK) | nf;
+      if (!isScas) regs[6] = (regs[6] + step) & mask64;
+      regs[7] = (regs[7] + step) & mask64;
+      if (rep !== 0) {
+        const zf = (flags & 0x40n) !== 0n;
+        if ((rep === 0xF3 && !zf) || (rep === 0xF2 && zf)) break;
+      }
+    }
+    if (rep !== 0) regs[1] = count;
+  }
+  return Number(flags & 0xFFFFFFFFn);
+}
+
+async function runString(code, { regs, rflags = 0x202, memInit = new Map(), ptr = 512 }) {
+  const { result, path } = emit(code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(WebAssembly.validate(readFileSync(path)), 'emitted module must validate');
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const guestMem = makeGuestMem();
+  for (const [k, v] of memInit) guestMem.bytes.set(k, v);
+  const view = new DataView(memory.buffer);
+  regs.forEach((v, i) => view.setBigUint64(ptr + i * 8, v, true));
+  view.setBigUint64(ptr + 128, 0x12345678ABCDEFF0n, true);
+  view.setUint32(ptr + 136, rflags >>> 0, true);
+  view.setUint32(ptr + 140, 0xA5A5A5A5, true);
+  const { instance } = await WebAssembly.instantiate(readFileSync(path), stringEnv(memory, guestMem));
+  instance.exports.execute(ptr);
+  return {
+    regs: Array.from({ length: 16 }, (_, i) => view.getBigUint64(ptr + i * 8, true)),
+    rflags: view.getUint32(ptr + 136, true),
+    ripOut: view.getBigUint64(ptr + 128, true),
+    reserved: view.getUint32(ptr + 140, true),
+    guestMem,
+  };
+}
+
+// Compare wasm execution against the reference model.
+async function checkString(code, sub, size, rep, asize32, regs, rflags, memInit) {
+  const refRegs = [...regs];
+  const refMem = makeGuestMem();
+  for (const [k, v] of memInit) refMem.bytes.set(k, v);
+  const refFlags = refString(sub, size, rep, asize32, refRegs, rflags, refMem);
+  const out = await runString(code, { regs: [...regs], rflags, memInit });
+  assert.deepEqual(out.regs, refRegs, 'GPRs');
+  assert.equal(out.rflags, refFlags >>> 0, 'RFLAGS');
+  assert.equal(out.ripOut, (0x12345678ABCDEFF0n + BigInt(code.length)) & mask64, 'RIP');
+  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+  // Memory: compare the full byte maps.
+  const refKeys = [...refMem.bytes.keys()].map(String).sort();
+  const outKeys = [...out.guestMem.bytes.keys()].map(String).sort();
+  assert.deepEqual(outKeys, refKeys, 'written addresses');
+  for (const k of refKeys) assert.equal(out.guestMem.bytes.get(BigInt(k)), refMem.bytes.get(BigInt(k)), `mem[${k}]`);
+}
+
+const SBASE = 0x1000n; // test scratch region
+function memBytes(base, arr) {
+  const m = new Map();
+  arr.forEach((v, i) => m.set(base + BigInt(i), v));
+  return m;
+}
+
+test('STOSB stores AL and advances RDI', async () => {
+  const regs = baseRegs(); regs[0] = 0xABn; regs[7] = SBASE;
+  await checkString([0xAA], 1, 1, 0, false, regs, 0x202, new Map());
+});
+
+test('STOSD stores EAX and advances RDI by 4', async () => {
+  const regs = baseRegs(); regs[0] = 0xDEADBEEFn; regs[7] = SBASE;
+  await checkString([0xAB], 1, 4, 0, false, regs, 0x202, new Map());
+});
+
+test('REP STOSD fills RCX dwords and zeroes RCX', async () => {
+  const regs = baseRegs(); regs[0] = 0x11223344n; regs[7] = SBASE; regs[1] = 4n;
+  await checkString([0xF3, 0xAB], 1, 4, 0xF3, false, regs, 0x202, new Map());
+});
+
+test('MOVSB copies byte and advances RSI/RDI', async () => {
+  const regs = baseRegs(); regs[6] = SBASE; regs[7] = SBASE + 0x100n;
+  await checkString([0xA4], 0, 1, 0, false, regs, 0x202, memBytes(SBASE, [0x7E]));
+});
+
+test('REP MOVSD copies RCX dwords', async () => {
+  const regs = baseRegs(); regs[6] = SBASE; regs[7] = SBASE + 0x100n; regs[1] = 3n;
+  await checkString([0xF3, 0xA5], 0, 4, 0xF3, false, regs, 0x202,
+    memBytes(SBASE, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]));
+});
+
+test('STD makes STOSB decrement RDI', async () => {
+  const regs = baseRegs(); regs[0] = 0x5An; regs[7] = SBASE + 0x10n;
+  await checkString([0xAA], 1, 1, 0, false, regs, 0x202 | 0x400, new Map());
+});
+
+test('0x67 masks addresses to 32 bits but not register updates', async () => {
+  const regs = baseRegs(); regs[6] = 0x1_00001000n; regs[7] = 0x2_00002000n;
+  await checkString([0x67, 0xA5], 0, 4, 0, true, regs, 0x202, memBytes(0x1000n, [9, 9, 9, 9]));
+});
+
+test('REP with RCX=0 does nothing but still clears RCX', async () => {
+  const regs = baseRegs(); regs[6] = SBASE; regs[7] = SBASE + 0x100n; regs[1] = 0n;
+  await checkString([0xF3, 0xA5], 0, 4, 0xF3, false, regs, 0x202, new Map());
+});
+
+test('SCASB finds AL and sets ZF', async () => {
+  const regs = baseRegs(); regs[0] = 0x42n; regs[7] = SBASE;
+  await checkString([0xAE], 3, 1, 0, false, regs, 0x202, memBytes(SBASE, [0x42]));
+});
+
+test('REPE CMPSB stops at first mismatch with RCX remainder', async () => {
+  const regs = baseRegs(); regs[6] = SBASE; regs[7] = SBASE + 0x100n; regs[1] = 8n;
+  const mem = memBytes(SBASE, [1, 2, 3, 4, 5, 6, 7, 8]);
+  for (const [k, v] of memBytes(SBASE + 0x100n, [1, 2, 9, 4, 5, 6, 7, 8])) mem.set(k, v);
+  await checkString([0xF3, 0xA6], 2, 1, 0xF3, false, regs, 0x202, mem);
+});
+
+test('REPNE SCASD stops at match', async () => {
+  const regs = baseRegs(); regs[0] = 0x99n; regs[7] = SBASE; regs[1] = 8n;
+  await checkString([0xF2, 0xAF], 3, 4, 0xF2, false, regs, 0x202,
+    memBytes(SBASE, [0, 0, 0, 0, 0x99, 0, 0, 0]));
+});
+
+test('REP STOSQ writes 8 bytes per iteration', async () => {
+  const regs = baseRegs(); regs[0] = 0x1122334455667788n; regs[7] = SBASE; regs[1] = 2n;
+  await checkString([0xF3, 0x48, 0xAB], 1, 8, 0xF3, false, regs, 0x202, new Map());
+});
+
+test('string op preserves non-flag RFLAGS bits', async () => {
+  const regs = baseRegs(); regs[6] = SBASE; regs[7] = SBASE + 0x100n;
+  await checkString([0xA6], 2, 1, 0, false, regs, 0x202 | 0x400 | 0x200, memBytes(SBASE, [5]));
+});
+
+// --- String-op differential fuzzing vs the JS reference model ---
+// Deterministic PRNG (mulberry32) for reproducible fuzzing.
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+test('string ops differential fuzz (reference model)', async () => {
+  const rand = mulberry32(0x5EED);
+  const pick = arr => arr[Math.floor(rand() * arr.length)];
+  const r64 = () => BigInt(Math.floor(rand() * 0xFFFFFFFF)) << 32n | BigInt(Math.floor(rand() * 0xFFFFFFFF));
+  const CASES = 300;
+  for (let c = 0; c < CASES; c++) {
+    const sub = Math.floor(rand() * 4);
+    const size = pick([1, 2, 4, 8]);
+    const rep = pick([0, 0xF2, 0xF3]);
+    const asize32 = rand() < 0.3;
+    const df = rand() < 0.3;
+    // Addresses: mostly in the scratch region, sometimes with high bits set
+    // (to exercise 0x67 masking vs full 64-bit update).
+    const addrBase = SBASE + BigInt(Math.floor(rand() * 256));
+    const hi = rand() < 0.2 ? BigInt(Math.floor(rand() * 0xFFFF)) << 32n : 0n;
+    const regs = baseRegs();
+    regs[0] = r64(); // RAX (STOS value / SCAS comparand)
+    regs[1] = BigInt(Math.floor(rand() * 12)); // RCX (REP count)
+    regs[6] = addrBase + hi; // RSI
+    regs[7] = addrBase + 0x200n + hi; // RDI (separate region)
+    const rflags = 0x202 | (df ? 0x400 : 0) | (rand() < 0.5 ? 0x1 : 0);
+    // Random memory contents in both regions.
+    const memInit = new Map();
+    for (let i = 0; i < 64; i++) {
+      if (rand() < 0.7) memInit.set(SBASE + BigInt(i), Math.floor(rand() * 256));
+      if (rand() < 0x7) memInit.set(SBASE + 0x200n + BigInt(i), Math.floor(rand() * 256));
+    }
+    // Encode the instruction.
+    const opByte = [0xA4, 0xAA, 0xA6, 0xAE][sub] + (size === 1 ? 0 : 1);
+    // A4/A5, AA/AB, A6/A7, AE/AF: byte opcode for size 1, +1 for size 2/4/8.
+    // 0x66 prefix selects size 2, REX.W selects size 8.
+    const code = [];
+    if (rep) code.push(rep);
+    if (asize32) code.push(0x67);
+    if (size === 2) code.push(0x66);
+    if (size === 8) code.push(0x48);
+    code.push(opByte);
+    await checkString(code, sub, size, rep, asize32, regs, rflags, memInit);
+  }
 });

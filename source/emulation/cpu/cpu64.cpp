@@ -616,6 +616,88 @@ static void refWatchInit() {
         g_refObjAddr = 0x400000000ULL + 0x30170ULL; // PIE base + release_object
 }
 
+// String ops (MOVS/STOS/CMPS/SCAS), factored from dsp_43/dsp_44 so the
+// single-step dispatcher and execBlock's BK_STRING case share one
+// implementation. sub: 0=MOVS, 1=STOS, 2=CMPS, 3=SCAS.
+void CPU64::runStringOp(U8 sub, U32 size, U8 rep, bool asize32) {
+    if (sub <= 1) {
+        bool isStos = (sub == 1);
+        S64 step = (rflags & X64_DF) ? -(S64)size : (S64)size;
+        U64 count = (rep != 0) ? reg[X64_RCX].u64 : 1;
+        if (asize32) count &= 0xFFFFFFFFULL;
+        while (count--) {
+            U64 src = reg[X64_RSI].u64;
+            U64 dst = reg[X64_RDI].u64;
+            if (asize32) { src &= 0xFFFFFFFFULL; dst &= 0xFFFFFFFFULL; }
+            U64 val;
+            if (isStos) {
+                val = (size == 1) ? reg[X64_RAX].u8
+                    : (size == 2) ? reg[X64_RAX].u16
+                    : (size == 4) ? reg[X64_RAX].u32 : reg[X64_RAX].u64;
+            } else {
+                switch (size) {
+                    case 1: val = memory->readb(src); break;
+                    case 2: val = memory->readw(src); break;
+                    case 4: val = memory->readd(src); break;
+                    default: val = memory->readq(src); break;
+                }
+            }
+            switch (size) {
+                case 1: memory->writeb(dst, (U8)val); break;
+                case 2: memory->writew(dst, (U16)val); break;
+                case 4: memory->writed(dst, (U32)val); break;
+                case 8: memory->writeq(dst, val); break;
+            }
+            if (!isStos) reg[X64_RSI].setU64(reg[X64_RSI].u64 + (U64)step);
+            reg[X64_RDI].setU64(reg[X64_RDI].u64 + (U64)step);
+        }
+        if (rep != 0) reg[X64_RCX].setU64(0);
+        return;
+    }
+    bool isScas = (sub == 3);
+    S64 step = (rflags & X64_DF) ? -(S64)size : (S64)size;
+    U64 count = (rep != 0) ? reg[X64_RCX].u64 : 1;
+    if (asize32) count &= 0xFFFFFFFFULL;
+    bool stopOnZF = (rep == 0xF3); // REPE
+    bool stopOnNZ = (rep == 0xF2); // REPNE
+    U64 lhs = 0, rhs = 0;
+    while (count > 0) {
+        count--;
+        if (isScas) {
+            lhs = (size == 1) ? reg[X64_RAX].u8
+                : (size == 2) ? reg[X64_RAX].u16
+                : (size == 4) ? reg[X64_RAX].u32 : reg[X64_RAX].u64;
+        } else {
+            U64 src = reg[X64_RSI].u64;
+            if (asize32) src &= 0xFFFFFFFFULL;
+            switch (size) {
+                case 1: lhs = memory->readb(src); break;
+                case 2: lhs = memory->readw(src); break;
+                case 4: lhs = memory->readd(src); break;
+                default: lhs = memory->readq(src); break;
+            }
+        }
+        U64 dst = reg[X64_RDI].u64;
+        if (asize32) dst &= 0xFFFFFFFFULL;
+        switch (size) {
+            case 1: rhs = memory->readb(dst); break;
+            case 2: rhs = memory->readw(dst); break;
+            case 4: rhs = memory->readd(dst); break;
+            default: rhs = memory->readq(dst); break;
+        }
+        U64 diff = lhs - rhs;
+        flagsSub(rflags, lhs, rhs, diff, size);
+        if (!isScas) reg[X64_RSI].setU64(reg[X64_RSI].u64 + (U64)step);
+        reg[X64_RDI].setU64(reg[X64_RDI].u64 + (U64)step);
+        if (rep != 0) {
+            bool zfNow = (rflags & X64_ZF) != 0;
+            if (stopOnZF && !zfNow) break;
+            if (stopOnNZ && zfNow) break;
+        }
+    }
+    if (rep != 0) reg[X64_RCX].setU64(count);
+}
+
 U32 CPU64::step() {
     U64 ipStart = rip;
 
@@ -2469,40 +2551,12 @@ dsp_42:
     //
     // MOVSB/MOVSW/MOVSD/MOVSQ — A4 (byte), A5 (opSize).
     // STOSB/STOSW/STOSD/STOSQ — AA (byte), AB (opSize). Source is RAX.
+
 dsp_43:
     if (op == 0xA4 || op == 0xA5 || op == 0xAA || op == 0xAB) {
         U32 size = (op == 0xA4 || op == 0xAA) ? 1 : opSize;
         bool isStos = (op == 0xAA || op == 0xAB);
-        S64 step = (rflags & X64_DF) ? -(S64)size : (S64)size;
-        U64 count = (p.rep != 0) ? reg[X64_RCX].u64 : 1;
-        if (p.asize32) count &= 0xFFFFFFFFULL;
-        while (count--) {
-            U64 src = reg[X64_RSI].u64;
-            U64 dst = reg[X64_RDI].u64;
-            if (p.asize32) { src &= 0xFFFFFFFFULL; dst &= 0xFFFFFFFFULL; }
-            U64 val;
-            if (isStos) {
-                val = (size == 1) ? reg[X64_RAX].u8
-                    : (size == 2) ? reg[X64_RAX].u16
-                    : (size == 4) ? reg[X64_RAX].u32 : reg[X64_RAX].u64;
-            } else {
-                switch (size) {
-                    case 1: val = memory->readb(src); break;
-                    case 2: val = memory->readw(src); break;
-                    case 4: val = memory->readd(src); break;
-                    default: val = memory->readq(src); break;
-                }
-            }
-            switch (size) {
-                case 1: memory->writeb(dst, (U8)val); break;
-                case 2: memory->writew(dst, (U16)val); break;
-                case 4: memory->writed(dst, (U32)val); break;
-                case 8: memory->writeq(dst, val); break;
-            }
-            if (!isStos) reg[X64_RSI].setU64(reg[X64_RSI].u64 + (U64)step);
-            reg[X64_RDI].setU64(reg[X64_RDI].u64 + (U64)step);
-        }
-        if (p.rep != 0) reg[X64_RCX].setU64(0);
+        runStringOp(isStos ? 1 : 0, size, p.rep, p.asize32);
         rip += opOff + 1;
         return opOff + 1;
     }
@@ -2517,47 +2571,7 @@ dsp_44:
     if (op == 0xA6 || op == 0xA7 || op == 0xAE || op == 0xAF) {
         U32 size = (op == 0xA6 || op == 0xAE) ? 1 : opSize;
         bool isScas = (op == 0xAE || op == 0xAF);
-        S64 step = (rflags & X64_DF) ? -(S64)size : (S64)size;
-        U64 count = (p.rep != 0) ? reg[X64_RCX].u64 : 1;
-        if (p.asize32) count &= 0xFFFFFFFFULL;
-        bool stopOnZF = (p.rep == 0xF3); // REPE
-        bool stopOnNZ = (p.rep == 0xF2); // REPNE
-        U64 lhs = 0, rhs = 0;
-        while (count > 0) {
-            count--;
-            if (isScas) {
-                lhs = (size == 1) ? reg[X64_RAX].u8
-                    : (size == 2) ? reg[X64_RAX].u16
-                    : (size == 4) ? reg[X64_RAX].u32 : reg[X64_RAX].u64;
-            } else {
-                U64 src = reg[X64_RSI].u64;
-                if (p.asize32) src &= 0xFFFFFFFFULL;
-                switch (size) {
-                    case 1: lhs = memory->readb(src); break;
-                    case 2: lhs = memory->readw(src); break;
-                    case 4: lhs = memory->readd(src); break;
-                    default: lhs = memory->readq(src); break;
-                }
-            }
-            U64 dst = reg[X64_RDI].u64;
-            if (p.asize32) dst &= 0xFFFFFFFFULL;
-            switch (size) {
-                case 1: rhs = memory->readb(dst); break;
-                case 2: rhs = memory->readw(dst); break;
-                case 4: rhs = memory->readd(dst); break;
-                default: rhs = memory->readq(dst); break;
-            }
-            U64 diff = lhs - rhs;
-            flagsSub(rflags, lhs, rhs, diff, size);
-            if (!isScas) reg[X64_RSI].setU64(reg[X64_RSI].u64 + (U64)step);
-            reg[X64_RDI].setU64(reg[X64_RDI].u64 + (U64)step);
-            if (p.rep != 0) {
-                bool zfNow = (rflags & X64_ZF) != 0;
-                if (stopOnZF && !zfNow) break;
-                if (stopOnNZ && zfNow) break;
-            }
-        }
-        if (p.rep != 0) reg[X64_RCX].setU64(count);
+        runStringOp(isScas ? 3 : 2, size, p.rep, p.asize32);
         rip += opOff + 1;
         return opOff + 1;
     }
@@ -5677,8 +5691,12 @@ bool CPU64::buildBlock(U64 startRip, BBlock& b) {
             opOff = consumePrefixes(p);
         }
         rip = savedRip;
-        if (p.lock || p.rep || p.osize16) break;   // unsupported in v1
         U8 op = fetchByte(r + opOff);
+        // String ops (A4-A7/AA/AB/AE/AF) accept REP/0x66/0x67; LOCK+string
+        // still ends the block (the JIT decoder rejects it too).
+        bool isStringOp = ((op >= 0xA4 && op <= 0xA7) || op == 0xAA ||
+                           op == 0xAB || op == 0xAE || op == 0xAF);
+        if (p.lock || (!isStringOp && (p.rep || p.osize16))) break; // unsupported in v1
         bool rexW = (p.rex & 0x08) != 0;
         U8 size = rexW ? 8 : 4;
         BRec& rec = b.recs[b.n];
@@ -5762,6 +5780,13 @@ bool CPU64::buildBlock(U64 startRip, BBlock& b) {
         } else if (op >= 0x58 && op <= 0x5F) {
             rec.kind = BK_POP;
             rec.sub = (U8)((op - 0x58) | ((p.rex & 0x01) ? 0x08 : 0));
+            rec.len = (U8)(opOff + 1);
+        } else if (isStringOp) {
+            rec.kind = BK_STRING;
+            rec.sub = (op <= 0xA5) ? 0 : (op <= 0xA7) ? 2 : (op <= 0xAB) ? 1 : 3;
+            rec.size = ((op & 1) == 0) ? 1 : (p.rex & 0x08) ? 8 : (p.osize16 ? 2 : 4);
+            rec.rep = p.rep;
+            rec.asize32 = p.asize32;
             rec.len = (U8)(opOff + 1);
         } else if (op == 0x0F && fetchByte(r + opOff + 1) >= 0x80 && fetchByte(r + opOff + 1) <= 0x8F) {
             rec.kind = BK_JCC8;                    // same executor as rel8
@@ -5911,6 +5936,13 @@ U32 CPU64::execBlock(const BBlock& b, U64 maxInsn) {
             rip += rec.len;
             break;
         }
+        case BK_STRING: {
+            // Same implementation as the single-step dispatcher (runStringOp
+            // is shared), so block execution matches step() exactly.
+            runStringOp(rec.sub, rec.size, rec.rep, rec.asize32);
+            rip += rec.len;
+            break;
+        }
         case BK_JCC8: {
             rip += rec.len;
             if (evalCC(rec.sub)) rip += (U64)(S64)rec.jccDelta;
@@ -5940,10 +5972,16 @@ U32 CPU64::execBlock(const BBlock& b, U64 maxInsn) {
 // count on success, 0 to fall back to the interpreter's execBlock.
 //
 // Soundness notes:
-// - The emitter rejects any block containing a memory operand, so an
-//   instantiated block is register-only: it cannot write guest memory, and
-//   the page-generation check tryJitStep already performed at cache lookup
-//   is sufficient (no mid-block invalidation rechecks needed).
+// - Blocks may now contain string ops (the first memory-touching group).
+//   Their accesses go through imported host helpers that call the exact
+//   same KMemory64 methods as the interpreter, so fault/commit semantics
+//   match. Writes still funnel through noteGuestWrite (block pages are
+//   barred from the DTLB fast path), so a code-page write bumps the
+//   generation and the next cache lookup rebuilds. Within-block staleness
+//   (a string op rewriting the block's own later bytes) matches what
+//   execBlock already accepts for pre-decoded records.
+// - The page-generation check tryJitStep performed at cache lookup remains
+//   sufficient; no mid-block invalidation rechecks were added.
 // - The module always executes the full block and advances RIP past it, so
 //   the caller must only enter when the block fits its remaining budget
 //   (maxInsn >= nOps); tryJitStep enforces this.
@@ -5966,7 +6004,11 @@ U32 CPU64::tryWasmExec(Jit64Block& block, U32 nOps) {
     jit64WasmStateInit(state, gprs, rip, rflags);
     // wasm32 host address of the state struct in linear memory. The path is
     // unreachable on native builds (jit64WasmAvailable() is false there).
+    // Route the module's memory helpers at this CPU's address space for the
+    // duration of the synchronous call.
+    jit64WasmSetActiveMem(memory);
     jit64WasmCall(block.wasmIndex, (U32)(uintptr_t)&state);
+    jit64WasmSetActiveMem(nullptr);
     jit64WasmStateRead(state, gprs, rip, rflags);
     for (U32 i = 0; i < 16; i++) reg[i].setU64(gprs[i]);
     return nOps;

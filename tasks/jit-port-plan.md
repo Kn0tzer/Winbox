@@ -557,3 +557,108 @@ vs `execute()` 162 ns per call (~300x). Instantiation amortizes after
 ~300 executions of a cached block; cold/single-shot blocks are a net
 loss. The block cache already amortizes this for hot code; phase-4
 batching/merging is worth it if the cold-start path matters.
+
+## 11. Design: string-op emission (memory-touching), 2026-10-05
+
+String ops (MOVS/STOS/CMPS/SCAS, A4-A7/AA/AB/AE/AF) are the first emitter
+group that touches guest memory. Design decisions, made before emitting:
+
+**Memory access path: imported host helpers, not raw linear memory.**
+The emitted module gains two function imports alongside `env.memory`:
+`env.memRead(addrLo:i32, addrHi:i32, size:i32, retPtr:i32)` and
+`env.memWrite(addrLo:i32, addrHi:i32, size:i32, valLo:i32, valHi:i32)`.
+All params are i32 (no BigInt dependence); the 64-bit read result is
+written to 8 bytes at `retPtr` (a new `U64 memScratch` at struct offset
+144; struct grows 144 -> 152). The JS glue calls exported C++
+`jit64MemRead`/`jit64MemWrite`, which dispatch to the exact same
+`KMemory64::readb/readw/readd/readq` and `writeb/writew/writed/writeq`
+the interpreter uses. Fault/commit semantics are therefore identical by
+construction: unmapped reads return 0, writes commit on demand, and the
+write slow path calls `noteGuestWrite` (block pages are barred from the
+DTLB fast path, so code-page writes always bump generations).
+
+**Routing to the right KMemory64:** a `thread_local KMemory64*` set by
+`CPU64::tryWasmExec` around `jit64WasmCall` (wasm execution is fully
+synchronous; the module cannot re-enter the CPU, so the thread-local is
+always correct when an import runs). Chosen over a token table or a
+second `execute()` param because a 64-bit host pointer cannot cross the
+JS boundary without precision loss, and the thread-local needs no ABI
+change to the instantiate path.
+
+**Soundness vs the "register-only" argument (§9):** emitted blocks are no
+longer register-only. The within-block staleness this introduces (a
+string op writing the blocks own code page, later ops in the same
+## 11. Design: string-op emission (memory-touching), 2026-10-05
+
+String ops (MOVS/STOS/CMPS/SCAS, A4-A7/AA/AB/AE/AF) are the first emitter
+group that touches guest memory. Design decisions, made before emitting:
+
+**Memory access path: imported host helpers, not raw linear memory.**
+The emitted module gains two function imports alongside `env.memory`:
+`env.memRead(addrLo:i32, addrHi:i32, size:i32, retPtr:i32)` and
+`env.memWrite(addrLo:i32, addrHi:i32, size:i32, valLo:i32, valHi:i32)`.
+All params are i32 (no BigInt dependence); the 64-bit read result is
+written to 8 bytes at `retPtr` (a new `U64 memScratch` at struct offset
+144; struct grows 144 -> 152). The JS glue calls exported C++
+`jit64MemRead`/`jit64MemWrite`, which dispatch to the exact same
+`KMemory64::readb/readw/readd/readq` and `writeb/writew/writed/writeq`
+the interpreter uses. Fault/commit semantics are therefore identical by
+construction: unmapped reads return 0, writes commit on demand, and the
+write slow path calls `noteGuestWrite` (block pages are barred from the
+DTLB fast path, so code-page writes always bump generations).
+
+**Routing to the right KMemory64:** a `thread_local KMemory64*` set by
+`CPU64::tryWasmExec` around `jit64WasmCall` (wasm execution is fully
+synchronous; the module cannot re-enter the CPU, so the thread-local is
+always correct when an import runs). Chosen over a token table or a
+second `execute()` param because a 64-bit host pointer cannot cross the
+JS boundary without precision loss, and the thread-local needs no ABI
+change to the instantiate path.
+
+**Soundness vs the "register-only" argument (section 9):** emitted blocks
+are no longer register-only. The within-block staleness this introduces
+(a string op writing the block's own code page, later ops in the same
+module executing the pre-write snapshot) is exactly the staleness the
+interpreter's `execBlock` already accepts (it executes pre-decoded
+records without per-record rechecks). The generation check at block
+entry plus `noteGuestWrite` on the write path (next entry rebuilds)
+preserves the existing invalidation contract. No new invalidation
+machinery is needed.
+
+**Interpreter equivalence:** `dsp_43`/`dsp_44` are factored into
+`CPU64::runStringOp(sub, size, rep, asize32)`, called from the
+single-step dispatcher AND from `execBlock`'s new `BK_STRING` case.
+Single source of truth; the 258-test selftest guards the refactor.
+`buildBlock` learns `BK_STRING` (string ops are exempted from the
+REP/0x66 break; LOCK+string still breaks, matching the JIT decoder's
+rejection). The `tryJitStep` cross-check (`bb.n == n`, length agreement)
+then works for string-op blocks.
+
+**Decoder:** new `J64_STRING` kind (sub 0=MOVS,1=STOS,2=CMPS,3=SCAS;
+size 1/2/4; new `rep` and `asize32` fields on `Jit64Op`). A4-A7, AA, AB,
+AE, AF decoded; A8/A9 (TEST) and AC/AD (LODS, unimplemented by the
+interpreter) excluded; LOCK excluded (conservative: falls back to the
+interpreter, which ignores it). Segment prefixes ignored, matching the
+interpreter (dsp_43/dsp_44 never consult p.seg). REX.W ignored for size
+(string ops use opSize only).
+
+**Flags:** CMPS/SCAS reuse the verified `emitFlags` SUB path
+(sub=5, sb per width). MOVS/STOS touch no flags. DF (bit 10) selects
+plus/minus size step; RSI/RDI update is full 64-bit wrapping (NOT masked
+under 0x67 -- only the effective address is masked), matching the
+interpreter.
+
+**Performance note:** per-iteration host calls (2 per MOVS iteration)
+are slower than the interpreter's C++ loop for huge REPs. Correctness
+first; a bulk memCopy helper is the obvious follow-up if timing gates
+flag it. The 48us instantiation cost (section 10) dominates for cold
+blocks anyway.
+
+### 11.8 Pre-existing i32Const bug (found by string-op testing, 2026-10-05)
+i32Const used unsigned LEB128 for the i32.const immediate, but the wasm spec
+requires SIGNED LEB128. Values with bit 6 set in the final payload byte decode
+as negative (0x40 encodes as one byte 0x40, decodes to -64). Affected all prior
+uses with such constants (F_ALU_MASK=0x8D5 in emitFlags, F_SHIFT_MASK, rotMask,
+F_CFOF_MASK). Fixed to proper signed LEB128, mirroring i64Const. The string-op
+REP early-exit (i32.const 0x40 for ZF) exposed it: the br_if never fired until
+the fix. All gates green after the fix (native 212, Node 81 incl. 300-case fuzz).
