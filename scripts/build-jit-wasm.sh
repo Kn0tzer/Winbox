@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# scripts/build-jit-wasm.sh — Phase-1 JIT wasm build driver.
+# scripts/build-jit-wasm.sh — decoder/cache and initial wasm emitter gates.
 #
 # Activate an Emscripten SDK before running the wasm gates.
 #
 # When run, it:
-#   1. Builds + runs the NATIVE phase-1 unit tests (g++ -std=c++17) as a gate.
+#   1. Runs native decoder/cache tests and emitted wasm MOV modules under Node.
 #      Any failure aborts before touching emcc.
 #   2. Builds the wasm64-selftest recipe (project/emscripten/makefile), which
 #      compiles with GUEST_X64 and BLOCK_EXEC enabled in an isolated directory.
@@ -17,8 +17,8 @@
 #      1 executes JIT-compiled blocks via the interpreter's execBlock, so the
 #      test output must match; a separate sentinel proves JIT blocks executed.
 #
-# Phase 2 will extend this script: wasm opcode emitter build, module
-# instantiation glue (boxedwine_wasm_instantiate_runtime_batch), and the
+# Future work will extend this script: runtime module instantiation/table glue
+# (boxedwine_wasm_instantiate_runtime_batch), broader arithmetic, and the
 # node --x64-run-elf fixture with timing comparison.
 #
 # Usage: ./scripts/build-jit-wasm.sh [--selftest-only]
@@ -42,6 +42,15 @@ g++ -std=c++17 -Wall -Wextra -DBOXEDWINE_GUEST_X64=1 \
     "$REPO/source/emulation/cpu/tests/jit64_tests.cpp" \
     -o "$BUILD_TMP/jit64_tests"
 "$BUILD_TMP/jit64_tests"
+command -v node >/dev/null || { echo "ERROR: node not found." >&2; exit 1; }
+g++ -std=c++17 -Wall -Wextra -DBOXEDWINE_GUEST_X64=1 \
+    -I"$REPO/include" \
+    "$REPO/source/emulation/cpu/jit64.cpp" \
+    "$REPO/source/emulation/cpu/jit64wasm.cpp" \
+    "$REPO/source/emulation/cpu/tests/jit64_wasm_fixture.cpp" \
+    -o "$BUILD_TMP/jit64_wasm_fixture"
+JIT64_WASM_FIXTURE="$BUILD_TMP/jit64_wasm_fixture" node --test \
+    "$REPO/source/emulation/cpu/tests/jit64_wasm_tests.mjs"
 
 if [ -n "$SELFTEST_ONLY" ]; then
     echo "selftest-only: skipping emcc build."
@@ -53,7 +62,6 @@ command -v emcc >/dev/null || {
     echo "ERROR: emcc not found. Activate the Emscripten SDK first (emsdk_env.sh)." >&2
     exit 1
 }
-command -v node >/dev/null || { echo "ERROR: node not found." >&2; exit 1; }
 # Command-line MAKEFLAGS wins over the makefile's automatic CPU-count setting.
 # Separate objects prevent stale files compiled without BLOCK_EXEC from passing.
 make -C "$REPO/project/emscripten" Build/Wasm64JitSelfTest/boxedwine64-selftest.js MAKEFLAGS="-j$JOBS" \
