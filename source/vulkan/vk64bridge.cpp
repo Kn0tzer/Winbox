@@ -3531,6 +3531,22 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         if (vkTrace()) klog_fmt("vk64: vkQueueSubmit(%u batches, %u command buffers)", (unsigned)n, (unsigned)frames.size());
         bool hasWork = false;
         for (auto& fr : frames) if (fr.first && !fr.first->cmds.empty()) { hasWork = true; break; }
+        // Fallback: DXVK sometimes records draws to CBs that are never
+        // submitted (e.g., 70 draws to 3 CBs, but submits reference empty CBs).
+        // Scan all CmdBufs for non-empty ones and include them.
+        if (!hasWork) {
+            for (auto& kv : g_objs) {
+                Obj* o = kv.second;
+                if (!o || o->kind != K_CMDBUF) continue;
+                CmdBuf* cb = (CmdBuf*)o;
+                if (!cb->cmds.empty()) {
+                    frames.push_back({cb, kv.first});
+                    hasWork = true;
+                    if (vkTrace()) klog_fmt("vk64: vkQueueSubmit2 fallback: found non-empty CB 0x%llx (%u cmds)",
+                                             (unsigned long long)kv.first, (unsigned)cb->cmds.size());
+                }
+            }
+        }
         if (hasWork) {
             if (vkSchemaV2()) serializeSubmitV2(frames); else serializeSubmit(frames);
         }
@@ -3572,6 +3588,22 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // overhead for submits that carry no rendering work.
         bool hasWork = false;
         for (auto& fr : frames) if (fr.first && !fr.first->cmds.empty()) { hasWork = true; break; }
+        // Fallback: DXVK sometimes records draws to CBs that are never
+        // submitted (e.g., 70 draws to 3 CBs, but submits reference empty CBs).
+        // Scan all CmdBufs for non-empty ones and include them.
+        if (!hasWork) {
+            for (auto& kv : g_objs) {
+                Obj* o = kv.second;
+                if (!o || o->kind != K_CMDBUF) continue;
+                CmdBuf* cb = (CmdBuf*)o;
+                if (!cb->cmds.empty()) {
+                    frames.push_back({cb, kv.first});
+                    hasWork = true;
+                    if (vkTrace()) klog_fmt("vk64: vkQueueSubmit2 fallback: found non-empty CB 0x%llx (%u cmds)",
+                                             (unsigned long long)kv.first, (unsigned)cb->cmds.size());
+                }
+            }
+        }
         if (hasWork) {
             if (vkSchemaV2()) serializeSubmitV2(frames); else serializeSubmit(frames);
         }
