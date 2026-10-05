@@ -778,7 +778,8 @@ const V2_VERT_FORMAT = {
   37: 'unorm8x4', 16: 'unorm8x2', 64: 'unorm10-10-10-2',
   83: 'float16x2', 97: 'float16x4', 77: 'unorm16x2', 91: 'unorm16x4',
   // 44 = VK_FORMAT_B8G8R8A8_UNORM. WebGPU has no BGRA vertex format; map to
-  // unorm8x4. Caveat: R/B channels swap vs Vulkan component order.
+  // unorm8x4 and swizzle R/B in the uploaded bytes (swizzleBgraVb), so the
+  // shader sees Vulkan's component order.
   44: 'unorm8x4',
 };
 // Byte size of each V2_VERT_FORMAT entry, for minimum-stride computation.
@@ -1028,6 +1029,40 @@ export function rewritePushConstantsWGSL(wgsl) {
       'const $1: u32 = 0u;');
   }
   return { code, pushBlocks };
+}
+
+// ---------------------------------------------------------------------------
+// Naga Y-negation strip and BGR vertex swizzle.
+// ---------------------------------------------------------------------------
+// Naga's SPIR-V frontend appends `pos.y = -(pos.y)` (via a temp) to every
+// translated vertex shader. That negation is the correct Vulkan->WebGPU
+// adapter only for positive Vulkan viewport heights: on this stack NDC y=+1
+// maps to texture row 0 (top), so the negation reproduces Vulkan's mapping
+// for h>0. DXVK's D3D9 path uses negative viewport heights (Y-flip
+// convention), which WebGPU cannot express; emulating such a viewport needs
+// the UN-negated shader variant, selected per draw (see the viewport case).
+export function stripNagaYNegation(wgsl) {
+  return String(wgsl)
+    .replace(/let\s+(_e\d+)\s*=\s*(\w+)\.y\s*;\s*\2\.y\s*=\s*-\(\1\)\s*;/g, '')
+    .replace(/(\w+)\.y\s*=\s*-\(\1\.y\)\s*;/g, '');
+}
+
+// B8G8R8A8 vertex attributes arrive as B,G,R,A bytes. WebGPU has no BGRA
+// vertex format (mapped to unorm8x4 above), so without a swizzle the shader
+// would see R/B swapped vs Vulkan. Swizzle each 4-byte attribute element
+// once per (buffer, layout); the GPU cache key is layout-qualified.
+export function swizzleBgraVb(bytes, stride, offsets) {
+  const out = new Uint8Array(bytes);
+  if (!(stride > 0)) return out;
+  const count = Math.floor(out.length / stride);
+  for (const a of offsets) {
+    for (let i = 0; i < count; i++) {
+      const o = i * stride + a;
+      if (o + 3 >= out.length) break;
+      const t = out[o]; out[o] = out[o + 2]; out[o + 2] = t;
+    }
+  }
+  return out;
 }
 
 // Scan translated WGSL for resource declarations. The bind-group layouts are
@@ -1292,12 +1327,13 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     return null;
   }
 
-  async function getPipelineFor(pipe, sampleCount) {
-    const key = pipe.pipeId + ':ms' + sampleCount + ':topology:' + pipe.topology + ':vb:' + JSON.stringify(pipe.vb);
+  async function getPipelineFor(pipe, sampleCount, unnegated = false) {
+    const key = pipe.pipeId + ':ms' + sampleCount + ':topology:' + pipe.topology + ':vb:' + JSON.stringify(pipe.vb) + ':yny' + (unnegated ? '1' : '0');
     if (pipelines.has(key)) return pipelines.get(key);
     const vsm = F.shaders.get(pipe.vsHash), fsm = F.shaders.get(pipe.fsHash);
     if (!vsm || !fsm) return { skip: 'missing-shader' };
-    const vsWgsl = await shaders.get('vertex', { hash: pipe.vsHash, size: vsm.code.length, code: vsm.code }, { rasterTopology: pipe.topology });
+    let vsWgsl = await shaders.get('vertex', { hash: pipe.vsHash, size: vsm.code.length, code: vsm.code }, { rasterTopology: pipe.topology });
+    if (unnegated) vsWgsl = stripNagaYNegation(vsWgsl);
     const fsWgsl = await shaders.get('fragment', { hash: pipe.fsHash, size: fsm.code.length, code: fsm.code }, { rasterTopology: pipe.topology });
     if (!vsWgsl || !fsWgsl) return { skip: 'shader-translation' };
     const vsR = rewritePushConstantsWGSL(vsWgsl), fsR = rewritePushConstantsWGSL(fsWgsl);
@@ -1347,6 +1383,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     // Vertex input state from the PIPELINE record's layout tables.
     /** @type {GPUVertexBufferLayout[]} */
     const buffers = [];
+    const vbWalk = [];
     const slotOf = new Map(); // vulkan binding number -> vertex slot
     for (const vb of pipe.vb) {
       const attributes = [];
@@ -1362,6 +1399,9 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       const stride = Math.max(vb.stride, minStride, 4);
       const arrayStride = Math.ceil(stride / 4) * 4;
       buffers.push({ arrayStride, stepMode: vb.inputRate ? 'instance' : 'vertex', attributes });
+      const attrs44 = [];
+      for (const va of pipe.va) if (va.binding === vb.binding && va.format === 44) attrs44.push(va.offset);
+      vbWalk.push({ binding: vb.binding, stride, attrs44 });
     }
 
     device.pushErrorScope('validation');
@@ -1389,7 +1429,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     });
     const err = await device.popErrorScope();
     if (err) { stats.unsupported++; return { skip: 'pipeline-rejected:' + err.message }; }
-    const rec = { key, pipeline, layouts, decls, hasPush, slotOf, maxGroup };
+    const rec = { key, pipeline, layouts, decls, hasPush, slotOf, maxGroup, vbWalk };
     pipelines.set(key, rec);
     return rec;
   }
@@ -1552,7 +1592,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
 
       // --- replay ops ---
       const st = {
-        pipeRec: null, sets: new Map(), setVer: new Map(), inlineMap: new Map(),
+        pipeRec: null, pipeDesc: null, pipeNeg: false, sets: new Map(), setVer: new Map(), inlineMap: new Map(),
         pushBlock: new Uint8Array(V2_PUSH_SIZE), pushDirty: false,
         vbinds: [], ibind: null, viewport: null, scissor: null,
       };
@@ -1564,7 +1604,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
           case 'bindPipe': {
             const rec = await getPipelineFor(op.pipe, passSamples);
             if (rec.skip) { skipped = rec.skip; break; }
-            st.pipeRec = rec;
+            st.pipeRec = rec; st.pipeDesc = op.pipe; st.pipeNeg = false;
             passEnc.setPipeline(rec.pipeline);
             break;
           }
@@ -1581,7 +1621,19 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
             if (!st.pipeRec) { skipped = 'draw-without-pipeline'; break; }
             if (st.viewport) {
               const [x, y, w, h, md, xmd] = st.viewport;
-              if (w > 0 && h > 0) passEnc.setViewport(x, y, w, h, md, xmd);
+              if (w > 0 && h !== 0) {
+                // WebGPU rejects negative viewport heights; Vulkan uses h<0
+                // as the Y-flip convention (DXVK D3D9 always does). Emulate
+                // exactly: rect (x, y+h, w, -h) plus the un-negated VS variant
+                // (see stripNagaYNegation), which together reproduce Vulkan's
+                // framebuffer mapping bit-for-bit.
+                const negH = h < 0;
+                if (negH !== st.pipeNeg && st.pipeDesc) {
+                  const rec = await getPipelineFor(st.pipeDesc, passSamples, negH);
+                  if (!rec.skip) { st.pipeRec = rec; st.pipeNeg = negH; passEnc.setPipeline(rec.pipeline); }
+                }
+                passEnc.setViewport(x, negH ? y + h : y, w, Math.abs(h), md, xmd);
+              }
             }
             if (st.scissor) {
               const [x, y, w, h] = st.scissor;
@@ -1618,7 +1670,13 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
               if (slot === undefined) continue;
               const bytes = F.buffers.get(vb.buf);
               if (!bytes) continue;
-              const gpu = gpuBufferFor(vb.buf, bytes, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST);
+              let vkey = vb.buf, vbytes = bytes;
+              const walk = (st.pipeRec.vbWalk || []).find(w => w.binding === vb.binding);
+              if (walk && walk.attrs44.length) {
+                vkey = vb.buf + '|swz44:' + st.pipeRec.key;
+                vbytes = swizzleBgraVb(bytes, walk.stride, walk.attrs44);
+              }
+              const gpu = gpuBufferFor(vkey, vbytes, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST);
               passEnc.setVertexBuffer(slot, gpu, Math.min(vb.offset, gpu.size));
               vbSet.add(slot);
             }
