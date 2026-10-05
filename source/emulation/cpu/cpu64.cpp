@@ -12,6 +12,7 @@
 #ifdef BOXEDWINE_GUEST_X64
 
 #include "cpu64.h"
+#include "jit64.h"      // phase-1 JIT framework (BW64_JIT=1 runtime flag)
 #include "kmemory64.h"
 #include "syscall64.h"
 #include "ksignal.h"   // K_SIGFPE
@@ -5531,6 +5532,12 @@ void CPU64::run() {
         }
 #ifdef BOXEDWINE_BLOCK_EXEC
         {
+            // Phase-1 JIT fast path (active only when BW64_JIT=1; no-op otherwise).
+            U32 jn = tryJitStep();
+            if (jn) {
+                instructionCount += jn;
+                continue;
+            }
             U32 bn = tryBlockStep();
             if (bn) {
                 instructionCount += bn;
@@ -5911,6 +5918,58 @@ U32 CPU64::execBlock(const BBlock& b) {
     return executed;
 }
 
+// ---- Phase-1 JIT hook (see include/jit64.h). Gated on BW64_JIT=1 so default
+// behavior is unchanged. Compiles the JIT plan for the block at RIP, validates
+// it, then executes via the interpreter's execBlock (same BBlock builder the
+// JIT decoder cross-checks in tests) so semantics stay bit-identical. Phase 2
+// replaces the execBlock call with wasm-module execution of the emitted plan.
+// The hook lives INSIDE the BOXEDWINE_BLOCK_EXEC section because it reuses
+// BBlock/execBlock/page-gen validity; without that infra it returns 0.
+U32 CPU64::tryJitStep() {
+    if (!jit64Enabled()) return 0;
+    if (!m_jit) ensureJit();
+    U64 r = rip;
+    // Snapshot up to 15 bytes/insn * 24 recs for the JIT decoder.
+    U8 snap[15 * 24];
+    for (U32 i = 0; i < sizeof(snap); i++) snap[i] = fetchByte(r + i);
+    Jit64Op ops[24];
+    U32 n = jit64CompileStream(r, snap, (U32)sizeof(snap), ops, 24, true);
+    if (n < 2) { m_jit->insnsFallback++; return 0; }
+    // Reuse the interpreter's block builder as the execution vehicle AND the
+    // cross-check: the JIT plan and BBlock must agree on every instruction
+    // length (otherwise the JIT decoder drifted from step()'s dispatch).
+    BBlock bb;
+    if (!buildBlock(r, bb)) { m_jit->insnsFallback += 1; return 0; }
+    if (bb.n != n) { m_jit->insnsFallback += 1; return 0; } // decoder drift guard
+    for (U32 i = 0; i < n; i++) {
+        if (ops[i].plan != JIT64_FAST || ops[i].len != bb.recs[i].len) {
+            m_jit->insnsFallback += 1;
+            return 0; // whole-block fallback rule
+        }
+    }
+    // Gens come from the just-built BBlock (registered by buildBlock).
+    const Jit64Block* hit = m_jit->cache.lookup(r, bb.page0, bb.gen0, bb.page1, bb.gen1);
+    if (!hit) {
+        hit = m_jit->cache.insert(r, bb.page0, bb.gen0, bb.page1, bb.gen1, ops, n);
+        m_jit->blocksCompiled++;
+    }
+    U32 done = execBlock(bb);
+    m_jit->blocksExecuted++;
+    m_jit->insnsFast += done;
+    return done;
+}
+
+void CPU64::ensureJit() {
+    if (!m_jit) {
+        m_jit = new Jit64State();
+    }
+}
+
+void CPU64::freeJit() {
+    delete m_jit;
+    m_jit = nullptr;
+}
+
 U32 CPU64::tryBlockStep() {
     U64 r = rip;
     U32 neg = (U32)((r ^ (r >> 10)) & 1023);
@@ -5976,6 +6035,13 @@ U64 CPU64::runBounded(U64 maxInsn) {
         }
 #ifdef BOXEDWINE_BLOCK_EXEC
         {
+            // Phase-1 JIT fast path (active only when BW64_JIT=1; no-op otherwise).
+            U32 jn = tryJitStep();
+            if (jn) {
+                instructionCount += jn;
+                ran += jn;
+                continue;
+            }
             U32 bn = tryBlockStep();
             if (bn) {
                 instructionCount += bn;
