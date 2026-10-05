@@ -53,8 +53,9 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
                              0, 0, 1, 1, NULL, NULL, inst, NULL);
         if (!hw) Sleep(1000);
     }
-    if (!hw) return 1;
-    /* Sleep forever. See header NOTE (2): do not replace with GetMessage. */
+    /* Sleep forever regardless: even if the window could not be created
+     * (e.g. novideo headless), exiting would drop the desktop user count and
+     * arm the close timeout. See header NOTE (2): do not use GetMessage. */
     for (;;) Sleep(60000);
     return 0;
 }
