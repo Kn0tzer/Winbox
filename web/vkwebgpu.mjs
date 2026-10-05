@@ -978,8 +978,8 @@ export function decodeV2Frame(records, counters = {}) {
 
 // ---------------------------------------------------------------------------
 // Push constants as a small UBO (tasks/schema-v2.md §5). naga's WGSL backend
-// has no push-constant address space to target, so the translated module keeps
-// its `var<push_constant>` declaration textually; this rewrites it to a plain
+// emits `var<immediate>` in 30.2.0 (older translations used
+// `var<push_constant>`); this rewrites either declaration to a plain
 // uniform at the reserved @group(3) @binding(0), and the renderer keeps one
 // 256-byte uniform buffer it writeBuffers before each draw group. At most one
 // push block per stage is supported — DXVK uses one.
@@ -987,8 +987,8 @@ export function decodeV2Frame(records, counters = {}) {
 export function rewritePushConstantsWGSL(wgsl) {
   let pushBlocks = 0;
   const code = String(wgsl).replace(
-    /@group\(\d+\)\s*@binding\(\d+\)(\s*)var<push_constant>/g,
-    (m, sp) => { pushBlocks++; return '@group(' + V2_PUSH_GROUP + ') @binding(' + V2_PUSH_BINDING + ')' + sp + 'var<uniform>'; }
+    /(?:@group\(\d+\)\s*@binding\(\d+\)\s*)?var<\s*(?:push_constant|immediate)\s*>/g,
+    () => { pushBlocks++; return '@group(' + V2_PUSH_GROUP + ') @binding(' + V2_PUSH_BINDING + ') var<uniform>'; }
   );
   return { code, pushBlocks };
 }
@@ -1173,10 +1173,19 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     if (!vsWgsl || !fsWgsl) return { skip: 'shader-translation' };
     const vsR = rewritePushConstantsWGSL(vsWgsl), fsR = rewritePushConstantsWGSL(fsWgsl);
     const pushBlocks = vsR.pushBlocks + fsR.pushBlocks;
-    if (pushBlocks > 1) { stats.unsupported++; return { skip: 'multi-push-block' }; }
-    const hasPush = pushBlocks === 1;
+    if (vsR.pushBlocks > 1 || fsR.pushBlocks > 1) { stats.unsupported++; return { skip: 'multi-push-block' }; }
+    const hasPush = pushBlocks > 0;
 
-    const decls = scanWgslResources(vsR.code).concat(scanWgslResources(fsR.code));
+    const declarations = scanWgslResources(vsR.code).concat(scanWgslResources(fsR.code));
+    const uniqueDeclarations = new Map();
+    for (const decl of declarations) {
+      const key = decl.group + ':' + decl.binding;
+      const prior = uniqueDeclarations.get(key);
+      if (prior && JSON.stringify(layoutEntryFor(prior)) !== JSON.stringify(layoutEntryFor(decl)))
+        return { skip: 'incompatible-shared-binding:' + key };
+      if (!prior) uniqueDeclarations.set(key, decl);
+    }
+    const decls = [...uniqueDeclarations.values()];
     const byGroup = new Map();
     for (const d of decls) {
       if (d.group > 2 && !(d.group === V2_PUSH_GROUP && d.binding === V2_PUSH_BINDING && d.addr === 'uniform')) {

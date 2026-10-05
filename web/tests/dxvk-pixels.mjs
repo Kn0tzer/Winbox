@@ -5,27 +5,38 @@ import { chromium } from '@playwright/test';
 import { serve } from '../../tools/browser/serve.mjs';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { trianglePixels } from './dxvk-pixel-analysis.mjs';
+import { parseV2Chunk, V2FrameAssembler, decodeV2Frame } from '../vkwebgpu.mjs';
 import { createHash } from 'node:crypto';
 
 const tag = process.env.TAG || `pixels-${Date.now()}`;
 if (!/^[\w.-]+$/.test(tag)) throw new Error('TAG must contain only letters, numbers, _, . or -');
 const dir = `test-results/dxvk-${tag}`;
 await mkdir(dir, { recursive: true });
-const server = await serve('dist');
+const server = await serve(process.env.WINE_DIST_DIR || 'dist');
 const browser = await chromium.launch({
   executablePath: process.env.CHROME_PATH || '/usr/local/bin/chromium', headless: true,
   args: ['--no-sandbox', '--disable-dev-shm-usage', '--enable-unsafe-webgpu',
     '--enable-unsafe-swiftshader', '--use-angle=vulkan', '--use-vulkan=swiftshader', '--enable-features=Vulkan'],
 });
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
-const logs = [], errors = [], chunkFiles = [];
+const logs = [], errors = [], chunkFiles = [], decodedFrames = [];
+const capturedAssembler = new V2FrameAssembler();
 page.on('console', m => logs.push(`${m.type()}: ${m.text()}`));
 page.on('pageerror', e => errors.push(e.message));
 const flush = () => writeFile(`${dir}/console.log`, logs.join('\n'));
 await page.exposeFunction('saveVkChunk', async b64 => {
   const file = `chunk-${String(chunkFiles.length).padStart(4, '0')}.bin`;
   chunkFiles.push(file);
-  await writeFile(`${dir}/${file}`, Buffer.from(b64, 'base64'));
+  const bytes = Buffer.from(b64, 'base64');
+  const records = capturedAssembler.ingest(parseV2Chunk(bytes));
+  if (records) {
+    const frame = decodeV2Frame(records);
+    decodedFrames.push({ frame: frame.frameNo, w: frame.width, h: frame.height,
+      attachments: frame.passes.flatMap(p => p.attachments).length,
+      indexedDraws: frame.passes.flatMap(p => p.ops).filter(o => o.op === 'draw' && o.indexed).length,
+      draws: frame.passes.flatMap(p => p.ops).filter(o => o.op === 'draw').length });
+  }
+  await writeFile(`${dir}/${file}`, bytes);
 });
 const timeout = Number(process.env.TIMEOUT || 1800000);
 let summary = { passed: false }, pixels = null;
@@ -113,10 +124,13 @@ try {
       && stats?.litPixels > 0 && !!pixels?.triangle,
     tri9Result: /tri9: RESULT 0/.test(joined) ? 0 : /tri9: RESULT 1/.test(joined) ? 1 : null,
     framesBuilt: (joined.match(/vk64: FRAME \d+ built/g) || []).length,
-    drawIndexedCalls: (joined.match(/vk64:.*(?:trap vkCmdDrawIndexed|vkCmdDrawIndexed cb=)/g) || []).length,
+    drawIndexedLogMatches: (joined.match(/vk64:.*(?:trap vkCmdDrawIndexed|vkCmdDrawIndexed cb=)/g) || []).length,
     guestExitLines: logs.filter(l => /exit_group syscall.*cmd=.*tri9\.exe/.test(l)),
     fallbackLines: logs.filter(l => /fallback|submitted.*cb|vkCmdDrawIndexed cb=|vkQueueSubmit2?.*cb/i.test(l)),
-    chunksCaptured: chunkFiles.length, provenance, stats, pixels, errors, renderErrors,
+    chunksCaptured: chunkFiles.length, decodedFrames,
+    decodedIndexedDraws: decodedFrames.reduce((n, f) => n + f.indexedDraws, 0),
+    decodedDraws: decodedFrames.reduce((n, f) => n + f.draws, 0),
+    provenance, stats, pixels, errors, renderErrors,
   };
 } catch (e) {
   summary.failure = String(e.stack || e);

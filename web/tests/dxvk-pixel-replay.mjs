@@ -14,7 +14,7 @@ const dir = `test-results/dxvk-${tag}`;
 await mkdir(dir, { recursive: true });
 const names = JSON.parse(await readFile(`${source}/chunks.json`, 'utf8'));
 if (!names.length || names.some(n => !/^chunk-\d+\.bin$/.test(n))) throw new Error('Invalid or empty captured chunk list');
-const server = await serve('dist');
+const server = await serve(process.env.WINE_DIST_DIR || 'dist');
 const browser = await chromium.launch({
   executablePath: process.env.CHROME_PATH || '/usr/local/bin/chromium', headless: true,
   args: ['--no-sandbox', '--disable-dev-shm-usage', '--enable-unsafe-webgpu', '--enable-unsafe-swiftshader',
