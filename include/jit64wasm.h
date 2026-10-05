@@ -30,7 +30,30 @@ void jit64WasmStateRead(const Jit64WasmState& state, U64 gpr[16], U64& rip, U32&
 // with eager, interpreter-exact flag computation (CF/PF/AF/ZF/SF/OF; other
 // RFLAGS bits preserved). Advances RIP, zero-extends 32-bit destinations.
 // Rejects the entire block for any unsupported op/operand. On rejection,
-// clears output. No CPU64 dispatch or wasm-table ownership is installed yet.
+// clears output.
 bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output);
+
+// Runtime module instantiation: the table-index glue (cf. PR #151's
+// boxedwine_wasm_instantiate_runtime_batch, single-module form; batching and
+// merging remain phase-4 work). Instantiates an emitted module against the
+// host's WebAssembly.Memory and returns a table index (>= 0), or -1 on
+// failure. jit64WasmCall invokes the table entry's execute(statePtr), where
+// statePtr is a wasm32 host address of a Jit64WasmState in linear memory.
+// jit64WasmRelease frees a table slot (slots are reused). Under
+// __EMSCRIPTEN__ these are implemented with synchronous WebAssembly.Module /
+// WebAssembly.Instance in source/emulation/cpu/jit64wasm_runtime.cpp; on
+// native builds they are inline no-ops (instantiate returns -1) so cpu64.cpp
+// links without the runtime TU.
+#ifdef __EMSCRIPTEN__
+int jit64WasmInstantiate(const U8* bytes, U32 byteCount);
+void jit64WasmCall(int tableIndex, U32 statePtr);
+void jit64WasmRelease(int tableIndex);
+inline bool jit64WasmAvailable() { return true; }
+#else
+inline int jit64WasmInstantiate(const U8*, U32) { return -1; }
+inline void jit64WasmCall(int, U32) {}
+inline void jit64WasmRelease(int) {}
+inline bool jit64WasmAvailable() { return false; }
+#endif
 
 #endif

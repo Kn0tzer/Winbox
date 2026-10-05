@@ -13,6 +13,7 @@
 
 #include "cpu64.h"
 #include "jit64.h"      // phase-1 JIT framework (BW64_JIT=1 runtime flag)
+#include "jit64wasm.h"   // phase-2 wasm emitter + table-index glue
 #include "kmemory64.h"
 #include "syscall64.h"
 #include "ksignal.h"   // K_SIGFPE
@@ -5933,6 +5934,44 @@ U32 CPU64::execBlock(const BBlock& b, U64 maxInsn) {
 // replaces the execBlock call with wasm-module execution of the emitted plan.
 // The hook lives INSIDE the BOXEDWINE_BLOCK_EXEC section because it reuses
 // BBlock/execBlock/page-gen validity; without that infra it returns 0.
+// Phase-2 wasm execution vehicle for tryJitStep. Marshals the 16 GPRs,
+// RIP and RFLAGS through the dependency-free state bridge, calls the
+// block's instantiated module, and unmarshals the results. Returns the op
+// count on success, 0 to fall back to the interpreter's execBlock.
+//
+// Soundness notes:
+// - The emitter rejects any block containing a memory operand, so an
+//   instantiated block is register-only: it cannot write guest memory, and
+//   the page-generation check tryJitStep already performed at cache lookup
+//   is sufficient (no mid-block invalidation rechecks needed).
+// - The module always executes the full block and advances RIP past it, so
+//   the caller must only enter when the block fits its remaining budget
+//   (maxInsn >= nOps); tryJitStep enforces this.
+// - Emission is deterministic per block: a rejection is cached as -2 and
+//   never retried; a live table index survives until the cache evicts the
+//   block (Jit64BlockCache releases it).
+U32 CPU64::tryWasmExec(Jit64Block& block, U32 nOps) {
+    if (!jit64WasmAvailable()) return 0;
+    if (block.wasmIndex == -2) return 0; // emission rejected before
+    if (block.wasmIndex < 0) {
+        std::vector<U8> module;
+        if (!jit64EmitWasm(block, module)) { block.wasmIndex = -2; return 0; }
+        int idx = jit64WasmInstantiate(module.data(), (U32)module.size());
+        if (idx < 0) return 0; // transient: retry next entry
+        block.wasmIndex = idx;
+    }
+    U64 gprs[16];
+    for (U32 i = 0; i < 16; i++) gprs[i] = reg[i].u64;
+    Jit64WasmState state;
+    jit64WasmStateInit(state, gprs, rip, rflags);
+    // wasm32 host address of the state struct in linear memory. The path is
+    // unreachable on native builds (jit64WasmAvailable() is false there).
+    jit64WasmCall(block.wasmIndex, (U32)(uintptr_t)&state);
+    jit64WasmStateRead(state, gprs, rip, rflags);
+    for (U32 i = 0; i < 16; i++) reg[i].setU64(gprs[i]);
+    return nOps;
+}
+
 U32 CPU64::tryJitStep(U64 maxInsn) {
     if (!jit64Enabled()) return 0;
     if (!m_jit) ensureJit();
@@ -5956,12 +5995,24 @@ U32 CPU64::tryJitStep(U64 maxInsn) {
         }
     }
     // Gens come from the just-built BBlock (registered by buildBlock).
-    const Jit64Block* hit = m_jit->cache.lookup(r, bb.page0, bb.gen0, bb.page1, bb.gen1);
+    Jit64Block* hit = m_jit->cache.lookup(r, bb.page0, bb.gen0, bb.page1, bb.gen1);
     if (!hit) {
         hit = m_jit->cache.insert(r, bb.page0, bb.gen0, bb.page1, bb.gen1, ops, n);
         m_jit->blocksCompiled++;
     }
-    U32 done = execBlock(bb, maxInsn);
+    // Phase-2: prefer the emitted wasm module when the whole block fits the
+    // caller's remaining budget (the module always runs the full block;
+    // execBlock below would stop at maxInsn). Falls back to the interpreter
+    // vehicle for rejected blocks, transient instantiate failures, and
+    // native builds (where the glue is a no-op).
+    U32 done = 0;
+    if (hit && maxInsn >= n) done = tryWasmExec(*hit, n);
+    if (done) {
+        m_jit->wasmBlocks++;
+        m_jit->wasmInsns += done;
+    } else {
+        done = execBlock(bb, maxInsn);
+    }
     m_jit->blocksExecuted++;
     m_jit->insnsFast += done;
     return done;

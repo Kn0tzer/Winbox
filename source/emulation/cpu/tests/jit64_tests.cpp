@@ -291,6 +291,40 @@ static void testWasmStateBridge() {
     CHECK(flags == 0xA5A5A5A5, "unmarshal flags=0x%x", flags);
 }
 
+static void testWasmGlue() {
+    // Native stubs: the table-index glue is emscripten-only. Natively every
+    // entry point must be a safe no-op so cpu64.cpp links (and runs) without
+    // the runtime TU — including the section-GC lifetime test.
+    CHECK(!jit64WasmAvailable(), "native jit64WasmAvailable should be false");
+    const U8 fake[] = {0x00, 0x61, 0x73, 0x6D};
+    CHECK(jit64WasmInstantiate(fake, sizeof(fake)) == -1, "native instantiate");
+    CHECK(jit64WasmInstantiate(nullptr, 0) == -1, "native instantiate null");
+    jit64WasmCall(0, 0);      // must not crash
+    jit64WasmCall(-1, 0xFFFFFFFFu);
+    jit64WasmRelease(0);      // must not crash
+    jit64WasmRelease(-1);
+    // Cache owns the wasm slot lifecycle: a fresh block starts unattempted,
+    // and eviction/invalidation reset the slot (release is a no-op here,
+    // but the bookkeeping must hold).
+    Jit64BlockCache cache;
+    Jit64Op ops[1];
+    U32 n = jit64CompileStream(0x400000, (const U8*)"\x48\x89\xC8", 3, ops, 1, false);
+    CHECK(n == 1, "glue-setup n=%u", n);
+    Jit64Block* b = cache.insert(0x400000, 1, 7, 1, 7, ops, n);
+    CHECK(b && b->wasmIndex == -1, "fresh block wasmIndex=%d", b ? b->wasmIndex : -99);
+    b->wasmIndex = -2; // simulate an emission rejection
+    Jit64Block* b2 = cache.insert(0x400000, 1, 7, 1, 7, ops, n); // same slot: overwrite
+    CHECK(b2 == b && b2->wasmIndex == -1, "overwrite must reset wasmIndex, got %d", b2->wasmIndex);
+    b2->wasmIndex = 3; // simulate a live table index
+    cache.invalidate(0x400000);
+    Jit64Block* b3 = cache.insert(0x400000, 1, 7, 1, 7, ops, n);
+    CHECK(b3->wasmIndex == -1, "invalidate must reset wasmIndex, got %d", b3->wasmIndex);
+    b3->wasmIndex = 5;
+    cache.clear();
+    Jit64Block* b4 = cache.insert(0x400000, 1, 7, 1, 7, ops, n);
+    CHECK(b4->wasmIndex == -1, "clear must reset wasmIndex, got %d", b4->wasmIndex);
+}
+
 int main() {
     printf("jit64 phase-1 unit tests\n");
     testCoverageTable();
@@ -303,6 +337,7 @@ int main() {
     testPlanText();
     testJitFlag();
     testWasmStateBridge();
+    testWasmGlue();
     printf("  %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

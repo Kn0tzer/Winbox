@@ -103,6 +103,11 @@ struct Jit64Block {
     U32 fastCount = 0;  // ops with plan == JIT64_FAST
     bool executable = false; // true iff fastCount == ops.size() && ops not empty
     U64 execCount = 0;  // times this block was entered via jit (stats)
+    // Phase-2 wasm module slot: -1 = not attempted, >= 0 = instantiated
+    // table index from jit64WasmInstantiate, -2 = emission rejected (the
+    // emitter is deterministic per block, so rejection is never retried).
+    // Owned by Jit64BlockCache: insert/invalidate/clear release live slots.
+    int wasmIndex = -1;
 };
 
 // Phase-1 opcode coverage table: exactly one row per opcode class the JIT
@@ -146,9 +151,9 @@ public:
     Jit64BlockCache();
     // Look up a compiled entry valid for `rip` with the given page gens.
     // Returns nullptr on miss/stale.
-    const Jit64Block* lookup(U64 rip, U64 page0, U32 gen0, U64 page1, U32 gen1);
+    Jit64Block* lookup(U64 rip, U64 page0, U32 gen0, U64 page1, U32 gen1);
     // Insert (evicts whatever collides). Copies ops.
-    const Jit64Block* insert(U64 rip, U64 page0, U32 gen0, U64 page1, U32 gen1,
+    Jit64Block* insert(U64 rip, U64 page0, U32 gen0, U64 page1, U32 gen1,
                              const Jit64Op* ops, U32 nOps);
     void invalidate(U64 rip); // drop one entry (negative-cache support)
     void clear();
@@ -175,6 +180,8 @@ struct Jit64State {
     U64 blocksExecuted = 0;
     U64 insnsFast = 0;
     U64 insnsFallback = 0;
+    U64 wasmBlocks = 0;  // blocks executed via emitted wasm modules
+    U64 wasmInsns = 0;   // instructions executed via emitted wasm modules
 };
 
 // Emit a wasm-module stub summary for a compiled block (phase-2 preparation):

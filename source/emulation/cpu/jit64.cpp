@@ -30,6 +30,7 @@
  */
 
 #include "../../../include/jit64.h"
+#include "../../../include/jit64wasm.h"
 
 #ifdef BOXEDWINE_GUEST_X64
 
@@ -513,10 +514,10 @@ U32 Jit64BlockCache::slotFor(U64 rip) {
     return (U32)((rip ^ (rip >> 9)) & (SLOTS - 1));
 }
 
-const Jit64Block* Jit64BlockCache::lookup(U64 rip, U64 page0, U32 gen0, U64 page1, U32 gen1) {
+Jit64Block* Jit64BlockCache::lookup(U64 rip, U64 page0, U32 gen0, U64 page1, U32 gen1) {
     m_lookups++;
     if (rip == 0) return nullptr;
-    const Jit64Block& b = m_slots[slotFor(rip)].block;
+    Jit64Block& b = m_slots[slotFor(rip)].block;
     if (b.startRip != rip) return nullptr;
     if (b.page0 != page0 || b.gen0 != gen0) return nullptr;
     if (b.page1 != page1 || b.gen1 != gen1) return nullptr;
@@ -525,11 +526,14 @@ const Jit64Block* Jit64BlockCache::lookup(U64 rip, U64 page0, U32 gen0, U64 page
     return &b;
 }
 
-const Jit64Block* Jit64BlockCache::insert(U64 rip, U64 page0, U32 gen0, U64 page1, U32 gen1,
+Jit64Block* Jit64BlockCache::insert(U64 rip, U64 page0, U32 gen0, U64 page1, U32 gen1,
                                           const Jit64Op* ops, U32 nOps) {
     if (rip == 0 || !ops || nOps == 0) return nullptr;
     m_inserts++;
     Jit64Block& b = m_slots[slotFor(rip)].block;
+    // Slot overwrite frees the previous block's instantiated module, if any.
+    if (b.wasmIndex >= 0) jit64WasmRelease(b.wasmIndex);
+    b.wasmIndex = -1;
     b.startRip = rip;
     b.page0 = page0; b.gen0 = gen0;
     b.page1 = page1; b.gen1 = gen1;
@@ -544,11 +548,19 @@ const Jit64Block* Jit64BlockCache::insert(U64 rip, U64 page0, U32 gen0, U64 page
 void Jit64BlockCache::invalidate(U64 rip) {
     if (rip == 0) return;
     Jit64Block& b = m_slots[slotFor(rip)].block;
-    if (b.startRip == rip) b.startRip = 0;
+    if (b.startRip == rip) {
+        if (b.wasmIndex >= 0) jit64WasmRelease(b.wasmIndex);
+        b.startRip = 0;
+        b.wasmIndex = -1;
+    }
 }
 
 void Jit64BlockCache::clear() {
-    for (U32 i = 0; i < SLOTS; i++) m_slots[i].block = Jit64Block();
+    for (U32 i = 0; i < SLOTS; i++) {
+        Jit64Block& b = m_slots[i].block;
+        if (b.wasmIndex >= 0) jit64WasmRelease(b.wasmIndex);
+        b = Jit64Block();
+    }
     m_lookups = m_hits = m_inserts = 0;
 }
 

@@ -434,3 +434,48 @@ size, REP prefix, shifts, IMUL, >24 ops.
 Still deferred: runtime module instantiation/table-index glue
 (`boxedwine_wasm_instantiate_runtime_batch`), the inline-TLB fast path,
 shifts/IMUL/string-op/FPU emission, and interpreter/JIT timing gates.
+
+## 9. Verified continuation, 2026-10-05 (table-index glue + tryJitStep wiring)
+
+The runtime instantiation glue is implemented as a single-module
+`boxedwine_wasm_instantiate_runtime_batch`-shaped API in `include/jit64wasm.h`
+(batch/merge remain phase-4 work): `jit64WasmInstantiate(bytes, len)` returns
+a table index (>= 0) or -1; `jit64WasmCall(index, statePtr)` invokes the
+table entry's `execute(statePtr)`; `jit64WasmRelease(index)` frees a slot for
+reuse. Under `__EMSCRIPTEN__` these are real declarations implemented with
+synchronous `WebAssembly.Module`/`WebAssembly.Instance` in the new
+`source/emulation/cpu/jit64wasm_runtime.cpp` (EM_JS; imports only
+`env.memory`, satisfied with the host's own `wasmMemory`, so the state
+pointer is an ordinary wasm32 linear-memory address). Natively they are
+inline no-ops (`instantiate` returns -1, `jit64WasmAvailable()` is false), so
+`cpu64.cpp` and the section-GC lifetime test link without the runtime TU.
+
+A live emscripten probe (hand-built `execute` module storing `0x34` to
+`gpr[0]`) verified the full path: instantiate -> index 0, call writes
+through the imported memory to the host `Jit64WasmState`, release + re-
+instantiate reuses slot 0, malformed bytes return -1. The probe caught one
+real bug: `Module.HEAPU8` is not exported by default (`EXPORTED_RUNTIME_METHODS`
+abort) — the glue now copies via `wasmMemory.buffer` instead, no build-flag
+change needed.
+
+`CPU64::tryJitStep()` (cpu64.cpp/h) now prefers the wasm vehicle on cache
+hits when the whole block fits the caller's budget (`maxInsn >= n`, since the
+module always runs the full block and advances RIP): marshal GPRs/RIP/RFLAGS
+via `jit64WasmStateInit`, `jit64WasmCall`, `jit64WasmStateRead`, unmarshal
+back. Emission rejection is cached (`wasmIndex == -2`, never retried);
+transient instantiate failures fall through to `execBlock` and retry next
+entry. Soundness: emitted blocks are register-only (the emitter rejects any
+memory operand), so the page-generation check at cache lookup suffices — no
+mid-block invalidation rechecks. Everything is behind `BW64_JIT`; the
+interpreter stays the fallback. `Jit64Block::wasmIndex` (-1 untried / >= 0
+live / -2 rejected) is owned by `Jit64BlockCache`: slot overwrite,
+`invalidate()` and `clear()` release live modules. New `Jit64State::wasmBlocks`
+/`wasmInsns` counters; the selftest prints a `WASM64:` sentinel under
+`BW64_JIT_VERIFY=1` (fails if zero) and the driver strips it from the
+interpreter-vs-JIT diff like the existing `JIT64:` line.
+
+Native harness: **159 passed, 0 failed** (151 + 8 new glue/cache-lifecycle
+tests), zero warnings. `test-jit-lifetime.sh` passes in both modes.
+`scripts/build-jit-wasm.sh` runs the emscripten selftest with
+`BW64_JIT=1 BW64_JIT_VERIFY=1` and asserts a nonzero `WASM64:` sentinel; the
+`BW64_JIT=1` smoke must stay byte-identical to the interpreter baseline.

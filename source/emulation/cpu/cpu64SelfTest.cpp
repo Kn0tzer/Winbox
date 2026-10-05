@@ -39,6 +39,8 @@ struct TestResult {
     int failed = 0;
     U64 jitBlocks = 0;
     U64 jitInsns = 0;
+    U64 wasmBlocks = 0;
+    U64 wasmInsns = 0;
 };
 
 void loadCode(KMemory64& mem, U64 addr, const std::vector<U8>& bytes) {
@@ -69,6 +71,8 @@ void runAndCheck(TestResult& r, const char* name,
     if (cpu.jit()) {
         r.jitBlocks += cpu.jit()->blocksExecuted;
         r.jitInsns += cpu.jit()->insnsFast;
+        r.wasmBlocks += cpu.jit()->wasmBlocks;
+        r.wasmInsns += cpu.jit()->wasmInsns;
     }
     bool hung = (!cpu.yield && cpu.instructionCount >= INSN_LIMIT);
     if (hung) {
@@ -6436,6 +6440,12 @@ int runX64SelfTest() {
                (unsigned long long)r.jitBlocks, (unsigned long long)r.jitInsns);
         if (!r.jitBlocks || !r.jitInsns) {
             printf("  FAIL: required JIT path did not execute any blocks\n");
+            r.failed++;
+        }
+        printf("WASM64: blocks=%llu insns=%llu\n",
+               (unsigned long long)r.wasmBlocks, (unsigned long long)r.wasmInsns);
+        if (!r.wasmBlocks || !r.wasmInsns) {
+            printf("  FAIL: required wasm-module path did not execute any blocks\n");
             r.failed++;
         }
     }

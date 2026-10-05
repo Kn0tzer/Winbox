@@ -93,7 +93,8 @@ if ! BW64_JIT=1 BW64_JIT_VERIFY=1 node "$JS_CJS" --x64-selftest > "$BUILD_TMP/se
     exit 1
 fi
 grep -E '^JIT64: blocks=[1-9][0-9]* insns=[1-9][0-9]*$' "$BUILD_TMP/selftest_jit.log"
-sed '/^JIT64:/d' "$BUILD_TMP/selftest_jit.log" > "$BUILD_TMP/selftest_jit_results.log"
+grep -E '^WASM64: blocks=[1-9][0-9]* insns=[1-9][0-9]*$' "$BUILD_TMP/selftest_jit.log"
+sed -e '/^JIT64:/d' -e '/^WASM64:/d' "$BUILD_TMP/selftest_jit.log" > "$BUILD_TMP/selftest_jit_results.log"
 if diff -u "$BUILD_TMP/selftest_interp.log" "$BUILD_TMP/selftest_jit_results.log"; then
     echo "OK: BW64_JIT=1 output identical to interpreter baseline."
 else

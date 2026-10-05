@@ -213,6 +213,10 @@ public:
     // it against the interpreter BBlock path, then executes via execBlock so
     // semantics stay bit-identical; phase 2 will emit wasm from the plan.
     U32 tryJitStep(U64 maxInsn = ~0ULL);
+    // Phase-2 wasm vehicle for tryJitStep (source/emulation/cpu/cpu64.cpp).
+    // Returns nOps if the block ran in its instantiated wasm module, 0 to
+    // fall back to the interpreter. No-op (returns 0) on native builds.
+    U32 tryWasmExec(struct Jit64Block& block, U32 nOps);
     struct Jit64State* jit() { return m_jit; }
     const struct Jit64State* jit() const { return m_jit; }
     void ensureJit();
