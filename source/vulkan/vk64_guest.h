@@ -6022,8 +6022,7 @@ typedef struct VkRenderingAttachmentInfo {
     uint32_t resolveImageLayout;
     uint32_t loadOp;
     uint32_t storeOp;
-    uint64_t clearColor0;
-    uint64_t clearColor1;
+    uint32_t clearValue[4]; // VkClearValue is 4-byte aligned, at byte 52.
 } VkRenderingAttachmentInfo;
 
 typedef struct VkRenderingInfo {
@@ -7217,6 +7216,8 @@ static_assert(sizeof(VkOffset2D) == 8, "VkOffset2D layout drifted from x86-64 gu
 static_assert(sizeof(VkOffset3D) == 12, "VkOffset3D layout drifted from x86-64 guest ABI");
 static_assert(sizeof(VkExtent2D) == 8, "VkExtent2D layout drifted from x86-64 guest ABI");
 static_assert(sizeof(VkExtent3D) == 12, "VkExtent3D layout drifted from x86-64 guest ABI");
+static_assert(sizeof(VkRenderingAttachmentInfo) == 72, "VkRenderingAttachmentInfo guest size");
+static_assert(offsetof(VkRenderingAttachmentInfo, clearValue) == 52, "VkRenderingAttachmentInfo clear ABI");
 static_assert(sizeof(VkClearValue) == 16, "VkClearValue layout drifted from x86-64 guest ABI");
 static_assert(sizeof(VkFormatProperties) == 12, "VkFormatProperties layout drifted from x86-64 guest ABI");
 static_assert(sizeof(VkMemoryRequirements) == 24, "VkMemoryRequirements layout drifted from x86-64 guest ABI");

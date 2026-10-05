@@ -264,6 +264,7 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkGetPhysicalDeviceImageFormatProperties,  "vkGetPhysicalDeviceImageFormatProperties") \
     X(VK64_fn_vkGetPhysicalDeviceFormatProperties2,      "vkGetPhysicalDeviceFormatProperties2") \
     X(VK64_fn_vkCmdDrawIndexed,                          "vkCmdDrawIndexed") \
+    X(VK64_fn_vkCmdBindVertexBuffers2,                    "vkCmdBindVertexBuffers2") \
     X(VK64_fn_vkCmdBindVertexBuffers,                     "vkCmdBindVertexBuffers") \
     X(VK64_fn_vkCmdBindIndexBuffer,                       "vkCmdBindIndexBuffer")
 #define VK64_NAME_ENTRY(id, nm) { (U64)(id), nm },
@@ -434,6 +435,7 @@ struct PipelineLayout : Obj { U32 nsets = 0; U64 sets[VK64_MAX_SETS]; };
 struct Pipeline : Obj {
     U32 topology = 0, cull = 0, front = 0, depthTest = 0, depthWrite = 0, depthOp = 0, blend = 0;
     U32 nvb = 0, nva = 0;
+    bool dynamicVertexStride = false;
     U32 vbStride[VK64_MAX_VERT_BINDINGS] = {0};
     U32 vbInputRate[VK64_MAX_VERT_BINDINGS] = {0};    /* 0 = per vertex, 1 = per instance */
     U32 vaBinding[VK64_MAX_VERT_ATTRIBS] = {0};       /* VkVertexInputAttributeDescription */
@@ -468,6 +470,10 @@ struct Cmd {
     U64 a = 0, b = 0, c = 0, d = 0;
     float f[8] = {0};
     double clearDepth = 1.0;
+    U32 vbCount = 0;
+    U64 vbBuffers[VK64_MAX_VERT_BINDINGS] = {0}, vbOffsets[VK64_MAX_VERT_BINDINGS] = {0};
+    U32 vbStrides[VK64_MAX_VERT_BINDINGS] = {0};
+    bool vbHasStride[VK64_MAX_VERT_BINDINGS] = {false};
     Copy  copy;
     // Push constants: the recorded bytes, byte-offset preserved. DXVK pushes
     // constants per-draw for essentially everything, so this is a hot path, not a
@@ -491,12 +497,18 @@ struct CmdBuf : Obj {
     // v2: vertex/index buffer tables (DXVK draws indexed almost exclusively).
     U64  vbs[VK64_MAX_VERT_BINDINGS] = {0};
     U64  vbOff[VK64_MAX_VERT_BINDINGS] = {0};
+    U32 vbStride[VK64_MAX_VERT_BINDINGS] = {0};
+    bool vbHasStride[VK64_MAX_VERT_BINDINGS] = {false};
+    std::vector<U64> dynamicObjects; // Synthetic attachments live with the recording.
+    ~CmdBuf() override { for (U64 id : dynamicObjects) dropObj(id); }
     U32  nvb = 0;
     U64  ib = 0, ibOff = 0;
     U32  ibType = 0;   // 0 = uint16, 1 = uint32
 };
 CmdBuf* cbOf(U64 id, const char* who) { return objOf<CmdBuf>(id, K_CMDBUF, who); }
 void resetCmdBuf(CmdBuf* cb) {
+    for (U64 id : cb->dynamicObjects) dropObj(id);
+    cb->dynamicObjects.clear();
     cb->cmds.clear();
     cb->pipe = 0;
     cb->haveVp = cb->haveSci = false;
@@ -505,6 +517,8 @@ void resetCmdBuf(CmdBuf* cb) {
     memset(cb->sci, 0, sizeof(cb->sci));
     memset(cb->vbs, 0, sizeof(cb->vbs));
     memset(cb->vbOff, 0, sizeof(cb->vbOff));
+    memset(cb->vbStride, 0, sizeof(cb->vbStride));
+    memset(cb->vbHasStride, 0, sizeof(cb->vbHasStride));
     cb->nvb = 0;
     cb->ib = 0; cb->ibOff = 0; cb->ibType = 0;
 }
@@ -1404,6 +1418,9 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 }
             }
         };
+        U64 activePipe = 0;
+        U32 vertexStrides[VK64_MAX_VERT_BINDINGS] = {0};
+        bool vertexHasStride[VK64_MAX_VERT_BINDINGS] = {false};
         auto emitPipeline = [&](U64 pipeId) {
             Pipeline* pipe = objOf<Pipeline>(pipeId, K_PIPELINE, "vkQueueSubmit");
             if (!pipe) return;
@@ -1419,7 +1436,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 p.u32(pipe->blend);
                 p.u32(pipe->nvb); p.u32(pipe->nva);
                 for (U32 i = 0; i < pipe->nvb; i++) {
-                    p.u32(i); p.u32(pipe->vbStride[i]); p.u32(pipe->vbInputRate[i]);
+                    p.u32(i); p.u32(pipe->dynamicVertexStride && vertexHasStride[i] ? vertexStrides[i] : pipe->vbStride[i]); p.u32(pipe->vbInputRate[i]);
                 }
                 for (U32 i = 0; i < pipe->nva; i++) {
                     p.u32(pipe->vaLocation[i]); p.u32(pipe->vaBinding[i]);
@@ -1456,7 +1473,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             switch (k.kind) {
                 case CMD_BEGIN_RP: emitRpBegin(k); break;
                 case CMD_END_RP:   emit(V2_RP_END, [](ChunkWriter&) {}); break;
-                case CMD_BIND_PIPE: emitPipeline(k.a); break;
+                case CMD_BIND_PIPE: activePipe = k.a; emitPipeline(k.a); break;
                 case CMD_BIND_SETS: {
                     U32 first = (U32)k.a, count = (U32)k.b;
                     if (first >= VK64_MAX_SETS) break;
@@ -1489,15 +1506,19 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     break;
                 case CMD_BIND_VB: {
                     emit(V2_VERTEX_BIND, [&](ChunkWriter& p) {
-                        p.u8(st->nvb); p.u8(0); p.u16(0);
-                        for (U32 i = 0; i < st->nvb; i++) {
-                            p.u32(i); p.u64(st->vbs[i]); p.u64(st->vbOff[i]);
+                        p.u8(k.vbCount); p.u8(0); p.u16(0);
+                        for (U32 i = 0; i < k.vbCount; i++) {
+                            p.u32(i); p.u64(k.vbBuffers[i]); p.u64(k.vbOffsets[i]);
                         }
                     });
-                    for (U32 i = 0; i < st->nvb; i++) {
-                        Buffer* vb = objOf<Buffer>(st->vbs[i], K_BUFFER, "vkQueueSubmit");
-                        if (vb && vb->size) emitBufferData(st->vbs[i], vb->memOff, vb->size);
+                    memcpy(vertexStrides, k.vbStrides, sizeof(vertexStrides));
+                    memcpy(vertexHasStride, k.vbHasStride, sizeof(vertexHasStride));
+                    for (U32 i = 0; i < k.vbCount; i++) {
+                        Buffer* vb = objOf<Buffer>(k.vbBuffers[i], K_BUFFER, "vkQueueSubmit");
+                        if (vb && vb->size) emitBufferData(k.vbBuffers[i], vb->memOff, vb->size);
                     }
+                    auto* pipe = activePipe ? objOf<Pipeline>(activePipe, K_PIPELINE, "vkQueueSubmit") : nullptr;
+                    if (pipe && pipe->dynamicVertexStride) emitPipeline(activePipe);
                     break;
                 }
                 case CMD_BIND_IB: {
@@ -2775,6 +2796,14 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                     p->vaOffset[a] = vas[a].offset;
                 }
             }
+            VkPipelineDynamicStateCreateInfo dynamic = {};
+            if (readStruct(ci.pDynamicState, dynamic)) {
+                std::vector<VkDynamicState> states;
+                readArray(dynamic.pDynamicStates, dynamic.dynamicStateCount, states);
+                for (auto state : states)
+                    if (state == VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE)
+                        p->dynamicVertexStride = true;
+            }
             std::vector<VkPipelineColorBlendAttachmentState> blends;
             readArray(cbs.pAttachments, cbs.attachmentCount ? 1 : 0, blends);
             p->blend = (!blends.empty() && blends[0].blendEnable) ? 1 : 0;
@@ -3367,36 +3396,39 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkCmdBeginRendering:
     case VK64_fn_vkCmdBeginRenderingKHR: {
-        // (cmdBuf, pRenderingInfo*) — Vulkan 1.3 dynamic rendering. DXVK uses
-        // this instead of render passes when available. We record it as a
-        // BEGIN_RP with the first color attachment's image view as the target.
-        klog_fmt("vk64: BEGIN_RENDERING_CALLED cb=0x%llx", (unsigned long long)args.a[0]);
         CmdBuf* cb = cbOf(args.a[0], "vkCmdBeginRendering");
         VkRenderingInfo ri = {};
-        if (!cb || !readStruct(args.a[1], ri)) { klog("vk64: BEGIN_RENDERING_FAILED"); return 0; }
-        U64 fbView = 0;
-        if (ri.colorAttachmentCount > 0 && ri.pColorAttachments) {
+        if (!cb || !readStruct(args.a[1], ri)) return 0;
+        U64 rpId = 0, fbId = 0;
+        auto* rp = createObj<RenderPass>(K_RENDERPASS, rpId);
+        auto* fb = createObj<Framebuffer>(K_FRAMEBUFFER, fbId);
+        cb->dynamicObjects.push_back(rpId);
+        cb->dynamicObjects.push_back(fbId);
+        fb->rp = rpId; fb->w = ri.renderAreaWidth; fb->h = ri.renderAreaHeight;
+        Cmd c; c.kind = CMD_BEGIN_RP; c.a = rpId; c.b = fbId;
+        auto attachment = [&](U64 address, bool depth) {
             VkRenderingAttachmentInfo att = {};
-            if (readStruct(ri.pColorAttachments, att)) {
-                fbView = att.imageView;
-            }
-        }
-        klog_fmt("vk64: BEGIN_RENDERING view=0x%llx", (unsigned long long)fbView);
-        // Dynamic rendering has no VkFramebuffer; synthesize one wrapping the
-        // image view so the frame builder finds it via objOf(K_FRAMEBUFFER).
-        U64 fbId = 0;
-        if (fbView) {
-            Framebuffer* fb = createObj<Framebuffer>(K_FRAMEBUFFER, fbId);
-            fb->natt = 1;
-            fb->views[0] = fbView;
-            fb->w = ri.renderAreaWidth;
-            fb->h = ri.renderAreaHeight;
-        }
-        Cmd c;
-        c.kind = CMD_BEGIN_RP;
-        c.a = 0;  // no render pass object in dynamic rendering
-        c.b = fbId;  // synthetic framebuffer ID
-        // TODO: extract clear values from attachments
+            if (!address || fb->natt >= VK64_MAX_ATTACH || !readStruct(address, att)) return;
+            auto* view = objOf<ImageView>(att.imageView, K_IMAGEVIEW, "vkCmdBeginRendering");
+            if (!view) return;
+            auto* image = objOf<Image>(view->image, K_IMAGE, "vkCmdBeginRendering");
+            U32 i = fb->natt++;
+            fb->views[i] = att.imageView;
+            rp->formats[i] = view->format ? view->format : (image ? image->format : 0);
+            rp->loadOps[i] = att.loadOp; rp->storeOps[i] = att.storeOp;
+            rp->samples[i] = image && image->samples ? image->samples : 1;
+            if (depth) {
+                float value; memcpy(&value, att.clearValue, 4); c.clearDepth = value;
+                rp->depthFmt = rp->formats[i];
+            } else if (i == 0) memcpy(c.f, att.clearValue, 16);
+        };
+        U32 colors = std::min(ri.colorAttachmentCount, (U32)VK64_MAX_ATTACH);
+        for (U32 i = 0; i < colors && ri.pColorAttachments; ++i)
+            attachment(ri.pColorAttachments + (U64)i * sizeof(VkRenderingAttachmentInfo), false);
+        attachment(ri.pDepthAttachment, true);
+        // Packed depth/stencil shares one image view and one replay attachment.
+        if (!ri.pDepthAttachment) attachment(ri.pStencilAttachment, true);
+        rp->natt = fb->natt;
         pushCmd(cb, c);
         return 0;
     }
@@ -3482,7 +3514,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         pushCmd(cb, c);
         return 0;
     }
-    case VK64_fn_vkCmdBindVertexBuffers: {
+    case VK64_fn_vkCmdBindVertexBuffers:
+    case VK64_fn_vkCmdBindVertexBuffers2: {
         // (cmdBuf, firstBinding, bindingCount, pBuffers*, pOffsets*)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdBindVertexBuffers");
         if (!cb) return 0;
@@ -3492,12 +3525,21 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         for (U32 i = 0; i < count; i++) {
             cb->vbs[first + i] = rd64(args.a[3] + (U64)i * 8);
             cb->vbOff[first + i] = rd64(args.a[4] + (U64)i * 8);
+            if (fnId == VK64_fn_vkCmdBindVertexBuffers2 && args.a[6]) {
+                cb->vbStride[first + i] = (U32)rd64(args.a[6] + (U64)i * 8);
+                cb->vbHasStride[first + i] = true;
+            }
         }
         U32 end = first + count;
         if (end > cb->nvb) cb->nvb = end;
         Cmd c;
         c.kind = CMD_BIND_VB;
         c.a = first; c.b = count;
+        c.vbCount = cb->nvb;
+        memcpy(c.vbBuffers, cb->vbs, sizeof(c.vbBuffers));
+        memcpy(c.vbOffsets, cb->vbOff, sizeof(c.vbOffsets));
+        memcpy(c.vbStrides, cb->vbStride, sizeof(c.vbStrides));
+        memcpy(c.vbHasStride, cb->vbHasStride, sizeof(c.vbHasStride));
         pushCmd(cb, c);
         return 0;
     }

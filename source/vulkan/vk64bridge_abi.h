@@ -280,6 +280,7 @@ enum {
     // vkd3d supporting calls: append-only, separately from inherited extras.
     VK64_fn_vkFlushMappedMemoryRanges = 800,       // (device, count, pRanges*)
     VK64_fn_vkInvalidateMappedMemoryRanges,       // (device, count, pRanges*)
+    VK64_fn_vkCmdBindVertexBuffers2,
     VK64_fn__MAX
 };
 

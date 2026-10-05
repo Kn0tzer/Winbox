@@ -71,6 +71,12 @@ void vkDestroyCommandPool(U64, U64, const void*);
 void vkFreeCommandBuffers(U64, U64, U32, const U64*);
 int vkBeginCommandBuffer(U64, const void*);
 void vkCmdDraw(U64, U32, U32, U32, U32);
+void vkCmdBeginRendering(U64, const void*);
+void vkCmdEndRendering(U64);
+void vkCmdBindPipeline(U64, U32, U64);
+int vkCreateGraphicsPipelines(U64, U64, U32, const void*, const void*, void*);
+void vkCmdBindVertexBuffers2(U64, U32, U32, const U64*, const U64*, const U64*, const U64*);
+void vkCmdBindVertexBuffers2EXT(U64, U32, U32, const U64*, const U64*, const U64*, const U64*);
 }
 int main() {
     g_mem = &memory;
@@ -158,7 +164,139 @@ int main() {
     tracked->tokens.emplace_back(); tracked->tokens[0].count = &destroyedMembers;
     dropObj(trackedId);
     assert(destroyedMembers == 1); // Base deletion must reclaim derived vector elements.
+    // Build the producer input using Vulkan x86-64 byte offsets, rather than
+    // the bridge typedefs: this catches an internally consistent but wrong ABI.
+    U64 dynamicCbId; auto* dynamicCb = createObj<CmdBuf>(K_CMDBUF, dynamicCbId);
+    U64 imageId; auto* image = createObj<Image>(K_IMAGE, imageId);
+    image->format = 44; image->samples = 4;
+    U64 viewId; auto* view = createObj<ImageView>(K_IMAGEVIEW, viewId);
+    view->image = imageId; view->format = 44; view->aspect = 1;
+    U8 attachment[72] = {}, rendering[72] = {};
+    auto put32 = [](U8* bytes, size_t at, U32 value) { memcpy(bytes + at, &value, 4); };
+    auto put64 = [](U8* bytes, size_t at, U64 value) { memcpy(bytes + at, &value, 8); };
+    put64(attachment, 16, viewId); put32(attachment, 44, 1); put32(attachment, 48, 0);
+    float clear[4] = {0.125f, 0.25f, 0.5f, 1.0f};
+    memcpy(attachment + 52, clear, sizeof(clear));
+    put32(rendering, 28, 480); put32(rendering, 32, 360);
+    put32(rendering, 36, 1); put32(rendering, 44, 1); put64(rendering, 48, 1536);
+    memory.memcpyToGuest(1536, attachment, sizeof(attachment));
+    memory.memcpyToGuest(1664, rendering, sizeof(rendering));
+    vkCmdBeginRendering(dynamicCbId, (void*)1664);
+    vkCmdDraw(dynamicCbId, 3, 1, 0, 0); vkCmdEndRendering(dynamicCbId);
+    serializeSubmitV2({{dynamicCb, dynamicCbId}});
+    assert(!g_v2Pending.empty());
+    unsigned rpBegins = 0;
+    for (const auto& chunk : g_v2Pending.back().chunks) {
+        for (size_t at = 16; at < chunk.size();) {
+            U32 type, len; memcpy(&type, chunk.data() + at, 4); memcpy(&len, chunk.data() + at + 4, 4);
+            assert(at + 8 + len <= chunk.size());
+            if (type == V2_RP_BEGIN) {
+                ++rpBegins;
+                U32 count, format, load, store, samples;
+                memcpy(&count, chunk.data() + at + 8 + 24, 4);
+                memcpy(&format, chunk.data() + at + 8 + 28, 4);
+                memcpy(&load, chunk.data() + at + 8 + 32, 4);
+                memcpy(&store, chunk.data() + at + 8 + 36, 4);
+                memcpy(&samples, chunk.data() + at + 8 + 40, 4);
+                assert(count == 1 && format == 44 && load == 1 && store == 0 && samples == 4);
+                assert(memcmp(chunk.data() + at + 8 + 48, clear, 16) == 0);
+            }
+            at += 8 + len;
+        }
+    }
+    assert(rpBegins == 1); // Dynamic rendering must not silently drop RP_BEGIN.
+    g_v2Pending.clear();
+    const auto syntheticIds = dynamicCb->dynamicObjects;
+    resetCmdBuf(dynamicCb);
+    for (auto id : syntheticIds) assert(g_objs.count(id) == 0);
+    assert(vkGetDeviceProcAddr(0, "vkCmdBindVertexBuffers2") ==
+           reinterpret_cast<void(*)()>(vkCmdBindVertexBuffers2));
+    assert(vkGetDeviceProcAddr(0, "vkCmdBindVertexBuffers2EXT") ==
+           reinterpret_cast<void(*)()>(vkCmdBindVertexBuffers2EXT));
+    U64 vertexMemoryId; auto* vertexMemory = createObj<DeviceMemory>(K_MEMORY, vertexMemoryId);
+    vertexMemory->size = 128; vertexMemory->va = memory.mmapReserveAndMap(128, 3);
+    U64 vertexId; auto* vertex = createObj<Buffer>(K_BUFFER, vertexId);
+    vertex->size = 128; vertex->mem = vertexMemoryId;
+    for (U32 i = 0; i < 128; ++i) memory.bytes[vertexMemory->va + i] = i;
+    VkVertexInputBindingDescription binding{0, 0, VK_VERTEX_INPUT_RATE_VERTEX};
+    VkVertexInputAttributeDescription attribute{0, 0, (VkFormat)109, 0};
+    VkPipelineVertexInputStateCreateInfo vertexInfo{};
+    vertexInfo.vertexBindingDescriptionCount = 1; vertexInfo.pVertexBindingDescriptions = 1920;
+    vertexInfo.vertexAttributeDescriptionCount = 1; vertexInfo.pVertexAttributeDescriptions = 1952;
+    VkPipelineDynamicStateCreateInfo dynamicInfo{};
+    dynamicInfo.dynamicStateCount = 1; dynamicInfo.pDynamicStates = 1984;
+    VkDynamicState dynamicState = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE;
+    VkGraphicsPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.pVertexInputState = 2048; pipelineInfo.pDynamicState = 2176;
+    memory.memcpyToGuest(1920, &binding, sizeof(binding));
+    memory.memcpyToGuest(1952, &attribute, sizeof(attribute));
+    memory.memcpyToGuest(1984, &dynamicState, sizeof(dynamicState));
+    memory.memcpyToGuest(2048, &vertexInfo, sizeof(vertexInfo));
+    memory.memcpyToGuest(2176, &dynamicInfo, sizeof(dynamicInfo));
+    memory.memcpyToGuest(2304, &pipelineInfo, sizeof(pipelineInfo));
+    assert(vkCreateGraphicsPipelines(deviceId, 0, 1, (void*)2304, nullptr, (void*)2560) == VK_SUCCESS);
+    U64 pipelineId = memory.readq(2560);
+    auto* pipeline = objOf<Pipeline>(pipelineId, K_PIPELINE, "test");
+    assert(pipeline->dynamicVertexStride && pipeline->nvb == 1 && pipeline->nva == 1);
+    vkCmdBeginRendering(dynamicCbId, (void*)1664);
+    memory.writeq(1800, vertexId); memory.writeq(1816, 8); memory.writeq(1832, 20);
+    vkCmdBindVertexBuffers2(dynamicCbId, 0, 1, (U64*)1800, (U64*)1816, nullptr, (U64*)1832);
+    vkCmdBindPipeline(dynamicCbId, 0, pipelineId);
+    vkCmdDraw(dynamicCbId, 3, 1, 0, 0);
+    memory.writeq(1816, 16); memory.writeq(1832, 24);
+    vkCmdBindVertexBuffers2EXT(dynamicCbId, 0, 1, (U64*)1800, (U64*)1816, nullptr, (U64*)1832);
+    vkCmdDraw(dynamicCbId, 3, 1, 0, 0); vkCmdEndRendering(dynamicCbId);
+    serializeSubmitV2({{dynamicCb, dynamicCbId}});
+    std::vector<U32> emittedStrides;
+    std::vector<U64> emittedOffsets;
+    unsigned bufferRecords = 0;
+    for (const auto& chunk : g_v2Pending.back().chunks) {
+        for (size_t at = 16; at < chunk.size();) {
+            U32 type, len; memcpy(&type, chunk.data() + at, 4); memcpy(&len, chunk.data() + at + 4, 4);
+            const U8* p = chunk.data() + at + 8;
+            if (type == V2_PIPELINE) {
+                U32 stride; memcpy(&stride, p + 64, 4); emittedStrides.push_back(stride);
+            }
+            if (type == V2_VERTEX_BIND) {
+                U64 offset; memcpy(&offset, p + 16, 8); emittedOffsets.push_back(offset);
+            }
+            if (type == V2_BUFFER_DATA) {
+                ++bufferRecords;
+                assert(len == 148 && memcmp(p + 20, memory.bytes.data() + vertexMemory->va, 128) == 0);
+            }
+            at += 8 + len;
+        }
+    }
+    assert((emittedStrides == std::vector<U32>{20, 24}));
+    assert((emittedOffsets == std::vector<U64>{8, 16}));
+    assert(bufferRecords == 1); // Same data transfers once, while binding state stays per command.
+    resetCmdBuf(dynamicCb);
+    assert(!dynamicCb->vbHasStride[0] && !dynamicCb->vbStride[0]);
+    g_v2Pending.clear();
+    // Depth attachment has its own load/store and clear value, rather than
+    // borrowing color metadata. It must occupy an explicit depth entry.
+    U64 depthImageId; auto* depthImage = createObj<Image>(K_IMAGE, depthImageId);
+    depthImage->format = 126; depthImage->samples = 4;
+    U64 depthViewId; auto* depthView = createObj<ImageView>(K_IMAGEVIEW, depthViewId);
+    depthView->image = depthImageId; depthView->format = 126; depthView->aspect = 2;
+    U8 depthAttachment[72] = {};
+    put64(depthAttachment, 16, depthViewId); put32(depthAttachment, 44, 1); put32(depthAttachment, 48, 1);
+    float depthClear = 0.375f; memcpy(depthAttachment + 52, &depthClear, 4);
+    put64(rendering, 56, 2688);
+    memory.memcpyToGuest(2688, depthAttachment, sizeof(depthAttachment));
+    memory.memcpyToGuest(1664, rendering, sizeof(rendering));
+    vkCmdBeginRendering(dynamicCbId, (void*)1664);
+    auto& begin = dynamicCb->cmds.back();
+    auto* dynamicFb = objOf<Framebuffer>(begin.b, K_FRAMEBUFFER, "test");
+    auto* dynamicRp = objOf<RenderPass>(begin.a, K_RENDERPASS, "test");
+    assert(dynamicFb->natt == 2 && dynamicFb->views[1] == depthViewId);
+    assert(dynamicRp->formats[1] == 126 && dynamicRp->samples[1] == 4);
+    assert(begin.clearDepth == 0.375 && dynamicRp->loadOps[1] == 1 && dynamicRp->storeOps[1] == 1);
+    auto cleanupIds = dynamicCb->dynamicObjects;
+    dropObj(dynamicCbId);
+    for (auto id : cleanupIds) assert(!g_objs.count(id));
     while (!g_objs.empty()) dropObj(g_objs.begin()->first);
+    puts("PASS: dynamic rendering attachment ABI, manifest metadata, stride/binding snapshots, cleanup");
     puts("PASS: command-pool isolation, child destruction, full reset, virtual destruction");
     puts("PASS: WithCount viewport/scissor core+EXT and coherent mapped ranges");
 }

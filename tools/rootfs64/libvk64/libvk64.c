@@ -214,6 +214,7 @@ enum {
 
     VK64_fn_vkFlushMappedMemoryRanges = 800,
     VK64_fn_vkInvalidateMappedMemoryRanges,
+    VK64_fn_vkCmdBindVertexBuffers2,
     VK64_fn__MAX
 };
 
@@ -843,6 +844,23 @@ API void vkCmdBindVertexBuffers(VkCommandBuffer cb, uint32_t firstBinding, uint3
     a.a[0] = cb; a.a[1] = firstBinding; a.a[2] = bindingCount; a.a[3] = P(buffers); a.a[4] = P(offsets);
     (void)vk64_trap(VK64_fn_vkCmdBindVertexBuffers, &a);
 }
+API void vkCmdBindVertexBuffers2(VkCommandBuffer cb, uint32_t first, uint32_t count,
+    const VkBuffer* buffers, const VkDeviceSize* offsets, const VkDeviceSize* sizes,
+    const VkDeviceSize* strides) {
+    VK64Args a = {{(uint64_t)cb, first, count, (uint64_t)(uintptr_t)buffers,
+        (uint64_t)(uintptr_t)offsets, (uint64_t)(uintptr_t)sizes, (uint64_t)(uintptr_t)strides}};
+    (void)vk64_trap(VK64_fn_vkCmdBindVertexBuffers2, &a);
+}
+API void vkCmdBindVertexBuffers2KHR(VkCommandBuffer cb, uint32_t first, uint32_t count,
+    const VkBuffer* buffers, const VkDeviceSize* offsets, const VkDeviceSize* sizes,
+    const VkDeviceSize* strides) {
+    vkCmdBindVertexBuffers2(cb, first, count, buffers, offsets, sizes, strides);
+}
+API void vkCmdBindVertexBuffers2EXT(VkCommandBuffer cb, uint32_t first, uint32_t count,
+    const VkBuffer* buffers, const VkDeviceSize* offsets, const VkDeviceSize* sizes,
+    const VkDeviceSize* strides) {
+    vkCmdBindVertexBuffers2(cb, first, count, buffers, offsets, sizes, strides);
+}
 API void vkCmdBindIndexBuffer(VkCommandBuffer cb, VkBuffer buffer, uint64_t offset, uint32_t indexType) {
     VK64Args a = {{0}};
     a.a[0] = cb; a.a[1] = buffer; a.a[2] = offset; a.a[3] = indexType;
@@ -1039,6 +1057,9 @@ static const struct procEntry g_procs[] = {
     E(vkCmdDraw, VK64_fn_vkCmdDraw),
     E(vkCmdDrawIndexed, VK64_fn_vkCmdDrawIndexed),
     E(vkCmdBindVertexBuffers, VK64_fn_vkCmdBindVertexBuffers),
+    E(vkCmdBindVertexBuffers2, VK64_fn_vkCmdBindVertexBuffers2),
+    E(vkCmdBindVertexBuffers2KHR, VK64_fn_vkCmdBindVertexBuffers2),
+    E(vkCmdBindVertexBuffers2EXT, VK64_fn_vkCmdBindVertexBuffers2),
     E(vkCmdBindIndexBuffer, VK64_fn_vkCmdBindIndexBuffer),
     E(vkCmdPushConstants, VK64_fn_vkCmdPushConstants),
     E(vkCmdPipelineBarrier, VK64_fn_vkCmdPipelineBarrier),
@@ -1265,8 +1286,7 @@ TAIL(vkCmdEndConditionalRenderingEXT)
 TAIL(vkCmdNextSubpass2KHR)
 TAIL(vkCmdNextSubpass2)
 TAIL(vkCmdDrawIndirectByteCountEXT)
-TAIL(vkCmdBindVertexBuffers2)
-TAIL(vkCmdBindVertexBuffers2KHR)
+
 TAIL(vkTrimCommandPoolKHR)
 TAIL(vkTrimCommandPool)
 TAIL(vkCreateFramebuffer2KHR)
