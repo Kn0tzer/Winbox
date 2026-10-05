@@ -3187,7 +3187,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkEndCommandBuffer: {
         CmdBuf* cb = cbOf(args.a[0], "vkEndCommandBuffer");
-        klog_fmt("vk64: vkEndCommandBuffer ncmd=%u", cb ? (unsigned)cb->cmds.size() : 0);
+        klog_fmt("vk64: vkEndCommandBuffer cb=0x%llx ncmd=%u", (unsigned long long)args.a[0], cb ? (unsigned)cb->cmds.size() : 0);
         return VK_SUCCESS;
     }
     case VK64_fn_vkCmdBeginRenderPass: {
