@@ -12,21 +12,26 @@
  * never drops to explorer-only and the close timeout never arms. Zero CPU
  * cost, all wine binaries stay stock.
  *
- * Two hard-won lessons encoded below (Oct 2026 diagnostics):
+ * Three hard-won lessons encoded below (Oct 2026 diagnostics):
  *  1. RETRY window creation. deskpin is spawned early in boot, before
  *     winex11.drv/explorer are reliably up; the first CreateWindowExA often
  *     fails with nodrv_CreateWindow ("The explorer process failed to start").
  *     Exiting then defeats the whole purpose — so retry for up to 10 min.
  *  2. Do NOT pump messages. A blocking GetMessage loop terminates this
  *     process within seconds under Boxedwine (diagnosed via pid-tagged
- *     builds: window+GetMessage dies via exit_group(0), window+Sleep lives).
- *     The hidden window needs no input processing; its existence pins the
- *     desktop, so Sleep-forever is correct and sufficient.
+ *     builds: window+GetMessage dies via exit_group(0),
+ *     window+Sleep lives). The hidden window needs no input processing; its
+ *     existence pins the desktop, so Sleep-forever is correct and sufficient.
+ *  3. Use SHORT sleeps with periodic activity. A tight Sleep(60000) loop
+ *     exits under Boxedwine (diagnosed Oct 2026); window + Sleep(30000)
+ *     with periodic OutputDebugString survives 180s+. The logging keeps the
+ *     thread visibly active to the scheduler.
  *
  * Build: x86_64-w64-mingw32-gcc -O2 -mwindows -o deskpin.exe deskpin.c
  * The launcher spawns it right after the session comes up (wine64-launcher.js).
  */
 #include <windows.h>
+#include <stdio.h>
 
 static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l)
 {
@@ -40,6 +45,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     WNDCLASSA wc = {0};
     HWND hw = NULL;
     int i;
+    char buf[128];
 
     (void)prev; (void)cmd; (void)show;
     wc.lpfnWndProc = wndProc;
@@ -53,9 +59,15 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
                              0, 0, 1, 1, NULL, NULL, inst, NULL);
         if (!hw) Sleep(1000);
     }
-    /* Sleep forever regardless: even if the window could not be created
-     * (e.g. novideo headless), exiting would drop the desktop user count and
-     * arm the close timeout. See header NOTE (2): do not use GetMessage. */
-    for (;;) Sleep(60000);
+    /* Sleep forever with periodic activity (see header NOTE 3).
+     * Even if the window could not be created (e.g. novideo headless),
+     * exiting would drop the desktop user count and arm the close timeout. */
+    i = 0;
+    for (;;) {
+        Sleep(30000);
+        /* Periodic heartbeat: keeps the thread active under Boxedwine. */
+        wsprintfA(buf, "deskpin: alive %d (hw=%p)\n", i++, hw);
+        OutputDebugStringA(buf);
+    }
     return 0;
 }
