@@ -897,6 +897,7 @@ export function decodeV2Frame(records, counters = {}) {
             binding: r.u32(), type: r.u32(), dstArrayElement: r.u32(), count: r.u32(),
             kind: r.u8(), _pad1: r.u8(), _pad2: r.u16(),
             obj: v2Hex64(r.u64()), range: v2Hex64(r.u64()),
+            bufOff: r.u64().toString(),
           });
         }
         r.done('DESC_SET');
@@ -905,10 +906,14 @@ export function decodeV2Frame(records, counters = {}) {
       }
       case V2_REC.BUFFER_DATA: {
         const bufId = v2Hex64(r.u64());
-        r.skip(8); // offset (kept for debugging; lookup is by buffer id)
+        const memOff = r.u64().toString();
         const len = r.u32();
         if (len > V2_MAX_RECORD_BYTES) throw new Error('vk64: v2 BUFFER_DATA len out of range');
         const bytes = r.bytes(len); r.done('BUFFER_DATA');
+        // One VkBuffer may back several bindings at different offsets; key by
+        // (id, offset). Keep the bare-id key (first record) for VB/IB lookups.
+        const key = bufId + ':' + memOff;
+        if (!frame.buffers.has(key)) frame.buffers.set(key, bytes.slice());
         if (!frame.buffers.has(bufId)) frame.buffers.set(bufId, bytes.slice());
         break;
       }
@@ -1409,7 +1414,11 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
         const mk = k => {
           const b = bindingForElement(bindings, d.binding, k);
           let bytes = null, bufHex = null;
-          if (b && b.kind === 1) { bufHex = b.obj; bytes = F.buffers.get(bufHex); }
+          if (b && b.kind === 1) {
+            bufHex = b.obj;
+            // Offset-qualified: one VkBuffer may back several uniform ranges.
+            bytes = F.buffers.get(bufHex + ':' + (b.bufOff || '0')) || F.buffers.get(bufHex);
+          }
           else if (b && b.kind === 4) { bufHex = 'inline:' + group + ':' + d.binding + ':' + k; bytes = inlineMap.get(group + ':' + d.binding); }
           // Missing uniform data: substitute a zero buffer large enough for any
           // practical uniform block (WebGPU validates against the shader's struct).

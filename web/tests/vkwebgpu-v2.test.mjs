@@ -61,13 +61,13 @@ function dxvkFrame(frameNo = 7) {
   // set 0: uniform buffer + 3-element sampled-image array + sampler
   R.push(rec(V2_REC.DESC_SET, cat(
     new W().u8(0).u8(3).u16(0).u64(0x1eaf).buf(),
-    new W().u32(0).u32(6).u32(0).u32(1).u8(1).u8(0).u16(0).u64(0xb001).u64(128).buf(),   // binding 0: UBO
-    new W().u32(1).u32(2).u32(0).u32(3).u8(2).u8(0).u16(0).u64(0x9e9).u64(0).buf(),       // binding 1: 3 sampled images
-    new W().u32(2).u32(0).u32(0).u32(1).u8(3).u8(0).u16(0).u64(0x5a5a).u64(0).buf()       // binding 2: sampler
+    new W().u32(0).u32(6).u32(0).u32(1).u8(1).u8(0).u16(0).u64(0xb001).u64(128).u64(0).buf(),   // binding 0: UBO
+    new W().u32(1).u32(2).u32(0).u32(3).u8(2).u8(0).u16(0).u64(0x9e9).u64(0).u64(0).buf(),       // binding 1: 3 sampled images
+    new W().u32(2).u32(0).u32(0).u32(1).u8(3).u8(0).u16(0).u64(0x5a5a).u64(0).u64(0).buf()       // binding 2: sampler
   )));
   R.push(rec(V2_REC.DESC_SET, cat(
     new W().u8(1).u8(1).u16(0).u64(0x2eaf).buf(),
-    new W().u32(0).u32(1000138000).u32(0).u32(16).u8(4).u8(0).u16(0).u64(0xdead).u64(16).buf() // inline uniform block
+    new W().u32(0).u32(1000138000).u32(0).u32(16).u8(4).u8(0).u16(0).u64(0xdead).u64(16).u64(0).buf() // inline uniform block
   )));
   R.push(rec(V2_REC.BUFFER_DATA, cat(new W().u64(0xb001).u64(0).u32(8).buf(), new Uint8Array([9, 9, 9, 9, 9, 9, 9, 9]))));
   R.push(rec(V2_REC.IMAGE_DATA, cat(

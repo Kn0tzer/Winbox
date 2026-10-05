@@ -1416,9 +1416,18 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                         case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK: kind = 4; break;
                         default: break;
                     }
+                    // Absolute byte offset of this binding's range, matching
+                    // V2_BUFFER_DATA's memOff. One VkBuffer may back several
+                    // uniform bindings at different offsets (DXVK sub-allocates
+                    // D3D9 constants); the page keys captures by (id, offset).
+                    U64 absOff = 0;
+                    if (kind == 1) {
+                        Buffer* bbuf = objOf<Buffer>(b.obj, K_BUFFER, "vkQueueSubmit");
+                        if (bbuf) absOff = bbuf->memOff + b.bufOff;
+                    }
                     p.u32(b.binding); p.u32(b.type); p.u32(b.dstArrayElement); p.u32(b.count);
                     p.u8(kind); p.u8(0); p.u16(0);
-                    p.u64(b.obj); p.u64(b.range);
+                    p.u64(b.obj); p.u64(b.range); p.u64(absOff);
                 }
             });
             for (U32 i = 0; i < s->nbind; i++) {
