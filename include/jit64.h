@@ -79,6 +79,9 @@ enum Jit64Kind : U8 {
     J64_SYSCALL = 20,   // 0F 05 — always fallback (block terminator)
     J64_STRING = 21,    // A4-A7/AA/AB/AE/AF: sub 0=MOVS,1=STOS,2=CMPS,3=SCAS
     J64_FPU = 22,       // D8-DF x87: interpreter-only by design (80-bit SoftFloat); never JIT64_FAST
+    J64_MOVX = 23,      // 0F B6/B7/BE/BF MOVZX/MOVSX r, r/m; sub 0=zx8,1=zx16,2=sx8,3=sx16
+    J64_IMUL_1OP = 24,  // F6/F7 /5 one-operand IMUL (implicit RAX/RDX)
+    J64_IMUL_3OP = 25,  // 69/6B three-operand IMUL r, r/m, imm
     J64_UNKNOWN = 255
 };
 
@@ -95,6 +98,7 @@ struct Jit64Op {
     S64 delta = 0;      // branch displacement (CALL/JMP/JCC)
     U8 rep = 0;         // REP prefix: 0, 0xF2 or 0xF3 (J64_STRING only)
     bool asize32 = false; // 0x67 address-size prefix (J64_STRING only)
+    bool rexPresent = false; // any REX prefix byte (8-bit high-byte vs SPL/... rule)
     Jit64OpcodeClass plan = JIT64_FALLBACK;
 };
 

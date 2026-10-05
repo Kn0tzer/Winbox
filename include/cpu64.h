@@ -279,13 +279,15 @@ private:
         BK_MOV_RM_R, BK_MOV_R_RM, BK_ALU_RM_R, BK_ALU_R_RM,
         BK_ALU_RM_IMM, BK_SHIFT_IMM, BK_IMUL_R_RM, BK_JCC8,
         BK_TEST_RM_R, BK_LEA, BK_MOV_RM_IMM, BK_MOV_R_IMM, BK_PUSH, BK_POP,
-        BK_STRING
+        BK_STRING, BK_ALU_ACC_IMM, BK_MOVX, BK_IMUL_1OP, BK_IMUL_3OP
     };
     struct BRec {
         U8  kind = 0;
         U8  size = 4;          // operand size (1/2/4/8; string ops use 1/2/4)
         U8  sub = 0;           // aluOp / shift sub-op / jcc condition /
-                               // string op (0=MOVS,1=STOS,2=CMPS,3=SCAS)
+                               // string op (0=MOVS,1=STOS,2=CMPS,3=SCAS) /
+                               // BK_ALU_ACC_IMM: 0..7 aluOp, 8=TEST /
+                               // BK_MOVX: 0=zx8,1=zx16,2=sx8,3=sx16
         U8  rexPresent = 0;
         U8  len = 0;           // full instruction byte length
         BRecipe mr;

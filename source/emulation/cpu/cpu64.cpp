@@ -5696,38 +5696,65 @@ bool CPU64::buildBlock(U64 startRip, BBlock& b) {
         // still ends the block (the JIT decoder rejects it too).
         bool isStringOp = ((op >= 0xA4 && op <= 0xA7) || op == 0xAA ||
                            op == 0xAB || op == 0xAE || op == 0xAF);
-        if (p.lock || (!isStringOp && (p.rep || p.osize16))) break; // unsupported in v1
+        if (p.lock || (!isStringOp && p.rep)) break; // unsupported in v1
         bool rexW = (p.rex & 0x08) != 0;
-        U8 size = rexW ? 8 : 4;
+        // REX.W wins over 0x66; 8-bit forms ignore the operand-size prefix.
+        U8 size = rexW ? 8 : (p.osize16 ? 2 : 4);
         BRec& rec = b.recs[b.n];
         rec = BRec();
         rec.size = size;
         rec.rexPresent = (p.rex != 0) ? 1 : 0;
 
         if (op == 0x89 || op == 0x8B) {
+            if (size == 2) break; // 16-bit MOV unsupported in blocks
             if (!decodeModRMRecipe(r + opOff + 1, p, 0, rec.mr)) break;
             rec.kind = (op == 0x89) ? BK_MOV_RM_R : BK_MOV_R_RM;
             rec.len = (U8)(opOff + 1 + rec.mr.length);
         } else if (op <= 0x3D && ((op & 0x06) != 0x06) && (op & 0x7) <= 3) {
             U8 form = op & 0x7;
-            if ((form & 1) == 0) break;            // 8-bit forms unsupported in v1
+            // 8-bit forms ignore 0x66/REX.W; 16-bit forms use the 0x66 size.
+            rec.size = (form & 1) ? size : 1;
             if (!decodeModRMRecipe(r + opOff + 1, p, 0, rec.mr)) break;
             rec.kind = (form < 2) ? BK_ALU_RM_R : BK_ALU_R_RM;
             rec.sub = (op >> 3) & 0x7;
             rec.len = (U8)(opOff + 1 + rec.mr.length);
-        } else if (op == 0x81 || op == 0x83) {
-            U32 trailing = (op == 0x81) ? 4u : 1u;
+        } else if ((op <= 0x3D && ((op & 0x06) != 0x06) && ((op & 0x7) == 4 || (op & 0x7) == 5)) ||
+                   op == 0xA8 || op == 0xA9) {
+            // ALU ACC, imm (04/05..3C/3D) and TEST ACC, imm (A8/A9, sub=8).
+            // 8-bit forms ignore 0x66/REX.W for the size; A8 is always 8-bit.
+            bool isTestAcc = (op == 0xA8 || op == 0xA9);
+            U8 form = isTestAcc ? (U8)(op == 0xA8 ? 4 : 5) : (U8)(op & 0x7);
+            rec.size = (form == 4) ? 1 : size;
+            U32 isz = (form == 4) ? 1 : (rec.size == 8 ? 4 : rec.size);
+            U64 immAddr = r + opOff + 1;
+            if (rec.size == 1) rec.imm = fetchByte(immAddr);
+            else if (rec.size == 2)
+                rec.imm = (U64)(fetchByte(immAddr) | ((U64)fetchByte(immAddr + 1) << 8));
+            else if (rec.size == 4) rec.imm = fetchDword(immAddr);
+            else rec.imm = (U64)(S64)(S32)fetchDword(immAddr);
+            rec.kind = BK_ALU_ACC_IMM;
+            rec.sub = isTestAcc ? 8 : (U8)((op >> 3) & 0x7);
+            rec.len = (U8)(opOff + 1 + isz);
+        } else if (op == 0x80 || op == 0x81 || op == 0x83) {
+            // 0x80 is the 8-bit form (0x66/REX.W ignored); 0x81 takes an
+            // imm16 under 0x66, else imm32 (sign-extended for 64-bit).
+            rec.size = (op == 0x80) ? 1 : size;
+            U32 trailing = (op == 0x81) ? (rec.size == 2 ? 2u : 4u) : 1u;
             if (!decodeModRMRecipe(r + opOff + 1, p, trailing, rec.mr)) break;
             rec.kind = BK_ALU_RM_IMM;
             rec.sub = rec.mr.regField & 0x7;
             U64 immAddr = r + opOff + 1 + rec.mr.length;
             U32 immLen;
-            if (op == 0x83) {
+            if (op == 0x80 || op == 0x83) {
                 S8 i8 = (S8)fetchByte(immAddr);
                 rec.imm = (U64)(S64)i8;
-                if (size == 4) rec.imm &= 0xFFFFFFFFULL;
+                if (rec.size == 4) rec.imm &= 0xFFFFFFFFULL;
+                else if (rec.size == 2) rec.imm &= 0xFFFFULL;
                 immLen = 1;
-            } else if (size == 4) {
+            } else if (rec.size == 2) {
+                rec.imm = (U64)(fetchByte(immAddr) | ((U64)fetchByte(immAddr + 1) << 8));
+                immLen = 2;
+            } else if (rec.size == 4) {
                 rec.imm = fetchDword(immAddr);
                 immLen = 4;
             } else {
@@ -5736,27 +5763,67 @@ bool CPU64::buildBlock(U64 startRip, BBlock& b) {
                 immLen = 4;
             }
             rec.len = (U8)(opOff + 1 + rec.mr.length + immLen);
-        } else if (op == 0xC1) {
+        } else if (op == 0xC0 || op == 0xC1) {
+            // 0xC0 is the 8-bit form (0x66/REX.W ignored).
+            rec.size = (op == 0xC0) ? 1 : size;
             if (!decodeModRMRecipe(r + opOff + 1, p, 1, rec.mr)) break;
             rec.kind = BK_SHIFT_IMM;
             rec.sub = rec.mr.regField & 0x7;
             U8 count = fetchByte(r + opOff + 1 + rec.mr.length);
-            rec.imm = count & ((size == 8) ? 0x3F : 0x1F);
+            rec.imm = count & ((rec.size == 8) ? 0x3F : 0x1F);
             rec.len = (U8)(opOff + 1 + rec.mr.length + 1);
         } else if (op == 0x0F && fetchByte(r + opOff + 1) == 0xAF) {
             if (!decodeModRMRecipe(r + opOff + 2, p, 0, rec.mr)) break;
             rec.kind = BK_IMUL_R_RM;
             rec.len = (U8)(opOff + 2 + rec.mr.length);
-        } else if (op == 0x85) {
+        } else if (op == 0x0F && (fetchByte(r + opOff + 1) == 0xB6 ||
+                                        fetchByte(r + opOff + 1) == 0xB7 ||
+                                        fetchByte(r + opOff + 1) == 0xBE ||
+                                        fetchByte(r + opOff + 1) == 0xBF)) {
+            // 0F B6/B7/BE/BF: MOVZX/MOVSX r, r/m8/16 (sub 0=zx8,1=zx16,2=sx8,3=sx16).
+            U8 op2 = fetchByte(r + opOff + 1);
+            if (!decodeModRMRecipe(r + opOff + 2, p, 0, rec.mr)) break;
+            rec.kind = BK_MOVX;
+            rec.sub = (U8)((op2 == 0xB6) ? 0 : (op2 == 0xB7) ? 1 :
+                           (op2 == 0xBE) ? 2 : 3);
+            rec.len = (U8)(opOff + 2 + rec.mr.length);
+        } else if (op == 0xF6 || op == 0xF7) {
+            // F6/F7 group 3: only /5 (IMUL r/m) builds a record.
+            U8 grpSize = (op == 0xF6) ? 1 : size;
+            if (!decodeModRMRecipe(r + opOff + 1, p, 0, rec.mr)) break;
+            if ((rec.mr.regField & 0x7) != 5) break;
+            rec.kind = BK_IMUL_1OP;
+            rec.size = grpSize;
+            rec.len = (U8)(opOff + 1 + rec.mr.length);
+        } else if (op == 0x69 || op == 0x6B) {
+            // IMUL r, r/m, imm: 6B takes a sign-extended imm8; 69 takes
+            // imm16 under 0x66 else imm32 (sign-extended for 64-bit).
+            // The operand size is the regular size for both.
+            U32 trailing = (op == 0x6B) ? 1u : (size == 2 ? 2u : 4u);
+            rec.size = size;
+            if (!decodeModRMRecipe(r + opOff + 1, p, trailing, rec.mr)) break;
+            U64 immAddr = r + opOff + 1 + rec.mr.length;
+            if (op == 0x6B) rec.imm = (U64)(S64)(S8)fetchByte(immAddr);
+            else if (size == 2)
+                rec.imm = (U64)(S64)(S16)(fetchByte(immAddr) |
+                                          ((U16)fetchByte(immAddr + 1) << 8));
+            else rec.imm = (U64)(S64)(S32)fetchDword(immAddr);
+            rec.kind = BK_IMUL_3OP;
+            rec.len = (U8)(opOff + 1 + rec.mr.length + trailing);
+        } else if (op == 0x84 || op == 0x85) {
+            // 0x84 is the 8-bit form (0x66/REX.W ignored).
+            rec.size = (op == 0x84) ? 1 : size;
             if (!decodeModRMRecipe(r + opOff + 1, p, 0, rec.mr)) break;
             rec.kind = BK_TEST_RM_R;
             rec.len = (U8)(opOff + 1 + rec.mr.length);
         } else if (op == 0x8D) {
+            if (size == 2) break; // 16-bit LEA unsupported in blocks
             if (!decodeModRMRecipe(r + opOff + 1, p, 0, rec.mr)) break;
             if (rec.mr.isReg) break;               // LEA reg-form undefined
             rec.kind = BK_LEA;
             rec.len = (U8)(opOff + 1 + rec.mr.length);
         } else if (op == 0xC7) {
+            if (size == 2) break; // 16-bit C7 unsupported in blocks
             if (!decodeModRMRecipe(r + opOff + 1, p, 4, rec.mr)) break;
             if ((rec.mr.regField & 0x7) != 0) break;
             rec.kind = BK_MOV_RM_IMM;
@@ -5764,6 +5831,7 @@ bool CPU64::buildBlock(U64 startRip, BBlock& b) {
             rec.imm = (size == 8) ? (U64)(S64)imm32 : (U64)(U32)imm32;
             rec.len = (U8)(opOff + 1 + rec.mr.length + 4);
         } else if (op >= 0xB8 && op <= 0xBF) {
+            if (size == 2) break; // 16-bit B8 unsupported in blocks
             rec.kind = BK_MOV_R_IMM;
             rec.sub = (U8)((op - 0xB8) | ((p.rex & 0x01) ? 0x08 : 0));
             if (rexW) {
@@ -5851,14 +5919,18 @@ U32 CPU64::execBlock(const BBlock& b, U64 maxInsn) {
         case BK_ALU_RM_R: {
             ModRM m = resolveRecipe(rec.mr);
             U64 a = loadRM(m, size, rexPresent);
-            U64 bv = (size == 4) ? (U64)reg[m.regField].u32 : reg[m.regField].u64;
+            U64 bv = (size == 1) ? readReg8(m.regField, rexPresent)
+                   : (size == 2) ? (U64)reg[m.regField].u16
+                   : (size == 4) ? (U64)reg[m.regField].u32 : reg[m.regField].u64;
             runAlu(rec.sub, size, true, a, bv, m, rexPresent);
             rip += rec.len;
             break;
         }
         case BK_ALU_R_RM: {
             ModRM m = resolveRecipe(rec.mr);
-            U64 a = (size == 4) ? (U64)reg[m.regField].u32 : reg[m.regField].u64;
+            U64 a = (size == 1) ? readReg8(m.regField, rexPresent)
+                  : (size == 2) ? (U64)reg[m.regField].u16
+                  : (size == 4) ? (U64)reg[m.regField].u32 : reg[m.regField].u64;
             U64 bv = loadRM(m, size, rexPresent);
             runAlu(rec.sub, size, false, a, bv, m, rexPresent);
             rip += rec.len;
@@ -5868,6 +5940,22 @@ U32 CPU64::execBlock(const BBlock& b, U64 maxInsn) {
             ModRM m = resolveRecipe(rec.mr);
             U64 a = loadRM(m, size, rexPresent);
             runAlu(rec.sub, size, true, a, rec.imm, m, rexPresent);
+            rip += rec.len;
+            break;
+        }
+        case BK_ALU_ACC_IMM: {
+            // ALU ACC, imm (sub 0..7) and TEST ACC, imm (sub 8, flags-only).
+            // 8-bit reads/writes AL directly (no ModRM, so no high-byte rule).
+            U64 a = (size == 1) ? (U64)reg[X64_RAX].u8
+                  : (size == 2) ? (U64)reg[X64_RAX].u16
+                  : (size == 4) ? (U64)reg[X64_RAX].u32 : reg[X64_RAX].u64;
+            if (rec.sub == 8) {
+                flagsLogic(rflags, a & rec.imm, size);
+            } else {
+                ModRM fake;
+                fake.isReg = true; fake.rmIndex = X64_RAX; fake.regField = 0;
+                runAlu(rec.sub, size, true, a, rec.imm, fake, rexPresent);
+            }
             rip += rec.len;
             break;
         }
@@ -5883,26 +5971,99 @@ U32 CPU64::execBlock(const BBlock& b, U64 maxInsn) {
         }
         case BK_IMUL_R_RM: {
             ModRM m = resolveRecipe(rec.mr);
-            U64 a = (size == 4) ? (U64)reg[m.regField].u32 : reg[m.regField].u64;
+            U64 a = (size == 2) ? (U64)reg[m.regField].u16
+                  : (size == 4) ? (U64)reg[m.regField].u32 : reg[m.regField].u64;
             U64 bv = loadRM(m, size, rexPresent);
             S64 sa, sb;
-            if (size == 4) { sa = (S64)(S32)a; sb = (S64)(S32)bv; }
+            if (size == 2) { sa = (S64)(S16)a; sb = (S64)(S16)bv; }
+            else if (size == 4) { sa = (S64)(S32)a; sb = (S64)(S32)bv; }
             else { sa = (S64)a; sb = (S64)bv; }
             S64 res = sa * sb;
             bool overflow;
-            if (size == 4) overflow = (res != (S64)(S32)res);
+            if (size == 2) overflow = (res != (S64)(S16)res);
+            else if (size == 4) overflow = (res != (S64)(S32)res);
             else { __int128 r128 = (__int128)sa * (__int128)sb; overflow = (r128 != (__int128)res); }
             rflags &= ~(X64_CF | X64_OF);
             if (overflow) rflags |= X64_CF | X64_OF;
-            if (size == 4) reg[m.regField].setU32((U32)res);
+            if (size == 2) reg[m.regField].setU16((U16)res);
+            else if (size == 4) reg[m.regField].setU32((U32)res);
             else reg[m.regField].setU64(res);
+            rip += rec.len;
+            break;
+        }
+        case BK_MOVX: {
+            // MOVZX/MOVSX r, r/m (sub 0=zx8,1=zx16,2=sx8,3=sx16). No flags.
+            ModRM m = resolveRecipe(rec.mr);
+            U32 srcSize = (rec.sub == 0 || rec.sub == 2) ? 1 : 2;
+            U64 raw = loadRM(m, srcSize, rexPresent);
+            U64 v = (rec.sub >= 2)
+                  ? (U64)(S64)((srcSize == 1) ? (S8)raw : (S16)raw)
+                  : raw;
+            if (size == 2) reg[m.regField].setU16((U16)v);
+            else if (size == 4) reg[m.regField].setU32((U32)v);
+            else reg[m.regField].setU64(v);
+            rip += rec.len;
+            break;
+        }
+        case BK_IMUL_1OP: {
+            // One-operand IMUL r/m (F6/F7 /5): RDX:RAX (or DX:AX, EDX:EAX,
+            // AX for 8-bit) = RAX * r/m, signed. CF=OF on overflow.
+            ModRM m = resolveRecipe(rec.mr);
+            U64 src = loadRM(m, size, rexPresent);
+            bool overflow = false;
+            if (size == 1) {
+                S16 prod = (S16)(S8)reg[X64_RAX].u8 * (S16)(S8)src;
+                reg[X64_RAX].setU16((U16)prod);
+                overflow = ((S8)(prod & 0xFF) != prod);
+            } else if (size == 2) {
+                S32 prod = (S32)(S16)reg[X64_RAX].u16 * (S32)(S16)(U16)src;
+                reg[X64_RAX].setU16((U16)prod);
+                reg[X64_RDX].setU16((U16)(prod >> 16));
+                overflow = ((S16)(U16)prod != prod);
+            } else if (size == 4) {
+                S64 prod = (S64)(S32)reg[X64_RAX].u32 * (S64)(S32)(U32)src;
+                reg[X64_RAX].setU64((U64)(U32)prod);
+                reg[X64_RDX].setU64((U64)(U32)((U64)prod >> 32));
+                overflow = ((S32)(U32)prod != prod);
+            } else {
+                __int128 p = (__int128)(S64)reg[X64_RAX].u64 * (__int128)(S64)src;
+                U64 lo = (U64)p, hi = (U64)(p >> 64);
+                reg[X64_RAX].setU64(lo);
+                reg[X64_RDX].setU64(hi);
+                overflow = ((S64)lo != p);
+            }
+            rflags &= ~(X64_CF | X64_OF);
+            if (overflow) rflags |= (X64_CF | X64_OF);
+            rip += rec.len;
+            break;
+        }
+        case BK_IMUL_3OP: {
+            // IMUL r, r/m, imm: signed multiply, overflow iff the full
+            // product does not fit the operand width. CF=OF on overflow.
+            ModRM m = resolveRecipe(rec.mr);
+            U64 src = loadRM(m, size, rexPresent);
+            S64 sa = (size == 2) ? (S64)(S16)src
+                   : (size == 4) ? (S64)(S32)src : (S64)src;
+            S64 imm = (S64)rec.imm; // already sign-extended at build
+            S64 r = sa * imm;
+            bool overflow;
+            if (size == 2) overflow = (r != (S64)(S16)r);
+            else if (size == 4) overflow = (r != (S64)(S32)r);
+            else { __int128 r128 = (__int128)sa * (__int128)imm; overflow = (r128 != (__int128)r); }
+            rflags &= ~(X64_CF | X64_OF);
+            if (overflow) rflags |= X64_CF | X64_OF;
+            if (size == 2) reg[m.regField].setU16((U16)r);
+            else if (size == 4) reg[m.regField].setU32((U32)r);
+            else reg[m.regField].setU64((U64)r);
             rip += rec.len;
             break;
         }
         case BK_TEST_RM_R: {
             ModRM m = resolveRecipe(rec.mr);
             U64 a = loadRM(m, size, rexPresent);
-            U64 bv = (size == 4) ? (U64)reg[m.regField].u32 : reg[m.regField].u64;
+            U64 bv = (size == 1) ? readReg8(m.regField, rexPresent)
+                   : (size == 2) ? (U64)reg[m.regField].u16
+                   : (size == 4) ? (U64)reg[m.regField].u32 : reg[m.regField].u64;
             flagsLogic(rflags, a & bv, size);
             rip += rec.len;
             break;

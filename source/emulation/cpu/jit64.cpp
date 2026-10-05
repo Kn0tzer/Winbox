@@ -54,7 +54,7 @@ static const Jit64CoveredOpcode kCovered[] = {
     { "E9 JMP rel32",      0xE9, 0x00, J64_JMP_REL },     // 12 (2.2%)
     { "74 JZ rel8",        0x74, 0x00, J64_JCC },         // 13 (2.0%)
     { "39 CMP r/m,r",      0x39, 0x00, J64_ALU_RM_R },    // 14 (2.0%)
-    { "0FB6 MOVZX r,r/m8", 0x0F, 0xB6, J64_MOV_R_RM },    // 15 (1.9%)
+    { "0FB6 MOVZX r,r/m8", 0x0F, 0xB6, J64_MOVX },        // 15 (1.9%)
     { "C7 MOV r/m,imm32",  0xC7, 0x00, J64_MOV_RM_IMM },  // 16 (1.8%)
     { "75 JNZ rel8",       0x75, 0x00, J64_JCC },         // 17 (1.7%)
     { "C3 RET",            0xC3, 0x00, J64_RET },         // 18 (1.7%)
@@ -171,8 +171,7 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
     if (opOff >= byteCount) return false;
     bool rexW = (p.rex & 0x08) != 0;
     U8 size = rexW ? 8 : (p.osize16 ? 2 : 4);
-    bool rexPresent = (p.rex != 0);
-    (void)rexPresent;
+    out.rexPresent = (p.rex != 0);
     U8 op = bytes[opOff];
 
     // Two-byte map.
@@ -202,15 +201,17 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
             out.regField = rf; out.rmIndex = ri; out.isMem = hm;
             return true;
         }
-        if (op2 == 0xB6 || op2 == 0xB7) { // MOVZX r, r/m8/16
+        if (op2 == 0xB6 || op2 == 0xB7 || op2 == 0xBE || op2 == 0xBF) {
+            // MOVZX r, r/m8/16 (B6/B7); MOVSX r, r/m8/16 (BE/BF).
             U8 rf; bool rr; U8 ri; bool hm;
             U32 ml = scanModRM(bytes + opOff + 2, byteCount - (opOff + 2), p, rf, rr, ri, hm);
             if (!ml) return false;
-            out.kind = J64_MOV_R_RM;
-            out.size = size;
+            out.kind = J64_MOVX;
+            out.size = size; // destination width (2/4/8); never 1
             out.len = (U8)(opOff + 2 + ml);
             out.regField = rf; out.rmIndex = ri; out.isMem = hm;
-            out.sub = (op2 == 0xB6) ? 1 : 2; // source width marker
+            out.sub = (U8)((op2 == 0xB6) ? 0 : (op2 == 0xB7) ? 1 :
+                           (op2 == 0xBE) ? 2 : 3);
             return true;
         }
         if (op2 == 0x1F) { // multi-byte NOP
@@ -268,20 +269,21 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
         return true;
     }
     // ALU r/m, r / r, r/m (00..3B except /6 /7 rows: 06,07,0E,...).
+    // 8-bit forms (form 0/2) use size 1; the 0x66 prefix is ignored for them.
     if (op <= 0x3D && ((op & 0x06) != 0x06) && (op & 0x7) <= 3) {
         U8 form = (U8)(op & 0x7);
-        if (form == 0 || form == 2) return false; // 8-bit forms: phase-1 fallback (still decode as unknown)
         U8 rf; bool rr; U8 ri; bool hm;
         U32 ml = scanModRM(bytes + opOff + 1, byteCount - (opOff + 1), p, rf, rr, ri, hm);
         if (!ml) return false;
         out.kind = (form < 2) ? J64_ALU_RM_R : J64_ALU_R_RM;
         out.sub = (op >> 3) & 0x7;
-        out.size = size;
+        out.size = (form & 1) ? size : 1;
         out.len = (U8)(opOff + 1 + ml);
         out.regField = rf; out.rmIndex = ri; out.isMem = hm;
         return true;
     }
     // ALU ACC, imm (04/05, 0C/0D, 14/15, 1C/1D, 24/25, 2C/2D, 34/35, 3C/3D).
+    // A8/A9 are TEST AL/AX/EAX/RAX, imm (decoded as J64_ALU_ACC_IMM sub=8).
     if (op <= 0x3D && ((op & 0x06) != 0x06) && ((op & 0x7) == 4 || (op & 0x7) == 5)) {
         U8 form = op & 0x7;
         U32 isz = (form == 4) ? 1 : (rexW ? 4 : (p.osize16 ? 2 : 4));
@@ -298,10 +300,25 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
         out.regField = 0; // ACC = RAX
         return true;
     }
-    // 0x80/0x81/0x83 imm-group ALU.
+    if (op == 0xA8 || op == 0xA9) {
+        U32 isz = (op == 0xA8) ? 1 : (rexW ? 4 : (p.osize16 ? 2 : 4));
+        if (opOff + 1 + isz > byteCount) return false;
+        out.kind = J64_ALU_ACC_IMM;
+        out.sub = 8; // TEST marker (flags-only, like J64_TEST_RM_R)
+        if (op == 0xA8) { out.imm = bytes[opOff + 1]; out.size = 1; }
+        else if (rexW) { out.imm = (U64)(S64)(S32)readU32(bytes + opOff + 1); out.size = 8; }
+        else if (p.osize16) {
+            out.imm = bytes[opOff + 1] | ((U32)bytes[opOff + 2] << 8);
+            out.size = 2;
+        } else { out.imm = readU32(bytes + opOff + 1); out.size = 4; }
+        out.len = (U8)(opOff + 1 + isz);
+        out.regField = 0; // ACC = RAX
+        return true;
+    }
+    // 0x80/0x81/0x83 imm-group ALU (0x80 is the 8-bit form; 0x66/REX.W ignored).
     if (op == 0x80 || op == 0x81 || op == 0x83) {
-        if (op == 0x80) return false; // 8-bit: fallback
-        U32 trailing = (op == 0x81) ? (p.osize16 ? 2u : 4u) : 1u;
+        U8 isz = (op == 0x80) ? 1 : size;
+        U32 trailing = (op == 0x81) ? (isz == 2 ? 2u : 4u) : 1u;
         // Need modrm + trailing bytes present.
         U32 avail = byteCount - (opOff + 1);
         U8 rf; bool rr; U8 ri; bool hm;
@@ -310,31 +327,30 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
         out.kind = J64_ALU_RM_IMM;
         out.sub = rf & 0x7;
         const U8* ip = bytes + opOff + 1 + ml;
-        if (op == 0x83) {
+        if (op == 0x80 || op == 0x83) {
             S8 i8 = (S8)ip[0];
             out.imm = (U64)(S64)i8;
-            if (size == 4) out.imm &= 0xFFFFFFFFULL;
-            else if (size == 2) out.imm &= 0xFFFFULL;
-        } else if (size == 2) {
+            if (isz == 4) out.imm &= 0xFFFFFFFFULL;
+            else if (isz == 2) out.imm &= 0xFFFFULL;
+        } else if (isz == 2) {
             out.imm = ip[0] | ((U32)ip[1] << 8);
-        } else if (size == 4) {
+        } else if (isz == 4) {
             out.imm = readU32(ip);
         } else {
             out.imm = (U64)(S64)(S32)readU32(ip);
         }
-        out.size = size;
+        out.size = isz;
         out.len = (U8)(opOff + 1 + ml + trailing);
         out.regField = rf; out.rmIndex = ri; out.isMem = hm;
         return true;
     }
-    // TEST r/m, r.
+    // TEST r/m, r (0x84 is the 8-bit form; 0x66/REX.W ignored).
     if (op == 0x84 || op == 0x85) {
-        if (op == 0x84) return false; // 8-bit: fallback
         U8 rf; bool rr; U8 ri; bool hm;
         U32 ml = scanModRM(bytes + opOff + 1, byteCount - (opOff + 1), p, rf, rr, ri, hm);
         if (!ml) return false;
         out.kind = J64_TEST_RM_R;
-        out.size = size;
+        out.size = (op == 0x84) ? 1 : size;
         out.len = (U8)(opOff + 1 + ml);
         out.regField = rf; out.rmIndex = ri; out.isMem = hm;
         return true;
@@ -366,9 +382,9 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
         out.regField = rf; out.rmIndex = ri; out.isMem = hm;
         return true;
     }
-    // SHIFT r/m, imm8 (C0/C1).
+    // SHIFT r/m, imm8 (C0 is the 8-bit form; 0x66/REX.W ignored).
     if (op == 0xC0 || op == 0xC1) {
-        if (op == 0xC0) return false; // 8-bit: fallback
+        U8 ssz = (op == 0xC0) ? 1 : size;
         U8 rf; bool rr; U8 ri; bool hm;
         U32 avail = byteCount - (opOff + 1);
         U32 ml = scanModRM(bytes + opOff + 1, avail, p, rf, rr, ri, hm);
@@ -376,9 +392,42 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
         U8 count = bytes[opOff + 1 + ml];
         out.kind = J64_SHIFT_IMM;
         out.sub = rf & 0x7;
-        out.size = size;
-        out.imm = count & ((size == 8) ? 0x3F : 0x1F);
+        out.size = ssz;
+        out.imm = count & ((ssz == 8) ? 0x3F : 0x1F);
         out.len = (U8)(opOff + 1 + ml + 1);
+        out.regField = rf; out.rmIndex = ri; out.isMem = hm;
+        return true;
+    }
+    // F6/F7 group 3: only /5 (IMUL r/m, one-operand) decodes. /0 TEST imm,
+    // /2 NOT, /3 NEG, /4 MUL, /6 DIV, /7 IDIV stay unknown (fallback).
+    // F6 is the 8-bit form (AX = AL * r/m8); F7 uses the operand size.
+    if (op == 0xF6 || op == 0xF7) {
+        U8 rf; bool rr; U8 ri; bool hm;
+        U32 ml = scanModRM(bytes + opOff + 1, byteCount - (opOff + 1), p, rf, rr, ri, hm);
+        if (!ml || (rf & 0x7) != 5) return false;
+        out.kind = J64_IMUL_1OP;
+        out.size = (op == 0xF6) ? 1 : size;
+        out.len = (U8)(opOff + 1 + ml);
+        out.regField = rf; out.rmIndex = ri; out.isMem = hm;
+        return true;
+    }
+    // 69/6B: three-operand IMUL r, r/m, imm. 6B takes a sign-extended imm8;
+    // 69 takes imm16 under 0x66 else imm32 (sign-extended for 64-bit).
+    if (op == 0x69 || op == 0x6B) {
+        // 6B takes a sign-extended imm8; 69 takes imm16 under 0x66 else imm32.
+        // The operand size is the regular opSize for both.
+        U32 trailing = (op == 0x6B) ? 1u : (size == 2 ? 2u : 4u);
+        U32 avail = byteCount - (opOff + 1);
+        U8 rf; bool rr; U8 ri; bool hm;
+        U32 ml = scanModRM(bytes + opOff + 1, avail, p, rf, rr, ri, hm);
+        if (!ml || avail < ml + trailing) return false;
+        const U8* ip = bytes + opOff + 1 + ml;
+        out.kind = J64_IMUL_3OP;
+        out.size = size;
+        if (op == 0x6B) out.imm = (U64)(S64)(S8)ip[0];
+        else if (size == 2) out.imm = (U64)(S64)(S16)(ip[0] | ((U16)ip[1] << 8));
+        else out.imm = (U64)(S64)(S32)readU32(ip);
+        out.len = (U8)(opOff + 1 + ml + trailing);
         out.regField = rf; out.rmIndex = ri; out.isMem = hm;
         return true;
     }
@@ -474,28 +523,45 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16) {
         op.plan = JIT64_FAST;
         return;
     }
-    if (hasLockOrRep || osize16) return; // phase-1 rule: prefixes force fallback
+    if (hasLockOrRep) return; // LOCK/REP on non-string ops: interpreter-only
+    // osize16 means "0x66 selected a 16-bit operand size" (the caller masks
+    // out the redundant-0x66-with-REX.W case, where the size stays 64-bit).
+    // 8-bit forms ignore 0x66, so they are exempt.
+    if (osize16 && op.size != 1 && op.size != 2) return;
     switch (op.kind) {
     case J64_MOV_RM_R:
     case J64_MOV_R_RM:
-        // 8-bit MOV forms never reach here (decoder rejects them); MOVZX (sub)
-        // and 16-bit operand size are fallback.
-        if (op.size == 1 || op.size == 2) return;
+        // 8/16-bit MOV stays fallback (not in the fast set).
+        if (op.size == 1 || op.size == 2 || op.sub != 0) return;
+        op.plan = JIT64_FAST;
+        return;
+    case J64_MOVX:
+        // MOVZX/MOVSX r, r/m (register-direct only at emission).
+        if (op.size != 2 && op.size != 4 && op.size != 8) return;
+        if (op.sub > 3) return;
         op.plan = JIT64_FAST;
         return;
     case J64_ALU_RM_R:
     case J64_ALU_R_RM:
     case J64_ALU_RM_IMM:
     case J64_ALU_ACC_IMM:
-        if (op.size == 1 || op.size == 2) return;
+        // sub 8 = TEST acc,imm (A8/A9); otherwise the 0..7 ALU sub-ops.
+        if (op.size != 1 && op.size != 2 && op.size != 4 && op.size != 8) return;
+        if (op.sub > 8) return;
         op.plan = JIT64_FAST;
         return;
     case J64_SHIFT_IMM:
-        if (op.size == 1 || op.size == 2) return;
+        if (op.size != 1 && op.size != 2 && op.size != 4 && op.size != 8) return;
+        if (op.sub > 7) return;
         op.plan = JIT64_FAST;
         return;
     case J64_IMUL_R_RM:
-        if (op.size == 2) return;
+        if (op.size == 1) return;
+        op.plan = JIT64_FAST;
+        return;
+    case J64_IMUL_1OP:
+    case J64_IMUL_3OP:
+        if (op.size != 1 && op.size != 2 && op.size != 4 && op.size != 8) return;
         op.plan = JIT64_FAST;
         return;
     case J64_TEST_RM_R:
@@ -533,7 +599,7 @@ U32 jit64CompileStream(U64 ripBase, const U8* bytes, U32 byteCount,
         if (!jit64DecodeOne(ripBase + off, bytes + off, byteCount - off, op)) break;
         if (op.kind == J64_FPU) break; // x87 is interpreter-only (plan section 12); truncate, keep the fast prefix
         if (op.len == 0) break;
-        jit64Classify(op, p.lock || p.rep != 0, p.osize16);
+        jit64Classify(op, p.lock || p.rep != 0, p.osize16 && !(p.rex & 0x08));
         opsOut[n++] = op;
         off += op.len;
         if (stopAtControlFlow) {

@@ -654,6 +654,44 @@ first; a bulk memCopy helper is the obvious follow-up if timing gates
 flag it. The 48us instantiation cost (section 10) dominates for cold
 blocks anyway.
 
+### 2026-10-05: 8-bit ALU, 16-bit forms, MOVZX/MOVSX, 1-op/3-op IMUL
+
+8-bit ALU emission (00-3D forms 0/2/4, 80 /0../7, 84/85, A8/A9, C0 /4../7):
+exact partial-register semantics via `byteRegParts`/`emitReadByte`/
+`emitWriteByte`/`emitReadWord`/`emitWriteWord`. The REX rule is critical:
+without REX, indices 4..7 are AH/BH/CH/DH (phys-4, shift 8); with any REX
+they are SPL/BPL/SIL/DIL (low bytes). Transcribed from the interpreter's
+`readReg8`/`writeReg8`. 8-bit writes do inline RMW and return 0xFF.
+
+16-bit forms (0x66 prefix): ALU/shift/rotate with 16-bit flag widths.
+`setU16` preserves the upper 48 bits (RMW via `emitWriteWord`). The
+0x66 prefix is ignored for 8-bit forms (matches interpreter).
+
+MOVZX/MOVSX emission (`emitMovx`, 0F B6/B7/BE/BF): 8->16/32/64 and
+16->32/64. Flags untouched (interpreter leaves them). 16-bit dest does
+RMW; 32-bit zero-extends; 64-bit writes full.
+
+One-operand IMUL (`emitImul1`, F6/F7 /5): rDX:rAX (EDX:EAX, DX:AX, AX
+for smaller). 8-bit writes AX (interpreter `setU16`). 64-bit uses the
+32-bit limb method with sign correction; the signed hi is saved to L_T1
+before the overflow check (it was consumed by `i64.ne`). CF/OF set iff
+the high half doesn't match sign-extension of the low half.
+
+Three-operand IMUL (`emitImul3`, 69/6B): r = sext(r/m) * sext(imm).
+6B takes imm8 (sign-extended); 69 takes imm16 under 0x66 else imm32.
+Overflow iff the full product doesn't fit the width.
+
+Bugs caught pre-commit via differential fuzzing (1440 cases):
+- 6B operand size: used imm8 width as operand size (should be opSize).
+- 64-bit IMUL1: stray `[sext]` left on stack (validation error).
+- 64-bit IMUL1: wrote hi to local 4 (RSP) not 3 (RDX).
+- 64-bit IMUL1: used hi_u not signed_hi for RDX (L_P holds unsigned).
+- Test bugs: wrong srcSize for MOVX, wrong GPR index for RDX (3 vs 2),
+  8-bit opcodes in 16-bit fuzz, missing byteAccess for high-byte sources.
+
+Gates: native 278/0, Node wasm 140/0 (1440 fuzz), selftest 258/0,
+smoke byte-identical (WASM64 blocks=20).
+
 ### 11.8 Pre-existing i32Const bug (found by string-op testing, 2026-10-05)
 i32Const used unsigned LEB128 for the i32.const immediate, but the wasm spec
 requires SIGNED LEB128. Values with bit 6 set in the final payload byte decode

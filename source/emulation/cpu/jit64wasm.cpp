@@ -83,6 +83,89 @@ constexpr U32 L_T1 = 24, L_T2 = 25, L_STEP = 26, L_CNT = 27;
 // the defined execute().
 constexpr U32 F_MEMREAD = 0, F_MEMWRITE = 1;
 
+// Operand-width helpers (1/2/4/8 bytes).
+U64 widthMask(U8 size) {
+    return size == 1 ? 0xFFULL : size == 2 ? 0xFFFFULL :
+           size == 4 ? 0xFFFFFFFFULL : 0xFFFFFFFFFFFFFFFFULL;
+}
+U64 widthSB(U8 size) {
+    return (U64)1 << (size * 8 - 1);
+}
+
+// Resolve an 8-bit register index to (physical GPR, shift) per the x86-64
+// high-byte rule: without any REX prefix, indices 4..7 name AH/CH/DH/BH
+// (bits 8-15 of regs 0..3); with any REX they name SPL/BPL/SIL/DIL (the
+// low bytes of regs 4..7). Mirrors CPU64::readReg8/writeReg8.
+void byteRegParts(const Jit64Op& op, U32 idx, U32& physReg, U32& shift) {
+    if (!op.rexPresent && idx >= 4 && idx <= 7) {
+        physReg = idx - 4; shift = 8;
+    } else {
+        physReg = idx; shift = 0;
+    }
+}
+
+// Read an 8-bit register into destLocal as i64 0..255.
+void emitReadByte(Bytes& body, const Jit64Op& op, U32 idx, U32 destLocal) {
+    U32 phys, sh;
+    byteRegParts(op, idx, phys, sh);
+    local(body, 0x20, phys + 1);
+    if (sh) {
+        i64Const(body, sh);
+        body.push_back(0x88); // i64.shr_u
+    }
+    i64Const(body, 0xFF);
+    body.push_back(0x83); // i64.and
+    local(body, 0x21, destLocal);
+}
+
+// Write the low 8 bits of srcLocal into an 8-bit register (RMW on the GPR).
+void emitWriteByte(Bytes& body, const Jit64Op& op, U32 idx, U32 srcLocal) {
+    U32 phys, sh;
+    byteRegParts(op, idx, phys, sh);
+    local(body, 0x20, phys + 1);
+    i64Const(body, ~(0xFFULL << sh));
+    body.push_back(0x83); // i64.and (clear the target byte)
+    local(body, 0x20, srcLocal);
+    i64Const(body, 0xFF);
+    body.push_back(0x83); // i64.and
+    if (sh) {
+        i64Const(body, sh);
+        body.push_back(0x86); // i64.shl
+    }
+    body.push_back(0x84); // i64.or
+    local(body, 0x21, phys + 1);
+}
+
+// Read a 16-bit register into destLocal as i64 0..65535.
+void emitReadWord(Bytes& body, U32 idx, U32 destLocal) {
+    local(body, 0x20, idx + 1);
+    i64Const(body, 0xFFFFULL);
+    body.push_back(0x83); // i64.and
+    local(body, 0x21, destLocal);
+}
+
+// Write the low 16 bits of srcLocal into a 16-bit register (upper 48 kept).
+void emitWriteWord(Bytes& body, U32 idx, U32 srcLocal) {
+    local(body, 0x20, idx + 1);
+    i64Const(body, 0xFFFFFFFFFFFF0000ULL);
+    body.push_back(0x83); // i64.and
+    local(body, 0x20, srcLocal);
+    i64Const(body, 0xFFFFULL);
+    body.push_back(0x83); // i64.and
+    body.push_back(0x84); // i64.or
+    local(body, 0x21, idx + 1);
+}
+
+// Sign-extend the low `size` bytes of the stack-top i64 to 64 bits.
+void emitSext(Bytes& body, U8 size) {
+    if (size == 8) return;
+    U32 sh = 64 - size * 8;
+    i64Const(body, sh);
+    body.push_back(0x86); // i64.shl
+    i64Const(body, sh);
+    body.push_back(0x87); // i64.shr_s
+}
+
 // OR the stack-top 0/1 value, shifted left by `shift`, into L_F. The
 // value comes from a comparison/test operator, which yields i32.
 void orFlagBit(Bytes& body, U32 shift) {
@@ -185,49 +268,57 @@ void emitFlags(Bytes& body, U8 sub, U64 sb, bool isLogic) {
     local(body, 0x21, L_RFLAGS);
 }
 
+// Read a width-masked operand from GPR idx into destLocal.
+void emitReadOperand(Bytes& body, const Jit64Op& op, U32 idx, U32 destLocal) {
+    if (op.size == 1) emitReadByte(body, op, idx, destLocal);
+    else if (op.size == 2) emitReadWord(body, idx, destLocal);
+    else {
+        local(body, 0x20, idx + 1);
+        if (op.size == 4) {
+            i64Const(body, 0xFFFFFFFFULL);
+            body.push_back(0x83); // i64.and
+        }
+        local(body, 0x21, destLocal);
+    }
+}
+
 // Emit one register-direct ALU/TEST op. Returns the destination GPR index,
-// or 0xFF when the op writes no register (TEST/CMP).
+// or 0xFF when the op writes no register (TEST/CMP) or when the write-back
+// was done inline (8/16-bit RMW). Caller publishes L_R for 32/64-bit.
 U32 emitAlu(Bytes& body, const Jit64Op& op) {
-    const bool isTest = op.kind == J64_TEST_RM_R;
+    const bool isTest = op.kind == J64_TEST_RM_R ||
+                        (op.kind == J64_ALU_ACC_IMM && op.sub == 8);
     const bool isLogic = isTest || op.sub == 1 || op.sub == 4 || op.sub == 6;
     const U8 effSub = isTest ? 4 : op.sub; // TEST computes flags like AND
-    const U64 mask = op.size == 4 ? 0xFFFFFFFFULL : 0xFFFFFFFFFFFFFFFFULL;
-    const U64 sb = op.size == 4 ? 0x80000000ULL : 0x8000000000000000ULL;
+    const U64 mask = widthMask(op.size);
+    const U64 sb = widthSB(op.size);
     U32 destReg;
-    if (op.kind == J64_ALU_RM_R || isTest) destReg = op.rmIndex;
+    if (op.kind == J64_ALU_RM_R || op.kind == J64_TEST_RM_R) destReg = op.rmIndex;
     else if (op.kind == J64_ALU_R_RM) destReg = op.regField;
     else if (op.kind == J64_ALU_RM_IMM) destReg = op.rmIndex;
-    else destReg = 0; // J64_ALU_ACC_IMM: RAX
+    else destReg = 0; // J64_ALU_ACC_IMM: RAX (AL/AX for 8/16-bit)
     // L_A = width-masked lhs (dest's old value).
-    local(body, 0x20, destReg + 1);
-    if (op.size == 4) {
-        i64Const(body, mask);
-        body.push_back(0x83); // i64.and
-    }
-    local(body, 0x21, L_A);
+    emitReadOperand(body, op, destReg, L_A);
     // L_B = width-masked rhs; ADC/SBB fold the incoming carry in.
     if (op.kind == J64_ALU_RM_IMM || op.kind == J64_ALU_ACC_IMM) {
-        i64Const(body, op.imm);
+        i64Const(body, op.imm & mask);
+        local(body, 0x21, L_B);
     } else {
-        const U32 srcReg = (op.kind == J64_ALU_RM_R || isTest) ? op.regField : op.rmIndex;
-        local(body, 0x20, srcReg + 1);
-    }
-    if (op.size == 4) {
-        i64Const(body, mask);
-        body.push_back(0x83);
+        const U32 srcReg = (op.kind == J64_ALU_RM_R || op.kind == J64_TEST_RM_R)
+                         ? op.regField : op.rmIndex;
+        emitReadOperand(body, op, srcReg, L_B);
     }
     if (op.sub == 2 || op.sub == 3) {
+        local(body, 0x20, L_B);
         local(body, 0x20, L_RFLAGS);
         i32Const(body, 1);
         body.push_back(0x71); // i32.and -> incoming CF as 0/1
         body.push_back(0xAD); // i64.extend_i32_u
         body.push_back(0x7C); // i64.add
-        if (op.size == 4) {
-            i64Const(body, mask);
-            body.push_back(0x83);
-        }
+        i64Const(body, mask);
+        body.push_back(0x83); // width-mask the rhs+carry
+        local(body, 0x21, L_B);
     }
-    local(body, 0x21, L_B);
     // L_R = L_A <op> L_B, width-masked.
     local(body, 0x20, L_A);
     local(body, 0x20, L_B);
@@ -242,13 +333,13 @@ U32 emitAlu(Bytes& body, const Jit64Op& op) {
     case 6: body.push_back(0x85); break; // i64.xor
     default: return 0xFF; // unreachable: filtered by the acceptance check
     }
-    if (op.size == 4) {
-        i64Const(body, mask);
-        body.push_back(0x83);
-    }
+    i64Const(body, mask);
+    body.push_back(0x83);
     local(body, 0x21, L_R);
     emitFlags(body, effSub, sb, isLogic);
     if (isTest || op.sub == 7) return 0xFF; // TEST/CMP write no register
+    if (op.size == 1) { emitWriteByte(body, op, destReg, L_R); return 0xFF; }
+    if (op.size == 2) { emitWriteWord(body, destReg, L_R); return 0xFF; }
     return destReg;
 }
 
@@ -262,9 +353,9 @@ U32 emitAlu(Bytes& body, const Jit64Op& op) {
 U32 emitShift(Bytes& body, const Jit64Op& op) {
     const U64 count = op.imm; // already masked to 0x1F/0x3F at decode
     const U32 destReg = op.rmIndex;
-    const U64 mask = op.size == 4 ? 0xFFFFFFFFULL : 0xFFFFFFFFFFFFFFFFULL;
-    const U64 sb = op.size == 4 ? 0x80000000ULL : 0x8000000000000000ULL;
-    const U64 wbits = op.size == 4 ? 32 : 64;
+    const U64 mask = widthMask(op.size);
+    const U64 sb = widthSB(op.size);
+    const U64 wbits = (U64)op.size * 8;
     const U8 sub = op.sub == 6 ? 4 : op.sub; // /6 aliases SHL
     if (count == 0) {
         if (op.size == 4) {
@@ -272,48 +363,29 @@ U32 emitShift(Bytes& body, const Jit64Op& op) {
             // the count is 0 (cpu64.cpp BK_SHIFT_IMM / step shift path do
             // reg[rm].setU32((U32)v)); flags are untouched. Publish the
             // width-masked value via L_R so the caller stores it back.
-            local(body, 0x20, destReg + 1);
-            i64Const(body, mask);
-            body.push_back(0x83); // i64.and
-            local(body, 0x21, L_R);
+            emitReadOperand(body, op, destReg, L_R);
             return destReg;
         }
-        return 0xFF; // 64-bit count==0: pure no-op, value and flags untouched
+        return 0xFF; // count==0: pure no-op for 1/2/8-bit, value and flags untouched
     }
     // L_A = width-masked operand.
-    local(body, 0x20, destReg + 1);
-    if (op.size == 4) {
-        i64Const(body, mask);
-        body.push_back(0x83); // i64.and
-    }
-    local(body, 0x21, L_A);
+    emitReadOperand(body, op, destReg, L_A);
     // L_R = shift result. The shift amount is pushed after any
     // sign-extension so the operand stack stays [value, amount].
     local(body, 0x20, L_A);
     if (sub == 4) {
         i64Const(body, count);
         body.push_back(0x86); // i64.shl
-        if (op.size == 4) {
-            i64Const(body, mask);
-            body.push_back(0x83);
-        }
     } else if (sub == 5) {
         i64Const(body, count);
         body.push_back(0x88); // i64.shr_u (L_A already width-masked)
-    } else { // SAR: sign-extend, arithmetic shift, mask.
-        if (op.size == 4) {
-            i64Const(body, 32);
-            body.push_back(0x86); // i64.shl
-            i64Const(body, 32);
-            body.push_back(0x87); // i64.shr_s
-        }
+    } else { // SAR: sign-extend the width, arithmetic shift, mask.
+        emitSext(body, op.size);
         i64Const(body, count);
         body.push_back(0x87); // i64.shr_s
-        if (op.size == 4) {
-            i64Const(body, mask);
-            body.push_back(0x83);
-        }
     }
+    i64Const(body, mask);
+    body.push_back(0x83); // width-mask the result
     local(body, 0x21, L_R);
     // Flags: L_F accumulates the five shift flag bits.
     i64Const(body, 0);
@@ -396,6 +468,8 @@ U32 emitShift(Bytes& body, const Jit64Op& op) {
     body.push_back(0xA7); // i32.wrap_i64
     body.push_back(0x72); // i32.or
     local(body, 0x21, L_RFLAGS);
+    if (op.size == 1) { emitWriteByte(body, op, destReg, L_R); return 0xFF; }
+    if (op.size == 2) { emitWriteWord(body, destReg, L_R); return 0xFF; }
     return destReg;
 }
 
@@ -410,29 +484,21 @@ U32 emitShift(Bytes& body, const Jit64Op& op) {
 U32 emitRotate(Bytes& body, const Jit64Op& op) {
     const U64 count = op.imm; // already masked to 0x1F/0x3F at decode
     const U32 destReg = op.rmIndex;
-    const U64 mask = op.size == 4 ? 0xFFFFFFFFULL : 0xFFFFFFFFFFFFFFFFULL;
-    const U64 sb = op.size == 4 ? 0x80000000ULL : 0x8000000000000000ULL;
-    const U64 wbits = op.size == 4 ? 32 : 64;
+    const U64 mask = widthMask(op.size);
+    const U64 sb = widthSB(op.size);
+    const U64 wbits = (U64)op.size * 8;
     const U8 sub = op.sub; // 0=ROL, 1=ROR, 2=RCL, 3=RCR
     if (count == 0) {
         if (op.size == 4) {
             // As for shifts: the interpreter zero-extends the 32-bit
             // destination even on count==0; flags untouched.
-            local(body, 0x20, destReg + 1);
-            i64Const(body, mask);
-            body.push_back(0x83); // i64.and
-            local(body, 0x21, L_R);
+            emitReadOperand(body, op, destReg, L_R);
             return destReg;
         }
-        return 0xFF; // 64-bit count==0: pure no-op
+        return 0xFF; // count==0: pure no-op for 1/2/8-bit
     }
     // L_A = width-masked operand.
-    local(body, 0x20, destReg + 1);
-    if (op.size == 4) {
-        i64Const(body, mask);
-        body.push_back(0x83); // i64.and
-    }
-    local(body, 0x21, L_A);
+    emitReadOperand(body, op, destReg, L_A);
     if (sub == 0 || sub == 1) {
         // ROL/ROR: single rotate; c == count here (count already masked).
         const U64 c = count % wbits;
@@ -451,10 +517,8 @@ U32 emitRotate(Bytes& body, const Jit64Op& op) {
             body.push_back(0x86); // i64.shl
         }
         body.push_back(0x84); // i64.or
-        if (op.size == 4) {
-            i64Const(body, mask);
-            body.push_back(0x83);
-        }
+        i64Const(body, mask);
+        body.push_back(0x83); // width-mask
         local(body, 0x21, L_R);
         // CF: ROL: result & 1; ROR: (result & sb) != 0. Stash as i64 0/1 in L_P.
         local(body, 0x20, L_R);
@@ -502,10 +566,8 @@ U32 emitRotate(Bytes& body, const Jit64Op& op) {
             body.push_back(0x86); // i64.shl
             local(body, 0x20, L_P);
             body.push_back(0x84); // i64.or
-            if (op.size == 4) {
-                i64Const(body, mask);
-                body.push_back(0x83);
-            }
+            i64Const(body, mask);
+            body.push_back(0x83); // width-mask
             local(body, 0x21, L_R);
             // Carry = newCf.
             local(body, 0x20, L_A);
@@ -524,10 +586,8 @@ U32 emitRotate(Bytes& body, const Jit64Op& op) {
             i64Const(body, sb);
             body.push_back(0x7E); // i64.mul: 0 or sb
             body.push_back(0x84); // i64.or
-            if (op.size == 4) {
-                i64Const(body, mask);
-                body.push_back(0x83);
-            }
+            i64Const(body, mask);
+            body.push_back(0x83); // width-mask
             local(body, 0x21, L_R);
             local(body, 0x20, L_A);
             local(body, 0x21, L_P);
@@ -591,6 +651,8 @@ U32 emitRotate(Bytes& body, const Jit64Op& op) {
     body.push_back(0xA7); // i32.wrap_i64
     body.push_back(0x72); // i32.or
     local(body, 0x21, L_RFLAGS);
+    if (op.size == 1) { emitWriteByte(body, op, destReg, L_R); return 0xFF; }
+    if (op.size == 2) { emitWriteWord(body, destReg, L_R); return 0xFF; }
     return destReg;
 }
 
@@ -608,35 +670,22 @@ U32 emitImul(Bytes& body, const Jit64Op& op) {
     // L_A = sign-extended dest operand, L_B = sign-extended source operand.
     // (For 64-bit the raw u64 bit pattern already is the S64 operand.)
     local(body, 0x20, destReg + 1);
-    if (op.size == 4) {
-        i64Const(body, 32);
-        body.push_back(0x86); // i64.shl
-        i64Const(body, 32);
-        body.push_back(0x87); // i64.shr_s: sign-extends the low 32 bits
-    }
+    emitSext(body, op.size);
     local(body, 0x21, L_A);
     local(body, 0x20, srcReg + 1);
-    if (op.size == 4) {
-        i64Const(body, 32);
-        body.push_back(0x86);
-        i64Const(body, 32);
-        body.push_back(0x87);
-    }
+    emitSext(body, op.size);
     local(body, 0x21, L_B);
-    // L_R = wrapped 64-bit product (exact for 32-bit: |operands| < 2^32).
+    // L_R = wrapped 64-bit product (exact for 16/32-bit: |operands| < 2^32).
     local(body, 0x20, L_A);
     local(body, 0x20, L_B);
     body.push_back(0x7E); // i64.mul
     local(body, 0x21, L_R);
     // Overflow detection -> i32 0/1 on the stack.
-    if (op.size == 4) {
-        // 32-bit: the 64-bit product is exact; overflow iff it differs from
-        // its own 32-bit sign extension.
+    if (op.size == 2 || op.size == 4) {
+        // 16/32-bit: the 64-bit product is exact; overflow iff it differs
+        // from its own width sign extension.
         local(body, 0x20, L_R);
-        i64Const(body, 32);
-        body.push_back(0x86);
-        i64Const(body, 32);
-        body.push_back(0x87); // sext32(L_R)
+        emitSext(body, op.size); // sext16/32(L_R)
         local(body, 0x20, L_R);
         body.push_back(0x52); // i64.ne
     } else {
@@ -750,7 +799,8 @@ U32 emitImul(Bytes& body, const Jit64Op& op) {
     i64Const(body, F_CFOF_MASK);
     body.push_back(0x7E); // i64.mul
     local(body, 0x21, L_F);
-    // Publish: 32-bit zero-extends the destination (setU32).
+    // Publish: 32-bit zero-extends the destination (setU32); 16-bit
+    // preserves the upper 48 (setU16, RMW).
     if (op.size == 4) {
         local(body, 0x20, L_R);
         i64Const(body, m32);
@@ -767,8 +817,330 @@ U32 emitImul(Bytes& body, const Jit64Op& op) {
     body.push_back(0xA7); // i32.wrap_i64
     body.push_back(0x72); // i32.or
     local(body, 0x21, L_RFLAGS);
+    if (op.size == 2) { emitWriteWord(body, destReg, L_R); return 0xFF; }
     return destReg;
 }
+// Emit one register-direct MOVZX/MOVSX (0F B6/B7/BE/BF). sub: 0=zx8,
+// 1=zx16, 2=sx8, 3=sx16. No flags affected. Returns the destination GPR
+// index, or 0xFF when the write-back was done inline (16-bit RMW).
+// Mirrors cpu64.cpp BK_MOVX: 16-bit dest preserves the upper 48 bits,
+// 32-bit zero-extends, 64-bit writes the full register.
+U32 emitMovx(Bytes& body, const Jit64Op& op) {
+    const U32 destReg = op.regField;
+    const U32 srcReg = op.rmIndex;
+    const U8 srcSize = (op.sub == 0 || op.sub == 2) ? 1 : 2;
+    const bool isSigned = op.sub >= 2;
+    // L_R = extended source value.
+    if (srcSize == 1) emitReadByte(body, op, srcReg, L_R);
+    else emitReadWord(body, srcReg, L_R);
+    if (isSigned) {
+        local(body, 0x20, L_R);
+        emitSext(body, srcSize);
+        local(body, 0x21, L_R);
+    }
+    if (op.size == 2) {
+        // setU16: low 16 bits, upper 48 preserved.
+        emitWriteWord(body, destReg, L_R);
+        return 0xFF;
+    }
+    // 32/64-bit: the value already fits (zero-extended by construction for
+    // MOVZX; low 32 bits of the sign extension for MOVSX); publish via L_R.
+    if (op.size == 4 && isSigned) {
+        local(body, 0x20, L_R);
+        i64Const(body, 0xFFFFFFFFULL);
+        body.push_back(0x83); // i64.and
+        local(body, 0x21, L_R);
+    }
+    return destReg;
+}
+
+// Emit one register-direct one-operand IMUL (F6/F7 /5). Writes RDX:RAX
+// (DX:AX / EDX:EAX / AX for 16/32/8-bit); the 8-bit form writes the full
+// AX (setU16). CF/OF reflect signed overflow; other flags preserved.
+// Returns 0xFF (all writes done inline). Mirrors cpu64.cpp BK_IMUL_1OP.
+U32 emitImul1(Bytes& body, const Jit64Op& op) {
+    const U64 m32 = 0xFFFFFFFFULL;
+    // L_A = sign-extended RAX operand at width; L_B = sign-extended r/m.
+    if (op.size == 1) emitReadByte(body, op, 0, L_A);
+    else {
+        local(body, 0x20, 0 + 1); // RAX
+        if (op.size == 2) {
+            i64Const(body, 0xFFFFULL);
+            body.push_back(0x83);
+        } else if (op.size == 4) {
+            i64Const(body, m32);
+            body.push_back(0x83);
+        }
+        local(body, 0x21, L_A);
+    }
+    if (op.size == 1) emitReadByte(body, op, op.rmIndex, L_B);
+    else {
+        local(body, 0x20, op.rmIndex + 1);
+        if (op.size == 2) {
+            i64Const(body, 0xFFFFULL);
+            body.push_back(0x83);
+        } else if (op.size == 4) {
+            i64Const(body, m32);
+            body.push_back(0x83);
+        }
+        local(body, 0x21, L_B);
+    }
+    local(body, 0x20, L_A);
+    emitSext(body, op.size == 1 ? 1 : op.size);
+    local(body, 0x21, L_A);
+    local(body, 0x20, L_B);
+    emitSext(body, op.size == 1 ? 1 : op.size);
+    local(body, 0x21, L_B);
+    // L_R = wrapped product.
+    local(body, 0x20, L_A);
+    local(body, 0x20, L_B);
+    body.push_back(0x7E); // i64.mul
+    local(body, 0x21, L_R);
+    // Overflow -> i32 0/1 on the stack; then write the halves.
+    if (op.size == 8) {
+        // 128-bit check via limbs (same method as emitImul).
+        // Compute signed_hi in L_P using the limb method.
+        i64Const(body, 0);
+        local(body, 0x21, L_P);
+        local(body, 0x20, L_A);
+        i64Const(body, 32); body.push_back(0x88);
+        local(body, 0x20, L_B);
+        i64Const(body, 32); body.push_back(0x88);
+        body.push_back(0x7E);
+        local(body, 0x20, L_P); body.push_back(0x7C);
+        local(body, 0x21, L_P);
+        local(body, 0x20, L_A);
+        i64Const(body, 32); body.push_back(0x88);
+        local(body, 0x20, L_B);
+        i64Const(body, m32); body.push_back(0x83);
+        body.push_back(0x7E);
+        local(body, 0x21, L_T1);
+        local(body, 0x20, L_A);
+        i64Const(body, m32); body.push_back(0x83);
+        local(body, 0x20, L_B);
+        i64Const(body, 32); body.push_back(0x88);
+        body.push_back(0x7E);
+        local(body, 0x21, L_T2);
+        local(body, 0x20, L_T1);
+        i64Const(body, 32); body.push_back(0x88);
+        local(body, 0x20, L_T2);
+        i64Const(body, 32); body.push_back(0x88);
+        body.push_back(0x7C);
+        local(body, 0x20, L_T1);
+        i64Const(body, m32); body.push_back(0x83);
+        local(body, 0x20, L_T2);
+        i64Const(body, m32); body.push_back(0x83);
+        body.push_back(0x7C);
+        local(body, 0x22, L_T1);
+        i64Const(body, 32); body.push_back(0x88);
+        body.push_back(0x7C);
+        local(body, 0x20, L_P); body.push_back(0x7C);
+        local(body, 0x21, L_P);
+        local(body, 0x20, L_T1);
+        i64Const(body, m32); body.push_back(0x83);
+        local(body, 0x20, L_A);
+        i64Const(body, m32); body.push_back(0x83);
+        local(body, 0x20, L_B);
+        i64Const(body, m32); body.push_back(0x83);
+        body.push_back(0x7E);
+        i64Const(body, 32); body.push_back(0x88);
+        body.push_back(0x7C);
+        i64Const(body, 32); body.push_back(0x88);
+        local(body, 0x20, L_P); body.push_back(0x7C);
+        local(body, 0x21, L_P);
+        // signed_hi = hi_u - a_s*b - b_s*a; compare with sext64(lo).
+        local(body, 0x20, L_P);
+        local(body, 0x20, L_A);
+        i64Const(body, 63); body.push_back(0x88);
+        local(body, 0x20, L_B);
+        body.push_back(0x7E);
+        body.push_back(0x7D);
+        local(body, 0x20, L_B);
+        i64Const(body, 63); body.push_back(0x88);
+        local(body, 0x20, L_A);
+        body.push_back(0x7E);
+        body.push_back(0x7D);
+        // Stack: [signed_hi]. Save it (L_T1/L_T2 are dead after hi_u).
+        local(body, 0x21, L_T1); // L_T1 = signed_hi. Stack: [].
+        // Overflow: signed_hi != sext64(lo).
+        local(body, 0x20, L_T1);
+        local(body, 0x20, L_R);
+        i64Const(body, 63); body.push_back(0x87);
+        body.push_back(0x52); // i64.ne -> i32 overflow. Stack: [overflow].
+        // Write RDX:RAX = signed_hi:lo.
+        local(body, 0x20, L_T1);
+        local(body, 0x21, 2 + 1); // RDX (GPR 2). Stack: [overflow].
+        local(body, 0x20, L_R);
+        local(body, 0x21, 0 + 1); // RAX (GPR 0). Stack: [overflow].
+    } else {
+        // 8/16/32-bit: product exact in 64 bits; overflow iff it differs
+        // from its own width sign extension.
+        local(body, 0x20, L_R);
+        emitSext(body, op.size == 1 ? 1 : op.size);
+        local(body, 0x20, L_R);
+        body.push_back(0x52); // i64.ne -> i32 overflow
+        if (op.size == 1) {
+            // AX = prod (setU16, upper RAX preserved).
+            emitWriteWord(body, 0, L_R);
+        } else if (op.size == 2) {
+            // DX:AX = prod (setU16 halves).
+            local(body, 0x20, L_R);
+            i64Const(body, 0xFFFFULL); body.push_back(0x83);
+            local(body, 0x21, L_T1);
+            emitWriteWord(body, 0, L_T1); // AX
+            local(body, 0x20, L_R);
+            i64Const(body, 16); body.push_back(0x88); // hi
+            i64Const(body, 0xFFFFULL); body.push_back(0x83);
+            local(body, 0x21, L_T1);
+            emitWriteWord(body, 2, L_T1); // DX (GPR 2)
+        } else {
+            // EDX:EAX: full 64-bit writes of the zero-extended halves.
+            local(body, 0x20, L_R);
+            i64Const(body, m32); body.push_back(0x83);
+            local(body, 0x21, 0 + 1); // RAX = lo
+            local(body, 0x20, L_R);
+            i64Const(body, 32); body.push_back(0x88);
+            i64Const(body, m32); body.push_back(0x83);
+            local(body, 0x21, 2 + 1); // RDX (GPR 2) = hi
+        }
+    }
+    // L_F = overflow ? (CF|OF) : 0; merge preserving other flags.
+    body.push_back(0xAD); // i64.extend_i32_u
+    i64Const(body, F_CFOF_MASK);
+    body.push_back(0x7E); // i64.mul
+    local(body, 0x21, L_F);
+    local(body, 0x20, L_RFLAGS);
+    i32Const(body, F_CFOF_MASK);
+    body.push_back(0x72); // i32.or
+    i32Const(body, F_CFOF_MASK);
+    body.push_back(0x73); // i32.xor
+    local(body, 0x20, L_F);
+    body.push_back(0xA7); // i32.wrap_i64
+    body.push_back(0x72); // i32.or
+    local(body, 0x21, L_RFLAGS);
+    return 0xFF;
+}
+
+// Emit one register-direct three-operand IMUL (69/6B): r = sext(src) * imm.
+// Overflow iff the full product does not fit the width; CF/OF set.
+// Returns the destination GPR index, or 0xFF when written inline (16-bit).
+// Mirrors cpu64.cpp BK_IMUL_3OP.
+U32 emitImul3(Bytes& body, const Jit64Op& op) {
+    const U32 destReg = op.regField;
+    // L_A = sign-extended source; L_B = sign-extended immediate.
+    local(body, 0x20, op.rmIndex + 1);
+    if (op.size == 2) {
+        i64Const(body, 0xFFFFULL);
+        body.push_back(0x83);
+    } else if (op.size == 4) {
+        i64Const(body, 0xFFFFFFFFULL);
+        body.push_back(0x83);
+    }
+    emitSext(body, op.size);
+    local(body, 0x21, L_A);
+    i64Const(body, (U64)op.imm); // already sign-extended at decode
+    local(body, 0x21, L_B);
+    // L_R = wrapped product.
+    local(body, 0x20, L_A);
+    local(body, 0x20, L_B);
+    body.push_back(0x7E); // i64.mul
+    local(body, 0x21, L_R);
+    if (op.size == 8) {
+        // 128-bit overflow check (limb method, L_A/L_B/L_R as in emitImul).
+        i64Const(body, 0);
+        local(body, 0x21, L_P);
+        local(body, 0x20, L_A);
+        i64Const(body, 32); body.push_back(0x88);
+        local(body, 0x20, L_B);
+        i64Const(body, 32); body.push_back(0x88);
+        body.push_back(0x7E);
+        local(body, 0x20, L_P); body.push_back(0x7C);
+        local(body, 0x21, L_P);
+        local(body, 0x20, L_A);
+        i64Const(body, 32); body.push_back(0x88);
+        local(body, 0x20, L_B);
+        i64Const(body, 0xFFFFFFFFULL); body.push_back(0x83);
+        body.push_back(0x7E);
+        local(body, 0x21, L_T1);
+        local(body, 0x20, L_A);
+        i64Const(body, 0xFFFFFFFFULL); body.push_back(0x83);
+        local(body, 0x20, L_B);
+        i64Const(body, 32); body.push_back(0x88);
+        body.push_back(0x7E);
+        local(body, 0x21, L_T2);
+        local(body, 0x20, L_T1);
+        i64Const(body, 32); body.push_back(0x88);
+        local(body, 0x20, L_T2);
+        i64Const(body, 32); body.push_back(0x88);
+        body.push_back(0x7C);
+        local(body, 0x20, L_T1);
+        i64Const(body, 0xFFFFFFFFULL); body.push_back(0x83);
+        local(body, 0x20, L_T2);
+        i64Const(body, 0xFFFFFFFFULL); body.push_back(0x83);
+        body.push_back(0x7C);
+        local(body, 0x22, L_T1);
+        i64Const(body, 32); body.push_back(0x88);
+        body.push_back(0x7C);
+        local(body, 0x20, L_P); body.push_back(0x7C);
+        local(body, 0x21, L_P);
+        local(body, 0x20, L_T1);
+        i64Const(body, 0xFFFFFFFFULL); body.push_back(0x83);
+        local(body, 0x20, L_A);
+        i64Const(body, 0xFFFFFFFFULL); body.push_back(0x83);
+        local(body, 0x20, L_B);
+        i64Const(body, 0xFFFFFFFFULL); body.push_back(0x83);
+        body.push_back(0x7E);
+        i64Const(body, 32); body.push_back(0x88);
+        body.push_back(0x7C);
+        i64Const(body, 32); body.push_back(0x88);
+        local(body, 0x20, L_P); body.push_back(0x7C);
+        local(body, 0x21, L_P);
+        local(body, 0x20, L_P);
+        local(body, 0x20, L_A);
+        i64Const(body, 63); body.push_back(0x88);
+        local(body, 0x20, L_B);
+        body.push_back(0x7E);
+        body.push_back(0x7D);
+        local(body, 0x20, L_B);
+        i64Const(body, 63); body.push_back(0x88);
+        local(body, 0x20, L_A);
+        body.push_back(0x7E);
+        body.push_back(0x7D);
+        local(body, 0x20, L_R);
+        i64Const(body, 63); body.push_back(0x87);
+        body.push_back(0x52); // i64.ne -> i32 overflow
+    } else {
+        local(body, 0x20, L_R);
+        emitSext(body, op.size);
+        local(body, 0x20, L_R);
+        body.push_back(0x52); // i64.ne -> i32 overflow
+    }
+    body.push_back(0xAD); // i64.extend_i32_u
+    i64Const(body, F_CFOF_MASK);
+    body.push_back(0x7E); // i64.mul
+    local(body, 0x21, L_F);
+    // Publish: 16-bit preserves upper (RMW); 32-bit zero-extends.
+    if (op.size == 2) emitWriteWord(body, destReg, L_R);
+    else {
+        local(body, 0x20, L_R);
+        if (op.size == 4) {
+            i64Const(body, 0xFFFFFFFFULL);
+            body.push_back(0x83);
+        }
+        local(body, 0x21, destReg + 1);
+    }
+    local(body, 0x20, L_RFLAGS);
+    i32Const(body, F_CFOF_MASK);
+    body.push_back(0x72); // i32.or
+    i32Const(body, F_CFOF_MASK);
+    body.push_back(0x73); // i32.xor
+    local(body, 0x20, L_F);
+    body.push_back(0xA7); // i32.wrap_i64
+    body.push_back(0x72); // i32.or
+    local(body, 0x21, L_RFLAGS);
+    return 0xFF; // destination already published inline above
+}
+
 } // namespace
 
 void jit64WasmStateInit(Jit64WasmState& state, const U64 gpr[16], U64 rip, U32 rflags) {
@@ -997,13 +1369,34 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
     U32 byteCount = 0;
     for (const auto& op : block.ops) {
         if (op.plan != JIT64_FAST || !op.len || op.len > 15) return false;
+        // Operand-width acceptance: ALU/shift/TEST/MOVX/IMUL kinds support
+        // 1/2/4/8-byte operands (register-direct only); everything else
+        // stays 4/8-byte.
+        bool widthOk;
+        switch (op.kind) {
+        case J64_ALU_RM_R:
+        case J64_ALU_R_RM:
+        case J64_ALU_RM_IMM:
+        case J64_ALU_ACC_IMM:
+        case J64_TEST_RM_R:
+        case J64_SHIFT_IMM:
+        case J64_MOVX:
+        case J64_IMUL_R_RM:
+        case J64_IMUL_1OP:
+        case J64_IMUL_3OP:
+            widthOk = (op.size == 1 || op.size == 2 || op.size == 4 || op.size == 8);
+            break;
+        default:
+            widthOk = (op.size == 4 || op.size == 8);
+            break;
+        }
         if (op.kind == J64_STRING) {
             // String ops use 1/2/4/8-byte operands and touch memory through
             // the imported helpers (never raw linear memory).
             if (op.isMem || (op.size != 1 && op.size != 2 && op.size != 4 && op.size != 8)) return false;
             if (op.sub > 3) return false;
             if (op.rep != 0 && op.rep != 0xF2 && op.rep != 0xF3) return false;
-        } else if (op.isMem || (op.size != 4 && op.size != 8)) {
+        } else if (op.isMem || !widthOk) {
             return false;
         }
         switch (op.kind) {
@@ -1026,7 +1419,7 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             if (op.rmIndex >= 16 || op.sub > 7) return false;
             break;
         case J64_ALU_ACC_IMM:
-            if (op.sub > 7) return false;
+            if (op.sub > 8) return false; // sub 8 = TEST acc,imm
             break;
         case J64_SHIFT_IMM:
             // SHL/SHR/SAR (/4,/5,/6,/7) and rotates (/0../3), 0xC1 only.
@@ -1034,6 +1427,19 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             break;
         case J64_IMUL_R_RM:
             // Two-operand IMUL r, r/m (0F AF), register-direct only.
+            if (op.regField >= 16 || op.rmIndex >= 16) return false;
+            break;
+        case J64_MOVX:
+            // MOVZX/MOVSX r, r/m, register-direct only.
+            if (op.sub > 3 || op.regField >= 16 || op.rmIndex >= 16) return false;
+            if (op.size == 1) return false; // destination is never 8-bit
+            break;
+        case J64_IMUL_1OP:
+            // One-operand IMUL r/m (F6/F7 /5), register-direct only.
+            if (op.rmIndex >= 16) return false;
+            break;
+        case J64_IMUL_3OP:
+            // Three-operand IMUL r, r/m, imm, register-direct only.
             if (op.regField >= 16 || op.rmIndex >= 16) return false;
             break;
         case J64_STRING:
@@ -1102,6 +1508,26 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
                 local(body, 0x20, L_R);
                 local(body, 0x21, written + 1);
             }
+            break;
+        }
+        case J64_MOVX: {
+            // MOVZX/MOVSX: emitMovx leaves the result in L_R (or did the
+            // 16-bit RMW inline); publish like the ALU ops.
+            U32 written = emitMovx(body, op);
+            if (written != 0xFF) {
+                local(body, 0x20, L_R);
+                local(body, 0x21, written + 1);
+            }
+            break;
+        }
+        case J64_IMUL_1OP: {
+            // One-operand IMUL: emitImul1 writes RAX/RDX inline.
+            emitImul1(body, op);
+            break;
+        }
+        case J64_IMUL_3OP: {
+            // Three-operand IMUL: emitImul3 writes the destination inline.
+            emitImul3(body, op);
             break;
         }
         case J64_STRING: {

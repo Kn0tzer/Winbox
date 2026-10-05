@@ -95,9 +95,9 @@ test('out-of-bounds state traps before modifying any guest state', async () => {
 
 for (const [name, code] of [
   ['empty block', []],
-  ['guest-memory MOV', [0x48, 0x89, 0x00]], ['MOVZX source width', [0x0F, 0xB6, 0xC0]],
+  ['guest-memory MOV', [0x48, 0x89, 0x00]],
   ['16-bit MOV', [0x66, 0xB8, 0x42, 0]], ['REP prefix', [0xF3, 0xB8, 0x42, 0, 0, 0]],
-  ['16-bit ADD', [0x66, 0x01, 0xC0]], ['memory ADD', [0x48, 0x01, 0x00]],
+  ['memory ADD', [0x48, 0x01, 0x00]],
   ['unsupported suffix after MOV', [...movabs(0, 1n), 0x48, 0xC1, 0x20, 0x04]],
   ['block longer than 24 operations', Array.from({ length: 25 }, () => movabs(0, 1n)).flat()],
 ]) {
@@ -895,5 +895,453 @@ test('string ops differential fuzz (reference model)', async () => {
     if (size === 8) code.push(0x48);
     code.push(opByte);
     await checkString(code, sub, size, rep, asize32, regs, rflags, memInit);
+  }
+});
+
+// --- 8-bit ALU emission ---
+// 8-bit register model: without REX, indices 4..7 are AH/CH/DH/BH;
+// with any REX they are SPL/BPL/SIL/DIL.
+function byteAccess(regs, idx, rex) {
+  let phys = idx, shift = 0n;
+  if (!rex && idx >= 4 && idx <= 7) { phys = idx - 4; shift = 8n; }
+  return {
+    get: () => (regs[phys] >> shift) & 0xFFn,
+    set: (v) => { regs[phys] = (regs[phys] & ~(0xFFn << shift)) | ((v & 0xFFn) << shift); },
+  };
+}
+
+async function checkAlu8(code, destIdx, srcIdx, rex, sub, rflagsIn = 0x202) {
+  const regs = baseRegs();
+  const dest = byteAccess(regs, destIdx, rex);
+  const src = byteAccess(regs, srcIdx, rex);
+  const { r, flags } = refAlu(sub, dest.get(), src.get(), 1);
+  const out = await runAlu(code, regs, rflagsIn);
+  expectAlu(out, rflagsIn, flags, code.length, got => {
+    const exp = [...regs];
+    if (sub !== 7) byteAccess(exp, destIdx, rex).set(r);
+    for (let i = 0; i < 16; i++) assert.equal(got[i], exp[i], `GPR ${i}`);
+  });
+}
+
+for (const sub of [0, 1, 2, 3, 4, 5, 6, 7]) {
+  test(`8-bit ALU r/m,r sub=${sub} (AL,CL)`, async () => {
+    await checkAlu8([sub * 8, modrm(1, 0)], 0, 1, false, sub);
+  });
+  test(`8-bit ALU r,r/m sub=${sub} (CL,AL)`, async () => {
+    const regs = baseRegs();
+    const dest = byteAccess(regs, 1, false), src = byteAccess(regs, 0, false);
+    const { r, flags } = refAlu(sub, dest.get(), src.get(), 1);
+    const out = await runAlu([sub * 8 + 2, modrm(1, 0)], regs, 0x202);
+    expectAlu(out, 0x202, flags, 2, got => {
+      const exp = [...regs];
+      if (sub !== 7) byteAccess(exp, 1, false).set(r);
+      for (let i = 0; i < 16; i++) assert.equal(got[i], exp[i], `GPR ${i}`);
+    });
+  });
+}
+
+test('8-bit ADD AH,BH (high-byte registers, no REX)', async () => {
+  await checkAlu8([0x00, modrm(7, 4)], 4, 7, false, 0);
+});
+test('8-bit SUB DH,AH preserves neighbors', async () => {
+  const regs = baseRegs();
+  regs[0] = 0x1122334455667788n; regs[2] = 0xAABBCCDDEEFF0011n;
+  const dest = byteAccess(regs, 6, false), src = byteAccess(regs, 4, false);
+  const { r, flags } = refAlu(5, dest.get(), src.get(), 1);
+  const out = await runAlu([0x28, modrm(4, 6)], regs, 0x202);
+  expectAlu(out, 0x202, flags, 2, got => {
+    const exp = [...regs];
+    byteAccess(exp, 6, false).set(r);
+    for (let i = 0; i < 16; i++) assert.equal(got[i], exp[i], `GPR ${i}`);
+  });
+});
+test('8-bit ADD SPL,SPL under REX (not AH)', async () => {
+  const regs = baseRegs();
+  regs[4] = 0x1122334455667788n; // RSP: SPL is the low byte
+  const dest = byteAccess(regs, 4, true), src = byteAccess(regs, 4, true);
+  const { r, flags } = refAlu(0, dest.get(), src.get(), 1);
+  const out = await runAlu([0x40, 0x00, modrm(4, 4)], regs, 0x202);
+  expectAlu(out, 0x202, flags, 3, got => {
+    const exp = [...regs];
+    byteAccess(exp, 4, true).set(r);
+    for (let i = 0; i < 16; i++) assert.equal(got[i], exp[i], `GPR ${i}`);
+  });
+});
+test('8-bit ADD AL,imm8 (acc-imm)', async () => {
+  const regs = baseRegs();
+  const { r, flags } = refAlu(0, regs[0] & 0xFFn, 0x7Fn, 1);
+  const out = await runAlu([0x04, 0x7F], regs, 0x202);
+  expectAlu(out, 0x202, flags, 2, got => {
+    const exp = [...regs]; exp[0] = (exp[0] & ~0xFFn) | r;
+    for (let i = 0; i < 16; i++) assert.equal(got[i], exp[i], `GPR ${i}`);
+  });
+});
+test('8-bit OR r/m8,imm8 (0x80 group)', async () => {
+  const regs = baseRegs();
+  const { r, flags } = refAlu(1, regs[2] & 0xFFn, 0xF0n, 1);
+  const out = await runAlu([0x80, modrm(1, 2), 0xF0], regs, 0x202);
+  expectAlu(out, 0x202, flags, 3, got => {
+    const exp = [...regs]; exp[2] = (exp[2] & ~0xFFn) | r;
+    for (let i = 0; i < 16; i++) assert.equal(got[i], exp[i], `GPR ${i}`);
+  });
+});
+test('8-bit TEST r/m8,r8 sets flags only', async () => {
+  const regs = baseRegs();
+  const { flags } = refAlu(4, regs[0] & 0xFFn, regs[1] & 0xFFn, 1);
+  const out = await runAlu([0x84, modrm(1, 0)], regs, 0x202);
+  expectAlu(out, 0x202, flags, 2, got => {
+    for (let i = 0; i < 16; i++) assert.equal(got[i], regs[i], `GPR ${i} untouched`);
+  });
+});
+test('8-bit TEST AL,imm8 (A8)', async () => {
+  const regs = baseRegs();
+  const { flags } = refAlu(4, regs[0] & 0xFFn, 0x0Fn, 1);
+  const out = await runAlu([0xA8, 0x0F], regs, 0x202);
+  expectAlu(out, 0x202, flags, 2, got => {
+    for (let i = 0; i < 16; i++) assert.equal(got[i], regs[i], `GPR ${i} untouched`);
+  });
+});
+
+// --- 16-bit ALU emission ---
+async function checkAlu16(code, sub, rflagsIn = 0x202) {
+  const regs = baseRegs();
+  const { r, flags } = refAlu(sub, regs[0] & 0xFFFFn, regs[1] & 0xFFFFn, 2);
+  const out = await runAlu(code, regs, rflagsIn);
+  expectAlu(out, rflagsIn, flags, code.length, got => {
+    const exp = [...regs];
+    if (sub !== 7) exp[0] = (exp[0] & ~0xFFFFn) | r; // setU16: upper preserved
+    for (let i = 0; i < 16; i++) assert.equal(got[i], exp[i], `GPR ${i}`);
+  });
+}
+for (const [name, byte] of [['ADD', 0x01], ['OR', 0x09], ['ADC', 0x11], ['SBB', 0x19], ['AND', 0x21], ['SUB', 0x29], ['XOR', 0x31], ['CMP', 0x39]]) {
+  test(`16-bit ${name} AX,CX preserves upper 48`, async () => {
+    await checkAlu16([0x66, byte, modrm(1, 0)], (byte >> 3) & 7);
+  });
+}
+test('16-bit ADD AX,imm16 (acc-imm)', async () => {
+  const regs = baseRegs();
+  const { r, flags } = refAlu(0, regs[0] & 0xFFFFn, 0x1234n, 2);
+  const out = await runAlu([0x66, 0x05, 0x34, 0x12], regs, 0x202);
+  expectAlu(out, 0x202, flags, 4, got => {
+    const exp = [...regs]; exp[0] = (exp[0] & ~0xFFFFn) | r;
+    for (let i = 0; i < 16; i++) assert.equal(got[i], exp[i], `GPR ${i}`);
+  });
+});
+test('16-bit SHL AX,1 with flags', async () => {
+  const regs = baseRegs(); regs[0] = 0xFEDCBA987654C001n;
+  const v = regs[0] & 0xFFFFn;
+  const r = (v << 1n) & 0xFFFFn;
+  const cf = (v >> 15n) & 1n, of = (((r >> 15n) & 1n) ^ cf);
+  const zf = r === 0n ? 1n : 0n, sf = (r >> 15n) & 1n;
+  let p = Number(r & 0xFFn); p ^= p >> 4; p ^= p >> 2; p ^= p >> 1;
+  const flags = cf | (BigInt((p & 1) === 0 ? 1 : 0) << 2n) | (zf << 6n) | (sf << 7n) | (of << 11n);
+  const out = await runAlu([0x66, 0xC1, modrm(4, 0), 0x01], regs, 0x202);
+  expectAlu(out, 0x202, flags, 4, got => {
+    const exp = [...regs]; exp[0] = (exp[0] & ~0xFFFFn) | r;
+    for (let i = 0; i < 16; i++) assert.equal(got[i], exp[i], `GPR ${i}`);
+  });
+});
+
+// --- MOVZX/MOVSX emission ---
+async function checkMovx(op2, destSize, rexW) {
+  const sub = [0xB6, 0xB7, 0xBE, 0xBF].indexOf(op2);
+  const srcSize = (sub === 0 || sub === 2) ? 1 : 2; // B6/BE: 8-bit source
+  const signed = sub >= 2;
+  const regs = baseRegs();
+  regs[1] = 0xFEDCBA9876543281n; // src: low byte 0x81, low word 0x3281
+  let v = srcSize === 1 ? regs[1] & 0xFFn : regs[1] & 0xFFFFn;
+  if (signed) v = srcSize === 1 ? BigInt.asIntN(8, v) : BigInt.asIntN(16, v);
+  v = BigInt.asUintN(64, v);
+  const code = [];
+  if (destSize === 2) code.push(0x66);
+  if (rexW) code.push(0x48);
+  code.push(0x0F, op2, modrm(0, 1));
+  const out = await runAlu(code, regs, 0x202);
+  const exp = [...regs];
+  if (destSize === 2) exp[0] = (exp[0] & ~0xFFFFn) | (v & 0xFFFFn);
+  else if (destSize === 4) exp[0] = v & 0xFFFFFFFFn;
+  else exp[0] = v;
+  expectAlu(out, 0x202, 0n, code.length, got => {
+    for (let i = 0; i < 16; i++) assert.equal(got[i], exp[i], `GPR ${i}`);
+  });
+  assert.equal(out.rflags, 0x202, 'MOVX preserves flags');
+}
+for (const op2 of [0xB6, 0xB7, 0xBE, 0xBF]) {
+  for (const [ds, rw] of [[2, false], [4, false], [8, true]]) {
+    test(`MOVX 0F${op2.toString(16).toUpperCase()} dest${ds * 8}`, async () => {
+      await checkMovx(op2, ds, rw);
+    });
+  }
+}
+
+// --- one-operand IMUL emission ---
+async function checkImul1(size, rexW) {
+  const regs = baseRegs();
+  regs[0] = 0xFEDCBA9876543211n; regs[1] = 0x1122334455667788n;
+  const w = size * 8;
+  const wmask = (1n << BigInt(w)) - 1n;
+  const sa = BigInt.asIntN(w, regs[0] & wmask);
+  const sb = BigInt.asIntN(w, regs[1] & wmask);
+  const prod = sa * sb;
+  const lo = BigInt.asUintN(w, prod);
+  const overflow = BigInt.asIntN(w, lo) !== prod ? 1n : 0n;
+  const code = [];
+  if (rexW) code.push(0x48); else if (size === 2) code.push(0x66);
+  code.push(size === 1 ? 0xF6 : 0xF7, modrm(5, 1));
+  const out = await runAlu(code, regs, 0x202);
+  const exp = [...regs];
+  // 8-bit IMUL writes the 16-bit product to AX (interpreter setU16).
+  if (size === 1) exp[0] = (exp[0] & ~0xFFFFn) | BigInt.asUintN(16, prod);
+  else if (size === 2) {
+    exp[0] = (exp[0] & ~0xFFFFn) | lo;
+    exp[2] = (exp[2] & ~0xFFFFn) | ((prod >> BigInt(w)) & 0xFFFFn);
+  } else if (size === 4) {
+    exp[0] = lo; exp[2] = (prod >> 32n) & 0xFFFFFFFFn;
+  } else { exp[0] = BigInt.asUintN(64, prod); exp[2] = BigInt.asUintN(64, prod >> 64n); }
+  const flags = overflow ? 0x801n : 0n;
+  expectAlu(out, 0x202, flags, code.length, got => {
+    for (let i = 0; i < 16; i++) assert.equal(got[i], exp[i], `GPR ${i}`);
+  });
+  assert.equal(out.rflags & ~0x801, 0x202 & ~0x801, 'other flags preserved');
+}
+for (const [size, rexW] of [[1, false], [2, false], [4, false], [8, true]]) {
+  test(`IMUL 1-op ${size * 8}-bit`, async () => { await checkImul1(size, rexW); });
+}
+
+// --- three-operand IMUL emission ---
+async function checkImul3(size, useImm8) {
+  const regs = baseRegs();
+  regs[1] = 0xFEDCBA9876543211n;
+  const w = size * 8;
+  const sa = BigInt.asIntN(w, regs[1] & ((1n << BigInt(w)) - 1n));
+  const imm = useImm8 ? -5n : 0x12345n;
+  const prod = sa * imm;
+  const r = BigInt.asUintN(w, prod);
+  const overflow = BigInt.asIntN(w, r) !== prod ? 1n : 0n;
+  const code = [];
+  if (size === 8) code.push(0x48); else if (size === 2) code.push(0x66);
+  if (useImm8) code.push(0x6B, modrm(0, 1), 0xFB);
+  else if (size === 2) code.push(0x69, modrm(0, 1), 0x45, 0x23);
+  else code.push(0x69, modrm(0, 1), 0x45, 0x23, 0x01, 0x00);
+  const out = await runAlu(code, regs, 0x202);
+  const exp = [...regs];
+  if (size === 2) exp[0] = (exp[0] & ~0xFFFFn) | r;
+  else if (size === 4) exp[0] = r;
+  else exp[0] = BigInt.asUintN(64, prod);
+  const flags = overflow ? 0x801n : 0n;
+  expectAlu(out, 0x202, flags, code.length, got => {
+    for (let i = 0; i < 16; i++) assert.equal(got[i], exp[i], `GPR ${i}`);
+  });
+  assert.equal(out.rflags & ~0x801, 0x202 & ~0x801, 'other flags preserved');
+}
+for (const size of [2, 4, 8]) {
+  test(`IMUL 3-op ${size * 8}-bit imm8`, async () => { await checkImul3(size, true); });
+  test(`IMUL 3-op ${size * 8}-bit imm${size === 2 ? 16 : 32}`, async () => { await checkImul3(size, false); });
+}
+
+// --- Differential fuzzing for new groups ---
+function makeRand(seed) {
+  let s = seed >>> 0;
+  return () => {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+function r64fuzz(rand) {
+  let v = 0n;
+  for (let i = 0; i < 8; i++) v = (v << 8n) | BigInt(Math.floor(rand() * 256));
+  return v;
+}
+
+test('fuzz 8-bit ALU vs reference (500 cases, high-byte adversarial)', async () => {
+  const rand = makeRand(0x8A1F);
+  for (let i = 0; i < 500; i++) {
+    const sub = Math.floor(rand() * 8);
+    const useRex = rand() < 0.4;
+    // Register indices in the modrm byte (0..7, or 0..15 with REX).
+    let d = Math.floor(rand() * 8), s = Math.floor(rand() * 8);
+    if (useRex && rand() < 0.5) d += 8;
+    if (useRex && rand() < 0.5) s += 8;
+    // Adversarial: force high-byte (4..7) without REX half the time.
+    if (!useRex && rand() < 0.5) d = 4 + Math.floor(rand() * 4);
+    if (!useRex && rand() < 0.5) s = 4 + Math.floor(rand() * 4);
+    const isRRM = rand() < 0.5; // true: r8,r/m8 (02); false: r/m8,r8 (00)
+    const code = [];
+    let rex = 0;
+    if (useRex) {
+      rex = 0x40;
+      if (d >= 8) { rex |= 0x04; d -= 8; } // REX.R extends reg field
+      if (s >= 8) { rex |= 0x01; s -= 8; } // REX.B extends rm field
+      // Note: for r/m8,r8, reg=s, rm=d. For r8,r/m8, reg=d, rm=s.
+      // We set REX based on d/s as reg/rm; adjust below.
+    }
+    // Recompute: for opcode 00 (r/m,r): reg=s, rm=d. For 02 (r,r/m): reg=d, rm=s.
+    let regF = isRRM ? d : s, rmF = isRRM ? s : d;
+    if (useRex) {
+      rex = 0x40;
+      if (regF >= 8) { rex |= 0x04; regF -= 8; }
+      if (rmF >= 8) { rex |= 0x01; rmF -= 8; }
+      code.push(rex);
+    }
+    code.push(sub * 8 + (isRRM ? 2 : 0), 0xC0 | (regF << 3) | rmF);
+    const regs = baseRegs();
+    for (let r = 0; r < 16; r++) regs[r] = r64fuzz(rand);
+    // Physical accessors: byteAccess maps 4..7 to high-byte iff !rex.
+    const destIdx = isRRM ? d : d; // d is the destination modrm index (0..15)
+    const srcIdx = isRRM ? s : s;
+    // Reconstruct full indices (with high bits) for byteAccess.
+    const dFull = isRRM ? (regF + (rex & 0x04 ? 8 : 0)) : (rmF + (rex & 0x01 ? 8 : 0));
+    const sFull = isRRM ? (rmF + (rex & 0x01 ? 8 : 0)) : (regF + (rex & 0x04 ? 8 : 0));
+    const hasRex = code[0] === rex && useRex;
+    const dAcc = byteAccess(regs, dFull, hasRex);
+    const sAcc = byteAccess(regs, sFull, hasRex);
+    const { r, flags } = refAlu(sub, dAcc.get(), sAcc.get(), 1);
+    const out = await runAlu(code, regs, 0x202);
+    const exp = [...regs];
+    if (sub !== 7) {
+      const eAcc = byteAccess(exp, dFull, hasRex);
+      eAcc.set(r);
+    }
+    const got = out.regs;
+    for (let g = 0; g < 16; g++) {
+      assert.equal(got[g], exp[g], `fuzz8 i=${i} sub=${sub} GPR${g}`);
+    }
+    assert.equal(out.rflags, (0x202 & ~0x8D5) | Number(flags), `fuzz8 i=${i} flags`);
+    assert.equal(out.ripOut, (0x12345678ABCDEFF0n + BigInt(code.length)) & mask64, `fuzz8 i=${i} rip`);
+  }
+});
+
+test('fuzz 16-bit ALU vs reference (300 cases)', async () => {
+  const rand = makeRand(0x16B1);
+  for (let i = 0; i < 300; i++) {
+    const sub = Math.floor(rand() * 8);
+    const isRRM = rand() < 0.5;
+    const d = Math.floor(rand() * 8), s = Math.floor(rand() * 8);
+    const regF = isRRM ? d : s, rmF = isRRM ? s : d;
+    const code = [0x66, sub * 8 + (isRRM ? 3 : 1), 0xC0 | (regF << 3) | rmF];
+    const regs = baseRegs();
+    for (let r = 0; r < 16; r++) regs[r] = r64fuzz(rand);
+    const dv = regs[d] & 0xFFFFn, sv = regs[s] & 0xFFFFn;
+    const { r, flags } = refAlu(sub, dv, sv, 2);
+    const out = await runAlu(code, regs, 0x202);
+    const exp = [...regs];
+    if (sub !== 7) exp[d] = (exp[d] & ~0xFFFFn) | r;
+    const got = out.regs;
+    for (let g = 0; g < 16; g++) assert.equal(got[g], exp[g], `fuzz16 i=${i} GPR${g}`);
+    assert.equal(out.rflags, (0x202 & ~0x8D5) | Number(flags), `fuzz16 i=${i} flags`);
+  }
+});
+
+test('fuzz MOVX vs reference (240 cases)', async () => {
+  const rand = makeRand(0x0F5E);
+  const ops = [0xB6, 0xB7, 0xBE, 0xBF];
+  for (let i = 0; i < 240; i++) {
+    const op2 = ops[Math.floor(rand() * 4)];
+    const sub = ops.indexOf(op2);
+    const srcSize = (sub === 0 || sub === 2) ? 1 : 2;
+    const signed = sub >= 2;
+    const destSize = [2, 4, 8][Math.floor(rand() * 3)];
+    const d = Math.floor(rand() * 8), s = Math.floor(rand() * 8);
+    const code = [];
+    if (destSize === 2) code.push(0x66);
+    if (destSize === 8) code.push(0x48);
+    code.push(0x0F, op2, 0xC0 | (d << 3) | s);
+    const regs = baseRegs();
+    for (let r = 0; r < 16; r++) regs[r] = r64fuzz(rand);
+    // Source may be a high-byte register (AH/BH/CH/DH) if s in 4..7 and no REX.
+    // REX.W is present for 64-bit dest, so pass rex=true in that case.
+    const hasRex = destSize === 8;
+    let v;
+    if (srcSize === 1) v = byteAccess(regs, s, hasRex).get();
+    else v = regs[s] & 0xFFFFn;
+    if (signed) v = srcSize === 1 ? BigInt.asIntN(8, v) : BigInt.asIntN(16, v);
+    v = BigInt.asUintN(64, v);
+    const out = await runAlu(code, regs, 0x202);
+    const exp = [...regs];
+    if (destSize === 2) exp[d] = (exp[d] & ~0xFFFFn) | (v & 0xFFFFn);
+    else if (destSize === 4) exp[d] = v & 0xFFFFFFFFn;
+    else exp[d] = v;
+    const got = out.regs;
+    for (let g = 0; g < 16; g++) assert.equal(got[g], exp[g], `fuzzMovx i=${i} GPR${g}`);
+    assert.equal(out.rflags, 0x202, `fuzzMovx i=${i} flags preserved`);
+  }
+});
+
+test('fuzz IMUL 1-op vs reference (200 cases)', async () => {
+  const rand = makeRand(0xF607);
+  for (let i = 0; i < 200; i++) {
+    const size = [1, 2, 4, 8][Math.floor(rand() * 4)];
+    const s = Math.floor(rand() * 8);
+    const code = [];
+    if (size === 8) code.push(0x48); else if (size === 2) code.push(0x66);
+    code.push(size === 1 ? 0xF6 : 0xF7, 0xC0 | (5 << 3) | s);
+    const regs = baseRegs();
+    for (let r = 0; r < 16; r++) regs[r] = r64fuzz(rand);
+    const w = size * 8, wmask = (1n << BigInt(w)) - 1n;
+    const sa = BigInt.asIntN(w, regs[0] & wmask);
+    // 8-bit source may be high-byte (no REX in this fuzz).
+    const sbRaw = size === 1 ? byteAccess(regs, s, false).get() : regs[s] & wmask;
+    const sb = BigInt.asIntN(w, sbRaw);
+    const prod = sa * sb;
+    const out = await runAlu(code, regs, 0x202);
+    const exp = [...regs];
+    let overflow;
+    if (size === 1) {
+      exp[0] = (exp[0] & ~0xFFFFn) | BigInt.asUintN(16, prod);
+      overflow = BigInt.asIntN(8, BigInt.asUintN(8, prod)) !== prod;
+    } else if (size === 2) {
+      exp[0] = (exp[0] & ~0xFFFFn) | BigInt.asUintN(16, prod);
+      exp[2] = (exp[2] & ~0xFFFFn) | BigInt.asUintN(16, prod >> 16n);
+      overflow = BigInt.asIntN(16, BigInt.asUintN(16, prod)) !== prod;
+    } else if (size === 4) {
+      exp[0] = BigInt.asUintN(32, prod);
+      exp[2] = BigInt.asUintN(32, prod >> 32n);
+      overflow = BigInt.asIntN(32, BigInt.asUintN(32, prod)) !== prod;
+    } else {
+      exp[0] = BigInt.asUintN(64, prod);
+      exp[2] = BigInt.asUintN(64, prod >> 64n);
+      overflow = BigInt.asIntN(64, BigInt.asUintN(64, prod)) !== prod;
+    }
+    const got = out.regs;
+    for (let g = 0; g < 16; g++) assert.equal(got[g], exp[g], `fuzzImul1 i=${i} GPR${g}`);
+    const expFlags = (0x202 & ~0x801) | (overflow ? 0x801 : 0);
+    assert.equal(out.rflags, expFlags, `fuzzImul1 i=${i} flags`);
+  }
+});
+
+test('fuzz IMUL 3-op vs reference (200 cases)', async () => {
+  const rand = makeRand(0x69B1);
+  for (let i = 0; i < 200; i++) {
+    const size = [2, 4, 8][Math.floor(rand() * 3)];
+    const useImm8 = rand() < 0.5;
+    const d = Math.floor(rand() * 8), s = Math.floor(rand() * 8);
+    const imm = useImm8 ? BigInt(Math.floor(rand() * 256) - 128)
+                       : BigInt(Math.floor(rand() * 4294967296) - 2147483648);
+    const code = [];
+    if (size === 8) code.push(0x48); else if (size === 2) code.push(0x66);
+    if (useImm8) {
+      code.push(0x6B, 0xC0 | (d << 3) | s, Number(imm & 0xFFn));
+    } else if (size === 2) {
+      code.push(0x69, 0xC0 | (d << 3) | s, Number(imm & 0xFFn), Number((imm >> 8n) & 0xFFn));
+    } else {
+      code.push(0x69, 0xC0 | (d << 3) | s,
+        Number(imm & 0xFFn), Number((imm >> 8n) & 0xFFn),
+        Number((imm >> 16n) & 0xFFn), Number((imm >> 24n) & 0xFFn));
+    }
+    const regs = baseRegs();
+    for (let r = 0; r < 16; r++) regs[r] = r64fuzz(rand);
+    const w = size * 8;
+    const sa = BigInt.asIntN(w, regs[s] & ((1n << BigInt(w)) - 1n));
+    const prod = sa * imm;
+    const out = await runAlu(code, regs, 0x202);
+    const exp = [...regs];
+    const r = BigInt.asUintN(w, prod);
+    if (size === 2) exp[d] = (exp[d] & ~0xFFFFn) | r;
+    else exp[d] = size === 4 ? r : BigInt.asUintN(64, prod);
+    const overflow = BigInt.asIntN(w, r) !== prod;
+    const got = out.regs;
+    for (let g = 0; g < 16; g++) assert.equal(got[g], exp[g], `fuzzImul3 i=${i} GPR${g}`);
+    const expFlags = (0x202 & ~0x801) | (overflow ? 0x801 : 0);
+    assert.equal(out.rflags, expFlags, `fuzzImul3 i=${i} flags`);
   }
 });

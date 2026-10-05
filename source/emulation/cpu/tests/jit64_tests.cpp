@@ -74,10 +74,20 @@ static void testMovForms() {
     // C7 45 FC 2A 00 00 00  mov dword [rbp-4], 42
     Jit64Op e = dec(0x400000, {0xC7, 0x45, 0xFC, 0x2A, 0x00, 0x00, 0x00});
     CHECK(e.kind == J64_MOV_RM_IMM && e.len == 7 && e.imm == 42, "C7: kind=%d len=%d imm=%llu", e.kind, e.len, e.imm);
-    // 0F B6 C0          movzx eax, al  (reg form, MOVZX marker sub=1)
+    // 0F B6 C0          movzx eax, al  (J64_MOVX, sub 0=zx8)
     Jit64Op f = dec(0x400000, {0x0F, 0xB6, 0xC0});
-    CHECK(f.kind == J64_MOV_R_RM && f.len == 3, "0FB6: kind=%d len=%d", f.kind, f.len);
+    CHECK(f.kind == J64_MOVX && f.sub == 0 && f.len == 3, "0FB6: kind=%d sub=%d len=%d", f.kind, f.sub, f.len);
     CHECK(f.plan == JIT64_FAST, "0FB6 plan fallback");
+    // 0F BE C0          movsx eax, al  (J64_MOVX, sub 2=sx8)
+    Jit64Op f2 = dec(0x400000, {0x0F, 0xBE, 0xC0});
+    CHECK(f2.kind == J64_MOVX && f2.sub == 2 && f2.len == 3, "0FBE: kind=%d sub=%d", f2.kind, f2.sub);
+    CHECK(f2.plan == JIT64_FAST, "0FBE plan fallback");
+    // 0F B7 C0          movzx eax, ax  (J64_MOVX, sub 1=zx16)
+    Jit64Op f3 = dec(0x400000, {0x0F, 0xB7, 0xC0});
+    CHECK(f3.kind == J64_MOVX && f3.sub == 1, "0FB7: kind=%d sub=%d", f3.kind, f3.sub);
+    // 0F BF C0          movsx eax, ax  (J64_MOVX, sub 3=sx16)
+    Jit64Op f4 = dec(0x400000, {0x0F, 0xBF, 0xC0});
+    CHECK(f4.kind == J64_MOVX && f4.sub == 3, "0FBF: kind=%d sub=%d", f4.kind, f4.sub);
 }
 
 static void testAluForms() {
@@ -163,10 +173,59 @@ static void testFallbackRules() {
     CHECK(jit64DecodeOne(0x400000, op16, 3, b), "66-decode failed");
     jit64Classify(b, false, true);
     CHECK(b.plan == JIT64_FALLBACK, "o16 mov must be fallback");
-    // 8-bit ALU is unknown (fallback by construction).
-    Jit64Op c;
-    const U8 add8[] = {0x00, 0xC8};
-    CHECK(!jit64DecodeOne(0x400000, add8, 2, c), "8-bit ADD should not decode fast");
+    // 8-bit ALU decodes (size 1) and classifies fast.
+    Jit64Op c = dec(0x400000, {0x00, 0xC8});
+    CHECK(c.kind == J64_ALU_RM_R && c.size == 1 && c.sub == 0 && c.len == 2,
+          "8-bit ADD: kind=%d size=%d sub=%d len=%d", c.kind, c.size, c.sub, c.len);
+    CHECK(c.plan == JIT64_FAST, "8-bit ADD plan fallback");
+    CHECK(!c.rexPresent, "8-bit ADD without REX");
+    // 44 00 C8          add r8b, r9b (REX: no high-byte rule)
+    Jit64Op c2 = dec(0x400000, {0x44, 0x00, 0xC8});
+    CHECK(c2.kind == J64_ALU_RM_R && c2.size == 1 && c2.rexPresent, "REX add8: kind=%d", c2.kind);
+    CHECK(c2.rmIndex == 0 && c2.regField == 9, "REX add8: rm=%d rf=%d", c2.rmIndex, c2.regField);
+    // 00 E4             add ah, ah (no REX: high-byte registers)
+    Jit64Op c3 = dec(0x400000, {0x00, 0xE4});
+    CHECK(c3.kind == J64_ALU_RM_R && c3.size == 1 && !c3.rexPresent, "ah add: kind=%d", c3.kind);
+    CHECK(c3.rmIndex == 4 && c3.regField == 4, "ah add: rm=%d rf=%d", c3.rmIndex, c3.regField);
+    // 80 C0 05          add al, 5
+    Jit64Op c4 = dec(0x400000, {0x80, 0xC0, 0x05});
+    CHECK(c4.kind == J64_ALU_RM_IMM && c4.size == 1 && c4.sub == 0 && c4.imm == 5 && c4.len == 3,
+          "80 add: kind=%d size=%d imm=%llu len=%d", c4.kind, c4.size, c4.imm, c4.len);
+    CHECK(c4.plan == JIT64_FAST, "80 add plan fallback");
+    // 84 C0             test al, al
+    Jit64Op c5 = dec(0x400000, {0x84, 0xC0});
+    CHECK(c5.kind == J64_TEST_RM_R && c5.size == 1 && c5.len == 2, "84: kind=%d", c5.kind);
+    CHECK(c5.plan == JIT64_FAST, "84 plan fallback");
+    // A8 0F             test al, 0x0F
+    Jit64Op c6 = dec(0x400000, {0xA8, 0x0F});
+    CHECK(c6.kind == J64_ALU_ACC_IMM && c6.sub == 8 && c6.size == 1 && c6.imm == 0x0F && c6.len == 2,
+          "A8: kind=%d sub=%d imm=%llu", c6.kind, c6.sub, c6.imm);
+    CHECK(c6.plan == JIT64_FAST, "A8 plan fallback");
+    // C0 E0 04          shl al, 4
+    Jit64Op c7 = dec(0x400000, {0xC0, 0xE0, 0x04});
+    CHECK(c7.kind == J64_SHIFT_IMM && c7.size == 1 && c7.sub == 4 && c7.imm == 4 && c7.len == 3,
+          "C0: kind=%d sub=%d imm=%llu", c7.kind, c7.sub, c7.imm);
+    CHECK(c7.plan == JIT64_FAST, "C0 plan fallback");
+    // F6 E8             imul al (one-operand, /5)
+    Jit64Op c8 = dec(0x400000, {0xF6, 0xE8});
+    CHECK(c8.kind == J64_IMUL_1OP && c8.size == 1 && c8.len == 2, "F6: kind=%d", c8.kind);
+    CHECK(c8.plan == JIT64_FAST, "F6 plan fallback");
+    // F6 E0             mul al (/4: not decoded)
+    Jit64Op c9;
+    CHECK(!jit64DecodeOne(0x400000, (const U8[]){0xF6, 0xE0}, 2, c9), "F6 /4 must not decode");
+    // 6B C0 05          imul eax, eax, 5
+    Jit64Op c10 = dec(0x400000, {0x6B, 0xC0, 0x05});
+    CHECK(c10.kind == J64_IMUL_3OP && c10.size == 4 && c10.imm == 5 && c10.len == 3,
+          "6B: kind=%d imm=%llu len=%d", c10.kind, c10.imm, c10.len);
+    CHECK(c10.plan == JIT64_FAST, "6B plan fallback");
+    // 69 C0 34 12 00 00 imul eax, eax, 0x1234
+    Jit64Op c11 = dec(0x400000, {0x69, 0xC0, 0x34, 0x12, 0x00, 0x00});
+    CHECK(c11.kind == J64_IMUL_3OP && c11.size == 4 && c11.imm == 0x1234 && c11.len == 6,
+          "69: kind=%d imm=%llu len=%d", c11.kind, c11.imm, c11.len);
+    // 66 01 C0          add ax, ax (16-bit)
+    Jit64Op c12 = dec(0x400000, {0x66, 0x01, 0xC0});
+    CHECK(c12.kind == J64_ALU_RM_R && c12.size == 2 && c12.len == 3, "66 ADD: size=%d len=%d", c12.size, c12.len);
+    CHECK(c12.plan == JIT64_FAST, "66 ADD plan fallback");
     // Truncated stream must not decode.
     Jit64Op d;
     const U8 trunc[] = {0x48, 0x89};
