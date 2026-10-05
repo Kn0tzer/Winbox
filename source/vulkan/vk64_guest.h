@@ -5959,6 +5959,36 @@ typedef struct VkSubmitInfo {
     uint64_t pSignalSemaphores;
 } VkSubmitInfo;
 
+typedef struct VkSemaphoreSubmitInfo {
+    VkStructureType sType;
+    uint64_t pNext;
+    uint64_t semaphore;
+    uint64_t value;
+    uint64_t stageMask;
+    uint32_t deviceIndex;
+    uint32_t _pad;
+} VkSemaphoreSubmitInfo;
+
+typedef struct VkCommandBufferSubmitInfo {
+    VkStructureType sType;
+    uint64_t pNext;
+    uint64_t commandBuffer;
+    uint32_t deviceMask;
+    uint32_t _pad;
+} VkCommandBufferSubmitInfo;
+
+typedef struct VkSubmitInfo2 {
+    VkStructureType sType;
+    uint64_t pNext;
+    uint32_t flags;
+    uint32_t waitSemaphoreInfoCount;
+    uint64_t pWaitSemaphoreInfos;
+    uint32_t commandBufferInfoCount;
+    uint64_t pCommandBufferInfos;
+    uint32_t signalSemaphoreInfoCount;
+    uint64_t pSignalSemaphoreInfos;
+} VkSubmitInfo2;
+
 typedef struct VkMappedMemoryRange {
     VkStructureType    sType;
     uint64_t pNext;

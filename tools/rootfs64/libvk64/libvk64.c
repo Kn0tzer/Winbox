@@ -781,6 +781,14 @@ API VkResult vkQueuePresentKHR(VkQueue q, const void* pi) {
     VK64Args a = {{0}}; a.a[0] = q; a.a[1] = P(pi);
     return (VkResult)vk64_trap(VK64_fn_vkQueuePresentKHR, &a);
 }
+API VkResult vkQueueSubmit2(VkQueue q, uint32_t n, const void* submits, VkFence fence) {
+    VK64Args a = {{0}}; a.a[0] = q; a.a[1] = n; a.a[2] = P(submits); a.a[3] = fence;
+    return (VkResult)vk64_trap(VK64_fn_vkQueueSubmit2, &a);
+}
+API VkResult vkQueueSubmit2KHR(VkQueue q, uint32_t n, const void* submits, VkFence fence) {
+    VK64Args a = {{0}}; a.a[0] = q; a.a[1] = n; a.a[2] = P(submits); a.a[3] = fence;
+    return (VkResult)vk64_trap(VK64_fn_vkQueueSubmit2KHR, &a);
+}
 
 // ===========================================================================
 // G. Global (no instance): instance version
@@ -920,6 +928,8 @@ static const struct procEntry g_procs[] = {
     E(vkCmdCopyBufferToImage, VK64_fn_vkCmdCopyBufferToImage),
     // --- frame boundary ---
     E(vkQueueSubmit, VK64_fn_vkQueueSubmit),
+    E(vkQueueSubmit2, VK64_fn_vkQueueSubmit2),
+    E(vkQueueSubmit2KHR, VK64_fn_vkQueueSubmit2KHR),
     E(vkQueuePresentKHR, VK64_fn_vkQueuePresentKHR),
 };
 #undef E
@@ -1066,8 +1076,6 @@ TAIL(vkDestroyQueryPool)
 TAIL(vkCreateComputePipelines)
 TAIL(vkGetPipelineLayoutSupport)
 TAIL(vkQueueBindSparse)
-TAIL(vkQueueSubmit2)
-TAIL(vkQueueSubmit2KHR)
 TAIL(vkCmdPipelineBarrier2)
 TAIL(vkCmdPipelineBarrier2KHR)
 TAIL(vkCmdBindIndexBuffer2)

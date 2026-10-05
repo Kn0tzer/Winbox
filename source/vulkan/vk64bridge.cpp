@@ -222,6 +222,8 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkCmdCopyBufferToImage,               "vkCmdCopyBufferToImage") \
     X(VK64_fn_vkCmdEndRenderPass,                   "vkCmdEndRenderPass")  \
     X(VK64_fn_vkQueueSubmit,                        "vkQueueSubmit")       \
+    X(VK64_fn_vkQueueSubmit2,                       "vkQueueSubmit2")      \
+    X(VK64_fn_vkQueueSubmit2KHR,                    "vkQueueSubmit2KHR")   \
     X(VK64_fn_vkQueuePresentKHR,                    "vkQueuePresentKHR")   \
     X(VK64_fn_vkEnumerateInstanceVersion,           "vkEnumerateInstanceVersion") \
     X(VK64_fn_vkGetPhysicalDeviceProperties2,       "vkGetPhysicalDeviceProperties2") \
@@ -3358,6 +3360,40 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         klog_fmt("vk64: vkQueueSubmit(%u batches, %u command buffers)", (unsigned)n, (unsigned)frames.size());
         if (vkSchemaV2()) serializeSubmitV2(frames); else serializeSubmit(frames);
         if (args.a[3]) { Fence* f = objOf<Fence>(args.a[3], K_FENCE, "vkQueueSubmit"); if (f) f->signalled = 1; }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkQueueSubmit2:
+    case VK64_fn_vkQueueSubmit2KHR: {
+        // (queue, nSubmits, pSubmitInfo2*, fence) — Vulkan 1.3 path DXVK uses.
+        // VkSubmitInfo2 carries semaphore values inline (no timeline pNext).
+        U32 n = (U32)args.a[1];
+        std::vector<VkSubmitInfo2> sis;
+        readArray(args.a[2], n, sis);
+        std::vector<std::pair<CmdBuf*, U64>> frames;
+        for (U32 i = 0; i < n; i++) {
+            std::vector<VkSemaphoreSubmitInfo> waits, signals;
+            readArray(sis[i].pWaitSemaphoreInfos, sis[i].waitSemaphoreInfoCount, waits);
+            readArray(sis[i].pSignalSemaphoreInfos, sis[i].signalSemaphoreInfoCount, signals);
+            for (auto& w : waits) {
+                Semaphore* s = objOf<Semaphore>((U64)w.semaphore, K_SEMAPHORE, "vkQueueSubmit2");
+                if (s && s->counter < w.value) s->counter = w.value;
+            }
+            for (auto& sg : signals) {
+                Semaphore* s = objOf<Semaphore>((U64)sg.semaphore, K_SEMAPHORE, "vkQueueSubmit2");
+                if (s && sg.value > s->counter) s->counter = sg.value;
+            }
+            std::vector<VkCommandBufferSubmitInfo> cbis;
+            readArray(sis[i].pCommandBufferInfos, sis[i].commandBufferInfoCount, cbis);
+            for (auto& cbi : cbis) {
+                CmdBuf* cb = cbOf((U64)cbi.commandBuffer, "vkQueueSubmit2");
+                if (!cb) continue;
+                for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
+                frames.push_back({cb, (U64)cbi.commandBuffer});
+            }
+        }
+        klog_fmt("vk64: vkQueueSubmit2(%u batches, %u command buffers)", (unsigned)n, (unsigned)frames.size());
+        if (vkSchemaV2()) serializeSubmitV2(frames); else serializeSubmit(frames);
+        if (args.a[3]) { Fence* f = objOf<Fence>(args.a[3], K_FENCE, "vkQueueSubmit2"); if (f) f->signalled = 1; }
         return VK_SUCCESS;
     }
     case VK64_fn_vkQueuePresentKHR: {

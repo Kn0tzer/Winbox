@@ -258,6 +258,8 @@ enum {
     VK64_fn_vkCmdBindVertexBuffers,        // (cmdBuf, firstBinding, bindingCount, pBuffers*, pOffsets*)
     VK64_fn_vkCmdBindIndexBuffer,           // (cmdBuf, buffer, offset, indexType)
 
+    VK64_fn_vkQueueSubmit2,                       // (queue, nSubmits, pSubmitInfo2*, fence) -> builds the frame manifest
+    VK64_fn_vkQueueSubmit2KHR,                    // (queue, nSubmits, pSubmitInfo2*, fence) -> alias
     VK64_fn__MAX
 };
 
