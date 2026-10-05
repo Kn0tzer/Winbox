@@ -510,5 +510,11 @@ block. Selftest **258 passed, 0 failed**; `BW64_JIT=1` smoke stays
 byte-identical with `WASM64: blocks=21 insns=49` (was 20/47 — shift ops in
 the smoke workload now jitted).
 
-Still deferred: rotates, IMUL, string ops, FPU emission; per-block
-instantiation overhead measurement (phase-4 batching decision).
+Still deferred: rotates, IMUL, string ops, FPU emission.
+
+Per-block instantiation overhead (Node v22, 200 iterations, 1-op module):
+`WebAssembly.compile` 40 us + `instantiate` 8 us = **48 us per block**,
+vs `execute()` 162 ns per call (~300x). Instantiation amortizes after
+~300 executions of a cached block; cold/single-shot blocks are a net
+loss. The block cache already amortizes this for hot code; phase-4
+batching/merging is worth it if the cold-start path matters.
