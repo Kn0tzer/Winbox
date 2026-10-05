@@ -192,6 +192,8 @@ enum {
     VK64_fn_vkCmdDrawIndexed,
     VK64_fn_vkCmdBindVertexBuffers,
     VK64_fn_vkCmdBindIndexBuffer,
+    VK64_fn_vkQueueSubmit2,
+    VK64_fn_vkQueueSubmit2KHR,
 
     VK64_fn__MAX
 };
