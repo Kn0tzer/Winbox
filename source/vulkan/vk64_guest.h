@@ -6012,6 +6012,37 @@ typedef struct VkDescriptorUpdateTemplateCreateInfo {
     uint32_t _pad;
 } VkDescriptorUpdateTemplateCreateInfo;
 
+typedef struct VkRenderingAttachmentInfo {
+    VkStructureType sType;
+    uint64_t pNext;
+    uint64_t imageView;
+    uint32_t imageLayout;
+    uint32_t resolveMode;
+    uint64_t resolveImageView;
+    uint32_t resolveImageLayout;
+    uint32_t loadOp;
+    uint32_t storeOp;
+    uint64_t clearColor0;
+    uint64_t clearColor1;
+} VkRenderingAttachmentInfo;
+
+typedef struct VkRenderingInfo {
+    VkStructureType sType;
+    uint64_t pNext;
+    uint32_t flags;
+    uint32_t renderAreaOffsetX;
+    uint32_t renderAreaOffsetY;
+    uint32_t renderAreaWidth;
+    uint32_t renderAreaHeight;
+    uint32_t layerCount;
+    uint32_t viewMask;
+    uint32_t colorAttachmentCount;
+    uint32_t _pad;
+    uint64_t pColorAttachments;
+    uint64_t pDepthAttachment;
+    uint64_t pStencilAttachment;
+} VkRenderingInfo;
+
 typedef struct VkMappedMemoryRange {
     VkStructureType    sType;
     uint64_t pNext;

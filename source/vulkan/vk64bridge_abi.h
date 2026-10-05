@@ -273,6 +273,10 @@ enum {
     VK64_fn_vkCmdPushConstants2KHR,              // alias
     VK64_fn_vkCmdBindIndexBuffer2,               // (cmdBuf, buffer, offset, size, indexType) -> binds index buffer
     VK64_fn_vkCmdBindIndexBuffer2KHR,            // alias
+    VK64_fn_vkCmdBeginRendering,                // (cmdBuf, pRenderingInfo*) -> records dynamic rendering begin
+    VK64_fn_vkCmdBeginRenderingKHR,             // alias
+    VK64_fn_vkCmdEndRendering,                  // (cmdBuf) -> records dynamic rendering end
+    VK64_fn_vkCmdEndRenderingKHR,               // alias
     VK64_fn__MAX
 };
 

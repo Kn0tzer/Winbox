@@ -223,6 +223,10 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkCmdPushConstants2KHR,              "vkCmdPushConstants2KHR")\
     X(VK64_fn_vkCmdBindIndexBuffer2,               "vkCmdBindIndexBuffer2")\
     X(VK64_fn_vkCmdBindIndexBuffer2KHR,            "vkCmdBindIndexBuffer2KHR")\
+    X(VK64_fn_vkCmdBeginRendering,                "vkCmdBeginRendering")\
+    X(VK64_fn_vkCmdBeginRenderingKHR,             "vkCmdBeginRenderingKHR")\
+    X(VK64_fn_vkCmdEndRendering,                  "vkCmdEndRendering")\
+    X(VK64_fn_vkCmdEndRenderingKHR,               "vkCmdEndRenderingKHR")\
     X(VK64_fn_vkCmdBindPipeline,                    "vkCmdBindPipeline")   \
     X(VK64_fn_vkCmdBindDescriptorSets,              "vkCmdBindDescriptorSets") \
     X(VK64_fn_vkCmdSetViewport,                     "vkCmdSetViewport")    \
@@ -3227,6 +3231,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdBeginRenderPass2KHR: {
         // (cmdBuf, pRenderPassBegin*, pSubpassBeginInfo*) — v2 has extra dependency
         // info in pNext; the begin info itself is identical to v1.
+        klog_fmt("vk64: BEGIN_RP2_CALLED cb=0x%llx", (unsigned long long)args.a[0]);
         CmdBuf* cb = cbOf(args.a[0], "vkCmdBeginRenderPass2");
         VkRenderPassBeginInfo bi = {};
         if (!cb || !readStruct(args.a[1], bi)) return 0;
@@ -3305,6 +3310,41 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         c.a = cb->ib;
         c.b = cb->ibOff;
         c.c = cb->ibType;
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdBeginRendering:
+    case VK64_fn_vkCmdBeginRenderingKHR: {
+        // (cmdBuf, pRenderingInfo*) — Vulkan 1.3 dynamic rendering. DXVK uses
+        // this instead of render passes when available. We record it as a
+        // BEGIN_RP with the first color attachment's image view as the target.
+        klog_fmt("vk64: BEGIN_RENDERING_CALLED cb=0x%llx", (unsigned long long)args.a[0]);
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdBeginRendering");
+        VkRenderingInfo ri = {};
+        if (!cb || !readStruct(args.a[1], ri)) { klog("vk64: BEGIN_RENDERING_FAILED"); return 0; }
+        U64 fbView = 0;
+        if (ri.colorAttachmentCount > 0 && ri.pColorAttachments) {
+            VkRenderingAttachmentInfo att = {};
+            if (readStruct(ri.pColorAttachments, att)) {
+                fbView = att.imageView;
+            }
+        }
+        klog_fmt("vk64: BEGIN_RENDERING view=0x%llx", (unsigned long long)fbView);
+        Cmd c;
+        c.kind = CMD_BEGIN_RP;
+        c.a = 0;  // no render pass object in dynamic rendering
+        c.b = fbView;  // image view as framebuffer identifier
+        // TODO: extract clear values from attachments
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdEndRendering:
+    case VK64_fn_vkCmdEndRenderingKHR: {
+        // (cmdBuf)
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdEndRendering");
+        if (!cb) return 0;
+        Cmd c;
+        c.kind = CMD_END_RP;
         pushCmd(cb, c);
         return 0;
     }

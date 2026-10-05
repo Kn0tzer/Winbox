@@ -207,6 +207,10 @@ enum {
     VK64_fn_vkCmdPushConstants2KHR,
     VK64_fn_vkCmdBindIndexBuffer2,
     VK64_fn_vkCmdBindIndexBuffer2KHR,
+    VK64_fn_vkCmdBeginRendering,
+    VK64_fn_vkCmdBeginRenderingKHR,
+    VK64_fn_vkCmdEndRendering,
+    VK64_fn_vkCmdEndRenderingKHR,
 
     VK64_fn__MAX
 };
@@ -759,6 +763,22 @@ API void vkCmdBindIndexBuffer2KHR(VkCommandBuffer cb, uint64_t buf, uint64_t off
     VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = buf; a.a[2] = off; a.a[3] = size; a.a[4] = idxType;
     (void)vk64_trap(VK64_fn_vkCmdBindIndexBuffer2KHR, &a);
 }
+API void vkCmdBeginRendering(VkCommandBuffer cb, const void* ri) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = P(ri);
+    (void)vk64_trap(VK64_fn_vkCmdBeginRendering, &a);
+}
+API void vkCmdBeginRenderingKHR(VkCommandBuffer cb, const void* ri) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = P(ri);
+    (void)vk64_trap(VK64_fn_vkCmdBeginRenderingKHR, &a);
+}
+API void vkCmdEndRendering(VkCommandBuffer cb) {
+    VK64Args a = {{0}}; a.a[0] = cb;
+    (void)vk64_trap(VK64_fn_vkCmdEndRendering, &a);
+}
+API void vkCmdEndRenderingKHR(VkCommandBuffer cb) {
+    VK64Args a = {{0}}; a.a[0] = cb;
+    (void)vk64_trap(VK64_fn_vkCmdEndRenderingKHR, &a);
+}
 API void vkCmdBindPipeline(VkCommandBuffer cb, uint32_t bindPoint, VkPipeline p) {
     VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = bindPoint; a.a[2] = p;
     (void)vk64_trap(VK64_fn_vkCmdBindPipeline, &a);
@@ -1010,6 +1030,10 @@ static const struct procEntry g_procs[] = {
     E(vkCmdPushConstants2KHR, VK64_fn_vkCmdPushConstants2KHR),
     E(vkCmdBindIndexBuffer2, VK64_fn_vkCmdBindIndexBuffer2),
     E(vkCmdBindIndexBuffer2KHR, VK64_fn_vkCmdBindIndexBuffer2KHR),
+    E(vkCmdBeginRendering, VK64_fn_vkCmdBeginRendering),
+    E(vkCmdBeginRenderingKHR, VK64_fn_vkCmdBeginRenderingKHR),
+    E(vkCmdEndRendering, VK64_fn_vkCmdEndRendering),
+    E(vkCmdEndRenderingKHR, VK64_fn_vkCmdEndRenderingKHR),
     E(vkQueuePresentKHR, VK64_fn_vkQueuePresentKHR),
 };
 #undef E
