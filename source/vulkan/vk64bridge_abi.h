@@ -277,6 +277,9 @@ enum {
     VK64_fn_vkCmdBeginRenderingKHR,             // alias
     VK64_fn_vkCmdEndRendering,                  // (cmdBuf) -> records dynamic rendering end
     VK64_fn_vkCmdEndRenderingKHR,               // alias
+    // vkd3d supporting calls: append-only, separately from inherited extras.
+    VK64_fn_vkFlushMappedMemoryRanges = 800,       // (device, count, pRanges*)
+    VK64_fn_vkInvalidateMappedMemoryRanges,       // (device, count, pRanges*)
     VK64_fn__MAX
 };
 

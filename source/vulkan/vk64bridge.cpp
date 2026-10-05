@@ -234,6 +234,8 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkCmdDraw,                            "vkCmdDraw")           \
     X(VK64_fn_vkCmdPipelineBarrier,                 "vkCmdPipelineBarrier")\
     X(VK64_fn_vkCmdCopyBufferToImage,               "vkCmdCopyBufferToImage") \
+    X(VK64_fn_vkFlushMappedMemoryRanges,            "vkFlushMappedMemoryRanges") \
+    X(VK64_fn_vkInvalidateMappedMemoryRanges,       "vkInvalidateMappedMemoryRanges") \
     X(VK64_fn_vkCmdEndRenderPass,                   "vkCmdEndRenderPass")  \
     X(VK64_fn_vkQueueSubmit,                        "vkQueueSubmit")       \
     X(VK64_fn_vkQueueSubmit2,                       "vkQueueSubmit2")      \
@@ -327,6 +329,7 @@ enum ObjKind : U32 {
     K_DESCPOOL, K_FENCE, K_SEMAPHORE, K_SWAPCHAIN, K_SURFACE, K_TEMPLATE
 };
 struct Obj {
+    virtual ~Obj() = default;
     U32 kind = 0;
     U64 magic = 0;
 };
@@ -384,7 +387,7 @@ struct Instance : Obj { U64 phys[4] = {0,0,0,0}; U32 physCount = 0; };
 struct PhysDev  : Obj { U64 instance = 0; };
 struct Device   : Obj { U64 physDev = 0, queue = 0; };
 struct Queue    : Obj { U64 device = 0; };
-struct CmdPool  : Obj { U32 queueFamily = 0; };
+struct CmdPool  : Obj { U64 device = 0; U32 queueFamily = 0; };
 struct PipelineCache : Obj {};
 struct DescPool  : Obj {};
 struct Surface   : Obj {};
@@ -479,6 +482,7 @@ struct Cmd {
     std::vector<float> capPos, capCol;
 };
 struct CmdBuf : Obj {
+    U64 pool = 0;
     std::vector<Cmd> cmds;
     U64  pipe = 0;
     U64  sets[VK64_MAX_SETS] = {0};
@@ -492,6 +496,18 @@ struct CmdBuf : Obj {
     U32  ibType = 0;   // 0 = uint16, 1 = uint32
 };
 CmdBuf* cbOf(U64 id, const char* who) { return objOf<CmdBuf>(id, K_CMDBUF, who); }
+void resetCmdBuf(CmdBuf* cb) {
+    cb->cmds.clear();
+    cb->pipe = 0;
+    cb->haveVp = cb->haveSci = false;
+    memset(cb->sets, 0, sizeof(cb->sets));
+    memset(cb->vp, 0, sizeof(cb->vp));
+    memset(cb->sci, 0, sizeof(cb->sci));
+    memset(cb->vbs, 0, sizeof(cb->vbs));
+    memset(cb->vbOff, 0, sizeof(cb->vbOff));
+    cb->nvb = 0;
+    cb->ib = 0; cb->ibOff = 0; cb->ibType = 0;
+}
 
 // The frame serializer is defined above the switch; forward declaration so
 // pushCmd can flag overflow.
@@ -2486,21 +2502,29 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
 
     case VK64_fn_vkResetCommandBuffer: {
         CmdBuf* cb = cbOf(args.a[0], "vkResetCommandBuffer");
-        if (cb) {
-            cb->cmds.clear();
-            cb->pipe = 0;
-            cb->haveVp = cb->haveSci = false;
-            memset(cb->sets, 0, sizeof(cb->sets));
-        }
+        if (!cb) return VK_ERROR_INITIALIZATION_FAILED;
+        resetCmdBuf(cb);
         return VK_SUCCESS;
     }
-    case VK64_fn_vkResetCommandPool:
+    case VK64_fn_vkResetCommandPool: {
+        CmdPool* pool = objOf<CmdPool>(args.a[1], K_CMDPOOL, "vkResetCommandPool");
+        if (!pool || pool->device != args.a[0]) return VK_ERROR_INITIALIZATION_FAILED;
+        // Pools are independently reset by DXVK worker threads. Resetting every
+        // CmdBuf erased draws still awaiting submission in a different pool.
         for (auto& kv : g_objs)
-            if (kv.second->kind == K_CMDBUF) ((CmdBuf*)kv.second)->cmds.clear();
+            if (kv.second->kind == K_CMDBUF && ((CmdBuf*)kv.second)->pool == args.a[1])
+                resetCmdBuf((CmdBuf*)kv.second);
         return VK_SUCCESS;
+    }
     case VK64_fn_vkFreeCommandBuffers: {
         U32 n = (U32)args.a[2];
-        for (U32 i = 0; i < n; i++) dropObj(rd64(args.a[3] + (U64)i * 8));
+        CmdPool* pool = objOf<CmdPool>(args.a[1], K_CMDPOOL, "vkFreeCommandBuffers");
+        if (!pool || pool->device != args.a[0]) return 0;
+        for (U32 i = 0; i < n; i++) {
+            U64 id = rd64(args.a[3] + (U64)i * 8);
+            CmdBuf* cb = cbOf(id, "vkFreeCommandBuffers");
+            if (cb && cb->pool == args.a[1]) dropObj(id);
+        }
         return VK_SUCCESS;
     }
 
@@ -2601,6 +2625,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
         CmdPool* p = createObj<CmdPool>(K_CMDPOOL, id);
+        p->device = args.a[0];
         p->queueFamily = ci.queueFamilyIndex;
         wr64(args.a[3], id);
         return VK_SUCCESS;
@@ -2920,9 +2945,12 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkAllocateCommandBuffers: {
         VkCommandBufferAllocateInfo ai = {};
         if (!readStruct(args.a[1], ai) || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        CmdPool* pool = objOf<CmdPool>(ai.commandPool, K_CMDPOOL, "vkAllocateCommandBuffers");
+        if (!pool || pool->device != args.a[0]) return VK_ERROR_INITIALIZATION_FAILED;
         for (U32 i = 0; i < ai.commandBufferCount; i++) {
             U64 id = 0;
-            createObj<CmdBuf>(K_CMDBUF, id);
+            CmdBuf* cb = createObj<CmdBuf>(K_CMDBUF, id);
+            cb->pool = ai.commandPool;
             wr64(args.a[2] + (U64)i * 8, id);
         }
         klog_fmt("vk64: vkAllocateCommandBuffers x%u", (unsigned)ai.commandBufferCount);
@@ -3110,6 +3138,24 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         wr64(args.a[5], m->va + args.a[2]);
         return VK_SUCCESS;
     }
+    case VK64_fn_vkFlushMappedMemoryRanges:
+    case VK64_fn_vkInvalidateMappedMemoryRanges: {
+        // All exposed host-visible memory is coherent guest memory. A valid
+        // flush/invalidate has no extra work, but must not mask invalid ranges.
+        if (!objOf<Device>(args.a[0], K_DEVICE, "vkMappedMemoryRanges") ||
+            (args.a[1] && !args.a[2])) return VK_ERROR_MEMORY_MAP_FAILED;
+        std::vector<VkMappedMemoryRange> ranges;
+        readArray(args.a[2], (U32)args.a[1], ranges);
+        for (const auto& range : ranges) {
+            DeviceMemory* mem = objOf<DeviceMemory>(range.memory, K_MEMORY, "vkMappedMemoryRanges");
+            if (!mem || !mem->va || mem->memIndex == 1 || range.offset >= mem->size)
+                return VK_ERROR_MEMORY_MAP_FAILED;
+            if (range.size != VK_WHOLE_SIZE &&
+                (!range.size || range.size > mem->size - range.offset))
+                return VK_ERROR_MEMORY_MAP_FAILED;
+        }
+        return VK_SUCCESS;
+    }
     case VK64_fn_vkUnmapMemory:
         return VK_SUCCESS;   /* nothing to release: it is ordinary guest memory */
 
@@ -3134,7 +3180,19 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         return 0;
     }
     case VK64_fn_vkDestroySurfaceKHR:      dropObj(args.a[1]); return 0;
-    case VK64_fn_vkDestroyCommandPool:     dropObj(args.a[1]); return 0;
+    case VK64_fn_vkDestroyCommandPool: {
+        if (!args.a[1]) return 0;
+        CmdPool* pool = objOf<CmdPool>(args.a[1], K_CMDPOOL, "vkDestroyCommandPool");
+        if (!pool || pool->device != args.a[0]) return 0;
+        // Collect first: dropObj erases the shared object map.
+        std::vector<U64> children;
+        for (const auto& kv : g_objs)
+            if (kv.second->kind == K_CMDBUF && ((CmdBuf*)kv.second)->pool == args.a[1])
+                children.push_back(kv.first);
+        for (U64 id : children) dropObj(id);
+        dropObj(args.a[1]);
+        return 0;
+    }
     case VK64_fn_vkDestroyBuffer:          dropObj(args.a[1]); return 0;
     case VK64_fn_vkDestroyImage:           dropObj(args.a[1]); return 0;
     case VK64_fn_vkDestroyImageView:       dropObj(args.a[1]); return 0;
@@ -3180,14 +3238,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkBeginCommandBuffer: {
         CmdBuf* cb = cbOf(args.a[0], "vkBeginCommandBuffer");
         if (!cb) return VK_ERROR_INITIALIZATION_FAILED;
-        cb->cmds.clear();
-        cb->pipe = 0;
-        cb->haveVp = cb->haveSci = false;
-        memset(cb->sets, 0, sizeof(cb->sets));
-        memset(cb->vbs, 0, sizeof(cb->vbs));
-        memset(cb->vbOff, 0, sizeof(cb->vbOff));
-        cb->nvb = 0;
-        cb->ib = 0; cb->ibOff = 0; cb->ibType = 0;
+        resetCmdBuf(cb);
         return VK_SUCCESS;
     }
     case VK64_fn_vkEndCommandBuffer: {

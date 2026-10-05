@@ -212,6 +212,8 @@ enum {
     VK64_fn_vkCmdEndRendering,
     VK64_fn_vkCmdEndRenderingKHR,
 
+    VK64_fn_vkFlushMappedMemoryRanges = 800,
+    VK64_fn_vkInvalidateMappedMemoryRanges,
     VK64_fn__MAX
 };
 
@@ -615,6 +617,14 @@ API VkResult vkMapMemory(VkDevice dev, VkDeviceMemory mem, VkDeviceSize off, VkD
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = mem; a.a[2] = off; a.a[3] = size; a.a[4] = flags; a.a[5] = P(pp);
     return (VkResult)vk64_trap(VK64_fn_vkMapMemory, &a);
 }
+API VkResult vkFlushMappedMemoryRanges(VkDevice dev, uint32_t count, const void* ranges) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = count; a.a[2] = P(ranges);
+    return (VkResult)vk64_trap(VK64_fn_vkFlushMappedMemoryRanges, &a);
+}
+API VkResult vkInvalidateMappedMemoryRanges(VkDevice dev, uint32_t count, const void* ranges) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = count; a.a[2] = P(ranges);
+    return (VkResult)vk64_trap(VK64_fn_vkInvalidateMappedMemoryRanges, &a);
+}
 API void vkUnmapMemory(VkDevice dev, VkDeviceMemory mem) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = mem;
     (void)vk64_trap(VK64_fn_vkUnmapMemory, &a);
@@ -798,6 +808,20 @@ API void vkCmdSetViewport(VkCommandBuffer cb, uint32_t first, uint32_t count, co
 API void vkCmdSetScissor(VkCommandBuffer cb, uint32_t first, uint32_t count, const void* scissors) {
     VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = first; a.a[2] = count; a.a[3] = P(scissors);
     (void)vk64_trap(VK64_fn_vkCmdSetScissor, &a);
+}
+// The recorder/page currently replay viewport 0 only. These forms start at 0,
+// so share the existing recording path; do not imply multiViewport support.
+API void vkCmdSetViewportWithCount(VkCommandBuffer cb, uint32_t count, const void* viewports) {
+    vkCmdSetViewport(cb, 0, count, viewports);
+}
+API void vkCmdSetViewportWithCountEXT(VkCommandBuffer cb, uint32_t count, const void* viewports) {
+    vkCmdSetViewportWithCount(cb, count, viewports);
+}
+API void vkCmdSetScissorWithCount(VkCommandBuffer cb, uint32_t count, const void* scissors) {
+    vkCmdSetScissor(cb, 0, count, scissors);
+}
+API void vkCmdSetScissorWithCountEXT(VkCommandBuffer cb, uint32_t count, const void* scissors) {
+    vkCmdSetScissorWithCount(cb, count, scissors);
 }
 API void vkCmdDraw(VkCommandBuffer cb, uint32_t vertexCount, uint32_t instanceCount,
                    uint32_t firstVertex, uint32_t firstInstance) {
@@ -1005,6 +1029,12 @@ static const struct procEntry g_procs[] = {
     E(vkCmdBindPipeline, VK64_fn_vkCmdBindPipeline),
     E(vkCmdBindDescriptorSets, VK64_fn_vkCmdBindDescriptorSets),
     E(vkCmdSetViewport, VK64_fn_vkCmdSetViewport),
+    E(vkCmdSetScissorWithCountEXT, VK64_fn_vkCmdSetScissor),
+    E(vkCmdSetScissorWithCount, VK64_fn_vkCmdSetScissor),
+    E(vkCmdSetViewportWithCountEXT, VK64_fn_vkCmdSetViewport),
+    E(vkCmdSetViewportWithCount, VK64_fn_vkCmdSetViewport),
+    E(vkInvalidateMappedMemoryRanges, VK64_fn_vkInvalidateMappedMemoryRanges),
+    E(vkFlushMappedMemoryRanges, VK64_fn_vkFlushMappedMemoryRanges),
     E(vkCmdSetScissor, VK64_fn_vkCmdSetScissor),
     E(vkCmdDraw, VK64_fn_vkCmdDraw),
     E(vkCmdDrawIndexed, VK64_fn_vkCmdDrawIndexed),
@@ -1162,8 +1192,6 @@ TAIL(vkBindBufferMemory2KHR)
 TAIL(vkBindImageMemory2)
 TAIL(vkBindImageMemory2KHR)
 TAIL(vkGetDeviceMemoryCommitment)
-TAIL(vkFlushMappedMemoryRanges)
-TAIL(vkInvalidateMappedMemoryRanges)
 TAIL(vkFreeDescriptorSets)
 TAIL(vkDestroyBufferView)
 TAIL(vkSetDebugUtilsObjectNameEXT)
@@ -1230,10 +1258,6 @@ TAIL(vkCmdSetDepthBiasNV)
 TAIL(vkCmdSetCullModeEXT)
 TAIL(vkCmdSetFrontFaceEXT)
 TAIL(vkCmdSetPrimitiveTopologyEXT)
-TAIL(vkCmdSetViewportWithCount)
-TAIL(vkCmdSetViewportWithCountEXT)
-TAIL(vkCmdSetScissorWithCount)
-TAIL(vkCmdSetScissorWithCountEXT)
 TAIL(vkCmdSetVertexInputEXT)
 TAIL(vkCmdDrawIndirectCountKHR)
 TAIL(vkCmdBeginConditionalRenderingEXT)
