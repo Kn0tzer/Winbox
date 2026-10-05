@@ -189,4 +189,23 @@ export const EMITTERS = [
       note: "sub: 0=MOVS, 1=STOS, 2=CMPS, 3=SCAS; rep loop with ZF early-exit",
     },
   },
+  {
+    func: "emitLeaGen",
+    template: "lea",
+    kinds: ["J64_LEA"],
+    encoding:
+      "LEA r, m: 0x8D /r, ModRM mod != 3 (reg form is #UD). REX.W selects " +
+      "64-bit, else 32-bit (zero-extended). 0x66 16-bit rejected by the " +
+      "classifier (the interpreter's block decoder breaks on it). EA via " +
+      "emitEA (SIB/RIP-relative/0x67); FS/GS-segment EAs stay " +
+      "interpreter-only.",
+    operands:
+      "sizes 4/8; destination is the ModRM reg field; the r/m names memory " +
+      "but is never dereferenced, so no fault is possible.",
+    flags: {
+      writes: [],
+      preserves: "all RFLAGS bits - LEA never touches flags",
+      note: "the value IS the effective address; no memory is read",
+    },
+  },
 ];

@@ -437,6 +437,8 @@ U32 jit64EmitNew(std::vector<U8>& body, const Jit64Op& op) {
         return emitMovxGen(body, op);
     case J64_STRING:
         return emitStringGen(body, op);
+    case J64_LEA:
+        return emitLeaGen(body, op);
     default:
         return 0xFE;
     }
@@ -538,12 +540,14 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             if (op.sub > 3) return false;
             if (op.rep != 0 && op.rep != 0xF2 && op.rep != 0xF3) return false;
         } else if (op.isMem) {
-            // Memory operands are only accepted for ALU/TEST kinds; the EA
-            // fields are validated defensively (a malformed EA degrades to
-            // whole-block rejection, never to a wrong address).
+            // Memory operands are only accepted for ALU/TEST kinds and LEA;
+            // the EA fields are validated defensively (a malformed EA degrades
+            // to whole-block rejection, never to a wrong address). LEA names
+            // memory for its EA computation but never dereferences it.
             bool memAlu = op.kind == J64_ALU_RM_R || op.kind == J64_ALU_R_RM ||
                           op.kind == J64_ALU_RM_IMM || op.kind == J64_TEST_RM_R;
-            if (!memAlu || !widthOk) return false;
+            bool memLea = op.kind == J64_LEA;
+            if ((!memAlu && !memLea) || !widthOk) return false;
             if (op.ea.seg != 0) return false; // FS/GS: interpreter-only
             if (op.ea.baseReg != 0xFF && op.ea.baseReg >= 16) return false;
             if (op.ea.idxReg != 0xFF && op.ea.idxReg >= 16) return false;
@@ -561,6 +565,11 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
         case J64_MOV_RM_R:
         case J64_MOV_R_RM:
             if (op.sub != 0 || op.regField >= 16 || op.rmIndex >= 16) return false;
+            break;
+        case J64_LEA:
+            // LEA r, m: r/m always names memory (reg form is #UD at decode);
+            // the destination is the ModRM reg field.
+            if (op.sub != 0 || op.regField >= 16) return false;
             break;
         case J64_ALU_RM_R:
         case J64_ALU_R_RM:
@@ -668,6 +677,16 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             // MOVZX/MOVSX: emitMovxGen leaves the result in L_R (or did the
             // 16-bit RMW inline); publish like the ALU ops.
             U32 written = emitMovxGen(body, op);
+            if (written != 0xFF) {
+                local(body, 0x20, L_R);
+                local(body, 0x21, written + 1);
+            }
+            break;
+        }
+        case J64_LEA: {
+            // LEA: emitLeaGen leaves the computed address in L_R; publish it
+            // to the destination GPR local. No flags are touched.
+            U32 written = emitLeaGen(body, op);
             if (written != 0xFF) {
                 local(body, 0x20, L_R);
                 local(body, 0x21, written + 1);

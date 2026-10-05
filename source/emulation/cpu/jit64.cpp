@@ -419,6 +419,7 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
         out.size = size;
         out.len = (U8)(opOff + 1 + ml);
         out.regField = rf; out.rmIndex = ri; out.isMem = hm;
+        decodeEA(bytes + opOff + 1, p, ripBase + opOff + 1, 0, out.ea);
         return true;
     }
     // MOV r/m, imm (C6 /0, C7 /0).
@@ -624,7 +625,6 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16) {
         op.plan = JIT64_FAST;
         return;
     case J64_TEST_RM_R:
-    case J64_LEA:
     case J64_MOV_RM_IMM:
     case J64_MOV_R_IMM:
     case J64_PUSH:
@@ -635,6 +635,12 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16) {
     case J64_RET:
     case J64_LEAVE:
     case J64_NOP:
+        op.plan = JIT64_FAST;
+        return;
+    case J64_LEA:
+        // 16-bit LEA is not in the interpreter's block set (buildBlock
+        // breaks on size==2); only 32/64-bit forms reach emission.
+        if (op.size != 4 && op.size != 8) return;
         op.plan = JIT64_FAST;
         return;
     case J64_SYSCALL:

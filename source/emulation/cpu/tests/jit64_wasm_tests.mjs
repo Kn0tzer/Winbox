@@ -1712,3 +1712,126 @@ test('fuzz IMUL 3-op vs reference (200 cases)', async () => {
     assert.equal(out.rflags, expFlags, `fuzzImul3 i=${i} flags`);
   }
 });
+
+// --- LEA differential fuzzing vs the interpreter's EA computation ---
+// Reference model: EA from computeEA (mirrors emitEA's i64 math and the
+// interpreter's decodeModRM); 32-bit LEA zero-extends, 64-bit stores the
+// full address; flags are never touched; no memory is read (a bad address
+// cannot fault). The fixture decodes at ripBase=0, so RIP-relative targets
+// are computed from the modrm offset, matching decodeEA.
+function encLea({ size, reg = 0, eaKind = 'base', base = 0, idx = 1, scale = 0, disp = 0, asize32 = false }) {
+  let rex = 0;
+  if (size === 8) rex |= 0x08;
+  if (reg >= 8) rex |= 0x04;
+  const needB = eaKind !== 'riprel' && eaKind !== 'sib32' && base >= 8;
+  const needX = (eaKind === 'sib' || eaKind === 'sib32') && idx >= 8;
+  if (needB) rex |= 0x01;
+  if (needX) rex |= 0x02;
+  const code = [];
+  if (asize32) code.push(0x67);
+  if (rex) code.push(0x40 | rex);
+  const prefixLen = code.length;
+  code.push(0x8D);
+  const modrmPos = prefixLen + 1;
+  let mod, rm;
+  const dispBytes = [], sibBytes = [];
+  if (eaKind === 'riprel') { mod = 0; rm = 5; }
+  else if (eaKind === 'sib' || eaKind === 'sib32') {
+    rm = 4;
+    const noBase = eaKind === 'sib32';
+    mod = noBase ? 0 : disp !== 0 ? (disp >= -128 && disp <= 127 ? 1 : 2) : 0;
+    if (!noBase && (base & 7) === 5 && mod === 0) { mod = 1; disp = 0; } // [r13] needs disp8
+    sibBytes.push((scale << 6) | ((idx & 7) << 3) | (noBase ? 5 : (base & 7)));
+  } else {
+    rm = base & 7;
+    mod = eaKind === 'disp8' ? 1 : eaKind === 'disp32' ? 2 : 0;
+    if (rm === 5 && mod === 0) { mod = 1; disp = 0; } // [rbp] needs disp8=0
+    if (rm === 4) sibBytes.push(0x20 | (base & 7)); // rsp/r12 base needs a SIB (idx=none)
+  }
+  if (mod === 1) dispBytes.push(disp & 0xFF);
+  if (mod === 2 || eaKind === 'riprel' || eaKind === 'sib32') dispBytes.push(...little(BigInt(disp) & 0xFFFFFFFFn, 4));
+  code.push((mod << 6) | ((reg & 7) << 3) | rm, ...sibBytes, ...dispBytes);
+  const ea = { ripRel: false, ripRelTarget: 0n, baseReg: 0xFF, idxReg: 0xFF, scale: 0, disp: 0n, asize32 };
+  if (eaKind === 'riprel') {
+    ea.ripRel = true;
+    ea.ripRelTarget = (BigInt(modrmPos) + 5n + BigInt.asIntN(64, BigInt.asIntN(32, BigInt(disp)))) & mask64;
+  } else {
+    if (eaKind === 'sib' || eaKind === 'sib32') {
+      ea.scale = scale;
+      if (eaKind !== 'sib32') ea.baseReg = base;
+      if (!((idx & 7) === 4 && !(rex & 0x02))) ea.idxReg = idx;
+    } else {
+      ea.baseReg = base;
+    }
+    if (mod === 1) ea.disp = BigInt.asIntN(64, BigInt.asIntN(8, BigInt(disp))) & mask64;
+    else if (mod === 2 || eaKind === 'sib32') ea.disp = BigInt.asIntN(64, BigInt.asIntN(32, BigInt(disp))) & mask64;
+    else ea.disp = 0n;
+  }
+  return { code, ea, reg, size };
+}
+
+test('LEA basic forms', async () => {
+  // lea rax, [rbx+rcx*4+0x10]
+  const regs = baseRegs(); regs[3] = 0x1000n; regs[1] = 0x100n;
+  const out = await runAlu([0x48, 0x8D, 0x44, 0x8B, 0x10], regs, 0x202);
+  assert.equal(out.regs[0], 0x1410n);
+  assert.equal(out.regs[3], 0x1000n, 'base register untouched');
+  assert.equal(out.regs[1], 0x100n, 'index register untouched');
+  assert.equal(out.rflags, 0x202, 'LEA preserves flags');
+  // 32-bit LEA zero-extends (high bits of the address are discarded)
+  const regs2 = baseRegs(); regs2[3] = 0xFFFFFFFF00000000n;
+  const out2 = await runAlu([0x8D, 0x03], regs2, 0x202);
+  assert.equal(out2.regs[0], 0n);
+  // RIP-relative (fixture ripBase=0; modrm at offset 2)
+  const out3 = await runAlu([0x48, 0x8D, 0x05, 0x00, 0x01, 0x00, 0x00], baseRegs(), 0x202);
+  assert.equal(out3.regs[0], 0x107n);
+  // 0x67 address-size override masks the address to 32 bits
+  const regs4 = baseRegs(); regs4[3] = 0x1FFFFFFFFn;
+  const out4 = await runAlu([0x67, 0x48, 0x8D, 0x03], regs4, 0x202);
+  assert.equal(out4.regs[0], 0xFFFFFFFFn);
+});
+
+test('fuzz LEA vs reference (600 cases)', async () => {
+  const rand = makeRand(0x1EA0);
+  const eaKinds = ['base', 'disp8', 'disp32', 'sib', 'sib32', 'riprel'];
+  const advVals = [0n, 0xFFFFFFFFFFFFFFFFn, 0xFFFFFFFFn, 0x100000000n, 0xFFFFFFFF00000000n, 0x8000000000000000n, 0x7FFFFFFFFFFFFFFFn];
+  const flagSets = [0x202, 0x246, 0x8D5, 0xFFFFFFFF, 0x0];
+  for (let i = 0; i < 600; i++) {
+    const size = rand() < 0.5 ? 4 : 8;
+    const eaKind = eaKinds[Math.floor(rand() * eaKinds.length)];
+    const reg = Math.floor(rand() * 16);
+    const base = Math.floor(rand() * 16);
+    const idx = Math.floor(rand() * 16);
+    const scale = Math.floor(rand() * 4);
+    const asize32 = rand() < 0.15;
+    const dispChoices = [0, 1, -1, 127, -128, 0x7FFFFFFF, -0x80000000, Math.floor(rand() * 0x100000000) - 0x80000000];
+    const disp = dispChoices[Math.floor(rand() * dispChoices.length)];
+    const enc = encLea({ size, reg, eaKind, base, idx, scale, disp, asize32 });
+    const regs = baseRegs();
+    for (let r = 0; r < 16; r++) {
+      regs[r] = rand() < 0.35 ? advVals[Math.floor(rand() * advVals.length)] : r64fuzz(rand);
+    }
+    const initFlags = flagSets[Math.floor(rand() * flagSets.length)];
+    const refRegs = [...regs];
+    const eaAddr = computeEA(enc.ea, refRegs);
+    refRegs[enc.reg] = size === 4 ? eaAddr & 0xFFFFFFFFn : eaAddr;
+    const out = await runAlu(enc.code, [...regs], initFlags);
+    const got = out.regs;
+    for (let g = 0; g < 16; g++) {
+      assert.equal(got[g], refRegs[g], `fuzzLea i=${i} kind=${eaKind} size=${size} GPR${g}`);
+    }
+    assert.equal(out.rflags, initFlags >>> 0, `fuzzLea i=${i} flags preserved`);
+    assert.equal(out.ripOut, (0x12345678ABCDEFF0n + BigInt(enc.code.length)) & mask64, `fuzzLea i=${i} rip`);
+    assert.equal(out.reserved, 0xA5A5A5A5, `fuzzLea i=${i} reserved`);
+  }
+});
+
+for (const [name, code] of [
+  ['16-bit LEA', [0x66, 0x8D, 0x00]],
+  ['FS-segment LEA', [0x64, 0x8D, 0x00]],
+  ['GS-segment LEA', [0x65, 0x48, 0x8D, 0x00]],
+  ['reg-form LEA', [0x48, 0x8D, 0xC0]],
+  ['LOCK LEA', [0xF0, 0x48, 0x8D, 0x00]],
+]) {
+  test(`whole-block fallback rejects ${name}`, () => assert.equal(emit(code).result.status, 2));
+}

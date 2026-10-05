@@ -1009,6 +1009,24 @@ function genMovx(e) {
 }`;
 }
 
+function genLea(e) {
+  return `U32 ${e.func}(Bytes& body, const Jit64Op& op) {
+    // LEA r, m: the value IS the effective address. Mirrors cpu64.cpp
+    // BK_LEA exactly: 32-bit zero-extends, 64-bit stores the full address.
+    // (16-bit LEA never reaches emission: the classifier rejects it, and
+    // the interpreter's block decoder breaks on it too.) No flags are
+    // touched and no memory is read, so a bad address cannot fault.
+    emitEA(body, op); // L_T1 = effective address
+    local(body, 0x20, L_T1);
+    if (op.size == 4) {
+        i64Const(body, 0xFFFFFFFFULL);
+        body.push_back(0x83); // i64.and: 32-bit zero extension
+    }
+    local(body, 0x21, L_R);
+    return op.regField;
+}`;
+}
+
 // "string" template: string
 function genString(e) {
   return `U32 ${e.func}(Bytes& body, const Jit64Op& op) {
@@ -1171,7 +1189,7 @@ function genString(e) {
 }`;
 }
 
-const TEMPLATES = { alu: (e) => (e.mem ? genAluMem(e) : genAlu(e)), shift: genShift, rotate: genRotate, imul2: genImul2, imul1: genImul1, imul3: genImul3, movx: genMovx, string: genString };
+const TEMPLATES = { alu: (e) => (e.mem ? genAluMem(e) : genAlu(e)), shift: genShift, rotate: genRotate, imul2: genImul2, imul1: genImul1, imul3: genImul3, movx: genMovx, string: genString, lea: genLea };
 
 function generate() {
   const out = [];
