@@ -5705,10 +5705,14 @@ bool CPU64::buildBlock(U64 startRip, BBlock& b) {
         rec.size = size;
         rec.rexPresent = (p.rex != 0) ? 1 : 0;
 
-        if (op == 0x89 || op == 0x8B) {
-            if (size == 2) break; // 16-bit MOV unsupported in blocks
+        if (op == 0x88 || op == 0x89 || op == 0x8A || op == 0x8B) {
+            bool is8 = (op == 0x88 || op == 0x8A);
+            if (!is8 && size == 2) break; // 16-bit MOV unsupported in blocks
             if (!decodeModRMRecipe(r + opOff + 1, p, 0, rec.mr)) break;
-            rec.kind = (op == 0x89) ? BK_MOV_RM_R : BK_MOV_R_RM;
+            rec.kind = (op == 0x88 || op == 0x89) ? BK_MOV_RM_R : BK_MOV_R_RM;
+            // 8-bit forms ignore 0x66/REX.W for the size (always 1), exactly
+            // like the JIT decoder (jit64.cpp) so the drift guard agrees.
+            if (is8) rec.size = 1;
             rec.len = (U8)(opOff + 1 + rec.mr.length);
         } else if (op <= 0x3D && ((op & 0x06) != 0x06) && (op & 0x7) <= 3) {
             U8 form = op & 0x7;
@@ -5909,7 +5913,10 @@ U32 CPU64::execBlock(const BBlock& b, U64 maxInsn) {
         switch (rec.kind) {
         case BK_MOV_RM_R: {
             ModRM m = resolveRecipe(rec.mr);
-            U64 src = (size == 4) ? (U64)reg[m.regField].u32 : reg[m.regField].u64;
+            // size==1 mirrors dsp_9 (0x88): readReg8 applies the
+            // AH/BH/CH/DH-vs-REX rule; storeRM handles the rest.
+            U64 src = (size == 1) ? (U64)readReg8(m.regField, rexPresent)
+                    : (size == 4) ? (U64)reg[m.regField].u32 : reg[m.regField].u64;
             storeRM(m, size, src, rexPresent);
             rip += rec.len;
             break;
@@ -5917,7 +5924,9 @@ U32 CPU64::execBlock(const BBlock& b, U64 maxInsn) {
         case BK_MOV_R_RM: {
             ModRM m = resolveRecipe(rec.mr);
             U64 val = loadRM(m, size, rexPresent);
-            if (size == 4) reg[m.regField].setU32((U32)val);
+            // size==1 mirrors dsp_10 (0x8A): writeReg8, not setU64.
+            if (size == 1) writeReg8(m.regField, (U8)val, rexPresent);
+            else if (size == 4) reg[m.regField].setU32((U32)val);
             else reg[m.regField].setU64(val);
             rip += rec.len;
             break;
@@ -6180,7 +6189,8 @@ thr_MOV_RM_R: {
         U32 size = rec.size;
 
         ModRM m = resolveRecipe(rec.mr);
-        U64 src = (size == 4) ? (U64)reg[m.regField].u32 : reg[m.regField].u64;
+        U64 src = (size == 1) ? (U64)readReg8(m.regField, rexPresent)
+                : (size == 4) ? (U64)reg[m.regField].u32 : reg[m.regField].u64;
         storeRM(m, size, src, rexPresent);
         rip += rec.len;
         THR_NEXT();
@@ -6193,7 +6203,8 @@ thr_MOV_R_RM: {
 
         ModRM m = resolveRecipe(rec.mr);
         U64 val = loadRM(m, size, rexPresent);
-        if (size == 4) reg[m.regField].setU32((U32)val);
+        if (size == 1) writeReg8(m.regField, (U8)val, rexPresent);
+        else if (size == 4) reg[m.regField].setU32((U32)val);
         else reg[m.regField].setU64(val);
         rip += rec.len;
         THR_NEXT();

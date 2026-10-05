@@ -1127,6 +1127,38 @@ function genStack(e) {
   return L.join("\n");
 }
 
+
+// "mov8" template: 8-bit MOV (emitMov8Gen).
+// 0x88 MOV r/m8, r8; 0x8A MOV r8, r/m8. Mirrors cpu64.cpp dsp_9/dsp_10
+// exactly: no flags are touched; 8-bit register access follows the
+// AH/BH/CH/DH-vs-REX rule via emitReadByte/emitWriteByte; memory forms
+// go through the imported helpers with the interpreter's fault ordering:
+//   88 mem: readReg8 (cannot fault), then [EA] = byte (may fault);
+//   8A mem: byte = [EA] (may fault), then writeReg8 (cannot fault).
+// The EA is computed from pre-instruction registers (decode-time), so
+// emitEA runs before any register write. Returns 0xFF: GPR writes happen
+// inline in the GPR locals and the epilogue store-back publishes them.
+function genMov8(e) {
+  return `U32 ${e.func}(Bytes& body, const Jit64Op& op) {
+    const U32 src = op.kind == J64_MOV_RM_R ? op.regField : op.rmIndex;
+    const U32 dest = op.kind == J64_MOV_RM_R ? op.rmIndex : op.regField;
+    if (op.isMem) {
+        emitEA(body, op); // L_T1 = effective address
+        if (op.kind == J64_MOV_RM_R) {
+            emitReadByte(body, op, src, L_A);
+            emitMemWrite(body, L_T1, L_A, 1);
+        } else {
+            emitMemRead(body, L_T1, 1); // L_R = [EA]
+            emitWriteByte(body, op, dest, L_R);
+        }
+    } else {
+        emitReadByte(body, op, src, L_A);
+        emitWriteByte(body, op, dest, L_A);
+    }
+    return 0xFF;
+}`;
+}
+
 // "string" template: string
 function genString(e) {
   return `U32 ${e.func}(Bytes& body, const Jit64Op& op) {
@@ -1289,7 +1321,7 @@ function genString(e) {
 }`;
 }
 
-const TEMPLATES = { alu: (e) => (e.mem ? genAluMem(e) : genAlu(e)), shift: genShift, rotate: genRotate, imul2: genImul2, imul1: genImul1, imul3: genImul3, movx: genMovx, string: genString, lea: genLea, stack: genStack };
+const TEMPLATES = { alu: (e) => (e.mem ? genAluMem(e) : genAlu(e)), shift: genShift, rotate: genRotate, imul2: genImul2, imul1: genImul1, imul3: genImul3, movx: genMovx, string: genString, lea: genLea, stack: genStack, mov8: genMov8 };
 
 function generate() {
   const out = [];

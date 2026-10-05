@@ -1094,3 +1094,22 @@ U32 emitStackGen(Bytes& body, const Jit64Op& op) {
     }
     return 0xFF;
 }
+
+U32 emitMov8Gen(Bytes& body, const Jit64Op& op) {
+    const U32 src = op.kind == J64_MOV_RM_R ? op.regField : op.rmIndex;
+    const U32 dest = op.kind == J64_MOV_RM_R ? op.rmIndex : op.regField;
+    if (op.isMem) {
+        emitEA(body, op); // L_T1 = effective address
+        if (op.kind == J64_MOV_RM_R) {
+            emitReadByte(body, op, src, L_A);
+            emitMemWrite(body, L_T1, L_A, 1);
+        } else {
+            emitMemRead(body, L_T1, 1); // L_R = [EA]
+            emitWriteByte(body, op, dest, L_R);
+        }
+    } else {
+        emitReadByte(body, op, src, L_A);
+        emitWriteByte(body, op, dest, L_A);
+    }
+    return 0xFF;
+}

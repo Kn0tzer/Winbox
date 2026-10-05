@@ -35,7 +35,7 @@ static Jit64Op dec(U64 base, std::vector<U8> b) {
 static void testCoverageTable() {
     U32 n = 0;
     const Jit64CoveredOpcode* t = jit64CoveredOpcodes(&n);
-    CHECK(n == 21, "coverage table has %u entries, want 21", n);
+    CHECK(n == 22, "coverage table has %u entries, want 22", n);
     CHECK(t != nullptr, "coverage table null");
     // Spot-check rank order matches the profile.
     CHECK(t[0].op == 0x89, "rank1 op=0x%02x want 0x89", t[0].op);
@@ -50,6 +50,7 @@ static void testCoverageTable() {
     CHECK(t[14].op == 0x0F && t[14].op2 == 0xB6, "rank15 want 0FB6 got %02x/%02x", t[14].op, t[14].op2);
     CHECK(t[18].op == 0x0F && t[18].op2 == 0x84, "rank19 want 0F84 got %02x/%02x", t[18].op, t[18].op2);
     CHECK(t[20].op == 0x63, "rank21 op=0x%02x want 0x63 (MOVSXD)", t[20].op);
+    CHECK(t[21].op == 0x88, "rank22 op=0x%02x want 0x88 (MOV r/m8,r8)", t[21].op);
 }
 
 static void testMovForms() {
@@ -124,6 +125,71 @@ static void testMovForms() {
     Jit64Op g4 = dec(0x400000, {0x63, 0x03});
     CHECK(g4.kind == J64_MOVX && g4.sub == 4 && g4.isMem && g4.len == 2,
           "63mem: kind=%d sub=%d mem=%d len=%d", g4.kind, g4.sub, g4.isMem, g4.len);
+}
+
+static void testMov8Forms() {
+    // 88 C8              mov al, cl  (reg-direct, no REX: low bytes)
+    Jit64Op a = dec(0x400000, {0x88, 0xC8});
+    CHECK(a.kind == J64_MOV_RM_R && a.size == 1 && a.len == 2,
+          "88: kind=%d size=%d len=%d", a.kind, a.size, a.len);
+    CHECK(a.regField == 1 && a.rmIndex == 0 && !a.isMem && !a.rexPresent,
+          "88: rf=%d rm=%d mem=%d rex=%d", a.regField, a.rmIndex, a.isMem, a.rexPresent);
+    CHECK(a.plan == JIT64_FAST, "88 plan fallback");
+    // 88 E0              mov al, ah  (no REX: index 4 => high byte of rax)
+    Jit64Op b = dec(0x400000, {0x88, 0xE0});
+    CHECK(b.kind == J64_MOV_RM_R && b.size == 1 && b.regField == 4 && b.rmIndex == 0,
+          "88E0: rf=%d rm=%d size=%d", b.regField, b.rmIndex, b.size);
+    CHECK(!b.rexPresent && b.plan == JIT64_FAST, "88E0 rex/fast");
+    // 40 88 E4           mov spl, ah->spl  (REX present: index 4 => SPL, not AH)
+    Jit64Op c = dec(0x400000, {0x40, 0x88, 0xE4});
+    CHECK(c.kind == J64_MOV_RM_R && c.size == 1 && c.len == 3,
+          "4088: kind=%d size=%d len=%d", c.kind, c.size, c.len);
+    CHECK(c.regField == 4 && c.rmIndex == 4 && c.rexPresent,
+          "4088: rf=%d rm=%d rex=%d", c.regField, c.rmIndex, c.rexPresent);
+    CHECK(c.plan == JIT64_FAST, "4088 plan fallback");
+    // 45 88 C1           mov r9b, r8b  (REX.R+B extend both byte registers)
+    Jit64Op d = dec(0x400000, {0x45, 0x88, 0xC1});
+    CHECK(d.regField == 8 && d.rmIndex == 9 && d.size == 1 && d.rexPresent,
+          "4588: rf=%d rm=%d", d.regField, d.rmIndex);
+    CHECK(d.plan == JIT64_FAST, "4588 plan fallback");
+    // 8A C3              mov al, bl  (reverse direction)
+    Jit64Op e = dec(0x400000, {0x8A, 0xC3});
+    CHECK(e.kind == J64_MOV_R_RM && e.size == 1 && e.len == 2,
+          "8A: kind=%d size=%d len=%d", e.kind, e.size, e.len);
+    CHECK(e.regField == 0 && e.rmIndex == 3 && !e.isMem,
+          "8A: rf=%d rm=%d mem=%d", e.regField, e.rmIndex, e.isMem);
+    CHECK(e.plan == JIT64_FAST, "8A plan fallback");
+    // 66 88 C8           mov al, cl with 0x66: prefix ignored, still size 1 + fast
+    {
+        Jit64Op o; bool ok = jit64DecodeOne(0x400000, (const U8[]){0x66, 0x88, 0xC8}, 3, o);
+        CHECK(ok && o.kind == J64_MOV_RM_R && o.size == 1,
+              "6688: kind=%d size=%d", o.kind, o.size);
+        jit64Classify(o, false, true);
+        CHECK(o.plan == JIT64_FAST, "6688 must stay fast (0x66 ignored for 8-bit)");
+    }
+    // 88 45 FC           mov byte [rbp-4], al  (mem form: EA decoded)
+    Jit64Op f = dec(0x400000, {0x88, 0x45, 0xFC});
+    CHECK(f.kind == J64_MOV_RM_R && f.size == 1 && f.isMem && f.len == 3,
+          "88mem: kind=%d size=%d mem=%d len=%d", f.kind, f.size, f.isMem, f.len);
+    CHECK(f.ea.baseReg == 5 && f.ea.disp == (S64)(S8)0xFC,
+          "88mem: ea base=%d disp=%lld", f.ea.baseReg, (long long)f.ea.disp);
+    CHECK(f.plan == JIT64_FAST, "88mem plan fallback");
+    // 8A 04 25 78 56 34 12  mov al, [0x12345678]  (disp32-only mem form)
+    Jit64Op g = dec(0x400000, {0x8A, 0x04, 0x25, 0x78, 0x56, 0x34, 0x12});
+    CHECK(g.kind == J64_MOV_R_RM && g.size == 1 && g.isMem && g.len == 7,
+          "8Amem: kind=%d size=%d mem=%d len=%d", g.kind, g.size, g.isMem, g.len);
+    CHECK(g.ea.baseReg == 0xFF && g.plan == JIT64_FAST, "8Amem disp32-only");
+    // 66 89 C8           mov ax, cx: 16-bit MOV stays interpreter-only.
+    {
+        Jit64Op o; bool ok = jit64DecodeOne(0x400000, (const U8[]){0x66, 0x89, 0xC8}, 3, o);
+        CHECK(ok && o.kind == J64_MOV_RM_R && o.size == 2, "6689 size=%d", o.size);
+        jit64Classify(o, false, true);
+        CHECK(o.plan == JIT64_FALLBACK, "6689 must stay fallback (16-bit MOV)");
+    }
+    // 88 C0              mov al, al (dest==src aliasing decodes cleanly)
+    Jit64Op h = dec(0x400000, {0x88, 0xC0});
+    CHECK(h.kind == J64_MOV_RM_R && h.regField == 0 && h.rmIndex == 0 && h.plan == JIT64_FAST,
+          "88C0 aliasing");
 }
 
 static void testAluForms() {
@@ -744,6 +810,7 @@ int main() {
     printf("jit64 phase-1 unit tests\\n");
     testCoverageTable();
     testMovForms();
+    testMov8Forms();
     testAluForms();
     testEaDecode();
     testStackDecode();

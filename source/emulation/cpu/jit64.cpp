@@ -61,10 +61,13 @@ static const Jit64CoveredOpcode kCovered[] = {
     { "0F84 JZ rel32",     0x0F, 0x84, J64_JCC },         // 19 (1.2%)
     { "01 ADD r/m,r",      0x01, 0x00, J64_ALU_RM_R },    // 20 (1.2%)
     { "63 MOVSXD",         0x63, 0x00, J64_MOVX },        // 21 (1.3% doom.exe; sub 4)
-    // NOTE: 0F85 (JNZ rel32) and 29 (SUB r/m,r) stay FAST in jit64Classify but
-    // fell just outside this corpus's top-20, so they have no table row. FF
-    // (INC/DEC/indirect CALL) and 00 (8-bit ADD) rank 19-20 by byte but are
-    // not in the phase-1 fast set and are correctly absent.
+    { "88 MOV r/m8,r8",    0x88, 0x00, J64_MOV_RM_R },    // 22 (0.83% doom.exe; 8A same row)
+    // NOTE: 0F85 (JNZ rel32) stays FAST in jit64Classify but fell just outside
+    // this corpus's top-20, so it has no table row. The whole 00..3B ALU range
+    // (including 29 SUB r/m,r) is table-covered; the phase-1 table only names
+    // the ranks that made its top-20. FF's INC/DEC /0 /1 forms have no fast
+    // path, but in the profiled corpus every FF hit is indirect CALL/JMP /2 /4
+    // (block boundaries, already handled).
 };
 
 const Jit64CoveredOpcode* jit64CoveredOpcodes(U32* countOut) {
@@ -334,15 +337,20 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
         }
         return true;
     }
-    // MOV r/m, r / MOV r, r/m.
-    if (op == 0x89 || op == 0x8B) {
+    // MOV r/m, r / MOV r, r/m (88/89/8A/8B). 8-bit forms (88/8A) use size 1;
+    // the 0x66 prefix is ignored for them, matching the interpreter
+    // (cpu64.cpp dsp_9/dsp_10 hardcode the width). Memory forms decode the
+    // EA (needed by the wasm mem path); the 89/8B EA was previously never
+    // read (mem 89/8B stays interpreter-fallback at emission).
+    if (op == 0x88 || op == 0x89 || op == 0x8A || op == 0x8B) {
         U8 rf; bool rr; U8 ri; bool hm;
         U32 ml = scanModRM(bytes + opOff + 1, byteCount - (opOff + 1), p, rf, rr, ri, hm);
         if (!ml) return false;
-        out.kind = (op == 0x89) ? J64_MOV_RM_R : J64_MOV_R_RM;
-        out.size = size;
+        out.kind = (op == 0x88 || op == 0x89) ? J64_MOV_RM_R : J64_MOV_R_RM;
+        out.size = (op == 0x88 || op == 0x8A) ? 1 : size;
         out.len = (U8)(opOff + 1 + ml);
         out.regField = rf; out.rmIndex = ri; out.isMem = hm;
+        if (hm) decodeEA(bytes + opOff + 1, p, ripBase + opOff + 1, 0, out.ea);
         return true;
     }
     // ALU r/m, r / r, r/m (00..3B except /6 /7 rows: 06,07,0E,...).
@@ -666,8 +674,11 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16) {
     switch (op.kind) {
     case J64_MOV_RM_R:
     case J64_MOV_R_RM:
-        // 8/16-bit MOV stays fallback (not in the fast set).
-        if (op.size == 1 || op.size == 2 || op.sub != 0) return;
+        // 8-bit MOV (88/8A) is fast; 16-bit stays fallback (not in the
+        // fast set). The 0x66 prefix is ignored for the 8-bit forms (the
+        // decoder hardcodes size 1), matching the interpreter.
+        if (op.size == 2 || op.sub != 0) return;
+        if (op.size != 1 && op.size != 4 && op.size != 8) return;
         op.plan = JIT64_FAST;
         return;
     case J64_MOVX:

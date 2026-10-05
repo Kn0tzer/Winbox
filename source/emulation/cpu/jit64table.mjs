@@ -11,7 +11,7 @@
 //   func:     generated C++ function name, e.g. "emitAluGen".
 //   template: composition pattern implemented by the generator
 //             ("alu", "shift", "rotate", "imul2", "imul1", "imul3",
-//              "movx", "string").
+//              "movx", "string", "lea", "stack", "mov8").
 //   mem:      for the "alu" template: false = register-direct (emitAlu
 //             shape), true = memory-operand (emitAluMem shape).
 //   kinds:    Jit64Kind values the emitter handles.
@@ -237,6 +237,33 @@ export const EMITTERS = [
             "write r/m. (Reads return 0 and writes commit on unmapped " +
             "pages, so the ORDER of RSP update vs memory access is the " +
             "observable contract.)",
+    },
+  },
+  {
+    func: "emitMov8Gen",
+    template: "mov8",
+    kinds: ["J64_MOV_RM_R", "J64_MOV_R_RM"],
+    encoding:
+      "MOV r/m8, r8 (0x88); MOV r8, r/m8 (0x8A). The 8-bit forms ignore " +
+      "REX.W and 0x66 for the size (always 1) - 0x66 is accepted and " +
+      "ignored, matching the interpreter (cpu64.cpp dsp_9/dsp_10 " +
+      "hardcode the width). 16-bit MOV stays interpreter-only via the " +
+      "classifier. EA via emitEA for memory forms (SIB/RIP-relative/" +
+      "0x67/seg; FS/GS-segment EAs stay interpreter-only).",
+    operands:
+      "size 1 only. Register operands follow the AH/BH/CH/DH-vs-REX " +
+      "rule (no REX + index 4..7 => high byte of regs 0..3; any REX => " +
+      "low byte of regs 4..7), via emitReadByte/emitWriteByte. Memory " +
+      "forms: 88 reads the source byte register then writes [EA]; 8A " +
+      "reads [EA] then writes the dest byte register.",
+    flags: {
+      writes: [],
+      preserves: "all RFLAGS bits - MOV never touches flags",
+      note: "fault ordering mirrors cpu64.cpp exactly. 88 mem: " +
+            "readReg8 (cannot fault), then [EA] = byte (may fault). " +
+            "8A mem: byte = [EA] (may fault), then writeReg8. The EA " +
+            "itself is computed from pre-instruction registers at " +
+            "decode time, like the interpreter's decodeModRM.",
     },
   },
 ];

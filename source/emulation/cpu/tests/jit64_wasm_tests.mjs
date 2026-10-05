@@ -655,6 +655,179 @@ test('ADD [mem],r64 / SUB r64,[mem] round-trip', async () => {
     { regs, rflags: 0x202, memInit });
 });
 
+// --- 8-bit MOV (88/8A) reference model (mirrors cpu64.cpp dsp_9/dsp_10) ---
+// Encode MOV r/m8,r8 (0x88) / MOV r8,r/m8 (0x8A), reg-direct (eaKind 'reg')
+// or memory (eaKinds shared with encAluMem). Returns { code, ea, reg, rm,
+// rexPresent, dir, eaKind }.
+function encMov8({ dir, reg = 0, rm = 0, eaKind = 'reg', base = 0, idx = 1, scale = 0, disp = 0, asize32 = false }) {
+  let rex = 0;
+  if (reg >= 8) rex |= 0x04;
+  if (eaKind === 'reg') { if (rm >= 8) rex |= 0x01; }
+  else if (eaKind !== 'riprel') { if (base >= 8) rex |= 0x01; }
+  if ((eaKind === 'sib' || eaKind === 'sib32') && idx >= 8) rex |= 0x02;
+  const rexPresent = rex !== 0;
+  const code = [];
+  if (asize32) code.push(0x67);
+  if (rex) code.push(0x40 | rex);
+  const prefixLen = code.length;
+  code.push(dir === 'rm_r' ? 0x88 : 0x8A);
+  const modrmPos = prefixLen + 1;
+  let mod, rmF;
+  const dispBytes = [];
+  const sibBytes = [];
+  if (eaKind === 'reg') { mod = 3; rmF = rm & 7; }
+  else if (eaKind === 'riprel') { mod = 0; rmF = 5; }
+  else if (eaKind === 'sib' || eaKind === 'sib32') {
+    rmF = 4;
+    const noBase = eaKind === 'sib32';
+    mod = noBase ? 0 : disp !== 0 ? (disp >= -128 && disp <= 127 ? 1 : 2) : 0;
+    sibBytes.push((scale << 6) | ((idx & 7) << 3) | (noBase ? 5 : (base & 7)));
+  } else {
+    rmF = base & 7;
+    mod = eaKind === 'disp8' ? 1 : eaKind === 'disp32' ? 2 : 0;
+  }
+  if (mod === 1) dispBytes.push(disp & 0xFF);
+  if (mod === 2 || eaKind === 'riprel' || eaKind === 'sib32') dispBytes.push(...little(BigInt(disp) & 0xFFFFFFFFn, 4));
+  code.push((mod << 6) | ((reg & 7) << 3) | rmF, ...sibBytes, ...dispBytes);
+  // Expected EA params (fixture ripBase=0); mirrors encAluMem.
+  const ea = { ripRel: false, ripRelTarget: 0n, baseReg: 0xFF, idxReg: 0xFF, scale: 0, disp: 0n, asize32, seg: 0 };
+  if (eaKind === 'riprel') {
+    ea.ripRel = true;
+    ea.ripRelTarget = (BigInt(modrmPos) + 5n + BigInt.asIntN(64, BigInt.asIntN(32, BigInt(disp)))) & mask64;
+  } else if (eaKind !== 'reg') {
+    if (eaKind === 'sib' || eaKind === 'sib32') {
+      ea.scale = scale;
+      if (eaKind !== 'sib32') ea.baseReg = base;
+      if (!((idx & 7) === 4 && !(rex & 0x02))) ea.idxReg = idx;
+    } else {
+      ea.baseReg = base;
+    }
+    ea.disp = 0n;
+    if (mod === 1) ea.disp = BigInt.asIntN(64, BigInt.asIntN(8, BigInt(disp))) & mask64;
+    else if (mod === 2 || eaKind === 'sib32') ea.disp = BigInt.asIntN(64, BigInt.asIntN(32, BigInt(disp))) & mask64;
+  }
+  return { code, ea, reg, rm, rexPresent, dir, eaKind };
+}
+
+// Differential check: wasm vs JS reference model (dsp_9/dsp_10).
+async function checkMov8(enc, { regs, rflags = 0x202, memInit = new Map(), rip = 0x12345678ABCDEFF0n }) {
+  const refRegs = [...regs];
+  const refMem = makeGuestMem();
+  for (const [k, v] of memInit) refMem.bytes.set(k, v);
+  if (enc.eaKind === 'reg') {
+    const srcIdx = enc.dir === 'rm_r' ? enc.reg : enc.rm;
+    const destIdx = enc.dir === 'rm_r' ? enc.rm : enc.reg;
+    const byte = memRegRead(refRegs, srcIdx, 1, enc.rexPresent);
+    memRegWrite(refRegs, destIdx, 1, byte, enc.rexPresent);
+  } else {
+    const eaAddr = computeEA(enc.ea, refRegs);
+    if (enc.dir === 'rm_r') {
+      const byte = memRegRead(refRegs, enc.reg, 1, enc.rexPresent);
+      refMem.write(eaAddr, 1, byte);
+    } else {
+      const byte = refMem.read(eaAddr, 1);
+      memRegWrite(refRegs, enc.reg, 1, byte, enc.rexPresent);
+    }
+  }
+  const out = await runAluMem(enc.code, { regs: [...regs], rflags, memInit, rip });
+  assert.deepEqual(out.regs, refRegs, 'GPRs');
+  assert.equal(BigInt(out.rflags), BigInt(rflags) & 0xFFFFFFFFn, 'RFLAGS preserved (MOV never touches flags)');
+  assert.equal(out.ripOut, (rip + BigInt(enc.code.length)) & mask64, 'RIP');
+  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+  const refKeys = [...refMem.bytes.keys()].map(String).sort();
+  const outKeys = [...out.guestMem.bytes.keys()].map(String).sort();
+  assert.deepEqual(outKeys, refKeys, 'written addresses');
+  for (const k of refKeys) assert.equal(out.guestMem.bytes.get(BigInt(k)), refMem.bytes.get(BigInt(k)), `mem[${k}]`);
+}
+
+test('MOV r/m8,r8 reg-direct: low bytes and high-byte AH', async () => {
+  // 88 C8: mov al, cl
+  await checkMov8(encMov8({ dir: 'rm_r', reg: 1, rm: 0, eaKind: 'reg' }), { regs: baseRegs() });
+  // 88 E0: mov al, ah (no REX: reg field 4 => AH)
+  const regs = baseRegs(); regs[0] = 0x1122334455667788n;
+  await checkMov8(encMov8({ dir: 'rm_r', reg: 4, rm: 0, eaKind: 'reg' }), { regs });
+});
+
+test('MOV r8,r/m8 reg-direct: 8A direction and REX SPL semantics', async () => {
+  // 8A C3: mov al, bl
+  await checkMov8(encMov8({ dir: 'r_rm', reg: 0, rm: 3, eaKind: 'reg' }), { regs: baseRegs() });
+  // 40 88 E0: mov spl, al (REX present: reg field 4 => SPL, not AH)
+  const regs = baseRegs(); regs[4] = 0xAABBCCDDEEFF0011n;
+  await checkMov8(encMov8({ dir: 'rm_r', reg: 4, rm: 0, eaKind: 'reg' }), { regs });
+});
+
+test('MOV r/m8,r8 with REX.B: r8b/r9b', async () => {
+  // 45 88 C1: mov r9b, r8b
+  const regs = baseRegs(); regs[8] = 0x5An;
+  await checkMov8(encMov8({ dir: 'rm_r', reg: 8, rm: 9, eaKind: 'reg' }), { regs });
+});
+
+test('MOV byte [mem],r8 / r8,[mem] round-trip', async () => {
+  const regs = baseRegs(); regs[0] = ALU_SBASE; regs[1] = 0xABn;
+  const memInit = aluMemInit(ALU_SBASE, [0x11]);
+  // 88 08: mov [rax], cl ; 8A 10: mov dl, [rax]
+  await checkMov8(encMov8({ dir: 'rm_r', reg: 1, eaKind: 'base', base: 0 }), { regs, memInit });
+  const regs2 = baseRegs(); regs2[0] = ALU_SBASE;
+  await checkMov8(encMov8({ dir: 'r_rm', reg: 2, eaKind: 'base', base: 0 }), { regs: regs2, memInit });
+});
+
+test('MOV r/m8,r8 to unmapped address commits the write', async () => {
+  const regs = baseRegs(); regs[0] = 0xDEAD0000n; regs[3] = 0x7Fn;
+  await checkMov8(encMov8({ dir: 'rm_r', reg: 3, eaKind: 'base', base: 0 }), { regs, memInit: new Map() });
+});
+
+test('MOV r8,[mem] from unmapped address reads 0', async () => {
+  const regs = baseRegs(); regs[0] = 0xDEAD0000n;
+  await checkMov8(encMov8({ dir: 'r_rm', reg: 3, eaKind: 'base', base: 0 }), { regs, memInit: new Map() });
+});
+
+test('66 88 stays fast (0x66 ignored for 8-bit)', async () => {
+  await checkMov8({ ...encMov8({ dir: 'rm_r', reg: 1, rm: 0, eaKind: 'reg' }), code: [0x66, 0x88, 0xC8] }, { regs: baseRegs() });
+});
+
+test('whole-block fallback rejects 16-bit MOV (66 89)', () => {
+  assert.equal(emit([0x66, 0x89, 0xC8]).result.status, 2);
+});
+
+test('fuzz 8-bit MOV vs reference (600 cases)', async () => {
+  const rng = mulberry32(0x885A);
+  for (let i = 0; i < 600; i++) {
+    const dir = pick(rng, ['rm_r', 'r_rm']);
+    const reg = Math.floor(rng() * 16);
+    const useMem = rng() < 0.7; // 88 is 91% memory-store in doom.exe
+    let eaKind = 'reg', ea = null, rm = 0;
+    if (useMem) {
+      ea = randomEA(rng);
+      eaKind = ea.eaKind;
+    } else {
+      rm = Math.floor(rng() * 16);
+    }
+    // High-byte registers (4..7) with no REX: keep the EA REX-free so the
+    // encoder's intent (AH/BH/CH/DH) survives; REX+4..7 (SPL/...) is still
+    // covered when the EA forces REX via base/idx >= 8.
+    const hiReg = reg >= 4 && reg <= 7;
+    const hiRm = !useMem && rm >= 4 && rm <= 7;
+    let effReg = reg, effRm = rm, effEa = ea, effEaKind = eaKind;
+    if ((hiReg || hiRm) && useMem && ((ea.base ?? 0) >= 8 || (ea.idx ?? 0) >= 8)) {
+      effEaKind = 'base'; effEa = { eaKind: 'base', base: 0, disp: 0, asize32: ea.asize32 };
+    }
+    if ((hiReg || hiRm) && !useMem && (effRm >= 8)) effRm = effRm - 8;
+    const enc = encMov8({ dir, reg: effReg, rm: effRm, eaKind: effEaKind,
+      base: effEa?.base ?? 0, idx: effEa?.idx ?? 1, scale: effEa?.scale ?? 0,
+      disp: effEa?.disp ?? 0, asize32: effEa?.asize32 ?? false });
+    const regs = Array.from({ length: 16 }, () => advVal(rng));
+    // Adversarial byte patterns in the source byte's lane.
+    const memInit = new Map();
+    if (useMem) {
+      const eaForInit = enc.ea;
+      const targetHint = computeEA(eaForInit, regs);
+      memInit.set(targetHint & mask64, Math.floor(rng() * 256));
+    }
+    const rflags = pick(rng, [0x202, 0x203, 0x8D5, 0x246, 0x202 | 0x800, 0x402]);
+    await checkMov8(enc, { regs, rflags, memInit });
+  }
+}, 180000);
+
 // --- Shift reference model (mirrors cpu64.cpp doShift; count pre-masked) ---
 const SHIFT_MASK = 0x8C5;
 function refShift(sub, v, count, width, rflagsIn) {

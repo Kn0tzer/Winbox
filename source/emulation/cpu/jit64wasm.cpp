@@ -443,6 +443,10 @@ U32 jit64EmitNew(std::vector<U8>& body, const Jit64Op& op) {
     case J64_PUSH:
     case J64_POP:
         return emitStackGen(body, op);
+    case J64_MOV_RM_R:
+    case J64_MOV_R_RM:
+        if (op.size == 1) return emitMov8Gen(body, op);
+        return 0xFE; // 4/8-bit MOV keeps the hand-written emitter
     default:
         return 0xFE;
     }
@@ -517,10 +521,13 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
     for (const auto& op : block.ops) {
         if (op.plan != JIT64_FAST || !op.len || op.len > 15) return false;
         // Operand-width acceptance: ALU/shift/TEST/MOVX/IMUL kinds support
-        // 1/2/4/8-byte operands (register-direct only); everything else
+        // 1/2/4/8-byte operands (register-direct only); 8-bit MOV (88/8A)
+        // joins them for size 1 (reg and mem forms); everything else
         // stays 4/8-byte.
         bool widthOk;
         switch (op.kind) {
+        case J64_MOV_RM_R:
+        case J64_MOV_R_RM:
         case J64_ALU_RM_R:
         case J64_ALU_R_RM:
         case J64_ALU_RM_IMM:
@@ -544,16 +551,20 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             if (op.sub > 3) return false;
             if (op.rep != 0 && op.rep != 0xF2 && op.rep != 0xF3) return false;
         } else if (op.isMem) {
-            // Memory operands are only accepted for ALU/TEST kinds and LEA;
-            // the EA fields are validated defensively (a malformed EA degrades
-            // to whole-block rejection, never to a wrong address). LEA names
-            // memory for its EA computation but never dereferences it.
+            // Memory operands are only accepted for ALU/TEST kinds, LEA,
+            // PUSH/POP, and 8-bit MOV (88/8A); the EA fields are validated
+            // defensively (a malformed EA degrades to whole-block rejection,
+            // never to a wrong address). LEA names memory for its EA
+            // computation but never dereferences it. 89/8B mem forms stay
+            // interpreter-fallback (unchanged pre-existing behavior).
             bool memAlu = op.kind == J64_ALU_RM_R || op.kind == J64_ALU_R_RM ||
                           op.kind == J64_ALU_RM_IMM || op.kind == J64_TEST_RM_R;
             bool memLea = op.kind == J64_LEA;
             bool memStack = (op.kind == J64_PUSH && op.sub == 2) ||
                             (op.kind == J64_POP && op.sub == 1);
-            if ((!memAlu && !memLea && !memStack) || !widthOk) return false;
+            bool memMov8 = (op.kind == J64_MOV_RM_R || op.kind == J64_MOV_R_RM) &&
+                           op.size == 1;
+            if ((!memAlu && !memLea && !memStack && !memMov8) || !widthOk) return false;
             if (op.ea.seg != 0) return false; // FS/GS: interpreter-only
             if (op.ea.baseReg != 0xFF && op.ea.baseReg >= 16) return false;
             if (op.ea.idxReg != 0xFF && op.ea.idxReg >= 16) return false;
@@ -570,7 +581,11 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             break;
         case J64_MOV_RM_R:
         case J64_MOV_R_RM:
-            if (op.sub != 0 || op.regField >= 16 || op.rmIndex >= 16) return false;
+            // rmIndex is 0xFF for memory forms (scanModRM has no register
+            // to report); only check it for register-direct ops, mirroring
+            // the ALU validation below.
+            if (op.sub != 0 || op.regField >= 16) return false;
+            if (!op.isMem && op.rmIndex >= 16) return false;
             break;
         case J64_LEA:
             // LEA r, m: r/m always names memory (reg form is #UD at decode);
@@ -659,6 +674,12 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
         }
         case J64_MOV_RM_R:
         case J64_MOV_R_RM: {
+            if (op.size == 1) {
+                // 8-bit MOV (88/8A): table-generated emitMov8Gen. Register
+                // writes happen inline in the GPR locals (returns 0xFF).
+                emitMov8Gen(body, op);
+                break;
+            }
             U32 dest = op.kind == J64_MOV_RM_R ? op.rmIndex : op.regField;
             U32 src = op.kind == J64_MOV_RM_R ? op.regField : op.rmIndex;
             local(body, 0x20, src + 1);
