@@ -510,7 +510,46 @@ block. Selftest **258 passed, 0 failed**; `BW64_JIT=1` smoke stays
 byte-identical with `WASM64: blocks=21 insns=49` (was 20/47 — shift ops in
 the smoke workload now jitted).
 
-Still deferred: rotates, IMUL, string ops, FPU emission.
+Still deferred: string ops, FPU emission.
+
+### 2026-10-05: rotates + IMUL (d853f18)
+
+Rotate emission (`emitRotate`, 0xC1 /0../3, 32/64-bit): ROL/ROR via
+single-rotl/rotr; RCL/RCR via a wasm `block`/`loop` with loop-carried
+carry in L_P and counter in L_B. Flags: CF = last bit rotated out; OF
+only for count==1 (ROL/RCL: MSB^CF; ROR/RCR: MSB^MSB<<1); SZP/AF
+untouched (interpreter's `doShift` skips `setSZP` for rotates); count==0
+is a flag no-op (32-bit still zero-extends the destination, matching
+the interpreter's `setU32`). OF is *preserved* (not cleared) when
+count!=1, via a count-dependent merge mask (0x801 for count==1, 0x001
+otherwise).
+
+IMUL emission (`emitImul`, two-operand 0F AF, register-direct only):
+sign-extended operands; 32-bit uses exact 64-bit product with overflow
+iff `res != sext32(res)`; 64-bit uses a 128-bit product via 32-bit limbs
+(`hi_u = t3 + s_hi + m_hi`, provably no intermediate wrap), signed
+correction `signed_hi = hi_u - a_s*b - b_s*a (mod 2^64)`, overflow iff
+`signed_hi != shr_s(lo,63)`. CF|OF both set on overflow, both cleared
+otherwise; all other flags preserved. One-operand (F6/F7 /5) and
+three-operand (69/6B) IMUL stay interpreter-only.
+
+Three emitter bugs were demonstrated failing before their fixes via
+differential fuzzing against JS reference models of the interpreter
+formulas (640 cases: values + flags): (1) 64-bit IMUL overflow flag
+never set — `i64.and` used instead of `i64.mul` to scale the 0/1
+overflow bit into the 0x801 mask (`1 & 0x801 == 1`); (2) rotate OF
+cleared instead of preserved for count!=1 (fixed via the
+count-dependent mask); (3) 32-bit shift/rotate-by-0 did not zero-extend
+the destination (emitter left the high 32 bits intact; interpreter
+does `setU32`).
+
+Native harness: **182 passed, 0 failed** (173 + 9 new emission
+accept/reject checks). Node suite: **68 passed, 0 failed** (58 + 10
+new), including JS reference models of `doShift` rotates and
+`BK_IMUL_R_RM` and execution tests covering CF/OF edges, RCL/RCR carry
+threading, 32-bit width, count-0 no-op, AF/SZP preservation, and a mixed
+imul+rol block. Selftest **258 passed, 0 failed**; `BW64_JIT=1` smoke
+stays byte-identical with `WASM64: blocks=21 insns=49`.
 
 Per-block instantiation overhead (Node v22, 200 iterations, 1-op module):
 `WebAssembly.compile` 40 us + `instantiate` 8 us = **48 us per block**,
