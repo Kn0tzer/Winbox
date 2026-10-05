@@ -3468,8 +3468,12 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 frames.push_back({cb, cbId});
             }
         }
-        klog_fmt("vk64: vkQueueSubmit(%u batches, %u command buffers)", (unsigned)n, (unsigned)frames.size());
-        if (vkSchemaV2()) serializeSubmitV2(frames); else serializeSubmit(frames);
+        if (vkTrace()) klog_fmt("vk64: vkQueueSubmit(%u batches, %u command buffers)", (unsigned)n, (unsigned)frames.size());
+        bool hasWork = false;
+        for (auto& fr : frames) if (fr.first && !fr.first->cmds.empty()) { hasWork = true; break; }
+        if (hasWork) {
+            if (vkSchemaV2()) serializeSubmitV2(frames); else serializeSubmit(frames);
+        }
         if (args.a[3]) { Fence* f = objOf<Fence>(args.a[3], K_FENCE, "vkQueueSubmit"); if (f) f->signalled = 1; }
         return VK_SUCCESS;
     }
@@ -3502,8 +3506,15 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 frames.push_back({cb, (U64)cbi.commandBuffer});
             }
         }
-        klog_fmt("vk64: vkQueueSubmit2(%u batches, %u command buffers)", (unsigned)n, (unsigned)frames.size());
-        if (vkSchemaV2()) serializeSubmitV2(frames); else serializeSubmit(frames);
+        if (vkTrace()) klog_fmt("vk64: vkQueueSubmit2(%u batches, %u command buffers)", (unsigned)n, (unsigned)frames.size());
+        // Skip serialization if no command buffers have commands (common case
+        // for DXVK's empty init submits). This avoids the frame manifest
+        // overhead for submits that carry no rendering work.
+        bool hasWork = false;
+        for (auto& fr : frames) if (fr.first && !fr.first->cmds.empty()) { hasWork = true; break; }
+        if (hasWork) {
+            if (vkSchemaV2()) serializeSubmitV2(frames); else serializeSubmit(frames);
+        }
         if (args.a[3]) { Fence* f = objOf<Fence>(args.a[3], K_FENCE, "vkQueueSubmit2"); if (f) f->signalled = 1; }
         return VK_SUCCESS;
     }
