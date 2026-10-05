@@ -239,6 +239,22 @@ export function splitCombinedSamplers(mod, log) {
     log.push(`spirvfix R1: split combined uniform %${varId} -> image %${imgVar} (set ${set}, binding ${imgBind}) + sampler %${sampVar} (binding ${sampBind})`);
   }
 
+  // SPIR-V 1.4+ lists descriptor globals in OpEntryPoint interfaces.
+  // Preserve that interface when the original combined variable is deleted.
+  // https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#OpEntryPoint
+  for (const ins of mod.insns) {
+    if (ins.op !== Op.EntryPoint) continue;
+    let start = 2; // execution model, function ID, then NUL-terminated name
+    while (start < ins.words.length) {
+      const word = ins.words[start++];
+      if ([0, 8, 16, 24].some(shift => ((word >>> shift) & 255) === 0)) break;
+    }
+    ins.words = ins.words.slice(0, start).concat(ins.words.slice(start).flatMap(id => {
+      const pair = pairs.get(id);
+      return pair ? [pair.imageVar, pair.samplerVar] : [id];
+    }));
+  }
+
   const kept = mod.insns.filter((_, i) => !dropIdx.has(i));
   const aPos = (() => { const s = sections({ insns: kept }); return s.lastAnnot + 1; })();
   kept.splice(Math.max(aPos, 0), 0, ...addAnnot);
@@ -650,8 +666,96 @@ export function foldSpecConstants(mod, log) {
     (remaining.length ? `, ${remaining.length} UNSUPPORTED (left as-is)` : ''));
   return true;
 }
+// Non-point rasterization ignores PointSize and has undefined PointCoord.
+// Keep their computations in Private variables only with known line/triangle
+// topology. Point and unknown topology retain naga's strict unsupported error.
+function privatizePointBuiltins(mod, log, topology) {
+  if (![1, 2, 3, 4].includes(topology)) return false;
+  const builtins = mod.insns.filter(i => i.op === Op.Decorate && i.words[1] === 11
+    && [1, 16].includes(i.words[2]));
+  if (!builtins.length) return false;
+  const byId = new Map(mod.insns.filter(i => i.resultId != null).map(i => [i.resultId, i]));
+  const ids = new Set(builtins.map(i => i.words[0]));
+  // Pointer-chain result types would need independent storage-class rewriting.
+  if (mod.insns.some(i => [65, 66, 67].includes(i.op) && ids.has(i.words[2]))) return false;
+  if (builtins.some(deco => {
+    const variable = byId.get(deco.words[0]), pointer = variable && byId.get(variable.words[0]);
+    const storage = deco.words[2] === 1 ? 3 : 1;
+    return !variable || !pointer || pointer.op !== Op.TypePointer
+      || variable.words[2] !== storage || pointer.words[1] !== storage;
+  })) return false;
+  const add = [], newId = makeIdSource(mod);
+  for (const deco of builtins) {
+    const variable = byId.get(deco.words[0]), pointer = variable && byId.get(variable.words[0]);
+    if (!variable || !pointer || pointer.op !== Op.TypePointer) return false;
+    const storage = deco.words[2] === 1 ? 3 : 1;
+    if (variable.words[2] !== storage || pointer.words[1] !== storage) return false;
+    let privatePointer = mod.insns.concat(add).find(i => i.op === Op.TypePointer && i.words[1] === 6 && i.words[2] === pointer.words[2]);
+    if (!privatePointer) {
+      const id = newId();
+      privatePointer = { op: Op.TypePointer, words: [id, 6, pointer.words[2]], resultId: id, resultType: null };
+      add.push(privatePointer);
+    }
+    variable.words[0] = privatePointer.resultId; variable.resultType = privatePointer.resultId; variable.words[2] = 6;
+    if (deco.words[2] === 16) {
+      const zero = newId();
+      add.push({ op: Op.ConstantNull, words: [pointer.words[2], zero], resultType: pointer.words[2], resultId: zero });
+      variable.words[3] = zero; // zero is one permitted value of non-point PointCoord
+    }
+  }
+  mod.insns = mod.insns.filter(i => !builtins.includes(i));
+  // New types/constants must precede the globals that use them.
+  const firstVariable = mod.insns.findIndex(i => i.op === Op.Variable);
+  mod.insns.splice(firstVariable < 0 ? sections(mod).firstFunc : firstVariable, 0, ...add);
+  if (mod.header.version < 0x00010400) for (const entry of mod.insns.filter(i => i.op === Op.EntryPoint)) {
+    let start = 2;
+    while (start < entry.words.length) {
+      const word = entry.words[start++];
+      if ([0, 8, 16, 24].some(shift => ((word >>> shift) & 255) === 0)) break;
+    }
+    entry.words = entry.words.slice(0, start).concat(entry.words.slice(start).filter(id => !ids.has(id)));
+  }
+  log.push(`spirvfix: privatized ${builtins.length} unused point builtin(s) for non-point topology ${topology}`);
+  return true;
+}
+
+// Demote continues helper execution; Kill terminates it. Lower only a demote
+// immediately followed by an acyclic chain of branch-only blocks ending in
+// void return: no subsequent derivatives, writes or helper queries can differ.
+function lowerTailDemotes(mod, log) {
+  const demotes = mod.insns.filter(i => i.op === 5380);
+  if (!demotes.length || mod.insns.some(i => i.op === 5381)) return false;
+  const blocks = new Map(); let block = null;
+  for (const i of mod.insns) {
+    if (i.op === Op.Label) { block = []; blocks.set(i.words[0], block); }
+    else if (i.op === Op.FunctionEnd) block = null;
+    else if (block) block.push(i);
+  }
+  const pureReturn = (id, seen = new Set()) => {
+    if (seen.has(id)) return false;
+    seen.add(id);
+    const tail = blocks.get(id);
+    if (!tail || tail.length !== 1) return false;
+    return tail[0].op === 253 || (tail[0].op === 249 && pureReturn(tail[0].words[0], seen));
+  };
+  for (const d of demotes) {
+    const next = mod.insns[mod.insns.indexOf(d) + 1];
+    if (!next || next.op !== 249 || !pureReturn(next.words[0])) return false;
+  }
+  for (const d of demotes) {
+    const at = mod.insns.indexOf(d);
+    d.op = 252; d.words = [];
+    mod.insns.splice(at + 1, 1); // Kill is the block terminator, replacing branch
+  }
+  mod.insns = mod.insns.filter(i => !(i.op === 17 && i.words[0] === 5379)
+    && !(i.op === 10 && new TextDecoder().decode(new Uint8Array(strOf(i, 0))) === 'SPV_EXT_demote_to_helper_invocation'));
+  log.push(`spirvfix: lowered ${demotes.length} terminal demote(s) with no helper continuation`);
+  return true;
+}
+
 // --- entry point -------------------------------------------------------------
-export function applySpirvFix(bytes) {
+/** @param {Uint8Array} bytes @param {{rasterTopology?: number}} [options] */
+export function applySpirvFix(bytes, { rasterTopology } = {}) {
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const log = [], applied = [];
   let mod;
@@ -670,6 +774,8 @@ export function applySpirvFix(bytes) {
   } catch (e) {
     log.push('R2 failed: ' + (e.message || e));
   }
+  if (privatizePointBuiltins(mod, log, rasterTopology)) applied.push('non-point-builtins');
+  if (lowerTailDemotes(mod, log)) applied.push('tail-demote-to-kill');
   if (!applied.length) return { bytes: u8, applied, log };
   try {
     return { bytes: serializeSpirv(mod), applied, log };
@@ -678,4 +784,4 @@ export function applySpirvFix(bytes) {
   }
 }
 
-export const REWRITES = ['split-combined-sampler', 'fold-spec-constants'];
+export const REWRITES = ['split-combined-sampler', 'fold-spec-constants', 'non-point-builtins', 'tail-demote-to-kill'];

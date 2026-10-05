@@ -1,8 +1,8 @@
 import { init, translate } from './vendor/naga/index.js';
 let nagaReady;
 let slangReady;
-/** @param {string} from @param {string | Uint8Array} source @param {'vertex'|'fragment'|'compute'} stage @param {string} entryPoint */
-export async function toWGSL(from, source, stage='vertex', entryPoint='main') {
+/** @param {string} from @param {string | Uint8Array} source @param {'vertex'|'fragment'|'compute'} stage @param {string} entryPoint @param {{rasterTopology?: number}} [options] */
+export async function toWGSL(from, source, stage='vertex', entryPoint='main', options={}) {
   if(typeof source==='string' && source.length>1024*1024) throw new Error('Shader exceeds 1 MiB');
   if(source instanceof Uint8Array && source.byteLength>1024*1024) throw new Error('Shader exceeds 1 MiB');
   if(!['vertex','fragment','compute'].includes(stage)) throw new Error('Invalid shader stage');
@@ -39,7 +39,7 @@ export async function toWGSL(from, source, stage='vertex', entryPoint='main') {
     // warning instead of breaking module load.
     try {
       const { applySpirvFix } = await import('../tools/spirvfix/spirvfix.mjs');
-      source = applySpirvFix(source).bytes;
+      source = applySpirvFix(source, options).bytes;
     } catch(e) {
       console.warn('spirvfix pre-pass unavailable, passing SPIR-V through unmodified:', e?.message || e);
     }

@@ -220,21 +220,21 @@ function b64ToBytes(b64) {
 // this runs under the bridge's MAIN_THREAD_EM_ASM call.
 // ---------------------------------------------------------------------------
 /**
- * @param {{translate?: (from: string, source: Uint8Array, stage: string) => Promise<string>, log?: (msg: string) => void}} [options]
+ * @param {{translate?: (from: string, source: Uint8Array, stage: string, entryPoint?: string, options?: {rasterTopology?: number}) => Promise<string>, log?: (msg: string) => void}} [options]
  */
 export function createShaderCache({ translate = toWGSL, log = defaultLog } = {}) {
   const wgsl = new Map();      // key -> WGSL
   const stats = { translated: 0, overridden: 0, rejected: 0, hits: 0 };
   return {
     stats,
-    async get(stage, mod) {
+    async get(stage, mod, options = {}) {
       if (!mod) return null;
-      const key = stage + ':' + mod.hash + ':' + mod.size;
+      const key = stage + ':' + mod.hash + ':' + mod.size + ':topology:' + (options.rasterTopology ?? 'unknown');
       if (wgsl.has(key)) { stats.hits++; return wgsl.get(key); }
       const override = FS_OVERRIDES.get(mod.hash + ':' + mod.size);
       if (override) { wgsl.set(key, override); stats.overridden++; return override; }
       try {
-        const code = String(await translate('spirv', mod.code, stage) ?? '');
+        const code = String(await translate('spirv', mod.code, stage, 'main', options) ?? '');
         if (!code) throw new Error('empty translation');
         wgsl.set(key, code); stats.translated++;
         return code;
@@ -260,7 +260,7 @@ function defaultLog(msg) {
 // ---------------------------------------------------------------------------
 /**
  * @param {HTMLCanvasElement} canvas
- * @param {{translate?: (from: string, source: Uint8Array, stage: string) => Promise<string>, log?: (msg: string) => void}} [options]
+ * @param {{translate?: (from: string, source: Uint8Array, stage: string, entryPoint?: string, options?: {rasterTopology?: number}) => Promise<string>, log?: (msg: string) => void}} [options]
  */
 export async function createVkRenderer(canvas, { translate, log = defaultLog } = {}) {
   if (!navigator.gpu) throw new Error('WebGPU is unavailable');
@@ -1041,7 +1041,7 @@ export function v2PickSampleCount(requested) { return requested > 1 ? 4 : 1; }
 // ---------------------------------------------------------------------------
 /**
  * @param {HTMLCanvasElement} canvas
- * @param {{translate?: (from: string, source: Uint8Array, stage: string) => Promise<string>, log?: (msg: string) => void, onResize?: () => void}} [options]
+ * @param {{translate?: (from: string, source: Uint8Array, stage: string, entryPoint?: string, options?: {rasterTopology?: number}) => Promise<string>, log?: (msg: string) => void, onResize?: () => void}} [options]
  */
 export async function createVkRenderer2(canvas, { translate, log = defaultLog, onResize } = {}) {
   if (!navigator.gpu) throw new Error('WebGPU is unavailable');
@@ -1164,12 +1164,12 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   }
 
   async function getPipelineFor(pipe, sampleCount) {
-    const key = pipe.pipeId + ':ms' + sampleCount;
+    const key = pipe.pipeId + ':ms' + sampleCount + ':topology:' + pipe.topology + ':vb:' + JSON.stringify(pipe.vb);
     if (pipelines.has(key)) return pipelines.get(key);
     const vsm = F.shaders.get(pipe.vsHash), fsm = F.shaders.get(pipe.fsHash);
     if (!vsm || !fsm) return { skip: 'missing-shader' };
-    const vsWgsl = await shaders.get('vertex', { hash: pipe.vsHash, size: vsm.code.length, code: vsm.code });
-    const fsWgsl = await shaders.get('fragment', { hash: pipe.fsHash, size: fsm.code.length, code: fsm.code });
+    const vsWgsl = await shaders.get('vertex', { hash: pipe.vsHash, size: vsm.code.length, code: vsm.code }, { rasterTopology: pipe.topology });
+    const fsWgsl = await shaders.get('fragment', { hash: pipe.fsHash, size: fsm.code.length, code: fsm.code }, { rasterTopology: pipe.topology });
     if (!vsWgsl || !fsWgsl) return { skip: 'shader-translation' };
     const vsR = rewritePushConstantsWGSL(vsWgsl), fsR = rewritePushConstantsWGSL(fsWgsl);
     const pushBlocks = vsR.pushBlocks + fsR.pushBlocks;
