@@ -5792,13 +5792,36 @@ bool CPU64::buildBlock(U64 startRip, BBlock& b) {
                            (op2 == 0xBE) ? 2 : 3);
             rec.len = (U8)(opOff + 2 + rec.mr.length);
         } else if (op == 0xF6 || op == 0xF7) {
-            // F6/F7 group 3: only /5 (IMUL r/m) builds a record.
+            // F6/F7 group 3: /5 (IMUL r/m) keeps BK_IMUL_1OP; /0 TEST,
+            // /2 NOT, /3 NEG, /4 MUL (unsigned) build BK_GRP3. /1 is an
+            // invalid encoding; /6 /7 DIV/IDIV end the block
+            // (interpreter-only: #DE signal delivery). The ModRM reg
+            // field selects the sub-op; peek it to size the trailing
+            // TEST immediate (RIP-relative addressing needs the length).
             U8 grpSize = (op == 0xF6) ? 1 : size;
-            if (!decodeModRMRecipe(r + opOff + 1, p, 0, rec.mr)) break;
-            if ((rec.mr.regField & 0x7) != 5) break;
-            rec.kind = BK_IMUL_1OP;
-            rec.size = grpSize;
-            rec.len = (U8)(opOff + 1 + rec.mr.length);
+            U8 grpSub = (fetchByte(r + opOff + 1) >> 3) & 0x7;
+            U32 grpTrailing = (grpSub == 0)
+                ? (grpSize == 1 ? 1u : grpSize == 2 ? 2u : 4u) : 0u;
+            if (!decodeModRMRecipe(r + opOff + 1, p, grpTrailing, rec.mr)) break;
+            if (grpSub == 5) {
+                rec.kind = BK_IMUL_1OP;
+                rec.size = grpSize;
+                rec.len = (U8)(opOff + 1 + rec.mr.length);
+            } else if (grpSub == 0 || grpSub == 2 || grpSub == 3 || grpSub == 4) {
+                rec.kind = BK_GRP3;
+                rec.sub = grpSub;
+                rec.size = grpSize;
+                if (grpSub == 0) {
+                    U64 grpImmAddr = r + opOff + 1 + rec.mr.length;
+                    if (grpSize == 1) rec.imm = fetchByte(grpImmAddr);
+                    else if (grpSize == 2)
+                        rec.imm = (U64)fetchByte(grpImmAddr) |
+                                  ((U64)fetchByte(grpImmAddr + 1) << 8);
+                    else if (grpSize == 4) rec.imm = fetchDword(grpImmAddr);
+                    else rec.imm = (U64)(S64)(S32)fetchDword(grpImmAddr);
+                }
+                rec.len = (U8)(opOff + 1 + rec.mr.length + grpTrailing);
+            } else break;
         } else if (op == 0x69 || op == 0x6B) {
             // IMUL r, r/m, imm: 6B takes a sign-extended imm8; 69 takes
             // imm16 under 0x66 else imm32 (sign-extended for 64-bit).
@@ -6052,6 +6075,51 @@ U32 CPU64::execBlock(const BBlock& b, U64 maxInsn) {
             rip += rec.len;
             break;
         }
+        case BK_GRP3: {
+            // F6/F7 group 3: /0 TEST r/m,imm, /2 NOT r/m, /3 NEG r/m,
+            // /4 MUL r/m (unsigned). Mirrors dsp_31 exactly.
+            ModRM m = resolveRecipe(rec.mr);
+            U64 src = loadRM(m, size, rexPresent);
+            if (rec.sub == 0) {
+                flagsLogic(rflags, src & rec.imm, size);
+            } else if (rec.sub == 2) {
+                storeRM(m, size, ~src, rexPresent);
+            } else if (rec.sub == 3) {
+                U64 r = (U64)0 - src;
+                flagsSub(rflags, 0, src, r, size);
+                storeRM(m, size, r, rexPresent);
+            } else {
+                // MUL (unsigned): RDX:RAX (or DX:AX, EDX:EAX, AX for
+                // 8-bit) = RAX * r/m. CF/OF set iff the high half is
+                // non-zero; all other flags preserved.
+                bool overflow = false;
+                if (size == 1) {
+                    U16 prod = (U16)reg[X64_RAX].u8 * (U16)(U8)src;
+                    reg[X64_RAX].setU16(prod);
+                    overflow = (prod >> 8) != 0;
+                } else if (size == 2) {
+                    U32 prod = (U32)reg[X64_RAX].u16 * (U32)(U16)src;
+                    reg[X64_RAX].setU16((U16)prod);
+                    reg[X64_RDX].setU16((U16)(prod >> 16));
+                    overflow = ((prod >> 16) & 0xFFFFu) != 0;
+                } else if (size == 4) {
+                    U64 prod = (U64)reg[X64_RAX].u32 * (U64)(U32)src;
+                    reg[X64_RAX].setU64((U64)(U32)prod);
+                    reg[X64_RDX].setU64((U64)(U32)(prod >> 32));
+                    overflow = ((prod >> 32) & 0xFFFFFFFFu) != 0;
+                } else {
+                    __uint128_t prod =
+                        (__uint128_t)reg[X64_RAX].u64 * (__uint128_t)src;
+                    reg[X64_RAX].setU64((U64)prod);
+                    reg[X64_RDX].setU64((U64)(prod >> 64));
+                    overflow = (prod >> 64) != 0;
+                }
+                rflags &= ~(X64_CF | X64_OF);
+                if (overflow) rflags |= (X64_CF | X64_OF);
+            }
+            rip += rec.len;
+            break;
+        }
         case BK_IMUL_3OP: {
             // IMUL r, r/m, imm: signed multiply, overflow iff the full
             // product does not fit the operand width. CF=OF on overflow.
@@ -6148,11 +6216,11 @@ U32 CPU64::execBlock(const BBlock& b, U64 maxInsn) {
 // bytes of the block being executed).
 U32 CPU64::execBlockThreaded(const BBlock& b, U64 maxInsn) {
     if (b.n == 0 || maxInsn == 0) return 0;
-    static_assert(BK_IMUL_3OP == 18, "BKind order changed: update thrDispatch table");
+    static_assert(BK_GRP3 == 19, "BKind order changed: update thrDispatch table");
     // Static: label addresses are compile-time constants; the table is
     // built once, not on every block execution (2M+ executions per
     // benchmark loop - 19 stores each would be measurable).
-    static const void* thrDispatch[19] = {
+    static const void* thrDispatch[20] = {
         &&thr_MOV_RM_R,
         &&thr_MOV_R_RM,
         &&thr_ALU_RM_R,
@@ -6172,6 +6240,7 @@ U32 CPU64::execBlockThreaded(const BBlock& b, U64 maxInsn) {
         &&thr_MOVX,
         &&thr_IMUL_1OP,
         &&thr_IMUL_3OP,
+        &&thr_GRP3,
     };
     U32 executed = 0;
     U16 i = 0;
@@ -6459,6 +6528,56 @@ thr_IMUL_1OP: {
         }
         rflags &= ~(X64_CF | X64_OF);
         if (overflow) rflags |= (X64_CF | X64_OF);
+        rip += rec.len;
+        THR_NEXT();
+
+    }
+thr_GRP3: {
+        const BRec& rec = b.recs[i];
+        bool rexPresent = rec.rexPresent != 0;
+        U32 size = rec.size;
+
+        // F6/F7 group 3: /0 TEST r/m,imm, /2 NOT r/m, /3 NEG r/m,
+        // /4 MUL r/m (unsigned). Mirrors dsp_31 exactly.
+        ModRM m = resolveRecipe(rec.mr);
+        U64 src = loadRM(m, size, rexPresent);
+        if (rec.sub == 0) {
+        flagsLogic(rflags, src & rec.imm, size);
+        } else if (rec.sub == 2) {
+        storeRM(m, size, ~src, rexPresent);
+        } else if (rec.sub == 3) {
+        U64 r = (U64)0 - src;
+        flagsSub(rflags, 0, src, r, size);
+        storeRM(m, size, r, rexPresent);
+        } else {
+        // MUL (unsigned): RDX:RAX (or DX:AX, EDX:EAX, AX for
+        // 8-bit) = RAX * r/m. CF/OF set iff the high half is
+        // non-zero; all other flags preserved.
+        bool overflow = false;
+        if (size == 1) {
+        U16 prod = (U16)reg[X64_RAX].u8 * (U16)(U8)src;
+        reg[X64_RAX].setU16(prod);
+        overflow = (prod >> 8) != 0;
+        } else if (size == 2) {
+        U32 prod = (U32)reg[X64_RAX].u16 * (U32)(U16)src;
+        reg[X64_RAX].setU16((U16)prod);
+        reg[X64_RDX].setU16((U16)(prod >> 16));
+        overflow = ((prod >> 16) & 0xFFFFu) != 0;
+        } else if (size == 4) {
+        U64 prod = (U64)reg[X64_RAX].u32 * (U64)(U32)src;
+        reg[X64_RAX].setU64((U64)(U32)prod);
+        reg[X64_RDX].setU64((U64)(U32)(prod >> 32));
+        overflow = ((prod >> 32) & 0xFFFFFFFFu) != 0;
+        } else {
+        __uint128_t prod =
+        (__uint128_t)reg[X64_RAX].u64 * (__uint128_t)src;
+        reg[X64_RAX].setU64((U64)prod);
+        reg[X64_RDX].setU64((U64)(prod >> 64));
+        overflow = (prod >> 64) != 0;
+        }
+        rflags &= ~(X64_CF | X64_OF);
+        if (overflow) rflags |= (X64_CF | X64_OF);
+        }
         rip += rec.len;
         THR_NEXT();
 

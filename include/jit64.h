@@ -82,6 +82,12 @@ enum Jit64Kind : U8 {
     J64_MOVX = 23,      // 0F B6/B7/BE/BF MOVZX/MOVSX r, r/m; 63 MOVSXD r,r/m32; sub 0=zx8,1=zx16,2=sx8,3=sx16,4=sxd32
     J64_IMUL_1OP = 24,  // F6/F7 /5 one-operand IMUL (implicit RAX/RDX)
     J64_IMUL_3OP = 25,  // 69/6B three-operand IMUL r, r/m, imm
+    J64_GRP3 = 26,      // F6/F7 group 3: sub = ModRM reg field;
+                        // 0=TEST r/m,imm, 2=NOT, 3=NEG, 4=MUL (unsigned).
+                        // /1 invalid; /5 stays J64_IMUL_1OP; /6 /7 DIV/IDIV
+                        // are interpreter-only (their #DE path delivers a
+                        // host SIGFPE with exact register state, which the
+                        // straight-line wasm block model cannot represent).
     J64_UNKNOWN = 255
 };
 

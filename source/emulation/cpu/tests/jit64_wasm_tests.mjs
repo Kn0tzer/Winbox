@@ -2265,3 +2265,267 @@ test('fuzz PUSH/POP vs reference (600 cases)', async () => {
     }
   }
 }, 120000);
+
+// --- F6/F7 group 3 (TEST/NOT/NEG/MUL) reference model (mirrors cpu64.cpp dsp_31) ---
+// Encode F6/F7 /0 (TEST r/m,imm), /2 (NOT r/m), /3 (NEG r/m), /4 (MUL r/m).
+// sub: 0|2|3|4; size: 1|2|4|8 (F6 forces size 1). eaKind: 'reg' | 'base' |
+// 'disp8' | 'disp32' | 'sib' | 'sib32' | 'riprel'.
+// Returns { code, ea, sub, size, imm, rm, rexPresent, eaKind }.
+function encGrp3({ sub, size, rm = 0, imm = 0, eaKind = 'reg', base = 0, idx = 1, scale = 0, disp = 0, asize32 = false }) {
+  const isF6 = size === 1;
+  let r = rm;
+  let rex = 0;
+  if (size === 8) rex |= 0x08;
+  if (eaKind === 'reg' ? r >= 8 : (eaKind !== 'riprel' && base >= 8)) rex |= 0x01;
+  if ((eaKind === 'sib' || eaKind === 'sib32') && idx >= 8) rex |= 0x02;
+  // High-byte rule: size 1 with r in 4..7 (AH..BH) forbids REX entirely.
+  // The fuzz avoids REX-needing EAs in that case; assert the invariant.
+  if (size === 1 && r >= 4 && r <= 7) assert.equal(rex, 0, 'high-byte rm needs REX-free encoding');
+  const rexPresent = rex !== 0;
+  const code = [];
+  if (asize32) code.push(0x67);
+  if (size === 2) code.push(0x66);
+  if (rex) code.push(0x40 | rex);
+  const prefixLen = code.length;
+  code.push(isF6 ? 0xF6 : 0xF7);
+  const modrmPos = prefixLen + 1;
+  let mod, rmF;
+  const dispBytes = [];
+  const sibBytes = [];
+  if (eaKind === 'reg') { mod = 3; rmF = r & 7; }
+  else if (eaKind === 'riprel') { mod = 0; rmF = 5; }
+  else if (eaKind === 'sib' || eaKind === 'sib32') {
+    rmF = 4;
+    const noBase = eaKind === 'sib32';
+    mod = noBase ? 0 : disp !== 0 ? (disp >= -128 && disp <= 127 ? 1 : 2) : 0;
+    sibBytes.push((scale << 6) | ((idx & 7) << 3) | (noBase ? 5 : (base & 7)));
+  } else {
+    rmF = base & 7;
+    mod = eaKind === 'disp8' ? 1 : eaKind === 'disp32' ? 2 : 0;
+  }
+  if (mod === 1) dispBytes.push(disp & 0xFF);
+  if (mod === 2 || eaKind === 'riprel' || eaKind === 'sib32') dispBytes.push(...little(BigInt(disp) & 0xFFFFFFFFn, 4));
+  code.push((mod << 6) | (sub << 3) | rmF, ...sibBytes, ...dispBytes);
+  // TEST immediate (finalized like the decoder: imm8/imm16/imm32, or
+  // sign-extended imm32 for 64-bit).
+  let immVal = 0n, immLen = 0;
+  if (sub === 0) {
+    immLen = size === 1 ? 1 : size === 2 ? 2 : 4;
+    if (size === 1) { code.push(Number(BigInt(imm) & 0xFFn)); immVal = BigInt(imm) & 0xFFn; }
+    else if (size === 2) { code.push(...little(BigInt(imm) & 0xFFFFn, 2)); immVal = BigInt(imm) & 0xFFFFn; }
+    else if (size === 4) { code.push(...little(BigInt(imm) & 0xFFFFFFFFn, 4)); immVal = BigInt(imm) & 0xFFFFFFFFn; }
+    else { code.push(...little(BigInt(imm) & 0xFFFFFFFFn, 4)); immVal = BigInt.asIntN(64, BigInt.asIntN(32, BigInt(imm))); }
+  }
+  // Expected EA params (fixture ripBase=0). TEST's RIP-relative target
+  // includes the trailing immediate length (decodeEA trailingImm).
+  const ea = { ripRel: false, ripRelTarget: 0n, baseReg: 0xFF, idxReg: 0xFF, scale: 0, disp: 0n, asize32, seg: 0 };
+  if (eaKind === 'riprel') {
+    ea.ripRel = true;
+    ea.ripRelTarget = (BigInt(modrmPos) + 5n + BigInt(immLen) + BigInt.asIntN(64, BigInt.asIntN(32, BigInt(disp)))) & mask64;
+  } else if (eaKind !== 'reg') {
+    if (eaKind === 'sib' || eaKind === 'sib32') {
+      ea.scale = scale;
+      if (eaKind !== 'sib32') ea.baseReg = base;
+      if (!((idx & 7) === 4 && !(rex & 0x02))) ea.idxReg = idx;
+    } else {
+      ea.baseReg = base;
+    }
+    if (mod === 1) ea.disp = BigInt.asIntN(64, BigInt.asIntN(8, BigInt(disp))) & mask64;
+    else if (mod === 2 || eaKind === 'sib32') ea.disp = BigInt.asIntN(64, BigInt.asIntN(32, BigInt(disp))) & mask64;
+  }
+  return { code, ea, sub, size, imm: immVal, rm: r, rexPresent, eaKind };
+}
+
+// Differential check: wasm vs JS reference model (dsp_31).
+async function checkGrp3(enc, { regs, rflags = 0x202, memInit = new Map(), rip = 0x12345678ABCDEFF0n }) {
+  const { sub, size } = enc;
+  const mask = size === 8 ? mask64 : (1n << BigInt(size * 8)) - 1n;
+  const refRegs = [...regs];
+  const refMem = makeGuestMem();
+  for (const [k, v] of memInit) refMem.bytes.set(k, v);
+  let a, eaAddr = 0n;
+  if (enc.eaKind === 'reg') {
+    a = memRegRead(refRegs, enc.rm, size, enc.rexPresent);
+  } else {
+    eaAddr = computeEA(enc.ea, refRegs);
+    a = refMem.read(eaAddr, size);
+  }
+  let refFlags = BigInt(rflags) & 0xFFFFFFFFn;
+  const writeback = (v) => {
+    if (enc.eaKind === 'reg') memRegWrite(refRegs, enc.rm, size, v, enc.rexPresent);
+    else refMem.write(eaAddr, size, v);
+  };
+  if (sub === 0) {
+    // TEST: flags like AND of (a & imm); no writeback.
+    const { flags } = refAlu(4, a, enc.imm & mask, size);
+    refFlags = ((BigInt(rflags) & ~0x8D5n) | flags) & 0xFFFFFFFFn;
+  } else if (sub === 2) {
+    // NOT: no flags.
+    writeback((~a) & mask);
+  } else if (sub === 3) {
+    // NEG: SUB of (0 - a).
+    const { r, flags } = refAlu(5, 0n, a, size);
+    refFlags = ((BigInt(rflags) & ~0x8D5n) | flags) & 0xFFFFFFFFn;
+    writeback(r);
+  } else {
+    // MUL (unsigned): RDX:RAX = RAX * a; CF/OF iff hi != 0.
+    const prod = (refRegs[0] & mask) * a;
+    const lo = prod & mask;
+    const hi = (prod >> BigInt(size * 8)) & mask;
+    const overflow = hi !== 0n;
+    if (size === 1) {
+      refRegs[0] = (refRegs[0] & ~0xFFFFn) | (prod & 0xFFFFn); // AX = prod
+    } else if (size === 2) {
+      refRegs[0] = (refRegs[0] & ~0xFFFFn) | lo;
+      refRegs[2] = (refRegs[2] & ~0xFFFFn) | hi;
+    } else {
+      refRegs[0] = lo; // 32-bit: zero-extended by construction
+      refRegs[2] = hi;
+    }
+    refFlags = ((BigInt(rflags) & ~0x801n) | (overflow ? 0x801n : 0n)) & 0xFFFFFFFFn;
+  }
+  const out = await runAluMem(enc.code, { regs: [...regs], rflags, memInit, rip });
+  assert.deepEqual(out.regs, refRegs, 'GPRs');
+  assert.equal(BigInt(out.rflags), refFlags, 'RFLAGS');
+  assert.equal(out.ripOut, (rip + BigInt(enc.code.length)) & mask64, 'RIP');
+  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+  const refKeys = [...refMem.bytes.keys()].map(String).sort();
+  const outKeys = [...out.guestMem.bytes.keys()].map(String).sort();
+  assert.deepEqual(outKeys, refKeys, 'written addresses');
+  for (const k of refKeys) assert.equal(out.guestMem.bytes.get(BigInt(k)), refMem.bytes.get(BigInt(k)), `mem[${k}]`);
+}
+
+test('GRP3 TEST reg-direct: flags like AND, no writeback', async () => {
+  // F7 C0 imm32: test eax, 0x12345678
+  const regs = baseRegs();
+  await checkGrp3(encGrp3({ sub: 0, size: 4, rm: 0, imm: 0x12345678 }), { regs });
+  // 48 F7 C3 imm32(-1): test rbx, -1 (sign-extended imm)
+  const regs2 = baseRegs(); regs2[3] = 0x8000000000000000n;
+  await checkGrp3(encGrp3({ sub: 0, size: 8, rm: 3, imm: -1 }), { regs: regs2 });
+  // F6 C4 0x0F: test ah, 0x0F (high-byte register, no REX)
+  const regs3 = baseRegs(); regs3[0] = 0x0000FF00n;
+  await checkGrp3(encGrp3({ sub: 0, size: 1, rm: 4, imm: 0x0F }), { regs: regs3 });
+});
+
+test('GRP3 TEST [mem]: fault-free load, RIP-relative immediate shift', async () => {
+  // F7 05 disp32 imm32: test [rip+disp], imm — the EA must skip the imm.
+  const regs = baseRegs();
+  const disp = 0x100;
+  const target = (10n + BigInt(disp)) & mask64; // fixture ripBase=0, len 10
+  const memInit = aluMemInit(target, [0xFF, 0xFF, 0xFF, 0xFF]);
+  await checkGrp3(encGrp3({ sub: 0, size: 4, eaKind: 'riprel', disp, imm: 0x0F0F0F0F }), { regs, memInit });
+  // F6 00 disp8: test byte [rax+disp], imm8
+  const regs2 = baseRegs(); regs2[0] = ALU_SBASE;
+  const memInit2 = aluMemInit(ALU_SBASE + 0x10n, [0x81]);
+  await checkGrp3(encGrp3({ sub: 0, size: 1, eaKind: 'disp8', base: 0, disp: 0x10, imm: 0x81 }), { regs: regs2, memInit: memInit2 });
+});
+
+test('GRP3 NOT: bitwise complement, flags preserved', async () => {
+  // F7 D1: not ecx
+  const regs = baseRegs();
+  const rflags = 0x8D5;
+  await checkGrp3(encGrp3({ sub: 2, size: 4, rm: 1 }), { regs, rflags });
+  // 48 F7 D7: not rdi (64-bit)
+  await checkGrp3(encGrp3({ sub: 2, size: 8, rm: 7 }), { regs: baseRegs(), rflags });
+  // F6 D4: not ah (high byte)
+  const regs3 = baseRegs(); regs3[0] = 0x123456789ABCDEF0n;
+  await checkGrp3(encGrp3({ sub: 2, size: 1, rm: 4 }), { regs: regs3, rflags });
+  // F7 13: not [rbx] (memory store)
+  const regs4 = baseRegs(); regs4[3] = ALU_SBASE;
+  const memInit = aluMemInit(ALU_SBASE, [0x00, 0x00, 0x00, 0x00]);
+  await checkGrp3(encGrp3({ sub: 2, size: 4, eaKind: 'base', base: 3 }), { regs: regs4, rflags, memInit });
+});
+
+test('GRP3 NEG: 0-a with SUB flags, CF=(a!=0)', async () => {
+  // F7 DB: neg ebx — CF set (ebx != 0)
+  const regs = baseRegs();
+  await checkGrp3(encGrp3({ sub: 3, size: 4, rm: 3 }), { regs, rflags: 0x202 });
+  // NEG of 0: CF clear, ZF set.
+  const regs2 = baseRegs(); regs2[3] = 0n;
+  await checkGrp3(encGrp3({ sub: 3, size: 4, rm: 3 }), { regs: regs2, rflags: 0x203 });
+  // NEG of 0x80000000: OF set.
+  const regs3 = baseRegs(); regs3[3] = 0x80000000n;
+  await checkGrp3(encGrp3({ sub: 3, size: 4, rm: 3 }), { regs: regs3 });
+  // 48 F7 DF: neg rdi (64-bit, -1 -> 1, CF set)
+  const regs4 = baseRegs(); regs4[7] = 0xFFFFFFFFFFFFFFFFn;
+  await checkGrp3(encGrp3({ sub: 3, size: 8, rm: 7 }), { regs: regs4 });
+  // F7 1D disp32: neg [mem32]
+  const regs5 = baseRegs(); regs5[0] = ALU_SBASE;
+  const memInit = aluMemInit(ALU_SBASE + 0x20n, [0x01, 0x00, 0x00, 0x80]);
+  await checkGrp3(encGrp3({ sub: 3, size: 4, eaKind: 'disp8', base: 0, disp: 0x20 }), { regs: regs5, memInit });
+});
+
+test('GRP3 MUL: unsigned RDX:RAX product, CF/OF=(hi!=0)', async () => {
+  // F7 E0: mul eax — RAX=0xFFFFFFFF, r/m=0xFFFFFFFF -> hi!=0, CF/OF set.
+  const regs = baseRegs(); regs[0] = 0xFFFFFFFFn;
+  await checkGrp3(encGrp3({ sub: 4, size: 4, rm: 0 }), { regs });
+  // No overflow: RAX=2, r/m=3 -> RAX=6, RDX=0, CF/OF clear.
+  const regs2 = baseRegs(); regs2[0] = 2n;
+  await checkGrp3(encGrp3({ sub: 4, size: 4, rm: 0 }), { regs: regs2 });
+  // 48 F7 E3: mul rbx, 64-bit with high limbs (exercises the limb path).
+  const regs3 = baseRegs(); regs3[0] = 0xFFFFFFFFFFFFFFFFn; regs3[3] = 0xFFFFFFFFFFFFFFFFn;
+  await checkGrp3(encGrp3({ sub: 4, size: 8, rm: 3 }), { regs: regs3 });
+  // 64-bit, hi=0: RAX=0x100000000, r/m=0x100000000 -> prod=2^64, lo=0, hi=1.
+  const regs4 = baseRegs(); regs4[0] = 0x100000000n; regs4[3] = 0x100000000n;
+  await checkGrp3(encGrp3({ sub: 4, size: 8, rm: 3 }), { regs: regs4 });
+  // F6 E0: mul al — AX = AL * r/m8.
+  const regs5 = baseRegs(); regs5[0] = 0xFFn;
+  await checkGrp3(encGrp3({ sub: 4, size: 1, rm: 0 }), { regs: regs5 });
+  // 66 F7 E1: mul cx — DX:AX.
+  const regs6 = baseRegs(); regs6[0] = 0xFFFFn;
+  await checkGrp3(encGrp3({ sub: 4, size: 2, rm: 1 }), { regs: regs6 });
+  // MUL r/m32 (memory).
+  const regs7 = baseRegs(); regs7[0] = 0x12345678n; regs7[1] = ALU_SBASE;
+  const memInit = aluMemInit(ALU_SBASE, [0xFF, 0xFF, 0xFF, 0xFF]);
+  await checkGrp3(encGrp3({ sub: 4, size: 4, eaKind: 'base', base: 1 }), { regs: regs7, memInit });
+});
+
+test('GRP3 whole-block fallback rejects DIV/IDIV and /1', () => {
+  assert.equal(emit([0xF7, 0xF0]).result.status, 2); // DIV r/m32
+  assert.equal(emit([0xF7, 0xF8]).result.status, 2); // IDIV r/m32
+  assert.equal(emit([0xF6, 0xF0]).result.status, 2); // DIV r/m8
+  assert.equal(emit([0xF7, 0xC8]).result.status, 2); // /1 invalid
+  assert.equal(emit([0xF0, 0xF7, 0xD0]).result.status, 2); // LOCK NOT
+});
+
+test('fuzz F6/F7 group 3 vs reference (600 cases)', async () => {
+  const rng = mulberry32(0xF607);
+  const flagSets = [0x202, 0x203, 0x8D5, 0x246, 0x202 | 0x800, 0x402, 0x0];
+  for (let i = 0; i < 600; i++) {
+    const sub = pick(rng, [0, 0, 2, 3, 3, 4]); // weight by profile (TEST/NEG heavy)
+    const size = pick(rng, [1, 1, 2, 4, 4, 4, 8, 8]);
+    const useMem = rng() < 0.55;
+    let eaKind = 'reg', rm = 0;
+    let eaParams = {};
+    if (useMem) {
+      const ea = randomEA(rng);
+      eaKind = ea.eaKind;
+      eaParams = ea;
+    } else {
+      rm = Math.floor(rng() * 16);
+    }
+    // High-byte rm (4..7) with size 1: keep the encoding REX-free.
+    if (size === 1 && rm >= 4 && rm <= 7 && useMem &&
+        ((eaParams.base ?? 0) >= 8 || (eaParams.idx ?? 0) >= 8 || size === 8)) {
+      eaKind = 'base'; eaParams = { eaKind: 'base', base: 0, disp: 0, asize32: eaParams.asize32 };
+    }
+    const imm = sub === 0 ? Math.floor(rng() * 0x100000000) - 0x80000000 : 0;
+    const enc = encGrp3({ sub, size, rm, imm, eaKind,
+      base: eaParams.base ?? 0, idx: eaParams.idx ?? 1, scale: eaParams.scale ?? 0,
+      disp: eaParams.disp ?? 0, asize32: eaParams.asize32 ?? false });
+    const regs = Array.from({ length: 16 }, () => advVal(rng));
+    const memInit = new Map();
+    if (useMem) {
+      const targetHint = computeEA(enc.ea, regs);
+      for (let b = 0; b < size; b++) memInit.set((targetHint + BigInt(b)) & mask64, Math.floor(rng() * 256));
+    }
+    const rflags = pick(rng, flagSets);
+    const tag = `fuzzGrp3 i=${i} sub=${sub} size=${size} ea=${eaKind}`;
+    try {
+      await checkGrp3(enc, { regs, rflags, memInit });
+    } catch (e) {
+      e.message = `${tag}: ${e.message}`;
+      throw e;
+    }
+  }
+}, 180000);

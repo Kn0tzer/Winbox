@@ -1095,6 +1095,195 @@ U32 emitStackGen(Bytes& body, const Jit64Op& op) {
     return 0xFF;
 }
 
+U32 emitGrp3Gen(Bytes& body, const Jit64Op& op) {
+    const U64 mask = widthMask(op.size);
+    const U64 sb = widthSB(op.size);
+    const U64 m32 = 0xFFFFFFFFULL;
+    // L_A = width-masked r/m operand.
+    if (op.isMem) {
+        emitEA(body, op); // L_T1 = effective address
+        emitMemRead(body, L_T1, op.size); // -> L_R (zero-extended)
+        local(body, 0x20, L_R);
+        i64Const(body, mask);
+        body.push_back(0x83); // i64.and
+        local(body, 0x21, L_A);
+    } else {
+        emitReadOperand(body, op, op.rmIndex, L_A);
+    }
+    if (op.sub == 0) {
+        // TEST: flags like AND of (a & imm); no writeback.
+        i64Const(body, op.imm & mask);
+        local(body, 0x21, L_B);
+        emitAluCompute(body, 4, true, mask, sb);
+        return 0xFF;
+    }
+    if (op.sub == 2 || op.sub == 3) {
+        // NOT / NEG.
+        if (op.sub == 2) {
+            local(body, 0x20, L_A);
+            i64Const(body, mask);
+            body.push_back(0x85); // i64.xor -> (~a) & mask
+            local(body, 0x21, L_R);
+        } else {
+            // NEG via the SUB path: L_A = 0, L_B = a. CF = (R <u 0)
+            // = (a != 0); OF/AF/SZ/P per flagsSub(0, a, r).
+            local(body, 0x20, L_A);
+            local(body, 0x21, L_B);
+            i64Const(body, 0);
+            local(body, 0x21, L_A);
+            emitAluCompute(body, 7, false, mask, sb);
+        }
+        if (op.isMem) {
+            emitMemWrite(body, L_T1, L_R, op.size);
+            return 0xFF;
+        }
+        if (op.size == 1) { emitWriteByte(body, op, op.rmIndex, L_R); return 0xFF; }
+        if (op.size == 2) { emitWriteWord(body, op.rmIndex, L_R); return 0xFF; }
+        return op.rmIndex;
+    }
+    // MUL r/m (unsigned). On entry L_A = width-masked r/m operand; move it
+    // to L_B, then L_A = zero-extended RAX at width.
+    local(body, 0x20, L_A);
+    local(body, 0x21, L_B); // L_B = operand (L_A is clobbered below)
+    if (op.size == 1) emitReadByte(body, op, 0, L_A);
+    else {
+        local(body, 0x20, 0 + 1); // RAX
+        if (op.size == 2) {
+            i64Const(body, 0xFFFFULL);
+            body.push_back(0x83);
+        } else if (op.size == 4) {
+            i64Const(body, m32);
+            body.push_back(0x83);
+        }
+        local(body, 0x21, L_A);
+    }
+    local(body, 0x20, L_A);
+    local(body, 0x20, L_B);
+    body.push_back(0x7E); // i64.mul
+    local(body, 0x21, L_R); // L_R = low half (exact for widths < 8)
+    if (op.size == 8) {
+        // 128-bit product via 32-bit limbs (unsigned long multiplication):
+        // hi = a_hi*b_hi + (a_lo*b_hi >> 32) + (a_hi*b_lo >> 32) +
+        //      (((a_lo*b_lo >> 32) + (a_lo*b_hi & m32) +
+        //        (a_hi*b_lo & m32)) >> 32).
+        // Every partial sum fits in 64 bits, so wrapping is exact.
+        local(body, 0x20, L_A);
+        i64Const(body, m32);
+        body.push_back(0x83);
+        local(body, 0x21, L_T1); // a_lo
+        local(body, 0x20, L_A);
+        i64Const(body, 32);
+        body.push_back(0x88);
+        local(body, 0x21, L_T2); // a_hi
+        local(body, 0x20, L_B);
+        i64Const(body, m32);
+        body.push_back(0x83);
+        local(body, 0x21, L_P); // b_lo
+        local(body, 0x20, L_B);
+        i64Const(body, 32);
+        body.push_back(0x88);
+        local(body, 0x21, L_A); // b_hi (L_B dead)
+        local(body, 0x20, L_T2);
+        local(body, 0x20, L_A);
+        body.push_back(0x7E); // a_hi*b_hi
+        local(body, 0x20, L_T1);
+        local(body, 0x20, L_A);
+        body.push_back(0x7E);
+        i64Const(body, 32);
+        body.push_back(0x88); // (a_lo*b_hi) >> 32
+        local(body, 0x20, L_T2);
+        local(body, 0x20, L_P);
+        body.push_back(0x7E);
+        i64Const(body, 32);
+        body.push_back(0x88); // (a_hi*b_lo) >> 32
+        local(body, 0x20, L_T1);
+        local(body, 0x20, L_P);
+        body.push_back(0x7E);
+        i64Const(body, 32);
+        body.push_back(0x88); // (a_lo*b_lo) >> 32
+        local(body, 0x20, L_T1);
+        local(body, 0x20, L_A);
+        body.push_back(0x7E);
+        i64Const(body, m32);
+        body.push_back(0x83); // (a_lo*b_hi) & m32
+        local(body, 0x20, L_T2);
+        local(body, 0x20, L_P);
+        body.push_back(0x7E);
+        i64Const(body, m32);
+        body.push_back(0x83); // (a_hi*b_lo) & m32
+        body.push_back(0x7C); // +
+        body.push_back(0x7C); // +
+        i64Const(body, 32);
+        body.push_back(0x88); // carry >> 32
+        body.push_back(0x7C); // +
+        body.push_back(0x7C); // +
+        body.push_back(0x7C); // + -> hi
+        local(body, 0x21, L_P); // L_P = hi
+        // overflow = (hi != 0); RDX:RAX = hi:lo.
+        local(body, 0x20, L_P);
+        i64Const(body, 0);
+        body.push_back(0x52); // i64.ne -> i32 overflow
+        local(body, 0x20, L_P);
+        local(body, 0x21, 2 + 1); // RDX
+        local(body, 0x20, L_R);
+        local(body, 0x21, 0 + 1); // RAX
+    } else {
+        // 8/16/32-bit: the product is exact in 64 bits; split hi/lo.
+        local(body, 0x20, L_R);
+        if (op.size == 1) {
+            i64Const(body, 8);
+            body.push_back(0x88); // hi = prod >> 8
+        } else if (op.size == 2) {
+            i64Const(body, 16);
+            body.push_back(0x88);
+            i64Const(body, 0xFFFFULL);
+            body.push_back(0x83); // hi = (prod >> 16) & 0xFFFF
+        } else {
+            i64Const(body, 32);
+            body.push_back(0x88); // hi = prod >> 32
+        }
+        local(body, 0x21, L_T1); // L_T1 = hi
+        local(body, 0x20, L_T1);
+        i64Const(body, 0);
+        body.push_back(0x52); // i64.ne -> i32 overflow
+        if (op.size == 1) {
+            // AX = prod (setU16, upper RAX preserved).
+            emitWriteWord(body, 0, L_R);
+        } else if (op.size == 2) {
+            // DX:AX = hi:lo (setU16 halves).
+            local(body, 0x20, L_R);
+            i64Const(body, 0xFFFFULL);
+            body.push_back(0x83);
+            local(body, 0x21, L_T2); // lo
+            emitWriteWord(body, 0, L_T2); // AX
+            emitWriteWord(body, 2, L_T1); // DX
+        } else {
+            // EDX:EAX: full 64-bit writes of the zero-extended halves.
+            local(body, 0x20, L_R);
+            i64Const(body, m32);
+            body.push_back(0x83);
+            local(body, 0x21, 0 + 1); // RAX = lo
+            local(body, 0x20, L_T1);
+            local(body, 0x21, 2 + 1); // RDX = hi
+        }
+    }
+    // L_F = overflow ? (CF|OF) : 0; merge preserving other flags.
+    body.push_back(0xAD); // i64.extend_i32_u
+    i64Const(body, F_CFOF_MASK);
+    body.push_back(0x7E); // i64.mul
+    local(body, 0x21, L_F);
+    local(body, 0x20, L_RFLAGS);
+    i32Const(body, F_CFOF_MASK);
+    body.push_back(0x72); // i32.or
+    i32Const(body, F_CFOF_MASK);
+    body.push_back(0x73); // i32.xor
+    local(body, 0x20, L_F);
+    body.push_back(0xA7); // i32.wrap_i64
+    body.push_back(0x72); // i32.or
+    local(body, 0x21, L_RFLAGS);
+    return 0xFF;
+}
+
 U32 emitMov8Gen(Bytes& body, const Jit64Op& op) {
     const U32 src = op.kind == J64_MOV_RM_R ? op.regField : op.rmIndex;
     const U32 dest = op.kind == J64_MOV_RM_R ? op.rmIndex : op.regField;

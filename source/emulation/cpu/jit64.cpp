@@ -62,6 +62,7 @@ static const Jit64CoveredOpcode kCovered[] = {
     { "01 ADD r/m,r",      0x01, 0x00, J64_ALU_RM_R },    // 20 (1.2%)
     { "63 MOVSXD",         0x63, 0x00, J64_MOVX },        // 21 (1.3% doom.exe; sub 4)
     { "88 MOV r/m8,r8",    0x88, 0x00, J64_MOV_RM_R },    // 22 (0.83% doom.exe; 8A same row)
+    { "F7 GRP3",           0xF7, 0x00, J64_GRP3 },        // 23 (0.32% F7 + 0.22% F6 doom.exe; /0 TEST /2 NOT /3 NEG /4 MUL; DIV/IDIV stay interpreted)
     // NOTE: 0F85 (JNZ rel32) stays FAST in jit64Classify but fell just outside
     // this corpus's top-20, so it has no table row. The whole 00..3B ALU range
     // (including 29 SUB r/m,r) is table-covered; the phase-1 table only names
@@ -505,17 +506,53 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
         out.regField = rf; out.rmIndex = ri; out.isMem = hm;
         return true;
     }
-    // F6/F7 group 3: only /5 (IMUL r/m, one-operand) decodes. /0 TEST imm,
-    // /2 NOT, /3 NEG, /4 MUL, /6 DIV, /7 IDIV stay unknown (fallback).
-    // F6 is the 8-bit form (AX = AL * r/m8); F7 uses the operand size.
+    // F6/F7 group 3. /5 (IMUL r/m, one-operand) keeps the proven
+    // J64_IMUL_1OP path. /0 TEST r/m,imm, /2 NOT, /3 NEG, /4 MUL r/m
+    // (unsigned) decode as J64_GRP3 with sub = the ModRM reg field.
+    // /1 is an invalid encoding; /6 /7 DIV/IDIV stay unknown (fallback):
+    // their #DE path delivers a host SIGFPE with exact register state
+    // and may redirect RIP to a handler, which the straight-line wasm
+    // block model cannot represent (no mid-block bail; tryWasmExec does
+    // not catch traps). The interpreter implements them exactly.
+    // F6 is the 8-bit form (0x66 ignored, like the interpreter);
+    // F7 uses the operand size.
     if (op == 0xF6 || op == 0xF7) {
         U8 rf; bool rr; U8 ri; bool hm;
         U32 ml = scanModRM(bytes + opOff + 1, byteCount - (opOff + 1), p, rf, rr, ri, hm);
-        if (!ml || (rf & 0x7) != 5) return false;
-        out.kind = J64_IMUL_1OP;
-        out.size = (op == 0xF6) ? 1 : size;
-        out.len = (U8)(opOff + 1 + ml);
+        if (!ml) return false;
+        U8 sub = rf & 0x7;
+        if (sub == 5) {
+            out.kind = J64_IMUL_1OP;
+            out.size = (op == 0xF6) ? 1 : size;
+            out.len = (U8)(opOff + 1 + ml);
+            out.regField = rf; out.rmIndex = ri; out.isMem = hm;
+            return true;
+        }
+        if (sub != 0 && sub != 2 && sub != 3 && sub != 4) return false;
+        U8 grpsize = (op == 0xF6) ? 1 : size;
+        out.kind = J64_GRP3;
+        out.sub = sub;
+        out.size = grpsize;
         out.regField = rf; out.rmIndex = ri; out.isMem = hm;
+        if (sub == 0) {
+            // TEST r/m,imm: trailing immediate (imm8/imm16/imm32, or
+            // sign-extended imm32 for 64-bit, mirroring dsp_31). The
+            // immediate shifts RIP-relative addressing, so decodeEA gets
+            // the immediate length (the interpreter adds it to effAddr).
+            U32 immLen = (grpsize == 1) ? 1 : (grpsize == 2) ? 2 : 4;
+            U32 avail = byteCount - (opOff + 1);
+            if (avail < ml + immLen) return false;
+            const U8* ip = bytes + opOff + 1 + ml;
+            if (grpsize == 1) out.imm = ip[0];
+            else if (grpsize == 2) out.imm = (U64)(ip[0] | ((U16)ip[1] << 8));
+            else if (grpsize == 4) out.imm = readU32(ip);
+            else out.imm = (U64)(S64)(S32)readU32(ip);
+            out.len = (U8)(opOff + 1 + ml + immLen);
+            if (hm) decodeEA(bytes + opOff + 1, p, ripBase + opOff + 1, immLen, out.ea);
+        } else {
+            out.len = (U8)(opOff + 1 + ml);
+            if (hm) decodeEA(bytes + opOff + 1, p, ripBase + opOff + 1, 0, out.ea);
+        }
         return true;
     }
     // PUSH r/m64 (FF /6). Always 64-bit in long mode (cpu64.cpp: the /6
@@ -711,6 +748,16 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16) {
         if (op.size != 1 && op.size != 2 && op.size != 4 && op.size != 8) return;
         op.plan = JIT64_FAST;
         return;
+    case J64_GRP3:
+        // F6/F7 group 3: /0 TEST, /2 NOT, /3 NEG, /4 MUL. The decoder
+        // only produces these four sub-ops (/1 invalid, /5 is
+        // J64_IMUL_1OP, /6 /7 DIV/IDIV never decode here); re-check
+        // defensively. F6 is always 8-bit (0x66 ignored, matching the
+        // interpreter); F7 takes 2/4/8.
+        if (op.size != 1 && op.size != 2 && op.size != 4 && op.size != 8) return;
+        if (op.sub != 0 && op.sub != 2 && op.sub != 3 && op.sub != 4) return;
+        op.plan = JIT64_FAST;
+        return;
     case J64_PUSH:
     case J64_POP:
         // Near PUSH/POP are always 64-bit in long mode (the interpreter
@@ -857,6 +904,12 @@ bool jit64BlockMayStore(const Jit64Op* ops, U32 nOps) {
             break;
         case J64_STRING:
             if (op.sub == 0 || op.sub == 1) return true; // MOVS/STOS store
+            break;
+        case J64_GRP3:
+            // NOT/NEG r/m (sub 2/3) store to guest memory via the
+            // imported helper; TEST (sub 0) and MUL (sub 4) never do
+            // (MUL writes RAX/RDX, which are wasm locals).
+            if (op.isMem && (op.sub == 2 || op.sub == 3)) return true;
             break;
         case J64_PUSH:
             return true; // stack store; a pathological rsp could hit code

@@ -35,7 +35,7 @@ static Jit64Op dec(U64 base, std::vector<U8> b) {
 static void testCoverageTable() {
     U32 n = 0;
     const Jit64CoveredOpcode* t = jit64CoveredOpcodes(&n);
-    CHECK(n == 22, "coverage table has %u entries, want 22", n);
+    CHECK(n == 23, "coverage table has %u entries, want 23", n);
     CHECK(t != nullptr, "coverage table null");
     // Spot-check rank order matches the profile.
     CHECK(t[0].op == 0x89, "rank1 op=0x%02x want 0x89", t[0].op);
@@ -51,6 +51,7 @@ static void testCoverageTable() {
     CHECK(t[18].op == 0x0F && t[18].op2 == 0x84, "rank19 want 0F84 got %02x/%02x", t[18].op, t[18].op2);
     CHECK(t[20].op == 0x63, "rank21 op=0x%02x want 0x63 (MOVSXD)", t[20].op);
     CHECK(t[21].op == 0x88, "rank22 op=0x%02x want 0x88 (MOV r/m8,r8)", t[21].op);
+    CHECK(t[22].op == 0xF7 && t[22].kind == J64_GRP3, "rank23 want F7/GRP3 got %02x/%d", t[22].op, (int)t[22].kind);
 }
 
 static void testMovForms() {
@@ -479,9 +480,11 @@ static void testFallbackRules() {
     Jit64Op c8 = dec(0x400000, {0xF6, 0xE8});
     CHECK(c8.kind == J64_IMUL_1OP && c8.size == 1 && c8.len == 2, "F6: kind=%d", c8.kind);
     CHECK(c8.plan == JIT64_FAST, "F6 plan fallback");
-    // F6 E0             mul al (/4: not decoded)
-    Jit64Op c9;
-    CHECK(!jit64DecodeOne(0x400000, (const U8[]){0xF6, 0xE0}, 2, c9), "F6 /4 must not decode");
+    // F6 E0             mul al (/4: J64_GRP3, unsigned one-operand MUL)
+    Jit64Op c9 = dec(0x400000, {0xF6, 0xE0});
+    CHECK(c9.kind == J64_GRP3 && c9.sub == 4 && c9.size == 1 && c9.len == 2,
+          "F6 /4: kind=%d sub=%d", c9.kind, c9.sub);
+    CHECK(c9.plan == JIT64_FAST, "F6 /4 plan fallback");
     // 6B C0 05          imul eax, eax, 5
     Jit64Op c10 = dec(0x400000, {0x6B, 0xC0, 0x05});
     CHECK(c10.kind == J64_IMUL_3OP && c10.size == 4 && c10.imm == 5 && c10.len == 3,
@@ -717,6 +720,78 @@ static bool decodeOne(const std::vector<U8>& b, Jit64Op& op) {
     return jit64DecodeOne(0x400000, b.data(), (U32)b.size(), op);
 }
 
+static void testGrp3Emission() {
+    Jit64Op op;
+    // TEST r/m,imm decodes: kind, sub, size, len, finalized immediate.
+    CHECK(decodeOne({0xF7, 0xC0, 0x78, 0x56, 0x34, 0x12}, op) &&
+          op.kind == J64_GRP3 && op.sub == 0 && op.size == 4 && op.len == 6 &&
+          op.imm == 0x12345678, "f7 test eax,imm32 decode");
+    CHECK(decodeOne({0xF6, 0xC0, 0x7F}, op) &&
+          op.kind == J64_GRP3 && op.sub == 0 && op.size == 1 && op.len == 3 &&
+          op.imm == 0x7F, "f6 test al,imm8 decode");
+    CHECK(decodeOne({0x66, 0xF7, 0xC0, 0x34, 0x12}, op) &&
+          op.kind == J64_GRP3 && op.sub == 0 && op.size == 2 && op.len == 5 &&
+          op.imm == 0x1234, "66 f7 test ax,imm16 decode");
+    // 64-bit TEST: imm32 sign-extended at decode (mirrors dsp_31).
+    CHECK(decodeOne({0x48, 0xF7, 0xC0, 0x80, 0xFF, 0xFF, 0xFF}, op) &&
+          op.kind == J64_GRP3 && op.sub == 0 && op.size == 8 && op.len == 7 &&
+          op.imm == 0xFFFFFFFFFFFFFF80ULL, "rex.w test rax,imm32 decode");
+    // F6 ignores 0x66 for the size (interpreter hardcodes 1).
+    CHECK(decodeOne({0x66, 0xF6, 0xC0, 0x01}, op) &&
+          op.kind == J64_GRP3 && op.sub == 0 && op.size == 1 && op.len == 4,
+          "66 f6 size=%d", op.size);
+    // NOT / NEG / MUL.
+    CHECK(decodeOne({0xF7, 0xD0}, op) &&
+          op.kind == J64_GRP3 && op.sub == 2 && op.size == 4 && op.len == 2 &&
+          !op.isMem, "f7 not eax decode");
+    CHECK(decodeOne({0xF7, 0x18}, op) &&
+          op.kind == J64_GRP3 && op.sub == 3 && op.size == 4 && op.len == 2 &&
+          op.isMem && op.ea.baseReg == 0, "f7 neg [rax] decode");
+    CHECK(decodeOne({0x48, 0xF7, 0xE0}, op) &&
+          op.kind == J64_GRP3 && op.sub == 4 && op.size == 8 && op.len == 3,
+          "rex.w mul rax decode");
+    CHECK(decodeOne({0xF6, 0xE0}, op) &&
+          op.kind == J64_GRP3 && op.sub == 4 && op.size == 1 && op.len == 2,
+          "f6 mul al decode");
+    // /5 keeps the proven IMUL path.
+    CHECK(decodeOne({0xF7, 0xE8}, op) && op.kind == J64_IMUL_1OP, "f7 /5 kind=%d", op.kind);
+    // /1 invalid; /6 /7 DIV/IDIV stay unknown (interpreter-only).
+    CHECK(!decodeOne({0xF7, 0xC8}, op), "f7 /1 decoded");
+    CHECK(!decodeOne({0xF7, 0xF0}, op), "f7 div decoded");
+    CHECK(!decodeOne({0xF7, 0xF8}, op), "f7 idiv decoded");
+    CHECK(!decodeOne({0xF6, 0xF0}, op), "f6 div decoded");
+    // TEST RIP-relative: the EA target includes the immediate length
+    // (the interpreter adds immLen to effAddr for RIP-rel TEST).
+    CHECK(decodeOne({0xF7, 0x05, 0x10, 0x00, 0x00, 0x00, 0x78, 0x56, 0x34, 0x12}, op) &&
+          op.kind == J64_GRP3 && op.isMem && op.ea.ripRel &&
+          op.ea.ripRelTarget == 0x400000 + 10 + 0x10 && op.len == 10,
+          "f7 test [rip] ea");
+    // Plans: all four sub-ops fast; LOCK falls back.
+    Jit64Op t = dec(0x400000, {0xF7, 0xC0, 0x01, 0x00, 0x00, 0x00});
+    CHECK(t.plan == JIT64_FAST, "test plan fallback");
+    Jit64Op nn = dec(0x400000, {0xF7, 0xD3});
+    CHECK(nn.plan == JIT64_FAST, "not plan fallback");
+    Jit64Op ng = dec(0x400000, {0x48, 0xF7, 0xDB});
+    CHECK(ng.plan == JIT64_FAST, "neg plan fallback");
+    Jit64Op mu = dec(0x400000, {0x48, 0xF7, 0xE3});
+    CHECK(mu.plan == JIT64_FAST, "mul plan fallback");
+    // Emission accept/reject.
+    CHECK(emitOk({0xF7, 0xC0, 0x78, 0x56, 0x34, 0x12}), "test eax,imm32 rejected");
+    CHECK(emitOk({0xF6, 0xC0, 0x7F}), "test al,imm8 rejected");
+    CHECK(emitOk({0x48, 0xF7, 0xC0, 0x80, 0xFF, 0xFF, 0xFF}), "test rax,imm32 rejected");
+    CHECK(emitOk({0xF7, 0xD0}), "not eax rejected");
+    CHECK(emitOk({0xF7, 0x18}), "neg [rax] rejected");
+    CHECK(emitOk({0x48, 0xF7, 0xE3}), "mul rbx rejected");
+    CHECK(emitOk({0xF6, 0xE0}), "mul al rejected");
+    CHECK(emitOk({0xF7, 0x05, 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00}), "test [rip] rejected");
+    CHECK(!emitOk({0xF7, 0xF3}), "div accepted");
+    CHECK(!emitOk({0xF7, 0xFB}), "idiv accepted");
+    CHECK(!emitOk({0xF7, 0xC8}), "/1 accepted");
+    CHECK(!emitOk({0xF0, 0xF7, 0xD0}), "lock not accepted");
+    // GRP3 mixed with ALU in one block: accepted.
+    CHECK(emitOk({0xF7, 0xD0, 0x48, 0x01, 0xC8}), "not+add block rejected");
+}
+
 static void testStringEmission() {
     Jit64Op op;
     // MOVS/STOS decode: kind, sub, size, len.
@@ -825,6 +900,7 @@ int main() {
     testShiftEmission();
     testRotateEmission();
     testImulEmission();
+    testGrp3Emission();
     testStringEmission();
     testX87NeverJitted();
     printf("  %d passed, %d failed\n", g_pass, g_fail);

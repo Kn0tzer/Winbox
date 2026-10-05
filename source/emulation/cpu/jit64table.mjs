@@ -240,6 +240,33 @@ export const EMITTERS = [
     },
   },
   {
+    func: "emitGrp3Gen",
+    template: "grp3",
+    kinds: ["J64_GRP3"],
+    encoding:
+      "F6/F7 group 3: TEST r/m,imm (0xF6 /0 imm8, 0xF7 /0 imm16/imm32, " +
+      "imm32 sign-extended for 64-bit); NOT r/m (0xF6/0xF7 /2); NEG r/m " +
+      "(/3); MUL r/m unsigned (/4). /1 invalid; /5 stays J64_IMUL_1OP; " +
+      "/6 /7 DIV/IDIV are interpreter-only (#DE). F6 is always 8-bit " +
+      "(0x66 ignored, matching the interpreter); F7 takes 2/4/8. EA via " +
+      "emitEA for memory forms (SIB/RIP-relative/0x67/seg; FS/GS-segment " +
+      "EAs stay interpreter-only). TEST's RIP-relative EA includes the " +
+      "trailing immediate length (decodeEA trailingImm).",
+    operands:
+      "sizes 1/2/4/8; the r/m operand is the ModRM r/m field (register " +
+      "or memory); TEST's immediate is finalized at decode.",
+    flags: {
+      writes: ["CF", "PF", "AF", "ZF", "SF", "OF"],
+      preserves: "NOT preserves all flags; MUL preserves all but CF/OF; " +
+                 "TEST/NEG write all six",
+      note: "TEST: flags like AND of (r/m & imm), no writeback. NOT: no " +
+            "flags. NEG: flags like SUB of (0 - r/m), CF = (r/m != 0). " +
+            "MUL: CF/OF = (high half != 0), others preserved. Fault " +
+            "ordering mirrors cpu64.cpp: memRead before compute+flags, " +
+            "memWrite after (NOT/NEG).",
+    },
+  },
+  {
     func: "emitMov8Gen",
     template: "mov8",
     kinds: ["J64_MOV_RM_R", "J64_MOV_R_RM"],

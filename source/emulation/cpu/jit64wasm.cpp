@@ -447,6 +447,8 @@ U32 jit64EmitNew(std::vector<U8>& body, const Jit64Op& op) {
     case J64_MOV_R_RM:
         if (op.size == 1) return emitMov8Gen(body, op);
         return 0xFE; // 4/8-bit MOV keeps the hand-written emitter
+    case J64_GRP3:
+        return emitGrp3Gen(body, op);
     default:
         return 0xFE;
     }
@@ -538,6 +540,7 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
         case J64_IMUL_R_RM:
         case J64_IMUL_1OP:
         case J64_IMUL_3OP:
+        case J64_GRP3:
             widthOk = (op.size == 1 || op.size == 2 || op.size == 4 || op.size == 8);
             break;
         default:
@@ -564,7 +567,8 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
                             (op.kind == J64_POP && op.sub == 1);
             bool memMov8 = (op.kind == J64_MOV_RM_R || op.kind == J64_MOV_R_RM) &&
                            op.size == 1;
-            if ((!memAlu && !memLea && !memStack && !memMov8) || !widthOk) return false;
+            bool memGrp3 = op.kind == J64_GRP3;
+            if ((!memAlu && !memLea && !memStack && !memMov8 && !memGrp3) || !widthOk) return false;
             if (op.ea.seg != 0) return false; // FS/GS: interpreter-only
             if (op.ea.baseReg != 0xFF && op.ea.baseReg >= 16) return false;
             if (op.ea.idxReg != 0xFF && op.ea.idxReg >= 16) return false;
@@ -638,6 +642,13 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
         case J64_IMUL_3OP:
             // Three-operand IMUL r, r/m, imm, register-direct only.
             if (op.regField >= 16 || op.rmIndex >= 16) return false;
+            break;
+        case J64_GRP3:
+            // F6/F7 group 3: /0 TEST, /2 NOT, /3 NEG, /4 MUL. The
+            // decoder only produces these four sub-ops; re-check
+            // defensively. rmIndex is 0xFF for memory forms.
+            if (op.sub != 0 && op.sub != 2 && op.sub != 3 && op.sub != 4) return false;
+            if (!op.isMem && op.rmIndex >= 16) return false;
             break;
         case J64_STRING:
             break; // validated above
@@ -741,6 +752,17 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
         case J64_IMUL_3OP: {
             // Three-operand IMUL: emitImul3Gen writes the destination inline.
             emitImul3Gen(body, op);
+            break;
+        }
+        case J64_GRP3: {
+            // F6/F7 group 3: emitGrp3Gen returns 0xFF when it published
+            // everything inline (TEST, MUL, memory forms, 8/16-bit
+            // writebacks), else the destination GPR for L_R.
+            U32 written = emitGrp3Gen(body, op);
+            if (written != 0xFF) {
+                local(body, 0x20, L_R);
+                local(body, 0x21, written + 1);
+            }
             break;
         }
         case J64_STRING: {
