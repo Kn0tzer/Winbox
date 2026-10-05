@@ -618,7 +618,7 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
 // present path).
 // ===========================================================================
 
-export const V2_MAGIC = 0x324B5632; // 'VK2F' little-endian
+export const V2_MAGIC = 0x46324B56; // 'VK2F' little-endian (bytes 56 4B 32 46)
 export const V2_VERSION = 2;
 export const V2_FLAG_MORE = 0x1;
 export const V2_CHUNK_HEADER_LEN = 16;
