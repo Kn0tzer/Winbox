@@ -1301,7 +1301,15 @@ void v2QueueFrame(V2FrameAsm& fa) {
 
 void hopV2ToPage() {
 #ifdef __EMSCRIPTEN__
-    for (const auto& f : g_v2Pending) {
+    // Hop ONLY the presented frame (the back of the queue). DXVK builds an
+    // intermediate 480x360 backbuffer frame plus the real 472x333 present
+    // frame per present; hopping the intermediate first makes the page tier
+    // render it (resizing + clearing the canvas) before the real frame
+    // arrives, and canvas readback races the resize-clear -> blank canvas
+    // while bridge stats show lit pixels. The page tier is latest-frame-wins
+    // (takeLatest) anyway, so intermediates were always dropped there.
+    if (!g_v2Pending.empty()) {
+        const auto& f = g_v2Pending.back();
         for (const auto& chunk : f.chunks) {
             const U8* ptr = chunk.data();
             U32 len = (U32)chunk.size();
