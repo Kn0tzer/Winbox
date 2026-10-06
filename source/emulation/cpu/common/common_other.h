@@ -23,6 +23,7 @@ void common_int9A(CPU* cpu);
 void common_int9B(CPU* cpu);
 void common_int3(CPU* cpu);
 void common_intIb(CPU* cpu);
+void common_int80(CPU* cpu);
 void common_ud2(CPU* cpu);
 void common_hlt(CPU* cpu);
 void common_cpuid(CPU* cpu);
