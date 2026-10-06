@@ -1971,7 +1971,42 @@ function genCmov(e) {
 }
 
 
-const TEMPLATES = { alu: (e) => (e.mem ? genAluMem(e) : genAlu(e)), shift: (e) => (e.mem ? genShiftMem(e) : genShift(e)), rotate: (e) => (e.mem ? genRotateMem(e) : genRotate(e)), imul2: genImul2, imul1: genImul1, imul3: genImul3, movx: genMovx, string: genString, lea: genLea, stack: genStack, mov8: genMov8, grp3: genGrp3, cbw: genCbw, cmov: genCmov };
+// "cqo" template: CWD/CDQ/CQO (emitCqoGen).
+// 0x99: RDX = sign-extension of RAX. 16-bit (CWD): DX = (AX & 0x8000)
+//   ? 0xFFFF : 0 with upper 48 of RDX preserved (setU16). 32-bit (CDQ):
+//   EDX = (EAX & 0x80000000) ? 0xFFFFFFFF : 0, full 64-bit RDX write
+//   (setU64). 64-bit (CQO): RDX = (RAX sign bit) ? ~0ULL : 0, full
+//   64-bit write. Mirrors cpu64.cpp dsp_19 exactly: no flags touched,
+//   no memory accessed, RAX is read-only. RAX is GPR local 1
+//   (X64_RAX == 0), RDX is GPR local 3 (X64_RDX == 2).
+// Branchless: cond = (sign bit set) ? 1 : 0 (i32 via i64.ne);
+// result = select(-1, 0, cond); the -1 is width-truncated by the write.
+// Returns 0xFF for 16-bit (inline RMW via emitWriteWord, upper 48 kept),
+// 2 (RDX) for 32/64-bit (epilogue publishes L_R to RDX).
+function genCqo(e) {
+  return `U32 ${e.func}(Bytes& body, const Jit64Op& op) {
+    // Stack for select: [val1, val2, cond] -> val1 if cond else val2.
+    i64Const(body, ~0ULL);           // val1 = -1 (all ones)
+    i64Const(body, 0ULL);            // val2 = 0
+    local(body, 0x20, 1);            // RAX
+    if (op.size == 2) i64Const(body, 0x8000ULL);
+    else if (op.size == 4) i64Const(body, 0x80000000ULL);
+    else i64Const(body, 0x8000000000000000ULL);
+    body.push_back(0x83);            // i64.and: isolate sign bit
+    i64Const(body, 0ULL);
+    body.push_back(0x52);            // i64.ne -> i32 cond
+    body.push_back(0x1B);            // select -> i64 (-1 or 0)
+    local(body, 0x21, L_R);
+    if (op.size == 2) {
+        emitWriteWord(body, 2, L_R); // RDX low 16, upper 48 preserved
+        return 0xFF;
+    }
+    return 2; // RDX: full 64-bit write via epilogue
+}`;
+}
+
+
+const TEMPLATES = { alu: (e) => (e.mem ? genAluMem(e) : genAlu(e)), shift: (e) => (e.mem ? genShiftMem(e) : genShift(e)), rotate: (e) => (e.mem ? genRotateMem(e) : genRotate(e)), imul2: genImul2, imul1: genImul1, imul3: genImul3, movx: genMovx, string: genString, lea: genLea, stack: genStack, mov8: genMov8, grp3: genGrp3, cbw: genCbw, cmov: genCmov, cqo: genCqo };
 
 function generate() {
   const out = [];

@@ -453,6 +453,8 @@ U32 jit64EmitNew(std::vector<U8>& body, const Jit64Op& op) {
         return emitGrp3Gen(body, op);
     case J64_CBW:
         return emitCbwGen(body, op);
+    case J64_CQO:
+        return emitCqoGen(body, op);
     case J64_CMOV:
         return emitCmovGen(body, op);
     default:
@@ -551,6 +553,10 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             break;
         case J64_CBW:
             // CBW/CWDE/CDQE: 16/32/64-bit all valid.
+            widthOk = (op.size == 2 || op.size == 4 || op.size == 8);
+            break;
+        case J64_CQO:
+            // CWD/CDQ/CQO: 16/32/64-bit all valid.
             widthOk = (op.size == 2 || op.size == 4 || op.size == 8);
             break;
         case J64_CMOV:
@@ -677,6 +683,12 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             // CBW/CWDE/CDQE (0x98): pure RAX transform, no ModRM, no flags,
             // no memory. Sizes 2/4/8 only (the decoder sets size from the
             // prefixes; the classifier already rejected anything else).
+            if (op.size != 2 && op.size != 4 && op.size != 8) return false;
+            break;
+        case J64_CQO:
+            // CWD/CDQ/CQO (0x99): RAX read-only, RDX written; no ModRM,
+            // no flags, no memory. Sizes 2/4/8 only (the decoder sets size
+            // from the prefixes; the classifier already rejected else).
             if (op.size != 2 && op.size != 4 && op.size != 8) return false;
             break;
         case J64_CMOV:
@@ -814,6 +826,16 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             // CBW/CWDE/CDQE: emitCbwGen returns 0xFF for 16-bit (inline
             // RMW via emitWriteWord), else 0 (RAX) for L_R publish.
             U32 written = emitCbwGen(body, op);
+            if (written != 0xFF) {
+                local(body, 0x20, L_R);
+                local(body, 0x21, written + 1);
+            }
+            break;
+        }
+        case J64_CQO: {
+            // CWD/CDQ/CQO: emitCqoGen returns 0xFF for 16-bit (inline
+            // RMW via emitWriteWord), else 2 (RDX) for L_R publish.
+            U32 written = emitCqoGen(body, op);
             if (written != 0xFF) {
                 local(body, 0x20, L_R);
                 local(body, 0x21, written + 1);

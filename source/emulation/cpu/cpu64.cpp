@@ -5929,6 +5929,14 @@ bool CPU64::buildBlock(U64 startRip, BBlock& b) {
             // no flags, no memory, no faults.
             rec.kind = BK_CBW;
             rec.len = (U8)(opOff + 1);
+        } else if (op == 0x99) {
+            // CWD/CDQ/CQO: sign-extend AX->DX (16-bit), EAX->EDX:EAX
+            // (32-bit), RAX->RDX:RAX (64-bit). All three sizes decode in
+            // blocks (the interpreter dsp_19 handles all three);
+            // rec.size already holds rexW ? 8 : (osize16 ? 2 : 4).
+            // RAX read-only, RDX written; no flags, no memory, no faults.
+            rec.kind = BK_CQO;
+            rec.len = (U8)(opOff + 1);
         } else {
             break;                                  // unsupported → end block here
         }
@@ -6233,6 +6241,17 @@ U32 CPU64::execBlock(const BBlock& b, U64 maxInsn) {
             rip += rec.len;
             break;
         }
+        case BK_CQO: {
+            // CWD/CDQ/CQO (0x99): mirrors cpu64.cpp dsp_19 exactly.
+            // 16-bit: DX = (AX sign) ? 0xFFFF : 0, upper 48 of RDX kept.
+            // 32-bit: EDX = (EAX sign) ? 0xFFFFFFFF : 0 (full RDX write).
+            // 64-bit: RDX = (RAX sign) ? ~0ULL : 0. No flags.
+            if (size == 2) reg[X64_RDX].setU16((reg[X64_RAX].u16 & 0x8000) ? 0xFFFFu : 0u);
+            else if (size == 4) reg[X64_RDX].setU64((reg[X64_RAX].u32 & 0x80000000u) ? 0xFFFFFFFFu : 0u);
+            else reg[X64_RDX].setU64((reg[X64_RAX].u64 & 0x8000000000000000ULL) ? ~(U64)0 : 0ULL);
+            rip += rec.len;
+            break;
+        }
         case BK_CMOV: {
             // CMOVcc r, r/m (0F 40..4F): mirrors dsp_38 exactly. The
             // source is always loaded (faults even if the condition is
@@ -6278,7 +6297,7 @@ U32 CPU64::execBlockThreaded(const BBlock& b, U64 maxInsn) {
     // Static: label addresses are compile-time constants; the table is
     // built once, not on every block execution (2M+ executions per
     // benchmark loop - 19 stores each would be measurable).
-    static const void* thrDispatch[22] = {
+    static const void* thrDispatch[23] = {
         &&thr_MOV_RM_R,
         &&thr_MOV_R_RM,
         &&thr_ALU_RM_R,
@@ -6301,6 +6320,7 @@ U32 CPU64::execBlockThreaded(const BBlock& b, U64 maxInsn) {
         &&thr_GRP3,
         &&thr_CBW,
         &&thr_CMOV,
+        &&thr_CQO,
     };
     U32 executed = 0;
     U16 i = 0;
@@ -6676,6 +6696,18 @@ thr_CBW: {
         if (size == 2) reg[X64_RAX].setU16((U16)(S16)(S8)reg[X64_RAX].u8);
         else if (size == 4) reg[X64_RAX].setU64((U64)(U32)(S32)(S16)reg[X64_RAX].u16);
         else reg[X64_RAX].setU64((U64)(S64)(S32)reg[X64_RAX].u32);
+        rip += rec.len;
+        THR_NEXT();
+
+    }
+thr_CQO: {
+        const BRec& rec = b.recs[i];
+        U32 size = rec.size;
+
+        // CWD/CDQ/CQO (0x99): mirrors cpu64.cpp dsp_19 exactly.
+        if (size == 2) reg[X64_RDX].setU16((reg[X64_RAX].u16 & 0x8000) ? 0xFFFFu : 0u);
+        else if (size == 4) reg[X64_RDX].setU64((reg[X64_RAX].u32 & 0x80000000u) ? 0xFFFFFFFFu : 0u);
+        else reg[X64_RDX].setU64((reg[X64_RAX].u64 & 0x8000000000000000ULL) ? ~(U64)0 : 0ULL);
         rip += rec.len;
         THR_NEXT();
 

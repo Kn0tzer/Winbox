@@ -373,4 +373,22 @@ export const EMITTERS = [
             "condition is false (x86-64 quirk). Mirrors dsp_38 exactly.",
     },
   },
+  {
+    func: "emitCqoGen",
+    template: "cqo",
+    kinds: ["J64_CQO"],
+    encoding:
+      "CWD/CDQ/CQO (0x99): no ModRM, no immediate. 0x66 selects 16-bit " +
+      "(CWD: AX->DX), default is 32-bit (CDQ: EAX->EDX), REX.W selects " +
+      "64-bit (CQO: RAX->RDX). RAX is read-only, RDX is written.",
+    operands:
+      "sizes 2/4/8, implicit RAX source and RDX destination only.",
+    flags: {
+      writes: [],
+      preserves: "all RFLAGS bits - CWD/CDQ/CQO never touch flags",
+      note: "16-bit: setU16 (upper 48 of RDX preserved); 32/64-bit: full " +
+            "64-bit RDX write of the sign extension. Mirrors cpu64.cpp " +
+            "dsp_19 exactly.",
+    },
+  },
 ];

@@ -35,7 +35,7 @@ static Jit64Op dec(U64 base, std::vector<U8> b) {
 static void testCoverageTable() {
     U32 n = 0;
     const Jit64CoveredOpcode* t = jit64CoveredOpcodes(&n);
-    CHECK(n == 26, "coverage table has %u entries, want 26", n);
+    CHECK(n == 27, "coverage table has %u entries, want 27", n);
     CHECK(t != nullptr, "coverage table null");
     // Spot-check rank order matches the profile.
     CHECK(t[0].op == 0x89, "rank1 op=0x%02x want 0x89", t[0].op);
@@ -53,6 +53,8 @@ static void testCoverageTable() {
     CHECK(t[21].op == 0x88, "rank22 op=0x%02x want 0x88 (MOV r/m8,r8)", t[21].op);
     CHECK(t[22].op == 0xF7 && t[22].kind == J64_GRP3, "rank23 want F7/GRP3 got %02x/%d", t[22].op, (int)t[22].kind);
     CHECK(t[23].op == 0x98 && t[23].kind == J64_CBW, "rank24 want 98/CBW got %02x/%d", t[23].op, (int)t[23].kind);
+    CHECK(t[26].op == 0x99, "rank27 want 99");
+    CHECK(t[26].kind == J64_CQO, "rank27 kind");
 }
 
 static void testMovForms() {
@@ -501,6 +503,24 @@ static void testFallbackRules() {
     CHECK(cbw3.kind == J64_CBW && cbw3.size == 8 && cbw3.len == 2,
           "48 98: kind=%d size=%d len=%d", cbw3.kind, cbw3.size, cbw3.len);
     CHECK(cbw3.plan == JIT64_FAST, "48 98 plan fallback");
+    // 99                cdq (EAX -> EDX, default 32-bit)
+    Jit64Op cqo1 = dec(0x400000, {0x99});
+    CHECK(cqo1.kind == J64_CQO, "99 kind");
+    CHECK(cqo1.size == 4, "99 size");
+    CHECK(cqo1.len == 1, "99 len");
+    CHECK(cqo1.plan == JIT64_FAST, "99 plan fallback");
+    // 66 99             cwd (AX -> DX, 16-bit)
+    Jit64Op cqo2 = dec(0x400000, {0x66, 0x99});
+    CHECK(cqo2.kind == J64_CQO, "66 99 kind");
+    CHECK(cqo2.size == 2, "66 99 size");
+    CHECK(cqo2.len == 2, "66 99 len");
+    CHECK(cqo2.plan == JIT64_FAST, "66 99 plan fallback");
+    // 48 99             cqo (RAX -> RDX, 64-bit)
+    Jit64Op cqo3 = dec(0x400000, {0x48, 0x99});
+    CHECK(cqo3.kind == J64_CQO, "48 99 kind");
+    CHECK(cqo3.size == 8, "48 99 size");
+    CHECK(cqo3.len == 2, "48 99 len");
+    CHECK(cqo3.plan == JIT64_FAST, "48 99 plan fallback");
     // 0F 44 C1          cmove eax, ecx (reg-direct, 32-bit)
     Jit64Op cm1 = dec(0x400000, {0x0F, 0x44, 0xC1});
     CHECK(cm1.kind == J64_CMOV && cm1.sub == 4 && cm1.size == 4 && cm1.len == 3,

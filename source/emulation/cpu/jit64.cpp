@@ -66,6 +66,7 @@ static const Jit64CoveredOpcode kCovered[] = {
     { "98 CBW/CWDE/CDQE",  0x98, 0x00, J64_CBW },         // 24 (0.31% doom.exe)
     { "D1 SHIFT/ROT r/m,1", 0xD1, 0x00, J64_SHIFT_IMM },    // 25 (0.25% doom.exe; D0 8-bit + C1-mem also newly jitted)
     { "0F40 CMOVcc",        0x0F, 0x40, J64_CMOV },        // 26 (0.51% doom.exe; whole 0F40..4F family; sub = cc)
+    { "99 CWD/CDQ/CQO",      0x99, 0x00, J64_CQO },         // 27 (0.11% doom.exe)
     // NOTE: 0F85 (JNZ rel32) stays FAST in jit64Classify but fell just outside
     // this corpus's top-20, so it has no table row. The whole 00..3B ALU range
     // (including 29 SUB r/m,r) is table-covered; the phase-1 table only names
@@ -716,6 +717,17 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
         out.len = (U8)(opOff + 1);
         return true;
     }
+    if (op == 0x99) {
+        // CWD/CDQ/CQO: sign-extend AX->DX (16-bit, 0x66), EAX->EDX:EAX
+        // (32-bit, default), RAX->RDX:RAX (64-bit, REX.W). The size local
+        // already encodes rexW ? 8 : (osize16 ? 2 : 4), exactly matching
+        // the interpreter opSize (cpu64.cpp dsp_19). RAX is read-only,
+        // RDX is written; no flags, no memory, no faults.
+        out.kind = J64_CQO;
+        out.size = size;
+        out.len = (U8)(opOff + 1);
+        return true;
+    }
     // x87 FPU escape (D8-DF): interpreter-only by design (plan section 12 --
     // the 64-bit guest mandates 80-bit SoftFloat; wasm f64 emission is
     // provably not bit-exact). Decode the exact length via ModRM so the
@@ -844,6 +856,13 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16) {
     case J64_CBW:
         // CBW/CWDE/CDQE: 16/32/64-bit all reach emission (the interpreter's
         // dsp_20 handles all three; buildBlock decodes all three too).
+        // The generic osize16 guard above already permits size==2 here.
+        if (op.size != 2 && op.size != 4 && op.size != 8) return;
+        op.plan = JIT64_FAST;
+        return;
+    case J64_CQO:
+        // CWD/CDQ/CQO: 16/32/64-bit all reach emission (the interpreter
+        // dsp_19 handles all three; buildBlock decodes all three too).
         // The generic osize16 guard above already permits size==2 here.
         if (op.size != 2 && op.size != 4 && op.size != 8) return;
         op.plan = JIT64_FAST;

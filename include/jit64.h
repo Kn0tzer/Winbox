@@ -95,6 +95,10 @@ enum Jit64Kind : U8 {
                         // 0..15 (same encoding as Jcc). Dest is always a
                         // register; source is always loaded (faults even if
                         // the condition is false). No flags touched.
+    J64_CQO = 29,       // 0x99 CWD/CDQ/CQO: sign-extend AX->DX:AX (16),
+                        // EAX->EDX:EAX (32), RAX->RDX:RAX (64). RAX is
+                        // read-only, RDX is written. No flags, no memory,
+                        // no faults.
     J64_UNKNOWN = 255
 };
 

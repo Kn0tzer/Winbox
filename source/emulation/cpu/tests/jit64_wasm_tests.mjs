@@ -2637,6 +2637,103 @@ test('fuzz CBW/CWDE/CDQE vs reference (600 cases)', async () => {
 }, 180000);
 
 
+// ---- CWD/CDQ/CQO (0x99) ----
+// RDX = sign-extension of RAX. No ModRM, no flags, no memory. RAX is
+// read-only. The reference model mirrors cpu64.cpp dsp_19 exactly.
+function encCqo(size) {
+  const code = [];
+  if (size === 2) code.push(0x66);
+  if (size === 8) code.push(0x48); // REX.W
+  code.push(0x99);
+  return { code, size };
+}
+
+async function checkCqo(enc, { regs, rflags = 0x202, rip = 0x12345678ABCDEFF0n }) {
+  const { size } = enc;
+  const refRegs = [...regs];
+  const rax = refRegs[0];
+  const rdx = refRegs[2];
+  let signSet;
+  if (size === 2) signSet = (rax & 0x8000n) !== 0n;
+  else if (size === 4) signSet = (rax & 0x80000000n) !== 0n;
+  else signSet = (rax & 0x8000000000000000n) !== 0n;
+  if (size === 2) {
+    // CWD: DX = sign ? 0xFFFF : 0, upper 48 of RDX preserved (setU16).
+    refRegs[2] = (rdx & ~0xFFFFn) | (signSet ? 0xFFFFn : 0n);
+  } else {
+    // CDQ/CQO: full 64-bit RDX write (setU64).
+    refRegs[2] = signSet ? mask64 : 0n;
+  }
+  // RAX (refRegs[0]) is unchanged: 0x99 only reads it.
+  const out = await runAluMem(enc.code, { regs: [...regs], rflags, rip });
+  assert.deepEqual(out.regs, refRegs, "GPRs");
+  assert.equal(BigInt(out.rflags), BigInt(rflags) & 0xFFFFFFFFn, "RFLAGS preserved");
+  assert.equal(out.ripOut, (rip + BigInt(enc.code.length)) & mask64, "RIP");
+  assert.equal(out.reserved, 0xA5A5A5A5, "ABI reserved word");
+}
+
+test("CWD (66 99): AX->DX sign extension, upper 48 of RDX preserved", async () => {
+  // AX=0x8000 -> DX=0xFFFF, upper 48 of RDX untouched.
+  const regs = baseRegs(); regs[0] = 0x1234567880001234n; regs[2] = 0xABCDEF0123456789n;
+  await checkCqo(encCqo(2), { regs });
+  // AX=0x7FFF -> DX=0x0000.
+  const regs2 = baseRegs(); regs2[0] = 0xFFFFFFFFFFFF7FFFn; regs2[2] = 0xFFFFFFFFFFFFFFFFn;
+  await checkCqo(encCqo(2), { regs: regs2 });
+});
+
+test("CDQ (99): EAX->EDX sign extension, full RDX write", async () => {
+  // EAX=0x80000000 -> RDX=0xFFFFFFFFFFFFFFFF.
+  const regs = baseRegs(); regs[0] = 0x1234567880000000n;
+  await checkCqo(encCqo(4), { regs });
+  // EAX=0x7FFFFFFF -> RDX=0x0000000000000000.
+  const regs2 = baseRegs(); regs2[0] = 0xFFFFFFFF7FFFFFFFn; regs2[2] = 0xABCDEF0123456789n;
+  await checkCqo(encCqo(4), { regs: regs2 });
+});
+
+test("CQO (48 99): RAX->RDX sign extension", async () => {
+  // RAX=0x8000000000000000 -> RDX=0xFFFFFFFFFFFFFFFF.
+  const regs = baseRegs(); regs[0] = 0x8000000000000000n;
+  await checkCqo(encCqo(8), { regs });
+  // RAX=0x7FFFFFFFFFFFFFFF -> RDX=0x0.
+  const regs2 = baseRegs(); regs2[0] = 0x7FFFFFFFFFFFFFFFn; regs2[2] = 0xABCDEF0123456789n;
+  await checkCqo(encCqo(8), { regs: regs2 });
+});
+
+test("CWD/CDQ/CQO: RAX read-only, RFLAGS preserved across flag sets", async () => {
+  const flagSets = [0x202, 0x8D5, 0x0, 0xFFFFFFFF];
+  for (const rflags of flagSets) {
+    const regs = baseRegs(); regs[0] = 0xDEADBEEF80000000n;
+    await checkCqo(encCqo(2), { regs, rflags });
+    await checkCqo(encCqo(4), { regs: baseRegs(), rflags });
+    await checkCqo(encCqo(8), { regs: baseRegs(), rflags });
+  }
+});
+
+test("fuzz CWD/CDQ/CQO vs reference (600 cases)", async () => {
+  const rng = mulberry32(0x99C0);
+  const flagSets = [0x202, 0x203, 0x8D5, 0x246, 0x202 | 0x800, 0x402, 0x0];
+  const advVals = [0n, 1n, 0x7FFFn, 0x8000n, 0xFFFFn, 0x7FFFFFFFn, 0x80000000n,
+                   0xFFFFFFFFn, 0x7FFFFFFFFFFFFFFFn, 0x8000000000000000n,
+                   0xFFFFFFFFFFFFFFFFn];
+  for (let i = 0; i < 600; i++) {
+    const size = pick(rng, [2, 4, 4, 8, 8]);
+    const enc = encCqo(size);
+    const regs = Array.from({ length: 16 }, () => advVal(rng));
+    // Bias RAX and RDX toward sign-boundary values.
+    if (rng() < 0.6) regs[0] = pick(rng, advVals);
+    if (rng() < 0.4) regs[2] = pick(rng, advVals);
+    const rflags = pick(rng, flagSets);
+    const tag = "fuzzCqo i=" + i + " size=" + size;
+    try {
+      await checkCqo(enc, { regs, rflags });
+    } catch (e) {
+      e.message = tag + ": " + e.message;
+      throw e;
+    }
+  }
+}, 180000);
+
+
 // ---- CMOVcc (0F 40..4F) ----
 // Conditional move: dest=reg, src=r/m. Source is ALWAYS loaded (faults
 // even if condition false). No flags touched. 32-bit form zero-extends
