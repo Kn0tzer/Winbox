@@ -35,7 +35,7 @@ static Jit64Op dec(U64 base, std::vector<U8> b) {
 static void testCoverageTable() {
     U32 n = 0;
     const Jit64CoveredOpcode* t = jit64CoveredOpcodes(&n);
-    CHECK(n == 29, "coverage table has %u entries, want 29", n);
+    CHECK(n == 30, "coverage table has %u entries, want 30", n);
     CHECK(t != nullptr, "coverage table null");
     // Spot-check rank order matches the profile.
     CHECK(t[0].op == 0x89, "rank1 op=0x%02x want 0x89", t[0].op);
@@ -57,6 +57,8 @@ static void testCoverageTable() {
     CHECK(t[27].op == 0x99, "rank28 want 99");
     CHECK(t[27].kind == J64_CQO, "rank28 kind");
     CHECK(t[28].op == 0xC6, "rank29 want C6");
+    CHECK(t[29].op == 0x0F && t[29].op2 == 0x90, "rank30 want 0F90 got %02x/%02x", t[29].op, t[29].op2);
+    CHECK(t[29].kind == J64_SETCC, "rank30 kind");
 }
 
 static void testMovForms() {
@@ -561,6 +563,21 @@ static void testFallbackRules() {
     CHECK(cm3.kind == J64_CMOV && cm3.sub == 2 && cm3.size == 2 && cm3.isMem,
           "0F42 mem: kind=%d sub=%d size=%d isMem=%d", cm3.kind, cm3.sub, cm3.size, cm3.isMem);
     CHECK(cm3.plan == JIT64_FAST, "0F42 mem plan fallback");
+    // 0F 94 C1          sete cl (reg-direct, 8-bit)
+    Jit64Op sc1 = dec(0x400000, {0x0F, 0x94, 0xC1});
+    CHECK(sc1.kind == J64_SETCC && sc1.sub == 4 && sc1.size == 1 && sc1.len == 3,
+          "0F94: kind=%d sub=%d size=%d len=%d", sc1.kind, sc1.sub, sc1.size, sc1.len);
+    CHECK(sc1.rmIndex == 1 && !sc1.isMem, "0F94 operands");
+    CHECK(sc1.plan == JIT64_FAST, "0F94 plan fallback");
+    // 0F 95 04 25 00 10 00 00  setne byte [0x1000] (mem)
+    Jit64Op sc2 = dec(0x400000, {0x0F, 0x95, 0x04, 0x25, 0x00, 0x10, 0x00, 0x00});
+    CHECK(sc2.kind == J64_SETCC && sc2.sub == 5 && sc2.size == 1 && sc2.isMem,
+          "0F95 mem: kind=%d sub=%d size=%d isMem=%d", sc2.kind, sc2.sub, sc2.size, sc2.isMem);
+    CHECK(sc2.plan == JIT64_FAST, "0F95 mem plan fallback");
+    // 0F 9C C4          setl ah (high-byte reg: declined to interpreter)
+    Jit64Op sc3 = dec(0x400000, {0x0F, 0x9C, 0xC4});
+    CHECK(sc3.kind == J64_SETCC && sc3.sub == 12, "0F9C kind/sub");
+    CHECK(sc3.plan != JIT64_FAST, "0F9C AH should be interpreter-only");
     // 6B C0 05          imul eax, eax, 5
     Jit64Op c10 = dec(0x400000, {0x6B, 0xC0, 0x05});
     CHECK(c10.kind == J64_IMUL_3OP && c10.size == 4 && c10.imm == 5 && c10.len == 3,

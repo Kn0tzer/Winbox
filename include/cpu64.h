@@ -287,7 +287,8 @@ private:
         BK_CBW, // 0x98 CBW/CWDE/CDQE: sign-extend AL->AX/AX->EAX/EAX->RAX
         BK_CMOV, // 0F 40..4F CMOVcc r, r/m: sub = condition 0..15
         BK_CQO, // 0x99 CWD/CDQ/CQO: sign-extend AX->DX / EAX->EDX:EAX / RAX->RDX:RAX
-        BK_SHIFT_CL // 0xD2/0xD3 shift/rotate r/m, CL: count from CL at runtime
+        BK_SHIFT_CL, // 0xD2/0xD3 shift/rotate r/m, CL: count from CL at runtime
+        BK_SETCC // 0F 90..9F SETcc r/m8: sub = condition 0..15
     };
     struct BRec {
         U8  kind = 0;

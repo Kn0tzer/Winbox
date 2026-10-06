@@ -1494,6 +1494,65 @@ function genMovImm8(e) {
 }`;
 }
 
+// "setcc" template: SETcc r/m8 (emitSetccGen).
+// 0F 90..9F: dest = (condition holds) ? 1 : 0. The condition evaluator is
+// identical to CMOVcc (mirrors CPU64::evalCC): leaves i32 0/1 on the stack.
+// Extended to i64, stored to L_A, then written via emitWriteByte (reg) or
+// emitEA + emitMemWrite (mem). No flags are touched (only read).
+// Returns 0xFF: the write happens inline (GPR locals for reg, imported
+// helper for mem) and the epilogue store-back publishes GPRs.
+function genSetcc(e) {
+  return `U32 ${e.func}(Bytes& body, const Jit64Op& op) {
+    // Condition evaluator: leaves i32 0/1 on the stack. Same logic as
+    // the CMOVcc template (and CPU64::evalCC). L_RFLAGS is i32.
+    auto emitCond = [&]() {
+        const U8 cc = op.sub;
+        auto pushFlagBit = [&](U32 bit) {
+            local(body, 0x20, L_RFLAGS); // i32
+            i32Const(body, bit);
+            body.push_back(0x76); // i32.shr_u
+            i32Const(body, 1);
+            body.push_back(0x71); // i32.and -> i32 0/1
+        };
+        switch (cc & 0xE) {
+            case 0x0: pushFlagBit(F_OF); break;
+            case 0x2: pushFlagBit(F_CF); break;
+            case 0x4: pushFlagBit(F_ZF); break;
+            case 0x6:
+                pushFlagBit(F_CF);
+                pushFlagBit(F_ZF);
+                body.push_back(0x72); // i32.or
+                break;
+            case 0x8: pushFlagBit(F_SF); break;
+            case 0xA: pushFlagBit(F_PF); break;
+            case 0xC:
+                pushFlagBit(F_SF);
+                pushFlagBit(F_OF);
+                body.push_back(0x73); // i32.xor
+                break;
+            case 0xE:
+                pushFlagBit(F_ZF);
+                pushFlagBit(F_SF);
+                pushFlagBit(F_OF);
+                body.push_back(0x73); // i32.xor (SF^OF)
+                body.push_back(0x72); // i32.or (ZF | (SF^OF))
+                break;
+        }
+        if (cc & 0x1) body.push_back(0x45); // i32.eqz
+    };
+    emitCond(); // i32 0/1 on stack
+    body.push_back(0xAD); // i64.extend_i32_u -> i64 0/1
+    local(body, 0x21, L_A); // L_A = result byte
+    if (op.isMem) {
+        emitEA(body, op); // L_T1 = effective address
+        emitMemWrite(body, L_T1, L_A, 1);
+    } else {
+        emitWriteByte(body, op, op.rmIndex, L_A);
+    }
+    return 0xFF;
+}`;
+}
+
 // "grp3" template: F6/F7 group 3 (emitGrp3Gen).
 // TEST r/m,imm (/0): flags like AND of (r/m & imm), no writeback.
 // NOT r/m (/2): r/m = ~r/m, no flags touched.
@@ -2727,7 +2786,7 @@ function genRotateCLMem(e) {
     return 0xFF;
 }`;
 }
-const TEMPLATES = { alu: (e) => (e.mem ? genAluMem(e) : genAlu(e)), shift: (e) => (e.mem ? genShiftMem(e) : genShift(e)), rotate: (e) => (e.mem ? genRotateMem(e) : genRotate(e)), shiftCL: (e) => (e.mem ? genShiftCLMem(e) : genShiftCL(e)), rotateCL: (e) => (e.mem ? genRotateCLMem(e) : genRotateCL(e)), imul2: genImul2, imul1: genImul1, imul3: genImul3, movx: genMovx, string: genString, lea: genLea, stack: genStack, mov8: genMov8, movimm8: genMovImm8, grp3: genGrp3, cbw: genCbw, cmov: genCmov, cqo: genCqo };
+const TEMPLATES = { alu: (e) => (e.mem ? genAluMem(e) : genAlu(e)), shift: (e) => (e.mem ? genShiftMem(e) : genShift(e)), rotate: (e) => (e.mem ? genRotateMem(e) : genRotate(e)), shiftCL: (e) => (e.mem ? genShiftCLMem(e) : genShiftCL(e)), rotateCL: (e) => (e.mem ? genRotateCLMem(e) : genRotateCL(e)), imul2: genImul2, imul1: genImul1, imul3: genImul3, movx: genMovx, string: genString, lea: genLea, stack: genStack, mov8: genMov8, movimm8: genMovImm8, grp3: genGrp3, cbw: genCbw, cmov: genCmov, cqo: genCqo, setcc: genSetcc };
 
 function generate() {
   const out = [];

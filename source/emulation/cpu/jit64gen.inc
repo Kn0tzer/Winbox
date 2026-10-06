@@ -2417,3 +2417,53 @@ U32 emitMovImm8Gen(Bytes& body, const Jit64Op& op) {
     }
     return 0xFF;
 }
+
+U32 emitSetccGen(Bytes& body, const Jit64Op& op) {
+    // Condition evaluator: leaves i32 0/1 on the stack. Same logic as
+    // the CMOVcc template (and CPU64::evalCC). L_RFLAGS is i32.
+    auto emitCond = [&]() {
+        const U8 cc = op.sub;
+        auto pushFlagBit = [&](U32 bit) {
+            local(body, 0x20, L_RFLAGS); // i32
+            i32Const(body, bit);
+            body.push_back(0x76); // i32.shr_u
+            i32Const(body, 1);
+            body.push_back(0x71); // i32.and -> i32 0/1
+        };
+        switch (cc & 0xE) {
+            case 0x0: pushFlagBit(F_OF); break;
+            case 0x2: pushFlagBit(F_CF); break;
+            case 0x4: pushFlagBit(F_ZF); break;
+            case 0x6:
+                pushFlagBit(F_CF);
+                pushFlagBit(F_ZF);
+                body.push_back(0x72); // i32.or
+                break;
+            case 0x8: pushFlagBit(F_SF); break;
+            case 0xA: pushFlagBit(F_PF); break;
+            case 0xC:
+                pushFlagBit(F_SF);
+                pushFlagBit(F_OF);
+                body.push_back(0x73); // i32.xor
+                break;
+            case 0xE:
+                pushFlagBit(F_ZF);
+                pushFlagBit(F_SF);
+                pushFlagBit(F_OF);
+                body.push_back(0x73); // i32.xor (SF^OF)
+                body.push_back(0x72); // i32.or (ZF | (SF^OF))
+                break;
+        }
+        if (cc & 0x1) body.push_back(0x45); // i32.eqz
+    };
+    emitCond(); // i32 0/1 on stack
+    body.push_back(0xAD); // i64.extend_i32_u -> i64 0/1
+    local(body, 0x21, L_A); // L_A = result byte
+    if (op.isMem) {
+        emitEA(body, op); // L_T1 = effective address
+        emitMemWrite(body, L_T1, L_A, 1);
+    } else {
+        emitWriteByte(body, op, op.rmIndex, L_A);
+    }
+    return 0xFF;
+}

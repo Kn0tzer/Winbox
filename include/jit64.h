@@ -105,6 +105,10 @@ enum Jit64Kind : U8 {
                         // (flags untouched); 32-bit count==0 still
                         // zero-extends a register dest. OF defined only for
                         // count==1. D2 is the 8-bit form.
+    J64_SETCC = 31,     // 0F 90..9F SETcc r/m8: sub = condition 0..15
+                        // (same encoding as Jcc/CMOVcc). Dest is r/m8
+                        // (always byte); 0/1 based on RFLAGS. No flags
+                        // touched. 0x66/REX.W ignored.
     J64_UNKNOWN = 255
 };
 

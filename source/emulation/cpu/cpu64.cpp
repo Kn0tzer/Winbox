@@ -5823,6 +5823,18 @@ bool CPU64::buildBlock(U64 startRip, BBlock& b) {
             rec.kind = BK_CMOV;
             rec.sub = op2 & 0xF;
             rec.len = (U8)(opOff + 2 + rec.mr.length);
+        } else if (op == 0x0F && fetchByte(r + opOff + 1) >= 0x90 &&
+                                        fetchByte(r + opOff + 1) <= 0x9F) {
+            // 0F 90..9F: SETcc r/m8. Condition in low 4 bits of op2
+            // (same encoding as Jcc/CMOVcc). Dest is always r/m8 (byte);
+            // 0x66/REX.W ignored. Mirrors the interpreter's dsp_15:
+            // val = evalCC(cc) ? 1 : 0, stored via storeRM.
+            U8 op2 = fetchByte(r + opOff + 1);
+            if (!decodeModRMRecipe(r + opOff + 2, p, 0, rec.mr)) break;
+            rec.kind = BK_SETCC;
+            rec.sub = op2 & 0xF;
+            rec.size = 1;
+            rec.len = (U8)(opOff + 2 + rec.mr.length);
         } else if (op == 0xF6 || op == 0xF7) {
             // F6/F7 group 3: /5 (IMUL r/m) keeps BK_IMUL_1OP; /0 TEST,
             // /2 NOT, /3 NEG, /4 MUL (unsigned) build BK_GRP3. /1 is an
@@ -6306,6 +6318,17 @@ U32 CPU64::execBlock(const BBlock& b, U64 maxInsn) {
             rip += rec.len;
             break;
         }
+        case BK_SETCC: {
+            // SETcc r/m8 (0F 90..9F): mirrors dsp_15 exactly.
+            // val = evalCC(sub) ? 1 : 0, stored as a byte via storeRM.
+            // No flags touched. The ModRM reg field is ignored (it's
+            // part of the opcode, not a register operand).
+            ModRM m = resolveRecipe(rec.mr);
+            U8 val = evalCC(rec.sub) ? 1 : 0;
+            storeRM(m, 1, val, rexPresent);
+            rip += rec.len;
+            break;
+        }
         }
         executed++;
         // A guest store can rewrite a later instruction in this block. Stop
@@ -6333,7 +6356,7 @@ U32 CPU64::execBlockThreaded(const BBlock& b, U64 maxInsn) {
     // Static: label addresses are compile-time constants; the table is
     // built once, not on every block execution (2M+ executions per
     // benchmark loop - 19 stores each would be measurable).
-    static const void* thrDispatch[24] = {
+    static const void* thrDispatch[25] = {
         &&thr_MOV_RM_R,
         &&thr_MOV_R_RM,
         &&thr_ALU_RM_R,
@@ -6358,6 +6381,7 @@ U32 CPU64::execBlockThreaded(const BBlock& b, U64 maxInsn) {
         &&thr_CMOV,
         &&thr_CQO,
         &&thr_SHIFT_CL,
+        &&thr_SETCC,
     };
     U32 executed = 0;
     U16 i = 0;
@@ -6783,6 +6807,19 @@ thr_CMOV: {
         } else if (size == 4) {
             reg[m.regField].setU32(reg[m.regField].u32);
         }
+        rip += rec.len;
+        THR_NEXT();
+
+    }
+    thr_SETCC: {
+        const BRec& rec = b.recs[i];
+        bool rexPresent = rec.rexPresent != 0;
+
+        // SETcc r/m8 (0F 90..9F): mirrors dsp_15 exactly (verbatim
+        // copy of the execBlock BK_SETCC case for the threaded tier).
+        ModRM m = resolveRecipe(rec.mr);
+        U8 val = evalCC(rec.sub) ? 1 : 0;
+        storeRM(m, 1, val, rexPresent);
         rip += rec.len;
         THR_NEXT();
 

@@ -3366,3 +3366,117 @@ test('fuzz C6 MOV r/m8,imm8 vs reference (600 cases)', async () => {
     }
   }
 }, 180000);
+
+// --- SETcc (0F 90..9F) differential tests ---
+function encSetcc({ cc = 4, rm = 0, eaKind = 'reg', base = 0, disp = 0 }) {
+  // cc 0..15, rm 0..15 (REX.B emitted iff rm >= 8).
+  const rexPresent = rm >= 8;
+  const code = [];
+  if (rexPresent) code.push(0x41); // REX.B
+  code.push(0x0F, 0x90 + (cc & 0xF));
+  let mod, rmF;
+  const dispBytes = [];
+  if (eaKind === 'reg') { mod = 3; rmF = rm & 7; }
+  else { rmF = base & 7; mod = disp !== 0 ? (disp >= -128 && disp <= 127 ? 1 : 2) : 0; }
+  if (mod === 1) dispBytes.push(disp & 0xFF);
+  if (mod === 2) dispBytes.push(...little(BigInt(disp) & 0xFFFFFFFFn, 4));
+  code.push((mod << 6) | (0 << 3) | rmF, ...dispBytes);
+  const ea = { ripRel: false, ripRelTarget: 0n, baseReg: 0xFF, idxReg: 0xFF, scale: 0, disp: 0n, asize32: false, seg: 0 };
+  if (eaKind !== 'reg') {
+    ea.baseReg = base;
+    ea.disp = 0n;
+    if (mod === 1) ea.disp = BigInt.asIntN(64, BigInt.asIntN(8, BigInt(disp))) & mask64;
+    else if (mod === 2) ea.disp = BigInt.asIntN(64, BigInt.asIntN(32, BigInt(disp))) & mask64;
+  }
+  return { code, ea, cc: cc & 0xF, rm, rexPresent, eaKind };
+}
+
+async function checkSetcc(enc, { regs, rflags = 0x202, memInit = new Map(), rip = 0x12345678ABCDEFF0n }) {
+  const refRegs = [...regs];
+  const refMem = makeGuestMem();
+  for (const [k, v] of memInit) refMem.bytes.set(k, v);
+  const val = evalCCRef(enc.cc, rflags) ? 1n : 0n;
+  if (enc.eaKind === 'reg') {
+    memRegWrite(refRegs, enc.rm, 1, val, enc.rexPresent);
+  } else {
+    const eaAddr = computeEA(enc.ea, refRegs);
+    refMem.write(eaAddr, 1, val);
+  }
+  const out = await runAluMem(enc.code, { regs: [...regs], rflags, memInit, rip });
+  assert.deepEqual(out.regs, refRegs, 'GPRs');
+  assert.equal(BigInt(out.rflags), BigInt(rflags) & 0xFFFFFFFFn, 'RFLAGS preserved (SETcc never touches flags)');
+  assert.equal(out.ripOut, (rip + BigInt(enc.code.length)) & mask64, 'RIP');
+  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+  const refKeys = [...refMem.bytes.keys()].map(String).sort();
+  const outKeys = [...out.guestMem.bytes.keys()].map(String).sort();
+  assert.deepEqual(outKeys, refKeys, 'written addresses');
+  for (const k of refKeys) assert.equal(out.guestMem.bytes.get(BigInt(k)), refMem.bytes.get(BigInt(k)), `mem[${k}]`);
+}
+
+test('SETcc reg-direct: all 16 conditions', async () => {
+  // ZF=1: sete (cc=4) -> 1, setne (cc=5) -> 0
+  let regs = baseRegs();
+  await checkSetcc(encSetcc({ cc: 4, rm: 1 }), { regs, rflags: 0x202 | 0x40 });
+  regs = baseRegs();
+  await checkSetcc(encSetcc({ cc: 5, rm: 1 }), { regs, rflags: 0x202 | 0x40 });
+  // CF=1: setb (cc=2) -> 1, setnb (cc=3) -> 0
+  regs = baseRegs();
+  await checkSetcc(encSetcc({ cc: 2, rm: 2 }), { regs, rflags: 0x202 | 0x1 });
+  regs = baseRegs();
+  await checkSetcc(encSetcc({ cc: 3, rm: 2 }), { regs, rflags: 0x202 | 0x1 });
+  // SF!=OF: setl (cc=12) -> 1
+  regs = baseRegs();
+  await checkSetcc(encSetcc({ cc: 12, rm: 3 }), { regs, rflags: 0x202 | 0x80 });
+  // 41 0F 9F C0: setg r8b (REX.B, rm=8)
+  regs = baseRegs();
+  await checkSetcc(encSetcc({ cc: 15, rm: 8 }), { regs, rflags: 0x202 });
+});
+
+test('SETcc mem form', async () => {
+  // 0F 94 00: sete byte [rax]
+  const regs = baseRegs(); regs[0] = ALU_SBASE;
+  await checkSetcc(encSetcc({ cc: 4, eaKind: 'base', base: 0 }), { regs, rflags: 0x202 | 0x40, memInit: new Map() });
+  // 0F 95 40 08: setne byte [rax+8]
+  const regs2 = baseRegs(); regs2[0] = ALU_SBASE;
+  await checkSetcc(encSetcc({ cc: 5, eaKind: 'disp8', base: 0, disp: 8 }), { regs: regs2, rflags: 0x202, memInit: new Map() });
+});
+
+test('SETcc preserves RFLAGS', async () => {
+  const regs = baseRegs();
+  for (const rf of [0x202, 0x8D5, 0x0, 0xFFFFFFFF, 0xA5B5]) {
+    await checkSetcc(encSetcc({ cc: 4, rm: 1 }), { regs: [...regs], rflags: rf });
+  }
+});
+
+test('fuzz SETcc vs reference (600 cases)', async () => {
+  const rng = mulberry32(0x90CC);
+  // Adversarial flag sets: each flag bit isolated + combinations.
+  const flagSets = [0x202, 0x203, 0x206, 0x242, 0x282, 0x806, 0x8D5, 0x0, 0xFFFFFFFF, 0xA5B5, 0x5A5A];
+  for (let i = 0; i < 600; i++) {
+    const cc = Math.floor(rng() * 16);
+    const isMem = rng() < 0.4; // 40% memory forms
+    const rflags = pick(rng, flagSets);
+    const tag = `fuzzSetcc i=${i} cc=${cc} mem=${isMem} flags=0x${rflags.toString(16)}`;
+    try {
+      if (!isMem) {
+        // Register-direct: rm 0..15. High-byte (4..7, no REX) is
+        // interpreter-only (classifier decline); skip in the JIT fuzz.
+        const rm = Math.floor(rng() * 16);
+        if (rm >= 4 && rm <= 7) { i--; continue; } // declined, no REX.B
+        const regs = Array.from({ length: 16 }, () => advVal(rng));
+        const enc = encSetcc({ cc, rm });
+        await checkSetcc(enc, { regs, rflags });
+      } else {
+        // Memory form: [rax] and [rax+disp8].
+        const regs = baseRegs(); regs[0] = ALU_SBASE;
+        const useDisp = rng() < 0.5;
+        const disp = useDisp ? Math.floor(rng() * 256) - 128 : 0;
+        const enc = encSetcc({ cc, eaKind: useDisp ? 'disp8' : 'base', base: 0, disp });
+        await checkSetcc(enc, { regs, rflags, memInit: new Map() });
+      }
+    } catch (e) {
+      e.message = `${tag}: ${e.message}`;
+      throw e;
+    }
+  }
+}, 180000);

@@ -488,4 +488,27 @@ export const EMITTERS = [
             "decodeModRM. Reg: writeReg8 (cannot fault).",
     },
   },
+  {
+    func: "emitSetccGen",
+    template: "setcc",
+    kinds: ["J64_SETCC"],
+    encoding:
+      "SETcc r/m8 (0F 90..9F): sub = condition 0..15 (same encoding as " +
+      "Jcc/CMOVcc). Dest is always r/m8 (byte); 0x66/REX.W ignored. " +
+      "The value written is 1 if the condition holds, 0 otherwise.",
+    operands:
+      "size 1 only. Register destinations follow the AH/BH/CH/DH-vs-REX " +
+      "rule via emitWriteByte, but AH/BH/CH/DH (no REX, rm 4..7) are " +
+      "declined to the interpreter by the classifier (latent high-byte " +
+      "writeback bug, D1 round). Memory forms: [EA] = (cc ? 1 : 0) via " +
+      "emitEA + emitMemWrite.",
+    flags: {
+      writes: [],
+      preserves: "all RFLAGS bits - SETcc never touches flags (only reads)",
+      note: "condition evaluated from RFLAGS via the same logic as " +
+            "evalCC/cpu64.cpp and the CMOVcc template. Mem: EA computed " +
+            "at decode time, then [EA] = byte (may fault). Reg: writeReg8 " +
+            "(cannot fault).",
+    },
+  },
 ];

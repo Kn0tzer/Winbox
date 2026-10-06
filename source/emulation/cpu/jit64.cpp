@@ -69,6 +69,7 @@ static const Jit64CoveredOpcode kCovered[] = {
     { "0F40 CMOVcc",        0x0F, 0x40, J64_CMOV },        // 26 (0.51% doom.exe; whole 0F40..4F family; sub = cc)
     { "99 CWD/CDQ/CQO",      0x99, 0x00, J64_CQO },         // 27 (0.11% doom.exe)
     { "C6 MOV r/m8,imm8",    0xC6, 0x00, J64_MOV_RM_IMM },  // 28 (0.11% doom.exe; high-byte reg declined)
+    { "0F90 SETcc",          0x0F, 0x90, J64_SETCC },       // 29 (0.25% doom.exe; whole 0F90..9F family; sub = cc; high-byte reg declined)
     // NOTE: 0F85 (JNZ rel32) stays FAST in jit64Classify but fell just outside
     // this corpus's top-20, so it has no table row. The whole 00..3B ALU range
     // (including 29 SUB r/m,r) is table-covered; the phase-1 table only names
@@ -289,6 +290,22 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
             out.kind = J64_CMOV;
             out.sub = (U8)(op2 & 0xF);
             out.size = size;
+            out.len = (U8)(opOff + 2 + ml);
+            out.regField = rf; out.rmIndex = ri; out.isMem = hm;
+            if (hm) decodeEA(bytes + opOff + 2, p, ripBase + opOff + 2, 0, out.ea);
+            return true;
+        }
+        if (op2 >= 0x90 && op2 <= 0x9F) {
+            // SETcc r/m8. Condition in low 4 bits (same encoding as
+            // Jcc/CMOVcc). Dest is always r/m8 (byte); 0x66/REX.W ignored.
+            // Mirrors cpu64.cpp dsp_15: val = evalCC(cc) ? 1 : 0, stored
+            // via storeRM(m, 1, val, rexPresent). No flags touched.
+            U8 rf; bool rr; U8 ri; bool hm;
+            U32 ml = scanModRM(bytes + opOff + 2, byteCount - (opOff + 2), p, rf, rr, ri, hm);
+            if (!ml) return false;
+            out.kind = J64_SETCC;
+            out.sub = (U8)(op2 & 0xF);
+            out.size = 1;
             out.len = (U8)(opOff + 2 + ml);
             out.regField = rf; out.rmIndex = ri; out.isMem = hm;
             if (hm) decodeEA(bytes + opOff + 2, p, ripBase + opOff + 2, 0, out.ea);
@@ -884,6 +901,18 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16) {
         // the generic guards above. No flags are touched.
         if (op.size != 2 && op.size != 4 && op.size != 8) return;
         if (op.sub > 15) return;
+        op.plan = JIT64_FAST;
+        return;
+    case J64_SETCC:
+        // SETcc r/m8: always size 1 (0x66/REX.W ignored by decoder).
+        // sub = condition 0..15. Dest is r/m8 (reg or mem); the value
+        // written is 0 or 1 based on RFLAGS. No flags are touched.
+        // AH/BH/CH/DH (8-bit, rm 4..7, no REX, reg-direct):
+        // interpreter-only (latent high-byte writeback bug, D1 round).
+        if (op.size != 1) return;
+        if (op.sub > 15) return;
+        if (!op.rexPresent && !op.isMem &&
+            op.rmIndex >= 4 && op.rmIndex <= 7) return;
         op.plan = JIT64_FAST;
         return;
     case J64_PUSH:
