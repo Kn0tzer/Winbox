@@ -2452,7 +2452,7 @@ static U32 bounceSockaddrTo32(CPU64* cpu, U64 src64, U32 len, U32* outLenAddr) {
 // Per-THREAD (see bounceSockaddrTo32's note): a per-process msg scratch is
 // corrupted when sibling threads sendmsg/recvmsg concurrently.
 static std::unordered_map<U32, U32> g_msgScratchByThread;
-static U32 msgScratch(KThread* thread) {
+U32 msgScratch(KThread* thread) {
     if (!thread || !thread->memory || !thread->process) return 0;
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(g_scratchMutex);
     auto it = g_msgScratchByThread.find(thread->id);

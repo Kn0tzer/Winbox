@@ -1775,7 +1775,60 @@ U32 syscall_sendto(CPU* cpu, U32 eipCount) {
 
 U32 syscall_sendmsg(CPU* cpu, U32 eipCount) {
     SYS_LOG1(SYSCALL_SOCKET, cpu, "sendmsg socket=%d message=%X flags=%X", ARG1, ARG2, ARG3);
-    U32 result = ksendmsg(cpu->thread, ARG1, ARG2, ARG3);
+    KThread* thread = cpu->thread;
+    KMemory* memory = cpu->memory;
+    U32 msgAddr = ARG2;
+
+    // Fast path: single iov (or zero) - pass through unchanged.
+    U32 iovlen = memory->readd(msgAddr + 12); // msg_iovlen
+    if (iovlen <= 1) {
+        U32 result = ksendmsg(thread, ARG1, msgAddr, ARG3);
+        SYS_LOG(SYSCALL_SOCKET, cpu, " result=%d(0x%X)\n", result, result);
+        return result;
+    }
+
+    // Slow path: coalesce multiple iovs into a single-iov msghdr in scratch.
+    // KUnixSocketObject uses per-iov length-prefix framing; if the receiver
+    // uses fewer iovs than the sender, trailing segments are silently dropped.
+    // Coalescing matches the 64-bit sys_sendmsg64 behavior (syscall64.cpp).
+    // Scratch layout (must match syscall64.cpp MSG_SCRATCH_* defines):
+    //   +0   : 32-bit msghdr (28 bytes)
+    //   +32  : one 32-bit iovec {base,len}
+    //   +512 : data buffer (64KB - 512)
+    extern U32 msgScratch(KThread* thread);
+    U32 base = msgScratch(thread);
+    if (!base) {
+        U32 result = ksendmsg(thread, ARG1, msgAddr, ARG3);
+        SYS_LOG(SYSCALL_SOCKET, cpu, " result=%d(0x%X)\n", result, result);
+        return result;
+    }
+
+    U32 iov = memory->readd(msgAddr + 8); // msg_iov
+    U32 dataAddr = base + 512;
+    U32 dataCap = (64 * 1024) - 512;
+    U32 total = 0;
+    for (U32 i = 0; i < iovlen; i++) {
+        U32 b = memory->readd(iov + 8 * i);       // iov_base
+        U32 l = memory->readd(iov + 8 * i + 4);   // iov_len
+        if (l == 0) continue;
+        if (total + l > dataCap) l = dataCap - total;
+        if (l == 0) break;
+        memory->memcpy(dataAddr + total, b, l);
+        total += l;
+    }
+
+    // Build single-iov 32-bit msghdr in scratch, preserving name/control/flags.
+    memory->writed(base + 32, dataAddr);                    // iov_base
+    memory->writed(base + 32 + 4, total);                   // iov_len
+    memory->writed(base + 0, memory->readd(msgAddr + 0));   // msg_name
+    memory->writed(base + 4, memory->readd(msgAddr + 4));   // msg_namelen
+    memory->writed(base + 8, base + 32);                    // msg_iov
+    memory->writed(base + 12, total ? 1 : 0);               // msg_iovlen
+    memory->writed(base + 16, memory->readd(msgAddr + 16)); // msg_control
+    memory->writed(base + 20, memory->readd(msgAddr + 20)); // msg_controllen
+    memory->writed(base + 24, memory->readd(msgAddr + 24)); // msg_flags
+
+    U32 result = ksendmsg(thread, ARG1, base, ARG3);
     SYS_LOG(SYSCALL_SOCKET, cpu, " result=%d(0x%X)\n", result, result);
     return result;
 }
