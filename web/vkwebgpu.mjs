@@ -1584,6 +1584,19 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     const dummyVb = device.createBuffer({ size: 4096, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
     F.live.push(dummyVb);
 
+    // --- replay state persists across passes within a frame ---
+    // Vulkan allows vkCmdBindPipeline / vkCmdBindVertexBuffers outside a render
+    // pass (vkd3d does this); the bound pipeline and vertex state must carry
+    // over to the next pass with attachments instead of being dropped with
+    // the per-pass state.
+    const st = {
+      pipeRec: null, pipeDesc: null, pipeNeg: false, sets: new Map(), setVer: new Map(), inlineMap: new Map(),
+      pushBlock: new Uint8Array(V2_PUSH_SIZE), pushDirty: false,
+      vbinds: [], ibind: null, viewport: null, scissor: null,
+      pipeBad: false, badPipes: new Map(),
+    };
+    const bump = si => st.setVer.set(si, (st.setVer.get(si) || 0) + 1);
+
     for (const p of frame.passes) {
       // --- targets for this pass (MSAA-aware) ---
       let passSamples = 1;
@@ -1625,23 +1638,25 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
           presentTex = single; presentW = p.w; presentH = p.h; lastClear = p.clearColor;
         }
       }
-      if (!colorAttachments.length && !depthView) { stats.skips++; continue; }
-
-      const rpDesc = { colorAttachments };
-      if (depthView) rpDesc.depthStencilAttachment = {
-        view: depthView, depthClearValue: p.clearDepth,
-        depthLoadOp: 'clear', depthStoreOp: 'store',
-      };
-      const passEnc = encoder.beginRenderPass(rpDesc);
+      // Passes without attachments (e.g. ops recorded outside a render pass,
+      // which Vulkan allows) still update the replay state; they just have no
+      // encoder to issue commands against.
+      let passEnc = null;
+      if (colorAttachments.length || depthView) {
+        const rpDesc = { colorAttachments };
+        if (depthView) rpDesc.depthStencilAttachment = {
+          view: depthView, depthClearValue: p.clearDepth,
+          depthLoadOp: 'clear', depthStoreOp: 'store',
+        };
+        passEnc = encoder.beginRenderPass(rpDesc);
+        // Carry over a pipeline bound by an earlier pass (vkd3d binds before
+        // vkCmdBeginRenderPass).
+        if (st.pipeRec && !st.pipeBad) passEnc.setPipeline(st.pipeRec.pipeline);
+      } else {
+        stats.skips++;
+      }
 
       // --- replay ops ---
-      const st = {
-        pipeRec: null, pipeDesc: null, pipeNeg: false, sets: new Map(), setVer: new Map(), inlineMap: new Map(),
-        pushBlock: new Uint8Array(V2_PUSH_SIZE), pushDirty: false,
-        vbinds: [], ibind: null, viewport: null, scissor: null,
-        pipeBad: false, badPipes: new Map(),
-      };
-      const bump = si => st.setVer.set(si, (st.setVer.get(si) || 0) + 1);
       let skipped = null;
 
       for (const op of p.ops) {
@@ -1659,7 +1674,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
               break;
             }
             st.pipeRec = rec; st.pipeDesc = op.pipe; st.pipeNeg = false;
-            passEnc.setPipeline(rec.pipeline);
+            if (passEnc) passEnc.setPipeline(rec.pipeline);
             break;
           }
           case 'bindSets': break; // sets resolve from DESC_SET records; ids kept for debugging
@@ -1673,6 +1688,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
           case 'draw': {
             if (skipped) break;
             if (st.pipeBad || !st.pipeRec) break;
+            if (!passEnc) break;
             if (st.viewport) {
               const [x, y, w, h, md, xmd] = st.viewport;
               if (w > 0 && h !== 0) {
@@ -1684,7 +1700,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
                 const negH = h < 0;
                 if (negH !== st.pipeNeg && st.pipeDesc) {
                   const rec = await getPipelineFor(st.pipeDesc, passSamples, negH);
-                  if (!rec.skip) { st.pipeRec = rec; st.pipeNeg = negH; passEnc.setPipeline(rec.pipeline); }
+                  if (!rec.skip) { st.pipeRec = rec; st.pipeNeg = negH; if (passEnc) passEnc.setPipeline(rec.pipeline); }
                 }
                 passEnc.setViewport(x, negH ? y + h : y, w, Math.abs(h), md, xmd);
               }
@@ -1755,7 +1771,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
         }
         if (skipped) break;
       }
-      passEnc.end();
+      if (passEnc) passEnc.end();
       if (skipped) { stats.skips++; return { rendered: false, reason: skipped }; }
     }
 
