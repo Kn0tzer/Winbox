@@ -22,9 +22,15 @@
 #define __GL64BRIDGE_H__
 
 class CPU64;
+class CPU;
 
 // Entry point from ksyscall64. fnId = RDI, argsAddr = RSI (guest VA of a
 // GL64Args). Returns the call's result (or 0 for void) to be placed in RAX.
 U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr);
+
+// 32-bit entry point from ksyscall (int $0x80). fnId = EBX, argsAddr = ECX
+// (guest VA of a GL64Args with 32-bit values zero-extended into 64-bit slots).
+// Returns the result to be placed in EAX.
+U64 gl32Bridge(CPU* cpu, U32 fnId, U32 argsAddr);
 
 #endif // __GL64BRIDGE_H__

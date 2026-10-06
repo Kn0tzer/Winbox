@@ -642,7 +642,8 @@ inline float af(const GL64Args& a, int i)  { U32 u = (U32)a.a[i]; float f; memcp
 inline double ad(const GL64Args& a, int i) { U64 u = a.a[i]; double d; memcpy(&d, &u, 8); return d; }
 
 // Read `count` floats from a guest buffer (params* for glLightfv etc.).
-void readFloats(CPU64* cpu, U64 guestAddr, float* out, int count) {
+template<typename CpuT>
+void readFloats(CpuT* cpu, U64 guestAddr, float* out, int count) {
     if (!guestAddr) { for (int i=0;i<count;i++) out[i]=0; return; }
     cpu->memory->memcpyFromGuest(out, guestAddr, (U64)count * 4);
 }
@@ -980,7 +981,8 @@ bool renderbufferStorageFixup(GLenum& ifmt) {
 
 // Read a NUL-terminated C string from guest memory, capped at `maxLen` bytes.
 // Reads in chunks to avoid a per-byte trap; stops at the first NUL.
-std::string readGuestCStr(CPU64* cpu, U64 guestAddr, U64 maxLen) {
+template<typename CpuT>
+std::string readGuestCStr(CpuT* cpu, U64 guestAddr, U64 maxLen) {
     std::string out;
     if (!guestAddr) return out;
     char buf[256];
@@ -1000,7 +1002,8 @@ std::string readGuestCStr(CPU64* cpu, U64 guestAddr, U64 maxLen) {
 // guest. n = args.a[0], guest id array = args.a[1].
 enum class GenKind { Buffer, Texture, VertexArray,
                      Framebuffer, Renderbuffer, Sampler };
-void genObjects(CPU64* cpu, const GL64Args& args, GenKind kind) {
+template<typename CpuT>
+void genObjects(CpuT* cpu, const GL64Args& args, GenKind kind) {
     GLsizei n = (GLsizei)args.a[0];
     if (n <= 0 || n > 65536 || !args.a[1]) return;
     // Probe-hot kinds allocate guest IDs locally (no hop); the host object is
@@ -1069,7 +1072,8 @@ void flushPendingDeletes() {
         }
     });
 }
-void deleteObjects(CPU64* cpu, const GL64Args& args, GenKind kind) {
+template<typename CpuT>
+void deleteObjects(CpuT* cpu, const GL64Args& args, GenKind kind) {
     GLsizei n = (GLsizei)args.a[0];
     if (n <= 0 || n > 65536 || !args.a[1]) return;
     std::vector<GLuint> guestIds((size_t)n, 0);
@@ -1109,7 +1113,8 @@ void deleteObjects(CPU64* cpu, const GL64Args& args, GenKind kind) {
 }
 
 // glGetShaderInfoLog / glGetProgramInfoLog: args = (obj, bufSize, length*, infoLog*).
-void writeInfoLog(CPU64* cpu, const GL64Args& args, bool isProgram) {
+template<typename CpuT>
+void writeInfoLog(CpuT* cpu, const GL64Args& args, bool isProgram) {
     GLuint obj = (GLuint)args.a[0];
     GLsizei bufSize = (GLsizei)args.a[1];
     if (bufSize <= 0 || bufSize > (1 << 20)) bufSize = 0;
@@ -1293,7 +1298,8 @@ size_t texImageBytes(GLsizei w, GLsizei h, GLenum format, GLenum type) {
 
 #include "gl64webgpu.h"
 
-U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
+template<typename CpuT>
+U64 gl64BridgeCore(CpuT* cpu, U64 fnId, U64 argsAddr) {
     std::lock_guard<std::recursive_mutex> lk(g_glMutex);
 
     // Track the most recent fnIds (ring) so a nonzero glGetError can be annotated
@@ -4107,6 +4113,18 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             klog_fmt("gl64: unimplemented fn id %llu", (unsigned long long)fnId);
             return 0;
     }
+}
+
+// 64-bit entry point (existing API)
+U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
+    return gl64BridgeCore(cpu, fnId, argsAddr);
+}
+
+// 32-bit entry point: the 32-bit shim packs args identically (64-bit slots,
+// 32-bit values zero-extended), so the same core logic works. The CPU* provides
+// KMemory* (32-bit) which has memcpyFromGuest/memcpyToGuest wrappers.
+U64 gl32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
+    return gl64BridgeCore(cpu, (U64)fnId, (U64)argsAddr);
 }
 
 #endif // BOXEDWINE_OPENGL

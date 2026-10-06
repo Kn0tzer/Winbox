@@ -24,6 +24,8 @@
 #include "ksocket.h"
 #include "kepoll.h"
 #include "kevent.h"
+#include "../opengl/gl64bridge.h"
+#include "../vulkan/vk64bridge.h"
 
 #include <random>
 #include <thread>
@@ -2268,6 +2270,31 @@ void ksyscall(CPU* cpu, U32 eipCount) {
             cpu->nextOp = cpu->getNextOp();
             return;
         }
+    }
+    // 32-bit GL/VK bridge traps (see tools/rootfs64/libgl32, libvk32).
+    // The 32-bit shims use int $0x80 with EAX=GL64_SYSCALL_NR/VK64_SYSCALL_NR,
+    // EBX=fnId, ECX=guest VA of args. These numbers are above the Linux
+    // syscall range so they don't collide with the syscallFunc table.
+    if (EAX == 0x474C0000) {
+#ifdef BOXEDWINE_OPENGL
+        result = (U32)gl32Bridge(cpu, EBX, ECX);
+#else
+        result = -K_ENOSYS;
+#endif
+        EAX = result;
+        cpu->eip.u32 += eipCount;
+        cpu->thread->kernelTime += KSystem::getMicroCounter() - startTime;
+        return;
+    } else if (EAX == 0x564B0000) {
+#ifdef BOXEDWINE_VULKAN64
+        result = (U32)vk32Bridge(cpu, EBX, ECX);
+#else
+        result = -K_ENOSYS;
+#endif
+        EAX = result;
+        cpu->eip.u32 += eipCount;
+        cpu->thread->kernelTime += KSystem::getMicroCounter() - startTime;
+        return;
     }
     if (EAX>439) {
         result = -K_ENOSYS;

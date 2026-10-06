@@ -9,7 +9,8 @@ std::atomic<bool> bwGpuEnabled{false};
 std::ostringstream bwGpuCommands;
 int bwGpuCommandCount = 0;
 bool bwGpuOverflow = false;
-void bwGpuCapture(CPU64* cpu, U64 fn, const GL64Args& args) {
+template<typename CpuT>
+void bwGpuCapture(CpuT* cpu, U64 fn, const GL64Args& args) {
     if (!bwGpuEnabled.load(std::memory_order_relaxed)) return;
     if (fn == GL64_fn_glXSwapBuffers) {
         std::string json = "{\"width\":" + std::to_string(g_drawW) +
