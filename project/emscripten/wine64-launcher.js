@@ -1072,24 +1072,47 @@
                     // service stack (services.exe) and desktop exist before GUI apps.
                     // Gate sessionReady() on its completion via arch32WinebootDone.
                     if (ARCH32 && !arch32WinebootDone) {
+                        // The spawn is queued and drained on the next main-loop
+                        // tick, so lastSpawnedPid() does not change synchronously.
+                        // Phase 1: wait for the wineboot pid to appear.
+                        var wbPidBefore = lastSpawnedPid();
                         spawnArgv(wineProgArgv("wineboot --init"), "wineboot --init (x86 service stack)");
-                        var wbPid = lastSpawnedPid();
-                        console.log("session: x86 wineboot pid=" + wbPid + ", waiting for completion");
-                        var wbWaited = 0, WB_STEP = 500, WB_LIMIT = 120000;
-                        (function wbPoll() {
-                            if (!pidAlive(wbPid)) {
-                                console.log("session: x86 wineboot completed");
+                        var wbPidWaited = 0, WB_PID_STEP = 200, WB_PID_LIMIT = 30000;
+                        (function wbPidPoll() {
+                            var p = lastSpawnedPid();
+                            if (p && p !== wbPidBefore) {
+                                console.log("session: x86 wineboot pid=" + p + ", waiting for completion");
+                                wbDonePoll(p);
+                                return;
+                            }
+                            wbPidWaited += WB_PID_STEP;
+                            if (wbPidWaited >= WB_PID_LIMIT) {
+                                console.error("session: x86 wineboot pid never appeared, proceeding anyway");
                                 arch32WinebootDone = true;
                                 return;
                             }
-                            wbWaited += WB_STEP;
-                            if (wbWaited >= WB_LIMIT) {
-                                console.error("session: x86 wineboot timed out, proceeding anyway");
-                                arch32WinebootDone = true;
-                                return;
-                            }
-                            setTimeout(wbPoll, WB_STEP);
+                            setTimeout(wbPidPoll, WB_PID_STEP);
                         })();
+                        // Phase 2: wait for wineboot --init to exit. 32-bit
+                        // emulation is slow; 5-minute cap, then proceed anyway
+                        // rather than deadlock the session.
+                        function wbDonePoll(wbPid) {
+                            var wbWaited = 0, WB_STEP = 500, WB_LIMIT = 300000;
+                            (function wbPoll() {
+                                if (!pidAlive(wbPid)) {
+                                    console.log("session: x86 wineboot completed");
+                                    arch32WinebootDone = true;
+                                    return;
+                                }
+                                wbWaited += WB_STEP;
+                                if (wbWaited >= WB_LIMIT) {
+                                    console.error("session: x86 wineboot timed out, proceeding anyway");
+                                    arch32WinebootDone = true;
+                                    return;
+                                }
+                                setTimeout(wbPoll, WB_STEP);
+                            })();
+                        }
                     }
                 }
                 return;
