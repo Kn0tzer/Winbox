@@ -1063,8 +1063,12 @@
                     // ~1-in-3 cold boots. deskpin.exe holds a hidden window (a
                     // desktop *user*, blocked in GetMessage, zero CPU) so the
                     // close timeout never arms. All wine binaries stay stock.
-                    // (x86: deskpin.exe is a 64-bit PE; skip under 32-bit wine.)
-                    if (!ARCH32) {
+                    // Desktop pin: arch-appropriate PE (the 64-bit deskpin.exe
+                    // fails with c0000135 under 32-bit wine, so x86 sessions
+                    // use the 32-bit deskpin32.exe from prefix32.zip).
+                    if (ARCH32) {
+                        spawnArgv(wineProgArgv("Z:\\home\\username\\deskpin32.exe"), "deskpin32 (hold desktop open)");
+                    } else {
                         spawnArgv(wineProgArgv("Z:\\home\\username\\deskpin.exe"), "deskpin (hold desktop open)");
                     }
                     // x86: Wine does not auto-run wineboot --init on 32-bit (ntdll

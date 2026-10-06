@@ -69,6 +69,17 @@ printf "/" > "$PKG/home/username/.wine/dosdevices/z(_colon_).link"
 printf "/usr/lib/i386-linux-gnu/wine/i386-windows" \
     > "$PKG/home/username/.wine/drive_c/windows/system32.link"
 
+# Bundle the 32-bit deskpin.exe (desktop pin for x86 sessions; the 64-bit
+# deskpin.exe cannot run under 32-bit wine). The launcher spawns it as
+# Z:\home\username\deskpin32.exe in ?arch=x86 mode.
+DESKPIN32="$HERE/gltest/deskpin32.exe"
+if [ -f "$DESKPIN32" ]; then
+  cp "$DESKPIN32" "$PKG/home/username/deskpin32.exe"
+  echo "  + bundled deskpin32.exe"
+else
+  echo "  NOTE: $DESKPIN32 missing - x86 sessions will have no desktop pin." >&2
+fi
+
 # 5. Zip it.
 rm -f "$OUT_ZIP"
 (cd "$PKG" && zip -q -r "$OUT_ZIP" home)
