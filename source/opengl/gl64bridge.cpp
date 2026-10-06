@@ -802,6 +802,48 @@ std::map<std::tuple<GLuint, GLenum, GLint>, TextureLevel> g_textureLevels;
 std::map<GLuint, TextureLevel> g_textureInfo;
 // Renderbuffer-name -> internal format, recorded on successful storage.
 std::map<GLuint, GLenum> g_renderbufferInfo;
+// Perf: guest-visible IDs for glGenTextures/glGenFramebuffers/glGenRenderbuffers
+// are allocated locally (no main-thread hop); the host GL object is created
+// lazily on first bind/use via ensureHost* (must run inside a main-thread hop).
+// Saves 1 hop per generated object (~3 hops per wined3d probed format). IDs are
+// monotonic from a private range (never reused). g_textureInfo/g_renderbufferInfo
+// stay keyed by HOST id. Map access is safe: worker thread under g_glMutex
+// (held across the hop wait), or inside the hopped closure on the main thread
+// (exclusive while the worker blocks).
+std::map<GLuint, GLuint> g_texGuestToHost;
+std::map<GLuint, GLuint> g_rbGuestToHost;
+std::map<GLuint, GLuint> g_fboGuestToHost;
+GLuint g_nextGuestObjectId = 0x10000000;
+inline bool isLocalGuestId(GLuint id) { return id >= 0x10000000; }
+// Resolve a guest object ID to the host ID, creating the host GL object on
+// first use. MUST be called inside a main-thread hop (issues GL calls).
+inline GLuint ensureHostTexture(GLuint guestId) {
+    if (!guestId) return 0;
+    auto it = g_texGuestToHost.find(guestId);
+    if (it != g_texGuestToHost.end()) return it->second;
+    GLuint hostId = 0;
+    glGenTextures(1, &hostId);
+    g_texGuestToHost[guestId] = hostId;
+    return hostId;
+}
+inline GLuint ensureHostRenderbuffer(GLuint guestId) {
+    if (!guestId) return 0;
+    auto it = g_rbGuestToHost.find(guestId);
+    if (it != g_rbGuestToHost.end()) return it->second;
+    GLuint hostId = 0;
+    glGenRenderbuffers(1, &hostId);
+    g_rbGuestToHost[guestId] = hostId;
+    return hostId;
+}
+inline GLuint ensureHostFramebuffer(GLuint guestId) {
+    if (!guestId) return 0;
+    auto it = g_fboGuestToHost.find(guestId);
+    if (it != g_fboGuestToHost.end()) return it->second;
+    GLuint hostId = 0;
+    glGenFramebuffers(1, &hostId);
+    g_fboGuestToHost[guestId] = hostId;
+    return hostId;
+}
 GLenum g_allocationError = GL_NO_ERROR;
 void recordBridgeError(GLenum error) {
     if (error && !g_allocationError) g_allocationError = error;
@@ -957,6 +999,16 @@ enum class GenKind { Buffer, Texture, VertexArray,
 void genObjects(CPU64* cpu, const GL64Args& args, GenKind kind) {
     GLsizei n = (GLsizei)args.a[0];
     if (n <= 0 || n > 65536 || !args.a[1]) return;
+    // Probe-hot kinds allocate guest IDs locally (no hop); the host object is
+    // created lazily on first bind/use (see ensureHost*). Other kinds keep the
+    // direct hop path.
+    if (kind == GenKind::Texture || kind == GenKind::Framebuffer ||
+        kind == GenKind::Renderbuffer) {
+        std::vector<GLuint> ids((size_t)n);
+        for (GLsizei i = 0; i < n; ++i) ids[i] = g_nextGuestObjectId++;
+        cpu->memory->memcpyToGuest(args.a[1], ids.data(), (U64)n * 4);
+        return;
+    }
     std::vector<GLuint> ids((size_t)n, 0);
     GLuint* p = ids.data();
     glOnMain([&]{
@@ -977,29 +1029,47 @@ void genObjects(CPU64* cpu, const GL64Args& args, GenKind kind) {
 void deleteObjects(CPU64* cpu, const GL64Args& args, GenKind kind) {
     GLsizei n = (GLsizei)args.a[0];
     if (n <= 0 || n > 65536 || !args.a[1]) return;
-    std::vector<GLuint> ids((size_t)n, 0);
-    cpu->memory->memcpyFromGuest(ids.data(), args.a[1], (U64)n * 4);
-    const GLuint* p = ids.data();
+    std::vector<GLuint> guestIds((size_t)n, 0);
+    cpu->memory->memcpyFromGuest(guestIds.data(), args.a[1], (U64)n * 4);
+    // Translate guest IDs to host IDs. IDs never realized on the host (locally
+    // allocated but never bound/used) need no GL call; just drop the mapping.
+    // Runs on the worker thread under g_glMutex (safe: no hop is in flight).
+    std::vector<GLuint> hostIds;
+    hostIds.reserve((size_t)n);
+    std::map<GLuint, GLuint>* idMap = nullptr;
+    if (kind == GenKind::Texture) idMap = &g_texGuestToHost;
+    else if (kind == GenKind::Framebuffer) idMap = &g_fboGuestToHost;
+    else if (kind == GenKind::Renderbuffer) idMap = &g_rbGuestToHost;
+    for (GLsizei i = 0; i < n; ++i) {
+        GLuint guestId = guestIds[(size_t)i];
+        if (!guestId || !idMap) { if (!idMap) hostIds.push_back(guestId); continue; }
+        auto it = idMap->find(guestId);
+        if (it != idMap->end()) { hostIds.push_back(it->second); idMap->erase(it); }
+        // else: never realized on host; nothing to delete.
+    }
+    // Also drop host-keyed tracking for the deleted host IDs.
+    for (GLuint hostId : hostIds) {
+        if (kind == GenKind::Texture) {
+            for (auto it=g_textureLevels.begin();it!=g_textureLevels.end();) {
+                if (std::get<0>(it->first)==hostId) it=g_textureLevels.erase(it);
+                else ++it;
+            }
+            g_textureInfo.erase(hostId);
+        } else if (kind == GenKind::Renderbuffer) {
+            g_renderbufferInfo.erase(hostId);
+        }
+    }
+    if (hostIds.empty()) return; // nothing reached the host; no hop needed.
+    const GLuint* p = hostIds.data();
+    GLsizei m = (GLsizei)hostIds.size();
     glOnMain([&]{
         switch (kind) {
-            case GenKind::Buffer:      glDeleteBuffers(n, p); break;
-            case GenKind::Texture:
-                glDeleteTextures(n, p);
-                for (GLsizei i=0;i<n;++i) {
-                    for (auto it=g_textureLevels.begin();it!=g_textureLevels.end();) {
-                        if (std::get<0>(it->first)==p[i]) it=g_textureLevels.erase(it);
-                        else ++it;
-                    }
-                    g_textureInfo.erase(p[i]);
-                }
-                break;
-            case GenKind::VertexArray: glDeleteVertexArrays(n, p); break;
-            case GenKind::Framebuffer: glDeleteFramebuffers(n, p); break;
-            case GenKind::Renderbuffer:
-                glDeleteRenderbuffers(n, p);
-                for (GLsizei i = 0; i < n; ++i) g_renderbufferInfo.erase(p[i]);
-                break;
-            case GenKind::Sampler:     glDeleteSamplers(n, p); break;
+            case GenKind::Buffer:      glDeleteBuffers(m, p); break;
+            case GenKind::Texture:     glDeleteTextures(m, p); break;
+            case GenKind::VertexArray: glDeleteVertexArrays(m, p); break;
+            case GenKind::Framebuffer: glDeleteFramebuffers(m, p); break;
+            case GenKind::Renderbuffer:glDeleteRenderbuffers(m, p); break;
+            case GenKind::Sampler:     glDeleteSamplers(m, p); break;
         }
     });
 }
@@ -2210,7 +2280,12 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             if (g_glContext && args.a[1]) genObjects(cpu, args, GenKind::Texture);
             return 0;
         case GL64_fn_glBindTexture:
-            if (g_glContext) GL_MT(glBindTexture(hostTextureTarget((GLenum)ai(args,0)), (GLuint)ai(args,1)));
+            if (g_glContext) {
+                GLenum tgt = hostTextureTarget((GLenum)ai(args,0));
+                GLuint guestId = (GLuint)ai(args,1);
+                // Host object is created lazily on first bind (see genObjects).
+                glOnMain([&]{ glBindTexture(tgt, ensureHostTexture(guestId)); });
+            }
             return 0;
         case GL64_fn_glDeleteTextures:
             if (g_glContext && args.a[1]) deleteObjects(cpu, args, GenKind::Texture);
@@ -2483,32 +2558,50 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glBindFramebuffer:
             if (g_glContext) {
                 GLenum target = (GLenum)ai(args,0);
-                GLuint fb = (GLuint)ai(args,1);
-                if (target == GL_FRAMEBUFFER) {
-                    // From here on the guest owns the draw target; the bridge must
-                    // stop force-binding its own FBO (see bindDrawTarget).
-                    g_guestFboBound = (fb != 0);
-                    g_guestFbo = fb;
-                }
-                GL_MT(glBindFramebuffer(target, fb));
+                GLuint guestFb = (GLuint)ai(args,1);
+                // Host object created lazily on first bind; g_guestFbo stores the
+                // HOST id (bindGuestTarget/readbackAndPresent use it in GL calls).
+                // Both flags are set inside the hop so they stay consistent.
+                glOnMain([&]{
+                    GLuint hostFb = ensureHostFramebuffer(guestFb);
+                    if (target == GL_FRAMEBUFFER) {
+                        // From here on the guest owns the draw target; the bridge must
+                        // stop force-binding its own FBO (see bindDrawTarget).
+                        g_guestFboBound = (guestFb != 0);
+                        g_guestFbo = hostFb;
+                    }
+                    glBindFramebuffer(target, hostFb);
+                });
             }
             return 0;
         case GL64_fn_glIsFramebuffer: {
             GLboolean r = GL_FALSE;
-            GLuint fb = (GLuint)ai(args,0);
-            if (g_glContext) GL_MT(r = glIsFramebuffer(fb));
+            GLuint guestFb = (GLuint)ai(args,0);
+            if (g_glContext) {
+                auto it = g_fboGuestToHost.find(guestFb);
+                if (it != g_fboGuestToHost.end()) {
+                    GLuint hostFb = it->second;
+                    GL_MT(r = glIsFramebuffer(hostFb));
+                } else if (isLocalGuestId(guestFb)) {
+                    r = GL_TRUE; // generated by us, not yet realized; still "used".
+                } else {
+                    GL_MT(r = glIsFramebuffer(guestFb));
+                }
+            }
             return (U64)(r ? 1 : 0);
         }
         case GL64_fn_glFramebufferTexture2D:
             if (g_glContext)
                 glOnMain([&]{
                     bindGuestTarget();
+                    // Guest texture ID -> host ID (created lazily if never bound).
+                    GLuint hostTex = ensureHostTexture((GLuint)ai(args,3));
                     glFramebufferTexture2D((GLenum)ai(args,0), (GLenum)ai(args,1),
-                                           hostTextureTarget((GLenum)ai(args,2)), (GLuint)ai(args,3),
+                                           hostTextureTarget((GLenum)ai(args,2)), hostTex,
                                            (GLint)ai(args,4));
                     if (getenv("BW64_GLTRACE")) {
                         GLint storage = 0;
-                        auto ti = g_textureInfo.find((GLuint)ai(args,3));
+                        auto ti = g_textureInfo.find(hostTex);
                         if (ti != g_textureInfo.end()) storage = ti->second.internalFormat;
                         klog_fmt("gl64 ATTACH2D: fbo=%u target=0x%x att=0x%x textarget=0x%x tex=%u level=%d storage=0x%x",
                                  g_guestFbo, (unsigned)ai(args,0), (unsigned)ai(args,1),
@@ -2522,44 +2615,50 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glFramebufferTexture:
             if (g_glContext) {
                 GLenum tgt=(GLenum)ai(args,0); GLenum att=(GLenum)ai(args,1);
-                GLuint tex=(GLuint)ai(args,2); GLint lvl=(GLint)ai(args,3);
+                GLuint guestTex=(GLuint)ai(args,2); GLint lvl=(GLint)ai(args,3);
                 glOnMain([&]{
                     bindGuestTarget();
+                    GLuint hostTex = ensureHostTexture(guestTex);
                     EM_ASM({ try {
                         if (typeof GLctx === 'undefined') return;
                         GLctx.framebufferTexture($0, $1, $2, $3); } catch (e) {} },
-                      (int)tgt, (int)att, (int)tex, (int)lvl); });
+                      (int)tgt, (int)att, (int)hostTex, (int)lvl); });
             }
             return 0;
         case GL64_fn_glFramebufferTextureLayer:
             if (g_glContext)
                 glOnMain([&]{
                     bindGuestTarget();
+                    GLuint hostTex = ensureHostTexture((GLuint)ai(args,2));
                     glFramebufferTextureLayer((GLenum)ai(args,0), (GLenum)ai(args,1),
-                                              (GLuint)ai(args,2), (GLint)ai(args,3),
+                                              hostTex, (GLint)ai(args,3),
                                               (GLint)ai(args,4));
                 });
             return 0;
         case GL64_fn_glFramebufferTexture1D:
             if (g_glContext) glOnMain([&]{
                 bindGuestTarget();
+                GLuint hostTex = ensureHostTexture((GLuint)ai(args,3));
                 glFramebufferTexture2D((GLenum)ai(args,0), (GLenum)ai(args,1),
-                                       GL_TEXTURE_2D, (GLuint)ai(args,3), (GLint)ai(args,4));
+                                       GL_TEXTURE_2D, hostTex, (GLint)ai(args,4));
             });
             return 0;
         case GL64_fn_glFramebufferTexture3D:
             if (g_glContext) glOnMain([&]{
                 bindGuestTarget();
+                GLuint hostTex = ensureHostTexture((GLuint)ai(args,3));
                 glFramebufferTextureLayer((GLenum)ai(args,0), (GLenum)ai(args,1),
-                                          (GLuint)ai(args,3), (GLint)ai(args,4), (GLint)ai(args,5));
+                                          hostTex, (GLint)ai(args,4), (GLint)ai(args,5));
             });
             return 0;
         case GL64_fn_glFramebufferRenderbuffer:
             if (g_glContext)
                 glOnMain([&]{
                     bindGuestTarget();
+                    // Guest RB ID -> host ID (created lazily if never bound).
+                    GLuint hostRb = ensureHostRenderbuffer((GLuint)ai(args,3));
                     glFramebufferRenderbuffer((GLenum)ai(args,0), (GLenum)ai(args,1),
-                                               (GLenum)ai(args,2), (GLuint)ai(args,3));
+                                               (GLenum)ai(args,2), hostRb);
                 });
             return 0;
         case GL64_fn_glCheckFramebufferStatus: {
@@ -2633,11 +2732,14 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             if (g_glContext && args.a[1]) deleteObjects(cpu, args, GenKind::Renderbuffer);
             return 0;
         case GL64_fn_glBindRenderbuffer:
-            if (g_glContext)
+            if (g_glContext) {
+                GLenum tgt = (GLenum)ai(args,0);
+                GLuint guestRb = (GLuint)ai(args,1);
                 glOnMain([&]{
                     bindGuestTarget();
-                    glBindRenderbuffer((GLenum)ai(args,0), (GLuint)ai(args,1));
+                    glBindRenderbuffer(tgt, ensureHostRenderbuffer(guestRb));
                 });
+            }
             return 0;
         case GL64_fn_glRenderbufferStorage:
             if (g_glContext) {
@@ -2690,8 +2792,18 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         }
         case GL64_fn_glIsRenderbuffer: {
             GLboolean r = GL_FALSE;
-            GLuint rb = (GLuint)ai(args,0);
-            if (g_glContext) GL_MT(r = glIsRenderbuffer(rb));
+            GLuint guestRb = (GLuint)ai(args,0);
+            if (g_glContext) {
+                auto it = g_rbGuestToHost.find(guestRb);
+                if (it != g_rbGuestToHost.end()) {
+                    GLuint hostRb = it->second;
+                    GL_MT(r = glIsRenderbuffer(hostRb));
+                } else if (isLocalGuestId(guestRb)) {
+                    r = GL_TRUE; // generated by us, not yet realized; still "used".
+                } else {
+                    GL_MT(r = glIsRenderbuffer(guestRb));
+                }
+            }
             return (U64)(r ? 1 : 0);
         }
         case GL64_fn_glGetRenderbufferParameteriv:
