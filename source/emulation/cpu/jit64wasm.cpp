@@ -470,6 +470,8 @@ U32 jit64EmitNew(std::vector<U8>& body, const Jit64Op& op) {
         return emitCmovGen(body, op);
     case J64_SETCC:
         return emitSetccGen(body, op);
+    case J64_BT:
+        return emitBtGen(body, op);
     default:
         return 0xFE;
     }
@@ -581,6 +583,10 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             // SETcc: always 8-bit (size 1).
             widthOk = (op.size == 1);
             break;
+        case J64_BT:
+            // BT/BTS/BTR/BTC: 16/32/64-bit only (no 8-bit form).
+            widthOk = (op.size == 2 || op.size == 4 || op.size == 8);
+            break;
         case J64_MOV_RM_IMM:
             // C6 (MOV r/m8, imm8): size 1. C7: size 4/8 (size 2 is
             // decodeable but the decoder's length is wrong for 0x66;
@@ -620,7 +626,8 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             bool memCmov = op.kind == J64_CMOV;
             bool memMovImm = op.kind == J64_MOV_RM_IMM && op.size == 1;
             bool memSetcc = op.kind == J64_SETCC;
-            if ((!memAlu && !memLea && !memStack && !memMov8 && !memGrp3 && !memShift && !memCmov && !memMovImm && !memSetcc) || !widthOk) return false;
+            bool memBt = op.kind == J64_BT;
+            if ((!memAlu && !memLea && !memStack && !memMov8 && !memGrp3 && !memShift && !memCmov && !memMovImm && !memSetcc && !memBt) || !widthOk) return false;
             if (op.ea.seg != 0) return false; // FS/GS: interpreter-only
             if (op.ea.baseReg != 0xFF && op.ea.baseReg >= 16) return false;
             if (op.ea.idxReg != 0xFF && op.ea.idxReg >= 16) return false;
@@ -743,6 +750,14 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             // ModRM reg extension and is ignored. Always size 1.
             if (op.sub > 15) return false;
             if (op.size != 1) return false;
+            break;
+        case J64_BT:
+            // BT/BTS/BTR/BTC (0F A3/AB/B3/BB): sub = 0..3. Bit index in
+            // regField (GPR 0..15); target in rmIndex (GPR) or EA (mem).
+            // Sizes 2/4/8 only.
+            if (op.sub > 3) return false;
+            if (op.size != 2 && op.size != 4 && op.size != 8) return false;
+            if (op.regField >= 16) return false;
             if (!op.isMem && op.rmIndex >= 16) return false;
             break;
         case J64_STRING:
@@ -925,6 +940,18 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             // emitWriteByte, mem via emitEA+emitMemWrite) and returns
             // 0xFF; no L_R publish needed.
             emitSetccGen(body, op);
+            break;
+        }
+        case J64_BT: {
+            // BT/BTS/BTR/BTC: emitBtGen leaves the new value in L_R for
+            // BTS/BTR/BTC reg-direct (32/64-bit) and returns the target
+            // register for the epilogue store-back. BT (sub 0), 16-bit
+            // reg-direct (via emitWriteWord), and mem forms return 0xFF.
+            U32 written = emitBtGen(body, op);
+            if (written != 0xFF) {
+                local(body, 0x20, L_R);
+                local(body, 0x21, written + 1);
+            }
             break;
         }
         case J64_STRING: {

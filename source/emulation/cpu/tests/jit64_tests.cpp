@@ -35,7 +35,7 @@ static Jit64Op dec(U64 base, std::vector<U8> b) {
 static void testCoverageTable() {
     U32 n = 0;
     const Jit64CoveredOpcode* t = jit64CoveredOpcodes(&n);
-    CHECK(n == 30, "coverage table has %u entries, want 30", n);
+    CHECK(n == 31, "coverage table has %u entries, want 31", n);
     CHECK(t != nullptr, "coverage table null");
     // Spot-check rank order matches the profile.
     CHECK(t[0].op == 0x89, "rank1 op=0x%02x want 0x89", t[0].op);
@@ -59,6 +59,8 @@ static void testCoverageTable() {
     CHECK(t[28].op == 0xC6, "rank29 want C6");
     CHECK(t[29].op == 0x0F && t[29].op2 == 0x90, "rank30 want 0F90 got %02x/%02x", t[29].op, t[29].op2);
     CHECK(t[29].kind == J64_SETCC, "rank30 kind");
+    CHECK(t[30].op == 0x0F && t[30].op2 == 0xA3, "rank31 want 0FA3 got %02x/%02x", t[30].op, t[30].op2);
+    CHECK(t[30].kind == J64_BT, "rank31 kind");
 }
 
 static void testMovForms() {
@@ -578,6 +580,25 @@ static void testFallbackRules() {
     Jit64Op sc3 = dec(0x400000, {0x0F, 0x9C, 0xC4});
     CHECK(sc3.kind == J64_SETCC && sc3.sub == 12, "0F9C kind/sub");
     CHECK(sc3.plan != JIT64_FAST, "0F9C AH should be interpreter-only");
+    // 0F A3 C1          bt ecx, eax (reg-direct, 32-bit)
+    Jit64Op bt1 = dec(0x400000, {0x0F, 0xA3, 0xC1});
+    CHECK(bt1.kind == J64_BT && bt1.sub == 0 && bt1.size == 4 && bt1.len == 3,
+          "0FA3: kind=%d sub=%d size=%d len=%d", bt1.kind, bt1.sub, bt1.size, bt1.len);
+    CHECK(bt1.regField == 0 && bt1.rmIndex == 1 && !bt1.isMem, "0FA3 operands");
+    CHECK(bt1.plan == JIT64_FAST, "0FA3 plan fallback");
+    // 0F AB 04 25 00 10 00 00  bts dword [0x1000], eax (mem, 32-bit)
+    Jit64Op bt2 = dec(0x400000, {0x0F, 0xAB, 0x04, 0x25, 0x00, 0x10, 0x00, 0x00});
+    CHECK(bt2.kind == J64_BT && bt2.sub == 1 && bt2.size == 4 && bt2.isMem,
+          "0FAB mem: kind=%d sub=%d size=%d isMem=%d", bt2.kind, bt2.sub, bt2.size, bt2.isMem);
+    CHECK(bt2.plan == JIT64_FAST, "0FAB mem plan fallback");
+    // 0F B3 C1          btr ecx, eax (sub=2)
+    Jit64Op bt3 = dec(0x400000, {0x0F, 0xB3, 0xC1});
+    CHECK(bt3.kind == J64_BT && bt3.sub == 2, "0FB3 kind/sub");
+    CHECK(bt3.plan == JIT64_FAST, "0FB3 plan fallback");
+    // 66 0F BB C1       btc cx, ax (16-bit via 0x66)
+    Jit64Op bt4 = dec(0x400000, {0x66, 0x0F, 0xBB, 0xC1});
+    CHECK(bt4.kind == J64_BT && bt4.sub == 3 && bt4.size == 2, "0FBB 16-bit");
+    CHECK(bt4.plan == JIT64_FAST, "0FBB plan fallback");
     // 6B C0 05          imul eax, eax, 5
     Jit64Op c10 = dec(0x400000, {0x6B, 0xC0, 0x05});
     CHECK(c10.kind == J64_IMUL_3OP && c10.size == 4 && c10.imm == 5 && c10.len == 3,

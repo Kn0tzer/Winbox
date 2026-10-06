@@ -1553,6 +1553,105 @@ function genSetcc(e) {
 }`;
 }
 
+// "bt" template: BT/BTS/BTR/BTC r/m16/32/64, r16/32/64 (emitBtGen).
+// Bit index from ModRM reg field (GPR); target is r/m (reg or mem).
+// Mirrors cpu64.cpp: bit = idx & (width-1); CF = (v >> bit) & 1;
+// BTS: v |= (1<<bit); BTR: v &= ~(1<<bit); BTC: v ^= (1<<bit).
+// Only CF is written; all other flags preserved.
+function genBt(e) {
+  return `U32 ${e.func}(Bytes& body, const Jit64Op& op) {
+    const U32 size = op.size; // 2, 4, or 8
+    const U32 sub = op.sub;   // 0=BT, 1=BTS, 2=BTR, 3=BTC
+    const U64 wbits = (U64)size * 8;
+    const U64 widthMask = size == 2 ? 0xFFFFULL :
+                          size == 4 ? 0xFFFFFFFFULL : 0xFFFFFFFFFFFFFFFFULL;
+    const U64 bitMask = wbits - 1; // 15, 31, or 63
+
+    // L_T2 = bit index: GPR[regField] masked to width, then & (wbits-1).
+    local(body, 0x20, op.regField + 1);
+    if (size != 8) {
+        i64Const(body, widthMask);
+        body.push_back(0x83); // i64.and
+    }
+    i64Const(body, bitMask);
+    body.push_back(0x83); // i64.and
+    local(body, 0x21, L_T2);
+
+    // L_A = target value, masked to width.
+    if (op.isMem) {
+        emitEA(body, op); // L_T1 = EA
+        emitMemRead(body, L_T1, size); // -> L_R
+        local(body, 0x20, L_R);
+    } else {
+        local(body, 0x20, op.rmIndex + 1);
+    }
+    if (size != 8) {
+        i64Const(body, widthMask);
+        body.push_back(0x83); // i64.and
+    }
+    local(body, 0x21, L_A);
+
+    // L_B = selected bit: (L_A >> L_T2) & 1.
+    local(body, 0x20, L_A);
+    local(body, 0x20, L_T2);
+    body.push_back(0x88); // i64.shr_u
+    i64Const(body, 1);
+    body.push_back(0x83); // i64.and
+    local(body, 0x21, L_B);
+
+    // CF = L_B (clear CF, OR in selected bit). L_RFLAGS is i32.
+    local(body, 0x20, L_RFLAGS);
+    i32Const(body, 0xFFFFFFFE); // ~X64_CF
+    body.push_back(0x71); // i32.and
+    local(body, 0x20, L_B);
+    body.push_back(0xA7); // i32.wrap_i64
+    body.push_back(0x72); // i32.or
+    local(body, 0x21, L_RFLAGS);
+
+    if (sub == 0) return 0xFF; // BT: no writeback.
+
+    // BTS/BTR/BTC: compute new value in L_R.
+    // L_R = 1 << bit (mask).
+    i64Const(body, 1);
+    local(body, 0x20, L_T2);
+    body.push_back(0x86); // i64.shl
+    local(body, 0x21, L_R);
+    if (sub == 1) {
+        // BTS: v | mask
+        local(body, 0x20, L_A);
+        local(body, 0x20, L_R);
+        body.push_back(0x84); // i64.or
+    } else if (sub == 2) {
+        // BTR: v & ~mask
+        local(body, 0x20, L_R);
+        i64Const(body, ~0ULL);
+        body.push_back(0x85); // i64.xor -> ~mask
+        local(body, 0x21, L_R);
+        local(body, 0x20, L_A);
+        local(body, 0x20, L_R);
+        body.push_back(0x83); // i64.and
+    } else {
+        // BTC: v ^ mask
+        local(body, 0x20, L_A);
+        local(body, 0x20, L_R);
+        body.push_back(0x85); // i64.xor
+    }
+    local(body, 0x21, L_R);
+
+    // Write back.
+    if (op.isMem) {
+        emitMemWrite(body, L_T1, L_R, size);
+        return 0xFF;
+    }
+    if (size == 2) {
+        emitWriteWord(body, op.rmIndex, L_R);
+        return 0xFF;
+    }
+    // 32/64-bit: L_R already masked; caller publishes via epilogue.
+    return op.rmIndex;
+}`;
+}
+
 // "grp3" template: F6/F7 group 3 (emitGrp3Gen).
 // TEST r/m,imm (/0): flags like AND of (r/m & imm), no writeback.
 // NOT r/m (/2): r/m = ~r/m, no flags touched.
@@ -2786,7 +2885,7 @@ function genRotateCLMem(e) {
     return 0xFF;
 }`;
 }
-const TEMPLATES = { alu: (e) => (e.mem ? genAluMem(e) : genAlu(e)), shift: (e) => (e.mem ? genShiftMem(e) : genShift(e)), rotate: (e) => (e.mem ? genRotateMem(e) : genRotate(e)), shiftCL: (e) => (e.mem ? genShiftCLMem(e) : genShiftCL(e)), rotateCL: (e) => (e.mem ? genRotateCLMem(e) : genRotateCL(e)), imul2: genImul2, imul1: genImul1, imul3: genImul3, movx: genMovx, string: genString, lea: genLea, stack: genStack, mov8: genMov8, movimm8: genMovImm8, grp3: genGrp3, cbw: genCbw, cmov: genCmov, cqo: genCqo, setcc: genSetcc };
+const TEMPLATES = { alu: (e) => (e.mem ? genAluMem(e) : genAlu(e)), shift: (e) => (e.mem ? genShiftMem(e) : genShift(e)), rotate: (e) => (e.mem ? genRotateMem(e) : genRotate(e)), shiftCL: (e) => (e.mem ? genShiftCLMem(e) : genShiftCL(e)), rotateCL: (e) => (e.mem ? genRotateCLMem(e) : genRotateCL(e)), imul2: genImul2, imul1: genImul1, imul3: genImul3, movx: genMovx, string: genString, lea: genLea, stack: genStack, mov8: genMov8, movimm8: genMovImm8, grp3: genGrp3, cbw: genCbw, cmov: genCmov, cqo: genCqo, setcc: genSetcc, bt: genBt };
 
 function generate() {
   const out = [];

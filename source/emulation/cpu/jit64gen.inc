@@ -2467,3 +2467,95 @@ U32 emitSetccGen(Bytes& body, const Jit64Op& op) {
     }
     return 0xFF;
 }
+
+U32 emitBtGen(Bytes& body, const Jit64Op& op) {
+    const U32 size = op.size; // 2, 4, or 8
+    const U32 sub = op.sub;   // 0=BT, 1=BTS, 2=BTR, 3=BTC
+    const U64 wbits = (U64)size * 8;
+    const U64 widthMask = size == 2 ? 0xFFFFULL :
+                          size == 4 ? 0xFFFFFFFFULL : 0xFFFFFFFFFFFFFFFFULL;
+    const U64 bitMask = wbits - 1; // 15, 31, or 63
+
+    // L_T2 = bit index: GPR[regField] masked to width, then & (wbits-1).
+    local(body, 0x20, op.regField + 1);
+    if (size != 8) {
+        i64Const(body, widthMask);
+        body.push_back(0x83); // i64.and
+    }
+    i64Const(body, bitMask);
+    body.push_back(0x83); // i64.and
+    local(body, 0x21, L_T2);
+
+    // L_A = target value, masked to width.
+    if (op.isMem) {
+        emitEA(body, op); // L_T1 = EA
+        emitMemRead(body, L_T1, size); // -> L_R
+        local(body, 0x20, L_R);
+    } else {
+        local(body, 0x20, op.rmIndex + 1);
+    }
+    if (size != 8) {
+        i64Const(body, widthMask);
+        body.push_back(0x83); // i64.and
+    }
+    local(body, 0x21, L_A);
+
+    // L_B = selected bit: (L_A >> L_T2) & 1.
+    local(body, 0x20, L_A);
+    local(body, 0x20, L_T2);
+    body.push_back(0x88); // i64.shr_u
+    i64Const(body, 1);
+    body.push_back(0x83); // i64.and
+    local(body, 0x21, L_B);
+
+    // CF = L_B (clear CF, OR in selected bit). L_RFLAGS is i32.
+    local(body, 0x20, L_RFLAGS);
+    i32Const(body, 0xFFFFFFFE); // ~X64_CF
+    body.push_back(0x71); // i32.and
+    local(body, 0x20, L_B);
+    body.push_back(0xA7); // i32.wrap_i64
+    body.push_back(0x72); // i32.or
+    local(body, 0x21, L_RFLAGS);
+
+    if (sub == 0) return 0xFF; // BT: no writeback.
+
+    // BTS/BTR/BTC: compute new value in L_R.
+    // L_R = 1 << bit (mask).
+    i64Const(body, 1);
+    local(body, 0x20, L_T2);
+    body.push_back(0x86); // i64.shl
+    local(body, 0x21, L_R);
+    if (sub == 1) {
+        // BTS: v | mask
+        local(body, 0x20, L_A);
+        local(body, 0x20, L_R);
+        body.push_back(0x84); // i64.or
+    } else if (sub == 2) {
+        // BTR: v & ~mask
+        local(body, 0x20, L_R);
+        i64Const(body, ~0ULL);
+        body.push_back(0x85); // i64.xor -> ~mask
+        local(body, 0x21, L_R);
+        local(body, 0x20, L_A);
+        local(body, 0x20, L_R);
+        body.push_back(0x83); // i64.and
+    } else {
+        // BTC: v ^ mask
+        local(body, 0x20, L_A);
+        local(body, 0x20, L_R);
+        body.push_back(0x85); // i64.xor
+    }
+    local(body, 0x21, L_R);
+
+    // Write back.
+    if (op.isMem) {
+        emitMemWrite(body, L_T1, L_R, size);
+        return 0xFF;
+    }
+    if (size == 2) {
+        emitWriteWord(body, op.rmIndex, L_R);
+        return 0xFF;
+    }
+    // 32/64-bit: L_R already masked; caller publishes via epilogue.
+    return op.rmIndex;
+}

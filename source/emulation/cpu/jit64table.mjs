@@ -297,7 +297,7 @@ export const EMITTERS = [
     func: "emitStringGen",
     template: "string",
     kinds: ["J64_STRING"],
-    encoding: "MOVS (0xA4/0xA5), STOS (0xAA/0xAB), CMPS (0xA6/0xA7), SCAS (0xAC/0xAD) with REP/REPE/REPNE (0xF2/0xF3).",
+    encoding: "MOVS (0xA4/0xA5), STOS (0xAA/0xAB), CMPS (0xA6/0xA7), SCAS (0xAE/0xAF) with REP/REPE/REPNE (0xF2/0xF3).",
     operands: "sizes 1/2/4/8; RSI/RDI/RCX implicit; 0x67 addr-size.",
     flags: {
       writes: ["CF", "PF", "AF", "ZF", "SF", "OF"],
@@ -509,6 +509,28 @@ export const EMITTERS = [
             "evalCC/cpu64.cpp and the CMOVcc template. Mem: EA computed " +
             "at decode time, then [EA] = byte (may fault). Reg: writeReg8 " +
             "(cannot fault).",
+    },
+  },
+  {
+    func: "emitBtGen",
+    template: "bt",
+    kinds: ["J64_BT"],
+    encoding:
+      "BT/BTS/BTR/BTC r/m16/32/64, r16/32/64 (0F A3/AB/B3/BB): sub = " +
+      "0(BT)/1(BTS)/2(BTR)/3(BTC). Bit index from ModRM reg field " +
+      "(GPR); target is r/m (reg or mem).",
+    operands:
+      "sizes 2/4/8 only (no 8-bit form; 0x66 selects 16-bit, REX.W 64-bit). " +
+      "Bit = idx & (width-1). Reg-direct: target in rmIndex. Mem: EA " +
+      "computed at decode time.",
+    flags: {
+      writes: ["CF"],
+      preserves: "all RFLAGS except CF - only CF is written (from the " +
+                 "selected bit); OF/SF/ZF/AF/PF untouched",
+      note: "Mirrors cpu64.cpp: v = loadRM; bit = idx & (width-1); " +
+            "CF = (v >> bit) & 1. BTS: v |= mask; BTR: v &= ~mask; " +
+            "BTC: v ^= mask; storeRM if sub != 0. Mem: [EA] read then " +
+            "written (may fault on either).",
     },
   },
 ];

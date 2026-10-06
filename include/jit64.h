@@ -109,6 +109,10 @@ enum Jit64Kind : U8 {
                         // (same encoding as Jcc/CMOVcc). Dest is r/m8
                         // (always byte); 0/1 based on RFLAGS. No flags
                         // touched. 0x66/REX.W ignored.
+    J64_BT = 32,        // 0F A3/AB/B3/BB BT/BTS/BTR/BTC r/m16/32/64, r16/32/64:
+                        // sub = 0(BT)/1(BTS)/2(BTR)/3(BTC). Bit = reg & (width-1).
+                        // CF = selected bit. BTS/BTR/BTC modify the bit.
+                        // Only CF touched. 0x66 selects 16-bit; REX.W 64-bit.
     J64_UNKNOWN = 255
 };
 

@@ -70,6 +70,7 @@ static const Jit64CoveredOpcode kCovered[] = {
     { "99 CWD/CDQ/CQO",      0x99, 0x00, J64_CQO },         // 27 (0.11% doom.exe)
     { "C6 MOV r/m8,imm8",    0xC6, 0x00, J64_MOV_RM_IMM },  // 28 (0.11% doom.exe; high-byte reg declined)
     { "0F90 SETcc",          0x0F, 0x90, J64_SETCC },       // 29 (0.25% doom.exe; whole 0F90..9F family; sub = cc; high-byte reg declined)
+    { "0FA3 BT",             0x0F, 0xA3, J64_BT },          // 30 (0.02% doom.exe; 0FA3/AB/B3/BB BT/BTS/BTR/BTC; sub = op)
     // NOTE: 0F85 (JNZ rel32) stays FAST in jit64Classify but fell just outside
     // this corpus's top-20, so it has no table row. The whole 00..3B ALU range
     // (including 29 SUB r/m,r) is table-covered; the phase-1 table only names
@@ -306,6 +307,23 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
             out.kind = J64_SETCC;
             out.sub = (U8)(op2 & 0xF);
             out.size = 1;
+            out.len = (U8)(opOff + 2 + ml);
+            out.regField = rf; out.rmIndex = ri; out.isMem = hm;
+            if (hm) decodeEA(bytes + opOff + 2, p, ripBase + opOff + 2, 0, out.ea);
+            return true;
+        }
+        if (op2 == 0xA3 || op2 == 0xAB || op2 == 0xB3 || op2 == 0xBB) {
+            // BT/BTS/BTR/BTC r/m16/32/64, r16/32/64. sub = 0(BT)/1(BTS)/
+            // 2(BTR)/3(BTC) = (op2 - 0xA3) >> 3. The bit index is in the
+            // ModRM reg field (always a register); the target is r/m.
+            // Mirrors cpu64.cpp: bit = idx & (width-1); CF = (v>>bit)&1;
+            // BTS/BTR/BTC modify the bit. Only CF touched.
+            U8 rf; bool rr; U8 ri; bool hm;
+            U32 ml = scanModRM(bytes + opOff + 2, byteCount - (opOff + 2), p, rf, rr, ri, hm);
+            if (!ml) return false;
+            out.kind = J64_BT;
+            out.sub = (U8)((op2 - 0xA3) >> 3);
+            out.size = size;
             out.len = (U8)(opOff + 2 + ml);
             out.regField = rf; out.rmIndex = ri; out.isMem = hm;
             if (hm) decodeEA(bytes + opOff + 2, p, ripBase + opOff + 2, 0, out.ea);
@@ -913,6 +931,15 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16) {
         if (op.sub > 15) return;
         if (!op.rexPresent && !op.isMem &&
             op.rmIndex >= 4 && op.rmIndex <= 7) return;
+        op.plan = JIT64_FAST;
+        return;
+    case J64_BT:
+        // BT/BTS/BTR/BTC r/m16/32/64, r16/32/64: sub = 0(BT)/1(BTS)/
+        // 2(BTR)/3(BTC). Bit index in regField (always a GPR); target
+        // in rmIndex (reg) or EA (mem). Sizes 2/4/8 only (no 8-bit form).
+        // Only CF is written; other flags preserved.
+        if (op.size != 2 && op.size != 4 && op.size != 8) return;
+        if (op.sub > 3) return;
         op.plan = JIT64_FAST;
         return;
     case J64_PUSH:

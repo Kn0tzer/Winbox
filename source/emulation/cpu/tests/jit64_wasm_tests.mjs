@@ -3480,3 +3480,103 @@ test('fuzz SETcc vs reference (600 cases)', async () => {
     }
   }
 }, 180000);
+
+// --- BT/BTS/BTR/BTC (0F A3/AB/B3/BB) differential tests ---
+function encBt({ sub = 0, regField = 0, rm = 0, eaKind = 'reg', base = 0, disp = 0, size = 4 }) {
+  const code = [];
+  let rex = 0;
+  if (size === 8) rex |= 0x08;
+  if (regField >= 8) rex |= 0x04;
+  if (rm >= 8 && eaKind === 'reg') rex |= 0x01;
+  if (size === 2) code.push(0x66);
+  if (rex) code.push(0x40 | rex);
+  const op2 = 0xA3 + sub * 8;
+  code.push(0x0F, op2);
+  let mod, regF = regField & 7, rmF;
+  const dispBytes = [];
+  if (eaKind === 'reg') { mod = 3; rmF = rm & 7; }
+  else { rmF = base & 7; mod = disp !== 0 ? 1 : 0; }
+  if (mod === 1) dispBytes.push(disp & 0xFF);
+  code.push((mod << 6) | (regF << 3) | rmF, ...dispBytes);
+  return { code, sub, regField, rm, eaKind, base, disp, size };
+}
+
+async function checkBt(enc, { regs, rflags = 0x202, memInit = new Map(), rip = 0x12345678ABCDEFF0n }) {
+  const refRegs = regs.map(x => BigInt(x));
+  const refMem = makeGuestMem();
+  for (const [k, v] of memInit) refMem.bytes.set(k, v);
+  const size = enc.size;
+  const wbits = BigInt(size * 8);
+  const widthMask = (1n << wbits) - 1n;
+  const idx = refRegs[enc.regField] & widthMask;
+  const bit = idx & (wbits - 1n);
+  const mask = 1n << bit;
+  let v, eaAddr = 0n;
+  if (enc.eaKind === 'reg') {
+    v = refRegs[enc.rm] & widthMask;
+  } else {
+    eaAddr = (refRegs[enc.base] + BigInt(enc.disp)) & mask64;
+    const bytes = [];
+    for (let b = 0; b < size; b++) bytes.push(refMem.bytes.get(eaAddr + BigInt(b)) || 0);
+    v = 0n;
+    for (let b = size - 1; b >= 0; b--) v = (v << 8n) | BigInt(bytes[b]);
+    v &= widthMask;
+  }
+  const selected = (v >> bit) & 1n;
+  const refRflags = (BigInt(rflags) & ~1n) | selected;
+  if (enc.sub !== 0) {
+    let nv = v;
+    if (enc.sub === 1) nv = v | mask;
+    else if (enc.sub === 2) nv = v & (widthMask ^ mask);
+    else nv = v ^ mask;
+    nv &= widthMask;
+    if (enc.eaKind === 'reg') {
+      if (size === 2) refRegs[enc.rm] = (refRegs[enc.rm] & ~0xFFFFn) | nv;
+      else refRegs[enc.rm] = nv;
+    } else {
+      for (let b = 0; b < size; b++) refMem.bytes.set(eaAddr + BigInt(b), Number((nv >> BigInt(b * 8)) & 0xFFn));
+    }
+  }
+  const out = await runAluMem(enc.code, { regs: regs.map(x => BigInt(x)), rflags, memInit, rip });
+  assert.deepEqual(out.regs.map(x => BigInt(x)), refRegs, 'GPRs');
+  const outFlags = BigInt(out.rflags) & 0xFFFFFFFFn;
+  const wantFlags = refRflags & 0xFFFFFFFFn;
+  assert.equal(outFlags, wantFlags, 'RFLAGS (only CF changes)');
+  assert.equal(out.ripOut, (rip + BigInt(enc.code.length)) & mask64, 'RIP');
+  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+}
+
+test('fuzz BT/BTS/BTR/BTC vs reference (600 cases)', async () => {
+  const rng = mulberry32(0x0FA3);
+  const flagSets = [0x202, 0x203, 0x206, 0x242, 0x282, 0x806, 0x8D5, 0x0, 0xFFFFFFFF, 0xA5B5];
+  const bitVals = [0n, 1n, 15n, 16n, 17n, 31n, 32n, 33n, 63n, 64n, 65n, 255n, 4294967295n, 18446744073709551615n];
+  for (let i = 0; i < 600; i++) {
+    const sub = Math.floor(rng() * 4);
+    const size = [2, 4, 8][Math.floor(rng() * 3)];
+    const isMem = rng() < 0.4;
+    const rflags = flagSets[Math.floor(rng() * flagSets.length)];
+    const tag = 'fuzzBt i=' + i + ' sub=' + sub + ' size=' + size + ' mem=' + isMem;
+    try {
+      if (!isMem) {
+        const regs = Array.from({ length: 16 }, () => advVal(rng));
+        const regField = Math.floor(rng() * 16);
+        regs[regField] = bitVals[Math.floor(rng() * bitVals.length)];
+        const rm = Math.floor(rng() * 16);
+        const enc = encBt({ sub, regField, rm, size });
+        await checkBt(enc, { regs, rflags });
+      } else {
+        const regs = baseRegs();
+        regs[0] = ALU_SBASE;
+        const regField = Math.floor(rng() * 16);
+        regs[regField] = bitVals[Math.floor(rng() * bitVals.length)];
+        const useDisp = rng() < 0.5;
+        const disp = useDisp ? Math.floor(rng() * 256) - 128 : 0;
+        const enc = encBt({ sub, regField, eaKind: useDisp ? 'disp8' : 'base', base: 0, disp, size });
+        await checkBt(enc, { regs, rflags, memInit: new Map() });
+      }
+    } catch (e) {
+      e.message = tag + ': ' + e.message;
+      throw e;
+    }
+  }
+}, 180000);
