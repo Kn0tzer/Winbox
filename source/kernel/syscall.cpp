@@ -463,6 +463,7 @@ static U32 syscall_readlink(CPU* cpu, U32 eipCount) {
 static U32 syscall_mmap64(CPU* cpu, U32 eipCount) {
     KMemory* memory = cpu->memory;
     SYS_LOG1(SYSCALL_MEMORY, cpu, "mmap: address=%.8X len=%d prot=%X flags=%X fd=%d offset=%d", memory->readd(ARG1), memory->readd(ARG1+4), memory->readd(ARG1+8), memory->readd(ARG1+12), memory->readd(ARG1+16), memory->readd(ARG1+20));
+    { U32 _a = memory->readd(ARG1); U32 _l = memory->readd(ARG1+4); if (_a >= 0xC0000000 || _l == 0x21000) klog_fmt("GUEST_MMAP: addr=%08X len=%X prot=%X flags=%X", _a, _l, memory->readd(ARG1+8), memory->readd(ARG1+12)); }
     U32 result = memory->mmap(cpu->thread, memory->readd(ARG1), memory->readd(ARG1+4), memory->readd(ARG1+8), memory->readd(ARG1+12), memory->readd(ARG1+16), memory->readd(ARG1+20));
     SYS_LOG(SYSCALL_MEMORY, cpu, " result=%d(0x%X)\n", result, result);
     return result;
@@ -971,7 +972,9 @@ static U32 syscall_ugetrlimit(CPU* cpu, U32 eipCount) {
 
 static U32 syscall_mmap2(CPU* cpu, U32 eipCount) {
     SYS_LOG1(SYSCALL_MEMORY, cpu, "mmap2: address=%.8X len=0x%X(%d) prot=%X flags=%X fd=%d offset=%d", ARG1, ARG2, ARG2, ARG3, ARG4, ARG5, ARG6);
+    U32 _log_mmap2 = (ARG1 >= 0xC0000000 || ARG2 == 0x21000);
     U32 result = cpu->memory->mmap(cpu->thread, ARG1, ARG2, ARG3, ARG4, ARG5, ((U64)ARG6)*4096l);
+    if (_log_mmap2) klog_fmt("GUEST_MMAP2_RESULT: %08X", result);
     SYS_LOG(SYSCALL_MEMORY, cpu, " result=%d(0x%X)\n", result, result);
     return result;
 }
