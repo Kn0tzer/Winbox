@@ -1301,15 +1301,22 @@ void v2QueueFrame(V2FrameAsm& fa) {
 
 void hopV2ToPage() {
 #ifdef __EMSCRIPTEN__
-    // Hop ONLY the presented frame (the back of the queue). DXVK builds an
-    // intermediate 480x360 backbuffer frame plus the real 472x333 present
-    // frame per present; hopping the intermediate first makes the page tier
-    // render it (resizing + clearing the canvas) before the real frame
-    // arrives, and canvas readback races the resize-clear -> blank canvas
-    // while bridge stats show lit pixels. The page tier is latest-frame-wins
-    // (takeLatest) anyway, so intermediates were always dropped there.
+    // Hop the frame with the actual pixel data. DXVK builds two v2 frames per
+    // present: a 480x360 backbuffer frame (1MB, contains IMAGE_DATA with the
+    // rendered triangle) and a 472x333 present frame (3.5KB, just the present
+    // metadata without pixels). Hopping only the back (472x333) gives the page
+    // an empty frame -> litPixels=0. Hopping all frames causes the page to
+    // render 480x360 then clear for 472x333, racing the readback -> blank.
+    // Select the frame with the maximum bytes (the one with the pixels).
     if (!g_v2Pending.empty()) {
-        const auto& f = g_v2Pending.back();
+        const V2DoneFrame* best = &g_v2Pending.front();
+        size_t bestBytes = 0;
+        for (const auto& f : g_v2Pending) {
+            size_t total = 0;
+            for (const auto& c : f.chunks) total += c.size();
+            if (total > bestBytes) { bestBytes = total; best = &f; }
+        }
+        const auto& f = *best;
         for (const auto& chunk : f.chunks) {
             const U8* ptr = chunk.data();
             U32 len = (U32)chunk.size();
