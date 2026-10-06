@@ -229,7 +229,10 @@ export function createShaderCache({ translate = toWGSL, log = defaultLog } = {})
     stats,
     async get(stage, mod, options = {}) {
       if (!mod) return null;
-      const key = stage + ':' + mod.hash + ':' + mod.size + ':topology:' + (options.rasterTopology ?? 'unknown');
+      // Specialization values are part of the cache key: the same SPIR-V
+      // module with different spec constants produces different WGSL.
+      const specKey = (options.specOverrides || []).map(e => e.constantID + ':' + Array.from(e.value).join(',')).join(';');
+      const key = stage + ':' + mod.hash + ':' + mod.size + ':topology:' + (options.rasterTopology ?? 'unknown') + ':spec:' + specKey;
       if (wgsl.has(key)) { stats.hits++; return wgsl.get(key); }
       const override = FS_OVERRIDES.get(mod.hash + ':' + mod.size);
       if (override) { wgsl.set(key, override); stats.overridden++; return override; }
@@ -888,8 +891,28 @@ export function decodeV2Frame(records, counters = {}) {
         const vb = [], va = [];
         for (let k = 0; k < nVb; k++) vb.push({ binding: r.u32(), stride: r.u32(), inputRate: r.u32() });
         for (let k = 0; k < nVa; k++) va.push({ location: r.u32(), binding: r.u32(), format: r.u32(), offset: r.u32() });
+        // Append-only specialization tail (2026-10-06): per-stage list of
+        // {constantID, size, value bytes}. Absent in frames from older bridges.
+        const readSpec = () => {
+          const n = r.u32();
+          if (n > 16) throw new Error('vk64: v2 PIPELINE spec count out of range');
+          const entries = [];
+          for (let i = 0; i < n; i++) {
+            const constantID = r.u32(), size = r.u32();
+            if (size !== 1 && size !== 2 && size !== 4 && size !== 8)
+              throw new Error('vk64: v2 PIPELINE spec size out of range');
+            const value = r.bytes(size);
+            entries.push({ constantID, size, value });
+          }
+          return entries;
+        };
+        let vsSpec = [], fsSpec = [];
+        if (r.p < r.dv.byteLength) {
+          vsSpec = readSpec();
+          fsSpec = readSpec();
+        }
         r.done('PIPELINE');
-        const pipe = { pipeId, vsHash, fsHash, topology, cull, front, depthTest, depthWrite, depthOp, blend, vb, va };
+        const pipe = { pipeId, vsHash, fsHash, topology, cull, front, depthTest, depthWrite, depthOp, blend, vb, va, vsSpec, fsSpec };
         frame.pipelines.set(pipeId, pipe);
         needPass().ops.push({ op: 'bindPipe', pipe });
         break;
@@ -1347,9 +1370,9 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     if (pipelines.has(key)) return pipelines.get(key);
     const vsm = F.shaders.get(pipe.vsHash), fsm = F.shaders.get(pipe.fsHash);
     if (!vsm || !fsm) return { skip: 'missing-shader' };
-    let vsWgsl = await shaders.get('vertex', { hash: pipe.vsHash, size: vsm.code.length, code: vsm.code }, { rasterTopology: pipe.topology });
+    let vsWgsl = await shaders.get('vertex', { hash: pipe.vsHash, size: vsm.code.length, code: vsm.code }, { rasterTopology: pipe.topology, specOverrides: pipe.vsSpec });
     if (unnegated) vsWgsl = stripNagaYNegation(vsWgsl);
-    const fsWgsl = await shaders.get('fragment', { hash: pipe.fsHash, size: fsm.code.length, code: fsm.code }, { rasterTopology: pipe.topology });
+    const fsWgsl = await shaders.get('fragment', { hash: pipe.fsHash, size: fsm.code.length, code: fsm.code }, { rasterTopology: pipe.topology, specOverrides: pipe.fsSpec });
     if (!vsWgsl || !fsWgsl) return { skip: 'shader-translation' };
     const vsR = rewritePushConstantsWGSL(vsWgsl), fsR = rewritePushConstantsWGSL(fsWgsl);
     const pushBlocks = vsR.pushBlocks + fsR.pushBlocks;
