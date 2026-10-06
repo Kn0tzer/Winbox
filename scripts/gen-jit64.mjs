@@ -1470,6 +1470,30 @@ function genMov8(e) {
 }`;
 }
 
+// "movimm8" template: MOV r/m8, imm8 (emitMovImm8Gen).
+// 0xC6 /0. Mirrors cpu64.cpp dsp_12 exactly: no flags are touched; the
+// 1-byte immediate is written to the 8-bit register or memory location.
+// Register destinations follow the AH/BH/CH/DH-vs-REX rule via
+// emitWriteByte (but AH/BH/CH/DH are declined to the interpreter by the
+// classifier). Memory forms go through emitEA + emitMemWrite with the
+// interpreter's fault ordering: the EA is computed from pre-instruction
+// registers (decode-time), then [EA] = imm8 (may fault).
+// Returns 0xFF: the write happens inline (GPR locals for reg, imported
+// helper for mem) and the epilogue store-back publishes GPRs.
+function genMovImm8(e) {
+  return `U32 ${e.func}(Bytes& body, const Jit64Op& op) {
+    i64Const(body, op.imm & 0xFF);
+    local(body, 0x21, L_A); // L_A = imm8
+    if (op.isMem) {
+        emitEA(body, op); // L_T1 = effective address
+        emitMemWrite(body, L_T1, L_A, 1);
+    } else {
+        emitWriteByte(body, op, op.rmIndex, L_A);
+    }
+    return 0xFF;
+}`;
+}
+
 // "grp3" template: F6/F7 group 3 (emitGrp3Gen).
 // TEST r/m,imm (/0): flags like AND of (r/m & imm), no writeback.
 // NOT r/m (/2): r/m = ~r/m, no flags touched.
@@ -2006,7 +2030,7 @@ function genCqo(e) {
 }
 
 
-const TEMPLATES = { alu: (e) => (e.mem ? genAluMem(e) : genAlu(e)), shift: (e) => (e.mem ? genShiftMem(e) : genShift(e)), rotate: (e) => (e.mem ? genRotateMem(e) : genRotate(e)), imul2: genImul2, imul1: genImul1, imul3: genImul3, movx: genMovx, string: genString, lea: genLea, stack: genStack, mov8: genMov8, grp3: genGrp3, cbw: genCbw, cmov: genCmov, cqo: genCqo };
+const TEMPLATES = { alu: (e) => (e.mem ? genAluMem(e) : genAlu(e)), shift: (e) => (e.mem ? genShiftMem(e) : genShift(e)), rotate: (e) => (e.mem ? genRotateMem(e) : genRotate(e)), imul2: genImul2, imul1: genImul1, imul3: genImul3, movx: genMovx, string: genString, lea: genLea, stack: genStack, mov8: genMov8, movimm8: genMovImm8, grp3: genGrp3, cbw: genCbw, cmov: genCmov, cqo: genCqo };
 
 function generate() {
   const out = [];

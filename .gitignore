@@ -58,3 +58,7 @@ project/mac-xcode/build_*/
 /s[0-9]*.png
 /s_*.png
 /saveas_*.png
+
+# Python bytecode cache (profiler tooling)
+__pycache__/
+*.pyc

@@ -391,4 +391,29 @@ export const EMITTERS = [
             "dsp_19 exactly.",
     },
   },
+  {
+    func: "emitMovImm8Gen",
+    template: "movimm8",
+    kinds: ["J64_MOV_RM_IMM"],
+    encoding:
+      "MOV r/m8, imm8 (0xC6 /0). The 8-bit form uses a 1-byte immediate " +
+      "(vs 4 bytes for C7); size is always 1 (0x66/REX.W ignored, " +
+      "matching the interpreter which hardcodes width 1 in dsp_12). " +
+      "Only /0 is defined; other sub-ops fall through to unhandled. " +
+      "EA via emitEA for memory forms (SIB/RIP-relative/0x67/seg; " +
+      "FS/GS-segment EAs stay interpreter-only).",
+    operands:
+      "size 1 only. Register destinations follow the AH/BH/CH/DH-vs-REX " +
+      "rule via emitWriteByte, but AH/BH/CH/DH (no REX, rm 4..7) are " +
+      "declined to the interpreter by the classifier (latent high-byte " +
+      "writeback bug, D1 round). Memory forms: [EA] = imm8.",
+    flags: {
+      writes: [],
+      preserves: "all RFLAGS bits - MOV never touches flags",
+      note: "fault ordering mirrors cpu64.cpp exactly. Mem: [EA] = imm8 " +
+            "(may fault); the EA itself is computed from pre-instruction " +
+            "registers at decode time, like the interpreter's " +
+            "decodeModRM. Reg: writeReg8 (cannot fault).",
+    },
+  },
 ];

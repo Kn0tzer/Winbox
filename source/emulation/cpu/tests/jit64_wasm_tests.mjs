@@ -3113,3 +3113,111 @@ test('fuzz D0/D1 shift/rotate-by-1 vs reference (600 cases)', async () => {
     }
   }
 }, 180000);
+
+// C6 (MOV r/m8, imm8) tests. Reference model: the immediate byte is
+// written to the 8-bit register or memory location; no flags touched.
+// Mirrors cpu64.cpp dsp_12 (storeRM with size 1).
+function encC6({ rm = 0, imm = 0x42, eaKind = 'reg', base = 0, disp = 0 }) {
+  // rm is 0..15 (like encMov8); REX.B is emitted iff rm >= 8.
+  const rexPresent = rm >= 8;
+  const code = [];
+  if (rexPresent) code.push(0x41); // REX.B
+  code.push(0xC6);
+  let mod, rmF;
+  const dispBytes = [];
+  if (eaKind === 'reg') { mod = 3; rmF = rm & 7; }
+  else { rmF = base & 7; mod = disp !== 0 ? (disp >= -128 && disp <= 127 ? 1 : 2) : 0; }
+  if (mod === 1) dispBytes.push(disp & 0xFF);
+  if (mod === 2) dispBytes.push(...little(BigInt(disp) & 0xFFFFFFFFn, 4));
+  code.push((mod << 6) | (0 << 3) | rmF, ...dispBytes); // /0
+  code.push(imm & 0xFF);
+  const ea = { ripRel: false, ripRelTarget: 0n, baseReg: 0xFF, idxReg: 0xFF, scale: 0, disp: 0n, asize32: false, seg: 0 };
+  if (eaKind !== 'reg') {
+    ea.baseReg = base;
+    ea.disp = 0n;
+    if (mod === 1) ea.disp = BigInt.asIntN(64, BigInt.asIntN(8, BigInt(disp))) & mask64;
+    else if (mod === 2) ea.disp = BigInt.asIntN(64, BigInt.asIntN(32, BigInt(disp))) & mask64;
+  }
+  return { code, ea, rm, imm: imm & 0xFF, rexPresent, eaKind };
+}
+
+async function checkC6(enc, { regs, rflags = 0x202, memInit = new Map(), rip = 0x12345678ABCDEFF0n }) {
+  const refRegs = [...regs];
+  const refMem = makeGuestMem();
+  for (const [k, v] of memInit) refMem.bytes.set(k, v);
+  const byte = BigInt(enc.imm & 0xFF);
+  if (enc.eaKind === 'reg') {
+    memRegWrite(refRegs, enc.rm, 1, byte, enc.rexPresent);
+  } else {
+    const eaAddr = computeEA(enc.ea, refRegs);
+    refMem.write(eaAddr, 1, byte);
+  }
+  const out = await runAluMem(enc.code, { regs: [...regs], rflags, memInit, rip });
+  assert.deepEqual(out.regs, refRegs, 'GPRs');
+  assert.equal(BigInt(out.rflags), BigInt(rflags) & 0xFFFFFFFFn, 'RFLAGS preserved (MOV never touches flags)');
+  assert.equal(out.ripOut, (rip + BigInt(enc.code.length)) & mask64, 'RIP');
+  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+  const refKeys = [...refMem.bytes.keys()].map(String).sort();
+  const outKeys = [...out.guestMem.bytes.keys()].map(String).sort();
+  assert.deepEqual(outKeys, refKeys, 'written addresses');
+  for (const k of refKeys) assert.equal(out.guestMem.bytes.get(BigInt(k)), refMem.bytes.get(BigInt(k)), `mem[${k}]`);
+}
+
+test('C6 MOV r/m8,imm8 reg-direct: low bytes', async () => {
+  // C6 C0 42: mov al, 0x42
+  await checkC6(encC6({ rm: 0, imm: 0x42 }), { regs: baseRegs() });
+  // C6 C3 FF: mov bl, 0xFF (upper bits preserved)
+  const regs = baseRegs(); regs[3] = 0x1122334455667788n;
+  await checkC6(encC6({ rm: 3, imm: 0xFF }), { regs });
+  // 41 C6 C0 42: mov r8b, 0x42 (REX.B, rm=8)
+  await checkC6(encC6({ rm: 8, imm: 0x42 }), { regs: baseRegs() });
+});
+
+test('C6 MOV r/m8,imm8 mem form', async () => {
+  // C6 00 42: mov byte [rax], 0x42
+  const regs = baseRegs(); regs[0] = ALU_SBASE;
+  await checkC6(encC6({ eaKind: 'base', base: 0, imm: 0x42 }), { regs, memInit: new Map() });
+  // C6 40 08 42: mov byte [rax+8], 0x42 (disp8)
+  const regs2 = baseRegs(); regs2[0] = ALU_SBASE;
+  await checkC6(encC6({ eaKind: 'disp8', base: 0, disp: 8, imm: 0xAB }), { regs: regs2, memInit: new Map() });
+});
+
+test('C6 preserves RFLAGS', async () => {
+  const regs = baseRegs();
+  for (const rf of [0x202, 0x8D5, 0x0, 0xFFFFFFFF]) {
+    await checkC6(encC6({ rm: 1, imm: 0x00 }), { regs: [...regs], rflags: rf });
+  }
+});
+
+test('fuzz C6 MOV r/m8,imm8 vs reference (600 cases)', async () => {
+  const rng = mulberry32(0xC600);
+  const flagSets = [0x202, 0x203, 0x8D5, 0x246, 0x202 | 0x800, 0x402, 0x0, 0xA5B5];
+  const advImms = [0, 1, 0x7F, 0x80, 0xFF, 0x42, 0xAB];
+  for (let i = 0; i < 600; i++) {
+    const isMem = rng() < 0.4; // 40% memory forms
+    const rflags = pick(rng, flagSets);
+    const imm = pick(rng, advImms);
+    const tag = `fuzzC6 i=${i} mem=${isMem} imm=${imm}`;
+    try {
+      if (!isMem) {
+        // Register-direct: rm 0..15. High-byte (4..7, no REX) is
+        // interpreter-only (classifier decline); skip in the JIT fuzz.
+        const rm = Math.floor(rng() * 16);
+        if (rm >= 4 && rm <= 7) { i--; continue; } // declined, no REX.B
+        const regs = Array.from({ length: 16 }, () => advVal(rng));
+        const enc = encC6({ rm, imm });
+        await checkC6(enc, { regs, rflags });
+      } else {
+        // Memory form: [rax] and [rax+disp8].
+        const regs = baseRegs(); regs[0] = ALU_SBASE;
+        const useDisp = rng() < 0.5;
+        const disp = useDisp ? Math.floor(rng() * 256) - 128 : 0;
+        const enc = encC6({ eaKind: useDisp ? 'disp8' : 'base', base: 0, disp, imm });
+        await checkC6(enc, { regs, rflags, memInit: new Map() });
+      }
+    } catch (e) {
+      e.message = `${tag}: ${e.message}`;
+      throw e;
+    }
+  }
+}, 180000);

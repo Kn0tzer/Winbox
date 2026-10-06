@@ -5871,6 +5871,16 @@ bool CPU64::buildBlock(U64 startRip, BBlock& b) {
             if (rec.mr.isReg) break;               // LEA reg-form undefined
             rec.kind = BK_LEA;
             rec.len = (U8)(opOff + 1 + rec.mr.length);
+        } else if (op == 0xC6) {
+            // MOV r/m8, imm8: 1-byte immediate, size always 1 (0x66/REX.W
+            // ignored, matching the interpreter's dsp_12 and the JIT
+            // decoder). Only /0 is defined.
+            if (!decodeModRMRecipe(r + opOff + 1, p, 1, rec.mr)) break;
+            if ((rec.mr.regField & 0x7) != 0) break;
+            rec.kind = BK_MOV_RM_IMM;
+            rec.size = 1;
+            rec.imm = (U64)fetchByte(r + opOff + 1 + rec.mr.length);
+            rec.len = (U8)(opOff + 1 + rec.mr.length + 1);
         } else if (op == 0xC7) {
             if (size == 2) break; // 16-bit C7 unsupported in blocks
             if (!decodeModRMRecipe(r + opOff + 1, p, 4, rec.mr)) break;

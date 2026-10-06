@@ -449,6 +449,11 @@ U32 jit64EmitNew(std::vector<U8>& body, const Jit64Op& op) {
     case J64_MOV_R_RM:
         if (op.size == 1) return emitMov8Gen(body, op);
         return 0xFE; // 4/8-bit MOV keeps the hand-written emitter
+    case J64_MOV_RM_IMM:
+        // C6 (MOV r/m8, imm8): table-generated emitMovImm8Gen.
+        // C7 (size 4/8) keeps the hand-written emitter.
+        if (op.size == 1) return emitMovImm8Gen(body, op);
+        return 0xFE;
     case J64_GRP3:
         return emitGrp3Gen(body, op);
     case J64_CBW:
@@ -563,6 +568,12 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             // CMOVcc: 16/32/64-bit all valid (never 8-bit).
             widthOk = (op.size == 2 || op.size == 4 || op.size == 8);
             break;
+        case J64_MOV_RM_IMM:
+            // C6 (MOV r/m8, imm8): size 1. C7: size 4/8 (size 2 is
+            // decodeable but the decoder's length is wrong for 0x66;
+            // the classifier leaves it fast, matching pre-C6 behavior).
+            widthOk = (op.size == 1 || op.size == 4 || op.size == 8);
+            break;
         default:
             widthOk = (op.size == 4 || op.size == 8);
             break;
@@ -594,7 +605,8 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             bool memGrp3 = op.kind == J64_GRP3;
             bool memShift = op.kind == J64_SHIFT_IMM;
             bool memCmov = op.kind == J64_CMOV;
-            if ((!memAlu && !memLea && !memStack && !memMov8 && !memGrp3 && !memShift && !memCmov) || !widthOk) return false;
+            bool memMovImm = op.kind == J64_MOV_RM_IMM && op.size == 1;
+            if ((!memAlu && !memLea && !memStack && !memMov8 && !memGrp3 && !memShift && !memCmov && !memMovImm) || !widthOk) return false;
             if (op.ea.seg != 0) return false; // FS/GS: interpreter-only
             if (op.ea.baseReg != 0xFF && op.ea.baseReg >= 16) return false;
             if (op.ea.idxReg != 0xFF && op.ea.idxReg >= 16) return false;
@@ -607,7 +619,10 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             if (op.regField >= 16) return false;
             break;
         case J64_MOV_RM_IMM:
-            if (op.rmIndex >= 16) return false;
+            // rmIndex is 0xFF for memory forms (scanModRM has no register
+            // to report); only check it for register-direct ops, mirroring
+            // the MOV_RM_R validation above.
+            if (!op.isMem && op.rmIndex >= 16) return false;
             break;
         case J64_MOV_RM_R:
         case J64_MOV_R_RM:
@@ -729,6 +744,12 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
         switch (op.kind) {
         case J64_MOV_R_IMM:
         case J64_MOV_RM_IMM: {
+            if (op.kind == J64_MOV_RM_IMM && op.size == 1) {
+                // C6 (MOV r/m8, imm8): table-generated emitMovImm8Gen.
+                // Handles reg and mem forms with 8-bit write semantics.
+                emitMovImm8Gen(body, op);
+                break;
+            }
             U32 dest = op.kind == J64_MOV_RM_IMM ? op.rmIndex : op.regField;
             i64Const(body, op.size == 4 ? op.imm & 0xFFFFFFFFULL : op.imm);
             local(body, 0x21, dest + 1);

@@ -35,7 +35,7 @@ static Jit64Op dec(U64 base, std::vector<U8> b) {
 static void testCoverageTable() {
     U32 n = 0;
     const Jit64CoveredOpcode* t = jit64CoveredOpcodes(&n);
-    CHECK(n == 27, "coverage table has %u entries, want 27", n);
+    CHECK(n == 28, "coverage table has %u entries, want 28", n);
     CHECK(t != nullptr, "coverage table null");
     // Spot-check rank order matches the profile.
     CHECK(t[0].op == 0x89, "rank1 op=0x%02x want 0x89", t[0].op);
@@ -80,6 +80,28 @@ static void testMovForms() {
     // C7 45 FC 2A 00 00 00  mov dword [rbp-4], 42
     Jit64Op e = dec(0x400000, {0xC7, 0x45, 0xFC, 0x2A, 0x00, 0x00, 0x00});
     CHECK(e.kind == J64_MOV_RM_IMM && e.len == 7 && e.imm == 42, "C7: kind=%d len=%d imm=%llu", e.kind, e.len, e.imm);
+    // C6 C0 42          mov al, 0x42  (J64_MOV_RM_IMM, size 1)
+    Jit64Op e6a = dec(0x400000, {0xC6, 0xC0, 0x42});
+    CHECK(e6a.kind == J64_MOV_RM_IMM && e6a.size == 1 && e6a.len == 3, "C6 reg: kind=%d size=%d len=%d", e6a.kind, e6a.size, e6a.len);
+    CHECK(e6a.imm == 0x42 && e6a.rmIndex == 0 && !e6a.isMem, "C6 reg: imm=%llu rm=%d mem=%d", e6a.imm, e6a.rmIndex, e6a.isMem);
+    CHECK(e6a.plan == JIT64_FAST, "C6 reg plan fallback");
+    // C6 45 FC 42       mov byte [rbp-4], 0x42  (mem form)
+    Jit64Op e6b = dec(0x400000, {0xC6, 0x45, 0xFC, 0x42});
+    CHECK(e6b.kind == J64_MOV_RM_IMM && e6b.size == 1 && e6b.len == 4, "C6 mem: kind=%d size=%d len=%d", e6b.kind, e6b.size, e6b.len);
+    CHECK(e6b.imm == 0x42 && e6b.isMem, "C6 mem: imm=%llu mem=%d", e6b.imm, e6b.isMem);
+    CHECK(e6b.plan == JIT64_FAST, "C6 mem plan fallback");
+    // 41 C6 C0 42       mov r8b, 0x42  (REX.B: rm 8, not high-byte)
+    Jit64Op e6c = dec(0x400000, {0x41, 0xC6, 0xC0, 0x42});
+    CHECK(e6c.kind == J64_MOV_RM_IMM && e6c.rmIndex == 8 && e6c.rexPresent, "C6 rex: rm=%d rex=%d", e6c.rmIndex, e6c.rexPresent);
+    CHECK(e6c.plan == JIT64_FAST, "C6 rex plan fallback");
+    // C6 C4 42          mov ah, 0x42  (no REX, rm 4 => AH: interpreter-only)
+    Jit64Op e6d = dec(0x400000, {0xC6, 0xC4, 0x42});
+    CHECK(e6d.kind == J64_MOV_RM_IMM && e6d.size == 1, "C6 ah: kind=%d size=%d", e6d.kind, e6d.size);
+    CHECK(e6d.plan != JIT64_FAST, "C6 ah should decline (high-byte)");
+    // C6 C8 42          /1 is undefined: decode must not produce MOV_RM_IMM
+    Jit64Op e6e;
+    bool ok6e = jit64DecodeOne(0x400000, (const U8[]){0xC6, 0xC8, 0x42}, 3, e6e);
+    CHECK(!ok6e || e6e.kind != J64_MOV_RM_IMM, "C6 /1: ok=%d kind=%d", ok6e, e6e.kind);
     // 0F B6 C0          movzx eax, al  (J64_MOVX, sub 0=zx8)
     Jit64Op f = dec(0x400000, {0x0F, 0xB6, 0xC0});
     CHECK(f.kind == J64_MOVX && f.sub == 0 && f.len == 3, "0FB6: kind=%d sub=%d len=%d", f.kind, f.sub, f.len);

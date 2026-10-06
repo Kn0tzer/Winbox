@@ -1741,3 +1741,15 @@ U32 emitCqoGen(Bytes& body, const Jit64Op& op) {
     }
     return 2; // RDX: full 64-bit write via epilogue
 }
+
+U32 emitMovImm8Gen(Bytes& body, const Jit64Op& op) {
+    i64Const(body, op.imm & 0xFF);
+    local(body, 0x21, L_A); // L_A = imm8
+    if (op.isMem) {
+        emitEA(body, op); // L_T1 = effective address
+        emitMemWrite(body, L_T1, L_A, 1);
+    } else {
+        emitWriteByte(body, op, op.rmIndex, L_A);
+    }
+    return 0xFF;
+}

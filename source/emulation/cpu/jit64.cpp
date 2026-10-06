@@ -67,6 +67,7 @@ static const Jit64CoveredOpcode kCovered[] = {
     { "D1 SHIFT/ROT r/m,1", 0xD1, 0x00, J64_SHIFT_IMM },    // 25 (0.25% doom.exe; D0 8-bit + C1-mem also newly jitted)
     { "0F40 CMOVcc",        0x0F, 0x40, J64_CMOV },        // 26 (0.51% doom.exe; whole 0F40..4F family; sub = cc)
     { "99 CWD/CDQ/CQO",      0x99, 0x00, J64_CQO },         // 27 (0.11% doom.exe)
+    { "C6 MOV r/m8,imm8",    0xC6, 0x00, J64_MOV_RM_IMM },  // 28 (0.11% doom.exe; high-byte reg declined)
     // NOTE: 0F85 (JNZ rel32) stays FAST in jit64Classify but fell just outside
     // this corpus's top-20, so it has no table row. The whole 00..3B ALU range
     // (including 29 SUB r/m,r) is table-covered; the phase-1 table only names
@@ -495,20 +496,31 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
         out.regField = rf; out.rmIndex = ri; out.isMem = hm;
         return true;
     }
-    // MOV r/m, imm (C6 /0, C7 /0).
+    // MOV r/m, imm (C6 /0, C7 /0). C6 is the 8-bit form: 1-byte
+    // immediate, size always 1 (0x66/REX.W ignored, matching the
+    // interpreter which hardcodes width 1 in dsp_12). C7 is the
+    // 16/32/64-bit form with a 4-byte immediate.
     if (op == 0xC6 || op == 0xC7) {
-        if (op == 0xC6) return false; // 8-bit: fallback
         U8 rf; bool rr; U8 ri; bool hm;
         U32 avail = byteCount - (opOff + 1);
         U32 ml = scanModRM(bytes + opOff + 1, avail, p, rf, rr, ri, hm);
-        if (!ml || (rf & 0x7) != 0 || avail < ml + 4) return false;
+        if (!ml || (rf & 0x7) != 0) return false;
         const U8* ip = bytes + opOff + 1 + ml;
-        S32 i32 = (S32)readU32(ip);
         out.kind = J64_MOV_RM_IMM;
-        out.size = size;
-        out.imm = (size == 8) ? (U64)(S64)i32 : (U64)(U32)i32;
-        out.len = (U8)(opOff + 1 + ml + 4);
         out.regField = rf; out.rmIndex = ri; out.isMem = hm;
+        if (op == 0xC6) {
+            if (avail < ml + 1) return false;
+            out.size = 1;
+            out.imm = (U64)ip[0];
+            out.len = (U8)(opOff + 1 + ml + 1);
+        } else {
+            if (avail < ml + 4) return false;
+            S32 i32 = (S32)readU32(ip);
+            out.size = size;
+            out.imm = (size == 8) ? (U64)(S64)i32 : (U64)(U32)i32;
+            out.len = (U8)(opOff + 1 + ml + 4);
+        }
+        if (hm) decodeEA(bytes + opOff + 1, p, ripBase + opOff + 1, 0, out.ea);
         return true;
     }
     // SHIFT r/m, imm8 (C0 is the 8-bit form; 0x66/REX.W ignored).
@@ -843,7 +855,6 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16) {
         op.plan = JIT64_FAST;
         return;
     case J64_TEST_RM_R:
-    case J64_MOV_RM_IMM:
     case J64_MOV_R_IMM:
     case J64_CALL_REL:
     case J64_JMP_REL:
@@ -851,6 +862,17 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16) {
     case J64_RET:
     case J64_LEAVE:
     case J64_NOP:
+        op.plan = JIT64_FAST;
+        return;
+    case J64_MOV_RM_IMM:
+        // C6 (size 1): AH/BH/CH/DH (rm 4..7, no REX, reg-direct) stay
+        // interpreter-only. The high-byte writeback path in the emitter
+        // has a latent bug (fuzz found incorrect results for SHL AH,1
+        // in the D1 round); 64-bit code rarely uses these registers.
+        // Conservative decline per DIV/IDIV precedent. C7 (size 4/8)
+        // is unaffected (no high-byte forms).
+        if (op.size == 1 && !op.rexPresent && !op.isMem &&
+            op.rmIndex >= 4 && op.rmIndex <= 7) return;
         op.plan = JIT64_FAST;
         return;
     case J64_CBW:
