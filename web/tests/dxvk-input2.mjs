@@ -159,7 +159,7 @@ try {
       return s ? { lit: s.litPixels || 0, rendered: s.v2?.rendered || 0 } : null;
     } catch (e) { return null; }
   }).catch(() => null);
-  const keyLines = () => logs.filter(l => /tri9input: KEYDOWN/.test(l));
+  const keyLines = () => logs.filter(l => /9input: KEYDOWN/.test(l));
   const parseOff = (line) => {
     const m = /off=\((-?\d+),(-?\d+)\)/.exec(line);
     return m ? { x: parseInt(m[1], 10), y: parseInt(m[2], 10) } : null;
