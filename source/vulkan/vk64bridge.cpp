@@ -284,81 +284,38 @@ const char* fnName(U64 id) {
 }
 
 std::recursive_mutex g_vkMutex;   // one bridge per process; every trap serializes
-// Type-erased guest memory accessor for 32-bit and 64-bit guests.
-// Both KMemory (32-bit) and KMemory64 have memcpyFromGuest/memcpyToGuest/readd/
-// writed/readq/writeq/readb with compatible signatures (see include/kmemory.h
-// wrappers), so this dispatches on the stored type tag.
-struct BridgeMem {
-    void* p = nullptr;
-    bool is64 = true;
-    inline void memcpyFromGuest(void* dst, U64 src, U64 len) {
-        if (is64) ((KMemory64*)p)->memcpyFromGuest(dst, src, len);
-        else ((KMemory*)p)->memcpyFromGuest(dst, src, len);
-    }
-    inline void memcpyToGuest(U64 dst, const void* src, U64 len) {
-        if (is64) ((KMemory64*)p)->memcpyToGuest(dst, src, len);
-        else ((KMemory*)p)->memcpyToGuest(dst, src, len);
-    }
-    inline U32 readd(U64 a) {
-        return is64 ? ((KMemory64*)p)->readd(a) : ((KMemory*)p)->readd((U32)a);
-    }
-    inline void writed(U64 a, U32 v) {
-        if (is64) ((KMemory64*)p)->writed(a, v); else ((KMemory*)p)->writed((U32)a, v);
-    }
-    inline U64 readq(U64 a) {
-        return is64 ? ((KMemory64*)p)->readq(a) : ((KMemory*)p)->readq((U32)a);
-    }
-    inline void writeq(U64 a, U64 v) {
-        if (is64) ((KMemory64*)p)->writeq(a, v); else ((KMemory*)p)->writeq((U32)a, v);
-    }
-    inline U8 readb(U64 a) {
-        return is64 ? ((KMemory64*)p)->readb(a) : ((KMemory*)p)->readb((U32)a);
-    }
-    inline U64 mmapReserveAndMap(U64 length, U32 prot) {
-        // 32-bit guests: not yet implemented (returns 0 = failure).
-        // The 64-bit path uses KMemory64::mmapReserveAndMap; 32-bit KMemory
-        // has a different mmap signature requiring a KThread*.
-        if (is64) return ((KMemory64*)p)->mmapReserveAndMap(length, prot);
-        return 0;
-    }
-    inline U64 munmap(U64 addr, U64 len) {
-        if (is64) return ((KMemory64*)p)->munmap(addr, len);
-        // 32-bit: KMemory::unmap returns U32
-        return ((KMemory*)p)->unmap((U32)addr, (U32)len);
-    }
-};
-BridgeMem g_mem;  // guest memory of the calling thread's process
+KMemory64* g_mem = nullptr;       // guest memory of the calling thread's process
 
 // ---------------------------------------------------------------------------
 // Guest memory helpers. EVERY guest pointer arrives here as a VA and is only
 // ever read/written through these.
 // ---------------------------------------------------------------------------
 template <class T> inline bool readStruct(U64 addr, T& out) {
-    if (!addr || !g_mem.p) return false;
-    g_mem.memcpyFromGuest(&out, addr, sizeof(T));
+    if (!addr || !g_mem) return false;
+    g_mem->memcpyFromGuest(&out, addr, sizeof(T));
     return true;
 }
 template <class T> inline void writeStruct(U64 addr, const T& in) {
-    if (addr && g_mem.p) g_mem.memcpyToGuest(addr, &in, sizeof(T));
+    if (addr && g_mem) g_mem->memcpyToGuest(addr, &in, sizeof(T));
 }
 template <class T> inline void readArray(U64 addr, U32 count, std::vector<T>& out) {
     out.clear();
-    if (!addr || !g_mem.p || !count) return;
+    if (!addr || !g_mem || !count) return;
     out.resize(count);
-    g_mem.memcpyFromGuest(out.data(), addr, sizeof(T) * (size_t)count);
+    g_mem->memcpyFromGuest(out.data(), addr, sizeof(T) * (size_t)count);
 }
 template <class T> inline void writeArray(U64 addr, const std::vector<T>& in, U32 count) {
-    if (addr && g_mem.p && count) g_mem.memcpyToGuest(addr, in.data(), sizeof(T) * (size_t)count);
+    if (addr && g_mem && count) g_mem->memcpyToGuest(addr, in.data(), sizeof(T) * (size_t)count);
 }
-inline U32  rd32(U64 a) { return (a && g_mem.p) ? g_mem.readd(a) : 0; }
-inline void wr32(U64 a, U32 v) { if (a && g_mem.p) g_mem.writed(a, v); }
-inline U64  rd64(U64 a) { return (a && g_mem.p) ? g_mem.readq(a) : 0; }
-inline void wr64(U64 a, U64 v) { if (a && g_mem.p) g_mem.writeq(a, v); }
+inline U32  rd32(U64 a) { return (a && g_mem) ? g_mem->readd(a) : 0; }
+inline void wr32(U64 a, U32 v) { if (a && g_mem) g_mem->writed(a, v); }
+inline U64  rd64(U64 a) { return (a && g_mem) ? g_mem->readq(a) : 0; }
+inline void wr64(U64 a, U64 v) { if (a && g_mem) g_mem->writeq(a, v); }
 inline std::string guestStr(U64 addr, size_t maxLen = 512) {
     std::string s;
-    if (!addr || !g_mem.p) return s;
+    if (!addr || !g_mem) return s;
     for (size_t i = 0; i < maxLen; i++) {
-        U8 c = g_mem.readb(addr + i);
+        U8 c = g_mem->readb(addr + i);
         if (!c) break;
         s.push_back((char)c);
     }
@@ -504,7 +461,7 @@ static void captureStageSpec(U64 specVa, StageSpec& out) {
     std::vector<Vk64SpecMapEntry> mes;
     readArray(si.pMapEntries, si.mapEntryCount, mes);
     std::vector<U8> data((size_t)si.dataSize);
-    g_mem.memcpyFromGuest(data.data(), si.pData, (size_t)si.dataSize);
+    g_mem->memcpyFromGuest(data.data(), si.pData, (size_t)si.dataSize);
     for (auto& me : mes) {
         if (out.n >= 16) break;
         if (me.offset + me.size > si.dataSize || me.size > 8 || me.size == 0) continue;
@@ -791,7 +748,7 @@ void execUpdateBuf(const Cmd& k) {
     U64 n = (U64)k.updBytes.size();
     if (off >= m->size) return;
     if (off + n > m->size) n = m->size - off;
-    g_mem.memcpyToGuest(m->va + off, k.updBytes.data(), n);
+    g_mem->memcpyToGuest(m->va + off, k.updBytes.data(), n);
 }
 void execCopy(const Copy& r) {
     Buffer* src = objOf<Buffer>(r.srcBuffer, K_BUFFER, "copyBufferToImage");
@@ -812,8 +769,8 @@ void execCopy(const Copy& r) {
     if (dstBase + (U64)rowBytes * r.h > dmem->va + dmem->size) return;
     std::vector<U8> tmp(rowBytes);
     for (U32 y = 0; y < r.h; y++) {
-        g_mem.memcpyFromGuest(tmp.data(), srcBase + (U64)y * srcRow, rowBytes);
-        g_mem.memcpyToGuest(dstBase + (U64)y * (U64)dst->w * bpp, tmp.data(), rowBytes);
+        g_mem->memcpyFromGuest(tmp.data(), srcBase + (U64)y * srcRow, rowBytes);
+        g_mem->memcpyToGuest(dstBase + (U64)y * (U64)dst->w * bpp, tmp.data(), rowBytes);
     }
 }
 
@@ -824,7 +781,7 @@ std::vector<U8> readGuestRange(U64 memId, U64 memOff, U64 bytes) {
     if (memOff >= m->size) return out;
     if (memOff + bytes > m->size) bytes = m->size - memOff;
     out.resize((size_t)bytes);
-    g_mem.memcpyFromGuest(out.data(), m->va + memOff, bytes);
+    g_mem->memcpyFromGuest(out.data(), m->va + memOff, bytes);
     return out;
 }
 
@@ -1542,7 +1499,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     // b.obj = guest VA of the inline bytes, b.range = size.
                     if (b.obj && b.range) {
                         std::vector<U8> bytes((size_t)b.range);
-                        g_mem.memcpyFromGuest(bytes.data(), b.obj, b.range);
+                        g_mem->memcpyFromGuest(bytes.data(), b.obj, b.range);
                         emit(V2_INLINE_BYTES, [&](ChunkWriter& p) {
                             p.u8(setIndex); p.u8(0); p.u16(0);
                             p.u32(b.binding); p.u32(b.dstArrayElement); p.u32((U32)bytes.size());
@@ -1889,11 +1846,11 @@ void fillCoreFeatures(VkPhysicalDeviceFeatures* f) {
 // reads it from.
 #define SET_FEATURES(addr, fn, T)                                             \
     do {                                                                       \
-        if ((addr) && g_mem.p) {                                                 \
+        if ((addr) && g_mem) {                                                 \
             T f_ = {};                                                         \
-            g_mem.memcpyFromGuest(&f_, (addr), sizeof(f_));                   \
+            g_mem->memcpyFromGuest(&f_, (addr), sizeof(f_));                   \
             fn(f_);                                                            \
-            g_mem.memcpyToGuest((addr), &f_, sizeof(f_));                     \
+            g_mem->memcpyToGuest((addr), &f_, sizeof(f_));                     \
         }                                                                      \
     } while (0)
 inline void fillRobustness2(VkPhysicalDeviceRobustness2FeaturesEXT& f) {
@@ -2062,8 +2019,8 @@ inline void fillVulkan11Features(VkPhysicalDeviceVulkan11Features& f) {
 }
 
 void walkFeatures2(U64 pNextAddr) {
-    for (U64 cur = pNextAddr; cur && g_mem.p;) {
-        U32 sType = g_mem.readd(cur);
+    for (U64 cur = pNextAddr; cur && g_mem;) {
+        U32 sType = g_mem->readd(cur);
         switch (sType) {
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT:
                 SET_FEATURES(cur, fillRobustness2, VkPhysicalDeviceRobustness2FeaturesEXT); break;
@@ -2096,7 +2053,7 @@ void walkFeatures2(U64 pNextAddr) {
                          (unsigned)sType);
                 break;
         }
-        cur = g_mem.readq(cur + 8);      /* pNext is at offset 8 in every struct */
+        cur = g_mem->readq(cur + 8);      /* pNext is at offset 8 in every struct */
     }
 }
 
@@ -2112,39 +2069,39 @@ void walkProperties2(U64 pNextAddr) {
         0x56, 0x4B, 0x57, 0x47, 0x50, 0x55, 0x21, 0x01,   /* 'VKWGPU' + version */
         0x56, 0x4B, 0x57, 0x47, 0x50, 0x55, 0x21, 0x02,
     };
-    for (U64 cur = pNextAddr; cur && g_mem.p;) {
-        U32 sType = g_mem.readd(cur);
+    for (U64 cur = pNextAddr; cur && g_mem;) {
+        U32 sType = g_mem->readd(cur);
         switch (sType) {
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES: {
                 VkPhysicalDeviceIDProperties p = {};
-                g_mem.memcpyFromGuest(&p, cur, sizeof(p));
+                g_mem->memcpyFromGuest(&p, cur, sizeof(p));
                 memcpy(p.deviceUUID, uuid, VK_UUID_SIZE);
                 p.deviceNodeMask = 1;
-                g_mem.memcpyToGuest(cur, &p, sizeof(p));
+                g_mem->memcpyToGuest(cur, &p, sizeof(p));
                 break;
             }
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES: {
                 VkPhysicalDeviceSubgroupProperties p = {};
-                g_mem.memcpyFromGuest(&p, cur, sizeof(p));
+                g_mem->memcpyFromGuest(&p, cur, sizeof(p));
                 p.subgroupSize = 32;          /* warp-shaped, like every real ICD */
                 p.supportedStages = 0xffffffffu;
                 p.supportedOperations = 0xffffffffu;
                 p.quadOperationsInAllStages = VK_TRUE;
-                g_mem.memcpyToGuest(cur, &p, sizeof(p));
+                g_mem->memcpyToGuest(cur, &p, sizeof(p));
                 break;
             }
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_PROPERTIES: {
                 VkPhysicalDeviceMaintenance5Properties p = {};
-                g_mem.memcpyFromGuest(&p, cur, sizeof(p));
+                g_mem->memcpyFromGuest(&p, cur, sizeof(p));
                 p.earlyFragmentMultisampleCoverageAfterSampleCounting = VK_TRUE;
                 p.earlyFragmentSampleMaskTestBeforeSampleCounting = VK_TRUE;
                 p.polygonModePointSize = VK_TRUE;
-                g_mem.memcpyToGuest(cur, &p, sizeof(p));
+                g_mem->memcpyToGuest(cur, &p, sizeof(p));
                 break;
             }
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES: {
                 VkPhysicalDeviceDescriptorIndexingProperties p = {};
-                g_mem.memcpyFromGuest(&p, cur, sizeof(p));
+                g_mem->memcpyFromGuest(&p, cur, sizeof(p));
                 p.maxUpdateAfterBindDescriptorsInAllPools = 1024;
                 p.maxPerStageDescriptorUpdateAfterBindSamplers = 16;
                 p.maxPerStageDescriptorUpdateAfterBindUniformBuffers = 16;
@@ -2163,22 +2120,22 @@ void walkProperties2(U64 pNextAddr) {
                 p.maxDescriptorSetUpdateAfterBindSampledImages = 1024;
                 p.maxDescriptorSetUpdateAfterBindStorageImages = 1024;
                 p.maxDescriptorSetUpdateAfterBindInputAttachments = 16;
-                g_mem.memcpyToGuest(cur, &p, sizeof(p));
+                g_mem->memcpyToGuest(cur, &p, sizeof(p));
                 break;
             }
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_PROPERTIES_EXT: {
                 VkPhysicalDeviceRobustness2PropertiesEXT p = {};
-                g_mem.memcpyFromGuest(&p, cur, sizeof(p));
+                g_mem->memcpyFromGuest(&p, cur, sizeof(p));
                 // MUST be non-zero: DXVK D3D9DeviceEx divides constant-layout
                 // sizes by these alignments; zero => guest SIGFPE.
                 p.robustStorageBufferAccessSizeAlignment = 4;
                 p.robustUniformBufferAccessSizeAlignment = 4;
-                g_mem.memcpyToGuest(cur, &p, sizeof(p));
+                g_mem->memcpyToGuest(cur, &p, sizeof(p));
                 break;
             }
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT: {
                 VkPhysicalDeviceTransformFeedbackPropertiesEXT p = {};
-                g_mem.memcpyFromGuest(&p, cur, sizeof(p));
+                g_mem->memcpyFromGuest(&p, cur, sizeof(p));
                 p.maxTransformFeedbackStreams = 4;
                 p.maxTransformFeedbackBuffers = 4;
                 p.maxTransformFeedbackBufferSize = 1ull << 27;
@@ -2188,12 +2145,12 @@ void walkProperties2(U64 pNextAddr) {
                 p.transformFeedbackQueries = VK_TRUE;
                 p.transformFeedbackStreamsLinesTriangles = VK_TRUE;
                 p.transformFeedbackDraw = VK_TRUE;
-                g_mem.memcpyToGuest(cur, &p, sizeof(p));
+                g_mem->memcpyToGuest(cur, &p, sizeof(p));
                 break;
             }
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES: {
                 VkPhysicalDeviceVulkan11Properties p = {};
-                g_mem.memcpyFromGuest(&p, cur, sizeof(p));
+                g_mem->memcpyFromGuest(&p, cur, sizeof(p));
                 memcpy(p.deviceUUID, uuid, VK_UUID_SIZE);
                 p.deviceNodeMask = 1;
                 p.subgroupSize = 32;
@@ -2205,23 +2162,23 @@ void walkProperties2(U64 pNextAddr) {
                 p.maxMultiviewInstanceIndex = 0xFFFFFFFFu;
                 p.maxPerSetDescriptors = 1024;
                 p.maxMemoryAllocationSize = 2ull * 1024 * 1024 * 1024;
-                g_mem.memcpyToGuest(cur, &p, sizeof(p));
+                g_mem->memcpyToGuest(cur, &p, sizeof(p));
                 break;
             }
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES: {
                 Vk64Vulkan13Properties p = {};
-                g_mem.memcpyFromGuest(&p, cur, sizeof(p));
+                g_mem->memcpyFromGuest(&p, cur, sizeof(p));
                 // vkd3d-proton single-texel-alignment gate (device.c:2520):
                 // storageTexelBufferOffsetSingleTexelAlignment ||
                 // storageTexelBufferOffsetAlignmentBytes == 1 (same for uniform).
                 p.storageTexelBufferOffsetSingleTexelAlignment = VK_TRUE;
                 p.uniformTexelBufferOffsetSingleTexelAlignment = VK_TRUE;
-                g_mem.memcpyToGuest(cur, &p, sizeof(p));
+                g_mem->memcpyToGuest(cur, &p, sizeof(p));
                 break;
             }
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES: {
                 VkPhysicalDeviceVulkan12Properties p = {};
-                g_mem.memcpyFromGuest(&p, cur, sizeof(p));
+                g_mem->memcpyFromGuest(&p, cur, sizeof(p));
                 p.driverID = VK_DRIVER_ID_MESA_LLVMPIPE;
                 p.driverName[0] = 'b';
                 p.driverName[1] = 'o';
@@ -2257,7 +2214,7 @@ void walkProperties2(U64 pNextAddr) {
                 p.maxDescriptorSetUpdateAfterBindInputAttachments = 16;
                 p.maxTimelineSemaphoreValueDifference = 0xFFFFFFFFull;
                 p.framebufferIntegerColorSampleCounts = VK_SAMPLE_COUNT_1_BIT;
-                g_mem.memcpyToGuest(cur, &p, sizeof(p));
+                g_mem->memcpyToGuest(cur, &p, sizeof(p));
                 break;
             }
             default:
@@ -2265,7 +2222,7 @@ void walkProperties2(U64 pNextAddr) {
                          (unsigned)sType);
                 break;
         }
-        cur = g_mem.readq(cur + 8);
+        cur = g_mem->readq(cur + 8);
     }
 }
 
@@ -2301,21 +2258,9 @@ U64 createSurface() {
 // ---------------------------------------------------------------------------
 // Entry point from ksyscall64.
 // ---------------------------------------------------------------------------
-// Set the global BridgeMem from a CPU (32-bit or 64-bit).
-// Uses overload resolution: CPU64* -> is64=true, CPU* -> is64=false.
-inline void setBridgeMem(CPU64* cpu) {
-    g_mem.p = cpu ? cpu->memory : nullptr;
-    g_mem.is64 = true;
-}
-inline void setBridgeMem(CPU* cpu) {
-    g_mem.p = cpu ? cpu->memory : nullptr;
-    g_mem.is64 = false;
-}
-
-template<typename CpuT>
-U64 vk64BridgeCore(CpuT* cpu, U64 fnId, U64 argsAddr) {
+U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     std::lock_guard<std::recursive_mutex> lk(g_vkMutex);
-    setBridgeMem(cpu);
+    g_mem = cpu ? cpu->memory : nullptr;
 
     if (fnId == VK64_fn_witness) {
         // The guest shim's constructor. Proves the guest dlopen()ed THIS
@@ -2328,13 +2273,13 @@ U64 vk64BridgeCore(CpuT* cpu, U64 fnId, U64 argsAddr) {
         // This is the P1 loader_tally worklist, still recording what a real guest
         // actually asks for.
         VK64Args a0 = {};
-        if (argsAddr && g_mem.p) g_mem.memcpyFromGuest(&a0, argsAddr, sizeof(a0));
+        if (argsAddr && g_mem) g_mem->memcpyFromGuest(&a0, argsAddr, sizeof(a0));
         klog_fmt("vk64: asked-for (unimplemented): %s", guestStr(a0.a[0]).c_str());
         return (U64)(int64_t)VK_ERROR_FEATURE_NOT_PRESENT;
     }
     if (fnId == VK64_fn_traceProc) {
         VK64Args a0 = {};
-        if (argsAddr && g_mem.p) g_mem.memcpyFromGuest(&a0, argsAddr, sizeof(a0));
+        if (argsAddr && g_mem) g_mem->memcpyFromGuest(&a0, argsAddr, sizeof(a0));
         klog_fmt("vk64: gipa %s: %s", a0.a[1] ? "HIT " : "MISS", guestStr(a0.a[0]).c_str());
         return 0;
     }
@@ -2342,7 +2287,7 @@ U64 vk64BridgeCore(CpuT* cpu, U64 fnId, U64 argsAddr) {
     if (vkTrace()) { klog_fmt("vk64: trap %s", fnName(fnId)); g_tracedCalls++; }
 
     VK64Args args = {};
-    if (argsAddr && g_mem.p) g_mem.memcpyFromGuest(&args, argsAddr, sizeof(args));
+    if (argsAddr && g_mem) g_mem->memcpyFromGuest(&args, argsAddr, sizeof(args));
 
     switch (fnId) {
     // =====================================================================
@@ -2515,19 +2460,19 @@ U64 vk64BridgeCore(CpuT* cpu, U64 fnId, U64 argsAddr) {
             VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT | VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT |
             VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT);
         writeStruct(args.a[2], p2);
-        for (U64 cur = p2.pNext; cur && g_mem.p;) {
-            if (g_mem.readd(cur) == VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3) {
+        for (U64 cur = p2.pNext; cur && g_mem;) {
+            if (g_mem->readd(cur) == VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3) {
                 VkFormatProperties3 p3 = {};
-                g_mem.memcpyFromGuest(&p3, cur, sizeof(p3));
+                g_mem->memcpyFromGuest(&p3, cur, sizeof(p3));
                 // _2 flag values match v1 on the low bits; add color/depth targets.
                 const VkFormatFeatureFlags2 img2 = (VkFormatFeatureFlags2)((U64)img | 0x3800ull);
                 p3.linearTilingFeatures = img2;
                 p3.optimalTilingFeatures = (VkFormatFeatureFlags2)((U64)img2 |
                     (U64)VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | (U64)VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
                 p3.bufferFeatures = (VkFormatFeatureFlags2)p2.formatProperties.bufferFeatures;
-                g_mem.memcpyToGuest(cur, &p3, sizeof(p3));
+                g_mem->memcpyToGuest(cur, &p3, sizeof(p3));
             }
-            cur = g_mem.readq(cur + 8);
+            cur = g_mem->readq(cur + 8);
         }
         return 0;
     }
@@ -2543,11 +2488,11 @@ U64 vk64BridgeCore(CpuT* cpu, U64 fnId, U64 argsAddr) {
         // (physDev, pInfo2*, pProps2*)
         if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
         VkImageFormatProperties2 p2 = {};
-        g_mem.memcpyFromGuest(&p2, args.a[2], sizeof(p2));
+        g_mem->memcpyFromGuest(&p2, args.a[2], sizeof(p2));
         VkPhysicalDeviceImageFormatInfo2 info = {};
-        g_mem.memcpyFromGuest(&info, args.a[1], sizeof(info));
+        g_mem->memcpyFromGuest(&info, args.a[1], sizeof(info));
         fillImageFormatProps(&p2.imageFormatProperties);
-        g_mem.memcpyToGuest(args.a[2], &p2, sizeof(p2));
+        g_mem->memcpyToGuest(args.a[2], &p2, sizeof(p2));
         return VK_SUCCESS;
     }
     case VK64_fn_vkGetPhysicalDeviceSurfaceCapabilitiesKHR: {
@@ -2622,7 +2567,7 @@ U64 vk64BridgeCore(CpuT* cpu, U64 fnId, U64 argsAddr) {
         // (dev, VkBufferMemoryRequirementsInfo2*, VkMemoryRequirements2*)
         if (!args.a[1] || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
         VkBufferMemoryRequirementsInfo2 in2 = {};
-        g_mem.memcpyFromGuest(&in2, args.a[1], sizeof(in2));
+        g_mem->memcpyFromGuest(&in2, args.a[1], sizeof(in2));
         Buffer* b = objOf<Buffer>((U64)in2.buffer, K_BUFFER, "vkGetBufferMemoryRequirements2");
         // G2: DXVK may query requirements for buffers created outside our
         // bridge (e.g., via winevulkan paths that bypass our vkCreateBuffer).
@@ -2630,26 +2575,26 @@ U64 vk64BridgeCore(CpuT* cpu, U64 fnId, U64 argsAddr) {
         // can proceed. The size is advisory; DXVK validates it.
         U64 bufSize = (b && b->size) ? b->size : 65536;
         VkMemoryRequirements2 out2 = {};
-        g_mem.memcpyFromGuest(&out2, args.a[2], sizeof(out2));
+        g_mem->memcpyFromGuest(&out2, args.a[2], sizeof(out2));
         out2.memoryRequirements.size = (bufSize + 255) & ~(U64)255;
         out2.memoryRequirements.alignment = 256;
         out2.memoryRequirements.memoryTypeBits = 0xF;
-        g_mem.memcpyToGuest(args.a[2], &out2, sizeof(out2));
+        g_mem->memcpyToGuest(args.a[2], &out2, sizeof(out2));
         // Fill chained VkMemoryDedicatedRequirements in place.
         U64 pn = out2.pNext;
         while (pn) {
             U32 st = 0;
-            g_mem.memcpyFromGuest(&st, pn, sizeof(st));
+            g_mem->memcpyFromGuest(&st, pn, sizeof(st));
             if (st == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS) {
                 VkMemoryDedicatedRequirements dr = {};
-                g_mem.memcpyFromGuest(&dr, pn, sizeof(dr));
+                g_mem->memcpyFromGuest(&dr, pn, sizeof(dr));
                 dr.prefersDedicatedAllocation = 0;
                 dr.requiresDedicatedAllocation = 0;
-                g_mem.memcpyToGuest(pn, &dr, sizeof(dr));
+                g_mem->memcpyToGuest(pn, &dr, sizeof(dr));
                 break;
             }
             U64 nxt = 0;
-            g_mem.memcpyFromGuest(&nxt, pn + 8, sizeof(nxt));
+            g_mem->memcpyFromGuest(&nxt, pn + 8, sizeof(nxt));
             pn = nxt;
         }
         return VK_SUCCESS;
@@ -2660,33 +2605,33 @@ U64 vk64BridgeCore(CpuT* cpu, U64 fnId, U64 argsAddr) {
         // creating a temp buffer when available.
         if (!args.a[1] || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
         VkDeviceBufferMemoryRequirements devInfo = {};
-        g_mem.memcpyFromGuest(&devInfo, args.a[1], sizeof(devInfo));
+        g_mem->memcpyFromGuest(&devInfo, args.a[1], sizeof(devInfo));
         U64 createInfoSize = 0;
         if (devInfo.pCreateInfo) {
             VkBufferCreateInfo ci = {};
-            g_mem.memcpyFromGuest(&ci, devInfo.pCreateInfo, sizeof(ci));
+            g_mem->memcpyFromGuest(&ci, devInfo.pCreateInfo, sizeof(ci));
             createInfoSize = ci.size;
         }
         VkMemoryRequirements2 out2 = {};
-        g_mem.memcpyFromGuest(&out2, args.a[2], sizeof(out2));
+        g_mem->memcpyFromGuest(&out2, args.a[2], sizeof(out2));
         out2.memoryRequirements.size = createInfoSize ? ((createInfoSize + 255) & ~(U64)255) : 256;
         out2.memoryRequirements.alignment = 256;
         out2.memoryRequirements.memoryTypeBits = 0xF;
-        g_mem.memcpyToGuest(args.a[2], &out2, sizeof(out2));
+        g_mem->memcpyToGuest(args.a[2], &out2, sizeof(out2));
         U64 pn = out2.pNext;
         while (pn) {
             U32 st = 0;
-            g_mem.memcpyFromGuest(&st, pn, sizeof(st));
+            g_mem->memcpyFromGuest(&st, pn, sizeof(st));
             if (st == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS) {
                 VkMemoryDedicatedRequirements dr = {};
-                g_mem.memcpyFromGuest(&dr, pn, sizeof(dr));
+                g_mem->memcpyFromGuest(&dr, pn, sizeof(dr));
                 dr.prefersDedicatedAllocation = 0;
                 dr.requiresDedicatedAllocation = 0;
-                g_mem.memcpyToGuest(pn, &dr, sizeof(dr));
+                g_mem->memcpyToGuest(pn, &dr, sizeof(dr));
                 break;
             }
             U64 nxt = 0;
-            g_mem.memcpyFromGuest(&nxt, pn + 8, sizeof(nxt));
+            g_mem->memcpyFromGuest(&nxt, pn + 8, sizeof(nxt));
             pn = nxt;
         }
         return VK_SUCCESS;
@@ -2706,31 +2651,31 @@ U64 vk64BridgeCore(CpuT* cpu, U64 fnId, U64 argsAddr) {
         // (dev, VkImageMemoryRequirementsInfo2*, VkMemoryRequirements2*)
         if (!args.a[1] || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
         VkImageMemoryRequirementsInfo2 in2 = {};
-        g_mem.memcpyFromGuest(&in2, args.a[1], sizeof(in2));
+        g_mem->memcpyFromGuest(&in2, args.a[1], sizeof(in2));
         Image* im = objOf<Image>((U64)in2.image, K_IMAGE, "vkGetImageMemoryRequirements2");
         if (!im) return VK_ERROR_INITIALIZATION_FAILED;
         VkMemoryRequirements2 out2 = {};
-        g_mem.memcpyFromGuest(&out2, args.a[2], sizeof(out2));
+        g_mem->memcpyFromGuest(&out2, args.a[2], sizeof(out2));
         U64 px = (U64)im->w * im->h * (im->d ? im->d : 1) * (im->layers ? im->layers : 1) * fmt_bpp(im->format);
         out2.memoryRequirements.size = (px + 255) & ~(U64)255;
         out2.memoryRequirements.alignment = 256;
         out2.memoryRequirements.memoryTypeBits = 0xF;
-        g_mem.memcpyToGuest(args.a[2], &out2, sizeof(out2));
+        g_mem->memcpyToGuest(args.a[2], &out2, sizeof(out2));
         // Fill chained VkMemoryDedicatedRequirements in place (guest buffer).
         U64 pn = out2.pNext;
         while (pn) {
             U32 st = 0;
-            g_mem.memcpyFromGuest(&st, pn, sizeof(st));
+            g_mem->memcpyFromGuest(&st, pn, sizeof(st));
             if (st == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS) {
                 VkMemoryDedicatedRequirements dr = {};
-                g_mem.memcpyFromGuest(&dr, pn, sizeof(dr));
+                g_mem->memcpyFromGuest(&dr, pn, sizeof(dr));
                 dr.prefersDedicatedAllocation = 0;
                 dr.requiresDedicatedAllocation = 0;
-                g_mem.memcpyToGuest(pn, &dr, sizeof(dr));
+                g_mem->memcpyToGuest(pn, &dr, sizeof(dr));
                 break;
             }
             U64 nxt = 0;
-            g_mem.memcpyFromGuest(&nxt, pn + 8, sizeof(nxt));
+            g_mem->memcpyFromGuest(&nxt, pn + 8, sizeof(nxt));
             pn = nxt;
         }
         return VK_SUCCESS;
@@ -3122,7 +3067,7 @@ U64 vk64BridgeCore(CpuT* cpu, U64 fnId, U64 argsAddr) {
             return VK_ERROR_INITIALIZATION_FAILED;
         for (U32 i = 0; i < n; i++) {
             VkComputePipelineCreateInfo ci = {};
-            g_mem.memcpyFromGuest(&ci, args.a[3] + (U64)i * sizeof(ci), sizeof(ci));
+            g_mem->memcpyFromGuest(&ci, args.a[3] + (U64)i * sizeof(ci), sizeof(ci));
             U64 id = 0;
             Pipeline* pl = createObj<Pipeline>(K_PIPELINE, id);
             pl->cs = ci.stage.module;
@@ -3181,7 +3126,7 @@ U64 vk64BridgeCore(CpuT* cpu, U64 fnId, U64 argsAddr) {
         // refcount drop — vkcube destroys both modules right after pipeline
         // creation, which is legal).
         m->code.resize((size_t)ci.codeSize);
-        g_mem.memcpyFromGuest(m->code.data(), ci.pCode, ci.codeSize);
+        g_mem->memcpyFromGuest(m->code.data(), ci.pCode, ci.codeSize);
         m->hash = blob_hash(m->code.data(), m->code.size());
         wr64(args.a[3], id);
         klog_fmt("vk64: vkCreateShaderModule %llu bytes (hash %016llx)",
@@ -3215,15 +3160,15 @@ U64 vk64BridgeCore(CpuT* cpu, U64 fnId, U64 argsAddr) {
         // Timeline detection: VkSemaphoreTypeCreateInfo hangs off
         // VkSemaphoreCreateInfo::pNext, and the walker must not stop at the first
         // unknown sType (a guest may chain something else first).
-        for (U64 cur = ci.pNext; cur && g_mem.p;) {
-            if (g_mem.readd(cur) == VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO) {
+        for (U64 cur = ci.pNext; cur && g_mem;) {
+            if (g_mem->readd(cur) == VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO) {
                 VkSemaphoreTypeCreateInfo ti = {};
-                g_mem.memcpyFromGuest(&ti, cur, sizeof(ti));
+                g_mem->memcpyFromGuest(&ti, cur, sizeof(ti));
                 s->isTimeline = (ti.semaphoreType == VK_SEMAPHORE_TYPE_TIMELINE) ? 1 : 0;
                 s->counter = ti.initialValue;
                 break;
             }
-            cur = g_mem.readq(cur + 8);
+            cur = g_mem->readq(cur + 8);
         }
         wr64(args.a[3], id);
         klog_fmt("vk64: vkCreateSemaphore%s%s",
@@ -3283,7 +3228,7 @@ U64 vk64BridgeCore(CpuT* cpu, U64 fnId, U64 argsAddr) {
         // CPU64 store path into K64Page buffers and cannot write to a wasm-heap
         // address, so the only substrate a guest-visible map can use is the
         // kernel's own mapper (tasks/p1-final.md section 2.4).
-        m->va = g_mem.mmapReserveAndMap(ai.allocationSize, K_PROT_READ | K_PROT_WRITE);
+        m->va = g_mem->mmapReserveAndMap(ai.allocationSize, K_PROT_READ | K_PROT_WRITE);
         wr64(args.a[3], id);
         klog_fmt("vk64: vkAllocateMemory %llu bytes -> guest va 0x%llx (type %u)",
                  (unsigned long long)m->size, (unsigned long long)m->va, (unsigned)m->memIndex);
@@ -3415,15 +3360,15 @@ U64 vk64BridgeCore(CpuT* cpu, U64 fnId, U64 argsAddr) {
                 // Inline UBO: the bytes live in the write's pNext
                 // (VkWriteDescriptorSetInlineUniformBlock), not in a buffer. Keep
                 // the data pointer so the binding is not mistaken for a null one.
-                for (U64 cur = w.pNext; cur && g_mem.p;) {
-                    if (g_mem.readd(cur) == VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK) {
+                for (U64 cur = w.pNext; cur && g_mem;) {
+                    if (g_mem->readd(cur) == VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK) {
                         VkWriteDescriptorSetInlineUniformBlock ib = {};
-                        g_mem.memcpyFromGuest(&ib, cur, sizeof(ib));
+                        g_mem->memcpyFromGuest(&ib, cur, sizeof(ib));
                         b->obj = ib.pData;
                         b->range = ib.dataSize;
                         break;
                     }
-                    cur = g_mem.readq(cur + 8);
+                    cur = g_mem->readq(cur + 8);
                 }
             } else if (w.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
                        w.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ||
@@ -3619,7 +3564,7 @@ U64 vk64BridgeCore(CpuT* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkFreeMemory: {
         DeviceMemory* m = objOf<DeviceMemory>(args.a[1], K_MEMORY, "vkFreeMemory");
         if (m) {
-            if (m->va) g_mem.munmap(m->va, m->size);
+            if (m->va) g_mem->munmap(m->va, m->size);
             dropObj(args.a[1]);
         }
         return 0;
@@ -3736,7 +3681,7 @@ U64 vk64BridgeCore(CpuT* cpu, U64 fnId, U64 argsAddr) {
         c.pcStageFlags = stageFlags;
         c.pcOffset = offset;
         c.pcSize = size > VK64_MAX_PUSH_BYTES ? VK64_MAX_PUSH_BYTES : size;
-        if (pValues && c.pcSize) g_mem.memcpyFromGuest(c.pcBytes, pValues, c.pcSize);
+        if (pValues && c.pcSize) g_mem->memcpyFromGuest(c.pcBytes, pValues, c.pcSize);
         pushCmd(cb, c);
         return 0;
     }
@@ -3954,7 +3899,7 @@ U64 vk64BridgeCore(CpuT* cpu, U64 fnId, U64 argsAddr) {
         c.pcOffset = off;
         c.pcSize = size;
         c.pcStageFlags = (U32)args.a[2];
-        g_mem.memcpyFromGuest(c.pcBytes, args.a[5], size);
+        g_mem->memcpyFromGuest(c.pcBytes, args.a[5], size);
         pushCmd(cb, c);
         return 0;
     }
@@ -3980,7 +3925,7 @@ U64 vk64BridgeCore(CpuT* cpu, U64 fnId, U64 argsAddr) {
         c.updBuf = args.a[1];
         c.updOff = args.a[2];
         c.updBytes.resize((size_t)size);
-        g_mem.memcpyFromGuest(c.updBytes.data(), args.a[4], size);
+        g_mem->memcpyFromGuest(c.updBytes.data(), args.a[4], size);
         pushCmd(cb, c);
         return 0;
     }
@@ -4033,10 +3978,10 @@ U64 vk64BridgeCore(CpuT* cpu, U64 fnId, U64 argsAddr) {
             // VALUES that make a u64 semaphore mean anything. DXVK writes one of
             // these on every flush (its tracking fence), so ignoring the chain
             // means the counter never moves and every later wait reads stale.
-            for (U64 cur = sis[i].pNext; cur && g_mem.p;) {
-                if (g_mem.readd(cur) == VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO) {
+            for (U64 cur = sis[i].pNext; cur && g_mem;) {
+                if (g_mem->readd(cur) == VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO) {
                     VkTimelineSemaphoreSubmitInfo ti = {};
-                    g_mem.memcpyFromGuest(&ti, cur, sizeof(ti));
+                    g_mem->memcpyFromGuest(&ti, cur, sizeof(ti));
                     for (U32 w = 0; w < ti.waitSemaphoreValueCount; w++) {
                         U64 semId = rd64(sis[i].pWaitSemaphores + (U64)w * 8);
                         U64 want  = rd64(ti.pWaitSemaphoreValues + (U64)w * 8);
@@ -4051,7 +3996,7 @@ U64 vk64BridgeCore(CpuT* cpu, U64 fnId, U64 argsAddr) {
                     }
                     break;
                 }
-                cur = g_mem.readq(cur + 8);
+                cur = g_mem->readq(cur + 8);
             }
             for (U32 c = 0; c < sis[i].commandBufferCount; c++) {
                 U64 cbId = rd64(sis[i].pCommandBuffers + (U64)c * 8);
@@ -4182,15 +4127,11 @@ U64 vk64BridgeCore(CpuT* cpu, U64 fnId, U64 argsAddr) {
     }
 }
 
-// 64-bit entry point (existing API)
-U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
-    return vk64BridgeCore(cpu, fnId, argsAddr);
-}
-
-// 32-bit entry point: the 32-bit shim packs args identically (64-bit slots,
-// 32-bit values zero-extended), so the same core logic works.
+// 32-bit entry point (stub). Full 32-bit Vulkan bridge is future work;
+// the BridgeMem approach in 261e9976 caused a JS pthread error.
 U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
-    return vk64BridgeCore(cpu, (U64)fnId, (U64)argsAddr);
+    (void)cpu; (void)fnId; (void)argsAddr;
+    return 0;
 }
 
 #endif // BOXEDWINE_VULKAN64

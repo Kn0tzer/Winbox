@@ -34,6 +34,7 @@ class CPU;
 U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr);
 
 // 32-bit entry point from ksyscall (int $0x80). fnId = EBX, argsAddr = ECX.
+// Currently a stub; full 32-bit Vulkan support is future work.
 U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr);
 
 #endif // __VK64BRIDGE_H__

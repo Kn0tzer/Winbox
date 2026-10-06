@@ -23,9 +23,9 @@
 #include "ksignal.h"
 #include "ksocket.h"
 #include "kepoll.h"
-#include "kevent.h"
 #include "../opengl/gl64bridge.h"
 #include "../vulkan/vk64bridge.h"
+#include "kevent.h"
 
 #include <random>
 #include <thread>

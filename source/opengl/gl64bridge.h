@@ -28,9 +28,8 @@ class CPU;
 // GL64Args). Returns the call's result (or 0 for void) to be placed in RAX.
 U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr);
 
-// 32-bit entry point from ksyscall (int $0x80). fnId = EBX, argsAddr = ECX
-// (guest VA of a GL64Args with 32-bit values zero-extended into 64-bit slots).
-// Returns the result to be placed in EAX.
+// 32-bit entry point from ksyscall (int $0x80). fnId = EBX, argsAddr = ECX.
+// Currently a stub; full 32-bit GL support is future work.
 U64 gl32Bridge(CPU* cpu, U32 fnId, U32 argsAddr);
 
 #endif // __GL64BRIDGE_H__
