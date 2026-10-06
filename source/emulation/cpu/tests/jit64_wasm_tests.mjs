@@ -2762,7 +2762,7 @@ test('CMOVcc: 16-bit preserves upper 48', async () => {
   assert.equal(out.regs[1], 0xAAAAAAAAAAAA1234n, 'upper 48 preserved');
 });
 
-test.skip('CMOVcc: memory source, taken and not-taken', async () => {
+test('CMOVcc: memory source, taken and not-taken', async () => {
   const memAddr = 0x10000n;
   const memInit = new Map();
   [0xEF, 0xBE, 0xAD, 0xDE].forEach((b, i) => memInit.set(memAddr + BigInt(i), b));
@@ -2778,7 +2778,7 @@ test.skip('CMOVcc: memory source, taken and not-taken', async () => {
   await checkCmov(enc2, { regs: regs2, rflags: 0x240, memInit });
 });
 
-test.skip('fuzz CMOVcc vs reference (600 cases)', async () => {
+test('fuzz CMOVcc vs reference (600 cases)', async () => {
   const rng = mulberry32(0xC40F);
   const flagSets = [0x202, 0x203, 0x8C5, 0x246, 0x202 | 0x800, 0x402, 0x0, 0x8D5];
   const advVals = [0n, 1n, 0x7Fn, 0x80n, 0xFFn, 0x7FFFn, 0x8000n, 0xFFFFn,
@@ -2792,11 +2792,33 @@ test.skip('fuzz CMOVcc vs reference (600 cases)', async () => {
     const memAddr = 0x10000n + BigInt(Math.floor(rng() * 16) * 8);
     const memInit = new Map();
     if (isMem) {
-      const baseReg = Math.floor(rng() * 8);
+      // NB: baseReg 4 (RSP) needs a SIB byte and 5 (RBP) encodes as
+      // RIP-relative in mod=00; encCmovMem only emits the simple mod=00
+      // [base] form, so both are excluded here.
+      const baseReg = pick(rng, [0, 1, 2, 3, 6, 7]);
       enc = encCmovMem(cc, size, dest, baseReg);
       regs = Array.from({ length: 16 }, () => advVal(rng));
-      regs[baseReg] = memAddr;
-      for (let b = 0; b < 8; b++) memInit.set(memAddr + BigInt(b), Math.floor(rng() * 256));
+      // Vary the memory operand: page-boundary touch, unmapped (reads 0),
+      // or normal mapped. The source is always loaded even if the condition
+      // is false, so all three exercise the load path.
+      const ar = rng();
+      let addr, doInit;
+      if (ar < 0.15) {
+        // Page-boundary: address straddling a 4K boundary.
+        addr = 0x2000n - BigInt(2 + Math.floor(rng() * 6));
+        doInit = true;
+      } else if (ar < 0.25) {
+        // Unmapped: no memInit entries; the sparse map reads 0.
+        addr = 0x50000n + BigInt(Math.floor(rng() * 32));
+        doInit = false;
+      } else {
+        addr = memAddr;
+        doInit = true;
+      }
+      regs[baseReg] = addr;
+      if (doInit) {
+        for (let b = 0; b < 8; b++) memInit.set(addr + BigInt(b), Math.floor(rng() * 256));
+      }
     } else {
       const src = Math.floor(rng() * 16);
       enc = encCmov(cc, size, dest, src);

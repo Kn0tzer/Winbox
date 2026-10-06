@@ -569,11 +569,15 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             if (op.rep != 0 && op.rep != 0xF2 && op.rep != 0xF3) return false;
         } else if (op.isMem) {
             // Memory operands are only accepted for ALU/TEST kinds, LEA,
-            // PUSH/POP, and 8-bit MOV (88/8A); the EA fields are validated
-            // defensively (a malformed EA degrades to whole-block rejection,
-            // never to a wrong address). LEA names memory for its EA
-            // computation but never dereferences it. 89/8B mem forms stay
-            // interpreter-fallback (unchanged pre-existing behavior).
+            // PUSH/POP, 8-bit MOV (88/8A), F6/F7 group 3, shifts, and
+            // CMOVcc; the EA fields are validated defensively (a malformed
+            // EA degrades to whole-block rejection, never to a wrong
+            // address). LEA names memory for its EA computation but never
+            // dereferences it. 89/8B mem forms stay interpreter-fallback
+            // (unchanged pre-existing behavior). CMOVcc's source is always
+            // loaded (faults even if the condition is false), mirroring
+            // dsp_38; the emitter does emitEA+emitMemRead before the
+            // select, so fault ordering matches.
             bool memAlu = op.kind == J64_ALU_RM_R || op.kind == J64_ALU_R_RM ||
                           op.kind == J64_ALU_RM_IMM || op.kind == J64_TEST_RM_R;
             bool memLea = op.kind == J64_LEA;
@@ -583,7 +587,8 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
                            op.size == 1;
             bool memGrp3 = op.kind == J64_GRP3;
             bool memShift = op.kind == J64_SHIFT_IMM;
-            if ((!memAlu && !memLea && !memStack && !memMov8 && !memGrp3 && !memShift) || !widthOk) return false;
+            bool memCmov = op.kind == J64_CMOV;
+            if ((!memAlu && !memLea && !memStack && !memMov8 && !memGrp3 && !memShift && !memCmov) || !widthOk) return false;
             if (op.ea.seg != 0) return false; // FS/GS: interpreter-only
             if (op.ea.baseReg != 0xFF && op.ea.baseReg >= 16) return false;
             if (op.ea.idxReg != 0xFF && op.ea.idxReg >= 16) return false;
