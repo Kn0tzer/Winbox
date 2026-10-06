@@ -288,7 +288,7 @@ U32 FsFileNode::getMode() {
     if (KThread::currentThread()->process->userId == 0 || this->path.startsWith("/tmp") || this->path.startsWith("/var") || this->path.startsWith("/home")) {
         result |= K__S_IWRITE;
         // wine server needs to be private, but winetricks check "-w" in the script on /tmp which needs these 2
-        if (!this->path.startsWith("/tmp/.wine")) {
+        if (!this->path.startsWith("/tmp/.wine") && !this->path.startsWith("/tmp/wine-")) {
             result |= K__S_IWGRP | K__S_IWOTH;
         }
     }
