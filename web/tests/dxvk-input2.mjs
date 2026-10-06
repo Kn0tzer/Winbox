@@ -25,9 +25,14 @@ const timeout = Number(process.env.TIMEOUT || 1800000);
 
 // In-page triangle measurement: centroid of non-background pixels + dominant
 // color + color at the top-vertex sample point (guest 240,85 -> canvas scale).
-const MEASURE_JS = `() => {
+const MEASURE_JS = `async () => {
   const cv = document.getElementById('vkCanvas');
   if (!cv || !cv.width) return null;
+  // WebGPU canvas presentation is asynchronous; drawImage captures the
+  // composited bitmap, which may lag the getCurrentTexture() copy by a
+  // frame in headless SwiftShader. Wait for two compositor frames so the
+  // latest presented frame is available for capture.
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
   const w = cv.width, h = cv.height;
   const off = document.createElement('canvas'); off.width = w; off.height = h;
   const ctx = off.getContext('2d', { willReadFrequently: true });
