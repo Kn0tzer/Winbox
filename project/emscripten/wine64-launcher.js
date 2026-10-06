@@ -1086,25 +1086,43 @@
                         (function wbPinPoll() {
                             var pinPid = lastSpawnedPid();
                             if (pinPid && pinPid !== pinPidBefore) {
-                                // Pin drained. Now spawn wineboot and track ITS pid.
-                                // Phase 1: wait for the wineboot pid to appear.
-                                var wbPidBefore = pinPid;
-                                spawnArgv(wineProgArgv("wineboot --init"), "wineboot --init (x86 service stack)");
-                                var wbPidWaited = 0, WB_PID_STEP = 200, WB_PID_LIMIT = 30000;
-                                (function wbPidPoll() {
-                                    var p = lastSpawnedPid();
-                                    if (p && p !== wbPidBefore) {
-                                        console.log("session: x86 wineboot pid=" + p + ", waiting for completion");
-                                        wbDonePoll(p);
+                                // Pin drained. Deskpin32 was queued after the pin,
+                                // so wait for it to drain too. Otherwise wbPidPoll
+                                // mistakes deskpin32's pid for wineboot's.
+                                var deskpinPidBefore = pinPid;
+                                var wbDeskpinWaited = 0, WB_DESKPIN_STEP = 200, WB_DESKPIN_LIMIT = 30000;
+                                (function wbDeskpinPoll() {
+                                    var dpPid = lastSpawnedPid();
+                                    if (dpPid && dpPid !== deskpinPidBefore) {
+                                        // Deskpin32 drained. Now spawn wineboot and track ITS pid.
+                                        // Phase 1: wait for the wineboot pid to appear.
+                                        var wbPidBefore = dpPid;
+                                        spawnArgv(wineProgArgv("wineboot --init"), "wineboot --init (x86 service stack)");
+                                        var wbPidWaited = 0, WB_PID_STEP = 200, WB_PID_LIMIT = 30000;
+                                        (function wbPidPoll() {
+                                            var p = lastSpawnedPid();
+                                            if (p && p !== wbPidBefore) {
+                                                console.log("session: x86 wineboot pid=" + p + ", waiting for completion");
+                                                wbDonePoll(p);
+                                                return;
+                                            }
+                                            wbPidWaited += WB_PID_STEP;
+                                            if (wbPidWaited >= WB_PID_LIMIT) {
+                                                console.error("session: x86 wineboot pid never appeared, proceeding anyway");
+                                                arch32WinebootDone = true;
+                                                return;
+                                            }
+                                            setTimeout(wbPidPoll, WB_PID_STEP);
+                                        })();
                                         return;
                                     }
-                                    wbPidWaited += WB_PID_STEP;
-                                    if (wbPidWaited >= WB_PID_LIMIT) {
-                                        console.error("session: x86 wineboot pid never appeared, proceeding anyway");
+                                    wbDeskpinWaited += WB_DESKPIN_STEP;
+                                    if (wbDeskpinWaited >= WB_DESKPIN_LIMIT) {
+                                        console.error("session: x86 deskpin32 pid never appeared, proceeding anyway");
                                         arch32WinebootDone = true;
                                         return;
                                     }
-                                    setTimeout(wbPidPoll, WB_PID_STEP);
+                                    setTimeout(wbDeskpinPoll, WB_DESKPIN_STEP);
                                 })();
                                 return;
                             }
