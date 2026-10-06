@@ -425,6 +425,14 @@ extern "C" EMSCRIPTEN_KEEPALIVE int bw64_last_spawned_pid() {
     return (int)g_lastSpawnedPid.load(std::memory_order_acquire);
 }
 
+// bw64_pid_alive: whether a pid is still in the process table (1) or has
+// exited/been reaped (0). Used by JS to wait for helper processes (e.g.
+// wineboot --init on x86) without polling logs.
+extern "C" EMSCRIPTEN_KEEPALIVE int bw64_pid_alive(int pid) {
+    if (pid <= 0) return 0;
+    return KSystem::getProcess((U32)pid) ? 1 : 0;
+}
+
 // bw64_reset_present: clear the XWire base window so the next app's first window
 // becomes the presented base (instead of compositing onto the closed app's
 // larger window). Safe to call from the browser main thread — it locks the

@@ -962,8 +962,18 @@
         try { return M.ccall(name, "number", argTypes, args); }
         catch (e) { console.warn("ccall " + name + " failed: " + e); return null; }
     }
-    function sessionReady() {
+    // x86 service-stack gate: on 32-bit, the session is not ready for GUI apps
+    // until wineboot --init has completed (creates the desktop). Set by
+    // pollArch32Wineboot() below; true immediately on 64-bit.
+    var arch32WinebootDone = !ARCH32;
+    function pidAlive(pid) {
+        return callExport("bw64_pid_alive", ["number"], [pid]) === 1;
+    }
+    function sessionReadyRaw() {
         return callExport("bw64_session_ready", [], []) === 1;
+    }
+    function sessionReady() {
+        return sessionReadyRaw() && arch32WinebootDone;
     }
     function lastSpawnedPid() {
         return callExport("bw64_last_spawned_pid", [], []) || 0;
@@ -1038,7 +1048,7 @@
     function pinSessionServerWhenReady() {
         var waited = 0, STEP = 100, LIMIT = 60000;
         (function poll() {
-            if (sessionReady()) {
+            if (sessionReadyRaw()) {
                 if (!sessionServerPinned) {
                     sessionServerPinned = true;
                     // Capture the boot app pid BEFORE the pin spawn overwrites the
@@ -1056,6 +1066,30 @@
                     // (x86: deskpin.exe is a 64-bit PE; skip under 32-bit wine.)
                     if (!ARCH32) {
                         spawnArgv(wineProgArgv("Z:\\home\\username\\deskpin.exe"), "deskpin (hold desktop open)");
+                    }
+                    // x86: Wine does not auto-run wineboot --init on 32-bit (ntdll
+                    // run_wineboot path not triggered). Spawn it explicitly so the
+                    // service stack (services.exe) and desktop exist before GUI apps.
+                    // Gate sessionReady() on its completion via arch32WinebootDone.
+                    if (ARCH32 && !arch32WinebootDone) {
+                        spawnArgv(wineProgArgv("wineboot --init"), "wineboot --init (x86 service stack)");
+                        var wbPid = lastSpawnedPid();
+                        console.log("session: x86 wineboot pid=" + wbPid + ", waiting for completion");
+                        var wbWaited = 0, WB_STEP = 500, WB_LIMIT = 120000;
+                        (function wbPoll() {
+                            if (!pidAlive(wbPid)) {
+                                console.log("session: x86 wineboot completed");
+                                arch32WinebootDone = true;
+                                return;
+                            }
+                            wbWaited += WB_STEP;
+                            if (wbWaited >= WB_LIMIT) {
+                                console.error("session: x86 wineboot timed out, proceeding anyway");
+                                arch32WinebootDone = true;
+                                return;
+                            }
+                            setTimeout(wbPoll, WB_STEP);
+                        })();
                     }
                 }
                 return;
@@ -1315,7 +1349,7 @@
         // early chance when the user switches tabs before closing.
         var armed = false;
         (function poll() {
-            if (sessionReady()) {
+            if (sessionReadyRaw()) {
                 if (!armed) {
                     armed = true;
                     setInterval(persistTick, 5000);
