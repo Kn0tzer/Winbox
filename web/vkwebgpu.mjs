@@ -1547,6 +1547,9 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     if (canvas.width !== frame.width || canvas.height !== frame.height) {
       canvas.width = frame.width; canvas.height = frame.height;
       obsW = frame.width; obsH = frame.height;
+      // Reconfigure the WebGPU context for the new canvas size; without
+      // this getCurrentTexture() may return a stale-sized texture.
+      context.configure({ device, format, alphaMode: 'opaque', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST });
     }
 
     let presentTex = null, presentW = frame.width, presentH = frame.height, lastClear = [0, 0, 0, 1];
