@@ -448,6 +448,30 @@ struct PipelineLayout : Obj { U32 nsets = 0; U64 sets[VK64_MAX_SETS]; };
 // can apply them instead of the SPIR-V defaults (spirvfix R2 folds to defaults).
 struct SpecEntry { U32 constantID = 0; U32 size = 0; U8 value[8] = {0}; };
 struct StageSpec { U32 n = 0; SpecEntry entries[16]; };
+// Guest-side VkSpecializationInfo (pointers are U64 guest VAs).
+struct Vk64SpecMapEntry { U32 constantID; U32 offset; U64 size; };
+struct Vk64SpecInfo { U32 mapEntryCount; U32 _pad; U64 pMapEntries; U64 dataSize; U64 pData; };
+static void captureStageSpec(U64 specVa, StageSpec& out) {
+    if (!specVa) return;
+    Vk64SpecInfo si = {};
+    if (!readStruct(specVa, si)) return;
+    if (!si.mapEntryCount || si.mapEntryCount > 16) return;
+    if (!si.pMapEntries || !si.pData || !si.dataSize || si.dataSize > 256) return;
+    std::vector<Vk64SpecMapEntry> mes;
+    readArray(si.pMapEntries, si.mapEntryCount, mes);
+    std::vector<U8> data((size_t)si.dataSize);
+    g_mem->memcpyFromGuest(data.data(), si.pData, (size_t)si.dataSize);
+    for (auto& me : mes) {
+        if (out.n >= 16) break;
+        if (me.offset + me.size > si.dataSize || me.size > 8 || me.size == 0) continue;
+        // size must be 1, 2, 4, or 8 for scalar spec constants
+        if (me.size != 1 && me.size != 2 && me.size != 4 && me.size != 8) continue;
+        SpecEntry& e = out.entries[out.n++];
+        e.constantID = me.constantID;
+        e.size = (U32)me.size;
+        memcpy(e.value, data.data() + me.offset, (size_t)me.size);
+    }
+}
 struct Pipeline : Obj {
     U32 topology = 0, cull = 0, front = 0, depthTest = 0, depthWrite = 0, depthOp = 0, blend = 0;
     StageSpec vsSpec, fsSpec;
@@ -2943,30 +2967,6 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         wr64(args.a[3], id);
         return VK_SUCCESS;
     }
-// Guest-side VkSpecializationInfo (pointers are U64 guest VAs).
-struct Vk64SpecMapEntry { U32 constantID; U32 offset; U64 size; };
-struct Vk64SpecInfo { U32 mapEntryCount; U32 _pad; U64 pMapEntries; U64 dataSize; U64 pData; };
-static void captureStageSpec(U64 specVa, StageSpec& out) {
-    if (!specVa) return;
-    Vk64SpecInfo si = {};
-    if (!readStruct(specVa, si)) return;
-    if (!si.mapEntryCount || si.mapEntryCount > 16) return;
-    if (!si.pMapEntries || !si.pData || !si.dataSize || si.dataSize > 256) return;
-    std::vector<Vk64SpecMapEntry> mes;
-    readArray(si.pMapEntries, si.mapEntryCount, mes);
-    std::vector<U8> data((size_t)si.dataSize);
-    g_mem->memcpyFromGuest(data.data(), si.pData, (size_t)si.dataSize);
-    for (auto& me : mes) {
-        if (out.n >= 16) break;
-        if (me.offset + me.size > si.dataSize || me.size > 8 || me.size == 0) continue;
-        // size must be 1, 2, 4, or 8 for scalar spec constants
-        if (me.size != 1 && me.size != 2 && me.size != 4 && me.size != 8) continue;
-        SpecEntry& e = out.entries[out.n++];
-        e.constantID = me.constantID;
-        e.size = (U32)me.size;
-        memcpy(e.value, data.data() + me.offset, (size_t)me.size);
-    }
-}
     case VK64_fn_vkCreateGraphicsPipelines: {
         // (device, cache, n, pCreateInfos*, pAllocator, out VkPipeline*)
         U32 n = (U32)args.a[2];
