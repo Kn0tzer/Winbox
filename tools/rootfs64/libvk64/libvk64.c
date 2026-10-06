@@ -221,6 +221,10 @@ enum {
     VK64_fn_vkBindBufferMemory2KHR,
     VK64_fn_vkBindImageMemory2,
     VK64_fn_vkBindImageMemory2KHR,
+    // dxgi (D3D12 swapchain): init_vk_funcs dlsym()s this when it loads
+    // vulkan-1.dll as our PE shim. Same append-only position as
+    // vk64bridge_abi.h.
+    VK64_fn_vkGetPhysicalDeviceWin32PresentationSupportKHR,
     VK64_fn__MAX
 };
 
@@ -472,6 +476,13 @@ API VkResult vkCreateXlibSurfaceKHR(VkInstance inst, const void* ci, const void*
 API VkBool32 vkGetPhysicalDeviceXlibPresentationSupportKHR(VkPhysicalDevice pd, uint32_t qfam, const void* dpy, unsigned long visual) {
     VK64Args a = {{0}}; a.a[0] = pd; a.a[1] = qfam; a.a[2] = P(dpy); a.a[3] = (uint64_t)visual;
     return (VkBool32)vk64_trap(VK64_fn_vkGetPhysicalDeviceXlibPresentationSupportKHR, &a);
+}
+/* Returns VkBool32 (not VkResult): TRUE, every queue family presents through
+ * the page tier's canvas -- same rationale as the Xlib variant. dxgi's
+ * init_vk_funcs resolves this from vulkan-1.dll during swapchain setup. */
+API VkBool32 vkGetPhysicalDeviceWin32PresentationSupportKHR(VkPhysicalDevice pd, uint32_t qfam) {
+    VK64Args a = {{0}}; a.a[0] = pd; a.a[1] = qfam;
+    return (VkBool32)vk64_trap(VK64_fn_vkGetPhysicalDeviceWin32PresentationSupportKHR, &a);
 }
 /* DXVK's D3D9SwapChainEx::CreateBackBuffers gates every texture on
  * vkGetPhysicalDeviceImageFormatProperties2 (via DxvkAdapter::getFormatLimits):
@@ -999,6 +1010,7 @@ static const struct procEntry g_procs[] = {
     E(vkGetPhysicalDeviceSurfacePresentModesKHR, VK64_fn_vkGetPhysicalDeviceSurfacePresentModesKHR),
     E(vkGetPhysicalDeviceSurfaceSupportKHR, VK64_fn_vkGetPhysicalDeviceSurfaceSupportKHR),
     E(vkGetPhysicalDeviceXlibPresentationSupportKHR, VK64_fn_vkGetPhysicalDeviceXlibPresentationSupportKHR),
+    E(vkGetPhysicalDeviceWin32PresentationSupportKHR, VK64_fn_vkGetPhysicalDeviceWin32PresentationSupportKHR),
     E(vkGetDeviceQueue, VK64_fn_vkGetDeviceQueue),
     E(vkGetBufferMemoryRequirements, VK64_fn_vkGetBufferMemoryRequirements),
     E(vkGetBufferMemoryRequirements2, VK64_fn_vkGetBufferMemoryRequirements2),

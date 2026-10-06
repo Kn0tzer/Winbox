@@ -263,6 +263,7 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkCmdPushConstants,                   "vkCmdPushConstants") \
     X(VK64_fn_vkCreateXlibSurfaceKHR,               "vkCreateXlibSurfaceKHR") \
     X(VK64_fn_vkGetPhysicalDeviceXlibPresentationSupportKHR, "vkGetPhysicalDeviceXlibPresentationSupportKHR") \
+    X(VK64_fn_vkGetPhysicalDeviceWin32PresentationSupportKHR, "vkGetPhysicalDeviceWin32PresentationSupportKHR") \
     X(VK64_fn_vkGetPhysicalDeviceImageFormatProperties2, "vkGetPhysicalDeviceImageFormatProperties2") \
     X(VK64_fn_vkGetPhysicalDeviceImageFormatProperties,  "vkGetPhysicalDeviceImageFormatProperties") \
     X(VK64_fn_vkGetPhysicalDeviceFormatProperties2,      "vkGetPhysicalDeviceFormatProperties2") \
@@ -2536,6 +2537,13 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // calls it per device when picking a presentable one. TRUE: the page
         // tier presents every frame through the canvas; there is no
         // non-presentable device behind this shim.
+        return VK_TRUE;
+
+    case VK64_fn_vkGetPhysicalDeviceWin32PresentationSupportKHR:
+        // (physDev, qFam) -> VkBool32 in RAX. dxgi's init_vk_funcs resolves
+        // this from vulkan-1.dll during swapchain setup. TRUE: the page tier
+        // presents every frame through the canvas; there is no non-presentable
+        // device behind this shim.
         return VK_TRUE;
 
     case VK64_fn_vkGetDeviceQueue: {

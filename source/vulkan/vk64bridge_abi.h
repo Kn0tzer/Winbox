@@ -287,6 +287,9 @@ enum {
     VK64_fn_vkBindBufferMemory2KHR,               // alias
     VK64_fn_vkBindImageMemory2,                   // (device, bindInfoCount, pBindInfos*) -> records image binds
     VK64_fn_vkBindImageMemory2KHR,                // alias
+    // dxgi (D3D12 swapchain): init_vk_funcs resolves this from vulkan-1.dll
+    // when loaded as our PE shim. Same append-only position as libvk64.c.
+    VK64_fn_vkGetPhysicalDeviceWin32PresentationSupportKHR, // (physDev, qFam) -> VkBool32
     VK64_fn__MAX
 };
 
