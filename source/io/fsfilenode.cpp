@@ -279,6 +279,9 @@ U32 FsFileNode::getMode() {
     if (this->path == "/etc/sudoers") {
         return result | K__S_IRGRP;
     }
+    if (this->path.endsWith("/.wine/wineserver")) {
+        return result; // Debian Wine server rendezvous file: must report exactly 0400
+    }
     if (!FsFileNode::nonExecFileFullPaths.count(this->path)) {
         result |= K__S_IEXEC;
         if (this->path.startsWith("/usr/local/bin") || this->path.startsWith("/usr/bin") || this->path.startsWith("/bin") || this->path.startsWith("/opt/wine/bin")) {
