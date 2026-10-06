@@ -269,7 +269,11 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkCmdDrawIndexed,                          "vkCmdDrawIndexed") \
     X(VK64_fn_vkCmdBindVertexBuffers2,                    "vkCmdBindVertexBuffers2") \
     X(VK64_fn_vkCmdBindVertexBuffers,                     "vkCmdBindVertexBuffers") \
-    X(VK64_fn_vkCmdBindIndexBuffer,                       "vkCmdBindIndexBuffer")
+    X(VK64_fn_vkCmdBindIndexBuffer,                       "vkCmdBindIndexBuffer") \
+    X(VK64_fn_vkBindBufferMemory2,                        "vkBindBufferMemory2") \
+    X(VK64_fn_vkBindBufferMemory2KHR,                     "vkBindBufferMemory2KHR") \
+    X(VK64_fn_vkBindImageMemory2,                         "vkBindImageMemory2") \
+    X(VK64_fn_vkBindImageMemory2KHR,                      "vkBindImageMemory2KHR")
 #define VK64_NAME_ENTRY(id, nm) { (U64)(id), nm },
 const struct { U64 id; const char* name; } g_fnNames[] = { VK64_FN_LIST(VK64_NAME_ENTRY) };
 #undef VK64_NAME_ENTRY
@@ -3182,6 +3186,17 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         }
         return VK_SUCCESS;
     }
+    // VkBindBufferMemoryInfo / VkBindImageMemoryInfo share this x86-64 layout.
+    struct VkBindMemInfo2 {
+        U32 sType;
+        U32 _pad0;
+        U64 pNext;
+        U64 handle;       // buffer or image
+        U64 memory;
+        U64 memoryOffset;
+    };
+    static_assert(sizeof(VkBindMemInfo2) == 40, "VkBind*MemoryInfo layout");
+
     case VK64_fn_vkBindBufferMemory: {
         Buffer* b = objOf<Buffer>(args.a[1], K_BUFFER, "vkBindBufferMemory");
         DeviceMemory* m = objOf<DeviceMemory>(args.a[2], K_MEMORY, "vkBindBufferMemory");
@@ -3198,6 +3213,40 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         im->mem = args.a[2];
         im->memOff = args.a[3];
         im->pixBytes = (U64)im->w * im->h * (im->d ? im->d : 1) * (im->layers ? im->layers : 1) * fmt_bpp(im->format);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkBindBufferMemory2:
+    case VK64_fn_vkBindBufferMemory2KHR: {
+        // (device, bindInfoCount, pBindInfos*) — same record-only semantics as
+        // vkBindBufferMemory; the host has no real Vulkan device to bind on.
+        U32 n = (U32)args.a[1];
+        std::vector<VkBindMemInfo2> infos;
+        readArray(args.a[2], n, infos);
+        for (const auto& info : infos) {
+            Buffer* b = objOf<Buffer>(info.handle, K_BUFFER, "vkBindBufferMemory2");
+            DeviceMemory* m = objOf<DeviceMemory>(info.memory, K_MEMORY, "vkBindBufferMemory2");
+            if (!b || !m) return VK_ERROR_INITIALIZATION_FAILED;
+            if (info.memoryOffset >= m->size) return VK_ERROR_INITIALIZATION_FAILED;
+            b->mem = info.memory;
+            b->memOff = info.memoryOffset;
+        }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkBindImageMemory2:
+    case VK64_fn_vkBindImageMemory2KHR: {
+        // (device, bindInfoCount, pBindInfos*) — same record-only semantics as
+        // vkBindImageMemory.
+        U32 n = (U32)args.a[1];
+        std::vector<VkBindMemInfo2> infos;
+        readArray(args.a[2], n, infos);
+        for (const auto& info : infos) {
+            Image* im = objOf<Image>(info.handle, K_IMAGE, "vkBindImageMemory2");
+            DeviceMemory* m = objOf<DeviceMemory>(info.memory, K_MEMORY, "vkBindImageMemory2");
+            if (!im || !m) return VK_ERROR_INITIALIZATION_FAILED;
+            im->mem = info.memory;
+            im->memOff = info.memoryOffset;
+            im->pixBytes = (U64)im->w * im->h * (im->d ? im->d : 1) * (im->layers ? im->layers : 1) * fmt_bpp(im->format);
+        }
         return VK_SUCCESS;
     }
     case VK64_fn_vkUpdateDescriptorSets: {

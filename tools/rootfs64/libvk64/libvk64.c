@@ -217,6 +217,10 @@ enum {
     VK64_fn_vkFlushMappedMemoryRanges = 800,
     VK64_fn_vkInvalidateMappedMemoryRanges,
     VK64_fn_vkCmdBindVertexBuffers2,
+    VK64_fn_vkBindBufferMemory2,
+    VK64_fn_vkBindBufferMemory2KHR,
+    VK64_fn_vkBindImageMemory2,
+    VK64_fn_vkBindImageMemory2KHR,
     VK64_fn__MAX
 };
 
@@ -251,7 +255,7 @@ static void* vk64_benign(const char* name) {
     VK64Args a = {{0}};
     a.a[0] = (uint64_t)(uintptr_t)name;
     (void)vk64_trap(VK64_fn_unimplemented, &a);
-    return (void*)(intptr_t)(-2);   /* VK_ERROR_FEATURE_NOT_PRESENT */
+    return (void*)(intptr_t)(-8);   /* VK_ERROR_FEATURE_NOT_PRESENT */
 }
 
 #define API __attribute__((visibility("default")))
@@ -614,6 +618,22 @@ API VkResult vkBindBufferMemory(VkDevice dev, VkBuffer buf, VkDeviceMemory mem, 
 API VkResult vkBindImageMemory(VkDevice dev, VkImage img, VkDeviceMemory mem, VkDeviceSize off) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = img; a.a[2] = mem; a.a[3] = off;
     return (VkResult)vk64_trap(VK64_fn_vkBindImageMemory, &a);
+}
+API VkResult vkBindBufferMemory2(VkDevice dev, uint32_t n, const void* infos) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = n; a.a[2] = P(infos);
+    return (VkResult)vk64_trap(VK64_fn_vkBindBufferMemory2, &a);
+}
+API VkResult vkBindBufferMemory2KHR(VkDevice dev, uint32_t n, const void* infos) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = n; a.a[2] = P(infos);
+    return (VkResult)vk64_trap(VK64_fn_vkBindBufferMemory2KHR, &a);
+}
+API VkResult vkBindImageMemory2(VkDevice dev, uint32_t n, const void* infos) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = n; a.a[2] = P(infos);
+    return (VkResult)vk64_trap(VK64_fn_vkBindImageMemory2, &a);
+}
+API VkResult vkBindImageMemory2KHR(VkDevice dev, uint32_t n, const void* infos) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = n; a.a[2] = P(infos);
+    return (VkResult)vk64_trap(VK64_fn_vkBindImageMemory2KHR, &a);
 }
 API void vkUpdateDescriptorSets(VkDevice dev, uint32_t nw, const void* writes,
                                 uint32_t nc, const void* copies) {
@@ -1029,7 +1049,11 @@ static const struct procEntry g_procs[] = {
     E(vkAllocateCommandBuffers, VK64_fn_vkAllocateCommandBuffers),
     E(vkAllocateDescriptorSets, VK64_fn_vkAllocateDescriptorSets),
     E(vkBindBufferMemory, VK64_fn_vkBindBufferMemory),
+    E(vkBindBufferMemory2, VK64_fn_vkBindBufferMemory2),
+    E(vkBindBufferMemory2KHR, VK64_fn_vkBindBufferMemory2KHR),
     E(vkBindImageMemory, VK64_fn_vkBindImageMemory),
+    E(vkBindImageMemory2, VK64_fn_vkBindImageMemory2),
+    E(vkBindImageMemory2KHR, VK64_fn_vkBindImageMemory2KHR),
     E(vkUpdateDescriptorSets, VK64_fn_vkUpdateDescriptorSets),
     E(vkMapMemory, VK64_fn_vkMapMemory),
     E(vkUnmapMemory, VK64_fn_vkUnmapMemory),
@@ -1223,10 +1247,6 @@ TAIL(vkDestroyDeviceKHR)
 TAIL(vkDestroySwapchainKHR2)
 TAIL(vkMergePipelineCaches)
 TAIL(vkResetPipelineCache)
-TAIL(vkBindBufferMemory2)
-TAIL(vkBindBufferMemory2KHR)
-TAIL(vkBindImageMemory2)
-TAIL(vkBindImageMemory2KHR)
 TAIL(vkGetDeviceMemoryCommitment)
 TAIL(vkFreeDescriptorSets)
 TAIL(vkDestroyBufferView)
