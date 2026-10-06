@@ -1782,8 +1782,10 @@ U32 KProcess::clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 t
             newThread->cpu->reg[4].u32 = child_stack;
         }
         if (vm) {
-            newThread->cpu->reg[4].u32+=8;
-            newThread->cpu->eip.u32 = newThread->cpu->peek32(0);
+            // vfork: child shares the parent's VM until execve. The CPU was
+            // cloned from the parent above (EIP at the int 0x80); step over it.
+            // (Was: eip = peek32(0), always 0 -> EIP=0 fault loop.)
+            newThread->cpu->eip.u32 += 2; // step over clone call in the new thread
         } else {
             newThread->cpu->eip.u32 += 2; // step over clone call in the new thread
         }
@@ -1821,11 +1823,12 @@ U32 KProcess::clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 t
             *ldt = desc;
             newThread->cpu->setSegment(GS, desc.entry_number << 3);
         }
+        newThread->clone(thread); // inherit parent CPU (EIP at int 0x80, regs, segs, FPU)
         newThread->clear_child_tid = ctid;
         memory->writed(ptid, newThread->id);
-        newThread->cpu->reg[4].u32 = child_stack;
-        newThread->cpu->reg[4].u32+=8;
-        newThread->cpu->eip.u32 = newThread->cpu->peek32(0);
+        newThread->cpu->reg[4].u32 = child_stack; // ESP = new thread stack
+        newThread->cpu->eip.u32 += 2; // step over clone call in the new thread
+        newThread->cpu->reg[0].u32 = 0; // child returns 0 from clone
         //klog("starting %d/%d", newThread->process->id, newThread->id);
         scheduleThread(newThread);
         return newThread->id;
