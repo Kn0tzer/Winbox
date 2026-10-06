@@ -3059,7 +3059,7 @@ test('fuzz D0/D1 shift/rotate-by-1 vs reference (600 cases)', async () => {
                    0x7FFFFFFFFFFFFFFFn, 0x8000000000000000n, 0xFFFFFFFFFFFFFFFFn];
   for (let i = 0; i < 600; i++) {
     const sub = Math.floor(rng() * 8);
-    const size = pick(rng, [1, 2, 4, 4, 8, 8]); // weight toward 32/64-bit
+    const size = pick(rng, [1, 4, 4, 8, 8]); // 16-bit declined
     const isMem = rng() < 0.3; // 30% memory forms
     const rflags = pick(rng, flagSets);
     const tag = `fuzzD1 i=${i} sub=${sub} size=${size} mem=${isMem}`;
@@ -3102,6 +3102,150 @@ test('fuzz D0/D1 shift/rotate-by-1 vs reference (600 cases)', async () => {
         const memInit = new Map();
         for (let b = 0; b < size; b++) memInit.set(ALU_SBASE + BigInt(b), Number((initVal >> BigInt(8 * b)) & 0xFFn));
         const ref = sub <= 3 ? refRotate(sub, initVal, 1n, size, rflags) : refShift(sub, initVal, 1n, size, rflags);
+        const out = await runAluMem(code, { regs, rflags, memInit });
+        assert.equal(out.guestMem.read(ALU_SBASE, size), ref.r, `${tag} mem`);
+        const fmask = sub <= 3 ? 0x801 : 0x8C5;
+        assert.equal(BigInt(out.rflags) & BigInt(fmask), ref.flags & BigInt(fmask), `${tag} flags`);
+      }
+    } catch (e) {
+      e.message = `${tag}: ${e.message}`;
+      throw e;
+    }
+  }
+}, 180000);
+
+// --- D2/D3 shift/rotate by CL: targeted tests + differential fuzz ---
+// Semantics mirror the interpreter's dsp_41: count = CL & (size==8 ? 0x3F : 0x1F).
+// count==0 is a pure no-op (no flags; 32-bit zero-extends on writeback).
+// OF only defined for count==1. RCL/RCR carry-in from CF.
+function encD3(sub, size, rm) {
+  // size: 1 (D2), 2 (0x66), 4 (default), 8 (REX.W). rm: 0..15 reg index.
+  const code = [];
+  if (size === 2) code.push(0x66);
+  const rexB = rm >= 8 ? 1 : 0;
+  if (size === 8) code.push(0x48 | rexB); // REX.W (+B)
+  else if (rexB) code.push(0x40 | rexB); // REX.B without W
+  code.push(size === 1 ? 0xD2 : 0xD3);
+  code.push(0xC0 | (sub << 3) | (rm & 7));
+  return code;
+}
+
+function encD3Mem(sub, size, baseReg) {
+  // Simple [baseReg] memory form: mod=00, rm=baseReg (0..7, no REX.B).
+  const code = [];
+  if (size === 8) code.push(0x48);
+  else if (size === 2) code.push(0x66);
+  code.push(size === 1 ? 0xD2 : 0xD3);
+  code.push((sub << 3) | (baseReg & 7)); // mod=00
+  return code;
+}
+
+function effCountCL(cl, size) {
+  return BigInt((Number(cl) & 0xFF) & (size === 8 ? 0x3F : 0x1F));
+}
+
+test('D3 SHL r64 by CL', async () => {
+  const regs = baseRegs(); regs[0] = 0x4000000000000000n; regs[1] = 0x4n; // CL=4
+  const { r, flags } = refShift(4, regs[0], 4n, 8, 0x202);
+  const out = await runAlu(encD3(4, 8, 0), regs, 0x202);
+  expectShift(out, 0x202, flags, 3, got => assert.equal(got[0], r));
+});
+
+test('D3 SHL r32 by CL=0 is no-op (flags untouched)', async () => {
+  const regs = baseRegs(); regs[0] = 0xDEADBEEFn; regs[1] = 0x20n; // CL=32 -> masked to 0
+  const out = await runAlu(encD3(4, 4, 0), regs, 0x8D5);
+  assert.equal(out.rflags, 0x8D5, 'flags untouched');
+  assert.equal(BigInt(out.regs[0]) & 0xFFFFFFFFn, 0xDEADBEEFn, 'value unchanged');
+});
+
+test('D3 SHL r64 by CL=0 is pure no-op', async () => {
+  const regs = baseRegs(); regs[0] = 0x123456789ABCDEF0n; regs[1] = 0x0n;
+  const out = await runAlu(encD3(4, 8, 0), regs, 0x246);
+  assert.equal(out.rflags, 0x246, 'flags untouched');
+  assert.equal(out.regs[0], 0x123456789ABCDEF0n, 'value unchanged');
+});
+
+test('D3 SHR r64 by CL=1 sets OF from MSB', async () => {
+  const regs = baseRegs(); regs[0] = 0x8000000000000000n; regs[1] = 0x1n;
+  const { r, flags } = refShift(5, regs[0], 1n, 8, 0x202);
+  assert.equal(flags & 0x800n, 0x800n, 'OF set (MSB was 1)');
+  const out = await runAlu(encD3(5, 8, 0), regs, 0x202);
+  expectShift(out, 0x202, flags, 3, got => assert.equal(got[0], r));
+});
+
+test('D3 count masked to 0x1F for 32-bit (CL=33 -> 1)', async () => {
+  const regs = baseRegs(); regs[0] = 0x00000001n; regs[1] = 0x21n; // CL=33 -> 1
+  const { r, flags } = refShift(4, regs[0], 1n, 4, 0x202);
+  assert.equal(r, 0x00000002n);
+  const out = await runAlu(encD3(4, 4, 0), regs, 0x202);
+  expectShift(out, 0x202, flags, 2, got => assert.equal(got[0], r));
+});
+
+test('D3 count masked to 0x3F for 64-bit (CL=65 -> 1)', async () => {
+  const regs = baseRegs(); regs[0] = 0x0000000000000001n; regs[1] = 0x41n; // CL=65 -> 1
+  const { r, flags } = refShift(4, regs[0], 1n, 8, 0x202);
+  assert.equal(r, 0x0000000000000002n);
+  const out = await runAlu(encD3(4, 8, 0), regs, 0x202);
+  expectShift(out, 0x202, flags, 3, got => assert.equal(got[0], r));
+});
+
+
+test('fuzz D2/D3 shift/rotate-by-CL vs reference (600 cases)', async () => {
+  const rng = mulberry32(0xD3C1);
+  const flagSets = [0x202, 0x203, 0x8D5, 0x246, 0x202 | 0x800, 0x402, 0x0, 0xA5B5];
+  const advVals = [0n, 1n, 0x7Fn, 0x80n, 0xFFn, 0x7FFFn, 0x8000n, 0xFFFFn,
+                   0x7FFFFFFFn, 0x80000000n, 0xFFFFFFFFn,
+                   0x7FFFFFFFFFFFFFFFn, 0x8000000000000000n, 0xFFFFFFFFFFFFFFFFn];
+  // Adversarial CL values: 0 (no-op), 1 (OF edge), 31/32/33 (mask edges),
+  // 63/64/65 (64-bit mask edges), 255 (max), plus random.
+  const advCL = [0, 1, 2, 31, 32, 33, 63, 64, 65, 127, 128, 255];
+  for (let i = 0; i < 600; i++) {
+    let sub = 4 + Math.floor(rng() * 4); // rotates declined, shifts only
+    const size = pick(rng, [1, 4, 4, 8, 8]); // 16-bit declined
+    const isMem = false; // mem forms declined (interpreter-only)
+    const rflags = pick(rng, flagSets);
+    const cl = rng() < 0.5 ? pick(rng, advCL) : Math.floor(rng() * 256);
+    const count = effCountCL(cl, size);
+    const tag = `fuzzD3 i=${i} sub=${sub} size=${size} mem=${isMem} cl=${cl}`;
+    try {
+      if (!isMem) {
+        // Register-direct. Never use rm=1 (RCX) as the operand: CL is the
+        // count source and writing it would be a data-dependent mess the
+        // interpreter handles but the fuzz reference models separately.
+        let rm = Math.floor(rng() * 16);
+        if (rm === 1) rm = 9; // RCX -> R9
+        // 8-bit high-byte (AH/BH/CH/DH, rm 4..7 no REX): interpreter-only
+        // (classifier fallback); skip in the JIT fuzz.
+        if (size === 1 && rm >= 4 && rm <= 7) { i--; continue; }
+        const code = encD3(sub, size, rm);
+        const regs = Array.from({ length: 16 }, () => advVal(rng));
+        if (rng() < 0.5) regs[rm & 15] = pick(rng, advVals);
+        regs[1] = (regs[1] & ~0xFFn) | BigInt(cl); // CL = count source
+        const v = size === 1 ? regs[rm & 15] & 0xFFn :
+                  size === 2 ? regs[rm & 15] & 0xFFFFn :
+                  size === 4 ? regs[rm & 15] & 0xFFFFFFFFn : regs[rm & 15];
+        const ref = sub <= 3 ? refRotate(sub, v, count, size, rflags)
+                             : refShift(sub, v, count, size, rflags);
+        const out = await runAlu(code, regs, rflags);
+        // Reference model returns the masked value; the JIT writes back the
+        // full register (64-bit: full; 32-bit: zero-extended; 16/8-bit: merged).
+        const want = size === 8 ? ref.r :
+                     size === 4 ? ref.r & 0xFFFFFFFFn :
+                     size === 2 ? (regs[rm & 15] & ~0xFFFFn) | ref.r :
+                                  (regs[rm & 15] & ~0xFFn) | ref.r;
+        assert.equal(out.regs[rm & 15] & mask64, want & mask64, `${tag} reg`);
+        const fmask = sub <= 3 ? 0x801 : 0x8C5;
+        assert.equal(BigInt(out.rflags) & BigInt(fmask), ref.flags & BigInt(fmask), `${tag} flags`);
+      } else {
+        // Memory form: [rax] via baseReg=0. Skip rm=1 (RCX) as base too.
+        const code = encD3Mem(sub, size, 0);
+        const regs = baseRegs(); regs[0] = ALU_SBASE;
+        regs[1] = (regs[1] & ~0xFFn) | BigInt(cl);
+        const initVal = pick(rng, advVals) & (size === 8 ? mask64 : (1n << BigInt(size * 8)) - 1n);
+        const memInit = new Map();
+        for (let b = 0; b < size; b++) memInit.set(ALU_SBASE + BigInt(b), Number((initVal >> BigInt(8 * b)) & 0xFFn));
+        const ref = sub <= 3 ? refRotate(sub, initVal, count, size, rflags)
+                             : refShift(sub, initVal, count, size, rflags);
         const out = await runAluMem(code, { regs, rflags, memInit });
         assert.equal(out.guestMem.read(ALU_SBASE, size), ref.r, `${tag} mem`);
         const fmask = sub <= 3 ? 0x801 : 0x8C5;

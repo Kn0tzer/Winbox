@@ -35,7 +35,7 @@ static Jit64Op dec(U64 base, std::vector<U8> b) {
 static void testCoverageTable() {
     U32 n = 0;
     const Jit64CoveredOpcode* t = jit64CoveredOpcodes(&n);
-    CHECK(n == 28, "coverage table has %u entries, want 28", n);
+    CHECK(n == 29, "coverage table has %u entries, want 29", n);
     CHECK(t != nullptr, "coverage table null");
     // Spot-check rank order matches the profile.
     CHECK(t[0].op == 0x89, "rank1 op=0x%02x want 0x89", t[0].op);
@@ -53,8 +53,10 @@ static void testCoverageTable() {
     CHECK(t[21].op == 0x88, "rank22 op=0x%02x want 0x88 (MOV r/m8,r8)", t[21].op);
     CHECK(t[22].op == 0xF7 && t[22].kind == J64_GRP3, "rank23 want F7/GRP3 got %02x/%d", t[22].op, (int)t[22].kind);
     CHECK(t[23].op == 0x98 && t[23].kind == J64_CBW, "rank24 want 98/CBW got %02x/%d", t[23].op, (int)t[23].kind);
-    CHECK(t[26].op == 0x99, "rank27 want 99");
-    CHECK(t[26].kind == J64_CQO, "rank27 kind");
+    CHECK(t[25].op == 0xD3 && t[25].kind == J64_SHIFT_CL, "rank26 want D3/SHIFT_CL got %02x/%d", t[25].op, (int)t[25].kind);
+    CHECK(t[27].op == 0x99, "rank28 want 99");
+    CHECK(t[27].kind == J64_CQO, "rank28 kind");
+    CHECK(t[28].op == 0xC6, "rank29 want C6");
 }
 
 static void testMovForms() {
@@ -794,6 +796,52 @@ static bool decodeOne(const std::vector<U8>& b, Jit64Op& op) {
     return jit64DecodeOne(0x400000, b.data(), (U32)b.size(), op);
 }
 
+static void testShiftCLEmission() {
+    // D3/D2 shift/rotate by CL: decode + classifier + wasm acceptance.
+    Jit64Op op;
+    // D3 SHL r/m64,CL decodes: kind, sub, size, len (no immediate).
+    CHECK(decodeOne({0x48, 0xD3, 0xE0}, op) &&
+          op.kind == J64_SHIFT_CL && op.sub == 4 && op.size == 8 &&
+          op.len == 3 && !op.isMem, "D3 shl rax,cl decode");
+    // D3 ROR r/m32,CL: 32-bit default size.
+    CHECK(decodeOne({0xD3, 0xC9}, op) &&
+          op.kind == J64_SHIFT_CL && op.sub == 1 && op.size == 4 &&
+          op.len == 2, "D3 ror ecx,cl decode");
+    // D2 SHL r/m8,CL: 8-bit form.
+    CHECK(decodeOne({0xD2, 0xE0}, op) &&
+          op.kind == J64_SHIFT_CL && op.sub == 4 && op.size == 1 &&
+          op.len == 2, "D2 shl al,cl decode");
+    // 0x66 D3: 16-bit form.
+    CHECK(decodeOne({0x66, 0xD3, 0xF8}, op) &&
+          op.kind == J64_SHIFT_CL && op.sub == 7 && op.size == 2,
+          "D3 sar ax,cl decode");
+    // D3 mem form decodes with EA.
+    CHECK(decodeOne({0x48, 0xD3, 0x20}, op) &&
+          op.kind == J64_SHIFT_CL && op.isMem && op.len == 3,
+          "D3 shl [rax],cl decode");
+    // Wasm acceptance: all sub-ops x sizes, reg-direct.
+    CHECK(emitOk({0x48, 0xD3, 0xE0}), "shl rax,cl rejected");
+    CHECK(emitOk({0xD3, 0xE8}), "shr eax,cl rejected");
+    CHECK(!emitOk({0x66, 0xD3, 0xF8}), "sar ax,cl accepted");
+    CHECK(emitOk({0xD2, 0xE0}), "shl al,cl rejected");
+    CHECK(!emitOk({0x48, 0xD3, 0xC0}), "rol rax,cl accepted");
+    CHECK(!emitOk({0x48, 0xD3, 0xC8}), "ror rax,cl accepted");
+    CHECK(!emitOk({0x48, 0xD3, 0xD0}), "rcl rax,cl accepted");
+    CHECK(!emitOk({0x48, 0xD3, 0xD8}), "rcr rax,cl accepted");
+    // /6 aliases SHL: accepted.
+    CHECK(emitOk({0x48, 0xD3, 0xF0}), "shl(/6) rax,cl rejected");
+    // Memory forms: declined (interpreter-only; mem flag-merge bug).
+    CHECK(!emitOk({0x48, 0xD3, 0x20}), "shl [rax],cl accepted");
+    CHECK(!emitOk({0x48, 0xD3, 0x00}), "rol [rax],cl accepted");
+    // High-byte (AH/BH/CH/DH, D2 rm 4..7, no REX): declined to interpreter.
+    CHECK(!emitOk({0xD2, 0xE4}), "shl ah,cl accepted");
+    // ... but with REX it's fine (SPL, not AH).
+    CHECK(emitOk({0x40, 0xD2, 0xE4}), "shl spl,cl rejected");
+    // Shift-by-CL mixed with ALU in one block: accepted.
+    CHECK(emitOk({0x48, 0xD3, 0xE0, 0x48, 0x01, 0xC8}), "shl-cl+add block rejected");
+}
+
+
 static void testGrp3Emission() {
     Jit64Op op;
     // TEST r/m,imm decodes: kind, sub, size, len, finalized immediate.
@@ -973,6 +1021,7 @@ int main() {
     testWasmGlue();
     testShiftEmission();
     testRotateEmission();
+    testShiftCLEmission();
     testImulEmission();
     testGrp3Emission();
     testStringEmission();

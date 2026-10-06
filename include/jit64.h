@@ -99,6 +99,12 @@ enum Jit64Kind : U8 {
                         // EAX->EDX:EAX (32), RAX->RDX:RAX (64). RAX is
                         // read-only, RDX is written. No flags, no memory,
                         // no faults.
+    J64_SHIFT_CL = 30,  // sub = shift op 0..7 (0xD2/0xD3). Count is dynamic:
+                        // CL & 0xFF at runtime, masked to 0x1F (0x3F for
+                        // 64-bit) by the emitter. count==0 is a pure no-op
+                        // (flags untouched); 32-bit count==0 still
+                        // zero-extends a register dest. OF defined only for
+                        // count==1. D2 is the 8-bit form.
     J64_UNKNOWN = 255
 };
 

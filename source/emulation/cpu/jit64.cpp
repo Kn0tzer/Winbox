@@ -65,6 +65,7 @@ static const Jit64CoveredOpcode kCovered[] = {
     { "F7 GRP3",           0xF7, 0x00, J64_GRP3 },        // 23 (0.32% F7 + 0.22% F6 doom.exe; /0 TEST /2 NOT /3 NEG /4 MUL; DIV/IDIV stay interpreted)
     { "98 CBW/CWDE/CDQE",  0x98, 0x00, J64_CBW },         // 24 (0.31% doom.exe)
     { "D1 SHIFT/ROT r/m,1", 0xD1, 0x00, J64_SHIFT_IMM },    // 25 (0.25% doom.exe; D0 8-bit + C1-mem also newly jitted)
+    { "D3 SHIFT/ROT r/m,CL", 0xD3, 0x00, J64_SHIFT_CL },   // 29 (0.035% doom.exe; D2 8-bit form also jitted)
     { "0F40 CMOVcc",        0x0F, 0x40, J64_CMOV },        // 26 (0.51% doom.exe; whole 0F40..4F family; sub = cc)
     { "99 CWD/CDQ/CQO",      0x99, 0x00, J64_CQO },         // 27 (0.11% doom.exe)
     { "C6 MOV r/m8,imm8",    0xC6, 0x00, J64_MOV_RM_IMM },  // 28 (0.11% doom.exe; high-byte reg declined)
@@ -554,6 +555,25 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
         if (hm) decodeEA(bytes + opOff + 1, p, ripBase + opOff + 1, immLen, out.ea);
         return true;
     }
+    // SHIFT/ROTATE r/m, CL (D2 is the 8-bit form; D3 takes the operand
+    // size from prefixes). The count is dynamic: CL & 0xFF at runtime,
+    // masked to 0x1F (0x3F for 64-bit) by the emitter, mirroring the
+    // interpreter's dsp_41 count handling.
+    // Memory forms fill the EA so the mem emitters can use them.
+    if (op == 0xD2 || op == 0xD3) {
+        U8 ssz = (op == 0xD2) ? 1 : size;
+        U8 rf; bool rr; U8 ri; bool hm;
+        U32 avail = byteCount - (opOff + 1);
+        U32 ml = scanModRM(bytes + opOff + 1, avail, p, rf, rr, ri, hm);
+        if (!ml) return false;
+        out.kind = J64_SHIFT_CL;
+        out.sub = rf & 0x7;
+        out.size = ssz;
+        out.len = (U8)(opOff + 1 + ml);
+        out.regField = rf; out.rmIndex = ri; out.isMem = hm;
+        if (hm) decodeEA(bytes + opOff + 1, p, ripBase + opOff + 1, 0, out.ea);
+        return true;
+    }
     // F6/F7 group 3. /5 (IMUL r/m, one-operand) keeps the proven
     // J64_IMUL_1OP path. /0 TEST r/m,imm, /2 NOT, /3 NEG, /4 MUL r/m
     // (unsigned) decode as J64_GRP3 with sub = the ModRM reg field.
@@ -815,6 +835,24 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16) {
             op.rmIndex >= 4 && op.rmIndex <= 7) return;
         op.plan = JIT64_FAST;
         return;
+    case J64_SHIFT_CL:
+        if (op.size != 1 && op.size != 2 && op.size != 4 && op.size != 8) return;
+        if (op.sub > 7) return;
+        // Same AH/BH/CH/DH decline as J64_SHIFT_IMM (latent high-byte
+        // writeback bug found by D1-round fuzz).
+        if (op.size == 1 && !op.rexPresent && !op.isMem &&
+            op.rmIndex >= 4 && op.rmIndex <= 7) return;
+        // Memory forms DECLINED (interpreter-only): the mem emitters'
+        // dynamic flag-merge has a bug (flags read as 0 in wasm tests).
+        // 16-bit DECLINED: ROL/ROR writeback bug.
+        // Rotates (sub 0..3) DECLINED: ROR 8-bit and RCR OF bugs found by
+        // fuzz; the rotate-by-CL templates need rework. Shifts (SHL/SHR/
+        // SAR, sub 4..7) 1/4/8-bit reg-direct fully verified.
+        if (op.isMem) return;
+        if (op.size == 2) return;
+        if (op.sub <= 3) return;
+        op.plan = JIT64_FAST;
+        return;
     case J64_IMUL_R_RM:
         if (op.size == 1) return;
         op.plan = JIT64_FAST;
@@ -1010,6 +1048,7 @@ bool jit64BlockMayStore(const Jit64Op* ops, U32 nOps) {
         case J64_ALU_RM_R:
         case J64_ALU_RM_IMM:
         case J64_SHIFT_IMM:
+        case J64_SHIFT_CL:
         case J64_MOV_RM_IMM:
             if (op.isMem) return true;
             break;

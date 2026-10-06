@@ -5787,6 +5787,16 @@ bool CPU64::buildBlock(U64 startRip, BBlock& b) {
             rec.sub = rec.mr.regField & 0x7;
             rec.imm = 1;
             rec.len = (U8)(opOff + 1 + rec.mr.length);
+        } else if (op == 0xD2 || op == 0xD3) {
+            // D2/D3: shift/rotate by CL. D2 is 8-bit, D3 takes the operand
+            // size. The count is dynamic (reg[RCX].u8 at execution time),
+            // so the BK_SHIFT_CL handlers read CL and mask it, mirroring
+            // the interpreter's dsp_41 exactly.
+            rec.size = (op == 0xD2) ? 1 : size;
+            if (!decodeModRMRecipe(r + opOff + 1, p, 0, rec.mr)) break;
+            rec.kind = BK_SHIFT_CL;
+            rec.sub = rec.mr.regField & 0x7;
+            rec.len = (U8)(opOff + 1 + rec.mr.length);
         } else if (op == 0x0F && fetchByte(r + opOff + 1) == 0xAF) {
             if (!decodeModRMRecipe(r + opOff + 2, p, 0, rec.mr)) break;
             rec.kind = BK_IMUL_R_RM;
@@ -6055,6 +6065,22 @@ U32 CPU64::execBlock(const BBlock& b, U64 maxInsn) {
             rip += rec.len;
             break;
         }
+        case BK_SHIFT_CL: {
+            // D2/D3 shift/rotate by CL: mirrors the interpreter's dsp_41
+            // exactly (count = reg[RCX].u8, masked to 0x1F/0x3F; loadRM
+            // before doShift so a faulting address faults even when
+            // count==0; storeRM only when count != 0; 32-bit register
+            // zero-extend on count==0).
+            ModRM m = resolveRecipe(rec.mr);
+            U8 count = reg[X64_RCX].u8;
+            count &= (size == 8) ? 0x3F : 0x1F;
+            U64 v = loadRM(m, size, rexPresent);
+            U64 res = doShift(rflags, rec.sub, v, count, size);
+            if (count != 0) storeRM(m, size, res, rexPresent);
+            else if (size == 4 && m.isReg) reg[m.rmIndex].setU32((U32)v);
+            rip += rec.len;
+            break;
+        }
         case BK_IMUL_R_RM: {
             ModRM m = resolveRecipe(rec.mr);
             U64 a = (size == 2) ? (U64)reg[m.regField].u16
@@ -6307,7 +6333,7 @@ U32 CPU64::execBlockThreaded(const BBlock& b, U64 maxInsn) {
     // Static: label addresses are compile-time constants; the table is
     // built once, not on every block execution (2M+ executions per
     // benchmark loop - 19 stores each would be measurable).
-    static const void* thrDispatch[23] = {
+    static const void* thrDispatch[24] = {
         &&thr_MOV_RM_R,
         &&thr_MOV_R_RM,
         &&thr_ALU_RM_R,
@@ -6331,6 +6357,7 @@ U32 CPU64::execBlockThreaded(const BBlock& b, U64 maxInsn) {
         &&thr_CBW,
         &&thr_CMOV,
         &&thr_CQO,
+        &&thr_SHIFT_CL,
     };
     U32 executed = 0;
     U16 i = 0;
@@ -6718,6 +6745,24 @@ thr_CQO: {
         if (size == 2) reg[X64_RDX].setU16((reg[X64_RAX].u16 & 0x8000) ? 0xFFFFu : 0u);
         else if (size == 4) reg[X64_RDX].setU64((reg[X64_RAX].u32 & 0x80000000u) ? 0xFFFFFFFFu : 0u);
         else reg[X64_RDX].setU64((reg[X64_RAX].u64 & 0x8000000000000000ULL) ? ~(U64)0 : 0ULL);
+        rip += rec.len;
+        THR_NEXT();
+
+    }
+thr_SHIFT_CL: {
+        const BRec& rec = b.recs[i];
+        bool rexPresent = rec.rexPresent != 0;
+        U32 size = rec.size;
+
+        // D2/D3 shift/rotate by CL: verbatim copy of the execBlock
+        // BK_SHIFT_CL case for the threaded tier.
+        ModRM m = resolveRecipe(rec.mr);
+        U8 count = reg[X64_RCX].u8;
+        count &= (size == 8) ? 0x3F : 0x1F;
+        U64 v = loadRM(m, size, rexPresent);
+        U64 res = doShift(rflags, rec.sub, v, count, size);
+        if (count != 0) storeRM(m, size, res, rexPresent);
+        else if (size == 4 && m.isReg) reg[m.rmIndex].setU32((U32)v);
         rip += rec.len;
         THR_NEXT();
 

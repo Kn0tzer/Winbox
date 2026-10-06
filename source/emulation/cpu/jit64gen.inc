@@ -673,6 +673,665 @@ U32 emitRotateMemGen(Bytes& body, const Jit64Op& op) {
     return 0xFF;
 }
 
+U32 emitShiftCLGen(Bytes& body, const Jit64Op& op) {
+    const U32 destReg = op.rmIndex;
+    const U64 mask = widthMask(op.size);
+    const U64 sb = widthSB(op.size);
+    const U64 wbits = (U64)op.size * 8;
+    const U8 sub = op.sub == 6 ? 4 : op.sub; // /6 aliases SHL
+    const U64 countMask = (op.size == 8) ? 0x3F : 0x1F;
+    // L_T1 = count. RCX is GPR 1 -> wasm local 2.
+    local(body, 0x20, 2);
+    i64Const(body, 0xFF);
+    body.push_back(0x83); // i64.and
+    i64Const(body, countMask);
+    body.push_back(0x83); // i64.and
+    local(body, 0x21, L_T1);
+    // L_A = width-masked operand.
+    emitReadOperand(body, op, destReg, L_A);
+    // L_R = shift result. Stack discipline: [value, count].
+    local(body, 0x20, L_A);
+    if (sub == 7) emitSext(body, op.size); // SAR: arithmetic shift of sext value
+    local(body, 0x20, L_T1);
+    if (sub == 4) body.push_back(0x86);      // i64.shl
+    else if (sub == 5) body.push_back(0x88); // i64.shr_u (L_A width-masked)
+    else body.push_back(0x87);               // i64.shr_s
+    i64Const(body, mask);
+    body.push_back(0x83); // width-mask the result
+    local(body, 0x21, L_R);
+    // Flags: L_F accumulates the five shift flag bits. Computed
+    // unconditionally; the final merge selects old rflags when count==0.
+    i64Const(body, 0);
+    local(body, 0x21, L_F);
+    // CF -> L_P as i64 0/1. SHL: (L_A >> (wbits - count)) & 1;
+    // SHR/SAR: (L_A >> (count - 1)) & 1. (For count==0 the value is
+    // meaningless but well-defined -- wasm shifts never trap -- and is
+    // discarded by the final select.)
+    local(body, 0x20, L_A);
+    if (sub == 4 || sub == 6) {
+        i64Const(body, wbits);
+        local(body, 0x20, L_T1);
+        body.push_back(0x7D); // i64.sub: wbits - count
+    } else {
+        local(body, 0x20, L_T1);
+        i64Const(body, 1);
+        body.push_back(0x7D); // i64.sub: count - 1
+    }
+    body.push_back(0x88); // i64.shr_u
+    i64Const(body, 1);
+    body.push_back(0x83); // i64.and
+    local(body, 0x21, L_P);
+    local(body, 0x20, L_P);
+    body.push_back(0xA7); // i32.wrap_i64
+    orFlagBit(body, F_CF);
+    // OF: only defined for count == 1; mask the bit by (count == 1),
+    // matching the interpreter clearing OF for count != 1.
+    {
+        if (sub == 4 || sub == 6) {
+            // OF = MSB(result) XOR CF (SHL; /6 aliases SHL).
+            local(body, 0x20, L_R);
+            i64Const(body, sb);
+            body.push_back(0x83);
+            i64Const(body, 0);
+            body.push_back(0x52); // i64.ne -> i32
+            local(body, 0x20, L_P);
+            body.push_back(0xA7); // i32.wrap_i64
+            body.push_back(0x73); // i32.xor
+            body.push_back(0xAD); // i64.extend_i32_u
+        } else if (sub == 5) {
+            // OF = old MSB.
+            local(body, 0x20, L_A);
+            i64Const(body, sb);
+            body.push_back(0x83);
+            i64Const(body, 0);
+            body.push_back(0x52); // i64.ne -> i32
+            body.push_back(0xAD); // i64.extend_i32_u
+        } else {
+            i64Const(body, 0); // SAR: OF = 0
+        }
+        local(body, 0x20, L_T1);
+        i64Const(body, 1);
+        body.push_back(0x51); // i64.eq -> i32 (count == 1)
+        body.push_back(0xAD); // i64.extend_i32_u
+        body.push_back(0x83); // i64.and
+        body.push_back(0xA7); // i32.wrap_i64
+        orFlagBit(body, F_OF);
+    }
+    // ZF.
+    local(body, 0x20, L_R);
+    body.push_back(0x50); // i64.eqz
+    orFlagBit(body, F_ZF);
+    // SF.
+    local(body, 0x20, L_R);
+    i64Const(body, sb);
+    body.push_back(0x83);
+    i64Const(body, 0);
+    body.push_back(0x52);
+    orFlagBit(body, F_SF);
+    // PF: even parity of the low byte; PF = ((folded & 1) ^ 1).
+    local(body, 0x20, L_R);
+    i64Const(body, 0xFF);
+    body.push_back(0x83);
+    local(body, 0x21, L_P);
+    const U32 shifts[] = {4, 2, 1};
+    for (U32 s : shifts) {
+        local(body, 0x20, L_P);
+        local(body, 0x20, L_P);
+        i64Const(body, s);
+        body.push_back(0x88); // i64.shr_u
+        body.push_back(0x85); // i64.xor
+        local(body, 0x21, L_P);
+    }
+    local(body, 0x20, L_P);
+    i64Const(body, 1);
+    body.push_back(0x83); // & 1
+    i64Const(body, 1);
+    body.push_back(0x85); // ^ 1
+    body.push_back(0xA7); // i32.wrap_i64
+    orFlagBit(body, F_PF);
+    // Final merge: rflags = count==0 ? old : (old & ~F_SHIFT_MASK) | L_F.
+    // select(val1=old, val2=merged, cond): returns val1 if cond != 0.
+    local(body, 0x20, L_RFLAGS); // [old]
+    local(body, 0x20, L_RFLAGS);
+    i32Const(body, F_SHIFT_MASK);
+    body.push_back(0x72); // i32.or
+    i32Const(body, F_SHIFT_MASK);
+    body.push_back(0x73); // i32.xor -> old & ~MASK
+    local(body, 0x20, L_F);
+    body.push_back(0xA7); // i32.wrap_i64
+    body.push_back(0x72); // i32.or -> merged
+    local(body, 0x20, L_T1);
+    body.push_back(0x50); // i64.eqz -> i32 (count == 0)
+    body.push_back(0x1B); // select
+    local(body, 0x21, L_RFLAGS);
+    if (op.size == 1) { emitWriteByte(body, op, destReg, L_R); return 0xFF; }
+    if (op.size == 2) { emitWriteWord(body, destReg, L_R); return 0xFF; }
+    return destReg;
+}
+
+U32 emitRotateCLGen(Bytes& body, const Jit64Op& op) {
+    const U32 destReg = op.rmIndex;
+    const U64 mask = widthMask(op.size);
+    const U64 sb = widthSB(op.size);
+    const U64 wbits = (U64)op.size * 8;
+    const U8 sub = op.sub; // 0=ROL, 1=ROR, 2=RCL, 3=RCR
+    const U64 countMask = (op.size == 8) ? 0x3F : 0x1F;
+    // L_T1 = count. RCX is GPR 1 -> wasm local 2.
+    local(body, 0x20, 2);
+    i64Const(body, 0xFF);
+    body.push_back(0x83);
+    i64Const(body, countMask);
+    body.push_back(0x83);
+    local(body, 0x21, L_T1);
+    // L_A = width-masked operand.
+    emitReadOperand(body, op, destReg, L_A);
+    if (sub == 0 || sub == 1) {
+        // ROL/ROR: c = count % wbits in L_B.
+        local(body, 0x20, L_T1);
+        i64Const(body, wbits);
+        body.push_back(0x82); // i64.rem_u
+        local(body, 0x21, L_B);
+        local(body, 0x20, L_A);
+        local(body, 0x20, L_B);
+        if (sub == 0) { // ROL: (v << c) | (v >> (wbits - c))
+            body.push_back(0x86); // i64.shl
+            local(body, 0x20, L_A);
+            i64Const(body, wbits);
+            local(body, 0x20, L_B);
+            body.push_back(0x7D); // i64.sub
+            body.push_back(0x88); // i64.shr_u
+        } else { // ROR: (v >> c) | (v << (wbits - c))
+            body.push_back(0x88); // i64.shr_u
+            local(body, 0x20, L_A);
+            i64Const(body, wbits);
+            local(body, 0x20, L_B);
+            body.push_back(0x7D);
+            body.push_back(0x86); // i64.shl
+        }
+        body.push_back(0x84); // i64.or
+        i64Const(body, mask);
+        body.push_back(0x83);
+        local(body, 0x21, L_R);
+        // CF -> L_P as i64 0/1. ROL: result & 1; ROR: (result & sb) != 0.
+        // When c==0, L_R == L_A, so these match the interpreter's c==0
+        // special cases ((v & 1) / (v & sb)) without a branch.
+        local(body, 0x20, L_R);
+        if (sub == 0) {
+            i64Const(body, 1);
+            body.push_back(0x83);
+        } else {
+            i64Const(body, sb);
+            body.push_back(0x83);
+            i64Const(body, 0);
+            body.push_back(0x52);
+            body.push_back(0xAD);
+        }
+        local(body, 0x21, L_P);
+    } else {
+        // RCL/RCR: rotate through carry. c = count % (wbits+1) in L_B;
+        // loop threads the carry in L_P (incoming CF first), L_R holds
+        // the running result. Same structure as genRotate, dynamic trip count.
+        local(body, 0x20, L_RFLAGS);
+        i32Const(body, 1);
+        body.push_back(0x71); // i32.and -> incoming CF as 0/1
+        body.push_back(0xAD); // i64.extend_i32_u
+        local(body, 0x21, L_P);
+        local(body, 0x20, L_A);
+        local(body, 0x21, L_R);
+        local(body, 0x20, L_T1);
+        i64Const(body, wbits + 1);
+        body.push_back(0x82); // i64.rem_u
+        local(body, 0x21, L_B);
+        body.push_back(0x02); body.push_back(0x40); // block $done
+        body.push_back(0x03); body.push_back(0x40); // loop $l
+        local(body, 0x20, L_B);
+        body.push_back(0x50); // i64.eqz
+        body.push_back(0x0D); body.push_back(0x01); // br_if 1 ($done)
+        if (sub == 2) { // RCL
+            local(body, 0x20, L_R);
+            i64Const(body, sb);
+            body.push_back(0x83);
+            i64Const(body, 0);
+            body.push_back(0x52);
+            body.push_back(0xAD);
+            local(body, 0x21, L_A); // L_A = newCf (temp)
+            local(body, 0x20, L_R);
+            i64Const(body, 1);
+            body.push_back(0x86);
+            local(body, 0x20, L_P);
+            body.push_back(0x84);
+            i64Const(body, mask);
+            body.push_back(0x83);
+            local(body, 0x21, L_R);
+            local(body, 0x20, L_A);
+            local(body, 0x21, L_P);
+        } else { // RCR
+            local(body, 0x20, L_R);
+            i64Const(body, 1);
+            body.push_back(0x83);
+            local(body, 0x21, L_A);
+            local(body, 0x20, L_R);
+            i64Const(body, 1);
+            body.push_back(0x88);
+            local(body, 0x20, L_P);
+            i64Const(body, sb);
+            body.push_back(0x7E); // i64.mul: 0 or sb
+            body.push_back(0x84);
+            i64Const(body, mask);
+            body.push_back(0x83);
+            local(body, 0x21, L_R);
+            local(body, 0x20, L_A);
+            local(body, 0x21, L_P);
+        }
+        local(body, 0x20, L_B);
+        i64Const(body, 1);
+        body.push_back(0x7D); // i64.sub
+        local(body, 0x21, L_B);
+        body.push_back(0x0C); body.push_back(0x00); // br 0 ($l)
+        body.push_back(0x0B); // end loop
+        body.push_back(0x0B); // end block
+    }
+    // Flags: L_F accumulates CF and OF only.
+    i64Const(body, 0);
+    local(body, 0x21, L_F);
+    local(body, 0x20, L_P);
+    body.push_back(0xA7); // i32.wrap_i64
+    orFlagBit(body, F_CF);
+    // OF: only defined for count == 1; mask the bit by (count == 1),
+    // matching the interpreter clearing OF for count != 1.
+    {
+        if (sub == 4 || sub == 6) {
+            // OF = MSB(result) XOR CF (SHL; /6 aliases SHL).
+            local(body, 0x20, L_R);
+            i64Const(body, sb);
+            body.push_back(0x83);
+            i64Const(body, 0);
+            body.push_back(0x52); // i64.ne -> i32
+            local(body, 0x20, L_P);
+            body.push_back(0xA7); // i32.wrap_i64
+            body.push_back(0x73); // i32.xor
+            body.push_back(0xAD); // i64.extend_i32_u
+        } else if (sub == 5) {
+            // OF = old MSB (SHR).
+            local(body, 0x20, L_A);
+            i64Const(body, sb);
+            body.push_back(0x83);
+            i64Const(body, 0);
+            body.push_back(0x52); // i64.ne -> i32
+            body.push_back(0xAD); // i64.extend_i32_u
+        } else {
+            i64Const(body, 0); // SAR: OF = 0
+        }
+        local(body, 0x20, L_T2);
+        i64Const(body, 1);
+        body.push_back(0x51); // i64.eq -> i32 (count == 1)
+        body.push_back(0xAD);
+        body.push_back(0x83);
+        body.push_back(0xA7);
+        orFlagBit(body, F_OF);
+    }
+    // Dynamic flag mask: CF always, OF only when count == 1.
+    // maskBits = (1 << F_CF) | ((count==1) << F_OF), stashed in L_T2 (i64).
+    i64Const(body, 1u << F_CF);
+    local(body, 0x20, L_T1);
+    i64Const(body, 1);
+    body.push_back(0x51); // i64.eq -> i32 (count == 1)
+    body.push_back(0xAD); // i64.extend_i32_u
+    i64Const(body, (U64)F_OF);
+    body.push_back(0x86); // i64.shl
+    body.push_back(0x84); // i64.or
+    local(body, 0x21, L_T2);
+    // Final merge: rflags = count==0 ? old : (old & ~maskBits) | L_F.
+    // RFLAGS ops are i32; wrap the i64 mask and flag bits.
+    local(body, 0x20, L_RFLAGS); // [old] i32
+    local(body, 0x20, L_RFLAGS); // [old, old]
+    local(body, 0x20, L_T2);
+    body.push_back(0xA7); // i32.wrap_i64
+    body.push_back(0x72); // i32.or -> [old, old|mask]
+    local(body, 0x20, L_T2);
+    body.push_back(0xA7);
+    body.push_back(0x73); // i32.xor -> [old, old & ~maskBits]
+    local(body, 0x20, L_F);
+    body.push_back(0xA7); // i32.wrap_i64
+    body.push_back(0x72); // i32.or -> [old, merged]
+    local(body, 0x20, L_T1);
+    body.push_back(0x50); // i64.eqz -> count == 0
+    body.push_back(0x1B); // select
+    local(body, 0x21, L_RFLAGS);
+    if (op.size == 1) { emitWriteByte(body, op, destReg, L_R); return 0xFF; }
+    if (op.size == 2) { emitWriteWord(body, destReg, L_R); return 0xFF; }
+    return destReg;
+}
+
+U32 emitShiftCLMemGen(Bytes& body, const Jit64Op& op) {
+    const U64 mask = widthMask(op.size);
+    const U64 sb = widthSB(op.size);
+    const U64 wbits = (U64)op.size * 8;
+    const U8 sub = op.sub == 6 ? 4 : op.sub; // /6 aliases SHL
+    const U64 countMask = (op.size == 8) ? 0x3F : 0x1F;
+    // L_T2 = count (L_T1 is the EA below). RCX is GPR 1 -> wasm local 2.
+    local(body, 0x20, 2);
+    i64Const(body, 0xFF);
+    body.push_back(0x83); // i64.and
+    i64Const(body, countMask);
+    body.push_back(0x83); // i64.and
+    local(body, 0x21, L_T2);
+    emitEA(body, op); // L_T1 = effective address
+    // L_A = width-masked memory operand. emitMemRead faults on unmapped
+    // pages exactly like the interpreter's loadRM (even when count==0).
+    emitMemRead(body, L_T1, op.size); // -> L_R (zero-extended)
+    local(body, 0x20, L_R);
+    i64Const(body, mask);
+    body.push_back(0x83); // i64.and
+    local(body, 0x21, L_A);
+    // L_R = shift result (same computation as the register-direct path,
+    // reading the count from L_T2).
+    local(body, 0x20, L_A);
+    if (sub == 7) emitSext(body, op.size);
+    local(body, 0x20, L_T2);
+    if (sub == 4) body.push_back(0x86);
+    else if (sub == 5) body.push_back(0x88);
+    else body.push_back(0x87);
+    i64Const(body, mask);
+    body.push_back(0x83);
+    local(body, 0x21, L_R);
+    // Flags (same as genShiftCL, count from L_T2).
+    i64Const(body, 0);
+    local(body, 0x21, L_F);
+    local(body, 0x20, L_A);
+    if (sub == 4 || sub == 6) {
+        i64Const(body, wbits);
+        local(body, 0x20, L_T2);
+        body.push_back(0x7D); // wbits - count
+    } else {
+        local(body, 0x20, L_T2);
+        i64Const(body, 1);
+        body.push_back(0x7D); // count - 1
+    }
+    body.push_back(0x88);
+    i64Const(body, 1);
+    body.push_back(0x83);
+    local(body, 0x21, L_P);
+    local(body, 0x20, L_P);
+    body.push_back(0xA7);
+    orFlagBit(body, F_CF);
+    {
+        if (sub == 4) {
+            local(body, 0x20, L_R);
+            i64Const(body, sb);
+            body.push_back(0x83);
+            i64Const(body, 0);
+            body.push_back(0x52);
+            local(body, 0x20, L_P);
+            body.push_back(0xA7);
+            body.push_back(0x73);
+            body.push_back(0xAD);
+        } else if (sub == 5) {
+            local(body, 0x20, L_A);
+            i64Const(body, sb);
+            body.push_back(0x83);
+            i64Const(body, 0);
+            body.push_back(0x52);
+            body.push_back(0xAD);
+        } else {
+            i64Const(body, 0);
+        }
+        local(body, 0x20, L_T2);
+        i64Const(body, 1);
+        body.push_back(0x51);
+        body.push_back(0xAD);
+        body.push_back(0x83);
+        body.push_back(0xA7);
+        orFlagBit(body, F_OF);
+    }
+    local(body, 0x20, L_R);
+    body.push_back(0x50);
+    orFlagBit(body, F_ZF);
+    local(body, 0x20, L_R);
+    i64Const(body, sb);
+    body.push_back(0x83);
+    i64Const(body, 0);
+    body.push_back(0x52);
+    orFlagBit(body, F_SF);
+    local(body, 0x20, L_R);
+    i64Const(body, 0xFF);
+    body.push_back(0x83);
+    local(body, 0x21, L_P);
+    const U32 shifts[] = {4, 2, 1};
+    for (U32 s : shifts) {
+        local(body, 0x20, L_P);
+        local(body, 0x20, L_P);
+        i64Const(body, s);
+        body.push_back(0x88);
+        body.push_back(0x85);
+        local(body, 0x21, L_P);
+    }
+    local(body, 0x20, L_P);
+    i64Const(body, 1);
+    body.push_back(0x83);
+    i64Const(body, 1);
+    body.push_back(0x85);
+    body.push_back(0xA7);
+    orFlagBit(body, F_PF);
+    // Final merge with count==0 select (same as genShiftCL).
+    local(body, 0x20, L_RFLAGS);
+    local(body, 0x20, L_RFLAGS);
+    i32Const(body, F_SHIFT_MASK);
+    body.push_back(0x72);
+    i32Const(body, F_SHIFT_MASK);
+    body.push_back(0x73);
+    local(body, 0x20, L_F);
+    body.push_back(0xA7);
+    body.push_back(0x72);
+    local(body, 0x20, L_T2);
+    body.push_back(0x50);
+    body.push_back(0x1B);
+    local(body, 0x21, L_RFLAGS);
+    // Store back to memory only when count != 0 (interpreter never stores
+    // on count==0 for memory operands). No register writeback.
+    local(body, 0x20, L_T2);
+    i64Const(body, 0);
+    body.push_back(0x52); // i64.ne -> i32 (count != 0)
+    body.push_back(0x04); body.push_back(0x40); // if
+    emitMemWrite(body, L_T1, L_R, op.size);
+    body.push_back(0x0B); // end
+    return 0xFF;
+}
+
+U32 emitRotateCLMemGen(Bytes& body, const Jit64Op& op) {
+    const U64 mask = widthMask(op.size);
+    const U64 sb = widthSB(op.size);
+    const U64 wbits = (U64)op.size * 8;
+    const U8 sub = op.sub;
+    const U64 countMask = (op.size == 8) ? 0x3F : 0x1F;
+    // L_T2 = count (L_T1 is the EA below).
+    local(body, 0x20, 2);
+    i64Const(body, 0xFF);
+    body.push_back(0x83);
+    i64Const(body, countMask);
+    body.push_back(0x83);
+    local(body, 0x21, L_T2);
+    emitEA(body, op); // L_T1 = effective address
+    emitMemRead(body, L_T1, op.size); // -> L_R (zero-extended)
+    local(body, 0x20, L_R);
+    i64Const(body, mask);
+    body.push_back(0x83);
+    local(body, 0x21, L_A);
+    if (sub == 0 || sub == 1) {
+        local(body, 0x20, L_T2);
+        i64Const(body, wbits);
+        body.push_back(0x82); // i64.rem_u
+        local(body, 0x21, L_B);
+        local(body, 0x20, L_A);
+        local(body, 0x20, L_B);
+        if (sub == 0) {
+            body.push_back(0x86);
+            local(body, 0x20, L_A);
+            i64Const(body, wbits);
+            local(body, 0x20, L_B);
+            body.push_back(0x7D);
+            body.push_back(0x88);
+        } else {
+            body.push_back(0x88);
+            local(body, 0x20, L_A);
+            i64Const(body, wbits);
+            local(body, 0x20, L_B);
+            body.push_back(0x7D);
+            body.push_back(0x86);
+        }
+        body.push_back(0x84);
+        i64Const(body, mask);
+        body.push_back(0x83);
+        local(body, 0x21, L_R);
+        local(body, 0x20, L_R);
+        if (sub == 0) {
+            i64Const(body, 1);
+            body.push_back(0x83);
+        } else {
+            i64Const(body, sb);
+            body.push_back(0x83);
+            i64Const(body, 0);
+            body.push_back(0x52);
+            body.push_back(0xAD);
+        }
+        local(body, 0x21, L_P);
+    } else {
+        local(body, 0x20, L_RFLAGS);
+        i32Const(body, 1);
+        body.push_back(0x71);
+        body.push_back(0xAD);
+        local(body, 0x21, L_P);
+        local(body, 0x20, L_A);
+        local(body, 0x21, L_R);
+        local(body, 0x20, L_T2);
+        i64Const(body, wbits + 1);
+        body.push_back(0x82); // i64.rem_u
+        local(body, 0x21, L_B);
+        body.push_back(0x02); body.push_back(0x40);
+        body.push_back(0x03); body.push_back(0x40);
+        local(body, 0x20, L_B);
+        body.push_back(0x50);
+        body.push_back(0x0D); body.push_back(0x01);
+        if (sub == 2) {
+            local(body, 0x20, L_R);
+            i64Const(body, sb);
+            body.push_back(0x83);
+            i64Const(body, 0);
+            body.push_back(0x52);
+            body.push_back(0xAD);
+            local(body, 0x21, L_A);
+            local(body, 0x20, L_R);
+            i64Const(body, 1);
+            body.push_back(0x86);
+            local(body, 0x20, L_P);
+            body.push_back(0x84);
+            i64Const(body, mask);
+            body.push_back(0x83);
+            local(body, 0x21, L_R);
+            local(body, 0x20, L_A);
+            local(body, 0x21, L_P);
+        } else {
+            local(body, 0x20, L_R);
+            i64Const(body, 1);
+            body.push_back(0x83);
+            local(body, 0x21, L_A);
+            local(body, 0x20, L_R);
+            i64Const(body, 1);
+            body.push_back(0x88);
+            local(body, 0x20, L_P);
+            i64Const(body, sb);
+            body.push_back(0x7E);
+            body.push_back(0x84);
+            i64Const(body, mask);
+            body.push_back(0x83);
+            local(body, 0x21, L_R);
+            local(body, 0x20, L_A);
+            local(body, 0x21, L_P);
+        }
+        local(body, 0x20, L_B);
+        i64Const(body, 1);
+        body.push_back(0x7D);
+        local(body, 0x21, L_B);
+        body.push_back(0x0C); body.push_back(0x00);
+        body.push_back(0x0B);
+        body.push_back(0x0B);
+    }
+    i64Const(body, 0);
+    local(body, 0x21, L_F);
+    local(body, 0x20, L_P);
+    body.push_back(0xA7);
+    orFlagBit(body, F_CF);
+    {
+        if (sub == 0 || sub == 2) {
+            local(body, 0x20, L_R);
+            i64Const(body, sb);
+            body.push_back(0x83);
+            i64Const(body, 0);
+            body.push_back(0x52);
+            local(body, 0x20, L_P);
+            body.push_back(0xA7);
+            body.push_back(0x73);
+            body.push_back(0xAD);
+        } else {
+            local(body, 0x20, L_R);
+            i64Const(body, sb);
+            body.push_back(0x83);
+            i64Const(body, 0);
+            body.push_back(0x52);
+            local(body, 0x20, L_R);
+            i64Const(body, 1);
+            body.push_back(0x86);
+            i64Const(body, sb);
+            body.push_back(0x83);
+            i64Const(body, 0);
+            body.push_back(0x52);
+            body.push_back(0x73);
+            body.push_back(0xAD);
+        }
+        local(body, 0x20, L_T2);
+        i64Const(body, 1);
+        body.push_back(0x51);
+        body.push_back(0xAD);
+        body.push_back(0x83);
+        body.push_back(0xA7);
+        orFlagBit(body, F_OF);
+    }
+    // maskBits -> L_P as i64 (L_P is free: carry already folded into L_F).
+    // L_T2 keeps the count for the count==0 tests below.
+    i64Const(body, 1u << F_CF);
+    local(body, 0x20, L_T2);
+    i64Const(body, 1);
+    body.push_back(0x51); // i64.eq -> i32 (count == 1)
+    body.push_back(0xAD); // i64.extend_i32_u
+    i64Const(body, (U64)F_OF);
+    body.push_back(0x86); // i64.shl
+    body.push_back(0x84); // i64.or
+    local(body, 0x21, L_P);
+    local(body, 0x20, L_RFLAGS); // i32 old
+    local(body, 0x20, L_RFLAGS);
+    local(body, 0x20, L_P);
+    body.push_back(0xA7); // i32.wrap_i64
+    body.push_back(0x72); // i32.or -> [old, old|mask]
+    local(body, 0x20, L_P);
+    body.push_back(0xA7);
+    body.push_back(0x73); // i32.xor -> [old, old & ~maskBits]
+    local(body, 0x20, L_F);
+    body.push_back(0xA7); // i32.wrap_i64
+    body.push_back(0x72); // i32.or -> [old, merged]
+    local(body, 0x20, L_T2);
+    body.push_back(0x50); // i64.eqz -> count == 0
+    body.push_back(0x1B); // select
+    local(body, 0x21, L_RFLAGS);
+    // Store back to memory only when count != 0.
+    local(body, 0x20, L_T2);
+    i64Const(body, 0);
+    body.push_back(0x52); // i64.ne -> count != 0
+    body.push_back(0x04); body.push_back(0x40); // if
+    emitMemWrite(body, L_T1, L_R, op.size);
+    body.push_back(0x0B); // end
+    return 0xFF;
+}
+
 U32 emitImulGen(Bytes& body, const Jit64Op& op) {
     const U32 destReg = op.regField;
     const U32 srcReg = op.rmIndex;

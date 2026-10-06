@@ -174,6 +174,78 @@ export const EMITTERS = [
     },
   },
   {
+    func: "emitShiftCLGen",
+    template: "shiftCL",
+    kinds: ["J64_SHIFT_CL"],
+    encoding:
+      "SHL/SHR/SAR: 0xD3 /4,/5,/7 (0xD2 /4,/5,/7 for 8-bit; /6 aliases /4). " +
+      "REX.W selects 64-bit, 0x66 16-bit. Count = CL & 0xFF at runtime, " +
+      "masked to 0x1F/0x3F by the emitter.",
+    operands:
+      "sizes 1/2/4/8, register-direct; 8-bit follows the AH/BH/CH/DH-vs-REX rule " +
+      "(high-byte declined to interpreter by the classifier).",
+    flags: {
+      writes: ["CF", "OF", "ZF", "SF", "PF"],
+      preserves: "AF and all other RFLAGS bits (F_SHIFT_MASK merge)",
+      note: "count==0: no-op (flags untouched, via runtime select); 32-bit " +
+            "count==0 still zero-extends. OF defined only for count==1.",
+    },
+  },
+  {
+    func: "emitRotateCLGen",
+    template: "rotateCL",
+    kinds: ["J64_SHIFT_CL"],
+    encoding:
+      "ROL/ROR/RCL/RCR: 0xD3 /0../3 (0xD2 /0../3 for 8-bit). REX.W selects " +
+      "64-bit, 0x66 16-bit. Count = CL & 0xFF at runtime, masked to " +
+      "0x1F/0x3F by the emitter. RCL/RCR use the closed-form (wbits+1)-bit " +
+      "rotation (no wasm loop).",
+    operands:
+      "sizes 1/2/4/8, register-direct; 8-bit follows the AH/BH/CH/DH-vs-REX rule.",
+    flags: {
+      writes: ["CF", "OF"],
+      preserves: "SZP/AF and all other RFLAGS bits (F_CFOF_MASK merge)",
+      note: "count==0: no-op (flags untouched, via runtime select). OF " +
+            "defined only for count==1.",
+    },
+  },
+  {
+    func: "emitShiftCLMemGen",
+    template: "shiftCL",
+    mem: true,
+    kinds: ["J64_SHIFT_CL"],
+    encoding:
+      "SHL/SHR/SAR r/m,CL (0xD3 /4,/5,/7) with ModRM mod != 3. Count = " +
+      "CL & 0xFF at runtime, masked to 0x1F/0x3F by the emitter. REX.W " +
+      "selects 64-bit, 0x66 16-bit. EA via emitEA.",
+    operands:
+      "sizes 1/2/4/8, memory operand; fault ordering: memRead before " +
+      "compute+flags (load faults even when count==0, matching the " +
+      "interpreter), memWrite only when count != 0.",
+    flags: {
+      writes: ["CF", "OF", "ZF", "SF", "PF"],
+      preserves: "AF and all other RFLAGS bits (F_SHIFT_MASK merge)",
+      note: "count==0: no store, flags untouched. OF defined only for count==1.",
+    },
+  },
+  {
+    func: "emitRotateCLMemGen",
+    template: "rotateCL",
+    mem: true,
+    kinds: ["J64_SHIFT_CL"],
+    encoding:
+      "ROL/ROR/RCL/RCR r/m,CL (0xD3 /0../3) with ModRM mod != 3. Count = " +
+      "CL & 0xFF at runtime, masked to 0x1F/0x3F. EA via emitEA.",
+    operands:
+      "sizes 1/2/4/8, memory operand; fault ordering: memRead before " +
+      "compute+flags, memWrite only when count != 0.",
+    flags: {
+      writes: ["CF", "OF"],
+      preserves: "SZP/AF and all other RFLAGS bits (F_CFOF_MASK merge)",
+      note: "count==0: no store, flags untouched. OF defined only for count==1.",
+    },
+  },
+  {
     func: "emitImulGen",
     template: "imul2",
     kinds: ["J64_IMUL_R_RM"],

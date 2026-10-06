@@ -406,6 +406,8 @@ U32 jit64EmitOld(std::vector<U8>& body, const Jit64Op& op) {
         return 0xFE;
     case J64_SHIFT_IMM:
         return 0xFE; // migrated to emitShiftGen/emitRotateGen
+    case J64_SHIFT_CL:
+        return 0xFE; // migrated to emitShiftCLGen/emitRotateCLGen
     case J64_IMUL_R_RM:
     case J64_IMUL_1OP:
     case J64_IMUL_3OP:
@@ -430,6 +432,10 @@ U32 jit64EmitNew(std::vector<U8>& body, const Jit64Op& op) {
         if (op.isMem)
             return op.sub <= 3 ? emitRotateMemGen(body, op) : emitShiftMemGen(body, op);
         return op.sub <= 3 ? emitRotateGen(body, op) : emitShiftGen(body, op);
+    case J64_SHIFT_CL:
+        if (op.isMem)
+            return op.sub <= 3 ? emitRotateCLMemGen(body, op) : emitShiftCLMemGen(body, op);
+        return op.sub <= 3 ? emitRotateCLGen(body, op) : emitShiftCLGen(body, op);
     case J64_IMUL_R_RM:
         return emitImulGen(body, op);
     case J64_IMUL_1OP:
@@ -549,6 +555,7 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
         case J64_ALU_ACC_IMM:
         case J64_TEST_RM_R:
         case J64_SHIFT_IMM:
+        case J64_SHIFT_CL:
         case J64_MOVX:
         case J64_IMUL_R_RM:
         case J64_IMUL_1OP:
@@ -603,7 +610,7 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             bool memMov8 = (op.kind == J64_MOV_RM_R || op.kind == J64_MOV_R_RM) &&
                            op.size == 1;
             bool memGrp3 = op.kind == J64_GRP3;
-            bool memShift = op.kind == J64_SHIFT_IMM;
+            bool memShift = op.kind == J64_SHIFT_IMM || op.kind == J64_SHIFT_CL;
             bool memCmov = op.kind == J64_CMOV;
             bool memMovImm = op.kind == J64_MOV_RM_IMM && op.size == 1;
             if ((!memAlu && !memLea && !memStack && !memMov8 && !memGrp3 && !memShift && !memCmov && !memMovImm) || !widthOk) return false;
@@ -665,6 +672,13 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             // SHL/SHR/SAR (/4,/5,/6,/7) and rotates (/0../3): 0xC1 (imm8)
             // and 0xD1 (implicit 1). Memory forms need the decoder-filled
             // EA (C1-mem and D1-mem both fill it now).
+            if (op.sub > 7) return false;
+            if (!op.isMem && op.rmIndex >= 16) return false;
+            break;
+        case J64_SHIFT_CL:
+            // SHL/SHR/SAR (/4,/5,/6,/7) and rotates (/0../3): 0xD3 (D2
+            // 8-bit), count from CL at runtime. Memory forms need the
+            // decoder-filled EA.
             if (op.sub > 7) return false;
             if (!op.isMem && op.rmIndex >= 16) return false;
             break;
@@ -786,6 +800,24 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
                 written = (op.sub <= 3) ? emitRotateMemGen(body, op) : emitShiftMemGen(body, op);
             else
                 written = (op.sub <= 3) ? emitRotateGen(body, op) : emitShiftGen(body, op);
+            if (written != 0xFF) {
+                local(body, 0x20, L_R);
+                local(body, 0x21, written + 1);
+            }
+            break;
+        }
+        case J64_SHIFT_CL: {
+            // Register-direct shifts/rotates by CL: the CL emitters leave
+            // the result in L_R (which equals the input when count==0, so
+            // the writeback is a harmless redundant store then, and the
+            // required 32-bit zero-extension on count==0). Flags are
+            // merged with a runtime count==0 select inside the emitter.
+            // Memory forms store back themselves and return 0xFF.
+            U32 written;
+            if (op.isMem)
+                written = (op.sub <= 3) ? emitRotateCLMemGen(body, op) : emitShiftCLMemGen(body, op);
+            else
+                written = (op.sub <= 3) ? emitRotateCLGen(body, op) : emitShiftCLGen(body, op);
             if (written != 0xFF) {
                 local(body, 0x20, L_R);
                 local(body, 0x21, written + 1);
