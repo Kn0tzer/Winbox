@@ -35,7 +35,7 @@ static Jit64Op dec(U64 base, std::vector<U8> b) {
 static void testCoverageTable() {
     U32 n = 0;
     const Jit64CoveredOpcode* t = jit64CoveredOpcodes(&n);
-    CHECK(n == 25, "coverage table has %u entries, want 25", n);
+    CHECK(n == 26, "coverage table has %u entries, want 26", n);
     CHECK(t != nullptr, "coverage table null");
     // Spot-check rank order matches the profile.
     CHECK(t[0].op == 0x89, "rank1 op=0x%02x want 0x89", t[0].op);
@@ -501,6 +501,22 @@ static void testFallbackRules() {
     CHECK(cbw3.kind == J64_CBW && cbw3.size == 8 && cbw3.len == 2,
           "48 98: kind=%d size=%d len=%d", cbw3.kind, cbw3.size, cbw3.len);
     CHECK(cbw3.plan == JIT64_FAST, "48 98 plan fallback");
+    // 0F 44 C1          cmove eax, ecx (reg-direct, 32-bit)
+    Jit64Op cm1 = dec(0x400000, {0x0F, 0x44, 0xC1});
+    CHECK(cm1.kind == J64_CMOV && cm1.sub == 4 && cm1.size == 4 && cm1.len == 3,
+          "0F44: kind=%d sub=%d size=%d len=%d", cm1.kind, cm1.sub, cm1.size, cm1.len);
+    CHECK(cm1.regField == 0 && cm1.rmIndex == 1 && !cm1.isMem, "0F44 operands");
+    CHECK(cm1.plan == JIT64_FAST, "0F44 plan fallback");
+    // 48 0F 4F C2       cmovg rax, rdx (64-bit)
+    Jit64Op cm2 = dec(0x400000, {0x48, 0x0F, 0x4F, 0xC2});
+    CHECK(cm2.kind == J64_CMOV && cm2.sub == 15 && cm2.size == 8 && cm2.len == 4,
+          "0F4F: kind=%d sub=%d size=%d", cm2.kind, cm2.sub, cm2.size);
+    CHECK(cm2.plan == JIT64_FAST, "0F4F plan fallback");
+    // 66 0F 42 04 25 00 10 00 00  cmovb ax, [0x1000] (16-bit mem)
+    Jit64Op cm3 = dec(0x400000, {0x66, 0x0F, 0x42, 0x04, 0x25, 0x00, 0x10, 0x00, 0x00});
+    CHECK(cm3.kind == J64_CMOV && cm3.sub == 2 && cm3.size == 2 && cm3.isMem,
+          "0F42 mem: kind=%d sub=%d size=%d isMem=%d", cm3.kind, cm3.sub, cm3.size, cm3.isMem);
+    CHECK(cm3.plan == JIT64_FAST, "0F42 mem plan fallback");
     // 6B C0 05          imul eax, eax, 5
     Jit64Op c10 = dec(0x400000, {0x6B, 0xC0, 0x05});
     CHECK(c10.kind == J64_IMUL_3OP && c10.size == 4 && c10.imm == 5 && c10.len == 3,

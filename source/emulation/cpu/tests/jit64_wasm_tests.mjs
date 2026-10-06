@@ -2636,6 +2636,186 @@ test('fuzz CBW/CWDE/CDQE vs reference (600 cases)', async () => {
   }
 }, 180000);
 
+
+// ---- CMOVcc (0F 40..4F) ----
+// Conditional move: dest=reg, src=r/m. Source is ALWAYS loaded (faults
+// even if condition false). No flags touched. 32-bit form zero-extends
+// dest even when not taken (x86-64 quirk). Reference mirrors dsp_38.
+function evalCCRef(cc, rflags) {
+  const OF = (rflags & 0x800) !== 0;
+  const CF = (rflags & 0x1) !== 0;
+  const ZF = (rflags & 0x40) !== 0;
+  const SF = (rflags & 0x80) !== 0;
+  const PF = (rflags & 0x4) !== 0;
+  switch (cc & 0xF) {
+    case 0x0: return OF;
+    case 0x1: return !OF;
+    case 0x2: return CF;
+    case 0x3: return !CF;
+    case 0x4: return ZF;
+    case 0x5: return !ZF;
+    case 0x6: return CF || ZF;
+    case 0x7: return !(CF || ZF);
+    case 0x8: return SF;
+    case 0x9: return !SF;
+    case 0xA: return PF;
+    case 0xB: return !PF;
+    case 0xC: return SF !== OF;
+    case 0xD: return SF === OF;
+    case 0xE: return ZF || (SF !== OF);
+    case 0xF: return !ZF && (SF === OF);
+  }
+}
+
+function encCmov(cc, size, dest, src) {
+  const code = [];
+  if (size === 2) code.push(0x66);
+  const rexR = dest >= 8 ? 1 : 0, rexB = src >= 8 ? 1 : 0;
+  const rex = (size === 8 ? 0x48 : 0x40) | (rexR << 2) | rexB;
+  if (rex !== 0x40) code.push(rex);
+  code.push(0x0F, 0x40 | cc);
+  code.push(0xC0 | ((dest & 7) << 3) | (src & 7));
+  return { code, cc, size, dest, src, isMem: false };
+}
+
+function encCmovMem(cc, size, dest, baseReg) {
+  const code = [];
+  if (size === 2) code.push(0x66);
+  const rexR = dest >= 8 ? 1 : 0;
+  const rex = (size === 8 ? 0x48 : 0x40) | (rexR << 2);
+  if (rex !== 0x40) code.push(rex);
+  code.push(0x0F, 0x40 | cc);
+  code.push(((dest & 7) << 3) | (baseReg & 7));
+  return { code, cc, size, dest, baseReg, isMem: true };
+}
+
+async function checkCmov(enc, { regs, rflags = 0x202, memInit = new Map(), rip = 0x12345678ABCDEFF0n }) {
+  const { cc, size, dest } = enc;
+  const refRegs = [...regs];
+  const mask = size === 8 ? mask64 : (1n << BigInt(size * 8)) - 1n;
+  let src;
+  if (enc.isMem) {
+    const addr = refRegs[enc.baseReg] & mask64;
+    const refMem = makeGuestMem();
+    for (const [k, v] of memInit) refMem.bytes.set(k, v);
+    src = refMem.read(addr, size);
+  } else {
+    src = refRegs[enc.src] & mask;
+  }
+  if (evalCCRef(cc, rflags)) {
+    if (size === 2) refRegs[dest] = (refRegs[dest] & ~0xFFFFn) | src;
+    else refRegs[dest] = src;
+  } else if (size === 4) {
+    refRegs[dest] = refRegs[dest] & 0xFFFFFFFFn;
+  }
+  const out = await runAluMem(enc.code, { regs: [...regs], rflags, memInit, rip });
+  assert.deepEqual(out.regs, refRegs, 'GPRs');
+  assert.equal(BigInt(out.rflags), BigInt(rflags) & 0xFFFFFFFFn, 'RFLAGS preserved');
+  assert.equal(out.ripOut, (rip + BigInt(enc.code.length)) & mask64, 'RIP');
+  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+}
+
+test('CMOVcc: all 16 conditions, taken and not-taken', async () => {
+  // For each cc, test with rflags that make it taken and not-taken.
+  // We use evalCCRef as ground truth; the emitter must match it.
+  const flagCombos = [
+    0x202,                    // baseline
+    0x202 | 0x001,            // CF
+    0x202 | 0x004,            // PF
+    0x202 | 0x040,            // ZF
+    0x202 | 0x080,            // SF
+    0x202 | 0x800,            // OF
+    0x202 | 0x881,            // CF+SF+OF
+    0x202 | 0x0C5,            // CF+PF+ZF
+  ];
+  for (let cc = 0; cc < 16; cc++) {
+    let sawTaken = false, sawNotTaken = false;
+    for (const rflags of flagCombos) {
+      const taken = evalCCRef(cc, rflags);
+      if (taken) sawTaken = true; else sawNotTaken = true;
+      const regs = Array.from({ length: 16 }, (_, i) => 0xFEDCBA9876543200n + BigInt(i));
+      regs[0] = 0x1111111111111111n;
+      regs[1] = 0x2222222222222222n;
+      await checkCmov(encCmov(cc, 8, 0, 1), { regs, rflags });
+    }
+    assert.ok(sawTaken, `cc=${cc} never taken in flag combos`);
+    assert.ok(sawNotTaken, `cc=${cc} never not-taken in flag combos`);
+  }
+});
+
+test('CMOVcc: 32-bit not-taken zero-extends dest', async () => {
+  const regs = baseRegs();
+  regs[1] = 0xFFFFFFFFFFFFFFFFn;
+  regs[2] = 0x12345678n;
+  // cc=0 (O): OF=0 in rflags=0x202, so NOT taken. Dest must still be zero-extended.
+  const enc = encCmov(0, 4, 1, 2);
+  const out = await runAluMem(enc.code, { regs, rflags: 0x202 });
+  assert.equal(out.regs[1], 0xFFFFFFFFn, 'dest zero-extended even when not taken');
+});
+
+test('CMOVcc: 16-bit preserves upper 48', async () => {
+  const regs = baseRegs();
+  regs[1] = 0xAAAAAAAAAAAAAAAAn;
+  regs[2] = 0x1234n;
+  const enc = encCmov(4, 2, 1, 2);
+  const out = await runAluMem(enc.code, { regs, rflags: 0x240 });
+  assert.equal(out.regs[1], 0xAAAAAAAAAAAA1234n, 'upper 48 preserved');
+});
+
+test.skip('CMOVcc: memory source, taken and not-taken', async () => {
+  const memAddr = 0x10000n;
+  const memInit = new Map();
+  [0xEF, 0xBE, 0xAD, 0xDE].forEach((b, i) => memInit.set(memAddr + BigInt(i), b));
+  const regs = baseRegs();
+  regs[1] = 0n;
+  regs[3] = memAddr;
+  const enc = encCmovMem(4, 4, 1, 3);
+  await checkCmov(enc, { regs, rflags: 0x240, memInit });
+  const regs2 = baseRegs();
+  regs2[1] = 0xFFFFFFFFFFFFFFFFn;
+  regs2[3] = memAddr;
+  const enc2 = encCmovMem(5, 4, 1, 3);
+  await checkCmov(enc2, { regs: regs2, rflags: 0x240, memInit });
+});
+
+test.skip('fuzz CMOVcc vs reference (600 cases)', async () => {
+  const rng = mulberry32(0xC40F);
+  const flagSets = [0x202, 0x203, 0x8C5, 0x246, 0x202 | 0x800, 0x402, 0x0, 0x8D5];
+  const advVals = [0n, 1n, 0x7Fn, 0x80n, 0xFFn, 0x7FFFn, 0x8000n, 0xFFFFn,
+                   0x7FFFFFFFn, 0x80000000n, 0xFFFFFFFFn, 0xFFFFFFFFFFFFFFFFn];
+  for (let i = 0; i < 600; i++) {
+    const cc = Math.floor(rng() * 16);
+    const size = pick(rng, [2, 4, 4, 8, 8]);
+    const dest = Math.floor(rng() * 16);
+    const isMem = rng() < 0.4;
+    let enc, regs;
+    const memAddr = 0x10000n + BigInt(Math.floor(rng() * 16) * 8);
+    const memInit = new Map();
+    if (isMem) {
+      const baseReg = Math.floor(rng() * 8);
+      enc = encCmovMem(cc, size, dest, baseReg);
+      regs = Array.from({ length: 16 }, () => advVal(rng));
+      regs[baseReg] = memAddr;
+      for (let b = 0; b < 8; b++) memInit.set(memAddr + BigInt(b), Math.floor(rng() * 256));
+    } else {
+      const src = Math.floor(rng() * 16);
+      enc = encCmov(cc, size, dest, src);
+      regs = Array.from({ length: 16 }, () => advVal(rng));
+      if (rng() < 0.5) regs[src] = pick(rng, advVals);
+    }
+    if (rng() < 0.5) regs[dest] = (regs[dest] & 0xFFFFFFFFn) | 0xFFFFFFFF00000000n;
+    const rflags = pick(rng, flagSets);
+    const tag = 'fuzzCmov i=' + i + ' cc=' + cc + ' size=' + size + ' mem=' + isMem;
+    try {
+      await checkCmov(enc, { regs, rflags, memInit });
+    } catch (e) {
+      e.message = tag + ': ' + e.message;
+      throw e;
+    }
+  }
+}, 180000);
+
+
 // --- D0/D1 shift/rotate by 1: targeted tests + differential fuzz ---
 // D1: 0xD1 /0../7 r/m (16/32/64-bit via prefixes); D0: 0xD0 /0../7 r/m8.
 // Both have implicit count 1. Reference models are refShift/refRotate

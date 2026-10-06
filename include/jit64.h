@@ -91,6 +91,10 @@ enum Jit64Kind : U8 {
     J64_CBW = 27,       // 0x98 CBW/CWDE/CDQE: sign-extend AL->AX (16),
                         // AX->EAX (32), EAX->RAX (64). Pure RAX
                         // transform; no flags, no memory, no faults.
+    J64_CMOV = 28,      // 0F 40..4F CMOVcc r, r/m16/32/64: sub = condition
+                        // 0..15 (same encoding as Jcc). Dest is always a
+                        // register; source is always loaded (faults even if
+                        // the condition is false). No flags touched.
     J64_UNKNOWN = 255
 };
 

@@ -5802,6 +5802,17 @@ bool CPU64::buildBlock(U64 startRip, BBlock& b) {
             rec.sub = (U8)((op2 == 0xB6) ? 0 : (op2 == 0xB7) ? 1 :
                            (op2 == 0xBE) ? 2 : 3);
             rec.len = (U8)(opOff + 2 + rec.mr.length);
+        } else if (op == 0x0F && fetchByte(r + opOff + 1) >= 0x40 &&
+                                        fetchByte(r + opOff + 1) <= 0x4F) {
+            // 0F 40..4F: CMOVcc r, r/m16/32/64. Condition in low 4 bits
+            // of op2 (same encoding as Jcc). Dest is always a register;
+            // the source is always loaded (faults even if the condition
+            // is false), mirroring the interpreter's dsp_38.
+            U8 op2 = fetchByte(r + opOff + 1);
+            if (!decodeModRMRecipe(r + opOff + 2, p, 0, rec.mr)) break;
+            rec.kind = BK_CMOV;
+            rec.sub = op2 & 0xF;
+            rec.len = (U8)(opOff + 2 + rec.mr.length);
         } else if (op == 0xF6 || op == 0xF7) {
             // F6/F7 group 3: /5 (IMUL r/m) keeps BK_IMUL_1OP; /0 TEST,
             // /2 NOT, /3 NEG, /4 MUL (unsigned) build BK_GRP3. /1 is an
@@ -6222,6 +6233,24 @@ U32 CPU64::execBlock(const BBlock& b, U64 maxInsn) {
             rip += rec.len;
             break;
         }
+        case BK_CMOV: {
+            // CMOVcc r, r/m (0F 40..4F): mirrors dsp_38 exactly. The
+            // source is always loaded (faults even if the condition is
+            // false). If taken, dest = src (size-appropriate write). If
+            // not taken, the 32-bit form still zero-extends dest (x86-64
+            // quirk). No flags touched.
+            ModRM m = resolveRecipe(rec.mr);
+            U64 src = loadRM(m, size, rexPresent);
+            if (evalCC(rec.sub)) {
+                if (size == 2) reg[m.regField].setU16((U16)src);
+                else if (size == 4) reg[m.regField].setU32((U32)src);
+                else reg[m.regField].setU64(src);
+            } else if (size == 4) {
+                reg[m.regField].setU32(reg[m.regField].u32);
+            }
+            rip += rec.len;
+            break;
+        }
         }
         executed++;
         // A guest store can rewrite a later instruction in this block. Stop
@@ -6249,7 +6278,7 @@ U32 CPU64::execBlockThreaded(const BBlock& b, U64 maxInsn) {
     // Static: label addresses are compile-time constants; the table is
     // built once, not on every block execution (2M+ executions per
     // benchmark loop - 19 stores each would be measurable).
-    static const void* thrDispatch[21] = {
+    static const void* thrDispatch[22] = {
         &&thr_MOV_RM_R,
         &&thr_MOV_R_RM,
         &&thr_ALU_RM_R,
@@ -6271,6 +6300,7 @@ U32 CPU64::execBlockThreaded(const BBlock& b, U64 maxInsn) {
         &&thr_IMUL_3OP,
         &&thr_GRP3,
         &&thr_CBW,
+        &&thr_CMOV,
     };
     U32 executed = 0;
     U16 i = 0;
@@ -6646,6 +6676,26 @@ thr_CBW: {
         if (size == 2) reg[X64_RAX].setU16((U16)(S16)(S8)reg[X64_RAX].u8);
         else if (size == 4) reg[X64_RAX].setU64((U64)(U32)(S32)(S16)reg[X64_RAX].u16);
         else reg[X64_RAX].setU64((U64)(S64)(S32)reg[X64_RAX].u32);
+        rip += rec.len;
+        THR_NEXT();
+
+    }
+thr_CMOV: {
+        const BRec& rec = b.recs[i];
+        bool rexPresent = rec.rexPresent != 0;
+        U32 size = rec.size;
+
+        // CMOVcc r, r/m (0F 40..4F): mirrors dsp_38 exactly (verbatim
+        // copy of the execBlock BK_CMOV case for the threaded tier).
+        ModRM m = resolveRecipe(rec.mr);
+        U64 src = loadRM(m, size, rexPresent);
+        if (evalCC(rec.sub)) {
+            if (size == 2) reg[m.regField].setU16((U16)src);
+            else if (size == 4) reg[m.regField].setU32((U32)src);
+            else reg[m.regField].setU64(src);
+        } else if (size == 4) {
+            reg[m.regField].setU32(reg[m.regField].u32);
+        }
         rip += rec.len;
         THR_NEXT();
 

@@ -1884,7 +1884,94 @@ function genCbw(e) {
 }`;
 }
 
-const TEMPLATES = { alu: (e) => (e.mem ? genAluMem(e) : genAlu(e)), shift: (e) => (e.mem ? genShiftMem(e) : genShift(e)), rotate: (e) => (e.mem ? genRotateMem(e) : genRotate(e)), imul2: genImul2, imul1: genImul1, imul3: genImul3, movx: genMovx, string: genString, lea: genLea, stack: genStack, mov8: genMov8, grp3: genGrp3, cbw: genCbw };
+// "cmov" template: CMOVcc r, r/m (emitCmovGen).
+function genCmov(e) {
+  return `U32 ${e.func}(Bytes& body, const Jit64Op& op) {
+    const U32 destReg = op.regField;
+    const U64 mask = widthMask(op.size);
+    if (op.isMem) {
+        emitEA(body, op);
+        emitMemRead(body, L_T1, op.size);
+        local(body, 0x20, L_R);
+        local(body, 0x21, L_A);
+    } else {
+        local(body, 0x20, op.rmIndex + 1);
+        if (op.size != 8) {
+            i64Const(body, mask);
+            body.push_back(0x83);
+        }
+        local(body, 0x21, L_A);
+    }
+    // Condition evaluator: leaves i32 0/1 on the stack. Inlined at each
+    // select site (L_P is i64, cannot hold the i32 condition).
+    auto emitCond = [&]() {
+        const U8 cc = op.sub;
+        auto pushFlagBit = [&](U32 bit) {
+            local(body, 0x20, L_RFLAGS); // i32
+            i32Const(body, bit);
+            body.push_back(0x76); // i32.shr_u
+            i32Const(body, 1);
+            body.push_back(0x71); // i32.and -> i32 0/1
+        };
+        switch (cc & 0xE) {
+            case 0x0: pushFlagBit(F_OF); break;
+            case 0x2: pushFlagBit(F_CF); break;
+            case 0x4: pushFlagBit(F_ZF); break;
+            case 0x6:
+                pushFlagBit(F_CF);
+                pushFlagBit(F_ZF);
+                body.push_back(0x72);
+                break;
+            case 0x8: pushFlagBit(F_SF); break;
+            case 0xA: pushFlagBit(F_PF); break;
+            case 0xC:
+                pushFlagBit(F_SF);
+                pushFlagBit(F_OF);
+                body.push_back(0x73);
+                break;
+            case 0xE:
+                pushFlagBit(F_ZF);
+                pushFlagBit(F_SF);
+                pushFlagBit(F_OF);
+                body.push_back(0x73);
+                body.push_back(0x72);
+                break;
+        }
+        if (cc & 0x1) body.push_back(0x45); // i32.eqz
+    };
+    if (op.size == 8) {
+        local(body, 0x20, L_A);        // new (val1)
+        local(body, 0x20, destReg + 1); // old (val2)
+        emitCond();                    // cond (i32)
+        body.push_back(0x1B);          // select -> i64
+        local(body, 0x21, L_R);
+    } else if (op.size == 4) {
+        local(body, 0x20, L_A);        // new (val1)
+        local(body, 0x20, destReg + 1); // old
+        i64Const(body, 0xFFFFFFFFULL);
+        body.push_back(0x83);          // old & 0xFFFFFFFF (val2)
+        emitCond();                    // cond (i32)
+        body.push_back(0x1B);          // select -> i64
+        local(body, 0x21, L_R);
+    } else {
+        local(body, 0x20, destReg + 1);
+        i64Const(body, 0xFFFFFFFFFFFF0000ULL);
+        body.push_back(0x83);
+        local(body, 0x20, L_A);
+        i64Const(body, 0xFFFFULL);
+        body.push_back(0x83);
+        body.push_back(0x7C);
+        local(body, 0x20, destReg + 1); // old (val2)
+        emitCond();                    // cond (i32)
+        body.push_back(0x1B);          // select -> i64
+        local(body, 0x21, L_R);
+    }
+    return destReg;
+}`;
+}
+
+
+const TEMPLATES = { alu: (e) => (e.mem ? genAluMem(e) : genAlu(e)), shift: (e) => (e.mem ? genShiftMem(e) : genShift(e)), rotate: (e) => (e.mem ? genRotateMem(e) : genRotate(e)), imul2: genImul2, imul1: genImul1, imul3: genImul3, movx: genMovx, string: genString, lea: genLea, stack: genStack, mov8: genMov8, grp3: genGrp3, cbw: genCbw, cmov: genCmov };
 
 function generate() {
   const out = [];

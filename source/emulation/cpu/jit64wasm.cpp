@@ -453,6 +453,8 @@ U32 jit64EmitNew(std::vector<U8>& body, const Jit64Op& op) {
         return emitGrp3Gen(body, op);
     case J64_CBW:
         return emitCbwGen(body, op);
+    case J64_CMOV:
+        return emitCmovGen(body, op);
     default:
         return 0xFE;
     }
@@ -549,6 +551,10 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             break;
         case J64_CBW:
             // CBW/CWDE/CDQE: 16/32/64-bit all valid.
+            widthOk = (op.size == 2 || op.size == 4 || op.size == 8);
+            break;
+        case J64_CMOV:
+            // CMOVcc: 16/32/64-bit all valid (never 8-bit).
             widthOk = (op.size == 2 || op.size == 4 || op.size == 8);
             break;
         default:
@@ -666,6 +672,16 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             // CBW/CWDE/CDQE (0x98): pure RAX transform, no ModRM, no flags,
             // no memory. Sizes 2/4/8 only (the decoder sets size from the
             // prefixes; the classifier already rejected anything else).
+            if (op.size != 2 && op.size != 4 && op.size != 8) return false;
+            break;
+        case J64_CMOV:
+            // CMOVcc r, r/m (0F 40..4F): sub = condition 0..15 (decoder
+            // sets it from the opcode; re-check defensively). Dest is
+            // always a register; source may be reg or memory (rmIndex is
+            // 0xFF for memory forms).
+            if (op.sub > 15) return false;
+            if (op.regField >= 16) return false;
+            if (!op.isMem && op.rmIndex >= 16) return false;
             if (op.size != 2 && op.size != 4 && op.size != 8) return false;
             break;
         case J64_STRING:
@@ -793,6 +809,16 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             // CBW/CWDE/CDQE: emitCbwGen returns 0xFF for 16-bit (inline
             // RMW via emitWriteWord), else 0 (RAX) for L_R publish.
             U32 written = emitCbwGen(body, op);
+            if (written != 0xFF) {
+                local(body, 0x20, L_R);
+                local(body, 0x21, written + 1);
+            }
+            break;
+        }
+        case J64_CMOV: {
+            // CMOVcc: emitCmovGen computes the selected value in L_R
+            // (branchless via wasm select) and returns the dest GPR.
+            U32 written = emitCmovGen(body, op);
             if (written != 0xFF) {
                 local(body, 0x20, L_R);
                 local(body, 0x21, written + 1);

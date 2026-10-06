@@ -355,4 +355,22 @@ export const EMITTERS = [
             "to 64. Mirrors cpu64.cpp dsp_20 exactly.",
     },
   },
+  {
+    func: "emitCmovGen",
+    template: "cmov",
+    kinds: ["J64_CMOV"],
+    encoding:
+      "CMOVcc r16/32/64, r/m16/32/64 (0F 40..4F): sub = condition 0..15 " +
+      "(same encoding as Jcc). 0x66 selects 16-bit, default is 32-bit, " +
+      "REX.W selects 64-bit. Dest is always a register (regField).",
+    operands:
+      "sizes 2/4/8, reg-direct dest; reg-or-memory source (rmIndex/isMem). " +
+      "The source is ALWAYS loaded, even if the condition is false.",
+    flags: {
+      writes: [],
+      preserves: "all RFLAGS bits - CMOVcc never touches flags",
+      note: "32-bit form zero-extends the destination even when the " +
+            "condition is false (x86-64 quirk). Mirrors dsp_38 exactly.",
+    },
+  },
 ];

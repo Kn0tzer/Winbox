@@ -65,6 +65,7 @@ static const Jit64CoveredOpcode kCovered[] = {
     { "F7 GRP3",           0xF7, 0x00, J64_GRP3 },        // 23 (0.32% F7 + 0.22% F6 doom.exe; /0 TEST /2 NOT /3 NEG /4 MUL; DIV/IDIV stay interpreted)
     { "98 CBW/CWDE/CDQE",  0x98, 0x00, J64_CBW },         // 24 (0.31% doom.exe)
     { "D1 SHIFT/ROT r/m,1", 0xD1, 0x00, J64_SHIFT_IMM },    // 25 (0.25% doom.exe; D0 8-bit + C1-mem also newly jitted)
+    { "0F40 CMOVcc",        0x0F, 0x40, J64_CMOV },        // 26 (0.51% doom.exe; whole 0F40..4F family; sub = cc)
     // NOTE: 0F85 (JNZ rel32) stays FAST in jit64Classify but fell just outside
     // this corpus's top-20, so it has no table row. The whole 00..3B ALU range
     // (including 29 SUB r/m,r) is table-covered; the phase-1 table only names
@@ -271,6 +272,23 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
             out.regField = rf; out.rmIndex = ri; out.isMem = hm;
             out.sub = (U8)((op2 == 0xB6) ? 0 : (op2 == 0xB7) ? 1 :
                            (op2 == 0xBE) ? 2 : 3);
+            return true;
+        }
+        if (op2 >= 0x40 && op2 <= 0x4F) {
+            // CMOVcc r, r/m16/32/64. Condition in low 4 bits (same
+            // encoding as Jcc). Dest is always a register; the source
+            // is always loaded (faults even if the condition is false),
+            // mirroring cpu64.cpp dsp_38. Sizes 2/4/8 (0x66 -> 16-bit,
+            // REX.W -> 64-bit, default 32-bit); never 8-bit.
+            U8 rf; bool rr; U8 ri; bool hm;
+            U32 ml = scanModRM(bytes + opOff + 2, byteCount - (opOff + 2), p, rf, rr, ri, hm);
+            if (!ml) return false;
+            out.kind = J64_CMOV;
+            out.sub = (U8)(op2 & 0xF);
+            out.size = size;
+            out.len = (U8)(opOff + 2 + ml);
+            out.regField = rf; out.rmIndex = ri; out.isMem = hm;
+            if (hm) decodeEA(bytes + opOff + 2, p, ripBase + opOff + 2, 0, out.ea);
             return true;
         }
         if (op2 == 0x1F) { // multi-byte NOP
@@ -790,6 +808,17 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16) {
         // interpreter); F7 takes 2/4/8.
         if (op.size != 1 && op.size != 2 && op.size != 4 && op.size != 8) return;
         if (op.sub != 0 && op.sub != 2 && op.sub != 3 && op.sub != 4) return;
+        op.plan = JIT64_FAST;
+        return;
+    case J64_CMOV:
+        // CMOVcc r, r/m16/32/64: sizes 2/4/8 (never 8-bit, so no
+        // AH/BH/CH/DH high-byte concern). sub = condition 0..15 (the
+        // decoder sets it from the opcode; re-check defensively).
+        // Memory sources are always loaded (faults even if the
+        // condition is false); FS/GS and LOCK are already rejected by
+        // the generic guards above. No flags are touched.
+        if (op.size != 2 && op.size != 4 && op.size != 8) return;
+        if (op.sub > 15) return;
         op.plan = JIT64_FAST;
         return;
     case J64_PUSH:

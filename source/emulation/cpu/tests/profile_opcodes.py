@@ -85,6 +85,7 @@ def pe_exec_sections(path: str):
 #   ALU acc,imm: 04..3D step 8, plus A8/A9 (TEST acc,imm, sub 8)
 #   ALU r/m,imm: 80/81/83; TEST r/m,r: 84/85
 #   MOV: 88/89/8A/8B, B8..BF, C7; MOVZX/MOVSX: 0FB6/0FB7/0FBE/0FBF; MOVSXD: 63
+#   IMUL: 0FAF (2-op, reg-direct), 69/6B (3-op, reg-direct); mem forms fall back
 #   Control flow (decoded + classified fast; they terminate blocks by design):
 #   JMP rel8 (EB), Jcc rel8 (70..7F), Jcc rel32 (0F80..0F8F)
 COVERED = {
@@ -92,6 +93,7 @@ COVERED = {
     "0F84", "C7", "75", "C3", "0F85", "01", "C1", "0FB6", "58..5F", "29",
     "50..57", "B8..BF", "63",
     "F6", "F7", "98", "D1",
+    "69", "6B", "0FAF",
     "00", "02", "03", "08", "09", "0A", "0B", "10", "11", "12", "13",
     "18", "19", "1A", "1B", "20", "21", "22", "23", "28", "2A", "2B",
     "30", "32", "33", "38", "3A", "3B",
