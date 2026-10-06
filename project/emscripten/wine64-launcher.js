@@ -1072,26 +1072,45 @@
                     // service stack (services.exe) and desktop exist before GUI apps.
                     // Gate sessionReady() on its completion via arch32WinebootDone.
                     if (ARCH32 && !arch32WinebootDone) {
-                        // The spawn is queued and drained on the next main-loop
-                        // tick, so lastSpawnedPid() does not change synchronously.
-                        // Phase 1: wait for the wineboot pid to appear.
-                        var wbPidBefore = lastSpawnedPid();
-                        spawnArgv(wineProgArgv("wineboot --init"), "wineboot --init (x86 service stack)");
-                        var wbPidWaited = 0, WB_PID_STEP = 200, WB_PID_LIMIT = 30000;
-                        (function wbPidPoll() {
-                            var p = lastSpawnedPid();
-                            if (p && p !== wbPidBefore) {
-                                console.log("session: x86 wineboot pid=" + p + ", waiting for completion");
-                                wbDonePoll(p);
+                        // The wineserver pin spawn above was queued but not yet
+                        // drained; lastSpawnedPid() still holds the boot app pid.
+                        // Wait for the pin to drain FIRST, otherwise Phase 1
+                        // mistakes the pins pid for wineboots (10->12 race).
+                        // currentAppPid was captured before the pin spawn.
+                        var pinPidBefore = currentAppPid;
+                        var wbPinWaited = 0, WB_PIN_STEP = 200, WB_PIN_LIMIT = 30000;
+                        (function wbPinPoll() {
+                            var pinPid = lastSpawnedPid();
+                            if (pinPid && pinPid !== pinPidBefore) {
+                                // Pin drained. Now spawn wineboot and track ITS pid.
+                                // Phase 1: wait for the wineboot pid to appear.
+                                var wbPidBefore = pinPid;
+                                spawnArgv(wineProgArgv("wineboot --init"), "wineboot --init (x86 service stack)");
+                                var wbPidWaited = 0, WB_PID_STEP = 200, WB_PID_LIMIT = 30000;
+                                (function wbPidPoll() {
+                                    var p = lastSpawnedPid();
+                                    if (p && p !== wbPidBefore) {
+                                        console.log("session: x86 wineboot pid=" + p + ", waiting for completion");
+                                        wbDonePoll(p);
+                                        return;
+                                    }
+                                    wbPidWaited += WB_PID_STEP;
+                                    if (wbPidWaited >= WB_PID_LIMIT) {
+                                        console.error("session: x86 wineboot pid never appeared, proceeding anyway");
+                                        arch32WinebootDone = true;
+                                        return;
+                                    }
+                                    setTimeout(wbPidPoll, WB_PID_STEP);
+                                })();
                                 return;
                             }
-                            wbPidWaited += WB_PID_STEP;
-                            if (wbPidWaited >= WB_PID_LIMIT) {
-                                console.error("session: x86 wineboot pid never appeared, proceeding anyway");
+                            wbPinWaited += WB_PIN_STEP;
+                            if (wbPinWaited >= WB_PIN_LIMIT) {
+                                console.error("session: x86 pin pid never appeared, proceeding anyway");
                                 arch32WinebootDone = true;
                                 return;
                             }
-                            setTimeout(wbPidPoll, WB_PID_STEP);
+                            setTimeout(wbPinPoll, WB_PIN_STEP);
                         })();
                         // Phase 2: wait for wineboot --init to exit. 32-bit
                         // emulation is slow; 5-minute cap, then proceed anyway
