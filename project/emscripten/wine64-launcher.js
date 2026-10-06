@@ -216,6 +216,11 @@
         // The pre-booted prefix is a third overlay; mount it only when we'll use
         // it, so the bare --version / ?boot=1 paths stay byte-for-byte unchanged.
         if (USE_PREFIX) args.push("-zip", PREFIX_ZIP);
+        // Lazy game payload (M8): mount the game zip on-demand via HTTP Range.
+        // window.bwGameZipSpec is a bw64url: spec set by runtime.html; the C++
+        // FsZip handles it transparently (source/io/fszipurl.cpp). The zip must
+        // contain home/username/apps/... paths.
+        if (window.bwGameZipSpec) args.push("-zip", window.bwGameZipSpec);
         if (NOVIDEO) args.push("-novideo");
         if (window.bwWorkingDirectory) args.push("-w", window.bwWorkingDirectory);
 

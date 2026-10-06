@@ -4,7 +4,13 @@ import { getPackage } from '../storage.mjs';
 import { safePath, checkEntries } from '../files.mjs';
 const query = new URLSearchParams(location.search);
 const id = query.get('installation');
-const pkg = id && id !== 'demo' ? await getPackage(id) : null;
+// Lazy game payload (M8): a game zip mounted on-demand via bw64url/HTTP Range,
+// bypassing IndexedDB, the 768 MiB checkEntries cap, and the MEMFS copy.
+// Query: ?gamezip=<url>&gamezipsize=<bytes>&exe=<path>
+// The zip must contain home/username/apps/... paths (like prefix64.zip).
+const gameZipUrl = query.get('gamezip');
+const gameZipSize = Number(query.get('gamezipsize') || 0);
+const pkg = (!gameZipUrl && id && id !== 'demo') ? await getPackage(id) : null;
 const send = (type, data) => parent.postMessage({ wine: true, type, data }, location.origin);
 window.bwRuntimeStatus = text => send('status', text);
 window.bwRuntimeLog = text => send('log', text);
@@ -53,7 +59,20 @@ if (query.get('naga') === '1') {
     window.bwRuntimeLog('naga: module load failed — ANGLE fallback active');
   });
 }
-if (pkg) {
+if (gameZipUrl && gameZipSize > 0) {
+  const exe = safePath(query.get('exe') || '');
+  if (!exe) throw new Error('Executable path required with gamezip');
+  const args = JSON.parse(query.get('args') || '[]');
+  if (!Array.isArray(args) || args.length > 32 || args.some(a => typeof a !== 'string' || a.length > 4096 || /[\x00-\x1f]/.test(a))) throw new Error('Invalid program arguments');
+  // Absolutize: the sync fetch runs on pthread workers whose base URL is not the page's.
+  const absGameUrl = new URL(gameZipUrl, location.href).href;
+  window.bwGameZipSpec = 'bw64url:' + gameZipSize + ';' + absGameUrl + '|' + gameZipSize;
+  console.log('lazy game: mounting ' + gameZipSize + ' bytes from ' + absGameUrl);
+  window.bwProgramArgv = ['Z:\\home\\username\\apps\\' + exe.replaceAll('/', '\\'), ...args];
+  window.bwWorkingDirectory = '/home/username/apps/' + exe.split('/').slice(0, -1).join('/');
+  // No bwPrepareFilesystem: game files are served lazily from the zip mount.
+  // Writes (saves/configs) land in the MEMFS upper layer via the overlay.
+} else if (pkg) {
   checkEntries(pkg.files);
   const exe = safePath(query.get('exe') || '');
   if (!pkg.files.some(f => f.path === exe)) throw new Error('Executable is absent from package');
