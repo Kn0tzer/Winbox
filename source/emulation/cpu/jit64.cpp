@@ -844,13 +844,16 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16) {
             op.rmIndex >= 4 && op.rmIndex <= 7) return;
         // Memory forms DECLINED (interpreter-only): the mem emitters'
         // dynamic flag-merge has a bug (flags read as 0 in wasm tests).
-        // 16-bit DECLINED: ROL/ROR writeback bug.
-        // Rotates (sub 0..3) DECLINED: ROR 8-bit and RCR OF bugs found by
-        // fuzz; the rotate-by-CL templates need rework. Shifts (SHL/SHR/
-        // SAR, sub 4..7) 1/4/8-bit reg-direct fully verified.
+        // 16-bit DECLINED: ROL/ROR writeback bug (0xFFFF vs 0x8000 in fuzz).
+        // 8-bit rotates (sub 0..3, size 1) DECLINED: result bug (fuzz shows
+        // 0xFF instead of correct rotate; 8-bit shifts work fine).
+        // 32/64-bit rotates ENABLED: fixed the reg-direct rotateCL OF block
+        // which was copy-pasted shift logic (sub==4/5/6 checks, L_T2 for
+        // count). Now uses rotate OF semantics (ROL/RCL: MSB^CF, ROR/RCR:
+        // MSB^((result<<1)&sb)) with count in L_T1. Verified by 600-case fuzz.
         if (op.isMem) return;
         if (op.size == 2) return;
-        if (op.sub <= 3) return;
+        if (op.sub <= 3 && op.size == 1) return;
         op.plan = JIT64_FAST;
         return;
     case J64_IMUL_R_RM:

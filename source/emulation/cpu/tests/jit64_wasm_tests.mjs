@@ -3200,8 +3200,9 @@ test('fuzz D2/D3 shift/rotate-by-CL vs reference (600 cases)', async () => {
   // 63/64/65 (64-bit mask edges), 255 (max), plus random.
   const advCL = [0, 1, 2, 31, 32, 33, 63, 64, 65, 127, 128, 255];
   for (let i = 0; i < 600; i++) {
-    let sub = 4 + Math.floor(rng() * 4); // rotates declined, shifts only
+    let sub = Math.floor(rng() * 8); // 0-3 rotates, 4-7 shifts
     const size = pick(rng, [1, 4, 4, 8, 8]); // 16-bit declined
+    if (sub <= 3 && size === 1) { i--; continue; } // 8-bit rotates: result bug, declined
     const isMem = false; // mem forms declined (interpreter-only)
     const rflags = pick(rng, flagSets);
     const cl = rng() < 0.5 ? pick(rng, advCL) : Math.floor(rng() * 256);

@@ -824,10 +824,10 @@ static void testShiftCLEmission() {
     CHECK(emitOk({0xD3, 0xE8}), "shr eax,cl rejected");
     CHECK(!emitOk({0x66, 0xD3, 0xF8}), "sar ax,cl accepted");
     CHECK(emitOk({0xD2, 0xE0}), "shl al,cl rejected");
-    CHECK(!emitOk({0x48, 0xD3, 0xC0}), "rol rax,cl accepted");
-    CHECK(!emitOk({0x48, 0xD3, 0xC8}), "ror rax,cl accepted");
-    CHECK(!emitOk({0x48, 0xD3, 0xD0}), "rcl rax,cl accepted");
-    CHECK(!emitOk({0x48, 0xD3, 0xD8}), "rcr rax,cl accepted");
+    CHECK(emitOk({0x48, 0xD3, 0xC0}), "rol rax,cl rejected");
+    CHECK(emitOk({0x48, 0xD3, 0xC8}), "ror rax,cl rejected");
+    CHECK(emitOk({0x48, 0xD3, 0xD0}), "rcl rax,cl rejected");
+    CHECK(emitOk({0x48, 0xD3, 0xD8}), "rcr rax,cl rejected");
     // /6 aliases SHL: accepted.
     CHECK(emitOk({0x48, 0xD3, 0xF0}), "shl(/6) rax,cl rejected");
     // Memory forms: declined (interpreter-only; mem flag-merge bug).

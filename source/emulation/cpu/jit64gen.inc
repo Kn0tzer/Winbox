@@ -937,11 +937,11 @@ U32 emitRotateCLGen(Bytes& body, const Jit64Op& op) {
     local(body, 0x20, L_P);
     body.push_back(0xA7); // i32.wrap_i64
     orFlagBit(body, F_CF);
-    // OF: only defined for count == 1; mask the bit by (count == 1),
-    // matching the interpreter clearing OF for count != 1.
+    // OF: only defined for count == 1; mask the bit by (count == 1).
+    // ROL/RCL: OF = MSB(result) XOR CF.
+    // ROR/RCR: OF = MSB(result) XOR ((result << 1) & sb != 0).
     {
-        if (sub == 4 || sub == 6) {
-            // OF = MSB(result) XOR CF (SHL; /6 aliases SHL).
+        if (sub == 0 || sub == 2) {
             local(body, 0x20, L_R);
             i64Const(body, sb);
             body.push_back(0x83);
@@ -951,18 +951,23 @@ U32 emitRotateCLGen(Bytes& body, const Jit64Op& op) {
             body.push_back(0xA7); // i32.wrap_i64
             body.push_back(0x73); // i32.xor
             body.push_back(0xAD); // i64.extend_i32_u
-        } else if (sub == 5) {
-            // OF = old MSB (SHR).
-            local(body, 0x20, L_A);
+        } else {
+            local(body, 0x20, L_R);
             i64Const(body, sb);
             body.push_back(0x83);
             i64Const(body, 0);
-            body.push_back(0x52); // i64.ne -> i32
-            body.push_back(0xAD); // i64.extend_i32_u
-        } else {
-            i64Const(body, 0); // SAR: OF = 0
+            body.push_back(0x52);
+            local(body, 0x20, L_R);
+            i64Const(body, 1);
+            body.push_back(0x86);
+            i64Const(body, sb);
+            body.push_back(0x83);
+            i64Const(body, 0);
+            body.push_back(0x52);
+            body.push_back(0x73);
+            body.push_back(0xAD);
         }
-        local(body, 0x20, L_T2);
+        local(body, 0x20, L_T1);
         i64Const(body, 1);
         body.push_back(0x51); // i64.eq -> i32 (count == 1)
         body.push_back(0xAD);
