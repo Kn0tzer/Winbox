@@ -1616,6 +1616,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
         pipeRec: null, pipeDesc: null, pipeNeg: false, sets: new Map(), setVer: new Map(), inlineMap: new Map(),
         pushBlock: new Uint8Array(V2_PUSH_SIZE), pushDirty: false,
         vbinds: [], ibind: null, viewport: null, scissor: null,
+        pipeBad: false, badPipes: new Map(),
       };
       const bump = si => st.setVer.set(si, (st.setVer.get(si) || 0) + 1);
       let skipped = null;
@@ -1623,8 +1624,17 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       for (const op of p.ops) {
         switch (op.op) {
           case 'bindPipe': {
-            const rec = await getPipelineFor(op.pipe, passSamples);
-            if (rec.skip) { skipped = rec.skip; break; }
+            let rec;
+            try { rec = await getPipelineFor(op.pipe, passSamples); }
+            catch (e) { rec = { skip: 'pipeline-threw' }; }
+            if (rec.skip) {
+              if (!st.badPipes.has(op.pipe.pipeId)) {
+                st.badPipes.set(op.pipe.pipeId, rec.skip);
+                stats.skippedDraws = (stats.skippedDraws || 0) + 1;
+              }
+              st.pipeRec = null; st.pipeBad = true;
+              break;
+            }
             st.pipeRec = rec; st.pipeDesc = op.pipe; st.pipeNeg = false;
             passEnc.setPipeline(rec.pipeline);
             break;
@@ -1639,7 +1649,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
           case 'ibind': st.ibind = op; break;
           case 'draw': {
             if (skipped) break;
-            if (!st.pipeRec) { skipped = 'draw-without-pipeline'; break; }
+            if (st.pipeBad || !st.pipeRec) break;
             if (st.viewport) {
               const [x, y, w, h, md, xmd] = st.viewport;
               if (w > 0 && h !== 0) {
