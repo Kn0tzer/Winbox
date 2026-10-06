@@ -233,6 +233,11 @@ private:
     // logical button state, like the 32-bit XServer path.
     uint32_t buttonState = 0;
 
+    // Virtual absolute pointer position for relative-motion (EvMotionRel)
+    // accumulation. Initialized lazily from the sink's last pointer pos.
+    int relX = 0, relY = 0;
+    bool relInit = false;
+
     // The window the pointer has "entered" (we sent EnterNotify for). 0 = none.
     // We send a crossing the first time input lands so winex11 associates the
     // pointer with the window before any click.

@@ -414,9 +414,17 @@ public:
                 break;
             }
             case SDL_MOUSEMOTION:
-                lastX = e.motion.x; lastY = e.motion.y;
-                ie.type = XWireInputEvent::EvMotion;
-                ie.x = lastX; ie.y = lastY;
+                if (SDL_GetRelativeMouseMode()) {
+                    // FPS mouse-look: pointer is locked, only deltas are
+                    // meaningful. Carry them as EvMotionRel; the connection
+                    // accumulates them into a virtual absolute position.
+                    ie.type = XWireInputEvent::EvMotionRel;
+                    ie.x = e.motion.xrel; ie.y = e.motion.yrel;
+                } else {
+                    lastX = e.motion.x; lastY = e.motion.y;
+                    ie.type = XWireInputEvent::EvMotion;
+                    ie.x = lastX; ie.y = lastY;
+                }
                 ie.state = sdlModState();
                 push(ie);
                 break;
@@ -428,10 +436,33 @@ public:
                 // X buttons: 1=left,2=middle,3=right
                 ie.detail = (e.button.button == SDL_BUTTON_LEFT) ? 1 :
                             (e.button.button == SDL_BUTTON_MIDDLE) ? 2 :
-                            (e.button.button == SDL_BUTTON_RIGHT) ? 3 : e.button.button;
+                            (e.button.button == SDL_BUTTON_RIGHT) ? 3 :
+                            (e.button.button == SDL_BUTTON_X1) ? 8 :
+                            (e.button.button == SDL_BUTTON_X2) ? 9 : e.button.button;
                 ie.x = lastX; ie.y = lastY;
                 ie.state = sdlModState();
                 push(ie);
+                break;
+            }
+            case SDL_MOUSEWHEEL: {
+                // X11 wheel convention: button 4 = up, 5 = down, 6 = left,
+                // 7 = right. Each tick is a press immediately followed by a
+                // release (matches X server behavior for wheel buttons).
+                int wx = e.wheel.x, wy = e.wheel.y;
+                uint32_t btn = 0;
+                if (wy > 0) btn = 4;
+                else if (wy < 0) btn = 5;
+                else if (wx > 0) btn = 7;
+                else if (wx < 0) btn = 6;
+                if (btn) {
+                    ie.state = sdlModState();
+                    ie.x = lastX; ie.y = lastY;
+                    ie.type = XWireInputEvent::EvButtonDown;
+                    ie.detail = btn;
+                    push(ie);
+                    ie.type = XWireInputEvent::EvButtonUp;
+                    push(ie);
+                }
                 break;
             }
             default: break;
@@ -519,9 +550,17 @@ public:
                 break;
             }
             case SDL_MOUSEMOTION:
-                lastX = e.motion.x; lastY = e.motion.y;
-                ie.type = XWireInputEvent::EvMotion;
-                ie.x = lastX; ie.y = lastY;
+                if (SDL_GetRelativeMouseMode()) {
+                    // FPS mouse-look: pointer is locked, only deltas are
+                    // meaningful. Carry them as EvMotionRel; the connection
+                    // accumulates them into a virtual absolute position.
+                    ie.type = XWireInputEvent::EvMotionRel;
+                    ie.x = e.motion.xrel; ie.y = e.motion.yrel;
+                } else {
+                    lastX = e.motion.x; lastY = e.motion.y;
+                    ie.type = XWireInputEvent::EvMotion;
+                    ie.x = lastX; ie.y = lastY;
+                }
                 ie.state = sdlModState();
                 push(ie);
                 break;
@@ -532,10 +571,33 @@ public:
                                                           : XWireInputEvent::EvButtonUp;
                 ie.detail = (e.button.button == SDL_BUTTON_LEFT) ? 1 :
                             (e.button.button == SDL_BUTTON_MIDDLE) ? 2 :
-                            (e.button.button == SDL_BUTTON_RIGHT) ? 3 : e.button.button;
+                            (e.button.button == SDL_BUTTON_RIGHT) ? 3 :
+                            (e.button.button == SDL_BUTTON_X1) ? 8 :
+                            (e.button.button == SDL_BUTTON_X2) ? 9 : e.button.button;
                 ie.x = lastX; ie.y = lastY;
                 ie.state = sdlModState();
                 push(ie);
+                break;
+            }
+            case SDL_MOUSEWHEEL: {
+                // X11 wheel convention: button 4 = up, 5 = down, 6 = left,
+                // 7 = right. Each tick is a press immediately followed by a
+                // release (matches X server behavior for wheel buttons).
+                int wx = e.wheel.x, wy = e.wheel.y;
+                uint32_t btn = 0;
+                if (wy > 0) btn = 4;
+                else if (wy < 0) btn = 5;
+                else if (wx > 0) btn = 7;
+                else if (wx < 0) btn = 6;
+                if (btn) {
+                    ie.state = sdlModState();
+                    ie.x = lastX; ie.y = lastY;
+                    ie.type = XWireInputEvent::EvButtonDown;
+                    ie.detail = btn;
+                    push(ie);
+                    ie.type = XWireInputEvent::EvButtonUp;
+                    push(ie);
+                }
                 break;
             }
             default: break;

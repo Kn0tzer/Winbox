@@ -32,8 +32,9 @@
 struct XWireInputEvent {
     // Names are prefixed to avoid colliding with X11/X.h macros (KeyPress,
     // ButtonPress, ... are #defined to ints there).
-    enum Type { EvKeyDown, EvKeyUp, EvButtonDown, EvButtonUp, EvMotion } type;
-    int x = 0, y = 0;          // pointer position in window coords
+    enum Type { EvKeyDown, EvKeyUp, EvButtonDown, EvButtonUp, EvMotion, EvMotionRel } type;
+    int x = 0, y = 0;          // pointer position in window coords (EvMotion),
+                               // or relative delta dx/dy (EvMotionRel)
     uint32_t detail = 0;       // keycode (key events) or button number (button events)
     uint32_t state = 0;        // modifier/button mask
 };

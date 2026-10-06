@@ -1991,6 +1991,7 @@ void XWireConnection::deliverInputEvents() {
             case XWireInputEvent::EvButtonDown: code = 4;  wantMask = 0x00000004; break; // ButtonPressMask
             case XWireInputEvent::EvButtonUp:   code = 5;  wantMask = 0x00000008; break; // ButtonReleaseMask
             case XWireInputEvent::EvMotion:     code = 6;  wantMask = 0x00000040; break; // PointerMotionMask
+            case XWireInputEvent::EvMotionRel:  code = 6;  wantMask = 0x00000040; break; // PointerMotionMask (relative)
             default: continue;
         }
 
@@ -2038,11 +2039,27 @@ void XWireConnection::deliverInputEvents() {
 
         // event-x/y are relative to the TARGET window: host coord minus the
         // target's host origin (target root origin minus base origin).
+        // For EvMotionRel, x/y are deltas: accumulate into a virtual absolute
+        // position so the emitted MotionNotify carries a position the guest
+        // can difference (FPS mouse-look). Deltas need no origin translation.
         XWireInputEvent local = ev;
-        local.x = ev.x - ((int)tgtX - (int)baseX);
-        local.y = ev.y - ((int)tgtY - (int)baseY);
+        if (ev.type == XWireInputEvent::EvMotionRel) {
+            if (!relInit) {
+                int px = 0, py = 0; uint32_t pm = 0;
+                if (g_xwirePresentSink) g_xwirePresentSink->lastPointer(px, py, pm);
+                relX = px; relY = py; relInit = true;
+            }
+            relX += ev.x; relY += ev.y;
+            local.x = relX - ((int)tgtX - (int)baseX);
+            local.y = relY - ((int)tgtY - (int)baseY);
+            local.type = XWireInputEvent::EvMotion;
+        } else {
+            if (relInit) { relInit = false; } // absolute motion resyncs
+            local.x = ev.x - ((int)tgtX - (int)baseX);
+            local.y = ev.y - ((int)tgtY - (int)baseY);
+        }
 
-        if (ev.type == XWireInputEvent::EvMotion && !(mask & wantMask)) continue;
+        if ((ev.type == XWireInputEvent::EvMotion || ev.type == XWireInputEvent::EvMotionRel) && !(mask & wantMask)) continue;
         // Announce EnterNotify when the pointer crosses into a new target window;
         // winex11 tracks the pointer window via crossing events (a click without
         // it defocuses the control / menus don't track).
