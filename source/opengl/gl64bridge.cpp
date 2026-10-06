@@ -590,11 +590,15 @@ void resizeTarget(int w, int h) {
 #endif
 }
 
+// Forward declaration: defined after deleteObjects (needs complete GenKind).
+void flushPendingDeletes();
 // Read the rendered framebuffer and present it through the X11-wire sink.
 // On WASM this whole body runs on the GL-owning main thread (caller wraps it via
 // glOnMain at the glXSwapBuffers case); the glReadPixels targets our offscreen
 // FBO, which is left bound after rendering.
 void readbackAndPresent() {
+    // Drain batched glDelete*s (single hop) before presenting.
+    flushPendingDeletes();
     if (!g_glContext || !g_currentDrawable || !g_xwirePresentSink) {
         return;
     }
@@ -1026,6 +1030,45 @@ void genObjects(CPU64* cpu, const GL64Args& args, GenKind kind) {
     });
     cpu->memory->memcpyToGuest(args.a[1], ids.data(), (U64)n * 4);
 }
+// Perf: deferred GL object deletion. deleteObjects() translates guest IDs to
+// host IDs, drops all guest-visible tracking immediately, and queues the
+// (kind, hostId) pairs here instead of hopping to the main thread per call.
+// The queue drains in a single hop at the next present (flushPendingDeletes,
+// called from readbackAndPresent) or at context destroy. Transparent to the
+// guest: GL names become unused at delete time (id maps erased synchronously),
+// re-deleting an already-deleted name is a spec no-op, and host IDs are never
+// recycled by GL while still alive. Guarded by g_glMutex like the id maps.
+std::vector<std::pair<GenKind, GLuint>> g_pendingDeletes;
+
+// Drain g_pendingDeletes: one glDelete* per kind, all inside a single
+// main-thread hop. Safe to call with an empty queue.
+void flushPendingDeletes() {
+    std::vector<std::pair<GenKind, GLuint>> pending;
+    {
+        std::lock_guard<std::recursive_mutex> lk(g_glMutex);
+        if (g_pendingDeletes.empty()) return;
+        pending.swap(g_pendingDeletes);
+    }
+    if (!g_glContext) return; // GL never came up; nothing exists host-side.
+    glOnMain([&]{
+        for (int ki = 0; ki <= (int)GenKind::Sampler; ++ki) {
+            GenKind kind = (GenKind)ki;
+            std::vector<GLuint> ids;
+            for (auto& e : pending) if (e.first == kind) ids.push_back(e.second);
+            if (ids.empty()) continue;
+            GLsizei n = (GLsizei)ids.size();
+            const GLuint* q = ids.data();
+            switch (kind) {
+                case GenKind::Buffer:      glDeleteBuffers(n, q); break;
+                case GenKind::Texture:     glDeleteTextures(n, q); break;
+                case GenKind::VertexArray: glDeleteVertexArrays(n, q); break;
+                case GenKind::Framebuffer: glDeleteFramebuffers(n, q); break;
+                case GenKind::Renderbuffer:glDeleteRenderbuffers(n, q); break;
+                case GenKind::Sampler:     glDeleteSamplers(n, q); break;
+            }
+        }
+    });
+}
 void deleteObjects(CPU64* cpu, const GL64Args& args, GenKind kind) {
     GLsizei n = (GLsizei)args.a[0];
     if (n <= 0 || n > 65536 || !args.a[1]) return;
@@ -1059,19 +1102,10 @@ void deleteObjects(CPU64* cpu, const GL64Args& args, GenKind kind) {
             g_renderbufferInfo.erase(hostId);
         }
     }
-    if (hostIds.empty()) return; // nothing reached the host; no hop needed.
-    const GLuint* p = hostIds.data();
-    GLsizei m = (GLsizei)hostIds.size();
-    glOnMain([&]{
-        switch (kind) {
-            case GenKind::Buffer:      glDeleteBuffers(m, p); break;
-            case GenKind::Texture:     glDeleteTextures(m, p); break;
-            case GenKind::VertexArray: glDeleteVertexArrays(m, p); break;
-            case GenKind::Framebuffer: glDeleteFramebuffers(m, p); break;
-            case GenKind::Renderbuffer:glDeleteRenderbuffers(m, p); break;
-            case GenKind::Sampler:     glDeleteSamplers(m, p); break;
-        }
-    });
+    // Batch the host IDs for deferred deletion (single hop at next present)
+    // instead of hopping once per delete call. All guest-visible tracking was
+    // already dropped above, so this is transparent to the guest.
+    for (GLuint hostId : hostIds) g_pendingDeletes.emplace_back(kind, hostId);
 }
 
 // glGetShaderInfoLog / glGetProgramInfoLog: args = (obj, bufSize, length*, infoLog*).
@@ -1435,6 +1469,7 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             // C8: timestamp destroys — pass teardown is destroy + re-create.
             if (getenv("BW64_GLTRACE"))
                 klog_fmt("gl64 PHASE: destroy-context t=%.1fs", bridgeElapsedSec());
+            flushPendingDeletes(); // free batched deletes before teardown
             return 0; // keep the single context alive for first light
         case GL64_fn_glXGetCurrentContext:
             return g_glContext ? g_nextOpaqueId : 0;
@@ -1556,7 +1591,9 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             // proven D3D9-era path is untouched. "33" additionally probes the 3.3
             // core-profile path — A2's diagnosis §2 H4/O5 showed 3.3 is DANGEROUS
             // (wined3d then takes wglCreateContextAttribsARB + glGetStringi, which
-            // this bridge does not implement), so it is opt-in only.
+            // glGetStringi is implemented guest-side now (libgl64.c serves the
+            // curated extension list), so 3.3 stays opt-in only for the
+            // remaining context-attribs surface.
             const char* v = getenv("BW64_GLVERSION");
             if (!v || v[0] != '3') return 21;
             if (v[1] == '3') return 33;
@@ -3944,6 +3981,129 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             return 0;   // no GLES3 equivalent (Emscripten exports no C symbol)
 
         default:
+        // --- 3.0 forward-only gap set --------------------------------------
+        // Standard GL 3.0 core entry points; previously gl64_noop on the guest
+        // side. Direct forwards to WebGL2. Emscripten exports C symbols for all
+        // but glClearBufferfi/glGetBooleani_v, which go through GLctx via EM_ASM.
+        case GL64_fn_glClearBufferiv: {
+            if (g_glContext && args.a[2]) {
+                GLenum buf=(GLenum)ai(args,0); GLint db=(GLint)ai(args,1);
+                GLint v[4]={0};
+                cpu->memory->memcpyFromGuest(v, args.a[2], sizeof(v));
+                GL_MT(glClearBufferiv(buf, db, v));
+            }
+            return 0;
+        }
+        case GL64_fn_glClearBufferuiv: {
+            if (g_glContext && args.a[2]) {
+                GLenum buf=(GLenum)ai(args,0); GLint db=(GLint)ai(args,1);
+                GLuint v[4]={0};
+                cpu->memory->memcpyFromGuest(v, args.a[2], sizeof(v));
+                GL_MT(glClearBufferuiv(buf, db, v));
+            }
+            return 0;
+        }
+        case GL64_fn_glClearBufferfv: {
+            if (g_glContext && args.a[2]) {
+                GLenum buf=(GLenum)ai(args,0); GLint db=(GLint)ai(args,1);
+                GLfloat v[4]={0};
+                cpu->memory->memcpyFromGuest(v, args.a[2], sizeof(v));
+                GL_MT(glClearBufferfv(buf, db, v));
+            }
+            return 0;
+        }
+        case GL64_fn_glClearBufferfi: {
+            if (g_glContext) {
+                GLenum buf=(GLenum)ai(args,0); GLint db=(GLint)ai(args,1);
+                GLfloat depth=af(args,2); GLint stencil=(GLint)ai(args,3);
+#ifdef __EMSCRIPTEN__
+                // Emscripten exports no C symbol; call through GLctx.
+                glOnMain([&]{
+                    EM_ASM({ try {
+                        if (typeof GLctx === 'undefined') return;
+                        GLctx.clearBufferfi($0, $1, $2, $3);
+                    } catch (e) {} }, (int)buf, db, depth, stencil);
+                });
+#else
+                GL_MT(glClearBufferfi(buf, db, depth, stencil));
+#endif
+            }
+            return 0;
+        }
+        case GL64_fn_glGetIntegeri_v: {
+            if (g_glContext && args.a[2]) {
+                GLenum pname=(GLenum)ai(args,0); GLuint idx=(GLuint)ai(args,1);
+                GLint v=0; GLint* vp=&v;
+                GL_MT(glGetIntegeri_v(pname, idx, vp));
+                cpu->memory->memcpyToGuest(args.a[2], &v, sizeof(v));
+            }
+            return 0;
+        }
+        case GL64_fn_glGetBooleani_v: {
+            if (g_glContext && args.a[2]) {
+                GLenum pname=(GLenum)ai(args,0); GLuint idx=(GLuint)ai(args,1);
+#ifdef __EMSCRIPTEN__
+                // Emscripten exports no C symbol; query GLctx (single boolean).
+                GLboolean v=0; GLboolean* vp=&v;
+                glOnMain([&]{
+                    EM_ASM({ try {
+                        if (typeof GLctx === 'undefined') return;
+                        var r = GLctx.getIndexedParameter($0, $1);
+                        if (r && r.length !== undefined) r = r[0];
+                        HEAPU8[$2] = r ? 1 : 0;
+                    } catch (e) {} }, (int)pname, (int)idx, (int)(uintptr_t)vp);
+                });
+#else
+                GLboolean v=0; GLboolean* vp=&v;
+                GL_MT(glGetBooleani_v(pname, idx, vp));
+#endif
+                cpu->memory->memcpyToGuest(args.a[2], &v, sizeof(v));
+            }
+            return 0;
+        }
+        case GL64_fn_glVertexAttribIPointer: {
+            // pointer (a[4]) is a byte offset into the bound ARRAY_BUFFER.
+            if (g_glContext) {
+                GLuint idx=(GLuint)ai(args,0); GLint sz=(GLint)ai(args,1); GLenum ty=(GLenum)ai(args,2);
+                GLsizei st=(GLsizei)ai(args,3);
+                const void* off = (const void*)(uintptr_t)args.a[4];
+                GL_MT(glVertexAttribIPointer(idx, sz, ty, st, off));
+            }
+            return 0;
+        }
+        case GL64_fn_glUniform1uiv: case GL64_fn_glUniform2uiv:
+        case GL64_fn_glUniform3uiv: case GL64_fn_glUniform4uiv: {
+            if (g_glContext && args.a[2]) {
+                int comps = fnId==GL64_fn_glUniform1uiv?1 : fnId==GL64_fn_glUniform2uiv?2 :
+                            fnId==GL64_fn_glUniform3uiv?3 : 4;
+                GLsizei n = (GLsizei)ai(args,1);
+                if (n > 0 && n <= 4096) {
+                    std::vector<GLuint> v((size_t)n * comps);
+                    cpu->memory->memcpyFromGuest(v.data(), args.a[2], (U64)v.size()*4);
+                    GLint loc=(GLint)ai(args,0); const GLuint* p=v.data();
+                    switch (comps) {
+                        case 1: GL_MT(glUniform1uiv(loc, n, p)); break;
+                        case 2: GL_MT(glUniform2uiv(loc, n, p)); break;
+                        case 3: GL_MT(glUniform3uiv(loc, n, p)); break;
+                        default: GL_MT(glUniform4uiv(loc, n, p)); break;
+                    }
+                }
+            }
+            return 0;
+        }
+        case GL64_fn_glGetUniformuiv: {
+            // (program, locations*, out values*) - mirrors glGetUniformiv; the
+            // guest always passes count==1.
+            if (g_glContext && args.a[1] && args.a[2]) {
+                GLint loc = 0;
+                cpu->memory->memcpyFromGuest(&loc, args.a[1], 4);
+                GLuint p=(GLuint)ai(args,0);
+                GLuint u = 0; GL_MT(glGetUniformuiv(p, loc, &u));
+                cpu->memory->memcpyToGuest(args.a[2], &u, 4);
+            }
+            return 0;
+        }
+
             klog_fmt("gl64: unimplemented fn id %llu", (unsigned long long)fnId);
             return 0;
     }
