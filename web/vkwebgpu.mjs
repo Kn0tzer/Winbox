@@ -472,19 +472,20 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
   const v2state = { chunksReceived: 0, framesReceived: 0, rendered: 0,
     droppedConsumer: 0, chunkGaps: 0, rejected: 0 };
   let renderer2 = null, starting2 = null, pump2 = Promise.resolve();
-  // Pump coalescing: the bridge hops every queued frame's chunks on present
-  // via separate proxied calls. Chaining pump2.then() per frame lets the
-  // microtask run between chunk deliveries, rendering a stale intermediate
-  // frame before the presented frame arrives (canvas size thrash).
-  // Coalesce onto a macrotask so takeLatest() sees the full present batch.
-  let pumpQueued = false;
+  // Pump debouncing: the bridge hops every queued frame's chunks on present
+  // (intermediate renders + the presented frame) via separate proxied calls
+  // that may be interleaved with event-loop turns. A setTimeout(0) is not
+  // enough: the timer can fire before the present batch's later chunks arrive
+  // (worker postMessage ordering), rendering a stale intermediate frame and
+  // thrashing the canvas size every present. Debounce 8ms so takeLatest()
+  // sees the full present batch and keeps only the presented frame.
+  let pumpTimer = null;
   function queuePump() {
-    if (pumpQueued) return;
-    pumpQueued = true;
-    setTimeout(() => {
-      pumpQueued = false;
+    if (pumpTimer) clearTimeout(pumpTimer);
+    pumpTimer = setTimeout(() => {
+      pumpTimer = null;
       pump2 = pump2.then(() => pumpChunks());
-    }, 0);
+    }, 8);
   }
 
   // Canvas-resize hook: frames recorded at the old size would misconfigure
@@ -1540,6 +1541,9 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     F.shaders = frame.shaders; F.images = frame.images;
     F.views = frame.views; F.samplers = frame.samplers; F.buffers = frame.buffers;
     F.texCache.clear(); F.bufCache.clear(); F.sampCache.clear(); F.live.length = 0;
+    if (typeof window !== 'undefined' && window.__bwDbgRender)
+      console.log('bwDbg render f' + frame.frameNo + ' ' + frame.width + 'x' + frame.height +
+        ' canvas ' + canvas.width + 'x' + canvas.height);
     if (canvas.width !== frame.width || canvas.height !== frame.height) {
       canvas.width = frame.width; canvas.height = frame.height;
       obsW = frame.width; obsH = frame.height;
