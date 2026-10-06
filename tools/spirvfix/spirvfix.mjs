@@ -774,8 +774,16 @@ export function applySpirvFix(bytes, { rasterTopology } = {}) {
   } catch (e) {
     log.push('R2 failed: ' + (e.message || e));
   }
-  if (privatizePointBuiltins(mod, log, rasterTopology)) applied.push('non-point-builtins');
-  if (lowerTailDemotes(mod, log)) applied.push('tail-demote-to-kill');
+  try {
+    if (privatizePointBuiltins(mod, log, rasterTopology)) applied.push('non-point-builtins');
+  } catch (e) {
+    log.push('R3 failed: ' + (e.message || e));
+  }
+  try {
+    if (lowerTailDemotes(mod, log)) applied.push('tail-demote-to-kill');
+  } catch (e) {
+    log.push('R4 failed: ' + (e.message || e));
+  }
   if (!applied.length) return { bytes: u8, applied, log };
   try {
     return { bytes: serializeSpirv(mod), applied, log };
