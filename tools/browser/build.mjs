@@ -33,7 +33,7 @@ await cp(resolve(root, 'node_modules/naga-wasm/dist'), resolve(out, 'vendor/naga
 await mkdir(resolve(out, 'runtime'), { recursive: true });
 for (const name of ['boxedwine64.js', 'boxedwine64.wasm']) await copyFile(resolve(root, 'project/emscripten/Build/Wasm64Mt', name), resolve(out, 'runtime', name));
 await copyFile(resolve(root, 'project/emscripten/wine64-launcher.js'), resolve(out, 'runtime/wine64-launcher.js'));
-for (const name of ['glibc-rootfs64.zip', 'wine64.zip', 'prefix64.zip']) await copyFile(resolve(root, 'web/runtime', name), resolve(out, 'runtime', name));
+for (const name of ['glibc-rootfs64.zip', 'wine64.zip', 'prefix64.zip', 'glibc-rootfs32.zip', 'wine32.zip', 'prefix32.zip']) await copyFile(resolve(root, 'web/runtime', name), resolve(out, 'runtime', name));
 await copyFile(resolve(root, 'web/runtime.html'), resolve(out, 'runtime/index.html'));
 await copyFile(resolve(root, 'license.txt'), resolve(out, 'LICENSE.txt'));
 await mkdir(resolve(out, 'vendor/slang'), { recursive: true });

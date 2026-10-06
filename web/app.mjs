@@ -104,12 +104,12 @@ async function snapshot(){
   walk('/root/home/username');await writeStored(iframe.dataset.installation,files,true);
 }
 async function stop(){await snapshot();iframe?.remove();iframe=null;renderer?.destroy();renderer=null;$('gpuCanvas')?.remove();$('stop').disabled=true;}
-async function launch(prog,{pkg=null,exe=null,args=[]}={}){
+async function launch(prog,{pkg=null,exe=null,args=[],arch=null}={}){
   await stop();$('log').textContent='';$('placeholder')?.remove();
   const gpu=$('backend').value==='webgpu';
   if(gpu){const canvas=document.createElement('canvas');canvas.id='gpuCanvas';$('display').append(canvas);try{renderer=await createRenderer(canvas);window.wineGpu=renderer;}catch(e){canvas.remove();throw e;}}
   iframe=document.createElement('iframe');iframe.title='Windows program runtime';iframe.allow='cross-origin-isolated; fullscreen';iframe.dataset.installation=pkg?.id||'demo';
-  const q=new URLSearchParams({p:prog,installation:pkg?.id||'demo',gpu:gpu?'1':'0',gltrace:'0',session:'0'});
+  const q=new URLSearchParams({p:prog,installation:pkg?.id||'demo',gpu:gpu?'1':'0',gltrace:'0',session:'0'});if(arch)q.set('arch',arch);
   if(exe){q.set('exe',exe);q.set('args',JSON.stringify(args));}
   iframe.src='runtime/index.html?'+q;$('display').append(iframe);$('stop').disabled=false;report('Booting Wine. First launch can take 30–120 seconds.');
   setTimeout(()=>iframe?.contentWindow?.document.getElementById('canvas')?.focus(),1000);
@@ -135,7 +135,7 @@ $('drop').onclick=()=>$('folderInput').click();$('drop').onkeydown=e=>{if(e.key=
 $('drop').ondragover=e=>{e.preventDefault();$('drop').classList.add('over');};$('drop').ondragleave=()=>$('drop').classList.remove('over');
 $('drop').ondrop=e=>{e.preventDefault();$('drop').classList.remove('over');const items=Array.from(e.dataTransfer.items);const files=Array.from(e.dataTransfer.files);guard(async()=>{report('Importing drop…');if(files.length===1&&/\.zip$/i.test(files[0].name))await install(await fromZip(files[0]),files[0].name);else await install(await fromDrop(items),files[0]?.name||'Dropped folder');});};
 $('library').onchange=()=>guard(()=>select($('library').value));$('executable').onchange=()=>{$('start').disabled=!$('executable').value;};
-$('start').onclick=()=>guard(async()=>{const exe=safePath($('executable').value),file=selected.files.find(f=>f.path===exe);const arch=await peArchitecture(file.blob);if(arch!=='x64')throw new Error('This runtime currently requires a 64-bit EXE. 32-bit/WoW64 is not certified.');const args=JSON.parse($('arguments').value);if(!Array.isArray(args)||args.some(a=>typeof a!=='string'||/[\x00-\x1f]/.test(a)))throw new Error('Arguments must be a JSON array of strings');await launch('uploaded.exe',{pkg:selected,exe,args});});
+$('start').onclick=()=>guard(async()=>{const exe=safePath($('executable').value),file=selected.files.find(f=>f.path===exe);const arch=await peArchitecture(file.blob);if(arch!=='x64'&&arch!=='x86')throw new Error('Unsupported PE architecture: '+arch);const args=JSON.parse($('arguments').value);if(!Array.isArray(args)||args.some(a=>typeof a!=='string'||/[\x00-\x1f]/.test(a)))throw new Error('Arguments must be a JSON array of strings');await launch('uploaded.exe',{pkg:selected,exe,args,arch});});
 $('stop').onclick=()=>guard(async()=>{await stop();report('Stopped; writable files saved locally.');});
 for(const button of /** @type {NodeListOf<HTMLButtonElement>} */ (document.querySelectorAll('button[data-demo]')))button.onclick=()=>guard(()=>launch(button.dataset.demo));
 $('fullscreen').onclick=()=>guard(()=>$('display').requestFullscreen());

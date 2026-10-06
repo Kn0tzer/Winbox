@@ -84,12 +84,17 @@
 (function () {
     "use strict";
 
-    var GLIBC_ZIP = "glibc-rootfs64.zip";
-    var WINE_ZIP = "wine64.zip";
-    var PREFIX_ZIP = "prefix64.zip"; // pre-booted .wine prefix (+glcube.exe), ~257KB
+    // 32-bit guest support (step 4+5): ?arch=x86 selects the 32-bit runtime
+    // (glibc-rootfs32.zip + wine32.zip + prefix32.zip, /usr/lib/wine/wine).
+    // Default (absent/anything else) is the 64-bit path, unchanged.
+    var ARCH32 = param("arch") === "x86";
+    var GLIBC_ZIP = ARCH32 ? "glibc-rootfs32.zip" : "glibc-rootfs64.zip";
+    var WINE_ZIP = ARCH32 ? "wine32.zip" : "wine64.zip";
+    var PREFIX_ZIP = ARCH32 ? "prefix32.zip" : "prefix64.zip"; // pre-booted .wine prefix
     var ROOT = "/root";
-    var WINE64 = "/usr/lib/wine/wine64";
-    var WINESERVER64 = "/usr/lib/wine/wineserver64"; // real daemon binary (session mode)
+    var WINE64 = ARCH32 ? "/usr/lib/wine/wine" : "/usr/lib/wine/wine64";
+    var WINESERVER64 = ARCH32 ? "/usr/lib/wine/wineserver32" : "/usr/lib/wine/wineserver64"; // real daemon binary (session mode)
+    var WINEDLLPATH = ARCH32 ? "/usr/lib/i386-linux-gnu/wine" : "/usr/lib/x86_64-linux-gnu/wine";
     // The pre-booted prefix in PREFIX_ZIP lives here (dosdevices c: -> ../drive_c,
     // z: -> /). Running a program with these is what lets wine skip wineboot.
     var PREFIX_HOME = "/home/username";
@@ -119,7 +124,7 @@
     // certifies the ?lazy=0 escape hatch, and the non-gating lazy smoke
     // remains as the runner monitor).
     var LAZY = param("lazy") !== "0";
-    var wineZipArg = "wine64.zip"; // replaced by a bw64url: spec in lazy mode
+    var wineZipArg = WINE_ZIP; // replaced by a bw64url: spec in lazy mode
 
     // --- current run configuration ------------------------------------------
     // These describe the run being booted RIGHT NOW. The bare-page defaults come
@@ -168,7 +173,7 @@
             "HOME=" + PREFIX_HOME,
             "WINEPREFIX=" + PREFIX_WINE,
             "WINESERVER=" + WINESERVER64,
-            "WINEDLLPATH=/usr/lib/x86_64-linux-gnu/wine",
+            "WINEDLLPATH=" + WINEDLLPATH,
             // Force wined3d's command stream SINGLE-THREADED (csmt=0). wined3d 8.0
             // defaults CSMT on, which spawns a worker thread (wined3d_cs_run) and
             // makes Present() submit to a queue + spin until the worker drains it.
@@ -219,7 +224,7 @@
             args.push("-env", "HOME=/winePrefix");
             args.push("-env", "WINEPREFIX=/winePrefix/.wine");
             args.push("-env", "WINESERVER=" + WINESERVER64);
-            args.push("-env", "WINEDLLPATH=/usr/lib/x86_64-linux-gnu/wine");
+            args.push("-env", "WINEDLLPATH=" + WINEDLLPATH);
             args.push(WINE64, "wineboot", "--init");
         } else if (SESSION) {
             // PERSISTENT SESSION. Boot the requested app the SAME proven way as
@@ -244,7 +249,7 @@
             wineProgArgv(PROG).forEach(function (tok) { args.push(tok); });
         } else {
             // Bare wine64 --version (correctness boot, no prefix needed).
-            args.push("-env", "WINEDLLPATH=/usr/lib/x86_64-linux-gnu/wine");
+            args.push("-env", "WINEDLLPATH=" + WINEDLLPATH);
             args.push("-env", "WINESERVER=" + WINESERVER64);
             args.push(WINE64);
             var prog = (PROG && PROG.length) ? PROG : "--version";
