@@ -1814,6 +1814,7 @@ U32 KProcess::clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 t
         return newProcess->id;
     } else if ((flags & 0xFFFFFF00) == (K_CLONE_THREAD | K_CLONE_VM | K_CLONE_FS | K_CLONE_FILES | K_CLONE_SIGHAND | K_CLONE_SETTLS | K_CLONE_PARENT_SETTID | K_CLONE_CHILD_CLEARTID | K_CLONE_SYSVSEM)) {
         KThread* newThread = this->createThread();
+        newThread->clone(thread); // inherit parent CPU (EIP at int 0x80, regs, segs, FPU) - MUST come before TLS setup
         struct user_desc desc;
 
         memory->memcpy(&desc, tls, sizeof(struct user_desc));
@@ -1823,7 +1824,6 @@ U32 KProcess::clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 t
             *ldt = desc;
             newThread->cpu->setSegment(GS, desc.entry_number << 3);
         }
-        newThread->clone(thread); // inherit parent CPU (EIP at int 0x80, regs, segs, FPU)
         newThread->clear_child_tid = ctid;
         memory->writed(ptid, newThread->id);
         newThread->cpu->reg[4].u32 = child_stack; // ESP = new thread stack
