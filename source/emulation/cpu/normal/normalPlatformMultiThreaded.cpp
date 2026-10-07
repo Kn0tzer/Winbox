@@ -116,7 +116,14 @@ static void platformThread(CPU* cpu) {
             cpu->run();
         } catch (...) {
             if (!cpu->thread->terminating) {
-                cpu->nextOp = cpu->getNextOp();
+                try {
+                    cpu->nextOp = cpu->getNextOp();
+                } catch (...) {
+                    // getNextOp failed (e.g., invalid EIP after signal handling)
+                    // Terminate the thread gracefully instead of crashing
+                    cpu->thread->terminating = true;
+                    cpu->nextOp = nullptr;
+                }
             }
         }
 #ifdef __TEST
