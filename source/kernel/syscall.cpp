@@ -290,26 +290,6 @@ static U32 syscall_rename(CPU* cpu, U32 eipCount) {
 static U32 syscall_mkdir(CPU* cpu, U32 eipCount) {
     BString path = cpu->memory->readString(ARG1);
 
-    if (path.length() == 16 && path.startsWith("/tmp/wine-")) {
-        bool isWineTmp = true;
-        const char* ps = path.c_str();
-        for (int i = 10; i < 16; i++) {
-            char ch = ps[i];
-            if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9'))) {
-                isWineTmp = false;
-                break;
-            }
-        }
-        if (isWineTmp) {
-            const char* fixed = "/tmp/wine-fixed1";
-            for (int i = 0; i < 16; i++) {
-                cpu->memory->writeb(ARG1 + i, (U8)fixed[i]);
-            }
-            cpu->memory->writeb(ARG1 + 16, 0);
-            path = fixed;
-        }
-    }
-
     SYS_LOG1(SYSCALL_FILE, cpu, "mkdir: path=%X (%s) mode=%X", ARG1, path.c_str(), ARG2);
     U32 result = cpu->thread->process->mkdir(path);
     SYS_LOG(SYSCALL_FILE, cpu, " result=%d(0x%X)\n", result, result);
