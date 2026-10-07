@@ -1615,6 +1615,17 @@ void KThread::runSignal(U32 signal, U32 trapNo, U32 errorNo) {
 // bit 4 - 0 = n/a, 1 = fault was an instruction fetch
 
 void KThread::seg_mapper(U32 address, bool readFault, bool writeFault, bool throwException) {
+    // On-demand mapping for 32-bit Wine syscall_frame
+    if (!this->process->is64Bit && address >= 0x70000000 && address < 0x78000000) {
+        U32 pageAddr = address & ~0xFFF;
+        U32 result = this->memory->mmap(this, pageAddr, 0x1000,
+            K_PROT_READ | K_PROT_WRITE,
+            K_MAP_PRIVATE | K_MAP_ANONYMOUS | K_MAP_FIXED,
+            -1, 0, false);
+        if (result == pageAddr) {
+            return;
+        }
+    }
     if (this->process->sigActions[K_SIGSEGV].handlerAndSigAction!=K_SIG_IGN && this->process->sigActions[K_SIGSEGV].handlerAndSigAction!=K_SIG_DFL) {
         this->process->sigActions[K_SIGSEGV].sigInfo[0] = K_SIGSEGV;		
         this->process->sigActions[K_SIGSEGV].sigInfo[1] = 0;
