@@ -22,6 +22,7 @@
 #include <memory>
 #include <unordered_map>
 #include <vector>
+#include <mutex>
 #include <array>
 #include <string>
 #include <utility>
@@ -150,6 +151,14 @@ private:
 
     // Pending outbound bytes, flushed to the socket in one shot per onData().
     std::vector<uint8_t> out;
+
+    // Protects out, sequence, buttonState, enteredWindow, relX/relY/relInit
+    // against concurrent access from the main-thread input pump
+    // (pumpInputAndFlush -> deliverInputEvents) and the guest thread
+    // (onData -> processOneRequest/deliverInputEvents). Recursive because
+    // deliverInputEvents() calls sendInputEvent()/sendCrossing() which also
+    // touch protected state. Lock ordering: ioMutex before srv.regMutex.
+    mutable std::recursive_mutex ioMutex;
 
     // Inbound assembly buffer (a request may straddle recvBuffer chunks).
     std::vector<uint8_t> in;

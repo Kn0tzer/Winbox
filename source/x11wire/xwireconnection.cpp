@@ -355,11 +355,13 @@ void XWireServerSocket::onPeerWrote() {
 // sees coherent reply records.
 // ---------------------------------------------------------------------------
 void XWireConnection::writeToClient(const void* data, uint32_t len) {
+    std::lock_guard<std::recursive_mutex> lk(ioMutex);
     const uint8_t* p = (const uint8_t*)data;
     out.insert(out.end(), p, p + len);
 }
 
 void XWireConnection::flushReplies() {
+    std::lock_guard<std::recursive_mutex> lk(ioMutex);
     if (out.empty()) return;
     const std::shared_ptr<XWireServerSocket>& peer = serverPeer;
     if (peer) {
@@ -1886,6 +1888,9 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
 }
 
 void XWireConnection::onData() {
+    // Serialize against the main-thread input pump (pumpInputAndFlush).
+    // Protects out, sequence, and request-processing state.
+    std::lock_guard<std::recursive_mutex> lk(ioMutex);
     const std::shared_ptr<XWireServerSocket>& peer = serverPeer;
     if (!peer) return;
 
@@ -1958,6 +1963,10 @@ void XWireConnection::onData() {
 // duplicated across the several connections sharing the global registry.
 void XWireConnection::deliverInputEvents() {
     if (!g_xwirePresentSink) return;
+    // Serialize against concurrent onData() (guest thread) and pumpInputAndFlush()
+    // (main thread). Protects buttonState/enteredWindow/relX/etc. and the out
+    // vector written by sendInputEvent/sendCrossing below.
+    std::lock_guard<std::recursive_mutex> lk(ioMutex);
     XWireServer& srv = XWireServer::instance();
     uint32_t pw;
     int16_t baseX = 0, baseY = 0;
