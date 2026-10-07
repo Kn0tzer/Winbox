@@ -1078,11 +1078,7 @@
                     // Desktop pin: arch-appropriate PE (the 64-bit deskpin.exe
                     // fails with c0000135 under 32-bit wine, so x86 sessions
                     // use the 32-bit deskpin32.exe from prefix32.zip).
-                    if (ARCH32) {
-                        spawnArgv(wineProgArgv("Z:\\home\\username\\deskpin32.exe"), "deskpin32 (hold desktop open)");
-                    } else {
-                        spawnArgv(wineProgArgv("Z:\\home\\username\\deskpin.exe"), "deskpin (hold desktop open)");
-                    }
+                    // Deskpin spawn moved to wbPinPoll (sequential) to avoid pid race.
                     // x86: Wine does not auto-run wineboot --init on 32-bit (ntdll
                     // run_wineboot path not triggered). Spawn it explicitly so the
                     // service stack (services.exe) and desktop exist before GUI apps.
@@ -1098,9 +1094,14 @@
                         (function wbPinPoll() {
                             var pinPid = lastSpawnedPid();
                             if (pinPid && pinPid !== pinPidBefore) {
-                                // Pin drained. Deskpin32 was queued after the pin,
-                                // so wait for it to drain too. Otherwise wbPidPoll
-                                // mistakes deskpin32's pid for wineboot's.
+                                // Pin drained. Spawn deskpin32 SEQUENTIALLY (not queued
+                                // with pin) to avoid the 10->12->14 pid race where both
+                                // drain before JS polling sees them.
+                                if (ARCH32) {
+                                    spawnArgv(wineProgArgv("Z:\\home\\username\\deskpin32.exe"), "deskpin32 (hold desktop open)");
+                                } else {
+                                    spawnArgv(wineProgArgv("Z:\\home\\username\\deskpin.exe"), "deskpin (hold desktop open)");
+                                }
                                 var deskpinPidBefore = pinPid;
                                 var wbDeskpinWaited = 0, WB_DESKPIN_STEP = 200, WB_DESKPIN_LIMIT = 30000;
                                 (function wbDeskpinPoll() {
