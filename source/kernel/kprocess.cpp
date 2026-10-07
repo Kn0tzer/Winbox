@@ -1171,6 +1171,7 @@ static S32 internalAccess(std::shared_ptr<FsNode> node, U32 flags) {
 }
 
 U32 KProcess::access(BString path, U32 mode) {
+    path = rewriteServerDirPath(path, this->is64Bit);
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, true);
     return internalAccess(node, mode); 
 }
@@ -1220,6 +1221,7 @@ U32 KProcess::chdir(BString path) {
 }
 
 U32 KProcess::unlinkFile(BString path) {
+    path = rewriteServerDirPath(path, this->is64Bit);
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, false);
     if (!node) {
         return -K_ENOENT;
@@ -1286,6 +1288,7 @@ U32 KProcess::close(FD fildes) {
 }
 
 U32 KProcess::open(BString path, U32 flags) {
+    path = rewriteServerDirPath(path, this->is64Bit);
     KFileDescriptorPtr fd;
         
     U32 result = this->openFile(this->currentDirectory, path, flags, fd);
@@ -2316,6 +2319,7 @@ U32 KProcess::getcwd(U32 buffer, U32 size) {
 }
 
 U32 KProcess::stat64(BString path, U32 buffer) {
+    path = rewriteServerDirPath(path, this->is64Bit);
     bool isLink = false;
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, true, &isLink);
     if (!node) {
@@ -2327,6 +2331,7 @@ U32 KProcess::stat64(BString path, U32 buffer) {
 }
 
 U32 KProcess::lstat64(BString path, U32 buffer) {
+    path = rewriteServerDirPath(path, this->is64Bit);
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, false);
     if (!node) {
         return -K_ENOENT;
@@ -2582,6 +2587,7 @@ U32 KProcess::getCurrentDirectoryFromDirFD(FD dirfd, BString& currentDirectory) 
 }
 
 U32 KProcess::openat(FD dirfd, BString path, U32 flags) {
+    path = rewriteServerDirPath(path, this->is64Bit);
     BString dir;
     U32 result = 0;
     
@@ -2720,6 +2726,7 @@ void KProcess::writeStatX(KMemory* memory, U32 buf, U32 id, U32 rdev, U32 hardLi
     memory->writed(buf, 0);           // stx_dio_offset_align
 }
 U32 KProcess::statx(FD dirfd, BString path, U32 flags, U32 mask, U32 buf) {
+    path = rewriteServerDirPath(path, this->is64Bit);
     BString dir;
     U32 result = 0;
 
@@ -2794,6 +2801,7 @@ U32 KProcess::fstatat64(FD dirfd, BString path, U32 buf, U32 flag) {
 }
 
 U32 KProcess::unlinkat(FD dirfd, BString path, U32 flags) {
+    path = rewriteServerDirPath(path, this->is64Bit);
     BString dir;
     U32 result = 0;
     
