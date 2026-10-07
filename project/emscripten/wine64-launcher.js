@@ -1067,7 +1067,12 @@
                     // C-side last-spawned pid.
                     currentAppPid = lastSpawnedPid();
                     console.log("session: boot app pid=" + currentAppPid);
-                    spawnArgv([WINESERVER64, "-p"], WINESERVER64 + " -p (pin persistent)");
+                    // 32-bit: skip separate wineserver pin; let ntdll spawn it as
+                    // child to avoid tmpdir mismatch (ntdll and pin get different
+                    // mkdtemp dirs).
+                    if (!ARCH32) {
+                        spawnArgv([WINESERVER64, "-p"], WINESERVER64 + " -p (pin persistent)");
+                    }
                     // Desktop pin (M18 boot reliability): wineserver WM_CLOSEs an
                     // "empty" desktop (only explorer's threads left) after 1s, and
                     // the slow interpreted wineboot->app handoff routinely leaves
@@ -1084,6 +1089,31 @@
                     // service stack (services.exe) and desktop exist before GUI apps.
                     // Gate sessionReady() on its completion via arch32WinebootDone.
                     if (ARCH32 && !arch32WinebootDone) {
+                        // ARCH32: wineserver pin is SKIPPED (ntdll spawns wineserver
+                        // as child to avoid tmpdir mismatch). Do NOT wait for pin
+                        // pid - it will never appear. Spawn deskpin32 directly.
+                        // (64-bit path below still uses wbPinPoll for the pin.)
+                        var pinSkippedForArch32 = true; // pin spawn is if(!ARCH32)
+                        if (pinSkippedForArch32) {
+                            spawnArgv(wineProgArgv("Z:\\home\\username\\deskpin32.exe"), "deskpin32 (hold desktop open)");
+                            var deskpinPidBefore2 = currentAppPid;
+                            var wbDeskpinWaited2 = 0, WB_DESKPIN_STEP2 = 200, WB_DESKPIN_LIMIT2 = 30000;
+                            (function wbDeskpinPoll2() {
+                                var dpPid2 = lastSpawnedPid();
+                                if (dpPid2 && dpPid2 !== deskpinPidBefore2) {
+                                    console.log("session: x86 wineboot skipped (fake ELF)");
+                                    arch32WinebootDone = true;
+                                    return;
+                                }
+                                wbDeskpinWaited2 += WB_DESKPIN_STEP2;
+                                if (wbDeskpinWaited2 >= WB_DESKPIN_LIMIT2) {
+                                    console.error("session: x86 deskpin32 pid never appeared, proceeding anyway");
+                                    arch32WinebootDone = true;
+                                    return;
+                                }
+                                setTimeout(wbDeskpinPoll2, WB_DESKPIN_STEP2);
+                            })();
+                        } else {
                         // The wineserver pin spawn above was queued but not yet
                         // drained; lastSpawnedPid() still holds the boot app pid.
                         // Wait for the pin to drain FIRST, otherwise Phase 1
@@ -1132,6 +1162,7 @@
                             }
                             setTimeout(wbPinPoll, WB_PIN_STEP);
                         })();
+                        } // end else (pin not skipped)
                         // Phase 2: wait for wineboot --init to exit. 32-bit
                         // emulation is slow; 5-minute cap, then proceed anyway
                         // rather than deadlock the session.

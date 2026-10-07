@@ -127,6 +127,9 @@ std::shared_ptr<FsNode> FsNode::getChildByName(BString name) {
         if (!result && name.endsWith(".link")) {
             result = this->childrenByName[name.substr(0, name.length() - 5)];
         }
+        if (!result && name.contains(":")) {
+            result = this->childrenByName[name.replace(":", "(_colon_)") + ".link"];
+        }
     }
     return result;
 }
