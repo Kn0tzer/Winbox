@@ -120,7 +120,7 @@ U32 KMemory::mmap(KThread* thread, U32 addr, U32 len, S32 prot, S32 flags, FD fi
         }
         if (pageStart == 0) {
             // :TODO: this seems like a hack, there must be something wrong with how I implemented mmap
-            if (KSystem::wineMajorVersion >= 7 && (flags & K_MAP_BOXEDWINE) == 0) {
+            if ((flags & K_MAP_BOXEDWINE) == 0) { // guest request: user-space
                 pageStart = 0x10000;
             } else {
                 pageStart = ADDRESS_PROCESS_MMAP_START;
