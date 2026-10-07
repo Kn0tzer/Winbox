@@ -115,6 +115,13 @@ U32 KMemory::mmap(KThread* thread, U32 addr, U32 len, S32 prot, S32 flags, FD fi
                     break;
                 }
             }
+            // Only relocate for Wine heap reservations (1MB PROT_NONE in
+            // 256MB-512MB). Other FIXED_NOREPLACE callers require the exact
+            // address, so keep immediate EEXIST for them.
+            bool heapLike = (len == 0x100000 && prot == 0 && addr >= 0x10000000 && addr < 0x20000000);
+            if (conflict && !heapLike) {
+                return -K_EEXIST;
+            }
             if (conflict) {
                 U32 searchStart = pageStart + 1;
                 bool found = false;
