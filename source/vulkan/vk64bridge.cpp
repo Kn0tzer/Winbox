@@ -1373,6 +1373,28 @@ void hopV2ToPage() {
     g_v2Pending.clear();
 }
 
+// FNV-1a 64-bit content hash, shared with the page tier: the IMAGE_DATA
+// record carries this hash, so the page keys its texture cache without
+// hashing pixel bytes itself.
+static U64 fnv1a64(const U8* data, size_t len) {
+    U64 h = 14695981039346656037ULL;
+    for (size_t i = 0; i < len; i++) { h ^= (U64)data[i]; h *= 1099511628211ULL; }
+    return h;
+}
+
+// Cross-frame texture content hashes: VkImage id -> FNV-1a 64-bit of the last
+// emitted pixel bytes. Image ids are monotonic (g_nextId, never recycled), so
+// entries stay valid; vkDestroyImage erases them. When the hash is unchanged,
+// emitImageData sends a pixel-less record (view->image link + hash only),
+// saving wasm->JS bridge bandwidth for static textures.
+static std::unordered_map<U64, U64> g_imageContentHash;
+// Cross-frame buffer content hashes: (bufId,memOff,len) -> FNV-1a 64-bit.
+// Same dedup as images: when the hash is unchanged, emitBufferData sends a
+// byte-less record (ids + hash only), saving bridge bandwidth for static
+// vertex/index/uniform buffers. Buffer ids are monotonic (g_nextId), so
+// entries stay valid; vkDestroyBuffer erases them.
+static std::map<std::tuple<U64,U64,U64>, U64> g_bufferContentHash;
+
 // Submit-time v2 frame reconstruction: the same walk as serializeSubmit, but
 // the frame is a stream of binary records instead of one JSON string, and it
 // covers the DXVK-shaped calls v1 never modelled (descriptor sets with arrays,
@@ -1420,8 +1442,20 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             if (!b || !b->mem) return;
             std::vector<U8> bytes = readGuestRange(b->mem, memOff, len);
             if (bytes.empty()) return;
+            // Cross-frame dedup: resend bytes only when content changed.
+            U64 hash = fnv1a64(bytes.data(), bytes.size());
+            auto key = std::make_tuple(bufId, memOff, len);
+            auto it = g_bufferContentHash.find(key);
+            bool sendBytes = true;
+            if (it != g_bufferContentHash.end() && it->second == hash) {
+                sendBytes = false;
+            } else {
+                g_bufferContentHash[key] = hash;
+            }
             emit(V2_BUFFER_DATA, [&](ChunkWriter& p) {
-                p.u64(bufId); p.u64(memOff); p.u32((U32)bytes.size()); p.bytes(bytes);
+                p.u64(bufId); p.u64(memOff); p.u64(hash);
+                p.u32(sendBytes ? (U32)bytes.size() : 0);
+                if (sendBytes) p.bytes(bytes);
             });
         };
         auto emitSampler = [&](U64 id) {
@@ -1442,12 +1476,26 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             if (!tex) return;
             std::vector<U8> bytes;
             if (tex->mem && tex->pixBytes) bytes = readGuestRange(tex->mem, tex->memOff, tex->pixBytes);
+            // Cross-frame dedup: resend pixel bytes only when content changed.
+            U64 hash = 0;
+            bool sendPixels = true;
+            if (!bytes.empty()) {
+                hash = fnv1a64(bytes.data(), bytes.size());
+                auto it = g_imageContentHash.find(view->image);
+                if (it != g_imageContentHash.end() && it->second == hash) {
+                    sendPixels = false;
+                } else {
+                    g_imageContentHash[view->image] = hash;
+                }
+            }
             emit(V2_IMAGE_DATA, [&](ChunkWriter& p) {
                 // viewId first: the page's DESC_SET bindings name image VIEWS,
                 // while this record is deduped per image, so the record carries
                 // the view->image link the page needs.
                 p.u64(viewId); p.u64(view->image); p.u32(tex->w); p.u32(tex->h); p.u32(tex->format);
-                p.u32((U32)bytes.size()); p.bytes(bytes);
+                p.u64(hash);
+                p.u32(sendPixels ? (U32)bytes.size() : 0);
+                if (sendPixels) p.bytes(bytes);
             });
         };
         auto emitDescSet = [&](U32 setIndex, U64 setId) {
@@ -1686,8 +1734,8 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             const char* names[] = { "?", "FRAME_BEGIN", "FRAME_END", "RP_BEGIN", "RP_END",
                 "SHADER", "PIPELINE", "BIND_SETS", "DESC_SET", "BUFFER_DATA", "IMAGE_DATA",
                 "SAMPLER", "PUSH", "VIEWPORT", "SCISSOR", "VERTEX_BIND", "INDEX_BIND",
-                "DRAW", "INLINE_BYTES" };
-            for (U32 t = 1; t < 19; t++)
+                "DRAW", "INLINE_BYTES", "BUFFER_REUSE", "IMAGE_REUSE" };
+            for (U32 t = 1; t < 21; t++)
                 if (hist[t]) { dump += " "; dump += names[t]; dump += "=" + std::to_string(hist[t]); }
             klog_fmt("%s", dump.c_str());
         }
@@ -1819,8 +1867,28 @@ void fillCoreFeatures(VkPhysicalDeviceFeatures* f) {
     f->shaderStorageImageWriteWithoutFormat = VK_TRUE;
     f->shaderClipDistance = VK_TRUE;
     f->samplerAnisotropy = VK_TRUE;
-    f->geometryShader = VK_FALSE;       /* WebGPU has no geometry stage */
-    f->tessellationShader = VK_FALSE;
+    /* D3D11 baseline: DXVK D3D11Device::GetDeviceFeatures hard-requires the
+     * below for feature level 10_1, and checkFeatureSupport gates ALL of
+     * D3D11 device creation on them. WebGPU cannot implement several (no
+     * geometry stage, no wireframe fill, single viewport, no dual-source
+     * blend, no sample-rate shading), so they are advertised for device
+     * creation. This is safe for FL 9_3 targets: 9_x has no geometry /
+     * tessellation stages and real 9_3 apps do not use wireframe,
+     * multi-viewport, or dual-src blending. If a future app creates a
+     * geometry shader, pipeline creation fails loudly at the page tier
+     * (no WGSL target stage) instead of silently misrendering. */
+    f->geometryShader = VK_TRUE;        /* advertised; NOT implemented (see above) */
+    f->tessellationShader = VK_FALSE;   /* stays FALSE: caps max FL at 10_1 */
+    f->depthBiasClamp = VK_TRUE;        /* advertised; clamp approximated */
+    f->depthClamp = VK_TRUE;            /* advertised; see above */
+    f->dualSrcBlend = VK_TRUE;          /* advertised; rare in practice */
+    f->fillModeNonSolid = VK_TRUE;      /* advertised; wireframe not implemented */
+    f->multiViewport = VK_TRUE;         /* advertised; WebGPU supports 1 viewport */
+    f->occlusionQueryPrecise = VK_TRUE;
+    f->sampleRateShading = VK_TRUE;     /* advertised; rare in practice */
+    f->shaderCullDistance = VK_TRUE;    /* advertised; rare in practice */
+    f->shaderImageGatherExtended = VK_TRUE;
+    f->textureCompressionBC = VK_TRUE;  /* needs browser texture-compression-bc */
     f->fragmentStoresAndAtomics = VK_TRUE;
     f->vertexPipelineStoresAndAtomics = VK_TRUE;
 }
@@ -2017,6 +2085,12 @@ inline void fillVulkan11Features(VkPhysicalDeviceVulkan11Features& f) {
     f.shaderDrawParameters = VK_TRUE;       // vkd3d-proton hard gate (device.c:2658)
     f.protectedMemory = VK_FALSE;
 }
+inline void fillVulkan13Features(VkPhysicalDeviceVulkan13Features& f) {
+    // DXVK D3D11 baseline hard-requires shaderDemoteToHelperInvocation
+    // (d3d11_device.cpp GetDeviceFeatures). Advertised; demote-vs-kill
+    // nuances are not observable at FL 9_3.
+    f.shaderDemoteToHelperInvocation = VK_TRUE;
+}
 
 void walkFeatures2(U64 pNextAddr) {
     for (U64 cur = pNextAddr; cur && g_mem;) {
@@ -2048,6 +2122,8 @@ void walkFeatures2(U64 pNextAddr) {
                 SET_FEATURES(cur, fillVulkan12Features, VkPhysicalDeviceVulkan12Features); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES:
                 SET_FEATURES(cur, fillVulkan11Features, VkPhysicalDeviceVulkan11Features); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES:
+                SET_FEATURES(cur, fillVulkan13Features, VkPhysicalDeviceVulkan13Features); break;
             default:
                 klog_fmt("vk64: Features2 pNext sType=%u not modeled, left as the guest set it",
                          (unsigned)sType);
@@ -3531,8 +3607,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         dropObj(args.a[1]);
         return 0;
     }
-    case VK64_fn_vkDestroyBuffer:          dropObj(args.a[1]); return 0;
-    case VK64_fn_vkDestroyImage:           dropObj(args.a[1]); return 0;
+    case VK64_fn_vkDestroyImage:           g_imageContentHash.erase(args.a[1]); dropObj(args.a[1]); return 0;
+    case VK64_fn_vkDestroyBuffer:          { U64 id = args.a[1]; for (auto it = g_bufferContentHash.begin(); it != g_bufferContentHash.end();) { if (std::get<0>(it->first) == id) it = g_bufferContentHash.erase(it); else ++it; } dropObj(id); return 0; }
     case VK64_fn_vkDestroyImageView:       dropObj(args.a[1]); return 0;
     case VK64_fn_vkDestroySampler:         dropObj(args.a[1]); return 0;
     case VK64_fn_vkDestroyRenderPass:      dropObj(args.a[1]); return 0;
