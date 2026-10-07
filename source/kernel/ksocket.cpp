@@ -79,6 +79,65 @@ U32 ksocket(U32 domain, U32 type, U32 protocol) {
 
 #define IS_NOT_SOCKET(fd) (fd->kobject->type!=KTYPE_NATIVE_SOCKET && fd->kobject->type!=KTYPE_UNIX_SOCKET)
 
+// Rewrites wineserver socket paths for 32-bit processes to isolate them
+// from 64-bit wineserver sockets. Both architectures compute the same
+// server dir hash from WINEPREFIX, causing 32-bit Wine to connect to the
+// 64-bit wineserver (which never responds to 32-bit protocol).
+// For 32-bit: /tmp/wine-XXX/server-UID-HASH/socket -> /tmp/wine-XXX/server32-UID-HASH/socket
+// For 64-bit: unchanged
+static BString rewriteWineserverSocketPath(const BString& path, bool is64Bit) {
+    if (is64Bit) {
+        return path;
+    }
+    int idx = path.indexOf("/server-");
+    if (idx < 0) {
+        return path;
+    }
+    BString before = path.substr(0, idx + 7);
+    BString after = path.substr(idx + 7);
+    BString result = before + B("32") + after;
+    return result;
+}
+
+static bool patchSocketPathForArch(KThread* thread, U32 address, U32 len, BString& outOriginal, BString& outPatched, U32& outNewLen) {
+    outOriginal = B("");
+    outPatched = B("");
+    outNewLen = len;
+    if (!address || len < 3) {
+        return false;
+    }
+    KMemory* memory = thread->memory;
+    U16 family = memory->readw(address);
+    if (family != K_AF_UNIX) {
+        return false;
+    }
+    U32 pathLen = (U32)memory->strlen(address + 2);
+    if (pathLen == 0 || pathLen + 3 > len) {
+        return false;
+    }
+    BString original(pathLen + 1, 0);
+    memory->memcpy(original.str(), address + 2, pathLen + 1);
+    BString patched = rewriteWineserverSocketPath(original, thread->process->is64Bit);
+    if (patched == original) {
+        return false;
+    }
+    if (patched.length() > 107) {
+        return false;
+    }
+    outOriginal = original;
+    outPatched = patched;
+    outNewLen = 2 + patched.length() + 1;
+    memory->memcpy(address + 2, patched.c_str(), patched.length() + 1);
+    return true;
+}
+
+static void restoreSocketPath(KThread* thread, U32 address, const BString& original) {
+    if (original.length() == 0) {
+        return;
+    }
+    thread->memory->memcpy(address + 2, original.c_str(), original.length() + 1);
+}
+
 U32 kbind(KThread* thread, U32 socket, U32 address, U32 len) {
     KFileDescriptorPtr fd = thread->process->getFileDescriptor(socket);
 
@@ -89,6 +148,14 @@ U32 kbind(KThread* thread, U32 socket, U32 address, U32 len) {
         return -K_ENOTSOCK;
     }
     std::shared_ptr<KSocketObject> s = std::dynamic_pointer_cast<KSocketObject>(fd->kobject);
+    // Isolate 32-bit wineserver sockets from 64-bit ones (see rewriteWineserverSocketPath)
+    BString origPath, patchedPath;
+    U32 newLen = len;
+    if (patchSocketPathForArch(thread, address, len, origPath, patchedPath, newLen)) {
+        U32 result = s->bind(thread, fd, address, newLen);
+        restoreSocketPath(thread, address, origPath);
+        return result;
+    }
     return s->bind(thread, fd, address, len);
 }
 
@@ -105,7 +172,15 @@ U32 kconnect(KThread* thread, U32 socket, U32 address, U32 len) {
     if (s->connected) {
         return -K_EISCONN;
     }		
-    return s->connect(thread, fd, address, len);        
+    // Isolate 32-bit wineserver sockets from 64-bit ones (see rewriteWineserverSocketPath)
+    BString origPath, patchedPath;
+    U32 newLen = len;
+    if (patchSocketPathForArch(thread, address, len, origPath, patchedPath, newLen)) {
+        U32 result = s->connect(thread, fd, address, newLen);
+        restoreSocketPath(thread, address, origPath);
+        return result;
+    }
+    return s->connect(thread, fd, address, len);
 }
 
 U32 klisten(KThread* thread, U32 socket, U32 backlog) {

@@ -1092,7 +1092,25 @@ U32 KProcess::rmdir(BString path) {
     return node->removeDir();
 }
 
+// Rewrites wineserver server dir paths for 32-bit processes to isolate them
+// from 64-bit wineserver. Both architectures compute the same server dir hash
+// from WINEPREFIX, causing conflicts. For 32-bit: /server- -> /server32-
+// Must match the rewriting in ksocket.cpp (rewriteWineserverSocketPath).
+static BString rewriteServerDirPath(const BString& path, bool is64Bit) {
+    if (is64Bit) {
+        return path;
+    }
+    int idx = path.indexOf("/server-");
+    if (idx < 0) {
+        return path;
+    }
+    BString before = path.substr(0, idx + 7);
+    BString after = path.substr(idx + 7);
+    return before + B("32") + after;
+}
+
 U32 KProcess::mkdir(BString path) {
+    path = rewriteServerDirPath(path, this->is64Bit);
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, false);   
     if (node) {
         return -K_EEXIST;
@@ -1184,6 +1202,7 @@ U32 KProcess::chmod(BString path, U32 mode) {
 }
 
 U32 KProcess::chdir(BString path) {
+    path = rewriteServerDirPath(path, this->is64Bit);
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, true);
     if (!node)
         return -K_ENOENT;
@@ -2580,6 +2599,7 @@ U32 KProcess::openat(FD dirfd, BString path, U32 flags) {
 }
 
 U32 KProcess::mkdirat(U32 dirfd, BString path, U32 mode) {
+    path = rewriteServerDirPath(path, this->is64Bit);
     BString dir;
     U32 result = 0;
     
