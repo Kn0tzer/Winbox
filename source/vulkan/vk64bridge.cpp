@@ -274,7 +274,11 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkBindBufferMemory2,                        "vkBindBufferMemory2") \
     X(VK64_fn_vkBindBufferMemory2KHR,                     "vkBindBufferMemory2KHR") \
     X(VK64_fn_vkBindImageMemory2,                         "vkBindImageMemory2") \
-    X(VK64_fn_vkBindImageMemory2KHR,                      "vkBindImageMemory2KHR")
+    X(VK64_fn_vkBindImageMemory2KHR,                      "vkBindImageMemory2KHR") \
+    X(VK64_fn_vkCmdCopyImageToBuffer,                    "vkCmdCopyImageToBuffer") \
+    X(VK64_fn_vkCmdCopyImage,                            "vkCmdCopyImage") \
+    X(VK64_fn_vkCmdCopyImageToBuffer2,                   "vkCmdCopyImageToBuffer2") \
+    X(VK64_fn_vkCmdCopyImageToBuffer2KHR,                "vkCmdCopyImageToBuffer2KHR")
 #define VK64_NAME_ENTRY(id, nm) { (U64)(id), nm },
 const struct { U64 id; const char* name; } g_fnNames[] = { VK64_FN_LIST(VK64_NAME_ENTRY) };
 #undef VK64_NAME_ENTRY
@@ -505,10 +509,14 @@ struct Swapchain : Obj { U32 w = 0, h = 0, format = 0, nimg = 0, cur = 0; U64 im
 enum CmdKind : U32 {
     CMD_BEGIN_RP, CMD_END_RP, CMD_BIND_PIPE, CMD_BIND_SETS, CMD_VIEWPORT,
     CMD_SCISSOR, CMD_DRAW, CMD_DRAW_INDEXED, CMD_BARRIER, CMD_COPY_B2I, CMD_PUSH_CONST,
-    CMD_BIND_VB, CMD_BIND_IB, CMD_UPDATE_BUF
+    CMD_BIND_VB, CMD_BIND_IB, CMD_UPDATE_BUF, CMD_COPY_I2B
 };
 struct Copy {
     U64 srcBuffer = 0, dstImage = 0, bufOff = 0;
+    U32 rowLen = 0, imgH = 0; int32_t ox = 0, oy = 0; U32 w = 0, h = 0;
+};
+struct CopyI2B {
+    U64 srcImage = 0, dstBuffer = 0, bufOff = 0;
     U32 rowLen = 0, imgH = 0; int32_t ox = 0, oy = 0; U32 w = 0, h = 0;
 };
 struct Cmd {
@@ -521,6 +529,7 @@ struct Cmd {
     U32 vbStrides[VK64_MAX_VERT_BINDINGS] = {0};
     bool vbHasStride[VK64_MAX_VERT_BINDINGS] = {false};
     Copy  copy;
+    CopyI2B copyI2B;
     // Push constants: the recorded bytes, byte-offset preserved. DXVK pushes
     // constants per-draw for essentially everything, so this is a hot path, not a
     // corner case.
@@ -1259,7 +1268,7 @@ enum V2Rec : U32 {
     V2_BUFFER_DATA = 0x09, V2_IMAGE_DATA = 0x0A, V2_SAMPLER = 0x0B,
     V2_PUSH = 0x0C, V2_VIEWPORT = 0x0D, V2_SCISSOR = 0x0E,
     V2_VERTEX_BIND = 0x0F, V2_INDEX_BIND = 0x10, V2_DRAW = 0x11,
-    V2_INLINE_BYTES = 0x12,
+    V2_INLINE_BYTES = 0x12, V2_READBACK = 0x13,
 };
 const U32 V2_CHUNK_MAGIC = 0x46324B56u;   // 'VK2F' little-endian: bytes 56 4B 32 46
 const U32 V2_CHUNK_VERSION = 2;
@@ -1400,6 +1409,96 @@ static std::map<std::tuple<U64,U64,U64>, U64> g_bufferContentHash;
 // covers the DXVK-shaped calls v1 never modelled (descriptor sets with arrays,
 // indexed draws, vertex/index binds, per-attachment MSAA, the render-pass
 // graph). One v2 frame per submit-with-draw, queued for the present hop.
+struct ReadbackPending {
+    U64 srcImage = 0, dstBuffer = 0, dstBufOff = 0;
+    U32 w = 0, h = 0, heapPtr = 0, flagPtr = 0;
+};
+static std::vector<ReadbackPending> g_readbackPending;
+
+static bool waitForReadbackFlag(U32 flagPtr, int timeoutMs) {
+#ifdef __EMSCRIPTEN__
+    int r = EM_ASM_INT({
+        try {
+            var view = new Int32Array(HEAPU8.buffer, $0, 1);
+            var res = Atomics.wait(view, 0, 0, $1);
+            return res === 'ok' ? 1 : 0;
+        } catch (e) { return -1; }
+    }, flagPtr, timeoutMs);
+    return r == 1;
+#else
+    (void)flagPtr; (void)timeoutMs;
+    return false;
+#endif
+}
+
+static void hopV2LastToPage() {
+#ifdef __EMSCRIPTEN__
+    if (g_v2Pending.empty()) return;
+    MAIN_THREAD_EM_ASM({ try { globalThis.bwVkHeapBuffer = HEAPU8.buffer; } catch (e) {} });
+    const auto& f = g_v2Pending.back();
+    for (const auto& chunk : f.chunks) {
+        const U8* ptr = chunk.data();
+        U32 len = (U32)chunk.size();
+        MAIN_THREAD_EM_ASM({
+            if (globalThis.window && window.bwVkChunk) {
+                try {
+                    const bytes = new Uint8Array(HEAPU8.buffer, $0, $1).slice();
+                    window.bwVkChunk(bytes, $2);
+                } catch (e) {}
+            }
+        }, ptr, len, (U32)0);
+    }
+    g_v2Pending.clear();
+#else
+    g_v2Pending.clear();
+#endif
+}
+
+static bool setupReadbacks(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
+    g_readbackPending.clear();
+    for (const auto& fr : frames) {
+        CmdBuf* cb = fr.first;
+        if (!cb) continue;
+        for (const Cmd& k : cb->cmds) {
+            if (k.kind != CMD_COPY_I2B) continue;
+            const CopyI2B& rb = k.copyI2B;
+            if (!rb.w || !rb.h || rb.w > 4096 || rb.h > 4096) continue;
+            size_t pxBytes = (size_t)rb.w * rb.h * 4;
+            U8* heap = (U8*)malloc(pxBytes + 4);
+            if (!heap) continue;
+            memset(heap, 0, pxBytes + 4);
+            ReadbackPending pend;
+            pend.srcImage = rb.srcImage; pend.dstBuffer = rb.dstBuffer;
+            pend.dstBufOff = rb.bufOff; pend.w = rb.w; pend.h = rb.h;
+            pend.heapPtr = (U32)(uintptr_t)heap;
+            pend.flagPtr = (U32)(uintptr_t)(heap + pxBytes);
+            g_readbackPending.push_back(pend);
+        }
+    }
+    return !g_readbackPending.empty();
+}
+
+static void completeReadbacks() {
+    if (g_readbackPending.empty()) return;
+    hopV2LastToPage();
+    for (auto& pend : g_readbackPending) {
+        if (!waitForReadbackFlag(pend.flagPtr, 10000)) continue;
+        Buffer* buf = objOf<Buffer>(pend.dstBuffer, K_BUFFER, "readback");
+        if (!buf || !buf->mem) continue;
+        DeviceMemory* mem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "readback");
+        if (!mem || !mem->va) continue;
+        size_t pxBytes = (size_t)pend.w * pend.h * 4;
+        U64 dstVa = mem->va + buf->memOff + pend.dstBufOff;
+        if (buf->memOff + pend.dstBufOff + pxBytes > mem->size) {
+            if (buf->memOff + pend.dstBufOff >= mem->size) continue;
+            pxBytes = (size_t)(mem->size - buf->memOff - pend.dstBufOff);
+        }
+        g_mem->memcpyToGuest(dstVa, (U8*)(uintptr_t)pend.heapPtr, pxBytes);
+    }
+    for (auto& pend : g_readbackPending) free((void*)(uintptr_t)pend.heapPtr);
+    g_readbackPending.clear();
+}
+
 void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
     for (const auto& fr : frames) {
         CmdBuf* st = fr.first;
@@ -1716,7 +1815,20 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                         p.u32((U32)k.a); p.u32((U32)k.c); p.u32((U32)(int32_t)k.copy.ox);
                     });
                     break;
-                default: break;   // barriers, copies (eagerly executed at submit)
+                case CMD_COPY_I2B: {
+                    const CopyI2B& rb = k.copyI2B;
+                    for (const auto& pend : g_readbackPending) {
+                        if (pend.srcImage == rb.srcImage && pend.dstBuffer == rb.dstBuffer) {
+                            emit(V2_READBACK, [&](ChunkWriter& p) {
+                                p.u64(rb.srcImage); p.u32(rb.w); p.u32(rb.h);
+                                p.u32(pend.heapPtr); p.u32(pend.flagPtr);
+                            });
+                            break;
+                        }
+                    }
+                    break;
+                }
+                default: break;
             }
         }
 
@@ -4039,6 +4151,56 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         }
         return 0;
     }
+    case VK64_fn_vkCmdCopyImageToBuffer: {
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdCopyImageToBuffer");
+        U32 nreg = (U32)args.a[4];
+        std::vector<VkBufferImageCopy> regs;
+        readArray(args.a[5], nreg, regs);
+        if (!cb) return 0;
+        for (U32 i = 0; i < regs.size(); i++) {
+            Cmd c; c.kind = CMD_COPY_I2B;
+            c.copyI2B.srcImage = args.a[1]; c.copyI2B.dstBuffer = args.a[3];
+            c.copyI2B.bufOff = regs[i].bufferOffset;
+            c.copyI2B.rowLen = regs[i].bufferRowLength;
+            c.copyI2B.imgH = regs[i].bufferImageHeight;
+            c.copyI2B.ox = regs[i].imageOffset.x; c.copyI2B.oy = regs[i].imageOffset.y;
+            c.copyI2B.w = regs[i].imageExtent.width; c.copyI2B.h = regs[i].imageExtent.height;
+            pushCmd(cb, c);
+        }
+        return 0;
+    }
+    case VK64_fn_vkCmdCopyImageToBuffer2:
+    case VK64_fn_vkCmdCopyImageToBuffer2KHR: {
+        // VkBufferImageCopy2 has sType+pNext at start (unlike VkBufferImageCopy).
+        // 64-bit layout: sType(0,4), pNext(8,8), bufferOffset(16,8), bufferRowLength(24,4),
+        // bufferImageHeight(28,4), imageSubresource(32,16), imageOffset(48,12), imageExtent(60,12).
+        struct VkBufferImageCopy2L {
+            U32 sType; U32 _p0; U64 pNext;
+            U64 bufferOffset; U32 bufferRowLength; U32 bufferImageHeight;
+            U32 aspectMask; U32 mipLevel; U32 baseArrayLayer; U32 layerCount;
+            int32_t ox; int32_t oy; int32_t oz;
+            U32 w; U32 h; U32 d;
+        };
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdCopyImageToBuffer2");
+        U32 nreg = (U32)args.a[4];
+        std::vector<VkBufferImageCopy2L> regs;
+        readArray(args.a[5], nreg, regs);
+        if (!cb) return 0;
+        for (U32 i = 0; i < regs.size(); i++) {
+            Cmd c; c.kind = CMD_COPY_I2B;
+            c.copyI2B.srcImage = args.a[1]; c.copyI2B.dstBuffer = args.a[3];
+            c.copyI2B.bufOff = regs[i].bufferOffset;
+            c.copyI2B.rowLen = regs[i].bufferRowLength;
+            c.copyI2B.imgH = regs[i].bufferImageHeight;
+            c.copyI2B.ox = regs[i].ox; c.copyI2B.oy = regs[i].oy;
+            c.copyI2B.w = regs[i].w; c.copyI2B.h = regs[i].h;
+            pushCmd(cb, c);
+        }
+        return 0;
+    }
+    case VK64_fn_vkCmdCopyImage: {
+        return 0;
+    }
 
     // =====================================================================
     // E. Frame boundary (2 of the 85)
@@ -4105,7 +4267,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             }
         }
         if (hasWork) {
-            if (vkSchemaV2()) serializeSubmitV2(frames); else serializeSubmit(frames);
+            if (vkSchemaV2()) {
+                bool needRb = setupReadbacks(frames);
+                serializeSubmitV2(frames);
+                if (needRb) completeReadbacks();
+            } else serializeSubmit(frames);
         }
         if (args.a[3]) { Fence* f = objOf<Fence>(args.a[3], K_FENCE, "vkQueueSubmit"); if (f) f->signalled = 1; }
         return VK_SUCCESS;
@@ -4163,7 +4329,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             }
         }
         if (hasWork) {
-            if (vkSchemaV2()) serializeSubmitV2(frames); else serializeSubmit(frames);
+            if (vkSchemaV2()) {
+                bool needRb = setupReadbacks(frames);
+                serializeSubmitV2(frames);
+                if (needRb) completeReadbacks();
+            } else serializeSubmit(frames);
         }
         if (args.a[3]) { Fence* f = objOf<Fence>(args.a[3], K_FENCE, "vkQueueSubmit2"); if (f) f->signalled = 1; }
         return VK_SUCCESS;
