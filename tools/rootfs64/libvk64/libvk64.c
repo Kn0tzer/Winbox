@@ -225,6 +225,11 @@ enum {
     // vulkan-1.dll as our PE shim. Same append-only position as
     // vk64bridge_abi.h.
     VK64_fn_vkGetPhysicalDeviceWin32PresentationSupportKHR,
+    // readback: must match vk64bridge_abi.h order exactly
+    VK64_fn_vkCmdCopyImageToBuffer,
+    VK64_fn_vkCmdCopyImage,
+    VK64_fn_vkCmdCopyImageToBuffer2,
+    VK64_fn_vkCmdCopyImageToBuffer2KHR,
     VK64_fn__MAX
 };
 
@@ -931,6 +936,37 @@ API void vkCmdCopyBufferToImage(VkCommandBuffer cb, VkBuffer src, VkImage dst, u
     (void)vk64_trap(VK64_fn_vkCmdCopyBufferToImage, &a);
 }
 
+// --- readback: image->buffer copies (were TAIL stubs; now trap to host) ---
+API void vkCmdCopyImageToBuffer(VkCommandBuffer commandBuffer, VkImage srcImage, uint32_t srcImageLayout,
+                                VkBuffer dstBuffer, uint32_t regionCount, const void* pRegions) {
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = srcImage; a.a[2] = srcImageLayout;
+    a.a[3] = dstBuffer; a.a[4] = regionCount; a.a[5] = P(pRegions);
+    (void)vk64_trap(VK64_fn_vkCmdCopyImageToBuffer, &a);
+}
+// VkCopyImageToBufferInfo2 64-bit layout (Vulkan spec; verified field offsets)
+typedef struct VkCopyImageToBufferInfo2L {
+    uint32_t sType; uint32_t _pad0;
+    const void* pNext;
+    VkImage srcImage;
+    uint32_t srcImageLayout; uint32_t _pad1;
+    VkBuffer dstBuffer;
+    uint32_t regionCount; uint32_t _pad2;
+    const void* pRegions;
+} VkCopyImageToBufferInfo2L;
+API void vkCmdCopyImageToBuffer2(VkCommandBuffer commandBuffer, const VkCopyImageToBufferInfo2L* pInfo) {
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = pInfo->srcImage; a.a[2] = 0;
+    a.a[3] = pInfo->dstBuffer; a.a[4] = pInfo->regionCount; a.a[5] = P(pInfo->pRegions);
+    (void)vk64_trap(VK64_fn_vkCmdCopyImageToBuffer2, &a);
+}
+API void vkCmdCopyImageToBuffer2KHR(VkCommandBuffer commandBuffer, const VkCopyImageToBufferInfo2L* pInfo) {
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = pInfo->srcImage; a.a[2] = 0;
+    a.a[3] = pInfo->dstBuffer; a.a[4] = pInfo->regionCount; a.a[5] = P(pInfo->pRegions);
+    (void)vk64_trap(VK64_fn_vkCmdCopyImageToBuffer2KHR, &a);
+}
+
 // ===========================================================================
 // F. Frame boundary (2 of the 85)
 // ===========================================================================
@@ -1291,7 +1327,6 @@ TAIL(vkCmdCopyImage2KHR)
 TAIL(vkCmdBlitImage)
 TAIL(vkCmdBlitImage2)
 TAIL(vkCmdBlitImage2KHR)
-TAIL(vkCmdCopyImageToBuffer)
 TAIL(vkCmdCopyBufferToImage2)
 TAIL(vkCmdCopyBufferToImage2KHR)
 TAIL(vkCmdFillBuffer)

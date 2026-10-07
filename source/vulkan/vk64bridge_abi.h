@@ -290,6 +290,11 @@ enum {
     // dxgi (D3D12 swapchain): init_vk_funcs resolves this from vulkan-1.dll
     // when loaded as our PE shim. Same append-only position as libvk64.c.
     VK64_fn_vkGetPhysicalDeviceWin32PresentationSupportKHR, // (physDev, qFam) -> VkBool32
+    // readback: image->buffer copies (append-only; DXVK readback path)
+    VK64_fn_vkCmdCopyImageToBuffer,                  // (cmdBuf, srcImage, srcImageLayout, dstBuffer, regionCount, pRegions*) -> records CMD_COPY_I2B
+    VK64_fn_vkCmdCopyImage,                          // (cmdBuf, ...) -> no-op (ID stability)
+    VK64_fn_vkCmdCopyImageToBuffer2,                 // (cmdBuf, srcImage, 0, dstBuffer, regionCount, pRegions*) -> records CMD_COPY_I2B
+    VK64_fn_vkCmdCopyImageToBuffer2KHR,              // alias of vkCmdCopyImageToBuffer2
     VK64_fn__MAX
 };
 
