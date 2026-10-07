@@ -851,7 +851,7 @@
                 // Diagnostic flags are opt-in, fixed names (never arbitrary env).
                 // Opt-in: only set when ?gltrace=1 is passed explicitly. gltrace=0 or absent
                 // leaves it unset (the C side checks existence via getenv, not value).
-                if (param("gltrace") && param("gltrace") !== "0") ENV["BW64_GLTRACE"] = "1";
+                if (param("gltrace") && param("gltrace") !== "0") ENV["BW64_GLTRACE"] = param("gltrace");
                 if (param("ripsample") === "1") {
                     ENV["BW64_RIPSAMPLE"] = "1";
                     ENV["BW64_RIPSAMPLE_HB"] = "1";
@@ -870,10 +870,13 @@
                 // (?glversion=3.2 opts D3D11 experiments into 3.2 core strings;
                 // default 2.1 keeps the proven D3D9 path untouched).
                 if (param("glversion")) ENV["BW64_GLVERSION"] = param("glversion");
+                // BW64_XWIRE (?xwire=1): XWire input/protocol diagnostic logging.
+                if (param("xwire") === "1") ENV["BW64_XWIRE"] = "1";
                 // BW64_ENVDUMP (?envedump=1, O2 diagnosis): syscall64.cpp dumps the
                 // FULL envp of every guest execve — proves whether WINEDEBUG etc.
                 // survive the boot -env argv -> execve chain.
                 if (param("envedump") === "1") ENV["BW64_ENVDUMP"] = "1";
+                if (param("wscount") === "1") ENV["BW64_WSCOUNT"] = "1";
                 // Hold main() until the rootfs is in the VFS.
                 liveModule["addRunDependency"]("loadWine64Fs");
                 loadFilesystem(els);

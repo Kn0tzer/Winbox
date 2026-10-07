@@ -592,13 +592,15 @@ void resizeTarget(int w, int h) {
 
 // Forward declaration: defined after deleteObjects (needs complete GenKind).
 void flushPendingDeletes();
+void flushPendingDeletesOnGL(); // inline: caller already on GL thread
 // Read the rendered framebuffer and present it through the X11-wire sink.
 // On WASM this whole body runs on the GL-owning main thread (caller wraps it via
 // glOnMain at the glXSwapBuffers case); the glReadPixels targets our offscreen
 // FBO, which is left bound after rendering.
 void readbackAndPresent() {
-    // Drain batched glDelete*s (single hop) before presenting.
-    flushPendingDeletes();
+    // Drain batched glDelete*s. Already on the GL thread (called from inside
+    // glOnMain) so use the inline variant — hopping again would deadlock.
+    flushPendingDeletesOnGL();
     if (!g_glContext || !g_currentDrawable || !g_xwirePresentSink) {
         return;
     }
@@ -1042,15 +1044,19 @@ std::vector<std::pair<GenKind, GLuint>> g_pendingDeletes;
 
 // Drain g_pendingDeletes: one glDelete* per kind, all inside a single
 // main-thread hop. Safe to call with an empty queue.
-void flushPendingDeletes() {
+// Inline variant: runs the GL deletes on the calling thread. Only call when
+// already on the GL-owning thread (e.g. inside a glOnMain closure) — hopping
+// again via glOnMain would deadlock (outer hop waits for inner job while the
+// main thread is busy running the outer closure).
+void flushPendingDeletesOnGL() {
     std::vector<std::pair<GenKind, GLuint>> pending;
     {
-        std::lock_guard<std::recursive_mutex> lk(g_glMutex);
+        std::unique_lock<std::recursive_mutex> lk(g_glMutex, std::try_to_lock);
         if (g_pendingDeletes.empty()) return;
         pending.swap(g_pendingDeletes);
     }
     if (!g_glContext) return; // GL never came up; nothing exists host-side.
-    glOnMain([&]{
+    {
         for (int ki = 0; ki <= (int)GenKind::Sampler; ++ki) {
             GenKind kind = (GenKind)ki;
             std::vector<GLuint> ids;
@@ -1067,7 +1073,14 @@ void flushPendingDeletes() {
                 case GenKind::Sampler:     glDeleteSamplers(n, q); break;
             }
         }
-    });
+    }
+}
+void flushPendingDeletes() {
+    {
+        std::lock_guard<std::recursive_mutex> lk(g_glMutex);
+        if (g_pendingDeletes.empty()) return;
+    }
+    glOnMain([&]{ flushPendingDeletesOnGL(); });
 }
 void deleteObjects(CPU64* cpu, const GL64Args& args, GenKind kind) {
     GLsizei n = (GLsizei)args.a[0];

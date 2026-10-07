@@ -93,6 +93,9 @@ bool doMainLoop() {
         if (g_xwirePresentSink) {
             timeout = 17;
         }
+        if (hasMainThreadWork()) {
+            timeout = 0;
+        }
 #endif
         if (flipFB()) {
             timeout = 17;

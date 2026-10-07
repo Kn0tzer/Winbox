@@ -111,6 +111,10 @@ struct MainThreadJob {
 std::mutex g_mtwMutex;
 std::deque<MainThreadJob*> g_mtwQueue;
 
+bool hasMainThreadWork() {
+    std::lock_guard<std::mutex> lk(g_mtwMutex);
+    return !g_mtwQueue.empty();
+}
 void drainMainThreadWork() {
     for (;;) {
         MainThreadJob* job = nullptr;

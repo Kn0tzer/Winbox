@@ -130,5 +130,6 @@ void xwireInjectMouseWheel(int dx, int dy);
 // FROM the main thread it runs inline. Safe before any sink is installed (still
 // pumped by the main loop). Defined in xwirepresentSDL.cpp.
 void xwireRunOnMainThread(const std::function<void()>& fn);
+bool hasMainThreadWork();
 
 #endif
