@@ -105,7 +105,7 @@ U32 KMemory::mmap(KThread* thread, U32 addr, U32 len, S32 prot, S32 flags, FD fi
             return -K_EINVAL;
         }
         if (flags & K_MAP_FIXED_NOREPLACE) {
-            if (!remap && addr != 0 && pageStart + pageCount > ADDRESS_PROCESS_MMAP_START) {
+            if (!remap && addr != 0 && pageStart >= ADDRESS_PROCESS_MMAP_START) {
                 return -K_ENOMEM;
             }
             for (U32 page = pageStart; page < pageStart + pageCount; page++) {
@@ -115,7 +115,7 @@ U32 KMemory::mmap(KThread* thread, U32 addr, U32 len, S32 prot, S32 flags, FD fi
             }
         }
     } else {
-        if (pageStart + pageCount > ADDRESS_PROCESS_MMAP_START) {
+        if (pageStart >= ADDRESS_PROCESS_MMAP_START) {
             return -K_ENOMEM;
         }
         if (pageStart == 0) {
