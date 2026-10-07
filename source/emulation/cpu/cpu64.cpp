@@ -5206,6 +5206,12 @@ dsp_59:
                 // D9 EE = FLDZ — push +0.0
                 fpu.PREP_PUSH();
                 fpu.FLDZ();
+            } else if (op == 0xD9 && modrmByte == 0xFE) {
+                // D9 FE = FSIN — sine of ST(0), result in ST(0)
+                fpu.FSIN();
+            } else if (op == 0xD9 && modrmByte == 0xFF) {
+                // D9 FF = FCOS — cosine of ST(0), result in ST(0)
+                fpu.FCOS();
             } else if (op == 0xDF && modrmByte == 0xE0) {
                 // DF E0 = FNSTSW AX — write status word into AX, preserving
                 // the upper 48 bits of RAX (per AMD64 manual).
