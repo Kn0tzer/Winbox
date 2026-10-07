@@ -108,8 +108,33 @@ U32 KMemory::mmap(KThread* thread, U32 addr, U32 len, S32 prot, S32 flags, FD fi
             if (!remap && addr != 0 && pageStart >= ADDRESS_PROCESS_MMAP_START) {
                 return -K_ENOMEM;
             }
+            bool conflict = false;
             for (U32 page = pageStart; page < pageStart + pageCount; page++) {
                 if (isPageMapped(page)) {
+                    conflict = true;
+                    break;
+                }
+            }
+            if (conflict) {
+                U32 searchStart = pageStart + 1;
+                bool found = false;
+                while (searchStart + pageCount <= ADDRESS_PROCESS_MMAP_START) {
+                    bool free = true;
+                    for (U32 page = searchStart; page < searchStart + pageCount; page++) {
+                        if (isPageMapped(page)) {
+                            free = false;
+                            searchStart = page + 1;
+                            break;
+                        }
+                    }
+                    if (free) {
+                        pageStart = searchStart;
+                        addr = pageStart << K_PAGE_SHIFT;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
                     return -K_EEXIST;
                 }
             }
