@@ -1151,6 +1151,9 @@ static const struct procEntry g_procs[] = {
     E(vkCmdUpdateBuffer, VK64_fn_vkCmdUpdateBuffer),
     E(vkCmdPipelineBarrier, VK64_fn_vkCmdPipelineBarrier),
     E(vkCmdCopyBufferToImage, VK64_fn_vkCmdCopyBufferToImage),
+    E(vkCmdCopyImageToBuffer, VK64_fn_vkCmdCopyImageToBuffer),
+    E(vkCmdCopyImageToBuffer2, VK64_fn_vkCmdCopyImageToBuffer2),
+    E(vkCmdCopyImageToBuffer2KHR, VK64_fn_vkCmdCopyImageToBuffer2KHR),
     // --- frame boundary ---
     E(vkQueueSubmit, VK64_fn_vkQueueSubmit),
     E(vkQueueSubmit2, VK64_fn_vkQueueSubmit2),
