@@ -152,6 +152,20 @@ KProcess::KProcess(U32 id) : id(id), exitOrExecCond(std::make_shared<BoxedWineCo
     this->ldt[2].seg_not_present = 0;
     this->ldt[2].read_exec_only = 0;
 
+    // Wine 32-bit PE segments: CS=0x23 (LDT[4]), DS/SS/ES=0x2B (LDT[5])
+    // Wine's ntdll uses IRETD with these selectors to transfer to PE entry point.
+    this->ldt[4].base_addr = 0;
+    this->ldt[4].entry_number = 4;
+    this->ldt[4].seg_32bit = 1;
+    this->ldt[4].seg_not_present = 0;
+    this->ldt[4].read_exec_only = 0;
+
+    this->ldt[5].base_addr = 0;
+    this->ldt[5].entry_number = 5;
+    this->ldt[5].seg_32bit = 1;
+    this->ldt[5].seg_not_present = 0;
+    this->ldt[5].read_exec_only = 0;
+
     this->hasSetSeg[GS] = true;
     this->hasSetSeg[FS] = true;    
 }
