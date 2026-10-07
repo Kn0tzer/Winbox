@@ -184,7 +184,11 @@
             // doesn't reach wined3d. With csmt=0 wined3d uses the inline st ops:
             // Present runs glClear/glDrawArrays/SwapBuffers synchronously on the
             // calling thread — no worker thread to wait on.
-            "WINE_D3D_CONFIG=csmt=0x0"
+            "WINE_D3D_CONFIG=csmt=0x0",
+            // Bypass the wine-preloader exec: Boxedwine virtualizes memory layout,
+            // so the preloader (which reserves low memory) is unnecessary. Without
+            // this, 32-bit wine ELF fails with "could not exec the wine loader".
+            "WINELOADERNOEXEC=1"
         ];
         // Opt-in Wine diagnostics; captured at boot for all session processes.
         var wd = param("winedbg");
