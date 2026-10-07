@@ -49,7 +49,7 @@
 // wait) and returns; the main loop drains the queue each tick via
 // bw64SessionDrainSpawns() and does the real startProcess there.
 
-#if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_MULTI_THREADED) && defined(BOXEDWINE_GUEST_X64)
+#if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_MULTI_THREADED)
 
 #include <emscripten/emscripten.h>
 #include "boxedwine.h"

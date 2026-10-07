@@ -19,7 +19,7 @@
 #include "boxedwine.h"
 #include "startupArgs.h"
 
-#if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_MULTI_THREADED) && defined(BOXEDWINE_GUEST_X64)
+#if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_MULTI_THREADED)
 // Persistent in-browser wine session (source/sdl/emscripten/wine64session.cpp):
 // remember the boot launch params so later in-session app spawns reuse them.
 void bw64SessionRememberContext(const BString& workingDir, const std::vector<BString>& env,
@@ -620,7 +620,7 @@ bool StartUpArgs::apply() {
             result = thread != nullptr;
             if (result) bootPid = process->id;
         }
-#if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_MULTI_THREADED) && defined(BOXEDWINE_GUEST_X64)
+#if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_MULTI_THREADED)
         // Boot process is up — record its launch params + pid so the JS launcher
         // can spawn further apps into THIS running kernel (persistent wine
         // session) without reloading, and close the boot app on the first switch.
