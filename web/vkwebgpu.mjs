@@ -1254,7 +1254,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     frames: 0, rendered: 0, skips: 0, unknownFormats: 0, unsupported: 0,
     litPixels: 0, paintedPixels: 0, totalPixels: 0, width: 0, height: 0, aliased: 0,
   };
-  const snapshot = () => ({ ...stats, ...shaders.stats });
+  const snapshot = () => ({ ...stats, ...shaders.stats, persist: { ...persistStats } });
   let destroyed = false;
   let resizeObs = null;
   // Track the canvas size the observer has seen. render() updates this
@@ -1291,12 +1291,38 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     texCache: new Map(), bufCache: new Map(), sampCache: new Map(), live: [],
   };
 
+  // Persistent cross-frame GPU resource caches (optimization: avoid per-frame
+  // re-creation of textures/buffers/samplers when content is unchanged).
+  // Keyed by content hash; entries are never destroyed (bounded by unique
+  // resources, which is small for real apps).
+  const persistTexCache = new Map();  // imgHex:hash -> {tex, w, h, format}
+  const persistBufCache = new Map();  // bufHex:usage:hash -> GPUBuffer
+  const persistSampCache = new Map(); // sampHex -> GPUSampler
+  const persistStats = { texHits: 0, texMiss: 0, bufHits: 0, bufMiss: 0, sampHits: 0 };
+  let persistPushBuf = null, persistDummyVb = null;
+
+  // Fast FNV-1a hash for Uint8Array content comparison.
+  function fnv1a(bytes) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < bytes.length; i++) {
+      h ^= bytes[i];
+      h = Math.imul(h, 0x01000193);
+    }
+    return (h >>> 0).toString(16);
+  }
+
   function gpuTextureFor(imgHex, img) {
-    let t = F.texCache.get(imgHex);
-    if (t) return t;
+    // Persistent cache: hash the pixel content; reuse GPUTexture if unchanged.
     const w = Math.max(1, img.w), h = Math.max(1, img.h);
-    t = device.createTexture({
-      size: [w, h], format: v2TextureFormat(img.format, stats),
+    const fmt = v2TextureFormat(img.format, stats);
+    let hash = 'empty';
+    if (img.pixels && img.pixels.length) hash = fnv1a(img.pixels);
+    const ck = imgHex + ':' + w + 'x' + h + ':' + fmt + ':' + hash;
+    let entry = persistTexCache.get(ck);
+    if (entry) { persistStats.texHits++; return entry.tex; }
+    persistStats.texMiss++;
+    const t = device.createTexture({
+      size: [w, h], format: fmt,
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
     if (img.pixels && img.pixels.length) {
@@ -1306,28 +1332,36 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       const src = img.pixels.length >= want ? img.pixels.subarray(0, want) : img.pixels;
       device.queue.writeTexture({ texture: t }, src, { bytesPerRow: rowBytes, rowsPerImage: h }, [w, h]);
     }
-    F.texCache.set(imgHex, t); F.live.push(t);
+    persistTexCache.set(ck, { tex: t, w, h, format: fmt });
+    // Also populate frame-local cache for within-frame dedup
+    F.texCache.set(imgHex, t);
     return t;
   }
 
   function gpuBufferFor(bufHex, bytes, usage) {
-    const ck = bufHex + ':' + usage;
-    let b = F.bufCache.get(ck);
-    if (b) return b;
+    // Persistent cache: hash content; reuse GPUBuffer if unchanged.
+    const hash = fnv1a(bytes);
+    const ck = bufHex + ':' + usage + ':' + bytes.length + ':' + hash;
+    let b = persistBufCache.get(ck);
+    if (b) { persistStats.bufHits++; return b; }
+    persistStats.bufMiss++;
     b = device.createBuffer({ size: Math.max(4, bytes.length), usage, mappedAtCreation: true });
     new Uint8Array(b.getMappedRange()).set(bytes.subarray(0, Math.min(bytes.length, b.size)));
     b.unmap();
-    F.bufCache.set(ck, b); F.live.push(b);
+    persistBufCache.set(ck, b);
+    F.bufCache.set(bufHex + ':' + usage, b);
     return b;
   }
 
   function gpuSamplerFor(sampHex, s) {
-    let sm = F.sampCache.get(sampHex);
-    if (sm) return sm;
+    // Persistent cache: samplers are defined by parameters, never change.
+    let sm = persistSampCache.get(sampHex);
+    if (sm) { persistStats.sampHits++; return sm; }
     sm = device.createSampler({
       magFilter: s.mag, minFilter: s.min, mipmapFilter: s.mipmap,
       addressModeU: s.addrU, addressModeV: s.addrV, maxAnisotropy: s.maxAnisotropy,
     });
+    persistSampCache.set(sampHex, sm);
     F.sampCache.set(sampHex, sm);
     return sm;
   }
@@ -1564,6 +1598,8 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     F.shaders = frame.shaders; F.images = frame.images;
     F.views = frame.views; F.samplers = frame.samplers; F.buffers = frame.buffers;
     F.texCache.clear(); F.bufCache.clear(); F.sampCache.clear(); F.live.length = 0;
+    // NOTE: persistTexCache/persistBufCache/persistSampCache are NOT cleared —
+    // they provide cross-frame reuse of GPU resources when content is unchanged.
     if (typeof window !== 'undefined' && window.__bwDbgRender)
       console.log('bwDbg render f' + frame.frameNo + ' ' + frame.width + 'x' + frame.height +
         ' canvas ' + canvas.width + 'x' + canvas.height);
@@ -1578,11 +1614,13 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     let presentTex = null, presentW = frame.width, presentH = frame.height, lastClear = [0, 0, 0, 1];
     const encoder = device.createCommandEncoder();
     const groupCache = new Map(); // per-frame: pipeKey|setIndex|ver -> GPUBindGroup
-    const pushBuf = device.createBuffer({ size: V2_PUSH_SIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    F.live.push(pushBuf);
-    // Dummy vertex buffer for pipeline slots the guest leaves unbound (null buffer).
-    const dummyVb = device.createBuffer({ size: 4096, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
-    F.live.push(dummyVb);
+    // Persistent across frames: same size every frame, no need to re-create.
+    if (!persistPushBuf) {
+      persistPushBuf = device.createBuffer({ size: V2_PUSH_SIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      persistDummyVb = device.createBuffer({ size: 4096, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+    }
+    const pushBuf = persistPushBuf;
+    const dummyVb = persistDummyVb;
 
     // --- replay state persists across passes within a frame ---
     // Vulkan allows vkCmdBindPipeline / vkCmdBindVertexBuffers outside a render
