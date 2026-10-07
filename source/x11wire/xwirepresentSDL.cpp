@@ -469,6 +469,18 @@ public:
         }
     }
 
+    // Direct XWire event injection, bypassing SDL translation. Used by the
+    // bw64_xwire_mouse_* JS entry points for headless browser input.
+    // Safe from any thread: push is mutex-guarded.
+    void injectEvent(const XWireInputEvent& ie) {
+        XWireInputEvent e2 = ie;
+        if (e2.type == XWireInputEvent::EvMotion) { lastX = e2.x; lastY = e2.y; }
+        if (e2.type == XWireInputEvent::EvButtonDown ||
+            e2.type == XWireInputEvent::EvButtonUp) { lastX = e2.x; lastY = e2.y; }
+        e2.state = sdlModState();
+        push(e2);
+    }
+
 private:
 
     void push(const XWireInputEvent& ie) {
@@ -604,6 +616,18 @@ public:
         }
     }
 
+    // Direct XWire event injection, bypassing SDL translation. Used by the
+    // bw64_xwire_mouse_* JS entry points for headless browser input.
+    // Safe from any thread: push is mutex-guarded.
+    void injectEvent(const XWireInputEvent& ie) {
+        XWireInputEvent e2 = ie;
+        if (e2.type == XWireInputEvent::EvMotion) { lastX = e2.x; lastY = e2.y; }
+        if (e2.type == XWireInputEvent::EvButtonDown ||
+            e2.type == XWireInputEvent::EvButtonUp) { lastX = e2.x; lastY = e2.y; }
+        e2.state = sdlModState();
+        push(e2);
+    }
+
 private:
     void push(const XWireInputEvent& ie) {
         std::lock_guard<std::mutex> lk(mtx);
@@ -656,6 +680,64 @@ void xwireInjectKey(uint32_t sdlScancode, int down) {
     e.type = down ? SDL_KEYDOWN : SDL_KEYUP;
     e.key.keysym.scancode = (SDL_Scancode)sdlScancode;
     xwireForwardSdlEvent(e);
+}
+
+// Direct mouse injection for headless browser operation. Bypasses SDL event
+// capture entirely; builds XWireInputEvent directly. All safe from any thread.
+// x/y are in guest window coordinates (same space as EvMotion from SDL).
+
+static void injectToActiveSink(const XWireInputEvent& ie) {
+    if (g_xwirePresentSink == &g_sink) g_sink.injectEvent(ie);
+    else if (g_xwirePresentSink) g_inputSink.injectEvent(ie);
+}
+
+void xwireInjectMouseMove(int x, int y) {
+    if (!g_xwirePresentSink) return;
+    XWireInputEvent ie;
+    ie.type = XWireInputEvent::EvMotion;
+    ie.x = x; ie.y = y;
+    injectToActiveSink(ie);
+}
+
+void xwireInjectMouseRel(int dx, int dy) {
+    if (!g_xwirePresentSink) return;
+    XWireInputEvent ie;
+    ie.type = XWireInputEvent::EvMotionRel;
+    ie.x = dx; ie.y = dy;
+    injectToActiveSink(ie);
+}
+
+void xwireInjectMouseButton(int button, int down) {
+    if (!g_xwirePresentSink) return;
+    if (button < 1 || button > 9) return;
+    XWireInputEvent ie;
+    ie.type = down ? XWireInputEvent::EvButtonDown : XWireInputEvent::EvButtonUp;
+    ie.detail = (uint32_t)button;
+    int px = 0, py = 0; uint32_t pm = 0;
+    g_xwirePresentSink->lastPointer(px, py, pm);
+    ie.x = px; ie.y = py;
+    injectToActiveSink(ie);
+}
+
+void xwireInjectMouseWheel(int dx, int dy) {
+    if (!g_xwirePresentSink) return;
+    // X11 wheel convention: button 4 = up, 5 = down, 6 = left, 7 = right.
+    // Each tick is a press immediately followed by a release.
+    int px = 0, py = 0; uint32_t pm = 0;
+    g_xwirePresentSink->lastPointer(px, py, pm);
+    uint32_t btn = 0;
+    if (dy > 0) btn = 4;
+    else if (dy < 0) btn = 5;
+    else if (dx > 0) btn = 7;
+    else if (dx < 0) btn = 6;
+    if (!btn) return;
+    XWireInputEvent ie;
+    ie.x = px; ie.y = py;
+    ie.detail = btn;
+    ie.type = XWireInputEvent::EvButtonDown;
+    injectToActiveSink(ie);
+    ie.type = XWireInputEvent::EvButtonUp;
+    injectToActiveSink(ie);
 }
 
 // Run `fn` on the platform main thread, blocking until it completes. Inline if

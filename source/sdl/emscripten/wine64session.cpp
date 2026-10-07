@@ -388,6 +388,24 @@ extern "C" EMSCRIPTEN_KEEPALIVE void bw64_xwire_key(int sdlScancode, int down) {
     xwireInjectKey((uint32_t)sdlScancode, down);
 }
 
+// bw64_xwire_mouse_move(x, y): absolute pointer position in guest window coords.
+// bw64_xwire_mouse_rel(dx, dy): relative deltas (FPS mouse-look).
+// bw64_xwire_mouse_button(button, down): X11 button 1=left,2=middle,3=right,8=X1,9=X2.
+// bw64_xwire_mouse_wheel(dx, dy): wheel ticks (dy>0 up, dy<0 down, dx horizontal).
+// All no-ops until the session is up. Safe from the browser main thread.
+extern "C" EMSCRIPTEN_KEEPALIVE void bw64_xwire_mouse_move(int x, int y) {
+    xwireInjectMouseMove(x, y);
+}
+extern "C" EMSCRIPTEN_KEEPALIVE void bw64_xwire_mouse_rel(int dx, int dy) {
+    xwireInjectMouseRel(dx, dy);
+}
+extern "C" EMSCRIPTEN_KEEPALIVE void bw64_xwire_mouse_button(int button, int down) {
+    xwireInjectMouseButton(button, down);
+}
+extern "C" EMSCRIPTEN_KEEPALIVE void bw64_xwire_mouse_wheel(int dx, int dy) {
+    xwireInjectMouseWheel(dx, dy);
+}
+
 // bw64_register_file: register a file JS already wrote into MEMFS (e.g. an
 // uploaded .exe at guest path /home/username/foo.exe) into Boxedwine's VFS, so the
 // app spawned right after can find it. Queue it (drained on the main-loop thread,
