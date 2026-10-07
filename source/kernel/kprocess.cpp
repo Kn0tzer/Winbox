@@ -1209,11 +1209,10 @@ U32 KProcess::chdir(BString path) {
         return -K_ENOENT;
     if (!node->isDirectory())
         return -K_ENOTDIR;
-    if (path.startsWith('/')) {
-        this->currentDirectory = path;
-    } else {
-        this->currentDirectory = this->currentDirectory+"/"+path;
-    }
+    // Use the resolved node path, not the unresolved input path, so that
+    // symlinks (e.g. dosdevices/z:) don't leak into the cwd and corrupt
+    // Wine's Unix->NT path conversion.
+    this->currentDirectory = node->path;
     if (this->currentDirectory.endsWith('/')) {
         this->currentDirectory = this->currentDirectory.substr(0, this->currentDirectory.length()-1);
     }
@@ -2077,10 +2076,9 @@ U32 KProcess::fchdir(FD fildes) {
     if (!p->openFile->node->isDirectory()) {		
         return -K_ENOTDIR;
     }
-    if (p->openFile->openedPath.length())
-        this->currentDirectory = p->openFile->openedPath;
-    else
-        this->currentDirectory = p->openFile->node->path;
+    // Use the resolved node path, not the unresolved openedPath, so that
+    // symlinks don't leak into the cwd (see chdir fix above).
+    this->currentDirectory = p->openFile->node->path;
     if (this->currentDirectory.endsWith("/")) {
         this->currentDirectory = this->currentDirectory.substr(0, this->currentDirectory.length()-1);
     }
