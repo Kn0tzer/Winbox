@@ -1107,26 +1107,11 @@
                                 (function wbDeskpinPoll() {
                                     var dpPid = lastSpawnedPid();
                                     if (dpPid && dpPid !== deskpinPidBefore) {
-                                        // Deskpin32 drained. Now spawn wineboot and track ITS pid.
-                                        // Phase 1: wait for the wineboot pid to appear.
-                                        var wbPidBefore = dpPid;
-                                        spawnArgv(wineProgArgv("wineboot --init"), "wineboot --init (x86 service stack)");
-                                        var wbPidWaited = 0, WB_PID_STEP = 200, WB_PID_LIMIT = 30000;
-                                        (function wbPidPoll() {
-                                            var p = lastSpawnedPid();
-                                            if (p && p !== wbPidBefore) {
-                                                console.log("session: x86 wineboot pid=" + p + ", waiting for completion");
-                                                wbDonePoll(p);
-                                                return;
-                                            }
-                                            wbPidWaited += WB_PID_STEP;
-                                            if (wbPidWaited >= WB_PID_LIMIT) {
-                                                console.error("session: x86 wineboot pid never appeared, proceeding anyway");
-                                                arch32WinebootDone = true;
-                                                return;
-                                            }
-                                            setTimeout(wbPidPoll, WB_PID_STEP);
-                                        })();
+                                        // Wineboot spawn SKIPPED: fake is ELF not PE.
+                                        // Wine PE loader fails with c0000017 on ELF.
+                                        // Internal ntdll run_wineboot fork+exec handled by fake directly.
+                                        console.log("session: x86 wineboot skipped (fake ELF)");
+                                        arch32WinebootDone = true;
                                         return;
                                     }
                                     wbDeskpinWaited += WB_DESKPIN_STEP;
