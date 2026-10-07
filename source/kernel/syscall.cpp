@@ -711,6 +711,12 @@ static U32 syscall_clone3(CPU* cpu, U32 eipCount) {
     */
 }
 
+static U32 syscall_fork(CPU* cpu, U32 eipCount) {
+    // fork() = clone(SIGCHLD, 0). SIGCHLD=17.
+    U32 result = cpu->thread->process->clone(cpu->thread, 17, 0, 0, 0, 0);
+    return result;
+}
+
 static U32 syscall_clone(CPU* cpu, U32 eipCount) {
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "clone: flags=%X child_stack=%X ptid=%X tls=%X ctid=%X", ARG1, ARG2, ARG3, ARG4, ARG5);
     U32 result = cpu->thread->process->clone(cpu->thread, ARG1, ARG2, ARG3, ARG4, ARG5);
@@ -1939,7 +1945,7 @@ U32 syscall_sigtimedwait_time64(CPU* cpu, U32 eipCount) {
 static const SyscallFunc syscallFunc[] = {
     nullptr,                  // 0
     syscall_exit,       // 1 __NR_exit
-    nullptr,                  // 2
+    syscall_fork,       // 2 __NR_fork
     syscall_read,       // 3 __NR_read
     syscall_write,      // 4 __NR_write
     syscall_open,       // 5 __NR_open
