@@ -73,7 +73,7 @@ EM_JS(void, bw64StartFetch, (double ctxAddr, double jobAddr, const char* url, do
     });
 });
 
-static void bw64FetchOnMain(em_proxying_ctx* ctx, void* arg) {
+static EMSCRIPTEN_KEEPALIVE void bw64FetchOnMain(em_proxying_ctx* ctx, void* arg) {
     FetchJob* job = (FetchJob*)arg;
     bw64StartFetch((double)(uintptr_t)ctx, (double)(uintptr_t)job, job->url,
                    (double)job->start, (double)job->endIncl,
