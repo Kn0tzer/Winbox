@@ -1616,7 +1616,7 @@ void KThread::runSignal(U32 signal, U32 trapNo, U32 errorNo) {
 
 void KThread::seg_mapper(U32 address, bool readFault, bool writeFault, bool throwException) {
     // On-demand mapping for 32-bit Wine syscall_frame
-    if (!this->process->is64Bit && address >= 0x70000000 && address < 0x78000000) {
+    if (!this->process->is64Bit && address >= 0x76f000 && address < 0x770000) {
         U32 pageAddr = address & ~0xFFF;
         if (!this->memory->isPageAllocated(pageAddr >> 12)) {
             U32 result = this->memory->mmap(this, pageAddr, 0x1000,
