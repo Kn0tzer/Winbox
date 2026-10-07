@@ -655,7 +655,7 @@ export const V2_REC = Object.freeze({
   SHADER: 0x05, PIPELINE: 0x06, BIND_SETS: 0x07, DESC_SET: 0x08,
   BUFFER_DATA: 0x09, IMAGE_DATA: 0x0A, SAMPLER: 0x0B, PUSH: 0x0C,
   VIEWPORT: 0x0D, SCISSOR: 0x0E, VERTEX_BIND: 0x0F, INDEX_BIND: 0x10,
-  DRAW: 0x11, INLINE_BYTES: 0x12,
+  DRAW: 0x11, INLINE_BYTES: 0x12, READBACK: 0x13,
 });
 
 // Vulkan descriptor types (numeric, as the bridge records them).
@@ -710,7 +710,7 @@ export function parseV2Chunk(bytes) {
     if (p + V2_REC_HEADER_LEN > bytes.length) throw new Error('vk64: v2 chunk truncated record header');
     const type = dv.getUint16(p, true);
     const len = dv.getUint32(p + 4, true);
-    if (type < V2_REC.FRAME_BEGIN || type > V2_REC.INLINE_BYTES)
+    if (type < V2_REC.FRAME_BEGIN || type > V2_REC.READBACK)
       throw new Error('vk64: v2 unknown record type 0x' + type.toString(16));
     if (len > V2_MAX_RECORD_BYTES || p + V2_REC_HEADER_LEN + len > bytes.length)
       throw new Error('vk64: v2 record 0x' + type.toString(16) + ' truncated (len ' + len + ')');
@@ -836,7 +836,7 @@ export function decodeV2Frame(records, counters = {}) {
     frameNo, width, height, passes: [],
     shaders: new Map(), pipelines: new Map(), buffers: new Map(),
     images: new Map(), views: new Map(), samplers: new Map(),
-    bufHashes: new Map(),
+    bufHashes: new Map(), readbacks: [],
   };
   const implicitPass = () => ({
     rpId: '0', fbId: '0', w: width, h: height, attachments: [],
@@ -1042,6 +1042,14 @@ export function decodeV2Frame(records, counters = {}) {
         if (len > V2_MAX_RECORD_BYTES) throw new Error('vk64: v2 INLINE_BYTES len out of range');
         const bytes = r.bytes(len); r.done('INLINE_BYTES');
         needPass().ops.push({ op: 'inline', setIndex, binding, dstArrayElement, bytes: bytes.slice() });
+        break;
+      }
+      case V2_REC.READBACK: {
+        const srcImage = v2Hex64(r.u64());
+        const w = r.u32(), h = r.u32(), heapPtr = r.u32(), flagPtr = r.u32();
+        r.done('READBACK');
+        if (w < 1 || h < 1 || w > 4096 || h > 4096) throw new Error('vk64: v2 READBACK size out of range');
+        frame.readbacks.push({ srcImage, w, h, heapPtr, flagPtr });
         break;
       }
       default:
@@ -1954,6 +1962,29 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
 
     if (!presentTex) { stats.skips++; return { rendered: false, reason: 'no-colour-target' }; }
 
+    // V2_READBACK records (guest vkCmdCopyImageToBuffer): copy the source
+    // image to a MAP_READ buffer now, resolve to the wasm heap after submit.
+    // The bridge is blocked in Atomics.wait on flagPtr; we must ALWAYS notify
+    // (even on failure) so it never hangs the full 10s timeout.
+    const v2readbacks = [];
+    if (frame.readbacks && frame.readbacks.length) {
+      for (const rb of frame.readbacks) {
+        const tex = targets.get('img:' + rb.srcImage) || targets.get('imgd:' + rb.srcImage);
+        const rbBytesPerRow = Math.ceil(rb.w * 4 / 256) * 256;
+        if (!tex) {
+          v2readbacks.push({ rb, buffer: null, bytesPerRow: rbBytesPerRow, ok: false });
+          continue;
+        }
+        try {
+          const buf = device.createBuffer({ size: rbBytesPerRow * rb.h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+          encoder.copyTextureToBuffer({ texture: tex }, { buffer: buf, bytesPerRow: rbBytesPerRow }, [rb.w, rb.h]);
+          v2readbacks.push({ rb, buffer: buf, bytesPerRow: rbBytesPerRow, ok: true });
+        } catch (e) {
+          v2readbacks.push({ rb, buffer: null, bytesPerRow: rbBytesPerRow, ok: false });
+        }
+      }
+    }
+
     // Readback of the present target (COPY_SRC) plus the present copy to the
     // page canvas, like the v1 tier. The readback exists only for the
     // lit/painted stats; it is sampled every STATS_EVERY frames to avoid a
@@ -1990,6 +2021,32 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       readback.destroy();
       stats.litPixels = lit; stats.paintedPixels = painted;
       stats.totalPixels = presentW * presentH; stats.width = presentW; stats.height = presentH;
+    }
+
+    // Resolve V2_READBACKs: copy GPU pixels into the wasm heap and wake the
+    // bridge's Atomics.wait. Always notify, even on failure.
+    for (const vrb of v2readbacks) {
+      const { rb, buffer, bytesPerRow: rbBpr, ok } = vrb;
+      try {
+        const heapBuf = globalThis.bwVkHeapBuffer;
+        if (ok && buffer && heapBuf) {
+          await buffer.mapAsync(GPUMapMode.READ);
+          const src = new Uint8Array(buffer.getMappedRange());
+          const pxBytes = rb.w * rb.h * 4;
+          const dst = new Uint8Array(heapBuf, rb.heapPtr, pxBytes);
+          for (let y = 0; y < rb.h; y++) {
+            dst.set(src.subarray(y * rbBpr, y * rbBpr + rb.w * 4), y * rb.w * 4);
+          }
+          buffer.unmap();
+        }
+      } catch (e) { /* fall through to notify */ }
+      try {
+        if (buffer) buffer.destroy();
+      } catch (e) {}
+      try {
+        const heapBuf = globalThis.bwVkHeapBuffer;
+        if (heapBuf) Atomics.notify(new Int32Array(heapBuf, rb.flagPtr, 1), 0, 1);
+      } catch (e) {}
     }
 
     const release = () => { for (const x of F.live.splice(0)) { try { x.destroy(); } catch { /* ignore */ } } };
