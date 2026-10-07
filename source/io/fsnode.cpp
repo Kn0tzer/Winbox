@@ -115,7 +115,20 @@ void FsNode::loadChildren() {
 std::shared_ptr<FsNode> FsNode::getChildByName(BString name) {
     this->loadChildren();
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->childrenByNameMutex);
-    return this->childrenByName[name];
+    std::shared_ptr<FsNode> result = this->childrenByName[name];
+    if (!result) {
+        // fallback: VFS name variations for dosdevices symlinks (z: <-> z(_colon_), .link suffix)
+        if (name.contains(":")) {
+            result = this->childrenByName[name.replace(":", "(_colon_)")];
+        }
+        if (!result && !name.endsWith(".link")) {
+            result = this->childrenByName[name + ".link"];
+        }
+        if (!result && name.endsWith(".link")) {
+            result = this->childrenByName[name.substr(0, name.length() - 5)];
+        }
+    }
+    return result;
 }
 
 std::shared_ptr<FsNode> FsNode::getChildByNameIgnoreCase(BString name) {
