@@ -863,6 +863,18 @@
                 if (param("wildjump") === "1") ENV["BW64_WILDJUMP"] = "1";
                 if (param("dlltrace") === "1") ENV["BW64_DLLTRACE"] = "1";
                 if (param("filemap") === "1") ENV["BW64_FMMAP"] = "1";
+                // Unified logging: ?loglevel=debug&logfilter=vulkan:trace,wineserver:debug
+                // Sets BW64_LOG env var consumed by bw64_log_init() in the wasm module.
+                // Format: "level" or "level,sub:level,sub:level" (see include/bwlog.h).
+                (function() {
+                    var ll = param("loglevel"), lf = param("logfilter");
+                    if (!ll && !lf) return;
+                    var parts = [];
+                    if (ll) parts.push(ll);
+                    if (lf) parts.push(lf);
+                    ENV["BW64_LOG"] = parts.join(",");
+                    try { console.log("wine64-launcher: BW64_LOG=" + ENV["BW64_LOG"]); } catch (e) {}
+                })();
                 if (param("unimpldump") === "1") ENV["BW64_UNIMPLDUMP"] = "1";
                 if (param("dumpaddr")) ENV["BW64_DUMPADDR"] = param("dumpaddr");
                 // LD_BIND_NOW=1 forces eager PLT resolution in guest ld-linux.
