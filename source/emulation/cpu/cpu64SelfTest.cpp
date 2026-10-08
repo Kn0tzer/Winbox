@@ -6685,6 +6685,63 @@ int runX64SelfTest() {
         return c.reg[X64_R15].u64 == 0x42ULL && c.reg[X64_RBX].u64 == 0x7FFFE9ULL;
     });
 
+    // ENTER (C8 iw ib): create stack frame. Level 0, alloc 16.
+    // push RBP; RBP=RSP-8; RSP=RSP-8-16.
+    runAndCheck(r, "enter level 0, alloc 16", withExit({
+        0x48, 0xBD, 0xF0, 0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00,  // mov rbp, 0x7FFFF0
+        0xC8, 0x10, 0x00, 0x00,  // enter 16, 0
+        0x48, 0x89, 0xE3,        // mov rbx, rsp (save)
+        0x48, 0x89, 0xE8,        // mov rax, rbp
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0x7FFFE8ULL && c.reg[X64_RBX].u64 == 0x7FFFD8ULL;
+    });
+
+    // ENTER level 0, alloc 0: just push RBP, no frame allocation.
+    runAndCheck(r, "enter level 0, alloc 0", withExit({
+        0x48, 0xBD, 0xF0, 0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00,  // mov rbp, 0x7FFFF0
+        0xC8, 0x00, 0x00, 0x00,  // enter 0, 0
+        0x48, 0x89, 0xE3,        // mov rbx, rsp (save)
+        0x48, 0x89, 0xE8,        // mov rax, rbp
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0x7FFFE8ULL && c.reg[X64_RBX].u64 == 0x7FFFE8ULL;
+    });
+
+    // ENTER level 1, alloc 8: push RBP, push FrameTemp, set RBP, alloc.
+    runAndCheck(r, "enter level 1, alloc 8", withExit({
+        0x48, 0xBD, 0xF0, 0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00,  // mov rbp, 0x7FFFF0
+        0xC8, 0x08, 0x00, 0x01,  // enter 8, 1
+        0x48, 0x89, 0xE3,        // mov rbx, rsp (save)
+        0x48, 0x89, 0xE8,        // mov rax, rbp
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0x7FFFE8ULL && c.reg[X64_RBX].u64 == 0x7FFFD8ULL;
+    });
+
+    // ENTER level 2, alloc 0: exercises the nested display-entry loop.
+    // (The display entry contents are not verified here because
+    // mov r64, [rbp+disp8] reads are broken in the emulator -- a separate
+    // pre-existing bug. The loop structure and RBP/RSP updates are verified.)
+    runAndCheck(r, "enter level 2", withExit({
+        0x48, 0xBD, 0xF0, 0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00,  // mov rbp, 0x7FFFF0
+        0xC8, 0x00, 0x00, 0x02,  // enter 0, 2
+        0x48, 0x89, 0xE3,        // mov rbx, rsp (save)
+        0x48, 0x89, 0xE8,        // mov rax, rbp
+    }), [](CPU64& c) {
+        // push RBP (8) + push display (8) + push FrameTemp (8) = 24 bytes
+        // RBP=0x7FFFF0-8=0x7FFFE8, RSP=0x7FFFF0-24=0x7FFFD8
+        return c.reg[X64_R15].u64 == 0x7FFFE8ULL && c.reg[X64_RBX].u64 == 0x7FFFD8ULL;
+    });
+
+    // ENTER with 0x66 operand-size prefix: 16-bit pushes on BP/SP.
+    // Upper 48 bits of RBP/RSP are preserved; only low 16 bits change.
+    runAndCheck(r, "enter 16-bit (66 C8)", withExit({
+        0x48, 0xBD, 0x00, 0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00,  // mov rbp, 0x7FFF00
+        0x66, 0xC8, 0x10, 0x00, 0x01,  // enter 16, 1 (16-bit)
+        0x48, 0x89, 0xE3,              // mov rbx, rsp (save)
+        0x48, 0x89, 0xE8,              // mov rax, rbp
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0x7FFFEEULL && c.reg[X64_RBX].u64 == 0x7FFFDCULL;
+    });
+
     const char* requireJit = std::getenv("BW64_JIT_VERIFY");
     if (requireJit && std::strcmp(requireJit, "1") == 0) {
         printf("JIT64: blocks=%llu insns=%llu\n",

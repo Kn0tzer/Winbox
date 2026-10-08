@@ -794,10 +794,11 @@ U32 CPU64::step() {
         case 0x49: case 0x4a: case 0x4b: case 0x4c: case 0x4d: case 0x4e: case 0x4f: case 0x60: 
         case 0x61: case 0x62: case 0x64: case 0x65: case 0x66: case 0x67: case 0x6c: case 0x6d: 
         case 0x6e: case 0x6f: case 0x82: case 0x9a: case 0xc4: case 0xc5: 
-        case 0xc8: case 0xca: case 0xcb: case 0xcd: case 0xce: case 0xd4: case 0xd5: case 0xd6: 
+        case 0xca: case 0xcb: case 0xcd: case 0xce: case 0xd4: case 0xd5: case 0xd6: 
         case 0xe3: goto dsp_60;
         case 0xe0: case 0xe1: case 0xe2: goto dsp_61;
         case 0xac: case 0xad: goto dsp_62;
+        case 0xc8: goto dsp_63;
         case 0xe4: case 0xe5: case 0xe6: case 0xe7: 
         case 0xea: case 0xec: case 0xed: case 0xee: case 0xef: case 0xf0: case 0xf1: case 0xf2: 
         case 0xf3: case 0xf4: case 0xfa: case 0xfb: goto unhandled;
@@ -879,6 +880,57 @@ dsp_62:
             reg[X64_RSI].setU64(reg[X64_RSI].u64 + (U64)step);
         }
         U32 used = opOff + 1;
+        rip += used;
+        return used;
+    }
+    goto unhandled;
+
+    // ENTER imm16, imm8 (C8 iw ib). Create a stack frame for a procedure.
+    // AllocSize (imm16) bytes are reserved on the stack; NestingLevel
+    // (imm8, only the low 5 bits are used) controls how many display
+    // entries are pushed for nested lexical scopes (Borland/Delphi style).
+    //   64-bit (default): push RBP; FrameTemp = RSP;
+    //     for i in 1..Level-1: push [RBP - i*8]; if Level > 0: push FrameTemp;
+    //     RBP = FrameTemp; RSP -= AllocSize.
+    //   16-bit (0x66 prefix): same shape with 2-byte pushes on BP/SP.
+    // The 0x67 address-size prefix has no effect. Follows the dsp_45
+    // (LEAVE) register conventions and dsp_60 rip/used pattern.
+dsp_63:
+    if (op == 0xC8) {
+        U16 allocSize = (U16)(fetchByte(rip + opOff + 1) |
+                              ((U16)fetchByte(rip + opOff + 2) << 8));
+        U8 level = (U8)(fetchByte(rip + opOff + 3) & 0x1F);
+        U32 used = opOff + 4;
+        if (p.osize16) {
+            // 16-bit operand size: 2-byte pushes, BP/SP with 16-bit wrap.
+            U16 bp = reg[X64_RBP].u16;
+            reg[X64_RSP].setU16(reg[X64_RSP].u16 - 2);
+            memory->writew(reg[X64_RSP].u64, bp);
+            U16 frameTemp = reg[X64_RSP].u16;
+            for (U8 i = 1; i < level; i++) {
+                reg[X64_RSP].setU16(reg[X64_RSP].u16 - 2);
+                memory->writew(reg[X64_RSP].u64,
+                               memory->readw((U64)(bp - (U16)(i * 2))));
+            }
+            if (level > 0) {
+                reg[X64_RSP].setU16(reg[X64_RSP].u16 - 2);
+                memory->writew(reg[X64_RSP].u64, frameTemp);
+            }
+            reg[X64_RBP].setU16(frameTemp);
+            reg[X64_RSP].setU16(reg[X64_RSP].u16 - allocSize);
+        } else {
+            // 64-bit: 8-byte pushes on RBP/RSP.
+            push64(reg[X64_RBP].u64);
+            U64 frameTemp = reg[X64_RSP].u64;
+            for (U8 i = 1; i < level; i++) {
+                push64(memory->readq(reg[X64_RBP].u64 - (U64)i * 8));
+            }
+            if (level > 0) {
+                push64(frameTemp);
+            }
+            reg[X64_RBP].setU64(frameTemp);
+            reg[X64_RSP].setU64(reg[X64_RSP].u64 - allocSize);
+        }
         rip += used;
         return used;
     }
