@@ -23,6 +23,16 @@
 //      specialization values are baked — documented: the page tier has no
 //      specialization API, so defaults are the only values that could ever
 //      reach the GPU here.
+//   R5 "strip-draw-parameters": naga rejects OpCapability DrawParameters
+//      (UnsupportedCapability(DrawParameters)) even when DXVK declares it
+//      without using the draw builtins (BaseVertex 4424, BaseInstance 4425,
+//      DrawIndex 4426). Rewrite: drop the capability when none of those
+//      builtins are decorated. Verified against DXVK D3D11 shaders.
+//   R6 "strip-index-decorations": naga rejects fragment entry points carrying
+//      OpDecorate Index (32, dual-source blending index) with "Entry point
+//      main at Fragment is invalid", on SPIR-V that spirv-val accepts. DXVK
+//      emits Index 0 on single-source outputs where it is meaningless.
+//      Rewrite: drop the decoration. Verified against DXVK D3D11 shaders.
 //
 // Interface: applySpirvFix(bytes: Uint8Array) -> { bytes, applied, log }.
 // applied is [] when the module needs nothing (byte-identical passthrough).
@@ -792,6 +802,37 @@ function lowerTailDemotes(mod, log) {
   return true;
 }
 
+// R5 "strip-unused-draw-parameters": naga 30.2.0 rejects
+// OpCapability DrawParameters (4427) with UnsupportedCapability, even when
+// DXVK declares it but never uses the draw builtins (BaseVertex 4424,
+// BaseInstance 4425, DrawIndex 4426). If the capability is present but none
+// of those builtins are decorated, drop the capability. Safe because the
+// shader cannot reference what it never declares.
+function stripUnusedDrawParameters(mod, log) {
+  const hasCap = mod.insns.some(i => i.op === 17 && i.words[0] === 4427);
+  if (!hasCap) return false;
+  const used = mod.insns.some(i => i.op === Op.Decorate && i.words[1] === 11
+    && [4424, 4425, 4426].includes(i.words[2]));
+  if (used) return false;
+  mod.insns = mod.insns.filter(i => !(i.op === 17 && i.words[0] === 4427));
+  log.push('spirvfix: stripped unused OpCapability DrawParameters');
+  return true;
+}
+
+// R6 "strip-index-decorations": naga 30.2.0 rejects fragment entry points
+// carrying OpDecorate Index (32, dual-source blending index) with
+// "Entry point main at Fragment is invalid", even on valid SPIR-V
+// (spirv-val passes). DXVK emits Index 0 on single-source outputs where it
+// is meaningless. Drop the decoration; dual-source blending is not used by
+// the D3D11/D3D10 paths here.
+function stripIndexDecorations(mod, log) {
+  const found = mod.insns.filter(i => i.op === Op.Decorate && i.words[1] === 32);
+  if (!found.length) return false;
+  mod.insns = mod.insns.filter(i => !(i.op === Op.Decorate && i.words[1] === 32));
+  log.push(`spirvfix: stripped ${found.length} OpDecorate Index decoration(s)`);
+  return true;
+}
+
 // --- entry point -------------------------------------------------------------
 /** @param {Uint8Array} bytes @param {{rasterTopology?: number}} [options] */
 export function applySpirvFix(bytes, { rasterTopology, specOverrides } = {}) {
@@ -823,6 +864,16 @@ export function applySpirvFix(bytes, { rasterTopology, specOverrides } = {}) {
   } catch (e) {
     log.push('R4 failed: ' + (e.message || e));
   }
+  try {
+    if (stripUnusedDrawParameters(mod, log)) applied.push('strip-draw-parameters');
+  } catch (e) {
+    log.push('R5 failed: ' + (e.message || e));
+  }
+  try {
+    if (stripIndexDecorations(mod, log)) applied.push('strip-index-decorations');
+  } catch (e) {
+    log.push('R6 failed: ' + (e.message || e));
+  }
   if (!applied.length) return { bytes: u8, applied, log };
   try {
     return { bytes: serializeSpirv(mod), applied, log };
@@ -831,4 +882,4 @@ export function applySpirvFix(bytes, { rasterTopology, specOverrides } = {}) {
   }
 }
 
-export const REWRITES = ['split-combined-sampler', 'fold-spec-constants', 'non-point-builtins', 'tail-demote-to-kill'];
+export const REWRITES = ['split-combined-sampler', 'fold-spec-constants', 'non-point-builtins', 'tail-demote-to-kill', 'strip-draw-parameters', 'strip-index-decorations'];

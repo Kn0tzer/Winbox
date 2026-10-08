@@ -346,8 +346,8 @@ export async function createVkRenderer(canvas, { translate, log = defaultLog } =
     const man = parseManifest(text);
     ensureTargets(man.width, man.height);
 
-    const vsWgsl = await shaders.get('vertex', man.vs);
-    const fsWgsl = await shaders.get('fragment', man.fs);
+    const vsWgsl = await shaders.get('vertex', man.vs, { rasterTopology: 3 });
+    const fsWgsl = await shaders.get('fragment', man.fs, { rasterTopology: 3 });
     if (!vsWgsl || !fsWgsl) { stats.skips++; return { rendered: false, reason: 'shader-translation' }; }
     const [vx, vy, vw, vh] = man.viewport;
     if (vw <= 0 || vh <= 0) { stats.skips++; return { rendered: false, reason: 'empty viewport' }; }
