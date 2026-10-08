@@ -3,10 +3,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test web/tests/*.test.mjs",
+    "test": "node tools/run-tests.mjs",
     "build": "node tools/browser/build.mjs",
     "test:browser": "node web/tests/browser.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:legacy": "node --test web/tests/*.test.mjs",
+    "test:suite": "node web/tests/suite/runner.mjs --unit",
+    "test:suite:browser": "node web/tests/suite/runner.mjs --browser"
   },
   "dependencies": {
     "@zip.js/zip.js": "2.22.0",

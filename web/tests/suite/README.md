@@ -5,11 +5,22 @@ Every test returns a binary PASS/FAIL. No manual inspection. No "looks right."
 
 ## Quick Start
 
-```bash
-# Run everything (unit + browser)
-node web/tests/suite/runner.mjs
+This is the canonical test suite for Boxedwine64. It is wired into `npm test`.
 
-# Unit tests only (fast, no browser, ~1 second)
+```bash
+# Run ALL fast tests (legacy + suite unit) -- this is what `npm test` does
+npm test
+
+# Suite unit tests only (fast, no browser, ~2 seconds)
+npm run test:suite
+
+# Suite browser tests only (slow, needs Playwright + box)
+npm run test:suite:browser
+
+# Legacy tests only (pre-suite, web/tests/*.test.mjs)
+npm run test:legacy
+
+# Direct runner invocation (same as npm run test:suite, with more options)
 node web/tests/suite/runner.mjs --unit
 
 # Browser tests only (slow, needs Playwright + box)
