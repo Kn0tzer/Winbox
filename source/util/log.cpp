@@ -17,6 +17,7 @@
  */
 
 #include "boxedwine.h"
+#include "bwlog.h"
 #include "knativethread.h"
 #include "knativesystem.h"
 
