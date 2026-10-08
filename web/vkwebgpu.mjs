@@ -1706,17 +1706,25 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
             bufHex = b.obj;
             const qkey = bufHex + ':' + (b.bufOff || '0');
             bytes = F.buffers.get(qkey);
+            // Always key on the bridge 64-bit content hash, for full records
+            // and byte-less (deduped) records alike. Rehashing present bytes
+            // page-side (32-bit) produced a different key than the one used
+            // for deduped records, so deduped frames missed the persistent
+            // GPU buffer cache.
+            preHash = F.bufHashes.get(qkey) || F.bufHashes.get(bufHex);
             if (bytes) bufHex = qkey;
             else {
               bytes = F.buffers.get(bufHex);
-              if (!bytes) preHash = F.bufHashes.get(qkey) || F.bufHashes.get(bufHex);
+              if (!bytes && preHash) bufHex = qkey;
             }
           }
           else if (b && b.kind === 4) { bufHex = 'inline:' + group + ':' + d.binding + ':' + k; bytes = inlineMap.get(group + ':' + d.binding); }
           if (!bytes && !preHash) { bytes = ZERO4096; bufHex = 'zero:' + group + ':' + d.binding + ':' + k; }
-          let effLen = bytes ? bytes.length : 0;
-          if (d.minSize && effLen < d.minSize) { bufHex += ':pad' + d.minSize; effLen = d.minSize; }
-          parts.push('b' + d.binding + ':' + k + ':' + bufferKey(bufHex, bytes, usage, effLen, preHash));
+          // The size suffix must not depend on whether this frame carried the
+          // bytes: a byte-less (deduped) record has no length to compare, but
+          // the persistent cache entry was created under the suffixed key.
+          if (d.minSize) { bufHex += ':min' + d.minSize; }
+          parts.push('b' + d.binding + ':' + k + ':' + bufferKey(bufHex, bytes, usage, 0, preHash));
         }
       } else if (t.startsWith('texture_storage')) {
         parts.push('x' + d.binding);
@@ -1769,26 +1777,35 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
             // range of the same VkBuffer poisons the cache for this binding.
             const qkey = bufHex + ':' + (b.bufOff || '0');
             bytes = F.buffers.get(qkey);
+            // Always key on the bridge 64-bit content hash, for full records
+            // and byte-less (deduped) records alike. The old code only used
+            // the bridge hash when bytes were absent, so full records were
+            // cached under a page-side 32-bit rehash while deduped records
+            // looked up the bridge hash: every deduped frame missed the
+            // persistent cache, gpuBufferFor returned null, and
+            // createBindGroup rejected the frame (framesAdvanced stuck at 0).
+            preHash = F.bufHashes ? (F.bufHashes.get(qkey) || F.bufHashes.get(bufHex)) : null;
             if (bytes) bufHex = qkey;
             else {
               bytes = F.buffers.get(bufHex);
-              if (!bytes) {
-                preHash = F.bufHashes ? (F.bufHashes.get(qkey) || F.bufHashes.get(bufHex)) : null;
-                if (preHash) bufHex = qkey;
-              }
+              if (!bytes && preHash) bufHex = qkey;
             }
           }
           else if (b && b.kind === 4) { bufHex = 'inline:' + group + ':' + d.binding + ':' + k; bytes = inlineMap.get(group + ':' + d.binding); }
           // Missing uniform data: substitute a zero buffer large enough for any
           // practical uniform block (WebGPU validates against the shader's struct).
           if (!bytes && !preHash) { bytes = ZERO4096; bufHex = 'zero:' + group + ':' + d.binding + ':' + k; }
-          // Pad short buffers to the shader-declared uniform block size.
-          // (Skipped for deduped buffers: the cached GPU resource already has the right size.)
-          if (bytes && d.minSize && bytes.length < d.minSize) {
-            const padded = new Uint8Array(d.minSize);
-            padded.set(bytes);
-            bytes = padded;
-            bufHex += ':pad' + d.minSize;
+          // The size suffix must not depend on whether this frame carried the
+          // bytes: a byte-less (deduped) record has no length to compare, but
+          // the persistent cache entry was created under the suffixed key, so
+          // a deduped frame must compute the same key to hit it.
+          if (d.minSize) {
+            if (bytes && bytes.length < d.minSize) {
+              const padded = new Uint8Array(d.minSize);
+              padded.set(bytes);
+              bytes = padded;
+            }
+            bufHex += ':min' + d.minSize;
           }
           return { buffer: gpuBufferFor(bufHex, bytes, (isStorage ? GPUBufferUsage.STORAGE : GPUBufferUsage.UNIFORM) | GPUBufferUsage.COPY_DST, preHash) };
         };
