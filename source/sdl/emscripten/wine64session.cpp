@@ -264,22 +264,35 @@ static void doSignalWineboot() {
     }
 
     // Step 1: Find wineserver32 socket path by scanning /tmp
-    std::shared_ptr<FsNode> tmpNode = Fs::getNodeFromLocalPath(B("/"), B("/tmp"), true);
-    if (!tmpNode) {
-        klog("wine64session: doSignalWineboot: /tmp not found");
-        return;
-    }
-    std::vector<std::shared_ptr<FsNode>> tmpChildren;
-    tmpNode->getAllChildren(tmpChildren);
+    // If not found yet (wineserver32 still starting), re-queue for next tick
     BString socketPath;
-    for (auto& child : tmpChildren) {
-        if (child->name.startsWith(B("server32-"))) {
-            socketPath = B("/tmp/") + child->name + B("/socket");
-            break;
+    {
+        std::shared_ptr<FsNode> tmpNode = Fs::getNodeFromLocalPath(B("/"), B("/tmp"), true);
+        if (tmpNode) {
+            std::vector<std::shared_ptr<FsNode>> tmpChildren;
+            tmpNode->getAllChildren(tmpChildren);
+            for (auto& child : tmpChildren) {
+                if (child->name.startsWith(B("server32-"))) {
+                    socketPath = B("/tmp/") + child->name + B("/socket");
+                    break;
+                }
+            }
         }
     }
     if (socketPath.isEmpty()) {
-        klog("wine64session: doSignalWineboot: no server32-* in /tmp");
+        static int retryCount = 0;
+        if (retryCount < 100) {
+            retryCount++;
+            Wine64Req req;
+            req.kind = Wine64Req::SignalWineboot;
+            pendingLockAcquire();
+            g_pending.push_back(std::move(req));
+            pendingLockRelease();
+            klog_fmt("wine64session: doSignalWineboot: socket not ready, re-queued");
+        } else {
+            klog("wine64session: doSignalWineboot: giving up after 100 retries");
+            retryCount = 0;
+        }
         return;
     }
     klog_fmt("wine64session: doSignalWineboot: socket %s", socketPath.c_str());
