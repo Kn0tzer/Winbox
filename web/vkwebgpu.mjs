@@ -963,11 +963,11 @@ export function decodeV2Frame(records, counters = {}) {
         const key = bufId + ':' + memOff;
         if (!frame.buffers.has(key)) {
           frame.buffers.set(key, bytes ? bytes.slice() : null);
-          if (!bytes) frame.bufHashes.set(key, hash);
+          frame.bufHashes.set(key, hash); // always store bridge hash
         }
         if (!frame.buffers.has(bufId)) {
           frame.buffers.set(bufId, bytes ? bytes.slice() : null);
-          if (!bytes) frame.bufHashes.set(bufId, hash);
+          frame.bufHashes.set(bufId, hash); // always store bridge hash
         }
         break;
       }
@@ -1924,7 +1924,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
               const slot = st.pipeRec.slotOf.get(vb.binding);
               if (slot === undefined) continue;
               const bytes = F.buffers.get(vb.buf);
-              const preHash = bytes ? null : (F.bufHashes ? F.bufHashes.get(vb.buf) : null);
+              const preHash = F.bufHashes ? F.bufHashes.get(vb.buf) : null; // always use bridge hash
               if (!bytes && !preHash) continue;
               let vkey = vb.buf, vbytes = bytes;
               const walk = (st.pipeRec.vbWalk || []).find(w => w.binding === vb.binding);
@@ -1944,7 +1944,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
             let indexed = op.indexed;
             if (indexed && st.ibind) {
               const bytes = F.buffers.get(st.ibind.buf);
-              const preHash = bytes ? null : (F.bufHashes ? F.bufHashes.get(st.ibind.buf) : null);
+              const preHash = F.bufHashes ? F.bufHashes.get(st.ibind.buf) : null; // always use bridge hash
               if (!bytes && !preHash) indexed = false;
               else {
                 const gpu = gpuBufferFor(st.ibind.buf, bytes, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST, preHash);
