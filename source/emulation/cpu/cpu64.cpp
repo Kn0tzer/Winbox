@@ -793,10 +793,11 @@ U32 CPU64::step() {
         case 0x41: case 0x42: case 0x43: case 0x44: case 0x45: case 0x46: case 0x47: case 0x48: 
         case 0x49: case 0x4a: case 0x4b: case 0x4c: case 0x4d: case 0x4e: case 0x4f: case 0x60: 
         case 0x61: case 0x62: case 0x64: case 0x65: case 0x66: case 0x67: case 0x6c: case 0x6d: 
-        case 0x6e: case 0x6f: case 0x82: case 0x9a: case 0xac: case 0xad: case 0xc4: case 0xc5: 
+        case 0x6e: case 0x6f: case 0x82: case 0x9a: case 0xc4: case 0xc5: 
         case 0xc8: case 0xca: case 0xcb: case 0xcd: case 0xce: case 0xd4: case 0xd5: case 0xd6: 
         case 0xe3: goto dsp_60;
         case 0xe0: case 0xe1: case 0xe2: goto dsp_61;
+        case 0xac: case 0xad: goto dsp_62;
         case 0xe4: case 0xe5: case 0xe6: case 0xe7: 
         case 0xea: case 0xec: case 0xed: case 0xee: case 0xef: case 0xf0: case 0xf1: case 0xf2: 
         case 0xf3: case 0xf4: case 0xfa: case 0xfb: goto unhandled;
@@ -840,6 +841,45 @@ dsp_61:
         bool take = (count != 0) &&
                     (op == 0xE2 || (op == 0xE1 ? zf : !zf));
         rip = take ? (rip + used + (U64)(S64)disp) : (rip + used);
+        return used;
+    }
+    goto unhandled;
+
+    // LODS -- string load. LODSB (AC): AL = [RSI]; LODSW/LODSD/LODSQ (AD):
+    // AX/EAX/RAX = [RSI]. The index is then adjusted by +/- the operand
+    // size according to DF (CLD increments, STD decrements). Address size
+    // defaults to 64-bit (RSI); the 0x67 prefix selects 32-bit ESI -- the
+    // effective address is masked to 32 bits and the ESI update
+    // zero-extends into RSI, per x86-64 semantics (cf. dsp_61 LOOP asize32
+    // handling). Follows the dsp_43 (MOVS) memory/DF conventions. REP
+    // prefixes have no effect on LODS (single iteration).
+dsp_62:
+    if (op == 0xAC || op == 0xAD) {
+        U32 size = (op == 0xAC) ? 1 : opSize;
+        S64 step = (rflags & X64_DF) ? -(S64)size : (S64)size;
+        U64 addr = reg[X64_RSI].u64;
+        if (p.asize32) addr &= 0xFFFFFFFFULL;
+        switch (size) {
+            case 1:
+                writeReg8(X64_RAX, memory->readb(addr), rexPresent);
+                break;
+            case 2:
+                reg[X64_RAX].setU16(memory->readw(addr));
+                break;
+            case 4:
+                reg[X64_RAX].setU32(memory->readd(addr));
+                break;
+            default:
+                reg[X64_RAX].setU64(memory->readq(addr));
+                break;
+        }
+        if (p.asize32) {
+            reg[X64_RSI].setU32(reg[X64_RSI].u32 + (U32)step);
+        } else {
+            reg[X64_RSI].setU64(reg[X64_RSI].u64 + (U64)step);
+        }
+        U32 used = opOff + 1;
+        rip += used;
         return used;
     }
     goto unhandled;

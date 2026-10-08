@@ -6601,6 +6601,90 @@ int runX64SelfTest() {
         return c.reg[X64_R15].u64 == 1 && c.reg[X64_RBX].u64 == 1;
     });
 
+    // LODSB (AC): AL = [RSI], RSI += 1 (DF=0). Only AL is written;
+    // the upper 56 bits of RAX are preserved.
+    runAndCheck(r, "lodsb forward (df=0)", withExit({
+        0xC6, 0x44, 0x24, 0xF8, 0x42,  // mov byte [rsp-8], 0x42
+        0xC6, 0x44, 0x24, 0xF9, 0x99,  // mov byte [rsp-7], 0x99
+        0x48, 0xC7, 0xC0, 0xFF, 0xFF, 0xFF, 0xFF,  // mov rax, -1 (all bits set)
+        0x48, 0x8D, 0x74, 0x24, 0xF8,  // lea rsi, [rsp-8]
+        0xFC,                          // cld
+        0xAC,                          // lodsb -> AL=0x42, RSI+=1
+        0x48, 0x89, 0xF3,              // mov rbx, rsi (save)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xFFFFFFFFFFFFFF42ULL && c.reg[X64_RBX].u64 == 0x7FFFE9ULL;
+    });
+
+    // LODSB (AC) with DF=1 (STD): RSI decrements by 1.
+    runAndCheck(r, "lodsb backward (df=1)", withExit({
+        0xC6, 0x44, 0x24, 0xF8, 0x42,  // mov byte [rsp-8], 0x42
+        0xC6, 0x44, 0x24, 0xF9, 0x99,  // mov byte [rsp-7], 0x99
+        0x48, 0x31, 0xC0,              // xor rax, rax
+        0x48, 0x8D, 0x74, 0x24, 0xF9,  // lea rsi, [rsp-7]
+        0xFD,                          // std
+        0xAC,                          // lodsb -> AL=0x99, RSI-=1
+        0x48, 0x89, 0xF3,              // mov rbx, rsi (save)
+        0xFC,                          // cld (restore)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0x99ULL && c.reg[X64_RBX].u64 == 0x7FFFE8ULL;
+    });
+
+    // LODSW (66 AD): AX = [RSI], RSI += 2.
+    runAndCheck(r, "lodsw", withExit({
+        0xC6, 0x44, 0x24, 0xF8, 0x34,  // mov byte [rsp-8], 0x34
+        0xC6, 0x44, 0x24, 0xF9, 0x12,  // mov byte [rsp-7], 0x12
+        0x48, 0x31, 0xC0,              // xor rax, rax
+        0x48, 0x8D, 0x74, 0x24, 0xF8,  // lea rsi, [rsp-8]
+        0xFC,                          // cld
+        0x66, 0xAD,                    // lodsw -> AX=0x1234, RSI+=2
+        0x48, 0x89, 0xF3,              // mov rbx, rsi (save)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0x1234ULL && c.reg[X64_RBX].u64 == 0x7FFFEAULL;
+    });
+
+    // LODSD (AD): EAX = [RSI] (zero-extends into RAX), RSI += 4.
+    runAndCheck(r, "lodsd", withExit({
+        0xC6, 0x44, 0x24, 0xF8, 0xDE,  // [rsp-8]=0xDE
+        0xC6, 0x44, 0x24, 0xF9, 0xAD,  // [rsp-7]=0xAD
+        0xC6, 0x44, 0x24, 0xFA, 0xBE,  // [rsp-6]=0xBE
+        0xC6, 0x44, 0x24, 0xFB, 0xEF,  // [rsp-5]=0xEF
+        0x48, 0xC7, 0xC0, 0xFF, 0xFF, 0xFF, 0xFF,  // mov rax, -1 (high bits set)
+        0x48, 0x8D, 0x74, 0x24, 0xF8,  // lea rsi, [rsp-8]
+        0xFC,                          // cld
+        0xAD,                          // lodsd -> EAX=0xEFBEADDE, RAX zero-extended
+        0x48, 0x89, 0xF3,              // mov rbx, rsi (save)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xEFBEADDEULL && c.reg[X64_RBX].u64 == 0x7FFFECULL;
+    });
+
+    // LODSQ (48 AD): RAX = [RSI], RSI += 8.
+    runAndCheck(r, "lodsq (rex.w)", withExit({
+        0x48, 0xB8, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,  // mov rax, 0x1122334455667788
+        0x48, 0x89, 0x44, 0x24, 0xF8,  // mov [rsp-8], rax
+        0x48, 0x31, 0xC0,              // xor rax, rax
+        0x48, 0x8D, 0x74, 0x24, 0xF8,  // lea rsi, [rsp-8]
+        0xFC,                          // cld
+        0x48, 0xAD,                    // lodsq -> RAX=0x1122334455667788, RSI+=8
+        0x48, 0x89, 0xF3,              // mov rbx, rsi (save)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0x1122334455667788ULL && c.reg[X64_RBX].u64 == 0x7FFFF0ULL;
+    });
+
+    // LODSB with 0x67 address-size prefix: 32-bit ESI is used. The
+    // effective address is masked to 32 bits, and the ESI update
+    // zero-extends into RSI (high bits cleared), per x86-64 semantics.
+    runAndCheck(r, "lodsb 32-bit (67 AC, esi zero-extends)", withExit({
+        0xC6, 0x44, 0x24, 0xF8, 0x42,  // mov byte [rsp-8], 0x42
+        0x48, 0x31, 0xC0,              // xor rax, rax
+        0x48, 0xBE, 0xE8, 0xFF, 0x7F, 0x00, 0x78, 0x56, 0x34, 0x12,
+            // mov rsi, 0x12345678007FFFE8 (high bits set, low32 = data addr)
+        0xFC,                          // cld
+        0x67, 0xAC,                    // lodsb (addr32) -> AL=0x42, RSI=0x7FFFE9
+        0x48, 0x89, 0xF3,              // mov rbx, rsi (save)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0x42ULL && c.reg[X64_RBX].u64 == 0x7FFFE9ULL;
+    });
+
     const char* requireJit = std::getenv("BW64_JIT_VERIFY");
     if (requireJit && std::strcmp(requireJit, "1") == 0) {
         printf("JIT64: blocks=%llu insns=%llu\n",
