@@ -148,7 +148,13 @@
         SESSION = USE_PREFIX && opts.session !== false;
     }
     // Initial config from the URL (?boot / ?novideo / ?p / ?session).
-    applyRunConfig(param("p"), {
+    // Gamezip contract (?gamezip=<url>&gamezipsize=<n>&exe=<path>[&args=[...]]):
+    // index.html derives window.bwProgramArgv from ?exe=/?args=. When ?p= is
+    // absent, the uploaded argv's exe becomes the program so the documented
+    // URL works without a ?p= workaround. ?p= still wins when present.
+    var initialProg = param("p") ||
+        (window.bwProgramArgv && window.bwProgramArgv.length ? window.bwProgramArgv[0] : null);
+    applyRunConfig(initialProg, {
         boot: param("boot") === "1",
         novideo: param("novideo") === "1",
         session: param("session") !== "0"
@@ -863,6 +869,8 @@
                 if (param("wildjump") === "1") ENV["BW64_WILDJUMP"] = "1";
                 if (param("dlltrace") === "1") ENV["BW64_DLLTRACE"] = "1";
                 if (param("filemap") === "1") ENV["BW64_FMMAP"] = "1";
+                if (param("pathcachestats") === "1") ENV["BW64_PATHCACHE_STATS"] = "1";
+                if (param("nopathcache") === "1") ENV["BW64_NOPATHCACHE"] = "1";
                 // Unified logging: ?loglevel=debug&logfilter=vulkan:trace,wineserver:debug
                 // Sets BW64_LOG env var consumed by bw64_log_init() in the wasm module.
                 // Format: "level" or "level,sub:level,sub:level" (see include/bwlog.h).
