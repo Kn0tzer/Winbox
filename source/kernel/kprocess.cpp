@@ -2275,6 +2275,29 @@ static void patchWinebootEventCreateWritev(KThread* thread, KFileDescriptorPtr f
 }
 
 
+
+#define WINE_REQ_CREATE_EVENT 30
+static const U8 wbEvt[] = {
+    0x5F,0x00,0x5F,0x00,0x77,0x00,0x69,0x00,0x6E,0x00,0x65,0x00,0x62,0x00,0x6F,0x00,
+    0x6F,0x00,0x74,0x00,0x5F,0x00,0x65,0x00,0x76,0x00,0x65,0x00,0x6E,0x00,0x74,0x00
+};
+static void patchWbEvt(KThread* t, KFileDescriptorPtr fd, U32 iov, S32 cnt) {
+    if (!t || !t->process || t->process->is64Bit) return;
+    if (!fd || !fd->kobject || fd->kobject->type != 1) return;
+    KMemory* m = t->memory;
+    if (!iov || cnt <= 0 || cnt > 16) return;
+    U32 b0 = m->readd(iov);
+    U32 l0 = m->readd(iov+4);
+    if (!b0 || l0 < 24) return;
+    if (m->readd(b0) != 30) return;
+    U32 sl = l0 > 256 ? 256 : l0;
+    U8 buf[256];
+    m->memcpy(buf, b0, sl);
+    for (U32 i = 0; i + 32 <= sl; i++) {
+        if (!memcmp(buf+i, wbEvt, 32)) { m->writed(b0+20, 1); return; }
+    }
+}
+
 U32 KProcess::writev(KThread* thread, FD handle, U32 iov, S32 iovcnt) {
     KFileDescriptorPtr fd = this->getFileDescriptor(handle);
 
@@ -2284,8 +2307,7 @@ U32 KProcess::writev(KThread* thread, FD handle, U32 iov, S32 iovcnt) {
     if (!fd->canWrite()) {
         return -K_EINVAL;
     }
-    // Patch __wineboot_event to start signaled for 32-bit (see patchWinebootEventCreateWritev)
-    patchWinebootEventCreateWritev(thread, fd, iov, iovcnt);
+    patchWbEvt(thread, fd, iov, iovcnt);
     return fd->kobject->writev(thread, iov, iovcnt);    
 }
 
