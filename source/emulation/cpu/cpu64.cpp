@@ -793,11 +793,9 @@ U32 CPU64::step() {
         case 0x41: case 0x42: case 0x43: case 0x44: case 0x45: case 0x46: case 0x47: case 0x48: 
         case 0x49: case 0x4a: case 0x4b: case 0x4c: case 0x4d: case 0x4e: case 0x4f: case 0x60: 
         case 0x61: case 0x62: case 0x64: case 0x65: case 0x66: case 0x67: case 0x6c: case 0x6d: 
-        case 0xac: case 0xad: case 0xc8: case 0xe0: case 0xe1: case 0xe2: case 0xe3:
-        goto dsp_60;
-        case 0x6e: case 0x6f: case 0x82: case 0x9a: case 0xc4: case 0xc5: 
-        case 0xca: case 0xcb: case 0xcd: case 0xce: case 0xd4: case 0xd5: case 0xd6: 
-        case 0xe4: case 0xe5: case 0xe6: case 0xe7: 
+        case 0x6e: case 0x6f: case 0x82: case 0x9a: case 0xac: case 0xad: case 0xc4: case 0xc5: 
+        case 0xc8: case 0xca: case 0xcb: case 0xcd: case 0xce: case 0xd4: case 0xd5: case 0xd6: 
+        case 0xe0: case 0xe1: case 0xe2: case 0xe3: case 0xe4: case 0xe5: case 0xe6: case 0xe7: 
         case 0xea: case 0xec: case 0xed: case 0xee: case 0xef: case 0xf0: case 0xf1: case 0xf2: 
         case 0xf3: case 0xf4: case 0xfa: case 0xfb: goto unhandled;
     }
@@ -4932,36 +4930,6 @@ dsp_59:
                 U32 bits = memory->readd(m.effAddr);
                 fpu.PREP_PUSH();
                 fpu.FLD_F32(bits, fpu.STV(0));
-            } else if (op == 0xD8 && sub == 0) {
-                // FADD m32fp — ST(0) += float32 at memory
-                U32 bits = memory->readd(m.effAddr);
-                fpu.FLD_F32(bits, 8);
-                fpu.FADD(fpu.STV(0), 8);
-            } else if (op == 0xD8 && sub == 1) {
-                // FMUL m32fp — ST(0) *= float32 at memory
-                U32 bits = memory->readd(m.effAddr);
-                fpu.FLD_F32(bits, 8);
-                fpu.FMUL(fpu.STV(0), 8);
-            } else if (op == 0xD8 && sub == 4) {
-                // FSUB m32fp — ST(0) -= float32 at memory
-                U32 bits = memory->readd(m.effAddr);
-                fpu.FLD_F32(bits, 8);
-                fpu.FSUB(fpu.STV(0), 8);
-            } else if (op == 0xD8 && sub == 6) {
-                // FDIV m32fp — ST(0) /= float32 at memory
-                U32 bits = memory->readd(m.effAddr);
-                fpu.FLD_F32(bits, 8);
-                fpu.FDIV(fpu.STV(0), 8);
-            } else if (op == 0xD9 && sub == 2) {
-                // FST m32fp — convert TOS to f32, store, no pop
-                double d;
-                if (fpu.isRegCached[fpu.top]) {
-                    d = fpu.regCache[fpu.top].d;
-                } else {
-                    d = (double)fpu.getF64(fpu.top);
-                }
-                union { float f; U32 i; } u; u.f = (float)d;
-                memory->writed(m.effAddr, u.i);
             } else if (op == 0xD9 && sub == 3) {
                 // FSTP m32fp — convert TOS to f32, store, pop
                 double d;
@@ -5432,112 +5400,6 @@ dsp_59:
             return used;
         }
     }
-
-    // LODS / ENTER / LOOP family — string load and loop control.
-    //   LODSB (AC): AL = [RSI], RSI += +/-1
-    //   LODSW/LODSD/LODSQ (AD): AX/EAX/RAX = [RSI], RSI += +/-opSize
-    //   ENTER (C8): create stack frame (imm16=bytes, imm8=level)
-    //   LOOPNE (E0): count--, jump if count!=0 && ZF==0
-    //   LOOPE (E1): count--, jump if count!=0 && ZF==1
-    //   LOOP (E2): count--, jump if count!=0
-    //   JRCXZ (E3): jump if count==0 (address-size: RCX/ECX)
-dsp_60:
-    if (op == 0xAC || op == 0xAD) {
-        U32 size = (op == 0xAC) ? 1 : opSize;
-        S64 step = (rflags & X64_DF) ? -(S64)size : (S64)size;
-        U64 addr = reg[X64_RSI].u64;
-        if (p.asize32) addr &= 0xFFFFFFFFULL;
-        U64 val;
-        switch (size) {
-            case 1:
-                val = memory->readb(addr);
-                writeReg8(X64_RAX, (U8)val, rexPresent);
-                break;
-            case 2:
-                val = memory->readw(addr);
-                reg[X64_RAX].setU16((U16)val);
-                break;
-            case 4:
-                val = memory->readd(addr);
-                reg[X64_RAX].setU32((U32)val);
-                break;
-            default:
-                val = memory->readq(addr);
-                reg[X64_RAX].setU64(val);
-                break;
-        }
-        reg[X64_RSI].setU64(reg[X64_RSI].u64 + (U64)step);
-        rip += opOff + 1;
-        return opOff + 1;
-    }
-    if (op == 0xC8) {
-        // ENTER imm16, imm8 — create stack frame. In 64-bit mode the
-        // default operand size is 64-bit (0x66 prefix selects 16-bit).
-        U16 bytes = (U16)(fetchByte(rip + opOff + 1) |
-                          (fetchByte(rip + opOff + 2) << 8));
-        U8 level = fetchByte(rip + opOff + 3);
-        U32 used = opOff + 4;
-        if (opSize == 2) {
-            // 16-bit form — push BP, frame pointer in BP
-            reg[X64_RSP].setU16((U16)(reg[X64_RSP].u16 - 2));
-            memory->writew(reg[X64_RSP].u64, reg[X64_RBP].u16);
-            reg[X64_RBP].setU16((U16)(reg[X64_RSP].u64 & 0xFFFF));
-            U64 framePtr = reg[X64_RBP].u64;
-            for (U32 i = 1; i < (level & 0x1F); i++) {
-                framePtr -= 2;
-                reg[X64_RSP].setU16((U16)(reg[X64_RSP].u16 - 2));
-                memory->writew(reg[X64_RSP].u64, memory->readw(framePtr));
-            }
-            if (level & 0x1F) {
-                reg[X64_RSP].setU16((U16)(reg[X64_RSP].u16 - 2));
-                memory->writew(reg[X64_RSP].u64, (U16)(reg[X64_RBP].u64 & 0xFFFF));
-            }
-            reg[X64_RSP].setU16((U16)(reg[X64_RSP].u16 - bytes));
-        } else {
-            // 64-bit form — push RBP, frame pointer in RBP
-            push64(reg[X64_RBP].u64);
-            reg[X64_RBP].setU64(reg[X64_RSP].u64);
-            U64 framePtr = reg[X64_RBP].u64;
-            for (U32 i = 1; i < (level & 0x1F); i++) {
-                framePtr -= 8;
-                push64(memory->readq(framePtr));
-            }
-            if (level & 0x1F) {
-                push64(reg[X64_RBP].u64);
-            }
-            reg[X64_RSP].setU64(reg[X64_RSP].u64 - bytes);
-        }
-        rip += used;
-        return used;
-    }
-    if (op == 0xE0 || op == 0xE1 || op == 0xE2) {
-        // LOOPNE/LOOPE/LOOP rel8 — decrement count register, conditional jump.
-        // Address size selects RCX (64-bit) vs ECX (32-bit with 0x67 prefix).
-        S8 disp = (S8)fetchByte(rip + opOff + 1);
-        U32 used = opOff + 2;
-        if (p.asize32) {
-            reg[X64_RCX].setU32(reg[X64_RCX].u32 - 1);
-        } else {
-            reg[X64_RCX].setU64(reg[X64_RCX].u64 - 1);
-        }
-        U64 count = p.asize32 ? (U64)reg[X64_RCX].u32 : reg[X64_RCX].u64;
-        bool zf = (rflags & X64_ZF) != 0;
-        bool take = false;
-        if (op == 0xE2) take = (count != 0);
-        else if (op == 0xE1) take = (count != 0) && zf;
-        else take = (count != 0) && !zf; // 0xE0 LOOPNE
-        rip = take ? (rip + used + (U64)(S64)disp) : (rip + used);
-        return used;
-    }
-    if (op == 0xE3) {
-        // JRCXZ/JECXZ rel8 — jump if count register is zero.
-        S8 disp = (S8)fetchByte(rip + opOff + 1);
-        U32 used = opOff + 2;
-        U64 count = p.asize32 ? (U64)reg[X64_RCX].u32 : reg[X64_RCX].u64;
-        rip = (count == 0) ? (rip + used + (U64)(S64)disp) : (rip + used);
-        return used;
-    }
-    goto unhandled;
 
 unhandled:
     // Unimplemented. Print enough leading bytes to identify the opcode
