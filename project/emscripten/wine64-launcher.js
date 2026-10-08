@@ -1113,25 +1113,18 @@
                                         // Signal the __wineboot_event that ntdll created.
                                         // The fake wineboot.exe (91-byte ELF) exits 0 without
                                         // signaling, causing threads to stall forever on the
-                                        // event. signalboot.exe opens and signals it via Win32.
-                                        var sbPidBefore = dpPid;
-                                        spawnArgv(wineProgArgv("Z:\\home\\username\\signalboot.exe"), "signalboot (signal __wineboot_event)");
-                                        var sbWaited = 0, SB_STEP = 200, SB_LIMIT = 30000;
-                                        (function sbPoll() {
-                                            var sbPid = lastSpawnedPid();
-                                            if (sbPid && sbPid !== sbPidBefore) {
-                                                console.log("session: x86 signalboot pid=" + sbPid);
-                                                wbDonePoll(sbPid);
-                                                return;
-                                            }
-                                            sbWaited += SB_STEP;
-                                            if (sbWaited >= SB_LIMIT) {
-                                                console.error("session: x86 signalboot pid never appeared, proceeding anyway");
-                                                arch32WinebootDone = true;
-                                                return;
-                                            }
-                                            setTimeout(sbPoll, SB_STEP);
-                                        })();
+                                        // event. Use bw64_signal_wineboot_event() to signal
+                                        // via the Wine server protocol directly, bypassing
+                                        // broken 32-bit PE execution.
+                                        var sigResult = callExport("bw64_signal_wineboot_event", [], []);
+                                        if (sigResult === 1) {
+                                            console.log("session: x86 wineboot event signal queued");
+                                        } else {
+                                            console.error("session: x86 wineboot event signal failed to queue");
+                                        }
+                                        // Proceed - the signal is queued and will be processed
+                                        // by the main loop. No need to wait for a pid.
+                                        arch32WinebootDone = true;
                                         return;
                                     }
                                     wbDeskpinWaited += WB_DESKPIN_STEP;
