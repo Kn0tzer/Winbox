@@ -1775,8 +1775,9 @@ U32 KProcess::clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 t
             flags &=~K_CLONE_VM;
             vm = true;
         }
-        if (flags & ~(K_CLONE_CHILD_SETTID|K_CLONE_CHILD_CLEARTID|K_CLONE_PARENT_SETTID)) {
-            kpanic_fmt("KProcess::clone - unhandled flag 0x%X", (U32)(flags & ~(K_CLONE_CHILD_SETTID|K_CLONE_CHILD_CLEARTID|K_CLONE_PARENT_SETTID)));
+        // Wine uses CLONE_FS|CLONE_FILES|CLONE_SIGHAND for new_process; allow them.
+        if (flags & ~(K_CLONE_CHILD_SETTID|K_CLONE_CHILD_CLEARTID|K_CLONE_PARENT_SETTID|K_CLONE_FS|K_CLONE_FILES|K_CLONE_SIGHAND)) {
+            kpanic_fmt("KProcess::clone - unhandled flag 0x%X", (U32)(flags & ~(K_CLONE_CHILD_SETTID|K_CLONE_CHILD_CLEARTID|K_CLONE_PARENT_SETTID|K_CLONE_FS|K_CLONE_FILES|K_CLONE_SIGHAND)));
         }
         KProcessPtr newProcess = KProcess::create();
         newProcess->memory = KMemory::create(newProcess.get());
