@@ -214,12 +214,16 @@ void OPCALL normal_movGdSxE16(CPU* cpu, DecodedOp* op) {
 }
 void OPCALL normal_leaR16(CPU* cpu, DecodedOp* op) {
     START_OP(cpu, op);
-    cpu->reg[op->reg].u16 = eaa(cpu, op);
+    // LEA computes the effective address OFFSET, not the linear address.
+    // The eaa() macro includes the segment base, which must be excluded.
+    cpu->reg[op->reg].u16 = (U16)(eaa(cpu, op) - cpu->seg[op->base].address);
     NEXT();
 }
 void OPCALL normal_leaR32(CPU* cpu, DecodedOp* op) {
     START_OP(cpu, op);
-    cpu->reg[op->reg].u32 = eaa(cpu, op);
+    // LEA computes the effective address OFFSET, not the linear address.
+    // The eaa() macro includes the segment base, which must be excluded.
+    cpu->reg[op->reg].u32 = eaa(cpu, op) - cpu->seg[op->base].address;
     NEXT();
 }
 void OPCALL normal_movRdCRx(CPU* cpu, DecodedOp* op) {
