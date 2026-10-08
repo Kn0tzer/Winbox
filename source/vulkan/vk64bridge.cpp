@@ -1679,11 +1679,22 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     pipe->vertexStrideVariants.push_back({effectiveStrides, serializedId});
                 } else serializedId = variant->id;
             }
+            // WebGPU: pipeline depth state must match render pass attachments.
+            // If FB has no depth attachment, force depth test off.
+            bool fbHasDepth = false;
+            if (fb) {
+                for (U32 i = 0; i < fb->natt; i++) {
+                    ImageView* v = objOf<ImageView>(fb->views[i], K_IMAGEVIEW, "vkQueueSubmit");
+                    if (v && (v->aspect & 0x2u)) { fbHasDepth = true; break; }
+                }
+            }
+            U32 effDepthTest = fbHasDepth ? pipe->depthTest : 0;
+            U32 effDepthWrite = fbHasDepth ? pipe->depthWrite : 0;
             emit(V2_PIPELINE, [&](ChunkWriter& p) {
                 p.u64(serializedId);
                 p.u64(vs ? vs->hash : 0); p.u64(fs ? fs->hash : 0);
                 p.u32(pipe->topology); p.u32(pipe->cull); p.u32(pipe->front);
-                p.u32(pipe->depthTest); p.u32(pipe->depthWrite); p.u32(pipe->depthOp);
+                p.u32(effDepthTest); p.u32(effDepthWrite); p.u32(pipe->depthOp);
                 p.u32(pipe->blend);
                 p.u32(pipe->nvb); p.u32(pipe->nva);
                 for (U32 i = 0; i < pipe->nvb; i++) {
@@ -1761,12 +1772,23 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                         for (int i = 0; i < 6; i++) p.f32(k.f[i]);
                     });
                     break;
-                case CMD_SCISSOR:
+                case CMD_SCISSOR: {
+                    // WebGPU: scissor must be contained in render area. Clamp to FB dims.
+                    int32_t sx = (int32_t)k.f[0], sy = (int32_t)k.f[1];
+                    int32_t sw = (int32_t)k.f[2], sh = (int32_t)k.f[3];
+                    if (sx < 0) { sw += sx; sx = 0; }
+                    if (sy < 0) { sh += sy; sy = 0; }
+                    if (fb) {
+                        if (sx + sw > (int32_t)fb->w) sw = (int32_t)fb->w - sx;
+                        if (sy + sh > (int32_t)fb->h) sh = (int32_t)fb->h - sy;
+                    }
+                    if (sw < 0) sw = 0; if (sh < 0) sh = 0;
                     emit(V2_SCISSOR, [&](ChunkWriter& p) {
-                        p.u32((U32)(int32_t)k.f[0]); p.u32((U32)(int32_t)k.f[1]);
-                        p.u32((U32)(int32_t)k.f[2]); p.u32((U32)(int32_t)k.f[3]);
+                        p.u32((U32)sx); p.u32((U32)sy);
+                        p.u32((U32)sw); p.u32((U32)sh);
                     });
                     break;
+                }
                 case CMD_PUSH_CONST:
                     nPush++;
                     emit(V2_PUSH, [&](ChunkWriter& p) {
