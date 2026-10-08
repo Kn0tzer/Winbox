@@ -605,6 +605,10 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
   };
   globalThis.bwVkTier = tier;
   globalThis.bwVkStats = stats;
+  // The wasm bridge hops v2 chunks via window.bwVkChunk(bytes, flags) (see
+  // hopV2LastToPage in vk64bridge.cpp). Wire it here so direct EM_ASM delivery
+  // works even when the host page bypasses the app.mjs vk2 message path.
+  try { globalThis.bwVkChunk = (bytes, flags) => tier.chunk(bytes, flags); } catch (e) {}
   return tier;
 }
 // ===========================================================================
@@ -641,7 +645,7 @@ export const V2_VERSION = 2;
 export const V2_FLAG_MORE = 0x1;
 export const V2_CHUNK_HEADER_LEN = 16;
 export const V2_REC_HEADER_LEN = 8;
-export const V2_MAX_CHUNK_BYTES = 4 * 1024 * 1024; // ingest sanity cap (writer caps at 1 MiB)
+export const V2_MAX_CHUNK_BYTES = 16 * 1024 * 1024; // ingest sanity cap (bridge may emit single large records >1MiB)
 export const V2_MAX_RECORD_BYTES = 256 * 1024 * 1024;
 export const V2_MAX_FRAME_RECORDS = 1 << 20;
 export const V2_PUSH_GROUP = 3;      // reserved group for the push-constant UBO
