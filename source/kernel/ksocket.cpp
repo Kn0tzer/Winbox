@@ -138,6 +138,81 @@ static void restoreSocketPath(KThread* thread, U32 address, const BString& origi
     thread->memory->memcpy(address + 2, original.c_str(), original.length() + 1);
 }
 
+// Wine server protocol REQ id for create_event (from Wine 8.0 server/protocol.def)
+#define WINE_REQ_CREATE_EVENT 30
+
+// UTF-16LE bytes for "__wineboot_event" (16 chars * 2 bytes = 32 bytes)
+static const U8 winebootEventNameUtf16[] = {
+    0x5F, 0x00, 0x5F, 0x00, 0x77, 0x00, 0x69, 0x00,
+    0x6E, 0x00, 0x65, 0x00, 0x62, 0x00, 0x6F, 0x00,
+    0x6F, 0x00, 0x74, 0x00, 0x5F, 0x00, 0x65, 0x00,
+    0x76, 0x00, 0x65, 0x00, 0x6E, 0x00, 0x74, 0x00
+};
+
+// Intercepts wineserver create_event requests for __wineboot_event in 32-bit
+// processes and sets initial_state=1 so the event starts signaled.
+// This unblocks 32-bit Wine threads waiting on the event, bypassing the need
+// for a working 32-bit PE to signal it (32-bit PE execution is broken).
+// Only affects 32-bit processes connected to wineserver32.
+// Request layout (Wine 8.0): header(12) + access(4)@12 + manual_reset(4)@16
+//   + initial_state(4)@20 + objattr(vararg)@24+
+static void patchWinebootEventCreate(KThread* thread, std::shared_ptr<KSocketObject> s, U32 address) {
+    // Only for 32-bit processes (64-bit wineboot signals the event itself)
+    if (thread->process->is64Bit) {
+        return;
+    }
+    // Only for wineserver32 sockets
+    if (!strstr(s->destAddress.data, "server32-")) {
+        return;
+    }
+    KMemory* memory = thread->memory;
+    // Parse msghdr: msg_iov at +8, msg_iovlen at +12
+    U32 iovAddr = memory->readd(address + 8);
+    U32 iovLen = memory->readd(address + 12);
+    if (!iovAddr || !iovLen || iovLen > 16) {
+        return;
+    }
+    // Read first iovec (base + len)
+    U32 firstBase = memory->readd(iovAddr);
+    U32 firstLen = memory->readd(iovAddr + 4);
+    if (!firstBase || firstLen < 24) {
+        return;
+    }
+    // Check REQ id == create_event (30)
+    U32 reqId = memory->readd(firstBase);
+    if (reqId != WINE_REQ_CREATE_EVENT) {
+        return;
+    }
+    // Scan iovec data for UTF-16LE "__wineboot_event" (up to 512 bytes)
+    U8 scanBuf[512];
+    U32 scanLen = 0;
+    for (U32 i = 0; i < iovLen && scanLen < sizeof(scanBuf); i++) {
+        U32 base = memory->readd(iovAddr + i * 8);
+        U32 len = memory->readd(iovAddr + i * 8 + 4);
+        if (!base || !len) continue;
+        U32 toCopy = len;
+        if (scanLen + toCopy > sizeof(scanBuf)) {
+            toCopy = sizeof(scanBuf) - scanLen;
+        }
+        memory->memcpy(scanBuf + scanLen, base, toCopy);
+        scanLen += toCopy;
+    }
+    bool found = false;
+    for (U32 i = 0; i + sizeof(winebootEventNameUtf16) <= scanLen; i++) {
+        if (memcmp(scanBuf + i, winebootEventNameUtf16, sizeof(winebootEventNameUtf16)) == 0) {
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        return;
+    }
+    // Set initial_state=1 at offset 20 from request start
+    memory->writed(firstBase + 20, 1);
+    klog("ksocket: patched __wineboot_event create_event initial_state=1 (32-bit)");
+}
+
+
 U32 kbind(KThread* thread, U32 socket, U32 address, U32 len) {
     KFileDescriptorPtr fd = thread->process->getFileDescriptor(socket);
 
@@ -393,6 +468,8 @@ U32 ksendmsg(KThread* thread, U32 socket, U32 address, U32 flags) {
         return -K_ENOTSOCK;
     }
     std::shared_ptr<KSocketObject> s = std::dynamic_pointer_cast<KSocketObject>(fd->kobject);
+    // Patch __wineboot_event to start signaled for 32-bit (see patchWinebootEventCreate)
+    patchWinebootEventCreate(thread, s, address);
     return s->sendmsg(thread, fd, address, flags);    
 }
 
