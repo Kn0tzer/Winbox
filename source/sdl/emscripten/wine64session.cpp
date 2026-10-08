@@ -263,7 +263,8 @@ static void doSignalWineboot() {
         return;
     }
 
-    // Step 1: Find wineserver32 socket path by scanning /tmp
+    // Step 1: Find wineserver32 socket path
+    // Pattern: /tmp/wine-XXX/server32-UID-HASH/socket (32-bit isolated)
     // If not found yet (wineserver32 still starting), re-queue for next tick
     BString socketPath;
     {
@@ -271,11 +272,20 @@ static void doSignalWineboot() {
         if (tmpNode) {
             std::vector<std::shared_ptr<FsNode>> tmpChildren;
             tmpNode->getAllChildren(tmpChildren);
-            for (auto& child : tmpChildren) {
-                if (child->name.startsWith(B("server32-"))) {
-                    socketPath = B("/tmp/") + child->name + B("/socket");
-                    break;
+            for (auto& wineDir : tmpChildren) {
+                if (!wineDir->name.startsWith(B("wine-"))) continue;
+                BString winePath = B("/tmp/") + wineDir->name;
+                std::shared_ptr<FsNode> wineNode = Fs::getNodeFromLocalPath(B("/"), winePath, true);
+                if (!wineNode) continue;
+                std::vector<std::shared_ptr<FsNode>> wineChildren;
+                wineNode->getAllChildren(wineChildren);
+                for (auto& child : wineChildren) {
+                    if (child->name.startsWith(B("server32-"))) {
+                        socketPath = winePath + B("/") + child->name + B("/socket");
+                        break;
+                    }
                 }
+                if (!socketPath.isEmpty()) break;
             }
         }
     }
@@ -345,6 +355,25 @@ static void doSignalWineboot() {
         return;
     }
     klog("wine64session: doSignalWineboot: connected");
+
+    // Step 3b: Send init_first_thread to establish protocol session
+    const int REQ_init_first_thread = 1;
+    U8 initReq[32];
+    *(int*)(initReq + 0) = REQ_init_first_thread;
+    *(int*)(initReq + 4) = 20;
+    *(int*)(initReq + 8) = 32;
+    *(unsigned int*)(initReq + 12) = 9999;
+    *(unsigned int*)(initReq + 16) = 9999;
+    *(int*)(initReq + 20) = 0;
+    *(int*)(initReq + 24) = -1;
+    *(int*)(initReq + 28) = -1;
+    U32 initWritten = sock->writeNative(initReq, 32);
+    klog_fmt("wine64session: doSignalWineboot: init written %u/32", initWritten);
+    if (initWritten == 32) {
+        U8 initReply[64];
+        U32 initRead = sock->readNative(initReply, 32);
+        klog_fmt("wine64session: doSignalWineboot: init reply %u bytes", initRead);
+    }
 
     // Step 4: Send open_event
     const char* eventName = "\\\\KernelObjects\\\\__wineboot_event";
