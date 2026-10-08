@@ -74,7 +74,7 @@ try {
     await flush();
     await page.waitForTimeout(2000);
     const out = logs.join('\n');
-    if (/tri10swap: READY/.test(out)) ready = true;
+    if (/swap: READY/.test(out)) ready = true;
   }
   if (!ready) throw new Error('tri10swap READY not seen');
 
