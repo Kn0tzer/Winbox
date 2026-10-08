@@ -60,12 +60,15 @@
 #include "../../io/fs.h"      // Fs::getNodeFromLocalPath / addFileNode (VFS registration)
 #include "../../io/fsnode.h"
 #include "../../x11wire/xwirepresent.h"
-#include "kunixsocket.h" // xwireInjectKey (bw64_xwire_key)
+#include "kunixsocket.h" // xwireInjectKey (bw64_xwire_key), KUnixSocketObject
 #include "ksocket.h" // K_AF_UNIX, K_SOCK_STREAM (doSignalWineboot)
+#include "kobject.h" // KTYPE_UNIX_SOCKET (doSignalWineboot socket validation)
 
 #include <atomic>
 #include <vector>
 #include <string>
+#include <thread>
+#include <chrono>
 
 // --- captured session context -------------------------------------------------
 // StartUpArgs::apply() (the boot path) fills these once, so later spawns reuse
@@ -249,6 +252,32 @@ static void doSpawn(const Wine64Req& req) {
 // Protocol (verified against 64-bit traces):
 //   REQ_open_event = 33: access(U32), attributes(U32), rootdir(U32), VARARG(name,unicode_str)
 //   REQ_event_op = 31: handle(U32), op(S32)  [op=2 signals per 64-bit trace]
+// Read with a bounded timeout so a dead/unresponsive wineserver cannot hang
+// the session thread forever. Temporarily switches the socket to non-blocking
+// and polls; restores the original blocking mode before returning.
+// Returns bytes read, or 0 on timeout/closed. Logs on timeout.
+// Runs on the main-loop thread.
+static U32 readWithTimeout(KUnixSocketObject* sock, U8* buffer, U32 len, int timeoutMs) {
+    bool wasBlocking = sock->isBlocking();
+    sock->setBlocking(false);
+    U32 result = 0;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    for (;;) {
+        result = sock->readNative(buffer, len);
+        if (result != (U32)(0 - K_EWOULDBLOCK)) {
+            break; // data, EOF(0), EPIPE, or EINTR -- all terminal
+        }
+        result = 0; // normalize EWOULDBLOCK for the timeout path
+        if (std::chrono::steady_clock::now() >= deadline) {
+            klog_fmt("wine64session: doSignalWineboot: read timed out after %d ms, giving up", timeoutMs);
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    sock->setBlocking(wasBlocking);
+    return result;
+}
+
 // Runs on the main-loop thread.
 static void doSignalWineboot() {
     klog("wine64session: doSignalWineboot: signaling __wineboot_event in wineserver32");
@@ -266,6 +295,9 @@ static void doSignalWineboot() {
     // Step 1: Find wineserver32 socket path
     // Pattern: /tmp/wine-XXX/server32-UID-HASH/socket (32-bit isolated)
     // If not found yet (wineserver32 still starting), re-queue for next tick
+    // We validate that the socket file actually exists with a live listening
+    // socket kobject, trying all candidates (stale dirs from crashed servers
+    // may linger alongside the live one).
     BString socketPath;
     {
         std::shared_ptr<FsNode> tmpNode = Fs::getNodeFromLocalPath(B("/"), B("/tmp"), true);
@@ -280,9 +312,18 @@ static void doSignalWineboot() {
                 std::vector<std::shared_ptr<FsNode>> wineChildren;
                 wineNode->getAllChildren(wineChildren);
                 for (auto& child : wineChildren) {
-                    if (child->name.startsWith(B("server32-"))) {
-                        socketPath = winePath + B("/") + child->name + B("/socket");
-                        break;
+                    if (!child->name.startsWith(B("server32-"))) continue;
+                    BString cand = winePath + B("/") + child->name + B("/socket");
+                    // Validate: socket node must exist with a live UNIX socket kobject
+                    std::shared_ptr<FsNode> sockNode = Fs::getNodeFromLocalPath(B("/"), cand, true);
+                    if (sockNode) {
+                        std::shared_ptr<KObject> ko = sockNode->kobject.lock();
+                        if (ko && ko->type == KTYPE_UNIX_SOCKET) {
+                            socketPath = cand;
+                            break;
+                        } else {
+                            klog_fmt("wine64session: doSignalWineboot: candidate %s has no live socket, skipping", cand.c_str());
+                        }
                     }
                 }
                 if (!socketPath.isEmpty()) break;
@@ -349,9 +390,41 @@ static void doSignalWineboot() {
         return;
     }
 
+    // Connect with timeout: wineserver32 may not be in its accept loop yet.
+    // A blocking connect() waits indefinitely on the acceptor; use non-blocking
+    // + poll to avoid hanging the session thread forever.
+    sock->setBlocking(false);
     U32 connResult = sock->connect(thread, fd, guestAddr, addrLen);
-    if (connResult != 0) {
-        klog_fmt("wine64session: doSignalWineboot: connect failed");
+    bool connected = (connResult == 0);
+    if (!connected && connResult == (U32)(0 - K_EINPROGRESS)) {
+        // Connection queued; wait for acceptor to establish it (sets sock->connection)
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(5000);
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (!sock->connection.expired()) {
+                connected = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (!connected) {
+            klog("wine64session: doSignalWineboot: connect timed out after 5000 ms, re-queued");
+        }
+    }
+    sock->setBlocking(true); // restore blocking for protocol I/O
+    if (!connected) {
+        if (connResult != 0 && connResult != (U32)(0 - K_EINPROGRESS)) {
+            klog_fmt("wine64session: doSignalWineboot: connect failed errno=%d (%s)", (int)(S32)connResult, socketPath.c_str());
+        }
+        // Socket may have died between validation and connect, or wineserver32
+        // not yet accepting; re-queue to retry
+        {
+            Wine64Req req;
+            req.kind = Wine64Req::SignalWineboot;
+            pendingLockAcquire();
+            g_pending.push_back(std::move(req));
+            pendingLockRelease();
+            klog("wine64session: doSignalWineboot: connect failed, re-queued");
+        }
         return;
     }
     klog("wine64session: doSignalWineboot: connected");
@@ -371,7 +444,7 @@ static void doSignalWineboot() {
     klog_fmt("wine64session: doSignalWineboot: init written %u/32", initWritten);
     if (initWritten == 32) {
         U8 initReply[64];
-        U32 initRead = sock->readNative(initReply, 32);
+        U32 initRead = readWithTimeout(sock.get(), initReply, 32, 5000);
         klog_fmt("wine64session: doSignalWineboot: init reply %u bytes", initRead);
     }
 
@@ -401,7 +474,7 @@ static void doSignalWineboot() {
 
     // Step 5: Read reply
     U8 replyBuf[32];
-    U32 nread = sock->readNative(replyBuf, 8);
+    U32 nread = readWithTimeout(sock.get(), replyBuf, 8, 5000);
     if (nread < 8) {
         klog("wine64session: doSignalWineboot: open_event reply short");
         return;
@@ -425,7 +498,7 @@ static void doSignalWineboot() {
         klog("wine64session: doSignalWineboot: event_op write failed");
         return;
     }
-    nread = sock->readNative(replyBuf, 8);
+    nread = readWithTimeout(sock.get(), replyBuf, 8, 5000);
     if (nread < 8) {
         klog("wine64session: doSignalWineboot: event_op reply short");
         return;

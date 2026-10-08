@@ -33,28 +33,33 @@ extern "C"
 
 unzFile FsZip::openEntryStream(U64 zipOffset) {
 #ifdef BOXEDWINE_ZLIB
-    unzFile z = fsZipUrlIsSpec(this->zipPath) ? fsZipUrlOpen(this->zipPath) : unzOpen(this->zipPath.c_str());
-    if (!z) {
-        klog_fmt("FsZip::openEntryStream: could not open %s", this->zipPath.c_str());
-        return nullptr;
-    }
-    // unzSetOffset64 works on a fresh handle: it sets pos_in_central_dir and
-    // reads the entry's central-directory info, after which unzOpenCurrentFile
-    // positions the stream at the entry's first compressed byte.
-    if (unzSetOffset64(z, zipOffset) != UNZ_OK || unzOpenCurrentFile(z) != UNZ_OK) {
-        klog_fmt("FsZip::openEntryStream: could not position entry in %s", this->zipPath.c_str());
+    const int maxAttempts = 3;
+    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+        unzFile z = fsZipUrlIsSpec(this->zipPath) ? fsZipUrlOpen(this->zipPath) : unzOpen(this->zipPath.c_str());
+        if (!z) {
+            klog_fmt("FsZip::openEntryStream: could not open %s (attempt %d/%d)", this->zipPath.c_str(), attempt, maxAttempts);
+            if (attempt == maxAttempts) return nullptr;
+            continue;
+        }
+        int setOff = unzSetOffset64(z, zipOffset);
+        int openCur = (setOff == UNZ_OK) ? unzOpenCurrentFile(z) : setOff;
+        if (setOff == UNZ_OK && openCur == UNZ_OK) {
+            U64 n = ++this->statStreamOpens;
+            if ((n & 63) == 0) {
+                klog_fmt("FsZip: %llu entry streams opened, %llu MB decompressed, %llu MB served from cache, %llu backward reopens",
+                         (unsigned long long)n,
+                         (unsigned long long)(this->statBytesDecompressed.load() >> 20),
+                         (unsigned long long)(this->statCacheServedBytes.load() >> 20),
+                         (unsigned long long)this->statStreamReopens.load());
+            }
+            return z;
+        }
+        klog_fmt("FsZip::openEntryStream: could not position entry in %s (attempt %d/%d, setOffset=%d, openCurrent=%d, zipOffset=%llu)",
+                 this->zipPath.c_str(), attempt, maxAttempts, setOff, openCur, (unsigned long long)zipOffset);
         unzClose(z);
-        return nullptr;
+        if (attempt == maxAttempts) return nullptr;
     }
-    U64 n = ++this->statStreamOpens;
-    if ((n & 63) == 0) {
-        klog_fmt("FsZip: %llu entry streams opened, %llu MB decompressed, %llu MB served from cache, %llu backward reopens",
-                 (unsigned long long)n,
-                 (unsigned long long)(this->statBytesDecompressed.load() >> 20),
-                 (unsigned long long)(this->statCacheServedBytes.load() >> 20),
-                 (unsigned long long)this->statStreamReopens.load());
-    }
-    return z;
+    return nullptr;
 #else
     (void)zipOffset;
     return nullptr;

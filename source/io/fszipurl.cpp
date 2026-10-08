@@ -206,11 +206,25 @@ struct RangedFile {
         inFlight.insert(idx);
         lk.unlock();
         // ---- synchronous network fetch WITHOUT holding m ----
-        auto buf = std::make_unique<U8[]>(BLOCK_SIZE);
-        bool ok = fetchRaw(off, len, buf.get());
+        // Exception safety: if the allocation or fetch throws, we must
+        // re-lock, remove from inFlight, and wake waiters. Otherwise
+        // waiters deadlock on a stale inFlight entry.
+        std::unique_ptr<U8[]> buf;
+        bool ok = false;
+        bool threw = false;
+        try {
+            buf = std::make_unique<U8[]>(BLOCK_SIZE);
+            ok = fetchRaw(off, len, buf.get());
+        } catch (...) {
+            threw = true;
+        }
         // ---- re-acquire before touching cache state ----
         lk.lock();
         inFlight.erase(idx);
+        if (threw) {
+            fetchCv.notify_all();
+            throw;
+        }
         const U8* result = nullptr;
         if (ok) try {
             // inFlight gave us exclusive fetch rights, so the block should
@@ -255,6 +269,9 @@ struct RangedFile {
         U8* dst = (U8*)out;
         U32 done = 0;
         std::unique_lock<std::mutex> lk(m);
+        // Clear sticky error on entry: a previous transient failure should not
+        // poison subsequent reads. The flag is re-set below on actual failure.
+        if (done == 0) error.store(false, std::memory_order_relaxed);
         while (size) {
             if (pos >= total) {
                 break; // EOF
