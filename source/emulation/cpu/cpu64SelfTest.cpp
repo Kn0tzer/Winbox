@@ -6430,6 +6430,57 @@ int runX64SelfTest() {
         0xB8, 0x42, 0x00, 0x00, 0x00,       // mov eax, 0x42 (patched to 0x99)
     }), [](CPU64& c) { return c.reg[X64_R15].u64 == 0x99; });
 
+    // JRCXZ (E3): jump short if RCX == 0. Taken case.
+    // Note: the exit syscall (0F 05) clobbers RCX with the return RIP per
+    // the AMD64 ABI (cpu64.cpp dsp_23), so RCX is saved to RBX before exit.
+    runAndCheck(r, "jrcxz taken (rcx=0)", withExit({
+        0x48, 0xC7, 0xC1, 0x00, 0x00, 0x00, 0x00, // mov rcx, 0
+        0xE3, 0x07,                               // jrcxz +7 (taken)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // (target) mov rax, 0xAA
+        0x48, 0x89, 0xCB,                         // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA && c.reg[X64_RBX].u64 == 0;
+    });
+
+    // JRCXZ (E3): not-taken case (RCX != 0 falls through).
+    // Note: the exit syscall (0F 05) clobbers RCX with the return RIP per
+    // the AMD64 ABI (cpu64.cpp dsp_23), so RCX is saved to RBX before exit.
+    runAndCheck(r, "jrcxz not taken (rcx=1)", withExit({
+        0x48, 0xC7, 0xC1, 0x01, 0x00, 0x00, 0x00, // mov rcx, 1
+        0xE3, 0x07,                               // jrcxz +7 (not taken)
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // (fallthrough) mov rax, 0xAA
+        0xEB, 0x07,                               // jmp +7 (skip taken-target)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0x89, 0xCB,                         // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA && c.reg[X64_RBX].u64 == 1;
+    });
+
+    // JECXZ (67 E3): 0x67 address-size prefix selects ECX. RCX has high
+    // bits set but ECX == 0, so the jump must be taken.
+    runAndCheck(r, "jecxz taken (ecx=0, rcx high bits set)", withExit({
+        0x48, 0xB9, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, // mov rcx, 0x100000000
+        0x67, 0xE3, 0x07,                                           // jecxz +7 (taken)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00,                   // (skipped) mov rax, 0xD0BA
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00,                   // (target) mov rax, 0xAA
+        0x48, 0x89, 0xCB,                                           // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA && c.reg[X64_RBX].u64 == 0x100000000ULL;
+    });
+
+    // JECXZ (67 E3): not-taken case (ECX != 0 falls through).
+    runAndCheck(r, "jecxz not taken (ecx=1)", withExit({
+        0x48, 0xC7, 0xC1, 0x01, 0x00, 0x00, 0x00, // mov rcx, 1
+        0x67, 0xE3, 0x07,                         // jecxz +7 (not taken)
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // (fallthrough) mov rax, 0xAA
+        0xEB, 0x07,                               // jmp +7 (skip taken-target)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0x89, 0xCB,                         // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA && c.reg[X64_RBX].u64 == 1;
+    });
+
     const char* requireJit = std::getenv("BW64_JIT_VERIFY");
     if (requireJit && std::strcmp(requireJit, "1") == 0) {
         printf("JIT64: blocks=%llu insns=%llu\n",

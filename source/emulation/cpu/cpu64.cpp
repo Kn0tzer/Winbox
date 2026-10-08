@@ -795,10 +795,25 @@ U32 CPU64::step() {
         case 0x61: case 0x62: case 0x64: case 0x65: case 0x66: case 0x67: case 0x6c: case 0x6d: 
         case 0x6e: case 0x6f: case 0x82: case 0x9a: case 0xac: case 0xad: case 0xc4: case 0xc5: 
         case 0xc8: case 0xca: case 0xcb: case 0xcd: case 0xce: case 0xd4: case 0xd5: case 0xd6: 
-        case 0xe0: case 0xe1: case 0xe2: case 0xe3: case 0xe4: case 0xe5: case 0xe6: case 0xe7: 
+        case 0xe3: goto dsp_60;
+        case 0xe0: case 0xe1: case 0xe2: case 0xe4: case 0xe5: case 0xe6: case 0xe7: 
         case 0xea: case 0xec: case 0xed: case 0xee: case 0xef: case 0xf0: case 0xf1: case 0xf2: 
         case 0xf3: case 0xf4: case 0xfa: case 0xfb: goto unhandled;
     }
+
+    // JRCXZ rel8 (E3 cb). Jump short if RCX is zero. The 0x67
+    // address-size prefix selects the 32-bit ECX test (JECXZ);
+    // 0x66 operand-size prefix has no effect. Follows the dsp_37
+    // (JMP rel8) rip/used pattern.
+dsp_60:
+    if (op == 0xE3) {
+        S8 disp = (S8)fetchByte(rip + opOff + 1);
+        U32 used = opOff + 2;
+        U64 count = p.asize32 ? (U64)reg[X64_RCX].u32 : reg[X64_RCX].u64;
+        rip = (count == 0) ? (rip + used + (U64)(S64)disp) : (rip + used);
+        return used;
+    }
+    goto unhandled;
 
     // ---- Single-byte opcodes ----
 
