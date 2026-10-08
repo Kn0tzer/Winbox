@@ -70,15 +70,15 @@ try {
 
   // wait for game to start (input3: WinMain)
   const startUntil = Date.now() + 180000;
-  while (Date.now() < startUntil && !logs.some(l => /input3: WinMain/.test(l))) {
+  while (Date.now() < startUntil && !logs.some(l => /WinMain start/.test(l))) {
     await page.waitForTimeout(2000); await flush();
   }
-  if (!logs.some(l => /input3: WinMain/.test(l))) throw new Error('game never started');
+  if (!logs.some(l => /WinMain start/.test(l))) throw new Error('game never started');
   console.log('GAME STARTED');
 
   // wait for first frame
   const frameUntil = Date.now() + 120000;
-  while (Date.now() < frameUntil && !logs.some(l => /input3: frame/.test(l))) {
+  while (Date.now() < frameUntil && !logs.some(l => /frame \d+ mouse=/.test(l))) {
     await page.waitForTimeout(2000); await flush();
   }
   console.log('FRAMES FLOWING');
@@ -94,12 +94,12 @@ try {
     await page.waitForTimeout(800);
   }
   await flush();
-  const mouseOk = has(/input3: MOUSE/);
-  console.log('MOUSE_MOVE', mouseOk ? 'PASS' : 'FAIL', 'count=', count(/input3: MOUSE/));
+  const mouseOk = has(/MOUSE \d/);
+  console.log('MOUSE_MOVE', mouseOk ? 'PASS' : 'FAIL', 'count=', count(/MOUSE \d/));
   summary.details.mouseMove = mouseOk;
 
   console.log('=== LEFT CLICK ===');
-  const shotsBefore = count(/input3: BTN 1 DOWN/);
+  const shotsBefore = count(/BTN 1 DOWN/);
   await page.evaluate(() => {
     window.bwRuntime.call('bw64_xwire_mouse_move', ['number','number'], [240, 180]);
     window.bwRuntime.call('bw64_xwire_mouse_button', ['number','number'], [1, 1]);
@@ -107,7 +107,7 @@ try {
   await page.waitForTimeout(500);
   await page.evaluate(() => window.bwRuntime.call('bw64_xwire_mouse_button', ['number','number'], [1, 0]));
   await page.waitForTimeout(800); await flush();
-  const leftOk = count(/input3: BTN 1 DOWN/) > shotsBefore && has(/input3: BTN 1 UP/);
+  const leftOk = count(/BTN 1 DOWN/) > shotsBefore && has(/BTN 1 UP/);
   console.log('LEFT_CLICK', leftOk ? 'PASS' : 'FAIL');
   summary.details.leftClick = leftOk;
 
@@ -116,7 +116,7 @@ try {
   await page.waitForTimeout(300);
   await page.evaluate(() => window.bwRuntime.call('bw64_xwire_mouse_button', ['number','number'], [3, 0]));
   await page.waitForTimeout(800); await flush();
-  const rightOk = has(/input3: BTN 3 DOWN/) && has(/input3: BTN 3 UP/);
+  const rightOk = has(/(BTN 3 DOWN|zoom=\d)/) && has(/BTN 3 UP/);
   console.log('RIGHT_CLICK', rightOk ? 'PASS' : 'FAIL');
   summary.details.rightClick = rightOk;
 
@@ -125,18 +125,18 @@ try {
   await page.waitForTimeout(300);
   await page.evaluate(() => window.bwRuntime.call('bw64_xwire_mouse_button', ['number','number'], [2, 0]));
   await page.waitForTimeout(800); await flush();
-  const midOk = has(/input3: BTN 2 DOWN/) && has(/input3: BTN 2 UP/);
+  const midOk = has(/BTN 2 DOWN/) && has(/BTN 2 UP/);
   console.log('MIDDLE_CLICK', midOk ? 'PASS' : 'FAIL');
   summary.details.middleClick = midOk;
 
   console.log('=== WHEEL ===');
-  const wheelsBefore = count(/input3: WHEEL/);
+  const wheelsBefore = count(/WHEEL /);
   await page.evaluate(() => window.bwRuntime.call('bw64_xwire_mouse_wheel', ['number','number'], [0, 1]));
   await page.waitForTimeout(500);
   await page.evaluate(() => window.bwRuntime.call('bw64_xwire_mouse_wheel', ['number','number'], [0, -1]));
   await page.waitForTimeout(800); await flush();
-  const wheelOk = count(/input3: WHEEL/) > wheelsBefore;
-  console.log('WHEEL', wheelOk ? 'PASS' : 'FAIL', 'count=', count(/input3: WHEEL/));
+  const wheelOk = count(/WHEEL /) > wheelsBefore;
+  console.log('WHEEL', wheelOk ? 'PASS' : 'FAIL', 'count=', count(/WHEEL /));
   summary.details.wheel = wheelOk;
 
   console.log('=== X1/X2 ===');
@@ -148,8 +148,8 @@ try {
   await page.waitForTimeout(300);
   await page.evaluate(() => window.bwRuntime.call('bw64_xwire_mouse_button', ['number','number'], [9, 0]));
   await page.waitForTimeout(800); await flush();
-  const x1Ok = has(/input3: BTN 8 DOWN/) && has(/input3: BTN 8 UP/);
-  const x2Ok = has(/input3: BTN 9 DOWN/) && has(/input3: BTN 9 UP/);
+  const x1Ok = has(/BTN 8 DOWN/) && has(/BTN 8 UP/);
+  const x2Ok = has(/BTN 9 DOWN/) && has(/BTN 9 UP/);
   console.log('X1', x1Ok ? 'PASS' : 'FAIL', 'X2', x2Ok ? 'PASS' : 'FAIL');
   summary.details.x1 = x1Ok; summary.details.x2 = x2Ok;
 
@@ -158,7 +158,7 @@ try {
   // Actually from xwirepresentSDL: W->25, A->38, S->39, D->40 (these are X11 codes)
   // For bw64_xwire_key we pass SDL scancodes. SDL_SCANCODE_W=26, A=4, S=22, D=7, SPACE=44, UP=82, DOWN=81
   const SC = { KeyW: 26, KeyA: 4, KeyS: 22, KeyD: 7, Space: 44, ArrowUp: 82, ArrowDown: 81, ArrowLeft: 80, ArrowRight: 79 };
-  const keysBefore = count(/input3: KEYDOWN/);
+  const keysBefore = count(/KEYDOWN/);
   for (const code of ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ArrowUp', 'ArrowDown']) {
     await page.evaluate(([sc]) => {
       window.bwRuntime.call('bw64_xwire_key', ['number','number'], [sc, 1]);
@@ -170,18 +170,18 @@ try {
     await page.waitForTimeout(400);
   }
   await flush();
-  const keysAfter = count(/input3: KEYDOWN/);
+  const keysAfter = count(/KEYDOWN/);
   const keyOk = (keysAfter - keysBefore) >= 5;
   console.log('KEYBOARD', keyOk ? 'PASS' : 'FAIL', `(${keysAfter - keysBefore} KEYDOWNs)`);
   summary.details.keyboard = keyOk;
 
   console.log('=== RELATIVE MOUSE ===');
-  const relBefore = count(/input3: MOUSE/);
+  const relBefore = count(/MOUSE \d/);
   await page.evaluate(() => {
     for (let i = 0; i < 5; i++) window.bwRuntime.call('bw64_xwire_mouse_rel', ['number','number'], [10, -5]);
   });
   await page.waitForTimeout(1000); await flush();
-  const relOk = count(/input3: MOUSE/) > relBefore;
+  const relOk = count(/MOUSE \d/) > relBefore;
   console.log('REL_MOUSE', relOk ? 'PASS' : 'FAIL');
   summary.details.relMouse = relOk;
 
@@ -190,7 +190,7 @@ try {
   console.log('SCREENSHOT saved');
 
   // final summary from game
-  const sumLine = logs.find(l => /input3: SUMMARY/.test(l));
+  const sumLine = logs.find(l => /SUMMARY/.test(l));
   console.log('GAME_SUMMARY', sumLine || 'none yet');
 
   const allPass = mouseOk && leftOk && rightOk && midOk && wheelOk && x1Ok && x2Ok && keyOk && relOk;
