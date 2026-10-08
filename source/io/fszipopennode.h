@@ -20,12 +20,16 @@
 #define __FSZIPOPENNODE_H__
 
 #include "fsopennode.h"
+#include "fszip.h"
+
+#include <vector>
 
 class FsZipNode;
 
 class FsZipOpenNode : public FsOpenNode {
 public:
     FsZipOpenNode(std::shared_ptr<FsNode> node, std::shared_ptr<FsZipNode>& zipNode, U32 flags, U64 offset);
+    ~FsZipOpenNode() override;
 
     // From FsOpenNode
     S64 length() override;
@@ -50,7 +54,35 @@ public:
 private:
     std::shared_ptr<FsZipNode> zipNode;
     S64 pos;
-    U64 offset;    
+    U64 offset;
+    // Per-node lock. FsOpenNode::read() used to serialize ALL zip reads on the
+    // single FsZip::readMutex ("reduce thrashing in the zip file"); with each
+    // node owning a private decompression stream there is no shared stream left
+    // to thrash, so the lock is per-node now.
+    BOXEDWINE_MUTEX readMutex;
+
+    // Independent decompression stream for this open node, opened lazily by
+    // ensureStream() at the start of our entry. In cached mode it only ever
+    // moves forward to extend `cache` (always exactly at cache.size()); in
+    // streaming mode positionStream() moves it as needed.
+    unzFile stream = nullptr;
+    U64 streamPos = 0; // decompressed offset the private stream is positioned at
+    // Decompressed prefix [0, cache.size()) of the entry. Entries of CACHE_CAP
+    // bytes or less are cached whole as they are read: backward seeks become
+    // memcpy and every byte is decompressed at most once per node.
+    std::vector<U8> cache;
+    bool cacheComplete = false;
+    static const U64 CACHE_CAP = 8 * 1024 * 1024; // 8MB: covers all but the huge DLLs
+
+    bool ensureStream();
+    void closeStream();
+    // Moves the private stream to decompressed offset target, reopening the
+    // entry and skipping forward when target < streamPos (zlib cannot seek
+    // backward). Streaming mode only; cached mode never calls this.
+    void positionStream(U64 target);
+    // Reads up to len bytes from the private stream (looping to EOF/error);
+    // advances streamPos; counts statBytesDecompressed.
+    U32 readFromStream(U8* dst, U32 len);
 };
 
 #endif
