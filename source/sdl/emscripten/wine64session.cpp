@@ -59,7 +59,8 @@
 #include "ksignal.h" // K_SIGTERM
 #include "../../io/fs.h"      // Fs::getNodeFromLocalPath / addFileNode (VFS registration)
 #include "../../io/fsnode.h"
-#include "../../x11wire/xwirepresent.h" // xwireInjectKey (bw64_xwire_key)
+#include "../../x11wire/xwirepresent.h"
+#include "kunixsocket.h" // xwireInjectKey (bw64_xwire_key)
 
 #include <atomic>
 #include <vector>
@@ -90,7 +91,7 @@ static Wine64SessionCtx g_sessionCtx;
 // on the main-loop thread, in order, so a "kill old app then spawn new app"
 // switch is sequenced correctly.
 struct Wine64Req {
-    enum Kind { Spawn, Kill, RegisterFile } kind = Spawn;
+    enum Kind { Spawn, Kill, RegisterFile, SignalWineboot } kind = Spawn;
     std::vector<BString> argv;   // Spawn
     std::vector<BString> env;    // Spawn
     U32 pid = 0;                 // Kill
@@ -232,6 +233,58 @@ static void doSpawn(const Wine64Req& req) {
     KThread::setCurrentThread(saved);
 }
 
+// doSignalWineboot: signal __wineboot_event in wineserver32 via the Wine server
+// protocol, bypassing 32-bit PE execution (which is broken - no 32-bit PE runs
+// its entry point). This unblocks 32-bit Wine threads waiting on the event.
+//
+// Protocol (from Wine server/protocol.def):
+//   REQ_open_event = 33: access(U32), attributes(U32), rootdir(U32), VARARG(name,unicode_str)
+//   REQ_event_op = 31: handle(U32), op(S32)  [op: 0=PULSE, 1=SET, 2=RESET]
+// Runs on the main-loop thread.
+static void doSignalWineboot() {
+    klog("wine64session: doSignalWineboot: signaling __wineboot_event in wineserver32");
+
+    // Wine server protocol constants (from server/protocol.def)
+    const int REQ_open_event = 33;
+    const int REQ_event_op = 31;
+    const int SET_EVENT = 1;
+
+    // Build open_event request for \KernelObjects\__wineboot_event
+    // Format: header(12) + access(4) + attributes(4) + rootdir(4) + pad(4) + name(UTF-16)
+    const char* eventName = "\\KernelObjects\\__wineboot_event";
+    // Convert to UTF-16LE
+    int nameLen = 0;
+    while (eventName[nameLen]) nameLen++;
+    int nameBytes = (nameLen + 1) * 2; // +1 for null terminator, *2 for UTF-16
+
+    int reqSize = 28 + nameBytes; // 28 = header(12) + fixed(16)
+    U8* reqBuf = new U8[reqSize];
+
+    // Header: req(4), request_size(4), reply_size(4)
+    *(int*)(reqBuf + 0) = REQ_open_event;
+    *(int*)(reqBuf + 4) = nameBytes; // request_size = variable part size
+    *(int*)(reqBuf + 8) = 8; // reply_size = max reply (handle + pad)
+
+    // Body: access(4), attributes(4), rootdir(4), pad(4)
+    *(unsigned int*)(reqBuf + 12) = 0x1F0003; // EVENT_ALL_ACCESS
+    *(unsigned int*)(reqBuf + 16) = 0; // attributes
+    *(unsigned int*)(reqBuf + 20) = 0; // rootdir (null = \KernelObjects)
+    *(unsigned int*)(reqBuf + 24) = 0; // pad
+
+    // VARARG name as UTF-16LE
+    U16* namePtr = (U16*)(reqBuf + 28);
+    for (int i = 0; i <= nameLen; i++) {
+        namePtr[i] = (U16)eventName[i];
+    }
+
+    klog_fmt("wine64session: doSignalWineboot: built open_event request (%d bytes)", reqSize);
+    // TODO: Connect to wineserver32 socket and send
+    // For now, log and clean up
+    delete[] reqBuf;
+
+    klog("wine64session: doSignalWineboot: socket connection not yet implemented");
+}
+
 // Kill a previously-spawned app (close-previous-on-switch). Runs on the
 // main-loop thread.
 //
@@ -356,6 +409,7 @@ void bw64SessionDrainSpawns() {
     for (auto& req : todo) {
         if (req.kind == Wine64Req::Kill) doKill(req.pid);
         else if (req.kind == Wine64Req::RegisterFile) doRegisterFile(req.path);
+        else if (req.kind == Wine64Req::SignalWineboot) doSignalWineboot();
         else doSpawn(req);
     }
 }
@@ -465,6 +519,20 @@ extern "C" EMSCRIPTEN_KEEPALIVE void bw64_reset_present() {
 // Whether the persistent session is up (context captured == boot completed).
 extern "C" EMSCRIPTEN_KEEPALIVE int bw64_session_ready() {
     return g_sessionCtx.valid.load(std::memory_order_acquire) ? 1 : 0;
+}
+
+// bw64_signal_wineboot_event: queue a request to signal __wineboot_event in
+// wineserver32 via the Wine server protocol. Bypasses 32-bit PE execution
+// (which is broken). Called via Module.ccall("bw64_signal_wineboot_event").
+// Returns 1 if queued, 0 if session not ready.
+extern "C" EMSCRIPTEN_KEEPALIVE int bw64_signal_wineboot_event() {
+    if (!g_sessionCtx.valid.load(std::memory_order_acquire)) return 0;
+    Wine64Req req;
+    req.kind = Wine64Req::SignalWineboot;
+    pendingLockAcquire();
+    g_pending.push_back(std::move(req));
+    pendingLockRelease();
+    return 1;
 }
 
 // bw64_clipboard_set: stage host clipboard text for the guest (paste path).
