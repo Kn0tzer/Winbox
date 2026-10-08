@@ -10,7 +10,8 @@
 // (multiple url|size pairs = the split .partNNN files served on Pages, treated
 // as one concatenated virtual file). Reads fetch missing 512 KB blocks with a
 // SYNCHRONOUS same-origin XHR — legal because guest threads run on pthread web
-// workers, never the browser main thread — and cache them for the session.
+// workers, never the browser main thread — and cache them with LRU eviction
+// capped at 256MB (512 blocks) so long sessions can't exhaust WASM memory.
 //
 // Only compiled to a working implementation under __EMSCRIPTEN__; elsewhere
 // fsZipUrlIsSpec always returns false and FsZip uses the normal file path.

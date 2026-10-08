@@ -11,6 +11,7 @@ bool fsZipUrlIsSpec(BString path) {
 
 #include <emscripten.h>
 #include <cstdlib>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -114,7 +115,19 @@ struct RangedFile {
     U64 fetched = 0;      // stats: bytes downloaded so far
     U64 lastLogged = 0;
     std::mutex m;
-    std::map<U64, std::unique_ptr<U8[]>> blocks;
+    // LRU block cache: 512KB blocks, capped at MAX_CACHED_BLOCKS (256MB).
+    // All access happens under m (readAt holds it for the whole read loop),
+    // so the recency list needs no extra locking. Eviction is transparent:
+    // a later read of an evicted block just re-fetches it.
+    static constexpr size_t MAX_CACHED_BLOCKS = 512; // 512 x 512KB = 256MB
+    struct BlockEntry {
+        std::unique_ptr<U8[]> data;
+        std::list<U64>::iterator lruIt; // position in lruOrder, front = MRU
+    };
+    std::map<U64, BlockEntry> blocks;
+    std::list<U64> lruOrder; // front = most recently used
+    U64 evicted = 0;         // stats: blocks evicted so far
+    U64 lastEvictLogged = 0;
 
     // Fetch [off, off+len) directly from the underlying parts into dst.
     bool fetchRaw(U64 off, U64 len, U8* dst) {
@@ -151,7 +164,9 @@ struct RangedFile {
     const U8* getBlock(U64 idx) {
         auto it = blocks.find(idx);
         if (it != blocks.end()) {
-            return it->second.get();
+            // Hit: refresh recency (splice keeps the stored iterator valid).
+            lruOrder.splice(lruOrder.begin(), lruOrder, it->second.lruIt);
+            return it->second.data.get();
         }
         U64 off = idx * BLOCK_SIZE;
         if (off >= total) {
@@ -162,8 +177,24 @@ struct RangedFile {
         if (!fetchRaw(off, len, buf.get())) {
             return nullptr;
         }
-        const U8* raw = buf.get();
-        blocks[idx] = std::move(buf);
+        lruOrder.push_front(idx);
+        BlockEntry e;
+        e.data = std::move(buf);
+        e.lruIt = lruOrder.begin();
+        const U8* raw = e.data.get();
+        blocks[idx] = std::move(e);
+        while (blocks.size() > MAX_CACHED_BLOCKS) {
+            U64 victim = lruOrder.back();
+            lruOrder.pop_back();
+            blocks.erase(victim);
+            evicted++;
+        }
+        if (evicted - lastEvictLogged >= 64) {
+            lastEvictLogged = evicted;
+            klog_fmt("fszipurl: LRU evicted %llu blocks (%llu MB total), cache capped at 256MB",
+                     (unsigned long long)evicted,
+                     (unsigned long long)(evicted >> 1));
+        }
         return raw;
     }
 
