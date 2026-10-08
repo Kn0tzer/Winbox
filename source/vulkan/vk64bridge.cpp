@@ -278,7 +278,10 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkCmdCopyImageToBuffer,                    "vkCmdCopyImageToBuffer") \
     X(VK64_fn_vkCmdCopyImage,                            "vkCmdCopyImage") \
     X(VK64_fn_vkCmdCopyImageToBuffer2,                   "vkCmdCopyImageToBuffer2") \
-    X(VK64_fn_vkCmdCopyImageToBuffer2KHR,                "vkCmdCopyImageToBuffer2KHR")
+    X(VK64_fn_vkCmdCopyImageToBuffer2KHR,                "vkCmdCopyImageToBuffer2KHR") \
+    X(VK64_fn_vkCmdCopyBuffer,                         "vkCmdCopyBuffer") \
+    X(VK64_fn_vkCmdCopyBuffer2,                        "vkCmdCopyBuffer2") \
+    X(VK64_fn_vkCmdCopyBuffer2KHR,                     "vkCmdCopyBuffer2KHR")
 #define VK64_NAME_ENTRY(id, nm) { (U64)(id), nm },
 const struct { U64 id; const char* name; } g_fnNames[] = { VK64_FN_LIST(VK64_NAME_ENTRY) };
 #undef VK64_NAME_ENTRY
@@ -4221,6 +4224,66 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         return 0;
     }
     case VK64_fn_vkCmdCopyImage: {
+        return 0;
+    }
+    case VK64_fn_vkCmdCopyBuffer: {
+        // (cmdBuf, srcBuffer, dstBuffer, regionCount, pRegions*)
+        // Immediate CPU memcpy: all Vulkan memory is guest-mapped, so the
+        // copy is visible to subsequent reads (e.g. emitBufferData at submit).
+        // This is what DXVK uses to upload vertex/index data from staging.
+        struct VkBufferCopyL { U64 srcOffset; U64 dstOffset; U64 size; };
+        U32 nreg = (U32)args.a[3];
+        std::vector<VkBufferCopyL> regs;
+        readArray(args.a[4], nreg, regs);
+        Buffer* src = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdCopyBuffer");
+        Buffer* dst = objOf<Buffer>(args.a[2], K_BUFFER, "vkCmdCopyBuffer");
+        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdCopyBuffer");
+        DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyBuffer");
+        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        for (const auto& r : regs) {
+            U64 sOff = smem->va + src->memOff + r.srcOffset;
+            U64 dOff = dmem->va + dst->memOff + r.dstOffset;
+            U64 n = r.size;
+            if (r.srcOffset >= smem->size || r.dstOffset >= dmem->size) continue;
+            if (sOff + n > smem->va + smem->size) n = smem->va + smem->size - sOff;
+            if (dOff + n > dmem->va + dmem->size) n = dmem->va + dmem->size - dOff;
+            if (!n) continue;
+            std::vector<U8> tmp((size_t)n);
+            g_mem->memcpyFromGuest(tmp.data(), sOff, n);
+            g_mem->memcpyToGuest(dOff, tmp.data(), n);
+        }
+        return 0;
+    }
+    case VK64_fn_vkCmdCopyBuffer2:
+    case VK64_fn_vkCmdCopyBuffer2KHR: {
+        // (cmdBuf, srcBuffer, dstBuffer, regionCount, pRegions*) — shim
+        // unpacks VkCopyBufferInfo2; regions are VkBufferCopy2 (sType+pNext header).
+        struct VkBufferCopy2L {
+            U32 sType; U32 _p0; U64 pNext;
+            U64 srcOffset; U64 dstOffset; U64 size;
+        };
+        U32 nreg = (U32)args.a[3];
+        std::vector<VkBufferCopy2L> regs;
+        readArray(args.a[4], nreg, regs);
+        Buffer* src = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdCopyBuffer2");
+        Buffer* dst = objOf<Buffer>(args.a[2], K_BUFFER, "vkCmdCopyBuffer2");
+        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdCopyBuffer2");
+        DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyBuffer2");
+        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        for (const auto& r : regs) {
+            U64 sOff = smem->va + src->memOff + r.srcOffset;
+            U64 dOff = dmem->va + dst->memOff + r.dstOffset;
+            U64 n = r.size;
+            if (r.srcOffset >= smem->size || r.dstOffset >= dmem->size) continue;
+            if (sOff + n > smem->va + smem->size) n = smem->va + smem->size - sOff;
+            if (dOff + n > dmem->va + dmem->size) n = dmem->va + dmem->size - dOff;
+            if (!n) continue;
+            std::vector<U8> tmp((size_t)n);
+            g_mem->memcpyFromGuest(tmp.data(), sOff, n);
+            g_mem->memcpyToGuest(dOff, tmp.data(), n);
+        }
         return 0;
     }
 

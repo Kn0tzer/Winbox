@@ -230,6 +230,9 @@ enum {
     VK64_fn_vkCmdCopyImage,
     VK64_fn_vkCmdCopyImageToBuffer2,
     VK64_fn_vkCmdCopyImageToBuffer2KHR,
+    VK64_fn_vkCmdCopyBuffer,
+    VK64_fn_vkCmdCopyBuffer2,
+    VK64_fn_vkCmdCopyBuffer2KHR,
     VK64_fn__MAX
 };
 
@@ -966,6 +969,32 @@ API void vkCmdCopyImageToBuffer2KHR(VkCommandBuffer commandBuffer, const VkCopyI
     a.a[3] = pInfo->dstBuffer; a.a[4] = pInfo->regionCount; a.a[5] = P(pInfo->pRegions);
     (void)vk64_trap(VK64_fn_vkCmdCopyImageToBuffer2KHR, &a);
 }
+API void vkCmdCopyBuffer(VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkBuffer dstBuffer, uint32_t regionCount, const void* pRegions) {
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = srcBuffer; a.a[2] = dstBuffer;
+    a.a[3] = regionCount; a.a[4] = P(pRegions);
+    (void)vk64_trap(VK64_fn_vkCmdCopyBuffer, &a);
+}
+typedef struct VkCopyBufferInfo2L {
+    uint32_t sType; uint32_t _pad0;
+    const void* pNext;
+    VkBuffer srcBuffer;
+    VkBuffer dstBuffer;
+    uint32_t regionCount; uint32_t _pad2;
+    const void* pRegions;
+} VkCopyBufferInfo2L;
+API void vkCmdCopyBuffer2(VkCommandBuffer commandBuffer, const VkCopyBufferInfo2L* pInfo) {
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = pInfo->srcBuffer; a.a[2] = pInfo->dstBuffer;
+    a.a[3] = pInfo->regionCount; a.a[4] = P(pInfo->pRegions);
+    (void)vk64_trap(VK64_fn_vkCmdCopyBuffer2, &a);
+}
+API void vkCmdCopyBuffer2KHR(VkCommandBuffer commandBuffer, const VkCopyBufferInfo2L* pInfo) {
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = pInfo->srcBuffer; a.a[2] = pInfo->dstBuffer;
+    a.a[3] = pInfo->regionCount; a.a[4] = P(pInfo->pRegions);
+    (void)vk64_trap(VK64_fn_vkCmdCopyBuffer2KHR, &a);
+}
 
 // ===========================================================================
 // F. Frame boundary (2 of the 85)
@@ -1154,6 +1183,9 @@ static const struct procEntry g_procs[] = {
     E(vkCmdCopyImageToBuffer, VK64_fn_vkCmdCopyImageToBuffer),
     E(vkCmdCopyImageToBuffer2, VK64_fn_vkCmdCopyImageToBuffer2),
     E(vkCmdCopyImageToBuffer2KHR, VK64_fn_vkCmdCopyImageToBuffer2KHR),
+    E(vkCmdCopyBuffer, VK64_fn_vkCmdCopyBuffer),
+    E(vkCmdCopyBuffer2, VK64_fn_vkCmdCopyBuffer2),
+    E(vkCmdCopyBuffer2KHR, VK64_fn_vkCmdCopyBuffer2KHR),
     // --- frame boundary ---
     E(vkQueueSubmit, VK64_fn_vkQueueSubmit),
     E(vkQueueSubmit2, VK64_fn_vkQueueSubmit2),
@@ -1321,9 +1353,6 @@ TAIL(vkCmdDrawIndexedIndirectCount)
 TAIL(vkCmdDispatch)
 TAIL(vkCmdDispatchBase)
 TAIL(vkCmdDispatchIndirect)
-TAIL(vkCmdCopyBuffer)
-TAIL(vkCmdCopyBuffer2)
-TAIL(vkCmdCopyBuffer2KHR)
 TAIL(vkCmdCopyImage)
 TAIL(vkCmdCopyImage2)
 TAIL(vkCmdCopyImage2KHR)

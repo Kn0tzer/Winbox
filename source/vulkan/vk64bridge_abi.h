@@ -295,6 +295,9 @@ enum {
     VK64_fn_vkCmdCopyImage,                          // (cmdBuf, ...) -> no-op (ID stability)
     VK64_fn_vkCmdCopyImageToBuffer2,                 // (cmdBuf, srcImage, 0, dstBuffer, regionCount, pRegions*) -> records CMD_COPY_I2B
     VK64_fn_vkCmdCopyImageToBuffer2KHR,              // alias of vkCmdCopyImageToBuffer2
+    VK64_fn_vkCmdCopyBuffer,                        // (cmdBuf, srcBuffer, dstBuffer, regionCount, pRegions*) -> immediate CPU memcpy
+    VK64_fn_vkCmdCopyBuffer2,                       // (cmdBuf, pCopyBufferInfo*) -> immediate CPU memcpy
+    VK64_fn_vkCmdCopyBuffer2KHR,                    // alias of vkCmdCopyBuffer2
     VK64_fn__MAX
 };
 
