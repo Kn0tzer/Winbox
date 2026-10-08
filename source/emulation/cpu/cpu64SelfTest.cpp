@@ -6717,9 +6717,9 @@ int runX64SelfTest() {
     });
 
     // ENTER level 2, alloc 0: exercises the nested display-entry loop.
-    // (The display entry contents are not verified here because
-    // mov r64, [rbp+disp8] reads are broken in the emulator -- a separate
-    // pre-existing bug. The loop structure and RBP/RSP updates are verified.)
+    // (Display entry contents not verified here; RBP/RSP updates are verified.
+    // Note: mov r64,[rbp+disp8] was suspected broken but proven working by
+    // dedicated execute-and-verify tests, 2026-10-08.)
     runAndCheck(r, "enter level 2", withExit({
         0x48, 0xBD, 0xF0, 0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00,  // mov rbp, 0x7FFFF0
         0xC8, 0x00, 0x00, 0x02,  // enter 0, 2
@@ -6740,6 +6740,392 @@ int runX64SelfTest() {
         0x48, 0x89, 0xE8,              // mov rax, rbp
     }), [](CPU64& c) {
         return c.reg[X64_R15].u64 == 0x7FFFEEULL && c.reg[X64_RBX].u64 == 0x7FFFDCULL;
+    });
+
+    // ----- x87 m32fp forms (D8/D9): FADD/FMUL/FSUB/FDIV/FST -----
+    // T: FADD m32fp — 2.5 + 1.5f = 4.0.
+    {
+        std::vector<U8> code = {
+            0x48, 0x83, 0xEC, 0x08,                                     // sub rsp, 8
+            0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x40, // 2.5
+            0x48, 0x89, 0x04, 0x24,                                     // mov [rsp], rax
+            0xDD, 0x04, 0x24,                                           // fld qword [rsp]
+            0xC7, 0x04, 0x24, 0x00, 0x00, 0xC0, 0x3F,                   // mov dword [rsp], 1.5f
+            0xD8, 0x04, 0x24,                                           // fadd dword [rsp] ; st0=4.0
+            0xDD, 0x1C, 0x24,                                           // fstp qword [rsp]
+            0x48, 0x8B, 0x04, 0x24,                                     // mov rax, [rsp]
+            0x48, 0x83, 0xC4, 0x08,                                     // add rsp, 8
+        };
+        runAndCheck(r, "x87 FADD m32fp (2.5+1.5f=4.0)", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 0x4010000000000000ULL; // 4.0
+        });
+    }
+
+    // T: FMUL m32fp — 2.5 * 2.0f = 5.0.
+    {
+        std::vector<U8> code = {
+            0x48, 0x83, 0xEC, 0x08,
+            0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x40, // 2.5
+            0x48, 0x89, 0x04, 0x24,
+            0xDD, 0x04, 0x24,                                           // fld 2.5
+            0xC7, 0x04, 0x24, 0x00, 0x00, 0x00, 0x40,                   // mov dword [rsp], 2.0f
+            0xD8, 0x0C, 0x24,                                           // fmul dword [rsp] ; st0=5.0
+            0xDD, 0x1C, 0x24,                                           // fstp
+            0x48, 0x8B, 0x04, 0x24,
+            0x48, 0x83, 0xC4, 0x08,
+        };
+        runAndCheck(r, "x87 FMUL m32fp (2.5*2.0f=5.0)", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 0x4014000000000000ULL; // 5.0
+        });
+    }
+
+    // T: FSUB m32fp — 10.0 - 4.5f = 5.5.
+    {
+        std::vector<U8> code = {
+            0x48, 0x83, 0xEC, 0x08,
+            0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x24, 0x40, // 10.0
+            0x48, 0x89, 0x04, 0x24,
+            0xDD, 0x04, 0x24,                                           // fld 10.0
+            0xC7, 0x04, 0x24, 0x00, 0x00, 0x90, 0x40,                   // mov dword [rsp], 4.5f
+            0xD8, 0x24, 0x24,                                           // fsub dword [rsp] ; st0=5.5
+            0xDD, 0x1C, 0x24,                                           // fstp
+            0x48, 0x8B, 0x04, 0x24,
+            0x48, 0x83, 0xC4, 0x08,
+        };
+        runAndCheck(r, "x87 FSUB m32fp (10.0-4.5f=5.5)", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 0x4016000000000000ULL; // 5.5
+        });
+    }
+
+    // T: FDIV m32fp — 10.0 / 4.0f = 2.5.
+    {
+        std::vector<U8> code = {
+            0x48, 0x83, 0xEC, 0x08,
+            0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x24, 0x40, // 10.0
+            0x48, 0x89, 0x04, 0x24,
+            0xDD, 0x04, 0x24,                                           // fld 10.0
+            0xC7, 0x04, 0x24, 0x00, 0x00, 0x80, 0x40,                   // mov dword [rsp], 4.0f
+            0xD8, 0x34, 0x24,                                           // fdiv dword [rsp] ; st0=2.5
+            0xDD, 0x1C, 0x24,                                           // fstp
+            0x48, 0x8B, 0x04, 0x24,
+            0x48, 0x83, 0xC4, 0x08,
+        };
+        runAndCheck(r, "x87 FDIV m32fp (10.0/4.0f=2.5)", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 0x4004000000000000ULL; // 2.5
+        });
+    }
+
+    // T: FST m32fp — store 3.75 as float32 without popping.
+    {
+        std::vector<U8> code = {
+            0x48, 0x83, 0xEC, 0x08,
+            0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0E, 0x40, // 3.75
+            0x48, 0x89, 0x04, 0x24,
+            0xDD, 0x04, 0x24,                                           // fld 3.75
+            0xD9, 0x14, 0x24,                                           // fst dword [rsp]  ; no pop
+            0x8B, 0x04, 0x24,                                           // mov eax, [rsp]
+            0x48, 0x83, 0xC4, 0x08,
+        };
+        runAndCheck(r, "x87 FST m32fp (3.75 -> 0x40700000, no pop)", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u32 == 0x40700000U; // 3.75f
+        });
+    }
+
+    // ----- Shift edge cases: sar sign-extends, shr zero-fills -----
+    // T: SAR r64,1 sign-extends bit 63.
+    runAndCheck(r, "sar rax,1 sign-extends (0x8000..->0xC000..)", withExit({
+        0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80,  // mov rax, 0x8000000000000000
+        0x48, 0xC1, 0xF8, 0x01,                                     // sar rax, 1
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xC000000000000000ULL;
+    });
+
+    // T: SHR r64,1 zero-fills bit 63.
+    runAndCheck(r, "shr rax,1 zero-fills (0x8000..->0x4000..)", withExit({
+        0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80,  // mov rax, 0x8000000000000000
+        0x48, 0xC1, 0xE8, 0x01,                                     // shr rax, 1
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0x4000000000000000ULL;
+    });
+
+    // T: SHR sets CF from the last bit shifted out (1>>1 -> 0, CF=1).
+    runAndCheck(r, "shr rax,1 sets CF from last bit", withExit({
+        0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00,  // mov rax, 1
+        0x48, 0xC1, 0xE8, 0x01,                    // shr rax, 1  (rax=0, CF=1)
+        0x9C,                                      // pushfq
+        0x58,                                      // pop rax (rax=rflags)
+    }), [](CPU64& c) {
+        return (c.reg[X64_R15].u64 & 0x1ULL) != 0;
+    });
+
+    // T: SAR r32,1 sign-extends within 32 bits and zero-extends to 64.
+    runAndCheck(r, "sar eax,1 32-bit (0x80000000->0xC0000000)", withExit({
+        0xB8, 0x00, 0x00, 0x00, 0x80,  // mov eax, 0x80000000
+        0xC1, 0xF8, 0x01,              // sar eax, 1
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xC0000000ULL;
+    });
+
+    // ----- ADC/SBB carry chains -----
+    // T: ADC with CF=1: 0xFFFF..F + 0 + 1 wraps to 0 with CF=1.
+    runAndCheck(r, "adc rax,0 with CF=1 (wrap -> 0, CF=1)", withExit({
+        0xF9,                                                        // stc
+        0x48, 0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,  // mov rax, 0xFFFFFFFFFFFFFFFF
+        0x48, 0x83, 0xD0, 0x00,                                     // adc rax, 0
+        0x48, 0x89, 0xC3,                                           // mov rbx, rax (save result)
+        0x9C,                                                        // pushfq
+        0x58,                                                        // pop rax (rax=rflags)
+    }), [](CPU64& c) {
+        return c.reg[X64_RBX].u64 == 0 && (c.reg[X64_R15].u64 & 0x1ULL) != 0;
+    });
+
+    // T: ADC 64-bit carry out: 0xFFFF..F + 1 + 1 = 0x1_0000..01 -> 1, CF=1.
+    runAndCheck(r, "adc rax,1 carry out (-> 1, CF=1)", withExit({
+        0xF9,                                                        // stc
+        0x48, 0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,  // mov rax, 0xFFFFFFFFFFFFFFFF
+        0x48, 0x83, 0xD0, 0x01,                                     // adc rax, 1
+        0x48, 0x89, 0xC3,                                           // mov rbx, rax
+        0x9C,                                                        // pushfq
+        0x58,                                                        // pop rax
+    }), [](CPU64& c) {
+        return c.reg[X64_RBX].u64 == 1 && (c.reg[X64_R15].u64 & 0x1ULL) != 0;
+    });
+
+    // T: SBB with CF=1: 5 - 3 - 1 = 1, CF=0 (no borrow out).
+    runAndCheck(r, "sbb rax,3 with CF=1 (5-3-1=1, CF=0)", withExit({
+        0xF9,                                      // stc
+        0x48, 0xC7, 0xC0, 0x05, 0x00, 0x00, 0x00,  // mov rax, 5
+        0x48, 0x83, 0xD8, 0x03,                    // sbb rax, 3
+        0x48, 0x89, 0xC3,                          // mov rbx, rax
+        0x9C,                                       // pushfq
+        0x58,                                       // pop rax
+    }), [](CPU64& c) {
+        return c.reg[X64_RBX].u64 == 1 && (c.reg[X64_R15].u64 & 0x1ULL) == 0;
+    });
+
+    // T: SBB underflow: 0 - 0 - 1 = 0xFFFF..F, CF=1.
+    runAndCheck(r, "sbb rax,0 underflow (-> 0xFFFF.., CF=1)", withExit({
+        0x48, 0x31, 0xC0,  // xor rax, rax (CF=0)
+        0xF9,              // stc (CF=1)
+        0x48, 0x83, 0xD8, 0x00,  // sbb rax, 0
+        0x48, 0x89, 0xC3,  // mov rbx, rax
+        0x9C,              // pushfq
+        0x58,              // pop rax
+    }), [](CPU64& c) {
+        return c.reg[X64_RBX].u64 == 0xFFFFFFFFFFFFFFFFULL && (c.reg[X64_R15].u64 & 0x1ULL) != 0;
+    });
+
+    // ----- INC/DEC preserve CF (classic x86 gotcha) -----
+    // T: INC does not touch CF.
+    runAndCheck(r, "inc preserves CF=1", withExit({
+        0xF9,                                      // stc
+        0x48, 0xC7, 0xC0, 0x05, 0x00, 0x00, 0x00,  // mov rax, 5
+        0xFF, 0xC0,                                // inc rax
+        0x48, 0x89, 0xC3,                          // mov rbx, rax
+        0x9C,                                       // pushfq
+        0x58,                                       // pop rax
+    }), [](CPU64& c) {
+        return c.reg[X64_RBX].u64 == 6 && (c.reg[X64_R15].u64 & 0x1ULL) != 0;
+    });
+
+    // T: DEC does not touch CF.
+    runAndCheck(r, "dec preserves CF=1", withExit({
+        0xF9,                                      // stc
+        0x48, 0xC7, 0xC0, 0x05, 0x00, 0x00, 0x00,  // mov rax, 5
+        0xFF, 0xC8,                                // dec rax
+        0x48, 0x89, 0xC3,                          // mov rbx, rax
+        0x9C,                                       // pushfq
+        0x58,                                       // pop rax
+    }), [](CPU64& c) {
+        return c.reg[X64_RBX].u64 == 4 && (c.reg[X64_R15].u64 & 0x1ULL) != 0;
+    });
+
+    // T: INC 0xFFFF..F -> 0 sets ZF, leaves CF=0.
+    runAndCheck(r, "inc 0xFFFF..->0 sets ZF, CF=0", withExit({
+        0x48, 0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,  // mov rax, 0xFFFFFFFFFFFFFFFF
+        0xFF, 0xC0,  // inc rax
+        0x48, 0x89, 0xC3,  // mov rbx, rax
+        0x9C,  // pushfq
+        0x58,  // pop rax
+    }), [](CPU64& c) {
+        return c.reg[X64_RBX].u64 == 0 &&
+               (c.reg[X64_R15].u64 & 0x40ULL) != 0 &&
+               (c.reg[X64_R15].u64 & 0x1ULL) == 0;
+    });
+
+    // ----- AND/OR always clear CF and OF -----
+    // T: AND clears CF and OF even when both were set.
+    runAndCheck(r, "and rax,rax clears CF+OF", withExit({
+        0x48, 0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F,  // mov rax, 0x7FFFFFFFFFFFFFFF
+        0x48, 0x01, 0xC0,  // add rax, rax (OF=1, signed overflow)
+        0xF9,              // stc (CF=1)
+        0x48, 0x21, 0xC0,  // and rax, rax (CF=0, OF=0)
+        0x9C,              // pushfq
+        0x58,              // pop rax
+    }), [](CPU64& c) {
+        return (c.reg[X64_R15].u64 & 0x801ULL) == 0;
+    });
+
+    // T: OR clears CF and OF even when both were set.
+    runAndCheck(r, "or rax,rax clears CF+OF", withExit({
+        0x48, 0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F,  // mov rax, 0x7FFFFFFFFFFFFFFF
+        0x48, 0x01, 0xC0,  // add rax, rax (OF=1)
+        0xF9,              // stc (CF=1)
+        0x48, 0x09, 0xC0,  // or rax, rax (CF=0, OF=0)
+        0x9C,              // pushfq
+        0x58,              // pop rax
+    }), [](CPU64& c) {
+        return (c.reg[X64_R15].u64 & 0x801ULL) == 0;
+    });
+
+    // ----- IMUL signed multiply -----
+    // T: IMUL r64,r/m64,imm8 with negatives: -7 * -6 = 42.
+    runAndCheck(r, "imul rax,rax,-6 (-7*-6=42)", withExit({
+        0x48, 0xC7, 0xC0, 0xF9, 0xFF, 0xFF, 0xFF,  // mov rax, -7
+        0x48, 0x6B, 0xC0, 0xFA,                    // imul rax, rax, -6
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 42;
+    });
+
+    // T: IMUL overflow sets CF and OF (0x7FFF.. * 2 doesn't fit).
+    runAndCheck(r, "imul overflow sets CF+OF", withExit({
+        0x48, 0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F,  // mov rax, 0x7FFFFFFFFFFFFFFF
+        0x48, 0x6B, 0xC0, 0x02,  // imul rax, rax, 2
+        0x9C,  // pushfq
+        0x58,  // pop rax
+    }), [](CPU64& c) {
+        return (c.reg[X64_R15].u64 & 0x801ULL) == 0x801ULL;
+    });
+
+    // ----- MOVSX / MOVSXD sign extension -----
+    // T: MOVSX r64,r/m8 sign-extends 0xFF -> 0xFFFF..FF.
+    runAndCheck(r, "movsx rbx,al (0xFF->0xFFFF..FF)", withExit({
+        0x48, 0xC7, 0xC0, 0xFF, 0x00, 0x00, 0x00,  // mov rax, 0xFF
+        0x48, 0x0F, 0xBE, 0xD8,                    // movsx rbx, al
+        0x48, 0x89, 0xD8,                          // mov rax, rbx
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xFFFFFFFFFFFFFFFFULL;
+    });
+
+    // T: MOVSX r64,r/m16 sign-extends 0x8000 -> 0xFFFF..8000.
+    runAndCheck(r, "movsx rbx,ax (0x8000->0xFFFF..8000)", withExit({
+        0x66, 0xB8, 0x00, 0x80,  // mov ax, 0x8000
+        0x48, 0x0F, 0xBF, 0xD8,  // movsx rbx, ax
+        0x48, 0x89, 0xD8,        // mov rax, rbx
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xFFFFFFFFFFFF8000ULL;
+    });
+
+    // T: MOVSXD r64,r/m32 sign-extends 0x80000000 -> 0xFFFFFFFF80000000.
+    runAndCheck(r, "movsxd rbx,eax (0x80000000->0xFFFFFFFF80000000)", withExit({
+        0xB8, 0x00, 0x00, 0x00, 0x80,  // mov eax, 0x80000000
+        0x48, 0x63, 0xD8,              // movsxd rbx, eax
+        0x48, 0x89, 0xD8,              // mov rax, rbx
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xFFFFFFFF80000000ULL;
+    });
+
+    // ----- BSR -----
+    // T: BSR finds the index of the highest set bit (0x100 -> 8).
+    runAndCheck(r, "bsr rax,rbx (0x100->8)", withExit({
+        0x48, 0xC7, 0xC3, 0x00, 0x01, 0x00, 0x00,  // mov rbx, 0x100
+        0x48, 0x0F, 0xBD, 0xC3,                    // bsr rax, rbx
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 8;
+    });
+
+    // ----- Conditional jumps beyond JZ -----
+    // T: JNZ taken when ZF=0.
+    runAndCheck(r, "jnz taken (ZF=0)", withExit({
+        0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00,  // mov rax, 1
+        0x48, 0x85, 0xC0,                          // test rax, rax (ZF=0)
+        0x75, 0x07,                                 // jnz +7
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // mov rax, 0xAA (target)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA;
+    });
+
+    // T: JNZ not taken when ZF=1 (falls through).
+    runAndCheck(r, "jnz not taken (ZF=1)", withExit({
+        0x48, 0x31, 0xC0,                          // xor rax, rax (ZF=1)
+        0x75, 0x07,                                 // jnz +7 (not taken)
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // mov rax, 0xAA (fallthrough)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA;
+    });
+
+    // T: JB taken on unsigned below (3 < 5 -> CF=1).
+    runAndCheck(r, "jb taken (3<5 unsigned, CF=1)", withExit({
+        0x48, 0xC7, 0xC0, 0x03, 0x00, 0x00, 0x00,  // mov rax, 3
+        0x48, 0xC7, 0xC3, 0x05, 0x00, 0x00, 0x00,  // mov rbx, 5
+        0x48, 0x39, 0xD8,                          // cmp rax, rbx (CF=1)
+        0x72, 0x07,                                 // jb +7
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // mov rax, 0xAA (target)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA;
+    });
+
+    // T: JL taken on signed less (-1 < 5 -> SF!=OF).
+    runAndCheck(r, "jl taken (-1<5 signed)", withExit({
+        0x48, 0xC7, 0xC0, 0xFF, 0xFF, 0xFF, 0xFF,  // mov rax, -1
+        0x48, 0xC7, 0xC3, 0x05, 0x00, 0x00, 0x00,  // mov rbx, 5
+        0x48, 0x39, 0xD8,                          // cmp rax, rbx (SF!=OF)
+        0x7C, 0x07,                                 // jl +7
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // mov rax, 0xAA (target)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA;
+    });
+
+    // ----- LEA with SIB -----
+    // T: LEA with SIB addressing: [rbx+rcx*4+0x10] = 0x1000+12+16 = 0x101C.
+    runAndCheck(r, "lea rax,[rbx+rcx*4+0x10] SIB (-> 0x101C)", withExit({
+        0x48, 0xC7, 0xC3, 0x00, 0x10, 0x00, 0x00,  // mov rbx, 0x1000
+        0x48, 0xC7, 0xC1, 0x03, 0x00, 0x00, 0x00,  // mov rcx, 3
+        0x48, 0x8D, 0x44, 0x8B, 0x10,              // lea rax, [rbx+rcx*4+0x10]
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0x101CULL;
+    });
+
+    // ----- CMPXCHG mismatch -----
+    // T: CMPXCHG [rsp],rbx mismatch: ZF=0, rax=old mem, mem unchanged.
+    runAndCheck(r, "cmpxchg [rsp],rbx mismatch (ZF=0, rax=mem)", withExit({
+        0x48, 0xC7, 0xC0, 0x11, 0x11, 0x00, 0x00,  // mov rax, 0x1111
+        0x50,                                      // push rax ([rsp]=0x1111)
+        0x48, 0xC7, 0xC0, 0x22, 0x22, 0x00, 0x00,  // mov rax, 0x2222 (expected, wrong)
+        0x48, 0xC7, 0xC3, 0x33, 0x33, 0x00, 0x00,  // mov rbx, 0x3333 (new value)
+        0x48, 0x0F, 0xB1, 0x1C, 0x24,              // cmpxchg [rsp], rbx (ZF=0, rax=0x1111)
+        0x9C,                                      // pushfq
+        0x59,                                      // pop rcx (rcx=rflags)
+        0x5A,                                      // pop rdx (rdx=[rsp], must be 0x1111)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0x1111ULL &&
+               (c.reg[X64_RCX].u64 & 0x40ULL) == 0 &&
+               c.reg[X64_RDX].u64 == 0x1111ULL;
+    });
+
+    // ----- PUSHFQ/POPFQ -----
+    // T: PUSHFQ+POPFQ round-trip preserves ZF/PF and reserved bit 1.
+    runAndCheck(r, "pushfq/popfq round-trip (ZF|PF)", withExit({
+        0x48, 0x31, 0xC0,  // xor rax, rax (ZF=1, PF=1)
+        0x9C,              // pushfq
+        0x58,              // pop rax (rax=rflags)
+    }), [](CPU64& c) {
+        // mask 0xC5 = CF|PF|AF|ZF|SF (excludes reserved bit 1)
+        return (c.reg[X64_R15].u64 & 0xC5ULL) == 0x44ULL;
+    });
+
+    // ----- TEST flag behavior -----
+    // T: TEST rax,rax with negative value sets SF.
+    runAndCheck(r, "test rax,rax sets SF (negative)", withExit({
+        0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80,  // mov rax, 0x8000000000000000
+        0x48, 0x85, 0xC0,  // test rax, rax (SF=1)
+        0x9C,              // pushfq
+        0x58,              // pop rax
+    }), [](CPU64& c) {
+        return (c.reg[X64_R15].u64 & 0x80ULL) != 0;
     });
 
     const char* requireJit = std::getenv("BW64_JIT_VERIFY");

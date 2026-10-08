@@ -5066,6 +5066,36 @@ dsp_59:
                 U32 bits = memory->readd(m.effAddr);
                 fpu.PREP_PUSH();
                 fpu.FLD_F32(bits, fpu.STV(0));
+            } else if (op == 0xD8 && sub == 0) {
+                // FADD m32fp — ST(0) += float32 at memory
+                U32 bits = memory->readd(m.effAddr);
+                fpu.FLD_F32(bits, 8);
+                fpu.FADD(fpu.STV(0), 8);
+            } else if (op == 0xD8 && sub == 1) {
+                // FMUL m32fp — ST(0) *= float32 at memory
+                U32 bits = memory->readd(m.effAddr);
+                fpu.FLD_F32(bits, 8);
+                fpu.FMUL(fpu.STV(0), 8);
+            } else if (op == 0xD8 && sub == 4) {
+                // FSUB m32fp — ST(0) -= float32 at memory
+                U32 bits = memory->readd(m.effAddr);
+                fpu.FLD_F32(bits, 8);
+                fpu.FSUB(fpu.STV(0), 8);
+            } else if (op == 0xD8 && sub == 6) {
+                // FDIV m32fp — ST(0) /= float32 at memory
+                U32 bits = memory->readd(m.effAddr);
+                fpu.FLD_F32(bits, 8);
+                fpu.FDIV(fpu.STV(0), 8);
+            } else if (op == 0xD9 && sub == 2) {
+                // FST m32fp — convert TOS to f32, store, no pop
+                double d;
+                if (fpu.isRegCached[fpu.top]) {
+                    d = fpu.regCache[fpu.top].d;
+                } else {
+                    d = (double)fpu.getF64(fpu.top);
+                }
+                union { float f; U32 i; } u; u.f = (float)d;
+                memory->writed(m.effAddr, u.i);
             } else if (op == 0xD9 && sub == 3) {
                 // FSTP m32fp — convert TOS to f32, store, pop
                 double d;
