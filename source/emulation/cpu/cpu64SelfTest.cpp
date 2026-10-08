@@ -6481,6 +6481,126 @@ int runX64SelfTest() {
         return c.reg[X64_R15].u64 == 0xAA && c.reg[X64_RBX].u64 == 1;
     });
 
+    // LOOP (E2): decrement RCX, jump if the decremented count != 0.
+    // RCX=2 -> 1, jump taken.
+    // Note: the exit syscall (0F 05) clobbers RCX with the return RIP per
+    // the AMD64 ABI (cpu64.cpp dsp_23), so RCX is saved to RBX before exit.
+    runAndCheck(r, "loop taken (rcx=2->1)", withExit({
+        0x48, 0xC7, 0xC1, 0x02, 0x00, 0x00, 0x00, // mov rcx, 2
+        0x48, 0x31, 0xC0,                         // xor rax, rax  ; ZF=1 (deterministic)
+        0xE2, 0x07,                               // loop +7 (taken: rcx 2->1)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // (target) mov rax, 0xAA
+        0x48, 0x89, 0xCB,                         // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA && c.reg[X64_RBX].u64 == 1;
+    });
+
+    // LOOP (E2): RCX=1 -> 0, falls through (loop termination case).
+    runAndCheck(r, "loop not taken (rcx=1->0)", withExit({
+        0x48, 0xC7, 0xC1, 0x01, 0x00, 0x00, 0x00, // mov rcx, 1
+        0x48, 0x31, 0xC0,                         // xor rax, rax
+        0xE2, 0x07,                               // loop +7 (not taken: rcx 1->0)
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // (fallthrough) mov rax, 0xAA
+        0xEB, 0x07,                               // jmp +7 (skip taken-target)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0x89, 0xCB,                         // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA && c.reg[X64_RBX].u64 == 0;
+    });
+
+    // LOOP (E2): RCX=0 wraps to 0xFFFFFFFFFFFFFFFF (decrement first, per
+    // Intel SDM) so the jump is taken, not fallen through.
+    runAndCheck(r, "loop wraps (rcx=0->max, taken)", withExit({
+        0x48, 0xC7, 0xC1, 0x00, 0x00, 0x00, 0x00, // mov rcx, 0
+        0x48, 0x31, 0xC0,                         // xor rax, rax
+        0xE2, 0x07,                               // loop +7 (taken: rcx 0->max)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // (target) mov rax, 0xAA
+        0x48, 0x89, 0xCB,                         // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA && c.reg[X64_RBX].u64 == 0xFFFFFFFFFFFFFFFFULL;
+    });
+
+    // LOOPE/LOOPZ (E1): jump when count != 0 AND ZF==1. Taken.
+    runAndCheck(r, "loope taken (rcx=2, zf=1)", withExit({
+        0x48, 0xC7, 0xC1, 0x02, 0x00, 0x00, 0x00, // mov rcx, 2
+        0x48, 0x31, 0xC0,                         // xor rax, rax  ; ZF=1
+        0xE1, 0x07,                               // loope +7 (taken)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // (target) mov rax, 0xAA
+        0x48, 0x89, 0xCB,                         // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA && c.reg[X64_RBX].u64 == 1;
+    });
+
+    // LOOPE (E1): count != 0 but ZF==0 -> not taken. RCX is still
+    // decremented even when the jump is not taken.
+    runAndCheck(r, "loope not taken (zf=0)", withExit({
+        0x48, 0xC7, 0xC1, 0x02, 0x00, 0x00, 0x00, // mov rcx, 2
+        0x48, 0x31, 0xC0,                         // xor rax, rax  ; ZF=1
+        0x48, 0x83, 0xF8, 0x01,                   // cmp rax, 1    ; ZF=0
+        0xE1, 0x07,                               // loope +7 (not taken)
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // (fallthrough) mov rax, 0xAA
+        0xEB, 0x07,                               // jmp +7 (skip taken-target)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0x89, 0xCB,                         // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA && c.reg[X64_RBX].u64 == 1;
+    });
+
+    // LOOPNE/LOOPNZ (E0): jump when count != 0 AND ZF==0. Taken.
+    runAndCheck(r, "loopne taken (rcx=2, zf=0)", withExit({
+        0x48, 0xC7, 0xC1, 0x02, 0x00, 0x00, 0x00, // mov rcx, 2
+        0x48, 0x31, 0xC0,                         // xor rax, rax  ; ZF=1
+        0x48, 0x83, 0xF8, 0x01,                   // cmp rax, 1    ; ZF=0
+        0xE0, 0x07,                               // loopne +7 (taken)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // (target) mov rax, 0xAA
+        0x48, 0x89, 0xCB,                         // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA && c.reg[X64_RBX].u64 == 1;
+    });
+
+    // LOOPNE (E0): count != 0 but ZF==1 -> not taken.
+    runAndCheck(r, "loopne not taken (zf=1)", withExit({
+        0x48, 0xC7, 0xC1, 0x02, 0x00, 0x00, 0x00, // mov rcx, 2
+        0x48, 0x31, 0xC0,                         // xor rax, rax  ; ZF=1
+        0xE0, 0x07,                               // loopne +7 (not taken)
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // (fallthrough) mov rax, 0xAA
+        0xEB, 0x07,                               // jmp +7 (skip taken-target)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0x89, 0xCB,                         // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA && c.reg[X64_RBX].u64 == 1;
+    });
+
+    // LOOP with 0x67 address-size prefix: decrements ECX (32-bit), and the
+    // 32-bit write zero-extends into RCX. ECX=0 -> 0xFFFFFFFF != 0, taken.
+    runAndCheck(r, "loop 32-bit (67 E2, ecx=0->max, taken)", withExit({
+        0x48, 0xB9, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, // mov rcx, 0x100000000
+        0x48, 0x31, 0xC0,                                           // xor rax, rax
+        0x67, 0xE2, 0x07,                                           // loop +7 (taken)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00,                   // (skipped) mov rax, 0xD0BA
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00,                   // (target) mov rax, 0xAA
+        0x48, 0x89, 0xCB,                                           // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA && c.reg[X64_RBX].u64 == 0xFFFFFFFFULL;
+    });
+
+    // LOOP must not modify flags: ZF=1 before, still ZF=1 after (read back
+    // via sete al; rax was 0 so sete leaves rax==1).
+    runAndCheck(r, "loop preserves ZF", withExit({
+        0x48, 0xC7, 0xC1, 0x02, 0x00, 0x00, 0x00, // mov rcx, 2
+        0x48, 0x31, 0xC0,                         // xor rax, rax  ; ZF=1
+        0xE2, 0x07,                               // loop +7 (taken)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x0F, 0x94, 0xC0,                         // (target) sete al  ; al = ZF
+        0x48, 0x89, 0xCB,                         // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 1 && c.reg[X64_RBX].u64 == 1;
+    });
+
     const char* requireJit = std::getenv("BW64_JIT_VERIFY");
     if (requireJit && std::strcmp(requireJit, "1") == 0) {
         printf("JIT64: blocks=%llu insns=%llu\n",

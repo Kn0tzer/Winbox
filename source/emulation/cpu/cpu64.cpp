@@ -796,7 +796,8 @@ U32 CPU64::step() {
         case 0x6e: case 0x6f: case 0x82: case 0x9a: case 0xac: case 0xad: case 0xc4: case 0xc5: 
         case 0xc8: case 0xca: case 0xcb: case 0xcd: case 0xce: case 0xd4: case 0xd5: case 0xd6: 
         case 0xe3: goto dsp_60;
-        case 0xe0: case 0xe1: case 0xe2: case 0xe4: case 0xe5: case 0xe6: case 0xe7: 
+        case 0xe0: case 0xe1: case 0xe2: goto dsp_61;
+        case 0xe4: case 0xe5: case 0xe6: case 0xe7: 
         case 0xea: case 0xec: case 0xed: case 0xee: case 0xef: case 0xf0: case 0xf1: case 0xf2: 
         case 0xf3: case 0xf4: case 0xfa: case 0xfb: goto unhandled;
     }
@@ -811,6 +812,34 @@ dsp_60:
         U32 used = opOff + 2;
         U64 count = p.asize32 ? (U64)reg[X64_RCX].u32 : reg[X64_RCX].u64;
         rip = (count == 0) ? (rip + used + (U64)(S64)disp) : (rip + used);
+        return used;
+    }
+    goto unhandled;
+
+    // LOOP/LOOPE/LOOPNE rel8 (E2/E1/E0 cb). Decrement the count register
+    // (RCX, or ECX with the 0x67 address-size prefix), then jump short if
+    // the decremented count is non-zero and, for E1/E0, the ZF condition
+    // holds: E2 jumps when count != 0; E1 when count != 0 && ZF==1;
+    // E0 when count != 0 && ZF==0. The decrement does not modify flags.
+    // The 0x66 operand-size prefix has no effect. Follows the dsp_60
+    // (JRCXZ) rip/used pattern.
+dsp_61:
+    if (op >= 0xE0 && op <= 0xE2) {
+        S8 disp = (S8)fetchByte(rip + opOff + 1);
+        U32 used = opOff + 2;
+        U64 count;
+        if (p.asize32) {
+            U32 c = reg[X64_RCX].u32 - 1;
+            reg[X64_RCX].setU32(c);   // 32-bit write zero-extends, per x86-64
+            count = c;
+        } else {
+            count = reg[X64_RCX].u64 - 1;
+            reg[X64_RCX].setU64(count);
+        }
+        bool zf = (rflags & X64_ZF) != 0;
+        bool take = (count != 0) &&
+                    (op == 0xE2 || (op == 0xE1 ? zf : !zf));
+        rip = take ? (rip + used + (U64)(S64)disp) : (rip + used);
         return used;
     }
     goto unhandled;
