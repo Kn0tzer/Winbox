@@ -1110,11 +1110,28 @@
                                 (function wbDeskpinPoll() {
                                     var dpPid = lastSpawnedPid();
                                     if (dpPid && dpPid !== deskpinPidBefore) {
-                                        // Wineboot spawn SKIPPED: fake is ELF not PE.
-                                        // Wine PE loader fails with c0000017 on ELF.
-                                        // Internal ntdll run_wineboot fork+exec handled by fake directly.
-                                        console.log("session: x86 wineboot skipped (fake ELF)");
-                                        arch32WinebootDone = true;
+                                        // Signal the __wineboot_event that ntdll created.
+                                        // The fake wineboot.exe (91-byte ELF) exits 0 without
+                                        // signaling, causing threads to stall forever on the
+                                        // event. signalboot.exe opens and signals it via Win32.
+                                        var sbPidBefore = dpPid;
+                                        spawnArgv(wineProgArgv("Z:\\home\\username\\signalboot.exe"), "signalboot (signal __wineboot_event)");
+                                        var sbWaited = 0, SB_STEP = 200, SB_LIMIT = 30000;
+                                        (function sbPoll() {
+                                            var sbPid = lastSpawnedPid();
+                                            if (sbPid && sbPid !== sbPidBefore) {
+                                                console.log("session: x86 signalboot pid=" + sbPid);
+                                                wbDonePoll(sbPid);
+                                                return;
+                                            }
+                                            sbWaited += SB_STEP;
+                                            if (sbWaited >= SB_LIMIT) {
+                                                console.error("session: x86 signalboot pid never appeared, proceeding anyway");
+                                                arch32WinebootDone = true;
+                                                return;
+                                            }
+                                            setTimeout(sbPoll, SB_STEP);
+                                        })();
                                         return;
                                     }
                                     wbDeskpinWaited += WB_DESKPIN_STEP;
@@ -1142,13 +1159,13 @@
                             var wbWaited = 0, WB_STEP = 500, WB_LIMIT = 300000;
                             (function wbPoll() {
                                 if (!pidAlive(wbPid)) {
-                                    console.log("session: x86 wineboot completed");
+                                    console.log("session: x86 signalboot completed (event signaled)");
                                     arch32WinebootDone = true;
                                     return;
                                 }
                                 wbWaited += WB_STEP;
                                 if (wbWaited >= WB_LIMIT) {
-                                    console.error("session: x86 wineboot timed out, proceeding anyway");
+                                    console.error("session: x86 signalboot timed out, proceeding anyway");
                                     arch32WinebootDone = true;
                                     return;
                                 }
