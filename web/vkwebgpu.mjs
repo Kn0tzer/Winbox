@@ -1397,7 +1397,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   // Buffer cache key (shared with the bind-group fingerprint).
   function bufferKey(bufHex, bytes, usage, effLen, preHash) {
     const hash = preHash || (bytes ? fnv1a(bytes) : 'empty');
-    return bufHex + ':' + usage + ':' + effLen + ':' + hash;
+    return bufHex + ':' + usage + ':' + hash;
   }
 
   function gpuBufferFor(bufHex, bytes, usage, preHash) {
