@@ -61,6 +61,7 @@
 #include "../../io/fsnode.h"
 #include "../../x11wire/xwirepresent.h"
 #include "kunixsocket.h" // xwireInjectKey (bw64_xwire_key)
+#include "ksocket.h" // K_AF_UNIX, K_SOCK_STREAM (doSignalWineboot)
 
 #include <atomic>
 #include <vector>
@@ -241,49 +242,155 @@ static void doSpawn(const Wine64Req& req) {
 //   REQ_open_event = 33: access(U32), attributes(U32), rootdir(U32), VARARG(name,unicode_str)
 //   REQ_event_op = 31: handle(U32), op(S32)  [op: 0=PULSE, 1=SET, 2=RESET]
 // Runs on the main-loop thread.
+// doSignalWineboot: signal __wineboot_event in wineserver32 via the Wine server
+// protocol, bypassing 32-bit PE execution (which is broken - no 32-bit PE runs
+// its entry point). This unblocks 32-bit Wine threads waiting on the event.
+//
+// Protocol (verified against 64-bit traces):
+//   REQ_open_event = 33: access(U32), attributes(U32), rootdir(U32), VARARG(name,unicode_str)
+//   REQ_event_op = 31: handle(U32), op(S32)  [op=2 signals per 64-bit trace]
+// Runs on the main-loop thread.
 static void doSignalWineboot() {
     klog("wine64session: doSignalWineboot: signaling __wineboot_event in wineserver32");
 
-    // Wine server protocol constants (from server/protocol.def)
     const int REQ_open_event = 33;
     const int REQ_event_op = 31;
-    const int SET_EVENT = 1;
+    const int OP_SIGNAL = 2;
 
-    // Build open_event request for \KernelObjects\__wineboot_event
-    // Format: header(12) + access(4) + attributes(4) + rootdir(4) + pad(4) + name(UTF-16)
-    const char* eventName = "\\KernelObjects\\__wineboot_event";
-    // Convert to UTF-16LE
-    int nameLen = 0;
-    while (eventName[nameLen]) nameLen++;
-    int nameBytes = (nameLen + 1) * 2; // +1 for null terminator, *2 for UTF-16
-
-    int reqSize = 28 + nameBytes; // 28 = header(12) + fixed(16)
-    U8* reqBuf = new U8[reqSize];
-
-    // Header: req(4), request_size(4), reply_size(4)
-    *(int*)(reqBuf + 0) = REQ_open_event;
-    *(int*)(reqBuf + 4) = nameBytes; // request_size = variable part size
-    *(int*)(reqBuf + 8) = 8; // reply_size = max reply (handle + pad)
-
-    // Body: access(4), attributes(4), rootdir(4), pad(4)
-    *(unsigned int*)(reqBuf + 12) = 0x1F0003; // EVENT_ALL_ACCESS
-    *(unsigned int*)(reqBuf + 16) = 0; // attributes
-    *(unsigned int*)(reqBuf + 20) = 0; // rootdir (null = \KernelObjects)
-    *(unsigned int*)(reqBuf + 24) = 0; // pad
-
-    // VARARG name as UTF-16LE
-    U16* namePtr = (U16*)(reqBuf + 28);
-    for (int i = 0; i <= nameLen; i++) {
-        namePtr[i] = (U16)eventName[i];
+    KThread* thread = KThread::currentThread();
+    if (!thread || !thread->process) {
+        klog("wine64session: doSignalWineboot: no current thread/process");
+        return;
     }
 
-    klog_fmt("wine64session: doSignalWineboot: built open_event request (%d bytes)", reqSize);
-    // TODO: Connect to wineserver32 socket and send
-    // For now, log and clean up
-    delete[] reqBuf;
+    // Step 1: Find wineserver32 socket path by scanning /tmp
+    std::shared_ptr<FsNode> tmpNode = Fs::getNodeFromLocalPath(B("/"), B("/tmp"), true);
+    if (!tmpNode) {
+        klog("wine64session: doSignalWineboot: /tmp not found");
+        return;
+    }
+    std::vector<std::shared_ptr<FsNode>> tmpChildren;
+    tmpNode->getAllChildren(tmpChildren);
+    BString socketPath;
+    for (auto& child : tmpChildren) {
+        if (child->name.startsWith(B("server32-"))) {
+            socketPath = B("/tmp/") + child->name + B("/socket");
+            break;
+        }
+    }
+    if (socketPath.isEmpty()) {
+        klog("wine64session: doSignalWineboot: no server32-* in /tmp");
+        return;
+    }
+    klog_fmt("wine64session: doSignalWineboot: socket %s", socketPath.c_str());
 
-    klog("wine64session: doSignalWineboot: socket connection not yet implemented");
+    // Step 2: Create socket and allocate fd
+    std::shared_ptr<KUnixSocketObject> sock = std::make_shared<KUnixSocketObject>(K_AF_UNIX, K_SOCK_STREAM, 0);
+    KFileDescriptorPtr fd = thread->process->allocFileDescriptor(sock, 3, 0, -1, 0);
+    if (!fd) {
+        klog("wine64session: doSignalWineboot: fd alloc failed");
+        return;
+    }
+    // Get the fd number - allocFileDescriptor returns the object, need the handle
+    // We'll find it by scanning (or use a simpler approach below)
+
+    // Step 3: Write sockaddr_un to guest memory and connect
+    // sockaddr_un: family(U16=1) + path(108 bytes)
+    U32 addrLen = 2 + socketPath.length() + 1;
+    if (addrLen > 110) {
+        klog("wine64session: doSignalWineboot: socket path too long");
+        return;
+    }
+    // Allocate guest memory for sockaddr
+    U32 guestAddr = thread->memory->mmap(thread, 0, 4096, 7, 0x22, -1, 0, false);
+    if (!guestAddr) {
+        klog("wine64session: doSignalWineboot: mmap failed");
+        return;
+    }
+    thread->memory->writew(guestAddr, K_AF_UNIX);
+    thread->memory->memcpy(guestAddr + 2, socketPath.c_str(), socketPath.length() + 1);
+
+    // Find the fd number for our allocated descriptor
+    // allocFileDescriptor with handle=-1 auto-assigns; we need to find it
+    // Simpler: iterate fds to find our socket object
+    U32 fdNum = 0;
+    for (U32 i = 3; i < 1024; i++) {
+        KFileDescriptorPtr f = thread->process->getFileDescriptor(i);
+        if (f && f->kobject == sock) {
+            fdNum = i;
+            break;
+        }
+    }
+    if (!fdNum) {
+        klog("wine64session: doSignalWineboot: could not find fd number");
+        return;
+    }
+
+    U32 connResult = sock->connect(thread, fd, guestAddr, addrLen);
+    if (connResult != 0) {
+        klog_fmt("wine64session: doSignalWineboot: connect failed");
+        return;
+    }
+    klog("wine64session: doSignalWineboot: connected");
+
+    // Step 4: Send open_event
+    const char* eventName = "\\\\KernelObjects\\\\__wineboot_event";
+    int nameLen = 0;
+    while (eventName[nameLen]) nameLen++;
+    int nameBytes = (nameLen + 1) * 2;
+    int reqSize = 28 + nameBytes;
+    U8* reqBuf = new U8[reqSize];
+    *(int*)(reqBuf + 0) = REQ_open_event;
+    *(int*)(reqBuf + 4) = nameBytes;
+    *(int*)(reqBuf + 8) = 8;
+    *(unsigned int*)(reqBuf + 12) = 0x1F0003;
+    *(unsigned int*)(reqBuf + 16) = 0;
+    *(unsigned int*)(reqBuf + 20) = 0;
+    *(unsigned int*)(reqBuf + 24) = 0;
+    U16* namePtr = (U16*)(reqBuf + 28);
+    for (int i = 0; i <= nameLen; i++) namePtr[i] = (U16)eventName[i];
+
+    U32 written = sock->writeNative(reqBuf, reqSize);
+    delete[] reqBuf;
+    if (written != (U32)reqSize) {
+        klog("wine64session: doSignalWineboot: open_event write failed");
+        return;
+    }
+
+    // Step 5: Read reply
+    U8 replyBuf[32];
+    U32 nread = sock->readNative(replyBuf, 8);
+    if (nread < 8) {
+        klog("wine64session: doSignalWineboot: open_event reply short");
+        return;
+    }
+    U32 eventHandle = *(U32*)(replyBuf + 0);
+    if (!eventHandle) {
+        klog("wine64session: doSignalWineboot: null handle");
+        return;
+    }
+    klog("wine64session: doSignalWineboot: got event handle");
+
+    // Step 6: Send event_op
+    U8 opReq[20];
+    *(int*)(opReq + 0) = REQ_event_op;
+    *(int*)(opReq + 4) = 8;
+    *(int*)(opReq + 8) = 8;
+    *(U32*)(opReq + 12) = eventHandle;
+    *(int*)(opReq + 16) = OP_SIGNAL;
+    written = sock->writeNative(opReq, 20);
+    if (written != 20) {
+        klog("wine64session: doSignalWineboot: event_op write failed");
+        return;
+    }
+    nread = sock->readNative(replyBuf, 8);
+    if (nread < 8) {
+        klog("wine64session: doSignalWineboot: event_op reply short");
+        return;
+    }
+    klog("wine64session: doSignalWineboot: event signaled successfully");
 }
+
 
 // Kill a previously-spawned app (close-previous-on-switch). Runs on the
 // main-loop thread.
