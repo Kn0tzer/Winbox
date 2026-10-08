@@ -316,6 +316,10 @@ const char* fnName(U64 id) {
 
 std::recursive_mutex g_vkMutex;   // one bridge per process; every trap serializes
 KMemory64* g_mem = nullptr;       // guest memory of the calling thread's process
+// Global generation counter: bumped whenever any buffer is modified via
+// vkCmdCopyBuffer/vkCmdUpdateBuffer/vkCmdFillBuffer. Lets emitBufferData skip
+// the expensive readGuestRange+hash for static buffers.
+static U64 g_bufDirtyTick = 1;
 
 // ---------------------------------------------------------------------------
 // Guest memory helpers. EVERY guest pointer arrives here as a VA and is only
@@ -1432,10 +1436,6 @@ static std::unordered_map<U64, U64> g_imageContentHash;
 // entries stay valid; vkDestroyBuffer erases them.
 struct BufHashEntry { U64 hash = 0; U64 dirtyGen = 0; };
 static std::map<std::tuple<U64,U64,U64>, BufHashEntry> g_bufferContentHash;
-// Global generation counter: bumped whenever any buffer is modified via
-// vkCmdCopyBuffer/vkCmdUpdateBuffer/vkCmdFillBuffer. Lets emitBufferData skip
-// the expensive readGuestRange+hash for static buffers.
-static U64 g_bufDirtyTick = 1;
 
 // Submit-time v2 frame reconstruction: the same walk as serializeSubmit, but
 // the frame is a stream of binary records instead of one JSON string, and it
@@ -4267,9 +4267,6 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             c.copyI2B.w = regs[i].w; c.copyI2B.h = regs[i].h;
             pushCmd(cb, c);
         }
-        return 0;
-    }
-    case VK64_fn_vkCmdCopyImage: {
         return 0;
     }
     case VK64_fn_vkCmdCopyBuffer: {

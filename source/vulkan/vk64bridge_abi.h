@@ -298,6 +298,29 @@ enum {
     VK64_fn_vkCmdCopyBuffer,                        // (cmdBuf, srcBuffer, dstBuffer, regionCount, pRegions*) -> immediate CPU memcpy
     VK64_fn_vkCmdCopyBuffer2,                       // (cmdBuf, pCopyBufferInfo*) -> immediate CPU memcpy
     VK64_fn_vkCmdCopyBuffer2KHR,                    // alias of vkCmdCopyBuffer2
+    // Game-breaking stub implementations (immediate CPU emulation)
+    VK64_fn_vkCmdFillBuffer,                        // (cmdBuf, dstBuffer, dstOffset, size, data) -> fill with 32-bit pattern
+    VK64_fn_vkCmdClearColorImage,                   // (cmdBuf, image, layout, pColor*, rangeCount, pRanges*) -> fill image
+    VK64_fn_vkCmdClearAttachments,                  // (cmdBuf, attachCount, pAttach*, rectCount, pRects*) -> clear in RP
+    VK64_fn_vkCmdClearAttachmentsKHR,               // alias
+    VK64_fn_vkCmdCopyImage2,                        // (cmdBuf, srcImg, dstImg, nRegions, pRegions*) -> immediate copy (unpacked)
+    VK64_fn_vkCmdCopyImage2KHR,                     // alias
+    VK64_fn_vkCmdCopyBufferToImage2,                // (cmdBuf, srcBuf, dstImg, nRegions, pRegions*) -> immediate copy (unpacked)
+    VK64_fn_vkCmdCopyBufferToImage2KHR,             // alias
+    VK64_fn_vkCmdBlitImage,                         // (cmdBuf, srcImg, srcLayout, dstImg, dstLayout, nRegions, pRegions*, filter) -> scaled copy
+    VK64_fn_vkCmdBlitImage2,                        // (cmdBuf, srcImg, dstImg, nRegions, pRegions*, filter) -> scaled copy (unpacked)
+    VK64_fn_vkCmdBlitImage2KHR,                     // alias
+    VK64_fn_vkCmdResolveImage,                      // (cmdBuf, srcImg, srcLayout, dstImg, dstLayout, nRegions, pRegions*) -> MSAA resolve
+    VK64_fn_vkCmdResolveImageKHR,                   // alias
+    VK64_fn_vkCmdDrawIndirect,                      // (cmdBuf, buffer, offset, drawCount, stride) -> indirect to direct draws
+    VK64_fn_vkCmdDrawIndexedIndirect,               // (cmdBuf, buffer, offset, drawCount, stride) -> indirect to direct draws
+    VK64_fn_vkCmdDrawIndirectCount,                 // (cmdBuf, buffer, offset, countBuf, countOffset, maxDraws, stride)
+    VK64_fn_vkCmdDrawIndirectCountKHR,              // alias
+    VK64_fn_vkCmdDrawIndexedIndirectCount,          // (cmdBuf, buffer, offset, countBuf, countOffset, maxDraws, stride)
+    VK64_fn_vkCmdExecuteCommands,                   // (cmdBuf, cmdCount, pCmdBufs*) -> merge secondary CBs
+    VK64_fn_vkCmdDispatch,                          // (cmdBuf, x, y, z) -> record compute dispatch
+    VK64_fn_vkCmdDispatchBase,                      // (cmdBuf, baseX, baseY, baseZ, x, y, z) -> record compute dispatch
+    VK64_fn_vkCmdDispatchIndirect,                  // (cmdBuf, buffer, offset) -> record compute dispatch
     VK64_fn__MAX
 };
 
