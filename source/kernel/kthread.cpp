@@ -1664,6 +1664,12 @@ void KThread::clone(KThread* from) {
     this->waitingForSignalToEndMaskToRestore = from->waitingForSignalToEndMaskToRestore;
     this->cpu->clone(from->cpu);
     this->cpu->thread = this;
+    // Copy TLS LDT entries: forked child needs parent's FS/GS segment state.
+    // Without this, 32-bit Wine child processes (conhost.exe) fault on TEB
+    // access via FS and are killed immediately after new_process.
+    for (int i = 0; i < TLS_ENTRIES; i++) {
+        this->tls[i] = from->tls[i];
+    }
 }
 
 U32 KThread::modify_ldt(U32 func, U32 ptr, U32 count) {
