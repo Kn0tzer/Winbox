@@ -5373,9 +5373,18 @@ dsp_59:
             } else if (op == 0xD9 && modrmByte == 0xE8) {
                 // D9 E8 = FLD1 — push +1.0 (FPU::FLD1 does PREP_PUSH itself)
                 fpu.FLD1();
+            } else if (op == 0xD9 && modrmByte == 0xEB) {
+                // D9 EB = FLDPI - push pi
+                fpu.FLDPI();
             } else if (op == 0xD9 && modrmByte == 0xEE) {
                 // D9 EE = FLDZ — push +0.0 (FPU::FLDZ does PREP_PUSH itself)
                 fpu.FLDZ();
+            } else if (op == 0xD9 && modrmByte == 0xF5) {
+                // D9 F5 = FPREM1 - partial remainder (IEEE)
+                fpu.FPREM1();
+            } else if (op == 0xD9 && modrmByte == 0xFB) {
+                // D9 FB = FSINCOS - ST(0)=sin(x), push cos(x)
+                fpu.FSINCOS();
             } else if (op == 0xD9 && modrmByte == 0xFE) {
                 // D9 FE = FSIN — sine of ST(0), result in ST(0)
                 fpu.FSIN();
