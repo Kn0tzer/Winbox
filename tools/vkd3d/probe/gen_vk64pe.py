@@ -2,7 +2,8 @@
 import sys
 
 exports = []
-with open('/tmp/exports.txt') as f:
+import os
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'exports.txt')) as f:
     for line in f:
         parts = line.strip().split()
         if len(parts) == 3:
@@ -67,25 +68,72 @@ for name, fnid, argc in unimpl:
 
 # Proc table for loader functions (all exports)
 out.append('typedef struct { const char *name; void *func; } ProcEntry;')
+out.append('// Forward declarations for loader functions (defined below g_procs)')
+out.append('__declspec(dllexport) void *vkGetDeviceProcAddr(uint64_t device, const char *name);')
+out.append('__declspec(dllexport) void *vkGetInstanceProcAddr(uint64_t instance, const char *name);')
+out.append('__declspec(dllexport) void *vk_icdGetInstanceProcAddr(uint64_t instance, const char *name);')
+out.append('__declspec(dllexport) void *vk_icdGetPhysicalDeviceProcAddr(uint64_t instance, const char *name);')
+out.append('__declspec(dllexport) uint32_t vk_icdNegotiateLoaderICDInterfaceVersion(uint32_t *pVersion);')
 out.append('static ProcEntry g_procs[] = {')
 for name, fnid, argc in exports:
-    if name not in loaders:
+    if True:  # Include loaders so they are resolvable via vkGetInstanceProcAddr
         out.append(f'    {{"{name}", (void*){name}}},')
 out.append('};')
 out.append(f'static const int g_nprocs = {len(exports) - len(loaders)};')
 out.append('')
 out.append('''/* Benign stub for unknown proc names. Traps with fnId=1 (unimplemented)
- * so the host logs the request, then returns VK_ERROR_FEATURE_NOT_PRESENT. */
+ * so the host logs the request, then returns VK_ERROR_FEATURE_NOT_PRESENT.
+ * For vkd3d-queried functions with output params, writes plausible defaults
+ * to prevent infinite retry loops. */
 static __thread uint64_t vk64_benign_name = 0;
-__declspec(dllexport) uint64_t vk64_benign(uint64_t a0) {
+__declspec(dllexport) uint64_t vk64_benign(uint64_t a0, uint64_t a1, uint64_t a2) {
     uint64_t args[16] = {vk64_benign_name};
-    (void)a0;
+    const char *name = (const char*)vk64_benign_name;
     vk64_trap(1ULL, args);
+    if (name && a2) {
+        if (strcmp(name, "vkGetPhysicalDeviceSurfaceCapabilities2KHR") == 0) {
+            uint32_t *out = (uint32_t*)a2;
+            out[0] = 1000119001;
+            out[1] = 0;
+            for (int i = 2; i < 32; i++) out[i] = 0;
+            out[2] = 2;
+            out[3] = 8;
+            return 0;
+        }
+    }
+    (void)a0; (void)a1;
     return (uint64_t)(int64_t)-8;
+}
+
+/* Denylist: extension functions that cause vkd3d to spin if stubbed.
+ * Return NULL so vkd3d disables the extension cleanly. */
+static const char *g_denylist[] = {
+    "vkGetDescriptorSetLayoutSizeEXT",
+    "vkGetDescriptorSetLayoutBindingOffsetEXT",
+    "vkGetDescriptorEXT",
+    "vkCmdBindDescriptorBuffersEXT",
+    "vkCmdSetDescriptorBufferOffsetsEXT",
+    "vkCmdBindDescriptorBufferEmbeddedSamplersEXT",
+    "vkGetBufferOpaqueCaptureDescriptorDataEXT",
+    "vkGetImageOpaqueCaptureDescriptorDataEXT",
+    "vkGetImageViewOpaqueCaptureDescriptorDataEXT",
+    "vkGetSamplerOpaqueCaptureDescriptorDataEXT",
+    "vkGetAccelerationStructureOpaqueCaptureDescriptorDataEXT",
+    "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR",
+    "vkGetPhysicalDeviceCooperativeMatrixPropertiesNV",
+    "vkGetPhysicalDeviceDescriptorSizeEXT",
+};
+static const int g_ndenylist = 14;
+static int vk64_is_denylisted(const char *name) {
+    int i;
+    for (i = 0; i < g_ndenylist; i++)
+        if (strcmp(name, g_denylist[i]) == 0) return 1;
+    return 0;
 }
 
 static void *vk64_resolve(const char *name) {
     if (!name) return (void*)vk64_benign;
+    if (vk64_is_denylisted(name)) return NULL;
     for (int i = 0; i < g_nprocs; i++) {
         if (strcmp(name, g_procs[i].name) == 0)
             return g_procs[i].func;
