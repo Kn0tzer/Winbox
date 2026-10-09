@@ -802,6 +802,69 @@ static U64 sys_exit64(CPU64* cpu, U64 status, bool group) {
         klog_fmt("CPU64: %s syscall, status=%lld",
                  group ? "exit_group" : "exit", (long long)status);
     }
+    // BW64_EXIT_TRACE (D3D11 multi-device clean-exit(0) investigation):
+    // On process exit, dump guest RIP + stack return addresses and resolve
+    // them against Wine's PEB loader list, so we can see which guest code
+    // called exit_group. Process exits are rare; zero steady-state cost.
+    if (group && cpu->thread && cpu->thread->process) {
+        U64 ripTrace = cpu->rip;
+        U64 rspTrace = cpu->reg[X64_RSP].u64;
+        U64 raTrace[4];
+        for (int rti = 0; rti < 4; rti++)
+            raTrace[rti] = cpu->memory->readq(rspTrace + (U64)rti * 8);
+        klog_fmt("CPU64: exit_group trace tid=%d rip=0x%llx rsp=0x%llx ra=[0x%llx,0x%llx,0x%llx,0x%llx]",
+                 (int)cpu->thread->id,
+                 (unsigned long long)ripTrace, (unsigned long long)rspTrace,
+                 (unsigned long long)raTrace[0], (unsigned long long)raTrace[1],
+                 (unsigned long long)raTrace[2], (unsigned long long)raTrace[3]);
+        U64 gsTrace = cpu->gsbase;
+        if (gsTrace) {
+            U64 pebTrace = cpu->memory->readq(gsTrace + 0x60);
+            U64 ldrTrace = pebTrace ? cpu->memory->readq(pebTrace + 0x18) : 0;
+            if (ldrTrace) {
+                struct ExitMod { U64 base; char name[64]; };
+                ExitMod modsTrace[48]; int nModsTrace = 0;
+                // PEB_LDR_DATA+0x10=InLoadOrderModuleList; entries link via
+                // InLoadOrderLinks at +0x00, so entry=link (no subtract).
+                U64 headTrace = ldrTrace + 0x10;
+                U64 linkTrace = cpu->memory->readq(headTrace);
+                for (int mi = 0; mi < 64 && linkTrace && linkTrace != headTrace && nModsTrace < 48; mi++) {
+                    U64 entryTrace = linkTrace;
+                    U64 baseTrace = cpu->memory->readq(entryTrace + 0x30);
+                    ExitMod mdTrace; mdTrace.base = baseTrace; mdTrace.name[0] = 0;
+                    if (baseTrace) {
+                        U16 nlenTrace = cpu->memory->readw(entryTrace + 0x58);
+                        U64 nbufTrace = cpu->memory->readq(entryTrace + 0x60);
+                        if (nlenTrace && nbufTrace && nlenTrace < 120) {
+                            int cnTrace = nlenTrace / 2; if (cnTrace > 62) cnTrace = 62;
+                            for (int ci = 0; ci < cnTrace; ci++) {
+                                U16 chTrace = cpu->memory->readw(nbufTrace + (U64)ci * 2);
+                                mdTrace.name[ci] = (chTrace < 128) ? (char)chTrace : '?';
+                            }
+                            mdTrace.name[cnTrace] = 0;
+                        }
+                        modsTrace[nModsTrace++] = mdTrace;
+                    }
+                    linkTrace = cpu->memory->readq(linkTrace);
+                }
+                U64 addrsTrace[5] = { ripTrace, raTrace[0], raTrace[1], raTrace[2], raTrace[3] };
+                const char* tagsTrace[5] = { "rip", "ra0", "ra1", "ra2", "ra3" };
+                for (int ai = 0; ai < 5; ai++) {
+                    const char* mnTrace = "?"; U64 moTrace = addrsTrace[ai];
+                    for (int i = 0; i < nModsTrace; i++) {
+                        if (modsTrace[i].base && modsTrace[i].base <= addrsTrace[ai] &&
+                            addrsTrace[ai] - modsTrace[i].base < moTrace) {
+                            moTrace = addrsTrace[ai] - modsTrace[i].base;
+                            mnTrace = modsTrace[i].name[0] ? modsTrace[i].name : "?";
+                        }
+                    }
+                    klog_fmt("CPU64: exit_group %s=0x%llx -> %s+0x%llx", tagsTrace[ai],
+                             (unsigned long long)addrsTrace[ai], mnTrace,
+                             (unsigned long long)moTrace);
+                }
+            }
+        }
+    }
     // Stop this thread's run loop now, whatever else happens below.
     cpu->yield = true;
     if (cpu->thread && cpu->thread->process) {
