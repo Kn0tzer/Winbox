@@ -2016,6 +2016,25 @@ void XWireConnection::deliverInputEvents() {
         // focus, which is exactly what we now honor for keys.)
         const bool isKey = (ev.type == XWireInputEvent::EvKeyDown ||
                             ev.type == XWireInputEvent::EvKeyUp);
+        // For EvMotionRel, x/y are deltas: accumulate into a virtual absolute
+        // position BEFORE the pointer hit-test, so routing uses the cursor
+        // position the guest can difference (FPS mouse-look). Hit-testing on
+        // raw deltas hit no window (e.g. dy=-5 fails y>=0), so the event fell
+        // back to presentWindow -- which may lack PointerMotionMask or be the
+        // wrong window -- and the guest never saw relative motion.
+        XWireInputEvent eff = ev;
+        if (ev.type == XWireInputEvent::EvMotionRel) {
+            if (!relInit) {
+                int px = 0, py = 0; uint32_t pm = 0;
+                if (g_xwirePresentSink) g_xwirePresentSink->lastPointer(px, py, pm);
+                relX = px; relY = py; relInit = true;
+            }
+            relX += ev.x; relY += ev.y;
+            eff.x = relX; eff.y = relY;
+            eff.type = XWireInputEvent::EvMotion;
+        } else if (ev.type == XWireInputEvent::EvMotion) {
+            if (relInit) { relInit = false; } // absolute motion resyncs
+        }
         uint32_t target = presentWindow;
         int16_t tgtX = baseX, tgtY = baseY;   // target window root origin
         uint32_t mask = 0;
@@ -2028,8 +2047,8 @@ void XWireConnection::deliverInputEvents() {
                     if (kv.first == presentWindow || w.isRoot) continue;
                     if (!w.mapped || !w.fbW || !w.fbH) continue;
                     int hx0 = (int)w.x - baseX, hy0 = (int)w.y - baseY;   // host rect
-                    if (ev.x >= hx0 && ev.x < hx0 + (int)w.fbW &&
-                        ev.y >= hy0 && ev.y < hy0 + (int)w.fbH &&
+                    if (eff.x >= hx0 && eff.x < hx0 + (int)w.fbW &&
+                        eff.y >= hy0 && eff.y < hy0 + (int)w.fbH &&
                         w.mapSerial >= bestSerial) {
                         bestSerial = w.mapSerial;
                         target = kv.first;
@@ -2047,26 +2066,13 @@ void XWireConnection::deliverInputEvents() {
         if ((target & ~clientIdMask) != clientIdBase) continue;
 
         // event-x/y are relative to the TARGET window: host coord minus the
-        // target's host origin (target root origin minus base origin).
-        // For EvMotionRel, x/y are deltas: accumulate into a virtual absolute
-        // position so the emitted MotionNotify carries a position the guest
-        // can difference (FPS mouse-look). Deltas need no origin translation.
-        XWireInputEvent local = ev;
-        if (ev.type == XWireInputEvent::EvMotionRel) {
-            if (!relInit) {
-                int px = 0, py = 0; uint32_t pm = 0;
-                if (g_xwirePresentSink) g_xwirePresentSink->lastPointer(px, py, pm);
-                relX = px; relY = py; relInit = true;
-            }
-            relX += ev.x; relY += ev.y;
-            local.x = relX - ((int)tgtX - (int)baseX);
-            local.y = relY - ((int)tgtY - (int)baseY);
-            local.type = XWireInputEvent::EvMotion;
-        } else {
-            if (relInit) { relInit = false; } // absolute motion resyncs
-            local.x = ev.x - ((int)tgtX - (int)baseX);
-            local.y = ev.y - ((int)tgtY - (int)baseY);
-        }
+        // target's host origin (target root origin minus base origin). For
+        // EvMotionRel, eff.x/eff.y already hold the accumulated virtual
+        // absolute position, so the emitted MotionNotify carries a position
+        // the guest can difference (FPS mouse-look).
+        XWireInputEvent local = eff;
+        local.x = eff.x - ((int)tgtX - (int)baseX);
+        local.y = eff.y - ((int)tgtY - (int)baseY);
 
         if ((ev.type == XWireInputEvent::EvMotion || ev.type == XWireInputEvent::EvMotionRel) && !(mask & wantMask)) continue;
         // Announce EnterNotify when the pointer crosses into a new target window;
@@ -2077,8 +2083,8 @@ void XWireConnection::deliverInputEvents() {
             enteredWindow = target;
         }
         if (getenv("BW64_XWIRE")) {
-            klog_fmt("XWire input: deliver code=%d detail=%d host(%d,%d)->win(%d,%d) to win=0x%x (mask=0x%x)",
-                     (int)code, (int)ev.detail, (int)ev.x, (int)ev.y,
+            klog_fmt("XWire input: deliver code=%d detail=%d type=%d host(%d,%d)->win(%d,%d) to win=0x%x (mask=0x%x)",
+                     (int)code, (int)ev.detail, (int)ev.type, (int)eff.x, (int)eff.y,
                      (int)local.x, (int)local.y, (unsigned)target, (unsigned)mask);
         }
         sendInputEvent(code, target, local, tgtX, tgtY);

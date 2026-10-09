@@ -3,11 +3,18 @@
 // Run: TAG=unique TIMEOUT=1800000 node /tmp/input3-probe.mjs
 import { chromium } from '@playwright/test';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { waitForBuildIdle } from '/home/ubuntu/boxedwine64/web/tests/build-lock.mjs';
+import { acquireProbeSlot } from '/home/ubuntu/boxedwine64/web/tests/probe-slots.mjs';
 
 const tag = process.env.TAG || `input3-${Date.now()}`;
 if (!/^[\w.-]+$/.test(tag)) throw new Error('TAG bad');
 const dir = `test-results/input3-${tag}`;
 await mkdir(dir, { recursive: true });
+
+// wait for any in-flight WASM rebuild to finish (avoid torn dist/)
+await waitForBuildIdle();
+const slot = await acquireProbeSlot();
+console.log('SLOT', slot.index);
 
 // serve dist
 const { serve } = await import('/home/ubuntu/boxedwine64/tools/browser/serve.mjs');
@@ -65,7 +72,7 @@ try {
   summary.details.mouseFns = mouseFns;
 
   const spawn = await page.evaluate(() => window.bwRuntime.call('bw64_spawn', ['string', 'string'],
-    ['/usr/lib/wine/wine64\nZ:\\\\home\\\\username\\\\tri9input3.exe', 'BW64_VKTRACE=0\nBW64_VKFRAME=0\nWINEDLLOVERRIDES=d3d9=n\nLD_LIBRARY_PATH=/home/username']));
+    ['/usr/lib/wine/wine64\nZ:\\\\home\\\\username\\\\tri9input3.exe', 'BW64_VKTRACE=0\nBW64_VKFRAME=0\nWINEDLLOVERRIDES=d3d9=n\nLD_LIBRARY_PATH=/home/username\nBW64_XWIRE=1']));
   console.log('SPAWN', spawn);
 
   // wait for game to start (input3: WinMain)
@@ -88,14 +95,19 @@ try {
 
   // --- INPUT TESTS ---
   console.log('=== MOUSE MOVE ===');
-  // Move mouse to several positions via injection
-  for (const [x, y] of [[100, 100], [300, 200], [150, 250], [400, 100]]) {
+  // Move mouse to several positions via injection, PACED like real hardware.
+  // winex11 merges back-to-back MotionNotify duplicates (keeps last), so a
+  // synchronous burst collapses to a single WM_MOUSEMOVE; paced events each
+  // survive. The game logs MOUSE every 10th move, so inject 12 to cross it.
+  const mouseBefore = count(/MOUSE \d/);
+  const spots = [[100,100],[300,200],[150,250],[400,100],[120,320],[350,150],[200,200],[100,300],[400,300],[250,120],[180,180],[320,320]];
+  for (const [x, y] of spots) {
     await page.evaluate(([x, y]) => window.bwRuntime.call('bw64_xwire_mouse_move', ['number','number'], [x, y]), [x, y]);
-    await page.waitForTimeout(800);
+    await page.waitForTimeout(400);
   }
   await flush();
-  const mouseOk = has(/MOUSE \d/);
-  console.log('MOUSE_MOVE', mouseOk ? 'PASS' : 'FAIL', 'count=', count(/MOUSE \d/));
+  const mouseOk = count(/MOUSE \d/) > mouseBefore;
+  console.log('MOUSE_MOVE', mouseOk ? 'PASS' : 'FAIL', 'MOUSE lines ' + mouseBefore + ' -> ' + count(/MOUSE \d/));
   summary.details.mouseMove = mouseOk;
 
   console.log('=== LEFT CLICK ===');
@@ -121,8 +133,11 @@ try {
   summary.details.rightClick = rightOk;
 
   console.log('=== MIDDLE CLICK ===');
+  // 600ms separation: the game pumps at ~8fps under SwiftShader and the
+  // button DOWN/UP can land in the same wine batch (or a slow frame) and one
+  // gets lost wine-side. Longer separation makes the test deterministic.
   await page.evaluate(() => window.bwRuntime.call('bw64_xwire_mouse_button', ['number','number'], [2, 1]));
-  await page.waitForTimeout(300);
+  await page.waitForTimeout(600);
   await page.evaluate(() => window.bwRuntime.call('bw64_xwire_mouse_button', ['number','number'], [2, 0]));
   await page.waitForTimeout(800); await flush();
   const midOk = has(/BTN 2 DOWN/) && has(/BTN 2 UP/);
@@ -176,13 +191,20 @@ try {
   summary.details.keyboard = keyOk;
 
   console.log('=== RELATIVE MOUSE ===');
+  // PACED like real pointerlock hardware (see MOUSE MOVE note): a synchronous
+  // burst would be merged by winex11 into one WM_MOUSEMOVE. Paced events yield
+  // ~2/3 WM_MOUSEMOVEs (verified by rel-diag probe) but the exact count varies
+  // with pump timing; 50 events reliably cross two MOUSE thresholds (game logs
+  // every 10th move).
   const relBefore = count(/MOUSE \d/);
-  await page.evaluate(() => {
-    for (let i = 0; i < 5; i++) window.bwRuntime.call('bw64_xwire_mouse_rel', ['number','number'], [10, -5]);
-  });
-  await page.waitForTimeout(1000); await flush();
-  const relOk = count(/MOUSE \d/) > relBefore;
-  console.log('REL_MOUSE', relOk ? 'PASS' : 'FAIL');
+  for (let i = 0; i < 50; i++) {
+    await page.evaluate(() => window.bwRuntime.call('bw64_xwire_mouse_rel', ['number','number'], [6, -3]));
+    await page.waitForTimeout(120);
+  }
+  await page.waitForTimeout(1500); await flush();
+  const relAfter = count(/MOUSE \d/);
+  const relOk = relAfter > relBefore;
+  console.log('REL_MOUSE', relOk ? 'PASS' : 'FAIL', `MOUSE lines ${relBefore} -> ${relAfter}`);
   summary.details.relMouse = relOk;
 
   // screenshot showing game state
@@ -206,4 +228,5 @@ try {
   console.log('SUMMARY', JSON.stringify(summary));
   await browser.close();
   server.close();
+  await slot.release();
 }
