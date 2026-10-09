@@ -5452,17 +5452,35 @@ dsp_59:
                 // D9 F5 = FPREM1 - partial remainder (IEEE)
                 fpu.FPREM1();
             } else if (op == 0xD9 && modrmByte == 0xF0) {
+                // D9 F0 = F2XM1 — 2^x - 1
+                fpu.F2XM1();
             } else if (op == 0xD9 && modrmByte == 0xF1) {
+                // D9 F1 = FYL2X — y * log2(x)
+                fpu.FYL2X();
             } else if (op == 0xD9 && modrmByte == 0xF2) {
+                // D9 F2 = FPTAN — partial tangent
+                fpu.FPTAN();
             } else if (op == 0xD9 && modrmByte == 0xF3) {
+                // D9 F3 = FPATAN — arctan(y/x)
+                fpu.FPATAN();
             } else if (op == 0xD9 && modrmByte == 0xF4) {
+                // D9 F4 = FXTRACT — extract exponent and significand
+                fpu.FXTRACT();
             } else if (op == 0xD9 && modrmByte == 0xF8) {
+                // D9 F8 = FPREM — partial remainder
+                fpu.FPREM();
             } else if (op == 0xD9 && modrmByte == 0xF9) {
+                // D9 F9 = FYL2XP1 — y * log2(x+1)
+                fpu.FYL2XP1();
             } else if (op == 0xD9 && modrmByte == 0xFB) {
                 // D9 FB = FSINCOS - ST(0)=sin(x), push cos(x)
                 fpu.FSINCOS();
             } else if (op == 0xD9 && modrmByte == 0xFC) {
+                // D9 FC = FRNDINT — round to integer
+                fpu.FRNDINT();
             } else if (op == 0xD9 && modrmByte == 0xFD) {
+                // D9 FD = FSCALE — scale by power of 2
+                fpu.FSCALE();
             } else if (op == 0xD9 && modrmByte == 0xFE) {
                 // D9 FE = FSIN — sine of ST(0), result in ST(0)
                 fpu.FSIN();
