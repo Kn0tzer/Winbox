@@ -59,4 +59,10 @@ void ripSamplerNoteModule(int pid, U64 lo, U64 len, const std::string& path);
 // ranges would mis-attribute the next image's RIPs).
 void ripSamplerClearPid(int pid);
 
+// BW64_RIPSAMPLE_PROFILE statistical profiler (additive). Defined in
+// source/emulation/cpu/normal/ripSampler.cpp.
+bool ripSamplerProfileEnabled();
+void ripSamplerProfAdd(int pid, U64 rip, U64 insns);
+void ripSamplerProfDumpReset(int pid);
+
 #endif // __RIP_SAMPLER_H__
