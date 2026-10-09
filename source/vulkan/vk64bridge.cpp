@@ -402,7 +402,14 @@ Obj* findObj(U64 id, U32 kind) {
 }
 template <class T> T* objOf(U64 id, U32 kind, const char* who) {
     Obj* o = findObj(id, kind);
-    if (!o) klog_fmt("vk64: %s: bad/stale handle 0x%llx", who, (unsigned long long)id);
+    if (!o && id) {
+        // Rate-limit: the submit path looks up the same stale descriptors
+        // every frame; klog_fmt+fflush costs ~7ms per call (~74ms/frame).
+        // Log each distinct id once to preserve diagnostics.
+        static std::unordered_set<U64> logged;
+        if (logged.insert(id).second)
+            klog_fmt("vk64: %s: bad/stale handle 0x%llx", who, (unsigned long long)id);
+    }
     return (T*)o;
 }
 void dropObj(U64 id) {
