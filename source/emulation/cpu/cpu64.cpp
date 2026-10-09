@@ -2027,12 +2027,18 @@ dsp_38:
             if (opSize == 2) { sa = (S64)(S16)a; sb = (S64)(S16)b; }
             else if (opSize == 4) { sa = (S64)(S32)a; sb = (S64)(S32)b; }
             else { sa = (S64)a; sb = (S64)b; }
-            S64 r = sa * sb;
-            // CF/OF set if signed result doesn't fit in opSize.
+            // Note: 64-bit signed multiply can overflow S64 (UB), so do the
+            // 64-bit path in __int128 and truncate; 16/32-bit products always
+            // fit in S64.
+            S64 r;
             bool overflow = false;
-            if (opSize == 2) overflow = (r != (S64)(S16)r);
-            else if (opSize == 4) overflow = (r != (S64)(S32)r);
-            else { __int128 r128 = (__int128)sa * (__int128)sb; overflow = (r128 != (__int128)r); }
+            if (opSize == 2) { r = sa * sb; overflow = (r != (S64)(S16)r); }
+            else if (opSize == 4) { r = sa * sb; overflow = (r != (S64)(S32)r); }
+            else {
+                __int128 r128 = (__int128)sa * (__int128)sb;
+                r = (S64)r128;
+                overflow = (r128 != (__int128)r);
+            }
             rflags &= ~(X64_CF | X64_OF);
             if (overflow) rflags |= X64_CF | X64_OF;
             switch (opSize) {
@@ -5365,12 +5371,10 @@ dsp_59:
                 // D9 E1 = FABS — absolute value of ST(0)
                 fpu.FABS();
             } else if (op == 0xD9 && modrmByte == 0xE8) {
-                // D9 E8 = FLD1 — push +1.0
-                fpu.PREP_PUSH();
+                // D9 E8 = FLD1 — push +1.0 (FPU::FLD1 does PREP_PUSH itself)
                 fpu.FLD1();
             } else if (op == 0xD9 && modrmByte == 0xEE) {
-                // D9 EE = FLDZ — push +0.0
-                fpu.PREP_PUSH();
+                // D9 EE = FLDZ — push +0.0 (FPU::FLDZ does PREP_PUSH itself)
                 fpu.FLDZ();
             } else if (op == 0xD9 && modrmByte == 0xFE) {
                 // D9 FE = FSIN — sine of ST(0), result in ST(0)
