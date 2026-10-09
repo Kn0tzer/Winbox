@@ -21,6 +21,9 @@
 #include <SDL.h>
 #include <algorithm>
 #include "../../source/kernel/devs/oss.h"
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 
 #define DSP_BUFFER_SIZE (1024*32)
 
@@ -142,6 +145,9 @@ public:
 	bool sameFormat = false;
 	U32 dspFragSize = 4096;
 	bool open = false;
+#ifdef __EMSCRIPTEN__
+	bool bwPump = false; // KDspAudioSdl-owned Web Audio bridge active
+#endif
 	std::deque<U8> audioBuffer; // only used when KSystem::soundEnabled is false
 	SDL_AudioDeviceID deviceId = 0;
 	U32 realQueuedWant = 0;
@@ -173,6 +179,9 @@ public:
 		if (!this->deviceId) {
 			return 0;
 		}
+		if (this->bwPump) {
+			return 0; // our pump drains every byte; priming only adds latency
+		}
 		U32 gotBytesPerSecond = bytesPerSecondGot();
 		U32 frameSize = bytesPerSampleGot() * this->got.channels;
 		if (!gotBytesPerSecond || !frameSize) {
@@ -199,6 +208,101 @@ public:
 	}
 };
 
+#ifdef __EMSCRIPTEN__
+// KDspAudioSdl-owned Web Audio bridge. SDL's emscripten audio driver pump
+// (ScriptProcessorNode.onaudioprocess -> HandleAudioProcess) never delivers
+// audio to the destination in this build, so writeAudio pushes F32 frames
+// into a ring buffer in wasm heap (shared across threads), consumed by our
+// own ScriptProcessorNode. This avoids SDL's buffer queue entirely, and
+// avoids JS Module state (openAudio and writeAudio may run on different
+// threads with different Module objects).
+#define BW_RING_FRAMES (1 << 20)
+#define BW_RING_MASK (BW_RING_FRAMES - 1)
+static float bwRing[BW_RING_FRAMES];
+static volatile Uint32 bwRingWrite = 0; // producer (writeAudio), unbounded
+static volatile Uint32 bwRingRead = 0;  // consumer (bridge onaudioprocess), unbounded
+static bool bwBridgeArmed = false;
+static bool pumpLogged = false; // one-time diagnostic: peak of first pushed audio
+
+static void bwAudioEnsureBridge() {
+	// Idempotent per AudioContext; recreates if SDL made a new context.
+	EM_ASM({
+		var SDL2 = Module['SDL2'] || (Module['SDL2'] = {});
+		var ctx = SDL2.audioContext;
+		if (!ctx) return;
+		if (ctx.state === 'suspended' && navigator.userActivation && navigator.userActivation.hasBeenActive) {
+			try { ctx.resume(); } catch (e) {}
+		}
+		if (!SDL2.bwNode || SDL2.bwNodeCtx !== ctx) {
+			if (SDL2.bwNode) { try { SDL2.bwNode.disconnect(); } catch (e) {} }
+			var ring = HEAPF32.subarray($0 >> 2, ($0 >> 2) + $3);
+			var wIdx = HEAPU32.subarray($1 >> 2, ($1 >> 2) + 1);
+			var rIdx = HEAPU32.subarray($2 >> 2, ($2 >> 2) + 1);
+			var mask = $3 - 1;
+			var node = ctx.createScriptProcessor(4096, 0, 1);
+			node.onaudioprocess = function(e) {
+				var out = e.outputBuffer.getChannelData(0);
+				var w = wIdx[0] >>> 0;
+				var r = rIdx[0] >>> 0;
+				var used = (w - r) >>> 0;
+				if (used > $3) used = $3;
+				var n = used < out.length ? used : out.length;
+				for (var i = 0; i < n; i++) {
+					out[i] = ring[(r + i) & mask];
+				}
+				if (n < out.length) out.fill(0, n);
+				rIdx[0] = (r + n) >>> 0;
+			};
+			node.connect(ctx.destination);
+			SDL2.bwNode = node;
+			SDL2.bwNodeCtx = ctx;
+		}
+	}, bwRing, (int)&bwRingWrite, (int)&bwRingRead, BW_RING_FRAMES);
+	bwBridgeArmed = true;
+}
+
+// Frames currently in the ring (for closeAudio drain-wait).
+static Uint32 bwAudioRingUsed() {
+	Uint32 w = bwRingWrite;
+	Uint32 r = bwRingRead;
+	Uint32 used = w - r;
+	return used > BW_RING_FRAMES ? BW_RING_FRAMES : used;
+}
+
+// Push F32 frames into the ring. Single producer. Drops oldest on overflow.
+static void bwAudioPushJs(const Uint8* bytes, Uint32 byteLen) {
+	Uint32 frames = byteLen / 4;
+	if (!frames || !bwBridgeArmed) return;
+	const float* samples = (const float*)bytes;
+	Uint32 w = bwRingWrite;
+	Uint32 r = bwRingRead;
+	Uint32 used = w - r;
+	if (used > BW_RING_FRAMES) used = BW_RING_FRAMES;
+	Uint32 free = BW_RING_FRAMES - used - 1;
+	if (frames > free) {
+		Uint32 drop = frames - free;
+		bwRingRead = r + drop;
+		r += drop;
+	}
+	Uint32 wi = w & BW_RING_MASK;
+	Uint32 first = BW_RING_FRAMES - wi;
+	if (first > frames) first = frames;
+	memcpy(&bwRing[wi], samples, first * 4);
+	if (frames > first) {
+		memcpy(bwRing, samples + first, (frames - first) * 4);
+	}
+	bwRingWrite = w + frames;
+	if (!pumpLogged) {
+		pumpLogged = true;
+		float peak = 0;
+		for (Uint32 i = 0; i < frames; i++) {
+			float a = samples[i] < 0 ? -samples[i] : samples[i];
+			if (a > peak) peak = a;
+		}
+		klog_fmt("bwPump: first push %u frames peak=%.4f", frames, peak);
+	}
+}
+#endif
 // Voices whose closeAudio was called while audio was still queued to SDL.
 // A timer polls these and finalizes the device close when the queue drains.
 static std::list<std::shared_ptr<KDspAudioSdl>> pendingCloses;
@@ -210,7 +314,12 @@ static Uint32 SDLCALL drainTimerCb(Uint32 interval, void* /*param*/) {
 	auto it = pendingCloses.begin();
 	while (it != pendingCloses.end()) {
 		std::shared_ptr<KDspAudioSdl> v = *it;
-		if (!v->deviceId || SDL_GetQueuedAudioSize(v->deviceId) == 0) {
+#ifdef __EMSCRIPTEN__
+		bool drained = !v->deviceId || (SDL_GetQueuedAudioSize(v->deviceId) == 0 && (!v->bwPump || bwAudioRingUsed() == 0));
+#else
+		bool drained = !v->deviceId || SDL_GetQueuedAudioSize(v->deviceId) == 0;
+#endif
+		if (drained) {
 			if (v->deviceId) {
 				SDL_CloseAudioDevice(v->deviceId);
 				v->deviceId = 0;
@@ -236,6 +345,7 @@ static void ensureDrainTimer() {
 		drainTimer = SDL_AddTimer(50, drainTimerCb, nullptr);
 	}
 }
+
 
 void KDspAudioSdl::soundEnabled() {
 	if (this->open) {
@@ -304,6 +414,13 @@ void KDspAudioSdl::openAudio(U32 format, U32 freq, U32 channels) {
 	this->open = true;	
 	SDL_PauseAudioDevice(this->deviceId, 0);
 	klog_fmt("openAudio: freq=%d(got %d) format=%x(got %x) channels=%d(got %d)", this->want.freq, this->got.freq, this->want.format, this->got.format, this->want.channels, this->got.channels);
+#ifdef __EMSCRIPTEN__
+	// SDL's emscripten driver pump does not deliver audio in this build;
+	// feed our own Web Audio bridge instead.
+	bwAudioEnsureBridge();
+	this->bwPump = true;
+	klog_fmt("bwPump: bridge armed");
+#endif
 }
 
 void KDspAudioSdl::closeAudio() {
@@ -320,7 +437,12 @@ void KDspAudioSdl::closeAudio() {
 	if (!this->deviceId) {
 		return;
 	}
-	if (SDL_GetQueuedAudioSize(this->deviceId) > 0) {
+#ifdef __EMSCRIPTEN__
+	bool stillQueued = this->bwPump ? (bwAudioRingUsed() > 0) : (SDL_GetQueuedAudioSize(this->deviceId) > 0);
+#else
+	bool stillQueued = SDL_GetQueuedAudioSize(this->deviceId) > 0;
+#endif
+	if (stillQueued) {
 		// Leave the device open so the queue can drain; the poll timer will finalize.
 		ensureDrainTimer();
 		pendingCloses.push_back(shared_from_this());
@@ -368,6 +490,31 @@ U32 KDspAudioSdl::writeAudio(U8* data, U32 len) {
 	if (!this->open || !this->deviceId) {
 		return 0;
 	}
+#ifdef __EMSCRIPTEN__
+	{
+		static int wlog = 0;
+		if (wlog < 3) {
+			wlog++;
+			klog_fmt("bwPump: writeAudio bwPump=%d gotFmt=%x", (int)this->bwPump, this->got.format);
+		}
+		// Check S16 input peak (want.format is S16) on every write until non-zero seen
+		static int nzLogged = 0;
+		if (!nzLogged && this->want.format == AUDIO_S16LSB) {
+			int peak16 = 0;
+			const Sint16* s16 = (const Sint16*)data;
+			Uint32 n16 = len / 2;
+			for (Uint32 i = 0; i < n16; i++) {
+				int a = s16[i] < 0 ? -s16[i] : s16[i];
+				if (a > peak16) peak16 = a;
+				if (peak16 > 100) break;
+			}
+			if (peak16 > 100) {
+				nzLogged = 1;
+				klog_fmt("bwPump: S16 input first non-zero peak=%d (n=%u)", peak16, n16);
+			}
+		}
+	}
+#endif
 
 	U32 queued = this->getGuestQueuedAudioSizeWant();
 	if (queued >= DSP_BUFFER_SIZE) {
@@ -390,6 +537,10 @@ U32 KDspAudioSdl::writeAudio(U8* data, U32 len) {
 			}
 			int got = SDL_AudioStreamGet(this->stream, this->streamBuffer.data(), available);
 			if (got > 0) {
+#ifdef __EMSCRIPTEN__
+				if (this->bwPump && this->got.format == AUDIO_F32LSB) bwAudioPushJs(this->streamBuffer.data(), (Uint32)got);
+				else
+#endif
 				SDL_QueueAudio(this->deviceId, this->streamBuffer.data(), got);
 			}
 		}
@@ -408,8 +559,16 @@ U32 KDspAudioSdl::writeAudio(U8* data, U32 len) {
 		this->cvt.buf = this->cvtBuf;
 		memcpy(this->cvt.buf, data, len);
 		SDL_ConvertAudio(&this->cvt);
+#ifdef __EMSCRIPTEN__
+		if (this->bwPump && this->got.format == AUDIO_F32LSB) bwAudioPushJs(this->cvt.buf, (Uint32)this->cvt.len_cvt);
+		else
+#endif
 		SDL_QueueAudio(this->deviceId, this->cvt.buf, this->cvt.len_cvt);
 	} else {
+#ifdef __EMSCRIPTEN__
+		if (this->bwPump && this->got.format == AUDIO_F32LSB) bwAudioPushJs(data, len);
+		else
+#endif
 		SDL_QueueAudio(this->deviceId, data, len);
 	}
 	addRealQueuedWant(len);
