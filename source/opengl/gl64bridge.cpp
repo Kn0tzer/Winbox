@@ -3347,17 +3347,49 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 if (bufSize > 0) cpu->memory->memcpyToGuest(args.a[4], nm.data(), (U64)len + 1);
             }
             return 0;
-        case GL64_fn_glGetAttachedShaders:
+        case GL64_fn_glGetAttachedShaders: {
             if (g_glContext && args.a[2] && args.a[3]) {
+                GLuint p = (GLuint)ai(args,0);
                 GLsizei bufSize = (GLsizei)ai(args,1);
+                // Emscripten's glGetAttachedShaders runs
+                //   GLctx.getAttachedShaders(GL.programs[p]).length
+                // which throws a JS TypeError (killing the guest) when the
+                // host has no live program for p, instead of recording
+                // GL_INVALID_VALUE like desktop GL. Pre-validate on the
+                // GL-owning thread and emulate the desktop error path.
+                // TEMP-DIAG 2026-10-09: console.log captures why the host
+                // program entry is missing (bridge-coverage glcov crash).
+                int hostValid = 0;
+                glOnMain([&]{
+                    hostValid = EM_ASM_INT({
+                        var p = $0;
+                        var has = (p in GL.programs);
+                        var prog = GL.programs[p];
+                        var lost = GLctx.isContextLost();
+                        var r = null; var err = "";
+                        try { r = prog ? GLctx.getAttachedShaders(prog) : null; }
+                        catch (e) { err = " THREW=" + String(e).slice(0, 60); }
+                        console.log("DIAG gAS p=" + p + " has=" + has +
+                                    " prog=" + (prog ? "obj" : String(prog)) +
+                                    " ctxLost=" + lost +
+                                    " attached=" + (r ? r.length : "null") + err);
+                        if (!prog) { GL.recordError(1281); return 0; }
+                        return r ? 1 : 0;
+                    }, p);
+                });
+                if (!hostValid) {
+                    klog_fmt("gl64: glGetAttachedShaders(%u): no live host program; skipped (emscripten JS would throw)", p);
+                    return 0;
+                }
                 std::vector<GLuint> sh((size_t)(bufSize > 0 ? bufSize : 0), 0);
                 GLsizei cnt = 0;
-                GLuint p=(GLuint)ai(args,0); GLuint* sp = sh.data();
+                GLuint* sp = sh.data();
                 GL_MT(glGetAttachedShaders(p, bufSize, &cnt, sp));
                 cpu->memory->writed(args.a[2], (U32)cnt);
                 if (cnt > 0) cpu->memory->memcpyToGuest(args.a[3], sh.data(), (U64)cnt * 4);
             }
             return 0;
+        }
         case GL64_fn_glGetShaderSourceImpl:
             if (g_glContext && args.a[3]) {
                 GLsizei bufSize = (GLsizei)ai(args,1);
