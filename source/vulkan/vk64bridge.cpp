@@ -3691,12 +3691,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             } else {
                 // combined image sampler (and texel buffers, which share the
                 // VkDescriptorBufferInfo shape)
-                if (w.pBufferInfo) {
-                    VkDescriptorBufferInfo bi = {};
-                    readStruct(w.pBufferInfo, bi);
-                    b->obj = bi.buffer;
-                    b->range = bi.range;
-                } else {
+                // FIX (2026-10-09): For COMBINED_IMAGE_SAMPLER, w.pBufferInfo is
+                // non-null garbage (same as w.pImageInfo). Trust descriptorType,
+                // always read VkDescriptorImageInfo.
+                {
                     VkDescriptorImageInfo ii = {};
                     readStruct(w.pImageInfo, ii);
                     b->obj = ii.imageView;
