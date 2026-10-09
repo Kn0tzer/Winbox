@@ -33,6 +33,12 @@
 //      main at Fragment is invalid", on SPIR-V that spirv-val accepts. DXVK
 //      emits Index 0 on single-source outputs where it is meaningless.
 //      Rewrite: drop the decoration. Verified against DXVK D3D11 shaders.
+//   R7 "strip-signed-zero-inf-nan-preserve": naga rejects OpCapability
+//      SignedZeroInfNanPreserve (4466) with UnsupportedCapability.
+//      vkd3d-proton/vkd3d-shader emits it (with OpExecutionMode 4461) for FP
+//      control. Rewrite: drop the capability and any OpExecutionMode
+//      SignedZeroInfNanPreserve instructions. Safe for rendering: it only
+//      governs NaN/inf edge-case preservation.
 //
 // Interface: applySpirvFix(bytes: Uint8Array) -> { bytes, applied, log }.
 // applied is [] when the module needs nothing (byte-identical passthrough).
@@ -833,6 +839,30 @@ function stripIndexDecorations(mod, log) {
   return true;
 }
 
+// R7 "strip-signed-zero-inf-nan-preserve": naga 30.2.0 rejects OpCapability
+// SignedZeroInfNanPreserve (4466) with UnsupportedCapability. vkd3d-proton's
+// vkd3d-shader emits it together with OpExecutionMode SignedZeroInfNanPreserve
+// (4461) for floating-point control. Drop the capability and any such
+// execution-mode instructions; without the capability naga never sees it.
+// Rendering-safe: the mode only governs NaN/inf signed-zero preservation,
+// irrelevant to the pixel values these shaders compute.
+function stripSignedZeroInfNanPreserve(mod, log) {
+  const hasCap = mod.insns.some(i => i.op === 17 && i.words[0] === 4466);
+  const modes = mod.insns.filter(i => i.op === Op.ExecutionMode && i.words[1] === 4461);
+  const exts = mod.insns.filter(i => i.op === Op.ExtInstImport &&
+    new TextDecoder().decode(new Uint8Array(strOf(i, 0))) === 'SPV_KHR_float_controls');
+  if (!hasCap && !modes.length && !exts.length) return false;
+  mod.insns = mod.insns.filter(i => !((i.op === 17 && i.words[0] === 4466) ||
+    (i.op === Op.ExecutionMode && i.words[1] === 4461) ||
+    (i.op === Op.ExtInstImport &&
+      new TextDecoder().decode(new Uint8Array(strOf(i, 0))) === 'SPV_KHR_float_controls')));
+  const what = [hasCap ? 'capability' : null,
+    modes.length ? modes.length + ' execution mode(s)' : null,
+    exts.length ? exts.length + ' OpExtension(s)' : null].filter(Boolean).join(' + ');
+  log.push('spirvfix: stripped SignedZeroInfNanPreserve (' + what + ')');
+  return true;
+}
+
 // --- entry point -------------------------------------------------------------
 /** @param {Uint8Array} bytes @param {{rasterTopology?: number}} [options] */
 export function applySpirvFix(bytes, { rasterTopology, specOverrides } = {}) {
@@ -874,6 +904,11 @@ export function applySpirvFix(bytes, { rasterTopology, specOverrides } = {}) {
   } catch (e) {
     log.push('R6 failed: ' + (e.message || e));
   }
+  try {
+    if (stripSignedZeroInfNanPreserve(mod, log)) applied.push('strip-signed-zero-inf-nan-preserve');
+  } catch (e) {
+    log.push('R7 failed: ' + (e.message || e));
+  }
   if (!applied.length) return { bytes: u8, applied, log };
   try {
     return { bytes: serializeSpirv(mod), applied, log };
@@ -882,4 +917,4 @@ export function applySpirvFix(bytes, { rasterTopology, specOverrides } = {}) {
   }
 }
 
-export const REWRITES = ['split-combined-sampler', 'fold-spec-constants', 'non-point-builtins', 'tail-demote-to-kill', 'strip-draw-parameters', 'strip-index-decorations'];
+export const REWRITES = ['split-combined-sampler', 'fold-spec-constants', 'non-point-builtins', 'tail-demote-to-kill', 'strip-draw-parameters', 'strip-index-decorations', 'strip-signed-zero-inf-nan-preserve'];

@@ -233,6 +233,29 @@ enum {
     VK64_fn_vkCmdCopyBuffer,
     VK64_fn_vkCmdCopyBuffer2,
     VK64_fn_vkCmdCopyBuffer2KHR,
+    VK64_fn_vkCmdFillBuffer,
+    VK64_fn_vkCmdClearColorImage,
+    VK64_fn_vkCmdClearAttachments,
+    VK64_fn_vkCmdClearAttachmentsKHR,
+    VK64_fn_vkCmdCopyImage2,
+    VK64_fn_vkCmdCopyImage2KHR,
+    VK64_fn_vkCmdCopyBufferToImage2,
+    VK64_fn_vkCmdCopyBufferToImage2KHR,
+    VK64_fn_vkCmdBlitImage,
+    VK64_fn_vkCmdBlitImage2,
+    VK64_fn_vkCmdBlitImage2KHR,
+    VK64_fn_vkCmdResolveImage,
+    VK64_fn_vkCmdResolveImageKHR,
+    VK64_fn_vkCmdDrawIndirect,
+    VK64_fn_vkCmdDrawIndexedIndirect,
+    VK64_fn_vkCmdDrawIndirectCount,
+    VK64_fn_vkCmdDrawIndirectCountKHR,
+    VK64_fn_vkCmdDrawIndexedIndirectCount,
+    VK64_fn_vkCmdExecuteCommands,
+    VK64_fn_vkCmdDispatch,
+    VK64_fn_vkCmdDispatchBase,
+    VK64_fn_vkCmdDispatchIndirect,
+    VK64_fn_vkGetBufferDeviceAddress,
     VK64_fn__MAX
 };
 
@@ -510,6 +533,29 @@ API VkResult vkGetPhysicalDeviceImageFormatProperties(VkPhysicalDevice pd, uint3
 API void vkGetPhysicalDeviceFormatProperties2(VkPhysicalDevice pd, uint32_t format, void* props) {
     VK64Args a = {{0}}; a.a[0] = pd; a.a[1] = format; a.a[2] = P(props);
     (void)vk64_trap(VK64_fn_vkGetPhysicalDeviceFormatProperties2, &a);
+}
+/* KHR aliases for core-promoted physical-device query functions.
+ * In real Vulkan, e.g. vkGetPhysicalDeviceProperties2KHR IS
+ * vkGetPhysicalDeviceProperties2 (promoted in Vulkan 1.1); an ICD must
+ * return the same pointer for both names. vkd3d queries the KHR names
+ * via vkGetInstanceProcAddr, so alias them to the core wrappers. */
+API void vkGetPhysicalDeviceProperties2KHR(VkPhysicalDevice pd, void* p) {
+    vkGetPhysicalDeviceProperties2(pd, p);
+}
+API void vkGetPhysicalDeviceFeatures2KHR(VkPhysicalDevice pd, void* p) {
+    vkGetPhysicalDeviceFeatures2(pd, p);
+}
+API void vkGetPhysicalDeviceMemoryProperties2KHR(VkPhysicalDevice pd, void* p) {
+    vkGetPhysicalDeviceMemoryProperties2(pd, p);
+}
+API void vkGetPhysicalDeviceQueueFamilyProperties2KHR(VkPhysicalDevice pd, uint32_t* count, void* p) {
+    vkGetPhysicalDeviceQueueFamilyProperties2(pd, count, p);
+}
+API void vkGetPhysicalDeviceFormatProperties2KHR(VkPhysicalDevice pd, uint32_t format, void* props) {
+    vkGetPhysicalDeviceFormatProperties2(pd, format, props);
+}
+API VkResult vkGetPhysicalDeviceImageFormatProperties2KHR(VkPhysicalDevice pd, const void* info, void* props) {
+    return vkGetPhysicalDeviceImageFormatProperties2(pd, info, props);
 }
 API VkResult vkCreateHeadlessSurfaceEXT(VkInstance inst, const void* ci, const void* alloc, VkSurfaceKHR* out) {
     VK64Args a = {{0}}; a.a[0] = inst; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
@@ -1048,6 +1094,33 @@ typedef void (*PFN_vkVoidFunction)(void);
 
 struct procEntry { const char* name; uint64_t fnId; PFN_vkVoidFunction fn; };
 #define E(n, id) { #n, (uint64_t)(id), (PFN_vkVoidFunction)n }
+// Forward declarations for game-breaking stub implementations
+API uint64_t vkGetBufferDeviceAddress(VkDevice, const void*);
+API uint64_t vkGetBufferDeviceAddressKHR(VkDevice, const void*);
+API void vkCmdFillBuffer(VkCommandBuffer, VkBuffer, uint64_t, uint64_t, uint32_t);
+API void vkCmdClearColorImage(VkCommandBuffer, VkImage, uint32_t, const void*, uint32_t, const void*);
+API void vkCmdClearAttachments(VkCommandBuffer, uint32_t, const void*, uint32_t, const void*);
+API void vkCmdClearAttachmentsKHR(VkCommandBuffer, uint32_t, const void*, uint32_t, const void*);
+API void vkCmdCopyImage(VkCommandBuffer, VkImage, uint32_t, VkImage, uint32_t, uint32_t, const void*);
+API void vkCmdCopyImage2(VkCommandBuffer, const void*);
+API void vkCmdCopyImage2KHR(VkCommandBuffer, const void*);
+API void vkCmdCopyBufferToImage2(VkCommandBuffer, const void*);
+API void vkCmdCopyBufferToImage2KHR(VkCommandBuffer, const void*);
+API void vkCmdBlitImage(VkCommandBuffer, VkImage, uint32_t, VkImage, uint32_t, uint32_t, const void*, uint32_t);
+API void vkCmdBlitImage2(VkCommandBuffer, const void*);
+API void vkCmdBlitImage2KHR(VkCommandBuffer, const void*);
+API void vkCmdResolveImage(VkCommandBuffer, VkImage, uint32_t, VkImage, uint32_t, uint32_t, const void*);
+API void vkCmdResolveImageKHR(VkCommandBuffer, VkImage, uint32_t, VkImage, uint32_t, uint32_t, const void*);
+API void vkCmdDrawIndirect(VkCommandBuffer, VkBuffer, uint64_t, uint32_t, uint32_t);
+API void vkCmdDrawIndexedIndirect(VkCommandBuffer, VkBuffer, uint64_t, uint32_t, uint32_t);
+API void vkCmdDrawIndirectCount(VkCommandBuffer, VkBuffer, uint64_t, VkBuffer, uint64_t, uint32_t, uint32_t);
+API void vkCmdDrawIndirectCountKHR(VkCommandBuffer, VkBuffer, uint64_t, VkBuffer, uint64_t, uint32_t, uint32_t);
+API void vkCmdDrawIndexedIndirectCount(VkCommandBuffer, VkBuffer, uint64_t, VkBuffer, uint64_t, uint32_t, uint32_t);
+API void vkCmdExecuteCommands(VkCommandBuffer, uint32_t, const VkCommandBuffer*);
+API void vkCmdDispatch(VkCommandBuffer, uint32_t, uint32_t, uint32_t);
+API void vkCmdDispatchBase(VkCommandBuffer, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+API void vkCmdDispatchIndirect(VkCommandBuffer, VkBuffer, uint64_t);
+
 static const struct procEntry g_procs[] = {
     // --- global ---
     E(vkEnumerateInstanceVersion, VK64_fn_vkEnumerateInstanceVersion),
@@ -1060,16 +1133,22 @@ static const struct procEntry g_procs[] = {
     E(vkEnumerateDeviceExtensionProperties, VK64_fn_vkEnumerateDeviceExtensionProperties),
     E(vkGetPhysicalDeviceProperties, VK64_fn_vkGetPhysicalDeviceProperties),
     E(vkGetPhysicalDeviceProperties2, VK64_fn_vkGetPhysicalDeviceProperties2),
+    E(vkGetPhysicalDeviceProperties2KHR, VK64_fn_vkGetPhysicalDeviceProperties2),
     E(vkGetPhysicalDeviceFeatures, VK64_fn_vkGetPhysicalDeviceFeatures),
     E(vkGetPhysicalDeviceFeatures2, VK64_fn_vkGetPhysicalDeviceFeatures2),
+    E(vkGetPhysicalDeviceFeatures2KHR, VK64_fn_vkGetPhysicalDeviceFeatures2),
     E(vkGetPhysicalDeviceMemoryProperties, VK64_fn_vkGetPhysicalDeviceMemoryProperties),
     E(vkGetPhysicalDeviceMemoryProperties2, VK64_fn_vkGetPhysicalDeviceMemoryProperties2),
+    E(vkGetPhysicalDeviceMemoryProperties2KHR, VK64_fn_vkGetPhysicalDeviceMemoryProperties2),
     E(vkGetPhysicalDeviceQueueFamilyProperties, VK64_fn_vkGetPhysicalDeviceQueueFamilyProperties),
     E(vkGetPhysicalDeviceQueueFamilyProperties2, VK64_fn_vkGetPhysicalDeviceQueueFamilyProperties2),
+    E(vkGetPhysicalDeviceQueueFamilyProperties2KHR, VK64_fn_vkGetPhysicalDeviceQueueFamilyProperties2),
     E(vkGetPhysicalDeviceFormatProperties, VK64_fn_vkGetPhysicalDeviceFormatProperties),
     E(vkGetPhysicalDeviceFormatProperties2, VK64_fn_vkGetPhysicalDeviceFormatProperties2),
+    E(vkGetPhysicalDeviceFormatProperties2KHR, VK64_fn_vkGetPhysicalDeviceFormatProperties2),
     E(vkGetPhysicalDeviceImageFormatProperties, VK64_fn_vkGetPhysicalDeviceImageFormatProperties),
     E(vkGetPhysicalDeviceImageFormatProperties2, VK64_fn_vkGetPhysicalDeviceImageFormatProperties2),
+    E(vkGetPhysicalDeviceImageFormatProperties2KHR, VK64_fn_vkGetPhysicalDeviceImageFormatProperties2),
     E(vkGetPhysicalDeviceSurfaceCapabilitiesKHR, VK64_fn_vkGetPhysicalDeviceSurfaceCapabilitiesKHR),
     E(vkGetPhysicalDeviceSurfaceFormatsKHR, VK64_fn_vkGetPhysicalDeviceSurfaceFormatsKHR),
     E(vkGetPhysicalDeviceSurfacePresentModesKHR, VK64_fn_vkGetPhysicalDeviceSurfacePresentModesKHR),
@@ -1103,6 +1182,8 @@ static const struct procEntry g_procs[] = {
     E(vkCreateSwapchainKHR, VK64_fn_vkCreateSwapchainKHR),
     E(vkCreateCommandPool, VK64_fn_vkCreateCommandPool),
     E(vkCreateBuffer, VK64_fn_vkCreateBuffer),
+    E(vkGetBufferDeviceAddress, VK64_fn_vkGetBufferDeviceAddress),
+    E(vkGetBufferDeviceAddressKHR, VK64_fn_vkGetBufferDeviceAddress),
     E(vkCreateImage, VK64_fn_vkCreateImage),
     E(vkCreateImageView, VK64_fn_vkCreateImageView),
     E(vkCreateBufferView, VK64_fn_vkCreateBufferView),
@@ -1186,6 +1267,29 @@ static const struct procEntry g_procs[] = {
     E(vkCmdCopyBuffer, VK64_fn_vkCmdCopyBuffer),
     E(vkCmdCopyBuffer2, VK64_fn_vkCmdCopyBuffer2),
     E(vkCmdCopyBuffer2KHR, VK64_fn_vkCmdCopyBuffer2KHR),
+    E(vkCmdFillBuffer, VK64_fn_vkCmdFillBuffer),
+    E(vkCmdClearColorImage, VK64_fn_vkCmdClearColorImage),
+    E(vkCmdClearAttachments, VK64_fn_vkCmdClearAttachments),
+    E(vkCmdClearAttachmentsKHR, VK64_fn_vkCmdClearAttachmentsKHR),
+    E(vkCmdCopyImage, VK64_fn_vkCmdCopyImage),
+    E(vkCmdCopyImage2, VK64_fn_vkCmdCopyImage2),
+    E(vkCmdCopyImage2KHR, VK64_fn_vkCmdCopyImage2KHR),
+    E(vkCmdCopyBufferToImage2, VK64_fn_vkCmdCopyBufferToImage2),
+    E(vkCmdCopyBufferToImage2KHR, VK64_fn_vkCmdCopyBufferToImage2KHR),
+    E(vkCmdBlitImage, VK64_fn_vkCmdBlitImage),
+    E(vkCmdBlitImage2, VK64_fn_vkCmdBlitImage2),
+    E(vkCmdBlitImage2KHR, VK64_fn_vkCmdBlitImage2KHR),
+    E(vkCmdResolveImage, VK64_fn_vkCmdResolveImage),
+    E(vkCmdResolveImageKHR, VK64_fn_vkCmdResolveImageKHR),
+    E(vkCmdDrawIndirect, VK64_fn_vkCmdDrawIndirect),
+    E(vkCmdDrawIndexedIndirect, VK64_fn_vkCmdDrawIndexedIndirect),
+    E(vkCmdDrawIndirectCount, VK64_fn_vkCmdDrawIndirectCount),
+    E(vkCmdDrawIndirectCountKHR, VK64_fn_vkCmdDrawIndirectCountKHR),
+    E(vkCmdDrawIndexedIndirectCount, VK64_fn_vkCmdDrawIndexedIndirectCount),
+    E(vkCmdExecuteCommands, VK64_fn_vkCmdExecuteCommands),
+    E(vkCmdDispatch, VK64_fn_vkCmdDispatch),
+    E(vkCmdDispatchBase, VK64_fn_vkCmdDispatchBase),
+    E(vkCmdDispatchIndirect, VK64_fn_vkCmdDispatchIndirect),
     // --- frame boundary ---
     E(vkQueueSubmit, VK64_fn_vkQueueSubmit),
     E(vkQueueSubmit2, VK64_fn_vkQueueSubmit2),
@@ -1296,8 +1400,13 @@ API unsigned vk_icdNegotiateLoaderICDInterfaceVersion(unsigned* pVersion) {
 // PFN_vkVoidFunction only reads RAX, and the arguments are ignored either way.
 // ===========================================================================
 #define TAIL(n) API void* n(void) { return vk64_benign(#n); }
-TAIL(vkGetBufferDeviceAddress)
-TAIL(vkGetBufferDeviceAddressKHR)
+API uint64_t vkGetBufferDeviceAddress(VkDevice dev, const void* info) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(info);
+    return vk64_trap(VK64_fn_vkGetBufferDeviceAddress, &a);
+}
+API uint64_t vkGetBufferDeviceAddressKHR(VkDevice dev, const void* info) {
+    return vkGetBufferDeviceAddress(dev, info);
+}
 TAIL(vkGetBufferMemoryRequirements2KHR)
 TAIL(vkGetBufferOpaqueCaptureAddressKHR)
 TAIL(vkGetDeviceImageMemoryRequirements)
@@ -1342,38 +1451,218 @@ TAIL(vkCreateEvent)
 TAIL(vkDestroyEvent)
 TAIL(vkSetEvent)
 TAIL(vkResetEvent)
+// =====================================================================
+// Game-breaking stub implementations (replacing TAIL)
+// =====================================================================
+
+API void vkCmdFillBuffer(VkCommandBuffer commandBuffer, VkBuffer dstBuffer, uint64_t dstOffset, uint64_t size, uint32_t data) {
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = dstBuffer; a.a[2] = dstOffset;
+    a.a[3] = size; a.a[4] = data;
+    (void)vk64_trap(VK64_fn_vkCmdFillBuffer, &a);
+}
+
+API void vkCmdClearColorImage(VkCommandBuffer commandBuffer, VkImage image, uint32_t imageLayout, const void* pColor, uint32_t rangeCount, const void* pRanges) {
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = image; a.a[2] = imageLayout;
+    a.a[3] = P(pColor); a.a[4] = rangeCount; a.a[5] = P(pRanges);
+    (void)vk64_trap(VK64_fn_vkCmdClearColorImage, &a);
+}
+
+API void vkCmdClearAttachments(VkCommandBuffer commandBuffer, uint32_t attachmentCount, const void* pAttachments, uint32_t rectCount, const void* pRects) {
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = attachmentCount; a.a[2] = P(pAttachments);
+    a.a[3] = rectCount; a.a[4] = P(pRects);
+    (void)vk64_trap(VK64_fn_vkCmdClearAttachments, &a);
+}
+
+API void vkCmdClearAttachmentsKHR(VkCommandBuffer commandBuffer, uint32_t attachmentCount, const void* pAttachments, uint32_t rectCount, const void* pRects) {
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = attachmentCount; a.a[2] = P(pAttachments);
+    a.a[3] = rectCount; a.a[4] = P(pRects);
+    (void)vk64_trap(VK64_fn_vkCmdClearAttachmentsKHR, &a);
+}
+
+API void vkCmdCopyImage(VkCommandBuffer commandBuffer, VkImage srcImage, uint32_t srcImageLayout, VkImage dstImage, uint32_t dstImageLayout, uint32_t regionCount, const void* pRegions) {
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = srcImage; a.a[2] = srcImageLayout;
+    a.a[3] = dstImage; a.a[4] = dstImageLayout; a.a[5] = regionCount; a.a[6] = P(pRegions);
+    (void)vk64_trap(VK64_fn_vkCmdCopyImage, &a);
+}
+
+typedef struct VkCopyImageInfo2L {
+    uint32_t sType; uint32_t _pad0;
+    const void* pNext;
+    VkImage srcImage;
+    uint32_t srcImageLayout; uint32_t _pad1;
+    VkImage dstImage;
+    uint32_t dstImageLayout; uint32_t _pad2;
+    uint32_t regionCount; uint32_t _pad3;
+    const void* pRegions;
+} VkCopyImageInfo2L;
+
+API void vkCmdCopyImage2(VkCommandBuffer commandBuffer, const void* pInfoIn) {
+    const VkCopyImageInfo2L* pInfo = (const VkCopyImageInfo2L*)pInfoIn;
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = pInfo->srcImage; a.a[2] = pInfo->dstImage;
+    a.a[3] = pInfo->regionCount; a.a[4] = P(pInfo->pRegions);
+    (void)vk64_trap(VK64_fn_vkCmdCopyImage2, &a);
+}
+
+API void vkCmdCopyImage2KHR(VkCommandBuffer commandBuffer, const void* pInfoIn) {
+    const VkCopyImageInfo2L* pInfo = (const VkCopyImageInfo2L*)pInfoIn;
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = pInfo->srcImage; a.a[2] = pInfo->dstImage;
+    a.a[3] = pInfo->regionCount; a.a[4] = P(pInfo->pRegions);
+    (void)vk64_trap(VK64_fn_vkCmdCopyImage2KHR, &a);
+}
+
+typedef struct VkCopyBufferToImageInfo2L {
+    uint32_t sType; uint32_t _pad0;
+    const void* pNext;
+    VkBuffer srcBuffer;
+    VkImage dstImage;
+    uint32_t dstImageLayout; uint32_t _pad1;
+    uint32_t regionCount; uint32_t _pad2;
+    const void* pRegions;
+} VkCopyBufferToImageInfo2L;
+
+API void vkCmdCopyBufferToImage2(VkCommandBuffer commandBuffer, const void* pInfoIn) {
+    const VkCopyBufferToImageInfo2L* pInfo = (const VkCopyBufferToImageInfo2L*)pInfoIn;
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = pInfo->srcBuffer; a.a[2] = pInfo->dstImage;
+    a.a[3] = pInfo->regionCount; a.a[4] = P(pInfo->pRegions);
+    (void)vk64_trap(VK64_fn_vkCmdCopyBufferToImage2, &a);
+}
+
+API void vkCmdCopyBufferToImage2KHR(VkCommandBuffer commandBuffer, const void* pInfoIn) {
+    const VkCopyBufferToImageInfo2L* pInfo = (const VkCopyBufferToImageInfo2L*)pInfoIn;
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = pInfo->srcBuffer; a.a[2] = pInfo->dstImage;
+    a.a[3] = pInfo->regionCount; a.a[4] = P(pInfo->pRegions);
+    (void)vk64_trap(VK64_fn_vkCmdCopyBufferToImage2KHR, &a);
+}
+
+API void vkCmdBlitImage(VkCommandBuffer commandBuffer, VkImage srcImage, uint32_t srcImageLayout, VkImage dstImage, uint32_t dstImageLayout, uint32_t regionCount, const void* pRegions, uint32_t filter) {
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = srcImage; a.a[2] = srcImageLayout;
+    a.a[3] = dstImage; a.a[4] = dstImageLayout; a.a[5] = regionCount;
+    a.a[6] = P(pRegions); a.a[7] = filter;
+    (void)vk64_trap(VK64_fn_vkCmdBlitImage, &a);
+}
+
+typedef struct VkBlitImageInfo2L {
+    uint32_t sType; uint32_t _pad0;
+    const void* pNext;
+    VkImage srcImage;
+    uint32_t srcImageLayout; uint32_t _pad1;
+    VkImage dstImage;
+    uint32_t dstImageLayout; uint32_t _pad2;
+    uint32_t regionCount; uint32_t _pad3;
+    const void* pRegions;
+    uint32_t filter; uint32_t _pad4;
+} VkBlitImageInfo2L;
+
+API void vkCmdBlitImage2(VkCommandBuffer commandBuffer, const void* pInfoIn) {
+    const VkBlitImageInfo2L* pInfo = (const VkBlitImageInfo2L*)pInfoIn;
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = pInfo->srcImage; a.a[2] = pInfo->dstImage;
+    a.a[3] = pInfo->regionCount; a.a[4] = P(pInfo->pRegions); a.a[5] = pInfo->filter;
+    (void)vk64_trap(VK64_fn_vkCmdBlitImage2, &a);
+}
+
+API void vkCmdBlitImage2KHR(VkCommandBuffer commandBuffer, const void* pInfoIn) {
+    const VkBlitImageInfo2L* pInfo = (const VkBlitImageInfo2L*)pInfoIn;
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = pInfo->srcImage; a.a[2] = pInfo->dstImage;
+    a.a[3] = pInfo->regionCount; a.a[4] = P(pInfo->pRegions); a.a[5] = pInfo->filter;
+    (void)vk64_trap(VK64_fn_vkCmdBlitImage2KHR, &a);
+}
+
+API void vkCmdResolveImage(VkCommandBuffer commandBuffer, VkImage srcImage, uint32_t srcImageLayout, VkImage dstImage, uint32_t dstImageLayout, uint32_t regionCount, const void* pRegions) {
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = srcImage; a.a[2] = srcImageLayout;
+    a.a[3] = dstImage; a.a[4] = dstImageLayout; a.a[5] = regionCount; a.a[6] = P(pRegions);
+    (void)vk64_trap(VK64_fn_vkCmdResolveImage, &a);
+}
+
+API void vkCmdResolveImageKHR(VkCommandBuffer commandBuffer, VkImage srcImage, uint32_t srcImageLayout, VkImage dstImage, uint32_t dstImageLayout, uint32_t regionCount, const void* pRegions) {
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = srcImage; a.a[2] = srcImageLayout;
+    a.a[3] = dstImage; a.a[4] = dstImageLayout; a.a[5] = regionCount; a.a[6] = P(pRegions);
+    (void)vk64_trap(VK64_fn_vkCmdResolveImageKHR, &a);
+}
+
+API void vkCmdDrawIndirect(VkCommandBuffer commandBuffer, VkBuffer buffer, uint64_t offset, uint32_t drawCount, uint32_t stride) {
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = buffer; a.a[2] = offset;
+    a.a[3] = drawCount; a.a[4] = stride;
+    (void)vk64_trap(VK64_fn_vkCmdDrawIndirect, &a);
+}
+
+API void vkCmdDrawIndexedIndirect(VkCommandBuffer commandBuffer, VkBuffer buffer, uint64_t offset, uint32_t drawCount, uint32_t stride) {
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = buffer; a.a[2] = offset;
+    a.a[3] = drawCount; a.a[4] = stride;
+    (void)vk64_trap(VK64_fn_vkCmdDrawIndexedIndirect, &a);
+}
+
+API void vkCmdDrawIndirectCount(VkCommandBuffer commandBuffer, VkBuffer buffer, uint64_t offset, VkBuffer countBuffer, uint64_t countBufferOffset, uint32_t maxDrawCount, uint32_t stride) {
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = buffer; a.a[2] = offset;
+    a.a[3] = countBuffer; a.a[4] = countBufferOffset; a.a[5] = maxDrawCount; a.a[6] = stride;
+    (void)vk64_trap(VK64_fn_vkCmdDrawIndirectCount, &a);
+}
+
+API void vkCmdDrawIndirectCountKHR(VkCommandBuffer commandBuffer, VkBuffer buffer, uint64_t offset, VkBuffer countBuffer, uint64_t countBufferOffset, uint32_t maxDrawCount, uint32_t stride) {
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = buffer; a.a[2] = offset;
+    a.a[3] = countBuffer; a.a[4] = countBufferOffset; a.a[5] = maxDrawCount; a.a[6] = stride;
+    (void)vk64_trap(VK64_fn_vkCmdDrawIndirectCountKHR, &a);
+}
+
+API void vkCmdDrawIndexedIndirectCount(VkCommandBuffer commandBuffer, VkBuffer buffer, uint64_t offset, VkBuffer countBuffer, uint64_t countBufferOffset, uint32_t maxDrawCount, uint32_t stride) {
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = buffer; a.a[2] = offset;
+    a.a[3] = countBuffer; a.a[4] = countBufferOffset; a.a[5] = maxDrawCount; a.a[6] = stride;
+    (void)vk64_trap(VK64_fn_vkCmdDrawIndexedIndirectCount, &a);
+}
+
+API void vkCmdExecuteCommands(VkCommandBuffer commandBuffer, uint32_t commandBufferCount, const VkCommandBuffer* pCommandBuffers) {
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = commandBufferCount; a.a[2] = P(pCommandBuffers);
+    (void)vk64_trap(VK64_fn_vkCmdExecuteCommands, &a);
+}
+
+API void vkCmdDispatch(VkCommandBuffer commandBuffer, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ) {
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = groupCountX; a.a[2] = groupCountY; a.a[3] = groupCountZ;
+    (void)vk64_trap(VK64_fn_vkCmdDispatch, &a);
+}
+
+API void vkCmdDispatchBase(VkCommandBuffer commandBuffer, uint32_t baseGroupX, uint32_t baseGroupY, uint32_t baseGroupZ, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ) {
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = baseGroupX; a.a[2] = baseGroupY; a.a[3] = baseGroupZ;
+    a.a[4] = groupCountX; a.a[5] = groupCountY; a.a[6] = groupCountZ;
+    (void)vk64_trap(VK64_fn_vkCmdDispatchBase, &a);
+}
+
+API void vkCmdDispatchIndirect(VkCommandBuffer commandBuffer, VkBuffer buffer, uint64_t offset) {
+    VK64Args a = {{0}};
+    a.a[0] = commandBuffer; a.a[1] = buffer; a.a[2] = offset;
+    (void)vk64_trap(VK64_fn_vkCmdDispatchIndirect, &a);
+}
+
 TAIL(vkCreateQueryPool)
 TAIL(vkDestroyQueryPool)
 TAIL(vkGetPipelineLayoutSupport)
 TAIL(vkQueueBindSparse)
-TAIL(vkCmdDrawIndexedIndirect)
-TAIL(vkCmdDrawIndirect)
-TAIL(vkCmdDrawIndirectCount)
-TAIL(vkCmdDrawIndexedIndirectCount)
-TAIL(vkCmdDispatch)
-TAIL(vkCmdDispatchBase)
-TAIL(vkCmdDispatchIndirect)
-TAIL(vkCmdCopyImage)
-TAIL(vkCmdCopyImage2)
-TAIL(vkCmdCopyImage2KHR)
-TAIL(vkCmdBlitImage)
-TAIL(vkCmdBlitImage2)
-TAIL(vkCmdBlitImage2KHR)
-TAIL(vkCmdCopyBufferToImage2)
-TAIL(vkCmdCopyBufferToImage2KHR)
-TAIL(vkCmdFillBuffer)
-TAIL(vkCmdClearColorImage)
-TAIL(vkCmdClearAttachments)
-TAIL(vkCmdClearAttachmentsKHR)
-TAIL(vkCmdResolveImage)
-TAIL(vkCmdResolveImageKHR)
 TAIL(vkCmdSetBlendConstant)
 TAIL(vkCmdSetDepthBounds)
 TAIL(vkCmdSetStencilReference)
 TAIL(vkCmdPushDescriptorSet)
 TAIL(vkCmdNextSubpass)
 TAIL(vkCmdNextSubpassKHR)
-TAIL(vkCmdExecuteCommands)
 TAIL(vkCmdBeginQuery)
 TAIL(vkCmdEndQuery)
 TAIL(vkCmdResetQueryPool)
@@ -1392,7 +1681,7 @@ TAIL(vkCmdSetCullModeEXT)
 TAIL(vkCmdSetFrontFaceEXT)
 TAIL(vkCmdSetPrimitiveTopologyEXT)
 TAIL(vkCmdSetVertexInputEXT)
-TAIL(vkCmdDrawIndirectCountKHR)
+
 TAIL(vkCmdBeginConditionalRenderingEXT)
 TAIL(vkCmdEndConditionalRenderingEXT)
 TAIL(vkCmdNextSubpass2KHR)

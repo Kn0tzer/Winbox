@@ -9,17 +9,24 @@ import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { parseV2Chunk, V2FrameAssembler, decodeV2Frame } from "../vkwebgpu.mjs";
 import { createHash } from "node:crypto";
 import { inflateSync } from "node:zlib";
+import { acquireProbeSlot } from '/home/ubuntu/boxedwine64/web/tests/probe-slots.mjs';
 
 const tag = process.env.TAG || `d3d12-${Date.now()}`;
 if (!/^[\w.-]+$/.test(tag)) throw new Error("TAG must contain only letters, numbers, _, . or -");
 const dir = `test-results/dxvk-${tag}`;
 await mkdir(dir, { recursive: true });
 
-// Draw mode: TRI12DRAW_PATH set -> tri12draw.exe (RGB triangle) instead of tri12.exe (clear-only).
-const drawMode = !!process.env.TRI12DRAW_PATH;
-const triExeName = drawMode ? "tri12draw.exe" : "tri12.exe";
-const triExePath = drawMode ? process.env.TRI12DRAW_PATH
-  : (process.env.TRI12_PATH || "tools/vkd3d/probe/tri12.exe");
+// Exe selection: TRI12DRAW_PATH -> RGB triangle; SCENE12_PATH -> complex scene
+// (3 PSOs, 60 draws/frame, depth buffer); TRI12_PATH -> override for tri12.exe;
+// default tri12.exe (clear-only). Exe base name + result tag derive from path.
+const scene12Path = process.env.SCENE12_PATH;
+const drawMode = !!process.env.TRI12DRAW_PATH || !!scene12Path;
+const triExePath = process.env.TRI12DRAW_PATH || scene12Path
+  || (process.env.TRI12_PATH || "tools/vkd3d/probe/tri12.exe");
+const triExeName = triExePath.split("/").pop();
+const resultTag = triExeName.replace(/\.exe$/i, "");
+const resultRe = new RegExp(resultTag + ": RESULT [01]");
+const failRe = new RegExp(resultTag + ": FAIL");
 
 // Simple clear-color analysis: count pixels far from the page-tier default
 // background (0,40,100). A working clear shows cornflower (100,149,237).
@@ -97,6 +104,8 @@ function drawPixels(png) {
 }
 
 const server = await serve(process.env.WINE_DIST_DIR || "dist");
+const slot = await acquireProbeSlot();
+console.log("PROBE SLOT ACQUIRED");
 const browser = await chromium.launch({
   executablePath: process.env.CHROME_PATH || "/usr/local/bin/chromium", headless: true,
   args: ["--no-sandbox", "--disable-dev-shm-usage", "--enable-unsafe-webgpu",
@@ -136,7 +145,8 @@ try {
     ["bw64vulkan.dll", process.env.WINEVULKAN_PATH || "tools/vkd3d/probe/bw64vulkan.dll"],
     // Unify loader namespace: dxgi LoadLibraryA("vulkan-1.dll") must resolve to our
     // PE shim (app dir wins search order), not Wine builtin winevulkan.
-    ["vulkan-1.dll", process.env.WINEVULKAN_PATH || "tools/vkd3d/probe/bw64vulkan.dll"]];
+    ["vulkan-1.dll", process.env.WINEVULKAN_PATH || "tools/vkd3d/probe/bw64vulkan.dll"],
+    ["dxgi.dll", process.env.DXGI_PATH || "tools/dxvk/build.w64/src/dxgi/dxgi.dll"]];
   for (const [name, path] of assets) {
     const bytes = await readFile(path);
     provenance.push({ name, path, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
@@ -170,7 +180,7 @@ try {
     };
   });
   const spawn = await page.evaluate((exeName) => window.bwRuntime.call("bw64_spawn", ["string", "string"],
-    ["/usr/lib/wine/wine64\nZ:\\\\home\\\\username\\\\" + exeName, "BW64_VKTRACE=2\nBW64_VKFRAME=1\nWINEDLLOVERRIDES=d3d12=n,d3d12core=n\nLD_LIBRARY_PATH=/home/username"]), triExeName);
+    ["/usr/lib/wine/wine64\nZ:\\\\home\\\\username\\\\" + exeName, "BW64_VKTRACE=2\nBW64_VKFRAME=1\nWINEDLLOVERRIDES=d3d12=n;d3d12core=n;dxgi=n;vulkan-1=n;winevulkan=n\nLD_LIBRARY_PATH=/home/username"]), triExeName);
   console.log("SPAWN", spawn);
   const until = Date.now() + timeout;
   let lastPrint = 0, lastRendered = 0, shot = null;
@@ -186,7 +196,7 @@ try {
       console.log("PROGRESS", JSON.stringify({ chunks: chunkFiles.length, stats, tail: logs.slice(-2) }));
       await flush();
     }
-    if (logs.some(l => (drawMode ? /tri12draw: RESULT [01]/ : /tri12: RESULT [01]/).test(l))) {
+    if (logs.some(l => resultRe.test(l))) {
       await page.waitForTimeout(3000);
       break;
     }
@@ -206,15 +216,13 @@ try {
   // vkd3d gate diagnostics: capture the exact failing requirement from guest log
   const gateLines = logs.filter(l => /not supported|Lacking support|required|E_INVALIDARG|is not supported/i.test(l)).slice(0, 20);
   summary = {
-    passed: drawMode
-      ? /tri12draw: RESULT 0/.test(joined) && !errors.length && !renderErrors.length
-        && stats?.v2?.rendered > 0 && pixels && pixels.trianglePx > 1000
-      : /tri12: RESULT 0/.test(joined) && !errors.length && !renderErrors.length
-        && stats?.v2?.rendered > 0 && pixels && pixels.cornflowerPx > 1000,
-    tri12Result: drawMode
-      ? (/tri12draw: RESULT 0/.test(joined) ? 0 : /tri12draw: RESULT 1/.test(joined) ? 1 : null)
-      : (/tri12: RESULT 0/.test(joined) ? 0 : /tri12: RESULT 1/.test(joined) ? 1 : null),
-    tri12FailLines: logs.filter(l => (drawMode ? /tri12draw: FAIL/ : /tri12: FAIL/).test(l)),
+    passed: new RegExp(resultTag + ": RESULT 0").test(joined) && !errors.length && !renderErrors.length
+        && stats?.v2?.rendered > 0 && pixels
+        && (drawMode ? pixels.trianglePx > 1000 : pixels.cornflowerPx > 1000),
+    tri12Result:
+      (new RegExp(resultTag + ": RESULT 0").test(joined) ? 0
+        : new RegExp(resultTag + ": RESULT 1").test(joined) ? 1 : null),
+    tri12FailLines: logs.filter(l => failRe.test(l)),
     gateLines,
     framesBuilt: (joined.match(/vk64: FRAME \d+ built/g) || []).length,
     chunksCaptured: chunkFiles.length, decodedFrames,
@@ -229,6 +237,7 @@ try {
   await writeFile(`${dir}/summary.json`, JSON.stringify(summary, null, 2));
   await writeFile(`${dir}/chunks.json`, JSON.stringify(chunkFiles));
   console.log("D3D12 VERDICT", JSON.stringify(summary));
+  await slot.release().catch(() => {}); console.log("PROBE SLOT RELEASED");
   await browser.close(); server.close();
   if (!summary.passed) process.exitCode = 1;
 }

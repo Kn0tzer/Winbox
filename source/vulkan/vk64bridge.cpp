@@ -170,6 +170,7 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkCreateSwapchainKHR,                 "vkCreateSwapchainKHR") \
     X(VK64_fn_vkCreateCommandPool,                  "vkCreateCommandPool") \
     X(VK64_fn_vkCreateBuffer,                       "vkCreateBuffer")      \
+    X(VK64_fn_vkGetBufferDeviceAddress,             "vkGetBufferDeviceAddress") \
     X(VK64_fn_vkCreateImage,                        "vkCreateImage")       \
     X(VK64_fn_vkCreateImageView,                    "vkCreateImageView")   \
     X(VK64_fn_vkCreateBufferView,                       "vkCreateBufferView") \
@@ -381,6 +382,7 @@ const U64 OBJ_MAGIC = 0x564B4F42ull;   // 'VKOB'
 
 std::unordered_map<U64, Obj*> g_objs;
 U64 g_nextId = 0x564B0100;
+U64 g_nextDevVa = 0x4000000000ULL; // VA space for vkGetBufferDeviceAddress (256MB stride)
 
 template <class T> T* createObj(U32 kind, U64& idOut) {
     T* o = new T();
@@ -452,7 +454,7 @@ struct Semaphore : Obj {
     U64  counter = 0;
 };
 struct DeviceMemory : Obj { U64 size = 0, va = 0; U32 memIndex = 0; bool wasMapped = false; };
-struct Buffer : Obj { U64 size = 0, mem = 0, memOff = 0; U32 usage = 0; U64 dirtyGen = 0; };
+struct Buffer : Obj { U64 size = 0, mem = 0, memOff = 0; U32 usage = 0; U64 dirtyGen = 0; U64 devVa = 0; };
 struct Image  : Obj {
     U32 w = 0, h = 0, d = 0, layers = 0, mips = 0, format = 0, tiling = 0, usage = 0, samples = 0;
     U64 mem = 0, memOff = 0, pixBytes = 0;
@@ -667,6 +669,7 @@ U64 blob_hash(const U8* p, size_t n) {
 // payloads inlined base64: there is no filesystem between wasm and the page.
 // ---------------------------------------------------------------------------
 U32 g_frameNo = 0;
+static U64 g_v2SubmitFrames = 0; // frames with draws serialized to v2 (dedup epoch)
 std::string g_pendingFrame;          // built by submit, hopped by present
 U32 g_lastPresented = 0;
 
@@ -1306,6 +1309,18 @@ const U32 V2_CHUNK_MAGIC = 0x46324B56u;   // 'VK2F' little-endian: bytes 56 4B 3
 const U32 V2_CHUNK_VERSION = 2;
 const size_t V2_CHUNK_CAP = 1024 * 1024;  // seal before a record that would overflow
 const U32 V2_PRODUCER_CHUNK_RING = 8;     // drop oldest COMPLETE frame past this
+// Byte-payload cap for a single V2_BUFFER_DATA record. The page rejects any
+// chunk over 16MB (V2_MAX_CHUNK_BYTES); a record near that size poisons its
+// whole chunk AND desyncs every later byte-less dedup record (the bridge
+// believes the page received bytes it never got). vkd3d-proton backs small
+// resources (e.g. an 84-byte vertex buffer) with huge heap-sized VkBuffers
+// (16MB); the draw only ever touches the prefix, so emit at most 1MB.
+// The dedup hash covers the emitted prefix.
+const size_t V2_MAX_BUF_SEND = 1u << 20; // 1MB
+// Full-resend period (frames) for buffer content dedup: heals any
+// bridge/page desync caused by a dropped or rejected chunk (the page has no
+// upstream resend channel).
+const U32 V2_BUF_RESEND_PERIOD = 64;
 
 struct ChunkWriter {
     std::vector<U8> b;
@@ -1543,6 +1558,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         for (const Cmd& k : st->cmds)
             if (k.kind == CMD_DRAW || k.kind == CMD_DRAW_INDEXED) { anyDraw = true; break; }
         if (!anyDraw) { klog_fmt("vk64: submit(v2): frame %u without draw, skipped", g_frameNo); continue; }
+        g_v2SubmitFrames++;
 
         V2FrameAsm fa;
         U32 hist[32] = {0};
@@ -1574,26 +1590,46 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             if (!b || !b->mem) return;
             auto key = std::make_tuple(bufId, memOff, len);
             auto it = g_bufferContentHash.find(key);
+            // Huge buffers: vkd3d-proton backs small resources with heap-sized
+            // VkBuffers (a 16MB VkBuffer for an 84-byte VB). The page rejects
+            // any chunk over 16MB, so cap the emitted prefix at 1MB — the draw
+            // only touches the prefix. Dedup hash covers the emitted bytes.
+            const bool tooLarge = len > V2_MAX_BUF_SEND;
+            const U64 sendLen = tooLarge ? V2_MAX_BUF_SEND : len;
+            // Periodic full resend: heals any bridge/page desync from a
+            // dropped or rejected chunk. The first submitted frames always
+            // send full bytes so startup never depends on a chunk the page
+            // may have dropped. (g_frameNo counts presents since boot, which
+            // is useless here; g_v2SubmitFrames counts real submits.)
+            const bool forceFull =
+                (g_v2SubmitFrames <= 3 || (g_v2SubmitFrames % V2_BUF_RESEND_PERIOD) == 0);
             // Fast path: buffer was hashed before and hasn't been modified
             // via any Vulkan command since (dirtyGen unchanged) and its
             // memory was never mapped (no CPU writes possible). Skip the
             // expensive readGuestRange + fnv1a64 entirely.
             DeviceMemory* bmem = objOf<DeviceMemory>(b->mem, K_MEMORY, "vkQueueSubmit");
-            if (it != g_bufferContentHash.end() && it->second.dirtyGen == b->dirtyGen &&
+            if (!forceFull && it != g_bufferContentHash.end() && it->second.dirtyGen == b->dirtyGen &&
                 b->dirtyGen != 0 && bmem && !bmem->wasMapped) {
+                klog_fmt("vk64: BUFFER_DATA fast-byteless id=0x%llx len=%llu", (unsigned long long)bufId, (unsigned long long)len);
                 emit(V2_BUFFER_DATA, [&](ChunkWriter& p) {
                     p.u64(bufId); p.u64(memOff); p.u64(it->second.hash);
                     p.u32(0);
                 });
                 return;
             }
-            std::vector<U8> bytes = readGuestRange(b->mem, memOff, len);
+            std::vector<U8> bytes = readGuestRange(b->mem, memOff, sendLen);
             if (bytes.empty()) return;
             // Cross-frame dedup: resend bytes only when content changed.
             U64 hash = fnv1a64(bytes.data(), bytes.size());
             bool sendBytes = true;
-            if (it != g_bufferContentHash.end() && it->second.hash == hash) {
+            if (!forceFull && it != g_bufferContentHash.end() && it->second.hash == hash) {
                 sendBytes = false;
+                klog_fmt("vk64: BUFFER_DATA hashmatch-byteless id=0x%llx len=%llu", (unsigned long long)bufId, (unsigned long long)len);
+            } else {
+                klog_fmt("vk64: BUFFER_DATA full-send id=0x%llx len=%llu", (unsigned long long)bufId, (unsigned long long)len);
+            }
+            if (tooLarge) {
+                klog_fmt("vk64: BUFFER_DATA capped id=0x%llx len=%llu -> %llu bytes (vkd3d heap-sized buffer; page rejects chunks over 16MB)", (unsigned long long)bufId, (unsigned long long)len, (unsigned long long)sendLen);
             }
             g_bufferContentHash[key] = {hash, b->dirtyGen};
             emit(V2_BUFFER_DATA, [&](ChunkWriter& p) {
@@ -1944,7 +1980,7 @@ void fillProperties(VkPhysicalDeviceProperties* p) {
     L.maxStorageBufferRange = 1 << 30; L.maxPushConstantsSize = 256;
     L.maxMemoryAllocationCount = 4096; L.maxSamplerAllocationCount = 4000;
     L.bufferImageGranularity = 1; L.sparseAddressSpaceSize = 0;
-    L.maxBoundDescriptorSets = 4; L.maxPerStageDescriptorSamplers = 16;
+    L.maxBoundDescriptorSets = 8; L.maxPerStageDescriptorSamplers = 16;
     L.maxPerStageDescriptorUniformBuffers = 16; L.maxPerStageDescriptorStorageBuffers = 4;
     L.maxPerStageDescriptorSampledImages = 16; L.maxPerStageDescriptorStorageImages = 4;
     L.maxPerStageDescriptorInputAttachments = 4;
@@ -3145,8 +3181,26 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         Buffer* b = createObj<Buffer>(K_BUFFER, id);
         b->size = ci.size;
         b->usage = ci.usage;
+        klog_fmt("vk64: vkCreateBuffer id=0x%llx size=%llu usage=0x%x", (unsigned long long)id, (unsigned long long)ci.size, ci.usage);
         wr64(args.a[3], id);
         return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetBufferDeviceAddress: {
+        // (device, VkBufferDeviceAddressInfo*): vkd3d-proton uses the VA for
+        // its internal GPU VA map (IASetVertexBuffers deref). There is no real
+        // GPU behind the bridge, so the VA is just a unique non-zero identifier
+        // per buffer. 256MB stride guarantees VA ranges never overlap, so
+        // vkd3d's va_map range lookups (va + offset) stay unambiguous.
+        struct { U64 sType; U64 pNext; U64 buffer; } info = {};
+        if (!args.a[1] || !g_mem) return 0;
+        g_mem->memcpyFromGuest(&info, args.a[1], sizeof(info));
+        Buffer* b = objOf<Buffer>(info.buffer, K_BUFFER, "vkGetBufferDeviceAddress");
+        if (!b) return 0;
+        if (!b->devVa) {
+            b->devVa = g_nextDevVa;
+            g_nextDevVa += 0x10000000ULL;
+        }
+        return b->devVa;
     }
     case VK64_fn_vkCreateImage: {
         VkImageCreateInfo ci = {};

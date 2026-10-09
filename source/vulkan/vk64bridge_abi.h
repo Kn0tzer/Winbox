@@ -321,6 +321,7 @@ enum {
     VK64_fn_vkCmdDispatch,                          // (cmdBuf, x, y, z) -> record compute dispatch
     VK64_fn_vkCmdDispatchBase,                      // (cmdBuf, baseX, baseY, baseZ, x, y, z) -> record compute dispatch
     VK64_fn_vkCmdDispatchIndirect,                  // (cmdBuf, buffer, offset) -> record compute dispatch
+    VK64_fn_vkGetBufferDeviceAddress,              // (device, VkBufferDeviceAddressInfo*) -> u64 VA
     VK64_fn__MAX
 };
 
