@@ -39,6 +39,16 @@
 //      control. Rewrite: drop the capability and any OpExecutionMode
 //      SignedZeroInfNanPreserve instructions. Safe for rendering: it only
 //      governs NaN/inf edge-case preservation.
+//   R8 "strip-unused-physical-storage-buffer": naga rejects OpCapability
+//      PhysicalStorageBufferAddresses (5346/5347) and the
+//      SPV_KHR_physical_storage_buffer extension. vkd3d-proton emits them
+//      for shaders that never actually use physical pointers (e.g. when a
+//      descriptor table is present it compiles all shaders with the
+//      PhysicalStorageBuffer64 memory model). Rewrite, only when no
+//      OpConvertUToPtr/OpConvertPtrToU and no PhysicalStorageBuffer pointer
+//      types exist: drop the capability + extension, rewrite OpMemoryModel
+//      addressing to Logical. Safe: with no physical pointers the addressing
+//      model is unobservable.
 //
 // Interface: applySpirvFix(bytes: Uint8Array) -> { bytes, applied, log }.
 // applied is [] when the module needs nothing (byte-identical passthrough).
@@ -863,6 +873,45 @@ function stripSignedZeroInfNanPreserve(mod, log) {
   return true;
 }
 
+// R8 "strip-unused-physical-storage-buffer": naga rejects OpCapability
+// PhysicalStorageBufferAddresses (5346, or 5347 as emitted by vkd3d-shader)
+// and the SPV_KHR_physical_storage_buffer OpExtension with
+// UnsupportedCapability/UnsupportedExtension. vkd3d-proton emits them even
+// for shaders that never touch a physical pointer (no OpConvertUToPtr /
+// OpConvertPtrToU, no PhysicalStorageBuffer StorageClass pointer types) —
+// observed on D3D12 shaders compiled with a descriptor table present, where
+// the whole pipeline gets the PhysicalStorageBuffer64 memory model. When the
+// capability is unused, drop it and the extension and rewrite the addressing
+// model to Logical (memory model untouched). If physical pointers ARE used,
+// leave the module alone (naga cannot translate it; the frame is skipped).
+function stripUnusedPhysicalStorageBuffer(mod, log) {
+  const hasCap = mod.insns.some(i => i.op === 17 && (i.words[0] === 5346 || i.words[0] === 5347));
+  if (!hasCap) return false;
+  const usesPsb = mod.insns.some(i =>
+    i.op === 120 || i.op === 121 || // OpConvertUToPtr / OpConvertPtrToU
+    (i.op === Op.TypePointer && i.words[0] === 5349)); // PhysicalStorageBuffer storage class
+  if (usesPsb) {
+    log.push('spirvfix: PhysicalStorageBufferAddresses is actually used; not stripping');
+    return false;
+  }
+  const extName = insn => new TextDecoder().decode(new Uint8Array(strOf(insn, 0)));
+  const exts = mod.insns.filter(i => i.op === 10 && extName(i) === 'SPV_KHR_physical_storage_buffer');
+  let memRewritten = false;
+  for (const i of mod.insns) {
+    if (i.op === Op.MemoryModel && i.words[0] === 5348) { // PhysicalStorageBuffer64
+      i.words[0] = 0; // Logical
+      memRewritten = true;
+    }
+  }
+  mod.insns = mod.insns.filter(i => !((i.op === 17 && (i.words[0] === 5346 || i.words[0] === 5347)) ||
+    (i.op === 10 && extName(i) === 'SPV_KHR_physical_storage_buffer')));
+  const what = ['capability',
+    exts.length ? exts.length + ' OpExtension(s)' : null,
+    memRewritten ? 'OpMemoryModel->Logical' : null].filter(Boolean).join(' + ');
+  log.push('spirvfix: stripped unused PhysicalStorageBufferAddresses (' + what + ')');
+  return true;
+}
+
 // --- entry point -------------------------------------------------------------
 /** @param {Uint8Array} bytes @param {{rasterTopology?: number}} [options] */
 export function applySpirvFix(bytes, { rasterTopology, specOverrides } = {}) {
@@ -909,6 +958,11 @@ export function applySpirvFix(bytes, { rasterTopology, specOverrides } = {}) {
   } catch (e) {
     log.push('R7 failed: ' + (e.message || e));
   }
+  try {
+    if (stripUnusedPhysicalStorageBuffer(mod, log)) applied.push('strip-unused-physical-storage-buffer');
+  } catch (e) {
+    log.push('R8 failed: ' + (e.message || e));
+  }
   if (!applied.length) return { bytes: u8, applied, log };
   try {
     return { bytes: serializeSpirv(mod), applied, log };
@@ -917,4 +971,4 @@ export function applySpirvFix(bytes, { rasterTopology, specOverrides } = {}) {
   }
 }
 
-export const REWRITES = ['split-combined-sampler', 'fold-spec-constants', 'non-point-builtins', 'tail-demote-to-kill', 'strip-draw-parameters', 'strip-index-decorations', 'strip-signed-zero-inf-nan-preserve'];
+export const REWRITES = ['split-combined-sampler', 'fold-spec-constants', 'non-point-builtins', 'tail-demote-to-kill', 'strip-draw-parameters', 'strip-index-decorations', 'strip-signed-zero-inf-nan-preserve', 'strip-unused-physical-storage-buffer'];

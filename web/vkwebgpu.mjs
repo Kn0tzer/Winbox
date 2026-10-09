@@ -1540,8 +1540,13 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     return null;
   }
 
-  async function getPipelineFor(pipe, sampleCount, unnegated = false) {
-    const key = pipe.pipeId + ':ms' + sampleCount + ':topology:' + pipe.topology + ':vb:' + JSON.stringify(pipe.vb) + ':yny' + (unnegated ? '1' : '0');
+  async function getPipelineFor(pipe, sampleCount, unnegated = false, passHasDepth = false) {
+    // WebGPU requires the pipeline's depthStencil state to match the render
+    // pass attachments: a pipeline without depthStencil cannot be set in a
+    // pass with a depth attachment (Vulkan allows it). Key the cache on the
+    // pass depth state and always emit a (possibly disabled) depthStencil
+    // when the pass has depth.
+    const key = pipe.pipeId + ':ms' + sampleCount + ':topology:' + pipe.topology + ':vb:' + JSON.stringify(pipe.vb) + ':yny' + (unnegated ? '1' : '0') + ':pd' + (passHasDepth ? '1' : '0');
     if (pipelines.has(key)) return pipelines.get(key);
     const vsm = F.shaders.get(pipe.vsHash), fsm = F.shaders.get(pipe.fsHash);
     if (!vsm || !fsm) return { skip: 'missing-shader' };
@@ -1634,9 +1639,10 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
         topology: V2_TOPOLOGY[pipe.topology] || 'triangle-list',
         cullMode: CULL[pipe.cull] || 'none', frontFace: FRONT[pipe.front] || 'ccw',
       },
-      depthStencil: pipe.depthTest ? {
-        format: 'depth24plus', depthWriteEnabled: !!pipe.depthWrite,
-        depthCompare: DEPTH_OP[pipe.depthOp] || 'less-equal',
+      depthStencil: (pipe.depthTest || passHasDepth) ? {
+        format: 'depth24plus',
+        depthWriteEnabled: pipe.depthTest ? !!pipe.depthWrite : false,
+        depthCompare: pipe.depthTest ? (DEPTH_OP[pipe.depthOp] || 'less-equal') : 'always',
       } : undefined,
       multisample: { count: sampleCount },
     });
@@ -1932,7 +1938,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
         switch (op.op) {
           case 'bindPipe': {
             let rec;
-            try { rec = await getPipelineFor(op.pipe, passSamples); }
+            try { rec = await getPipelineFor(op.pipe, passSamples, false, !!depthView); }
             catch (e) { rec = { skip: 'pipeline-threw' }; }
             if (rec.skip) {
               if (!st.badPipes.has(op.pipe.pipeId)) {
@@ -1968,7 +1974,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
                 // framebuffer mapping bit-for-bit.
                 const negH = h < 0;
                 if (negH !== st.pipeNeg && st.pipeDesc) {
-                  const rec = await getPipelineFor(st.pipeDesc, passSamples, negH);
+                  const rec = await getPipelineFor(st.pipeDesc, passSamples, negH, !!depthView);
                   if (!rec.skip) { st.pipeRec = rec; st.pipeNeg = negH; if (passEnc) passEnc.setPipeline(rec.pipeline); }
                 }
                 passEnc.setViewport(x, negH ? y + h : y, w, Math.abs(h), md, xmd);
