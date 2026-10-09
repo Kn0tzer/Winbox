@@ -4254,6 +4254,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // (cmdBuf, srcBuffer, dstImage, layout, nRegions, pRegions*)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdCopyBufferToImage");
         U32 nreg = (U32)args.a[4];
+        // Defensive: garbage regionCount would cause over-allocation in readArray.
+        if (nreg > 1024) return 0;
         std::vector<VkBufferImageCopy> regs;
         readArray(args.a[5], nreg, regs);
         if (!cb) return 0;
@@ -4306,6 +4308,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         };
         CmdBuf* cb = cbOf(args.a[0], "vkCmdCopyImageToBuffer2");
         U32 nreg = (U32)args.a[4];
+        // Defensive: garbage regionCount would cause std::length_error in readArray.
+        if (nreg > 1024) return 0;
         std::vector<VkBufferImageCopy2L> regs;
         readArray(args.a[5], nreg, regs);
         if (!cb) return 0;
@@ -4362,6 +4366,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             U64 srcOffset; U64 dstOffset; U64 size;
         };
         U32 nreg = (U32)args.a[3];
+        // Defensive: a garbage regionCount (e.g. 1447756043 observed from
+        // mismatched shim args) would cause std::length_error in readArray.
+        // No legitimate call needs more than 1024 regions.
+        if (nreg > 1024) return 0;
         std::vector<VkBufferCopy2L> regs;
         readArray(args.a[4], nreg, regs);
         Buffer* src = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdCopyBuffer2");
@@ -4371,12 +4379,24 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyBuffer2");
         if (!smem || !dmem || !smem->va || !dmem->va) return 0;
         for (const auto& r : regs) {
-            U64 sOff = smem->va + src->memOff + r.srcOffset;
-            U64 dOff = dmem->va + dst->memOff + r.dstOffset;
+            // Validate the bind-relative offset (including the buffer's bind
+            // offset) BEFORE computing absolute addresses. The old check
+            // (r.srcOffset >= smem->size) ignored src->memOff, so when
+            // memOff+srcOffset exceeded the memory size the clamp below
+            // (sEnd - sOff) underflowed U64 -> huge n -> std::length_error.
+            // The wraparound checks also guard U64 addition overflow.
+            U64 sRel = src->memOff + r.srcOffset;
+            U64 dRel = dst->memOff + r.dstOffset;
+            if (sRel < src->memOff || sRel >= smem->size) continue;
+            if (dRel < dst->memOff || dRel >= dmem->size) continue;
+            U64 sOff = smem->va + sRel;
+            U64 dOff = dmem->va + dRel;
             U64 n = r.size;
-            if (r.srcOffset >= smem->size || r.dstOffset >= dmem->size) continue;
-            if (sOff + n > smem->va + smem->size) n = smem->va + smem->size - sOff;
-            if (dOff + n > dmem->va + dmem->size) n = dmem->va + dmem->size - dOff;
+            U64 sEnd = smem->va + smem->size;
+            U64 dEnd = dmem->va + dmem->size;
+            // sOff < sEnd and dOff < dEnd hold here, so no underflow.
+            if (sOff + n > sEnd) n = sEnd - sOff;
+            if (dOff + n > dEnd) n = dEnd - dOff;
             if (!n) continue;
             std::vector<U8> tmp((size_t)n);
             g_mem->memcpyFromGuest(tmp.data(), sOff, n);
@@ -4580,6 +4600,9 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         };
         CmdBuf* cb = cbOf(args.a[0], "vkCmdCopyBufferToImage2");
         U32 nreg = (U32)args.a[3];
+        // Defensive: garbage regionCount (PE shim arg shift) would cause
+        // massive over-allocation in readArray and millions of no-op copies.
+        if (nreg > 1024) return 0;
         std::vector<VkBufferImageCopy2L> regs;
         readArray(args.a[4], nreg, regs);
         if (!cb) return 0;
