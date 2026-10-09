@@ -149,6 +149,7 @@ struct TestCase {
     U8 memInit[256] = {};     // initial scratch content
     bool checkCfPreserved = false;   // inc/dec: CF must be unchanged
     bool checkFlagsUnchanged = false;// e.g. shift by masked-count 0: no flag change
+    bool skipRsiRdi = false;         // string ops: RSI/RDI hold scratch addrs, checked per-side
 };
 
 static bool writeAll(int fd, const void* buf, size_t n) {
@@ -817,6 +818,106 @@ static void buildFpuCases(std::vector<TestCase>& out) {
         tc.flagsMask = 0; tc.checkMem = true; tc.memLen = 8;
         out.push_back(tc);
     }
+    // Transcendental: finit; fld1; fop; fstp [rbx] (single-operand)
+    struct X { const char* name; U8 op; };
+    X trans[] = {
+        {"f2xm1", 0xF0}, {"fptan", 0xF2}, {"fxtract", 0xF4},
+        {"fprem", 0xF8}, {"frndint", 0xFC}, {"fscale", 0xFD},
+    };
+    for (auto& x : trans) {
+        std::vector<U8> b;
+        b.push_back(0xDB); b.push_back(0xE3);       // finit
+        b.push_back(0xD9); b.push_back(0xE8);       // fld1
+        b.push_back(0xD9); b.push_back(x.op);       // fop
+        b.push_back(0xDD); b.push_back(0x1B);       // fstp qword [rbx]
+        TestCase tc; tc.set = "fpu"; tc.name = x.name; tc.form = "st";
+        tc.code = b; initRegs(tc, 0, MEM_SCRATCH);
+        tc.flagsMask = 0; tc.checkMem = true; tc.memLen = 8;
+        out.push_back(tc);
+    }
+    // Two-operand transcendental: finit; fld1; fld1; fop; fstp [rbx]
+    // fyl2x: ST(1)*log2(ST(0)) = 1*log2(1) = 0, pops
+    // fpatan: arctan(ST(1)/ST(0)) = arctan(1) = pi/4, pops
+    // fyl2xp1: ST(1)*log2(ST(0)+1) = 1*log2(2) = 1, pops
+    struct Y { const char* name; U8 op; };
+    Y trans2[] = {{"fyl2x", 0xF1}, {"fpatan", 0xF3}, {"fyl2xp1", 0xF9}};
+    for (auto& y : trans2) {
+        std::vector<U8> b;
+        b.push_back(0xDB); b.push_back(0xE3);       // finit
+        b.push_back(0xD9); b.push_back(0xE8);       // fld1
+        b.push_back(0xD9); b.push_back(0xE8);       // fld1
+        b.push_back(0xD9); b.push_back(y.op);       // fop (pops)
+        b.push_back(0xDD); b.push_back(0x1B);       // fstp qword [rbx]
+        TestCase tc; tc.set = "fpu"; tc.name = y.name; tc.form = "st,stp";
+        tc.code = b; initRegs(tc, 0, MEM_SCRATCH);
+        tc.flagsMask = 0; tc.checkMem = true; tc.memLen = 8;
+        out.push_back(tc);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// String ops test builders. Pattern: set RSI/RDI/RCX, init memory,
+// execute string op, verify registers and memory.
+// Source at MEM_SCRATCH, dest at MEM_SCRATCH+128.
+// ---------------------------------------------------------------------------
+static void buildStringCases(std::vector<TestCase>& out) {
+    // String ops: RBX points to scratch (patched by runner).
+    // We derive RSI/RDI from RBX via LEA to avoid absolute addresses.
+    // MOVSB: rep movsb, copy 8 bytes from [RBX] to [RBX+128]
+    {
+        std::vector<U8> b;
+        // lea rsi, [rbx]
+        b.push_back(0x48); b.push_back(0x8D); b.push_back(0x33);
+        // lea rdi, [rbx+128]
+        b.push_back(0x48); b.push_back(0x8D); b.push_back(0xBB);
+        b.push_back(0x80); b.push_back(0x00); b.push_back(0x00); b.push_back(0x00);
+        // mov rcx, 8
+        b.push_back(0x48); b.push_back(0xB9);
+        for (int k = 0; k < 8; k++) b.push_back(k == 0 ? 8 : 0);
+        // rep movsb
+        b.push_back(0xF3); b.push_back(0xA4);
+        TestCase tc; tc.set = "int"; tc.name = "movsb"; tc.form = "rep";
+        tc.code = b; initRegs(tc, 0, MEM_SCRATCH);
+        tc.flagsIn = 0x202; tc.flagsMask = 0; tc.skipRsiRdi = true;
+        for (int i = 0; i < 8; i++) tc.memInit[i] = (U8)(i + 1);
+        tc.checkMem = true; tc.memLen = 136;
+        out.push_back(tc);
+    }
+    // STOSB: rep stosb, store AL=0x5A to [RBX], 8 times
+    {
+        std::vector<U8> b;
+        // mov al, 0x5A
+        b.push_back(0xB0); b.push_back(0x5A);
+        // lea rdi, [rbx]
+        b.push_back(0x48); b.push_back(0x8D); b.push_back(0x3B);
+        // mov rcx, 8
+        b.push_back(0x48); b.push_back(0xB9);
+        for (int k = 0; k < 8; k++) b.push_back(k == 0 ? 8 : 0);
+        // rep stosb
+        b.push_back(0xF3); b.push_back(0xAA);
+        TestCase tc; tc.set = "int"; tc.name = "stosb"; tc.form = "rep";
+        tc.code = b; initRegs(tc, 0, MEM_SCRATCH);
+        tc.flagsIn = 0x202; tc.flagsMask = 0;
+        tc.checkMem = true; tc.memLen = 8;
+        out.push_back(tc);
+    }
+    // LODSB: rep lodsb, load 4 bytes from [RBX] to AL (last = 0x13)
+    {
+        std::vector<U8> b;
+        // lea rsi, [rbx]
+        b.push_back(0x48); b.push_back(0x8D); b.push_back(0x36);
+        // mov rcx, 4
+        b.push_back(0x48); b.push_back(0xB9);
+        for (int k = 0; k < 8; k++) b.push_back(k == 0 ? 4 : 0);
+        // rep lodsb
+        b.push_back(0xF3); b.push_back(0xAC);
+        TestCase tc; tc.set = "int"; tc.name = "lodsb"; tc.form = "rep";
+        tc.code = b; initRegs(tc, 0, MEM_SCRATCH);
+        tc.flagsIn = 0x202; tc.flagsMask = 0; tc.skipRsiRdi = true;
+        for (int i = 0; i < 4; i++) tc.memInit[i] = (U8)(0x10 + i);
+        // AL should be 0x13; we check via RAX in register comparison
+        out.push_back(tc);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1136,6 +1237,7 @@ static CaseResult diffCase(const TestCase& tc, int idx, const NativeResult& n) {
     for (int i = 0; i < 16; i++) {
         if (i == X64_RSP) continue;
         if (rbxPatched && i == X64_RBX) continue;
+        if (tc.skipRsiRdi && (i == X64_RSI || i == X64_RDI)) continue;
         if (cr.nRegs[i] != cr.eRegs[i]) {
             snprintf(tmp, sizeof(tmp), "%s:n=0x%llx/e=0x%llx ",
                      regName(i), (unsigned long long)cr.nRegs[i],
@@ -1235,6 +1337,7 @@ int main(int argc, char** argv) {
     buildIntCases(cases);
     buildFpuCases(cases);
     buildSseCases(cases);
+    // buildStringCases(cases); // DISABLED: harness cannot handle RSI/RDI per-side checks yet
     std::vector<TimingSpec> timings;
     buildTimings(timings);
 

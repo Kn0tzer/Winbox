@@ -89,16 +89,26 @@ per-form table in `REPORT.md` makes every bucket auditable.
 
 ## Scope and limits
 
-- Pass 1: full integer ALU (mov/push/pop/add/sub/adc/sbb/and/or/xor/cmp/
-  test/inc/dec/neg/not/lea/shifts/rotates/shld/shrd/mul/imul/div/idiv/
-  xchg/xadd/bswap/movsx/movzx/cbw-cqo/setcc/cmovcc), x87 FPU starter
+- Pass 1 (155 forms): full integer ALU (mov/push/pop/add/sub/adc/sbb/and/or/
+  xor/cmp/test/inc/dec/neg/not/lea/shifts/rotates/shld/shrd/mul/imul/div/
+  idiv/xchg/xadd/bswap/movsx/movzx/cbw-cqo/setcc/cmovcc), x87 FPU starter
   (fld1/fldz/fldpi/fldl2e, faddp/fsubp/fsubrp/fmulp/fdivp/fdivrp, fxch),
   SSE starter (movaps/movups/movdqa/movdqu, addps/subps/mulps/divps/
   maxps/minps/sqrtps, andps/andnps/orps/xorps, paddd/psubd/paddq/psubq/
   pmullw/pcmpeqd/pand/por/pxor).
-- Not covered yet: string ops, control flow (jcc/loops/calls), segment
-  overrides, privileged/system instructions, AVX, most of SSE2+ integer
-  SIMD, FPU environment (fldcw/fstenv), MMX.
+- Pass 2 (2026-10-09, +12 forms): x87 constants (fldl2t/fldl2e/fldlg2/fldln2)
+  and transcendental (f2xm1/fyl2x/fptan/fpatan/fxtract/fprem/frndint/fscale).
+  Note: fyl2xp1 has 1-ULP precision difference vs x86 80-bit (documented,
+  dispatch uncommitted).
+- Not covered yet: string ops (emulator implements MOVS/STOS/LODS/SCAS/CMPS
+  but harness lacks RSI/RDI per-side infrastructure), control flow (jcc/
+  loops/calls), segment overrides, privileged/system instructions, most of
+  SSE2+ integer SIMD, FPU environment (fldcw/fstenv).
+- AVX/AVX2: intentionally unsupported. Emulator clears AVX bit in CPUID
+  (cpu64.cpp:2852) so glibc selects non-AVX paths. Documented, not a bug.
+- MMX: advertised in CPUID (MMX=1) but no instruction handlers implemented
+  (0F 6E/6F/7E/7F unhandled). Known gap; MMX is deprecated (superseded by
+  SSE) and rarely used by modern games.
 - The harness never modifies emulator behavior; test-only stubs in
   `harness.cpp` cover symbols differential snippets cannot reach
   (`ksyscall64`, `KSystem::getSystemTimeAsMicroSeconds`,
