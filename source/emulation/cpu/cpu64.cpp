@@ -378,6 +378,54 @@ static void flagsSub(U32& f, U64 a, U64 b, U64 r, U32 width) {
     setSZP(f, rm, width);
 }
 
+
+// ADC: flags for a + b + cIn. Uses unsigned __int128 for the full sum
+// so CF/AF/OF are derived from the true operation, not a wrapped operand.
+static void flagsAdc(U32& f, U64 a, U64 b, U64 cIn, U64 r, U32 width) {
+    U64 mask = maskFor(width);
+    a &= mask; b &= mask;
+    U64 rm = r & mask;
+    U32 wbits = width * 8;
+    f &= ~(X64_CF | X64_OF | X64_AF);
+    unsigned __int128 full = (unsigned __int128)a + b + (cIn & 1);
+    // CF: unsigned carry out of the top bit.
+    if ((full >> wbits) != 0) f |= X64_CF;
+    // OF: signed overflow. Sign-extend a, b to 128 bits and check the
+    // true signed sum against the signed range.
+    U64 sb = signBitFor(width);
+    __int128 sa = (a & sb) ? (__int128)a | (~(__int128)mask) : (__int128)a;
+    __int128 sbb = (b & sb) ? (__int128)b | (~(__int128)mask) : (__int128)b;
+    __int128 sfull = sa + sbb + (cIn & 1);
+    __int128 smin = -(__int128)sb;
+    __int128 smax = (__int128)(sb - 1);
+    if (sfull < smin || sfull > smax) f |= X64_OF;
+    // AF: carry from bit 3 to bit 4.
+    if (((a & 0xF) + (b & 0xF) + (cIn & 1)) > 0xF) f |= X64_AF;
+    setSZP(f, rm, width);
+}
+
+// SBB: flags for a - b - cIn. Borrow and signed overflow from 128-bit.
+static void flagsSbb(U32& f, U64 a, U64 b, U64 cIn, U64 r, U32 width) {
+    U64 mask = maskFor(width);
+    a &= mask; b &= mask;
+    U64 rm = r & mask;
+    f &= ~(X64_CF | X64_OF | X64_AF);
+    unsigned __int128 subtrahend = (unsigned __int128)b + (cIn & 1);
+    // CF (borrow): 1 if a < b + cIn (unsigned).
+    if ((unsigned __int128)a < subtrahend) f |= X64_CF;
+    // OF: signed overflow on a - b - cIn.
+    U64 sb = signBitFor(width);
+    __int128 sa = (a & sb) ? (__int128)a | (~(__int128)mask) : (__int128)a;
+    __int128 sbb = (b & sb) ? (__int128)b | (~(__int128)mask) : (__int128)b;
+    __int128 sfull = sa - sbb - (cIn & 1);
+    __int128 smin = -(__int128)sb;
+    __int128 smax = (__int128)(sb - 1);
+    if (sfull < smin || sfull > smax) f |= X64_OF;
+    // AF: borrow from bit 4 (a_low4 < b_low4 + cIn).
+    if ((a & 0xF) < ((b & 0xF) + (cIn & 1))) f |= X64_AF;
+    setSZP(f, rm, width);
+}
+
 // Logical ops always clear CF and OF, leave AF undefined (we clear it).
 static void flagsLogic(U32& f, U64 r, U32 width) {
     f &= ~(X64_CF | X64_OF | X64_AF);
@@ -396,10 +444,10 @@ __attribute__((always_inline)) inline void CPU64::runAlu(U8 aluOp, U32 size, boo
                 flagsLogic(rflags, result, size); break;
         case 2: { U64 cIn = (rflags & X64_CF) ? 1 : 0;
                 result = lhs + rhs + cIn;
-                flagsAdd(rflags, lhs, rhs + cIn, result, size); break; }
+                flagsAdc(rflags, lhs, rhs, cIn, result, size); break; }
         case 3: { U64 cIn = (rflags & X64_CF) ? 1 : 0;
                 result = lhs - rhs - cIn;
-                flagsSub(rflags, lhs, rhs + cIn, result, size); break; }
+                flagsSbb(rflags, lhs, rhs, cIn, result, size); break; }
         case 4: result = lhs & rhs;
                 flagsLogic(rflags, result, size); break;
         case 5: result = lhs - rhs;
@@ -4379,7 +4427,16 @@ dsp_55:
                     case 0x59: r[i] = a[i] * b[i]; break;
                     case 0x5C: r[i] = a[i] - b[i]; break;
                     case 0x5E: r[i] = a[i] / b[i]; break;
-                    case 0x51: r[i] = std::sqrt(b[i]); break;
+                    case 0x51: {
+                        U32 bits = fu32(b[i]);
+                        // Negative (sign bit set) and not -0.0 (0x80000000):
+                        // x86 returns the indefinite QNaN 0xFFC00000.
+                        if ((bits & 0x80000000U) != 0 && bits != 0x80000000U)
+                            r[i] = u32f(0xFFC00000U);
+                        else
+                            r[i] = std::sqrt(b[i]);
+                        break;
+                    }
                     case 0x5D: r[i] = (a[i] < b[i]) ? a[i] : b[i]; break;
                     case 0x5F: r[i] = (a[i] > b[i]) ? a[i] : b[i]; break;
                     default:   r[i] = a[i]; break;
@@ -5373,18 +5430,39 @@ dsp_59:
             } else if (op == 0xD9 && modrmByte == 0xE8) {
                 // D9 E8 = FLD1 — push +1.0 (FPU::FLD1 does PREP_PUSH itself)
                 fpu.FLD1();
+            } else if (op == 0xD9 && modrmByte == 0xE9) {
+                // D9 E9 = FLDL2T — push log2(10)
+                fpu.FLDL2T();
+            } else if (op == 0xD9 && modrmByte == 0xEA) {
+                // D9 EA = FLDL2E — push log2(e)
+                fpu.FLDL2E();
             } else if (op == 0xD9 && modrmByte == 0xEB) {
                 // D9 EB = FLDPI - push pi
                 fpu.FLDPI();
+            } else if (op == 0xD9 && modrmByte == 0xEC) {
+                // D9 EC = FLDLG2 — push log10(2)
+                fpu.FLDLG2();
+            } else if (op == 0xD9 && modrmByte == 0xED) {
+                // D9 ED = FLDLN2 — push ln(2)
+                fpu.FLDLN2();
             } else if (op == 0xD9 && modrmByte == 0xEE) {
                 // D9 EE = FLDZ — push +0.0 (FPU::FLDZ does PREP_PUSH itself)
                 fpu.FLDZ();
             } else if (op == 0xD9 && modrmByte == 0xF5) {
                 // D9 F5 = FPREM1 - partial remainder (IEEE)
                 fpu.FPREM1();
+            } else if (op == 0xD9 && modrmByte == 0xF0) {
+            } else if (op == 0xD9 && modrmByte == 0xF1) {
+            } else if (op == 0xD9 && modrmByte == 0xF2) {
+            } else if (op == 0xD9 && modrmByte == 0xF3) {
+            } else if (op == 0xD9 && modrmByte == 0xF4) {
+            } else if (op == 0xD9 && modrmByte == 0xF8) {
+            } else if (op == 0xD9 && modrmByte == 0xF9) {
             } else if (op == 0xD9 && modrmByte == 0xFB) {
                 // D9 FB = FSINCOS - ST(0)=sin(x), push cos(x)
                 fpu.FSINCOS();
+            } else if (op == 0xD9 && modrmByte == 0xFC) {
+            } else if (op == 0xD9 && modrmByte == 0xFD) {
             } else if (op == 0xD9 && modrmByte == 0xFE) {
                 // D9 FE = FSIN — sine of ST(0), result in ST(0)
                 fpu.FSIN();

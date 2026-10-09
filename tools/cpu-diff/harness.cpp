@@ -805,7 +805,8 @@ static void buildFpuCases(std::vector<TestCase>& out) {
     }
     // bare loads (finit; fldX; fstp [rbx])
     struct L { const char* name; U8 l; };
-    L loads[] = {{"fld1", 0xE8}, {"fldz", 0xEE}, {"fldpi", 0xEB}, {"fldl2e", 0xEC}};
+    L loads[] = {{"fld1", 0xE8}, {"fldz", 0xEE}, {"fldpi", 0xEB},
+                 {"fldl2t", 0xE9}, {"fldl2e", 0xEA}, {"fldlg2", 0xEC}, {"fldln2", 0xED}};
     for (auto& l : loads) {
         std::vector<U8> b;
         b.push_back(0xDB); b.push_back(0xE3);
