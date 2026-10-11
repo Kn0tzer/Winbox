@@ -5813,11 +5813,15 @@ template <class T> T* objOf32(U64 id32, U32 kind, const char* who) {
 // ---------------------------------------------------------------------------
 namespace {
 // Fill every VkBool32 payload dword of a 32-bit feature struct with VK_TRUE.
-// hostSize = sizeof(host struct); 32-bit payload dwords = (hostSize-16)/4
-// because the only layout delta vs host is the 4-byte-smaller pNext.
-inline void vk32_fillFeatures32(U32 addr, size_t hostSize) {
-    if (!addr || !g_mem32 || hostSize < 16) return;
-    U32 n = (U32)((hostSize - 16) / 4);
+// hostSize = sizeof(host struct); guestSize = sizeof(win32 guest struct).
+// Dwords written are clamped to the guest size: for structs where the host
+// (8-aligned uint64_t pNext) has trailing padding the win32 guest lacks,
+// (hostSize-16)/4 would write past the end of the guest struct.
+inline void vk32_fillFeatures32(U32 addr, size_t hostSize, size_t guestSize) {
+    if (!addr || !g_mem32 || hostSize < 16 || guestSize < 8) return;
+    U32 hostN = (U32)((hostSize - 16) / 4);
+    U32 guestN = (U32)((guestSize - 8) / 4);
+    U32 n = hostN < guestN ? hostN : guestN;
     for (U32 i = 0; i < n; i++) wr32_32(addr + 8 + i * 4, (U32)VK_TRUE);
 }
 // 32-bit field writers: hostOff = offsetof(host struct, field); valid for
@@ -5834,33 +5838,33 @@ void vk32_walkFeatures2(U32 pNextAddr) {
         U32 sType = rd32_32(cur);
         switch (sType) {
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceRobustness2FeaturesEXT)); break;
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceRobustness2FeaturesEXT), 20); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceMaintenance5Features)); break;
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceMaintenance5Features), 12); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_6_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceMaintenance6Features)); break;
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceMaintenance6Features), 12); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceTransformFeedbackFeaturesEXT)); break;
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceTransformFeedbackFeaturesEXT), sizeof(VkPhysicalDeviceTransformFeedbackFeaturesEXT) - 8); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT:
-                vk32_fillFeatures32(cur, sizeof(Vk64VertexAttributeDivisorFeaturesEXT)); break;
+                vk32_fillFeatures32(cur, sizeof(Vk64VertexAttributeDivisorFeaturesEXT), sizeof(Vk64VertexAttributeDivisorFeaturesEXT) - 8); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceDescriptorIndexingFeatures)); break;
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceDescriptorIndexingFeatures), sizeof(VkPhysicalDeviceDescriptorIndexingFeatures) - 8); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceShaderFloat16Int8Features)); break;
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceShaderFloat16Int8Features), sizeof(VkPhysicalDeviceShaderFloat16Int8Features) - 8); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDevice16BitStorageFeatures)); break;
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDevice16BitStorageFeatures), sizeof(VkPhysicalDevice16BitStorageFeatures) - 8); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDevice8BitStorageFeatures)); break;
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDevice8BitStorageFeatures), 20); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceScalarBlockLayoutFeatures)); break;
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceScalarBlockLayoutFeatures), 12); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceDepthClipEnableFeaturesEXT)); break;
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceDepthClipEnableFeaturesEXT), 12); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceVulkan12Features)); break;
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceVulkan12Features), 196); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceVulkan11Features)); break;
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceVulkan11Features), sizeof(VkPhysicalDeviceVulkan11Features) - 8); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceVulkan13Features)); break;
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceVulkan13Features), 68); break;
             default:
                 break; // unknown: leave as the guest set it
         }
@@ -6232,7 +6236,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         if (!args.a[1] || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
         U32 pCreateInfo = rd32_32((U32)args.a[1] + 8);
         U64 createSize = 0;
-        if (pCreateInfo) createSize = rd64_32(pCreateInfo + 12); // VkBufferCreateInfo.size@12 (32-bit)
+        if (pCreateInfo) createSize = rd64_32(pCreateInfo + 12); // VkBufferCreateInfo.size@12 (i386 guest, u64 4-aligned)
         U64 size = createSize ? ((createSize + 255) & ~(U64)255) : 256;
         U32 dst = (U32)args.a[2] + 8;
         wr64_32(dst + 0, size);
@@ -7295,7 +7299,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkGetBufferMemoryRequirements2: {
         if (!args.a[1] || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
         U32 infoAddr = (U32)args.a[1], outAddr = (U32)args.a[2];
-        U32 bufHandle = rd32_32(infoAddr + 8);
+        U32 bufHandle = (U32)rd64_32(infoAddr + 8);
         Buffer* b = objOf32<Buffer>(bufHandle, K_BUFFER, "vkGetBufferMemoryRequirements2");
         U64 bufSize = (b && b->size) ? b->size : 65536;
         U32 reqOff = outAddr + 8;
@@ -7307,7 +7311,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkGetImageMemoryRequirements2: {
         if (!args.a[1] || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
         U32 infoAddr = (U32)args.a[1], outAddr = (U32)args.a[2];
-        U32 imgHandle = rd32_32(infoAddr + 8);
+        U32 imgHandle = (U32)rd64_32(infoAddr + 8);
         Image* im = objOf32<Image>(imgHandle, K_IMAGE, "vkGetImageMemoryRequirements2");
         if (!im) return VK_ERROR_INITIALIZATION_FAILED;
         U64 px = (U64)im->w * im->h * (im->d ? im->d : 1) * (im->layers ? im->layers : 1) * fmt_bpp(im->format);
@@ -7324,7 +7328,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         U32 ciAddr = (U32)args.a[1];
         U32 nbind = ciAddr ? rd32_32(ciAddr + 12) : 0;
         l->nbind = nbind > VK64_MAX_BINDINGS ? VK64_MAX_BINDINGS : nbind;
-        wr32_32((U32)args.a[3], id);
+        wr64_32((U32)args.a[3], id);
         return VK_SUCCESS;
     }
     case VK64_fn_vkCreateDescriptorPool: {
@@ -7332,17 +7336,17 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
         createObj32<DescPool>(K_DESCPOOL, id);
-        wr32_32((U32)args.a[3], id);
+        wr64_32((U32)args.a[3], id);
         return VK_SUCCESS;
     }
     case VK64_fn_vkAllocateDescriptorSets: {
         if (!args.a[1] || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
         U32 infoAddr = (U32)args.a[1], outAddr = (U32)args.a[2];
-        U32 count = rd32_32(infoAddr + 12);
+        U32 count = rd32_32(infoAddr + 16);
         for (U32 i = 0; i < count; i++) {
             U64 id = 0;
             createObj32<DescSet>(K_SET, id);
-            wr32_32(outAddr + i * 4, id);
+            wr64_32(outAddr + i * 8, id);
         }
         return VK_SUCCESS;
     }
@@ -7353,7 +7357,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
         createObj32<DescTemplate>(K_TEMPLATE, id);
-        wr32_32((U32)args.a[3], id);
+        wr64_32((U32)args.a[3], id);
         return VK_SUCCESS;
     }
     case VK64_fn_vkUpdateDescriptorSetWithTemplate: {
@@ -7365,8 +7369,8 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         U32 infoAddr = (U32)args.a[2];
         U32 count = (U32)args.a[1];
         for (U32 i = 0; i < count; i++) {
-            U32 base = infoAddr + i * 24;
-            U32 bufHandle = rd32_32(base + 8);
+            U32 base = infoAddr + i * 32;
+            U64 bufHandle = rd64_32(base + 8);
             Buffer* b = objOf32<Buffer>(bufHandle, K_BUFFER, "vkBindBufferMemory2");
             if (!b) return VK_ERROR_INITIALIZATION_FAILED;
         }
@@ -7379,7 +7383,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         U32 count = (U32)args.a[1];
         for (U32 i = 0; i < count; i++) {
             U32 base = infoAddr + i * 32;
-            U32 imgHandle = rd32_32(base + 8);
+            U64 imgHandle = rd64_32(base + 8);
             Image* im = objOf32<Image>(imgHandle, K_IMAGE, "vkBindImageMemory2");
             if (!im) return VK_ERROR_INITIALIZATION_FAILED;
         }
@@ -7392,7 +7396,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         for (U32 i = 0; i < count; i++) {
             U64 id = 0;
             createObj32<Pipeline>(K_PIPELINE, id);
-            wr32_32(outAddr + i * 4, id);
+            wr64_32(outAddr + i * 8, id);
         }
         return VK_SUCCESS;
     }
@@ -7400,13 +7404,13 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
         createObj32<BufferView>(K_BUFFERVIEW, id);
-        wr32_32((U32)args.a[3], id);
+        wr64_32((U32)args.a[3], id);
         return VK_SUCCESS;
     }
     case VK64_fn_vkGetBufferDeviceAddress: {
         if (!args.a[1]) return 0;
         U32 infoAddr = (U32)args.a[1];
-        U32 bufHandle = rd32_32(infoAddr + 8);
+        U32 bufHandle = (U32)rd64_32(infoAddr + 8);
         Buffer* b = objOf32<Buffer>(bufHandle, K_BUFFER, "vkGetBufferDeviceAddress");
         if (!b) return 0;
         if (!b->devVa) {

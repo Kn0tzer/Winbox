@@ -594,6 +594,18 @@ API VkResult vkCreateDescriptorPool(VkDevice dev, const void* ci, const void* al
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
     return (VkResult)vk64_trap(VK64_fn_vkCreateDescriptorPool, &a);
 }
+// No-op lifecycle helpers: the bridge tracks pools/sets as IDs and never
+// needs host-side teardown for reset/free (short-run leak is harmless).
+// Implemented locally (no trap) so Wine's Unix handler gets VK_SUCCESS
+// instead of calling the benign stub with a fake handle as string (fault).
+API VkResult vkResetDescriptorPool(VkDevice dev, VkDescriptorPool pool, VkFlags flags) {
+    (void)dev; (void)pool; (void)flags;
+    return 0;
+}
+API VkResult vkFreeDescriptorSets(VkDevice dev, VkDescriptorPool pool, uint32_t count, const void* sets) {
+    (void)dev; (void)pool; (void)count; (void)sets;
+    return 0;
+}
 API VkResult vkCreateShaderModule(VkDevice dev, const void* ci, const void* alloc, VkShaderModule* out) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
     return (VkResult)vk64_trap(VK64_fn_vkCreateShaderModule, &a);
@@ -751,6 +763,9 @@ API void vkDestroyDescriptorSetLayout(VkDevice dev, VkDescriptorSetLayout l, con
 API void vkDestroyDescriptorPool(VkDevice dev, VkDescriptorPool p, const void* alloc) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = p; a.a[2] = P(alloc);
     (void)vk64_trap(VK64_fn_vkDestroyDescriptorPool, &a);
+}
+API void vkDestroyBufferView(VkDevice dev, VkBufferView v, const void* alloc) {
+    (void)dev; (void)v; (void)alloc;
 }
 API void vkDestroyShaderModule(VkDevice dev, VkShaderModule m, const void* alloc) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = m; a.a[2] = P(alloc);
@@ -1072,6 +1087,8 @@ static const struct procEntry g_procs[] = {
     E(vkCreatePipelineLayout, VK64_fn_vkCreatePipelineLayout),
     E(vkCreateDescriptorSetLayout, VK64_fn_vkCreateDescriptorSetLayout),
     E(vkCreateDescriptorPool, VK64_fn_vkCreateDescriptorPool),
+    E(vkResetDescriptorPool, VK64_fn_vkResetCommandPool),
+    E(vkFreeDescriptorSets, VK64_fn_vkResetCommandPool),
     E(vkCreateShaderModule, VK64_fn_vkCreateShaderModule),
     E(vkCreatePipelineCache, VK64_fn_vkCreatePipelineCache),
     E(vkCreateFence, VK64_fn_vkCreateFence),
@@ -1098,6 +1115,7 @@ static const struct procEntry g_procs[] = {
     E(vkDestroySwapchainKHR, VK64_fn_vkDestroySwapchainKHR),
     E(vkDestroyCommandPool, VK64_fn_vkDestroyCommandPool),
     E(vkDestroyBuffer, VK64_fn_vkDestroyBuffer),
+    E(vkDestroyBufferView, VK64_fn_vkDestroyBuffer),
     E(vkDestroyImage, VK64_fn_vkDestroyImage),
     E(vkDestroyImageView, VK64_fn_vkDestroyImageView),
     E(vkDestroySampler, VK64_fn_vkDestroySampler),
@@ -1288,8 +1306,6 @@ TAIL(vkDestroySwapchainKHR2)
 TAIL(vkMergePipelineCaches)
 TAIL(vkResetPipelineCache)
 TAIL(vkGetDeviceMemoryCommitment)
-TAIL(vkFreeDescriptorSets)
-TAIL(vkDestroyBufferView)
 TAIL(vkSetDebugUtilsObjectNameEXT)
 TAIL(vkSetDebugUtilsObjectTagEXT)
 TAIL(vkCreateDebugUtilsMessengerEXT)
