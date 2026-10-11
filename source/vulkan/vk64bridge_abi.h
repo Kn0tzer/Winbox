@@ -322,6 +322,9 @@ enum {
     VK64_fn_vkCmdDispatchBase,                      // (cmdBuf, baseX, baseY, baseZ, x, y, z) -> record compute dispatch
     VK64_fn_vkCmdDispatchIndirect,                  // (cmdBuf, buffer, offset) -> record compute dispatch
     VK64_fn_vkGetBufferDeviceAddress,              // (device, VkBufferDeviceAddressInfo*) -> u64 VA
+    VK64_fn_vkGetPhysicalDeviceProperties2KHR,     // alias of vkGetPhysicalDeviceProperties2
+    VK64_fn_vkGetPhysicalDeviceFeatures2KHR,       // alias of vkGetPhysicalDeviceFeatures2
+    VK64_fn_vkGetPhysicalDeviceMemoryProperties2KHR, // alias of vkGetPhysicalDeviceMemoryProperties2
     VK64_fn__MAX
 };
 

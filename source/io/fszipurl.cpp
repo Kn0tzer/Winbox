@@ -115,6 +115,7 @@ struct RangedFile {
     std::vector<UrlPart> parts; // immutable after mount (fsZipUrlOpen)
     U64 total = 0;              // immutable after mount
     std::atomic<bool> error{false};
+    std::atomic<bool> permanentError{false};
     std::atomic<U64> fetched{0};      // stats: bytes downloaded so far
     std::atomic<U64> lastLogged{0};
     std::mutex m;
@@ -159,6 +160,7 @@ struct RangedFile {
                 klog_fmt("fszipurl: range fetch FAILED url=%s off=%llu len=%llu -> %d",
                          p->url.c_str(), (unsigned long long)inPart,
                          (unsigned long long)chunk, got);
+                if (got == -404 || got == -403) { permanentError.store(true, std::memory_order_relaxed); }
                 return false;
             }
             fetched.fetch_add(chunk, std::memory_order_relaxed);
@@ -182,6 +184,7 @@ struct RangedFile {
     // block is present in the cache and m is held, so the caller can safely
     // memcpy from the returned pointer (eviction also requires m).
     const U8* getBlock(U64 idx, std::unique_lock<std::mutex>& lk) {
+        if (permanentError.load(std::memory_order_relaxed)) return nullptr;
         for (;;) {
             auto it = blocks.find(idx);
             if (it != blocks.end()) {

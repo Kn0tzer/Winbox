@@ -48,6 +48,10 @@
 // buffer IS the batching boundary, and only the per-frame handoff hops.
 
 #include "boxedwine.h"
+#include "vk32bridge_abi.h"
+namespace vk32abi {
+#include "vk32_guest.h"
+}
 #include "bwlog.h"
 
 #ifdef BOXEDWINE_VULKAN64
@@ -57,6 +61,7 @@
 #include "cpu64.h"
 #include "kmemory64.h"
 #include "kprocess.h"
+#include "ripSampler.h"   // BW64_VKPROF frame-boundary RIPPROF dump (additive)
 
 // Vulkan core types, for STRUCT LAYOUTS, enums and constants only.
 //
@@ -75,11 +80,14 @@
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
+#else
+#include <time.h>   // clock_gettime for the BW64_VKPROF vkProfNow() fallback
 #endif
 
 #include <algorithm>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <string>
 #include <mutex>
 #include <cstring>
@@ -125,6 +133,16 @@ inline int vkDumpFrames() {
         cached = (!t || !t[0] || t[0] == '0') ? 0 : (t[0] == '2' ? 2 : 1);
     }
     return cached;
+}
+// BW64_FRAMELOG=1 restores the per-frame "FRAME %u built" log line.
+// Off by default: klog_fmt costs ~7ms/call (format+mutex+fwrite+fflush).
+inline bool vkFrameLog() {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* t = getenv("BW64_FRAMELOG");
+        cached = (t && t[0] == '1') ? 1 : 0;
+    }
+    return cached != 0;
 }
 // Above this, the manifest's base64 payloads are stripped from the log.
 const size_t kManifestLogCap = 64 * 1024;
@@ -253,6 +271,9 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkGetPhysicalDeviceProperties2,       "vkGetPhysicalDeviceProperties2") \
     X(VK64_fn_vkGetPhysicalDeviceFeatures2,         "vkGetPhysicalDeviceFeatures2") \
     X(VK64_fn_vkGetPhysicalDeviceMemoryProperties2, "vkGetPhysicalDeviceMemoryProperties2") \
+    X(VK64_fn_vkGetPhysicalDeviceProperties2KHR,       "vkGetPhysicalDeviceProperties2KHR") \
+    X(VK64_fn_vkGetPhysicalDeviceFeatures2KHR,         "vkGetPhysicalDeviceFeatures2KHR") \
+    X(VK64_fn_vkGetPhysicalDeviceMemoryProperties2KHR, "vkGetPhysicalDeviceMemoryProperties2KHR") \
     X(VK64_fn_vkGetPhysicalDeviceQueueFamilyProperties2,"vkGetPhysicalDeviceQueueFamilyProperties2") \
     X(VK64_fn_vkGetFenceStatus,                     "vkGetFenceStatus")    \
     X(VK64_fn_vkResetCommandPool,                   "vkResetCommandPool")  \
@@ -317,10 +338,7 @@ const char* fnName(U64 id) {
 
 std::recursive_mutex g_vkMutex;   // one bridge per process; every trap serializes
 KMemory64* g_mem = nullptr;       // guest memory of the calling thread's process
-// Global generation counter: bumped whenever any buffer is modified via
-// vkCmdCopyBuffer/vkCmdUpdateBuffer/vkCmdFillBuffer. Lets emitBufferData skip
-// the expensive readGuestRange+hash for static buffers.
-static U64 g_bufDirtyTick = 1;
+static U64 g_bufDirtyTick = 1;      // buffer dirtiness generation counter
 
 // ---------------------------------------------------------------------------
 // Guest memory helpers. EVERY guest pointer arrives here as a VA and is only
@@ -856,25 +874,45 @@ const U32 kCapMaxVerts = 256;   // baked-vertex cap per draw; tri9 needs 3
 
 bool captureIndexedDraw(CmdBuf* cb, Cmd& c) {
     U32 indexCount = (U32)c.a, firstIndex = (U32)c.c;
-    if (!indexCount || indexCount > kCapMaxVerts) return false;
+    static int capLogCount = 0;
+    if (!indexCount || indexCount > kCapMaxVerts) {
+        if (capLogCount < 30) { capLogCount++; klog_fmt("CAPFAIL: indexCount=%u", indexCount); }
+        return false;
+    }
     Pipeline* pipe = objOf<Pipeline>(cb->pipe, K_PIPELINE, "capDraw");
     if (!pipe || !pipe->nva) return false;
-    // Position = location-0 float4, color = location-1 unorm8x4 (tri9 FVF).
+    // Position = location-0 float4 (D3D9 tri9) or float3 (D3D12 scene12).
+    // Color = location-1 unorm8x4 packed (D3D9) or float4 (D3D12 scene12).
     int posAi = -1, colAi = -1;
+    bool posIsVec3 = false, colIsFloat4 = false;
     for (U32 i = 0; i < pipe->nva; i++) {
         U32 f = pipe->vaFormat[i];
-        if (pipe->vaLocation[i] == 0 && f == VK_FORMAT_R32G32B32A32_SFLOAT) posAi = (int)i;
-        if (pipe->vaLocation[i] == 1 &&
-            (f == VK_FORMAT_B8G8R8A8_UNORM || f == VK_FORMAT_R8G8B8A8_UNORM ||
-             f == VK_FORMAT_B8G8R8A8_SRGB || f == VK_FORMAT_R8G8B8A8_SRGB)) colAi = (int)i;
+        if (pipe->vaLocation[i] == 0) {
+            if (f == VK_FORMAT_R32G32B32A32_SFLOAT) { posAi = (int)i; posIsVec3 = false; }
+            else if (f == VK_FORMAT_R32G32B32_SFLOAT) { posAi = (int)i; posIsVec3 = true; }
+        }
+        if (pipe->vaLocation[i] == 1) {
+            if (f == VK_FORMAT_B8G8R8A8_UNORM || f == VK_FORMAT_R8G8B8A8_UNORM ||
+                f == VK_FORMAT_B8G8R8A8_SRGB || f == VK_FORMAT_R8G8B8A8_SRGB) {
+                colAi = (int)i; colIsFloat4 = false;
+            } else if (f == VK_FORMAT_R32G32B32A32_SFLOAT) {
+                colAi = (int)i; colIsFloat4 = true;
+            }
+        }
     }
-    if (posAi < 0 || colAi < 0) return false;
+    if (posAi < 0 || colAi < 0) {
+        if (capLogCount < 30) { capLogCount++; klog_fmt("CAPFAIL: posAi=%d colAi=%d nva=%u indexCount=%u", posAi, colAi, pipe->nva, indexCount); }
+        return false;
+    }
     U32 posBind = pipe->vaBinding[posAi], colBind = pipe->vaBinding[colAi];
     if (posBind >= VK64_MAX_VERT_BINDINGS || colBind >= VK64_MAX_VERT_BINDINGS) return false;
     Buffer* pbuf = objOf<Buffer>(cb->vbs[posBind], K_BUFFER, "capDraw");
     Buffer* cbuf = objOf<Buffer>(cb->vbs[colBind], K_BUFFER, "capDraw");
     Buffer* ibuf = objOf<Buffer>(cb->ib, K_BUFFER, "capDraw");
-    if (!pbuf || !cbuf || !ibuf || !pbuf->mem || !cbuf->mem || !ibuf->mem) return false;
+    if (!pbuf || !cbuf || !ibuf || !pbuf->mem || !cbuf->mem || !ibuf->mem) {
+        if (capLogCount < 30) { capLogCount++; klog_fmt("CAPFAIL: buffers pbuf=%p cbuf=%p ibuf=%p indexCount=%u", (void*)pbuf, (void*)cbuf, (void*)ibuf, indexCount); }
+        return false;
+    }
     U32 idxSize = (cb->ibType == 1) ? 4 : 2;
     std::vector<U8> idxBytes = readGuestRange(ibuf->mem, ibuf->memOff + cb->ibOff + (U64)firstIndex * idxSize,
                                               (U64)indexCount * idxSize);
@@ -893,16 +931,33 @@ bool captureIndexedDraw(CmdBuf* cb, Cmd& c) {
         vids[i] = (U32)v;
         if ((U32)v > maxV) maxV = (U32)v;
     }
-    U32 pstride = pipe->vbStride[posBind], cstride = pipe->vbStride[colBind];
-    if (!pstride || !cstride) return false;
-    U64 pNeed = (U64)maxV * pstride + pipe->vaOffset[posAi] + 16;
-    U64 cNeed = (U64)maxV * cstride + pipe->vaOffset[colAi] + 4;
+    // Stride may come from pipeline (static) or bind time (dynamic, v2 API).
+    // Prefer bind-time stride if set, fall back to pipeline stride.
+    U32 pstride = cb->vbStride[posBind] ? cb->vbStride[posBind] : pipe->vbStride[posBind];
+    U32 cstride = cb->vbStride[colBind] ? cb->vbStride[colBind] : pipe->vbStride[colBind];
+    if (!pstride || !cstride) {
+        if (capLogCount < 30) { capLogCount++; klog_fmt("CAPFAIL: stride pstride=%u cstride=%u indexCount=%u", pstride, cstride, indexCount); }
+        return false;
+    }
+    U32 posSize = posIsVec3 ? 12 : 16;
+    U32 colSize = colIsFloat4 ? 16 : 4;
+    U64 pNeed = (U64)maxV * pstride + pipe->vaOffset[posAi] + posSize;
+    U64 cNeed = (U64)maxV * cstride + pipe->vaOffset[colAi] + colSize;
     std::vector<U8> pbytes = readGuestRange(pbuf->mem, pbuf->memOff + cb->vbOff[posBind], pNeed);
     std::vector<U8> cbytes = readGuestRange(cbuf->mem, cbuf->memOff + cb->vbOff[colBind], cNeed);
-    if (pbytes.size() < pNeed || cbytes.size() < cNeed) return false;
+    if (pbytes.size() < pNeed || cbytes.size() < cNeed) {
+        if (capLogCount < 30) { capLogCount++; klog_fmt("CAPFAIL: bytes pbytes=%zu/%llu cbytes=%zu/%llu indexCount=%u", pbytes.size(), (unsigned long long)pNeed, cbytes.size(), (unsigned long long)cNeed, indexCount); }
+        return false;
+    }
     // RHW pixel -> NDC bake needs the viewport DXVK set for this draw.
-    if (!cb->haveVp || cb->vp[2] <= 0 || cb->vp[3] <= 0) return false;
-    float vpw = cb->vp[2], vph = cb->vp[3];
+    // D3D12 vec3 positions are already in clip/NDC space and bypass this.
+    float vpw = 0, vph = 0;
+    if (!posIsVec3) {
+        if (!cb->haveVp || cb->vp[2] <= 0 || cb->vp[3] <= 0) {
+            return false;
+        }
+        vpw = cb->vp[2]; vph = cb->vp[3];
+    }
     bool bgr = (pipe->vaFormat[colAi] == VK_FORMAT_B8G8R8A8_UNORM ||
                 pipe->vaFormat[colAi] == VK_FORMAT_B8G8R8A8_SRGB);
     c.capPos.reserve((size_t)indexCount * 4);
@@ -910,26 +965,176 @@ bool captureIndexedDraw(CmdBuf* cb, Cmd& c) {
     for (U32 i = 0; i < indexCount; i++) {
         U32 v = vids[i];
         float pf[4];
-        memcpy(pf, &pbytes[(size_t)v * pstride + pipe->vaOffset[posAi]], 16);
-        U32 ci;
-        memcpy(&ci, &cbytes[(size_t)v * cstride + pipe->vaOffset[colAi]], 4);
+        if (posIsVec3) {
+            memcpy(pf, &pbytes[(size_t)v * pstride + pipe->vaOffset[posAi]], 12);
+            pf[3] = 1.0f;
+        } else {
+            memcpy(pf, &pbytes[(size_t)v * pstride + pipe->vaOffset[posAi]], 16);
+        }
         float rhw = pf[3] != 0.0f ? pf[3] : 1.0f;
         // Vulkan and WebGPU share the top-left framebuffer origin: NDC y
         // follows the pixel row, no flip (the page tier documented rule).
-        c.capPos.push_back(pf[0] / rhw / vpw * 2.0f - 1.0f);
-        c.capPos.push_back(pf[1] / rhw / vph * 2.0f - 1.0f);
-        c.capPos.push_back(pf[2] / rhw);
-        c.capPos.push_back(1.0f);
-        // D3DCOLOR is 0xAARRGGBB; the B8G8R8A8 byte order already matches it.
-        float comp[4] = { (ci & 0xff) / 255.0f, ((ci >> 8) & 0xff) / 255.0f,
-                          ((ci >> 16) & 0xff) / 255.0f, ((ci >> 24) & 0xff) / 255.0f };
-        c.capCol.push_back(bgr ? comp[2] : comp[0]);
-        c.capCol.push_back(comp[1]);
-        c.capCol.push_back(bgr ? comp[0] : comp[2]);
-        c.capCol.push_back(comp[3]);
+        // D3D12 scene12 positions are already in NDC-like space; D3D9 tri9
+        // uses RHW pixel coords requiring viewport normalization.
+        if (posIsVec3) {
+            // D3D12: position already in clip/NDC space, pass through.
+            c.capPos.push_back(pf[0]);
+            c.capPos.push_back(pf[1]);
+            c.capPos.push_back(pf[2]);
+            c.capPos.push_back(1.0f);
+        } else {
+            c.capPos.push_back(pf[0] / rhw / vpw * 2.0f - 1.0f);
+            c.capPos.push_back(pf[1] / rhw / vph * 2.0f - 1.0f);
+            c.capPos.push_back(pf[2] / rhw);
+            c.capPos.push_back(1.0f);
+        }
+        if (colIsFloat4) {
+            float cf[4];
+            memcpy(cf, &cbytes[(size_t)v * cstride + pipe->vaOffset[colAi]], 16);
+            c.capCol.push_back(cf[0]);
+            c.capCol.push_back(cf[1]);
+            c.capCol.push_back(cf[2]);
+            c.capCol.push_back(cf[3]);
+        } else {
+            U32 ci;
+            memcpy(&ci, &cbytes[(size_t)v * cstride + pipe->vaOffset[colAi]], 4);
+            // D3DCOLOR is 0xAARRGGBB; the B8G8R8A8 byte order already matches it.
+            float comp[4] = { (ci & 0xff) / 255.0f, ((ci >> 8) & 0xff) / 255.0f,
+                              ((ci >> 16) & 0xff) / 255.0f, ((ci >> 24) & 0xff) / 255.0f };
+            c.capCol.push_back(bgr ? comp[2] : comp[0]);
+            c.capCol.push_back(comp[1]);
+            c.capCol.push_back(bgr ? comp[0] : comp[2]);
+            c.capCol.push_back(comp[3]);
+        }
     }
     c.capCount = indexCount;
-    klog_fmt("vk64: replay capture: %u verts baked (NDC, %s)", indexCount, bgr ? "B8G8R8A8" : "R8G8B8A8");
+    if (capLogCount < 30) { capLogCount++; klog_fmt("CAPOK: indexCount=%u firstIndex=%u capCount=%u", indexCount, firstIndex, c.capCount); }
+    return true;
+}
+
+// Non-indexed twin of captureIndexedDraw: bake vertexCount sequential vertices
+// starting at firstVertex (vkCmdDraw has no vertexOffset; firstVertex is the
+// absolute index). The baked arrays are in draw order so the replay
+// vertex_index maps 1:1, exactly like the indexed path.
+bool captureDraw(CmdBuf* cb, Cmd& c) {
+    U32 vertexCount = (U32)c.a, firstVertex = (U32)c.c;
+    static int capLogCountNI = 0;
+    if (!vertexCount || vertexCount > kCapMaxVerts) {
+        if (capLogCountNI < 30) { capLogCountNI++; klog_fmt("CAPFAIL-NI: vertexCount=%u", vertexCount); }
+        return false;
+    }
+    Pipeline* pipe = objOf<Pipeline>(cb->pipe, K_PIPELINE, "capDrawNI");
+    if (!pipe || !pipe->nva) return false;
+    // Position = location-0 float4 (D3D9 tri9) or float3 (D3D12 scene12).
+    // Color = location-1 unorm8x4 packed (D3D9) or float4 (D3D12 scene12).
+    int posAi = -1, colAi = -1;
+    bool posIsVec3 = false, colIsFloat4 = false;
+    for (U32 i = 0; i < pipe->nva; i++) {
+        U32 f = pipe->vaFormat[i];
+        if (pipe->vaLocation[i] == 0) {
+            if (f == VK_FORMAT_R32G32B32A32_SFLOAT) { posAi = (int)i; posIsVec3 = false; }
+            else if (f == VK_FORMAT_R32G32B32_SFLOAT) { posAi = (int)i; posIsVec3 = true; }
+        }
+        if (pipe->vaLocation[i] == 1) {
+            if (f == VK_FORMAT_B8G8R8A8_UNORM || f == VK_FORMAT_R8G8B8A8_UNORM ||
+                f == VK_FORMAT_B8G8R8A8_SRGB || f == VK_FORMAT_R8G8B8A8_SRGB) {
+                colAi = (int)i; colIsFloat4 = false;
+            } else if (f == VK_FORMAT_R32G32B32A32_SFLOAT) {
+                colAi = (int)i; colIsFloat4 = true;
+            }
+        }
+    }
+    if (posAi < 0 || colAi < 0) {
+        if (capLogCountNI < 30) { capLogCountNI++; klog_fmt("CAPFAIL-NI: posAi=%d colAi=%d nva=%u vertexCount=%u", posAi, colAi, pipe->nva, vertexCount); }
+        return false;
+    }
+    U32 posBind = pipe->vaBinding[posAi], colBind = pipe->vaBinding[colAi];
+    if (posBind >= VK64_MAX_VERT_BINDINGS || colBind >= VK64_MAX_VERT_BINDINGS) return false;
+    Buffer* pbuf = objOf<Buffer>(cb->vbs[posBind], K_BUFFER, "capDrawNI");
+    Buffer* cbuf = objOf<Buffer>(cb->vbs[colBind], K_BUFFER, "capDrawNI");
+    if (!pbuf || !cbuf || !pbuf->mem || !cbuf->mem) {
+        if (capLogCountNI < 30) { capLogCountNI++; klog_fmt("CAPFAIL-NI: buffers pbuf=%p cbuf=%p vertexCount=%u", (void*)pbuf, (void*)cbuf, vertexCount); }
+        return false;
+    }
+    // Stride may come from pipeline (static) or bind time (dynamic, v2 API).
+    // Prefer bind-time stride if set, fall back to pipeline stride.
+    U32 pstride = cb->vbStride[posBind] ? cb->vbStride[posBind] : pipe->vbStride[posBind];
+    U32 cstride = cb->vbStride[colBind] ? cb->vbStride[colBind] : pipe->vbStride[colBind];
+    if (!pstride || !cstride) {
+        if (capLogCountNI < 30) { capLogCountNI++; klog_fmt("CAPFAIL-NI: stride pstride=%u cstride=%u vertexCount=%u", pstride, cstride, vertexCount); }
+        return false;
+    }
+    U32 posSize = posIsVec3 ? 12 : 16;
+    U32 colSize = colIsFloat4 ? 16 : 4;
+    U32 maxV = firstVertex + vertexCount - 1;
+    U64 pNeed = (U64)maxV * pstride + pipe->vaOffset[posAi] + posSize;
+    U64 cNeed = (U64)maxV * cstride + pipe->vaOffset[colAi] + colSize;
+    std::vector<U8> pbytes = readGuestRange(pbuf->mem, pbuf->memOff + cb->vbOff[posBind], pNeed);
+    std::vector<U8> cbytes = readGuestRange(cbuf->mem, cbuf->memOff + cb->vbOff[colBind], cNeed);
+    if (pbytes.size() < pNeed || cbytes.size() < cNeed) {
+        if (capLogCountNI < 30) { capLogCountNI++; klog_fmt("CAPFAIL-NI: bytes pbytes=%zu/%llu cbytes=%zu/%llu vertexCount=%u", pbytes.size(), (unsigned long long)pNeed, cbytes.size(), (unsigned long long)cNeed, vertexCount); }
+        return false;
+    }
+    // RHW pixel -> NDC bake needs the viewport DXVK set for this draw.
+    // D3D12 vec3 positions are already in clip/NDC space and bypass this.
+    float vpw = 0, vph = 0;
+    if (!posIsVec3) {
+        if (!cb->haveVp || cb->vp[2] <= 0 || cb->vp[3] <= 0) {
+            return false;
+        }
+        vpw = cb->vp[2]; vph = cb->vp[3];
+    }
+    bool bgr = (pipe->vaFormat[colAi] == VK_FORMAT_B8G8R8A8_UNORM ||
+                pipe->vaFormat[colAi] == VK_FORMAT_B8G8R8A8_SRGB);
+    c.capPos.reserve((size_t)vertexCount * 4);
+    c.capCol.reserve((size_t)vertexCount * 4);
+    for (U32 i = 0; i < vertexCount; i++) {
+        U32 v = firstVertex + i;
+        float pf[4];
+        if (posIsVec3) {
+            memcpy(pf, &pbytes[(size_t)v * pstride + pipe->vaOffset[posAi]], 12);
+            pf[3] = 1.0f;
+        } else {
+            memcpy(pf, &pbytes[(size_t)v * pstride + pipe->vaOffset[posAi]], 16);
+        }
+        float rhw = pf[3] != 0.0f ? pf[3] : 1.0f;
+        // Vulkan and WebGPU share the top-left framebuffer origin: NDC y
+        // follows the pixel row, no flip (the page tier documented rule).
+        // D3D12 scene12 positions are already in NDC-like space; D3D9 tri9
+        // uses RHW pixel coords requiring viewport normalization.
+        if (posIsVec3) {
+            // D3D12: position already in clip/NDC space, pass through.
+            c.capPos.push_back(pf[0]);
+            c.capPos.push_back(pf[1]);
+            c.capPos.push_back(pf[2]);
+            c.capPos.push_back(1.0f);
+        } else {
+            c.capPos.push_back(pf[0] / rhw / vpw * 2.0f - 1.0f);
+            c.capPos.push_back(pf[1] / rhw / vph * 2.0f - 1.0f);
+            c.capPos.push_back(pf[2] / rhw);
+            c.capPos.push_back(1.0f);
+        }
+        if (colIsFloat4) {
+            float cf[4];
+            memcpy(cf, &cbytes[(size_t)v * cstride + pipe->vaOffset[colAi]], 16);
+            c.capCol.push_back(cf[0]);
+            c.capCol.push_back(cf[1]);
+            c.capCol.push_back(cf[2]);
+            c.capCol.push_back(cf[3]);
+        } else {
+            U32 ci;
+            memcpy(&ci, &cbytes[(size_t)v * cstride + pipe->vaOffset[colAi]], 4);
+            // D3DCOLOR is 0xAARRGGBB; the B8G8R8A8 byte order already matches it.
+            float comp[4] = { (ci & 0xff) / 255.0f, ((ci >> 8) & 0xff) / 255.0f,
+                              ((ci >> 16) & 0xff) / 255.0f, ((ci >> 24) & 0xff) / 255.0f };
+            c.capCol.push_back(bgr ? comp[2] : comp[0]);
+            c.capCol.push_back(comp[1]);
+            c.capCol.push_back(bgr ? comp[0] : comp[2]);
+            c.capCol.push_back(comp[3]);
+        }
+    }
+    c.capCount = vertexCount;
+    if (capLogCountNI < 30) { capLogCountNI++; klog_fmt("CAPOK-NI: vertexCount=%u firstVertex=%u capCount=%u", vertexCount, firstVertex, c.capCount); }
     return true;
 }
 
@@ -1003,12 +1208,12 @@ std::vector<U8> synthReplayVs(const std::vector<float>& pos, const std::vector<f
     std::vector<U32> caseLbl(n);
     for (U32 i = 0; i < n; i++) caseLbl[i] = s.fresh();
     U32 dflt = s.fresh();
-    s.inst(246, {merge, 0});                // OpSelectionMerge
+    s.inst(247, {merge, 0});                // OpSelectionMerge (247)
     {
-        size_t at = s.w.size();             // OpSwitch
+        size_t at = s.w.size();             // OpSwitch = 251
         s.w.push_back(0); s.w.push_back(idx); s.w.push_back(dflt);
         for (U32 i = 0; i < n; i++) { s.w.push_back(i); s.w.push_back(caseLbl[i]); }
-        s.w[at] = ((U32)(s.w.size() - at) << 16) | 247;
+        s.w[at] = ((U32)(s.w.size() - at) << 16) | 251;
     }
     for (U32 i = 0; i < n; i++) {
         s.inst(248, {caseLbl[i]});
@@ -1024,6 +1229,8 @@ std::vector<U8> synthReplayVs(const std::vector<float>& pos, const std::vector<f
     return s.bytes();
 }
 
+// Fragment: Location-0 color passthrough.
+// Fragment: Location-0 color passthrough.
 // Fragment: Location-0 color passthrough.
 std::vector<U8> synthReplayFs() {
     SpvEmit s;
@@ -1094,7 +1301,16 @@ void serializeSubmit(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         double clearDepth = 1.0;
         std::vector<std::pair<U32, U32>> draws;   // vertexCount, firstVertex
         std::vector<const Cmd*> pushes;           // in order: offset + bytes matter
-        const Cmd* firstCap = nullptr;            // first indexed draw with baked verts
+        std::vector<float> allCapPos; std::vector<float> allCapCol;            // first indexed draw with baked verts
+        {
+            // Debug: count cmd kinds
+            U32 cntDraw = 0, cntDrawIdx = 0, cntOther = 0;
+            for (const Cmd& k2 : st->cmds) {
+                if (k2.kind == CMD_DRAW) cntDraw++;
+                else if (k2.kind == CMD_DRAW_INDEXED) cntDrawIdx++;
+                else cntOther++;
+            }
+        }
         for (const Cmd& k : st->cmds) {
             switch (k.kind) {
                 case CMD_BEGIN_RP:
@@ -1108,12 +1324,31 @@ void serializeSubmit(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 case CMD_SCISSOR:  sci = k.f; break;
                 case CMD_PUSH_CONST: pushes.push_back(&k); break;
                 case CMD_DRAW:
-                    if (draws.size() < VK64_MAX_DRAWS) draws.push_back({(U32)k.a, (U32)k.c});
+                    // Baked in draw order like indexed: captured draws get
+                    // firstVertex = current baked-verts offset for replay.
+                    if (draws.size() < VK64_MAX_DRAWS) {
+                        U32 vtxOff = (U32)k.c;
+                        if (k.capCount) {
+                            vtxOff = (U32)(allCapPos.size() / 4);
+                            for (float f : k.capPos) allCapPos.push_back(f);
+                            for (float f : k.capCol) allCapCol.push_back(f);
+                        }
+                        draws.push_back({(U32)k.a, vtxOff});
+                    }
                     break;
                 case CMD_DRAW_INDEXED:
-                    // Baked in draw order, so the replay vertex_index maps 1:1.
-                    if (draws.size() < VK64_MAX_DRAWS) draws.push_back({(U32)k.a, 0});
-                    if (!firstCap && k.capCount) firstCap = &k;
+                    // Baked in draw order. Concatenate all baked verts so the
+                    // replay shader has every quad, with firstVertex offsets.
+                    if (draws.size() < VK64_MAX_DRAWS) {
+                        U32 vtxOff = 0;
+                        if (k.capCount) {
+                            // firstVertex = current total baked verts
+                            vtxOff = (U32)(allCapPos.size() / 4);
+                            for (float f : k.capPos) allCapPos.push_back(f);
+                            for (float f : k.capCol) allCapCol.push_back(f);
+                        }
+                        draws.push_back({(U32)k.a, vtxOff});
+                    }
                     break;
                 default: break;
             }
@@ -1175,13 +1410,14 @@ void serializeSubmit(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         // captured triangle. Otherwise the guest modules go out unchanged.
         std::vector<U8> repVs, repFs;
         bool haveReplay = false;
-        if (firstCap) {
-            repVs = synthReplayVs(firstCap->capPos, firstCap->capCol, firstCap->capCount);
+        U32 totalCapVerts = (U32)(allCapPos.size() / 4);
+        if (totalCapVerts > 0) {
+            repVs = synthReplayVs(allCapPos, allCapCol, totalCapVerts);
             repFs = synthReplayFs();
             haveReplay = !repVs.empty() && !repFs.empty();
             if (haveReplay)
                 klog_fmt("vk64: replay shaders synthesized (%u verts, vs %zuB fs %zuB)",
-                         firstCap->capCount, repVs.size(), repFs.size());
+                         totalCapVerts, repVs.size(), repFs.size());
         }
         if (haveReplay) {
             char sh[40];
@@ -1394,8 +1630,115 @@ void v2QueueFrame(V2FrameAsm& fa) {
     g_v2Pending.push_back(std::move(done));
 }
 
+// ---------------------------------------------------------------------------
+// BW64_VKPROF frame profiler (additive, env-gated, zero cost when unset).
+// Wall-clock breakdown of one guest frame, present-exit to present-exit:
+//   wall      frame wall (this present exit minus previous present exit)
+//   submit    vkQueueSubmit/2/2KHR handler wall (cmdbuf walk, readGuestRange
+//             copies, fnv1a64 hashing, chunk emit, readback hop)
+//   bufdata   emitBufferData portion of submit (+ bytes hashed / bytes sent)
+//   imgdata   emitImageData portion of submit (+ bytes hashed / bytes sent)
+//   trapOther all OTHER vk64 trap handlers (vkCmd* recording, acquire, ...)
+//   present   vkQueuePresentKHR handler wall (struct reads + hopV2ToPage)
+//   hop       MAIN_THREAD_EM_ASM chunk hops: chunks / bytes (inside present;
+//             a readback hop inside submit is also counted here but its wall
+//             stays inside submit)
+//   guest     wall - submit - trapOther - present  (pure CPU64 interpreter)
+// One klog line per presented frame. All state is touched only under g_vkMutex
+// (already held by vk64Bridge), so no extra locking. Behavior unchanged when
+// BW64_VKPROF is unset: a few emscripten_get_now() calls per trap.
+// ---------------------------------------------------------------------------
+inline double vkProfNow() {
+#ifdef __EMSCRIPTEN__
+    return emscripten_get_now();
+#else
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+#endif
+}
+// VKPROF profiler enablement. Emscripten's getenv() cache is populated at
+// runtime init before preRun ENV assignments, so ENV["BW64_VKPROF"] is
+// ignored. Read the URL param directly via EM_ASM on first call, bypassing
+// the environment entirely. The getenv fallback is preserved for native.
+// VKPROF profiler enablement. Emscripten's getenv() cache is populated at
+// runtime init before preRun ENV assignments, so ENV["BW64_VKPROF"] is
+// ignored. Read the URL param directly via EM_ASM on first call, bypassing
+// the environment entirely. The getenv fallback is preserved for native.
+// BW64_VKPROF force-enable from the page. vkProfEnabled()'s EM_ASM reads
+// window.location.search, but the entire runtime executes on a Web Worker
+// (-pthread -sPROXY_TO_PTHREAD=1) where window doesn't exist, so the
+// ?vkprof=1 URL param is unreadable from C. The launcher (main thread, where
+// window.location is valid) calls bw64_vkprof_enable() via ccall during
+// startup when the param is present, before the guest boots.
+static bool g_vkProfForce = false;
+// BW64_VKPROF first-frame gate: bw64_vkprof_enable() is called from the
+// launcher onRuntimeInitialized, i.e. during WASM init while the bridge is
+// still setting up. Enabling profiling that early races bridge setup and
+// stalls the guest after 2 submits (2,649 -> 0 lit px with ?vkprof=1).
+// Defer activation until the first vkQueuePresentKHR has fully handed its
+// frame to the page; vkProfEnabled() stays false until then.
+static bool g_vkProfFirstFrameDone = false;
+extern "C" EMSCRIPTEN_KEEPALIVE void bw64_vkprof_enable() { g_vkProfForce = true; }
+inline bool vkProfEnabled() {
+    if (!g_vkProfFirstFrameDone) return false;
+    if (g_vkProfForce) return true;
+    static bool checked = false;
+    static bool enabled = false;
+    if (!checked) {
+        checked = true;
+#ifdef __EMSCRIPTEN__
+        enabled = EM_ASM_INT({
+            try { return window.location.search.indexOf("vkprof=1") !== -1 ? 1 : 0; }
+            catch (e) { return 0; }
+        }) != 0;
+#endif
+        if (!enabled && std::getenv("BW64_VKPROF") != nullptr) enabled = true;
+    }
+    return enabled;
+}
+struct VkProfAcc {
+    bool haveFrame = false;
+    U64 frameNo = 0;
+    double lastPresentT = 0;
+    double accSubmit = 0, accBufData = 0, accImgData = 0, accTrapOther = 0;
+    double accHop = 0, accSer2 = 0, accQueue = 0;
+    U64 accTrapCalls = 0;
+    U64 accHopChunks = 0, accHopBytes = 0;
+    U64 accBufHashed = 0, accBufSent = 0, accImgHashed = 0, accImgSent = 0;
+    U64 accBufCalls = 0, accImgCalls = 0;
+    double trapWall[256] = {}; // per-fnId wall for trapOther top-3 (fnIds < 256)
+    U64 trapCnt[256] = {};
+};
+inline VkProfAcc& vkProfAcc() { static VkProfAcc a; return a; }
+inline void vkProfReset(VkProfAcc& a) {
+    a.accSubmit = a.accBufData = a.accImgData = a.accTrapOther = a.accHop = 0;
+    a.accSer2 = a.accQueue = 0;
+    a.accTrapCalls = a.accHopChunks = a.accHopBytes = 0;
+    a.accBufHashed = a.accBufSent = a.accImgHashed = a.accImgSent = 0;
+    a.accBufCalls = a.accImgCalls = 0;
+    for (int i = 0; i < 256; i++) { a.trapWall[i] = 0; a.trapCnt[i] = 0; }
+}
+// RAII per-trap timer, constructed first in vk64Bridge(): attributes every
+// trap's wall to accTrapOther EXCEPT submit/submit2/submit2KHR/present, which
+// time themselves at finer granularity below.
+struct VkProfTrapTimer {
+    U64 fn; double t0;
+    explicit VkProfTrapTimer(U64 f) : fn(f), t0(vkProfNow()) {}
+    ~VkProfTrapTimer() {
+        if (!vkProfEnabled()) return;
+        if (fn == VK64_fn_vkQueueSubmit || fn == VK64_fn_vkQueueSubmit2 ||
+            fn == VK64_fn_vkQueueSubmit2KHR || fn == VK64_fn_vkQueuePresentKHR)
+            return;
+        double dt = vkProfNow() - t0;
+        VkProfAcc& a = vkProfAcc();
+        a.accTrapOther += dt;
+        a.accTrapCalls++;
+        if (fn < 256) { a.trapWall[fn] += dt; a.trapCnt[fn]++; }
+    }
+};
 void hopV2ToPage() {
 #ifdef __EMSCRIPTEN__
+    double vkprofHopT0 = vkProfNow(); U64 vkprofHopChunks = 0, vkprofHopBytes = 0;
     // Hop the frame with the actual pixel data. DXVK builds two v2 frames per
     // present: a 480x360 backbuffer frame (1MB, contains IMAGE_DATA with the
     // rendered triangle) and a 472x333 present frame (3.5KB, just the present
@@ -1415,6 +1758,7 @@ void hopV2ToPage() {
         for (const auto& chunk : f.chunks) {
             const U8* ptr = chunk.data();
             U32 len = (U32)chunk.size();
+            vkprofHopChunks++; vkprofHopBytes += len;
             MAIN_THREAD_EM_ASM({
                 if (globalThis.window && window.bwVkChunk) {
                     try {
@@ -1428,6 +1772,7 @@ void hopV2ToPage() {
             }, ptr, len, (U32)0);
         }
     }
+    if (vkProfEnabled()) { VkProfAcc& a = vkProfAcc(); a.accHop += vkProfNow() - vkprofHopT0; a.accHopChunks += vkprofHopChunks; a.accHopBytes += vkprofHopBytes; }
 #else
     if (!g_v2Pending.empty())
         klog_fmt("vk64: v2 hop skipped (not an emscripten build): %u queued frames dropped",
@@ -1458,6 +1803,9 @@ static std::unordered_map<U64, U64> g_imageContentHash;
 // entries stay valid; vkDestroyBuffer erases them.
 struct BufHashEntry { U64 hash = 0; U64 dirtyGen = 0; };
 static std::map<std::tuple<U64,U64,U64>, BufHashEntry> g_bufferContentHash;
+// Global generation counter: bumped whenever any buffer is modified via
+// vkCmdCopyBuffer/vkCmdUpdateBuffer/vkCmdFillBuffer. Lets emitBufferData skip
+// the expensive readGuestRange+hash for static buffers.
 
 // Submit-time v2 frame reconstruction: the same walk as serializeSubmit, but
 // the frame is a stream of binary records instead of one JSON string, and it
@@ -1554,7 +1902,13 @@ static void completeReadbacks() {
     g_readbackPending.clear();
 }
 
+
 void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
+    double vkprofSer2T0 = vkProfNow(); // BW64_VKPROF (additive)
+    // BW64_VKPROF accumulators (additive): time/bytes inside the two hot emit lambdas.
+    double vkprofBufT = 0, vkprofImgT = 0;
+    U64 vkprofBufHashed = 0, vkprofBufSent = 0, vkprofImgHashed = 0, vkprofImgSent = 0;
+    U64 vkprofBufCalls = 0, vkprofImgCalls = 0;
     for (const auto& fr : frames) {
         CmdBuf* st = fr.first;
         U64 fbId = 0;
@@ -1590,7 +1944,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 p.u64(sm->hash); p.u32((U32)sm->code.size()); p.bytes(sm->code);
             });
         };
-        auto emitBufferData = [&](U64 bufId, U64 memOff, U64 len) {
+        auto emitBufferDataInner = [&](U64 bufId, U64 memOff, U64 len) {
             if (!bufId || !len) return;
             if (!bufDone.insert(std::make_tuple(bufId, memOff, len)).second) return;
             Buffer* b = objOf<Buffer>(bufId, K_BUFFER, "vkQueueSubmit");
@@ -1617,7 +1971,6 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             DeviceMemory* bmem = objOf<DeviceMemory>(b->mem, K_MEMORY, "vkQueueSubmit");
             if (!forceFull && it != g_bufferContentHash.end() && it->second.dirtyGen == b->dirtyGen &&
                 b->dirtyGen != 0 && bmem && !bmem->wasMapped) {
-                klog_fmt("vk64: BUFFER_DATA fast-byteless id=0x%llx len=%llu", (unsigned long long)bufId, (unsigned long long)len);
                 emit(V2_BUFFER_DATA, [&](ChunkWriter& p) {
                     p.u64(bufId); p.u64(memOff); p.u64(it->second.hash);
                     p.u32(0);
@@ -1631,9 +1984,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             bool sendBytes = true;
             if (!forceFull && it != g_bufferContentHash.end() && it->second.hash == hash) {
                 sendBytes = false;
-                klog_fmt("vk64: BUFFER_DATA hashmatch-byteless id=0x%llx len=%llu", (unsigned long long)bufId, (unsigned long long)len);
             } else {
-                klog_fmt("vk64: BUFFER_DATA full-send id=0x%llx len=%llu", (unsigned long long)bufId, (unsigned long long)len);
             }
             if (tooLarge) {
                 klog_fmt("vk64: BUFFER_DATA capped id=0x%llx len=%llu -> %llu bytes (vkd3d heap-sized buffer; page rejects chunks over 16MB)", (unsigned long long)bufId, (unsigned long long)len, (unsigned long long)sendLen);
@@ -1644,6 +1995,14 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 p.u32(sendBytes ? (U32)bytes.size() : 0);
                 if (sendBytes) p.bytes(bytes);
             });
+            if (vkProfEnabled()) { vkprofBufHashed += bytes.size(); if (sendBytes) vkprofBufSent += bytes.size(); }
+        };
+        // BW64_VKPROF wrapper: wall time per emitBufferData call (additive).
+        auto emitBufferData = [&](U64 bufId, U64 memOff, U64 len) {
+            double t0 = vkProfNow();
+            ++vkprofBufCalls;
+            emitBufferDataInner(bufId, memOff, len);
+            vkprofBufT += vkProfNow() - t0;
         };
         auto emitSampler = [&](U64 id) {
             if (!id || !samplerDone.insert(id).second) return;
@@ -1655,7 +2014,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 p.u32(s->addrU); p.u32(s->addrV); p.f32(s->maxAniso);
             });
         };
-        auto emitImageData = [&](U64 viewId) {
+        auto emitImageDataInner = [&](U64 viewId) {
             ImageView* view = objOf<ImageView>(viewId, K_IMAGEVIEW, "vkQueueSubmit");
             if (!view || !view->image) return;
             if (!imageDone.insert(view->image).second) return;
@@ -1684,6 +2043,14 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 p.u32(sendPixels ? (U32)bytes.size() : 0);
                 if (sendPixels) p.bytes(bytes);
             });
+            if (vkProfEnabled()) { vkprofImgHashed += bytes.size(); if (sendPixels) vkprofImgSent += bytes.size(); }
+        };
+        // BW64_VKPROF wrapper: wall time per emitImageData call (additive).
+        auto emitImageData = [&](U64 viewId) {
+            double t0 = vkProfNow();
+            ++vkprofImgCalls;
+            emitImageDataInner(viewId);
+            vkprofImgT += vkProfNow() - t0;
         };
         auto emitDescSet = [&](U32 setIndex, U64 setId) {
             DescSet* s = objOf<DescSet>(setId, K_SET, "vkQueueSubmit");
@@ -1747,13 +2114,40 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         U64 activePipe = 0;
         U32 vertexStrides[VK64_MAX_VERT_BINDINGS] = {0};
         bool vertexHasStride[VK64_MAX_VERT_BINDINGS] = {false};
+        // V2 replay: baked indexed-draw verts (populated in pre-pass below).
+        std::vector<float> v2CapPos, v2CapCol;
+        std::vector<U32> v2DrawVtxOff;
+        U32 v2TotalCapVerts = 0;
+        std::vector<U8> v2RepVs, v2RepFs;
+        U64 v2RepVsHash = 0, v2RepFsHash = 0;
+        size_t v2DrawIdx = 0;
+        std::set<U64> v2ReplayPipes;
         auto emitPipeline = [&](U64 pipeId) {
             Pipeline* pipe = objOf<Pipeline>(pipeId, K_PIPELINE, "vkQueueSubmit");
             if (!pipe) return;
             ShaderModule* vs = pipe->vs ? objOf<ShaderModule>(pipe->vs, K_SHADER, "vkQueueSubmit") : nullptr;
             ShaderModule* fs = pipe->fs ? objOf<ShaderModule>(pipe->fs, K_SHADER, "vkQueueSubmit") : nullptr;
-            emitShader(vs, 0);
-            emitShader(fs, 1);
+            // V2 replay: if baked indexed draws exist, substitute procedural shaders.
+            // V2 replay: if baked indexed draws exist, substitute procedural shaders.
+            bool useReplay = (v2RepVsHash != 0 && v2RepFsHash != 0);
+            if (useReplay) {
+                // Emit replay shaders as V2_SHADER records.
+                if (shaderDone.insert(v2RepVsHash).second) {
+                    emit(V2_SHADER, [&](ChunkWriter& p) {
+                        p.u8(0); p.u8(0); p.u16(0);
+                        p.u64(v2RepVsHash); p.u32((U32)v2RepVs.size()); p.bytes(v2RepVs);
+                    });
+                }
+                if (shaderDone.insert(v2RepFsHash).second) {
+                    emit(V2_SHADER, [&](ChunkWriter& p) {
+                        p.u8(1); p.u8(0); p.u16(0);
+                        p.u64(v2RepFsHash); p.u32((U32)v2RepFs.size()); p.bytes(v2RepFs);
+                    });
+                }
+            } else {
+                emitShader(vs, 0);
+                emitShader(fs, 1);
+            }
             U64 serializedId = pipeId;
             std::vector<U32> effectiveStrides;
             for (U32 i = 0; i < pipe->nvb; ++i)
@@ -1768,7 +2162,11 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 } else serializedId = variant->id;
             }
             // WebGPU: pipeline depth state must match render pass attachments.
-            // If FB has no depth attachment, force depth test off.
+            // The JS side (getPipelineFor passHasDepth) handles validation.
+            // Do NOT mask by fbHasDepth: V2 must carry the pipeline's true
+            // depth intent. Masking causes pipelines needing depth (e.g.
+            // indexed quads, depthOp=less-equal) to get 'always' and vanish.
+            // (2026-10-09: fix effDepthTest masking bug)
             bool fbHasDepth = false;
             if (fb) {
                 for (U32 i = 0; i < fb->natt; i++) {
@@ -1776,11 +2174,14 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     if (v && (v->aspect & 0x2u)) { fbHasDepth = true; break; }
                 }
             }
-            U32 effDepthTest = fbHasDepth ? pipe->depthTest : 0;
-            U32 effDepthWrite = fbHasDepth ? pipe->depthWrite : 0;
+            (void)fbHasDepth; // V2 carries true intent; JS handles pass matching.
+            U32 effDepthTest = pipe->depthTest;
+            U32 effDepthWrite = pipe->depthWrite;
             emit(V2_PIPELINE, [&](ChunkWriter& p) {
                 p.u64(serializedId);
-                p.u64(vs ? vs->hash : 0); p.u64(fs ? fs->hash : 0);
+                U64 vsHash = useReplay ? v2RepVsHash : (vs ? vs->hash : 0);
+                U64 fsHash = useReplay ? v2RepFsHash : (fs ? fs->hash : 0);
+                p.u64(vsHash); p.u64(fsHash);
                 p.u32(pipe->topology); p.u32(pipe->cull); p.u32(pipe->front);
                 p.u32(effDepthTest); p.u32(effDepthWrite); p.u32(pipe->depthOp);
                 p.u32(pipe->blend);
@@ -1838,6 +2239,34 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         });
 
         U32 nDraw = 0, nPush = 0;
+        // Pre-pass: collect all baked indexed-draw verts for replay shader.
+        // The pipeline is bound before draws, so we need the data upfront.
+        {
+            U32 vtxOff = 0;
+            U64 curPipe = 0;
+            for (const Cmd& k2 : st->cmds) {
+                if (k2.kind == CMD_BIND_PIPE) curPipe = k2.a;
+                if ((k2.kind == CMD_DRAW_INDEXED || k2.kind == CMD_DRAW) && k2.capCount) {
+                    v2DrawVtxOff.push_back(vtxOff);
+                    vtxOff += k2.capCount;
+                    for (float f : k2.capPos) v2CapPos.push_back(f);
+                    for (float f : k2.capCol) v2CapCol.push_back(f);
+                    if (curPipe) v2ReplayPipes.insert(curPipe);
+                } else if (k2.kind == CMD_DRAW_INDEXED || k2.kind == CMD_DRAW) {
+                    v2DrawVtxOff.push_back(0);
+                }
+            }
+        }
+        v2TotalCapVerts = (U32)(v2CapPos.size() / 4);
+        if (v2TotalCapVerts > 0) {
+            v2RepVs = synthReplayVs(v2CapPos, v2CapCol, v2TotalCapVerts);
+            v2RepFs = synthReplayFs();
+            if (!v2RepVs.empty() && !v2RepFs.empty()) {
+                v2RepVsHash = blob_hash(v2RepVs.data(), v2RepVs.size());
+                v2RepFsHash = blob_hash(v2RepFs.data(), v2RepFs.size());
+            }
+        }
+        v2DrawIdx = 0;
         for (const Cmd& k : st->cmds) {
             switch (k.kind) {
                 case CMD_BEGIN_RP: emitRpBegin(k); break;
@@ -1911,19 +2340,60 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 }
                 case CMD_DRAW:
                     nDraw++;
-                    emit(V2_DRAW, [&](ChunkWriter& p) {
-                        p.u32((U32)k.a); p.u32((U32)k.b); p.u32((U32)k.c); p.u32((U32)k.d);
-                        p.u8(0); p.u8(0); p.u16(0);
-                        p.u32(0); p.u32(0); p.u32(0);
-                    });
+                    {
+                        // V2 replay: captured non-indexed draws are baked in draw
+                        // order; emit with firstVertex = baked offset so
+                        // gl_VertexIndex selects baked vert i. Non-captured draws
+                        // keep the plain path (no vertex buffers at replay).
+                        U32 vtxOff = 0;
+                        if (v2DrawIdx < v2DrawVtxOff.size()) {
+                            vtxOff = v2DrawVtxOff[v2DrawIdx];
+                        }
+                        v2DrawIdx++;
+                        bool captured = (k.capCount > 0) && (v2RepVsHash != 0);
+                        if (captured) {
+                            emit(V2_DRAW, [&](ChunkWriter& p) {
+                                p.u32((U32)k.a); p.u32((U32)k.b); p.u32(vtxOff); p.u32((U32)k.d);
+                                p.u8(0); p.u8(0); p.u16(0);
+                                p.u32(0); p.u32(0); p.u32(0);
+                            });
+                        } else {
+                            emit(V2_DRAW, [&](ChunkWriter& p) {
+                                p.u32((U32)k.a); p.u32((U32)k.b); p.u32((U32)k.c); p.u32((U32)k.d);
+                                p.u8(0); p.u8(0); p.u16(0);
+                                p.u32(0); p.u32(0); p.u32(0);
+                            });
+                        }
+                    }
                     break;
                 case CMD_DRAW_INDEXED:
                     nDraw++;
-                    emit(V2_DRAW, [&](ChunkWriter& p) {
-                        p.u32(0); p.u32((U32)k.b); p.u32(0); p.u32((U32)k.d);
-                        p.u8(1); p.u8(0); p.u16(0);
-                        p.u32((U32)k.a); p.u32((U32)k.c); p.u32((U32)(int32_t)k.copy.ox);
-                    });
+                    {
+                        // V2 replay: captured indexed draws are baked in draw order;
+                        // emit as non-indexed so gl_VertexIndex = vtxOff + i selects
+                        // baked vert i. Non-captured draws retain indexed behavior.
+                        U32 vtxOff = 0;
+                        if (v2DrawIdx < v2DrawVtxOff.size()) {
+                            vtxOff = v2DrawVtxOff[v2DrawIdx];
+                        }
+                        v2DrawIdx++;
+                        bool captured = (k.capCount > 0) && (v2RepVsHash != 0);
+                        if (captured) {
+                            emit(V2_DRAW, [&](ChunkWriter& p) {
+                                p.u32((U32)k.a); p.u32((U32)k.b); p.u32(vtxOff); p.u32((U32)k.d);
+                                p.u8(0); p.u8(0); p.u16(0);
+                                p.u32(0); p.u32(0); p.u32(0);
+                            });
+                        } else {
+                            U32 firstIdx = (U32)k.c;
+                            U32 baseVtx = (U32)(int32_t)k.copy.ox;
+                            emit(V2_DRAW, [&](ChunkWriter& p) {
+                                p.u32(0); p.u32((U32)k.b); p.u32(0); p.u32((U32)k.d);
+                                p.u8(1); p.u8(0); p.u16(0);
+                                p.u32((U32)k.a); p.u32(firstIdx); p.u32(baseVtx);
+                            });
+                        }
+                    }
                     break;
                 case CMD_COPY_I2B: {
                     const CopyI2B& rb = k.copyI2B;
@@ -1943,14 +2413,16 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         }
 
         emit(V2_FRAME_END, [&](ChunkWriter& p) { p.u32(g_frameNo); });
+        double vkprofQueueT0 = vkProfNow(); // BW64_VKPROF (additive)
         v2QueueFrame(fa);
 
         const V2DoneFrame& qd = g_v2Pending.back();
         size_t totalBytes = 0;
         for (const auto& c : qd.chunks) totalBytes += c.size();
-        klog_fmt("vk64: FRAME %u built (v2): %ux%u draws=%u pushes=%u chunks=%u bytes=%zu",
-                 g_frameNo, fb->w, fb->h, (unsigned)nDraw, (unsigned)nPush,
-                 (unsigned)qd.chunks.size(), totalBytes);
+        if (vkFrameLog())
+            klog_fmt("vk64: FRAME %u built (v2): %ux%u draws=%u pushes=%u chunks=%u bytes=%zu",
+                     g_frameNo, fb->w, fb->h, (unsigned)nDraw, (unsigned)nPush,
+                     (unsigned)qd.chunks.size(), totalBytes);
         if (vkDumpV2()) {
             std::string dump = "vk64: FRAME " + std::to_string(g_frameNo) + " v2 records:";
             const char* names[] = { "?", "FRAME_BEGIN", "FRAME_END", "RP_BEGIN", "RP_END",
@@ -1960,6 +2432,15 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             for (U32 t = 1; t < 21; t++)
                 if (hist[t]) { dump += " "; dump += names[t]; dump += "=" + std::to_string(hist[t]); }
             klog_fmt("%s", dump.c_str());
+        }
+        if (vkProfEnabled()) {
+            VkProfAcc& pa = vkProfAcc();
+            pa.accBufData += vkprofBufT; pa.accImgData += vkprofImgT;
+            pa.accBufHashed += vkprofBufHashed; pa.accBufSent += vkprofBufSent;
+            pa.accImgHashed += vkprofImgHashed; pa.accImgSent += vkprofImgSent;
+            pa.accBufCalls += vkprofBufCalls; pa.accImgCalls += vkprofImgCalls;
+            pa.accQueue += vkProfNow() - vkprofQueueT0;
+            pa.accSer2 += vkProfNow() - vkprofSer2T0;
         }
         g_frameNo++;
     }
@@ -2347,8 +2828,12 @@ void walkFeatures2(U64 pNextAddr) {
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES:
                 SET_FEATURES(cur, fillVulkan13Features, VkPhysicalDeviceVulkan13Features); break;
             default:
-                klog_fmt("vk64: Features2 pNext sType=%u not modeled, left as the guest set it",
-                         (unsigned)sType);
+                if (cur && g_mem) {
+                    static const U8 zeros[512] = {};
+                    g_mem->memcpyToGuest(cur + 16, zeros, sizeof(zeros));
+                    klog_fmt("vk64: Features2 pNext sType=%u not modeled, zeroed (extension disabled)",
+                             (unsigned)sType);
+                }
                 break;
         }
         cur = g_mem->readq(cur + 8);      /* pNext is at offset 8 in every struct */
@@ -2551,6 +3036,8 @@ U64 createSurface() {
     return id;
 }
 
+
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -2558,6 +3045,9 @@ U64 createSurface() {
 // ---------------------------------------------------------------------------
 U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     std::lock_guard<std::recursive_mutex> lk(g_vkMutex);
+    // NB: constructed AFTER the lock so the destructor (which touches the
+    // profiler accumulators) also runs under g_vkMutex. BW64_VKPROF, no-op when unset.
+    VkProfTrapTimer vkprofTrap(fnId);
     g_mem = cpu ? cpu->memory : nullptr;
 
     if (fnId == VK64_fn_witness) {
@@ -3769,6 +4259,13 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                            te.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
                     U64 view = rd64(dAddr + 8);
                     b->obj = view; b->range = 0;
+                } else if (te.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+                    // VkDescriptorImageInfo: sampler @0, imageView @8.
+                    // (2026-10-09: D3D9 textured draw was black — template path
+                    // dropped the image view, so no IMAGE_DATA was emitted.)
+                    U64 samp = rd64(dAddr);
+                    U64 view = rd64(dAddr + 8);
+                    b->obj = view; b->range = samp;
                 } else if (te.type == VK_DESCRIPTOR_TYPE_SAMPLER) {
                     U64 samp = rd64(dAddr);
                     b->obj = samp; b->range = 0;
@@ -4138,6 +4635,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         c.b = args.a[2];   // instanceCount
         c.c = args.a[3];   // firstVertex
         c.d = args.a[4];   // firstInstance
+        captureDraw(cb, c);
         pushCmd(cb, c);
         return 0;
     }
@@ -4535,10 +5033,14 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 if (sy >= src->h || dy >= dst->h) continue;
                 U64 sOff = smem->va + src->memOff + (U64)sy * srcRowPitch + (U64)r.srcX * pxBytes;
                 U64 dOff = dmem->va + dst->memOff + (U64)dy * dstRowPitch + (U64)r.dstX * pxBytes;
+                U64 sEnd = smem->va + smem->size;
+                U64 dEnd = dmem->va + dmem->size;
+                // If start is already out of bounds, skip: prevents U64
+                // underflow in the clamp below (sEnd - sOff wraps if sOff>=sEnd).
+                if (sOff >= sEnd || dOff >= dEnd) continue;
                 U64 n = (U64)copyW * pxBytes;
-                // Bounds check
-                if (sOff + n > smem->va + smem->size) n = smem->va + smem->size - sOff;
-                if (dOff + n > dmem->va + dmem->size) n = dmem->va + dmem->size - dOff;
+                if (sOff + n > sEnd) n = sEnd - sOff;
+                if (dOff + n > dEnd) n = dEnd - dOff;
                 if (!n) continue;
                 std::vector<U8> tmp((size_t)n);
                 g_mem->memcpyFromGuest(tmp.data(), sOff, n);
@@ -4582,9 +5084,14 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 if (sy >= src->h || dy >= dst->h) continue;
                 U64 sOff = smem->va + src->memOff + (U64)sy * srcRowPitch + (U64)r.srcX * pxBytes;
                 U64 dOff = dmem->va + dst->memOff + (U64)dy * dstRowPitch + (U64)r.dstX * pxBytes;
+                U64 sEnd = smem->va + smem->size;
+                U64 dEnd = dmem->va + dmem->size;
+                // If start is already out of bounds, skip: prevents U64
+                // underflow in the clamp below (sEnd - sOff wraps if sOff>=sEnd).
+                if (sOff >= sEnd || dOff >= dEnd) continue;
                 U64 n = (U64)copyW * pxBytes;
-                if (sOff + n > smem->va + smem->size) n = smem->va + smem->size - sOff;
-                if (dOff + n > dmem->va + dmem->size) n = dmem->va + dmem->size - dOff;
+                if (sOff + n > sEnd) n = sEnd - sOff;
+                if (dOff + n > dEnd) n = dEnd - dOff;
                 if (!n) continue;
                 std::vector<U8> tmp((size_t)n);
                 g_mem->memcpyFromGuest(tmp.data(), sOff, n);
@@ -4674,8 +5181,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                     if (dxAbs >= dst->w) continue;
                     U64 sOff = smem->va + src->memOff + (U64)sy * srcRowPitch + (U64)sx * pxBytes;
                     U64 dOff = dmem->va + dst->memOff + (U64)dyAbs * dstRowPitch + (U64)dxAbs * pxBytes;
-                    if (sOff + pxBytes > smem->va + smem->size) continue;
-                    if (dOff + pxBytes > dmem->va + dmem->size) continue;
+                    U64 sEndB = smem->va + smem->size;
+                    U64 dEndB = dmem->va + dmem->size;
+                    if (sOff >= sEndB || dOff >= dEndB) continue;
+                    if (sOff + pxBytes > sEndB) continue;
+                    if (dOff + pxBytes > dEndB) continue;
                     U8 pixel[16];
                     g_mem->memcpyFromGuest(pixel, sOff, pxBytes);
                     g_mem->memcpyToGuest(dOff, pixel, pxBytes);
@@ -4729,8 +5239,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                     if (dxAbs >= dst->w) continue;
                     U64 sOff = smem->va + src->memOff + (U64)sy * srcRowPitch + (U64)sx * pxBytes;
                     U64 dOff = dmem->va + dst->memOff + (U64)dyAbs * dstRowPitch + (U64)dxAbs * pxBytes;
-                    if (sOff + pxBytes > smem->va + smem->size) continue;
-                    if (dOff + pxBytes > dmem->va + dmem->size) continue;
+                    U64 sEndB = smem->va + smem->size;
+                    U64 dEndB = dmem->va + dmem->size;
+                    if (sOff >= sEndB || dOff >= dEndB) continue;
+                    if (sOff + pxBytes > sEndB) continue;
+                    if (dOff + pxBytes > dEndB) continue;
                     U8 pixel[16];
                     g_mem->memcpyFromGuest(pixel, sOff, pxBytes);
                     g_mem->memcpyToGuest(dOff, pixel, pxBytes);
@@ -4774,9 +5287,14 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 if (sy >= src->h || dy >= dst->h) continue;
                 U64 sOff = smem->va + src->memOff + (U64)sy * srcRowPitch + (U64)r.srcX * pxBytes;
                 U64 dOff = dmem->va + dst->memOff + (U64)dy * dstRowPitch + (U64)r.dstX * pxBytes;
+                U64 sEnd = smem->va + smem->size;
+                U64 dEnd = dmem->va + dmem->size;
+                // If start is already out of bounds, skip: prevents U64
+                // underflow in the clamp below (sEnd - sOff wraps if sOff>=sEnd).
+                if (sOff >= sEnd || dOff >= dEnd) continue;
                 U64 n = (U64)copyW * pxBytes;
-                if (sOff + n > smem->va + smem->size) n = smem->va + smem->size - sOff;
-                if (dOff + n > dmem->va + dmem->size) n = dmem->va + dmem->size - dOff;
+                if (sOff + n > sEnd) n = sEnd - sOff;
+                if (dOff + n > dEnd) n = dEnd - dOff;
                 if (!n) continue;
                 std::vector<U8> tmp((size_t)n);
                 g_mem->memcpyFromGuest(tmp.data(), sOff, n);
@@ -4998,6 +5516,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     // =====================================================================
     case VK64_fn_vkQueueSubmit: {
         // (queue, nSubmits, pSubmits*)
+        double vkprofSubmitT0 = vkProfNow(); // BW64_VKPROF (additive)
         U32 n = (U32)args.a[1];
         std::vector<VkSubmitInfo> sis;
         readArray(args.a[2], n, sis);
@@ -5065,11 +5584,13 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             } else serializeSubmit(frames);
         }
         if (args.a[3]) { Fence* f = objOf<Fence>(args.a[3], K_FENCE, "vkQueueSubmit"); if (f) f->signalled = 1; }
+        if (vkProfEnabled()) vkProfAcc().accSubmit += vkProfNow() - vkprofSubmitT0;
         return VK_SUCCESS;
     }
     case VK64_fn_vkQueueSubmit2:
     case VK64_fn_vkQueueSubmit2KHR: {
         // (queue, nSubmits, pSubmitInfo2*, fence) — Vulkan 1.3 path DXVK uses.
+        double vkprofSubmitT0 = vkProfNow(); // BW64_VKPROF (additive)
         // VkSubmitInfo2 carries semaphore values inline (no timeline pNext).
         U32 n = (U32)args.a[1];
         std::vector<VkSubmitInfo2> sis;
@@ -5127,10 +5648,12 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             } else serializeSubmit(frames);
         }
         if (args.a[3]) { Fence* f = objOf<Fence>(args.a[3], K_FENCE, "vkQueueSubmit2"); if (f) f->signalled = 1; }
+        if (vkProfEnabled()) vkProfAcc().accSubmit += vkProfNow() - vkprofSubmitT0;
         return VK_SUCCESS;
     }
     case VK64_fn_vkQueuePresentKHR: {
         // (queue, pPresentInfo*)
+        double vkprofPresentT0 = vkProfNow(); // BW64_VKPROF (additive)
         VkPresentInfoKHR pi = {};
         if (!readStruct(args.a[1], pi)) return VK_ERROR_INITIALIZATION_FAILED;
         for (U32 i = 0; i < pi.swapchainCount; i++) {
@@ -5151,6 +5674,56 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // chunk; the producer ring already dropped the oldest frames past its
         // cap, so this never carries a backlog.
         if (vkSchemaV2()) hopV2ToPage(); else emitFrameNow();
+        // ---- BW64_VKPROF frame boundary (additive, env-gated) ----
+        if (vkProfEnabled()) {
+            double t1 = vkProfNow();
+            VkProfAcc& pa = vkProfAcc();
+            double bodyDt = t1 - vkprofPresentT0;
+            if (pa.haveFrame) {
+                double wall = t1 - pa.lastPresentT;
+                double guest = wall - pa.accSubmit - pa.accTrapOther - bodyDt;
+                // Top-3 trapOther contributors by wall time (additive).
+                char topT[256] = {0};
+                {
+                    struct TE { U64 id; double w; U64 c; };
+                    TE top[3] = {};
+                    for (U64 i = 0; i < 256; i++) {
+                        double w = pa.trapWall[i]; U64 c = pa.trapCnt[i];
+                        if (w <= 0) continue;
+                        for (int k = 0; k < 3; k++) if (w > top[k].w) {
+                            for (int m = 2; m > k; m--) top[m] = top[m-1];
+                            top[k] = {i, w, c};
+                            break;
+                        }
+                    }
+                    char* pp = topT; size_t rem = sizeof(topT);
+                    for (int k = 0; k < 3 && top[k].w > 0; k++) {
+                        int nn = snprintf(pp, rem, "%s%s:%.2f(%llu)", k ? ";" : "",
+                                          fnName(top[k].id), top[k].w,
+                                          (unsigned long long)top[k].c);
+                        if (nn > 0 && (size_t)nn < rem) { pp += nn; rem -= (size_t)nn; }
+                    }
+                }
+                klog_fmt("vk64: VKPROF frame=%llu wall=%.3fms submit=%.3fms bufdata=%.3fms bufB=%llu/%llu imgdata=%.3fms imgB=%llu/%llu trapOther=%.3fms(%llu calls) present=%.3fms hop=%.3fms hopB=%lluch/%lluB guest=%.3fms bufC=%llu imgC=%llu ser2=%.3fms queue=%.3fms topT=%s",
+                         (unsigned long long)pa.frameNo, wall, pa.accSubmit,
+                         pa.accBufData, (unsigned long long)pa.accBufHashed, (unsigned long long)pa.accBufSent,
+                         pa.accImgData, (unsigned long long)pa.accImgHashed, (unsigned long long)pa.accImgSent,
+                         pa.accTrapOther, (unsigned long long)pa.accTrapCalls, bodyDt, pa.accHop,
+                         (unsigned long long)pa.accHopChunks, (unsigned long long)pa.accHopBytes, guest,
+                         (unsigned long long)pa.accBufCalls, (unsigned long long)pa.accImgCalls,
+                         pa.accSer2, pa.accQueue, topT);
+                if (ripSamplerProfileEnabled() && cpu && cpu->thread && cpu->thread->process)
+                    ripSamplerProfDumpReset((int)cpu->thread->process->id);
+            } else {
+                klog_fmt("vk64: VKPROF enabled: per-frame breakdown follows (wall/submit/bufdata/imgdata/trapOther/present/hop/guest, ms)");
+            }
+            pa.haveFrame = true; pa.lastPresentT = t1; pa.frameNo++;
+            vkProfReset(pa);
+        }
+        // First-frame gate for BW64_VKPROF (see vkProfEnabled): profiling
+        // activates only after the first present has fully completed, so
+        // bridge setup during WASM init is never profiled.
+        g_vkProfFirstFrameDone = true;
         return VK_SUCCESS;
     }
 
@@ -5164,11 +5737,1670 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
 }
 
-// 32-bit entry point (stub). Full 32-bit Vulkan bridge is future work;
-// the BridgeMem approach in 261e9976 caused a JS pthread error.
-U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
-    (void)cpu; (void)fnId; (void)argsAddr;
-    return 0;
+KMemory* g_mem32 = nullptr;
+KThread* g_thread32 = nullptr;
+
+// ---------------------------------------------------------------------------
+// 32-bit guest memory helpers. Mirror the 64-bit helpers.
+// ---------------------------------------------------------------------------
+template <class T> inline bool readStruct32(U32 addr, T& out) {
+    if (!addr || !g_mem32) return false;
+    g_mem32->memcpyFromGuest(&out, addr, sizeof(T));
+    return true;
 }
+template <class T> inline void writeStruct32(U32 addr, const T& in) {
+    if (addr && g_mem32) g_mem32->memcpyToGuest(addr, &in, sizeof(T));
+}
+template <class T> inline void readArray32(U32 addr, U32 count, std::vector<T>& out) {
+    out.clear();
+    if (!addr || !g_mem32 || !count) return;
+    out.resize(count);
+    g_mem32->memcpyFromGuest(out.data(), addr, sizeof(T) * (size_t)count);
+}
+template <class T> inline void writeArray32(U32 addr, const std::vector<T>& in, U32 count) {
+    if (addr && g_mem32 && count) g_mem32->memcpyToGuest(addr, in.data(), sizeof(T) * (size_t)count);
+}
+inline U32 rd32_32(U32 a) { return (a && g_mem32) ? g_mem32->readd(a) : 0; }
+inline void wr32_32(U32 a, U32 v) { if (a && g_mem32) g_mem32->writed(a, v); }
+inline U64 rd64_32(U32 a) {
+    if (!a || !g_mem32) return 0;
+    U64 lo = g_mem32->readd(a);
+    U64 hi = g_mem32->readd(a + 4);
+    return lo | (hi << 32);
+}
+inline void wr64_32(U32 a, U64 v) {
+    if (!a || !g_mem32) return;
+    g_mem32->writed(a, (U32)v);
+    g_mem32->writed(a + 4, (U32)(v >> 32));
+}
+inline std::string guestStr32(U32 addr, size_t maxLen = 512) {
+    std::string s;
+    if (!addr || !g_mem32) return s;
+    for (size_t i = 0; i < maxLen; i++) {
+        U8 c = g_mem32->readb(addr + (U32)i);
+        if (!c) break;
+        s.push_back((char)c);
+    }
+    return s;
+}
+
+// ---------------------------------------------------------------------------
+// 32-bit handle minting. Disjoint range from the 64-bit allocator.
+// ---------------------------------------------------------------------------
+U64 g_nextId32 = VK32_HANDLE_BASE;
+template <class T> T* createObj32(U32 kind, U64& idOut) {
+    T* o = new T();
+    o->kind = kind;
+    o->magic = OBJ_MAGIC;
+    idOut = g_nextId32++;
+    if (idOut > 0xFFFFFFFFULL) klog("vk32: FATAL: 32-bit handle space exhausted");
+    g_objs[idOut] = o;
+    return o;
+}
+template <class T> T* objOf32(U64 id32, U32 kind, const char* who) {
+    return objOf<T>(id32 & 0xFFFFFFFFULL, kind, who);
+}
+
+
+// ---------------------------------------------------------------------------
+// 32-bit Features2 / Properties2 pNext walkers.
+//
+// 32-bit guest chained-struct layout: sType@0 (u32), pNext@4 (u32), payload@8.
+// The 64-bit walkers are load-bearing for DXVK (it chains ~15 feature structs
+// into VkPhysicalDeviceFeatures2 and reads the VkBool32s back); the 32-bit
+// bridge never had them, so DXVK saw every chained feature as unsupported.
+// These mirror the 64-bit walkers with 32-bit offsets.
+// ---------------------------------------------------------------------------
+namespace {
+// Fill every VkBool32 payload dword of a 32-bit feature struct with VK_TRUE.
+// hostSize = sizeof(host struct); 32-bit payload dwords = (hostSize-16)/4
+// because the only layout delta vs host is the 4-byte-smaller pNext.
+inline void vk32_fillFeatures32(U32 addr, size_t hostSize) {
+    if (!addr || !g_mem32 || hostSize < 16) return;
+    U32 n = (U32)((hostSize - 16) / 4);
+    for (U32 i = 0; i < n; i++) wr32_32(addr + 8 + i * 4, (U32)VK_TRUE);
+}
+// 32-bit field writers: hostOff = offsetof(host struct, field); valid for
+// fields before any uint64_t that carries host 8-alignment padding.
+inline void vk32_w32f(U32 base, size_t hostOff, U32 v) {
+    wr32_32(base + (U32)hostOff - 8, v);
+}
+inline void vk32_w64f(U32 base, size_t hostOff, U64 v) {
+    wr64_32(base + (U32)hostOff - 8, v);
+}
+
+void vk32_walkFeatures2(U32 pNextAddr) {
+    for (U32 cur = pNextAddr; cur && g_mem32;) {
+        U32 sType = rd32_32(cur);
+        switch (sType) {
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT:
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceRobustness2FeaturesEXT)); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES:
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceMaintenance5Features)); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_6_FEATURES:
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceMaintenance6Features)); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT:
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceTransformFeedbackFeaturesEXT)); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT:
+                vk32_fillFeatures32(cur, sizeof(Vk64VertexAttributeDivisorFeaturesEXT)); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES:
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceDescriptorIndexingFeatures)); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES:
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceShaderFloat16Int8Features)); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES:
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDevice16BitStorageFeatures)); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES:
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDevice8BitStorageFeatures)); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES:
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceScalarBlockLayoutFeatures)); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT:
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceDepthClipEnableFeaturesEXT)); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES:
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceVulkan12Features)); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES:
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceVulkan11Features)); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES:
+                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceVulkan13Features)); break;
+            default:
+                break; // unknown: leave as the guest set it
+        }
+        cur = rd32_32(cur + 4); // pNext at +4 in 32-bit layout
+    }
+}
+
+void vk32_walkProperties2(U32 pNextAddr) {
+    static const U8 uuid[16] = {
+        0x56, 0x4B, 0x57, 0x47, 0x50, 0x55, 0x21, 0x01,
+        0x56, 0x4B, 0x57, 0x47, 0x50, 0x55, 0x21, 0x02,
+    };
+    for (U32 cur = pNextAddr; cur && g_mem32;) {
+        U32 sType = rd32_32(cur);
+        switch (sType) {
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES: {
+                for (int i = 0; i < 16; i++) g_mem32->writeb(cur + 8 + i, uuid[i]);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceIDProperties, deviceNodeMask), 1);
+                break;
+            }
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES: {
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceSubgroupProperties, subgroupSize), 32);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceSubgroupProperties, supportedStages), 0xffffffffu);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceSubgroupProperties, supportedOperations), 0xffffffffu);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceSubgroupProperties, quadOperationsInAllStages), (U32)VK_TRUE);
+                break;
+            }
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_PROPERTIES_EXT: {
+                // MUST be non-zero: DXVK D3D9 divides by these; zero => SIGFPE.
+                vk32_w64f(cur, offsetof(VkPhysicalDeviceRobustness2PropertiesEXT, robustStorageBufferAccessSizeAlignment), 4);
+                vk32_w64f(cur, offsetof(VkPhysicalDeviceRobustness2PropertiesEXT, robustUniformBufferAccessSizeAlignment), 4);
+                break;
+            }
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES: {
+                for (int i = 0; i < 16; i++) g_mem32->writeb(cur + 8 + i, uuid[i]);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, deviceNodeMask), 1);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, subgroupSize), 32);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, subgroupSupportedStages), 0xffffffffu);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, subgroupSupportedOperations), 0xffffffffu);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, subgroupQuadOperationsInAllStages), (U32)VK_TRUE);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, maxMultiviewViewCount), 6);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, maxMultiviewInstanceIndex), 0xFFFFFFFFu);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, maxPerSetDescriptors), 1024);
+                vk32_w64f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, maxMemoryAllocationSize), 2ull * 1024 * 1024 * 1024);
+                break;
+            }
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES: {
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, driverID), (U32)VK_DRIVER_ID_MESA_LLVMPIPE);
+                U32 dn = (U32)offsetof(VkPhysicalDeviceVulkan12Properties, driverName) - 8;
+                const char* nm = "boxedwine";
+                for (int i = 0; i < 8; i++) g_mem32->writeb(cur + dn + i, (U8)nm[i]);
+                U32 di = (U32)offsetof(VkPhysicalDeviceVulkan12Properties, driverInfo) - 8;
+                const char* inf = "vk64";
+                for (int i = 0; i < 4; i++) g_mem32->writeb(cur + di + i, (U8)inf[i]);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, maxUpdateAfterBindDescriptorsInAllPools), 1024);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, maxPerStageDescriptorUpdateAfterBindSamplers), 16);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, maxPerStageDescriptorUpdateAfterBindUniformBuffers), 16);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, maxPerStageDescriptorUpdateAfterBindStorageBuffers), 1000000);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, maxPerStageDescriptorUpdateAfterBindSampledImages), 1000000);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, maxPerStageDescriptorUpdateAfterBindStorageImages), 1000000);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, maxPerStageDescriptorUpdateAfterBindInputAttachments), 4);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, maxPerStageUpdateAfterBindResources), 128);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, maxDescriptorSetUpdateAfterBindSamplers), 1024);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, maxDescriptorSetUpdateAfterBindUniformBuffers), 1024);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, maxDescriptorSetUpdateAfterBindStorageBuffers), 1024);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, maxDescriptorSetUpdateAfterBindSampledImages), 1024);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, maxDescriptorSetUpdateAfterBindStorageImages), 1024);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, maxDescriptorSetUpdateAfterBindInputAttachments), 16);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, framebufferIntegerColorSampleCounts), (U32)VK_SAMPLE_COUNT_1_BIT);
+                break;
+            }
+            default:
+                break; // unknown: leave as the guest set it
+        }
+        cur = rd32_32(cur + 4); // pNext at +4 in 32-bit layout
+    }
+}
+} // namespace
+
+U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
+    std::lock_guard<std::recursive_mutex> lk(g_vkMutex);
+    g_mem32 = cpu ? cpu->memory : nullptr;
+    g_thread32 = cpu ? cpu->thread : nullptr;
+
+    if (fnId == VK64_fn_witness) {
+        klog("vk32: FIRST trap - 32-bit guest libvulkan.so.1 mapped (witness fnId=0)");
+        return 0;
+    }
+    if (fnId == VK64_fn_unimplemented) {
+        VK32Args a0 = {};
+        if (argsAddr && g_mem32) g_mem32->memcpyFromGuest(&a0, argsAddr, sizeof(a0));
+        klog_fmt("vk32: asked-for (unimplemented): %s", guestStr32((U32)a0.a[0]).c_str());
+        return (U64)(int64_t)VK_ERROR_FEATURE_NOT_PRESENT;
+    }
+    if (fnId == VK64_fn_traceProc) {
+        VK32Args a0 = {};
+        if (argsAddr && g_mem32) g_mem32->memcpyFromGuest(&a0, argsAddr, sizeof(a0));
+        klog_fmt("vk32: gipa %s: %s", a0.a[1] ? "HIT " : "MISS", guestStr32((U32)a0.a[0]).c_str());
+        return 0;
+    }
+
+    if (vkTrace()) { klog_fmt("vk32: trap %s", fnName(fnId)); g_tracedCalls++; }
+
+    VK32Args args = {};
+    if (argsAddr && g_mem32) g_mem32->memcpyFromGuest(&args, argsAddr, sizeof(args));
+
+    switch (fnId) {
+    // ================= B. Queries =================
+    case VK64_fn_vkEnumerateInstanceVersion:
+        wr32_32((U32)args.a[0], g_icd_api_version);
+        return VK_SUCCESS;
+
+    case VK64_fn_vkEnumerateInstanceExtensionProperties: {
+        const U32 n = (U32)(sizeof(g_inst_exts) / sizeof(g_inst_exts[0]));
+        if (!args.a[1]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (!args.a[2]) { wr32_32((U32)args.a[1], n); return VK_SUCCESS; }
+        U32 want = rd32_32((U32)args.a[1]);
+        U32 c = want < n ? want : n;
+        std::vector<VkExtensionProperties> props((size_t)(c ? c : 1));
+        for (U32 i = 0; i < c; i++) {
+            memset(&props[i], 0, sizeof(props[i]));
+            strncpy(props[i].extensionName, g_inst_exts[i], VK_MAX_EXTENSION_NAME_SIZE - 1);
+            props[i].specVersion = VK_API_VERSION_1_1;
+        }
+        writeArray32((U32)args.a[2], props, c);
+        wr32_32((U32)args.a[1], c);
+        return c < n ? VK_INCOMPLETE : VK_SUCCESS;
+    }
+    case VK64_fn_vkEnumerateInstanceLayerProperties:
+        if (!args.a[0]) return VK_ERROR_INITIALIZATION_FAILED;
+        wr32_32((U32)args.a[0], 0);
+        return VK_SUCCESS;
+
+    case VK64_fn_vkEnumeratePhysicalDevices: {
+        Instance* inst = objOf32<Instance>(args.a[0], K_INSTANCE, "vkEnumeratePhysicalDevices");
+        if (!inst || !args.a[1]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 n = inst->physCount;
+        if (!args.a[2]) { wr32_32((U32)args.a[1], n); return VK_SUCCESS; }
+        U32 want = rd32_32((U32)args.a[1]);
+        U32 c = want < n ? want : n;
+        std::vector<U32> devs((size_t)(c ? c : 1));
+        for (U32 i = 0; i < c; i++) devs[i] = (U32)inst->phys[i];
+        writeArray32((U32)args.a[2], devs, c);
+        wr32_32((U32)args.a[1], c);
+        return c < n ? VK_INCOMPLETE : VK_SUCCESS;
+    }
+    case VK64_fn_vkEnumerateDeviceExtensionProperties: {
+        const U32 n = (U32)(sizeof(g_dev_exts) / sizeof(g_dev_exts[0]));
+        if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (!args.a[3]) { wr32_32((U32)args.a[2], n); return VK_SUCCESS; }
+        U32 want = rd32_32((U32)args.a[2]);
+        U32 c = want < n ? want : n;
+        std::vector<VkExtensionProperties> props((size_t)(c ? c : 1));
+        for (U32 i = 0; i < c; i++) {
+            memset(&props[i], 0, sizeof(props[i]));
+            strncpy(props[i].extensionName, g_dev_exts[i], VK_MAX_EXTENSION_NAME_SIZE - 1);
+            props[i].specVersion = VK_API_VERSION_1_1;
+        }
+        writeArray32((U32)args.a[3], props, c);
+        wr32_32((U32)args.a[2], c);
+        return c < n ? VK_INCOMPLETE : VK_SUCCESS;
+    }
+    case VK64_fn_vkGetPhysicalDeviceProperties: {
+        PhysDev* pd = objOf32<PhysDev>(args.a[0], K_PHYSDEV, "vkGetPhysicalDeviceProperties");
+        if (!pd || !args.a[1]) return 0;
+        U32 dst = (U32)args.a[1];
+        wr32_32(dst + 0, g_icd_api_version);
+        wr32_32(dst + 4, 1);
+        wr32_32(dst + 8, 0x1234);
+        wr32_32(dst + 12, 0x5678);
+        wr32_32(dst + 16, VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU);
+        const char* name = "Boxedwine64 WebGPU";
+        for (int i = 0; i < 256 && name[i]; i++)
+            g_mem32->writeb(dst + 20 + i, (U8)name[i]);
+        wr32_32(dst + 292 + 4, 8192);
+        return 0;
+    }
+    case VK64_fn_vkGetPhysicalDeviceFeatures: {
+        if (!args.a[1]) return 0;
+        U32 dst = (U32)args.a[1];
+        for (U32 i = 0; i < 220; i += 4) wr32_32(dst + i, 0);
+        wr32_32(dst + 0, 1);
+        return 0;
+    }
+    case VK64_fn_vkGetPhysicalDeviceMemoryProperties: {
+        if (!args.a[1]) return 0;
+        U32 dst = (U32)args.a[1];
+        wr32_32(dst + 0, 1);
+        wr32_32(dst + 4 + 0, 0x0007);
+        wr32_32(dst + 4 + 4, 0);
+        U32 heapOff = 4 + 32 * 8;
+        wr32_32(dst + heapOff, 1);
+        wr64_32(dst + heapOff + 4, 0x100000000ULL);
+        wr32_32(dst + heapOff + 4 + 8, 0x0001);
+        return 0;
+    }
+    case VK64_fn_vkGetPhysicalDeviceProperties2:
+    case VK64_fn_vkGetPhysicalDeviceProperties2KHR: {
+        // 32-bit VkPhysicalDeviceProperties2: sType@0, pNext@4, properties@8.
+        PhysDev* pd = objOf32<PhysDev>(args.a[0], K_PHYSDEV, "vkGetPhysicalDeviceProperties2");
+        if (!pd || !args.a[1]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 dst = (U32)args.a[1];
+        U32 props = dst + 8;
+        wr32_32(props + 0, g_icd_api_version);
+        wr32_32(props + 4, 1);
+        wr32_32(props + 8, 0x1234);
+        wr32_32(props + 12, 0x5678);
+        wr32_32(props + 16, VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU);
+        const char* name = "Boxedwine64 WebGPU";
+        for (int i = 0; i < 256 && name[i]; i++)
+            g_mem32->writeb(props + 20 + i, (U8)name[i]);
+        wr32_32(props + 292 + 4, 8192);
+        vk32_walkProperties2(rd32_32(dst + 4));
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetPhysicalDeviceFeatures2:
+    case VK64_fn_vkGetPhysicalDeviceFeatures2KHR: {
+        // 32-bit VkPhysicalDeviceFeatures2: sType@0, pNext@4, features@8 (220 bytes).
+        if (!args.a[1]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 dst = (U32)args.a[1];
+        U32 feat = dst + 8;
+        for (U32 i = 0; i < 220; i += 4) wr32_32(feat + i, 0);
+        wr32_32(feat + 0, 1); // robustBufferAccess
+        vk32_walkFeatures2(rd32_32(dst + 4));
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetPhysicalDeviceMemoryProperties2:
+    case VK64_fn_vkGetPhysicalDeviceMemoryProperties2KHR: {
+        // 32-bit VkPhysicalDeviceMemoryProperties2: sType@0, pNext@4, memProps@8.
+        if (!args.a[1]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 dst = (U32)args.a[1] + 8;
+        wr32_32(dst + 0, 1);
+        wr32_32(dst + 4 + 0, 0x0007);
+        wr32_32(dst + 4 + 4, 0);
+        U32 heapOff = 4 + 32 * 8;
+        wr32_32(dst + heapOff, 1);
+        wr64_32(dst + heapOff + 4, 0x100000000ULL);
+        wr32_32(dst + heapOff + 4 + 8, 0x0001);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetPhysicalDeviceSurfaceCapabilitiesKHR: {
+        // 32-bit VkSurfaceCapabilitiesKHR: all u32 fields, same layout as host.
+        if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 dst = (U32)args.a[2];
+        wr32_32(dst + 0, 1);   // minImageCount
+        wr32_32(dst + 4, 3);   // maxImageCount
+        wr32_32(dst + 8, 0xFFFFFFFFu);  // currentExtent.width (undefined)
+        wr32_32(dst + 12, 0xFFFFFFFFu); // currentExtent.height
+        wr32_32(dst + 16, 1);  // minImageExtent.width
+        wr32_32(dst + 20, 1);  // minImageExtent.height
+        wr32_32(dst + 24, 16384); // maxImageExtent.width
+        wr32_32(dst + 28, 16384); // maxImageExtent.height
+        wr32_32(dst + 32, 1);  // maxImageArrayLayers
+        wr32_32(dst + 36, 1);  // supportedTransforms (IDENTITY_BIT)
+        wr32_32(dst + 40, 1);  // currentTransform (IDENTITY_BIT)
+        wr32_32(dst + 44, 1);  // supportedCompositeAlpha (OPAQUE_BIT)
+        wr32_32(dst + 48, 0x19); // supportedUsageFlags (COLOR_ATTACHMENT|TRANSFER_DST)
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetPhysicalDeviceSurfaceFormatsKHR: {
+        if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (!args.a[3]) { wr32_32((U32)args.a[2], 1); return VK_SUCCESS; }
+        if (rd32_32((U32)args.a[2]) < 1) { wr32_32((U32)args.a[2], 1); return VK_INCOMPLETE; }
+        U32 dst = (U32)args.a[3];
+        wr32_32(dst + 0, 44); // VK_FORMAT_B8G8R8A8_UNORM
+        wr32_32(dst + 4, 0);  // VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
+        wr32_32((U32)args.a[2], 1);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetPhysicalDeviceSurfacePresentModesKHR: {
+        if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (!args.a[3]) { wr32_32((U32)args.a[2], 1); return VK_SUCCESS; }
+        if (rd32_32((U32)args.a[2]) < 1) { wr32_32((U32)args.a[2], 1); return VK_INCOMPLETE; }
+        wr32_32((U32)args.a[3], 1); // VK_PRESENT_MODE_FIFO_KHR
+        wr32_32((U32)args.a[2], 1);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetPhysicalDeviceSurfaceSupportKHR:
+        wr32_32((U32)args.a[3], 1); // VK_TRUE
+        return VK_SUCCESS;
+    case VK64_fn_vkGetPhysicalDeviceFormatProperties: {
+        // 32-bit VkFormatProperties: 3x u32 (linear@0, optimal@4, buffer@8).
+        if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 dst = (U32)args.a[2];
+        U32 img = (U32)(VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
+            VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT);
+        wr32_32(dst + 0, img);
+        wr32_32(dst + 4, (U32)(img | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
+            VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT));
+        wr32_32(dst + 8, (U32)(VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT |
+            VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT | VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT));
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetPhysicalDeviceImageFormatProperties: {
+        // 32-bit VkImageFormatProperties: maxExtent@0(12), maxMipLevels@12,
+        // maxArrayLayers@16, sampleCounts@20, maxResourceSize@24(8).
+        if (!args.a[6]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 dst = (U32)args.a[6];
+        wr32_32(dst + 0, 16384); wr32_32(dst + 4, 16384); wr32_32(dst + 8, 2048);
+        wr32_32(dst + 12, 14);
+        wr32_32(dst + 16, 2048);
+        wr32_32(dst + 20, 0x0F);
+        wr64_32(dst + 24, 2ull * 1024 * 1024 * 1024);
+        return VK_SUCCESS;
+    }
+
+    case VK64_fn_vkGetPhysicalDeviceFormatProperties2: {
+        // 32-bit VkFormatProperties2: sType@0, pNext@4, formatProperties@8
+        // (linear@8, optimal@12, buffer@16).
+        if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 dst = (U32)args.a[2];
+        U32 img = (U32)(VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
+            VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT);
+        U32 optimal = (U32)(img | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
+            VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
+        U32 buffer = (U32)(VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT |
+            VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT | VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT);
+        wr32_32(dst + 8, img);
+        wr32_32(dst + 12, optimal);
+        wr32_32(dst + 16, buffer);
+        // FormatProperties3 pNext chain (32-bit: sType@0, pNext@4, payload@8)
+        for (U32 cur = rd32_32(dst + 4); cur && g_mem32;) {
+            if (rd32_32(cur) == (U32)VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3) {
+                U64 img2 = (U64)img | 0x3800ull;
+                wr64_32(cur + 8, img2);
+                wr64_32(cur + 16, img2 | (U64)optimal);
+                wr64_32(cur + 24, (U64)buffer);
+            }
+            cur = rd32_32(cur + 4);
+        }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetPhysicalDeviceImageFormatProperties2: {
+        // 32-bit VkImageFormatProperties2: sType@0, pNext@4, imageFormatProperties@8.
+        if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 dst = (U32)args.a[2] + 8;
+        wr32_32(dst + 0, 16384); // maxExtent.width
+        wr32_32(dst + 4, 16384); // maxExtent.height
+        wr32_32(dst + 8, 2048);  // maxExtent.depth
+        wr32_32(dst + 12, 14);   // maxMipLevels
+        wr32_32(dst + 16, 2048); // maxArrayLayers
+        wr32_32(dst + 20, 0x0F); // sampleCounts (1|2|4|8)
+        wr64_32(dst + 24, 2ull * 1024 * 1024 * 1024); // maxResourceSize
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetDeviceBufferMemoryRequirements: {
+        // 32-bit: VkDeviceBufferMemoryRequirements (sType@0,pNext@4,pCreateInfo@8),
+        // out VkMemoryRequirements2 (sType@0,pNext@4,memReq@8: size@8,align@16,typeBits@24).
+        if (!args.a[1] || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 pCreateInfo = rd32_32((U32)args.a[1] + 8);
+        U64 createSize = 0;
+        if (pCreateInfo) createSize = rd64_32(pCreateInfo + 12); // VkBufferCreateInfo.size@12 (32-bit)
+        U64 size = createSize ? ((createSize + 255) & ~(U64)255) : 256;
+        U32 dst = (U32)args.a[2] + 8;
+        wr64_32(dst + 0, size);
+        wr64_32(dst + 8, 256);
+        wr32_32(dst + 16, 0xF);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetPhysicalDeviceQueueFamilyProperties: {
+        if (!args.a[1]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (!args.a[2]) { wr32_32((U32)args.a[1], 1); return VK_SUCCESS; }
+        U32 want = rd32_32((U32)args.a[1]);
+        if (want >= 1) {
+            U32 dst = (U32)args.a[2];
+            wr32_32(dst + 0, 0x000F);
+            wr32_32(dst + 4, 1);
+            wr32_32(dst + 8, 0);
+            wr32_32(dst + 12, 1); wr32_32(dst + 16, 1); wr32_32(dst + 20, 1);
+            wr32_32((U32)args.a[1], 1);
+        }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetDeviceQueue: {
+        Device* dev = objOf32<Device>(args.a[0], K_DEVICE, "vkGetDeviceQueue");
+        if (!dev || !args.a[3]) return 0;
+        wr32_32((U32)args.a[3], (U32)dev->queue);
+        return 0;
+    }
+    case VK64_fn_vkGetBufferMemoryRequirements: {
+        Buffer* b = objOf32<Buffer>(args.a[1], K_BUFFER, "vkGetBufferMemoryRequirements");
+        if (!b || !args.a[2]) return 0;
+        U32 dst = (U32)args.a[2];
+        wr64_32(dst + 0, b->size);
+        wr64_32(dst + 8, 256);
+        wr32_32(dst + 16, 1);
+        return 0;
+    }
+    case VK64_fn_vkGetImageMemoryRequirements: {
+        Image* im = objOf32<Image>(args.a[1], K_IMAGE, "vkGetImageMemoryRequirements");
+        if (!im || !args.a[2]) return 0;
+        U32 dst = (U32)args.a[2];
+        U64 pxBytes = im->pixBytes ? im->pixBytes : 4;
+        wr64_32(dst + 0, (U64)im->w * im->h * im->d * im->layers * pxBytes);
+        wr64_32(dst + 8, 256);
+        wr32_32(dst + 16, 1);
+        return 0;
+    }
+    case VK64_fn_vkGetSwapchainImagesKHR: {
+        Swapchain* sc = objOf32<Swapchain>(args.a[1], K_SWAPCHAIN, "vkGetSwapchainImagesKHR");
+        if (!sc || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 n = sc->nimg;
+        if (!args.a[3]) { wr32_32((U32)args.a[2], n); return VK_SUCCESS; }
+        U32 want = rd32_32((U32)args.a[2]);
+        U32 c = want < n ? want : n;
+        std::vector<U64> imgs((size_t)(c ? c : 1));
+        for (U32 i = 0; i < c; i++) imgs[i] = sc->imgs[i];
+        writeArray32((U32)args.a[3], imgs, c);
+        wr32_32((U32)args.a[2], c);
+        return c < n ? VK_INCOMPLETE : VK_SUCCESS;
+    }
+    case VK64_fn_vkAcquireNextImageKHR: {
+        Swapchain* sc = objOf32<Swapchain>(args.a[1], K_SWAPCHAIN, "vkAcquireNextImageKHR");
+        if (!sc || !args.a[5]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 idx = sc->cur % (sc->nimg ? sc->nimg : 1);
+        sc->cur++;
+        wr32_32((U32)args.a[5], idx);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkDeviceWaitIdle:
+    case VK64_fn_vkQueueWaitIdle:
+        return VK_SUCCESS;
+    case VK64_fn_vkResetFences: {
+        U32 n = (U32)args.a[1];
+        for (U32 i = 0; i < n && args.a[2]; i++) {
+            Fence* f = objOf<Fence>(rd64_32((U32)args.a[2] + i * 8), K_FENCE, "vkResetFences");
+            if (f) f->signalled = 0;
+        }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkWaitForFences: {
+        U32 n = (U32)args.a[1];
+        for (U32 i = 0; i < n && args.a[2]; i++) {
+            Fence* f = objOf<Fence>(rd64_32((U32)args.a[2] + i * 8), K_FENCE, "vkWaitForFences");
+            if (f) f->signalled = 1;
+        }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetFenceStatus: {
+        Fence* f = objOf<Fence>(args.a[1], K_FENCE, "vkGetFenceStatus");
+        return (f && f->signalled) ? VK_SUCCESS : VK_NOT_READY;
+    }
+    case VK64_fn_vkResetCommandBuffer: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkResetCommandBuffer");
+        if (cb) resetCmdBuf(cb);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkResetCommandPool:
+        return VK_SUCCESS;
+    case VK64_fn_vkFreeCommandBuffers: {
+        U32 n = (U32)args.a[2];
+        for (U32 i = 0; i < n && args.a[3]; i++)
+            dropObj(rd32_32((U32)args.a[3] + i * 4));
+        return 0;
+    }
+
+    // ================= C1. Creates =================
+    case VK64_fn_vkCreateInstance: {
+        vk32abi::VkInstanceCreateInfo ci = {};
+        if (!readStruct32((U32)args.a[0], ci) || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 instId = 0;
+        Instance* inst = createObj32<Instance>(K_INSTANCE, instId);
+        U64 pdId = 0;
+        PhysDev* pd = createObj32<PhysDev>(K_PHYSDEV, pdId);
+        pd->instance = instId;
+        inst->phys[0] = pdId;
+        inst->physCount = 1;
+        wr32_32((U32)args.a[2], (U32)instId);
+        klog_fmt("vk32: vkCreateInstance ok instance=0x%x", (unsigned)instId);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateDevice: {
+        vk32abi::VkDeviceCreateInfo ci = {};
+        PhysDev* pd = objOf32<PhysDev>(args.a[0], K_PHYSDEV, "vkCreateDevice");
+        if (!pd || !readStruct32((U32)args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (!ci.queueCreateInfoCount) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 devId = 0, qId = 0;
+        Device* dev = createObj32<Device>(K_DEVICE, devId);
+        Queue* q = createObj32<Queue>(K_QUEUE, qId);
+        dev->physDev = (U32)args.a[0];
+        dev->queue = qId;
+        q->device = devId;
+        wr32_32((U32)args.a[3], (U32)devId);
+        klog_fmt("vk32: vkCreateDevice ok device=0x%x", (unsigned)devId);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateXcbSurfaceKHR:
+    case VK64_fn_vkCreateXlibSurfaceKHR:
+    case VK64_fn_vkCreateWin32SurfaceKHR:
+    case VK64_fn_vkCreateHeadlessSurfaceEXT: {
+        if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        createObj32<Surface>(K_SURFACE, id);
+        wr64_32((U32)args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateSwapchainKHR: {
+        vk32abi::VkSwapchainCreateInfoKHR ci = {};
+        if (!readStruct32((U32)args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        Swapchain* sc = createObj32<Swapchain>(K_SWAPCHAIN, id);
+        sc->nimg = ci.minImageCount ? ci.minImageCount : 2;
+        if (sc->nimg > 8) sc->nimg = 8;
+        sc->w = ci.imageExtent.width;
+        sc->h = ci.imageExtent.height;
+        sc->format = ci.imageFormat;
+        for (U32 i = 0; i < sc->nimg; i++) {
+            U64 imgId = 0;
+            Image* im = createObj32<Image>(K_IMAGE, imgId);
+            im->w = sc->w; im->h = sc->h; im->d = 1;
+            im->layers = 1; im->mips = 1;
+            im->format = sc->format;
+            im->pixBytes = fmt_bpp(sc->format);
+            sc->imgs[i] = imgId;
+        }
+        wr64_32((U32)args.a[3], id);
+        klog_fmt("vk32: vkCreateSwapchainKHR ok %ux%u x%u", sc->w, sc->h, sc->nimg);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateCommandPool: {
+        vk32abi::VkCommandPoolCreateInfo ci = {};
+        if (!readStruct32((U32)args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        CmdPool* p = createObj32<CmdPool>(K_CMDPOOL, id);
+        p->device = (U32)args.a[0];
+        wr64_32((U32)args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateBuffer: {
+        vk32abi::VkBufferCreateInfo ci = {};
+        if (!readStruct32((U32)args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (!ci.size) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        Buffer* b = createObj32<Buffer>(K_BUFFER, id);
+        b->size = ci.size;
+        b->usage = ci.usage;
+        wr64_32((U32)args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateImage: {
+        vk32abi::VkImageCreateInfo ci = {};
+        if (!readStruct32((U32)args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        Image* im = createObj32<Image>(K_IMAGE, id);
+        im->w = ci.extent.width; im->h = ci.extent.height; im->d = ci.extent.depth;
+        im->layers = ci.arrayLayers ? ci.arrayLayers : 1;
+        im->mips = ci.mipLevels ? ci.mipLevels : 1;
+        im->format = ci.format; im->tiling = ci.tiling; im->usage = ci.usage;
+        im->samples = ci.samples;
+        im->pixBytes = fmt_bpp(ci.format);
+        wr64_32((U32)args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateImageView: {
+        vk32abi::VkImageViewCreateInfo ci = {};
+        if (!readStruct32((U32)args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        Image* src = objOf<Image>(ci.image, K_IMAGE, "vkCreateImageView");
+        if (!src) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        ImageView* v = createObj32<ImageView>(K_IMAGEVIEW, id);
+        v->image = ci.image;
+        v->format = ci.format;
+        v->aspect = ci.subresourceRange.aspectMask;
+        wr64_32((U32)args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateSampler: {
+        vk32abi::VkSamplerCreateInfo ci = {};
+        if (!readStruct32((U32)args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        Sampler* s = createObj32<Sampler>(K_SAMPLER, id);
+        s->mag = ci.magFilter; s->min = ci.minFilter;
+        wr64_32((U32)args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateShaderModule: {
+        vk32abi::VkShaderModuleCreateInfo ci = {};
+        if (!readStruct32((U32)args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        ShaderModule* m = createObj32<ShaderModule>(K_SHADER, id);
+        if (ci.codeSize && ci.pCode) {
+            m->code.resize(ci.codeSize);
+            g_mem32->memcpyFromGuest(m->code.data(), ci.pCode, ci.codeSize);
+            m->hash = blob_hash(m->code.data(), m->code.size());
+        }
+        wr64_32((U32)args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateGraphicsPipelines: {
+        U32 n = (U32)args.a[2];
+        if (!n || !args.a[3] || !args.a[5]) return VK_ERROR_INITIALIZATION_FAILED;
+        for (U32 pi = 0; pi < n; pi++) {
+            vk32abi::VkGraphicsPipelineCreateInfo gpi = {};
+            if (!readStruct32((U32)args.a[3] + pi * (U32)sizeof(gpi), gpi)) return VK_ERROR_INITIALIZATION_FAILED;
+            U64 id = 0;
+            Pipeline* p = createObj32<Pipeline>(K_PIPELINE, id);
+            p->layout = gpi.layout;
+            p->rp = gpi.renderPass;
+            for (U32 si = 0; si < gpi.stageCount && gpi.pStages; si++) {
+                vk32abi::VkPipelineShaderStageCreateInfo ssi = {};
+                readStruct32(gpi.pStages + si * (U32)sizeof(ssi), ssi);
+                if ((U32)ssi.stage == (U32)VK_SHADER_STAGE_VERTEX_BIT) p->vs = ssi.module;
+                else if ((U32)ssi.stage == (U32)VK_SHADER_STAGE_FRAGMENT_BIT) p->fs = ssi.module;
+            }
+            if (gpi.pVertexInputState) {
+                vk32abi::VkPipelineVertexInputStateCreateInfo vis = {};
+                readStruct32(gpi.pVertexInputState, vis);
+                p->nvb = vis.vertexBindingDescriptionCount;
+                for (U32 bi = 0; bi < vis.vertexBindingDescriptionCount && bi < VK64_MAX_VERT_BINDINGS; bi++) {
+                    vk32abi::VkVertexInputBindingDescription bd = {};
+                    readStruct32(vis.pVertexBindingDescriptions + bi * (U32)sizeof(bd), bd);
+                    p->vbStride[bi] = bd.stride;
+                }
+            }
+            wr64_32((U32)args.a[5] + pi * 8, id);
+        }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreatePipelineLayout: {
+        vk32abi::VkPipelineLayoutCreateInfo ci = {};
+        if (!readStruct32((U32)args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        PipelineLayout* pl = createObj32<PipelineLayout>(K_PIPELAYOUT, id);
+        pl->nsets = ci.setLayoutCount;
+        for (U32 i = 0; i < ci.setLayoutCount && i < VK64_MAX_SETS && ci.pSetLayouts; i++)
+            pl->sets[i] = rd64_32(ci.pSetLayouts + i * 8);
+        wr64_32((U32)args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateRenderPass: {
+        vk32abi::VkRenderPassCreateInfo ci = {};
+        if (!readStruct32((U32)args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        RenderPass* rp = createObj32<RenderPass>(K_RENDERPASS, id);
+        rp->natt = ci.attachmentCount;
+        for (U32 i = 0; i < ci.attachmentCount && i < VK64_MAX_ATTACH && ci.pAttachments; i++) {
+            vk32abi::VkAttachmentDescription ad = {};
+            readStruct32(ci.pAttachments + i * (U32)sizeof(ad), ad);
+            rp->formats[i] = ad.format;
+            rp->loadOps[i] = ad.loadOp;
+            rp->storeOps[i] = ad.storeOp;
+            rp->samples[i] = ad.samples;
+        }
+        wr64_32((U32)args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateFramebuffer: {
+        vk32abi::VkFramebufferCreateInfo ci = {};
+        if (!readStruct32((U32)args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        Framebuffer* fb = createObj32<Framebuffer>(K_FRAMEBUFFER, id);
+        fb->rp = ci.renderPass;
+        fb->w = ci.width; fb->h = ci.height;
+        fb->natt = ci.attachmentCount;
+        for (U32 i = 0; i < ci.attachmentCount && i < VK64_MAX_ATTACH && ci.pAttachments; i++)
+            fb->views[i] = rd64_32(ci.pAttachments + i * 8);
+        wr64_32((U32)args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateFence: {
+        if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        Fence* f = createObj32<Fence>(K_FENCE, id);
+        vk32abi::VkFenceCreateInfo ci = {};
+        if (readStruct32((U32)args.a[1], ci) && (ci.flags & VK_FENCE_CREATE_SIGNALED_BIT))
+            f->signalled = 1;
+        wr64_32((U32)args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateSemaphore: {
+        if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        createObj32<Semaphore>(K_SEMAPHORE, id);
+        wr64_32((U32)args.a[3], id);
+        return VK_SUCCESS;
+    }
+
+    // ================= C2. Allocation =================
+    case VK64_fn_vkAllocateMemory: {
+        vk32abi::VkMemoryAllocateInfo ai = {};
+        if (!readStruct32((U32)args.a[1], ai) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        DeviceMemory* m = createObj32<DeviceMemory>(K_MEMORY, id);
+        m->size = ai.allocationSize;
+        // Allocate guest VA via 32-bit mmap (addr=0 = find free range).
+        // Mirrors KMemory64::mmapReserveAndMap used by the 64-bit path.
+        m->va = g_mem32->mmap(g_thread32, 0, (U32)ai.allocationSize,
+                             K_PROT_READ | K_PROT_WRITE,
+                             K_MAP_ANONYMOUS | K_MAP_PRIVATE, -1, 0, false);
+        wr64_32((U32)args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkAllocateCommandBuffers: {
+        vk32abi::VkCommandBufferAllocateInfo ai = {};
+        if (!readStruct32((U32)args.a[1], ai) || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        for (U32 i = 0; i < ai.commandBufferCount; i++) {
+            U64 id = 0;
+            CmdBuf* cb = createObj32<CmdBuf>(K_CMDBUF, id);
+            cb->pool = ai.commandPool;
+            wr32_32((U32)args.a[2] + i * 4, (U32)id);
+        }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkBindBufferMemory: {
+        Buffer* b = objOf<Buffer>(args.a[1], K_BUFFER, "vkBindBufferMemory");
+        DeviceMemory* m = objOf<DeviceMemory>(args.a[2], K_MEMORY, "vkBindBufferMemory");
+        if (!b || !m) return VK_ERROR_INITIALIZATION_FAILED;
+        b->mem = args.a[2];
+        b->memOff = args.a[3];
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkBindImageMemory: {
+        Image* im = objOf<Image>(args.a[1], K_IMAGE, "vkBindImageMemory");
+        DeviceMemory* m = objOf<DeviceMemory>(args.a[2], K_MEMORY, "vkBindImageMemory");
+        if (!im || !m) return VK_ERROR_INITIALIZATION_FAILED;
+        im->mem = args.a[2];
+        im->memOff = args.a[3];
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkMapMemory: {
+        DeviceMemory* m = objOf<DeviceMemory>(args.a[1], K_MEMORY, "vkMapMemory");
+        if (!m || !args.a[5]) return VK_ERROR_MEMORY_MAP_FAILED;
+        wr32_32((U32)args.a[5], (U32)(m->va + args.a[2]));
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkUnmapMemory:
+    case VK64_fn_vkFlushMappedMemoryRanges:
+    case VK64_fn_vkInvalidateMappedMemoryRanges:
+        return VK_SUCCESS;
+
+    // ================= C3. Destroys =================
+    case VK64_fn_vkDestroyInstance:
+    case VK64_fn_vkDestroyDevice:
+        dropObj(args.a[0] & 0xFFFFFFFFULL);
+        return 0;
+    case VK64_fn_vkFreeMemory: {
+        DeviceMemory* m = objOf<DeviceMemory>(args.a[1], K_MEMORY, "vkFreeMemory");
+        if (m) {
+            if (m->va) g_mem32->unmap((U32)m->va, (U32)m->size);
+            dropObj(args.a[1] & 0xFFFFFFFFULL);
+        }
+        return 0;
+    }
+    case VK64_fn_vkDestroySurfaceKHR:
+    case VK64_fn_vkDestroySwapchainKHR:
+    case VK64_fn_vkDestroyCommandPool:
+    case VK64_fn_vkDestroyBuffer:
+    case VK64_fn_vkDestroyImage:
+    case VK64_fn_vkDestroyImageView:
+    case VK64_fn_vkDestroySampler:
+    case VK64_fn_vkDestroyRenderPass:
+    case VK64_fn_vkDestroyFramebuffer:
+    case VK64_fn_vkDestroyPipeline:
+    case VK64_fn_vkDestroyPipelineLayout:
+    case VK64_fn_vkDestroyDescriptorSetLayout:
+    case VK64_fn_vkDestroyDescriptorPool:
+    case VK64_fn_vkDestroyShaderModule:
+    case VK64_fn_vkDestroyPipelineCache:
+    case VK64_fn_vkDestroyFence:
+    case VK64_fn_vkDestroySemaphore:
+    case VK64_fn_vkDestroyDescriptorUpdateTemplate:
+        dropObj(args.a[1] & 0xFFFFFFFFULL);
+        return 0;
+
+    // ================= D. Command recording =================
+    case VK64_fn_vkBeginCommandBuffer: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkBeginCommandBuffer");
+        if (!cb) return VK_ERROR_INITIALIZATION_FAILED;
+        resetCmdBuf(cb);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkEndCommandBuffer: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkEndCommandBuffer");
+        if (!cb) return VK_ERROR_INITIALIZATION_FAILED;
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCmdBeginRenderPass: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdBeginRenderPass");
+        if (!cb) return 0;
+        vk32abi::VkRenderPassBeginInfo rbi = {};
+        if (!readStruct32((U32)args.a[1], rbi)) return 0;
+        Cmd c;
+        c.kind = CMD_BEGIN_RP;
+        c.a = rbi.renderPass;
+        c.b = rbi.framebuffer;
+        c.vbCount = rbi.clearValueCount;
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdEndRenderPass:
+    case VK64_fn_vkCmdEndRenderPass2:
+    case VK64_fn_vkCmdEndRenderPass2KHR:
+    case VK64_fn_vkCmdEndRendering:
+    case VK64_fn_vkCmdEndRenderingKHR: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdEndRenderPass");
+        if (!cb) return 0;
+        Cmd c; c.kind = CMD_END_RP;
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdBindPipeline: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdBindPipeline");
+        if (!cb) return 0;
+        Cmd c;
+        c.kind = CMD_BIND_PIPE;
+        c.a = args.a[1];
+        c.b = args.a[2];
+        pushCmd(cb, c);
+        cb->pipe = args.a[2];
+        return 0;
+    }
+    case VK64_fn_vkCmdBindDescriptorSets: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdBindDescriptorSets");
+        if (!cb) return 0;
+        U32 first = (U32)args.a[3], count = (U32)args.a[4];
+        for (U32 i = 0; i < count && first + i < VK64_MAX_SETS && args.a[5]; i++)
+            cb->sets[first + i] = rd64_32((U32)args.a[5] + i * 8);
+        Cmd c; c.kind = CMD_BIND_SETS; c.a = args.a[3]; c.b = args.a[4];
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdSetViewport: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdSetViewport");
+        if (!cb || !args.a[3]) return 0;
+        vk32abi::VkViewport vp = {};
+        readStruct32((U32)args.a[3], vp);
+        cb->vp[0] = vp.x; cb->vp[1] = vp.y;
+        cb->vp[2] = vp.width; cb->vp[3] = vp.height;
+        cb->vp[4] = vp.minDepth; cb->vp[5] = vp.maxDepth;
+        cb->haveVp = true;
+        return 0;
+    }
+    case VK64_fn_vkCmdSetScissor: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdSetScissor");
+        if (!cb || !args.a[3]) return 0;
+        vk32abi::VkRect2D sc = {};
+        readStruct32((U32)args.a[3], sc);
+        cb->sci[0] = (float)sc.offset.x; cb->sci[1] = (float)sc.offset.y;
+        cb->sci[2] = (float)sc.extent.width; cb->sci[3] = (float)sc.extent.height;
+        cb->haveSci = true;
+        return 0;
+    }
+    case VK64_fn_vkCmdDraw: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdDraw");
+        if (!cb) return 0;
+        Cmd c; c.kind = CMD_DRAW;
+        c.a = args.a[1]; c.b = args.a[2]; c.c = args.a[3]; c.d = args.a[4];
+        captureDraw(cb, c);
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdDrawIndexed: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdDrawIndexed");
+        if (!cb) return 0;
+        Cmd c; c.kind = CMD_DRAW_INDEXED;
+        c.a = args.a[1]; c.b = args.a[2]; c.c = args.a[3];
+        c.d = args.a[5];
+        c.diVertexOffset = (int32_t)args.a[4];
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdBindVertexBuffers:
+    case VK64_fn_vkCmdBindVertexBuffers2: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdBindVertexBuffers");
+        if (!cb) return 0;
+        U32 first = (U32)args.a[1], count = (U32)args.a[2];
+        if (!args.a[3] || !args.a[4] || !count || first >= VK64_MAX_VERT_BINDINGS) return 0;
+        if (first + count > VK64_MAX_VERT_BINDINGS) count = VK64_MAX_VERT_BINDINGS - first;
+        for (U32 i = 0; i < count; i++) {
+            cb->vbs[first + i] = rd64_32((U32)args.a[3] + i * 8);
+            cb->vbOff[first + i] = rd64_32((U32)args.a[4] + i * 8);
+        }
+        Cmd c; c.kind = CMD_BIND_VB; c.a = first; c.b = count;
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdBindIndexBuffer:
+    case VK64_fn_vkCmdBindIndexBuffer2:
+    case VK64_fn_vkCmdBindIndexBuffer2KHR: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdBindIndexBuffer");
+        if (!cb) return 0;
+        cb->ib = args.a[1];
+        cb->ibOff = args.a[2];
+        return 0;
+    }
+    case VK64_fn_vkCmdPipelineBarrier:
+    case VK64_fn_vkCmdPipelineBarrier2:
+    case VK64_fn_vkCmdPipelineBarrier2KHR: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdPipelineBarrier");
+        if (!cb) return 0;
+        Cmd c; c.kind = CMD_BARRIER;
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdPushConstants:
+    case VK64_fn_vkCmdPushConstants2:
+    case VK64_fn_vkCmdPushConstants2KHR: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdPushConstants");
+        if (!cb) return 0;
+        Cmd c; c.kind = CMD_PUSH_CONST;
+        if (fnId == VK64_fn_vkCmdPushConstants) {
+            c.pcOffset = (U32)args.a[3];
+            c.pcSize = (U32)args.a[4];
+            c.pcStageFlags = (U32)args.a[2];
+            U32 n = c.pcSize > VK64_MAX_PUSH_BYTES ? VK64_MAX_PUSH_BYTES : c.pcSize;
+            if (args.a[5] && n) g_mem32->memcpyFromGuest(c.pcBytes, (U32)args.a[5], n);
+        }
+        pushCmd(cb, c);
+        return 0;
+    }
+    // ---- 23 game-breaking functions ----
+    case VK64_fn_vkCmdFillBuffer: {
+        Buffer* dst = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdFillBuffer");
+        if (!dst || !dst->mem) return 0;
+        DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdFillBuffer");
+        if (!dmem || !dmem->va) return 0;
+        U64 offset = dst->memOff + args.a[2];
+        U64 size = args.a[3];
+        U32 data = (U32)args.a[4];
+        if (offset >= dmem->size) return 0;
+        if (offset + size > dmem->size) size = dmem->size - offset;
+        if (!size) return 0;
+        U32 va = (U32)(dmem->va + offset);
+        for (U64 i = 0; i + 4 <= size; i += 4)
+            g_mem32->memcpyToGuest(va + (U32)i, &data, 4);
+        if (size % 4) g_mem32->memcpyToGuest(va + (U32)(size & ~3ULL), &data, (U32)(size % 4));
+        dst->dirtyGen = g_bufDirtyTick++;
+        return 0;
+    }
+    case VK64_fn_vkCmdClearColorImage: {
+        Image* im = objOf<Image>(args.a[1], K_IMAGE, "vkCmdClearColorImage");
+        if (!im || !im->mem) return 0;
+        DeviceMemory* dmem = objOf<DeviceMemory>(im->mem, K_MEMORY, "vkCmdClearColorImage");
+        if (!dmem || !dmem->va) return 0;
+        vk32abi::VkClearColorValue col = {};
+        readStruct32((U32)args.a[3], col);
+        U32 pxBytes = (U32)(im->pixBytes ? im->pixBytes : 4);
+        U32 pixel; memcpy(&pixel, col.float32, 4);
+        U64 total = (U64)im->w * im->h * im->d * im->layers * pxBytes;
+        U32 va = (U32)(dmem->va + im->memOff);
+        for (U64 off = 0; off < total; off += 4)
+            g_mem32->memcpyToGuest(va + (U32)off, &pixel, 4);
+        return 0;
+    }
+    case VK64_fn_vkCmdClearAttachments:
+    case VK64_fn_vkCmdClearAttachmentsKHR: {
+        // Clear via the framebuffer of the current render pass.
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdClearAttachments");
+        if (!cb) return 0;
+        U64 fbId = 0;
+        for (auto it = cb->cmds.rbegin(); it != cb->cmds.rend(); ++it) {
+            if (it->kind == CMD_BEGIN_RP) { fbId = it->b; break; }
+        }
+        Framebuffer* fb = objOf<Framebuffer>(fbId, K_FRAMEBUFFER, "vkCmdClearAttachments");
+        if (!fb) return 0;
+        U32 natt = (U32)args.a[1];
+        for (U32 i = 0; i < natt && args.a[2]; i++) {
+            vk32abi::VkClearAttachment att = {};
+            readStruct32((U32)args.a[2] + i * (U32)sizeof(att), att);
+            if (att.colorAttachment >= fb->natt) continue;
+            ImageView* view = objOf<ImageView>(fb->views[att.colorAttachment], K_IMAGEVIEW, "vkCmdClearAttachments");
+            if (!view) continue;
+            Image* im = objOf<Image>(view->image, K_IMAGE, "vkCmdClearAttachments");
+            if (!im || !im->mem) continue;
+            DeviceMemory* dmem = objOf<DeviceMemory>(im->mem, K_MEMORY, "vkCmdClearAttachments");
+            if (!dmem || !dmem->va) continue;
+            U32 pxBytes = (U32)(im->pixBytes ? im->pixBytes : 4);
+            U32 pixel; memcpy(&pixel, att.clearValue.color.float32, 4);
+            U64 total = (U64)im->w * im->h * pxBytes;
+            U32 va = (U32)(dmem->va + im->memOff);
+            for (U64 off = 0; off < total; off += 4)
+                g_mem32->memcpyToGuest(va + (U32)off, &pixel, 4);
+        }
+        return 0;
+    }
+    case VK64_fn_vkCmdCopyBuffer: {
+        Buffer* src = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdCopyBuffer");
+        Buffer* dst = objOf<Buffer>(args.a[2], K_BUFFER, "vkCmdCopyBuffer");
+        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdCopyBuffer");
+        DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyBuffer");
+        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        U32 nreg = (U32)args.a[3];
+        U8 tmp[65536];
+        for (U32 i = 0; i < nreg && args.a[4]; i++) {
+            vk32abi::VkBufferCopy r = {};
+            readStruct32((U32)args.a[4] + i * (U32)sizeof(r), r);
+            U64 srcVa = smem->va + src->memOff + r.srcOffset;
+            U64 dstVa = dmem->va + dst->memOff + r.dstOffset;
+            U64 size = r.size;
+            while (size > 0) {
+                U32 chunk = size > sizeof(tmp) ? sizeof(tmp) : (U32)size;
+                g_mem32->memcpyFromGuest(tmp, (U32)srcVa, chunk);
+                g_mem32->memcpyToGuest((U32)dstVa, tmp, chunk);
+                srcVa += chunk; dstVa += chunk; size -= chunk;
+            }
+        }
+        dst->dirtyGen = g_bufDirtyTick++;
+        return 0;
+    }
+    case VK64_fn_vkCmdCopyBuffer2:
+    case VK64_fn_vkCmdCopyBuffer2KHR: {
+        if (!args.a[1]) return 0;
+        U32 info = (U32)args.a[1];
+        U64 src = rd64_32(info + 8);
+        U64 dst = rd64_32(info + 16);
+        U32 nreg = rd32_32(info + 24);
+        U32 pReg = rd32_32(info + 28);
+        Buffer* srcB = objOf<Buffer>(src, K_BUFFER, "vkCmdCopyBuffer2");
+        Buffer* dstB = objOf<Buffer>(dst, K_BUFFER, "vkCmdCopyBuffer2");
+        if (!srcB || !dstB || !srcB->mem || !dstB->mem) return 0;
+        DeviceMemory* smem = objOf<DeviceMemory>(srcB->mem, K_MEMORY, "vkCmdCopyBuffer2");
+        DeviceMemory* dmem = objOf<DeviceMemory>(dstB->mem, K_MEMORY, "vkCmdCopyBuffer2");
+        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        U8 tmp[65536];
+        for (U32 i = 0; i < nreg && pReg; i++) {
+            U32 r = pReg + i * 32;
+            U64 srcOff = rd64_32(r + 8);
+            U64 dstOff = rd64_32(r + 16);
+            U64 size = rd64_32(r + 24);
+            U64 srcVa = smem->va + srcB->memOff + srcOff;
+            U64 dstVa = dmem->va + dstB->memOff + dstOff;
+            while (size > 0) {
+                U32 chunk = size > sizeof(tmp) ? sizeof(tmp) : (U32)size;
+                g_mem32->memcpyFromGuest(tmp, (U32)srcVa, chunk);
+                g_mem32->memcpyToGuest((U32)dstVa, tmp, chunk);
+                srcVa += chunk; dstVa += chunk; size -= chunk;
+            }
+        }
+        dstB->dirtyGen = g_bufDirtyTick++;
+        return 0;
+    }
+    case VK64_fn_vkCmdCopyImage:
+    case VK64_fn_vkCmdCopyImage2:
+    case VK64_fn_vkCmdCopyImage2KHR: {
+        Image* src = objOf<Image>(args.a[1], K_IMAGE, "vkCmdCopyImage");
+        Image* dst = nullptr;
+        U32 nreg = 0, pReg = 0;
+        if (fnId == VK64_fn_vkCmdCopyImage) {
+            dst = objOf<Image>(args.a[3], K_IMAGE, "vkCmdCopyImage");
+            nreg = (U32)args.a[5]; pReg = (U32)args.a[6];
+        } else {
+            dst = objOf<Image>(args.a[2], K_IMAGE, "vkCmdCopyImage2");
+            nreg = (U32)args.a[3]; pReg = (U32)args.a[4];
+        }
+        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdCopyImage");
+        DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyImage");
+        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        U32 pxBytes = (U32)(src->pixBytes ? src->pixBytes : 4);
+        U8 tmp[65536];
+        for (U32 i = 0; i < nreg && pReg; i++) {
+            vk32abi::VkImageCopy r = {};
+            readStruct32(pReg + i * (U32)sizeof(r), r);
+            U32 w = r.extent.width, h = r.extent.height;
+            U32 srcRow = src->w * pxBytes, dstRow = dst->w * pxBytes;
+            for (U32 y = 0; y < h; y++) {
+                U32 sy = (U32)r.srcOffset.y + y, dy = (U32)r.dstOffset.y + y;
+                if (sy >= src->h || dy >= dst->h) continue;
+                U64 srcVa = smem->va + src->memOff + (U64)sy * srcRow + (U64)(U32)r.srcOffset.x * pxBytes;
+                U64 dstVa = dmem->va + dst->memOff + (U64)dy * dstRow + (U64)(U32)r.dstOffset.x * pxBytes;
+                U32 rowBytes = w * pxBytes, done = 0;
+                while (done < rowBytes) {
+                    U32 chunk = rowBytes - done > sizeof(tmp) ? sizeof(tmp) : rowBytes - done;
+                    g_mem32->memcpyFromGuest(tmp, (U32)(srcVa + done), chunk);
+                    g_mem32->memcpyToGuest((U32)(dstVa + done), tmp, chunk);
+                    done += chunk;
+                }
+            }
+        }
+        return 0;
+    }
+    case VK64_fn_vkCmdCopyBufferToImage:
+    case VK64_fn_vkCmdCopyBufferToImage2:
+    case VK64_fn_vkCmdCopyBufferToImage2KHR: {
+        Buffer* src = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdCopyBufferToImage");
+        Image* dst = objOf<Image>(args.a[2], K_IMAGE, "vkCmdCopyBufferToImage");
+        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdCopyBufferToImage");
+        DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyBufferToImage");
+        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        U32 nreg = 0, pReg = 0;
+        if (fnId == VK64_fn_vkCmdCopyBufferToImage) {
+            nreg = (U32)args.a[4]; pReg = (U32)args.a[5];
+        } else {
+            nreg = (U32)args.a[3]; pReg = (U32)args.a[4];
+        }
+        U32 pxBytes = (U32)(dst->pixBytes ? dst->pixBytes : 4);
+        U8 tmp[65536];
+        for (U32 i = 0; i < nreg && pReg; i++) {
+            vk32abi::VkBufferImageCopy r = {};
+            readStruct32(pReg + i * (U32)sizeof(r), r);
+            U32 w = r.imageExtent.width, h = r.imageExtent.height;
+            U64 srcVa = smem->va + src->memOff + r.bufferOffset;
+            U32 dstRow = dst->w * pxBytes;
+            for (U32 y = 0; y < h; y++) {
+                U32 dy = (U32)r.imageOffset.y + y;
+                if (dy >= dst->h) continue;
+                U64 dstVa = dmem->va + dst->memOff + (U64)dy * dstRow + (U64)(U32)r.imageOffset.x * pxBytes;
+                U32 rowBytes = w * pxBytes, done = 0;
+                while (done < rowBytes) {
+                    U32 chunk = rowBytes - done > sizeof(tmp) ? sizeof(tmp) : rowBytes - done;
+                    g_mem32->memcpyFromGuest(tmp, (U32)(srcVa + done), chunk);
+                    g_mem32->memcpyToGuest((U32)(dstVa + done), tmp, chunk);
+                    done += chunk;
+                }
+                srcVa += rowBytes;
+            }
+        }
+        dst->copied = 1;
+        return 0;
+    }
+    case VK64_fn_vkCmdCopyImageToBuffer:
+    case VK64_fn_vkCmdCopyImageToBuffer2:
+    case VK64_fn_vkCmdCopyImageToBuffer2KHR: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdCopyImageToBuffer");
+        if (!cb) return 0;
+        Cmd c; c.kind = CMD_COPY_I2B;
+        c.a = args.a[1]; c.b = args.a[3];
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdBlitImage:
+    case VK64_fn_vkCmdBlitImage2:
+    case VK64_fn_vkCmdBlitImage2KHR: {
+        Image* src = objOf<Image>(args.a[1], K_IMAGE, "vkCmdBlitImage");
+        Image* dst = nullptr;
+        U32 nreg = 0, pReg = 0;
+        if (fnId == VK64_fn_vkCmdBlitImage) {
+            dst = objOf<Image>(args.a[3], K_IMAGE, "vkCmdBlitImage");
+            nreg = (U32)args.a[5]; pReg = (U32)args.a[6];
+        } else {
+            dst = objOf<Image>(args.a[2], K_IMAGE, "vkCmdBlitImage2");
+            nreg = (U32)args.a[3]; pReg = (U32)args.a[4];
+        }
+        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdBlitImage");
+        DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdBlitImage");
+        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        U32 pxBytes = (U32)(src->pixBytes ? src->pixBytes : 4);
+        U32 srcRowPitch = src->w * pxBytes, dstRowPitch = dst->w * pxBytes;
+        for (U32 i = 0; i < nreg && pReg; i++) {
+            vk32abi::VkImageBlit r = {};
+            readStruct32(pReg + i * (U32)sizeof(r), r);
+            int32_t srcW = r.srcOffsets[1].x - r.srcOffsets[0].x;
+            int32_t srcH = r.srcOffsets[1].y - r.srcOffsets[0].y;
+            int32_t dstW = r.dstOffsets[1].x - r.dstOffsets[0].x;
+            int32_t dstH = r.dstOffsets[1].y - r.dstOffsets[0].y;
+            if (srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) continue;
+            for (int32_t dy = 0; dy < dstH; dy++) {
+                int32_t sy = r.srcOffsets[0].y + (dy * srcH) / dstH;
+                if (sy < 0 || (U32)sy >= src->h) continue;
+                U32 dyAbs = (U32)(r.dstOffsets[0].y + dy);
+                if (dyAbs >= dst->h) continue;
+                for (int32_t dx = 0; dx < dstW; dx++) {
+                    int32_t sx = r.srcOffsets[0].x + (dx * srcW) / dstW;
+                    if (sx < 0 || (U32)sx >= src->w) continue;
+                    U32 dxAbs = (U32)(r.dstOffsets[0].x + dx);
+                    if (dxAbs >= dst->w) continue;
+                    U32 spx = 0;
+                    g_mem32->memcpyFromGuest(&spx, (U32)(smem->va + src->memOff + (U64)sy * srcRowPitch + (U64)sx * pxBytes), pxBytes);
+                    g_mem32->memcpyToGuest((U32)(dmem->va + dst->memOff + (U64)dyAbs * dstRowPitch + (U64)dxAbs * pxBytes), &spx, pxBytes);
+                }
+            }
+        }
+        return 0;
+    }
+    case VK64_fn_vkCmdResolveImage:
+    case VK64_fn_vkCmdResolveImageKHR: {
+        Image* src = objOf<Image>(args.a[1], K_IMAGE, "vkCmdResolveImage");
+        Image* dst = objOf<Image>(args.a[3], K_IMAGE, "vkCmdResolveImage");
+        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdResolveImage");
+        DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdResolveImage");
+        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        U32 pxBytes = (U32)(src->pixBytes ? src->pixBytes : 4);
+        U64 total = (U64)src->w * src->h * pxBytes;
+        U64 sva = smem->va + src->memOff, dva = dmem->va + dst->memOff;
+        U8 tmp[65536];
+        while (total > 0) {
+            U32 chunk = total > sizeof(tmp) ? sizeof(tmp) : (U32)total;
+            g_mem32->memcpyFromGuest(tmp, (U32)sva, chunk);
+            g_mem32->memcpyToGuest((U32)dva, tmp, chunk);
+            sva += chunk; dva += chunk; total -= chunk;
+        }
+        return 0;
+    }
+    case VK64_fn_vkCmdDrawIndirect: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdDrawIndirect");
+        Buffer* buf = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdDrawIndirect");
+        if (!cb || !buf || !buf->mem) return 0;
+        DeviceMemory* dmem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDrawIndirect");
+        if (!dmem || !dmem->va) return 0;
+        U32 drawCount = (U32)args.a[3], stride = (U32)args.a[4];
+        if (!stride) stride = 16;
+        U32 base = (U32)(dmem->va + buf->memOff + args.a[2]);
+        for (U32 i = 0; i < drawCount; i++) {
+            Cmd c; c.kind = CMD_DRAW;
+            c.a = rd32_32(base + i * stride + 0);
+            c.b = rd32_32(base + i * stride + 4);
+            c.c = rd32_32(base + i * stride + 8);
+            c.d = rd32_32(base + i * stride + 12);
+            pushCmd(cb, c);
+        }
+        return 0;
+    }
+    case VK64_fn_vkCmdDrawIndexedIndirect: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdDrawIndexedIndirect");
+        Buffer* buf = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdDrawIndexedIndirect");
+        if (!cb || !buf || !buf->mem) return 0;
+        DeviceMemory* dmem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDrawIndexedIndirect");
+        if (!dmem || !dmem->va) return 0;
+        U32 drawCount = (U32)args.a[3], stride = (U32)args.a[4];
+        if (!stride) stride = 20;
+        U32 base = (U32)(dmem->va + buf->memOff + args.a[2]);
+        for (U32 i = 0; i < drawCount; i++) {
+            Cmd c; c.kind = CMD_DRAW_INDEXED;
+            c.a = rd32_32(base + i * stride + 0);
+            c.b = rd32_32(base + i * stride + 4);
+            c.c = rd32_32(base + i * stride + 8);
+            c.diVertexOffset = (int32_t)rd32_32(base + i * stride + 12);
+            c.d = rd32_32(base + i * stride + 16);
+            pushCmd(cb, c);
+        }
+        return 0;
+    }
+    case VK64_fn_vkCmdDrawIndirectCount:
+    case VK64_fn_vkCmdDrawIndirectCountKHR:
+    case VK64_fn_vkCmdDrawIndexedIndirectCount: {
+        bool indexed = (fnId == VK64_fn_vkCmdDrawIndexedIndirectCount);
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdDraw*IndirectCount");
+        Buffer* buf = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdDraw*IndirectCount");
+        Buffer* cbuf = objOf<Buffer>(args.a[3], K_BUFFER, "vkCmdDraw*IndirectCount");
+        if (!cb || !buf || !cbuf || !buf->mem || !cbuf->mem) return 0;
+        DeviceMemory* dmem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDraw*IndirectCount");
+        DeviceMemory* cmem = objOf<DeviceMemory>(cbuf->mem, K_MEMORY, "vkCmdDraw*IndirectCount");
+        if (!dmem || !cmem || !dmem->va || !cmem->va) return 0;
+        U32 drawCount = rd32_32((U32)(cmem->va + cbuf->memOff + args.a[4]));
+        U32 maxDraws = (U32)args.a[5], stride = (U32)args.a[6];
+        if (drawCount > maxDraws) drawCount = maxDraws;
+        if (!stride) stride = indexed ? 20 : 16;
+        U32 base = (U32)(dmem->va + buf->memOff + args.a[2]);
+        for (U32 i = 0; i < drawCount; i++) {
+            Cmd c;
+            if (indexed) {
+                c.kind = CMD_DRAW_INDEXED;
+                c.a = rd32_32(base + i * stride + 0);
+                c.b = rd32_32(base + i * stride + 4);
+                c.c = rd32_32(base + i * stride + 8);
+                c.diVertexOffset = (int32_t)rd32_32(base + i * stride + 12);
+                c.d = rd32_32(base + i * stride + 16);
+            } else {
+                c.kind = CMD_DRAW;
+                c.a = rd32_32(base + i * stride + 0);
+                c.b = rd32_32(base + i * stride + 4);
+                c.c = rd32_32(base + i * stride + 8);
+                c.d = rd32_32(base + i * stride + 12);
+            }
+            pushCmd(cb, c);
+        }
+        return 0;
+    }
+    case VK64_fn_vkCmdExecuteCommands: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdExecuteCommands");
+        if (!cb) return 0;
+        U32 n = (U32)args.a[1];
+        for (U32 i = 0; i < n && args.a[2]; i++) {
+            CmdBuf* secondary = objOf32<CmdBuf>(rd32_32((U32)args.a[2] + i * 4), K_CMDBUF, "vkCmdExecuteCommands");
+            if (!secondary) continue;
+            for (const auto& c : secondary->cmds) pushCmd(cb, c);
+        }
+        return 0;
+    }
+    case VK64_fn_vkCmdDispatch:
+    case VK64_fn_vkCmdDispatchBase:
+    case VK64_fn_vkCmdDispatchIndirect: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdDispatch");
+        if (!cb) return 0;
+        Cmd c; c.kind = CMD_DISPATCH;
+        if (fnId == VK64_fn_vkCmdDispatch) {
+            c.a = args.a[1]; c.b = args.a[2]; c.c = args.a[3];
+        } else if (fnId == VK64_fn_vkCmdDispatchBase) {
+            c.a = args.a[4]; c.b = args.a[5]; c.c = args.a[6];
+        } else {
+            Buffer* buf = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdDispatchIndirect");
+            if (buf && buf->mem) {
+                DeviceMemory* dmem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDispatchIndirect");
+                if (dmem && dmem->va) {
+                    U32 base = (U32)(dmem->va + buf->memOff + args.a[2]);
+                    c.a = rd32_32(base + 0); c.b = rd32_32(base + 4); c.c = rd32_32(base + 8);
+                }
+            }
+        }
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdUpdateBuffer: {
+        Buffer* dst = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdUpdateBuffer");
+        if (!dst || !dst->mem || !args.a[4]) return 0;
+        DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdUpdateBuffer");
+        if (!dmem || !dmem->va) return 0;
+        U64 size = args.a[3];
+        U32 va = (U32)(dmem->va + dst->memOff + args.a[2]);
+        U32 src = (U32)args.a[4];
+        U8 tmp[65536];
+        while (size > 0) {
+            U32 chunk = size > sizeof(tmp) ? sizeof(tmp) : (U32)size;
+            g_mem32->memcpyFromGuest(tmp, src, chunk);
+            g_mem32->memcpyToGuest(va, tmp, chunk);
+            src += chunk; va += chunk; size -= chunk;
+        }
+        dst->dirtyGen = g_bufDirtyTick++;
+        return 0;
+    }
+    case VK64_fn_vkCmdBeginRenderPass2:
+    case VK64_fn_vkCmdBeginRenderPass2KHR:
+    case VK64_fn_vkCmdBeginRendering:
+    case VK64_fn_vkCmdBeginRenderingKHR: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdBeginRenderPass2");
+        if (!cb) return 0;
+        Cmd c; c.kind = CMD_BEGIN_RP;
+        pushCmd(cb, c);
+        return 0;
+    }
+
+    // ================= E. Frame boundary =================
+    case VK64_fn_vkQueueSubmit:
+    case VK64_fn_vkQueueSubmit2:
+    case VK64_fn_vkQueueSubmit2KHR: {
+        Queue* q = objOf32<Queue>(args.a[0], K_QUEUE, "vkQueueSubmit");
+        if (!q) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 nsub = (U32)args.a[1];
+        std::vector<std::pair<CmdBuf*, U64>> frames;
+        for (U32 s = 0; s < nsub && args.a[2]; s++) {
+            // VkSubmitInfo 32-bit: 36 bytes. commandBufferCount at +20, pCommandBuffers at +24.
+            U32 si = (U32)args.a[2] + s * 36;
+            U32 cmdCount = rd32_32(si + 20);
+            U32 pCmd = rd32_32(si + 24);
+            for (U32 i = 0; i < cmdCount && pCmd; i++) {
+                U32 cbId = rd32_32(pCmd + i * 4);
+                CmdBuf* cb = objOf32<CmdBuf>(cbId, K_CMDBUF, "vkQueueSubmit");
+                if (!cb) continue;
+                for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
+                for (const Cmd& k : cb->cmds) if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
+                frames.push_back({cb, cbId});
+            }
+        }
+        bool hasWork = false;
+        for (auto& fr : frames) if (fr.first && !fr.first->cmds.empty()) { hasWork = true; break; }
+        if (!hasWork) {
+            for (auto& kv : g_objs) {
+                Obj* o = kv.second;
+                if (!o || o->kind != K_CMDBUF) continue;
+                CmdBuf* cb = (CmdBuf*)o;
+                if (!cb->cmds.empty()) { frames.push_back({cb, kv.first}); hasWork = true; }
+            }
+        }
+        if (hasWork) {
+            if (vkSchemaV2()) {
+                bool needRb = setupReadbacks(frames);
+                serializeSubmitV2(frames);
+                if (needRb) completeReadbacks();
+            } else serializeSubmit(frames);
+        }
+        if (args.a[3]) {
+            Fence* f = objOf<Fence>(args.a[3], K_FENCE, "vkQueueSubmit");
+            if (f) f->signalled = 1;
+        }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkQueuePresentKHR: {
+        Queue* q = objOf32<Queue>(args.a[0], K_QUEUE, "vkQueuePresentKHR");
+        if (!q || !args.a[1]) return VK_ERROR_INITIALIZATION_FAILED;
+        // VkPresentInfoKHR 32-bit: 32 bytes. swapchainCount at +16,
+        // pSwapchains at +20, pImageIndices at +24, pResults at +28.
+        U32 pi = (U32)args.a[1];
+        U32 scCount = rd32_32(pi + 16);
+        U32 pSc = rd32_32(pi + 20);
+        U32 pIdx = rd32_32(pi + 24);
+        U32 pRes = rd32_32(pi + 28);
+        for (U32 i = 0; i < scCount && pSc; i++) {
+            U64 scId = rd64_32(pSc + i * 8);
+            Swapchain* sc = objOf<Swapchain>(scId, K_SWAPCHAIN, "vkQueuePresentKHR");
+            klog_fmt("vk32: vkQueuePresentKHR swapchain=0x%llx image=%u %ux%u",
+                     (unsigned long long)scId,
+                     pIdx ? rd32_32(pIdx + i * 4) : 0,
+                     sc ? sc->w : 0, sc ? sc->h : 0);
+            if (pRes) wr32_32(pRes + i * 4, VK_SUCCESS);
+        }
+        if (vkSchemaV2()) hopV2ToPage(); else emitFrameNow();
+        return VK_SUCCESS;
+    }
+
+
+    case VK64_fn_vkGetPhysicalDeviceQueueFamilyProperties2: {
+        U32 countAddr = (U32)args.a[1], arrAddr = (U32)args.a[2];
+        const U32 fams = 1;
+        if (!countAddr) return VK_ERROR_INITIALIZATION_FAILED;
+        if (!arrAddr) { wr32_32(countAddr, fams); return VK_SUCCESS; }
+        U32 want = rd32_32(countAddr);
+        U32 c = want < fams ? want : fams;
+        wr32_32(countAddr, c);
+        if (c > 0) {
+            U32 base = arrAddr + 8;
+            wr32_32(base + 0, VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT);
+            wr32_32(base + 4, 1);
+            wr32_32(base + 8, 64);
+            wr32_32(base + 12, 1); wr32_32(base + 16, 1); wr32_32(base + 20, 1);
+        }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetBufferMemoryRequirements2: {
+        if (!args.a[1] || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 infoAddr = (U32)args.a[1], outAddr = (U32)args.a[2];
+        U32 bufHandle = rd32_32(infoAddr + 8);
+        Buffer* b = objOf32<Buffer>(bufHandle, K_BUFFER, "vkGetBufferMemoryRequirements2");
+        U64 bufSize = (b && b->size) ? b->size : 65536;
+        U32 reqOff = outAddr + 8;
+        wr64_32(reqOff + 0, (bufSize + 255) & ~(U64)255);
+        wr64_32(reqOff + 8, 256);
+        wr32_32(reqOff + 16, 0xF);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetImageMemoryRequirements2: {
+        if (!args.a[1] || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 infoAddr = (U32)args.a[1], outAddr = (U32)args.a[2];
+        U32 imgHandle = rd32_32(infoAddr + 8);
+        Image* im = objOf32<Image>(imgHandle, K_IMAGE, "vkGetImageMemoryRequirements2");
+        if (!im) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 px = (U64)im->w * im->h * (im->d ? im->d : 1) * (im->layers ? im->layers : 1) * fmt_bpp(im->format);
+        U32 reqOff = outAddr + 8;
+        wr64_32(reqOff + 0, (px + 255) & ~(U64)255);
+        wr64_32(reqOff + 8, 256);
+        wr32_32(reqOff + 16, 0xF);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateDescriptorSetLayout: {
+        if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        DescSetLayout* l = createObj32<DescSetLayout>(K_SETLAYOUT, id);
+        U32 ciAddr = (U32)args.a[1];
+        U32 nbind = ciAddr ? rd32_32(ciAddr + 12) : 0;
+        l->nbind = nbind > VK64_MAX_BINDINGS ? VK64_MAX_BINDINGS : nbind;
+        wr32_32((U32)args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateDescriptorPool: {
+        if (!objOf32<Device>((U32)args.a[0], K_DEVICE, "vkCreateDescriptorPool") || !args.a[3])
+            return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        createObj32<DescPool>(K_DESCPOOL, id);
+        wr32_32((U32)args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkAllocateDescriptorSets: {
+        if (!args.a[1] || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 infoAddr = (U32)args.a[1], outAddr = (U32)args.a[2];
+        U32 count = rd32_32(infoAddr + 12);
+        for (U32 i = 0; i < count; i++) {
+            U64 id = 0;
+            createObj32<DescSet>(K_SET, id);
+            wr32_32(outAddr + i * 4, id);
+        }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkUpdateDescriptorSets: {
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateDescriptorUpdateTemplate: {
+        if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        createObj32<DescTemplate>(K_TEMPLATE, id);
+        wr32_32((U32)args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkUpdateDescriptorSetWithTemplate: {
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkBindBufferMemory2:
+    case VK64_fn_vkBindBufferMemory2KHR: {
+        if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 infoAddr = (U32)args.a[2];
+        U32 count = (U32)args.a[1];
+        for (U32 i = 0; i < count; i++) {
+            U32 base = infoAddr + i * 24;
+            U32 bufHandle = rd32_32(base + 8);
+            Buffer* b = objOf32<Buffer>(bufHandle, K_BUFFER, "vkBindBufferMemory2");
+            if (!b) return VK_ERROR_INITIALIZATION_FAILED;
+        }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkBindImageMemory2:
+    case VK64_fn_vkBindImageMemory2KHR: {
+        if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 infoAddr = (U32)args.a[2];
+        U32 count = (U32)args.a[1];
+        for (U32 i = 0; i < count; i++) {
+            U32 base = infoAddr + i * 32;
+            U32 imgHandle = rd32_32(base + 8);
+            Image* im = objOf32<Image>(imgHandle, K_IMAGE, "vkBindImageMemory2");
+            if (!im) return VK_ERROR_INITIALIZATION_FAILED;
+        }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateComputePipelines: {
+        if (!args.a[4]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 count = (U32)args.a[2];
+        U32 outAddr = (U32)args.a[4];
+        for (U32 i = 0; i < count; i++) {
+            U64 id = 0;
+            createObj32<Pipeline>(K_PIPELINE, id);
+            wr32_32(outAddr + i * 4, id);
+        }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateBufferView: {
+        if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        createObj32<BufferView>(K_BUFFERVIEW, id);
+        wr32_32((U32)args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetBufferDeviceAddress: {
+        if (!args.a[1]) return 0;
+        U32 infoAddr = (U32)args.a[1];
+        U32 bufHandle = rd32_32(infoAddr + 8);
+        Buffer* b = objOf32<Buffer>(bufHandle, K_BUFFER, "vkGetBufferDeviceAddress");
+        if (!b) return 0;
+        if (!b->devVa) {
+            b->devVa = g_nextDevVa;
+            g_nextDevVa += 0x10000000ULL;
+        }
+        return b->devVa;
+    }
+
+    default:
+        klog_fmt("vk32: unimplemented fn id %u (%s)", fnId, fnName(fnId));
+        return (U64)(int64_t)VK_ERROR_FEATURE_NOT_PRESENT;
+    }
+}
+
 
 #endif // BOXEDWINE_VULKAN64
