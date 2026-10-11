@@ -6035,7 +6035,19 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         const char* name = "Boxedwine64 WebGPU";
         for (int i = 0; i < 256 && name[i]; i++)
             g_mem32->writeb(dst + 20 + i, (U8)name[i]);
-        wr32_32(dst + 292 + 4, 8192);
+        wr32_32(dst + 296 + 4, 8192);
+        // Sample-count limits: DXVK D3D9 DecodeMultiSampleType derives the
+        // backbuffer sampleCount from framebuffer{Color,Depth}SampleCounts;
+        // zero here zeroes sampleCount and fails CheckImageSupport
+        // (Cannot create texture). Matches 64-bit fillProperties (1x|4x).
+        // Offsets are the 32-bit WINDOWS (MinGW i686) VkPhysicalDeviceLimits
+        // layout, verified via i686-w64-mingw32-gcc offsetof (NOT the 64-bit
+        // host layout: the sample-count fields sit 8 bytes earlier on win32).
+        wr32_32(dst + 296 + 360, 0x5); // framebufferColorSampleCounts (empirical)
+        wr32_32(dst + 296 + 364, 0x5); // framebufferDepthSampleCounts (empirical)
+        wr32_32(dst + 296 + 376, 0x5); // framebufferStencilSampleCounts
+        wr32_32(dst + 296 + 388, 0x5); // sampledImageColorSampleCounts
+        wr32_32(dst + 296 + 396, 0x5); // sampledImageDepthSampleCounts
         return 0;
     }
     case VK64_fn_vkGetPhysicalDeviceFeatures: {
@@ -6072,7 +6084,15 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         const char* name = "Boxedwine64 WebGPU";
         for (int i = 0; i < 256 && name[i]; i++)
             g_mem32->writeb(props + 20 + i, (U8)name[i]);
-        wr32_32(props + 292 + 4, 8192);
+        wr32_32(props + 296 + 4, 8192);
+        // 32-bit Windows (MinGW i686) VkPhysicalDeviceLimits offsets, verified
+        // via i686-w64-mingw32-gcc offsetof. NOT the 64-bit host layout.
+        wr32_32(props + 296 + 360, 0x5); // framebufferColorSampleCounts (empirical)
+        wr32_32(props + 296 + 364, 0x5); // framebufferDepthSampleCounts (empirical)
+        wr32_32(props + 296 + 376, 0x5); // framebufferStencilSampleCounts
+        wr32_32(props + 296 + 388, 0x5); // sampledImageColorSampleCounts
+        wr32_32(props + 296 + 396, 0x5); // sampledImageDepthSampleCounts
+
         vk32_walkProperties2(rd32_32(dst + 4));
         return VK_SUCCESS;
     }
@@ -6286,7 +6306,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkResetFences: {
         U32 n = (U32)args.a[1];
         for (U32 i = 0; i < n && args.a[2]; i++) {
-            Fence* f = objOf<Fence>(rd64_32((U32)args.a[2] + i * 8), K_FENCE, "vkResetFences");
+            Fence* f = objOf32<Fence>(rd64_32((U32)args.a[2] + i * 8), K_FENCE, "vkResetFences");
             if (f) f->signalled = 0;
         }
         return VK_SUCCESS;
@@ -6294,13 +6314,13 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkWaitForFences: {
         U32 n = (U32)args.a[1];
         for (U32 i = 0; i < n && args.a[2]; i++) {
-            Fence* f = objOf<Fence>(rd64_32((U32)args.a[2] + i * 8), K_FENCE, "vkWaitForFences");
+            Fence* f = objOf32<Fence>(rd64_32((U32)args.a[2] + i * 8), K_FENCE, "vkWaitForFences");
             if (f) f->signalled = 1;
         }
         return VK_SUCCESS;
     }
     case VK64_fn_vkGetFenceStatus: {
-        Fence* f = objOf<Fence>(args.a[1], K_FENCE, "vkGetFenceStatus");
+        Fence* f = objOf32<Fence>(args.a[1], K_FENCE, "vkGetFenceStatus");
         return (f && f->signalled) ? VK_SUCCESS : VK_NOT_READY;
     }
     case VK64_fn_vkResetCommandBuffer: {
@@ -6417,7 +6437,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCreateImageView: {
         vk32abi::VkImageViewCreateInfo ci = {};
         if (!readStruct32((U32)args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
-        Image* src = objOf<Image>(ci.image, K_IMAGE, "vkCreateImageView");
+        Image* src = objOf32<Image>(ci.image, K_IMAGE, "vkCreateImageView");
         if (!src) return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
         ImageView* v = createObj32<ImageView>(K_IMAGEVIEW, id);
@@ -6565,23 +6585,23 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         return VK_SUCCESS;
     }
     case VK64_fn_vkBindBufferMemory: {
-        Buffer* b = objOf<Buffer>(args.a[1], K_BUFFER, "vkBindBufferMemory");
-        DeviceMemory* m = objOf<DeviceMemory>(args.a[2], K_MEMORY, "vkBindBufferMemory");
+        Buffer* b = objOf32<Buffer>(args.a[1], K_BUFFER, "vkBindBufferMemory");
+        DeviceMemory* m = objOf32<DeviceMemory>(args.a[2], K_MEMORY, "vkBindBufferMemory");
         if (!b || !m) return VK_ERROR_INITIALIZATION_FAILED;
         b->mem = args.a[2];
         b->memOff = args.a[3];
         return VK_SUCCESS;
     }
     case VK64_fn_vkBindImageMemory: {
-        Image* im = objOf<Image>(args.a[1], K_IMAGE, "vkBindImageMemory");
-        DeviceMemory* m = objOf<DeviceMemory>(args.a[2], K_MEMORY, "vkBindImageMemory");
+        Image* im = objOf32<Image>(args.a[1], K_IMAGE, "vkBindImageMemory");
+        DeviceMemory* m = objOf32<DeviceMemory>(args.a[2], K_MEMORY, "vkBindImageMemory");
         if (!im || !m) return VK_ERROR_INITIALIZATION_FAILED;
         im->mem = args.a[2];
         im->memOff = args.a[3];
         return VK_SUCCESS;
     }
     case VK64_fn_vkMapMemory: {
-        DeviceMemory* m = objOf<DeviceMemory>(args.a[1], K_MEMORY, "vkMapMemory");
+        DeviceMemory* m = objOf32<DeviceMemory>(args.a[1], K_MEMORY, "vkMapMemory");
         if (!m || !args.a[5]) return VK_ERROR_MEMORY_MAP_FAILED;
         wr32_32((U32)args.a[5], (U32)(m->va + args.a[2]));
         return VK_SUCCESS;
@@ -6597,7 +6617,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         dropObj(args.a[0] & 0xFFFFFFFFULL);
         return 0;
     case VK64_fn_vkFreeMemory: {
-        DeviceMemory* m = objOf<DeviceMemory>(args.a[1], K_MEMORY, "vkFreeMemory");
+        DeviceMemory* m = objOf32<DeviceMemory>(args.a[1], K_MEMORY, "vkFreeMemory");
         if (m) {
             if (m->va) g_mem32->unmap((U32)m->va, (U32)m->size);
             dropObj(args.a[1] & 0xFFFFFFFFULL);
@@ -6773,9 +6793,9 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     }
     // ---- 23 game-breaking functions ----
     case VK64_fn_vkCmdFillBuffer: {
-        Buffer* dst = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdFillBuffer");
+        Buffer* dst = objOf32<Buffer>(args.a[1], K_BUFFER, "vkCmdFillBuffer");
         if (!dst || !dst->mem) return 0;
-        DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdFillBuffer");
+        DeviceMemory* dmem = objOf32<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdFillBuffer");
         if (!dmem || !dmem->va) return 0;
         U64 offset = dst->memOff + args.a[2];
         U64 size = args.a[3];
@@ -6791,9 +6811,9 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         return 0;
     }
     case VK64_fn_vkCmdClearColorImage: {
-        Image* im = objOf<Image>(args.a[1], K_IMAGE, "vkCmdClearColorImage");
+        Image* im = objOf32<Image>(args.a[1], K_IMAGE, "vkCmdClearColorImage");
         if (!im || !im->mem) return 0;
-        DeviceMemory* dmem = objOf<DeviceMemory>(im->mem, K_MEMORY, "vkCmdClearColorImage");
+        DeviceMemory* dmem = objOf32<DeviceMemory>(im->mem, K_MEMORY, "vkCmdClearColorImage");
         if (!dmem || !dmem->va) return 0;
         vk32abi::VkClearColorValue col = {};
         readStruct32((U32)args.a[3], col);
@@ -6814,18 +6834,18 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         for (auto it = cb->cmds.rbegin(); it != cb->cmds.rend(); ++it) {
             if (it->kind == CMD_BEGIN_RP) { fbId = it->b; break; }
         }
-        Framebuffer* fb = objOf<Framebuffer>(fbId, K_FRAMEBUFFER, "vkCmdClearAttachments");
+        Framebuffer* fb = objOf32<Framebuffer>(fbId, K_FRAMEBUFFER, "vkCmdClearAttachments");
         if (!fb) return 0;
         U32 natt = (U32)args.a[1];
         for (U32 i = 0; i < natt && args.a[2]; i++) {
             vk32abi::VkClearAttachment att = {};
             readStruct32((U32)args.a[2] + i * (U32)sizeof(att), att);
             if (att.colorAttachment >= fb->natt) continue;
-            ImageView* view = objOf<ImageView>(fb->views[att.colorAttachment], K_IMAGEVIEW, "vkCmdClearAttachments");
+            ImageView* view = objOf32<ImageView>(fb->views[att.colorAttachment], K_IMAGEVIEW, "vkCmdClearAttachments");
             if (!view) continue;
-            Image* im = objOf<Image>(view->image, K_IMAGE, "vkCmdClearAttachments");
+            Image* im = objOf32<Image>(view->image, K_IMAGE, "vkCmdClearAttachments");
             if (!im || !im->mem) continue;
-            DeviceMemory* dmem = objOf<DeviceMemory>(im->mem, K_MEMORY, "vkCmdClearAttachments");
+            DeviceMemory* dmem = objOf32<DeviceMemory>(im->mem, K_MEMORY, "vkCmdClearAttachments");
             if (!dmem || !dmem->va) continue;
             U32 pxBytes = (U32)(im->pixBytes ? im->pixBytes : 4);
             U32 pixel; memcpy(&pixel, att.clearValue.color.float32, 4);
@@ -6837,11 +6857,11 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         return 0;
     }
     case VK64_fn_vkCmdCopyBuffer: {
-        Buffer* src = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdCopyBuffer");
-        Buffer* dst = objOf<Buffer>(args.a[2], K_BUFFER, "vkCmdCopyBuffer");
+        Buffer* src = objOf32<Buffer>(args.a[1], K_BUFFER, "vkCmdCopyBuffer");
+        Buffer* dst = objOf32<Buffer>(args.a[2], K_BUFFER, "vkCmdCopyBuffer");
         if (!src || !dst || !src->mem || !dst->mem) return 0;
-        DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdCopyBuffer");
-        DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyBuffer");
+        DeviceMemory* smem = objOf32<DeviceMemory>(src->mem, K_MEMORY, "vkCmdCopyBuffer");
+        DeviceMemory* dmem = objOf32<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyBuffer");
         if (!smem || !dmem || !smem->va || !dmem->va) return 0;
         U32 nreg = (U32)args.a[3];
         U8 tmp[65536];
@@ -6869,11 +6889,11 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         U64 dst = rd64_32(info + 16);
         U32 nreg = rd32_32(info + 24);
         U32 pReg = rd32_32(info + 28);
-        Buffer* srcB = objOf<Buffer>(src, K_BUFFER, "vkCmdCopyBuffer2");
-        Buffer* dstB = objOf<Buffer>(dst, K_BUFFER, "vkCmdCopyBuffer2");
+        Buffer* srcB = objOf32<Buffer>(src, K_BUFFER, "vkCmdCopyBuffer2");
+        Buffer* dstB = objOf32<Buffer>(dst, K_BUFFER, "vkCmdCopyBuffer2");
         if (!srcB || !dstB || !srcB->mem || !dstB->mem) return 0;
-        DeviceMemory* smem = objOf<DeviceMemory>(srcB->mem, K_MEMORY, "vkCmdCopyBuffer2");
-        DeviceMemory* dmem = objOf<DeviceMemory>(dstB->mem, K_MEMORY, "vkCmdCopyBuffer2");
+        DeviceMemory* smem = objOf32<DeviceMemory>(srcB->mem, K_MEMORY, "vkCmdCopyBuffer2");
+        DeviceMemory* dmem = objOf32<DeviceMemory>(dstB->mem, K_MEMORY, "vkCmdCopyBuffer2");
         if (!smem || !dmem || !smem->va || !dmem->va) return 0;
         U8 tmp[65536];
         for (U32 i = 0; i < nreg && pReg; i++) {
@@ -6896,19 +6916,19 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdCopyImage:
     case VK64_fn_vkCmdCopyImage2:
     case VK64_fn_vkCmdCopyImage2KHR: {
-        Image* src = objOf<Image>(args.a[1], K_IMAGE, "vkCmdCopyImage");
+        Image* src = objOf32<Image>(args.a[1], K_IMAGE, "vkCmdCopyImage");
         Image* dst = nullptr;
         U32 nreg = 0, pReg = 0;
         if (fnId == VK64_fn_vkCmdCopyImage) {
-            dst = objOf<Image>(args.a[3], K_IMAGE, "vkCmdCopyImage");
+            dst = objOf32<Image>(args.a[3], K_IMAGE, "vkCmdCopyImage");
             nreg = (U32)args.a[5]; pReg = (U32)args.a[6];
         } else {
-            dst = objOf<Image>(args.a[2], K_IMAGE, "vkCmdCopyImage2");
+            dst = objOf32<Image>(args.a[2], K_IMAGE, "vkCmdCopyImage2");
             nreg = (U32)args.a[3]; pReg = (U32)args.a[4];
         }
         if (!src || !dst || !src->mem || !dst->mem) return 0;
-        DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdCopyImage");
-        DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyImage");
+        DeviceMemory* smem = objOf32<DeviceMemory>(src->mem, K_MEMORY, "vkCmdCopyImage");
+        DeviceMemory* dmem = objOf32<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyImage");
         if (!smem || !dmem || !smem->va || !dmem->va) return 0;
         U32 pxBytes = (U32)(src->pixBytes ? src->pixBytes : 4);
         U8 tmp[65536];
@@ -6936,11 +6956,11 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdCopyBufferToImage:
     case VK64_fn_vkCmdCopyBufferToImage2:
     case VK64_fn_vkCmdCopyBufferToImage2KHR: {
-        Buffer* src = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdCopyBufferToImage");
-        Image* dst = objOf<Image>(args.a[2], K_IMAGE, "vkCmdCopyBufferToImage");
+        Buffer* src = objOf32<Buffer>(args.a[1], K_BUFFER, "vkCmdCopyBufferToImage");
+        Image* dst = objOf32<Image>(args.a[2], K_IMAGE, "vkCmdCopyBufferToImage");
         if (!src || !dst || !src->mem || !dst->mem) return 0;
-        DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdCopyBufferToImage");
-        DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyBufferToImage");
+        DeviceMemory* smem = objOf32<DeviceMemory>(src->mem, K_MEMORY, "vkCmdCopyBufferToImage");
+        DeviceMemory* dmem = objOf32<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyBufferToImage");
         if (!smem || !dmem || !smem->va || !dmem->va) return 0;
         U32 nreg = 0, pReg = 0;
         if (fnId == VK64_fn_vkCmdCopyBufferToImage) {
@@ -6986,19 +7006,19 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdBlitImage:
     case VK64_fn_vkCmdBlitImage2:
     case VK64_fn_vkCmdBlitImage2KHR: {
-        Image* src = objOf<Image>(args.a[1], K_IMAGE, "vkCmdBlitImage");
+        Image* src = objOf32<Image>(args.a[1], K_IMAGE, "vkCmdBlitImage");
         Image* dst = nullptr;
         U32 nreg = 0, pReg = 0;
         if (fnId == VK64_fn_vkCmdBlitImage) {
-            dst = objOf<Image>(args.a[3], K_IMAGE, "vkCmdBlitImage");
+            dst = objOf32<Image>(args.a[3], K_IMAGE, "vkCmdBlitImage");
             nreg = (U32)args.a[5]; pReg = (U32)args.a[6];
         } else {
-            dst = objOf<Image>(args.a[2], K_IMAGE, "vkCmdBlitImage2");
+            dst = objOf32<Image>(args.a[2], K_IMAGE, "vkCmdBlitImage2");
             nreg = (U32)args.a[3]; pReg = (U32)args.a[4];
         }
         if (!src || !dst || !src->mem || !dst->mem) return 0;
-        DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdBlitImage");
-        DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdBlitImage");
+        DeviceMemory* smem = objOf32<DeviceMemory>(src->mem, K_MEMORY, "vkCmdBlitImage");
+        DeviceMemory* dmem = objOf32<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdBlitImage");
         if (!smem || !dmem || !smem->va || !dmem->va) return 0;
         U32 pxBytes = (U32)(src->pixBytes ? src->pixBytes : 4);
         U32 srcRowPitch = src->w * pxBytes, dstRowPitch = dst->w * pxBytes;
@@ -7030,11 +7050,11 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     }
     case VK64_fn_vkCmdResolveImage:
     case VK64_fn_vkCmdResolveImageKHR: {
-        Image* src = objOf<Image>(args.a[1], K_IMAGE, "vkCmdResolveImage");
-        Image* dst = objOf<Image>(args.a[3], K_IMAGE, "vkCmdResolveImage");
+        Image* src = objOf32<Image>(args.a[1], K_IMAGE, "vkCmdResolveImage");
+        Image* dst = objOf32<Image>(args.a[3], K_IMAGE, "vkCmdResolveImage");
         if (!src || !dst || !src->mem || !dst->mem) return 0;
-        DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdResolveImage");
-        DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdResolveImage");
+        DeviceMemory* smem = objOf32<DeviceMemory>(src->mem, K_MEMORY, "vkCmdResolveImage");
+        DeviceMemory* dmem = objOf32<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdResolveImage");
         if (!smem || !dmem || !smem->va || !dmem->va) return 0;
         U32 pxBytes = (U32)(src->pixBytes ? src->pixBytes : 4);
         U64 total = (U64)src->w * src->h * pxBytes;
@@ -7050,9 +7070,9 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     }
     case VK64_fn_vkCmdDrawIndirect: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdDrawIndirect");
-        Buffer* buf = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdDrawIndirect");
+        Buffer* buf = objOf32<Buffer>(args.a[1], K_BUFFER, "vkCmdDrawIndirect");
         if (!cb || !buf || !buf->mem) return 0;
-        DeviceMemory* dmem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDrawIndirect");
+        DeviceMemory* dmem = objOf32<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDrawIndirect");
         if (!dmem || !dmem->va) return 0;
         U32 drawCount = (U32)args.a[3], stride = (U32)args.a[4];
         if (!stride) stride = 16;
@@ -7069,9 +7089,9 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     }
     case VK64_fn_vkCmdDrawIndexedIndirect: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdDrawIndexedIndirect");
-        Buffer* buf = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdDrawIndexedIndirect");
+        Buffer* buf = objOf32<Buffer>(args.a[1], K_BUFFER, "vkCmdDrawIndexedIndirect");
         if (!cb || !buf || !buf->mem) return 0;
-        DeviceMemory* dmem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDrawIndexedIndirect");
+        DeviceMemory* dmem = objOf32<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDrawIndexedIndirect");
         if (!dmem || !dmem->va) return 0;
         U32 drawCount = (U32)args.a[3], stride = (U32)args.a[4];
         if (!stride) stride = 20;
@@ -7092,11 +7112,11 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdDrawIndexedIndirectCount: {
         bool indexed = (fnId == VK64_fn_vkCmdDrawIndexedIndirectCount);
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdDraw*IndirectCount");
-        Buffer* buf = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdDraw*IndirectCount");
-        Buffer* cbuf = objOf<Buffer>(args.a[3], K_BUFFER, "vkCmdDraw*IndirectCount");
+        Buffer* buf = objOf32<Buffer>(args.a[1], K_BUFFER, "vkCmdDraw*IndirectCount");
+        Buffer* cbuf = objOf32<Buffer>(args.a[3], K_BUFFER, "vkCmdDraw*IndirectCount");
         if (!cb || !buf || !cbuf || !buf->mem || !cbuf->mem) return 0;
-        DeviceMemory* dmem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDraw*IndirectCount");
-        DeviceMemory* cmem = objOf<DeviceMemory>(cbuf->mem, K_MEMORY, "vkCmdDraw*IndirectCount");
+        DeviceMemory* dmem = objOf32<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDraw*IndirectCount");
+        DeviceMemory* cmem = objOf32<DeviceMemory>(cbuf->mem, K_MEMORY, "vkCmdDraw*IndirectCount");
         if (!dmem || !cmem || !dmem->va || !cmem->va) return 0;
         U32 drawCount = rd32_32((U32)(cmem->va + cbuf->memOff + args.a[4]));
         U32 maxDraws = (U32)args.a[5], stride = (U32)args.a[6];
@@ -7145,9 +7165,9 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         } else if (fnId == VK64_fn_vkCmdDispatchBase) {
             c.a = args.a[4]; c.b = args.a[5]; c.c = args.a[6];
         } else {
-            Buffer* buf = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdDispatchIndirect");
+            Buffer* buf = objOf32<Buffer>(args.a[1], K_BUFFER, "vkCmdDispatchIndirect");
             if (buf && buf->mem) {
-                DeviceMemory* dmem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDispatchIndirect");
+                DeviceMemory* dmem = objOf32<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDispatchIndirect");
                 if (dmem && dmem->va) {
                     U32 base = (U32)(dmem->va + buf->memOff + args.a[2]);
                     c.a = rd32_32(base + 0); c.b = rd32_32(base + 4); c.c = rd32_32(base + 8);
@@ -7158,9 +7178,9 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         return 0;
     }
     case VK64_fn_vkCmdUpdateBuffer: {
-        Buffer* dst = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdUpdateBuffer");
+        Buffer* dst = objOf32<Buffer>(args.a[1], K_BUFFER, "vkCmdUpdateBuffer");
         if (!dst || !dst->mem || !args.a[4]) return 0;
-        DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdUpdateBuffer");
+        DeviceMemory* dmem = objOf32<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdUpdateBuffer");
         if (!dmem || !dmem->va) return 0;
         U64 size = args.a[3];
         U32 va = (U32)(dmem->va + dst->memOff + args.a[2]);
@@ -7226,7 +7246,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             } else serializeSubmit(frames);
         }
         if (args.a[3]) {
-            Fence* f = objOf<Fence>(args.a[3], K_FENCE, "vkQueueSubmit");
+            Fence* f = objOf32<Fence>(args.a[3], K_FENCE, "vkQueueSubmit");
             if (f) f->signalled = 1;
         }
         return VK_SUCCESS;
@@ -7243,7 +7263,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         U32 pRes = rd32_32(pi + 28);
         for (U32 i = 0; i < scCount && pSc; i++) {
             U64 scId = rd64_32(pSc + i * 8);
-            Swapchain* sc = objOf<Swapchain>(scId, K_SWAPCHAIN, "vkQueuePresentKHR");
+            Swapchain* sc = objOf32<Swapchain>(scId, K_SWAPCHAIN, "vkQueuePresentKHR");
             klog_fmt("vk32: vkQueuePresentKHR swapchain=0x%llx image=%u %ux%u",
                      (unsigned long long)scId,
                      pIdx ? rd32_32(pIdx + i * 4) : 0,

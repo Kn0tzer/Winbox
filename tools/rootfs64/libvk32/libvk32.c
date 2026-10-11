@@ -12,7 +12,7 @@
  *  GNU General Public License for more details.
  */
 
-// Guest libvulkan.so.1 for the 64-bit Boxedwine Vulkan path — the Vulkan
+// Guest libvulkan.so.1 for the 32-bit Boxedwine Vulkan path — the Vulkan
 // analogue of tools/rootfs64/libgl64/libgl64.c.
 //
 // THE WHOLE POINT: there is no Vulkan loader and no ICD .so in the guest. This
@@ -225,6 +225,9 @@ enum {
     // vulkan-1.dll as our PE shim. Same append-only position as
     // vk64bridge_abi.h.
     VK64_fn_vkGetPhysicalDeviceWin32PresentationSupportKHR,
+    VK64_fn_vkGetPhysicalDeviceProperties2KHR = 838,
+    VK64_fn_vkGetPhysicalDeviceFeatures2KHR = 839,
+    VK64_fn_vkGetPhysicalDeviceMemoryProperties2KHR = 840,
     VK64_fn__MAX
 };
 
@@ -268,37 +271,42 @@ static void* vk64_benign(const char* name) {
 // Handles and VkDeviceSize are 64-bit on the guest (x86-64), so unsigned long /
 // unsigned long long are exact. No Vulkan header is included (and none is needed:
 // every wrapper is a pass-through of scalars and pointers).
-typedef unsigned long       VkHandle;      /* VkInstance, VkDevice, VkBuffer, ... */
+/* 32-bit Vulkan ABI: dispatchable handles are 32-bit pointers,
+   non-dispatchable handles are 64-bit integers. */
+typedef unsigned int        VkDispatchableHandle;  /* VkInstance, VkDevice, VkQueue, VkCommandBuffer */
+typedef unsigned long long  VkNonDispatchableHandle; /* VkBuffer, VkImage, VkDeviceMemory, ... */
 typedef unsigned long long  VkDeviceSize;
 typedef unsigned int        VkFlags;
 typedef int                 VkResult;
 typedef unsigned int        VkBool32;
 
-typedef VkHandle VkInstance;
-typedef VkHandle VkPhysicalDevice;
-typedef VkHandle VkDevice;
-typedef VkHandle VkQueue;
-typedef VkHandle VkCommandPool;
-typedef VkHandle VkCommandBuffer;
-typedef VkHandle VkDeviceMemory;
-typedef VkHandle VkBuffer;
-typedef VkHandle VkImage;
-typedef VkHandle VkImageView;
-typedef VkHandle VkBufferView;
-typedef VkHandle VkSampler;
-typedef VkHandle VkShaderModule;
-typedef VkHandle VkDescriptorSetLayout;
-typedef VkHandle VkDescriptorPool;
-typedef VkHandle VkDescriptorSet;
-typedef VkHandle VkPipelineLayout;
-typedef VkHandle VkPipeline;
-typedef VkHandle VkRenderPass;
-typedef VkHandle VkFramebuffer;
-typedef VkHandle VkPipelineCache;
-typedef VkHandle VkFence;
-typedef VkHandle VkSemaphore;
-typedef VkHandle VkSurfaceKHR;
-typedef VkHandle VkSwapchainKHR;
+/* Dispatchable (32-bit) */
+typedef VkDispatchableHandle VkInstance;
+typedef VkDispatchableHandle VkPhysicalDevice;
+typedef VkDispatchableHandle VkDevice;
+typedef VkDispatchableHandle VkQueue;
+typedef VkDispatchableHandle VkCommandPool;
+typedef VkDispatchableHandle VkCommandBuffer;
+/* Non-dispatchable (64-bit) */
+typedef VkNonDispatchableHandle VkDeviceMemory;
+typedef VkNonDispatchableHandle VkBuffer;
+typedef VkNonDispatchableHandle VkImage;
+typedef VkNonDispatchableHandle VkImageView;
+typedef VkNonDispatchableHandle VkBufferView;
+typedef VkNonDispatchableHandle VkSampler;
+typedef VkNonDispatchableHandle VkShaderModule;
+typedef VkNonDispatchableHandle VkDescriptorSetLayout;
+typedef VkNonDispatchableHandle VkDescriptorPool;
+typedef VkNonDispatchableHandle VkDescriptorSet;
+typedef VkNonDispatchableHandle VkPipelineLayout;
+typedef VkNonDispatchableHandle VkPipeline;
+typedef VkNonDispatchableHandle VkRenderPass;
+typedef VkNonDispatchableHandle VkFramebuffer;
+typedef VkNonDispatchableHandle VkPipelineCache;
+typedef VkNonDispatchableHandle VkFence;
+typedef VkNonDispatchableHandle VkSemaphore;
+typedef VkNonDispatchableHandle VkSurfaceKHR;
+typedef VkNonDispatchableHandle VkSwapchainKHR;
 
 #define VK_NULL_HANDLE ((VkHandle)0)
 #define P(x) ((uint64_t)(uintptr_t)(x))
@@ -341,6 +349,18 @@ API void vkGetPhysicalDeviceFeatures2(VkPhysicalDevice pd, void* p) {
 API void vkGetPhysicalDeviceMemoryProperties(VkPhysicalDevice pd, void* p) {
     VK64Args a = {{0}}; a.a[0] = pd; a.a[1] = P(p);
     (void)vk64_trap(VK64_fn_vkGetPhysicalDeviceMemoryProperties, &a);
+}
+API void vkGetPhysicalDeviceProperties2KHR(VkPhysicalDevice pd, void* p) {
+    VK64Args a = {{0}}; a.a[0] = pd; a.a[1] = P(p);
+    (void)vk64_trap(VK64_fn_vkGetPhysicalDeviceProperties2KHR, &a);
+}
+API void vkGetPhysicalDeviceFeatures2KHR(VkPhysicalDevice pd, void* p) {
+    VK64Args a = {{0}}; a.a[0] = pd; a.a[1] = P(p);
+    (void)vk64_trap(VK64_fn_vkGetPhysicalDeviceFeatures2KHR, &a);
+}
+API void vkGetPhysicalDeviceMemoryProperties2KHR(VkPhysicalDevice pd, void* p) {
+    VK64Args a = {{0}}; a.a[0] = pd; a.a[1] = P(p);
+    (void)vk64_trap(VK64_fn_vkGetPhysicalDeviceMemoryProperties2KHR, &a);
 }
 API void vkGetPhysicalDeviceMemoryProperties2(VkPhysicalDevice pd, void* p) {
     VK64Args a = {{0}}; a.a[0] = pd; a.a[1] = P(p);
@@ -999,6 +1019,9 @@ static const struct procEntry g_procs[] = {
     E(vkGetPhysicalDeviceFeatures2, VK64_fn_vkGetPhysicalDeviceFeatures2),
     E(vkGetPhysicalDeviceMemoryProperties, VK64_fn_vkGetPhysicalDeviceMemoryProperties),
     E(vkGetPhysicalDeviceMemoryProperties2, VK64_fn_vkGetPhysicalDeviceMemoryProperties2),
+    E(vkGetPhysicalDeviceProperties2KHR, VK64_fn_vkGetPhysicalDeviceProperties2KHR),
+    E(vkGetPhysicalDeviceFeatures2KHR, VK64_fn_vkGetPhysicalDeviceFeatures2KHR),
+    E(vkGetPhysicalDeviceMemoryProperties2KHR, VK64_fn_vkGetPhysicalDeviceMemoryProperties2KHR),
     E(vkGetPhysicalDeviceQueueFamilyProperties, VK64_fn_vkGetPhysicalDeviceQueueFamilyProperties),
     E(vkGetPhysicalDeviceQueueFamilyProperties2, VK64_fn_vkGetPhysicalDeviceQueueFamilyProperties2),
     E(vkGetPhysicalDeviceFormatProperties, VK64_fn_vkGetPhysicalDeviceFormatProperties),
@@ -1178,6 +1201,11 @@ API PFN_vkVoidFunction vkGetInstanceProcAddr(VkInstance inst, const char* name) 
     if (strcmp(name, "vk_icdGetInstanceProcAddr") == 0) return (PFN_vkVoidFunction)vkGetInstanceProcAddr;
     if (strcmp(name, "vk_icdGetPhysicalDeviceProcAddr") == 0) return (PFN_vkVoidFunction)vkGetInstanceProcAddr;
     if (strcmp(name, "vk_icdNegotiateLoaderICDInterfaceVersion") == 0) return (PFN_vkVoidFunction)vk64_benign;
+    // Return NULL (not benign) for MapMemory2/UnmapMemory2 so Wine does not attempt the VK_EXT_map_memory_placed path.
+    if (strcmp(name, "vkMapMemory2") == 0) return 0;
+    if (strcmp(name, "vkMapMemory2KHR") == 0) return 0;
+    if (strcmp(name, "vkUnmapMemory2") == 0) return 0;
+    if (strcmp(name, "vkUnmapMemory2KHR") == 0) return 0;
     // Unknown name: report it to the host (hit=0) so the log is the worklist,
     // then hand back the benign stub so the app keeps a callable pointer.
     {
