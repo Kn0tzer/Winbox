@@ -1579,7 +1579,7 @@ const U32 V2_PRODUCER_CHUNK_RING = 8;     // drop oldest COMPLETE frame past thi
 // resources (e.g. an 84-byte vertex buffer) with huge heap-sized VkBuffers
 // (16MB); the draw only ever touches the prefix, so emit at most 1MB.
 // The dedup hash covers the emitted prefix.
-const size_t V2_MAX_BUF_SEND = 1u << 20; // 1MB
+const size_t V2_MAX_BUF_SEND = 8u << 20; // 8MB
 // Full-resend period (frames) for buffer content dedup: heals any
 // bridge/page desync caused by a dropped or rejected chunk (the page has no
 // upstream resend channel).
@@ -1827,6 +1827,34 @@ static std::map<std::tuple<U64,U64,U64>, BufHashEntry> g_bufferContentHash;
 // vkCmdCopyBuffer/vkCmdUpdateBuffer/vkCmdFillBuffer. Lets emitBufferData skip
 // the expensive readGuestRange+hash for static buffers.
 
+// Page buffers contain the bytes starting at a Vulkan binding offset. Give
+// each slice an opaque replay ID so different offsets of one buffer coexist.
+static std::map<std::pair<U64,U64>, U64> g_bufferSliceIds;
+static U64 bufferSliceId(U64 buffer, U64 offset) {
+    if (!offset) return buffer;
+    static U64 next = 0xf000000000000000ULL;
+    auto [it, inserted] = g_bufferSliceIds.emplace(std::make_pair(buffer, offset), 0);
+    if (inserted) it->second = ++next;
+    return it->second;
+}
+// Byte size of one vertex of a VkFormat the v2 emitter may see. Only the
+// formats DXVK/D3D9 and the probes produce are listed; an unknown format falls
+// back to 16 (conservative: keeps the clamp above the real value).
+U32 v2VertexFormatBytes(U32 fmt) {
+    switch (fmt) {
+        case VK_FORMAT_R32_SFLOAT: case VK_FORMAT_R32_UINT: case VK_FORMAT_R32_SINT: return 4;
+        case VK_FORMAT_R32G32_SFLOAT: case VK_FORMAT_R32G32_UINT: case VK_FORMAT_R32G32_SINT:
+        case VK_FORMAT_R16G16B16A16_SFLOAT: return 8;
+        case VK_FORMAT_R32G32B32_SFLOAT: case VK_FORMAT_R32G32B32_UINT: return 12;
+        case VK_FORMAT_R32G32B32A32_SFLOAT: case VK_FORMAT_R32G32B32A32_UINT: return 16;
+        case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_B8G8R8A8_UNORM:
+        case VK_FORMAT_R8G8B8A8_SRGB: case VK_FORMAT_B8G8R8A8_SRGB: return 4;
+        case VK_FORMAT_R8_UNORM: return 1;
+        case VK_FORMAT_R8G8_UNORM: return 2;
+        default: return 16;
+    }
+}
+
 // Submit-time v2 frame reconstruction: the same walk as serializeSubmit, but
 // the frame is a stream of binary records instead of one JSON string, and it
 // covers the DXVK-shaped calls v1 never modelled (descriptor sets with arrays,
@@ -1964,7 +1992,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 p.u64(sm->hash); p.u32((U32)sm->code.size()); p.bytes(sm->code);
             });
         };
-        auto emitBufferDataInner = [&](U64 bufId, U64 memOff, U64 len) {
+        auto emitBufferDataInner = [&](U64 bufId, U64 memOff, U64 len, U64 replayId) {
             if (!bufId || !len) return;
             if (!bufDone.insert(std::make_tuple(bufId, memOff, len)).second) return;
             Buffer* b = objOf<Buffer>(bufId, K_BUFFER, "vkQueueSubmit");
@@ -1992,7 +2020,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             if (!forceFull && it != g_bufferContentHash.end() && it->second.dirtyGen == b->dirtyGen &&
                 b->dirtyGen != 0 && bmem && !bmem->wasMapped) {
                 emit(V2_BUFFER_DATA, [&](ChunkWriter& p) {
-                    p.u64(bufId); p.u64(memOff); p.u64(it->second.hash);
+                    p.u64(replayId); p.u64(memOff); p.u64(it->second.hash);
                     p.u32(0);
                 });
                 return;
@@ -2011,17 +2039,17 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             }
             g_bufferContentHash[key] = {hash, b->dirtyGen};
             emit(V2_BUFFER_DATA, [&](ChunkWriter& p) {
-                p.u64(bufId); p.u64(memOff); p.u64(hash);
+                p.u64(replayId); p.u64(memOff); p.u64(hash);
                 p.u32(sendBytes ? (U32)bytes.size() : 0);
                 if (sendBytes) p.bytes(bytes);
             });
             if (vkProfEnabled()) { vkprofBufHashed += bytes.size(); if (sendBytes) vkprofBufSent += bytes.size(); }
         };
         // BW64_VKPROF wrapper: wall time per emitBufferData call (additive).
-        auto emitBufferData = [&](U64 bufId, U64 memOff, U64 len) {
+        auto emitBufferData = [&](U64 bufId, U64 memOff, U64 len, U64 replayId = 0) {
             double t0 = vkProfNow();
             ++vkprofBufCalls;
-            emitBufferDataInner(bufId, memOff, len);
+            emitBufferDataInner(bufId, memOff, len, replayId ? replayId : bufId);
             vkprofBufT += vkProfNow() - t0;
         };
         auto emitSampler = [&](U64 id) {
@@ -2286,6 +2314,71 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             }
         }
         v2DrawIdx = 0;
+        // Determine the byte ranges the original draws touch before emitting
+        // bound DXVK staging buffers, which can be much larger than live data.
+        U64 v2MaxVbUse[VK64_MAX_VERT_BINDINGS] = {0};
+        U64 v2MaxIbUse = 0;
+        {
+            U64 curPipe = 0;
+            U64 curIb = 0, curIbOff = 0;
+            U32 curIbType = 0;
+            U32 curStride[VK64_MAX_VERT_BINDINGS] = {0};
+            bool curHasStride[VK64_MAX_VERT_BINDINGS] = {false};
+            for (const Cmd& k2 : st->cmds) {
+                if (k2.kind == CMD_BIND_PIPE) {
+                    curPipe = k2.a;
+                } else if (k2.kind == CMD_BIND_IB) {
+                    curIb = k2.a; curIbOff = k2.b; curIbType = (U32)k2.c;
+                } else if (k2.kind == CMD_BIND_VB) {
+                    for (U32 i = 0; i < k2.vbCount && i < VK64_MAX_VERT_BINDINGS; i++) {
+                        curStride[i] = k2.vbStrides[i];
+                        curHasStride[i] = k2.vbHasStride[i];
+                    }
+                } else if (k2.kind == CMD_DRAW_INDEXED || k2.kind == CMD_DRAW) {
+                    U64 maxVertex = 0;
+                    if (k2.kind == CMD_DRAW) {
+                        maxVertex = (U64)k2.c + (k2.a ? k2.a - 1 : 0);
+                    } else if (k2.a) {
+                        // Highest vertex id referenced by the index range.
+                        U32 idxSize = 2; // read from the bound index buffer below
+                        Buffer* ib = objOf<Buffer>(curIb, K_BUFFER, "v2use");
+                        if (ib && curIbType == 1) idxSize = 4;
+                        if (ib && ib->mem) {
+                            std::vector<U8> idx = readGuestRange(ib->mem,
+                                ib->memOff + curIbOff + (U64)k2.c * idxSize,
+                                (U64)k2.a * idxSize);
+                            if (idx.size() >= (size_t)k2.a * idxSize) {
+                                for (U32 i = 0; i < k2.a; i++) {
+                                    U64 ix = (idxSize == 4)
+                                        ? (U64)(idx[i*4] | ((U64)idx[i*4+1] << 8) |
+                                                ((U64)idx[i*4+2] << 16) | ((U64)idx[i*4+3] << 24))
+                                        : (U64)(idx[i*2] | ((U64)idx[i*2+1] << 8));
+                                    if (ix > maxVertex) maxVertex = ix;
+                                }
+                                v2MaxIbUse = std::max(v2MaxIbUse, ((U64)k2.c + k2.a) * idxSize);
+                            }
+                        }
+                        if (k2.a && maxVertex == 0) maxVertex = k2.a - 1;
+                        // vertexOffset shifts every index; keep it unsigned-safe.
+                        if (k2.diVertexOffset > 0) maxVertex += (U64)k2.diVertexOffset;
+                    }
+                    Pipeline* pipe = curPipe ? objOf<Pipeline>(curPipe, K_PIPELINE, "v2use") : nullptr;
+                    if (pipe) {
+                        for (U32 i = 0; i < pipe->nva && i < VK64_MAX_VERT_ATTRIBS; i++) {
+                            U32 slot = pipe->vaBinding[i];
+                            if (slot >= VK64_MAX_VERT_BINDINGS) continue;
+                            U32 stride = pipe->dynamicVertexStride && curHasStride[slot] && curStride[slot]
+                                ? curStride[slot] : pipe->vbStride[slot];
+                            if (!stride) continue;
+                            U64 end = (maxVertex + 1) * stride +
+                                (U64)pipe->vaOffset[i] + (U64)v2VertexFormatBytes(pipe->vaFormat[i]);
+                            if (end > v2MaxVbUse[slot]) v2MaxVbUse[slot] = end;
+                        }
+                    }
+
+                }
+            }
+        }
         for (const Cmd& k : st->cmds) {
             switch (k.kind) {
                 case CMD_BEGIN_RP: emitRpBegin(k); break;
@@ -2336,14 +2429,22 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     emit(V2_VERTEX_BIND, [&](ChunkWriter& p) {
                         p.u8(k.vbCount); p.u8(0); p.u16(0);
                         for (U32 i = 0; i < k.vbCount; i++) {
-                            p.u32(i); p.u64(k.vbBuffers[i]); p.u64(k.vbOffsets[i]);
+                            p.u32(i); p.u64(bufferSliceId(k.vbBuffers[i], k.vbOffsets[i])); p.u64(0);
                         }
                     });
                     memcpy(vertexStrides, k.vbStrides, sizeof(vertexStrides));
                     memcpy(vertexHasStride, k.vbHasStride, sizeof(vertexHasStride));
                     for (U32 i = 0; i < k.vbCount; i++) {
                         Buffer* vb = objOf<Buffer>(k.vbBuffers[i], K_BUFFER, "vkQueueSubmit");
-                        if (vb && vb->size) emitBufferData(k.vbBuffers[i], vb->memOff, vb->size);
+                        if (!vb || k.vbOffsets[i] >= vb->size) continue;
+                        // Clamp to what the frame's draws touch when the pre-pass
+                        // resolved it: DXVK binds whole 16MB staging heaps whose
+                        // live vertex data is a small prefix.
+                        U64 bound = vb->size - k.vbOffsets[i];
+                        if (i < VK64_MAX_VERT_BINDINGS && v2MaxVbUse[i] > 0 && v2MaxVbUse[i] < bound)
+                            bound = v2MaxVbUse[i];
+                        emitBufferData(k.vbBuffers[i], vb->memOff + k.vbOffsets[i], bound,
+                            bufferSliceId(k.vbBuffers[i], k.vbOffsets[i]));
                     }
                     auto* pipe = activePipe ? objOf<Pipeline>(activePipe, K_PIPELINE, "vkQueueSubmit") : nullptr;
                     if (pipe && pipe->dynamicVertexStride) emitPipeline(activePipe);
@@ -2351,10 +2452,14 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 }
                 case CMD_BIND_IB: {
                     emit(V2_INDEX_BIND, [&](ChunkWriter& p) {
-                        p.u64(st->ib); p.u64(st->ibOff); p.u32(st->ibType);
+                        p.u64(bufferSliceId(k.a, k.b)); p.u64(0); p.u32(k.c);
                     });
-                    Buffer* ib = objOf<Buffer>(st->ib, K_BUFFER, "vkQueueSubmit");
-                    if (ib && ib->size) emitBufferData(st->ib, ib->memOff, ib->size);
+                    Buffer* ib = objOf<Buffer>(k.a, K_BUFFER, "vkQueueSubmit");
+                    if (ib && k.b < ib->size) {
+                        U64 bound = ib->size - k.b;
+                        if (v2MaxIbUse > 0 && v2MaxIbUse < bound) bound = v2MaxIbUse;
+                        emitBufferData(k.a, ib->memOff + k.b, bound, bufferSliceId(k.a, k.b));
+                    }
                     break;
                 }
                 case CMD_DRAW:
