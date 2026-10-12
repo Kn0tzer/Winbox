@@ -235,6 +235,7 @@ enum {
     VK64_fn_vkGetPhysicalDeviceProperties2KHR = 838,
     VK64_fn_vkGetPhysicalDeviceFeatures2KHR = 839,
     VK64_fn_vkGetPhysicalDeviceMemoryProperties2KHR = 840,
+    VK64_fn_vkGetQueryPoolResults = 852, // size_t is pointer-sized in the guest ABI
     VK64_fn__MAX
 };
 
@@ -301,6 +302,7 @@ typedef VkNonDispatchableHandle VkImage;
 typedef VkNonDispatchableHandle VkImageView;
 typedef VkNonDispatchableHandle VkBufferView;
 typedef VkNonDispatchableHandle VkSampler;
+typedef VkNonDispatchableHandle VkQueryPool;
 typedef VkNonDispatchableHandle VkShaderModule;
 typedef VkNonDispatchableHandle VkDescriptorSetLayout;
 typedef VkNonDispatchableHandle VkDescriptorPool;
@@ -453,6 +455,12 @@ API VkResult vkWaitForFences(VkDevice dev, uint32_t n, const VkFence* fences, Vk
 API VkResult vkGetFenceStatus(VkDevice dev, VkFence fence) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = fence;
     return (VkResult)vk64_trap(VK64_fn_vkGetFenceStatus, &a);
+}
+API VkResult vkGetQueryPoolResults(VkDevice dev, VkQueryPool q, uint32_t first, uint32_t count,
+                                  unsigned long dataSize, void* data, uint64_t stride, VkFlags flags) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = q; a.a[2] = first; a.a[3] = count;
+    a.a[4] = dataSize; a.a[5] = P(data); a.a[6] = stride; a.a[7] = flags;
+    return (VkResult)vk64_trap(VK64_fn_vkGetQueryPoolResults, &a);
 }
 API VkResult vkDeviceWaitIdle(VkDevice dev) {
     VK64Args a = {{0}}; a.a[0] = dev;
@@ -1094,6 +1102,7 @@ static const struct procEntry g_procs[] = {
     E(vkResetFences, VK64_fn_vkResetFences),
     E(vkWaitForFences, VK64_fn_vkWaitForFences),
     E(vkGetFenceStatus, VK64_fn_vkGetFenceStatus),
+    E(vkGetQueryPoolResults, VK64_fn_vkGetQueryPoolResults),
     E(vkDeviceWaitIdle, VK64_fn_vkDeviceWaitIdle),
     E(vkQueueWaitIdle, VK64_fn_vkQueueWaitIdle),
     E(vkResetCommandBuffer, VK64_fn_vkResetCommandBuffer),
@@ -1331,7 +1340,6 @@ TAIL(vkGetPhysicalDeviceSurfaceCapabilities2EXT)
 TAIL(vkGetPhysicalDeviceSurfaceFormats2EXT)
 TAIL(vkGetPhysicalDeviceSurfacePresentModes2EXT)
 TAIL(vkGetPipelineCacheData)
-TAIL(vkGetQueryPoolResults)
 TAIL(vkGetQueryPoolResults64)
 TAIL(vkGetQueryPoolResults64KHR)
 TAIL(vkGetRenderingAreaGranularity)
