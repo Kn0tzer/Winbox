@@ -50,7 +50,11 @@ def patch_prefix(prefix):
                 if info.filename in registries:
                     data = configure_registry(data)
                 new.writestr(info, data)
-            new.writestr('etc/fonts/fonts.conf', config, compress_type=zipfile.ZIP_DEFLATED)
+            info = zipfile.ZipInfo('etc/fonts/fonts.conf')
+            info.create_system = 3
+            info.external_attr = 0o100644 << 16
+            info.compress_type = zipfile.ZIP_DEFLATED
+            new.writestr(info, config)
         temp.replace(prefix)
     finally:
         temp.unlink(missing_ok=True)
