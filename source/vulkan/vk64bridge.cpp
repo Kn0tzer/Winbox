@@ -2037,7 +2037,9 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         auto emitImageDataInner = [&](U64 viewId) {
             ImageView* view = objOf<ImageView>(viewId, K_IMAGEVIEW, "vkQueueSubmit");
             if (!view || !view->image) return;
-            if (!imageDone.insert(view->image).second) return;
+            // Descriptor bindings name views. Deduplicating by image drops
+            // the view->image link for every other view of the same image.
+            if (!imageDone.insert(viewId).second) return;
             Image* tex = objOf<Image>(view->image, K_IMAGE, "vkQueueSubmit");
             if (!tex) return;
             std::vector<U8> bytes;
@@ -2056,7 +2058,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             }
             emit(V2_IMAGE_DATA, [&](ChunkWriter& p) {
                 // viewId first: the page's DESC_SET bindings name image VIEWS,
-                // while this record is deduped per image, so the record carries
+                // while pixel content is deduped per image, so the record carries
                 // the view->image link the page needs.
                 p.u64(viewId); p.u64(view->image); p.u32(tex->w); p.u32(tex->h); p.u32(tex->format);
                 p.u64(hash);
