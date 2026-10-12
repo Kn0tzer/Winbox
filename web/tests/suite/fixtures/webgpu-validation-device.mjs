@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 export function createValidationDevice() {
   const saved = new Map(['navigator', 'GPUTextureUsage', 'GPUBufferUsage', 'GPUMapMode', 'GPUShaderStage'].map(k => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
   const pipelines = [], bound = [], writes = [], textures = [];
-  const texture = d => ({ ...d, width: d.size[0], height: d.size[1], createView(options = {}) { return { texture: this, dimension: options.dimension || '2d' }; }, destroy() {} });
+  const texture = d => ({ ...d, width: d.size[0], height: d.size[1], createView(options = {}) { return { texture: this, dimension: options.dimension || '2d' }; }, destroy() { this.destroyed=true; } });
   const device = {
     addEventListener() {}, lost: new Promise(() => {}), pushErrorScope() {}, async popErrorScope() { return null; },
     createTexture(d) { const t=texture(d);textures.push(t);return t; },

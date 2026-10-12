@@ -1605,14 +1605,16 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
 
   const blankTex = (cube = false) => {
     const key = cube ? '\0blank-cube' : '\0blank';
-    let t = F.texCache.get(key);
-    if (!t) {
+    // Persistent bind groups retain this view between frames. Its texture
+    // must live as long as the renderer, like ordinary cached image textures.
+    let entry = persistTexCache.get(key);
+    if (!entry) {
       const layers = cube ? 6 : 1;
-      t = device.createTexture({ size: [1, 1, layers], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+      const t = device.createTexture({ size: [1, 1, layers], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
       device.queue.writeTexture({ texture: t }, new Uint8Array(4 * layers), { bytesPerRow: 4, rowsPerImage: 1 }, [1, 1, layers]);
-      F.texCache.set(key, t); F.live.push(t);
+      entry = { tex: t }; persistTexCache.set(key, entry);
     }
-    return t;
+    return entry.tex;
   };
 
   /** @returns {GPUBindGroupLayoutEntry | null} */
