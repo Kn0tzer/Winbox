@@ -18,7 +18,7 @@ test('descriptor aliases retain every image view even when views share image pix
 #include <map>
 #include <vector>
 using U8=uint8_t;using U32=uint32_t;using U64=uint64_t;
-struct ImageView{U64 image=9;};struct Image{U64 mem=1,memOff=0,pixBytes=4;U32 w=1,h=1,format=37;};
+struct ImageView{U64 image=9;};struct Image{U64 mem=1,memOff=0,pixBytes=4;U32 w=1,h=1,d=1,layers=1,mips=1,format=37;};
 ImageView views[2];Image image;enum{K_IMAGEVIEW,K_IMAGE,V2_IMAGE_DATA};
 template<class T>T* objOf(U64 id,int kind,const char*){if(kind==K_IMAGEVIEW)return (T*)(id==1?&views[0]:id==2?&views[1]:nullptr);return id==9?(T*)&image:nullptr;}
 std::vector<U8> readGuestRange(U64,U64,U64){return {1,2,3,4};}

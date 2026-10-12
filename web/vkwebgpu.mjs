@@ -1135,13 +1135,17 @@ export function decodeV2Frame(records, counters = {}) {
         const w = r.u32(), h = r.u32(), format = r.u32(), hash = v2Hex64(r.u64()), pixLen = r.u32();
         if (w > MAX_DIMENSION || h > MAX_DIMENSION || pixLen > V2_MAX_RECORD_BYTES)
           throw new Error('vk64: v2 IMAGE_DATA out of range');
-        const pixels = pixLen ? r.bytes(pixLen) : null; r.done('IMAGE_DATA');
+        const pixels = pixLen ? r.bytes(pixLen) : null;
+        const d = r.left ? r.u32() : 1, layers = r.left ? r.u32() : 1, mips = r.left ? r.u32() : 1;
+        if (d < 1 || d > MAX_DIMENSION || layers < 1 || layers > MAX_DIMENSION || mips < 1 || mips > 32)
+          throw new Error('vk64: v2 IMAGE_DATA depth/layers/mips out of range');
+        r.done('IMAGE_DATA');
         frame.views.set(viewId, imageId);
         // Pixel-less record (pixLen 0): wasm-side dedup, content unchanged
         // since the last full record. The view->image link is still recorded;
         // the texture resolves from the persistent cache via the content hash.
         if (!frame.images.has(imageId))
-          frame.images.set(imageId, { w, h, format, hash, pixels: pixLen ? pixels.slice() : null });
+          frame.images.set(imageId, { w, h, d, layers, mips, format, hash, pixels: pixLen ? pixels.slice() : null });
         break;
       }
       case V2_REC.SAMPLER: {
@@ -1554,26 +1558,28 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   // without re-hashing pixel bytes on the page. Pass counters=null to skip
   // unknown-format accounting (used by the bind-group fingerprint, which must
   // not double-count).
-  function textureKey(imgHex, img, counters, cube = false) {
+  function textureKey(imgHex, img, counters, cube = false, dimension = '2d') {
     const w = Math.max(1, img.w), h = Math.max(1, img.h);
     const fmt = v2TextureFormat(img.format, counters === undefined ? stats : counters);
     const hash = img.hash || (img.pixels && img.pixels.length ? fnv1a(img.pixels) : 'empty');
-    return { ck: imgHex + ':' + w + 'x' + h + ':' + fmt + ':' + hash + (cube ? ':cube' : ''), w, h, fmt };
+    const d = dimension === '3d' ? Math.max(1, img.d || 1) : 1;
+    return { ck: imgHex + ':' + w + 'x' + h + ':' + fmt + ':' + hash + (cube ? ':cube' : '') + (dimension !== '2d' ? ':' + dimension + ':' + d : ''), w, h, d, fmt };
   }
 
-  function gpuTextureFor(imgHex, img, cube = false) {
+  function gpuTextureFor(imgHex, img, cube = false, dimension = '2d') {
     // Persistent cache: reuse GPUTexture when content is unchanged.
-    const { ck, w, h, fmt } = textureKey(imgHex, img, undefined, cube);
+    const { ck, w, h, d, fmt } = textureKey(imgHex, img, undefined, cube, dimension);
     let entry = persistTexCache.get(ck);
     if (entry) { persistStats.texHits++; return entry.tex; }
     if (!img.pixels || !img.pixels.length) {
       // Deduped record for a texture the page never uploaded (wasm only
       // dedups after a full send, so this should not happen). Safe fallback.
-      return blankTex(cube);
+      return blankTex(cube, dimension);
     }
     persistStats.texMiss++;
+    const slices = cube ? 6 : d;
     const t = device.createTexture({
-      size: [w, h, cube ? 6 : 1], format: fmt,
+      size: [w, h, slices], format: fmt, dimension,
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
     if (img.pixels && img.pixels.length) {
@@ -1584,7 +1590,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       const rows = compressed ? Math.ceil(h / 4) : h;
       const want = rowBytes * rows;
       const pixels = img.format === 91 ? rgba16UnormToHalf(img.pixels) : img.pixels;
-      let src = pixels.length >= want ? pixels.subarray(0, want) : pixels;
+      let src = pixels.length >= want * slices ? pixels.subarray(0, want * slices) : pixels;
       if (cube) {
         // The bridge stores each face's complete mip chain contiguously.
         // WebGPU's base-level upload needs only the first mip from each face.
@@ -1594,7 +1600,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
           for (let face = 0; face < 6; face++)
             src.set(pixels.subarray(face * faceStride, face * faceStride + want), face * want);
       }
-      device.queue.writeTexture({ texture: t }, src, { bytesPerRow: rowBytes, rowsPerImage: rows }, [w, h, cube ? 6 : 1]);
+      device.queue.writeTexture({ texture: t }, src, { bytesPerRow: rowBytes, rowsPerImage: rows }, [w, h, slices]);
     }
     persistTexCache.set(ck, { tex: t, w, h, format: fmt });
     // Also populate frame-local cache for within-frame dedup
@@ -1641,14 +1647,14 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     return sm;
   }
 
-  const blankTex = (cube = false) => {
-    const key = cube ? '\0blank-cube' : '\0blank';
+  const blankTex = (cube = false, dimension = '2d') => {
+    const key = cube ? '\0blank-cube' : dimension !== '2d' ? '\0blank-' + dimension : '\0blank';
     // Persistent bind groups retain this view between frames. Its texture
     // must live as long as the renderer, like ordinary cached image textures.
     let entry = persistTexCache.get(key);
     if (!entry) {
       const layers = cube ? 6 : 1;
-      const t = device.createTexture({ size: [1, 1, layers], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+      const t = device.createTexture({ size: [1, 1, layers], dimension, format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
       device.queue.writeTexture({ texture: t }, new Uint8Array(4 * layers), { bytesPerRow: 4, rowsPerImage: 1 }, [1, 1, layers]);
       entry = { tex: t }; persistTexCache.set(key, entry);
     }
@@ -1662,7 +1668,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     if (t.startsWith('texture_') && !t.startsWith('texture_storage')) {
       const elem = /texture_\w+<(\w+)>/.exec(t)?.[1] || 'f32';
       const sampleType = elem === 'i32' ? 'sint' : elem === 'u32' ? 'uint' : elem === 'f32' ? 'float' : 'float';
-      const viewDimension = t.startsWith('texture_cube') ? 'cube' : t.includes('_array') ? '2d-array' : t.startsWith('texture_3d') ? '3d' : '2d';
+      const viewDimension = t.startsWith('texture_cube') ? 'cube' : t.includes('_array') ? '2d-array' : t.startsWith('texture_3d') ? '3d' : t.startsWith('texture_1d') ? '1d' : '2d';
       return { binding: decl.binding, visibility: vis, texture: { sampleType: t.startsWith('texture_depth') ? 'depth' : sampleType, viewDimension, multisampled: false } };
     }
     if (t === 'sampler' || t === 'sampler_comparison')
@@ -1902,12 +1908,13 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
           // earlier in the frame, sample the texture actually rendered into —
           // its IMAGE_DATA record carries the view->image link but no pixels.
           const cube = t.startsWith('texture_cube');
-          const aliasTex = !cube && v2ImageKnown(imgHex)
+          const dimension = t.startsWith('texture_1d') ? '1d' : t.startsWith('texture_3d') ? '3d' : '2d';
+          const aliasTex = !cube && dimension === '2d' && v2ImageKnown(imgHex)
             ? (targets.get(v2ImageTargetKey(imgHex, false)) || targets.get(v2ImageTargetKey(imgHex, true)))
             : null;
           if (aliasTex) stats.aliased++;
           const img = !aliasTex && imgHex && F.images.get(imgHex);
-          views.push(aliasTex ? aliasTex.createView() : (img ? gpuTextureFor(imgHex, img, cube) : blankTex(cube)).createView({ dimension: cube ? 'cube' : '2d' }));
+          views.push(aliasTex ? aliasTex.createView() : (img ? gpuTextureFor(imgHex, img, cube, dimension) : blankTex(cube, dimension)).createView({ dimension: cube ? 'cube' : dimension }));
         }
         entries.push({ binding: d.binding, resource: d.arrayCount > 1 ? views : views[0] });
       } else if (t === 'sampler' || t === 'sampler_comparison') {

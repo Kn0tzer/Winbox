@@ -2085,6 +2085,9 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 p.u64(hash);
                 p.u32(sendPixels ? (U32)bytes.size() : 0);
                 if (sendPixels) p.bytes(bytes);
+                p.u32(std::max(1U, tex->d));
+                p.u32(std::max(1U, tex->layers));
+                p.u32(std::max(1U, tex->mips));
             });
             if (vkProfEnabled()) { vkprofImgHashed += bytes.size(); if (sendPixels) vkprofImgSent += bytes.size(); }
         };
