@@ -20,3 +20,19 @@ bool readWine32SavedStack(Memory& memory, uint32_t fsBase, Wine32SavedStack& res
     result = { eip, esp, memory.readd(frame + 0x34), base };
     return true;
 }
+
+// Follow validated frame pointers instead of mistaking arbitrary stack words
+// (including ASCII text) for return addresses. Corrupt/cyclic chains stop.
+template <class Memory, class Visitor>
+uint32_t walkWine32SavedFrames(Memory& memory, const Wine32SavedStack& saved, Visitor visit) {
+    uint32_t fp = saved.ebp, count = 0;
+    while (count < 32 && saved.stackBase >= 8 && fp >= saved.esp &&
+           fp <= saved.stackBase - 8 && !(fp & 3) && memory.canRead(fp, 8)) {
+        const uint32_t previous = memory.readd(fp), address = memory.readd(fp + 4);
+        if (!address || !memory.canRead(address, 1)) break;
+        visit(fp, address); ++count;
+        if (previous <= fp) break;
+        fp = previous;
+    }
+    return count;
+}

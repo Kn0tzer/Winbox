@@ -3240,6 +3240,11 @@ void KProcess::printStack() {
                 klog_fmt("WINE32 CALLER pid=%u tid=%u eip=0x%x esp=0x%x ebp=0x%x %s+0x%x",
                     this->id, thread->id, saved.eip, saved.esp, saved.ebp,
                     caller.c_str(), this->getModuleEip(saved.eip));
+                walkWine32SavedFrames(*cpu->memory, saved, [&](U32 fp, U32 address) {
+                    BString module = this->getModuleName(address);
+                    klog_fmt("WINE32 FRAME pid=%u tid=%u fp=0x%x addr=0x%x %s+0x%x",
+                        this->id, thread->id, fp, address, module.c_str(), this->getModuleEip(address));
+                });
                 const U32 bytes = std::min<U32>(16384, saved.stackBase - saved.esp);
                 U32 emitted = 0;
                 for (U32 off = 0; off + 4 <= bytes && emitted < 32; off += 4) {

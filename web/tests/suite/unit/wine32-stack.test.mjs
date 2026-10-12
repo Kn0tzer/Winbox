@@ -24,6 +24,10 @@ int main(){
  m.put(0x418,0x400);m.put(0x404,0x4000);m.put(0x408,0x2800);m.put(0x5f8,0x2000);
  m.put(0x2008,0x1234);m.put(0x200c,0x3000);m.put(0x2034,0x3200);
  assert(readWine32SavedStack(m,0x400,s));assert(s.eip==0x1234 && s.esp==0x3000 && s.ebp==0x3200 && s.stackBase==0x4000);
+ m.put(0x3200,0x3240);m.put(0x3204,0x5678);m.put(0x3240,0);m.put(0x3244,0x9abc);
+ uint32_t visited=0;assert(walkWine32SavedFrames(m,s,[&](uint32_t,uint32_t){visited++;})==2);assert(visited==2);
+ m.put(0x3200,0x3200);assert(walkWine32SavedFrames(m,s,[](uint32_t,uint32_t){})==1);
+ s.ebp=0xfffffff0;assert(walkWine32SavedFrames(m,s,[](uint32_t,uint32_t){})==0);s.ebp=0x3200;
  assert(!readWine32SavedStack(m,0,s));assert(!readWine32SavedStack(m,0xfffffff0,s));
  m.put(0x418,0);assert(!readWine32SavedStack(m,0x400,s));m.put(0x418,0x400);
  m.put(0x5f8,0);assert(!readWine32SavedStack(m,0x400,s));m.put(0x5f8,0xfffffff0);assert(!readWine32SavedStack(m,0x400,s));m.put(0x5f8,0x2000);
