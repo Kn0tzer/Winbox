@@ -859,7 +859,7 @@ export class V2FrameQueue {
 // ---------------------------------------------------------------------------
 const V2_TEX_FORMAT = {
   37: 'rgba8unorm', 38: 'rgba8snorm', 43: 'rgba8unorm-srgb', 44: 'bgra8unorm', 50: 'bgra8unorm-srgb',
-  97: 'rgba16float',
+  91: 'rgba16float', 97: 'rgba16float',
   9: 'r8unorm', 16: 'rg8unorm', 41: 'rgba8uint', 64: 'rgb10a2unorm', 122: 'rg11b10ufloat',
   100: 'r32float', 109: 'rgba32float',
   131: 'bc1-rgba-unorm', 132: 'bc1-rgba-unorm-srgb',
@@ -870,6 +870,26 @@ const V2_TEX_FORMAT = {
   143: 'bc6h-rgb-ufloat', 144: 'bc6h-rgb-float', 145: 'bc7-rgba-unorm', 146: 'bc7-rgba-unorm-srgb',
   124: 'depth16unorm', 126: 'depth32float', 129: 'depth24plus-stencil8', 130: 'depth32float-stencil8',
 };
+// WebGPU has no core normalized RGBA16 texture format. Preserve its range
+// in a filterable RGBA16 float texture instead of interpreting bytes as RGBA8.
+export function rgba16UnormToHalf(bytes) {
+  const out = new Uint8Array(bytes.length);
+  const src = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const dst = new DataView(out.buffer);
+  for (let offset = 0; offset + 1 < bytes.length; offset += 2) {
+    const value = src.getUint16(offset, true) / 65535;
+    let bits = 0;
+    if (value > 0 && value < 2 ** -14) bits = Math.round(value * 2 ** 24);
+    else if (value > 0) {
+      let exponent = Math.floor(Math.log2(value));
+      let fraction = Math.round(value / 2 ** exponent * 1024);
+      if (fraction === 2048) { exponent++; fraction = 1024; }
+      bits = ((exponent + 15) << 10) | (fraction - 1024);
+    }
+    dst.setUint16(offset, bits, true);
+  }
+  return out;
+}
 export function v2TextureFormat(vkFormat, counters) {
   const f = V2_TEX_FORMAT[vkFormat];
   if (!f && counters) counters.unknownFormats = (counters.unknownFormats || 0) + 1;
@@ -1525,15 +1545,16 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       const rowBytes = compressed ? Math.ceil(w / 4) * blockBytes : w * bpp;
       const rows = compressed ? Math.ceil(h / 4) : h;
       const want = rowBytes * rows;
-      let src = img.pixels.length >= want ? img.pixels.subarray(0, want) : img.pixels;
+      const pixels = img.format === 91 ? rgba16UnormToHalf(img.pixels) : img.pixels;
+      let src = pixels.length >= want ? pixels.subarray(0, want) : pixels;
       if (cube) {
         // The bridge stores each face's complete mip chain contiguously.
         // WebGPU's base-level upload needs only the first mip from each face.
         src = new Uint8Array(want * 6);
-        const faceStride = img.pixels.length / 6;
+        const faceStride = pixels.length / 6;
         if (Number.isInteger(faceStride) && faceStride >= want)
           for (let face = 0; face < 6; face++)
-            src.set(img.pixels.subarray(face * faceStride, face * faceStride + want), face * want);
+            src.set(pixels.subarray(face * faceStride, face * faceStride + want), face * want);
       }
       device.queue.writeTexture({ texture: t }, src, { bytesPerRow: rowBytes, rowsPerImage: rows }, [w, h, cube ? 6 : 1]);
     }
