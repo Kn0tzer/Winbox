@@ -225,6 +225,13 @@ enum {
     // vulkan-1.dll as our PE shim. Same append-only position as
     // vk64bridge_abi.h.
     VK64_fn_vkGetPhysicalDeviceWin32PresentationSupportKHR,
+    // Transfer IDs shared with vk64bridge_abi.h. DXVK uses the Vulkan 1.3
+    // copy commands even when the older names also resolve.
+    VK64_fn_vkCmdCopyBuffer = 812,
+    VK64_fn_vkCmdCopyBuffer2 = 813,
+    VK64_fn_vkCmdCopyBuffer2KHR = 814,
+    VK64_fn_vkCmdCopyBufferToImage2 = 821,
+    VK64_fn_vkCmdCopyBufferToImage2KHR = 822,
     VK64_fn_vkGetPhysicalDeviceProperties2KHR = 838,
     VK64_fn_vkGetPhysicalDeviceFeatures2KHR = 839,
     VK64_fn_vkGetPhysicalDeviceMemoryProperties2KHR = 840,
@@ -966,6 +973,31 @@ API void vkCmdCopyBufferToImage(VkCommandBuffer cb, VkBuffer src, VkImage dst, u
     (void)vk64_trap(VK64_fn_vkCmdCopyBufferToImage, &a);
 }
 
+// DXVK's staging uploads use copy-commands2. These must dispatch to the
+// bridge: a callable benign stub leaves the destination textures all zero.
+API void vkCmdCopyBuffer(VkCommandBuffer cb, VkBuffer src, VkBuffer dst,
+                         uint32_t nRegions, const void* regions) {
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = src; a.a[2] = dst; a.a[3] = nRegions; a.a[4] = P(regions);
+    (void)vk64_trap(VK64_fn_vkCmdCopyBuffer, &a);
+}
+API void vkCmdCopyBuffer2(VkCommandBuffer cb, const void* info) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = P(info);
+    (void)vk64_trap(VK64_fn_vkCmdCopyBuffer2, &a);
+}
+API void vkCmdCopyBuffer2KHR(VkCommandBuffer cb, const void* info) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = P(info);
+    (void)vk64_trap(VK64_fn_vkCmdCopyBuffer2KHR, &a);
+}
+API void vkCmdCopyBufferToImage2(VkCommandBuffer cb, const void* info) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = P(info);
+    (void)vk64_trap(VK64_fn_vkCmdCopyBufferToImage2, &a);
+}
+API void vkCmdCopyBufferToImage2KHR(VkCommandBuffer cb, const void* info) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = P(info);
+    (void)vk64_trap(VK64_fn_vkCmdCopyBufferToImage2KHR, &a);
+}
+
 // ===========================================================================
 // F. Frame boundary (2 of the 85)
 // ===========================================================================
@@ -1156,6 +1188,11 @@ static const struct procEntry g_procs[] = {
     E(vkCmdUpdateBuffer, VK64_fn_vkCmdUpdateBuffer),
     E(vkCmdPipelineBarrier, VK64_fn_vkCmdPipelineBarrier),
     E(vkCmdCopyBufferToImage, VK64_fn_vkCmdCopyBufferToImage),
+    E(vkCmdCopyBuffer, VK64_fn_vkCmdCopyBuffer),
+    E(vkCmdCopyBuffer2, VK64_fn_vkCmdCopyBuffer2),
+    E(vkCmdCopyBuffer2KHR, VK64_fn_vkCmdCopyBuffer2KHR),
+    E(vkCmdCopyBufferToImage2, VK64_fn_vkCmdCopyBufferToImage2),
+    E(vkCmdCopyBufferToImage2KHR, VK64_fn_vkCmdCopyBufferToImage2KHR),
     // --- frame boundary ---
     E(vkQueueSubmit, VK64_fn_vkQueueSubmit),
     E(vkQueueSubmit2, VK64_fn_vkQueueSubmit2),
@@ -1326,9 +1363,6 @@ TAIL(vkCmdDrawIndexedIndirectCount)
 TAIL(vkCmdDispatch)
 TAIL(vkCmdDispatchBase)
 TAIL(vkCmdDispatchIndirect)
-TAIL(vkCmdCopyBuffer)
-TAIL(vkCmdCopyBuffer2)
-TAIL(vkCmdCopyBuffer2KHR)
 TAIL(vkCmdCopyImage)
 TAIL(vkCmdCopyImage2)
 TAIL(vkCmdCopyImage2KHR)
@@ -1336,8 +1370,6 @@ TAIL(vkCmdBlitImage)
 TAIL(vkCmdBlitImage2)
 TAIL(vkCmdBlitImage2KHR)
 TAIL(vkCmdCopyImageToBuffer)
-TAIL(vkCmdCopyBufferToImage2)
-TAIL(vkCmdCopyBufferToImage2KHR)
 TAIL(vkCmdFillBuffer)
 TAIL(vkCmdClearColorImage)
 TAIL(vkCmdClearAttachments)
