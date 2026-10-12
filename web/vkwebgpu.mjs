@@ -2193,16 +2193,21 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
               if (!bytes && !preHash) continue;
               let vkey = vb.buf, vbytes = bytes;
               const walk = (st.pipeRec.vbWalk || []).find(w => w.binding === vb.binding);
-              if (walk && walk.attrs44.length) {
-                vkey = vb.buf + '|swz44:' + st.pipeRec.key;
-                vbytes = swizzleBgraVb(bytes, walk.stride, walk.attrs44);
-              }
+              const swizzled = walk && walk.attrs44.length;
+              if (swizzled) vkey += '|swz44:' + st.pipeRec.key;
               const scaled = walk?.scaled.length > 0;
-              if (scaled) {
-                vkey += '|scaled:' + st.pipeRec.key + ':' + vb.offset;
-                if (vbytes) vbytes = repackScaledVb(vbytes.subarray(vb.offset), walk.stride, walk.outputStride, walk.scaled);
+              if (scaled) vkey += '|scaled:' + st.pipeRec.key + ':' + vb.offset;
+              const usage = GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST;
+              // Converted buffers already carry the source content hash and
+              // vertex layout in their cache key. Check before converting:
+              // the same static mesh is bound by many draws and frames.
+              let gpu = preHash ? persistBufCache.get(bufferKey(vkey, null, usage, 0, preHash)) : null;
+              if (gpu) persistStats.bufHits++;
+              else {
+                if (swizzled) vbytes = swizzleBgraVb(bytes, walk.stride, walk.attrs44);
+                if (scaled && vbytes) vbytes = repackScaledVb(vbytes.subarray(vb.offset), walk.stride, walk.outputStride, walk.scaled);
+                gpu = gpuBufferFor(vkey, vbytes, usage, preHash);
               }
-              const gpu = gpuBufferFor(vkey, vbytes, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST, preHash);
               if (!gpu) continue;
               passEnc.setVertexBuffer(slot, gpu, scaled ? 0 : Math.min(vb.offset, gpu.size));
               vbSet.add(slot);
