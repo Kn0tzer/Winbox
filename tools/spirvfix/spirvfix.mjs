@@ -800,8 +800,22 @@ function lowerTailDemotes(mod, log) {
     if (seen.has(id)) return false;
     seen.add(id);
     const tail = blocks.get(id);
-    if (!tail || tail.length !== 1) return false;
-    return tail[0].op === 253 || (tail[0].op === 249 && pureReturn(tail[0].words[0], seen));
+    if (!tail) return false;
+    if (tail.length === 1)
+      return tail[0].op === 253 || (tail[0].op === 249 && pureReturn(tail[0].words[0], seen));
+    // DXVK ends fixed-function alpha testing with an output-only FClamp.
+    // Demoted fragments cannot publish that output, and this tail has no
+    // derivatives, helper queries or externally observable writes.
+    if (tail.length !== 4) return false;
+    const [load, clamp, store, ret] = tail;
+    const output = mod.insns.find(i => i.op === Op.Variable && i.words[1] === load.words[2]);
+    const glsl = mod.insns.find(i => i.op === 11 && i.words[0] === clamp.words[2]
+      && new TextDecoder().decode(new Uint8Array(strOf(i, 1))) === 'GLSL.std.450');
+    return load.op === Op.Load && output?.words[2] === 3 && clamp.op === 12 && !!glsl
+      && clamp.words[3] === 43 && clamp.words[4] === load.words[1]
+      && clamp.words[0] === load.words[0] && store.op === Op.Store
+      && store.words[0] === load.words[2] && store.words[1] === clamp.words[1]
+      && ret.op === 253;
   };
   for (const d of demotes) {
     const next = mod.insns[mod.insns.indexOf(d) + 1];

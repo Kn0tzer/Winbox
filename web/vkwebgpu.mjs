@@ -858,9 +858,16 @@ export class V2FrameQueue {
 // an unmapped format falls back to rgba8unorm and is counted, never thrown.
 // ---------------------------------------------------------------------------
 const V2_TEX_FORMAT = {
-  37: 'rgba8unorm', 43: 'rgba8unorm-srgb', 44: 'bgra8unorm', 50: 'bgra8unorm-srgb',
+  37: 'rgba8unorm', 38: 'rgba8snorm', 43: 'rgba8unorm-srgb', 44: 'bgra8unorm', 50: 'bgra8unorm-srgb',
+  97: 'rgba16float',
   9: 'r8unorm', 16: 'rg8unorm', 41: 'rgba8uint', 64: 'rgb10a2unorm', 122: 'rg11b10ufloat',
   100: 'r32float', 109: 'rgba32float',
+  131: 'bc1-rgba-unorm', 132: 'bc1-rgba-unorm-srgb',
+  133: 'bc1-rgba-unorm', 134: 'bc1-rgba-unorm-srgb',
+  135: 'bc2-rgba-unorm', 136: 'bc2-rgba-unorm-srgb',
+  137: 'bc3-rgba-unorm', 138: 'bc3-rgba-unorm-srgb',
+  139: 'bc4-r-unorm', 140: 'bc4-r-snorm', 141: 'bc5-rg-unorm', 142: 'bc5-rg-snorm',
+  143: 'bc6h-rgb-ufloat', 144: 'bc6h-rgb-float', 145: 'bc7-rgba-unorm', 146: 'bc7-rgba-unorm-srgb',
   124: 'depth16unorm', 126: 'depth32float', 129: 'depth24plus-stencil8', 130: 'depth32float-stencil8',
 };
 export function v2TextureFormat(vkFormat, counters) {
@@ -871,6 +878,7 @@ export function v2TextureFormat(vkFormat, counters) {
 const V2_VERT_FORMAT = {
   100: 'float32', 103: 'float32x2', 106: 'float32x3', 109: 'float32x4',
   37: 'unorm8x4', 16: 'unorm8x2', 64: 'unorm10-10-10-2',
+  39: 'float32x4', 80: 'float32x2', // scaled inputs are repacked before upload
   83: 'float16x2', 97: 'float16x4', 77: 'unorm16x2', 91: 'unorm16x4',
   // 44 = VK_FORMAT_B8G8R8A8_UNORM. WebGPU has no BGRA vertex format; map to
   // unorm8x4 and swizzle R/B in the uploaded bytes (swizzleBgraVb), so the
@@ -883,6 +891,26 @@ const V2_VERT_FORMAT_SIZE = {
   'unorm8x2': 2, 'unorm8x4': 4, 'unorm10-10-10-2': 4,
   'float16x2': 4, 'float16x4': 8, 'unorm16x2': 4, 'unorm16x4': 8,
 };
+const V2_SCALED_VERTEX = {
+  39: { components: 4, bits: 8, signed: false }, // R8G8B8A8_USCALED
+  80: { components: 2, bits: 16, signed: true }, // R16G16_SSCALED
+};
+export function repackScaledVb(bytes, inputStride, outputStride, attributes) {
+  const count = Math.floor(bytes.length / inputStride);
+  const out = new Uint8Array(count * outputStride);
+  const src = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const dst = new DataView(out.buffer);
+  for (let vertex = 0; vertex < count; vertex++) {
+    const from = vertex * inputStride, to = vertex * outputStride;
+    out.set(bytes.subarray(from, from + inputStride), to);
+    for (const a of attributes) for (let component = 0; component < a.components; component++) {
+      const offset = from + a.srcOffset + component * a.bits / 8;
+      const value = a.bits === 8 ? src.getUint8(offset) : src.getInt16(offset, true);
+      dst.setFloat32(to + a.dstOffset + component * 4, value, true);
+    }
+  }
+  return out;
+}
 export function v2VertexFormat(vkFormat) { return V2_VERT_FORMAT[vkFormat] || null; }
 const V2_TOPOLOGY = { 0: 'point-list', 1: 'line-list', 2: 'line-strip', 3: 'triangle-list', 4: 'triangle-strip' };
 
@@ -1449,34 +1477,46 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   // without re-hashing pixel bytes on the page. Pass counters=null to skip
   // unknown-format accounting (used by the bind-group fingerprint, which must
   // not double-count).
-  function textureKey(imgHex, img, counters) {
+  function textureKey(imgHex, img, counters, cube = false) {
     const w = Math.max(1, img.w), h = Math.max(1, img.h);
     const fmt = v2TextureFormat(img.format, counters === undefined ? stats : counters);
     const hash = img.hash || (img.pixels && img.pixels.length ? fnv1a(img.pixels) : 'empty');
-    return { ck: imgHex + ':' + w + 'x' + h + ':' + fmt + ':' + hash, w, h, fmt };
+    return { ck: imgHex + ':' + w + 'x' + h + ':' + fmt + ':' + hash + (cube ? ':cube' : ''), w, h, fmt };
   }
 
-  function gpuTextureFor(imgHex, img) {
+  function gpuTextureFor(imgHex, img, cube = false) {
     // Persistent cache: reuse GPUTexture when content is unchanged.
-    const { ck, w, h, fmt } = textureKey(imgHex, img);
+    const { ck, w, h, fmt } = textureKey(imgHex, img, undefined, cube);
     let entry = persistTexCache.get(ck);
     if (entry) { persistStats.texHits++; return entry.tex; }
     if (!img.pixels || !img.pixels.length) {
       // Deduped record for a texture the page never uploaded (wasm only
       // dedups after a full send, so this should not happen). Safe fallback.
-      return blankTex();
+      return blankTex(cube);
     }
     persistStats.texMiss++;
     const t = device.createTexture({
-      size: [w, h], format: fmt,
+      size: [w, h, cube ? 6 : 1], format: fmt,
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
     if (img.pixels && img.pixels.length) {
-      const bpp = 4; // the mapped colour formats are all 4 bytes/px
-      const rowBytes = Math.max(bpp, w * bpp);
-      const want = rowBytes * h;
-      const src = img.pixels.length >= want ? img.pixels.subarray(0, want) : img.pixels;
-      device.queue.writeTexture({ texture: t }, src, { bytesPerRow: rowBytes, rowsPerImage: h }, [w, h]);
+      const compressed = fmt.startsWith('bc');
+      const blockBytes = /^bc[14]-/.test(fmt) ? 8 : 16;
+      const bpp = { r8unorm: 1, rg8unorm: 2, rgba16float: 8, rgba32float: 16 }[fmt] || 4;
+      const rowBytes = compressed ? Math.ceil(w / 4) * blockBytes : w * bpp;
+      const rows = compressed ? Math.ceil(h / 4) : h;
+      const want = rowBytes * rows;
+      let src = img.pixels.length >= want ? img.pixels.subarray(0, want) : img.pixels;
+      if (cube) {
+        // The bridge stores each face's complete mip chain contiguously.
+        // WebGPU's base-level upload needs only the first mip from each face.
+        src = new Uint8Array(want * 6);
+        const faceStride = img.pixels.length / 6;
+        if (Number.isInteger(faceStride) && faceStride >= want)
+          for (let face = 0; face < 6; face++)
+            src.set(img.pixels.subarray(face * faceStride, face * faceStride + want), face * want);
+      }
+      device.queue.writeTexture({ texture: t }, src, { bytesPerRow: rowBytes, rowsPerImage: rows }, [w, h, cube ? 6 : 1]);
     }
     persistTexCache.set(ck, { tex: t, w, h, format: fmt });
     // Also populate frame-local cache for within-frame dedup
@@ -1523,12 +1563,14 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     return sm;
   }
 
-  const blankTex = () => {
-    let t = F.texCache.get('\0blank');
+  const blankTex = (cube = false) => {
+    const key = cube ? '\0blank-cube' : '\0blank';
+    let t = F.texCache.get(key);
     if (!t) {
-      t = device.createTexture({ size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
-      device.queue.writeTexture({ texture: t }, new Uint8Array([0, 0, 0, 0]), { bytesPerRow: 4 }, [1, 1]);
-      F.texCache.set('\0blank', t); F.live.push(t);
+      const layers = cube ? 6 : 1;
+      t = device.createTexture({ size: [1, 1, layers], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+      device.queue.writeTexture({ texture: t }, new Uint8Array(4 * layers), { bytesPerRow: 4, rowsPerImage: 1 }, [1, 1, layers]);
+      F.texCache.set(key, t); F.live.push(t);
     }
     return t;
   };
@@ -1623,20 +1665,24 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     for (const vb of pipe.vb) {
       const attributes = [];
       let minStride = 0;
+      const scaled = [];
       for (const va of pipe.va) {
         if (va.binding !== vb.binding) continue;
         const vf = v2VertexFormat(va.format);
         if (!vf) { stats.unsupported++; return { skip: 'vertex-format:' + va.format }; }
         attributes.push({ shaderLocation: va.location, offset: va.offset, format: vf });
-        minStride = Math.max(minStride, va.offset + (V2_VERT_FORMAT_SIZE[vf] || 4));
+        const scaling = V2_SCALED_VERTEX[va.format];
+        if (scaling) scaled.push({ ...scaling, srcOffset: va.offset, attribute: attributes[attributes.length - 1] });
+        minStride = Math.max(minStride, va.offset + (scaling ? scaling.components * scaling.bits / 8 : (V2_VERT_FORMAT_SIZE[vf] || 4)));
       }
       slotOf.set(vb.binding, buffers.length);
       const stride = Math.max(vb.stride, minStride, 4);
-      const arrayStride = Math.ceil(stride / 4) * 4;
+      let arrayStride = Math.ceil(stride / 4) * 4;
+      for (const a of scaled) { a.dstOffset = arrayStride; a.attribute.offset = arrayStride; arrayStride += a.components * 4; }
       buffers.push({ arrayStride, stepMode: vb.inputRate ? 'instance' : 'vertex', attributes });
       const attrs44 = [];
       for (const va of pipe.va) if (va.binding === vb.binding && va.format === 44) attrs44.push(va.offset);
-      vbWalk.push({ binding: vb.binding, stride, attrs44 });
+      vbWalk.push({ binding: vb.binding, stride, attrs44, scaled, outputStride: arrayStride });
     }
 
     device.pushErrorScope('validation');
@@ -1708,7 +1754,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
           if (ak) parts.push('a' + d.binding + ':' + k + ':' + ak);
           else {
             const img = imgHex && F.images.get(imgHex);
-            parts.push('t' + d.binding + ':' + k + ':' + (img ? textureKey(imgHex, img, null).ck : 'blank'));
+            parts.push('t' + d.binding + ':' + k + ':' + (img ? textureKey(imgHex, img, null, t.startsWith('texture_cube')).ck : 'blank'));
           }
         }
       } else if (t === 'sampler' || t === 'sampler_comparison') {
@@ -1772,12 +1818,13 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
           // Sampled-image alias replay: when this VkImage was a render target
           // earlier in the frame, sample the texture actually rendered into —
           // its IMAGE_DATA record carries the view->image link but no pixels.
-          const aliasTex = v2ImageKnown(imgHex)
+          const cube = t.startsWith('texture_cube');
+          const aliasTex = !cube && v2ImageKnown(imgHex)
             ? (targets.get(v2ImageTargetKey(imgHex, false)) || targets.get(v2ImageTargetKey(imgHex, true)))
             : null;
           if (aliasTex) stats.aliased++;
           const img = !aliasTex && imgHex && F.images.get(imgHex);
-          views.push(aliasTex ? aliasTex.createView() : (img ? gpuTextureFor(imgHex, img) : blankTex()).createView());
+          views.push(aliasTex ? aliasTex.createView() : (img ? gpuTextureFor(imgHex, img, cube) : blankTex(cube)).createView({ dimension: cube ? 'cube' : '2d' }));
         }
         entries.push({ binding: d.binding, resource: d.arrayCount > 1 ? views : views[0] });
       } else if (t === 'sampler' || t === 'sampler_comparison') {
@@ -2051,9 +2098,14 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
                 vkey = vb.buf + '|swz44:' + st.pipeRec.key;
                 vbytes = swizzleBgraVb(bytes, walk.stride, walk.attrs44);
               }
+              const scaled = walk?.scaled.length > 0;
+              if (scaled) {
+                vkey += '|scaled:' + st.pipeRec.key + ':' + vb.offset;
+                if (vbytes) vbytes = repackScaledVb(vbytes.subarray(vb.offset), walk.stride, walk.outputStride, walk.scaled);
+              }
               const gpu = gpuBufferFor(vkey, vbytes, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST, preHash);
               if (!gpu) continue;
-              passEnc.setVertexBuffer(slot, gpu, Math.min(vb.offset, gpu.size));
+              passEnc.setVertexBuffer(slot, gpu, scaled ? 0 : Math.min(vb.offset, gpu.size));
               vbSet.add(slot);
             }
             // Slots the guest left unbound (null buffer) still need a buffer.

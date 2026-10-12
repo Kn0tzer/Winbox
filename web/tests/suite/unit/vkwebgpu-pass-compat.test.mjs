@@ -1,33 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createVkRenderer2 } from '../../../vkwebgpu.mjs';
+import { createValidationDevice } from '../fixtures/webgpu-validation-device.mjs';
 
 test('replayed Vulkan pipelines match each pass depth attachment and sample count', async () => {
-  const saved = new Map(['navigator', 'GPUTextureUsage', 'GPUBufferUsage', 'GPUMapMode', 'GPUShaderStage'].map(k => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
-  const pipelines = [], bound = [];
-  const texture = d => ({ ...d, width: d.size[0], height: d.size[1], createView() { return { texture: this }; }, destroy() {} });
-  const device = {
-    addEventListener() {}, lost: new Promise(() => {}), pushErrorScope() {}, async popErrorScope() { return null; },
-    createTexture: texture,
-    createBuffer(d) { const bytes = new ArrayBuffer(d.size); return { ...d, getMappedRange: () => bytes, async mapAsync() {}, unmap() {}, destroy() {} }; },
-    createBindGroupLayout: d => d, createPipelineLayout: d => d, createShaderModule: d => d,
-    createRenderPipeline(d) { pipelines.push(d); return d; },
-    createCommandEncoder() { return {
-      beginRenderPass(d) { return {
-        setPipeline(p) {
-          assert.equal(!!p.depthStencil, !!d.depthStencilAttachment, 'pipeline must match the current pass depth attachment');
-          const view = d.colorAttachments[0]?.view || d.depthStencilAttachment.view;
-          assert.equal(p.multisample.count, view.texture.sampleCount || 1, 'pipeline must match the current pass sample count');
-          bound.push(p);
-        }, draw() {}, end() {},
-      }; }, copyTextureToBuffer() {}, copyTextureToTexture() {}, finish() { return {}; },
-    }; }, queue: { submit() {}, async onSubmittedWorkDone() {} }, destroy() {},
-  };
-  const canvas = { width: 4, height: 4, getContext: () => ({ configure() {}, unconfigure() {}, getCurrentTexture: () => texture({ size: [4, 4] }) }) };
-  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { gpu: {
-    async requestAdapter() { return { features: new Set(), async requestDevice() { return device; } }; }, getPreferredCanvasFormat: () => 'rgba8unorm',
-  } } });
-  for (const k of ['GPUTextureUsage', 'GPUBufferUsage', 'GPUMapMode', 'GPUShaderStage']) Object.defineProperty(globalThis, k, { configurable: true, value: new Proxy({}, { get: () => 1 }) });
+  const { canvas, pipelines, bound, restore } = createValidationDevice();
   try {
     const r = await createVkRenderer2(canvas, { translate: async () => 'fn main() {}' });
     const pipe = { pipeId: 'pipe', topology: 3, vb: [], va: [], vsHash: 'vs', fsHash: 'fs', depthTest: true, depthWrite: true, depthOp: 3 };
@@ -40,5 +17,5 @@ test('replayed Vulkan pipelines match each pass depth attachment and sample coun
     assert.equal((await r.render(frame)).rendered, true);
     assert.equal(bound.length, 3);assert.deepEqual(pipelines.map(p => [!!p.depthStencil, p.multisample.count]), [[true, 4], [false, 1], [true, 1]]);
     r.destroy();
-  } finally { for (const [k, d] of saved) { if (d) Object.defineProperty(globalThis, k, d); else delete globalThis[k]; } }
+  } finally { restore(); }
 });
