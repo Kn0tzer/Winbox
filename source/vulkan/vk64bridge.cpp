@@ -338,6 +338,11 @@ const char* fnName(U64 id) {
 
 std::recursive_mutex g_vkMutex;   // one bridge per process; every trap serializes
 KMemory64* g_mem = nullptr;       // guest memory of the calling thread's process
+extern KMemory* g_mem32;
+inline void readGuestBytes(void* out, U64 va, size_t count) {
+    if (g_mem32) g_mem32->memcpyFromGuest(out, (U32)va, count);
+    else if (g_mem) g_mem->memcpyFromGuest(out, va, count);
+}
 static U64 g_bufDirtyTick = 1;      // buffer dirtiness generation counter
 
 // ---------------------------------------------------------------------------
@@ -453,9 +458,23 @@ const U32 VK64_MAX_PUSH_BYTES = 256;   // matches limits.maxPushConstantsSize
 // per-element payload schema is P3 work — but the INDEX and COUNT are recorded
 // now so the schema has something honest to read.
 struct Binding { U32 binding = 0, type = 0, dstArrayElement = 0, count = 1; U64 obj = 0, range = 0;
-                 U64 bufOff = 0; }; // VkDescriptorBufferInfo::offset: DXVK sub-allocates
+                 U64 bufOff = 0; std::vector<U8> inlineBytes; }; // VkDescriptorBufferInfo::offset: DXVK sub-allocates
                  // uniforms (D3D9ConstantBuffer::Alloc) and binds each range with its own
                  // offset; dropping it made every uniform capture read from offset 0.
+
+// Inline uniform pData is only valid during the update call. Keep the complete
+// binding so byte-offset writes preserve portions written by previous updates.
+static void updateInlineUniform(Binding& b, U32 offset, U64 data, U32 size) {
+    if (!data || !size || size > UINT32_MAX - offset) return;
+    const U32 end = offset + size;
+    if (b.inlineBytes.size() < end) b.inlineBytes.resize(end);
+    readGuestBytes(b.inlineBytes.data() + offset, data, size);
+    b.obj = 0;
+    b.bufOff = 0;
+    b.dstArrayElement = 0;
+    b.count = (U32)b.inlineBytes.size();
+    b.range = b.inlineBytes.size();
+}
 
 struct Instance : Obj { U64 phys[4] = {0,0,0,0}; U32 physCount = 0; };
 struct PhysDev  : Obj { U64 instance = 0; };
@@ -2099,14 +2118,11 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 } else if (b.type == VK_DESCRIPTOR_TYPE_SAMPLER) {
                     emitSampler(b.obj);
                 } else if (b.type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
-                    // b.obj = guest VA of the inline bytes, b.range = size.
-                    if (b.obj && b.range) {
-                        std::vector<U8> bytes((size_t)b.range);
-                        g_mem->memcpyFromGuest(bytes.data(), b.obj, b.range);
+                    if (!b.inlineBytes.empty()) {
                         emit(V2_INLINE_BYTES, [&](ChunkWriter& p) {
                             p.u8(setIndex); p.u8(0); p.u16(0);
-                            p.u32(b.binding); p.u32(b.dstArrayElement); p.u32((U32)bytes.size());
-                            p.bytes(bytes);
+                            p.u32(b.binding); p.u32(0); p.u32((U32)b.inlineBytes.size());
+                            p.bytes(b.inlineBytes);
                         });
                     }
                 }
@@ -4164,15 +4180,12 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 b->range = bi.range;
                 b->bufOff = bi.offset;
             } else if (w.descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
-                // Inline UBO: the bytes live in the write's pNext
-                // (VkWriteDescriptorSetInlineUniformBlock), not in a buffer. Keep
-                // the data pointer so the binding is not mistaken for a null one.
+                // The caller's inline data must be consumed before this update returns.
                 for (U64 cur = w.pNext; cur && g_mem;) {
                     if (g_mem->readd(cur) == VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK) {
                         VkWriteDescriptorSetInlineUniformBlock ib = {};
                         g_mem->memcpyFromGuest(&ib, cur, sizeof(ib));
-                        b->obj = ib.pData;
-                        b->range = ib.dataSize;
+                        updateInlineUniform(*b, w.dstArrayElement, ib.pData, ib.dataSize);
                         break;
                     }
                     cur = g_mem->readq(cur + 8);
@@ -4236,7 +4249,9 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         U64 dataBase = args.a[3];
         for (U32 ei = 0; ei < t->nentry; ei++) {
             const TmplEntry& te = t->entries[ei];
-            for (U32 i = 0; i < te.count; i++) {
+            // Inline descriptorCount is a byte count; stride is ignored.
+            const U32 elements = te.type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK ? 1 : te.count;
+            for (U32 i = 0; i < elements; i++) {
                 U64 dAddr = dataBase + te.offset + (U64)i * te.stride;
                 U32 binding = te.binding;
                 U32 elem = te.arrayElement + i;
@@ -4252,7 +4267,9 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 b->type = te.type;
                 b->dstArrayElement = elem;
                 b->count = 1;
-                if (te.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
+                if (te.type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
+                    updateInlineUniform(*b, te.arrayElement, dAddr, te.count);
+                } else if (te.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
                     te.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
                     U64 buf = rd64(dAddr); U64 off = rd64(dAddr + 8); U64 range = rd64(dAddr + 16);
                     b->obj = buf; b->range = range; b->bufOff = off;
@@ -7352,16 +7369,149 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         return VK_SUCCESS;
     }
     case VK64_fn_vkUpdateDescriptorSets: {
+        // (device, nWrite, pWrites*, nCopy, pCopies*)
+        U32 nw = (U32)args.a[1];
+        std::vector<vk32abi::VkWriteDescriptorSet> writes;
+        readArray32(args.a[2], nw, writes);
+        for (U32 i = 0; i < nw; i++) {
+            const vk32abi::VkWriteDescriptorSet& w = writes[i];
+            DescSet* s = objOf32<DescSet>(w.dstSet, K_SET, "vkUpdateDescriptorSets");
+            if (!s || w.dstBinding >= VK64_MAX_BINDINGS) continue;
+            Binding* b = nullptr;
+            for (U32 k = 0; k < s->nbind; k++)
+                if (s->binds[k].binding == w.dstBinding) { b = &s->binds[k]; break; }
+            if (!b) {
+                if (s->nbind >= VK64_MAX_BINDINGS) continue;
+                b = &s->binds[s->nbind++];
+                b->binding = w.dstBinding;
+            }
+            // Fidelity: the write's own descriptorType (not the set layout's) and
+            // its ARRAY GEOMETRY. A DXVK caller writes descriptor arrays and
+            // partial-overlap ranges (dstArrayElement/count), and collapsing those
+            // to "element 0 of binding N" makes the recorded set a different set
+            // from the one the app declared. The element payloads stay in the flat
+            // Binding table for now (schema v2 is P3); index and count are honest
+            // today so that table can grow without re-reading the guest.
+            b->type = w.descriptorType;
+            b->dstArrayElement = w.dstArrayElement;
+            b->count = w.descriptorCount ? w.descriptorCount : 1;
+            if ((U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
+                (U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+                vk32abi::VkDescriptorBufferInfo bi = {};
+                readStruct32(w.pBufferInfo, bi);
+                b->obj = bi.buffer;
+                b->range = bi.range;
+                b->bufOff = bi.offset;
+            } else if ((U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
+                // The caller's inline data must be consumed before this update returns.
+                for (U64 cur = w.pNext; cur && g_mem32;) {
+                    if (g_mem32->readd(cur) == VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK) {
+                        vk32abi::VkWriteDescriptorSetInlineUniformBlock ib = {};
+                        g_mem32->memcpyFromGuest(&ib, cur, sizeof(ib));
+                        updateInlineUniform(*b, w.dstArrayElement, ib.pData, ib.dataSize);
+                        break;
+                    }
+                    cur = g_mem32->readd((U32)cur + 4);
+                }
+            } else if ((U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
+                       (U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ||
+                       (U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_SAMPLER) {
+                // image-only / sampler-only: keep the one handle each names, so a
+                // storage image is not misreported as a sampled image
+                vk32abi::VkDescriptorImageInfo ii = {};
+                readStruct32(w.pImageInfo, ii);
+                b->obj = ii.imageView;
+                b->range = ii.sampler;
+            } else {
+                // combined image sampler (and texel buffers, which share the
+                // vk32abi::VkDescriptorBufferInfo shape)
+                // FIX (2026-10-09): For COMBINED_IMAGE_SAMPLER, w.pBufferInfo is
+                // non-null garbage (same as w.pImageInfo). Trust descriptorType,
+                // always read vk32abi::VkDescriptorImageInfo.
+                {
+                    vk32abi::VkDescriptorImageInfo ii = {};
+                    readStruct32(w.pImageInfo, ii);
+                    b->obj = ii.imageView;
+                    b->range = ii.sampler;
+                }
+            }
+        }
         return VK_SUCCESS;
     }
     case VK64_fn_vkCreateDescriptorUpdateTemplate: {
+        // (device, pCreateInfo*, pAllocator, out vk32abi::VkDescriptorUpdateTemplate*)
+        vk32abi::VkDescriptorUpdateTemplateCreateInfo ci = {};
+        if (!readStruct32(args.a[1], ci)) return VK_ERROR_INITIALIZATION_FAILED;
         if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
-        createObj32<DescTemplate>(K_TEMPLATE, id);
-        wr64_32((U32)args.a[3], id);
+        DescTemplate* t = createObj32<DescTemplate>(K_TEMPLATE, id);
+        std::vector<vk32abi::VkDescriptorUpdateTemplateEntry> entries;
+        readArray32(ci.pDescriptorUpdateEntries, ci.descriptorUpdateEntryCount, entries);
+        for (auto& e : entries) {
+            if (t->nentry >= VK64_MAX_BINDINGS) break;
+            TmplEntry& te = t->entries[t->nentry++];
+            te.binding = e.dstBinding; te.arrayElement = e.dstArrayElement;
+            te.count = e.descriptorCount; te.type = e.descriptorType;
+            te.offset = e.offset; te.stride = e.stride;
+        }
+        wr64_32(args.a[3], id);
+        klog_fmt("vk32: vkCreateDescriptorUpdateTemplate -> 0x%llx (%u entries)",
+                 (unsigned long long)id, (unsigned)t->nentry);
         return VK_SUCCESS;
     }
     case VK64_fn_vkUpdateDescriptorSetWithTemplate: {
+        // (device, descriptorSet, descriptorUpdateTemplate, pData)
+        DescSet* s = objOf32<DescSet>(args.a[1], K_SET, "vkUpdateDescriptorSetWithTemplate");
+        DescTemplate* t = objOf32<DescTemplate>(args.a[2], K_TEMPLATE, "vkUpdateDescriptorSetWithTemplate");
+        if (!s || !t || !args.a[3]) return VK_SUCCESS;
+        U64 dataBase = args.a[3];
+        for (U32 ei = 0; ei < t->nentry; ei++) {
+            const TmplEntry& te = t->entries[ei];
+            // Inline descriptorCount is a byte count; stride is ignored.
+            const U32 elements = te.type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK ? 1 : te.count;
+            for (U32 i = 0; i < elements; i++) {
+                U64 dAddr = dataBase + te.offset + (U64)i * te.stride;
+                U32 binding = te.binding;
+                U32 elem = te.arrayElement + i;
+                if (binding >= VK64_MAX_BINDINGS) continue;
+                Binding* b = nullptr;
+                for (U32 k = 0; k < s->nbind; k++)
+                    if (s->binds[k].binding == binding) { b = &s->binds[k]; break; }
+                if (!b) {
+                    if (s->nbind >= VK64_MAX_BINDINGS) continue;
+                    b = &s->binds[s->nbind++];
+                    b->binding = binding;
+                }
+                b->type = te.type;
+                b->dstArrayElement = elem;
+                b->count = 1;
+                if (te.type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
+                    updateInlineUniform(*b, te.arrayElement, dAddr, te.count);
+                } else if (te.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
+                    te.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+                    U64 buf = rd64_32(dAddr); U64 off = rd64_32(dAddr + 8); U64 range = rd64_32(dAddr + 16);
+                    b->obj = buf; b->range = range; b->bufOff = off;
+                } else if (te.type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
+                           te.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
+                    U64 view = rd64_32(dAddr + 8);
+                    b->obj = view; b->range = 0;
+                } else if (te.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+                    // vk32abi::VkDescriptorImageInfo: sampler @0, imageView @8.
+                    // (2026-10-09: D3D9 textured draw was black — template path
+                    // dropped the image view, so no IMAGE_DATA was emitted.)
+                    U64 samp = rd64_32(dAddr);
+                    U64 view = rd64_32(dAddr + 8);
+                    b->obj = view; b->range = samp;
+                } else if (te.type == VK_DESCRIPTOR_TYPE_SAMPLER) {
+                    U64 samp = rd64_32(dAddr);
+                    b->obj = samp; b->range = 0;
+                } else if (te.type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER ||
+                           te.type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER) {
+                    U64 bv = rd64_32(dAddr);
+                    b->obj = bv; b->range = 0;
+                }
+            }
+        }
         return VK_SUCCESS;
     }
     case VK64_fn_vkBindBufferMemory2:

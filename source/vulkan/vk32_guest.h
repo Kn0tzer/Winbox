@@ -6346,6 +6346,28 @@ typedef struct VkDescriptorSetLayoutCreateInfo {
     uint32_t pBindings;
 } VkDescriptorSetLayoutCreateInfo;
 
+typedef struct VkDescriptorUpdateTemplateEntry {
+    uint32_t            dstBinding;
+    uint32_t            dstArrayElement;
+    uint32_t            descriptorCount;
+    VkDescriptorType    descriptorType;
+    uint32_t              offset;
+    uint32_t              stride;
+} VkDescriptorUpdateTemplateEntry;
+
+typedef struct VkDescriptorUpdateTemplateCreateInfo {
+    VkStructureType                           sType;
+    uint32_t pNext;
+    VkDescriptorUpdateTemplateCreateFlags     flags;
+    uint32_t                                  descriptorUpdateEntryCount;
+    uint32_t pDescriptorUpdateEntries;
+    VkDescriptorUpdateTemplateType            templateType;
+    VkDescriptorSetLayout                     descriptorSetLayout;
+    VkPipelineBindPoint                       pipelineBindPoint;
+    VkPipelineLayout                          pipelineLayout;
+    uint32_t                                  set;
+} VkDescriptorUpdateTemplateCreateInfo;
+
 typedef struct VkWriteDescriptorSet {
     VkStructureType                  sType;
     uint32_t pNext;
