@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <vector>
 #include <utility>
+#include "xwirekeyboard.h"
 
 // The active presentation sink (platform/sdl sets it during window init). null
 // when headless / -novideo, in which case all PutImage/Map presentation is a
@@ -179,6 +180,7 @@ namespace {
     // is the request-stream opcode libX11 assigns to GLX after QueryExtension.
     enum {
         GLX_MAJOR_OPCODE = 149,
+        XKB_MAJOR_OPCODE = 151,
         GLX_FIRST_EVENT  = 95,   // first GLX event code (BufferSwapComplete et al.)
         // GLX minor opcodes (the few libX11 might still send synchronously).
         X_GLXQueryVersion        = 7,
@@ -1557,6 +1559,9 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
                 r[9] = GLX_MAJOR_OPCODE;       // major-opcode
                 r[10] = GLX_FIRST_EVENT;       // first-event
                 r[11] = 0;                     // first-error
+            } else if (extName == "XKEYBOARD") {
+                r[8] = 1; r[9] = XKB_MAJOR_OPCODE;
+                r[10] = 85; // fixed map: no unsolicited XKB events
             } else if (extName == "RANDR") {
                 // #67: advertise RandR so wine's xrandr display handler registers one
                 // monitor (it needs RandR>=1.4; see X_RRQueryVersion below).
@@ -1582,6 +1587,14 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
             memcpy(r + 8, &w, 2);
             memcpy(r + 10, &h, 2);
             writeToClient(r, sizeof(r));
+            break;
+        }
+        case XKB_MAJOR_OPCODE: {
+            auto reply = xwireXkbReply(req, len, sequence, [](unsigned key) {
+                auto pair = keysymForKeycode(key);
+                return std::array<uint32_t, 2>{pair.lo, pair.hi};
+            });
+            if (!reply.empty()) writeToClient(reply.data(), (uint32_t)reply.size());
             break;
         }
         case GLX_MAJOR_OPCODE: {
