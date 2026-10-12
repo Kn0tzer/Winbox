@@ -1253,6 +1253,25 @@ var<immediate> unnamed: present_info_t;
 }`;
 }
 
+export function stripNagaFragmentDepth(wgsl) {
+  const structs = [...String(wgsl).matchAll(/struct\s+(\w+)\s*\{([^}]+)\}/g)];
+  for (const [whole, name, body] of structs) {
+    const members = body.split('\n').filter(line => /\w+\s*:/.test(line));
+    const index = members.findIndex(line => /@builtin\(frag_depth\)/.test(line));
+    if (index < 0) continue;
+    const constructors = [...String(wgsl).matchAll(new RegExp('\\b' + name + '\\(([^()]*)\\)', 'g'))];
+    if (!constructors.length || constructors.some(m => m[1].split(',').length !== members.length ||
+        m[1].split(',').some(arg => !/^\s*\w+\s*$/.test(arg)))) return wgsl;
+    let code = String(wgsl).replace(whole, whole.replace(members[index], ''));
+    for (const m of constructors) {
+      const args = m[1].split(','); args.splice(index, 1);
+      code = code.replace(m[0], name + '(' + args.join(',') + ')');
+    }
+    return code;
+  }
+  return wgsl;
+}
+
 export function scanWgslResources(wgsl) {
   const out = [];
   WGSL_RES_DECL.lastIndex = 0;
@@ -1598,13 +1617,14 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     return null;
   }
 
-  async function getPipelineFor(pipe, sampleCount, unnegated = false, passHasDepth = false) {
+  async function getPipelineFor(pipe, sampleCount, unnegated = false, passHasDepth = false, indexType = 0, colorCount = 1) {
     // WebGPU requires the pipeline's depthStencil state to match the render
     // pass attachments: a pipeline without depthStencil cannot be set in a
     // pass with a depth attachment (Vulkan allows it). Key the cache on the
     // pass depth state and always emit a (possibly disabled) depthStencil
     // when the pass has depth.
-    const key = pipe.pipeId + ':ms' + sampleCount + ':topology:' + pipe.topology + ':vb:' + JSON.stringify(pipe.vb) + ':yny' + (unnegated ? '1' : '0') + ':pd' + (passHasDepth ? '1' : '0') + ':dt' + (pipe.depthTest ? '1' : '0');
+    const stripIndexType = pipe.topology === 2 || pipe.topology === 4 ? indexType : undefined;
+    const key = pipe.pipeId + ':ms' + sampleCount + ':topology:' + pipe.topology + ':vb:' + JSON.stringify(pipe.vb) + ':yny' + (unnegated ? '1' : '0') + ':pd' + (passHasDepth ? '1' : '0') + ':dt' + (pipe.depthTest ? '1' : '0') + ':si' + (stripIndexType ?? 'none') + ':colors' + colorCount;
     if (pipelines.has(key)) return pipelines.get(key);
     const vsm = F.shaders.get(pipe.vsHash), fsm = F.shaders.get(pipe.fsHash);
     if (!vsm || !fsm) return { skip: 'missing-shader' };
@@ -1612,6 +1632,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     if (unnegated) vsWgsl = stripNagaYNegation(vsWgsl);
     let fsWgsl = await shaders.get('fragment', { hash: pipe.fsHash, size: fsm.code.length, code: fsm.code }, { rasterTopology: pipe.topology, specOverrides: pipe.fsSpec });
     fsWgsl = rewriteResolvedDxvkPresent(pipe.fsHash, fsWgsl);
+    if (!passHasDepth) fsWgsl = stripNagaFragmentDepth(fsWgsl);
     if (!vsWgsl || !fsWgsl) return { skip: 'shader-translation' };
     const vsR = rewritePushConstantsWGSL(vsWgsl), fsR = rewritePushConstantsWGSL(fsWgsl);
     const pushBlocks = vsR.pushBlocks + fsR.pushBlocks;
@@ -1694,12 +1715,13 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       },
       fragment: {
         module: device.createShaderModule({ code: fsR.code }), entryPoint: 'main',
-        targets: [{ format, blend: pipe.blend ? {
+        targets: Array.from({ length: colorCount }, () => ({ format, blend: pipe.blend ? {
           color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
-          alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } } : undefined }],
+          alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } } : undefined })),
       },
       primitive: {
         topology: V2_TOPOLOGY[pipe.topology] || 'triangle-list',
+        stripIndexFormat: stripIndexType === undefined ? undefined : stripIndexType ? 'uint32' : 'uint16',
         cullMode: CULL[pipe.cull] || 'none', frontFace: FRONT[pipe.front] || 'ccw',
       },
       depthStencil: passHasDepth ? {
@@ -1711,7 +1733,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     });
     const err = await device.popErrorScope();
     if (err) { stats.unsupported++; return { skip: 'pipeline-rejected:' + err.message }; }
-    const rec = { key, pipeline, layouts, decls, hasPush, slotOf, maxGroup, vbWalk };
+    const rec = { key, pipeline, layouts, decls, hasPush, slotOf, maxGroup, vbWalk, stripIndexType };
     pipelines.set(key, rec);
     return rec;
   }
@@ -1991,7 +2013,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
         // Carry over a pipeline bound by an earlier pass (vkd3d binds before
         // vkCmdBeginRenderPass).
         if (st.pipeRec && st.pipeDesc && !st.pipeBad) {
-          const rec = await getPipelineFor(st.pipeDesc, passSamples, st.pipeNeg, !!depthView);
+          const rec = await getPipelineFor(st.pipeDesc, passSamples, st.pipeNeg, !!depthView, st.ibind?.indexType || 0, colorAttachments.length);
           st.pipeRec = rec.skip ? null : rec;
           st.pipeBad = !!rec.skip;
           if (st.pipeRec) passEnc.setPipeline(st.pipeRec.pipeline);
@@ -2007,7 +2029,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
         switch (op.op) {
           case 'bindPipe': {
             let rec;
-            try { rec = await getPipelineFor(op.pipe, passSamples, false, !!depthView); }
+            try { rec = await getPipelineFor(op.pipe, passSamples, false, !!depthView, st.ibind?.indexType || 0, colorAttachments.length); }
             catch (e) { rec = { skip: 'pipeline-threw' }; }
             if (rec.skip) {
               if (!st.badPipes.has(op.pipe.pipeId)) {
@@ -2043,7 +2065,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
                 // framebuffer mapping bit-for-bit.
                 const negH = h < 0;
                 if (negH !== st.pipeNeg && st.pipeDesc) {
-                  const rec = await getPipelineFor(st.pipeDesc, passSamples, negH, !!depthView);
+                  const rec = await getPipelineFor(st.pipeDesc, passSamples, negH, !!depthView, st.ibind?.indexType || 0, colorAttachments.length);
                   if (!rec.skip) { st.pipeRec = rec; st.pipeNeg = negH; if (passEnc) passEnc.setPipeline(rec.pipeline); }
                 }
                 passEnc.setViewport(x, negH ? y + h : y, w, Math.abs(h), md, xmd);
@@ -2052,6 +2074,12 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
             if (st.scissor) {
               const [x, y, w, h] = st.scissor;
               if (w > 0 && h > 0) passEnc.setScissorRect(x | 0, y | 0, w | 0, h | 0);
+            }
+            if (st.pipeRec.stripIndexType !== undefined && st.pipeRec.stripIndexType !== (st.ibind?.indexType || 0)) {
+              const rec = await getPipelineFor(st.pipeDesc, passSamples, st.pipeNeg, !!depthView, st.ibind?.indexType || 0, colorAttachments.length);
+              if (rec.skip) break;
+              st.pipeRec = rec;
+              passEnc.setPipeline(rec.pipeline);
             }
             for (let g = 0; g <= st.pipeRec.maxGroup; g++) {
               if (g === V2_PUSH_GROUP) continue;

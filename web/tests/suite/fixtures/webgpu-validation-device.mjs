@@ -11,13 +11,15 @@ export function createValidationDevice() {
     createBindGroup(d) { for(const e of d.entries) { const l=d.layout.entries.find(l=>l.binding===e.binding);if(l.texture) assert.equal(e.resource.dimension,l.texture.viewDimension); }return d; },
     createRenderPipeline(d) { pipelines.push(d); return d; },
     createCommandEncoder() { return {
-      beginRenderPass(d) { return {
+      beginRenderPass(d) { let currentPipeline, indexFormat; return {
         setPipeline(p) {
           assert.equal(!!p.depthStencil, !!d.depthStencilAttachment, 'pipeline must match the current pass depth attachment');
           const view = d.colorAttachments[0]?.view || d.depthStencilAttachment.view;
           assert.equal(p.multisample.count, view.texture.sampleCount || 1, 'pipeline must match the current pass sample count');
-          bound.push(p);
-        }, draw() {}, setBindGroup() {}, end() {},
+          assert.equal(p.fragment.targets.length, d.colorAttachments.length, 'pipeline must match the current pass color attachments');
+          currentPipeline = p; bound.push(p);
+        }, draw() {}, setBindGroup() {}, setIndexBuffer(buffer, format) { indexFormat = format; },
+        drawIndexed() { if (currentPipeline.primitive.topology.endsWith('strip')) assert.equal(currentPipeline.primitive.stripIndexFormat, indexFormat); }, end() {},
       }; }, copyTextureToBuffer() {}, copyTextureToTexture() {}, finish() { return {}; },
     }; }, queue: { submit() {}, writeTexture(d,data,layout,size) { writes.push({d,data:new Uint8Array(data),layout,size}); }, async onSubmittedWorkDone() {} }, destroy() {},
   };
