@@ -1987,7 +1987,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       for (const a of p.attachments) passSamples = Math.max(passSamples, v2PickSampleCount(a.samples || 1));
       /** @type {GPURenderPassColorAttachment[]} */
       const colorAttachments = [];
-      let depthView = null;
+      let depthView = null, depthAttachment = null;
       for (const a of p.attachments) {
         const samples = v2PickSampleCount(a.samples || 1);
         // Known VkImage identity: the single-sample (resolve) target is keyed
@@ -2001,6 +2001,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
             usage: GPUTextureUsage.RENDER_ATTACHMENT | texBinding,
           });
           depthView = tex.createView();
+          depthAttachment = a;
         } else {
           const single = target(v2TargetKey(a.imageId, p.w, p.h, 1, false), {
             size: [p.w, p.h], format,
@@ -2030,7 +2031,8 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
         const rpDesc = { colorAttachments };
         if (depthView) rpDesc.depthStencilAttachment = {
           view: depthView, depthClearValue: p.clearDepth,
-          depthLoadOp: 'clear', depthStoreOp: 'store',
+          depthLoadOp: depthAttachment.loadOp === 0 ? 'load' : 'clear',
+          depthStoreOp: depthAttachment.storeOp === 1 ? 'discard' : 'store',
         };
         passEnc = encoder.beginRenderPass(rpDesc);
         // Carry over a pipeline bound by an earlier pass (vkd3d binds before
