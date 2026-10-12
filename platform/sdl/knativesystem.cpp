@@ -21,6 +21,7 @@
 #include <SDL.h>
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
+#include <emscripten.h>
 #include <emscripten/threading.h> // emscripten_is_main_browser_thread (KNativeSystem::exit)
 #endif
 #include "knativescreenSDL.h"
@@ -158,6 +159,9 @@ void KNativeSystem::exit(const char* msg, U32 code) {
     // makes the real fatal reason reachable in the console regardless of thread.
     klog_fmt("KNativeSystem::exit(%d): %s", code, msg ? msg : "");
 #ifdef __EMSCRIPTEN__
+    // Capture on the failing worker: forwarding only the message loses its
+    // WebAssembly call stack when the main thread receives the console event.
+    EM_ASM({ console.error('Native panic stack: ' + new Error().stack); });
     // Only pop the (alert-based) message box on the main browser thread; on a
     // worker it would throw. The klog above already surfaced the message.
     if (emscripten_is_main_browser_thread()) {
