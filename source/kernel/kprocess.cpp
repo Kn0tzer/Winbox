@@ -23,6 +23,7 @@
 #include "kstat.h"
 #include "bufferaccess.h"
 #include "ksignal.h"
+#include "wine32stack.h"
 #include "kepoll.h"
 #include "../io/fsmemnode.h"
 #include "../io/fsmemopennode.h"
@@ -3228,6 +3229,30 @@ void KProcess::printStack() {
             BString name = this->getModuleName(cpu->seg[CS].address+cpu->eip.u32);
 
             klog_fmt("    0x%08d %s", this->getModuleEip(cpu->seg[CS].address+cpu->eip.u32), name.length()?name.c_str():"Unknown");
+        }
+        if (!this->is64Bit && !thread->waitingCond) {
+            // A Wine Unix handler's ESP points to its Unix stack. Recover the
+            // saved Windows stack so diagnostics show the game caller too.
+            BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(cpu->memory->mutex);
+            Wine32SavedStack saved;
+            if (readWine32SavedStack(*cpu->memory, cpu->seg[FS].address, saved)) {
+                BString caller = this->getModuleName(saved.eip);
+                klog_fmt("WINE32 CALLER pid=%u tid=%u eip=0x%x esp=0x%x ebp=0x%x %s+0x%x",
+                    this->id, thread->id, saved.eip, saved.esp, saved.ebp,
+                    caller.c_str(), this->getModuleEip(saved.eip));
+                const U32 bytes = std::min<U32>(16384, saved.stackBase - saved.esp);
+                U32 emitted = 0;
+                for (U32 off = 0; off + 4 <= bytes && emitted < 32; off += 4) {
+                    if (!cpu->memory->canRead(saved.esp + off, 4)) break;
+                    U32 addr = cpu->memory->readd(saved.esp + off);
+                    BString module = this->getModuleName(addr);
+                    U32 offset = this->getModuleEip(addr);
+                    if (!module.contains(B("/home/username/apps/")) || !offset) continue;
+                    klog_fmt("WINE32 STACK pid=%u tid=%u sp+0x%x=0x%x %s+0x%x",
+                        this->id, thread->id, off, addr, module.c_str(), offset);
+                    emitted++;
+                }
+            }
         }
         ChangeThread c(thread);
         cpu->walkStack(cpu->eip.u32, EBP, 6);
