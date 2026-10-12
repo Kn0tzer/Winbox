@@ -1398,14 +1398,15 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
             r[1] = 1;                          // revert-to: PointerRoot
             r[2] = (uint8_t)(sequence & 0xff);
             r[3] = (uint8_t)(sequence >> 8);
-            // Report the presented window as focused (not root) so wine treats
-            // the app window as active and processes keyboard input. Falls back
-            // to root when nothing is presented yet.
+            // Focus can belong to a Vulkan/GL window while the last GDI
+            // presentation still belongs to the desktop. Report the actual
+            // focus first, then use presentation/root as startup fallbacks.
             uint32_t focus = rootWindow;
             {
                 XWireServer& srv = XWireServer::instance();
                 std::lock_guard<std::mutex> lk(srv.regMutex);
-                if (srv.presentWindow) focus = srv.presentWindow;
+                if (srv.focusWindow) focus = srv.focusWindow;
+                else if (srv.presentWindow) focus = srv.presentWindow;
             }
             memcpy(r + 8, &focus, 4);          // focus window
             writeToClient(r, sizeof(r));
@@ -1972,11 +1973,10 @@ void XWireConnection::deliverInputEvents() {
     int16_t baseX = 0, baseY = 0;
     {
         std::lock_guard<std::mutex> lk(srv.regMutex);
-        // Keys follow the focus window per X semantics; presentWindow is only
-        // set by the GDI PutImage path, so Vulkan/GL apps would otherwise never
-        // receive input. Fall back to the last FocusIn window when nothing has
-        // presented yet.
-        pw = srv.presentWindow ? srv.presentWindow : srv.focusWindow;
+        // A Vulkan/GL game can take focus without presenting through GDI.
+        // Drain input on its connection even if GDI last drew the desktop.
+        // Presentation is a fallback before a focus window is available.
+        pw = srv.focusWindow ? srv.focusWindow : srv.presentWindow;
         if (!pw) return;
         // Owner check: the presented (base) window's id base must match ours, so
         // only one connection drains the shared host input queue.
