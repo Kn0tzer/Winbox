@@ -1209,6 +1209,22 @@ export function swizzleBgraVb(bytes, stride, offsets) {
 // DESC_SET table — so whatever binding assignment naga chose (including a
 // texture+sampler pair sharing one binding, which WGSL allows) is honoured.
 const WGSL_RES_DECL = /@group\((\d+)\)\s*@binding\((\d+)\)\s*var(?:<([^>]+)>)?\s*(\w+)\s*:\s*([^;]+);/g;
+// DXVK's MSAA present shader averages its source samples. The page tier has
+// already resolved that attachment, so loading the resolved texel performs
+// the same operation. Gamma-enabled presentation retains the original shader.
+export function rewriteResolvedDxvkPresent(hash, wgsl) {
+  if (hash !== '8b1e0f33622e4d9f' || typeof wgsl !== 'string' ||
+      !/const s_gamma_bound: bool = false;/.test(wgsl) ||
+      !/var s_image: texture_multisampled_2d<f32>;/.test(wgsl)) return wgsl;
+  return `struct present_info_t {src_offset: vec2<i32>, dst_offset: vec2<i32>,}
+var<immediate> unnamed: present_info_t;
+@group(0) @binding(0) var s_image: texture_2d<f32>;
+@fragment fn main(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+ let coord = vec2<i32>(p.xy) + unnamed.src_offset - unnamed.dst_offset;
+ return textureLoad(s_image, coord, 0);
+}`;
+}
+
 export function scanWgslResources(wgsl) {
   const out = [];
   WGSL_RES_DECL.lastIndex = 0;
@@ -1552,7 +1568,8 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     if (!vsm || !fsm) return { skip: 'missing-shader' };
     let vsWgsl = await shaders.get('vertex', { hash: pipe.vsHash, size: vsm.code.length, code: vsm.code }, { rasterTopology: pipe.topology, specOverrides: pipe.vsSpec });
     if (unnegated) vsWgsl = stripNagaYNegation(vsWgsl);
-    const fsWgsl = await shaders.get('fragment', { hash: pipe.fsHash, size: fsm.code.length, code: fsm.code }, { rasterTopology: pipe.topology, specOverrides: pipe.fsSpec });
+    let fsWgsl = await shaders.get('fragment', { hash: pipe.fsHash, size: fsm.code.length, code: fsm.code }, { rasterTopology: pipe.topology, specOverrides: pipe.fsSpec });
+    fsWgsl = rewriteResolvedDxvkPresent(pipe.fsHash, fsWgsl);
     if (!vsWgsl || !fsWgsl) return { skip: 'shader-translation' };
     const vsR = rewritePushConstantsWGSL(vsWgsl), fsR = rewritePushConstantsWGSL(fsWgsl);
     const pushBlocks = vsR.pushBlocks + fsR.pushBlocks;
