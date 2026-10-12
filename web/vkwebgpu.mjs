@@ -1562,7 +1562,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     // pass with a depth attachment (Vulkan allows it). Key the cache on the
     // pass depth state and always emit a (possibly disabled) depthStencil
     // when the pass has depth.
-    const key = pipe.pipeId + ':ms' + sampleCount + ':topology:' + pipe.topology + ':vb:' + JSON.stringify(pipe.vb) + ':yny' + (unnegated ? '1' : '0') + ':pd' + (passHasDepth ? '1' : '0');
+    const key = pipe.pipeId + ':ms' + sampleCount + ':topology:' + pipe.topology + ':vb:' + JSON.stringify(pipe.vb) + ':yny' + (unnegated ? '1' : '0') + ':pd' + (passHasDepth ? '1' : '0') + ':dt' + (pipe.depthTest ? '1' : '0');
     if (pipelines.has(key)) return pipelines.get(key);
     const vsm = F.shaders.get(pipe.vsHash), fsm = F.shaders.get(pipe.fsHash);
     if (!vsm || !fsm) return { skip: 'missing-shader' };
@@ -1656,7 +1656,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
         topology: V2_TOPOLOGY[pipe.topology] || 'triangle-list',
         cullMode: CULL[pipe.cull] || 'none', frontFace: FRONT[pipe.front] || 'ccw',
       },
-      depthStencil: (pipe.depthTest || passHasDepth) ? {
+      depthStencil: passHasDepth ? {
         format: 'depth24plus',
         depthWriteEnabled: pipe.depthTest ? !!pipe.depthWrite : false,
         depthCompare: pipe.depthTest ? (DEPTH_OP[pipe.depthOp] || 'less-equal') : 'always',
@@ -1943,7 +1943,12 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
         passEnc = encoder.beginRenderPass(rpDesc);
         // Carry over a pipeline bound by an earlier pass (vkd3d binds before
         // vkCmdBeginRenderPass).
-        if (st.pipeRec && !st.pipeBad) passEnc.setPipeline(st.pipeRec.pipeline);
+        if (st.pipeRec && st.pipeDesc && !st.pipeBad) {
+          const rec = await getPipelineFor(st.pipeDesc, passSamples, st.pipeNeg, !!depthView);
+          st.pipeRec = rec.skip ? null : rec;
+          st.pipeBad = !!rec.skip;
+          if (st.pipeRec) passEnc.setPipeline(st.pipeRec.pipeline);
+        }
       } else {
         stats.skips++;
       }
