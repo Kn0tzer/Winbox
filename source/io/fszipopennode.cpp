@@ -138,6 +138,12 @@ U32 FsZipOpenNode::readFromStream(U8* dst, U32 len) {
 }
 
 void FsZipOpenNode::positionStream(U64 target) {
+    // Stored entries permit direct seeks, including large VPKs and ZIP64.
+    // Compressed entries keep the forward decompression path below.
+    if (unzSeekStoredFile64(this->stream, target) == UNZ_OK) {
+        this->streamPos = target;
+        return;
+    }
     // Streaming mode only: in cached mode the stream only moves forward
     // to extend the cache, so it is always exactly at cache.size().
     if (target < this->streamPos) {

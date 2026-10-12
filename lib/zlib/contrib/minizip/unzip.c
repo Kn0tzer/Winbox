@@ -148,6 +148,7 @@ typedef struct
     ZPOS64_T pos_local_extrafield;   /* position in the local extra field in read*/
     ZPOS64_T total_out_64;
 
+    int crc32_valid;           /* false after a nonsequential stored seek */
     uLong crc32;                /* crc32 of all data uncompressed */
     uLong crc32_wait;           /* crc32 we must obtain after decompress all */
     ZPOS64_T rest_read_compressed; /* number of byte to be decompressed */
@@ -1539,6 +1540,7 @@ extern int ZEXPORT unzOpenCurrentFile3 (unzFile file, int* method,
 
     pfile_in_zip_read_info->crc32_wait=s->cur_file_info.crc;
     pfile_in_zip_read_info->crc32=0;
+    pfile_in_zip_read_info->crc32_valid=1;
     pfile_in_zip_read_info->total_out_64=0;
     pfile_in_zip_read_info->compression_method = s->cur_file_info.compression_method;
     pfile_in_zip_read_info->filestream=s->filestream;
@@ -1670,6 +1672,39 @@ extern ZPOS64_T ZEXPORT unzGetCurrentFileZStreamPos64( unzFile file)
 }
 
 /** Addition for GDAL : END */
+
+/* Direct access is valid only for unencrypted, uncompressed entries. */
+extern int ZEXPORT unzSeekStoredFile64(unzFile file, ZPOS64_T offset)
+{
+    unz64_s* s;
+    file_in_zip64_read_info_s* info;
+    ZPOS64_T data_start;
+    if (file == NULL)
+        return UNZ_PARAMERROR;
+    s = (unz64_s*)file;
+    info = s->pfile_in_zip_read;
+    if (info == NULL || info->compression_method != 0 || info->raw ||
+        (s->cur_file_info.flag & 1) || s->encrypted ||
+        s->cur_file_info.compressed_size != s->cur_file_info.uncompressed_size ||
+        offset > s->cur_file_info.uncompressed_size)
+        return UNZ_PARAMERROR;
+    if (offset == info->total_out_64)
+        return UNZ_OK;
+    data_start = info->offset_local_extrafield + info->size_local_extrafield;
+    if (offset > (ZPOS64_T)-1 - data_start)
+        return UNZ_BADZIPFILE;
+    info->pos_in_zipfile = data_start + offset;
+    info->rest_read_compressed = s->cur_file_info.compressed_size - offset;
+    info->rest_read_uncompressed = s->cur_file_info.uncompressed_size - offset;
+    info->stream.avail_in = 0;
+    info->stream.next_in = NULL;
+    info->stream.total_out = (uLong)offset;
+    info->total_out_64 = offset;
+    /* A full read restarted at zero can still validate the entry's CRC. */
+    info->crc32 = 0;
+    info->crc32_valid = (offset == 0);
+    return UNZ_OK;
+}
 
 /*
   Read bytes from the current file.
@@ -2017,7 +2052,7 @@ extern int ZEXPORT unzCloseCurrentFile (unzFile file)
 
 
     if ((pfile_in_zip_read_info->rest_read_uncompressed == 0) &&
-        (!pfile_in_zip_read_info->raw))
+        (!pfile_in_zip_read_info->raw) && pfile_in_zip_read_info->crc32_valid)
     {
         if (pfile_in_zip_read_info->crc32 != pfile_in_zip_read_info->crc32_wait)
             err=UNZ_CRCERROR;
