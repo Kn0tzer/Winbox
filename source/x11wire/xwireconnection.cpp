@@ -637,7 +637,7 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
         case X_MapWindow: {
             uint32_t wid = rd32(req + 4);
             uint16_t ew = 0, eh = 0;
-            bool found = false;
+            bool found = false, acceptsKeys = false;
             // When this map adopts a NEW base (app switch), the outgoing base's
             // owner-client-base is captured here so we can hide that app's windows
             // (unmapAppWindows) + wipe the canvas AFTER dropping the registry lock.
@@ -652,6 +652,7 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
                     ew = it->second.width  ? it->second.width  : screenWidth;
                     eh = it->second.height ? it->second.height : screenHeight;
                     found = true;
+                    acceptsKeys = (it->second.eventMask & 0x00000001) != 0;
                     // Persistent-session app switch: adopt the NEW app's window as
                     // the canvas base at MAP time. (Doing this only in the PutImage
                     // path misses GL apps like glcube, which render via OpenGL/
@@ -700,10 +701,11 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
             }
             if (found) {
                 ensureWindow();
-                // MapNotify FIRST: winex11 selects StructureNotifyMask and blocks
-                // its message pump waiting for it to confirm the window is
-                // viewable. Without it a GL app parks in GetMessage forever after
-                // mapping and never reaches its first frame.
+                // Wine 10 waits for WM_STATE before accepting activation.
+                // Acknowledge managed windows before sending their FocusIn.
+                updateWmState(wid, 1); // NormalState
+                // Confirm the map after its WM_STATE acknowledgment, then
+                // expose the drawable and focus the input window.
                 sendMapNotify(wid);
                 // The host window + presentWindow are chosen lazily on the first
                 // PutImage (CreateWindow/Map geometry is unreliable — winex11
@@ -711,10 +713,9 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
                 // prompts the app to paint, which triggers that PutImage; a
                 // generous fallback extent makes the app repaint its whole area.
                 sendExpose(wid, 0, 0, ew, eh);
-                // Grant keyboard focus to the mapped window so wine activates
-                // its input queue — otherwise delivered KeyPress events are
-                // ignored and typing feels dead.
-                sendFocusIn(wid);
+                // Graphics child drawables select no key events. Mapping one
+                // must not take focus away from the application's whole window.
+                if (acceptsKeys) sendFocusIn(wid);
             }
             break;
         }
@@ -730,6 +731,7 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
                     wasOverlay = (wid != srv.presentWindow && !it->second.isRoot);
                 }
             }
+            updateWmState(wid, 0); // WithdrawnState
             // A menu/popup just closed — recompose so it disappears from the host.
             if (wasOverlay) srv.schedulePresent();
             break;
@@ -2684,6 +2686,27 @@ void XWireConnection::sendSelectionClear(uint32_t ownerWindow, const std::string
     writeToClient(e, sizeof(e));
     flushReplies();
     klog_fmt("XWire: SelectionClear -> owner 0x%x (%s)", ownerWindow, selectionName.c_str());
+}
+
+void XWireConnection::updateWmState(uint32_t window, uint32_t state) {
+    XWireServer& srv = XWireServer::instance();
+    bool notify = false;
+    {
+        std::lock_guard<std::mutex> lk(srv.regMutex);
+        auto it = srv.windows.find(window);
+        if (it == srv.windows.end() || it->second.isRoot || it->second.overrideRedirect) return;
+        notify = (it->second.eventMask & 0x400000) != 0;
+        if (!state) {
+            srv.windowProps.erase({window, "WM_STATE"});
+        } else {
+            auto& prop = srv.windowProps[{window, "WM_STATE"}];
+            prop.type = "WM_STATE";
+            prop.format = 32;
+            prop.data.assign(8, 0); // state and the optional icon window (None)
+            memcpy(prop.data.data(), &state, 4);
+        }
+    }
+    if (notify) sendPropertyNotify(window, internAtom("WM_STATE", false), state ? 0 : 1);
 }
 
 void XWireConnection::sendFocusIn(uint32_t window) {

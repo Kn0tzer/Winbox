@@ -79,6 +79,7 @@ public:
     // Without it wine's window never activates its input queue, so KeyPress
     // events we deliver are ignored even though they arrive. Sent when a window
     // maps; GetInputFocus is also answered with the present window (not root).
+    void updateWmState(uint32_t window, uint32_t state);
     void sendFocusIn(uint32_t window);
 
     // MapNotify (code 19) — winex11 selects StructureNotifyMask and blocks its
