@@ -1759,37 +1759,30 @@ struct VkProfTrapTimer {
 void hopV2ToPage() {
 #ifdef __EMSCRIPTEN__
     double vkprofHopT0 = vkProfNow(); U64 vkprofHopChunks = 0, vkprofHopBytes = 0;
-    // Hop the frame with the actual pixel data. DXVK builds two v2 frames per
-    // present: a 480x360 backbuffer frame (1MB, contains IMAGE_DATA with the
-    // rendered triangle) and a 472x333 present frame (3.5KB, just the present
-    // metadata without pixels). Hopping only the back (472x333) gives the page
-    // an empty frame -> litPixels=0. Hopping all frames causes the page to
-    // render 480x360 then clear for 472x333, racing the readback -> blank.
-    // Select the frame with the maximum bytes (the one with the pixels).
+    // A present depends on all preceding submissions: scene rendering,
+    // postprocessing and the swapchain copy. Payload size is unrelated to
+    // which commands are required. The page replays this ordered batch and
+    // updates its canvas only after the final submission.
     if (!g_v2Pending.empty()) {
-        const V2DoneFrame* best = &g_v2Pending.front();
-        size_t bestBytes = 0;
+        size_t submission = 0;
         for (const auto& f : g_v2Pending) {
-            size_t total = 0;
-            for (const auto& c : f.chunks) total += c.size();
-            if (total > bestBytes) { bestBytes = total; best = &f; }
-        }
-        const auto& f = *best;
-        for (const auto& chunk : f.chunks) {
-            const U8* ptr = chunk.data();
-            U32 len = (U32)chunk.size();
-            vkprofHopChunks++; vkprofHopBytes += len;
-            MAIN_THREAD_EM_ASM({
-                if (globalThis.window && window.bwVkChunk) {
-                    try {
-                        // One memcpy: a subarray view is unsafe to retain because
-                        // wasm memory growth detaches every live view.
-                        // Use HEAPU8 directly (Module.HEAPU8 may not be in scope).
-                        const bytes = new Uint8Array(HEAPU8.buffer, $0, $1).slice();
-                        window.bwVkChunk(bytes, $2);
-                    } catch (e) { console.warn('vk64: bwVkChunk failed', e); }
-                }
-            }, ptr, len, (U32)0);
+            const U32 moreSubmissions = ++submission < g_v2Pending.size() ? 1 : 0;
+            for (const auto& chunk : f.chunks) {
+                const U8* ptr = chunk.data();
+                U32 len = (U32)chunk.size();
+                vkprofHopChunks++; vkprofHopBytes += len;
+                MAIN_THREAD_EM_ASM({
+                    if (globalThis.window && window.bwVkChunk) {
+                        try {
+                            // One memcpy: a subarray view is unsafe to retain because
+                            // wasm memory growth detaches every live view.
+                            // Use HEAPU8 directly (Module.HEAPU8 may not be in scope).
+                            const bytes = new Uint8Array(HEAPU8.buffer, $0, $1).slice();
+                            window.bwVkChunk(bytes, $2);
+                        } catch (e) { console.warn('vk64: bwVkChunk failed', e); }
+                    }
+                }, ptr, len, moreSubmissions);
+            }
         }
     }
     if (vkProfEnabled()) { VkProfAcc& a = vkProfAcc(); a.accHop += vkProfNow() - vkprofHopT0; a.accHopChunks += vkprofHopChunks; a.accHopBytes += vkprofHopBytes; }

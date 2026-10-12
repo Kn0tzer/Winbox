@@ -541,6 +541,7 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
 
   // --- schema v2 (binary framed records): streaming queue + render pump ---
   const v2queue = new V2FrameQueue(V2_QUEUE_CAP);
+  const v2present = new V2PresentAssembler();
   const v2asm = new V2FrameAssembler();
   const v2state = { chunksReceived: 0, framesReceived: 0, rendered: 0,
     droppedConsumer: 0, chunkGaps: 0, rejected: 0 };
@@ -631,7 +632,6 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
   // and queueing are synchronous; the render pump is serialised behind pump2.
   // Never throws back at the guest.
   function chunk(bytes, flags) {
-    void flags;
     v2state.chunksReceived++;
     let parsed;
     try { parsed = parseV2Chunk(bytes); }
@@ -652,8 +652,10 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
       log('vk64: v2 frame rejected \u2014 ' + (e.message || e));
       return Promise.resolve({ rendered: false, reason: String(e.message || e) });
     }
+    const presented = v2present.push(decoded, flags);
+    if (!presented) return Promise.resolve({ rendered: false, reason: 'assembling-present' });
     v2state.framesReceived++;
-    v2queue.push(decoded); // drop-oldest past V2_QUEUE_CAP
+    v2queue.push(presented); // drop complete presentations, never individual submissions
     v2state.droppedConsumer = v2queue.dropped;
     queuePump();
     return pump2;
@@ -837,10 +839,46 @@ export class V2FrameAssembler {
 // push() drops the oldest past the cap; takeLatest() returns the newest and
 // drops everything older (latest-frame-wins); clear() drains (resize hook).
 // ---------------------------------------------------------------------------
+export class V2PresentAssembler {
+  constructor() { this.pending = []; }
+  push(frame, flags = 0) {
+    this.pending.push(frame);
+    if (flags & 1) return null; // more queue submissions before this presentation
+    const submissions = this.pending;
+    this.pending = [];
+    if (submissions.length === 1) return frame;
+    // Keep submission-local resource snapshots: a buffer slice can legally
+    // be updated between submissions after its guest fence has signalled.
+    return { ...frame, submissions, passes: submissions.flatMap(f => f.passes) };
+  }
+}
+
 export class V2FrameQueue {
-  constructor(cap = V2_QUEUE_CAP) { this.cap = cap; this.q = []; this.dropped = 0; }
+  constructor(cap = V2_QUEUE_CAP) {
+    this.cap = cap; this.q = []; this.dropped = 0;
+    this.imageData = new Map(); this.bufferData = new Map();
+  }
   get size() { return this.q.length; }
   push(frame) {
+    // Payloads are deltas even when a frame's draw commands are discarded.
+    // Retain the latest data so a subsequent hash-only reference can upload it.
+    for (const submission of frame.submissions || [frame]) {
+      for (const [id, image] of submission.images || []) {
+        if (image.pixels) this.imageData.set(id, image);
+        else {
+          const previous = this.imageData.get(id);
+          if (previous?.hash === image.hash) image.pixels = previous.pixels;
+        }
+      }
+      for (const [id, bytes] of submission.buffers || []) {
+        const hash = submission.bufHashes?.get(id);
+        if (bytes) this.bufferData.set(id, { bytes, hash });
+        else {
+          const previous = this.bufferData.get(id);
+          if (previous?.hash === hash) submission.buffers.set(id, previous.bytes);
+        }
+      }
+    }
     this.q.push(frame);
     while (this.q.length > this.cap) { this.q.shift(); this.dropped++; }
   }
@@ -1939,8 +1977,16 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     return entries;
   }
 
-  async function render(frame) {
+  async function render(frame, { present = true } = {}) {
     if (destroyed) throw new Error('page tier destroyed');
+    if (frame.submissions) {
+      let result;
+      for (let i = 0; i < frame.submissions.length; i++) {
+        result = await render(frame.submissions[i], { present: present && i === frame.submissions.length - 1 });
+        if (!result?.rendered) return result;
+      }
+      return result;
+    }
     F.shaders = frame.shaders; F.images = frame.images;
     F.views = frame.views; F.samplers = frame.samplers; F.buffers = frame.buffers;
     F.bufHashes = frame.bufHashes;
@@ -1950,7 +1996,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     if (typeof window !== 'undefined' && window.__bwDbgRender)
       console.log('bwDbg render f' + frame.frameNo + ' ' + frame.width + 'x' + frame.height +
         ' canvas ' + canvas.width + 'x' + canvas.height);
-    if (canvas.width !== frame.width || canvas.height !== frame.height) {
+    if (present && (canvas.width !== frame.width || canvas.height !== frame.height)) {
       canvas.width = frame.width; canvas.height = frame.height;
       obsW = frame.width; obsH = frame.height;
       // Reconfigure the WebGPU context for the new canvas size; without
@@ -2188,7 +2234,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       if (skipped) { stats.skips++; return { rendered: false, reason: skipped }; }
     }
 
-    if (!presentTex) { stats.skips++; return { rendered: false, reason: 'no-colour-target' }; }
+    if (!presentTex && present) { stats.skips++; return { rendered: false, reason: 'no-colour-target' }; }
 
     // V2_READBACK records (guest vkCmdCopyImageToBuffer): copy the source
     // image to a MAP_READ buffer now, resolve to the wasm heap after submit.
@@ -2217,7 +2263,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     // page canvas, like the v1 tier. The readback exists only for the
     // lit/painted stats; it is sampled every STATS_EVERY frames to avoid a
     // GPU->CPU sync stall on every frame. The present copy always runs.
-    const doStats = (stats.frames % STATS_EVERY) === 0;
+    const doStats = present && (stats.frames % STATS_EVERY) === 0;
     device.pushErrorScope('validation');
     const bytesPerRow = Math.ceil(presentW * 4 / 256) * 256;
     let readback = null;
@@ -2225,7 +2271,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       readback = device.createBuffer({ size: bytesPerRow * presentH, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
       encoder.copyTextureToBuffer({ texture: presentTex }, { buffer: readback, bytesPerRow }, [presentW, presentH]);
     }
-    encoder.copyTextureToTexture({ texture: presentTex }, { texture: context.getCurrentTexture() }, [presentW, presentH]);
+    if (present) encoder.copyTextureToTexture({ texture: presentTex }, { texture: context.getCurrentTexture() }, [presentW, presentH]);
     device.queue.submit([encoder.finish()]);
     const invalid = await device.popErrorScope();
     if (invalid) { if (readback) readback.destroy(); throw new Error('v2 frame encoding rejected: ' + invalid.message); }
@@ -2277,7 +2323,8 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       } catch (e) {}
     }
 
-    const release = () => { for (const x of F.live.splice(0)) { try { x.destroy(); } catch { /* ignore */ } } };
+    const ownedResources = F.live.splice(0);
+    const release = () => { for (const x of ownedResources) { try { x.destroy(); } catch { /* ignore */ } } };
     device.queue.onSubmittedWorkDone().then(release, release);
 
     stats.frames++; stats.rendered++;
