@@ -717,7 +717,10 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
                 sendExpose(wid, 0, 0, ew, eh);
                 // Graphics child drawables select no key events. Mapping one
                 // must not take focus away from the application's whole window.
-                if (acceptsKeys) sendFocusIn(wid);
+                if (acceptsKeys) {
+                    sendFocusIn(wid);
+                    sendTakeFocus(wid);
+                }
             }
             break;
         }
@@ -2720,6 +2723,40 @@ void XWireConnection::updateWmState(uint32_t window, uint32_t state) {
         }
     }
     if (notify) sendPropertyNotify(window, internAtom("WM_STATE", false), state ? 0 : 1);
+}
+
+void XWireConnection::sendTakeFocus(uint32_t window) {
+    const uint32_t protocol = internAtom("WM_TAKE_FOCUS", true);
+    if (!protocol) return;
+    bool advertised = false;
+    {
+        XWireServer& srv = XWireServer::instance();
+        std::lock_guard<std::mutex> lk(srv.regMutex);
+        auto win = srv.windows.find(window);
+        if (win == srv.windows.end() || win->second.isRoot || win->second.overrideRedirect) return;
+        auto prop = srv.windowProps.find({window, "WM_PROTOCOLS"});
+        if (prop == srv.windowProps.end() || prop->second.type != "ATOM" || prop->second.format != 32) return;
+        for (size_t i = 0; i + 4 <= prop->second.data.size(); i += 4) {
+            uint32_t value;
+            memcpy(&value, prop->second.data.data() + i, 4);
+            if (value == protocol) { advertised = true; break; }
+        }
+    }
+    if (!advertised) return;
+    // A window manager delivers this ClientMessage after acknowledging the
+    // map. Wine's default UseTakeFocus path does not activate on FocusIn.
+    uint8_t e[32] = {0};
+    e[0] = 33 | 0x80; // ClientMessage delivered by SendEvent
+    e[1] = 32;
+    e[2] = (uint8_t)(sequence & 0xff);
+    e[3] = (uint8_t)(sequence >> 8);
+    memcpy(e + 4, &window, 4);
+    const uint32_t protocols = internAtom("WM_PROTOCOLS", false);
+    memcpy(e + 8, &protocols, 4);
+    memcpy(e + 12, &protocol, 4);
+    const uint32_t timestamp = (uint32_t)KSystem::getMilliesSinceStart();
+    memcpy(e + 16, &timestamp, 4);
+    writeToClient(e, sizeof(e));
 }
 
 void XWireConnection::sendFocusIn(uint32_t window) {
