@@ -256,6 +256,7 @@ enum {
     VK64_fn_vkCmdDispatchBase,
     VK64_fn_vkCmdDispatchIndirect,
     VK64_fn_vkGetBufferDeviceAddress,
+    VK64_fn_vkResetQueryPool = 851,
     VK64_fn__MAX
 };
 
@@ -327,6 +328,7 @@ typedef VkHandle VkRenderPass;
 typedef VkHandle VkFramebuffer;
 typedef VkHandle VkPipelineCache;
 typedef VkHandle VkFence;
+typedef VkHandle VkQueryPool;
 typedef VkHandle VkSemaphore;
 typedef VkHandle VkSurfaceKHR;
 typedef VkHandle VkSwapchainKHR;
@@ -473,6 +475,11 @@ API VkResult vkResetCommandBuffer(VkCommandBuffer cb, VkFlags flags) {
 API VkResult vkResetCommandPool(VkDevice dev, VkCommandPool pool, VkFlags flags) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = pool; a.a[2] = flags;
     return (VkResult)vk64_trap(VK64_fn_vkResetCommandPool, &a);
+}
+API void vkResetQueryPool(VkDevice dev, VkQueryPool pool, uint32_t first, uint32_t count) {
+    VK64Args a = {{0}};
+    a.a[0] = dev; a.a[1] = pool; a.a[2] = first; a.a[3] = count;
+    (void)vk64_trap(VK64_fn_vkResetQueryPool, &a);
 }
 API void vkFreeCommandBuffers(VkDevice dev, VkCommandPool pool, uint32_t n, const VkCommandBuffer* cbs) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = pool; a.a[2] = n; a.a[3] = P(cbs);
@@ -1122,6 +1129,7 @@ API void vkCmdDispatchBase(VkCommandBuffer, uint32_t, uint32_t, uint32_t, uint32
 API void vkCmdDispatchIndirect(VkCommandBuffer, VkBuffer, uint64_t);
 
 static const struct procEntry g_procs[] = {
+    E(vkResetQueryPool, VK64_fn_vkResetQueryPool),
     // --- global ---
     E(vkEnumerateInstanceVersion, VK64_fn_vkEnumerateInstanceVersion),
     E(vkEnumerateInstanceExtensionProperties, VK64_fn_vkEnumerateInstanceExtensionProperties),
