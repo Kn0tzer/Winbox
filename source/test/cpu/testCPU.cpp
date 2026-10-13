@@ -250,6 +250,10 @@ void testRunParallel(const TestEntry* entries, size_t entryCount, U32 workerCoun
     };
 
     if (workerCount == 1) {
+#ifdef BOXEDWINE_HOST_EXCEPTIONS
+        // The JIT uses host faults to fall back for unaligned guest atomics.
+        platformInitExceptionHandling();
+#endif
         for (size_t i = 0; i < entryCount; ++i) {
             runEntry(0, i);
         }
