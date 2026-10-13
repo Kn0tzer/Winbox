@@ -6454,7 +6454,9 @@ DecodedOp* decodeBlock(DecodeBlockCallback* callback, U32 eip, bool isBig, U32& 
         }
         else {
             decoder[d.inst]->decode(&d, op);
-            if (!callback->isValidExecutableAddress(d.eip)) {
+            // Validate the bytes of THIS instruction, not the next one.
+            // A JIT method may end exactly at an executable page boundary.
+            if (!callback->isValidExecutableAddress(d.eip - 1)) {
 				// last instruction went into a page that is not executable, stop decoding this block
                 if (!prev) {
                     return nullptr;
@@ -6498,7 +6500,7 @@ DecodedOp* decodeBlock(DecodeBlockCallback* callback, U32 eip, bool isBig, U32& 
         if (instructionInfo[op->inst].branch & DECODE_BRANCH_1) {
             op->data.nextJump = callback->getOpLocation(d.eip + op->imm);
         }
-        if (!callback->shouldContinue(d.eip)) {
+        if (!callback->shouldContinue(d.eip) || !callback->isValidExecutableAddress(d.eip)) {
             break;
         }
         if (opCount > maxOpCount) {

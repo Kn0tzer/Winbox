@@ -24,6 +24,7 @@
 #include "cpu/testCMov.h"
 #include "cpu/testCmp.h"
 #include "cpu/testCPU.h"
+#include "cpu/testDecoderPageBoundary.h"
 #include "cpu/testFPU.h"
 #include "cpu/testIncDec.h"
 #include "cpu/testJmp.h"
@@ -656,6 +657,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testLockedInc, "Test Multi-threaded locked inc"},
 #endif
     {testWaitPid, "Test waitpid child selection"},
+    {testDecoderPageBoundary, "Test decoder executable page boundary"},
 };
 
 } // namespace
