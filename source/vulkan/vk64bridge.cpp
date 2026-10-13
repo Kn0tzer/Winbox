@@ -604,7 +604,7 @@ struct Swapchain : Obj { U32 w = 0, h = 0, format = 0, nimg = 0, cur = 0; U64 im
 enum CmdKind : U32 {
     CMD_BEGIN_RP, CMD_END_RP, CMD_BIND_PIPE, CMD_BIND_SETS, CMD_VIEWPORT,
     CMD_SCISSOR, CMD_DRAW, CMD_DRAW_INDEXED, CMD_BARRIER, CMD_COPY_B2I, CMD_PUSH_CONST,
-    CMD_BIND_VB, CMD_BIND_IB, CMD_UPDATE_BUF, CMD_COPY_I2B, CMD_DISPATCH
+    CMD_BIND_VB, CMD_BIND_IB, CMD_UPDATE_BUF, CMD_COPY_I2B, CMD_DISPATCH, CMD_COPY_IMAGE
 };
 struct Copy {
     U64 srcBuffer = 0, dstImage = 0, bufOff = 0;
@@ -613,6 +613,11 @@ struct Copy {
 struct CopyI2B {
     U64 srcImage = 0, dstBuffer = 0, bufOff = 0;
     U32 rowLen = 0, imgH = 0; int32_t ox = 0, oy = 0; U32 w = 0, h = 0;
+};
+struct ImageCopy {
+    U64 src = 0, dst = 0;
+    U32 srcMip = 0, srcLayer = 0, dstMip = 0, dstLayer = 0;
+    U32 srcOrigin[3] = {}, dstOrigin[3] = {}, extent[3] = {};
 };
 struct Cmd {
     U32 kind = 0;
@@ -625,6 +630,7 @@ struct Cmd {
     bool vbHasStride[VK64_MAX_VERT_BINDINGS] = {false};
     Copy  copy;
     CopyI2B copyI2B;
+    ImageCopy imageCopy;
     // Push constants: the recorded bytes, byte-offset preserved. DXVK pushes
     // constants per-draw for essentially everything, so this is a hot path, not a
     // corner case.
@@ -687,6 +693,20 @@ void pushCmd(CmdBuf* st, const Cmd& c) {
     if (!st) return;
     if (st->cmds.size() >= VK64_MAX_CMDS) { g_frameOverflow = true; return; }
     st->cmds.push_back(c);
+}
+
+// GPU render targets have no current pixels in guest backing memory. Preserve
+// image transfers in command order so the page copies the rendered texture.
+void recordImageCopy(CmdBuf* cb, U64 src, U64 dst, U32 srcMip, U32 srcLayer, U32 dstMip, U32 dstLayer,
+                     int32_t sx, int32_t sy, int32_t sz, int32_t dx, int32_t dy, int32_t dz,
+                     U32 w, U32 h, U32 d, U32 layers) {
+    if (!cb || !w || !h || !d || sx < 0 || sy < 0 || sz < 0 || dx < 0 || dy < 0 || dz < 0) return;
+    for (U32 layer = 0; layer < layers && layer < VK64_MAX_CMDS; ++layer) {
+        Cmd c; c.kind = CMD_COPY_IMAGE;
+        c.imageCopy = { src, dst, srcMip, srcLayer + layer, dstMip, dstLayer + layer,
+                       { (U32)sx, (U32)sy, (U32)sz }, { (U32)dx, (U32)dy, (U32)dz }, { w, h, d } };
+        pushCmd(cb, c);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1584,7 +1604,7 @@ enum V2Rec : U32 {
     V2_BUFFER_DATA = 0x09, V2_IMAGE_DATA = 0x0A, V2_SAMPLER = 0x0B,
     V2_PUSH = 0x0C, V2_VIEWPORT = 0x0D, V2_SCISSOR = 0x0E,
     V2_VERTEX_BIND = 0x0F, V2_INDEX_BIND = 0x10, V2_DRAW = 0x11,
-    V2_INLINE_BYTES = 0x12, V2_READBACK = 0x13,
+    V2_INLINE_BYTES = 0x12, V2_READBACK = 0x13, V2_IMAGE_COPY = 0x14,
 };
 const U32 V2_CHUNK_MAGIC = 0x46324B56u;   // 'VK2F' little-endian: bytes 56 4B 32 46
 const U32 V2_CHUNK_VERSION = 2;
@@ -2533,6 +2553,17 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                         }
                     }
                     break;
+                case CMD_COPY_IMAGE: {
+                    const ImageCopy& copy = k.imageCopy;
+                    emit(V2_IMAGE_COPY, [&](ChunkWriter& p) {
+                        p.u64(copy.src); p.u64(copy.dst);
+                        p.u32(copy.srcMip); p.u32(copy.srcLayer); p.u32(copy.dstMip); p.u32(copy.dstLayer);
+                        for (U32 v : copy.srcOrigin) p.u32(v);
+                        for (U32 v : copy.dstOrigin) p.u32(v);
+                        for (U32 v : copy.extent) p.u32(v);
+                    });
+                    break;
+                }
                 case CMD_COPY_I2B: {
                     const CopyI2B& rb = k.copyI2B;
                     for (const auto& pend : g_readbackPending) {
@@ -5228,6 +5259,9 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         U32 nreg = (U32)args.a[5];
         std::vector<VkImageCopyL> regs;
         readArray(args.a[6], nreg, regs);
+        for (const auto& r : regs)
+            recordImageCopy(cbOf(args.a[0], "vkCmdCopyImage"), args.a[1], args.a[3], r.srcMip, r.srcBaseLayer, r.dstMip, r.dstBaseLayer,
+                r.srcX, r.srcY, r.srcZ, r.dstX, r.dstY, r.dstZ, r.w, r.h, r.d, std::min(r.srcLayerCount, r.dstLayerCount));
         U32 pxBytes = (U32)src->pixBytes;
         if (!pxBytes) pxBytes = 4;
         U32 srcRowPitch = src->w * pxBytes;
@@ -5281,6 +5315,9 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         U32 nreg = (U32)args.a[3];
         std::vector<VkImageCopy2L> regs;
         readArray(args.a[4], nreg, regs);
+        for (const auto& r : regs)
+            recordImageCopy(cbOf(args.a[0], "vkCmdCopyImage2"), args.a[1], args.a[2], r.srcMip, r.srcBaseLayer, r.dstMip, r.dstBaseLayer,
+                r.srcX, r.srcY, r.srcZ, r.dstX, r.dstY, r.dstZ, r.w, r.h, r.d, std::min(r.srcLayerCount, r.dstLayerCount));
         U32 pxBytes = (U32)src->pixBytes;
         if (!pxBytes) pxBytes = 4;
         U32 srcRowPitch = src->w * pxBytes;
@@ -5484,6 +5521,9 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         U32 nreg = (U32)args.a[5];
         std::vector<VkImageResolveL> regs;
         readArray(args.a[6], nreg, regs);
+        for (const auto& r : regs)
+            recordImageCopy(cbOf(args.a[0], "vkCmdResolveImage"), args.a[1], args.a[3], r.srcMip, r.srcBaseLayer, r.dstMip, r.dstBaseLayer,
+                r.srcX, r.srcY, r.srcZ, r.dstX, r.dstY, r.dstZ, r.w, r.h, r.d, std::min(r.srcLayerCount, r.dstLayerCount));
         U32 pxBytes = (U32)src->pixBytes;
         if (!pxBytes) pxBytes = 4;
         U32 srcRowPitch = src->w * pxBytes;
@@ -7215,7 +7255,13 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         U8 tmp[65536];
         for (U32 i = 0; i < nreg && pReg; i++) {
             vk32abi::VkImageCopy r = {};
-            readStruct32(pReg + i * (U32)sizeof(r), r);
+            const U32 header = fnId == VK64_fn_vkCmdCopyImage ? 0 : 8;
+            readStruct32(pReg + i * ((U32)sizeof(r) + header) + header, r);
+            recordImageCopy(objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdCopyImage"), args.a[1],
+                fnId == VK64_fn_vkCmdCopyImage ? args.a[3] : args.a[2],
+                r.srcSubresource.mipLevel, r.srcSubresource.baseArrayLayer, r.dstSubresource.mipLevel, r.dstSubresource.baseArrayLayer,
+                r.srcOffset.x, r.srcOffset.y, r.srcOffset.z, r.dstOffset.x, r.dstOffset.y, r.dstOffset.z,
+                r.extent.width, r.extent.height, r.extent.depth, std::min(r.srcSubresource.layerCount, r.dstSubresource.layerCount));
             U32 w = r.extent.width, h = r.extent.height;
             U32 srcRow = src->w * pxBytes, dstRow = dst->w * pxBytes;
             for (U32 y = 0; y < h; y++) {
@@ -7333,6 +7379,14 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdResolveImageKHR: {
         Image* src = objOf32<Image>(args.a[1], K_IMAGE, "vkCmdResolveImage");
         Image* dst = objOf32<Image>(args.a[3], K_IMAGE, "vkCmdResolveImage");
+        for (U32 i = 0; i < (U32)args.a[5] && args.a[6]; ++i) {
+            vk32abi::VkImageResolve r = {};
+            readStruct32((U32)args.a[6] + i * (U32)sizeof(r), r);
+            recordImageCopy(objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdResolveImage"), args.a[1], args.a[3],
+                r.srcSubresource.mipLevel, r.srcSubresource.baseArrayLayer, r.dstSubresource.mipLevel, r.dstSubresource.baseArrayLayer,
+                r.srcOffset.x, r.srcOffset.y, r.srcOffset.z, r.dstOffset.x, r.dstOffset.y, r.dstOffset.z,
+                r.extent.width, r.extent.height, r.extent.depth, std::min(r.srcSubresource.layerCount, r.dstSubresource.layerCount));
+        }
         if (!src || !dst || !src->mem || !dst->mem) return 0;
         DeviceMemory* smem = objOf32<DeviceMemory>(src->mem, K_MEMORY, "vkCmdResolveImage");
         DeviceMemory* dmem = objOf32<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdResolveImage");

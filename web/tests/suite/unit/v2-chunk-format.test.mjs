@@ -9,6 +9,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { parseV2Chunk, V2_MAGIC, V2_VERSION } from '../../../vkwebgpu.mjs';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -51,17 +52,13 @@ test('V2_REC type IDs are sequential from 0x01', () => {
 });
 
 test('page chunk parser accepts all V2_REC types', () => {
-  // The parser validates: type >= FRAME_BEGIN && type <= READBACK
-  // Verify the range check covers all defined types
-  const min = Math.min(...Object.values(v2rec));
-  const max = Math.max(...Object.values(v2rec));
-  assert.equal(min, v2rec.FRAME_BEGIN, 'Parser lower bound must be FRAME_BEGIN');
-  assert.equal(max, v2rec.READBACK, 'Parser upper bound must be READBACK');
-  // Verify the range check exists in parseV2Chunk
-  assert.ok(
-    pageSrc.includes('type < V2_REC.FRAME_BEGIN') || pageSrc.includes('type < 0x01'),
-    'parseV2Chunk must validate record type lower bound'
-  );
+  const types = Object.values(v2rec);
+  const chunk = new Uint8Array(16 + types.length * 8), view = new DataView(chunk.buffer);
+  view.setUint32(0, V2_MAGIC, true); view.setUint16(4, V2_VERSION, true);
+  types.forEach((type, index) => view.setUint16(16 + index * 8, type, true));
+  assert.deepEqual(parseV2Chunk(chunk).records.map(record => record.type), types);
+  view.setUint16(16, Math.max(...types) + 1, true);
+  assert.throws(() => parseV2Chunk(chunk), /unknown record type/);
 });
 
 test('V2 chunk magic and version constants exist', () => {

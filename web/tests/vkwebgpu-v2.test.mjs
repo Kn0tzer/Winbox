@@ -111,8 +111,8 @@ test('malformed chunks are rejected with a reason', () => {
   // truncated record payload (cut mid-record: header 16 + rec header 8 + 6 payload bytes)
   const cut = chunk(0, false, ...good).subarray(0, 30);
   assert.throws(() => parseV2Chunk(cut), /truncat/);
-  // unknown record type (0x13 is now V2_REC.READBACK; use 0x14)
-  const unk = rec(0x14, new Uint8Array(4));
+  // The first number above the defined schema remains invalid as it grows.
+  const unk = rec(Math.max(...Object.values(V2_REC)) + 1, new Uint8Array(4));
   assert.throws(() => parseV2Chunk(chunk(0, false, unk)), /unknown record type/);
   // declared length overruns the chunk
   const lie = new W().u16(V2_REC.PUSH).u16(0).u32(9999).buf();

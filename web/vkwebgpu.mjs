@@ -734,7 +734,7 @@ export const V2_REC = Object.freeze({
   SHADER: 0x05, PIPELINE: 0x06, BIND_SETS: 0x07, DESC_SET: 0x08,
   BUFFER_DATA: 0x09, IMAGE_DATA: 0x0A, SAMPLER: 0x0B, PUSH: 0x0C,
   VIEWPORT: 0x0D, SCISSOR: 0x0E, VERTEX_BIND: 0x0F, INDEX_BIND: 0x10,
-  DRAW: 0x11, INLINE_BYTES: 0x12, READBACK: 0x13,
+  DRAW: 0x11, INLINE_BYTES: 0x12, READBACK: 0x13, IMAGE_COPY: 0x14,
 });
 
 // Vulkan descriptor types (numeric, as the bridge records them).
@@ -789,7 +789,7 @@ export function parseV2Chunk(bytes) {
     if (p + V2_REC_HEADER_LEN > bytes.length) throw new Error('vk64: v2 chunk truncated record header');
     const type = dv.getUint16(p, true);
     const len = dv.getUint32(p + 4, true);
-    if (type < V2_REC.FRAME_BEGIN || type > V2_REC.READBACK)
+    if (type < V2_REC.FRAME_BEGIN || type > V2_REC.IMAGE_COPY)
       throw new Error('vk64: v2 unknown record type 0x' + type.toString(16));
     if (len > V2_MAX_RECORD_BYTES || p + V2_REC_HEADER_LEN + len > bytes.length)
       throw new Error('vk64: v2 record 0x' + type.toString(16) + ' truncated (len ' + len + ')');
@@ -1166,6 +1166,18 @@ export function decodeV2Frame(records, counters = {}) {
         if (offset + size > V2_PUSH_SIZE) throw new Error('vk64: v2 PUSH out of range');
         const bytes = r.bytes(size); r.done('PUSH');
         needPass().ops.push({ op: 'push', offset, bytes: bytes.slice() });
+        break;
+      }
+      case V2_REC.IMAGE_COPY: {
+        const srcImage = v2Hex64(r.u64()), dstImage = v2Hex64(r.u64());
+        const srcMip = r.u32(), srcLayer = r.u32(), dstMip = r.u32(), dstLayer = r.u32();
+        const srcOrigin = [r.u32(), r.u32(), r.u32()], dstOrigin = [r.u32(), r.u32(), r.u32()];
+        const extent = [r.u32(), r.u32(), r.u32()]; r.done('image copy');
+        if (srcImage === V2_UNKNOWN_IMAGE || dstImage === V2_UNKNOWN_IMAGE ||
+            extent.some(n => !n || n > MAX_DIMENSION) ||
+            [...srcOrigin, ...dstOrigin].some(n => n > MAX_DIMENSION) || pass?.attachments.length)
+          throw new Error('vk64: v2 invalid image copy');
+        needPass().ops.push({ op: 'imageCopy', srcImage, dstImage, srcMip, srcLayer, dstMip, dstLayer, srcOrigin, dstOrigin, extent });
         break;
       }
       case V2_REC.VIEWPORT: {
@@ -1582,7 +1594,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     const slices = cube ? 6 : d;
     const t = device.createTexture({
       size: [w, h, slices], format: fmt, dimension,
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC,
     });
     if (img.pixels && img.pixels.length) {
       const compressed = fmt.startsWith('bc');
@@ -2061,7 +2073,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
         } else {
           const single = target(v2TargetKey(a.imageId, p.w, p.h, 1, false), {
             size: [p.w, p.h], format,
-            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | texBinding,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST | texBinding,
           });
           let view = single.createView(), resolveTarget;
           if (samples > 1) {
@@ -2108,6 +2120,22 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
 
       for (const op of p.ops) {
         switch (op.op) {
+          case 'imageCopy': {
+            if (passEnc) throw new Error('image copy inside a render pass');
+            if (op.srcMip || op.dstMip || op.srcLayer || op.dstLayer || op.extent[2] !== 1 || op.srcOrigin[2] || op.dstOrigin[2])
+              throw new Error('image copy subresource is not supported by the base-level replay');
+            const source = targets.get(v2ImageTargetKey(op.srcImage, false)) ||
+              (F.images.has(op.srcImage) && gpuTextureFor(op.srcImage, F.images.get(op.srcImage)));
+            if (!source) throw new Error('image copy source missing: ' + op.srcImage);
+            const image = F.images.get(op.dstImage);
+            const destination = target(v2ImageTargetKey(op.dstImage, false), {
+              size: [Math.max(image?.w || 0, op.dstOrigin[0] + op.extent[0]), Math.max(image?.h || 0, op.dstOrigin[1] + op.extent[1])],
+              format: source.format,
+              usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
+            });
+            encoder.copyTextureToTexture({ texture: source, origin: op.srcOrigin }, { texture: destination, origin: op.dstOrigin }, op.extent);
+            break;
+          }
           case 'bindPipe': {
             let rec;
             try { rec = await getPipelineFor(op.pipe, passSamples, false, !!depthView, st.ibind?.indexType || 0, colorAttachments.length); }

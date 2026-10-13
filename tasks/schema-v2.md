@@ -103,6 +103,14 @@ so the decision is pinned to the submit path, never re-read per frame).
 
 ## 3. Schema v2 record catalogue
 
+Image transfers use append-only record `0x14` (`IMAGE_COPY`). Its payload is
+`u64 srcImage, u64 dstImage`, followed by thirteen little-endian `u32` fields:
+`srcMip, srcLayer, dstMip, dstLayer, srcX, srcY, srcZ, dstX, dstY, dstZ,
+width, height, depth` (68 bytes total). It occurs outside a render pass and
+retains command ordering. Copy and resolve commands copy the page's rendered
+texture, rather than the guest's stale backing pixels. Current replay supports
+base-level, single-layer 2D transfers; other subresources are rejected explicitly.
+
 Frame = **present-to-present**. Records stream across submits; `FRAME_BEGIN`
 is emitted at the first submit-with-draw after a present, `FRAME_END` seals at
 `vkQueuePresentKHR`. A submit with no draws emits nothing.
