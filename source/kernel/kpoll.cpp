@@ -137,6 +137,7 @@ S32 internal_poll(KThread* thread, KPollData* data, U32 count, U32 timeout) {
                      (int)(thread->process ? thread->process->id : -1), (int)timeout, (int)count, buf);
         }
         if (timeout==0) {
+            thread->condStartWaitTime = 0;
             clearPollData(thread, firstData, count);
             return 0;
         }
@@ -145,21 +146,22 @@ S32 internal_poll(KThread* thread, KPollData* data, U32 count, U32 timeout) {
             clearPollData(thread, firstData, count);
             return -K_EINTR;
         }
+        const U32 now = KSystem::getMilliesSinceStart();
         if (!thread->condStartWaitTime) {
-            thread->condStartWaitTime = KSystem::getMilliesSinceStart();
-        } else {
-            U32 diff = KSystem::getMilliesSinceStart()-thread->condStartWaitTime;
-            if (diff>timeout) {
+            thread->condStartWaitTime = now;
+        }
+        U32 elapsed = now - thread->condStartWaitTime;
+        if (timeout <= 0xF0000000 && elapsed >= timeout) {
                 thread->condStartWaitTime = 0;
                 clearPollData(thread, firstData, count);
                 return 0;
-            }
-            timeout-=diff;
-        }   
+        }
         if (timeout>0xF0000000) {
             BOXEDWINE_CONDITION_WAIT(thread->pollCond);
         } else {
-            BOXEDWINE_CONDITION_WAIT_TIMEOUT(thread->pollCond, timeout);
+            // Keep the original deadline. Subtracting total elapsed time from
+            // an already-reduced timeout returns early after spurious wakes.
+            BOXEDWINE_CONDITION_WAIT_TIMEOUT(thread->pollCond, timeout - elapsed);
         }
         clearPollData(thread, firstData, count);
 #ifdef BOXEDWINE_MULTI_THREADED
