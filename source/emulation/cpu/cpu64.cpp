@@ -2635,11 +2635,14 @@ dsp_42:
         }
         S64 sa = (opSize == 2) ? (S64)(S16)a
                : (opSize == 4) ? (S64)(S32)a : (S64)a;
-        S64 r = sa * imm;
+        // Compute before truncating: overflowing S64 multiplication is undefined
+        // and lets native optimizers discard the guest's CF/OF overflow test.
+        __int128 r128 = (__int128)sa * (__int128)imm;
+        S64 r = (S64)r128;
         bool overflow = false;
         if (opSize == 2) overflow = (r != (S64)(S16)r);
         else if (opSize == 4) overflow = (r != (S64)(S32)r);
-        else { __int128 r128 = (__int128)sa * (__int128)imm; overflow = (r128 != (__int128)r); }
+        else overflow = (r128 != (__int128)r);
         rflags &= ~(X64_CF | X64_OF);
         if (overflow) rflags |= X64_CF | X64_OF;
         switch (opSize) {
@@ -6143,10 +6146,11 @@ U32 CPU64::execBlock(const BBlock& b, U64 maxInsn) {
             S64 sa, sb;
             if (size == 4) { sa = (S64)(S32)a; sb = (S64)(S32)bv; }
             else { sa = (S64)a; sb = (S64)bv; }
-            S64 res = sa * sb;
+            __int128 r128 = (__int128)sa * (__int128)sb;
+            S64 res = (S64)r128;
             bool overflow;
             if (size == 4) overflow = (res != (S64)(S32)res);
-            else { __int128 r128 = (__int128)sa * (__int128)sb; overflow = (r128 != (__int128)res); }
+            else overflow = (r128 != (__int128)res);
             rflags &= ~(X64_CF | X64_OF);
             if (overflow) rflags |= X64_CF | X64_OF;
             if (size == 4) reg[m.regField].setU32((U32)res);
