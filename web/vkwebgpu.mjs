@@ -1416,7 +1416,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
         passEnc = encoder.beginRenderPass(rpDesc);
         // Carry over a pipeline bound by an earlier pass (vkd3d binds before
         // vkCmdBeginRenderPass).
-        if (st.pipeRec && st.pipeDesc && !st.pipeBad) {
+        if (st.pipeDesc) {
           const rec = await getPipelineFor(st.pipeDesc, passSamples, st.pipeNeg, !!depthView, st.ibind?.indexType || 0, colorAttachments.length);
           st.pipeRec = rec.skip ? null : rec;
           st.pipeBad = !!rec.skip;
@@ -1448,6 +1448,10 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
             break;
           }
           case 'bindPipe': {
+            // Vulkan permits a binding before any render pass. Retain it and
+            // create the WebGPU pipeline when its attachment formats are known.
+            st.pipeDesc = op.pipe; st.pipeNeg = false; st.pipeRec = null; st.pipeBad = false;
+            if (!passEnc) break;
             let rec;
             try { rec = await getPipelineFor(op.pipe, passSamples, false, !!depthView, st.ibind?.indexType || 0, colorAttachments.length); }
             catch (e) { rec = { skip: 'pipeline-threw' }; }
@@ -1460,7 +1464,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
               console.warn('vkwebgpu: pipeline skipped', op.pipe.pipeId, rec.skip);
               break;
             }
-            st.pipeRec = rec; st.pipeDesc = op.pipe; st.pipeNeg = false; st.pipeBad = false;
+            st.pipeRec = rec;
             if (passEnc) passEnc.setPipeline(rec.pipeline);
             break;
           }

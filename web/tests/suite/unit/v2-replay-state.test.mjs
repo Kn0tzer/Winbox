@@ -2,19 +2,26 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createVkRenderer2 } from '../../../vkwebgpu.mjs';
 
-test('replay preserves per-draw push constants and sizes shared attachments before encoding', async () => {
+test('replay carries a pipeline bound before the render pass, preserves push constants and sizes attachments', async () => {
   const saved = new Map(['navigator', 'GPUBufferUsage', 'GPUTextureUsage', 'GPUShaderStage', 'GPUMapMode']
     .map(k => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
   const draws = [], textures = [];
   let groups = new Map();
+  let validationError = null;
   const device = {
-    lost: new Promise(() => {}), addEventListener() {}, pushErrorScope() {}, async popErrorScope() { return null; },
+    lost: new Promise(() => {}), addEventListener() {}, pushErrorScope() {}, async popErrorScope() {
+      const error = validationError; validationError = null; return error;
+    },
     createBuffer(d) { return { size: d.size, data: new ArrayBuffer(d.size), getMappedRange() { return this.data; },
       unmap() {}, async mapAsync() {}, destroy() {} }; },
     createTexture(d) { const t = { label: d.label, width: d.size[0], height: d.size[1],
       createView() { return { texture: this }; }, destroy() {} }; textures.push(t); return t; },
     createBindGroupLayout: d => d, createPipelineLayout: d => d, createShaderModule: d => d,
-    createRenderPipeline: d => d, createBindGroup: d => d,
+    createRenderPipeline(d) {
+      if (!d.fragment?.targets.length && !d.depthStencil)
+        validationError = new Error('No attachment was specified.');
+      return d;
+    }, createBindGroup: d => d,
     queue: { writeBuffer(b, o, bytes) { new Uint8Array(b.data).set(bytes, o); },
       submit() {}, async onSubmittedWorkDone() {} },
     createCommandEncoder() { return {
@@ -51,11 +58,11 @@ test('replay preserves per-draw push constants and sizes shared attachments befo
     const pipe = { pipeId: 'p', vsHash: 'v', fsHash: 'f', topology: 3, vb: [], va: [] };
     const draw = { op: 'draw', vertexCount: 3, instanceCount: 1, firstVertex: 0, firstInstance: 0 };
     const pass = (h, value) => ({ w: 64, h, attachments: [{ imageId: 'image', samples: 1, isDepth: 0, loadOp: 1, storeOp: 0 }],
-      clearColor: [0, 0, 0, 1], ops: [{ op: 'bindPipe', pipe }, { op: 'descSet', setIndex: 1, bindings: [{ binding: 0, kind: 1, obj: 'uniform', count: 1, bufOff: '0', range: 768 }] }, { op: 'descSet', setIndex: 2, bindings: [{ binding: 0, kind: 1, obj: 'uniform', count: 1, bufOff: '0', range: 768 }] }, { op: 'push', offset: 0, bytes: new Uint8Array([value]) }, draw] });
+      clearColor: [0, 0, 0, 1], ops: [{ op: 'descSet', setIndex: 1, bindings: [{ binding: 0, kind: 1, obj: 'uniform', count: 1, bufOff: '0', range: 768 }] }, { op: 'descSet', setIndex: 2, bindings: [{ binding: 0, kind: 1, obj: 'uniform', count: 1, bufOff: '0', range: 768 }] }, { op: 'push', offset: 0, bytes: new Uint8Array([value]) }, draw] });
     const result = await renderer.render({ frameNo: 1, width: 64, height: 32,
       shaders: new Map([['v', { code: new Uint8Array(4) }], ['f', { code: new Uint8Array(4) }]]),
       images: new Map(), views: new Map(), samplers: new Map(), buffers: new Map([['uniform', new Uint8Array(768)]]), bufHashes: new Map(),
-      passes: [pass(32, 1), pass(64, 2)] });
+      passes: [{w:64,h:32,attachments:[],clearColor:[0,0,0,1],ops:[{op:'bindPipe',pipe}]}, pass(32, 1), pass(64, 2)] });
     assert.equal(result.rendered, true);
     assert.notEqual(draws[0], draws[1]);
     assert.deepEqual(draws.map(b => new Uint8Array(b.data)[0]), [1, 2]);
