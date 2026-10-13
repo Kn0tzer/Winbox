@@ -927,7 +927,7 @@ function stripUnusedPhysicalStorageBuffer(mod, log) {
 }
 
 // --- entry point -------------------------------------------------------------
-/** @param {Uint8Array} bytes @param {{rasterTopology?: number}} [options] */
+/** @param {Uint8Array} bytes @param {{rasterTopology?: number, specOverrides?: {constantID: number, value: Uint8Array}[]}} [options] */
 export function applySpirvFix(bytes, { rasterTopology, specOverrides } = {}) {
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const log = [], applied = [];

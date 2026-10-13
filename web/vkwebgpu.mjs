@@ -1017,6 +1017,7 @@ export function decodeV2Frame(records, counters = {}) {
         const rpId = v2Hex64(r.u64()), fbId = v2Hex64(r.u64());
         const w = r.u32(), h = r.u32(), natt = r.u32();
         if (natt > 8) throw new Error('vk64: v2 RP_BEGIN attachment count out of range');
+        /** @type {{format:number, loadOp:number, storeOp:number, samples:number, isDepth:number, viewId?:string, imageId?:string}[]} */
         const attachments = [];
         for (let a = 0; a < natt; a++) {
           attachments.push({ format: r.u32(), loadOp: r.u32(), storeOp: r.u32(), samples: r.u32(), isDepth: r.u32() });
@@ -1566,6 +1567,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     return { ck: imgHex + ':' + w + 'x' + h + ':' + fmt + ':' + hash + (cube ? ':cube' : '') + (dimension !== '2d' ? ':' + dimension + ':' + d : ''), w, h, d, fmt };
   }
 
+  /** @param {string} imgHex @param {any} img @param {boolean} [cube] @param {GPUTextureDimension} [dimension] */
   function gpuTextureFor(imgHex, img, cube = false, dimension = '2d') {
     // Persistent cache: reuse GPUTexture when content is unchanged.
     const { ck, w, h, d, fmt } = textureKey(imgHex, img, undefined, cube, dimension);
@@ -1647,6 +1649,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     return sm;
   }
 
+  /** @param {boolean} [cube] @param {GPUTextureDimension} [dimension] */
   const blankTex = (cube = false, dimension = '2d') => {
     const key = cube ? '\0blank-cube' : dimension !== '2d' ? '\0blank-' + dimension : '\0blank';
     // Persistent bind groups retain this view between frames. Its texture
