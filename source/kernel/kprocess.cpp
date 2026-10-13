@@ -3230,7 +3230,7 @@ void KProcess::printStack() {
 
             klog_fmt("    0x%08d %s", this->getModuleEip(cpu->seg[CS].address+cpu->eip.u32), name.length()?name.c_str():"Unknown");
         }
-        if (!this->is64Bit && !thread->waitingCond) {
+        if (!this->is64Bit) {
             // A Wine Unix handler's ESP points to its Unix stack. Recover the
             // saved Windows stack so diagnostics show the game caller too.
             BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(cpu->memory->mutex);
