@@ -1,4 +1,4 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>Wine runtime</title><style>body{margin:0;background:#080c11;color:#acbfd2;font:12px system-ui}#status{padding:10px}canvas{display:block;max-width:100%;margin:auto}#output{display:none}</style></head><body><div id="status">Loading…</div><progress id="progress" hidden></progress><span id="spinner" hidden></span><canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas><canvas id="gl64canvas" width="1024" height="1024" hidden></canvas><textarea id="output" readonly></textarea>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>Wine runtime</title><style>body{margin:0;background:#080c11;color:#acbfd2;font:12px system-ui}#status{padding:10px}canvas{display:block;max-width:100%;margin:auto}canvas[hidden]{display:none}#vkCanvas{position:absolute;top:34px;left:50%;transform:translateX(-50%);pointer-events:none}#output{display:none}</style><script src="../sparse-memfs.js"></script></head><body><div id="status">Loading…</div><progress id="progress" hidden></progress><span id="spinner" hidden></span><canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas><canvas id="gl64canvas" width="1024" height="1024" hidden></canvas><textarea id="output" readonly></textarea>
 <script type="module">
 import { getPackage } from '../storage.mjs';
 import { safePath, checkEntries } from '../files.mjs';
@@ -70,6 +70,16 @@ if (gameZipUrl && gameZipSize > 0) {
   console.log('lazy game: mounting ' + gameZipSize + ' bytes from ' + absGameUrl);
   window.bwProgramArgv = ['Z:\\home\\username\\apps\\' + exe.replaceAll('/', '\\'), ...args];
   window.bwWorkingDirectory = '/home/username/apps/' + exe.split('/').slice(0, -1).join('/');
+  // Optional second lazy overlay (?overlay=<url>&overlaysize=<bytes>): a small
+  // zip with home/username/apps/... paths (e.g. DXVK d3d9.dll + libvulkan shim)
+  // mounted AFTER the game zip so its files win. Same bw64url: shape.
+  const overlayUrl = query.get('overlay');
+  const overlaySize = Number(query.get('overlaysize') || 0);
+  if (overlayUrl && overlaySize > 0) {
+    const absOverlayUrl = new URL(overlayUrl, location.href).href;
+    window.bwOverlaySpec = 'bw64url:' + overlaySize + ';' + absOverlayUrl + '|' + overlaySize;
+    console.log('lazy overlay: mounting ' + overlaySize + ' bytes from ' + absOverlayUrl);
+  }
   // No bwPrepareFilesystem: game files are served lazily from the zip mount.
   // Writes (saves/configs) land in the MEMFS upper layer via the overlay.
 } else if (pkg) {

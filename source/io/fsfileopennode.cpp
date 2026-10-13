@@ -41,11 +41,21 @@ bool FsFileOpenNode::setLength(S64 len) {
 }
 
 S64 FsFileOpenNode::getFilePointer() {
+    if (this->readBufferPos >= 0) {
+        // Buffer is active: return the logical position, not the
+        // actual file position (which is ahead due to read-ahead)
+        return this->expectedPos;
+    }
     return lseek64(this->handle, 0, SEEK_CUR);
 }
 
 S64 FsFileOpenNode::seek(S64 pos) {
-    return lseek64(this->handle, pos, SEEK_SET);
+    this->invalidateReadBuffer();
+    S64 result = lseek64(this->handle, pos, SEEK_SET);
+    if (result >= 0) {
+        this->expectedPos = result;
+    }
+    return result;
 }
 
 void FsFileOpenNode::close() {
@@ -61,7 +71,7 @@ bool FsFileOpenNode::isOpen() {
 void FsFileOpenNode::reopen() {
     int openFlags = O_BINARY;
     int flags = this->flags;
-                        
+
     if ((flags & K_O_ACCMODE)==K_O_RDONLY) {
         openFlags|=O_RDONLY;
     } else if ((flags & K_O_ACCMODE)==K_O_WRONLY) {
@@ -74,6 +84,8 @@ void FsFileOpenNode::reopen() {
     }
 
     this->handle = ::open(this->fileNode->nativePath.c_str(), openFlags, 0666);
+    this->invalidateReadBuffer();
+    this->expectedPos = 0;
 }
 
 U32 FsFileOpenNode::ioctl(KThread* thread, U32 request) {
@@ -114,5 +126,75 @@ U32 FsFileOpenNode::readNative(U8* buffer, U32 len) {
 }
 
 U32 FsFileOpenNode::writeNative(U8* buffer, U32 len) {
-    return (U32)::write(this->handle, buffer, len);
+    this->invalidateReadBuffer();
+    U32 result = (U32)::write(this->handle, buffer, len);
+    if ((S32)result > 0) {
+        this->expectedPos += result;
+    }
+    return result;
+}
+
+// Buffered read implementation for FsFileOpenNode.
+// Uses a 64KB read-ahead buffer to reduce syscall overhead.
+// - Small reads (52B/56B from ELF/PE loader) become memcpy hits after first fill
+// - Large reads use 1 syscall per 64KB instead of 16 per 4KB chunk
+// - Backward seeks within the buffered range are free
+// Stats for measuring buffer effectiveness
+static U64 g_bufHits = 0;
+static U64 g_bufMisses = 0;
+static U64 g_bufBytesFromBuffer = 0;
+static U64 g_bufBytesFromFile = 0;
+
+U32 FsFileOpenNode::internalRead(KThread* thread, U32 address, U32 len) {
+    U32 result = 0;
+    KMemory* memory = thread->memory;
+
+    memory->performOnMemory(address, len, false, [&result, this](U8* ram, U32 chunkLen) {
+        // Fast path: check if [expectedPos, expectedPos+chunkLen) is in buffer
+        if (this->readBufferPos >= 0 &&
+            this->expectedPos >= this->readBufferPos &&
+            this->expectedPos + (S64)chunkLen <= this->readBufferPos + (S64)this->readBufferLen) {
+            memcpy(ram, this->readBuffer + (this->expectedPos - this->readBufferPos), chunkLen);
+            this->expectedPos += chunkLen;
+            result += chunkLen;
+            g_bufHits++;
+            g_bufBytesFromBuffer += chunkLen;
+            return true;
+        }
+
+        // Slow path: buffer miss.
+        // The file position is already at expectedPos (invariant maintained by
+        // seek/write/buffer-fill), so no seek is needed before reading.
+        S64 actualPos = this->expectedPos;
+
+        // Fill the buffer with a large read
+        this->invalidateReadBuffer();
+        U32 n = this->readNative(this->readBuffer, READ_BUFFER_SIZE);
+        if ((S32)n <= 0) {
+            return false; // EOF or error
+        }
+        this->readBufferPos = actualPos;
+        this->readBufferLen = n;
+        // Note: file position is now at actualPos + n, but our logical position
+        // is actualPos + toCopy. This is fine: the next buffer hit does not touch
+        // the file, and the next miss will seek to the correct position.
+
+        U32 toCopy = chunkLen < n ? chunkLen : n;
+        memcpy(ram, this->readBuffer, toCopy);
+        this->expectedPos = actualPos + toCopy;
+        result += toCopy;
+        g_bufMisses++;
+        g_bufBytesFromFile += n;
+        // Log stats periodically
+        if ((g_bufHits + g_bufMisses) % 10000 == 0) {
+            U64 total = g_bufHits + g_bufMisses;
+            klog_fmt("FsFileOpenNode buffer: hits=%llu misses=%llu hit_rate=%.1f%% bytes_from_buffer=%lluMB bytes_from_file=%lluMB",
+                g_bufHits, g_bufMisses,
+                total ? (100.0 * g_bufHits / total) : 0.0,
+                g_bufBytesFromBuffer / (1024*1024),
+                g_bufBytesFromFile / (1024*1024));
+        }
+        return toCopy == chunkLen;
+    });
+    return result;
 }

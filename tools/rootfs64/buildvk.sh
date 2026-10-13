@@ -29,7 +29,7 @@
 # (test-results/baldi-o2-envdump-console.log:4378-4387) shows the guest probing
 # /lib/x86_64-linux-gnu/, /usr/lib/x86_64-linux-gnu/, /lib/ and /usr/lib/, and the
 # committed zips today contain NO libvulkan.so.1 at all — that is the reason
-# tasks/p1-final.md lists "where does the guest look for the shim" as unknown #1.
+# The guest loader must find the mounted Vulkan shim by its library name.
 # So: the .so goes to BOTH lib/x86_64-linux-gnu/ and usr/lib/x86_64-linux-gnu/ of
 # BOTH zips (the same both-paths trick the libGL.so.1 staging uses), and the
 # fixture goes to usr/bin/ in wine64.zip (that zip owns the usr/ tree).

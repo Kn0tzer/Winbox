@@ -6997,6 +6997,28 @@ int runX64SelfTest() {
         return (c.reg[X64_R15].u64 & 0x801ULL) == 0x801ULL;
     });
 
+    // The two-operand form also runs through BK_IMUL_R_RM in cached builds.
+    runAndCheck(r, "imul r64,r/m64 overflow sets CF+OF", withExit({
+        0x48, 0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F, // mov rax, INT64_MAX
+        0x48, 0xC7, 0xC3, 0x02, 0x00, 0x00, 0x00,                  // mov rbx, 2
+        0x48, 0x0F, 0xAF, 0xC3,                                    // imul rax, rbx
+        0x9C, 0x58,                                                // pushfq; pop rax
+    }), [](CPU64& c) {
+        if ((c.reg[X64_R15].u64 & 0x801ULL) != 0x801ULL) return false;
+#ifdef BOXEDWINE_BLOCK_EXEC
+        if (std::getenv("BW64_JIT_VERIFY") && std::strcmp(std::getenv("BW64_JIT_VERIFY"), "1") == 0) {
+            if (!c.jit() || !c.jit()->blocksExecuted) return false;
+            U64 page = CODE_BASE >> 12;
+            U32 generation = KMemory64::blockPageGenOf(page);
+            const auto* block = c.jit()->cache.lookup(CODE_BASE, page, generation, page, generation);
+            if (!block || !block->executable || block->ops.size() != 3 ||
+                block->ops[2].kind != J64_IMUL_R_RM || c.jit()->insnsFast < 3) return false;
+            printf("JIT64: IMUL64 overflow executed in cached block\n");
+        }
+#endif
+        return true;
+    });
+
     // ----- MOVSX / MOVSXD sign extension -----
     // T: MOVSX r64,r/m8 sign-extends 0xFF -> 0xFFFF..FF.
     runAndCheck(r, "movsx rbx,al (0xFF->0xFFFF..FF)", withExit({

@@ -12,6 +12,7 @@
 #
 # Output: web/runtime/prefix32.zip
 set -e
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 STAGE=/home/ubuntu/wine32-stage/stage
 ROOTFS32=/home/ubuntu/wine32-stage/rootfs32
@@ -68,6 +69,23 @@ printf "../drive_c" > "$PKG/home/username/.wine/dosdevices/c(_colon_).link"
 printf "/" > "$PKG/home/username/.wine/dosdevices/z(_colon_).link"
 printf "/usr/lib/i386-linux-gnu/wine/i386-windows" \
     > "$PKG/home/username/.wine/drive_c/windows/system32.link"
+# .NET support for managed games (Celeste targets .NET 4.5.2): the mono files
+# live in the GAME zip (apps/mono, apps/Microsoft.NET) so Portal-classic boot
+# never pays the 247MB download. These links resolve them to C:\windows\mono
+# and C:\windows\Microsoft.NET at runtime; without mono in the game zip they
+# dangle harmlessly (same as no-mono today).
+printf "../../../apps/mono" \
+    > "$PKG/home/username/.wine/drive_c/windows/mono.link"
+printf "../../../apps/Microsoft.NET" \
+    > "$PKG/home/username/.wine/drive_c/windows/Microsoft.NET.link"
+# Merge the wine-mono .NETFramework version-policy keys so managed exes see
+# installed frameworks (fragment captured from a real wine-mono 7.4.0 install).
+if [ -f "$HERE/prefix-mono-reg.txt" ]; then
+  cat "$HERE/prefix-mono-reg.txt" >> "$PKG/home/username/.wine/system.reg"
+  echo "  + merged prefix-mono-reg.txt (.NETFramework keys)"
+else
+  echo "  NOTE: $HERE/prefix-mono-reg.txt missing - managed games will lack framework keys." >&2
+fi
 
 # Bundle the 32-bit deskpin.exe (desktop pin for x86 sessions; the 64-bit
 # deskpin.exe cannot run under 32-bit wine). The launcher spawns it as

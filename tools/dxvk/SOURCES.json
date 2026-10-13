@@ -1,0 +1,25 @@
+{
+  "note": "Vendored source snapshots: commits identify the base revisions of each component; retained local changes are versioned with this repository. Build without submodule initialization. License files remain in each source tree.",
+  "sources": [
+    {
+      "path": "tools/dxvk/src",
+      "commit": "0cf05780abd7250c2cd713b7749cf32180157cf5",
+      "remote": "https://github.com/doitsujin/dxvk.git"
+    },
+    {
+      "path": "tools/dxvk/src/include/vulkan",
+      "commit": "b379292b2ab6df5771ba9870d53cf8b2c9295daf",
+      "remote": "https://github.com/KhronosGroup/Vulkan-Headers.git"
+    },
+    {
+      "path": "tools/dxvk/src/include/spirv",
+      "commit": "2acb319af38d43be3ea76bfabf3998e5281d8d12",
+      "remote": "https://github.com/KhronosGroup/SPIRV-Headers.git"
+    },
+    {
+      "path": "tools/dxvk/src/subprojects/libdisplay-info",
+      "commit": "275e6459c7ab1ddd4b125f28d0440716e4888078",
+      "remote": "https://gitlab.freedesktop.org/JoshuaAshton/libdisplay-info.git"
+    }
+  ]
+}

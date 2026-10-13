@@ -56,8 +56,8 @@ const suites = [
   {
     id: "d3d12", exe: "d3dconf12.exe", exePath: "tools/vkd3d/probe/d3dconf12.exe",
     assets: [
-      ["d3d12.dll", "/home/ubuntu/wt-vkd3d/tools/vkd3d/build.w64/libs/d3d12/d3d12.dll"],
-      ["d3d12core.dll", "/home/ubuntu/wt-vkd3d/tools/vkd3d/build.w64/libs/d3d12core/d3d12core.dll"],
+      ["d3d12.dll", "tools/vkd3d/build.w64/libs/d3d12/d3d12.dll"],
+      ["d3d12core.dll", "tools/vkd3d/build.w64/libs/d3d12core/d3d12core.dll"],
       ["dxgi.dll", "tools/dxvk/build.w64/src/dxgi/dxgi.dll"],
       ["libvulkan.so.1", "tools/rootfs64/libvk64/libvulkan.so.1"],
       ["bw64vulkan.dll", "tools/vkd3d/probe/bw64vulkan.dll"],

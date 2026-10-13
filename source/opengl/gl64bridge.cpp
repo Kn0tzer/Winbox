@@ -1176,7 +1176,7 @@ bool bgraToRgba(GLenum& fmt, GLenum type, std::vector<U8>& pix) {
 // the inherited A2 fixup, retain RGB10_A2's native 2_10_10_10_REV representation,
 // scale each packed component by its actual bit width, and swap BGRA channels
 // AFTER unpacking. Empty pixel vectors still need valid allocation formats.
-// Regression vectors: test-results/baldi-a3-pixel-test.py.
+// Regression vectors: tools/regression/baldi-a3-pixel-test.py.
 void glesTexFormatFixup(GLint& ifmt, GLenum& fmt, GLenum& type, std::vector<U8>& pix) {
     // WebGL2 accepts RGB10_A2 + RGBA + UNSIGNED_INT_2_10_10_10_REV
     // natively. The inherited fixup changed its type to BYTE, making it invalid.

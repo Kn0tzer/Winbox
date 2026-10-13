@@ -21,6 +21,7 @@
 
 #include "platformBoxedwine.h"
 #include "kfilelock.h"
+#include <atomic>
 
 // on windows one.txt and One.txt are the same file but on Linux they are different
 #define EXT_MIXED ".mixed"
@@ -61,6 +62,9 @@ public:
 
     virtual BString getLink() {return this->link;}
     virtual bool isLink() { return this->link.length() > 0; }
+    // True for links whose target is computed dynamically per call (e.g. /proc/self/fd).
+    // The path cache never caches walks that traverse these.
+    virtual bool isDynamicLink() { return false; }
 
     U32 getHardLinkCount() {return this->hardLinkCount;}    
     bool isDirectory() {return this->isDir;}
@@ -78,6 +82,14 @@ public:
     U32 hardLinkCount;    
     const Type type;
     std::weak_ptr<KObject> kobject;
+
+    // Path-cache coherency (see Fs::pathCache in fs.h):
+    // - removedFromParent is set when the node is detached from its parent and
+    //   cleared when (re-)added via addChild. Lets cache hits fail fast.
+    // - childrenVersion is bumped on every addChild/removeChildByName so cached
+    //   negative lookups ("not found") can detect the directory changed.
+    std::atomic<bool> removedFromParent;
+    std::atomic<U32> childrenVersion;
 
     std::shared_ptr<FsNode> getChildByName(BString name);
     std::shared_ptr<FsNode> getChildByNameIgnoreCase(BString name);

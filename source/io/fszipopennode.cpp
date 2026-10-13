@@ -35,12 +35,12 @@ FsZipOpenNode::~FsZipOpenNode() {
 }
 
 S64 FsZipOpenNode::length() {
-    return this->node->length();
+    return this->zipNode->length();
 }
 
 bool FsZipOpenNode::setLength(S64 len) {
     // if this file was open for write, it would have been copied to the file system
-    kpanic("FsZipOpenNode::setLength should not have been called"); 
+    kpanic("FsZipOpenNode::setLength should not have been called");
     return false;
 }
 
@@ -49,8 +49,9 @@ S64 FsZipOpenNode::getFilePointer() {
 }
 
 S64 FsZipOpenNode::seek(S64 pos) {
-    if (pos>(S64)this->node->length())
-        this->pos = this->node->length();
+    S64 len = (S64)this->zipNode->length();
+    if (pos > len)
+        this->pos = len;
     else
         this->pos = pos;
     return this->pos;
@@ -175,7 +176,10 @@ U32 FsZipOpenNode::readNative(U8* buffer, U32 len) {
     if (len == 0) {
         return 0;
     }
-    U64 fileLen = (U64)this->node->length();
+    // Use zipNode->length() directly: FsFileNode::length() can return 0 for
+    // ZIP entries (e.g. via a stale nativePath stat), but the zipInfo from the
+    // scan has the correct uncompressed_size.
+    U64 fileLen = this->zipNode->length();
     if ((U64)this->pos >= fileLen) {
         return 0;
     }

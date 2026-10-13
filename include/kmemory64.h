@@ -17,6 +17,7 @@
 #include <unordered_map>
 #include <map>
 #include <cstring>
+#include <cstdlib>
 
 class KProcess;
 class KThread;
@@ -58,6 +59,14 @@ class KThread;
 // actually TOUCHED, not address space RESERVED. The buffer, once allocated, is
 // never reallocated while live, so a host pointer handed out by getRamPtr (the
 // 64-bit futex table keys on it) stays stable until the page is decommitted.
+// Forward-declared: defined in kmemory64.cpp, logs via klog_fmt when BW64_BSSDIAG is set.
+// Declared here so K64Page methods (in this header) can log buffer changes.
+void bssBufDiagLog(const char* op, const void* oldPtr, const void* newPtr);
+static inline bool bssBufDiagOn() {
+    static int cached = -1;
+    if (cached < 0) cached = std::getenv("BW64_BSSDIAG") ? 1 : 0;
+    return cached != 0;
+}
 struct K64Page {
     U8* data = nullptr;
     U32 flags = 0;
@@ -67,28 +76,36 @@ struct K64Page {
     // same file page, so wineserver's writes are visible to clients and vice
     // versa. We must NOT delete[] or reallocate a borrowed buffer.
     bool dataShared = false;
-    ~K64Page() { if (!dataShared) delete[] data; }
+    ~K64Page() {
+        if (bssBufDiagOn() && data) bssBufDiagLog("dtor", data, nullptr);
+        if (!dataShared) delete[] data;
+    }
     // Allocate + zero the backing buffer on first write/commit. Idempotent.
     U8* commit() {
         if (!data) {
             data = new U8[K64_PAGE_SIZE];
             ::memset(data, 0, K64_PAGE_SIZE);
+            if (bssBufDiagOn()) bssBufDiagLog("commit", nullptr, data);
         }
         return data;
     }
     // Point this page at a process-shared backing buffer (not owned here).
     void adoptShared(U8* shared) {
+        U8* old = data;
         if (data && !dataShared) delete[] data;
         data = shared;
         dataShared = true;
+        if (bssBufDiagOn()) bssBufDiagLog("adoptShared", old, shared);
     }
     // Drop the backing buffer (munmap / PROT_NONE). The slot survives; a later
     // read returns zero, a later write re-commits a fresh zero page. A borrowed
     // shared buffer is detached (not freed — the registry owns it).
     void decommit() {
+        U8* old = data;
         if (!dataShared) delete[] data;
         data = nullptr;
         dataShared = false;
+        if (bssBufDiagOn() && old) bssBufDiagLog("decommit", old, nullptr);
     }
     bool committed() const { return data != nullptr; }
 };

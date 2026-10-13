@@ -452,7 +452,7 @@ static void writeStackString(KThread* thread, CPU * cpu, const char* s) {
 #define HWCAP_I386_XMM2  1 << 26
 #define HWCAP_I386_AMD3D 1 << 31
 
-static void pushThreadStack(KThread* thread, CPU* cpu, int argc, U32* a, int envc, U32* e) {
+static void pushThreadStack(KThread* thread, CPU* cpu, int argc, U32* a, int envc, U32* e, U32 execfn) {
     KProcessPtr process = cpu->thread->process;
 
     cpu->push32(rand());
@@ -475,6 +475,12 @@ static void pushThreadStack(KThread* thread, CPU* cpu, int argc, U32* a, int env
 
     cpu->push32(randomAddress);
     cpu->push32(25); // AT_RANDOM
+    // AT_EXECFN: guest address of argv[0] string. Wine's loader derives its
+    // bindir/loader/module paths from it; without it Wine falls back to a
+    // bogus path (mirrors the 64-bit loader in loader64.cpp).
+    klog_fmt("setupThreadStack32: AT_EXECFN=%08X", execfn);
+    cpu->push32(execfn);
+    cpu->push32(31); // AT_EXECFN
     cpu->push32(100);
     cpu->push32( 17); // AT_CLKTCK
     //push32(cpu, HWCAP_I386_FPU|HWCAP_I386_VME|HWCAP_I386_TSC|HWCAP_I386_CX8|HWCAP_I386_CMOV|HWCAP_I386_FCMOV);
@@ -520,6 +526,10 @@ static void pushThreadStack(KThread* thread, CPU* cpu, int argc, U32* a, int env
 static void setupThreadStack(KThread* thread, CPU* cpu, BString programName, const std::vector<BString>& args, const std::vector<BString>& env) {
     U32 a[MAX_ARG_COUNT] = {};
     U32 e[MAX_ARG_COUNT] = {};
+    klog_fmt("setupThreadStack32: argc=%u envc=%u prog=%s", (U32)args.size(), (U32)env.size(), programName.c_str());
+    for (U32 i = 0; i < env.size() && i < 5; i++) {
+        klog_fmt("setupThreadStack32: env[%u]=%s", i, env[i].c_str());
+    }
 
     cpu->push32(0);
     cpu->push32(0);
@@ -543,7 +553,7 @@ static void setupThreadStack(KThread* thread, CPU* cpu, BString programName, con
         a[i]=ESP;
     }
 
-    pushThreadStack(thread, cpu, (U32)args.size(), a, (U32)env.size(), e);
+    pushThreadStack(thread, cpu, (U32)args.size(), a, (U32)env.size(), e, args.size() ? a[0] : 0);
 }
 
 U32 KProcess::getNextFileDescriptorHandle(int after) {
@@ -1855,6 +1865,9 @@ U32 KProcess::clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 t
         struct user_desc desc;
 
         memory->memcpy(&desc, tls, sizeof(struct user_desc));
+#ifdef BW64_INST_TRACE
+        klog_fmt("INSTTRACE CLONE_TLS tid=%u tls_ptr=%08X base=%08X entry=%u", newThread->id, tls, desc.base_addr, desc.entry_number);
+#endif
 
         if (desc.base_addr!=0 && desc.entry_number!=0) {
             struct user_desc* ldt = newThread->getLDT(desc.entry_number);

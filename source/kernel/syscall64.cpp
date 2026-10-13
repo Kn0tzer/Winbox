@@ -1097,7 +1097,12 @@ static U64 sys_openat64(CPU64* cpu, U64 dirfd, U64 pathAddr, U64 flags, U64 /*mo
             klog_fmt("sys_openat64: open('%s') -> %d  [cwd='%s' full='%s' flags=0x%llx]",
                      path, (int)(S32)rc, process->currentDirectory.c_str(), full.c_str(),
                      (unsigned long long)flags);
-        } else {
+        } else if (strstr(path, ".exe")) {
+            // Program-spawn failures stay visible by default (rare, and probes
+            // + users rely on the exe name appearing in the log). The DLL
+            // search-probe spam (dozens of failed opens per library) is
+            // SCDUMP-gated: it cost ~20% of main-thread CPU in profiles via
+            // print + postMessage + textarea mirror per line.
             klog_fmt("sys_openat64: open('%s') -> %d", path, (int)(S32)rc);
         }
         return (U64)(S64)(S32)rc;
@@ -1134,6 +1139,12 @@ static U64 sys_openat64(CPU64* cpu, U64 dirfd, U64 pathAddr, U64 flags, U64 /*mo
             strstr(path, ".drv")    || strstr(path, "x11")) {
             klog_fmt("sys_openat64: OPENED '%s' -> fd %d", path, (int)result->handle);
         }
+    }
+    // Process-spawn signal: successful .exe opens are rare (one per process)
+    // and worth one line by default (probes detect EXE SPAWN from this even
+    // when the open succeeds, e.g. the program exists in the game zip).
+    if (!getenv("BW64_DLLTRACE") && strstr(path, ".exe")) {
+        klog_fmt("sys_openat64: OPENED '%s' -> fd %d", path, (int)result->handle);
     }
     return (U64)result->handle;
 }

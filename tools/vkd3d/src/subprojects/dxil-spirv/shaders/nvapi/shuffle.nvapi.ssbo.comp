@@ -1,0 +1,12 @@
+#define NV_SHADER_EXTN_SLOT u127
+#define NV_SHADER_EXTN_REGISTER_SPACE space0
+#include "nvHLSLExtns.h"
+
+RWStructuredBuffer<uint> Blah;
+
+[numthreads(32, 1, 1)]
+void main(uint thr : SV_DispatchThreadID)
+{
+	Blah[thr] = NvShfl(thr, 9);
+}
+

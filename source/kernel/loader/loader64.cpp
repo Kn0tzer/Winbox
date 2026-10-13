@@ -63,7 +63,8 @@ Elf64ParseResult ElfLoader64::parseBuffer(const U8* data, U64 length) {
         return result;
     }
     if (ehdr.e_machine != k_EM_X86_64) {
-        klog_fmt("ElfLoader64::parseBuffer: unsupported e_machine 0x%x (only x86-64 is supported in v1)", ehdr.e_machine);
+        unsigned int e_machine_tmp = ehdr.e_machine;
+        klog_fmt("ElfLoader64::parseBuffer: unsupported e_machine 0x%x (only x86-64 is supported in v1)", e_machine_tmp);
         return result;
     }
     if (ehdr.e_phentsize != sizeof(struct k_Elf64_Phdr)) {

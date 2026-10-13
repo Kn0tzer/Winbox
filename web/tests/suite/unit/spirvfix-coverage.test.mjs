@@ -1,6 +1,6 @@
 // web/tests/suite/unit/spirvfix-coverage.test.mjs — Full spirvfix rewrite coverage.
 //
-// spirvfix applies 6 rewrite rules (R1-R6) to make DXVK shaders translatable
+// spirvfix applies nine rewrite rules to make DXVK shaders translatable
 // by naga. Each rule must be tested for:
 //   (a) BASIC: fires when its trigger condition is present
 //   (b) NEGATIVE: does NOT fire when trigger is absent
@@ -25,8 +25,8 @@ const cap = (c) => ({ op: 17, words: [c] });
 const decorate = (target, dec, ...params) => ({ op: 71, words: [target, dec, ...params] });
 const entryPoint = (model, id) => ({ op: 15, words: [model, id, 0x6E69616D, 0] });
 
-// All 6 rewrite names must be exported
-test('REWRITES exports all 6 rules', () => {
+// Rule-specific coverage also lives in the specialization and corpus tests.
+test('REWRITES exports all nine rules', () => {
   assert.deepEqual(REWRITES, [
     'split-combined-sampler',
     'fold-spec-constants',
@@ -34,6 +34,9 @@ test('REWRITES exports all 6 rules', () => {
     'tail-demote-to-kill',
     'strip-draw-parameters',
     'strip-index-decorations',
+    'strip-signed-zero-inf-nan-preserve',
+    'strip-unused-physical-storage-buffer',
+    'prune-specialized-aliases',
   ]);
 });
 

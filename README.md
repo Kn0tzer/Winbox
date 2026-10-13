@@ -1,97 +1,114 @@
-# Boxedwine64 — Windows userspace emulator in the browser
+# Boxedwine64
 
-Run Windows games and programs in a browser tab. Drop in a folder or ZIP,
-pick the EXE, and it runs: CPU emulation, Wine userspace, graphics bridged
-to WebGPU/WebGL, input and audio forwarded to the page.
+Windows userspace in the browser: 32-bit and 64-bit CPU emulation, Wine,
+OpenGL/Vulkan bridges, WebGPU/WebGL2 rendering, files, input and audio.
+The page accepts a folder or ZIP and lets you choose the Windows executable.
 
-Live demo: `https://kn0tzer.work.gd/wine/` (drop a folder, press Start).
+[Live server demo](https://kn0tzer.work.gd/wine/) ·
+[Test catalog](web/tests/CATALOG.md) · [Runtime map](docs/architecture.md)
 
-## Honest status (2026-10-13, verified by probes, not assumed)
+## Build from a clone
 
-- 32-bit `wine --version` prints `wine-10.0` in-browser; 32-bit programs run.
-- 32-bit OpenGL triangle renders (`trigl: RESULT 0`).
-- Portal (32-bit D3D9): boots to window, presents 1024×768, but frames are
-  black (`lit=0`, `menuVerified:false`). Not playable yet.
-- Celeste (32-bit OpenGL/FNA): passes the old pixel-format blocker, reaches
-  `BEGIN LOAD` / `GFX LOAD` / `MTN LOAD`, then stalls in OLE marshaling
-  (`0x80004002`). Not playable yet.
-- Test suite: **93 unit files green + 73 legacy cases green, 0 failing.**
-  Browser game probes are the ground truth for playability — counters are not.
-
-## Build
-
-One writer of `dist/` at a time, always through the wrapper:
+Use Node 22, pnpm 9.15.0, Python 3.11+ and the pinned Emscripten SDK listed
+in [the build instructions](tools/browser/README.md).
 
 ```sh
-tools/bw64-build.sh          # full build + verify + sync dist/ and web/ + provenance
-tools/bw64-build.sh --check  # idle / in-progress / stale lock
+pnpm install --frozen-lockfile
+pnpm bootstrap             # verified runtime inputs + npm vendor staging
+./tools/bw64-build.sh       # compile emulator, export browser app, record hashes
+pnpm test
+pnpm typecheck
 ```
 
-Never run raw `make wasm64-mt`. Never build while a probe holds a slot
-(the wrapper refuses). See `BUILD_PROTOCOL.md`.
+Generated exports live in ignored `dist/`. Runtime archives and the Slang
+compiler are SHA256-pinned GitHub release assets; the bootstrap tool restores
+them rather than storing copies in Git. `pnpm build:export` refreshes the page export using an already compiled
+matched WASM/JavaScript pair. `pnpm build` and the full wrapper compile the
+emulator too. For an offline restore, use
+`python3 tools/browser/bootstrap.py --local /path/to/browser-runtime-20261013.tar`.
 
-## Test
+Serve the export with the isolation headers required by WASM threads:
 
 ```sh
-npm test                                   # everything fast: legacy + suite unit
-node web/tests/suite/runner.mjs --unit     # 93 unit files, ~20s, no browser
-node web/tests/suite/runner.mjs --browser  # Playwright probes, needs the box
-node web/tests/suite/runner.mjs --unit --filter celeste
+node --input-type=module -e 'import { serve } from "./tools/browser/serve.mjs"; await serve("dist", 8077);'
 ```
 
-Every test reports binary PASS/FAIL and never hangs (120s kill per unit
-file, outer timeout per browser test). Details: `web/tests/suite/README.md`.
+Open `http://127.0.0.1:8077/`. Optional built-in game archives come from
+`WINE_GAMES_DIR` or local `web/games/`; game uploads work independently.
 
-## Run a game (repeatable probe)
+## Checks
+
+```sh
+pnpm test                                        # legacy + suite unit checks
+pnpm typecheck
+bash scripts/build-jit-wasm.sh --selftest-only     # real native/JIT/WASM checks
+python3 tools/vkd3d/tests/run-native.py            # real Vulkan bridge/shim checks
+make -C project/linux test JOBS=2
+project/linux/Build/Test/boxedwine 0 0 1           # full CPU32 table
+node --test tools/regression/wine32-exception.test.mjs
+```
+
+The [catalog](web/tests/CATALOG.md) maps the full requested stack and both
+architectures to unit, native, guest and browser checks. It names the gaps:
+source/registration checks establish their assertions; correct rendering,
+complete API behavior, OPFS persistence and game playability need runtime
+proof. All previous suite, legacy and native tests remain, including the
+browser checks whose fixture wiring is incomplete.
+
+To run an existing game probe:
 
 ```sh
 GAME=portal node web/tests/game-probe.mjs
-GAME=celeste GAME_ZIP=/home/ubuntu/kn0tzer/games/celeste-drmfree.zip GL32=1 MONO32_DIR=/home/ubuntu/scripts/mono32 node web/tests/game-probe.mjs
-GAME=gangbeasts node web/tests/game-probe.mjs
+GAME=celeste GAME_ZIP=/path/to/celeste.zip GL32=1 MONO32_DIR=/path/to/mono32 node web/tests/game-probe.mjs
 ```
 
-One probe at a time (`acquireProbeSlot`), wait for build idle, read
-`test-results/<tag>/summary.json`. A mapped window is never a pass;
-menu evidence (`portal-evidence.mjs` OCR gate) or it didn't happen.
+Use [the build/probe protocol](BUILD_PROTOCOL.md). Results must record the
+build hashes; a mapped window or successful Present does not prove visible
+frames. Fresh evidence goes in ignored `test-results/`.
 
-## Guarantee contract
+## Recorded game status
 
-`web/tests/suite/unit/game-capability-matrix.test.mjs` maps each game to
-the subsystem tests that must be green before it can work:
+The latest saved game measurements are dated 2026-10-13:
+Portal reaches a window and presents black frames; Celeste passes graphics
+initialization, then stalls in OLE marshaling. Neither is established as
+playable. A GL32 triangle rendered correctly. See
+[game compatibility](docs/game-compatibility.md) and
+[historical reports](docs/reports/README.md) for the precise evidence and
+D3D conformance failures. Maintenance checks do not refresh these game claims.
 
-- Celeste = cpu32 + gl32 + input + audio + fs + mono + sdl2
-- Portal = cpu32 + vk32 + v2transport + shader + input + audio + fs
+## Where to change things
 
-Green matrix means the path is proven; black frames / stalls after that
-are new bugs with repros, not mysteries.
+| Path | Purpose |
+| --- | --- |
+| `source/`, `include/`, `platform/` | Emulator and retained Linux/SDL host support |
+| `project/emscripten/`, `project/linux/` | Browser build and native diagnostic/test builds |
+| `web/` | Browser app, renderers, protocol decoder, storage and tests |
+| `tools/rootfs64/`, `tools/rootfs32/` | Guest shims, rootfs/prefix builders and staging |
+| `tools/dxvk/`, `tools/vkd3d/` | Pinned vendored sources, guest probes and bridge tests |
+| `tools/spirvfix/`, `tools/cpu-diff/`, `tools/regression/` | Shader transforms and reusable regression tools |
+| `web/tests/diagnostics/` | Preserved former root-level probe scripts |
+| `testdata/`, `web/tests/suite/fixtures/` | Committed binary/data fixtures required by tests |
+| `docs/` | Architecture, protocol design and curated historical reports |
+| `dist/`, `web/runtime/`, `web/vendor/`, `test-results/` | Generated local files, excluded from Git |
 
-## Known gaps (tracked, not hidden)
+`master` is the maintained runtime. `archive/jit-emitter` preserves useful
+advanced JIT source, generators and tests that predate the current runtime
+fixes; see [the archived experiment](docs/jit-experiment.md). DXVK/vkd3d
+source snapshots are ordinary files with exact provenance in `SOURCES.json`,
+so a clone needs no submodule setup.
 
-- CPU: AVX intentionally unsupported (CPUID cleared); MMX advertised, 0
-  handlers (deprecated); string/control/segment/privileged/SSE2+ outside
-  the 167-form qemu differential — see `tools/cpu-diff/METHOD.md`.
-- D3D: 55 conformance ops — D3D9 13/15 (BLACK-not-RGB), D3D10 6/7,
-  D3D11 11/13 (Present clear-only + exit(0) multi-device), D3D12 18/20.
-  See `test-results/d3d-conformance-MATRIX.md`.
-- Vulkan: 14 entries broken; GL: 110 broken runtime behaviors.
-  Static API surface is 100% present (bridged); behavior is not.
-- Audio: `/dev/dsp` 441Hz sine verified; Wine waveOut hang open.
-- 32-bit `vkMapMemory` dispatch: open (Wine asserts at `loader_thunks.c:6053`).
+## Publication and recovery
 
-## Deploy
+[GitHub](https://github.com/Kn0tzer/Boxedwine64) is the sole repository remote.
+The Pages workflow compiles the current browser app, runs checks and packages
+same-origin rootfs chunks. Local server deployment is an explicit copy of a
+verified `dist/` export into `/home/ubuntu/kn0tzer/wine/`, after a backup.
 
-- GitHub Pages builds `master` on push (paths-gated; test-only changes skip
-  the rebuild). Big rootfs zips travel via Release `rootfs-pages`, never in
-  git (>100MB is rejected).
-- `kn0tzer.work.gd/wine` serves `/home/ubuntu/kn0tzer/wine` (Caddy bind).
-  Deploy = `rsync dist/ → kn0tzer/wine/` after a green suite + backup to
-  `/home/ubuntu/backups`. Backups live in `/home/ubuntu/backups`.
-
-## Layout
-
-- `source/` — emulator (cpu, kernel, io, vulkan, opengl, x11, sdl)
-- `tools/` — shims, probes, harnesses (`cpu-diff`, `d3dtests`, `dxvk`, `vkd3d`, `spirvfix`)
-- `web/` — page tier (`vkwebgpu.mjs`, `shader.mjs`) + `tests/suite/` (the suite)
-- `dist/`, `web/runtime/` — built matched pair + `BUILD_INFO.json` (never trust a result without it)
-- `test-results/` — probe evidence (the ground truth)
-- `tasks/game-compatibility.md` — per-game verified status with dates
+The 2026-10-13 maintenance backup is
+`/home/ubuntu/backups/boxedwine64-maintenance-20261013/`: all previous Git refs
+in `all-refs.bundle`, complete source/worktree contents in `workspaces.tar`,
+and the archived raw probe evidence in `test-results/`. The history rewrite
+map is copied there as `commit-map`; use it to resolve commit IDs cited in
+older BB conversations. Git history retains
+source changes and tests; generated exports, archives, dumps and old host
+projects are filtered out. Future builds and probes should leave Git clean.

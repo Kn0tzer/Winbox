@@ -329,6 +329,12 @@ static U32 syscall_times(CPU* cpu, U32 eipCount) {
 static U32 syscall_brk(CPU* cpu, U32 eipCount) {
     SYS_LOG1(SYSCALL_MEMORY|SYSCALL_PROCESS, cpu, "brk: address=%.8X", ARG1);
     U32 result = cpu->thread->process->brk(cpu->thread, ARG1);
+    // Hot path (heap growth fires thousands of brks during boot): only log
+    // under SCDUMP. Unconditional logging cost ~20% of main-thread CPU in the
+    // Portal menu profile (print + postMessage + textarea mirror per line).
+    if (getenv("BW64_SCDUMP")) {
+        klog_fmt("brk32: addr=%08X result=%08X", ARG1, result);
+    }
     SYS_LOG(SYSCALL_MEMORY|SYSCALL_PROCESS, cpu, " result=%d(0x%X)\n", result, result);
     return result;
 }

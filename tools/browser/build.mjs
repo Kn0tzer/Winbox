@@ -1,15 +1,17 @@
-import { cp, mkdir, copyFile, readFile, rm, symlink, stat } from 'node:fs/promises';
+import { cp, mkdir, copyFile, rm, symlink, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { stageVendors } from './stage-vendor.mjs';
 const root = resolve(import.meta.dirname, '../..');
 const out = resolve(root, process.env.WINE_BUILD_OUT || 'dist');
 await mkdir(out, { recursive: true });
-for (const name of ['index.html', 'style.css', 'app.mjs', 'files.mjs', 'games.mjs', 'storage.mjs', 'webgpu.mjs', 'shader.mjs', 'naga-rt.mjs', 'vkwebgpu.mjs']) await copyFile(resolve(root, 'web', name), resolve(out, name));
+if (out === root || out === resolve(root, 'web')) throw new Error('Build output must be separate from source files');
+for (const name of ['index.html', 'style.css', 'app.mjs', 'files.mjs', 'games.mjs', 'storage.mjs', 'webgpu.mjs', 'shader.mjs', 'naga-rt.mjs', 'vkwebgpu.mjs', 'vk-protocol.mjs', 'vk-log.mjs', 'wgsl-utils.mjs', 'sparse-memfs.js']) await copyFile(resolve(root, 'web', name), resolve(out, name));
 // Built-in game archives are staged under /games so the launcher catalog can
 // range-fetch them. WINE_GAMES_DIR selects the source; WINE_GAMES_COPY=1 copies
 // the archives instead of linking them (link is the default: they are 100+ MB).
 const gamesOut = resolve(out, 'games');
 async function findGames() {
-  for (const dir of [process.env.WINE_GAMES_DIR, '/home/ubuntu/kn0tzer/wine/games', resolve(root, 'web/games')].filter(Boolean)) {
+  for (const dir of [process.env.WINE_GAMES_DIR, resolve(root, 'web/games')].filter(Boolean)) {
     try { await stat(resolve(dir, 'baldi.zip')); return dir; } catch { /* try the next source */ }
   }
   return null;
@@ -27,22 +29,19 @@ if (gamesSrc) {
   console.warn('Built-in games: no archive source found; the launcher catalog will report its card as unavailable.');
 }
 
-await mkdir(resolve(out, 'vendor'), { recursive: true });
-await cp(resolve(root, 'node_modules/@zip.js/zip.js'), resolve(out, 'vendor/zip'), { recursive: true, dereference: true });
-await cp(resolve(root, 'node_modules/naga-wasm/dist'), resolve(out, 'vendor/naga'), { recursive: true });
+await stageVendors();
+await stageVendors(resolve(out, 'vendor'));
 await mkdir(resolve(out, 'runtime'), { recursive: true });
 await copyFile(resolve(root, 'tools/spirvfix/spirvfix.mjs'), resolve(out, 'spirvfix.mjs'));
-for (const name of ['boxedwine64.js', 'boxedwine64.wasm']) await copyFile(resolve(root, 'project/emscripten/Build/Wasm64Mt', name), resolve(out, 'runtime', name));
+for (const name of ['boxedwine64.js', 'boxedwine64.wasm', 'BUILD_INFO.json']) await copyFile(resolve(root, 'project/emscripten/Build/Wasm64Mt', name), resolve(out, 'runtime', name));
 await copyFile(resolve(root, 'project/emscripten/wine64-launcher.js'), resolve(out, 'runtime/wine64-launcher.js'));
 for (const name of ['glibc-rootfs64.zip', 'wine64.zip', 'prefix64.zip', 'glibc-rootfs32.zip', 'wine32.zip', 'prefix32.zip']) await copyFile(resolve(root, 'web/runtime', name), resolve(out, 'runtime', name));
 await copyFile(resolve(root, 'web/runtime.html'), resolve(out, 'runtime/index.html'));
 await copyFile(resolve(root, 'license.txt'), resolve(out, 'LICENSE.txt'));
-await mkdir(resolve(out, 'vendor/slang'), { recursive: true });
-for (const name of ['slang-wasm.js', 'slang-wasm.wasm', 'interface.d.ts']) await copyFile(resolve(root, 'tools/browser/slang', name), resolve(out, 'vendor/slang', name));
-await cp(resolve(root, 'tools/browser/slang/third-party-notices'), resolve(out, 'vendor/slang/third-party-notices'), { recursive: true });
-await cp(resolve(root, 'web/vendor'), resolve(out, 'vendor'), { recursive: true });
-// SPIR-V pre-pass (tools/spirvfix): web/shader.mjs imports
-// '../tools/spirvfix/spirvfix.mjs', which the browser resolves to
-// /tools/spirvfix/ when dist is the document root.
-await cp(resolve(root, 'tools/spirvfix'), resolve(out, 'tools/spirvfix'), { recursive: true });
+await copyFile(resolve(root, 'project/emscripten/coi-serviceworker.js'), resolve(out, 'coi-serviceworker.js'));
+// Pages cannot set isolation headers. Register the same-origin worker at the
+// export root, so both the app and its runtime iframe are controlled.
+const { readFile, writeFile } = await import('node:fs/promises');
+const index = resolve(out, 'index.html');
+await writeFile(index, (await readFile(index, 'utf8')).replace('</head>', '<script src="coi-serviceworker.js"></script></head>'));
 console.log(`Browser export: ${out}`);

@@ -548,6 +548,33 @@ static void initWatch() {
     if (g_watchLen == 0) g_watchLen = 8;
 }
 
+// BW64_BSSDIAG=0xADDR -- temporary diagnostic for the BSS host-write bug.
+// Klogs host->guest writes and guest reads touching the page containing ADDR,
+// with backing buffer pointers, to see whether a write lands in the buffer
+// the read sees. Parsed once, env-gated, temporary.
+static U64 g_bssDiagPage = 0;
+static bool g_bssDiagInit = false;
+static void initBssDiag() {
+    g_bssDiagInit = true;
+    const char* e = std::getenv("BW64_BSSDIAG");
+    if (!e) return;
+    if (e[0] == 'i' && e[1] == 'm' && e[2] == 'g') { g_bssDiagPage = 1; }
+    else g_bssDiagPage = std::strtoull(e, nullptr, 0) >> K64_PAGE_SHIFT;
+    klog_fmt("BSSDIAG: armed for page 0x%llx", (unsigned long long)g_bssDiagPage);
+}
+// Defined here (klog_fmt available) for K64Page methods in kmemory64.h.
+// Logs buffer pointer changes when BW64_BSSDIAG is set.
+void bssBufDiagLog(const char* op, const void* oldPtr, const void* newPtr) {
+    klog_fmt("BSSDIAG BUF: %s old=%p new=%p", op, oldPtr, newPtr);
+}
+static inline bool bssDiagHit(U64 pageNum) {
+    if (!g_bssDiagInit) initBssDiag();
+    if (!g_bssDiagPage) return false;
+    if (g_bssDiagPage == 1) return (pageNum >= 0x40000 && pageNum < 0x41000) ||
+                                         (pageNum >= 0x140000 && pageNum < 0x141000);
+    return pageNum == g_bssDiagPage;
+}
+
 // BW64_MEMRING: a ring of the most recent guest writes made BY THE WINESERVER
 // process, each tagged with the guest RIP that issued it (recovered from the
 // running thread's CPU64). Bug #2's dominant faces are glibc malloc-metadata
@@ -605,6 +632,11 @@ void KMemory64::memcpyToGuest(U64 dstGuest, const void* src, U64 len) {
         g_strayInit && !g_strayOn && g_memRingInit && !g_memRingOn &&
         g_watchInit && !g_watchAddr) {
         if (U8* hit = k64DTlbLookup(this, dstGuest >> K64_PAGE_SHIFT)) {
+            if (bssDiagHit(dstGuest >> K64_PAGE_SHIFT)) {
+                U64 v = 0; std::memcpy(&v, src, len >= 8 ? 8 : (size_t)len);
+                klog_fmt("BSSDIAG W fast: dst=0x%llx hit=%p val=0x%llx",
+                         (unsigned long long)dstGuest, (void*)hit, (unsigned long long)v);
+            }
             ::memcpy(hit + offsetInPage, src, (size_t)len);
             return;
         }
@@ -633,6 +665,13 @@ void KMemory64::memcpyToGuest(U64 dstGuest, const void* src, U64 len) {
         if (chunk > len) chunk = len;
         U8* data = commitPageLocked(pageNum, K64_PAGE_MAPPED | K64_PAGE_READ | K64_PAGE_WRITE);
         k64DTlbInsert(this, pageNum, data);
+        if (bssDiagHit(pageNum)) {
+            K64Page* pg = getPage(pageNum);
+            U64 v = 0; std::memcpy(&v, s, chunk >= 8 ? 8 : (size_t)chunk);
+            klog_fmt("BSSDIAG W slow: dst=0x%llx data=%p pageData=%p val=0x%llx",
+                     (unsigned long long)dstGuest, (void*)data,
+                     (void*)(pg ? pg->data : nullptr), (unsigned long long)v);
+        }
         ::memcpy(data + offsetInPage, s, (size_t)chunk); // commit-on-write (MT-safe)
         dstGuest += chunk;
         s += chunk;
@@ -647,11 +686,25 @@ void KMemory64::memcpyFromGuest(void* dst, U64 srcGuest, U64 len) {
     U64 offsetInPage = srcGuest & K64_PAGE_MASK;
     if (len && offsetInPage + len <= K64_PAGE_SIZE) {
         if (U8* hit = k64DTlbLookup(this, srcGuest >> K64_PAGE_SHIFT)) {
+            if (bssDiagHit(srcGuest >> K64_PAGE_SHIFT)) {
+                U64 v = 0; ::memcpy(&v, hit + offsetInPage, len >= 8 ? 8 : (size_t)len);
+                klog_fmt("BSSDIAG R fast: addr=0x%llx hit=%p val=0x%llx",
+                         (unsigned long long)srcGuest, (void*)hit, (unsigned long long)v);
+            }
             ::memcpy(dst, hit + offsetInPage, (size_t)len);
             return;
         }
     }
     U8* d = (U8*)dst;
+    bool diag = bssDiagHit(srcGuest >> K64_PAGE_SHIFT);
+    if (diag) {
+        U64 pageNum0 = srcGuest >> K64_PAGE_SHIFT;
+        U8* hit0 = k64DTlbLookup(this, pageNum0);
+        K64Page* pg0 = getPage(pageNum0);
+        klog_fmt("BSSDIAG R: addr=0x%llx tlbHit=%p pageData=%p committed=%d",
+                 (unsigned long long)srcGuest, (void*)hit0,
+                 (void*)(pg0 ? pg0->data : nullptr), pg0 && pg0->committed() ? 1 : 0);
+    }
     while (len) {
         U64 pageNum = srcGuest >> K64_PAGE_SHIFT;
         offsetInPage = srcGuest & K64_PAGE_MASK;
@@ -661,6 +714,10 @@ void KMemory64::memcpyFromGuest(void* dst, U64 srcGuest, U64 len) {
         if (page && page->committed()) {
             k64DTlbInsert(this, pageNum, page->data);
             ::memcpy(d, page->data + offsetInPage, (size_t)chunk);
+            if (diag) {
+                U64 v = 0; std::memcpy(&v, d, chunk >= 8 ? 8 : (size_t)chunk);
+                klog_fmt("BSSDIAG R val: 0x%llx", (unsigned long long)v);
+            }
         } else {
             // Absent slot OR reserved-but-uncommitted page → reads as zero.
             // (Not cached: a later write commits a buffer the TLB must see.)

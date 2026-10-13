@@ -92,9 +92,9 @@
     var WINE_ZIP = ARCH32 ? "wine32.zip" : "wine64.zip";
     var PREFIX_ZIP = ARCH32 ? "prefix32.zip" : "prefix64.zip"; // pre-booted .wine prefix
     var ROOT = "/root";
-    var WINE64 = ARCH32 ? "/usr/lib/wine/wine" : "/usr/lib/wine/wine64";
+    var WINE64 = ARCH32 ? "/opt/wine-stable/bin/wine" : "/usr/lib/wine/wine64";
     var WINESERVER64 = ARCH32 ? "/usr/lib/wine/wineserver32" : "/usr/lib/wine/wineserver64"; // real daemon binary (session mode)
-    var WINEDLLPATH = ARCH32 ? "/usr/lib/i386-linux-gnu/wine" : "/usr/lib/x86_64-linux-gnu/wine";
+    var WINEDLLPATH = ARCH32 ? "/opt/wine-stable/lib/wine" : "/usr/lib/x86_64-linux-gnu/wine";
     // The pre-booted prefix in PREFIX_ZIP lives here (dosdevices c: -> ../drive_c,
     // z: -> /). Running a program with these is what lets wine skip wineboot.
     var PREFIX_HOME = "/home/username";
@@ -194,11 +194,17 @@
             // Bypass the wine-preloader exec: Boxedwine virtualizes memory layout,
             // so the preloader (which reserves low memory) is unnecessary. Without
             // this, 32-bit wine ELF fails with "could not exec the wine loader".
-            "WINELOADERNOEXEC=1"
+            "WINELOADERNOEXEC=1",
+            "XDG_RUNTIME_DIR=/tmp",
         ];
         // Opt-in Wine diagnostics; captured at boot for all session processes.
         var wd = param("winedbg");
         if (wd) e.push("WINEDEBUG=" + wd);
+        if (ARCH32) e.push("WINEDATADIR=/opt/wine-stable/share/wine", "TMPDIR=/home/username/tmp");
+        var overrides = param("dlloverrides");
+        if (overrides) e.push("WINEDLLOVERRIDES=" + overrides);
+        var libraryPath = param("ldpath");
+        if (libraryPath) e.push("LD_LIBRARY_PATH=" + libraryPath);
         if (param("monodebug") === "1") {
             e.push("MONO_LOG_LEVEL=debug", "MONO_LOG_MASK=" + (param("monomask") || "asm"));
         }
@@ -231,6 +237,7 @@
         // FsZip handles it transparently (source/io/fszipurl.cpp). The zip must
         // contain home/username/apps/... paths.
         if (window.bwGameZipSpec) args.push("-zip", window.bwGameZipSpec);
+        if (window.bwOverlaySpec) args.push("-zip", window.bwOverlaySpec);
         if (NOVIDEO) args.push("-novideo");
         if (window.bwWorkingDirectory) args.push("-w", window.bwWorkingDirectory);
 
@@ -522,12 +529,26 @@
         // ROOT (/root in MEMFS) is the guest "/". Boxedwine MKDIR()s ROOT itself
         // inside main(), but that runs AFTER this preRun hook, so create the full
         // chain here (ROOT first) — a later MKDIR of an existing dir is a no-op.
+        // Use /home/username (not /winePrefix) to match PREFIX_HOME/PREFIX_WINE.
+        // The zip's /home/username/.wine is read-only; creating it in MEMFS
+        // overlays a writable version.
         mkdirHost(ROOT);
-        mkdirHost(ROOT + "/winePrefix");
-        mkdirHost(ROOT + "/winePrefix/.wine");
+        mkdirHost(ROOT + "/home");
+        mkdirHost(ROOT + "/home/username");
+        mkdirHost(ROOT + "/home/username/.wine");
+        mkdirHost(ROOT + "/home/username/tmp");
+        // Wineserver hardcodes /tmp/.wine-<uid> for its server dir (not affected
+        // by TMPDIR). The zip's /tmp is read-only, so overlay a writable one.
+        mkdirHost(ROOT + "/tmp");
+        // Wine 10 wineserver uses /run/user/<uid>/wine/ for its socket dir
+        // (not /tmp/.wine-<uid>). Guest runs as uid=1; ensure it exists writable.
+        mkdirHost(ROOT + "/run");
+        mkdirHost(ROOT + "/run/user");
+        mkdirHost(ROOT + "/run/user/1");
+        mkdirHost(ROOT + "/run/user/1/wine");
         try {
-            var st = getFS().stat(ROOT + "/winePrefix/.wine");
-            console.log("created writable WINEPREFIX at " + ROOT + "/winePrefix/.wine (mode " + st.mode.toString(8) + ")");
+            var st = getFS().stat(ROOT + "/home/username/.wine");
+            console.log("created writable WINEPREFIX at " + ROOT + "/home/username/.wine (mode " + st.mode.toString(8) + ")");
         } catch (e) {
             console.error("WINEPREFIX dir NOT created: " + e);
         }
@@ -802,7 +823,7 @@
                               USE_PREFIX ? "Starting " + PROG + " (pre-booted prefix)..." :
                               "Starting wine64...");
 
-                if (DO_BOOT) prepareWinePrefix();
+                if (DO_BOOT || SESSION) prepareWinePrefix();
 
                 var M = liveModule || window.Module;
                 var args = buildArguments();
@@ -845,6 +866,27 @@
             spinner: document.getElementById("spinner"),
             output: document.getElementById("output")
         };
+        // Batched mirror of wasm stdout into #output: appending per line is
+        // O(n^2) string copies plus a scrollTop layout per line (a 336-sample
+        // hotspot in the Portal menu profile). Buffer and flush at most twice
+        // a second, keeping the last 256KB.
+        var outputBuf = [];
+        var outputTimer = null;
+        function flushOutput() {
+            outputTimer = null;
+            if (!els.output || !outputBuf.length) return;
+            var chunk = outputBuf.join("\n") + "\n";
+            outputBuf = [];
+            var v = els.output.value + chunk;
+            els.output.value = v.length > 262144 ? v.slice(v.length - 262144) : v;
+            els.output.scrollTop = els.output.scrollHeight;
+        }
+        function mirrorOutput(text) {
+            if (!els.output) return;
+            outputBuf.push(text);
+            if (!outputTimer) outputTimer = setTimeout(flushOutput, 500);
+            if (outputBuf.length > 2000) flushOutput();
+        }
 
         window.Module = {
             arguments: [],
@@ -856,12 +898,17 @@
                 // is NOT necessarily === window.Module. Capture it so loadFilesystem
                 // and the FS writes target the real object.
                 liveModule = (typeof Module !== "undefined") ? Module : window.Module;
+                if (window.bwInstallSparseTmpMappings && typeof MEMFS !== "undefined")
+                    window.bwInstallSparseTmpMappings(liveModule.FS || window.FS, MEMFS);
                 // Emscripten libc reads the generated global ENV object, not
                 // Module.ENV. Set it before getEnvStrings caches the environment.
                 // Diagnostic flags are opt-in, fixed names (never arbitrary env).
                 // Opt-in: only set when ?gltrace=1 is passed explicitly. gltrace=0 or absent
                 // leaves it unset (the C side checks existence via getenv, not value).
                 if (param("gltrace") && param("gltrace") !== "0") ENV["BW64_GLTRACE"] = param("gltrace");
+                if (param("vkprof") === "1") ENV["BW64_VKPROF"] = "1";
+                if (param("winmmbypass") === "1") ENV["WINEDLLOVERRIDES"] = "winmm=n";
+                if (param("bssdiag") && param("bssdiag") !== "0") ENV["BW64_BSSDIAG"] = param("bssdiag") === "1" ? "img" : param("bssdiag");
                 if (param("ripsample") === "1") {
                     ENV["BW64_RIPSAMPLE"] = "1";
                     ENV["BW64_RIPSAMPLE_HB"] = "1";
@@ -909,16 +956,28 @@
                 var text = Array.prototype.slice.call(arguments).join(" ");
                 console.log(text);
                 if (window.bwRuntimeLog) window.bwRuntimeLog(text);
-                if (els.output) { els.output.value += text + "\n"; els.output.scrollTop = els.output.scrollHeight; }
+                mirrorOutput(text);
             },
             printErr: function () {
                 var text = Array.prototype.slice.call(arguments).join(" ");
                 console.error(text);
                 if (window.bwRuntimeLog) window.bwRuntimeLog(text);
-                if (els.output) { els.output.value += text + "\n"; els.output.scrollTop = els.output.scrollHeight; }
+                mirrorOutput(text);
             },
             setStatus: function (text) { if (text) setStatusText(text); },
-            onRuntimeInitialized: function () { runtimeInitialized = true; },
+            onRuntimeInitialized: function () {
+                runtimeInitialized = true;
+                // BW64_VKPROF (?vkprof=1): the vk64 bridge runs on a Web Worker
+                // where window does not exist, so it cannot read the URL param
+                // itself. Enable it from the main thread before the guest boots.
+                if (param("vkprof") === "1") {
+                    var M = liveModule || window.Module;
+                    if (M && typeof M.ccall === "function") {
+                        try { M.ccall("bw64_vkprof_enable", null, [], []); }
+                        catch (e) { console.warn("bw64_vkprof_enable failed: " + e); }
+                    }
+                }
+            },
             totalDependencies: 0,
             monitorRunDependencies: function () {}
         };
@@ -1090,7 +1149,7 @@
                     // Spawn wineserver pin for both 32-bit and 64-bit.
                     // The VFS directory enumeration fix (8d0f4978) ensures tmpdir
                     // consistency, so the pin works correctly for 32-bit.
-                    spawnArgv([WINESERVER64, "-p"], WINESERVER64 + " -p (pin persistent)");
+                    spawnArgv([WINESERVER64, "-f", "-p"], WINESERVER64 + " -f -p (pin persistent)");
                     // Desktop pin (M18 boot reliability): wineserver WM_CLOSEs an
                     // "empty" desktop (only explorer's threads left) after 1s, and
                     // the slow interpreted wineboot->app handoff routinely leaves

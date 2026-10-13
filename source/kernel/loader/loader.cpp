@@ -133,7 +133,6 @@ FsOpenNode* ElfLoader::inspectNode(BString currentDirectory, const std::shared_p
     if (openNode) {        
         interpreter = getInterpreter(openNode, &isElf);
         if (isElf) {
-            loader = interpreter;
             interpreter = B("");
         } else if (interpreter.length()) {
             interpreter.split(' ', interpreterArgs);

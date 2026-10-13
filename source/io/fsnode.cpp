@@ -29,6 +29,8 @@ FsNode::FsNode(Type type, U32 id, U32 rdev, BString path, BString link, BString 
     rdev(rdev),
     hardLinkCount(1),
     type(type),  
+    removedFromParent(false),
+    childrenVersion(0),
     parent(parent),
     isDir(isDirectory),      
     hasLoadedChildrenFromFileSystem(false),
@@ -50,11 +52,16 @@ bool FsNode::canWrite() {
 }
 
 void FsNode::removeNodeFromParent() {
+    this->removedFromParent.store(true, std::memory_order_release);
+    BString oldPath = this->path;
     std::shared_ptr<FsNode> parent = this->getParent().lock();
     if (parent) {
         BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(parent->childrenByNameMutex);
         parent->childrenByName.remove(this->name);
+        parent->childrenVersion.fetch_add(1, std::memory_order_relaxed);
     }
+    // Invalidate this path and any descendant paths (no node lock held here).
+    Fs::invalidatePathCachePrefix(oldPath);
 }
 
 void FsNode::loadChildren() {
@@ -155,12 +162,27 @@ void FsNode::addChild(std::shared_ptr<FsNode> node) {
     this->loadChildren();
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->childrenByNameMutex);
     this->childrenByName.set(node->name, node);
+    node->removedFromParent.store(false, std::memory_order_release);
+    this->childrenVersion.fetch_add(1, std::memory_order_relaxed);
 }
 
 void FsNode::removeChildByName(BString name) {
     this->loadChildren();
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->childrenByNameMutex);
-    this->childrenByName.remove(name);
+    std::shared_ptr<FsNode> child;
+    BString childPath;
+    {
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->childrenByNameMutex);
+        child = this->childrenByName[name];
+        if (child) {
+            child->removedFromParent.store(true, std::memory_order_release);
+            childPath = child->path;
+        }
+        this->childrenByName.remove(name);
+        this->childrenVersion.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (child) {
+        Fs::invalidatePathCachePrefix(childPath);
+    }
 }
 
 void FsNode::getAllChildren(std::vector<std::shared_ptr<FsNode> > & results) {

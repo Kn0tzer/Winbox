@@ -1,3 +1,7 @@
+> Historical investigation at the dates below. Current source/tests and the
+> dated conformance report in `docs/reports/d3d-conformance-MATRIX.md` take
+> precedence; listed missing entrypoints may already be implemented.
+
 # Probe plan: minimal D3D12 clear + triangle (next lane)
 
 No app build is performed in this lane. This is the concrete, ordered plan

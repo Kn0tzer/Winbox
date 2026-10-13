@@ -1,3 +1,7 @@
+> Historical investigation at the dates below. Current source/tests and the
+> dated conformance report in `docs/reports/d3d-conformance-MATRIX.md` take
+> precedence; listed missing entrypoints may already be implemented.
+
 # ICD work items for vkd3d (lane-vkd3d, 2026-10-05)
 
 **Historical sketches, superseded by [CURRENT_STATUS.md](CURRENT_STATUS.md).**

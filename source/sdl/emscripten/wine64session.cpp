@@ -305,14 +305,14 @@ static void doSignalWineboot() {
             std::vector<std::shared_ptr<FsNode>> tmpChildren;
             tmpNode->getAllChildren(tmpChildren);
             for (auto& wineDir : tmpChildren) {
-                if (!wineDir->name.startsWith(B("wine-"))) continue;
+                if (!wineDir->name.startsWith(B("wine-")) && !wineDir->name.startsWith(B(".wine-"))) continue;
                 BString winePath = B("/tmp/") + wineDir->name;
                 std::shared_ptr<FsNode> wineNode = Fs::getNodeFromLocalPath(B("/"), winePath, true);
                 if (!wineNode) continue;
                 std::vector<std::shared_ptr<FsNode>> wineChildren;
                 wineNode->getAllChildren(wineChildren);
                 for (auto& child : wineChildren) {
-                    if (!child->name.startsWith(B("server32-"))) continue;
+                    if (!child->name.startsWith(B("server32-")) && !child->name.startsWith(B("server-"))) continue;
                     BString cand = winePath + B("/") + child->name + B("/socket");
                     // Validate: socket node must exist with a live UNIX socket kobject
                     std::shared_ptr<FsNode> sockNode = Fs::getNodeFromLocalPath(B("/"), cand, true);

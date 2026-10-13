@@ -633,12 +633,28 @@ bool KMemory::isAddressDynamic(U32 address, U32 len) {
     return data->opCache.isAddressDynamic(address, len);
 }
 
+#ifdef BW64_INST_TRACE
+void bw64DumpInstTrace(U32 tid);
+#endif
 void KMemory::logPageFault(KThread* thread, U32 address) {
     U32 start = 0;
     CPU* cpu = thread->cpu;
 
     BString name = process->getModuleName(cpu->seg[CS].address + cpu->eip.u32);
     klog_fmt("%.8X EAX=%.8X ECX=%.8X EDX=%.8X EBX=%.8X ESP=%.8X EBP=%.8X ESI=%.8X EDI=%.8X %s at %.8X", cpu->seg[CS].address + cpu->eip.u32, cpu->reg[0].u32, cpu->reg[1].u32, cpu->reg[2].u32, cpu->reg[3].u32, cpu->reg[4].u32, cpu->reg[5].u32, cpu->reg[6].u32, cpu->reg[7].u32, name.c_str(), process->getModuleEip(cpu->seg[CS].address + cpu->eip.u32));
+
+#ifdef BW64_INST_TRACE
+    klog_fmt("INSTTRACE ids: thread->id=%u cpu->thread=%s cpuThreadId=%u same=%d", thread->id,
+             cpu->thread ? "set" : "NULL", cpu->thread ? cpu->thread->id : 0xFFFFFFFFu,
+             cpu->thread == thread ? 1 : 0);
+    {
+        U32 fesp = cpu->reg[4].u32;
+        U32 vsrc = cpu->memory->readd(fesp + 0xD8);
+        U32 vdst = cpu->memory->readd(fesp + 0x98);
+        klog_fmt("INSTTRACE stackcheck ESP=%.8X [ESP+0xD8](src)=%.8X [ESP+0x98](dst)=%.8X", fesp, vsrc, vdst);
+    }
+    bw64DumpInstTrace(thread->id);
+#endif
 
     klog_fmt("Page Fault at %.8X", address);
     klog("Valid address ranges:");

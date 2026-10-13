@@ -39,11 +39,22 @@ std::atomic_int Fs::nextNodeId=1;
 std::shared_ptr<FsFileNode> Fs::rootNode;
 BString Fs::nativePathSeperator;
 
+#define FS_PATH_CACHE_MAX 4096
+#define FS_PATH_CACHE_STATS_INTERVAL 50000
+
+std::unordered_map<Fs::FsPathCacheKey, Fs::FsPathCacheEntry, Fs::FsPathCacheKeyHash> Fs::pathCache;
+std::list<Fs::FsPathCacheKey> Fs::pathCacheLru;
+BOXEDWINE_MUTEX Fs::pathCacheMutex;
+std::atomic<U64> Fs::pathCacheHits(0);
+std::atomic<U64> Fs::pathCacheMisses(0);
+
 void Fs::shutDown() {
+	Fs::clearPathCache();
 	rootNode = nullptr;
 }
 bool Fs::initFileSystem(const BString& rootPath) {
     Fs::nextNodeId = 1;
+    Fs::clearPathCache();
     BString path;
     Fs::nativePathSeperator = (char)std::filesystem::path::preferred_separator;
     if (rootPath.endsWith("/")) {
@@ -132,6 +143,172 @@ std::shared_ptr<FsNode> Fs::getNodeFromLocalPath(const BString& currentDirectory
     return Fs::getNodeFromLocalPath(currentDirectory, path, nullptr, nullptr, followLink, isLink);
 }
 
+bool Fs::isPathCacheEnabled() {
+    static bool disabled = (getenv("BW64_NOPATHCACHE") != nullptr);
+    return !disabled;
+}
+
+static bool isPathCacheStatsEnabled() {
+    static bool enabled = (getenv("BW64_PATHCACHE_STATS") != nullptr);
+    return enabled;
+}
+
+void Fs::clearPathCache() {
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(Fs::pathCacheMutex);
+    Fs::pathCache.clear();
+    Fs::pathCacheLru.clear();
+}
+
+void Fs::logPathCacheStats() {
+    U64 hits = Fs::pathCacheHits.load(std::memory_order_relaxed);
+    U64 misses = Fs::pathCacheMisses.load(std::memory_order_relaxed);
+    U64 total = hits + misses;
+    double rate = total ? (100.0 * (double)hits / (double)total) : 0.0;
+    U32 entries;
+    {
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(Fs::pathCacheMutex);
+        entries = (U32)Fs::pathCache.size();
+    }
+    klog_fmt("pathcache: %llu hits, %llu misses (%.1f%% hit rate), %u entries", hits, misses, rate, entries);
+}
+
+void Fs::invalidatePathCachePrefix(const BString& prefix) {
+    if (!Fs::isPathCacheEnabled() || prefix.length() == 0) {
+        return;
+    }
+    BString dirPrefix = prefix + "/";
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(Fs::pathCacheMutex);
+    for (auto it = Fs::pathCache.begin(); it != Fs::pathCache.end();) {
+        const BString& p = it->first.path;
+        if (p == prefix || p.startsWith(dirPrefix)) {
+            Fs::pathCacheLru.erase(it->second.lruIt);
+            it = Fs::pathCache.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+static void pathCacheTouch(std::unordered_map<Fs::FsPathCacheKey, Fs::FsPathCacheEntry, Fs::FsPathCacheKeyHash>& cache,
+                           std::list<Fs::FsPathCacheKey>& lru, Fs::FsPathCacheEntry& e) {
+    lru.splice(lru.begin(), lru, e.lruIt);
+}
+
+static void pathCacheEvictOne(std::unordered_map<Fs::FsPathCacheKey, Fs::FsPathCacheEntry, Fs::FsPathCacheKeyHash>& cache,
+                              std::list<Fs::FsPathCacheKey>& lru) {
+    const Fs::FsPathCacheKey& victim = lru.back();
+    cache.erase(victim);
+    lru.pop_back();
+}
+
+bool Fs::lookupPathCache(const BString& fullpath, bool followLink, bool allowNegative, bool* isLink, std::shared_ptr<FsNode>& result) {
+    result = nullptr;
+    if (!Fs::isPathCacheEnabled()) {
+        return false;
+    }
+    FsPathCacheKey key{fullpath, followLink};
+    bool resolved = false;
+    bool wantStats = false;
+    {
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(Fs::pathCacheMutex);
+        auto it = Fs::pathCache.find(key);
+        if (it == Fs::pathCache.end()) {
+            Fs::pathCacheMisses.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            FsPathCacheEntry& e = it->second;
+            bool valid = false;
+            std::shared_ptr<FsNode> node;
+            if (e.isNegative) {
+                // Negative entries are only usable when the caller doesn't need
+                // miss details (lastNode/missingParts). Coherency comes from the
+                // parent's childrenVersion: any add/remove bumps it.
+                if (allowNegative) {
+                    std::shared_ptr<FsNode> parent = e.negParent.lock();
+                    if (parent && parent->childrenVersion.load(std::memory_order_acquire) == e.negVersion) {
+                        valid = true;
+                    }
+                }
+            } else {
+                node = e.node.lock();
+                if (node && !node->removedFromParent.load(std::memory_order_acquire) && node->path == e.nodePath) {
+                    valid = true;
+                    for (auto& hop : e.linkHops) {
+                        std::shared_ptr<FsNode> linkNode = hop.linkNode.lock();
+                        if (!linkNode || linkNode->removedFromParent.load(std::memory_order_acquire) || linkNode->getLink() != hop.target) {
+                            valid = false;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!valid) {
+                Fs::pathCacheLru.erase(e.lruIt);
+                Fs::pathCache.erase(it);
+                Fs::pathCacheMisses.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                pathCacheTouch(Fs::pathCache, Fs::pathCacheLru, e);
+                Fs::pathCacheHits.fetch_add(1, std::memory_order_relaxed);
+                if (!e.isNegative && isLink) {
+                    *isLink = e.finalWasLink;
+                }
+                result = node;
+                resolved = true;
+            }
+        }
+        U64 total = Fs::pathCacheHits.load(std::memory_order_relaxed) + Fs::pathCacheMisses.load(std::memory_order_relaxed);
+        wantStats = isPathCacheStatsEnabled() && (total % FS_PATH_CACHE_STATS_INTERVAL) == 0 && total > 0;
+    }
+    if (wantStats) {
+        Fs::logPathCacheStats();
+    }
+    return resolved;
+}
+
+void Fs::storePositivePathCache(const BString& fullpath, bool followLink, const std::shared_ptr<FsNode>& node,
+                                const std::vector<FsPathCacheLinkHop>& linkHops, bool finalWasLink) {
+    if (!Fs::isPathCacheEnabled() || !node) {
+        return;
+    }
+    FsPathCacheKey key{fullpath, followLink};
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(Fs::pathCacheMutex);
+    if (Fs::pathCache.find(key) != Fs::pathCache.end()) {
+        return; // already cached (raced); keep the existing entry
+    }
+    while (Fs::pathCache.size() >= FS_PATH_CACHE_MAX) {
+        pathCacheEvictOne(Fs::pathCache, Fs::pathCacheLru);
+    }
+    FsPathCacheEntry e;
+    e.isNegative = false;
+    e.node = node;
+    e.nodePath = node->path;
+    e.linkHops = linkHops;
+    e.finalWasLink = finalWasLink;
+    Fs::pathCacheLru.push_front(key);
+    e.lruIt = Fs::pathCacheLru.begin();
+    Fs::pathCache.emplace(std::move(key), std::move(e));
+}
+
+void Fs::storeNegativePathCache(const BString& fullpath, bool followLink, const std::shared_ptr<FsNode>& parent, U32 parentVersion) {
+    if (!Fs::isPathCacheEnabled() || !parent) {
+        return;
+    }
+    FsPathCacheKey key{fullpath, followLink};
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(Fs::pathCacheMutex);
+    if (Fs::pathCache.find(key) != Fs::pathCache.end()) {
+        return; // already cached (raced); keep the existing entry
+    }
+    while (Fs::pathCache.size() >= FS_PATH_CACHE_MAX) {
+        pathCacheEvictOne(Fs::pathCache, Fs::pathCacheLru);
+    }
+    FsPathCacheEntry e;
+    e.isNegative = true;
+    e.negParent = parent;
+    e.negVersion = parentVersion;
+    Fs::pathCacheLru.push_front(key);
+    e.lruIt = Fs::pathCacheLru.begin();
+    Fs::pathCache.emplace(std::move(key), std::move(e));
+}
+
 BString Fs::getFullPath(const BString& currentDirectory, const BString& path) {
     BString fullpath;
 
@@ -172,6 +349,15 @@ std::shared_ptr<FsNode> Fs::getNodeFromLocalPath(const BString& currentDirectory
 
     if (fullpath.length()==0 || fullpath=="/")
         return Fs::rootNode;
+
+    // Negative cache entries can't fill lastNode/missingParts, so only allow
+    // them when the caller doesn't need miss details.
+    bool allowNegative = (lastNode == nullptr && missingParts == nullptr);
+    std::shared_ptr<FsNode> cachedNode;
+    if (Fs::lookupPathCache(fullpath, followLink, allowNegative, isLink, cachedNode)) {
+        return cachedNode;
+    }
+
     std::vector<BString> parts;
     Fs::splitPath(fullpath, parts);
     std::shared_ptr<FsNode> node = Fs::rootNode;
@@ -181,6 +367,11 @@ std::shared_ptr<FsNode> Fs::getNodeFromLocalPath(const BString& currentDirectory
     std::vector<std::shared_ptr<FsNode> > nodes;
 
     nodes.push_back(node);
+
+    // Path-cache bookkeeping. Walks that traverse dynamic links are never cached.
+    bool traversedDynamicLink = false;
+    bool finalWasLink = false;
+    std::vector<FsPathCacheLinkHop> linkHops;
 
     if (!cleanPath(parts))
         return nullptr;
@@ -193,7 +384,12 @@ std::shared_ptr<FsNode> Fs::getNodeFromLocalPath(const BString& currentDirectory
             i++;
             continue;
         }
-        node = node->getChildByName(parts[i]);
+        std::shared_ptr<FsNode> parentNode = node;
+        // Version check around the lookup: if the directory changes concurrently,
+        // don't cache a negative result for it.
+        U32 v0 = parentNode->childrenVersion.load(std::memory_order_acquire);
+        node = parentNode->getChildByName(parts[i]);
+        U32 v1 = parentNode->childrenVersion.load(std::memory_order_acquire);
         if (!node) {
             if (missingParts) {
                 for (; i < parts.size(); i++) {
@@ -203,12 +399,26 @@ std::shared_ptr<FsNode> Fs::getNodeFromLocalPath(const BString& currentDirectory
             if (lastNode) {
                 *lastNode = nodes.back();
             }
+            if (allowNegative && !traversedDynamicLink && v0 == v1) {
+                Fs::storeNegativePathCache(fullpath, followLink, parentNode, v1);
+            }
             return nullptr;
         }
         nodes.push_back(node);
         if (node->isLink() && (followLink || i<parts.size()-1)) {
-            if (i==parts.size()-1 && isLink) {
-                *isLink = true;
+            if (node->isDynamicLink()) {
+                traversedDynamicLink = true;
+            } else {
+                FsPathCacheLinkHop hop;
+                hop.linkNode = node;
+                hop.target = node->getLink();
+                linkHops.push_back(std::move(hop));
+            }
+            if (i==parts.size()-1) {
+                finalWasLink = true;
+                if (isLink) {
+                    *isLink = true;
+                }
             }
 
             std::vector<BString> linkParts;
@@ -228,6 +438,9 @@ std::shared_ptr<FsNode> Fs::getNodeFromLocalPath(const BString& currentDirectory
             continue;
         }
         i++;
+    }
+    if (!traversedDynamicLink) {
+        Fs::storePositivePathCache(fullpath, followLink, node, linkHops, finalWasLink);
     }
     return node;
 }

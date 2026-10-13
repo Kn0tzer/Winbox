@@ -41,7 +41,7 @@
 #include <errno.h>
 
 #ifndef __cpp_lib_atomic_ref
-#include "../platform/mac/atomic_ref.h"
+#include "compat/atomic_ref.h"
 #endif
 
 #if defined(BOXEDWINE_OPENGL_SDL) || defined(BOXEDWINE_OPENGL_ES) || defined(BOXEDWINE_OPENGL_OSMESA)

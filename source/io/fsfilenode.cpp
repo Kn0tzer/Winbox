@@ -342,6 +342,7 @@ S32 translateErr(U32 e) {
 U32 FsFileNode::rename(BString path) {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->openNodesMutex);
     U32 result=0;
+    BString oldPath = this->path;
     std::vector<S64> tmpPos;
 
     this->ensurePathIsLocal(false);
@@ -429,6 +430,11 @@ U32 FsFileNode::rename(BString path) {
             continue;
         }
         break;
+    }
+    if (result == 0 && oldPath != this->path) {
+        // The node (and any descendants) moved: drop cached paths under the old prefix.
+        // No node lock is held here.
+        Fs::invalidatePathCachePrefix(oldPath);
     }
     int i=0;
     this->openNodes.for_each([&tmpPos,&i](KListNode<FsOpenNode*>* n) {

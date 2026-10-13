@@ -690,6 +690,10 @@ void JitCodeGen::doJIT(U32 address, DecodedOp* op) {
 #endif
         createHelpers();
         for (U32 i = 0; i < FLAGS_NULL; i++) {
+            // Phase 0: no 64-bit guest can execute yet and the JIT flag
+            // codegen does not handle FLAGS_*64; skip them (entries stay
+            // null) instead of panicking in getCF().
+            if (i >= FLAGS_ADD64 && i <= FLAGS_NEG64) continue;
             jit = startNewJIT(cpu);
             jit->disableTmps = true; // the functions created should not call getTmp since the caller won't know what tmps are in use
             cpu->thread->process->calculateCF[i] = jit->createCalculationCF((LazyFlagType)i);

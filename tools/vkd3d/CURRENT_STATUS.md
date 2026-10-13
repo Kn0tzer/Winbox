@@ -1,3 +1,7 @@
+> Historical investigation at the dates below. Current source/tests and the
+> dated conformance report in `docs/reports/d3d-conformance-MATRIX.md` take
+> precedence; listed missing entrypoints may already be implemented.
+
 # D3D12 bridge status, 2026-10-05
 
 The vkd3d cross-build is complete; D3D12 device creation and rendered pixels

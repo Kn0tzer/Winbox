@@ -8,11 +8,10 @@
  * the Vulkan spec (they are 64-bit even on 32-bit). This header therefore
  * does NOT include vulkan_core.h.
  *
- * i386 alignment: the DXVK win32 guest build uses 4-byte alignment for
- * 8-byte types (empirical: swapchain 472x333 reads correctly with pack(4),
- * garbage 333x1 with pack(8)). The structs below are wrapped in
- * #pragma pack(push, 4) so a wasm32/clang host reproduces the real win32
- * guest layout exactly.
+ * Linux i386 driver ABI: Wine converts Windows structs before calling this
+ * boundary. Structs are wrapped in #pragma pack(push, 4) to reproduce the
+ * i386 layout exactly (without it, uint64_t members would be 8-aligned and
+ * every field after the first uint64_t would be read from the wrong offset).
  */
 
 #ifndef __VK32_GUEST_H__
@@ -105,9 +104,19 @@ typedef uint64_t VkFlags64;
 typedef VkFlags VkPipelineCreationFeedbackFlags;
 typedef VkFlags VkToolPurposeFlags;
 typedef VkFlags VkPrivateDataSlotCreateFlags;
+typedef VkFlags64 VkPipelineStageFlags2;
+typedef VkFlags64 VkPipelineStageFlagBits2;
+typedef VkFlags64 VkAccessFlags2;
+typedef VkFlags64 VkAccessFlagBits2;
 typedef VkFlags VkSubmitFlags;
 typedef VkFlags VkRenderingFlags;
+typedef VkFlags64 VkFormatFeatureFlags2;
+typedef VkFlags64 VkFormatFeatureFlagBits2;
 typedef VkFlags VkMemoryUnmapFlags;
+typedef VkFlags64 VkPipelineCreateFlags2;
+typedef VkFlags64 VkPipelineCreateFlagBits2;
+typedef VkFlags64 VkBufferUsageFlags2;
+typedef VkFlags64 VkBufferUsageFlagBits2;
 typedef VkFlags VkHostImageCopyFlags;
 typedef VkFlags VkCompositeAlphaFlagsKHR;
 typedef VkFlags VkSurfaceTransformFlagsKHR;
@@ -189,6 +198,10 @@ typedef VkFlags VkDeviceAddressBindingFlagsEXT;
 typedef VkFlags VkFrameBoundaryFlagsEXT;
 typedef VkFlags VkBuildMicromapFlagsEXT;
 typedef VkFlags VkMicromapCreateFlagsEXT;
+typedef VkFlags64 VkPhysicalDeviceSchedulingControlsFlagsARM;
+typedef VkFlags64 VkPhysicalDeviceSchedulingControlsFlagBitsARM;
+typedef VkFlags64 VkMemoryDecompressionMethodFlagBitsNV;
+typedef VkFlags64 VkMemoryDecompressionMethodFlagsNV;
 typedef VkFlags VkDirectDriverLoadingFlagsLUNARG;
 typedef VkFlags VkOpticalFlowGridSizeFlagsNV;
 typedef VkFlags VkOpticalFlowUsageFlagsNV;
@@ -5633,7 +5646,7 @@ typedef enum VkShaderGroupShaderKHR {
     VK_SHADER_GROUP_SHADER_MAX_ENUM_KHR = 0x7FFFFFFF
 } VkShaderGroupShaderKHR;
 
-#pragma pack(push, 4)  // i386 guest: 8-byte types are 4-byte aligned (empirical: DXVK win32 build uses 4-align; pack(8) breaks swapchain 472x333 -> 333x1)
+#pragma pack(push, 4)  // i386: max natural alignment is 4
 
 typedef struct VkExtent2D {
     uint32_t    width;
@@ -6081,6 +6094,19 @@ typedef struct VkPipelineCacheCreateInfo {
     uint32_t pInitialData;
 } VkPipelineCacheCreateInfo;
 
+typedef struct VkSpecializationMapEntry {
+    uint32_t    constantID;
+    uint32_t    offset;
+    uint32_t      size;
+} VkSpecializationMapEntry;
+
+typedef struct VkSpecializationInfo {
+    uint32_t                           mapEntryCount;
+    uint32_t pMapEntries;
+    uint32_t                             dataSize;
+    uint32_t pData;
+} VkSpecializationInfo;
+
 typedef struct VkPipelineShaderStageCreateInfo {
     VkStructureType                     sType;
     uint32_t pNext;
@@ -6346,28 +6372,6 @@ typedef struct VkDescriptorSetLayoutCreateInfo {
     uint32_t pBindings;
 } VkDescriptorSetLayoutCreateInfo;
 
-typedef struct VkDescriptorUpdateTemplateEntry {
-    uint32_t            dstBinding;
-    uint32_t            dstArrayElement;
-    uint32_t            descriptorCount;
-    VkDescriptorType    descriptorType;
-    uint32_t              offset;
-    uint32_t              stride;
-} VkDescriptorUpdateTemplateEntry;
-
-typedef struct VkDescriptorUpdateTemplateCreateInfo {
-    VkStructureType                           sType;
-    uint32_t pNext;
-    VkDescriptorUpdateTemplateCreateFlags     flags;
-    uint32_t                                  descriptorUpdateEntryCount;
-    uint32_t pDescriptorUpdateEntries;
-    VkDescriptorUpdateTemplateType            templateType;
-    VkDescriptorSetLayout                     descriptorSetLayout;
-    VkPipelineBindPoint                       pipelineBindPoint;
-    VkPipelineLayout                          pipelineLayout;
-    uint32_t                                  set;
-} VkDescriptorUpdateTemplateCreateInfo;
-
 typedef struct VkWriteDescriptorSet {
     VkStructureType                  sType;
     uint32_t pNext;
@@ -6570,6 +6574,22 @@ typedef struct VkPhysicalDeviceSubgroupProperties {
     VkBool32                  quadOperationsInAllStages;
 } VkPhysicalDeviceSubgroupProperties;
 
+typedef struct VkBindBufferMemoryInfo {
+    VkStructureType    sType;
+    uint32_t pNext;
+    VkBuffer           buffer;
+    VkDeviceMemory     memory;
+    VkDeviceSize       memoryOffset;
+} VkBindBufferMemoryInfo;
+
+typedef struct VkBindImageMemoryInfo {
+    VkStructureType    sType;
+    uint32_t pNext;
+    VkImage            image;
+    VkDeviceMemory     memory;
+    VkDeviceSize       memoryOffset;
+} VkBindImageMemoryInfo;
+
 typedef struct VkPhysicalDevice16BitStorageFeatures {
     VkStructureType    sType;
     uint32_t pNext;
@@ -6578,6 +6598,13 @@ typedef struct VkPhysicalDevice16BitStorageFeatures {
     VkBool32           storagePushConstant16;
     VkBool32           storageInputOutput16;
 } VkPhysicalDevice16BitStorageFeatures;
+
+typedef struct VkMemoryDedicatedRequirements {
+    VkStructureType    sType;
+    uint32_t pNext;
+    VkBool32           prefersDedicatedAllocation;
+    VkBool32           requiresDedicatedAllocation;
+} VkMemoryDedicatedRequirements;
 
 typedef struct VkMemoryDedicatedAllocateInfo {
     VkStructureType    sType;
@@ -6638,6 +6665,28 @@ typedef struct VkPhysicalDeviceMemoryProperties2 {
     uint32_t pNext;
     VkPhysicalDeviceMemoryProperties    memoryProperties;
 } VkPhysicalDeviceMemoryProperties2;
+
+typedef struct VkDescriptorUpdateTemplateEntry {
+    uint32_t            dstBinding;
+    uint32_t            dstArrayElement;
+    uint32_t            descriptorCount;
+    VkDescriptorType    descriptorType;
+    uint32_t              offset;
+    uint32_t              stride;
+} VkDescriptorUpdateTemplateEntry;
+
+typedef struct VkDescriptorUpdateTemplateCreateInfo {
+    VkStructureType                           sType;
+    uint32_t pNext;
+    VkDescriptorUpdateTemplateCreateFlags     flags;
+    uint32_t                                  descriptorUpdateEntryCount;
+    uint32_t pDescriptorUpdateEntries;
+    VkDescriptorUpdateTemplateType            templateType;
+    VkDescriptorSetLayout                     descriptorSetLayout;
+    VkPipelineBindPoint                       pipelineBindPoint;
+    VkPipelineLayout                          pipelineLayout;
+    uint32_t                                  set;
+} VkDescriptorUpdateTemplateCreateInfo;
 
 typedef struct VkPhysicalDeviceIDProperties {
     VkStructureType    sType;
@@ -6942,12 +6991,87 @@ typedef struct VkPhysicalDeviceVulkan13Features {
     VkBool32           maintenance4;
 } VkPhysicalDeviceVulkan13Features;
 
+typedef struct VkSemaphoreSubmitInfo {
+    VkStructureType          sType;
+    uint32_t pNext;
+    VkSemaphore              semaphore;
+    uint64_t                 value;
+    VkPipelineStageFlags2    stageMask;
+    uint32_t                 deviceIndex;
+} VkSemaphoreSubmitInfo;
+
+typedef struct VkCommandBufferSubmitInfo {
+    VkStructureType    sType;
+    uint32_t pNext;
+    VkCommandBuffer    commandBuffer;
+    uint32_t           deviceMask;
+} VkCommandBufferSubmitInfo;
+
+typedef struct VkSubmitInfo2 {
+    VkStructureType                     sType;
+    uint32_t pNext;
+    VkSubmitFlags                       flags;
+    uint32_t                            waitSemaphoreInfoCount;
+    uint32_t pWaitSemaphoreInfos;
+    uint32_t                            commandBufferInfoCount;
+    uint32_t pCommandBufferInfos;
+    uint32_t                            signalSemaphoreInfoCount;
+    uint32_t pSignalSemaphoreInfos;
+} VkSubmitInfo2;
+
+typedef struct VkBufferImageCopy2 {
+    VkStructureType             sType;
+    uint32_t pNext;
+    VkDeviceSize                bufferOffset;
+    uint32_t                    bufferRowLength;
+    uint32_t                    bufferImageHeight;
+    VkImageSubresourceLayers    imageSubresource;
+    VkOffset3D                  imageOffset;
+    VkExtent3D                  imageExtent;
+} VkBufferImageCopy2;
+
+typedef struct VkCopyBufferToImageInfo2 {
+    VkStructureType              sType;
+    uint32_t pNext;
+    VkBuffer                     srcBuffer;
+    VkImage                      dstImage;
+    VkImageLayout                dstImageLayout;
+    uint32_t                     regionCount;
+    uint32_t pRegions;
+} VkCopyBufferToImageInfo2;
+
 typedef struct VkWriteDescriptorSetInlineUniformBlock {
     VkStructureType    sType;
     uint32_t pNext;
     uint32_t           dataSize;
     uint32_t pData;
 } VkWriteDescriptorSetInlineUniformBlock;
+
+typedef struct VkRenderingAttachmentInfo {
+    VkStructureType          sType;
+    uint32_t pNext;
+    VkImageView              imageView;
+    VkImageLayout            imageLayout;
+    VkResolveModeFlagBits    resolveMode;
+    VkImageView              resolveImageView;
+    VkImageLayout            resolveImageLayout;
+    VkAttachmentLoadOp       loadOp;
+    VkAttachmentStoreOp      storeOp;
+    VkClearValue             clearValue;
+} VkRenderingAttachmentInfo;
+
+typedef struct VkRenderingInfo {
+    VkStructureType                     sType;
+    uint32_t pNext;
+    VkRenderingFlags                    flags;
+    VkRect2D                            renderArea;
+    uint32_t                            layerCount;
+    uint32_t                            viewMask;
+    uint32_t                            colorAttachmentCount;
+    uint32_t pColorAttachments;
+    uint32_t pDepthAttachment;
+    uint32_t pStencilAttachment;
+} VkRenderingInfo;
 
 typedef struct VkPhysicalDeviceVulkan14Features {
     VkStructureType    sType;
@@ -7105,8 +7229,7 @@ typedef struct VkPhysicalDeviceRobustness2FeaturesEXT {
 #pragma pack(pop)
 
 // --- layout guards: any drift in the source header breaks the boundary ---
-// Sizes below are the real win32 guest ABI values (uint64_t 8-byte aligned,
-// matching i686-w64-mingw32).
+// Sizes below are the i386 ABI values (4-byte max alignment).
 static_assert(sizeof(VkExtent2D) == 8, "VkExtent2D layout drifted from i386 guest ABI");
 static_assert(sizeof(VkExtent3D) == 12, "VkExtent3D layout drifted from i386 guest ABI");
 static_assert(sizeof(VkOffset2D) == 8, "VkOffset2D layout drifted from i386 guest ABI");

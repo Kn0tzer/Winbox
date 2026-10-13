@@ -4,11 +4,13 @@ import { chromium } from '@playwright/test';
 import { serve } from '/home/ubuntu/boxedwine64/tools/browser/serve.mjs';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { acquireProbeSlot } from '/home/ubuntu/boxedwine64/web/tests/probe-slots.mjs';
+import { waitForBuildIdle } from '/home/ubuntu/boxedwine64/web/tests/build-lock.mjs';
 
 const tag = process.env.TAG || `tri10swap-${Date.now()}`;
 const dir = `test-results/dxvk-${tag}`;
 await mkdir(dir, { recursive: true });
 
+await waitForBuildIdle();
 const slot = await acquireProbeSlot();
 console.log('SLOT', slot.index);
 let server, browser;
@@ -51,7 +53,7 @@ try {
   }
 
   const bootstrapUntil = Date.now() + timeout;
-  while (!logs.some(l => /^log: vkboot\s*$/.test(l))) {
+  while (!logs.some(l => /^log: (?:\[guest fd=\d+[^\]]*\] )?vkboot\s*$/.test(l))) {
     if (Date.now() > bootstrapUntil) throw new Error('bootstrap timeout');
     await flush();
     await page.waitForTimeout(500);

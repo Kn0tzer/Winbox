@@ -139,8 +139,8 @@ try {
   console.log("SESSION READY");
   const assets = [
     [triExeName, triExePath],
-    ["d3d12.dll", process.env.D3D12_PATH || "/home/ubuntu/wt-vkd3d/tools/vkd3d/build.w64/libs/d3d12/d3d12.dll"],
-    ["d3d12core.dll", process.env.D3D12CORE_PATH || "/home/ubuntu/wt-vkd3d/tools/vkd3d/build.w64/libs/d3d12core/d3d12core.dll"],
+    ["d3d12.dll", process.env.D3D12_PATH || "tools/vkd3d/build.w64/libs/d3d12/d3d12.dll"],
+    ["d3d12core.dll", process.env.D3D12CORE_PATH || "tools/vkd3d/build.w64/libs/d3d12core/d3d12core.dll"],
     ["libvulkan.so.1", process.env.VK_SHIM_PATH || "tools/rootfs64/libvk64/libvulkan.so.1"],
     ["bw64vulkan.dll", process.env.WINEVULKAN_PATH || "tools/vkd3d/probe/bw64vulkan.dll"],
     // Unify loader namespace: dxgi LoadLibraryA("vulkan-1.dll") must resolve to our

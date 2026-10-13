@@ -8,7 +8,7 @@
  *
  *  jit64.h — Phase-1 JIT framework for the 64-bit guest (CPU64).
  *
- *  Strategy (per tasks/jit-port-plan.md §3.1 "recommend the former with a thin
+ *  Strategy (per docs/jit-experiment.md §3.1 "recommend the former with a thin
  *  adapter"): build on cpu64's OWN BBlock/BRec IR rather than forcing cpu64
  *  onto the 32-bit DecodedOp pipeline. Phase 1 implements:
  *
@@ -107,7 +107,7 @@ struct Jit64Block {
 
 // Phase-1 opcode coverage table: exactly one row per opcode class the JIT
 // claims as fast. The test harness asserts this list matches the top-20
-// profile (see tasks/jit-port-plan.md "Phase 1 status").
+// profile (see docs/jit-experiment.md "Phase 1 status").
 struct Jit64CoveredOpcode {
     const char* name;   // e.g. "89 MOV r/m,r"
     U8 op;              // primary opcode byte (0x0F for two-byte)

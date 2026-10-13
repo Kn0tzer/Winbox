@@ -1444,7 +1444,12 @@ U32 KNativeSocketObject::sendmsg(KThread* thread, const KFileDescriptorPtr& fd, 
     for (U32 i=0;i<hdr.msg_iovlen;i++) {
         len += memory->readd(hdr.msg_iov + 8 * i + 4);
     }
-    U8* buffer = new U8[len];
+    // Optimization: use stack buffer for small messages to avoid heap
+    // allocation overhead. Wineserver requests are typically < 1KB.
+    // Only heap-allocate for large messages.
+    U8 stackBuf[4096];
+    U8* heapBuf = nullptr;
+    U8* buffer = (len <= sizeof(stackBuf)) ? stackBuf : (heapBuf = new U8[len]);
     len = 0;
     for (U32 i = 0; i < hdr.msg_iovlen; i++) {
         U32 p = memory->readd(hdr.msg_iov + 8 * i);
@@ -1474,7 +1479,7 @@ U32 KNativeSocketObject::sendmsg(KThread* thread, const KFileDescriptorPtr& fd, 
         result = (U32)::send(this->nativeSocket, (const char*)buffer, len, nativeFlags);
     }
     LOG_SOCK("%x native socket: %x sendmsg msg_name=%x msg_namelen=%x result=%x", thread->id, nativeSocket, hdr.msg_name, hdr.msg_namelen, result);
-    delete[] buffer;
+    if (heapBuf) delete[] heapBuf;
     if ((S32)result >= 0) {
         this->error = 0;
         return result;

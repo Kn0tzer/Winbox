@@ -5,7 +5,7 @@
 // guaranteed playable. Example: input + audio + OpenGL + 32-bit CPU green →
 // Celeste (32-bit OpenGL) has 100% chance of working.
 //
-// Profiles (from tasks/game-compatibility.md + celeste.zip PE analysis):
+// Profiles (from docs/game-compatibility.md + celeste.zip PE analysis):
 //   celeste: i386 Celeste.exe + FNA.dll + SDL2.dll + Mono + fmod (32-bit OpenGL)
 //   portal:  32-bit D3D9 via DXVK→Vulkan32→WebGPU (hl2.exe x86)
 //   gangbeasts: x64 Unity (D3D11→Vulkan64) — archive currently x64, not 32-bit
@@ -81,14 +81,14 @@ test('Celeste required subsystems all have execute-level guards (not existence-o
 });
 
 test('four-bucket coverage helper: vk64 report exists (P10 scope-narrowing guard)', () => {
-  const vkcov = (() => { try { return readFileSync(join(repoRoot, 'test-results/d3d-conformance-MATRIX.md'), 'utf8'); } catch { return ''; } })();
+  const vkcov = (() => { try { return readFileSync(join(repoRoot, 'docs/reports/d3d-conformance-MATRIX.md'), 'utf8'); } catch { return ''; } })();
   assert.ok(true, 'four-bucket (total/passing/slow/broken) discipline enforced by this matrix — vk64 266/252/0/14, GL64 306/5/191/110 precedent');
 });
 
 test('statuses distinguish verified / inferred / assumed (P7)', () => {
-  const compat = readFileSync(join(repoRoot, 'tasks/game-compatibility.md'), 'utf8');
+  const compat = readFileSync(join(repoRoot, 'docs/game-compatibility.md'), 'utf8');
   assert.ok(compat.includes('Verified') || compat.includes('verified'),
-    'tasks/game-compatibility.md must record Verified dates/hashes (inferred ≠ coverage)');
+    'docs/game-compatibility.md must record Verified dates/hashes (inferred ≠ coverage)');
   assert.ok(compat.includes('Celeste') || compat.includes('celeste'),
     'compatibility doc must track Celeste path (32-bit OpenGL/.NET)');
 });

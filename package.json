@@ -4,7 +4,9 @@
   "type": "module",
   "scripts": {
     "test": "node tools/run-tests.mjs",
-    "build": "node tools/browser/build.mjs",
+    "bootstrap": "python3 tools/browser/bootstrap.py && node tools/browser/stage-vendor.mjs",
+    "build": "bash tools/bw64-build.sh",
+    "build:export": "bash tools/bw64-build.sh --export-only",
     "test:browser": "node web/tests/browser.mjs",
     "typecheck": "tsc --noEmit",
     "test:legacy": "node --test web/tests/*.test.mjs",

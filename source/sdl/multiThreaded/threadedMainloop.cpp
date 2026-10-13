@@ -153,5 +153,3 @@ void waitForProcessToFinish(const KProcessPtr& process, KThread* thread) {
         BOXEDWINE_CONDITION_WAIT(KSystem::processesCond);
     }
 }
-
-#endif

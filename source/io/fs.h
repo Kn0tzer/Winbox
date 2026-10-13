@@ -22,6 +22,7 @@
 #include "platformBoxedwine.h"
 #include "fsnode.h"
 #include "fsopennode.h"
+#include <unordered_map>
 
 #define K_O_RDONLY   0x0000
 #define K_O_WRONLY   0x0001
@@ -110,12 +111,69 @@ public:
 
     static std::shared_ptr<FsFileNode> rootNode;
 	static void shutDown();
+
+    // --- VFS path cache ---
+    // Maps a canonical full path (+followLink flag) to the node it resolves to,
+    // so repeated opens of the same path don't walk from the root.
+    // Coherency:
+    //  * Positive entries are validated on hit (node alive, not detached via
+    //    FsNode::removedFromParent, node->path unchanged, traversed static link
+    //    targets unchanged). Walks that traverse dynamic links are never cached.
+    //  * Negative entries ("not found") carry the parent dir's childrenVersion;
+    //    any addChild/removeChildByName bumps it, so stale negatives fail fast.
+    //  * removeNodeFromParent/removeChildByName/rename do prefix invalidation
+    //    for the removed subtree. shutDown/initFileSystem clear everything.
+    // Locking: pathCacheMutex is a leaf lock - it is never held while acquiring
+    // a node lock, so no lock-ordering issues with childrenByNameMutex.
+    struct FsPathCacheKey {
+        BString path;
+        bool followLink;
+        bool operator==(const FsPathCacheKey& o) const { return followLink == o.followLink && path == o.path; }
+    };
+    struct FsPathCacheKeyHash {
+        std::size_t operator()(const FsPathCacheKey& k) const {
+            std::size_t h = std::hash<BString>()(k.path);
+            return k.followLink ? h ^ 0x9e3779b97f4a7c15ULL : h;
+        }
+    };
+    struct FsPathCacheLinkHop {
+        std::weak_ptr<FsNode> linkNode; // static link traversed during the walk
+        BString target;                 // its target at cache time
+    };
+    struct FsPathCacheEntry {
+        bool isNegative = false;
+        std::weak_ptr<FsNode> node;                  // positive only
+        BString nodePath;                            // positive only: node->path at store time
+        std::vector<FsPathCacheLinkHop> linkHops;    // positive only
+        bool finalWasLink = false;                   // positive only: for the isLink out-param
+        std::weak_ptr<FsNode> negParent;             // negative only
+        U32 negVersion = 0;                          // negative only: parent childrenVersion
+        std::list<FsPathCacheKey>::iterator lruIt;
+    };
+
+    static void clearPathCache();
+    static void logPathCacheStats();
+    // Erase entries for exactly `prefix` and any path under `prefix + "/"`.
+    static void invalidatePathCachePrefix(const BString& prefix);
 private:
     friend class KUnixSocketObject;
 
     static std::shared_ptr<FsNode> getNodeFromLocalPath(const BString& currentDirectory, const BString& path, std::shared_ptr<FsNode>* lastNode, std::vector<BString>* missingParts, bool followLink, bool* isLink= nullptr);
 
     static std::atomic_int nextNodeId;
+
+    static std::unordered_map<FsPathCacheKey, FsPathCacheEntry, FsPathCacheKeyHash> pathCache;
+    static std::list<FsPathCacheKey> pathCacheLru;
+    static BOXEDWINE_MUTEX pathCacheMutex;
+    static std::atomic<U64> pathCacheHits;
+    static std::atomic<U64> pathCacheMisses;
+
+    static bool isPathCacheEnabled();
+    // Returns true if the cache resolved the lookup (result set; nullptr = not found).
+    static bool lookupPathCache(const BString& fullpath, bool followLink, bool allowNegative, bool* isLink, std::shared_ptr<FsNode>& result);
+    static void storePositivePathCache(const BString& fullpath, bool followLink, const std::shared_ptr<FsNode>& node,
+                                       const std::vector<FsPathCacheLinkHop>& linkHops, bool finalWasLink);
+    static void storeNegativePathCache(const BString& fullpath, bool followLink, const std::shared_ptr<FsNode>& parent, U32 parentVersion);
 };
 
 #endif

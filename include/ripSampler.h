@@ -30,6 +30,7 @@
 #include <string>
 
 class CPU64;
+class CPU;
 
 // True iff BW64_RIPSAMPLE is set (env read once, cached). All other entry
 // points early-out on this, so callers can also gate their argument prep.
@@ -46,6 +47,7 @@ int  ripSamplerAcquireSlot(int pid, int tid);
 // execve() frees the old CPU64 and installs a fresh one; republishing keeps the
 // slot pointing at the pointer the loop is actually running. No-op on slot==-1.
 void ripSamplerPublish(int slot, CPU64* cpu);
+void ripSamplerPublish32(int slot, CPU* cpu);
 
 // Release the slot as the thread exits (before its CPU64 is torn down).
 void ripSamplerReleaseSlot(int slot);

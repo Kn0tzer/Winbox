@@ -1,3 +1,7 @@
+> Historical investigation at the dates below. Current source/tests and the
+> dated conformance report in `docs/reports/d3d-conformance-MATRIX.md` take
+> precedence; listed missing entrypoints may already be implemented.
+
 # D3D12 via vkd3d — feasibility (lane-vkd3d, 2026-10-05)
 
 Scope: can vkd3d-proton run D3D12 on top of the vk64bridge ICD

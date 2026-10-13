@@ -290,7 +290,13 @@ void OPCALL normal_rdtsc(CPU* cpu, DecodedOp* op) {
 #else
 void OPCALL normal_rdtsc(CPU* cpu, DecodedOp* op) {
     START_OP(cpu, op);
+#ifdef BOXEDWINE_MULTI_THREADED
+    // The threaded interpreter does not count instructions. Use a shared
+    // monotonic clock so guest calibration and spin waits can make progress.
+    U64 t = KSystem::getMicroCounter() * 1000;
+#else
     U64 t = cpu->instructionCount+cpu->blockInstructionCount+op->imm;
+#endif
     EAX = (U32)t;
     EDX = (U32)(t >> 32);
     NEXT();

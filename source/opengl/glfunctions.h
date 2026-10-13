@@ -80,6 +80,8 @@ GL_FUNCTION(CallLists, void, (GLsizei n, GLenum type, const GLvoid *lists), (ARG
 GL_FUNCTION(ListBase, void, (GLuint base), (ARG1),,,("glListBase"))
 GL_FUNCTION(Begin, void, (GLenum mode), (ARG1),,,("glBegin"))
 GL_FUNCTION(End, void, (), (),,,("glEnd"))
+GL_FUNCTION(Finish, void, (), (),,,("glFinish"))
+GL_FUNCTION(Flush, void, (), (),,,("glFlush"))
 GL_FUNCTION(Vertex2d, void, (GLdouble x, GLdouble y), (dARG1, dARG2),,,("glVertex2d"))
 GL_FUNCTION(Vertex2f, void, (GLfloat x, GLfloat y), (fARG1, fARG2),,,("glVertex2f"))
 GL_FUNCTION(Vertex2i, void, (GLint x, GLint y), (ARG1, ARG2),,,("glVertex2i"))

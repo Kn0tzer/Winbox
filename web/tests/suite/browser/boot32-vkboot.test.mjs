@@ -30,7 +30,7 @@ export default class Boot32VkbootTest extends ProbeTest {
     const { page } = ctx;
 
     // Boot 32-bit Wine and run the vkboot test PE
-    await page.goto(`${ctx.server.url}/?arch=x86&test=vkboot`);
+    await page.goto(`${ctx.server.url}/runtime/index.html?arch=x86&test=vkboot`);
 
     // Wait for boot to complete or timeout
     // The test PE prints "vkboot" via log: when its entry point runs

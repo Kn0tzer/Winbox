@@ -29,6 +29,7 @@
 #include <stdio.h>
 
 
+
 BString socketAddressName(KMemory* memory, U32 address, U32 len) {
     if (!address) {
         return B("");
@@ -61,7 +62,7 @@ U32 ksocket(U32 domain, U32 type, U32 protocol) {
         std::shared_ptr<KUnixSocketObject> kSocket = std::make_shared<KUnixSocketObject>(domain, type, protocol);
         KFileDescriptorPtr result = KThread::currentThread()->process->allocFileDescriptor(kSocket, K_O_RDWR, 0, -1, 0);
         return result->handle;
-    } else if (domain == K_AF_NETLINK) {       
+    } else if (domain == K_AF_NETLINK) {
         std::shared_ptr<KNetLinkObject> kSocket = std::make_shared<KNetLinkObject>(domain, type, protocol);
         KFileDescriptorPtr result = KThread::currentThread()->process->allocFileDescriptor(kSocket, K_O_RDWR, 0, -1, 0);
         return result->handle;
@@ -246,7 +247,7 @@ U32 kconnect(KThread* thread, U32 socket, U32 address, U32 len) {
     std::shared_ptr<KSocketObject> s = std::dynamic_pointer_cast<KSocketObject>(fd->kobject);
     if (s->connected) {
         return -K_EISCONN;
-    }		
+    }
     // Isolate 32-bit wineserver sockets from 64-bit ones (see rewriteWineserverSocketPath)
     BString origPath, patchedPath;
     U32 newLen = len;
@@ -289,7 +290,7 @@ U32 kaccept(KThread* thread, U32 socket, U32 address, U32 len, U32 flags) {
 
 U32 kgetsockname(KThread* thread, U32 socket, U32 address, U32 plen) {
     KFileDescriptorPtr fd = thread->process->getFileDescriptor(socket);
-    
+
     if (!fd) {
         return -K_EBADF;
     }
@@ -302,7 +303,7 @@ U32 kgetsockname(KThread* thread, U32 socket, U32 address, U32 plen) {
 
 U32 kgetpeername(KThread* thread, U32 socket, U32 address, U32 plen) {
     KFileDescriptorPtr fd = thread->process->getFileDescriptor(socket);
-    
+
     if (!fd) {
         return -K_EBADF;
     }
@@ -341,7 +342,7 @@ S32 ksocketpairFds(KThread* thread, U32 af, U32 type, U32 protocol, U32 flags, F
     f2 = thread->process->getFileDescriptor(fd2);
     s1 = std::dynamic_pointer_cast<KUnixSocketObject>(f1->kobject);
     s2 = std::dynamic_pointer_cast<KUnixSocketObject>(f2->kobject);
-    
+
     s1->connection = s2;
     s2->connection = s1;
     s1->connected = true;
@@ -438,7 +439,7 @@ U32 kgetsockopt(KThread* thread, U32 socket, U32 level, U32 name, U32 value, U32
         return -K_ENOTSOCK;
     }
     std::shared_ptr<KSocketObject> s = std::dynamic_pointer_cast<KSocketObject>(fd->kobject);
-    return s->getsockopt(thread, fd, level, name, value, len_address);    
+    return s->getsockopt(thread, fd, level, name, value, len_address);
 }
 
 #define K_SOL_SOCKET 1
@@ -468,9 +469,13 @@ U32 ksendmsg(KThread* thread, U32 socket, U32 address, U32 flags) {
         return -K_ENOTSOCK;
     }
     std::shared_ptr<KSocketObject> s = std::dynamic_pointer_cast<KSocketObject>(fd->kobject);
-    // Patch __wineboot_event to start signaled for 32-bit (see patchWinebootEventCreate)
-    patchWinebootEventCreate(thread, s, address);
-    return s->sendmsg(thread, fd, address, flags);    
+    // Optimization: only check for wineboot event patch on 32-bit.
+    // 64-bit processes never need this (wineboot signals the event itself).
+    // This avoids the function call overhead on every 64-bit sendmsg.
+    if (!thread->process->is64Bit) {
+        patchWinebootEventCreate(thread, s, address);
+    }
+    return s->sendmsg(thread, fd, address, flags);
 }
 
 U32 krecvmsg(KThread* thread, U32 socket, U32 address, U32 flags) {
@@ -497,7 +502,7 @@ U32 ksendto(KThread* thread, U32 socket, U32 message, U32 length, U32 flags, U32
         return -K_ENOTSOCK;
     }
     std::shared_ptr<KSocketObject> s = std::dynamic_pointer_cast<KSocketObject>(fd->kobject);
-    return s->sendto(thread, fd, message, length, flags, dest_addr, dest_len);        
+    return s->sendto(thread, fd, message, length, flags, dest_addr, dest_len);
 }
 
 // ssize_t recvfrom(int socket, void *restrict buffer, size_t length, int flags, struct sockaddr *restrict address, socklen_t *restrict address_len);
@@ -511,7 +516,7 @@ U32 krecvfrom(KThread* thread, U32 socket, U32 buffer, U32 length, U32 flags, U3
         return -K_ENOTSOCK;
     }
     std::shared_ptr<KSocketObject> s = std::dynamic_pointer_cast<KSocketObject>(fd->kobject);
-    return s->recvfrom(thread, fd, buffer, length, flags, address, address_len);    
+    return s->recvfrom(thread, fd, buffer, length, flags, address, address_len);
 }
 
 bool isNativeSocket(KThread* thread, FD desc) {

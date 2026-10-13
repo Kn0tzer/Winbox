@@ -115,6 +115,8 @@ void RWPage::writed(MMU* mmu, U32 address, U32 value) {
 }
 
 bool RWPage::canReadRam(MMU* mmu) {
+    // The direct RAM fast path bypasses internalGetRamPtr(), so it is only
+    // valid after an on-demand page has acquired its own backing RAM.
     return mmu->ramIndex && (mmu->flags & (PAGE_READ | PAGE_EXEC));
 }
 

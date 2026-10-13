@@ -69,6 +69,13 @@ public:
 	void setFragmentSize(U32 size) override;
 	U32 getBufferSize() override {return this->getGuestQueuedAudioSizeWant();}
 	U32 getBufferCapacity() override { return DSP_BUFFER_SIZE;}
+	bool isBwPump() override {
+#ifdef __EMSCRIPTEN__
+		return this->bwPump;
+#else
+		return false;
+#endif
+	}
 
 	U32 bytesPerSampleWant() {
 		return SDL_AUDIO_BITSIZE(this->want.format) / 8;
@@ -516,6 +523,13 @@ U32 KDspAudioSdl::writeAudio(U8* data, U32 len) {
 	}
 #endif
 
+#ifdef __EMSCRIPTEN__
+	// bwPump: JS Web Audio bridge handles backpressure via its own ring buffer.
+	// The host-side wall-clock queue estimate is unreliable under emulation
+	// (native writer thread vs emulator clock) and causes spurious EWOULDBLOCK,
+	// stalling winealsa feeder thread so WHDR_DONE never fires. Always accept.
+	if (!this->bwPump) {
+#endif
 	U32 queued = this->getGuestQueuedAudioSizeWant();
 	if (queued >= DSP_BUFFER_SIZE) {
 		return -K_EWOULDBLOCK;
@@ -525,6 +539,9 @@ U32 KDspAudioSdl::writeAudio(U8* data, U32 len) {
 	if (!len) {
 		return -K_EWOULDBLOCK;
 	}
+#ifdef __EMSCRIPTEN__
+	}
+#endif
 
 	if (!this->sameFormat && this->stream) {
 		if (SDL_AudioStreamPut(this->stream, data, (int)len) < 0) {

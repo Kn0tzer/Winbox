@@ -193,7 +193,7 @@ U32 KUnixSocketObject::internal_write(KThread* thread, const std::shared_ptr<KUn
         // on the 32-bit cpu, sentinel leaks as a short write -> wine "partial
         // write"); return a clean -EPIPE like Linux. See writeNative for the full
         // rationale.
-        if (thread->cpu64) {
+        if (thread->process->is64Bit) {
             return -K_EPIPE;
         }
         return writePipeClosed(thread, false);
@@ -305,7 +305,7 @@ U32 KUnixSocketObject::writeNative(U8* buffer, U32 len) {
         // never leak the -K_CONTINUE sentinel; the 32-bit path keeps its existing
         // SIGPIPE behaviour. (See [[project_boxedwine64_bug2_teardown]] for the
         // same 32-bit-runSignal-on-a-64-bit-thread mis-delivery class.)
-        if (thread && thread->cpu64) {
+        if (thread && thread->process->is64Bit) {
             return -K_EPIPE;
         }
         if (thread) {

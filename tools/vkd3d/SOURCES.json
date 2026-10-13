@@ -1,0 +1,45 @@
+{
+  "note": "Vendored source snapshots: commits identify the base revisions of each component; retained local changes are versioned with this repository. Build without submodule initialization. License files remain in each source tree.",
+  "sources": [
+    {
+      "path": "tools/vkd3d/src",
+      "commit": "faf71e79b9b7e7ac6b7294a3c0b62f33d85e90ad",
+      "remote": "https://github.com/HansKristian-Work/vkd3d-proton.git"
+    },
+    {
+      "path": "tools/vkd3d/src/khronos/SPIRV-Headers",
+      "commit": "f88a2d766840fc825af1fc065977953ba1fa4a91",
+      "remote": "https://github.com/KhronosGroup/SPIRV-Headers"
+    },
+    {
+      "path": "tools/vkd3d/src/khronos/Vulkan-Headers",
+      "commit": "ee2ec5fd83dafce291024683b50dc89219333076",
+      "remote": "https://github.com/KhronosGroup/Vulkan-Headers"
+    },
+    {
+      "path": "tools/vkd3d/src/subprojects/dxil-spirv",
+      "commit": "e79ef39803ee1dbf31c629bc7440a659122063c7",
+      "remote": "https://github.com/HansKristian-Work/dxil-spirv"
+    },
+    {
+      "path": "tools/vkd3d/src/subprojects/dxil-spirv/subprojects/dxbc-spirv",
+      "commit": "8dae2d8573af08378c6059aca3d5987da99d20b5",
+      "remote": "https://github.com/doitsujin/dxbc-spirv"
+    },
+    {
+      "path": "tools/vkd3d/src/subprojects/dxil-spirv/third_party/SPIRV-Cross",
+      "commit": "be71ee8c12cd7dc5ca8fa9581f708c2e8561fe2a",
+      "remote": "https://github.com/KhronosGroup/SPIRV-Cross"
+    },
+    {
+      "path": "tools/vkd3d/src/subprojects/dxil-spirv/third_party/SPIRV-Tools",
+      "commit": "199cb207b911501ddd76dcddf100a6e21c15ef23",
+      "remote": "https://github.com/KhronosGroup/SPIRV-Tools"
+    },
+    {
+      "path": "tools/vkd3d/src/subprojects/dxil-spirv/third_party/spirv-headers",
+      "commit": "c63848ecf2200425511319fd8bf2c17b751e501e",
+      "remote": "https://github.com/KhronosGroup/SPIRV-Headers"
+    }
+  ]
+}
