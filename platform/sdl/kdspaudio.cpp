@@ -612,13 +612,18 @@ KDspAudio::~KDspAudio() {
 }
 
 void KDspAudio::iterateOpenAudio(std::function<void(KDspAudioPtr&)> callback) {
-	BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(mutex);
-	for (auto& it : openAudios) {
-		KDspAudioPtr audio = it.value.lock();
-		if (audio) {
-			callback(audio);
+	std::vector<KDspAudioPtr> snapshot;
+	{
+		BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(mutex);
+		for (auto& it : openAudios) {
+			KDspAudioPtr audio = it.value.lock();
+			if (audio) snapshot.push_back(std::move(audio));
 		}
 	}
+	// Opening a voice can create/release another voice. Its destructor also
+	// takes the registry mutex, so neither callbacks nor final references may
+	// be released while that mutex is held.
+	for (auto& audio : snapshot) callback(audio);
 }
 
 void KDspAudio::shutdown() {

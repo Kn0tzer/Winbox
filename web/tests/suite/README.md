@@ -44,15 +44,19 @@ matrix is at `docs/reports/d3d-conformance-MATRIX.md` and pins recorded
 failures. `game-capability-matrix` checks profile/test mappings and
 documentation; passing it cannot guarantee game playability.
 
-Seven browser checks expect unimplemented `?test=...` fixtures and completion
-globals: `audio-tone`, `boot32-vkboot`, `celeste-boot`, `d3d11-triangle`,
-`gl32-triangle`, `input-keyboard`, `input-mouse-rel`. Their assertions remain
-intact, but they may time out and are not verified browser coverage. Real
-flat probes such as `wine32-boot-regression.mjs`, `d3d-conformance.mjs`,
-`game-probe.mjs` and `tri11-93-stats.mjs` are retained. The comprehensive
-D3D classes stage real guest binaries but check fewer operations than their
-comments imply. Full stack coverage, including every architecture variant,
-remains incomplete.
+The browser classes now execute real guests. Keyboard and relative mouse
+checks observe Win32 messages in both CPU modes. Audio measures output PCM
+from the 64-bit DSP fixture; GL32 and D3D12 inspect rendered pixels. D3D12
+runs both its clear and draw/present fixtures. The Celeste check confirms
+the game's completed-load log; its screenshot must be reviewed separately
+for rendering and gameplay.
+
+Guest fixtures require both MinGW cross compilers. Celeste uses a local
+DRM-free archive (`CELESTE_ZIP`) and Wine Mono prepared with
+`python3 tools/rootfs64/prepare-mono32.py`; `MONO32_DIR` can override its
+cache directory. D3D probes require the generated DXVK/vkd3d DLLs named in
+their source. The broader flat probes remain in place. These checks cover
+selected paths, and full API/architecture coverage remains incomplete.
 
 ## Adding a check
 

@@ -24,6 +24,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
+#ifdef __EMSCRIPTEN__
+#include "guestloglines.h"
+#endif
 
 #define VT_AUTO 0
 #define VT_PROCESS 1
@@ -75,6 +78,9 @@ private:
     U32 relsig;
     U32 acqsig;
     bool graphics;
+#ifdef __EMSCRIPTEN__
+    GuestLogLines guestLogLines;
+#endif
 };
 
 FsOpenNode* openDevTTY(const std::shared_ptr<FsNode>& node, U32 flags, U32 data) {
@@ -105,6 +111,7 @@ void DevTTY::writeTermios(KMemory* memory, U32 address) {
 }
 
 U32 DevTTY::writeNative(U8* buffer, U32 len) {
+    if (!len) return 0;
     BString s = BString::copy((char*)buffer, len);
     // winemenubuilder was removed because it is not necessary and this will speed up start time
     if (s.contains("winemenubuilder")) {
@@ -123,6 +130,20 @@ U32 DevTTY::writeNative(U8* buffer, U32 len) {
     if (KSystem::watchTTY) {
         KSystem::watchTTY(s);
     }
+#ifdef __EMSCRIPTEN__
+    KThread* thread = KThread::currentThread();
+    U32 producer = thread ? thread->id : 0;
+    auto records = guestLogLines.append(producer, std::string_view((char*)buffer, len));
+    for (auto& record : records) {
+        // Very long/no-newline diagnostics still flush at the bounded chunk
+        // size, with a host log boundary rather than an unbounded buffer.
+        if (record.back() != '\n') record.push_back('\n');
+        if (KSystem::ttyPrepend && thread && thread->process)
+            record = std::string("TTY:") + thread->process->name.c_str() + ":" + record;
+        internal_log(BString::copy(record.data(), (U32)record.size()), stdout);
+    }
+    return len;
+#else
     if (KSystem::ttyPrepend) {
         thread_local static bool newLine = true;
         if (newLine) {
@@ -137,6 +158,7 @@ U32 DevTTY::writeNative(U8* buffer, U32 len) {
         }
     }
     return (U32)::write(1, buffer, len);    
+#endif
 }
 
 

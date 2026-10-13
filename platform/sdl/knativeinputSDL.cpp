@@ -100,6 +100,9 @@ bool KNativeInputSDL::mouseWheel(int amount, int x, int y) {
 }
 
 bool KNativeInputSDL::mouseButton(U32 down, U32 button, int x, int y) {
+#if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_GUEST_X64)
+    xwireRecordInputPhase(10);
+#endif
     if (KSystem::enableSoundAfterMouseClick) {
         KSystem::enableSoundAfterMouseClick = false;
         KSystem::soundEnabled = true;
@@ -107,10 +110,16 @@ bool KNativeInputSDL::mouseButton(U32 down, U32 button, int x, int y) {
             audio->soundEnabled();
             });
     }
+#if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_GUEST_X64)
+    xwireRecordInputPhase(11);
+#endif
     x = xFromScreen(x);
     y = yFromScreen(y);
 
     checkMousePos(x, y, true);
+#if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_GUEST_X64)
+    xwireRecordInputPhase(12);
+#endif
 
     XServer* server = XServer::getServer(true);
     if (server) {
@@ -260,6 +269,9 @@ U32 KNativeInputSDL::getInputModifiers() {
 }
 
 bool KNativeInputSDL::key(U32 sdlScanCode, U32 key, U32 down) {
+#if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_GUEST_X64)
+    xwireRecordInputPhase(13);
+#endif
     XServer* server = XServer::getServer(true);
     if (server) {
         U32 x11Key = XKeyboard::sdl2x11(sdlScanCode);

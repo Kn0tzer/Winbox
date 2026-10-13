@@ -32,10 +32,9 @@ export default class D3D11ComprehensiveTest extends ProbeTest {
 
   async run(ctx) {
     const { page, server } = ctx;
-    const logs = [];
-    page.on('console', m => logs.push(`${m.type()}: ${m.text()}`));
+    const logs = this.consoleLines;
 
-    await page.goto(`${server.url}/runtime/index.html?p=cmd%20%2Fc%20echo%20vkboot&session=1&novideo=0&persist=0&gltrace=0`);
+    await page.goto(`${server.url}/runtime/index.html?p=cmd%20%2Fc%20echo%20vkboot&session=1&novideo=0&persist=0&gltrace=0&framelog=1`);
     await this.waitForPageFn(page, () => window.bwRuntime?.ready?.() === true, 600000);
 
     for (const f of [
@@ -45,11 +44,8 @@ export default class D3D11ComprehensiveTest extends ProbeTest {
       ['libvulkan.so.1', 'tools/rootfs64/libvk64/libvulkan.so.1'],
     ]) await this.stageFile(page, f[0], f[1]);
 
-    const bootstrapUntil = Date.now() + 600000;
-    while (!logs.some(l => /^log: vkboot\s*$/.test(l))) {
-      if (Date.now() > bootstrapUntil) throw new Error('Wine bootstrap timed out');
-      await page.waitForTimeout(500);
-    }
+    // Runtime readiness is bounded above; each real guest RESULT below proves execution.
+
 
     await page.evaluate(async () => {
       const { installVkPageTier } = await import('../vkwebgpu.mjs');
@@ -61,7 +57,7 @@ export default class D3D11ComprehensiveTest extends ProbeTest {
     const spawn = await page.evaluate(() => window.bwRuntime.call('bw64_spawn',
       ['string', 'string'],
       ['/usr/lib/wine/wine64\nZ:\\home\\username\\tri11_93.exe',
-       'BW64_VKTRACE=0\nBW64_VKFRAME=0\nWINEDLLOVERRIDES=d3d11=n;dxgi=n\nLD_LIBRARY_PATH=/home/username']));
+       'BW64_VKTRACE=1\nBW64_FRAMELOG=1\nBW64_VKFRAME=0\nWINEDLLOVERRIDES=d3d11=n;dxgi=n\nLD_LIBRARY_PATH=/home/username']));
 
     const until = Date.now() + 600000;
     let litLine = null;

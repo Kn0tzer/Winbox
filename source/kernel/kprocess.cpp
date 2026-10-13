@@ -379,17 +379,27 @@ void KProcess::clone(const KProcessPtr& from) {
     this->effectiveGroupId = from->effectiveGroupId;
     this->currentDirectory = from->currentDirectory;
     this->brkEnd = from->brkEnd;
-    for (auto& n : from->fds) {
-        KFileDescriptorPtr fromFd = n.value;
-        KFileDescriptorPtr fd = this->allocFileDescriptor(fromFd->kobject, fromFd->accessFlags, fromFd->descriptorFlags, n.key, 0);
-        this->fds.set(n.key, fd);     
+    struct ForkFd { U32 handle, accessFlags, descriptorFlags; std::shared_ptr<KObject> object; };
+    std::vector<ForkFd> snapshot;
+    {
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(from->fdsMutex);
+        for (auto& n : from->fds)
+            snapshot.push_back({n.key, n.value->accessFlags, n.value->descriptorFlags, n.value->kobject});
+    }
+    // Release the parent's lock before allocating child descriptors and VFS
+    // links. Sibling threads can change the parent table during fork.
+    for (const auto& entry : snapshot) {
+        KFileDescriptorPtr fd = this->allocFileDescriptor(entry.object, entry.accessFlags, entry.descriptorFlags, entry.handle, 0);
+        this->fds.set(entry.handle, fd);
         KObject* kobject = fd->kobject.get();
-        Fs::addDynamicLinkFile(fdNode->path + "/" + BString::valueOf(n.key), k_mdev(0, 0), fdNode, false, [kobject] {
+        Fs::addDynamicLinkFile(fdNode->path + "/" + BString::valueOf(entry.handle), k_mdev(0, 0), fdNode, false, [kobject] {
             return kobject->selfFd();
             });
     }
-    // :TODO: not thread safe if from has multiple threads
-    this->mappedFiles = from->mappedFiles;
+    {
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(from->mappedFilesMutex);
+        this->mappedFiles = from->mappedFiles;
+    }
     std::copy(from->sigActions, from->sigActions+MAX_SIG_ACTIONS, this->sigActions);
     this->path = from->path;
     this->commandLine = from->commandLine;
@@ -3243,6 +3253,27 @@ void KProcess::printStack() {
 
             klog_fmt("    0x%08d %s", this->getModuleEip(cpu->seg[CS].address+cpu->eip.u32), name.length()?name.c_str():"Unknown");
         }
+#ifdef BOXEDWINE_GUEST_X64
+        if (this->is64Bit && thread->cpu64) {
+            // The compatibility CPU's EIP/EBP do not describe a 64-bit thread.
+            // Include syscall arguments so a parked read can be tied to its fd.
+            CPU64* c = thread->cpu64;
+            klog_fmt("CPU64 STACK pid=%u tid=%u rip=0x%llx rsp=0x%llx rbp=0x%llx rax=0x%llx rdi=0x%llx rsi=0x%llx rdx=0x%llx",
+                id, thread->id, (unsigned long long)c->rip,
+                (unsigned long long)c->reg[X64_RSP].u64, (unsigned long long)c->reg[X64_RBP].u64,
+                (unsigned long long)c->reg[X64_RAX].u64, (unsigned long long)c->reg[X64_RDI].u64,
+                (unsigned long long)c->reg[X64_RSI].u64, (unsigned long long)c->reg[X64_RDX].u64);
+            const U64 sp = c->reg[X64_RSP].u64;
+            for (U32 i = 0; i < 16; ++i) {
+                const U64 at = sp + i * 8;
+                if (at < sp || !c->memory->isPageMapped(at >> 12) ||
+                    !c->memory->isPageMapped((at + 7) >> 12)) break;
+                klog_fmt("CPU64 STACK pid=%u tid=%u sp+0x%x=0x%llx", id, thread->id, i * 8,
+                    (unsigned long long)c->memory->readq(at));
+            }
+            continue;
+        }
+#endif
         if (!this->is64Bit) {
             // A Wine Unix handler's ESP points to its Unix stack. Recover the
             // saved Windows stack so diagnostics show the game caller too.

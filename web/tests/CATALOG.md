@@ -60,15 +60,16 @@ are distinct questions.
 ## Browser suite limitations
 
 `node web/tests/suite/runner.mjs --browser` preserves all 11 suite probes.
-Seven expect fixtures absent from the shipped app: `audio-tone`,
-`boot32-vkboot`, `celeste-boot`, `d3d11-triangle`, `gl32-triangle`,
-`input-keyboard`, `input-mouse-rel`. Their `?test=...` URLs and completion
-globals await fixture wiring. They are not established runtime coverage and
-may time out. Their assertions remain intact.
+All classes now use actual runtime/guest fixtures. Input checks compile a
+Win32 witness for both CPU modes and require guest key-down/key-up and
+RAWINPUT deltas. Audio checks actual DSP output PCM. GL32 and D3D12 inspect
+visible pixels; Celeste's boot check requires its completed-load log.
+Celeste rendering and playability require separate interactive evidence.
 
 The comprehensive D3D classes use the real runtime API and stage guest
 executables. Their names still cover more than their current assertions:
-D3D11 primarily runs `tri11_93.exe`, and D3D12 runs `tri12.exe`. Use
+D3D11 primarily runs `tri11_93.exe`, and D3D12 runs `tri12.exe` plus
+`tri12draw.exe`, including a compositor screenshot pixel assertion. Use
 `d3d-conformance.mjs` and its guest conformance programs for the broader
 per-operation matrix. Record actual runtime, GPU backend and fixture hashes
 with browser results. Passing `game-capability-matrix` cannot guarantee that

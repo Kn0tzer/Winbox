@@ -104,6 +104,11 @@ void tickXWirePresent();
 // stays SDL-agnostic. Defined in xwirepresentSDL.cpp.
 union SDL_Event;
 void xwireForwardSdlEvent(const SDL_Event& e);
+// Runtime diagnostics count actual input delivery, independently of guest logs.
+#ifdef __EMSCRIPTEN__
+void xwireRecordInputDelivery(uint8_t code, uint32_t window);
+void xwireRecordInputPhase(uint32_t phase);
+#endif
 
 // SDL scancode -> X11 keycode (evdev code + 8). Defined in xwirepresentSDL.cpp.
 uint32_t sdlScancodeToX11(int scancode);

@@ -52,8 +52,9 @@ The [catalog](web/tests/CATALOG.md) maps the full requested stack and both
 architectures to unit, native, guest and browser checks. It names the gaps:
 source/registration checks establish their assertions; correct rendering,
 complete API behavior, OPFS persistence and game playability need runtime
-proof. All previous suite, legacy and native tests remain, including the
-browser checks whose fixture wiring is incomplete.
+proof. All previous suite, legacy and native tests remain. The browser
+suite now runs real guest fixtures; its dependencies are described in the
+[suite guide](web/tests/suite/README.md).
 
 To run an existing game probe:
 

@@ -21,6 +21,7 @@ import { readdirSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
+import { withTimeout } from './lib/probe-base.mjs';
 
 const suiteDir = dirname(fileURLToPath(import.meta.url));
 const unitDir = join(suiteDir, "unit");
@@ -86,6 +87,7 @@ async function runBrowserFile(file) {
   const name = basename(file, ".test.mjs");
   const t0 = Date.now();
   let test = null;
+  let timer;
   try {
     const mod = await import(pathToFileURL(file).href);
     const TestClass = mod.default;
@@ -106,16 +108,16 @@ async function runBrowserFile(file) {
       }
     })();
     const timeout = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error(`FAIL ${name}: browser test timed out after ${timeoutMs}ms (hung probe killed — never stall forever)`)), timeoutMs));
+      timer = setTimeout(() => reject(new Error(`FAIL ${name}: browser test timed out after ${timeoutMs}ms (hung probe killed — never stall forever)`)), timeoutMs));
     await Promise.race([runOnce, timeout]);
     return { passed: true, durationMs: Date.now() - t0 };
   } catch (e) {
     // Ensure cleanup even on failure/timeout (best effort, 10s cap each)
     if (test) {
-      try { await Promise.race([test.teardown(), new Promise(r => setTimeout(r, 10000))]); } catch {}
+      try { await withTimeout(test.teardown(), 30000, 'test cleanup'); } catch {}
     }
     return { passed: false, durationMs: Date.now() - t0, error: e.message + "\n" + (e.stack || "").split("\n").slice(1, 4).join("\n") };
-  }
+  } finally { clearTimeout(timer); }
 }
 
 async function main() {

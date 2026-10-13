@@ -2114,6 +2114,9 @@ void XWireConnection::deliverInputEvents() {
 // (== host content coords), root-x/y add the origin back.
 void XWireConnection::sendInputEvent(uint8_t code, uint32_t window, const XWireInputEvent& ev,
                                      int16_t winX, int16_t winY) {
+#ifdef __EMSCRIPTEN__
+    xwireRecordInputDelivery(code, window);
+#endif
     uint8_t e[32] = {0};
     e[0] = code;
     e[1] = (uint8_t)ev.detail;                 // keycode / button

@@ -22,12 +22,14 @@
 /tools/vkd3d/build/
 /tools/vkd3d/install/
 /tools/cpu-diff/build/
+/tools/guest-fixtures/build/
 /tools/cpu-diff/runner
 /tools/cpu-diff/report.json
 /tools/rootfs64/dist/
 /tools/rootfs64/pages-assets/
 /tools/rootfs64/work/extract/
 /tools/rootfs64/work/lsbundle/
+/tools/rootfs64/mono32/
 /tools/BoxedWineRunner/out/
 
 # Probe output stays local; curated reports live in docs/reports/.

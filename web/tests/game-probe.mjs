@@ -30,7 +30,7 @@ if (!/^[\w.-]+$/.test(tag)) throw Error('Invalid TAG');
 const dir = join(repo, 'test-results', tag);
 await mkdir(dir, { recursive: true });
 const root = await mkdtemp(join(tmpdir(), 'bw-game-'));
-const gamePath = resolve(process.env.GAME_ZIP || `/home/ubuntu/kn0tzer/games/${game}.zip`);
+const gamePath = resolve(process.env.GAME_ZIP || `/home/ubuntu/kn0tzer/games/${game === 'celeste' ? 'celeste-drmfree' : game}.zip`);
 const result = { game, profile, tag, startedAt: new Date().toISOString(), menuVerified: false,
   gameplayVerified: false, pass: false, samples: [] };
 let slot, server, browser, browserServer, logFile;
@@ -42,6 +42,8 @@ try {
   slot = await acquireProbeSlot();
   await waitForBuildIdle();
   result.build = JSON.parse(await readFile(join(runtimeRoot, 'runtime/BUILD_INFO.json'), 'utf8'));
+  if (createHash('sha256').update(await readFile(join(runtimeRoot, 'runtime/boxedwine64.wasm'))).digest('hex') !== result.build.wasm_sha256)
+    throw new Error('Runtime hash does not match BUILD_INFO.json');
   await symlink(runtimeRoot, join(root, 'dist'));
   // Source shader.mjs resolves its pre-pass relative to the export parent.
   await symlink(join(runtimeRoot, 'tools'), join(root, 'tools'));
@@ -82,8 +84,14 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
   server = await serve(root);
   browserServer = await chromium.launchServer({ executablePath: process.env.CHROME_PATH || '/usr/local/bin/chromium', headless: true,
     args: ['--no-sandbox', '--disable-dev-shm-usage', '--enable-unsafe-webgpu', '--enable-unsafe-swiftshader',
-      '--use-angle=vulkan', '--use-vulkan=swiftshader', '--enable-features=Vulkan'] });
+      '--use-angle=vulkan', '--use-vulkan=swiftshader', '--enable-features=Vulkan',
+      '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0'] });
   await writeFile(join(dir, '.browser.ws'), browserServer.wsEndpoint(), { mode: 0o600 });
+  const userData = browserServer.process().spawnargs.find(a => a.startsWith('--user-data-dir='))?.split('=').slice(1).join('=');
+  if (userData) {
+    const port = (await readFile(join(userData, 'DevToolsActivePort'), 'utf8')).split('\n')[0];
+    await writeFile(join(dir, '.browser.cdp'), `http://127.0.0.1:${port}`, { mode: 0o600 });
+  }
   browser = await chromium.connect(browserServer.wsEndpoint());
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   const launcher = await readFile(resolve(process.env.PROBE_LAUNCHER || join(runtimeRoot, 'runtime/wine64-launcher.js')));
@@ -101,7 +109,7 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
           const start = performance.now();
           const outcome = await render(frame, options);
           globalThis.__gameLastOutcome = outcome;
-          if (outcome?.rendered) {
+          if (outcome?.rendered && options?.present !== false) {
             await value.device.queue.onSubmittedWorkDone();
             const samples = globalThis.__gameFrames;
             samples.push({ start, end: performance.now() });
@@ -186,7 +194,10 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
       fps:result.measurement?.renderedFps, last:logs.slice(-2).map(l=>l.slice(0,160)) }));
     if (result.errors.some(l => /pageerror:|Native panic stack|http-error:/.test(l))) break;
     if (profile.fixture && logs.some(l => /trigl: RESULT 0/.test(l))) { result.pass = true; break; }
-    if (menuStart !== undefined && snap.now - menuStart >= measureMs) { result.pass = result.measurement.renderedFrames > 0; break; }
+    if (menuStart !== undefined && snap.now - menuStart >= measureMs) {
+      result.pass = result.measurement.renderedFrames > 0;
+      if (process.env.HOLD_OPEN !== '1') break;
+    }
   }
   await page.screenshot({ path: join(dir, 'final.png') });
 } catch (e) { result.error = e.stack || String(e); }
@@ -196,6 +207,8 @@ finally {
   logFile?.end();
   await browser?.close().catch(() => {});
   await browserServer?.close().catch(() => {});
+  await rm(join(dir, '.browser.ws'), { force: true });
+  await rm(join(dir, '.browser.cdp'), { force: true });
   server?.close();
   await slot?.release();
   await rm(root, { recursive: true, force: true });

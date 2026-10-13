@@ -40,6 +40,52 @@
 #include <mutex>
 #include <deque>
 #include <atomic>
+#include <cstdio>
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+#endif
+
+namespace {
+std::atomic<uint64_t> inputTicks{0}, forwardedKeys{0}, deliveredKeys{0}, deliveredMotion{0};
+std::atomic<uint32_t> lastInputWindow{0};
+std::atomic<uint32_t> inputPhase{0};
+}
+
+void xwireRecordInputPhase(uint32_t phase) { inputPhase.store(phase, std::memory_order_relaxed); }
+
+void xwireRecordInputDelivery(uint8_t code, uint32_t window) {
+    if (code == 2 || code == 3) deliveredKeys.fetch_add(1, std::memory_order_relaxed);
+    if (code == 6) deliveredMotion.fetch_add(1, std::memory_order_relaxed);
+    lastInputWindow.store(window, std::memory_order_relaxed);
+}
+
+#ifdef __EMSCRIPTEN__
+extern "C" EMSCRIPTEN_KEEPALIVE const char* bw64_input_snapshot() {
+    static thread_local char result[512];
+    uint32_t focus = 0, present = 0, mask = 0, owner = 0;
+    XWireServer& server = XWireServer::instance();
+    bool busy;
+    {
+        std::unique_lock<std::mutex> lock(server.regMutex, std::try_to_lock);
+        busy = !lock.owns_lock();
+        if (!busy) {
+            focus = server.focusWindow; present = server.presentWindow;
+            auto window = server.windows.find(focus ? focus : present);
+            if (window != server.windows.end()) { mask = window->second.eventMask; owner = window->second.ownerClientBase; }
+        }
+    }
+    std::snprintf(result, sizeof(result),
+        "{\"ticks\":%llu,\"forwardedKeys\":%llu,\"deliveredKeys\":%llu,\"deliveredMotion\":%llu,"
+        "\"lastWindow\":%u,\"focus\":%u,\"present\":%u,\"mask\":%u,\"owner\":%u,\"phase\":%u,\"pending\":%s,\"busy\":%s}",
+        (unsigned long long)inputTicks.load(std::memory_order_relaxed),
+        (unsigned long long)forwardedKeys.load(std::memory_order_relaxed),
+        (unsigned long long)deliveredKeys.load(std::memory_order_relaxed),
+        (unsigned long long)deliveredMotion.load(std::memory_order_relaxed),
+        lastInputWindow.load(std::memory_order_relaxed), focus, present, mask, owner, inputPhase.load(std::memory_order_relaxed),
+        g_xwirePresentSink && g_xwirePresentSink->hasInput() ? "true" : "false", busy ? "true" : "false");
+    return result;
+}
+#endif
 #include <vector>
 #include <functional>
 #include <condition_variable>
@@ -670,6 +716,7 @@ void installXWireSink() {
 // (knativeinputSDL) into the XWire input queue. No-op when no sink is active
 // (headless / -novideo / 32-bit). Keeps a single SDL_PollEvent in the process.
 void xwireForwardSdlEvent(const SDL_Event& e) {
+    if (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) forwardedKeys.fetch_add(1, std::memory_order_relaxed);
     if (g_xwirePresentSink == &g_sink) g_sink.forwardSdlEvent(e);
     else if (g_xwirePresentSink) g_inputSink.forwardSdlEvent(e);
 }
@@ -763,17 +810,22 @@ void xwireRunOnMainThread(const std::function<void()>& fn) {
 // Drive present + input from the main loop (main thread). Safe to call when no
 // sink is installed.
 void tickXWirePresent() {
+    inputTicks.fetch_add(1, std::memory_order_relaxed);
+    xwireRecordInputPhase(1);
     // Run any work the gl64 bridge (or others) deferred to the main thread —
     // e.g. SDL_CreateWindow for the hidden GL target. Done unconditionally (even
     // with no sink) so a headless-but-GL path still drains.
     drainMainThreadWork();
+    xwireRecordInputPhase(2);
     if (g_xwirePresentSink) {
         // Coalesced present: the wire server's draw handlers (PutImage bands,
         // CopyArea, text, map/unmap) only mark the scene dirty; the one full
         // composite per tick happens here. Lock-free no-op when nothing drew,
         // so the boot storm stays uncontended (same reasoning as hasInput()).
         XWireServer::instance().flushPendingPresent();
+        xwireRecordInputPhase(3);
         g_xwirePresentSink->tickMainThread();
+        xwireRecordInputPhase(4);
         // Flush queued host input to the guest only when there IS input — a
         // lock-free check, so during the boot storm (no input) we take zero
         // mutexes and never contend with the guest threads holding the conn/reg
@@ -783,6 +835,7 @@ void tickXWirePresent() {
             XWireServer::instance().pumpInput();
         }
     }
+    xwireRecordInputPhase(5);
 }
 
 #endif // BOXEDWINE_GUEST_X64

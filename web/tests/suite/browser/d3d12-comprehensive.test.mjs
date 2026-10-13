@@ -8,7 +8,9 @@
 
 import { ProbeTest } from '../lib/probe-base.mjs';
 import { check, checkGreaterThan } from '../lib/assert.mjs';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
+import { isVkd3dError } from '../lib/log-evidence.mjs';
+import { screenshotPixels } from '../lib/pixels.mjs';
 
 export default class D3D12ComprehensiveTest extends ProbeTest {
   constructor() {
@@ -29,26 +31,26 @@ export default class D3D12ComprehensiveTest extends ProbeTest {
 
   async run(ctx) {
     const { page, server } = ctx;
-    const logs = [];
-    page.on('console', m => logs.push(`${m.type()}: ${m.text()}`));
+    const logs = this.consoleLines;
 
-    await page.goto(`${server.url}/runtime/index.html?p=cmd%20%2Fc%20echo%20vkboot&session=1&novideo=0&persist=0&gltrace=0`);
+    await page.goto(`${server.url}/runtime/index.html?p=cmd%20%2Fc%20echo%20vkboot&session=1&novideo=0&persist=0&gltrace=0&framelog=1`);
     await this.waitForPageFn(page, () => window.bwRuntime?.ready?.() === true, 600000);
 
     for (const f of [
       ['tri12.exe', 'tools/vkd3d/probe/tri12.exe'],
-      ['d3d12.dll', 'tools/vkd3d/build/src/d3d12/d3d12.dll'],
+      ['tri12draw.exe', 'tools/vkd3d/probe/tri12draw.exe'],
+      ['d3d12.dll', 'tools/vkd3d/build.w64/libs/d3d12/d3d12.dll'],
+      ['d3d12core.dll', 'tools/vkd3d/build.w64/libs/d3d12core/d3d12core.dll'],
+      ['dxgi.dll', 'tools/dxvk/build.w64/src/dxgi/dxgi.dll'],
+      ['bw64vulkan.dll', 'tools/vkd3d/probe/bw64vulkan.dll'],
+      ['vulkan-1.dll', 'tools/vkd3d/probe/bw64vulkan.dll'],
       ['libvulkan.so.1', 'tools/rootfs64/libvk64/libvulkan.so.1'],
     ]) {
-      try { await this.stageFile(page, f[0], f[1]); }
-      catch (e) { console.log(`  (stage ${f[0]}: ${e.message})`); }
+      await this.stageFile(page, f[0], f[1]);
     }
 
-    const bootstrapUntil = Date.now() + 600000;
-    while (!logs.some(l => /^log: vkboot\s*$/.test(l))) {
-      if (Date.now() > bootstrapUntil) throw new Error('Wine bootstrap timed out');
-      await page.waitForTimeout(500);
-    }
+    // Runtime readiness is bounded above; each real guest RESULT below proves execution.
+
 
     await page.evaluate(async () => {
       const { installVkPageTier } = await import('../vkwebgpu.mjs');
@@ -59,7 +61,7 @@ export default class D3D12ComprehensiveTest extends ProbeTest {
     const spawn = await page.evaluate(() => window.bwRuntime.call('bw64_spawn',
       ['string', 'string'],
       ['/usr/lib/wine/wine64\nZ:\\home\\username\\tri12.exe',
-       'BW64_VKTRACE=0\nWINEDLLOVERRIDES=d3d12=n\nLD_LIBRARY_PATH=/home/username']));
+       'BW64_VKTRACE=1\nBW64_FRAMELOG=1\nWINEDLLOVERRIDES=d3d12=n;d3d12core=n;dxgi=n;vulkan-1=n;winevulkan=n\nLD_LIBRARY_PATH=/home/username']));
 
     const until = Date.now() + 600000;
     let resultLine = null;
@@ -71,12 +73,25 @@ export default class D3D12ComprehensiveTest extends ProbeTest {
     check(resultLine !== null, 'D3D12 test must produce RESULT line');
     check(/RESULT 0/.test(resultLine), `D3D12 device + clear must succeed (got: ${resultLine})`);
 
+    // The clear probe has no swapchain. Exercise draw and presentation with
+    // the existing triangle fixture before checking the frame builder.
+    const drawFrom = logs.length;
+    await this.spawnGuest(page, 'tri12draw.exe', { arch: 'x64', env:
+      'BW64_VKTRACE=1\nWINEDLLOVERRIDES=d3d12=n;d3d12core=n;dxgi=n;vulkan-1=n;winevulkan=n' });
+    const draw = await this.waitForLog(page, /tri12draw:\s*RESULT/, 600000, drawFrom);
+    check(/RESULT 0/.test(draw), `D3D12 draw and present must succeed (got: ${draw})`);
+
     // COMMON: V2 frames must be built (proves vkd3d -> bridge -> page path)
     const frames = logs.filter(l => /FRAME \d+ built \(v2\)/.test(l)).length;
     checkGreaterThan(frames, 0, 'D3D12 must build V2 frames');
+    await this.waitForPageFn(page, () => window.bwVkStats?.().v2?.rendered > 0, 30000);
+    await page.evaluate(() => window.bwVkRenderer2.device.queue.onSubmittedWorkDone());
+    const pixels = screenshotPixels(await page.locator('#vkCanvas').screenshot({ path: this.dir + '/triangle.png' }));
+    await writeFile(this.dir + '/pixels.json', JSON.stringify({ pixels, stats: await page.evaluate(() => window.bwVkStats?.()) }, null, 2));
+    checkGreaterThan(pixels.redDominant, 1000, 'D3D12 must present the RGB triangle above its blue clear color');
 
     // EDGE: no vkd3d errors in console
-    const vkd3dErrs = logs.filter(l => /vkd3d.*(err|fail)/i.test(l));
+    const vkd3dErrs = logs.filter(isVkd3dError);
     check(vkd3dErrs.length === 0,
       `No vkd3d errors expected (found ${vkd3dErrs.length})`);
   }

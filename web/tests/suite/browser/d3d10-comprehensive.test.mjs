@@ -32,23 +32,17 @@ export default class D3D10ComprehensiveTest extends ProbeTest {
     const spawn = await page.evaluate(([exe, e]) => window.bwRuntime.call('bw64_spawn',
       ['string', 'string'],
       [`/usr/lib/wine/wine64\nZ:\\home\\username\\${exe}`,
-       `BW64_VKTRACE=0\nWINEDLLOVERRIDES=d3d11=n;dxgi=n\nLD_LIBRARY_PATH=/home/username\n${e}`]),
+       `BW64_VKTRACE=1\nBW64_FRAMELOG=1\nWINEDLLOVERRIDES=d3d10core=n;d3d11=n;dxgi=n\nLD_LIBRARY_PATH=/home/username\n${e}`]),
       [exeName, env]);
-    const until = Date.now() + 300000;
-    while (Date.now() < until) {
-      const hit = logs.find(l => resultPattern.test(l));
-      if (hit) return hit;
-      await page.waitForTimeout(2000);
-    }
-    throw new Error(`${tag}: result pattern not seen within 5 min (spawn=${spawn})`);
+    check(spawn > 0, `${tag}: guest spawn must be queued`);
+    return this.waitForLog(page, resultPattern, 300000);
   }
 
   async run(ctx) {
     const { page, server } = ctx;
-    const logs = [];
-    page.on('console', m => logs.push(`${m.type()}: ${m.text()}`));
+    const logs = this.consoleLines;
 
-    await page.goto(`${server.url}/runtime/index.html?p=cmd%20%2Fc%20echo%20vkboot&session=1&novideo=0&persist=0&gltrace=0`);
+    await page.goto(`${server.url}/runtime/index.html?p=cmd%20%2Fc%20echo%20vkboot&session=1&novideo=0&persist=0&gltrace=0&framelog=1`);
     await this.waitForPageFn(page, () => window.bwRuntime?.ready?.() === true, 600000);
 
     for (const f of [
@@ -56,16 +50,14 @@ export default class D3D10ComprehensiveTest extends ProbeTest {
       ['tri10.exe', 'tools/d3dtests/tri10.exe'],
       ['scene10.exe', 'tools/d3dtests/scene10.exe'],
       ['tri10swap93.exe', 'tools/d3dtests/tri10swap93.exe'],
+      ['d3d10core.dll', 'tools/dxvk/build.w64/src/d3d10/d3d10core.dll'],
       ['d3d11.dll', 'tools/dxvk/build.w64/src/d3d11/d3d11.dll'],
       ['dxgi.dll', 'tools/dxvk/build.w64/src/dxgi/dxgi.dll'],
       ['libvulkan.so.1', 'tools/rootfs64/libvk64/libvulkan.so.1'],
     ]) await this.stageFile(page, f[0], f[1]);
 
-    const bootstrapUntil = Date.now() + 600000;
-    while (!logs.some(l => /^log: vkboot\s*$/.test(l))) {
-      if (Date.now() > bootstrapUntil) throw new Error('Wine bootstrap timed out');
-      await page.waitForTimeout(500);
-    }
+    // Runtime readiness is bounded above; each real guest RESULT below proves execution.
+
 
     // BASIC 1: D3D10 device creation
     const dev = await this.runTest(page, logs, 'd3d10dev.exe', /d3d10dev:\s*RESULT/, 'd3d10dev');

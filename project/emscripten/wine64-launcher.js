@@ -907,6 +907,7 @@
                 // leaves it unset (the C side checks existence via getenv, not value).
                 if (param("gltrace") && param("gltrace") !== "0") ENV["BW64_GLTRACE"] = param("gltrace");
                 if (param("vkprof") === "1") ENV["BW64_VKPROF"] = "1";
+                if (param("framelog") === "1") ENV["BW64_FRAMELOG"] = "1";
                 if (param("winmmbypass") === "1") ENV["WINEDLLOVERRIDES"] = "winmm=n";
                 if (param("bssdiag") && param("bssdiag") !== "0") ENV["BW64_BSSDIAG"] = param("bssdiag") === "1" ? "img" : param("bssdiag");
                 if (param("ripsample") === "1") {
@@ -1064,7 +1065,9 @@
         return callExport("bw64_session_ready", [], []) === 1;
     }
     function sessionReady() {
-        return sessionReadyRaw() && arch32WinebootDone;
+        // The wineboot helper runs only in persistent-session mode. A direct
+        // 32-bit game must not wait for a helper that was never scheduled.
+        return sessionReadyRaw() && (!SESSION || arch32WinebootDone);
     }
     function lastSpawnedPid() {
         return callExport("bw64_last_spawned_pid", [], []) || 0;

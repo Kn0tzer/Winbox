@@ -51,6 +51,13 @@ static inline uint64_t vk64_trap(uint64_t fnId, uint64_t *args) {
 for name, fnid, argc in normal:
     params = ', '.join(f'uint64_t a{i}' for i in range(argc)) if argc else 'void'
     inits = ', '.join(f'a{i}' for i in range(argc))
+    if name in {'vkCmdSetViewportWithCount', 'vkCmdSetViewportWithCountEXT',
+                'vkCmdSetScissorWithCount', 'vkCmdSetScissorWithCountEXT'}:
+        # The host uses the canonical (cmd, first, count, pointer) trap ABI.
+        # WithCount omits first, which is implicitly zero.
+        if argc != 3:
+            raise ValueError(f'{name} must have three public arguments')
+        inits = 'a0, 0, a1, a2'
     out.append(f'__declspec(dllexport) uint64_t {name}({params}) {{')
     out.append(f'    uint64_t args[16] = {{{inits}}};')
     out.append(f'    return vk64_trap({fnid}ULL, args);')
