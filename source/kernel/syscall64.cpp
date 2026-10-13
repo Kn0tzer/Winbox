@@ -1764,8 +1764,12 @@ static U64 sys_execve64(CPU64* cpu, U64 pathAddr, U64 argvAddr, U64 envpAddr) {
     // Flagged spawns (-p pin, -k, -w) are left untouched (argc > 1).
     if (args.size() == 1 &&
         (path.endsWith("/wineserver64") || path.endsWith("/wineserver"))) {
+        // Keep the server in its spawned guest process. Daemonizing adds a
+        // second fork during Wine startup and can strand the loader waiting
+        // for a server whose parent has already exited.
+        args.push_back(B("-f"));
         args.push_back(B("-p"));
-        klog_fmt("sys_execve64: bare wineserver spawn made persistent (-p) for boot reliability");
+        klog_fmt("sys_execve64: bare wineserver spawn made foreground and persistent (-f -p)");
     }
     klog_fmt("sys_execve64: pid=%d path='%s' argv0='%s' argc=%d envc=%d",
              (int)(cpu->thread && cpu->thread->process ? cpu->thread->process->id : -1),
