@@ -478,6 +478,9 @@ export async function createVkRenderer(canvas, { translate, log = defaultLog } =
  */
 export function installVkPageTier({ canvas, log = defaultLog } = {}) {
   if (globalThis.bwVkTier) return globalThis.bwVkTier;
+  let destroyed = false, destroying = null;
+  const ownedCanvases = new Set();
+  const stopped = () => ({ rendered: false, reason: 'destroyed' });
   const state = { received: 0, rendered: 0, rejected: 0, errors: [], last: null,
     litPixels: 0, paintedPixels: 0, totalPixels: 0 };
   const stats = () => ({ ...state, errors: state.errors.slice(-8), pipeline: renderer?.snapshot() || null,
@@ -500,6 +503,7 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
   // sees the full present batch and keeps only the presented frame.
   let pumpTimer = null;
   function queuePump() {
+    if (destroyed) return;
     if (pumpTimer) clearTimeout(pumpTimer);
     pumpTimer = setTimeout(() => {
       pumpTimer = null;
@@ -516,6 +520,7 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
   }
 
   async function frame(json) {
+    if (destroyed) return stopped();
     state.received++;
     try {
       if (!renderer) {
@@ -528,6 +533,7 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
         });
         await starting;
       }
+      if (destroyed) return stopped();
       const result = await renderer.render(typeof json === 'string' ? json : JSON.stringify(json));
       state.last = result?.rendered ? result : { rendered: false, reason: result?.reason || 'skipped' };
       if (result?.rendered) {
@@ -545,6 +551,7 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
   }
 
   async function pumpChunks() {
+    if (destroyed) return stopped();
     if (!renderer2) {
       starting2 ||= createVkRenderer2(canvas || defaultCanvas(), { log, onResize: v2Resize }).then(r => {
         renderer2 = r; globalThis.bwVkRenderer2 = r;
@@ -552,6 +559,7 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
       });
       await starting2;
     }
+    if (destroyed) return stopped();
     const f = v2queue.takeLatest(); // latest-frame-wins: the guest presenting
     if (!f) return { rendered: false, reason: 'empty' }; // faster than the page renders never builds a backlog
     try {
@@ -599,6 +607,7 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
   // and queueing are synchronous; the render pump is serialised behind pump2.
   // Never throws back at the guest.
   function chunk(bytes, flags) {
+    if (destroyed) return Promise.resolve(stopped());
     v2state.chunksReceived++;
     let parsed;
     try { parsed = parseV2Chunk(bytes); }
@@ -632,6 +641,7 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
     const el = document.createElement('canvas');
     el.id = 'vkCanvas';
     (document.getElementById('display') || document.body).append(el);
+    ownedCanvases.add(el);
     return el;
   }
 
@@ -641,16 +651,42 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
     stats,
     get ready() { return !!renderer; },
     get litPixels() { return state.litPixels; },
+    destroy() {
+      if (destroying) return destroying;
+      destroyed = true;
+      if (pumpTimer) clearTimeout(pumpTimer);
+      pumpTimer = null;
+      v2queue.clear(); v2queue.imageData.clear(); v2queue.bufferData.clear();
+      v2present.pending.length = 0; v2asm.records.length = 0;
+      if (globalThis.bwVkTier === tier) delete globalThis.bwVkTier;
+      if (globalThis.bwVkStats === stats) delete globalThis.bwVkStats;
+      if (globalThis.bwVkChunk === acceptChunk) delete globalThis.bwVkChunk;
+      // Let a renderer that is initializing or encoding finish before freeing
+      // its device. Queued work sees destroyed and never starts another frame.
+      destroying = Promise.allSettled([pending, pump2, starting, starting2]).then(() => {
+        for (const r of [renderer, renderer2]) {
+          if (!r) continue;
+          r.destroy();
+          if (globalThis.bwVkRenderer === r) delete globalThis.bwVkRenderer;
+          if (globalThis.bwVkRenderer2 === r) delete globalThis.bwVkRenderer2;
+        }
+        renderer = renderer2 = null;
+        for (const el of ownedCanvases) el.remove();
+        ownedCanvases.clear();
+      });
+      return destroying;
+    },
   };
   globalThis.bwVkTier = tier;
   globalThis.bwVkStats = stats;
   // The wasm bridge hops v2 chunks via window.bwVkChunk(bytes, flags) (see
   // hopV2LastToPage in vk64bridge.cpp). Wire it here so direct EM_ASM delivery
   // works even when the host page bypasses the app.mjs vk2 message path.
-  try { globalThis.bwVkChunk = (bytes, flags) => {
+  const acceptChunk = (bytes, flags) => {
     bwLogRl(4, 'vulkan', 100, 'v2 chunk received: ' + bytes.length + ' bytes flags=' + flags);
     tier.chunk(bytes, flags);
-  }; } catch (e) {}
+  };
+  try { globalThis.bwVkChunk = acceptChunk; } catch (e) {}
   return tier;
 }
 

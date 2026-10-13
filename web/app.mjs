@@ -103,7 +103,13 @@ async function snapshot(){
   function walk(dir){let names;try{names=FS.readdir(dir);}catch{return;}for(const n of names){if(n==='.'||n==='..'||n.startsWith('.bw64clip'))continue;const path=dir+'/'+n,st=FS.lstat(path);if(FS.isDir(st.mode))walk(path);else if(FS.isFile(st.mode)){size+=st.size;if(size>768*1024**2||files.length>=20000)throw new Error('Save tree exceeds backup limits');files.push({path,data:FS.readFile(path)});}}}
   walk('/root/home/username');await writeStored(iframe.dataset.installation,files,true);
 }
-async function stop(){await snapshot();iframe?.remove();iframe=null;renderer?.destroy();renderer=null;$('gpuCanvas')?.remove();$('stop').disabled=true;}
+async function stop(){
+  await snapshot();iframe?.remove();iframe=null;
+  renderer?.destroy();renderer=null;$('gpuCanvas')?.remove();
+  const ready=window.bwVkTierReady;delete window.bwVkTierReady;
+  const tier=ready?await ready.catch(()=>window.bwVkTier):window.bwVkTier;
+  await tier?.destroy();$('stop').disabled=true;
+}
 async function launch(prog,{pkg=null,exe=null,args=[],arch=null}={}){
   await stop();$('log').textContent='';$('placeholder')?.remove();
   const gpu=$('backend').value==='webgpu';
@@ -123,10 +129,22 @@ window.addEventListener('message',e=>{
   // vk64 page tier (tasks/p1-final.md §2.9): the sibling of the 'gpu' branch. The
   // guest's Vulkan frame manifest is rendered by web/vkwebgpu.mjs into its own
   // canvas; any error falls back to the upstream rendering exactly like 'gpu'.
-  if(type==='vk'){const ready=window.bwVkTierReady||(window.bwVkTierReady=import('./vkwebgpu.mjs').then(m=>(window.bwVkTier=m.installVkPageTier())));ready.then(t=>t.frame(data)).then(()=>report(`Real guest Vulkan → WebGPU · ${window.bwVkStats?.().rendered||0} frames`)).catch(err=>{log('WebGPU Vulkan fallback: '+err.message);console.warn('WebGPU Vulkan fallback: '+err.message);report('Unsupported Vulkan frame; showing upstream rendering.');});}
   // Schema v2 (tasks/schema-v2.md): binary chunks arrive via window.bwVkChunk
   // in the runtime page; the tier queues them (drop-oldest, latest-frame-wins).
-  if(type==='vk2'){const ready=window.bwVkTierReady||(window.bwVkTierReady=import('./vkwebgpu.mjs').then(m=>(window.bwVkTier=m.installVkPageTier())));ready.then(t=>t.chunk(data.bytes, data.flags)).then(()=>report(`Real guest Vulkan → WebGPU · ${window.bwVkStats?.().v2?.rendered||0} v2 frames`)).catch(err=>{log('WebGPU Vulkan fallback: '+err.message);console.warn('WebGPU Vulkan fallback: '+err.message);report('Unsupported Vulkan frame; showing upstream rendering.');});}
+  if(type==='vk'||type==='vk2'){
+    const runtime=iframe;
+    const ready=window.bwVkTierReady||(window.bwVkTierReady=import('./vkwebgpu.mjs').then(m=>(window.bwVkTier=m.installVkPageTier())));
+    ready.then(async tier=>{
+      if(iframe!==runtime)return;
+      await(type==='vk'?tier.frame(data):tier.chunk(data.bytes,data.flags));
+      if(iframe!==runtime)return;
+      const stats=window.bwVkStats?.();
+      report(`Real guest Vulkan → WebGPU · ${type==='vk'?(stats?.rendered||0)+' frames':(stats?.v2?.rendered||0)+' v2 frames'}`);
+    }).catch(err=>{
+      if(iframe!==runtime)return;
+      log('WebGPU Vulkan fallback: '+err.message);console.warn('WebGPU Vulkan fallback: '+err.message);report('Unsupported Vulkan frame; showing upstream rendering.');
+    });
+  }
 });
 $('folderButton').onclick=()=>$('folderInput').click();$('zipButton').onclick=()=>$('zipInput').click();
 $('folderInput').onchange=()=>guard(async()=>{report('Importing folder…');const files=await fromFiles($('folderInput').files);const name=$('folderInput').files[0]?.webkitRelativePath.split('/')[0];await install(files,name);$('folderInput').value='';});
