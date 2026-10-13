@@ -59,6 +59,7 @@ suite now runs real guest fixtures; its dependencies are described in the
 To run an existing game probe:
 
 ```sh
+node web/tests/suite/runner.mjs --game=portal      # prerequisites before acceptance
 GAME=portal node web/tests/game-probe.mjs
 GAME=celeste GAME_ZIP=/path/to/celeste.zip GL32=1 MONO32_DIR=/path/to/mono32 node web/tests/game-probe.mjs
 ```

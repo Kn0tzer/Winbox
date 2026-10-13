@@ -11,6 +11,9 @@ node web/tests/suite/runner.mjs --unit         # no browser
 node web/tests/suite/runner.mjs --browser      # runtime and guest assets needed
 node web/tests/suite/runner.mjs --unit --filter=d3d11
 node web/tests/suite/runner.mjs --unit --json
+node web/tests/suite/runner.mjs --game=celeste  # bounded prerequisites, no game archive
+node web/tests/suite/runner.mjs --game=portal
+node web/tests/suite/runner.mjs --game=gangbeasts
 ```
 
 Filtering uses `--filter=value`. Exit zero means the selected files passed;
@@ -18,6 +21,20 @@ native CPU checks and flat guest/browser probes have separate entrypoints.
 The maintenance baseline contained 93 unit files, 11 browser files and nine
 legacy Node test files, all preserved. Discovery includes new regression
 files automatically; these historical counts are not fixed coverage targets.
+
+Game preflights run selected real guest probes and targeted regressions before
+the full game. They save `test-results/prerequisites-<game>/summary.json`.
+The report requires every listed check to pass against one WASM and browser
+code fingerprint. Filtering or running only unit checks leaves the preflight
+incomplete. The report always leaves gameplay unverified and names the
+remaining game-specific behavior that needs an acceptance check.
+
+Use small contract failures as the main diagnostic loop. Preserve a failing
+case, compare it against an authoritative specification or an independent
+reference, fix its subsystem and rerun affected contracts. For example, the
+shared-mapping ELF runs under both Linux/QEMU and the browser kernel. Run a
+full game after its prerequisites pass; loading, menu rendering and interactive
+gameplay are separate acceptance milestones.
 
 ## Layout
 
@@ -57,6 +74,11 @@ DRM-free archive (`CELESTE_ZIP`) and Wine Mono prepared with
 cache directory. D3D probes require the generated DXVK/vkd3d DLLs named in
 their source. The broader flat probes remain in place. These checks cover
 selected paths, and full API/architecture coverage remains incomplete.
+The shared-mapping ELF requires `x86_64-linux-gnu-gcc`; the small Mono probe
+requires `mcs` and the pinned Wine Mono payload. Clocks, fullscreen clipping,
+input messages and managed runtime behavior have separate probes. Timeout
+failures save `timeout-evidence.json` and request guest stacks on the failing
+run, rather than requiring another boot to gather that state.
 
 ## Adding a check
 

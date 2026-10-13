@@ -540,8 +540,8 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
     sequence++;
 
     if (getenv("BW64_XWIRE")) {
-        klog_fmt("XWire: req opcode=%d detail=%d len=%d seq=%d",
-                 (int)opcode, (int)req[1], (int)len, (int)sequence);
+        klog_fmt("XWire: req opcode=%d detail=%d len=%d seq=%d client=0x%x pid=%u",
+                 (int)opcode, (int)req[1], (int)len, (int)sequence, clientIdBase, ownerPid);
     }
 
     switch (opcode) {
@@ -735,6 +735,7 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
                     it->second.mapped = false;
                     wasOverlay = (wid != srv.presentWindow && !it->second.isRoot);
                 }
+                if (srv.pointerGrabWindow == wid) srv.pointerGrabClient = srv.pointerGrabWindow = 0;
             }
             updateWmState(wid, 0); // WithdrawnState
             // A menu/popup just closed — recompose so it disappears from the host.
@@ -746,6 +747,7 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
             XWireServer& srv = XWireServer::instance();
             std::lock_guard<std::mutex> lk(srv.regMutex);
             srv.windows.erase(wid);
+            if (srv.pointerGrabWindow == wid) srv.pointerGrabClient = srv.pointerGrabWindow = 0;
             break;
         }
         case X_PutImage: {
@@ -1425,7 +1427,22 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
         // QueryPointer, TranslateCoords, ...) sent NO reply, so libX11 blocked
         // forever inside the click handler on wine's GUI thread — freezing the
         // message pump, which stopped keystroke processing AND the caret timer.
-        case X_GrabPointer:
+        case X_GrabPointer: {
+            const uint32_t window = rd32(req + 4);
+            uint8_t status = 0;
+            {
+                auto& srv = XWireServer::instance();
+                std::lock_guard<std::mutex> lk(srv.regMutex);
+                auto it = srv.windows.find(window);
+                if (srv.pointerGrabClient && srv.pointerGrabClient != clientIdBase) status = 1; // AlreadyGrabbed
+                else if (it == srv.windows.end() || !it->second.mapped) status = 3; // GrabNotViewable
+                else { srv.pointerGrabClient = clientIdBase; srv.pointerGrabWindow = window; }
+            }
+            uint8_t r[32] = {0}; r[0] = 1; r[1] = status;
+            r[2] = uint8_t(sequence); r[3] = uint8_t(sequence >> 8);
+            writeToClient(r, sizeof(r));
+            break;
+        }
         case X_GrabKeyboard: {
             // Always grant the grab. Reply: r[1]=status (GrabSuccess=0).
             uint8_t r[32] = {0};
@@ -1533,7 +1550,6 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
         // Reply-less grab/ungrab/pointer requests: accept and no-op so libX11's
         // stream stays in sync. (X_WarpPointer cursor warp is a no-op for now.)
         case X_SendEvent:
-        case X_UngrabPointer:
         case X_ChangeActivePointerGrab:
         case X_UngrabKeyboard:
         case X_AllowEvents:
@@ -1541,6 +1557,12 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
         case X_UngrabServer:
         case X_WarpPointer:
             break;
+        case X_UngrabPointer: {
+            auto& srv = XWireServer::instance();
+            std::lock_guard<std::mutex> lk(srv.regMutex);
+            if (srv.pointerGrabClient == clientIdBase) srv.pointerGrabClient = srv.pointerGrabWindow = 0;
+            break;
+        }
         case X_QueryExtension: {
             // Most extensions are reported absent (MIT-SHM, XKB, ...) so libX11
             // uses the plain core path (non-SHM PutImage). EXCEPTION: GLX. wine's
@@ -1565,6 +1587,12 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
             } else if (extName == "XKEYBOARD") {
                 r[8] = 1; r[9] = XKB_MAJOR_OPCODE;
                 r[10] = 85; // fixed map: no unsolicited XKB events
+            } else if (extName == "XInputExtension") {
+                r[8] = 1; r[9] = XWireInput2::opcode;
+                // libXi registers its XI1 decoders even for XI2 clients. A zero
+                // base replaces core Key/Button/Focus decoders with XI1 layouts.
+                r[10] = 100; // reserved XI1 event range, separate from core events
+                r[11] = 128; // XI BadDevice (events use X GenericEvent)
             } else if (extName == "RANDR") {
                 // #67: advertise RandR so wine's xrandr display handler registers one
                 // monitor (it needs RandR>=1.4; see X_RRQueryVersion below).
@@ -1598,6 +1626,12 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
                 return std::array<uint32_t, 2>{pair.lo, pair.hi};
             });
             if (!reply.empty()) writeToClient(reply.data(), (uint32_t)reply.size());
+            break;
+        }
+        case XWireInput2::opcode: {
+            auto response = input2.request(req, len, sequence);
+            if (response.error) sendError(response.error, sequence, 0, opcode, req[1]);
+            else if (!response.bytes.empty()) writeToClient(response.bytes.data(), response.bytes.size());
             break;
         }
         case GLX_MAJOR_OPCODE: {
@@ -2041,6 +2075,25 @@ void XWireConnection::deliverInputEvents() {
         // back to presentWindow -- which may lack PointerMotionMask or be the
         // wrong window -- and the guest never saw relative motion.
         XWireInputEvent eff = ev;
+        const bool motion = ev.type == XWireInputEvent::EvMotionRel || ev.type == XWireInputEvent::EvMotion;
+        bool grabbed = false;
+        { std::lock_guard<std::mutex> registryLock(srv.regMutex); grabbed = srv.pointerGrabClient != 0; }
+        const auto rawDevices = motion ? input2.rawDevices(rootWindow, grabbed) : std::vector<uint16_t>{};
+        const bool rawMotion = !rawDevices.empty();
+        if (motion && getenv("BW64_XWIRE"))
+            klog_fmt("XWire raw: client=0x%x pid=%u type=%d devices=%u grabbed=%d x=%d y=%d",
+                clientIdBase, ownerPid, int(ev.type), unsigned(rawDevices.size()), int(grabbed), ev.x, ev.y);
+        if (motion) {
+            const int32_t dx = ev.type == XWireInputEvent::EvMotionRel ? ev.x : ev.x - rawX;
+            const int32_t dy = ev.type == XWireInputEvent::EvMotionRel ? ev.y : ev.y - rawY;
+            rawX += dx; rawY += dy;
+            if (rawMotion && (dx || dy)) {
+                for (auto device : rawDevices) {
+                    auto event = XWireInput2::motion(sequence, KSystem::getMilliesSinceStart(), dx, dy, device);
+                    writeToClient(event.data(), event.size());
+                }
+            }
+        }
         if (ev.type == XWireInputEvent::EvMotionRel) {
             if (!relInit) {
                 int px = 0, py = 0; uint32_t pm = 0;
@@ -2053,6 +2106,10 @@ void XWireConnection::deliverInputEvents() {
         } else if (ev.type == XWireInputEvent::EvMotion) {
             if (relInit) { relInit = false; } // absolute motion resyncs
         }
+        // Wine enables root RawMotion while clipping. Its raw handler sends the
+        // relative hardware input; a core motion for the same sample would
+        // generate a second, absolute movement and lose motion at screen edges.
+        if (rawMotion) continue;
         uint32_t target = presentWindow;
         int16_t tgtX = baseX, tgtY = baseY;   // target window root origin
         uint32_t mask = 0;

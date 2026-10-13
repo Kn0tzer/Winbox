@@ -18,6 +18,7 @@
 #include "boxedwine.h"
 #include "kunixsocket.h"
 #include "xwirepresent.h"
+#include "xwireinput2.h"
 
 #include <memory>
 #include <unordered_map>
@@ -248,6 +249,8 @@ private:
     // accumulation. Initialized lazily from the sink's last pointer pos.
     int relX = 0, relY = 0;
     bool relInit = false;
+    XWireInput2 input2;
+    int32_t rawX = 0, rawY = 0;
 
     // The window the pointer has "entered" (we sent EnterNotify for). 0 = none.
     // We send a crossing the first time input lands so winex11 associates the

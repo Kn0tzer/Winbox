@@ -314,6 +314,7 @@ bool XWireServer::dropAppByPid(uint32_t pid) {
     bool changed = false;
     {
         std::lock_guard<std::mutex> lk(regMutex);
+        if (owned(pointerGrabClient)) pointerGrabClient = pointerGrabWindow = 0;
         for (auto it = windows.begin(); it != windows.end();) {
             if (!it->second.isRoot &&
                 (owned(it->first) || owned(it->second.ownerClientBase))) {

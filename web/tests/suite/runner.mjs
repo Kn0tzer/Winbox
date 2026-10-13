@@ -17,11 +17,12 @@
 // Each test prints:  PASS <name> (<duration>ms)
 //                or: FAIL <name> (<duration>ms)\n  <error message>
 
-import { readdirSync } from "node:fs";
+import { readdirSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 import { withTimeout } from './lib/probe-base.mjs';
+import { gamePrerequisites, prerequisiteSelection, prerequisiteEvidence } from './lib/game-prerequisites.mjs';
 
 const suiteDir = dirname(fileURLToPath(import.meta.url));
 const unitDir = join(suiteDir, "unit");
@@ -33,13 +34,15 @@ const onlyBrowser = args.includes("--browser");
 const jsonOutput = args.includes("--json");
 const filterArg = args.find(a => a.startsWith("--filter="));
 const filter = filterArg ? filterArg.split("=")[1].toLowerCase() : null;
+const game = args.find(a => a.startsWith('--game='))?.slice('--game='.length);
+if (game && !gamePrerequisites[game]) throw new Error(`Unknown game: ${game}`);
 
 const results = [];
 
 function log(...a) { if (!jsonOutput) console.log(...a); }
 
-function record(name, category, passed, durationMs, error = null) {
-  results.push({ name, category, passed, durationMs, error: error ? String(error).slice(0, 2000) : null });
+function record(name, category, passed, durationMs, error = null, wasmSha256 = null, runtimeCodeHash = null) {
+  results.push({ name, category, passed, durationMs, error: error ? String(error).slice(0, 2000) : null, wasmSha256, runtimeCodeHash });
   if (passed) {
     log(`  PASS ${name} (${durationMs}ms)`);
   } else {
@@ -110,7 +113,7 @@ async function runBrowserFile(file) {
     const timeout = new Promise((_, reject) =>
       timer = setTimeout(() => reject(new Error(`FAIL ${name}: browser test timed out after ${timeoutMs}ms (hung probe killed — never stall forever)`)), timeoutMs));
     await Promise.race([runOnce, timeout]);
-    return { passed: true, durationMs: Date.now() - t0 };
+    return { passed: true, durationMs: Date.now() - t0, wasmSha256: test.buildInfo?.wasm_sha256, runtimeCodeHash: test.runtimeCodeHash };
   } catch (e) {
     // Ensure cleanup even on failure/timeout (best effort, 10s cap each)
     if (test) {
@@ -131,6 +134,7 @@ async function main() {
     for (const f of files) {
       const name = basename(f, ".test.mjs");
       if (filter && !name.toLowerCase().includes(filter)) continue;
+      if (game && !prerequisiteSelection(game, 'unit').has(name)) continue;
       const r = await runUnitFile(join(unitDir, f));
       record(name, "unit", r.passed, r.durationMs, r.error);
     }
@@ -143,19 +147,31 @@ async function main() {
     for (const f of files) {
       const name = basename(f, ".test.mjs");
       if (filter && !name.toLowerCase().includes(filter)) continue;
+      if (game && !prerequisiteSelection(game, 'browser').has(name)) continue;
       const r = await runBrowserFile(join(browserDir, f));
-      record(name, "browser", r.passed, r.durationMs, r.error);
+      record(name, "browser", r.passed, r.durationMs, r.error, r.wasmSha256, r.runtimeCodeHash);
     }
   }
 
   const passed = results.filter(r => r.passed).length;
   const failed = results.filter(r => !r.passed).length;
+  const preflight = game ? prerequisiteEvidence(game, results) : null;
+  const summary = { passed, failed, results, ...(preflight ? { preflight } : {}) };
+  if (game) {
+    const dir = join('test-results', `prerequisites-${game}`);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'summary.json'), JSON.stringify(summary, null, 2));
+  }
 
   if (jsonOutput) {
-    console.log(JSON.stringify({ passed, failed, results }, null, 2));
+    console.log(JSON.stringify(summary, null, 2));
   } else {
     log(`\n${"=".repeat(50)}`);
     log(`SUITE RESULT: ${passed} passed, ${failed} failed`);
+    if (preflight) {
+      log(`Game prerequisite checks: ${preflight.prerequisiteChecksPassed ? 'passed on one runtime' : 'incomplete or failed'}`);
+      log(`Game acceptance remains unverified: ${preflight.uncoveredBehavior.join('; ')}`);
+    }
     if (failed > 0) {
       log("Failed tests:");
       for (const r of results.filter(r => !r.passed)) log(`  - ${r.name} [${r.category}]`);

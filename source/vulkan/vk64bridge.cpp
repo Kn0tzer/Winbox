@@ -2047,10 +2047,8 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         for (const Cmd& k : st->cmds) if (k.kind == CMD_BEGIN_RP) { fbId = k.b; break; }
         Framebuffer* fb = objOf<Framebuffer>(fbId, K_FRAMEBUFFER, "vkQueueSubmit");
         if (!fb) { klog_fmt("vk64: submit(v2): frame %u has no framebuffer, skipped", g_frameNo); continue; }
-        bool anyDraw = false;
-        for (const Cmd& k : st->cmds)
-            if (k.kind == CMD_DRAW || k.kind == CMD_DRAW_INDEXED) { anyDraw = true; break; }
-        if (!anyDraw) { klog_fmt("vk64: submit(v2): frame %u without draw, skipped", g_frameNo); continue; }
+        // A render-pass load clear changes its attachment without a draw.
+        // Preserve it for later submissions that sample the cleared image.
         g_v2SubmitFrames++;
 
         V2FrameAsm fa;

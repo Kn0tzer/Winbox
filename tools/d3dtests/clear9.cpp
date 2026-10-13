@@ -69,6 +69,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show) {
         Sleep(16);
     }
 done:
+#ifdef BW64_PROBE_HOLD_MS
+    // Keep the final real swapchain frame available for compositor inspection.
+    // Normal diagnostic builds retain their original immediate-exit behavior.
+    printf("clear9: CAPTURE_READY\n"); fflush(stdout);
+    Sleep(BW64_PROBE_HOLD_MS);
+#endif
     if (dev) IDirect3DDevice9_Release(dev);
     if (d3d) IDirect3D9_Release(d3d);
     printf("clear9: %d frames presented\nclear9: RESULT 0\n", frames);

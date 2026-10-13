@@ -3258,11 +3258,13 @@ void KProcess::printStack() {
             // The compatibility CPU's EIP/EBP do not describe a 64-bit thread.
             // Include syscall arguments so a parked read can be tied to its fd.
             CPU64* c = thread->cpu64;
-            klog_fmt("CPU64 STACK pid=%u tid=%u rip=0x%llx rsp=0x%llx rbp=0x%llx rax=0x%llx rdi=0x%llx rsi=0x%llx rdx=0x%llx",
+            klog_fmt("CPU64 STACK pid=%u tid=%u rip=0x%llx rsp=0x%llx rbp=0x%llx rax=0x%llx rdi=0x%llx rsi=0x%llx rdx=0x%llx r10=0x%llx r8=0x%llx r9=0x%llx waitStart=%u now=%u",
                 id, thread->id, (unsigned long long)c->rip,
                 (unsigned long long)c->reg[X64_RSP].u64, (unsigned long long)c->reg[X64_RBP].u64,
                 (unsigned long long)c->reg[X64_RAX].u64, (unsigned long long)c->reg[X64_RDI].u64,
-                (unsigned long long)c->reg[X64_RSI].u64, (unsigned long long)c->reg[X64_RDX].u64);
+                (unsigned long long)c->reg[X64_RSI].u64, (unsigned long long)c->reg[X64_RDX].u64,
+                (unsigned long long)c->reg[X64_R10].u64, (unsigned long long)c->reg[X64_R8].u64,
+                (unsigned long long)c->reg[X64_R9].u64, thread->condStartWaitTime, KSystem::getMilliesSinceStart());
             const U64 sp = c->reg[X64_RSP].u64;
             for (U32 i = 0; i < 16; ++i) {
                 const U64 at = sp + i * 8;

@@ -1,8 +1,5 @@
-// web/tests/suite/browser/d3d9-comprehensive.test.mjs — D3D9 full-spectrum test.
-//
-// BASIC: device creation, basic triangle, texture mapping
-// COMMON: vertex/index buffers, all primitive types, shader models
-// EDGE: state blocks, all render states, exotic FVF codes
+// D3D9 guest workloads: device creation, clear, textured quad, vertex shader,
+// and a multi-draw scene. The x86 variant also checks compositor clear pixels.
 //
 // Uses existing test executables in tools/d3dtests/:
 //   clear9.exe — basic device + clear
@@ -13,10 +10,14 @@
 import { ProbeTest } from '../lib/probe-base.mjs';
 import { check, checkGreaterThan } from '../lib/assert.mjs';
 import { readFile } from 'node:fs/promises';
+import { guestFixture } from '../lib/guest-fixtures.mjs';
+import { screenshotPixels } from '../lib/pixels.mjs';
+import { writeFile } from 'node:fs/promises';
 
 export default class D3D9ComprehensiveTest extends ProbeTest {
-  constructor() {
-    super({ tag: 'd3d9-comprehensive', timeoutMs: 1200000 });
+  constructor({ arch = 'x64' } = {}) {
+    super({ tag: arch === 'x86' ? 'd3d9-32' : 'd3d9-comprehensive', timeoutMs: 1200000 });
+    this.arch = arch;
   }
 
   async stageFile(page, name, repoPath) {
@@ -32,29 +33,57 @@ export default class D3D9ComprehensiveTest extends ProbeTest {
   }
 
   async runTest(page, logs, exeName, resultPattern, tag) {
-    const spawn = await page.evaluate((exe) => window.bwRuntime.call('bw64_spawn',
+    const loader = this.arch === 'x86' ? '/opt/wine-stable/bin/wine' : '/usr/lib/wine/wine64';
+    const before = this.consoleLines.length;
+    const spawn = await page.evaluate(({exe, loader}) => window.bwRuntime.call('bw64_spawn',
       ['string', 'string'],
-      [`/usr/lib/wine/wine64\nZ:\\home\\username\\${exe}`, 'BW64_VKTRACE=1\nBW64_FRAMELOG=1\nWINEDLLOVERRIDES=d3d9=n\nLD_LIBRARY_PATH=/home/username']),
-      exeName);
+      [`${loader}\nZ:\\home\\username\\${exe}`, 'BW64_VKTRACE=1\nBW64_FRAMELOG=1\nWINEDLLOVERRIDES=d3d9=n\nLD_LIBRARY_PATH=/home/username']),
+      {exe: exeName, loader});
     check(spawn > 0, `${tag}: guest spawn must be queued`);
-    return this.waitForLog(page, resultPattern, 300000);
+    if (this.arch === 'x86' && tag === 'clear9') {
+      await this.waitForLog(page, /clear9: CAPTURE_READY/, 300000, before);
+      await page.waitForTimeout(1000);
+      const png = await page.locator('#vkCanvas').screenshot();
+      const pixels = screenshotPixels(png);
+      await writeFile(this.dir + '/clear.png', png);
+      await writeFile(this.dir + '/clear-pixels.json', JSON.stringify(pixels, null, 2));
+      await writeFile(this.dir + '/clear-renderer.json', JSON.stringify(await page.evaluate(() => globalThis.bwVkStats?.()), null, 2));
+      await writeFile(this.dir + '/clear-frame.json', await page.evaluate(() => JSON.stringify(globalThis.__d3d9Frame, (_, value) => {
+        if (value instanceof Map) return Object.fromEntries(value);
+        if (ArrayBuffer.isView(value)) return Array.from(value);
+        if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value));
+        return value;
+      })));
+      checkGreaterThan(pixels.redDominant, 100000, 'CPU32 DXVK clear must reach the browser compositor with its final red color');
+    }
+    return this.waitForLog(page, resultPattern, 300000, before);
   }
 
   async run(ctx) {
     const { page, server } = ctx;
     const logs = this.consoleLines;
+    if (this.arch === 'x86') await page.addInitScript(() => {
+      let renderer;
+      Object.defineProperty(globalThis, 'bwVkRenderer2', { configurable: true, get: () => renderer, set(value) {
+        renderer = value;
+        const render = value.render.bind(value);
+        value.render = (frame, options) => { globalThis.__d3d9Frame = frame; return render(frame, options); };
+      }});
+    });
 
-    await page.goto(`${server.url}/runtime/index.html?p=cmd%20%2Fc%20echo%20vkboot&session=1&novideo=0&persist=0&gltrace=0&framelog=1`);
+    await this.bootGuest(page, { arch: this.arch, novideo: '0', gltrace: '0', framelog: '1' });
     await this.waitForPageFn(page, () => window.bwRuntime?.ready?.() === true, 600000);
 
     // Stage D3D9 test executables
     for (const exe of ['clear9.exe', 'texquad9.exe', 'vshade9.exe', 'scene9.exe']) {
-      await this.stageFile(page, exe, `tools/d3dtests/${exe}`);
+      const file = this.arch === 'x86' ? await guestFixture('d3d9-' + exe.slice(0,-4), this.arch) : `tools/d3dtests/${exe}`;
+      await this.stageFile(page, exe, file);
     }
     await this.stageFile(page, 'checker.bmp', 'tools/d3dtests/checker.bmp');
     // Exercise DXVK through the actual Vulkan bridge.
-    await this.stageFile(page, 'd3d9.dll', 'tools/dxvk/build.w64/src/d3d9/d3d9.dll');
-    await this.stageFile(page, 'libvulkan.so.1', 'tools/rootfs64/libvk64/libvulkan.so.1');
+    const bits = this.arch === 'x86' ? '32' : '64';
+    await this.stageFile(page, 'd3d9.dll', `tools/dxvk/build.w${bits}/src/d3d9/d3d9.dll`);
+    await this.stageFile(page, 'libvulkan.so.1', `tools/rootfs64/libvk${bits}/libvulkan.so.1`);
 
     // Runtime readiness is bounded above; each real guest RESULT below proves execution.
 

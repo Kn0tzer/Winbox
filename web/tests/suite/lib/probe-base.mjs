@@ -36,6 +36,7 @@ import { createHash } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { acquireProbeSlot } from "../../probe-slots.mjs";
 import { waitForBuildIdle } from "../../build-lock.mjs";
+import { runtimeCodeHash } from './runtime-evidence.mjs';
 
 export async function withTimeout(promise, ms, what) {
   let timer;
@@ -77,6 +78,10 @@ export class ProbeTest {
     if (createHash('sha256').update(wasm).digest('hex') !== this.buildInfo.wasm_sha256) {
       throw new Error('Runtime hash does not match BUILD_INFO.json');
     }
+    const js = await readFile(join(dist, 'runtime/boxedwine64.js'));
+    if (createHash('sha256').update(js).digest('hex') !== this.buildInfo.js_sha256)
+      throw new Error('Runtime JS hash does not match BUILD_INFO.json');
+    this.runtimeCodeHash = await runtimeCodeHash(dist);
     this._root = await mkdtemp(join(tmpdir(), 'bw-suite-'));
     for (const file of await readdir(dist)) await symlink(join(dist, file), join(this._root, file));
     await mkdir(join(this._root, '__fixtures'));
@@ -100,6 +105,7 @@ export class ProbeTest {
   async teardown() {
     if (this._log) { await new Promise(r => this._log.end(r)); this._log = null; }
     await writeFile(join(this.dir, 'BUILD_INFO.json'), JSON.stringify(this.buildInfo || null, null, 2));
+    await writeFile(join(this.dir, 'runtime-code-hash.txt'), this.runtimeCodeHash || 'unverified');
     if (this._browser) { try { await withTimeout(this._browser.close(), 15000, 'browser close'); } catch {} this._browser = null; }
     if (this._browserServer) { await withTimeout(this._browserServer.close(), 15000, 'browser server close'); this._browserServer = null; }
     await rm(join(this.dir, '.browser.ws'), { force: true });
@@ -180,12 +186,21 @@ export class ProbeTest {
   async waitForLog(page, pattern, timeoutMs = 180000, from = 0) {
     const until = Date.now() + timeoutMs;
     do {
-      const error = this.consoleLines.find(l => /\[pageerror\]|Native panic stack|abort\(|unreachable|RuntimeError: memory access out of bounds/.test(l));
+      const error = this.consoleLines.find(l => /\[pageerror\]|Native panic stack|abort\(|unreachable|RuntimeError: memory access out of bounds|module:(?:import_dll|loader_init).*Z:.*home.*username/.test(l));
       if (error) throw new Error(error);
       const line = this.consoleLines.slice(from).find(l => pattern.test(l));
       if (line) return line;
       await page.waitForTimeout(250);
     } while (Date.now() < until);
+    // Preserve the parked guest's state on the failing run. This avoids an
+    // expensive second boot solely to discover its current wait/stack.
+    try {
+      const snapshot = await withTimeout(page.evaluate(() => globalThis.Module?.ccall?.('bw64_input_snapshot', 'string', [], [])), 2000, 'failure snapshot');
+      await writeFile(join(this.dir, 'timeout-evidence.json'), JSON.stringify({ pattern: String(pattern), snapshot, timeoutMs }, null, 2));
+      await withTimeout(page.locator('#canvas').focus(), 2000, 'failure canvas focus');
+      await withTimeout(page.keyboard.press('ScrollLock'), 2000, 'guest stack request');
+      await page.waitForTimeout(750);
+    } catch {}
     throw new Error(`Guest output ${pattern} not seen within ${timeoutMs}ms; last lines:\n${this.consoleLines.slice(-12).join('\n')}`);
   }
 }

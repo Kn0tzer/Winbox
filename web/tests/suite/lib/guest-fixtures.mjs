@@ -6,23 +6,52 @@ import { resolve, join } from 'node:path';
 const root = resolve(import.meta.dirname, '../../../..');
 const fixtures = {
   'input-witness': ['tools/guest-fixtures/input-witness.c', '-luser32'],
+  'window-state': ['tools/guest-fixtures/window-state.c', '-luser32'],
+  'cursor-clip': ['tools/guest-fixtures/cursor-clip.c', '-luser32'],
+  'win32-clock': ['tools/guest-fixtures/win32-clock.c'],
   dsptone: ['tools/guest-fixtures/dsptone.c', '-lm'],
   trigl: ['tools/openglTest/trigl.c', '-lopengl32', '-lgdi32', '-luser32'],
 };
+const elfFixtures = { 'shared-mapping': ['tools/guest-fixtures/shared-mapping.c', '-static'] };
+const managedFixtures = { 'mono-runtime': ['tools/guest-fixtures/mono-runtime.cs'] };
+for (const name of ['clear9', 'texquad9', 'vshade9', 'scene9'])
+  fixtures[`d3d9-${name}`] = [`tools/d3dtests/${name}.cpp`, '-ld3d9', '-lgdi32', '-luser32'];
+fixtures['d3d9-clear9'].push('-DBW64_PROBE_HOLD_MS=10000');
 
 export async function guestFixture(name, arch = 'x86') {
-  if (!fixtures[name] || !['x86', 'x64'].includes(arch)) throw new Error('Invalid guest fixture');
-  const [source, ...libraries] = fixtures[name];
-  const compiler = arch === 'x86' ? 'i686-w64-mingw32-gcc' : 'x86_64-w64-mingw32-gcc';
+  const linux = Boolean(elfFixtures[name]);
+  const managed = Boolean(managedFixtures[name]);
+  const definition = managed ? managedFixtures[name] : linux ? elfFixtures[name] : fixtures[name];
+  if (!definition || !['x86', 'x64'].includes(arch) || (managed && arch !== 'x86')) throw new Error('Invalid guest fixture');
+  const [source, ...libraries] = definition;
+  const driver = source.endsWith('.cpp') ? 'g++' : 'gcc';
+  const compiler = managed ? 'mcs' : linux ? (arch === 'x86' ? 'i686-linux-gnu-gcc' : 'x86_64-linux-gnu-gcc')
+    : `${arch === 'x86' ? 'i686' : 'x86_64'}-w64-mingw32-${driver}`;
   const version = execFileSync(compiler, ['--version'], { encoding: 'utf8' }).split('\n')[0];
-  const hash = createHash('sha256').update(await readFile(join(root, source))).update(version).update(JSON.stringify(libraries)).digest('hex');
+  const linkOptions = driver === 'g++' ? ['-static-libgcc', '-static-libstdc++'] : [];
+  const options = managed ? ['-optimize+', '-platform:x86', '-sdk:4.5'] : ['-O2', ...linkOptions, ...libraries];
+  const hash = createHash('sha256').update(await readFile(join(root, source))).update(version)
+    .update(JSON.stringify({ options, name, arch })).digest('hex');
   const dir = join(root, 'tools/guest-fixtures/build', hash);
-  const output = join(dir, `${name}-${arch}.exe`);
+  const output = join(dir, `${name}-${arch}.${linux ? 'elf' : 'exe'}`);
   try { await stat(output); return output; } catch {}
   await mkdir(dir, { recursive: true });
-  execFileSync(compiler, ['-O2', '-o', output, join(root, source), ...libraries], { stdio: 'pipe' });
-  await writeFile(join(dir, 'provenance.json'), JSON.stringify({ source, compiler: version, hash, arch }, null, 2));
+  execFileSync(compiler, managed ? [...options, '-out:' + output, join(root, source)]
+    : ['-O2', ...linkOptions, '-o', output, join(root, source), ...libraries], { stdio: 'pipe' });
+  await writeFile(join(dir, 'provenance.json'), JSON.stringify({ source, compiler: version, options, hash, arch }, null, 2));
   return output;
+}
+
+export function monoArchive(destination, { gl32 = false } = {}) {
+  const mono = resolve(root, process.env.MONO32_DIR || 'tools/rootfs64/mono32');
+  execFileSync('python3', [join(root, 'tools/rootfs64/prepare-mono32.py'), '--check', '--output', mono], { stdio: 'pipe' });
+  execFileSync('python3', ['-c', `import zipfile,pathlib,sys
+root=pathlib.Path(sys.argv[2])
+with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
+ if sys.argv[3]=='1':z.write(sys.argv[4],'home/username/apps/libGL.so.1')
+ for p in sorted(root.rglob('*')):
+  if p.is_file():z.write(p,'home/username/apps/'+p.relative_to(root).as_posix())
+`, destination, mono, gl32 ? '1' : '0', join(root, 'tools/rootfs64/libgl32/libGL.so.1')]);
 }
 
 export async function canvasPixels(page, selector = '#canvas') {

@@ -251,6 +251,27 @@ int main() {
         }
     }
     assert(rpBegins == 1 && aliasRecords == 1); // Views differ, image identity joins them.
+    // A render-pass clear changes the sampled image even without a draw. DXVK
+    // submits this before its separate swapchain presentation command buffer.
+    CmdBuf clearOnly;
+    for (const Cmd& command : dynamicCb->cmds)
+        if (command.kind == CMD_BEGIN_RP || command.kind == CMD_END_RP) clearOnly.cmds.push_back(command);
+    const size_t beforeClear = g_v2Pending.size();
+    serializeSubmitV2({{&clearOnly, dynamicCbId}});
+    assert(g_v2Pending.size() == beforeClear + 1);
+    unsigned clearPasses = 0;
+    for (const auto& chunk : g_v2Pending.back().chunks) for (size_t at = 16; at < chunk.size();) {
+        U32 type, len; memcpy(&type, chunk.data() + at, 4); memcpy(&len, chunk.data() + at + 4, 4);
+        assert(at + 8 + len <= chunk.size());
+        if (type == V2_RP_BEGIN) {
+            ++clearPasses;
+            assert(memcmp(chunk.data() + at + 8 + 48, clear, 16) == 0);
+        }
+        assert(type != V2_DRAW); // indexed draws use the same record with a flag
+        at += 8 + len;
+    }
+    assert(clearPasses == 1);
+    puts("PASS: clear-only render passes survive submission serialization");
     g_v2Pending.clear();
     const auto syntheticIds = dynamicCb->dynamicObjects;
     resetCmdBuf(dynamicCb);
