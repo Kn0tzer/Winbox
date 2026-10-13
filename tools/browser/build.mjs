@@ -31,6 +31,7 @@ await mkdir(resolve(out, 'vendor'), { recursive: true });
 await cp(resolve(root, 'node_modules/@zip.js/zip.js'), resolve(out, 'vendor/zip'), { recursive: true, dereference: true });
 await cp(resolve(root, 'node_modules/naga-wasm/dist'), resolve(out, 'vendor/naga'), { recursive: true });
 await mkdir(resolve(out, 'runtime'), { recursive: true });
+await copyFile(resolve(root, 'tools/spirvfix/spirvfix.mjs'), resolve(out, 'spirvfix.mjs'));
 for (const name of ['boxedwine64.js', 'boxedwine64.wasm']) await copyFile(resolve(root, 'project/emscripten/Build/Wasm64Mt', name), resolve(out, 'runtime', name));
 await copyFile(resolve(root, 'project/emscripten/wine64-launcher.js'), resolve(out, 'runtime/wine64-launcher.js'));
 for (const name of ['glibc-rootfs64.zip', 'wine64.zip', 'prefix64.zip', 'glibc-rootfs32.zip', 'wine32.zip', 'prefix32.zip']) await copyFile(resolve(root, 'web/runtime', name), resolve(out, 'runtime', name));
