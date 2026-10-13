@@ -79,7 +79,7 @@ for name, fnid, argc in exports:
     if True:  # Include loaders so they are resolvable via vkGetInstanceProcAddr
         out.append(f'    {{"{name}", (void*){name}}},')
 out.append('};')
-out.append(f'static const int g_nprocs = {len(exports) - len(loaders)};')
+out.append('static const int g_nprocs = sizeof(g_procs) / sizeof(g_procs[0]);')
 out.append('')
 out.append('''/* Benign stub for unknown proc names. Traps with fnId=1 (unimplemented)
  * so the host logs the request, then returns VK_ERROR_FEATURE_NOT_PRESENT.
