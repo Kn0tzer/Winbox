@@ -28,7 +28,7 @@
 // Return normally = PASS.
 
 import { chromium } from "@playwright/test";
-import { serve } from "../../../tools/browser/serve.mjs";
+import { serve } from "../../../../tools/browser/serve.mjs";
 import { mkdir } from "node:fs/promises";
 import { acquireProbeSlot } from "../../probe-slots.mjs";
 
@@ -50,14 +50,20 @@ export class ProbeTest {
   async setup() {
     await mkdir(this.dir, { recursive: true });
     this._slot = await acquireProbeSlot({ timeoutMs: this.timeoutMs });
-    this._server = await serve(process.env.WINE_DIST_DIR || this.distDir);
-    this._browser = await chromium.launch({ headless: true });
+    const withTimeout = (p, ms, what) => Promise.race([
+      p,
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`ProbeTest setup timed out: ${what} after ${ms}ms`)), ms)),
+    ]);
+    this._server = await withTimeout(serve(process.env.WINE_DIST_DIR || this.distDir), 60000, "static server start");
+    this._server.url = 'http://127.0.0.1:' + this._server.address().port;
+    this._browser = await withTimeout(chromium.launch({ headless: true }), 120000, "chromium.launch");
   }
 
   async teardown() {
-    if (this._browser) { try { await this._browser.close(); } catch {} this._browser = null; }
-    if (this._server) { try { await this._server.close(); } catch {} this._server = null; }
-    if (this._slot) { try { await this._slot.release(); } catch {} this._slot = null; }
+    const withTimeout = (p, ms) => Promise.race([p, new Promise(r => setTimeout(r, ms))]);
+    if (this._browser) { try { await withTimeout(this._browser.close(), 15000); } catch {} this._browser = null; }
+    if (this._server) { try { await withTimeout(this._server.close(), 10000); } catch {} this._server = null; }
+    if (this._slot) { try { await withTimeout(this._slot.release(), 5000); } catch {} this._slot = null; }
   }
 
   // Subclasses implement this. ctx = { page, console, dir, server }.

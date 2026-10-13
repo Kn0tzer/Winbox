@@ -48,49 +48,72 @@ function record(name, category, passed, durationMs, error = null) {
 }
 
 // --- Unit tests: run each file via node --test, parse TAP output ---
+// FAILS (never stalls): 120s per-file timeout kills hung tests and reports FAIL.
+const UNIT_TIMEOUT_MS = Number(process.env.BW64_UNIT_TIMEOUT_MS || 120000);
 async function runUnitFile(file) {
   const name = basename(file, ".test.mjs");
   const t0 = Date.now();
   return new Promise(resolve => {
+    let settled = false;
+    const finish = (r) => { if (!settled) { settled = true; clearTimeout(killTimer); resolve(r); } };
     const proc = spawn("node", ["--test", file], { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "", stderr = "";
     proc.stdout.on("data", d => stdout += d);
     proc.stderr.on("data", d => stderr += d);
+    const killTimer = setTimeout(() => {
+      try { proc.kill("SIGKILL"); } catch {}
+      finish({ passed: false, durationMs: Date.now() - t0, error: `FAIL ${name}: timed out after ${UNIT_TIMEOUT_MS}ms (hung test killed — never stall forever)` });
+    }, UNIT_TIMEOUT_MS);
     proc.on("close", code => {
       const durationMs = Date.now() - t0;
       // Parse TAP: look for "not ok" lines
       const failures = stdout.split("\n").filter(l => l.startsWith("not ok"));
       if (code === 0 && failures.length === 0) {
-        resolve({ passed: true, durationMs });
+        finish({ passed: true, durationMs });
       } else {
         const detail = failures.join("\n") || stderr.slice(0, 1000) || `exit code ${code}`;
-        resolve({ passed: false, durationMs, error: detail });
+        finish({ passed: false, durationMs, error: detail });
       }
     });
-    proc.on("error", e => resolve({ passed: false, durationMs: Date.now() - t0, error: String(e) }));
+    proc.on("error", e => finish({ passed: false, durationMs: Date.now() - t0, error: String(e) }));
   });
 }
 
 // --- Browser tests: import the module, instantiate default export, run ---
+// FAILS (never stalls): outer timeout = test.timeoutMs + 60s setup/teardown grace.
+// Any hang (slot, server, browser, page, teardown) becomes FAIL with a message.
 async function runBrowserFile(file) {
   const name = basename(file, ".test.mjs");
   const t0 = Date.now();
+  let test = null;
   try {
     const mod = await import(pathToFileURL(file).href);
     const TestClass = mod.default;
     if (!TestClass) throw new Error("No default export (expected a ProbeTest subclass)");
-    const test = new TestClass();
-    await test.setup();
-    try {
-      const page = await test.newPage();
-      await test.run({ page, console: test.consoleLines, dir: test.dir, server: test._server });
-      await page.close();
-    } finally {
-      await test.teardown();
-    }
+    test = new TestClass();
+    const timeoutMs = (test.timeoutMs || 900000) + 60000;
+    const runOnce = (async () => {
+      await test.setup();
+      try {
+        const page = await test.newPage();
+        try {
+          await test.run({ page, console: test.consoleLines, dir: test.dir, server: test._server });
+        } finally {
+          try { await page.close(); } catch {}
+        }
+      } finally {
+        await test.teardown();
+      }
+    })();
+    const timeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`FAIL ${name}: browser test timed out after ${timeoutMs}ms (hung probe killed — never stall forever)`)), timeoutMs));
+    await Promise.race([runOnce, timeout]);
     return { passed: true, durationMs: Date.now() - t0 };
   } catch (e) {
-    // Ensure cleanup even on failure (best effort)
+    // Ensure cleanup even on failure/timeout (best effort, 10s cap each)
+    if (test) {
+      try { await Promise.race([test.teardown(), new Promise(r => setTimeout(r, 10000))]); } catch {}
+    }
     return { passed: false, durationMs: Date.now() - t0, error: e.message + "\n" + (e.stack || "").split("\n").slice(1, 4).join("\n") };
   }
 }
