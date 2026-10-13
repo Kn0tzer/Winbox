@@ -10,6 +10,7 @@ test('game ZIP conversion preserves entries and supports direct reads deep insid
     execFileSync('python3', ['-c', `
 import zipfile,sys,hashlib
 from pathlib import Path
+sys.dont_write_bytecode=True
 sys.path.insert(0,'tools')
 from optimize_gamezip import optimize
 p=Path(sys.argv[1]);src=p/'source.zip';dst=p/'stored.zip'

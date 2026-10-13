@@ -484,7 +484,7 @@ static void sdl_glFlush(CPU* cpu) {
             context->currentWindow->showWindow(true);
         }
     }
-    sdlFlush();	
+    sdlFlush();
 }
 
 #undef GL_FUNCTION
