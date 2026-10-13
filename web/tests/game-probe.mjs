@@ -33,7 +33,7 @@ const root = await mkdtemp(join(tmpdir(), 'bw-game-'));
 const gamePath = resolve(process.env.GAME_ZIP || `/home/ubuntu/kn0tzer/games/${game}.zip`);
 const result = { game, profile, tag, startedAt: new Date().toISOString(), menuVerified: false,
   gameplayVerified: false, pass: false, samples: [] };
-let slot, server, browser, logFile;
+let slot, server, browser, browserServer, logFile;
 const logs = [];
 let stopping = false;
 process.on('SIGTERM', () => { stopping = true; });
@@ -76,9 +76,11 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
   result.overlaySha256 = createHash('sha256').update(await readFile(overlay)).digest('hex');
   result.gameArchive = { path: gamePath, bytes: (await stat(gamePath)).size };
   server = await serve(root);
-  browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/local/bin/chromium', headless: true,
+  browserServer = await chromium.launchServer({ executablePath: process.env.CHROME_PATH || '/usr/local/bin/chromium', headless: true,
     args: ['--no-sandbox', '--disable-dev-shm-usage', '--enable-unsafe-webgpu', '--enable-unsafe-swiftshader',
       '--use-angle=vulkan', '--use-vulkan=swiftshader', '--enable-features=Vulkan'] });
+  await writeFile(join(dir, '.browser.ws'), browserServer.wsEndpoint(), { mode: 0o600 });
+  browser = await chromium.connect(browserServer.wsEndpoint());
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   const launcher = await readFile(resolve(process.env.PROBE_LAUNCHER || join(runtimeRoot, 'runtime/wine64-launcher.js')));
   result.launcherSha256 = createHash('sha256').update(launcher).digest('hex');
@@ -90,9 +92,11 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
       set(value) {
         renderer = value;
         const render = value.render.bind(value);
-        value.render = async frame => {
+        value.render = async (frame, options) => {
+          globalThis.__gameLastFrame = frame;
           const start = performance.now();
-          const outcome = await render(frame);
+          const outcome = await render(frame, options);
+          globalThis.__gameLastOutcome = outcome;
           if (outcome?.rendered) {
             await value.device.queue.onSubmittedWorkDone();
             const samples = globalThis.__gameFrames;
@@ -186,6 +190,7 @@ finally {
   await writeFile(join(dir, 'summary.json'), JSON.stringify(result, null, 2));
   logFile?.end();
   await browser?.close().catch(() => {});
+  await browserServer?.close().catch(() => {});
   server?.close();
   await slot?.release();
   await rm(root, { recursive: true, force: true });
