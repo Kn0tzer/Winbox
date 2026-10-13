@@ -236,12 +236,12 @@ FS_LDFLAGS ?= -s FORCE_FILESYSTEM -lidbfs.js
 # treats link-time -O as its own setting (default -O0), and it is what enables
 # the binaryen/wasm-opt passes over the final module + optimized JS glue. Without
 # it the shipped .wasm is the unoptimized LTO-less concatenation of the objects.
-LDFLAGS = -O3 $(FS_LDFLAGS) -s USE_SDL=2 -s USE_ZLIB=1 -fwasm-exceptions -s INITIAL_MEMORY=536870912 $(SHELL_LDFLAGS) -s EXPORTED_RUNTIME_METHODS='["addRunDependency", "removeRunDependency","ERRNO_CODES","ccall","FS","abort","wasmMemory"]' -mtail-call $(EXTRA_LD_FLAGS)
+LDFLAGS = -O3 $(FS_LDFLAGS) -s USE_SDL=2 -s USE_ZLIB=1 -fwasm-exceptions -s INITIAL_MEMORY=536870912 $(SHELL_LDFLAGS) -s EXPORTED_RUNTIME_METHODS='["addRunDependency", "removeRunDependency","ERRNO_CODES","ccall","FS","abort","wasmMemory"]' -mtail-call $(EXTRA_LD_FLAGS) $(BW64_LINK_DIAGNOSTICS)
 
 #$(TEST_BUILD_DIR)/boxedwineTest: $(TEST_OBJS)
 #	$(CC) $(TEST_OBJS) -o $@ $(LDFLAGS)
 
-$(BUILD_DIR)/$(TARGET_EXEC): $(ALL)
+$(BUILD_DIR)/$(TARGET_EXEC): $(ALL) makefile
 	@$(CXX) $(ALL) -o $@ $(LDFLAGS)
 ifneq ($(strip $(ASSET_FILES)),)
 	@for asset in $(ASSET_FILES); do \

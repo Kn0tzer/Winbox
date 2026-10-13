@@ -113,7 +113,6 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
   if (profile.renderer === 'd3d11') params.set('dlloverrides', 'd3d11=n;dxgi=n');
   if (process.env.GLTRACE) params.set('gltrace', process.env.GLTRACE);
   if (process.env.RIPSAMPLE) params.set('ripsample', '1');
-  if (process.env.MONO_INTERP === '1') params.set('monointerp', '1');
   result.launchParams = Object.fromEntries(params);
   await page.goto(`${base}/dist/runtime/index.html?${params}`, { timeout: 60000 });
   const cdp = await browser.newBrowserCDPSession();
@@ -123,18 +122,29 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
   const timeoutMs = Number(process.env.TIMEOUT_MS || 600000);
   const measureMs = Number(process.env.MEASURE_MS || 120000);
   let menuStart;
+  let stackDumped = false;
   while (!stopping && Date.now() - t0 < timeoutMs) {
     await page.waitForTimeout(15000);
+    if (process.env.DUMP_STACKS === '1' && !stackDumped && Date.now() - t0 >= 30000) {
+      stackDumped = true;
+      await page.locator('#canvas').focus();
+      await page.keyboard.press('ScrollLock');
+    }
     const snap = await page.evaluate(() => {
       const fs = globalThis.bwRuntime?.fs();
       const guestLogs = {};
-      for (const path of ['/root/home/username/apps/error_log.txt', '/root/home/username/apps/ErrorLog.txt',
+      const guestDirectories = {};
+      for (const path of ['/root', '/root/home/username', '/root/home/username/apps']) {
+        try { guestDirectories[path] = fs.readdir(path).slice(0, 100); }
+        catch (e) { guestDirectories[path] = String(e); }
+      }
+      for (const path of ['/root/home/username/apps/error_log.txt', '/root/home/username/apps/errorLog.txt', '/root/home/username/apps/ErrorLog.txt',
         '/root/home/username/apps/player.log', '/root/home/username/apps/console.log',
         '/root/home/username/.wine/drive_c/users/username/AppData/LocalLow/Boneloaf/Gang Beasts/Player.log']) {
         try { guestLogs[path] = fs.readFile(path, {encoding:'utf8'}).slice(-65536); } catch {}
       }
       return { now:performance.now(), stats:globalThis.bwVkStats?.(), frames:globalThis.__gameFrames,
-        gl:globalThis.bwGlStats, guestLogs,
+        gl:globalThis.bwGlStats, guestLogs, guestDirectories,
         canvas:[...document.querySelectorAll('canvas')].map(c=>({id:c.id, width:c.width, height:c.height})) };
     });
     const shot = await page.screenshot();
@@ -151,13 +161,14 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
     result.samples.push({ elapsedSeconds: (Date.now()-t0)/1000, hash, stats:snap.stats, gl:snap.gl, text });
     result.canvas = snap.canvas;
     result.guestLogs = snap.guestLogs;
+    result.guestDirectories = snap.guestDirectories;
     if (menuStart !== undefined && snap.now > menuStart) result.measurement = summarizeRenderedFrames(snap.frames, menuStart, snap.now);
-    result.errors = logs.filter(l => /pageerror:|SHADER COMPILE FAIL|device lost|d3d11: failed/.test(l)).slice(-12);
+    result.errors = logs.filter(l => /pageerror:|Native panic stack|SHADER COMPILE FAIL|device lost|d3d11: failed|http-error:/.test(l)).slice(-12);
     await writeFile(join(dir, 'summary.json'), JSON.stringify(result, null, 2));
     console.log(JSON.stringify({ dir, seconds: Math.round((Date.now()-t0)/1000), menuVerified:result.menuVerified,
       rendered:snap.stats?.v2?.rendered, rejected:snap.stats?.v2?.rejected, gl:snap.gl,
       fps:result.measurement?.renderedFps, last:logs.slice(-2).map(l=>l.slice(0,160)) }));
-    if (result.errors.some(l => l.startsWith('pageerror:'))) break;
+    if (result.errors.some(l => /pageerror:|Native panic stack|http-error:/.test(l))) break;
     if (profile.fixture && logs.some(l => /trigl: RESULT 0/.test(l))) { result.pass = true; break; }
     if (menuStart !== undefined && snap.now - menuStart >= measureMs) { result.pass = result.measurement.renderedFrames > 0; break; }
   }
