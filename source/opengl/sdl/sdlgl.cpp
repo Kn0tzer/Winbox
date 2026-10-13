@@ -34,8 +34,8 @@ static std::atomic_int shownGlWindows;
 typedef void (GLAPIENTRY *pfnglFinish)();
 typedef void (GLAPIENTRY *pfnglFlush)();
 
-static pfnglFinish pglFinish;
-static pfnglFlush pglFlush;
+static pfnglFinish sdlFinish;
+static pfnglFlush sdlFlush;
 
 class SDLGlWindow : public std::enable_shared_from_this<SDLGlWindow> {
 public:
@@ -468,7 +468,7 @@ bool KOpenGLSdl::glMakeCurrent(KThread* thread, const std::shared_ptr<XDrawable>
 
 // GLAPI void APIENTRY glFinish( void ) {
 static void sdl_glFinish(CPU* cpu) {	
-    pglFinish();
+    sdlFinish();
 }
 
 // GLAPI void APIENTRY glFlush( void ) {
@@ -484,7 +484,7 @@ static void sdl_glFlush(CPU* cpu) {
             context->currentWindow->showWindow(true);
         }
     }
-    pglFlush();	
+    sdlFlush();	
 }
 
 #undef GL_FUNCTION
@@ -511,8 +511,8 @@ static void initSdlOpenGL() {
     int99Callback[Finish] = sdl_glFinish;
     int99Callback[Flush] = sdl_glFlush;
 
-    pglFinish = (pfnglFinish)SDL_GL_GetProcAddress("glFinish");
-    pglFlush = (pfnglFlush)SDL_GL_GetProcAddress("glFlush");
+    sdlFinish = (pfnglFinish)SDL_GL_GetProcAddress("glFinish");
+    sdlFlush = (pfnglFlush)SDL_GL_GetProcAddress("glFlush");
 }
 
 KOpenGLPtr SDLGL::create() {

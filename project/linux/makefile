@@ -59,6 +59,8 @@ SOURCES += $(PROJDIR)/lib/imgui/imgui_draw.cpp
 SOURCES += $(PROJDIR)/lib/imgui/imgui.cpp
 SOURCES += $(PROJDIR)/lib/tiny-process/process.cpp
 SOURCES += $(PROJDIR)/lib/tiny-process/process_unix.cpp
+MINIZIP_SOURCES := $(addprefix $(PROJDIR)/lib/zlib/contrib/minizip/,ioapi.c mztools.c unzip.c zip.c)
+SOURCES += $(MINIZIP_SOURCES)
 
 SOFT_SOURCES = $(wildcard $(PROJDIR)/lib/softfloat/source/*.c)
 SOFT_SOURCES += $(wildcard $(PROJDIR)/lib/softfloat/source/8086-SSE/*.c)
@@ -70,15 +72,22 @@ TEST_SOURCES += $(wildcard $(PROJDIR)/source/sdl/*.cpp)
 TEST_SOURCES += $(wildcard $(PROJDIR)/source/sdl/**/*.cpp)
 TEST_SOURCES += $(wildcard $(PROJDIR)/platform/sdl/*.cpp)
 TEST_SOURCES += $(wildcard $(PROJDIR)/platform/linux/*.cpp)
-TEST_SOURCES += $(shell find $(PROJDIR)/source/emulation -type f -name '*.cpp')
+# NB: source/emulation/cpu/tests/* are standalone harnesses with their own main()
+# (see scripts/test-jit-lifetime.sh); the emscripten recipe prunes them too
+# (scripts/build-jit-wasm.sh). Keep them out of the unified test binary.
+TEST_SOURCES += $(shell find $(PROJDIR)/source/emulation -type f -name '*.cpp' -not -path '$(PROJDIR)/source/emulation/cpu/tests/*')
 TEST_SOURCES += $(wildcard $(PROJDIR)/source/io/*.cpp)
 TEST_SOURCES += $(wildcard $(PROJDIR)/source/kernel/*.cpp)
 TEST_SOURCES += $(wildcard $(PROJDIR)/source/kernel/**/*.cpp)
 TEST_SOURCES += $(wildcard $(PROJDIR)/source/util/*.cpp)
 TEST_SOURCES += $(wildcard $(PROJDIR)/source/opengl/sdl/*.cpp)
-TEST_SOURCES += $(wildcard $(PROJDIR)/source/opengl/*.cpp)
-TEST_SOURCES += $(wildcard $(PROJDIR)/source/vulkan/*.cpp)
+# NB: gl64bridge.cpp/vk64bridge.cpp require BOXEDWINE_GUEST_X64 + OpenGL;
+# the test build has neither. Stage A tests trap dispatch only.
+TEST_SOURCES += $(filter-out $(PROJDIR)/source/opengl/gl64bridge.cpp, $(wildcard $(PROJDIR)/source/opengl/*.cpp))
+TEST_SOURCES += $(filter-out $(PROJDIR)/source/vulkan/vk64bridge.cpp, $(wildcard $(PROJDIR)/source/vulkan/*.cpp))
 TEST_SOURCES += $(wildcard $(PROJDIR)/source/x11/*.cpp)
+TEST_SOURCES += $(wildcard $(PROJDIR)/source/x11wire/*.cpp)
+TEST_SOURCES += $(MINIZIP_SOURCES)
 
 ifeq ($(BUILD_DIR), Build/Test)
 SRCS := $(TEST_SOURCES)
@@ -99,7 +108,7 @@ SDL_CFLAGS = $(shell sdl2-config --cflags)
 SDL_LIBS = $(shell sdl2-config --libs)
 CPPFLAGS ?= -std=c++20 -O2 $(EXTRA_CPP_FLAGS) $(GCC_EXTRA_FLAGS) -Werror=switch -Wall -Wno-invalid-offsetof -Wno-delete-incomplete -Wno-unused-result -Wno-unknown-pragmas -Wno-unused-local-typedefs -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable $(INCLUDES) -DBOXEDWINE_RECORDER -DBOXEDWINE_ZLIB -DBOXEDWINE_HAS_SETJMP -DSDL2=1 "-DGLH=<SDL_opengl.h>" -DBOXEDWINE_OPENGL_SDL -DSIMDE_SSE2_NO_NATIVE -DBOXEDWINE_POSIX -DBOXEDWINE_OPENGL_IMGUI_V2 $(SDL_CFLAGS)
 CFLAGS ?= -O2 $(INCLUDES)
-LDFLAGS = -L./linux_build/lib -lcurl -lssl -lcrypto -lpthread -lm -lz -lminizip -lGL -lstdc++ -lstdc++fs $(SDL_LIBS)
+LDFLAGS = -L./linux_build/lib -lcurl -lssl -lcrypto -lpthread -lm -lz -lGL -lstdc++ -lstdc++fs $(SDL_LIBS)
 
 #$(TEST_BUILD_DIR)/boxedwineTest: $(TEST_OBJS)
 #	$(CC) $(TEST_OBJS) -o $@ $(LDFLAGS)
