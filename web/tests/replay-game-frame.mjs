@@ -35,15 +35,25 @@ try {
   // Stop automatic runtime boot in this page: rendering needs only WebGPU.
   await page.route('**/wine64-launcher.js', route => route.fulfill({ body: '', contentType: 'text/javascript' }));
   await page.goto(`http://127.0.0.1:${server.address().port}/runtime/index.html?replay=1`);
-  const result = await page.evaluate(async ({ json, decode, encode, captureTargets }) => {
+  const result = await page.evaluate(async ({ json, decode, encode, captureTargets, whiteFragment, passLimit }) => {
     const decodeFrame = (0, eval)(`(${decode})`);
     const encodeFrame = (0, eval)(`(${encode})`);
-    const frame = decodeFrame(json);
+    let frame = decodeFrame(json);
+    if (passLimit > 0) {
+      frame = frame.submissions?.[0] || frame;
+      frame.passes = frame.passes.slice(0, passLimit);
+    }
     globalThis.__bwStatsEvery = 1;
     const { createVkRenderer2 } = await import('../vkwebgpu.mjs');
     const canvas = document.createElement('canvas'); canvas.id = 'replayCanvas';
     document.body.replaceChildren(canvas);
     const renderer = await createVkRenderer2(canvas);
+    if (whiteFragment) {
+      const getShader = renderer.shaders.get.bind(renderer.shaders);
+      renderer.shaders.get = (stage, module, options) => stage === 'fragment'
+        ? Promise.resolve('@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }')
+        : getShader(stage, module, options);
+    }
     const textures = [];
     if (captureTargets) {
       const createTexture = renderer.device.createTexture.bind(renderer.device);
@@ -85,7 +95,9 @@ try {
     }
     return { outcome, elapsedMs, stats: renderer.snapshot(), targets,
       capturedFrameNo: frame.frameNo, roundtripBytes: encodeFrame(frame).length };
-  }, { json, decode: decodeFrame.toString(), encode: encodeFrame.toString(), captureTargets: process.env.CAPTURE_TARGETS === '1' });
+  }, { json, decode: decodeFrame.toString(), encode: encodeFrame.toString(),
+    captureTargets: process.env.CAPTURE_TARGETS === '1', whiteFragment: process.env.DEBUG_FRAGMENT === 'white',
+    passLimit: Number(process.env.REPLAY_PASS_LIMIT || 0) });
   for (const [index, target] of result.targets.entries()) {
     await writeFile(join(dir, `target-${index}.png`), Buffer.from(target.png, 'base64'));
     delete target.png;

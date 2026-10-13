@@ -62,7 +62,11 @@ try {
     assets.push([join(repo, `tools/rootfs64/libvk${arch}/libvulkan.so.1`), 'home/username/apps/libvulkan.so.1']);
   }
   if (profile.renderer === 'opengl' && (game === 'gl32' || (game === 'celeste' && process.env.GL32 === '1'))) {
-    assets.push([join(repo, 'tools/rootfs64/libgl32/libGL.so.1'), 'usr/lib/i386-linux-gnu/libGL.so.1']);
+    const shim = join(repo, 'tools/rootfs64/libgl32/libGL.so.1');
+    // ZIP mounts keep their first entry; the base Wine archive already owns
+    // /usr/lib's Mesa library. LD_LIBRARY_PATH searches this unique path first.
+    assets.push([shim, 'home/username/apps/libGL.so.1']);
+    assets.push([shim, 'usr/lib/i386-linux-gnu/libGL.so.1']);
   }
   execFileSync('python3', ['-c', `import zipfile,json,sys,pathlib
 with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
@@ -123,6 +127,7 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
   if (profile.renderer === 'd3d9') params.set('dlloverrides', 'd3d9=n');
   if (profile.renderer === 'd3d11') params.set('dlloverrides', 'd3d11=n;dxgi=n');
   if (process.env.GLTRACE) params.set('gltrace', process.env.GLTRACE);
+  if (process.env.XWIRE === '1') params.set('xwire', '1');
   if (process.env.RIPSAMPLE) params.set('ripsample', '1');
   result.launchParams = Object.fromEntries(params);
   await page.goto(`${base}/dist/runtime/index.html?${params}`, { timeout: 60000 });
