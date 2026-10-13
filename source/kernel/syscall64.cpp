@@ -1507,12 +1507,13 @@ static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
     bool dump = getenv("BW64_FMMAP") != nullptr;
     if (dump) {
         klog_fmt("FMMAP [pid=%d] addr=0x%llx aligned=0x%llx len=0x%llx mapLen=0x%llx "
-                 "prot=0x%x flags=0x%x off=0x%llx fixed=%d file='%s'",
+                 "prot=0x%x flags=0x%x off=0x%llx fixed=%d inode=%llu file='%s'",
                  (int)(cpu->thread ? cpu->thread->process->id : -1),
                  (unsigned long long)addr, (unsigned long long)aligned,
                  (unsigned long long)length, (unsigned long long)mapLen,
                  (unsigned)prot, (unsigned)flags, (unsigned long long)offset,
                  (int)((flags & K_MAP_FIXED) != 0),
+                 (unsigned long long)(kfile->openFile->node ? kfile->openFile->node->id : 0),
                  kfile->openFile->node ? kfile->openFile->node->path.c_str() : "?");
     }
     // MAP_SHARED file mapping that must be GENUINELY shared across every process
@@ -1546,15 +1547,22 @@ static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
             serverSection = true;
         }
     }
-    if (serverSection && (flags & K_MAP_SHARED) && kfile->openFile->node && !reserved) {
+    if (serverSection && (flags & K_MAP_SHARED) && kfile->openFile->node) {
+        // mmap(NULL, MAP_SHARED) has already reserved a fresh address range.
+        // Replace that range's pages with shared backing as well: Wine's server
+        // uses NULL for its writable clock page, while clients use fixed maps.
         // Seed bytes for any page of this file not yet in the registry.
         std::vector<U8> seedBuf((size_t)mapLen, 0);
         U64 fileBase = offset & ~0xFFFULL;
-        S64 savedFp = kfile->openFile->getFilePointer();
-        kfile->openFile->seek((S64)fileBase);
-        kfile->openFile->readNative(seedBuf.data(), (U32)mapLen);
-        kfile->openFile->seek(savedFp);
+        {
+            std::lock_guard<std::mutex> lk(g_fileReadMutex);
+            S64 savedFp = kfile->openFile->getFilePointer();
+            kfile->openFile->seek((S64)fileBase);
+            kfile->openFile->readNative(seedBuf.data(), (U32)mapLen);
+            kfile->openFile->seek(savedFp);
+        }
         U64 r = cpu->memory->mmapSharedFile(aligned, mapLen, (U32)prot,
+                                            kfile->openFile->node->id,
                                             kfile->openFile->node->path.c_str(),
                                             fileBase, seedBuf.data(), (U64)seedBuf.size());
         if ((S64)r < 0) return r;

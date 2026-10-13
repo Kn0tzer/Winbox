@@ -6397,6 +6397,31 @@ int runX64SelfTest() {
         ok ? r.passed++ : r.failed++;
     }
 
+    // The shared server clock must remain live in fixed client maps, and a
+    // recreated temporary filename must get independent backing.
+    {
+        KMemory64 writer(nullptr), reader(nullptr), recreated(nullptr), renamed(nullptr);
+        U8 seed[K_PAGE_SIZE] = {};
+        const U64 inode = 0xb0641001, newInode = 0xb0641002;
+        const U64 writeAt = writer.mmapReserveAndMap(K_PAGE_SIZE, 3);
+        writer.mmapSharedFile(writeAt, K_PAGE_SIZE, 3, inode, "tmpmap-clock", 0, seed, sizeof(seed));
+        reader.mmapSharedFile(0x7ffe0000, K_PAGE_SIZE, 1, inode, "tmpmap-clock", 0, seed, sizeof(seed));
+        writer.writeq(writeAt, 0x123456789abcdef0ULL);
+        bool ok = reader.readq(0x7ffe0000) == 0x123456789abcdef0ULL;
+        printf("  %s: shared file writer reservation aliases fixed reader\n", ok ? "PASS" : "FAIL");
+        ok ? r.passed++ : r.failed++;
+        recreated.mmapSharedFile(0x7ffd0000, K_PAGE_SIZE, 3, newInode, "tmpmap-clock", 0, seed, sizeof(seed));
+        ok = recreated.readq(0x7ffd0000) == 0;
+        recreated.writeq(0x7ffd0000, 0x11223344);
+        ok = ok && reader.readq(0x7ffe0000) == 0x123456789abcdef0ULL;
+        printf("  %s: recreated file identity keeps old mappings independent\n", ok ? "PASS" : "FAIL");
+        ok ? r.passed++ : r.failed++;
+        renamed.mmapSharedFile(0x7ffc0000, K_PAGE_SIZE, 1, inode, "renamed-clock", 0, seed, sizeof(seed));
+        ok = renamed.readq(0x7ffc0000) == 0x123456789abcdef0ULL;
+        printf("  %s: same file identity aliases across pathname changes\n", ok ? "PASS" : "FAIL");
+        ok ? r.passed++ : r.failed++;
+    }
+
     // The bounded runner must stop before the remaining records of a cached
     // block change registers. This matters for scheduler slices as well as
     // instruction-by-instruction tests.

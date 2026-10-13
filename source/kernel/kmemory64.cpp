@@ -23,13 +23,14 @@
 
 // ---------------------------------------------------------------------------
 // Process-shared file mappings (MAP_SHARED). A single host buffer per
-// (file path, page-aligned file offset) is aliased by every process that maps
+// (file identity, page-aligned file offset) is aliased by every process that maps
 // that file page MAP_SHARED — so a write by one process (e.g. wineserver
 // updating its shared object/sequence section) is seen by all others, exactly
 // like a real shared mmap. Without this, the 64-bit file-mmap path handed each
 // process a private copy and wine's server shared-memory section desynced,
 // crashing wineserver with release_object refcount underflow. Mirrors the
-// 32-bit KMemory::MappedFileCache (keyed by node->path). Pages live for the
+// File identity distinguishes an unlinked file from a new file at the same
+// pathname; Wine reuses temporary mapping names. Pages live for the
 // life of the process (server section is tiny + long-lived); we never evict.
 // ---------------------------------------------------------------------------
 namespace {
@@ -37,12 +38,12 @@ struct SharedFilePage {
     U8 data[K64_PAGE_SIZE];
 };
 std::mutex g_sharedFileMutex;
-// key: path + "\0" + decimal page-aligned file offset -> one shared page buffer.
+// key: inode + "\0" + decimal page-aligned file offset -> one shared page buffer.
 std::unordered_map<std::string, std::shared_ptr<SharedFilePage>> g_sharedFileRegistry;
 
-std::shared_ptr<SharedFilePage> getSharedFilePage(const std::string& path, U64 offsetPage,
+std::shared_ptr<SharedFilePage> getSharedFilePage(U64 identity, U64 offsetPage,
                                                   const U8* seed, U64 seedLen, bool& created) {
-    std::string key = path;
+    std::string key = std::to_string(identity);
     key.push_back('\0');
     key += std::to_string(offsetPage);
     std::lock_guard<std::mutex> lk(g_sharedFileMutex);
@@ -357,11 +358,11 @@ U64 KMemory64::mmapAnonymousFixed(U64 addr, U64 len, U32 prot) {
     return addr;
 }
 
-U64 KMemory64::mmapSharedFile(U64 addr, U64 len, U32 prot, const char* path,
+U64 KMemory64::mmapSharedFile(U64 addr, U64 len, U32 prot, U64 fileIdentity, const char* path,
                               U64 fileOffset, const U8* fileBytes, U64 fileBytesLen) {
     if (len == 0) return (U64)-K_EINVAL;
     if (addr & K64_PAGE_MASK) return (U64)-K_EINVAL;
-    if (!path) return (U64)-K_EINVAL;
+    if (!path || !fileIdentity) return (U64)-K_EINVAL;
 
     U64 pageStart = addr >> K64_PAGE_SHIFT;
     U64 pageCount = (len + K64_PAGE_SIZE - 1) >> K64_PAGE_SHIFT;
@@ -390,7 +391,7 @@ U64 KMemory64::mmapSharedFile(U64 addr, U64 len, U32 prot, const char* path,
             if (seedLen > K64_PAGE_SIZE) seedLen = K64_PAGE_SIZE;
         }
         bool created = false;
-        std::shared_ptr<SharedFilePage> shared = getSharedFilePage(p, fpage, seed, seedLen, created);
+        std::shared_ptr<SharedFilePage> shared = getSharedFilePage(fileIdentity, fpage, seed, seedLen, created);
         noteGuestWrite(pageStart + i); // buffer replaced = cached blocks stale
         // adoptShared REPLACES (and may free) the page's buffer — stale data
         // TLB entries for this page must not survive.

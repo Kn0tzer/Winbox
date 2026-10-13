@@ -127,7 +127,7 @@ public:
     // section (server-1-*/tmpmap-*) relies on this: wineserver writes object/
     // sequence state that clients read directly. Without real sharing the section
     // desyncs → wineserver release_object refcount underflow. addr is page-aligned.
-    U64 mmapSharedFile(U64 addr, U64 len, U32 prot, const char* path, U64 fileOffset,
+    U64 mmapSharedFile(U64 addr, U64 len, U32 prot, U64 fileIdentity, const char* path, U64 fileOffset,
                        const U8* fileBytes, U64 fileBytesLen);
 
     // Atomically pick a free address range AND map it, so two guest threads of
