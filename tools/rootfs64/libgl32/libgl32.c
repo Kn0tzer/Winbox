@@ -7,7 +7,7 @@
  *  (at your option) any later version.
  */
 
-// Guest libGL.so.1 for the 32-bit Boxedwine wine path. wine's winex11.drv
+// Guest libGL.so.1 for the 64-bit Boxedwine wine path. wine's winex11.drv
 // dlopen("libGL.so.1") and resolves glXGetProcAddressARB + the core GLX entry
 // points; opengl32 then resolves every gl* function through glXGetProcAddressARB.
 // Each wrapper here packs its arguments into a GL64Args block and traps to the
@@ -388,14 +388,12 @@ enum {
 // ---- the trap ---------------------------------------------------------------
 static inline uint64_t gl64_trap(uint64_t fnId, GL64Args* args) {
     uint32_t ret;
-    register uint32_t ebx __asm__("ebx") = (uint32_t)fnId;
-    register uint32_t ecx __asm__("ecx") = (uint32_t)(uintptr_t)args;
-    __asm__ __volatile__(
-        "int $0x80"
+    __asm__ __volatile__("int $0x80"
         : "=a"(ret)
-        : "a"((uint32_t)GL64_SYSCALL_NR), "r"(ebx), "r"(ecx)
+        : "a"((uint32_t)GL64_SYSCALL_NR), "b"((uint32_t)fnId),
+          "c"((uint32_t)(uintptr_t)args)
         : "memory");
-    return (uint64_t)ret;
+    return ret;
 }
 
 // Load-time witness: fire a gl64 trap with fnId=0 the moment winex11/opengl32

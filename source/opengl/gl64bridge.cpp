@@ -31,6 +31,8 @@
 #include "gl64bridge_abi.h"
 #include "cpu64.h"
 #include "kmemory64.h"
+#include "kmemory.h"
+#include "glguestmemory.h"
 #include "../x11wire/xwirepresent.h"
 #include "../x11wire/xwireserver.h"
 
@@ -644,7 +646,7 @@ inline float af(const GL64Args& a, int i)  { U32 u = (U32)a.a[i]; float f; memcp
 inline double ad(const GL64Args& a, int i) { U64 u = a.a[i]; double d; memcpy(&d, &u, 8); return d; }
 
 // Read `count` floats from a guest buffer (params* for glLightfv etc.).
-void readFloats(CPU64* cpu, U64 guestAddr, float* out, int count) {
+void readFloats(GLGuestCPU* cpu, U64 guestAddr, float* out, int count) {
     if (!guestAddr) { for (int i=0;i<count;i++) out[i]=0; return; }
     cpu->memory->memcpyFromGuest(out, guestAddr, (U64)count * 4);
 }
@@ -982,7 +984,7 @@ bool renderbufferStorageFixup(GLenum& ifmt) {
 
 // Read a NUL-terminated C string from guest memory, capped at `maxLen` bytes.
 // Reads in chunks to avoid a per-byte trap; stops at the first NUL.
-std::string readGuestCStr(CPU64* cpu, U64 guestAddr, U64 maxLen) {
+std::string readGuestCStr(GLGuestCPU* cpu, U64 guestAddr, U64 maxLen) {
     std::string out;
     if (!guestAddr) return out;
     char buf[256];
@@ -1002,7 +1004,7 @@ std::string readGuestCStr(CPU64* cpu, U64 guestAddr, U64 maxLen) {
 // guest. n = args.a[0], guest id array = args.a[1].
 enum class GenKind { Buffer, Texture, VertexArray,
                      Framebuffer, Renderbuffer, Sampler };
-void genObjects(CPU64* cpu, const GL64Args& args, GenKind kind) {
+void genObjects(GLGuestCPU* cpu, const GL64Args& args, GenKind kind) {
     GLsizei n = (GLsizei)args.a[0];
     if (n <= 0 || n > 65536 || !args.a[1]) return;
     // Probe-hot kinds allocate guest IDs locally (no hop); the host object is
@@ -1082,7 +1084,7 @@ void flushPendingDeletes() {
     }
     glOnMain([&]{ flushPendingDeletesOnGL(); });
 }
-void deleteObjects(CPU64* cpu, const GL64Args& args, GenKind kind) {
+void deleteObjects(GLGuestCPU* cpu, const GL64Args& args, GenKind kind) {
     GLsizei n = (GLsizei)args.a[0];
     if (n <= 0 || n > 65536 || !args.a[1]) return;
     std::vector<GLuint> guestIds((size_t)n, 0);
@@ -1122,7 +1124,7 @@ void deleteObjects(CPU64* cpu, const GL64Args& args, GenKind kind) {
 }
 
 // glGetShaderInfoLog / glGetProgramInfoLog: args = (obj, bufSize, length*, infoLog*).
-void writeInfoLog(CPU64* cpu, const GL64Args& args, bool isProgram) {
+void writeInfoLog(GLGuestCPU* cpu, const GL64Args& args, bool isProgram) {
     GLuint obj = (GLuint)args.a[0];
     GLsizei bufSize = (GLsizei)args.a[1];
     if (bufSize <= 0 || bufSize > (1 << 20)) bufSize = 0;
@@ -1306,7 +1308,7 @@ size_t texImageBytes(GLsizei w, GLsizei h, GLenum format, GLenum type) {
 
 #include "gl64webgpu.h"
 
-U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
+static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
     std::lock_guard<std::recursive_mutex> lk(g_glMutex);
 
     // Track the most recent fnIds (ring) so a nonzero glGetError can be annotated
@@ -1924,8 +1926,7 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             if (count <= 0 || count > 256) return 0;
             // Read the guest string-pointer array and optional length array, then
             // each guest source string, into host-owned storage.
-            std::vector<U64> guestStrPtrs(count);
-            cpu->memory->memcpyFromGuest(guestStrPtrs.data(), args.a[2], (U64)count * 8);
+            auto guestStrPtrs = cpu->memory->readPointers(args.a[2], count);
             std::vector<S32> guestLens;
             bool haveLens = args.a[3] != 0;
             if (haveLens) {
@@ -3908,10 +3909,9 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 if (n > 0 && n <= 1024) {
                     std::vector<GLsizei> counts((size_t)n);
                     std::vector<GLint>    bvs((size_t)n);
-                    std::vector<U64>     idx((size_t)n);
+                    auto idx = cpu->memory->readPointers(args.a[3], n);
                     cpu->memory->memcpyFromGuest(counts.data(), args.a[1], (U64)n * 4);
                     cpu->memory->memcpyFromGuest(bvs.data(), args.a[5], (U64)n * 4);
-                    cpu->memory->memcpyFromGuest(idx.data(), args.a[3], (U64)n * 8);
                     const GLsizei* c = counts.data(); const GLint* b = bvs.data();
                     U64* i = idx.data();
                     // WebGL2 has no multiDraw* entry points at all, so issue one
@@ -4154,11 +4154,16 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
 }
 
-// 32-bit entry point (stub). Full 32-bit GL bridge is future work;
-// the templated approach in 261e9976 caused a wasm startup trap.
+U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
+    GLGuestMemory memory(cpu->memory);
+    GLGuestCPU guest{&memory};
+    return glBridge(&guest, fnId, argsAddr);
+}
+
 U64 gl32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
-    (void)cpu; (void)fnId; (void)argsAddr;
-    return 0;
+    GLGuestMemory memory(cpu->memory);
+    GLGuestCPU guest{&memory};
+    return glBridge(&guest, fnId, argsAddr);
 }
 
 #endif // BOXEDWINE_OPENGL
