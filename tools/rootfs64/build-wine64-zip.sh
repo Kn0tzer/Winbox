@@ -224,6 +224,7 @@ fi
 VK_PREBUILT="$HERE/libvk64/libvulkan.so.1"
 VK_FIXTURE="$HERE/libvk64/vkfixture"
 if [ -f "$VK_PREBUILT" ]; then
+    python3 "$HERE/build_vulkan_shims.py" --check --arch 64
     echo "--- staging custom guest libvulkan.so.1 ---"
     mkdir -p "$STAGEHOST/lib/x86_64-linux-gnu" "$STAGEHOST/usr/lib/x86_64-linux-gnu"
     cp "$VK_PREBUILT" "$STAGEHOST/lib/x86_64-linux-gnu/libvulkan.so.1"

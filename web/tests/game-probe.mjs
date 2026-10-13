@@ -23,7 +23,8 @@ const profiles = {
 };
 const game = process.env.GAME || 'portal';
 if (!profiles[game]) throw Error(`Unknown GAME: ${game}`);
-const profile = profiles[game];
+const profile = { ...profiles[game], renderer: process.env.PROBE_RENDERER || profiles[game].renderer };
+if (!['d3d9', 'd3d11', 'opengl'].includes(profile.renderer)) throw Error(`Invalid renderer: ${profile.renderer}`);
 const tag = process.env.TAG || `${game}-${Date.now()}`;
 if (!/^[\w.-]+$/.test(tag)) throw Error('Invalid TAG');
 const dir = join(repo, 'test-results', tag);
@@ -51,6 +52,7 @@ try {
   if (process.env.PROBE_ASSET) assets.push([resolve(process.env.PROBE_ASSET), `home/username/apps/${process.env.PROBE_EXE || profile.exe}`]);
   if (profile.renderer.startsWith('d3d')) {
     const arch = profile.arch === 'x86' ? '32' : '64';
+    execFileSync('python3', [join(repo, 'tools/rootfs64/build_vulkan_shims.py'), '--check', '--arch', arch]);
     const dlls = profile.renderer === 'd3d9' ? ['d3d9'] : ['d3d11', 'dxgi'];
     for (const dll of dlls) {
       const file = join(repo, `tools/dxvk/build.w${arch}/src/${dll}/${dll}.dll`);
@@ -59,13 +61,18 @@ try {
     }
     assets.push([join(repo, `tools/rootfs64/libvk${arch}/libvulkan.so.1`), 'home/username/apps/libvulkan.so.1']);
   }
-  if (game === 'gl32' || (game === 'celeste' && process.env.GL32 === '1')) {
+  if (profile.renderer === 'opengl' && (game === 'gl32' || (game === 'celeste' && process.env.GL32 === '1'))) {
     assets.push([join(repo, 'tools/rootfs64/libgl32/libGL.so.1'), 'usr/lib/i386-linux-gnu/libGL.so.1']);
   }
-  execFileSync('python3', ['-c', `import zipfile,json,sys
+  execFileSync('python3', ['-c', `import zipfile,json,sys,pathlib
 with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
  for src,dst in json.loads(sys.argv[2]):z.write(src,dst)
-`, overlay, JSON.stringify(assets)]);
+ if sys.argv[3]:
+  root=pathlib.Path(sys.argv[3]).resolve()
+  if not (root/'mono/mono-2.0/bin/libmono-2.0-x86.dll').is_file():raise ValueError('Not a Wine Mono directory')
+  for src in sorted(root.rglob('*')):
+   if src.is_file():z.write(src,'home/username/apps/'+src.relative_to(root).as_posix())
+`, overlay, JSON.stringify(assets), process.env.MONO32_DIR || '']);
   result.overlaySha256 = createHash('sha256').update(await readFile(overlay)).digest('hex');
   result.gameArchive = { path: gamePath, bytes: (await stat(gamePath)).size };
   server = await serve(root);

@@ -325,6 +325,25 @@ enum {
     VK64_fn_vkGetPhysicalDeviceProperties2KHR,     // alias of vkGetPhysicalDeviceProperties2
     VK64_fn_vkGetPhysicalDeviceFeatures2KHR,       // alias of vkGetPhysicalDeviceFeatures2
     VK64_fn_vkGetPhysicalDeviceMemoryProperties2KHR, // alias of vkGetPhysicalDeviceMemoryProperties2
+    // D3D9 query sync (append-only): D3D9 event/occlusion queries via DXVK need
+    // real VkEvent/VkQueryPool entry points. The benign stub faults Wine's Unix
+    // handler (it reads the fake handle as a string) and trips the PE assert,
+    // so these are implemented in the bridge. Same explicit positions as libvk32.c.
+    VK64_fn_vkCreateEvent = 841,                // (device, pCreateInfo*, pAllocator, out VkEvent*)
+    VK64_fn_vkDestroyEvent,                     // (device, event, pAllocator)
+    VK64_fn_vkSetEvent,                         // (device, event) -> signalled
+    VK64_fn_vkResetEvent,                       // (device, event) -> unsignalled
+    VK64_fn_vkGetEventStatus,                   // (device, event) -> SET/RESET
+    VK64_fn_vkCmdSetEvent,                      // (cmdBuf, event, stageMask) -> signalled
+    VK64_fn_vkCmdResetEvent,                    // (cmdBuf, event, stageMask) -> unsignalled
+    VK64_fn_vkCmdWaitEvents,                    // (...) -> no-op (immediate execution already done)
+    VK64_fn_vkCreateQueryPool,                  // (device, pCreateInfo*, pAllocator, out VkQueryPool*)
+    VK64_fn_vkDestroyQueryPool,                 // (device, pool, pAllocator)
+    VK64_fn_vkResetQueryPool,                   // (device, pool, first, count) -> SUCCESS
+    VK64_fn_vkGetQueryPoolResults,              // (device, pool, first, count, dataSize, pData*, stride, flags) -> zero-filled SUCCESS
+    VK64_fn_vkCmdResetQueryPool,                // (cmdBuf, pool, first, count) -> SUCCESS
+    VK64_fn_vkCmdBeginQuery,                    // (cmdBuf, pool, query, flags) -> SUCCESS
+    VK64_fn_vkCmdEndQuery,                      // (cmdBuf, pool, query) -> SUCCESS
     VK64_fn__MAX
 };
 

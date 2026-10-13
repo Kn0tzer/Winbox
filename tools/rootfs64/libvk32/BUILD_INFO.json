@@ -1,0 +1,15 @@
+{
+  "arch": "32",
+  "sourceSha256": "835951b3c606adae905742d285f91e90c7eb0c94b86af337e80b85f5b1834706",
+  "binarySha256": "306460f6455343c2ed36e80a405411cefe190e9b205d2dd3b0b6629103b1e5d8",
+  "flags": [
+    "-shared",
+    "-fPIC",
+    "-O2",
+    "-fvisibility=hidden",
+    "-nostdlib",
+    "-ffreestanding",
+    "-Wl,-soname,libvulkan.so.1"
+  ],
+  "compiler": "i686-linux-gnu-gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0"
+}

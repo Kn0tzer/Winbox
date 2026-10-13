@@ -9,7 +9,7 @@ does not count as gameplay. Record failures and the tested build hashes.
 | Portal 2 | 32-bit Vulkan | Missing; portal.zip contains Portal 1 (hl2.exe, x86) |
 | Gang Beasts | 32-bit Unity | gangbeasts.zip contains x64 Unity |
 | Borderlands 2 | 32-bit Unreal / D3D9 | Missing |
-| Celeste | 32-bit OpenGL / .NET | Present; wine-mono overlay packaged |
+| Celeste | 32-bit OpenGL / .NET | Original archive uses FNA/OpenGL; new DRM-free directory uses XNA 4/D3D9 |
 | Kerbal Space Program | 64-bit Unity Vulkan | Missing |
 | Team Fortress 2 | 64-bit D3D9 | Missing |
 
@@ -40,7 +40,9 @@ npm test
 npm run typecheck
 bw64-build
 bash tools/rootfs64/build-libgl32.sh
+python3 tools/rootfs64/build_vulkan_shims.py
 GAME=celeste GL32=1 GLTRACE=1 node web/tests/game-probe.mjs
+GAME=celeste GAME_ZIP=/home/ubuntu/kn0tzer/games/celeste-drmfree.zip PROBE_RENDERER=d3d9 MONO32_DIR=/home/ubuntu/scripts/mono32 node web/tests/game-probe.mjs
 GAME=gangbeasts node web/tests/game-probe.mjs
 GAME=portal node web/tests/game-probe.mjs
 ```

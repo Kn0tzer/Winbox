@@ -276,6 +276,21 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkGetPhysicalDeviceMemoryProperties2KHR, "vkGetPhysicalDeviceMemoryProperties2KHR") \
     X(VK64_fn_vkGetPhysicalDeviceQueueFamilyProperties2,"vkGetPhysicalDeviceQueueFamilyProperties2") \
     X(VK64_fn_vkGetFenceStatus,                     "vkGetFenceStatus")    \
+    X(VK64_fn_vkCreateEvent,                       "vkCreateEvent")       \
+    X(VK64_fn_vkDestroyEvent,                      "vkDestroyEvent")      \
+    X(VK64_fn_vkSetEvent,                          "vkSetEvent")          \
+    X(VK64_fn_vkResetEvent,                        "vkResetEvent")        \
+    X(VK64_fn_vkGetEventStatus,                    "vkGetEventStatus")    \
+    X(VK64_fn_vkCmdSetEvent,                       "vkCmdSetEvent")       \
+    X(VK64_fn_vkCmdResetEvent,                     "vkCmdResetEvent")     \
+    X(VK64_fn_vkCmdWaitEvents,                     "vkCmdWaitEvents")     \
+    X(VK64_fn_vkCreateQueryPool,                   "vkCreateQueryPool")   \
+    X(VK64_fn_vkDestroyQueryPool,                  "vkDestroyQueryPool")  \
+    X(VK64_fn_vkResetQueryPool,                    "vkResetQueryPool")    \
+    X(VK64_fn_vkGetQueryPoolResults,               "vkGetQueryPoolResults") \
+    X(VK64_fn_vkCmdResetQueryPool,                 "vkCmdResetQueryPool") \
+    X(VK64_fn_vkCmdBeginQuery,                     "vkCmdBeginQuery")     \
+    X(VK64_fn_vkCmdEndQuery,                       "vkCmdEndQuery")       \
     X(VK64_fn_vkResetCommandPool,                   "vkResetCommandPool")  \
     X(VK64_fn_vkQueueWaitIdle,                      "vkQueueWaitIdle")     \
     X(VK64_fn_vkCreateHeadlessSurfaceEXT,           "vkCreateHeadlessSurfaceEXT") \
@@ -394,7 +409,8 @@ enum ObjKind : U32 {
     K_INSTANCE = 1, K_PHYSDEV, K_DEVICE, K_QUEUE, K_CMDPOOL, K_CMDBUF, K_MEMORY,
     K_BUFFER, K_IMAGE, K_IMAGEVIEW, K_BUFFERVIEW, K_SAMPLER, K_SHADER, K_SETLAYOUT, K_SET,
     K_PIPELAYOUT, K_PIPELINE, K_RENDERPASS, K_FRAMEBUFFER, K_PIPECACHE,
-    K_DESCPOOL, K_FENCE, K_SEMAPHORE, K_SWAPCHAIN, K_SURFACE, K_TEMPLATE
+    K_DESCPOOL, K_FENCE, K_SEMAPHORE, K_SWAPCHAIN, K_SURFACE, K_TEMPLATE,
+    K_EVENT, K_QUERYPOOL
 };
 struct Obj {
     virtual ~Obj() = default;
@@ -485,6 +501,8 @@ struct PipelineCache : Obj {};
 struct DescPool  : Obj {};
 struct Surface   : Obj {};
 struct Fence     : Obj { int signalled = 0; };
+struct Event     : Obj { int signalled = 0; };
+struct QueryPool : Obj { U32 type = 0, count = 0; };
 // Timeline semaphores (audit P2-NOW item 3). DXVK puts a u64 wait/signal fence
 // on EVERY command-list flush, so the counter is not optional bookkeeping: it is
 // the only thing that makes vkQueueSubmit's VkTimelineSemaphoreSubmitInfo
@@ -3656,6 +3674,77 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         if (!f) return VK_ERROR_INITIALIZATION_FAILED;
         return f->signalled ? VK_SUCCESS : VK_NOT_READY;
     }
+    // D3D9 query sync: events are signalled inline (immediate execution), so
+    // Set is visible to Get immediately. Query results are zero-filled: the
+    // menu path only needs completion, not real occlusion counts.
+    case VK64_fn_vkCreateEvent: {
+        if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        createObj<Event>(K_EVENT, id);
+        wr64(args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkDestroyEvent:              dropObj(args.a[1]); return 0;
+    case VK64_fn_vkSetEvent: {
+        Event* e = objOf<Event>(args.a[1], K_EVENT, "vkSetEvent");
+        if (!e) return VK_ERROR_INITIALIZATION_FAILED;
+        e->signalled = 1;
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkResetEvent: {
+        Event* e = objOf<Event>(args.a[1], K_EVENT, "vkResetEvent");
+        if (!e) return VK_ERROR_INITIALIZATION_FAILED;
+        e->signalled = 0;
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetEventStatus: {
+        Event* e = objOf<Event>(args.a[1], K_EVENT, "vkGetEventStatus");
+        if (!e) return VK_ERROR_INITIALIZATION_FAILED;
+        return e->signalled ? VK_EVENT_SET : VK_EVENT_RESET;
+    }
+    case VK64_fn_vkCmdSetEvent: {
+        Event* e = objOf<Event>(args.a[1], K_EVENT, "vkCmdSetEvent");
+        if (!e) return VK_ERROR_INITIALIZATION_FAILED;
+        e->signalled = 1;
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCmdResetEvent: {
+        Event* e = objOf<Event>(args.a[1], K_EVENT, "vkCmdResetEvent");
+        if (!e) return VK_ERROR_INITIALIZATION_FAILED;
+        e->signalled = 0;
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCmdWaitEvents:
+        return VK_SUCCESS; // immediate execution: nothing to wait for
+    case VK64_fn_vkCreateQueryPool: {
+        if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        createObj<QueryPool>(K_QUERYPOOL, id);
+        wr64(args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkDestroyQueryPool:          dropObj(args.a[1]); return 0;
+    case VK64_fn_vkResetQueryPool:
+    case VK64_fn_vkCmdResetQueryPool:
+    case VK64_fn_vkCmdBeginQuery:
+    case VK64_fn_vkCmdEndQuery:
+        return VK_SUCCESS;
+    case VK64_fn_vkGetQueryPoolResults: {
+        QueryPool* q = objOf<QueryPool>(args.a[1], K_QUERYPOOL, "vkGetQueryPoolResults");
+        if (!q || !args.a[5]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 n = args.a[4];
+        if (n > (1ULL << 20)) n = (1ULL << 20); // clamp garbage sizes
+        if (n && g_mem) {
+            static const U8 zeros[4096] = {};
+            U64 off = 0;
+            while (off < n) {
+                U64 c = n - off > sizeof(zeros) ? sizeof(zeros) : n - off;
+                g_mem->memcpyToGuest(args.a[5] + off, zeros, (size_t)c);
+                off += c;
+            }
+        }
+        return VK_SUCCESS;
+    }
     case VK64_fn_vkDeviceWaitIdle:
     case VK64_fn_vkQueueWaitIdle:
         return VK_SUCCESS;
@@ -6447,6 +6536,73 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkGetFenceStatus: {
         Fence* f = objOf32<Fence>(args.a[1], K_FENCE, "vkGetFenceStatus");
         return (f && f->signalled) ? VK_SUCCESS : VK_NOT_READY;
+    }
+    // D3D9 query sync (32-bit mirrors of the 64-bit cases above).
+    case VK64_fn_vkCreateEvent: {
+        if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        createObj32<Event>(K_EVENT, id);
+        wr64_32((U32)args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkSetEvent: {
+        Event* e = objOf32<Event>(args.a[1], K_EVENT, "vkSetEvent");
+        if (!e) return VK_ERROR_INITIALIZATION_FAILED;
+        e->signalled = 1;
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkResetEvent: {
+        Event* e = objOf32<Event>(args.a[1], K_EVENT, "vkResetEvent");
+        if (!e) return VK_ERROR_INITIALIZATION_FAILED;
+        e->signalled = 0;
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetEventStatus: {
+        Event* e = objOf32<Event>(args.a[1], K_EVENT, "vkGetEventStatus");
+        if (!e) return VK_ERROR_INITIALIZATION_FAILED;
+        return e->signalled ? VK_EVENT_SET : VK_EVENT_RESET;
+    }
+    case VK64_fn_vkCmdSetEvent: {
+        Event* e = objOf32<Event>(args.a[1], K_EVENT, "vkCmdSetEvent");
+        if (!e) return VK_ERROR_INITIALIZATION_FAILED;
+        e->signalled = 1;
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCmdResetEvent: {
+        Event* e = objOf32<Event>(args.a[1], K_EVENT, "vkCmdResetEvent");
+        if (!e) return VK_ERROR_INITIALIZATION_FAILED;
+        e->signalled = 0;
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCmdWaitEvents:
+        return VK_SUCCESS; // immediate execution: nothing to wait for
+    case VK64_fn_vkCreateQueryPool: {
+        if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        createObj32<QueryPool>(K_QUERYPOOL, id);
+        wr64_32((U32)args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkResetQueryPool:
+    case VK64_fn_vkCmdResetQueryPool:
+    case VK64_fn_vkCmdBeginQuery:
+    case VK64_fn_vkCmdEndQuery:
+        return VK_SUCCESS;
+    case VK64_fn_vkGetQueryPoolResults: {
+        QueryPool* q = objOf32<QueryPool>(args.a[1], K_QUERYPOOL, "vkGetQueryPoolResults");
+        if (!q || !args.a[5]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 n = args.a[4];
+        if (n > (1ULL << 20)) n = (1ULL << 20); // clamp garbage sizes
+        if (n && g_mem32) {
+            static const U8 zeros[4096] = {};
+            U64 off = 0;
+            while (off < n) {
+                U64 c = n - off > sizeof(zeros) ? sizeof(zeros) : n - off;
+                g_mem32->memcpyToGuest((U32)(args.a[5] + off), zeros, (size_t)c);
+                off += c;
+            }
+        }
+        return VK_SUCCESS;
     }
     case VK64_fn_vkResetCommandBuffer: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkResetCommandBuffer");
