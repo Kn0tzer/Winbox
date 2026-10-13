@@ -19,7 +19,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
-const page = readFileSync(join(repoRoot, 'web/vkwebgpu.mjs'), 'utf8');
+const page = ['web/vkwebgpu.mjs', 'web/vk-protocol.mjs']
+  .map(file => readFileSync(join(repoRoot, file), 'utf8')).join('\n');
 const bridge = readFileSync(join(repoRoot, 'source/vulkan/vk64bridge.cpp'), 'utf8');
 
 test('bwVkChunk wiring exists (ace9685f: never assigned → all dropped)', () => {
