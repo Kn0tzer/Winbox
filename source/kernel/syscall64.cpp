@@ -276,16 +276,9 @@
 //       'S'=sendmsg scm_rights fd sent (e0=#fds, e1=first guest fd).
 // extra0/extra1 carry per-kind context (see crashRingRecordRead callers).
 struct CrashRingEntry { char kind; U32 pid; U32 fd; U32 len; U32 extra0; U32 extra1; U8 hdr[16]; };
-// Serializes guest file reads (sys_read64 + sys_mmap64_file) against the shared
-// per-zip decompression stream. wine's DLLs live in wine64.zip; every
-// FsZipOpenNode of the same entry shares ONE unzFile + position state, and the
-// seek()+readNative() that maps a DLL segment is several un-co-locked calls. Two
-// wine processes loading the same DLL on separate host threads otherwise
-// interleave seek/read and each reads from the OTHER's file position — splatter-
-// ing a DLL's MZ header over its own .text/.data/IAT, corrupting the IAT, and
-// producing a wild indirect call into low memory (RIP=0x10270) -> "could not load
-// kernel32.dll" -> cascading wineserver heap corruption. Holding this lock across
-// the whole read makes file reads atomic. Not perf-critical (DLL load path).
+// Legacy serialization across file syscall paths. Each ZIP open now owns its
+// decompression stream. Positioned reads also acquire KFile's position lock:
+// lseek does not use this global mutex and must not interrupt seek/read/restore.
 static std::mutex g_fileReadMutex;
 
 static CrashRingEntry g_crashRing[64];
@@ -1310,18 +1303,21 @@ static U64 sys_pread64(CPU64* cpu, U64 fd, U64 buf, U64 count, U64 offset) {
         fdesc->kobject->seek(savedPos);
         return (S64)total;
     };
-    // Same zip-stream hazard as sys_mmap64_file / sys_read64: this seek+read+seek
-    // is unsynchronized, and wine's PE loader + glibc ld.so pread DLL/DSO headers
-    // from the SHARED per-zip stream. Serialize file reads (KFile only — a
-    // blocking socket pread must not hold the global lock). Without this, a
-    // header pread races a concurrent mmap of the same zip entry and reads the
-    // wrong bytes (the residual "could not load kernel32.dll" path after the
-    // mmap/read serialization fixed the segment-map corruption).
+    // Use KFile's positioned operation so concurrent lseek and ordinary reads
+    // share its filePosMutex. A socket must never hold the global file lock.
     std::shared_ptr<KFile> pkfile = std::dynamic_pointer_cast<KFile>(fdesc->kobject);
     S64 got;
     if (pkfile) {
         std::lock_guard<std::mutex> lk(g_fileReadMutex);
-        got = readFully();
+        U64 total = 0;
+        got = 0;
+        while (total < count) {
+            U32 n = pkfile->preadNative(tmp.data() + total, (S64)(offset + total), (U32)(count - total));
+            if ((S32)n < 0) { got = (S64)(S32)n; break; }
+            if (n == 0) break;
+            total += n;
+        }
+        if (got >= 0) got = (S64)total;
     } else {
         got = readFully();
     }
@@ -1529,10 +1525,13 @@ static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
         U64 fileBase = offset & ~0xFFFULL;
         {
             std::lock_guard<std::mutex> lk(g_fileReadMutex);
-            S64 savedFp = kfile->openFile->getFilePointer();
-            kfile->openFile->seek((S64)fileBase);
-            kfile->openFile->readNative(seedBuf.data(), (U32)mapLen);
-            kfile->openFile->seek(savedFp);
+            U64 total = 0;
+            while (total < mapLen) {
+                U32 n = kfile->preadNative(seedBuf.data() + total, (S64)(fileBase + total), (U32)(mapLen - total));
+                if ((S32)n < 0) return (U64)(S64)(S32)n;
+                if (n == 0) break;
+                total += n;
+            }
         }
         U64 r = cpu->memory->mmapSharedFile(aligned, mapLen, (U32)prot,
                                             kfile->openFile->node->id,
@@ -1587,36 +1586,25 @@ static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
         if (!tailSave.empty()) cpu->memory->memcpyToGuest(fileEnd, tailSave.data(), tail);
     }
     // Read [offset, offset+length) and copy into [addr, addr+length).
-    // MT-CRITICAL: the seek()+readNative()+seek() sequence is THREE separate calls
-    // that must not interleave with another thread's file read. For zip-backed
-    // files (wine's DLLs live in wine64.zip) every FsZipOpenNode shares ONE
-    // underlying decompression stream (FsZip::zipfile) plus its position state;
-    // readNative only locks its own body, so when two wine processes mmap the same
-    // DLL concurrently on separate host threads their seek/read interleave and
-    // each reads from the OTHER's file position — splattering e.g. winex11.drv's
-    // MZ header (file offset 0) over its .text/.data/IAT -> corrupted IAT pointers
-    // -> a wild indirect call into low memory (RIP=0x10270) -> "could not load
-    // kernel32.dll" -> cascading wineserver heap corruption. A process-global lock
-    // across the whole seek+read+restore makes each file-mmap read atomic. DLL
-    // loading is not perf-critical, so the serialization cost is acceptable.
+    // KFile's positioned read holds the same filePosMutex as ordinary reads
+    // and lseek. The global file-read lock alone cannot exclude lseek, and
+    // direct openFile calls bypass KFile's position ownership entirely.
     std::vector<U8> buf((size_t)length);
     U32 got;
     {
         std::lock_guard<std::mutex> lk(g_fileReadMutex);
-        S64 saved = kfile->openFile->getFilePointer();
-        kfile->openFile->seek((S64)offset);
         // Loop: a single zip-backed readNative (unzReadCurrentFile) can return
         // fewer bytes than `length`. A single-shot read here would leave the tail
         // of a large section (e.g. a multi-MB .text) zero-filled — the same class
         // of bug as the capped pread64 that produced the HxD 0x937b30 crash.
         U64 total = 0;
         while (total < length) {
-            U32 n = kfile->openFile->readNative(buf.data() + total, (U32)(length - total));
+            U32 n = kfile->preadNative(buf.data() + total, (S64)(offset + total), (U32)(length - total));
+            if ((S32)n < 0) return (U64)(S64)(S32)n;
             if (n == 0) break; // EOF / no progress
             total += n;
         }
         got = (U32)total;
-        kfile->openFile->seek(saved);
     }
     // BW64_MAPWATCH=0xADDR: log every file-mmap that lands in [ADDR, ADDR+0x20000)
     // with its file offset — to catch a segment being (re)mapped from the WRONG

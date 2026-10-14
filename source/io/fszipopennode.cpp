@@ -45,10 +45,12 @@ bool FsZipOpenNode::setLength(S64 len) {
 }
 
 S64 FsZipOpenNode::getFilePointer() {
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->readMutex);
     return this->pos;
 }
 
 S64 FsZipOpenNode::seek(S64 pos) {
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->readMutex);
     S64 len = (S64)this->zipNode->length();
     if (pos > len)
         this->pos = len;
@@ -236,6 +238,7 @@ U32 FsZipOpenNode::writeNative(U8* buffer, U32 len) {
 }
 
 void FsZipOpenNode::reopen() {
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->readMutex);
     this->pos = 0;
     // The decompressed prefix cache stays valid: the zip entry did not
     // change, so a subsequent seek+read is served from cache for free.
