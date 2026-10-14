@@ -130,7 +130,15 @@ public:
     // request. Called by XWireServer::pumpInput from the main-thread present tick
     // so an idle app still receives keystrokes/clicks. flushReplies' writeNative
     // path is the thread-safe client-wakeup (same as onPeerWrote).
-    void pumpInputAndFlush() { deliverInputEvents(); flushReplies(); }
+    void pumpInputAndFlush() {
+        // A guest request may own ioMutex while waiting for platform GL work.
+        // Keep the platform loop free to finish that work; onData or the next
+        // tick will deliver queued input when this connection becomes idle.
+        std::unique_lock<std::recursive_mutex> lock(ioMutex, std::try_to_lock);
+        if (!lock.owns_lock()) return;
+        deliverInputEvents();
+        flushReplies();
+    }
 
     // Tell this connection's client it lost a selection (SelectionClear, code
     // 29) — sent when the HOST clipboard takes over so wine stops preferring
