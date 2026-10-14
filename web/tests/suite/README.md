@@ -68,6 +68,13 @@ runs both its clear and draw/present fixtures. The Celeste check requires
 the game's completed-load log and colored pixels on its guest canvas.
 Interactive gameplay remains a separate acceptance check.
 
+To reuse a suite boot for interactive acceptance or inspect its failure,
+run `TEST_PROBE=celeste-boot HOLD_MS=600000 node web/tests/hold-suite-probe.mjs`.
+It runs the actual test class and saves `probe-result.json`, then retains
+the browser and its `.browser.cdp` endpoint for the bounded hold period.
+The probe result still does not establish game playability; save separate
+evidence of the game actions and their visible outcomes.
+
 Guest fixtures require both MinGW cross compilers. Celeste uses a local
 DRM-free archive (`CELESTE_ZIP`) and Wine Mono prepared with
 `python3 tools/rootfs64/prepare-mono32.py`; `MONO32_DIR` can override its
