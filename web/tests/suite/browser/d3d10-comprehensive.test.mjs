@@ -42,8 +42,7 @@ export default class D3D10ComprehensiveTest extends ProbeTest {
     const { page, server } = ctx;
     const logs = this.consoleLines;
 
-    await page.goto(`${server.url}/runtime/index.html?p=cmd%20%2Fc%20echo%20vkboot&session=1&novideo=0&persist=0&gltrace=0&framelog=1`);
-    await this.waitForPageFn(page, () => window.bwRuntime?.ready?.() === true, 600000);
+    await this.bootGuest(page, { arch: 'x64', novideo: '0', gltrace: '0', framelog: '1' });
 
     for (const f of [
       ['d3d10dev.exe', 'tools/d3dtests/d3d10dev.exe'],

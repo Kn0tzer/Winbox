@@ -17,8 +17,8 @@ export const gamePrerequisites = {
   },
   gangbeasts: {
     architecture: 'x64',
-    unit: [...kernel, 'zip-stored-seek', 'zip-decompression', 'v2-replay-state'],
-    browser: [...input, 'memory-shared', 'd3d11-comprehensive', 'd3d11-triangle', 'audio-tone'],
+    unit: [...kernel, 'zip-stored-seek', 'zip-decompression', 'v2-replay-state', 'memory64-backing-lifetime'],
+    browser: [...input, 'memory-shared', 'fork-mapping', 'd3d11-comprehensive', 'd3d11-triangle', 'audio-tone'],
     uncoveredBehavior: ['Unity runtime and asset-loading workload', 'game-specific audio integration', 'interactive match movement and grabbing'],
   },
 };
@@ -40,7 +40,9 @@ export function prerequisiteEvidence(game, results) {
   const browserResults = results.filter(r => r.category === 'browser');
   const codeHashes = new Set(browserResults.map(r => r.runtimeCodeHash).filter(Boolean));
   const sameRuntime = hashes.size === 1 && codeHashes.size === 1 && browserResults.every(r => r.wasmSha256 && r.runtimeCodeHash);
-  return { game, architecture: profile.architecture, prerequisiteChecksPassed: missing.length === 0 && sameRuntime,
+  const correctArchitecture = browserResults.every(r => r.architectures?.includes(profile.architecture));
+  return { game, architecture: profile.architecture, prerequisiteChecksPassed: missing.length === 0 && sameRuntime && correctArchitecture,
+    correctArchitecture,
     missing, wasmSha256: sameRuntime ? [...hashes][0] : null,
     runtimeCodeHash: sameRuntime ? [...codeHashes][0] : null,
     fullGameVerified: false, uncoveredBehavior: profile.uncoveredBehavior };

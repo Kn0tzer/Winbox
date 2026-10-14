@@ -1,9 +1,10 @@
 // Inventory and evidence validation; source guards do not establish playability.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { resolve, join } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { gamePrerequisites, prerequisiteEvidence, prerequisiteSelection } from '../lib/game-prerequisites.mjs';
 const root = resolve(import.meta.dirname, '../../../..');
 const suite = resolve(import.meta.dirname, '..');
@@ -39,7 +40,8 @@ test('Celeste required subsystems map to executable guest probes', () => {
 
 function passing(game, hash='runtime-a') {
   return ['unit','browser'].flatMap(category => gamePrerequisites[game][category]
-    .map(name => ({name,category,passed:true,wasmSha256:category==='browser'?hash:null,runtimeCodeHash:category==='browser'?'code-a':null})));
+    .map(name => ({name,category,passed:true,wasmSha256:category==='browser'?hash:null,runtimeCodeHash:category==='browser'?'code-a':null,
+      architectures: category==='browser' ? [gamePrerequisites[game].architecture] : []})));
 }
 test('complete prerequisite evidence never claims game playability', () => {
   for (const game of Object.keys(gamePrerequisites)) {
@@ -61,8 +63,24 @@ test('missing, failed, unproven or mixed-runtime probes cannot pass the prefligh
     assert.equal(prerequisiteEvidence(game, mixedCode).prerequisiteChecksPassed, false);
     const noHash = structuredClone(complete); noHash.find(r=>r.category==='browser').wasmSha256=null;
     assert.equal(prerequisiteEvidence(game, noHash).prerequisiteChecksPassed, false);
+    const wrongArch = structuredClone(complete);
+    wrongArch.find(r=>r.category==='browser').architectures = [gamePrerequisites[game].architecture === 'x86' ? 'x64' : 'x86'];
+    assert.equal(prerequisiteEvidence(game, wrongArch).prerequisiteChecksPassed, false);
+    const noArch = structuredClone(complete); delete noArch.find(r=>r.category==='browser').architectures;
+    assert.equal(prerequisiteEvidence(game, noArch).prerequisiteChecksPassed, false);
   }
   assert.throws(()=>prerequisiteSelection('unknown','browser'), /Unknown game/);
+});
+test('an incomplete game preflight returns a failing CLI exit status', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bw64-preflight-exit-'));
+  try {
+    const run = spawnSync(process.execPath, [join(suite, 'runner.mjs'), '--unit', '--game=celeste',
+      '--filter=missing-fixture-selection', '--json'], { cwd: dir, encoding: 'utf8', timeout: 10000 });
+    assert.equal(run.error, undefined);
+    const summary = JSON.parse(run.stdout);
+    assert.equal(summary.preflight.prerequisiteChecksPassed, false);
+    assert.equal(run.status, 1, 'Missing prerequisites must fail even when no selected test failed');
+  } finally { rmSync(dir, {recursive: true, force: true}); }
 });
 test('the historical conformance report exposes its actual result buckets', () => {
   const report=readFileSync(join(root,'docs/reports/d3d-conformance-MATRIX.md'),'utf8');

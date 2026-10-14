@@ -62,6 +62,8 @@ export class ProbeTest {
     this.dir = `test-results/suite-${tag}`;
     this.consoleLines = [];
     this.rawConsoleLines = [];
+    this.guestArchitectures = ['x86', 'x64'];
+    this.testedArchitectures = new Set();
     this._slot = null;
     this._server = null;
     this._browser = null;
@@ -149,6 +151,7 @@ export class ProbeTest {
   }
 
   async bootGuest(page, parameters = {}) {
+    this.testedArchitectures.add(parameters.arch || 'x64');
     const params = new URLSearchParams({ p: 'cmd /c echo vkboot', session: '1', persist: '0', fresh: '1', ...parameters });
     await page.goto(`${this._server.url}/runtime/index.html?${params}`);
     await this.waitForPageFn(page, () => globalThis.bwRuntime?.ready?.() === true, 600000);

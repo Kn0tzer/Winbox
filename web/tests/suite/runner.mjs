@@ -41,8 +41,8 @@ const results = [];
 
 function log(...a) { if (!jsonOutput) console.log(...a); }
 
-function record(name, category, passed, durationMs, error = null, wasmSha256 = null, runtimeCodeHash = null) {
-  results.push({ name, category, passed, durationMs, error: error ? String(error).slice(0, 2000) : null, wasmSha256, runtimeCodeHash });
+function record(name, category, passed, durationMs, error = null, wasmSha256 = null, runtimeCodeHash = null, architectures = []) {
+  results.push({ name, category, passed, durationMs, error: error ? String(error).slice(0, 2000) : null, wasmSha256, runtimeCodeHash, architectures });
   if (passed) {
     log(`  PASS ${name} (${durationMs}ms)`);
   } else {
@@ -96,6 +96,7 @@ async function runBrowserFile(file) {
     const TestClass = mod.default;
     if (!TestClass) throw new Error("No default export (expected a ProbeTest subclass)");
     test = new TestClass();
+    if (game) test.guestArchitectures = [gamePrerequisites[game].architecture];
     const timeoutMs = (test.timeoutMs || 900000) + 60000;
     const runOnce = (async () => {
       await test.setup();
@@ -113,7 +114,8 @@ async function runBrowserFile(file) {
     const timeout = new Promise((_, reject) =>
       timer = setTimeout(() => reject(new Error(`FAIL ${name}: browser test timed out after ${timeoutMs}ms (hung probe killed — never stall forever)`)), timeoutMs));
     await Promise.race([runOnce, timeout]);
-    return { passed: true, durationMs: Date.now() - t0, wasmSha256: test.buildInfo?.wasm_sha256, runtimeCodeHash: test.runtimeCodeHash };
+    return { passed: true, durationMs: Date.now() - t0, wasmSha256: test.buildInfo?.wasm_sha256,
+      runtimeCodeHash: test.runtimeCodeHash, architectures: [...test.testedArchitectures] };
   } catch (e) {
     // Ensure cleanup even on failure/timeout (best effort, 10s cap each)
     if (test) {
@@ -149,7 +151,7 @@ async function main() {
       if (filter && !name.toLowerCase().includes(filter)) continue;
       if (game && !prerequisiteSelection(game, 'browser').has(name)) continue;
       const r = await runBrowserFile(join(browserDir, f));
-      record(name, "browser", r.passed, r.durationMs, r.error, r.wasmSha256, r.runtimeCodeHash);
+      record(name, "browser", r.passed, r.durationMs, r.error, r.wasmSha256, r.runtimeCodeHash, r.architectures);
     }
   }
 
@@ -179,7 +181,7 @@ async function main() {
     log(`${"=".repeat(50)}`);
   }
 
-  process.exit(failed > 0 ? 1 : 0);
+  process.exit(failed > 0 || (preflight && !preflight.prerequisiteChecksPassed) ? 1 : 0);
 }
 
 main().catch(e => { console.error("Runner crashed:", e); process.exit(2); });

@@ -34,8 +34,7 @@ export default class D3D11ComprehensiveTest extends ProbeTest {
     const { page, server } = ctx;
     const logs = this.consoleLines;
 
-    await page.goto(`${server.url}/runtime/index.html?p=cmd%20%2Fc%20echo%20vkboot&session=1&novideo=0&persist=0&gltrace=0&framelog=1`);
-    await this.waitForPageFn(page, () => window.bwRuntime?.ready?.() === true, 600000);
+    await this.bootGuest(page, { arch: 'x64', novideo: '0', gltrace: '0', framelog: '1' });
 
     for (const f of [
       ['tri11_93.exe', 'tools/d3dtests/tri11_93.exe'],
