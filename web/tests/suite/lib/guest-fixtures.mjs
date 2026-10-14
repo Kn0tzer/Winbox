@@ -13,6 +13,7 @@ const fixtures = {
   trigl: ['tools/openglTest/trigl.c', '-lopengl32', '-lgdi32', '-luser32'],
 };
 const elfFixtures = { 'shared-mapping': ['tools/guest-fixtures/shared-mapping.c', '-static'] };
+elfFixtures['fork-mapping'] = ['tools/guest-fixtures/fork-mapping.c', '-static'];
 const managedFixtures = { 'mono-runtime': ['tools/guest-fixtures/mono-runtime.cs'] };
 managedFixtures['fna-runtime'] = ['tools/guest-fixtures/fna-runtime.cs',
   '-r:tools/rootfs64/mono32/mono/mono-2.0/lib/mono/gac/FNA/22.9.1.0__0738eb9f132ed756/FNA.dll'];

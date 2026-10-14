@@ -1516,38 +1516,11 @@ static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
                  (unsigned long long)(kfile->openFile->node ? kfile->openFile->node->id : 0),
                  kfile->openFile->node ? kfile->openFile->node->path.c_str() : "?");
     }
-    // MAP_SHARED file mapping that must be GENUINELY shared across every process
-    // that maps the same file: wine's server shared-memory section
-    // (/run/user/.../wine/server-1-*/* incl. tmpmap-*) — wineserver maps it
-    // WRITABLE and writes object/sequence state; the CLIENTS map the SAME file
-    // (e.g. KUSER_SHARED_DATA at 0x7ffe0000) and read those writes directly. A
-    // private read-copy would give each process a stale snapshot and desync the
-    // section. So that file's pages must alias ONE shared backing buffer.
-    //
-    // CRUCIAL: this aliasing is ONLY correct for files that hold genuinely
-    // process-shared state. It is WRONG for PE image sections. wine maps a DLL's
-    // read-only sections (.text/.rdata) with MAP_SHARED too, but then loads the
-    // image at a PER-PROCESS base and calls relocate_image, which mprotects those
-    // sections writable and patches absolute addresses by THIS process's load
-    // delta. If two processes share the backing, the second process's relocation
-    // overwrites the first's already-relocated bytes (with a different delta), so
-    // the first process then reads doubly/wrongly-relocated pointers — garbage
-    // IAT/function pointers, a wild indirect call into low memory, and the
-    // downstream wineserver "corrupted double-linked list"/release_object crash.
-    // So restrict the shared-backing divert to the wineserver server-section
-    // files; every other MAP_SHARED file map (PE images, .nls, etc.) falls
-    // through to the private per-process read-copy below, which is correct
-    // because each process relocates its own copy.
-    bool serverSection = false;
-    if (kfile->openFile->node) {
-        const char* p = kfile->openFile->node->path.c_str();
-        // The wine server runtime dir is .../wine/server-<disp>-<inst>/...
-        if (strstr(p, "/wine/server-") || strstr(p, "/server-1-") ||
-            strstr(p, "tmpmap")) {
-            serverSection = true;
-        }
-    }
-    if (serverSection && (flags & K_MAP_SHARED) && kfile->openFile->node) {
+    // Honor the requested mapping mode for every file, independent of its
+    // pathname. Wine 8's map_image_into_view uses VPROT_WRITECOPY/MAP_PRIVATE
+    // for ordinary PE image sections; shared sections must remain shared.
+    // Reference: wine-8.0/dlls/ntdll/unix/virtual.c, map_file_into_view.
+    if ((flags & K_MAP_SHARED) && kfile->openFile->node) {
         // mmap(NULL, MAP_SHARED) has already reserved a fresh address range.
         // Replace that range's pages with shared backing as well: Wine's server
         // uses NULL for its writable clock page, while clients use fixed maps.

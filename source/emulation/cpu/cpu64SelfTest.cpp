@@ -6422,6 +6422,53 @@ int runX64SelfTest() {
         ok ? r.passed++ : r.failed++;
     }
 
+    // Fork preserves address-space reservations and file sharing, while
+    // private bytes in the child remain independent of the parent.
+    {
+        KMemory64 parent(nullptr), child(nullptr);
+        const U64 original = parent.mmapReserveAndMap(2 * K_PAGE_SIZE, 3);
+        parent.writeq(original, 0x1122334455667788ULL);
+        const U64 reservation = original + 2 * K_PAGE_SIZE;
+        parent.mmapAnonymousFixed(reservation, K_PAGE_SIZE, 0);
+        child.cloneFrom(&parent);
+        const U64 allocated = child.mmapReserveAndMap(K_PAGE_SIZE, 3);
+        bool ok = allocated >= reservation + K_PAGE_SIZE &&
+                  child.readq(original) == 0x1122334455667788ULL;
+        child.writeq(original, 9);
+        ok = ok && parent.readq(original) == 0x1122334455667788ULL;
+        printf("  %s: fork preserves reservations and private mapping isolation\n", ok ? "PASS" : "FAIL");
+        ok ? r.passed++ : r.failed++;
+    }
+    {
+        KMemory64 parent(nullptr), child(nullptr);
+        U8 seed[K_PAGE_SIZE] = {};
+        const U64 address = 0x7ffc0000;
+        parent.mmapSharedFile(address, K_PAGE_SIZE, 3, 0xb0641003, "fork-shared", 0, seed, sizeof(seed));
+        parent.writeq(address, 5);
+        child.cloneFrom(&parent);
+        child.writeq(address, 7);
+        bool ok = parent.readq(address) == 7;
+        parent.writeq(address, 11);
+        ok = ok && child.readq(address) == 11;
+        printf("  %s: fork preserves shared file aliasing in both directions\n", ok ? "PASS" : "FAIL");
+        ok ? r.passed++ : r.failed++;
+    }
+
+    {
+        KMemory64 writer(nullptr), observer(nullptr);
+        U8 seed[K_PAGE_SIZE] = {};
+        const U64 address = 0x7ffb0000;
+        writer.mmapSharedFile(address, K_PAGE_SIZE, 3, 0xb0641004, "remap-shared", 0, seed, sizeof(seed));
+        observer.mmapSharedFile(address, K_PAGE_SIZE, 3, 0xb0641004, "remap-shared", 0, seed, sizeof(seed));
+        writer.writeq(address, 13);
+        writer.mmapAnonymousFixed(address, K_PAGE_SIZE, 3);
+        bool ok = writer.readq(address) == 0 && observer.readq(address) == 13;
+        writer.writeq(address, 17);
+        ok = ok && observer.readq(address) == 13;
+        printf("  %s: anonymous replacement detaches the old shared file\n", ok ? "PASS" : "FAIL");
+        ok ? r.passed++ : r.failed++;
+    }
+
     // The bounded runner must stop before the remaining records of a cached
     // block change registers. This matters for scheduler slices as well as
     // instruction-by-instruction tests.
