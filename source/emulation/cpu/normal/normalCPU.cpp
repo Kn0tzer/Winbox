@@ -591,6 +591,7 @@ NormalCPU::NormalCPU(KMemory* memory) : CPU(memory) {
     initNormalOps();
 #ifdef BOXEDWINE_JIT
     this->firstOp = firstDynamicOp;
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(memory->mutex);
     memcpy(this->calculateCF, memory->process->calculateCF, sizeof(calculateCF));
 #else
     this->firstOp = nullptr;
@@ -668,7 +669,7 @@ void NormalCPU::run() {
     normalDispatch(this, nextOp);
 #else
 #ifdef BOXEDWINE_JIT
-    if (nextOp->runCount <= JIT_RUN_COUNT) {
+    if (nextOp->runCount <= JIT_RUN_COUNT || !calculateCF[0]) {
         firstOp(this, nextOp);
     } else {
         if (nextOp->inst == Callback) onExitSignal(this, nextOp); else nextOp->pfn(this, nextOp);

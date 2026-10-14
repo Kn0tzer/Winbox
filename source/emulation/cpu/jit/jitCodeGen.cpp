@@ -661,12 +661,6 @@ bool JitCodeGen::compileOps(DecodedOp* op) {
 
 void JitCodeGen::doJIT(U32 address, DecodedOp* op) {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(cpu->memory->mutex);
-    // did another thread beat us to JITing this block?
-    if (op->flags & OP_FLAG_JIT) {
-        // this will get triggered a few times, especially during shutdown
-        // I have see this in firefight installer at the end and opentdd start up
-        return;
-    }
     if (!cpu->thread->process->startJITOp) {
         JitCodeGen* jit = startNewJIT(cpu);
         cpu->thread->process->syncToHost = jit->createSyncToHost();
@@ -706,6 +700,11 @@ void JitCodeGen::doJIT(U32 address, DecodedOp* op) {
         }
         memcpy(cpu->calculateCF, cpu->thread->process->calculateCF, sizeof(cpu->thread->process->calculateCF));
     }    
+    // Blocks are shared, but helper pointers belong to each CPU. A sibling
+    // may have compiled this block before our CPU's first JIT entry.
+    if (op->flags & OP_FLAG_JIT) {
+        return;
+    }
     this->currentEip = address;
     this->startingEip = address;
 
@@ -723,10 +722,10 @@ void JitCodeGen::doJIT(U32 address, DecodedOp* op) {
 
 void OPCALL firstDynamicOp(CPU* cpu, DecodedOp* op) {
 #ifdef __TEST
-    if (op->runCount == 0) {
+    if (op->runCount == 0 || !cpu->calculateCF[0]) {
 #else
     // done check is for long blocks that get broken up, affects f-22/f-16
-    if (op->runCount == JIT_RUN_COUNT && op->inst != Done && !(op->flags & OP_FLAG_JIT)) {
+    if (!cpu->calculateCF[0] || (op->runCount == JIT_RUN_COUNT && op->inst != Done && !(op->flags & OP_FLAG_JIT))) {
 #endif    
         startNewJIT(cpu, cpu->getEipAddress(), op);
     }
