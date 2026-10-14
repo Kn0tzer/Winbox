@@ -44,6 +44,9 @@ Commands: `pnpm test`, `pnpm typecheck`, `make -C project/linux test -j2`,
 through the existing probes. Save raw evidence in ignored `test-results/`
 and failure backups in `/home/ubuntu/backups/`.
 
-Current uncertainty: the browser audio probe has an intermittent host
-allocator crash. Celeste, Portal and Gang Beasts gameplay and Portal's
-achievable frame rate remain unverified.
+Current uncertainty: the loading-label race has a passing ASan regression
+and repeated audio runs; complete browser-suite repetition remains required.
+Celeste's title now renders after the framebuffer repair, but its first
+interaction stalled the input pump. A targeted nonblocking-pump regression
+passes; real-game verification of that repair is pending. Portal and Gang
+Beasts gameplay and Portal's achievable frame rate remain unverified.

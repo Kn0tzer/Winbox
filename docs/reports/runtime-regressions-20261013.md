@@ -148,3 +148,43 @@ and 73 legacy checks, with the unchanged legacy skip. Type checking passes.
 The D3D11 comprehensive guest also passed after its architecture evidence
 fix. Commit: `40d30912`. The ordered game acceptance and performance criteria are in
 `tasks/plan.md`; Celeste, Portal and Gang Beasts gameplay remain unverified.
+
+## Framebuffer and x87 repairs — 2026-10-14
+
+The first interactive Celeste attempt drew an animated mountain but no
+title or menu. The GL bridge resized framebuffer storage on each viewport
+change, collapsed independent read/draw bindings, and presented the last
+offscreen target rather than the drawable backbuffer. A small WGL fixture
+failed on its split blit before the repair. An additional binding-query
+check caught host framebuffer IDs leaking into guest queries.
+
+The bridge now sizes storage from drawable geometry, preserves split
+bindings and pixel-pack state, returns guest object names and swaps the
+drawable's default framebuffer. These rules follow the Khronos reference
+pages for [glViewport](https://raw.githubusercontent.com/KhronosGroup/OpenGL-Refpages/main/gl4/glViewport.xml),
+[glBindFramebuffer](https://raw.githubusercontent.com/KhronosGroup/OpenGL-Refpages/main/gl4/glBindFramebuffer.xml)
+and [glXSwapBuffers](https://raw.githubusercontent.com/KhronosGroup/OpenGL-Refpages/main/gl2.1/xhtml/glXSwapBuffers.xml).
+The fixture now captures a 320×240 drawable with exactly 4,800 red blit
+pixels and more than 60,000 retained green pixels. FNA, GL32 and all 18
+Celeste prerequisites pass on WASM `48f86483f39a`. The real game finishes
+loading and renders its title and logo. Commit: `7d53f065`.
+
+The CPU differential harness also contained an invalid FYL2XP1 input
+outside Intel's defined domain. Replacing that input with valid vectors
+exposed real tiny-value and negative-zero errors in the FPU's `log(1+x)`
+calculation. `log1p(x)` retains those inputs. Exact native/QEMU comparisons
+pass all 1,560 cases in 167 forms; the native CPU64 harness passes 327
+checks, including both FPU storage paths. The rebuilt CPU32 table passes
+with zero failures in 192 seconds. The differential CLI now returns
+nonzero for a failed reference or wrong result and rebuilds stale binaries.
+Its failed-reference control reports every form broken. Commit: `2e2f7e1c`.
+
+The first interaction with the repaired Celeste title stalled platform
+input ticks at 23,660, phase 4, with a pending event and no delivered keys.
+A targeted test reproduces a blocking connection pump while a guest owns
+its I/O lock. The pump now defers busy connections and holds the lock
+across delivery and flush. That regression and all 113 fast unit files
+pass, as does type checking. Browser and real-game verification of this
+change remain pending. This is a visible title, not verified gameplay.
+Evidence is preserved under
+`/home/ubuntu/backups/boxedwine64-functional-20261014/celeste-input-stall/`.

@@ -23,6 +23,20 @@
   Owners: suite input/clock probes and probe slots. Acceptance: both CPU
   modes still pass input and clock assertions; D3D9 compositor pixels pass
   in both modes. Preserve the original motion totals and packet assertions.
+- [x] **M: Repair framebuffer presentation and binding contracts.**
+  Verified a failing guest fixture before the fix and a passing browser
+  capture afterward: 320×240 drawable, 4,800 red blit pixels and over 60,000
+  retained green backbuffer pixels. FNA and all 18 Celeste prerequisites
+  passed; the real title and logo rendered. Commit: `7d53f065`.
+- [x] **S: Repair valid FYL2XP1 numerical failures.**
+  Tiny positive/negative values and negative zero failed before `log1p`.
+  Exact QEMU differential comparisons now pass all 1,560 cases across 167
+  forms, and native CPU64 passes 327 checks. The full rebuilt CPU32 table
+  also passes with zero failures in 192 seconds. Commit: `2e2f7e1c`.
+- [ ] **S: Close the real Celeste input stall.**
+  A targeted test reproduces a platform pump blocking on a busy guest
+  connection. The nonblocking fix passes that regression and all 113 unit
+  files. Browser repetition and actual game controls remain required.
 - [ ] **S: Run the complete test gate.** Acceptance: all commands in
   `plan.md` pass against a recorded build. Depends on the repair tasks.
 - [ ] **M: Verify Celeste gameplay.** Depends on its passing preflight.

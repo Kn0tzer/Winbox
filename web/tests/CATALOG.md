@@ -63,7 +63,7 @@ are distinct questions.
 All classes now use actual runtime/guest fixtures. Input checks compile a
 Win32 witness for both CPU modes and require guest key-down/key-up and
 RAWINPUT deltas. Audio checks actual DSP output PCM. GL32 and D3D12 inspect
-visible pixels; Celeste's boot check requires its completed-load log and
+visible pixels; Celeste's boot check requires its `GAME DISPLAYED` log and
 colored canvas pixels. Interactive game playability needs separate evidence.
 The GL32 framebuffer fixture checks offscreen rendering, independent read/draw
 bindings, guest object names and presentation of the window's backbuffer.
