@@ -7,12 +7,22 @@
   Depends on the existing native test build.
   Verified: focused native test passed in one second; the full CPU32 table
   passed with zero failures in 187 seconds; all 110 fast unit files passed.
-- [ ] **M: Close the browser allocator crash.** Inspect the isolated WASM
+- [x] **M: Repair the reproduced loading-screen memory race.** Inspect the isolated WASM
   sanitizer probe; fix the owning subsystem, add a small regression, and
   repeat the original audio scenario. A passing retry is insufficient.
-- [ ] **M: Validate and commit inherited memory/probe fixes.** Owners:
+  Verified: the native ASan regression fails before the label lock and
+  passes afterward; three consecutive browser audio runs passed on runtime
+  `c89c7870ff0d`, with measured nonzero PCM. Full-suite repetition remains
+  part of the separate complete-test gate. Commit: `694abc75`.
+- [x] **M: Validate and commit inherited memory fixes.** Owners:
   memory64, guest fixtures and suite harness. Acceptance: focused browser
-  mapping/input checks, fast suite and native memory checks pass.
+  mapping checks, fast suite and native memory checks pass. Verified:
+  native CPU64 321/321, native ASan lifetime checks, browser fork mapping
+  and the independent QEMU/Linux fixture. Commit: `98c3a8e3`.
+- [ ] **S: Validate inherited probe timing and input selection changes.**
+  Owners: suite input/clock probes and probe slots. Acceptance: both CPU
+  modes still pass input and clock assertions; D3D9 compositor pixels pass
+  in both modes. Preserve the original motion totals and packet assertions.
 - [ ] **S: Run the complete test gate.** Acceptance: all commands in
   `plan.md` pass against a recorded build. Depends on the repair tasks.
 - [ ] **M: Verify Celeste gameplay.** Depends on its passing preflight.

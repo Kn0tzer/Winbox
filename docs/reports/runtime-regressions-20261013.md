@@ -77,3 +77,74 @@ moved from center x=103.5 to x=223.5 after ArrowRight. This uses the same
 Wine Mono/FNA/SDL2/OpenGL libraries as Celeste without loading game content.
 It is now an additional Celeste preflight requirement, rather than evidence
 that Celeste itself is playable.
+
+## Memory contracts and isolated probes — 2026-10-14
+
+Repeated browser runs still exposed intermittent GUI startup and a host
+allocator crash. Focused D3D9 and input runs passed in isolation. Probes
+now default to one emulator at a time, and mouse tests wait for observed
+delivery while retaining packet-count and accumulated-motion assertions.
+Game preflights select the game's CPU architecture and reject evidence
+that lacks that architecture; default input/clock suite runs retain both.
+
+Independent native regressions then reproduced memory faults: an
+AddressSanitizer use-after-free when a shared mapping replaces backing
+still held by an in-flight access, a stale pointer acquiring a newer cache
+generation, fork allocation overwriting inherited reservations, fork
+turning shared files into private copies, and anonymous remapping clearing
+another process's shared file. The two lifetime/cache checks now pass and
+the native CPU64 harness passes 321 cases. Replaced private buffers remain
+owned until their page dies, so a cache invalidation cannot expose freed
+host memory to an access already underway.
+
+The real Linux fork/mapping fixture passed under QEMU, but initially failed
+in the browser with shared=13 instead of the child's written 29. It exposed
+a separate syscall shortcut that shared only Wine-named files. The mapping
+syscall now follows MAP_SHARED/MAP_PRIVATE for any file. Wine's ordinary
+PE image mapping already requests private copies; its
+[Wine 8 mapping code](https://github.com/wine-mirror/wine/blob/wine-8.0/dlls/ntdll/unix/virtual.c)
+supplies that distinction. The fork-mapping browser fixture and both D3D9
+variants subsequently passed with runtime
+`1006d7f19a34348225eb82d9f3e149c374b035717d346b331af81a0af9c40286`.
+Full-suite repetition and game playability remain separate checks.
+
+## Continuation repairs — 2026-10-14
+
+A fresh full CPU32 run exposed an unaligned locked-increment mismatch:
+10,000,001 instead of 10,000,000. Its cold standalone test hung in the native
+ARM exception handler. A diagnostic showed an indirect jump to address zero
+with an empty per-CPU flag-helper table. A sibling could compile the shared
+block first, after which JIT entry skipped helper initialization for the
+other CPUs. The fix initializes each CPU before entering shared code and
+protects the constructor's helper-table copy against partial initialization.
+The targeted regression failed before the fix and passes in production and
+test modes. The cold native check passes in one second; the complete CPU32
+table passes with zero failures in 187 seconds. Commit: `b7b06e2a`.
+
+The browser audio probe also hit a host allocator crash on its first repeat.
+An isolated retry passed, leaving the intermittent failure unexplained.
+The isolated WASM sanitizer build booted but progressed too slowly to finish
+the audio fixture; that result is inconclusive. A smaller native test then
+forced the actual loading-screen label copy to overlap a guest stage update.
+AddressSanitizer reported a four-byte write into freed `BStringData` in its
+reference-count increment. Label snapshots now acquire the stage writer's
+lock, and the progress percentage is atomic. The same forced interleaving
+passes with the fix. Three consecutive audio browser runs then passed with
+runtime `c89c7870ff0d63934c292a80706ebebdd12b850917d542a82423e5c5c9e6b618`.
+Each captured 118 audio callbacks, over 229,000 nonzero PCM samples and RMS
+above 0.016. The fork-mapping browser check passed on the same runtime, and
+the fixture also passed independently under QEMU/Linux. The rebuilt native
+CPU64 harness passed all 321 cases. Full browser-suite repetition remains
+outstanding. Commits: `694abc75` (label ownership) and `98c3a8e3` (mapping
+contracts).
+Failure evidence is preserved under
+`/home/ubuntu/backups/boxedwine64-functional-20261014/continuation-boot-label-before/`.
+
+Preflight regressions also exposed missing architecture evidence in the
+D3D10/11/12 comprehensive probes and an exit-zero result for an incomplete
+game preflight. Those probes now record their actual x64 boot, and missing
+prerequisites produce exit status one. The fast suite passes 112 unit files
+and 73 legacy checks, with the unchanged legacy skip. Type checking passes.
+The D3D11 comprehensive guest also passed after its architecture evidence
+fix. Commit: `40d30912`. The ordered game acceptance and performance criteria are in
+`tasks/plan.md`; Celeste, Portal and Gang Beasts gameplay remain unverified.
