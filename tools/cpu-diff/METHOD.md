@@ -98,8 +98,9 @@ per-form table in `REPORT.md` makes every bucket auditable.
   pmullw/pcmpeqd/pand/por/pxor).
 - Pass 2 (2026-10-09, +12 forms): x87 constants (fldl2t/fldl2e/fldlg2/fldln2)
   and transcendental (f2xm1/fyl2x/fptan/fpatan/fxtract/fprem/frndint/fscale).
-  Note: fyl2xp1 has 1-ULP precision difference vs x86 80-bit (documented,
-  dispatch uncommitted).
+  The original FYL2XP1 vector used x=1, outside Intel's defined operand
+  range. Its differing result was an invalid comparison, not evidence of
+  a 1-ULP precision difference. The current vectors use valid operands.
 - Not covered yet: string ops (emulator implements MOVS/STOS/LODS/SCAS/CMPS
   but harness lacks RSI/RDI per-side infrastructure), control flow (jcc/
   loops/calls), segment overrides, privileged/system instructions, most of
@@ -131,3 +132,26 @@ committed - they await review.
 
 Remaining failures (ADC/SBB flags, FLDPI/FLDL2E unimplemented, SQRTPS NaN
 payload) are documented in BUGS.md as reported-not-fixed.
+
+## Verified checkpoint — 2026-10-14
+
+The current harness runs 1,560 cases covering 167 instruction forms.
+All 118 integer, 23 x87 and 26 SSE forms pass the native/QEMU comparison.
+The historical failure statements above describe the 2026-10-09 run.
+
+FYL2XP1 now includes valid positive/negative quarter inputs, tiny positive
+and negative epsilon, and negative zero. Exact stored-result comparisons
+remain in place. The valid tiny and signed-zero cases failed before the
+production FPU switched from `log(1+x)` to `log1p(x)`, and pass afterward.
+The native CPU64 harness checks those three cases in both its cached-f64
+and extended-register paths.
+
+The operand restriction comes from [Intel SDM Volume 2A, FYL2XP1,
+page 3-425](https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-2a-manual.pdf).
+An out-of-range result is undefined; the harness must not require QEMU's
+particular NaN for that input. The baseline now uses zero, and the new valid
+inputs provide the numerical regression coverage.
+
+The runner checks source/header freshness before using a cached executable.
+The CLI returns nonzero for wrong results, an unstable emulator result, or
+a failed native reference run; timing outliers remain reported separately.

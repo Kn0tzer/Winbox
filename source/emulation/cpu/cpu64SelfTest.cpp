@@ -4069,6 +4069,38 @@ int runX64SelfTest() {
         });
     }
 
+    // Independent QEMU/x86-64 results for valid FYL2XP1 operands. Computing
+    // log(1+x) loses tiny x and the sign of -0 before the logarithm runs.
+    {
+        const bool previousMode = KSystem::useF64;
+        struct LogCase { U64 input, expected; const char* name; };
+        const LogCase cases[] = {
+            {0x3c30000000000000ULL, 0x3c371547652b82feULL, "x87 FYL2XP1 tiny positive epsilon"},
+            {0xbc30000000000000ULL, 0xbc371547652b82feULL, "x87 FYL2XP1 tiny negative epsilon"},
+            {0x8000000000000000ULL, 0x8000000000000000ULL, "x87 FYL2XP1 negative zero"},
+        };
+        for (bool cached : {false, true}) {
+            KSystem::useF64 = cached;
+            for (const auto& test : cases) {
+                std::vector<U8> code = {0x48,0x83,0xEC,0x08,0x48,0xB8};
+                for (int byte=0; byte<8; byte++) code.push_back((U8)(test.input >> (8*byte)));
+                const U8 operation[] = {
+                    0x48,0x89,0x04,0x24, // mov [rsp],rax
+                    0xDB,0xE3,0xD9,0xE8, // finit; fld1
+                    0xDD,0x04,0x24,0xD9,0xF9, // fld qword [rsp]; fyl2xp1
+                    0xDD,0x1C,0x24,0x48,0x8B,0x04,0x24, // fstp [rsp]; mov rax,[rsp]
+                    0x48,0x83,0xC4,0x08,
+                };
+                code.insert(code.end(), operation, operation + sizeof(operation));
+                const U64 expected = test.expected;
+                runAndCheck(r, test.name, withExit(code), [expected](CPU64& cpu) {
+                    return cpu.reg[X64_R15].u64 == expected;
+                });
+            }
+        }
+        KSystem::useF64 = previousMode;
+    }
+
     // T: FNSTSW AX — after FLDZ, FXAM-style flags not set in our simplified
     // model; we just confirm that the upper 48 bits of RAX are preserved and
     // the low 16 bits get the SW value (whatever it is). Pre-load RAX with a

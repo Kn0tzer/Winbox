@@ -360,7 +360,7 @@ static const U32 F_CF = X64_CF, F_PF = X64_PF, F_AF = X64_AF,
                  F_ZF = X64_ZF, F_SF = X64_SF, F_OF = X64_OF;
 static const U32 F_ALL6 = X64_CF | X64_PF | X64_AF | X64_ZF | X64_SF | X64_OF;
 
-static U64 guardReg(int i) { return 0xA55A0000A55A0000ULL ^ (U64)(U32)(i * 0x11111111); }
+static U64 guardReg(int i) { return 0xA55A0000A55A0000ULL ^ (U64)((U32)i * 0x11111111U); }
 
 static void initRegs(TestCase& tc, U64 raxVal, U64 rbxVal) {
     for (int i = 0; i < 16; i++) tc.r[i] = guardReg(i);
@@ -838,18 +838,29 @@ static void buildFpuCases(std::vector<TestCase>& out) {
     // Two-operand transcendental: finit; fld1; fld1; fop; fstp [rbx]
     // fyl2x: ST(1)*log2(ST(0)) = 1*log2(1) = 0, pops
     // fpatan: arctan(ST(1)/ST(0)) = arctan(1) = pi/4, pops
-    // fyl2xp1: ST(1)*log2(ST(0)+1) = 1*log2(2) = 1, pops
+    // FYL2XP1 has a restricted input domain (Intel SDM Vol. 2A, 3-425).
+    // x=1 is outside it and has undefined results; use x=0 for this baseline.
     struct Y { const char* name; U8 op; };
     Y trans2[] = {{"fyl2x", 0xF1}, {"fpatan", 0xF3}, {"fyl2xp1", 0xF9}};
     for (auto& y : trans2) {
         std::vector<U8> b;
         b.push_back(0xDB); b.push_back(0xE3);       // finit
         b.push_back(0xD9); b.push_back(0xE8);       // fld1
-        b.push_back(0xD9); b.push_back(0xE8);       // fld1
+        b.push_back(0xD9); b.push_back(y.op == 0xF9 ? 0xEE : 0xE8); // fldz / fld1
         b.push_back(0xD9); b.push_back(y.op);       // fop (pops)
         b.push_back(0xDD); b.push_back(0x1B);       // fstp qword [rbx]
         TestCase tc; tc.set = "fpu"; tc.name = y.name; tc.form = "st,stp";
         tc.code = b; initRegs(tc, 0, MEM_SCRATCH);
+        tc.flagsMask = 0; tc.checkMem = true; tc.memLen = 8;
+        out.push_back(tc);
+    }
+    // Valid FYL2XP1 operands, including cancellation and signed-zero cases.
+    // Keep the exact native/emulator byte comparison for every stored result.
+    for (double epsilon : {0.25, -0.25, 0x1p-60, -0x1p-60, -0.0}) {
+        TestCase tc; tc.set = "fpu"; tc.name = "fyl2xp1"; tc.form = "st,stp";
+        tc.code = {0xDB,0xE3,0xD9,0xE8,0xDD,0x43,0x08,0xD9,0xF9,0xDD,0x1B};
+        initRegs(tc,0,MEM_SCRATCH);
+        memcpy(tc.memInit + 8,&epsilon,sizeof(epsilon));
         tc.flagsMask = 0; tc.checkMem = true; tc.memLen = 8;
         out.push_back(tc);
     }
@@ -1529,7 +1540,9 @@ int main(int argc, char** argv) {
                kv.first.c_str(), b.total, b.pass, b.slowflaky, b.broken);
     }
     printf("report: %s/REPORT.md  raw: %s/report.json\n", outDir.c_str(), outDir.c_str());
-    return 0;
+    return std::all_of(results.begin(), results.end(), [](const CaseResult& result) {
+        return result.nativeOk && result.emuOk && result.emuStable && result.match;
+    }) ? 0 : 1;
 }
 
 #else

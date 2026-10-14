@@ -35,7 +35,10 @@ SOFTINC="-I$REPO/lib/softfloat/source/include -I$REPO/lib/softfloat/source -I$RE
 mkdir -p build/softfloat
 for s in $REPO/lib/softfloat/source/*.c $REPO/lib/softfloat/source/8086-SSE/*.c; do
   o="build/softfloat/$(basename $s .c).o"
-  [ -f "$o" ] || gcc -O2 $SOFTINC -c "$s" -o "$o"
+  if [ ! -f "$o" ] || [ "$s" -nt "$o" ] || [ build.sh -nt "$o" ] ||
+     [ -n "$(find "$REPO/lib/softfloat/source" -type f -name '*.h' -newer "$o" -print -quit)" ]; then
+    gcc -O2 $SOFTINC -c "$s" -o "$o"
+  fi
 done
 echo "LD build/cpu-diff"
 g++ build/*.o build/softfloat/*.o -o build/cpu-diff
