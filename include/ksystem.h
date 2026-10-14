@@ -182,10 +182,12 @@ public:
     // services -> winex11 -> the target .exe); the XWire present tick renders a
     // labeled progress bar from them until the guest maps its real window.
     // 0..100. `bootProgressLabel` is the current stage ("Starting services…").
-    // Plain statics — written from a guest thread, read on the main thread; a
-    // torn read just shows a slightly stale label, which is fine for a spinner.
-    static volatile int bootProgressPercent;   // -1 = inactive / window is up
+    // Guest threads publish stages; the main thread takes an owned label
+    // snapshot under the writer's lock. Copying a BString concurrently with
+    // replacement can increment a freed data object's reference count.
+    static std::atomic<int> bootProgressPercent; // -1 = inactive / window is up
     static BString bootProgressLabel;
+    static BString getBootProgressLabel();
     // Called from sys_execve64 with the basename of each PE the boot chain runs.
     static void noteBootStage(const BString& peName);
 

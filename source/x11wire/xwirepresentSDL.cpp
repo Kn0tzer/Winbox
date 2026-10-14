@@ -367,7 +367,7 @@ public:
                 screen->showWindow(true);
                 loadingShown = true;
             }
-            BString label = KSystem::bootProgressLabel;
+            BString label = KSystem::getBootProgressLabel();
             int pct = KSystem::bootProgressPercent;
             std::vector<BString> log = KSystem::getBootLogTail(26);
             std::vector<uint8_t> lf;
