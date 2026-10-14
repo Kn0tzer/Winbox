@@ -122,16 +122,20 @@ SDL_Window*   g_hiddenWindow = nullptr;   // hidden, GL-capable
 SDL_GLContext g_glContext    = nullptr;
 #endif
 bool          g_glInitFailed = false;
-// A2: set once the guest binds a NON-ZERO GL_FRAMEBUFFER of its own (wined3d's
-// D3D11 render targets). While false the bridge force-targets its own offscreen
-// FBO (the only one with a DEPTH attachment, which the fixed-function path needs);
-// once true it must stop stomping the guest's binding back, or every draw lands in
-// the wrong target and wined3d's swapchain render comes out empty.
-bool          g_guestFboBound = false;
-// The guest's last NON-ZERO GL_FRAMEBUFFER binding (wined3d's current render
-// target). readbackAndPresent reads THIS when set, so a wined3d render shows up
-// in the guest window instead of the bridge's own (now unused) FBO.
+// Host bindings for the guest's independent draw/read targets. Zero selects
+// the drawable's virtual default framebuffer; guest names stay separate so
+// binding queries never expose host object IDs.
 GLuint        g_guestFbo = 0;
+GLuint        g_guestReadFbo = 0;
+GLuint        g_guestDrawName = 0, g_guestReadName = 0;
+
+inline GLuint defaultFramebuffer() {
+#ifdef __EMSCRIPTEN__
+    return g_emFbo;
+#else
+    return 0;
+#endif
+}
 
 #ifdef __EMSCRIPTEN__
 // Run a closure on the platform MAIN thread (which owns the WebGL context),
@@ -187,11 +191,9 @@ std::vector<U8> g_bgrx;   // converted, top-down, for submitFrame
 // the offscreen-backbuffer machinery can rebind the framebuffer between the
 // guest's glClear and its draws, so the fixed-function (glcube) path re-binds our
 // own offscreen FBO — the only target with a DEPTH attachment — before each draw.
-// Once the guest has bound a framebuffer of ITS OWN (wined3d's D3D11 render
-// targets) that would be actively wrong, so we back off and honour the guest's
-// binding instead (A2).
+// Honor the guest's current draw binding, including its offscreen targets.
 inline void bindDrawTarget() {
-    if (!g_guestFboBound && g_emFbo) glBindFramebuffer(GL_FRAMEBUFFER, g_emFbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_guestFbo ? g_guestFbo : defaultFramebuffer());
 }
 
 // A2: wined3d's glBindFramebuffer / glFramebufferTexture2D are SEPARATE traps, and
@@ -202,7 +204,18 @@ inline void bindDrawTarget() {
 // GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT — which wined3d treats as a hard
 // render-target failure. Re-bind the guest's own FBO inside the same main-thread
 // closure as every framebuffer operation.
-inline void bindGuestTarget() { if (g_guestFbo) glBindFramebuffer(GL_FRAMEBUFFER, g_guestFbo); }
+inline void bindGuestTarget(GLenum target = GL_FRAMEBUFFER) {
+    if (target == GL_READ_FRAMEBUFFER) {
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, g_guestReadFbo ? g_guestReadFbo : defaultFramebuffer());
+    } else {
+        bindDrawTarget();
+    }
+}
+
+inline void restoreFramebufferBindings() {
+    bindGuestTarget(GL_READ_FRAMEBUFFER);
+    bindDrawTarget();
+}
 
 #ifdef __EMSCRIPTEN__
 // --- immediate-mode batching ------------------------------------------------
@@ -309,6 +322,11 @@ static std::atomic<std::thread::id> g_glCurrentThread{};
 // (Re)create the offscreen FBO color/depth attachments at the current drawable
 // size. MUST run on the GL-owning main thread (caller wraps it).
 void emBuildFbo(int w, int h) {
+    GLint texture = 0, renderbuffer = 0, read = 0, draw = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture);
+    glGetIntegerv(GL_RENDERBUFFER_BINDING, &renderbuffer);
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw);
     if (!g_emFbo)     glGenFramebuffers(1, &g_emFbo);
     if (!g_emColorTex) glGenTextures(1, &g_emColorTex);
     if (!g_emDepthRb)  glGenRenderbuffers(1, &g_emDepthRb);
@@ -324,6 +342,10 @@ void emBuildFbo(int w, int h) {
     glBindFramebuffer(GL_FRAMEBUFFER, g_emFbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_emColorTex, 0);
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, g_emDepthRb);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glBindRenderbuffer(GL_RENDERBUFFER, renderbuffer);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, read);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw);
 }
 #endif
 
@@ -592,6 +614,20 @@ void resizeTarget(int w, int h) {
 #endif
 }
 
+void syncDrawableSize() {
+    auto& server = XWireServer::instance();
+    int w = 0, h = 0;
+    {
+        std::lock_guard<std::mutex> lock(server.regMutex);
+        auto window = server.windows.find(g_currentDrawable);
+        if (window != server.windows.end()) {
+            w = window->second.width;
+            h = window->second.height;
+        }
+    }
+    if (w > 0 && h > 0) resizeTarget(w, h);
+}
+
 // Forward declaration: defined after deleteObjects (needs complete GenKind).
 void flushPendingDeletes();
 void flushPendingDeletesOnGL(); // inline: caller already on GL thread
@@ -612,15 +648,27 @@ void readbackAndPresent() {
     g_rgba.resize(pixels * 4);
     g_bgrx.resize(pixels * 4);
 
-#ifdef __EMSCRIPTEN__
-    // Read back whatever the guest last rendered into: its own FBO if it bound
-    // one (A2 — wined3d's D3D11 render targets), else our offscreen FBO which
-    // carries the DEPTH attachment the fixed-function path needs.
-    if (g_guestFbo) glBindFramebuffer(GL_FRAMEBUFFER, g_guestFbo);
-    else if (g_emFbo) glBindFramebuffer(GL_FRAMEBUFFER, g_emFbo);
-#endif
+    // GLX swaps the drawable's backbuffer, independent of the currently bound
+    // offscreen FBO. Preserve the guest's split bindings and pixel pack state.
+    GLint pack = 0, row = 0, skipRows = 0, skipPixels = 0, pbo = 0;
+    glGetIntegerv(GL_PACK_ALIGNMENT, &pack);
+    glGetIntegerv(GL_PACK_ROW_LENGTH, &row);
+    glGetIntegerv(GL_PACK_SKIP_ROWS, &skipRows);
+    glGetIntegerv(GL_PACK_SKIP_PIXELS, &skipPixels);
+    glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &pbo);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, defaultFramebuffer());
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_PACK_SKIP_ROWS, 0);
+    glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
     glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, g_rgba.data());
+    glPixelStorei(GL_PACK_ALIGNMENT, pack);
+    glPixelStorei(GL_PACK_ROW_LENGTH, row);
+    glPixelStorei(GL_PACK_SKIP_ROWS, skipRows);
+    glPixelStorei(GL_PACK_SKIP_PIXELS, skipPixels);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
+    restoreFramebufferBindings();
 
     // glReadPixels is bottom-up RGBA; the sink wants top-down BGRX (X11 ZPixmap
     // on a 0x00RRGGBB TrueColor visual == byte order B,G,R,X little-endian).
@@ -1101,6 +1149,14 @@ void deleteObjects(GLGuestCPU* cpu, const GL64Args& args, GenKind kind) {
     for (GLsizei i = 0; i < n; ++i) {
         GLuint guestId = guestIds[(size_t)i];
         if (!guestId || !idMap) { if (!idMap) hostIds.push_back(guestId); continue; }
+        if (kind == GenKind::Framebuffer) {
+            if (guestId == g_guestDrawName) {
+                g_guestDrawName = 0; g_guestFbo = 0;
+            }
+            if (guestId == g_guestReadName) {
+                g_guestReadName = 0; g_guestReadFbo = 0;
+            }
+        }
         auto it = idMap->find(guestId);
         if (it != idMap->end()) { hostIds.push_back(it->second); idMap->erase(it); }
         // else: never realized on host; nothing to delete.
@@ -1442,6 +1498,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             // a real mapped window so the present sink can find it (otherwise wined3d's
             // windowed present has no window to blit/read back against).
             g_currentDrawable = XWireServer::instance().resolveGlxDrawable((U32)args.a[0]);
+            syncDrawableSize();
             // Claim the present slot for this GL app. Its readback frames are
             // tagged with this drawable id (not the X11 window it maps), so the
             // present sink's window filter needs to know the drawable belongs to
@@ -1536,7 +1593,9 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             return 0;
         case GL64_fn_glViewport:
             if (ensureContext()) {
-                resizeTarget((int)ai(args,2), (int)ai(args,3));
+                // A viewport is a coordinate transform, not framebuffer storage.
+                // Only a real drawable geometry change resizes the backbuffer.
+                syncDrawableSize();
                 GL_MT(glViewport((GLint)ai(args,0), (GLint)ai(args,1), (GLsizei)ai(args,2), (GLsizei)ai(args,3)));
             }
             return 0;
@@ -1627,6 +1686,10 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 // error so it can't pollute wined3d's own glGetError checks.
                 bool handled = true;
                 switch (pname) {
+                    case 0x8CA6 /*GL_DRAW_FRAMEBUFFER_BINDING / GL_FRAMEBUFFER_BINDING*/:
+                        v[0] = g_guestDrawName; break;
+                    case 0x8CAA /*GL_READ_FRAMEBUFFER_BINDING*/:
+                        v[0] = g_guestReadName; break;
                     case 0x0D31 /*GL_MAX_LIGHTS*/:               v[0] = 8; break;
                     case 0x0D32 /*GL_MAX_CLIP_PLANES*/:          v[0] = 6; break;
                     case 0x0D50 /*GL_MAX_PIXEL_MAP_TABLE*/:      v[0] = 256; break;
@@ -2612,14 +2675,16 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 GLuint guestFb = (GLuint)ai(args,1);
                 // Host object created lazily on first bind; g_guestFbo stores the
                 // HOST id (bindGuestTarget/readbackAndPresent use it in GL calls).
-                // Both flags are set inside the hop so they stay consistent.
+                // Binding state is updated inside the same host GL hop.
                 glOnMain([&]{
-                    GLuint hostFb = ensureHostFramebuffer(guestFb);
-                    if (target == GL_FRAMEBUFFER) {
-                        // From here on the guest owns the draw target; the bridge must
-                        // stop force-binding its own FBO (see bindDrawTarget).
-                        g_guestFboBound = (guestFb != 0);
-                        g_guestFbo = hostFb;
+                    GLuint hostFb = guestFb ? ensureHostFramebuffer(guestFb) : defaultFramebuffer();
+                    if (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER) {
+                        g_guestFbo = guestFb ? hostFb : 0;
+                        g_guestDrawName = guestFb;
+                    }
+                    if (target == GL_FRAMEBUFFER || target == GL_READ_FRAMEBUFFER) {
+                        g_guestReadFbo = guestFb ? hostFb : 0;
+                        g_guestReadName = guestFb;
                     }
                     glBindFramebuffer(target, hostFb);
                 });
@@ -2767,7 +2832,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             if (g_glContext) {
                 GLenum mask = (GLenum)ai(args,8); GLenum filter = (GLenum)ai(args,9);
                 glOnMain([&]{
-                    bindGuestTarget();
+                    restoreFramebufferBindings();
                     glBlitFramebuffer((GLint)ai(args,0), (GLint)ai(args,1),
                                       (GLint)ai(args,2), (GLint)ai(args,3),
                                       (GLint)ai(args,4), (GLint)ai(args,5),
@@ -2880,13 +2945,22 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 if (n > 0 && n <= 16) {
                     std::vector<GLenum> bufs((size_t)n, GL_NONE);
                     cpu->memory->memcpyFromGuest(bufs.data(), args.a[1], (U64)n * 4);
+                    if (!g_guestFbo) for (auto& buffer : bufs) {
+                        if (buffer == GL_BACK || buffer == GL_FRONT || buffer == GL_BACK_LEFT || buffer == GL_FRONT_LEFT)
+                            buffer = GL_COLOR_ATTACHMENT0;
+                    }
                     const GLenum* p = bufs.data();
                     glOnMain([&]{ bindGuestTarget(); glDrawBuffers(n, p); });
                 }
             }
             return 0;
         case GL64_fn_glReadBuffer:
-            if (g_glContext) GL_MT(glReadBuffer((GLenum)ai(args,0)));
+            if (g_glContext) {
+                GLenum buffer = (GLenum)ai(args,0);
+                if (!g_guestReadFbo && (buffer == GL_BACK || buffer == GL_FRONT || buffer == GL_BACK_LEFT || buffer == GL_FRONT_LEFT))
+                    buffer = GL_COLOR_ATTACHMENT0;
+                glOnMain([&]{ bindGuestTarget(GL_READ_FRAMEBUFFER); glReadBuffer(buffer); });
+            }
             return 0;
 
         // --- sampler objects (unblocks wined3d feature level >= 10_0) -----

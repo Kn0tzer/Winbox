@@ -59,12 +59,14 @@ are distinct questions.
 
 ## Browser suite limitations
 
-`node web/tests/suite/runner.mjs --browser` preserves all 11 suite probes.
+`node web/tests/suite/runner.mjs --browser` discovers every suite probe.
 All classes now use actual runtime/guest fixtures. Input checks compile a
 Win32 witness for both CPU modes and require guest key-down/key-up and
 RAWINPUT deltas. Audio checks actual DSP output PCM. GL32 and D3D12 inspect
-visible pixels; Celeste's boot check requires its completed-load log.
-Celeste rendering and playability require separate interactive evidence.
+visible pixels; Celeste's boot check requires its completed-load log and
+colored canvas pixels. Interactive game playability needs separate evidence.
+The GL32 framebuffer fixture checks offscreen rendering, independent read/draw
+bindings, guest object names and presentation of the window's backbuffer.
 
 The comprehensive D3D classes use the real runtime API and stage guest
 executables. Their names still cover more than their current assertions:

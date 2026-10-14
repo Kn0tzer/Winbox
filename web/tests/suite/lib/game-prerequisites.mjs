@@ -6,7 +6,7 @@ export const gamePrerequisites = {
   celeste: {
     architecture: 'x86',
     unit: [...kernel, 'zip-stored-seek', 'zip-decompression', 'gl32-shared-renderer'],
-    browser: [...input, 'boot32-vkboot', 'gl32-triangle', 'mono-runtime', 'fna-runtime'],
+    browser: [...input, 'boot32-vkboot', 'gl32-triangle', 'gl32-framebuffer', 'mono-runtime', 'fna-runtime'],
     uncoveredBehavior: ['Celeste-specific FNA rendering workload', '32-bit FMOD audio playback', 'interactive level movement and jumping'],
   },
   portal: {

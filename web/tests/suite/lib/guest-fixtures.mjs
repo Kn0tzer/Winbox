@@ -11,6 +11,7 @@ const fixtures = {
   'win32-clock': ['tools/guest-fixtures/win32-clock.c'],
   dsptone: ['tools/guest-fixtures/dsptone.c', '-lm'],
   trigl: ['tools/openglTest/trigl.c', '-lopengl32', '-lgdi32', '-luser32'],
+  'gl-framebuffer': ['tools/guest-fixtures/gl-framebuffer.c', '-lopengl32', '-lgdi32', '-luser32'],
 };
 const elfFixtures = { 'shared-mapping': ['tools/guest-fixtures/shared-mapping.c', '-static'] };
 elfFixtures['fork-mapping'] = ['tools/guest-fixtures/fork-mapping.c', '-static'];

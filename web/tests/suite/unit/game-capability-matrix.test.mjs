@@ -34,7 +34,7 @@ test('every prerequisite names an existing probe, including Gang Beasts', () => 
 });
 test('Celeste required subsystems map to executable guest probes', () => {
   const probes = prerequisiteSelection('celeste', 'browser');
-  for (const required of ['boot32-vkboot', 'gl32-triangle', 'mono-runtime', 'fna-runtime', 'win32-clock', 'input-fullscreen', 'input-keyboard'])
+  for (const required of ['boot32-vkboot', 'gl32-triangle', 'gl32-framebuffer', 'mono-runtime', 'fna-runtime', 'win32-clock', 'input-fullscreen', 'input-keyboard'])
     assert.ok(probes.has(required), `Celeste prerequisite missing: ${required}`);
 });
 
