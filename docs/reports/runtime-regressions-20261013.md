@@ -188,3 +188,20 @@ pass, as does type checking. Browser and real-game verification of this
 change remain pending. This is a visible title, not verified gameplay.
 Evidence is preserved under
 `/home/ubuntu/backups/boxedwine64-functional-20261014/celeste-input-stall/`.
+
+The next full browser run on `59d71ee62ed7` still hit allocator faults during
+audio, D3D10 and x64 keyboard startup. Different allocator callers do not
+identify the original corrupting write. The ZIP read/seek regression
+forced a concurrent position reset while an actual `FsZipOpenNode` read
+was underway. ASan caught a 1,028-byte write into the four-byte destination.
+ZIP seek, position queries and reopen now acquire the read mutex. File
+mmap and pread also use `KFile::preadNative`, whose position lock is shared
+with lseek; the older global file-read mutex did not exclude lseek.
+The forced regression passes after the repair. All 114 fast unit files and
+327 native CPU64 checks pass. Commit: `b6d2bc2a`. The real startup failures
+remain open until browser repetition confirms the rebuilt runtime.
+
+A fast harness check timed out while importing Playwright under concurrent
+build load. Its three-second child-exit assertion now starts when the
+fixture reports completion, with a separate bounded startup wait. The
+deadline-cleanup behavior remains required. Commit: `8277a2b5`.

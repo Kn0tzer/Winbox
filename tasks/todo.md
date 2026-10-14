@@ -37,6 +37,13 @@
   A targeted test reproduces a platform pump blocking on a busy guest
   connection. The nonblocking fix passes that regression and all 113 unit
   files. Browser repetition and actual game controls remain required.
+- [ ] **M: Close the remaining Wine startup heap faults.**
+  The full browser run on `59d71ee62ed7` exposed allocator faults in audio,
+  D3D10 and x64 input startup. A forced concurrent ZIP seek produced an
+  ASan 1,028-byte write into a four-byte buffer. Locking ZIP positions and
+  using atomic KFile preads closes that regression; 114 fast unit files and
+  native CPU64 327/327 pass. Repeat the failing browser cases on the rebuilt
+  runtime before closing the startup failures. Commit: `b6d2bc2a`.
 - [ ] **S: Run the complete test gate.** Acceptance: all commands in
   `plan.md` pass against a recorded build. Depends on the repair tasks.
 - [ ] **M: Verify Celeste gameplay.** Depends on its passing preflight.
