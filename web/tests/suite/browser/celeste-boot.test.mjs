@@ -1,7 +1,8 @@
 // Boot the actual DRM-free Celeste archive; stage and provenance are measured.
 import { ProbeTest } from '../lib/probe-base.mjs';
-import { check, checkIncludes } from '../lib/assert.mjs';
-import { monoArchive } from '../lib/guest-fixtures.mjs';
+import { check, checkIncludes, checkGreaterThan } from '../lib/assert.mjs';
+import { monoArchive, canvasPixels } from '../lib/guest-fixtures.mjs';
+import { writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 export default class CelesteBootTest extends ProbeTest {
   constructor() { super({ tag: 'celeste-boot', timeoutMs: 1200000 }); }
@@ -18,6 +19,21 @@ export default class CelesteBootTest extends ProbeTest {
     check(stage.length > 0, 'Actual Celeste must complete loading and display its game window');
     checkIncludes(this.consoleLines.join('\n'), 'wine', '32-bit Wine must execute Celeste');
     check(!!this.buildInfo.wasm_sha256, 'BUILD_INFO wasm hash must match actual runtime');
-    await page.screenshot({ path: this.dir + '/celeste-stage.png' });
+    // GAME DISPLAYED precedes the first draw. A black mapped window previously
+    // passed this check, so inspect the actual guest canvas as well.
+    let pixels;
+    try {
+      const deadline = Date.now() + 60000;
+      do {
+        pixels = await canvasPixels(page);
+        if (pixels.lit > 10000 && pixels.varied > 1000) break;
+        await page.waitForTimeout(500);
+      } while (Date.now() < deadline);
+    } finally {
+      await page.screenshot({ path: this.dir + '/celeste-stage.png' });
+      await writeFile(this.dir + '/pixels.json', JSON.stringify(pixels || null, null, 2));
+    }
+    checkGreaterThan(pixels.lit, 10000, 'Celeste must present a visible game frame');
+    checkGreaterThan(pixels.varied, 1000, 'Celeste must present colored content beyond window chrome');
   }
 }

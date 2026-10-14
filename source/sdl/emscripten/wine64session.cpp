@@ -60,15 +60,10 @@
 #include "../../io/fs.h"      // Fs::getNodeFromLocalPath / addFileNode (VFS registration)
 #include "../../io/fsnode.h"
 #include "../../x11wire/xwirepresent.h"
-#include "kunixsocket.h" // xwireInjectKey (bw64_xwire_key), KUnixSocketObject
-#include "ksocket.h" // K_AF_UNIX, K_SOCK_STREAM (doSignalWineboot)
-#include "kobject.h" // KTYPE_UNIX_SOCKET (doSignalWineboot socket validation)
 
 #include <atomic>
 #include <vector>
 #include <string>
-#include <thread>
-#include <chrono>
 
 // --- captured session context -------------------------------------------------
 // StartUpArgs::apply() (the boot path) fills these once, so later spawns reuse
@@ -95,7 +90,7 @@ static Wine64SessionCtx g_sessionCtx;
 // on the main-loop thread, in order, so a "kill old app then spawn new app"
 // switch is sequenced correctly.
 struct Wine64Req {
-    enum Kind { Spawn, Kill, RegisterFile, SignalWineboot } kind = Spawn;
+    enum Kind { Spawn, Kill, RegisterFile } kind = Spawn;
     std::vector<BString> argv;   // Spawn
     std::vector<BString> env;    // Spawn
     U32 pid = 0;                 // Kill
@@ -237,276 +232,6 @@ static void doSpawn(const Wine64Req& req) {
     KThread::setCurrentThread(saved);
 }
 
-// doSignalWineboot: signal __wineboot_event in wineserver32 via the Wine server
-// protocol, bypassing 32-bit PE execution (which is broken - no 32-bit PE runs
-// its entry point). This unblocks 32-bit Wine threads waiting on the event.
-//
-// Protocol (from Wine server/protocol.def):
-//   REQ_open_event = 33: access(U32), attributes(U32), rootdir(U32), VARARG(name,unicode_str)
-//   REQ_event_op = 31: handle(U32), op(S32)  [op: 0=PULSE, 1=SET, 2=RESET]
-// Runs on the main-loop thread.
-// doSignalWineboot: signal __wineboot_event in wineserver32 via the Wine server
-// protocol, bypassing 32-bit PE execution (which is broken - no 32-bit PE runs
-// its entry point). This unblocks 32-bit Wine threads waiting on the event.
-//
-// Protocol (verified against 64-bit traces):
-//   REQ_open_event = 33: access(U32), attributes(U32), rootdir(U32), VARARG(name,unicode_str)
-//   REQ_event_op = 31: handle(U32), op(S32)  [op=2 signals per 64-bit trace]
-// Read with a bounded timeout so a dead/unresponsive wineserver cannot hang
-// the session thread forever. Temporarily switches the socket to non-blocking
-// and polls; restores the original blocking mode before returning.
-// Returns bytes read, or 0 on timeout/closed. Logs on timeout.
-// Runs on the main-loop thread.
-static U32 readWithTimeout(KUnixSocketObject* sock, U8* buffer, U32 len, int timeoutMs) {
-    bool wasBlocking = sock->isBlocking();
-    sock->setBlocking(false);
-    U32 result = 0;
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
-    for (;;) {
-        result = sock->readNative(buffer, len);
-        if (result != (U32)(0 - K_EWOULDBLOCK)) {
-            break; // data, EOF(0), EPIPE, or EINTR -- all terminal
-        }
-        result = 0; // normalize EWOULDBLOCK for the timeout path
-        if (std::chrono::steady_clock::now() >= deadline) {
-            klog_fmt("wine64session: doSignalWineboot: read timed out after %d ms, giving up", timeoutMs);
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    sock->setBlocking(wasBlocking);
-    return result;
-}
-
-// Runs on the main-loop thread.
-static void doSignalWineboot() {
-    klog("wine64session: doSignalWineboot: signaling __wineboot_event in wineserver32");
-
-    const int REQ_open_event = 33;
-    const int REQ_event_op = 31;
-    const int OP_SIGNAL = 2;
-
-    KThread* thread = KThread::currentThread();
-    if (!thread || !thread->process) {
-        klog("wine64session: doSignalWineboot: no current thread/process");
-        return;
-    }
-
-    // Step 1: Find wineserver32 socket path
-    // Pattern: /tmp/wine-XXX/server32-UID-HASH/socket (32-bit isolated)
-    // If not found yet (wineserver32 still starting), re-queue for next tick
-    // We validate that the socket file actually exists with a live listening
-    // socket kobject, trying all candidates (stale dirs from crashed servers
-    // may linger alongside the live one).
-    BString socketPath;
-    {
-        std::shared_ptr<FsNode> tmpNode = Fs::getNodeFromLocalPath(B("/"), B("/tmp"), true);
-        if (tmpNode) {
-            std::vector<std::shared_ptr<FsNode>> tmpChildren;
-            tmpNode->getAllChildren(tmpChildren);
-            for (auto& wineDir : tmpChildren) {
-                if (!wineDir->name.startsWith(B("wine-")) && !wineDir->name.startsWith(B(".wine-"))) continue;
-                BString winePath = B("/tmp/") + wineDir->name;
-                std::shared_ptr<FsNode> wineNode = Fs::getNodeFromLocalPath(B("/"), winePath, true);
-                if (!wineNode) continue;
-                std::vector<std::shared_ptr<FsNode>> wineChildren;
-                wineNode->getAllChildren(wineChildren);
-                for (auto& child : wineChildren) {
-                    if (!child->name.startsWith(B("server32-")) && !child->name.startsWith(B("server-"))) continue;
-                    BString cand = winePath + B("/") + child->name + B("/socket");
-                    // Validate: socket node must exist with a live UNIX socket kobject
-                    std::shared_ptr<FsNode> sockNode = Fs::getNodeFromLocalPath(B("/"), cand, true);
-                    if (sockNode) {
-                        std::shared_ptr<KObject> ko = sockNode->kobject.lock();
-                        if (ko && ko->type == KTYPE_UNIX_SOCKET) {
-                            socketPath = cand;
-                            break;
-                        } else {
-                            klog_fmt("wine64session: doSignalWineboot: candidate %s has no live socket, skipping", cand.c_str());
-                        }
-                    }
-                }
-                if (!socketPath.isEmpty()) break;
-            }
-        }
-    }
-    if (socketPath.isEmpty()) {
-        static int retryCount = 0;
-        if (retryCount < 100) {
-            retryCount++;
-            Wine64Req req;
-            req.kind = Wine64Req::SignalWineboot;
-            pendingLockAcquire();
-            g_pending.push_back(std::move(req));
-            pendingLockRelease();
-            klog_fmt("wine64session: doSignalWineboot: socket not ready, re-queued");
-        } else {
-            klog("wine64session: doSignalWineboot: giving up after 100 retries");
-            retryCount = 0;
-        }
-        return;
-    }
-    klog_fmt("wine64session: doSignalWineboot: socket %s", socketPath.c_str());
-
-    // Step 2: Create socket and allocate fd
-    std::shared_ptr<KUnixSocketObject> sock = std::make_shared<KUnixSocketObject>(K_AF_UNIX, K_SOCK_STREAM, 0);
-    KFileDescriptorPtr fd = thread->process->allocFileDescriptor(sock, 3, 0, -1, 0);
-    if (!fd) {
-        klog("wine64session: doSignalWineboot: fd alloc failed");
-        return;
-    }
-    // Get the fd number - allocFileDescriptor returns the object, need the handle
-    // We'll find it by scanning (or use a simpler approach below)
-
-    // Step 3: Write sockaddr_un to guest memory and connect
-    // sockaddr_un: family(U16=1) + path(108 bytes)
-    U32 addrLen = 2 + socketPath.length() + 1;
-    if (addrLen > 110) {
-        klog("wine64session: doSignalWineboot: socket path too long");
-        return;
-    }
-    // Allocate guest memory for sockaddr
-    U32 guestAddr = thread->memory->mmap(thread, 0, 4096, 7, 0x22, -1, 0, false);
-    if (!guestAddr) {
-        klog("wine64session: doSignalWineboot: mmap failed");
-        return;
-    }
-    thread->memory->writew(guestAddr, K_AF_UNIX);
-    thread->memory->memcpy(guestAddr + 2, socketPath.c_str(), socketPath.length() + 1);
-
-    // Find the fd number for our allocated descriptor
-    // allocFileDescriptor with handle=-1 auto-assigns; we need to find it
-    // Simpler: iterate fds to find our socket object
-    U32 fdNum = 0;
-    for (U32 i = 3; i < 1024; i++) {
-        KFileDescriptorPtr f = thread->process->getFileDescriptor(i);
-        if (f && f->kobject == sock) {
-            fdNum = i;
-            break;
-        }
-    }
-    if (!fdNum) {
-        klog("wine64session: doSignalWineboot: could not find fd number");
-        return;
-    }
-
-    // Connect with timeout: wineserver32 may not be in its accept loop yet.
-    // A blocking connect() waits indefinitely on the acceptor; use non-blocking
-    // + poll to avoid hanging the session thread forever.
-    sock->setBlocking(false);
-    U32 connResult = sock->connect(thread, fd, guestAddr, addrLen);
-    bool connected = (connResult == 0);
-    if (!connected && connResult == (U32)(0 - K_EINPROGRESS)) {
-        // Connection queued; wait for acceptor to establish it (sets sock->connection)
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(5000);
-        while (std::chrono::steady_clock::now() < deadline) {
-            if (!sock->connection.expired()) {
-                connected = true;
-                break;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-        if (!connected) {
-            klog("wine64session: doSignalWineboot: connect timed out after 5000 ms, re-queued");
-        }
-    }
-    sock->setBlocking(true); // restore blocking for protocol I/O
-    if (!connected) {
-        if (connResult != 0 && connResult != (U32)(0 - K_EINPROGRESS)) {
-            klog_fmt("wine64session: doSignalWineboot: connect failed errno=%d (%s)", (int)(S32)connResult, socketPath.c_str());
-        }
-        // Socket may have died between validation and connect, or wineserver32
-        // not yet accepting; re-queue to retry
-        {
-            Wine64Req req;
-            req.kind = Wine64Req::SignalWineboot;
-            pendingLockAcquire();
-            g_pending.push_back(std::move(req));
-            pendingLockRelease();
-            klog("wine64session: doSignalWineboot: connect failed, re-queued");
-        }
-        return;
-    }
-    klog("wine64session: doSignalWineboot: connected");
-
-    // Step 3b: Send init_first_thread to establish protocol session
-    const int REQ_init_first_thread = 1;
-    U8 initReq[32];
-    *(int*)(initReq + 0) = REQ_init_first_thread;
-    *(int*)(initReq + 4) = 20;
-    *(int*)(initReq + 8) = 32;
-    *(unsigned int*)(initReq + 12) = 9999;
-    *(unsigned int*)(initReq + 16) = 9999;
-    *(int*)(initReq + 20) = 0;
-    *(int*)(initReq + 24) = -1;
-    *(int*)(initReq + 28) = -1;
-    U32 initWritten = sock->writeNative(initReq, 32);
-    klog_fmt("wine64session: doSignalWineboot: init written %u/32", initWritten);
-    if (initWritten == 32) {
-        U8 initReply[64];
-        U32 initRead = readWithTimeout(sock.get(), initReply, 32, 5000);
-        klog_fmt("wine64session: doSignalWineboot: init reply %u bytes", initRead);
-    }
-
-    // Step 4: Send open_event
-    const char* eventName = "\\\\KernelObjects\\\\__wineboot_event";
-    int nameLen = 0;
-    while (eventName[nameLen]) nameLen++;
-    int nameBytes = (nameLen + 1) * 2;
-    int reqSize = 28 + nameBytes;
-    U8* reqBuf = new U8[reqSize];
-    *(int*)(reqBuf + 0) = REQ_open_event;
-    *(int*)(reqBuf + 4) = nameBytes;
-    *(int*)(reqBuf + 8) = 8;
-    *(unsigned int*)(reqBuf + 12) = 0x1F0003;
-    *(unsigned int*)(reqBuf + 16) = 0;
-    *(unsigned int*)(reqBuf + 20) = 0;
-    *(unsigned int*)(reqBuf + 24) = 0;
-    U16* namePtr = (U16*)(reqBuf + 28);
-    for (int i = 0; i <= nameLen; i++) namePtr[i] = (U16)eventName[i];
-
-    U32 written = sock->writeNative(reqBuf, reqSize);
-    delete[] reqBuf;
-    if (written != (U32)reqSize) {
-        klog("wine64session: doSignalWineboot: open_event write failed");
-        return;
-    }
-
-    // Step 5: Read reply
-    U8 replyBuf[32];
-    U32 nread = readWithTimeout(sock.get(), replyBuf, 8, 5000);
-    if (nread < 8) {
-        klog("wine64session: doSignalWineboot: open_event reply short");
-        return;
-    }
-    U32 eventHandle = *(U32*)(replyBuf + 0);
-    if (!eventHandle) {
-        klog("wine64session: doSignalWineboot: null handle");
-        return;
-    }
-    klog("wine64session: doSignalWineboot: got event handle");
-
-    // Step 6: Send event_op
-    U8 opReq[20];
-    *(int*)(opReq + 0) = REQ_event_op;
-    *(int*)(opReq + 4) = 8;
-    *(int*)(opReq + 8) = 8;
-    *(U32*)(opReq + 12) = eventHandle;
-    *(int*)(opReq + 16) = OP_SIGNAL;
-    written = sock->writeNative(opReq, 20);
-    if (written != 20) {
-        klog("wine64session: doSignalWineboot: event_op write failed");
-        return;
-    }
-    nread = readWithTimeout(sock.get(), replyBuf, 8, 5000);
-    if (nread < 8) {
-        klog("wine64session: doSignalWineboot: event_op reply short");
-        return;
-    }
-    klog("wine64session: doSignalWineboot: event signaled successfully");
-}
-
-
 // Kill a previously-spawned app (close-previous-on-switch). Runs on the
 // main-loop thread.
 //
@@ -631,7 +356,6 @@ void bw64SessionDrainSpawns() {
     for (auto& req : todo) {
         if (req.kind == Wine64Req::Kill) doKill(req.pid);
         else if (req.kind == Wine64Req::RegisterFile) doRegisterFile(req.path);
-        else if (req.kind == Wine64Req::SignalWineboot) doSignalWineboot();
         else doSpawn(req);
     }
 }
@@ -741,20 +465,6 @@ extern "C" EMSCRIPTEN_KEEPALIVE void bw64_reset_present() {
 // Whether the persistent session is up (context captured == boot completed).
 extern "C" EMSCRIPTEN_KEEPALIVE int bw64_session_ready() {
     return g_sessionCtx.valid.load(std::memory_order_acquire) ? 1 : 0;
-}
-
-// bw64_signal_wineboot_event: queue a request to signal __wineboot_event in
-// wineserver32 via the Wine server protocol. Bypasses 32-bit PE execution
-// (which is broken). Called via Module.ccall("bw64_signal_wineboot_event").
-// Returns 1 if queued, 0 if session not ready.
-extern "C" EMSCRIPTEN_KEEPALIVE int bw64_signal_wineboot_event() {
-    if (!g_sessionCtx.valid.load(std::memory_order_acquire)) return 0;
-    Wine64Req req;
-    req.kind = Wine64Req::SignalWineboot;
-    pendingLockAcquire();
-    g_pending.push_back(std::move(req));
-    pendingLockRelease();
-    return 1;
 }
 
 // bw64_clipboard_set: stage host clipboard text for the guest (paste path).

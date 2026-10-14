@@ -53,3 +53,27 @@ passes 108 unit files and the unchanged legacy checks. Type checking passes.
 prerequisites and records their runtime hashes, missing checks and remaining
 game-specific behavior. A passing preflight never sets `fullGameVerified`.
 Interactive verification and optimization remain outstanding.
+
+## Startup and FNA checks — 2026-10-14
+
+The first Celeste preflight failed two probes before their guest entry points
+ran. Both logs showed the launcher's old manual Wine server handshake
+receiving no reply. The launcher reported readiness as soon as that request
+was queued, and the host waited on the browser main loop for replies.
+Normal 32-bit Wine now executes real PE programs and initializes its own
+startup event; that bypass came from an earlier broken runtime.
+
+The launcher now lets Wine initialize its services. Persistent server and
+desktop pins are spawned sequentially in both CPU modes, with readiness
+remaining false on a spawn failure or timeout. Executable launcher tests
+cover sequencing and readiness; the unused manual protocol implementation
+was removed after the fullscreen and clock guest probes passed with the
+new path. The failed logs and runtime metadata are preserved under
+`/home/ubuntu/backups/boxedwine64-functional-20261014/startup-before/`.
+
+A small FNA integration program also passed: texture upload/readback,
+SpriteBatch rendering and keyboard input. Its 16,384-pixel red rectangle
+moved from center x=103.5 to x=223.5 after ArrowRight. This uses the same
+Wine Mono/FNA/SDL2/OpenGL libraries as Celeste without loading game content.
+It is now an additional Celeste preflight requirement, rather than evidence
+that Celeste itself is playable.

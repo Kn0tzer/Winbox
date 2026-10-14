@@ -1,13 +1,13 @@
 // Bounded subsystem checks to run before expensive game acceptance checks.
 // Passing these checks establishes their stated contracts, never playability.
-const kernel = ['unix-connect-handoff', 'fork-fd-snapshot', 'poll-deadline', 'xwire-input2', 'xwire-pointer-grab'];
+const kernel = ['unix-connect-handoff', 'fork-fd-snapshot', 'poll-deadline', 'xwire-input2', 'xwire-pointer-grab', 'runtime-session-ready'];
 const input = ['win32-clock', 'input-fullscreen', 'input-keyboard', 'input-mouse-rel'];
 export const gamePrerequisites = {
   celeste: {
     architecture: 'x86',
     unit: [...kernel, 'zip-stored-seek', 'zip-decompression', 'gl32-shared-renderer'],
-    browser: [...input, 'boot32-vkboot', 'gl32-triangle', 'mono-runtime'],
-    uncoveredBehavior: ['FNA/SDL2 game rendering workload', '32-bit FMOD audio playback', 'interactive level movement and jumping'],
+    browser: [...input, 'boot32-vkboot', 'gl32-triangle', 'mono-runtime', 'fna-runtime'],
+    uncoveredBehavior: ['Celeste-specific FNA rendering workload', '32-bit FMOD audio playback', 'interactive level movement and jumping'],
   },
   portal: {
     architecture: 'x86',

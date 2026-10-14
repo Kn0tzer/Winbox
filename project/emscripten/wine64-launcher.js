@@ -1057,7 +1057,7 @@
     // x86 service-stack gate: on 32-bit, the session is not ready for GUI apps
     // until wineboot --init has completed (creates the desktop). Set by
     // pollArch32Wineboot() below; true immediately on 64-bit.
-    var arch32WinebootDone = !ARCH32;
+    var sessionPinsReady = !SESSION;
     function pidAlive(pid) {
         return callExport("bw64_pid_alive", ["number"], [pid]) === 1;
     }
@@ -1065,9 +1065,9 @@
         return callExport("bw64_session_ready", [], []) === 1;
     }
     function sessionReady() {
-        // The wineboot helper runs only in persistent-session mode. A direct
-        // 32-bit game must not wait for a helper that was never scheduled.
-        return sessionReadyRaw() && (!SESSION || arch32WinebootDone);
+        // Wine initializes its own services and __wineboot_event. This gate
+        // only promises that the persistent server/desktop pins were spawned.
+        return sessionReadyRaw() && (!SESSION || sessionPinsReady);
     }
     function lastSpawnedPid() {
         return callExport("bw64_last_spawned_pid", [], []) || 0;
@@ -1140,121 +1140,44 @@
     // the prefix/X11/GL warm so later launchApp() spawns land in the SAME wine.
     var sessionServerPinned = false;
     function pinSessionServerWhenReady() {
+        function waitForSpawn(previousPid, label, next) {
+            var waited = 0, STEP = 200, LIMIT = 30000;
+            (function pollPid() {
+                var pid = lastSpawnedPid();
+                if (pid && pid !== previousPid) { next(pid); return; }
+                waited += STEP;
+                if (waited >= LIMIT) {
+                    console.error("session: " + label + " pid never appeared; session remains unready");
+                    return;
+                }
+                setTimeout(pollPid, STEP);
+            })();
+        }
         var waited = 0, STEP = 100, LIMIT = 60000;
         (function poll() {
             if (sessionReadyRaw()) {
-                if (!sessionServerPinned) {
-                    sessionServerPinned = true;
-                    // Capture the boot app pid BEFORE the pin spawn overwrites the
-                    // C-side last-spawned pid.
-                    currentAppPid = lastSpawnedPid();
-                    console.log("session: boot app pid=" + currentAppPid);
-                    // Spawn wineserver pin for both 32-bit and 64-bit.
-                    // The VFS directory enumeration fix (8d0f4978) ensures tmpdir
-                    // consistency, so the pin works correctly for 32-bit.
-                    spawnArgv([WINESERVER64, "-f", "-p"], WINESERVER64 + " -f -p (pin persistent)");
-                    // Desktop pin (M18 boot reliability): wineserver WM_CLOSEs an
-                    // "empty" desktop (only explorer's threads left) after 1s, and
-                    // the slow interpreted wineboot->app handoff routinely leaves
-                    // the desktop empty for seconds — explorer died mid-boot on
-                    // ~1-in-3 cold boots. deskpin.exe holds a hidden window (a
-                    // desktop *user*, blocked in GetMessage, zero CPU) so the
-                    // close timeout never arms. All wine binaries stay stock.
-                    // Desktop pin: arch-appropriate PE (the 64-bit deskpin.exe
-                    // fails with c0000135 under 32-bit wine, so x86 sessions
-                    // use the 32-bit deskpin32.exe from prefix32.zip).
-                    // Deskpin spawn moved to wbPinPoll (sequential) to avoid pid race.
-                    // x86: Wine does not auto-run wineboot --init on 32-bit (ntdll
-                    // run_wineboot path not triggered). Spawn it explicitly so the
-                    // service stack (services.exe) and desktop exist before GUI apps.
-                    // Gate sessionReady() on its completion via arch32WinebootDone.
-                    if (ARCH32 && !arch32WinebootDone) {
-                        // The wineserver pin spawn above was queued but not yet
-                        // drained; lastSpawnedPid() still holds the boot app pid.
-                        // Wait for the pin to drain FIRST, otherwise Phase 1
-                        // mistakes the pins pid for wineboots (10->12 race).
-                        // currentAppPid was captured before the pin spawn.
-                        var pinPidBefore = currentAppPid;
-                        var wbPinWaited = 0, WB_PIN_STEP = 200, WB_PIN_LIMIT = 30000;
-                        (function wbPinPoll() {
-                            var pinPid = lastSpawnedPid();
-                            if (pinPid && pinPid !== pinPidBefore) {
-                                // Pin drained. Spawn deskpin32 SEQUENTIALLY (not queued
-                                // with pin) to avoid the 10->12->14 pid race where both
-                                // drain before JS polling sees them.
-                                if (ARCH32) {
-                                    spawnArgv(wineProgArgv("Z:\\home\\username\\deskpin32.exe"), "deskpin32 (hold desktop open)");
-                                } else {
-                                    spawnArgv(wineProgArgv("Z:\\home\\username\\deskpin.exe"), "deskpin (hold desktop open)");
-                                }
-                                var deskpinPidBefore = pinPid;
-                                var wbDeskpinWaited = 0, WB_DESKPIN_STEP = 200, WB_DESKPIN_LIMIT = 30000;
-                                (function wbDeskpinPoll() {
-                                    var dpPid = lastSpawnedPid();
-                                    if (dpPid && dpPid !== deskpinPidBefore) {
-                                        // Signal the __wineboot_event that ntdll created.
-                                        // The fake wineboot.exe (91-byte ELF) exits 0 without
-                                        // signaling, causing threads to stall forever on the
-                                        // event. Use bw64_signal_wineboot_event() to signal
-                                        // via the Wine server protocol directly, bypassing
-                                        // broken 32-bit PE execution.
-                                        var sigResult = callExport("bw64_signal_wineboot_event", [], []);
-                                        if (sigResult === 1) {
-                                            console.log("session: x86 wineboot event signal queued");
-                                        } else {
-                                            console.error("session: x86 wineboot event signal failed to queue");
-                                        }
-                                        // Proceed - the signal is queued and will be processed
-                                        // by the main loop. No need to wait for a pid.
-                                        arch32WinebootDone = true;
-                                        return;
-                                    }
-                                    wbDeskpinWaited += WB_DESKPIN_STEP;
-                                    if (wbDeskpinWaited >= WB_DESKPIN_LIMIT) {
-                                        console.error("session: x86 deskpin32 pid never appeared, proceeding anyway");
-                                        arch32WinebootDone = true;
-                                        return;
-                                    }
-                                    setTimeout(wbDeskpinPoll, WB_DESKPIN_STEP);
-                                })();
-                                return;
-                            }
-                            wbPinWaited += WB_PIN_STEP;
-                            if (wbPinWaited >= WB_PIN_LIMIT) {
-                                console.error("session: x86 pin pid never appeared, proceeding anyway");
-                                arch32WinebootDone = true;
-                                return;
-                            }
-                            setTimeout(wbPinPoll, WB_PIN_STEP);
-                        })();
-                        // Phase 2: wait for wineboot --init to exit. 32-bit
-                        // emulation is slow; 5-minute cap, then proceed anyway
-                        // rather than deadlock the session.
-                        function wbDonePoll(wbPid) {
-                            var wbWaited = 0, WB_STEP = 500, WB_LIMIT = 300000;
-                            (function wbPoll() {
-                                if (!pidAlive(wbPid)) {
-                                    console.log("session: x86 signalboot completed (event signaled)");
-                                    arch32WinebootDone = true;
-                                    return;
-                                }
-                                wbWaited += WB_STEP;
-                                if (wbWaited >= WB_LIMIT) {
-                                    console.error("session: x86 signalboot timed out, proceeding anyway");
-                                    arch32WinebootDone = true;
-                                    return;
-                                }
-                                setTimeout(wbPoll, WB_STEP);
-                            })();
-                        }
-                    }
+                if (sessionServerPinned) return;
+                sessionServerPinned = true;
+                currentAppPid = lastSpawnedPid();
+                console.log("session: boot app pid=" + currentAppPid);
+                if (!spawnArgv([WINESERVER64, "-f", "-p"], "persistent wineserver pin")) {
+                    console.error("session: wineserver pin failed; session remains unready"); return;
                 }
+                waitForSpawn(currentAppPid, "wineserver pin", function(pinPid) {
+                    var desktop = ARCH32 ? "deskpin32.exe" : "deskpin.exe";
+                    if (!spawnArgv(wineProgArgv("Z:\\home\\username\\" + desktop), "desktop pin")) {
+                        console.error("session: desktop pin failed; session remains unready"); return;
+                    }
+                    waitForSpawn(pinPid, "desktop pin", function() {
+                        sessionPinsReady = true;
+                        console.log("session: persistent pins spawned; Wine owns service initialization");
+                    });
+                });
                 return;
             }
             waited += STEP;
             if (waited >= LIMIT) {
-                console.error("session never became ready after " + LIMIT + "ms");
-                return;
+                console.error("session never became ready after " + LIMIT + "ms"); return;
             }
             setTimeout(poll, STEP);
         })();

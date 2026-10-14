@@ -64,9 +64,9 @@ documentation; passing it cannot guarantee game playability.
 The browser classes now execute real guests. Keyboard and relative mouse
 checks observe Win32 messages in both CPU modes. Audio measures output PCM
 from the 64-bit DSP fixture; GL32 and D3D12 inspect rendered pixels. D3D12
-runs both its clear and draw/present fixtures. The Celeste check confirms
-the game's completed-load log; its screenshot must be reviewed separately
-for rendering and gameplay.
+runs both its clear and draw/present fixtures. The Celeste check requires
+the game's completed-load log and colored pixels on its guest canvas.
+Interactive gameplay remains a separate acceptance check.
 
 Guest fixtures require both MinGW cross compilers. Celeste uses a local
 DRM-free archive (`CELESTE_ZIP`) and Wine Mono prepared with
@@ -79,6 +79,12 @@ requires `mcs` and the pinned Wine Mono payload. Clocks, fullscreen clipping,
 input messages and managed runtime behavior have separate probes. Timeout
 failures save `timeout-evidence.json` and request guest stacks on the failing
 run, rather than requiring another boot to gather that state.
+
+`fna-runtime` uses Wine Mono's FNA assembly and SDL2/OpenGL backend without
+Celeste's content. It checks a texture upload/readback, SpriteBatch output
+and keyboard movement of the rendered rectangle. The fixture build cache
+includes the referenced assembly's content hash. This integration check
+supplements the separate managed-runtime and GL triangle checks.
 
 ## Adding a check
 

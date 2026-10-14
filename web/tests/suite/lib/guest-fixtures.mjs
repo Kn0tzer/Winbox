@@ -14,6 +14,8 @@ const fixtures = {
 };
 const elfFixtures = { 'shared-mapping': ['tools/guest-fixtures/shared-mapping.c', '-static'] };
 const managedFixtures = { 'mono-runtime': ['tools/guest-fixtures/mono-runtime.cs'] };
+managedFixtures['fna-runtime'] = ['tools/guest-fixtures/fna-runtime.cs',
+  '-r:tools/rootfs64/mono32/mono/mono-2.0/lib/mono/gac/FNA/22.9.1.0__0738eb9f132ed756/FNA.dll'];
 for (const name of ['clear9', 'texquad9', 'vshade9', 'scene9'])
   fixtures[`d3d9-${name}`] = [`tools/d3dtests/${name}.cpp`, '-ld3d9', '-lgdi32', '-luser32'];
 fixtures['d3d9-clear9'].push('-DBW64_PROBE_HOLD_MS=10000');
@@ -23,15 +25,18 @@ export async function guestFixture(name, arch = 'x86') {
   const managed = Boolean(managedFixtures[name]);
   const definition = managed ? managedFixtures[name] : linux ? elfFixtures[name] : fixtures[name];
   if (!definition || !['x86', 'x64'].includes(arch) || (managed && arch !== 'x86')) throw new Error('Invalid guest fixture');
-  const [source, ...libraries] = definition;
+  const [source, ...libraryNames] = definition;
+  const libraries = libraryNames.map(option => option.startsWith('-r:') ? '-r:' + join(root, option.slice(3)) : option);
   const driver = source.endsWith('.cpp') ? 'g++' : 'gcc';
   const compiler = managed ? 'mcs' : linux ? (arch === 'x86' ? 'i686-linux-gnu-gcc' : 'x86_64-linux-gnu-gcc')
     : `${arch === 'x86' ? 'i686' : 'x86_64'}-w64-mingw32-${driver}`;
   const version = execFileSync(compiler, ['--version'], { encoding: 'utf8' }).split('\n')[0];
   const linkOptions = driver === 'g++' ? ['-static-libgcc', '-static-libstdc++'] : [];
-  const options = managed ? ['-optimize+', '-platform:x86', '-sdk:4.5'] : ['-O2', ...linkOptions, ...libraries];
-  const hash = createHash('sha256').update(await readFile(join(root, source))).update(version)
-    .update(JSON.stringify({ options, name, arch })).digest('hex');
+  const options = managed ? ['-optimize+', '-platform:x86', '-sdk:4.5', ...libraries] : ['-O2', ...linkOptions, ...libraries];
+  const digest = createHash('sha256').update(await readFile(join(root, source))).update(version)
+    .update(JSON.stringify({ options, name, arch }));
+  for (const option of libraries) if (option.startsWith('-r:')) digest.update(await readFile(option.slice(3)));
+  const hash = digest.digest('hex');
   const dir = join(root, 'tools/guest-fixtures/build', hash);
   const output = join(dir, `${name}-${arch}.${linux ? 'elf' : 'exe'}`);
   try { await stat(output); return output; } catch {}
