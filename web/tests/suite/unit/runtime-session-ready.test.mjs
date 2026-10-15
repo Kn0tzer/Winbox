@@ -7,18 +7,29 @@ import { runInNewContext } from 'node:vm';
 const source = readFileSync(new URL('../../../../project/emscripten/wine64-launcher.js', import.meta.url), 'utf8');
 const predicate = source.match(/function sessionReady\(\) \{[\s\S]*?\n    \}/)?.[0];
 assert.ok(predicate, 'Runtime readiness predicate must exist');
-function ready(session, pinsReady, nativeReady) {
+function ready(session, pinsReady, nativeReady, desktopReady = false) {
   return runInNewContext(predicate + '; sessionReady()', {
-    SESSION: session, sessionPinsReady: pinsReady, sessionReadyRaw: () => nativeReady,
+    SESSION: session, sessionPinsReady: pinsReady, sessionDesktopReady: desktopReady,
+    sessionReadyRaw: () => nativeReady,
   });
 }
 
 test('a standalone 32-bit game is ready without a persistent-session wineboot helper', () => {
   assert.equal(ready(false, false, true), true);
 });
-test('a persistent session waits for its server and desktop pin spawns', () => {
+test('a persistent session waits for a working desktop after its pin spawns', () => {
   assert.equal(ready(true, false, true), false);
-  assert.equal(ready(true, true, true), true);
+  assert.equal(ready(true, true, true), false);
+  assert.equal(ready(true, true, true, true), true);
+});
+test('only the desktop helper window acknowledgement opens its readiness gate', () => {
+  const observer = source.match(/function observeSessionOutput\(text\) \{[\s\S]*?\n    \}/)?.[0];
+  assert.ok(observer);
+  const state = { sessionDesktopReady: false };
+  runInNewContext(observer + '; observeSessionOutput("wine64session: spawned pid=14")', state);
+  assert.equal(state.sessionDesktopReady, false);
+  runInNewContext(observer + '; observeSessionOutput("[guest fd=1 pid=14] deskpin: READY hwnd=0x10040")', state);
+  assert.equal(state.sessionDesktopReady, true);
 });
 
 const pinFunction = source.slice(source.indexOf('    function pinSessionServerWhenReady()'),

@@ -19,5 +19,8 @@ test('runtime evidence changes with renderer or compiler code and survives reloc
     assert.notEqual(await runtimeCodeHash(a),original);
     await writeFile(join(b,'vendor/compiler.wasm'),new Uint8Array([0,97,115,109,1]));
     assert.notEqual(await runtimeCodeHash(b),original);
+    const beforeDesktopChange = await runtimeCodeHash(a);
+    await writeFile(join(a, 'desktop-pin-provenance.json'), '{"helper_sha256":"changed"}');
+    assert.notEqual(await runtimeCodeHash(a), beforeDesktopChange);
   } finally { await Promise.all([rm(a,{recursive:true,force:true}),rm(b,{recursive:true,force:true})]); }
 });

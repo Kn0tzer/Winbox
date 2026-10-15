@@ -16,6 +16,7 @@ import { readFileSync, existsSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 const sha256File = (p) => createHash('sha256').update(readFileSync(p)).digest('hex');
@@ -51,13 +52,28 @@ test('dist/runtime and web/runtime wasm/js pairs are in sync', () => {
   assert.equal(distJs, webJs, 'dist vs web boxedwine64.js must match (stale JS + new WASM → __emscripten_receive_on_main_thread_js crash)');
 });
 
-test('wine/prefix zips do not silently diverge between dist and web', () => {
+test('Wine archives match their bases and prefix differences contain only the versioned desktop helpers', () => {
   for (const z of ['wine32.zip', 'wine64.zip', 'prefix32.zip', 'prefix64.zip']) {
     const a = join(repoRoot, 'dist/runtime', z);
     const b = join(repoRoot, 'web/runtime', z);
     if (!existsSync(a) || !existsSync(b)) continue;
-    assert.equal(sha256File(a), sha256File(b),
-      `${z}: dist vs web must match (binary-patched vs pristine drift)`);
+    if (z.startsWith('wine')) assert.equal(sha256File(a), sha256File(b), `${z}: dist vs web must match`);
+    else execFileSync('python3', ['-c', `
+import pathlib, sys, zipfile, json, hashlib
+exported, base, root, arch = map(str, sys.argv[1:])
+helper = 'deskpin32.exe' if arch == '32' else 'deskpin.exe'
+paths = {'home/username/' + helper}
+if arch == '64': paths.add('home/username/.wine/drive_c/' + helper)
+expected = (pathlib.Path(root) / 'tools/rootfs64/gltest' / helper).read_bytes()
+with zipfile.ZipFile(exported) as actual, zipfile.ZipFile(base) as original:
+ assert set(actual.namelist()) == set(original.namelist()) | paths
+ assert len(actual.namelist()) == len(set(actual.namelist())), 'duplicate zip members'
+ for name in actual.namelist():
+  assert actual.read(name) == (expected if name in paths else original.read(name)), name
+provenance = json.loads((pathlib.Path(exported).parent / 'desktop-pin-provenance.json').read_text())[arch]
+assert provenance['helper_sha256'] == hashlib.sha256(expected).hexdigest()
+assert provenance['prefix_sha256'] == hashlib.sha256(pathlib.Path(exported).read_bytes()).hexdigest()
+`, a, b, repoRoot, z.includes('32') ? '32' : '64'], { stdio: 'pipe' });
   }
 });
 

@@ -955,6 +955,7 @@
             }],
             print: function () {
                 var text = Array.prototype.slice.call(arguments).join(" ");
+                observeSessionOutput(text);
                 console.log(text);
                 if (window.bwRuntimeLog) window.bwRuntimeLog(text);
                 mirrorOutput(text);
@@ -1054,10 +1055,11 @@
         try { return M.ccall(name, "number", argTypes, args); }
         catch (e) { console.warn("ccall " + name + " failed: " + e); return null; }
     }
-    // x86 service-stack gate: on 32-bit, the session is not ready for GUI apps
-    // until wineboot --init has completed (creates the desktop). Set by
-    // pollArch32Wineboot() below; true immediately on 64-bit.
     var sessionPinsReady = !SESSION;
+    var sessionDesktopReady = !SESSION;
+    function observeSessionOutput(text) {
+        if (/deskpin: READY hwnd=0x[0-9a-f]+/i.test(text)) sessionDesktopReady = true;
+    }
     function pidAlive(pid) {
         return callExport("bw64_pid_alive", ["number"], [pid]) === 1;
     }
@@ -1065,9 +1067,9 @@
         return callExport("bw64_session_ready", [], []) === 1;
     }
     function sessionReady() {
-        // Wine initializes its own services and __wineboot_event. This gate
-        // only promises that the persistent server/desktop pins were spawned.
-        return sessionReadyRaw() && (!SESSION || sessionPinsReady);
+        // A queued Wine process has not necessarily initialized its graphics
+        // driver. The desktop pin acknowledges only a successful window.
+        return sessionReadyRaw() && (!SESSION || (sessionPinsReady && sessionDesktopReady));
     }
     function lastSpawnedPid() {
         return callExport("bw64_last_spawned_pid", [], []) || 0;

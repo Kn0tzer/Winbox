@@ -58,14 +58,8 @@ export default class D3D11ComprehensiveTest extends ProbeTest {
       ['/usr/lib/wine/wine64\nZ:\\home\\username\\tri11_93.exe',
        'BW64_VKTRACE=1\nBW64_FRAMELOG=1\nBW64_VKFRAME=0\nWINEDLLOVERRIDES=d3d11=n;dxgi=n\nLD_LIBRARY_PATH=/home/username']));
 
-    const until = Date.now() + 600000;
-    let litLine = null;
-    while (Date.now() < until) {
-      litLine = logs.find(l => /tri1193:\s*LIT=/.test(l));
-      if (litLine) break;
-      await page.waitForTimeout(2000);
-    }
-    check(litLine !== null, 'D3D11 triangle must produce LIT line');
+    const litLine = await this.waitForLog(page, /tri1193:\s*(?:LIT=|FAIL|RESULT)/, 600000);
+    check(/tri1193:\s*LIT=/.test(litLine), `D3D11 triangle must render: ${litLine}`);
     const lit = parseInt(litLine.match(/LIT=(\d+)/)[1], 10);
     checkGreaterThan(lit, 0, `D3D11 must render pixels (LIT=${lit})`);
 

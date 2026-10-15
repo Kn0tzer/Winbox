@@ -1,5 +1,6 @@
 import { cp, mkdir, copyFile, rm, symlink, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { stageVendors } from './stage-vendor.mjs';
 const root = resolve(import.meta.dirname, '../..');
 const out = resolve(root, process.env.WINE_BUILD_OUT || 'dist');
@@ -36,6 +37,9 @@ await copyFile(resolve(root, 'tools/spirvfix/spirvfix.mjs'), resolve(out, 'spirv
 for (const name of ['boxedwine64.js', 'boxedwine64.wasm', 'BUILD_INFO.json']) await copyFile(resolve(root, 'project/emscripten/Build/Wasm64Mt', name), resolve(out, 'runtime', name));
 await copyFile(resolve(root, 'project/emscripten/wine64-launcher.js'), resolve(out, 'runtime/wine64-launcher.js'));
 for (const name of ['glibc-rootfs64.zip', 'wine64.zip', 'prefix64.zip', 'glibc-rootfs32.zip', 'wine32.zip', 'prefix32.zip']) await copyFile(resolve(root, 'web/runtime', name), resolve(out, 'runtime', name));
+// Keep the pinned base archives intact; replace only our desktop helper in
+// the exported prefixes so readiness matches the helper shipped with this tree.
+execFileSync('python3', [resolve(root, 'tools/browser/stage-desktop-pin.py'), resolve(out, 'runtime')]);
 await copyFile(resolve(root, 'web/runtime.html'), resolve(out, 'runtime/index.html'));
 await copyFile(resolve(root, 'license.txt'), resolve(out, 'LICENSE.txt'));
 await copyFile(resolve(root, 'project/emscripten/coi-serviceworker.js'), resolve(out, 'coi-serviceworker.js'));

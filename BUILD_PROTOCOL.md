@@ -17,6 +17,13 @@ blocks the build; readers also wait. Only a validated dead PID can be reclaimed.
 `BW64_BUILD_WAIT_SECONDS` bounds the wait. `EMSDK` selects the SDK when emcc
 is not already active; `JOBS` controls compilation.
 
+The browser export replaces only `deskpin.exe`/`deskpin32.exe` in the pinned
+prefix archives with the versioned helpers under `tools/rootfs64/gltest/`.
+`desktop-pin-provenance.json` records helper and resulting prefix hashes and
+is included in the browser evidence fingerprint. The provenance test checks
+every other archive member against the pinned base. Rebuild both helpers
+from `deskpin.c` with the matching MinGW compiler after changing that source.
+
 Do not run raw `make wasm64-mt` against the shared output. Use
 `BW64_BUILD_OWNER` to label a build. The diagnostic override
 `BW64_BUILD_FORCE=1` bypasses the probe guard and can invalidate a live probe;
