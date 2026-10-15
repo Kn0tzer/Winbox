@@ -338,15 +338,23 @@ U32 KProcess::getThreadCount() {
 }
 
 void KProcess::deleteThread(KThread* thread) {
-    thread->cleanup();  
-    if (this->getThreadCount() == 0) {
-        cleanupProcess();
-        delete this->memory; // this might call KThread::currentThread, so don't delete thread before this
-        this->memory = nullptr; 
+    bool lastThread;
+    {
+        // Removing a thread from the table and releasing the final process
+        // resources must be one exit operation. Otherwise two exiting threads
+        // can both observe an empty table and delete the same memory.
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(threadExitMutex);
+        thread->cleanup();
+        lastThread = this->getThreadCount() == 0;
+        if (lastThread) {
+            cleanupProcess();
+            delete this->memory; // this might call KThread::currentThread, so don't delete thread before this
+            this->memory = nullptr;
+        }
+        delete thread;
     }
-    delete thread;
     // don't call into getProcess while holding threadsCondition
-    if (!this->terminated && this->getThreadCount() == 0) {
+    if (!this->terminated && lastThread) {
         KProcessPtr parent = KSystem::getProcess(this->parentId);
         if (!parent || parent->getThreadCount() == 0) {
             KSystem::eraseProcess(this->id);

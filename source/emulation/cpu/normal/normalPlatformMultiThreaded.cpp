@@ -92,10 +92,8 @@ static void platformThread(CPU* cpu) {
             }
         }
         ripSamplerReleaseSlot(ripSlot);
-        cpu->thread->cleanup();
-        platformThreadCount--;
         process->deleteThread(cpu->thread);
-        if (platformThreadCount == 0) {
+        if (--platformThreadCount == 0) {
             KSystem::shutingDown = true;
             KNativeSystem::postQuit();
         }
@@ -145,11 +143,8 @@ static void platformThread(CPU* cpu) {
     }
 
     ripSamplerReleaseSlot(ripSlot32);
-    cpu->thread->cleanup();    
-
-    platformThreadCount--;
     process->deleteThread(cpu->thread);
-    if (platformThreadCount == 0) {
+    if (--platformThreadCount == 0) {
         KSystem::shutingDown = true;
         KNativeSystem::postQuit();
     }
