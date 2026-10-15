@@ -69,10 +69,11 @@ Wine32 server connection failure in GL32 startup. Two forced filesystem
 regressions then exposed incomplete directory publication and duplicate
 inodes during concurrent file creation. Both repairs pass their focused
 regressions (`be66e10b`). Native CPU32/CPU64, the 118-file fast suite, type
-checking and three untraced GL32 repeats pass on `a97994c0725f`. A fresh full
-browser run is in progress.
+checking and three untraced GL32 repeats pass on `a97994c0725f`. The fresh full
+browser run passes all 19 files. Evidence and derived architecture-specific
+game prerequisites are in `test-results/acceptance-oct15/`.
 
-Celeste's boot check renders its intro artwork. Interactive level movement
-and jumping remain unverified. Portal and Gang Beasts gameplay and Portal's
+Celeste's boot check renders its intro artwork. A separate interactive
+session is starting; level movement and jumping remain unverified. Portal and Gang Beasts gameplay and Portal's
 achievable frame rate remain unverified. Preserve the requested phase order;
 a successful retry or visible title alone cannot establish acceptance.

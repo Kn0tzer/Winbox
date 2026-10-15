@@ -311,3 +311,23 @@ passes all 602 cases in 182 seconds, CPU64 passes all 327 cases, and all
 118 unit files, 73 legacy checks and type checking pass. Three consecutive
 untraced GL32 triangle probes pass on that runtime. A new complete browser
 run is in progress; gameplay remains gated on its outcome.
+
+
+## Complete test gate — 2026-10-15
+
+The fresh browser suite passes all 19 files on WASM `a97994c0725f`.
+This includes the previously failing GL32 startup, both input architectures,
+D3D9 presentation, D3D10/11/12, actual audio PCM, FNA input/rendering, the
+extended fork/mapping fixture, shared memory, Mono and clocks. All 118 unit
+files, 73 legacy checks, native CPU32 (602) and CPU64 (327), type checking,
+and the seven Vulkan harness groups also pass; the existing legacy skip
+remains unchanged. The shader/Vulkan groups were checked earlier in this
+continuation; those bridge sources have not changed during these repairs.
+
+The complete report, fast/native logs and game-specific prerequisite reports
+are saved under `test-results/acceptance-oct15/`. Each prerequisite report is
+explicitly derived from the full suite, requires the game's architecture,
+and records the common runtime and browser-code hashes. These reports do
+not claim game playability. A separate Celeste browser has started for
+interactive level movement and jumping. Portal and Gang Beasts acceptance
+and Portal gameplay FPS remain outstanding.
