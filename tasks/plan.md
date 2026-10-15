@@ -45,7 +45,7 @@ Commands: `pnpm test`, `pnpm typecheck`, `make -C project/linux test -j2`,
 through the existing probes. Save raw evidence in ignored `test-results/`
 and failure backups in `/home/ubuntu/backups/`.
 
-Runtime checkpoint (2026-10-15): the fast suite passes 116 unit files
+Runtime checkpoint (2026-10-15): the fast suite passes 118 unit files
 and 73 legacy checks, with the existing skip unchanged. Native CPU32 and
 CPU64 pass 602 and 327 checks after the executor-exit repair. Type checking
 and seven Vulkan harness groups pass.
@@ -64,7 +64,13 @@ and parent waitpid under QEMU and in the real browser; both pass on WASM
 startup failure. The launcher now waits for a successful
 window acknowledgement from the desktop helper before accepting later apps
 (`30f8e18f`). Three consecutive D3D11/audio pairs pass. All fast checks and
-packaging/provenance checks pass; complete browser repetition is running.
+packaging/provenance checks pass. The next full browser run stopped at a
+Wine32 server connection failure in GL32 startup. Two forced filesystem
+regressions then exposed incomplete directory publication and duplicate
+inodes during concurrent file creation. Both repairs pass their focused
+regressions (`be66e10b`). Native CPU32/CPU64, the 118-file fast suite, type
+checking and three untraced GL32 repeats pass on `a97994c0725f`. A fresh full
+browser run is in progress.
 
 Celeste's boot check renders its intro artwork. Interactive level movement
 and jumping remain unverified. Portal and Gang Beasts gameplay and Portal's

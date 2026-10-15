@@ -283,5 +283,31 @@ Three consecutive D3D11/audio pairs passed with the desktop gate on the same
 captured 224–228 callbacks, at least 247,003 nonzero samples, and RMS above
 0.0117. Commit `30f8e18f` records the readiness gate, both rebuilt helpers,
 and prefix packaging verification. All 116 unit files, 73 legacy checks,
-type checking and the prefix-member/provenance checks pass. The full
-19-file browser suite is running against the final exported helper hashes.
+type checking and the prefix-member/provenance checks pass. The following full browser run reached the GL32 triangle probe, where Wine32
+reported that its server never started. It was stopped for diagnosis; game
+acceptance remained gated. The failed process dump showed two live server
+processes in poll, with both initial Wine clients terminated.
+
+
+## Filesystem publication — 2026-10-15
+
+Two independent forced interleavings reproduced filesystem faults. A second
+thread could observe a directory's loaded flag before its children had been
+published. Concurrent O_CREAT calls could also publish separate FsNode
+objects for the same native path, giving that path different inode IDs and
+independent record-lock state. Directory loading now holds its directory
+mutex through publication, and file creation rechecks the namespace under a
+shared creation lock. Both regressions fail before their respective repairs
+and pass afterward. Temporary server path tracing was removed after six
+traced startups passed; that timing change did not reproduce or close the
+untraced Wine32 failure. Normal release repetition is required.
+
+Failure evidence and both native regression failures are preserved under
+`/home/ubuntu/backups/boxedwine64-functional-20261015/server32-6895-before/`.
+The filesystem repair runtime is WASM
+`a97994c0725fab35b83d899f2860a9ad50a0aa400a8cc0717bb53a158c3a7731`.
+Commit `be66e10b` contains the repairs and both regressions. Native CPU32
+passes all 602 cases in 182 seconds, CPU64 passes all 327 cases, and all
+118 unit files, 73 legacy checks and type checking pass. Three consecutive
+untraced GL32 triangle probes pass on that runtime. A new complete browser
+run is in progress; gameplay remains gated on its outcome.
