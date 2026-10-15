@@ -16,8 +16,9 @@ verify Gang Beasts gameplay, then optimize the stack toward Portal above
    movement, camera control and an interactive game action with captures.
 4. **Gang Beasts:** the real archive draws its menu and a match; verify
    character movement and grabbing with captures.
-5. **Performance:** record Portal gameplay FPS and frame times, build and
-   browser identity, GPU adapter, resolution and the measurement interval.
+5. **Performance:** use the current server at 1024×768 as the baseline.
+   Record Portal gameplay FPS and frame times, build and browser identity,
+   GPU adapter, resolution and the measurement interval.
    Compare changes under identical conditions and retain measured wins.
    Above 30 FPS is the target; a menu or submission count cannot prove it.
 
@@ -44,9 +45,28 @@ Commands: `pnpm test`, `pnpm typecheck`, `make -C project/linux test -j2`,
 through the existing probes. Save raw evidence in ignored `test-results/`
 and failure backups in `/home/ubuntu/backups/`.
 
-Current uncertainty: the loading-label race has a passing ASan regression
-and repeated audio runs; complete browser-suite repetition remains required.
-Celeste's title now renders after the framebuffer repair, but its first
-interaction stalled the input pump. A targeted nonblocking-pump regression
-passes; real-game verification of that repair is pending. Portal and Gang
-Beasts gameplay and Portal's achievable frame rate remain unverified.
+Runtime checkpoint (2026-10-15): the fast suite passes 116 unit files
+and 73 legacy checks, with the existing skip unchanged. Native CPU32 and
+CPU64 pass 602 and 327 checks after the executor-exit repair. Type checking
+and seven Vulkan harness groups pass.
+
+The first complete browser run on WASM `bd004303a645` passed 18 of 19
+files. The mouse test consumed late duplicate Wine log lines; sequence-aware
+waits now pass in both architectures (`5e978310`). A subsequent full run
+reproduced allocator corruption, so the browser gate remains open.
+
+Further regressions exposed cleanup outside the serialized teardown in
+ordinary exit and exit_group. MT cleanup now waits until the executor has
+left its run loop, and the last executor publishes process termination
+(`33edab1e`). The extended fork fixture checks final ordinary-thread exits
+and parent waitpid under QEMU and in the real browser; both pass on WASM
+`68956b49a713`. Browser repetition then exposed an independent Wine graphics
+startup failure. The launcher now waits for a successful
+window acknowledgement from the desktop helper before accepting later apps
+(`30f8e18f`). Three consecutive D3D11/audio pairs pass. All fast checks and
+packaging/provenance checks pass; complete browser repetition is running.
+
+Celeste's boot check renders its intro artwork. Interactive level movement
+and jumping remain unverified. Portal and Gang Beasts gameplay and Portal's
+achievable frame rate remain unverified. Preserve the requested phase order;
+a successful retry or visible title alone cannot establish acceptance.

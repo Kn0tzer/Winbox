@@ -205,3 +205,83 @@ A fast harness check timed out while importing Playwright under concurrent
 build load. Its three-second child-exit assertion now starts when the
 fixture reports completion, with a separate bounded startup wait. The
 deadline-cleanup behavior remains required. Commit: `8277a2b5`.
+
+## Concurrent process teardown — 2026-10-15
+
+The release audio probe reproduced an out-of-bounds allocator failure on
+WASM `c79107937d38`. An isolated optimized build with allocator checks also
+aborted during loading-screen allocation. The complete ASan audio probe
+passed with 240,535 nonzero PCM samples; its changed timing/layout did not
+explain the release failure.
+
+A native regression then reproduced duplicate process cleanup during
+concurrent final thread exits. The platform loop removed threads before
+calling `KProcess::deleteThread`, which removed them again. Multiple exit
+paths could see an empty table, close process resources and delete the same
+32-bit scratch memory. The exit path now serializes removal and resource
+release per process. Both CPU modes delegate cleanup to that path, and the
+platform thread count reaches zero only after teardown finishes.
+
+The regression executes the production exit tail and `deleteThread` with
+scheduled cleanup work. It fails on duplicate process cleanup before the
+repair and passes afterward, including the single shutdown notification.
+All 115 fast unit files, 73 legacy checks and type checking pass; the legacy
+skip remains unchanged. Three release audio repeats on WASM
+`bd004303a645d8864e30d5533da2b5e7ae53f44a3fbf39fb595537828c28819c`
+pass, each with 118 callbacks, over 226,000 nonzero samples and RMS above
+0.016. The rebuilt native CPU32 table passes all 602 checks in 206 seconds.
+The rebuilt native CPU64 harness passes all 327 checks. The full browser
+suite remains pending. These repeats do not yet close the intermittent startup failure.
+
+The initial release and allocator-check failures are preserved under
+`/home/ubuntu/backups/boxedwine64-functional-20261015/`. Current repetition
+artifacts are in `test-results/suite-audio-exit-fix-{1,2,3}/`.
+
+The first complete browser run on that runtime passed 18 of 19 files, with
+no allocator crash. The mouse test reported 450 instead of 500 units after
+its per-sample wait consumed a late duplicate of the preceding Wine debug
+line. A packet sequence now advances each wait; burst boundaries also
+exclude late duplicates of reset packets. Reversing the preceding measured
+motion avoids assuming an initial host cursor position. The ten-packet and
+500-unit assertions remain, as do the burst and negative-motion checks.
+The focused browser probe passes both CPU modes, and the fast suite now
+passes 116 unit files. A later full browser repetition reproduced an allocator
+crash during D3D11 startup and was stopped for investigation. Commits:
+`ae31b112` (teardown), `5e978310` (mouse evidence), and `02002af7` (inherited
+architecture and presentation checks).
+
+
+The first teardown repair did not include cleanup inside ordinary exit or
+exit_group. Native regressions forced both missed paths to overlap final
+executor teardown, reproducing premature memory release. MT ordinary exit
+now defers removal until the executor leaves its run loop. exit_group
+serializes its cleanup with sibling teardown; the final executor publishes
+termination even when both ordinary exits initially observe another thread.
+Commit `33edab1e` includes those repairs and an extended fork fixture that
+checks the parent's waitpid status after concurrent raw SYS_exit calls.
+The fixture passes under Linux/QEMU and in the browser on WASM
+`68956b49a713c38b44ae987e616e11949c3cc0f1ed243042fc3b84b286286c5b`.
+The rebuilt native tables pass 602 CPU32 and 327 CPU64 cases; all 116 fast
+unit files and type checking pass.
+
+A following D3D11 startup returned `D3D11CreateDevice` failure because Wine
+could not load its graphics driver; explorer and the desktop pin had failed
+to initialize. There was no allocator exception in that run. The launcher
+only waited for the desktop pin's PID, allowing later applications to load
+while graphics initialization was still underway. Desktop readiness now
+requires an acknowledgement after the helper successfully creates a window.
+The helper is staged over the pinned prefix during export; all unrelated
+archive members remain byte-identical. Startup repetitions and the complete
+browser suite are still required. Preserved failures are under
+`graphics-6895-before`, `audio-5215-before` and `d3d11-bd004-before` in the
+2026-10-15 functional backup directory. No game gameplay or FPS acceptance
+has been claimed.
+
+
+Three consecutive D3D11/audio pairs passed with the desktop gate on the same
+`68956b49a713` runtime. D3D11 reported 8,192 lit pixels each time. Audio
+captured 224–228 callbacks, at least 247,003 nonzero samples, and RMS above
+0.0117. Commit `30f8e18f` records the readiness gate, both rebuilt helpers,
+and prefix packaging verification. All 116 unit files, 73 legacy checks,
+type checking and the prefix-member/provenance checks pass. The full
+19-file browser suite is running against the final exported helper hashes.
