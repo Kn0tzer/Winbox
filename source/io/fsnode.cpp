@@ -65,11 +65,10 @@ void FsNode::removeNodeFromParent() {
 }
 
 void FsNode::loadChildren() {
+    // The loaded flag also prevents recursion through addChild. Keep it under
+    // the directory lock so another thread cannot see it before publication.
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(childrenByNameMutex);
     if (!this->hasLoadedChildrenFromFileSystem) {
-        BOXEDWINE_CRITICAL_SECTION;
-        if (this->hasLoadedChildrenFromFileSystem) {
-            return;
-        }
         this->hasLoadedChildrenFromFileSystem = true;
         bool traceLink = getenv("BW64_LINKTRACE") && this->path.contains("dosdevices");
         if (this->nativePath.length()) {

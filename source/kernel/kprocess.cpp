@@ -649,23 +649,29 @@ U32 KProcess::openFileDescriptor(BString currentDirectory, BString localPath, U3
         }
     }
     if (!node) {
-        BString fullPath = Fs::getFullPath(currentDirectory, localPath);
-        BString parentPath = Fs::getParentPath(fullPath);
-        BString fileName = Fs::getFileNameFromPath(fullPath);
-        std::shared_ptr<FsNode> parent = Fs::getNodeFromLocalPath(B(""), parentPath, true);
-        if (!parent) {
-            return -K_ENOENT;
-        }       
-        BString nativePath = Fs::getNativePathFromParentAndLocalFilename(parent, fileName);
-        std::shared_ptr<FsNode> mixedSibling = parent->getChildByNameIgnoreCase(fileName);
-        if (mixedSibling) {
-            nativePath = nativePath + EXT_MIXED;
-            if (Fs::doesNativePathExist(nativePath)) {
-                kwarn("KProcess::openFileDescriptor mixed file already exists");
+        // Creators in different processes must publish one FsNode. Otherwise
+        // the same native file gets separate inode IDs and independent locks.
+        BOXEDWINE_CRITICAL_SECTION;
+        node = Fs::getNodeFromLocalPath(currentDirectory, localPath, true);
+        if (!node) {
+            BString fullPath = Fs::getFullPath(currentDirectory, localPath);
+            BString parentPath = Fs::getParentPath(fullPath);
+            BString fileName = Fs::getFileNameFromPath(fullPath);
+            std::shared_ptr<FsNode> parent = Fs::getNodeFromLocalPath(B(""), parentPath, true);
+            if (!parent) {
+                return -K_ENOENT;
             }
+            BString nativePath = Fs::getNativePathFromParentAndLocalFilename(parent, fileName);
+            std::shared_ptr<FsNode> mixedSibling = parent->getChildByNameIgnoreCase(fileName);
+            if (mixedSibling) {
+                nativePath = nativePath + EXT_MIXED;
+                if (Fs::doesNativePathExist(nativePath)) {
+                    kwarn("KProcess::openFileDescriptor mixed file already exists");
+                }
+            }
+            node = Fs::addFileNode(parent->path+"/"+fileName, B(""), nativePath, false, parent);
+            Fs::makeLocalDirs(parent->path);
         }
-        node = Fs::addFileNode(parent->path+"/"+fileName, B(""), nativePath, false, parent);
-        Fs::makeLocalDirs(parent->path);
     }
     std::shared_ptr<KObject> nodeObject = node->kobject.lock();
     if (nodeObject) {
