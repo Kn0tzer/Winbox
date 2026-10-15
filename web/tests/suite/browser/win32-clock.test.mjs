@@ -3,7 +3,7 @@ import { guestFixture } from '../lib/guest-fixtures.mjs';
 export default class Win32ClockTest extends ProbeTest {
   constructor() { super({ tag: 'win32-clock', timeoutMs: 600000 }); }
   async run({ page }) {
-    for (const arch of ['x86', 'x64']) {
+    for (const arch of this.guestArchitectures) {
       if (arch === 'x64') { await page.close(); page = await this.newPage(); }
       await this.bootGuest(page, { arch, winedbg: '+debugstr' });
       await this.stageFile(page, 'win32-clock.exe', await guestFixture('win32-clock', arch));

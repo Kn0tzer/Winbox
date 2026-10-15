@@ -5,7 +5,7 @@ import { guestFixture } from '../lib/guest-fixtures.mjs';
 export default class InputKeyboardTest extends ProbeTest {
   constructor() { super({ tag: 'input-keyboard', timeoutMs: 900000 }); }
   async run({ page }) {
-    for (const arch of ['x86', 'x64']) {
+    for (const arch of this.guestArchitectures) {
       if (arch === 'x64') { await page.close(); page = await this.newPage(); }
       const exe = await guestFixture('input-witness', arch);
       await this.bootGuest(page, { arch, winedbg: '+debugstr' });

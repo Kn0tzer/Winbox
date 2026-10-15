@@ -25,7 +25,9 @@ files automatically; these historical counts are not fixed coverage targets.
 Game preflights run selected real guest probes and targeted regressions before
 the full game. They save `test-results/prerequisites-<game>/summary.json`.
 The report requires every listed check to pass against one WASM and browser
-code fingerprint. Filtering or running only unit checks leaves the preflight
+code fingerprint, with evidence that the required CPU architecture ran.
+Game preflights select that architecture; ordinary suite runs still check
+both variants of the input and clock probes. Filtering or running only unit checks leaves the preflight
 incomplete. The report always leaves gameplay unverified and names the
 remaining game-specific behavior that needs an acceptance check.
 
@@ -81,11 +83,17 @@ DRM-free archive (`CELESTE_ZIP`) and Wine Mono prepared with
 cache directory. D3D probes require the generated DXVK/vkd3d DLLs named in
 their source. The broader flat probes remain in place. These checks cover
 selected paths, and full API/architecture coverage remains incomplete.
+Browser probes run one emulator at a time by default. `PROBE_SLOTS` can
+explicitly allow concurrency; Wine startup and input timings should be
+interpreted against the host load rather than treated as API correctness.
 The shared-mapping ELF requires `x86_64-linux-gnu-gcc`; the small Mono probe
 requires `mcs` and the pinned Wine Mono payload. Clocks, fullscreen clipping,
 input messages and managed runtime behavior have separate probes. Timeout
 failures save `timeout-evidence.json` and request guest stacks on the failing
 run, rather than requiring another boot to gather that state.
+The fork-mapping ELF also runs under QEMU/Linux as a reference. It checks
+child allocation against inherited reservations, private isolation, shared
+file updates and detaching an anonymous replacement from the shared file.
 
 `fna-runtime` uses Wine Mono's FNA assembly and SDL2/OpenGL backend without
 Celeste's content. It checks a texture upload/readback, SpriteBatch output

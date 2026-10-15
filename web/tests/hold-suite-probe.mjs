@@ -24,6 +24,7 @@ try {
   } catch (error) { result.error = error.stack || String(error); }
   result.wasmSha256 = probe.buildInfo?.wasm_sha256;
   result.runtimeCodeHash = probe.runtimeCodeHash;
+  result.architectures = [...probe.testedArchitectures];
   await writeFile(probe.dir + '/probe-result.json', JSON.stringify(result, null, 2));
   console.log(JSON.stringify({ dir: probe.dir, stage: 'interactive', passed: result.passed, error: result.error, holdMs }));
   const until = Date.now() + holdMs;

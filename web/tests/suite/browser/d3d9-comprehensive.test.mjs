@@ -1,5 +1,5 @@
 // D3D9 guest workloads: device creation, clear, textured quad, vertex shader,
-// and a multi-draw scene. The x86 variant also checks compositor clear pixels.
+// and a multi-draw scene. Both variants check compositor clear pixels.
 //
 // Uses existing test executables in tools/d3dtests/:
 //   clear9.exe — basic device + clear
@@ -40,7 +40,7 @@ export default class D3D9ComprehensiveTest extends ProbeTest {
       [`${loader}\nZ:\\home\\username\\${exe}`, 'BW64_VKTRACE=1\nBW64_FRAMELOG=1\nWINEDLLOVERRIDES=d3d9=n\nLD_LIBRARY_PATH=/home/username']),
       {exe: exeName, loader});
     check(spawn > 0, `${tag}: guest spawn must be queued`);
-    if (this.arch === 'x86' && tag === 'clear9') {
+    if (tag === 'clear9') {
       await this.waitForLog(page, /clear9: CAPTURE_READY/, 300000, before);
       await page.waitForTimeout(1000);
       const png = await page.locator('#vkCanvas').screenshot();
@@ -54,7 +54,7 @@ export default class D3D9ComprehensiveTest extends ProbeTest {
         if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value));
         return value;
       })));
-      checkGreaterThan(pixels.redDominant, 100000, 'CPU32 DXVK clear must reach the browser compositor with its final red color');
+      checkGreaterThan(pixels.redDominant, 100000, `${this.arch} DXVK clear must reach the browser compositor with its final red color`);
     }
     return this.waitForLog(page, resultPattern, 300000, before);
   }
@@ -62,7 +62,7 @@ export default class D3D9ComprehensiveTest extends ProbeTest {
   async run(ctx) {
     const { page, server } = ctx;
     const logs = this.consoleLines;
-    if (this.arch === 'x86') await page.addInitScript(() => {
+    await page.addInitScript(() => {
       let renderer;
       Object.defineProperty(globalThis, 'bwVkRenderer2', { configurable: true, get: () => renderer, set(value) {
         renderer = value;
@@ -76,7 +76,7 @@ export default class D3D9ComprehensiveTest extends ProbeTest {
 
     // Stage D3D9 test executables
     for (const exe of ['clear9.exe', 'texquad9.exe', 'vshade9.exe', 'scene9.exe']) {
-      const file = this.arch === 'x86' ? await guestFixture('d3d9-' + exe.slice(0,-4), this.arch) : `tools/d3dtests/${exe}`;
+      const file = await guestFixture('d3d9-' + exe.slice(0,-4), this.arch);
       await this.stageFile(page, exe, file);
     }
     await this.stageFile(page, 'checker.bmp', 'tools/d3dtests/checker.bmp');

@@ -5,7 +5,7 @@ import { checkEqual } from '../lib/assert.mjs';
 export default class FullscreenInputTest extends ProbeTest {
   constructor() { super({ tag: 'input-fullscreen', timeoutMs: 600000 }); }
   async run({ page }) {
-    for (const arch of ['x86', 'x64']) {
+    for (const arch of this.guestArchitectures) {
       if (arch === 'x64') { await page.close(); page = await this.newPage(); }
       const exe = await guestFixture('cursor-clip', arch);
       await this.bootGuest(page, { arch, winedbg: '+debugstr,+cursor' });

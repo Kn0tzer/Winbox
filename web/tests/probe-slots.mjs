@@ -10,14 +10,16 @@
 //   try { ...probe... } finally { await slot.release(); }
 //
 // Env:
-//   PROBE_SLOTS   number of concurrent slots (default 2)
+//   PROBE_SLOTS   number of concurrent slots (default 1)
 //   PROBE_SLOT_DIR slot dir (default /tmp/bw64-probe-slots)
 import { openSync, closeSync, writeFileSync, unlinkSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 const SLOT_DIR = process.env.PROBE_SLOT_DIR || '/tmp/bw64-probe-slots';
 const LEGACY_LOCK = '/tmp/bw64-probe.lock';
-export const MAX_SLOTS = Number(process.env.PROBE_SLOTS || 2);
+// A second CPU-heavy emulator can delay Wine startup and input delivery past
+// wall-clock deadlines. Use explicit concurrency only for a suitable host.
+export const MAX_SLOTS = Number(process.env.PROBE_SLOTS || 1);
 
 function pidAlive(pid) {
   if (!pid || !Number.isFinite(pid)) return false;
