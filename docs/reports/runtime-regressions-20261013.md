@@ -346,3 +346,39 @@ hashes, verified controls and capture names. Frame rate and game audio were
 not measured; these captures establish the listed functional controls.
 Portal acceptance is now running on the same export. Gang Beasts and
 Portal performance verification remain outstanding.
+
+### Portal framebuffer resolve and probe progress (2026-10-15)
+
+The real Portal run on WASM `a97994c0725f` did not pass playability:
+its post-loading canvas was black despite successful WebGPU submissions.
+The captured frame and replay evidence are under
+`test-results/portal-playability-oct15/` and
+`portal-{black,scene,geometry,copy}-replay-oct15/`. The early scene pass
+draws geometry; inserting a resolve from its MSAA framebuffer to the
+postprocessing source restores visible final pixels. The game log reports
+`gipa MISS: vkCmdResolveImage2` and `vkCmdResolveImage2KHR`, and the shipped
+DXVK source calls that API for hardware resolves. These entry points were
+missing in both guest shims.
+
+The shims now repack each Vulkan 1.3 resolve region into the existing
+ordered legacy resolve ABI. This preserves the compiled WASM and avoids
+introducing another protocol operation. A new regression compiles the real
+shim for i386 and x86-64, links callers using the official Vulkan header,
+and executes them under QEMU. It verifies both names, multiple regions,
+offsets, layers, 64-bit image handles and a zero-region call. Both variants
+fail before the repair and pass afterward. `pnpm test` passes 120 unit
+files and the existing legacy checks; all seven native bridge harness
+groups pass. Logs are copied into `test-results/acceptance-oct15/`.
+
+The game probe's synchronous Tesseract call also stalled HTTP asset serving
+on a noisy loading frame. Commit `46ba2e53` runs OCR asynchronously with a
+three-second deadline and kills the owned child on timeout. Its regression
+checks event-loop progress and child termination. The new Portal run uses
+this probe and the repaired shim. Its archive stores only seven VPK
+entries instead of compressing them twice; all 1,753 paths, sizes and CRCs
+match the original, and full archive CRC validation passes. The original
+archive is unchanged; hashes are in `portal-stored-archive.json`.
+
+Portal rendering and gameplay acceptance, Gang Beasts, and the performance
+target remain open. The replay still has incorrect scene textures; visible
+replay pixels do not establish correct game rendering or playability.

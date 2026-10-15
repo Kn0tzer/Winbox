@@ -1118,6 +1118,8 @@ API void vkCmdBlitImage2(VkCommandBuffer, const void*);
 API void vkCmdBlitImage2KHR(VkCommandBuffer, const void*);
 API void vkCmdResolveImage(VkCommandBuffer, VkImage, uint32_t, VkImage, uint32_t, uint32_t, const void*);
 API void vkCmdResolveImageKHR(VkCommandBuffer, VkImage, uint32_t, VkImage, uint32_t, uint32_t, const void*);
+API void vkCmdResolveImage2(VkCommandBuffer, const void*);
+API void vkCmdResolveImage2KHR(VkCommandBuffer, const void*);
 API void vkCmdDrawIndirect(VkCommandBuffer, VkBuffer, uint64_t, uint32_t, uint32_t);
 API void vkCmdDrawIndexedIndirect(VkCommandBuffer, VkBuffer, uint64_t, uint32_t, uint32_t);
 API void vkCmdDrawIndirectCount(VkCommandBuffer, VkBuffer, uint64_t, VkBuffer, uint64_t, uint32_t, uint32_t);
@@ -1129,6 +1131,8 @@ API void vkCmdDispatchBase(VkCommandBuffer, uint32_t, uint32_t, uint32_t, uint32
 API void vkCmdDispatchIndirect(VkCommandBuffer, VkBuffer, uint64_t);
 
 static const struct procEntry g_procs[] = {
+    E(vkCmdResolveImage2, VK64_fn_vkCmdResolveImage),
+    E(vkCmdResolveImage2KHR, VK64_fn_vkCmdResolveImage),
     E(vkResetQueryPool, VK64_fn_vkResetQueryPool),
     // --- global ---
     E(vkEnumerateInstanceVersion, VK64_fn_vkEnumerateInstanceVersion),
@@ -1585,6 +1589,39 @@ API void vkCmdBlitImage2KHR(VkCommandBuffer commandBuffer, const void* pInfoIn) 
     a.a[0] = commandBuffer; a.a[1] = pInfo->srcImage; a.a[2] = pInfo->dstImage;
     a.a[3] = pInfo->regionCount; a.a[4] = P(pInfo->pRegions); a.a[5] = pInfo->filter;
     (void)vk64_trap(VK64_fn_vkCmdBlitImage2KHR, &a);
+}
+
+// Vulkan 1.3 resolves have the same region semantics as vkCmdResolveImage.
+// Repack each pointer-bearing *2 region using the guest compiler's own ABI,
+// then dispatch through the existing ordered resolve command in the bridge.
+// DXVK calls these names when copying its MSAA framebuffer for postprocessing.
+typedef struct VkImageResolveRegionL {
+    uint32_t srcSubresource[4]; int32_t srcOffset[3];
+    uint32_t dstSubresource[4]; int32_t dstOffset[3];
+    uint32_t extent[3];
+} VkImageResolveRegionL;
+typedef struct VkImageResolve2L {
+    uint32_t sType; const void* pNext;
+    VkImageResolveRegionL region;
+} VkImageResolve2L;
+typedef struct VkResolveImageInfo2L {
+    uint32_t sType; const void* pNext;
+    VkImage srcImage; uint32_t srcImageLayout;
+    VkImage dstImage; uint32_t dstImageLayout;
+    uint32_t regionCount; const VkImageResolve2L* pRegions;
+} VkResolveImageInfo2L;
+API void vkCmdResolveImage2(VkCommandBuffer commandBuffer, const void* info) {
+    const VkResolveImageInfo2L* pInfo = (const VkResolveImageInfo2L*)info;
+    for (uint32_t i = 0; i < pInfo->regionCount; ++i) {
+        VkImageResolveRegionL region = pInfo->pRegions[i].region;
+        VK64Args a = {{0}};
+        a.a[0] = commandBuffer; a.a[1] = pInfo->srcImage; a.a[2] = pInfo->srcImageLayout;
+        a.a[3] = pInfo->dstImage; a.a[4] = pInfo->dstImageLayout; a.a[5] = 1; a.a[6] = P(&region);
+        (void)vk64_trap(VK64_fn_vkCmdResolveImage, &a);
+    }
+}
+API void vkCmdResolveImage2KHR(VkCommandBuffer commandBuffer, const void* info) {
+    vkCmdResolveImage2(commandBuffer, info);
 }
 
 API void vkCmdResolveImage(VkCommandBuffer commandBuffer, VkImage srcImage, uint32_t srcImageLayout, VkImage dstImage, uint32_t dstImageLayout, uint32_t regionCount, const void* pRegions) {

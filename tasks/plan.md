@@ -45,7 +45,7 @@ Commands: `pnpm test`, `pnpm typecheck`, `make -C project/linux test -j2`,
 through the existing probes. Save raw evidence in ignored `test-results/`
 and failure backups in `/home/ubuntu/backups/`.
 
-Runtime checkpoint (2026-10-15): the fast suite passes 118 unit files
+Runtime checkpoint (2026-10-15): the fast suite passes 120 unit files
 and 73 legacy checks, with the existing skip unchanged. Native CPU32 and
 CPU64 pass 602 and 327 checks after the executor-exit repair. Type checking
 and seven Vulkan harness groups pass.
@@ -80,3 +80,18 @@ are captured under `test-results/celeste-playability-oct15/`. The jump rises
 rate were not measured. Portal is now booting for map/input acceptance;
 Gang Beasts and Portal performance remain outstanding. Preserve the
 requested phase order and the recorded scope of each result.
+
+Portal's first real run submitted frames but remained black. A captured
+frame (`portal-playability-oct15/black-frame.json.gz`) reproduces this;
+replaying its early scene pass draws geometry, and inserting the missing
+framebuffer resolve restores visible final pixels. The live log records
+`gipa MISS: vkCmdResolveImage2`. Both guest shims now translate core/KHR
+resolve2 regions into the existing ordered resolve ABI, without changing
+the runtime WASM. Cross-compiled 32/64-bit tests use the official Vulkan
+structs and check offsets, layers, full-width image handles and every
+region; both fail before the fix and pass afterward. The 120-file fast
+suite and all seven native Vulkan harness groups pass. A fresh Portal
+run uses the repaired shim and a content-validated archive with stored
+VPK entries to avoid repeated outer-ZIP decompression. Rendering, menu,
+map and input acceptance remain pending; replay pixels alone do not pass
+the game.

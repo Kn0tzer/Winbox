@@ -232,6 +232,7 @@ enum {
     VK64_fn_vkCmdCopyBuffer2KHR = 814,
     VK64_fn_vkCmdCopyBufferToImage2 = 821,
     VK64_fn_vkCmdCopyBufferToImage2KHR = 822,
+    VK64_fn_vkCmdResolveImage = 826,
     VK64_fn_vkGetPhysicalDeviceProperties2KHR = 838,
     VK64_fn_vkGetPhysicalDeviceFeatures2KHR = 839,
     VK64_fn_vkGetPhysicalDeviceMemoryProperties2KHR = 840,
@@ -1085,6 +1086,39 @@ API void vkCmdCopyBufferToImage2KHR(VkCommandBuffer cb, const void* info) {
     (void)vk64_trap(VK64_fn_vkCmdCopyBufferToImage2KHR, &a);
 }
 
+// Vulkan 1.3 resolves have the same region semantics as vkCmdResolveImage.
+// Repack each pointer-bearing *2 region using the guest compiler's own ABI,
+// then dispatch through the existing ordered resolve command in the bridge.
+// DXVK calls these names when copying its MSAA framebuffer for postprocessing.
+typedef struct VkImageResolveRegionL {
+    uint32_t srcSubresource[4]; int32_t srcOffset[3];
+    uint32_t dstSubresource[4]; int32_t dstOffset[3];
+    uint32_t extent[3];
+} VkImageResolveRegionL;
+typedef struct VkImageResolve2L {
+    uint32_t sType; const void* pNext;
+    VkImageResolveRegionL region;
+} VkImageResolve2L;
+typedef struct VkResolveImageInfo2L {
+    uint32_t sType; const void* pNext;
+    VkImage srcImage; uint32_t srcImageLayout;
+    VkImage dstImage; uint32_t dstImageLayout;
+    uint32_t regionCount; const VkImageResolve2L* pRegions;
+} VkResolveImageInfo2L;
+API void vkCmdResolveImage2(VkCommandBuffer commandBuffer, const void* info) {
+    const VkResolveImageInfo2L* pInfo = (const VkResolveImageInfo2L*)info;
+    for (uint32_t i = 0; i < pInfo->regionCount; ++i) {
+        VkImageResolveRegionL region = pInfo->pRegions[i].region;
+        VK64Args a = {{0}};
+        a.a[0] = commandBuffer; a.a[1] = pInfo->srcImage; a.a[2] = pInfo->srcImageLayout;
+        a.a[3] = pInfo->dstImage; a.a[4] = pInfo->dstImageLayout; a.a[5] = 1; a.a[6] = P(&region);
+        (void)vk64_trap(VK64_fn_vkCmdResolveImage, &a);
+    }
+}
+API void vkCmdResolveImage2KHR(VkCommandBuffer commandBuffer, const void* info) {
+    vkCmdResolveImage2(commandBuffer, info);
+}
+
 // ===========================================================================
 // F. Frame boundary (2 of the 85)
 // ===========================================================================
@@ -1138,6 +1172,8 @@ typedef void (*PFN_vkVoidFunction)(void);
 struct procEntry { const char* name; uint64_t fnId; PFN_vkVoidFunction fn; };
 #define E(n, id) { #n, (uint64_t)(id), (PFN_vkVoidFunction)n }
 static const struct procEntry g_procs[] = {
+    E(vkCmdResolveImage2, VK64_fn_vkCmdResolveImage),
+    E(vkCmdResolveImage2KHR, VK64_fn_vkCmdResolveImage),
     // --- global ---
     E(vkEnumerateInstanceVersion, VK64_fn_vkEnumerateInstanceVersion),
     E(vkEnumerateInstanceExtensionProperties, VK64_fn_vkEnumerateInstanceExtensionProperties),
