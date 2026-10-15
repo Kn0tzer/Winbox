@@ -11,6 +11,7 @@ import { serve } from '../../tools/browser/serve.mjs';
 import { acquireProbeSlot } from './probe-slots.mjs';
 import { waitForBuildIdle } from './build-lock.mjs';
 import { hasPortalMenu, summarizeRenderedFrames } from './portal-evidence.mjs';
+import { portalMenuText } from './portal-ocr.mjs';
 
 const repo = resolve(import.meta.dirname, '../..');
 const runtimeRoot = resolve(process.env.PROBE_DIST || join(repo, 'dist'));
@@ -176,7 +177,9 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
     const hash = createHash('sha256').update(shot).digest('hex');
     let text = '';
     if (game === 'portal') {
-      text = execFileSync('tesseract', [join(dir, 'current.png'), 'stdout', '--psm', '11'], { encoding:'utf8', stdio:['ignore','pipe','ignore'] });
+      const ocr = await portalMenuText(join(dir, 'current.png'));
+      text = ocr.text;
+      if (ocr.timedOut) result.ocrTimeouts = (result.ocrTimeouts || 0) + 1;
       if (hasPortalMenu(text) && menuStart === undefined) {
         menuStart = snap.now; result.menuVerified = true; result.bootToMenuSeconds = snap.now/1000;
         await writeFile(join(dir, 'menu.png'), shot);
