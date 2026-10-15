@@ -2,12 +2,11 @@
 import { ProbeTest } from '../lib/probe-base.mjs';
 import { check, checkEqual, checkGreaterThan } from '../lib/assert.mjs';
 import { guestFixture } from '../lib/guest-fixtures.mjs';
-const rawEvents = lines => [...new Map(lines.map(l => l.match(/input-witness: RAW seq=(\d+) flags=(\d+) dx=(-?\d+) dy=(-?\d+)/)).filter(Boolean)
-  .map(m => [m[1], { sequence: +m[1], flags: +m[2], dx: +m[3], dy: +m[4] }])).values()];
+import { rawEvents, rawEventAfter } from '../lib/raw-input-evidence.mjs';
 export default class InputMouseRelTest extends ProbeTest {
   constructor() { super({ tag: 'input-mouse-rel', timeoutMs: 900000 }); }
   async run({ page }) {
-    for (const arch of ['x86', 'x64']) {
+    for (const arch of this.guestArchitectures) {
       if (arch === 'x64') { await page.close(); page = await this.newPage(); }
       const exe = await guestFixture('input-witness', arch);
       await this.bootGuest(page, { arch, winedbg: '+debugstr' });
@@ -15,37 +14,42 @@ export default class InputMouseRelTest extends ProbeTest {
       await this.stageFile(page, 'input-witness.exe', exe);
       const from = await this.spawnGuest(page, 'input-witness.exe', { arch, env: 'WINEDEBUG=+debugstr' });
       await this.waitForLog(page, /input-witness: READY/, 180000, from);
-      let before = this.consoleLines.length;
       const inject = (dx, dy) => page.evaluate(([x,y]) => globalThis.bwRuntime.call('bw64_xwire_mouse_rel', ['number','number'], [x,y]), [dx,dy]);
+      let sequence = 0;
+      const waitForPacket = async (dx, dy) => {
+        const line = await this.waitForLog(page, rawEventAfter(sequence, dx, dy), 30000, from);
+        const event = rawEvents([line])[0];
+        sequence = event.sequence;
+        return event;
+      };
       await inject(100,50);
-      await this.waitForLog(page, /input-witness: RAW .*dx=100 dy=50/, 30000, before);
-      const events = rawEvents(this.consoleLines.slice(before));
-      checkGreaterThan(events.length, 0, 'Relative mouse movement must generate guest events');
-      check(events[0] !== undefined, 'Must have at least one relative mouse event');
-      checkEqual(events[0].flags & 1, 0, 'Guest RAWINPUT must use relative coordinates');
-      before = this.consoleLines.length;
-      // Physical samples arrive over time. Keep the packet-count assertion,
-      // and separately check an instantaneous burst's exact accumulated motion.
-      for (let i=0;i<10;i++) { await inject(50,0); await page.waitForTimeout(20); }
-      await page.waitForTimeout(1500);
-      const rapid = rawEvents(this.consoleLines.slice(before));
+      const initial = await waitForPacket(100,50);
+      checkEqual(initial.flags & 1, 0, 'Guest RAWINPUT must use relative coordinates');
+      // Require a new guest packet for every separate sample. A late duplicate
+      // debug line cannot acknowledge the following injection.
+      const rapid = [];
+      for (let i=0;i<10;i++) {
+        await inject(50,0);
+        rapid.push(await waitForPacket(50,0));
+      }
       checkGreaterThan(rapid.length, 5, `${arch}: rapid relative movements must not be lost`);
       checkEqual(rapid.reduce((sum,e) => sum+e.dx,0), 500, 'Every rapid horizontal delta must reach the guest');
-      // Start this independent case inside the desktop again. Otherwise the
-      // second +500 burst crosses the screen edge and Wine clips the cursor.
-      const resetFrom = this.consoleLines.length;
-      await page.evaluate(() => globalThis.bwRuntime.call('bw64_xwire_mouse_move', ['number','number'], [100,50]));
-      await this.waitForLog(page, /input-witness: RAW .*dx=-500 dy=0/, 30000, resetFrom);
-      before = this.consoleLines.length;
+      // Reverse the measured motion before the independent burst so it stays
+      // inside the desktop, regardless of the initial host cursor position.
+      await inject(-500,0);
+      await waitForPacket(-500,0);
+      const burstStart = sequence;
       await page.evaluate(() => { for (let i=0;i<10;i++) globalThis.bwRuntime.call('bw64_xwire_mouse_rel', ['number','number'], [50,0]); });
-      await page.waitForTimeout(1500);
-      const burst = rawEvents(this.consoleLines.slice(before));
+      const burstEvents = () => rawEvents(this.consoleLines.slice(from)).filter(event => event.sequence > burstStart);
+      const until = Date.now() + 30000;
+      while (Date.now() < until && burstEvents().reduce((sum, event) => sum + event.dx, 0) < 500) await page.waitForTimeout(100);
+      const burst = burstEvents();
       checkEqual(burst.reduce((sum,e) => sum+e.dx,0), 500, 'Coalesced burst must preserve all ten deltas');
       checkEqual(burst.reduce((sum,e) => sum+e.dy,0), 0, 'Horizontal burst must not introduce vertical motion');
-      before = this.consoleLines.length;
+      sequence = Math.max(sequence, ...burst.map(event => event.sequence));
       await inject(-75,-25);
-      await this.waitForLog(page, /input-witness: RAW .*dx=-75 dy=-25/, 30000, before);
-      checkGreaterThan(rawEvents(this.consoleLines.slice(before)).length, 0, 'Negative relative movement must generate guest events');
+      const negative = await waitForPacket(-75,-25);
+      check(negative.sequence > burstStart, 'Negative relative movement must generate a new guest event');
     }
   }
 }
