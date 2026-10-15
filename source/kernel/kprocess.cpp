@@ -338,20 +338,32 @@ U32 KProcess::getThreadCount() {
 }
 
 void KProcess::deleteThread(KThread* thread) {
-    bool lastThread;
+    bool lastThread = false;
+    bool needsExitGroup;
     {
         // Removing a thread from the table and releasing the final process
         // resources must be one exit operation. Otherwise two exiting threads
         // can both observe an empty table and delete the same memory.
         BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(threadExitMutex);
-        thread->cleanup();
-        lastThread = this->getThreadCount() == 0;
-        if (lastThread) {
-            cleanupProcess();
-            delete this->memory; // this might call KThread::currentThread, so don't delete thread before this
-            this->memory = nullptr;
+        needsExitGroup = !this->terminated && this->getThreadCount() == 1;
+        if (!needsExitGroup) {
+            thread->cleanup();
+            lastThread = this->getThreadCount() == 0;
+            if (lastThread) {
+                cleanupProcess();
+                delete this->memory; // this might call KThread::currentThread, so don't delete thread before this
+                this->memory = nullptr;
+            }
+            delete thread;
         }
-        delete thread;
+    }
+    if (needsExitGroup) {
+        // Two concurrent exit syscalls can both initially see another thread.
+        // Keep the final executor registered while publishing process exit,
+        // without holding the teardown lock across global process lookups.
+        this->exitgroup(thread, this->exitCode);
+        this->deleteThread(thread);
+        return;
     }
     // don't call into getProcess while holding threadsCondition
     if (!this->terminated && lastThread) {
@@ -793,7 +805,11 @@ U32 KProcess::exit(KThread* thread, U32 code) {
         return this->exitgroup(thread, code);    
 
     thread->cpu->yield = true;
+#ifndef BOXEDWINE_MULTI_THREADED
     thread->cleanup(); // will unschedule the thread
+#endif
+    // In MT mode the executor still uses its CPU/memory until it leaves the
+    // run loop. deleteThread owns removal and cleanup after that point.
 	terminateCurrentThread(thread);
 
     return 0;
@@ -2068,13 +2084,22 @@ U32 KProcess::exitgroup(KThread* thread, U32 code) {
         this->terminated = true;
     }
 
-    thread->cleanup(); // must happen before we clear memory
-    this->threads.clear();
-    if (cloneVM) {
-        // make sure the shared memory is unhooked from parent
-        this->memory->execvReset(cloneVM);
+    {
+        // killAllThreads waits for table removal, which can precede the
+        // sibling's destructor. Wait for that teardown before removing our
+        // own entry, or the sibling can free memory still used below.
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(threadExitMutex);
+        thread->cleanup(); // must happen before we clear memory
+        {
+            BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(threadsMutex);
+            this->threads.clear();
+        }
+        if (cloneVM) {
+            // make sure the shared memory is unhooked from parent
+            this->memory->execvReset(cloneVM);
+        }
+        this->cleanupProcess(); // release RAM, sockets, etc now, before waitpid
     }
-    this->cleanupProcess(); // release RAM, sockets, etc now.  No reason to wait to do that until waitpid is called
     this->exitCode = code;
 
     {

@@ -869,9 +869,9 @@ static U64 sys_exit64(CPU64* cpu, U64 status, bool group) {
         if (group) {
             process->exitgroup(cpu->thread, (U32)status);
         } else {
-            // KProcess::exit runs cleanup() (which zeroes clear_child_tid64 and
-            // futex-wakes the joiner) and terminates this thread; if it's the
-            // last thread it falls through to exitgroup and ends the process.
+            // KProcess::exit requests termination. The MT executor cleans up
+            // and wakes joiners after leaving its run loop; the final thread
+            // also publishes process termination through exitgroup.
             process->exit(cpu->thread, (U32)status);
         }
     }
