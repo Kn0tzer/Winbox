@@ -73,7 +73,10 @@ checking and three untraced GL32 repeats pass on `a97994c0725f`. The fresh full
 browser run passes all 19 files. Evidence and derived architecture-specific
 game prerequisites are in `test-results/acceptance-oct15/`.
 
-Celeste's boot check renders its intro artwork. A separate interactive
-session is starting; level movement and jumping remain unverified. Portal and Gang Beasts gameplay and Portal's
-achievable frame rate remain unverified. Preserve the requested phase order;
-a successful retry or visible title alone cannot establish acceptance.
+Celeste functional acceptance passes in its prologue: the real archive,
+menus, level, horizontal movement with D, jumping with Space, and landing
+are captured under `test-results/celeste-playability-oct15/`. The jump rises
+70 pixels relative to the same stationary terrain. Game audio and frame
+rate were not measured. Portal is now booting for map/input acceptance;
+Gang Beasts and Portal performance remain outstanding. Preserve the
+requested phase order and the recorded scope of each result.

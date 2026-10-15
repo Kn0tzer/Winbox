@@ -331,3 +331,18 @@ and records the common runtime and browser-code hashes. These reports do
 not claim game playability. A separate Celeste browser has started for
 interactive level movement and jumping. Portal and Gang Beasts acceptance
 and Portal gameplay FPS remain outstanding.
+
+
+## Celeste functional acceptance — 2026-10-15
+
+The real Celeste archive reaches its main menu, a new-file screen and the
+playable prologue. Browser keyboard input with D moves Madeline from the
+starting position to the right. Space produces a visible jump above the
+platform and a return to the ground. Same-viewport captures show a 70-pixel
+rise while the terrain remains fixed. The acceptance evidence is in
+`test-results/celeste-playability-oct15/playability.json`, with a copy in
+`test-results/acceptance-oct15/`. It records the exact runtime/browser-code
+hashes, verified controls and capture names. Frame rate and game audio were
+not measured; these captures establish the listed functional controls.
+Portal acceptance is now running on the same export. Gang Beasts and
+Portal performance verification remain outstanding.
