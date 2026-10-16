@@ -20,7 +20,7 @@ test('real X11 pointer handlers preserve exclusive ownership and release on unma
 #include <map>
 enum{X_GrabPointer=26,X_UngrabPointer=27,X_UnmapWindow=10,X_DestroyWindow=4};
 struct Window{bool mapped=false,isRoot=false;};
-struct XWireServer{std::mutex regMutex;std::map<uint32_t,Window> windows;uint32_t presentWindow=0,pointerGrabClient=0,pointerGrabWindow=0;void schedulePresent(){}static XWireServer& instance(){static XWireServer s;return s;}};
+struct XWireServer{std::mutex regMutex;std::map<uint32_t,Window> windows;uint32_t presentWindow=0,focusWindow=0,pointerGrabClient=0,pointerGrabWindow=0;void schedulePresent(){}static XWireServer& instance(){static XWireServer s;return s;}};
 uint8_t reply[32];void writeToClient(const uint8_t* p,size_t n){assert(n==32);memcpy(reply,p,n);}
 uint32_t rd32(const uint8_t* p){uint32_t v;memcpy(&v,p,4);return v;}
 void updateWmState(uint32_t,uint32_t){}void ensureWindow(){}

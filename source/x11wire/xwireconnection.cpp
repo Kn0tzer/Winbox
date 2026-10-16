@@ -736,6 +736,7 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
                     wasOverlay = (wid != srv.presentWindow && !it->second.isRoot);
                 }
                 if (srv.pointerGrabWindow == wid) srv.pointerGrabClient = srv.pointerGrabWindow = 0;
+                if (srv.focusWindow == wid) srv.focusWindow = 0;
             }
             updateWmState(wid, 0); // WithdrawnState
             // A menu/popup just closed — recompose so it disappears from the host.
@@ -747,6 +748,8 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
             XWireServer& srv = XWireServer::instance();
             std::lock_guard<std::mutex> lk(srv.regMutex);
             srv.windows.erase(wid);
+            // A destroyed temporary focus must not strand the host input queue.
+            if (srv.focusWindow == wid) srv.focusWindow = 0;
             if (srv.pointerGrabWindow == wid) srv.pointerGrabClient = srv.pointerGrabWindow = 0;
             break;
         }
@@ -2022,6 +2025,7 @@ void XWireConnection::deliverInputEvents() {
     std::lock_guard<std::recursive_mutex> lk(ioMutex);
     XWireServer& srv = XWireServer::instance();
     uint32_t pw;
+    bool restoreFocus = false;
     int16_t baseX = 0, baseY = 0;
     {
         std::lock_guard<std::mutex> lk(srv.regMutex);
@@ -2039,6 +2043,13 @@ void XWireConnection::deliverInputEvents() {
         // (presented at host 0,0), so root coords = host + base origin, and an
         // overlay at root (ox,oy) occupies host [ox-baseX, oy-baseY).
         baseX = it->second.x; baseY = it->second.y;
+        restoreFocus = !srv.focusWindow;
+    }
+    // Wine needs FocusIn to activate its native keyboard target, as well as
+    // the server's fallback routing after a temporary focus disappears.
+    if (restoreFocus) {
+        sendFocusIn(pw);
+        sendTakeFocus(pw);
     }
     uint32_t presentWindow = pw;
 

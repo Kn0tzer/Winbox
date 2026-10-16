@@ -20,6 +20,10 @@ export default class InputKeyboardTest extends ProbeTest {
         const before = this.consoleLines.length;
         await page.keyboard.down(key);
         await this.waitForLog(page, new RegExp(`input-witness: KEY DOWN vk=${vk}\\b`), 30000, before);
+        if (key.length === 1 || key === 'Space') {
+          const character = key === 'Space' ? 32 : key.charCodeAt(0);
+          await this.waitForLog(page, new RegExp(`input-witness: CHAR code=${character}\\b`), 30000, before);
+        }
         await page.keyboard.up(key);
         await this.waitForLog(page, new RegExp(`input-witness: KEY UP vk=${vk}\\b`), 30000, before);
       }

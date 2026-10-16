@@ -21,6 +21,8 @@ static LRESULT CALLBACK wndproc(HWND window, UINT message, WPARAM w, LPARAM l) {
     }
     if (message == WM_KEYDOWN || message == WM_KEYUP) {
         emit("input-witness: KEY %s vk=%u\n", message == WM_KEYDOWN ? "DOWN" : "UP", (unsigned)w);
+    } else if (message == WM_CHAR) {
+        emit("input-witness: CHAR code=%u\n", (unsigned)w);
     } else if (message == WM_INPUT) {
         RAWINPUT input; UINT size = sizeof(input);
         if (GetRawInputData((HRAWINPUT)l, RID_INPUT, &input, &size, sizeof(RAWINPUTHEADER)) != (UINT)-1 && input.header.dwType == RIM_TYPEMOUSE) {
