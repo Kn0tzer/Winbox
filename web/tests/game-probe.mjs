@@ -62,7 +62,13 @@ try {
       assets.push([file, `home/username/apps/${dll}.dll`]);
       if (game === 'portal') assets.push([file, `home/username/apps/bin/${dll}.dll`]);
     }
-    assets.push([join(repo, `tools/rootfs64/libvk${arch}/libvulkan.so.1`), 'home/username/apps/libvulkan.so.1']);
+    const shim = resolve(process.env.PROBE_VULKAN_SHIM || join(repo, `tools/rootfs64/libvk${arch}/libvulkan.so.1`));
+    const shimBytes = await readFile(shim);
+    const expectedMachine = arch === '32' ? 3 : 62;
+    if (shimBytes.length < 20 || shimBytes.toString('hex', 0, 4) !== '7f454c46' || shimBytes[4] !== (arch === '32' ? 1 : 2) ||
+        shimBytes.readUInt16LE(18) !== expectedMachine) throw Error('Vulkan shim architecture does not match guest');
+    result.vulkanShim = { path: shim, sha256: createHash('sha256').update(shimBytes).digest('hex') };
+    assets.push([shim, 'home/username/apps/libvulkan.so.1']);
   }
   if (profile.renderer === 'opengl' && (game === 'gl32' || (game === 'celeste' && process.env.GL32 === '1'))) {
     const shim = join(repo, 'tools/rootfs64/libgl32/libGL.so.1');
