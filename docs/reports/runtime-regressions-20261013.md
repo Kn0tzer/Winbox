@@ -432,3 +432,37 @@ instruction regression does not close this allocator failure.
 
 Portal gameplay acceptance, Gang Beasts, and the requested performance
 work remain open. The CPU repair still requires a fresh real-game run.
+
+### Exec address-space lifetime (2026-10-16)
+
+`KProcess::execve` reset both address spaces before `onExec` stopped sibling
+executors. Those siblings could still run guest instructions or clear
+guest futex/robust-list state against the old memory. Exec now stops them
+before resetting memory and waits on the thread teardown lock: removal
+from the thread table alone can precede the destructor finishing.
+
+The fail-first regression executes the actual reset section with a live
+sibling and delayed teardown. It passes for both 32-bit and 64-bit paths
+after the repair. The Linux guest fork/mapping fixture now also executes
+a new image while a sibling writes its old mapping, three times, and
+checks the child's exit status. Its QEMU reference run passes. This is a
+confirmed lifetime defect; attributing the earlier release allocator trap
+to it still requires browser verification.
+
+The first ASan diagnostic was invalid because its unused giant CPU64
+self-test file was compiled without instrumentation to fit Chromium's
+function limit. It and the X11 code shared a weak `vector<unsigned char>`
+insert instantiation. A two-file Emscripten 6.0.9 reproduction produces the
+same 32-byte read report inside a 132-byte vector; the fully instrumented
+version passes. Evidence is in `asan-mixed-container-repro-oct16/` under
+the session backup directory. That report does not establish an X11 race.
+Private diagnostics now replace the unused self-test with an instrumented
+failing stub and keep runtime C++ instrumentation consistent. A worker
+error hook captures useful stacks with allocation tracing disabled.
+
+The corrected diagnostic reached the desktop but exhausted its 4 GB
+memory limit. Reducing quarantine/redzones let it reach D3D10 device
+initialization, where sanitizer reporting recursed through pthread proxy
+handling and ended with a JavaScript stack overflow. These diagnostic
+limits do not close the original release failure. The full browser gate,
+current-build game acceptance, and measured Portal performance remain open.

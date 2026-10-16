@@ -121,3 +121,13 @@ libc startup before reaching its checks; the freestanding replacement
 retains every SSE3 assertion and page guard. The static-libc startup
 failure is also preserved as a separate diagnostic. Resolve the Wine64
 allocator failure and rerun the browser gate before resuming game acceptance.
+
+Oct16 continuation found and repaired an exec lifetime defect: sibling
+executors and their teardown now finish before either address space is
+reset. The fail-first lifetime test covers both architectures and delayed
+destruction; the guest fixture adds three execs with a live writing sibling
+and passes its QEMU reference run. Browser verification is in progress on
+WASM `424d1f8416e7`; the original allocator trap is not yet closed.
+An initial ASan container report was independently reproduced as a mixed
+instrumentation artifact. Corrected diagnostics reached D3D10 startup but
+hit memory/reporting limits; see the runtime regression report for evidence.

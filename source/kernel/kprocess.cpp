@@ -971,6 +971,13 @@ U32 KProcess::execve(KThread* thread, BString path, std::vector<BString>& args, 
     }
 
     // reset memory must come after we grab the args and env
+    // Stop sibling executors before freeing their address space. Their exit
+    // cleanup can still touch guest futexes and robust lists after removal
+    // from the thread table, so also wait for deleteThread's teardown lock.
+    killAllThreads(thread);
+    {
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(threadExitMutex);
+    }
     this->heap.freeAll(this->memory);
     this->memory->execvReset(cloneVM);
     cloneVM = false;

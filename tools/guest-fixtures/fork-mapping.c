@@ -7,9 +7,17 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 static atomic_int exit_ready;
+static atomic_int exec_ready;
+static void* touch_until_exec(void* data) {
+    volatile uint32_t* page = data;
+    atomic_store(&exec_ready, 1);
+    for (;;) page[0]++;
+    return NULL;
+}
 static void* ordinary_thread_exit(void* unused) {
     (void)unused;
     atomic_store(&exit_ready, 1);
@@ -18,8 +26,9 @@ static void* ordinary_thread_exit(void* unused) {
     return NULL;
 }
 
-int main(void) {
+int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
+    if (argc == 2 && !strcmp(argv[1], "after-threaded-exec")) return 0;
     char path[] = "/tmp/bw64-fork-map-XXXXXX";
     int fd = mkstemp(path);
     if (fd < 0 || ftruncate(fd, 4096) || unlink(path)) return 1;
@@ -69,6 +78,27 @@ int main(void) {
         }
     }
     puts("fork-mapping: FINAL_THREAD_EXIT_WAITPID");
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        child = fork();
+        if (child < 0) return 40;
+        if (!child) {
+            volatile uint32_t* page = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            pthread_t sibling;
+            if ((void*)page == MAP_FAILED || pthread_create(&sibling, NULL, touch_until_exec, (void*)page)) _exit(41);
+            while (!atomic_load(&exec_ready)) sched_yield();
+            // exec must stop this executor and its clear_child_tid cleanup
+            // before replacing the old address space.
+            char* next[] = {argv[0], "after-threaded-exec", NULL};
+            execv("/proc/self/exe", next);
+            _exit(42);
+        }
+        status = 0;
+        if (waitpid(child, &status, 0) != child || !WIFEXITED(status) || WEXITSTATUS(status)) {
+            printf("fork-mapping: FAIL threaded exec status=%d\n", status); return 43;
+        }
+    }
+    puts("fork-mapping: EXEC_WITH_LIVE_SIBLING");
     puts("fork-mapping: RESULT 0");
     return 0;
 }
