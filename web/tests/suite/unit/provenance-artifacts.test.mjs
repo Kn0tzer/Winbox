@@ -102,3 +102,27 @@ test('probe slot protocol exists (single probe at a time)', () => {
   const src = readFileSync(p, 'utf8');
   assert.ok(src.includes('acquireProbeSlot'), 'probe-slots.mjs must export acquireProbeSlot');
 });
+
+test('Wine32 export adds only the pinned architecture-independent Wine fonts', () => {
+  execFileSync('python3', ['-c', `
+import hashlib, json, pathlib, zipfile
+root = pathlib.Path(${JSON.stringify(repoRoot)})
+base = root / 'web/runtime/glibc-rootfs32.zip'
+exported = root / 'dist/runtime/glibc-rootfs32.zip'
+wine = root / 'web/runtime/wine64.zip'
+record = json.loads((exported.parent / 'wine32-font-provenance.json').read_text())
+with zipfile.ZipFile(base) as old, zipfile.ZipFile(exported) as new, zipfile.ZipFile(wine) as source:
+    expected = {'opt/wine-stable/share/wine/fonts/' + pathlib.Path(n).name: source.read(n)
+                for n in source.namelist() if n.startswith('usr/share/wine/fonts/') and n.endswith('.ttf')}
+    assert 'opt/wine-stable/share/wine/fonts/tahoma.ttf' in expected
+    assert set(new.namelist()) == set(old.namelist()) | set(expected)
+    for name in old.namelist():
+        assert new.read(name) == old.read(name), name
+    for name, data in expected.items():
+        assert new.read(name) == data, name
+        assert record['fonts'][name] == hashlib.sha256(data).hexdigest(), name
+for key, path in [('source_wine64_sha256', wine), ('glibc_rootfs32_sha256', exported)]:
+    with path.open('rb') as f:
+        assert record[key] == hashlib.file_digest(f, 'sha256').hexdigest(), key
+`], { stdio: 'pipe' });
+});

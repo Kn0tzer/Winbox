@@ -21,7 +21,12 @@ The browser export replaces only `deskpin.exe`/`deskpin32.exe` in the pinned
 prefix archives with the versioned helpers under `tools/rootfs64/gltest/`.
 `desktop-pin-provenance.json` records helper and resulting prefix hashes and
 is included in the browser evidence fingerprint. The provenance test checks
-every other archive member against the pinned base. Rebuild both helpers
+every other archive member against the pinned base.
+The export also adds the pinned Wine64 package's architecture-independent
+fonts to Wine32's data directory in `glibc-rootfs32.zip`.
+`wine32-font-provenance.json` records their hashes and the resulting archive;
+its provenance test verifies every original archive member is unchanged.
+Both provenance records are included in the browser evidence fingerprint. Rebuild both helpers
 from `deskpin.c` with the matching MinGW compiler after changing that source.
 
 Do not run raw `make wasm64-mt` against the shared output. Use

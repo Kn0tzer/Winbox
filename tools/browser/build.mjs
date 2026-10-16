@@ -40,6 +40,8 @@ for (const name of ['glibc-rootfs64.zip', 'wine64.zip', 'prefix64.zip', 'glibc-r
 // Keep the pinned base archives intact; replace only our desktop helper in
 // the exported prefixes so readiness matches the helper shipped with this tree.
 execFileSync('python3', [resolve(root, 'tools/browser/stage-desktop-pin.py'), resolve(out, 'runtime')]);
+// DirectWrite needs the actual Tahoma family; a GDI substitute alone is insufficient.
+execFileSync('python3', [resolve(root, 'tools/browser/stage-wine32-fonts.py'), resolve(out, 'runtime')]);
 await copyFile(resolve(root, 'web/runtime.html'), resolve(out, 'runtime/index.html'));
 await copyFile(resolve(root, 'license.txt'), resolve(out, 'LICENSE.txt'));
 await copyFile(resolve(root, 'project/emscripten/coi-serviceworker.js'), resolve(out, 'coi-serviceworker.js'));
