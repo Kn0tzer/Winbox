@@ -95,3 +95,29 @@ run uses the repaired shim and a content-validated archive with stored
 VPK entries to avoid repeated outer-ZIP decompression. Rendering, menu,
 map and input acceptance remain pending; replay pixels alone do not pass
 the game.
+
+The real run with resolve2 now draws visible final pixels but retains
+corrupt textures and no readable menu. Read-only inspection found hundreds
+of image objects bound at offset zero in shared allocations. Temporary
+shim and DXVK diagnostics traced valid size/alignment requirements to
+zero alignment inside DXVK's allocator. Its emitted `F2 0F 12` MOVDDUP
+instruction was decoded as MOVLPS by CPU32, leaving the upper mask zero.
+The repair implements the distinct SSE3 duplicate moves and prefix paths.
+The fail-first native regression now passes all register pairs, unaligned
+loads and DXVK's two-lane mask; the full CPU32 run passes 603 checks.
+A standalone freestanding guest passes under QEMU and in the repaired
+browser runtime, including an eight-byte load immediately before a
+protected page. CPU64 passes 327 checks; fast tests, type checking and
+the seven native Vulkan groups pass. WASM is now `647ee26bfbab`.
+All temporary DXVK logging was removed. Portal's preflight now requires
+the SSE3 guest and resolve2 shim regressions.
+
+The full browser gate remains open. D3D10's Wine64 startup hit a memory
+access trap inside `emscripten_builtin_malloc`, called by
+`KMemory64::cloneFrom` during fork. The run was stopped and its exact
+symbols and logs preserved in `d3d10-647ee-before/` under the session
+backup directory. The first SSE3 guest used static glibc and failed in
+libc startup before reaching its checks; the freestanding replacement
+retains every SSE3 assertion and page guard. The static-libc startup
+failure is also preserved as a separate diagnostic. Resolve the Wine64
+allocator failure and rerun the browser gate before resuming game acceptance.

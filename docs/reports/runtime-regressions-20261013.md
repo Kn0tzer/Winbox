@@ -382,3 +382,53 @@ archive is unchanged; hashes are in `portal-stored-archive.json`.
 Portal rendering and gameplay acceptance, Gang Beasts, and the performance
 target remain open. The replay still has incorrect scene textures; visible
 replay pixels do not establish correct game rendering or playability.
+
+### CPU32 SSE3 duplicate moves (2026-10-16)
+
+The live resolve2 run restores visible final pixels, reproducing the
+experimental copy replay. It still has corrupt textures and no readable
+menu. A read-only scan of typed Vulkan image objects in WASM memory found
+590 of 591 candidates at offset zero, including distinct compressed
+textures sharing one allocation. Their duplicated bytes do not match the
+sampled source VPK payloads. Evidence is in
+`test-results/portal-resolve2-oct15/image-bindings.json` and the Oct16
+`portal-{bindings,allocator,granularity,chunk}-diag-oct16/` probes.
+
+Temporary shim logging confirms the caller passes zero offsets. DXVK
+diagnostics then show image size 3,145,728 and alignment 256 at the driver
+return, but alignment zero at the allocator input, producing a zero-length
+slice. The disassembly broadcasts a qword mask with `F2 0F 12` MOVDDUP
+before masking size and alignment together. CPU32 decoded this prefix as
+MOVLPS, preserving the zero upper half of the mask. CPU64 already has a
+distinct implementation. No allocator or Vulkan-layout workaround was
+introduced; the temporary DXVK logging has been removed.
+
+CPU32 now implements MOVDDUP, MOVSLDUP and MOVSHDUP with distinct prefix
+decoding and bit-preserving operations. The native fail-first regression
+checks every register pair, self-aliasing, unaligned memory and DXVK's
+allocation mask. All 603 native CPU32 checks pass. A standalone i386 guest
+passes under QEMU and on repaired WASM `647ee26bfbab` in the browser. It
+also checks flags and an eight-byte memory operand ending at a protected
+page boundary. CPU64 passes all 327 checks, and all seven native Vulkan
+harness groups pass. The 120-file fast suite and type checking pass. Current logs are under
+`test-results/acceptance-oct16/`; pre-repair evidence is backed up under
+`/home/ubuntu/backups/boxedwine64-functional-20261015/cpu32-sse3-before/`.
+
+The initial browser fixture linked static glibc and failed with
+`malloc(): corrupted top size` during libc startup before reaching the
+instruction checks. That failure does not establish an SSE3 regression;
+the native fail-first test does. The replacement uses direct Linux
+syscalls and retains every instruction assertion and the page guard.
+Both the source and the failing libc-startup logs are preserved in
+`cpu32-sse3-static-glibc/` under the session backup directory.
+
+The fresh full browser run also exposed a separate Wine64 startup trap in
+D3D10. The matching symbol map identifies
+`emscripten_builtin_malloc → KMemory64::cloneFrom → KProcess::forkProcess64
+→ KProcess::clone64 → CPU64::step`. The run was stopped after preserving
+logs, build provenance and symbols in `d3d10-647ee-before/` under the
+session backup directory. The browser gate remains open; a successful
+instruction regression does not close this allocator failure.
+
+Portal gameplay acceptance, Gang Beasts, and the requested performance
+work remain open. The CPU repair still requires a fresh real-game run.

@@ -571,6 +571,40 @@ void common_movapsE128Xmm(CPU* cpu, U32 reg, U32 address) {
     cpu->memory->writeq(address+8, cpu->xmm[reg].ps.u64[1]);
 }
 
+// SSE3 duplicate moves preserve bits, including NaN payloads and signed zero.
+void common_movddupXmmXmm(CPU* cpu, U32 r1, U32 r2) {
+    U64 value = cpu->xmm[r2].pi.u64[0];
+    cpu->xmm[r1].pi.u64[0] = value;
+    cpu->xmm[r1].pi.u64[1] = value;
+}
+void common_movddupXmmE64(CPU* cpu, U32 reg, U32 address) {
+    U64 value = cpu->memory->readq(address);
+    cpu->xmm[reg].pi.u64[0] = value;
+    cpu->xmm[reg].pi.u64[1] = value;
+}
+void common_movsldupXmmXmm(CPU* cpu, U32 r1, U32 r2) {
+    U32 low = cpu->xmm[r2].pi.u32[0], high = cpu->xmm[r2].pi.u32[2];
+    cpu->xmm[r1].pi.u32[0] = cpu->xmm[r1].pi.u32[1] = low;
+    cpu->xmm[r1].pi.u32[2] = cpu->xmm[r1].pi.u32[3] = high;
+}
+void common_movsldupXmmE128(CPU* cpu, U32 reg, U32 address) {
+    U64 first = cpu->memory->readq(address), second = cpu->memory->readq(address + 8);
+    U32 low = (U32)first, high = (U32)second;
+    cpu->xmm[reg].pi.u32[0] = cpu->xmm[reg].pi.u32[1] = low;
+    cpu->xmm[reg].pi.u32[2] = cpu->xmm[reg].pi.u32[3] = high;
+}
+void common_movshdupXmmXmm(CPU* cpu, U32 r1, U32 r2) {
+    U32 low = cpu->xmm[r2].pi.u32[1], high = cpu->xmm[r2].pi.u32[3];
+    cpu->xmm[r1].pi.u32[0] = cpu->xmm[r1].pi.u32[1] = low;
+    cpu->xmm[r1].pi.u32[2] = cpu->xmm[r1].pi.u32[3] = high;
+}
+void common_movshdupXmmE128(CPU* cpu, U32 reg, U32 address) {
+    U64 first = cpu->memory->readq(address), second = cpu->memory->readq(address + 8);
+    U32 low = (U32)(first >> 32), high = (U32)(second >> 32);
+    cpu->xmm[reg].pi.u32[0] = cpu->xmm[reg].pi.u32[1] = low;
+    cpu->xmm[reg].pi.u32[2] = cpu->xmm[reg].pi.u32[3] = high;
+}
+
 void common_movhlpsXmmXmm(CPU* cpu, U32 r1, U32 r2) {
     cpu->xmm[r1].ps.u64[0] = cpu->xmm[r2].ps.u64[1];
 }

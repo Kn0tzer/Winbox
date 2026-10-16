@@ -1037,6 +1037,43 @@ void testSseAddps_0x358() {
     verifyOnlyXmmChanged(0, expectedLow, expectedHigh, "sse addps mem");
 }
 
+// DXVK duplicates a qword alignment mask before masking both size and
+// alignment. Treating F2 0F 12 as MOVLPS leaves the upper mask zero and
+// turns every image allocation into a zero-length slice.
+void testSse3DuplicateMoves() {
+    struct DuplicateCase { U8 prefix, opcode; U64 low, high; };
+    const DuplicateCase cases[] = {
+        {0xf2, 0x12, XMM_SRC_LOW, XMM_SRC_LOW}, // MOVDDUP
+        {0xf3, 0x12, 0xeeff2468eeff2468ULL, 0x5566778855667788ULL}, // MOVSLDUP
+        {0xf3, 0x16, 0xaabbccddaabbccddULL, 0x1122334411223344ULL}, // MOVSHDUP
+    };
+    for (const auto& c : cases) for (int dst = 0; dst < 8; ++dst) {
+        for (int src = 0; src < 8; ++src) {
+            initSse();
+            setXmm(src, XMM_SRC_LOW, XMM_SRC_HIGH);
+            emitSseRegReg(c.prefix, c.opcode, dst, src);
+            runTestCPU();
+            verifyXmmMove(dst, c.low, c.high, src,
+                XMM_SRC_LOW, XMM_SRC_HIGH, "sse3 duplicate reg");
+        }
+        initSse();
+        memory->writeq(TEST_HEAP_ADDRESS + MEM_SRC + 3, XMM_SRC_LOW);
+        memory->writeq(TEST_HEAP_ADDRESS + MEM_SRC + 11, XMM_SRC_HIGH);
+        emitSseRegMem(c.prefix, c.opcode, dst, MEM_SRC + 3);
+        runTestCPU();
+        verifyOnlyXmmChanged(dst, c.low, c.high, "sse3 duplicate unaligned mem");
+    }
+    initSse();
+    setXmm(0, 3145728, 256);
+    setXmm(1, 0, 0);
+    memory->writeq(TEST_HEAP_ADDRESS + MEM_SRC, ~0ULL);
+    emitSseRegMem(0xf2, 0x12, 1, MEM_SRC);
+    emitSseRegReg(0x66, 0xdb, 0, 1); // PAND xmm0, xmm1
+    runTestCPU();
+    if (cpu->xmm[0].pi.u64[0] != 3145728 || cpu->xmm[0].pi.u64[1] != 256)
+        failed("sse3 movddup preserves both DXVK allocation lanes");
+}
+
 void testSseMoveUnpack_0x312_0x313_0x316_0x317_0x328_0x329() {
     runSse128RegOnly(0, 0, 0x12, 0xaabbccddeeff2468ULL, 0x1122334455667788ULL, 0x1234567890abcdefULL, 0x24680bdf13579aceULL, 0x24680bdf13579aceULL, 0x1122334455667788ULL, "sse movhlps");
     runSse128(0, 0, 0x14, 0xaabbccddeeff2468ULL, 0x1122334455667788ULL, 0x1234567890abcdefULL, 0x24680bdf13579aceULL, 0x90abcdefeeff2468ULL, 0x12345678aabbccddULL, "sse unpcklps");

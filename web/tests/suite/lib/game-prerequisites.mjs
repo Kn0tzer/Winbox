@@ -11,8 +11,8 @@ export const gamePrerequisites = {
   },
   portal: {
     architecture: 'x86',
-    unit: [...kernel, 'zip-stored-seek', 'zip-decompression', 'v2-replay-state'],
-    browser: [...input, 'boot32-vkboot', 'd3d9-32'],
+    unit: [...kernel, 'zip-stored-seek', 'zip-decompression', 'v2-replay-state', 'vk-resolve-image2'],
+    browser: [...input, 'boot32-vkboot', 'cpu32-sse3', 'd3d9-32'],
     uncoveredBehavior: ['Source engine material/shader workload', '32-bit game audio playback', 'interactive map loading, movement and camera control'],
   },
   gangbeasts: {
