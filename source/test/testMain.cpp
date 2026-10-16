@@ -666,6 +666,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testGl32TrapWitness, "Test gl32 Trap Witness (Stage A-GL)"},
     {testDemandPageIsolation, "Test demand-page isolation"},
     {testSse3DuplicateMoves, "Test SSE3 duplicate moves"},
+    {testSse3Haddpd, "Test SSE3 HADDPD"},
 };
 
 } // namespace

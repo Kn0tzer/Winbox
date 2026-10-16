@@ -571,6 +571,22 @@ void common_movapsE128Xmm(CPU* cpu, U32 reg, U32 address) {
     cpu->memory->writeq(address+8, cpu->xmm[reg].ps.u64[1]);
 }
 
+// Snapshot both operands before writing: Chromium uses HADDPD xmm7,xmm7.
+void common_haddpdXmmXmm(CPU* cpu, U32 r1, U32 r2) {
+    const simde__m128d dst = cpu->xmm[r1].pd;
+    const simde__m128d src = cpu->xmm[r2].pd;
+    cpu->xmm[r1].pd.f64[0] = dst.f64[0] + dst.f64[1];
+    cpu->xmm[r1].pd.f64[1] = src.f64[0] + src.f64[1];
+}
+void common_haddpdXmmE128(CPU* cpu, U32 reg, U32 address) {
+    simde__m128d src;
+    src.u64[0] = cpu->memory->readq(address);
+    src.u64[1] = cpu->memory->readq(address + 8);
+    const simde__m128d dst = cpu->xmm[reg].pd;
+    cpu->xmm[reg].pd.f64[0] = dst.f64[0] + dst.f64[1];
+    cpu->xmm[reg].pd.f64[1] = src.f64[0] + src.f64[1];
+}
+
 // SSE3 duplicate moves preserve bits, including NaN payloads and signed zero.
 void common_movddupXmmXmm(CPU* cpu, U32 r1, U32 r2) {
     U64 value = cpu->xmm[r2].pi.u64[0];

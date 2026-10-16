@@ -49,13 +49,22 @@ static int check_instructions(void) {
     __asm__ volatile("movdqu (%1), %%xmm0; movddup (%2), %%xmm1; pand %%xmm1, %%xmm0; movdqu %%xmm0, %0"
                      : "=m"(output) : "r"(allocation), "r"(mapping + page - 8) : "xmm0", "xmm1", "memory");
     if (output[0] != allocation[0] || output[1] != allocation[1]) return 6;
+    // Exact Chromium startup fault: HADDPD xmm7,xmm7, plus a memory source.
+    const uint64_t doubles[2] __attribute__((aligned(16))) = {0x3ff4000000000000ULL, 0xc00c000000000000ULL}; // 1.25, -3.5
+    const uint64_t other[2] __attribute__((aligned(16))) = {0x4024000000000000ULL, 0x3fe0000000000000ULL}; // 10, 0.5
+    __asm__ volatile("movupd (%1), %%xmm7; haddpd %%xmm7, %%xmm7; movupd %%xmm7, %0"
+                     : "=m"(output) : "r"(doubles) : "xmm7", "memory");
+    if (output[0] != 0xc002000000000000ULL || output[1] != 0xc002000000000000ULL) return 7;
+    __asm__ volatile("movupd (%1), %%xmm0; haddpd (%2), %%xmm0; movupd %%xmm0, %0"
+                     : "=m"(output) : "r"(doubles), "r"(other) : "xmm0", "memory");
+    if (output[0] != 0xc002000000000000ULL || output[1] != 0x4025000000000000ULL) return 8;
     syscall3(91, address, page * 2, 0);
     return 0;
 }
 
 int guest_main(void) {
     int result = check_instructions();
-    char message[] = "cpu32-sse3: MOVDDUP MOVSLDUP MOVSHDUP PAGE_GUARD RESULT 0\n";
+    char message[] = "cpu32-sse3: MOVDDUP MOVSLDUP MOVSHDUP HADDPD PAGE_GUARD RESULT 0\n";
     message[sizeof(message) - 3] = '0' + result;
     syscall3(4, 1, (unsigned)(uintptr_t)message, sizeof(message) - 1);
     return result;

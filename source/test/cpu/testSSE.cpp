@@ -1037,6 +1037,44 @@ void testSseAddps_0x358() {
     verifyOnlyXmmChanged(0, expectedLow, expectedHigh, "sse addps mem");
 }
 
+// Chromium 109 uses 66 0F 7C FF while collecting startup statistics.
+// A register-only HADDPD must not fault or overwrite a source before summing it.
+void testSse3Haddpd() {
+    const U64 a = bitsFromDouble(1.25), b = bitsFromDouble(-3.5);
+    const U64 c = bitsFromDouble(10.0), d = bitsFromDouble(0.5);
+    const U64 sumA = bitsFromDouble(-2.25), sumB = bitsFromDouble(10.5);
+    for (int dst = 0; dst < 8; ++dst) {
+        for (int src = 0; src < 8; ++src) {
+            initSse();
+            setXmm(dst, a, b);
+            if (dst != src) setXmm(src, c, d);
+            cpu->flags = SSE_FLAG_MASK | DF;
+            emitSseRegReg(0x66, 0x7c, dst, src);
+            runTestCPU();
+            verifyXmmMove(dst, sumA, dst == src ? sumA : sumB,
+                src, c, d, "sse3 haddpd reg");
+            if ((TestX86::actualFlags(cpu, true) & (SSE_FLAG_MASK | DF)) != (SSE_FLAG_MASK | DF))
+                failed("sse3 haddpd preserves flags");
+        }
+        initSse();
+        setXmm(dst, a, b);
+        writeXmmMem(MEM_SRC, c, d);
+        emitSseRegMem(0x66, 0x7c, dst, MEM_SRC);
+        runTestCPU();
+        verifyOnlyXmmChanged(dst, sumA, sumB, "sse3 haddpd mem");
+        if (memory->readq(TEST_HEAP_ADDRESS + MEM_SRC) != c ||
+            memory->readq(TEST_HEAP_ADDRESS + MEM_SRC + 8) != d)
+            failed("sse3 haddpd preserves source memory");
+    }
+    // Preserve the sign of -0 + -0; opposite signed zeroes sum to +0.
+    initSse();
+    setXmm(0, bitsFromDouble(-0.0), bitsFromDouble(-0.0));
+    writeXmmMem(MEM_SRC, bitsFromDouble(-0.0), bitsFromDouble(0.0));
+    emitSseRegMem(0x66, 0x7c, 0, MEM_SRC);
+    runTestCPU();
+    verifyOnlyXmmChanged(0, bitsFromDouble(-0.0), bitsFromDouble(0.0), "sse3 haddpd signed zero");
+}
+
 // DXVK duplicates a qword alignment mask before masking both size and
 // alignment. Treating F2 0F 12 as MOVLPS leaves the upper mask zero and
 // turns every image allocation into a zero-length slice.

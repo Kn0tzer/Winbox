@@ -1122,6 +1122,8 @@ const InstructionInfo instructionInfo[] = {
     {0, 0, 0, 0, 0, 0}, // MovapsXmmXmm
     {0, 128, 0, 0, 0, 0}, // MovapsXmmE128
     {0, 0, 128, 0, 0, 0}, // MovapsE128Xmm
+    {0, 0, 0, 0, 0, 0}, // HaddpdXmmXmm
+    {0, 128, 0, 0, 0, 0}, // HaddpdXmmE128
     {0, 0, 0, 0, 0, 0}, // MovddupXmmXmm
     {0, 64, 0, 0, 0, 0}, // MovddupXmmE64
     {0, 0, 0, 0, 0, 0}, // MovsldupXmmXmm
@@ -3025,6 +3027,8 @@ const LogInstruction instructionLog[] = {
     {"Movaps", 0, logXmmXmm},
     {"Movaps", 128, logXmmE},
     {"Movaps", 128, logEXmm},
+    {"Haddpd", 0, logXmmXmm},
+    {"Haddpd", 128, logXmmE},
     {"Movddup", 0, logXmmXmm},
     {"Movddup", 64, logXmmE},
     {"Movsldup", 0, logXmmXmm},
@@ -5908,6 +5912,7 @@ DecodeRMr sse0x16c(PunpcklqdqXmmXmm, PunpcklqdqXmmE128);
 DecodeRMr sse0x16d(PunpckhqdqXmmXmm, PunpckhqdqXmmE128);
 DecodeRMr sse0x16e(MovdXmmR32, MovdXmmE32);
 DecodeRMr sse0x16f(MovdqaXmmXmm, MovdqaXmmE128);
+DecodeRMr sse0x17c(HaddpdXmmXmm, HaddpdXmmE128);
 DecodeRMr sse0x170(PshufdXmmXmm, PshufdXmmE128, 8);
 DecodeGroup sse0x171(Invalid, Invalid, PsrlwXmm, Invalid, PsrawXmm, Invalid, PsllwXmm, Invalid, 8);
 DecodeGroup sse0x172(Invalid, Invalid, PsrldXmm, Invalid, PsradXmm, Invalid, PslldXmm, Invalid, 8);
@@ -6056,7 +6061,7 @@ const Decode* const decoder[] = {
     &sse0x168, &sse0x169, &sse0x16a, &sse0x16b, &sse0x16c, &sse0x16d, &sse0x16e, &sse0x16f,
     // 0x170
     &sse0x170, &sse0x171, &sse0x172, &sse0x173, &sse0x174, &sse0x175, &sse0x176, nullptr,
-    nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &sse0x17e, &sse0x17f,
+    nullptr, nullptr, nullptr, nullptr, &sse0x17c, nullptr, &sse0x17e, &sse0x17f,
     // 0x180
     &decodeJo16, &decodeJno16, &decodeJb16, &decodeJnb16, &decodeJz16, &decodeJnz16, &decodeJbe16, &decodeJnbe16,
     &decodeJs16, &decodeJns16, &decodeJp16, &decodeJnp16, &decodeJl16, &decodeJnl16, &decodeJle16, &decodeJnle16,
