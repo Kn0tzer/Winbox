@@ -41,7 +41,7 @@ test('browser probes use bounded boot or page-wait helpers', () => {
   assert.ok(files.length >= 8, `expected 8+ browser tests, found ${files.length}`);
   for (const f of files) {
     const src = readFileSync(join(dir, f), 'utf8');
-    assert.ok(src.includes('waitForPageFn') || src.includes('bootGuest') || src.includes('extends D3D9ComprehensiveTest'),
+    assert.ok(src.includes('waitForPageFn') || src.includes('waitForLog') || src.includes('bootGuest') || src.includes('extends D3D9ComprehensiveTest'),
       `${f}: must use a bounded page wait or the shared bounded boot helper`);
     assert.ok(!src.includes('while (true)') && !src.includes('while(true)'),
       `${f}: must not contain infinite while(true) poll loops`);
