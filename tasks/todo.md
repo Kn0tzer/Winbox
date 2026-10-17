@@ -74,3 +74,11 @@
   Global LTO also gives no overall win and stays private. Next: navigation,
   frame-limit settings and isolated dispatch comparisons.
 - [ ] **CP5: Portal acceptance.** Depends on CP4; do not switch early.
+
+### CP4a: Constrained HTTP navigation
+
+- [x] Preserve pre-change direct/relay failures and add the enabled-TCP red test.
+- [x] Implement the same-origin gateway configuration and narrow TCP opt-in.
+- [x] Verify the loopback relay boundary and actual Chromium HTTP interaction.
+- [x] Run fast/type/offline checks and commit. Contract:
+  `docs/specs/chromium-networking.md`.

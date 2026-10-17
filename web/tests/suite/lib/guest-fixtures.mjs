@@ -8,6 +8,7 @@ const fixtures = {
   'input-witness': ['tools/guest-fixtures/input-witness.c', '-luser32'],
   'window-state': ['tools/guest-fixtures/window-state.c', '-luser32'],
   'cursor-clip': ['tools/guest-fixtures/cursor-clip.c', '-luser32'],
+  'win32-tcp': ['tools/guest-fixtures/win32-tcp.c', '-lws2_32'],
   'win32-clock': ['tools/guest-fixtures/win32-clock.c'],
   'win32-fonts': ['tools/guest-fixtures/win32-fonts.cpp', '-ldwrite', '-lgdi32', '-luser32'],
   dsptone: ['tools/guest-fixtures/dsptone.c', '-lm'],

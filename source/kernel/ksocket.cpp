@@ -54,9 +54,18 @@ BString socketAddressName(KMemory* memory, U32 address, U32 len) {
 
 U32 ksocket(U32 domain, U32 type, U32 protocol) {
 #if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_GUEST_X64)
-    // Browser experiment is offline: Wine IPC remains in-process, but guest
-    // internet sockets must never become WebSockets to arbitrary host ports.
-    if (domain != K_AF_UNIX && domain != K_AF_NETLINK) return -K_EAFNOSUPPORT;
+    // Offline by default. The launcher sets this host-only flag together with
+    // a fixed same-origin SOCKFS relay before libc reads the environment.
+    // Guest TCP destinations must never become direct host-port WebSockets.
+    if (domain != K_AF_UNIX && domain != K_AF_NETLINK) {
+        static const bool relayEnabled = [] {
+            const char* value = getenv("BW64_NETWORK_RELAY");
+            return value && strcmp(value, "1") == 0;
+        }();
+        if (!relayEnabled || domain != K_AF_INET || type != K_SOCK_STREAM || (protocol != 0 && protocol != 6)) {
+            return -K_EAFNOSUPPORT;
+        }
+    }
 #endif
     if (domain==K_AF_UNIX) {
         std::shared_ptr<KUnixSocketObject> kSocket = std::make_shared<KUnixSocketObject>(domain, type, protocol);

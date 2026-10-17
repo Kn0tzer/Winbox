@@ -342,6 +342,21 @@
         return M ? M.FS : undefined;
     }
 
+    // Networking is fixed at initialization and never takes a destination URL.
+    function configureNetworkRelay(module, env, enabled, href) {
+        delete env["BW64_NETWORK_RELAY"];
+        if (enabled !== true) return;
+        var relay = new URL("./__bw64_tcp", href);
+        if (relay.protocol !== "http:" && relay.protocol !== "https:") {
+            throw new Error("Network relay requires an HTTP or HTTPS runtime origin");
+        }
+        relay.protocol = relay.protocol === "https:" ? "wss:" : "ws:";
+        relay.username = "";
+        relay.password = "";
+        module.websocket = Object.assign(module.websocket || {}, { url: relay.href, subprotocol: "binary" });
+        env["BW64_NETWORK_RELAY"] = "1";
+    }
+
     // Resolve the FS object from the live module. preRun runs before main(), and FS
     // (with createDataFile) is already available there — that's exactly when files
     // are meant to be written into the VFS. Returns the FS object, or null if only
@@ -898,6 +913,7 @@
                 // is NOT necessarily === window.Module. Capture it so loadFilesystem
                 // and the FS writes target the real object.
                 liveModule = (typeof Module !== "undefined") ? Module : window.Module;
+                configureNetworkRelay(liveModule, ENV, new URLSearchParams(window.location.search).get("network") === "1", window.location.href);
                 if (window.bwInstallSparseTmpMappings && typeof MEMFS !== "undefined")
                     window.bwInstallSparseTmpMappings(liveModule.FS || window.FS, MEMFS);
                 // Emscripten libc reads the generated global ENV object, not
