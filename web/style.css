@@ -460,14 +460,6 @@ main {
   overflow-wrap:anywhere;
   letter-spacing:-.3px;
 }
-.run-state {
-  font-size:11px;
-  color:var(--muted);
-  padding:4px 7px;
-  background:var(--subtle);
-  border-radius:5px;
-  white-space:nowrap;
-}
 .player-actions {
   display:flex;
   gap:8px;
@@ -482,7 +474,7 @@ main {
 }
 .display {
   position:relative;
-  min-height:500px;
+  aspect-ratio:var(--program-aspect, 4 / 3);
   background:#101216;
   border-radius:14px;
   overflow:hidden;
@@ -491,20 +483,29 @@ main {
 }
 .display iframe {
   display:block;
-  position:relative;
+  position:absolute;
+  inset:0;
   z-index:1;
   width:100%;
-  height:650px;
+  height:100%;
   border:0;
   background:#101216;
 }
-.display #gpuCanvas {
+.display>canvas {
   position:absolute;
   inset:0;
   width:100%;
   height:100%;
   z-index:2;
   pointer-events:none;
+  object-fit:contain;
+}
+.display:fullscreen {
+  width:100%;
+  height:100%;
+  aspect-ratio:auto;
+  border:0;
+  border-radius:0;
 }
 .loading {
   position:absolute;
@@ -550,18 +551,8 @@ main {
   height:5px;
   margin-top:12px;
 }
-.player-footer {
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:16px;
-  margin-top:8px;
-}
-.player-footer p {
+.loading .loading-elapsed {
   font-size:12px;
-  color:var(--muted);
-  overflow-wrap:anywhere;
-  min-width:0;
 }
 .diagnostics {
   margin-top:13px;
@@ -685,10 +676,6 @@ dialog select,dialog input {
   body:has(#player:not([hidden])) .app-shell {
     width:min(100% - 4rem,1440px);
   }
-  .display iframe {
-    height:calc(100dvh - 260px);
-    min-height:650px;
-  }
 }
 @media(max-width:640px) {
   .app-shell {
@@ -765,24 +752,15 @@ dialog select,dialog input {
     font-size:15px;
     max-width:130px;
   }
-  .run-state {
-    display:none;
-  }
   .player-actions {
     gap:2px;
   }
   .stop-button {
     padding-inline:10px;
   }
-  .display {
-    min-height:400px;
-  }
-  .display iframe {
-    height:520px;
-  }
-  .player-footer {
-    gap:8px;
-  }
+  .player-toolbar { flex-wrap:wrap; }
+  .player-actions { margin-left:auto; }
+  .display:has(.loading:not([hidden])) { min-height:340px; }
   .loading {
     padding:20px;
   }

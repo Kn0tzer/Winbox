@@ -33,7 +33,7 @@ try {
   for (const [id, arch, executable] of [['doom','x64',null],['chromium','x86','chrome.exe'],['portal','x86','hl2.exe'],['celeste','x86','Celeste.exe'],['gangbeasts','x64','Gang Beasts.exe'],['explorer','x64',null],['notepad','x64',null],['cube','x64',null],['snake','x64',null]]) {
     await page.locator(`[data-game="${id}"]`).click();
     await page.locator('#display iframe').waitFor();
-    await page.waitForFunction(()=>document.getElementById('runState').textContent==='Running');
+    await page.waitForFunction(()=>document.getElementById('loading').hidden);
     const query = new URL(await page.locator('#display iframe').getAttribute('src'), page.url()).searchParams;
     assert.equal(query.get('arch'),arch,id);assert.equal(query.get('installation'),executable?'demo-'+id:'demo',id);
     if (executable) {assert.equal(query.get('exe'),executable);assert.equal(query.get('gamezipsize'),'12345678');}
@@ -43,23 +43,26 @@ try {
     assert.ok(!await page.locator('#notice').evaluate(element=>element.classList.contains('error')));
   }
   checks.push('All nine demo tiles launch in one click with correct architecture/entry point');
+  await page.clock.install();
   holdFirstPaint=true;await page.locator('[data-game="notepad"]').click();
-  await page.waitForFunction(()=>document.getElementById('runtimeStatus').textContent==='Not frozen, still loading');
-  await page.waitForFunction(()=>document.getElementById('runtimeStatus').textContent==='Running...');
+  await page.waitForFunction(()=>document.getElementById('status').textContent.includes('first frame'));
+  assert.equal(await page.locator('#loadingActivity').isVisible(),false);
   let runtime=await(await page.locator('#display iframe').elementHandle()).contentFrame();
+  await page.clock.fastForward(16000);
   await runtime.evaluate(()=>parent.postMessage({wine:true,type:'log',data:'Still preparing pixels'},location.origin));
-  await page.waitForFunction(()=>document.getElementById('runtimeStatus').textContent==='Not frozen, still loading');
+  await page.waitForFunction(()=>document.getElementById('loadingActivity').textContent.includes('Not frozen, still loading'));
   await runtime.evaluate(()=>parent.postMessage({wine:true,type:'error',data:'Startup test failure'},location.origin));
-  await page.waitForFunction(()=>document.getElementById('runtimeStatus').textContent==='Startup test failure',null,{timeout:1000});
+  await page.waitForFunction(()=>document.getElementById('status').textContent==='Startup test failure',null,{timeout:1000});
   await runtime.evaluate(()=>parent.postMessage({wine:true,type:'log',data:'Late log after failure'},location.origin));
-  assert.equal(await page.locator('#runtimeStatus').textContent(),'Startup test failure');
+  assert.equal(await page.locator('#status').textContent(),'Startup test failure');
   await page.click('#playerRetry');
-  await page.waitForFunction(()=>document.getElementById('runtimeStatus').textContent==='Not frozen, still loading');
+  await page.waitForFunction(()=>document.getElementById('status').textContent.includes('first frame'));
   runtime=await(await page.locator('#display iframe').elementHandle()).contentFrame();
   await runtime.evaluate(()=>window.finishPaint());
-  await page.waitForFunction(()=>document.getElementById('runtimeStatus').textContent==='Running...');
+  await page.waitForFunction(()=>document.getElementById('loading').hidden);
   await runtime.evaluate(()=>parent.postMessage({wine:true,type:'log',data:'Normal log after painting'},location.origin));
-  assert.equal(await page.locator('#runtimeStatus').textContent(),'Running...');
+  assert.equal(await page.locator('#loading').isVisible(),false);
+  await page.clock.resume();
   await page.click('#stop');await page.waitForFunction(()=>!document.getElementById('folderButton').disabled);holdFirstPaint=false;
   checks.push('Startup reassurance follows recent logs, expires when logs stop, and clears after the first visible frame');
   const folder=join(temp,'Fixture'); await mkdir(folder);
@@ -69,13 +72,13 @@ try {
   await page.locator('#display iframe').waitFor();
   let query=new URL(await page.locator('#display iframe').getAttribute('src'),page.url()).searchParams;
   assert.equal(query.get('arch'),'x86');assert.equal(query.get('exe'),'Fixture.exe');
-  await page.waitForFunction(()=>document.getElementById('runState').textContent==='Running');
+  await page.waitForFunction(()=>document.getElementById('loading').hidden);
   await page.click('#stop');
   await rm(folder,{recursive:true}); // Saved files must survive removal of the source folder.
   await page.reload(); await page.waitForFunction(()=>window.wineLibrary&&!document.getElementById('library').hasAttribute('aria-busy'));
   assert.match(await page.locator('#library').textContent(),/Fixture/);
   await page.locator('.saved-run').click();await page.locator('#display iframe').waitFor();
-  query=new URL(await page.locator('#display iframe').getAttribute('src'),page.url()).searchParams;assert.equal(query.get('exe'),'Fixture.exe');await page.waitForFunction(()=>document.getElementById('runState').textContent==='Running');await page.click('#stop');
+  query=new URL(await page.locator('#display iframe').getAttribute('src'),page.url()).searchParams;assert.equal(query.get('exe'),'Fixture.exe');await page.waitForFunction(()=>document.getElementById('loading').hidden);await page.click('#stop');
   await page.waitForFunction(()=>!document.getElementById('folderButton').disabled);assert.ok(!await page.locator('#notice').evaluate(element=>element.classList.contains('error')));
   checks.push('Folder selection auto-detects and auto-starts; persisted folder reruns in one click');
   await page.getByRole('button',{name:'Settings for Fixture'}).click();
@@ -85,7 +88,7 @@ try {
   await page.reload();await page.waitForFunction(()=>window.wineGames);assert.equal(await page.locator('html').getAttribute('data-theme'),'dark');
   checks.push('Native settings dialogs, Escape dismissal and saved appearance work');
   failPortal=true;await page.locator('[data-game="portal"]').click();await page.locator('#playerRetry').waitFor({state:'visible'});assert.match(await page.locator('#status').textContent(),/unavailable/);failPortal=false;
-  await page.click('#playerRetry');await page.waitForFunction(()=>document.getElementById('runState').textContent==='Running');await page.click('#stop');await page.waitForFunction(()=>!document.getElementById('folderButton').disabled);
+  await page.click('#playerRetry');await page.waitForFunction(()=>document.getElementById('loading').hidden);await page.click('#stop');await page.waitForFunction(()=>!document.getElementById('folderButton').disabled);
   checks.push('Failed demo download exposes retry and recovers without a reload');
   for (const width of [320,640,1920]) {
     await page.setViewportSize({width,height:1000});

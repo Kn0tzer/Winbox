@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@mercuryworkshop/wisp-js':
+        specifier: 0.5.0
+        version: 0.5.0
       '@zip.js/zip.js':
         specifier: 2.22.0
         version: 2.22.0
@@ -26,9 +29,13 @@ importers:
         version: 5.9.3
       ws:
         specifier: 8.22.0
-        version: 8.22.0
+        version: 8.22.0(bufferutil@4.1.0)
 
 packages:
+
+  '@mercuryworkshop/wisp-js@0.5.0':
+    resolution: {integrity: sha512-YIPnONZdMYRXLdttL/zQM2PwjHQw3LfNPWTP54Lqhehs79lcORY8rwv5j7bGnuz9S31rZIh1OEzldubE9dtnoA==}
+    hasBin: true
 
   '@playwright/test@1.58.2':
     resolution: {integrity: sha512-akea+6bHYBBfA9uQqSYmlJXn61cTa+jbO87xVLCWbTqbWadRVmhxlXATaOjOgcBaWU4ePo0wB41KMFv3o35IXA==}
@@ -42,14 +49,30 @@ packages:
     resolution: {integrity: sha512-QgkA+BSEPNR0C2l6xbSu5HDXieUxiuDK+Jx4ZeZlp22QO/qRUIF6JRXdxh4WlLiQUmnE/9aaGerlni+OY81wqg==}
     engines: {bun: '>=0.7.0', deno: '>=1.0.0', node: '>=18.0.0'}
 
+  bufferutil@4.1.0:
+    resolution: {integrity: sha512-ZMANVnAixE6AWWnPzlW2KpUrxhm9woycYvPOo67jWHyFowASTEd9s+QN1EIMsSDtwhIxN4sWE1jotpuDUIgyIw==}
+    engines: {node: '>=6.14.2'}
+
+  commander@15.0.0:
+    resolution: {integrity: sha512-z67u4ZhzCL/Tydu1lJARtEZYWbWaN7oYLHbsuzocr6y4N6WZAagG3RQ4FW61V1/0+jImpj293XfrcYnd1qxtPg==}
+    engines: {node: '>=22.12.0'}
+
   fsevents@2.3.2:
     resolution: {integrity: sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA==}
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
 
+  ipaddr.js@2.5.0:
+    resolution: {integrity: sha512-aq+t5NAc+cS6rZQQVWC2x98CPqGtKKTMDd4Gaodv0wShnItdKg/51djkGJ1hqH+Oy0ivDftCbSLCQob8zso01w==}
+    engines: {node: '>= 10'}
+
   naga-wasm@30.2.0:
     resolution: {integrity: sha512-TNKjybMep7dUtmslyueiXMhZLa8Tr432/v0XUcbRfip0gb9liiiynoX8iLNcOkqK/8LaIoG+8HEy4LE6/y8R1w==}
     engines: {node: '>=24.12'}
+
+  node-gyp-build@4.8.4:
+    resolution: {integrity: sha512-LA4ZjwlnUblHVgq0oBF3Jl/6h/Nvs5fzBLwdEF4nuxnFdsfajde4WfxtJr3CaiH+F6ewcIB/q4jQ4UzPyid+CQ==}
+    hasBin: true
 
   playwright-core@1.58.2:
     resolution: {integrity: sha512-yZkEtftgwS8CsfYo7nm0KE8jsvm6i/PTgVtB8DL726wNf6H2IMsDuxCpJj59KDaxCtSnrWan2AeDqM7JBaultg==}
@@ -80,6 +103,15 @@ packages:
 
 snapshots:
 
+  '@mercuryworkshop/wisp-js@0.5.0':
+    dependencies:
+      bufferutil: 4.1.0
+      commander: 15.0.0
+      ipaddr.js: 2.5.0
+      ws: 8.22.0(bufferutil@4.1.0)
+    transitivePeerDependencies:
+      - utf-8-validate
+
   '@playwright/test@1.58.2':
     dependencies:
       playwright: 1.58.2
@@ -88,10 +120,20 @@ snapshots:
 
   '@zip.js/zip.js@2.22.0': {}
 
+  bufferutil@4.1.0:
+    dependencies:
+      node-gyp-build: 4.8.4
+
+  commander@15.0.0: {}
+
   fsevents@2.3.2:
     optional: true
 
+  ipaddr.js@2.5.0: {}
+
   naga-wasm@30.2.0: {}
+
+  node-gyp-build@4.8.4: {}
 
   playwright-core@1.58.2: {}
 
@@ -103,4 +145,6 @@ snapshots:
 
   typescript@5.9.3: {}
 
-  ws@8.22.0: {}
+  ws@8.22.0(bufferutil@4.1.0):
+    optionalDependencies:
+      bufferutil: 4.1.0

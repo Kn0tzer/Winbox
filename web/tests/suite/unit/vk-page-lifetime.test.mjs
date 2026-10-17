@@ -55,7 +55,7 @@ async function appEnvironment(gpu) {
   function element(tag = 'div') {
     const el = {
       tag, children: [], dataset: {}, value: '', textContent: '', disabled: false,
-      classList: { add() {}, remove() {}, toggle() {} }, style: {}, contentWindow: { document: { getElementById: () => null } },
+      classList: { add() {}, remove() {}, toggle() {} }, style: { setProperty() {}, removeProperty() {} }, contentWindow: { document: { getElementById: () => null } },
       setAttribute() {}, removeAttribute() {}, focus() {}, close() {}, showModal() {},
       append(...children) { for (const child of children) { this.children.push(child); if (child.id) elements.set(child.id, child); } },
       add(option) { this.children.push(option); }, replaceChildren(...children) { this.children = children; },
@@ -65,6 +65,8 @@ async function appEnvironment(gpu) {
     return el;
   }
   for (const [, id] of source.matchAll(/\$\('([^']+)'\)/g)) elements.set(id, element());
+  const markup = await readFile(new URL('../../../index.html', import.meta.url), 'utf8');
+  for (const [, id] of markup.matchAll(/\bid="([^"]+)"/g)) if (!elements.has(id)) elements.set(id, element());
   elements.get('backend').value = 'webgl';
   const demo = { onclick: () => globalThis.wineGames.install('doom') };
   const document = {

@@ -6,7 +6,7 @@ import { formatBytes } from './games.mjs';
 import { prepareArchive, removeArchive } from './package-archive.mjs';
 import { storedFiles, snapshotRuntime, readSaveBlobs } from './session-storage.mjs';
 import { replaceInstallation } from './installation.mjs';
-import { startupMessage, visibleFrame } from './startup.mjs';
+import { startupProgress, visibleFrame } from './startup.mjs';
 
 const $ = id => /** @type {any} */ (document.getElementById(id));
 const icon = name => {
@@ -22,7 +22,7 @@ const text = (tag, value, className = '') => {
 };
 let current = null, selected = null, busy = false, operation = null, lastAction = null;
 let generation = 0, stopping = null;
-const settings = { appearance: 'system', graphics: 'auto' };
+const settings = { appearance: 'system', graphics: 'auto', internet: 'off', enhancement: 'off', sharpness: 0.5 };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('wine.launcher.settings.v1') || '{}')); } catch {}
 function appearance(value) {
   document.documentElement.dataset.theme = ['light', 'dark'].includes(value) ? value : 'system';
@@ -32,6 +32,10 @@ function appearance(value) {
 }
 appearance(settings.appearance);
 $('backend').value = settings.graphics;
+for (const name of ['internet', 'enhancement', 'sharpness']) {
+  $(name).value = settings[name];
+  $(name).onchange = () => { settings[name] = name === 'sharpness' ? Number($(name).value) : $(name).value; persistSettings(); };
+}
 $('appearance').onchange = () => { settings.appearance = $('appearance').value; appearance(settings.appearance); persistSettings(); };
 $('backend').onchange = () => { settings.graphics = $('backend').value; persistSettings(); };
 function persistSettings() { try { localStorage.setItem('wine.launcher.settings.v1', JSON.stringify(settings)); } catch {} }
@@ -58,17 +62,18 @@ async function action(fn, { retry = fn } = {}) {
   catch (error) {
     if (active.signal.aborted) return;
     const value = errorText(error); message(value, true);
-    if (!$('player').hidden) { $('loading').hidden = false; $('loadingTitle').textContent = 'Could not start this program'; status(value); $('runState').textContent = 'Needs attention'; $('playerRetry').hidden = !lastAction; }
+    if (!$('player').hidden) { $('loading').hidden = false; $('loadingTitle').textContent = 'Could not start this program'; status(value); $('loadingActivity').hidden = true; $('playerRetry').hidden = !lastAction; }
     $('retry').hidden = !lastAction;
     if ($('folderDialog').open) { $('folderError').hidden = false; $('folderError').textContent = value; }
   } finally { if (operation === active) operation = null; lock(false); }
 }
 function preparing(title) {
   $('launcher').hidden = true; $('player').hidden = false;
-  $('runtimeTitle').textContent = title; $('runState').textContent = 'Starting';
+  $('runtimeTitle').textContent = title;
   $('loadingTitle').textContent = 'Getting things ready'; $('loading').hidden = false;
   $('launchProgress').hidden = true; $('playerRetry').hidden = true;
-  $('runtimeStatus').textContent = 'The first launch can take a little longer.';
+  $('loadingActivity').hidden = true; $('loadingElapsed').textContent = '';
+  $('display').style.removeProperty('--program-aspect');
   $('log').textContent = ''; message('');
   $('runtimeTitle').setAttribute('tabindex', '-1'); $('runtimeTitle').focus({ preventScroll: true });
 }
@@ -79,7 +84,7 @@ async function closeRuntime() {
   let saveError;
   try { const saved = snapshotRuntime(run.frame); run.frame.remove(); await saved; } catch (error) { saveError = error; }
   finally {
-    run.frame.remove(); run.archive?.release(); run.renderer?.destroy(); run.canvas?.remove();
+    run.enhancer?.destroy(); run.frame.remove(); run.archive?.release(); run.renderer?.destroy(); run.canvas?.remove();
     const tier = await run.vkReady?.catch(() => null); await tier?.destroy();
     delete window.bwVkTier; delete window.bwVkTierReady; delete window.wineGpu;
   }
@@ -93,28 +98,30 @@ async function stop() {
     try { await closeRuntime(); } catch (error) { failure = error; }
     $('player').hidden = true; $('launcher').hidden = false;
     $('launchProgress').hidden = true;
-    message(failure ? errorText(failure) : 'Program stopped. Your saved folders are ready to open again.', Boolean(failure));
+    message(failure ? errorText(failure) : '', Boolean(failure));
     $('folderButton').focus({ preventScroll: true });
   })();
   lock(busy);
   try { await stopping; } finally { stopping = null; lock(busy); }
 }
 async function launchFrame(query, title, archive = null) {
+  if (settings.internet === 'on') { query.set('network', '1'); query.set('wisp', '1'); }
+  if (settings.enhancement !== 'off') query.set('enhance', '1');
   const frame = document.createElement('iframe'); frame.title = title + ' runtime';
   frame.allow = 'cross-origin-isolated; fullscreen'; frame.dataset.installation = query.get('installation');
   const run = { frame, archive, generation: ++generation, renderer: null, vkReady: null, canvas: null,
-    lastLog: null, firstMapped: false, hasFrame: false, failed: false, status: '', progressTimer: null, probe: null };
+    lastLog: null, firstMapped: false, hasFrame: false, failed: false, status: '', progressTimer: null, probe: null,
+    startedAt: performance.now(), enhancer: null, enhancerPending: false };
   current = run;
   if (query.get('gpu') === '1') {
     const canvas = document.createElement('canvas'); canvas.id = 'gpuCanvas'; run.canvas = canvas; $('display').append(canvas);
     try { const { createRenderer } = await import('./webgpu.mjs'); run.renderer = await createRenderer(canvas); window.wineGpu = run.renderer; }
-    catch (error) { canvas.remove(); query.set('gpu', '0'); log('Graphics fallback: ' + errorText(error)); }
+    catch (error) { canvas.remove(); run.canvas = null; query.set('gpu', '0'); log('Graphics fallback: ' + errorText(error)); }
   }
   if (current !== run) { run.renderer?.destroy(); run.canvas?.remove(); archive?.release(); return; }
   frame.src = 'runtime/index.html?v=__RUNTIME_VERSION__&' + query;
   $('display').append(frame); status('Starting ' + title + '. The first run may take a minute.');
-  $('runtimeStatus').textContent = 'Loading the runtime and program files…';
-  run.status = $('runtimeStatus').textContent;
+  run.status = 'Loading the runtime and program files…';
   run.progressTimer = setInterval(() => updateStartup(run, true), 500);
 }
 function updateStartup(run, sample = false) {
@@ -122,13 +129,26 @@ function updateStartup(run, sample = false) {
   if (sample && run.firstMapped && !run.hasFrame) {
     try {
       run.probe ||= Object.assign(document.createElement('canvas'), { width: 32, height: 20 });
-      run.hasFrame = Boolean(run.renderer?.frames) || visibleFrame(run.frame.contentWindow?.document.getElementById('canvas'), run.probe);
+      run.hasFrame = Boolean(run.renderer?.frames) || visibleFrame($('vkCanvas') || run.frame.contentWindow?.document.getElementById('canvas'), run.probe);
     } catch { /* The runtime document may still be navigating. */ }
   }
-  if (run.hasFrame) { clearInterval(run.progressTimer); run.probe = null; }
-  const value = startupMessage(run.status, run.lastLog, run.hasFrame);
-  if ($('runtimeStatus').textContent !== value) $('runtimeStatus').textContent = value;
-  if (!$('loading').hidden && $('status').textContent !== value) status(value);
+  if (run.hasFrame) {
+    clearInterval(run.progressTimer); run.probe = null;
+    $('loading').hidden = true; $('launchProgress').hidden = true;
+    if (settings.enhancement !== 'off' && !run.enhancer && !run.enhancerPending) {
+      run.enhancerPending = true;
+      import('./enhancement.mjs').then(({ createEnhancer }) => {
+        if (current !== run) return;
+        run.enhancer = createEnhancer($('display'), () => $('vkCanvas') || run.canvas || run.frame.contentWindow?.document.getElementById('canvas'),
+          { mode: settings.enhancement, sharpness: settings.sharpness, onError: error => { log('Image enhancement disabled: ' + errorText(error)); } });
+      }).catch(error => log('Image enhancement unavailable: ' + errorText(error)));
+    }
+    return;
+  }
+  const progress = startupProgress(run.status, run.lastLog, run.hasFrame, performance.now(), run.startedAt, run.firstMapped);
+  $('loadingTitle').textContent = progress.title; status(progress.detail);
+  $('loadingActivity').textContent = progress.activity; $('loadingActivity').hidden = !progress.activity;
+  $('loadingElapsed').textContent = progress.elapsed;
 }
 async function runSaved(id, signal) {
   const pkg = await getPackage(id);
@@ -188,7 +208,7 @@ function renderDemos() {
     const button = document.createElement('button'); button.type = 'button'; button.className = 'program-card';
     button.dataset.game = demo.id; button.dataset.launch = ''; button.setAttribute('aria-label', 'Run ' + demo.title);
     const play = icon('player-play'); play.classList.add('card-play');
-    button.append(icon(demo.icon), text('strong', demo.title), text('span', demo.description, 'description'), play);
+    button.append(icon(demo.icon), text('strong', demo.title), play);
     button.onclick = () => action(signal => startDemo(demo, signal)); fragment.append(button);
   }
   $('gameCatalog').replaceChildren(fragment); $('gameCatalog').removeAttribute('aria-busy');
@@ -213,7 +233,7 @@ async function refreshLibrary() {
 async function manageFolder(id) {
   selected = await getPackage(id); if (!selected) throw Error('Folder no longer exists.');
   const program = selected.program || await detectProgram(selected.files, { name: selected.name });
-  $('folderTitle').textContent = selected.name; $('folderInfo').textContent = program.arch === 'x86' ? 'Windows 32-bit. Runtime selected automatically.' : 'Windows 64-bit. Runtime selected automatically.';
+  $('folderTitle').textContent = selected.name; $('folderInfo').textContent = ''; $('folderInfo').hidden = true;
   $('executable').replaceChildren();
   for (const file of selected.files) if (/\.exe$/i.test(file.path)) $('executable').add(new Option(file.path, file.path));
   $('executable').value = program.exe; $('arguments').value = JSON.stringify(program.args);
@@ -224,19 +244,21 @@ window.addEventListener('message', event => {
   if (!run || event.origin !== location.origin || event.source !== run.frame.contentWindow || event.data?.wine !== true) return;
   const { type, data } = event.data;
   if (type === 'status') { run.status = String(data); updateStartup(run); }
-  if (type === 'error') { run.failed = true; clearInterval(run.progressTimer); $('runtimeStatus').textContent = String(data); $('loading').hidden = false; $('loadingTitle').textContent = 'The program could not continue'; status(String(data)); $('playerRetry').hidden = !lastAction; $('runState').textContent = 'Stopped'; }
+  if (type === 'error') { run.failed = true; clearInterval(run.progressTimer); $('loading').hidden = false; $('loadingTitle').textContent = 'The program could not continue'; status(String(data)); $('loadingActivity').hidden = true; $('playerRetry').hidden = !lastAction; }
+  if (type === 'size' && Number.isFinite(data?.width) && Number.isFinite(data?.height) && data.width > 0 && data.height > 0) {
+    $('display').style.setProperty('--program-aspect', `${data.width} / ${data.height}`);
+  }
   if (type === 'log') {
     log(String(data));
     run.lastLog = performance.now();
     if (String(data).includes('first window mapped')) {
-      $('loading').hidden = true; $('launchProgress').hidden = true; $('runState').textContent = 'Running';
       run.firstMapped = true;
       run.frame.contentWindow?.document.getElementById('canvas')?.focus({ preventScroll: true });
     }
     updateStartup(run);
   }
   if (type === 'gpu' && run.renderer) {
-    try { run.renderer.render(data); } catch (error) { log('Graphics fallback: ' + errorText(error)); run.renderer.destroy(); run.renderer = null; $('gpuCanvas')?.remove(); }
+    try { run.renderer.render(data); run.firstMapped = true; updateStartup(run, true); } catch (error) { log('Graphics fallback: ' + errorText(error)); run.renderer.destroy(); run.renderer = null; $('gpuCanvas')?.remove(); run.canvas = null; }
   }
   if (type === 'vk' || type === 'vk2') {
     if (!run.vkReady) {
@@ -249,6 +271,9 @@ window.addEventListener('message', event => {
     run.vkReady.then(async tier => {
       if (current !== run || !tier) return;
       await (type === 'vk' ? tier.frame(data) : tier.chunk(data.bytes, data.flags));
+      run.firstMapped = true; updateStartup(run, true);
+      const canvas = $('vkCanvas');
+      if (canvas?.width && canvas?.height) $('display').style.setProperty('--program-aspect', `${canvas.width} / ${canvas.height}`);
     }).catch(error => { if (current === run) log('Graphics fallback: ' + errorText(error)); });
   }
 });
@@ -311,7 +336,7 @@ $('export').onclick = () => action(async () => {
     files.push({ path: 'writable/' + safePath(entry.path.slice('/root/home/username/'.length)), size: entry.data.length, blob: new Blob([entry.data]) });
   }
   const backup = { id: crypto.randomUUID(), created: new Date().toISOString(), files };
-  const archive = await prepareArchive(backup, { prefix: '', onProgress: (done, total) => { $('folderInfo').textContent = 'Preparing backup: ' + formatBytes(done) + ' of ' + formatBytes(total); } });
+  const archive = await prepareArchive(backup, { prefix: '', onProgress: (done, total) => { $('folderInfo').hidden = false; $('folderInfo').textContent = 'Preparing backup: ' + formatBytes(done) + ' of ' + formatBytes(total); } });
   downloadUrl(archive.url, selected.name + '-backup.zip');
   setTimeout(() => { archive.release(); removeArchive(backup).catch(() => {}); }, 60000);
   message('Backup downloaded, including files and local saves.');
@@ -319,7 +344,7 @@ $('export').onclick = () => action(async () => {
 $('restore').onclick = () => $('restoreInput').click();
 $('restoreInput').onchange = () => action(async signal => {
   const file = $('restoreInput').files[0]; if (!file || !selected) return;
-  $('folderInfo').textContent = 'Reading the backup…';
+  $('folderInfo').hidden = false; $('folderInfo').textContent = 'Reading the backup…';
   const entries = await fromZip(file, { strip: false, budget: folderLimits, stream: true, signal });
   try {
   if (entries.some(entry => !entry.path.startsWith('package/') && !entry.path.startsWith('writable/'))) throw Error('Choose a backup created by this launcher.');
@@ -346,6 +371,5 @@ window.wineLibrary = { getPackage, listPackages };
 window.wineGames = { catalog: demos, install: id => action(signal => startDemo(demos.find(demo => demo.id === id), signal)) };
 renderDemos();
 const supported = crossOriginIsolated && typeof SharedArrayBuffer !== 'undefined';
-$('capability').textContent = supported ? 'Ready on this device' : 'Browser setup required';
 if (!supported) message('This browser needs cross-origin isolation to run programs. Reload the page, or open it in a current browser.', true);
 await refreshLibrary().catch(error => { $('library').replaceChildren(text('p', 'Saved folders could not be loaded. Reload to try again.', 'empty')); $('library').removeAttribute('aria-busy'); message(errorText(error), true); });

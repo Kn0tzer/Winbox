@@ -1,13 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { startupMessage } from '../startup.mjs';
-test('recent logs reassure while Running is waiting for its first visible frame',()=>{
- assert.equal(startupMessage('Running...',1000,false,2000),'Not frozen, still loading');
+import { startupProgress } from '../startup.mjs';
+test('startup describes the stage before the first frame', () => {
+  const progress = startupProgress('Running...', 1000, false, 2000, 0);
+  assert.match(progress.detail, /first frame/i);
+  assert.equal(progress.activity, '');
 });
-test('stale logs never claim the program is active',()=>{
- assert.equal(startupMessage('Running...',1000,false,4000),'Running...');
+test('reassurance requires more than fifteen seconds and recent logs', () => {
+  assert.equal(startupProgress('Running...', 15000, false, 15000, 0).activity, '');
+  assert.match(startupProgress('Running...', 16000, false, 16001, 0).activity, /Not frozen, still loading/);
+  assert.doesNotMatch(startupProgress('Running...', 12000, false, 16001, 0).activity, /Not frozen/);
+  assert.match(startupProgress('Running...', 12000, false, 16001, 0).activity, /logs.*4 seconds/i);
 });
-test('the message clears after a visible frame and preserves useful progress',()=>{
- assert.equal(startupMessage('Running...',1000,true,2000),'Running...');
- assert.equal(startupMessage('Downloading runtime: 25%',1000,false,2000),'Downloading runtime: 25%');
+test('visible frames clear startup reassurance and downloads retain progress', () => {
+  assert.equal(startupProgress('Running...', 16000, true, 16001, 0).activity, '');
+  assert.equal(startupProgress('Downloading runtime: 25%', 16000, false, 16001, 0).detail, 'Downloading runtime: 25%');
+  assert.match(startupProgress('Loading rootfs 70%', null, false, 5000, 0).title, /Windows files/);
 });

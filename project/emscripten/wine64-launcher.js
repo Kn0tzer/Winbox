@@ -917,6 +917,7 @@
                 // and the FS writes target the real object.
                 liveModule = (typeof Module !== "undefined") ? Module : window.Module;
                 configureNetworkRelay(liveModule, ENV, new URLSearchParams(window.location.search).get("network") === "1", window.location.href);
+                if (window.bwConfigureNetwork && new URLSearchParams(window.location.search).get("network") === "1") window.bwConfigureNetwork(SOCKFS, DNS);
                 if (window.bwInstallSparseTmpMappings && typeof MEMFS !== "undefined")
                     window.bwInstallSparseTmpMappings(liveModule.FS || window.FS, MEMFS);
                 // Emscripten libc reads the generated global ENV object, not

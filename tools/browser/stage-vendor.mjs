@@ -30,6 +30,11 @@ export async function stageVendors(destination = resolve(root, 'web/vendor')) {
       }
     }
   }
+  const wisp = resolve(destination, 'wisp');
+  await mkdir(wisp, { recursive: true });
+  for (const name of ['dist/wisp-client.mjs', 'LICENSE', 'README.md']) {
+    await copyFile(resolve(root, 'node_modules/@mercuryworkshop/wisp-js', name), resolve(wisp, name.split('/').at(-1)));
+  }
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
