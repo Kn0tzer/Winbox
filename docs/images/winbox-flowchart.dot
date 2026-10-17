@@ -1,0 +1,79 @@
+digraph Winbox {
+  graph [
+    label="WINBOX  /  HOW IT WORKS\nWindows programs, running in your browser",
+    labelloc=t,
+    labeljust=l,
+    fontname="Arial",
+    fontsize=22,
+    fontcolor="#18324b",
+    bgcolor="#f4f7fb",
+    pad=0.35,
+    nodesep=0.42,
+    ranksep=0.48,
+    splines=ortho,
+    outputorder=edgesfirst,
+    newrank=true
+  ];
+
+  node [
+    shape=box,
+    style="rounded,filled",
+    fontname="Arial",
+    fontsize=13,
+    fontcolor="#18324b",
+    color="#b6c7d9",
+    fillcolor="#ffffff",
+    penwidth=1.5,
+    margin="0.18,0.12"
+  ];
+
+  edge [
+    color="#536b80",
+    penwidth=1.6,
+    arrowsize=0.75,
+    arrowhead=normal
+  ];
+
+  folder [label="Folder / ZIP upload\nlocal", fillcolor="#edf5ff", color="#85add8"];
+  demo [label="Pick a demo\non demand", fillcolor="#edf5ff", color="#85add8"];
+  files [label="Program files\nupload: IndexedDB  ·  demos: /games", fillcolor="#eff8f3", color="#82b39c"];
+  detect [label="Find .exe\nx86 / x64", fillcolor="#edf5ff", color="#85add8"];
+  runtime [label="Boxedwine64 + Wine\nWebAssembly  ·  32 / 64-bit", fillcolor="#e5f0ff", color="#4b83c7", penwidth=2];
+
+  folder -> files;
+  demo -> files;
+  files -> detect -> runtime;
+
+  d3d [label="Direct3D 9–11", fillcolor="#fff4e5", color="#d9a152"];
+  d3d12 [label="Direct3D 12", fillcolor="#fff4e5", color="#d9a152"];
+  gl [label="OpenGL", fillcolor="#f2edfa", color="#9a7bc4"];
+  dxvk [label="DXVK", fillcolor="#f4effa", color="#9a7bc4"];
+  vkd3d [label="vkd3d", fillcolor="#f4effa", color="#9a7bc4"];
+  bridge [label="Vulkan bridge\nguest shim  ·  frame stream", fillcolor="#edf4ff", color="#7096ce"];
+  glbridge [label="GL bridge", fillcolor="#f4effa", color="#9a7bc4"];
+  webgpu [label="WebGPU\nSPIR-V → WGSL", fillcolor="#e9f6fb", color="#58a0bd"];
+  webgl [label="WebGL2", fillcolor="#e9f6fb", color="#58a0bd"];
+  glsubset [label="GL subset\nexperimental", style="rounded,dashed,filled", fillcolor="#faf7ff", color="#9a7bc4", fontcolor="#76579f"];
+  player [label="Winbox player\nbrowser-rendered windows\nkeyboard / pointer in  ·  audio out", fillcolor="#eaf7f1", color="#62a889", penwidth=2];
+
+  runtime -> d3d;
+  runtime -> d3d12;
+  runtime -> gl;
+  d3d -> dxvk -> bridge;
+  d3d12 -> vkd3d -> bridge;
+  bridge -> webgpu;
+  gl -> glbridge -> webgl;
+  gl -> glsubset [style=dashed, color="#8a68b4", fontcolor="#76579f", xlabel="optional"];
+  glsubset -> webgpu [style=dashed, color="#8a68b4"];
+  webgpu -> player;
+  webgl -> player;
+
+  browser [shape=note, label="BROWSER\nIsolation  ·  WebAssembly threads  ·  WebGL2\nWebGPU for Vulkan path  ·  compatibility varies", fillcolor="#f7f9fc", color="#c7d3df", fontsize=11];
+  player -> browser [style=dotted, arrowhead=none, color="#aab8c6"];
+
+  { rank=same; folder; demo; }
+  { rank=same; d3d; d3d12; gl; }
+  { rank=same; dxvk; vkd3d; glbridge; }
+  { rank=same; bridge; glsubset; }
+  { rank=same; webgpu; webgl; }
+}

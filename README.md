@@ -9,4 +9,4 @@ Windows apps and games in a browser:
 Codex 6.1 sol in a loop for around 2 weeks. Everything the user interacts with (including this readme) is made by me. The entire backend is complete slop. Based on [Boxedwine64](https://github.com/andrewnakas/Boxedwine64) which is based on [Boxedwine](https://github.com/danoon2/Boxedwine) which is based on [Wine](https://github.com/wine-mirror/wine)
 
 ## How it works
-![Winbox graphics flowchart](docs/images/winbox-flowchart.png)
+![Winbox runtime flowchart](docs/images/winbox-flowchart.png)
