@@ -72,7 +72,8 @@
   Depends on CP3. Retained dynamic-fd cache optimization cuts measured startup
   renderer CPU by 7.0%; repeated 300-frame scenes preserve pixels and timing.
   Global LTO and the frame-rate-limit flag give no useful overall win.
-  HTTP/offline acceptance now passes; next is the isolated dispatch comparison.
+  HTTP/offline acceptance passes. Indirect CPU dispatch costs 16.7% more
+  startup CPU and is rejected; next is sampling actual CPU hotspots.
 - [ ] **CP5: Portal acceptance.** Depends on CP4; do not switch early.
 
 ### CP4a: Constrained HTTP navigation
