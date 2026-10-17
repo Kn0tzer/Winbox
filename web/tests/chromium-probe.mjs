@@ -22,10 +22,11 @@ const chromeArgs = process.env.CHROME_ARGS ? JSON.parse(process.env.CHROME_ARGS)
 ];
 const result = { tag, startedAt: new Date().toISOString(), chromeArgs, pass: false };
 const events = [];
-let page;
+let page, browserCdp, readyCpu;
 try {
   await probe.setup();
   result.build = probe.buildInfo;
+  result.hostBrowserVersion = probe._browser.version();
   result.runtimeCodeHash = probe.runtimeCodeHash;
   const archiveHash = createHash('sha256');
   for await (const chunk of createReadStream(source)) archiveHash.update(chunk);
@@ -39,10 +40,18 @@ try {
   const overlay = join(probe._root, '__fixtures/smoke.zip');
   execFileSync('python3', ['tools/make_gamezip.py', stage, overlay], { stdio: 'pipe' });
   page = await probe.newPage();
+  browserCdp = await withTimeout(probe._browser.newBrowserCDPSession(), 5000, 'CPU accounting session');
   page.on('console', message => {
     const match = message.text().match(/BW_CHROMIUM_JSON (\{.*\})/);
     if (!match) return;
-    try { events.push({ wallMs: Date.now() - started, ...JSON.parse(match[1]) }); } catch {}
+    try {
+      const event = { wallMs: Date.now() - started, ...JSON.parse(match[1]) };
+      events.push(event);
+      if (event.event === 'ready') {
+        readyCpu = withTimeout(browserCdp.send('SystemInfo.getProcessInfo'), 5000, 'ready CPU snapshot')
+          .then(value => ({ value }), error => ({ error: String(error) }));
+      }
+    } catch {}
   });
   const base = probe._server.url;
   const args = [...chromeArgs, '--enable-logging=stderr', '--log-level=0', '--window-size=1000,700',
@@ -52,6 +61,7 @@ try {
     overlay: base + '/__fixtures/smoke.zip', overlaysize: String((await stat(overlay)).size),
     session: '0', persist: '0', fresh: '1', winedbg: process.env.WINEDEBUG || '-all' });
   result.launchParams = Object.fromEntries(params);
+  const cpuBefore = await withTimeout(browserCdp.send('SystemInfo.getProcessInfo'), 5000, 'initial CPU snapshot');
   const started = Date.now();
   await page.goto(base + '/runtime/index.html?' + params, { timeout: 60000 });
   async function waitEvent(predicate, label, remaining = timeoutMs) {
@@ -74,6 +84,17 @@ try {
     throw Error('Timed out waiting for guest ' + label);
   }
   result.ready = await waitEvent(e => e.event === 'ready', 'JavaScript readiness');
+  const capturedCpu = await readyCpu;
+  if (!capturedCpu?.value) throw Error(capturedCpu?.error || 'Missing ready CPU snapshot');
+  const before = new Map(cpuBefore.processInfo.map(p => [p.id, p]));
+  const cpuReady = capturedCpu.value.processInfo;
+  const processes = cpuReady.map(p => ({ ...p, deltaSeconds: p.cpuTime - (before.get(p.id)?.cpuTime || 0) }));
+  // All guest Wasm workers run in one host renderer. Chromium can replace an
+  // idle spare during navigation, so account the stable active renderer only.
+  const active = processes.filter(p => p.type === 'renderer' && p.deltaSeconds > 1);
+  if (active.length !== 1 || !before.has(active[0].id)) throw Error('Guest renderer was replaced or CPU ownership is ambiguous');
+  result.startupCpu = { rendererId: active[0].id, rendererSeconds: active[0].deltaSeconds,
+    before: cpuBefore.processInfo, ready: cpuReady, processes };
 
   let word, inputWord, benchmarkWord;
   const renderEnd = Math.min(started + timeoutMs, Date.now() + 30000);
@@ -129,5 +150,5 @@ try {
   await withTimeout(probe.teardown(), 45000, 'Chromium probe teardown').catch(() => {});
 }
 console.log(JSON.stringify({ dir: probe.dir, pass: result.pass, ready: result.ready, benchmark: result.benchmark,
-  clickLatencyMs: result.clickLatencyMs, error: result.error }));
+  clickLatencyMs: result.clickLatencyMs, startupCpuSeconds: result.startupCpu?.rendererSeconds, error: result.error }));
 process.exit(result.pass ? 0 : 1);
