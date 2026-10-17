@@ -5,6 +5,7 @@ import { resolve, join } from 'node:path';
 
 const root = resolve(import.meta.dirname, '../../../..');
 const fixtures = {
+  'launcher-ready': ['tools/guest-fixtures/launcher-ready.c', '-luser32'],
   'input-witness': ['tools/guest-fixtures/input-witness.c', '-luser32'],
   'window-state': ['tools/guest-fixtures/window-state.c', '-luser32'],
   'cursor-clip': ['tools/guest-fixtures/cursor-clip.c', '-luser32'],

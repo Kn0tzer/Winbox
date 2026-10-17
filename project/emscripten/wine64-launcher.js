@@ -795,6 +795,7 @@
     // dependency so main() proceeds. On an in-page relaunch the resolved
     // promises hand the bytes back instantly.
     function loadFilesystem(els) {
+        window.bwFilesystemReady = false;
         console.log("wine64-launcher: loading 64-bit rootfs from " + (BASE || "./"));
         var downloads = startZipDownloads(); // no-op if already in flight
         var names = neededZips();
@@ -831,6 +832,7 @@
                 });
             })
             .then(function () {
+                window.bwFilesystemReady = window.bwPersistenceRestored === true;
                 if (els.progress) els.progress.hidden = true;
                 if (els.spinner) els.spinner.hidden = true;
                 setStatusText(DO_BOOT ? "Booting wine prefix..." :
@@ -858,6 +860,7 @@
             .catch(function (err) {
                 console.error("wine64-launcher failed: " + err);
                 setStatusText("Failed to load rootfs: " + err);
+                if (window.bwRuntimeError) window.bwRuntimeError(String(err.message || err));
             });
     }
 
@@ -1356,15 +1359,17 @@
         }
     }
     // Restore every persisted file into MEMFS. Runs inside preRun (FS ready,
-    // main() held by the loadWine64Fs run dependency). Never rejects — a broken
-    // store must not block boot.
+    // main() held by the loadWine64Fs run dependency). Failed restoration holds
+    // boot and exposes retry, preserving existing saves and avoiding an unsaved run.
     function restorePersistedFiles() {
-        if (!PERSIST || typeof indexedDB === "undefined") return Promise.resolve();
+        window.bwPersistenceError = null;
+        window.bwPersistenceRestored = !PERSIST;
+        if (!PERSIST) return Promise.resolve();
         var FS = getFS();
-        if (!FS) return Promise.resolve();
+        if (!FS) return Promise.reject(new Error("Filesystem unavailable during save restoration"));
         return persistOpenDb().then(function (db) {
-            return new Promise(function (resolve) {
-                var n = 0, bytes = 0;
+            return new Promise(function (resolve, reject) {
+                var n = 0, bytes = 0, failed = false;
                 var tx = db.transaction(PERSIST_STORE, "readonly");
                 var cur = tx.objectStore(PERSIST_STORE).openCursor();
                 cur.onsuccess = function () {
@@ -1379,28 +1384,35 @@
                         persistManifest[path] = rec.sig;
                         n++; bytes += rec.data.length;
                     } catch (e) {
+                        failed = true;
                         console.warn("persist: restore of " + path + " failed: " + e);
                     }
                     c.continue();
                 };
                 tx.oncomplete = function () {
+                    window.bwPersistenceRestored = !failed;
                     if (n) console.log("persist: restored " + n + " file(s), " + bytes + " bytes");
-                    db.close(); resolve();
+                    db.close();
+                    if (failed) reject(new Error("Some saved files could not be restored"));
+                    else resolve();
                 };
-                tx.onerror = function () { db.close(); resolve(); };
+                tx.onerror = tx.onabort = function () { db.close(); reject(tx.error || new Error("Save restoration failed")); };
             });
-        }).catch(function (e) { console.warn("persist: restore skipped: " + e); });
+        }).catch(function (e) {
+            window.bwPersistenceError = "Saved files could not be restored. Free browser storage or close other tabs, then retry. " + String(e.message || e);
+            throw new Error(window.bwPersistenceError);
+        });
     }
     function persistWalk(FS, dir, out) {
         var names;
-        try { names = FS.readdir(dir); } catch (e) { return; }
+        names = FS.readdir(dir);
         for (var i = 0; i < names.length; i++) {
             var name = names[i];
             if (name === "." || name === "..") continue;
             if (PERSIST_SKIP[name]) continue;
             var p = dir + "/" + name;
             var st;
-            try { st = FS.lstat(p); } catch (e) { continue; }
+            st = FS.lstat(p);
             if (FS.isDir(st.mode)) persistWalk(FS, p, out);
             else if (FS.isFile(st.mode) && st.size <= PERSIST_FILE_CAP) {
                 out[p] = (st.mtime && st.mtime.getTime ? st.mtime.getTime() : Number(st.mtime) || 0) + ":" + st.size;
@@ -1411,7 +1423,7 @@
     // deleted files removed). Cheap when nothing changed: a stat walk + map diff.
     var persistBusy = false;
     function persistTick() {
-        if (persistBusy || !PERSIST) return;
+        if (persistBusy || !PERSIST || window.bwFilesystemReady !== true) return;
         var FS = getFS();
         if (!FS) return;
         var now = {};

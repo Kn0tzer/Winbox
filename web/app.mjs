@@ -1,175 +1,330 @@
-import { fromFiles, fromDrop, fromZip, makeZip, peArchitecture, safePath, checkEntries } from './files.mjs';
-import { listPackages, getPackage, savePackage, deletePackage, overlay } from './storage.mjs';
-import { createRenderer } from './webgpu.mjs';
-import { toWGSL } from './shader.mjs';
-import { builtinGames, fetchGameArchive, formatBytes } from './games.mjs';
-/** @type {(id: string) => HTMLElement & {value: string, disabled: boolean, files: FileList, options: HTMLOptionsCollection, add(option: HTMLOptionElement): void}} */
-const $=id=>/** @type {any} */(document.getElementById(id));
-const IDLE_CARD_STATE='Download and install on this device';
-let selected=null,iframe=null,renderer=null,busy=false;
-const report=text=>{$('status').textContent=text;};
-function log(text){$('log').textContent=($('log').textContent+'\n'+text).slice(-48000);}
-async function guard(fn){if(busy)return;busy=true;try{await fn();}catch(e){report(e.message||String(e));}finally{busy=false;}}
-async function refresh(id=selected?.id){
-  const packages=await listPackages();$('library').replaceChildren(new Option('Select an installation',''));
-  for(const pkg of packages)$('library').add(new Option(pkg.name,pkg.id));
-  $('library').value=id||'';await select(id);
+import { fromFiles, fromDrop, fromZip, cleanupExtracted, ownFiles, sourceDirectory, retainExtracted, removeSource, peArchitecture, safePath, checkEntries, folderLimits, limits } from './files.mjs';
+import { listPackages, getPackage, savePackage, deletePackage } from './storage.mjs';
+import { detectProgram, runtimeParameters } from './launch.mjs';
+import { demos, demoParameters } from './demos.mjs';
+import { formatBytes } from './games.mjs';
+import { prepareArchive, removeArchive } from './package-archive.mjs';
+import { storedFiles, snapshotRuntime, readSaveBlobs } from './session-storage.mjs';
+import { replaceInstallation } from './installation.mjs';
+
+const $ = id => /** @type {any} */ (document.getElementById(id));
+const icon = name => {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.classList.add('icon'); svg.setAttribute('aria-hidden', 'true');
+  const use = document.createElementNS(svg.namespaceURI, 'use');
+  use.setAttribute('href', 'assets/icons.svg#' + name); svg.append(use); return svg;
+};
+const text = (tag, value, className = '') => {
+  const node = document.createElement(tag); node.textContent = value;
+  if (className) node.className = className;
+  return node;
+};
+let current = null, selected = null, busy = false, operation = null, lastAction = null;
+let generation = 0, stopping = null;
+const settings = { appearance: 'system', graphics: 'auto' };
+try { Object.assign(settings, JSON.parse(localStorage.getItem('wine.launcher.settings.v1') || '{}')); } catch {}
+function appearance(value) {
+  document.documentElement.dataset.theme = ['light', 'dark'].includes(value) ? value : 'system';
+  $('appearance').value = value;
+  const dark = value === 'dark' || (value === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.querySelector('meta[name="theme-color"]').setAttribute('content', dark ? '#141518' : '#f5f6f8');
 }
-async function select(id){
-  selected=id?await getPackage(id):null;$('executable').replaceChildren();
-  for(const f of selected?.files||[])if(/\.exe$/i.test(f.path))$('executable').add(new Option(f.path,f.path));
-  for(const control of ['patch','export','restore','remove'])$(control).disabled=!selected;
-  $('start').disabled=!selected||!$('executable').value;
+appearance(settings.appearance);
+$('backend').value = settings.graphics;
+$('appearance').onchange = () => { settings.appearance = $('appearance').value; appearance(settings.appearance); persistSettings(); };
+$('backend').onchange = () => { settings.graphics = $('backend').value; persistSettings(); };
+function persistSettings() { try { localStorage.setItem('wine.launcher.settings.v1', JSON.stringify(settings)); } catch {} }
+function message(value, error = false) {
+  $('notice').hidden = !value; $('noticeText').textContent = value; $('notice').classList.toggle('error', error);
 }
-async function install(files,name,game){
-  checkEntries(files);
-  if(!files.some(f=>/\.exe$/i.test(f.path)))throw new Error('No .exe was found in the folder');
-  // Validate the catalog entry point before anything is persisted: an archive
-  // that lacks it must fail cleanly, without storing a package that cannot be
-  // started (and without leaving a duplicate behind on every retry).
-  if(game&&!files.some(f=>f.path===game.exe))throw new Error(`${game.exe} is absent from the downloaded archive`);
-  const pkg={id:crypto.randomUUID(),name:name||'Imported folder',files,created:new Date().toISOString()};
-  await savePackage(pkg);await navigator.storage.persist?.();await refresh(pkg.id);
-  if(!game)return report(`Imported ${files.length} files. Select the executable and press Start.`);
-  // Preselect the game's entry point, but keep the picker authoritative: any
-  // other .exe in the package stays selectable and overrides this choice.
-  $('executable').value=game.exe;$('start').disabled=false;
-  const args=$('arguments').value.trim();
-  if(game.args&&(!args||args==='[]'))$('arguments').value=JSON.stringify(game.args);
-  report(`Imported ${game.title}: ${files.length} files, ${game.exe} selected. Override in the picker if needed, then press Start.`);
+function status(value) { $('status').textContent = value; }
+function log(value) { $('log').textContent = ($('log').textContent + '\n' + value).slice(-48000); }
+function errorText(error) {
+  if (error?.name === 'QuotaExceededError') return 'This browser is out of storage. Delete an unused folder or free some space, then try again.';
+  return error?.message || String(error);
 }
-function renderCatalog(){
-  for(const game of builtinGames){
-    const card=document.createElement('button');
-    card.type='button';card.className='gamecard';card.dataset.game=game.id;
-    const title=document.createElement('strong');title.textContent=game.title;
-    const meta=document.createElement('span');meta.className='gamemeta';meta.textContent=`${game.engine} · ${game.note}`;
-    const bar=document.createElement('span');bar.className='bar';
-    const fill=document.createElement('i');bar.append(fill);
-    const state=document.createElement('span');state.className='gamestate';state.textContent=IDLE_CARD_STATE;
-    card.append(title,meta,bar,state);
-    card.onclick=()=>guard(()=>importGame(game,card));
-    $('gameCatalog').append(card);
+function lock(value) {
+  busy = value;
+  for (const button of document.querySelectorAll('[data-launch], #folderButton, #zipButton')) /** @type {HTMLButtonElement} */ (button).disabled = value || Boolean(stopping);
+  $('restart').disabled = value || Boolean(stopping);
+}
+async function action(fn, { retry = fn } = {}) {
+  if (busy || stopping) return;
+  lock(true); operation = new AbortController(); const active = operation;
+  if (retry) lastAction = retry;
+  $('retry').hidden = true; $('playerRetry').hidden = true;
+  try { await fn(active.signal); }
+  catch (error) {
+    if (active.signal.aborted) return;
+    const value = errorText(error); message(value, true);
+    if (!$('player').hidden) { $('loading').hidden = false; $('loadingTitle').textContent = 'Could not start this program'; status(value); $('runState').textContent = 'Needs attention'; $('playerRetry').hidden = !lastAction; }
+    $('retry').hidden = !lastAction;
+    if ($('folderDialog').open) { $('folderError').hidden = false; $('folderError').textContent = value; }
+  } finally { if (operation === active) operation = null; lock(false); }
+}
+function preparing(title) {
+  $('launcher').hidden = true; $('player').hidden = false;
+  $('runtimeTitle').textContent = title; $('runState').textContent = 'Starting';
+  $('loadingTitle').textContent = 'Getting things ready'; $('loading').hidden = false;
+  $('launchProgress').hidden = true; $('playerRetry').hidden = true;
+  $('runtimeStatus').textContent = 'The first launch can take a little longer.';
+  $('log').textContent = ''; message('');
+  $('runtimeTitle').setAttribute('tabindex', '-1'); $('runtimeTitle').focus({ preventScroll: true });
+}
+async function closeRuntime() {
+  const run = current; current = null; generation++;
+  if (!run) return;
+  let saveError;
+  try { const saved = snapshotRuntime(run.frame); run.frame.remove(); await saved; } catch (error) { saveError = error; }
+  finally {
+    run.frame.remove(); run.archive?.release(); run.renderer?.destroy(); run.canvas?.remove();
+    const tier = await run.vkReady?.catch(() => null); await tier?.destroy();
+    delete window.bwVkTier; delete window.bwVkTierReady; delete window.wineGpu;
   }
+  if (saveError) throw Error('The program stopped, but its latest saves could not be stored. ' + errorText(saveError));
 }
-async function importGame(game,card){
-  const IDLE=IDLE_CARD_STATE;
-  if(!card||!game||card.disabled)return;
-  const state=card.querySelector('.gamestate'),fill=card.querySelector('.bar>i');
-  const meter=(received,total)=>{
-    const pct=total?Math.min(100,Math.round(received/total*100)):0;
-    fill.style.width=pct+'%';
-    state.textContent=total?`Downloading ${formatBytes(received)} / ${formatBytes(total)} (${pct}%)`:`Downloading ${formatBytes(received)}`;
-    report(`${game.title}: downloading ${pct}%`);
-  };
-  // Every path below leaves through the finally, which owns the card state:
-  // aria-busy, disabled and the meter are restored here so a failed or
-  // superseded import cannot leave the card wedged mid-download.
-  card.disabled=true;card.setAttribute('aria-busy','true');
-  let installed=false,failure=null;
-  try{
-    const blob=await fetchGameArchive(game,meter);
-    fill.style.width='100%';state.textContent=`Extracting ${formatBytes(blob.size)}…`;report(`Extracting ${game.title}…`);
-    await install(await fromZip(blob),game.title,game);
-    installed=true;state.textContent='Installed';card.classList.add('done');
-  }catch(e){
-    failure=e;throw e;
-  }finally{
-    card.disabled=false;card.removeAttribute('aria-busy');
-    if(installed){state.textContent='Installed';card.classList.add('done');}
-    else{
-      card.classList.remove('done');fill.style.width='0%';
-      state.textContent=failure&&/cancelled by a newer request/.test(failure.message||'')?IDLE:'Import failed: '+(failure?failure.message||failure:'unknown error');
+async function stop() {
+  if (stopping) return stopping;
+  operation?.abort();
+  stopping = (async () => {
+    let failure;
+    try { await closeRuntime(); } catch (error) { failure = error; }
+    $('player').hidden = true; $('launcher').hidden = false;
+    $('launchProgress').hidden = true;
+    message(failure ? errorText(failure) : 'Program stopped. Your saved folders are ready to open again.', Boolean(failure));
+    $('folderButton').focus({ preventScroll: true });
+  })();
+  lock(busy);
+  try { await stopping; } finally { stopping = null; lock(busy); }
+}
+async function launchFrame(query, title, archive = null) {
+  const frame = document.createElement('iframe'); frame.title = title + ' runtime';
+  frame.allow = 'cross-origin-isolated; fullscreen'; frame.dataset.installation = query.get('installation');
+  const run = { frame, archive, generation: ++generation, renderer: null, vkReady: null, canvas: null };
+  current = run;
+  if (query.get('gpu') === '1') {
+    const canvas = document.createElement('canvas'); canvas.id = 'gpuCanvas'; run.canvas = canvas; $('display').append(canvas);
+    try { const { createRenderer } = await import('./webgpu.mjs'); run.renderer = await createRenderer(canvas); window.wineGpu = run.renderer; }
+    catch (error) { canvas.remove(); query.set('gpu', '0'); log('Graphics fallback: ' + errorText(error)); }
+  }
+  if (current !== run) { run.renderer?.destroy(); run.canvas?.remove(); archive?.release(); return; }
+  frame.src = 'runtime/index.html?v=__RUNTIME_VERSION__&' + query;
+  $('display').append(frame); status('Starting ' + title + '. The first run may take a minute.');
+  $('runtimeStatus').textContent = 'Loading the runtime and program files…';
+}
+async function runSaved(id, signal) {
+  const pkg = await getPackage(id);
+  if (!pkg) throw Error('This folder is no longer saved. Upload it again.');
+  await runPackage(pkg, signal);
+}
+async function runPackage(pkg, signal, prepared = null) {
+  await closeRuntime(); signal?.throwIfAborted(); preparing(pkg.name);
+  status('Detecting the program…');
+  const program = pkg.program || await detectProgram(pkg.files, { name: pkg.name });
+  if (!pkg.program) { pkg = { ...pkg, program }; await savePackage(pkg); }
+  let archive = prepared;
+  try {
+    if (!archive && (pkg.files.reduce((sum, file) => sum + file.size, 0) > 128 * 1024 ** 2 || pkg.files.length > limits.count)) {
+      archive = await archiveFor(pkg, signal);
+    }
+    signal?.throwIfAborted();
+    const query = runtimeParameters(program, { installation: pkg.id, archive: archive?.url, archiveBytes: archive?.bytes,
+      graphics: settings.graphics === 'auto' ? program.graphics : settings.graphics });
+    await launchFrame(query, pkg.name, archive);
+  } catch (error) { archive?.release(); throw error; }
+}
+async function archiveFor(pkg, signal) {
+  status('Preparing the folder for streamed loading…'); $('launchProgress').hidden = false;
+  return prepareArchive(pkg, { signal, onProgress: (done, total) => {
+    $('launchProgress').max = total || 1; $('launchProgress').value = done;
+    status('Preparing files: ' + formatBytes(done) + ' of ' + formatBytes(total));
+  } });
+}
+async function importFolder(files, name, signal) {
+  let archive, pkg, owned = files, saved = false;
+  try {
+    await closeRuntime(); signal.throwIfAborted(); preparing(name || 'Your folder'); status('Finding the main program…');
+    checkEntries(files, folderLimits);
+    const program = await detectProgram(files, { name }); signal.throwIfAborted();
+    status('Copying the folder into browser storage…');
+    owned = await ownFiles(files, { signal, onProgress: (done, total) => status('Saving files: ' + formatBytes(done) + ' of ' + formatBytes(total)) });
+    pkg = { id: crypto.randomUUID(), name: name || program.exe.split('/').at(-1).replace(/\.exe$/i, ''), files: owned, sourceDirectory: sourceDirectory(owned), program, created: new Date().toISOString() };
+    if (files.reduce((sum, file) => sum + file.size, 0) > 128 * 1024 ** 2 || files.length > limits.count) archive = await archiveFor(pkg, signal);
+    signal.throwIfAborted(); status('Saving this folder on your device…'); await savePackage(pkg); saved = true; retainExtracted(owned);
+    lastAction = nextSignal => runSaved(pkg.id, nextSignal);
+    navigator.storage?.persist?.().catch(() => {});
+    await refreshLibrary(); signal.throwIfAborted();
+    await runPackage(pkg, signal, archive);
+  } catch (error) { archive?.release(); if (pkg && !saved) await removeArchive(pkg).catch(() => {}); throw error; }
+  finally { await cleanupExtracted(owned).catch(() => {}); if (owned !== files) await cleanupExtracted(files).catch(() => {}); }
+}
+async function startDemo(demo, signal) {
+  await closeRuntime(); signal.throwIfAborted(); preparing(demo.title); status('Opening ' + demo.title + '…');
+  const query = await demoParameters(demo); signal.throwIfAborted();
+  if (settings.graphics !== 'auto') query.set('gpu', settings.graphics === 'webgpu' ? '1' : '0');
+  await launchFrame(query, demo.title);
+}
+function renderDemos() {
+  const fragment = document.createDocumentFragment();
+  for (const demo of demos) {
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'program-card';
+    button.dataset.game = demo.id; button.dataset.launch = ''; button.setAttribute('aria-label', 'Run ' + demo.title);
+    const play = icon('player-play'); play.classList.add('card-play');
+    button.append(icon(demo.icon), text('strong', demo.title), text('span', demo.description, 'description'), play);
+    button.onclick = () => action(signal => startDemo(demo, signal)); fragment.append(button);
+  }
+  $('gameCatalog').replaceChildren(fragment); $('gameCatalog').removeAttribute('aria-busy');
+}
+async function refreshLibrary() {
+  const packages = await listPackages(); const fragment = document.createDocumentFragment();
+  packages.sort((a, b) => String(b.created).localeCompare(String(a.created)));
+  for (const pkg of packages) {
+    const item = text('div', '', 'saved-item');
+    const run = document.createElement('button'); run.type = 'button'; run.className = 'saved-run'; run.dataset.launch = '';
+    const copy = text('span', '', 'saved-copy');
+    copy.append(text('strong', pkg.name), text('span', pkg.files.length.toLocaleString() + ' files · ' + formatBytes(pkg.files.reduce((n, f) => n + f.size, 0))));
+    run.append(icon('folder'), copy); run.onclick = () => action(signal => runSaved(pkg.id, signal));
+    const manage = document.createElement('button'); manage.type = 'button'; manage.className = 'icon-button';
+    manage.setAttribute('aria-label', 'Settings for ' + pkg.name); manage.append(icon('settings')); manage.onclick = () => action(() => manageFolder(pkg.id), { retry: null });
+    item.append(run, manage); fragment.append(item);
+  }
+  if (!packages.length) fragment.append(text('p', 'Uploaded folders appear here, ready for next time.', 'empty'));
+  $('library').replaceChildren(fragment); $('library').removeAttribute('aria-busy');
+  $('folderCount').textContent = packages.length ? packages.length.toLocaleString() + ' saved' : '';
+}
+async function manageFolder(id) {
+  selected = await getPackage(id); if (!selected) throw Error('Folder no longer exists.');
+  const program = selected.program || await detectProgram(selected.files, { name: selected.name });
+  $('folderTitle').textContent = selected.name; $('folderInfo').textContent = program.arch === 'x86' ? 'Windows 32-bit. Runtime selected automatically.' : 'Windows 64-bit. Runtime selected automatically.';
+  $('executable').replaceChildren();
+  for (const file of selected.files) if (/\.exe$/i.test(file.path)) $('executable').add(new Option(file.path, file.path));
+  $('executable').value = program.exe; $('arguments').value = JSON.stringify(program.args);
+  $('folderError').hidden = true; $('folderDialog').showModal();
+}
+window.addEventListener('message', event => {
+  const run = current;
+  if (!run || event.origin !== location.origin || event.source !== run.frame.contentWindow || event.data?.wine !== true) return;
+  const { type, data } = event.data;
+  if (type === 'status') { $('runtimeStatus').textContent = String(data); if (!$('loading').hidden) status(String(data)); }
+  if (type === 'error') { $('loading').hidden = false; $('loadingTitle').textContent = 'The program could not continue'; status(String(data)); $('playerRetry').hidden = !lastAction; $('runState').textContent = 'Stopped'; }
+  if (type === 'log') {
+    log(String(data));
+    if (String(data).includes('first window mapped')) {
+      $('loading').hidden = true; $('launchProgress').hidden = true; $('runState').textContent = 'Running';
+      run.frame.contentWindow?.document.getElementById('canvas')?.focus({ preventScroll: true });
     }
   }
-}
-function persistenceDb(id){return 'bw64persist-wine-'+id;}
-async function storedFiles(id){
-  return new Promise((resolve,reject)=>{
-    const r=indexedDB.open(persistenceDb(id),1);r.onupgradeneeded=()=>r.result.createObjectStore('files');r.onerror=()=>reject(r.error);
-    r.onsuccess=()=>{const db=r.result,tx=db.transaction('files','readonly'),records=[];const cur=tx.objectStore('files').openCursor();cur.onsuccess=()=>{const c=cur.result;if(c){records.push({path:String(c.key),data:c.value.data});c.continue();}};tx.oncomplete=()=>{db.close();resolve(records);};tx.onerror=()=>{db.close();reject(tx.error);};};
-  });
-}
-async function writeStored(id,entries,replace=false){
-  return new Promise((resolve,reject)=>{
-    const r=indexedDB.open(persistenceDb(id),1);r.onupgradeneeded=()=>r.result.createObjectStore('files');r.onerror=()=>reject(r.error);
-    r.onsuccess=()=>{const db=r.result,tx=db.transaction('files','readwrite'),s=tx.objectStore('files');if(replace)s.clear();for(const e of entries)s.put({data:e.data,sig:Date.now()+':'+e.data.length},e.path);tx.oncomplete=()=>{db.close();resolve();};tx.onerror=tx.onabort=()=>{db.close();reject(tx.error);};};
-  });
-}
-async function snapshot(){
-  if(!iframe)return;
-  const win=iframe.contentWindow,FS=win.bwRuntime?.fs();if(!FS)return;
-  const files=[];let size=0;
-  function walk(dir){let names;try{names=FS.readdir(dir);}catch{return;}for(const n of names){if(n==='.'||n==='..'||n.startsWith('.bw64clip'))continue;const path=dir+'/'+n,st=FS.lstat(path);if(FS.isDir(st.mode))walk(path);else if(FS.isFile(st.mode)){size+=st.size;if(size>768*1024**2||files.length>=20000)throw new Error('Save tree exceeds backup limits');files.push({path,data:FS.readFile(path)});}}}
-  walk('/root/home/username');await writeStored(iframe.dataset.installation,files,true);
-}
-async function stop(){
-  await snapshot();iframe?.remove();iframe=null;
-  renderer?.destroy();renderer=null;$('gpuCanvas')?.remove();
-  const ready=window.bwVkTierReady;delete window.bwVkTierReady;
-  const tier=ready?await ready.catch(()=>window.bwVkTier):window.bwVkTier;
-  await tier?.destroy();$('stop').disabled=true;
-}
-async function launch(prog,{pkg=null,exe=null,args=[],arch=null}={}){
-  await stop();$('log').textContent='';$('placeholder')?.remove();
-  const gpu=$('backend').value==='webgpu';
-  if(gpu){const canvas=document.createElement('canvas');canvas.id='gpuCanvas';$('display').append(canvas);try{renderer=await createRenderer(canvas);window.wineGpu=renderer;}catch(e){canvas.remove();throw e;}}
-  iframe=document.createElement('iframe');iframe.title='Windows program runtime';iframe.allow='cross-origin-isolated; fullscreen';iframe.dataset.installation=pkg?.id||'demo';
-  const q=new URLSearchParams({p:prog,installation:pkg?.id||'demo',gpu:gpu?'1':'0',gltrace:'0',session:'0'});if(arch)q.set('arch',arch);
-  if(exe){q.set('exe',exe);q.set('args',JSON.stringify(args));}
-  iframe.src='runtime/index.html?'+q;$('display').append(iframe);$('stop').disabled=false;report('Booting Wine. First launch can take 30–120 seconds.');
-  setTimeout(()=>iframe?.contentWindow?.document.getElementById('canvas')?.focus(),1000);
-}
-window.addEventListener('message',e=>{
-  if(e.origin!==location.origin||e.source!==iframe?.contentWindow||!e.data?.wine)return;
-  const {type,data}=e.data;
-  if(type==='status')$('runtimeStatus').textContent=String(data);
-  if(type==='log'){log(String(data));if(String(data).includes('first window mapped'))report('Guest window mapped. Rendering…');}
-  if(type==='gpu'&&renderer){try{const result=renderer.render(data);report(`Real guest OpenGL → WebGPU · ${result.frames} frames`);}catch(err){log('WebGPU fallback: '+err.message);console.warn('WebGPU fallback: '+err.message);report('Unsupported WebGPU command; showing upstream WebGL rendering.');renderer.destroy();renderer=null;$('gpuCanvas')?.remove();}}
-  // vk64 page tier (tasks/p1-final.md §2.9): the sibling of the 'gpu' branch. The
-  // guest's Vulkan frame manifest is rendered by web/vkwebgpu.mjs into its own
-  // canvas; any error falls back to the upstream rendering exactly like 'gpu'.
-  // Schema v2 (tasks/schema-v2.md): binary chunks arrive via window.bwVkChunk
-  // in the runtime page; the tier queues them (drop-oldest, latest-frame-wins).
-  if(type==='vk'||type==='vk2'){
-    const runtime=iframe;
-    const ready=window.bwVkTierReady||(window.bwVkTierReady=import('./vkwebgpu.mjs').then(m=>(window.bwVkTier=m.installVkPageTier())));
-    ready.then(async tier=>{
-      if(iframe!==runtime)return;
-      await(type==='vk'?tier.frame(data):tier.chunk(data.bytes,data.flags));
-      if(iframe!==runtime)return;
-      const stats=window.bwVkStats?.();
-      report(`Real guest Vulkan → WebGPU · ${type==='vk'?(stats?.rendered||0)+' frames':(stats?.v2?.rendered||0)+' v2 frames'}`);
-    }).catch(err=>{
-      if(iframe!==runtime)return;
-      log('WebGPU Vulkan fallback: '+err.message);console.warn('WebGPU Vulkan fallback: '+err.message);report('Unsupported Vulkan frame; showing upstream rendering.');
-    });
+  if (type === 'gpu' && run.renderer) {
+    try { run.renderer.render(data); } catch (error) { log('Graphics fallback: ' + errorText(error)); run.renderer.destroy(); run.renderer = null; $('gpuCanvas')?.remove(); }
+  }
+  if (type === 'vk' || type === 'vk2') {
+    if (!run.vkReady) {
+      run.vkReady = import('./vkwebgpu.mjs').then(module => {
+        if (current !== run) return null;
+        return (window.bwVkTier = module.installVkPageTier());
+      });
+      window.bwVkTierReady = run.vkReady;
+    }
+    run.vkReady.then(async tier => {
+      if (current !== run || !tier) return;
+      await (type === 'vk' ? tier.frame(data) : tier.chunk(data.bytes, data.flags));
+    }).catch(error => { if (current === run) log('Graphics fallback: ' + errorText(error)); });
   }
 });
-$('folderButton').onclick=()=>$('folderInput').click();$('zipButton').onclick=()=>$('zipInput').click();
-$('folderInput').onchange=()=>guard(async()=>{report('Importing folder…');const files=await fromFiles($('folderInput').files);const name=$('folderInput').files[0]?.webkitRelativePath.split('/')[0];await install(files,name);$('folderInput').value='';});
-$('zipInput').onchange=()=>guard(async()=>{const file=$('zipInput').files[0];if(!file)return;report('Reading package…');await install(/\.zip$/i.test(file.name)?await fromZip(file):await fromFiles([file]),file.name.replace(/\.(zip|exe)$/i,''));$('zipInput').value='';});
-$('drop').onclick=()=>$('folderInput').click();$('drop').onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();$('folderInput').click();}};
-$('drop').ondragover=e=>{e.preventDefault();$('drop').classList.add('over');};$('drop').ondragleave=()=>$('drop').classList.remove('over');
-$('drop').ondrop=e=>{e.preventDefault();$('drop').classList.remove('over');const items=Array.from(e.dataTransfer.items);const files=Array.from(e.dataTransfer.files);guard(async()=>{report('Importing drop…');if(files.length===1&&/\.zip$/i.test(files[0].name))await install(await fromZip(files[0]),files[0].name);else await install(await fromDrop(items),files[0]?.name||'Dropped folder');});};
-$('library').onchange=()=>guard(()=>select($('library').value));$('executable').onchange=()=>{$('start').disabled=!$('executable').value;};
-$('start').onclick=()=>guard(async()=>{const exe=safePath($('executable').value),file=selected.files.find(f=>f.path===exe);const arch=await peArchitecture(file.blob);if(arch!=='x64'&&arch!=='x86')throw new Error('Unsupported PE architecture: '+arch);const args=JSON.parse($('arguments').value);if(!Array.isArray(args)||args.some(a=>typeof a!=='string'||/[\x00-\x1f]/.test(a)))throw new Error('Arguments must be a JSON array of strings');await launch('uploaded.exe',{pkg:selected,exe,args,arch});});
-$('stop').onclick=()=>guard(async()=>{await stop();report('Stopped; writable files saved locally.');});
-for(const button of /** @type {NodeListOf<HTMLButtonElement>} */ (document.querySelectorAll('button[data-demo]')))button.onclick=()=>guard(()=>launch(button.dataset.demo));
-$('fullscreen').onclick=()=>guard(()=>$('display').requestFullscreen());
-$('patch').onclick=()=>$('patchInput').click();
-$('patchInput').onchange=()=>guard(async()=>{const file=$('patchInput').files[0];if(!file||!selected)return;const patch=await fromZip(file,{strip:false});await stop();selected=await overlay(selected,patch);await writeStored(selected.id,await Promise.all(patch.map(async f=>({path:'/root/home/username/apps/'+f.path,data:new Uint8Array(await f.blob.arrayBuffer())}))));await refresh(selected.id);report(`Applied ${patch.length} patch files. Start again to use them.`);$('patchInput').value='';});
-function download(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),10000);}
-$('export').onclick=()=>guard(async()=>{await snapshot();const stored=await storedFiles(selected.id);const files=selected.files.map(f=>({...f,path:'package/'+f.path}));for(const e of stored){if(!e.path.startsWith('/root/home/username/'))throw new Error('Invalid persisted save path');files.push({path:'writable/'+safePath(e.path.slice('/root/home/username/'.length)),size:e.data.length,blob:new Blob([e.data])});}download(await makeZip(files),selected.name+'-backup.zip');report('Backup exported: package, saves, registry and app profile.');});
-$('restore').onclick=()=>$('restoreInput').click();
-$('restoreInput').onchange=()=>guard(async()=>{const entries=await fromZip($('restoreInput').files[0],{strip:false});if(entries.some(e=>!e.path.startsWith('package/')&&!e.path.startsWith('writable/')))throw new Error('Not a Wine launcher backup');const files=entries.filter(e=>e.path.startsWith('package/')).map(e=>({...e,path:safePath(e.path.slice(8))}));checkEntries(files);const saves=await Promise.all(entries.filter(e=>e.path.startsWith('writable/')).map(async e=>({path:'/root/home/username/'+safePath(e.path.slice(9)),data:new Uint8Array(await e.blob.arrayBuffer())})));await stop();await savePackage({...selected,files});await writeStored(selected.id,saves,true);await refresh(selected.id);report('Backup restored. Press Start.');$('restoreInput').value='';});
-$('remove').onclick=()=>guard(async()=>{if(!confirm('Delete this imported folder and its local saves?'))return;await stop();const id=selected.id;await deletePackage(id);await new Promise((ok,fail)=>{const r=indexedDB.deleteDatabase(persistenceDb(id));r.onsuccess=ok;r.onerror=()=>fail(r.error);r.onblocked=()=>fail(new Error('Close other tabs running this installation'));});selected=null;await refresh();report('Installation deleted.');});
-async function compile(from,source){$('shaderResult').value='Compiling…';try{const code=await toWGSL(from,source,/** @type {'vertex'|'fragment'|'compute'} */($('shaderStage').value));$('shaderResult').value=code;if(navigator.gpu){const adapter=await navigator.gpu.requestAdapter();if(adapter){const device=await adapter.requestDevice();const info=await device.createShaderModule({code}).getCompilationInfo();device.destroy();const errors=info.messages.filter(m=>m.type==='error');if(errors.length)throw new Error(errors.map(e=>e.message).join('\n'));}}}catch(e){$('shaderResult').value=e.formatted||e.message||String(e);}}
-$('translate').onclick=()=>guard(()=>compile('glsl',$('shaderSource').value));
-$('hlsl').onclick=()=>guard(()=>compile('hlsl',$('shaderSource').value));
-$('spirv').onchange=()=>guard(async()=>{const file=$('spirv').files[0];if(file)await compile('spirv',new Uint8Array(await file.arrayBuffer()));});
-$('capability').textContent=crossOriginIsolated&&typeof SharedArrayBuffer!=='undefined'?'WASM threads ready · '+(navigator.gpu?'WebGPU detected':'WebGL2'):'Missing cross-origin isolation';
-await refresh();
-renderCatalog();
-window.wineLibrary={getPackage,listPackages};
-window.wineGames={catalog:builtinGames,install:(id)=>guard(()=>importGame(builtinGames.find(g=>g.id===id),document.querySelector(`[data-game="${id}"]`)))};
+$('folderButton').onclick = () => $('folderInput').click();
+$('zipButton').onclick = () => $('zipInput').click();
+$('folderInput').onchange = () => {
+  const chosen = Array.from(/** @type {FileList} */ ($('folderInput').files)); if (!chosen.length) return;
+  const name = chosen[0].webkitRelativePath.split('/')[0] || 'Your folder'; $('folderInput').value = '';
+  action(async signal => importFolder(await fromFiles(chosen), name, signal));
+};
+$('zipInput').onchange = () => {
+  const file = $('zipInput').files[0]; if (!file) return; $('zipInput').value = '';
+  action(async signal => { preparing(file.name); status('Reading the package…'); return importFolder(/\.zip$/i.test(file.name) ? await fromZip(file, { budget: folderLimits, stream: true, signal }) : await fromFiles([file]), file.name.replace(/\.(zip|exe)$/i, ''), signal); });
+};
+let dragDepth = 0;
+window.addEventListener('dragenter', event => { if (event.dataTransfer?.types.includes('Files')) { event.preventDefault(); dragDepth++; $('dropOverlay').hidden = false; } });
+window.addEventListener('dragover', event => { if (event.dataTransfer?.types.includes('Files')) event.preventDefault(); });
+window.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; $('dropOverlay').hidden = true; } });
+window.addEventListener('drop', event => {
+  event.preventDefault(); dragDepth = 0; $('dropOverlay').hidden = true;
+  if (!event.dataTransfer || busy) return;
+  const items = Array.from(event.dataTransfer.items), files = Array.from(event.dataTransfer.files);
+  action(async signal => { preparing(files[0]?.name || 'Your folder'); status('Reading the package…'); return importFolder(files.length === 1 && /\.zip$/i.test(files[0].name) ? await fromZip(files[0], { budget: folderLimits, stream: true, signal }) : items.some(item => item.webkitGetAsEntry?.()) ? await fromDrop(items) : await fromFiles(files), files[0]?.name.replace(/\.(zip|exe)$/i, '') || 'Dropped folder', signal); });
+});
+$('stop').onclick = stop; $('back').onclick = stop;
+$('restart').onclick = () => lastAction && action(lastAction);
+$('retry').onclick = () => lastAction && action(lastAction);
+$('playerRetry').onclick = () => lastAction && action(lastAction);
+$('fullscreen').onclick = () => $('display').requestFullscreen().catch(error => message(errorText(error), true));
+$('settingsButton').onclick = () => $('settingsDialog').showModal();
+for (const dialog of document.querySelectorAll('dialog')) dialog.addEventListener('click', event => { if (event.target === dialog) { const box = dialog.getBoundingClientRect(); if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) dialog.close(); } });
+$('start').onclick = () => action(async signal => {
+  const exe = safePath($('executable').value), file = selected.files.find(file => file.path === exe);
+  const base = selected.program || await detectProgram(selected.files, { name: selected.name });
+  const program = { ...base, exe, arch: await peArchitecture(file.blob), args: JSON.parse($('arguments').value) };
+  runtimeParameters(program); selected = { ...selected, program }; await savePackage(selected);
+  $('folderDialog').close(); await runPackage(selected, signal);
+});
+function downloadUrl(url, name) { const link = document.createElement('a'); link.href = url; link.download = name; link.click(); }
+$('patch').onclick = () => $('patchInput').click();
+$('patchInput').onchange = () => action(async signal => {
+  const file = $('patchInput').files[0]; if (!file || !selected) return;
+  const patch = await fromZip(file, { strip: false, signal }); await closeRuntime();
+  const merged = new Map(selected.files.map(file => [file.path.toLowerCase(), file]));
+  for (const file of patch) merged.set(file.path.toLowerCase(), file);
+  const files = [...merged.values()]; checkEntries(files, folderLimits);
+  const program = await detectProgram(files, { name: selected.name });
+  const saves = new Map((await storedFiles(selected.id)).map(file => [file.path, file]));
+  for (const file of await readSaveBlobs(patch, '/root/home/username/apps/')) saves.set(file.path, file);
+  const previous = selected;
+  selected = await replaceInstallation(previous, { files, program }, [...saves.values()]);
+  await removeArchive(previous).catch(() => {});
+  await refreshLibrary(); $('patchInput').value = ''; $('folderDialog').close(); message('Patch applied. Open the folder to run it.');
+}, { retry: null });
+$('export').onclick = () => action(async () => {
+  await snapshotRuntime(current?.frame); const stored = await storedFiles(selected.id);
+  const files = selected.files.map(file => ({ ...file, path: 'package/' + file.path }));
+  for (const entry of stored) {
+    if (!entry.path.startsWith('/root/home/username/')) throw Error('Invalid save path');
+    files.push({ path: 'writable/' + safePath(entry.path.slice('/root/home/username/'.length)), size: entry.data.length, blob: new Blob([entry.data]) });
+  }
+  const backup = { id: crypto.randomUUID(), created: new Date().toISOString(), files };
+  const archive = await prepareArchive(backup, { prefix: '', onProgress: (done, total) => { $('folderInfo').textContent = 'Preparing backup: ' + formatBytes(done) + ' of ' + formatBytes(total); } });
+  downloadUrl(archive.url, selected.name + '-backup.zip');
+  setTimeout(() => { archive.release(); removeArchive(backup).catch(() => {}); }, 60000);
+  message('Backup downloaded, including files and local saves.');
+}, { retry: null });
+$('restore').onclick = () => $('restoreInput').click();
+$('restoreInput').onchange = () => action(async signal => {
+  const file = $('restoreInput').files[0]; if (!file || !selected) return;
+  $('folderInfo').textContent = 'Reading the backup…';
+  const entries = await fromZip(file, { strip: false, budget: folderLimits, stream: true, signal });
+  try {
+  if (entries.some(entry => !entry.path.startsWith('package/') && !entry.path.startsWith('writable/'))) throw Error('Choose a backup created by this launcher.');
+  const files = entries.filter(entry => entry.path.startsWith('package/')).map(entry => ({ ...entry, path: safePath(entry.path.slice(8)) }));
+  checkEntries(files, folderLimits); const program = await detectProgram(files, { name: selected.name });
+  const writable = entries.filter(entry => entry.path.startsWith('writable/')).map(entry => ({ ...entry, path: safePath(entry.path.slice(9)) }));
+  const saves = await readSaveBlobs(writable, '/root/home/username/');
+  await closeRuntime(); const previous = selected;
+  selected = await replaceInstallation(previous, { files, program, sourceDirectory: sourceDirectory(entries) }, saves);
+  retainExtracted(entries);
+  await removeSource(previous).catch(() => {});
+  await removeArchive(previous).catch(() => {});
+  await refreshLibrary(); $('restoreInput').value = ''; $('folderDialog').close(); message('Backup restored. Open the folder to run it.');
+  } finally { await cleanupExtracted(entries).catch(() => {}); }
+}, { retry: null });
+$('remove').onclick = () => action(async () => {
+  if (!selected || !confirm('Delete this folder and its saves from this browser?')) return;
+  await closeRuntime(); const pkg = selected;
+  await new Promise((resolve, reject) => { const request = indexedDB.deleteDatabase('bw64persist-wine-' + pkg.id); request.onsuccess = resolve; request.onerror = () => reject(request.error); request.onblocked = () => reject(Error('Close other tabs running this folder, then try again.')); });
+  await deletePackage(pkg.id); await removeArchive(pkg); await removeSource(pkg).catch(() => {}); selected = null;
+  await refreshLibrary(); $('folderDialog').close(); message('Folder deleted from this browser.');
+}, { retry: null });
+window.wineLibrary = { getPackage, listPackages };
+window.wineGames = { catalog: demos, install: id => action(signal => startDemo(demos.find(demo => demo.id === id), signal)) };
+renderDemos();
+const supported = crossOriginIsolated && typeof SharedArrayBuffer !== 'undefined';
+$('capability').textContent = supported ? 'Ready on this device' : 'Browser setup required';
+if (!supported) message('This browser needs cross-origin isolation to run programs. Reload the page, or open it in a current browser.', true);
+await refreshLibrary().catch(error => { $('library').replaceChildren(text('p', 'Saved folders could not be loaded. Reload to try again.', 'empty')); $('library').removeAttribute('aria-busy'); message(errorText(error), true); });

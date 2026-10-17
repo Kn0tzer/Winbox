@@ -2,6 +2,9 @@ import { chromium } from '@playwright/test';
 import { serve } from '../../tools/browser/serve.mjs';
 import { mkdir,writeFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
+import { acquireProbeSlot } from './probe-slots.mjs';
+import { waitForBuildIdle } from './build-lock.mjs';
+await waitForBuildIdle();const slot=await acquireProbeSlot();
 const server=process.env.WINE_URL?null:await serve('dist');
 const url=process.env.WINE_URL||`http://127.0.0.1:${server.address().port}/`;
 await mkdir('test-results',{recursive:true});
@@ -13,23 +16,17 @@ try{
   await page.goto(url);await page.waitForFunction(()=>window.wineLibrary);
   assert.equal(await page.evaluate(()=>crossOriginIsolated),true);
   await page.screenshot({path:'test-results/launcher.png',fullPage:true});
-  if (!process.env.SKIP_SHADERS) {
-  await page.click('#translate');await page.waitForFunction(()=>document.getElementById('shaderResult').value.includes('@vertex'));
-  await page.fill('#shaderSource','float4 main(float3 position : POSITION) : SV_Position { return float4(position, 1.0); }');
-  await page.click('#hlsl');await page.waitForFunction(()=>document.getElementById('shaderResult').value.includes('@vertex'),{},{timeout:60000});
-  console.log('PASS GLSL and HLSL compiler conversion');
-  }
   if (!process.env.GPU_ONLY) {
-  await page.click('[data-demo="notepad.exe"]');
+  await page.click('[data-game="notepad"]');
   await page.waitForFunction(()=>document.getElementById('log').textContent.includes('first window mapped'),{},{timeout:180000});
   await page.waitForTimeout(10000);
   const frame=page.frames().find(f=>f.url().includes('/runtime/'));
   assert.ok(await frame.evaluate(()=>window.bwRuntime?.ready()));
   await page.screenshot({path:'test-results/notepad.png',fullPage:true});
   console.log('PASS real Windows Notepad window mapped');
-  await page.click('#stop');
+  await page.click('#stop');await page.waitForFunction(()=>!document.getElementById('folderButton').disabled);
   }
-  await page.selectOption('#backend','webgpu');await page.click('[data-demo="glcube.exe"]');
+  await page.click('#settingsButton');await page.selectOption('#backend','webgpu');await page.keyboard.press('Escape');await page.click('[data-game="cube"]');
   await page.waitForFunction(()=>window.wineGpu?.frames>=5,{},{timeout:90000});
   const frames=await page.evaluate(()=>window.wineGpu.frames);await page.waitForTimeout(1500);assert.ok(await page.evaluate(()=>window.wineGpu.frames)>frames);
   assert.deepEqual(await page.evaluate(()=>window.wineGpu.errors),[]);
@@ -45,5 +42,5 @@ try{
 }finally{
   await writeFile('test-results/browser-console.log',consoleLog.join('\n'));
   await writeFile('test-results/browser-errors.json',JSON.stringify(errors,null,2));
-  await browser.close();server?.close();
+  await browser.close();server?.close();await slot.release();
 }

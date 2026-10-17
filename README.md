@@ -2,7 +2,9 @@
 
 Windows userspace in the browser: 32-bit and 64-bit CPU emulation, Wine,
 OpenGL/Vulkan bridges, WebGPU/WebGL2 rendering, files, input and audio.
-The page accepts a folder or ZIP and lets you choose the Windows executable.
+Upload a folder to automatically detect and start its Windows executable, or
+choose a demo in one click. The launcher follows the Microapps design standard,
+with light/dark themes, a local folder library and optional advanced settings.
 
 [Live server demo](https://kn0tzer.work.gd/wine/) ·
 [Test catalog](web/tests/CATALOG.md) · [Runtime map](docs/architecture.md)
@@ -34,13 +36,18 @@ node --input-type=module -e 'import { serve } from "./tools/browser/serve.mjs"; 
 ```
 
 Open `http://127.0.0.1:8077/`. Optional built-in game archives come from
-`WINE_GAMES_DIR` or local `web/games/`; game uploads work independently.
+`WINE_GAMES_DIR` or local `web/games/`. The demo catalog uses hosted archives at
+`https://kn0tzer.work.gd/games/`; uploaded folders stay in browser storage.
+Automatic detection selects x86/x64 Windows, known engine defaults and an entry
+point. It does not make every Windows app compatible with the emulator.
 
 ## Checks
 
 ```sh
 pnpm test                                        # legacy + suite unit checks
 pnpm typecheck
+node web/tests/launcher-ui.mjs                   # launcher, storage failure and layout checks
+node web/tests/launcher-real.mjs                 # real Notepad + streamed folder auto-launch
 bash scripts/build-jit-wasm.sh --selftest-only     # real native/JIT/WASM checks
 python3 tools/vkd3d/tests/run-native.py            # real Vulkan bridge/shim checks
 make -C project/linux test JOBS=2

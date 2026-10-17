@@ -1,7 +1,7 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>Wine runtime</title><style>body{margin:0;background:#080c11;color:#acbfd2;font:12px system-ui}#status{padding:10px}canvas{display:block;max-width:100%;margin:auto}canvas[hidden]{display:none}#vkCanvas{position:absolute;top:34px;left:50%;transform:translateX(-50%);pointer-events:none}#output{display:none}</style><script src="../sparse-memfs.js"></script></head><body><div id="status">Loading…</div><progress id="progress" hidden></progress><span id="spinner" hidden></span><canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas><canvas id="gl64canvas" width="1024" height="1024" hidden></canvas><textarea id="output" readonly></textarea>
 <script type="module">
 import { getPackage } from '../storage.mjs';
-import { safePath, checkEntries } from '../files.mjs';
+import { safePath, checkEntries, folderLimits } from '../files.mjs';
 const query = new URLSearchParams(location.search);
 const id = query.get('installation');
 // Lazy game payload (M8): a game zip mounted on-demand via bw64url/HTTP Range,
@@ -10,10 +10,13 @@ const id = query.get('installation');
 // The zip must contain home/username/apps/... paths (like prefix64.zip).
 const gameZipUrl = query.get('gamezip');
 const gameZipSize = Number(query.get('gamezipsize') || 0);
-const pkg = (!gameZipUrl && id && id !== 'demo') ? await getPackage(id) : null;
+const pkg = (!gameZipUrl && id && id !== 'demo' && !id.startsWith('demo-')) ? await getPackage(id) : null;
 const send = (type, data) => parent.postMessage({ wine: true, type, data }, location.origin);
+window.addEventListener('error', event => send('error', event.message || 'Runtime error. Restart the program to try again.'));
+window.addEventListener('unhandledrejection', event => send('error', event.reason?.message || String(event.reason)));
 window.bwRuntimeStatus = text => send('status', text);
 window.bwRuntimeLog = text => send('log', text);
+window.bwRuntimeError = text => send('error', text);
 window.bwGpuFrame = json => send('gpu', JSON.parse(json));
 // vk64 page tier (tasks/p1-final.md §2.9): the Vulkan bridge hops ONE frame
 // manifest per present into window.bwVkFrame, which becomes a 'vk' message to
@@ -83,7 +86,7 @@ if (gameZipUrl && gameZipSize > 0) {
   // No bwPrepareFilesystem: game files are served lazily from the zip mount.
   // Writes (saves/configs) land in the MEMFS upper layer via the overlay.
 } else if (pkg) {
-  checkEntries(pkg.files);
+  checkEntries(pkg.files, folderLimits);
   const exe = safePath(query.get('exe') || '');
   if (!pkg.files.some(f => f.path === exe)) throw new Error('Executable is absent from package');
   const args = JSON.parse(query.get('args') || '[]');
@@ -101,7 +104,7 @@ if (gameZipUrl && gameZipSize > 0) {
   };
 }
 const script = document.createElement('script');
-script.src = 'wine64-launcher.js';
+script.src = 'wine64-launcher.js?v=__RUNTIME_VERSION__';
 script.onerror = () => send('status', 'Runtime loader download failed');
 document.body.append(script);
 if (query.get('gpu') === '1') {

@@ -1,4 +1,4 @@
-import { checkEntries } from './files.mjs';
+import { checkEntries, folderLimits } from './files.mjs';
 const NAME = 'wine-browser-library-v1';
 async function open() {
   return new Promise((resolve, reject) => {
@@ -20,12 +20,19 @@ async function operation(mode, fn) {
   } finally { db.close(); }
 }
 export async function savePackage(pkg) {
-  checkEntries(pkg.files);
+  checkEntries(pkg.files, folderLimits);
   await operation('readwrite', store => store.put(pkg));
 }
 export const getPackage = id => operation('readonly', store => store.get(id));
 export const listPackages = () => operation('readonly', store => store.getAll());
 export const deletePackage = id => operation('readwrite', store => store.delete(id));
+// Stage saves under a fresh installation ID before switching the library entry.
+// One packages transaction publishes the new installation and removes the old.
+export async function replacePackage(previous, next) {
+  checkEntries(next.files, folderLimits);
+  if (previous.id === next.id) throw Error('Replacement needs a new installation ID');
+  await operation('readwrite', store => { store.delete(previous.id); return store.put(next); });
+}
 export async function overlay(pkg, patch) {
   checkEntries(patch);
   const merged = new Map(pkg.files.map(f => [f.path.toLowerCase(), f]));

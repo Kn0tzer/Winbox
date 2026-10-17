@@ -51,11 +51,12 @@ function clearFrame(sequence = 0) {
 async function appEnvironment(gpu) {
   const source = await readFile(new URL('../../../app.mjs', import.meta.url), 'utf8');
   const elements = new Map(), listeners = new Map();
+  let hold = false; const waiting = [];
   function element(tag = 'div') {
     const el = {
       tag, children: [], dataset: {}, value: '', textContent: '', disabled: false,
-      classList: { add() {}, remove() {} }, style: {}, contentWindow: { document: { getElementById: () => null } },
-      setAttribute() {}, removeAttribute() {},
+      classList: { add() {}, remove() {}, toggle() {} }, style: {}, contentWindow: { document: { getElementById: () => null } },
+      setAttribute() {}, removeAttribute() {}, focus() {}, close() {}, showModal() {},
       append(...children) { for (const child of children) { this.children.push(child); if (child.id) elements.set(child.id, child); } },
       add(option) { this.children.push(option); }, replaceChildren(...children) { this.children = children; },
       remove() { this.removed = true; if (elements.get(this.id) === this) elements.delete(this.id); },
@@ -65,39 +66,39 @@ async function appEnvironment(gpu) {
   }
   for (const [, id] of source.matchAll(/\$\('([^']+)'\)/g)) elements.set(id, element());
   elements.get('backend').value = 'webgl';
-  const demo = element('button'); demo.dataset.demo = 'winecfg';
+  const demo = { onclick: () => globalThis.wineGames.install('doom') };
   const document = {
-    createElement: element, getElementById: id => elements.get(id) || null,
-    querySelectorAll: () => [demo], body: element('body'),
+    createElement: element, createElementNS: (namespaceURI, tag) => Object.assign(element(tag), { namespaceURI }), createDocumentFragment: () => element('fragment'), documentElement: element('html'), querySelector: () => element('meta'), getElementById: id => elements.get(id) || null,
+    querySelectorAll: () => [], body: element('body'),
   };
   // Startup only reads an empty installation library. No guest filesystem is
   // mounted, so stop's real snapshot() has no writable files to save.
   const indexedDB = { open() {
     const request = {};
     request.result = { createObjectStore() {}, close() {}, transaction() {
-      const tx = { objectStore: () => ({ getAll: () => ({ result: [] }) }) };
+      const tx = { objectStore: () => ({ getAll: () => ({ result: [] }), clear() {}, put() {} }) };
       queueMicrotask(() => tx.oncomplete?.()); return tx;
     } };
-    queueMicrotask(() => request.onsuccess?.()); return request;
+    if (hold) waiting.push(() => request.onsuccess?.()); else queueMicrotask(() => request.onsuccess?.()); return request;
   } };
   Object.assign(globalThis, {
     document, indexedDB, window: globalThis, location: { origin: 'http://localhost', search: '' },
-    crossOriginIsolated: true, Option: class { constructor(text, value) { this.text = text; this.value = value; } },
+    crossOriginIsolated: true, matchMedia: () => ({ matches: false }), localStorage: { getItem: () => null, setItem() {} }, Option: class { constructor(text, value) { this.text = text; this.value = value; } },
     addEventListener: (type, callback) => listeners.set(type, callback),
   });
   const app = source.replace(/(['"])\.\/([^'"]+)\1/g,
     (_match, quote, file) => quote + new URL('../../../' + file, import.meta.url).href + quote);
   await import('data:text/javascript;base64,' + Buffer.from(app).toString('base64'));
-  return { elements, demo, listeners };
+  return { elements, demo, listeners, holdSaves() { hold = true; }, releaseSaves() { hold = false; waiting.splice(0).forEach(done => done()); } };
 }
 
 test('Stop releases Vulkan resources and a new guest starts with a fresh tier', async () => {
   const restoreGlobals = preserveGlobals([...tierGlobals, 'document', 'indexedDB', 'window', 'location',
-    'crossOriginIsolated', 'Option', 'addEventListener', 'wineLibrary', 'wineGames']);
+    'crossOriginIsolated', 'matchMedia', 'localStorage', 'Option', 'addEventListener', 'wineLibrary', 'wineGames']);
   const gpu = createValidationDevice(); let destroyed = 0;
   gpu.device.destroy = () => { destroyed++; };
   try {
-    const { elements, demo, listeners } = await appEnvironment(gpu);
+    const { elements, demo, listeners, holdSaves, releaseSaves } = await appEnvironment(gpu);
     await demo.onclick();
     const iframe = elements.get('display').children.find(el => el.tag === 'iframe');
     listeners.get('message')({ origin: location.origin, source: iframe.contentWindow,
@@ -116,6 +117,21 @@ test('Stop releases Vulkan resources and a new guest starts with a fresh tier', 
     assert.notEqual(next, oldTier);
     assert.equal(next.stats().v2.rendered, 0);
     await next.destroy();
+    // Stop is deliberately held at its database write. A restart during that
+    // window must not create a guest that old teardown can remove or hide.
+    const live = elements.get('display').children.filter(el => el.tag === 'iframe' && !el.removed).at(-1);
+    live.contentWindow.bwFilesystemReady = true;
+    live.contentWindow.bwRuntime = { fs: () => ({ readdir: () => [] }) };
+    holdSaves();
+    const stopping = elements.get('stop').onclick();
+    await Promise.resolve();
+    await demo.onclick();
+    assert.equal(elements.get('display').children.filter(el => el.tag === 'iframe' && !el.removed).length, 0, 'restart must wait for pending save/teardown');
+    releaseSaves(); await stopping;
+    await demo.onclick();
+    assert.equal(elements.get('display').children.filter(el => el.tag === 'iframe' && !el.removed).length, 1, 'a fresh run starts after teardown completes');
+    assert.equal(elements.get('player').hidden, false, 'old Stop must not hide the new program');
+    await elements.get('stop').onclick();
   } finally { gpu.restore(); restoreGlobals(); }
 });
 

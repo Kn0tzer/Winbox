@@ -1,4 +1,5 @@
-import { cp, mkdir, copyFile, rm, symlink, stat } from 'node:fs/promises';
+import { cp, mkdir, copyFile, rm, symlink, stat, readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { stageVendors } from './stage-vendor.mjs';
@@ -6,7 +7,8 @@ const root = resolve(import.meta.dirname, '../..');
 const out = resolve(root, process.env.WINE_BUILD_OUT || 'dist');
 await mkdir(out, { recursive: true });
 if (out === root || out === resolve(root, 'web')) throw new Error('Build output must be separate from source files');
-for (const name of ['index.html', 'style.css', 'app.mjs', 'files.mjs', 'games.mjs', 'storage.mjs', 'webgpu.mjs', 'shader.mjs', 'naga-rt.mjs', 'vkwebgpu.mjs', 'vk-protocol.mjs', 'vk-log.mjs', 'wgsl-utils.mjs', 'sparse-memfs.js']) await copyFile(resolve(root, 'web', name), resolve(out, name));
+for (const name of ['index.html', 'style.css', 'app.mjs', 'launch.mjs', 'demos.mjs', 'package-archive.mjs', 'session-storage.mjs', 'installation.mjs', 'files.mjs', 'games.mjs', 'storage.mjs', 'webgpu.mjs', 'shader.mjs', 'naga-rt.mjs', 'vkwebgpu.mjs', 'vk-protocol.mjs', 'vk-log.mjs', 'wgsl-utils.mjs', 'sparse-memfs.js']) await copyFile(resolve(root, 'web', name), resolve(out, name));
+await cp(resolve(root, 'web/assets'), resolve(out, 'assets'), { recursive: true });
 // Built-in game archives are staged under /games so the launcher catalog can
 // range-fetch them. WINE_GAMES_DIR selects the source; WINE_GAMES_COPY=1 copies
 // the archives instead of linking them (link is the default: they are 100+ MB).
@@ -27,7 +29,7 @@ if (gamesSrc) {
   else await symlink(gamesSrc, gamesOut, 'dir');
   console.log(`Built-in games: ${gamesOut} -> ${gamesSrc} (${process.env.WINE_GAMES_COPY === '1' ? 'copied' : 'linked'})`);
 } else {
-  console.warn('Built-in games: no archive source found; the launcher catalog will report its card as unavailable.');
+  console.warn('Optional local game archives not staged; launcher demos use the hosted catalog.');
 }
 
 await stageVendors();
@@ -43,11 +45,17 @@ execFileSync('python3', [resolve(root, 'tools/browser/stage-wine32-fonts.py'), r
 // Record final prefix hashes after both font aliases and desktop helpers.
 execFileSync('python3', [resolve(root, 'tools/browser/stage-desktop-pin.py'), resolve(out, 'runtime')]);
 await copyFile(resolve(root, 'web/runtime.html'), resolve(out, 'runtime/index.html'));
+// Keep the cached runtime shell and loader together across UI deployments.
+const runtimeVersion = createHash('sha256').update(await readFile(resolve(root, 'web/runtime.html')))
+  .update(await readFile(resolve(root, 'project/emscripten/wine64-launcher.js'))).digest('hex').slice(0, 12);
+for (const name of ['app.mjs', 'runtime/index.html']) {
+  const path = resolve(out, name);
+  await writeFile(path, (await readFile(path, 'utf8')).replaceAll('__RUNTIME_VERSION__', runtimeVersion));
+}
 await copyFile(resolve(root, 'license.txt'), resolve(out, 'LICENSE.txt'));
 await copyFile(resolve(root, 'project/emscripten/coi-serviceworker.js'), resolve(out, 'coi-serviceworker.js'));
 // Pages cannot set isolation headers. Register the same-origin worker at the
 // export root, so both the app and its runtime iframe are controlled.
-const { readFile, writeFile } = await import('node:fs/promises');
 const index = resolve(out, 'index.html');
 await writeFile(index, (await readFile(index, 'utf8')).replace('</head>', '<script src="coi-serviceworker.js"></script></head>'));
 console.log(`Browser export: ${out}`);
