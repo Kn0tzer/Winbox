@@ -61,9 +61,10 @@
 
 - [x] **CP1: Functional Chromium acceptance.** Empty-field typing, readable
   rendering, clicks and JavaScript pass on the permanent export (`c7ed6992`).
-- [ ] **CP2: Controlled configuration/archive comparisons.** In progress;
-  baseline ready times 28.858/28.704 s. First stored-Wine run 30.595 s is
-  insufficient evidence of a gain. Repeat with identical fixture and checks.
+- [x] **CP2: Controlled configuration/archive comparisons.** All-stored Wine
+  and one raster thread offered no useful win and were rejected. Three quiet
+  baseline/raster pairs passed identical interaction/checksum checks. See the
+  report for medians, matching hashes and the unresolved rejected-variant click.
 - [ ] **CP3: Isolated SIMD compiler experiment.** Depends on CP2; keep current
   scalar register storage and verify any retained win with CPU regressions.
 - [ ] **CP4: Remaining measured Chromium improvements and browsing checks.**
