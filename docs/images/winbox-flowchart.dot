@@ -1,11 +1,6 @@
 digraph Winbox {
   graph [
-    label="WINBOX  /  HOW IT WORKS\nWindows programs, running in your browser",
-    labelloc=t,
-    labeljust=l,
     fontname="Arial",
-    fontsize=22,
-    fontcolor="#18324b",
     bgcolor="#f4f7fb",
     pad=0.35,
     nodesep=0.42,
@@ -34,31 +29,39 @@ digraph Winbox {
     arrowhead=normal
   ];
 
-  folder [label="Folder / ZIP upload\nlocal", fillcolor="#edf5ff", color="#85add8"];
-  demo [label="Pick a demo\non demand", fillcolor="#edf5ff", color="#85add8"];
-  files [label="Program files\nupload: IndexedDB  ·  demos: /games", fillcolor="#eff8f3", color="#82b39c"];
-  detect [label="Find .exe\nx86 / x64", fillcolor="#edf5ff", color="#85add8"];
-  runtime [label="Boxedwine64 + Wine\nWebAssembly  ·  32 / 64-bit", fillcolor="#e5f0ff", color="#4b83c7", penwidth=2];
+  folder [label="Upload a folder", fillcolor="#edf5ff", color="#85add8"];
+  demo [label="Choose a demo", fillcolor="#edf5ff", color="#85add8"];
+  exe [label="Windows .exe\narchitecture selected automatically", fillcolor="#eff8f3", color="#82b39c"];
+  runtime [label="Boxedwine64\nruns in WebAssembly", fillcolor="#e5f0ff", color="#4b83c7", penwidth=2];
+  threads [label="WebAssembly threads", fillcolor="#f7f9fc", color="#c7d3df", fontsize=11];
 
-  folder -> files;
-  demo -> files;
-  files -> detect -> runtime;
+  folder -> exe;
+  demo -> exe;
+  exe -> runtime;
+  runtime -> threads [style=dotted, arrowhead=none, color="#aab8c6"];
 
+  x86 [label="32-bit x86 CPU emulation\nfor x86 programs", fillcolor="#eaf1fc", color="#7096ce"];
+  x64 [label="64-bit x86-64 CPU emulation\nfor x64 programs", fillcolor="#eaf1fc", color="#7096ce"];
+  wine [label="Wine\nWindows API compatibility\nnot a CPU emulator", fillcolor="#eff8f3", color="#82b39c"];
   d3d [label="Direct3D 9–11", fillcolor="#fff4e5", color="#d9a152"];
   d3d12 [label="Direct3D 12", fillcolor="#fff4e5", color="#d9a152"];
   gl [label="OpenGL", fillcolor="#f2edfa", color="#9a7bc4"];
   dxvk [label="DXVK", fillcolor="#f4effa", color="#9a7bc4"];
   vkd3d [label="vkd3d", fillcolor="#f4effa", color="#9a7bc4"];
-  bridge [label="Vulkan bridge\nguest shim  ·  frame stream", fillcolor="#edf4ff", color="#7096ce"];
+  bridge [label="Vulkan bridge\nAPI calls → browser frames", fillcolor="#edf4ff", color="#7096ce"];
   glbridge [label="GL bridge", fillcolor="#f4effa", color="#9a7bc4"];
   webgpu [label="WebGPU\nSPIR-V → WGSL", fillcolor="#e9f6fb", color="#58a0bd"];
   webgl [label="WebGL2", fillcolor="#e9f6fb", color="#58a0bd"];
   glsubset [label="GL subset\nexperimental", style="rounded,dashed,filled", fillcolor="#faf7ff", color="#9a7bc4", fontcolor="#76579f"];
   player [label="Winbox player\nbrowser-rendered windows\nkeyboard / pointer in  ·  audio out", fillcolor="#eaf7f1", color="#62a889", penwidth=2];
 
-  runtime -> d3d;
-  runtime -> d3d12;
-  runtime -> gl;
+  runtime -> x86;
+  runtime -> x64;
+  x86 -> wine;
+  x64 -> wine;
+  wine -> d3d;
+  wine -> d3d12;
+  wine -> gl;
   d3d -> dxvk -> bridge;
   d3d12 -> vkd3d -> bridge;
   bridge -> webgpu;
@@ -68,10 +71,9 @@ digraph Winbox {
   webgpu -> player;
   webgl -> player;
 
-  browser [shape=note, label="BROWSER\nIsolation  ·  WebAssembly threads  ·  WebGL2\nWebGPU for Vulkan path  ·  compatibility varies", fillcolor="#f7f9fc", color="#c7d3df", fontsize=11];
-  player -> browser [style=dotted, arrowhead=none, color="#aab8c6"];
-
   { rank=same; folder; demo; }
+  { rank=same; runtime; threads; }
+  { rank=same; x86; x64; }
   { rank=same; d3d; d3d12; gl; }
   { rank=same; dxvk; vkd3d; glbridge; }
   { rank=same; bridge; glsubset; }
