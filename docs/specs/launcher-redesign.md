@@ -25,7 +25,7 @@ Portal/Celeste/Gang Beasts runtime defects.
    local library, loading/error/retry states, runtime stop/restart/fullscreen,
    optional settings and diagnostics. Preserve IndexedDB keys and save data.
 4. `publish-launcher`: tests, browser verification, local commit, authorized
-   GitHub push and deployment of the generated export to the existing /wine/.
+   GitHub push and deployment of the generated export to /winbox/.
 
 Dependencies: folder-launch and demo-launch precede launcher-ui integration;
 publish-launcher follows all three. No Microapps homepage edits or container

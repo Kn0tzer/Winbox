@@ -34,7 +34,7 @@ export async function toWGSL(from, source, stage='vertex', entryPoint='main', op
     // naga's spv-in rejects — combined-sampler loads (InvalidId) and spec
     // constants (UnsupportedInstruction) — before handing bytes to naga.
     // Byte-identical passthrough when nothing applies. The export includes a
-    // sibling implementation so this also works below a /wine/ URL prefix.
+    // sibling implementation so this also works below a /winbox/ URL prefix.
     try {
       const { applySpirvFix } = await import('./spirvfix.mjs');
       source = applySpirvFix(source, options).bytes;
