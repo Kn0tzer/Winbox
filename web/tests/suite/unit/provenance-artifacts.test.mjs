@@ -52,24 +52,34 @@ test('dist/runtime and web/runtime wasm/js pairs are in sync', () => {
   assert.equal(distJs, webJs, 'dist vs web boxedwine64.js must match (stale JS + new WASM → __emscripten_receive_on_main_thread_js crash)');
 });
 
-test('Wine archives match their bases and prefix differences contain only the versioned desktop helpers', () => {
+test('Wine exports preserve pinned files except desktop helpers and the Wine32 Arial alias', () => {
   for (const z of ['wine32.zip', 'wine64.zip', 'prefix32.zip', 'prefix64.zip']) {
     const a = join(repoRoot, 'dist/runtime', z);
     const b = join(repoRoot, 'web/runtime', z);
     if (!existsSync(a) || !existsSync(b)) continue;
     if (z.startsWith('wine')) assert.equal(sha256File(a), sha256File(b), `${z}: dist vs web must match`);
     else execFileSync('python3', ['-c', `
-import pathlib, sys, zipfile, json, hashlib
+import pathlib, sys, zipfile, json, hashlib, importlib.util
 exported, base, root, arch = map(str, sys.argv[1:])
 helper = 'deskpin32.exe' if arch == '32' else 'deskpin.exe'
 paths = {'home/username/' + helper}
 if arch == '64': paths.add('home/username/.wine/drive_c/' + helper)
 expected = (pathlib.Path(root) / 'tools/rootfs64/gltest' / helper).read_bytes()
+registry = 'home/username/.wine/user.reg'
+spec = importlib.util.spec_from_file_location('fonts', pathlib.Path(root) / 'tools/browser/stage-wine32-fonts.py')
+fonts = importlib.util.module_from_spec(spec); spec.loader.exec_module(fonts)
 with zipfile.ZipFile(exported) as actual, zipfile.ZipFile(base) as original:
  assert set(actual.namelist()) == set(original.namelist()) | paths
  assert len(actual.namelist()) == len(set(actual.namelist())), 'duplicate zip members'
  for name in actual.namelist():
-  assert actual.read(name) == (expected if name in paths else original.read(name)), name
+  desired = expected if name in paths else original.read(name)
+  if arch == '32' and name == registry: desired = fonts.configure_replacements(desired)
+  assert actual.read(name) == desired, name
+ if arch == '32':
+  record = json.loads((pathlib.Path(exported).parent / 'wine32-font-provenance.json').read_text())
+  assert record['registry_path'] == registry
+  assert record['registry_sha256'] == hashlib.sha256(actual.read(registry)).hexdigest()
+  assert record['replacements'] == {'Arial': 'DejaVu Sans'}
 provenance = json.loads((pathlib.Path(exported).parent / 'desktop-pin-provenance.json').read_text())[arch]
 assert provenance['helper_sha256'] == hashlib.sha256(expected).hexdigest()
 assert provenance['prefix_sha256'] == hashlib.sha256(pathlib.Path(exported).read_bytes()).hexdigest()

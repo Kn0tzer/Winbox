@@ -11,6 +11,6 @@ export default class Win32FontsTest extends ProbeTest {
     await this.stageFile(page, 'win32-fonts.exe', await guestFixture('win32-fonts', 'x86'));
     const from = await this.spawnGuest(page, 'win32-fonts.exe', { arch: 'x86', env: 'WINEDEBUG=+debugstr' });
     const line = await this.waitForLog(page, /win32-fonts:.*RESULT \d+/, 30000, from);
-    if (!/GDI=1 FAMILIES=[1-9]\d* TAHOMA=1 MAPPING=00000000 RESULT 0(?:\D|$)/.test(line)) throw Error(line);
+    if (!/GDI=1 FAMILIES=[1-9]\d* TAHOMA=1 MAPPING=00000000 ARIAL=1 METRICS=1 RESULT 0(?:\D|$)/.test(line)) throw Error(line);
   }
 }

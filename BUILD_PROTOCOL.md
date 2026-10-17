@@ -17,7 +17,7 @@ blocks the build; readers also wait. Only a validated dead PID can be reclaimed.
 `BW64_BUILD_WAIT_SECONDS` bounds the wait. `EMSDK` selects the SDK when emcc
 is not already active; `JOBS` controls compilation.
 
-The browser export replaces only `deskpin.exe`/`deskpin32.exe` in the pinned
+The browser export replaces `deskpin.exe`/`deskpin32.exe` in the pinned
 prefix archives with the versioned helpers under `tools/rootfs64/gltest/`.
 `desktop-pin-provenance.json` records helper and resulting prefix hashes and
 is included in the browser evidence fingerprint. The provenance test checks
@@ -26,6 +26,10 @@ The export also adds the pinned Wine64 package's architecture-independent
 fonts to Wine32's data directory in `glibc-rootfs32.zip`.
 `wine32-font-provenance.json` records their hashes and the resulting archive;
 its provenance test verifies every original archive member is unchanged.
+Wine32's exported user registry also exposes the pinned DejaVu Sans font as
+Arial through Wine's DirectWrite/GDI replacement list. Its registry hash is
+recorded in the font provenance; all other registry data is preserved. The
+desktop-helper provenance records prefix hashes after both export steps.
 Both provenance records are included in the browser evidence fingerprint. Rebuild both helpers
 from `deskpin.c` with the matching MinGW compiler after changing that source.
 

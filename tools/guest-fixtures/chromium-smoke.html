@@ -1,0 +1,44 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Chromium test</title>
+<style>
+body { background: #073b4c; color: white; font: 26px sans-serif; margin: 36px; }
+button, input { font: 26px sans-serif; padding: 12px; }
+#status { background: #118ab2; padding: 20px; }
+input { appearance: none; box-sizing: border-box; width: 400px; height: 60px; line-height: 32px; background: white; color: black; }
+#count { background: #06d6a0; color: #062f21; padding: 16px; }
+</style>
+<h1>Chromium is rendering</h1>
+<p id="status">JavaScript starting</p>
+<button id="button">Count clicks</button>
+<p id="count">Clicks: 0</p>
+<input id="input" placeholder="Type here" autofocus>
+<p id="typed"></p>
+<script>
+const log = (event, data) => console.log('BW_CHROMIUM_JSON ' + JSON.stringify({ event, ...data }));
+let clicks = 0;
+document.getElementById('button').onclick = () => {
+  document.getElementById('count').textContent = 'Clicks: ' + (++clicks);
+  document.title = 'BW_CLICK_' + clicks;
+  log('click', { clicks });
+};
+document.getElementById('input').oninput = event => {
+  document.getElementById('typed').textContent = 'Typed: ' + event.target.value;
+  log('input', { text: event.target.value });
+};
+document.title = 'BW_RENDER_OK';
+log('ready', { userAgent: navigator.userAgent });
+setTimeout(() => {
+  const samples = [], iterations = 1000000;
+  let checksum = 0;
+  for (let trial = 0; trial < 4; trial++) {
+    let sum = 0;
+    const start = performance.now();
+    for (let i = 0; i < iterations; i++) sum = (sum + i) | 0;
+    samples.push(performance.now() - start);
+    checksum = sum;
+  }
+  document.getElementById('status').textContent = 'JavaScript OK. Sum: ' + checksum + '; ms: ' + samples.map(Math.round).join(', ');
+  log('benchmark', { iterations, samples, checksum });
+}, 100);
+</script>

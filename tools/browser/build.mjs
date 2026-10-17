@@ -37,11 +37,11 @@ await copyFile(resolve(root, 'tools/spirvfix/spirvfix.mjs'), resolve(out, 'spirv
 for (const name of ['boxedwine64.js', 'boxedwine64.wasm', 'BUILD_INFO.json']) await copyFile(resolve(root, 'project/emscripten/Build/Wasm64Mt', name), resolve(out, 'runtime', name));
 await copyFile(resolve(root, 'project/emscripten/wine64-launcher.js'), resolve(out, 'runtime/wine64-launcher.js'));
 for (const name of ['glibc-rootfs64.zip', 'wine64.zip', 'prefix64.zip', 'glibc-rootfs32.zip', 'wine32.zip', 'prefix32.zip']) await copyFile(resolve(root, 'web/runtime', name), resolve(out, 'runtime', name));
-// Keep the pinned base archives intact; replace only our desktop helper in
-// the exported prefixes so readiness matches the helper shipped with this tree.
-execFileSync('python3', [resolve(root, 'tools/browser/stage-desktop-pin.py'), resolve(out, 'runtime')]);
-// DirectWrite needs the actual Tahoma family; a GDI substitute alone is insufficient.
+// Keep pinned archives intact; stage Wine fonts and the DirectWrite Arial alias
+// in the export before recording the final desktop-helper prefix hashes.
 execFileSync('python3', [resolve(root, 'tools/browser/stage-wine32-fonts.py'), resolve(out, 'runtime')]);
+// Record final prefix hashes after both font aliases and desktop helpers.
+execFileSync('python3', [resolve(root, 'tools/browser/stage-desktop-pin.py'), resolve(out, 'runtime')]);
 await copyFile(resolve(root, 'web/runtime.html'), resolve(out, 'runtime/index.html'));
 await copyFile(resolve(root, 'license.txt'), resolve(out, 'LICENSE.txt'));
 await copyFile(resolve(root, 'project/emscripten/coi-serviceworker.js'), resolve(out, 'coi-serviceworker.js'));
