@@ -55,3 +55,17 @@
 - [ ] **M per change: Measure and optimize Portal.** Depends on verified
   game correctness. Keep an attempt log with before/after measurements,
   variance and verdict; rerun affected checks after each retained change.
+
+
+## Current Chromium priority (2026-10-17)
+
+- [x] **CP1: Functional Chromium acceptance.** Empty-field typing, readable
+  rendering, clicks and JavaScript pass on the permanent export (`c7ed6992`).
+- [ ] **CP2: Controlled configuration/archive comparisons.** In progress;
+  baseline ready times 28.858/28.704 s. First stored-Wine run 30.595 s is
+  insufficient evidence of a gain. Repeat with identical fixture and checks.
+- [ ] **CP3: Isolated SIMD compiler experiment.** Depends on CP2; keep current
+  scalar register storage and verify any retained win with CPU regressions.
+- [ ] **CP4: Remaining measured Chromium improvements and browsing checks.**
+  Depends on CP3. Record rejected ideas and practical limits as well as wins.
+- [ ] **CP5: Portal acceptance.** Depends on CP4; do not switch early.

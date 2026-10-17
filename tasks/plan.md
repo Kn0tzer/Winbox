@@ -1,5 +1,10 @@
 # Runtime repair and game acceptance
 
+Current priority (2026-10-17, BB `thr_stya3zzsan`): the user's newer Chromium
+goal supersedes the earlier game order below. Get Chromium working, exhaust
+useful measured performance improvements, then resume Portal. Historical
+unresolved runtime checks below remain recorded; they are not silently closed.
+
 The user authorized this order in BB thread `thr_7k42yen7hk`, continuing
 `thr_euc85c2hcr`: fix failing tests, verify Celeste and Portal gameplay,
 verify Gang Beasts gameplay, then optimize the stack toward Portal above
@@ -131,3 +136,32 @@ WASM `424d1f8416e7`; the original allocator trap is not yet closed.
 An initial ASan container report was independently reproduced as a mixed
 instrumentation artifact. Corrected diagnostics reached D3D10 startup but
 hit memory/reporting limits; see the runtime regression report for evidence.
+
+
+## Chromium performance continuation
+
+- **CP1, M, complete:** Chromium 109 renders, clicks, types into an empty HTML
+  field and computes the benchmark checksum. Regressions cover HADDPD,
+  Wine fonts/Arial metrics and X11 focus. Verified commands and evidence are
+  in `docs/reports/chromium-20261016.md`; repair commit `c7ed6992` closes typing.
+- **CP2, S:** Compare runtime ZIP storage and one raster thread against an idle
+  baseline, interleaving repeated runs. Owner: `web/tests/chromium-probe.mjs`
+  and the report. Acceptance: every retained case passes the same real guest
+  rendering/click/type/checksum checks and improves beyond observed variance.
+  Command: `TAG=<case> [WINE_DIST_DIR=<private export>] [CHROME_ARGS=<json>]
+  node web/tests/chromium-probe.mjs`. Depends on CP1. Private archive variants
+  stay in `/tmp/chromium-performance`; do not replace pinned archives.
+- **CP3, M:** Test compiler SIMD in an isolated checkout/build, preserving CPU
+  register representation and floating-point semantics. Owners:
+  `project/emscripten/makefile`, focused CPU browser tests, and report.
+  Acceptance: repeated identical Chromium workloads show a clear improvement;
+  relevant CPU/browser checks, fast suite and type checking pass. Build only
+  through `tools/bw64-build.sh`, with no live probe slot; record binary and
+  archive hashes. Reject neutral or slower variants. Depends on CP2.
+- **CP4, S per change:** Profile remaining startup/interaction costs and isolate
+  required flags. Check browser navigation and network support separately.
+  Retain only measured, correctness-preserving improvements. Depends on CP3;
+  results determine the next small experiment rather than an open refactor.
+- **CP5, M:** Resume real Portal menu/map/input acceptance only after Chromium
+  works and useful optimization avenues are exhausted. Preserve existing
+  Portal preflight and evidence requirements. Depends on CP4.

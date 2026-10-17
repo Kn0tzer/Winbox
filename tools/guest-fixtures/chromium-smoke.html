@@ -9,8 +9,9 @@ input { appearance: none; box-sizing: border-box; width: 400px; height: 60px; li
 #count { background: #06d6a0; color: #062f21; padding: 16px; }
 </style>
 <h1>Chromium is rendering</h1>
-<p id="status">JavaScript starting</p>
+<p id="status">Ready to benchmark</p>
 <button id="button">Count clicks</button>
+<button id="benchmark">Run benchmark</button>
 <p id="count">Clicks: 0</p>
 <input id="input" placeholder="Type here" autofocus>
 <p id="typed"></p>
@@ -26,12 +27,15 @@ document.getElementById('input').oninput = event => {
   document.getElementById('typed').textContent = 'Typed: ' + event.target.value;
   log('input', { text: event.target.value });
 };
+document.getElementById('input').onfocus = () => log('focus', { target: 'input', hasFocus: document.hasFocus() });
+document.getElementById('input').onblur = () => log('blur', { target: 'input' });
+for (const event of ['mousedown', 'mouseup']) document.addEventListener(event, e => log(event, { target: e.target.id, x: e.clientX, y: e.clientY, button: e.button }));
 document.title = 'BW_RENDER_OK';
 log('ready', { userAgent: navigator.userAgent });
-setTimeout(() => {
+document.getElementById('benchmark').onclick = () => setTimeout(() => {
   const samples = [], iterations = 1000000;
   let checksum = 0;
-  for (let trial = 0; trial < 4; trial++) {
+  for (let trial = 0; trial < 8; trial++) {
     let sum = 0;
     const start = performance.now();
     for (let i = 0; i < iterations; i++) sum = (sum + i) | 0;
@@ -39,6 +43,6 @@ setTimeout(() => {
     checksum = sum;
   }
   document.getElementById('status').textContent = 'JavaScript OK. Sum: ' + checksum + '; ms: ' + samples.map(Math.round).join(', ');
-  log('benchmark', { iterations, samples, checksum });
+  log('benchmark', { workload: 'integer-sum-v2', iterations, samples, checksum });
 }, 100);
 </script>
