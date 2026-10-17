@@ -47,9 +47,23 @@ public:
     void reopen() override;
     bool isOpen() override;
 
+protected:
+    U32 internalRead(KThread* thread, U32 address, U32 len) override;
+
 private:
     std::shared_ptr<FsFileNode> fileNode;
     U32 handle;
+
+    // Read-ahead buffer: reduces syscall overhead for small/sequential reads.
+    // The ELF/PE loader does 52B/56B reads with backward seeks; buffering 64KB
+    // turns those into memcpy hits. Large reads also benefit (1 syscall for
+    // 64KB instead of 16 for 4KB chunks).
+    static const U32 READ_BUFFER_SIZE = 65536;
+    U8 readBuffer[READ_BUFFER_SIZE];
+    S64 readBufferPos = -1; // file offset of readBuffer[0], -1 = invalid
+    U32 readBufferLen = 0;  // valid bytes in readBuffer
+    S64 expectedPos = 0;    // tracked file position (avoids getFilePointer syscall)
+    void invalidateReadBuffer() { readBufferPos = -1; readBufferLen = 0; }
 };
 
 #endif

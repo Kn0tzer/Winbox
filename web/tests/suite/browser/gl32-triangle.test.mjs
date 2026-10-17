@@ -1,32 +1,21 @@
-// web/tests/suite/browser/gl32-triangle.test.mjs — Celeste OpenGL path (32-bit).
-//
-// VERIFIED PRECEDENT: real 32-bit Wine fixture displayed colored triangle,
-// `trigl: RESULT 0` in test-results/gl32-real-shim-01 with shim in
-// /home/username/apps (first search path). This test pins that: 32-bit CPU +
-// shared GL renderer + pixel-format query + swapbuffers must yield LIT>0.
-// If green alongside cpu32/input/audio, Celeste profile is guaranteed.
-
+// Execute the i386 WGL fixture and measure the real browser canvas.
 import { ProbeTest } from '../lib/probe-base.mjs';
 import { check, checkGreaterThan } from '../lib/assert.mjs';
-
+import { guestFixture, canvasPixels } from '../lib/guest-fixtures.mjs';
 export default class Gl32TriangleTest extends ProbeTest {
-  constructor() {
-    super({ tag: 'gl32-triangle', timeoutMs: 900000 });
-  }
-
-  async run(ctx) {
-    const { page } = ctx;
-    await page.goto(`${ctx.server.url}/?test=gl32-triangle`);
-    await this.waitForPageFn(page, () => window.__done === true, 600000);
-
-    const result = await page.evaluate(() => window.__trigl);
-    check(result === 0 || result === '0' || (typeof result === 'number'),
-      `32-bit GL fixture must report trigl RESULT (got ${result}; pixel-format query is the Celeste BLOCKER)`);
-
-    const lit = await page.evaluate(() => window.__lit ?? window.__pixels ?? 0);
-    checkGreaterThan(lit, 0,
-      `32-bit OpenGL triangle must render non-zero pixels (LIT=${lit}). ` +
-      `If 0, check: (1) shim in /home/username/apps first, (2) gl32Bridge forwarding, ` +
-      `(3) pixel-format query, (4) glXSwapBuffers present.`);
+  constructor() { super({ tag: 'gl32-triangle', timeoutMs: 900000 }); }
+  async run({ page }) {
+    const fixture = await guestFixture('trigl', 'x86');
+    await this.bootGuest(page, { arch: 'x86' });
+    await this.waitForPageFn(page, () => globalThis.bwRuntime.ready(), 600000);
+    await this.stageFile(page, 'trigl32.exe', fixture);
+    await this.stageFile(page, 'libGL.so.1', 'tools/rootfs64/libgl32/libGL.so.1');
+    const from = await this.spawnGuest(page, 'trigl32.exe', { arch: 'x86', env: 'WINEDEBUG=+debugstr' });
+    const line = await this.waitForLog(page, /trigl: RESULT [01]/, 300000, from);
+    check(/RESULT 0/.test(line), `32-bit GL fixture must succeed (${line})`);
+    const pixels = await canvasPixels(page);
+    checkGreaterThan(pixels.lit, 0, `32-bit OpenGL triangle must render non-zero pixels (LIT=${pixels.lit})`);
+    checkGreaterThan(pixels.varied, 100, 'GL triangle must contain colored pixels, not only window chrome');
+    await page.screenshot({ path: this.dir + '/triangle.png' });
   }
 }

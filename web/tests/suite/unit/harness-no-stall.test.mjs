@@ -4,8 +4,8 @@
 //  (a) runner kills hung unit files after 120s and reports FAIL,
 //  (b) runner wraps browser tests in timeoutMs+60s outer timeout,
 //  (c) probe-base setup/teardown have finite timeouts,
-//  (d) every browser test uses waitForPageFn with explicit timeout (no bare
-//      waitForFunction / infinite poll loops).
+//  (d) browser tests use the bounded boot/wait helpers. Actual timeout behavior
+//      is exercised by harness-lifecycle; source inventory is not a proof.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -35,14 +35,14 @@ test('probe-base setup/teardown are bounded (server 60s, browser 120s, close 15/
     'server start (60s) and chromium.launch (120s) must be bounded');
 });
 
-test('every browser test uses waitForPageFn with timeout (no infinite waits)', () => {
+test('browser probes use bounded boot or page-wait helpers', () => {
   const dir = join(suiteDir, '..', 'browser');
   const files = readdirSync(dir).filter(f => f.endsWith('.test.mjs'));
   assert.ok(files.length >= 8, `expected 8+ browser tests, found ${files.length}`);
   for (const f of files) {
     const src = readFileSync(join(dir, f), 'utf8');
-    assert.ok(src.includes('waitForPageFn'),
-      `${f}: must use waitForPageFn (bounded) — bare waitForFunction / while(true) would stall forever`);
+    assert.ok(src.includes('waitForPageFn') || src.includes('waitForLog') || src.includes('bootGuest') || src.includes('extends D3D9ComprehensiveTest'),
+      `${f}: must use a bounded page wait or the shared bounded boot helper`);
     assert.ok(!src.includes('while (true)') && !src.includes('while(true)'),
       `${f}: must not contain infinite while(true) poll loops`);
   }

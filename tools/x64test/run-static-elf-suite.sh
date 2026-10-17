@@ -7,24 +7,18 @@
 # real musl-built programs to a clean exit.
 #
 # Usage:  tools/x64test/run-static-elf-suite.sh [path-to-Boxedwine-binary]
-# Default binary path: the Xcode Debug build at
-#   ~/Library/Developer/Xcode/DerivedData/Boxedwine-*/Build/Products/Debug/Boxedwine.app/Contents/MacOS/Boxedwine
+# Default binary: BW64_BIN or project/linux/Build/X64Headless/boxedwine.
 #
 # Requires: zig (zig cc), Boxedwine built with BOXEDWINE_GUEST_X64=1.
 
 set -e
 
-BWX="${1:-}"
-if [ -z "$BWX" ]; then
-    BWX=$(ls -t ~/Library/Developer/Xcode/DerivedData/Boxedwine-*/Build/Products/Debug/Boxedwine.app/Contents/MacOS/Boxedwine 2>/dev/null | head -1)
-fi
-if [ ! -x "$BWX" ]; then
-    echo "boxedwine binary not found (pass path or build via xcodebuild first)" >&2
-    exit 2
-fi
+REPO="$(cd "$(dirname "$0")/../.." && pwd)"
+source "$REPO/tools/native-binary.sh"
+BWX="$(bw64_native_binary "${1:-}")" || exit 1
 
 if ! command -v zig >/dev/null 2>&1; then
-    echo "zig not installed (brew install zig)" >&2
+    echo "zig not installed (install Zig or add tools/browser/zig to PATH)" >&2
     exit 2
 fi
 

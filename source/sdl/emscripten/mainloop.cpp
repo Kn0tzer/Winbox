@@ -128,6 +128,7 @@ void mainloop() {
         // Persistent wine session: start any apps JS asked for (bw64_spawn) here
         // on the main-loop thread, against the already-running wineserver/prefix.
         bw64SessionDrainSpawns();
+        xwireRecordInputPhase(6);
 #endif
         U32 t = KSystem::getMilliesSinceStart();
         U32 nextTimer = getNextTimer();
@@ -151,6 +152,9 @@ void mainloop() {
         if (!KNativeSystem::getCurrentInput()->processEvents()) {
             KNativeSystem::cleanup();
         }
+#ifdef BOXEDWINE_GUEST_X64
+        xwireRecordInputPhase(7);
+#endif
   } catch (const std::exception& e) {
         static std::atomic<int> n{0};
         if (n.fetch_add(1) < 20) klog_fmt("mainloop: caught exception (loop survives): %s", e.what());

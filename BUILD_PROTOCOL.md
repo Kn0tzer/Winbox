@@ -1,34 +1,62 @@
-# Build / Probe Coordination Protocol
+# Build and probe coordination
 
-Exactly one writer of `dist/runtime/boxedwine64.{wasm,js}` at a time,
-and no probe starts while a build is in flight. Violating this produces
-torn builds that crash with `func is not a function` and poison every lane.
-
-## Builds
-
-Always through the wrapper. Never raw `make wasm64-mt`:
+The build wrapper is the only writer of the generated emulator pair.
+The page export, WASM/JavaScript and `BUILD_INFO.json` must agree. A probe
+must not observe a build replacing its runtime files.
 
 ```sh
-tools/bw64-build.sh          # build + verify + sync + provenance
-tools/bw64-build.sh --check  # idle / in-progress / stale
+tools/bw64-build.sh                # compile, export, verify hashes/provenance
+tools/bw64-build.sh --export-only  # refresh page using the verified compiled pair
+tools/bw64-build.sh --check        # idle / live / initializing / dead owner
 ```
 
-The wrapper takes an atomic lock, refuses while any probe slot is held,
-verifies WASM magic, copies the matched pair to `dist/runtime/` and
-`web/runtime/`, and writes `BUILD_INFO.json` (git SHA, hashes, timestamp)
-beside both. Identify yourself: `BW64_BUILD_OWNER="agent:<what>"`.
+The wrapper resolves its repository from its own path, restores pinned
+runtime inputs, takes an atomic lock and refuses live probe slots. A live
+owner keeps the lock regardless of age. An incomplete/malformed owner record
+blocks the build; readers also wait. Only a validated dead PID can be reclaimed.
+`BW64_BUILD_WAIT_SECONDS` bounds the wait. `EMSDK` selects the SDK when emcc
+is not already active; `JOBS` controls compilation.
 
-## Probes
+The browser export replaces `deskpin.exe`/`deskpin32.exe` in the pinned
+prefix archives with the versioned helpers under `tools/rootfs64/gltest/`.
+`desktop-pin-provenance.json` records helper and resulting prefix hashes and
+is included in the browser evidence fingerprint. The provenance test checks
+every other archive member against the pinned base.
+The export also adds the pinned Wine64 package's architecture-independent
+fonts to Wine32's data directory in `glibc-rootfs32.zip`.
+`wine32-font-provenance.json` records their hashes and the resulting archive;
+its provenance test verifies every original archive member is unchanged.
+Wine32's exported user registry also exposes the pinned DejaVu Sans font as
+Arial through Wine's DirectWrite/GDI replacement list. Its registry hash is
+recorded in the font provenance; all other registry data is preserved. The
+desktop-helper provenance records prefix hashes after both export steps.
+Both provenance records are included in the browser evidence fingerprint. Rebuild both helpers
+from `deskpin.c` with the matching MinGW compiler after changing that source.
 
-Acquire a slot first, then wait for build idle:
+Do not run raw `make wasm64-mt` against the shared output. Use
+`BW64_BUILD_OWNER` to label a build. The diagnostic override
+`BW64_BUILD_FORCE=1` bypasses the probe guard and can invalidate a live probe;
+use it only after stopping the affected probe.
+
+Probes keep the existing coordination helpers:
 
 ```js
 import { acquireProbeSlot } from './probe-slots.mjs';
 import { waitForBuildIdle } from './build-lock.mjs';
 const slot = await acquireProbeSlot();
-await waitForBuildIdle(); // throws after 10 min on a stuck build
+await waitForBuildIdle();
+try {
+  // Run the probe and record dist/runtime/BUILD_INFO.json with its summary.
+} finally {
+  await slot.release();
+}
 ```
 
-Record provenance in every `summary.json` (`dist/runtime/BUILD_INFO.json`).
-A result without a recorded build hash is inadmissible — it may describe
-a stale binary.
+Callers release slots during cleanup; later probes reclaim abandoned slots
+whose PID is dead. Existing helpers bound the wait. Keep the
+runtime lock/slot directories shared across local processes. Tests of lock
+behavior use isolated temporary directories.
+
+Raw outputs live in ignored `test-results/<tag>/`. Keep the summary, hashes,
+console errors and screenshots together. Curated reports are committed under
+`docs/reports/`; recorded API counts do not verify correct pixels or gameplay.

@@ -39,6 +39,7 @@ public:
 	virtual void setFragmentSize(U32 size) = 0;
 	virtual U32 getBufferSize() = 0;
 	virtual U32 getBufferCapacity() = 0;
+	virtual bool isBwPump() { return false; }
 
 	U32 id = 0;
 

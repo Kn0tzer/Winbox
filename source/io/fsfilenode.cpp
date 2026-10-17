@@ -279,6 +279,9 @@ U32 FsFileNode::getMode() {
     if (this->path == "/etc/sudoers") {
         return result | K__S_IRGRP;
     }
+    if (this->path.endsWith("/.wine/wineserver")) {
+        return result; // Debian Wine server rendezvous file: must report exactly 0400
+    }
     if (!FsFileNode::nonExecFileFullPaths.count(this->path)) {
         result |= K__S_IEXEC;
         if (this->path.startsWith("/usr/local/bin") || this->path.startsWith("/usr/bin") || this->path.startsWith("/bin") || this->path.startsWith("/opt/wine/bin")) {
@@ -288,7 +291,7 @@ U32 FsFileNode::getMode() {
     if (KThread::currentThread()->process->userId == 0 || this->path.startsWith("/tmp") || this->path.startsWith("/var") || this->path.startsWith("/home")) {
         result |= K__S_IWRITE;
         // wine server needs to be private, but winetricks check "-w" in the script on /tmp which needs these 2
-        if (!this->path.startsWith("/tmp/.wine")) {
+        if (!this->path.startsWith("/tmp/.wine") && !this->path.startsWith("/tmp/wine-")) {
             result |= K__S_IWGRP | K__S_IWOTH;
         }
     }
@@ -339,6 +342,7 @@ S32 translateErr(U32 e) {
 U32 FsFileNode::rename(BString path) {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->openNodesMutex);
     U32 result=0;
+    BString oldPath = this->path;
     std::vector<S64> tmpPos;
 
     this->ensurePathIsLocal(false);
@@ -426,6 +430,11 @@ U32 FsFileNode::rename(BString path) {
             continue;
         }
         break;
+    }
+    if (result == 0 && oldPath != this->path) {
+        // The node (and any descendants) moved: drop cached paths under the old prefix.
+        // No node lock is held here.
+        Fs::invalidatePathCachePrefix(oldPath);
     }
     int i=0;
     this->openNodes.for_each([&tmpPos,&i](KListNode<FsOpenNode*>* n) {

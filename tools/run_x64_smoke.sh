@@ -8,57 +8,21 @@
 # Usage:
 #   tools/run_x64_smoke.sh [path/to/Boxedwine]
 #
-# Defaults to the Debug build under project/mac-xcode/.
+# Uses BW64_BIN or the native Linux X64 diagnostic build by default.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-# Xcode writes into either project/mac-xcode/.../build (when build folder is
-# colocated) or ~/Library/Developer/Xcode/DerivedData (the default). Pick the
-# freshest binary across BOTH so we never run a stale in-tree binary after a
-# DerivedData build (or vice versa). User-supplied path overrides everything.
-if [ -n "${1:-}" ]; then
-    BOXEDWINE="$1"
-else
-    # Build a candidate list and pick the freshest *existing* binary. Two
-    # quirks we have to dodge here:
-    #   1) Either path may not exist (in-tree was deleted; DerivedData was
-    #      cleaned). `ls -t` returns non-zero in that case, and combined
-    #      with set -euo pipefail the script exits silently with no error
-    #      output, which is brutal to debug. We pre-filter to existing
-    #      paths so `ls` never sees a missing one.
-    #   2) The DerivedData entry is a glob; if no DerivedData build exists
-    #      the literal pattern `Boxedwine-*/...` doesn't expand and trips
-    #      `ls` on a bogus literal path.
-    CANDIDATES=()
-    INTREE="$ROOT/project/mac-xcode/Boxedwine/build/Debug/Boxedwine.app/Contents/MacOS/Boxedwine"
-    if [ -x "$INTREE" ]; then
-        CANDIDATES+=("$INTREE")
-    fi
-    for p in "$HOME/Library/Developer/Xcode/DerivedData"/Boxedwine-*/Build/Products/Debug/Boxedwine.app/Contents/MacOS/Boxedwine; do
-        if [ -x "$p" ]; then
-            CANDIDATES+=("$p")
-        fi
-    done
-    if [ "${#CANDIDATES[@]}" -gt 0 ]; then
-        BOXEDWINE="$(ls -t "${CANDIDATES[@]}" | head -1)"
-    else
-        BOXEDWINE=""
-    fi
-fi
-
-if [ -z "$BOXEDWINE" ] || [ ! -x "$BOXEDWINE" ]; then
-    echo "error: Boxedwine binary not found (tried in-tree build and DerivedData)" >&2
-    exit 1
-fi
+source "$ROOT/tools/native-binary.sh"
+BOXEDWINE="$(bw64_native_binary "${1:-}")" || exit 1
 echo "using: $BOXEDWINE"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 # Run one canned binary and check the exit status the guest sys_exit
-# reports (parsed from "CPU64: exit syscall, status=N" in stderr/stdout).
+# reports (parsed from "CPU64: exit[_group] syscall, status=N" in stderr/stdout).
 # The host process always exits 0; we care about the guest's status.
 run_one() {
     local name="$1"
@@ -70,7 +34,7 @@ run_one() {
     local out
     out="$("$BOXEDWINE" --x64-run-elf "$elf" 2>&1 || true)"
     local got
-    got="$(echo "$out" | grep -oE 'exit syscall, status=[0-9]+' | head -1 | grep -oE '[0-9]+$' || echo "?")"
+    got="$(echo "$out" | grep -oE 'exit(_group)? syscall, status=[0-9]+' | head -1 | grep -oE '[0-9]+$' || echo "?")"
     if [ "$got" = "$expected_status" ]; then
         printf "  PASS: %-24s (exit=%s)\n" "$name" "$got"
         return 0
@@ -100,7 +64,7 @@ run_one_prebuilt() {
     local out
     out="$("$BOXEDWINE" --x64-run-elf "$elf" 2>&1 || true)"
     local got
-    got="$(echo "$out" | grep -oE 'exit syscall, status=[0-9]+' | head -1 | grep -oE '[0-9]+$' || echo "?")"
+    got="$(echo "$out" | grep -oE 'exit(_group)? syscall, status=[0-9]+' | head -1 | grep -oE '[0-9]+$' || echo "?")"
     if [ "$got" = "$expected_status" ]; then
         printf "  PASS: %-24s (exit=%s)\n" "$name" "$got"
         return 0
@@ -189,7 +153,7 @@ run_one_dynamic() {
     local out
     out="$(BOXEDWINE64_LIBPATH="$libpath" "$BOXEDWINE" --x64-run-elf "$elf" 2>&1 || true)"
     local got
-    got="$(echo "$out" | grep -oE 'exit syscall, status=[0-9]+' | head -1 | grep -oE '[0-9]+$' || echo "?")"
+    got="$(echo "$out" | grep -oE 'exit(_group)? syscall, status=[0-9]+' | head -1 | grep -oE '[0-9]+$' || echo "?")"
     if [ "$got" = "$expected_status" ]; then
         printf "  PASS: %-24s (exit=%s)\n" "$name" "$got"
         return 0

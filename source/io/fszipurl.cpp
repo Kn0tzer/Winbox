@@ -11,9 +11,13 @@ bool fsZipUrlIsSpec(BString path) {
 
 #include <emscripten.h>
 #include <cstdlib>
+#include <atomic>
+#include <condition_variable>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <vector>
 
 // zlib_filefunc64_def etc. come via unzip.h (already included by fszipurl.h
@@ -73,7 +77,7 @@ EM_JS(void, bw64StartFetch, (double ctxAddr, double jobAddr, const char* url, do
     });
 });
 
-static void bw64FetchOnMain(em_proxying_ctx* ctx, void* arg) {
+static EMSCRIPTEN_KEEPALIVE void bw64FetchOnMain(em_proxying_ctx* ctx, void* arg) {
     FetchJob* job = (FetchJob*)arg;
     bw64StartFetch((double)(uintptr_t)ctx, (double)(uintptr_t)job, job->url,
                    (double)job->start, (double)job->endIncl,
@@ -108,15 +112,38 @@ struct UrlPart {
 };
 
 struct RangedFile {
-    std::vector<UrlPart> parts;
-    U64 total = 0;
-    bool error = false;
-    U64 fetched = 0;      // stats: bytes downloaded so far
-    U64 lastLogged = 0;
+    std::vector<UrlPart> parts; // immutable after mount (fsZipUrlOpen)
+    U64 total = 0;              // immutable after mount
+    std::atomic<bool> error{false};
+    std::atomic<bool> permanentError{false};
+    std::atomic<U64> fetched{0};      // stats: bytes downloaded so far
+    std::atomic<U64> lastLogged{0};
     std::mutex m;
-    std::map<U64, std::unique_ptr<U8[]>> blocks;
+    std::condition_variable fetchCv; // signaled when an in-flight block fetch finishes
+    // LRU block cache: 512KB blocks, capped at MAX_CACHED_BLOCKS (256MB).
+    // Locking discipline: m is held for cache lookup/insertion/eviction and for
+    // the memcpy out of a cached block, but NEVER across the synchronous
+    // network fetch. A cache miss releases m while fetching, so one thread's
+    // 50-200ms fetch never blocks other threads' cache hits or fetches of
+    // different blocks. inFlight tracks blocks with a fetch in progress;
+    // threads that miss on the same block wait on fetchCv instead of
+    // duplicating the fetch. Eviction is transparent: a later read of an
+    // evicted block just re-fetches it.
+    static constexpr size_t MAX_CACHED_BLOCKS = 512; // 512 x 512KB = 256MB
+    struct BlockEntry {
+        std::unique_ptr<U8[]> data;
+        std::list<U64>::iterator lruIt; // position in lruOrder, front = MRU
+    };
+    std::map<U64, BlockEntry> blocks;
+    std::list<U64> lruOrder; // front = most recently used
+    std::set<U64> inFlight;  // block indices with a fetch in progress (under m)
+    U64 evicted = 0;         // stats: blocks evicted so far (under m)
+    U64 lastEvictLogged = 0; // (under m)
 
     // Fetch [off, off+len) directly from the underlying parts into dst.
+    // Lock-free by design (parts/total are immutable after mount, stats are
+    // atomic): called WITHOUT holding m so concurrent block fetches proceed
+    // in parallel.
     bool fetchRaw(U64 off, U64 len, U8* dst) {
         while (len) {
             const UrlPart* p = nullptr;
@@ -133,44 +160,121 @@ struct RangedFile {
                 klog_fmt("fszipurl: range fetch FAILED url=%s off=%llu len=%llu -> %d",
                          p->url.c_str(), (unsigned long long)inPart,
                          (unsigned long long)chunk, got);
+                if (got == -404 || got == -403) { permanentError.store(true, std::memory_order_relaxed); }
                 return false;
             }
-            fetched += chunk;
+            fetched.fetch_add(chunk, std::memory_order_relaxed);
             off += chunk;
             dst += chunk;
             len -= chunk;
         }
-        if (fetched - lastLogged >= 16 * 1024 * 1024) {
-            lastLogged = fetched;
+        U64 f = fetched.load(std::memory_order_relaxed);
+        U64 ll = lastLogged.load(std::memory_order_relaxed);
+        if (f - ll >= 16 * 1024 * 1024) {
+            lastLogged.store(f, std::memory_order_relaxed);
             klog_fmt("fszipurl: %llu MB fetched lazily so far",
-                     (unsigned long long)(fetched >> 20));
+                     (unsigned long long)(f >> 20));
         }
         return true;
     }
 
-    const U8* getBlock(U64 idx) {
-        auto it = blocks.find(idx);
-        if (it != blocks.end()) {
-            return it->second.get();
+    // Look up block idx in the cache, fetching it on miss.
+    // Enter with m held via lk; m may be TEMPORARILY RELEASED during the
+    // network fetch and is re-acquired before return. On non-null return the
+    // block is present in the cache and m is held, so the caller can safely
+    // memcpy from the returned pointer (eviction also requires m).
+    const U8* getBlock(U64 idx, std::unique_lock<std::mutex>& lk) {
+        if (permanentError.load(std::memory_order_relaxed)) return nullptr;
+        for (;;) {
+            auto it = blocks.find(idx);
+            if (it != blocks.end()) {
+                // Hit: refresh recency (splice keeps the stored iterator valid).
+                lruOrder.splice(lruOrder.begin(), lruOrder, it->second.lruIt);
+                return it->second.data.get();
+            }
+            if (inFlight.find(idx) == inFlight.end())
+                break; // miss and nobody fetching: we become the fetcher
+            // Another thread is fetching this block; wait for it to finish,
+            // then re-check the cache (or become the fetcher if it failed).
+            fetchCv.wait(lk, [&] {
+                return blocks.find(idx) != blocks.end() ||
+                       inFlight.find(idx) == inFlight.end();
+            });
         }
         U64 off = idx * BLOCK_SIZE;
         if (off >= total) {
             return nullptr;
         }
         U64 len = std::min(BLOCK_SIZE, total - off);
-        auto buf = std::make_unique<U8[]>(BLOCK_SIZE);
-        if (!fetchRaw(off, len, buf.get())) {
-            return nullptr;
+        inFlight.insert(idx);
+        lk.unlock();
+        // ---- synchronous network fetch WITHOUT holding m ----
+        // Exception safety: if the allocation or fetch throws, we must
+        // re-lock, remove from inFlight, and wake waiters. Otherwise
+        // waiters deadlock on a stale inFlight entry.
+        std::unique_ptr<U8[]> buf;
+        bool ok = false;
+        bool threw = false;
+        try {
+            buf = std::make_unique<U8[]>(BLOCK_SIZE);
+            ok = fetchRaw(off, len, buf.get());
+        } catch (...) {
+            threw = true;
         }
-        const U8* raw = buf.get();
-        blocks[idx] = std::move(buf);
-        return raw;
+        // ---- re-acquire before touching cache state ----
+        lk.lock();
+        inFlight.erase(idx);
+        if (threw) {
+            fetchCv.notify_all();
+            throw;
+        }
+        const U8* result = nullptr;
+        if (ok) try {
+            // inFlight gave us exclusive fetch rights, so the block should
+            // not already be cached; check anyway for robustness.
+            auto it = blocks.find(idx);
+            if (it != blocks.end()) {
+                lruOrder.splice(lruOrder.begin(), lruOrder, it->second.lruIt);
+                result = it->second.data.get();
+            } else {
+                lruOrder.push_front(idx);
+                BlockEntry e;
+                e.data = std::move(buf);
+                e.lruIt = lruOrder.begin();
+                result = e.data.get();
+                blocks[idx] = std::move(e);
+                while (blocks.size() > MAX_CACHED_BLOCKS) {
+                    U64 victim = lruOrder.back();
+                    lruOrder.pop_back();
+                    blocks.erase(victim);
+                    evicted++;
+                }
+                if (evicted - lastEvictLogged >= 64) {
+                    lastEvictLogged = evicted;
+                    klog_fmt("fszipurl: LRU evicted %llu blocks (%llu MB total), cache capped at 256MB",
+                             (unsigned long long)evicted,
+                             (unsigned long long)(evicted >> 1));
+                }
+            }
+        } catch (...) {
+            // Don't leave waiters hanging on inFlight if insertion throws
+            // (e.g. OOM during map node allocation).
+            fetchCv.notify_all();
+            throw;
+        }
+        // Wake waiters on success or failure: on failure they re-check, find
+        // the block still missing, and retry the fetch themselves.
+        fetchCv.notify_all();
+        return result;
     }
 
     U32 readAt(U64& pos, void* out, U32 size) {
-        std::lock_guard<std::mutex> lk(m);
         U8* dst = (U8*)out;
         U32 done = 0;
+        std::unique_lock<std::mutex> lk(m);
+        // Clear sticky error on entry: a previous transient failure should not
+        // poison subsequent reads. The flag is re-set below on actual failure.
+        if (done == 0) error.store(false, std::memory_order_relaxed);
         while (size) {
             if (pos >= total) {
                 break; // EOF
@@ -178,9 +282,12 @@ struct RangedFile {
             U64 idx = pos / BLOCK_SIZE;
             U64 inBlock = pos % BLOCK_SIZE;
             U64 blockLen = std::min(BLOCK_SIZE, total - idx * BLOCK_SIZE);
-            const U8* b = getBlock(idx);
+            // getBlock may release m during the network fetch, then
+            // re-acquire it. The memcpy below runs with m held, so the
+            // block cannot be evicted under us.
+            const U8* b = getBlock(idx, lk);
             if (!b) {
-                error = true;
+                error.store(true, std::memory_order_relaxed);
                 break;
             }
             U32 chunk = (U32)std::min<U64>(size, blockLen - inBlock);

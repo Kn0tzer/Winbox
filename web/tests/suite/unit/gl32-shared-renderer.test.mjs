@@ -1,7 +1,7 @@
 // web/tests/suite/unit/gl32-shared-renderer.test.mjs — Celeste path (32-bit OpenGL).
 //
 // Celeste.exe is i386 (0x14c) + FNA.dll + SDL2.dll + Mono. It needs the
-// 32-bit OpenGL bridge sharing the 64-bit renderer (tasks/game-compatibility:
+// 32-bit OpenGL bridge sharing the 64-bit renderer (docs/game-compatibility:
 // "replace the 32-bit no-op bridge with the existing renderer; decode pointer
 // arrays by guest width"). Earlier dismissal "32-bit OpenGL is irrelevant to
 // Portal" was corrected: fix all 278 missing functions, no API left incomplete.

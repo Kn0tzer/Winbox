@@ -18,8 +18,6 @@
 
 #include <cstdio>
 #include <cstring>
-#include <ctime>
-#include <cstdlib>
 #include <vector>
 
 // Minimal in-process smoke test for the x86-64 interpreter. Builds tiny
@@ -41,8 +39,6 @@ struct TestResult {
     int failed = 0;
     U64 jitBlocks = 0;
     U64 jitInsns = 0;
-    U64 wasmBlocks = 0;
-    U64 wasmInsns = 0;
 };
 
 void loadCode(KMemory64& mem, U64 addr, const std::vector<U8>& bytes) {
@@ -73,8 +69,6 @@ void runAndCheck(TestResult& r, const char* name,
     if (cpu.jit()) {
         r.jitBlocks += cpu.jit()->blocksExecuted;
         r.jitInsns += cpu.jit()->insnsFast;
-        r.wasmBlocks += cpu.jit()->wasmBlocks;
-        r.wasmInsns += cpu.jit()->wasmInsns;
     }
     bool hung = (!cpu.yield && cpu.instructionCount >= INSN_LIMIT);
     if (hung) {
@@ -4075,6 +4069,38 @@ int runX64SelfTest() {
         });
     }
 
+    // Independent QEMU/x86-64 results for valid FYL2XP1 operands. Computing
+    // log(1+x) loses tiny x and the sign of -0 before the logarithm runs.
+    {
+        const bool previousMode = KSystem::useF64;
+        struct LogCase { U64 input, expected; const char* name; };
+        const LogCase cases[] = {
+            {0x3c30000000000000ULL, 0x3c371547652b82feULL, "x87 FYL2XP1 tiny positive epsilon"},
+            {0xbc30000000000000ULL, 0xbc371547652b82feULL, "x87 FYL2XP1 tiny negative epsilon"},
+            {0x8000000000000000ULL, 0x8000000000000000ULL, "x87 FYL2XP1 negative zero"},
+        };
+        for (bool cached : {false, true}) {
+            KSystem::useF64 = cached;
+            for (const auto& test : cases) {
+                std::vector<U8> code = {0x48,0x83,0xEC,0x08,0x48,0xB8};
+                for (int byte=0; byte<8; byte++) code.push_back((U8)(test.input >> (8*byte)));
+                const U8 operation[] = {
+                    0x48,0x89,0x04,0x24, // mov [rsp],rax
+                    0xDB,0xE3,0xD9,0xE8, // finit; fld1
+                    0xDD,0x04,0x24,0xD9,0xF9, // fld qword [rsp]; fyl2xp1
+                    0xDD,0x1C,0x24,0x48,0x8B,0x04,0x24, // fstp [rsp]; mov rax,[rsp]
+                    0x48,0x83,0xC4,0x08,
+                };
+                code.insert(code.end(), operation, operation + sizeof(operation));
+                const U64 expected = test.expected;
+                runAndCheck(r, test.name, withExit(code), [expected](CPU64& cpu) {
+                    return cpu.reg[X64_R15].u64 == expected;
+                });
+            }
+        }
+        KSystem::useF64 = previousMode;
+    }
+
     // T: FNSTSW AX — after FLDZ, FXAM-style flags not set in our simplified
     // model; we just confirm that the upper 48 bits of RAX are preserved and
     // the low 16 bits get the SW value (whatever it is). Pre-load RAX with a
@@ -6403,6 +6429,78 @@ int runX64SelfTest() {
         ok ? r.passed++ : r.failed++;
     }
 
+    // The shared server clock must remain live in fixed client maps, and a
+    // recreated temporary filename must get independent backing.
+    {
+        KMemory64 writer(nullptr), reader(nullptr), recreated(nullptr), renamed(nullptr);
+        U8 seed[K_PAGE_SIZE] = {};
+        const U64 inode = 0xb0641001, newInode = 0xb0641002;
+        const U64 writeAt = writer.mmapReserveAndMap(K_PAGE_SIZE, 3);
+        writer.mmapSharedFile(writeAt, K_PAGE_SIZE, 3, inode, "tmpmap-clock", 0, seed, sizeof(seed));
+        reader.mmapSharedFile(0x7ffe0000, K_PAGE_SIZE, 1, inode, "tmpmap-clock", 0, seed, sizeof(seed));
+        writer.writeq(writeAt, 0x123456789abcdef0ULL);
+        bool ok = reader.readq(0x7ffe0000) == 0x123456789abcdef0ULL;
+        printf("  %s: shared file writer reservation aliases fixed reader\n", ok ? "PASS" : "FAIL");
+        ok ? r.passed++ : r.failed++;
+        recreated.mmapSharedFile(0x7ffd0000, K_PAGE_SIZE, 3, newInode, "tmpmap-clock", 0, seed, sizeof(seed));
+        ok = recreated.readq(0x7ffd0000) == 0;
+        recreated.writeq(0x7ffd0000, 0x11223344);
+        ok = ok && reader.readq(0x7ffe0000) == 0x123456789abcdef0ULL;
+        printf("  %s: recreated file identity keeps old mappings independent\n", ok ? "PASS" : "FAIL");
+        ok ? r.passed++ : r.failed++;
+        renamed.mmapSharedFile(0x7ffc0000, K_PAGE_SIZE, 1, inode, "renamed-clock", 0, seed, sizeof(seed));
+        ok = renamed.readq(0x7ffc0000) == 0x123456789abcdef0ULL;
+        printf("  %s: same file identity aliases across pathname changes\n", ok ? "PASS" : "FAIL");
+        ok ? r.passed++ : r.failed++;
+    }
+
+    // Fork preserves address-space reservations and file sharing, while
+    // private bytes in the child remain independent of the parent.
+    {
+        KMemory64 parent(nullptr), child(nullptr);
+        const U64 original = parent.mmapReserveAndMap(2 * K_PAGE_SIZE, 3);
+        parent.writeq(original, 0x1122334455667788ULL);
+        const U64 reservation = original + 2 * K_PAGE_SIZE;
+        parent.mmapAnonymousFixed(reservation, K_PAGE_SIZE, 0);
+        child.cloneFrom(&parent);
+        const U64 allocated = child.mmapReserveAndMap(K_PAGE_SIZE, 3);
+        bool ok = allocated >= reservation + K_PAGE_SIZE &&
+                  child.readq(original) == 0x1122334455667788ULL;
+        child.writeq(original, 9);
+        ok = ok && parent.readq(original) == 0x1122334455667788ULL;
+        printf("  %s: fork preserves reservations and private mapping isolation\n", ok ? "PASS" : "FAIL");
+        ok ? r.passed++ : r.failed++;
+    }
+    {
+        KMemory64 parent(nullptr), child(nullptr);
+        U8 seed[K_PAGE_SIZE] = {};
+        const U64 address = 0x7ffc0000;
+        parent.mmapSharedFile(address, K_PAGE_SIZE, 3, 0xb0641003, "fork-shared", 0, seed, sizeof(seed));
+        parent.writeq(address, 5);
+        child.cloneFrom(&parent);
+        child.writeq(address, 7);
+        bool ok = parent.readq(address) == 7;
+        parent.writeq(address, 11);
+        ok = ok && child.readq(address) == 11;
+        printf("  %s: fork preserves shared file aliasing in both directions\n", ok ? "PASS" : "FAIL");
+        ok ? r.passed++ : r.failed++;
+    }
+
+    {
+        KMemory64 writer(nullptr), observer(nullptr);
+        U8 seed[K_PAGE_SIZE] = {};
+        const U64 address = 0x7ffb0000;
+        writer.mmapSharedFile(address, K_PAGE_SIZE, 3, 0xb0641004, "remap-shared", 0, seed, sizeof(seed));
+        observer.mmapSharedFile(address, K_PAGE_SIZE, 3, 0xb0641004, "remap-shared", 0, seed, sizeof(seed));
+        writer.writeq(address, 13);
+        writer.mmapAnonymousFixed(address, K_PAGE_SIZE, 3);
+        bool ok = writer.readq(address) == 0 && observer.readq(address) == 13;
+        writer.writeq(address, 17);
+        ok = ok && observer.readq(address) == 13;
+        printf("  %s: anonymous replacement detaches the old shared file\n", ok ? "PASS" : "FAIL");
+        ok ? r.passed++ : r.failed++;
+    }
+
     // The bounded runner must stop before the remaining records of a cached
     // block change registers. This matters for scheduler slices as well as
     // instruction-by-instruction tests.
@@ -6436,6 +6534,726 @@ int runX64SelfTest() {
         0xB8, 0x42, 0x00, 0x00, 0x00,       // mov eax, 0x42 (patched to 0x99)
     }), [](CPU64& c) { return c.reg[X64_R15].u64 == 0x99; });
 
+    // JRCXZ (E3): jump short if RCX == 0. Taken case.
+    // Note: the exit syscall (0F 05) clobbers RCX with the return RIP per
+    // the AMD64 ABI (cpu64.cpp dsp_23), so RCX is saved to RBX before exit.
+    runAndCheck(r, "jrcxz taken (rcx=0)", withExit({
+        0x48, 0xC7, 0xC1, 0x00, 0x00, 0x00, 0x00, // mov rcx, 0
+        0xE3, 0x07,                               // jrcxz +7 (taken)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // (target) mov rax, 0xAA
+        0x48, 0x89, 0xCB,                         // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA && c.reg[X64_RBX].u64 == 0;
+    });
+
+    // JRCXZ (E3): not-taken case (RCX != 0 falls through).
+    // Note: the exit syscall (0F 05) clobbers RCX with the return RIP per
+    // the AMD64 ABI (cpu64.cpp dsp_23), so RCX is saved to RBX before exit.
+    runAndCheck(r, "jrcxz not taken (rcx=1)", withExit({
+        0x48, 0xC7, 0xC1, 0x01, 0x00, 0x00, 0x00, // mov rcx, 1
+        0xE3, 0x07,                               // jrcxz +7 (not taken)
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // (fallthrough) mov rax, 0xAA
+        0xEB, 0x07,                               // jmp +7 (skip taken-target)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0x89, 0xCB,                         // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA && c.reg[X64_RBX].u64 == 1;
+    });
+
+    // JECXZ (67 E3): 0x67 address-size prefix selects ECX. RCX has high
+    // bits set but ECX == 0, so the jump must be taken.
+    runAndCheck(r, "jecxz taken (ecx=0, rcx high bits set)", withExit({
+        0x48, 0xB9, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, // mov rcx, 0x100000000
+        0x67, 0xE3, 0x07,                                           // jecxz +7 (taken)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00,                   // (skipped) mov rax, 0xD0BA
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00,                   // (target) mov rax, 0xAA
+        0x48, 0x89, 0xCB,                                           // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA && c.reg[X64_RBX].u64 == 0x100000000ULL;
+    });
+
+    // JECXZ (67 E3): not-taken case (ECX != 0 falls through).
+    runAndCheck(r, "jecxz not taken (ecx=1)", withExit({
+        0x48, 0xC7, 0xC1, 0x01, 0x00, 0x00, 0x00, // mov rcx, 1
+        0x67, 0xE3, 0x07,                         // jecxz +7 (not taken)
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // (fallthrough) mov rax, 0xAA
+        0xEB, 0x07,                               // jmp +7 (skip taken-target)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0x89, 0xCB,                         // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA && c.reg[X64_RBX].u64 == 1;
+    });
+
+    // LOOP (E2): decrement RCX, jump if the decremented count != 0.
+    // RCX=2 -> 1, jump taken.
+    // Note: the exit syscall (0F 05) clobbers RCX with the return RIP per
+    // the AMD64 ABI (cpu64.cpp dsp_23), so RCX is saved to RBX before exit.
+    runAndCheck(r, "loop taken (rcx=2->1)", withExit({
+        0x48, 0xC7, 0xC1, 0x02, 0x00, 0x00, 0x00, // mov rcx, 2
+        0x48, 0x31, 0xC0,                         // xor rax, rax  ; ZF=1 (deterministic)
+        0xE2, 0x07,                               // loop +7 (taken: rcx 2->1)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // (target) mov rax, 0xAA
+        0x48, 0x89, 0xCB,                         // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA && c.reg[X64_RBX].u64 == 1;
+    });
+
+    // LOOP (E2): RCX=1 -> 0, falls through (loop termination case).
+    runAndCheck(r, "loop not taken (rcx=1->0)", withExit({
+        0x48, 0xC7, 0xC1, 0x01, 0x00, 0x00, 0x00, // mov rcx, 1
+        0x48, 0x31, 0xC0,                         // xor rax, rax
+        0xE2, 0x07,                               // loop +7 (not taken: rcx 1->0)
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // (fallthrough) mov rax, 0xAA
+        0xEB, 0x07,                               // jmp +7 (skip taken-target)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0x89, 0xCB,                         // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA && c.reg[X64_RBX].u64 == 0;
+    });
+
+    // LOOP (E2): RCX=0 wraps to 0xFFFFFFFFFFFFFFFF (decrement first, per
+    // Intel SDM) so the jump is taken, not fallen through.
+    runAndCheck(r, "loop wraps (rcx=0->max, taken)", withExit({
+        0x48, 0xC7, 0xC1, 0x00, 0x00, 0x00, 0x00, // mov rcx, 0
+        0x48, 0x31, 0xC0,                         // xor rax, rax
+        0xE2, 0x07,                               // loop +7 (taken: rcx 0->max)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // (target) mov rax, 0xAA
+        0x48, 0x89, 0xCB,                         // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA && c.reg[X64_RBX].u64 == 0xFFFFFFFFFFFFFFFFULL;
+    });
+
+    // LOOPE/LOOPZ (E1): jump when count != 0 AND ZF==1. Taken.
+    runAndCheck(r, "loope taken (rcx=2, zf=1)", withExit({
+        0x48, 0xC7, 0xC1, 0x02, 0x00, 0x00, 0x00, // mov rcx, 2
+        0x48, 0x31, 0xC0,                         // xor rax, rax  ; ZF=1
+        0xE1, 0x07,                               // loope +7 (taken)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // (target) mov rax, 0xAA
+        0x48, 0x89, 0xCB,                         // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA && c.reg[X64_RBX].u64 == 1;
+    });
+
+    // LOOPE (E1): count != 0 but ZF==0 -> not taken. RCX is still
+    // decremented even when the jump is not taken.
+    runAndCheck(r, "loope not taken (zf=0)", withExit({
+        0x48, 0xC7, 0xC1, 0x02, 0x00, 0x00, 0x00, // mov rcx, 2
+        0x48, 0x31, 0xC0,                         // xor rax, rax  ; ZF=1
+        0x48, 0x83, 0xF8, 0x01,                   // cmp rax, 1    ; ZF=0
+        0xE1, 0x07,                               // loope +7 (not taken)
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // (fallthrough) mov rax, 0xAA
+        0xEB, 0x07,                               // jmp +7 (skip taken-target)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0x89, 0xCB,                         // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA && c.reg[X64_RBX].u64 == 1;
+    });
+
+    // LOOPNE/LOOPNZ (E0): jump when count != 0 AND ZF==0. Taken.
+    runAndCheck(r, "loopne taken (rcx=2, zf=0)", withExit({
+        0x48, 0xC7, 0xC1, 0x02, 0x00, 0x00, 0x00, // mov rcx, 2
+        0x48, 0x31, 0xC0,                         // xor rax, rax  ; ZF=1
+        0x48, 0x83, 0xF8, 0x01,                   // cmp rax, 1    ; ZF=0
+        0xE0, 0x07,                               // loopne +7 (taken)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // (target) mov rax, 0xAA
+        0x48, 0x89, 0xCB,                         // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA && c.reg[X64_RBX].u64 == 1;
+    });
+
+    // LOOPNE (E0): count != 0 but ZF==1 -> not taken.
+    runAndCheck(r, "loopne not taken (zf=1)", withExit({
+        0x48, 0xC7, 0xC1, 0x02, 0x00, 0x00, 0x00, // mov rcx, 2
+        0x48, 0x31, 0xC0,                         // xor rax, rax  ; ZF=1
+        0xE0, 0x07,                               // loopne +7 (not taken)
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // (fallthrough) mov rax, 0xAA
+        0xEB, 0x07,                               // jmp +7 (skip taken-target)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0x89, 0xCB,                         // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA && c.reg[X64_RBX].u64 == 1;
+    });
+
+    // LOOP with 0x67 address-size prefix: decrements ECX (32-bit), and the
+    // 32-bit write zero-extends into RCX. ECX=0 -> 0xFFFFFFFF != 0, taken.
+    runAndCheck(r, "loop 32-bit (67 E2, ecx=0->max, taken)", withExit({
+        0x48, 0xB9, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, // mov rcx, 0x100000000
+        0x48, 0x31, 0xC0,                                           // xor rax, rax
+        0x67, 0xE2, 0x07,                                           // loop +7 (taken)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00,                   // (skipped) mov rax, 0xD0BA
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00,                   // (target) mov rax, 0xAA
+        0x48, 0x89, 0xCB,                                           // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA && c.reg[X64_RBX].u64 == 0xFFFFFFFFULL;
+    });
+
+    // LOOP must not modify flags: ZF=1 before, still ZF=1 after (read back
+    // via sete al; rax was 0 so sete leaves rax==1).
+    runAndCheck(r, "loop preserves ZF", withExit({
+        0x48, 0xC7, 0xC1, 0x02, 0x00, 0x00, 0x00, // mov rcx, 2
+        0x48, 0x31, 0xC0,                         // xor rax, rax  ; ZF=1
+        0xE2, 0x07,                               // loop +7 (taken)
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x0F, 0x94, 0xC0,                         // (target) sete al  ; al = ZF
+        0x48, 0x89, 0xCB,                         // mov rbx, rcx (save pre-syscall)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 1 && c.reg[X64_RBX].u64 == 1;
+    });
+
+    // LODSB (AC): AL = [RSI], RSI += 1 (DF=0). Only AL is written;
+    // the upper 56 bits of RAX are preserved.
+    runAndCheck(r, "lodsb forward (df=0)", withExit({
+        0xC6, 0x44, 0x24, 0xF8, 0x42,  // mov byte [rsp-8], 0x42
+        0xC6, 0x44, 0x24, 0xF9, 0x99,  // mov byte [rsp-7], 0x99
+        0x48, 0xC7, 0xC0, 0xFF, 0xFF, 0xFF, 0xFF,  // mov rax, -1 (all bits set)
+        0x48, 0x8D, 0x74, 0x24, 0xF8,  // lea rsi, [rsp-8]
+        0xFC,                          // cld
+        0xAC,                          // lodsb -> AL=0x42, RSI+=1
+        0x48, 0x89, 0xF3,              // mov rbx, rsi (save)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xFFFFFFFFFFFFFF42ULL && c.reg[X64_RBX].u64 == 0x7FFFE9ULL;
+    });
+
+    // LODSB (AC) with DF=1 (STD): RSI decrements by 1.
+    runAndCheck(r, "lodsb backward (df=1)", withExit({
+        0xC6, 0x44, 0x24, 0xF8, 0x42,  // mov byte [rsp-8], 0x42
+        0xC6, 0x44, 0x24, 0xF9, 0x99,  // mov byte [rsp-7], 0x99
+        0x48, 0x31, 0xC0,              // xor rax, rax
+        0x48, 0x8D, 0x74, 0x24, 0xF9,  // lea rsi, [rsp-7]
+        0xFD,                          // std
+        0xAC,                          // lodsb -> AL=0x99, RSI-=1
+        0x48, 0x89, 0xF3,              // mov rbx, rsi (save)
+        0xFC,                          // cld (restore)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0x99ULL && c.reg[X64_RBX].u64 == 0x7FFFE8ULL;
+    });
+
+    // LODSW (66 AD): AX = [RSI], RSI += 2.
+    runAndCheck(r, "lodsw", withExit({
+        0xC6, 0x44, 0x24, 0xF8, 0x34,  // mov byte [rsp-8], 0x34
+        0xC6, 0x44, 0x24, 0xF9, 0x12,  // mov byte [rsp-7], 0x12
+        0x48, 0x31, 0xC0,              // xor rax, rax
+        0x48, 0x8D, 0x74, 0x24, 0xF8,  // lea rsi, [rsp-8]
+        0xFC,                          // cld
+        0x66, 0xAD,                    // lodsw -> AX=0x1234, RSI+=2
+        0x48, 0x89, 0xF3,              // mov rbx, rsi (save)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0x1234ULL && c.reg[X64_RBX].u64 == 0x7FFFEAULL;
+    });
+
+    // LODSD (AD): EAX = [RSI] (zero-extends into RAX), RSI += 4.
+    runAndCheck(r, "lodsd", withExit({
+        0xC6, 0x44, 0x24, 0xF8, 0xDE,  // [rsp-8]=0xDE
+        0xC6, 0x44, 0x24, 0xF9, 0xAD,  // [rsp-7]=0xAD
+        0xC6, 0x44, 0x24, 0xFA, 0xBE,  // [rsp-6]=0xBE
+        0xC6, 0x44, 0x24, 0xFB, 0xEF,  // [rsp-5]=0xEF
+        0x48, 0xC7, 0xC0, 0xFF, 0xFF, 0xFF, 0xFF,  // mov rax, -1 (high bits set)
+        0x48, 0x8D, 0x74, 0x24, 0xF8,  // lea rsi, [rsp-8]
+        0xFC,                          // cld
+        0xAD,                          // lodsd -> EAX=0xEFBEADDE, RAX zero-extended
+        0x48, 0x89, 0xF3,              // mov rbx, rsi (save)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xEFBEADDEULL && c.reg[X64_RBX].u64 == 0x7FFFECULL;
+    });
+
+    // LODSQ (48 AD): RAX = [RSI], RSI += 8.
+    runAndCheck(r, "lodsq (rex.w)", withExit({
+        0x48, 0xB8, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,  // mov rax, 0x1122334455667788
+        0x48, 0x89, 0x44, 0x24, 0xF8,  // mov [rsp-8], rax
+        0x48, 0x31, 0xC0,              // xor rax, rax
+        0x48, 0x8D, 0x74, 0x24, 0xF8,  // lea rsi, [rsp-8]
+        0xFC,                          // cld
+        0x48, 0xAD,                    // lodsq -> RAX=0x1122334455667788, RSI+=8
+        0x48, 0x89, 0xF3,              // mov rbx, rsi (save)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0x1122334455667788ULL && c.reg[X64_RBX].u64 == 0x7FFFF0ULL;
+    });
+
+    // LODSB with 0x67 address-size prefix: 32-bit ESI is used. The
+    // effective address is masked to 32 bits, and the ESI update
+    // zero-extends into RSI (high bits cleared), per x86-64 semantics.
+    runAndCheck(r, "lodsb 32-bit (67 AC, esi zero-extends)", withExit({
+        0xC6, 0x44, 0x24, 0xF8, 0x42,  // mov byte [rsp-8], 0x42
+        0x48, 0x31, 0xC0,              // xor rax, rax
+        0x48, 0xBE, 0xE8, 0xFF, 0x7F, 0x00, 0x78, 0x56, 0x34, 0x12,
+            // mov rsi, 0x12345678007FFFE8 (high bits set, low32 = data addr)
+        0xFC,                          // cld
+        0x67, 0xAC,                    // lodsb (addr32) -> AL=0x42, RSI=0x7FFFE9
+        0x48, 0x89, 0xF3,              // mov rbx, rsi (save)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0x42ULL && c.reg[X64_RBX].u64 == 0x7FFFE9ULL;
+    });
+
+    // ENTER (C8 iw ib): create stack frame. Level 0, alloc 16.
+    // push RBP; RBP=RSP-8; RSP=RSP-8-16.
+    runAndCheck(r, "enter level 0, alloc 16", withExit({
+        0x48, 0xBD, 0xF0, 0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00,  // mov rbp, 0x7FFFF0
+        0xC8, 0x10, 0x00, 0x00,  // enter 16, 0
+        0x48, 0x89, 0xE3,        // mov rbx, rsp (save)
+        0x48, 0x89, 0xE8,        // mov rax, rbp
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0x7FFFE8ULL && c.reg[X64_RBX].u64 == 0x7FFFD8ULL;
+    });
+
+    // ENTER level 0, alloc 0: just push RBP, no frame allocation.
+    runAndCheck(r, "enter level 0, alloc 0", withExit({
+        0x48, 0xBD, 0xF0, 0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00,  // mov rbp, 0x7FFFF0
+        0xC8, 0x00, 0x00, 0x00,  // enter 0, 0
+        0x48, 0x89, 0xE3,        // mov rbx, rsp (save)
+        0x48, 0x89, 0xE8,        // mov rax, rbp
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0x7FFFE8ULL && c.reg[X64_RBX].u64 == 0x7FFFE8ULL;
+    });
+
+    // ENTER level 1, alloc 8: push RBP, push FrameTemp, set RBP, alloc.
+    runAndCheck(r, "enter level 1, alloc 8", withExit({
+        0x48, 0xBD, 0xF0, 0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00,  // mov rbp, 0x7FFFF0
+        0xC8, 0x08, 0x00, 0x01,  // enter 8, 1
+        0x48, 0x89, 0xE3,        // mov rbx, rsp (save)
+        0x48, 0x89, 0xE8,        // mov rax, rbp
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0x7FFFE8ULL && c.reg[X64_RBX].u64 == 0x7FFFD8ULL;
+    });
+
+    // ENTER level 2, alloc 0: exercises the nested display-entry loop.
+    // (Display entry contents not verified here; RBP/RSP updates are verified.
+    // Note: mov r64,[rbp+disp8] was suspected broken but proven working by
+    // dedicated execute-and-verify tests, 2026-10-08.)
+    runAndCheck(r, "enter level 2", withExit({
+        0x48, 0xBD, 0xF0, 0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00,  // mov rbp, 0x7FFFF0
+        0xC8, 0x00, 0x00, 0x02,  // enter 0, 2
+        0x48, 0x89, 0xE3,        // mov rbx, rsp (save)
+        0x48, 0x89, 0xE8,        // mov rax, rbp
+    }), [](CPU64& c) {
+        // push RBP (8) + push display (8) + push FrameTemp (8) = 24 bytes
+        // RBP=0x7FFFF0-8=0x7FFFE8, RSP=0x7FFFF0-24=0x7FFFD8
+        return c.reg[X64_R15].u64 == 0x7FFFE8ULL && c.reg[X64_RBX].u64 == 0x7FFFD8ULL;
+    });
+
+    // ENTER with 0x66 operand-size prefix: 16-bit pushes on BP/SP.
+    // Upper 48 bits of RBP/RSP are preserved; only low 16 bits change.
+    runAndCheck(r, "enter 16-bit (66 C8)", withExit({
+        0x48, 0xBD, 0x00, 0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00,  // mov rbp, 0x7FFF00
+        0x66, 0xC8, 0x10, 0x00, 0x01,  // enter 16, 1 (16-bit)
+        0x48, 0x89, 0xE3,              // mov rbx, rsp (save)
+        0x48, 0x89, 0xE8,              // mov rax, rbp
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0x7FFFEEULL && c.reg[X64_RBX].u64 == 0x7FFFDCULL;
+    });
+
+    // ----- x87 m32fp forms (D8/D9): FADD/FMUL/FSUB/FDIV/FST -----
+    // T: FADD m32fp — 2.5 + 1.5f = 4.0.
+    {
+        std::vector<U8> code = {
+            0x48, 0x83, 0xEC, 0x08,                                     // sub rsp, 8
+            0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x40, // 2.5
+            0x48, 0x89, 0x04, 0x24,                                     // mov [rsp], rax
+            0xDD, 0x04, 0x24,                                           // fld qword [rsp]
+            0xC7, 0x04, 0x24, 0x00, 0x00, 0xC0, 0x3F,                   // mov dword [rsp], 1.5f
+            0xD8, 0x04, 0x24,                                           // fadd dword [rsp] ; st0=4.0
+            0xDD, 0x1C, 0x24,                                           // fstp qword [rsp]
+            0x48, 0x8B, 0x04, 0x24,                                     // mov rax, [rsp]
+            0x48, 0x83, 0xC4, 0x08,                                     // add rsp, 8
+        };
+        runAndCheck(r, "x87 FADD m32fp (2.5+1.5f=4.0)", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 0x4010000000000000ULL; // 4.0
+        });
+    }
+
+    // T: FMUL m32fp — 2.5 * 2.0f = 5.0.
+    {
+        std::vector<U8> code = {
+            0x48, 0x83, 0xEC, 0x08,
+            0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x40, // 2.5
+            0x48, 0x89, 0x04, 0x24,
+            0xDD, 0x04, 0x24,                                           // fld 2.5
+            0xC7, 0x04, 0x24, 0x00, 0x00, 0x00, 0x40,                   // mov dword [rsp], 2.0f
+            0xD8, 0x0C, 0x24,                                           // fmul dword [rsp] ; st0=5.0
+            0xDD, 0x1C, 0x24,                                           // fstp
+            0x48, 0x8B, 0x04, 0x24,
+            0x48, 0x83, 0xC4, 0x08,
+        };
+        runAndCheck(r, "x87 FMUL m32fp (2.5*2.0f=5.0)", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 0x4014000000000000ULL; // 5.0
+        });
+    }
+
+    // T: FSUB m32fp — 10.0 - 4.5f = 5.5.
+    {
+        std::vector<U8> code = {
+            0x48, 0x83, 0xEC, 0x08,
+            0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x24, 0x40, // 10.0
+            0x48, 0x89, 0x04, 0x24,
+            0xDD, 0x04, 0x24,                                           // fld 10.0
+            0xC7, 0x04, 0x24, 0x00, 0x00, 0x90, 0x40,                   // mov dword [rsp], 4.5f
+            0xD8, 0x24, 0x24,                                           // fsub dword [rsp] ; st0=5.5
+            0xDD, 0x1C, 0x24,                                           // fstp
+            0x48, 0x8B, 0x04, 0x24,
+            0x48, 0x83, 0xC4, 0x08,
+        };
+        runAndCheck(r, "x87 FSUB m32fp (10.0-4.5f=5.5)", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 0x4016000000000000ULL; // 5.5
+        });
+    }
+
+    // T: FDIV m32fp — 10.0 / 4.0f = 2.5.
+    {
+        std::vector<U8> code = {
+            0x48, 0x83, 0xEC, 0x08,
+            0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x24, 0x40, // 10.0
+            0x48, 0x89, 0x04, 0x24,
+            0xDD, 0x04, 0x24,                                           // fld 10.0
+            0xC7, 0x04, 0x24, 0x00, 0x00, 0x80, 0x40,                   // mov dword [rsp], 4.0f
+            0xD8, 0x34, 0x24,                                           // fdiv dword [rsp] ; st0=2.5
+            0xDD, 0x1C, 0x24,                                           // fstp
+            0x48, 0x8B, 0x04, 0x24,
+            0x48, 0x83, 0xC4, 0x08,
+        };
+        runAndCheck(r, "x87 FDIV m32fp (10.0/4.0f=2.5)", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 0x4004000000000000ULL; // 2.5
+        });
+    }
+
+    // T: FST m32fp — store 3.75 as float32 without popping.
+    {
+        std::vector<U8> code = {
+            0x48, 0x83, 0xEC, 0x08,
+            0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0E, 0x40, // 3.75
+            0x48, 0x89, 0x04, 0x24,
+            0xDD, 0x04, 0x24,                                           // fld 3.75
+            0xD9, 0x14, 0x24,                                           // fst dword [rsp]  ; no pop
+            0x8B, 0x04, 0x24,                                           // mov eax, [rsp]
+            0x48, 0x83, 0xC4, 0x08,
+        };
+        runAndCheck(r, "x87 FST m32fp (3.75 -> 0x40700000, no pop)", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u32 == 0x40700000U; // 3.75f
+        });
+    }
+
+    // ----- Shift edge cases: sar sign-extends, shr zero-fills -----
+    // T: SAR r64,1 sign-extends bit 63.
+    runAndCheck(r, "sar rax,1 sign-extends (0x8000..->0xC000..)", withExit({
+        0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80,  // mov rax, 0x8000000000000000
+        0x48, 0xC1, 0xF8, 0x01,                                     // sar rax, 1
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xC000000000000000ULL;
+    });
+
+    // T: SHR r64,1 zero-fills bit 63.
+    runAndCheck(r, "shr rax,1 zero-fills (0x8000..->0x4000..)", withExit({
+        0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80,  // mov rax, 0x8000000000000000
+        0x48, 0xC1, 0xE8, 0x01,                                     // shr rax, 1
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0x4000000000000000ULL;
+    });
+
+    // T: SHR sets CF from the last bit shifted out (1>>1 -> 0, CF=1).
+    runAndCheck(r, "shr rax,1 sets CF from last bit", withExit({
+        0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00,  // mov rax, 1
+        0x48, 0xC1, 0xE8, 0x01,                    // shr rax, 1  (rax=0, CF=1)
+        0x9C,                                      // pushfq
+        0x58,                                      // pop rax (rax=rflags)
+    }), [](CPU64& c) {
+        return (c.reg[X64_R15].u64 & 0x1ULL) != 0;
+    });
+
+    // T: SAR r32,1 sign-extends within 32 bits and zero-extends to 64.
+    runAndCheck(r, "sar eax,1 32-bit (0x80000000->0xC0000000)", withExit({
+        0xB8, 0x00, 0x00, 0x00, 0x80,  // mov eax, 0x80000000
+        0xC1, 0xF8, 0x01,              // sar eax, 1
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xC0000000ULL;
+    });
+
+    // ----- ADC/SBB carry chains -----
+    // T: ADC with CF=1: 0xFFFF..F + 0 + 1 wraps to 0 with CF=1.
+    runAndCheck(r, "adc rax,0 with CF=1 (wrap -> 0, CF=1)", withExit({
+        0xF9,                                                        // stc
+        0x48, 0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,  // mov rax, 0xFFFFFFFFFFFFFFFF
+        0x48, 0x83, 0xD0, 0x00,                                     // adc rax, 0
+        0x48, 0x89, 0xC3,                                           // mov rbx, rax (save result)
+        0x9C,                                                        // pushfq
+        0x58,                                                        // pop rax (rax=rflags)
+    }), [](CPU64& c) {
+        return c.reg[X64_RBX].u64 == 0 && (c.reg[X64_R15].u64 & 0x1ULL) != 0;
+    });
+
+    // T: ADC 64-bit carry out: 0xFFFF..F + 1 + 1 = 0x1_0000..01 -> 1, CF=1.
+    runAndCheck(r, "adc rax,1 carry out (-> 1, CF=1)", withExit({
+        0xF9,                                                        // stc
+        0x48, 0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,  // mov rax, 0xFFFFFFFFFFFFFFFF
+        0x48, 0x83, 0xD0, 0x01,                                     // adc rax, 1
+        0x48, 0x89, 0xC3,                                           // mov rbx, rax
+        0x9C,                                                        // pushfq
+        0x58,                                                        // pop rax
+    }), [](CPU64& c) {
+        return c.reg[X64_RBX].u64 == 1 && (c.reg[X64_R15].u64 & 0x1ULL) != 0;
+    });
+
+    // T: SBB with CF=1: 5 - 3 - 1 = 1, CF=0 (no borrow out).
+    runAndCheck(r, "sbb rax,3 with CF=1 (5-3-1=1, CF=0)", withExit({
+        0xF9,                                      // stc
+        0x48, 0xC7, 0xC0, 0x05, 0x00, 0x00, 0x00,  // mov rax, 5
+        0x48, 0x83, 0xD8, 0x03,                    // sbb rax, 3
+        0x48, 0x89, 0xC3,                          // mov rbx, rax
+        0x9C,                                       // pushfq
+        0x58,                                       // pop rax
+    }), [](CPU64& c) {
+        return c.reg[X64_RBX].u64 == 1 && (c.reg[X64_R15].u64 & 0x1ULL) == 0;
+    });
+
+    // T: SBB underflow: 0 - 0 - 1 = 0xFFFF..F, CF=1.
+    runAndCheck(r, "sbb rax,0 underflow (-> 0xFFFF.., CF=1)", withExit({
+        0x48, 0x31, 0xC0,  // xor rax, rax (CF=0)
+        0xF9,              // stc (CF=1)
+        0x48, 0x83, 0xD8, 0x00,  // sbb rax, 0
+        0x48, 0x89, 0xC3,  // mov rbx, rax
+        0x9C,              // pushfq
+        0x58,              // pop rax
+    }), [](CPU64& c) {
+        return c.reg[X64_RBX].u64 == 0xFFFFFFFFFFFFFFFFULL && (c.reg[X64_R15].u64 & 0x1ULL) != 0;
+    });
+
+    // ----- INC/DEC preserve CF (classic x86 gotcha) -----
+    // T: INC does not touch CF.
+    runAndCheck(r, "inc preserves CF=1", withExit({
+        0xF9,                                      // stc
+        0x48, 0xC7, 0xC0, 0x05, 0x00, 0x00, 0x00,  // mov rax, 5
+        0xFF, 0xC0,                                // inc rax
+        0x48, 0x89, 0xC3,                          // mov rbx, rax
+        0x9C,                                       // pushfq
+        0x58,                                       // pop rax
+    }), [](CPU64& c) {
+        return c.reg[X64_RBX].u64 == 6 && (c.reg[X64_R15].u64 & 0x1ULL) != 0;
+    });
+
+    // T: DEC does not touch CF.
+    runAndCheck(r, "dec preserves CF=1", withExit({
+        0xF9,                                      // stc
+        0x48, 0xC7, 0xC0, 0x05, 0x00, 0x00, 0x00,  // mov rax, 5
+        0xFF, 0xC8,                                // dec rax
+        0x48, 0x89, 0xC3,                          // mov rbx, rax
+        0x9C,                                       // pushfq
+        0x58,                                       // pop rax
+    }), [](CPU64& c) {
+        return c.reg[X64_RBX].u64 == 4 && (c.reg[X64_R15].u64 & 0x1ULL) != 0;
+    });
+
+    // T: INC 0xFFFF..F -> 0 sets ZF, leaves CF=0.
+    runAndCheck(r, "inc 0xFFFF..->0 sets ZF, CF=0", withExit({
+        0x48, 0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,  // mov rax, 0xFFFFFFFFFFFFFFFF
+        0xFF, 0xC0,  // inc rax
+        0x48, 0x89, 0xC3,  // mov rbx, rax
+        0x9C,  // pushfq
+        0x58,  // pop rax
+    }), [](CPU64& c) {
+        return c.reg[X64_RBX].u64 == 0 &&
+               (c.reg[X64_R15].u64 & 0x40ULL) != 0 &&
+               (c.reg[X64_R15].u64 & 0x1ULL) == 0;
+    });
+
+    // ----- AND/OR always clear CF and OF -----
+    // T: AND clears CF and OF even when both were set.
+    runAndCheck(r, "and rax,rax clears CF+OF", withExit({
+        0x48, 0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F,  // mov rax, 0x7FFFFFFFFFFFFFFF
+        0x48, 0x01, 0xC0,  // add rax, rax (OF=1, signed overflow)
+        0xF9,              // stc (CF=1)
+        0x48, 0x21, 0xC0,  // and rax, rax (CF=0, OF=0)
+        0x9C,              // pushfq
+        0x58,              // pop rax
+    }), [](CPU64& c) {
+        return (c.reg[X64_R15].u64 & 0x801ULL) == 0;
+    });
+
+    // T: OR clears CF and OF even when both were set.
+    runAndCheck(r, "or rax,rax clears CF+OF", withExit({
+        0x48, 0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F,  // mov rax, 0x7FFFFFFFFFFFFFFF
+        0x48, 0x01, 0xC0,  // add rax, rax (OF=1)
+        0xF9,              // stc (CF=1)
+        0x48, 0x09, 0xC0,  // or rax, rax (CF=0, OF=0)
+        0x9C,              // pushfq
+        0x58,              // pop rax
+    }), [](CPU64& c) {
+        return (c.reg[X64_R15].u64 & 0x801ULL) == 0;
+    });
+
+    // ----- IMUL signed multiply -----
+    // T: IMUL r64,r/m64,imm8 with negatives: -7 * -6 = 42.
+    runAndCheck(r, "imul rax,rax,-6 (-7*-6=42)", withExit({
+        0x48, 0xC7, 0xC0, 0xF9, 0xFF, 0xFF, 0xFF,  // mov rax, -7
+        0x48, 0x6B, 0xC0, 0xFA,                    // imul rax, rax, -6
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 42;
+    });
+
+    // T: IMUL overflow sets CF and OF (0x7FFF.. * 2 doesn't fit).
+    runAndCheck(r, "imul overflow sets CF+OF", withExit({
+        0x48, 0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F,  // mov rax, 0x7FFFFFFFFFFFFFFF
+        0x48, 0x6B, 0xC0, 0x02,  // imul rax, rax, 2
+        0x9C,  // pushfq
+        0x58,  // pop rax
+    }), [](CPU64& c) {
+        return (c.reg[X64_R15].u64 & 0x801ULL) == 0x801ULL;
+    });
+
+    // The two-operand form also runs through BK_IMUL_R_RM in cached builds.
+    runAndCheck(r, "imul r64,r/m64 overflow sets CF+OF", withExit({
+        0x48, 0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F, // mov rax, INT64_MAX
+        0x48, 0xC7, 0xC3, 0x02, 0x00, 0x00, 0x00,                  // mov rbx, 2
+        0x48, 0x0F, 0xAF, 0xC3,                                    // imul rax, rbx
+        0x9C, 0x58,                                                // pushfq; pop rax
+    }), [](CPU64& c) {
+        if ((c.reg[X64_R15].u64 & 0x801ULL) != 0x801ULL) return false;
+#ifdef BOXEDWINE_BLOCK_EXEC
+        if (std::getenv("BW64_JIT_VERIFY") && std::strcmp(std::getenv("BW64_JIT_VERIFY"), "1") == 0) {
+            if (!c.jit() || !c.jit()->blocksExecuted) return false;
+            U64 page = CODE_BASE >> 12;
+            U32 generation = KMemory64::blockPageGenOf(page);
+            const auto* block = c.jit()->cache.lookup(CODE_BASE, page, generation, page, generation);
+            if (!block || !block->executable || block->ops.size() != 3 ||
+                block->ops[2].kind != J64_IMUL_R_RM || c.jit()->insnsFast < 3) return false;
+            printf("JIT64: IMUL64 overflow executed in cached block\n");
+        }
+#endif
+        return true;
+    });
+
+    // ----- MOVSX / MOVSXD sign extension -----
+    // T: MOVSX r64,r/m8 sign-extends 0xFF -> 0xFFFF..FF.
+    runAndCheck(r, "movsx rbx,al (0xFF->0xFFFF..FF)", withExit({
+        0x48, 0xC7, 0xC0, 0xFF, 0x00, 0x00, 0x00,  // mov rax, 0xFF
+        0x48, 0x0F, 0xBE, 0xD8,                    // movsx rbx, al
+        0x48, 0x89, 0xD8,                          // mov rax, rbx
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xFFFFFFFFFFFFFFFFULL;
+    });
+
+    // T: MOVSX r64,r/m16 sign-extends 0x8000 -> 0xFFFF..8000.
+    runAndCheck(r, "movsx rbx,ax (0x8000->0xFFFF..8000)", withExit({
+        0x66, 0xB8, 0x00, 0x80,  // mov ax, 0x8000
+        0x48, 0x0F, 0xBF, 0xD8,  // movsx rbx, ax
+        0x48, 0x89, 0xD8,        // mov rax, rbx
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xFFFFFFFFFFFF8000ULL;
+    });
+
+    // T: MOVSXD r64,r/m32 sign-extends 0x80000000 -> 0xFFFFFFFF80000000.
+    runAndCheck(r, "movsxd rbx,eax (0x80000000->0xFFFFFFFF80000000)", withExit({
+        0xB8, 0x00, 0x00, 0x00, 0x80,  // mov eax, 0x80000000
+        0x48, 0x63, 0xD8,              // movsxd rbx, eax
+        0x48, 0x89, 0xD8,              // mov rax, rbx
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xFFFFFFFF80000000ULL;
+    });
+
+    // ----- BSR -----
+    // T: BSR finds the index of the highest set bit (0x100 -> 8).
+    runAndCheck(r, "bsr rax,rbx (0x100->8)", withExit({
+        0x48, 0xC7, 0xC3, 0x00, 0x01, 0x00, 0x00,  // mov rbx, 0x100
+        0x48, 0x0F, 0xBD, 0xC3,                    // bsr rax, rbx
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 8;
+    });
+
+    // ----- Conditional jumps beyond JZ -----
+    // T: JNZ taken when ZF=0.
+    runAndCheck(r, "jnz taken (ZF=0)", withExit({
+        0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00,  // mov rax, 1
+        0x48, 0x85, 0xC0,                          // test rax, rax (ZF=0)
+        0x75, 0x07,                                 // jnz +7
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // mov rax, 0xAA (target)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA;
+    });
+
+    // T: JNZ not taken when ZF=1 (falls through).
+    runAndCheck(r, "jnz not taken (ZF=1)", withExit({
+        0x48, 0x31, 0xC0,                          // xor rax, rax (ZF=1)
+        0x75, 0x07,                                 // jnz +7 (not taken)
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // mov rax, 0xAA (fallthrough)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA;
+    });
+
+    // T: JB taken on unsigned below (3 < 5 -> CF=1).
+    runAndCheck(r, "jb taken (3<5 unsigned, CF=1)", withExit({
+        0x48, 0xC7, 0xC0, 0x03, 0x00, 0x00, 0x00,  // mov rax, 3
+        0x48, 0xC7, 0xC3, 0x05, 0x00, 0x00, 0x00,  // mov rbx, 5
+        0x48, 0x39, 0xD8,                          // cmp rax, rbx (CF=1)
+        0x72, 0x07,                                 // jb +7
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // mov rax, 0xAA (target)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA;
+    });
+
+    // T: JL taken on signed less (-1 < 5 -> SF!=OF).
+    runAndCheck(r, "jl taken (-1<5 signed)", withExit({
+        0x48, 0xC7, 0xC0, 0xFF, 0xFF, 0xFF, 0xFF,  // mov rax, -1
+        0x48, 0xC7, 0xC3, 0x05, 0x00, 0x00, 0x00,  // mov rbx, 5
+        0x48, 0x39, 0xD8,                          // cmp rax, rbx (SF!=OF)
+        0x7C, 0x07,                                 // jl +7
+        0x48, 0xC7, 0xC0, 0xBA, 0xD0, 0x00, 0x00, // (skipped) mov rax, 0xD0BA
+        0x48, 0xC7, 0xC0, 0xAA, 0x00, 0x00, 0x00, // mov rax, 0xAA (target)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0xAA;
+    });
+
+    // ----- LEA with SIB -----
+    // T: LEA with SIB addressing: [rbx+rcx*4+0x10] = 0x1000+12+16 = 0x101C.
+    runAndCheck(r, "lea rax,[rbx+rcx*4+0x10] SIB (-> 0x101C)", withExit({
+        0x48, 0xC7, 0xC3, 0x00, 0x10, 0x00, 0x00,  // mov rbx, 0x1000
+        0x48, 0xC7, 0xC1, 0x03, 0x00, 0x00, 0x00,  // mov rcx, 3
+        0x48, 0x8D, 0x44, 0x8B, 0x10,              // lea rax, [rbx+rcx*4+0x10]
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0x101CULL;
+    });
+
+    // ----- CMPXCHG mismatch -----
+    // T: CMPXCHG [rsp],rbx mismatch: ZF=0, rax=old mem, mem unchanged.
+    runAndCheck(r, "cmpxchg [rsp],rbx mismatch (ZF=0, rax=mem)", withExit({
+        0x48, 0xC7, 0xC0, 0x11, 0x11, 0x00, 0x00,  // mov rax, 0x1111
+        0x50,                                      // push rax ([rsp]=0x1111)
+        0x48, 0xC7, 0xC0, 0x22, 0x22, 0x00, 0x00,  // mov rax, 0x2222 (expected, wrong)
+        0x48, 0xC7, 0xC3, 0x33, 0x33, 0x00, 0x00,  // mov rbx, 0x3333 (new value)
+        0x48, 0x0F, 0xB1, 0x1C, 0x24,              // cmpxchg [rsp], rbx (ZF=0, rax=0x1111)
+        0x9C,                                      // pushfq
+        0x59,                                      // pop rcx (rcx=rflags)
+        0x5A,                                      // pop rdx (rdx=[rsp], must be 0x1111)
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0x1111ULL &&
+               (c.reg[X64_RCX].u64 & 0x40ULL) == 0 &&
+               c.reg[X64_RDX].u64 == 0x1111ULL;
+    });
+
+    // ----- PUSHFQ/POPFQ -----
+    // T: PUSHFQ+POPFQ round-trip preserves ZF/PF and reserved bit 1.
+    runAndCheck(r, "pushfq/popfq round-trip (ZF|PF)", withExit({
+        0x48, 0x31, 0xC0,  // xor rax, rax (ZF=1, PF=1)
+        0x9C,              // pushfq
+        0x58,              // pop rax (rax=rflags)
+    }), [](CPU64& c) {
+        // mask 0xC5 = CF|PF|AF|ZF|SF (excludes reserved bit 1)
+        return (c.reg[X64_R15].u64 & 0xC5ULL) == 0x44ULL;
+    });
+
+    // ----- TEST flag behavior -----
+    // T: TEST rax,rax with negative value sets SF.
+    runAndCheck(r, "test rax,rax sets SF (negative)", withExit({
+        0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80,  // mov rax, 0x8000000000000000
+        0x48, 0x85, 0xC0,  // test rax, rax (SF=1)
+        0x9C,              // pushfq
+        0x58,              // pop rax
+    }), [](CPU64& c) {
+        return (c.reg[X64_R15].u64 & 0x80ULL) != 0;
+    });
+
     const char* requireJit = std::getenv("BW64_JIT_VERIFY");
     if (requireJit && std::strcmp(requireJit, "1") == 0) {
         printf("JIT64: blocks=%llu insns=%llu\n",
@@ -6444,228 +7262,9 @@ int runX64SelfTest() {
             printf("  FAIL: required JIT path did not execute any blocks\n");
             r.failed++;
         }
-        printf("WASM64: blocks=%llu insns=%llu\n",
-               (unsigned long long)r.wasmBlocks, (unsigned long long)r.wasmInsns);
-        if (!r.wasmBlocks || !r.wasmInsns) {
-            printf("  FAIL: required wasm-module path did not execute any blocks\n");
-            r.failed++;
-        }
     }
     printf("=== self-test summary: %d passed, %d failed ===\n\n", r.passed, r.failed);
     return r.failed == 0 ? 0 : 1;
-}
-
-
-// ---- Dispatch benchmark + threaded-tier differential fuzz ----
-// Invoked via:
-//   --x64-bench-dispatch <step|block> [reps]   one dispatch config per process;
-//                                              shell sets BW64_THREADED=1 for the
-//                                              threaded variant of "block".
-//   --x64-fuzz-threaded <step|block> <seeds>   differential fuzz: same seeds
-//                                              under each config; outputs are
-//                                              diffed (state hashes must match).
-// "step"  = tier 1: BW64_NOBLOCK=1 forces runBounded onto step().
-// "block" = runBounded -> tryBlockStep -> execBlock (switch, or threaded
-//           when BW64_THREADED=1 in the environment).
-namespace {
-
-U64 splitmix64(U64& s) {
-    U64 z = (s += 0x9E3779B97F4A7C15ULL);
-    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
-    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
-    return z ^ (z >> 31);
-}
-
-U64 benchNowNs() {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (U64)ts.tv_sec * 1000000000ULL + (U64)ts.tv_nsec;
-}
-
-// Tight block-friendly loop. All ops are buildBlock-supported; the loop body
-// (add/shl/sub/jnz) forms one 4-record block executed ~2M times, so dispatch
-// overhead dominates the measurement.
-//
-//   0x400000: 48 C7 C2 00 00 20 00   mov rdx, 0x200000
-//   0x400007: 48 31 C0              xor rax, rax
-//   0x40000A: 48 89 D9              mov rcx, rbx
-//   0x40000D: 48 01 C8              add rax, rcx      (loop)
-//   0x400010: 48 C1 E0 02           shl rax, 2
-//   0x400014: 48 83 EA 01           sub rdx, 1
-//   0x400018: 75 F3                 jnz 0x40000D
-//   0x40001A: CC                    int3 -> yield
-const std::vector<U8> BENCH_CODE = {
-    0x48, 0xC7, 0xC2, 0x00, 0x00, 0x20, 0x00,
-    0x48, 0x31, 0xC0,
-    0x48, 0x89, 0xD9,
-    0x48, 0x01, 0xC8,
-    0x48, 0xC1, 0xE0, 0x02,
-    0x48, 0x83, 0xEA, 0x01,
-    0x75, 0xF3,
-    0xCC,
-};
-const U64 BENCH_ITERS = 0x200000ULL;
-const U64 BENCH_INSNS = 3 + 4 * BENCH_ITERS;
-
-U64 benchOne(bool useStep) {
-    KMemory64 mem(nullptr);
-    mem.mmapAnonymousFixed(CODE_BASE, 0x1000, 7);
-    mem.mmapAnonymousFixed(STACK_TOP - 0x1000, 0x1000, 3);
-    loadCode(mem, CODE_BASE, BENCH_CODE);
-    CPU64 cpu(&mem);
-    cpu.rip = CODE_BASE;
-    cpu.reg[X64_RSP].setU64(STACK_TOP - 16);
-    cpu.reg[X64_RBX].setU64(0x123456789ABCDEF0ULL);
-
-    // Tier-1 mode: BW64_NOBLOCK=1 makes tryBlockStep decline so runBounded
-    // falls through to step() (pure interpreter, no block cache).
-    if (useStep) setenv("BW64_NOBLOCK", "1", 1);
-    U64 t0 = benchNowNs();
-    cpu.runBounded(4 * BENCH_ITERS + 100);
-    U64 ns = benchNowNs() - t0;
-
-    bool ok = cpu.yield && cpu.reg[X64_RDX].u64 == 0;
-    printf("  BENCH %s: %s insns=%llu ns=%llu ns/insn=%.3f blocks=%llu\n",
-           useStep ? "step" : "block", ok ? "OK" : "FAIL",
-           (unsigned long long)BENCH_INSNS, (unsigned long long)ns,
-           (double)ns / (double)BENCH_INSNS,
-           (unsigned long long)cpu.blockExecCount());
-    fflush(stdout);
-    return ok ? ns : 0;
-}
-
-// FNV-1a over full CPU + memory state.
-U64 fuzzHash(CPU64& cpu, KMemory64& mem) {
-    U64 h = 0xCBF29CE484222325ULL;
-    auto mix = [&](U64 v) {
-        h ^= v; h *= 0x100000001B3ULL;
-    };
-    for (int i = 0; i < 16; i++) mix(cpu.reg[i].u64);
-    mix(cpu.rip);
-    mix(cpu.rflags);
-    for (U64 a = CODE_BASE; a < CODE_BASE + 0x1000; a++) mix(mem.readb(a));
-    for (U64 a = STACK_TOP - 0x1000; a < STACK_TOP; a++) mix(mem.readb(a));
-    return h;
-}
-
-// Random block-friendly programs: straight-line runs of buildBlock-supported
-// ops, then INT3. Data regs avoid RSP/RBP; memory operands stay in-bounds.
-void fuzzGenProgram(U64 seed, std::vector<U8>& code, U64 initRegs[16], U8 stackImg[0x1000]) {
-    static const int DREGS[] = {0, 1, 2, 3, 6, 7, 8, 9, 10, 11}; // rax..r11 minus rsp/rbp
-    U64 s = seed * 0x9E3779B97F4A7C15ULL + 0x12345;
-    for (int i = 0; i < 16; i++) initRegs[i] = splitmix64(s);
-    for (int i = 0; i < 0x1000; i++) stackImg[i] = (U8)splitmix64(s);
-    code.clear();
-    auto modrm = [](int mod, int reg, int rm) -> U8 {
-        return (U8)((mod << 6) | (reg << 3) | rm);
-    };
-    int nops = 2 + (int)(splitmix64(s) % 7); // 2..8 ops
-    for (int k = 0; k < nops; k++) {
-        int d = DREGS[splitmix64(s) % 10];
-        int e = DREGS[splitmix64(s) % 10];
-        int pick = (int)(splitmix64(s) % 12);
-        switch (pick) {
-        case 0: // mov r64, r64
-            code.insert(code.end(), {0x48, 0x89, modrm(3, e, d)});
-            break;
-        case 1: { // mov r64, imm32
-            U32 imm = (U32)splitmix64(s);
-            code.insert(code.end(), {0x48, 0xC7, modrm(3, 0, d),
-                                     (U8)imm, (U8)(imm >> 8), (U8)(imm >> 16), (U8)(imm >> 24)});
-            break;
-        }
-        case 2: case 3: { // add/sub/xor r64, r64
-            U8 ops[3] = {0x01, 0x29, 0x31};
-            code.insert(code.end(), {0x48, ops[splitmix64(s) % 3], modrm(3, e, d)});
-            break;
-        }
-        case 4: { // add/sub r64, imm8
-            U8 sub = (splitmix64(s) & 1) ? 5 : 0;
-            code.insert(code.end(), {0x48, 0x83, modrm(3, sub, d), (U8)splitmix64(s)});
-            break;
-        }
-        case 5: // shl r64, imm8
-            code.insert(code.end(), {0x48, 0xC1, modrm(3, 4, d), (U8)(1 + splitmix64(s) % 63)});
-            break;
-        case 6: // imul r64, r64
-            code.insert(code.end(), {0x48, 0x0F, 0xAF, modrm(3, d, e)});
-            break;
-        case 7: // test r64, r64
-            code.insert(code.end(), {0x48, 0x85, modrm(3, e, d)});
-            break;
-        case 8: // push r64; pop r64 (paired, keeps rsp balanced)
-            code.insert(code.end(), {(U8)(0x50 + (d & 7)), (U8)(0x58 + (e & 7))});
-            break;
-        case 9: { // lea r64, [rip+disp32] (target inside code page)
-            U64 at = CODE_BASE + code.size();
-            S32 disp = (S32)((CODE_BASE + (splitmix64(s) % 256)) - (at + 7));
-            code.insert(code.end(), {0x48, 0x8D, modrm(0, d, 5),
-                                     (U8)disp, (U8)(disp >> 8), (U8)(disp >> 16), (U8)(disp >> 24)});
-            break;
-        }
-        case 10: { // mov r64, [rsp+disp8]
-            S8 disp = (S8)(-8 - 8 * (int)(splitmix64(s) % 14)); // -8..-120
-            code.insert(code.end(), {0x48, 0x8B, modrm(1, d, 4), 0x24, (U8)disp});
-            break;
-        }
-        default: { // mov [rsp+disp8], r64
-            S8 disp = (S8)(-8 - 8 * (int)(splitmix64(s) % 14));
-            code.insert(code.end(), {0x48, 0x89, modrm(1, e, 4), 0x24, (U8)disp});
-            break;
-        }
-        }
-    }
-    code.push_back(0xCC); // int3 -> yield
-}
-
-} // anonymous namespace
-
-int runX64BenchDispatch(int which, int reps) {
-    // which: 0 = tier 1 (step via BW64_NOBLOCK), 1 = block path (env selects switch/threaded).
-    printf("\n=== CPU64 dispatch benchmark (%s) ===\n", which == 0 ? "step" : "block");
-    U64 best = 0;
-    for (int r = 0; r < reps; r++) {
-        U64 ns = benchOne(which == 0);
-        if (ns == 0) { printf("BENCH: run failed\n"); return 1; }
-        if (best == 0 || ns < best) best = ns;
-    }
-    printf("BENCH %s: best-of-%d ns/insn=%.3f\n\n",
-           which == 0 ? "step" : "block", reps, (double)best / (double)BENCH_INSNS);
-    return 0;
-}
-
-int runX64FuzzThreaded(int which, int nseeds) {
-    // which: 0 = tier 1 (step via BW64_NOBLOCK), 1 = block path (env selects switch/threaded).
-    printf("\n=== CPU64 threaded-tier differential fuzz (%s, %d seeds) ===\n",
-           which == 0 ? "step" : "block", nseeds);
-    int blockSeeds = 0;
-    for (int seed = 0; seed < nseeds; seed++) {
-        std::vector<U8> code;
-        U64 initRegs[16];
-        U8 stackImg[0x1000];
-        fuzzGenProgram((U64)seed, code, initRegs, stackImg);
-
-        KMemory64 mem(nullptr);
-        mem.mmapAnonymousFixed(CODE_BASE, 0x1000, 7);
-        mem.mmapAnonymousFixed(STACK_TOP - 0x1000, 0x1000, 3);
-        loadCode(mem, CODE_BASE, code);
-        mem.memcpyToGuest(STACK_TOP - 0x1000, stackImg, 0x1000);
-        CPU64 cpu(&mem);
-        cpu.rip = CODE_BASE;
-        for (int i = 0; i < 16; i++) cpu.reg[i].setU64(initRegs[i]);
-        cpu.reg[X64_RSP].setU64(STACK_TOP - 16);
-        cpu.rflags = initRegs[0] & 0xFFF;
-
-        if (which == 0) setenv("BW64_NOBLOCK", "1", 1);
-        cpu.runBounded(100000);
-        if (cpu.blockExecCount() > 0) blockSeeds++;
-        printf("FUZZ seed=%d hash=%016llx blocks=%llu\n", seed,
-               (unsigned long long)fuzzHash(cpu, mem),
-               (unsigned long long)cpu.blockExecCount());
-        fflush(stdout);
-    }
-    printf("FUZZ summary: %d/%d seeds executed >=1 block\n\n", blockSeeds, nseeds);
-    return 0;
 }
 
 #endif // BOXEDWINE_GUEST_X64

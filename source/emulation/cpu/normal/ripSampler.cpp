@@ -51,9 +51,14 @@ static const U32 SPIN_TICKS_REQUIRED = 4;
 // ---------------------------------------------------------------------------
 // Env gate — read once.
 // ---------------------------------------------------------------------------
+bool ripSamplerProfileEnabled() {
+    static const bool on = std::getenv("BW64_RIPSAMPLE_PROFILE") != nullptr;
+    return on;
+}
+
 bool ripSamplerEnabled() {
     static const bool on = []() {
-        bool e = std::getenv("BW64_RIPSAMPLE") != nullptr;
+        bool e = std::getenv("BW64_RIPSAMPLE") != nullptr || ripSamplerProfileEnabled();
         if (e) {
             if (const char* t = std::getenv("BW64_RIPSAMPLE_THRESH"))
                 g_spinInsnThreshold = std::strtoull(t, nullptr, 0);
@@ -76,6 +81,7 @@ bool ripSamplerEnabled() {
 #define RIP_MAX_SLOTS 256
 struct RipSlot {
     std::atomic<CPU64*> cpu{nullptr};
+    std::atomic<CPU*> cpu32{nullptr};
     int pid = -1;
     int tid = -1;
 };
@@ -111,6 +117,47 @@ void ripSamplerClearPid(int pid) {
     if (!ripSamplerEnabled()) return;
     std::lock_guard<std::mutex> lk(g_modMutex);
     g_modRanges.erase(pid);
+}
+
+// ---------------------------------------------------------------------------
+// BW64_RIPSAMPLE_PROFILE statistical histogram: pid -> (module -> insns).
+// Written from CPU64::run() (one host thread per guest thread, 64k-insn
+// cadence, so the mutex cost is negligible); read + reset from the vk64
+// present trap for a per-frame module split. Resolution reuses the
+// g_modRanges table above (ripSamplerResolve is newest-wins on overlap).
+// ---------------------------------------------------------------------------
+static bool ripSamplerResolve(int pid, U64 rip, std::string& outBase, U64& outOff);
+
+static std::map<int, std::map<std::string, U64>> g_profMods;
+static std::map<int, U64> g_profTotal;
+static std::mutex g_profMutex;
+
+void ripSamplerProfAdd(int pid, U64 rip, U64 insns) {
+    if (!ripSamplerProfileEnabled() || insns == 0) return;
+    std::string base; U64 off = 0;
+    std::string key = ripSamplerResolve(pid, rip, base, off) ? base : "(unmapped)";
+    std::lock_guard<std::mutex> lk(g_profMutex);
+    g_profMods[pid][key] += insns;
+    g_profTotal[pid] += insns;
+}
+
+void ripSamplerProfDumpReset(int pid) {
+    if (!ripSamplerProfileEnabled()) return;
+    std::map<std::string, U64> mods;
+    U64 total = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_profMutex);
+        auto it = g_profMods.find(pid);
+        if (it != g_profMods.end()) { mods = it->second; g_profMods.erase(it); }
+        auto jt = g_profTotal.find(pid);
+        if (jt != g_profTotal.end()) { total = jt->second; g_profTotal.erase(jt); }
+    }
+    klog_fmt("RIPPROF pid=%d totalInsns=%llu", pid, (unsigned long long)total);
+    for (auto& kv : mods) {
+        double pct = total ? (100.0 * (double)kv.second / (double)total) : 0.0;
+        klog_fmt("RIPPROF pid=%d mod=%s insns=%llu pct=%.2f", pid, kv.first.c_str(),
+                 (unsigned long long)kv.second, pct);
+    }
 }
 
 static bool ripSamplerResolve(int pid, U64 rip, std::string& outBase, U64& outOff) {
@@ -152,6 +199,42 @@ static void ripSamplerLoop() {
         if (emitHb) hbAccumMs = 0;
         for (int i = 0; i < RIP_MAX_SLOTS; i++) {
             CPU64* c = g_slots[i].cpu.load(std::memory_order_relaxed);
+            CPU* c32 = g_slots[i].cpu32.load(std::memory_order_relaxed);
+            if (c32) {
+                if (emitHb) {
+                    U32 eip = c32->getEipAddress();
+                    auto process = c32->thread->process;
+                    klog_fmt("RIPSAMPLE32 HB pid=%d tid=%d eip=0x%x %s+0x%x eax=0x%x ebx=0x%x ecx=0x%x edx=0x%x esp=0x%x",
+                        g_slots[i].pid, g_slots[i].tid, eip,
+                        process->getModuleName(eip).c_str(), process->getModuleEip(eip),
+                        c32->reg[0].u32, c32->reg[3].u32, c32->reg[1].u32,
+                        c32->reg[2].u32, c32->reg[4].u32);
+                    const char* stackPid = std::getenv("BW64_RIPSAMPLE_STACK_PID");
+                    const char* stackTid = std::getenv("BW64_RIPSAMPLE_STACK_TID");
+                    if (std::getenv("BW64_RIPSAMPLE_STACK") &&
+                        (!stackPid || std::atoi(stackPid) == g_slots[i].pid) &&
+                        (!stackTid || std::atoi(stackTid) == g_slots[i].tid)) {
+                        U32 sp = c32->reg[4].u32;
+                        if (c32->memory->canRead(sp, 4)) {
+                            int emitted = 0;
+                            // Wine's window/message calls can put the game caller
+                            // beyond 2KiB. Stop at the mapped stack boundary.
+                            for (U32 off = 0; off < 16384 && emitted < 64; off += 4) {
+                                if (!c32->memory->canRead(sp + off, 4)) break;
+                                U32 addr = c32->memory->readd(sp + off);
+                                BString name = process->getModuleName(addr);
+                                if (!name.isEmpty() && (name.contains(B(".dll")) || name.contains(B(".so")))) {
+                                    klog_fmt("RIPSAMPLE32 STACK pid=%d tid=%d sp+0x%x=0x%x %s+0x%x",
+                                        g_slots[i].pid, g_slots[i].tid, off, addr,
+                                        name.c_str(), process->getModuleEip(addr));
+                                    emitted++;
+                                }
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
             if (!c) { g_last[i].spinTicks = 0; g_last[i].reported = false; continue; }
 
             U64 rip = c->rip;                 // racy sample — see registry note
@@ -219,6 +302,9 @@ static void ripSamplerLoop() {
 
 static std::once_flag g_startOnce;
 static void ripSamplerEnsureStarted() {
+    // The 30ms spin-detector thread only runs in spin mode (BW64_RIPSAMPLE);
+    // profile mode samples inside CPU64::run() and needs no background thread.
+    if (!std::getenv("BW64_RIPSAMPLE")) return;
     std::call_once(g_startOnce, []() {
         std::thread(ripSamplerLoop).detach();
     });
@@ -247,10 +333,16 @@ void ripSamplerPublish(int slot, CPU64* cpu) {
     g_slots[slot].cpu.store(cpu, std::memory_order_relaxed);
 }
 
+void ripSamplerPublish32(int slot, CPU* cpu) {
+    if (slot < 0) return;
+    g_slots[slot].cpu32.store(cpu, std::memory_order_relaxed);
+}
+
 void ripSamplerReleaseSlot(int slot) {
     if (slot < 0) return;
     std::lock_guard<std::mutex> lk(g_slotMutex);
     g_slots[slot].cpu.store(nullptr, std::memory_order_relaxed);
+    g_slots[slot].cpu32.store(nullptr, std::memory_order_relaxed);
     g_slots[slot].pid = -1;
     g_slots[slot].tid = -1;
     g_last[slot] = LastSample{};
@@ -263,8 +355,12 @@ class CPU64;
 bool ripSamplerEnabled() { return false; }
 int  ripSamplerAcquireSlot(int, int) { return -1; }
 void ripSamplerPublish(int, CPU64*) {}
+void ripSamplerPublish32(int, CPU*) {}
 void ripSamplerReleaseSlot(int) {}
 void ripSamplerNoteModule(int, U64, U64, const std::string&) {}
 void ripSamplerClearPid(int) {}
+bool ripSamplerProfileEnabled() { return false; }
+void ripSamplerProfAdd(int, U64, U64) {}
+void ripSamplerProfDumpReset(int) {}
 
 #endif

@@ -28,5 +28,6 @@ void testPushF16_0x09c();
 void testPushF32_0x29c();
 void testPushE16_0x0ff();
 void testPushE32_0x2ff();
+void testPushEspDisp8Order_0x2ff();
 
 #endif

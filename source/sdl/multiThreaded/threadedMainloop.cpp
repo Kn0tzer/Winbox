@@ -25,9 +25,7 @@
 #include "devfb.h"
 #include "../../x11/x11.h"
 #include "platformOpenGL.h"
-#ifdef BOXEDWINE_GUEST_X64
 #include "../../x11wire/xwirepresent.h"
-#endif
 
 U32 getNextTimer();
 void runTimers();
@@ -86,12 +84,14 @@ bool doMainLoop() {
             server->draw();
             timeout = 17;
         }
-#ifdef BOXEDWINE_GUEST_X64
         // Present the in-process X11 wire server's latest frame + pump host input
         // (Phase 2c). Cap the wait so we stay responsive while a window is up.
         tickXWirePresent();
         if (g_xwirePresentSink) {
             timeout = 17;
+        }
+        if (hasMainThreadWork()) {
+            timeout = 0;
         }
 #endif
         if (flipFB()) {
@@ -153,5 +153,3 @@ void waitForProcessToFinish(const KProcessPtr& process, KThread* thread) {
         BOXEDWINE_CONDITION_WAIT(KSystem::processesCond);
     }
 }
-
-#endif

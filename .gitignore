@@ -1,76 +1,57 @@
-project/msvc/BoxedWine/.vs/
-project/msvc/BoxedWine/BoxedWine/BoxedWine.vcxproj.user
-project/msvc/BoxedWine/ARM64/
-project/msvc/BoxedWine/x64/
-project/msvc/BoxedWine/Debug/
-project/msvc/BoxedWine/Release/
-project/msvc/BoxedWine/BoxedWine/x64/
-project/msvc/BoxedWine/BoxedWine/ARM64/
-project/msvc/BoxedWine/BoxedWine/Debug/
-project/msvc/BoxedWine/BoxedWine/Release/
-project/msvc/BoxedWine/zlib/ARM64/
-project/msvc/BoxedWine/zlib/x64/
-project/msvc/BoxedWine/zlib/Debug/
-project/msvc/BoxedWine/zlib/Release/
-project/msvc/BoxedWine/BoxedWine/Test/
-project/msvc/BoxedWine/zlib/Test/
-project/msvc/BoxedWine/Test/
-lib/sdl2/VisualC/SDL/Win32/
-lib/sdl2/VisualC/SDL/Debug/
-lib/sdl2/VisualC/SDL/ARM64/
-lib/sdl2/VisualC/SDL/x64/
-lib/sdl2/VisualC/SDLmain/Win32/
-lib/sdl2/VisualC/SDLmain/Debug/
-lib/sdl2/VisualC/SDLmain/ARM64/
-lib/sdl2/VisualC/SDLmain/x64/
-project/msvc/BoxedWine/BoxedWine/imgui.ini
-project/linux/bin/
-project/linux/linux_build/
-project/mac-xcode/bin/
-project/mac-xcode/Boxedwine/build/
-**/imgui.ini
-**/*.vcxproj.user
-project/linux/msvc-remote/Boxedwine/.vs/
-project/linux/msvc-remote/Boxedwine/Boxedwine/bin/
-project/linux/msvc-remote/Boxedwine/Boxedwine/obj/
-**/xcuserdata/*
-tools/vulkan/gen/
-tools/BoxedwineRunner/out/
-lib/mac
-.vs/
-# .github/ was ignored wholesale; un-ignore just the workflows dir so the Pages
-# deploy workflow is tracked (it builds + publishes the in-browser wasm64-mt
-# build). Everything else under .github/ stays ignored.
-.github/*
-!.github/workflows/
-.github/workflows/*
-!.github/workflows/deploy-pages.yml
-project/mac-xcode/Boxedwine/DerivedDataCoverage
-*.xcresult
-*.profraw
+# Generated browser exports, runtime inputs, and npm vendor staging.
+/dist/
+/dist-*/
+/web/runtime/
+/web/vendor/
+/web/games/
+/tools/browser/slang/
+/tools/browser/zig/
+/tools/browser/disasm/
+/node_modules/
+/_site/
 
-# macOS + local dev/debug artifacts
-.DS_Store
-**/.DS_Store
+# Build output and extracted runtime staging; retain all test source/fixtures.
+/project/emscripten/Build/
+/project/emscripten/build-wasm.log
+/project/linux/Build/
+/project/linux/bin/
+/project/linux/linux_build/
+/tools/dxvk/build.*/
+/tools/dxvk/install/
+/tools/vkd3d/build.*/
+/tools/vkd3d/build/
+/tools/vkd3d/install/
+/tools/cpu-diff/build/
+/tools/guest-fixtures/build/
+/tools/cpu-diff/runner
+/tools/cpu-diff/report.json
+/tools/rootfs64/dist/
+/tools/rootfs64/pages-assets/
+/tools/rootfs64/work/extract/
+/tools/rootfs64/work/lsbundle/
+/tools/rootfs64/mono32/
+/tools/BoxedWineRunner/out/
+
+# Probe output stays local; curated reports live in docs/reports/.
+/test-results/
+/core
+/core.*
 console_*.log
-project/mac-xcode/build_*/
-# headless-browser test screenshots dropped at repo root
 /s[0-9]*.png
 /s_*.png
 /saveas_*.png
-node_modules/
-/core/
-project/emscripten/build-wasm.log
-tools/browser/zig/
-tools/browser/slang/
-tools/browser/disasm/
 
-# published-fork: build artifacts excluded (see README)
-dist/runtime/wine64.zip
-web/runtime/wine64.zip
-web/runtime/wine64.zip.part*
-/core
-
-# published fork: regenerable / working debris, kept in local dev only
-dist/
-test-results/
+# Local tool/IDE caches and backup files.
+.DS_Store
+__pycache__/
+*.py[cod]
+*.bak
+*.bak-*
+*.bak[0-9]*
+*.orig
+*.profraw
+*.xcresult
+imgui.ini
+.idea/
+.vs/
+.wraplock

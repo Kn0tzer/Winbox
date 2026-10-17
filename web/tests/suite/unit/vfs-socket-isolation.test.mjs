@@ -5,7 +5,7 @@
 // enumeration returned colon-encoded z(_colon_).link → decode (8d0f4978);
 // /tmp/wine-* vs /tmp/.wine* privacy: getMode 0722 not 0700 (dc57f92a);
 // Debian rendezvous /.wine/wineserver needs 0400 (abce8fa2);
-// doSignalWineboot blocking connect → nonblocking + 5s timeout + retry;
+// Wine owns its startup event; the host must not block on forged requests;
 // FsZip entry 59–530 positioning → 0 (inFlight cleanup, 3-attempt retry,
 // sticky-error reset); 512KiB cache → 512-block/256MiB LRU (6de8613f);
 // global fetch serialization → coalesced in-flight (12db58e7); single
@@ -46,10 +46,13 @@ test('arch-isolated socket paths exist (P9 wrong-layer guard)', () => {
   assert.ok(ksock.includes('server32-'), 'ksocket 32-bit path isolation must exist');
 });
 
-test('doSignalWineboot is nonblocking with timeout+retry', () => {
-  const combined = kproc + readFileSync(join(repoRoot, 'source/kernel/kthread.cpp'), 'utf8');
-  assert.ok(combined.includes('nonblock') || combined.includes('Nonblock') || combined.includes('timeout') || combined.includes('5s') || combined.includes('retry') || combined.includes('signalWineboot') || combined.includes('Wineboot'),
-    'wineboot signal must be nonblocking + 5s timeout + retry (blocking connect hang guard)');
+test('session startup does not block the main loop on a forged Wine handshake', () => {
+  const session = readFileSync(join(repoRoot, 'source/sdl/emscripten/wine64session.cpp'), 'utf8');
+  const launcher = readFileSync(join(repoRoot, 'project/emscripten/wine64-launcher.js'), 'utf8');
+  assert.ok(!session.includes('doSignalWineboot') && !session.includes('bw64_signal_wineboot_event'),
+    'The guest Wine runtime must initialize its own startup event');
+  assert.ok(!launcher.includes('bw64_signal_wineboot_event'),
+    'The launcher must use the normal Wine startup path');
 });
 
 test('FsZip has LRU + coalesced fetches + per-node streams (Celeste 600MB bank)', () => {

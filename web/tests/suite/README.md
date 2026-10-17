@@ -1,98 +1,117 @@
-# Boxedwine64 Test Suite
+# Boxedwine64 suite
 
-Every test returns binary PASS/FAIL and never hangs. No manual inspection.
-No "looks right."
-
-## Run
+The suite discovers Node unit checks and browser probe classes. A green
+result proves those assertions. Source/report guards, fake GPU devices and
+real guest runs provide different evidence; see the [test catalog](../CATALOG.md)
+for subsystem and 32/64-bit coverage.
 
 ```sh
-npm test                                        # legacy + suite unit (fast)
-node web/tests/suite/runner.mjs --unit         # 93 unit files, ~25s, no browser
-node web/tests/suite/runner.mjs --browser       # 11 Playwright probes, needs the box
-node web/tests/suite/runner.mjs --unit --filter d3d11
-node web/tests/suite/runner.mjs --json          # CI output
+npm test                                     # legacy Node + suite unit files
+node web/tests/suite/runner.mjs --unit         # no browser
+node web/tests/suite/runner.mjs --browser      # runtime and guest assets needed
+node web/tests/suite/runner.mjs --unit --filter=d3d11
+node web/tests/suite/runner.mjs --unit --json
+node web/tests/suite/runner.mjs --game=celeste  # bounded prerequisites, no game archive
+node web/tests/suite/runner.mjs --game=portal
+node web/tests/suite/runner.mjs --game=gangbeasts
 ```
 
-Exit 0 = all pass. Anything else = failures listed by name.
+Filtering uses `--filter=value`. Exit zero means the selected files passed;
+native CPU checks and flat guest/browser probes have separate entrypoints.
+The maintenance baseline contained 93 unit files, 11 browser files and nine
+legacy Node test files, all preserved. Discovery includes new regression
+files automatically; these historical counts are not fixed coverage targets.
 
-## No-stall contract
+Game preflights run selected real guest probes and targeted regressions before
+the full game. They save `test-results/prerequisites-<game>/summary.json`.
+The report requires every listed check to pass against one WASM and browser
+code fingerprint, with evidence that the required CPU architecture ran.
+Game preflights select that architecture; ordinary suite runs still check
+both variants of the input and clock probes. Filtering or running only unit checks leaves the preflight
+incomplete. The report always leaves gameplay unverified and names the
+remaining game-specific behavior that needs an acceptance check.
 
-- Each unit file is killed after 120s and reported FAIL.
-- Each browser test gets its own timeout + 60s grace, then FAIL.
-- Setup is bounded (server 60s, browser launch 120s); teardown is capped.
-- Browser tests wait via `waitForPageFn` with explicit timeouts only.
-- Enforced by `harness-no-stall.test.mjs`. A hanging test is a harness bug.
+Use small contract failures as the main diagnostic loop. Preserve a failing
+case, compare it against an authoritative specification or an independent
+reference, fix its subsystem and rerun affected contracts. For example, the
+shared-mapping ELF runs under both Linux/QEMU and the browser kernel. Run a
+full game after its prerequisites pass; loading, menu rendering and interactive
+gameplay are separate acceptance milestones.
 
 ## Layout
 
+```text
+runner.mjs            discovers unit/*.test.mjs and browser/*.test.mjs
+lib/assert.mjs        check/checkEqual/checkGreaterThan helpers
+lib/probe-base.mjs    slot, server, browser and console capture
+unit/                 source/package/report guards and behavioral checks
+browser/              guest/browser ProbeTest subclasses
+fixtures/             SPIR-V, WGSL and fake WebGPU inputs
 ```
-web/tests/suite/
-  runner.mjs             # discovers + runs everything, prints PASS/FAIL
-  lib/assert.mjs         # check/checkEqual/checkGreaterThan (use these)
-  lib/probe-base.mjs     # ProbeTest: slots, server, browser, console capture
-  unit/*.test.mjs        # 93 files, node:test, no browser
-  browser/*.test.mjs     # 11 files, ProbeTest subclasses, need the box
-```
 
-## Entirety tests (newest, strictest)
+Unit files run in separate Node processes with a 120-second timeout.
+Browser runs have their per-test timeout plus setup/teardown grace; the base
+class bounds setup and teardown. A timeout reports failure. The no-stall
+guards inspect these mechanisms; they do not prove that every asynchronous
+resource cancels immediately.
 
-These verify whole instruction/API sets to the fullest static extent, with
-honest gap lists. A FAIL means a handler was lost or a new class arrived
-uncovered:
+## Coverage limits
 
-- `cpu-entirety` — full user-mode ISA: 0F families, x87 D8-DF
-  transcendentals, string ops, 167-form qemu differential linkage.
-  Known gaps: AVX by design, MMX 0 handlers, privileged/system excluded.
-- `vulkan-entirety` — every Vulkan ABI function bridged + shim-handled,
-  32-bit `objOf32` parity, no game-breaking TAIL stubs.
-- `opengl-entirety` — all 300+ GL ABI functions bridged, GL32 shares GL64
-  IDs, GLX present (Celeste pixel-format path).
-- `d3d-entirety` — D3D9/10/11/12 against the 55-op conformance matrix
-  (13/15, 6/7, 11/13, 18/20) with each broken op pinned by name.
+CPU/Vulkan/OpenGL/D3D `entirety` files primarily inspect source coverage
+or historical reports. They do not execute every instruction/API. The D3D
+matrix is at `docs/reports/d3d-conformance-MATRIX.md` and pins recorded
+failures. `game-capability-matrix` checks profile/test mappings and
+documentation; passing it cannot guarantee game playability.
 
-## Capability matrix (the guarantee)
+The browser classes now execute real guests. Keyboard and relative mouse
+checks observe Win32 messages in both CPU modes. Audio measures output PCM
+from the 64-bit DSP fixture; GL32 and D3D12 inspect rendered pixels. D3D12
+runs both its clear and draw/present fixtures. The Celeste check requires
+the game's completed-load log and colored pixels on its guest canvas.
+Interactive gameplay remains a separate acceptance check.
 
-`game-capability-matrix.test.mjs` maps games to required subsystems:
+To reuse a suite boot for interactive acceptance or inspect its failure,
+run `TEST_PROBE=celeste-boot HOLD_MS=600000 node web/tests/hold-suite-probe.mjs`.
+It runs the actual test class and saves `probe-result.json`, then retains
+the browser and its `.browser.cdp` endpoint for the bounded hold period.
+The probe result still does not establish game playability; save separate
+evidence of the game actions and their visible outcomes.
 
-- Celeste (32-bit OpenGL/FNA): cpu32 + gl32 + input + audio + fs + mono
-- Portal (32-bit D3D9): cpu32 + vk32 + v2transport + shader + input + audio + fs
+Guest fixtures require both MinGW cross compilers. Celeste uses a local
+DRM-free archive (`CELESTE_ZIP`) and Wine Mono prepared with
+`python3 tools/rootfs64/prepare-mono32.py`; `MONO32_DIR` can override its
+cache directory. D3D probes require the generated DXVK/vkd3d DLLs named in
+their source. The broader flat probes remain in place. These checks cover
+selected paths, and full API/architecture coverage remains incomplete.
+Browser probes run one emulator at a time by default. `PROBE_SLOTS` can
+explicitly allow concurrency; Wine startup and input timings should be
+interpreted against the host load rather than treated as API correctness.
+The shared-mapping ELF requires `x86_64-linux-gnu-gcc`; the small Mono probe
+requires `mcs` and the pinned Wine Mono payload. Clocks, fullscreen clipping,
+input messages and managed runtime behavior have separate probes. Timeout
+failures save `timeout-evidence.json` and request guest stacks on the failing
+run, rather than requiring another boot to gather that state.
+The fork-mapping ELF also runs under QEMU/Linux as a reference. It checks
+child allocation against inherited reservations, private isolation, shared
+file updates and detaching an anonymous replacement from the shared file.
 
-If every mapped test is green and the game still fails, that failure is a
-new bug with a repro — file it, don't re-chase the "do not chase" list
-(`negative-controls.test.mjs`).
+`fna-runtime` uses Wine Mono's FNA assembly and SDL2/OpenGL backend without
+Celeste's content. It checks a texture upload/readback, SpriteBatch output
+and keyboard movement of the rendered rectangle. The fixture build cache
+includes the referenced assembly's content hash. This integration check
+supplements the separate managed-runtime and GL triangle checks.
 
-## Boundary contracts (where the bugs live)
+## Adding a check
 
-Bugs cluster at boundaries, so the suite is heaviest there:
+Add `unit/<subsystem>-<case>.test.mjs` for behavior executable under Node,
+using real functions/fixtures where practical. Label source-string or
+recorded-report checks as static. Preserve assertions that fail with the
+regression present.
 
-- `provenance-artifacts` — wasm/js hashes match `BUILD_INFO.json`,
-  dist/web in sync (stale-JS + new-WASM = dead renderer).
-- `v2-transport-contract` — chunk magic/header, record registry fails loud,
-  16MB cap, present-only hop, `id:offset` cache keys.
-- `struct-layout-shipped` — layouts vs shipped DXVK DLLs, never
-  test-compile `offsetof`.
-- `packaging-prefix`, `vfs-socket-isolation` — zips, prefixes, sockets,
-  `/tmp` modes, FsZip LRU/coalescing.
-- `probe-harness-integrity` — strict log matching, truncation-tolerant
-  parsers, slot protocol, ms-not-count timing.
-- `input-keyboard-full`, `audio-audible-output` — verified bytes and
-  events, never inferred-from-neighbor.
-- `process-gates`, `performance-gates`, `binary-patch-registry` — commit
-  means proven-by-probe; builds quarantined; instrumentation gated.
+Add a `browser/<case>.test.mjs` ProbeTest subclass for real guest/GPU behavior.
+Wire an actual runtime/page hook, stage its guest fixture, use bounded waits
+and validate guest output or measured pixels/audio/events. An API call,
+mapped window or mentioned string cannot substitute for the intended output.
 
-## Adding a test
-
-1. Unit: create `unit/<subsystem>-<what>.test.mjs` with `node:test`.
-   Assert on file content or pure logic. Must fail with the bug present,
-   pass without it.
-2. Browser: create `browser/<name>.test.mjs` extending `ProbeTest`,
-   implement `run(ctx)` with `check*` helpers and bounded waits.
-3. Run the file, then the whole `--unit` suite. Name it for what's
-   verified, reference the bug it guards.
-
-## Status
-
-93 unit files green, 73 legacy cases green (+1 skip), 0 failing.
-Browser game probes are ground truth for playability: Portal presents but
-black (`lit=0`), Celeste loads content then stalls in OLE — both recorded
-in `tasks/game-compatibility.md`, neither claimed playable.
+Run the focused check and the unit suite. Keep fixtures/useful probes outside
+ignored output directories and record runtime hashes with browser evidence.

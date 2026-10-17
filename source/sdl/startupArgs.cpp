@@ -19,7 +19,7 @@
 #include "boxedwine.h"
 #include "startupArgs.h"
 
-#if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_MULTI_THREADED) && defined(BOXEDWINE_GUEST_X64)
+#if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_MULTI_THREADED)
 // Persistent in-browser wine session (source/sdl/emscripten/wine64session.cpp):
 // remember the boot launch params so later in-session app spawns reuse them.
 void bw64SessionRememberContext(const BString& workingDir, const std::vector<BString>& env,
@@ -87,11 +87,11 @@ int StartUpArgs::parse_resolution(const char *resolutionString, U32 *width, U32 
     *width = (U32)strtoul(resolutionString, &end, 10);
 
     // Width parsing failed, pointer not moved
-    if (end == resolutionString) 
+    if (end == resolutionString)
         return false;
-	
+
     // If the next character is not an 'x' then it is an improper resolution format
-    if (*end != 'x') 
+    if (*end != 'x')
         return false;
 
     // Advance the string to beyond the 'x'
@@ -128,7 +128,7 @@ void StartUpArgs::buildVirtualFileSystem() {
         }, K__S_IREAD, k_mdev(0, 0), KSystem::procNode);
 
     std::shared_ptr<FsNode> etcNode = Fs::getNodeFromLocalPath(B(""), B("/etc"), true);
-    createSysfs(rootNode);    
+    createSysfs(rootNode);
 
     Fs::addVirtualFile(B("/dev/tty0"), openDevTTY, K__S_IREAD|K__S_IWRITE|K__S_IFCHR, k_mdev(4, 0), devNode);
     Fs::addVirtualFile(B("/dev/tty"), openDevTTY, K__S_IREAD|K__S_IWRITE|K__S_IFCHR, k_mdev(4, 0), devNode);
@@ -154,7 +154,7 @@ void StartUpArgs::buildVirtualFileSystem() {
     Fs::addVirtualFile(B("/dev/input/event4"), openDevInputKeyboard, K__S_IWRITE|K__S_IREAD|K__S_IFCHR, k_mdev(0xd, 0x44), inputNode);
 	Fs::addVirtualFile(B("/dev/dsp"), openDevDsp, K__S_IWRITE | K__S_IREAD | K__S_IFCHR, k_mdev(14, 3), devNode);
 	Fs::addVirtualFile(B("/dev/mixer"), openDevMixer, K__S_IWRITE | K__S_IREAD | K__S_IFCHR, k_mdev(14, 0), devNode);
-    Fs::addVirtualFile(B("/dev/sequencer"), openDevSequencer, K__S_IWRITE | K__S_IREAD | K__S_IFCHR, k_mdev(14, 1), devNode);    
+    Fs::addVirtualFile(B("/dev/sequencer"), openDevSequencer, K__S_IWRITE | K__S_IREAD | K__S_IFCHR, k_mdev(14, 1), devNode);
 
     Fs::addVirtualFile(B("/etc/hostname"), openHostname, K__S_IREAD, k_mdev(0, 0), etcNode);
     Fs::addVirtualFile(B("/etc/hosts"), openHosts, K__S_IREAD, k_mdev(0, 0), etcNode);
@@ -264,7 +264,7 @@ std::vector<BString> StartUpArgs::buildArgs() {
         }
         args.push_back(m.nativePath);
         args.push_back(m.localPath);
-    }    
+    }
     if (!this->ddrawOverridePath.isEmpty()) {
         args.push_back(B("-ddrawOverride"));
         args.push_back(this->ddrawOverridePath);
@@ -287,7 +287,7 @@ std::vector<BString> StartUpArgs::buildArgs() {
 }
 
 bool StartUpArgs::apply() {
-    KSystem::init();    
+    KSystem::init();
 #ifdef BOXEDWINE_MULTI_THREADED
     KSystem::cpuAffinityCountForApp = this->cpuAffinity;
     if (KSystem::cpuAffinityCountForApp) {
@@ -363,7 +363,13 @@ bool StartUpArgs::apply() {
         klog_fmt("Resolution set to: %dx%d", this->screenCx, this->screenCy);
     }
 #ifdef BOXEDWINE_ZLIB
+#ifdef __EMSCRIPTEN__
+    // Installing the browser main loop unwinds this stack frame. ZIP nodes
+    // hold weak references to their mounts, which must outlive that unwind.
+    static std::vector<std::shared_ptr<FsZip>> openZips;
+#else
     std::vector<std::shared_ptr<FsZip>> openZips;
+#endif
     for (auto& zip : zips) {
         U64 startTime = KSystem::getMicroCounter();
         std::shared_ptr<FsZip> fsZip = std::make_shared<FsZip>();
@@ -439,30 +445,52 @@ bool StartUpArgs::apply() {
         }
     }
 
-    // automatically tell wine to use ddraw.dll if its in the same directory as the app being launched
-    // this is a quality of life issue so that the user doesn't have to manually add this with winecfg
-    // gog's hellfire uses this
-    bool foundWineDllOverride = false;
-
-    for (auto& value : envValues) {
-        if (value.startsWith("WINEDLLOVERRIDES")) {
-            foundWineDllOverride = true;
-        }
-    }
-    if (!foundWineDllOverride) {
-        if (args.size() >= 2 && args[0] == "/bin/wine") {
-            std::shared_ptr<FsNode> appNode = Fs::getNodeFromLocalPath(workingDir, args[1], true);
-            if (appNode) {
-                std::shared_ptr<FsNode> parentNode = appNode->getParent().lock();
-                if (parentNode && parentNode->getChildByNameIgnoreCase(B("ddraw.dll"))) {
-                    envValues.push_back(B("WINEDLLOVERRIDES=ddraw=n,b"));
-                    klog("automatically applied WINEDLLOVERRIDES=ddraw=n,b");
+    // automatically tell wine to use ddraw.dll / winmm.dll if in same directory as app
+    // ddraw: quality of life for gog's hellfire (user doesn't need winecfg)
+    // winmm: waveOut bypass - custom winmm.dll writes directly to Z:\dev\dsp
+    if (args.size() >= 2 && args[0] == "/bin/wine") {
+        std::shared_ptr<FsNode> appNode = Fs::getNodeFromLocalPath(workingDir, args[1], true);
+        if (appNode) {
+            std::shared_ptr<FsNode> parentNode = appNode->getParent().lock();
+            if (parentNode) {
+                bool hasDdraw = parentNode->getChildByNameIgnoreCase(B("ddraw.dll")) != nullptr;
+                bool hasWinmm = parentNode->getChildByNameIgnoreCase(B("winmm.dll")) != nullptr;
+                if (hasDdraw || hasWinmm) {
+                    // Build the dll list to override
+                    BString dlls;
+                    if (hasDdraw) dlls = B("ddraw");
+                    if (hasWinmm) {
+                        if (dlls.length() > 0) dlls += B(",");
+                        dlls += B("winmm");
+                    }
+                    BString overrideVal = dlls + B("=n,b");
+                    // Check if WINEDLLOVERRIDES already exists; append if so
+                    bool merged = false;
+                    for (auto& value : envValues) {
+                        if (value.startsWith(B("WINEDLLOVERRIDES="))) {
+                            // Check if our dlls already covered
+                            bool already = true;
+                            if (hasDdraw && !value.contains(B("ddraw"))) already = false;
+                            if (hasWinmm && !value.contains(B("winmm"))) already = false;
+                            if (!already) {
+                                // Append with semicolon separator
+                                value += B(";") + overrideVal;
+                                klog_fmt("automatically appended to WINEDLLOVERRIDES: %s", overrideVal.c_str());
+                            }
+                            merged = true;
+                            break;
+                        }
+                    }
+                    if (!merged) {
+                        envValues.push_back(B("WINEDLLOVERRIDES=") + overrideVal);
+                        klog_fmt("automatically applied WINEDLLOVERRIDES=%s", overrideVal.c_str());
+                    }
                 }
             }
         }
     }
     //envValues.push_back(B("WINEDEBUG=+wgl"));
-     
+
     if (userId==0) {
         envValues.push_back(B("PATH=/bin:/usr/bin:/usr/local/bin:/sbin:/usr/sbin:/usr/local/sbin"));
     } else {
@@ -474,7 +502,7 @@ bool StartUpArgs::apply() {
             std::shared_ptr<FsNode> mntDir = Fs::getNodeFromLocalPath(B(""), B("/mnt"), true);
             std::shared_ptr<FsNode> drive_d = Fs::addRootDirectoryNode("/mnt/drive_"+info.localPath, info.nativePath, mntDir);
             std::shared_ptr<FsNode> parent = Fs::getNodeFromLocalPath(B(""), B("/home/username/.wine/dosdevices"), true);
-            Fs::addFileNode("/home/username/.wine/dosdevices/"+info.localPath+":", "/mnt/drive_"+info.localPath, B(""), false, parent); 
+            Fs::addFileNode("/home/username/.wine/dosdevices/"+info.localPath+":", "/mnt/drive_"+info.localPath, B(""), false, parent);
         } else {
             BString ext = info.nativePath.substr(info.nativePath.length()-4).toLowerCase();
             if (ext == ".zip") {
@@ -505,7 +533,7 @@ bool StartUpArgs::apply() {
         args.push_back(B("/desktop=shell"));
     }
     if (this->args.size()) {
-        std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(workingDir, this->args[0], true);        
+        std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(workingDir, this->args[0], true);
 
         bool validLinuxCommand = false;
         if (node) {
@@ -530,7 +558,7 @@ bool StartUpArgs::apply() {
                 if (!isDir) {
                     dir = Fs::getNativeParentPath(dir);
                 }
-                
+
                 std::shared_ptr<FsNode> drive_d = Fs::addRootDirectoryNode(B("/mnt/drive_t"), dir, mntDir);
                 std::shared_ptr<FsNode> parent = Fs::getNodeFromLocalPath(B(""), B("/home/username/.wine/dosdevices"), true);
                 if (parent) {
@@ -540,7 +568,7 @@ bool StartUpArgs::apply() {
                 if (!workingDirSet) {
                     workingDir = B("/mnt/drive_t");
                 }
-            
+
                 if (isDir) {
                     args.clear();
                     args.push_back(B("/bin/wine"));
@@ -620,7 +648,7 @@ bool StartUpArgs::apply() {
             result = thread != nullptr;
             if (result) bootPid = process->id;
         }
-#if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_MULTI_THREADED) && defined(BOXEDWINE_GUEST_X64)
+#if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_MULTI_THREADED)
         // Boot process is up — record its launch params + pid so the JS launcher
         // can spawn further apps into THIS running kernel (persistent wine
         // session) without reloading, and close the boot app on the first switch.
@@ -637,7 +665,7 @@ bool StartUpArgs::apply() {
 #ifdef GENERATE_SOURCE
     if (gensrc)
         writeSource();
-#endif    
+#endif
 	KSystem::destroy();
     KNativeSystem::shutdown();
     KNativeAudio::shutdown();
@@ -645,7 +673,7 @@ bool StartUpArgs::apply() {
 
 #ifdef BOXEDWINE_ZLIB
     openZips.clear();
-#endif    
+#endif
     return true;
 }
 
@@ -778,7 +806,7 @@ bool StartUpArgs::parseStartupArgs(int argc, const char **argv) {
                 this->screenBpp = 32;
             }
         } else if (!strcmp(argv[i], "-noexecfiles")) {
-            B(argv[i + 1]).split(':', this->nonExecFileFullPaths);        
+            B(argv[i + 1]).split(':', this->nonExecFileFullPaths);
             i++;
         } else if (!strcmp(argv[i], "-p2")) {
             this->pentiumLevel = 2;
@@ -842,7 +870,7 @@ bool StartUpArgs::parseStartupArgs(int argc, const char **argv) {
         } else if (!strcmp(argv[i], "-log") && i + 1 < argc) {
             this->logPath = BString::copy(argv[i + 1]);
             i++;
-        } 
+        }
 #ifdef BOXEDWINE_RECORDER
         else if (!strcmp(argv[i], "-record")) {
             if (!Fs::doesNativePathExist(BString::copy(argv[i+1]))) {
@@ -881,7 +909,7 @@ bool StartUpArgs::parseStartupArgs(int argc, const char **argv) {
         } else {
             break;
         }
-    } 
+    }
     char curdir[1024];
     char* base = getcwd(curdir, sizeof(curdir));
     char pathSeperator = '/';
@@ -891,7 +919,7 @@ bool StartUpArgs::parseStartupArgs(int argc, const char **argv) {
     }
     if (KNativeSystem::getAppDirectory().length()) {
         BString base2 = KNativeSystem::getAppDirectory();
-        base2 = base2.substr(0, base2.length()-1); 
+        base2 = base2.substr(0, base2.length()-1);
         if (zips.size()==0 && !nozip) {
             std::vector<Platform::ListNodeResult> results;
             if (base) {
@@ -921,11 +949,11 @@ bool StartUpArgs::parseStartupArgs(int argc, const char **argv) {
 #else
         this->root=KNativeSystem::getLocalDirectory()+"root";
 #endif
-    }  
+    }
 
     argc = argc-i;
     argv = &argv[i];
-        
+
     for (i=0;i<argc;i++) {
         args.push_back(BString::copy(argv[i]));
     }
@@ -940,6 +968,6 @@ void StartUpArgs::setResolution(BString resolution) {
     if (success) {
         this->screenCx = width;
         this->screenCy = height;
-        this->resolutionSet = true;                
+        this->resolutionSet = true;
     }
 }

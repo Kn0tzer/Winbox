@@ -37,6 +37,7 @@ public:
     U32 setTimes(U64 lastAccessTime, U32 lastAccessTimeNano, U64 lastModifiedTime, U32 lastModifiedTimeNano) override;
     BString getLink() override;
     bool isLink() override;
+    bool isDynamicLink() override { return true; }
 
     std::function<BString(void)> fnGetLink;
 };

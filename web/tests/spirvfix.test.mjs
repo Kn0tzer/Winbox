@@ -30,6 +30,7 @@ const stageOf = f => (f.includes('.vert.') ? 'vertex' : 'fragment');
 // Expected rewrites per module, from tools/spirvfix/gate.mjs.
 const EXPECTED = {
   'p1-vkcube.frag.spv': ['split-combined-sampler'],
+  'p4-speconst.vert.spv': ['fold-spec-constants'],
   'p4-speconst.frag.spv': ['split-combined-sampler', 'fold-spec-constants'],
   'p5-pushconst.frag.spv': ['split-combined-sampler'],
   'p6-multitex.frag.spv': ['split-combined-sampler'],

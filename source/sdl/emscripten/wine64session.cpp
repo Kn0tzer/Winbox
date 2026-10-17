@@ -49,7 +49,7 @@
 // wait) and returns; the main loop drains the queue each tick via
 // bw64SessionDrainSpawns() and does the real startProcess there.
 
-#if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_MULTI_THREADED) && defined(BOXEDWINE_GUEST_X64)
+#if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_MULTI_THREADED)
 
 #include <emscripten/emscripten.h>
 #include "boxedwine.h"
@@ -59,7 +59,7 @@
 #include "ksignal.h" // K_SIGTERM
 #include "../../io/fs.h"      // Fs::getNodeFromLocalPath / addFileNode (VFS registration)
 #include "../../io/fsnode.h"
-#include "../../x11wire/xwirepresent.h" // xwireInjectKey (bw64_xwire_key)
+#include "../../x11wire/xwirepresent.h"
 
 #include <atomic>
 #include <vector>
@@ -388,6 +388,24 @@ extern "C" EMSCRIPTEN_KEEPALIVE void bw64_xwire_key(int sdlScancode, int down) {
     xwireInjectKey((uint32_t)sdlScancode, down);
 }
 
+// bw64_xwire_mouse_move(x, y): absolute pointer position in guest window coords.
+// bw64_xwire_mouse_rel(dx, dy): relative deltas (FPS mouse-look).
+// bw64_xwire_mouse_button(button, down): X11 button 1=left,2=middle,3=right,8=X1,9=X2.
+// bw64_xwire_mouse_wheel(dx, dy): wheel ticks (dy>0 up, dy<0 down, dx horizontal).
+// All no-ops until the session is up. Safe from the browser main thread.
+extern "C" EMSCRIPTEN_KEEPALIVE void bw64_xwire_mouse_move(int x, int y) {
+    xwireInjectMouseMove(x, y);
+}
+extern "C" EMSCRIPTEN_KEEPALIVE void bw64_xwire_mouse_rel(int dx, int dy) {
+    xwireInjectMouseRel(dx, dy);
+}
+extern "C" EMSCRIPTEN_KEEPALIVE void bw64_xwire_mouse_button(int button, int down) {
+    xwireInjectMouseButton(button, down);
+}
+extern "C" EMSCRIPTEN_KEEPALIVE void bw64_xwire_mouse_wheel(int dx, int dy) {
+    xwireInjectMouseWheel(dx, dy);
+}
+
 // bw64_register_file: register a file JS already wrote into MEMFS (e.g. an
 // uploaded .exe at guest path /home/username/foo.exe) into Boxedwine's VFS, so the
 // app spawned right after can find it. Queue it (drained on the main-loop thread,
@@ -423,6 +441,17 @@ extern "C" EMSCRIPTEN_KEEPALIVE int bw64_kill(int pid) {
 // remember which process to kill on the next switch.
 extern "C" EMSCRIPTEN_KEEPALIVE int bw64_last_spawned_pid() {
     return (int)g_lastSpawnedPid.load(std::memory_order_acquire);
+}
+
+// bw64_pid_alive: whether a pid is still running (1) or has exited (0).
+// Used by JS to wait for helper processes (e.g. wineboot --init on x86)
+// without polling logs. Note: exited processes linger in the process table
+// as zombies until reaped, so table membership alone is not enough -- check
+// isTerminated().
+extern "C" EMSCRIPTEN_KEEPALIVE int bw64_pid_alive(int pid) {
+    if (pid <= 0) return 0;
+    KProcessPtr proc = KSystem::getProcess((U32)pid);
+    return (proc && !proc->isTerminated()) ? 1 : 0;
 }
 
 // bw64_reset_present: clear the XWire base window so the next app's first window

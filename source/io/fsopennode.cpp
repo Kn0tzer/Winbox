@@ -94,7 +94,17 @@ std::shared_ptr<FsNode> FsOpenNode::getDirectoryEntry(U32 index, BString& name) 
         name = B(".");
     else if (index==1 && this->node->getParent().lock())
         name = B("..");
-    else
+    else {
         name = this->dirEntries[index]->name;
+        // decode VFS name conventions for dosdevices symlinks: strip .link suffix and decode (_colon_)
+        // so Wine sees the original names (z:, c:) when enumerating the directory
+        std::shared_ptr<FsNode> e = this->dirEntries[index];
+        if (e->isLink() && name.endsWith(".link")) {
+            name = name.substr(0, name.length() - 5);
+        }
+        if (name.contains("(_colon_)")) {
+            name = name.replace("(_colon_)", ":");
+        }
+    }
     return this->dirEntries[index];
 }

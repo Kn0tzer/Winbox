@@ -4,7 +4,7 @@
 // the page) that rewrites the module patterns naga 30.2.0 rejects, before
 // web/shader.mjs hands the bytes to translate({from:'spirv',...}).
 //
-// WHY (root causes, tasks/p1-final.md §2.12; verified against the corpus in
+// WHY (root causes; verified against the corpus in
 // testdata/spirv via tools/spirvfix/gate.mjs):
 //   R1 "split-combined-sampler": naga's lookup_sampled_image table has exactly
 //      one writer — parse_image_couple, reached only from OpSampledImage. A
@@ -23,6 +23,32 @@
 //      specialization values are baked — documented: the page tier has no
 //      specialization API, so defaults are the only values that could ever
 //      reach the GPU here.
+//   R5 "strip-draw-parameters": naga rejects OpCapability DrawParameters
+//      (UnsupportedCapability(DrawParameters)) even when DXVK declares it
+//      without using the draw builtins (BaseVertex 4424, BaseInstance 4425,
+//      DrawIndex 4426). Rewrite: drop the capability when none of those
+//      builtins are decorated. Verified against DXVK D3D11 shaders.
+//   R6 "strip-index-decorations": naga rejects fragment entry points carrying
+//      OpDecorate Index (32, dual-source blending index) with "Entry point
+//      main at Fragment is invalid", on SPIR-V that spirv-val accepts. DXVK
+//      emits Index 0 on single-source outputs where it is meaningless.
+//      Rewrite: drop the decoration. Verified against DXVK D3D11 shaders.
+//   R7 "strip-signed-zero-inf-nan-preserve": naga rejects OpCapability
+//      SignedZeroInfNanPreserve (4466) with UnsupportedCapability.
+//      vkd3d-proton/vkd3d-shader emits it (with OpExecutionMode 4461) for FP
+//      control. Rewrite: drop the capability and any OpExecutionMode
+//      SignedZeroInfNanPreserve instructions. Safe for rendering: it only
+//      governs NaN/inf edge-case preservation.
+//   R8 "strip-unused-physical-storage-buffer": naga rejects OpCapability
+//      PhysicalStorageBufferAddresses (5346/5347) and the
+//      SPV_KHR_physical_storage_buffer extension. vkd3d-proton emits them
+//      for shaders that never actually use physical pointers (e.g. when a
+//      descriptor table is present it compiles all shaders with the
+//      PhysicalStorageBuffer64 memory model). Rewrite, only when no
+//      OpConvertUToPtr/OpConvertPtrToU and no PhysicalStorageBuffer pointer
+//      types exist: drop the capability + extension, rewrite OpMemoryModel
+//      addressing to Logical. Safe: with no physical pointers the addressing
+//      model is unobservable.
 //
 // Interface: applySpirvFix(bytes: Uint8Array) -> { bytes, applied, log }.
 // applied is [] when the module needs nothing (byte-identical passthrough).
@@ -316,6 +342,7 @@ function scalarTypeOf(byId, typeId) {
 function constValue(byId, id) {
   const ins = byId.get(id);
   if (!ins) return null;
+  if (ins.op === Op.CopyObject) return constValue(byId, ins.words[2]);
   if (ins.op === Op.ConstantTrue || ins.op === Op.SpecConstantTrue)
     return { type: ins.words[0], elems: [{ kind: 'bool', value: true }] };
   if (ins.op === Op.ConstantFalse || ins.op === Op.SpecConstantFalse)
@@ -387,6 +414,7 @@ const SOP = {
   FOrdGreaterThanEqual: 190, FUnordGreaterThanEqual: 191,
   ShiftRightLogical: 194, ShiftRightArithmetic: 195, ShiftLeftLogical: 196,
   BitwiseOr: 197, BitwiseXor: 198, BitwiseAnd: 199, Not: 200,
+  BitFieldUExtract: 203,
   LogicalEqual: 164, LogicalNotEqual: 165, LogicalOr: 166,
   LogicalAnd: 167, LogicalNot: 168, Select: 169,
 };
@@ -401,6 +429,12 @@ function evalLane(inner, xs) {
   const wrapU = v => ((v % (M + 1n)) + (M + 1n)) % (M + 1n);
   try {
     switch (inner) {
+      case SOP.BitFieldUExtract: {
+        if (xs.length !== 3) return null;
+        const offset = big(xs[1]), count = big(xs[2]);
+        if (offset < 0n || count < 0n || offset + count > BigInt(w)) return null;
+        return { kind: 'uint', width: w, value: (big(xs[0]) >> offset) & ((1n << count) - 1n) };
+      }
       case SOP.Select: {
         if (xs.length !== 3) return null;
         const c = xs[0].kind === 'bool' ? xs[0].value : big(xs[0]) !== 0n;
@@ -640,10 +674,38 @@ export function foldSpecConstants(mod, log, specOverrides) {
   }
   const byId = new Map();
   for (const ins of mod.insns) if (ins.resultId != null) byId.set(ins.resultId, ins);
-  if (!mod.insns.some(i => i.op === Op.SpecConstantOp || i.op === Op.SpecConstantComposite)) return false;
+  if (!mod.insns.some(i => i.op >= Op.SpecConstantTrue && i.op <= Op.SpecConstantOp)) return false;
   const newId = makeIdSource(mod);
   const cx = { mod, byId, newId };
   let folded = 0, converted = 0;
+  for (const ins of mod.insns) {
+    if (ins.op === Op.SpecConstant) {
+      const specId = specIdOf.get(ins.resultId);
+      const override = specId !== undefined ? overrideMap.get(specId) : undefined;
+      const valueWords = override || ins.words.slice(2);
+      rebuild(ins, Op.Constant, ins.resultType, ins.resultId, valueWords);
+      if (override) log.push('spirvfix R2: applied specialization override for specId ' + specId);
+      converted++;
+    } else if (ins.op === Op.SpecConstantTrue) {
+      const specId = specIdOf.get(ins.resultId);
+      const override = specId !== undefined ? overrideMap.get(specId) : undefined;
+      if (override && override[0] === 0) {
+        rebuild(ins, Op.ConstantFalse, ins.resultType, ins.resultId, []);
+      } else {
+        rebuild(ins, Op.ConstantTrue, ins.resultType, ins.resultId, []);
+      }
+      converted++;
+    } else if (ins.op === Op.SpecConstantFalse) {
+      const specId = specIdOf.get(ins.resultId);
+      const override = specId !== undefined ? overrideMap.get(specId) : undefined;
+      if (override && override[0] !== 0) {
+        rebuild(ins, Op.ConstantTrue, ins.resultType, ins.resultId, []);
+      } else {
+        rebuild(ins, Op.ConstantFalse, ins.resultType, ins.resultId, []);
+      }
+      converted++;
+    }
+  }
   let progress = true;
   while (progress) {
     progress = false;
@@ -667,34 +729,6 @@ export function foldSpecConstants(mod, log, specOverrides) {
         try { emitFoldedConstant(ins, r, cx); } catch { continue; }
         folded++; progress = true;
       }
-    }
-  }
-  for (const ins of mod.insns) {
-    if (ins.op === Op.SpecConstant) {
-      const specId = specIdOf.get(ins.resultId);
-      const override = specId !== undefined ? overrideMap.get(specId) : undefined;
-      const valueWords = override || ins.words.slice(2);
-      rebuild(ins, Op.Constant, ins.resultType, ins.resultId, valueWords);
-      if (override) log.push('spirvfix R2: applied specialization override for specId ' + specId);
-      converted++;
-    } else if (ins.op === Op.SpecConstantTrue) {
-      const specId = specIdOf.get(ins.resultId);
-      const override = specId !== undefined ? overrideMap.get(specId) : undefined;
-      if (override && override[0] === 0) {
-        rebuild(ins, Op.ConstantFalse, 0, ins.resultId, []);
-      } else {
-        rebuild(ins, Op.ConstantTrue, 0, ins.resultId, []);
-      }
-      converted++;
-    } else if (ins.op === Op.SpecConstantFalse) {
-      const specId = specIdOf.get(ins.resultId);
-      const override = specId !== undefined ? overrideMap.get(specId) : undefined;
-      if (override && override[0] !== 0) {
-        rebuild(ins, Op.ConstantTrue, 0, ins.resultId, []);
-      } else {
-        rebuild(ins, Op.ConstantFalse, 0, ins.resultId, []);
-      }
-      converted++;
     }
   }
   const remaining = mod.insns.filter(i => i.op === Op.SpecConstantOp || i.op === Op.SpecConstantComposite);
@@ -774,8 +808,22 @@ function lowerTailDemotes(mod, log) {
     if (seen.has(id)) return false;
     seen.add(id);
     const tail = blocks.get(id);
-    if (!tail || tail.length !== 1) return false;
-    return tail[0].op === 253 || (tail[0].op === 249 && pureReturn(tail[0].words[0], seen));
+    if (!tail) return false;
+    if (tail.length === 1)
+      return tail[0].op === 253 || (tail[0].op === 249 && pureReturn(tail[0].words[0], seen));
+    // DXVK ends fixed-function alpha testing with an output-only FClamp.
+    // Demoted fragments cannot publish that output, and this tail has no
+    // derivatives, helper queries or externally observable writes.
+    if (tail.length !== 4) return false;
+    const [load, clamp, store, ret] = tail;
+    const output = mod.insns.find(i => i.op === Op.Variable && i.words[1] === load.words[2]);
+    const glsl = mod.insns.find(i => i.op === 11 && i.words[0] === clamp.words[2]
+      && new TextDecoder().decode(new Uint8Array(strOf(i, 1))) === 'GLSL.std.450');
+    return load.op === Op.Load && output?.words[2] === 3 && clamp.op === 12 && !!glsl
+      && clamp.words[3] === 43 && clamp.words[4] === load.words[1]
+      && clamp.words[0] === load.words[0] && store.op === Op.Store
+      && store.words[0] === load.words[2] && store.words[1] === clamp.words[1]
+      && ret.op === 253;
   };
   for (const d of demotes) {
     const next = mod.insns[mod.insns.indexOf(d) + 1];
@@ -792,8 +840,220 @@ function lowerTailDemotes(mod, log) {
   return true;
 }
 
+// R5 "strip-unused-draw-parameters": naga 30.2.0 rejects
+// OpCapability DrawParameters (4427) with UnsupportedCapability, even when
+// DXVK declares it but never uses the draw builtins (BaseVertex 4424,
+// BaseInstance 4425, DrawIndex 4426). If the capability is present but none
+// of those builtins are decorated, drop the capability. Safe because the
+// shader cannot reference what it never declares.
+function stripUnusedDrawParameters(mod, log) {
+  const hasCap = mod.insns.some(i => i.op === 17 && i.words[0] === 4427);
+  if (!hasCap) return false;
+  const used = mod.insns.some(i => i.op === Op.Decorate && i.words[1] === 11
+    && [4424, 4425, 4426].includes(i.words[2]));
+  if (used) return false;
+  mod.insns = mod.insns.filter(i => !(i.op === 17 && i.words[0] === 4427));
+  log.push('spirvfix: stripped unused OpCapability DrawParameters');
+  return true;
+}
+
+// R6 "strip-index-decorations": naga 30.2.0 rejects fragment entry points
+// carrying OpDecorate Index (32, dual-source blending index) with
+// "Entry point main at Fragment is invalid", even on valid SPIR-V
+// (spirv-val passes). DXVK emits Index 0 on single-source outputs where it
+// is meaningless. Drop the decoration; dual-source blending is not used by
+// the D3D11/D3D10 paths here.
+function stripIndexDecorations(mod, log) {
+  const found = mod.insns.filter(i => i.op === Op.Decorate && i.words[1] === 32);
+  if (!found.length) return false;
+  mod.insns = mod.insns.filter(i => !(i.op === Op.Decorate && i.words[1] === 32));
+  log.push(`spirvfix: stripped ${found.length} OpDecorate Index decoration(s)`);
+  return true;
+}
+
+// R7 "strip-signed-zero-inf-nan-preserve": naga 30.2.0 rejects OpCapability
+// SignedZeroInfNanPreserve (4466) with UnsupportedCapability. vkd3d-proton's
+// vkd3d-shader emits it together with OpExecutionMode SignedZeroInfNanPreserve
+// (4461) for floating-point control. Drop the capability and any such
+// execution-mode instructions; without the capability naga never sees it.
+// Rendering-safe: the mode only governs NaN/inf signed-zero preservation,
+// irrelevant to the pixel values these shaders compute.
+function stripSignedZeroInfNanPreserve(mod, log) {
+  const hasCap = mod.insns.some(i => i.op === 17 && i.words[0] === 4466);
+  const modes = mod.insns.filter(i => i.op === Op.ExecutionMode && i.words[1] === 4461);
+  const exts = mod.insns.filter(i => i.op === Op.ExtInstImport &&
+    new TextDecoder().decode(new Uint8Array(strOf(i, 0))) === 'SPV_KHR_float_controls');
+  if (!hasCap && !modes.length && !exts.length) return false;
+  mod.insns = mod.insns.filter(i => !((i.op === 17 && i.words[0] === 4466) ||
+    (i.op === Op.ExecutionMode && i.words[1] === 4461) ||
+    (i.op === Op.ExtInstImport &&
+      new TextDecoder().decode(new Uint8Array(strOf(i, 0))) === 'SPV_KHR_float_controls')));
+  const what = [hasCap ? 'capability' : null,
+    modes.length ? modes.length + ' execution mode(s)' : null,
+    exts.length ? exts.length + ' OpExtension(s)' : null].filter(Boolean).join(' + ');
+  log.push('spirvfix: stripped SignedZeroInfNanPreserve (' + what + ')');
+  return true;
+}
+
+// R8 "strip-unused-physical-storage-buffer": naga rejects OpCapability
+// PhysicalStorageBufferAddresses (5346, or 5347 as emitted by vkd3d-shader)
+// and the SPV_KHR_physical_storage_buffer OpExtension with
+// UnsupportedCapability/UnsupportedExtension. vkd3d-proton emits them even
+// for shaders that never touch a physical pointer (no OpConvertUToPtr /
+// OpConvertPtrToU, no PhysicalStorageBuffer StorageClass pointer types) —
+// observed on D3D12 shaders compiled with a descriptor table present, where
+// the whole pipeline gets the PhysicalStorageBuffer64 memory model. When the
+// capability is unused, drop it and the extension and rewrite the addressing
+// model to Logical (memory model untouched). If physical pointers ARE used,
+// leave the module alone (naga cannot translate it; the frame is skipped).
+function stripUnusedPhysicalStorageBuffer(mod, log) {
+  const hasCap = mod.insns.some(i => i.op === 17 && (i.words[0] === 5346 || i.words[0] === 5347));
+  if (!hasCap) return false;
+  const usesPsb = mod.insns.some(i =>
+    i.op === 120 || i.op === 121 || // OpConvertUToPtr / OpConvertPtrToU
+    (i.op === Op.TypePointer && i.words[0] === 5349)); // PhysicalStorageBuffer storage class
+  if (usesPsb) {
+    log.push('spirvfix: PhysicalStorageBufferAddresses is actually used; not stripping');
+    return false;
+  }
+  const extName = insn => new TextDecoder().decode(new Uint8Array(strOf(insn, 0)));
+  const exts = mod.insns.filter(i => i.op === 10 && extName(i) === 'SPV_KHR_physical_storage_buffer');
+  let memRewritten = false;
+  for (const i of mod.insns) {
+    if (i.op === Op.MemoryModel && i.words[0] === 5348) { // PhysicalStorageBuffer64
+      i.words[0] = 0; // Logical
+      memRewritten = true;
+    }
+  }
+  mod.insns = mod.insns.filter(i => !((i.op === 17 && (i.words[0] === 5346 || i.words[0] === 5347)) ||
+    (i.op === 10 && extName(i) === 'SPV_KHR_physical_storage_buffer')));
+  const what = ['capability',
+    exts.length ? exts.length + ' OpExtension(s)' : null,
+    memRewritten ? 'OpMemoryModel->Logical' : null].filter(Boolean).join(' + ');
+  log.push('spirvfix: stripped unused PhysicalStorageBufferAddresses (' + what + ')');
+  return true;
+}
+
+// Vulkan permits alternative image variables at one binding. WebGPU requires
+// unique bindings. When captured specialization values select just one branch,
+// remove the provably unreachable branch and its unused descriptor variables.
+// Dynamic choices remain unchanged and are rejected rather than guessed.
+function pruneSpecializedAliases(mod, log) {
+  const bindings = new Set();
+  let collision = false;
+  for (const d of mod.insns.filter(i => i.op === Op.Decorate && i.words[1] === Dec.Binding)) {
+    const set = mod.insns.find(i => i.op === Op.Decorate && i.words[0] === d.words[0] && i.words[1] === Dec.DescriptorSet)?.words[2] || 0;
+    const key = set + ':' + d.words[2];
+    if (bindings.has(key)) collision = true;
+    bindings.add(key);
+  }
+  if (!collision) return false;
+  const byId = new Map(mod.insns.filter(i => i.resultId != null).map(i => [i.resultId, i]));
+  const constants = new Set();
+  const supported = new Set([128, 130, 132, 164, 165, 166, 167, 168, 170, 171,
+    172, 173, 174, 175, 176, 177, 178, 179, 194, 195, 196, 197, 198, 199, 200, 203]);
+  let progress = true;
+  while (progress) {
+    progress = false;
+    let inFunc = false;
+    for (const ins of mod.insns) {
+      if (ins.op === Op.Function) inFunc = true;
+      if (ins.op === Op.FunctionEnd) inFunc = false;
+      if (!inFunc || constants.has(ins)) continue;
+      if (ins.op === Op.Select) {
+        const cond = constValue(byId, ins.words[2]);
+        if (cond?.elems.length !== 1 || cond.elems[0].kind !== 'bool') continue;
+        rebuild(ins, Op.CopyObject, ins.resultType, ins.resultId, [ins.words[cond.elems[0].value ? 3 : 4]]);
+        progress = true;
+      }
+      if (ins.op === Op.CopyObject) {
+        const value = constValue(byId, ins.words[2]);
+        if (!value || value.elems.length !== 1) continue;
+        emitFoldedConstant(ins, value, { mod, byId, newId: makeIdSource(mod) });
+        constants.add(ins); progress = true;
+      } else if (supported.has(ins.op)) {
+        const ty = byId.get(ins.resultType);
+        if (!ty || (ty.op !== Op.TypeInt && ty.op !== Op.TypeBool)) continue;
+        const value = evalSpecOp(byId, ins.op, ins.words.slice(2), ins.resultType);
+        if (!value) continue;
+        emitFoldedConstant(ins, value, { mod, byId, newId: makeIdSource(mod) });
+        constants.add(ins); progress = true;
+      }
+    }
+  }
+  // Constants belong before functions in SPIR-V's logical layout.
+  mod.insns = mod.insns.filter(i => !constants.has(i));
+  mod.insns.splice(sections(mod).firstFunc, 0, ...constants);
+  const remove = new Set();
+  for (let n = 0; n < mod.insns.length; ++n) {
+    const ins = mod.insns[n];
+    if (ins.op !== 250 || mod.insns[n - 1]?.op === 246) continue; // Keep loops' structural edges.
+    const cond = constValue(byId, ins.words[0]);
+    if (cond?.elems.length !== 1 || cond.elems[0].kind !== 'bool') continue;
+    const target = ins.words[cond.elems[0].value ? 1 : 2];
+    if (mod.insns[n - 1]?.op === 247) remove.add(mod.insns[n - 1]);
+    ins.op = 249; ins.words = [target];
+  }
+  let blocks = null, block = null;
+  const functions = [];
+  for (const ins of mod.insns) {
+    if (ins.op === Op.Function) { blocks = new Map(); functions.push(blocks); }
+    if (ins.op === Op.FunctionEnd) { blocks = null; block = null; }
+    if (ins.op === Op.Label) { block = []; blocks.set(ins.words[0], block); }
+    if (block) block.push(ins);
+  }
+  for (const blocks of functions) {
+    const reachable = new Set(), todo = [blocks.keys().next().value];
+    while (todo.length) {
+      const id = todo.pop();
+      if (reachable.has(id)) continue;
+      reachable.add(id);
+      for (const ins of blocks.get(id) || []) {
+        if (ins.op === 249) todo.push(ins.words[0]);
+        if (ins.op === 250) todo.push(ins.words[1], ins.words[2]);
+        if (ins.op === 251) todo.push(ins.words[1], ...ins.words.slice(3).filter((_, i) => i % 2 === 0));
+        if (ins.op === 246) todo.push(ins.words[0], ins.words[1]);
+        if (ins.op === 247 && !remove.has(ins)) todo.push(ins.words[0]);
+      }
+    }
+    for (const [id, instructions] of blocks) {
+      if (!reachable.has(id)) { instructions.forEach(i => remove.add(i)); continue; }
+      for (const ins of instructions) if (ins.op === 245) {
+        const pairs = [];
+        for (let k = 2; k < ins.words.length; k += 2)
+          if (reachable.has(ins.words[k + 1])) pairs.push(ins.words[k], ins.words[k + 1]);
+        if (pairs.length === 2) rebuild(ins, Op.CopyObject, ins.resultType, ins.resultId, [pairs[0]]);
+        else ins.words = ins.words.slice(0, 2).concat(pairs);
+      }
+    }
+  }
+  mod.insns = mod.insns.filter(i => !remove.has(i));
+  const referenced = new Set();
+  let inFunc = false;
+  for (const ins of mod.insns) {
+    if (ins.op === Op.Function) inFunc = true;
+    if (ins.op === Op.FunctionEnd) inFunc = false;
+    if (inFunc) for (const word of ins.words.slice(ins.resultType ? 2 : 0)) referenced.add(word);
+  }
+  const unused = new Set(mod.insns.filter(i => i.op === Op.Variable && i.words[2] === SC.UniformConstant
+    && !referenced.has(i.resultId)).map(i => i.resultId));
+  if (!unused.size) return constants.size > 0 || remove.size > 0;
+  mod.insns = mod.insns.filter(i => !(i.op === Op.Variable && unused.has(i.resultId))
+    && !((i.op === Op.Name || i.op === Op.Decorate) && unused.has(i.words[0])));
+  for (const ins of mod.insns) if (ins.op === Op.EntryPoint) {
+    let start = 2;
+    while (start < ins.words.length) {
+      const word = ins.words[start++];
+      if ([0, 8, 16, 24].some(shift => ((word >>> shift) & 255) === 0)) break;
+    }
+    ins.words = ins.words.slice(0, start).concat(ins.words.slice(start).filter(id => !unused.has(id)));
+  }
+  log.push(`spirvfix: pruned specialized branches and ${unused.size} unused descriptor alias(es)`);
+  return true;
+}
+
 // --- entry point -------------------------------------------------------------
-/** @param {Uint8Array} bytes @param {{rasterTopology?: number}} [options] */
+/** @param {Uint8Array} bytes @param {{rasterTopology?: number, specOverrides?: {constantID: number, value: Uint8Array}[]}} [options] */
 export function applySpirvFix(bytes, { rasterTopology, specOverrides } = {}) {
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const log = [], applied = [];
@@ -823,6 +1083,29 @@ export function applySpirvFix(bytes, { rasterTopology, specOverrides } = {}) {
   } catch (e) {
     log.push('R4 failed: ' + (e.message || e));
   }
+  try {
+    if (stripUnusedDrawParameters(mod, log)) applied.push('strip-draw-parameters');
+  } catch (e) {
+    log.push('R5 failed: ' + (e.message || e));
+  }
+  try {
+    if (stripIndexDecorations(mod, log)) applied.push('strip-index-decorations');
+  } catch (e) {
+    log.push('R6 failed: ' + (e.message || e));
+  }
+  try {
+    if (stripSignedZeroInfNanPreserve(mod, log)) applied.push('strip-signed-zero-inf-nan-preserve');
+  } catch (e) {
+    log.push('R7 failed: ' + (e.message || e));
+  }
+  try {
+    if (stripUnusedPhysicalStorageBuffer(mod, log)) applied.push('strip-unused-physical-storage-buffer');
+  } catch (e) {
+    log.push('R8 failed: ' + (e.message || e));
+  }
+  try {
+    if (pruneSpecializedAliases(mod, log)) applied.push('prune-specialized-aliases');
+  } catch (e) { log.push('R9 failed: ' + (e.message || e)); }
   if (!applied.length) return { bytes: u8, applied, log };
   try {
     return { bytes: serializeSpirv(mod), applied, log };
@@ -831,4 +1114,4 @@ export function applySpirvFix(bytes, { rasterTopology, specOverrides } = {}) {
   }
 }
 
-export const REWRITES = ['split-combined-sampler', 'fold-spec-constants', 'non-point-builtins', 'tail-demote-to-kill'];
+export const REWRITES = ['split-combined-sampler', 'fold-spec-constants', 'non-point-builtins', 'tail-demote-to-kill', 'strip-draw-parameters', 'strip-index-decorations', 'strip-signed-zero-inf-nan-preserve', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases'];

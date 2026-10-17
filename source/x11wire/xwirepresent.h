@@ -32,8 +32,9 @@
 struct XWireInputEvent {
     // Names are prefixed to avoid colliding with X11/X.h macros (KeyPress,
     // ButtonPress, ... are #defined to ints there).
-    enum Type { EvKeyDown, EvKeyUp, EvButtonDown, EvButtonUp, EvMotion } type;
-    int x = 0, y = 0;          // pointer position in window coords
+    enum Type { EvKeyDown, EvKeyUp, EvButtonDown, EvButtonUp, EvMotion, EvMotionRel } type;
+    int x = 0, y = 0;          // pointer position in window coords (EvMotion),
+                               // or relative delta dx/dy (EvMotionRel)
     uint32_t detail = 0;       // keycode (key events) or button number (button events)
     uint32_t state = 0;        // modifier/button mask
 };
@@ -103,6 +104,11 @@ void tickXWirePresent();
 // stays SDL-agnostic. Defined in xwirepresentSDL.cpp.
 union SDL_Event;
 void xwireForwardSdlEvent(const SDL_Event& e);
+// Runtime diagnostics count actual input delivery, independently of guest logs.
+#ifdef __EMSCRIPTEN__
+void xwireRecordInputDelivery(uint8_t code, uint32_t window);
+void xwireRecordInputPhase(uint32_t phase);
+#endif
 
 // SDL scancode -> X11 keycode (evdev code + 8). Defined in xwirepresentSDL.cpp.
 uint32_t sdlScancodeToX11(int scancode);
@@ -113,6 +119,15 @@ uint32_t sdlScancodeToX11(int scancode);
 // Exposed to JS as bw64_xwire_key. Defined in xwirepresentSDL.cpp.
 void xwireInjectKey(uint32_t sdlScancode, int down);
 
+// Direct mouse injection, bypassing SDL event capture. For headless browser
+// operation where Emscripten SDL never sees DOM mouse events.
+// Exposed to JS as bw64_xwire_mouse_move / _rel / _button / _wheel.
+// Defined in xwirepresentSDL.cpp.
+void xwireInjectMouseMove(int x, int y);
+void xwireInjectMouseRel(int dx, int dy);
+void xwireInjectMouseButton(int button, int down);
+void xwireInjectMouseWheel(int dx, int dy);
+
 // Run `fn` on the platform MAIN thread and block until it completes. macOS
 // requires SDL_CreateWindow / NSWindow on the main thread, but the gl64 bridge
 // runs on a guest thread — so it hands window creation here. The work is drained
@@ -120,5 +135,6 @@ void xwireInjectKey(uint32_t sdlScancode, int down);
 // FROM the main thread it runs inline. Safe before any sink is installed (still
 // pumped by the main loop). Defined in xwirepresentSDL.cpp.
 void xwireRunOnMainThread(const std::function<void()>& fn);
+bool hasMainThreadWork();
 
 #endif

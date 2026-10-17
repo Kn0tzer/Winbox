@@ -1,0 +1,720 @@
+#version 460
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_16bit_storage : require
+#if defined(GL_AMD_gpu_shader_half_float)
+#extension GL_AMD_gpu_shader_half_float : require
+#elif defined(GL_EXT_shader_explicit_arithmetic_types_float16)
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#else
+#error No extension available for FP16.
+#endif
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_scalar_block_layout : require
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer SSBO
+{
+    uint16_t _m0[];
+} _9;
+
+layout(set = 0, binding = 1, std430) buffer _12_14
+{
+    u16vec2 _m0[];
+} _14;
+
+layout(set = 0, binding = 2, scalar) buffer _17_19
+{
+    u16vec3 _m0[];
+} _19;
+
+layout(set = 0, binding = 3, std430) buffer _22_24
+{
+    u16vec4 _m0[];
+} _24;
+
+layout(set = 0, binding = 4, std430) buffer _26_28
+{
+    uint16_t _m0[];
+} _28;
+
+layout(set = 0, binding = 4, std430) buffer _30_32
+{
+    u16vec2 _m0[];
+} _32;
+
+layout(set = 0, binding = 4, std430) buffer _34_36
+{
+    u16vec4 _m0[];
+} _36;
+
+layout(set = 0, binding = 4, std430) buffer _39_41
+{
+    uint _m0[];
+} _41;
+
+layout(set = 0, binding = 4, std430) buffer _44_46
+{
+    uvec4 _m0[];
+} _46;
+
+layout(set = 0, binding = 5, std430) writeonly buffer _48_50
+{
+    uint16_t _m0[];
+} _50;
+
+layout(set = 0, binding = 5, std430) writeonly buffer _52_54
+{
+    u16vec2 _m0[];
+} _54;
+
+layout(set = 0, binding = 5, std430) writeonly buffer _56_58
+{
+    u16vec4 _m0[];
+} _58;
+
+layout(set = 0, binding = 6, std430) writeonly buffer _60_62
+{
+    uint16_t _m0[];
+} _62;
+
+layout(set = 0, binding = 6, std430) writeonly buffer _64_66
+{
+    u16vec2 _m0[];
+} _66;
+
+layout(set = 0, binding = 6, std430) writeonly buffer _68_70
+{
+    u16vec4 _m0[];
+} _70;
+
+layout(set = 1, binding = 0, std430) buffer _72_75
+{
+    uint16_t _m0[];
+} _75[];
+
+layout(set = 1, binding = 0, std430) buffer _77_80
+{
+    u16vec2 _m0[];
+} _80[];
+
+uint ByteAddressMask(uint index, uint stride)
+{
+    return index & (4294967295u / stride);
+}
+
+void main()
+{
+    _9._m0[gl_GlobalInvocationID.x] = float16BitsToUint16(uint16BitsToFloat16(_9._m0[gl_GlobalInvocationID.x]) + float16_t(1.0));
+    _14._m0[gl_GlobalInvocationID.x] = u16vec2(_14._m0[gl_GlobalInvocationID.x].x + 2us, _14._m0[gl_GlobalInvocationID.x].y + 2us);
+    f16vec3 _111 = uint16BitsToFloat16(_19._m0[gl_GlobalInvocationID.x]);
+    _19._m0[gl_GlobalInvocationID.x] = u16vec3(float16BitsToUint16(_111.x + float16_t(3.0)), float16BitsToUint16(_111.y + float16_t(3.0)), float16BitsToUint16(_111.z + float16_t(3.0)));
+    _24._m0[gl_GlobalInvocationID.x] = u16vec4(_24._m0[gl_GlobalInvocationID.x].x + 4us, _24._m0[gl_GlobalInvocationID.x].y + 4us, _24._m0[gl_GlobalInvocationID.x].z + 4us, _24._m0[gl_GlobalInvocationID.x].w + 4us);
+    uint16_t _152 = _28._m0[ByteAddressMask(gl_GlobalInvocationID.x, 2u)];
+    float _155 = float(uint16BitsToFloat16(_152));
+    u16vec2 _160 = _32._m0[ByteAddressMask(gl_GlobalInvocationID.x, 4u)];
+    f16vec2 _162 = uint16BitsToFloat16(_160);
+    float _166 = float(_162.y);
+    uint _172 = ByteAddressMask(gl_GlobalInvocationID.x * 3u, 2u);
+    uint16_t _174 = _28._m0[_172];
+    uint16_t _177 = _28._m0[_172 + 1u];
+    uint16_t _180 = _28._m0[_172 + 2u];
+    f16vec3 _182 = uint16BitsToFloat16(u16vec3(_174, _177, _180));
+    float _186 = float(_182.x);
+    u16vec4 _194 = _36._m0[ByteAddressMask(gl_GlobalInvocationID.x, 8u)];
+    f16vec4 _196 = uint16BitsToFloat16(_194);
+    uint16_t _208 = _28._m0[ByteAddressMask(gl_GlobalInvocationID.x, 2u)];
+    float _209 = float(_208);
+    uint _211 = ByteAddressMask(gl_GlobalInvocationID.x, 4u);
+    u16vec2 _213 = _32._m0[_211];
+    float _217 = float(_213.y);
+    uint _220 = ByteAddressMask(gl_GlobalInvocationID.x * 3u, 2u);
+    uint16_t _222 = _28._m0[_220];
+    uint16_t _225 = _28._m0[_220 + 1u];
+    uint16_t _228 = _28._m0[_220 + 2u];
+    u16vec3 _229 = u16vec3(_222, _225, _228);
+    float _233 = float(_229.x);
+    uint _237 = ByteAddressMask(gl_GlobalInvocationID.x, 8u);
+    u16vec4 _239 = _36._m0[_237];
+    _50._m0[ByteAddressMask(gl_GlobalInvocationID.x, 2u)] = float16BitsToUint16(float16_t(1.0));
+    _54._m0[ByteAddressMask(gl_GlobalInvocationID.x, 4u)] = u16vec2(float16BitsToUint16(float16_t(2.0)), float16BitsToUint16(float16_t(4.0)));
+    uint _260 = ByteAddressMask(gl_GlobalInvocationID.x * 3u, 2u);
+    _50._m0[_260] = float16BitsToUint16(float16_t(4.0));
+    _50._m0[_260 + 1u] = float16BitsToUint16(float16_t(5.0));
+    _50._m0[_260 + 2u] = float16BitsToUint16(float16_t(6.0));
+    _58._m0[ByteAddressMask(gl_GlobalInvocationID.x, 8u)] = u16vec4(float16BitsToUint16(float16_t(7.0)), float16BitsToUint16(float16_t(8.0)), float16BitsToUint16(float16_t(9.0)), float16BitsToUint16(float16_t(10.0)));
+    _62._m0[ByteAddressMask(gl_GlobalInvocationID.x, 2u)] = 1us;
+    _66._m0[ByteAddressMask(gl_GlobalInvocationID.x, 4u)] = u16vec2(2us, 4us);
+    uint _289 = ByteAddressMask(gl_GlobalInvocationID.x * 3u, 2u);
+    _62._m0[_289] = 4us;
+    _62._m0[_289 + 1u] = 5us;
+    _62._m0[_289 + 2u] = 6us;
+    _70._m0[ByteAddressMask(gl_GlobalInvocationID.x, 8u)] = u16vec4(7us, 8us, 9us, 10us);
+    uint _307 = _41._m0[ByteAddressMask(gl_GlobalInvocationID.x, 4u)];
+    float _308 = uintBitsToFloat(_307);
+    uint _310 = gl_GlobalInvocationID.x + 0u;
+    uint16_t _318 = _75[nonuniformEXT(_310)]._m0[ByteAddressMask(gl_GlobalInvocationID.x * 2u, 2u)];
+    float _320 = float(uint16BitsToFloat16(_318));
+    float _323 = ((float(_162.x) + _155) + _209) + float(_213.x);
+    float _329 = (((((_323 + _186) + float(_196.x)) + _233) + float(_239.x)) + _308) + _320;
+    float _335 = (((((_323 + float(_182.y)) + float(_196.y)) + float(_229.y)) + float(_239.y)) + _308) + _320;
+    _80[nonuniformEXT(_310)]._m0[ByteAddressMask(gl_GlobalInvocationID.x * 2u, 4u)] = u16vec2(float16BitsToUint16(float16_t(_329)), float16BitsToUint16(float16_t(_335)));
+    _46._m0[ByteAddressMask(gl_GlobalInvocationID.x, 16u)] = uvec4(uint((float(uint(_9._m0.length()) / 1u) + _329) + float(uint(_58._m0.length()) * 8u)), uint(_335 + 2.0), uint((((((((((_166 + _155) + float(_182.z)) + float(_196.z)) + _209) + _217) + float(_229.z)) + float(_239.z)) + _308) + _320) + float(uint(_24._m0.length()) / 1u)), uint((((((((((_155 + 8.0) + _166) + _186) + float(_196.w)) + _209) + _217) + _233) + float(_239.w)) + _308) + _320));
+}
+
+
+#if 0
+// SPIR-V disassembly
+; SPIR-V
+; Version: 1.3
+; Generator: Unknown(30017); 21022
+; Bound: 382
+; Schema: 0
+OpCapability Shader
+OpCapability Float16
+OpCapability Int16
+OpCapability StorageBufferArrayDynamicIndexing
+OpCapability ImageQuery
+OpCapability StorageBuffer16BitAccess
+OpCapability DenormPreserve
+OpCapability RuntimeDescriptorArray
+OpCapability StorageBufferArrayNonUniformIndexing
+OpExtension "SPV_EXT_descriptor_indexing"
+OpExtension "SPV_KHR_float_controls"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %3 "main" %83
+OpExecutionMode %3 LocalSize 64 1 1
+OpExecutionMode %3 DenormPreserve 16
+OpName %3 "main"
+OpName %7 "SSBO"
+OpName %12 "SSBO"
+OpName %17 "SSBO"
+OpName %22 "SSBO"
+OpName %26 "SSBO"
+OpName %30 "SSBO"
+OpName %34 "SSBO"
+OpName %39 "SSBO"
+OpName %44 "SSBO"
+OpName %48 "SSBO"
+OpName %52 "SSBO"
+OpName %56 "SSBO"
+OpName %60 "SSBO"
+OpName %64 "SSBO"
+OpName %68 "SSBO"
+OpName %72 "SSBO"
+OpName %77 "SSBO"
+OpName %143 "ByteAddressMask"
+OpName %141 "index"
+OpName %142 "stride"
+OpDecorate %6 ArrayStride 2
+OpMemberDecorate %7 0 Offset 0
+OpDecorate %7 Block
+OpDecorate %9 DescriptorSet 0
+OpDecorate %9 Binding 0
+OpDecorate %11 ArrayStride 4
+OpMemberDecorate %12 0 Offset 0
+OpDecorate %12 Block
+OpDecorate %14 DescriptorSet 0
+OpDecorate %14 Binding 1
+OpDecorate %16 ArrayStride 6
+OpMemberDecorate %17 0 Offset 0
+OpDecorate %17 Block
+OpDecorate %19 DescriptorSet 0
+OpDecorate %19 Binding 2
+OpDecorate %21 ArrayStride 8
+OpMemberDecorate %22 0 Offset 0
+OpDecorate %22 Block
+OpDecorate %24 DescriptorSet 0
+OpDecorate %24 Binding 3
+OpDecorate %25 ArrayStride 2
+OpMemberDecorate %26 0 Offset 0
+OpDecorate %26 Block
+OpDecorate %29 ArrayStride 4
+OpMemberDecorate %30 0 Offset 0
+OpDecorate %30 Block
+OpDecorate %33 ArrayStride 8
+OpMemberDecorate %34 0 Offset 0
+OpDecorate %34 Block
+OpDecorate %38 ArrayStride 4
+OpMemberDecorate %39 0 Offset 0
+OpDecorate %39 Block
+OpDecorate %43 ArrayStride 16
+OpMemberDecorate %44 0 Offset 0
+OpDecorate %44 Block
+OpDecorate %28 DescriptorSet 0
+OpDecorate %28 Binding 4
+OpDecorate %28 Aliased
+OpDecorate %32 DescriptorSet 0
+OpDecorate %32 Binding 4
+OpDecorate %32 Aliased
+OpDecorate %36 DescriptorSet 0
+OpDecorate %36 Binding 4
+OpDecorate %36 Aliased
+OpDecorate %41 DescriptorSet 0
+OpDecorate %41 Binding 4
+OpDecorate %41 Aliased
+OpDecorate %46 DescriptorSet 0
+OpDecorate %46 Binding 4
+OpDecorate %46 Aliased
+OpDecorate %47 ArrayStride 2
+OpMemberDecorate %48 0 Offset 0
+OpDecorate %48 Block
+OpDecorate %51 ArrayStride 4
+OpMemberDecorate %52 0 Offset 0
+OpDecorate %52 Block
+OpDecorate %55 ArrayStride 8
+OpMemberDecorate %56 0 Offset 0
+OpDecorate %56 Block
+OpDecorate %50 DescriptorSet 0
+OpDecorate %50 Binding 5
+OpDecorate %50 NonReadable
+OpDecorate %50 Aliased
+OpDecorate %54 DescriptorSet 0
+OpDecorate %54 Binding 5
+OpDecorate %54 NonReadable
+OpDecorate %54 Aliased
+OpDecorate %58 DescriptorSet 0
+OpDecorate %58 Binding 5
+OpDecorate %58 NonReadable
+OpDecorate %58 Aliased
+OpDecorate %59 ArrayStride 2
+OpMemberDecorate %60 0 Offset 0
+OpDecorate %60 Block
+OpDecorate %63 ArrayStride 4
+OpMemberDecorate %64 0 Offset 0
+OpDecorate %64 Block
+OpDecorate %67 ArrayStride 8
+OpMemberDecorate %68 0 Offset 0
+OpDecorate %68 Block
+OpDecorate %62 DescriptorSet 0
+OpDecorate %62 Binding 6
+OpDecorate %62 NonReadable
+OpDecorate %62 Aliased
+OpDecorate %66 DescriptorSet 0
+OpDecorate %66 Binding 6
+OpDecorate %66 NonReadable
+OpDecorate %66 Aliased
+OpDecorate %70 DescriptorSet 0
+OpDecorate %70 Binding 6
+OpDecorate %70 NonReadable
+OpDecorate %70 Aliased
+OpDecorate %71 ArrayStride 2
+OpMemberDecorate %72 0 Offset 0
+OpDecorate %72 Block
+OpDecorate %76 ArrayStride 4
+OpMemberDecorate %77 0 Offset 0
+OpDecorate %77 Block
+OpDecorate %75 DescriptorSet 1
+OpDecorate %75 Binding 0
+OpDecorate %75 Aliased
+OpDecorate %80 DescriptorSet 1
+OpDecorate %80 Binding 0
+OpDecorate %80 Aliased
+OpDecorate %83 BuiltIn GlobalInvocationId
+OpDecorate %310 NonUniform
+OpDecorate %312 NonUniform
+OpDecorate %314 NonUniform
+OpDecorate %317 NonUniform
+OpDecorate %344 NonUniform
+%1 = OpTypeVoid
+%2 = OpTypeFunction %1
+%5 = OpTypeInt 16 0
+%6 = OpTypeRuntimeArray %5
+%7 = OpTypeStruct %6
+%8 = OpTypePointer StorageBuffer %7
+%9 = OpVariable %8 StorageBuffer
+%10 = OpTypeVector %5 2
+%11 = OpTypeRuntimeArray %10
+%12 = OpTypeStruct %11
+%13 = OpTypePointer StorageBuffer %12
+%14 = OpVariable %13 StorageBuffer
+%15 = OpTypeVector %5 3
+%16 = OpTypeRuntimeArray %15
+%17 = OpTypeStruct %16
+%18 = OpTypePointer StorageBuffer %17
+%19 = OpVariable %18 StorageBuffer
+%20 = OpTypeVector %5 4
+%21 = OpTypeRuntimeArray %20
+%22 = OpTypeStruct %21
+%23 = OpTypePointer StorageBuffer %22
+%24 = OpVariable %23 StorageBuffer
+%25 = OpTypeRuntimeArray %5
+%26 = OpTypeStruct %25
+%27 = OpTypePointer StorageBuffer %26
+%28 = OpVariable %27 StorageBuffer
+%29 = OpTypeRuntimeArray %10
+%30 = OpTypeStruct %29
+%31 = OpTypePointer StorageBuffer %30
+%32 = OpVariable %31 StorageBuffer
+%33 = OpTypeRuntimeArray %20
+%34 = OpTypeStruct %33
+%35 = OpTypePointer StorageBuffer %34
+%36 = OpVariable %35 StorageBuffer
+%37 = OpTypeInt 32 0
+%38 = OpTypeRuntimeArray %37
+%39 = OpTypeStruct %38
+%40 = OpTypePointer StorageBuffer %39
+%41 = OpVariable %40 StorageBuffer
+%42 = OpTypeVector %37 4
+%43 = OpTypeRuntimeArray %42
+%44 = OpTypeStruct %43
+%45 = OpTypePointer StorageBuffer %44
+%46 = OpVariable %45 StorageBuffer
+%47 = OpTypeRuntimeArray %5
+%48 = OpTypeStruct %47
+%49 = OpTypePointer StorageBuffer %48
+%50 = OpVariable %49 StorageBuffer
+%51 = OpTypeRuntimeArray %10
+%52 = OpTypeStruct %51
+%53 = OpTypePointer StorageBuffer %52
+%54 = OpVariable %53 StorageBuffer
+%55 = OpTypeRuntimeArray %20
+%56 = OpTypeStruct %55
+%57 = OpTypePointer StorageBuffer %56
+%58 = OpVariable %57 StorageBuffer
+%59 = OpTypeRuntimeArray %5
+%60 = OpTypeStruct %59
+%61 = OpTypePointer StorageBuffer %60
+%62 = OpVariable %61 StorageBuffer
+%63 = OpTypeRuntimeArray %10
+%64 = OpTypeStruct %63
+%65 = OpTypePointer StorageBuffer %64
+%66 = OpVariable %65 StorageBuffer
+%67 = OpTypeRuntimeArray %20
+%68 = OpTypeStruct %67
+%69 = OpTypePointer StorageBuffer %68
+%70 = OpVariable %69 StorageBuffer
+%71 = OpTypeRuntimeArray %5
+%72 = OpTypeStruct %71
+%73 = OpTypeRuntimeArray %72
+%74 = OpTypePointer StorageBuffer %73
+%75 = OpVariable %74 StorageBuffer
+%76 = OpTypeRuntimeArray %10
+%77 = OpTypeStruct %76
+%78 = OpTypeRuntimeArray %77
+%79 = OpTypePointer StorageBuffer %78
+%80 = OpVariable %79 StorageBuffer
+%81 = OpTypeVector %37 3
+%82 = OpTypePointer Input %81
+%83 = OpVariable %82 Input
+%84 = OpTypePointer Input %37
+%86 = OpConstant %37 0
+%88 = OpTypePointer StorageBuffer %5
+%91 = OpTypeFloat 16
+%94 = OpConstant %91 0x1p+0
+%97 = OpTypePointer StorageBuffer %10
+%103 = OpConstant %5 2
+%107 = OpTypePointer StorageBuffer %15
+%110 = OpTypeVector %91 3
+%116 = OpConstant %91 0x1.8p+1
+%124 = OpTypePointer StorageBuffer %20
+%132 = OpConstant %5 4
+%139 = OpConstant %37 1
+%140 = OpTypeFunction %37 %37 %37
+%146 = OpConstant %37 4294967295
+%150 = OpConstant %37 2
+%154 = OpTypeFloat 32
+%158 = OpConstant %37 4
+%161 = OpTypeVector %91 2
+%169 = OpConstant %37 6
+%171 = OpConstant %37 3
+%192 = OpConstant %37 8
+%195 = OpTypeVector %91 4
+%253 = OpConstant %91 0x1p+1
+%255 = OpConstant %91 0x1p+2
+%262 = OpConstant %91 0x1.4p+2
+%264 = OpConstant %91 0x1.8p+2
+%272 = OpConstant %91 0x1.cp+2
+%274 = OpConstant %91 0x1p+3
+%276 = OpConstant %91 0x1.2p+3
+%278 = OpConstant %91 0x1.4p+3
+%283 = OpConstant %5 1
+%290 = OpConstant %5 5
+%291 = OpConstant %5 6
+%298 = OpConstant %5 7
+%299 = OpConstant %5 8
+%300 = OpConstant %5 9
+%301 = OpConstant %5 10
+%305 = OpTypePointer StorageBuffer %37
+%311 = OpTypePointer StorageBuffer %72
+%313 = OpTypePointer StorageBuffer %77
+%350 = OpConstant %154 2
+%356 = OpConstant %154 8
+%376 = OpConstant %37 16
+%378 = OpTypePointer StorageBuffer %42
+%3 = OpFunction %1 None %2
+%4 = OpLabel
+OpBranch %380
+%380 = OpLabel
+%85 = OpAccessChain %84 %83 %86
+%87 = OpLoad %37 %85
+%89 = OpAccessChain %88 %9 %86 %87
+%90 = OpLoad %5 %89
+%92 = OpBitcast %91 %90
+%93 = OpFAdd %91 %92 %94
+%95 = OpBitcast %5 %93
+%96 = OpAccessChain %88 %9 %86 %87
+OpStore %96 %95
+%98 = OpAccessChain %97 %14 %86 %87
+%99 = OpLoad %10 %98
+%100 = OpCompositeExtract %5 %99 0
+%101 = OpCompositeExtract %5 %99 1
+%102 = OpIAdd %5 %100 %103
+%104 = OpIAdd %5 %101 %103
+%105 = OpCompositeConstruct %10 %102 %104
+%106 = OpAccessChain %97 %14 %86 %87
+OpStore %106 %105
+%108 = OpAccessChain %107 %19 %86 %87
+%109 = OpLoad %15 %108
+%111 = OpBitcast %110 %109
+%112 = OpCompositeExtract %91 %111 0
+%113 = OpCompositeExtract %91 %111 1
+%114 = OpCompositeExtract %91 %111 2
+%115 = OpFAdd %91 %112 %116
+%117 = OpFAdd %91 %113 %116
+%118 = OpFAdd %91 %114 %116
+%119 = OpBitcast %5 %115
+%120 = OpBitcast %5 %117
+%121 = OpBitcast %5 %118
+%122 = OpCompositeConstruct %15 %119 %120 %121
+%123 = OpAccessChain %107 %19 %86 %87
+OpStore %123 %122
+%125 = OpAccessChain %124 %24 %86 %87
+%126 = OpLoad %20 %125
+%127 = OpCompositeExtract %5 %126 0
+%128 = OpCompositeExtract %5 %126 1
+%129 = OpCompositeExtract %5 %126 2
+%130 = OpCompositeExtract %5 %126 3
+%131 = OpIAdd %5 %127 %132
+%133 = OpIAdd %5 %128 %132
+%134 = OpIAdd %5 %129 %132
+%135 = OpIAdd %5 %130 %132
+%136 = OpCompositeConstruct %20 %131 %133 %134 %135
+%137 = OpAccessChain %124 %24 %86 %87
+OpStore %137 %136
+%138 = OpShiftLeftLogical %37 %87 %139
+%149 = OpFunctionCall %37 %143 %87 %150
+%151 = OpAccessChain %88 %28 %86 %149
+%152 = OpLoad %5 %151
+%153 = OpBitcast %91 %152
+%155 = OpFConvert %154 %153
+%156 = OpShiftLeftLogical %37 %87 %150
+%157 = OpFunctionCall %37 %143 %87 %158
+%159 = OpAccessChain %97 %32 %86 %157
+%160 = OpLoad %10 %159
+%162 = OpBitcast %161 %160
+%163 = OpCompositeExtract %91 %162 0
+%164 = OpCompositeExtract %91 %162 1
+%165 = OpFConvert %154 %163
+%166 = OpFConvert %154 %164
+%167 = OpFAdd %154 %166 %155
+%168 = OpIMul %37 %87 %169
+%170 = OpIMul %37 %87 %171
+%172 = OpFunctionCall %37 %143 %170 %150
+%173 = OpAccessChain %88 %28 %86 %172
+%174 = OpLoad %5 %173
+%176 = OpIAdd %37 %172 %139
+%175 = OpAccessChain %88 %28 %86 %176
+%177 = OpLoad %5 %175
+%179 = OpIAdd %37 %172 %150
+%178 = OpAccessChain %88 %28 %86 %179
+%180 = OpLoad %5 %178
+%181 = OpCompositeConstruct %15 %174 %177 %180
+%182 = OpBitcast %110 %181
+%183 = OpCompositeExtract %91 %182 0
+%184 = OpCompositeExtract %91 %182 1
+%185 = OpCompositeExtract %91 %182 2
+%186 = OpFConvert %154 %183
+%187 = OpFConvert %154 %184
+%188 = OpFConvert %154 %185
+%189 = OpFAdd %154 %167 %188
+%190 = OpShiftLeftLogical %37 %87 %171
+%191 = OpFunctionCall %37 %143 %87 %192
+%193 = OpAccessChain %124 %36 %86 %191
+%194 = OpLoad %20 %193
+%196 = OpBitcast %195 %194
+%197 = OpCompositeExtract %91 %196 0
+%198 = OpCompositeExtract %91 %196 1
+%199 = OpCompositeExtract %91 %196 2
+%200 = OpCompositeExtract %91 %196 3
+%201 = OpFConvert %154 %197
+%202 = OpFConvert %154 %198
+%203 = OpFConvert %154 %199
+%204 = OpFConvert %154 %200
+%205 = OpFAdd %154 %189 %203
+%206 = OpFunctionCall %37 %143 %87 %150
+%207 = OpAccessChain %88 %28 %86 %206
+%208 = OpLoad %5 %207
+%209 = OpConvertUToF %154 %208
+%210 = OpFAdd %154 %205 %209
+%211 = OpFunctionCall %37 %143 %87 %158
+%212 = OpAccessChain %97 %32 %86 %211
+%213 = OpLoad %10 %212
+%214 = OpCompositeExtract %5 %213 0
+%215 = OpCompositeExtract %5 %213 1
+%216 = OpConvertUToF %154 %214
+%217 = OpConvertUToF %154 %215
+%218 = OpFAdd %154 %210 %217
+%219 = OpIMul %37 %87 %171
+%220 = OpFunctionCall %37 %143 %219 %150
+%221 = OpAccessChain %88 %28 %86 %220
+%222 = OpLoad %5 %221
+%224 = OpIAdd %37 %220 %139
+%223 = OpAccessChain %88 %28 %86 %224
+%225 = OpLoad %5 %223
+%227 = OpIAdd %37 %220 %150
+%226 = OpAccessChain %88 %28 %86 %227
+%228 = OpLoad %5 %226
+%229 = OpCompositeConstruct %15 %222 %225 %228
+%230 = OpCompositeExtract %5 %229 0
+%231 = OpCompositeExtract %5 %229 1
+%232 = OpCompositeExtract %5 %229 2
+%233 = OpConvertUToF %154 %230
+%234 = OpConvertUToF %154 %231
+%235 = OpConvertUToF %154 %232
+%236 = OpFAdd %154 %218 %235
+%237 = OpFunctionCall %37 %143 %87 %192
+%238 = OpAccessChain %124 %36 %86 %237
+%239 = OpLoad %20 %238
+%240 = OpCompositeExtract %5 %239 0
+%241 = OpCompositeExtract %5 %239 1
+%242 = OpCompositeExtract %5 %239 2
+%243 = OpCompositeExtract %5 %239 3
+%244 = OpConvertUToF %154 %240
+%245 = OpConvertUToF %154 %241
+%246 = OpConvertUToF %154 %242
+%247 = OpConvertUToF %154 %243
+%248 = OpFAdd %154 %236 %246
+%249 = OpFunctionCall %37 %143 %87 %150
+%250 = OpBitcast %5 %94
+%251 = OpAccessChain %88 %50 %86 %249
+OpStore %251 %250
+%252 = OpFunctionCall %37 %143 %87 %158
+%254 = OpBitcast %5 %253
+%256 = OpBitcast %5 %255
+%257 = OpCompositeConstruct %10 %254 %256
+%258 = OpAccessChain %97 %54 %86 %252
+OpStore %258 %257
+%259 = OpIMul %37 %87 %171
+%260 = OpFunctionCall %37 %143 %259 %150
+%261 = OpBitcast %5 %255
+%263 = OpBitcast %5 %262
+%265 = OpBitcast %5 %264
+%266 = OpAccessChain %88 %50 %86 %260
+OpStore %266 %261
+%268 = OpIAdd %37 %260 %139
+%267 = OpAccessChain %88 %50 %86 %268
+OpStore %267 %263
+%270 = OpIAdd %37 %260 %150
+%269 = OpAccessChain %88 %50 %86 %270
+OpStore %269 %265
+%271 = OpFunctionCall %37 %143 %87 %192
+%273 = OpBitcast %5 %272
+%275 = OpBitcast %5 %274
+%277 = OpBitcast %5 %276
+%279 = OpBitcast %5 %278
+%280 = OpCompositeConstruct %20 %273 %275 %277 %279
+%281 = OpAccessChain %124 %58 %86 %271
+OpStore %281 %280
+%282 = OpFunctionCall %37 %143 %87 %150
+%284 = OpAccessChain %88 %62 %86 %282
+OpStore %284 %283
+%285 = OpFunctionCall %37 %143 %87 %158
+%286 = OpCompositeConstruct %10 %103 %132
+%287 = OpAccessChain %97 %66 %86 %285
+OpStore %287 %286
+%288 = OpIMul %37 %87 %171
+%289 = OpFunctionCall %37 %143 %288 %150
+%292 = OpAccessChain %88 %62 %86 %289
+OpStore %292 %132
+%294 = OpIAdd %37 %289 %139
+%293 = OpAccessChain %88 %62 %86 %294
+OpStore %293 %290
+%296 = OpIAdd %37 %289 %150
+%295 = OpAccessChain %88 %62 %86 %296
+OpStore %295 %291
+%297 = OpFunctionCall %37 %143 %87 %192
+%302 = OpCompositeConstruct %20 %298 %299 %300 %301
+%303 = OpAccessChain %124 %70 %86 %297
+OpStore %303 %302
+%304 = OpFunctionCall %37 %143 %87 %158
+%306 = OpAccessChain %305 %41 %86 %304
+%307 = OpLoad %37 %306
+%308 = OpBitcast %154 %307
+%309 = OpFAdd %154 %248 %308
+%310 = OpIAdd %37 %87 %86
+%312 = OpAccessChain %311 %75 %310
+%314 = OpAccessChain %313 %80 %310
+%315 = OpIMul %37 %87 %150
+%316 = OpFunctionCall %37 %143 %315 %150
+%317 = OpAccessChain %88 %312 %86 %316
+%318 = OpLoad %5 %317
+%319 = OpBitcast %91 %318
+%320 = OpFConvert %154 %319
+%321 = OpFAdd %154 %165 %155
+%322 = OpFAdd %154 %321 %209
+%323 = OpFAdd %154 %322 %216
+%324 = OpFAdd %154 %323 %186
+%325 = OpFAdd %154 %324 %201
+%326 = OpFAdd %154 %325 %233
+%327 = OpFAdd %154 %326 %244
+%328 = OpFAdd %154 %327 %308
+%329 = OpFAdd %154 %328 %320
+%330 = OpFAdd %154 %323 %187
+%331 = OpFAdd %154 %330 %202
+%332 = OpFAdd %154 %331 %234
+%333 = OpFAdd %154 %332 %245
+%334 = OpFAdd %154 %333 %308
+%335 = OpFAdd %154 %334 %320
+%336 = OpFAdd %154 %309 %320
+%337 = OpFConvert %91 %329
+%338 = OpFConvert %91 %335
+%339 = OpIMul %37 %87 %150
+%340 = OpFunctionCall %37 %143 %339 %158
+%341 = OpBitcast %5 %337
+%342 = OpBitcast %5 %338
+%343 = OpCompositeConstruct %10 %341 %342
+%344 = OpAccessChain %97 %314 %86 %340
+OpStore %344 %343
+%345 = OpArrayLength %37 %9 0
+%346 = OpUDiv %37 %345 %139
+%347 = OpConvertUToF %154 %346
+%348 = OpFAdd %154 %347 %329
+%349 = OpFAdd %154 %335 %350
+%351 = OpArrayLength %37 %24 0
+%352 = OpUDiv %37 %351 %139
+%353 = OpConvertUToF %154 %352
+%354 = OpFAdd %154 %336 %353
+%355 = OpFAdd %154 %155 %356
+%357 = OpFAdd %154 %355 %166
+%358 = OpFAdd %154 %357 %186
+%359 = OpFAdd %154 %358 %204
+%360 = OpFAdd %154 %359 %209
+%361 = OpFAdd %154 %360 %217
+%362 = OpFAdd %154 %361 %233
+%363 = OpFAdd %154 %362 %247
+%364 = OpFAdd %154 %363 %308
+%365 = OpFAdd %154 %364 %320
+%366 = OpArrayLength %37 %58 0
+%367 = OpIMul %37 %366 %192
+%368 = OpConvertUToF %154 %367
+%369 = OpFAdd %154 %348 %368
+%370 = OpConvertFToU %37 %369
+%371 = OpConvertFToU %37 %349
+%372 = OpConvertFToU %37 %354
+%373 = OpConvertFToU %37 %365
+%374 = OpShiftLeftLogical %37 %87 %158
+%375 = OpFunctionCall %37 %143 %87 %376
+%377 = OpCompositeConstruct %42 %370 %371 %372 %373
+%379 = OpAccessChain %378 %46 %86 %375
+OpStore %379 %377
+OpReturn
+OpFunctionEnd
+%143 = OpFunction %37 None %140
+%141 = OpFunctionParameter %37
+%142 = OpFunctionParameter %37
+%144 = OpLabel
+%145 = OpUDiv %37 %146 %142
+%147 = OpBitwiseAnd %37 %141 %145
+OpReturnValue %147
+OpFunctionEnd
+#endif

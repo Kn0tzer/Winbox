@@ -1,0 +1,22 @@
+; Wine-mono .NETFramework version-policy keys (from wine-mono 7.4.0 install).
+; Appended to prefix32 system.reg so managed games (Celeste) see installed frameworks.
+[Software\\Microsoft\\.NETFramework] 1791854119
+#time=1dd5ab05043a83e
+"InstallRoot"="C:\\windows\\Microsoft.NET\\Framework\\"
+
+[Software\\Microsoft\\.NETFramework\\policy\\v1.0] 1791854119
+#time=1dd5ab05043aa14
+
+[Software\\Microsoft\\.NETFramework\\policy\\v1.1] 1791854119
+#time=1dd5ab05043dea8
+
+[Software\\Microsoft\\.NETFramework\\policy\\v2.0] 1791854119
+#time=1dd5ab050442034
+"50727"="50727-50727"
+
+[Software\\Microsoft\\.NETFramework\\policy\\v3.0] 1791854119
+#time=1dd5ab05044523e
+
+[Software\\Microsoft\\.NETFramework\\policy\\v4.0] 1791854119
+#time=1dd5ab05044980c
+"30319"="30319-30319"

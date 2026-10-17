@@ -320,6 +320,12 @@ extern int ZEXPORT unzGetCurrentFileInfo OF((unzFile file,
 
 extern ZPOS64_T ZEXPORT unzGetCurrentFileZStreamPos64 OF((unzFile file));
 
+/* Seek within an open stored entry without reading the skipped bytes.
+   Rejects compressed/encrypted entries and offsets beyond EOF without mutation.
+   Nonsequential reads skip whole-entry CRC validation; seeking back to zero
+   restores CRC validation for a subsequent complete sequential read. */
+extern int ZEXPORT unzSeekStoredFile64 OF((unzFile file, ZPOS64_T offset));
+
 /** Addition for GDAL : END */
 
 

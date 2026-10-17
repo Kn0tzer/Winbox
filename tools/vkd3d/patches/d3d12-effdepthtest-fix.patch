@@ -1,0 +1,30 @@
+--- a/source/vulkan/vk64bridge.cpp
++++ b/source/vulkan/vk64bridge.cpp
+@@ -1768,7 +1768,11 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
+                 } else serializedId = variant->id;
+             }
+             // WebGPU: pipeline depth state must match render pass attachments.
+-            // If FB has no depth attachment, force depth test off.
++            // The JS side (getPipelineFor passHasDepth) handles validation.
++            // Do NOT mask by fbHasDepth: V2 must carry the pipeline's true
++            // depth intent. Masking causes pipelines needing depth (e.g.
++            // indexed quads, depthOp=less-equal) to get 'always' and vanish.
++            // (2026-10-09: fix effDepthTest masking bug)
+             bool fbHasDepth = false;
+             if (fb) {
+                 for (U32 i = 0; i < fb->natt; i++) {
+@@ -1776,11 +1780,12 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
+                     if (v && (v->aspect & 0x2u)) { fbHasDepth = true; break; }
+                 }
+             }
+-            U32 effDepthTest = fbHasDepth ? pipe->depthTest : 0;
+-            U32 effDepthWrite = fbHasDepth ? pipe->depthWrite : 0;
++            (void)fbHasDepth; // V2 carries true intent; JS handles pass matching.
++            U32 effDepthTest = pipe->depthTest;
++            U32 effDepthWrite = pipe->depthWrite;
+             emit(V2_PIPELINE, [&](ChunkWriter& p) {
+                 p.u64(serializedId);
+                 p.u64(vs ? vs->hash : 0); p.u64(fs ? fs->hash : 0);
+                 p.u32(pipe->topology); p.u32(pipe->cull); p.u32(pipe->front);
+                 p.u32(effDepthTest); p.u32(effDepthWrite); p.u32(pipe->depthOp);
+                 p.u32(pipe->blend);

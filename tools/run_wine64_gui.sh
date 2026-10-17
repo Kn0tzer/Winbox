@@ -41,13 +41,8 @@ has_guest_exe() {
     esac
 }
 
-BOX="${BW64_BIN:-$ROOT_DIR/project/mac-xcode/build_dd/Build/Products/Release/Boxedwine.app/Contents/MacOS/Boxedwine}"
-if [ ! -x "$BOX" ]; then
-    for p in "$HOME/Library/Developer/Xcode/DerivedData"/Boxedwine-*/Build/Products/*/Boxedwine.app/Contents/MacOS/Boxedwine; do
-        [ -x "$p" ] && BOX="$p"
-    done
-fi
-[ -x "$BOX" ] || { echo "error: no Boxedwine build found (build the Xcode Release target first)" >&2; exit 1; }
+source "$ROOT_DIR/tools/native-binary.sh"
+BOX="$(bw64_native_binary)" || exit 1
 
 # A curated short-name -> exe map of the GUI-interesting programs shipped in the
 # wine64 zip. Extend freely; anything not listed can still be launched by

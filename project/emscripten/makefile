@@ -89,7 +89,7 @@ wasm64-selftest-mem64: export EXTRA_LD_FLAGS := -sMEMORY64=1 -sENVIRONMENT=node 
 # the BOXEDWINE_OPENGL build fails with "unknown type name 'GLenum'" on a CLEAN
 # tree (a stale .o hid it locally). DISABLE_GL_EXTENSIONS empties the large legacy
 # 32-bit glfunctions_ext* marshaling (unused by the 64-bit gl64 bridge).
-wasm64-mt: export EXTRA_CPP_FLAGS := -DBOXEDWINE_GUEST_X64=1 -DBOXEDWINE_MULTI_THREADED -DBOXEDWINE_OPENGL -DBOXEDWINE_VULKAN64 '-DGLH=<SDL_opengl.h>' -DDISABLE_GL_EXTENSIONS -pthread -DNDEBUG
+wasm64-mt: export EXTRA_CPP_FLAGS := -DBOXEDWINE_GUEST_X64=1 -DBOXEDWINE_MULTI_THREADED -DBOXEDWINE_OPENGL -DBOXEDWINE_VULKAN64 -DBOXEDWINE_DIRECT_NORMAL_DISPATCH '-DGLH=<SDL_opengl.h>' -DDISABLE_GL_EXTENSIONS -pthread -DNDEBUG
 wasm64-mt: export BUILD_DIR := Build/Wasm64Mt
 wasm64-mt: export SHELL_FILE := shell.html
 wasm64-mt: export TARGET_EXEC := boxedwine64.html
@@ -224,7 +224,9 @@ $(OBJS): INCLUDES := -I../../lib/asmjit -I../../include -I../../lib/simde
 $(SOFT_OBJS): INCLUDES := -I../../lib/softfloat/source/include -I../../lib/softfloat/source -I../../lib/softfloat/source/8086-SSE
 
 CXXFLAGS ?= -std=c++20
-CPPFLAGS ?= -O3 -s USE_SDL=2 -s USE_ZLIB=1 -DBOXEDWINE_ZLIB -DSDL2=1 -DBOXEDWINE_DISABLE_UI -DSIMDE_SSE2_NO_NATIVE $(GCC_EXTRA_FLAGS) -Wall -Wno-deprecated-pragma -Wno-format-security -Wno-unused-private-field -Wno-invalid-offsetof -Wno-delete-incomplete -Wno-unused-result -Wno-unknown-pragmas -Wno-unused-local-typedefs -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable -mtail-call $(INCLUDES) $(EXTRA_CPP_FLAGS)
+# Guest page faults unwind into the interpreter loop. Enable native Wasm
+# exception handling when compiling as well as when linking.
+CPPFLAGS ?= -O3 -fwasm-exceptions -s USE_SDL=2 -s USE_ZLIB=1 -DBOXEDWINE_ZLIB -DSDL2=1 -DBOXEDWINE_DISABLE_UI -DSIMDE_SSE2_NO_NATIVE $(GCC_EXTRA_FLAGS) -Wall -Wno-deprecated-pragma -Wno-format-security -Wno-unused-private-field -Wno-invalid-offsetof -Wno-delete-incomplete -Wno-unused-result -Wno-unknown-pragmas -Wno-unused-local-typedefs -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable -mtail-call $(INCLUDES) $(EXTRA_CPP_FLAGS)
 
 SHELL_LDFLAGS := $(if $(filter %.html,$(TARGET_EXEC)),--shell-file $(SHELL_FILE),)
 # Filesystem backend. The browser targets persist a guest FS to IndexedDB
@@ -236,12 +238,12 @@ FS_LDFLAGS ?= -s FORCE_FILESYSTEM -lidbfs.js
 # treats link-time -O as its own setting (default -O0), and it is what enables
 # the binaryen/wasm-opt passes over the final module + optimized JS glue. Without
 # it the shipped .wasm is the unoptimized LTO-less concatenation of the objects.
-LDFLAGS = -O3 $(FS_LDFLAGS) -s USE_SDL=2 -s USE_ZLIB=1 -fwasm-exceptions -s INITIAL_MEMORY=536870912 $(SHELL_LDFLAGS) -s EXPORTED_RUNTIME_METHODS='["addRunDependency", "removeRunDependency","ERRNO_CODES","ccall","FS","abort","wasmMemory"]' -mtail-call $(EXTRA_LD_FLAGS)
+LDFLAGS = -O3 $(FS_LDFLAGS) -s USE_SDL=2 -s USE_ZLIB=1 -fwasm-exceptions -s INITIAL_MEMORY=536870912 $(SHELL_LDFLAGS) -s EXPORTED_RUNTIME_METHODS='["addRunDependency", "removeRunDependency","ERRNO_CODES","ccall","FS","abort","wasmMemory"]' -mtail-call $(EXTRA_LD_FLAGS) $(BW64_LINK_DIAGNOSTICS)
 
 #$(TEST_BUILD_DIR)/boxedwineTest: $(TEST_OBJS)
 #	$(CC) $(TEST_OBJS) -o $@ $(LDFLAGS)
 
-$(BUILD_DIR)/$(TARGET_EXEC): $(ALL)
+$(BUILD_DIR)/$(TARGET_EXEC): $(ALL) makefile
 	@$(CXX) $(ALL) -o $@ $(LDFLAGS)
 ifneq ($(strip $(ASSET_FILES)),)
 	@for asset in $(ASSET_FILES); do \
@@ -255,12 +257,12 @@ $(BUILD_DIR)/%.s.o: %.s
 	@$(AS) $(ASFLAGS) -c $< -o $@
 
 # c source
-$(BUILD_DIR)/%.c.o: %.c
+$(BUILD_DIR)/%.c.o: %.c makefile
 	@$(MKDIR_P) $(dir $@)
 	@$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 # c++ source
-$(BUILD_DIR)/%.cpp.o: %.cpp
+$(BUILD_DIR)/%.cpp.o: %.cpp makefile
 	@$(MKDIR_P) $(dir $@)
 	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) -MMD -MP -c $< -o $@
 

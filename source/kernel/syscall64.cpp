@@ -276,16 +276,9 @@
 //       'S'=sendmsg scm_rights fd sent (e0=#fds, e1=first guest fd).
 // extra0/extra1 carry per-kind context (see crashRingRecordRead callers).
 struct CrashRingEntry { char kind; U32 pid; U32 fd; U32 len; U32 extra0; U32 extra1; U8 hdr[16]; };
-// Serializes guest file reads (sys_read64 + sys_mmap64_file) against the shared
-// per-zip decompression stream. wine's DLLs live in wine64.zip; every
-// FsZipOpenNode of the same entry shares ONE unzFile + position state, and the
-// seek()+readNative() that maps a DLL segment is several un-co-locked calls. Two
-// wine processes loading the same DLL on separate host threads otherwise
-// interleave seek/read and each reads from the OTHER's file position — splatter-
-// ing a DLL's MZ header over its own .text/.data/IAT, corrupting the IAT, and
-// producing a wild indirect call into low memory (RIP=0x10270) -> "could not load
-// kernel32.dll" -> cascading wineserver heap corruption. Holding this lock across
-// the whole read makes file reads atomic. Not perf-critical (DLL load path).
+// Legacy serialization across file syscall paths. Each ZIP open now owns its
+// decompression stream. Positioned reads also acquire KFile's position lock:
+// lseek does not use this global mutex and must not interrupt seek/read/restore.
 static std::mutex g_fileReadMutex;
 
 static CrashRingEntry g_crashRing[64];
@@ -802,6 +795,69 @@ static U64 sys_exit64(CPU64* cpu, U64 status, bool group) {
         klog_fmt("CPU64: %s syscall, status=%lld",
                  group ? "exit_group" : "exit", (long long)status);
     }
+    // BW64_EXIT_TRACE (D3D11 multi-device clean-exit(0) investigation):
+    // On process exit, dump guest RIP + stack return addresses and resolve
+    // them against Wine's PEB loader list, so we can see which guest code
+    // called exit_group. Process exits are rare; zero steady-state cost.
+    if (group && cpu->thread && cpu->thread->process) {
+        U64 ripTrace = cpu->rip;
+        U64 rspTrace = cpu->reg[X64_RSP].u64;
+        U64 raTrace[4];
+        for (int rti = 0; rti < 4; rti++)
+            raTrace[rti] = cpu->memory->readq(rspTrace + (U64)rti * 8);
+        klog_fmt("CPU64: exit_group trace tid=%d rip=0x%llx rsp=0x%llx ra=[0x%llx,0x%llx,0x%llx,0x%llx]",
+                 (int)cpu->thread->id,
+                 (unsigned long long)ripTrace, (unsigned long long)rspTrace,
+                 (unsigned long long)raTrace[0], (unsigned long long)raTrace[1],
+                 (unsigned long long)raTrace[2], (unsigned long long)raTrace[3]);
+        U64 gsTrace = cpu->gsbase;
+        if (gsTrace) {
+            U64 pebTrace = cpu->memory->readq(gsTrace + 0x60);
+            U64 ldrTrace = pebTrace ? cpu->memory->readq(pebTrace + 0x18) : 0;
+            if (ldrTrace) {
+                struct ExitMod { U64 base; char name[64]; };
+                ExitMod modsTrace[48]; int nModsTrace = 0;
+                // PEB_LDR_DATA+0x10=InLoadOrderModuleList; entries link via
+                // InLoadOrderLinks at +0x00, so entry=link (no subtract).
+                U64 headTrace = ldrTrace + 0x10;
+                U64 linkTrace = cpu->memory->readq(headTrace);
+                for (int mi = 0; mi < 64 && linkTrace && linkTrace != headTrace && nModsTrace < 48; mi++) {
+                    U64 entryTrace = linkTrace;
+                    U64 baseTrace = cpu->memory->readq(entryTrace + 0x30);
+                    ExitMod mdTrace; mdTrace.base = baseTrace; mdTrace.name[0] = 0;
+                    if (baseTrace) {
+                        U16 nlenTrace = cpu->memory->readw(entryTrace + 0x58);
+                        U64 nbufTrace = cpu->memory->readq(entryTrace + 0x60);
+                        if (nlenTrace && nbufTrace && nlenTrace < 120) {
+                            int cnTrace = nlenTrace / 2; if (cnTrace > 62) cnTrace = 62;
+                            for (int ci = 0; ci < cnTrace; ci++) {
+                                U16 chTrace = cpu->memory->readw(nbufTrace + (U64)ci * 2);
+                                mdTrace.name[ci] = (chTrace < 128) ? (char)chTrace : '?';
+                            }
+                            mdTrace.name[cnTrace] = 0;
+                        }
+                        modsTrace[nModsTrace++] = mdTrace;
+                    }
+                    linkTrace = cpu->memory->readq(linkTrace);
+                }
+                U64 addrsTrace[5] = { ripTrace, raTrace[0], raTrace[1], raTrace[2], raTrace[3] };
+                const char* tagsTrace[5] = { "rip", "ra0", "ra1", "ra2", "ra3" };
+                for (int ai = 0; ai < 5; ai++) {
+                    const char* mnTrace = "?"; U64 moTrace = addrsTrace[ai];
+                    for (int i = 0; i < nModsTrace; i++) {
+                        if (modsTrace[i].base && modsTrace[i].base <= addrsTrace[ai] &&
+                            addrsTrace[ai] - modsTrace[i].base < moTrace) {
+                            moTrace = addrsTrace[ai] - modsTrace[i].base;
+                            mnTrace = modsTrace[i].name[0] ? modsTrace[i].name : "?";
+                        }
+                    }
+                    klog_fmt("CPU64: exit_group %s=0x%llx -> %s+0x%llx", tagsTrace[ai],
+                             (unsigned long long)addrsTrace[ai], mnTrace,
+                             (unsigned long long)moTrace);
+                }
+            }
+        }
+    }
     // Stop this thread's run loop now, whatever else happens below.
     cpu->yield = true;
     if (cpu->thread && cpu->thread->process) {
@@ -813,9 +869,9 @@ static U64 sys_exit64(CPU64* cpu, U64 status, bool group) {
         if (group) {
             process->exitgroup(cpu->thread, (U32)status);
         } else {
-            // KProcess::exit runs cleanup() (which zeroes clear_child_tid64 and
-            // futex-wakes the joiner) and terminates this thread; if it's the
-            // last thread it falls through to exitgroup and ends the process.
+            // KProcess::exit requests termination. The MT executor cleans up
+            // and wakes joiners after leaving its run loop; the final thread
+            // also publishes process termination through exitgroup.
             process->exit(cpu->thread, (U32)status);
         }
     }
@@ -1034,7 +1090,12 @@ static U64 sys_openat64(CPU64* cpu, U64 dirfd, U64 pathAddr, U64 flags, U64 /*mo
             klog_fmt("sys_openat64: open('%s') -> %d  [cwd='%s' full='%s' flags=0x%llx]",
                      path, (int)(S32)rc, process->currentDirectory.c_str(), full.c_str(),
                      (unsigned long long)flags);
-        } else {
+        } else if (strstr(path, ".exe")) {
+            // Program-spawn failures stay visible by default (rare, and probes
+            // + users rely on the exe name appearing in the log). The DLL
+            // search-probe spam (dozens of failed opens per library) is
+            // SCDUMP-gated: it cost ~20% of main-thread CPU in profiles via
+            // print + postMessage + textarea mirror per line.
             klog_fmt("sys_openat64: open('%s') -> %d", path, (int)(S32)rc);
         }
         return (U64)(S64)(S32)rc;
@@ -1071,6 +1132,12 @@ static U64 sys_openat64(CPU64* cpu, U64 dirfd, U64 pathAddr, U64 flags, U64 /*mo
             strstr(path, ".drv")    || strstr(path, "x11")) {
             klog_fmt("sys_openat64: OPENED '%s' -> fd %d", path, (int)result->handle);
         }
+    }
+    // Process-spawn signal: successful .exe opens are rare (one per process)
+    // and worth one line by default (probes detect EXE SPAWN from this even
+    // when the open succeeds, e.g. the program exists in the game zip).
+    if (!getenv("BW64_DLLTRACE") && strstr(path, ".exe")) {
+        klog_fmt("sys_openat64: OPENED '%s' -> fd %d", path, (int)result->handle);
     }
     return (U64)result->handle;
 }
@@ -1236,18 +1303,21 @@ static U64 sys_pread64(CPU64* cpu, U64 fd, U64 buf, U64 count, U64 offset) {
         fdesc->kobject->seek(savedPos);
         return (S64)total;
     };
-    // Same zip-stream hazard as sys_mmap64_file / sys_read64: this seek+read+seek
-    // is unsynchronized, and wine's PE loader + glibc ld.so pread DLL/DSO headers
-    // from the SHARED per-zip stream. Serialize file reads (KFile only — a
-    // blocking socket pread must not hold the global lock). Without this, a
-    // header pread races a concurrent mmap of the same zip entry and reads the
-    // wrong bytes (the residual "could not load kernel32.dll" path after the
-    // mmap/read serialization fixed the segment-map corruption).
+    // Use KFile's positioned operation so concurrent lseek and ordinary reads
+    // share its filePosMutex. A socket must never hold the global file lock.
     std::shared_ptr<KFile> pkfile = std::dynamic_pointer_cast<KFile>(fdesc->kobject);
     S64 got;
     if (pkfile) {
         std::lock_guard<std::mutex> lk(g_fileReadMutex);
-        got = readFully();
+        U64 total = 0;
+        got = 0;
+        while (total < count) {
+            U32 n = pkfile->preadNative(tmp.data() + total, (S64)(offset + total), (U32)(count - total));
+            if ((S32)n < 0) { got = (S64)(S32)n; break; }
+            if (n == 0) break;
+            total += n;
+        }
+        if (got >= 0) got = (S64)total;
     } else {
         got = readFully();
     }
@@ -1433,54 +1503,38 @@ static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
     bool dump = getenv("BW64_FMMAP") != nullptr;
     if (dump) {
         klog_fmt("FMMAP [pid=%d] addr=0x%llx aligned=0x%llx len=0x%llx mapLen=0x%llx "
-                 "prot=0x%x flags=0x%x off=0x%llx fixed=%d file='%s'",
+                 "prot=0x%x flags=0x%x off=0x%llx fixed=%d inode=%llu file='%s'",
                  (int)(cpu->thread ? cpu->thread->process->id : -1),
                  (unsigned long long)addr, (unsigned long long)aligned,
                  (unsigned long long)length, (unsigned long long)mapLen,
                  (unsigned)prot, (unsigned)flags, (unsigned long long)offset,
                  (int)((flags & K_MAP_FIXED) != 0),
+                 (unsigned long long)(kfile->openFile->node ? kfile->openFile->node->id : 0),
                  kfile->openFile->node ? kfile->openFile->node->path.c_str() : "?");
     }
-    // MAP_SHARED file mapping that must be GENUINELY shared across every process
-    // that maps the same file: wine's server shared-memory section
-    // (/run/user/.../wine/server-1-*/* incl. tmpmap-*) — wineserver maps it
-    // WRITABLE and writes object/sequence state; the CLIENTS map the SAME file
-    // (e.g. KUSER_SHARED_DATA at 0x7ffe0000) and read those writes directly. A
-    // private read-copy would give each process a stale snapshot and desync the
-    // section. So that file's pages must alias ONE shared backing buffer.
-    //
-    // CRUCIAL: this aliasing is ONLY correct for files that hold genuinely
-    // process-shared state. It is WRONG for PE image sections. wine maps a DLL's
-    // read-only sections (.text/.rdata) with MAP_SHARED too, but then loads the
-    // image at a PER-PROCESS base and calls relocate_image, which mprotects those
-    // sections writable and patches absolute addresses by THIS process's load
-    // delta. If two processes share the backing, the second process's relocation
-    // overwrites the first's already-relocated bytes (with a different delta), so
-    // the first process then reads doubly/wrongly-relocated pointers — garbage
-    // IAT/function pointers, a wild indirect call into low memory, and the
-    // downstream wineserver "corrupted double-linked list"/release_object crash.
-    // So restrict the shared-backing divert to the wineserver server-section
-    // files; every other MAP_SHARED file map (PE images, .nls, etc.) falls
-    // through to the private per-process read-copy below, which is correct
-    // because each process relocates its own copy.
-    bool serverSection = false;
-    if (kfile->openFile->node) {
-        const char* p = kfile->openFile->node->path.c_str();
-        // The wine server runtime dir is .../wine/server-<disp>-<inst>/...
-        if (strstr(p, "/wine/server-") || strstr(p, "/server-1-") ||
-            strstr(p, "tmpmap")) {
-            serverSection = true;
-        }
-    }
-    if (serverSection && (flags & K_MAP_SHARED) && kfile->openFile->node && !reserved) {
+    // Honor the requested mapping mode for every file, independent of its
+    // pathname. Wine 8's map_image_into_view uses VPROT_WRITECOPY/MAP_PRIVATE
+    // for ordinary PE image sections; shared sections must remain shared.
+    // Reference: wine-8.0/dlls/ntdll/unix/virtual.c, map_file_into_view.
+    if ((flags & K_MAP_SHARED) && kfile->openFile->node) {
+        // mmap(NULL, MAP_SHARED) has already reserved a fresh address range.
+        // Replace that range's pages with shared backing as well: Wine's server
+        // uses NULL for its writable clock page, while clients use fixed maps.
         // Seed bytes for any page of this file not yet in the registry.
         std::vector<U8> seedBuf((size_t)mapLen, 0);
         U64 fileBase = offset & ~0xFFFULL;
-        S64 savedFp = kfile->openFile->getFilePointer();
-        kfile->openFile->seek((S64)fileBase);
-        kfile->openFile->readNative(seedBuf.data(), (U32)mapLen);
-        kfile->openFile->seek(savedFp);
+        {
+            std::lock_guard<std::mutex> lk(g_fileReadMutex);
+            U64 total = 0;
+            while (total < mapLen) {
+                U32 n = kfile->preadNative(seedBuf.data() + total, (S64)(fileBase + total), (U32)(mapLen - total));
+                if ((S32)n < 0) return (U64)(S64)(S32)n;
+                if (n == 0) break;
+                total += n;
+            }
+        }
         U64 r = cpu->memory->mmapSharedFile(aligned, mapLen, (U32)prot,
+                                            kfile->openFile->node->id,
                                             kfile->openFile->node->path.c_str(),
                                             fileBase, seedBuf.data(), (U64)seedBuf.size());
         if ((S64)r < 0) return r;
@@ -1532,36 +1586,25 @@ static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
         if (!tailSave.empty()) cpu->memory->memcpyToGuest(fileEnd, tailSave.data(), tail);
     }
     // Read [offset, offset+length) and copy into [addr, addr+length).
-    // MT-CRITICAL: the seek()+readNative()+seek() sequence is THREE separate calls
-    // that must not interleave with another thread's file read. For zip-backed
-    // files (wine's DLLs live in wine64.zip) every FsZipOpenNode shares ONE
-    // underlying decompression stream (FsZip::zipfile) plus its position state;
-    // readNative only locks its own body, so when two wine processes mmap the same
-    // DLL concurrently on separate host threads their seek/read interleave and
-    // each reads from the OTHER's file position — splattering e.g. winex11.drv's
-    // MZ header (file offset 0) over its .text/.data/IAT -> corrupted IAT pointers
-    // -> a wild indirect call into low memory (RIP=0x10270) -> "could not load
-    // kernel32.dll" -> cascading wineserver heap corruption. A process-global lock
-    // across the whole seek+read+restore makes each file-mmap read atomic. DLL
-    // loading is not perf-critical, so the serialization cost is acceptable.
+    // KFile's positioned read holds the same filePosMutex as ordinary reads
+    // and lseek. The global file-read lock alone cannot exclude lseek, and
+    // direct openFile calls bypass KFile's position ownership entirely.
     std::vector<U8> buf((size_t)length);
     U32 got;
     {
         std::lock_guard<std::mutex> lk(g_fileReadMutex);
-        S64 saved = kfile->openFile->getFilePointer();
-        kfile->openFile->seek((S64)offset);
         // Loop: a single zip-backed readNative (unzReadCurrentFile) can return
         // fewer bytes than `length`. A single-shot read here would leave the tail
         // of a large section (e.g. a multi-MB .text) zero-filled — the same class
         // of bug as the capped pread64 that produced the HxD 0x937b30 crash.
         U64 total = 0;
         while (total < length) {
-            U32 n = kfile->openFile->readNative(buf.data() + total, (U32)(length - total));
+            U32 n = kfile->preadNative(buf.data() + total, (S64)(offset + total), (U32)(length - total));
+            if ((S32)n < 0) return (U64)(S64)(S32)n;
             if (n == 0) break; // EOF / no progress
             total += n;
         }
         got = (U32)total;
-        kfile->openFile->seek(saved);
     }
     // BW64_MAPWATCH=0xADDR: log every file-mmap that lands in [ADDR, ADDR+0x20000)
     // with its file offset — to catch a segment being (re)mapped from the WRONG
@@ -2452,7 +2495,7 @@ static U32 bounceSockaddrTo32(CPU64* cpu, U64 src64, U32 len, U32* outLenAddr) {
 // Per-THREAD (see bounceSockaddrTo32's note): a per-process msg scratch is
 // corrupted when sibling threads sendmsg/recvmsg concurrently.
 static std::unordered_map<U32, U32> g_msgScratchByThread;
-static U32 msgScratch(KThread* thread) {
+U32 msgScratch(KThread* thread) {
     if (!thread || !thread->memory || !thread->process) return 0;
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(g_scratchMutex);
     auto it = g_msgScratchByThread.find(thread->id);

@@ -21,9 +21,9 @@ GLIBC_ZIP="$DIST/glibc-rootfs64.zip"
 WINE_ZIP="$DIST/wine64.zip"
 BASE_ROOT="$RF/root"
 
-# Use the signing-disabled REFWATCH build by default.
-BOX="${BW64_BIN:-$ROOT_DIR/project/mac-xcode/build_refwatch/Build/Products/Release/Boxedwine.app/Contents/MacOS/Boxedwine}"
-[ -x "$BOX" ] || { echo "error: REFWATCH build not found at $BOX (set BW64_BIN)" >&2; exit 1; }
+# REFWATCH instrumentation is enabled for this run below.
+source "$ROOT_DIR/tools/native-binary.sh"
+BOX="$(bw64_native_binary)" || exit 1
 
 # Force a fresh prefix every run so wineboot --init does the full teardown that
 # trips bug #2 (the crash is in the boot-helper exit right after first-window-map

@@ -56,7 +56,9 @@ public:
     // From FsOpenNode
     bool setLength(S64 length) override;
     U32 ioctl(KThread* thread, U32 request) override;
+#ifdef BOXEDWINE_GUEST_X64
     U32 ioctl64(U32 request, U64 argAddr, KMemory64* mem) override;
+#endif
     U32 readNative(U8* buffer, U32 len) override;
     U32 writeNative(U8* buffer, U32 len) override;
     void waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) override;
@@ -119,6 +121,15 @@ U32 DevDsp::getEffectiveBufferCapacity() {
 }
 
 U32 DevDsp::getUsedBufferSize() {
+#ifdef __EMSCRIPTEN__
+    // bwPump: JS Web Audio bridge consumes data immediately via its ring buffer.
+    // Report zero used so GETOSPACE shows full availability and GETODELAY shows
+    // zero delay. Otherwise the wall-clock queue estimate makes Wine think data
+    // is still pending, and WHDR_DONE never fires for waveOut.
+    if (this->audio->isBwPump()) {
+        return 0;
+    }
+#endif
     return std::min(this->audio->getBufferSize(), this->getEffectiveBufferCapacity());
 }
 
@@ -127,9 +138,18 @@ U32 DevDsp::getAvailableBufferSize() {
 }
 
 bool DevDsp::isWriteReady() {
+#ifdef __EMSCRIPTEN__
+    // bwPump: JS Web Audio bridge owns backpressure via its ring buffer.
+    // Always report writable; otherwise poll() can block forever because
+    // waitForEvents never re-signals when the wall-clock estimate changes.
+    if (this->audio->isBwPump()) {
+        return true;
+    }
+#endif
     return this->getAvailableBufferSize() >= this->audio->getFragmentSize();
 }
 
+#ifdef BOXEDWINE_GUEST_X64
 // 64-bit-guest OSS ioctls (M5 sound bridge). alsa-lib's pcm_oss plugin (the
 // wine winealsa -> libasound -> /dev/dsp route) drives the device with the
 // classic OSS ioctl set; the 32-bit ioctl() above can't serve a 64-bit guest
@@ -255,6 +275,7 @@ U32 DevDsp::ioctl64(U32 request, U64 argAddr, KMemory64* mem) {
         return (U32)-K_ENOTTY;
     }
 }
+#endif
 
 U32 DevDsp::ioctl(KThread* thread, U32 request) {
     U32 len = (request >> 16) & 0x3FFF;

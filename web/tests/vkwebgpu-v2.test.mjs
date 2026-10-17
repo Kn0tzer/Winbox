@@ -3,7 +3,7 @@
 // the page tier's pure half: chunk framing, the frame assembler, record
 // decoding, the streaming queue, and the WGSL transforms. No WebGPU and no
 // browser: the fixtures below are built by a small LE writer that mirrors the
-// C++ ChunkWriter field-for-field (tasks/schema-v2.md §3), so these tests pin
+// C++ ChunkWriter field-for-field (docs/vulkan-protocol.md §3), so these tests pin
 // the documented wire layout, not the module's own writer.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -13,6 +13,7 @@ import {
   rewritePushConstantsWGSL, scanWgslResources, v2PickSampleCount,
   v2TextureFormat, v2VertexFormat, v2Hex64,
   v2TargetKey, v2ImageTargetKey, v2ImageKnown, V2_UNKNOWN_IMAGE,
+  wgslUniformSizes, parseMinBindingSize,
 } from '../vkwebgpu.mjs';
 
 // --- LE fixture writer (mirrors the C++ ChunkWriter) ---
@@ -69,9 +70,9 @@ function dxvkFrame(frameNo = 7) {
     new W().u8(1).u8(1).u16(0).u64(0x2eaf).buf(),
     new W().u32(0).u32(1000138000).u32(0).u32(16).u8(4).u8(0).u16(0).u64(0xdead).u64(16).u64(0).buf() // inline uniform block
   )));
-  R.push(rec(V2_REC.BUFFER_DATA, cat(new W().u64(0xb001).u64(0).u32(8).buf(), new Uint8Array([9, 9, 9, 9, 9, 9, 9, 9]))));
+  R.push(rec(V2_REC.BUFFER_DATA, cat(new W().u64(0xb001).u64(0).u64(0x1001).u32(8).buf(), new Uint8Array([9, 9, 9, 9, 9, 9, 9, 9]))));
   R.push(rec(V2_REC.IMAGE_DATA, cat(
-    new W().u64(0x9e9).u64(0x1111).u32(4).u32(4).u32(37).u32(64).buf(), new Uint8Array(64).fill(7)
+    new W().u64(0x9e9).u64(0x1111).u32(4).u32(4).u32(37).u64(0x1002).u32(64).buf(), new Uint8Array(64).fill(7)
   )));
   R.push(rec(V2_REC.SAMPLER, new W().u64(0x5a5a).u32(1).u32(1).u32(1).u32(2).u32(2).f32(4).buf()));
   R.push(rec(V2_REC.PUSH, cat(new W().u32(0).u32(16).u32(0x1f).buf(), new Uint8Array(16).fill(0xaa))));
@@ -79,9 +80,9 @@ function dxvkFrame(frameNo = 7) {
   R.push(rec(V2_REC.VIEWPORT, new W().f32(0).f32(0).f32(800).f32(600).f32(0).f32(1).buf()));
   R.push(rec(V2_REC.SCISSOR, new W().u32(0).u32(0).u32(800).u32(600).buf()));
   R.push(rec(V2_REC.VERTEX_BIND, cat(new W().u8(1).u8(0).u16(0).buf(), new W().u32(0).u64(0xc001).u64(0).buf())));
-  R.push(rec(V2_REC.BUFFER_DATA, cat(new W().u64(0xc001).u64(0).u32(96).buf(), new Uint8Array(96).fill(3))));
+  R.push(rec(V2_REC.BUFFER_DATA, cat(new W().u64(0xc001).u64(0).u64(0x1003).u32(96).buf(), new Uint8Array(96).fill(3))));
   R.push(rec(V2_REC.INDEX_BIND, new W().u64(0xc002).u64(0).u32(1).buf()));
-  R.push(rec(V2_REC.BUFFER_DATA, cat(new W().u64(0xc002).u64(0).u32(12).buf(), new Uint8Array(12).fill(5))));
+  R.push(rec(V2_REC.BUFFER_DATA, cat(new W().u64(0xc002).u64(0).u64(0x1004).u32(12).buf(), new Uint8Array(12).fill(5))));
   R.push(rec(V2_REC.DRAW, new W().u32(0).u32(1).u32(0).u32(0).u8(1).u8(0).u16(0).u32(36).u32(0).u32(0).buf()));
   R.push(rec(V2_REC.INLINE_BYTES, cat(new W().u8(1).u8(0).u16(0).buf(), new W().u32(0).u32(0).u32(16).buf(), new Uint8Array(16).fill(0xcc))));
   R.push(rec(V2_REC.RP_END, new Uint8Array(0)));
@@ -111,8 +112,8 @@ test('malformed chunks are rejected with a reason', () => {
   // truncated record payload (cut mid-record: header 16 + rec header 8 + 6 payload bytes)
   const cut = chunk(0, false, ...good).subarray(0, 30);
   assert.throws(() => parseV2Chunk(cut), /truncat/);
-  // unknown record type
-  const unk = rec(0x13, new Uint8Array(4));
+  // The first number above the defined schema remains invalid as it grows.
+  const unk = rec(Math.max(...Object.values(V2_REC)) + 1, new Uint8Array(4));
   assert.throws(() => parseV2Chunk(chunk(0, false, unk)), /unknown record type/);
   // declared length overruns the chunk
   const lie = new W().u16(V2_REC.PUSH).u16(0).u32(9999).buf();
@@ -330,6 +331,35 @@ test('MSAA sample counts clamp to what WebGPU guarantees', () => {
   assert.equal(v2PickSampleCount(2), 4);
   assert.equal(v2PickSampleCount(4), 4);
   assert.equal(v2PickSampleCount(16), 4);
+});
+
+test('wgslUniformSizes computes the padded WGSL block size, incl. u-suffixed counts', () => {
+  // Uniform address space: array element stride is rounded up to 16 (WGSL
+  // layout constraints), so a 240-float block is 240*16 = 3840 bytes — the
+  // guest UBO may be much smaller (960), and Dawn rejects the draw. Naga emits
+  // array counts with a u suffix, which the scanner must accept.
+  const f32Array = `
+struct type_1 { m: array<f32, 240u>, }
+@group(2) @binding(0) var<uniform> x_13 : type_1;`;
+  assert.equal(wgslUniformSizes(f32Array).get('2:0'), 240 * 16);
+  // A vec4 array stays vec4-strided (272*16 = 4352: the real DXVK D3D9
+  // pixel-constant rejection had a 3840-byte guest UBO behind this).
+  const vec4Array = `
+struct type_2 { m: array<vec4<f32>, 272u>, }
+@group(2) @binding(0) var<uniform> y_1 : type_2;`;
+  assert.equal(wgslUniformSizes(vec4Array).get('2:0'), 4352);
+  // A nested struct through an array of structs also resolves.
+  const nested = `
+struct Inner { a: vec4<f32>, b: vec4<f32>, }
+struct Outer { items: array<Inner, 3u>, }
+@group(0) @binding(0) var<uniform> u : Outer;`;
+  assert.equal(wgslUniformSizes(nested).get('0:0'), 96);
+});
+
+test('parseMinBindingSize reads the group/binding/size out of a Dawn rejection', () => {
+  const rejected = 'v2 frame encoding rejected: [Buffer (unlabeled)] bound with size 3840 at group 2, binding 0 is too small. The pipeline ([RenderPipeline (unlabeled)]) requires a buffer binding which is at least 4352 bytes. This binding is a uniform buffer binding.';
+  assert.deepEqual(parseMinBindingSize(rejected), { group: 2, binding: 0, bytes: 4352 });
+  assert.equal(parseMinBindingSize('unrelated failure'), null);
 });
 
 test('format maps cover the DXVK set and count the unknown', () => {

@@ -29,6 +29,8 @@ FsNode::FsNode(Type type, U32 id, U32 rdev, BString path, BString link, BString 
     rdev(rdev),
     hardLinkCount(1),
     type(type),  
+    removedFromParent(false),
+    childrenVersion(0),
     parent(parent),
     isDir(isDirectory),      
     hasLoadedChildrenFromFileSystem(false),
@@ -50,19 +52,23 @@ bool FsNode::canWrite() {
 }
 
 void FsNode::removeNodeFromParent() {
+    this->removedFromParent.store(true, std::memory_order_release);
+    BString oldPath = this->path;
     std::shared_ptr<FsNode> parent = this->getParent().lock();
     if (parent) {
         BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(parent->childrenByNameMutex);
         parent->childrenByName.remove(this->name);
+        parent->childrenVersion.fetch_add(1, std::memory_order_relaxed);
     }
+    // Invalidate this path and any descendant paths (no node lock held here).
+    Fs::invalidatePathCachePrefix(oldPath);
 }
 
 void FsNode::loadChildren() {
+    // The loaded flag also prevents recursion through addChild. Keep it under
+    // the directory lock so another thread cannot see it before publication.
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(childrenByNameMutex);
     if (!this->hasLoadedChildrenFromFileSystem) {
-        BOXEDWINE_CRITICAL_SECTION;
-        if (this->hasLoadedChildrenFromFileSystem) {
-            return;
-        }
         this->hasLoadedChildrenFromFileSystem = true;
         bool traceLink = getenv("BW64_LINKTRACE") && this->path.contains("dosdevices");
         if (this->nativePath.length()) {
@@ -115,7 +121,23 @@ void FsNode::loadChildren() {
 std::shared_ptr<FsNode> FsNode::getChildByName(BString name) {
     this->loadChildren();
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->childrenByNameMutex);
-    return this->childrenByName[name];
+    std::shared_ptr<FsNode> result = this->childrenByName[name];
+    if (!result) {
+        // fallback: VFS name variations for dosdevices symlinks (z: <-> z(_colon_), .link suffix)
+        if (name.contains(":")) {
+            result = this->childrenByName[name.replace(":", "(_colon_)")];
+        }
+        if (!result && !name.endsWith(".link")) {
+            result = this->childrenByName[name + ".link"];
+        }
+        if (!result && name.endsWith(".link")) {
+            result = this->childrenByName[name.substr(0, name.length() - 5)];
+        }
+        if (!result && name.contains(":")) {
+            result = this->childrenByName[name.replace(":", "(_colon_)") + ".link"];
+        }
+    }
+    return result;
 }
 
 std::shared_ptr<FsNode> FsNode::getChildByNameIgnoreCase(BString name) {
@@ -139,12 +161,30 @@ void FsNode::addChild(std::shared_ptr<FsNode> node) {
     this->loadChildren();
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->childrenByNameMutex);
     this->childrenByName.set(node->name, node);
+    node->removedFromParent.store(false, std::memory_order_release);
+    this->childrenVersion.fetch_add(1, std::memory_order_relaxed);
 }
 
 void FsNode::removeChildByName(BString name) {
     this->loadChildren();
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->childrenByNameMutex);
-    this->childrenByName.remove(name);
+    std::shared_ptr<FsNode> child;
+    BString childPath;
+    {
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->childrenByNameMutex);
+        child = this->childrenByName[name];
+        if (child) {
+            child->removedFromParent.store(true, std::memory_order_release);
+            childPath = child->path;
+        }
+        this->childrenByName.remove(name);
+        this->childrenVersion.fetch_add(1, std::memory_order_relaxed);
+    }
+    // Followed dynamic links (including descendants) are never path-cached.
+    // Unfollowed hits validate removedFromParent, and negative hits validate
+    // childrenVersion. Closing a /proc/<pid>/fd link needs no cache-wide scan.
+    if (child && !child->isDynamicLink()) {
+        Fs::invalidatePathCachePrefix(childPath);
+    }
 }
 
 void FsNode::getAllChildren(std::vector<std::shared_ptr<FsNode> > & results) {

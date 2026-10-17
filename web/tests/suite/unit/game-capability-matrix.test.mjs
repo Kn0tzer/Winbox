@@ -1,103 +1,93 @@
-// web/tests/suite/unit/game-capability-matrix.test.mjs — Guarantee matrix (the user contract).
-//
-// Goal: programmatically verify whether a path will work BEFORE running the
-// game. If all relevant subsystem tests are 100% passing, the game is
-// guaranteed playable. Example: input + audio + OpenGL + 32-bit CPU green →
-// Celeste (32-bit OpenGL) has 100% chance of working.
-//
-// Profiles (from tasks/game-compatibility.md + celeste.zip PE analysis):
-//   celeste: i386 Celeste.exe + FNA.dll + SDL2.dll + Mono + fmod (32-bit OpenGL)
-//   portal:  32-bit D3D9 via DXVK→Vulkan32→WebGPU (hl2.exe x86)
-//   gangbeasts: x64 Unity (D3D11→Vulkan64) — archive currently x64, not 32-bit
-//
-// Statuses must be verified / inferred / assumed (P7): inferred items are
-// test gaps, not coverage. Four-bucket report per API (P10): total / fully
-// passing / passing-but-slow-or-flaky / fully broken.
-
-import { test } from 'node:test';
+// Inventory and evidence validation; source guards do not establish playability.
+import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { execSync } from 'node:child_process';
+import { readFileSync, readdirSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { resolve, join } from 'node:path';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { gamePrerequisites, prerequisiteEvidence, prerequisiteSelection } from '../lib/game-prerequisites.mjs';
+const root = resolve(import.meta.dirname, '../../../..');
+const suite = resolve(import.meta.dirname, '..');
 
-const suiteDir = dirname(fileURLToPath(import.meta.url));
-const repoRoot = join(suiteDir, '..', '..', '..', '..');
-
-const PROFILES = {
-  celeste: {
-    desc: 'Celeste (32-bit OpenGL / FNA / SDL2 / Mono / FMOD)',
-    requires: ['cpu32', 'gl32', 'input', 'audio', 'fs', 'mono', 'sdl2'],
-    files: {
-      cpu32: ['cpu32-execute-guard.test.mjs', 'cpu32-opcode-coverage.test.mjs', 'elf-loader-mmap.test.mjs'],
-      gl32: ['gl32-shared-renderer.test.mjs', 'gl-shim-coverage.test.mjs', 'gl-guest-memory.test.mjs'],
-      input: ['input-keyboard-full.test.mjs', 'xwire-take-focus.test.mjs', 'xwire-focus.test.mjs', 'xwire-xkb.test.mjs'],
-      audio: ['audio-audible-output.test.mjs'],
-      fs: ['vfs-socket-isolation.test.mjs', 'zip-stored-seek.test.mjs', 'zip-decompression.test.mjs', 'sparse-memfs.test.mjs', 'gamezip-stored.test.mjs'],
-    },
-  },
-  portal: {
-    desc: 'Portal 1 (32-bit D3D9 via DXVK → Vulkan32 → WebGPU)',
-    requires: ['cpu32', 'vk32', 'v2transport', 'shader', 'input', 'audio', 'fs'],
-    files: {
-      cpu32: ['cpu32-execute-guard.test.mjs', 'elf-loader-mmap.test.mjs'],
-      vk32: ['vk32-dispatch.test.mjs', 'vk32-properties.test.mjs', 'vk32-query-results.test.mjs', 'vk32-transfer.test.mjs'],
-      v2transport: ['v2-transport-contract.test.mjs', 'v2-chunk-format.test.mjs', 'v2-buffer-use.test.mjs'],
-      shader: ['shader-spirv-matrix.test.mjs', 'spirvfix-r5-r6.test.mjs', 'spirvfix-r7.test.mjs', 'spirvfix-r8.test.mjs'],
-      input: ['input-keyboard-full.test.mjs'],
-      audio: ['audio-audible-output.test.mjs'],
-    },
-  },
-};
-
-function unitFiles() {
-  return new Set(readdirSync(suiteDir).filter(f => f.endsWith('.test.mjs')));
-}
-
-test('Celeste.exe is 32-bit i386 (profile precondition)', () => {
-  const zipPath = '/home/ubuntu/kn0tzer/games/celeste.zip';
-  if (!existsSync(zipPath)) return;
-  const out = execSync(`python3 -c "import zipfile,struct; z=zipfile.ZipFile('${zipPath}'); d=z.read('home/username/apps/Celeste.exe'); pe=struct.unpack('<I', d[0x3c:0x40])[0]; print(hex(struct.unpack('<H', d[pe+4:pe+6])[0]))"`, { encoding: 'utf8' }).trim();
-  assert.equal(out, '0x14c', `Celeste.exe must be i386 (0x14c), got ${out} — profile mapping invalid`);
+test('actual Celeste executable is i386', t => {
+  const zip = process.env.CELESTE_ZIP || '/home/ubuntu/kn0tzer/games/celeste-drmfree.zip';
+  if (!existsSync(zip)) { t.skip('Celeste archive unavailable; bitness unverified'); return; }
+  const machine = execFileSync('python3', ['-c', `import zipfile,struct,sys
+z=zipfile.ZipFile(sys.argv[1]); names=[n for n in z.namelist() if n.rsplit('/',1)[-1]=='Celeste.exe']
+assert len(names)==1
+b=z.read(names[0]); pe=struct.unpack_from('<I',b,0x3c)[0]
+assert b[:2]==b'MZ' and b[pe:pe+4]==bytes([80,69,0,0])
+print(hex(struct.unpack_from('<H',b,pe+4)[0]))`, zip], { encoding: 'utf8' }).trim();
+  assert.equal(machine, '0x14c');
 });
 
-test('every profile subsystem maps to existing test files (no phantom coverage)', () => {
-  const files = unitFiles();
-  for (const [game, prof] of Object.entries(PROFILES)) {
-    for (const [sub, list] of Object.entries(prof.files)) {
-      for (const f of list) {
-        assert.ok(files.has(f), `${game}/${sub}: mapped test file ${f} must exist (phantom coverage → P7 assumed-fixed fallacy)`);
-      }
+test('every prerequisite names an existing probe, including Gang Beasts', () => {
+  assert.deepEqual(Object.keys(gamePrerequisites).sort(), ['celeste','gangbeasts','portal']);
+  for (const [game, profile] of Object.entries(gamePrerequisites)) {
+    assert.ok(['x86','x64'].includes(profile.architecture));
+    assert.ok(profile.uncoveredBehavior.length > 0, game + ': retain explicit acceptance gaps');
+    for (const category of ['unit','browser']) {
+      const files = new Set(readdirSync(join(suite, category)).filter(f => f.endsWith('.test.mjs')));
+      for (const name of prerequisiteSelection(game, category)) assert.ok(files.has(name+'.test.mjs'), game+'/'+category+'/'+name);
     }
   }
 });
-
-test('Celeste required subsystems all have execute-level guards (not existence-only)', () => {
-  const files = unitFiles();
-  assert.ok(files.has('cpu32-execute-guard.test.mjs'), 'celeste/cpu32: execute-don\'t-exist guard must exist (P1)');
-  assert.ok(files.has('gl32-shared-renderer.test.mjs'), 'celeste/gl32: shared-renderer contract must exist');
-  assert.ok(files.has('input-keyboard-full.test.mjs'), 'celeste/input: keyboard must be verified, not inferred from mouse (P7)');
-  assert.ok(files.has('audio-audible-output.test.mjs'), 'celeste/audio: audible-bytes guard must exist (QueueAudio ≠ heard)');
+test('Celeste required subsystems map to executable guest probes', () => {
+  const probes = prerequisiteSelection('celeste', 'browser');
+  for (const required of ['boot32-vkboot', 'gl32-triangle', 'gl32-framebuffer', 'mono-runtime', 'fna-runtime', 'win32-clock', 'input-fullscreen', 'input-keyboard'])
+    assert.ok(probes.has(required), `Celeste prerequisite missing: ${required}`);
 });
 
-test('four-bucket coverage helper: vk64 report exists (P10 scope-narrowing guard)', () => {
-  const vkcov = (() => { try { return readFileSync(join(repoRoot, 'test-results/d3d-conformance-MATRIX.md'), 'utf8'); } catch { return ''; } })();
-  assert.ok(true, 'four-bucket (total/passing/slow/broken) discipline enforced by this matrix — vk64 266/252/0/14, GL64 306/5/191/110 precedent');
-});
-
-test('statuses distinguish verified / inferred / assumed (P7)', () => {
-  const compat = readFileSync(join(repoRoot, 'tasks/game-compatibility.md'), 'utf8');
-  assert.ok(compat.includes('Verified') || compat.includes('verified'),
-    'tasks/game-compatibility.md must record Verified dates/hashes (inferred ≠ coverage)');
-  assert.ok(compat.includes('Celeste') || compat.includes('celeste'),
-    'compatibility doc must track Celeste path (32-bit OpenGL/.NET)');
-});
-
-test('no game is claimed verified without its subsystem files present', () => {
-  for (const [game, prof] of Object.entries(PROFILES)) {
-    assert.ok(prof.requires.includes('cpu32') || prof.requires.includes('cpu64'),
-      `${game}: profile must require a CPU bitness`);
-    assert.ok(prof.requires.length >= 4,
-      `${game}: profile must require 4+ subsystems (single-gate "last blocker" framing P6 is forbidden)`);
+function passing(game, hash='runtime-a') {
+  return ['unit','browser'].flatMap(category => gamePrerequisites[game][category]
+    .map(name => ({name,category,passed:true,wasmSha256:category==='browser'?hash:null,runtimeCodeHash:category==='browser'?'code-a':null,
+      architectures: category==='browser' ? [gamePrerequisites[game].architecture] : []})));
+}
+test('complete prerequisite evidence never claims game playability', () => {
+  for (const game of Object.keys(gamePrerequisites)) {
+    const evidence = prerequisiteEvidence(game, passing(game));
+    assert.equal(evidence.prerequisiteChecksPassed, true);
+    assert.equal(evidence.fullGameVerified, false);
+    assert.equal(evidence.wasmSha256, 'runtime-a');
   }
+});
+test('missing, failed, unproven or mixed-runtime probes cannot pass the preflight', () => {
+  for (const game of Object.keys(gamePrerequisites)) {
+    const complete = passing(game);
+    assert.equal(prerequisiteEvidence(game, complete.slice(1)).prerequisiteChecksPassed, false);
+    const failed = structuredClone(complete); failed[0].passed=false;
+    assert.equal(prerequisiteEvidence(game, failed).prerequisiteChecksPassed, false);
+    const mixed = structuredClone(complete); mixed.find(r=>r.category==='browser').wasmSha256='runtime-b';
+    assert.equal(prerequisiteEvidence(game, mixed).prerequisiteChecksPassed, false);
+    const mixedCode = structuredClone(complete); mixedCode.find(r=>r.category==='browser').runtimeCodeHash='code-b';
+    assert.equal(prerequisiteEvidence(game, mixedCode).prerequisiteChecksPassed, false);
+    const noHash = structuredClone(complete); noHash.find(r=>r.category==='browser').wasmSha256=null;
+    assert.equal(prerequisiteEvidence(game, noHash).prerequisiteChecksPassed, false);
+    const wrongArch = structuredClone(complete);
+    wrongArch.find(r=>r.category==='browser').architectures = [gamePrerequisites[game].architecture === 'x86' ? 'x64' : 'x86'];
+    assert.equal(prerequisiteEvidence(game, wrongArch).prerequisiteChecksPassed, false);
+    const noArch = structuredClone(complete); delete noArch.find(r=>r.category==='browser').architectures;
+    assert.equal(prerequisiteEvidence(game, noArch).prerequisiteChecksPassed, false);
+  }
+  assert.throws(()=>prerequisiteSelection('unknown','browser'), /Unknown game/);
+});
+test('an incomplete game preflight returns a failing CLI exit status', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bw64-preflight-exit-'));
+  try {
+    const run = spawnSync(process.execPath, [join(suite, 'runner.mjs'), '--unit', '--game=celeste',
+      '--filter=missing-fixture-selection', '--json'], { cwd: dir, encoding: 'utf8', timeout: 10000 });
+    assert.equal(run.error, undefined);
+    const summary = JSON.parse(run.stdout);
+    assert.equal(summary.preflight.prerequisiteChecksPassed, false);
+    assert.equal(run.status, 1, 'Missing prerequisites must fail even when no selected test failed');
+  } finally { rmSync(dir, {recursive: true, force: true}); }
+});
+test('the historical conformance report exposes its actual result buckets', () => {
+  const report=readFileSync(join(root,'docs/reports/d3d-conformance-MATRIX.md'),'utf8');
+  for (const column of ['total','fully working','slow/flaky','fully broken']) assert.ok(report.includes(column));
+});
+test('compatibility documentation retains game-specific verification status', () => {
+  const doc=readFileSync(join(root,'docs/game-compatibility.md'),'utf8');
+  for(const game of ['Celeste','Portal','Gang Beasts']) assert.ok(doc.includes(game));
+  assert.ok(/verified/i.test(doc));
 });

@@ -835,4 +835,52 @@ void testPushE32_0x2ff() {
     runPushMemoryCases(32, "push e32 memory");
 }
 
+// Regression test for the 32-bit ntdll 0xD3F8 crash investigation (2026-10-08).
+// The crash sites use `push dword ptr [esp+disp8]` (e.g. FF 74 24 24 at 0xF87C).
+// Per Intel semantics the source operand must be read using the PRE-decrement
+// ESP. If the emulator decrements ESP first and then reads [esp+disp], it
+// reads 4 bytes too low and pushes a wrong value (matching the observed
+// "second set_env_var gets valueW instead of &env" symptom).
+void runPushEspDisp8OrderCase(U8 disp, const char* name) {
+    constexpr U32 CORRECT_VALUE = 0xDEADBEEF;
+    constexpr U32 TRAP_VALUE = 0xBAADF00D;
+    U32 expectedRegs[8];
+
+    newInstruction(INITIAL_FLAGS);
+    cpu->big = true;
+    initRegisters(expectedRegs);
+    // Correct value at [ESP+disp]; trap value at [ESP+disp-4], the address a
+    // post-decrement-ordering bug would read from instead.
+    memory->writed(stackAddress(STACK_START + disp), CORRECT_VALUE);
+    memory->writed(stackAddress(STACK_START + disp - 4), TRAP_VALUE);
+    writeStackGuard(32, STACK_START - 4);
+    expectedRegs[R_SP] = STACK_START - 4;
+
+    // FF /6, modrm=0x74 (mod=01 disp8, reg=110 push, rm=100 SIB),
+    // sib=0x24 (scale 0, index 100=none, base 100=ESP), disp8
+    emitByte(0xFF);
+    emitByte(0x74);
+    emitByte(0x24);
+    emitByte(disp);
+    runTestCPU();
+
+    verifyRegisters(expectedRegs, name);
+    U32 pushed = memory->readd(stackAddress(STACK_START - 4));
+    if (pushed != CORRECT_VALUE) {
+        failed("%s push [esp+disp8] ordering: pushed 0x%08x, expected 0x%08x (read wrong address)", name, pushed, CORRECT_VALUE);
+    }
+    if (memory->readd(stackAddress(STACK_START + disp)) != CORRECT_VALUE ||
+            memory->readd(stackAddress(STACK_START + disp - 4)) != TRAP_VALUE) {
+        failed("%s push [esp+disp8] clobbered source operand", name);
+    }
+    verifyFlagsUnchanged(name);
+}
+
+void testPushEspDisp8Order_0x2ff() {
+    // Displacements used by the 32-bit ntdll set_env_var crash sites
+    runPushEspDisp8OrderCase(0x18, "push [esp+0x18] ordering");
+    runPushEspDisp8OrderCase(0x24, "push [esp+0x24] ordering");
+    runPushEspDisp8OrderCase(0x3c, "push [esp+0x3c] ordering");
+}
+
 #endif

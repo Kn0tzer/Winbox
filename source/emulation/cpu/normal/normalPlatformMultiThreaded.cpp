@@ -92,10 +92,8 @@ static void platformThread(CPU* cpu) {
             }
         }
         ripSamplerReleaseSlot(ripSlot);
-        cpu->thread->cleanup();
-        platformThreadCount--;
         process->deleteThread(cpu->thread);
-        if (platformThreadCount == 0) {
+        if (--platformThreadCount == 0) {
             KSystem::shutingDown = true;
             KNativeSystem::postQuit();
         }
@@ -103,6 +101,8 @@ static void platformThread(CPU* cpu) {
     }
 #endif
 
+    int ripSlot32 = ripSamplerAcquireSlot((int)cpu->thread->process->id, (int)cpu->thread->id);
+    ripSamplerPublish32(ripSlot32, cpu);
     cpu->nextOp = cpu->getNextOp();
     if (!cpu->nextOp) {
         cpu->thread->seg_mapper(cpu->getEipAddress(), true, false, false);
@@ -116,7 +116,14 @@ static void platformThread(CPU* cpu) {
             cpu->run();
         } catch (...) {
             if (!cpu->thread->terminating) {
-                cpu->nextOp = cpu->getNextOp();
+                try {
+                    cpu->nextOp = cpu->getNextOp();
+                } catch (...) {
+                    // getNextOp failed (e.g., invalid EIP after signal handling)
+                    // Terminate the thread gracefully instead of crashing
+                    cpu->thread->terminating = true;
+                    cpu->nextOp = nullptr;
+                }
             }
         }
 #ifdef __TEST
@@ -135,11 +142,9 @@ static void platformThread(CPU* cpu) {
 #endif
     }
 
-    cpu->thread->cleanup();    
-
-    platformThreadCount--;
+    ripSamplerReleaseSlot(ripSlot32);
     process->deleteThread(cpu->thread);
-    if (platformThreadCount == 0) {
+    if (--platformThreadCount == 0) {
         KSystem::shutingDown = true;
         KNativeSystem::postQuit();
     }

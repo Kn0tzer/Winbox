@@ -10,6 +10,9 @@ interface Window {
   bwVkTierReady?: Promise<any>;
   bwVkStats?: () => any;
   bwVkRenderer?: any;
+  __bwLogConfig?: Record<string, string | number>;
+  __bwStatsEvery?: number;
+  __bwDbgRender?: boolean;
 }
 interface FileSystemFileEntry extends FileSystemEntry { file(success: (file: File) => void, error?: (error: DOMException) => void): void; }
 interface FileSystemDirectoryEntry extends FileSystemEntry { createReader(): FileSystemDirectoryReader; }

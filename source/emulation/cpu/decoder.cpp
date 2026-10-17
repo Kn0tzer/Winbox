@@ -1122,6 +1122,14 @@ const InstructionInfo instructionInfo[] = {
     {0, 0, 0, 0, 0, 0}, // MovapsXmmXmm
     {0, 128, 0, 0, 0, 0}, // MovapsXmmE128
     {0, 0, 128, 0, 0, 0}, // MovapsE128Xmm
+    {0, 0, 0, 0, 0, 0}, // HaddpdXmmXmm
+    {0, 128, 0, 0, 0, 0}, // HaddpdXmmE128
+    {0, 0, 0, 0, 0, 0}, // MovddupXmmXmm
+    {0, 64, 0, 0, 0, 0}, // MovddupXmmE64
+    {0, 0, 0, 0, 0, 0}, // MovsldupXmmXmm
+    {0, 128, 0, 0, 0, 0}, // MovsldupXmmE128
+    {0, 0, 0, 0, 0, 0}, // MovshdupXmmXmm
+    {0, 128, 0, 0, 0, 0}, // MovshdupXmmE128
     {0, 0, 0, 0, 0, 0}, // MovhlpsXmmXmm
     {0, 0, 0, 0, 0, 0}, // MovlhpsXmmXmm
     {0, 64, 0, 0, 0, 0}, // MovhpsXmmE64
@@ -3019,6 +3027,14 @@ const LogInstruction instructionLog[] = {
     {"Movaps", 0, logXmmXmm},
     {"Movaps", 128, logXmmE},
     {"Movaps", 128, logEXmm},
+    {"Haddpd", 0, logXmmXmm},
+    {"Haddpd", 128, logXmmE},
+    {"Movddup", 0, logXmmXmm},
+    {"Movddup", 64, logXmmE},
+    {"Movsldup", 0, logXmmXmm},
+    {"Movsldup", 128, logXmmE},
+    {"Movshdup", 0, logXmmXmm},
+    {"Movshdup", 128, logXmmE},
     {"Movhlps", 0, logXmmXmm},
     {"Movlhps", 0, logXmmXmm},
     {"Movhps", 64, logXmmE},
@@ -5849,7 +5865,7 @@ DecodeRMr sseMovapsXE(MovapsXmmXmm, MovapsXmmE128);
 DecodeRM sseMovapsEX(MovapsXmmXmm, MovapsE128Xmm);
 DecodeSSE2 sseMov0x310(MovupsXmmXmm, MovupsXmmE128, MovsdXmmXmm, MovsdXmmE64, MovssXmmXmm, MovssXmmE32);
 DecodeSSE2r sseMov0x311(MovupsXmmXmm, MovupsE128Xmm, MovsdXmmXmm, MovsdE64Xmm, MovssXmmXmm, MovssE32Xmm);
-DecodeRMr sseMov0x312(MovhlpsXmmXmm, MovlpsXmmE64);
+DecodeSSE2 sseMov0x312(MovhlpsXmmXmm, MovlpsXmmE64, MovddupXmmXmm, MovddupXmmE64, MovsldupXmmXmm, MovsldupXmmE128);
 DecodeRMr sseMov0x112(Invalid, MovlpdXmmE64);
 DecodeRMr sseMov0x113(Invalid, MovlpdE64Xmm);
 DecodeRMr sseMov0x114(UnpcklpdXmmXmm, UnpcklpdXmmE128);
@@ -5896,6 +5912,7 @@ DecodeRMr sse0x16c(PunpcklqdqXmmXmm, PunpcklqdqXmmE128);
 DecodeRMr sse0x16d(PunpckhqdqXmmXmm, PunpckhqdqXmmE128);
 DecodeRMr sse0x16e(MovdXmmR32, MovdXmmE32);
 DecodeRMr sse0x16f(MovdqaXmmXmm, MovdqaXmmE128);
+DecodeRMr sse0x17c(HaddpdXmmXmm, HaddpdXmmE128);
 DecodeRMr sse0x170(PshufdXmmXmm, PshufdXmmE128, 8);
 DecodeGroup sse0x171(Invalid, Invalid, PsrlwXmm, Invalid, PsrawXmm, Invalid, PsllwXmm, Invalid, 8);
 DecodeGroup sse0x172(Invalid, Invalid, PsrldXmm, Invalid, PsradXmm, Invalid, PslldXmm, Invalid, 8);
@@ -5952,7 +5969,7 @@ DecodeRMr sse0x1fd(PaddwXmmXmm, PaddwXmmE128);
 DecodeRMr sse0x1fe(PadddXmmXmm, PadddXmmE128);
 
 DecodeRM sseMov0x313(Invalid, MovlpsE64Xmm);
-DecodeRMr sseMov0x316(MovlhpsXmmXmm, MovhpsXmmE64);
+DecodeSSE2 sseMov0x316(MovlhpsXmmXmm, MovhpsXmmE64, Invalid, Invalid, MovshdupXmmXmm, MovshdupXmmE128);
 DecodeRMr sseMov0x317(Invalid, MovhpsE64Xmm);
 DecodeRMr sseMovmsk(MovmskpsR32Xmm, Invalid);
 DecodeRMr sseMaskmov(MaskmovqEDIMmxMmx, Invalid);
@@ -6044,7 +6061,7 @@ const Decode* const decoder[] = {
     &sse0x168, &sse0x169, &sse0x16a, &sse0x16b, &sse0x16c, &sse0x16d, &sse0x16e, &sse0x16f,
     // 0x170
     &sse0x170, &sse0x171, &sse0x172, &sse0x173, &sse0x174, &sse0x175, &sse0x176, nullptr,
-    nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &sse0x17e, &sse0x17f,
+    nullptr, nullptr, nullptr, nullptr, &sse0x17c, nullptr, &sse0x17e, &sse0x17f,
     // 0x180
     &decodeJo16, &decodeJno16, &decodeJb16, &decodeJnb16, &decodeJz16, &decodeJnz16, &decodeJbe16, &decodeJnbe16,
     &decodeJs16, &decodeJns16, &decodeJp16, &decodeJnp16, &decodeJl16, &decodeJnl16, &decodeJle16, &decodeJnle16,
@@ -6454,7 +6471,9 @@ DecodedOp* decodeBlock(DecodeBlockCallback* callback, U32 eip, bool isBig, U32& 
         }
         else {
             decoder[d.inst]->decode(&d, op);
-            if (!callback->isValidExecutableAddress(d.eip)) {
+            // Validate the bytes of THIS instruction, not the next one.
+            // A JIT method may end exactly at an executable page boundary.
+            if (!callback->isValidExecutableAddress(d.eip - 1)) {
 				// last instruction went into a page that is not executable, stop decoding this block
                 if (!prev) {
                     return nullptr;
@@ -6498,7 +6517,7 @@ DecodedOp* decodeBlock(DecodeBlockCallback* callback, U32 eip, bool isBig, U32& 
         if (instructionInfo[op->inst].branch & DECODE_BRANCH_1) {
             op->data.nextJump = callback->getOpLocation(d.eip + op->imm);
         }
-        if (!callback->shouldContinue(d.eip)) {
+        if (!callback->shouldContinue(d.eip) || !callback->isValidExecutableAddress(d.eip)) {
             break;
         }
         if (opCount > maxOpCount) {

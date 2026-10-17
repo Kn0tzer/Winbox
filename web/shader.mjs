@@ -33,12 +33,10 @@ export async function toWGSL(from, source, stage='vertex', entryPoint='main', op
     // Pre-pass (tools/spirvfix/spirvfix.mjs): rewrite the module patterns
     // naga's spv-in rejects — combined-sampler loads (InvalidId) and spec
     // constants (UnsupportedInstruction) — before handing bytes to naga.
-    // Byte-identical passthrough when nothing applies. Dynamic import because
-    // the pre-pass lives outside web/: layouts that don't ship it (dist
-    // without tools/spirvfix) keep today's pass-through behavior with a
-    // warning instead of breaking module load.
+    // Byte-identical passthrough when nothing applies. The export includes a
+    // sibling implementation so this also works below a /wine/ URL prefix.
     try {
-      const { applySpirvFix } = await import('../tools/spirvfix/spirvfix.mjs');
+      const { applySpirvFix } = await import('./spirvfix.mjs');
       source = applySpirvFix(source, options).bytes;
     } catch(e) {
       console.warn('spirvfix pre-pass unavailable, passing SPIR-V through unmodified:', e?.message || e);

@@ -71,7 +71,9 @@ KUnixSocketObject::~KUnixSocketObject() {
         auto it = c->pendingConnections.begin();
         while (it != c->pendingConnections.end()) {
             std::shared_ptr<KUnixSocketObject> p = (*it).lock();
-            if (p == shared_from_this()) {
+            // During destruction this socket's last strong reference is gone.
+            // shared_from_this() would throw; its pending weak entry is expired.
+            if (!p || p.get() == this) {
                 it = c->pendingConnections.erase(it);
             } else {
                 it++;
@@ -193,7 +195,7 @@ U32 KUnixSocketObject::internal_write(KThread* thread, const std::shared_ptr<KUn
         // on the 32-bit cpu, sentinel leaks as a short write -> wine "partial
         // write"); return a clean -EPIPE like Linux. See writeNative for the full
         // rationale.
-        if (thread->cpu64) {
+        if (thread->process->is64Bit) {
             return -K_EPIPE;
         }
         return writePipeClosed(thread, false);
@@ -305,7 +307,7 @@ U32 KUnixSocketObject::writeNative(U8* buffer, U32 len) {
         // never leak the -K_CONTINUE sentinel; the 32-bit path keeps its existing
         // SIGPIPE behaviour. (See [[project_boxedwine64_bug2_teardown]] for the
         // same 32-bit-runSignal-on-a-64-bit-thread mis-delivery class.)
-        if (thread && thread->cpu64) {
+        if (thread && thread->process->is64Bit) {
             return -K_EPIPE;
         }
         if (thread) {
@@ -644,7 +646,7 @@ U32 KUnixSocketObject::connect(KThread* thread, const KFileDescriptorPtr& fd, U3
                 // :TODO: what about a time out
                 
                 BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->lockCond);
-                if (!this->connecting.expired()) {
+                while (!this->connecting.expired()) {
                     BOXEDWINE_CONDITION_WAIT(this->lockCond);
 #ifdef BOXEDWINE_MULTI_THREADED
 					if (thread->terminating) {
@@ -723,6 +725,7 @@ U32 KUnixSocketObject::accept(KThread* thread, const KFileDescriptorPtr& fd, U32
     }
 
     pendingConnection->connection = resultSocket;
+    pendingConnection->connecting.reset();
     //pendingConnection->connected = true; this will be handled when the connecting thread is unblocked    
 
     resultSocket->connected = true;

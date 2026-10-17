@@ -24,6 +24,7 @@
 #include "cpu/testCMov.h"
 #include "cpu/testCmp.h"
 #include "cpu/testCPU.h"
+#include "cpu/testDecoderPageBoundary.h"
 #include "cpu/testFPU.h"
 #include "cpu/testIncDec.h"
 #include "cpu/testJmp.h"
@@ -49,7 +50,9 @@
 #include "cpu/testX86Util.h"
 #include "cpu/testXchg.h"
 #include "cpu/testXor.h"
+#include "cpu/testVk32Trap.h"
 #include "mmu/testSelfModifying.h"
+#include "mmu/testBrk.h"
 
 void testWaitPid();
 
@@ -589,6 +592,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testJmpE32_0x2ff, "Test Jmp E32 2ff"},
     {testJmpFarE32_0x2ff, "Test Jmp Far E32 2ff"},
     {testPushE32_0x2ff, "Test Push E32 2ff"},
+    {testPushEspDisp8Order_0x2ff, "Test Push [ESP+disp8] ordering 2ff"},
     {testCmovR16E16_0x140_0x14f, "Test Cmov R16,E16 140-14f"},
     {testCmovR32E32_0x340_0x34f, "Test Cmov R32,E32 340-34f"},
     {testSetE8_0x190_0x19f, "Test Set E8 190-19f"},
@@ -652,10 +656,17 @@ const TestEntry TEST_ENTRIES[] = {
     {testSelfModifyingMovsb, "Test Self Modifying Code using movsb"},
     {testSelfModifyingFront, "Test Self Modifying Code Same Block(Previous)"},
     {testSelfModifyingBack, "Test Self Modifying Code Same Block(Next)"},
+    {testBrkHeap, "Test brk/mmap heap"},
 #ifdef BOXEDWINE_MULTI_THREADED
     {testLockedInc, "Test Multi-threaded locked inc"},
 #endif
     {testWaitPid, "Test waitpid child selection"},
+    {testDecoderPageBoundary, "Test decoder executable page boundary"},
+    {testVk32TrapWitness, "Test vk32 Trap Witness (Stage A)"},
+    {testGl32TrapWitness, "Test gl32 Trap Witness (Stage A-GL)"},
+    {testDemandPageIsolation, "Test demand-page isolation"},
+    {testSse3DuplicateMoves, "Test SSE3 duplicate moves"},
+    {testSse3Haddpd, "Test SSE3 HADDPD"},
 };
 
 } // namespace

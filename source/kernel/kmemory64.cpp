@@ -23,13 +23,14 @@
 
 // ---------------------------------------------------------------------------
 // Process-shared file mappings (MAP_SHARED). A single host buffer per
-// (file path, page-aligned file offset) is aliased by every process that maps
+// (file identity, page-aligned file offset) is aliased by every process that maps
 // that file page MAP_SHARED — so a write by one process (e.g. wineserver
 // updating its shared object/sequence section) is seen by all others, exactly
 // like a real shared mmap. Without this, the 64-bit file-mmap path handed each
 // process a private copy and wine's server shared-memory section desynced,
 // crashing wineserver with release_object refcount underflow. Mirrors the
-// 32-bit KMemory::MappedFileCache (keyed by node->path). Pages live for the
+// File identity distinguishes an unlinked file from a new file at the same
+// pathname; Wine reuses temporary mapping names. Pages live for the
 // life of the process (server section is tiny + long-lived); we never evict.
 // ---------------------------------------------------------------------------
 namespace {
@@ -37,12 +38,12 @@ struct SharedFilePage {
     U8 data[K64_PAGE_SIZE];
 };
 std::mutex g_sharedFileMutex;
-// key: path + "\0" + decimal page-aligned file offset -> one shared page buffer.
+// key: inode + "\0" + decimal page-aligned file offset -> one shared page buffer.
 std::unordered_map<std::string, std::shared_ptr<SharedFilePage>> g_sharedFileRegistry;
 
-std::shared_ptr<SharedFilePage> getSharedFilePage(const std::string& path, U64 offsetPage,
+std::shared_ptr<SharedFilePage> getSharedFilePage(U64 identity, U64 offsetPage,
                                                   const U8* seed, U64 seedLen, bool& created) {
-    std::string key = path;
+    std::string key = std::to_string(identity);
     key.push_back('\0');
     key += std::to_string(offsetPage);
     std::lock_guard<std::mutex> lk(g_sharedFileMutex);
@@ -84,10 +85,10 @@ std::shared_ptr<SharedFilePage> getSharedFilePage(const std::string& path, U64 o
 //     commit-on-write regardless, so cached data* stays behaviorally exact.
 //   - mmap over an existing committed page zeroes IN PLACE (buffer stable).
 //   - K64Page::commit() never reallocates an existing buffer.
-// The only events that free/replace a committed buffer are the KMemory64
-// destructor (execve reset, process exit — also covers heap-address reuse of
-// the KMemory64* tag) and K64Page::adoptShared (the shared-file mmap path).
-// Both bump the global generation; a TLB hit requires a generation match.
+// Mapping changes invalidate the cache and retain replaced backing so an
+// access already in flight cannot write into the host allocator's freed
+// memory. Entries use the generation observed before acquiring their data
+// pointer. The destructor also invalidates tags before backing is freed.
 // Entries are tagged with the owning KMemory64* because kernel code on one
 // thread can touch another process's memory (fork ctid writes, ptrace-style
 // peeks), and one host thread serves exactly one running guest thread.
@@ -109,7 +110,7 @@ inline U8* k64DTlbLookup(const void* mem, U64 pageNum) {
     }
     return nullptr;
 }
-inline void k64DTlbInsert(const void* mem, U64 pageNum, U8* data) {
+inline void k64DTlbInsert(const void* mem, U64 pageNum, U8* data, U32 observedGen) {
 #ifdef BOXEDWINE_BLOCK_CACHE_INFRA
     // Block-cache invalidation contract: a page registered as holding decoded
     // blocks is barred from the data TLB. All its accesses then take the slow
@@ -123,7 +124,7 @@ inline void k64DTlbInsert(const void* mem, U64 pageNum, U8* data) {
     e.mem = mem;
     e.page = pageNum;
     e.data = data;
-    e.gen = g_k64DTlbGen.load(std::memory_order_acquire);
+    e.gen = observedGen;
 }
 inline void k64DTlbInvalidateAll() {
     g_k64DTlbGen.fetch_add(1, std::memory_order_release);
@@ -217,6 +218,7 @@ void KMemory64::strayWriteCheck(U64 dstGuest, U64 len) {
 }
 
 void KMemory64::cloneFrom(const KMemory64* from) {
+    if (from == this) return;
     // Lock both sides: `from` may be a live address space (the forking parent),
     // and we're populating `this` (the fresh child). The parent could fault new
     // pages concurrently in MT mode; take its lock for a consistent snapshot.
@@ -224,9 +226,15 @@ void KMemory64::cloneFrom(const KMemory64* from) {
     // explicit guards (the CRITICAL_SECTION macro hard-codes the name `lock`, so
     // it can't be used twice in one scope).
 #ifdef BOXEDWINE_MULTI_THREADED
+    // Mapping operations take mmapMutex before pagesMutex. Snapshot ranges
+    // and page contents together so the child allocator sees inherited VMAs.
+    std::lock_guard<std::recursive_mutex> lockFromMappings(from->mmapMutex);
+    std::lock_guard<std::recursive_mutex> lockThisMappings(mmapMutex);
     std::lock_guard<std::recursive_mutex> lockFrom(from->pagesMutex);
     std::lock_guard<std::recursive_mutex> lockThis(pagesMutex);
 #endif
+    mmapNext = from->mmapNext;
+    ranges = from->ranges;
     pages.clear();
     pages.reserve(from->pages.size());
     for (const auto& kv : from->pages) {
@@ -234,7 +242,9 @@ void KMemory64::cloneFrom(const KMemory64* from) {
         copy->flags = kv.second->flags;
         // Only copy backing store for committed pages; an uncommitted page in
         // the parent (reserved but never touched) stays uncommitted in the child.
-        if (kv.second->committed()) {
+        if (kv.second->dataShared) {
+            copy->adoptShared(kv.second->data);
+        } else if (kv.second->committed()) {
             ::memcpy(copy->commit(), kv.second->data, K64_PAGE_SIZE);
         }
         pages.emplace(kv.first, std::move(copy));
@@ -245,6 +255,12 @@ K64Page* KMemory64::getPage(U64 pageNum) const {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
     auto it = pages.find(pageNum);
     return it == pages.end() ? nullptr : it->second.get();
+}
+
+U8* KMemory64::getPageData(U64 pageNum) const {
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
+    auto it = pages.find(pageNum);
+    return it == pages.end() ? nullptr : it->second->data;
 }
 
 K64Page* KMemory64::getOrAllocPage(U64 pageNum, U32 flagsIfNew) {
@@ -320,6 +336,7 @@ U32 KMemory64::getPageFlags(U64 pageNum) const {
 U64 KMemory64::mmapAnonymousFixed(U64 addr, U64 len, U32 prot) {
     if (len == 0) return (U64)-K_EINVAL;
     if (addr & K64_PAGE_MASK) return (U64)-K_EINVAL;
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(mmapMutex);
 
     U64 pageStart = addr >> K64_PAGE_SHIFT;
     U64 pageCount = (len + K64_PAGE_SIZE - 1) >> K64_PAGE_SHIFT;
@@ -330,8 +347,15 @@ U64 KMemory64::mmapAnonymousFixed(U64 addr, U64 len, U32 prot) {
     if (prot & 0x4) flags |= K64_PAGE_EXEC;
 
     for (U64 i = 0; i < pageCount; i++) {
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
         K64Page* page = getOrAllocPage(pageStart + i, flags);
         page->flags = flags;
+        if (page->dataShared) {
+            // MAP_FIXED anonymous/private replacement must not zero or keep
+            // aliasing the old file's shared buffer in other processes.
+            page->decommit();
+            k64DTlbInvalidateAll();
+        }
         // Lazy commit: a FRESH reservation gets NO backing buffer — it reads as
         // zero (memcpyFromGuest zero-fills an uncommitted page) and only commits
         // on first write. This is the leak fix: wine's huge PROT_NONE spans no
@@ -357,11 +381,12 @@ U64 KMemory64::mmapAnonymousFixed(U64 addr, U64 len, U32 prot) {
     return addr;
 }
 
-U64 KMemory64::mmapSharedFile(U64 addr, U64 len, U32 prot, const char* path,
+U64 KMemory64::mmapSharedFile(U64 addr, U64 len, U32 prot, U64 fileIdentity, const char* path,
                               U64 fileOffset, const U8* fileBytes, U64 fileBytesLen) {
     if (len == 0) return (U64)-K_EINVAL;
     if (addr & K64_PAGE_MASK) return (U64)-K_EINVAL;
-    if (!path) return (U64)-K_EINVAL;
+    if (!path || !fileIdentity) return (U64)-K_EINVAL;
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(mmapMutex);
 
     U64 pageStart = addr >> K64_PAGE_SHIFT;
     U64 pageCount = (len + K64_PAGE_SIZE - 1) >> K64_PAGE_SHIFT;
@@ -373,6 +398,7 @@ U64 KMemory64::mmapSharedFile(U64 addr, U64 len, U32 prot, const char* path,
 
     std::string p(path);
     for (U64 i = 0; i < pageCount; i++) {
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
         K64Page* page = getOrAllocPage(pageStart + i, flags);
         page->flags = flags;
         // Each guest page adopts the one shared buffer for this file page. The
@@ -390,10 +416,10 @@ U64 KMemory64::mmapSharedFile(U64 addr, U64 len, U32 prot, const char* path,
             if (seedLen > K64_PAGE_SIZE) seedLen = K64_PAGE_SIZE;
         }
         bool created = false;
-        std::shared_ptr<SharedFilePage> shared = getSharedFilePage(p, fpage, seed, seedLen, created);
+        std::shared_ptr<SharedFilePage> shared = getSharedFilePage(fileIdentity, fpage, seed, seedLen, created);
         noteGuestWrite(pageStart + i); // buffer replaced = cached blocks stale
-        // adoptShared REPLACES (and may free) the page's buffer — stale data
-        // TLB entries for this page must not survive.
+        // Replaced private backing remains alive for in-flight accesses, but
+        // subsequent cached accesses must use the new shared mapping.
         page->adoptShared(shared->data);
         k64DTlbInvalidateAll();
         if (std::getenv("BW64_SHAREMAP")) {
@@ -548,6 +574,33 @@ static void initWatch() {
     if (g_watchLen == 0) g_watchLen = 8;
 }
 
+// BW64_BSSDIAG=0xADDR -- temporary diagnostic for the BSS host-write bug.
+// Klogs host->guest writes and guest reads touching the page containing ADDR,
+// with backing buffer pointers, to see whether a write lands in the buffer
+// the read sees. Parsed once, env-gated, temporary.
+static U64 g_bssDiagPage = 0;
+static bool g_bssDiagInit = false;
+static void initBssDiag() {
+    g_bssDiagInit = true;
+    const char* e = std::getenv("BW64_BSSDIAG");
+    if (!e) return;
+    if (e[0] == 'i' && e[1] == 'm' && e[2] == 'g') { g_bssDiagPage = 1; }
+    else g_bssDiagPage = std::strtoull(e, nullptr, 0) >> K64_PAGE_SHIFT;
+    klog_fmt("BSSDIAG: armed for page 0x%llx", (unsigned long long)g_bssDiagPage);
+}
+// Defined here (klog_fmt available) for K64Page methods in kmemory64.h.
+// Logs buffer pointer changes when BW64_BSSDIAG is set.
+void bssBufDiagLog(const char* op, const void* oldPtr, const void* newPtr) {
+    klog_fmt("BSSDIAG BUF: %s old=%p new=%p", op, oldPtr, newPtr);
+}
+static inline bool bssDiagHit(U64 pageNum) {
+    if (!g_bssDiagInit) initBssDiag();
+    if (!g_bssDiagPage) return false;
+    if (g_bssDiagPage == 1) return (pageNum >= 0x40000 && pageNum < 0x41000) ||
+                                         (pageNum >= 0x140000 && pageNum < 0x141000);
+    return pageNum == g_bssDiagPage;
+}
+
 // BW64_MEMRING: a ring of the most recent guest writes made BY THE WINESERVER
 // process, each tagged with the guest RIP that issued it (recovered from the
 // running thread's CPU64). Bug #2's dominant faces are glibc malloc-metadata
@@ -605,6 +658,11 @@ void KMemory64::memcpyToGuest(U64 dstGuest, const void* src, U64 len) {
         g_strayInit && !g_strayOn && g_memRingInit && !g_memRingOn &&
         g_watchInit && !g_watchAddr) {
         if (U8* hit = k64DTlbLookup(this, dstGuest >> K64_PAGE_SHIFT)) {
+            if (bssDiagHit(dstGuest >> K64_PAGE_SHIFT)) {
+                U64 v = 0; std::memcpy(&v, src, len >= 8 ? 8 : (size_t)len);
+                klog_fmt("BSSDIAG W fast: dst=0x%llx hit=%p val=0x%llx",
+                         (unsigned long long)dstGuest, (void*)hit, (unsigned long long)v);
+            }
             ::memcpy(hit + offsetInPage, src, (size_t)len);
             return;
         }
@@ -631,8 +689,16 @@ void KMemory64::memcpyToGuest(U64 dstGuest, const void* src, U64 len) {
         offsetInPage = dstGuest & K64_PAGE_MASK;
         U64 chunk = K64_PAGE_SIZE - offsetInPage;
         if (chunk > len) chunk = len;
+        U32 observedGen = g_k64DTlbGen.load(std::memory_order_acquire);
         U8* data = commitPageLocked(pageNum, K64_PAGE_MAPPED | K64_PAGE_READ | K64_PAGE_WRITE);
-        k64DTlbInsert(this, pageNum, data);
+        k64DTlbInsert(this, pageNum, data, observedGen);
+        if (bssDiagHit(pageNum)) {
+            K64Page* pg = getPage(pageNum);
+            U64 v = 0; std::memcpy(&v, s, chunk >= 8 ? 8 : (size_t)chunk);
+            klog_fmt("BSSDIAG W slow: dst=0x%llx data=%p pageData=%p val=0x%llx",
+                     (unsigned long long)dstGuest, (void*)data,
+                     (void*)(pg ? pg->data : nullptr), (unsigned long long)v);
+        }
         ::memcpy(data + offsetInPage, s, (size_t)chunk); // commit-on-write (MT-safe)
         dstGuest += chunk;
         s += chunk;
@@ -647,20 +713,39 @@ void KMemory64::memcpyFromGuest(void* dst, U64 srcGuest, U64 len) {
     U64 offsetInPage = srcGuest & K64_PAGE_MASK;
     if (len && offsetInPage + len <= K64_PAGE_SIZE) {
         if (U8* hit = k64DTlbLookup(this, srcGuest >> K64_PAGE_SHIFT)) {
+            if (bssDiagHit(srcGuest >> K64_PAGE_SHIFT)) {
+                U64 v = 0; ::memcpy(&v, hit + offsetInPage, len >= 8 ? 8 : (size_t)len);
+                klog_fmt("BSSDIAG R fast: addr=0x%llx hit=%p val=0x%llx",
+                         (unsigned long long)srcGuest, (void*)hit, (unsigned long long)v);
+            }
             ::memcpy(dst, hit + offsetInPage, (size_t)len);
             return;
         }
     }
     U8* d = (U8*)dst;
+    bool diag = bssDiagHit(srcGuest >> K64_PAGE_SHIFT);
+    if (diag) {
+        U64 pageNum0 = srcGuest >> K64_PAGE_SHIFT;
+        U8* hit0 = k64DTlbLookup(this, pageNum0);
+        K64Page* pg0 = getPage(pageNum0);
+        klog_fmt("BSSDIAG R: addr=0x%llx tlbHit=%p pageData=%p committed=%d",
+                 (unsigned long long)srcGuest, (void*)hit0,
+                 (void*)(pg0 ? pg0->data : nullptr), pg0 && pg0->committed() ? 1 : 0);
+    }
     while (len) {
         U64 pageNum = srcGuest >> K64_PAGE_SHIFT;
         offsetInPage = srcGuest & K64_PAGE_MASK;
         U64 chunk = K64_PAGE_SIZE - offsetInPage;
         if (chunk > len) chunk = len;
-        K64Page* page = getPage(pageNum);
-        if (page && page->committed()) {
-            k64DTlbInsert(this, pageNum, page->data);
-            ::memcpy(d, page->data + offsetInPage, (size_t)chunk);
+        U32 observedGen = g_k64DTlbGen.load(std::memory_order_acquire);
+        U8* data = getPageData(pageNum);
+        if (data) {
+            k64DTlbInsert(this, pageNum, data, observedGen);
+            ::memcpy(d, data + offsetInPage, (size_t)chunk);
+            if (diag) {
+                U64 v = 0; std::memcpy(&v, d, chunk >= 8 ? 8 : (size_t)chunk);
+                klog_fmt("BSSDIAG R val: 0x%llx", (unsigned long long)v);
+            }
         } else {
             // Absent slot OR reserved-but-uncommitted page → reads as zero.
             // (Not cached: a later write commits a buffer the TLB must see.)
@@ -690,10 +775,11 @@ void KMemory64::memsetGuest(U64 dstGuest, U8 value, U64 len) {
 U8 KMemory64::readb(U64 addr) {
     U64 pageNum = addr >> K64_PAGE_SHIFT;
     if (U8* hit = k64DTlbLookup(this, pageNum)) return hit[addr & K64_PAGE_MASK];
-    K64Page* p = getPage(pageNum);
-    if (p && p->committed()) {
-        k64DTlbInsert(this, pageNum, p->data);
-        return p->data[addr & K64_PAGE_MASK];
+    U32 observedGen = g_k64DTlbGen.load(std::memory_order_acquire);
+    U8* data = getPageData(pageNum);
+    if (data) {
+        k64DTlbInsert(this, pageNum, data, observedGen);
+        return data[addr & K64_PAGE_MASK];
     }
     return 0;
 }
@@ -721,8 +807,9 @@ void KMemory64::writeb(U64 addr, U8 value) {
     strayWriteCheck(addr, 1);
     recordMemWrite(addr, 1, value);
     noteGuestWrite(pageNum); // slow path only — fast path is barred for block pages
+    U32 observedGen = g_k64DTlbGen.load(std::memory_order_acquire);
     U8* data = commitPageLocked(pageNum, K64_PAGE_MAPPED | K64_PAGE_READ | K64_PAGE_WRITE);
-    k64DTlbInsert(this, pageNum, data);
+    k64DTlbInsert(this, pageNum, data, observedGen);
     data[addr & K64_PAGE_MASK] = value; // commit-on-write (MT-safe)
 }
 

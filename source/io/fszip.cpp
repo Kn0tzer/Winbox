@@ -31,37 +31,45 @@ extern "C"
 #include <time.h>
 #include <string.h>
 
-void FsZip::setupZipRead(U64 zipOffset, U64 zipFileOffset, const void* owner) {
+unzFile FsZip::openEntryStream(U64 zipOffset) {
 #ifdef BOXEDWINE_ZLIB
-    // The (lastZipOffset, lastZipFileOffset) skip-ahead is only valid when the
-    // stream is exactly where THIS reader last left it. If a different open-node
-    // touched the shared unzFile in between (two processes mmap'ing the same zip
-    // entry concurrently — each FsZipOpenNode has its own `pos`, but they share
-    // this one decompression stream), the skip would fast-forward by the wrong
-    // distance and decode the wrong file bytes. Forcing a fresh reopen+seek on an
-    // owner change keeps each read positioned by its own (offset,pos).
-    bool ownerChanged = (owner != lastReadOwner);
-    if (zipOffset != lastZipOffset || zipFileOffset < lastZipFileOffset || ownerChanged) {
-        unzCloseCurrentFile(this->zipfile);
-        unzSetOffset64(this->zipfile, zipOffset);
-        lastZipFileOffset = 0;
-        unzOpenCurrentFile(this->zipfile);
-        lastZipOffset = zipOffset;
-    }
-    lastReadOwner = owner;
-    if (zipFileOffset != lastZipFileOffset) {
-        char tmp[4096] = {};
-        U32 todo = (U32)(zipFileOffset - lastZipFileOffset);
-        while (todo) {
-            todo-=unzReadCurrentFile(this->zipfile, tmp, todo>4096?4096:todo);
+    const int maxAttempts = 3;
+    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+        unzFile z = fsZipUrlIsSpec(this->zipPath) ? fsZipUrlOpen(this->zipPath) : unzOpen(this->zipPath.c_str());
+        if (!z) {
+            klog_fmt("FsZip::openEntryStream: could not open %s (attempt %d/%d)", this->zipPath.c_str(), attempt, maxAttempts);
+            if (attempt == maxAttempts) return nullptr;
+            continue;
         }
-    }  
+        int setOff = unzSetOffset64(z, zipOffset);
+        int openCur = (setOff == UNZ_OK) ? unzOpenCurrentFile(z) : setOff;
+        if (setOff == UNZ_OK && openCur == UNZ_OK) {
+            U64 n = ++this->statStreamOpens;
+            if ((n & 63) == 0) {
+                klog_fmt("FsZip: %llu entry streams opened, %llu MB decompressed, %llu MB served from cache, %llu backward reopens",
+                         (unsigned long long)n,
+                         (unsigned long long)(this->statBytesDecompressed.load() >> 20),
+                         (unsigned long long)(this->statCacheServedBytes.load() >> 20),
+                         (unsigned long long)this->statStreamReopens.load());
+            }
+            return z;
+        }
+        klog_fmt("FsZip::openEntryStream: could not position entry in %s (attempt %d/%d, setOffset=%d, openCurrent=%d, zipOffset=%llu)",
+                 this->zipPath.c_str(), attempt, maxAttempts, setOff, openCur, (unsigned long long)zipOffset);
+        unzClose(z);
+        if (attempt == maxAttempts) return nullptr;
+    }
+    return nullptr;
+#else
+    (void)zipOffset;
+    return nullptr;
 #endif
 }
 
 bool FsZip::init(BString zipPath, BString mount) {
 #ifdef BOXEDWINE_ZLIB
     BString strippedMount;
+    this->zipPath = zipPath;
 
     std::shared_ptr<FsNode> root = Fs::getNodeFromLocalPath(B(""), B(""), true);
     // A bw64url: spec is not a filesystem path — give its tombstone file a
@@ -72,7 +80,6 @@ bool FsZip::init(BString zipPath, BString mount) {
         Fs::makeLocalDirs(mount);
         strippedMount = mount.substr(0, mount.length() - 1);
     }
-    this->lastZipOffset = 0xFFFFFFFFFFFFFFFFl;
     if (zipPath.length()) {
         unz_global_info global_info = {};
 
@@ -190,6 +197,12 @@ bool FsZip::init(BString zipPath, BString mount) {
 
 FsZip::~FsZip() {
 #ifdef BOXEDWINE_ZLIB
+    klog_fmt("FsZip: final: %llu entry streams, %llu MB decompressed, %llu MB served from cache, %llu backward reopens [%s]",
+             (unsigned long long)this->statStreamOpens.load(),
+             (unsigned long long)(this->statBytesDecompressed.load() >> 20),
+             (unsigned long long)(this->statCacheServedBytes.load() >> 20),
+             (unsigned long long)this->statStreamReopens.load(),
+             this->zipPath.c_str());
     unzClose(this->zipfile);
 #endif
 }

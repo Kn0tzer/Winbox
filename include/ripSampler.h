@@ -30,6 +30,7 @@
 #include <string>
 
 class CPU64;
+class CPU;
 
 // True iff BW64_RIPSAMPLE is set (env read once, cached). All other entry
 // points early-out on this, so callers can also gate their argument prep.
@@ -46,6 +47,7 @@ int  ripSamplerAcquireSlot(int pid, int tid);
 // execve() frees the old CPU64 and installs a fresh one; republishing keeps the
 // slot pointing at the pointer the loop is actually running. No-op on slot==-1.
 void ripSamplerPublish(int slot, CPU64* cpu);
+void ripSamplerPublish32(int slot, CPU* cpu);
 
 // Release the slot as the thread exits (before its CPU64 is torn down).
 void ripSamplerReleaseSlot(int slot);
@@ -58,5 +60,11 @@ void ripSamplerNoteModule(int pid, U64 lo, U64 len, const std::string& path);
 // Drop all module ranges for pid (execve replaces the address space — stale
 // ranges would mis-attribute the next image's RIPs).
 void ripSamplerClearPid(int pid);
+
+// BW64_RIPSAMPLE_PROFILE statistical profiler (additive). Defined in
+// source/emulation/cpu/normal/ripSampler.cpp.
+bool ripSamplerProfileEnabled();
+void ripSamplerProfAdd(int pid, U64 rip, U64 insns);
+void ripSamplerProfDumpReset(int pid);
 
 #endif // __RIP_SAMPLER_H__

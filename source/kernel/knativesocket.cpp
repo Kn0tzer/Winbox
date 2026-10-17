@@ -22,6 +22,7 @@
 #include "ksocket.h"
 #include "kstat.h"
 #include "bufferaccess.h"
+#include <atomic>
 
 #ifdef WIN32
 #undef BOOL
@@ -40,6 +41,7 @@ static int winsock_intialized;
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
+#include <poll.h>
 #include <fcntl.h>
 #include <net/if.h>
 #include <netdb.h>
@@ -79,8 +81,8 @@ BString socketAddressName(KMemory* memory, U32 address, U32 len);
 static KNativeThread* checkWaitingNativeSocketsThread;
 static BOXEDWINE_MUTEX checkWaitingNativeSocketsThreadMutex;
 static BOXEDWINE_MUTEX waitingNodeMutex;
-static bool checkWaitingNativeSocketsThreadDone;
-static S32 nativeSocketPipe[2];
+static std::atomic_bool checkWaitingNativeSocketsThreadDone{false};
+static S32 nativeSocketPipe[2] = {-1, -1};
 #endif
 
 void updateWaitingList() {
@@ -118,8 +120,8 @@ void updateWaitingList() {
 
 bool checkWaitingNativeSockets(int timeout) {
     struct timeval t;
-    t.tv_sec = 0;
-    t.tv_usec = timeout*1000;
+    t.tv_sec = timeout >= 0 ? timeout / 1000 : 0;
+    t.tv_usec = timeout >= 0 ? (timeout % 1000) * 1000 : 0;
 
 #ifdef BOXEDWINE_MULTI_THREADED
     {
@@ -134,30 +136,34 @@ bool checkWaitingNativeSockets(int timeout) {
             return false;
 #endif           
         int result = select(maxSocketId + 1, &waitingReadset, &waitingWriteset, &waitingErrorset, (timeout>=0?&t: nullptr));
-        if (result) {
+        if (result > 0) {
 #ifdef BOXEDWINE_MULTI_THREADED
             if (FD_ISSET(nativeSocketPipe[0], &waitingReadset)) {
                 char buf = 0;
+#ifdef __EMSCRIPTEN__
+                ::read(nativeSocketPipe[0], &buf, 1);
+#else
                 ::recv(nativeSocketPipe[0], &buf, 1, 0);
+#endif
                 return true;
             }
 #endif
-            BOXEDWINE_CONDITION* conditions[1024] = { };
+            BOXEDWINE_CONDITION conditions[1024] = { };
             U32 conditionCount = 0;
             {
                 BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(waitingNodeMutex);                
 
                 for (auto& s : waitingNativeSockets) {
                     if ((FD_ISSET(s->nativeSocket, &waitingReadset) || FD_ISSET(s->nativeSocket, &waitingErrorset)) && s->readingCond->waitCount()) {
-                        if (conditionCount<1024) conditions[conditionCount++]=&s->readingCond;
+                        if (conditionCount<1024) conditions[conditionCount++]=s->readingCond;
                     }
                     if ((FD_ISSET(s->nativeSocket, &waitingWriteset) || FD_ISSET(s->nativeSocket, &waitingErrorset)) && s->writingCond->waitCount()) {
-                        if (conditionCount<1024) conditions[conditionCount++]=&s->writingCond;
+                        if (conditionCount<1024) conditions[conditionCount++]=s->writingCond;
                     }
                 }
             }
             for (U32 i=0;i<conditionCount;i++) {
-                BOXEDWINE_CONDITION& c = *conditions[i];
+                BOXEDWINE_CONDITION& c = conditions[i];
                 BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(c);
                 BOXEDWINE_CONDITION_SIGNAL_ALL(c);
             }
@@ -190,7 +196,22 @@ static int checkWaitingNativeSockets_thread(void *ptr) {
 void startNativeSocketsThread() {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(checkWaitingNativeSocketsThreadMutex);
     if (!checkWaitingNativeSocketsThread) {
+#ifdef __EMSCRIPTEN__
+        // Emscripten has PIPEFS wakeups but its socketpair syscall is ENOSYS.
+        // Leaving the zero-initialized pair in place repeatedly polls stdin
+        // and skips every real socket's readiness notification.
+        if (::pipe(nativeSocketPipe) != 0) {
+            kpanic("Failed to create native socket monitor pipe");
+        }
+        if (nativeSocketPipe[0] >= FD_SETSIZE) {
+            ::close(nativeSocketPipe[0]);
+            ::close(nativeSocketPipe[1]);
+            nativeSocketPipe[0] = nativeSocketPipe[1] = -1;
+            kpanic("Native socket monitor pipe exceeds select descriptor limit");
+        }
+#else
         Platform::nativeSocketPair(nativeSocketPipe);
+#endif
         setNativeBlocking(nativeSocketPipe[0], false);
         setNativeBlocking(nativeSocketPipe[1], false);
         checkWaitingNativeSocketsThread = KNativeThread::createAndStartThread(checkWaitingNativeSockets_thread, B("NativeSockeThread"), (void *)nullptr);
@@ -198,12 +219,22 @@ void startNativeSocketsThread() {
 }
 
 void stopNativeSocketsThread() {
+    // KSystem::destroy joins every guest thread before stopping this monitor.
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(checkWaitingNativeSocketsThreadMutex);
     if (checkWaitingNativeSocketsThread) {
         checkWaitingNativeSocketsThreadDone = true;
         char buf = 0;
+#ifdef __EMSCRIPTEN__
+        if (nativeSocketPipe[1] >= 0) ::write(nativeSocketPipe[1], &buf, 1);
+#else
         ::send(nativeSocketPipe[1], &buf, 1, 0);
+#endif
         checkWaitingNativeSocketsThread->wait();
+#ifdef __EMSCRIPTEN__
+        ::close(nativeSocketPipe[0]);
+        ::close(nativeSocketPipe[1]);
+        nativeSocketPipe[0] = nativeSocketPipe[1] = -1;
+#endif
         checkWaitingNativeSocketsThreadDone = false;
         checkWaitingNativeSocketsThread = nullptr;
     }
@@ -211,6 +242,9 @@ void stopNativeSocketsThread() {
 #endif
 
 void addWaitingNativeSocket(const std::shared_ptr<KNativeSocketObject>& s) {
+#ifdef BOXEDWINE_MULTI_THREADED
+    const std::lock_guard<std::recursive_mutex> lifecycleLock(checkWaitingNativeSocketsThreadMutex);
+#endif
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(waitingNodeMutex);
     for (auto& waitingSocket : waitingNativeSockets) {
         if (waitingSocket->nativeSocket == s->nativeSocket) {
@@ -222,11 +256,18 @@ void addWaitingNativeSocket(const std::shared_ptr<KNativeSocketObject>& s) {
 #ifdef BOXEDWINE_MULTI_THREADED
     startNativeSocketsThread();
     char buf = 2;
+#ifdef __EMSCRIPTEN__
+    if (nativeSocketPipe[1] >= 0) ::write(nativeSocketPipe[1], &buf, 1);
+#else
     ::send(nativeSocketPipe[1], &buf, 1, 0);
+#endif
 #endif
 }
 
 void removeWaitingSocket(S32 nativeSocket) {
+#ifdef BOXEDWINE_MULTI_THREADED
+    const std::lock_guard<std::recursive_mutex> lifecycleLock(checkWaitingNativeSocketsThreadMutex);
+#endif
     {
         BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(waitingNodeMutex);
         for (int i = 0; i < (int)waitingNativeSockets.size(); i++) {
@@ -238,101 +279,113 @@ void removeWaitingSocket(S32 nativeSocket) {
     }
 #ifdef BOXEDWINE_MULTI_THREADED
     char buf = 3;
+#ifdef __EMSCRIPTEN__
+    if (nativeSocketPipe[1] >= 0) ::write(nativeSocketPipe[1], &buf, 1);
+#else
     ::send(nativeSocketPipe[1], &buf, 1, 0);
+#endif
 #endif
 }
 
-S32 translateNativeSocketError(const std::shared_ptr<KNativeSocketObject>& s, int error) {
+S32 translateNativeSocketError(S32 nativeSocket, int error) {
     S32 result = 0;
 #ifdef WIN32
+    if (error == WSAEMFILE) return -K_EMFILE;
+    if (error == WSAENOBUFS) return -K_ENOBUFS;
+    if (error == WSAEALREADY) return -K_EALREADY;
     if (error == WSAENOTCONN) {
         result = -K_ENOTCONN;
-        LOG_SOCK("  native socket: %x error %s(%x)", s->nativeSocket, "ENOTCONN", result);
+        LOG_SOCK("  native socket: %x error %s(%x)", nativeSocket, "ENOTCONN", result);
     }
     else if (error == WSAEWOULDBLOCK) {
         result = -K_EWOULDBLOCK;
-        LOG_SOCK("  native socket: %x error %s(%x)", s->nativeSocket, "EWOULDBLOCK", result);
+        LOG_SOCK("  native socket: %x error %s(%x)", nativeSocket, "EWOULDBLOCK", result);
     }
     else if (error == WSAETIMEDOUT) {
         result = -K_ETIMEDOUT;
-        LOG_SOCK("  native socket: %x error %s(%x)", s->nativeSocket, "ETIMEDOUT", result);
+        LOG_SOCK("  native socket: %x error %s(%x)", nativeSocket, "ETIMEDOUT", result);
     }
     else if (error == WSAECONNRESET) {
         result = -K_ECONNRESET;
-        LOG_SOCK("  native socket: %x error %s(%x)", s->nativeSocket, "ECONNRESET", result);
+        LOG_SOCK("  native socket: %x error %s(%x)", nativeSocket, "ECONNRESET", result);
     }
     else if (error == WSAEDESTADDRREQ) {
         result = -K_EDESTADDRREQ;
-        LOG_SOCK("  native socket: %x error %s(%x)", s->nativeSocket, "EDESTADDRREQ", result);
+        LOG_SOCK("  native socket: %x error %s(%x)", nativeSocket, "EDESTADDRREQ", result);
     }
     else if (error == WSAEHOSTUNREACH) {
         result = -K_EHOSTUNREACH;
-        LOG_SOCK("  native socket: %x error %s(%x)", s->nativeSocket, "EHOSTUNREACH", result);
+        LOG_SOCK("  native socket: %x error %s(%x)", nativeSocket, "EHOSTUNREACH", result);
     }
     else if (error == WSAECONNREFUSED) {
         result = -K_ECONNREFUSED;
-        LOG_SOCK("  native socket: %x error %s(%x)", s->nativeSocket, "ECONNREFUSED", result);
+        LOG_SOCK("  native socket: %x error %s(%x)", nativeSocket, "ECONNREFUSED", result);
     }
     else if (error == WSAEISCONN) {
         result = -K_EISCONN;
-        LOG_SOCK("  native socket: %x error %s(%x)", s->nativeSocket, "EISCONN", result);
+        LOG_SOCK("  native socket: %x error %s(%x)", nativeSocket, "EISCONN", result);
     }
     else if (error == WSAEMSGSIZE) {
         result = -K_EMSGSIZE;
-        LOG_SOCK("  native socket: %x error %s(%x)", s->nativeSocket, "EMSGSIZE", result);
+        LOG_SOCK("  native socket: %x error %s(%x)", nativeSocket, "EMSGSIZE", result);
     }
     else {
         result = -K_EIO;
-        LOG_SOCK("  native socket: %x error %s(%x)", s->nativeSocket, "EIO", result);
+        LOG_SOCK("  native socket: %x error %s(%x)", nativeSocket, "EIO", result);
     }
 
-#else 
+#else
+    if (error == EMFILE) return -K_EMFILE;
+    if (error == ENFILE) return -K_ENFILE;
+    if (error == ENOMEM) return -K_ENOMEM;
+    if (error == ENOBUFS) return -K_ENOBUFS;
+    if (error == EALREADY) return -K_EALREADY;
     if (error == ENOTCONN) {
         result = -K_ENOTCONN;
-        LOG_SOCK("  native socket: %x error %s(%x)", s->nativeSocket, "ENOTCONN", error);
+        LOG_SOCK("  native socket: %x error %s(%x)", nativeSocket, "ENOTCONN", error);
     }
     else if (error == EWOULDBLOCK) {
         result = -K_EWOULDBLOCK;
-        LOG_SOCK("  native socket: %x error %s(%x)", s->nativeSocket, "EWOULDBLOCK", error);
+        LOG_SOCK("  native socket: %x error %s(%x)", nativeSocket, "EWOULDBLOCK", error);
     }
     else if (error == ETIMEDOUT) {
         result = -K_ETIMEDOUT;
-        LOG_SOCK("  native socket: %x error %s(%x)", s->nativeSocket, "ETIMEDOUT", error);
+        LOG_SOCK("  native socket: %x error %s(%x)", nativeSocket, "ETIMEDOUT", error);
     }
     else if (error == ECONNRESET) {
         result = -K_ECONNRESET;
-        LOG_SOCK("  native socket: %x error %s(%x)", s->nativeSocket, "ECONNRESET", error);
+        LOG_SOCK("  native socket: %x error %s(%x)", nativeSocket, "ECONNRESET", error);
     }
     else if (error == EDESTADDRREQ) {
         result = -K_EDESTADDRREQ;
-        LOG_SOCK("  native socket: %x error %s(%x)", s->nativeSocket, "EDESTADDRREQ", error);
+        LOG_SOCK("  native socket: %x error %s(%x)", nativeSocket, "EDESTADDRREQ", error);
     }
     else if (error == EHOSTUNREACH) {
         result = -K_EHOSTUNREACH;
-        LOG_SOCK("  native socket: %x error %s(%x)", s->nativeSocket, "EHOSTUNREACH", error);
+        LOG_SOCK("  native socket: %x error %s(%x)", nativeSocket, "EHOSTUNREACH", error);
     }
     else if (error == EISCONN) {
         result = -K_EISCONN;
-        LOG_SOCK("  native socket: %x error %s(%x)", s->nativeSocket, "EISCONN", error);
+        LOG_SOCK("  native socket: %x error %s(%x)", nativeSocket, "EISCONN", error);
     }
     else if (error == ECONNREFUSED) {
         result = -K_ECONNREFUSED;
-        LOG_SOCK("  native socket: %x error %s(%x)", s->nativeSocket, "ECONNREFUSED", error);
+        LOG_SOCK("  native socket: %x error %s(%x)", nativeSocket, "ECONNREFUSED", error);
     } else if (error == EMSGSIZE) {
         result = -K_EMSGSIZE;
-        LOG_SOCK("  native socket: %x error %s(%x)", s->nativeSocket, "EMSGSIZE", error);
+        LOG_SOCK("  native socket: %x error %s(%x)", nativeSocket, "EMSGSIZE", error);
     } else if (error == EAFNOSUPPORT) {
         result = -K_EAFNOSUPPORT;
-        LOG_SOCK("  native socket: %x error %s(%x)", s->nativeSocket, "EAFNOSUPPORT", error);
+        LOG_SOCK("  native socket: %x error %s(%x)", nativeSocket, "EAFNOSUPPORT", error);
     } else if (error == EINPROGRESS) {
         result = -K_EINPROGRESS;
-        LOG_SOCK("  native socket: %x error %s(%x)", s->nativeSocket, "EINPROGRESS", error);
+        LOG_SOCK("  native socket: %x error %s(%x)", nativeSocket, "EINPROGRESS", error);
     } else if (error == EPERM) {
         result = -K_EPERM;
-        LOG_SOCK("  native socket: %x error %s(%x)", s->nativeSocket, "EPERM", error);
+        LOG_SOCK("  native socket: %x error %s(%x)", nativeSocket, "EPERM", error);
     } else {
         result = -K_EIO;
-        LOG_SOCK("  native socket: %x error %s(%x)", s->nativeSocket, "UKNOWN/EIO", error);
+        LOG_SOCK("  native socket: %x error %s(%x)", nativeSocket, "UKNOWN/EIO", error);
     }
 #endif
     return result;
@@ -340,9 +393,9 @@ S32 translateNativeSocketError(const std::shared_ptr<KNativeSocketObject>& s, in
 
 S32 handleNativeSocketError(const std::shared_ptr<KNativeSocketObject>& s, bool write) {
 #ifdef WIN32
-    S32 result = translateNativeSocketError(s, WSAGetLastError());
+    S32 result = translateNativeSocketError(s->nativeSocket, WSAGetLastError());
 #else
-    S32 result = translateNativeSocketError(s, errno);
+    S32 result = translateNativeSocketError(s->nativeSocket, errno);
 #endif
     s->error = -result;
 #ifndef BOXEDWINE_MULTI_THREADED
@@ -378,7 +431,7 @@ KNativeSocketObject::KNativeSocketObject(U32 domain, U32 type, U32 protocol) : K
     U32 nativeType = 0;
     U32 nativeProtocol = 0;
 
-    this->nativeSocket = 0;
+    this->nativeSocket = -1;
 
     if (type == K_SOCK_STREAM) {
         nativeType = SOCK_STREAM;
@@ -391,7 +444,7 @@ KNativeSocketObject::KNativeSocketObject(U32 domain, U32 type, U32 protocol) : K
     } else if (type == K_SOCK_SEQPACKET) {
         nativeType = SOCK_SEQPACKET;
     } else {
-        this->error = K_EPROTOTYPE;
+        this->error = -K_EPROTOTYPE;
         return;
     }
     if (protocol == 0) {
@@ -415,6 +468,22 @@ KNativeSocketObject::KNativeSocketObject(U32 domain, U32 type, U32 protocol) : K
         nativeProtocol = IPPROTO_IP;
     }
     this->nativeSocket = (S32)socket(AF_INET, nativeType, nativeProtocol);
+    if (this->nativeSocket < 0) {
+#ifdef WIN32
+        this->error = translateNativeSocketError(this->nativeSocket, WSAGetLastError());
+#else
+        this->error = translateNativeSocketError(this->nativeSocket, errno);
+#endif
+        return;
+    }
+#ifndef BOXEDWINE_MSVC
+    if (this->nativeSocket >= FD_SETSIZE) {
+        closesocket(this->nativeSocket);
+        this->nativeSocket = -1;
+        this->error = -K_EMFILE;
+        return;
+    }
+#endif
     LOG_SOCK("%x native socket: %x open nativeType=%x nativeProtocol=%x", KThread::currentThread()->id, nativeSocket, nativeType, nativeProtocol);
 #ifndef BOXEDWINE_MULTI_THREADED
     setNativeBlocking(this->nativeSocket, false);
@@ -787,7 +856,7 @@ bool KNativeSocketObject::isOpen() {
         return false;
     }
     */
-    return this->listening || this->connected;
+    return this->listening || this->connected || this->connecting;
 }
 
 bool KNativeSocketObject::isPriorityReadReady() {
@@ -830,13 +899,14 @@ bool KNativeSocketObject::isWriteReady() {
 
     ::select(this->nativeSocket + 1, nullptr, &sready, nullptr, &nowait);
     bool result = FD_ISSET(this->nativeSocket, &sready) != 0;
-    if (result) {
-        this->error = 0;
-    }
     return result;
 }
 
 void KNativeSocketObject::waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) {
+#ifdef BOXEDWINE_MULTI_THREADED
+    const std::lock_guard<std::recursive_mutex> lifecycleLock(checkWaitingNativeSocketsThreadMutex);
+#endif
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(waitingNodeMutex);
     if (events & K_POLLIN) {
         BOXEDWINE_CONDITION_ADD_PARENT(this->readingCond, parentCondition);
     } else {
@@ -847,7 +917,7 @@ void KNativeSocketObject::waitForEvents(BOXEDWINE_CONDITION& parentCondition, U3
     } else {
         BOXEDWINE_CONDITION_REMOVE_PARENT(this->writingCond, parentCondition);
     }
-    if (events == 0) {
+    if (!readingCond->parentsCount() && !writingCond->parentsCount()) {
         removeWaitingSocket(this->nativeSocket);
     } else {
         std::shared_ptr< KNativeSocketObject> t = std::dynamic_pointer_cast<KNativeSocketObject>(shared_from_this());
@@ -952,7 +1022,7 @@ U32 KNativeSocketObject::connect(KThread* thread, const KFileDescriptorPtr& fd, 
                 return -K_EIO;
             }
             if (error) {
-                result = translateNativeSocketError(t, error);
+                result = translateNativeSocketError(t->nativeSocket, error);
                 if (result != (U32)(-K_EWOULDBLOCK)) {
                     return result;
                 }
@@ -991,6 +1061,32 @@ U32 KNativeSocketObject::connect(KThread* thread, const KFileDescriptorPtr& fd, 
     int r = ::connect(this->nativeSocket, addr, addrLen);
     LOG_SOCK("native socket: %x connect %s result=%x", nativeSocket, socketAddressName(thread->memory, address, len).c_str(), r);
     if (r == 0) {
+#ifdef __EMSCRIPTEN__
+        // SOCKFS returns zero while the WebSocket is still opening. Reporting
+        // immediate success suppresses Wine's FD_CONNECT event. Let poll finish
+        // the connection when the underlying WebSocket becomes writable.
+        this->connected = false;
+        this->connecting = true;
+        if (!this->blocking) {
+            this->error = K_EINPROGRESS;
+            return -K_EINPROGRESS;
+        }
+        struct pollfd pending = {this->nativeSocket, POLLOUT, 0};
+        if (::poll(&pending, 1, -1) < 0) {
+            this->connecting = false;
+            return handleNativeSocketError(t, true);
+        }
+        int connectError = 0;
+        socklen_t connectErrorLen = sizeof(connectError);
+        int optionResult = ::getsockopt(this->nativeSocket, SOL_SOCKET, SO_ERROR, (char*)&connectError, &connectErrorLen);
+        this->connecting = false;
+        if (optionResult < 0) return handleNativeSocketError(t, true);
+        if (connectError) return translateNativeSocketError(this->nativeSocket, connectError);
+        if (!(pending.revents & POLLOUT)) return -K_ECONNREFUSED;
+        this->connected = true;
+        this->error = 0;
+        return 0;
+#endif
         int error = 0;
         socklen_t optLen = 4;
         ::getsockopt(this->nativeSocket, SOL_SOCKET, SO_ERROR, (char*)&error, &optLen);
@@ -1309,8 +1405,18 @@ U32 KNativeSocketObject::getsockopt(KThread* thread, const KFileDescriptorPtr& f
         } else if (name == K_SO_ERROR) {
             if (len != 4)
                 kpanic("KNativeSocketObject::getsockopt SO_ERROR expecting len of 4");
-            memory->writed(value, this->error);
-            retrievedValue = this->error;            
+            int nativeError = 0;
+            result = ::getsockopt(this->nativeSocket, SOL_SOCKET, SO_ERROR, (char*)&nativeError, &len);
+            if (!result) {
+                retrievedValue = nativeError ? -translateNativeSocketError(this->nativeSocket, nativeError) : 0;
+                memory->writed(value, retrievedValue);
+#ifdef __EMSCRIPTEN__
+                if (this->connecting && (nativeError || this->isWriteReady())) {
+                    this->connecting = false;
+                    this->connected = nativeError == 0;
+                }
+#endif
+            }
         } else if (name == K_SO_TYPE) { 
             if (len != 4)
                 kpanic("KNativeSocketObject::getsockopt K_SO_TYPE expecting len of 4");
@@ -1440,17 +1546,29 @@ U32 KNativeSocketObject::sendmsg(KThread* thread, const KFileDescriptorPtr& fd, 
             kwarn("KNativeSocketObject::sendmsg does not support sending file handles");
         }				
     }
+    // Snapshot the guest descriptors once: a second length read can race a
+    // guest writer, and unchecked 32-bit totals can wrap below the allocation.
+    if (hdr.msg_iovlen > 1024) return -K_EMSGSIZE;
+    if (hdr.msg_iovlen && hdr.msg_iov > 0xffffffffu - hdr.msg_iovlen * 8) return -K_EFAULT;
+    struct GuestIov { U32 address; U32 length; };
+    std::vector<GuestIov> vectors;
+    vectors.reserve(hdr.msg_iovlen);
     U32 len = 0;
-    for (U32 i=0;i<hdr.msg_iovlen;i++) {
-        len += memory->readd(hdr.msg_iov + 8 * i + 4);
-    }
-    U8* buffer = new U8[len];
-    len = 0;
     for (U32 i = 0; i < hdr.msg_iovlen; i++) {
-        U32 p = memory->readd(hdr.msg_iov + 8 * i);
-        U32 toCopy = memory->readd(hdr.msg_iov + 8 * i + 4);
-        memory->memcpy(buffer + len, p, toCopy);
-        len += toCopy;
+        GuestIov entry{memory->readd(hdr.msg_iov + 8 * i), memory->readd(hdr.msg_iov + 8 * i + 4)};
+        if (entry.length > 0x7fffffffu - len) return -K_EMSGSIZE;
+        if (entry.length && entry.address > 0xffffffffu - entry.length) return -K_EFAULT;
+        vectors.push_back(entry);
+        len += entry.length;
+    }
+    U8 stackBuf[4096];
+    std::unique_ptr<U8[]> heapBuf;
+    if (len > sizeof(stackBuf)) heapBuf.reset(new U8[len]);
+    U8* buffer = heapBuf ? heapBuf.get() : stackBuf;
+    U32 offset = 0;
+    for (const auto& entry : vectors) {
+        memory->memcpy(buffer + offset, entry.address, entry.length);
+        offset += entry.length;
     }
     struct sockaddr_in dest = {0};
     U32 destLen = 0;
@@ -1474,7 +1592,6 @@ U32 KNativeSocketObject::sendmsg(KThread* thread, const KFileDescriptorPtr& fd, 
         result = (U32)::send(this->nativeSocket, (const char*)buffer, len, nativeFlags);
     }
     LOG_SOCK("%x native socket: %x sendmsg msg_name=%x msg_namelen=%x result=%x", thread->id, nativeSocket, hdr.msg_name, hdr.msg_namelen, result);
-    delete[] buffer;
     if ((S32)result >= 0) {
         this->error = 0;
         return result;
@@ -1503,7 +1620,9 @@ U32 KNativeSocketObject::recvmsg(KThread* thread, const KFileDescriptorPtr& fd, 
 
     for (U32 i = 0; i < hdr.msg_iovlen; i++) {
         U32 p = memory->readd(hdr.msg_iov + 8 * i);
-        U32 len = memory->readd(hdr.msg_iov + 8 * i + 4);
+        U32 requested = memory->readd(hdr.msg_iov + 8 * i + 4);
+        if (!requested) continue;
+        U32 len = requested;
 
         struct sockaddr_in in = {0};
         socklen_t inLen = sizeof(struct sockaddr_in);
@@ -1525,6 +1644,10 @@ U32 KNativeSocketObject::recvmsg(KThread* thread, const KFileDescriptorPtr& fd, 
             memory->writed(address + 4, inLen);
             result+=r;
             this->error = 0;
+            // A short vector ends a stream scatter operation. Advancing after
+            // the page-sized cap would leave holes in the preceding vector;
+            // repeating MSG_PEEK would duplicate the stream's first bytes.
+            if ((U32)r < requested || (nativeFlags & MSG_PEEK)) break;
         }
         else if (result) {
             break;

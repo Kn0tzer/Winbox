@@ -386,6 +386,7 @@ private:
 
     BHashTable<U32, KThread*> threads;
     BOXEDWINE_MUTEX threadsMutex;
+    BOXEDWINE_MUTEX threadExitMutex;
 
     BOXEDWINE_MUTEX heapMutex;
     BHeap heap;

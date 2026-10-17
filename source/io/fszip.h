@@ -23,6 +23,8 @@
 
 #include "platformBoxedwine.h"
 
+#include <atomic>
+
 #undef OF
 #define STRICTUNZIP
 extern "C"
@@ -50,17 +52,16 @@ public:
     bool init(BString zipPath, BString mount);
     unzFile zipfile = nullptr;
 
-    U64 lastZipOffset = 0xFFFFFFFFFFFFFFFFl;
-    U64 lastZipFileOffset = 0;
-    // Identity of the FsZipOpenNode that last positioned the shared unzFile
-    // stream. The (lastZipOffset, lastZipFileOffset) fast-path skip is only valid
-    // when the SAME node reads forward; two nodes of the same zip entry (e.g. two
-    // wine processes mmap'ing winex11.drv concurrently, each with its own per-node
-    // `pos`) interleave across readMutex and leave the shared stream at the OTHER
-    // node's position, so trusting the skip reads the wrong file bytes -> a DLL
-    // image mapped from the wrong offset -> corrupted IAT -> wild jump. Force a
-    // reposition whenever the requesting node differs from the last one.
-    const void* lastReadOwner = nullptr;
+    // Path (or bw64url: spec) of the backing zip, stored so each FsZipOpenNode
+    // can open its own independent decompression stream via openEntryStream().
+    // (The old design shared the single `zipfile` stream above across all open
+    // nodes behind one readMutex; the loader's seek-heavy small-read pattern
+    // then re-decompressed every file 3-5x: each backward seek forced a
+    // close -> reopen -> decompress-from-start-and-discard, and any interleave
+    // between two open nodes forced the same. Now each node owns a private
+    // stream plus a decompressed prefix cache, so each byte is decompressed at
+    // most once per node and backward seeks are memcpy.)
+    BString zipPath;
 
     // Set by init() when the zip layout indicates an x86_64-linux/wine64
     // rootfs: presence of any of `x86_64-linux-gnu/`, `wine/x86_64-unix/`,
@@ -71,9 +72,21 @@ public:
     // exec routing landed alongside Milestone D rootfs work.
     bool guestIs64 = false;
 
-    BOXEDWINE_MUTEX readMutex;
+    // Opens a fresh, independent decompression stream positioned at the start
+    // of the entry at central-directory offset zipOffset. The caller owns the
+    // handle (unzCloseCurrentFile + unzClose when done). Returns nullptr on
+    // failure. Cheap: for bw64url: zips the compressed-byte block cache is
+    // shared per spec across handles; for local zips it is one small
+    // end-of-central-directory read per open.
+    unzFile openEntryStream(U64 zipOffset);
 
-    void setupZipRead(U64 zipOffset, U64 zipFileOffset, const void* owner = nullptr);
+    // Decompression-efficiency counters for the per-node stream + prefix-cache
+    // design (read by tests/diagnostics to verify the anti-thrash behavior).
+    std::atomic<U64> statStreamOpens{0};
+    std::atomic<U64> statBytesDecompressed{0}; // via unzReadCurrentFile, incl. discarded skips
+    std::atomic<U64> statCacheServedBytes{0};  // bytes served from the prefix cache
+    std::atomic<U64> statStreamReopens{0};    // backward-seek reopens (streaming mode only)
+
     void remove(BString localPath);
 
     static bool readFileFromZip(BString zipFile, BString file, BString& result);

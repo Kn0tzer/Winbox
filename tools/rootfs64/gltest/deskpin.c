@@ -59,6 +59,9 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
                              0, 0, 1, 1, NULL, NULL, inst, NULL);
         if (!hw) Sleep(1000);
     }
+    if (!hw) return 2;
+    printf("deskpin: READY hwnd=0x%llx\n", (unsigned long long)(ULONG_PTR)hw);
+    fflush(stdout);
     /* Sleep forever with periodic activity (see header NOTE 3).
      * Even if the window could not be created (e.g. novideo headless),
      * exiting would drop the desktop user count and arm the close timeout. */

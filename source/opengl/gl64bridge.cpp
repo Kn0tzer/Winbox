@@ -31,6 +31,8 @@
 #include "gl64bridge_abi.h"
 #include "cpu64.h"
 #include "kmemory64.h"
+#include "kmemory.h"
+#include "glguestmemory.h"
 #include "../x11wire/xwirepresent.h"
 #include "../x11wire/xwireserver.h"
 
@@ -120,16 +122,20 @@ SDL_Window*   g_hiddenWindow = nullptr;   // hidden, GL-capable
 SDL_GLContext g_glContext    = nullptr;
 #endif
 bool          g_glInitFailed = false;
-// A2: set once the guest binds a NON-ZERO GL_FRAMEBUFFER of its own (wined3d's
-// D3D11 render targets). While false the bridge force-targets its own offscreen
-// FBO (the only one with a DEPTH attachment, which the fixed-function path needs);
-// once true it must stop stomping the guest's binding back, or every draw lands in
-// the wrong target and wined3d's swapchain render comes out empty.
-bool          g_guestFboBound = false;
-// The guest's last NON-ZERO GL_FRAMEBUFFER binding (wined3d's current render
-// target). readbackAndPresent reads THIS when set, so a wined3d render shows up
-// in the guest window instead of the bridge's own (now unused) FBO.
+// Host bindings for the guest's independent draw/read targets. Zero selects
+// the drawable's virtual default framebuffer; guest names stay separate so
+// binding queries never expose host object IDs.
 GLuint        g_guestFbo = 0;
+GLuint        g_guestReadFbo = 0;
+GLuint        g_guestDrawName = 0, g_guestReadName = 0;
+
+inline GLuint defaultFramebuffer() {
+#ifdef __EMSCRIPTEN__
+    return g_emFbo;
+#else
+    return 0;
+#endif
+}
 
 #ifdef __EMSCRIPTEN__
 // Run a closure on the platform MAIN thread (which owns the WebGL context),
@@ -185,11 +191,9 @@ std::vector<U8> g_bgrx;   // converted, top-down, for submitFrame
 // the offscreen-backbuffer machinery can rebind the framebuffer between the
 // guest's glClear and its draws, so the fixed-function (glcube) path re-binds our
 // own offscreen FBO — the only target with a DEPTH attachment — before each draw.
-// Once the guest has bound a framebuffer of ITS OWN (wined3d's D3D11 render
-// targets) that would be actively wrong, so we back off and honour the guest's
-// binding instead (A2).
+// Honor the guest's current draw binding, including its offscreen targets.
 inline void bindDrawTarget() {
-    if (!g_guestFboBound && g_emFbo) glBindFramebuffer(GL_FRAMEBUFFER, g_emFbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_guestFbo ? g_guestFbo : defaultFramebuffer());
 }
 
 // A2: wined3d's glBindFramebuffer / glFramebufferTexture2D are SEPARATE traps, and
@@ -200,7 +204,18 @@ inline void bindDrawTarget() {
 // GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT — which wined3d treats as a hard
 // render-target failure. Re-bind the guest's own FBO inside the same main-thread
 // closure as every framebuffer operation.
-inline void bindGuestTarget() { if (g_guestFbo) glBindFramebuffer(GL_FRAMEBUFFER, g_guestFbo); }
+inline void bindGuestTarget(GLenum target = GL_FRAMEBUFFER) {
+    if (target == GL_READ_FRAMEBUFFER) {
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, g_guestReadFbo ? g_guestReadFbo : defaultFramebuffer());
+    } else {
+        bindDrawTarget();
+    }
+}
+
+inline void restoreFramebufferBindings() {
+    bindGuestTarget(GL_READ_FRAMEBUFFER);
+    bindDrawTarget();
+}
 
 #ifdef __EMSCRIPTEN__
 // --- immediate-mode batching ------------------------------------------------
@@ -307,6 +322,11 @@ static std::atomic<std::thread::id> g_glCurrentThread{};
 // (Re)create the offscreen FBO color/depth attachments at the current drawable
 // size. MUST run on the GL-owning main thread (caller wraps it).
 void emBuildFbo(int w, int h) {
+    GLint texture = 0, renderbuffer = 0, read = 0, draw = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture);
+    glGetIntegerv(GL_RENDERBUFFER_BINDING, &renderbuffer);
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw);
     if (!g_emFbo)     glGenFramebuffers(1, &g_emFbo);
     if (!g_emColorTex) glGenTextures(1, &g_emColorTex);
     if (!g_emDepthRb)  glGenRenderbuffers(1, &g_emDepthRb);
@@ -322,6 +342,10 @@ void emBuildFbo(int w, int h) {
     glBindFramebuffer(GL_FRAMEBUFFER, g_emFbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_emColorTex, 0);
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, g_emDepthRb);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glBindRenderbuffer(GL_RENDERBUFFER, renderbuffer);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, read);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw);
 }
 #endif
 
@@ -590,11 +614,31 @@ void resizeTarget(int w, int h) {
 #endif
 }
 
+void syncDrawableSize() {
+    auto& server = XWireServer::instance();
+    int w = 0, h = 0;
+    {
+        std::lock_guard<std::mutex> lock(server.regMutex);
+        auto window = server.windows.find(g_currentDrawable);
+        if (window != server.windows.end()) {
+            w = window->second.width;
+            h = window->second.height;
+        }
+    }
+    if (w > 0 && h > 0) resizeTarget(w, h);
+}
+
+// Forward declaration: defined after deleteObjects (needs complete GenKind).
+void flushPendingDeletes();
+void flushPendingDeletesOnGL(); // inline: caller already on GL thread
 // Read the rendered framebuffer and present it through the X11-wire sink.
 // On WASM this whole body runs on the GL-owning main thread (caller wraps it via
 // glOnMain at the glXSwapBuffers case); the glReadPixels targets our offscreen
 // FBO, which is left bound after rendering.
 void readbackAndPresent() {
+    // Drain batched glDelete*s. Already on the GL thread (called from inside
+    // glOnMain) so use the inline variant — hopping again would deadlock.
+    flushPendingDeletesOnGL();
     if (!g_glContext || !g_currentDrawable || !g_xwirePresentSink) {
         return;
     }
@@ -604,15 +648,27 @@ void readbackAndPresent() {
     g_rgba.resize(pixels * 4);
     g_bgrx.resize(pixels * 4);
 
-#ifdef __EMSCRIPTEN__
-    // Read back whatever the guest last rendered into: its own FBO if it bound
-    // one (A2 — wined3d's D3D11 render targets), else our offscreen FBO which
-    // carries the DEPTH attachment the fixed-function path needs.
-    if (g_guestFbo) glBindFramebuffer(GL_FRAMEBUFFER, g_guestFbo);
-    else if (g_emFbo) glBindFramebuffer(GL_FRAMEBUFFER, g_emFbo);
-#endif
+    // GLX swaps the drawable's backbuffer, independent of the currently bound
+    // offscreen FBO. Preserve the guest's split bindings and pixel pack state.
+    GLint pack = 0, row = 0, skipRows = 0, skipPixels = 0, pbo = 0;
+    glGetIntegerv(GL_PACK_ALIGNMENT, &pack);
+    glGetIntegerv(GL_PACK_ROW_LENGTH, &row);
+    glGetIntegerv(GL_PACK_SKIP_ROWS, &skipRows);
+    glGetIntegerv(GL_PACK_SKIP_PIXELS, &skipPixels);
+    glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &pbo);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, defaultFramebuffer());
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_PACK_SKIP_ROWS, 0);
+    glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
     glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, g_rgba.data());
+    glPixelStorei(GL_PACK_ALIGNMENT, pack);
+    glPixelStorei(GL_PACK_ROW_LENGTH, row);
+    glPixelStorei(GL_PACK_SKIP_ROWS, skipRows);
+    glPixelStorei(GL_PACK_SKIP_PIXELS, skipPixels);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
+    restoreFramebufferBindings();
 
     // glReadPixels is bottom-up RGBA; the sink wants top-down BGRX (X11 ZPixmap
     // on a 0x00RRGGBB TrueColor visual == byte order B,G,R,X little-endian).
@@ -638,7 +694,7 @@ inline float af(const GL64Args& a, int i)  { U32 u = (U32)a.a[i]; float f; memcp
 inline double ad(const GL64Args& a, int i) { U64 u = a.a[i]; double d; memcpy(&d, &u, 8); return d; }
 
 // Read `count` floats from a guest buffer (params* for glLightfv etc.).
-void readFloats(CPU64* cpu, U64 guestAddr, float* out, int count) {
+void readFloats(GLGuestCPU* cpu, U64 guestAddr, float* out, int count) {
     if (!guestAddr) { for (int i=0;i<count;i++) out[i]=0; return; }
     cpu->memory->memcpyFromGuest(out, guestAddr, (U64)count * 4);
 }
@@ -802,6 +858,48 @@ std::map<std::tuple<GLuint, GLenum, GLint>, TextureLevel> g_textureLevels;
 std::map<GLuint, TextureLevel> g_textureInfo;
 // Renderbuffer-name -> internal format, recorded on successful storage.
 std::map<GLuint, GLenum> g_renderbufferInfo;
+// Perf: guest-visible IDs for glGenTextures/glGenFramebuffers/glGenRenderbuffers
+// are allocated locally (no main-thread hop); the host GL object is created
+// lazily on first bind/use via ensureHost* (must run inside a main-thread hop).
+// Saves 1 hop per generated object (~3 hops per wined3d probed format). IDs are
+// monotonic from a private range (never reused). g_textureInfo/g_renderbufferInfo
+// stay keyed by HOST id. Map access is safe: worker thread under g_glMutex
+// (held across the hop wait), or inside the hopped closure on the main thread
+// (exclusive while the worker blocks).
+std::map<GLuint, GLuint> g_texGuestToHost;
+std::map<GLuint, GLuint> g_rbGuestToHost;
+std::map<GLuint, GLuint> g_fboGuestToHost;
+GLuint g_nextGuestObjectId = 0x10000000;
+inline bool isLocalGuestId(GLuint id) { return id >= 0x10000000; }
+// Resolve a guest object ID to the host ID, creating the host GL object on
+// first use. MUST be called inside a main-thread hop (issues GL calls).
+inline GLuint ensureHostTexture(GLuint guestId) {
+    if (!guestId) return 0;
+    auto it = g_texGuestToHost.find(guestId);
+    if (it != g_texGuestToHost.end()) return it->second;
+    GLuint hostId = 0;
+    glGenTextures(1, &hostId);
+    g_texGuestToHost[guestId] = hostId;
+    return hostId;
+}
+inline GLuint ensureHostRenderbuffer(GLuint guestId) {
+    if (!guestId) return 0;
+    auto it = g_rbGuestToHost.find(guestId);
+    if (it != g_rbGuestToHost.end()) return it->second;
+    GLuint hostId = 0;
+    glGenRenderbuffers(1, &hostId);
+    g_rbGuestToHost[guestId] = hostId;
+    return hostId;
+}
+inline GLuint ensureHostFramebuffer(GLuint guestId) {
+    if (!guestId) return 0;
+    auto it = g_fboGuestToHost.find(guestId);
+    if (it != g_fboGuestToHost.end()) return it->second;
+    GLuint hostId = 0;
+    glGenFramebuffers(1, &hostId);
+    g_fboGuestToHost[guestId] = hostId;
+    return hostId;
+}
 GLenum g_allocationError = GL_NO_ERROR;
 void recordBridgeError(GLenum error) {
     if (error && !g_allocationError) g_allocationError = error;
@@ -934,7 +1032,7 @@ bool renderbufferStorageFixup(GLenum& ifmt) {
 
 // Read a NUL-terminated C string from guest memory, capped at `maxLen` bytes.
 // Reads in chunks to avoid a per-byte trap; stops at the first NUL.
-std::string readGuestCStr(CPU64* cpu, U64 guestAddr, U64 maxLen) {
+std::string readGuestCStr(GLGuestCPU* cpu, U64 guestAddr, U64 maxLen) {
     std::string out;
     if (!guestAddr) return out;
     char buf[256];
@@ -954,9 +1052,19 @@ std::string readGuestCStr(CPU64* cpu, U64 guestAddr, U64 maxLen) {
 // guest. n = args.a[0], guest id array = args.a[1].
 enum class GenKind { Buffer, Texture, VertexArray,
                      Framebuffer, Renderbuffer, Sampler };
-void genObjects(CPU64* cpu, const GL64Args& args, GenKind kind) {
+void genObjects(GLGuestCPU* cpu, const GL64Args& args, GenKind kind) {
     GLsizei n = (GLsizei)args.a[0];
     if (n <= 0 || n > 65536 || !args.a[1]) return;
+    // Probe-hot kinds allocate guest IDs locally (no hop); the host object is
+    // created lazily on first bind/use (see ensureHost*). Other kinds keep the
+    // direct hop path.
+    if (kind == GenKind::Texture || kind == GenKind::Framebuffer ||
+        kind == GenKind::Renderbuffer) {
+        std::vector<GLuint> ids((size_t)n);
+        for (GLsizei i = 0; i < n; ++i) ids[i] = g_nextGuestObjectId++;
+        cpu->memory->memcpyToGuest(args.a[1], ids.data(), (U64)n * 4);
+        return;
+    }
     std::vector<GLuint> ids((size_t)n, 0);
     GLuint* p = ids.data();
     glOnMain([&]{
@@ -974,38 +1082,105 @@ void genObjects(CPU64* cpu, const GL64Args& args, GenKind kind) {
     });
     cpu->memory->memcpyToGuest(args.a[1], ids.data(), (U64)n * 4);
 }
-void deleteObjects(CPU64* cpu, const GL64Args& args, GenKind kind) {
+// Perf: deferred GL object deletion. deleteObjects() translates guest IDs to
+// host IDs, drops all guest-visible tracking immediately, and queues the
+// (kind, hostId) pairs here instead of hopping to the main thread per call.
+// The queue drains in a single hop at the next present (flushPendingDeletes,
+// called from readbackAndPresent) or at context destroy. Transparent to the
+// guest: GL names become unused at delete time (id maps erased synchronously),
+// re-deleting an already-deleted name is a spec no-op, and host IDs are never
+// recycled by GL while still alive. Guarded by g_glMutex like the id maps.
+std::vector<std::pair<GenKind, GLuint>> g_pendingDeletes;
+
+// Drain g_pendingDeletes: one glDelete* per kind, all inside a single
+// main-thread hop. Safe to call with an empty queue.
+// Inline variant: runs the GL deletes on the calling thread. Only call when
+// already on the GL-owning thread (e.g. inside a glOnMain closure) — hopping
+// again via glOnMain would deadlock (outer hop waits for inner job while the
+// main thread is busy running the outer closure).
+void flushPendingDeletesOnGL() {
+    std::vector<std::pair<GenKind, GLuint>> pending;
+    {
+        std::unique_lock<std::recursive_mutex> lk(g_glMutex, std::try_to_lock);
+        if (g_pendingDeletes.empty()) return;
+        pending.swap(g_pendingDeletes);
+    }
+    if (!g_glContext) return; // GL never came up; nothing exists host-side.
+    {
+        for (int ki = 0; ki <= (int)GenKind::Sampler; ++ki) {
+            GenKind kind = (GenKind)ki;
+            std::vector<GLuint> ids;
+            for (auto& e : pending) if (e.first == kind) ids.push_back(e.second);
+            if (ids.empty()) continue;
+            GLsizei n = (GLsizei)ids.size();
+            const GLuint* q = ids.data();
+            switch (kind) {
+                case GenKind::Buffer:      glDeleteBuffers(n, q); break;
+                case GenKind::Texture:     glDeleteTextures(n, q); break;
+                case GenKind::VertexArray: glDeleteVertexArrays(n, q); break;
+                case GenKind::Framebuffer: glDeleteFramebuffers(n, q); break;
+                case GenKind::Renderbuffer:glDeleteRenderbuffers(n, q); break;
+                case GenKind::Sampler:     glDeleteSamplers(n, q); break;
+            }
+        }
+    }
+}
+void flushPendingDeletes() {
+    {
+        std::lock_guard<std::recursive_mutex> lk(g_glMutex);
+        if (g_pendingDeletes.empty()) return;
+    }
+    glOnMain([&]{ flushPendingDeletesOnGL(); });
+}
+void deleteObjects(GLGuestCPU* cpu, const GL64Args& args, GenKind kind) {
     GLsizei n = (GLsizei)args.a[0];
     if (n <= 0 || n > 65536 || !args.a[1]) return;
-    std::vector<GLuint> ids((size_t)n, 0);
-    cpu->memory->memcpyFromGuest(ids.data(), args.a[1], (U64)n * 4);
-    const GLuint* p = ids.data();
-    glOnMain([&]{
-        switch (kind) {
-            case GenKind::Buffer:      glDeleteBuffers(n, p); break;
-            case GenKind::Texture:
-                glDeleteTextures(n, p);
-                for (GLsizei i=0;i<n;++i) {
-                    for (auto it=g_textureLevels.begin();it!=g_textureLevels.end();) {
-                        if (std::get<0>(it->first)==p[i]) it=g_textureLevels.erase(it);
-                        else ++it;
-                    }
-                    g_textureInfo.erase(p[i]);
-                }
-                break;
-            case GenKind::VertexArray: glDeleteVertexArrays(n, p); break;
-            case GenKind::Framebuffer: glDeleteFramebuffers(n, p); break;
-            case GenKind::Renderbuffer:
-                glDeleteRenderbuffers(n, p);
-                for (GLsizei i = 0; i < n; ++i) g_renderbufferInfo.erase(p[i]);
-                break;
-            case GenKind::Sampler:     glDeleteSamplers(n, p); break;
+    std::vector<GLuint> guestIds((size_t)n, 0);
+    cpu->memory->memcpyFromGuest(guestIds.data(), args.a[1], (U64)n * 4);
+    // Translate guest IDs to host IDs. IDs never realized on the host (locally
+    // allocated but never bound/used) need no GL call; just drop the mapping.
+    // Runs on the worker thread under g_glMutex (safe: no hop is in flight).
+    std::vector<GLuint> hostIds;
+    hostIds.reserve((size_t)n);
+    std::map<GLuint, GLuint>* idMap = nullptr;
+    if (kind == GenKind::Texture) idMap = &g_texGuestToHost;
+    else if (kind == GenKind::Framebuffer) idMap = &g_fboGuestToHost;
+    else if (kind == GenKind::Renderbuffer) idMap = &g_rbGuestToHost;
+    for (GLsizei i = 0; i < n; ++i) {
+        GLuint guestId = guestIds[(size_t)i];
+        if (!guestId || !idMap) { if (!idMap) hostIds.push_back(guestId); continue; }
+        if (kind == GenKind::Framebuffer) {
+            if (guestId == g_guestDrawName) {
+                g_guestDrawName = 0; g_guestFbo = 0;
+            }
+            if (guestId == g_guestReadName) {
+                g_guestReadName = 0; g_guestReadFbo = 0;
+            }
         }
-    });
+        auto it = idMap->find(guestId);
+        if (it != idMap->end()) { hostIds.push_back(it->second); idMap->erase(it); }
+        // else: never realized on host; nothing to delete.
+    }
+    // Also drop host-keyed tracking for the deleted host IDs.
+    for (GLuint hostId : hostIds) {
+        if (kind == GenKind::Texture) {
+            for (auto it=g_textureLevels.begin();it!=g_textureLevels.end();) {
+                if (std::get<0>(it->first)==hostId) it=g_textureLevels.erase(it);
+                else ++it;
+            }
+            g_textureInfo.erase(hostId);
+        } else if (kind == GenKind::Renderbuffer) {
+            g_renderbufferInfo.erase(hostId);
+        }
+    }
+    // Batch the host IDs for deferred deletion (single hop at next present)
+    // instead of hopping once per delete call. All guest-visible tracking was
+    // already dropped above, so this is transparent to the guest.
+    for (GLuint hostId : hostIds) g_pendingDeletes.emplace_back(kind, hostId);
 }
 
 // glGetShaderInfoLog / glGetProgramInfoLog: args = (obj, bufSize, length*, infoLog*).
-void writeInfoLog(CPU64* cpu, const GL64Args& args, bool isProgram) {
+void writeInfoLog(GLGuestCPU* cpu, const GL64Args& args, bool isProgram) {
     GLuint obj = (GLuint)args.a[0];
     GLsizei bufSize = (GLsizei)args.a[1];
     if (bufSize <= 0 || bufSize > (1 << 20)) bufSize = 0;
@@ -1057,7 +1232,7 @@ bool bgraToRgba(GLenum& fmt, GLenum type, std::vector<U8>& pix) {
 // the inherited A2 fixup, retain RGB10_A2's native 2_10_10_10_REV representation,
 // scale each packed component by its actual bit width, and swap BGRA channels
 // AFTER unpacking. Empty pixel vectors still need valid allocation formats.
-// Regression vectors: test-results/baldi-a3-pixel-test.py.
+// Regression vectors: tools/regression/baldi-a3-pixel-test.py.
 void glesTexFormatFixup(GLint& ifmt, GLenum& fmt, GLenum& type, std::vector<U8>& pix) {
     // WebGL2 accepts RGB10_A2 + RGBA + UNSIGNED_INT_2_10_10_10_REV
     // natively. The inherited fixup changed its type to BYTE, making it invalid.
@@ -1189,7 +1364,7 @@ size_t texImageBytes(GLsizei w, GLsizei h, GLenum format, GLenum type) {
 
 #include "gl64webgpu.h"
 
-U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
+static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
     std::lock_guard<std::recursive_mutex> lk(g_glMutex);
 
     // Track the most recent fnIds (ring) so a nonzero glGetError can be annotated
@@ -1323,6 +1498,7 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             // a real mapped window so the present sink can find it (otherwise wined3d's
             // windowed present has no window to blit/read back against).
             g_currentDrawable = XWireServer::instance().resolveGlxDrawable((U32)args.a[0]);
+            syncDrawableSize();
             // Claim the present slot for this GL app. Its readback frames are
             // tagged with this drawable id (not the X11 window it maps), so the
             // present sink's window filter needs to know the drawable belongs to
@@ -1365,6 +1541,7 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             // C8: timestamp destroys — pass teardown is destroy + re-create.
             if (getenv("BW64_GLTRACE"))
                 klog_fmt("gl64 PHASE: destroy-context t=%.1fs", bridgeElapsedSec());
+            flushPendingDeletes(); // free batched deletes before teardown
             return 0; // keep the single context alive for first light
         case GL64_fn_glXGetCurrentContext:
             return g_glContext ? g_nextOpaqueId : 0;
@@ -1416,7 +1593,9 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             return 0;
         case GL64_fn_glViewport:
             if (ensureContext()) {
-                resizeTarget((int)ai(args,2), (int)ai(args,3));
+                // A viewport is a coordinate transform, not framebuffer storage.
+                // Only a real drawable geometry change resizes the backbuffer.
+                syncDrawableSize();
                 GL_MT(glViewport((GLint)ai(args,0), (GLint)ai(args,1), (GLsizei)ai(args,2), (GLsizei)ai(args,3)));
             }
             return 0;
@@ -1486,7 +1665,9 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             // proven D3D9-era path is untouched. "33" additionally probes the 3.3
             // core-profile path — A2's diagnosis §2 H4/O5 showed 3.3 is DANGEROUS
             // (wined3d then takes wglCreateContextAttribsARB + glGetStringi, which
-            // this bridge does not implement), so it is opt-in only.
+            // glGetStringi is implemented guest-side now (libgl64.c serves the
+            // curated extension list), so 3.3 stays opt-in only for the
+            // remaining context-attribs surface.
             const char* v = getenv("BW64_GLVERSION");
             if (!v || v[0] != '3') return 21;
             if (v[1] == '3') return 33;
@@ -1505,6 +1686,10 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 // error so it can't pollute wined3d's own glGetError checks.
                 bool handled = true;
                 switch (pname) {
+                    case 0x8CA6 /*GL_DRAW_FRAMEBUFFER_BINDING / GL_FRAMEBUFFER_BINDING*/:
+                        v[0] = g_guestDrawName; break;
+                    case 0x8CAA /*GL_READ_FRAMEBUFFER_BINDING*/:
+                        v[0] = g_guestReadName; break;
                     case 0x0D31 /*GL_MAX_LIGHTS*/:               v[0] = 8; break;
                     case 0x0D32 /*GL_MAX_CLIP_PLANES*/:          v[0] = 6; break;
                     case 0x0D50 /*GL_MAX_PIXEL_MAP_TABLE*/:      v[0] = 256; break;
@@ -1804,8 +1989,7 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             if (count <= 0 || count > 256) return 0;
             // Read the guest string-pointer array and optional length array, then
             // each guest source string, into host-owned storage.
-            std::vector<U64> guestStrPtrs(count);
-            cpu->memory->memcpyFromGuest(guestStrPtrs.data(), args.a[2], (U64)count * 8);
+            auto guestStrPtrs = cpu->memory->readPointers(args.a[2], count);
             std::vector<S32> guestLens;
             bool haveLens = args.a[3] != 0;
             if (haveLens) {
@@ -2210,7 +2394,12 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             if (g_glContext && args.a[1]) genObjects(cpu, args, GenKind::Texture);
             return 0;
         case GL64_fn_glBindTexture:
-            if (g_glContext) GL_MT(glBindTexture(hostTextureTarget((GLenum)ai(args,0)), (GLuint)ai(args,1)));
+            if (g_glContext) {
+                GLenum tgt = hostTextureTarget((GLenum)ai(args,0));
+                GLuint guestId = (GLuint)ai(args,1);
+                // Host object is created lazily on first bind (see genObjects).
+                glOnMain([&]{ glBindTexture(tgt, ensureHostTexture(guestId)); });
+            }
             return 0;
         case GL64_fn_glDeleteTextures:
             if (g_glContext && args.a[1]) deleteObjects(cpu, args, GenKind::Texture);
@@ -2483,32 +2672,52 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glBindFramebuffer:
             if (g_glContext) {
                 GLenum target = (GLenum)ai(args,0);
-                GLuint fb = (GLuint)ai(args,1);
-                if (target == GL_FRAMEBUFFER) {
-                    // From here on the guest owns the draw target; the bridge must
-                    // stop force-binding its own FBO (see bindDrawTarget).
-                    g_guestFboBound = (fb != 0);
-                    g_guestFbo = fb;
-                }
-                GL_MT(glBindFramebuffer(target, fb));
+                GLuint guestFb = (GLuint)ai(args,1);
+                // Host object created lazily on first bind; g_guestFbo stores the
+                // HOST id (bindGuestTarget/readbackAndPresent use it in GL calls).
+                // Binding state is updated inside the same host GL hop.
+                glOnMain([&]{
+                    GLuint hostFb = guestFb ? ensureHostFramebuffer(guestFb) : defaultFramebuffer();
+                    if (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER) {
+                        g_guestFbo = guestFb ? hostFb : 0;
+                        g_guestDrawName = guestFb;
+                    }
+                    if (target == GL_FRAMEBUFFER || target == GL_READ_FRAMEBUFFER) {
+                        g_guestReadFbo = guestFb ? hostFb : 0;
+                        g_guestReadName = guestFb;
+                    }
+                    glBindFramebuffer(target, hostFb);
+                });
             }
             return 0;
         case GL64_fn_glIsFramebuffer: {
             GLboolean r = GL_FALSE;
-            GLuint fb = (GLuint)ai(args,0);
-            if (g_glContext) GL_MT(r = glIsFramebuffer(fb));
+            GLuint guestFb = (GLuint)ai(args,0);
+            if (g_glContext) {
+                auto it = g_fboGuestToHost.find(guestFb);
+                if (it != g_fboGuestToHost.end()) {
+                    GLuint hostFb = it->second;
+                    GL_MT(r = glIsFramebuffer(hostFb));
+                } else if (isLocalGuestId(guestFb)) {
+                    r = GL_TRUE; // generated by us, not yet realized; still "used".
+                } else {
+                    GL_MT(r = glIsFramebuffer(guestFb));
+                }
+            }
             return (U64)(r ? 1 : 0);
         }
         case GL64_fn_glFramebufferTexture2D:
             if (g_glContext)
                 glOnMain([&]{
                     bindGuestTarget();
+                    // Guest texture ID -> host ID (created lazily if never bound).
+                    GLuint hostTex = ensureHostTexture((GLuint)ai(args,3));
                     glFramebufferTexture2D((GLenum)ai(args,0), (GLenum)ai(args,1),
-                                           hostTextureTarget((GLenum)ai(args,2)), (GLuint)ai(args,3),
+                                           hostTextureTarget((GLenum)ai(args,2)), hostTex,
                                            (GLint)ai(args,4));
                     if (getenv("BW64_GLTRACE")) {
                         GLint storage = 0;
-                        auto ti = g_textureInfo.find((GLuint)ai(args,3));
+                        auto ti = g_textureInfo.find(hostTex);
                         if (ti != g_textureInfo.end()) storage = ti->second.internalFormat;
                         klog_fmt("gl64 ATTACH2D: fbo=%u target=0x%x att=0x%x textarget=0x%x tex=%u level=%d storage=0x%x",
                                  g_guestFbo, (unsigned)ai(args,0), (unsigned)ai(args,1),
@@ -2522,44 +2731,50 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glFramebufferTexture:
             if (g_glContext) {
                 GLenum tgt=(GLenum)ai(args,0); GLenum att=(GLenum)ai(args,1);
-                GLuint tex=(GLuint)ai(args,2); GLint lvl=(GLint)ai(args,3);
+                GLuint guestTex=(GLuint)ai(args,2); GLint lvl=(GLint)ai(args,3);
                 glOnMain([&]{
                     bindGuestTarget();
+                    GLuint hostTex = ensureHostTexture(guestTex);
                     EM_ASM({ try {
                         if (typeof GLctx === 'undefined') return;
                         GLctx.framebufferTexture($0, $1, $2, $3); } catch (e) {} },
-                      (int)tgt, (int)att, (int)tex, (int)lvl); });
+                      (int)tgt, (int)att, (int)hostTex, (int)lvl); });
             }
             return 0;
         case GL64_fn_glFramebufferTextureLayer:
             if (g_glContext)
                 glOnMain([&]{
                     bindGuestTarget();
+                    GLuint hostTex = ensureHostTexture((GLuint)ai(args,2));
                     glFramebufferTextureLayer((GLenum)ai(args,0), (GLenum)ai(args,1),
-                                              (GLuint)ai(args,2), (GLint)ai(args,3),
+                                              hostTex, (GLint)ai(args,3),
                                               (GLint)ai(args,4));
                 });
             return 0;
         case GL64_fn_glFramebufferTexture1D:
             if (g_glContext) glOnMain([&]{
                 bindGuestTarget();
+                GLuint hostTex = ensureHostTexture((GLuint)ai(args,3));
                 glFramebufferTexture2D((GLenum)ai(args,0), (GLenum)ai(args,1),
-                                       GL_TEXTURE_2D, (GLuint)ai(args,3), (GLint)ai(args,4));
+                                       GL_TEXTURE_2D, hostTex, (GLint)ai(args,4));
             });
             return 0;
         case GL64_fn_glFramebufferTexture3D:
             if (g_glContext) glOnMain([&]{
                 bindGuestTarget();
+                GLuint hostTex = ensureHostTexture((GLuint)ai(args,3));
                 glFramebufferTextureLayer((GLenum)ai(args,0), (GLenum)ai(args,1),
-                                          (GLuint)ai(args,3), (GLint)ai(args,4), (GLint)ai(args,5));
+                                          hostTex, (GLint)ai(args,4), (GLint)ai(args,5));
             });
             return 0;
         case GL64_fn_glFramebufferRenderbuffer:
             if (g_glContext)
                 glOnMain([&]{
                     bindGuestTarget();
+                    // Guest RB ID -> host ID (created lazily if never bound).
+                    GLuint hostRb = ensureHostRenderbuffer((GLuint)ai(args,3));
                     glFramebufferRenderbuffer((GLenum)ai(args,0), (GLenum)ai(args,1),
-                                               (GLenum)ai(args,2), (GLuint)ai(args,3));
+                                               (GLenum)ai(args,2), hostRb);
                 });
             return 0;
         case GL64_fn_glCheckFramebufferStatus: {
@@ -2617,7 +2832,7 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             if (g_glContext) {
                 GLenum mask = (GLenum)ai(args,8); GLenum filter = (GLenum)ai(args,9);
                 glOnMain([&]{
-                    bindGuestTarget();
+                    restoreFramebufferBindings();
                     glBlitFramebuffer((GLint)ai(args,0), (GLint)ai(args,1),
                                       (GLint)ai(args,2), (GLint)ai(args,3),
                                       (GLint)ai(args,4), (GLint)ai(args,5),
@@ -2633,11 +2848,14 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             if (g_glContext && args.a[1]) deleteObjects(cpu, args, GenKind::Renderbuffer);
             return 0;
         case GL64_fn_glBindRenderbuffer:
-            if (g_glContext)
+            if (g_glContext) {
+                GLenum tgt = (GLenum)ai(args,0);
+                GLuint guestRb = (GLuint)ai(args,1);
                 glOnMain([&]{
                     bindGuestTarget();
-                    glBindRenderbuffer((GLenum)ai(args,0), (GLuint)ai(args,1));
+                    glBindRenderbuffer(tgt, ensureHostRenderbuffer(guestRb));
                 });
+            }
             return 0;
         case GL64_fn_glRenderbufferStorage:
             if (g_glContext) {
@@ -2690,8 +2908,18 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         }
         case GL64_fn_glIsRenderbuffer: {
             GLboolean r = GL_FALSE;
-            GLuint rb = (GLuint)ai(args,0);
-            if (g_glContext) GL_MT(r = glIsRenderbuffer(rb));
+            GLuint guestRb = (GLuint)ai(args,0);
+            if (g_glContext) {
+                auto it = g_rbGuestToHost.find(guestRb);
+                if (it != g_rbGuestToHost.end()) {
+                    GLuint hostRb = it->second;
+                    GL_MT(r = glIsRenderbuffer(hostRb));
+                } else if (isLocalGuestId(guestRb)) {
+                    r = GL_TRUE; // generated by us, not yet realized; still "used".
+                } else {
+                    GL_MT(r = glIsRenderbuffer(guestRb));
+                }
+            }
             return (U64)(r ? 1 : 0);
         }
         case GL64_fn_glGetRenderbufferParameteriv:
@@ -2717,13 +2945,22 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 if (n > 0 && n <= 16) {
                     std::vector<GLenum> bufs((size_t)n, GL_NONE);
                     cpu->memory->memcpyFromGuest(bufs.data(), args.a[1], (U64)n * 4);
+                    if (!g_guestFbo) for (auto& buffer : bufs) {
+                        if (buffer == GL_BACK || buffer == GL_FRONT || buffer == GL_BACK_LEFT || buffer == GL_FRONT_LEFT)
+                            buffer = GL_COLOR_ATTACHMENT0;
+                    }
                     const GLenum* p = bufs.data();
                     glOnMain([&]{ bindGuestTarget(); glDrawBuffers(n, p); });
                 }
             }
             return 0;
         case GL64_fn_glReadBuffer:
-            if (g_glContext) GL_MT(glReadBuffer((GLenum)ai(args,0)));
+            if (g_glContext) {
+                GLenum buffer = (GLenum)ai(args,0);
+                if (!g_guestReadFbo && (buffer == GL_BACK || buffer == GL_FRONT || buffer == GL_BACK_LEFT || buffer == GL_FRONT_LEFT))
+                    buffer = GL_COLOR_ATTACHMENT0;
+                glOnMain([&]{ bindGuestTarget(GL_READ_FRAMEBUFFER); glReadBuffer(buffer); });
+            }
             return 0;
 
         // --- sampler objects (unblocks wined3d feature level >= 10_0) -----
@@ -3185,17 +3422,49 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 if (bufSize > 0) cpu->memory->memcpyToGuest(args.a[4], nm.data(), (U64)len + 1);
             }
             return 0;
-        case GL64_fn_glGetAttachedShaders:
+        case GL64_fn_glGetAttachedShaders: {
             if (g_glContext && args.a[2] && args.a[3]) {
+                GLuint p = (GLuint)ai(args,0);
                 GLsizei bufSize = (GLsizei)ai(args,1);
+                // Emscripten's glGetAttachedShaders runs
+                //   GLctx.getAttachedShaders(GL.programs[p]).length
+                // which throws a JS TypeError (killing the guest) when the
+                // host has no live program for p, instead of recording
+                // GL_INVALID_VALUE like desktop GL. Pre-validate on the
+                // GL-owning thread and emulate the desktop error path.
+                // TEMP-DIAG 2026-10-09: console.log captures why the host
+                // program entry is missing (bridge-coverage glcov crash).
+                int hostValid = 0;
+                glOnMain([&]{
+                    hostValid = EM_ASM_INT({
+                        var p = $0;
+                        var has = (p in GL.programs);
+                        var prog = GL.programs[p];
+                        var lost = GLctx.isContextLost();
+                        var r = null; var err = "";
+                        try { r = prog ? GLctx.getAttachedShaders(prog) : null; }
+                        catch (e) { err = " THREW=" + String(e).slice(0, 60); }
+                        console.log("DIAG gAS p=" + p + " has=" + has +
+                                    " prog=" + (prog ? "obj" : String(prog)) +
+                                    " ctxLost=" + lost +
+                                    " attached=" + (r ? r.length : "null") + err);
+                        if (!prog) { GL.recordError(1281); return 0; }
+                        return r ? 1 : 0;
+                    }, p);
+                });
+                if (!hostValid) {
+                    klog_fmt("gl64: glGetAttachedShaders(%u): no live host program; skipped (emscripten JS would throw)", p);
+                    return 0;
+                }
                 std::vector<GLuint> sh((size_t)(bufSize > 0 ? bufSize : 0), 0);
                 GLsizei cnt = 0;
-                GLuint p=(GLuint)ai(args,0); GLuint* sp = sh.data();
+                GLuint* sp = sh.data();
                 GL_MT(glGetAttachedShaders(p, bufSize, &cnt, sp));
                 cpu->memory->writed(args.a[2], (U32)cnt);
                 if (cnt > 0) cpu->memory->memcpyToGuest(args.a[3], sh.data(), (U64)cnt * 4);
             }
             return 0;
+        }
         case GL64_fn_glGetShaderSourceImpl:
             if (g_glContext && args.a[3]) {
                 GLsizei bufSize = (GLsizei)ai(args,1);
@@ -3714,10 +3983,9 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 if (n > 0 && n <= 1024) {
                     std::vector<GLsizei> counts((size_t)n);
                     std::vector<GLint>    bvs((size_t)n);
-                    std::vector<U64>     idx((size_t)n);
+                    auto idx = cpu->memory->readPointers(args.a[3], n);
                     cpu->memory->memcpyFromGuest(counts.data(), args.a[1], (U64)n * 4);
                     cpu->memory->memcpyFromGuest(bvs.data(), args.a[5], (U64)n * 4);
-                    cpu->memory->memcpyFromGuest(idx.data(), args.a[3], (U64)n * 8);
                     const GLsizei* c = counts.data(); const GLint* b = bvs.data();
                     U64* i = idx.data();
                     // WebGL2 has no multiDraw* entry points at all, so issue one
@@ -3832,9 +4100,144 @@ U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             return 0;   // no GLES3 equivalent (Emscripten exports no C symbol)
 
         default:
+        // --- 3.0 forward-only gap set --------------------------------------
+        // Standard GL 3.0 core entry points; previously gl64_noop on the guest
+        // side. Direct forwards to WebGL2. Emscripten exports C symbols for all
+        // but glClearBufferfi/glGetBooleani_v, which go through GLctx via EM_ASM.
+        case GL64_fn_glClearBufferiv: {
+            if (g_glContext && args.a[2]) {
+                GLenum buf=(GLenum)ai(args,0); GLint db=(GLint)ai(args,1);
+                GLint v[4]={0};
+                cpu->memory->memcpyFromGuest(v, args.a[2], sizeof(v));
+                GL_MT(glClearBufferiv(buf, db, v));
+            }
+            return 0;
+        }
+        case GL64_fn_glClearBufferuiv: {
+            if (g_glContext && args.a[2]) {
+                GLenum buf=(GLenum)ai(args,0); GLint db=(GLint)ai(args,1);
+                GLuint v[4]={0};
+                cpu->memory->memcpyFromGuest(v, args.a[2], sizeof(v));
+                GL_MT(glClearBufferuiv(buf, db, v));
+            }
+            return 0;
+        }
+        case GL64_fn_glClearBufferfv: {
+            if (g_glContext && args.a[2]) {
+                GLenum buf=(GLenum)ai(args,0); GLint db=(GLint)ai(args,1);
+                GLfloat v[4]={0};
+                cpu->memory->memcpyFromGuest(v, args.a[2], sizeof(v));
+                GL_MT(glClearBufferfv(buf, db, v));
+            }
+            return 0;
+        }
+        case GL64_fn_glClearBufferfi: {
+            if (g_glContext) {
+                GLenum buf=(GLenum)ai(args,0); GLint db=(GLint)ai(args,1);
+                GLfloat depth=af(args,2); GLint stencil=(GLint)ai(args,3);
+#ifdef __EMSCRIPTEN__
+                // Emscripten exports no C symbol; call through GLctx.
+                glOnMain([&]{
+                    EM_ASM({ try {
+                        if (typeof GLctx === 'undefined') return;
+                        GLctx.clearBufferfi($0, $1, $2, $3);
+                    } catch (e) {} }, (int)buf, db, depth, stencil);
+                });
+#else
+                GL_MT(glClearBufferfi(buf, db, depth, stencil));
+#endif
+            }
+            return 0;
+        }
+        case GL64_fn_glGetIntegeri_v: {
+            if (g_glContext && args.a[2]) {
+                GLenum pname=(GLenum)ai(args,0); GLuint idx=(GLuint)ai(args,1);
+                GLint v=0; GLint* vp=&v;
+                GL_MT(glGetIntegeri_v(pname, idx, vp));
+                cpu->memory->memcpyToGuest(args.a[2], &v, sizeof(v));
+            }
+            return 0;
+        }
+        case GL64_fn_glGetBooleani_v: {
+            if (g_glContext && args.a[2]) {
+                GLenum pname=(GLenum)ai(args,0); GLuint idx=(GLuint)ai(args,1);
+#ifdef __EMSCRIPTEN__
+                // Emscripten exports no C symbol; query GLctx (single boolean).
+                GLboolean v=0; GLboolean* vp=&v;
+                glOnMain([&]{
+                    EM_ASM({ try {
+                        if (typeof GLctx === 'undefined') return;
+                        var r = GLctx.getIndexedParameter($0, $1);
+                        if (r && r.length !== undefined) r = r[0];
+                        HEAPU8[$2] = r ? 1 : 0;
+                    } catch (e) {} }, (int)pname, (int)idx, (int)(uintptr_t)vp);
+                });
+#else
+                GLboolean v=0; GLboolean* vp=&v;
+                GL_MT(glGetBooleani_v(pname, idx, vp));
+#endif
+                cpu->memory->memcpyToGuest(args.a[2], &v, sizeof(v));
+            }
+            return 0;
+        }
+        case GL64_fn_glVertexAttribIPointer: {
+            // pointer (a[4]) is a byte offset into the bound ARRAY_BUFFER.
+            if (g_glContext) {
+                GLuint idx=(GLuint)ai(args,0); GLint sz=(GLint)ai(args,1); GLenum ty=(GLenum)ai(args,2);
+                GLsizei st=(GLsizei)ai(args,3);
+                const void* off = (const void*)(uintptr_t)args.a[4];
+                GL_MT(glVertexAttribIPointer(idx, sz, ty, st, off));
+            }
+            return 0;
+        }
+        case GL64_fn_glUniform1uiv: case GL64_fn_glUniform2uiv:
+        case GL64_fn_glUniform3uiv: case GL64_fn_glUniform4uiv: {
+            if (g_glContext && args.a[2]) {
+                int comps = fnId==GL64_fn_glUniform1uiv?1 : fnId==GL64_fn_glUniform2uiv?2 :
+                            fnId==GL64_fn_glUniform3uiv?3 : 4;
+                GLsizei n = (GLsizei)ai(args,1);
+                if (n > 0 && n <= 4096) {
+                    std::vector<GLuint> v((size_t)n * comps);
+                    cpu->memory->memcpyFromGuest(v.data(), args.a[2], (U64)v.size()*4);
+                    GLint loc=(GLint)ai(args,0); const GLuint* p=v.data();
+                    switch (comps) {
+                        case 1: GL_MT(glUniform1uiv(loc, n, p)); break;
+                        case 2: GL_MT(glUniform2uiv(loc, n, p)); break;
+                        case 3: GL_MT(glUniform3uiv(loc, n, p)); break;
+                        default: GL_MT(glUniform4uiv(loc, n, p)); break;
+                    }
+                }
+            }
+            return 0;
+        }
+        case GL64_fn_glGetUniformuiv: {
+            // (program, locations*, out values*) - mirrors glGetUniformiv; the
+            // guest always passes count==1.
+            if (g_glContext && args.a[1] && args.a[2]) {
+                GLint loc = 0;
+                cpu->memory->memcpyFromGuest(&loc, args.a[1], 4);
+                GLuint p=(GLuint)ai(args,0);
+                GLuint u = 0; GL_MT(glGetUniformuiv(p, loc, &u));
+                cpu->memory->memcpyToGuest(args.a[2], &u, 4);
+            }
+            return 0;
+        }
+
             klog_fmt("gl64: unimplemented fn id %llu", (unsigned long long)fnId);
             return 0;
     }
+}
+
+U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
+    GLGuestMemory memory(cpu->memory);
+    GLGuestCPU guest{&memory};
+    return glBridge(&guest, fnId, argsAddr);
+}
+
+U64 gl32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
+    GLGuestMemory memory(cpu->memory);
+    GLGuestCPU guest{&memory};
+    return glBridge(&guest, fnId, argsAddr);
 }
 
 #endif // BOXEDWINE_OPENGL

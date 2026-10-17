@@ -1,6 +1,6 @@
 ifndef BUILD_DIR
 
-.PHONY: default all clean release test 
+.PHONY: default all clean release test x64 x64-cache
 
 default all: release
 
@@ -23,17 +23,20 @@ release: export BUILD_DIR := Build/Release
 release: export EXTRA_CPP_FLAGS := $(BOXED_FLAGS)
 test:   export BUILD_DIR := Build/Test
 test: export EXTRA_CPP_FLAGS := $(BOXED_FLAGS) -D__TEST
+# CPU64/kernel/ELF diagnostics use the interpreter and no native GL/UI.
+# Browser graphics retain the WASM build and dedicated bridge harness checks.
+x64: export BUILD_DIR := Build/X64Headless
+x64: export EXTRA_CPP_FLAGS := -DASMJIT_STATIC -DBOXEDWINE_64 -DBOXEDWINE_GUEST_X64=1 -DBOXEDWINE_MULTI_THREADED -DBOXEDWINE_DISABLE_UI
+x64-cache: export BUILD_DIR := Build/X64HeadlessCache
+x64-cache: export EXTRA_CPP_FLAGS := -DASMJIT_STATIC -DBOXEDWINE_64 -DBOXEDWINE_GUEST_X64=1 -DBOXEDWINE_MULTI_THREADED -DBOXEDWINE_DISABLE_UI -DBOXEDWINE_BLOCK_EXEC=1 -DBOXEDWINE_BLOCK_CACHE_INFRA=1
 
-cpus  := $(shell grep -c ^processor /proc/cpuinfo)
-ifeq ($(cpus), 0)
-else ifeq ($(cpus), 1)
-else ifeq ($(cpus), 2)
-else
-cpus := $(shell echo $$(($(cpus)-1)))
-export MAKEFLAGS := -j $(cpus)
-$(info MAKEFLAGS is $(MAKEFLAGS))
+# Respect explicit make -j/MAKEFLAGS. Otherwise cap parallelism to keep the
+# native verifier from exhausting RAM on hosts with many logical CPUs.
+ifeq ($(filter -j% --jobs%,$(MAKEFLAGS)),)
+JOBS ?= 2
+MAKEFLAGS += -j$(JOBS)
 endif
-release test:
+release test x64 x64-cache:
 	@$(MAKE)
 
 clean:
@@ -46,7 +49,7 @@ PROJDIR := $(realpath $(CURDIR)/../..)
 TEST_BUILD_DIR ?= ./build/build_test
 $(info MAKEFLAGS $(MAKE_FLAGS))
 SOURCES = $(shell find $(PROJDIR)/lib/asmjit/asmjit -type f -name '*.cpp')
-SOURCES += $(shell find $(PROJDIR)/source -type f -name '*.cpp')
+SOURCES += $(shell find $(PROJDIR)/source -type d \( -path '$(PROJDIR)/source/test' -o -path '$(PROJDIR)/source/emulation/cpu/tests' \) -prune -o -type f -name '*.cpp' -print)
 SOURCES += $(wildcard $(PROJDIR)/platform/linux/*.cpp)
 SOURCES += $(wildcard $(PROJDIR)/platform/sdl/*.cpp)
 SOURCES += $(wildcard $(PROJDIR)/lib/pugixml/src/*.cpp)
@@ -59,6 +62,8 @@ SOURCES += $(PROJDIR)/lib/imgui/imgui_draw.cpp
 SOURCES += $(PROJDIR)/lib/imgui/imgui.cpp
 SOURCES += $(PROJDIR)/lib/tiny-process/process.cpp
 SOURCES += $(PROJDIR)/lib/tiny-process/process_unix.cpp
+MINIZIP_SOURCES := $(addprefix $(PROJDIR)/lib/zlib/contrib/minizip/,ioapi.c mztools.c unzip.c zip.c)
+SOURCES += $(MINIZIP_SOURCES)
 
 SOFT_SOURCES = $(wildcard $(PROJDIR)/lib/softfloat/source/*.c)
 SOFT_SOURCES += $(wildcard $(PROJDIR)/lib/softfloat/source/8086-SSE/*.c)
@@ -70,18 +75,27 @@ TEST_SOURCES += $(wildcard $(PROJDIR)/source/sdl/*.cpp)
 TEST_SOURCES += $(wildcard $(PROJDIR)/source/sdl/**/*.cpp)
 TEST_SOURCES += $(wildcard $(PROJDIR)/platform/sdl/*.cpp)
 TEST_SOURCES += $(wildcard $(PROJDIR)/platform/linux/*.cpp)
-TEST_SOURCES += $(shell find $(PROJDIR)/source/emulation -type f -name '*.cpp')
+# NB: source/emulation/cpu/tests/* are standalone harnesses with their own main()
+# (see scripts/test-jit-lifetime.sh); the emscripten recipe prunes them too
+# (scripts/build-jit-wasm.sh). Keep them out of the unified test binary.
+TEST_SOURCES += $(shell find $(PROJDIR)/source/emulation -type f -name '*.cpp' -not -path '$(PROJDIR)/source/emulation/cpu/tests/*')
 TEST_SOURCES += $(wildcard $(PROJDIR)/source/io/*.cpp)
 TEST_SOURCES += $(wildcard $(PROJDIR)/source/kernel/*.cpp)
 TEST_SOURCES += $(wildcard $(PROJDIR)/source/kernel/**/*.cpp)
 TEST_SOURCES += $(wildcard $(PROJDIR)/source/util/*.cpp)
 TEST_SOURCES += $(wildcard $(PROJDIR)/source/opengl/sdl/*.cpp)
-TEST_SOURCES += $(wildcard $(PROJDIR)/source/opengl/*.cpp)
-TEST_SOURCES += $(wildcard $(PROJDIR)/source/vulkan/*.cpp)
+# NB: gl64bridge.cpp/vk64bridge.cpp require BOXEDWINE_GUEST_X64 + OpenGL;
+# the test build has neither. Stage A tests trap dispatch only.
+TEST_SOURCES += $(filter-out $(PROJDIR)/source/opengl/gl64bridge.cpp, $(wildcard $(PROJDIR)/source/opengl/*.cpp))
+TEST_SOURCES += $(filter-out $(PROJDIR)/source/vulkan/vk64bridge.cpp, $(wildcard $(PROJDIR)/source/vulkan/*.cpp))
 TEST_SOURCES += $(wildcard $(PROJDIR)/source/x11/*.cpp)
+TEST_SOURCES += $(wildcard $(PROJDIR)/source/x11wire/*.cpp)
+TEST_SOURCES += $(MINIZIP_SOURCES)
 
 ifeq ($(BUILD_DIR), Build/Test)
 SRCS := $(TEST_SOURCES)
+else ifneq ($(filter Build/X64Headless Build/X64HeadlessCache,$(BUILD_DIR)),)
+SRCS := $(filter-out $(PROJDIR)/source/ui/% $(PROJDIR)/lib/asmjit/% $(PROJDIR)/lib/glew/% $(PROJDIR)/lib/imgui/% $(PROJDIR)/lib/pugixml/% $(PROJDIR)/lib/tiny-process/%,$(SOURCES))
 else
 SRCS := $(SOURCES)
 endif
@@ -97,9 +111,16 @@ $(SOFT_OBJS): INCLUDES := -I../../lib/softfloat/source/include -I../../lib/softf
 
 SDL_CFLAGS = $(shell sdl2-config --cflags)
 SDL_LIBS = $(shell sdl2-config --libs)
-CPPFLAGS ?= -std=c++20 -O2 $(EXTRA_CPP_FLAGS) $(GCC_EXTRA_FLAGS) -Werror=switch -Wall -Wno-invalid-offsetof -Wno-delete-incomplete -Wno-unused-result -Wno-unknown-pragmas -Wno-unused-local-typedefs -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable $(INCLUDES) -DBOXEDWINE_RECORDER -DBOXEDWINE_ZLIB -DBOXEDWINE_HAS_SETJMP -DSDL2=1 "-DGLH=<SDL_opengl.h>" -DBOXEDWINE_OPENGL_SDL -DSIMDE_SSE2_NO_NATIVE -DBOXEDWINE_POSIX -DBOXEDWINE_OPENGL_IMGUI_V2 $(SDL_CFLAGS)
+ifneq ($(filter Build/X64Headless Build/X64HeadlessCache,$(BUILD_DIR)),)
+GRAPHICS_CPP_FLAGS :=
+GRAPHICS_LD_FLAGS :=
+else
+GRAPHICS_CPP_FLAGS := "-DGLH=<SDL_opengl.h>" -DBOXEDWINE_OPENGL_SDL -DBOXEDWINE_OPENGL_IMGUI_V2
+GRAPHICS_LD_FLAGS := -lGL
+endif
+CPPFLAGS ?= -std=c++20 -O2 $(EXTRA_CPP_FLAGS) $(GCC_EXTRA_FLAGS) -Werror=switch -Wall -Wno-invalid-offsetof -Wno-delete-incomplete -Wno-unused-result -Wno-unknown-pragmas -Wno-unused-local-typedefs -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable $(INCLUDES) -DBOXEDWINE_RECORDER -DBOXEDWINE_ZLIB -DBOXEDWINE_HAS_SETJMP -DSDL2=1 $(GRAPHICS_CPP_FLAGS) -DSIMDE_SSE2_NO_NATIVE -DBOXEDWINE_POSIX $(SDL_CFLAGS)
 CFLAGS ?= -O2 $(INCLUDES)
-LDFLAGS = -L./linux_build/lib -lcurl -lssl -lcrypto -lpthread -lm -lz -lminizip -lGL -lstdc++ -lstdc++fs $(SDL_LIBS)
+LDFLAGS = -L./linux_build/lib -lcurl -lssl -lcrypto -lpthread -lm -lz $(GRAPHICS_LD_FLAGS) -lstdc++ -lstdc++fs $(SDL_LIBS)
 
 #$(TEST_BUILD_DIR)/boxedwineTest: $(TEST_OBJS)
 #	$(CC) $(TEST_OBJS) -o $@ $(LDFLAGS)

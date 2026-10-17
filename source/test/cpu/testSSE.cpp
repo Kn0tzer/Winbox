@@ -1037,6 +1037,81 @@ void testSseAddps_0x358() {
     verifyOnlyXmmChanged(0, expectedLow, expectedHigh, "sse addps mem");
 }
 
+// Chromium 109 uses 66 0F 7C FF while collecting startup statistics.
+// A register-only HADDPD must not fault or overwrite a source before summing it.
+void testSse3Haddpd() {
+    const U64 a = bitsFromDouble(1.25), b = bitsFromDouble(-3.5);
+    const U64 c = bitsFromDouble(10.0), d = bitsFromDouble(0.5);
+    const U64 sumA = bitsFromDouble(-2.25), sumB = bitsFromDouble(10.5);
+    for (int dst = 0; dst < 8; ++dst) {
+        for (int src = 0; src < 8; ++src) {
+            initSse();
+            setXmm(dst, a, b);
+            if (dst != src) setXmm(src, c, d);
+            cpu->flags = SSE_FLAG_MASK | DF;
+            emitSseRegReg(0x66, 0x7c, dst, src);
+            runTestCPU();
+            verifyXmmMove(dst, sumA, dst == src ? sumA : sumB,
+                src, c, d, "sse3 haddpd reg");
+            if ((TestX86::actualFlags(cpu, true) & (SSE_FLAG_MASK | DF)) != (SSE_FLAG_MASK | DF))
+                failed("sse3 haddpd preserves flags");
+        }
+        initSse();
+        setXmm(dst, a, b);
+        writeXmmMem(MEM_SRC, c, d);
+        emitSseRegMem(0x66, 0x7c, dst, MEM_SRC);
+        runTestCPU();
+        verifyOnlyXmmChanged(dst, sumA, sumB, "sse3 haddpd mem");
+        if (memory->readq(TEST_HEAP_ADDRESS + MEM_SRC) != c ||
+            memory->readq(TEST_HEAP_ADDRESS + MEM_SRC + 8) != d)
+            failed("sse3 haddpd preserves source memory");
+    }
+    // Preserve the sign of -0 + -0; opposite signed zeroes sum to +0.
+    initSse();
+    setXmm(0, bitsFromDouble(-0.0), bitsFromDouble(-0.0));
+    writeXmmMem(MEM_SRC, bitsFromDouble(-0.0), bitsFromDouble(0.0));
+    emitSseRegMem(0x66, 0x7c, 0, MEM_SRC);
+    runTestCPU();
+    verifyOnlyXmmChanged(0, bitsFromDouble(-0.0), bitsFromDouble(0.0), "sse3 haddpd signed zero");
+}
+
+// DXVK duplicates a qword alignment mask before masking both size and
+// alignment. Treating F2 0F 12 as MOVLPS leaves the upper mask zero and
+// turns every image allocation into a zero-length slice.
+void testSse3DuplicateMoves() {
+    struct DuplicateCase { U8 prefix, opcode; U64 low, high; };
+    const DuplicateCase cases[] = {
+        {0xf2, 0x12, XMM_SRC_LOW, XMM_SRC_LOW}, // MOVDDUP
+        {0xf3, 0x12, 0xeeff2468eeff2468ULL, 0x5566778855667788ULL}, // MOVSLDUP
+        {0xf3, 0x16, 0xaabbccddaabbccddULL, 0x1122334411223344ULL}, // MOVSHDUP
+    };
+    for (const auto& c : cases) for (int dst = 0; dst < 8; ++dst) {
+        for (int src = 0; src < 8; ++src) {
+            initSse();
+            setXmm(src, XMM_SRC_LOW, XMM_SRC_HIGH);
+            emitSseRegReg(c.prefix, c.opcode, dst, src);
+            runTestCPU();
+            verifyXmmMove(dst, c.low, c.high, src,
+                XMM_SRC_LOW, XMM_SRC_HIGH, "sse3 duplicate reg");
+        }
+        initSse();
+        memory->writeq(TEST_HEAP_ADDRESS + MEM_SRC + 3, XMM_SRC_LOW);
+        memory->writeq(TEST_HEAP_ADDRESS + MEM_SRC + 11, XMM_SRC_HIGH);
+        emitSseRegMem(c.prefix, c.opcode, dst, MEM_SRC + 3);
+        runTestCPU();
+        verifyOnlyXmmChanged(dst, c.low, c.high, "sse3 duplicate unaligned mem");
+    }
+    initSse();
+    setXmm(0, 3145728, 256);
+    setXmm(1, 0, 0);
+    memory->writeq(TEST_HEAP_ADDRESS + MEM_SRC, ~0ULL);
+    emitSseRegMem(0xf2, 0x12, 1, MEM_SRC);
+    emitSseRegReg(0x66, 0xdb, 0, 1); // PAND xmm0, xmm1
+    runTestCPU();
+    if (cpu->xmm[0].pi.u64[0] != 3145728 || cpu->xmm[0].pi.u64[1] != 256)
+        failed("sse3 movddup preserves both DXVK allocation lanes");
+}
+
 void testSseMoveUnpack_0x312_0x313_0x316_0x317_0x328_0x329() {
     runSse128RegOnly(0, 0, 0x12, 0xaabbccddeeff2468ULL, 0x1122334455667788ULL, 0x1234567890abcdefULL, 0x24680bdf13579aceULL, 0x24680bdf13579aceULL, 0x1122334455667788ULL, "sse movhlps");
     runSse128(0, 0, 0x14, 0xaabbccddeeff2468ULL, 0x1122334455667788ULL, 0x1234567890abcdefULL, 0x24680bdf13579aceULL, 0x90abcdefeeff2468ULL, 0x12345678aabbccddULL, "sse unpcklps");

@@ -91,6 +91,12 @@ inline U32 KMemory::readdInline(U32 address) {
 }
 
 inline void KMemory::writedInline(U32 address, U32 value) {
+#ifdef BW64_INST_TRACE
+    if (value == 0x352D31A9) {
+        // Cannot call KThread::currentThread() here (header, no context); log without EIP
+        klog_fmt("INSTTRACE watch POISON val=%.8X at addr=%.8X", value, address);
+    }
+#endif
     if ((address & 0xFFF) < 0xFFD) {
         U32 index = address >> 12;
         MMU& mmu = data->mmu[index];

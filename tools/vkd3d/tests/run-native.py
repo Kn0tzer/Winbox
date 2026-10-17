@@ -25,9 +25,9 @@ with tempfile.TemporaryDirectory(prefix="vkd3d-native-") as folder:
     shim = path / "shim.c"
     shim.write_text(source[:start] + replacement + source[end:])
     subprocess.run([os.environ.get("CC", "cc"), "-std=c11", "-O0", "-fno-builtin",
-                    *flags, "-c", str(shim), "-o", str(path / "shim.o")], check=True)
+                    *flags, "-c", str(shim), "-o", str(path / "shim.o")], check=True, timeout=180)
     subprocess.run([os.environ.get("CXX", "c++"), "-std=c++17", "-O0", "-g",
                     *flags, "-I", str(root / "include"),
                     str(root / "tools/vkd3d/tests/vk64_native_test.cpp"),
-                    str(path / "shim.o"), "-o", str(path / "test")], check=True)
-    subprocess.run([str(path / "test")], check=True)
+                    str(path / "shim.o"), "-o", str(path / "test")], check=True, timeout=180)
+    subprocess.run([str(path / "test")], check=True, timeout=30)

@@ -40,6 +40,52 @@
 #include <mutex>
 #include <deque>
 #include <atomic>
+#include <cstdio>
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+#endif
+
+namespace {
+std::atomic<uint64_t> inputTicks{0}, forwardedKeys{0}, deliveredKeys{0}, deliveredMotion{0};
+std::atomic<uint32_t> lastInputWindow{0};
+std::atomic<uint32_t> inputPhase{0};
+}
+
+void xwireRecordInputPhase(uint32_t phase) { inputPhase.store(phase, std::memory_order_relaxed); }
+
+void xwireRecordInputDelivery(uint8_t code, uint32_t window) {
+    if (code == 2 || code == 3) deliveredKeys.fetch_add(1, std::memory_order_relaxed);
+    if (code == 6) deliveredMotion.fetch_add(1, std::memory_order_relaxed);
+    lastInputWindow.store(window, std::memory_order_relaxed);
+}
+
+#ifdef __EMSCRIPTEN__
+extern "C" EMSCRIPTEN_KEEPALIVE const char* bw64_input_snapshot() {
+    static thread_local char result[512];
+    uint32_t focus = 0, present = 0, mask = 0, owner = 0;
+    XWireServer& server = XWireServer::instance();
+    bool busy;
+    {
+        std::unique_lock<std::mutex> lock(server.regMutex, std::try_to_lock);
+        busy = !lock.owns_lock();
+        if (!busy) {
+            focus = server.focusWindow; present = server.presentWindow;
+            auto window = server.windows.find(focus ? focus : present);
+            if (window != server.windows.end()) { mask = window->second.eventMask; owner = window->second.ownerClientBase; }
+        }
+    }
+    std::snprintf(result, sizeof(result),
+        "{\"ticks\":%llu,\"forwardedKeys\":%llu,\"deliveredKeys\":%llu,\"deliveredMotion\":%llu,"
+        "\"lastWindow\":%u,\"focus\":%u,\"present\":%u,\"mask\":%u,\"owner\":%u,\"phase\":%u,\"pending\":%s,\"busy\":%s}",
+        (unsigned long long)inputTicks.load(std::memory_order_relaxed),
+        (unsigned long long)forwardedKeys.load(std::memory_order_relaxed),
+        (unsigned long long)deliveredKeys.load(std::memory_order_relaxed),
+        (unsigned long long)deliveredMotion.load(std::memory_order_relaxed),
+        lastInputWindow.load(std::memory_order_relaxed), focus, present, mask, owner, inputPhase.load(std::memory_order_relaxed),
+        g_xwirePresentSink && g_xwirePresentSink->hasInput() ? "true" : "false", busy ? "true" : "false");
+    return result;
+}
+#endif
 #include <vector>
 #include <functional>
 #include <condition_variable>
@@ -321,7 +367,7 @@ public:
                 screen->showWindow(true);
                 loadingShown = true;
             }
-            BString label = KSystem::bootProgressLabel;
+            BString label = KSystem::getBootProgressLabel();
             int pct = KSystem::bootProgressPercent;
             std::vector<BString> log = KSystem::getBootLogTail(26);
             std::vector<uint8_t> lf;
@@ -414,9 +460,17 @@ public:
                 break;
             }
             case SDL_MOUSEMOTION:
-                lastX = e.motion.x; lastY = e.motion.y;
-                ie.type = XWireInputEvent::EvMotion;
-                ie.x = lastX; ie.y = lastY;
+                if (SDL_GetRelativeMouseMode()) {
+                    // FPS mouse-look: pointer is locked, only deltas are
+                    // meaningful. Carry them as EvMotionRel; the connection
+                    // accumulates them into a virtual absolute position.
+                    ie.type = XWireInputEvent::EvMotionRel;
+                    ie.x = e.motion.xrel; ie.y = e.motion.yrel;
+                } else {
+                    lastX = e.motion.x; lastY = e.motion.y;
+                    ie.type = XWireInputEvent::EvMotion;
+                    ie.x = lastX; ie.y = lastY;
+                }
                 ie.state = sdlModState();
                 push(ie);
                 break;
@@ -428,14 +482,49 @@ public:
                 // X buttons: 1=left,2=middle,3=right
                 ie.detail = (e.button.button == SDL_BUTTON_LEFT) ? 1 :
                             (e.button.button == SDL_BUTTON_MIDDLE) ? 2 :
-                            (e.button.button == SDL_BUTTON_RIGHT) ? 3 : e.button.button;
+                            (e.button.button == SDL_BUTTON_RIGHT) ? 3 :
+                            (e.button.button == SDL_BUTTON_X1) ? 8 :
+                            (e.button.button == SDL_BUTTON_X2) ? 9 : e.button.button;
                 ie.x = lastX; ie.y = lastY;
                 ie.state = sdlModState();
                 push(ie);
                 break;
             }
+            case SDL_MOUSEWHEEL: {
+                // X11 wheel convention: button 4 = up, 5 = down, 6 = left,
+                // 7 = right. Each tick is a press immediately followed by a
+                // release (matches X server behavior for wheel buttons).
+                int wx = e.wheel.x, wy = e.wheel.y;
+                uint32_t btn = 0;
+                if (wy > 0) btn = 4;
+                else if (wy < 0) btn = 5;
+                else if (wx > 0) btn = 7;
+                else if (wx < 0) btn = 6;
+                if (btn) {
+                    ie.state = sdlModState();
+                    ie.x = lastX; ie.y = lastY;
+                    ie.type = XWireInputEvent::EvButtonDown;
+                    ie.detail = btn;
+                    push(ie);
+                    ie.type = XWireInputEvent::EvButtonUp;
+                    push(ie);
+                }
+                break;
+            }
             default: break;
         }
+    }
+
+    // Direct XWire event injection, bypassing SDL translation. Used by the
+    // bw64_xwire_mouse_* JS entry points for headless browser input.
+    // Safe from any thread: push is mutex-guarded.
+    void injectEvent(const XWireInputEvent& ie) {
+        XWireInputEvent e2 = ie;
+        if (e2.type == XWireInputEvent::EvMotion) { lastX = e2.x; lastY = e2.y; }
+        if (e2.type == XWireInputEvent::EvButtonDown ||
+            e2.type == XWireInputEvent::EvButtonUp) { lastX = e2.x; lastY = e2.y; }
+        e2.state = sdlModState();
+        push(e2);
     }
 
 private:
@@ -519,9 +608,17 @@ public:
                 break;
             }
             case SDL_MOUSEMOTION:
-                lastX = e.motion.x; lastY = e.motion.y;
-                ie.type = XWireInputEvent::EvMotion;
-                ie.x = lastX; ie.y = lastY;
+                if (SDL_GetRelativeMouseMode()) {
+                    // FPS mouse-look: pointer is locked, only deltas are
+                    // meaningful. Carry them as EvMotionRel; the connection
+                    // accumulates them into a virtual absolute position.
+                    ie.type = XWireInputEvent::EvMotionRel;
+                    ie.x = e.motion.xrel; ie.y = e.motion.yrel;
+                } else {
+                    lastX = e.motion.x; lastY = e.motion.y;
+                    ie.type = XWireInputEvent::EvMotion;
+                    ie.x = lastX; ie.y = lastY;
+                }
                 ie.state = sdlModState();
                 push(ie);
                 break;
@@ -532,14 +629,49 @@ public:
                                                           : XWireInputEvent::EvButtonUp;
                 ie.detail = (e.button.button == SDL_BUTTON_LEFT) ? 1 :
                             (e.button.button == SDL_BUTTON_MIDDLE) ? 2 :
-                            (e.button.button == SDL_BUTTON_RIGHT) ? 3 : e.button.button;
+                            (e.button.button == SDL_BUTTON_RIGHT) ? 3 :
+                            (e.button.button == SDL_BUTTON_X1) ? 8 :
+                            (e.button.button == SDL_BUTTON_X2) ? 9 : e.button.button;
                 ie.x = lastX; ie.y = lastY;
                 ie.state = sdlModState();
                 push(ie);
                 break;
             }
+            case SDL_MOUSEWHEEL: {
+                // X11 wheel convention: button 4 = up, 5 = down, 6 = left,
+                // 7 = right. Each tick is a press immediately followed by a
+                // release (matches X server behavior for wheel buttons).
+                int wx = e.wheel.x, wy = e.wheel.y;
+                uint32_t btn = 0;
+                if (wy > 0) btn = 4;
+                else if (wy < 0) btn = 5;
+                else if (wx > 0) btn = 7;
+                else if (wx < 0) btn = 6;
+                if (btn) {
+                    ie.state = sdlModState();
+                    ie.x = lastX; ie.y = lastY;
+                    ie.type = XWireInputEvent::EvButtonDown;
+                    ie.detail = btn;
+                    push(ie);
+                    ie.type = XWireInputEvent::EvButtonUp;
+                    push(ie);
+                }
+                break;
+            }
             default: break;
         }
+    }
+
+    // Direct XWire event injection, bypassing SDL translation. Used by the
+    // bw64_xwire_mouse_* JS entry points for headless browser input.
+    // Safe from any thread: push is mutex-guarded.
+    void injectEvent(const XWireInputEvent& ie) {
+        XWireInputEvent e2 = ie;
+        if (e2.type == XWireInputEvent::EvMotion) { lastX = e2.x; lastY = e2.y; }
+        if (e2.type == XWireInputEvent::EvButtonDown ||
+            e2.type == XWireInputEvent::EvButtonUp) { lastX = e2.x; lastY = e2.y; }
+        e2.state = sdlModState();
+        push(e2);
     }
 
 private:
@@ -562,6 +694,11 @@ XWireInputOnlySink g_inputSink;
 
 } // namespace
 
+bool hasMainThreadWork() {
+    std::lock_guard<std::mutex> lk(g_mtwMutex);
+    return !g_mtwQueue.empty();
+}
+
 // Install the SDL sink so the X11 wire server presents to a host window. Called
 // from the 64-bit GUI launch path when video is enabled. Idempotent.
 void installXWireSink() {
@@ -579,6 +716,7 @@ void installXWireSink() {
 // (knativeinputSDL) into the XWire input queue. No-op when no sink is active
 // (headless / -novideo / 32-bit). Keeps a single SDL_PollEvent in the process.
 void xwireForwardSdlEvent(const SDL_Event& e) {
+    if (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) forwardedKeys.fetch_add(1, std::memory_order_relaxed);
     if (g_xwirePresentSink == &g_sink) g_sink.forwardSdlEvent(e);
     else if (g_xwirePresentSink) g_inputSink.forwardSdlEvent(e);
 }
@@ -594,6 +732,64 @@ void xwireInjectKey(uint32_t sdlScancode, int down) {
     e.type = down ? SDL_KEYDOWN : SDL_KEYUP;
     e.key.keysym.scancode = (SDL_Scancode)sdlScancode;
     xwireForwardSdlEvent(e);
+}
+
+// Direct mouse injection for headless browser operation. Bypasses SDL event
+// capture entirely; builds XWireInputEvent directly. All safe from any thread.
+// x/y are in guest window coordinates (same space as EvMotion from SDL).
+
+static void injectToActiveSink(const XWireInputEvent& ie) {
+    if (g_xwirePresentSink == &g_sink) g_sink.injectEvent(ie);
+    else if (g_xwirePresentSink) g_inputSink.injectEvent(ie);
+}
+
+void xwireInjectMouseMove(int x, int y) {
+    if (!g_xwirePresentSink) return;
+    XWireInputEvent ie;
+    ie.type = XWireInputEvent::EvMotion;
+    ie.x = x; ie.y = y;
+    injectToActiveSink(ie);
+}
+
+void xwireInjectMouseRel(int dx, int dy) {
+    if (!g_xwirePresentSink) return;
+    XWireInputEvent ie;
+    ie.type = XWireInputEvent::EvMotionRel;
+    ie.x = dx; ie.y = dy;
+    injectToActiveSink(ie);
+}
+
+void xwireInjectMouseButton(int button, int down) {
+    if (!g_xwirePresentSink) return;
+    if (button < 1 || button > 9) return;
+    XWireInputEvent ie;
+    ie.type = down ? XWireInputEvent::EvButtonDown : XWireInputEvent::EvButtonUp;
+    ie.detail = (uint32_t)button;
+    int px = 0, py = 0; uint32_t pm = 0;
+    g_xwirePresentSink->lastPointer(px, py, pm);
+    ie.x = px; ie.y = py;
+    injectToActiveSink(ie);
+}
+
+void xwireInjectMouseWheel(int dx, int dy) {
+    if (!g_xwirePresentSink) return;
+    // X11 wheel convention: button 4 = up, 5 = down, 6 = left, 7 = right.
+    // Each tick is a press immediately followed by a release.
+    int px = 0, py = 0; uint32_t pm = 0;
+    g_xwirePresentSink->lastPointer(px, py, pm);
+    uint32_t btn = 0;
+    if (dy > 0) btn = 4;
+    else if (dy < 0) btn = 5;
+    else if (dx > 0) btn = 7;
+    else if (dx < 0) btn = 6;
+    if (!btn) return;
+    XWireInputEvent ie;
+    ie.x = px; ie.y = py;
+    ie.detail = btn;
+    ie.type = XWireInputEvent::EvButtonDown;
+    injectToActiveSink(ie);
+    ie.type = XWireInputEvent::EvButtonUp;
+    injectToActiveSink(ie);
 }
 
 // Run `fn` on the platform main thread, blocking until it completes. Inline if
@@ -614,17 +810,22 @@ void xwireRunOnMainThread(const std::function<void()>& fn) {
 // Drive present + input from the main loop (main thread). Safe to call when no
 // sink is installed.
 void tickXWirePresent() {
+    inputTicks.fetch_add(1, std::memory_order_relaxed);
+    xwireRecordInputPhase(1);
     // Run any work the gl64 bridge (or others) deferred to the main thread —
     // e.g. SDL_CreateWindow for the hidden GL target. Done unconditionally (even
     // with no sink) so a headless-but-GL path still drains.
     drainMainThreadWork();
+    xwireRecordInputPhase(2);
     if (g_xwirePresentSink) {
         // Coalesced present: the wire server's draw handlers (PutImage bands,
         // CopyArea, text, map/unmap) only mark the scene dirty; the one full
         // composite per tick happens here. Lock-free no-op when nothing drew,
         // so the boot storm stays uncontended (same reasoning as hasInput()).
         XWireServer::instance().flushPendingPresent();
+        xwireRecordInputPhase(3);
         g_xwirePresentSink->tickMainThread();
+        xwireRecordInputPhase(4);
         // Flush queued host input to the guest only when there IS input — a
         // lock-free check, so during the boot storm (no input) we take zero
         // mutexes and never contend with the guest threads holding the conn/reg
@@ -634,6 +835,7 @@ void tickXWirePresent() {
             XWireServer::instance().pumpInput();
         }
     }
+    xwireRecordInputPhase(5);
 }
 
 #endif // BOXEDWINE_GUEST_X64

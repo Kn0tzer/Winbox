@@ -1,37 +1,39 @@
-// web/tests/suite/browser/celeste-boot.test.mjs — Celeste capability gate (32-bit OpenGL).
-//
-// Does NOT claim gameplay. Gates the systemic preconditions that previously
-// blocked Celeste before any game code ran: 32-bit Wine boot (wine-10.0),
-// pixel-format query → CELESTE 1.4.0.0 / BEGIN LOAD, Content file access
-// (large FMOD banks via FsZip per-node streams), and provenance match.
-// Full playability = this + gl32-triangle + input-keyboard + audio-tone green.
-
+// Boot the actual DRM-free Celeste archive; stage and provenance are measured.
 import { ProbeTest } from '../lib/probe-base.mjs';
-import { check, checkGreaterThan, checkIncludes } from '../lib/assert.mjs';
-
+import { check, checkIncludes, checkGreaterThan } from '../lib/assert.mjs';
+import { monoArchive, canvasPixels } from '../lib/guest-fixtures.mjs';
+import { writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 export default class CelesteBootTest extends ProbeTest {
-  constructor() {
-    super({ tag: 'celeste-boot', timeoutMs: 1200000 });
-  }
-
-  async run(ctx) {
-    const { page } = ctx;
-    await page.goto(`${ctx.server.url}/?test=celeste-boot`);
-    await this.waitForPageFn(page, () => window.__done === true, 900000);
-
-    const version = await page.evaluate(() => window.__wineVersion ?? '');
-    if (version) {
-      checkIncludes(String(version), 'wine',
-        `32-bit wine --version must print wine-x.y (got ${version}; qemu prints wine-10.0 → emulator defect if not)`);
+  constructor() { super({ tag: 'celeste-boot', timeoutMs: 1200000 }); }
+  async run({ page }) {
+    const game = await this.mountArchive(process.env.CELESTE_ZIP || '/home/ubuntu/kn0tzer/games/celeste-drmfree.zip', 'celeste.zip');
+    const overlay = resolve(this.dir, 'celeste-overlay.zip');
+    monoArchive(overlay, { gl32: true });
+    const mounted = await this.mountArchive(overlay, 'celeste-overlay.zip');
+    await this.bootGuest(page, { arch: 'x86', gamezip: game.url, gamezipsize: game.bytes,
+      overlay: mounted.url, overlaysize: mounted.bytes, p: 'Celeste.exe', exe: 'Celeste.exe', args: '[]',
+      session: '0', ldpath: '/home/username/apps' });
+    await this.waitForPageFn(page, () => globalThis.bwRuntime.ready(), 600000);
+    const stage = await this.waitForLog(page, /GAME DISPLAYED/, 900000);
+    check(stage.length > 0, 'Actual Celeste must complete loading and display its game window');
+    checkIncludes(this.consoleLines.join('\n'), 'wine', '32-bit Wine must execute Celeste');
+    check(!!this.buildInfo.wasm_sha256, 'BUILD_INFO wasm hash must match actual runtime');
+    // GAME DISPLAYED precedes the first draw. A black mapped window previously
+    // passed this check, so inspect the actual guest canvas as well.
+    let pixels;
+    try {
+      const deadline = Date.now() + 60000;
+      do {
+        pixels = await canvasPixels(page);
+        if (pixels.lit > 10000 && pixels.varied > 1000) break;
+        await page.waitForTimeout(500);
+      } while (Date.now() < deadline);
+    } finally {
+      await page.screenshot({ path: this.dir + '/celeste-stage.png' });
+      await writeFile(this.dir + '/pixels.json', JSON.stringify(pixels || null, null, 2));
     }
-
-    const stage = await page.evaluate(() => window.__celesteStage ?? '');
-    check(String(stage).length > 0,
-      'Celeste probe must report a stage (pixel-format query / CELESTE version / BEGIN LOAD). Empty = infra-blocked, not "assumed working" (P7).');
-
-    const buildInfo = await page.evaluate(() => window.__buildInfo ?? null);
-    if (buildInfo) {
-      check(!!buildInfo.wasm_sha256, 'probe must assert BUILD_INFO wasm hash before trusting result (P2 stale-binary guard)');
-    }
+    checkGreaterThan(pixels.lit, 10000, 'Celeste must present a visible game frame');
+    checkGreaterThan(pixels.varied, 1000, 'Celeste must present colored content beyond window chrome');
   }
 }

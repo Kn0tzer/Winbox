@@ -18,15 +18,8 @@ WINE_ZIP="$DIST/wine64.zip"
 OVERLAY="$RF/nss-overlay"
 BASE_ROOT="$RF/root"
 
-# Prefer the signing-disabled Release build we drive from the agent; fall back
-# to any DerivedData Debug build.
-BOX="$ROOT_DIR/project/mac-xcode/build_dd/Build/Products/Release/Boxedwine.app/Contents/MacOS/Boxedwine"
-if [ ! -x "$BOX" ]; then
-    for p in "$HOME/Library/Developer/Xcode/DerivedData"/Boxedwine-*/Build/Products/*/Boxedwine.app/Contents/MacOS/Boxedwine; do
-        [ -x "$p" ] && BOX="$p"
-    done
-fi
-[ -x "$BOX" ] || { echo "error: no Boxedwine build found" >&2; exit 1; }
+source "$ROOT_DIR/tools/native-binary.sh"
+BOX="$(bw64_native_binary)" || exit 1
 
 GUEST_PE="${1:-/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/notepad.exe}"
 shift || true

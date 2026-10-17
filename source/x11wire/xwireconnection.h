@@ -18,10 +18,12 @@
 #include "boxedwine.h"
 #include "kunixsocket.h"
 #include "xwirepresent.h"
+#include "xwireinput2.h"
 
 #include <memory>
 #include <unordered_map>
 #include <vector>
+#include <mutex>
 #include <array>
 #include <string>
 #include <utility>
@@ -78,7 +80,9 @@ public:
     // Without it wine's window never activates its input queue, so KeyPress
     // events we deliver are ignored even though they arrive. Sent when a window
     // maps; GetInputFocus is also answered with the present window (not root).
+    void updateWmState(uint32_t window, uint32_t state);
     void sendFocusIn(uint32_t window);
+    void sendTakeFocus(uint32_t window);
 
     // MapNotify (code 19) — winex11 selects StructureNotifyMask and blocks its
     // message pump until it sees the window become viewable. Sent on X_MapWindow.
@@ -126,7 +130,15 @@ public:
     // request. Called by XWireServer::pumpInput from the main-thread present tick
     // so an idle app still receives keystrokes/clicks. flushReplies' writeNative
     // path is the thread-safe client-wakeup (same as onPeerWrote).
-    void pumpInputAndFlush() { deliverInputEvents(); flushReplies(); }
+    void pumpInputAndFlush() {
+        // A guest request may own ioMutex while waiting for platform GL work.
+        // Keep the platform loop free to finish that work; onData or the next
+        // tick will deliver queued input when this connection becomes idle.
+        std::unique_lock<std::recursive_mutex> lock(ioMutex, std::try_to_lock);
+        if (!lock.owns_lock()) return;
+        deliverInputEvents();
+        flushReplies();
+    }
 
     // Tell this connection's client it lost a selection (SelectionClear, code
     // 29) — sent when the HOST clipboard takes over so wine stops preferring
@@ -150,6 +162,14 @@ private:
 
     // Pending outbound bytes, flushed to the socket in one shot per onData().
     std::vector<uint8_t> out;
+
+    // Protects out, sequence, buttonState, enteredWindow, relX/relY/relInit
+    // against concurrent access from the main-thread input pump
+    // (pumpInputAndFlush -> deliverInputEvents) and the guest thread
+    // (onData -> processOneRequest/deliverInputEvents). Recursive because
+    // deliverInputEvents() calls sendInputEvent()/sendCrossing() which also
+    // touch protected state. Lock ordering: ioMutex before srv.regMutex.
+    mutable std::recursive_mutex ioMutex;
 
     // Inbound assembly buffer (a request may straddle recvBuffer chunks).
     std::vector<uint8_t> in;
@@ -232,6 +252,13 @@ private:
     // motion during a drag and the press/release sequence report the correct
     // logical button state, like the 32-bit XServer path.
     uint32_t buttonState = 0;
+
+    // Virtual absolute pointer position for relative-motion (EvMotionRel)
+    // accumulation. Initialized lazily from the sink's last pointer pos.
+    int relX = 0, relY = 0;
+    bool relInit = false;
+    XWireInput2 input2;
+    int32_t rawX = 0, rawY = 0;
 
     // The window the pointer has "entered" (we sent EnterNotify for). 0 = none.
     // We send a crossing the first time input lands so winex11 associates the

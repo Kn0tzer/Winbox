@@ -69,7 +69,7 @@ bool KSystem::disableHideCursor = false;
 bool KSystem::forceRelativeMouse = false;
 bool KSystem::cacheReads = false;
 BString KSystem::showWindowTimestamp;
-volatile int KSystem::bootProgressPercent = -1;
+std::atomic<int> KSystem::bootProgressPercent = -1;
 BString KSystem::bootProgressLabel;
 BString KSystem::bootProgressDetail;
 static std::mutex g_bootLogMutex;
@@ -91,6 +91,11 @@ std::vector<BString> KSystem::getBootLogTail(int maxLines) {
     return out;
 }
 
+BString KSystem::getBootProgressLabel() {
+    std::lock_guard<std::mutex> lk(g_bootLogMutex);
+    return bootProgressLabel;
+}
+
 // Advance the GUI loading screen. Wine launches its boot subprocesses by
 // re-exec'ing the SAME unix binary (wine64-preloader -> wine64) and loads the
 // actual PE (wineboot/services/winedevice/explorer/notepad) INTERNALLY, so the
@@ -106,6 +111,7 @@ void KSystem::noteBootStage(const BString& peName) {
     // wine64 — counting both would double every stage).
     bool isPreloader = peName.contains("preloader");
     if (isPreloader) return;
+    std::lock_guard<std::mutex> lk(g_bootLogMutex);
     execCount++;
 
     static const struct { int pct; const char* label; } stages[] = {

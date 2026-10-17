@@ -106,7 +106,7 @@ BString ElfLoader::getInterpreter(FsOpenNode* openNode, bool* isElf) {
         U32 i;
 
         openNode->seek(hdr->e_phoff);	
-        for (i=0;i<hdr->e_phoff;i++) {
+        for (i=0;i<hdr->e_phnum;i++) {
             struct k_Elf32_Phdr phdr;		
             openNode->seek(hdr->e_phoff+i*hdr->e_phentsize);	
             openNode->readNative((U8*)&phdr, sizeof(struct k_Elf32_Phdr));
@@ -133,7 +133,6 @@ FsOpenNode* ElfLoader::inspectNode(BString currentDirectory, const std::shared_p
     if (openNode) {        
         interpreter = getInterpreter(openNode, &isElf);
         if (isElf) {
-            loader = interpreter;
             interpreter = B("");
         } else if (interpreter.length()) {
             interpreter.split(' ', interpreterArgs);
@@ -164,6 +163,12 @@ FsOpenNode* ElfLoader::inspectNode(BString currentDirectory, const std::shared_p
         }
     }		
 
+    // For ELF binaries, return the main binary (not the interpreter).
+    // The ELF loader handles PT_INTERP itself, ensuring AT_PHDR/AT_ENTRY
+    // refer to the main binary as ld.so expects.
+    if (isElf) {
+        return node->open(K_O_RDONLY);
+    }
     if (loaderNode) {
         return loaderNode->open(K_O_RDONLY);
     } else if (interpreterNode) {
@@ -339,5 +344,86 @@ bool ElfLoader::loadProgram(KThread* thread, FsOpenNode* openNode, U32* eip) {
 
     *eip = hdr->e_entry+reloc;
     thread->process->entry = *eip;
+
+    // ---- PT_INTERP: load the dynamic linker ----
+    // For dynamically-linked binaries, the kernel transfers control to the
+    // interpreter (e.g., /lib/ld-linux.so.2), not the binary's own entry.
+    // AT_PHDR/AT_ENTRY (set above from the main binary) tell the interpreter
+    // where the real program is; AT_BASE (set in pushThreadStack from
+    // loaderBaseAddress) tells it where the interpreter itself was loaded.
+    for (U32 i=0;i<hdr->e_phnum;i++) {
+        struct k_Elf32_Phdr phdr;
+        openNode->seek(hdr->e_phoff+hdr->e_phentsize*i);
+        openNode->readNative((U8*)&phdr, sizeof(struct k_Elf32_Phdr));
+        if (phdr.p_type==PT_INTERP) {
+            char interpPath[256] = {0};
+            openNode->seek(phdr.p_offset);
+            U32 ilen = phdr.p_filesz < 255 ? phdr.p_filesz : 255;
+            openNode->readNative((U8*)interpPath, ilen);
+            interpPath[ilen] = 0;
+            klog_fmt("loadProgram: PT_INTERP '%s', loading dynamic linker", interpPath);
+
+            // Open the interpreter via the guest filesystem
+            std::shared_ptr<FsNode> interpNode = Fs::getNodeFromLocalPath(
+                B(""), BString::copy(interpPath), true);
+            if (!interpNode) {
+                klog_fmt("loadProgram: interpreter not found: %s", interpPath);
+                return false;
+            }
+            FsOpenNode* interpOpen = interpNode->open(K_O_RDONLY);
+            if (!interpOpen) {
+                klog_fmt("loadProgram: cannot open interpreter: %s", interpPath);
+                return false;
+            }
+
+            // Parse interpreter ELF header
+            U8 ibuffer[sizeof(struct k_Elf32_Ehdr)] = {0};
+            if (interpOpen->readNative(ibuffer, sizeof(struct k_Elf32_Ehdr)) != sizeof(struct k_Elf32_Ehdr)) {
+                klog("loadProgram: cannot read interpreter ELF header");
+                interpOpen->close(); delete interpOpen;
+                return false;
+            }
+            struct k_Elf32_Ehdr* ihdr = (struct k_Elf32_Ehdr*)ibuffer;
+            if (!isElfMagic(ibuffer) || !isValidElf(ihdr)) {
+                klog("loadProgram: interpreter is not a valid ELF");
+                interpOpen->close(); delete interpOpen;
+                return false;
+            }
+
+            // Load interpreter at a high address, away from the main binary.
+            // Main PIE binaries go at 0xF0000000; use 0xB0000000 for ld.so.
+            U32 interpBase = 0xB0000000;
+            U32 interpEntry = 0;
+            for (U32 j=0;j<ihdr->e_phnum;j++) {
+                struct k_Elf32_Phdr iphdr;
+                interpOpen->seek(ihdr->e_phoff+ihdr->e_phentsize*j);
+                interpOpen->readNative((U8*)&iphdr, sizeof(struct k_Elf32_Phdr));
+                if (iphdr.p_type==PT_LOAD) {
+                    U32 iaddr = interpBase + iphdr.p_vaddr;
+                    U32 isectionLen = iphdr.p_memsz;
+                    // Page-align the mapping
+                    U32 alignedAddr = iaddr & ~0xFFF;
+                    isectionLen += (iaddr - alignedAddr);
+                    thread->memory->mmap(thread, alignedAddr, isectionLen,
+                        K_PROT_READ | K_PROT_WRITE | K_PROT_EXEC,
+                        K_MAP_PRIVATE | K_MAP_ANONYMOUS | K_MAP_FIXED, -1, 0);
+                    if (iphdr.p_filesz>0) {
+                        interpOpen->seek(iphdr.p_offset);
+                        interpOpen->read(thread, iaddr, iphdr.p_filesz);
+                    }
+                }
+            }
+            interpEntry = interpBase + ihdr->e_entry;
+            interpOpen->close(); delete interpOpen;
+
+            klog_fmt("loadProgram: interpreter mapped at 0x%x, entry 0x%x", interpBase, interpEntry);
+            // Transfer control to the interpreter, not the main binary.
+            // process->entry/phdr still refer to the main binary (for AT_ENTRY/AT_PHDR).
+            *eip = interpEntry;
+            // AT_BASE needs the interpreter's base for ld.so relocations
+            thread->process->loaderBaseAddress = interpBase;
+            break;
+        }
+    }
     return true;
 }

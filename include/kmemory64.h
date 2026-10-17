@@ -16,24 +16,17 @@
 #include <atomic>
 #include <unordered_map>
 #include <map>
+#include <vector>
 #include <cstring>
+#include <cstdlib>
 
 class KProcess;
 class KThread;
 
-// Minimal 64-bit guest memory for v1. Pages are allocated lazily on first
-// touch via an unordered_map keyed by page number (vaddr >> 12). This is
-// not the long-term design — a real two-level page table will replace it
-// once the loader/decoder/syscall paths are exercising it. For Phase 1.5
-// the priority is: enough surface to back ElfLoader64 segment mapping and
-// 64-bit stack setup, with simple correctness over performance.
-//
-// Deliberately NOT supported in v1:
-//   - file-backed mappings (mmap with fd)
-//   - MAP_SHARED, copy-on-write
-//   - futex pages, JIT page-write tracking
-//   - native host memory mapping
-// These will be added incrementally once the basics work end-to-end.
+// Sparse 64-bit guest memory with lazy page backing, mmap reservations,
+// shared file mappings, pinned futex buffers and a per-thread data cache.
+// Fork copies private backing and preserves shared-file aliases. Private
+// pages are copied eagerly; this is not a copy-on-write page table.
 
 #define K64_PAGE_SIZE  4096
 #define K64_PAGE_SHIFT 12
@@ -58,6 +51,14 @@ class KThread;
 // actually TOUCHED, not address space RESERVED. The buffer, once allocated, is
 // never reallocated while live, so a host pointer handed out by getRamPtr (the
 // 64-bit futex table keys on it) stays stable until the page is decommitted.
+// Forward-declared: defined in kmemory64.cpp, logs via klog_fmt when BW64_BSSDIAG is set.
+// Declared here so K64Page methods (in this header) can log buffer changes.
+void bssBufDiagLog(const char* op, const void* oldPtr, const void* newPtr);
+static inline bool bssBufDiagOn() {
+    static int cached = -1;
+    if (cached < 0) cached = std::getenv("BW64_BSSDIAG") ? 1 : 0;
+    return cached != 0;
+}
 struct K64Page {
     U8* data = nullptr;
     U32 flags = 0;
@@ -67,28 +68,40 @@ struct K64Page {
     // same file page, so wineserver's writes are visible to clients and vice
     // versa. We must NOT delete[] or reallocate a borrowed buffer.
     bool dataShared = false;
-    ~K64Page() { if (!dataShared) delete[] data; }
+    // Cached accesses and kernel references can still hold a previous private
+    // backing pointer during a mapping change. Retain it until this page dies;
+    // invalidating a cache does not end an access already in flight.
+    std::vector<std::unique_ptr<U8[]>> retiredBacking;
+    ~K64Page() {
+        if (bssBufDiagOn() && data) bssBufDiagLog("dtor", data, nullptr);
+        if (!dataShared) delete[] data;
+    }
     // Allocate + zero the backing buffer on first write/commit. Idempotent.
     U8* commit() {
         if (!data) {
             data = new U8[K64_PAGE_SIZE];
             ::memset(data, 0, K64_PAGE_SIZE);
+            if (bssBufDiagOn()) bssBufDiagLog("commit", nullptr, data);
         }
         return data;
     }
     // Point this page at a process-shared backing buffer (not owned here).
     void adoptShared(U8* shared) {
-        if (data && !dataShared) delete[] data;
+        U8* old = data;
+        if (data && !dataShared) retiredBacking.emplace_back(data);
         data = shared;
         dataShared = true;
+        if (bssBufDiagOn()) bssBufDiagLog("adoptShared", old, shared);
     }
     // Drop the backing buffer (munmap / PROT_NONE). The slot survives; a later
     // read returns zero, a later write re-commits a fresh zero page. A borrowed
     // shared buffer is detached (not freed — the registry owns it).
     void decommit() {
-        if (!dataShared) delete[] data;
+        U8* old = data;
+        if (data && !dataShared) retiredBacking.emplace_back(data);
         data = nullptr;
         dataShared = false;
+        if (bssBufDiagOn() && old) bssBufDiagLog("decommit", old, nullptr);
     }
     bool committed() const { return data != nullptr; }
 };
@@ -104,13 +117,13 @@ public:
     U64 mmapAnonymousFixed(U64 addr, U64 len, U32 prot);
 
     // Map a MAP_SHARED file region so it is genuinely SHARED across every process
-    // that maps the same file (keyed by path). Each guest page in [addr,addr+len)
+    // that maps the same file (keyed by file identity). Each guest page in [addr,addr+len)
     // adopts a process-global backing buffer from g_sharedFileRegistry, seeded
     // once from the file contents at [fileOffset,...). wine's server shared-memory
     // section (server-1-*/tmpmap-*) relies on this: wineserver writes object/
     // sequence state that clients read directly. Without real sharing the section
     // desyncs → wineserver release_object refcount underflow. addr is page-aligned.
-    U64 mmapSharedFile(U64 addr, U64 len, U32 prot, const char* path, U64 fileOffset,
+    U64 mmapSharedFile(U64 addr, U64 len, U32 prot, U64 fileIdentity, const char* path, U64 fileOffset,
                        const U8* fileBytes, U64 fileBytesLen);
 
     // Atomically pick a free address range AND map it, so two guest threads of
@@ -261,7 +274,7 @@ private:
     // Separate from pagesMutex so a long scan doesn't block unrelated page
     // faults. Process-wide bump cursor (replaces the old per-CPU64 mmapNext so
     // every thread of the process advances the same pointer). 0 = uninitialised.
-    BOXEDWINE_MUTEX mmapMutex;
+    mutable BOXEDWINE_MUTEX mmapMutex;
     U64 mmapNext = 0;
 
     // Reserved address-space ranges drawn from the mmap region (>= K64_MMAP_BASE).
@@ -287,6 +300,7 @@ private:
     // thread's write lands in an orphaned buffer (see definition).
     U8* commitPageLocked(U64 pageNum, U32 flagsIfNew);
     K64Page* getPage(U64 pageNum) const;
+    U8* getPageData(U64 pageNum) const;
 };
 
 // BW64_MEMRING dump (see kmemory64.cpp): print the recent wineserver guest-write

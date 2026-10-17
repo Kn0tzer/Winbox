@@ -105,22 +105,54 @@ U32 KMemory::mmap(KThread* thread, U32 addr, U32 len, S32 prot, S32 flags, FD fi
             return -K_EINVAL;
         }
         if (flags & K_MAP_FIXED_NOREPLACE) {
-            if (!remap && addr != 0 && pageStart + pageCount > ADDRESS_PROCESS_MMAP_START) {
+            if (!remap && addr != 0 && pageStart >= ADDRESS_PROCESS_MMAP_START) {
                 return -K_ENOMEM;
             }
+            bool conflict = false;
             for (U32 page = pageStart; page < pageStart + pageCount; page++) {
                 if (isPageMapped(page)) {
+                    conflict = true;
+                    break;
+                }
+            }
+            // Only relocate for Wine heap reservations (1MB PROT_NONE in
+            // 256MB-512MB). Other FIXED_NOREPLACE callers require the exact
+            // address, so keep immediate EEXIST for them.
+            bool heapLike = (len == 0x100000 && prot == 0 && addr >= 0x10000000 && addr < 0x20000000);
+            if (conflict && !heapLike) {
+                return -K_EEXIST;
+            }
+            if (conflict) {
+                U32 searchStart = pageStart + 1;
+                bool found = false;
+                while (searchStart + pageCount <= ADDRESS_PROCESS_MMAP_START) {
+                    bool free = true;
+                    for (U32 page = searchStart; page < searchStart + pageCount; page++) {
+                        if (isPageMapped(page)) {
+                            free = false;
+                            searchStart = page + 1;
+                            break;
+                        }
+                    }
+                    if (free) {
+                        pageStart = searchStart;
+                        addr = pageStart << K_PAGE_SHIFT;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
                     return -K_EEXIST;
                 }
             }
         }
     } else {
-        if (pageStart + pageCount > ADDRESS_PROCESS_MMAP_START) {
+        if (pageStart >= ADDRESS_PROCESS_MMAP_START) {
             return -K_ENOMEM;
         }
         if (pageStart == 0) {
             // :TODO: this seems like a hack, there must be something wrong with how I implemented mmap
-            if (KSystem::wineMajorVersion >= 7 && (flags & K_MAP_BOXEDWINE) == 0) {
+            if ((flags & K_MAP_BOXEDWINE) == 0) { // guest request: user-space
                 pageStart = 0x10000;
             } else {
                 pageStart = ADDRESS_PROCESS_MMAP_START;
@@ -601,12 +633,28 @@ bool KMemory::isAddressDynamic(U32 address, U32 len) {
     return data->opCache.isAddressDynamic(address, len);
 }
 
+#ifdef BW64_INST_TRACE
+void bw64DumpInstTrace(U32 tid);
+#endif
 void KMemory::logPageFault(KThread* thread, U32 address) {
     U32 start = 0;
     CPU* cpu = thread->cpu;
 
     BString name = process->getModuleName(cpu->seg[CS].address + cpu->eip.u32);
     klog_fmt("%.8X EAX=%.8X ECX=%.8X EDX=%.8X EBX=%.8X ESP=%.8X EBP=%.8X ESI=%.8X EDI=%.8X %s at %.8X", cpu->seg[CS].address + cpu->eip.u32, cpu->reg[0].u32, cpu->reg[1].u32, cpu->reg[2].u32, cpu->reg[3].u32, cpu->reg[4].u32, cpu->reg[5].u32, cpu->reg[6].u32, cpu->reg[7].u32, name.c_str(), process->getModuleEip(cpu->seg[CS].address + cpu->eip.u32));
+
+#ifdef BW64_INST_TRACE
+    klog_fmt("INSTTRACE ids: thread->id=%u cpu->thread=%s cpuThreadId=%u same=%d", thread->id,
+             cpu->thread ? "set" : "NULL", cpu->thread ? cpu->thread->id : 0xFFFFFFFFu,
+             cpu->thread == thread ? 1 : 0);
+    {
+        U32 fesp = cpu->reg[4].u32;
+        U32 vsrc = cpu->memory->readd(fesp + 0xD8);
+        U32 vdst = cpu->memory->readd(fesp + 0x98);
+        klog_fmt("INSTTRACE stackcheck ESP=%.8X [ESP+0xD8](src)=%.8X [ESP+0x98](dst)=%.8X", fesp, vsrc, vdst);
+    }
+    bw64DumpInstTrace(thread->id);
+#endif
 
     klog_fmt("Page Fault at %.8X", address);
     klog("Valid address ranges:");

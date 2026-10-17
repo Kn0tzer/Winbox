@@ -23,6 +23,7 @@
 #include "kstat.h"
 #include "bufferaccess.h"
 #include "ksignal.h"
+#include "wine32stack.h"
 #include "kepoll.h"
 #include "../io/fsmemnode.h"
 #include "../io/fsmemopennode.h"
@@ -151,6 +152,20 @@ KProcess::KProcess(U32 id) : id(id), exitOrExecCond(std::make_shared<BoxedWineCo
     this->ldt[2].seg_32bit = 1;
     this->ldt[2].seg_not_present = 0;
     this->ldt[2].read_exec_only = 0;
+
+    // Wine 32-bit PE segments: CS=0x23 (LDT[4]), DS/SS/ES=0x2B (LDT[5])
+    // Wine's ntdll uses IRETD with these selectors to transfer to PE entry point.
+    this->ldt[4].base_addr = 0;
+    this->ldt[4].entry_number = 4;
+    this->ldt[4].seg_32bit = 1;
+    this->ldt[4].seg_not_present = 0;
+    this->ldt[4].read_exec_only = 0;
+
+    this->ldt[5].base_addr = 0;
+    this->ldt[5].entry_number = 5;
+    this->ldt[5].seg_32bit = 1;
+    this->ldt[5].seg_not_present = 0;
+    this->ldt[5].read_exec_only = 0;
 
     this->hasSetSeg[GS] = true;
     this->hasSetSeg[FS] = true;    
@@ -323,15 +338,35 @@ U32 KProcess::getThreadCount() {
 }
 
 void KProcess::deleteThread(KThread* thread) {
-    thread->cleanup();  
-    if (this->getThreadCount() == 0) {
-        cleanupProcess();
-        delete this->memory; // this might call KThread::currentThread, so don't delete thread before this
-        this->memory = nullptr; 
+    bool lastThread = false;
+    bool needsExitGroup;
+    {
+        // Removing a thread from the table and releasing the final process
+        // resources must be one exit operation. Otherwise two exiting threads
+        // can both observe an empty table and delete the same memory.
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(threadExitMutex);
+        needsExitGroup = !this->terminated && this->getThreadCount() == 1;
+        if (!needsExitGroup) {
+            thread->cleanup();
+            lastThread = this->getThreadCount() == 0;
+            if (lastThread) {
+                cleanupProcess();
+                delete this->memory; // this might call KThread::currentThread, so don't delete thread before this
+                this->memory = nullptr;
+            }
+            delete thread;
+        }
     }
-    delete thread;
+    if (needsExitGroup) {
+        // Two concurrent exit syscalls can both initially see another thread.
+        // Keep the final executor registered while publishing process exit,
+        // without holding the teardown lock across global process lookups.
+        this->exitgroup(thread, this->exitCode);
+        this->deleteThread(thread);
+        return;
+    }
     // don't call into getProcess while holding threadsCondition
-    if (!this->terminated && this->getThreadCount() == 0) {
+    if (!this->terminated && lastThread) {
         KProcessPtr parent = KSystem::getProcess(this->parentId);
         if (!parent || parent->getThreadCount() == 0) {
             KSystem::eraseProcess(this->id);
@@ -364,17 +399,27 @@ void KProcess::clone(const KProcessPtr& from) {
     this->effectiveGroupId = from->effectiveGroupId;
     this->currentDirectory = from->currentDirectory;
     this->brkEnd = from->brkEnd;
-    for (auto& n : from->fds) {
-        KFileDescriptorPtr fromFd = n.value;
-        KFileDescriptorPtr fd = this->allocFileDescriptor(fromFd->kobject, fromFd->accessFlags, fromFd->descriptorFlags, n.key, 0);
-        this->fds.set(n.key, fd);     
+    struct ForkFd { U32 handle, accessFlags, descriptorFlags; std::shared_ptr<KObject> object; };
+    std::vector<ForkFd> snapshot;
+    {
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(from->fdsMutex);
+        for (auto& n : from->fds)
+            snapshot.push_back({n.key, n.value->accessFlags, n.value->descriptorFlags, n.value->kobject});
+    }
+    // Release the parent's lock before allocating child descriptors and VFS
+    // links. Sibling threads can change the parent table during fork.
+    for (const auto& entry : snapshot) {
+        KFileDescriptorPtr fd = this->allocFileDescriptor(entry.object, entry.accessFlags, entry.descriptorFlags, entry.handle, 0);
+        this->fds.set(entry.handle, fd);
         KObject* kobject = fd->kobject.get();
-        Fs::addDynamicLinkFile(fdNode->path + "/" + BString::valueOf(n.key), k_mdev(0, 0), fdNode, false, [kobject] {
+        Fs::addDynamicLinkFile(fdNode->path + "/" + BString::valueOf(entry.handle), k_mdev(0, 0), fdNode, false, [kobject] {
             return kobject->selfFd();
             });
     }
-    // :TODO: not thread safe if from has multiple threads
-    this->mappedFiles = from->mappedFiles;
+    {
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(from->mappedFilesMutex);
+        this->mappedFiles = from->mappedFiles;
+    }
     std::copy(from->sigActions, from->sigActions+MAX_SIG_ACTIONS, this->sigActions);
     this->path = from->path;
     this->commandLine = from->commandLine;
@@ -437,7 +482,7 @@ static void writeStackString(KThread* thread, CPU * cpu, const char* s) {
 #define HWCAP_I386_XMM2  1 << 26
 #define HWCAP_I386_AMD3D 1 << 31
 
-static void pushThreadStack(KThread* thread, CPU* cpu, int argc, U32* a, int envc, U32* e) {
+static void pushThreadStack(KThread* thread, CPU* cpu, int argc, U32* a, int envc, U32* e, U32 execfn) {
     KProcessPtr process = cpu->thread->process;
 
     cpu->push32(rand());
@@ -460,6 +505,12 @@ static void pushThreadStack(KThread* thread, CPU* cpu, int argc, U32* a, int env
 
     cpu->push32(randomAddress);
     cpu->push32(25); // AT_RANDOM
+    // AT_EXECFN: guest address of argv[0] string. Wine's loader derives its
+    // bindir/loader/module paths from it; without it Wine falls back to a
+    // bogus path (mirrors the 64-bit loader in loader64.cpp).
+    klog_fmt("setupThreadStack32: AT_EXECFN=%08X", execfn);
+    cpu->push32(execfn);
+    cpu->push32(31); // AT_EXECFN
     cpu->push32(100);
     cpu->push32( 17); // AT_CLKTCK
     //push32(cpu, HWCAP_I386_FPU|HWCAP_I386_VME|HWCAP_I386_TSC|HWCAP_I386_CX8|HWCAP_I386_CMOV|HWCAP_I386_FCMOV);
@@ -505,6 +556,10 @@ static void pushThreadStack(KThread* thread, CPU* cpu, int argc, U32* a, int env
 static void setupThreadStack(KThread* thread, CPU* cpu, BString programName, const std::vector<BString>& args, const std::vector<BString>& env) {
     U32 a[MAX_ARG_COUNT] = {};
     U32 e[MAX_ARG_COUNT] = {};
+    klog_fmt("setupThreadStack32: argc=%u envc=%u prog=%s", (U32)args.size(), (U32)env.size(), programName.c_str());
+    for (U32 i = 0; i < env.size() && i < 5; i++) {
+        klog_fmt("setupThreadStack32: env[%u]=%s", i, env[i].c_str());
+    }
 
     cpu->push32(0);
     cpu->push32(0);
@@ -528,7 +583,7 @@ static void setupThreadStack(KThread* thread, CPU* cpu, BString programName, con
         a[i]=ESP;
     }
 
-    pushThreadStack(thread, cpu, (U32)args.size(), a, (U32)env.size(), e);
+    pushThreadStack(thread, cpu, (U32)args.size(), a, (U32)env.size(), e, args.size() ? a[0] : 0);
 }
 
 U32 KProcess::getNextFileDescriptorHandle(int after) {
@@ -594,23 +649,29 @@ U32 KProcess::openFileDescriptor(BString currentDirectory, BString localPath, U3
         }
     }
     if (!node) {
-        BString fullPath = Fs::getFullPath(currentDirectory, localPath);
-        BString parentPath = Fs::getParentPath(fullPath);
-        BString fileName = Fs::getFileNameFromPath(fullPath);
-        std::shared_ptr<FsNode> parent = Fs::getNodeFromLocalPath(B(""), parentPath, true);
-        if (!parent) {
-            return -K_ENOENT;
-        }       
-        BString nativePath = Fs::getNativePathFromParentAndLocalFilename(parent, fileName);
-        std::shared_ptr<FsNode> mixedSibling = parent->getChildByNameIgnoreCase(fileName);
-        if (mixedSibling) {
-            nativePath = nativePath + EXT_MIXED;
-            if (Fs::doesNativePathExist(nativePath)) {
-                kwarn("KProcess::openFileDescriptor mixed file already exists");
+        // Creators in different processes must publish one FsNode. Otherwise
+        // the same native file gets separate inode IDs and independent locks.
+        BOXEDWINE_CRITICAL_SECTION;
+        node = Fs::getNodeFromLocalPath(currentDirectory, localPath, true);
+        if (!node) {
+            BString fullPath = Fs::getFullPath(currentDirectory, localPath);
+            BString parentPath = Fs::getParentPath(fullPath);
+            BString fileName = Fs::getFileNameFromPath(fullPath);
+            std::shared_ptr<FsNode> parent = Fs::getNodeFromLocalPath(B(""), parentPath, true);
+            if (!parent) {
+                return -K_ENOENT;
             }
+            BString nativePath = Fs::getNativePathFromParentAndLocalFilename(parent, fileName);
+            std::shared_ptr<FsNode> mixedSibling = parent->getChildByNameIgnoreCase(fileName);
+            if (mixedSibling) {
+                nativePath = nativePath + EXT_MIXED;
+                if (Fs::doesNativePathExist(nativePath)) {
+                    kwarn("KProcess::openFileDescriptor mixed file already exists");
+                }
+            }
+            node = Fs::addFileNode(parent->path+"/"+fileName, B(""), nativePath, false, parent);
+            Fs::makeLocalDirs(parent->path);
         }
-        node = Fs::addFileNode(parent->path+"/"+fileName, B(""), nativePath, false, parent);
-        Fs::makeLocalDirs(parent->path);
     }
     std::shared_ptr<KObject> nodeObject = node->kobject.lock();
     if (nodeObject) {
@@ -750,7 +811,11 @@ U32 KProcess::exit(KThread* thread, U32 code) {
         return this->exitgroup(thread, code);    
 
     thread->cpu->yield = true;
+#ifndef BOXEDWINE_MULTI_THREADED
     thread->cleanup(); // will unschedule the thread
+#endif
+    // In MT mode the executor still uses its CPU/memory until it leaves the
+    // run loop. deleteThread owns removal and cleanup after that point.
 	terminateCurrentThread(thread);
 
     return 0;
@@ -906,6 +971,13 @@ U32 KProcess::execve(KThread* thread, BString path, std::vector<BString>& args, 
     }
 
     // reset memory must come after we grab the args and env
+    // Stop sibling executors before freeing their address space. Their exit
+    // cleanup can still touch guest futexes and robust lists after removal
+    // from the thread table, so also wait for deleteThread's teardown lock.
+    killAllThreads(thread);
+    {
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(threadExitMutex);
+    }
     this->heap.freeAll(this->memory);
     this->memory->execvReset(cloneVM);
     cloneVM = false;
@@ -1078,7 +1150,25 @@ U32 KProcess::rmdir(BString path) {
     return node->removeDir();
 }
 
+// Rewrites wineserver server dir paths for 32-bit processes to isolate them
+// from 64-bit wineserver. Both architectures compute the same server dir hash
+// from WINEPREFIX, causing conflicts. For 32-bit: /server- -> /server32-
+// Must match the rewriting in ksocket.cpp (rewriteWineserverSocketPath).
+static BString rewriteServerDirPath(const BString& path, bool is64Bit) {
+    if (is64Bit) {
+        return path;
+    }
+    int idx = path.indexOf("/server-");
+    if (idx < 0) {
+        return path;
+    }
+    BString before = path.substr(0, idx + 7);
+    BString after = path.substr(idx + 7);
+    return before + B("32") + after;
+}
+
 U32 KProcess::mkdir(BString path) {
+    path = rewriteServerDirPath(path, this->is64Bit);
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, false);   
     if (node) {
         return -K_EEXIST;
@@ -1139,6 +1229,7 @@ static S32 internalAccess(std::shared_ptr<FsNode> node, U32 flags) {
 }
 
 U32 KProcess::access(BString path, U32 mode) {
+    path = rewriteServerDirPath(path, this->is64Bit);
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, true);
     return internalAccess(node, mode); 
 }
@@ -1170,16 +1261,16 @@ U32 KProcess::chmod(BString path, U32 mode) {
 }
 
 U32 KProcess::chdir(BString path) {
+    path = rewriteServerDirPath(path, this->is64Bit);
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, true);
     if (!node)
         return -K_ENOENT;
     if (!node->isDirectory())
         return -K_ENOTDIR;
-    if (path.startsWith('/')) {
-        this->currentDirectory = path;
-    } else {
-        this->currentDirectory = this->currentDirectory+"/"+path;
-    }
+    // Use the resolved node path, not the unresolved input path, so that
+    // symlinks (e.g. dosdevices/z:) don't leak into the cwd and corrupt
+    // Wine's Unix->NT path conversion.
+    this->currentDirectory = node->path;
     if (this->currentDirectory.endsWith('/')) {
         this->currentDirectory = this->currentDirectory.substr(0, this->currentDirectory.length()-1);
     }
@@ -1187,6 +1278,7 @@ U32 KProcess::chdir(BString path) {
 }
 
 U32 KProcess::unlinkFile(BString path) {
+    path = rewriteServerDirPath(path, this->is64Bit);
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, false);
     if (!node) {
         return -K_ENOENT;
@@ -1253,6 +1345,7 @@ U32 KProcess::close(FD fildes) {
 }
 
 U32 KProcess::open(BString path, U32 flags) {
+    path = rewriteServerDirPath(path, this->is64Bit);
     KFileDescriptorPtr fd;
         
     U32 result = this->openFile(this->currentDirectory, path, flags, fd);
@@ -1740,8 +1833,9 @@ U32 KProcess::clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 t
             flags &=~K_CLONE_VM;
             vm = true;
         }
-        if (flags & ~(K_CLONE_CHILD_SETTID|K_CLONE_CHILD_CLEARTID|K_CLONE_PARENT_SETTID)) {
-            kpanic_fmt("KProcess::clone - unhandled flag 0x%X", (U32)(flags & ~(K_CLONE_CHILD_SETTID|K_CLONE_CHILD_CLEARTID|K_CLONE_PARENT_SETTID)));
+        // Wine uses CLONE_FS|CLONE_FILES|CLONE_SIGHAND for new_process; allow them.
+        if (flags & ~(K_CLONE_CHILD_SETTID|K_CLONE_CHILD_CLEARTID|K_CLONE_PARENT_SETTID|K_CLONE_FS|K_CLONE_FILES|K_CLONE_SIGHAND)) {
+            kpanic_fmt("KProcess::clone - unhandled flag 0x%X", (U32)(flags & ~(K_CLONE_CHILD_SETTID|K_CLONE_CHILD_CLEARTID|K_CLONE_PARENT_SETTID|K_CLONE_FS|K_CLONE_FILES|K_CLONE_SIGHAND)));
         }
         KProcessPtr newProcess = KProcess::create();
         newProcess->memory = KMemory::create(newProcess.get());
@@ -1782,8 +1876,10 @@ U32 KProcess::clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 t
             newThread->cpu->reg[4].u32 = child_stack;
         }
         if (vm) {
-            newThread->cpu->reg[4].u32+=8;
-            newThread->cpu->eip.u32 = newThread->cpu->peek32(0);
+            // vfork: child shares the parent's VM until execve. The CPU was
+            // cloned from the parent above (EIP at the int 0x80); step over it.
+            // (Was: eip = peek32(0), always 0 -> EIP=0 fault loop.)
+            newThread->cpu->eip.u32 += 2; // step over clone call in the new thread
         } else {
             newThread->cpu->eip.u32 += 2; // step over clone call in the new thread
         }
@@ -1812,9 +1908,13 @@ U32 KProcess::clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 t
         return newProcess->id;
     } else if ((flags & 0xFFFFFF00) == (K_CLONE_THREAD | K_CLONE_VM | K_CLONE_FS | K_CLONE_FILES | K_CLONE_SIGHAND | K_CLONE_SETTLS | K_CLONE_PARENT_SETTID | K_CLONE_CHILD_CLEARTID | K_CLONE_SYSVSEM)) {
         KThread* newThread = this->createThread();
+        newThread->clone(thread); // inherit parent CPU (EIP at int 0x80, regs, segs, FPU) - MUST come before TLS setup
         struct user_desc desc;
 
         memory->memcpy(&desc, tls, sizeof(struct user_desc));
+#ifdef BW64_INST_TRACE
+        klog_fmt("INSTTRACE CLONE_TLS tid=%u tls_ptr=%08X base=%08X entry=%u", newThread->id, tls, desc.base_addr, desc.entry_number);
+#endif
 
         if (desc.base_addr!=0 && desc.entry_number!=0) {
             struct user_desc* ldt = newThread->getLDT(desc.entry_number);
@@ -1823,9 +1923,9 @@ U32 KProcess::clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 t
         }
         newThread->clear_child_tid = ctid;
         memory->writed(ptid, newThread->id);
-        newThread->cpu->reg[4].u32 = child_stack;
-        newThread->cpu->reg[4].u32+=8;
-        newThread->cpu->eip.u32 = newThread->cpu->peek32(0);
+        newThread->cpu->reg[4].u32 = child_stack; // ESP = new thread stack
+        newThread->cpu->eip.u32 += 2; // step over clone call in the new thread
+        newThread->cpu->reg[0].u32 = 0; // child returns 0 from clone
         //klog("starting %d/%d", newThread->process->id, newThread->id);
         scheduleThread(newThread);
         return newThread->id;
@@ -1997,13 +2097,22 @@ U32 KProcess::exitgroup(KThread* thread, U32 code) {
         this->terminated = true;
     }
 
-    thread->cleanup(); // must happen before we clear memory
-    this->threads.clear();
-    if (cloneVM) {
-        // make sure the shared memory is unhooked from parent
-        this->memory->execvReset(cloneVM);
+    {
+        // killAllThreads waits for table removal, which can precede the
+        // sibling's destructor. Wait for that teardown before removing our
+        // own entry, or the sibling can free memory still used below.
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(threadExitMutex);
+        thread->cleanup(); // must happen before we clear memory
+        {
+            BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(threadsMutex);
+            this->threads.clear();
+        }
+        if (cloneVM) {
+            // make sure the shared memory is unhooked from parent
+            this->memory->execvReset(cloneVM);
+        }
+        this->cleanupProcess(); // release RAM, sockets, etc now, before waitpid
     }
-    this->cleanupProcess(); // release RAM, sockets, etc now.  No reason to wait to do that until waitpid is called
     this->exitCode = code;
 
     {
@@ -2038,10 +2147,9 @@ U32 KProcess::fchdir(FD fildes) {
     if (!p->openFile->node->isDirectory()) {		
         return -K_ENOTDIR;
     }
-    if (p->openFile->openedPath.length())
-        this->currentDirectory = p->openFile->openedPath;
-    else
-        this->currentDirectory = p->openFile->node->path;
+    // Use the resolved node path, not the unresolved openedPath, so that
+    // symlinks don't leak into the cwd (see chdir fix above).
+    this->currentDirectory = p->openFile->node->path;
     if (this->currentDirectory.endsWith("/")) {
         this->currentDirectory = this->currentDirectory.substr(0, this->currentDirectory.length()-1);
     }
@@ -2159,6 +2267,107 @@ U32 KProcess::msync(KThread* thread, U32 addr, U32 len, U32 flags) {
     return -K_ENOMEM;
 }
 
+// Wine server protocol REQ id for create_event (from Wine 8.0 server/protocol.def)
+#define WINE_REQ_CREATE_EVENT_WRITEV 30
+
+// UTF-16LE bytes for "__wineboot_event" (16 chars * 2 bytes = 32 bytes)
+static const U8 winebootEventNameUtf16Writev[] = {
+    0x5F, 0x00, 0x5F, 0x00, 0x77, 0x00, 0x69, 0x00,
+    0x6E, 0x00, 0x65, 0x00, 0x62, 0x00, 0x6F, 0x00,
+    0x6F, 0x00, 0x74, 0x00, 0x5F, 0x00, 0x65, 0x00,
+    0x76, 0x00, 0x65, 0x00, 0x6E, 0x00, 0x74, 0x00
+};
+
+// Intercepts wineserver create_event requests for __wineboot_event in 32-bit
+// processes via writev and sets initial_state=1 so the event starts signaled.
+// (writev version - Wine uses writev, not sendmsg, for wineserver requests)
+// Request layout (Wine 8.0): header(12) + access(4)@12 + manual_reset(4)@16
+//   + initial_state(4)@20 + objattr(vararg)@24+
+static void patchWinebootEventCreateWritev(KThread* thread, KFileDescriptorPtr fd, U32 iov, S32 iovcnt) {
+    // Only for 32-bit processes (64-bit wineboot signals the event itself)
+    if (thread->process->is64Bit) {
+        return;
+    }
+    // Only for Unix sockets
+    if (!fd || !fd->kobject || fd->kobject->type != KTYPE_UNIX_SOCKET) {
+        return;
+    }
+    std::shared_ptr<KSocketObject> s = std::dynamic_pointer_cast<KSocketObject>(fd->kobject);
+    if (!s) {
+        return;
+    }
+    // Only for wineserver32 sockets
+    if (!strstr(s->destAddress.data, "server32-")) {
+        return;
+    }
+    KMemory* memory = thread->memory;
+    if (!iov || iovcnt <= 0 || iovcnt > 16) {
+        return;
+    }
+    // Read first iovec (base + len)
+    U32 firstBase = memory->readd(iov);
+    U32 firstLen = memory->readd(iov + 4);
+    if (!firstBase || firstLen < 24) {
+        return;
+    }
+    // Check REQ id == create_event (30)
+    U32 reqId = memory->readd(firstBase);
+    if (reqId != WINE_REQ_CREATE_EVENT_WRITEV) {
+        return;
+    }
+    // Scan iovec data for UTF-16LE "__wineboot_event" (up to 512 bytes)
+    U8 scanBuf[512];
+    U32 scanLen = 0;
+    for (S32 i = 0; i < iovcnt && scanLen < sizeof(scanBuf); i++) {
+        U32 base = memory->readd(iov + i * 8);
+        U32 len = memory->readd(iov + i * 8 + 4);
+        if (!base || !len) continue;
+        U32 toCopy = len;
+        if (scanLen + toCopy > sizeof(scanBuf)) {
+            toCopy = sizeof(scanBuf) - scanLen;
+        }
+        memory->memcpy(scanBuf + scanLen, base, toCopy);
+        scanLen += toCopy;
+    }
+    bool found = false;
+    for (U32 i = 0; i + sizeof(winebootEventNameUtf16Writev) <= scanLen; i++) {
+        if (memcmp(scanBuf + i, winebootEventNameUtf16Writev, sizeof(winebootEventNameUtf16Writev)) == 0) {
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        return;
+    }
+    // Set initial_state=1 at offset 20 from request start
+    memory->writed(firstBase + 20, 1);
+    klog("kprocess: patched __wineboot_event create_event initial_state=1 (32-bit, writev)");
+}
+
+
+
+#define WINE_REQ_CREATE_EVENT 30
+static const U8 wbEvt[] = {
+    0x5F,0x00,0x5F,0x00,0x77,0x00,0x69,0x00,0x6E,0x00,0x65,0x00,0x62,0x00,0x6F,0x00,
+    0x6F,0x00,0x74,0x00,0x5F,0x00,0x65,0x00,0x76,0x00,0x65,0x00,0x6E,0x00,0x74,0x00
+};
+static void patchWbEvt(KThread* t, KFileDescriptorPtr fd, U32 iov, S32 cnt) {
+    if (!t || !t->process || t->process->is64Bit) return;
+    if (!fd || !fd->kobject || fd->kobject->type != 1) return;
+    KMemory* m = t->memory;
+    if (!iov || cnt <= 0 || cnt > 16) return;
+    U32 b0 = m->readd(iov);
+    U32 l0 = m->readd(iov+4);
+    if (!b0 || l0 < 24) return;
+    if (m->readd(b0) != 30) return;
+    U32 sl = l0 > 256 ? 256 : l0;
+    U8 buf[256];
+    m->memcpy(buf, b0, sl);
+    for (U32 i = 0; i + 32 <= sl; i++) {
+        if (!memcmp(buf+i, wbEvt, 32)) { m->writed(b0+20, 1); return; }
+    }
+}
+
 U32 KProcess::writev(KThread* thread, FD handle, U32 iov, S32 iovcnt) {
     KFileDescriptorPtr fd = this->getFileDescriptor(handle);
 
@@ -2168,6 +2377,7 @@ U32 KProcess::writev(KThread* thread, FD handle, U32 iov, S32 iovcnt) {
     if (!fd->canWrite()) {
         return -K_EINVAL;
     }
+    patchWbEvt(thread, fd, iov, iovcnt);
     return fd->kobject->writev(thread, iov, iovcnt);    
 }
 
@@ -2280,6 +2490,7 @@ U32 KProcess::getcwd(U32 buffer, U32 size) {
 }
 
 U32 KProcess::stat64(BString path, U32 buffer) {
+    path = rewriteServerDirPath(path, this->is64Bit);
     bool isLink = false;
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, true, &isLink);
     if (!node) {
@@ -2291,6 +2502,7 @@ U32 KProcess::stat64(BString path, U32 buffer) {
 }
 
 U32 KProcess::lstat64(BString path, U32 buffer) {
+    path = rewriteServerDirPath(path, this->is64Bit);
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, false);
     if (!node) {
         return -K_ENOENT;
@@ -2546,6 +2758,7 @@ U32 KProcess::getCurrentDirectoryFromDirFD(FD dirfd, BString& currentDirectory) 
 }
 
 U32 KProcess::openat(FD dirfd, BString path, U32 flags) {
+    path = rewriteServerDirPath(path, this->is64Bit);
     BString dir;
     U32 result = 0;
     
@@ -2563,6 +2776,7 @@ U32 KProcess::openat(FD dirfd, BString path, U32 flags) {
 }
 
 U32 KProcess::mkdirat(U32 dirfd, BString path, U32 mode) {
+    path = rewriteServerDirPath(path, this->is64Bit);
     BString dir;
     U32 result = 0;
     
@@ -2683,6 +2897,7 @@ void KProcess::writeStatX(KMemory* memory, U32 buf, U32 id, U32 rdev, U32 hardLi
     memory->writed(buf, 0);           // stx_dio_offset_align
 }
 U32 KProcess::statx(FD dirfd, BString path, U32 flags, U32 mask, U32 buf) {
+    path = rewriteServerDirPath(path, this->is64Bit);
     BString dir;
     U32 result = 0;
 
@@ -2757,6 +2972,7 @@ U32 KProcess::fstatat64(FD dirfd, BString path, U32 buf, U32 flag) {
 }
 
 U32 KProcess::unlinkat(FD dirfd, BString path, U32 flags) {
+    path = rewriteServerDirPath(path, this->is64Bit);
     BString dir;
     U32 result = 0;
     
@@ -3082,6 +3298,58 @@ void KProcess::printStack() {
             BString name = this->getModuleName(cpu->seg[CS].address+cpu->eip.u32);
 
             klog_fmt("    0x%08d %s", this->getModuleEip(cpu->seg[CS].address+cpu->eip.u32), name.length()?name.c_str():"Unknown");
+        }
+#ifdef BOXEDWINE_GUEST_X64
+        if (this->is64Bit && thread->cpu64) {
+            // The compatibility CPU's EIP/EBP do not describe a 64-bit thread.
+            // Include syscall arguments so a parked read can be tied to its fd.
+            CPU64* c = thread->cpu64;
+            klog_fmt("CPU64 STACK pid=%u tid=%u rip=0x%llx rsp=0x%llx rbp=0x%llx rax=0x%llx rdi=0x%llx rsi=0x%llx rdx=0x%llx r10=0x%llx r8=0x%llx r9=0x%llx waitStart=%u now=%u",
+                id, thread->id, (unsigned long long)c->rip,
+                (unsigned long long)c->reg[X64_RSP].u64, (unsigned long long)c->reg[X64_RBP].u64,
+                (unsigned long long)c->reg[X64_RAX].u64, (unsigned long long)c->reg[X64_RDI].u64,
+                (unsigned long long)c->reg[X64_RSI].u64, (unsigned long long)c->reg[X64_RDX].u64,
+                (unsigned long long)c->reg[X64_R10].u64, (unsigned long long)c->reg[X64_R8].u64,
+                (unsigned long long)c->reg[X64_R9].u64, thread->condStartWaitTime, KSystem::getMilliesSinceStart());
+            const U64 sp = c->reg[X64_RSP].u64;
+            for (U32 i = 0; i < 16; ++i) {
+                const U64 at = sp + i * 8;
+                if (at < sp || !c->memory->isPageMapped(at >> 12) ||
+                    !c->memory->isPageMapped((at + 7) >> 12)) break;
+                klog_fmt("CPU64 STACK pid=%u tid=%u sp+0x%x=0x%llx", id, thread->id, i * 8,
+                    (unsigned long long)c->memory->readq(at));
+            }
+            continue;
+        }
+#endif
+        if (!this->is64Bit) {
+            // A Wine Unix handler's ESP points to its Unix stack. Recover the
+            // saved Windows stack so diagnostics show the game caller too.
+            BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(cpu->memory->mutex);
+            Wine32SavedStack saved;
+            if (readWine32SavedStack(*cpu->memory, cpu->seg[FS].address, saved)) {
+                BString caller = this->getModuleName(saved.eip);
+                klog_fmt("WINE32 CALLER pid=%u tid=%u eip=0x%x esp=0x%x ebp=0x%x %s+0x%x",
+                    this->id, thread->id, saved.eip, saved.esp, saved.ebp,
+                    caller.c_str(), this->getModuleEip(saved.eip));
+                walkWine32SavedFrames(*cpu->memory, saved, [&](U32 fp, U32 address) {
+                    BString module = this->getModuleName(address);
+                    klog_fmt("WINE32 FRAME pid=%u tid=%u fp=0x%x addr=0x%x %s+0x%x",
+                        this->id, thread->id, fp, address, module.c_str(), this->getModuleEip(address));
+                });
+                const U32 bytes = std::min<U32>(16384, saved.stackBase - saved.esp);
+                U32 emitted = 0;
+                for (U32 off = 0; off + 4 <= bytes && emitted < 32; off += 4) {
+                    if (!cpu->memory->canRead(saved.esp + off, 4)) break;
+                    U32 addr = cpu->memory->readd(saved.esp + off);
+                    BString module = this->getModuleName(addr);
+                    U32 offset = this->getModuleEip(addr);
+                    if (!module.contains(B("/home/username/apps/")) || !offset) continue;
+                    klog_fmt("WINE32 STACK pid=%u tid=%u sp+0x%x=0x%x %s+0x%x",
+                        this->id, thread->id, off, addr, module.c_str(), offset);
+                    emitted++;
+                }
+            }
         }
         ChangeThread c(thread);
         cpu->walkStack(cpu->eip.u32, EBP, 6);

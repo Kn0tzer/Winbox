@@ -287,6 +287,63 @@ enum {
     VK64_fn_vkBindBufferMemory2KHR,               // alias
     VK64_fn_vkBindImageMemory2,                   // (device, bindInfoCount, pBindInfos*) -> records image binds
     VK64_fn_vkBindImageMemory2KHR,                // alias
+    // dxgi (D3D12 swapchain): init_vk_funcs resolves this from vulkan-1.dll
+    // when loaded as our PE shim. Same append-only position as libvk64.c.
+    VK64_fn_vkGetPhysicalDeviceWin32PresentationSupportKHR, // (physDev, qFam) -> VkBool32
+    // readback: image->buffer copies (append-only; DXVK readback path)
+    VK64_fn_vkCmdCopyImageToBuffer,                  // (cmdBuf, srcImage, srcImageLayout, dstBuffer, regionCount, pRegions*) -> records CMD_COPY_I2B
+    VK64_fn_vkCmdCopyImage,                          // (cmdBuf, ...) -> no-op (ID stability)
+    VK64_fn_vkCmdCopyImageToBuffer2,                 // (cmdBuf, srcImage, 0, dstBuffer, regionCount, pRegions*) -> records CMD_COPY_I2B
+    VK64_fn_vkCmdCopyImageToBuffer2KHR,              // alias of vkCmdCopyImageToBuffer2
+    VK64_fn_vkCmdCopyBuffer,                        // (cmdBuf, srcBuffer, dstBuffer, regionCount, pRegions*) -> immediate CPU memcpy
+    VK64_fn_vkCmdCopyBuffer2,                       // (cmdBuf, pCopyBufferInfo*) -> immediate CPU memcpy
+    VK64_fn_vkCmdCopyBuffer2KHR,                    // alias of vkCmdCopyBuffer2
+    // Game-breaking stub implementations (immediate CPU emulation)
+    VK64_fn_vkCmdFillBuffer,                        // (cmdBuf, dstBuffer, dstOffset, size, data) -> fill with 32-bit pattern
+    VK64_fn_vkCmdClearColorImage,                   // (cmdBuf, image, layout, pColor*, rangeCount, pRanges*) -> fill image
+    VK64_fn_vkCmdClearAttachments,                  // (cmdBuf, attachCount, pAttach*, rectCount, pRects*) -> clear in RP
+    VK64_fn_vkCmdClearAttachmentsKHR,               // alias
+    VK64_fn_vkCmdCopyImage2,                        // (cmdBuf, srcImg, dstImg, nRegions, pRegions*) -> immediate copy (unpacked)
+    VK64_fn_vkCmdCopyImage2KHR,                     // alias
+    VK64_fn_vkCmdCopyBufferToImage2,                // (cmdBuf, srcBuf, dstImg, nRegions, pRegions*) -> immediate copy (unpacked)
+    VK64_fn_vkCmdCopyBufferToImage2KHR,             // alias
+    VK64_fn_vkCmdBlitImage,                         // (cmdBuf, srcImg, srcLayout, dstImg, dstLayout, nRegions, pRegions*, filter) -> scaled copy
+    VK64_fn_vkCmdBlitImage2,                        // (cmdBuf, srcImg, dstImg, nRegions, pRegions*, filter) -> scaled copy (unpacked)
+    VK64_fn_vkCmdBlitImage2KHR,                     // alias
+    VK64_fn_vkCmdResolveImage,                      // (cmdBuf, srcImg, srcLayout, dstImg, dstLayout, nRegions, pRegions*) -> MSAA resolve
+    VK64_fn_vkCmdResolveImageKHR,                   // alias
+    VK64_fn_vkCmdDrawIndirect,                      // (cmdBuf, buffer, offset, drawCount, stride) -> indirect to direct draws
+    VK64_fn_vkCmdDrawIndexedIndirect,               // (cmdBuf, buffer, offset, drawCount, stride) -> indirect to direct draws
+    VK64_fn_vkCmdDrawIndirectCount,                 // (cmdBuf, buffer, offset, countBuf, countOffset, maxDraws, stride)
+    VK64_fn_vkCmdDrawIndirectCountKHR,              // alias
+    VK64_fn_vkCmdDrawIndexedIndirectCount,          // (cmdBuf, buffer, offset, countBuf, countOffset, maxDraws, stride)
+    VK64_fn_vkCmdExecuteCommands,                   // (cmdBuf, cmdCount, pCmdBufs*) -> merge secondary CBs
+    VK64_fn_vkCmdDispatch,                          // (cmdBuf, x, y, z) -> record compute dispatch
+    VK64_fn_vkCmdDispatchBase,                      // (cmdBuf, baseX, baseY, baseZ, x, y, z) -> record compute dispatch
+    VK64_fn_vkCmdDispatchIndirect,                  // (cmdBuf, buffer, offset) -> record compute dispatch
+    VK64_fn_vkGetBufferDeviceAddress,              // (device, VkBufferDeviceAddressInfo*) -> u64 VA
+    VK64_fn_vkGetPhysicalDeviceProperties2KHR,     // alias of vkGetPhysicalDeviceProperties2
+    VK64_fn_vkGetPhysicalDeviceFeatures2KHR,       // alias of vkGetPhysicalDeviceFeatures2
+    VK64_fn_vkGetPhysicalDeviceMemoryProperties2KHR, // alias of vkGetPhysicalDeviceMemoryProperties2
+    // D3D9 query sync (append-only): D3D9 event/occlusion queries via DXVK need
+    // real VkEvent/VkQueryPool entry points. The benign stub faults Wine's Unix
+    // handler (it reads the fake handle as a string) and trips the PE assert,
+    // so these are implemented in the bridge. Same explicit positions as libvk32.c.
+    VK64_fn_vkCreateEvent = 841,                // (device, pCreateInfo*, pAllocator, out VkEvent*)
+    VK64_fn_vkDestroyEvent,                     // (device, event, pAllocator)
+    VK64_fn_vkSetEvent,                         // (device, event) -> signalled
+    VK64_fn_vkResetEvent,                       // (device, event) -> unsignalled
+    VK64_fn_vkGetEventStatus,                   // (device, event) -> SET/RESET
+    VK64_fn_vkCmdSetEvent,                      // (cmdBuf, event, stageMask) -> signalled
+    VK64_fn_vkCmdResetEvent,                    // (cmdBuf, event, stageMask) -> unsignalled
+    VK64_fn_vkCmdWaitEvents,                    // (...) -> no-op (immediate execution already done)
+    VK64_fn_vkCreateQueryPool,                  // (device, pCreateInfo*, pAllocator, out VkQueryPool*)
+    VK64_fn_vkDestroyQueryPool,                 // (device, pool, pAllocator)
+    VK64_fn_vkResetQueryPool,                   // (device, pool, first, count) -> SUCCESS
+    VK64_fn_vkGetQueryPoolResults,              // (device, pool, first, count, dataSize, pData*, stride, flags) -> zero-filled SUCCESS
+    VK64_fn_vkCmdResetQueryPool,                // (cmdBuf, pool, first, count) -> SUCCESS
+    VK64_fn_vkCmdBeginQuery,                    // (cmdBuf, pool, query, flags) -> SUCCESS
+    VK64_fn_vkCmdEndQuery,                      // (cmdBuf, pool, query) -> SUCCESS
     VK64_fn__MAX
 };
 

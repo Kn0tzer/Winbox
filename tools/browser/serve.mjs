@@ -4,7 +4,7 @@ import { stat } from 'node:fs/promises';
 import { resolve,extname,sep } from 'node:path';
 export async function serve(root,port=0){
   root=resolve(root);
-  const types={'.mjs':'text/javascript','.js':'text/javascript','.html':'text/html','.css':'text/css','.wasm':'application/wasm','.zip':'application/zip','.json':'application/json'};
+  const types={'.svg':'image/svg+xml','.mjs':'text/javascript','.js':'text/javascript','.html':'text/html','.css':'text/css','.wasm':'application/wasm','.zip':'application/zip','.json':'application/json'};
   const server=createServer(async(req,res)=>{
     try{
       const url=new URL(req.url,'http://localhost');const path=resolve(root,'.'+decodeURIComponent(url.pathname));

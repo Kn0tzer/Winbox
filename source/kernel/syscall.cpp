@@ -23,6 +23,8 @@
 #include "ksignal.h"
 #include "ksocket.h"
 #include "kepoll.h"
+#include "../opengl/gl64bridge.h"
+#include "../vulkan/vk64bridge.h"
 #include "kevent.h"
 
 #include <random>
@@ -327,6 +329,12 @@ static U32 syscall_times(CPU* cpu, U32 eipCount) {
 static U32 syscall_brk(CPU* cpu, U32 eipCount) {
     SYS_LOG1(SYSCALL_MEMORY|SYSCALL_PROCESS, cpu, "brk: address=%.8X", ARG1);
     U32 result = cpu->thread->process->brk(cpu->thread, ARG1);
+    // Hot path (heap growth fires thousands of brks during boot): only log
+    // under SCDUMP. Unconditional logging cost ~20% of main-thread CPU in the
+    // Portal menu profile (print + postMessage + textarea mirror per line).
+    if (getenv("BW64_SCDUMP")) {
+        klog_fmt("brk32: addr=%08X result=%08X", ARG1, result);
+    }
     SYS_LOG(SYSCALL_MEMORY|SYSCALL_PROCESS, cpu, " result=%d(0x%X)\n", result, result);
     return result;
 }
@@ -707,6 +715,12 @@ static U32 syscall_clone3(CPU* cpu, U32 eipCount) {
     SYS_LOG(SYSCALL_SYSTEM, cpu, " result=%d(0x%X)\n", result, result);
     return result;
     */
+}
+
+static U32 syscall_fork(CPU* cpu, U32 eipCount) {
+    // fork() = clone(SIGCHLD, 0). SIGCHLD=17.
+    U32 result = cpu->thread->process->clone(cpu->thread, 17, 0, 0, 0, 0);
+    return result;
 }
 
 static U32 syscall_clone(CPU* cpu, U32 eipCount) {
@@ -1773,7 +1787,60 @@ U32 syscall_sendto(CPU* cpu, U32 eipCount) {
 
 U32 syscall_sendmsg(CPU* cpu, U32 eipCount) {
     SYS_LOG1(SYSCALL_SOCKET, cpu, "sendmsg socket=%d message=%X flags=%X", ARG1, ARG2, ARG3);
-    U32 result = ksendmsg(cpu->thread, ARG1, ARG2, ARG3);
+    KThread* thread = cpu->thread;
+    KMemory* memory = cpu->memory;
+    U32 msgAddr = ARG2;
+
+    // Fast path: single iov (or zero) - pass through unchanged.
+    U32 iovlen = memory->readd(msgAddr + 12); // msg_iovlen
+    if (iovlen <= 1) {
+        U32 result = ksendmsg(thread, ARG1, msgAddr, ARG3);
+        SYS_LOG(SYSCALL_SOCKET, cpu, " result=%d(0x%X)\n", result, result);
+        return result;
+    }
+
+    // Slow path: coalesce multiple iovs into a single-iov msghdr in scratch.
+    // KUnixSocketObject uses per-iov length-prefix framing; if the receiver
+    // uses fewer iovs than the sender, trailing segments are silently dropped.
+    // Coalescing matches the 64-bit sys_sendmsg64 behavior (syscall64.cpp).
+    // Scratch layout (must match syscall64.cpp MSG_SCRATCH_* defines):
+    //   +0   : 32-bit msghdr (28 bytes)
+    //   +32  : one 32-bit iovec {base,len}
+    //   +512 : data buffer (64KB - 512)
+    extern U32 msgScratch(KThread* thread);
+    U32 base = msgScratch(thread);
+    if (!base) {
+        U32 result = ksendmsg(thread, ARG1, msgAddr, ARG3);
+        SYS_LOG(SYSCALL_SOCKET, cpu, " result=%d(0x%X)\n", result, result);
+        return result;
+    }
+
+    U32 iov = memory->readd(msgAddr + 8); // msg_iov
+    U32 dataAddr = base + 512;
+    U32 dataCap = (64 * 1024) - 512;
+    U32 total = 0;
+    for (U32 i = 0; i < iovlen; i++) {
+        U32 b = memory->readd(iov + 8 * i);       // iov_base
+        U32 l = memory->readd(iov + 8 * i + 4);   // iov_len
+        if (l == 0) continue;
+        if (total + l > dataCap) l = dataCap - total;
+        if (l == 0) break;
+        memory->memcpy(dataAddr + total, b, l);
+        total += l;
+    }
+
+    // Build single-iov 32-bit msghdr in scratch, preserving name/control/flags.
+    memory->writed(base + 32, dataAddr);                    // iov_base
+    memory->writed(base + 32 + 4, total);                   // iov_len
+    memory->writed(base + 0, memory->readd(msgAddr + 0));   // msg_name
+    memory->writed(base + 4, memory->readd(msgAddr + 4));   // msg_namelen
+    memory->writed(base + 8, base + 32);                    // msg_iov
+    memory->writed(base + 12, total ? 1 : 0);               // msg_iovlen
+    memory->writed(base + 16, memory->readd(msgAddr + 16)); // msg_control
+    memory->writed(base + 20, memory->readd(msgAddr + 20)); // msg_controllen
+    memory->writed(base + 24, memory->readd(msgAddr + 24)); // msg_flags
+
+    U32 result = ksendmsg(thread, ARG1, base, ARG3);
     SYS_LOG(SYSCALL_SOCKET, cpu, " result=%d(0x%X)\n", result, result);
     return result;
 }
@@ -1787,9 +1854,84 @@ U32 syscall_recvfrom(CPU* cpu, U32 eipCount) {
 
 U32 syscall_recvmsg(CPU* cpu, U32 eipCount) {
     SYS_LOG1(SYSCALL_SOCKET, cpu, "recvmsg socket=%d message=%X flags=%X", ARG1, ARG2, ARG3);
-    U32 result = krecvmsg(cpu->thread, ARG1, ARG2, ARG3);
-    SYS_LOG(SYSCALL_SOCKET, cpu, " result=%d(0x%X)\n", result, result);
-    return result;
+    KThread* thread = cpu->thread;
+    KMemory* memory = cpu->memory;
+    U32 msgAddr = ARG2;
+
+    // Fast path: single iov (or zero) - pass through unchanged.
+    U32 iovlen = memory->readd(msgAddr + 12); // msg_iovlen
+    if (iovlen <= 1) {
+        U32 result = krecvmsg(thread, ARG1, msgAddr, ARG3);
+        SYS_LOG(SYSCALL_SOCKET, cpu, " result=%d(0x%X)\n", result, result);
+        return result;
+    }
+
+    // Slow path: coalesce multiple iovs into a single-iov msghdr in scratch.
+    // KUnixSocketObject uses per-iov length-prefix framing; if the sender
+    // uses fewer iovs than the receiver, data can be misdelivered.
+    // Coalescing matches the 64-bit sys_recvmsg64 behavior (syscall64.cpp).
+    extern U32 msgScratch(KThread* thread);
+    U32 base = msgScratch(thread);
+    if (!base) {
+        U32 result = krecvmsg(thread, ARG1, msgAddr, ARG3);
+        SYS_LOG(SYSCALL_SOCKET, cpu, " result=%d(0x%X)\n", result, result);
+        return result;
+    }
+
+    U32 iov = memory->readd(msgAddr + 8); // msg_iov
+    U32 dataAddr = base + 512;
+    U32 dataCap = (64 * 1024) - 512;
+
+    // Total receive capacity across all iov segments.
+    U32 want = 0;
+    for (U32 i = 0; i < iovlen; i++) {
+        U32 l = memory->readd(iov + 8 * i + 4); // iov_len
+        want += l;
+        if (want > dataCap) { want = dataCap; break; }
+    }
+
+    // Build single-iov 32-bit msghdr in scratch.
+    memory->writed(base + 32, dataAddr);
+    memory->writed(base + 32 + 4, want);
+    memory->writed(base + 0, memory->readd(msgAddr + 0));
+    memory->writed(base + 4, memory->readd(msgAddr + 4));
+    memory->writed(base + 8, base + 32);
+    memory->writed(base + 12, want ? 1 : 0);
+    memory->writed(base + 16, memory->readd(msgAddr + 16));
+    memory->writed(base + 20, memory->readd(msgAddr + 20));
+    memory->writed(base + 24, memory->readd(msgAddr + 24));
+
+    U32 rc = krecvmsg(thread, ARG1, base, ARG3);
+    SYS_LOG(SYSCALL_SOCKET, cpu, " result=%d(0x%X)\n", rc, rc);
+
+    if ((S32)rc > 0) {
+        // Scatter the received bytes back into the original iov segments.
+        U32 remaining = rc;
+        U32 off = 0;
+        for (U32 i = 0; i < iovlen && remaining; i++) {
+            U32 b = memory->readd(iov + 8 * i);
+            U32 l = memory->readd(iov + 8 * i + 4);
+            U32 chunk = (l < remaining) ? l : remaining;
+            if (chunk) {
+                memory->memcpy(b, dataAddr + off, chunk);
+                off += chunk;
+                remaining -= chunk;
+            }
+        }
+        // Update msg_controllen and copy control data back (for SCM_RIGHTS).
+        U32 ctllen = memory->readd(base + 20);
+        memory->writed(msgAddr + 20, ctllen);
+        if (ctllen) {
+            U32 ctrlGuest = memory->readd(msgAddr + 16);
+            U32 ctrlScratch = memory->readd(base + 16);
+            U32 ctrlCap = memory->readd(msgAddr + 20);
+            if (ctllen > ctrlCap) ctllen = ctrlCap;
+            if (ctrlGuest && ctrlScratch && ctllen) {
+                memory->memcpy(ctrlGuest, ctrlScratch, ctllen);
+            }
+        }
+    }
+    return rc;
 }
 
 U32 syscall_shutdown(CPU* cpu, U32 eipCount) {
@@ -1809,7 +1951,7 @@ U32 syscall_sigtimedwait_time64(CPU* cpu, U32 eipCount) {
 static const SyscallFunc syscallFunc[] = {
     nullptr,                  // 0
     syscall_exit,       // 1 __NR_exit
-    nullptr,                  // 2
+    syscall_fork,       // 2 __NR_fork
     syscall_read,       // 3 __NR_read
     syscall_write,      // 4 __NR_write
     syscall_open,       // 5 __NR_open
@@ -2268,6 +2410,31 @@ void ksyscall(CPU* cpu, U32 eipCount) {
             cpu->nextOp = cpu->getNextOp();
             return;
         }
+    }
+    // 32-bit GL/VK bridge traps (see tools/rootfs64/libgl32, libvk32).
+    // The 32-bit shims use int $0x80 with EAX=GL64_SYSCALL_NR/VK64_SYSCALL_NR,
+    // EBX=fnId, ECX=guest VA of args. These numbers are above the Linux
+    // syscall range so they don't collide with the syscallFunc table.
+    if (EAX == 0x474C0000) {
+#ifdef BOXEDWINE_OPENGL
+        result = (U32)gl32Bridge(cpu, EBX, ECX);
+#else
+        result = -K_ENOSYS;
+#endif
+        EAX = result;
+        cpu->eip.u32 += eipCount;
+        cpu->thread->kernelTime += KSystem::getMicroCounter() - startTime;
+        return;
+    } else if (EAX == 0x564B0000) {
+#ifdef BOXEDWINE_VULKAN64
+        result = (U32)vk32Bridge(cpu, EBX, ECX);
+#else
+        result = -K_ENOSYS;
+#endif
+        EAX = result;
+        cpu->eip.u32 += eipCount;
+        cpu->thread->kernelTime += KSystem::getMicroCounter() - startTime;
+        return;
     }
     if (EAX>439) {
         result = -K_ENOSYS;

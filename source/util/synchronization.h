@@ -53,9 +53,8 @@ public:
     U32 lockOwner = 0;
 
 private:
-#define MAX_PARENTS 2
-    U32 parentCount = 0;
-    std::weak_ptr<BoxedWineCondition> parents[MAX_PARENTS];
+    std::vector<std::weak_ptr<BoxedWineCondition>> parents;
+    std::vector<std::shared_ptr<BoxedWineCondition>> parentSnapshot();
     std::mutex parentsMutex;
 };
 
@@ -128,9 +127,8 @@ public:
 private:
     KList<KThread*> waitingThreads;    
 
-#define MAX_PARENTS 2
-    U32 parentCount = 0;
-    std::weak_ptr<BoxedWineCondition> parents[MAX_PARENTS];
+    std::vector<std::weak_ptr<BoxedWineCondition>> parents;
+    std::vector<std::shared_ptr<BoxedWineCondition>> parentSnapshot();
 
     friend BoxedWineConditionTimer;
     void signalThread(bool all);

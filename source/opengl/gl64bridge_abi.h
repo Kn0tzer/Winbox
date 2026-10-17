@@ -457,6 +457,23 @@ enum {
     GL64_fn_glTexStorage3DMultisample = 856, // (target,samples,ifmt,w,h,d,fixed)
     GL64_fn_glGetMultisamplefv = 857,  // (pname,index,values* -> 2 floats)
 
+    // 3.0 forward-only gap set: standard GL 3.0 core entry points that were
+    // resolving to gl64_noop. All forward to WebGL2 (Emscripten exports C
+    // symbols for all but glClearBufferfi/glGetBooleani_v, which the bridge
+    // routes through GLctx via EM_ASM).
+    GL64_fn_glClearBufferiv = 858,      // (buffer, drawbuffer, value* -> 4 GLint)
+    GL64_fn_glClearBufferuiv = 859,     // (buffer, drawbuffer, value* -> 4 GLuint)
+    GL64_fn_glClearBufferfv = 860,      // (buffer, drawbuffer, value* -> 4 GLfloat)
+    GL64_fn_glClearBufferfi = 861,      // (buffer, drawbuffer, depth:float, stencil)
+    GL64_fn_glGetIntegeri_v = 862,      // (pname, index, out data*)
+    GL64_fn_glGetBooleani_v = 863,      // (pname, index, out data*)
+    GL64_fn_glVertexAttribIPointer = 864, // (index, size, type, stride, offset*)
+    GL64_fn_glUniform1uiv = 865,        // (location, count, value*)
+    GL64_fn_glUniform2uiv = 866,
+    GL64_fn_glUniform3uiv = 867,
+    GL64_fn_glUniform4uiv = 868,
+    GL64_fn_glGetUniformuiv = 869,      // (program, location*, out params*)
+
     GL64_fn__MAX
 };
 

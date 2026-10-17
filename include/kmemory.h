@@ -100,6 +100,10 @@ public:
     void memcpy(U32 address, const void* p, U32 len);
     void memcpy(void* p, U32 address, U32 len);
     void memcpy(U32 dest, U32 src, U32 len);
+    // Aliases matching KMemory64's interface, for the 32-bit GL/VK bridges.
+    // 32-bit guest addresses are always <4GB, so the U64->U32 cast is safe.
+    void memcpyFromGuest(void* dst, U64 srcGuest, U64 len) { memcpy(dst, (U32)srcGuest, (U32)len); }
+    void memcpyToGuest(U64 dstGuest, const void* src, U64 len) { memcpy((U32)dstGuest, src, (U32)len); }
     void strcpy(U32 address, const char* str);
     void memset(U32 address, char value, U32 len);
     int memcmp(U32 address, const void* p, U32 len);

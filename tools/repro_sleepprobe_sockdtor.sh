@@ -19,8 +19,8 @@ GLIBC_ZIP="$DIST/glibc-rootfs64.zip"
 WINE_ZIP="$DIST/wine64.zip"
 BASE_ROOT="$RF/root"
 
-BOX="${BW64_BIN:-$ROOT_DIR/project/mac-xcode/build_dd/Build/Products/Release/Boxedwine.app/Contents/MacOS/Boxedwine}"
-[ -x "$BOX" ] || { echo "error: Boxedwine build not found at $BOX (set BW64_BIN)" >&2; exit 1; }
+source "$ROOT_DIR/tools/native-binary.sh"
+BOX="$(bw64_native_binary)" || exit 1
 
 GUEST="${1:-/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/sleepprobe.exe}"
 

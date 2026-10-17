@@ -370,7 +370,19 @@ enum {
     GL64_fn_glTexStorage1D = 854,
     GL64_fn_glTexStorage2DMultisample = 855,
     GL64_fn_glTexStorage3DMultisample = 856,
-    GL64_fn_glGetMultisamplefv = 857
+    GL64_fn_glGetMultisamplefv = 857,
+    GL64_fn_glClearBufferiv = 858,
+    GL64_fn_glClearBufferuiv = 859,
+    GL64_fn_glClearBufferfv = 860,
+    GL64_fn_glClearBufferfi = 861,
+    GL64_fn_glGetIntegeri_v = 862,
+    GL64_fn_glGetBooleani_v = 863,
+    GL64_fn_glVertexAttribIPointer = 864,
+    GL64_fn_glUniform1uiv = 865,
+    GL64_fn_glUniform2uiv = 866,
+    GL64_fn_glUniform3uiv = 867,
+    GL64_fn_glUniform4uiv = 868,
+    GL64_fn_glGetUniformuiv = 869
 };
 
 // ---- the trap ---------------------------------------------------------------
@@ -1237,6 +1249,22 @@ API void glMultiDrawElementsBaseVertex(GLenum m, const GLsizei* count, GLenum ty
 API void glTextureBarrier(void){ (void)gl64_trap(GL64_fn_glTextureBarrier,0); }
 
 // ===========================================================================
+// --- GL 3.0 forward-only gap set ------------------------------------------------
+// Standard 3.0 core entry points used by real engines; previously resolved to
+// gl64_noop via glXGetProcAddressARB. All forward 1:1 to the host WebGL2 side.
+API void glClearBufferiv(GLenum buffer, GLint drawbuffer, const GLint* value){ GL64Args a={{0}}; a.a[0]=buffer; a.a[1]=(uint64_t)(uint32_t)drawbuffer; a.a[2]=(uint64_t)(uintptr_t)value; (void)gl64_trap(GL64_fn_glClearBufferiv,&a); }
+API void glClearBufferuiv(GLenum buffer, GLint drawbuffer, const GLuint* value){ GL64Args a={{0}}; a.a[0]=buffer; a.a[1]=(uint64_t)(uint32_t)drawbuffer; a.a[2]=(uint64_t)(uintptr_t)value; (void)gl64_trap(GL64_fn_glClearBufferuiv,&a); }
+API void glClearBufferfv(GLenum buffer, GLint drawbuffer, const GLfloat* value){ GL64Args a={{0}}; a.a[0]=buffer; a.a[1]=(uint64_t)(uint32_t)drawbuffer; a.a[2]=(uint64_t)(uintptr_t)value; (void)gl64_trap(GL64_fn_glClearBufferfv,&a); }
+API void glClearBufferfi(GLenum buffer, GLint drawbuffer, GLfloat depth, GLint stencil){ GL64Args a={{0}}; a.a[0]=buffer; a.a[1]=(uint64_t)(uint32_t)drawbuffer; a.a[2]=F2U(depth); a.a[3]=(uint64_t)(uint32_t)stencil; (void)gl64_trap(GL64_fn_glClearBufferfi,&a); }
+API void glGetIntegeri_v(GLenum pname, GLuint index, GLint* data){ GL64Args a={{0}}; a.a[0]=pname; a.a[1]=index; a.a[2]=(uint64_t)(uintptr_t)data; (void)gl64_trap(GL64_fn_glGetIntegeri_v,&a); }
+API void glGetBooleani_v(GLenum pname, GLuint index, GLboolean* data){ GL64Args a={{0}}; a.a[0]=pname; a.a[1]=index; a.a[2]=(uint64_t)(uintptr_t)data; (void)gl64_trap(GL64_fn_glGetBooleani_v,&a); }
+API void glVertexAttribIPointer(GLuint index, GLint size, GLenum type, GLsizei stride, const void* pointer){ GL64Args a={{0}}; a.a[0]=index; a.a[1]=(uint64_t)(uint32_t)size; a.a[2]=type; a.a[3]=(uint64_t)(uint32_t)stride; a.a[4]=(uint64_t)(uintptr_t)pointer; (void)gl64_trap(GL64_fn_glVertexAttribIPointer,&a); }
+API void glUniform1uiv(GLint location, GLsizei count, const GLuint* value){ GL64Args a={{0}}; a.a[0]=(uint64_t)(uint32_t)location; a.a[1]=(uint64_t)(uint32_t)count; a.a[2]=(uint64_t)(uintptr_t)value; (void)gl64_trap(GL64_fn_glUniform1uiv,&a); }
+API void glUniform2uiv(GLint location, GLsizei count, const GLuint* value){ GL64Args a={{0}}; a.a[0]=(uint64_t)(uint32_t)location; a.a[1]=(uint64_t)(uint32_t)count; a.a[2]=(uint64_t)(uintptr_t)value; (void)gl64_trap(GL64_fn_glUniform2uiv,&a); }
+API void glUniform3uiv(GLint location, GLsizei count, const GLuint* value){ GL64Args a={{0}}; a.a[0]=(uint64_t)(uint32_t)location; a.a[1]=(uint64_t)(uint32_t)count; a.a[2]=(uint64_t)(uintptr_t)value; (void)gl64_trap(GL64_fn_glUniform3uiv,&a); }
+API void glUniform4uiv(GLint location, GLsizei count, const GLuint* value){ GL64Args a={{0}}; a.a[0]=(uint64_t)(uint32_t)location; a.a[1]=(uint64_t)(uint32_t)count; a.a[2]=(uint64_t)(uintptr_t)value; (void)gl64_trap(GL64_fn_glUniform4uiv,&a); }
+API void glGetUniformuiv(GLuint program, const GLint* locs, GLuint* params){ GL64Args a={{0}}; a.a[0]=program; a.a[1]=(uint64_t)(uintptr_t)locs; a.a[2]=(uint64_t)(uintptr_t)params; (void)gl64_trap(GL64_fn_glGetUniformuiv,&a); }
+
 // glXGetProcAddressARB — opengl32/winex11 resolve every gl*/glX* through here.
 // Return our own wrapper for names we implement, or a harmless no-op stub for
 // the rest (so an unimplemented call is silently ignored rather than crashing).
@@ -1363,6 +1391,11 @@ E(glVertexAttribI4iv), E(glVertexAttribI4uiv),
 // --- A2 cycle 2 ---
 E(glPolygonOffsetClamp), E(glDrawElementsInstancedBaseVertex),
 E(glMultiDrawElementsBaseVertex), E(glTextureBarrier),
+// --- 3.0 forward-only gap set ---
+E(glClearBufferiv), E(glClearBufferuiv), E(glClearBufferfv), E(glClearBufferfi),
+E(glGetIntegeri_v), E(glGetBooleani_v), E(glVertexAttribIPointer),
+E(glUniform1uiv), E(glUniform2uiv), E(glUniform3uiv), E(glUniform4uiv),
+E(glGetUniformuiv),
 };
 #undef E
 #define NPROCS (sizeof(g_procs)/sizeof(g_procs[0]))

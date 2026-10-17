@@ -8,12 +8,8 @@
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 GUEST_ROOT="$ROOT_DIR/tools/rootfs64/root"
-CANDIDATES=()
-for p in "$HOME/Library/Developer/Xcode/DerivedData"/Boxedwine-*/Build/Products/Debug/Boxedwine.app/Contents/MacOS/Boxedwine; do
-    [ -x "$p" ] && CANDIDATES+=("$p")
-done
-[ "${#CANDIDATES[@]}" -gt 0 ] || { echo "error: no Boxedwine build found" >&2; exit 1; }
-BOX="$(ls -t "${CANDIDATES[@]}" | head -1)"
+source "$ROOT_DIR/tools/native-binary.sh"
+BOX="$(bw64_native_binary)" || exit 1
 GUEST="${1:?usage: run_x64_root.sh <guestPath> [args...]}"; shift || true
 echo "using: $BOX"
 echo "root:  $GUEST_ROOT"

@@ -10,6 +10,7 @@
 #include <cassert>
 #include <algorithm>
 #include <set>
+#include <map>
 #include <deque>
 #include <unordered_set>
 #include <vector>
@@ -18,8 +19,17 @@ using U8 = uint8_t; using U32 = uint32_t; using U64 = uint64_t;
 using S32 = int32_t; using S64 = int64_t;
 #define K_PROT_READ 1
 #define K_PROT_WRITE 2
+#define K_MAP_PRIVATE 0x02
+#define K_MAP_ANONYMOUS 0x20
+#define EMSCRIPTEN_KEEPALIVE
 void klog(const char*) {}
 void klog_fmt(const char*, ...) {}
+// Profiling is an optional diagnostic boundary, not a Vulkan semantic under
+// test. Keep it disabled while compiling the current shared 32/64 bridge.
+bool ripSamplerProfileEnabled() { return false; }
+void ripSamplerProfDumpReset(int) {}
+class KProcess { public: U32 id = 0; };
+class KThread { public: U32 id = 0; KProcess* process = nullptr; };
 class KMemory64 {
 public:
     std::vector<U8> bytes = std::vector<U8>(1024 * 1024);
@@ -42,8 +52,22 @@ public:
     U64 readq(U64 addr) { U64 out; memcpyFromGuest(&out, addr, 8); return out; }
     void writed(U64 addr, U32 value) { memcpyToGuest(addr, &value, 4); }
     void writeq(U64 addr, U64 value) { memcpyToGuest(addr, &value, 8); }
+    void writeb(U64 addr, U8 value) { memcpyToGuest(addr, &value, 1); }
 };
-class CPU64 { public: KMemory64* memory; };
+// The shared bridge now compiles both architectures. Its 32-bit memory
+// adapter uses the same bounds-checked byte storage; no bridge code is stubbed.
+class KMemory : public KMemory64 {
+public:
+    U32 mmap(KThread*, U32 addr, U32 len, S32 prot, S32 flags, S32 fd, U64 off, bool remap) {
+        assert(addr == 0 && prot == (K_PROT_READ | K_PROT_WRITE));
+        assert(flags == (K_MAP_ANONYMOUS | K_MAP_PRIVATE) && fd == -1 && off == 0 && !remap);
+        if (!len || len > bytes.size() - next) return (U32)-12; // -ENOMEM from this fixture's finite memory.
+        return (U32)mmapReserveAndMap(len, (U32)prot);
+    }
+    void unmap(U32 addr, U32 len) { munmap(addr, len); }
+};
+class CPU64 { public: KMemory64* memory; KThread* thread = nullptr; };
+class CPU { public: KMemory* memory; KThread* thread = nullptr; };
 #include "../../../source/vulkan/vk64bridge.cpp"
 
 static KMemory64 memory;
@@ -227,6 +251,27 @@ int main() {
         }
     }
     assert(rpBegins == 1 && aliasRecords == 1); // Views differ, image identity joins them.
+    // A render-pass clear changes the sampled image even without a draw. DXVK
+    // submits this before its separate swapchain presentation command buffer.
+    CmdBuf clearOnly;
+    for (const Cmd& command : dynamicCb->cmds)
+        if (command.kind == CMD_BEGIN_RP || command.kind == CMD_END_RP) clearOnly.cmds.push_back(command);
+    const size_t beforeClear = g_v2Pending.size();
+    serializeSubmitV2({{&clearOnly, dynamicCbId}});
+    assert(g_v2Pending.size() == beforeClear + 1);
+    unsigned clearPasses = 0;
+    for (const auto& chunk : g_v2Pending.back().chunks) for (size_t at = 16; at < chunk.size();) {
+        U32 type, len; memcpy(&type, chunk.data() + at, 4); memcpy(&len, chunk.data() + at + 4, 4);
+        assert(at + 8 + len <= chunk.size());
+        if (type == V2_RP_BEGIN) {
+            ++clearPasses;
+            assert(memcmp(chunk.data() + at + 8 + 48, clear, 16) == 0);
+        }
+        assert(type != V2_DRAW); // indexed draws use the same record with a flag
+        at += 8 + len;
+    }
+    assert(clearPasses == 1);
+    puts("PASS: clear-only render passes survive submission serialization");
     g_v2Pending.clear();
     const auto syntheticIds = dynamicCb->dynamicObjects;
     resetCmdBuf(dynamicCb);
@@ -272,6 +317,9 @@ int main() {
     std::vector<U32> emittedStrides;
     std::vector<U64> emittedPipelineIds;
     std::vector<U64> emittedOffsets;
+    std::vector<U64> emittedBindings;
+    std::vector<U64> emittedBufferIds;
+    std::vector<U64> emittedMemoryOffsets;
     unsigned bufferRecords = 0;
     for (const auto& chunk : g_v2Pending.back().chunks) {
         for (size_t at = 16; at < chunk.size();) {
@@ -282,18 +330,34 @@ int main() {
                 U64 id; memcpy(&id, p, 8); emittedPipelineIds.push_back(id);
             }
             if (type == V2_VERTEX_BIND) {
+                U64 id; memcpy(&id, p + 8, 8); emittedBindings.push_back(id);
                 U64 offset; memcpy(&offset, p + 16, 8); emittedOffsets.push_back(offset);
             }
             if (type == V2_BUFFER_DATA) {
                 ++bufferRecords;
-                assert(len == 148 && memcmp(p + 20, memory.bytes.data() + vertexMemory->va, 128) == 0);
+                // Current wire schema: replay ID, guest memory offset, hash,
+                // byte length, payload. Different binding offsets are rebased
+                // to independent slices; the draw-use prepass bounds this
+                // fixture to 3 vertices * largest stride 24 + attribute 16.
+                U64 id, offset, hash; U32 byteLength;
+                memcpy(&id, p, 8); memcpy(&offset, p + 8, 8);
+                memcpy(&hash, p + 16, 8); memcpy(&byteLength, p + 24, 4);
+                assert(offset == 8 || offset == 16);
+                assert(byteLength == 88 && len == 28 + byteLength);
+                const U8* expected = memory.bytes.data() + vertexMemory->va + offset;
+                assert(memcmp(p + 28, expected, byteLength) == 0);
+                assert(hash == fnv1a64(expected, byteLength));
+                emittedBufferIds.push_back(id); emittedMemoryOffsets.push_back(offset);
             }
             at += 8 + len;
         }
     }
     assert((emittedStrides == std::vector<U32>{20, 24}));
-    assert((emittedOffsets == std::vector<U64>{8, 16}));
-    assert(bufferRecords == 1); // Same data transfers once, while binding state stays per command.
+    assert((emittedOffsets == std::vector<U64>{0, 0}));
+    assert((emittedMemoryOffsets == std::vector<U64>{8, 16}));
+    assert(emittedBindings == emittedBufferIds);
+    assert(emittedBufferIds.size() == 2 && emittedBufferIds[0] != emittedBufferIds[1]);
+    assert(bufferRecords == 2); // Each unique slice transfers once with its own replay identity.
     assert(emittedPipelineIds.size() == 2 && emittedPipelineIds[0] != emittedPipelineIds[1]);
     assert(emittedPipelineIds[0] != pipelineId && emittedPipelineIds[1] != pipelineId);
     auto readPipelineIds = [&]() {
@@ -418,6 +482,42 @@ int main() {
     assert(ob2.size() == 32);
     for (U32 i = 0; i < 32; ++i) assert(ob2[i] == (U8)(64 + i));
     puts("PASS: descriptor buffer offset honored in uniform capture");
+    // Exercise the newly required 32-bit adapter through the real shared
+    // bridge, including its i386 allocation layout and mmap-error cleanup.
+    KMemory memory32; CPU cpu32{&memory32};
+    auto call32 = [&](U32 fn, const VK32Args& args) {
+        memory32.memcpyToGuest(128, &args, sizeof(args));
+        return vk32Bridge(&cpu32, fn, 128);
+    };
+    vk32abi::VkMemoryAllocateInfo allocation32{};
+    allocation32.sType = vk32abi::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocation32.allocationSize = 4096;
+    memory32.memcpyToGuest(512, &allocation32, sizeof(allocation32));
+    VK32Args args32{}; args32.a[1] = 512; args32.a[3] = 640;
+    assert(call32(VK64_fn_vkAllocateMemory, args32) == VK_SUCCESS);
+    U64 allocationId32 = memory32.readq(640);
+    auto* allocation = objOf32<DeviceMemory>(allocationId32, K_MEMORY, "test");
+    assert(allocation && allocation->size == 4096 && allocation->va == 4096);
+    memory32.writeq(672, 0xA5A5A5A5FFFFFFFFULL);
+    VK32Args map32{}; map32.a[1] = allocationId32; map32.a[2] = 32;
+    map32.a[3] = VK_WHOLE_SIZE; map32.a[5] = 672;
+    assert(call32(VK64_fn_vkMapMemory, map32) == VK_SUCCESS);
+    assert(memory32.readd(672) == allocation->va + 32);
+    assert(memory32.readd(676) == 0xA5A5A5A5); // Out-pointer is exactly four bytes.
+    memory32.writeq(640, 0xA5A5A5A5A5A5A5A5ULL);
+    const size_t objectsBeforeReject = g_objs.size();
+    for (U64 size : {0ULL, 0x40000001ULL, 2ULL * 1024 * 1024}) {
+        allocation32.allocationSize = size;
+        memory32.memcpyToGuest(512, &allocation32, sizeof(allocation32));
+        assert((S64)call32(VK64_fn_vkAllocateMemory, args32) == VK_ERROR_OUT_OF_DEVICE_MEMORY);
+        assert(memory32.readq(640) == 0xA5A5A5A5A5A5A5A5ULL);
+        assert(g_objs.size() == objectsBeforeReject); // Failed allocations cannot leak handles.
+    }
+    VK32Args free32{}; free32.a[1] = allocationId32;
+    assert(call32(VK64_fn_vkFreeMemory, free32) == VK_SUCCESS);
+    assert(!findObj(allocationId32, K_MEMORY));
+    g_mem32 = nullptr; g_mem = &memory;
+    puts("PASS: Vulkan32 allocation layout, four-byte map output and failure cleanup");
     auto cleanupIds = dynamicCb->dynamicObjects;
     dropObj(dynamicCbId);
     for (auto id : cleanupIds) assert(!g_objs.count(id));

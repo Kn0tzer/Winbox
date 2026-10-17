@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "release": "runtime-assets-20261013",
+  "repository": "Kn0tzer/Boxedwine64",
+  "archive": {
+    "name": "browser-runtime-20261013.tar",
+    "url": "https://github.com/Kn0tzer/Boxedwine64/releases/download/runtime-assets-20261013/browser-runtime-20261013.tar",
+    "bytes": 509480960,
+    "sha256": "bcc30b978a5f0df1f93b80e38faacd80bb62de9452ca4f79183f3b089c2dd4f5"
+  },
+  "files": [
+    {
+      "path": "web/runtime/glibc-rootfs64.zip",
+      "bytes": 9959020,
+      "sha256": "d71d48f9a41877f359f60cb4529a0b65ff55f17cedb286a058b2b613ed031c73"
+    },
+    {
+      "path": "web/runtime/wine64.zip",
+      "bytes": 210143509,
+      "sha256": "0572c75537ddf8312202b66a3790aaf0153d340ec2d64fff5f0877e1944a4dfa"
+    },
+    {
+      "path": "web/runtime/prefix64.zip",
+      "bytes": 18955998,
+      "sha256": "bd318e723c566dc5af1dbe767d5b89b05c7b3dbd9c5c7bd9cb5ffb5886407351"
+    },
+    {
+      "path": "web/runtime/glibc-rootfs32.zip",
+      "bytes": 3072882,
+      "sha256": "7c23a3ef4a94fe87bd58a7744e6ae257d4b045b317919e5f667921116ae7b9d3"
+    },
+    {
+      "path": "web/runtime/wine32.zip",
+      "bytes": 236709881,
+      "sha256": "281248fd532c33d371ea79e4c452b34353c737d0e8075970bb02ff6ff93d01f9"
+    },
+    {
+      "path": "web/runtime/prefix32.zip",
+      "bytes": 5914534,
+      "sha256": "ca99eb6ddbc85dc7c3a000b4c2415457a7e8e6c19e4bcecb8c26d37787f1e959"
+    },
+    {
+      "path": "tools/browser/slang/slang-wasm.js",
+      "bytes": 154529,
+      "sha256": "60fe8b4234d73d67c69d798d6deddb820c594a7f130b913b673f2d9c66b769ab"
+    },
+    {
+      "path": "tools/browser/slang/slang-wasm.wasm",
+      "bytes": 24518850,
+      "sha256": "834d30ccf9fc5c01baa33cca361734fbd65a0cdd3985af95bb454ecfff66e5f1"
+    },
+    {
+      "path": "tools/browser/slang/interface.d.ts",
+      "bytes": 23762,
+      "sha256": "5bb793de34090712a81ae03e75c26d4e78a11d6876c437c140d4a71be04ba150"
+    },
+    {
+      "path": "tools/browser/slang/third-party-notices/cmark-COPYING",
+      "bytes": 7567,
+      "sha256": "c22e885f33b821bddb24cf007145e5540655b6c0f403e49e6c76a93c28e6d9a9"
+    },
+    {
+      "path": "tools/browser/slang/third-party-notices/lz4-LICENSE",
+      "bytes": 1311,
+      "sha256": "8b58c446121a109ccf32edc094bba3010a3d85e4ee3702950db55e4d3e87736c"
+    },
+    {
+      "path": "tools/browser/slang/third-party-notices/miniz-LICENSE",
+      "bytes": 1184,
+      "sha256": "0115478d567121238cf6cc1c0c361926cf07a49d9e4c9e66da97fac6a01646b3"
+    },
+    {
+      "path": "tools/browser/slang/third-party-notices/unordered_dense-LICENSE",
+      "bytes": 1078,
+      "sha256": "4f5a62734899ec0ba85d3e8264a7ed1fcb4bcb8f0b4359c0afd627b6314ae599"
+    }
+  ]
+}

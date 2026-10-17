@@ -27,9 +27,14 @@
 #define __VK64BRIDGE_H__
 
 class CPU64;
+class CPU;
 
 // Entry point from ksyscall64. fnId = RDI, argsAddr = RSI (guest VA of a
 // VK64Args). Returns the call's result (or 0 for void) to be placed in RAX.
 U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr);
+
+// 32-bit entry point from ksyscall (int $0x80). fnId = EBX, argsAddr = ECX.
+// Currently a stub; full 32-bit Vulkan support is future work.
+U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr);
 
 #endif // __VK64BRIDGE_H__

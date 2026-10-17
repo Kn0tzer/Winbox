@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CPU64 WASM self-test</title>
+<canvas id="canvas"></canvas>
+<canvas id="gl64canvas" width="64" height="64"></canvas>
+<script>
+// Run the existing C++ suite in the same pthread-enabled module as Wine.
+var Module = {
+  arguments: ['--x64-selftest'],
+  canvas: document.getElementById('canvas'),
+  locateFile: path => '/runtime/' + path,
+  print: text => console.log(text),
+  printErr: text => console.error(text),
+  setStatus: () => {},
+};
+</script>
+<script src="/runtime/boxedwine64.js"></script>

@@ -4,7 +4,7 @@
 // leaves the vs/fs wrapper objects unterminated) and its rejections are the
 // contract between source/vulkan/vk64bridge.cpp and web/vkwebgpu.mjs.
 //
-// Fixtures are built from the exact shape the bridge emits (tasks/p1-final.md
+// Fixtures are built from the exact shape the bridge emits (docs/vulkan-protocol.md
 // §2.6 + serializeSubmit), including one real 64x64 manifest captured from the
 // vk64 run in test-results/vk-console.log.
 import { test } from 'node:test';

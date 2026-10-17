@@ -57,37 +57,18 @@ bool BoxedWineCondition::tryLock() {
 }
 
 void BoxedWineCondition::signal() {
-    if (parentCount) {
-        for (int i = 0; i < MAX_PARENTS; i++) {
-            std::shared_ptr<BoxedWineCondition> parent;
-            
-            {
-                const std::lock_guard<std::mutex> lock(parentsMutex);
-                parent = parents[i].lock();
-            }
-            if (parent) {
-                BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(parent);
-                parent->signal();
-                break;
-            }
-        }
+    for (const auto& parent : parentSnapshot()) {
+        BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(parent);
+        parent->signal();
+        break;
     }
     this->c.notify_one();
 }
 
 void BoxedWineCondition::signalAll() {
-    if (parentCount) {
-        for (int i = 0; i < MAX_PARENTS; i++) {
-            std::shared_ptr<BoxedWineCondition> parent;
-            {
-                const std::lock_guard<std::mutex> lock(parentsMutex);
-                parent = parents[i].lock();
-            }
-            if (parent) {
-                BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(parent);
-                parent->signalAll();
-            }
-        }
+    for (const auto& parent : parentSnapshot()) {
+        BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(parent);
+        parent->signalAll();
     }
     this->c.notify_all();
 }
@@ -101,18 +82,9 @@ void BoxedWineCondition::wait(std::unique_lock<std::mutex>& lock) {
     if (thread) {
         thread->waitingCond = nullptr;
     }
-    if (parentCount) {
-        for (int i = 0; i < MAX_PARENTS; i++) {
-            std::shared_ptr<BoxedWineCondition> parent;
-            {
-                const std::lock_guard<std::mutex> lock(parentsMutex);
-                parent = parents[i].lock();
-            }
-            if (parent) {
-                BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(parent);
-                parent->signalAll();
-            }
-        }
+    for (const auto& parent : parentSnapshot()) {
+        BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(parent);
+        parent->signalAll();
     }
 }
 
@@ -125,18 +97,9 @@ void BoxedWineCondition::waitWithTimeout(std::unique_lock<std::mutex>& lock, U32
     if (thread) {
         thread->waitingCond = nullptr;
     }    
-    if (parentCount) {
-        for (int i = 0; i < MAX_PARENTS; i++) {
-            std::shared_ptr<BoxedWineCondition> parent;
-            {
-                const std::lock_guard<std::mutex> lock(parentsMutex);
-                parent = parents[i].lock();
-            }
-            if (parent) {
-                BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(parent);
-                parent->signalAll();
-            }
-        }
+    for (const auto& parent : parentSnapshot()) {
+        BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(parent);
+        parent->signalAll();
     }
 }
 
@@ -147,38 +110,37 @@ void BoxedWineCondition::unlock() {
 
 void BoxedWineCondition::addParentCondition(const std::shared_ptr<BoxedWineCondition>& parent) {
     const std::lock_guard<std::mutex> lock(parentsMutex);
-    if (parentCount) {
-        for (int i = 0; i < MAX_PARENTS; i++) {
-            std::shared_ptr<BoxedWineCondition> p = parents[i].lock();
-            if (p == parent) {
-                return;
-            }
-        }
+    if (!parent) return;
+    for (const auto& entry : parents) {
+        if (entry.lock() == parent) return;
     }
-    for (int i = 0; i < MAX_PARENTS;i++) {
-        if (parents[i].expired()) {
-            parents[i] = parent;
-            parentCount++;
-            return;
-        }
+    for (auto& entry : parents) {
+        if (entry.expired()) { entry = parent; return; }
     }
-    kpanic("BoxedWineCondition::addParentCondition ran out of parent slots");
+    parents.push_back(parent);
 }
 
 void BoxedWineCondition::removeParentCondition(const std::shared_ptr<BoxedWineCondition>& parent) {
     const std::lock_guard<std::mutex> lock(parentsMutex);
-    for (int i = 0; i < MAX_PARENTS; i++) {
-        std::shared_ptr<BoxedWineCondition> p = parents[i].lock();
-        if (p == parent) {
-            parents[i].reset();
-            parentCount--;
-        }
+    for (auto it = parents.begin(); it != parents.end();) {
+        auto p = it->lock();
+        if (!p || p == parent) it = parents.erase(it);
+        else ++it;
     }
 }
 
-U32 BoxedWineCondition::parentsCount() {
+std::vector<std::shared_ptr<BoxedWineCondition>> BoxedWineCondition::parentSnapshot() {
     const std::lock_guard<std::mutex> lock(parentsMutex);
-    return parentCount;
+    std::vector<std::shared_ptr<BoxedWineCondition>> live;
+    for (auto it = parents.begin(); it != parents.end();) {
+        if (auto p = it->lock()) { live.push_back(p); ++it; }
+        else it = parents.erase(it);
+    }
+    return live;
+}
+
+U32 BoxedWineCondition::parentsCount() {
+    return (U32)parentSnapshot().size();
 }
 
 #else 
@@ -218,26 +180,16 @@ void BoxedWineCondition::signalThread(bool all) {
 void BoxedWineCondition::signal() {
     this->signalThread(false);
 
-    if (parentCount) {
-        for (int i = 0; i < MAX_PARENTS; i++) {
-            std::shared_ptr<BoxedWineCondition> parent = parents[i].lock();
-            if (parent) {
-                parent->signal();
-            }
-        }
+    for (const auto& parent : parentSnapshot()) {
+        parent->signal();
     }
 }
 
 void BoxedWineCondition::signalAll() {
     this->signalThread(true);
 
-    if (parentCount) {
-        for (int i = 0; i < MAX_PARENTS; i++) {
-            std::shared_ptr<BoxedWineCondition> parent = parents[i].lock();
-            if (parent) {
-                parent->signalAll();
-            }
-        }
+    for (const auto& parent : parentSnapshot()) {
+        parent->signalAll();
     }
 }
 
@@ -260,39 +212,38 @@ U32 BoxedWineCondition::waitWithTimeout(U32 ms) {
 }
  
 U32 BoxedWineCondition::waitCount() {
-    return this->waitingThreads.size() + (parentCount > 0 ? 1 : 0);
+    return this->waitingThreads.size() + (parentsCount() > 0 ? 1 : 0);
 }
 
 void BoxedWineCondition::addParentCondition(const std::shared_ptr<BoxedWineCondition>& parent) {
-    if (parentCount) {
-        for (int i = 0; i < MAX_PARENTS; i++) {
-            std::shared_ptr<BoxedWineCondition> p = parents[i].lock();
-            if (p == parent) {
-                return;
-            }
-        }
+    if (!parent) return;
+    for (const auto& entry : parents) {
+        if (entry.lock() == parent) return;
     }
-    for (int i = 0; i < MAX_PARENTS; i++) {
-        if (parents[i].expired()) {
-            parents[i] = parent;
-            parentCount++;
-            return;
-        }
+    for (auto& entry : parents) {
+        if (entry.expired()) { entry = parent; return; }
     }
-    kpanic("BoxedWineCondition::addParentCondition ran out of parent slots");
+    parents.push_back(parent);
 }
 
 void BoxedWineCondition::removeParentCondition(const std::shared_ptr<BoxedWineCondition>& parent) {
-    for (int i = 0; i < MAX_PARENTS; i++) {
-        std::shared_ptr<BoxedWineCondition> p = parents[i].lock();
-        if (p == parent) {
-            parents[i].reset();
-            parentCount--;
-        }
+    for (auto it = parents.begin(); it != parents.end();) {
+        auto p = it->lock();
+        if (!p || p == parent) it = parents.erase(it);
+        else ++it;
     }
 }
 
+std::vector<std::shared_ptr<BoxedWineCondition>> BoxedWineCondition::parentSnapshot() {
+    std::vector<std::shared_ptr<BoxedWineCondition>> live;
+    for (auto it = parents.begin(); it != parents.end();) {
+        if (auto p = it->lock()) { live.push_back(p); ++it; }
+        else it = parents.erase(it);
+    }
+    return live;
+}
+
 U32 BoxedWineCondition::parentsCount() {
-    return parentCount;
+    return (U32)parentSnapshot().size();
 }
 #endif
