@@ -65,8 +65,9 @@
   and one raster thread offered no useful win and were rejected. Three quiet
   baseline/raster pairs passed identical interaction/checksum checks. See the
   report for medians, matching hashes and the unresolved rejected-variant click.
-- [ ] **CP3: Isolated SIMD compiler experiment.** Depends on CP2; keep current
-  scalar register storage and verify any retained win with CPU regressions.
+- [x] **CP3: Isolated SIMD compiler experiment.** CPU32 edge cases and all
+  327 browser CPU64 checks pass. Three graphics pairs show no consistent win;
+  reject the compiler flag and keep the working baseline unchanged.
 - [ ] **CP4: Remaining measured Chromium improvements and browsing checks.**
   Depends on CP3. Record rejected ideas and practical limits as well as wins.
 - [ ] **CP5: Portal acceptance.** Depends on CP4; do not switch early.
