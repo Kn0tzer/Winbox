@@ -168,6 +168,21 @@ try {
     if (!relay.stats.toTcpBytes || !relay.stats.toWebSocketBytes)
       throw Error('Relay did not forward both directions');
   }
+  if (process.env.MEASURE_IDLE === '1') {
+    const before = await withTimeout(browserCdp.send('SystemInfo.getProcessInfo'), 5000, 'idle CPU before');
+    const idleStarted = performance.now();
+    await page.waitForTimeout(2000);
+    const after = await withTimeout(browserCdp.send('SystemInfo.getProcessInfo'), 5000, 'idle CPU after');
+    const elapsedMs = performance.now() - idleStarted;
+    const initial = new Map(before.processInfo.map(process => [process.id, process]));
+    const processes = after.processInfo.map(process => ({ ...process,
+      deltaSeconds: initial.has(process.id) ? process.cpuTime - initial.get(process.id).cpuTime : null }));
+    const renderer = processes.find(process => process.id === result.startupCpu.rendererId);
+    if (!renderer || renderer.deltaSeconds === null) throw Error('Idle renderer identity changed');
+    result.idleCpu = { elapsedMs, rendererSeconds: renderer.deltaSeconds,
+      rendererPercentOneCore: renderer.deltaSeconds * 100000 / elapsedMs,
+      before: before.processInfo, after: after.processInfo, processes };
+  }
   result.pass = true;
 } catch (error) {
   result.error = error.stack || String(error);
