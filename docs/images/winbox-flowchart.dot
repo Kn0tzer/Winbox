@@ -41,8 +41,9 @@ digraph Winbox {
   x86 [label="32-bit x86 CPU emulation", fillcolor="#eaf1fc", color="#7096ce"];
   x64 [label="64-bit x86-64 CPU emulation", fillcolor="#eaf1fc", color="#7096ce"];
   wine [label="Wine\nWindows API compatibility", fillcolor="#eff8f3", color="#82b39c"];
-  d3d [label="Direct3D 9–11", fillcolor="#fff4e5", color="#d9a152"];
-  d3d12 [label="Direct3D 12", fillcolor="#fff4e5", color="#d9a152"];
+  d3d [label="DirectX 9–11", fillcolor="#fff4e5", color="#d9a152"];
+  d3d12 [label="DirectX 12", fillcolor="#fff4e5", color="#d9a152"];
+  vulkan [label="Vulkan", fillcolor="#fff4e5", color="#d9a152"];
   gl [label="OpenGL", fillcolor="#f2edfa", color="#9a7bc4"];
   dxvk [label="DXVK", fillcolor="#f4effa", color="#9a7bc4"];
   vkd3d [label="vkd3d", fillcolor="#f4effa", color="#9a7bc4"];
@@ -58,9 +59,11 @@ digraph Winbox {
   x64 -> wine;
   wine -> d3d;
   wine -> d3d12;
+  wine -> vulkan;
   wine -> gl;
   d3d -> dxvk -> bridge;
   d3d12 -> vkd3d -> bridge;
+  vulkan -> bridge;
   bridge -> shader -> webgpu;
   gl -> glbridge -> webgl;
   gl -> glsubset [style=dashed, color="#8a68b4", fontcolor="#76579f"];
@@ -70,7 +73,7 @@ digraph Winbox {
 
   { rank=same; folder; demo; }
   { rank=same; x86; x64; }
-  { rank=same; d3d; d3d12; gl; }
+  { rank=same; d3d; d3d12; vulkan; gl; }
   { rank=same; dxvk; vkd3d; glbridge; }
   { rank=same; bridge; glsubset; }
   { rank=same; shader; }
