@@ -11,6 +11,6 @@ export default class Cpu32Sse3Test extends ProbeTest {
       ['/home/username/cpu32-sse3.elf', '']));
     if (pid <= 0) throw Error(`CPU32 SSE3 guest spawn failed: ${pid}`);
     const line = await this.waitForLog(page, /cpu32-sse3:.*RESULT \d+/, 15000, from);
-    if (!line.endsWith('MOVDDUP MOVSLDUP MOVSHDUP HADDPD PAGE_GUARD RESULT 0')) throw Error(line);
+    if (!line.endsWith('MOVDDUP MOVSLDUP MOVSHDUP HADDPD SIMD_EDGES PAGE_GUARD RESULT 0')) throw Error(line);
   }
 }

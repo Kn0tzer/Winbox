@@ -58,13 +58,37 @@ static int check_instructions(void) {
     __asm__ volatile("movupd (%1), %%xmm0; haddpd (%2), %%xmm0; movupd %%xmm0, %0"
                      : "=m"(output) : "r"(doubles), "r"(other) : "xmm0", "memory");
     if (output[0] != 0xc002000000000000ULL || output[1] != 0x4025000000000000ULL) return 8;
+    // Compiler SIMD must preserve operand selection for NaNs and signed zero.
+    const uint32_t left[4] = {0x80000000U, 0, 0x7fc12345U, 0x3f800000U};
+    const uint32_t right[4] = {0, 0x80000000U, 0x40000000U, 0x7fc54321U};
+    uint32_t lanes[4];
+    __asm__ volatile("movups (%1), %%xmm0; movups (%2), %%xmm1; minps %%xmm1, %%xmm0; movups %%xmm0, %0"
+                     : "=m"(lanes) : "r"(left), "r"(right) : "xmm0", "xmm1", "memory");
+    for (unsigned i = 0; i < 4; ++i) if (lanes[i] != right[i]) return 9;
+    __asm__ volatile("movups (%1), %%xmm0; movups (%2), %%xmm1; maxps %%xmm1, %%xmm0; movups %%xmm0, %0"
+                     : "=m"(lanes) : "r"(left), "r"(right) : "xmm0", "xmm1", "memory");
+    for (unsigned i = 0; i < 4; ++i) if (lanes[i] != right[i]) return 9;
+    const uint32_t factors[4] = {0xc0000000U, 0xc0000000U, 0x3f800000U, 0xc0000000U};
+    const uint32_t special[4] = {0, 0x80000000U, 1, 0x7f800000U};
+    const uint32_t product[4] = {0x80000000U, 0, 1, 0xff800000U};
+    __asm__ volatile("movups (%1), %%xmm0; mulps (%2), %%xmm0; movups %%xmm0, %0"
+                     : "=m"(lanes) : "r"(special), "r"(factors) : "xmm0", "memory");
+    for (unsigned i = 0; i < 4; ++i) if (lanes[i] != product[i]) return 9;
+    const uint32_t invalid_ints[4] = {0x7fc12345U, 0x7f800000U, 0x4f000000U, 0xcf000000U};
+    __asm__ volatile("movups (%1), %%xmm0; cvttps2dq %%xmm0, %%xmm0; movups %%xmm0, %0"
+                     : "=m"(lanes) : "r"(invalid_ints) : "xmm0", "memory");
+    for (unsigned i = 0; i < 4; ++i) if (lanes[i] != 0x80000000U) return 9;
+    for (unsigned i = 0; i < 16; ++i) mapping[page - 16 + i] = ((const unsigned char*)left)[i];
+    __asm__ volatile("movups (%1), %%xmm0; minps (%2), %%xmm0; movups %%xmm0, %0"
+                     : "=m"(lanes) : "r"(right), "r"(mapping + page - 16) : "xmm0", "memory");
+    for (unsigned i = 0; i < 4; ++i) if (lanes[i] != left[i]) return 9;
     syscall3(91, address, page * 2, 0);
     return 0;
 }
 
 int guest_main(void) {
     int result = check_instructions();
-    char message[] = "cpu32-sse3: MOVDDUP MOVSLDUP MOVSHDUP HADDPD PAGE_GUARD RESULT 0\n";
+    char message[] = "cpu32-sse3: MOVDDUP MOVSLDUP MOVSHDUP HADDPD SIMD_EDGES PAGE_GUARD RESULT 0\n";
     message[sizeof(message) - 3] = '0' + result;
     syscall3(4, 1, (unsigned)(uintptr_t)message, sizeof(message) - 1);
     return result;
