@@ -109,6 +109,8 @@ try {
   await page.locator('#canvas').click({ position: result.benchmarkTarget, timeout: 10000 });
   result.benchmark = await waitEvent(e => e.event === 'benchmark', 'benchmark');
   if (result.benchmark.checksum !== 1783293664 || result.benchmark.workload !== 'integer-sum-v2' || result.benchmark.samples.length !== 8) throw Error('Guest benchmark result is incorrect');
+  result.graphics = await waitEvent(e => e.event === 'graphics', 'graphics benchmark');
+  if (result.graphics.workload !== 'canvas-scene-v1' || result.graphics.frames !== 30 || result.graphics.intervals.length !== 30 || result.graphics.colorful < 1000 || result.graphics.intervals.some(ms => !Number.isFinite(ms) || ms <= 0)) throw Error('Guest graphics benchmark is incorrect');
   await page.waitForTimeout(1000);
   await page.screenshot({ path: join(probe.dir, 'interaction.png') });
   result.inputSnapshot = await page.evaluate(() => JSON.parse(globalThis.Module.ccall('bw64_input_snapshot', 'string', [], [])));
@@ -121,6 +123,7 @@ try {
   result.finishedAt = new Date().toISOString();
   result.events = events;
   result.benchmark ||= events.find(e => e.event === 'benchmark');
+  result.graphics ||= events.find(e => e.event === 'graphics');
   await mkdir(probe.dir, { recursive: true });
   await writeFile(join(probe.dir, 'summary.json'), JSON.stringify(result, null, 2));
   await withTimeout(probe.teardown(), 45000, 'Chromium probe teardown').catch(() => {});
