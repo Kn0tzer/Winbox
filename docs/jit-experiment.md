@@ -1,6 +1,6 @@
 # Archived JIT experiment
 
-The `archive/jit-emitter` branch preserves the advanced x64 WASM emitter and its generators/tests. It predates the current runtime fixes and is not the production engine. The current `master` branch has the interpreter and the smaller JIT infrastructure checked by `scripts/build-jit-wasm.sh --selftest-only`. The historical design below describes the archived work, not a claim that every emitter is active on master.
+Archived commit `3833127bc` (now merged into master’s history) preserves the advanced x64 WASM emitter and its generators/tests. It predates the current runtime fixes and is not the production engine. The current `master` branch has the interpreter and the smaller JIT infrastructure checked by `scripts/build-jit-wasm.sh --selftest-only`. The historical design below describes the archived work, not a claim that every emitter is active on master.
 
 # Port Plan: PR #151 WASM JIT → boxedwine64 `cpu64`
 

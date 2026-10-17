@@ -100,17 +100,18 @@ D3D conformance failures. Maintenance checks do not refresh these game claims.
 | `docs/` | Architecture, protocol design and curated historical reports |
 | `dist/`, `web/runtime/`, `web/vendor/`, `test-results/` | Generated local files, excluded from Git |
 
-`master` is the maintained runtime. `archive/jit-emitter` preserves useful
-advanced JIT source, generators and tests that predate the current runtime
-fixes; see [the archived experiment](docs/jit-experiment.md). DXVK/vkd3d
+`master` contains the consolidated branch history. Archived JIT commit
+`3833127bc` preserves advanced source, generators and tests that predate the
+maintained runtime fixes; see [the archived experiment](docs/jit-experiment.md). DXVK/vkd3d
 source snapshots are ordinary files with exact provenance in `SOURCES.json`,
 so a clone needs no submodule setup.
 
 ## Publication and recovery
 
 [GitHub](https://github.com/Kn0tzer/Boxedwine64) is the sole repository remote.
-The Pages workflow compiles the current browser app, runs checks and packages
-same-origin rootfs chunks. Local server deployment is an explicit copy of a
+The active Pages workflow retains GitHub’s existing definition because the
+available token cannot update workflow files. The newer browser export workflow
+is preserved in commit `9cafcf696`; activating it requires workflow permission. Local server deployment is an explicit copy of a
 verified `dist/` export into `/home/ubuntu/kn0tzer/wine/`, after a backup.
 
 The 2026-10-13 maintenance backup is
