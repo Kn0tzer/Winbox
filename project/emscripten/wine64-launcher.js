@@ -228,9 +228,14 @@
 
     // --- build the wine64 argv ----------------------------------------------
     function buildArguments() {
-        var args = ["-root", ROOT, "-zip", GLIBC_ZIP, "-zip", wineZipArg];
-        // The pre-booted prefix is a third overlay; mount it only when we'll use
-        // it, so the bare --version / ?boot=1 paths stay byte-for-byte unchanged.
+        var args = ["-root", ROOT];
+        // FsZip keeps the first node at each system path. Install the shared
+        // runtime before the older base images, including their Mono link/GL.
+        // Application files remain in /home/username/apps and are untouched.
+        if (window.bwDependencySpec) args.push("-zip", window.bwDependencySpec);
+        args.push("-zip", GLIBC_ZIP, "-zip", wineZipArg);
+        // The pre-booted prefix is needed only for application launches;
+        // bare --version and ?boot=1 paths do not use it.
         if (USE_PREFIX) args.push("-zip", PREFIX_ZIP);
         // Lazy game payload (M8): mount the game zip on-demand via HTTP Range.
         // window.bwGameZipSpec is a bw64url: spec set by runtime.html; the C++

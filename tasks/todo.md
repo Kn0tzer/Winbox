@@ -84,3 +84,10 @@
 - [x] Verify the loopback relay boundary and actual Chromium HTTP interaction.
 - [x] Run fast/type/offline checks and commit. Contract:
   `docs/specs/chromium-networking.md`.
+
+### Shared runtime dependencies (2026-10-17)
+
+- [x] Reproduce missing runtime through an unrelated managed upload.
+- [x] Stage and automatically mount pinned shared Mono and GL dependencies.
+- [x] Verify Celeste demo and upload, nested managed x86/x64 programs, and FNA input.
+- [x] Pass fast/type/build checks, deploy, verify live and commit locally.

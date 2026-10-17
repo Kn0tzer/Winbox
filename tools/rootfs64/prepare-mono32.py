@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Restore the pinned Wine Mono payload used by the Celeste browser probe."""
+"""Restore the pinned Wine Mono payload used by the shared browser runtime."""
 import argparse
 import hashlib
 import json
@@ -12,6 +12,8 @@ import urllib.request
 VERSION = '7.4.0'
 URL = f'https://github.com/wine-mono/wine-mono/releases/download/wine-mono-{VERSION}/wine-mono-{VERSION}-x86.tar.xz'
 ARCHIVE_SHA256 = '9249ece664bcf2fecb1308ea1d2542c72923df9fe3df891986f137b2266a9ba3'
+# Hash of sorted relative paths and file SHA256s from that exact release archive.
+TREE_SHA256 = '3cce9ae526795073a91197b974d0d3cde9bd9ad876b3925524d857d57c17c3d3'
 LIBRARIES = {
     'libmono-2.0-x86.dll': 'a3fda5b431adfe60f0fed6973bf9bc86766732a03d7dbdfcd44fbdbf46f0b439',
     'libmono-2.0-x86_64.dll': 'e4ba9361c6956d8ebfd42d8f3bc58eb0e29af04a7ae4995145f9ea23fd37f145',
@@ -30,6 +32,14 @@ def check(root):
             raise ValueError(f'{name} does not match Wine Mono {VERSION}')
     if not (mono / 'lib/mono/4.5/mscorlib.dll').is_file():
         raise ValueError('Wine Mono assemblies are missing')
+    tree = hashlib.sha256()
+    for path in sorted(root.rglob('*')):
+        if path.is_symlink():
+            raise ValueError('Wine Mono payload must not contain symlinks')
+        if path.is_file() and path != root / 'SOURCE.json':
+            tree.update((path.relative_to(root).as_posix() + '\0' + digest(path) + '\n').encode())
+    if tree.hexdigest() != TREE_SHA256:
+        raise ValueError(f'Wine Mono payload differs from the pinned {VERSION} release')
 
 
 def main():
@@ -40,7 +50,7 @@ def main():
     root = args.output.resolve()
     if args.check or root.exists():
         check(root)
-        print(f'Wine Mono {VERSION}: both runtime libraries verified ({root})')
+        print(f'Wine Mono {VERSION}: complete runtime verified ({root})')
         return
     root.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.mono32-', dir=root.parent) as scratch:

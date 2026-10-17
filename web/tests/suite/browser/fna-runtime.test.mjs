@@ -1,7 +1,7 @@
 // Exercise FNA/SDL2, shader drawing, texture readback and keyboard integration
 // without loading the full game's content archive.
 import { ProbeTest } from '../lib/probe-base.mjs';
-import { guestFixture, monoArchive } from '../lib/guest-fixtures.mjs';
+import { guestFixture } from '../lib/guest-fixtures.mjs';
 import { checkGreaterThan } from '../lib/assert.mjs';
 import { resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -26,14 +26,14 @@ async function redBounds(page) {
 export default class FnaRuntimeTest extends ProbeTest {
   constructor() { super({ tag: 'fna-runtime', timeoutMs: 600000 }); }
   async run({ page }) {
-    const archive = resolve(this.dir, 'fna-overlay.zip'); monoArchive(archive, { gl32: true });
+    const archive = resolve(this.dir, 'fna-program.zip');
     const exe = await guestFixture('fna-runtime', 'x86');
     execFileSync('python3', ['-c', `import zipfile,sys
-with zipfile.ZipFile(sys.argv[1],'a',zipfile.ZIP_STORED) as z:z.write(sys.argv[2],'home/username/apps/fna-runtime.exe')`, archive, exe]);
-    const mounted = await this.mountArchive(archive, 'fna-overlay.zip');
+with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:z.write(sys.argv[2],'home/username/apps/fna-runtime.exe')`, archive, exe]);
+    const mounted = await this.mountArchive(archive, 'fna-program.zip');
     await this.bootGuest(page, { arch: 'x86', gamezip: mounted.url, gamezipsize: mounted.bytes,
       p: 'fna-runtime.exe', exe: 'fna-runtime.exe', args: '[]', session: '0',
-      ldpath: '/home/username/apps', winedbg: '+debugstr' });
+      winedbg: '+debugstr' });
     await this.waitForLog(page, /fna-runtime: BEGIN/, 60000);
     await this.waitForLog(page, /fna-runtime: LOADED TEXTURE_ROUNDTRIP/, 60000);
     await this.waitForLog(page, /fna-runtime: READY/, 30000);

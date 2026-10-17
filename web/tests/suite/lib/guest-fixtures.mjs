@@ -55,18 +55,6 @@ export async function guestFixture(name, arch = 'x86') {
   return output;
 }
 
-export function monoArchive(destination, { gl32 = false } = {}) {
-  const mono = resolve(root, process.env.MONO32_DIR || 'tools/rootfs64/mono32');
-  execFileSync('python3', [join(root, 'tools/rootfs64/prepare-mono32.py'), '--check', '--output', mono], { stdio: 'pipe' });
-  execFileSync('python3', ['-c', `import zipfile,pathlib,sys
-root=pathlib.Path(sys.argv[2])
-with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
- if sys.argv[3]=='1':z.write(sys.argv[4],'home/username/apps/libGL.so.1')
- for p in sorted(root.rglob('*')):
-  if p.is_file():z.write(p,'home/username/apps/'+p.relative_to(root).as_posix())
-`, destination, mono, gl32 ? '1' : '0', join(root, 'tools/rootfs64/libgl32/libGL.so.1')]);
-}
-
 export async function canvasPixels(page, selector = '#canvas') {
   return page.evaluate(selector => {
     const canvas = document.querySelector(selector);

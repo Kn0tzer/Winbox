@@ -3,7 +3,7 @@
 | Game | Path | Verified status |
 | --- | --- | --- |
 | Portal 1 (`hl2.exe`, 32-bit D3D9 via DXVK→Vulkan32) | `GAME=portal` | The resolve2 shim repair restores visible 1024×768 frames, but textures are corrupt and the menu is missing (`portal-resolve2-oct15`). Gameplay remains unverified. CPU32 SSE3 repair is under verification. |
-| Celeste DRM-free (`Celeste.exe`, 32-bit OpenGL/FNA/Mono) | `GAME=celeste`, `GL32=1`, `MONO32_DIR` | Functional prologue acceptance passed on WASM `a97994c0725f`: menus, level loading, movement with D, jump with Space and landing (`celeste-playability-oct15/playability.json`). Frame rate and game audio were not verified. |
+| Celeste DRM-free (`Celeste.exe`, 32-bit OpenGL/FNA/Mono) | Demo button or uploaded ZIP; shared runtime libraries | Launcher boot and rendering verified on WASM `46eb53ee9777` through the demo and a saved ZIP upload (`launcher-dependencies-games`, `launcher-dependencies-upload-reopen`). Earlier prologue acceptance on `a97994c0725f` verified menus, movement, jumping and landing (`celeste-playability-oct15/playability.json`). Frame rate and game audio were not measured. |
 | 32-bit GL fixture (`trigl32.exe`) | shim in `/home/username/apps` | Colored triangle, `trigl: RESULT 0`. Verified 2026-10-13 (`gl32-real-shim-01`, `pass:true`). |
 | D3D11 offscreen (`tri11_93`) | staging-texture readback | `LIT=8192`. Verified 2026-10-09. Swapchain Present shows clear color only (open). |
 | Gang Beasts (x64 Unity) | `GAME=gangbeasts` | Earlier boot produced no frames. Gameplay on the repaired runtime awaits verification after Portal. |

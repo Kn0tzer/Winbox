@@ -10,7 +10,7 @@ export async function runtimeCodeHash(root) {
     for (const entry of await readdir(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) await visit(path);
-      else if (/\.(?:js|mjs|wasm|wgsl|spv|html|css)$/.test(entry.name) || ['desktop-pin-provenance.json', 'wine32-font-provenance.json'].includes(entry.name)) files.push(path);
+      else if (/\.(?:js|mjs|wasm|wgsl|spv|html|css)$/.test(entry.name) || ['desktop-pin-provenance.json', 'wine32-font-provenance.json', 'dependencies.json'].includes(entry.name)) files.push(path);
     }
   }
   await visit(root);

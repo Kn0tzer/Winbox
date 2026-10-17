@@ -1,5 +1,15 @@
 # Runtime repair and game acceptance
 
+Current task (2026-10-17): shared runtime dependencies, as requested by the user
+after reproducing Celeste's demo hang. Contract:
+`docs/specs/shared-runtime-dependencies.md`. This takes priority over the older
+performance tasks below. Sequence: (M) reproduce missing Mono through a renamed,
+nested uploaded executable; (M) build and mount shared Mono/graphics dependencies
+at system paths; (M) verify actual Celeste demo/upload and independent managed/FNA
+uploads, then deploy and commit. Use `pnpm test`, `pnpm typecheck`,
+`pnpm build:export` and the launcher dependency browser test. Preserve the native
+runtime and explicit probe overlays. No per-game dependency branches.
+
 Current priority (2026-10-17, BB `thr_stya3zzsan`): the user's newer Chromium
 goal supersedes the earlier game order below. Get Chromium working, exhaust
 useful measured performance improvements, then resume Portal. Historical

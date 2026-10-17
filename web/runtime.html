@@ -3,6 +3,7 @@
 import { getPackage } from '../storage.mjs';
 import { safePath, checkEntries, folderLimits } from '../files.mjs';
 import { installPresentation } from '../presentation.mjs';
+import { loadDependencies } from '../dependencies.mjs';
 const query = new URLSearchParams(location.search);
 const id = query.get('installation');
 // Lazy game payload (M8): a game zip mounted on-demand via bw64url/HTTP Range,
@@ -32,6 +33,9 @@ window.addEventListener('unhandledrejection', event => send('error', event.reaso
 window.bwRuntimeStatus = text => send('status', text);
 window.bwRuntimeLog = text => send('log', text);
 window.bwRuntimeError = text => send('error', text);
+// Every launch gets the same installed libraries. The guest's normal loaders
+// request Mono/graphics files lazily, regardless of demo, upload or EXE name.
+window.bwDependencySpec = await loadDependencies(new URL('dependencies.json?v=__RUNTIME_VERSION__', location.href));
 window.bwGpuFrame = json => send('gpu', JSON.parse(json));
 // vk64 page tier (tasks/p1-final.md §2.9): the Vulkan bridge hops ONE frame
 // manifest per present into window.bwVkFrame, which becomes a 'vk' message to
