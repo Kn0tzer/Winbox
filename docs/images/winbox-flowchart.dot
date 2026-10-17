@@ -30,33 +30,30 @@ digraph Winbox {
   ];
 
   folder [label="Upload a folder", fillcolor="#edf5ff", color="#85add8"];
-  demo [label="Choose a demo", fillcolor="#edf5ff", color="#85add8"];
-  exe [label="Windows .exe\narchitecture selected automatically", fillcolor="#eff8f3", color="#82b39c"];
-  runtime [label="Boxedwine64\nruns in WebAssembly", fillcolor="#e5f0ff", color="#4b83c7", penwidth=2];
-  threads [label="WebAssembly threads", fillcolor="#f7f9fc", color="#c7d3df", fontsize=11];
+  demo [label="Choose a demo program", fillcolor="#edf5ff", color="#85add8"];
+  exe [label="Windows .exe\nAuto detect architecture", fillcolor="#eff8f3", color="#82b39c"];
 
   folder -> exe;
   demo -> exe;
-  exe -> runtime;
-  runtime -> threads [style=dotted, arrowhead=none, color="#aab8c6"];
+  exe -> x86;
+  exe -> x64;
 
-  x86 [label="32-bit x86 CPU emulation\nfor x86 programs", fillcolor="#eaf1fc", color="#7096ce"];
-  x64 [label="64-bit x86-64 CPU emulation\nfor x64 programs", fillcolor="#eaf1fc", color="#7096ce"];
-  wine [label="Wine\nWindows API compatibility\nnot a CPU emulator", fillcolor="#eff8f3", color="#82b39c"];
+  x86 [label="32-bit x86 CPU emulation", fillcolor="#eaf1fc", color="#7096ce"];
+  x64 [label="64-bit x86-64 CPU emulation", fillcolor="#eaf1fc", color="#7096ce"];
+  wine [label="Wine\nWindows API compatibility", fillcolor="#eff8f3", color="#82b39c"];
   d3d [label="Direct3D 9–11", fillcolor="#fff4e5", color="#d9a152"];
   d3d12 [label="Direct3D 12", fillcolor="#fff4e5", color="#d9a152"];
   gl [label="OpenGL", fillcolor="#f2edfa", color="#9a7bc4"];
   dxvk [label="DXVK", fillcolor="#f4effa", color="#9a7bc4"];
   vkd3d [label="vkd3d", fillcolor="#f4effa", color="#9a7bc4"];
-  bridge [label="Vulkan bridge\nAPI calls → browser frames", fillcolor="#edf4ff", color="#7096ce"];
+  bridge [label="Vulkan bridge", fillcolor="#edf4ff", color="#7096ce"];
+  shader [label="SPIR-V → WGSL", fillcolor="#f0f4fb", color="#9aafc8"];
   glbridge [label="GL bridge", fillcolor="#f4effa", color="#9a7bc4"];
-  webgpu [label="WebGPU\nSPIR-V → WGSL", fillcolor="#e9f6fb", color="#58a0bd"];
+  webgpu [label="WebGPU", fillcolor="#e9f6fb", color="#58a0bd"];
   webgl [label="WebGL2", fillcolor="#e9f6fb", color="#58a0bd"];
   glsubset [label="GL subset\nexperimental", style="rounded,dashed,filled", fillcolor="#faf7ff", color="#9a7bc4", fontcolor="#76579f"];
-  player [label="Winbox player\nbrowser-rendered windows\nkeyboard / pointer in  ·  audio out", fillcolor="#eaf7f1", color="#62a889", penwidth=2];
+  player [label="Browser canvas\ninput and audio processing", fillcolor="#eaf7f1", color="#62a889", penwidth=2];
 
-  runtime -> x86;
-  runtime -> x64;
   x86 -> wine;
   x64 -> wine;
   wine -> d3d;
@@ -64,18 +61,18 @@ digraph Winbox {
   wine -> gl;
   d3d -> dxvk -> bridge;
   d3d12 -> vkd3d -> bridge;
-  bridge -> webgpu;
+  bridge -> shader -> webgpu;
   gl -> glbridge -> webgl;
-  gl -> glsubset [style=dashed, color="#8a68b4", fontcolor="#76579f", xlabel="optional"];
+  gl -> glsubset [style=dashed, color="#8a68b4", fontcolor="#76579f"];
   glsubset -> webgpu [style=dashed, color="#8a68b4"];
   webgpu -> player;
   webgl -> player;
 
   { rank=same; folder; demo; }
-  { rank=same; runtime; threads; }
   { rank=same; x86; x64; }
   { rank=same; d3d; d3d12; gl; }
   { rank=same; dxvk; vkd3d; glbridge; }
   { rank=same; bridge; glsubset; }
+  { rank=same; shader; }
   { rank=same; webgpu; webgl; }
 }
