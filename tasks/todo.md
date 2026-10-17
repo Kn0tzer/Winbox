@@ -73,7 +73,8 @@
   renderer CPU by 7.0%; repeated 300-frame scenes preserve pixels and timing.
   Global LTO and the frame-rate-limit flag give no useful overall win.
   HTTP/offline acceptance passes. Indirect CPU dispatch costs 16.7% more
-  startup CPU and is rejected; next is sampling actual CPU hotspots.
+  startup CPU and is rejected. Actual on-CPU profiling identifies the direct
+  dispatcher and memory-store handler; test targeted inlining next.
 - [ ] **CP5: Portal acceptance.** Depends on CP4; do not switch early.
 
 ### CP4a: Constrained HTTP navigation
