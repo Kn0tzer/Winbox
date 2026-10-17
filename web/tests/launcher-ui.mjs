@@ -16,11 +16,15 @@ try {
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/local/bin/chromium', args: ['--no-sandbox','--disable-dev-shm-usage'] });
   const page = await browser.newPage({ viewport: { width: 1440, height: 1100 }, colorScheme: 'light' });
   page.on('pageerror', error => errors.push(error.message));
-  let failPortal = false;
+  let failPortal = false, holdFirstPaint = false;
   await page.route('https://kn0tzer.work.gd/games/**', route => route.fulfill({ status: failPortal && route.request().url().includes('portal-') ? 503 : 200, headers: { 'content-length': '12345678', 'access-control-allow-origin': '*' }, body: '' }));
   // UI routing is exercised independently of game compatibility. Real runtime
   // acceptance is a separate check; this fixture never claims gameplay.
-  await page.route(url => url.pathname.endsWith('/runtime/index.html'), route => route.fulfill({ contentType: 'text/html', headers: { 'cross-origin-embedder-policy':'require-corp', 'cross-origin-opener-policy':'same-origin' }, body: '<!doctype html><title>Runtime fixture</title><script>window.bwRuntime={fs:()=>null};parent.postMessage({wine:true,type:"log",data:"first window mapped"},location.origin)</script>' }));
+  await page.route(url => url.pathname.endsWith('/runtime/index.html'), route => route.fulfill({ contentType: 'text/html', headers: { 'cross-origin-embedder-policy':'require-corp', 'cross-origin-opener-policy':'same-origin' }, body: `<!doctype html><title>Runtime fixture</title><canvas id="canvas" width="64" height="48"></canvas><script>
+  window.bwRuntime={fs:()=>null};window.finishPaint=()=>{const c=document.getElementById('canvas').getContext('2d');c.fillStyle='white';c.fillRect(0,0,64,48);};
+  ${holdFirstPaint ? '' : 'finishPaint();'}
+  parent.postMessage({wine:true,type:"status",data:"Running..."},location.origin);
+  parent.postMessage({wine:true,type:"log",data:"first window mapped"},location.origin);</script>` }));
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   await page.waitForFunction(() => window.wineGames && !document.getElementById('library').hasAttribute('aria-busy'));
   assert.equal(await page.locator('[data-game]').count(), 9);
@@ -39,6 +43,25 @@ try {
     assert.ok(!await page.locator('#notice').evaluate(element=>element.classList.contains('error')));
   }
   checks.push('All nine demo tiles launch in one click with correct architecture/entry point');
+  holdFirstPaint=true;await page.locator('[data-game="notepad"]').click();
+  await page.waitForFunction(()=>document.getElementById('runtimeStatus').textContent==='Not frozen, still loading');
+  await page.waitForFunction(()=>document.getElementById('runtimeStatus').textContent==='Running...');
+  let runtime=await(await page.locator('#display iframe').elementHandle()).contentFrame();
+  await runtime.evaluate(()=>parent.postMessage({wine:true,type:'log',data:'Still preparing pixels'},location.origin));
+  await page.waitForFunction(()=>document.getElementById('runtimeStatus').textContent==='Not frozen, still loading');
+  await runtime.evaluate(()=>parent.postMessage({wine:true,type:'error',data:'Startup test failure'},location.origin));
+  await page.waitForFunction(()=>document.getElementById('runtimeStatus').textContent==='Startup test failure',null,{timeout:1000});
+  await runtime.evaluate(()=>parent.postMessage({wine:true,type:'log',data:'Late log after failure'},location.origin));
+  assert.equal(await page.locator('#runtimeStatus').textContent(),'Startup test failure');
+  await page.click('#playerRetry');
+  await page.waitForFunction(()=>document.getElementById('runtimeStatus').textContent==='Not frozen, still loading');
+  runtime=await(await page.locator('#display iframe').elementHandle()).contentFrame();
+  await runtime.evaluate(()=>window.finishPaint());
+  await page.waitForFunction(()=>document.getElementById('runtimeStatus').textContent==='Running...');
+  await runtime.evaluate(()=>parent.postMessage({wine:true,type:'log',data:'Normal log after painting'},location.origin));
+  assert.equal(await page.locator('#runtimeStatus').textContent(),'Running...');
+  await page.click('#stop');await page.waitForFunction(()=>!document.getElementById('folderButton').disabled);holdFirstPaint=false;
+  checks.push('Startup reassurance follows recent logs, expires when logs stop, and clears after the first visible frame');
   const folder=join(temp,'Fixture'); await mkdir(folder);
   const pe=Buffer.alloc(1024);pe.writeUInt16LE(0x5a4d,0);pe.writeUInt32LE(64,60);pe.writeUInt32LE(0x4550,64);pe.writeUInt16LE(0x14c,68);pe.writeUInt16LE(1,70);pe.writeUInt16LE(224,84);pe.writeUInt16LE(2,86);pe.writeUInt16LE(0x10b,88);pe.writeUInt32LE(512,328);pe.writeUInt32LE(512,332);
   await writeFile(join(folder,'Fixture.exe'),pe); await writeFile(join(folder,'UnityCrashHandler64.exe'),pe);await writeFile(join(folder,'assets.txt'),'test');

@@ -6,6 +6,7 @@ import { formatBytes } from './games.mjs';
 import { prepareArchive, removeArchive } from './package-archive.mjs';
 import { storedFiles, snapshotRuntime, readSaveBlobs } from './session-storage.mjs';
 import { replaceInstallation } from './installation.mjs';
+import { startupMessage, visibleFrame } from './startup.mjs';
 
 const $ = id => /** @type {any} */ (document.getElementById(id));
 const icon = name => {
@@ -74,6 +75,7 @@ function preparing(title) {
 async function closeRuntime() {
   const run = current; current = null; generation++;
   if (!run) return;
+  clearInterval(run.progressTimer);
   let saveError;
   try { const saved = snapshotRuntime(run.frame); run.frame.remove(); await saved; } catch (error) { saveError = error; }
   finally {
@@ -100,7 +102,8 @@ async function stop() {
 async function launchFrame(query, title, archive = null) {
   const frame = document.createElement('iframe'); frame.title = title + ' runtime';
   frame.allow = 'cross-origin-isolated; fullscreen'; frame.dataset.installation = query.get('installation');
-  const run = { frame, archive, generation: ++generation, renderer: null, vkReady: null, canvas: null };
+  const run = { frame, archive, generation: ++generation, renderer: null, vkReady: null, canvas: null,
+    lastLog: null, firstMapped: false, hasFrame: false, failed: false, status: '', progressTimer: null, probe: null };
   current = run;
   if (query.get('gpu') === '1') {
     const canvas = document.createElement('canvas'); canvas.id = 'gpuCanvas'; run.canvas = canvas; $('display').append(canvas);
@@ -111,6 +114,21 @@ async function launchFrame(query, title, archive = null) {
   frame.src = 'runtime/index.html?v=__RUNTIME_VERSION__&' + query;
   $('display').append(frame); status('Starting ' + title + '. The first run may take a minute.');
   $('runtimeStatus').textContent = 'Loading the runtime and program files…';
+  run.status = $('runtimeStatus').textContent;
+  run.progressTimer = setInterval(() => updateStartup(run, true), 500);
+}
+function updateStartup(run, sample = false) {
+  if (current !== run || run.failed) return;
+  if (sample && run.firstMapped && !run.hasFrame) {
+    try {
+      run.probe ||= Object.assign(document.createElement('canvas'), { width: 32, height: 20 });
+      run.hasFrame = Boolean(run.renderer?.frames) || visibleFrame(run.frame.contentWindow?.document.getElementById('canvas'), run.probe);
+    } catch { /* The runtime document may still be navigating. */ }
+  }
+  if (run.hasFrame) { clearInterval(run.progressTimer); run.probe = null; }
+  const value = startupMessage(run.status, run.lastLog, run.hasFrame);
+  if ($('runtimeStatus').textContent !== value) $('runtimeStatus').textContent = value;
+  if (!$('loading').hidden && $('status').textContent !== value) status(value);
 }
 async function runSaved(id, signal) {
   const pkg = await getPackage(id);
@@ -205,14 +223,17 @@ window.addEventListener('message', event => {
   const run = current;
   if (!run || event.origin !== location.origin || event.source !== run.frame.contentWindow || event.data?.wine !== true) return;
   const { type, data } = event.data;
-  if (type === 'status') { $('runtimeStatus').textContent = String(data); if (!$('loading').hidden) status(String(data)); }
-  if (type === 'error') { $('loading').hidden = false; $('loadingTitle').textContent = 'The program could not continue'; status(String(data)); $('playerRetry').hidden = !lastAction; $('runState').textContent = 'Stopped'; }
+  if (type === 'status') { run.status = String(data); updateStartup(run); }
+  if (type === 'error') { run.failed = true; clearInterval(run.progressTimer); $('runtimeStatus').textContent = String(data); $('loading').hidden = false; $('loadingTitle').textContent = 'The program could not continue'; status(String(data)); $('playerRetry').hidden = !lastAction; $('runState').textContent = 'Stopped'; }
   if (type === 'log') {
     log(String(data));
+    run.lastLog = performance.now();
     if (String(data).includes('first window mapped')) {
       $('loading').hidden = true; $('launchProgress').hidden = true; $('runState').textContent = 'Running';
+      run.firstMapped = true;
       run.frame.contentWindow?.document.getElementById('canvas')?.focus({ preventScroll: true });
     }
+    updateStartup(run);
   }
   if (type === 'gpu' && run.renderer) {
     try { run.renderer.render(data); } catch (error) { log('Graphics fallback: ' + errorText(error)); run.renderer.destroy(); run.renderer = null; $('gpuCanvas')?.remove(); }

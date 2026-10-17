@@ -19,11 +19,11 @@ content-derived version to avoid mixing cached and current code after deploy.
 
 ## Validation
 
-- `pnpm test`: 84 legacy checks passed, one existing opt-in naga browser check
+- `pnpm test`: 87 legacy checks passed, one existing opt-in naga browser check
   skipped; all 127 suite unit groups passed. `pnpm typecheck` passed.
 - Browser UI checks cover all nine one-click routes, automatic folder selection,
   reload/rerun, settings, retry, keyboard focus, touch targets, 320/640/1920px,
-  200% CSS zoom, OPFS ZIP ranges/cache, storage-failure preservation, extraction
+  200% CSS zoom, startup log/first-paint feedback, OPFS ZIP ranges/cache, storage-failure preservation, extraction
   cleanup and backup round trips. Controlled runtime responses test routing;
   they do not establish game playability.
 - Three static adversarial review cycles informed storage, lifecycle and import
@@ -48,7 +48,9 @@ The tested export replaced `/home/ubuntu/kn0tzer/wine` with an atomic directory
 exchange. The previous export is at
 `/home/ubuntu/backups/boxedwine64-ui-20261017-1929/wine`. No container restarted.
 The GitHub branch is `ui/one-click-launcher-20261017`; remote `master` and this
-checkout have unrelated histories, so publication preserves both histories.
+checkout have unrelated histories. The publication snapshot is based on remote
+`master` and keeps its workflow definitions unchanged; the local implementation
+branch retains its original history. The token cannot publish workflow changes.
 
 ## Runtime and compatibility
 
@@ -68,3 +70,15 @@ playable. Chromium's normal demo opens offline; the earlier restricted HTTP
 fixture is not a deployed general-purpose Internet proxy. Demo archives stay
 outside Git at the existing `/games/` host. No homepage, password or container
 restart changes are part of this deployment.
+
+## Startup feedback follow-up
+
+While the runtime says Running but has not painted visible pixels, recent logs
+show “Not frozen, still loading”. The message expires after 2.5 seconds without
+logs and clears once a visible frame is detected. A 32×20 canvas sample runs
+only twice per second during startup; it stops after first paint, Stop or error.
+Log events do not trigger canvas readback. Unit and browser regressions cover
+active logs, quiet logs, errors/late logs, retry, subsequent logs after painting,
+and first-paint cleanup. Live Chromium also showed and cleared the message.
+The preceding deployed redesign is backed up at
+`/home/ubuntu/backups/boxedwine64-ui-20261017-1935/wine`.

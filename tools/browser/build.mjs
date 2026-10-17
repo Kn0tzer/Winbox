@@ -7,7 +7,7 @@ const root = resolve(import.meta.dirname, '../..');
 const out = resolve(root, process.env.WINE_BUILD_OUT || 'dist');
 await mkdir(out, { recursive: true });
 if (out === root || out === resolve(root, 'web')) throw new Error('Build output must be separate from source files');
-for (const name of ['index.html', 'style.css', 'app.mjs', 'launch.mjs', 'demos.mjs', 'package-archive.mjs', 'session-storage.mjs', 'installation.mjs', 'files.mjs', 'games.mjs', 'storage.mjs', 'webgpu.mjs', 'shader.mjs', 'naga-rt.mjs', 'vkwebgpu.mjs', 'vk-protocol.mjs', 'vk-log.mjs', 'wgsl-utils.mjs', 'sparse-memfs.js']) await copyFile(resolve(root, 'web', name), resolve(out, name));
+for (const name of ['index.html', 'style.css', 'app.mjs', 'launch.mjs', 'demos.mjs', 'package-archive.mjs', 'session-storage.mjs', 'installation.mjs', 'startup.mjs', 'files.mjs', 'games.mjs', 'storage.mjs', 'webgpu.mjs', 'shader.mjs', 'naga-rt.mjs', 'vkwebgpu.mjs', 'vk-protocol.mjs', 'vk-log.mjs', 'wgsl-utils.mjs', 'sparse-memfs.js']) await copyFile(resolve(root, 'web', name), resolve(out, name));
 await cp(resolve(root, 'web/assets'), resolve(out, 'assets'), { recursive: true });
 // Built-in game archives are staged under /games so the launcher catalog can
 // range-fetch them. WINE_GAMES_DIR selects the source; WINE_GAMES_COPY=1 copies

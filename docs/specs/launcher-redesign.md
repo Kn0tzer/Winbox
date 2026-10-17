@@ -36,7 +36,9 @@ restarts. No password/auth changes in this task.
 A single launcher screen, native buttons, system fonts, neutral gray tokens and
 one muted blue accent. System light/dark preference. A prominent upload action,
 a compact game library, and saved folders below. Settings disclose overrides;
-shader tooling and the previous multi-panel lab layout are removed. The running
+shader tooling and the previous multi-panel lab layout are removed. While
+startup logs are active before visible pixels, show “Not frozen, still loading”;
+clear it after first paint or when logs become quiet. The running
 program expands into a dedicated player with visible Stop and Fullscreen.
 Mobile-first CSS Grid, 44px controls, visible focus, reduced motion, no clipping
 at 320px or 200% zoom. Example token: `--accent: #355fa3`.
