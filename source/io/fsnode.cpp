@@ -179,7 +179,10 @@ void FsNode::removeChildByName(BString name) {
         this->childrenByName.remove(name);
         this->childrenVersion.fetch_add(1, std::memory_order_relaxed);
     }
-    if (child) {
+    // Followed dynamic links (including descendants) are never path-cached.
+    // Unfollowed hits validate removedFromParent, and negative hits validate
+    // childrenVersion. Closing a /proc/<pid>/fd link needs no cache-wide scan.
+    if (child && !child->isDynamicLink()) {
         Fs::invalidatePathCachePrefix(childPath);
     }
 }

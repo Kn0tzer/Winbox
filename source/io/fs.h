@@ -122,7 +122,8 @@ public:
     //  * Negative entries ("not found") carry the parent dir's childrenVersion;
     //    any addChild/removeChildByName bumps it, so stale negatives fail fast.
     //  * removeNodeFromParent/removeChildByName/rename do prefix invalidation
-    //    for the removed subtree. shutDown/initFileSystem clear everything.
+    //    for the removed subtree, except dynamic links whose hits validate
+    //    lazily as above. shutDown/initFileSystem clear everything.
     // Locking: pathCacheMutex is a leaf lock - it is never held while acquiring
     // a node lock, so no lock-ordering issues with childrenByNameMutex.
     struct FsPathCacheKey {

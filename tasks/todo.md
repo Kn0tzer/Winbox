@@ -69,5 +69,7 @@
   327 browser CPU64 checks pass. Three graphics pairs show no consistent win;
   reject the compiler flag and keep the working baseline unchanged.
 - [ ] **CP4: Remaining measured Chromium improvements and browsing checks.**
-  Depends on CP3. Record rejected ideas and practical limits as well as wins.
+  Depends on CP3. Retained dynamic-fd cache optimization cuts measured startup
+  renderer CPU by 7.0%; repeated 300-frame scenes preserve pixels and timing.
+  Next: isolated LTO/dispatch comparisons and navigation/network checks.
 - [ ] **CP5: Portal acceptance.** Depends on CP4; do not switch early.

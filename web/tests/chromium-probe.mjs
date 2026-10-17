@@ -12,6 +12,8 @@ const exec = promisify(execFile);
 const source = resolve(process.env.CHROMIUM_ZIP || '/tmp/chromium-bringup/chromium109.zip');
 const tag = process.env.TAG || 'chromium-acceptance';
 const timeoutMs = Number(process.env.TIMEOUT_MS || 180000);
+const longScene = process.env.LONG_SCENE === '1';
+const sceneFrames = longScene ? 300 : 30;
 const probe = new ProbeTest({ tag, timeoutMs });
 const chromeArgs = process.env.CHROME_ARGS ? JSON.parse(process.env.CHROME_ARGS) : [
   '--no-sandbox', '--no-zygote', '--single-process', '--in-process-gpu',
@@ -20,7 +22,7 @@ const chromeArgs = process.env.CHROME_ARGS ? JSON.parse(process.env.CHROME_ARGS)
   '--disable-dev-shm-usage', '--no-first-run', '--no-default-browser-check', '--disable-extensions',
   '--disable-sync', '--disable-breakpad', '--disable-background-networking',
 ];
-const result = { tag, startedAt: new Date().toISOString(), chromeArgs, pass: false };
+const result = { tag, startedAt: new Date().toISOString(), chromeArgs, sceneFrames, pass: false };
 const events = [];
 let page, browserCdp, readyCpu;
 try {
@@ -55,7 +57,7 @@ try {
   });
   const base = probe._server.url;
   const args = [...chromeArgs, '--enable-logging=stderr', '--log-level=0', '--window-size=1000,700',
-    '--user-data-dir=Z:\\home\\username\\apps\\profile', 'file:///Z:/home/username/apps/chromium-smoke.html'];
+    '--user-data-dir=Z:\\home\\username\\apps\\profile', 'file:///Z:/home/username/apps/chromium-smoke.html' + (longScene ? '?longScene=1' : '')];
   const params = new URLSearchParams({ arch: 'x86', gamezip: base + '/__fixtures/chromium.zip',
     gamezipsize: String(result.archive.bytes), exe: 'chrome.exe', args: JSON.stringify(args),
     overlay: base + '/__fixtures/smoke.zip', overlaysize: String((await stat(overlay)).size),
@@ -131,7 +133,7 @@ try {
   result.benchmark = await waitEvent(e => e.event === 'benchmark', 'benchmark');
   if (result.benchmark.checksum !== 1783293664 || result.benchmark.workload !== 'integer-sum-v2' || result.benchmark.samples.length !== 8) throw Error('Guest benchmark result is incorrect');
   result.graphics = await waitEvent(e => e.event === 'graphics', 'graphics benchmark');
-  if (result.graphics.workload !== 'canvas-scene-v1' || result.graphics.frames !== 30 || result.graphics.intervals.length !== 30 || result.graphics.colorful < 1000 || result.graphics.intervals.some(ms => !Number.isFinite(ms) || ms <= 0)) throw Error('Guest graphics benchmark is incorrect');
+  if (result.graphics.workload !== 'canvas-scene-v1' || result.graphics.frames !== sceneFrames || result.graphics.intervals.length !== sceneFrames || result.graphics.colorful < 1000 || result.graphics.intervals.some(ms => !Number.isFinite(ms) || ms <= 0)) throw Error('Guest graphics benchmark is incorrect');
   await page.waitForTimeout(1000);
   await page.screenshot({ path: join(probe.dir, 'interaction.png') });
   result.inputSnapshot = await page.evaluate(() => JSON.parse(globalThis.Module.ccall('bw64_input_snapshot', 'string', [], [])));

@@ -42,7 +42,9 @@ async function graphicsBenchmark() {
   canvas.style.display = 'block';
   const ctx = canvas.getContext('2d');
   const colors = ['#ff5b5b', '#00cf91', '#4db3ff', '#ffe16b'];
-  const warmupFrames = 5, frames = 30, intervals = [], drawSamples = [];
+  const longScene = new URLSearchParams(location.search).get('longScene') === '1';
+  const warmupFrames = longScene ? 30 : 5, frames = longScene ? 300 : 30;
+  const intervals = [], drawSamples = [];
   let previous;
   for (let frame = 0; frame < warmupFrames + frames; frame++) {
     const timestamp = await new Promise(resolve => requestAnimationFrame(resolve));
@@ -68,6 +70,8 @@ async function graphicsBenchmark() {
     if (Math.max(pixels[offset], pixels[offset + 1], pixels[offset + 2]) - Math.min(pixels[offset], pixels[offset + 1], pixels[offset + 2]) > 100) colorful++;
   }
   const result = { workload: 'canvas-scene-v1', frames, warmupFrames, intervals, drawSamples, pixelHash, colorful };
+  // Report milliseconds to three decimals so 300 samples fit in one Wine log.
+  result.intervals = intervals.map(ms => Math.round(ms * 1000) / 1000);
   log('graphics', result);
   return result;
 }
