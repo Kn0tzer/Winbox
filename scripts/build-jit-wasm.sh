@@ -38,7 +38,7 @@ case "$SELFTEST_ONLY" in
 esac
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: JOBS must be positive." >&2; exit 2; }
 
-echo "=== [1/4] native phase-1 unit tests (g++ gate) ==="
+echo "=== [1/5] native phase-1 unit tests (g++ gate) ==="
 mkdir -p "$BUILD_TMP"
 BUILD_TMP="$BUILD_TMP/lifetime" bash "$REPO/scripts/test-jit-lifetime.sh"
 g++ -std=c++17 -Wall -Wextra -DBOXEDWINE_GUEST_X64=1 \
@@ -62,8 +62,8 @@ g++ -std=c++17 -Wall -Wextra -DBOXEDWINE_GUEST_X64=1 -DJIT64_GEN_VERIFY=1 \
 "$BUILD_TMP/jit64_gen_tests"
 # Plan section 14.3: block-overlap invalidation. Caches a block, rewrites
 # guest memory inside / overlapping / across its range (plus a within-block
-# self-modifying store and a cross-page block), and re-executes on all three
-# native tiers, differentially against the pure interpreter. A sensitivity
+# self-modifying store and a cross-page block), and compares block execution
+# against a separately compiled instruction interpreter. A sensitivity
 # check (noteGuestWrite neutered) was verified to fail T1/T3/T4, so this gate
 # is not vacuous.
 echo "--- jit64 block-invalidation tests (section 14.3) ---"
@@ -80,24 +80,25 @@ for sf in "$REPO"/lib/softfloat/source/*.c "$REPO"/lib/softfloat/source/8086-SSE
         -I"$REPO/lib/softfloat/source" -I"$REPO/lib/softfloat/source/8086-SSE" \
         "$sf" -o "$obj"
 done
-g++ -std=c++20 -Wall -Wextra -DBOXEDWINE_GUEST_X64=1 -DBOXEDWINE_BLOCK_EXEC=1 \
-    -DBOXEDWINE_BLOCK_CACHE_INFRA=1 -ffunction-sections -fdata-sections \
-    -I"$REPO/include" -I"$REPO/lib/simde" -I"$REPO/lib/softfloat/source/include" \
-    "$REPO/source/emulation/cpu/cpu64.cpp" \
-    "$REPO/source/emulation/cpu/jit64.cpp" \
-    "$REPO/source/emulation/cpu/jit64wasm.cpp" \
-    "$REPO/source/kernel/kmemory64.cpp" \
-    "$REPO/source/util/bstring.cpp" \
-    "$BUILD_TMP/inv_fpu.o" "$BUILD_TMP"/softfloat/*.o \
-    "$REPO/source/emulation/cpu/tests/jit64_invalidate_tests.cpp" \
-    -Wl,--gc-sections -o "$BUILD_TMP/jit64_invalidate_tests" > "$BUILD_TMP/inv_build.log" 2>&1 || \
-    { echo "FAIL: invalidate-test build failed; see $BUILD_TMP/inv_build.log" >&2; exit 1; }
-BW64_NOBLOCK=1 "$BUILD_TMP/jit64_invalidate_tests" > "$BUILD_TMP/inv_tier1.log"
-"$BUILD_TMP/jit64_invalidate_tests" > "$BUILD_TMP/inv_tier15.log"
-BW64_THREADED=1 "$BUILD_TMP/jit64_invalidate_tests" > "$BUILD_TMP/inv_tier2.log"
-cmp -s "$BUILD_TMP/inv_tier1.log" "$BUILD_TMP/inv_tier15.log" || { echo "FAIL: tier 1.5 invalidation output differs from interpreter baseline" >&2; exit 1; }
-cmp -s "$BUILD_TMP/inv_tier1.log" "$BUILD_TMP/inv_tier2.log" || { echo "FAIL: tier 2 invalidation output differs from interpreter baseline" >&2; exit 1; }
-echo "OK: block-invalidation tests pass identically on tiers 1 / 1.5 / 2."
+for mode in interp blocks; do
+    INV_FLAGS=()
+    if [[ "$mode" == blocks ]]; then INV_FLAGS=(-DBOXEDWINE_BLOCK_EXEC=1); fi
+    g++ -std=c++20 -Wall -Wextra -DBOXEDWINE_GUEST_X64=1 "${INV_FLAGS[@]}" \
+        -DBOXEDWINE_BLOCK_CACHE_INFRA=1 -ffunction-sections -fdata-sections \
+        -I"$REPO/include" -I"$REPO/lib/simde" -I"$REPO/lib/softfloat/source/include" \
+        "$REPO/source/emulation/cpu/cpu64.cpp" \
+        "$REPO/source/emulation/cpu/jit64.cpp" \
+        "$REPO/source/emulation/cpu/jit64wasm.cpp" \
+        "$REPO/source/kernel/kmemory64.cpp" \
+        "$REPO/source/util/bstring.cpp" \
+        "$BUILD_TMP/inv_fpu.o" "$BUILD_TMP"/softfloat/*.o \
+        "$REPO/source/emulation/cpu/tests/jit64_invalidate_tests.cpp" \
+        -Wl,--gc-sections -o "$BUILD_TMP/jit64_invalidate_$mode" > "$BUILD_TMP/inv_build_$mode.log" 2>&1 || \
+        { echo "FAIL: $mode invalidate-test build; see $BUILD_TMP/inv_build_$mode.log" >&2; exit 1; }
+    "$BUILD_TMP/jit64_invalidate_$mode" > "$BUILD_TMP/inv_$mode.log"
+done
+cmp -s "$BUILD_TMP/inv_interp.log" "$BUILD_TMP/inv_blocks.log" || { echo "FAIL: block invalidation differs from the instruction interpreter" >&2; exit 1; }
+echo "OK: block-invalidation tests match the independent instruction interpreter."
 command -v node >/dev/null || { echo "ERROR: node not found." >&2; exit 1; }
 g++ -std=c++17 -Wall -Wextra -DBOXEDWINE_GUEST_X64=1 \
     -I"$REPO/include" \
@@ -113,7 +114,7 @@ if [ -n "$SELFTEST_ONLY" ]; then
     exit 0
 fi
 
-echo "=== [2/4] wasm64-selftest build (emcc) ==="
+echo "=== [2/5] wasm64-selftest build (emcc) ==="
 command -v emcc >/dev/null || {
     echo "ERROR: emcc not found. Activate the Emscripten SDK first (emsdk_env.sh)." >&2
     exit 1
@@ -133,11 +134,11 @@ JS_CJS="${JS%.js}.cjs"
 # Emscripten 6 does not mirror Node's environment unless NODE_HOST_ENV is set.
 # Forward only these two test controls before the guest calls getenv().
 {
-    printf '%s\n' 'var Module = { preRun: function() { ENV.BW64_JIT = process.env.BW64_JIT || "0"; ENV.BW64_JIT_VERIFY = process.env.BW64_JIT_VERIFY || "0"; ENV.BW64_JIT_ENGINE = process.env.BW64_JIT_ENGINE || ""; ENV.BW64_JIT_HOT = process.env.BW64_JIT_HOT || ""; ENV.BW64_THREADED = process.env.BW64_THREADED || "0"; } };'
+    printf '%s\n' 'var Module = { preRun: function() { ENV.BW64_JIT = process.env.BW64_JIT || "0"; ENV.BW64_JIT_VERIFY = process.env.BW64_JIT_VERIFY || "0"; ENV.BW64_JIT_ENGINE = process.env.BW64_JIT_ENGINE || ""; ENV.BW64_JIT_HOT = process.env.BW64_JIT_HOT || ""; } };'
     cat "$JS"
 } > "$JS_CJS"
 
-echo "=== [3/4] smoke run: interpreter vs BW64_JIT=1 (outputs must match) ==="
+echo "=== [3/5] smoke run: interpreter vs BW64_JIT=1 (outputs must match) ==="
 if ! BW64_JIT=0 BW64_JIT_VERIFY=0 node "$JS_CJS" --x64-selftest > "$BUILD_TMP/selftest_interp.log" 2>&1; then
     echo "FAIL: interpreter self-test; see $BUILD_TMP/selftest_interp.log" >&2
     exit 1
@@ -159,18 +160,7 @@ else
     echo "FAIL: JIT output differs from interpreter baseline (see diff above)." >&2
     exit 1
 fi
-echo "=== [4/4] threaded-tier smoke: BW64_THREADED=1 (must match interpreter) ==="
-if ! BW64_THREADED=1 node "$JS_CJS" --x64-selftest > "$BUILD_TMP/selftest_threaded.log" 2>&1; then
-    echo "FAIL: threaded self-test; see $BUILD_TMP/selftest_threaded.log" >&2
-    exit 1
-fi
-if diff -u "$BUILD_TMP/selftest_interp.log" "$BUILD_TMP/selftest_threaded.log"; then
-    echo "OK: BW64_THREADED=1 output identical to interpreter baseline."
-else
-    echo "FAIL: threaded output differs from interpreter baseline (see diff above)." >&2
-    exit 1
-fi
-echo "=== [5/6] genuine 64-bit ELF fixture (interpreter vs emitted modules) ==="
+echo "=== [4/5] genuine 64-bit ELF fixture (interpreter vs emitted modules) ==="
 FIXTURE_SRC="$REPO/tools/guest-fixtures/jitbench64.c"
 ELF="$BUILD_TMP/jitbench64.elf"
 if command -v x86_64-linux-gnu-gcc >/dev/null; then
@@ -237,7 +227,7 @@ fi
 printf 'OK: fixture %s identical across interpreter%s and emitted modules (.elf=%s bytes)\n' \
     "$INTERP_SUM" "${NATIVE_SUM:+, qemu-x86_64 reference $NATIVE_SUM}" "$(wc -c < "$ELF")"
 
-echo "=== [6/6] opt-in engine comparison (BW64_JIT_ENGINE=interp vs wasm) ==="
+echo "=== [5/5] opt-in engine comparison (BW64_JIT_ENGINE=interp vs wasm) ==="
 BW64_JIT=1 BW64_JIT_VERIFY=1 BW64_JIT_ENGINE=interp node "$JS_CJS" --x64-selftest > "$BUILD_TMP/selftest_interpengine.log" 2>&1
 grep -E '^JIT64: engine=interp blocks=[1-9]' "$BUILD_TMP/selftest_interpengine.log"
 sed -e '/^JIT64:/d' -e '/^WASM64:/d' -e '/^BW64JITSTATS:/d' "$BUILD_TMP/selftest_interpengine.log" > "$BUILD_TMP/selftest_interpengine_results.log"

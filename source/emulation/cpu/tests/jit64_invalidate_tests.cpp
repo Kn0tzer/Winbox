@@ -13,9 +13,8 @@
 // rewrites guest memory inside / overlapping / across the block's range, and
 // re-executes, comparing against the pure interpreter (tier 1, BW64_NOBLOCK=1).
 // A broken invalidation would execute stale bytes and fail the expected
-// register values. Covers the block-cache tier (1.5, switch dispatch) and
-// the threaded tier (2, BW64_THREADED=1); tier 3's wasm vehicle falls back
-// to execBlock on native builds, so it rides the same vehicle.
+// register values. The driver builds separate instruction-interpreter and
+// block-executor binaries, keeping the reference independent of block decoding.
 //
 // Build (mirrors scripts/test-jit-lifetime.sh link recipe):
 //   g++ -std=c++20 -DBOXEDWINE_GUEST_X64=1 -DBOXEDWINE_BLOCK_EXEC=1 \
@@ -25,8 +24,7 @@
 //       source/kernel/kmemory64.cpp source/util/bstring.cpp \
 //       <fpu.o> source/emulation/cpu/tests/jit64_invalidate_tests.cpp \
 //       -Wl,--gc-sections -o /tmp/jit64_invalidate_tests
-// Driver: run 3x — BW64_NOBLOCK=1 (tier 1 baseline), default (tier 1.5),
-// BW64_THREADED=1 (tier 2) — and require identical stdout + exit 0.
+// Driver: build with and without BOXEDWINE_BLOCK_EXEC; require identical output.
 // Exit 0 = all pass; non-zero = failures (count printed).
 
 #include "boxedwine.h"
@@ -35,6 +33,8 @@
 
 #include <cstdio>
 #include <cstring>
+#include <thread>
+#include <vector>
 
 // ---- standalone-link stubs (no kernel/process in this harness) ----
 thread_local KThread* KThread::runningThread = nullptr;
@@ -204,12 +204,28 @@ static void testRegistryOverflow() {
           "registry exhaustion allowed a stale overflow block");
 }
 
+static void testConcurrentRegistration() {
+    const U64 first = 0x300000000ULL;
+    std::vector<std::thread> workers;
+    for (U32 i = 0; i < 8; ++i) workers.emplace_back([=] {
+        for (U32 page = 0; page < 32; ++page) {
+            KMemory64::blockPageRegister(first + page);
+            KMemory64::noteGuestWrite(first + page);
+        }
+    });
+    for (auto& worker : workers) worker.join();
+    for (U32 page = 0; page < 32; ++page)
+        CHECK(KMemory64::blockPageGenOf(first + page) == 8,
+              "concurrent registration lost a write notification");
+}
+
 int main() {
     testUnrelatedPageWrites();
     testRewriteInsideBlock();
     testOverlapAtXPlus2();
     testWithinBlockSelfMod();
     testCrossPageRewrite();
+    testConcurrentRegistration();
     testRegistryOverflow();
     printf("invalidate_tests: pass=%d fail=%d\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
