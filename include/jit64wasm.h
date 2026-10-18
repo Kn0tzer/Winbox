@@ -5,22 +5,102 @@
 #include "jit64.h"
 
 // Staging ABI for a wasm32 host with 64-bit guest values. This is separate
-// from CPU64's object layout; a future runtime bridge must copy state in/out.
+// from CPU64's object layout: CPU64::tryJitStep copies the guest GPRs, RIP and
+// RFLAGS in before the call and back out afterwards.
+//
+// Host pointer width is NOT a guest concept. The emitted modules address this
+// struct through a wasm32 linear-memory offset, exactly like the imported
+// memory helpers' scratch pointer. A Memory64 build (64-bit host pointers) is
+// therefore not supported: jit64WasmAvailable() is false there and CPU64 keeps
+// using the interpreter. jit64WasmHostAbiOk() re-checks the assumptions at
+// runtime (pointer size and offsets) so a build-configuration mistake degrades
+// to the interpreter instead of corrupting state.
 struct Jit64WasmState {
     U64 gpr[16];
     U64 rip;
     U32 rflags;
     U32 reserved;
+    U64 memScratch; // 8-byte scratch for the memRead import's result
+    U32 genBase;    // wasm32 address of the page-generation table
+    U32 gen0;       // entry generation of the block's first code page
+    U32 gen1;       // entry generation of the block's last code page
+    U32 execCount;  // out: guest instructions actually executed
+    U32 reserved2;
+    U32 reserved3;
 };
 static_assert(offsetof(Jit64WasmState, rip) == 128, "wasm guest RIP offset");
 static_assert(offsetof(Jit64WasmState, rflags) == 136, "wasm guest flags offset");
-static_assert(sizeof(Jit64WasmState) == 144, "wasm guest state size");
+static_assert(offsetof(Jit64WasmState, memScratch) == 144, "wasm mem scratch offset");
+static_assert(offsetof(Jit64WasmState, genBase) == 152, "wasm gen table offset");
+static_assert(offsetof(Jit64WasmState, gen0) == 156, "wasm gen0 offset");
+static_assert(offsetof(Jit64WasmState, gen1) == 160, "wasm gen1 offset");
+static_assert(offsetof(Jit64WasmState, execCount) == 164, "wasm exec count offset");
+static_assert(sizeof(Jit64WasmState) == 176, "wasm guest state size");
 
-// Emit execute(state_ptr: i32) importing env.memory. Initially supports only
-// register-direct 32/64-bit MOV and immediate MOV, with 16 i64 GPR locals.
-// Advances RIP, zero-extends 32-bit destinations, and preserves flags.
-// Rejects the entire block for any unsupported op/operand. On rejection,
-// clears output. No CPU64 dispatch or wasm-table ownership is installed yet.
+// State bridge (non-optimizing plumbing): copy a plain GPR/RIP/RFLAGS triple
+// into the staging struct before execute(), and back out after. Keeps the
+// header dependency-free (no cpu64.h/SDL) so the native harness can test it.
+void jit64WasmStateInit(Jit64WasmState& state, const U64 gpr[16], U64 rip, U32 rflags);
+void jit64WasmStateRead(const Jit64WasmState& state, U64 gpr[16], U64& rip, U32& rflags);
+// Entry generations + generation-table address for the inline invalidation
+// checks the emitted module performs after every guest store.
+void jit64WasmStateSetGens(Jit64WasmState& state, U32 genBase, U32 gen0, U32 gen1);
+
+// Emit execute(state_ptr: i32) importing env.memory and the memory helpers.
+// Supported: register/memory 8/16/32/64-bit MOV, ALU (ADD/ADC/SUB/SBB/AND/OR/
+// XOR/CMP/TEST), shifts/rotates by immediate/1/CL, IMUL (1/2/3-operand),
+// MOVZX/MOVSX/MOVSXD, LEA, PUSH/POP, group 3 (TEST/NOT/NEG/MUL), CBW/CWDE/
+// CDQE, CWD/CDQ/CQO, CMOVcc, SETcc, BT/BTS/BTR/BTC, string ops, and the
+// control flow the block terminator needs: NOP, Jcc, JMP rel, CALL rel, RET,
+// LEAVE.
+//
+// Every instruction advances RIP individually so an early exit (page-gen
+// change after a guest store) reports the exact next RIP and executed count.
+// The module never runs past its last decoded instruction. Rejects the whole
+// block for any unsupported op/operand; on rejection, clears output.
 bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output);
+
+#ifdef JIT64_GEN_VERIFY
+// Byte-identical migration test hooks (defined in jit64wasm.cpp).
+// jit64EmitOld emits one op with the hand-written emitter, jit64EmitNew
+// with the table-generated one. Return 0xFE when the kind has no emitter
+// in that set (the test skips such ops).
+U32 jit64EmitOld(std::vector<U8>& body, const Jit64Op& op);
+U32 jit64EmitNew(std::vector<U8>& body, const Jit64Op& op);
+#endif
+
+// Runtime module instantiation and table ownership.
+//
+// The emitted function is installed into Emscripten's own wasmTable
+// (-sALLOW_TABLE_GROWTH) and the table index is returned. CPU64 calls that
+// index through a C++ function-pointer call, which Emscripten compiles to
+// call_indirect on the same table: no JavaScript crossing per block.
+//
+// Table indices are worker/table-local. A Jit64State records the owner id
+// returned by jit64WasmOwnerId(); a mismatch (guest thread migrated to a
+// different worker) drops the cache without touching the other worker's
+// table, so a numeric slot is never reused across workers.
+class KMemory64; // forward: the header stays dependency-free
+
+#ifdef __EMSCRIPTEN__
+int jit64WasmInstantiate(const U8* bytes, U32 byteCount);
+void jit64WasmCall(int tableIndex, Jit64WasmState* state);
+void jit64WasmRelease(int tableIndex);
+U32 jit64WasmOwnerId();
+// Routes the emitted module's memRead/memWrite imports at `mem` for the
+// duration of the next synchronous jit64WasmCall. Thread-local: wasm
+// execution never yields, so the import always observes the setter's thread.
+void jit64WasmSetActiveMem(KMemory64* mem);
+bool jit64WasmAvailable();
+bool jit64WasmHostAbiOk();
+#else
+inline int jit64WasmInstantiate(const U8*, U32) { return -1; }
+inline void jit64WasmCall(int, Jit64WasmState*) {}
+inline void jit64WasmRelease(int) {}
+inline U32 jit64WasmOwnerId() { return 0; }
+inline void jit64WasmSetActiveMem(KMemory64*) {}
+inline bool jit64WasmAvailable() { return false; }
+inline bool jit64WasmHostAbiOk() { return false; }
+#endif
 
 #endif

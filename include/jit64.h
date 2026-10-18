@@ -8,7 +8,7 @@
  *
  *  jit64.h — Phase-1 JIT framework for the 64-bit guest (CPU64).
  *
- *  Strategy (per docs/jit-experiment.md §3.1 "recommend the former with a thin
+ *  Strategy (per tasks/jit-port-plan.md §3.1 "recommend the former with a thin
  *  adapter"): build on cpu64's OWN BBlock/BRec IR rather than forcing cpu64
  *  onto the 32-bit DecodedOp pipeline. Phase 1 implements:
  *
@@ -77,7 +77,59 @@ enum Jit64Kind : U8 {
     J64_LEAVE = 18,     // 0xC9
     J64_NOP = 19,       // 0x90 (+ 0F 1F multi-byte NOP if seen)
     J64_SYSCALL = 20,   // 0F 05 — always fallback (block terminator)
+    J64_STRING = 21,    // A4-A7/AA/AB/AE/AF: sub 0=MOVS,1=STOS,2=CMPS,3=SCAS
+    J64_FPU = 22,       // D8-DF x87: interpreter-only by design (80-bit SoftFloat); never JIT64_FAST
+    J64_MOVX = 23,      // 0F B6/B7/BE/BF MOVZX/MOVSX r, r/m; 63 MOVSXD r,r/m32; sub 0=zx8,1=zx16,2=sx8,3=sx16,4=sxd32
+    J64_IMUL_1OP = 24,  // F6/F7 /5 one-operand IMUL (implicit RAX/RDX)
+    J64_IMUL_3OP = 25,  // 69/6B three-operand IMUL r, r/m, imm
+    J64_GRP3 = 26,      // F6/F7 group 3: sub = ModRM reg field;
+                        // 0=TEST r/m,imm, 2=NOT, 3=NEG, 4=MUL (unsigned).
+                        // /1 invalid; /5 stays J64_IMUL_1OP; /6 /7 DIV/IDIV
+                        // are interpreter-only (their #DE path delivers a
+                        // host SIGFPE with exact register state, which the
+                        // straight-line wasm block model cannot represent).
+    J64_CBW = 27,       // 0x98 CBW/CWDE/CDQE: sign-extend AL->AX (16),
+                        // AX->EAX (32), EAX->RAX (64). Pure RAX
+                        // transform; no flags, no memory, no faults.
+    J64_CMOV = 28,      // 0F 40..4F CMOVcc r, r/m16/32/64: sub = condition
+                        // 0..15 (same encoding as Jcc). Dest is always a
+                        // register; source is always loaded (faults even if
+                        // the condition is false). No flags touched.
+    J64_CQO = 29,       // 0x99 CWD/CDQ/CQO: sign-extend AX->DX:AX (16),
+                        // EAX->EDX:EAX (32), RAX->RDX:RAX (64). RAX is
+                        // read-only, RDX is written. No flags, no memory,
+                        // no faults.
+    J64_SHIFT_CL = 30,  // sub = shift op 0..7 (0xD2/0xD3). Count is dynamic:
+                        // CL & 0xFF at runtime, masked to 0x1F (0x3F for
+                        // 64-bit) by the emitter. count==0 is a pure no-op
+                        // (flags untouched); 32-bit count==0 still
+                        // zero-extends a register dest. OF defined only for
+                        // count==1. D2 is the 8-bit form.
+    J64_SETCC = 31,     // 0F 90..9F SETcc r/m8: sub = condition 0..15
+                        // (same encoding as Jcc/CMOVcc). Dest is r/m8
+                        // (always byte); 0/1 based on RFLAGS. No flags
+                        // touched. 0x66/REX.W ignored.
+    J64_BT = 32,        // 0F A3/AB/B3/BB BT/BTS/BTR/BTC r/m16/32/64, r16/32/64:
+                        // sub = 0(BT)/1(BTS)/2(BTR)/3(BTC). Bit = reg & (width-1).
+                        // CF = selected bit. BTS/BTR/BTC modify the bit.
+                        // Only CF touched. 0x66 selects 16-bit; REX.W 64-bit.
     J64_UNKNOWN = 255
+};
+
+// Effective-address description for isMem ops, mirroring CPU64::decodeModRM
+// (source/emulation/cpu/cpu64.cpp) field-for-field. Filled by the decoder
+// for memory-operand ALU/TEST kinds (J64_ALU_RM_R, J64_ALU_R_RM,
+// J64_ALU_RM_IMM, J64_TEST_RM_R); meaningless when !isMem. See
+// tasks/jit-port-plan.md section 13 for the design.
+struct Jit64MemEA {
+    bool ripRel = false;  // mod=0,rm=5: EA is the absolute ripRelTarget
+    U64 ripRelTarget = 0; // decode-time constant (no 0x67 mask, no seg: quirk)
+    U8 baseReg = 0xFF;    // 0..15, or 0xFF if none (SIB disp32-only)
+    U8 idxReg = 0xFF;     // 0..15, or 0xFF if none (idxF==4 && !REX.X)
+    U8 scale = 0;         // 0..3 (SIB shift count)
+    S64 disp = 0;         // sign-extended displacement
+    bool asize32 = false; // 0x67: mask EA to 32 bits after base+idx+disp wrap
+    U8 seg = 0;           // 0, 0x64 (FS), 0x65 (GS); emitter rejects seg != 0
 };
 
 // One decoded guest instruction in JIT IR.
@@ -91,23 +143,40 @@ struct Jit64Op {
     bool isMem = false; // ModRM names memory (vs register-direct)
     U64 imm = 0;        // finalized immediate (sign/mask applied at decode)
     S64 delta = 0;      // branch displacement (CALL/JMP/JCC)
+    U8 rep = 0;         // REP prefix: 0, 0xF2 or 0xF3 (J64_STRING only)
+    bool asize32 = false; // 0x67 address-size prefix (J64_STRING only)
+    bool rexPresent = false; // any REX prefix byte (8-bit high-byte vs SPL/... rule)
+    Jit64MemEA ea;        // effective address (valid only when isMem)
     Jit64OpcodeClass plan = JIT64_FALLBACK;
 };
+
+// Page-generation hash slot. MUST match KMemory64::blockSlot exactly: the
+// emitted wasm module addresses the same generation table by this index, so
+// a mismatch would silently check the wrong page. The invalidation test
+// asserts equality against the real KMemory64 helper.
+U64 jit64PageOf(U64 guestAddr);
+U32 jit64BlockSlot(U64 pageNum);
 
 // A compiled block: decoded ops + entry metadata + cache validity.
 struct Jit64Block {
     U64 startRip = 0;   // 0 = empty slot
     U64 page0 = 0, page1 = 0;
     U32 gen0 = 0, gen1 = 0;
+    U32 slot0 = 0, slot1 = 0; // jit64BlockSlot(page0/page1), baked into wasm
     std::vector<Jit64Op> ops;
     U32 fastCount = 0;  // ops with plan == JIT64_FAST
     bool executable = false; // true iff fastCount == ops.size() && ops not empty
     U64 execCount = 0;  // times this block was entered via jit (stats)
+    // Phase-2 wasm module slot: -1 = not attempted, >= 0 = instantiated
+    // table index from jit64WasmInstantiate, -2 = emission rejected (the
+    // emitter is deterministic per block, so rejection is never retried).
+    // Owned by Jit64BlockCache: insert/invalidate/clear release live slots.
+    int wasmIndex = -1;
 };
 
 // Phase-1 opcode coverage table: exactly one row per opcode class the JIT
 // claims as fast. The test harness asserts this list matches the top-20
-// profile (see docs/jit-experiment.md "Phase 1 status").
+// profile (see tasks/jit-port-plan.md "Phase 1 status").
 struct Jit64CoveredOpcode {
     const char* name;   // e.g. "89 MOV r/m,r"
     U8 op;              // primary opcode byte (0x0F for two-byte)
@@ -146,12 +215,19 @@ public:
     Jit64BlockCache();
     // Look up a compiled entry valid for `rip` with the given page gens.
     // Returns nullptr on miss/stale.
-    const Jit64Block* lookup(U64 rip, U64 page0, U32 gen0, U64 page1, U32 gen1);
+    Jit64Block* lookup(U64 rip, U64 page0, U32 gen0, U64 page1, U32 gen1);
     // Insert (evicts whatever collides). Copies ops.
-    const Jit64Block* insert(U64 rip, U64 page0, U32 gen0, U64 page1, U32 gen1,
+    Jit64Block* insert(U64 rip, U64 page0, U32 gen0, U64 page1, U32 gen1,
                              const Jit64Op* ops, U32 nOps);
+    // Raw entry for `rip` (may have a different startRip on collision). The
+    // caller validates startRip and page generations itself, which lets it
+    // validate an entry without knowing the block length up front.
+    Jit64Block* at(U64 rip) { return &m_slots[slotFor(rip)].block; }
+    const Jit64Block* at(U64 rip) const { return &m_slots[slotFor(rip)].block; }
     void invalidate(U64 rip); // drop one entry (negative-cache support)
-    void clear();
+    // Drop every entry. releaseWasm=false is for a cache whose table slots
+    // belong to a different worker's WebAssembly.Table (never touch those).
+    void clear(bool releaseWasm = true);
     // Stats.
     U64 lookups() const { return m_lookups; }
     U64 hits() const { return m_hits; }
@@ -167,15 +243,51 @@ private:
 // keeps the interpreter. Cached after first read (zero cost when off).
 bool jit64Enabled();
 
+// Small negative cache: rips whose block cannot be emitted stay on the
+// interpreter without paying a 360-byte instruction snapshot + decode on
+// every entry. Keyed on rip + the generation of rip's page. Pages that hold
+// no JIT block are not registered, so their generation does not move; a
+// stale negative entry can only keep a JIT-able block on the interpreter
+// (correct, slower), never execute stale code.
+class Jit64NegativeCache {
+public:
+    static constexpr U32 SLOTS = 256;
+    // True if `rip` is known-unemittable at generation `gen0`.
+    bool rejected(U64 rip, U32 gen0) const;
+    void add(U64 rip, U32 gen0);
+    void clear();
+private:
+    struct Slot { U64 rip = 0; U32 gen0 = 0; };
+    Slot m_slots[SLOTS];
+    static U32 slotFor(U64 rip) { return (U32)((rip ^ (rip >> 7)) & (SLOTS - 1)); }
+};
+// §14.3: true if any op in the block may store to guest memory (conservative
+// over-approximation; see jit64.cpp). Used to decline the wasm vehicle for
+// self-modifying-risk blocks.
+bool jit64BlockMayStore(const Jit64Op* ops, U32 nOps);
+
 // Per-CPU JIT state owned by CPU64 (pointer to keep cpu64.h lean; defined
 // here so cpu64.cpp can hold it by pointer without exposing internals).
 struct Jit64State {
     Jit64BlockCache cache;
+    Jit64NegativeCache negative;
     U64 blocksCompiled = 0;
     U64 blocksExecuted = 0;
     U64 insnsFast = 0;
     U64 insnsFallback = 0;
+    U64 wasmBlocks = 0;  // blocks executed via emitted wasm modules
+    U64 wasmInsns = 0;   // instructions executed via emitted wasm modules
+    U64 wasmEarlyExits = 0; // modules that stopped at a page-gen change
+    U64 emitRejected = 0;   // blocks the emitter refused (stays interpreted)
+    U64 instantiateFailed = 0; // table slot or module creation failure
+    U64 compileTimeUs = 0;  // decode + emit + instantiate, cold path only
+    U32 wasmOwner = 0;      // worker/table id that owns wasmIndex values
 };
+
+// Release all JIT table slots owned by `state` in the *current* worker. Called
+// from CPU64 destruction/freeJit so a cached module does not leak its table
+// entry for the process lifetime. Safe when state is null.
+void jit64ReleaseState(Jit64State* state);
 
 // Emit a wasm-module stub summary for a compiled block (phase-2 preparation):
 // reports the op plan in a stable text form the wasm emitter will consume.
