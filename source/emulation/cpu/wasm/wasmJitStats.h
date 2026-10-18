@@ -92,7 +92,6 @@ struct WasmJit32StatsSnapshot {
 
 // --- Recording hooks (called from the backend) -----------------------------
 void wasmJit32StatsBlockEmitted();
-void wasmJit32StatsBlockEntered();
 void wasmJit32StatsBlockInstantiated(U64 ns);
 void wasmJit32StatsAddEmitNs(U64 ns);
 void wasmJit32StatsFallback(WasmJit32Fallback kind);

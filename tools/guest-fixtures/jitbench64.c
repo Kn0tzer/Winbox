@@ -264,10 +264,10 @@ int main(int argc, char** argv) {
         QueryPerformanceCounter(&end);
         char line[256], checksum[17];
         jb_itoa_hex(g_checksum, checksum);
-        snprintf(line, sizeof(line), "BW_JITBENCH64 {\"sample\":%d,\"ms\":%.3f,\"checksum\":\"%s\",\"passes\":%u}\n",
+        snprintf(line, sizeof(line), "BW_JITBENCH64 sample=%d ms=%.3f checksum=%s passes=%u\n",
             sample, (double)(end.QuadPart - start.QuadPart) * 1000.0 / (double)frequency.QuadPart,
             checksum, (unsigned)passes);
-        jb_write(line, (unsigned long)strlen(line));
+        OutputDebugStringA(line);
     }
 #else
     jb_run(passes);

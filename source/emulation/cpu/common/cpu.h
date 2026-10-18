@@ -563,6 +563,7 @@ public:
     // generated code increments it once per executed guest instruction; a CPU
     // belongs to exactly one guest thread, so only that thread writes it.
     U64 wasmJitRetiredInstructions = 0;
+    U64 wasmJitBlocksEntered = 0;
 #endif
 };
 

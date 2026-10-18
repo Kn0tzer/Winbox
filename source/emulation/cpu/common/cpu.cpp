@@ -52,7 +52,6 @@ CPU::CPU(KMemory* memory) : memory(memory) {
     this->reset();
     this->fpu.reset();
 
-    opCache = (DecodedOp***)&getMemData(memory)->opCache.pageData[0];
 #ifdef BOXEDWINE_JIT_ARMV8
     sseConstants[SSE_MAX_INT32_PLUS_ONE_AS_DOUBLE].pd.f64[0] = 2147483648.0;
     sseConstants[SSE_MAX_INT32_PLUS_ONE_AS_DOUBLE].pd.f64[1] = 2147483648.0;
@@ -141,6 +140,8 @@ void CPU::reset() {
     this->stackNotMask = 0;
     this->stackMask = 0xFFFFFFFF;
     this->nextOp = nullptr;
+    // exec/CLONE_VM may replace the backing cache while retaining this CPU.
+    opCache = (DecodedOp***)&getMemData(memory)->opCache.pageData[0];
 #ifdef BOXEDWINE_MULTI_THREADED
     this->tmpLockAddress = 0;
 #endif

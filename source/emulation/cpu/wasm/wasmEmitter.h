@@ -416,6 +416,7 @@ public:
 
     void emitOp(U8 op);   // emit a standalone opcode
     void emitAtomicFence();
+    void emitI64AtomicAdd(U32 offset);
     void emitSimdOp(U32 op);
     // For SIMD ops whose lane immediate directly follows the opcode.
     // Lane load/store ops need a separate memarg+lane helper if added later.

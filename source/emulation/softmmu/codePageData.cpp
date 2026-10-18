@@ -17,6 +17,9 @@
  */
 
 #include "boxedwine.h"
+#ifdef __EMSCRIPTEN__
+#include <emscripten/heap.h>
+#endif
 #include "codePageData.h"
 #include "../../util/ptrpool.h"
 #include "kmemory_soft.h"
@@ -67,6 +70,18 @@ DecodedOp** DecodedOpCache::getLocation(U32 address) {
 
 DecodedOp* DecodedOpCache::get(U32 address) {
 	U32 pageIndex = address >> K_PAGE_SHIFT;
+#if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_WASM_JIT)
+    // Diagnose cache lifetime corruption at its first invalid table lookup,
+    // instead of losing the guest context to a later Wasm bounds trap.
+    uintptr_t level = (uintptr_t)pageData[pageIndex >> 10];
+    if (level > emscripten_get_heap_size() - 4096 || level < 4096) {
+        KThread* t = KThread::currentThread();
+        klog_fmt("BW32 CACHE CORRUPTION cache=%p level=%p address=%08x tid=%u cpu=%p memory=%p eip=%08x",
+            this, (void*)level, address, t ? t->id : 0, t ? t->cpu : nullptr,
+            t ? t->memory : nullptr, t && t->cpu ? t->cpu->getEipAddress() : 0);
+        std::abort();
+    }
+#endif
 	DecodedOpPageCache* page = getPageCache(pageIndex, false);
 	if (page) {
 		U32 offset = address & K_PAGE_MASK;

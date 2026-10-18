@@ -6495,6 +6495,7 @@ U32 CPU64::tryWasmExec(U64 maxInsn) {
         m_jit->insnsFallback++;
         return 0;
     }
+    m_jit->wasmEmitted++;
     const U64 instantiateStart = jit64NowUs();
     m_jit->emitTimeUs += instantiateStart - emitStart;
     int index = jit64WasmInstantiate(module.data(), (U32)module.size(), options);

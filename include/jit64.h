@@ -331,6 +331,7 @@ struct Jit64State {
     U64 wasmEntered = 0; // raw emitted-code blocksEntered counter (proof of execution)
     U64 wasmEarlyExits = 0; // modules that stopped at a page-gen change
     U64 wasmLimitExits = 0; // modules that stopped at the instruction bound
+    U64 wasmEmitted = 0; // modules emitted, including failed installations
     U64 wasmInstantiated = 0; // modules successfully instantiated into a table
     U64 emitRejected = 0;   // blocks the emitter refused (stays interpreted)
     U64 instantiateFailed = 0; // table slot or module creation failure

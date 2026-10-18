@@ -277,6 +277,12 @@ void WasmEmitter::emitAtomicFence() {
     m_currentBody.push_back(0x00); // reserved ordering byte
 }
 
+void WasmEmitter::emitI64AtomicAdd(U32 offset) {
+    m_currentBody.push_back(0xfe);
+    m_currentBody.push_back(0x1f); // i64.atomic.rmw.add; returns the previous value
+    emitMemArg(m_currentBody, 3, offset);
+}
+
 void WasmEmitter::emitSimdOp(U32 op) {
     m_currentBody.push_back(0xfd);
     appendULEB128(m_currentBody, op);

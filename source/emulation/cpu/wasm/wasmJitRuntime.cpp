@@ -35,10 +35,10 @@
  *   BW32_JIT=0|1                1 requests generated code, 0 keeps the
  *                               interpreter (the safe fallback used by the
  *                               public jit=0 parameter). Unset = compiled-in
- *                               default, which is enabled.
+ *                               default, which is disabled until representative acceptance passes.
  *   BW32_JIT_SAFE_MEMORY=0|1    guest memory-ordering policy for MT builds;
  *                               see wasmMemoryOrdering.h. Unset = the
- *                               backend default (enabled only in __TEST).
+ *                               backend default (enabled).
  *   BW32_JIT_STATS=0|1          emit a per-instruction retired counter inside
  *                               generated code. Off by default: it costs a
  *                               load/add/store per guest instruction and a
@@ -90,9 +90,9 @@ namespace {
 bool wasmJit32Enabled() {
     int cached = g_bw32JitEnabled.load(std::memory_order_acquire);
     if (cached == 0) {
-        // Enabled by default: the backend only exists in a build that asked
-        // for it, and BW32_JIT=0 is the documented interpreter fallback.
-        cached = readBoolEnv("BW32_JIT", 1) ? 1 : 2;
+        // Explicit opt-in while browser acceptance and cold-start costs are
+        // evaluated. The public jit=1 parameter sets this before startup.
+        cached = readBoolEnv("BW32_JIT", 0) ? 1 : 2;
         g_bw32JitEnabled.store(cached, std::memory_order_release);
         klog(cached == 1 ? "BW32 JIT: enabled (generated modules)"
                          : "BW32 JIT: disabled by BW32_JIT=0 (interpreter only)");

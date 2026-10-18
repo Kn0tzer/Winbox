@@ -14,10 +14,10 @@ export default class Jit64Test extends ProbeTest {
       await this.bootGuest(page, { arch: 'x64', jit, winedbg: '+debugstr' });
       await this.stageFile(page, 'jitbench64.exe', await guestFixture('jitbench64-pe', 'x64'));
       const from = await this.spawnGuest(page, 'jitbench64.exe', { arch: 'x64', env: 'WINEDEBUG=+debugstr' });
-      await this.waitForLog(page, /BW_JITBENCH64.*"sample":3/, 120000, from);
+      await this.waitForLog(page, /BW_JITBENCH64 sample=3/, 120000, from);
       const samples = this.consoleLines.slice(from).flatMap(line => {
-        const match = line.match(/BW_JITBENCH64 (\{.*\})/);
-        return match ? [JSON.parse(match[1])] : [];
+        const match = line.match(/BW_JITBENCH64 sample=(\d+) ms=([\d.]+) checksum=([a-f0-9]+) passes=(\d+)/);
+        return match ? [{ sample: Number(match[1]), ms: Number(match[2]), checksum: match[3], passes: Number(match[4]) }] : [];
       });
       assert.equal(samples.length, 4, 'cold and three warm samples completed');
       for (const sample of samples) {

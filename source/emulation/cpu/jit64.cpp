@@ -1180,17 +1180,17 @@ void jit64DropCache(Jit64State* state, bool releaseWasm) {
 // copies, never the live counters, so the UI cannot race guest execution.
 namespace {
 struct PublishedStats {
-    U64 compiled = 0, instantiated = 0, blocks = 0, insns = 0, entered = 0;
+    U64 compiled = 0, instantiated = 0, blocks = 0, insns = 0, entered = 0, emitted = 0;
     U64 earlyExits = 0, limitExits = 0, rejected = 0, instFailed = 0;
     U64 fallbacks = 0, skipped = 0, emitUs = 0, instantiateUs = 0;
 };
 PublishedStats readOwnedStats(const Jit64State& s) {
     return {s.blocksCompiled, s.wasmInstantiated, s.wasmBlocks, s.wasmInsns,
-        s.wasmEntered, s.wasmEarlyExits, s.wasmLimitExits, s.emitRejected,
+        s.wasmEntered, s.wasmEmitted, s.wasmEarlyExits, s.wasmLimitExits, s.emitRejected,
         s.instantiateFailed, s.insnsFallback, s.coldSkipped, s.emitTimeUs, s.instantiateTimeUs};
 }
 void addStats(PublishedStats& a, const PublishedStats& b) {
-    a.compiled += b.compiled; a.instantiated += b.instantiated;
+    a.emitted += b.emitted; a.compiled += b.compiled; a.instantiated += b.instantiated;
     a.blocks += b.blocks; a.insns += b.insns; a.entered += b.entered;
     a.earlyExits += b.earlyExits; a.limitExits += b.limitExits;
     a.rejected += b.rejected; a.instFailed += b.instFailed;
@@ -1247,7 +1247,7 @@ void jit64PublishMetrics() {
     stats.available = jit64WasmAvailable();
 #endif
     stats.enabled = stats.available && jit64Enabled();
-    stats.blocksEmitted = sum.instantiated;
+    stats.blocksEmitted = sum.emitted;
     stats.blocksInstantiated = sum.instantiated;
     stats.blocksEntered = sum.entered;
     stats.instructionsRetired = sum.insns;
@@ -1269,6 +1269,7 @@ U32 jit64GlobalStatsJson(char* buf, U32 bufSize) {
     static thread_local Jit64State totals;
     totals.blocksCompiled = sum.compiled;
     totals.wasmInstantiated = sum.instantiated;
+    totals.wasmEmitted = sum.emitted;
     totals.wasmBlocks = sum.blocks;
     totals.wasmInsns = sum.insns;
     totals.wasmEntered = sum.entered;
@@ -1432,7 +1433,7 @@ U32 jit64StatsJson(const Jit64State* state, char* buf, U32 bufSize) {
     j.add("\"mode\":\"%s\",", jit64WasmEngineMode());
     j.add("\"hotThreshold\":%u,", (unsigned)jit64HotThreshold());
     j.add("\"blocksCompiled\":%llu,", (unsigned long long)(s ? s->blocksCompiled : 0));
-    j.add("\"blocksEmitted\":%llu,", (unsigned long long)(s ? s->wasmInstantiated : 0));
+    j.add("\"blocksEmitted\":%llu,", (unsigned long long)(s ? s->wasmEmitted : 0));
     j.add("\"blocksInstantiated\":%llu,", (unsigned long long)(s ? s->wasmInstantiated : 0));
     // blocksEntered/insnsEmitted come from counters the EMITTED CODE wrote: the
     // module increments Jit64WasmState::blocksEntered and stores execCount.

@@ -24,6 +24,7 @@
 #include "wasmJitBatchPolicy.h"
 #include "wasmJitRuntime.h"
 #include "wasmJitStats.h"
+#include "bwjittable.h"
 #include "wasmMemoryOrdering.h"
 #include "wasmModuleMerger.h"
 #include "../jit/jitCodeGen.h"
@@ -139,7 +140,7 @@ extern S32 contextTimeRemaining;
 // across all worker threads without a mutex.
 // Value 0 is the "not yet initialized" sentinel; boxedwine_wasm_instantiate_mt
 // uses Atomics.compareExchange to set it to wasmTable.length on the first call.
-static int32_t g_wasmTableNextSlot = 0;
+// Table reservations share a namespace with guest64 generated modules.
 // Saved WASM bytes for slots published in shared DecodedOps. Each browser
 // worker has local wasmTable visibility, so another worker may need to lazily
 // instantiate the same bytes into the same slot before call_indirect can run.
@@ -3044,7 +3045,7 @@ EM_JS(void, wasm_jit_js_store_entry, (U32 eip, U32 blockHash, const void* bytes,
 // concurrently and can all see the same wasmTable.length, all call table.grow(1),
 // and all claim the same slot index.
 //
-// Fix: g_wasmTableNextSlot lives in WASM linear memory (SharedArrayBuffer in
+// Fix: bwJitTableNextSlot lives in WASM linear memory (SharedArrayBuffer in
 // pthreads builds), so Atomics.add() gives each worker a unique, sequentially
 // assigned slot index.  No mutex is needed; wasmTable.grow() is atomic at the
 // engine level, so concurrent grows are safe (each grow is an indivisible
@@ -3078,7 +3079,7 @@ EM_JS(int, boxedwine_wasm_instantiate_mt,
         }
 
         // Create a TypedArray view over the shared-memory counter.
-        // nextSlotPtr points to g_wasmTableNextSlot (int32_t) in the main
+        // nextSlotPtr points to bwJitTableNextSlot (int32_t) in the main
         // WASM module's linear memory, which is SharedArrayBuffer in pthreads
         // builds, making Atomics operations valid and cross-worker safe.
         var nextSlotTA = new Int32Array(HEAPU8.buffer, nextSlotPtr, 1);
@@ -3891,19 +3892,19 @@ static inline void boxedwine_wasm_call_block(int tableIndex, int cpuPtr, int rel
     // Guard against stale / garbage pfnJitCode values that could produce an
     // engine-level "table index is out of bounds" trap.
     //
-    // g_wasmTableNextSlot is initialized to wasmTable.length on the first JIT
+    // bwJitTableNextSlot is initialized to wasmTable.length on the first JIT
     // compilation and then incremented for each subsequent block; every valid
-    // allocated slot S satisfies S < g_wasmTableNextSlot.  A tableIndex that
-    // falls outside (0, g_wasmTableNextSlot) was never issued by our allocator
+    // allocated slot S satisfies S < bwJitTableNextSlot.  A tableIndex that
+    // falls outside (0, bwJitTableNextSlot) was never issued by our allocator
     // (could be a torn read, a stale DecodedOp value from before JIT, etc.).
     // Log it and bail out so the normal CPU interpreter picks up execution on
     // the next dispatch rather than crashing the worker thread.
-    if (tableIndex <= 0 || tableIndex >= g_wasmTableNextSlot) {
+    if (tableIndex <= 0 || tableIndex >= __atomic_load_n(&bwJitTableNextSlot, __ATOMIC_RELAXED)) {
 #ifdef BOXEDWINE_WASM_JIT_PROFILE
         wasmJitProfileSlotMiss();
 #endif
         klog_fmt("[WASM JIT] WARNING: call_block skipped bad tableIndex=%d "
-                 "(nextSlot=%d)", tableIndex, (int)g_wasmTableNextSlot);
+                 "(nextSlot=%d)", tableIndex, (int)__atomic_load_n(&bwJitTableNextSlot, __ATOMIC_RELAXED));
         return;
     }
 #endif
@@ -4131,7 +4132,6 @@ void OPCALL wasmStartJITOp(CPU* cpu, DecodedOp* op) {
                 }
             }
             WASM_JIT_PROFILE_ONLY(if (profileSample) { wasmJitProfileAddElapsedScaled(g_wasmJitProfileStartPreCallUs, startPreCallNs); })
-            wasmJit32StatsBlockEntered();
             wasmJit32TraceEntry(cpu, (U32)tableIndex, op);
             if (wasmJit32TrapTraceEnabled()) {
                 boxedwine_wasm_call_block_traced(tableIndex, (int)(uintptr_t)cpu, 0, cpu->eip.u32, op->blockOpCount);
@@ -4162,7 +4162,6 @@ void OPCALL wasmStartJITOp(CPU* cpu, DecodedOp* op) {
             }
         }
         WASM_JIT_PROFILE_ONLY(if (profileSample) { wasmJitProfileAddElapsedScaled(g_wasmJitProfileStartPreCallUs, startPreCallNs); })
-        wasmJit32StatsBlockEntered();
         wasmJit32TraceEntry(cpu, (U32)tableIndex, op);
         if (wasmJit32TrapTraceEnabled()) {
             boxedwine_wasm_call_block_traced(tableIndex, (int)(uintptr_t)cpu, (int)wasmJitRelocBaseForTable(tableIndex), cpu->eip.u32, op->blockOpCount);
@@ -4219,7 +4218,6 @@ void OPCALL wasmStartJITOp(CPU* cpu, DecodedOp* op) {
             memoryArraysChecked = true;
         }
         WASM_JIT_PROFILE_ONLY(if (profileSample) { wasmJitProfileAddElapsedScaled(g_wasmJitProfileStartPreCallUs, startPreCallNs); })
-        wasmJit32StatsBlockEntered();
         wasmJit32TraceEntry(cpu, (U32)tableIndex, executedOp);
         if (wasmJit32TrapTraceEnabled()) {
             boxedwine_wasm_call_block_traced(tableIndex, (int)(uintptr_t)cpu, (int)wasmJitRelocBaseForTable(tableIndex), cpu->eip.u32, executedOp->blockOpCount);
@@ -5558,7 +5556,7 @@ static void flushMtRuntimeBatch(CPU* cpu, const WasmJitFlushRequest& request) {
     S32 installResult = boxedwine_wasm_instantiate_runtime_group_mt(
         merged.data(), (int)merged.size(),
         g_wasmHelperTable, WASM_HELPER_COUNT,
-        &g_wasmTableNextSlot, (U32)entries.size(), slots.data(),
+        &bwJitTableNextSlot, (U32)entries.size(), slots.data(),
         (U32)WasmJitMtGroupKind::Runtime, groupIdentity,
         moduleRef.moduleId, moduleRef.memoryId, moduleRef.memoryIncarnation,
         brokerEnabled && moduleRef.moduleId, &lookupResult);
@@ -5902,7 +5900,7 @@ int wasmJitTestInstantiateMtGroupEntry(U32 groupIdx, U32 entryIdx, KMemory* memo
     }
     S32 lookupResult = WASM_JIT_MT_BROKER_LOOKUP_NONE;
     int tableIndex = boxedwine_wasm_instantiate_group_mt(bytes, size, g_wasmHelperTable, WASM_HELPER_COUNT,
-        &g_wasmTableNextSlot, exportName, groupKind, groupIdentity, moduleRef.memoryId, moduleRef.memoryIncarnation,
+        &bwJitTableNextSlot, exportName, groupKind, groupIdentity, moduleRef.memoryId, moduleRef.memoryIncarnation,
         moduleRef.moduleId, representedBlockCount, brokerEnabled, &lookupResult);
     if (tableIndex >= 0) {
         bool accepted = false;
@@ -6068,7 +6066,7 @@ bool wasmJitTestInstallMtRuntimeGroup(const std::vector<U8>& bytes, U32 entryCou
     S32 installResult = boxedwine_wasm_instantiate_runtime_group_mt(
         bytes.data(), (int)bytes.size(),
         g_wasmHelperTable, WASM_HELPER_COUNT,
-        &g_wasmTableNextSlot, entryCount, slots.data(),
+        &bwJitTableNextSlot, entryCount, slots.data(),
         (U32)WasmJitMtGroupKind::Runtime, groupIdentity,
         moduleRef.moduleId, moduleRef.memoryId, moduleRef.memoryIncarnation,
         brokerEnabled && moduleRef.moduleId, &lookupResult);
@@ -6752,6 +6750,13 @@ JitWasmCodeGen::JitWasmCodeGen(CPU* cpu) : JitSSE(cpu) {
         { 12, WasmType::V128 }, // MMX/SIMD scratch locals (locals 55-66)
         { 1,  WasmType::I32 },  // direct-loop budget (local 67)
     });
+
+    // This evidence is written by every generated function, including direct
+    // grouped entries. The UI reads the same atomic storage from other workers.
+    m_emitter.emitLocalGet(WASM_CPU_LOCAL);
+    m_emitter.emitI64Const(1);
+    m_emitter.emitI64AtomicAdd((U32)offsetof(CPU, wasmJitBlocksEntered));
+    m_emitter.emitOp(WASM_DROP);
 
     m_gpLoaded.fill(false);
     m_gpDirty.fill(false);
@@ -13206,7 +13211,7 @@ void JitWasmCodeGen::preCompile(DecodedOp* op, bool skippedOp) {
         // Separate fenced and unfenced modules, including grouped caches.
         // A safe-memory launch must never replay blocks recorded without it.
         // Also invalidate older MT ordering policies; leave ST identities alone.
-        m_preCompileBlockHash = wasmJitHashMix(m_preCompileBlockHash, 0x4d544f33u);
+        m_preCompileBlockHash = wasmJitHashMix(m_preCompileBlockHash, 0x4d544f34u);
         m_preCompileBlockHash = wasmJitHashMix(m_preCompileBlockHash, wasmJitNeedsMemoryFence ? 1u : 0u);
 #endif
         // A module emitted with the retired-instruction counter differs from
@@ -13295,17 +13300,6 @@ void JitWasmCodeGen::preCompile(DecodedOp* op, bool skippedOp) {
 }
 
 void JitWasmCodeGen::compile(DecodedOp* op) {
-    // Emitted retired-instruction counter (BW32_JIT_STATS=1 only). Placed at
-    // the head of this instruction's generated code so that an intra-block
-    // jump to this instruction still counts it exactly once per execution.
-    if (wasmJit32CollectRetiredInstructions()) {
-        m_emitter.emitLocalGet(WASM_CPU_LOCAL);
-        m_emitter.emitLocalGet(WASM_CPU_LOCAL);
-        m_emitter.emitI64Load((U32)offsetof(CPU, wasmJitRetiredInstructions));
-        m_emitter.emitI64Const(1);
-        m_emitter.emitOp(WASM_I64_ADD);
-        m_emitter.emitI64Store((U32)offsetof(CPU, wasmJitRetiredInstructions));
-    }
     if (op->isBranch()) {
         emitBranchBailoutCheck();
     }
@@ -13331,6 +13325,15 @@ void JitWasmCodeGen::compile(DecodedOp* op) {
 }
 
 void JitWasmCodeGen::postCompile(DecodedOp* op) {
+    // Count completed native instructions only. Branches and interpreter-backed
+    // operations are excluded: they can leave the block or redirect to a signal
+    // handler before this point. This is a documented subset of retirements.
+    if (wasmJit32CollectRetiredInstructions() && !op->isBranch() && !m_emulatedCurrentOp) {
+        m_emitter.emitLocalGet(WASM_CPU_LOCAL);
+        m_emitter.emitI64Const(1);
+        m_emitter.emitI64AtomicAdd((U32)offsetof(CPU, wasmJitRetiredInstructions));
+        m_emitter.emitOp(WASM_DROP);
+    }
     // Critical: base class advances currentEip by op->len. Without delegating,
     // every branch op compiled later in the block computes its target from a
     // stale block-start currentEip, not the op's own position. That made
@@ -13492,7 +13495,7 @@ void JitWasmCodeGen::commitJIT(DecodedOp* op) {
             tableIdx = boxedwine_wasm_instantiate_group_mt(
                 groupBytes, groupSize,
                 g_wasmHelperTable, WASM_HELPER_COUNT,
-                &g_wasmTableNextSlot,
+                &bwJitTableNextSlot,
                 groupExportName, groupKind, groupIdentity, groupModuleRef.memoryId,
                 groupModuleRef.memoryIncarnation, groupModuleRef.moduleId, groupRepresentedBlockCount,
                 groupBrokerEnabled, &groupLookupResult);
@@ -13615,7 +13618,7 @@ void JitWasmCodeGen::commitJIT(DecodedOp* op) {
             instSize,
             g_wasmHelperTable,
             WASM_HELPER_COUNT,
-            &g_wasmTableNextSlot,
+            &bwJitTableNextSlot,
             moduleRef.moduleId,
             moduleRef.memoryId,
             moduleRef.memoryIncarnation,
