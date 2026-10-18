@@ -62,6 +62,7 @@ namespace vk32abi {
 #include "kmemory64.h"
 #include "kprocess.h"
 #include "ripSampler.h"   // BW64_VKPROF frame-boundary RIPPROF dump (additive)
+#include "bw64metrics.h"   // live frame-stage metrics (BW64_METRICS, default on)
 
 // Vulkan core types, for STRUCT LAYOUTS, enums and constants only.
 //
@@ -1807,6 +1808,17 @@ inline bool vkProfEnabled() {
     }
     return enabled;
 }
+// Live frame metrics (BW64_METRICS, default ON) reuse these same present-to-
+// present timers, but never the per-frame VKPROF klog above: the panel wants
+// 2 snapshots/second, not one 7 ms log line per frame. The first-frame gate is
+// shared with VKPROF on purpose (enabling timers during WASM init raced bridge
+// setup and blanked the canvas); metrics simply start at the second present.
+inline bool vkMetricsEnabled() {
+    if (!g_vkProfFirstFrameDone) return false;
+    return bw64_metrics_enabled() != 0;
+}
+// True when either consumer needs the per-trap/per-stage timers accumulated.
+inline bool vkTimingEnabled() { return vkProfEnabled() || vkMetricsEnabled(); }
 struct VkProfAcc {
     bool haveFrame = false;
     U64 frameNo = 0;
@@ -1836,7 +1848,7 @@ struct VkProfTrapTimer {
     U64 fn; double t0;
     explicit VkProfTrapTimer(U64 f) : fn(f), t0(vkProfNow()) {}
     ~VkProfTrapTimer() {
-        if (!vkProfEnabled()) return;
+        if (!vkTimingEnabled()) return;
         if (fn == VK64_fn_vkQueueSubmit || fn == VK64_fn_vkQueueSubmit2 ||
             fn == VK64_fn_vkQueueSubmit2KHR || fn == VK64_fn_vkQueuePresentKHR)
             return;
@@ -1876,7 +1888,7 @@ void hopV2ToPage() {
             }
         }
     }
-    if (vkProfEnabled()) { VkProfAcc& a = vkProfAcc(); a.accHop += vkProfNow() - vkprofHopT0; a.accHopChunks += vkprofHopChunks; a.accHopBytes += vkprofHopBytes; }
+    if (vkTimingEnabled()) { VkProfAcc& a = vkProfAcc(); a.accHop += vkProfNow() - vkprofHopT0; a.accHopChunks += vkprofHopChunks; a.accHopBytes += vkprofHopBytes; }
 #else
     if (!g_v2Pending.empty())
         klog_fmt("vk64: v2 hop skipped (not an emscripten build): %u queued frames dropped",
@@ -2125,7 +2137,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 p.u32(sendBytes ? (U32)bytes.size() : 0);
                 if (sendBytes) p.bytes(bytes);
             });
-            if (vkProfEnabled()) { vkprofBufHashed += bytes.size(); if (sendBytes) vkprofBufSent += bytes.size(); }
+            if (vkTimingEnabled()) { vkprofBufHashed += bytes.size(); if (sendBytes) vkprofBufSent += bytes.size(); }
         };
         // BW64_VKPROF wrapper: wall time per emitBufferData call (additive).
         auto emitBufferData = [&](U64 bufId, U64 memOff, U64 len, U64 replayId = 0) {
@@ -2179,7 +2191,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 p.u32(std::max(1U, tex->layers));
                 p.u32(std::max(1U, tex->mips));
             });
-            if (vkProfEnabled()) { vkprofImgHashed += bytes.size(); if (sendPixels) vkprofImgSent += bytes.size(); }
+            if (vkTimingEnabled()) { vkprofImgHashed += bytes.size(); if (sendPixels) vkprofImgSent += bytes.size(); }
         };
         // BW64_VKPROF wrapper: wall time per emitImageData call (additive).
         auto emitImageData = [&](U64 viewId) {
@@ -2561,7 +2573,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 if (hist[t]) { dump += " "; dump += names[t]; dump += "=" + std::to_string(hist[t]); }
             klog_fmt("%s", dump.c_str());
         }
-        if (vkProfEnabled()) {
+        if (vkTimingEnabled()) {
             VkProfAcc& pa = vkProfAcc();
             pa.accBufData += vkprofBufT; pa.accImgData += vkprofImgT;
             pa.accBufHashed += vkprofBufHashed; pa.accBufSent += vkprofBufSent;
@@ -5805,7 +5817,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             } else serializeSubmit(frames);
         }
         if (args.a[3]) { Fence* f = objOf<Fence>(args.a[3], K_FENCE, "vkQueueSubmit"); if (f) f->signalled = 1; }
-        if (vkProfEnabled()) vkProfAcc().accSubmit += vkProfNow() - vkprofSubmitT0;
+        if (vkTimingEnabled()) vkProfAcc().accSubmit += vkProfNow() - vkprofSubmitT0;
         return VK_SUCCESS;
     }
     case VK64_fn_vkQueueSubmit2:
@@ -5869,7 +5881,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             } else serializeSubmit(frames);
         }
         if (args.a[3]) { Fence* f = objOf<Fence>(args.a[3], K_FENCE, "vkQueueSubmit2"); if (f) f->signalled = 1; }
-        if (vkProfEnabled()) vkProfAcc().accSubmit += vkProfNow() - vkprofSubmitT0;
+        if (vkTimingEnabled()) vkProfAcc().accSubmit += vkProfNow() - vkprofSubmitT0;
         return VK_SUCCESS;
     }
     case VK64_fn_vkQueuePresentKHR: {
@@ -5895,14 +5907,34 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // chunk; the producer ring already dropped the oldest frames past its
         // cap, so this never carries a backlog.
         if (vkSchemaV2()) hopV2ToPage(); else emitFrameNow();
-        // ---- BW64_VKPROF frame boundary (additive, env-gated) ----
-        if (vkProfEnabled()) {
+        // ---- BW64_VKPROF / BW64_METRICS frame boundary (additive) ----
+        // VKPROF keeps its one-line-per-frame klog (opt-in); the live metrics
+        // path consumes the same numbers and is on by default. Both are gated
+        // by the first-present flag below.
+        if (vkTimingEnabled()) {
             double t1 = vkProfNow();
             VkProfAcc& pa = vkProfAcc();
             double bodyDt = t1 - vkprofPresentT0;
             if (pa.haveFrame) {
                 double wall = t1 - pa.lastPresentT;
                 double guest = wall - pa.accSubmit - pa.accTrapOther - bodyDt;
+                if (vkMetricsEnabled()) {
+                    Bw64VkFrame mf;
+                    mf.frameNo = pa.frameNo;
+                    mf.wallMs = wall;
+                    mf.submitMs = pa.accSubmit;
+                    mf.trapOtherMs = pa.accTrapOther;
+                    mf.presentMs = bodyDt;
+                    mf.hopMs = pa.accHop;
+                    mf.bufMs = pa.accBufData;
+                    mf.imgMs = pa.accImgData;
+                    mf.guestMs = guest;
+                    mf.trapCalls = pa.accTrapCalls;
+                    mf.hopChunks = pa.accHopChunks;
+                    mf.hopBytes = pa.accHopBytes;
+                    bw64_metrics_vk_frame(&mf);
+                }
+                if (vkProfEnabled()) {
                 // Top-3 trapOther contributors by wall time (additive).
                 char topT[256] = {0};
                 {
@@ -5935,7 +5967,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                          pa.accSer2, pa.accQueue, topT);
                 if (ripSamplerProfileEnabled() && cpu && cpu->thread && cpu->thread->process)
                     ripSamplerProfDumpReset((int)cpu->thread->process->id);
-            } else {
+                }
+            } else if (vkProfEnabled()) {
                 klog_fmt("vk64: VKPROF enabled: per-frame breakdown follows (wall/submit/bufdata/imgdata/trapOther/present/hop/guest, ms)");
             }
             pa.haveFrame = true; pa.lastPresentT = t1; pa.frameNo++;
@@ -5959,6 +5992,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
 }
 
 KThread* g_thread32 = nullptr;
+
+// 32-bit guest Vulkan present boundary (live metrics only; see the present case).
+static bool g_vk32HaveFrame = false;
+static double g_vk32LastPresentT = 0;
+static U64 g_vk32FrameNo = 0;
 
 // ---------------------------------------------------------------------------
 // 32-bit guest memory helpers. Mirror the 64-bit helpers.
@@ -6205,8 +6243,7 @@ static void captureStageSpec32(U32 va, StageSpec& out) {
 }
 
 U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
-    std::lock_guard<std::recursive_mutex> lk(g_vkMutex);
-    g_mem = nullptr;
+    std::lock_guard<std::recursive_mutex> lk(g_vkMutex);    g_mem = nullptr;
     g_mem32 = cpu ? cpu->memory : nullptr;
     g_thread32 = cpu ? cpu->thread : nullptr;
 
@@ -7845,6 +7882,23 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             if (pRes) wr32_32(pRes + i * 4, VK_SUCCESS);
         }
         if (vkSchemaV2()) hopV2ToPage(); else emitFrameNow();
+        // Live metrics for the 32-bit guest Vulkan path: present count and the
+        // present-to-present wall ONLY. vk32Bridge has no per-trap timers, so
+        // submit/trap/hop/guest stay unavailable (never zero) and the panel
+        // says why.
+        if (vkMetricsEnabled()) {
+            double t1 = vkProfNow();
+            if (g_vk32HaveFrame) {
+                Bw64VkFrame mf = {};
+                mf.frameNo = ++g_vk32FrameNo;
+                mf.wallMs = t1 - g_vk32LastPresentT;
+                mf.breakdown = 0;
+                mf.arch = 1;
+                bw64_metrics_vk_frame(&mf);
+            }
+            g_vk32HaveFrame = true;
+            g_vk32LastPresentT = t1;
+        }
         return VK_SUCCESS;
     }
 

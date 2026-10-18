@@ -21,7 +21,13 @@ test('present delivers every queued submission in order with an explicit final b
 using U8=uint8_t;using U32=uint32_t;using U64=uint64_t;
 struct V2DoneFrame{std::vector<std::vector<U8>> chunks;};std::deque<V2DoneFrame> g_v2Pending;
 struct VkProfAcc{double accHop=0;U64 accHopChunks=0,accHopBytes=0;};
-double vkProfNow(){return 0;}bool vkProfEnabled(){return false;}VkProfAcc& vkProfAcc(){static VkProfAcc a;return a;}
+double vkProfNow(){return 0;}bool vkProfEnabled(){return false;}
+// The live metrics gate (BW64_METRICS) rides the same timers: with VKPROF off
+// and metrics on, hopV2ToPage still accumulates the hop span. The stub reports
+// both gates explicitly so this test keeps exercising the same code path the
+// bridge compiles.
+bool vkMetricsEnabled(){return false;}bool vkTimingEnabled(){return vkProfEnabled()||vkMetricsEnabled();}
+VkProfAcc& vkProfAcc(){static VkProfAcc a;return a;}
 struct Hop{U8 marker;U32 flags;};std::vector<Hop> hops;
 void fakeHop(const U8* p,U32,U32 flags){hops.push_back({*p,flags});}
 ${method}

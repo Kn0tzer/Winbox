@@ -8,6 +8,7 @@ import { storedFiles, snapshotRuntime, readSaveBlobs } from './session-storage.m
 import { replaceInstallation } from './installation.mjs';
 import { startupProgress, startupFailure, visibleFrame } from './startup.mjs';
 import { readDirectory, openDirectPackage } from './direct-folder.mjs';
+import { installFrameMetrics, METRICS_LINE_PREFIX } from './frame-metrics.mjs';
 
 const $ = id => /** @type {any} */ (document.getElementById(id));
 const icon = name => {
@@ -23,7 +24,19 @@ const text = (tag, value, className = '') => {
 };
 let current = null, selected = null, busy = false, operation = null, lastAction = null;
 let generation = 0, stopping = null;
-const settings = { appearance: 'system', graphics: 'auto', internet: 'off', enhancement: 'off', sharpness: 0.5, folderMode: 'copy' };
+// Live frame-stage metrics: one panel per running program, fed by the runtime's
+// `bw64: METRICS` lines and the page tier's counters. Created in launchFrame,
+// torn down in closeRuntime.
+let metrics = null, metricsTier = null;
+function metricsOpen() { return settings.metrics !== 'off'; }
+function applyMetricsVisibility() {
+  const open = metricsOpen() && !$('player').hidden;
+  $('metricsHost').hidden = !open;
+  $('stats').setAttribute('aria-pressed', String(open));
+  $('stats').title = open ? 'Hide frame metrics' : 'Show frame metrics';
+  if (metrics) metrics.setOpen(open);
+}
+const settings = { appearance: 'system', graphics: 'auto', internet: 'off', enhancement: 'off', sharpness: 0.5, folderMode: 'copy', metrics: 'on' };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('wine.launcher.settings.v1') || '{}')); } catch {}
 function appearance(value) {
   document.documentElement.dataset.theme = ['light', 'dark'].includes(value) ? value : 'system';
@@ -96,6 +109,8 @@ function preparing(title) {
 }
 async function closeRuntime() {
   const run = current; current = null; generation++;
+  if (metrics) { metrics.setRunState('stopped'); metrics.destroy(); metrics = null; }
+  metricsTier = null;
   if (!run) return;
   clearInterval(run.progressTimer);
   let saveError;
@@ -115,6 +130,7 @@ async function stop() {
     try { await closeRuntime(); } catch (error) { failure = error; }
     $('player').hidden = true; $('launcher').hidden = false;
     $('launchProgress').hidden = true;
+    $('metricsHost').hidden = true; $('stats').setAttribute('aria-pressed', 'false');
     message(failure ? errorText(failure) : '', Boolean(failure));
     $('folderButton').focus({ preventScroll: true });
   })();
@@ -138,6 +154,14 @@ async function launchFrame(query, title, archive = null) {
   if (current !== run) { run.renderer?.destroy(); run.canvas?.remove(); archive?.release(); return; }
   frame.src = 'runtime/index.html?v=__RUNTIME_VERSION__&' + query;
   $('display').append(frame); status('Starting ' + title + '. The first run may take a minute.');
+  metrics = installFrameMetrics({
+    tierProvider: () => (current === run ? metricsTier : null),
+    open: metricsOpen(),
+  });
+  metrics.setRunState('running');
+  $('metricsHost').replaceChildren(metrics.element);
+  metrics.start();
+  applyMetricsVisibility();
   run.status = 'Loading the runtime and program files…';
   run.progressTimer = setInterval(() => updateStartup(run, true), 500);
 }
@@ -279,6 +303,12 @@ window.addEventListener('message', event => {
     $('display').style.setProperty('--program-aspect', `${data.width} / ${data.height}`);
   }
   if (type === 'log') {
+    // The live metrics snapshot is a machine-readable line, not user-facing
+    // output: it feeds the panel and never enters the log pane.
+    if (metrics && current === run && String(data).includes(METRICS_LINE_PREFIX) && metrics.feed(String(data))) {
+      run.lastLog = performance.now();
+      return;
+    }
     log(String(data));
     const failure = startupFailure(String(data), run.exe);
     if (!run.hasFrame && failure) startupError(run, failure);
@@ -296,7 +326,7 @@ window.addEventListener('message', event => {
     if (!run.vkReady) {
       run.vkReady = import('./vkwebgpu.mjs').then(module => {
         if (current !== run) return null;
-        return (window.bwVkTier = module.installVkPageTier());
+        return (window.bwVkTier = metricsTier = module.installVkPageTier());
       });
       window.bwVkTierReady = run.vkReady;
     }
@@ -354,6 +384,7 @@ $('stop').onclick = stop; $('back').onclick = stop;
 $('restart').onclick = () => lastAction && action(lastAction);
 $('retry').onclick = () => lastAction && action(lastAction);
 $('playerRetry').onclick = () => lastAction && action(lastAction);
+$('stats').onclick = () => { settings.metrics = metricsOpen() ? 'off' : 'on'; persistSettings(); applyMetricsVisibility(); };
 $('fullscreen').onclick = () => $('display').requestFullscreen().catch(error => message(errorText(error), true));
 $('settingsButton').onclick = () => $('settingsDialog').showModal();
 for (const dialog of document.querySelectorAll('dialog')) dialog.addEventListener('click', event => { if (event.target === dialog) { const box = dialog.getBoundingClientRect(); if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) dialog.close(); } });

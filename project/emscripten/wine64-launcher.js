@@ -1006,6 +1006,18 @@
                         catch (e) { console.warn("bw64_vkprof_enable failed: " + e); }
                     }
                 }
+                // BW64_METRICS (?metrics=0): live frame-stage metrics are ON by
+                // default (the origin check + timing hooks are cheap and the
+                // snapshot is 2 lines/s). The timers run on guest worker
+                // threads where window.location is unreadable, so the opt-out
+                // has to be applied from the main thread here.
+                if (param("metrics") === "0") {
+                    var M2 = liveModule || window.Module;
+                    if (M2 && typeof M2.ccall === "function") {
+                        try { M2.ccall("bw64_metrics_set_enabled", null, ["number"], [0]); }
+                        catch (e) { console.warn("bw64_metrics_set_enabled failed: " + e); }
+                    }
+                }
             },
             totalDependencies: 0,
             monitorRunDependencies: function () {}

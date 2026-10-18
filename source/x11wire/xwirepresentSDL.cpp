@@ -34,6 +34,7 @@
 #include "ksystem.h"
 #include "knativesystem.h"
 #include "knativescreen.h"
+#include "bw64metrics.h"   // live frame-stage metrics (BW64_METRICS, default on)
 #include "xwirefont.h"
 
 #include <SDL.h>
@@ -427,6 +428,10 @@ public:
             }
             screen->putBitsOnWnd(0, frame.data(), 32, (U32)fw * 4, 0, 0, fw, fh, nullptr, true);
             screen->present();
+            // Live metrics: this is a really presented frame through the SDL
+            // (OpenGL / X11-wire) sink — the GL/D3D9 display path. Only counted
+            // here, never for the loading screen or an app-switch wipe above.
+            bw64_metrics_present_sdl();
             if (getenv("BW64_XWIRE")) {
                 uint32_t px = *(const uint32_t*)frame.data();
                 klog_fmt("XWire SDL: presented %dx%d topleft=0x%08x", (int)fw, (int)fh, px);

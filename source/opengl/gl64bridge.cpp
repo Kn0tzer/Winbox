@@ -33,6 +33,7 @@
 #include "kmemory64.h"
 #include "kmemory.h"
 #include "glguestmemory.h"
+#include "bw64metrics.h"   // live frame-stage metrics (BW64_METRICS, default on)
 #include "../x11wire/xwirepresent.h"
 #include "../x11wire/xwireserver.h"
 
@@ -4229,15 +4230,26 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
 }
 
 U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
+    // Live metrics: wall time of the whole guest->host GL trap, including the
+    // host marshaling and the WebGL2 calls it makes. This is the "GL bridge"
+    // stage; it says nothing about how long the guest or the driver took.
+    const bool bw64MetricsOn = bw64_metrics_enabled() != 0;
+    const double bw64T0 = bw64MetricsOn ? bw64_metrics_now_ms() : 0.0;
     GLGuestMemory memory(cpu->memory);
     GLGuestCPU guest{&memory};
-    return glBridge(&guest, fnId, argsAddr);
+    U64 result = glBridge(&guest, fnId, argsAddr);
+    if (bw64MetricsOn) bw64_metrics_add_stage(BW64_STAGE_GL, bw64_metrics_now_ms() - bw64T0, 0);
+    return result;
 }
 
 U64 gl32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
+    const bool bw64MetricsOn = bw64_metrics_enabled() != 0;
+    const double bw64T0 = bw64MetricsOn ? bw64_metrics_now_ms() : 0.0;
     GLGuestMemory memory(cpu->memory);
     GLGuestCPU guest{&memory};
-    return glBridge(&guest, fnId, argsAddr);
+    U64 result = glBridge(&guest, fnId, argsAddr);
+    if (bw64MetricsOn) bw64_metrics_add_stage(BW64_STAGE_GL, bw64_metrics_now_ms() - bw64T0, 0);
+    return result;
 }
 
 #endif // BOXEDWINE_OPENGL

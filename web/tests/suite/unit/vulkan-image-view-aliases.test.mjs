@@ -24,6 +24,8 @@ template<class T>T* objOf(U64 id,int kind,const char*){if(kind==K_IMAGEVIEW)retu
 std::vector<U8> readGuestRange(U64,U64,U64){return {1,2,3,4};}
 U64 fnv1a64(const U8*,size_t){return 123;}
 bool vkProfEnabled(){return false;}
+// Live metrics share these timers (see web/tests/suite/unit/frame-metrics.test.mjs).
+bool vkMetricsEnabled(){return false;}bool vkTimingEnabled(){return vkProfEnabled()||vkMetricsEnabled();}
 struct ChunkWriter{std::vector<U64> words;void u64(U64 v){words.push_back(v);}void u32(U32){}void bytes(const std::vector<U8>&){}};
 std::map<U64,U64> g_imageContentHash;U32 g_v2SubmitFrames=7,V2_BUF_RESEND_PERIOD=64;
 int main(){std::set<U64> imageDone;U64 vkprofImgHashed=0,vkprofImgSent=0;std::vector<ChunkWriter> records;

@@ -519,6 +519,176 @@ main {
   border:0;
   border-radius:0;
 }
+/* Live frame-stage metrics: a compact overlay inside the player display. */
+.stats-button {
+  gap:6px;
+}
+.stats-button .icon {
+  width:15px;
+  height:15px;
+}
+.stats-button[aria-pressed="true"] {
+  background:var(--accent);
+  border-color:transparent;
+  color:var(--on-accent);
+}
+.metrics-host[hidden] {
+  display:none;
+}
+.metrics-host {
+  position:absolute;
+  top:10px;
+  left:10px;
+  z-index:4;
+  max-width:min(420px,calc(100% - 20px));
+  max-height:calc(100% - 20px);
+  overflow:auto;
+  overscroll-behavior:contain;
+  pointer-events:auto;
+}
+.metrics-panel {
+  background:rgba(16,18,22,.92);
+  color:#e7eaf0;
+  border:1px solid #2c3444;
+  border-radius:12px;
+  padding:10px 12px 12px;
+  font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+  box-shadow:0 10px 24px rgba(0,0,0,.35);
+}
+.metrics-panel[hidden] {
+  display:none;
+}
+.metrics-head {
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+.metrics-title {
+  font-size:11px;
+  font-weight:600;
+  letter-spacing:.04em;
+  text-transform:uppercase;
+  margin:0;
+  flex:1;
+}
+.metrics-status {
+  font-size:10px;
+  padding:1px 6px;
+  border-radius:999px;
+  border:1px solid #39445a;
+  color:#adb6c7;
+  white-space:nowrap;
+}
+.metrics-status[data-state="measured"] {
+  border-color:#3f7a55;
+  color:#8fd6a6;
+}
+.metrics-status[data-state="stale"] {
+  border-color:#7a6a3f;
+  color:#e2cf9c;
+}
+.metrics-status[data-state="unavailable"] {
+  border-color:#5c4650;
+  color:#d8a2b4;
+}
+.metrics-close {
+  background:none;
+  border:0;
+  color:#8f99ab;
+  cursor:pointer;
+  font-size:12px;
+  line-height:1;
+  padding:4px 5px;
+  border-radius:6px;
+}
+.metrics-close:hover {
+  background:#232a37;
+  color:#e7eaf0;
+}
+.metrics-headline {
+  margin:6px 0 0;
+  color:#cfd6e4;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.metrics-legend {
+  margin:2px 0 8px;
+  color:#7d8799;
+  font-size:10px;
+}
+.metrics-group + .metrics-group {
+  margin-top:10px;
+  border-top:1px solid #232a37;
+  padding-top:8px;
+}
+.metrics-group-title {
+  font-size:10px;
+  letter-spacing:.06em;
+  text-transform:uppercase;
+  color:#8f99ab;
+  margin:0 0 4px;
+}
+.metrics-rows {
+  margin:0;
+}
+.metrics-row {
+  display:grid;
+  grid-template-columns:1fr auto;
+  gap:0 10px;
+  padding:3px 0;
+  border-left:2px solid transparent;
+  padding-left:5px;
+}
+.metrics-row[data-state="measured"] {
+  border-left-color:#3f7a55;
+}
+.metrics-row[data-state="inactive"] {
+  border-left-color:#3a4152;
+}
+.metrics-row[data-state="unavailable"] {
+  border-left-color:#7a4a56;
+}
+.metrics-row[data-state="stale"] {
+  border-left-color:#7a6a3f;
+}
+.metrics-label {
+  color:#cfd6e4;
+  overflow-wrap:anywhere;
+}
+.metrics-row[data-state="inactive"] .metrics-label,
+.metrics-row[data-state="unavailable"] .metrics-label,
+.metrics-row[data-state="stale"] .metrics-label {
+  color:#9aa3b4;
+}
+.metrics-value {
+  margin:0;
+  text-align:right;
+  white-space:nowrap;
+}
+.metrics-number {
+  color:#f0f3f8;
+}
+.metrics-row[data-state="unavailable"] .metrics-number,
+.metrics-row[data-state="inactive"] .metrics-number {
+  color:#9aa3b4;
+}
+.metrics-unit {
+  color:#7d8799;
+  margin-left:5px;
+  font-size:10px;
+}
+.metrics-note {
+  grid-column:1 / -1;
+  margin:0;
+  color:#7d8799;
+  font-size:10px;
+}
+@media (max-width:720px) {
+  .metrics-host {
+    max-width:calc(100% - 16px);
+  }
+}
 .loading {
   position:absolute;
   inset:0;

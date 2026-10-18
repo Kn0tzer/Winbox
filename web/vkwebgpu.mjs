@@ -231,7 +231,10 @@ function b64ToBytes(b64) {
  */
 export function createShaderCache({ translate = toWGSL, log = defaultLog } = {}) {
   const wgsl = new Map();      // key -> WGSL
-  const stats = { translated: 0, overridden: 0, rejected: 0, hits: 0 };
+  // translateMs measures the SPIR-V -> WGSL translation itself. Modules are
+  // cached per hash/topology/spec key, so this is milliseconds per translation
+  // EVENT, not milliseconds per frame; `translated` is the event count.
+  const stats = { translated: 0, overridden: 0, rejected: 0, hits: 0, translateMs: 0 };
   return {
     stats,
     async get(stage, mod, options = {}) {
@@ -243,6 +246,7 @@ export function createShaderCache({ translate = toWGSL, log = defaultLog } = {})
       if (wgsl.has(key)) { stats.hits++; return wgsl.get(key); }
       const override = FS_OVERRIDES.get(mod.hash + ':' + mod.size);
       if (override) { wgsl.set(key, override); stats.overridden++; return override; }
+      const bwTranslateT0 = metricsNow();
       try {
         let code = String(await translate('spirv', mod.code, stage, 'main', options) ?? '');
         // Naga's shortest decimal spelling of FLT_MAX can lie just outside
@@ -254,9 +258,11 @@ export function createShaderCache({ translate = toWGSL, log = defaultLog } = {})
             ? `bitcast<f32>(0x${rounded < 0 ? 'ff7fffff' : '7f7fffff'}u)` : literal;
         });
         if (!code) throw new Error('empty translation');
+        stats.translateMs += metricsNow() - bwTranslateT0;
         wgsl.set(key, code); stats.translated++;
         return code;
       } catch (e) {
+        stats.translateMs += metricsNow() - bwTranslateT0;
         stats.rejected++;
         log('vk64: page tier cannot translate the ' + stage + ' SPIR-V module (' + (e.formatted || e.message || e) + ') — frame skipped');
         return null;
@@ -268,6 +274,151 @@ export function createShaderCache({ translate = toWGSL, log = defaultLog } = {})
 function defaultLog(msg) {
   try { (globalThis.console && console.warn || (() => {}))(msg); } catch { /* logging must never throw */ }
   try { if (typeof globalThis.bwRuntimeLog === 'function') globalThis.bwRuntimeLog(msg); } catch { /* ignore */ }
+}
+
+const metricsNow = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
+// Present pacing for the live panel: real presented-frame timestamps (the page
+// tier only completes a frame when it actually reached the canvas). FPS is
+// derived from the last N presents, so it is a measured rate, not a guess.
+function createFramePacer(window = 60) {
+  const times = [];
+  return {
+    present() {
+      times.push(metricsNow());
+      while (times.length > window) times.shift();
+    },
+    snapshot() {
+      if (times.length < 2) return { presents: times.length, windowMs: null, fps: null, frameMs: null };
+      const span = times[times.length - 1] - times[0];
+      return {
+        presents: times.length,
+        windowMs: span,
+        fps: span > 0 ? (times.length - 1) * 1000 / span : null,
+        frameMs: span > 0 ? span / (times.length - 1) : null,
+      };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// WebGPU timestamp queries: the only source of GENUINE GPU execution time here.
+// JS queue.submit time is host-side call cost and is never reported as GPU time
+// (web/frame-metrics.mjs labels it "submit (JS)").
+//
+// Without the adapter's timestamp-query feature the timer reports
+// status 'unavailable' with that exact reason; with the feature but zero-valued
+// resolutions (some backends quantise to 0) it reports 'inactive', never a
+// fabricated number.
+// ---------------------------------------------------------------------------
+export function createGpuTimer(device, adapter, { log = defaultLog, slots = 4, window = 16 } = {}) {
+  const supported = !!(adapter && adapter.features && adapter.features.has && adapter.features.has('timestamp-query'));
+  const samples = [];
+  const state = {
+    status: supported ? 'inactive' : 'unavailable',
+    reason: supported ? 'no completed GPU timestamp sample yet' : 'WebGPU adapter does not expose the timestamp-query feature',
+    ms: null, lastMs: null, samples: 0, zeroResolutions: 0,
+  };
+  if (!supported) {
+    return {
+      supported: false,
+      begin: () => null,
+      end: () => {},
+      resolve: () => {},
+      snapshot: () => ({ ...state }),
+      destroy: () => {},
+    };
+  }
+  const rings = [];
+  for (let i = 0; i < slots; i++) {
+    try {
+      const querySet = device.createQuerySet({ type: 'timestamp', count: 2 });
+      const resolveBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
+      const readBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+      rings.push({ querySet, resolveBuffer, readBuffer, busy: false });
+    } catch (e) {
+      log('vk64: GPU timestamp query setup failed \u2014 ' + (e.message || e));
+      break;
+    }
+  }
+  if (!rings.length) {
+    state.status = 'unavailable';
+    state.reason = 'query set allocation failed on this device';
+    return { supported: false, begin: () => null, end: () => {}, resolve: () => {}, snapshot: () => ({ ...state }), destroy: () => {} };
+  }
+  let destroyed = false;
+
+  function begin(encoder) {
+    const ring = rings.find(r => !r.busy);
+    if (!ring) return null;
+    ring.busy = true;
+    try { encoder.writeTimestamp(ring.querySet, 0); } catch (e) {
+      ring.busy = false;
+      log('vk64: writeTimestamp failed \u2014 ' + (e.message || e));
+      return null;
+    }
+    return ring;
+  }
+  function end(encoder, ring) {
+    if (!ring) return;
+    try { encoder.writeTimestamp(ring.querySet, 1); } catch (e) {
+      log('vk64: writeTimestamp failed \u2014 ' + (e.message || e));
+      ring.busy = false;
+    }
+  }
+  function resolve(ring) {
+    if (!ring) return;
+    try {
+      const enc = device.createCommandEncoder();
+      enc.resolveQuerySet(ring.querySet, 0, 2, ring.resolveBuffer, 0);
+      enc.copyBufferToBuffer(ring.resolveBuffer, 0, ring.readBuffer, 0, 16);
+      device.queue.submit([enc.finish()]);
+    } catch (e) {
+      log('vk64: GPU timestamp resolve failed \u2014 ' + (e.message || e));
+      ring.busy = false;
+      return;
+    }
+    ring.readBuffer.mapAsync(GPUMapMode.READ).then(() => {
+      if (destroyed) return;
+      // WebGPU timestamps are nanoseconds.
+      const view = new BigUint64Array(ring.readBuffer.getMappedRange().slice(0));
+      ring.readBuffer.unmap();
+      const dt = Number(view[1] - view[0]) / 1e6;
+      ring.busy = false;
+      if (!(dt > 0)) {
+        state.zeroResolutions++;
+        state.status = 'inactive';
+        state.reason = 'this backend resolved both timestamps to 0 (no GPU clock available)';
+        return;
+      }
+      samples.push(dt);
+      while (samples.length > window) samples.shift();
+      state.lastMs = dt;
+      state.samples = samples.length;
+      state.ms = samples.reduce((sum, v) => sum + v, 0) / samples.length;
+      state.status = 'measured';
+      state.reason = null;
+    }).catch(e => {
+      ring.busy = false;
+      if (destroyed) return;
+      state.status = 'inactive';
+      state.reason = 'GPU timestamp readback failed: ' + (e.message || e);
+    });
+  }
+
+  return {
+    supported: true,
+    begin, end, resolve,
+    snapshot: () => ({ ...state }),
+    destroy: () => {
+      destroyed = true;
+      for (const r of rings) {
+        try { r.querySet.destroy(); } catch { /* ignore */ }
+        try { r.resolveBuffer.destroy(); } catch { /* ignore */ }
+        try { r.readBuffer.destroy(); } catch { /* ignore */ }
+      }
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -284,7 +435,11 @@ export async function createVkRenderer(canvas, { translate, log = defaultLog } =
   if (!navigator.gpu) throw new Error('WebGPU is unavailable');
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error('No WebGPU adapter');
-  const device = await adapter.requestDevice();
+  // The adapter's own feature set (not the v2 renderer's preference list) decides
+  // whether genuine GPU timing is possible on this legacy path.
+  const requiredFeatures = /** @type {GPUFeatureName[]} */ (['texture-compression-bc', 'depth32float-stencil8', 'float32-filterable', 'clip-distances', 'timestamp-query'])
+    .filter(feature => adapter.features.has(feature));
+  const device = await adapter.requestDevice({ requiredFeatures });
   const errors = [];
   device.addEventListener('uncapturederror', e => log('vk64: page tier WebGPU error: ' + (e.error?.message || e.error)));
   device.lost.then(info => errors.push('Device lost: ' + info.reason + ' ' + info.message));
@@ -303,6 +458,22 @@ export async function createVkRenderer(canvas, { translate, log = defaultLog } =
     litPixels: 0, paintedPixels: 0, totalPixels: 0, width: 0, height: 0,
   };
   const snapshot = () => ({ ...stats, ...shaders.stats });
+  // Live metrics for the legacy (v1 manifest) path — same shape as renderer2.
+  const pacer = createFramePacer();
+  const gpuTimer = createGpuTimer(device, adapter, { log });
+  const timing = { renderMs: 0, renderCount: 0, submitMs: 0, submitCount: 0, pipelineMs: 0, pipelineCount: 0 };
+  const metrics = () => {
+    const pace = pacer.snapshot();
+    return {
+      presents: pace.presents, windowMs: pace.windowMs, fps: pace.fps, frameMs: pace.frameMs,
+      gpu: gpuTimer.snapshot(),
+      translate: { ms: shaders.stats.translateMs || 0, count: shaders.stats.translated + shaders.stats.overridden + shaders.stats.rejected },
+      pipeline: { ms: timing.pipelineMs, count: timing.pipelineCount },
+      submit: { ms: timing.submitMs, count: timing.submitCount },
+      render: { ms: timing.renderMs, count: timing.renderCount },
+      skipped: stats.skips, unsupported: 0,
+    };
+  };
   let color = null, depth = null, w = 0, h = 0, destroyed = false;
 
   function ensureTargets(width, height) {
@@ -332,6 +503,7 @@ export async function createVkRenderer(canvas, { translate, log = defaultLog } =
       { binding: 2, resource: sampler } ] });
     device.pushErrorScope('validation');
     const encoder = device.createCommandEncoder();
+    const bwGpuSlot = gpuTimer.begin(encoder);
     /** @type {GPURenderPassDescriptor} */
     const descriptor = man.depthTest
       ? { colorAttachments: [{ view: color.createView(), clearValue: { r: man.clear[0], g: man.clear[1], b: man.clear[2], a: man.clear[3] }, loadOp: 'clear', storeOp: 'store' }],
@@ -352,12 +524,18 @@ export async function createVkRenderer(canvas, { translate, log = defaultLog } =
     const readback = device.createBuffer({ size: bytesPerRow * h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
     encoder.copyTextureToBuffer({ texture: color }, { buffer: readback, bytesPerRow }, [w, h]);
     encoder.copyTextureToTexture({ texture: color }, { texture: context.getCurrentTexture() }, [w, h]);
+    gpuTimer.end(encoder, bwGpuSlot);
+    const bwSubmitT0 = metricsNow();
     device.queue.submit([encoder.finish()]);
+    timing.submitMs += metricsNow() - bwSubmitT0;
+    timing.submitCount++;
+    gpuTimer.resolve(bwGpuSlot);
     return { invalid: await device.popErrorScope(), buffer, readback, bytesPerRow };
   }
 
   async function render(text) {
     if (destroyed) throw new Error('page tier destroyed');
+    const bwRenderT0 = metricsNow();
     const man = parseManifest(text);
     ensureTargets(man.width, man.height);
 
@@ -373,6 +551,7 @@ export async function createVkRenderer(canvas, { translate, log = defaultLog } =
       const vsModule = device.createShaderModule({ code: vsWgsl });
       const fsModule = device.createShaderModule({ code: fsWgsl });
       device.pushErrorScope('validation');
+      const bwPipeT0 = metricsNow();
       bgl = device.createBindGroupLayout({ entries: [
         { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
@@ -385,6 +564,8 @@ export async function createVkRenderer(canvas, { translate, log = defaultLog } =
         depthStencil: man.depthTest ? { format: 'depth24plus', depthWriteEnabled: man.depthWrite, depthCompare: man.depthOp } : undefined,
       });
       const err = await device.popErrorScope();
+      timing.pipelineMs += metricsNow() - bwPipeT0;
+      timing.pipelineCount++;
       if (err) throw new Error('render pipeline rejected: ' + err.message);
       pipelines.set(key, pipeline);
     } else {
@@ -455,15 +636,18 @@ export async function createVkRenderer(canvas, { translate, log = defaultLog } =
     stats.frames++; stats.rendered++;
     stats.litPixels = lit; stats.paintedPixels = painted;
     stats.totalPixels = w * h; stats.width = w; stats.height = h;
+    pacer.present();
+    timing.renderMs += metricsNow() - bwRenderT0;
+    timing.renderCount++;
     return { rendered: true, frame: man.frame, litPixels: lit, paintedPixels: painted,
       totalPixels: w * h, uniform, uboBytes: man.ubo ? man.ubo.length : 0, clear: man.clear };
   }
 
   return {
-    render, errors, device, shaders, snapshot,
+    render, errors, device, shaders, snapshot, metrics,
     stats,
     get frames() { return stats.rendered; },
-    destroy() { destroyed = true; context.unconfigure(); color?.destroy(); depth?.destroy(); device.destroy(); },
+    destroy() { destroyed = true; try { gpuTimer.destroy(); } catch { /* ignore */ } context.unconfigure(); color?.destroy(); depth?.destroy(); device.destroy(); },
   };
 }
 
@@ -485,6 +669,17 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
     litPixels: 0, paintedPixels: 0, totalPixels: 0 };
   const stats = () => ({ ...state, errors: state.errors.slice(-8), pipeline: renderer?.snapshot() || null,
     v2: { ...v2state, queue: v2queue.size, pipeline2: renderer2?.snapshot() || null } });
+  // Page-tier metrics for the live panel: present pacing plus the host-side
+  // stage spans of whichever renderer owns this presentation path. `null`
+  // means that renderer has not started yet (the panel shows it inactive).
+  const metrics = () => ({
+    v1: renderer ? renderer.metrics() : null,
+    v2: renderer2 ? renderer2.metrics() : null,
+    queue: { size: v2queue.size, dropped: v2queue.dropped },
+    received: { chunks: v2state.chunksReceived, frames: v2state.framesReceived },
+    rendered: { v1: state.rendered, v2: v2state.rendered },
+    rejected: state.rejected + v2state.rejected,
+  });
   let renderer = null, pending = Promise.resolve(), starting = null;
 
   // --- schema v2 (binary framed records): streaming queue + render pump ---
@@ -649,6 +844,7 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
     frame(json) { pending = pending.then(() => frame(json)); return pending; },
     chunk,
     stats,
+    metrics,
     get ready() { return !!renderer; },
     get litPixels() { return state.litPixels; },
     destroy() {
@@ -739,7 +935,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   if (!navigator.gpu) throw new Error('WebGPU is unavailable');
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error('No WebGPU adapter');
-  const requiredFeatures = /** @type {GPUFeatureName[]} */ (['texture-compression-bc', 'depth32float-stencil8', 'float32-filterable', 'clip-distances'])
+  const requiredFeatures = /** @type {GPUFeatureName[]} */ (['texture-compression-bc', 'depth32float-stencil8', 'float32-filterable', 'clip-distances', 'timestamp-query'])
     .filter(feature => adapter.features.has(feature));
   const device = await adapter.requestDevice({ requiredFeatures });
   const errors = [];
@@ -758,7 +954,26 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     frames: 0, rendered: 0, skips: 0, unknownFormats: 0, unsupported: 0,
     litPixels: 0, paintedPixels: 0, totalPixels: 0, width: 0, height: 0, aliased: 0,
   };
+  // Live metrics (web/frame-metrics.mjs): page-tier spans. These are JS-side
+  // measurements and are labelled as such in the panel; GPU execution time comes
+  // only from the timestamp timer below.
+  const pacer = createFramePacer();
+  const gpuTimer = createGpuTimer(device, adapter, { log });
+  const timing = { renderMs: 0, renderCount: 0, submitMs: 0, submitCount: 0, pipelineMs: 0, pipelineCount: 0 };
   const snapshot = () => ({ ...stats, ...shaders.stats, persist: { ...persistStats } });
+  // Page-tier metrics for the live panel: every field is measured on the page.
+  const metrics = () => {
+    const pace = pacer.snapshot();
+    return {
+      presents: pace.presents, windowMs: pace.windowMs, fps: pace.fps, frameMs: pace.frameMs,
+      gpu: gpuTimer.snapshot(),
+      translate: { ms: shaders.stats.translateMs || 0, count: shaders.stats.translated + shaders.stats.overridden + shaders.stats.rejected },
+      pipeline: { ms: timing.pipelineMs, count: timing.pipelineCount },
+      submit: { ms: timing.submitMs, count: timing.submitCount },
+      render: { ms: timing.renderMs, count: timing.renderCount },
+      skipped: stats.skips, unsupported: stats.unsupported,
+    };
+  };
   let destroyed = false;
   let resizeObs = null;
   // Track the canvas size the observer has seen. render() updates this
@@ -1077,6 +1292,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     }
 
     device.pushErrorScope('validation');
+    const bwPipeT0 = metricsNow();
     const pipeline = device.createRenderPipeline({
       layout: device.createPipelineLayout({ bindGroupLayouts: layouts }),
       vertex: {
@@ -1102,6 +1318,8 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       multisample: { count: sampleCount },
     });
     const err = await device.popErrorScope();
+    timing.pipelineMs += metricsNow() - bwPipeT0;
+    timing.pipelineCount++;
     if (err) { stats.unsupported++; return { skip: 'pipeline-rejected:' + err.message }; }
     const rec = { key, pipeline, layouts, decls, hasPush, slotOf, maxGroup, vbWalk, stripIndexType };
     pipelines.set(key, rec);
@@ -1297,6 +1515,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   }
 
   async function render(frame, { present = true } = {}) {
+    const bwRenderT0 = metricsNow();
     if (destroyed) throw new Error('page tier destroyed');
     if (frame.submissions) {
       let result;
@@ -1341,6 +1560,8 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     }
     let presentTex = null, presentW = frame.width, presentH = frame.height, lastClear = [0, 0, 0, 1];
     const encoder = device.createCommandEncoder();
+    // GPU timestamp 0: the beginning of this frame's submitted GPU work.
+    const bwGpuSlot = gpuTimer.begin(encoder);
     // Persistent across frames: same size every frame, no need to re-create.
     if (!persistDummyVb) {
       persistDummyVb = device.createBuffer({ size: 4096, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
@@ -1652,7 +1873,12 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
         throw new Error(`canvas texture is ${presentDest.width}x${presentDest.height}, present copy is ${presentW}x${presentH}`);
       encoder.copyTextureToTexture({ texture: presentTex }, { texture: presentDest }, [presentW, presentH]);
     }
+    gpuTimer.end(encoder, bwGpuSlot);
+    const bwSubmitT0 = metricsNow();
     device.queue.submit([encoder.finish()]);
+    timing.submitMs += metricsNow() - bwSubmitT0;
+    timing.submitCount++;
+    gpuTimer.resolve(bwGpuSlot);
     const invalid = await device.popErrorScope();
     if (invalid) { if (readback) readback.destroy(); throw new Error('v2 frame encoding rejected: ' + invalid.message); }
 
@@ -1708,6 +1934,9 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     device.queue.onSubmittedWorkDone().then(release, release);
 
     stats.frames++; stats.rendered++;
+    if (present) pacer.present();   // FPS counts DISPLAYED frames only
+    timing.renderMs += metricsNow() - bwRenderT0;
+    timing.renderCount++;
     return {
       rendered: true, frame: frame.frameNo, litPixels: stats.litPixels, paintedPixels: stats.paintedPixels,
       totalPixels: presentW * presentH, clear: lastClear,
@@ -1715,13 +1944,14 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   }
 
   return {
-    render, errors, device, shaders, snapshot, stats, invalidateTargets,
+    render, errors, device, shaders, snapshot, metrics, stats, invalidateTargets,
     learnMinBindingSize,
     get minBindingSizes() { return Object.fromEntries(uniformMinSize); },
     get frames() { return stats.rendered; },
     destroy() {
       destroyed = true;
       try { resizeObs?.disconnect(); } catch { /* ignore */ }
+      try { gpuTimer.destroy(); } catch { /* ignore */ }
       context.unconfigure(); invalidateTargets(); device.destroy();
     },
   };

@@ -20,6 +20,7 @@
 #include "kunixsocket.h"
 #include "kpoll.h"
 #include "ripSampler.h"
+#include "bw64metrics.h"   // live frame-stage metrics (BW64_METRICS, default on)
 #ifdef BOXEDWINE_OPENGL
 #include "../opengl/gl64bridge.h"
 #include "../opengl/gl64bridge_abi.h"
@@ -2885,6 +2886,20 @@ void ksyscall64(CPU64* cpu) {
     U64 a6   = cpu->reg[X64_R9].u64;
     U64 ret  = (U64)-K_ENOSYS;
 
+    // Live metrics: the syscall / host-bridge span is measured around the whole
+    // dispatch so the panel can separate interpreter traffic from the GL and
+    // Vulkan traps, which time themselves (see bw64metrics.h). The GL/VK traps
+    // are excluded here so they are never double-counted.
+    const bool bw64MetricsOn = bw64_metrics_enabled() != 0;
+    bool bw64BridgeTrap = false;
+#ifdef BOXEDWINE_OPENGL
+    bw64BridgeTrap = bw64BridgeTrap || nr == GL64_SYSCALL_NR;
+#endif
+#ifdef BOXEDWINE_VULKAN64
+    bw64BridgeTrap = bw64BridgeTrap || nr == VK64_SYSCALL_NR;
+#endif
+    const double bw64T0 = bw64MetricsOn ? bw64_metrics_now_ms() : 0.0;
+
     // Set BW64_SYSTRACE=1 to log every 64-bit syscall — invaluable for wine
     // bring-up (finding where a guest stalls or which syscall is next missing).
     // BW64_TRACEPID=N traces ONLY process N (one cheap compare; doesn't slow the
@@ -4419,7 +4434,14 @@ void ksyscall64(CPU64* cpu) {
     // execve (and any future blocking/restart paths) return -K_CONTINUE to mean
     // "the new image / restart already set the registers — do NOT overwrite RAX
     // with this sentinel." Mirrors the 32-bit dispatcher (syscall.cpp).
-    if (ret == (U64)(S64)-K_CONTINUE || ret == (U64)(S64)-K_WAIT) {
+    if (ret == (U64)(S64)-K_CONTINUE) {
+        if (bw64MetricsOn && !bw64BridgeTrap)
+            bw64_metrics_add_stage(BW64_STAGE_SYSCALL, bw64_metrics_now_ms() - bw64T0, 0);
+        return;
+    }
+    if (bw64MetricsOn && !bw64BridgeTrap)
+        bw64_metrics_add_stage(BW64_STAGE_SYSCALL, bw64_metrics_now_ms() - bw64T0, 0);
+    if (ret == (U64)(S64)-K_WAIT) {
         return;
     }
     cpu->reg[X64_RAX].setU64(ret);

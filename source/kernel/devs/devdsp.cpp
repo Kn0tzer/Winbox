@@ -28,6 +28,7 @@
 #include <math.h>
 #include <string.h>
 #include "kdspaudio.h"
+#include "bw64metrics.h"   // live frame-stage metrics (BW64_METRICS, default on)
 
 #ifdef __EMSCRIPTEN__
 // 48000 like native: SDL2's emscripten audio feeds WebAudio, which resamples
@@ -104,6 +105,11 @@ U32 DevDsp::readNative(U8* buffer, U32 len){
 }
 
 U32 DevDsp::writeNative(U8* buffer, U32 len) {    
+    // Live metrics: the audio bridge stage = this guest write path, i.e. the
+    // format conversion plus the Web Audio ring push inside writeAudio(). It is
+    // NOT an audible-latency measure and says nothing about the guest mixer.
+    const bool bw64MetricsOn = bw64_metrics_enabled() != 0;
+    const double bw64T0 = bw64MetricsOn ? bw64_metrics_now_ms() : 0.0;
     if (!this->audio->isOpen()) {
         this->audio->openAudio(this->format, this->freq, this->channels);
     }
@@ -111,6 +117,9 @@ U32 DevDsp::writeNative(U8* buffer, U32 len) {
     if ((S32)result > 0) {
         this->bytesWritten += result;
     }
+    if (bw64MetricsOn)
+        bw64_metrics_add_stage(BW64_STAGE_AUDIO, bw64_metrics_now_ms() - bw64T0,
+                               (S32)result > 0 ? (uint64_t)result : 0);
     return result;
 }
 
