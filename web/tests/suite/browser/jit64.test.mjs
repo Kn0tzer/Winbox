@@ -6,19 +6,28 @@ import { guestFixture } from '../lib/guest-fixtures.mjs';
 
 // Genuine PE64 under Wine64: the 32-bit Chromium benchmark cannot cover this.
 export default class Jit64Test extends ProbeTest {
-  constructor() { super({ tag: 'jit64', timeoutMs: 600000 }); this.guestArchitectures = ['x64']; }
+  constructor() { super({ tag: process.env.TAG || 'jit64', timeoutMs: 600000 }); this.guestArchitectures = ['x64']; }
   async run({ page }) {
     const results = [];
-    for (const jit of ['0', '1']) {
+    const modes = (process.env.BW_TEST_JIT64_MODES || '0,1').split(',');
+    if (modes.some(mode => !['0', '1'].includes(mode))) throw Error('Invalid BW_TEST_JIT64_MODES');
+    for (const jit of modes) {
       if (jit === '1') { await page.close(); page = await this.newPage(); }
       await this.bootGuest(page, { arch: 'x64', jit, winedbg: '+debugstr' });
       await this.stageFile(page, 'jitbench64.exe', await guestFixture('jitbench64-pe', 'x64'));
       const from = await this.spawnGuest(page, 'jitbench64.exe', { arch: 'x64', env: 'WINEDEBUG=+debugstr' });
       await this.waitForLog(page, /BW_JITBENCH64 sample=3/, 120000, from);
-      const samples = this.consoleLines.slice(from).flatMap(line => {
+      const reported = this.consoleLines.slice(from).flatMap(line => {
         const match = line.match(/BW_JITBENCH64 sample=(\d+) ms=([\d.]+) checksum=([a-f0-9]+) passes=(\d+)/);
         return match ? [{ sample: Number(match[1]), ms: Number(match[2]), checksum: match[3], passes: Number(match[4]) }] : [];
       });
+      // syscall64 tees fd=2 chunks and completed lines; debugstr can appear twice.
+      const unique = new Map();
+      for (const sample of reported) {
+        if (unique.has(sample.sample)) assert.deepEqual(unique.get(sample.sample), sample);
+        unique.set(sample.sample, sample);
+      }
+      const samples = [...unique.values()].sort((a, b) => a.sample - b.sample);
       assert.equal(samples.length, 4, 'cold and three warm samples completed');
       for (const sample of samples) {
         assert.equal(sample.checksum, '8b527b4986bdaccf', 'PE64 output matches independent ELF64 reference');
