@@ -26,6 +26,10 @@
 #include "../armv8/armv8CPU.h"
 #include "../../../util/ptrpool.h"
 #include "../wasm/wasmMemoryOrdering.h"
+#include "../wasm/wasmJitRuntime.h"
+#ifdef BOXEDWINE_WASM_JIT
+#include "../wasm/wasmJitStats.h"
+#endif
 #if defined(BOXEDWINE_JIT) && !defined(BOXEDWINE_WASM_JIT)
 #include "../jit/jitCodeGen.h"
 #endif
@@ -646,6 +650,15 @@ void OPCALL firstDynamicOp(CPU* cpu, DecodedOp* op);
 #endif
 
 NormalCPU::NormalCPU(KMemory* memory) : CPU(memory) {
+#ifdef BOXEDWINE_WASM_JIT
+    // Register with the cpu32 stats registry (the emitted retired-instruction
+    // counter lives in this CPU) and latch the run-time controls.
+    wasmJit32StatsRegisterCpu(this);
+#endif
+#if defined(BOXEDWINE_MULTI_THREADED) && defined(BOXEDWINE_WASM_JIT)
+    // Latch the guest memory-ordering policy before this CPU can run JIT code.
+    wasmJitInitMemoryOrdering(wasmJit32SafeMemoryEnabled());
+#endif
     initNormalOps();
 #ifdef BOXEDWINE_JIT
     this->firstOp = firstDynamicOp;

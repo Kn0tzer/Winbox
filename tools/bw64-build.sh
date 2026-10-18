@@ -5,7 +5,16 @@
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EMSCRIPTEN_DIR="$REPO/project/emscripten"
-BUILD_OUT="$EMSCRIPTEN_DIR/Build/Wasm64Mt"
+# BW64_BUILD_TARGET selects the makefile target (default unchanged). The JIT
+# target compiles the same runtime with -DBOXEDWINE_WASM_JIT, so it writes to
+# its own build directory and its build is NOT interchangeable with the
+# non-JIT one (that is the point of the A/B comparison).
+TARGET="${BW64_BUILD_TARGET:-wasm64-mt}"
+case "$TARGET" in
+    wasm64-mt)     BUILD_OUT="$EMSCRIPTEN_DIR/Build/Wasm64Mt" ;;
+    wasm64-mt-jit) BUILD_OUT="$EMSCRIPTEN_DIR/Build/Wasm64MtJit" ;;
+    *) echo "[bw64-build] FATAL: unknown BW64_BUILD_TARGET: $TARGET" >&2; exit 2 ;;
+esac
 LOCKDIR="${BUILD_LOCK_DIR:-/tmp/bw64-build.lock.d}"
 INFO_FILE="$LOCKDIR/info"
 PROBE_SLOT_DIR="${PROBE_SLOT_DIR:-/tmp/bw64-probe-slots}"
@@ -79,7 +88,7 @@ if [[ "$mode" != --export-only ]]; then
     fi
     version=$(emcc --version)
     [[ "$version" == *" 6.0.9 "* ]] || die 'the pinned build requires Emscripten 6.0.9'
-    make -C "$EMSCRIPTEN_DIR" wasm64-mt MAKEFLAGS="-j${JOBS:-2}"
+    make -C "$EMSCRIPTEN_DIR" "$TARGET" MAKEFLAGS="-j${JOBS:-2}"
 fi
 WASM="$BUILD_OUT/boxedwine64.wasm"
 JS="$BUILD_OUT/boxedwine64.js"

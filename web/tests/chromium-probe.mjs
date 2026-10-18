@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import { resolve, join } from 'node:path';
 import { cpus, loadavg } from 'node:os';
-import { ProbeTest, withTimeout } from './suite/lib/probe-base.mjs';
+import { ProbeTest, withTimeout, extraUrlParams } from './suite/lib/probe-base.mjs';
 import { attachLoopbackTcpRelay } from './suite/lib/loopback-tcp-relay.mjs';
 
 const exec = promisify(execFile);
@@ -90,6 +90,9 @@ try {
     gamezipsize: String(result.archive.bytes), exe: 'chrome.exe', args: JSON.stringify(args),
     overlay: base + '/__fixtures/smoke.zip', overlaysize: String((await stat(overlay)).size),
     session: '0', persist: '0', fresh: '1', winedbg: process.env.WINEDEBUG || '-all' });
+  // Engine selection for A/B runs (BW_TEST_URL_PARAMS='jit=1' etc.): the same
+  // public parameters the Winbox launcher uses, forwarded to the runtime page.
+  for (const [key, value] of Object.entries(extraUrlParams())) params.set(key, value);
   if (httpFixture) params.set('network', '1');
   result.launchParams = Object.fromEntries(params);
   const cpuBefore = await withTimeout(browserCdp.send('SystemInfo.getProcessInfo'), 5000, 'initial CPU snapshot');
@@ -99,6 +102,8 @@ try {
     const end = Math.min(started + timeoutMs, Date.now() + remaining);
     let lastLiveness = 0;
     while (Date.now() < end) {
+      const runtimeError = probe.consoleLines.find(line => /\[pageerror\]|Native panic stack|RuntimeError: memory access out of bounds/.test(line));
+      if (runtimeError) throw Error('Runtime failed before ' + label + ': ' + runtimeError);
       if (Date.now() - lastLiveness > 2000) {
         lastLiveness = Date.now();
         const boot = probe.consoleLines.find(line => /bootPid=\d+/.test(line))?.match(/bootPid=(\d+)/);
@@ -226,6 +231,11 @@ try {
     });
   }
   result.finishedAt = new Date().toISOString();
+  result.jitStats = await withTimeout(page?.evaluate(() => {
+    const module = globalThis.Module;
+    if (!module?._bw64_jit_stats_json_text) return null;
+    return JSON.parse(module.ccall('bw64_jit_stats_json_text', 'string', [], []));
+  }), 5000, 'JIT statistics').catch(() => null);
   result.events = events;
   result.benchmark ||= events.find(e => e.event === 'benchmark');
   result.graphics ||= events.find(e => e.event === 'graphics');

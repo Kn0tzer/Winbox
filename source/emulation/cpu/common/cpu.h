@@ -199,6 +199,12 @@ union SSE {
 #error "JIT_RUN_COUNT must fit in DecodedOp::runCount (U8) and leave room for the JIT_RUN_COUNT + 1 sentinel"
 #endif
 
+#ifdef BOXEDWINE_WASM_JIT
+enum WasmJitBailoutReason : U32 {
+    WASM_JIT_BAILOUT_NONE, WASM_JIT_BAILOUT_SMC, WASM_JIT_BAILOUT_CONTROL_FLOW,
+};
+#endif
+
 class CPU: public DecodeBlockCallback {
 public:
     static CPU* allocCPU(KMemory* memory);
@@ -355,7 +361,7 @@ public:
     U8 fetchByte(U32* eip) override;
     bool shouldContinue(U32 eip) override;
     DecodedOp** getOpLocation(U32 eip) override;        
-    void runNextSingleOp();
+    bool runNextSingleOp();
 
 #ifdef BOXEDWINE_MULTI_THREADED
     U64 nativeHandle = 0;
@@ -548,6 +554,15 @@ public:
     U32 wasmJitInCompiledCall = 0;
     U32 wasmJitReapRetiredOnExit = 0;
     U32 wasmJitHazardRegistered = 0;
+#endif
+#ifdef BOXEDWINE_WASM_JIT
+    // Appended last for the same reason: adding fields here cannot shift any
+    // offset a previously emitted module embeds (this fork ships no persisted
+    // JIT cache, but the rule keeps stale-cache debugging honest). Only
+    // non-zero while BW32_JIT_STATS=1 is latched at startup, in which case
+    // generated code increments it once per executed guest instruction; a CPU
+    // belongs to exactly one guest thread, so only that thread writes it.
+    U64 wasmJitRetiredInstructions = 0;
 #endif
 };
 

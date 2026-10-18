@@ -38,6 +38,17 @@ import { acquireProbeSlot } from "../../probe-slots.mjs";
 import { waitForBuildIdle } from "../../build-lock.mjs";
 import { runtimeCodeHash } from './runtime-evidence.mjs';
 
+// Extra runtime URL parameters for A/B runs, e.g.
+//   BW_TEST_URL_PARAMS='jit=1&jitstats=1&safemem=1' node web/tests/suite/runner.mjs --filter=cpu32
+// They select the guest CPU engine (jit=0|1) and its diagnostics through the
+// same public parameters the launcher uses. Applied AFTER each test's own
+// parameters, so a test can be run against either engine without edits.
+export function extraUrlParams() {
+  return process.env.BW_TEST_URL_PARAMS
+    ? Object.fromEntries(new URLSearchParams(process.env.BW_TEST_URL_PARAMS))
+    : {};
+}
+
 export async function withTimeout(promise, ms, what) {
   let timer;
   try {
@@ -152,7 +163,7 @@ export class ProbeTest {
 
   async bootGuest(page, parameters = {}) {
     this.testedArchitectures.add(parameters.arch || 'x64');
-    const params = new URLSearchParams({ p: 'cmd /c echo vkboot', session: '1', persist: '0', fresh: '1', ...parameters });
+    const params = new URLSearchParams({ p: 'cmd /c echo vkboot', session: '1', persist: '0', fresh: '1', ...parameters, ...extraUrlParams() });
     await page.goto(`${this._server.url}/runtime/index.html?${params}`);
     await this.waitForPageFn(page, () => globalThis.bwRuntime?.ready?.() === true, 600000);
   }

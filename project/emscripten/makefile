@@ -16,7 +16,7 @@ BW64_JIT_CPP_FLAGS :=
 BW64_JIT_LD_FLAGS :=
 endif
 
-.PHONY: default all clean release test multiThreaded wasm64-selftest wasm64-runelf wasm64-selftest-mem64 wasm64-mt
+.PHONY: default all clean release test multiThreaded wasm32-jit-selftest wasm64-selftest wasm64-runelf wasm64-selftest-mem64 wasm64-mt wasm64-mt-jit
 
 ZIP_ASSET_FILES := $(wildcard *.zip)
 
@@ -30,6 +30,10 @@ test: export BUILD_DIR := Build/Test
 test: export EXTRA_CPP_FLAGS := -D__TEST -DASMJIT_STATIC
 test: export SHELL_FILE := shelltest.html
 test: export EXTRA_LD_FLAGS := --emrun
+wasm32-jit-selftest: export BUILD_DIR := Build/Wasm32JitSelfTest
+wasm32-jit-selftest: export EXTRA_CPP_FLAGS := -D__TEST -DASMJIT_STATIC -DBOXEDWINE_WASM_JIT -DNDEBUG
+wasm32-jit-selftest: export TARGET_EXEC := boxedwine32-selftest.js
+wasm32-jit-selftest: export EXTRA_LD_FLAGS := -sENVIRONMENT=node -sEXIT_RUNTIME=1 -sALLOW_TABLE_GROWTH=1 -sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction
 multiThreaded: export EXTRA_CPP_FLAGS := -DBOXEDWINE_MULTI_THREADED -pthread -DNDEBUG
 multiThreaded: export BUILD_DIR := Build/MultiThreaded
 multiThreaded: export SHELL_FILE := shell.html
@@ -149,6 +153,52 @@ wasm64-mt: export TARGET_EXEC := boxedwine64.html
 wasm64-mt: export EXTRA_LD_FLAGS := -pthread -sFETCH=1 -sPTHREAD_POOL_SIZE=32 -sPROXY_TO_PTHREAD=1 -sOFFSCREENCANVAS_SUPPORT=1 -sOFFSCREENCANVASES_TO_PTHREAD=\#gl64canvas -sOFFSCREEN_FRAMEBUFFER=1 -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4294967296 -sLEGACY_GL_EMULATION=1 -sMAX_WEBGL_VERSION=2 -sASSERTIONS=0 --js-library=boxedwine-multithreaded-audio.js $(BW64_JIT_LD_FLAGS)
 wasm64-mt: export ASSET_FILES := boxedwine.css boxedwine-shell.js wine64.html wine64-launcher.js coi-serviceworker.js $(ZIP_ASSET_FILES)
 
+# 32-bit guest WASM JIT in the production browser configuration.
+#
+# Same target as wasm64-mt (guest64 + software 32-bit guest CPU + pthreads) plus
+# -DBOXEDWINE_WASM_JIT, which compiles the cpu32 backend in
+# source/emulation/cpu/wasm/ (the AUTO-GLOBBED EMULATION_SOURCES already pick
+# those files up; they are #ifdef'd to nothing in the other targets).
+#
+# Runtime selection stays in host code and is latched before any guest
+# instruction runs:
+#   BW32_JIT=0            keep the interpreter (the launcher's public jit=0)
+#   BW32_JIT=1 or unset   use generated modules (compiled-in default)
+#   BW32_JIT_SAFE_MEMORY 1 = emit guest TSO fences (see wasmMemoryOrdering.h)
+#   BW32_JIT_STATS=1      emit a per-instruction retired counter (see
+#                         wasmJitStats.h; costs hot-path work)
+# The launcher maps the ?jit= and ?safemem= URL parameters onto these.
+#
+# ALLOW_TABLE_GROWTH: every compiled block claims a monotonically increasing
+# wasmTable slot (Atomics protocol in boxedwine_wasm_instantiate_mt), so the
+# table must be growable.
+#
+# --pre-js boxedwine-wasm-jit-module-broker.js: JS-side module broker present on
+# the main thread and in every pthread worker (see that file for its scope).
+#
+# The flags mirror wasm64-mt exactly (GL, Vulkan, filesystem, pthread) so both
+# targets exercise the same runtime, library page and launcher whitelist.
+# The flags mirror wasm64-mt exactly (GL, Vulkan, filesystem, pthread) EXCEPT for
+# one deliberate difference:
+#
+#   -DBOXEDWINE_DIRECT_NORMAL_DISPATCH is NOT passed here.
+#
+# normalDispatch is a switch on op->inst, so a compiled block head (pfn =
+# startJITOp, inst unchanged) would be executed by the interpreter forever, and
+# NormalCPU::run() would never call firstDynamicOp to count a block hot. With
+# BOXEDWINE_WASM_JIT the interpreter instead chains through NEXT_INTERP_CHAIN
+# (normalCPU.cpp), which still reaches normalDispatch by direct tail call and
+# also exits to run() at compiled-block heads. That is the configuration the
+# backend was developed against (BOXEDWINE_JIT suppresses the automatic
+# BOXEDWINE_DIRECT_NORMAL_DISPATCH define in platformBoxedwine.h for exactly
+# this reason).
+wasm64-mt-jit: export EXTRA_CPP_FLAGS := -DBOXEDWINE_BLOCK_EXEC=1 -DBOXEDWINE_BLOCK_CACHE_INFRA=1 -DBOXEDWINE_GUEST_X64=1 -DBOXEDWINE_MULTI_THREADED -DBOXEDWINE_OPENGL -DBOXEDWINE_VULKAN64 '-DGLH=<SDL_opengl.h>' -DDISABLE_GL_EXTENSIONS -DBOXEDWINE_WASM_JIT -pthread -DNDEBUG
+wasm64-mt-jit: export BUILD_DIR := Build/Wasm64MtJit
+wasm64-mt-jit: export SHELL_FILE := shell.html
+wasm64-mt-jit: export TARGET_EXEC := boxedwine64.html
+wasm64-mt-jit: export EXTRA_LD_FLAGS := -pthread -sFETCH=1 -sPTHREAD_POOL_SIZE=32 -sPROXY_TO_PTHREAD=1 -sOFFSCREENCANVAS_SUPPORT=1 -sOFFSCREENCANVASES_TO_PTHREAD=\#gl64canvas -sOFFSCREEN_FRAMEBUFFER=1 -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4294967296 -sLEGACY_GL_EMULATION=1 -sMAX_WEBGL_VERSION=2 -sASSERTIONS=0 --js-library=boxedwine-multithreaded-audio.js --pre-js=boxedwine-wasm-jit-module-broker.js -sALLOW_TABLE_GROWTH
+wasm64-mt-jit: export ASSET_FILES := boxedwine.css boxedwine-shell.js wine64.html wine64-launcher.js coi-serviceworker.js $(ZIP_ASSET_FILES)
+
 cpus := $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1)
 make_jobs := $(shell n='$(cpus)'; expr "$$n" : '^[0-9][0-9]*$$' >/dev/null && [ "$$n" -gt 2 ] && expr "$$n" - 1)
 
@@ -156,7 +206,7 @@ ifneq ($(make_jobs),)
 export MAKEFLAGS := -j $(make_jobs)
 $(info MAKEFLAGS is $(MAKEFLAGS))
 endif
-release test multiThreaded wasm64-selftest wasm64-runelf wasm64-selftest-mem64 wasm64-mt:
+release test wasm32-jit-selftest multiThreaded wasm64-selftest wasm64-runelf wasm64-selftest-mem64 wasm64-mt wasm64-mt-jit:
 	@$(MAKE)
 
 clean:
@@ -224,7 +274,7 @@ TEST_SOURCES += $(PROJDIR)/lib/zlib/contrib/minizip/mztools.c
 TEST_SOURCES += $(PROJDIR)/lib/zlib/contrib/minizip/unzip.c
 TEST_SOURCES += $(PROJDIR)/lib/zlib/contrib/minizip/zip.c
 
-ifeq ($(BUILD_DIR), Build/Test)
+ifneq ($(filter Build/Test Build/Wasm32JitSelfTest,$(BUILD_DIR)),)
 SRCS := $(TEST_SOURCES)
 else
 SRCS := $(SOURCES)

@@ -38,7 +38,17 @@ await stageVendors(resolve(out, 'vendor'));
 await mkdir(resolve(out, 'runtime'), { recursive: true });
 execFileSync('python3', [resolve(root, 'tools/browser/stage-dependencies.py'), resolve(out, 'runtime')], { stdio: 'inherit' });
 await copyFile(resolve(root, 'tools/spirvfix/spirvfix.mjs'), resolve(out, 'spirvfix.mjs'));
-for (const name of ['boxedwine64.js', 'boxedwine64.wasm', 'BUILD_INFO.json']) await copyFile(resolve(root, 'project/emscripten/Build/Wasm64Mt', name), resolve(out, 'runtime', name));
+// Runtime binaries come from the makefile target the build used. BW64_BUILD_TARGET
+// mirrors project/emscripten/makefile (wasm64-mt = interpreter build,
+// wasm64-mt-jit = the same runtime with -DBOXEDWINE_WASM_JIT).
+const buildTargets = {
+  'wasm64-mt': 'Wasm64Mt',
+  'wasm64-mt-jit': 'Wasm64MtJit',
+};
+const buildTarget = process.env.BW64_BUILD_TARGET || 'wasm64-mt';
+const buildDir = buildTargets[buildTarget];
+if (!buildDir) throw new Error(`Unknown BW64_BUILD_TARGET: ${buildTarget}`);
+for (const name of ['boxedwine64.js', 'boxedwine64.wasm', 'BUILD_INFO.json']) await copyFile(resolve(root, 'project/emscripten/Build', buildDir, name), resolve(out, 'runtime', name));
 await copyFile(resolve(root, 'project/emscripten/wine64-launcher.js'), resolve(out, 'runtime/wine64-launcher.js'));
 for (const name of ['glibc-rootfs64.zip', 'wine64.zip', 'prefix64.zip', 'glibc-rootfs32.zip', 'wine32.zip', 'prefix32.zip']) await copyFile(resolve(root, 'web/runtime', name), resolve(out, 'runtime', name));
 // Keep pinned archives intact; stage Wine fonts and the DirectWrite Arial alias

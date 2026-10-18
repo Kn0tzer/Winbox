@@ -939,9 +939,7 @@
                     ENV["BW64_RIPSAMPLE"] = "1";
                     ENV["BW64_RIPSAMPLE_HB"] = "1";
                 }
-                if (param("wildjump") === "1") ENV["BW64_WILDJUMP"] = "1";
-                if (param("dlltrace") === "1") ENV["BW64_DLLTRACE"] = "1";
-                if (param("filemap") === "1") ENV["BW64_FMMAP"] = "1";
+                if (param("wildjump") === "1") ENV["BW64_WILDJUMP"] = "1";                if (param("dlltrace") === "1") ENV["BW64_DLLTRACE"] = "1";                if (param("filemap") === "1") ENV["BW64_FMMAP"] = "1";
                 if (param("pathcachestats") === "1") ENV["BW64_PATHCACHE_STATS"] = "1";
                 if (param("nopathcache") === "1") ENV["BW64_NOPATHCACHE"] = "1";
                 // Unified logging: ?loglevel=debug&logfilter=vulkan:trace,wineserver:debug
@@ -974,6 +972,40 @@
                 // survive the boot -env argv -> execve chain.
                 if (param("envedump") === "1") ENV["BW64_ENVDUMP"] = "1";
                 if (param("wscount") === "1") ENV["BW64_WSCOUNT"] = "1";
+                // Public JIT switch: ?jit=0|1 selects the guest CPU engine for
+                // BOTH architectures (jit=0 = interpreter everywhere, jit=1 =
+                // generated code where the build provides it). Absent leaves
+                // each engine at its compiled-in default. These must be host
+                // environment variables: they are read (and latched) by host
+                // code, so guest environment variables cannot switch them.
+                // BW32_JIT is the 32-bit guest (cpu32/WASM JIT) engine;
+                // BW64_JIT belongs to the 64-bit guest engine.
+                if (param("jit") === "0") {
+                    ENV["BW32_JIT"] = "0";
+                    ENV["BW64_JIT"] = "0";
+                } else if (param("jit") === "1") {
+                    ENV["BW32_JIT"] = "1";
+                    ENV["BW64_JIT"] = "1";
+                }
+                // ?safemem=1 asks the multi-threaded 32-bit JIT for x86 TSO
+                // guest-memory fences (correct on weakly ordered hosts, slower
+                // on memory-heavy multi-threaded guests). See
+                // source/emulation/cpu/wasm/wasmMemoryOrdering.h.
+                if (param("safemem") === "1") ENV["BW32_JIT_SAFE_MEMORY"] = "1";
+                else if (param("safemem") === "0") ENV["BW32_JIT_SAFE_MEMORY"] = "0";
+                // ?jitstats=1 makes generated code count retired instructions
+                // (diagnostic; costs hot-path work and a separate module cache
+                // identity). Read by bw32_jit_stats_json's provenance fields.
+                if (param("jitstats") === "1") ENV["BW32_JIT_STATS"] = "1";
+                // ?jittrace=1 logs every generated-code entry (worker-local slot,
+                // guest EIP, block size) so a fault inside generated code can be
+                // attributed to a block. Diagnostic only; very verbose.
+                if (param("jittrace") === "1") ENV["BW32_JIT_TRACE"] = "1";
+                // ?jitnogroups=1 installs each generated block as its own module
+                // instead of merging blocks into shared runtime groups. Diagnostic
+                // isolation for the MT group path (also avoids group-merge cost).
+                if (param("jitnogroups") === "1") ENV["BW32_JIT_NO_GROUPS"] = "1";
+                if (param("jittraptrace") === "1") ENV["BW32_JIT_TRAP_TRACE"] = "1";
                 // Hold main() until the rootfs is in the VFS.
                 liveModule["addRunDependency"]("loadWine64Fs");
                 loadFilesystem(els);

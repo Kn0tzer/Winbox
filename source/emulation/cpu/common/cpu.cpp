@@ -6,6 +6,9 @@
 #include "../../softmmu/kmemory_soft.h"
 #include "../normal/normalCPU.h"
 
+#ifdef BOXEDWINE_WASM_JIT
+#include "../wasm/wasmJitStats.h"
+#endif
 #if defined(BOXEDWINE_WASM_JIT) && defined(BOXEDWINE_MULTI_THREADED)
 void wasmJitMtLeaveCpu(CPU* cpu);
 void wasmJitMtUnregisterCpu(CPU* cpu);
@@ -18,6 +21,11 @@ CPU* CPU::allocCPU(KMemory* memory) {
 CPU::~CPU() {
 #if defined(BOXEDWINE_WASM_JIT) && defined(BOXEDWINE_MULTI_THREADED)
     wasmJitMtUnregisterCpu(this);
+#endif
+#ifdef BOXEDWINE_WASM_JIT
+    // Drop this guest thread's emitted retired-instruction counter from the
+    // cpu32 stats snapshot before the CPU storage is released.
+    wasmJit32StatsUnregisterCpu(this);
 #endif
 }
 
@@ -1282,17 +1290,18 @@ static DecodedOp lastOp;
 void OPCALL onLastOp(CPU* cpu, DecodedOp* op) {
 }
 
-void CPU::runNextSingleOp() {
+bool CPU::runNextSingleOp() {
     DecodedOp* op = nullptr;
     try {
         op = getNextOp();
         if (!op) {
             this->thread->seg_mapper(getEipAddress(), true, false, false);
-            this->nextOp = getNextOp();
+            op = getNextOp();
         }
     } catch (...) {
         // at this point the previous getNextOp threw an exception and the eip is now pointing to the signal handler
-        op = getNextOp();
+        this->nextOp = getNextOp();
+        return false;
     }
 
     if (!op) {
@@ -1313,9 +1322,12 @@ void CPU::runNextSingleOp() {
         o.pfn = NormalCPU::getFunctionForOp(op);
         o.pfn(this, &o);
     } catch (...) {
-        // motorhead 3dfx will trigger this when pressing enter to start a new game
+        // The exception handler selected a new EIP; generated code must exit.
+        this->nextOp = getNextOp();
+        return false;
     }
     this->nextOp = getNextOp();
+    return true;
 }
 
 #ifdef BOXEDWINE_JIT

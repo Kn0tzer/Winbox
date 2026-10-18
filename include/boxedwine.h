@@ -55,10 +55,11 @@
 // WASM JIT backend: emits WebAssembly bytecode for each compiled block.
 // Enabled by passing -DBOXEDWINE_WASM_JIT to the Emscripten compiler.
 // Implies BOXEDWINE_JIT (shared infrastructure) but does NOT use asmjit.
+// Orthogonal to BOXEDWINE_MULTI_THREADED: this fork's production browser build
+// (wasm64-mt-jit in project/emscripten/makefile) is a pthreads build and relies
+// on the per-worker table ownership in source/emulation/cpu/wasm.
 #ifdef BOXEDWINE_WASM_JIT
 #define BOXEDWINE_JIT
-// No BOXEDWINE_MULTI_THREADED: WASM is single-threaded by default
-// No ASMJIT flags: the WASM backend bypasses asmjit entirely
 #endif
 
 #ifdef BOXEDWINE_MAC_JIT

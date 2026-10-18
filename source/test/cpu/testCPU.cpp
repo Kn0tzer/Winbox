@@ -194,6 +194,35 @@ void testRunCPU() {
     } while (!cpu->nextOp || cpu->nextOp->inst != TestEnd);
 }
 
+#ifdef BOXEDWINE_WASM_JIT
+// Headless 32-bit CPU tests do not link the SDL input observer.
+#ifndef BOXEDWINE_GUEST_X64
+void xwireRecordInputDelivery(uint8_t, uint32_t) {}
+#endif
+
+// An interpreter-backed control transfer must leave generated code. Taken
+// from upstream's IRET regression (4d3762913): EBX marks stale fallthrough.
+void testWasmJitControlTransfer() {
+    auto& context = testContext();
+    CPU* cpu = context.cpu;
+    testNewInstruction(0);
+    const U32 sp = cpu->reg[4].u32;
+    context.memory->writed(cpu->seg[SS].address + sp, 6);
+    context.memory->writed(cpu->seg[SS].address + sp + 4, cpu->seg[CS].value);
+    context.memory->writed(cpu->seg[SS].address + sp + 8, cpu->flags | 2);
+    testPushCode8(0x31); testPushCode8(0xc0); // xor eax,eax
+    testPushCode8(0x75); testPushCode8(0x01); // jnz +1 (not taken)
+    testPushCode8(0xcf);                     // iret to offset 6
+    testPushCode8(0x43);                     // stale inc ebx must not execute
+    testRunCPU();
+    DecodedOp* block = context.memory->getDecodedOp(TEST_CODE_ADDRESS);
+    if (!block || block->pfn != cpu->thread->process->startJITOp)
+        testFail("IRET regression must execute a generated block");
+    if (cpu->reg[3].u32 != 0)
+        testFail("WASM JIT executed stale fallthrough after IRET");
+}
+#endif
+
 void testFail(const char* msg, ...) {
     TestContext& context = testContext();
     context.failed = true;

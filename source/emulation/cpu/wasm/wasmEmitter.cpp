@@ -267,6 +267,16 @@ void WasmEmitter::emitF64Store(U32 offset, U32 align) {
 
 void WasmEmitter::emitOp(U8 op) { m_currentBody.push_back(op); }
 
+// `atomic.fence` (0xfe 0x03, reserved ordering byte 0x00 = sequentially
+// consistent). Used at MT JIT guest memory-instruction boundaries to give the
+// generated code x86's ordering guarantee on weakly ordered hosts. See
+// wasmMemoryOrdering.h for the policy that decides whether it is emitted.
+void WasmEmitter::emitAtomicFence() {
+    m_currentBody.push_back(0xfe); // atomic instruction prefix
+    m_currentBody.push_back(0x03); // atomic.fence (sequentially consistent)
+    m_currentBody.push_back(0x00); // reserved ordering byte
+}
+
 void WasmEmitter::emitSimdOp(U32 op) {
     m_currentBody.push_back(0xfd);
     appendULEB128(m_currentBody, op);
