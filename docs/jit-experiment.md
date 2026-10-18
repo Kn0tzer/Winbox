@@ -2,6 +2,18 @@
 
 Archived commit `3833127bc` (now merged into master’s history) preserves the advanced x64 WASM emitter and its generators/tests. It predates the current runtime fixes and is not the production engine. The current `master` branch has the interpreter and the smaller JIT infrastructure checked by `scripts/build-jit-wasm.sh --selftest-only`. The historical design below describes the archived work, not a claim that every emitter is active on master.
 
+**Upstream status checked 2026-10-18:** [Boxedwine PR #151](https://github.com/danoon2/Boxedwine/pull/151)
+was merged on 2026-07-19. Its maintainer reported about 2.5× average performance
+over the non-JIT build across several applications; that is upstream evidence,
+not a Chromium measurement in this fork. The historical “closed, merged=no”
+statement below is superseded. Upstream's 32-bit guest WASM backend is a candidate
+for integration with the 32-bit Chromium path; it does not supply CPU64 support.
+The production `wasm64-mt` target here still uses the interpreter, without
+`BOXEDWINE_JIT` or `BOXEDWINE_BLOCK_EXEC`. Its CPU64 prototype's `tryJitStep()`
+still calls `execBlock`; the standalone emitter accepts only register/immediate
+MOV blocks and is not dispatched by the runtime. Setting `BW64_JIT=1` alone
+does not enable machine-code translation in the deployed build.
+
 # Port Plan: PR #151 WASM JIT → boxedwine64 `cpu64`
 
 Analysis date: 2026-03-09. Sources: local fork `/home/ubuntu/boxedwine64` @ working tree,

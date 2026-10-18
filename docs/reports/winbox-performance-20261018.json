@@ -1,0 +1,1066 @@
+{
+  "generatedAt": "2026-10-18T03:33:13.408Z",
+  "runs": [
+    {
+      "tag": "opt-20261018-base-1",
+      "startedAt": "2026-10-18T02:38:28.014Z",
+      "path": "test-results/suite-opt-20261018-base-1/summary.json",
+      "pass": false,
+      "wasmSha256": "95446e741cefdcb73965f32ef6898c24c027daa48ddf54ddfe58c86ea42f164f",
+      "runtimeCodeHash": "d2da5b0c89effb384704b9efccd26c075c2f15d7a4a0ea5904d63d47e3a1471e",
+      "hostBrowserVersion": "145.0.7632.0",
+      "archiveSha256": "6420689eb3793a78d8f1a4b4e785b527fe27e5f657db845f973c29949cd28e71",
+      "fixtureSha256": "7008723cbab78d48b02805070fcea0f45046f9f90ebce125f69589a9379581d0",
+      "error": "Error: Guest controls are not readable in the screenshot\n    at file:///home/ubuntu/boxedwine64/web/tests/chromium-probe.mjs:137:52"
+    },
+    {
+      "tag": "opt-20261018-live-1",
+      "startedAt": "2026-10-18T02:39:59.385Z",
+      "path": "test-results/suite-opt-20261018-live-1/summary.json",
+      "pass": false,
+      "wasmSha256": "46eb53ee977739bb0f765dc52387e6774ad1aee5252ae31dafbdd07bf49cd30a",
+      "runtimeCodeHash": "3ac9ac96192ab62dcf24cd19fadc1f68a8061ab3faa65c67d1a9ea0a7ba7b0e3",
+      "hostBrowserVersion": "145.0.7632.0",
+      "archiveSha256": "6420689eb3793a78d8f1a4b4e785b527fe27e5f657db845f973c29949cd28e71",
+      "fixtureSha256": "7008723cbab78d48b02805070fcea0f45046f9f90ebce125f69589a9379581d0",
+      "error": "Error: Guest controls are not readable in the screenshot\n    at file:///home/ubuntu/boxedwine64/web/tests/chromium-probe.mjs:137:52"
+    },
+    {
+      "tag": "opt-20261018-live-2",
+      "startedAt": "2026-10-18T02:40:58.604Z",
+      "path": "test-results/suite-opt-20261018-live-2/summary.json",
+      "pass": false,
+      "wasmSha256": "46eb53ee977739bb0f765dc52387e6774ad1aee5252ae31dafbdd07bf49cd30a",
+      "runtimeCodeHash": "3ac9ac96192ab62dcf24cd19fadc1f68a8061ab3faa65c67d1a9ea0a7ba7b0e3",
+      "hostBrowserVersion": "145.0.7632.0",
+      "archiveSha256": "6420689eb3793a78d8f1a4b4e785b527fe27e5f657db845f973c29949cd28e71",
+      "fixtureSha256": "1031a38a0e2d4b541ec33005b60c1cfe053364f31329b2ce553874d9e26e32ff",
+      "error": "Error: Guest controls are not readable in the screenshot\n    at file:///home/ubuntu/boxedwine64/web/tests/chromium-probe.mjs:137:52"
+    },
+    {
+      "tag": "opt-20261018-live-3",
+      "startedAt": "2026-10-18T02:42:36.023Z",
+      "path": "test-results/suite-opt-20261018-live-3/summary.json",
+      "pass": true,
+      "wasmSha256": "46eb53ee977739bb0f765dc52387e6774ad1aee5252ae31dafbdd07bf49cd30a",
+      "runtimeCodeHash": "3ac9ac96192ab62dcf24cd19fadc1f68a8061ab3faa65c67d1a9ea0a7ba7b0e3",
+      "hostBrowserVersion": "145.0.7632.0",
+      "archiveSha256": "6420689eb3793a78d8f1a4b4e785b527fe27e5f657db845f973c29949cd28e71",
+      "fixtureSha256": "5d4cc150345be6f67f45816b6d9e83d0de7aaaf1eb9ecd7c6832dcb76a17f3f4",
+      "readySeconds": 29.191,
+      "startupCpuSeconds": 44.57,
+      "integerSamplesMs": [
+        465,
+        417,
+        103,
+        102,
+        103,
+        103,
+        102,
+        103
+      ],
+      "warmIntegerMs": 103,
+      "sceneCpuSeconds": 30.599999999999994,
+      "callbackMedianMs": 49.998,
+      "callbackP95Ms": 66.664,
+      "drawMedianMs": 3,
+      "clickLatencyMs": 2502,
+      "idlePercentOneCore": 6.490825921813888
+    },
+    {
+      "tag": "opt-20261018-source-1",
+      "startedAt": "2026-10-18T02:42:59.639Z",
+      "path": "test-results/suite-opt-20261018-source-1/summary.json",
+      "pass": true,
+      "wasmSha256": "95446e741cefdcb73965f32ef6898c24c027daa48ddf54ddfe58c86ea42f164f",
+      "runtimeCodeHash": "d2da5b0c89effb384704b9efccd26c075c2f15d7a4a0ea5904d63d47e3a1471e",
+      "hostBrowserVersion": "145.0.7632.0",
+      "archiveSha256": "6420689eb3793a78d8f1a4b4e785b527fe27e5f657db845f973c29949cd28e71",
+      "fixtureSha256": "5d4cc150345be6f67f45816b6d9e83d0de7aaaf1eb9ecd7c6832dcb76a17f3f4",
+      "readySeconds": 30.246,
+      "startupCpuSeconds": 45.300000000000004,
+      "integerSamplesMs": [
+        490,
+        518,
+        128,
+        119,
+        119,
+        111,
+        114,
+        111
+      ],
+      "warmIntegerMs": 112.5,
+      "sceneCpuSeconds": 31.89,
+      "callbackMedianMs": 49.998,
+      "callbackP95Ms": 66.664,
+      "drawMedianMs": 3,
+      "clickLatencyMs": 1881,
+      "idlePercentOneCore": 6.991101641936981
+    },
+    {
+      "tag": "opt-20261018-branch-1",
+      "startedAt": "2026-10-18T02:45:44.205Z",
+      "path": "test-results/suite-opt-20261018-branch-1/summary.json",
+      "pass": true,
+      "wasmSha256": "3b16270af941bf41c6606ffae87aedba0f1221dbb4ad130e75a1bfd833af9ac8",
+      "runtimeCodeHash": "bcc307502e5332930ee7d1398a725b977113b208a485ccc5691db1e4a8429f7b",
+      "hostBrowserVersion": "145.0.7632.0",
+      "archiveSha256": "6420689eb3793a78d8f1a4b4e785b527fe27e5f657db845f973c29949cd28e71",
+      "fixtureSha256": "5d4cc150345be6f67f45816b6d9e83d0de7aaaf1eb9ecd7c6832dcb76a17f3f4",
+      "readySeconds": 27.975,
+      "startupCpuSeconds": 42.54,
+      "integerSamplesMs": [
+        418,
+        426,
+        101,
+        101,
+        99,
+        99,
+        101,
+        100
+      ],
+      "warmIntegerMs": 99.5,
+      "sceneCpuSeconds": 29.159999999999997,
+      "callbackMedianMs": 49.998,
+      "callbackP95Ms": 66.664,
+      "drawMedianMs": 3,
+      "clickLatencyMs": 322,
+      "idlePercentOneCore": 8.983734064577906
+    },
+    {
+      "tag": "opt-20261018-source-2",
+      "startedAt": "2026-10-18T02:46:56.845Z",
+      "path": "test-results/suite-opt-20261018-source-2/summary.json",
+      "pass": true,
+      "wasmSha256": "95446e741cefdcb73965f32ef6898c24c027daa48ddf54ddfe58c86ea42f164f",
+      "runtimeCodeHash": "d2da5b0c89effb384704b9efccd26c075c2f15d7a4a0ea5904d63d47e3a1471e",
+      "hostBrowserVersion": "145.0.7632.0",
+      "archiveSha256": "6420689eb3793a78d8f1a4b4e785b527fe27e5f657db845f973c29949cd28e71",
+      "fixtureSha256": "5d4cc150345be6f67f45816b6d9e83d0de7aaaf1eb9ecd7c6832dcb76a17f3f4",
+      "readySeconds": 31.162,
+      "startupCpuSeconds": 46.47,
+      "integerSamplesMs": [
+        544,
+        472,
+        114,
+        113,
+        120,
+        108,
+        107,
+        107
+      ],
+      "warmIntegerMs": 107.5,
+      "sceneCpuSeconds": 33.400000000000006,
+      "callbackMedianMs": 49.998,
+      "callbackP95Ms": 66.664,
+      "drawMedianMs": 3,
+      "clickLatencyMs": 656,
+      "idlePercentOneCore": 6.989445957572425
+    },
+    {
+      "tag": "opt-20261018-branch-2",
+      "startedAt": "2026-10-18T02:48:17.412Z",
+      "path": "test-results/suite-opt-20261018-branch-2/summary.json",
+      "pass": true,
+      "wasmSha256": "3b16270af941bf41c6606ffae87aedba0f1221dbb4ad130e75a1bfd833af9ac8",
+      "runtimeCodeHash": "bcc307502e5332930ee7d1398a725b977113b208a485ccc5691db1e4a8429f7b",
+      "hostBrowserVersion": "145.0.7632.0",
+      "archiveSha256": "6420689eb3793a78d8f1a4b4e785b527fe27e5f657db845f973c29949cd28e71",
+      "fixtureSha256": "5d4cc150345be6f67f45816b6d9e83d0de7aaaf1eb9ecd7c6832dcb76a17f3f4",
+      "readySeconds": 29.295,
+      "startupCpuSeconds": 45.010000000000005,
+      "integerSamplesMs": [
+        547,
+        387,
+        95,
+        95,
+        95,
+        96,
+        95,
+        96
+      ],
+      "warmIntegerMs": 95.5,
+      "sceneCpuSeconds": 30.39,
+      "callbackMedianMs": 49.998,
+      "callbackP95Ms": 66.664,
+      "drawMedianMs": 3,
+      "clickLatencyMs": 239,
+      "idlePercentOneCore": 19.46603955712166
+    },
+    {
+      "tag": "opt-20261018-source-3",
+      "startedAt": "2026-10-18T02:49:18.106Z",
+      "path": "test-results/suite-opt-20261018-source-3/summary.json",
+      "pass": true,
+      "wasmSha256": "95446e741cefdcb73965f32ef6898c24c027daa48ddf54ddfe58c86ea42f164f",
+      "runtimeCodeHash": "d2da5b0c89effb384704b9efccd26c075c2f15d7a4a0ea5904d63d47e3a1471e",
+      "hostBrowserVersion": "145.0.7632.0",
+      "archiveSha256": "6420689eb3793a78d8f1a4b4e785b527fe27e5f657db845f973c29949cd28e71",
+      "fixtureSha256": "5d4cc150345be6f67f45816b6d9e83d0de7aaaf1eb9ecd7c6832dcb76a17f3f4",
+      "readySeconds": 29.818,
+      "startupCpuSeconds": 47.04,
+      "integerSamplesMs": [
+        384,
+        386,
+        109,
+        107,
+        107,
+        113,
+        107,
+        108
+      ],
+      "warmIntegerMs": 107.5,
+      "sceneCpuSeconds": 30.20000000000001,
+      "callbackMedianMs": 49.998,
+      "callbackP95Ms": 66.664,
+      "drawMedianMs": 3,
+      "clickLatencyMs": 954,
+      "idlePercentOneCore": 6.4886636524881975
+    },
+    {
+      "tag": "opt-20261018-branch-3",
+      "startedAt": "2026-10-18T02:50:38.194Z",
+      "path": "test-results/suite-opt-20261018-branch-3/summary.json",
+      "pass": true,
+      "wasmSha256": "3b16270af941bf41c6606ffae87aedba0f1221dbb4ad130e75a1bfd833af9ac8",
+      "runtimeCodeHash": "bcc307502e5332930ee7d1398a725b977113b208a485ccc5691db1e4a8429f7b",
+      "hostBrowserVersion": "145.0.7632.0",
+      "archiveSha256": "6420689eb3793a78d8f1a4b4e785b527fe27e5f657db845f973c29949cd28e71",
+      "fixtureSha256": "5d4cc150345be6f67f45816b6d9e83d0de7aaaf1eb9ecd7c6832dcb76a17f3f4",
+      "readySeconds": 28.089,
+      "startupCpuSeconds": 44.88,
+      "integerSamplesMs": [
+        403,
+        412,
+        97,
+        97,
+        94,
+        95,
+        95,
+        94
+      ],
+      "warmIntegerMs": 94.5,
+      "sceneCpuSeconds": 29.510000000000005,
+      "callbackMedianMs": 49.998,
+      "callbackP95Ms": 66.664,
+      "drawMedianMs": 3,
+      "clickLatencyMs": 2497,
+      "idlePercentOneCore": 7.485187539921975
+    },
+    {
+      "tag": "opt-20261018-batch-1",
+      "startedAt": "2026-10-18T02:53:07.172Z",
+      "path": "test-results/suite-opt-20261018-batch-1/summary.json",
+      "pass": true,
+      "wasmSha256": "35e230d206ef0dfd06f2766794e8187a9a1a662b2e08d3a47574a81bdcd3bd18",
+      "runtimeCodeHash": "5dd2bfa8ed348d9744b744c13c16e25bd6d923e501ea860a0e3c15dcb4e67449",
+      "hostBrowserVersion": "145.0.7632.0",
+      "archiveSha256": "6420689eb3793a78d8f1a4b4e785b527fe27e5f657db845f973c29949cd28e71",
+      "fixtureSha256": "5d4cc150345be6f67f45816b6d9e83d0de7aaaf1eb9ecd7c6832dcb76a17f3f4",
+      "readySeconds": 27.557,
+      "startupCpuSeconds": 42.58,
+      "integerSamplesMs": [
+        468,
+        398,
+        96,
+        96,
+        96,
+        100,
+        96,
+        110
+      ],
+      "warmIntegerMs": 98,
+      "sceneCpuSeconds": 29.29,
+      "callbackMedianMs": 49.998,
+      "callbackP95Ms": 66.664,
+      "drawMedianMs": 3,
+      "clickLatencyMs": 225,
+      "idlePercentOneCore": 16.466400564877183
+    },
+    {
+      "tag": "opt-20261018-batch-2",
+      "startedAt": "2026-10-18T02:54:37.865Z",
+      "path": "test-results/suite-opt-20261018-batch-2/summary.json",
+      "pass": true,
+      "wasmSha256": "35e230d206ef0dfd06f2766794e8187a9a1a662b2e08d3a47574a81bdcd3bd18",
+      "runtimeCodeHash": "5dd2bfa8ed348d9744b744c13c16e25bd6d923e501ea860a0e3c15dcb4e67449",
+      "hostBrowserVersion": "145.0.7632.0",
+      "archiveSha256": "6420689eb3793a78d8f1a4b4e785b527fe27e5f657db845f973c29949cd28e71",
+      "fixtureSha256": "5d4cc150345be6f67f45816b6d9e83d0de7aaaf1eb9ecd7c6832dcb76a17f3f4",
+      "readySeconds": 28.352,
+      "startupCpuSeconds": 43.690000000000005,
+      "integerSamplesMs": [
+        445,
+        375,
+        97,
+        108,
+        98,
+        99,
+        98,
+        97
+      ],
+      "warmIntegerMs": 98,
+      "sceneCpuSeconds": 31.08,
+      "callbackMedianMs": 49.998,
+      "callbackP95Ms": 66.664,
+      "drawMedianMs": 3,
+      "clickLatencyMs": 304,
+      "idlePercentOneCore": 7.487804754664665
+    },
+    {
+      "tag": "opt-20261018-batch-3",
+      "startedAt": "2026-10-18T02:55:39.029Z",
+      "path": "test-results/suite-opt-20261018-batch-3/summary.json",
+      "pass": true,
+      "wasmSha256": "35e230d206ef0dfd06f2766794e8187a9a1a662b2e08d3a47574a81bdcd3bd18",
+      "runtimeCodeHash": "5dd2bfa8ed348d9744b744c13c16e25bd6d923e501ea860a0e3c15dcb4e67449",
+      "hostBrowserVersion": "145.0.7632.0",
+      "archiveSha256": "6420689eb3793a78d8f1a4b4e785b527fe27e5f657db845f973c29949cd28e71",
+      "fixtureSha256": "5d4cc150345be6f67f45816b6d9e83d0de7aaaf1eb9ecd7c6832dcb76a17f3f4",
+      "readySeconds": 28.529,
+      "startupCpuSeconds": 43.45,
+      "integerSamplesMs": [
+        465,
+        419,
+        96,
+        97,
+        96,
+        96,
+        96,
+        96
+      ],
+      "warmIntegerMs": 96,
+      "sceneCpuSeconds": 30.560000000000002,
+      "callbackMedianMs": 49.998,
+      "callbackP95Ms": 49.998,
+      "drawMedianMs": 3,
+      "clickLatencyMs": 314,
+      "idlePercentOneCore": 9.966400508177317
+    },
+    {
+      "tag": "opt-20261018-calls-1",
+      "startedAt": "2026-10-18T02:59:22.338Z",
+      "path": "test-results/suite-opt-20261018-calls-1/summary.json",
+      "pass": true,
+      "wasmSha256": "2fde77c9599f76c219b6a5036cca5d0c1a663c7c248d75dfb0fc147d36066235",
+      "runtimeCodeHash": "c671fc5f942e884bb7e9602ae86306fae98c281812b3ddf00e1786616cfd4c55",
+      "hostBrowserVersion": "145.0.7632.0",
+      "archiveSha256": "6420689eb3793a78d8f1a4b4e785b527fe27e5f657db845f973c29949cd28e71",
+      "fixtureSha256": "5d4cc150345be6f67f45816b6d9e83d0de7aaaf1eb9ecd7c6832dcb76a17f3f4",
+      "readySeconds": 28.233,
+      "startupCpuSeconds": 44.43,
+      "integerSamplesMs": [
+        565,
+        469,
+        101,
+        97,
+        94,
+        94,
+        101,
+        106
+      ],
+      "warmIntegerMs": 97.5,
+      "sceneCpuSeconds": 32.400000000000006,
+      "callbackMedianMs": 49.998,
+      "callbackP95Ms": 66.664,
+      "drawMedianMs": 3,
+      "clickLatencyMs": 283,
+      "clickActionabilityMs": 36,
+      "clickGuestDeliveryMs": 247,
+      "idlePercentOneCore": 13.476806644869704
+    },
+    {
+      "tag": "opt-20261018-calls-2",
+      "startedAt": "2026-10-18T03:02:49.895Z",
+      "path": "test-results/suite-opt-20261018-calls-2/summary.json",
+      "pass": true,
+      "wasmSha256": "2fde77c9599f76c219b6a5036cca5d0c1a663c7c248d75dfb0fc147d36066235",
+      "runtimeCodeHash": "c671fc5f942e884bb7e9602ae86306fae98c281812b3ddf00e1786616cfd4c55",
+      "hostBrowserVersion": "145.0.7632.0",
+      "archiveSha256": "6420689eb3793a78d8f1a4b4e785b527fe27e5f657db845f973c29949cd28e71",
+      "fixtureSha256": "5d4cc150345be6f67f45816b6d9e83d0de7aaaf1eb9ecd7c6832dcb76a17f3f4",
+      "readySeconds": 26.928,
+      "startupCpuSeconds": 42.519999999999996,
+      "integerSamplesMs": [
+        405,
+        405,
+        96,
+        97,
+        103,
+        98,
+        96,
+        95
+      ],
+      "warmIntegerMs": 97,
+      "sceneCpuSeconds": 29.879999999999995,
+      "callbackMedianMs": 49.998,
+      "callbackP95Ms": 66.664,
+      "drawMedianMs": 3,
+      "clickLatencyMs": 409,
+      "clickActionabilityMs": 23,
+      "clickGuestDeliveryMs": 386,
+      "idlePercentOneCore": 9.980740628912974
+    },
+    {
+      "tag": "opt-20261018-batch-4",
+      "startedAt": "2026-10-18T03:03:49.155Z",
+      "path": "test-results/suite-opt-20261018-batch-4/summary.json",
+      "pass": true,
+      "wasmSha256": "35e230d206ef0dfd06f2766794e8187a9a1a662b2e08d3a47574a81bdcd3bd18",
+      "runtimeCodeHash": "5dd2bfa8ed348d9744b744c13c16e25bd6d923e501ea860a0e3c15dcb4e67449",
+      "hostBrowserVersion": "145.0.7632.0",
+      "archiveSha256": "6420689eb3793a78d8f1a4b4e785b527fe27e5f657db845f973c29949cd28e71",
+      "fixtureSha256": "5d4cc150345be6f67f45816b6d9e83d0de7aaaf1eb9ecd7c6832dcb76a17f3f4",
+      "readySeconds": 28.858,
+      "startupCpuSeconds": 43.92,
+      "integerSamplesMs": [
+        442,
+        413,
+        99,
+        98,
+        100,
+        100,
+        99,
+        99
+      ],
+      "warmIntegerMs": 99.5,
+      "sceneCpuSeconds": 30.070000000000007,
+      "callbackMedianMs": 49.998,
+      "callbackP95Ms": 66.664,
+      "drawMedianMs": 3,
+      "clickLatencyMs": 373,
+      "clickActionabilityMs": 37,
+      "clickGuestDeliveryMs": 336,
+      "idlePercentOneCore": 6.491512396228047
+    },
+    {
+      "tag": "opt-20261018-calls-3",
+      "startedAt": "2026-10-18T03:04:51.242Z",
+      "path": "test-results/suite-opt-20261018-calls-3/summary.json",
+      "pass": true,
+      "wasmSha256": "2fde77c9599f76c219b6a5036cca5d0c1a663c7c248d75dfb0fc147d36066235",
+      "runtimeCodeHash": "c671fc5f942e884bb7e9602ae86306fae98c281812b3ddf00e1786616cfd4c55",
+      "hostBrowserVersion": "145.0.7632.0",
+      "archiveSha256": "6420689eb3793a78d8f1a4b4e785b527fe27e5f657db845f973c29949cd28e71",
+      "fixtureSha256": "5d4cc150345be6f67f45816b6d9e83d0de7aaaf1eb9ecd7c6832dcb76a17f3f4",
+      "readySeconds": 29.382,
+      "startupCpuSeconds": 43.02,
+      "integerSamplesMs": [
+        507,
+        395,
+        107,
+        102,
+        95,
+        112,
+        99,
+        96
+      ],
+      "warmIntegerMs": 97.5,
+      "sceneCpuSeconds": 29.630000000000003,
+      "callbackMedianMs": 49.998,
+      "callbackP95Ms": 66.664,
+      "drawMedianMs": 3,
+      "clickLatencyMs": 2455,
+      "clickActionabilityMs": 27,
+      "clickGuestDeliveryMs": 2428,
+      "idlePercentOneCore": 7.484541883749926
+    },
+    {
+      "tag": "opt-20261018-deployed-1",
+      "startedAt": "2026-10-18T03:23:11.677Z",
+      "path": "test-results/suite-opt-20261018-deployed-1/summary.json",
+      "pass": true,
+      "host": {
+        "arch": "arm64",
+        "logicalCpus": 4,
+        "cpu": "Neoverse-N1",
+        "loadAverage": [
+          2.23,
+          2.99,
+          3.02
+        ]
+      },
+      "wasmSha256": "46eb53ee977739bb0f765dc52387e6774ad1aee5252ae31dafbdd07bf49cd30a",
+      "runtimeCodeHash": "3ac9ac96192ab62dcf24cd19fadc1f68a8061ab3faa65c67d1a9ea0a7ba7b0e3",
+      "hostBrowserVersion": "145.0.7632.0",
+      "archiveSha256": "6420689eb3793a78d8f1a4b4e785b527fe27e5f657db845f973c29949cd28e71",
+      "fixtureSha256": "5d4cc150345be6f67f45816b6d9e83d0de7aaaf1eb9ecd7c6832dcb76a17f3f4",
+      "readySeconds": 29.557,
+      "startupCpuSeconds": 46.06,
+      "integerSamplesMs": [
+        640,
+        543,
+        112,
+        111,
+        115,
+        122,
+        112,
+        111
+      ],
+      "warmIntegerMs": 113.5,
+      "sceneCpuSeconds": 32.08,
+      "callbackMedianMs": 49.998,
+      "callbackP95Ms": 66.664,
+      "drawMedianMs": 3,
+      "clickLatencyMs": 1333,
+      "clickActionabilityMs": 33,
+      "clickGuestDeliveryMs": 1300,
+      "idlePercentOneCore": 6.988651513183615
+    },
+    {
+      "tag": "opt-20261018-final-1",
+      "startedAt": "2026-10-18T03:24:15.238Z",
+      "path": "test-results/suite-opt-20261018-final-1/summary.json",
+      "pass": true,
+      "host": {
+        "arch": "arm64",
+        "logicalCpus": 4,
+        "cpu": "Neoverse-N1",
+        "loadAverage": [
+          4.57,
+          3.52,
+          3.2
+        ]
+      },
+      "wasmSha256": "35e230d206ef0dfd06f2766794e8187a9a1a662b2e08d3a47574a81bdcd3bd18",
+      "runtimeCodeHash": "3b850e1cb46bba582bd3efe469aea18752961ad5430a43aa5e6704eee1ee5305",
+      "hostBrowserVersion": "145.0.7632.0",
+      "archiveSha256": "6420689eb3793a78d8f1a4b4e785b527fe27e5f657db845f973c29949cd28e71",
+      "fixtureSha256": "5d4cc150345be6f67f45816b6d9e83d0de7aaaf1eb9ecd7c6832dcb76a17f3f4",
+      "readySeconds": 28.705,
+      "startupCpuSeconds": 43.419999999999995,
+      "integerSamplesMs": [
+        467,
+        474,
+        105,
+        101,
+        102,
+        101,
+        114,
+        101
+      ],
+      "warmIntegerMs": 101.5,
+      "sceneCpuSeconds": 30.72999999999999,
+      "callbackMedianMs": 49.998,
+      "callbackP95Ms": 66.664,
+      "drawMedianMs": 3,
+      "clickLatencyMs": 2037,
+      "clickActionabilityMs": 30,
+      "clickGuestDeliveryMs": 2007,
+      "idlePercentOneCore": 6.990579306580845
+    },
+    {
+      "tag": "opt-20261018-deployed-2",
+      "startedAt": "2026-10-18T03:25:16.865Z",
+      "path": "test-results/suite-opt-20261018-deployed-2/summary.json",
+      "pass": true,
+      "host": {
+        "arch": "arm64",
+        "logicalCpus": 4,
+        "cpu": "Neoverse-N1",
+        "loadAverage": [
+          4.27,
+          3.63,
+          3.26
+        ]
+      },
+      "wasmSha256": "46eb53ee977739bb0f765dc52387e6774ad1aee5252ae31dafbdd07bf49cd30a",
+      "runtimeCodeHash": "3ac9ac96192ab62dcf24cd19fadc1f68a8061ab3faa65c67d1a9ea0a7ba7b0e3",
+      "hostBrowserVersion": "145.0.7632.0",
+      "archiveSha256": "6420689eb3793a78d8f1a4b4e785b527fe27e5f657db845f973c29949cd28e71",
+      "fixtureSha256": "5d4cc150345be6f67f45816b6d9e83d0de7aaaf1eb9ecd7c6832dcb76a17f3f4",
+      "readySeconds": 30.274,
+      "startupCpuSeconds": 46.18,
+      "integerSamplesMs": [
+        509,
+        532,
+        108,
+        125,
+        131,
+        116,
+        107,
+        106
+      ],
+      "warmIntegerMs": 111.5,
+      "sceneCpuSeconds": 32.61,
+      "callbackMedianMs": 49.998,
+      "callbackP95Ms": 66.664,
+      "drawMedianMs": 3,
+      "clickLatencyMs": 541,
+      "clickActionabilityMs": 35,
+      "clickGuestDeliveryMs": 506,
+      "idlePercentOneCore": 8.986645023217829
+    },
+    {
+      "tag": "opt-20261018-final-2",
+      "startedAt": "2026-10-18T03:26:19.365Z",
+      "path": "test-results/suite-opt-20261018-final-2/summary.json",
+      "pass": true,
+      "host": {
+        "arch": "arm64",
+        "logicalCpus": 4,
+        "cpu": "Neoverse-N1",
+        "loadAverage": [
+          5.12,
+          3.94,
+          3.39
+        ]
+      },
+      "wasmSha256": "35e230d206ef0dfd06f2766794e8187a9a1a662b2e08d3a47574a81bdcd3bd18",
+      "runtimeCodeHash": "3b850e1cb46bba582bd3efe469aea18752961ad5430a43aa5e6704eee1ee5305",
+      "hostBrowserVersion": "145.0.7632.0",
+      "archiveSha256": "6420689eb3793a78d8f1a4b4e785b527fe27e5f657db845f973c29949cd28e71",
+      "fixtureSha256": "5d4cc150345be6f67f45816b6d9e83d0de7aaaf1eb9ecd7c6832dcb76a17f3f4",
+      "readySeconds": 30.364,
+      "startupCpuSeconds": 44.120000000000005,
+      "integerSamplesMs": [
+        446,
+        442,
+        104,
+        116,
+        132,
+        98,
+        92,
+        92
+      ],
+      "warmIntegerMs": 95,
+      "sceneCpuSeconds": 31.65,
+      "callbackMedianMs": 49.998,
+      "callbackP95Ms": 66.664,
+      "drawMedianMs": 3,
+      "clickLatencyMs": 1171,
+      "clickActionabilityMs": 29,
+      "clickGuestDeliveryMs": 1142,
+      "idlePercentOneCore": 6.484184406362368
+    },
+    {
+      "tag": "opt-20261018-deployed-3",
+      "startedAt": "2026-10-18T03:27:21.997Z",
+      "path": "test-results/suite-opt-20261018-deployed-3/summary.json",
+      "pass": true,
+      "host": {
+        "arch": "arm64",
+        "logicalCpus": 4,
+        "cpu": "Neoverse-N1",
+        "loadAverage": [
+          4.34,
+          3.92,
+          3.41
+        ]
+      },
+      "wasmSha256": "46eb53ee977739bb0f765dc52387e6774ad1aee5252ae31dafbdd07bf49cd30a",
+      "runtimeCodeHash": "3ac9ac96192ab62dcf24cd19fadc1f68a8061ab3faa65c67d1a9ea0a7ba7b0e3",
+      "hostBrowserVersion": "145.0.7632.0",
+      "archiveSha256": "6420689eb3793a78d8f1a4b4e785b527fe27e5f657db845f973c29949cd28e71",
+      "fixtureSha256": "5d4cc150345be6f67f45816b6d9e83d0de7aaaf1eb9ecd7c6832dcb76a17f3f4",
+      "readySeconds": 29.349,
+      "startupCpuSeconds": 43.980000000000004,
+      "integerSamplesMs": [
+        516,
+        471,
+        116,
+        112,
+        110,
+        116,
+        120,
+        110
+      ],
+      "warmIntegerMs": 113,
+      "sceneCpuSeconds": 30.330000000000013,
+      "callbackMedianMs": 49.998,
+      "callbackP95Ms": 66.664,
+      "drawMedianMs": 3,
+      "clickLatencyMs": 2476,
+      "clickActionabilityMs": 48,
+      "clickGuestDeliveryMs": 2428,
+      "idlePercentOneCore": 6.9899801640040815
+    },
+    {
+      "tag": "opt-20261018-final-3",
+      "startedAt": "2026-10-18T03:28:24.724Z",
+      "path": "test-results/suite-opt-20261018-final-3/summary.json",
+      "pass": true,
+      "host": {
+        "arch": "arm64",
+        "logicalCpus": 4,
+        "cpu": "Neoverse-N1",
+        "loadAverage": [
+          4.86,
+          4.2,
+          3.55
+        ]
+      },
+      "wasmSha256": "35e230d206ef0dfd06f2766794e8187a9a1a662b2e08d3a47574a81bdcd3bd18",
+      "runtimeCodeHash": "3b850e1cb46bba582bd3efe469aea18752961ad5430a43aa5e6704eee1ee5305",
+      "hostBrowserVersion": "145.0.7632.0",
+      "archiveSha256": "6420689eb3793a78d8f1a4b4e785b527fe27e5f657db845f973c29949cd28e71",
+      "fixtureSha256": "5d4cc150345be6f67f45816b6d9e83d0de7aaaf1eb9ecd7c6832dcb76a17f3f4",
+      "readySeconds": 27.658,
+      "startupCpuSeconds": 43.09,
+      "integerSamplesMs": [
+        438,
+        403,
+        95,
+        98,
+        95,
+        103,
+        100,
+        96
+      ],
+      "warmIntegerMs": 98,
+      "sceneCpuSeconds": 30.840000000000003,
+      "callbackMedianMs": 49.998,
+      "callbackP95Ms": 66.664,
+      "drawMedianMs": 3,
+      "clickLatencyMs": 344,
+      "clickActionabilityMs": 35,
+      "clickGuestDeliveryMs": 309,
+      "idlePercentOneCore": 7.486783412788328
+    }
+  ],
+  "groups": [
+    {
+      "label": "opt-20261018-live",
+      "runs": 1,
+      "readySeconds": {
+        "median": 29.191,
+        "min": 29.191,
+        "max": 29.191
+      },
+      "startupCpuSeconds": {
+        "median": 44.57,
+        "min": 44.57,
+        "max": 44.57
+      },
+      "warmIntegerMs": {
+        "median": 103,
+        "min": 103,
+        "max": 103
+      },
+      "sceneCpuSeconds": {
+        "median": 30.599999999999994,
+        "min": 30.599999999999994,
+        "max": 30.599999999999994
+      },
+      "callbackMedianMs": {
+        "median": 49.998,
+        "min": 49.998,
+        "max": 49.998
+      },
+      "callbackP95Ms": {
+        "median": 66.664,
+        "min": 66.664,
+        "max": 66.664
+      },
+      "drawMedianMs": {
+        "median": 3,
+        "min": 3,
+        "max": 3
+      },
+      "clickLatencyMs": {
+        "median": 2502,
+        "min": 2502,
+        "max": 2502
+      },
+      "idlePercentOneCore": {
+        "median": 6.490825921813888,
+        "min": 6.490825921813888,
+        "max": 6.490825921813888
+      }
+    },
+    {
+      "label": "opt-20261018-source",
+      "runs": 3,
+      "readySeconds": {
+        "median": 30.246,
+        "min": 29.818,
+        "max": 31.162
+      },
+      "startupCpuSeconds": {
+        "median": 46.47,
+        "min": 45.300000000000004,
+        "max": 47.04
+      },
+      "warmIntegerMs": {
+        "median": 107.5,
+        "min": 107.5,
+        "max": 112.5
+      },
+      "sceneCpuSeconds": {
+        "median": 31.89,
+        "min": 30.20000000000001,
+        "max": 33.400000000000006
+      },
+      "callbackMedianMs": {
+        "median": 49.998,
+        "min": 49.998,
+        "max": 49.998
+      },
+      "callbackP95Ms": {
+        "median": 66.664,
+        "min": 66.664,
+        "max": 66.664
+      },
+      "drawMedianMs": {
+        "median": 3,
+        "min": 3,
+        "max": 3
+      },
+      "clickLatencyMs": {
+        "median": 954,
+        "min": 656,
+        "max": 1881
+      },
+      "idlePercentOneCore": {
+        "median": 6.989445957572425,
+        "min": 6.4886636524881975,
+        "max": 6.991101641936981
+      }
+    },
+    {
+      "label": "opt-20261018-branch",
+      "runs": 3,
+      "readySeconds": {
+        "median": 28.089,
+        "min": 27.975,
+        "max": 29.295
+      },
+      "startupCpuSeconds": {
+        "median": 44.88,
+        "min": 42.54,
+        "max": 45.010000000000005
+      },
+      "warmIntegerMs": {
+        "median": 95.5,
+        "min": 94.5,
+        "max": 99.5
+      },
+      "sceneCpuSeconds": {
+        "median": 29.510000000000005,
+        "min": 29.159999999999997,
+        "max": 30.39
+      },
+      "callbackMedianMs": {
+        "median": 49.998,
+        "min": 49.998,
+        "max": 49.998
+      },
+      "callbackP95Ms": {
+        "median": 66.664,
+        "min": 66.664,
+        "max": 66.664
+      },
+      "drawMedianMs": {
+        "median": 3,
+        "min": 3,
+        "max": 3
+      },
+      "clickLatencyMs": {
+        "median": 322,
+        "min": 239,
+        "max": 2497
+      },
+      "idlePercentOneCore": {
+        "median": 8.983734064577906,
+        "min": 7.485187539921975,
+        "max": 19.46603955712166
+      }
+    },
+    {
+      "label": "opt-20261018-batch",
+      "runs": 4,
+      "readySeconds": {
+        "median": 28.4405,
+        "min": 27.557,
+        "max": 28.858
+      },
+      "startupCpuSeconds": {
+        "median": 43.57000000000001,
+        "min": 42.58,
+        "max": 43.92
+      },
+      "warmIntegerMs": {
+        "median": 98,
+        "min": 96,
+        "max": 99.5
+      },
+      "sceneCpuSeconds": {
+        "median": 30.315000000000005,
+        "min": 29.29,
+        "max": 31.08
+      },
+      "callbackMedianMs": {
+        "median": 49.998,
+        "min": 49.998,
+        "max": 49.998
+      },
+      "callbackP95Ms": {
+        "median": 66.664,
+        "min": 49.998,
+        "max": 66.664
+      },
+      "drawMedianMs": {
+        "median": 3,
+        "min": 3,
+        "max": 3
+      },
+      "clickLatencyMs": {
+        "median": 309,
+        "min": 225,
+        "max": 373
+      },
+      "idlePercentOneCore": {
+        "median": 8.72710263142099,
+        "min": 6.491512396228047,
+        "max": 16.466400564877183
+      }
+    },
+    {
+      "label": "opt-20261018-calls",
+      "runs": 3,
+      "readySeconds": {
+        "median": 28.233,
+        "min": 26.928,
+        "max": 29.382
+      },
+      "startupCpuSeconds": {
+        "median": 43.02,
+        "min": 42.519999999999996,
+        "max": 44.43
+      },
+      "warmIntegerMs": {
+        "median": 97.5,
+        "min": 97,
+        "max": 97.5
+      },
+      "sceneCpuSeconds": {
+        "median": 29.879999999999995,
+        "min": 29.630000000000003,
+        "max": 32.400000000000006
+      },
+      "callbackMedianMs": {
+        "median": 49.998,
+        "min": 49.998,
+        "max": 49.998
+      },
+      "callbackP95Ms": {
+        "median": 66.664,
+        "min": 66.664,
+        "max": 66.664
+      },
+      "drawMedianMs": {
+        "median": 3,
+        "min": 3,
+        "max": 3
+      },
+      "clickLatencyMs": {
+        "median": 409,
+        "min": 283,
+        "max": 2455
+      },
+      "idlePercentOneCore": {
+        "median": 9.980740628912974,
+        "min": 7.484541883749926,
+        "max": 13.476806644869704
+      }
+    },
+    {
+      "label": "opt-20261018-deployed",
+      "runs": 3,
+      "readySeconds": {
+        "median": 29.557,
+        "min": 29.349,
+        "max": 30.274
+      },
+      "startupCpuSeconds": {
+        "median": 46.06,
+        "min": 43.980000000000004,
+        "max": 46.18
+      },
+      "warmIntegerMs": {
+        "median": 113,
+        "min": 111.5,
+        "max": 113.5
+      },
+      "sceneCpuSeconds": {
+        "median": 32.08,
+        "min": 30.330000000000013,
+        "max": 32.61
+      },
+      "callbackMedianMs": {
+        "median": 49.998,
+        "min": 49.998,
+        "max": 49.998
+      },
+      "callbackP95Ms": {
+        "median": 66.664,
+        "min": 66.664,
+        "max": 66.664
+      },
+      "drawMedianMs": {
+        "median": 3,
+        "min": 3,
+        "max": 3
+      },
+      "clickLatencyMs": {
+        "median": 1333,
+        "min": 541,
+        "max": 2476
+      },
+      "idlePercentOneCore": {
+        "median": 6.9899801640040815,
+        "min": 6.988651513183615,
+        "max": 8.986645023217829
+      }
+    },
+    {
+      "label": "opt-20261018-final",
+      "runs": 3,
+      "readySeconds": {
+        "median": 28.705,
+        "min": 27.658,
+        "max": 30.364
+      },
+      "startupCpuSeconds": {
+        "median": 43.419999999999995,
+        "min": 43.09,
+        "max": 44.120000000000005
+      },
+      "warmIntegerMs": {
+        "median": 98,
+        "min": 95,
+        "max": 101.5
+      },
+      "sceneCpuSeconds": {
+        "median": 30.840000000000003,
+        "min": 30.72999999999999,
+        "max": 31.65
+      },
+      "callbackMedianMs": {
+        "median": 49.998,
+        "min": 49.998,
+        "max": 49.998
+      },
+      "callbackP95Ms": {
+        "median": 66.664,
+        "min": 66.664,
+        "max": 66.664
+      },
+      "drawMedianMs": {
+        "median": 3,
+        "min": 3,
+        "max": 3
+      },
+      "clickLatencyMs": {
+        "median": 1171,
+        "min": 344,
+        "max": 2037
+      },
+      "idlePercentOneCore": {
+        "median": 6.990579306580845,
+        "min": 6.484184406362368,
+        "max": 7.486783412788328
+      }
+    }
+  ]
+}
