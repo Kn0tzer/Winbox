@@ -149,7 +149,7 @@ test('out-of-bounds state traps before modifying any guest state', async () => {
 
 for (const [name, code] of [
   ['empty block', []],
-  ['guest-memory MOV', [0x48, 0x89, 0x00]],
+  ['16-bit guest-memory MOV', [0x66, 0x89, 0x00]],
   ['16-bit MOV', [0x66, 0xB8, 0x42, 0]], ['16-bit MOVSXD', [0x66, 0x63, 0xC0]],
   ['REP prefix', [0xF3, 0xB8, 0x42, 0, 0, 0]],
   ['FS-segment memory ADD', [0x64, 0x48, 0x01, 0x00]],
@@ -205,6 +205,24 @@ async function runAlu(code, regs, rflags, rip = 0x12345678ABCDEFF0n, ptr = 512) 
 }
 
 const baseRegs = () => Array.from({ length: 16 }, (_, i) => 0xFEDCBA9876543200n + BigInt(i));
+for (const size of [4, 8]) {
+  test(`memory MOV ${size * 8} preserves addresses above 4GiB and register width`, async () => {
+    const regs = baseRegs();
+    regs[3] = 0x123400001000n;
+    regs[1] = 0xFEDCBA9898765432n;
+    const rex = size === 8 ? [0x48] : [];
+    const code = [...rex, 0x89, 0x0b, ...rex, 0x8b, 0x13]; // [rbx]=rcx; rdx=[rbx]
+    const out = await runAluMem(code, { regs, rflags: 0x8D7 });
+    const expected = [...regs];
+    expected[2] = BigInt.asUintN(size * 8, regs[1]);
+    assert.deepEqual(out.regs, expected);
+    assert.equal(out.rflags, 0x8D7);
+    assert.equal(out.ripOut, 0x12345678ABCDEFF0n + BigInt(code.length));
+    for (let i = 0; i < size; i++)
+      assert.equal(out.guestMem.bytes.get(regs[3] + BigInt(i)), little(regs[1], size)[i]);
+    expectEmitted(out, 2);
+  });
+}
 const modrm = (reg, rm) => 0xC0 | (reg << 3) | rm;
 function expectAlu(out, initFlags, newBits, codeLen, changed) {
   assert.equal(out.rflags, (((initFlags & ~ALU_MASK) | Number(newBits)) >>> 0), 'rflags');

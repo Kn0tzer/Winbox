@@ -39,6 +39,7 @@
 #include <cstdio>
 #include <cstdarg>
 #include <mutex>
+#include <atomic>
 #include <vector>
 
 static const Jit64CoveredOpcode kCovered[] = {
@@ -88,11 +89,11 @@ const Jit64CoveredOpcode* jit64CoveredOpcodes(U32* countOut) {
 }
 
 bool jit64Enabled() {
-    static int cached = -1;
-    if (cached < 0) {
-        cached = (std::getenv("BW64_JIT") && std::getenv("BW64_JIT")[0] == '1') ? 1 : 0;
-    }
-    return cached == 1;
+    static const bool enabled = [] {
+        const char* value = std::getenv("BW64_JIT");
+        return value && value[0] == '1';
+    }();
+    return enabled;
 }
 
 // ---- byte-level prefix scan (mirrors CPU64::consumePrefixes) ----
@@ -1048,9 +1049,9 @@ Jit64BlockCache::Jit64BlockCache() {
 // Page-generation reader used by lookupByRip. Installed by the host runtime
 // (KMemory64::blockPageGenOf) so this TU stays dependency-free; native tests
 // can install a fake to drive invalidation without a full KMemory64.
-static Jit64PageGenFn g_pageGenFn = nullptr;
+static std::atomic<Jit64PageGenFn> g_pageGenFn{nullptr};
 
-void jit64SetPageGenFn(Jit64PageGenFn fn) { g_pageGenFn = fn; }
+void jit64SetPageGenFn(Jit64PageGenFn fn) { g_pageGenFn.store(fn, std::memory_order_release); }
 
 U32 Jit64BlockCache::slotFor(U64 rip) {
     return (U32)((rip ^ (rip >> 9)) & (SLOTS - 1));
@@ -1080,9 +1081,10 @@ Jit64Block* Jit64BlockCache::lookupByRip(U64 rip) {
     // insert time, BEFORE their generation is read, so no write can slip in
     // between unnoticed. Without an installed reader the lookup fails closed
     // (the caller stays on the interpreter).
-    if (!g_pageGenFn) return nullptr;
-    if (g_pageGenFn(b.page0) != b.gen0) return nullptr;
-    if (b.page1 != b.page0 && g_pageGenFn(b.page1) != b.gen1) return nullptr;
+    const auto pageGen = g_pageGenFn.load(std::memory_order_acquire);
+    if (!pageGen) return nullptr;
+    if (pageGen(b.page0) != b.gen0) return nullptr;
+    if (b.page1 != b.page0 && pageGen(b.page1) != b.gen1) return nullptr;
     m_hits++;
     return &b;
 }
@@ -1168,34 +1170,55 @@ void jit64DropCache(Jit64State* state, bool releaseWasm) {
 }
 
 // ---- process-wide aggregate (metrics panel) ----
-// The list only ever holds live Jit64State objects: CPU64 registers its state
-// at first JIT use and calls jit64ReleaseState() (which unregisters) before
-// deleting it. No atomic traffic is needed on the block-entry hot path.
+// CPU counters have a single owner. Readers only see mutex-protected published
+// copies, never the live counters, so the UI cannot race guest execution.
 namespace {
-std::mutex g_jitStatesMutex;
-std::vector<Jit64State*>& jitStateList() {
-    static std::vector<Jit64State*> list;
-    return list;
+struct PublishedStats {
+    U64 compiled = 0, instantiated = 0, blocks = 0, insns = 0, entered = 0;
+    U64 earlyExits = 0, limitExits = 0, rejected = 0, instFailed = 0;
+    U64 fallbacks = 0, skipped = 0, emitUs = 0, instantiateUs = 0;
+};
+PublishedStats readOwnedStats(const Jit64State& s) {
+    return {s.blocksCompiled, s.wasmInstantiated, s.wasmBlocks, s.wasmInsns,
+        s.wasmEntered, s.wasmEarlyExits, s.wasmLimitExits, s.emitRejected,
+        s.instantiateFailed, s.insnsFallback, s.coldSkipped, s.emitTimeUs, s.instantiateTimeUs};
 }
-} // namespace
+void addStats(PublishedStats& a, const PublishedStats& b) {
+    a.compiled += b.compiled; a.instantiated += b.instantiated;
+    a.blocks += b.blocks; a.insns += b.insns; a.entered += b.entered;
+    a.earlyExits += b.earlyExits; a.limitExits += b.limitExits;
+    a.rejected += b.rejected; a.instFailed += b.instFailed;
+    a.fallbacks += b.fallbacks; a.skipped += b.skipped; a.emitUs += b.emitUs; a.instantiateUs += b.instantiateUs;
+}
+std::mutex g_jitStatesMutex;
+std::vector<std::pair<Jit64State*, PublishedStats>> g_jitStates;
+PublishedStats g_retiredStats;
+}
 
 void jit64RegisterState(Jit64State* state) {
     if (!state) return;
     std::lock_guard<std::mutex> lock(g_jitStatesMutex);
-    auto& list = jitStateList();
-    for (Jit64State* existing : list) {
-        if (existing == state) return;
+    for (auto& entry : g_jitStates) if (entry.first == state) return;
+    g_jitStates.emplace_back(state, readOwnedStats(*state));
+}
+
+void jit64PublishState(Jit64State* state) {
+    if (!state) return;
+    const PublishedStats snapshot = readOwnedStats(*state);
+    std::lock_guard<std::mutex> lock(g_jitStatesMutex);
+    for (auto& entry : g_jitStates) {
+        if (entry.first == state) { entry.second = snapshot; return; }
     }
-    list.push_back(state);
 }
 
 static void jit64UnregisterState(Jit64State* state) {
-    if (!state) return;
     std::lock_guard<std::mutex> lock(g_jitStatesMutex);
-    auto& list = jitStateList();
-    for (size_t i = 0; i < list.size(); i++) {
-        if (list[i] == state) {
-            list.erase(list.begin() + (long)i);
+    for (auto it = g_jitStates.begin(); it != g_jitStates.end(); ++it) {
+        if (it->first == state) {
+            // Destruction runs after this CPU stopped executing. Preserve its
+            // final counts so process-wide totals never decrease on exit.
+            addStats(g_retiredStats, readOwnedStats(*state));
+            g_jitStates.erase(it);
             return;
         }
     }
@@ -1203,42 +1226,26 @@ static void jit64UnregisterState(Jit64State* state) {
 
 U32 jit64GlobalStatsJson(char* buf, U32 bufSize) {
     if (!buf || bufSize < 64) return 0;
-    U64 blocksCompiled = 0, instantiated = 0, blocks = 0, insns = 0, entered = 0;
-    U64 earlyExits = 0, limitExits = 0, rejected = 0, instFailed = 0;
-    U64 fallbacks = 0, skipped = 0, emitUs = 0;
+    PublishedStats sum;
     {
         std::lock_guard<std::mutex> lock(g_jitStatesMutex);
-        for (Jit64State* s : jitStateList()) {
-            blocksCompiled += s->blocksCompiled;
-            instantiated += s->wasmInstantiated;
-            blocks += s->wasmBlocks;
-            insns += s->wasmInsns;
-            entered += s->wasmEntered;
-            earlyExits += s->wasmEarlyExits;
-            limitExits += s->wasmLimitExits;
-            rejected += s->emitRejected;
-            instFailed += s->instantiateFailed;
-            fallbacks += s->insnsFallback;
-            skipped += s->coldSkipped;
-            emitUs += s->emitTimeUs;
-        }
+        sum = g_retiredStats;
+        for (const auto& entry : g_jitStates) addStats(sum, entry.second);
     }
-    // Scratch state carries the summed counters. The per-CPU cache counters
-    // stay 0: summing per-CPU block caches is meaningless for a panel (read
-    // them with jit64StatsJson on the owning CPU when you need them).
     static thread_local Jit64State totals;
-    totals.blocksCompiled = blocksCompiled;
-    totals.wasmInstantiated = instantiated;
-    totals.wasmBlocks = blocks;
-    totals.wasmInsns = insns;
-    totals.wasmEntered = entered;
-    totals.wasmEarlyExits = earlyExits;
-    totals.wasmLimitExits = limitExits;
-    totals.emitRejected = rejected;
-    totals.instantiateFailed = instFailed;
-    totals.insnsFallback = fallbacks;
-    totals.coldSkipped = skipped;
-    totals.emitTimeUs = emitUs;
+    totals.blocksCompiled = sum.compiled;
+    totals.wasmInstantiated = sum.instantiated;
+    totals.wasmBlocks = sum.blocks;
+    totals.wasmInsns = sum.insns;
+    totals.wasmEntered = sum.entered;
+    totals.wasmEarlyExits = sum.earlyExits;
+    totals.wasmLimitExits = sum.limitExits;
+    totals.emitRejected = sum.rejected;
+    totals.instantiateFailed = sum.instFailed;
+    totals.insnsFallback = sum.fallbacks;
+    totals.coldSkipped = sum.skipped;
+    totals.emitTimeUs = sum.emitUs;
+    totals.instantiateTimeUs = sum.instantiateUs;
     return jit64StatsJson(&totals, buf, bufSize);
 }
 
@@ -1405,6 +1412,7 @@ U32 jit64StatsJson(const Jit64State* state, char* buf, U32 bufSize) {
     j.add("\"fallbacks\":%llu,", (unsigned long long)(s ? s->insnsFallback : 0));
     j.add("\"coldSkipped\":%llu,", (unsigned long long)(s ? s->coldSkipped : 0));
     j.add("\"emitUs\":%llu,", (unsigned long long)(s ? s->emitTimeUs : 0));
+    j.add("\"instantiateUs\":%llu,", (unsigned long long)(s ? s->instantiateTimeUs : 0));
     j.add("\"emitMs\":%.3f,", (double)(s ? s->emitTimeUs : 0) / 1000.0);
     j.add("\"fallbackInsns\":%llu,", (unsigned long long)(s ? s->insnsFallback : 0));
     j.add("\"cacheLookups\":%llu,", (unsigned long long)(s ? s->cache.lookups() : 0));
@@ -1414,10 +1422,10 @@ U32 jit64StatsJson(const Jit64State* state, char* buf, U32 bufSize) {
     // The 32-bit guest JIT is a different engine; this TU only knows that the
     // legacy 32-bit gates are compiled in. The metrics owner fills the real
     // cpu32 section in the 32-bit target.
-    j.add("\"cpu32\":{\"available\":1,\"enabled\":\"unknown\",\"engine\":\"boxedwine-jit\"}}");
+    j.add("\"cpu32\":{\"available\":1,\"enabled\":\"unknown\",\"engine\":\"boxedwine-jit\"}");
 #else
     j.add("\"cpu32\":{\"available\":0,\"enabled\":0,\"engine\":\"unavailable\","
-          "\"reason\":\"32-bit JIT not compiled in this target\"}}");
+          "\"reason\":\"32-bit JIT not compiled in this target\"}");
 #endif
     j.add("}");
     if (!j.ok) return 0;

@@ -386,6 +386,26 @@ void emitEA(Bytes& body, const Jit64Op& op) {
     local(body, 0x21, L_T1);
 }
 
+// MOV r/m, r (0x89) with a memory destination: store the width-masked source
+// register through the imported helper. Returns 0xFF (no register writeback).
+U32 emitMovStoreMem(Bytes& body, const Jit64Op& op) {
+    emitEA(body, op);                                // L_T1 = effective address
+    emitReadOperand(body, op, op.regField, L_R);     // width-masked source
+    emitMemWrite(body, L_T1, L_R, op.size);
+    return 0xFF;
+}
+
+// MOV r, r/m (0x8B) with a memory source: load through the imported helper.
+// The helper zero-extends (readb/readw/readd into a 64-bit slot), which is the
+// x86 behaviour for 8/16/32-bit loads and an identity for 64-bit ones.
+// Returns the destination register so the caller publishes L_R.
+U32 emitMovLoadMem(Bytes& body, const Jit64Op& op) {
+    emitEA(body, op);                    // L_T1 = effective address
+    emitMemRead(body, L_T1, op.size);    // L_R = [EA]
+    return op.regField;
+}
+
+
 
 
 // Emit one register-direct IMUL r, r/m (0F AF). Returns the destination GPR
@@ -877,8 +897,7 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
             // CMOVcc; the EA fields are validated defensively (a malformed
             // EA degrades to whole-block rejection, never to a wrong
             // address). LEA names memory for its EA computation but never
-            // dereferences it. 89/8B mem forms stay interpreter-fallback
-            // (unchanged pre-existing behavior). CMOVcc's source is always
+            // dereferences it. CMOVcc's source is always
             // loaded (faults even if the condition is false), mirroring
             // dsp_38; the emitter does emitEA+emitMemRead before the
             // select, so fault ordering matches.
@@ -887,15 +906,19 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
             bool memLea = op.kind == J64_LEA;
             bool memStack = (op.kind == J64_PUSH && op.sub == 2) ||
                             (op.kind == J64_POP && op.sub == 1);
-            bool memMov8 = (op.kind == J64_MOV_RM_R || op.kind == J64_MOV_R_RM) &&
-                           op.size == 1;
+            // 8-bit memory MOV was already emitted; 4/8-byte forms join it
+            // (the load/store goes through the imported helper, so the
+            // placement of the fault and the write is identical to the
+            // interpreter's loadRM/storeRM).
+            bool memMov = (op.kind == J64_MOV_RM_R || op.kind == J64_MOV_R_RM) &&
+                          (op.size == 1 || op.size == 4 || op.size == 8);
             bool memGrp3 = op.kind == J64_GRP3;
             bool memShift = op.kind == J64_SHIFT_IMM || op.kind == J64_SHIFT_CL;
             bool memCmov = op.kind == J64_CMOV;
             bool memMovImm = op.kind == J64_MOV_RM_IMM && op.size == 1;
             bool memSetcc = op.kind == J64_SETCC;
             bool memBt = op.kind == J64_BT;
-            if ((!memAlu && !memLea && !memStack && !memMov8 && !memGrp3 && !memShift && !memCmov && !memMovImm && !memSetcc && !memBt) || !widthOk) return false;
+            if ((!memAlu && !memLea && !memStack && !memMov && !memGrp3 && !memShift && !memCmov && !memMovImm && !memSetcc && !memBt) || !widthOk) return false;
             if (op.ea.seg != 0) return false; // FS/GS: interpreter-only
             if (op.ea.baseReg != 0xFF && op.ea.baseReg >= 16) return false;
             if (op.ea.idxReg != 0xFF && op.ea.idxReg >= 16) return false;
@@ -917,9 +940,12 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
         case J64_MOV_R_RM:
             // rmIndex is 0xFF for memory forms (scanModRM has no register
             // to report); only check it for register-direct ops, mirroring
-            // the ALU validation below.
+            // the ALU validation below. Register-direct forms need the
+            // destination register valid; memory forms need the source
+            // register (regField for 89, rmIndex for 8B) valid.
             if (op.sub != 0 || op.regField >= 16) return false;
             if (!op.isMem && op.rmIndex >= 16) return false;
+            if (op.isMem && op.size != 1 && op.size != 4 && op.size != 8) return false;
             break;
         case J64_LEA:
             // LEA r, m: r/m always names memory (reg form is #UD at decode);
@@ -1142,6 +1168,15 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
                 // 8-bit MOV (88/8A): table-generated emitMov8Gen. Register
                 // writes happen inline in the GPR locals (returns 0xFF).
                 emitMov8Gen(body, op);
+                break;
+            }
+            if (op.isMem) {
+                U32 written = op.kind == J64_MOV_RM_R ? emitMovStoreMem(body, op)
+                                                      : emitMovLoadMem(body, op);
+                if (written != 0xFF) {
+                    local(body, 0x20, L_R);
+                    local(body, 0x21, written + 1);
+                }
                 break;
             }
             U32 dest = op.kind == J64_MOV_RM_R ? op.rmIndex : op.regField;

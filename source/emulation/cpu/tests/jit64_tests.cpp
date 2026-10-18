@@ -1160,7 +1160,27 @@ static void testEngineAndStats() {
     CHECK(jit64StatsJson(nullptr, buf, 8) == 0, "small stats buffer must report 0");
 }
 
-int main() {
+static void testPublishedStats() {
+    char buf[2048];
+    Jit64State state;
+    jit64RegisterState(&state);
+    state.wasmBlocks = 3;
+    jit64PublishState(&state);
+    state.wasmBlocks = 10; // not yet published: readers must not inspect it
+    CHECK(jit64GlobalStatsJson(buf, sizeof(buf)) > 0, "aggregate JSON");
+    CHECK(std::strstr(buf, "\"blocksEntered\":3,") != nullptr, "read published snapshot");
+    jit64ReleaseState(&state);
+    CHECK(jit64GlobalStatsJson(buf, sizeof(buf)) > 0, "retired aggregate JSON");
+    CHECK(std::strstr(buf, "\"blocksEntered\":10,") != nullptr, "retain counts on CPU exit");
+}
+
+int main(int argc, char** argv) {
+    if (argc > 1 && std::strcmp(argv[1], "--stats-json") == 0) {
+        char buf[2048];
+        if (!jit64GlobalStatsJson(buf, sizeof(buf))) return 1;
+        puts(buf);
+        return 0;
+    }
     printf("jit64 phase-1 unit tests\\n");
     testCoverageTable();
     testMovForms();
@@ -1187,6 +1207,7 @@ int main() {
     testHotness();
     testLookupByRip();
     testEngineAndStats();
+    testPublishedStats();
     printf("  %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

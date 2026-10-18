@@ -11,19 +11,10 @@
 // helper imports, so the state pointer the module receives is an ordinary
 // wasm32 linear-memory address.
 //
-// Two publication modes, selected once at the first instantiation:
-//
-//   "table"    (preferred) the emitted execute() is appended to the host's
-//              WebAssembly.Table (the JIT build passes -sALLOW_TABLE_GROWTH)
-//              and its index is returned. CPU64 calls that index through a
-//              C++ function pointer, which compiles to call_indirect on the
-//              same table: no JavaScript crossing per block entry.
-//   "js-array" fallback used when the table cannot grow. The function is kept
-//              in a JS array and reached through an EM_JS call, which costs
-//              one JS->wasm transition per block. Correctness is identical;
-//              only the call overhead differs. The metrics surface reports
-//              which mode is live so a build mistake is visible rather than
-//              silently slowing everything down.
+// Generated exports use the host WebAssembly.Table and call_indirect, without
+// a JavaScript crossing on block entry. ALLOW_TABLE_GROWTH is required; if a
+// reservation/instantiation fails, CPU64 retains its interpreter fallback.
+// The slot namespace is shared with the guest32 backend.
 //
 // Table slots are worker-local (every wasm worker has its own table object),
 // which is what jit64WasmOwnerId() tracks: Jit64State records the owner that
@@ -40,6 +31,7 @@
 #include <cstring>
 #include "boxedwine.h"
 #include "kmemory64.h"
+#include "bwjittable.h"
 #ifdef __EMSCRIPTEN_PTHREADS__
 #include <pthread.h>
 #endif
@@ -50,10 +42,10 @@
 // import runs.
 namespace {
 thread_local KMemory64* g_jitActiveMem = nullptr;
-// 0 = not yet instantiated / unavailable, 1 = wasm table, 2 = JS array.
-int g_wasmEngineMode = 0;
-bool g_memOptionsKnown = false;
-Jit64EmitOptions g_memOptions;
+// 0 = not yet instantiated / unavailable, 1 = wasm table.
+thread_local int g_wasmEngineMode = 0;
+thread_local bool g_memOptionsKnown = false;
+thread_local Jit64EmitOptions g_memOptions;
 } // namespace
 
 void jit64WasmSetActiveMem(KMemory64* mem) { g_jitActiveMem = mem; }
@@ -91,27 +83,17 @@ EMSCRIPTEN_KEEPALIVE void jit64MemWrite(U32 addrLo, U32 addrHi, U32 size, U32 va
 }
 } // extern "C"
 
-// Probe once whether the host wasm table can grow. When it can, reserve the
-// probe slot so the first emitted function reuses it instead of growing again.
-EM_JS(int, jit64_wasm_table_probe_impl, (), {
-    try {
-        if (typeof wasmTable === 'undefined' || !wasmTable ||
-            typeof wasmTable.grow !== 'function') return 0;
-        var before = wasmTable.length;
-        wasmTable.grow(1);
-        if (wasmTable.length !== before + 1) return 0;
-        if (!Module.jit64WasmTableFree) Module.jit64WasmTableFree = [];
-        Module.jit64WasmTableFree.push(before);
-        return 1;
-    } catch (e) {
-        return 0;
-    }
+// Free indices belong to this worker and were reserved from the shared
+// guest32/guest64 namespace. Never allocate from wasmTable.length directly.
+EM_JS(int, jit64_wasm_take_free_slot_impl, (), {
+    var free = Module.jit64WasmTableFree;
+    return free && free.length ? free.pop() : -1;
 });
 
 // Instantiate one emitted module and publish its execute().
-// Returns a wasm table index (>= 0), -(2 + arraySlot) for the JS-array
-// fallback, or -1 when the module cannot be instantiated at all.
-EM_JS(int, jit64_wasm_instantiate_impl, (const unsigned char* bytes, unsigned size, int useTable), {
+// Returns the reserved index, or -1 when the module cannot be instantiated.
+EM_JS(int, jit64_wasm_instantiate_impl,
+      (const unsigned char* bytes, unsigned size, int slot, U32 readIndex, U32 writeIndex), {
     try {
         // Copy: the caller's vector may be freed right after this returns.
         var copy = new Uint8Array(wasmMemory.buffer, bytes, size).slice();
@@ -120,63 +102,25 @@ EM_JS(int, jit64_wasm_instantiate_impl, (const unsigned char* bytes, unsigned si
             memory: wasmMemory,
             // Memory helpers. All i32 params (addresses/values split lo/hi);
             // memRead writes 8 bytes to retPtr.
-            memRead: function(addrLo, addrHi, sz, retPtr) {
-                Module._jit64MemRead(addrLo, addrHi, sz, retPtr);
-            },
-            memWrite: function(addrLo, addrHi, sz, valLo, valHi) {
-                Module._jit64MemWrite(addrLo, addrHi, sz, valLo, valHi);
-            },
+            // Actual Wasm imports preserve exceptions and avoid a JavaScript
+            // crossing for each guest memory operand.
+            memRead: wasmTable.get(readIndex),
+            memWrite: wasmTable.get(writeIndex),
         } });
         var fn = instance.exports.execute;
         if (typeof fn !== 'function') return -1;
-        if (useTable) {
-            if (!Module.jit64WasmTableFree) Module.jit64WasmTableFree = [];
-            if (Module.jit64WasmTableFree.length) {
-                var reused = Module.jit64WasmTableFree.pop();
-                wasmTable.set(reused, fn);
-                return reused;
-            }
-            var idx = wasmTable.length;
-            wasmTable.grow(1);
-            wasmTable.set(idx, fn);
-            return idx;
-        }
-        if (!Module.jit64WasmTable) Module.jit64WasmTable = [];
-        if (!Module.jit64WasmJsFree) Module.jit64WasmJsFree = [];
-        if (Module.jit64WasmJsFree.length) {
-            var slot = Module.jit64WasmJsFree.pop();
-            Module.jit64WasmTable[slot] = fn;
-            return -(2 + slot);
-        }
-        Module.jit64WasmTable.push(fn);
-        return -(2 + Module.jit64WasmTable.length - 1);
+        wasmTable.set(slot, fn);
+        return slot;
     } catch (e) {
         return -1;
     }
 });
 
-// JS-array fallback call path (used only in js-array mode).
-EM_JS(void, jit64_wasm_call_impl, (int index, unsigned statePtr), {
-    var slot = -2 - index;
-    var fn = Module.jit64WasmTable[slot];
-    if (typeof fn !== 'function') throw new Error('jit64: bad wasm js slot ' + slot);
-    fn(statePtr);
-});
-
 EM_JS(void, jit64_wasm_table_release_impl, (int index), {
-    if (index >= 0 && index < wasmTable.length && wasmTable.get(index)) {
+    if (index >= 0 && index < wasmTable.length) {
         wasmTable.set(index, null);
         if (!Module.jit64WasmTableFree) Module.jit64WasmTableFree = [];
         Module.jit64WasmTableFree.push(index);
-    }
-});
-
-EM_JS(void, jit64_wasm_js_release_impl, (int index), {
-    var slot = -2 - index;
-    if (Module.jit64WasmTable && Module.jit64WasmTable[slot]) {
-        Module.jit64WasmTable[slot] = null;
-        if (!Module.jit64WasmJsFree) Module.jit64WasmJsFree = [];
-        Module.jit64WasmJsFree.push(slot);
     }
 });
 
@@ -199,12 +143,13 @@ int jit64WasmInstantiate(const U8* bytes, U32 byteCount, const Jit64EmitOptions&
     // a caller that emitted with the wrong descriptor instead of paying a
     // guaranteed module compile + throw.
     if (options.sharedMemory != jit64WasmMemoryOptions().sharedMemory) return -1;
-    if (g_wasmEngineMode == 0) {
-        g_wasmEngineMode = jit64_wasm_table_probe_impl() ? 1 : 2;
-    }
-    int index = jit64_wasm_instantiate_impl(bytes, (unsigned)byteCount, g_wasmEngineMode == 1 ? 1 : 0);
-    if (index >= 0) g_wasmEngineMode = 1;
-    else if (g_wasmEngineMode != 1) g_wasmEngineMode = 2;
+    int slot = jit64_wasm_take_free_slot_impl();
+    if (slot < 0) slot = bwJitReserveTableSlots(1);
+    if (slot < 0) return -1;
+    int index = jit64_wasm_instantiate_impl(bytes, (unsigned)byteCount, slot,
+        (U32)(uintptr_t)&jit64MemRead, (U32)(uintptr_t)&jit64MemWrite);
+    if (index < 0) jit64_wasm_table_release_impl(slot);
+    else g_wasmEngineMode = 1;
     return index;
 }
 
@@ -214,14 +159,11 @@ void jit64WasmCall(int tableIndex, Jit64WasmState* state) {
         // -sALLOW_TABLE_GROWTH, function pointer values ARE table indices, so
         // this compiles to call_indirect on the host table (no JS per call).
         reinterpret_cast<void (*)(U32)>(tableIndex)((U32)(uintptr_t)state);
-    } else if (tableIndex <= -2) {
-        jit64_wasm_call_impl(tableIndex, (unsigned)(uintptr_t)state);
     }
 }
 
 void jit64WasmRelease(int tableIndex) {
     if (tableIndex >= 0) jit64_wasm_table_release_impl(tableIndex);
-    else if (tableIndex <= -2) jit64_wasm_js_release_impl(tableIndex);
 }
 
 U32 jit64WasmOwnerId() {
@@ -254,7 +196,6 @@ const char* jit64WasmEngineMode() {
     if (!jit64WasmAvailable()) return "unavailable";
     switch (g_wasmEngineMode) {
     case 1: return "table";
-    case 2: return "js-array";
     default: return "idle";
     }
 }

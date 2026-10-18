@@ -6427,6 +6427,8 @@ U32 CPU64::execWasmBlock(const Jit64Block& block, U64 maxInsn) {
         if ((U64)executed == limit) m_jit->wasmLimitExits++;
         else m_jit->wasmEarlyExits++; // a code page was written: stop at that RIP
     }
+    if (m_jit->wasmBlocks == 1 || (m_jit->wasmBlocks & 1023) == 0)
+        jit64PublishState(m_jit);
     return executed;
 }
 
@@ -6483,6 +6485,7 @@ U32 CPU64::tryWasmExec(U64 maxInsn) {
     if (!block) return 0;
     Jit64EmitOptions options = jit64WasmMemoryOptions();
     std::vector<U8> module;
+    const U64 emitStart = jit64NowUs();
     if (!jit64EmitWasm(*block, options, module)) {
         // Deterministic for this block: remember the refusal on the entry (-2)
         // and in the negative cache, and stay on the interpreter.
@@ -6492,7 +6495,10 @@ U32 CPU64::tryWasmExec(U64 maxInsn) {
         m_jit->insnsFallback++;
         return 0;
     }
+    const U64 instantiateStart = jit64NowUs();
+    m_jit->emitTimeUs += instantiateStart - emitStart;
     int index = jit64WasmInstantiate(module.data(), (U32)module.size(), options);
+    m_jit->instantiateTimeUs += jit64NowUs() - instantiateStart;
     if (index < 0) {
         m_jit->instantiateFailed++;
         m_jit->cache.invalidate(r);
@@ -6503,7 +6509,15 @@ U32 CPU64::tryWasmExec(U64 maxInsn) {
     block->wasmIndex = index;
     m_jit->wasmInstantiated++;
     m_jit->blocksCompiled++;
-    m_jit->emitTimeUs += jit64NowUs() - t0;
+    m_jit->compileTimeUs += jit64NowUs() - t0;
+    // Compilation can take long enough for another guest thread to rewrite
+    // these pages. Do not enter the just-built stale block even once.
+    if (KMemory64::blockPageGenOf(page0) != gen0 ||
+        KMemory64::blockPageGenOf(page1) != gen1) {
+        m_jit->cache.invalidate(r);
+        m_jit->insnsFallback++;
+        return 0;
+    }
     return execWasmBlock(*block, maxInsn);
 }
 #else // !BOXEDWINE_BLOCK_CACHE_INFRA

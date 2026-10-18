@@ -7371,6 +7371,12 @@ int runX64SelfTest() {
     if (requireJit && std::strcmp(requireJit, "1") == 0) {
         printf("JIT64: engine=%s blocks=%llu insns=%llu\n", r.engine,
                (unsigned long long)r.jitBlocks, (unsigned long long)r.jitInsns);
+        // Process-wide aggregate JSON: exercises jit64RegisterState +
+        // jit64GlobalStatsJson (the panel's read path) in a real build.
+        {
+            char stats[768];
+            if (jit64GlobalStatsJson(stats, sizeof(stats))) printf("BW64JITSTATS: %s\n", stats);
+        }
         printf("WASM64: blocks=%llu insns=%llu entered=%llu rejected=%llu instantiateFailed=%llu\n",
                (unsigned long long)r.wasmBlocks, (unsigned long long)r.wasmInsns,
                (unsigned long long)r.wasmEntered,
@@ -7382,6 +7388,8 @@ int runX64SelfTest() {
         }
         // The wasm engine must prove it ran generated code: the emitted
         // modules report their own entry count and retired-instruction count.
+        // The phase-1 interpreter engine must prove the opposite (no emitted
+        // code at all), which is what makes it a valid A/B control.
         if (std::strcmp(r.engine, "wasm") == 0) {
             if (!r.wasmBlocks || !r.wasmInsns) {
                 printf("  FAIL: wasm engine executed no emitted blocks\n");
@@ -7392,8 +7400,14 @@ int runX64SelfTest() {
                        (unsigned long long)r.wasmEntered, (unsigned long long)r.wasmBlocks);
                 r.failed++;
             }
+        } else if (std::strcmp(r.engine, "interp") == 0) {
+            if (r.wasmBlocks || r.wasmInsns || r.wasmEntered) {
+                printf("  FAIL: interpreter engine reported emitted blocks=%llu insns=%llu\n",
+                       (unsigned long long)r.wasmBlocks, (unsigned long long)r.wasmInsns);
+                r.failed++;
+            }
         } else {
-            printf("  FAIL: wasm engine unavailable (engine=%s); emitted execution not proven\n", r.engine);
+            printf("  FAIL: no JIT engine selected (engine=%s)\n", r.engine);
             r.failed++;
         }
     }

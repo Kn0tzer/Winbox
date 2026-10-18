@@ -337,7 +337,8 @@ struct Jit64State {
     U64 coldLookups = 0;    // entries that missed the block cache
     U64 coldSkipped = 0;    // cold entries left to the interpreter (hotness)
     U64 compileTimeUs = 0;  // decode + emit + instantiate, cold path only
-    U64 emitTimeUs = 0;     // emit + instantiate only
+    U64 emitTimeUs = 0;     // WebAssembly byte emission only
+    U64 instantiateTimeUs = 0; // module creation and table installation
     U32 wasmOwner = 0;      // worker/table id that owns wasmIndex values
     bool wasmOwnerSet = false;
     U32 genBaseAddr = 0;    // KMemory64::blockGenTableAddr() (wasm32 offset)
@@ -359,6 +360,8 @@ void jit64DropCache(Jit64State* state, bool releaseWasm);
 // out at destruction, so the panel reads live per-CPU counters with no atomic
 // traffic on the block-entry path.
 void jit64RegisterState(Jit64State* state);
+// Called by the owning CPU; readers use the published copy.
+void jit64PublishState(Jit64State* state);
 U32 jit64GlobalStatsJson(char* buf, U32 bufSize);
 
 // ---- metrics seam ----

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# scripts/build-jit-wasm.sh — decoder/cache and initial wasm emitter gates.
+# scripts/build-jit-wasm.sh — decoder/cache, emitted-module, and runtime correctness gates.
 #
 # Activate an Emscripten SDK before running the wasm gates.
 #
 # When run, it:
-#   1. Runs native decoder/cache tests and emitted wasm MOV modules under Node.
+#   1. Runs native decoder/cache tests and emitted wasm modules under Node.
 #      Any failure aborts before touching emcc.
 #   2. Builds the wasm64-selftest recipe (project/emscripten/makefile), which
 #      compiles with GUEST_X64 and BLOCK_EXEC enabled in an isolated directory.
@@ -13,9 +13,9 @@
 #      the 32-bit targets); source/emulation/cpu/tests/ is pruned from the
 #      glob because the native harness has its own main().
 #   3. Smoke-runs the result under node twice — BW64_JIT unset (interpreter
-#      baseline) and BW64_JIT=1 (JIT fast path) — and diffs the outputs. Phase
-#      1 executes JIT-compiled blocks via the interpreter's execBlock, so the
-#      test output must match; a separate sentinel proves JIT blocks executed.
+#      baseline) and BW64_JIT=1 (emitted-module path) — and diffs the outputs.
+#      The generated modules report their own entries and retired instructions;
+#      the gate rejects decoder-only or interpreter-block execution.
 #
 #   4. Runs the genuine 64-bit ELF fixture (tools/guest-fixtures/jitbench64.c,
 #      built for x86-64) through the wasm64-runelf target twice — interpreter
@@ -218,6 +218,18 @@ if [ -n "$NATIVE_SUM" ]; then
     }
 fi
 grep -E '^WASM64: engine=wasm blocks=[1-9][0-9]* insns=[1-9][0-9]* entered=[1-9][0-9]* ' "$BUILD_TMP/fixture_jit.log"
+# The emitted modules must be reached through the wasm TABLE (call_indirect);
+# "js-array" mode would still be correct but crosses JavaScript per block, which
+# means -sALLOW_TABLE_GROWTH did not take effect and the measurement is wrong.
+grep -q '"mode":"table"' "$BUILD_TMP/fixture_jit.log" || {
+    echo "FAIL: emitted modules are not in table mode; see $BUILD_TMP/fixture_jit.log" >&2
+    grep -o '"mode":"[a-z-]*"' "$BUILD_TMP/fixture_jit.log" | head -2 >&2
+    exit 1
+}
+grep -q '"mode":"table"' "$BUILD_TMP/selftest_jit.log" || {
+    echo "FAIL: self-test emitted modules are not in table mode" >&2
+    exit 1
+}
 if grep -qE '^WASM64: engine=wasm blocks=[1-9]' "$BUILD_TMP/fixture_interp.log"; then
     echo "FAIL: BW64_JIT=0 run reported emitted blocks" >&2
     exit 1
@@ -226,7 +238,7 @@ printf 'OK: fixture %s identical across interpreter%s and emitted modules (.elf=
     "$INTERP_SUM" "${NATIVE_SUM:+, qemu-x86_64 reference $NATIVE_SUM}" "$(wc -c < "$ELF")"
 
 echo "=== [6/6] opt-in engine comparison (BW64_JIT_ENGINE=interp vs wasm) ==="
-BW64_JIT=1 BW64_JIT_ENGINE=interp node "$JS_CJS" --x64-selftest > "$BUILD_TMP/selftest_interpengine.log" 2>&1
+BW64_JIT=1 BW64_JIT_VERIFY=1 BW64_JIT_ENGINE=interp node "$JS_CJS" --x64-selftest > "$BUILD_TMP/selftest_interpengine.log" 2>&1
 grep -E '^JIT64: engine=interp blocks=[1-9]' "$BUILD_TMP/selftest_interpengine.log"
 sed -e '/^JIT64:/d' -e '/^WASM64:/d' -e '/^BW64JITSTATS:/d' "$BUILD_TMP/selftest_interpengine.log" > "$BUILD_TMP/selftest_interpengine_results.log"
 if diff -u "$BUILD_TMP/selftest_interp.log" "$BUILD_TMP/selftest_interpengine_results.log"; then

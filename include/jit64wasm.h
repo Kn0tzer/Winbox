@@ -101,9 +101,8 @@ U32 jit64EmitNew(std::vector<U8>& body, const Jit64Op& op);
 // The emitted function is installed into a WebAssembly.Table (the JIT build
 // passes -sALLOW_TABLE_GROWTH) and the returned index is called from C++ as a
 // function pointer, which compiles to call_indirect on that table: no
-// JavaScript crossing per block. When table growth is unavailable the runtime
-// falls back to a JS-side array (jit64WasmEngineMode() reports "js-array"), so
-// correctness never depends on the build flag; only the call overhead does.
+// JavaScript crossing per block or memory operand. If table reservation or
+// instantiation fails, the caller continues through the interpreter.
 //
 // Table indices are worker/table-local. A Jit64State records the owner id
 // returned by jit64WasmOwnerId(); a mismatch (guest thread migrated to a
@@ -123,7 +122,7 @@ int jit64WasmInstantiate(const U8* bytes, U32 byteCount, const Jit64EmitOptions&
 // Call the emitted execute() for `tableIndex`. Synchronous; the module cannot
 // re-enter the CPU.
 void jit64WasmCall(int tableIndex, Jit64WasmState* state);
-// Null the table slot (or drop the JS-array entry) and recycle it.
+// Null an owned table slot and recycle it in the current worker.
 void jit64WasmRelease(int tableIndex);
 U32 jit64WasmOwnerId();
 // Routes the emitted module's memRead/memWrite imports at `mem` for the
@@ -132,7 +131,7 @@ U32 jit64WasmOwnerId();
 void jit64WasmSetActiveMem(KMemory64* mem);
 bool jit64WasmAvailable();
 bool jit64WasmHostAbiOk();
-// "table" (ALLOW_TABLE_GROWTH call_indirect), "js-array" (fallback), or
+// "table" (ALLOW_TABLE_GROWTH call_indirect), or
 // "unavailable". For the metrics panel; never changes behavior.
 const char* jit64WasmEngineMode();
 // Detected host-memory descriptor (cached after the first call).
