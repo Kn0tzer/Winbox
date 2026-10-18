@@ -224,14 +224,17 @@ public:
     static U32 blockSlot(U64 pageNum); // registered slot, or overflow slot 0
     static void blockPageRegister(U64 pageNum);
     static U32 blockPageGenOf(U64 pageNum);
+    static U32 blockSlotGen(U32 slot); // hot check for a previously registered slot
     static void noteGuestWrite(U64 pageNum);
     static void noteGuestWriteRange(U64 addr, U64 len);
     // wasm32 address of the generation array. Emitted blocks bake their actual
     // registered slots into inline checks following stores. Zero on native64.
     static U32 blockGenTableAddr();
 #else
+    static U32  blockSlot(U64) { return 0; }
     static void blockPageRegister(U64) {}
     static U32  blockPageGenOf(U64) { return 0; }
+    static U32  blockSlotGen(U32) { return 0; }
     static void noteGuestWrite(U64) {}
     static void noteGuestWriteRange(U64, U64) {}
     static U32  blockGenTableAddr() { return 0; }

@@ -6208,8 +6208,10 @@ bool CPU64::buildBlock(U64 startRip, BBlock& b) {
     b.page1 = (r - 1) >> 12;
     KMemory64::blockPageRegister(b.page0);
     if (b.page1 != b.page0) KMemory64::blockPageRegister(b.page1);
-    b.gen0 = KMemory64::blockPageGenOf(b.page0);
-    b.gen1 = KMemory64::blockPageGenOf(b.page1);
+    b.slot0 = KMemory64::blockSlot(b.page0);
+    b.slot1 = KMemory64::blockSlot(b.page1);
+    b.gen0 = KMemory64::blockSlotGen(b.slot0);
+    b.gen1 = KMemory64::blockSlotGen(b.slot1);
     b.startRip = startRip;
     blockStatsBuilt++;
     return true;
@@ -6336,8 +6338,8 @@ U32 CPU64::execBlock(const BBlock& b, U64 maxInsn) {
         executed++;
         // A guest store can rewrite a later instruction in this block. Stop
         // at the next RIP so the runner decodes the updated bytes immediately.
-        if (KMemory64::blockPageGenOf(b.page0) != b.gen0 ||
-            KMemory64::blockPageGenOf(b.page1) != b.gen1) break;
+        if (KMemory64::blockSlotGen(b.slot0) != b.gen0 ||
+            KMemory64::blockSlotGen(b.slot1) != b.gen1) break;
     }
     return executed;
 }
@@ -6631,8 +6633,8 @@ U32 CPU64::tryBlockStep(U64 maxInsn) {
     }
     BBlock& b = blockTable[(U32)((r ^ (r >> 9)) & (BBLOCK_SLOTS - 1))];
     if (b.startRip == r) {
-        if (KMemory64::blockPageGenOf(b.page0) == b.gen0 &&
-            KMemory64::blockPageGenOf(b.page1) == b.gen1) {
+        if (KMemory64::blockSlotGen(b.slot0) == b.gen0 &&
+            KMemory64::blockSlotGen(b.slot1) == b.gen1) {
             U32 n = execBlock(b, maxInsn);
             blockStatsExec++;
             blockStatsInsn += n;

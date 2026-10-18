@@ -141,6 +141,7 @@ static constexpr U32 BLOCK_PAGE_SLOTS = BLOCK_PAGE_CAPACITY + 1;
 static std::atomic<U32> g_blockPagesRegistered{0};
 static std::atomic<U64> g_blockPageTag[BLOCK_PAGE_SLOTS];
 static std::atomic<U32> g_blockPageGen[BLOCK_PAGE_SLOTS];
+static std::atomic<bool> g_blockPageReady[BLOCK_PAGE_SLOTS];
 static std::atomic<bool> g_blockPageOverflow{false};
 
 static U32 blockPageSlot(U64 pageNum, bool insert) {
@@ -168,16 +169,26 @@ bool bw64PageHoldsBlocks(U64 pageNum) {
 }
 
 void KMemory64::blockPageRegister(U64 pageNum) {
-    if (blockPageSlot(pageNum, false)) return;
-    if (!blockPageSlot(pageNum, true)) g_blockPageOverflow.store(true, std::memory_order_release);
+    U32 slot = blockPageSlot(pageNum, false);
+    if (slot && g_blockPageReady[slot].load(std::memory_order_acquire)) return;
+    if (!slot) slot = blockPageSlot(pageNum, true);
+    if (!slot) g_blockPageOverflow.store(true, std::memory_order_release);
     g_blockPagesRegistered.store(1, std::memory_order_release);
     // Writes previously using another thread's data TLB must now observe this
     // registration. Registered pages cannot re-enter that TLB.
     k64DTlbInvalidateAll();
+    // Another compiler can find a just-claimed tag before its first registrar
+    // has evicted old data TLB entries. Such a compiler must also invalidate
+    // before using this slot; seeing the tag alone is not a completed register.
+    if (slot) g_blockPageReady[slot].store(true, std::memory_order_release);
 }
 
 U32 KMemory64::blockPageGenOf(U64 pageNum) {
-    return g_blockPageGen[blockSlot(pageNum)].load(std::memory_order_acquire);
+    return blockSlotGen(blockSlot(pageNum));
+}
+
+U32 KMemory64::blockSlotGen(U32 slot) {
+    return g_blockPageGen[slot].load(std::memory_order_acquire);
 }
 
 U32 KMemory64::blockGenTableAddr() {

@@ -307,6 +307,7 @@ private:
         U64 startRip = 0;      // 0 = empty slot
         U64 page0 = 0, page1 = 0;
         U32 gen0 = 0, gen1 = 0;
+        U32 slot0 = 0, slot1 = 0;
         U16 n = 0;
         BRec recs[BBLOCK_MAX_RECS];
     };
