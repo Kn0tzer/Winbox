@@ -29,6 +29,7 @@ const fixtures = {
 const elfFixtures = { 'shared-mapping': ['tools/guest-fixtures/shared-mapping.c', '-static'] };
 elfFixtures['fork-mapping'] = ['tools/guest-fixtures/fork-mapping.c', '-static', '-pthread'];
 elfFixtures['cpu32-sse3'] = ['tools/guest-fixtures/cpu32-sse3.c', '-static', '-msse3', '-nostdlib', '-fno-builtin', '-fno-stack-protector', '-fno-pie', '-no-pie'];
+elfFixtures['cpu32-jit-growth'] = ['tools/guest-fixtures/cpu32-jit-growth.c', '-static', '-msse3', '-nostdlib', '-fno-builtin', '-fno-stack-protector', '-fno-pie', '-no-pie'];
 elfFixtures['cpu32-branches'] = ['tools/guest-fixtures/cpu32-branches.c', '-static', '-nostdlib', '-fno-builtin', '-fno-stack-protector', '-fno-pie', '-no-pie'];
 elfFixtures['jitbench64'] = ['tools/guest-fixtures/jitbench64.c', '-static', '-nostdlib', '-fno-builtin',
   '-fno-stack-protector', '-fno-pie', '-no-pie', '-fno-tree-vectorize', '-DJITBENCH_FREESTANDING'];

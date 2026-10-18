@@ -13300,6 +13300,15 @@ void JitWasmCodeGen::preCompile(DecodedOp* op, bool skippedOp) {
 }
 
 void JitWasmCodeGen::compile(DecodedOp* op) {
+    // JitFPU operates on the double-precision regCache. The combined guest64
+    // runtime selects SoftFloat's 80-bit regs instead; mixing those stores
+    // with cached-double operations loses precision and can reuse stale data.
+    // Keep that mode coherent through the interpreter. Integer/SSE code still
+    // compiles, and native x87 remains available in double-cache builds.
+    if (!KSystem::useF64 && op->isFpuOp()) {
+        emulateSingleOp();
+        return;
+    }
     if (op->isBranch()) {
         emitBranchBailoutCheck();
     }
