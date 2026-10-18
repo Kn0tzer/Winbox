@@ -1,18 +1,51 @@
 # Archived JIT experiment
 
-Archived commit `3833127bc` (now merged into master’s history) preserves the advanced x64 WASM emitter and its generators/tests. It predates the current runtime fixes and is not the production engine. The current `master` branch has the interpreter and the smaller JIT infrastructure checked by `scripts/build-jit-wasm.sh --selftest-only`. The historical design below describes the archived work, not a claim that every emitter is active on master.
+Status of the CPU64 JIT (updated 2026-10-18 by the Lane-2 consolidation; see
+`docs/reports/winbox-jit64-20261018.md` for evidence and
+`docs/reports/winbox-jit64-metrics.md` for the stats contract):
+
+* **The emitted-wasm engine is implemented and exercised.** `BW64_JIT=1` on a
+  build made with `BW64_JIT_BUILD=1` (which adds
+  `-DBOXEDWINE_BLOCK_EXEC -DBOXEDWINE_BLOCK_CACHE_INFRA -sALLOW_TABLE_GROWTH`)
+  decodes hot blocks, emits one wasm module per block, instantiates it into the
+  host wasm table and calls it through a table index. Arithmetic, memory
+  (through the imported `KMemory64` helpers), flags, string ops, pushes/pops and
+  the block terminators (Jcc/JMP/CALL/RET/LEAVE/NOP) are all emitted.
+* **Execution is proven, not assumed.** The generated modules increment
+  `Jit64WasmState::blocksEntered` and store `Jit64WasmState::execCount`
+  themselves; `scripts/build-jit-wasm.sh` fails if the emitted-code entry
+  counter is zero or disagrees with the host's call count. The earlier prototype
+  (checkpoint `711fbf8b5`) could not emit a single real block: its acceptance
+  switch rejected exactly the terminators its decoder appends last.
+* **Invalidation is inline.** After every guest store the module re-reads the
+  block's code-page generations and leaves at the exact next guest RIP (with the
+  exact retired count) when either moved, mirroring `CPU64::execBlock`'s
+  per-record break. Self-modifying code is therefore bounded to the same
+  behaviour as the block interpreter.
+* **Fallback is total.** Any block with a non-fast op, an emitter refusal, an
+  instantiation failure or a stale page generation runs on the interpreter
+  (`CPU64::tryBlockStep`/`step`); `BW64_JIT` unset keeps the deployed behaviour
+  unchanged. Blocks are only compiled after `BW64_JIT_HOT` entries (default 8).
+* **Not yet a deployment claim.** No Chromium or wine64 timing comparison has
+  been run for CPU64; the production `wasm64-mt` target still builds without
+  `BW64_JIT_BUILD=1` and therefore still runs the interpreter. Enabling it by
+  default needs a representative performance win measured by the integration
+  agent, and one known cost: every emitted memory operand goes through the
+  imported read/write helper (a JS crossing per access), so memory-heavy code is
+  the least likely to win.
+
+Archived commit `3833127bc` (now merged into master's history) preserves the
+advanced x64 WASM emitter and its generators/tests. It predates the current
+runtime fixes and is not the production engine; the current tree carries the
+consolidated implementation described above. The historical design below
+describes the archived work, not a claim that every emitter is active.
 
 **Upstream status checked 2026-10-18:** [Boxedwine PR #151](https://github.com/danoon2/Boxedwine/pull/151)
 was merged on 2026-07-19. Its maintainer reported about 2.5× average performance
 over the non-JIT build across several applications; that is upstream evidence,
-not a Chromium measurement in this fork. The historical “closed, merged=no”
-statement below is superseded. Upstream's 32-bit guest WASM backend is a candidate
-for integration with the 32-bit Chromium path; it does not supply CPU64 support.
-The production `wasm64-mt` target here still uses the interpreter, without
-`BOXEDWINE_JIT` or `BOXEDWINE_BLOCK_EXEC`. Its CPU64 prototype's `tryJitStep()`
-still calls `execBlock`; the standalone emitter accepts only register/immediate
-MOV blocks and is not dispatched by the runtime. Setting `BW64_JIT=1` alone
-does not enable machine-code translation in the deployed build.
+not a Chromium measurement in this fork. Upstream's 32-bit guest WASM backend
+is a candidate for integration with the 32-bit Chromium path (Lane 1); it does
+not supply CPU64 support.
 
 # Port Plan: PR #151 WASM JIT → boxedwine64 `cpu64`
 

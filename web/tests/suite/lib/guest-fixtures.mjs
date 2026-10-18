@@ -13,6 +13,12 @@ const fixtures = {
   'win32-internet': ['tools/guest-fixtures/win32-internet.c', '-lws2_32'],
   'player-pointer': ['tools/guest-fixtures/player-pointer.c', '-luser32', '-lgdi32'],
   'win32-clock': ['tools/guest-fixtures/win32-clock.c'],
+  // Deterministic 64-bit integer/branch/memory workload with a checksum. The
+  // PE64 build (mingw, CRT printf) and the ELF64 build (freestanding, direct
+  // syscalls) share the same source and print the same checksum for the same
+  // pass count, so a CPU64 interpreter/JIT difference shows up as a differing
+  // checksum in either guest format.
+  jitbench64: ['tools/guest-fixtures/jitbench64.c', '-fno-tree-vectorize'],
   'mshtml-document': ['tools/guest-fixtures/mshtml-document.c', '-lole32', '-loleaut32', '-luuid'],
   'openal-tone': ['tools/guest-fixtures/openal-tone.c', '-lm'],
   'win32-fonts': ['tools/guest-fixtures/win32-fonts.cpp', '-ldwrite', '-lgdi32', '-luser32'],
@@ -24,6 +30,8 @@ const elfFixtures = { 'shared-mapping': ['tools/guest-fixtures/shared-mapping.c'
 elfFixtures['fork-mapping'] = ['tools/guest-fixtures/fork-mapping.c', '-static', '-pthread'];
 elfFixtures['cpu32-sse3'] = ['tools/guest-fixtures/cpu32-sse3.c', '-static', '-msse3', '-nostdlib', '-fno-builtin', '-fno-stack-protector', '-fno-pie', '-no-pie'];
 elfFixtures['cpu32-branches'] = ['tools/guest-fixtures/cpu32-branches.c', '-static', '-nostdlib', '-fno-builtin', '-fno-stack-protector', '-fno-pie', '-no-pie'];
+elfFixtures['jitbench64'] = ['tools/guest-fixtures/jitbench64.c', '-static', '-nostdlib', '-fno-builtin',
+  '-fno-stack-protector', '-fno-pie', '-no-pie', '-fno-tree-vectorize', '-DJITBENCH_FREESTANDING'];
 const managedFixtures = { 'mono-runtime': ['tools/guest-fixtures/mono-runtime.cs'] };
 managedFixtures['fna-runtime'] = ['tools/guest-fixtures/fna-runtime.cs',
   '-r:tools/rootfs64/mono32/mono/mono-2.0/lib/mono/gac/FNA/22.9.1.0__0738eb9f132ed756/FNA.dll'];
