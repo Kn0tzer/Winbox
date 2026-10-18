@@ -24,6 +24,7 @@ using U32 = unsigned; using U8 = unsigned char; using LazyFlagType = unsigned;
 #define OPCALL
 #define BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(m) std::lock_guard<std::mutex> lock(m)
 constexpr U32 OP_FLAG_JIT = 1, JIT_RUN_COUNT = 3, Done = 99;
+constexpr U32 OP_FLAG2_WASM_JIT_PENDING = 1;
 constexpr U32 FLAGS_NULL = 4, FLAGS_ADD64 = 5, FLAGS_NEG64 = 6, CS = 0;
 struct CPU; struct DecodedOp;
 using OpCallback = void (*)(CPU*, DecodedOp*);
@@ -37,12 +38,13 @@ struct CPU {
   Thread* thread; Memory* memory; void* calculateCF[FLAGS_NULL]{};
   U32 getEipAddress() { return 42; }
 };
-struct DecodedOp { U32 flags{}, runCount{}, inst{}; OpCallback pfn{}; };
+struct DecodedOp { U32 flags{}, runCount{}, inst{}; OpCallback pfn{}; U32 flags2{}; };
 int attempts = 0, dispatches = 0;
 void kpanic(const char*) { std::abort(); }
 void dispatch(CPU*, DecodedOp*) { dispatches++; }
 struct JitCodeGen {
   CPU* cpu; bool disableTmps{}; U32 currentEip{}, startingEip{};
+  DecodedOp* firstOp{};
   void doJIT(U32, DecodedOp*);
   U8* createSyncToHost() { return nullptr; }
   U8* createSyncFromHost() { return nullptr; }
@@ -76,6 +78,13 @@ int main() {
   firstDynamicOp(&cpu, &op);
   assert(std::memcmp(cpu.calculateCF, process.calculateCF, sizeof(cpu.calculateCF)) == 0);
   assert(attempts == 0 && dispatches == 1);
+  // Pending shared blocks need the same per-CPU initialization before the
+  // compiler's early return, without compiling the block a second time.
+  std::memset(cpu.calculateCF, 0, sizeof(cpu.calculateCF));
+  op.flags = 0; op.flags2 = OP_FLAG2_WASM_JIT_PENDING;
+  jit.doJIT(42, &op);
+  assert(std::memcmp(cpu.calculateCF, process.calculateCF, sizeof(cpu.calculateCF)) == 0);
+  assert(attempts == 0);
 }
 `);
     for (const defines of [[], ['-D__TEST']]) {
