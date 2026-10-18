@@ -10,12 +10,35 @@ export function startupProgress(status, lastLog, hasFrame, now = performance.now
     detail = firstMapped ? 'The program opened a window. Waiting for it to draw its first frame.'
       : 'Wine is starting the program and its background services. Waiting for a window and the first frame.';
   }
+  // Log activity is reported as an observation, never as proof that the program
+  // will launch. Long silences are normal during CPU, graphics and asset loading,
+  // and Wine's background services can keep logging after the program itself has
+  // already failed. Neither case justifies a timeout or a health claim.
   const active = lastLog !== null && now - lastLog < 2500;
-  const activity = hasFrame || now - startedAt <= 15000 ? '' : active
-    ? 'Not frozen, still loading. The program is still sending logs.'
-    : lastLog === null ? 'No program logs yet. You can inspect Show logs or restart.'
-      : `No new logs for ${Math.floor((now - lastLog) / 1000)} seconds. You can inspect Show logs or restart.`;
+  const silentSeconds = lastLog === null ? null : Math.floor((now - lastLog) / 1000);
+  const timeSinceStart = now - startedAt;
+  let activity = '';
+  if (hasFrame || timeSinceStart <= 15000) activity = '';
+  else if (active) activity = 'Runtime logs are arriving. Wine background services can keep logging even when the program cannot start, so this does not confirm that it will open.';
+  else if (lastLog === null) activity = 'No runtime logs yet. Programs can be quiet while loading assets or preparing graphics; this does not confirm a launch. Show logs has more detail.';
+  else if (silentSeconds <= 30) activity = `No new logs for ${silentSeconds} seconds. This can be normal while loading assets or preparing graphics; launch is not confirmed. Show logs has more detail.`;
+  else if (silentSeconds <= 120) activity = `No new logs for ${silentSeconds} seconds. Long silences are common while a program loads assets or compiles shaders; this does not confirm a launch or a hang. Show logs has more detail.`;
+  else activity = `No new logs for ${silentSeconds} seconds. A program can be quiet while loading assets or compiling shaders, but if this continues with no window or frame, stop it and check Show logs for details.`;
   return { title, detail, activity, elapsed: `Starting for ${elapsed} seconds` };
+}
+// Only terminal loader diagnostics for the requested executable count here.
+// Ordinary fixme/err output, service failures, and a dead initial Unix PID do
+// not establish whether a Windows process (or one of its children) can launch.
+export function startupFailure(line, exe = '') {
+  if (/^(?:Boot failed:|Exception:|Aborted\b)/i.test(line)) return line;
+  if (/wine: could not load kernel32\.dll, status/i.test(line)) return 'Wine could not load its Windows system libraries. ' + line;
+  const target = exe.replaceAll('\\', '/').split('/').at(-1)?.toLowerCase();
+  if (!target || !line.toLowerCase().includes(target)) return null;
+  if (/LdrInitializeThunk.*Importing dlls.*failed, status (?:c0000135|c000007b)/i.test(line))
+    return 'The program could not load a required DLL. Show logs lists the missing or incompatible library. ' + line;
+  if (/wine: (?:failed to open|cannot find|could not load).*: (?:c0000135|c000007b|c000000f)/i.test(line))
+    return 'The program could not be opened. Check its files and required libraries in Show logs. ' + line;
+  return null;
 }
 // Sample a tiny image during startup, then stop after the first visible frame.
 export function visibleFrame(canvas, probe) {

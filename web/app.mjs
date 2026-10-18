@@ -6,7 +6,8 @@ import { formatBytes } from './games.mjs';
 import { prepareArchive, removeArchive } from './package-archive.mjs';
 import { storedFiles, snapshotRuntime, readSaveBlobs } from './session-storage.mjs';
 import { replaceInstallation } from './installation.mjs';
-import { startupProgress, visibleFrame } from './startup.mjs';
+import { startupProgress, startupFailure, visibleFrame } from './startup.mjs';
+import { readDirectory, openDirectPackage } from './direct-folder.mjs';
 
 const $ = id => /** @type {any} */ (document.getElementById(id));
 const icon = name => {
@@ -22,7 +23,7 @@ const text = (tag, value, className = '') => {
 };
 let current = null, selected = null, busy = false, operation = null, lastAction = null;
 let generation = 0, stopping = null;
-const settings = { appearance: 'system', graphics: 'auto', internet: 'off', enhancement: 'off', sharpness: 0.5 };
+const settings = { appearance: 'system', graphics: 'auto', internet: 'off', enhancement: 'off', sharpness: 0.5, folderMode: 'copy' };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('wine.launcher.settings.v1') || '{}')); } catch {}
 function appearance(value) {
   document.documentElement.dataset.theme = ['light', 'dark'].includes(value) ? value : 'system';
@@ -39,6 +40,22 @@ for (const name of ['internet', 'enhancement', 'sharpness']) {
 $('appearance').onchange = () => { settings.appearance = $('appearance').value; appearance(settings.appearance); persistSettings(); };
 $('backend').onchange = () => { settings.graphics = $('backend').value; persistSettings(); };
 function persistSettings() { try { localStorage.setItem('wine.launcher.settings.v1', JSON.stringify(settings)); } catch {} }
+function folderMode() {
+  if (!window.showDirectoryPicker && settings.folderMode === 'direct') {
+    settings.folderMode = 'copy';
+    persistSettings();
+  }
+  for (const input of document.querySelectorAll('input[name="folderMode"]')) {
+    const radio = /** @type {HTMLInputElement} */ (input);
+    radio.checked = radio.value === settings.folderMode;
+    radio.onchange = () => { settings.folderMode = radio.value; persistSettings(); folderMode(); };
+  }
+  $('directMode').disabled = !window.showDirectoryPicker;
+  $('folderButtonLabel').textContent = settings.folderMode === 'direct' ? 'Open folder' : 'Upload folder';
+  $('dropHint').textContent = settings.folderMode === 'direct' ? 'Use Open folder for direct access.' : 'Or drag a folder here to copy it.';
+  if (!window.showDirectoryPicker) $('folderModeHelp').textContent = 'File system access is unavailable in this browser. Use Chrome or Edge for direct access, or select Copy to browser. Saves use browser storage in both modes.';
+}
+folderMode();
 function message(value, error = false) {
   $('notice').hidden = !value; $('noticeText').textContent = value; $('notice').classList.toggle('error', error);
 }
@@ -111,7 +128,7 @@ async function launchFrame(query, title, archive = null) {
   frame.allow = 'cross-origin-isolated; fullscreen'; frame.dataset.installation = query.get('installation');
   const run = { frame, archive, generation: ++generation, renderer: null, vkReady: null, canvas: null,
     lastLog: null, firstMapped: false, hasFrame: false, failed: false, status: '', progressTimer: null, probe: null,
-    startedAt: performance.now(), enhancer: null, enhancerPending: false };
+    startedAt: performance.now(), enhancer: null, enhancerPending: false, exe: query.get('exe') || '' };
   current = run;
   if (query.get('gpu') === '1') {
     const canvas = document.createElement('canvas'); canvas.id = 'gpuCanvas'; run.canvas = canvas; $('display').append(canvas);
@@ -150,9 +167,16 @@ function updateStartup(run, sample = false) {
   $('loadingActivity').textContent = progress.activity; $('loadingActivity').hidden = !progress.activity;
   $('loadingElapsed').textContent = progress.elapsed;
 }
+function startupError(run, value) {
+  run.failed = true; clearInterval(run.progressTimer);
+  $('loading').hidden = false; $('loadingTitle').textContent = 'The program could not continue'; status(value);
+  $('loadingActivity').hidden = true; $('launchProgress').hidden = true; $('playerRetry').hidden = !lastAction;
+}
 async function runSaved(id, signal) {
-  const pkg = await getPackage(id);
+  let pkg = await getPackage(id);
   if (!pkg) throw Error('This folder is no longer saved. Upload it again.');
+  pkg = await openDirectPackage(pkg, { signal });
+  if (pkg.mode === 'direct' && !pkg.files.some(file => file.path === pkg.program?.exe)) pkg.program = await detectProgram(pkg.files, { name: pkg.name });
   await runPackage(pkg, signal);
 }
 async function runPackage(pkg, signal, prepared = null) {
@@ -162,9 +186,10 @@ async function runPackage(pkg, signal, prepared = null) {
   if (!pkg.program) { pkg = { ...pkg, program }; await savePackage(pkg); }
   let archive = prepared;
   try {
-    if (!archive && (pkg.files.reduce((sum, file) => sum + file.size, 0) > 128 * 1024 ** 2 || pkg.files.length > limits.count)) {
+    if (!archive && (pkg.mode === 'direct' || pkg.files.reduce((sum, file) => sum + file.size, 0) > 128 * 1024 ** 2 || pkg.files.length > limits.count)) {
       archive = await archiveFor(pkg, signal);
     }
+    if (pkg.mode === 'direct') await savePackage(pkg);
     signal?.throwIfAborted();
     const query = runtimeParameters(program, { installation: pkg.id, archive: archive?.url, archiveBytes: archive?.bytes,
       graphics: settings.graphics === 'auto' ? program.graphics : settings.graphics });
@@ -175,19 +200,22 @@ async function archiveFor(pkg, signal) {
   status('Preparing the folder for streamed loading…'); $('launchProgress').hidden = false;
   return prepareArchive(pkg, { signal, onProgress: (done, total) => {
     $('launchProgress').max = total || 1; $('launchProgress').value = done;
-    status('Preparing files: ' + formatBytes(done) + ' of ' + formatBytes(total));
+    status((pkg.mode === 'direct' ? 'Indexing originals (no copy): ' : 'Preparing files: ') + formatBytes(done) + ' of ' + formatBytes(total));
   } });
 }
-async function importFolder(files, name, signal) {
+async function importFolder(files, name, signal, directory = null) {
   let archive, pkg, owned = files, saved = false;
   try {
     await closeRuntime(); signal.throwIfAborted(); preparing(name || 'Your folder'); status('Finding the main program…');
     checkEntries(files, folderLimits);
     const program = await detectProgram(files, { name }); signal.throwIfAborted();
-    status('Copying the folder into browser storage…');
-    owned = await ownFiles(files, { signal, onProgress: (done, total) => status('Saving files: ' + formatBytes(done) + ' of ' + formatBytes(total)) });
-    pkg = { id: crypto.randomUUID(), name: name || program.exe.split('/').at(-1).replace(/\.exe$/i, ''), files: owned, sourceDirectory: sourceDirectory(owned), program, created: new Date().toISOString() };
-    if (files.reduce((sum, file) => sum + file.size, 0) > 128 * 1024 ** 2 || files.length > limits.count) archive = await archiveFor(pkg, signal);
+    if (!directory) {
+      status('Copying the folder into browser storage…');
+      navigator.storage?.persist?.().catch(() => {});
+      owned = await ownFiles(files, { signal, onProgress: (done, total) => status('Saving files: ' + formatBytes(done) + ' of ' + formatBytes(total)) });
+    }
+    pkg = { id: crypto.randomUUID(), name: name || program.exe.split('/').at(-1).replace(/\.exe$/i, ''), files: owned, mode: directory ? 'direct' : 'copy', directory, sourceDirectory: sourceDirectory(owned), program, created: new Date().toISOString() };
+    if (directory || files.reduce((sum, file) => sum + file.size, 0) > 128 * 1024 ** 2 || files.length > limits.count) archive = await archiveFor(pkg, signal);
     signal.throwIfAborted(); status('Saving this folder on your device…'); await savePackage(pkg); saved = true; retainExtracted(owned);
     lastAction = nextSignal => runSaved(pkg.id, nextSignal);
     navigator.storage?.persist?.().catch(() => {});
@@ -220,7 +248,7 @@ async function refreshLibrary() {
     const item = text('div', '', 'saved-item');
     const run = document.createElement('button'); run.type = 'button'; run.className = 'saved-run'; run.dataset.launch = '';
     const copy = text('span', '', 'saved-copy');
-    copy.append(text('strong', pkg.name), text('span', pkg.files.length.toLocaleString() + ' files · ' + formatBytes(pkg.files.reduce((n, f) => n + f.size, 0))));
+    copy.append(text('strong', pkg.name), text('span', (pkg.mode === 'direct' ? 'Linked folder · ' : 'Browser copy · ') + pkg.files.length.toLocaleString() + ' files · ' + formatBytes(pkg.files.reduce((n, f) => n + f.size, 0))));
     run.append(icon('folder'), copy); run.onclick = () => action(signal => runSaved(pkg.id, signal));
     const manage = document.createElement('button'); manage.type = 'button'; manage.className = 'icon-button';
     manage.setAttribute('aria-label', 'Settings for ' + pkg.name); manage.append(icon('settings')); manage.onclick = () => action(() => manageFolder(pkg.id), { retry: null });
@@ -233,7 +261,9 @@ async function refreshLibrary() {
 async function manageFolder(id) {
   selected = await getPackage(id); if (!selected) throw Error('Folder no longer exists.');
   const program = selected.program || await detectProgram(selected.files, { name: selected.name });
-  $('folderTitle').textContent = selected.name; $('folderInfo').textContent = ''; $('folderInfo').hidden = true;
+  $('folderTitle').textContent = selected.name;
+  $('folderInfo').textContent = selected.mode === 'direct' ? 'Linked folder. Originals are read-only; saves and patches use browser storage. Restoring a backup creates a browser copy.' : 'Browser copy. The original folder is no longer needed.';
+  $('folderInfo').hidden = false; $('relink').hidden = selected.mode !== 'direct';
   $('executable').replaceChildren();
   for (const file of selected.files) if (/\.exe$/i.test(file.path)) $('executable').add(new Option(file.path, file.path));
   $('executable').value = program.exe; $('arguments').value = JSON.stringify(program.args);
@@ -243,13 +273,15 @@ window.addEventListener('message', event => {
   const run = current;
   if (!run || event.origin !== location.origin || event.source !== run.frame.contentWindow || event.data?.wine !== true) return;
   const { type, data } = event.data;
-  if (type === 'status') { run.status = String(data); updateStartup(run); }
-  if (type === 'error') { run.failed = true; clearInterval(run.progressTimer); $('loading').hidden = false; $('loadingTitle').textContent = 'The program could not continue'; status(String(data)); $('loadingActivity').hidden = true; $('playerRetry').hidden = !lastAction; }
+  if (type === 'status') { run.status = String(data); const failure = startupFailure(run.status, run.exe); if (failure) startupError(run, failure); else updateStartup(run); }
+  if (type === 'error') startupError(run, String(data));
   if (type === 'size' && Number.isFinite(data?.width) && Number.isFinite(data?.height) && data.width > 0 && data.height > 0) {
     $('display').style.setProperty('--program-aspect', `${data.width} / ${data.height}`);
   }
   if (type === 'log') {
     log(String(data));
+    const failure = startupFailure(String(data), run.exe);
+    if (!run.hasFrame && failure) startupError(run, failure);
     run.lastLog = performance.now();
     if (String(data).includes('first window mapped')) {
       run.firstMapped = true;
@@ -277,7 +309,26 @@ window.addEventListener('message', event => {
     }).catch(error => { if (current === run) log('Graphics fallback: ' + errorText(error)); });
   }
 });
-$('folderButton').onclick = () => $('folderInput').click();
+$('folderButton').onclick = () => {
+  if (settings.folderMode === 'copy') return $('folderInput').click();
+  action(async signal => {
+    if (!window.showDirectoryPicker) throw Error('File system access is unavailable. Select Copy to browser, or open this page in Chrome or Edge.');
+    let directory;
+    try { directory = await window.showDirectoryPicker({ mode: 'read', id: 'winbox-programs' }); }
+    catch (error) { if (error.name === 'AbortError') return; throw error; }
+    preparing(directory.name); status('Reading the folder index…');
+    await importFolder(await readDirectory(directory, { signal }), directory.name, signal, directory);
+  }, { retry: null });
+};
+$('relink').onclick = () => action(async signal => {
+  let directory;
+  try { directory = await window.showDirectoryPicker({ mode: 'read', id: 'winbox-programs' }); }
+  catch (error) { if (error.name === 'AbortError') return; throw error; }
+  const files = await readDirectory(directory, { signal });
+  const program = await detectProgram(files, { name: selected.name });
+  selected = { ...selected, directory, files, program }; await savePackage(selected);
+  await refreshLibrary(); $('folderDialog').close(); message('Folder relinked. Your browser saves are unchanged.');
+}, { retry: null });
 $('zipButton').onclick = () => $('zipInput').click();
 $('folderInput').onchange = () => {
   const chosen = Array.from(/** @type {FileList} */ ($('folderInput').files)); if (!chosen.length) return;
@@ -295,6 +346,7 @@ window.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth =
 window.addEventListener('drop', event => {
   event.preventDefault(); dragDepth = 0; $('dropOverlay').hidden = true;
   if (!event.dataTransfer || busy) return;
+  if (settings.folderMode === 'direct') { message('Use Open folder to grant direct access. To copy a dropped folder instead, select Copy to browser.'); return; }
   const items = Array.from(event.dataTransfer.items), files = Array.from(event.dataTransfer.files);
   action(async signal => { preparing(files[0]?.name || 'Your folder'); status('Reading the package…'); return importFolder(files.length === 1 && /\.zip$/i.test(files[0].name) ? await fromZip(files[0], { budget: folderLimits, stream: true, signal }) : items.some(item => item.webkitGetAsEntry?.()) ? await fromDrop(items) : await fromFiles(files), files[0]?.name.replace(/\.(zip|exe)$/i, '') || 'Dropped folder', signal); });
 });
@@ -306,6 +358,7 @@ $('fullscreen').onclick = () => $('display').requestFullscreen().catch(error => 
 $('settingsButton').onclick = () => $('settingsDialog').showModal();
 for (const dialog of document.querySelectorAll('dialog')) dialog.addEventListener('click', event => { if (event.target === dialog) { const box = dialog.getBoundingClientRect(); if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) dialog.close(); } });
 $('start').onclick = () => action(async signal => {
+  selected = await openDirectPackage(selected, { signal });
   const exe = safePath($('executable').value), file = selected.files.find(file => file.path === exe);
   const base = selected.program || await detectProgram(selected.files, { name: selected.name });
   const program = { ...base, exe, arch: await peArchitecture(file.blob), args: JSON.parse($('arguments').value) };
@@ -318,7 +371,7 @@ $('patchInput').onchange = () => action(async signal => {
   const file = $('patchInput').files[0]; if (!file || !selected) return;
   const patch = await fromZip(file, { strip: false, signal }); await closeRuntime();
   const merged = new Map(selected.files.map(file => [file.path.toLowerCase(), file]));
-  for (const file of patch) merged.set(file.path.toLowerCase(), file);
+  for (const file of patch) merged.set(file.path.toLowerCase(), selected.mode === 'direct' ? { ...file, override: true } : file);
   const files = [...merged.values()]; checkEntries(files, folderLimits);
   const program = await detectProgram(files, { name: selected.name });
   const saves = new Map((await storedFiles(selected.id)).map(file => [file.path, file]));
@@ -329,6 +382,7 @@ $('patchInput').onchange = () => action(async signal => {
   await refreshLibrary(); $('patchInput').value = ''; $('folderDialog').close(); message('Patch applied. Open the folder to run it.');
 }, { retry: null });
 $('export').onclick = () => action(async () => {
+  selected = await openDirectPackage(selected);
   await snapshotRuntime(current?.frame); const stored = await storedFiles(selected.id);
   const files = selected.files.map(file => ({ ...file, path: 'package/' + file.path }));
   for (const entry of stored) {
@@ -353,7 +407,7 @@ $('restoreInput').onchange = () => action(async signal => {
   const writable = entries.filter(entry => entry.path.startsWith('writable/')).map(entry => ({ ...entry, path: safePath(entry.path.slice(9)) }));
   const saves = await readSaveBlobs(writable, '/root/home/username/');
   await closeRuntime(); const previous = selected;
-  selected = await replaceInstallation(previous, { files, program, sourceDirectory: sourceDirectory(entries) }, saves);
+  selected = await replaceInstallation(previous, { files, program, mode: 'copy', directory: null, sourceDirectory: sourceDirectory(entries) }, saves);
   retainExtracted(entries);
   await removeSource(previous).catch(() => {});
   await removeArchive(previous).catch(() => {});
@@ -368,6 +422,10 @@ $('remove').onclick = () => action(async () => {
   await refreshLibrary(); $('folderDialog').close(); message('Folder deleted from this browser.');
 }, { retry: null });
 window.wineLibrary = { getPackage, listPackages };
+window.bwReadLocalArchive = (url, start, end) => {
+  if (current?.archive?.url !== url || !current.archive.read) throw Error('This local folder is no longer open. Restart it from the library.');
+  return current.archive.read(start, end);
+};
 window.wineGames = { catalog: demos, install: id => action(signal => startDemo(demos.find(demo => demo.id === id), signal)) };
 renderDemos();
 const supported = crossOriginIsolated && typeof SharedArrayBuffer !== 'undefined';

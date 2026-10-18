@@ -28,6 +28,21 @@ try {
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   await page.waitForFunction(() => window.wineGames && !document.getElementById('library').hasAttribute('aria-busy'));
   assert.equal(await page.locator('[data-game]').count(), 9);
+  {
+    const modes = await page.evaluate(() => ({
+      checked: document.querySelector('input[name="folderMode"]:checked')?.value,
+      labels: [...document.querySelectorAll('.folder-modes label')].map(label => label.innerText),
+      disabled: document.getElementById('directMode').disabled,
+      help: document.getElementById('folderModeHelp').textContent,
+      picker: typeof window.showDirectoryPicker,
+    }));
+    assert.equal(modes.checked, 'copy');
+    assert.equal(modes.labels.length, 2);
+    for (const label of modes.labels) { assert.match(label, /Pros/); assert.match(label, /Cons/); }
+    assert.match(modes.help, /never changed|Original files are never changed/);
+    if (modes.picker !== 'function') { assert.equal(modes.disabled, true); assert.match(modes.help, /unavailable/); }
+    checks.push('Folder access choice shows explicit pros and cons, defaults to copy, and disables direct access without the picker');
+  }
   await page.screenshot({ path: dir + '/desktop-light.png', fullPage: true, animations: 'disabled' });
   checks.push('Fresh library renders without console errors');
   for (const [id, arch, executable] of [['doom','x64',null],['chromium','x86','chrome.exe'],['portal','x86','hl2.exe'],['celeste','x86','Celeste.exe'],['gangbeasts','x64','Gang Beasts.exe'],['explorer','x64',null],['notepad','x64',null],['cube','x64',null],['snake','x64',null]]) {
@@ -50,7 +65,7 @@ try {
   let runtime=await(await page.locator('#display iframe').elementHandle()).contentFrame();
   await page.clock.fastForward(16000);
   await runtime.evaluate(()=>parent.postMessage({wine:true,type:'log',data:'Still preparing pixels'},location.origin));
-  await page.waitForFunction(()=>document.getElementById('loadingActivity').textContent.includes('Not frozen, still loading'));
+  await page.waitForFunction(()=>document.getElementById('loadingActivity').textContent.includes('does not confirm'));
   await runtime.evaluate(()=>parent.postMessage({wine:true,type:'error',data:'Startup test failure'},location.origin));
   await page.waitForFunction(()=>document.getElementById('status').textContent==='Startup test failure',null,{timeout:1000});
   await runtime.evaluate(()=>parent.postMessage({wine:true,type:'log',data:'Late log after failure'},location.origin));
@@ -64,7 +79,7 @@ try {
   assert.equal(await page.locator('#loading').isVisible(),false);
   await page.clock.resume();
   await page.click('#stop');await page.waitForFunction(()=>!document.getElementById('folderButton').disabled);holdFirstPaint=false;
-  checks.push('Startup reassurance follows recent logs, expires when logs stop, and clears after the first visible frame');
+  checks.push('Startup observations never claim launch health, follow recent logs, and clear after the first visible frame');
   const folder=join(temp,'Fixture'); await mkdir(folder);
   const pe=Buffer.alloc(1024);pe.writeUInt16LE(0x5a4d,0);pe.writeUInt32LE(64,60);pe.writeUInt32LE(0x4550,64);pe.writeUInt16LE(0x14c,68);pe.writeUInt16LE(1,70);pe.writeUInt16LE(224,84);pe.writeUInt16LE(2,86);pe.writeUInt16LE(0x10b,88);pe.writeUInt32LE(512,328);pe.writeUInt32LE(512,332);
   await writeFile(join(folder,'Fixture.exe'),pe); await writeFile(join(folder,'UnityCrashHandler64.exe'),pe);await writeFile(join(folder,'assets.txt'),'test');

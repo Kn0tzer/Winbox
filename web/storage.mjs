@@ -1,4 +1,5 @@
 import { checkEntries, folderLimits } from './files.mjs';
+import { packageRecord } from './direct-folder.mjs';
 const NAME = 'wine-browser-library-v1';
 async function open() {
   return new Promise((resolve, reject) => {
@@ -21,7 +22,7 @@ async function operation(mode, fn) {
 }
 export async function savePackage(pkg) {
   checkEntries(pkg.files, folderLimits);
-  await operation('readwrite', store => store.put(pkg));
+  await operation('readwrite', store => store.put(packageRecord(pkg)));
 }
 export const getPackage = id => operation('readonly', store => store.get(id));
 export const listPackages = () => operation('readonly', store => store.getAll());
@@ -31,7 +32,7 @@ export const deletePackage = id => operation('readwrite', store => store.delete(
 export async function replacePackage(previous, next) {
   checkEntries(next.files, folderLimits);
   if (previous.id === next.id) throw Error('Replacement needs a new installation ID');
-  await operation('readwrite', store => { store.delete(previous.id); return store.put(next); });
+  await operation('readwrite', store => { store.delete(previous.id); return store.put(packageRecord(next)); });
 }
 export async function overlay(pkg, patch) {
   checkEntries(patch);

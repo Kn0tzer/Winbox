@@ -1,4 +1,6 @@
 interface Window {
+  showDirectoryPicker?: (options: {mode: 'read', id: string}) => Promise<any>;
+  bwReadLocalArchive?: (url: string, start: number, end: number) => Promise<Uint8Array>;
   bwRuntime?: { fs(): any; ready(): boolean; call(name: string, types: string[], args: unknown[]): unknown };
   wineGpu?: any;
   wineLibrary?: any;

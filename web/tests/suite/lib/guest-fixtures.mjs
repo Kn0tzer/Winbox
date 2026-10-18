@@ -13,6 +13,8 @@ const fixtures = {
   'win32-internet': ['tools/guest-fixtures/win32-internet.c', '-lws2_32'],
   'player-pointer': ['tools/guest-fixtures/player-pointer.c', '-luser32', '-lgdi32'],
   'win32-clock': ['tools/guest-fixtures/win32-clock.c'],
+  'mshtml-document': ['tools/guest-fixtures/mshtml-document.c', '-lole32', '-loleaut32', '-luuid'],
+  'openal-tone': ['tools/guest-fixtures/openal-tone.c', '-lm'],
   'win32-fonts': ['tools/guest-fixtures/win32-fonts.cpp', '-ldwrite', '-lgdi32', '-luser32'],
   dsptone: ['tools/guest-fixtures/dsptone.c', '-lm'],
   trigl: ['tools/openglTest/trigl.c', '-lopengl32', '-lgdi32', '-luser32'],

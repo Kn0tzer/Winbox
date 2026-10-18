@@ -1,5 +1,6 @@
 import { ZipWriter, BlobReader, BlobWriter } from './vendor/zip/index-native.js';
 import { checkEntries, folderLimits, limits, safePath } from './files.mjs';
+import { virtualArchive } from './direct-folder.mjs';
 
 const directoryName = 'wine-launcher-archives';
 const archiveKey = pkg => {
@@ -8,6 +9,7 @@ const archiveKey = pkg => {
 };
 /** @param {any} pkg @param {{onProgress?:(received:number,total:number)=>void, signal?:AbortSignal, prefix?:string}} [options] */
 export async function prepareArchive(pkg, { onProgress = (received, total) => {}, signal, prefix = 'home/username/apps/' } = {}) {
+  if (pkg.mode === 'direct' && prefix === 'home/username/apps/') return virtualArchive(pkg, { onProgress, signal });
   checkEntries(pkg.files, folderLimits);
   if (prefix) for (const file of pkg.files) {
     if (new TextEncoder().encode(prefix + safePath(file.path)).length >= 255) throw Error('A file path is too long for streamed loading: ' + file.path);

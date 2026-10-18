@@ -59,6 +59,20 @@ static inline void cpu64_fpu_set_c012_3(FPU& f, int c3, int c2, int c0) {
     if (c0) f.sw |= 0x0100;
 }
 
+// FCOM/FUCOM compare result: C3/C2/C0 = 111 unordered, 100 equal,
+// 001 ST(0)<src, 000 ST(0)>src.
+static inline void cpu64_fpu_compare(FPU& f, double a, double b) {
+    if (std::isnan(a) || std::isnan(b)) {
+        cpu64_fpu_set_c012_3(f, 1, 1, 1);
+    } else if (a == b) {
+        cpu64_fpu_set_c012_3(f, 1, 0, 0);
+    } else if (a < b) {
+        cpu64_fpu_set_c012_3(f, 0, 0, 1);
+    } else {
+        cpu64_fpu_set_c012_3(f, 0, 0, 0);
+    }
+}
+
 CPU64::CPU64(KMemory64* memory) : memory(memory) {
     reg[X64_RSP].setU64(0);
     fpu.FINIT();
@@ -3485,6 +3499,66 @@ dsp_55:
             rip += used;
             return used;
         }
+        // Saturated packed byte/word add/sub — 66 0F D8/D9/DC/DD/E8/E9/EC/ED.
+        // Gecko's xul.dll uses PSUBUSB while laying out its first document.
+        if ((op2 == 0xD8 || op2 == 0xD9 || op2 == 0xDC || op2 == 0xDD ||
+             op2 == 0xE8 || op2 == 0xE9 || op2 == 0xEC || op2 == 0xED) && osize66) {
+            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            U64 srcLo, srcHi;
+            if (m.isReg) {
+                srcLo = xmm[m.rmIndex].lo;
+                srcHi = xmm[m.rmIndex].hi;
+            } else {
+                srcLo = memory->readq(m.effAddr);
+                srcHi = memory->readq(m.effAddr + 8);
+            }
+            U64 dLo = xmm[m.regField].lo;
+            U64 dHi = xmm[m.regField].hi;
+            bool word = (op2 == 0xD9 || op2 == 0xDD || op2 == 0xE9 || op2 == 0xED);
+            bool sub = (op2 == 0xD8 || op2 == 0xD9 || op2 == 0xE8 || op2 == 0xE9);
+            bool sgn = (op2 == 0xE8 || op2 == 0xE9 || op2 == 0xEC || op2 == 0xED);
+            U64 oLo = 0, oHi = 0;
+            int lanes = word ? 4 : 8;
+            int width = word ? 16 : 8;
+            for (int i = 0; i < lanes; i++) {
+                U32 ua = (U32)((dLo >> (i*width)) & (word ? 0xFFFF : 0xFF));
+                U32 ub = (U32)((srcLo >> (i*width)) & (word ? 0xFFFF : 0xFF));
+                U32 uc = (U32)((dHi >> (i*width)) & (word ? 0xFFFF : 0xFF));
+                U32 ud = (U32)((srcHi >> (i*width)) & (word ? 0xFFFF : 0xFF));
+                U32 rLo, rHi;
+                if (sgn) {
+                    S32 a = word ? (S32)(S16)ua : (S32)(S8)ua;
+                    S32 b = word ? (S32)(S16)ub : (S32)(S8)ub;
+                    S32 c = word ? (S32)(S16)uc : (S32)(S8)uc;
+                    S32 d = word ? (S32)(S16)ud : (S32)(S8)ud;
+                    S32 maxV = word ? 32767 : 127;
+                    S32 minV = word ? -32768 : -128;
+                    S32 vLo = sub ? a - b : a + b;
+                    S32 vHi = sub ? c - d : c + d;
+                    if (vLo < minV) vLo = minV;
+                    if (vLo > maxV) vLo = maxV;
+                    if (vHi < minV) vHi = minV;
+                    if (vHi > maxV) vHi = maxV;
+                    rLo = (U32)(vLo & (word ? 0xFFFF : 0xFF));
+                    rHi = (U32)(vHi & (word ? 0xFFFF : 0xFF));
+                } else if (sub) {
+                    rLo = ua > ub ? ua - ub : 0;
+                    rHi = uc > ud ? uc - ud : 0;
+                } else {
+                    U32 vLo = ua + ub, vHi = uc + ud;
+                    U32 cap = word ? 0xFFFF : 0xFF;
+                    rLo = vLo > cap ? cap : vLo;
+                    rHi = vHi > cap ? cap : vHi;
+                }
+                oLo |= (U64)rLo << (i*width);
+                oHi |= (U64)rHi << (i*width);
+            }
+            xmm[m.regField].lo = oLo;
+            xmm[m.regField].hi = oHi;
+            U32 used = opOff + 2 + m.length;
+            rip += used;
+            return used;
+        }
         // PMINUB/PMAXUB — 66 0F DA/DE /r. Unsigned byte min/max across 16
         // lanes. Used by glibc's strlen/memchr fast paths.
         if ((op2 == 0xDA || op2 == 0xDE) && osize66) {
@@ -5430,6 +5504,9 @@ dsp_59:
             } else if (op == 0xD9 && modrmByte == 0xE1) {
                 // D9 E1 = FABS — absolute value of ST(0)
                 fpu.FABS();
+            } else if (op == 0xD9 && modrmByte == 0xE5) {
+                // D9 E5 = FXAM — classify ST(0) into C3/C2/C0 and sign into C1.
+                fpu.FXAM();
             } else if (op == 0xD9 && modrmByte == 0xE8) {
                 // D9 E8 = FLD1 — push +1.0 (FPU::FLD1 does PREP_PUSH itself)
                 fpu.FLD1();
@@ -5533,6 +5610,55 @@ dsp_59:
                     cpu64_fpu_set_c012_3(fpu, 0, 0, 0);
                 }
                 if ((modrmByte & 0xF8) == 0xE8) fpu.FPOP();
+            } else if (op == 0xDC && (modrmByte & 0xF8) == 0xC0) {
+                // DC C0+i = FADD ST(i), ST(0)
+                fpu.FADD(fpu.STV(i), fpu.STV(0));
+            } else if (op == 0xDC && (modrmByte & 0xF8) == 0xC8) {
+                // DC C8+i = FMUL ST(i), ST(0)
+                fpu.FMUL(fpu.STV(i), fpu.STV(0));
+            } else if (op == 0xDC && (modrmByte & 0xF8) == 0xD0) {
+                // DC D0+i = FCOM ST(i) — compare ST(0) with ST(i)
+                U32 si = fpu.STV(i);
+                double a = fpu.isRegCached[fpu.top] ? fpu.regCache[fpu.top].d : fpu.getF64(fpu.top);
+                double b = fpu.isRegCached[si] ? fpu.regCache[si].d : fpu.getF64(si);
+                cpu64_fpu_compare(fpu, a, b);
+            } else if (op == 0xDC && (modrmByte & 0xF8) == 0xD8) {
+                // DC D8+i = FCOMP ST(i) — compare, then pop
+                U32 si = fpu.STV(i);
+                double a = fpu.isRegCached[fpu.top] ? fpu.regCache[fpu.top].d : fpu.getF64(fpu.top);
+                double b = fpu.isRegCached[si] ? fpu.regCache[si].d : fpu.getF64(si);
+                cpu64_fpu_compare(fpu, a, b);
+                fpu.FPOP();
+            } else if (op == 0xDC && (modrmByte & 0xF8) == 0xE0) {
+                // DC E0+i = FSUBR ST(i), ST(0) — ST(i) = ST(0) - ST(i)
+                fpu.FSUBR(fpu.STV(i), fpu.STV(0));
+            } else if (op == 0xDC && (modrmByte & 0xF8) == 0xE8) {
+                // DC E8+i = FSUB ST(i), ST(0) — ST(i) = ST(i) - ST(0)
+                fpu.FSUB(fpu.STV(i), fpu.STV(0));
+            } else if (op == 0xDC && (modrmByte & 0xF8) == 0xF0) {
+                // DC F0+i = FDIVR ST(i), ST(0) — ST(i) = ST(0) / ST(i)
+                fpu.FDIVR(fpu.STV(i), fpu.STV(0));
+            } else if (op == 0xDC && (modrmByte & 0xF8) == 0xF8) {
+                // DC F8+i = FDIV ST(i), ST(0) — ST(i) = ST(i) / ST(0)
+                fpu.FDIV(fpu.STV(i), fpu.STV(0));
+            } else if (op == 0xD8 && (modrmByte & 0xF8) == 0xC0) {
+                // D8 C0+i = FADD ST(0), ST(i)
+                fpu.FADD(fpu.STV(0), fpu.STV(i));
+            } else if (op == 0xD8 && (modrmByte & 0xF8) == 0xC8) {
+                // D8 C8+i = FMUL ST(0), ST(i)
+                fpu.FMUL(fpu.STV(0), fpu.STV(i));
+            } else if (op == 0xD8 && (modrmByte & 0xF8) == 0xE0) {
+                // D8 E0+i = FSUB ST(0), ST(i)
+                fpu.FSUB(fpu.STV(0), fpu.STV(i));
+            } else if (op == 0xD8 && (modrmByte & 0xF8) == 0xE8) {
+                // D8 E8+i = FSUBR ST(0), ST(i)
+                fpu.FSUBR(fpu.STV(0), fpu.STV(i));
+            } else if (op == 0xD8 && (modrmByte & 0xF8) == 0xF0) {
+                // D8 F0+i = FDIV ST(0), ST(i)
+                fpu.FDIV(fpu.STV(0), fpu.STV(i));
+            } else if (op == 0xD8 && (modrmByte & 0xF8) == 0xF8) {
+                // D8 F8+i = FDIVR ST(0), ST(i)
+                fpu.FDIVR(fpu.STV(0), fpu.STV(i));
             } else if (op == 0xD8 && (modrmByte & 0xF8) == 0xD0) {
                 // D8 D0+i = FCOM ST(0), ST(i) — set C0/C2/C3
                 U32 si = fpu.STV(i);

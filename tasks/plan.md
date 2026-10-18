@@ -150,6 +150,20 @@ hit memory/reporting limits; see the runtime regression report for evidence.
 
 ## Chromium performance continuation
 
+## Folder access, truthful startup and common dependencies (Oct 17)
+
+1. Implement read-only direct folders and copied-folder choice, with a valid
+   virtual ZIP range adapter, cached CRCs, permission recovery and browser proof.
+2. Replace log-based health claims with observations and explicit error handling;
+   verify quiet and noisy startup cases and real delayed rendering.
+3. Audit shared dependencies, add missing pinned payloads, exercise guest APIs,
+   record unsupported runtime behavior precisely. Preserve Mono/FNA/native apps.
+4. Run focused and full checks, export/deploy, smoke-test and commit locally.
+
+Specs: `docs/specs/folder-access.md`, `startup-observations.md`,
+`common-dependencies.md`. These three scopes were explicitly authorized by the
+user; read-only originals and browser-local saves are the default direct policy.
+
 - **CP1, M, complete:** Chromium 109 renders, clicks, types into an empty HTML
   field and computes the benchmark checksum. Regressions cover HADDPD,
   Wine fonts/Arial metrics and X11 focus. Verified commands and evidence are

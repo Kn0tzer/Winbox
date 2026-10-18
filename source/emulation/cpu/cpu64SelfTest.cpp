@@ -1127,6 +1127,23 @@ int runX64SelfTest() {
             return c.reg[X64_R15].u64 == 0x1020304040302010ULL;
         });
     }
+
+    // Test 41b: PSUBUSB saturates each byte subtraction at zero.
+    // xmm0 bytes = {0,10,200,255,5,6,7,8}; xmm1 = {1,20,100,255,0,0,0,0}
+    // → {0,0,100,0,5,6,7,8} = 0x0807060500640000 little-endian.
+    {
+        std::vector<U8> code = {
+            0x48, 0xB8, 0x00, 0x0A, 0xC8, 0xFF, 0x05, 0x06, 0x07, 0x08,
+            0x66, 0x48, 0x0F, 0x6E, 0xC0,                                // movq xmm0, rax
+            0x48, 0xB8, 0x01, 0x14, 0x64, 0xFF, 0x00, 0x00, 0x00, 0x00,
+            0x66, 0x48, 0x0F, 0x6E, 0xC8,                                // movq xmm1, rax
+            0x66, 0x0F, 0xD8, 0xC1,                                       // psubusb xmm0, xmm1
+            0x66, 0x48, 0x0F, 0x7E, 0xC0,                                 // movq rax, xmm0
+        };
+        runAndCheck(r, "psubusb saturates byte subtraction at zero", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 0x0807060500640000ULL;
+        });
+    }
     // Test 42: PMAXSW. Words in xmm0 = {0x0001, 0xFFFF (-1), 0x7FFF, 0x8000 (-32768)}.
     //          Words in xmm1 = {0x0000, 0x0000, 0x0000, 0x0000}.
     // Per-word signed max → {0x0001, 0x0000, 0x7FFF, 0x0000}.
@@ -3882,6 +3899,86 @@ int runX64SelfTest() {
         };
         runAndCheck(r, "x87 FXCH ST(1) swaps tops", withExit(code), [](CPU64& c) {
             return c.reg[X64_R15].u64 == 0x4000000000000000ULL; // 2.0
+        });
+    }
+
+    // T: D8 C8+i (FMUL ST(0), ST(i)) — the register form Gecko's xul.dll
+    // uses during browser startup. The decoder only implemented FCOM/FCOMP
+    // for this opcode before.
+    {
+        std::vector<U8> code = {
+            0x48, 0x83, 0xEC, 0x08,
+            0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x40, // 2.5
+            0x48, 0x89, 0x04, 0x24,
+            0xDD, 0x04, 0x24,                                           // fld 2.5        ; st0=2.5
+            0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x40, // 4.0
+            0x48, 0x89, 0x04, 0x24,
+            0xDD, 0x04, 0x24,                                           // fld 4.0        ; st0=4.0, st1=2.5
+            0xD8, 0xC9,                                                 // fmul st(0),st1 ; st0=10.0
+            0xDD, 0x1C, 0x24,                                           // fstp qword [rsp]
+            0x48, 0x8B, 0x04, 0x24,
+            0x48, 0x83, 0xC4, 0x08,
+        };
+        runAndCheck(r, "x87 D8 FMUL ST(0),ST(1) (4.0*2.5=10.0)", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 0x4024000000000000ULL; // 10.0
+        });
+    }
+
+    // T: D8 E0+i (FSUB ST(0), ST(i)) and D8 E8+i (FSUBR ST(0), ST(i)).
+    {
+        std::vector<U8> code = {
+            0x48, 0x83, 0xEC, 0x08,
+            0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x40, // 4.0
+            0x48, 0x89, 0x04, 0x24,
+            0xDD, 0x04, 0x24,                                           // fld 4.0       ; st0=4.0
+            0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x40, // 6.0
+            0x48, 0x89, 0x04, 0x24,
+            0xDD, 0x04, 0x24,                                           // fld 6.0       ; st0=6.0, st1=4.0
+            0xD8, 0xE1,                                                 // fsub st(0),st(1) ; st0=2.0
+            0xDD, 0x1C, 0x24,                                           // fstp qword [rsp]
+            0x48, 0x8B, 0x04, 0x24,
+            0x48, 0x83, 0xC4, 0x08,
+        };
+        runAndCheck(r, "x87 D8 FSUB ST(0),ST(1) (6.0-4.0=2.0)", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 0x4000000000000000ULL; // 2.0
+        });
+    }
+
+    // T: DC E9 (FSUB ST(1), ST(0)) writes ST(1) and does not pop.
+    {
+        std::vector<U8> code = {
+            0x48, 0x83, 0xEC, 0x08,
+            0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x40, // 2.5
+            0x48, 0x89, 0x04, 0x24,
+            0xDD, 0x04, 0x24,                                           // fld 2.5        ; st0=2.5
+            0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x40, // 4.0
+            0x48, 0x89, 0x04, 0x24,
+            0xDD, 0x04, 0x24,                                           // fld 4.0        ; st0=4.0, st1=2.5
+            0xDC, 0xE9,                                                 // fsub st(1),st0 ; st1=-1.5
+            0xD9, 0xC9,                                                 // fxch st(1)
+            0xDD, 0x1C, 0x24,                                           // fstp qword [rsp]
+            0x48, 0x8B, 0x04, 0x24,
+            0x48, 0x83, 0xC4, 0x08,
+        };
+        runAndCheck(r, "x87 DC FSUB ST(1),ST(0) (2.5-4.0=-1.5)", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 0xBFF8000000000000ULL; // -1.5
+        });
+    }
+
+    // T: D9 E5 (FXAM) classifies -0.0: C3=1, C2=0, C0=0, C1=1.
+    // Gecko's xul.dll uses FXAM/FNSTSW before its first browser call.
+    {
+        std::vector<U8> code = {
+            0x48, 0x83, 0xEC, 0x08,
+            0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, // -0.0
+            0x48, 0x89, 0x04, 0x24,
+            0xDD, 0x04, 0x24,                                           // fld qword [rsp]
+            0xD9, 0xE5,                                                 // fxam
+            0xDF, 0xE0,                                                 // fnstsw ax
+            0x48, 0x83, 0xC4, 0x08,
+        };
+        runAndCheck(r, "x87 D9 FXAM classifies -0.0 (C3+C1)", withExit(code), [](CPU64& c) {
+            return (c.reg[X64_R15].u16 & 0x4700) == 0x4200;
         });
     }
 

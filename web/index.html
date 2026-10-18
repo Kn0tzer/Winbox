@@ -17,12 +17,17 @@
     </header>
     <main id="main">
       <section id="launcher" aria-label="Programs">
+        <fieldset class="folder-modes"><legend>How to open folders</legend>
+          <label><input type="radio" name="folderMode" value="copy" checked><span><strong>Copy to browser</strong><span>Imports the files once into browser storage.</span><span class="tradeoff"><b>Pros</b> Works in every browser and keeps working if the original folder moves or is deleted.</span><span class="tradeoff"><b>Cons</b> Slower first import, duplicates the folder in browser storage, and updates need a fresh import.</span></span></label>
+          <label><input id="directMode" type="radio" name="folderMode" value="direct"><span><strong>File system access</strong><span>Reads the original files in place; nothing is copied.</span><span class="tradeoff"><b>Pros</b> No game-sized copy or upload, and edits on disk are picked up on the next launch.</span><span class="tradeoff"><b>Cons</b> Chromium browsers only, permission may need renewing after reload, and the folder must stay in place.</span></span></label>
+        </fieldset>
+        <p id="folderModeHelp" class="setting-help">Saves stay in browser storage in both modes. Original files are never changed. ZIP and EXE imports are always copied.</p>
         <button id="folderButton" class="upload-zone" type="button">
           <span class="upload-icon"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#folder-up"></use></svg></span>
-          <span class="upload-copy"><strong>Upload folder</strong></span>
+          <span class="upload-copy"><strong id="folderButtonLabel">Upload folder</strong></span>
           <svg class="icon upload-arrow" aria-hidden="true"><use href="assets/icons.svg#chevron-right"></use></svg>
         </button>
-        <div class="upload-hint"><span>Or drag a folder anywhere here.</span><button id="zipButton" class="text-button" type="button">Import ZIP or EXE</button></div>
+        <div class="upload-hint"><span id="dropHint">Or drag a folder here to copy it.</span><button id="zipButton" class="text-button" type="button">Import ZIP or EXE</button></div>
         <div id="notice" class="notice" role="status" aria-live="polite" hidden><span id="noticeText"></span><button id="retry" class="text-button" type="button" hidden>Try again</button></div>
         <section class="library-section" aria-labelledby="demoTitle">
           <div class="section-heading"><h2 id="demoTitle">Choose a demo program</h2></div>
@@ -51,6 +56,7 @@
   </dialog>
   <dialog id="folderDialog" aria-labelledby="folderTitle"><form method="dialog"><div class="dialog-heading"><h2 id="folderTitle">Folder settings</h2><button class="icon-button" aria-label="Close folder settings"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#x"></use></svg></button></div></form>
     <p id="folderInfo" class="setting-help" hidden></p><label for="executable">Program</label><select id="executable"></select>
+    <button id="relink" class="button" type="button" hidden>Relink folder</button>
     <label for="arguments">Launch arguments (JSON array)</label><input id="arguments" value="[]" autocomplete="off" spellcheck="false">
     <button id="start" class="button primary" type="button">Run program</button>
     <div class="management-actions"><button id="patch" class="button" type="button">Apply patch ZIP</button><button id="export" class="button" type="button">Save backup</button><button id="restore" class="button" type="button">Restore backup</button><button id="remove" class="text-button danger" type="button">Delete folder</button></div>

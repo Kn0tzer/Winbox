@@ -992,6 +992,8 @@
                 mirrorOutput(text);
             },
             setStatus: function (text) { if (text) setStatusText(text); },
+            onAbort: function (reason) { if (window.bwRuntimeError) window.bwRuntimeError('The runtime aborted: ' + reason); },
+            onExit: function (code) { if (window.bwRuntimeError) window.bwRuntimeError('The runtime exited before continuing (code ' + code + '). Check Show logs for the cause.'); },
             onRuntimeInitialized: function () {
                 runtimeInitialized = true;
                 // BW64_VKPROF (?vkprof=1): the vk64 bridge runs on a Web Worker
