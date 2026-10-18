@@ -132,30 +132,48 @@ inline void k64DTlbInvalidateAll() {
 } // namespace
 
 #ifdef BOXEDWINE_BLOCK_CACHE_INFRA
-// Block-cache invalidation tables (see kmemory64.h). File-scope globals:
-// zero impact on KMemory64's object layout, shared across address spaces.
+// Exact code-page registry. A hash collision probes another slot rather than
+// aliasing a generation: writes to heap/stack pages must not recompile code.
+// Entries never move or disappear, so baked wasm offsets remain valid across
+// threads and address-space lifetimes. Slot 0 is reserved for exhaustion.
+static constexpr U32 BLOCK_PAGE_CAPACITY = 65536;
+static constexpr U32 BLOCK_PAGE_SLOTS = BLOCK_PAGE_CAPACITY + 1;
 static std::atomic<U32> g_blockPagesRegistered{0};
-static std::atomic<U32> g_blockPageGen[4096];
-static std::atomic<U32> g_blockPageMark[128];
+static std::atomic<U64> g_blockPageTag[BLOCK_PAGE_SLOTS];
+static std::atomic<U32> g_blockPageGen[BLOCK_PAGE_SLOTS];
+static std::atomic<bool> g_blockPageOverflow{false};
+
+static U32 blockPageSlot(U64 pageNum, bool insert) {
+    const U64 tag = pageNum + 1; // zero denotes an unclaimed slot
+    U32 slot = (U32)((pageNum ^ (pageNum >> 12)) & (BLOCK_PAGE_CAPACITY - 1)) + 1;
+    for (U32 tried = 0; tried < BLOCK_PAGE_SLOTS - 1; ++tried) {
+        U64 found = g_blockPageTag[slot].load(std::memory_order_acquire);
+        if (found == tag) return slot;
+        if (!found) {
+            if (!insert) return 0;
+            if (g_blockPageTag[slot].compare_exchange_strong(found, tag,
+                    std::memory_order_acq_rel, std::memory_order_acquire) || found == tag)
+                return slot;
+        }
+        if (++slot == BLOCK_PAGE_SLOTS) slot = 1;
+    }
+    return 0;
+}
+
+U32 KMemory64::blockSlot(U64 pageNum) { return blockPageSlot(pageNum, false); }
 
 bool bw64PageHoldsBlocks(U64 pageNum) {
-    if (g_blockPagesRegistered.load(std::memory_order_relaxed) == 0) {
-        return false;
-    }
-    U32 slot = KMemory64::blockSlot(pageNum);
-    return (g_blockPageMark[slot >> 5].load(std::memory_order_relaxed) & (1u << (slot & 31))) != 0;
+    if (g_blockPagesRegistered.load(std::memory_order_acquire) == 0) return false;
+    return g_blockPageOverflow.load(std::memory_order_acquire) || blockPageSlot(pageNum, false) != 0;
 }
 
 void KMemory64::blockPageRegister(U64 pageNum) {
-    U32 slot = blockSlot(pageNum);
-    U32 word = slot >> 5, bit = 1u << (slot & 31);
-    if (!(g_blockPageMark[word].load(std::memory_order_relaxed) & bit)) {
-        g_blockPageMark[word].fetch_or(bit, std::memory_order_release);
-        g_blockPagesRegistered.fetch_add(1, std::memory_order_release);
-        // Evict every thread's cached entry for (any page aliasing) this slot,
-        // so writes that were fast-pathing through the TLB start missing.
-        k64DTlbInvalidateAll();
-    }
+    if (blockPageSlot(pageNum, false)) return;
+    if (!blockPageSlot(pageNum, true)) g_blockPageOverflow.store(true, std::memory_order_release);
+    g_blockPagesRegistered.store(1, std::memory_order_release);
+    // Writes previously using another thread's data TLB must now observe this
+    // registration. Registered pages cannot re-enter that TLB.
+    k64DTlbInvalidateAll();
 }
 
 U32 KMemory64::blockPageGenOf(U64 pageNum) {
@@ -163,20 +181,19 @@ U32 KMemory64::blockPageGenOf(U64 pageNum) {
 }
 
 U32 KMemory64::blockGenTableAddr() {
-    // wasm32 only: a 64-bit host pointer cannot be addressed by an emitted
-    // i32-offset load. The CPU64 JIT is disabled in Memory64 builds anyway.
     return sizeof(void*) == 4 ? (U32)(uintptr_t)&g_blockPageGen[0] : 0;
 }
 
 static inline void bw64NoteWriteSlow(U64 pageNum) {
-    U32 slot = KMemory64::blockSlot(pageNum);
-    if (g_blockPageMark[slot >> 5].load(std::memory_order_relaxed) & (1u << (slot & 31))) {
-        g_blockPageGen[slot].fetch_add(1, std::memory_order_release);
-    }
+    const U32 slot = blockPageSlot(pageNum, false);
+    if (slot) g_blockPageGen[slot].fetch_add(1, std::memory_order_release);
+    // An overflow block uses slot 0 and must observe EVERY guest write.
+    if (g_blockPageOverflow.load(std::memory_order_acquire))
+        g_blockPageGen[0].fetch_add(1, std::memory_order_release);
 }
 
 void KMemory64::noteGuestWrite(U64 pageNum) {
-    if (g_blockPagesRegistered.load(std::memory_order_relaxed) == 0) return;
+    if (g_blockPagesRegistered.load(std::memory_order_acquire) == 0) return;
     bw64NoteWriteSlow(pageNum);
 }
 

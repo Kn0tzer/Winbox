@@ -6483,6 +6483,10 @@ U32 CPU64::tryWasmExec(U64 maxInsn) {
 
     Jit64Block* block = m_jit->cache.insert(r, page0, gen0, page1, gen1, ops, n);
     if (!block) return 0;
+    // Registry slots are assigned to exact pages, not the emitter fixture's
+    // synthetic hash. Use these offsets for inline post-store validation.
+    block->slot0 = KMemory64::blockSlot(page0);
+    block->slot1 = KMemory64::blockSlot(page1);
     Jit64EmitOptions options = jit64WasmMemoryOptions();
     std::vector<U8> module;
     const U64 emitStart = jit64NowUs();

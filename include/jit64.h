@@ -156,10 +156,9 @@ struct Jit64Op {
 using Jit64PageGenFn = U32 (*)(U64 pageNum);
 void jit64SetPageGenFn(Jit64PageGenFn fn);
 
-// Page-generation hash slot. MUST match KMemory64::blockSlot exactly: the
-// emitted wasm module addresses the same generation table by this index, so
-// a mismatch would silently check the wrong page. The invalidation test
-// asserts equality against the real KMemory64 helper.
+// Synthetic generation slot used by standalone emitter tests. The runtime
+// replaces block.slot0/slot1 with KMemory64::blockSlot after page registration;
+// real pages have distinct stable slots even when their hashes collide.
 U64 jit64PageOf(U64 guestAddr);
 U32 jit64BlockSlot(U64 pageNum);
 
@@ -211,13 +210,14 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16);
 U32 jit64CompileStream(U64 ripBase, const U8* bytes, U32 byteCount,
                        Jit64Op* opsOut, U32 maxOps, bool stopAtControlFlow);
 
-// Block cache. Fixed-size open-addressed table keyed on startRip; validity
+// Block cache. Bounded four-way associative table keyed on startRip; validity
 // additionally requires matching page generations (same contract as the
 // interpreter's BOXEDWINE_BLOCK_EXEC blockTable: any write to a registered
 // page bumps its generation and the entry rebuilds).
 class Jit64BlockCache {
 public:
-    static constexpr U32 SLOTS = 512;
+    static constexpr U32 WAYS = 4;
+    static constexpr U32 SLOTS = 8192;
     Jit64BlockCache();
     // Look up a compiled entry valid for `rip` with the given page gens.
     // Returns nullptr on miss/stale. (Tests and the decode-time insert path.)
@@ -227,18 +227,18 @@ public:
     // caller-supplied pages). Same contract as CPU64::tryBlockStep: two
     // atomic generation reads per entry. Returns nullptr on miss/stale.
     Jit64Block* lookupByRip(U64 rip);
-    // Insert (evicts whatever collides). Copies ops.
+    // Insert (evicts the least recently used entry in a full set). Copies ops.
     Jit64Block* insert(U64 rip, U64 page0, U32 gen0, U64 page1, U32 gen1,
                              const Jit64Op* ops, U32 nOps);
     // Raw entry for `rip` (may have a different startRip on collision). The
     // caller validates startRip and page generations itself, which lets it
     // validate an entry without knowing the block length up front.
-    Jit64Block* at(U64 rip) { return &m_slots[slotFor(rip)].block; }
-    const Jit64Block* at(U64 rip) const { return &m_slots[slotFor(rip)].block; }
+    Jit64Block* at(U64 rip) { return &m_slots[findSlot(rip)].block; }
+    const Jit64Block* at(U64 rip) const { return &m_slots[findSlot(rip)].block; }
     // Count one execution of the entry at `rip` (per-block diagnostics).
     void recordExec(U64 rip) {
         if (rip == 0) return;
-        Jit64Block& b = m_slots[slotFor(rip)].block;
+        Jit64Block& b = m_slots[findSlot(rip)].block;
         if (b.startRip == rip) b.execCount++;
     }
     void invalidate(U64 rip); // drop one entry (negative-cache support)
@@ -250,10 +250,10 @@ public:
     U64 hits() const { return m_hits; }
     U64 inserts() const { return m_inserts; }
 private:
-    struct Slot { Jit64Block block; };
+    struct Slot { Jit64Block block; U64 used = 0; };
     Slot m_slots[SLOTS];
-    U64 m_lookups = 0, m_hits = 0, m_inserts = 0;
-    static U32 slotFor(U64 rip);
+    U64 m_lookups = 0, m_hits = 0, m_inserts = 0, m_clock = 0;
+    U32 findSlot(U64 rip) const;
 };
 
 // Runtime flag: BW64_JIT=1 enables the JIT path; anything else (or unset)
@@ -268,7 +268,7 @@ bool jit64Enabled();
 // (correct, slower), never execute stale code.
 class Jit64NegativeCache {
 public:
-    static constexpr U32 SLOTS = 256;
+    static constexpr U32 SLOTS = 8192;
     // True if `rip` is known-unemittable at generation `gen0`.
     bool rejected(U64 rip, U32 gen0) const;
     void add(U64 rip, U32 gen0);
@@ -291,7 +291,7 @@ bool jit64BlockMayStore(const Jit64Op* ops, U32 nOps);
 U16 jit64HotThreshold();
 class Jit64Hotness {
 public:
-    static constexpr U32 SLOTS = 512;
+    static constexpr U32 SLOTS = 8192;
     // Bump `rip`'s entry count. Returns true once the count reaches `threshold`
     // (and from then on for that rip, so a block that is evicted from the
     // block cache can be re-emitted immediately).

@@ -1113,6 +1113,27 @@ static void testHotness() {
     CHECK(t1 == jit64HotThreshold(), "hot threshold not cached");
 }
 
+static void testCacheCollisions() {
+    Jit64BlockCache cache;
+    Jit64Op op;
+    CHECK(jit64CompileStream(0x400000, (const U8*)"\x90", 1, &op, 1, false) == 1,
+          "collision fixture decode");
+    // These distinct hot blocks collide in the original direct-mapped cache.
+    for (U64 i = 0; i < 4; ++i)
+        cache.insert(0x400000 + i * 0x100000, 1, 7, 1, 7, &op, 1);
+    for (U64 i = 0; i < 4; ++i)
+        CHECK(cache.lookup(0x400000 + i * 0x100000, 1, 7, 1, 7),
+              "a colliding hot block was evicted");
+    cache.lookup(0x400000, 1, 7, 1, 7); // keep the first block hot
+    cache.insert(0x800000, 1, 7, 1, 7, &op, 1);
+    CHECK(cache.lookup(0x400000, 1, 7, 1, 7), "hot entry lost to eviction");
+    CHECK(!cache.lookup(0x500000, 1, 7, 1, 7), "least recently used entry survived");
+    cache.invalidate(0x700000);
+    cache.insert(0x900000, 1, 7, 1, 7, &op, 1);
+    CHECK(cache.lookup(0x600000, 1, 7, 1, 7), "insertion did not reuse the empty slot");
+    CHECK(cache.lookup(0x800000, 1, 7, 1, 7), "invalidation removed a different block");
+}
+
 static U32 g_fakeGen[4096];
 static U32 fakePageGenRead(U64 pageNum) { return g_fakeGen[jit64BlockSlot(pageNum)]; }
 
@@ -1205,6 +1226,7 @@ int main(int argc, char** argv) {
     testX87NeverJitted();
     testTerminatorEmission();
     testHotness();
+    testCacheCollisions();
     testLookupByRip();
     testEngineAndStats();
     testPublishedStats();

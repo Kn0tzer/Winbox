@@ -171,11 +171,46 @@ static void testCrossPageRewrite() {
            (unsigned long long)c.cpu.reg[X64_RAX].u64, (unsigned long long)c.cpu.reg[X64_RBX].u64);
 }
 
+static void testUnrelatedPageWrites() {
+    KMemory64 mem(nullptr);
+    const U64 codePage = 0x400;
+    // Deliberately aliases codePage in the old 4096-slot generation hash.
+    const U64 dataPage = 0x1401;
+    KMemory64::blockPageRegister(codePage);
+    const U32 gen = KMemory64::blockPageGenOf(codePage);
+    mem.writeq(dataPage << 12, 42);
+    CHECK(KMemory64::blockPageGenOf(codePage) == gen,
+          "an unrelated data write invalidated code");
+    KMemory64::blockPageRegister(dataPage);
+    CHECK(KMemory64::blockSlot(codePage) != KMemory64::blockSlot(dataPage),
+          "distinct code pages share a generation slot");
+    mem.writeq(dataPage << 12, 43);
+    CHECK(KMemory64::blockPageGenOf(codePage) == gen,
+          "a different registered page invalidated code");
+    mem.writeb(codePage << 12, 0x90);
+    CHECK(KMemory64::blockPageGenOf(codePage) != gen,
+          "a real code write did not invalidate code");
+}
+
+static void testRegistryOverflow() {
+    const U64 first = 0x100000000ULL;
+    for (U32 i = 0; i < 65536; ++i) KMemory64::blockPageRegister(first + i);
+    const U64 overflowPage = first + 65535;
+    CHECK(KMemory64::blockSlot(overflowPage) == 0, "overflow did not use its reserved slot");
+    const U32 before = KMemory64::blockPageGenOf(overflowPage);
+    KMemory64 mem(nullptr);
+    mem.writeb(0x90000000, 42);
+    CHECK(KMemory64::blockPageGenOf(overflowPage) != before,
+          "registry exhaustion allowed a stale overflow block");
+}
+
 int main() {
+    testUnrelatedPageWrites();
     testRewriteInsideBlock();
     testOverlapAtXPlus2();
     testWithinBlockSelfMod();
     testCrossPageRewrite();
+    testRegistryOverflow();
     printf("invalidate_tests: pass=%d fail=%d\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

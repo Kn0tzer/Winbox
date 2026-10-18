@@ -217,34 +217,19 @@ public:
     U64 committedPageCount() const;
 
 #ifdef BOXEDWINE_BLOCK_CACHE_INFRA
-    // ---- decoded-block-cache invalidation infra (Phase 1; see the block-
-    // cache brief in the milestone notes). A future block executor caches
-    // pre-decoded instruction runs keyed by RIP and must observe every store
-    // that could touch cached code. Pages holding blocks REGISTER here; every
-    // guest-write funnel calls noteGuestWrite*, which bumps the page slot's
-    // generation. A cached block records its pages' generations at build time
-    // and revalidates with one compare per page per execution. While no page
-    // is registered (today: always), the write-path cost is a single relaxed
-    // atomic load + branch. Slots are hashed, so collisions only cause false
-    // invalidation — never a stale block.
-    // Tables live at file scope in kmemory64.cpp (global, shared across all
-    // address spaces — cross-process slot collisions only cause false
-    // invalidation, never a stale block) so this object's hot-member layout
-    // is untouched. The gate/check helpers are defined there too.
-    static U32  blockSlot(U64 pageNum) { return (U32)((pageNum ^ (pageNum >> 12)) & 4095); }
-    static void blockPageRegister(U64 pageNum);   // mark page as holding blocks
-    static U32  blockPageGenOf(U64 pageNum);
+    // Registered code pages own stable, distinct generation slots. Data-page
+    // writes do not invalidate unrelated code. Slots are process-wide and never
+    // recycled while emitted modules can still reference them. If the bounded
+    // registry fills, new pages share a conservative overflow generation.
+    static U32 blockSlot(U64 pageNum); // registered slot, or overflow slot 0
+    static void blockPageRegister(U64 pageNum);
+    static U32 blockPageGenOf(U64 pageNum);
     static void noteGuestWrite(U64 pageNum);
     static void noteGuestWriteRange(U64 addr, U64 len);
-    // wasm32 linear-memory address of the generation table (4096 x U32, indexed
-    // by blockSlot). The CPU64 JIT bakes this into emitted modules so a guest
-    // store can re-check its block's code pages inline, without a host call.
-    // Returns 0 when the host has no 32-bit pointers (the JIT is disabled
-    // there) — callers must treat 0 as "inline invalidation unavailable".
-    static U32  blockGenTableAddr();
+    // wasm32 address of the generation array. Emitted blocks bake their actual
+    // registered slots into inline checks following stores. Zero on native64.
+    static U32 blockGenTableAddr();
 #else
-    // Compiled out (measured ~4% on cpu_bench from code-layout displacement
-    // alone — pay it only when the Phase 2 block executor buys it back).
     static void blockPageRegister(U64) {}
     static U32  blockPageGenOf(U64) { return 0; }
     static void noteGuestWrite(U64) {}

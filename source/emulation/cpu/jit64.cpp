@@ -1040,9 +1040,8 @@ U32 jit64CompileStream(U64 ripBase, const U8* bytes, U32 byteCount,
 
 // ---- block cache ----
 
-// Guest page number and KMemory64::blockSlot-compatible hash. Kept here (not
-// in kmemory64.h) because this TU stays dependency-free for the native tests;
-// the invalidation test compares both against the real KMemory64 helpers.
+// Synthetic page slots for standalone emitter tests. CPU64 replaces these with
+// the exact registry slots before emitting a runtime block.
 U64 jit64PageOf(U64 guestAddr) { return guestAddr >> 12; }
 U32 jit64BlockSlot(U64 pageNum) {
     return (U32)((pageNum ^ (pageNum >> 12)) & 4095);
@@ -1059,18 +1058,26 @@ static std::atomic<Jit64PageGenFn> g_pageGenFn{nullptr};
 
 void jit64SetPageGenFn(Jit64PageGenFn fn) { g_pageGenFn.store(fn, std::memory_order_release); }
 
-U32 Jit64BlockCache::slotFor(U64 rip) {
-    return (U32)((rip ^ (rip >> 9)) & (SLOTS - 1));
+U32 Jit64BlockCache::findSlot(U64 rip) const {
+    const U32 first = (U32)((rip ^ (rip >> 9) ^ (rip >> 32)) & (SLOTS / WAYS - 1)) * WAYS;
+    U32 oldest = first;
+    for (U32 i = first; i < first + WAYS; ++i) {
+        if (m_slots[i].block.startRip == rip) return i;
+        if (m_slots[i].used < m_slots[oldest].used) oldest = i;
+    }
+    return oldest;
 }
 
 Jit64Block* Jit64BlockCache::lookup(U64 rip, U64 page0, U32 gen0, U64 page1, U32 gen1) {
     m_lookups++;
     if (rip == 0) return nullptr;
-    Jit64Block& b = m_slots[slotFor(rip)].block;
+    const U32 slot = findSlot(rip);
+    Jit64Block& b = m_slots[slot].block;
     if (b.startRip != rip) return nullptr;
     if (b.page0 != page0 || b.gen0 != gen0) return nullptr;
     if (b.page1 != page1 || b.gen1 != gen1) return nullptr;
     if (!b.executable) return nullptr;
+    m_slots[slot].used = ++m_clock;
     m_hits++;
     return &b;
 }
@@ -1078,7 +1085,8 @@ Jit64Block* Jit64BlockCache::lookup(U64 rip, U64 page0, U32 gen0, U64 page1, U32
 Jit64Block* Jit64BlockCache::lookupByRip(U64 rip) {
     m_lookups++;
     if (rip == 0) return nullptr;
-    Jit64Block& b = m_slots[slotFor(rip)].block;
+    const U32 slot = findSlot(rip);
+    Jit64Block& b = m_slots[slot].block;
     if (b.startRip != rip || !b.executable) return nullptr;
     // Generation validation without a decode: two reads of the page-generation
     // table (the host instals its reader with jit64SetPageGenFn). A single
@@ -1091,6 +1099,7 @@ Jit64Block* Jit64BlockCache::lookupByRip(U64 rip) {
     if (!pageGen) return nullptr;
     if (pageGen(b.page0) != b.gen0) return nullptr;
     if (b.page1 != b.page0 && pageGen(b.page1) != b.gen1) return nullptr;
+    m_slots[slot].used = ++m_clock;
     m_hits++;
     return &b;
 }
@@ -1099,7 +1108,9 @@ Jit64Block* Jit64BlockCache::insert(U64 rip, U64 page0, U32 gen0, U64 page1, U32
                                           const Jit64Op* ops, U32 nOps) {
     if (rip == 0 || !ops || nOps == 0) return nullptr;
     m_inserts++;
-    Jit64Block& b = m_slots[slotFor(rip)].block;
+    const U32 slot = findSlot(rip);
+    m_slots[slot].used = ++m_clock;
+    Jit64Block& b = m_slots[slot].block;
     // Slot overwrite frees the previous block's instantiated module, if any.
     if (b.wasmIndex >= 0) jit64WasmRelease(b.wasmIndex);
     b.wasmIndex = -1;
@@ -1118,11 +1129,13 @@ Jit64Block* Jit64BlockCache::insert(U64 rip, U64 page0, U32 gen0, U64 page1, U32
 
 void Jit64BlockCache::invalidate(U64 rip) {
     if (rip == 0) return;
-    Jit64Block& b = m_slots[slotFor(rip)].block;
+    const U32 slot = findSlot(rip);
+    Jit64Block& b = m_slots[slot].block;
     if (b.startRip == rip) {
         if (b.wasmIndex >= 0) jit64WasmRelease(b.wasmIndex);
         b.startRip = 0;
         b.wasmIndex = -1;
+        m_slots[slot].used = 0;
     }
 }
 
@@ -1131,8 +1144,9 @@ void Jit64BlockCache::clear(bool releaseWasm) {
         Jit64Block& b = m_slots[i].block;
         if (releaseWasm && b.wasmIndex >= 0) jit64WasmRelease(b.wasmIndex);
         b = Jit64Block();
+        m_slots[i].used = 0;
     }
-    m_lookups = m_hits = m_inserts = 0;
+    m_lookups = m_hits = m_inserts = m_clock = 0;
 }
 
 // ---- negative cache ----
