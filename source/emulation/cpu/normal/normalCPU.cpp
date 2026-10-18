@@ -25,8 +25,27 @@
 #include "../armv7/armv7CPU.h"
 #include "../armv8/armv8CPU.h"
 #include "../../../util/ptrpool.h"
+#include "../wasm/wasmMemoryOrdering.h"
+#if defined(BOXEDWINE_JIT) && !defined(BOXEDWINE_WASM_JIT)
+#include "../jit/jitCodeGen.h"
+#endif
 
-#ifdef BOXEDWINE_MULTI_THREADED
+#if defined(BOXEDWINE_MULTI_THREADED) && defined(BOXEDWINE_WASM_JIT)
+static inline void normalOrderMemoryInstruction(DecodedOp* op) {
+    // Match the JIT's guest-memory instruction boundaries during warmup and
+    // single-op fallback. Ordinary Wasm loads/stores do not provide x86 TSO
+    // on weakly ordered hosts, even when another access uses a locked op.
+    if (instructionInfo[op->inst].readMemWidth || instructionInfo[op->inst].writeMemWidth) {
+        if (wasmJitNeedsMemoryFence) {
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+        } else {
+            // Retain the C++ compiler barrier even without hardware fences.
+            std::atomic_signal_fence(std::memory_order_seq_cst);
+        }
+    }
+}
+#define START_OP(cpu, op) normalOrderMemoryInstruction(op)
+#elif defined(BOXEDWINE_MULTI_THREADED)
 #ifdef _DEBUG
 //#define START_OP(cpu, op) op->log(cpu)
 #define START_OP(cpu, op)
@@ -49,13 +68,37 @@
 void OPCALL onExitSignal(CPU* cpu, DecodedOp* op);
 #ifdef BOXEDWINE_DIRECT_NORMAL_DISPATCH
 #define NEXT() cpu->eip.u32+=op->len; MUSTTAIL return normalDispatch(cpu, op->next);
+#elif defined(BOXEDWINE_WASM_JIT)
+// Non-bridge interpreter chains go through normalDispatch's switch (direct
+// tail calls) instead of the indirect nextOp->pfn call. Chains exit to run()
+// at compiled-block heads so wasmStartJITOp keeps its machinery (per-worker
+// readiness, relocBase, runCount counting); branches still break chains in
+// NEXT_BRANCH1/2 - that is the stack bound and must stay (the historical
+// branch-through variant overflowed the JS stack). Any DecodedOp whose pfn is
+// not normalOps[inst] must keep an inst that lands in normalDispatch's
+// default: case (see cpu.cpp's lastOp).
+#define NEXT_INTERP_CHAIN()                                                                         \
+    if (nextOp && nextOp->pfn != cpu->thread->process->startJITOp) {                                \
+        if (nextOp->inst == Callback) {                                                             \
+            cpu->nextOp = nextOp;                                                                   \
+            return;                                                                                 \
+        }                                                                                           \
+        MUSTTAIL return normalDispatch(cpu, nextOp);                                                \
+    }                                                                                                \
+    cpu->nextOp = nextOp;                                                                            \
+    return
+#define NEXT() do {                                                                                 \
+    cpu->eip.u32 += op->len;                                                                         \
+    DecodedOp* nextOp = op->next ? op->next : cpu->getNextOp();                                      \
+    NEXT_INTERP_CHAIN();                                                                             \
+} while (0)
 #else
 #define NEXT() cpu->eip.u32+=op->len; MUSTTAIL return (op->next->inst == Callback ? onExitSignal(cpu, op->next) : op->next->pfn(cpu, op->next));
 #endif
 #define NEXT_DONE() cpu->nextOp = cpu->getNextOp();
 #define NEXT_DONE_JUMP_OR_CALL() cpu->nextOp = cpu->getNextOp(OP_FLAG2_JUMP_TARGET);
 
-#if defined(BOXEDWINE_DIRECT_NORMAL_DISPATCH) && !defined(BOXEDWINE_JIT)
+#if defined(BOXEDWINE_DIRECT_NORMAL_DISPATCH) || defined(BOXEDWINE_WASM_JIT)
 static inline bool normalGetZF(CPU* cpu) {
     switch (cpu->lazyFlagType) {
     case FLAGS_NONE:
@@ -212,7 +255,7 @@ static inline bool normalGetNLE(CPU* cpu) {
 
 // Forward declaration so NEXT() can reference normalDispatch before the
 // normal_*.h opcode handlers are included.
-#ifdef BOXEDWINE_DIRECT_NORMAL_DISPATCH
+#if defined(BOXEDWINE_DIRECT_NORMAL_DISPATCH) || defined(BOXEDWINE_WASM_JIT)
 static void OPCALL normalDispatch(CPU* cpu, DecodedOp* op);
 #endif
 
@@ -513,7 +556,7 @@ static void bw64CrashSiteTrap(CPU* cpu) {
     }
 }
 
-#ifdef BOXEDWINE_DIRECT_NORMAL_DISPATCH
+#if defined(BOXEDWINE_DIRECT_NORMAL_DISPATCH) || defined(BOXEDWINE_WASM_JIT)
 static void OPCALL normalDispatch(CPU* cpu, DecodedOp* op) {
 #ifdef BW64_INST_TRACE
     // Guest-memory diagnostic traps belong only in instruction-trace builds.
@@ -667,6 +710,16 @@ DecodedOp* NormalCPU::getOp(U32 startIp, U32 jumpTargetFlags) {
 }
 
 void NormalCPU::run() {
+#if defined(BOXEDWINE_WASM_JIT) && !defined(__TEST)
+    if (nextOp) {
+        // WASM JIT fast exits can carry DecodedOp* values across code-cache
+        // invalidation; refetch from the live cache before dereferencing.
+        DecodedOp* liveOp = memory->getDecodedOp(getEipAddress());
+        if (liveOp != nextOp) {
+            nextOp = liveOp;
+        }
+    }
+#endif
     if (!nextOp) {
         if (thread->terminating) {
             return;

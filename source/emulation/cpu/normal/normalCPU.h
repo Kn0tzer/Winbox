@@ -37,7 +37,7 @@ public:
     // Thread-local limit for tail-chained basic blocks in the WASM worker.
     U32 branchBudget = 0;
 
-    OpCallback firstOp;    
+    OpCallback firstOp;
 };
 
 #endif

@@ -19,6 +19,9 @@
 #include "boxedwine.h"
 #include "knativesystem.h"
 #include "ripSampler.h"
+#ifdef BOXEDWINE_JIT
+#include "../jit/jitCodeLifecycle.h"
+#endif
 #ifdef BOXEDWINE_GUEST_X64
 #include "cpu64.h"
 #endif
@@ -166,6 +169,11 @@ void platformSetThreadDescription(KThread* thread);
 void scheduleThread(KThread* thread) {
     platformThreadCount++;
     CPU* cpu = thread->cpu;
+#ifdef BOXEDWINE_JIT
+    // A JIT backend may have process-lifetime state to prepare before the host
+    // thread can execute compiled guest blocks (WASM JIT: per-worker table).
+    jitThreadStartPreparing(cpu);
+#endif
 #ifdef __TEST
     cpu->nativeHandle = (U64)new std::thread(platformThread, cpu);
 #else
