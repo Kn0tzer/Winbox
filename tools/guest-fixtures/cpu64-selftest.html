@@ -7,7 +7,8 @@
 // Run the existing C++ suite in the same pthread-enabled module as Wine.
 var Module = {
   arguments: ['--x64-selftest'],
-  preRun: [() => { ENV.BW64_JIT = '1'; ENV.BW64_JIT_VERIFY = '1'; }],
+  // These tiny cases execute once; bypass production hotness to exercise JIT.
+  preRun: [() => { ENV.BW64_JIT = '1'; ENV.BW64_JIT_VERIFY = '1'; ENV.BW64_JIT_HOT = '0'; }],
   canvas: document.getElementById('canvas'),
   locateFile: path => '/runtime/' + path,
   print: text => console.log(text),
