@@ -200,6 +200,22 @@ void testRunCPU() {
 void xwireRecordInputDelivery(uint8_t, uint32_t) {}
 #endif
 
+// An exiting syscall can destroy the address space while its generated
+// caller is still unwinding. Any subsequent decode would dereference it.
+void testWasmJitTerminatedCpu() {
+    auto& context = testContext();
+    CPU* cpu = context.cpu;
+    KMemory* memory = cpu->memory;
+    bool terminating = context.thread->terminating;
+    context.thread->terminating = true;
+    cpu->memory = nullptr; // any accidental cache access must fail this test
+    bool continued = cpu->runNextSingleOp();
+    DecodedOp* next = cpu->getNextOp();
+    cpu->memory = memory;
+    context.thread->terminating = terminating;
+    if (continued || next) testFail("terminated CPU decoded from a released address space");
+}
+
 // An interpreter-backed control transfer must leave generated code. Taken
 // from upstream's IRET regression (4d3762913): EBX marks stale fallthrough.
 void testWasmJitControlTransfer() {

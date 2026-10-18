@@ -61,7 +61,11 @@ void klog(const char* msg);
 
 #if defined(BOXEDWINE_GUEST_X64)
 #define BW64_METRICS_ARCH_TEXT "x86-64"
+#ifdef BOXEDWINE_WASM_JIT
+#define BW64_METRICS_CPU32_SUPPORTED 1
+#else
 #define BW64_METRICS_CPU32_SUPPORTED 0
+#endif
 #define BW64_METRICS_CPU64_SUPPORTED 1
 #else
 #define BW64_METRICS_ARCH_TEXT "x86"
@@ -282,6 +286,7 @@ void writeJit(Jw& j, const char* key, JitSlot& s, bool supported) {
         memcpy(engine, s.engine, sizeof(engine));
     }
     uint64_t available = s.available.load(std::memory_order_relaxed);
+    supported = supported || available; // an explicit publisher can provide a backend
     j.fmt("\"%s\":{\"supported\":%s,\"available\":%s,\"engine\":", key,
           supported ? "true" : "false", available ? "true" : "false");
     if (engine[0]) { j.raw("\""); j.raw(engine); j.raw("\""); }

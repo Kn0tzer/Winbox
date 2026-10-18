@@ -678,7 +678,7 @@ bool NormalCPU::isValidExecutableAddress(U32 address) {
 }
 
 DecodedOp* NormalCPU::getOp(U32 startIp, U32 jumpTargetFlags) {
-    if (!this->thread->process) // exit was called, don't need to pre-cache the next block
+    if (this->thread->terminating || !this->thread->process) // exit was called, don't need to pre-cache the next block
         return nullptr;
 
     DecodedOp* op = memory->getDecodedOp(startIp);

@@ -1249,6 +1249,7 @@ U8 CPU::fetchByte(U32* eip) {
 }
 
 DecodedOp* CPU::getNextOp(U32 jumpTargetFlags) {
+    if (thread && thread->terminating) return nullptr;
     return getOp(getEipAddress(), jumpTargetFlags);
 }
 
@@ -1292,6 +1293,7 @@ void OPCALL onLastOp(CPU* cpu, DecodedOp* op) {
 }
 
 bool CPU::runNextSingleOp() {
+    if (thread && thread->terminating) { nextOp = nullptr; return false; }
     DecodedOp* op = nullptr;
     try {
         op = getNextOp();
@@ -1327,6 +1329,9 @@ bool CPU::runNextSingleOp() {
         this->nextOp = getNextOp();
         return false;
     }
+    // exit/exit_group may have released KMemoryData while the syscall
+    // helper still has this CPU on its stack. Do not decode after teardown.
+    if (thread && thread->terminating) { nextOp = nullptr; return false; }
     this->nextOp = getNextOp();
     return true;
 }

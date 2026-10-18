@@ -63,6 +63,7 @@ int totalFails = 0;
 const TestEntry TEST_ENTRIES[] = {
 #ifdef BOXEDWINE_WASM_JIT
     {testWasmJitControlTransfer, "WASM JIT interpreter-backed control transfer"},
+        {testWasmJitTerminatedCpu, "WASM JIT terminated CPU cache lifetime"},
 #endif
     {testMemoryAccess32, "Test 32-bit Memory Access"},
     {testMemoryAccess16, "Test 16-bit Memory Access"},

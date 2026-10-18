@@ -44,6 +44,7 @@ void testPushCode32(int value);
 void testRunCPU();
 #ifdef BOXEDWINE_WASM_JIT
 void testWasmJitControlTransfer();
+void testWasmJitTerminatedCpu();
 #endif
 void testFail(const char* msg, ...);
 void testRunParallel(const TestEntry* entries, size_t entryCount, U32 workerCount = 0);
