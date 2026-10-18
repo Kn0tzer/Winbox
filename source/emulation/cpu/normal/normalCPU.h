@@ -34,6 +34,9 @@ public:
 
     static OpCallback getFunctionForOp(DecodedOp* op);
 
+    // Thread-local limit for tail-chained basic blocks in the WASM worker.
+    U32 branchBudget = 0;
+
     OpCallback firstOp;    
 };
 

@@ -23,6 +23,7 @@ const fixtures = {
 const elfFixtures = { 'shared-mapping': ['tools/guest-fixtures/shared-mapping.c', '-static'] };
 elfFixtures['fork-mapping'] = ['tools/guest-fixtures/fork-mapping.c', '-static', '-pthread'];
 elfFixtures['cpu32-sse3'] = ['tools/guest-fixtures/cpu32-sse3.c', '-static', '-msse3', '-nostdlib', '-fno-builtin', '-fno-stack-protector', '-fno-pie', '-no-pie'];
+elfFixtures['cpu32-branches'] = ['tools/guest-fixtures/cpu32-branches.c', '-static', '-nostdlib', '-fno-builtin', '-fno-stack-protector', '-fno-pie', '-no-pie'];
 const managedFixtures = { 'mono-runtime': ['tools/guest-fixtures/mono-runtime.cs'] };
 managedFixtures['fna-runtime'] = ['tools/guest-fixtures/fna-runtime.cs',
   '-r:tools/rootfs64/mono32/mono/mono-2.0/lib/mono/gac/FNA/22.9.1.0__0738eb9f132ed756/FNA.dll'];

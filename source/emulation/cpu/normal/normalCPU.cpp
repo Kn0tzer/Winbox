@@ -185,15 +185,30 @@ static inline bool normalGetNLE(CPU* cpu) {
 #define normalGetNLE(cpu) (!(cpu)->getZF() && (cpu)->getSF() == (cpu)->getOF())
 #endif
 
-// if jmp back, then return so that we don't blow the stack
+// A guest pthread already owns a host worker. Batch a bounded number of basic
+// blocks before returning through the virtual run() loop. The outer loop keeps
+// ownership of termination/cleanup; no cross-thread state is cached here.
+// musttail bounds the host stack even for a guest loop with no syscalls.
+// Cooperative and JIT backends retain their scheduler return on every branch.
+#if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_MULTI_THREADED) && defined(BOXEDWINE_DIRECT_NORMAL_DISPATCH) && !defined(BOXEDWINE_JIT)
+#define CONTINUE_BRANCH() \
+    if (cpu->nextOp && static_cast<NormalCPU*>(cpu)->branchBudget > 1) { \
+        --static_cast<NormalCPU*>(cpu)->branchBudget; \
+        MUSTTAIL return normalDispatch(cpu, cpu->nextOp); \
+    }
+#else
+#define CONTINUE_BRANCH()
+#endif
+
 #define NEXT_BRANCH1()                                      \
     cpu->eip.u32+=op->len;                                  \
     if (!(*(op->data.nextJump))) {                          \
         *(op->data.nextJump) = cpu->getNextOp(OP_FLAG2_JUMP_TARGET);            \
     }                                                       \
-    cpu->nextOp = *(op->data.nextJump);
+    cpu->nextOp = *(op->data.nextJump);                      \
+    CONTINUE_BRANCH();
 
-#define NEXT_BRANCH2() cpu->eip.u32+=op->len; if (!op->next) {op->next = cpu->getNextOp(); } cpu->nextOp = op->next;
+#define NEXT_BRANCH2() cpu->eip.u32+=op->len; if (!op->next) {op->next = cpu->getNextOp(); } cpu->nextOp = op->next; CONTINUE_BRANCH();
 
 // Forward declaration so NEXT() can reference normalDispatch before the
 // normal_*.h opcode handlers are included.
@@ -666,6 +681,7 @@ void NormalCPU::run() {
         }
     }
 #ifdef BOXEDWINE_DIRECT_NORMAL_DISPATCH
+    branchBudget = 64;
     normalDispatch(this, nextOp);
 #else
 #ifdef BOXEDWINE_JIT
