@@ -39,6 +39,16 @@ struct TestResult {
     int failed = 0;
     U64 jitBlocks = 0;
     U64 jitInsns = 0;
+    // Emitted-code evidence: these come from Jit64WasmState::blocksEntered and
+    // ::execCount, which the generated modules write themselves. `wasmBlocks`
+    // is the host's call count; the two must agree, which is what makes the
+    // "executed generated code" claim checkable rather than assumed.
+    U64 wasmBlocks = 0;
+    U64 wasmInsns = 0;
+    U64 wasmEntered = 0;
+    U64 emitRejected = 0;
+    U64 instantiateFailed = 0;
+    const char* engine = "off";
 };
 
 void loadCode(KMemory64& mem, U64 addr, const std::vector<U8>& bytes) {
@@ -69,6 +79,12 @@ void runAndCheck(TestResult& r, const char* name,
     if (cpu.jit()) {
         r.jitBlocks += cpu.jit()->blocksExecuted;
         r.jitInsns += cpu.jit()->insnsFast;
+        r.wasmBlocks += cpu.jit()->wasmBlocks;
+        r.wasmInsns += cpu.jit()->wasmInsns;
+        r.wasmEntered += cpu.jit()->wasmEntered;
+        r.emitRejected += cpu.jit()->emitRejected;
+        r.instantiateFailed += cpu.jit()->instantiateFailed;
+        r.engine = jit64EngineName(cpu.jit()->engine);
     }
     bool hung = (!cpu.yield && cpu.instructionCount >= INSN_LIMIT);
     if (hung) {
@@ -7353,10 +7369,31 @@ int runX64SelfTest() {
 
     const char* requireJit = std::getenv("BW64_JIT_VERIFY");
     if (requireJit && std::strcmp(requireJit, "1") == 0) {
-        printf("JIT64: blocks=%llu insns=%llu\n",
+        printf("JIT64: engine=%s blocks=%llu insns=%llu\n", r.engine,
                (unsigned long long)r.jitBlocks, (unsigned long long)r.jitInsns);
+        printf("WASM64: blocks=%llu insns=%llu entered=%llu rejected=%llu instantiateFailed=%llu\n",
+               (unsigned long long)r.wasmBlocks, (unsigned long long)r.wasmInsns,
+               (unsigned long long)r.wasmEntered,
+               (unsigned long long)r.emitRejected,
+               (unsigned long long)r.instantiateFailed);
         if (!r.jitBlocks || !r.jitInsns) {
             printf("  FAIL: required JIT path did not execute any blocks\n");
+            r.failed++;
+        }
+        // The wasm engine must prove it ran generated code: the emitted
+        // modules report their own entry count and retired-instruction count.
+        if (std::strcmp(r.engine, "wasm") == 0) {
+            if (!r.wasmBlocks || !r.wasmInsns) {
+                printf("  FAIL: wasm engine executed no emitted blocks\n");
+                r.failed++;
+            }
+            if (r.wasmEntered != r.wasmBlocks) {
+                printf("  FAIL: emitted-code entry counter %llu != host call count %llu\n",
+                       (unsigned long long)r.wasmEntered, (unsigned long long)r.wasmBlocks);
+                r.failed++;
+            }
+        } else {
+            printf("  FAIL: wasm engine unavailable (engine=%s); emitted execution not proven\n", r.engine);
             r.failed++;
         }
     }

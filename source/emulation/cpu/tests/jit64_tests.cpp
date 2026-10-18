@@ -11,6 +11,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include "../../../../include/jit64.h"
@@ -711,7 +712,12 @@ static void testWasmStateBridge() {
     for (U32 i = 0; i < 16; i++) gpr[i] = 0xFEDCBA9876543210ULL + (U64)i * 0x0101010101010101ULL;
     Jit64WasmState st{};
     jit64WasmStateInit(st, gpr, 0x123456789ABCDEF0ULL, 0x8D5);
-    CHECK(st.reserved == 0, "marshal reserved=%u", st.reserved);
+    // Emitted-code outputs start at 0 and a non-shared host memory is assumed.
+    CHECK(st.blocksEntered == 0, "marshal blocksEntered=%u", st.blocksEntered);
+    CHECK(st.execCount == 0, "marshal execCount=%u", st.execCount);
+    CHECK(st.limit == JIT64_WASM_UNBOUNDED, "marshal limit=%u", st.limit);
+    jit64WasmStateSetGens(st, 0x1234, 5, 6);
+    CHECK(st.genBase == 0x1234 && st.gen0 == 5 && st.gen1 == 6, "marshal gens");
     for (U32 i = 0; i < 16; i++)
         CHECK(st.gpr[i] == gpr[i], "marshal gpr[%u]", i);
     CHECK(st.rip == 0x123456789ABCDEF0ULL, "marshal rip");
@@ -742,10 +748,13 @@ static void testWasmGlue() {
     // the runtime TU — including the section-GC lifetime test.
     CHECK(!jit64WasmAvailable(), "native jit64WasmAvailable should be false");
     const U8 fake[] = {0x00, 0x61, 0x73, 0x6D};
-    CHECK(jit64WasmInstantiate(fake, sizeof(fake)) == -1, "native instantiate");
-    CHECK(jit64WasmInstantiate(nullptr, 0) == -1, "native instantiate null");
-    jit64WasmCall(0, 0);      // must not crash
-    jit64WasmCall(-1, 0xFFFFFFFFu);
+    Jit64EmitOptions opts;
+    CHECK(jit64WasmInstantiate(fake, sizeof(fake), opts) == -1, "native instantiate");
+    CHECK(jit64WasmInstantiate(nullptr, 0, opts) == -1, "native instantiate null");
+    CHECK(!jit64WasmHostAbiOk(), "native host ABI must report not-ok");
+    CHECK(std::strcmp(jit64WasmEngineMode(), "unavailable") == 0, "native engine mode");
+    jit64WasmCall(0, nullptr);      // must not crash
+    jit64WasmCall(-1, nullptr);
     jit64WasmRelease(0);      // must not crash
     jit64WasmRelease(-1);
     // Cache owns the wasm slot lifecycle: a fresh block starts unattempted,
@@ -1041,6 +1050,116 @@ static void testX87NeverJitted() {
     CHECK(!emitOk({0xD8, 0x00}), "fadd m32 block accepted");
 }
 
+// --- emitted-block structure: terminators, hotness, generation lookups ---
+
+static void testTerminatorEmission() {
+    // INSN after INSN then a terminator: every terminator kind the decoder
+    // marks FAST must be emittable now (the archive defect was that the
+    // emitter rejected exactly the ops the decoder appends last).
+    const std::vector<std::vector<U8>> accepted = {
+        {0x48, 0x89, 0xC8, 0x90},                      // mov rax,rcx; nop
+        {0x48, 0x89, 0xC8, 0x74, 0x10},                // ...; jz +16
+        {0x48, 0x89, 0xC8, 0x0F, 0x85, 0x10, 0, 0, 0}, // ...; jnz rel32
+        {0x48, 0x89, 0xC8, 0xE9, 0x10, 0, 0, 0},       // ...; jmp rel32
+        {0x48, 0x89, 0xC8, 0xEB, 0x10},                // ...; jmp rel8
+        {0x48, 0x89, 0xC8, 0xE8, 0x10, 0, 0, 0},       // ...; call rel32
+        {0x48, 0x89, 0xC8, 0xC3},                      // ...; ret
+        {0x48, 0x89, 0xC8, 0xC9},                      // ...; leave
+        {0x48, 0x89, 0xC8, 0xC9, 0xC3},                // ...; leave; ret
+        {0x48, 0x89, 0xC8, 0x50, 0x5B, 0xC3},          // push; pop; ret
+    };
+    for (const auto& code : accepted) CHECK(emitOk(code), "terminator block rejected");
+
+    // A terminator BEFORE the last instruction cannot be represented by a
+    // straight-line module (a taken branch continues at another RIP), so it
+    // must be rejected rather than mis-executed.
+    CHECK(!emitOk({0x48, 0x89, 0xC8, 0x74, 0x02, 0x48, 0x89, 0xC8}), "mid-block jcc accepted");
+    CHECK(!emitOk({0x48, 0x89, 0xC8, 0xE9, 0x02, 0, 0, 0, 0x90}), "mid-block jmp accepted");
+    CHECK(!emitOk({0x48, 0x89, 0xC8, 0xC3, 0x90}), "mid-block ret accepted");
+    CHECK(!emitOk({0x48, 0x89, 0xC8, 0xE8, 0x02, 0, 0, 0, 0x90}), "mid-block call accepted");
+
+    // A hand-built block whose op list carries a stale FALLBACK plan must be
+    // refused wholesale (the runtime's whole-block fallback rule).
+    {
+        Jit64Op ops[2];
+        U32 n = jit64CompileStream(0x400000, (const U8*)"\x48\x89\xC8\xC3", 4, ops, 2, true);
+        CHECK(n == 2, "terminator stream n=%u", n);
+        ops[0].plan = JIT64_FALLBACK;
+        Jit64Block block;
+        block.ops.assign(ops, ops + n);
+        std::vector<U8> module = {0xAA};
+        CHECK(!jit64EmitWasm(block, module) && module.empty(), "fallback op not refused");
+    }
+}
+
+static void testHotness() {
+    Jit64Hotness hot;
+    const U64 rip = 0x400000;
+    CHECK(!hot.bump(rip, 4), "hotness fired early");
+    CHECK(!hot.bump(rip, 4), "hotness fired early (2)");
+    CHECK(!hot.bump(rip, 4), "hotness fired early (3)");
+    CHECK(hot.bump(rip, 4), "hotness should fire on the 4th entry");
+    // Once hot, every later entry stays hot (an evicted block is re-emitted).
+    CHECK(hot.bump(rip, 4), "hotness lost its hot state");
+    // threshold 0 = compile immediately.
+    CHECK(hot.bump(0x500000, 0), "threshold 0 must emit immediately");
+    CHECK(hot.bump(0, 4) == false, "rip 0 must never be counted");
+    // A different rip has its own counter.
+    CHECK(!hot.bump(0x600000, 4), "hotness aliased another rip");
+    hot.clear();
+    CHECK(!hot.bump(rip, 4), "clear did not reset the counters");
+    // The env-provided threshold is cached and stable.
+    U16 t1 = jit64HotThreshold();
+    CHECK(t1 == jit64HotThreshold(), "hot threshold not cached");
+}
+
+static U32 g_fakeGen[4096];
+static U32 fakePageGenRead(U64 pageNum) { return g_fakeGen[jit64BlockSlot(pageNum)]; }
+
+static void testLookupByRip() {
+    // lookupByRip needs the installed page-generation reader; without one it
+    // must fail closed (the caller then stays on the interpreter).
+    jit64SetPageGenFn(nullptr);
+    Jit64BlockCache cache;
+    Jit64Op ops[1];
+    U32 n = jit64CompileStream(0x400000, (const U8*)"\x48\x89\xC8", 3, ops, 1, false);
+    CHECK(n == 1, "lookup-setup n=%u", n);
+    Jit64Block* b = cache.insert(0x400000, 1, g_fakeGen[jit64BlockSlot(1)], 1, g_fakeGen[jit64BlockSlot(1)], ops, n);
+    CHECK(b != nullptr, "insert failed");
+    CHECK(cache.lookupByRip(0x400000) == nullptr, "no page-gen reader must fail closed");
+    jit64SetPageGenFn(&fakePageGenRead);
+    CHECK(cache.lookupByRip(0x400000) == b, "valid entry should hit");
+    CHECK(cache.lookupByRip(0x400008) == nullptr, "wrong rip must miss");
+    // A write to the page (generation bump) invalidates without a decode.
+    g_fakeGen[jit64BlockSlot(1)]++;
+    CHECK(cache.lookupByRip(0x400000) == nullptr, "stale generation must miss");
+    CHECK(cache.at(0x400000)->startRip == 0x400000, "entry must survive a stale lookup");
+    jit64SetPageGenFn(nullptr);
+}
+
+static void testEngineAndStats() {
+    // Engine names are stable strings the metrics panel switches on.
+    CHECK(std::strcmp(jit64EngineName(JIT64_ENGINE_WASM), "wasm") == 0, "engine name wasm");
+    CHECK(std::strcmp(jit64EngineName(JIT64_ENGINE_INTERP), "interp") == 0, "engine name interp");
+    CHECK(std::strcmp(jit64EngineName(JIT64_ENGINE_OFF), "off") == 0, "engine name off");
+    CHECK(std::strcmp(jit64WasmEngineMode(), "unavailable") == 0, "native engine mode");
+    // Metrics seam: a null state must still produce valid, honest JSON.
+    char buf[1024];
+    U32 used = jit64StatsJson(nullptr, buf, sizeof(buf));
+    CHECK(used > 0, "stats json produced nothing");
+    if (used) {
+        std::string json(buf, used);
+        CHECK(json.find("\"cpu64\"") != std::string::npos, "stats missing cpu64 section");
+        CHECK(json.find("\"cpu32\"") != std::string::npos, "stats missing cpu32 section");
+        CHECK(json.find("\"blocksEntered\":0") != std::string::npos, "stats blocksEntered");
+        CHECK(json.find("\"engine\":\"off\"") != std::string::npos, "stats engine");
+        CHECK(json.find("\"available\":0") != std::string::npos, "stats available");
+        CHECK(json.back() == '}', "stats json must end with }");
+    }
+    // Too-small buffers report 0 instead of truncating into invalid JSON.
+    CHECK(jit64StatsJson(nullptr, buf, 8) == 0, "small stats buffer must report 0");
+}
+
 int main() {
     printf("jit64 phase-1 unit tests\\n");
     testCoverageTable();
@@ -1064,6 +1183,10 @@ int main() {
     testGrp3Emission();
     testStringEmission();
     testX87NeverJitted();
+    testTerminatorEmission();
+    testHotness();
+    testLookupByRip();
+    testEngineAndStats();
     printf("  %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

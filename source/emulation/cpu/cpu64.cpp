@@ -12,7 +12,8 @@
 #ifdef BOXEDWINE_GUEST_X64
 
 #include "cpu64.h"
-#include "jit64.h"      // phase-1 JIT framework (BW64_JIT=1 runtime flag)
+#include "jit64.h"      // CPU64 JIT framework (BW64_JIT=1 runtime flag)
+#include "jit64wasm.h"  // emitted-module state ABI + runtime table glue
 #include "kmemory64.h"
 #include "syscall64.h"
 #include "ksignal.h"   // K_SIGFPE
@@ -20,6 +21,7 @@
 #include <cmath>
 #include <cstring>
 #include <mutex>
+#include <chrono>
 
 // Sharded locks for CPU64 atomic read-modify-write memory ops (XCHG with
 // memory, CMPXCHG, XADD, LOCK-prefixed ALU). In the multi-threaded build each
@@ -80,7 +82,10 @@ CPU64::CPU64(KMemory64* memory) : memory(memory) {
 
 CPU64::~CPU64() {
     // State ownership is independent of BOXEDWINE_BLOCK_EXEC: freeJit() is
-    // compiled only with that gate, so release the complete type here.
+    // compiled only with that gate, so release the complete type here. Table
+    // slots the emitted modules own are returned first (only in the worker
+    // that created them).
+    jit64ReleaseState(m_jit);
     delete m_jit;
 }
 
@@ -6337,26 +6342,187 @@ U32 CPU64::execBlock(const BBlock& b, U64 maxInsn) {
     return executed;
 }
 
-// ---- Phase-1 JIT hook (see include/jit64.h). Gated on BW64_JIT=1 so default
-// behavior is unchanged. Compiles the JIT plan for the block at RIP, validates
-// it, then executes via the interpreter's execBlock (same BBlock builder the
-// JIT decoder cross-checks in tests) so semantics stay bit-identical. Phase 2
-// replaces the execBlock call with wasm-module execution of the emitted plan.
-// The hook lives INSIDE the BOXEDWINE_BLOCK_EXEC section because it reuses
-// BBlock/execBlock/page-gen validity; without that infra it returns 0.
+// ---- CPU64 JIT hook (see include/jit64.h). Gated on BW64_JIT=1 so default
+// behavior is unchanged. Two engines:
+//
+//   wasm   (production) the emitted-wasm engine. A block that has proven hot
+//          is decoded by jit64's decoder, emitted as a wasm module, cached
+//          (keyed on startRip + its code pages' generations) and executed
+//          through a wasm table index. Emitted code owns the per-instruction
+//          RIP, the store-driven page-generation early exit and the
+//          instruction bound; everything is proven by counters the emitted
+//          code itself writes (Jit64WasmState::blocksEntered/execCount).
+//   interp (validation) phase-1 vehicle: the JIT decode plan is cross-checked
+//          against the interpreter's BBlock builder and executed through
+//          execBlock. Selected when no wasm host is available, or explicitly
+//          with BW64_JIT_ENGINE=interp (a same-binary A/B that proves the
+//          emitted path, not decoded-block caching, is doing the work).
+//
+// Both live inside the BLOCK_EXEC section because they reuse BBlock/execBlock/
+// page-gen validity.
+#if defined(BOXEDWINE_BLOCK_EXEC) && defined(BOXEDWINE_BLOCK_CACHE_INFRA)
+namespace {
+// Microseconds from a monotonic clock (cold-path accounting only).
+U64 jit64NowUs() {
+    using clock = std::chrono::steady_clock;
+    return (U64)std::chrono::duration_cast<std::chrono::microseconds>(
+               clock::now().time_since_epoch()).count();
+}
+}
+#endif
+
 U32 CPU64::tryJitStep(U64 maxInsn) {
     if (!jit64Enabled()) return 0;
     if (!m_jit) ensureJit();
+    if (m_jit->engine == JIT64_ENGINE_OFF) return 0;
+    // Table indices are worker-local: if this guest thread now runs on another
+    // host worker, drop the cache (without touching the other worker's table)
+    // and re-record the owner. Never reuse an index across workers.
+    if (jit64WasmOwnerId() != m_jit->wasmOwner) {
+        jit64DropCache(m_jit, false);
+        m_jit->hotness.clear();
+        m_jit->wasmOwner = jit64WasmOwnerId();
+    }
+    if (m_jit->engine == JIT64_ENGINE_WASM) return tryWasmExec(maxInsn);
+    return tryJitInterpStep(maxInsn);
+}
+
+#ifdef BOXEDWINE_BLOCK_CACHE_INFRA
+U32 CPU64::execWasmBlock(const Jit64Block& block, U64 maxInsn) {
+    if (block.wasmIndex < 0 || block.ops.empty()) return 0;
+    const U64 LIMIT = JIT64_WASM_UNBOUNDED;
+    const U64 limit = maxInsn < LIMIT ? maxInsn : LIMIT;
+    U64 gpr[16];
+    for (U32 i = 0; i < 16; i++) gpr[i] = reg[i].u64;
+    Jit64WasmState st;
+    jit64WasmStateInit(st, gpr, rip, rflags);
+    st.limit = (U32)limit;
+    jit64WasmStateSetGens(st, m_jit->genBaseAddr, block.gen0, block.gen1);
+    jit64WasmSetActiveMem(memory);
+    jit64WasmCall(block.wasmIndex, &st);
+    jit64WasmSetActiveMem(nullptr);
+    // From here on the guest state HAS advanced whatever execCount says, so
+    // never report 0 (that would make the caller re-run the block on the
+    // interpreter). The emitted code zeroes execCount on entry.
+    U64 outGpr[16];
+    U64 outRip = rip;
+    U32 outFlags = rflags;
+    jit64WasmStateRead(st, outGpr, outRip, outFlags);
+    for (U32 i = 0; i < 16; i++) reg[i].setU64(outGpr[i]);
+    rip = outRip;
+    rflags = outFlags;
+    U32 executed = st.execCount;
+    const U32 decoded = (U32)block.ops.size();
+    if (executed > decoded) executed = decoded; // defensive: never over-credit
+    // Emitted-code evidence: `st.blocksEntered` was incremented by the module
+    // itself and `st.execCount` was stored by it. The host's own call counter
+    // must agree with the module-reported entry count once per call.
+    m_jit->wasmBlocks++;
+    m_jit->wasmInsns += executed;
+    m_jit->wasmEntered += st.blocksEntered;
+    m_jit->blocksExecuted++;
+    m_jit->insnsFast += executed;
+    m_jit->cache.recordExec(block.startRip);
+    if (executed < decoded) {
+        if ((U64)executed == limit) m_jit->wasmLimitExits++;
+        else m_jit->wasmEarlyExits++; // a code page was written: stop at that RIP
+    }
+    return executed;
+}
+
+U32 CPU64::tryWasmExec(U64 maxInsn) {
+    U64 r = rip;
+    // Fast path: a cached emitted block, validated against ITS OWN recorded
+    // pages (two atomic generation reads) -- no decode, no snapshot.
+    Jit64Block* hit = m_jit->cache.lookupByRip(r);
+    if (hit) {
+        if (hit->wasmIndex < 0) { m_jit->insnsFallback++; return 0; }
+        return execWasmBlock(*hit, maxInsn);
+    }
+    m_jit->coldLookups++;
+    const U64 page0 = jit64PageOf(r);
+    const U32 gen0Entry = KMemory64::blockPageGenOf(page0);
+    // A rip already known unemittable at this generation never pays the
+    // snapshot + decode again (no page of a rejected block is registered, so
+    // the entry simply stays until this page is written).
+    if (m_jit->negative.rejected(r, gen0Entry)) { m_jit->insnsFallback++; return 0; }
+    // Hotness: do not compile every one-off startup block.
+    if (!m_jit->hotness.bump(r, jit64HotThreshold())) { m_jit->coldSkipped++; return 0; }
+
+    const U64 t0 = jit64NowUs();
+    // Snapshot up to 15 bytes/insn * 24 recs for the JIT decoder.
+    U8 snap[15 * 24];
+    for (U32 i = 0; i < (U32)sizeof(snap); i++) snap[i] = fetchByte(r + i);
+    Jit64Op ops[24];
+    U32 n = jit64CompileStream(r, snap, (U32)sizeof(snap), ops, 24, true);
+    if (n < 2) { m_jit->negative.add(r, gen0Entry); m_jit->insnsFallback++; return 0; }
+    U32 len = 0;
+    for (U32 i = 0; i < n; i++) {
+        if (ops[i].plan != JIT64_FAST) { m_jit->negative.add(r, gen0Entry); m_jit->insnsFallback++; return 0; }
+        len += ops[i].len;
+    }
+    if (!verifyJitPlanAgainstBlock(r, ops, n)) { m_jit->insnsFallback++; return 0; }
+    const U64 page1 = jit64PageOf(r + len - 1);
+    // Register BEFORE reading the generations (buildBlock's rule): from here on
+    // any write to either page bumps its generation, so the entry can never be
+    // validated against generations observed before the write was possible.
+    KMemory64::blockPageRegister(page0);
+    if (page1 != page0) KMemory64::blockPageRegister(page1);
+    const U32 gen0 = KMemory64::blockPageGenOf(page0);
+    const U32 gen1 = KMemory64::blockPageGenOf(page1);
+    // Close the decode window: if a guest store rewrote any decoded byte
+    // between the snapshot and the registration above, its generation bump
+    // may not be reflected in gen0/gen1, so re-read the bytes and decline when
+    // they moved. (Strictly stronger than buildBlock, which only reads the
+    // generations after decoding.)
+    for (U32 i = 0; i < len; i++) {
+        if (fetchByte(r + i) != snap[i]) { m_jit->insnsFallback++; return 0; }
+    }
+
+    Jit64Block* block = m_jit->cache.insert(r, page0, gen0, page1, gen1, ops, n);
+    if (!block) return 0;
+    Jit64EmitOptions options = jit64WasmMemoryOptions();
+    std::vector<U8> module;
+    if (!jit64EmitWasm(*block, options, module)) {
+        // Deterministic for this block: remember the refusal on the entry (-2)
+        // and in the negative cache, and stay on the interpreter.
+        block->wasmIndex = -2;
+        m_jit->emitRejected++;
+        m_jit->negative.add(r, gen0);
+        m_jit->insnsFallback++;
+        return 0;
+    }
+    int index = jit64WasmInstantiate(module.data(), (U32)module.size(), options);
+    if (index < 0) {
+        m_jit->instantiateFailed++;
+        m_jit->cache.invalidate(r);
+        m_jit->negative.add(r, gen0);
+        m_jit->insnsFallback++;
+        return 0;
+    }
+    block->wasmIndex = index;
+    m_jit->wasmInstantiated++;
+    m_jit->blocksCompiled++;
+    m_jit->emitTimeUs += jit64NowUs() - t0;
+    return execWasmBlock(*block, maxInsn);
+}
+#else // !BOXEDWINE_BLOCK_CACHE_INFRA
+U32 CPU64::execWasmBlock(const Jit64Block&, U64) { return 0; }
+U32 CPU64::tryWasmExec(U64) { return 0; }
+#endif
+
+// Phase-1 interpreter vehicle: validate the JIT decode plan against the
+// interpreter's BBlock builder, cache it, and execute it through execBlock so
+// semantics stay bit-identical. Only used when the wasm engine is unavailable
+// (native/compile-out) or BW64_JIT_ENGINE=interp.
+U32 CPU64::tryJitInterpStep(U64 maxInsn) {
     U64 r = rip;
     // Snapshot up to 15 bytes/insn * 24 recs for the JIT decoder.
     U8 snap[15 * 24];
-    for (U32 i = 0; i < sizeof(snap); i++) snap[i] = fetchByte(r + i);
+    for (U32 i = 0; i < (U32)sizeof(snap); i++) snap[i] = fetchByte(r + i);
     Jit64Op ops[24];
     U32 n = jit64CompileStream(r, snap, (U32)sizeof(snap), ops, 24, true);
     if (n < 2) { m_jit->insnsFallback++; return 0; }
-    // Reuse the interpreter's block builder as the execution vehicle AND the
-    // cross-check: the JIT plan and BBlock must agree on every instruction
-    // length (otherwise the JIT decoder drifted from step()'s dispatch).
     BBlock bb;
     if (!buildBlock(r, bb)) { m_jit->insnsFallback += 1; return 0; }
     if (bb.n != n) { m_jit->insnsFallback += 1; return 0; } // decoder drift guard
@@ -6366,7 +6532,6 @@ U32 CPU64::tryJitStep(U64 maxInsn) {
             return 0; // whole-block fallback rule
         }
     }
-    // Gens come from the just-built BBlock (registered by buildBlock).
     const Jit64Block* hit = m_jit->cache.lookup(r, bb.page0, bb.gen0, bb.page1, bb.gen1);
     if (!hit) {
         hit = m_jit->cache.insert(r, bb.page0, bb.gen0, bb.page1, bb.gen1, ops, n);
@@ -6378,13 +6543,51 @@ U32 CPU64::tryJitStep(U64 maxInsn) {
     return done;
 }
 
+// BW64_JIT_VERIFY=1: the JIT decoder must agree with the interpreter's block
+// builder on the instructions the BBlock covers (length for length, from the
+// same start RIP). A mismatch means the two decoders drifted apart, so the
+// block stays on the interpreter. Disabled by default: it costs a BBlock build
+// per cold block. Every earlier rejection (unsupported op / not all FAST) has
+// already returned, so by the time this runs the JIT stream is a superset of
+// the BBlock stream by construction.
+bool CPU64::verifyJitPlanAgainstBlock(U64 startRip, const Jit64Op* ops, U32 n) {
+    static const char* env = std::getenv("BW64_JIT_VERIFY");
+    if (!env || env[0] != '1') return true;
+    BBlock bb;
+    if (!buildBlock(startRip, bb)) return true; // nothing to compare against
+    if (bb.n > n) {
+        klog_fmt("JITVERIFY: BBlock covers %u recs but the JIT stream has %u at rip=0x%llx",
+                 (unsigned)bb.n, n, (unsigned long long)startRip);
+        return false;
+    }
+    U32 off = 0;
+    for (U32 i = 0; i < bb.n; i++) {
+        if (ops[i].len != bb.recs[i].len) {
+            klog_fmt("JITVERIFY: decoder drift at rip=0x%llx rec=%u jitLen=%u blockLen=%u",
+                     (unsigned long long)(startRip + off), i,
+                     (unsigned)ops[i].len, (unsigned)bb.recs[i].len);
+            return false;
+        }
+        off += ops[i].len;
+    }
+    return true;
+}
+
 void CPU64::ensureJit() {
     if (!m_jit) {
         m_jit = new Jit64State();
+        m_jit->engine = jit64SelectEngine();
+        m_jit->wasmOwner = jit64WasmOwnerId();
+        m_jit->genBaseAddr = KMemory64::blockGenTableAddr();
+        // Generation reader for the runtime's cache validation, and membership
+        // in the process-wide aggregate the metrics panel reads.
+        jit64SetPageGenFn(&KMemory64::blockPageGenOf);
+        jit64RegisterState(m_jit);
     }
 }
 
 void CPU64::freeJit() {
+    if (m_jit) jit64ReleaseState(m_jit);
     delete m_jit;
     m_jit = nullptr;
 }

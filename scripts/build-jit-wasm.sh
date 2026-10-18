@@ -17,9 +17,13 @@
 #      1 executes JIT-compiled blocks via the interpreter's execBlock, so the
 #      test output must match; a separate sentinel proves JIT blocks executed.
 #
-# Future work will extend this script: runtime module instantiation/table glue
-# (boxedwine_wasm_instantiate_runtime_batch), broader arithmetic, and the
-# node --x64-run-elf fixture with timing comparison.
+#   4. Runs the genuine 64-bit ELF fixture (tools/guest-fixtures/jitbench64.c,
+#      built for x86-64) through the wasm64-runelf target twice — interpreter
+#      (BW64_JIT=0) and emitted modules (BW64_JIT=1) — and requires the same
+#      checksum from both, plus non-zero EMITTED-CODE counters (the modules
+#      report their own entry/retired counts through Jit64WasmState). When a
+#      qemu-x86_64 binfmt handler is present the same binary is also run
+#      natively as an independent x86-64 reference.
 #
 # Usage: ./scripts/build-jit-wasm.sh [--selftest-only]
 set -euo pipefail
@@ -119,7 +123,7 @@ command -v emcc >/dev/null || {
 make -C "$REPO/project/emscripten" Build/Wasm64JitSelfTest/boxedwine64-selftest.js MAKEFLAGS="-j$JOBS" \
     BUILD_DIR=Build/Wasm64JitSelfTest \
     TARGET_EXEC=boxedwine64-selftest.js \
-    EXTRA_LD_FLAGS='-sENVIRONMENT=node -sEXIT_RUNTIME=1' \
+    EXTRA_LD_FLAGS='-sENVIRONMENT=node -sEXIT_RUNTIME=1 -sALLOW_TABLE_GROWTH=1' \
     EXTRA_CPP_FLAGS='-DBOXEDWINE_GUEST_X64=1 -DBOXEDWINE_BLOCK_EXEC=1 -DBOXEDWINE_BLOCK_CACHE_INFRA=1'
 JS="$REPO/project/emscripten/Build/Wasm64JitSelfTest/boxedwine64-selftest.js"
 [ -f "$JS" ] || { echo "ERROR: expected output $JS not produced." >&2; exit 1; }
@@ -129,7 +133,7 @@ JS_CJS="${JS%.js}.cjs"
 # Emscripten 6 does not mirror Node's environment unless NODE_HOST_ENV is set.
 # Forward only these two test controls before the guest calls getenv().
 {
-    printf '%s\n' 'var Module = { preRun: function() { ENV.BW64_JIT = process.env.BW64_JIT || "0"; ENV.BW64_JIT_VERIFY = process.env.BW64_JIT_VERIFY || "0"; ENV.BW64_THREADED = process.env.BW64_THREADED || "0"; } };'
+    printf '%s\n' 'var Module = { preRun: function() { ENV.BW64_JIT = process.env.BW64_JIT || "0"; ENV.BW64_JIT_VERIFY = process.env.BW64_JIT_VERIFY || "0"; ENV.BW64_JIT_ENGINE = process.env.BW64_JIT_ENGINE || ""; ENV.BW64_JIT_HOT = process.env.BW64_JIT_HOT || ""; ENV.BW64_THREADED = process.env.BW64_THREADED || "0"; } };'
     cat "$JS"
 } > "$JS_CJS"
 
@@ -142,9 +146,13 @@ if ! BW64_JIT=1 BW64_JIT_VERIFY=1 node "$JS_CJS" --x64-selftest > "$BUILD_TMP/se
     echo "FAIL: JIT self-test; see $BUILD_TMP/selftest_jit.log" >&2
     exit 1
 fi
-grep -E '^JIT64: blocks=[1-9][0-9]* insns=[1-9][0-9]*$' "$BUILD_TMP/selftest_jit.log"
-grep -E '^WASM64: blocks=[1-9][0-9]* insns=[1-9][0-9]*$' "$BUILD_TMP/selftest_jit.log"
-sed -e '/^JIT64:/d' -e '/^WASM64:/d' "$BUILD_TMP/selftest_jit.log" > "$BUILD_TMP/selftest_jit_results.log"
+# Emitted-execution evidence: engine=wasm plus non-zero EMITTED-CODE counters
+# (Jit64WasmState::blocksEntered / execCount, written by the generated modules
+# themselves) and equality between the module-reported entry count and the
+# host's call count.
+grep -E '^JIT64: engine=wasm blocks=[1-9][0-9]* insns=[1-9][0-9]*$' "$BUILD_TMP/selftest_jit.log"
+grep -E '^WASM64: blocks=[1-9][0-9]* insns=[1-9][0-9]* entered=[1-9][0-9]* ' "$BUILD_TMP/selftest_jit.log"
+sed -e '/^JIT64:/d' -e '/^WASM64:/d' -e '/^BW64JITSTATS:/d' "$BUILD_TMP/selftest_jit.log" > "$BUILD_TMP/selftest_jit_results.log"
 if diff -u "$BUILD_TMP/selftest_interp.log" "$BUILD_TMP/selftest_jit_results.log"; then
     echo "OK: BW64_JIT=1 output identical to interpreter baseline."
 else
@@ -162,4 +170,70 @@ else
     echo "FAIL: threaded output differs from interpreter baseline (see diff above)." >&2
     exit 1
 fi
+echo "=== [5/6] genuine 64-bit ELF fixture (interpreter vs emitted modules) ==="
+FIXTURE_SRC="$REPO/tools/guest-fixtures/jitbench64.c"
+ELF="$BUILD_TMP/jitbench64.elf"
+if command -v x86_64-linux-gnu-gcc >/dev/null; then
+    x86_64-linux-gnu-gcc -O2 -fno-tree-vectorize -static -nostdlib -fno-builtin \
+        -fno-stack-protector -fno-pie -no-pie -DJITBENCH_FREESTANDING \
+        -o "$ELF" "$FIXTURE_SRC"
+else
+    echo "WARN: x86_64-linux-gnu-gcc not found; skipping the ELF fixture gate." >&2
+    echo "build-jit-wasm.sh: all runnable gates passed (ELF fixture skipped)."
+    exit 0
+fi
+checksum_of() { grep -o 'checksum=[0-9a-f]*' "$1" | head -1; }
+# Independent x86-64 reference when a qemu binfmt handler is registered.
+NATIVE_SUM=""
+if [ -e /proc/sys/fs/binfmt_misc/qemu-x86_64 ] || [ "$(uname -m)" = x86_64 ]; then
+    "$ELF" > "$BUILD_TMP/fixture_native.log" 2>&1 || true
+    NATIVE_SUM="$(checksum_of "$BUILD_TMP/fixture_native.log")"
+fi
+
+make -C "$REPO/project/emscripten" Build/Wasm64JitRunElf/boxedwine64-runelf.js MAKEFLAGS="-j$JOBS" \
+    BUILD_DIR=Build/Wasm64JitRunElf \
+    TARGET_EXEC=boxedwine64-runelf.js \
+    EXTRA_LD_FLAGS='-sENVIRONMENT=node -sEXIT_RUNTIME=1 -sALLOW_TABLE_GROWTH=1 -sNODERAWFS=1' \
+    EXTRA_CPP_FLAGS='-DBOXEDWINE_GUEST_X64=1 -DBOXEDWINE_BLOCK_EXEC=1 -DBOXEDWINE_BLOCK_CACHE_INFRA=1'
+RUNJS="$REPO/project/emscripten/Build/Wasm64JitRunElf/boxedwine64-runelf.cjs"
+[ -f "${RUNJS%.cjs}.js" ] || { echo "ERROR: run-elf target produced no JS." >&2; exit 1; }
+{
+    printf '%s\n' 'var Module = { preRun: function() { ENV.BW64_JIT = process.env.BW64_JIT || "0"; ENV.BW64_JIT_VERIFY = process.env.BW64_JIT_VERIFY || "0"; ENV.BW64_JIT_ENGINE = process.env.BW64_JIT_ENGINE || ""; ENV.BW64_JIT_HOT = process.env.BW64_JIT_HOT || ""; } };'
+    cat "${RUNJS%.cjs}.js"
+} > "$RUNJS"
+
+BW64_JIT=0 BW64_JIT_HOT=0 node "$RUNJS" --x64-run-elf "$ELF" > "$BUILD_TMP/fixture_interp.log" 2>&1 || true
+BW64_JIT=1 BW64_JIT_VERIFY=1 BW64_JIT_HOT=0 node "$RUNJS" --x64-run-elf "$ELF" > "$BUILD_TMP/fixture_jit.log" 2>&1 || true
+INTERP_SUM="$(checksum_of "$BUILD_TMP/fixture_interp.log")"
+JIT_SUM="$(checksum_of "$BUILD_TMP/fixture_jit.log")"
+[ -n "$INTERP_SUM" ] || { echo "FAIL: interpreter run produced no checksum; see $BUILD_TMP/fixture_interp.log" >&2; tail -20 "$BUILD_TMP/fixture_interp.log" >&2; exit 1; }
+[ "$INTERP_SUM" = "$JIT_SUM" ] || {
+    echo "FAIL: JIT checksum $JIT_SUM != interpreter $INTERP_SUM (bit-exactness gate)" >&2
+    exit 1
+}
+if [ -n "$NATIVE_SUM" ]; then
+    [ "$NATIVE_SUM" = "$INTERP_SUM" ] || {
+        echo "FAIL: native/qemu checksum $NATIVE_SUM != interpreter $INTERP_SUM" >&2
+        exit 1
+    }
+fi
+grep -E '^WASM64: engine=wasm blocks=[1-9][0-9]* insns=[1-9][0-9]* entered=[1-9][0-9]* ' "$BUILD_TMP/fixture_jit.log"
+if grep -qE '^WASM64: engine=wasm blocks=[1-9]' "$BUILD_TMP/fixture_interp.log"; then
+    echo "FAIL: BW64_JIT=0 run reported emitted blocks" >&2
+    exit 1
+fi
+printf 'OK: fixture %s identical across interpreter%s and emitted modules (.elf=%s bytes)\n' \
+    "$INTERP_SUM" "${NATIVE_SUM:+, qemu-x86_64 reference $NATIVE_SUM}" "$(wc -c < "$ELF")"
+
+echo "=== [6/6] opt-in engine comparison (BW64_JIT_ENGINE=interp vs wasm) ==="
+BW64_JIT=1 BW64_JIT_ENGINE=interp node "$JS_CJS" --x64-selftest > "$BUILD_TMP/selftest_interpengine.log" 2>&1
+grep -E '^JIT64: engine=interp blocks=[1-9]' "$BUILD_TMP/selftest_interpengine.log"
+sed -e '/^JIT64:/d' -e '/^WASM64:/d' -e '/^BW64JITSTATS:/d' "$BUILD_TMP/selftest_interpengine.log" > "$BUILD_TMP/selftest_interpengine_results.log"
+if diff -u "$BUILD_TMP/selftest_interp.log" "$BUILD_TMP/selftest_interpengine_results.log"; then
+    echo "OK: phase-1 interpreter engine also matches the interpreter baseline."
+else
+    echo "FAIL: BW64_JIT_ENGINE=interp output differs from the baseline." >&2
+    exit 1
+fi
+
 echo "build-jit-wasm.sh: all gates passed."

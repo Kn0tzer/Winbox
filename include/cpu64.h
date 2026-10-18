@@ -205,14 +205,23 @@ public:
     void push64(U64 value);
     U64  pop64();
 
-    // ---- Phase-1 JIT hook (source/emulation/cpu/jit64.cpp, include/jit64.h).
-    // tryJitStep() is the JIT fast-path attempt, called from run()/runBounded()
-    // when BW64_JIT=1. Returns instructions executed, or 0 to fall back to
-    // the interpreter. Default behavior (BW64_JIT unset) is unchanged: the
-    // hook is never entered. Phase 1 compiles the block plan and validates
-    // it against the interpreter BBlock path, then executes via execBlock so
-    // semantics stay bit-identical; phase 2 will emit wasm from the plan.
+    // ---- CPU64 JIT entry point (source/emulation/cpu/jit64.cpp +
+    // jit64wasm*.cpp, include/jit64.h). Called from run()/runBounded() when
+    // BW64_JIT=1; returns the number of guest instructions retired, or 0 to
+    // fall back to the interpreter. Two engines (BW64_JIT_ENGINE, see
+    // jit64SelectEngine):
+    //   wasm   - the emitted-wasm engine: cached emitted modules are called
+    //            through a wasm table index; every store re-checks the block's
+    //            code pages inside the module and leaves at the exact next RIP.
+    //   interp - phase-1 vehicle: the JIT plan is validated against the
+    //            interpreter's BBlock builder and executed through execBlock.
+    // Default behavior (BW64_JIT unset) is unchanged: never entered.
     U32 tryJitStep(U64 maxInsn = ~0ULL);
+    // Phase-1 interpreter vehicle (validation engine; see tryJitStep).
+    U32 tryJitInterpStep(U64 maxInsn = ~0ULL);
+    // Emitted-wasm engine only (the wasm engine's implementation of
+    // tryJitStep); also usable directly by tests. 0 = use the interpreter.
+    U32 tryWasmExec(U64 maxInsn = ~0ULL);
     struct Jit64State* jit() { return m_jit; }
     const struct Jit64State* jit() const { return m_jit; }
     void ensureJit();
@@ -222,6 +231,13 @@ public:
     struct Jit64State* m_jit = nullptr;
 
 private:
+    // Call one cached emitted module and commit its guest state. Returns the
+    // instructions the emitted code reports having retired (0 = did not run).
+    U32 execWasmBlock(const struct Jit64Block& block, U64 maxInsn);
+    // Validate the JIT decode plan against the interpreter's BBlock builder
+    // (BW64_JIT_VERIFY=1). Returns false when the two decoders disagree, which
+    // keeps the block on the interpreter (drift guard).
+    bool verifyJitPlanAgainstBlock(U64 rip, const struct Jit64Op* ops, U32 n);
     U32 step();
 
     U8  fetchByte(U64 addr);

@@ -11,6 +11,57 @@ assert.ok(fixture, 'JIT64_WASM_FIXTURE must point at the native fixture emitter'
 const dir = mkdtempSync(join(tmpdir(), 'jit64-wasm-'));
 let sequence = 0;
 const mask64 = (1n << 64n) - 1n;
+
+// Jit64WasmState layout (include/jit64wasm.h): the staged guest state the
+// emitted execute() reads and writes. Every offset is static_assert-ed on the
+// C++ side; keep them in sync here.
+const STATE = {
+  rip: 128, rflags: 136, entered: 140, scratch: 144,
+  genBase: 152, gen0: 156, gen1: 160, execCount: 164, limit: 168,
+};
+
+// Stage the struct exactly like CPU64::execWasmBlock does: GPRs, RIP, RFLAGS,
+// the block's entry generations, the instruction budget and a zeroed
+// emitted-code entry counter.
+function initState(view, ptr, regs, rip, rflags, opts = {}) {
+  const { genBase = 0, gen0 = 0, gen1 = 0, limit = 0xFFFFFFFF, entered = 0, genTable = null } = opts;
+  regs.forEach((v, i) => view.setBigUint64(ptr + i * 8, v, true));
+  view.setBigUint64(ptr + STATE.rip, rip, true);
+  view.setUint32(ptr + STATE.rflags, rflags >>> 0, true);
+  view.setUint32(ptr + STATE.entered, entered, true);
+  view.setBigUint64(ptr + STATE.scratch, 0n, true);
+  view.setUint32(ptr + STATE.genBase, genBase, true);
+  view.setUint32(ptr + STATE.gen0, gen0, true);
+  view.setUint32(ptr + STATE.gen1, gen1, true);
+  view.setUint32(ptr + STATE.execCount, 0, true);
+  view.setUint32(ptr + STATE.limit, limit, true);
+  // Optional host-side page-generation table (the emitted module reads it at
+  // genBase + slot*4; KMemory64::blockSlot hashes pages to those slots).
+  if (genTable) for (const [slot, value] of genTable) view.setUint32(genBase + slot * 4, value >>> 0, true);
+}
+
+// Host-side page-generation table helper: slot index for a guest page, matching
+// KMemory64::blockSlot.
+function genSlotOf(page) { return Number(page ^ (page >> 12n)) & 4095; }
+
+function readState(view, ptr) {
+  return {
+    regs: Array.from({ length: 16 }, (_, i) => view.getBigUint64(ptr + i * 8, true)),
+    ripOut: view.getBigUint64(ptr + STATE.rip, true),
+    rflags: view.getUint32(ptr + STATE.rflags, true),
+    // Emitted-code counters: the module itself increments `entered` and stores
+    // `execCount`. Non-zero values prove the emitted code ran (no decoded-block
+    // cache can produce them).
+    entered: view.getUint32(ptr + STATE.entered, true),
+    execCount: view.getUint32(ptr + STATE.execCount, true),
+  };
+}
+
+// Assert the two emitted-code counters for a fully-executed block.
+function expectEmitted(out, instructions) {
+  assert.equal(out.entered, 1, 'emitted code must bump blocksEntered');
+  assert.equal(out.execCount, instructions, 'emitted code must report executed count');
+}
 const little = (value, count) => Array.from({ length: count }, (_, i) => Number((value >> BigInt(8 * i)) & 255n));
 const movabs = (reg, value) => [reg >= 8 ? 0x49 : 0x48, 0xB8 + reg % 8, ...little(value, 8)];
 
@@ -25,11 +76,13 @@ function baseEnv(memory) {
   } };
 }
 
-function emit(code) {
+function emit(code, { page0 = 0, page1 = page0, shared = false } = {}) {
   const path = join(dir, String(sequence++));
   writeFileSync(path + '.bin', new Uint8Array(code));
-  const result = spawnSync(fixture, [path + '.bin', path + '.wasm'], { encoding: 'utf8' });
-  return { result, path: path + '.wasm' };
+  const args = [path + '.bin', path + '.wasm', String(page0), String(page1)];
+  if (shared) args.push('shared');
+  const result = spawnSync(fixture, args, { encoding: 'utf8' });
+  return { result, path: path + '.wasm', page0, page1 };
 }
 
 async function check(code, changed, rip = 0x12345678ABCDEFF0n, ptr = 512) {
@@ -42,18 +95,19 @@ async function check(code, changed, rip = 0x12345678ABCDEFF0n, ptr = 512) {
   // pointers are legal too (the wasm alignment immediate is only a hint).
   const view = new DataView(memory.buffer);
   const before = Array.from({ length: 16 }, (_, i) => 0xFEDCBA9876543200n + BigInt(i));
-  before.forEach((v, i) => view.setBigUint64(ptr + i * 8, v, true));
-  view.setBigUint64(ptr + 128, rip, true);
-  view.setUint32(ptr + 136, 0x8D7, true);
-  view.setUint32(ptr + 140, 0xA5A5A5A5, true);
+  initState(view, ptr, before, rip, 0x8D7);
   const { instance } = await WebAssembly.instantiate(module, baseEnv(memory));
   instance.exports.execute(ptr);
+  const out = readState(view, ptr);
   const expected = [...before];
   changed(expected);
-  for (let i = 0; i < 16; i++) assert.equal(view.getBigUint64(ptr + i * 8, true), expected[i], `GPR ${i}`);
-  assert.equal(view.getBigUint64(ptr + 128, true), (rip + BigInt(code.length)) & mask64, '64-bit RIP');
-  assert.equal(view.getUint32(ptr + 136, true), 0x8D7, 'MOV preserves flags');
-  assert.equal(view.getUint32(ptr + 140, true), 0xA5A5A5A5, 'ABI reserved word');
+  for (let i = 0; i < 16; i++) assert.equal(out.regs[i], expected[i], `GPR ${i}`);
+  assert.equal(out.ripOut, (rip + BigInt(code.length)) & mask64, '64-bit RIP');
+  assert.equal(out.rflags, 0x8D7, 'MOV preserves flags');
+  // The decoded stream is executed to the end: execCount must equal the number
+  // of instructions the fixture decoded (bytes consumed / instruction count).
+  assert.equal(out.entered, 1, 'emitted code must bump blocksEntered');
+  assert.ok(out.execCount >= 1 && out.execCount <= code.length, 'execCount=' + out.execCount);
 }
 
 test('all 16 registers retain full 64-bit immediate values', async () => {
@@ -77,7 +131,7 @@ test('C7 imm32 zero-extends for a 32-bit register destination', () => check(
   [0x41, 0xC7, 0xC0, 0x80, 0xFF, 0xFF, 0xFF], regs => { regs[8] = 0xFFFFFF80n; }));
 test('RIP advancement wraps modulo 64 bits', () => check(movabs(0, 1n), regs => { regs[0] = 1n; }, mask64 - 3n));
 test('state at the end of imported memory stays in bounds', () => check(
-  movabs(0, 7n), regs => { regs[0] = 7n; }, 0n, 65536 - 144));
+  movabs(0, 7n), regs => { regs[0] = 7n; }, 0n, 65536 - 172));
 test('unaligned state pointer executes correctly', () => check(
   movabs(0, 9n), regs => { regs[0] = 9n; }, 0n, 513));
 test('out-of-bounds state traps before modifying any guest state', async () => {
@@ -144,18 +198,10 @@ async function runAlu(code, regs, rflags, rip = 0x12345678ABCDEFF0n, ptr = 512) 
   assert.ok(WebAssembly.validate(readFileSync(path)), 'emitted module must validate');
   const memory = new WebAssembly.Memory({ initial: 1 });
   const view = new DataView(memory.buffer);
-  regs.forEach((v, i) => view.setBigUint64(ptr + i * 8, v, true));
-  view.setBigUint64(ptr + 128, rip, true);
-  view.setUint32(ptr + 136, rflags >>> 0, true);
-  view.setUint32(ptr + 140, 0xA5A5A5A5, true);
+  initState(view, ptr, regs, rip, rflags);
   const { instance } = await WebAssembly.instantiate(readFileSync(path), baseEnv(memory));
   instance.exports.execute(ptr);
-  return {
-    regs: Array.from({ length: 16 }, (_, i) => view.getBigUint64(ptr + i * 8, true)),
-    rflags: view.getUint32(ptr + 136, true),
-    ripOut: view.getBigUint64(ptr + 128, true),
-    reserved: view.getUint32(ptr + 140, true),
-  };
+  return readState(view, ptr);
 }
 
 const baseRegs = () => Array.from({ length: 16 }, (_, i) => 0xFEDCBA9876543200n + BigInt(i));
@@ -163,7 +209,7 @@ const modrm = (reg, rm) => 0xC0 | (reg << 3) | rm;
 function expectAlu(out, initFlags, newBits, codeLen, changed) {
   assert.equal(out.rflags, (((initFlags & ~ALU_MASK) | Number(newBits)) >>> 0), 'rflags');
   assert.equal(out.ripOut, (0x12345678ABCDEFF0n + BigInt(codeLen)) & mask64, 'RIP advances');
-  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+  assert.equal(out.entered, 1, 'emitted code must bump blocksEntered');
   changed(out.regs);
 }
 
@@ -411,7 +457,7 @@ function encAluMem({ form, sub, size, reg = 0, imm = 0, eaKind = 'base', base = 
 }
 
 // Run one memory-ALU instruction against real memRead/memWrite imports.
-async function runAluMem(code, { regs, rflags = 0x202, memInit = new Map(), rip = 0x12345678ABCDEFF0n, ptr = 512 }) {
+async function runAluMem(code, { regs, rflags = 0x202, memInit = new Map(), rip = 0x12345678ABCDEFF0n, ptr = 512, stateOpts = {} }) {
   const { result, path } = emit(code);
   assert.equal(result.status, 0, result.stderr);
   assert.ok(WebAssembly.validate(readFileSync(path)), 'emitted module must validate');
@@ -420,18 +466,10 @@ async function runAluMem(code, { regs, rflags = 0x202, memInit = new Map(), rip 
   for (const [k, v] of memInit) guestMem.bytes.set(k, v);
   const view = new DataView(memory.buffer);
   regs.forEach((v, i) => view.setBigUint64(ptr + i * 8, v, true));
-  view.setBigUint64(ptr + 128, rip, true);
-  view.setUint32(ptr + 136, rflags >>> 0, true);
-  view.setUint32(ptr + 140, 0xA5A5A5A5, true);
-  const { instance } = await WebAssembly.instantiate(readFileSync(path), stringEnv(memory, guestMem));
+  initState(view, ptr, regs, rip, rflags, stateOpts);
+  const { instance } = await WebAssembly.instantiate(readFileSync(path), stringEnv(memory, guestMem, stateOpts));
   instance.exports.execute(ptr);
-  return {
-    regs: Array.from({ length: 16 }, (_, i) => view.getBigUint64(ptr + i * 8, true)),
-    rflags: view.getUint32(ptr + 136, true),
-    ripOut: view.getBigUint64(ptr + 128, true),
-    reserved: view.getUint32(ptr + 140, true),
-    guestMem,
-  };
+  return { ...readState(view, ptr), guestMem };
 }
 
 // Differential check: wasm vs JS reference model.
@@ -459,7 +497,7 @@ async function checkAluMem(enc, { regs, rflags = 0x202, memInit = new Map(), rip
   assert.deepEqual(out.regs, refRegs, 'GPRs');
   assert.equal(BigInt(out.rflags), refFlags, 'RFLAGS');
   assert.equal(out.ripOut, (rip + BigInt(enc.code.length)) & mask64, 'RIP');
-  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+  assert.equal(out.entered, 1, 'emitted code must bump blocksEntered');
   const refKeys = [...refMem.bytes.keys()].map(String).sort();
   const outKeys = [...out.guestMem.bytes.keys()].map(String).sort();
   assert.deepEqual(outKeys, refKeys, 'written addresses');
@@ -736,7 +774,7 @@ async function checkMov8(enc, { regs, rflags = 0x202, memInit = new Map(), rip =
   assert.deepEqual(out.regs, refRegs, 'GPRs');
   assert.equal(BigInt(out.rflags), BigInt(rflags) & 0xFFFFFFFFn, 'RFLAGS preserved (MOV never touches flags)');
   assert.equal(out.ripOut, (rip + BigInt(enc.code.length)) & mask64, 'RIP');
-  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+  assert.equal(out.entered, 1, 'emitted code must bump blocksEntered');
   const refKeys = [...refMem.bytes.keys()].map(String).sort();
   const outKeys = [...out.guestMem.bytes.keys()].map(String).sort();
   assert.deepEqual(outKeys, refKeys, 'written addresses');
@@ -865,7 +903,7 @@ function refShift(sub, v, count, width, rflagsIn) {
 function expectShift(out, initFlags, newBits, codeLen, changed) {
   assert.equal(out.rflags, (((initFlags & ~SHIFT_MASK) | Number(newBits)) >>> 0), 'rflags');
   assert.equal(out.ripOut, (0x12345678ABCDEFF0n + BigInt(codeLen)) & mask64, 'RIP advances');
-  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+  assert.equal(out.entered, 1, 'emitted code must bump blocksEntered');
   changed(out.regs);
 }
 
@@ -1017,7 +1055,7 @@ function refRotate(sub, v, count, width, rflagsIn) {
 function expectRotate(out, initFlags, newBits, codeLen, changed) {
   assert.equal(out.rflags, (((initFlags & ~ROT_MASK) | Number(newBits)) >>> 0), 'rflags');
   assert.equal(out.ripOut, (0x12345678ABCDEFF0n + BigInt(codeLen)) & mask64, 'RIP advances');
-  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+  assert.equal(out.entered, 1, 'emitted code must bump blocksEntered');
   changed(out.regs);
 }
 
@@ -1043,7 +1081,7 @@ function refImul(a, b, width) {
 function expectImul(out, initFlags, newBits, codeLen, changed) {
   assert.equal(out.rflags, (((initFlags & ~IMUL_MASK) | Number(newBits)) >>> 0), 'rflags');
   assert.equal(out.ripOut, (0x12345678ABCDEFF0n + BigInt(codeLen)) & mask64, 'RIP advances');
-  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+  assert.equal(out.entered, 1, 'emitted code must bump blocksEntered');
   changed(out.regs);
 }
 
@@ -1209,7 +1247,7 @@ function makeGuestMem() {
 // Import object for string-op modules: real memRead/memWrite backed by the
 // JS guest memory. Protocol: (addrLo, addrHi, size, retPtr) and
 // (addrLo, addrHi, size, valLo, valHi); memRead writes 8 bytes to retPtr.
-function stringEnv(memory, guestMem) {
+function stringEnv(memory, guestMem, stateOpts = {}) {
   const view = new DataView(memory.buffer);
   const u32 = n => Number(BigInt.asUintN(32, BigInt(n)));
   return { env: {
@@ -1222,6 +1260,10 @@ function stringEnv(memory, guestMem) {
       const addr = (BigInt(u32(addrHi)) << 32n) | BigInt(u32(addrLo));
       const val = (BigInt(u32(valHi)) << 32n) | BigInt(u32(valLo));
       guestMem.write(addr, size, val);
+      // Stand in for KMemory64::noteGuestWrite: when a test asks for it, the
+      // store bumps the page-generation slot the emitted module checks, which
+      // must make the module leave at the NEXT instruction.
+      if (stateOpts.onWrite) stateOpts.onWrite(addr, size);
     },
   } };
 }
@@ -1280,19 +1322,10 @@ async function runString(code, { regs, rflags = 0x202, memInit = new Map(), ptr 
   const guestMem = makeGuestMem();
   for (const [k, v] of memInit) guestMem.bytes.set(k, v);
   const view = new DataView(memory.buffer);
-  regs.forEach((v, i) => view.setBigUint64(ptr + i * 8, v, true));
-  view.setBigUint64(ptr + 128, 0x12345678ABCDEFF0n, true);
-  view.setUint32(ptr + 136, rflags >>> 0, true);
-  view.setUint32(ptr + 140, 0xA5A5A5A5, true);
+  initState(view, ptr, regs, 0x12345678ABCDEFF0n, rflags);
   const { instance } = await WebAssembly.instantiate(readFileSync(path), stringEnv(memory, guestMem));
   instance.exports.execute(ptr);
-  return {
-    regs: Array.from({ length: 16 }, (_, i) => view.getBigUint64(ptr + i * 8, true)),
-    rflags: view.getUint32(ptr + 136, true),
-    ripOut: view.getBigUint64(ptr + 128, true),
-    reserved: view.getUint32(ptr + 140, true),
-    guestMem,
-  };
+  return { ...readState(view, ptr), guestMem };
 }
 
 // Compare wasm execution against the reference model.
@@ -1305,7 +1338,7 @@ async function checkString(code, sub, size, rep, asize32, regs, rflags, memInit)
   assert.deepEqual(out.regs, refRegs, 'GPRs');
   assert.equal(out.rflags, refFlags >>> 0, 'RFLAGS');
   assert.equal(out.ripOut, (0x12345678ABCDEFF0n + BigInt(code.length)) & mask64, 'RIP');
-  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+  assert.equal(out.entered, 1, 'emitted code must bump blocksEntered');
   // Memory: compare the full byte maps.
   const refKeys = [...refMem.bytes.keys()].map(String).sort();
   const outKeys = [...out.guestMem.bytes.keys()].map(String).sort();
@@ -1866,7 +1899,7 @@ test('fuzz MOVSXD vs reference (600 cases)', async () => {
     const got = out.regs;
     for (let g = 0; g < 16; g++) assert.equal(got[g], exp[g], `fuzzMovsxd i=${i} GPR${g}`);
     assert.equal(out.rflags, initFlags >>> 0, `fuzzMovsxd i=${i} flags preserved`);
-    assert.equal(out.reserved, 0xA5A5A5A5, `fuzzMovsxd i=${i} ABI reserved`);
+    assert.equal(out.entered, 1, `fuzzMovsxd i=${i} emitted entry counter`);
   }
 });
 
@@ -2058,7 +2091,7 @@ test('fuzz LEA vs reference (600 cases)', async () => {
     }
     assert.equal(out.rflags, initFlags >>> 0, `fuzzLea i=${i} flags preserved`);
     assert.equal(out.ripOut, (0x12345678ABCDEFF0n + BigInt(enc.code.length)) & mask64, `fuzzLea i=${i} rip`);
-    assert.equal(out.reserved, 0xA5A5A5A5, `fuzzLea i=${i} reserved`);
+    assert.equal(out.entered, 1, `fuzzLea i=${i} emitted entry counter`);
   }
 });
 
@@ -2259,7 +2292,7 @@ test('fuzz PUSH/POP vs reference (600 cases)', async () => {
     assert.deepEqual(out.regs, refRegs, `${tag} GPRs`);
     assert.equal(out.rflags, rflags >>> 0, `${tag} RFLAGS preserved`);
     assert.equal(out.ripOut, (0x12345678ABCDEFF0n + BigInt(code.length)) & mask64, `${tag} RIP`);
-    assert.equal(out.reserved, 0xA5A5A5A5, `${tag} reserved`);
+    assert.equal(out.entered, 1, `${tag} emitted entry counter`);
     const refKeys = [...refMem.bytes.keys()].map(String).sort();
     const outKeys = [...out.guestMem.bytes.keys()].map(String).sort();
     assert.deepEqual(outKeys, refKeys, `${tag} written addresses`);
@@ -2391,7 +2424,7 @@ async function checkGrp3(enc, { regs, rflags = 0x202, memInit = new Map(), rip =
   assert.deepEqual(out.regs, refRegs, 'GPRs');
   assert.equal(BigInt(out.rflags), refFlags, 'RFLAGS');
   assert.equal(out.ripOut, (rip + BigInt(enc.code.length)) & mask64, 'RIP');
-  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+  assert.equal(out.entered, 1, 'emitted code must bump blocksEntered');
   const refKeys = [...refMem.bytes.keys()].map(String).sort();
   const outKeys = [...out.guestMem.bytes.keys()].map(String).sort();
   assert.deepEqual(outKeys, refKeys, 'written addresses');
@@ -2569,7 +2602,7 @@ async function checkCbw(enc, { regs, rflags = 0x202, rip = 0x12345678ABCDEFF0n }
   assert.deepEqual(out.regs, refRegs, 'GPRs');
   assert.equal(BigInt(out.rflags), BigInt(rflags) & 0xFFFFFFFFn, 'RFLAGS preserved');
   assert.equal(out.ripOut, (rip + BigInt(enc.code.length)) & mask64, 'RIP');
-  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+  assert.equal(out.entered, 1, 'emitted code must bump blocksEntered');
 }
 
 test('CBW (66 98): AL->AX sign extension, upper 48 preserved', async () => {
@@ -2669,7 +2702,7 @@ async function checkCqo(enc, { regs, rflags = 0x202, rip = 0x12345678ABCDEFF0n }
   assert.deepEqual(out.regs, refRegs, "GPRs");
   assert.equal(BigInt(out.rflags), BigInt(rflags) & 0xFFFFFFFFn, "RFLAGS preserved");
   assert.equal(out.ripOut, (rip + BigInt(enc.code.length)) & mask64, "RIP");
-  assert.equal(out.reserved, 0xA5A5A5A5, "ABI reserved word");
+  assert.equal(out.entered, 1, "emitted code must bump blocksEntered");
 }
 
 test("CWD (66 99): AX->DX sign extension, upper 48 of RDX preserved", async () => {
@@ -2809,7 +2842,7 @@ async function checkCmov(enc, { regs, rflags = 0x202, memInit = new Map(), rip =
   assert.deepEqual(out.regs, refRegs, 'GPRs');
   assert.equal(BigInt(out.rflags), BigInt(rflags) & 0xFFFFFFFFn, 'RFLAGS preserved');
   assert.equal(out.ripOut, (rip + BigInt(enc.code.length)) & mask64, 'RIP');
-  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+  assert.equal(out.entered, 1, 'emitted code must bump blocksEntered');
 }
 
 test('CMOVcc: all 16 conditions, taken and not-taken', async () => {
@@ -3301,7 +3334,7 @@ async function checkC6(enc, { regs, rflags = 0x202, memInit = new Map(), rip = 0
   assert.deepEqual(out.regs, refRegs, 'GPRs');
   assert.equal(BigInt(out.rflags), BigInt(rflags) & 0xFFFFFFFFn, 'RFLAGS preserved (MOV never touches flags)');
   assert.equal(out.ripOut, (rip + BigInt(enc.code.length)) & mask64, 'RIP');
-  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+  assert.equal(out.entered, 1, 'emitted code must bump blocksEntered');
   const refKeys = [...refMem.bytes.keys()].map(String).sort();
   const outKeys = [...out.guestMem.bytes.keys()].map(String).sort();
   assert.deepEqual(outKeys, refKeys, 'written addresses');
@@ -3406,7 +3439,7 @@ async function checkSetcc(enc, { regs, rflags = 0x202, memInit = new Map(), rip 
   assert.deepEqual(out.regs, refRegs, 'GPRs');
   assert.equal(BigInt(out.rflags), BigInt(rflags) & 0xFFFFFFFFn, 'RFLAGS preserved (SETcc never touches flags)');
   assert.equal(out.ripOut, (rip + BigInt(enc.code.length)) & mask64, 'RIP');
-  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+  assert.equal(out.entered, 1, 'emitted code must bump blocksEntered');
   const refKeys = [...refMem.bytes.keys()].map(String).sort();
   const outKeys = [...out.guestMem.bytes.keys()].map(String).sort();
   assert.deepEqual(outKeys, refKeys, 'written addresses');
@@ -3543,7 +3576,7 @@ async function checkBt(enc, { regs, rflags = 0x202, memInit = new Map(), rip = 0
   const wantFlags = refRflags & 0xFFFFFFFFn;
   assert.equal(outFlags, wantFlags, 'RFLAGS (only CF changes)');
   assert.equal(out.ripOut, (rip + BigInt(enc.code.length)) & mask64, 'RIP');
-  assert.equal(out.reserved, 0xA5A5A5A5, 'ABI reserved word');
+  assert.equal(out.entered, 1, 'emitted code must bump blocksEntered');
 }
 
 test('fuzz BT/BTS/BTR/BTC vs reference (600 cases)', async () => {
@@ -3580,3 +3613,269 @@ test('fuzz BT/BTS/BTR/BTC vs reference (600 cases)', async () => {
     }
   }
 }, 180000);
+
+// ---------------------------------------------------------------------------
+// Control flow, bounded execution and inline invalidation.
+//
+// The JIT decoder ends a block AFTER its terminator (Jcc/JMP/CALL/RET), so the
+// last instruction of most emitted modules is a branch. `check()` above only
+// covers fall-through streams; these tests pin the branch, push/pop and
+// early-exit semantics against a JS model transcribed from CPU64::step()'s
+// control-flow handlers (dsp_35/36/37/38/45 and RET at dsp_26).
+// ---------------------------------------------------------------------------
+
+const RIP0 = 0x12345678ABCDEFF0n;
+
+async function runTerm(code, opts = {}) {
+  const { regs, rflags = 0x202, rip = RIP0, ptr = 512, stateOpts = {}, memInit = new Map(),
+          page0 = 0, page1 = page0, bumpGen = null } = opts;
+  const { result, path } = emit(code, { page0, page1 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(WebAssembly.validate(readFileSync(path)), 'emitted module must validate');
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const guestMem = makeGuestMem();
+  for (const [k, v] of memInit) guestMem.bytes.set(k, v);
+  const view = new DataView(memory.buffer);
+  initState(view, ptr, regs, rip, rflags, stateOpts);
+  // bumpGen: model KMemory64::noteGuestWrite bumping the page slot the module
+  // checks, which must make it leave at the NEXT instruction.
+  const envOpts = bumpGen ? { ...stateOpts, onWrite: () => {
+      const addr = stateOpts.genBase + bumpGen.slot * 4;
+      view.setUint32(addr, (view.getUint32(addr, true) + 1) >>> 0, true);
+  } } : stateOpts;
+  const { instance } = await WebAssembly.instantiate(readFileSync(path), stringEnv(memory, guestMem, envOpts));
+  instance.exports.execute(ptr);
+  return { ...readState(view, ptr), guestMem };
+}
+
+const asU64 = v => BigInt.asUintN(64, v);
+
+test('NOP advances RIP without touching state (block exit through the tail)', async () => {
+  const regs = baseRegs();
+  const out = await runTerm([0x48, 0x89, 0xC8, 0x90], { regs });
+  assert.equal(out.regs[0], regs[1], 'mov rax,rcx');
+  assert.equal(out.ripOut, asU64(RIP0 + 4n), 'RIP after mov+nop');
+  assert.equal(out.rflags, 0x202, 'flags untouched');
+  expectEmitted(out, 2);
+});
+
+test('Jcc rel8 taken and not taken (JZ, ZF from the entry RFLAGS)', async () => {
+  const code = [0x48, 0x89, 0xC8, 0x74, 0x10]; // mov rax,rcx; jz +0x10
+  const taken = await runTerm(code, { regs: baseRegs(), rflags: 0x202 | 0x40 });
+  assert.equal(taken.ripOut, asU64(RIP0 + 5n + 0x10n), 'taken target = next + delta');
+  expectEmitted(taken, 2);
+  const fall = await runTerm(code, { regs: baseRegs(), rflags: 0x202 });
+  assert.equal(fall.ripOut, asU64(RIP0 + 5n), 'not taken = fallthrough');
+  expectEmitted(fall, 2);
+});
+
+test('Jcc rel32 (0F 85) taken and not taken', async () => {
+  const code = [0x48, 0x89, 0xC8, 0x0F, 0x85, 0x00, 0x01, 0x00, 0x00]; // jnz +0x100
+  const taken = await runTerm(code, { regs: baseRegs(), rflags: 0x202 });
+  assert.equal(taken.ripOut, asU64(RIP0 + 9n + 0x100n), 'taken rel32');
+  const fall = await runTerm(code, { regs: baseRegs(), rflags: 0x202 | 0x40 });
+  assert.equal(fall.ripOut, asU64(RIP0 + 9n), 'not taken rel32');
+});
+
+test('Jcc condition coverage: every cc reads the flag it should', async () => {
+  // (cc, rflags that make it taken, rflags that make it fall through)
+  const cases = [
+    [0x0, 0x800 | 0x202, 0x202],             // O
+    [0x1, 0x202, 0x800 | 0x202],             // NO
+    [0x2, 0x1 | 0x202, 0x202],               // B
+    [0x3, 0x202, 0x1 | 0x202],               // AE
+    [0x4, 0x40 | 0x202, 0x202],              // Z
+    [0x5, 0x202, 0x40 | 0x202],              // NZ
+    [0x6, 0x40 | 0x202, 0x202],              // BE (CF|ZF)
+    [0x7, 0x202, 0x40 | 0x202],              // A
+    [0x8, 0x80 | 0x202, 0x202],              // S
+    [0x9, 0x202, 0x80 | 0x202],              // NS
+    [0xA, 0x4 | 0x202, 0x202],               // P
+    [0xB, 0x202, 0x4 | 0x202],               // NP
+    [0xC, 0x80 | 0x202, 0x202],              // L  (SF!=OF)
+    [0xD, 0x202, 0x80 | 0x202],              // GE (SF==OF)
+    [0xE, 0x40 | 0x202, 0x202],              // LE (ZF|SF!=OF)
+    [0xF, 0x202, 0x40 | 0x202],              // G  (!ZF && SF==OF)
+  ];
+  for (const [cc, takenFlags, fallFlags] of cases) {
+    const code = [0x48, 0x89, 0xC8, 0x70 + cc, 0x08];
+    const taken = await runTerm(code, { regs: baseRegs(), rflags: takenFlags });
+    assert.equal(taken.ripOut, asU64(RIP0 + 5n + 8n), `cc=0x${cc.toString(16)} taken`);
+    const fall = await runTerm(code, { regs: baseRegs(), rflags: fallFlags });
+    assert.equal(fall.ripOut, asU64(RIP0 + 5n), `cc=0x${cc.toString(16)} fallthrough`);
+  }
+});
+
+test('JMP rel32 / rel8 set RIP and never fall through', async () => {
+  // Backwards branch (rel32 negative) and a self-jump (rel8 -2).
+  const back = await runTerm([0x48, 0x89, 0xC8, 0xE9, 0xF0, 0xFF, 0xFF, 0xFF], { regs: baseRegs() });
+  assert.equal(back.ripOut, asU64(RIP0 + 8n - 16n), 'jmp rel32 -16');
+  expectEmitted(back, 2);
+  const self = await runTerm([0x48, 0x89, 0xC8, 0xEB, 0xFE], { regs: baseRegs() });
+  // rel8 -2 measured from the END of the jmp (offset 5) = its own address.
+  assert.equal(self.ripOut, asU64(RIP0 + 3n), 'jmp rel8 -2 returns to the jmp itself');
+  expectEmitted(self, 2);
+});
+
+test('CALL rel32 pushes the return address and jumps', async () => {
+  const rsp = 0x800000n;
+  const regs = baseRegs();
+  regs[4] = rsp;
+  const out = await runTerm([0x48, 0x89, 0xC8, 0xE8, 0x10, 0x00, 0x00, 0x00], { regs });
+  assert.equal(out.ripOut, asU64(RIP0 + 8n + 0x10n), 'target = rip+len+delta');
+  assert.equal(out.regs[4], rsp - 8n, 'RSP decremented by 8');
+  assert.equal(out.guestMem.read(rsp - 8n, 8), asU64(RIP0 + 8n), 'return address pushed');
+  expectEmitted(out, 2);
+});
+
+test('RET pops RIP off the guest stack', async () => {
+  const rsp = 0x800000n;
+  const retAddr = 0xDEADBEEF12345678n;
+  const regs = baseRegs();
+  regs[4] = rsp;
+  const memInit = new Map();
+  for (let i = 0; i < 8; i++) memInit.set(rsp + BigInt(i), Number((retAddr >> BigInt(8 * i)) & 0xFFn));
+  const out = await runTerm([0x48, 0x89, 0xC8, 0xC3], { regs, memInit });
+  assert.equal(out.ripOut, retAddr, 'RIP from the stack');
+  assert.equal(out.regs[4], rsp + 8n, 'RSP advanced by 8');
+  expectEmitted(out, 2);
+});
+
+test('LEAVE is RSP = RBP; RBP = pop64() and still advances RIP', async () => {
+  const rbp = 0x700000n;
+  const saved = 0xCAFEBABE00000001n;
+  const regs = baseRegs();
+  regs[4] = 0x999n; // RSP before
+  regs[5] = rbp;    // RBP before
+  const memInit = new Map();
+  for (let i = 0; i < 8; i++) memInit.set(rbp + BigInt(i), Number((saved >> BigInt(8 * i)) & 0xFFn));
+  const out = await runTerm([0x48, 0x89, 0xC8, 0xC9], { regs, memInit });
+  assert.equal(out.regs[5], saved, 'RBP = [RBP]');
+  assert.equal(out.regs[4], rbp + 8n, 'RSP = old RBP + 8');
+  assert.equal(out.ripOut, asU64(RIP0 + 4n), 'LEAVE advances RIP by its length');
+  expectEmitted(out, 2);
+});
+
+test('PUSH/POP inside a block feed a following RET', async () => {
+  const rsp = 0x800000n;
+  const retAddr = 0x1122334455667788n;
+  const regs = baseRegs();
+  regs[4] = rsp;
+  // mov rax,rcx; push rax; pop rbx; ret  (RET reads [RSP] after the POP)
+  const memInit = new Map();
+  for (let i = 0; i < 8; i++) memInit.set(rsp + BigInt(i), Number((retAddr >> BigInt(8 * i)) & 0xFFn));
+  const out = await runTerm([0x48, 0x89, 0xC8, 0x50, 0x5B, 0xC3], { regs, memInit });
+  assert.equal(out.regs[3], regs[1], 'pop rbx reads what push rax wrote');
+  assert.equal(out.guestMem.read(rsp - 8n, 8), regs[1], 'push wrote to RSP-8');
+  assert.equal(out.regs[4], rsp + 8n, 'the RET popped one slot');
+  assert.equal(out.ripOut, retAddr, 'ret used the value at the restored RSP');
+  expectEmitted(out, 4);
+});
+
+test('bounded execution stops at the instruction limit with the exact RIP', async () => {
+  const code = [0x48, 0x89, 0xC8, 0x90, 0x90, 0x90]; // mov + 3 nops = 4 instrs
+  const regs = baseRegs();
+  const full = await runTerm(code, { regs });
+  expectEmitted(full, 4);
+  assert.equal(full.ripOut, asU64(RIP0 + 6n), 'full block RIP');
+  const one = await runTerm(code, { regs, stateOpts: { limit: 1 } });
+  assert.equal(one.execCount, 1, 'limit 1 stops after one instruction');
+  assert.equal(one.ripOut, asU64(RIP0 + 3n), 'RIP after the first instruction');
+  const two = await runTerm(code, { regs, stateOpts: { limit: 2 } });
+  assert.equal(two.execCount, 2, 'limit 2');
+  assert.equal(two.ripOut, asU64(RIP0 + 4n), 'RIP after two instructions');
+  const zero = await runTerm(code, { regs, stateOpts: { limit: 0 } });
+  assert.equal(zero.execCount, 0, 'zero budget executes nothing');
+  assert.equal(zero.ripOut, RIP0, 'zero budget leaves RIP at the entry');
+  assert.equal(zero.entered, 1, 'the module still ran (and reported 0)');
+});
+
+test('limit interacts with a terminator: the branch is not taken early', async () => {
+  const code = [0x48, 0x89, 0xC8, 0x74, 0x10];
+  const limited = await runTerm(code, { regs: baseRegs(), rflags: 0x202 | 0x40, stateOpts: { limit: 1 } });
+  assert.equal(limited.execCount, 1, 'only the mov ran');
+  assert.equal(limited.ripOut, asU64(RIP0 + 3n), 'RIP after the mov');
+});
+
+test('store into a block code page leaves the module at the next RIP', async () => {
+  // add [rax],rcx; add rbx,1; nop. (A memory MOV is interpreter-only, so the
+  // emittable store here is a memory ALU op.) The module re-reads the
+  // page-generation slot jit64BlockSlot(page0) after its store; the harness's
+  // memWrite import bumps that slot, standing in for noteGuestWrite.
+  const page0 = 5n;
+  const slot = genSlotOf(page0);
+  const genBase = 1024;
+  const code = [0x48, 0x01, 0x08, 0x48, 0x83, 0xC3, 0x01, 0x90];
+  const regs = baseRegs();
+  regs[0] = 0x10000n; // store target
+
+  // Baseline: generations unchanged -> the whole block runs.
+  const full = await runTerm(code, {
+    regs, page0, page1: page0,
+    stateOpts: { genBase, gen0: 7, gen1: 7, genTable: new Map([[slot, 7]]) },
+  });
+  assert.equal(full.execCount, 3, 'uninvalidated block runs to the end');
+  assert.equal(full.regs[3], regs[3] + 1n, 'add rbx,1 ran');
+  assert.equal(full.guestMem.read(0x10000n, 8), 0n + regs[1], 'store committed');
+  assert.equal(full.ripOut, asU64(RIP0 + 8n), 'RIP after the whole block');
+  expectEmitted(full, 3);
+
+  // With the store bumping the generation, the emitted code must stop right
+  // after the store: executed = 1, RIP = the next instruction, later ops
+  // skipped -- exactly where CPU64::execBlock breaks after a store record.
+  const out = await runTerm(code, {
+    regs, page0, page1: page0,
+    bumpGen: { slot },
+    stateOpts: { genBase, gen0: 7, gen1: 7, genTable: new Map([[slot, 7]]) },
+  });
+  assert.equal(out.execCount, 1, 'store must end the block at the next RIP');
+  assert.equal(out.ripOut, asU64(RIP0 + 3n), 'RIP is the instruction after the store');
+  assert.equal(out.regs[3], regs[3], 'add rbx,1 must NOT run');
+  assert.equal(out.guestMem.read(0x10000n, 8), regs[1], 'the store itself committed');
+  assert.equal(out.entered, 1, 'emitted code must bump blocksEntered');
+});
+
+test('a block that never stores ignores the generation table', async () => {
+  const page0 = 9n;
+  const slot = genSlotOf(page0);
+  const genBase = 1024;
+  const out = await runTerm([0x48, 0x89, 0xC8, 0x48, 0x01, 0xD8, 0x90], {
+    regs: baseRegs(), page0, page1: page0,
+    stateOpts: { genBase, gen0: 3, gen1: 3, genTable: new Map([[slot, 3]]) },
+  });
+  expectEmitted(out, 3);
+  assert.equal(out.ripOut, asU64(RIP0 + 7n), 'no store: nothing to re-check');
+});
+
+test('a stale entry generation does not stop the block (the check compares the TABLE)', async () => {
+  // The entry generation is captured by the host and compared with the table.
+  // A mismatch *at entry* is the host's problem (lookupByRip rejects it); the
+  // module's own check compares the live table value with ITS entry snapshot.
+  const page0 = 5n;
+  const slot = genSlotOf(page0);
+  const out = await runTerm([0x48, 0x01, 0x08, 0x90], {
+    regs: baseRegs(), page0, page1: page0,
+    stateOpts: { genBase: 1024, gen0: 7, gen1: 7, genTable: new Map([[slot, 7]]) },
+  });
+  expectEmitted(out, 2);
+});
+
+test('shared-memory import descriptor links only a shared host memory', async () => {
+  const code = [0x48, 0x89, 0xC8];
+  const bytes = readFileSync(emit(code, { shared: true }).path);
+  assert.ok(WebAssembly.validate(bytes), 'shared-import module must validate');
+  const plain = new WebAssembly.Memory({ initial: 1 });
+  const shared = new WebAssembly.Memory({ initial: 1, maximum: 65536, shared: true });
+  await assert.rejects(
+    WebAssembly.instantiate(bytes, baseEnv(plain)),
+    /shared|memory/i,
+    'a shared memory import must not match a plain memory');
+  const { instance } = await WebAssembly.instantiate(bytes, baseEnv(shared));
+  assert.equal(typeof instance.exports.execute, 'function');
+  // And the plain descriptor must not match a shared memory either.
+  const plainBytes = readFileSync(emit(code).path);
+  await assert.rejects(
+    WebAssembly.instantiate(plainBytes, baseEnv(shared)),
+    /shared|memory/i,
+    'a plain memory import must not match a shared memory');
+});

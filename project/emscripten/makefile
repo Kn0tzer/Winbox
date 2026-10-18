@@ -1,5 +1,21 @@
 ifndef BUILD_DIR
 
+# ---------------------------------------------------------------------------
+# CPU64 JIT build gate. `make wasm64-mt BW64_JIT_BUILD=1` (or any wasm64-*
+# target) compiles the block-execution + block-cache-invalidation
+# infrastructure the emitted-module engine needs and allows the host wasm table
+# to grow so emitted modules can be called through call_indirect. The 32-bit
+# and native targets never receive these defines, so the CPU32 runtime is
+# untouched. Runtime enablement is still BW64_JIT=1 (host env).
+BW64_JIT_BUILD ?= 0
+ifeq ($(BW64_JIT_BUILD),1)
+BW64_JIT_CPP_FLAGS := -DBOXEDWINE_BLOCK_EXEC=1 -DBOXEDWINE_BLOCK_CACHE_INFRA=1
+BW64_JIT_LD_FLAGS := -sALLOW_TABLE_GROWTH=1
+else
+BW64_JIT_CPP_FLAGS :=
+BW64_JIT_LD_FLAGS :=
+endif
+
 .PHONY: default all clean release test multiThreaded wasm64-selftest wasm64-runelf wasm64-selftest-mem64 wasm64-mt
 
 ZIP_ASSET_FILES := $(wildcard *.zip)
@@ -29,9 +45,9 @@ multiThreaded: export ASSET_FILES := boxedwine.css boxedwine-shell.js $(ZIP_ASSE
 # software page table keyed on U64 guest addresses, so guest pointer width is
 # independent of host pointer width (-sMEMORY64 is a later milestone).
 wasm64-selftest: export BUILD_DIR := Build/Wasm64SelfTest
-wasm64-selftest: export EXTRA_CPP_FLAGS := -DBOXEDWINE_GUEST_X64=1
+wasm64-selftest: export EXTRA_CPP_FLAGS := -DBOXEDWINE_GUEST_X64=1 $(BW64_JIT_CPP_FLAGS)
 wasm64-selftest: export TARGET_EXEC := boxedwine64-selftest.js
-wasm64-selftest: export EXTRA_LD_FLAGS := -sENVIRONMENT=node -sEXIT_RUNTIME=1
+wasm64-selftest: export EXTRA_LD_FLAGS := -sENVIRONMENT=node -sEXIT_RUNTIME=1 $(BW64_JIT_LD_FLAGS)
 
 # Same 64-bit core, but loads + runs a real x86_64 ELF off the host disk:
 #   node Build/Wasm64RunElf/boxedwine64-runelf.js --x64-run-elf /path/to/elf
@@ -39,10 +55,10 @@ wasm64-selftest: export EXTRA_LD_FLAGS := -sENVIRONMENT=node -sEXIT_RUNTIME=1
 # same static/dynamic ELFs the native --x64-run-elf accepts work unchanged).
 # With no path arg it runs the embedded hand-built hello-world ELF.
 wasm64-runelf: export BUILD_DIR := Build/Wasm64RunElf
-wasm64-runelf: export EXTRA_CPP_FLAGS := -DBOXEDWINE_GUEST_X64=1
+wasm64-runelf: export EXTRA_CPP_FLAGS := -DBOXEDWINE_GUEST_X64=1 $(BW64_JIT_CPP_FLAGS)
 wasm64-runelf: export TARGET_EXEC := boxedwine64-runelf.js
 wasm64-runelf: export FS_LDFLAGS := -sNODERAWFS=1
-wasm64-runelf: export EXTRA_LD_FLAGS := -sENVIRONMENT=node -sEXIT_RUNTIME=1
+wasm64-runelf: export EXTRA_LD_FLAGS := -sENVIRONMENT=node -sEXIT_RUNTIME=1 $(BW64_JIT_LD_FLAGS)
 
 # wasm64 (Memory64) variant of the self-test: same sources, but the WASM module
 # uses 64-bit linear-memory addressing (-sMEMORY64=1), so the host `void*` is
@@ -89,7 +105,7 @@ wasm64-selftest-mem64: export EXTRA_LD_FLAGS := -sMEMORY64=1 -sENVIRONMENT=node 
 # the BOXEDWINE_OPENGL build fails with "unknown type name 'GLenum'" on a CLEAN
 # tree (a stale .o hid it locally). DISABLE_GL_EXTENSIONS empties the large legacy
 # 32-bit glfunctions_ext* marshaling (unused by the 64-bit gl64 bridge).
-wasm64-mt: export EXTRA_CPP_FLAGS := -DBOXEDWINE_GUEST_X64=1 -DBOXEDWINE_MULTI_THREADED -DBOXEDWINE_OPENGL -DBOXEDWINE_VULKAN64 -DBOXEDWINE_DIRECT_NORMAL_DISPATCH '-DGLH=<SDL_opengl.h>' -DDISABLE_GL_EXTENSIONS -pthread -DNDEBUG
+wasm64-mt: export EXTRA_CPP_FLAGS := -DBOXEDWINE_GUEST_X64=1 -DBOXEDWINE_MULTI_THREADED -DBOXEDWINE_OPENGL -DBOXEDWINE_VULKAN64 -DBOXEDWINE_DIRECT_NORMAL_DISPATCH '-DGLH=<SDL_opengl.h>' -DDISABLE_GL_EXTENSIONS -pthread -DNDEBUG $(BW64_JIT_CPP_FLAGS)
 wasm64-mt: export BUILD_DIR := Build/Wasm64Mt
 wasm64-mt: export SHELL_FILE := shell.html
 wasm64-mt: export TARGET_EXEC := boxedwine64.html
@@ -130,7 +146,7 @@ wasm64-mt: export TARGET_EXEC := boxedwine64.html
 # adds them to EXPORTED_FUNCTIONS (merged with the pthread/PROXY_TO_PTHREAD feature
 # exports), so they're reachable from ccall without an explicit -sEXPORTED_FUNCTIONS
 # list (which would otherwise have to re-enumerate the feature exports too).
-wasm64-mt: export EXTRA_LD_FLAGS := -pthread -sFETCH=1 -sPTHREAD_POOL_SIZE=32 -sPROXY_TO_PTHREAD=1 -sOFFSCREENCANVAS_SUPPORT=1 -sOFFSCREENCANVASES_TO_PTHREAD=\#gl64canvas -sOFFSCREEN_FRAMEBUFFER=1 -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4294967296 -sLEGACY_GL_EMULATION=1 -sMAX_WEBGL_VERSION=2 -sASSERTIONS=0 --js-library=boxedwine-multithreaded-audio.js
+wasm64-mt: export EXTRA_LD_FLAGS := -pthread -sFETCH=1 -sPTHREAD_POOL_SIZE=32 -sPROXY_TO_PTHREAD=1 -sOFFSCREENCANVAS_SUPPORT=1 -sOFFSCREENCANVASES_TO_PTHREAD=\#gl64canvas -sOFFSCREEN_FRAMEBUFFER=1 -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4294967296 -sLEGACY_GL_EMULATION=1 -sMAX_WEBGL_VERSION=2 -sASSERTIONS=0 --js-library=boxedwine-multithreaded-audio.js $(BW64_JIT_LD_FLAGS)
 wasm64-mt: export ASSET_FILES := boxedwine.css boxedwine-shell.js wine64.html wine64-launcher.js coi-serviceworker.js $(ZIP_ASSET_FILES)
 
 cpus := $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1)

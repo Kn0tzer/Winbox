@@ -236,6 +236,12 @@ public:
     static U32  blockPageGenOf(U64 pageNum);
     static void noteGuestWrite(U64 pageNum);
     static void noteGuestWriteRange(U64 addr, U64 len);
+    // wasm32 linear-memory address of the generation table (4096 x U32, indexed
+    // by blockSlot). The CPU64 JIT bakes this into emitted modules so a guest
+    // store can re-check its block's code pages inline, without a host call.
+    // Returns 0 when the host has no 32-bit pointers (the JIT is disabled
+    // there) — callers must treat 0 as "inline invalidation unavailable".
+    static U32  blockGenTableAddr();
 #else
     // Compiled out (measured ~4% on cpu_bench from code-layout displacement
     // alone — pay it only when the Phase 2 block executor buys it back).
@@ -243,6 +249,7 @@ public:
     static U32  blockPageGenOf(U64) { return 0; }
     static void noteGuestWrite(U64) {}
     static void noteGuestWriteRange(U64, U64) {}
+    static U32  blockGenTableAddr() { return 0; }
 #endif
 
     // BW64_STRAYWRITE tripwire (see kmemory64.cpp): logs a guest write whose

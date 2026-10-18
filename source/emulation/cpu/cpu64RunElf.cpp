@@ -12,9 +12,11 @@
 #ifdef BOXEDWINE_GUEST_X64
 
 #include "cpu64.h"
+#include "jit64.h"
 #include "kmemory64.h"
 #include "../../kernel/loader/loader64.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -441,13 +443,46 @@ extern "C" int runX64RunElf(const char* path) {
     // cpu64.cpp:3654 still prints the first opcode that decode-fails
     // before we ever hit the cap.
     const U64 INSN_LIMIT = 64ULL * 1024 * 1024;
+    const auto startTime = std::chrono::steady_clock::now();
     cpu.runBounded(INSN_LIMIT);
+    const auto endTime = std::chrono::steady_clock::now();
+    const double elapsedMs =
+        std::chrono::duration<double, std::milli>(endTime - startTime).count();
 
     printf("--x64-run-elf: stopped after %llu instructions (yield=%d RIP=0x%llx RAX=0x%llx)\n",
            (unsigned long long)cpu.instructionCount,
            cpu.yield,
            (unsigned long long)cpu.rip,
            (unsigned long long)cpu.reg[X64_RAX].u64);
+    // Host wall-clock timing (this is not OS CPU accounting) plus the JIT
+    // engine's own counters. `blocksEntered`/`insns` come from values the
+    // EMITTED modules wrote (Jit64WasmState::blocksEntered / execCount), so a
+    // non-zero `entered` proves generated code ran rather than a decoded-block
+    // cache being hit. Cold/warm separation is the caller's job: this prints
+    // one whole-run figure.
+    if (cpu.instructionCount && elapsedMs > 0.0) {
+        printf("--x64-run-elf: elapsed_ms=%.3f insn_per_s=%.0f engine=%s\n",
+               elapsedMs,
+               (double)cpu.instructionCount * 1000.0 / elapsedMs,
+               jit64EngineName(jit64SelectEngine()));
+    }
+    if (const Jit64State* jit = cpu.jit()) {
+        if (jit->engine != JIT64_ENGINE_OFF) {
+            printf("WASM64: engine=%s blocks=%llu insns=%llu entered=%llu rejected=%llu "
+                   "instantiateFailed=%llu earlyExits=%llu limitExits=%llu emitUs=%llu\n",
+                   jit64EngineName(jit->engine),
+                   (unsigned long long)jit->wasmBlocks,
+                   (unsigned long long)jit->wasmInsns,
+                   (unsigned long long)jit->wasmEntered,
+                   (unsigned long long)jit->emitRejected,
+                   (unsigned long long)jit->instantiateFailed,
+                   (unsigned long long)jit->wasmEarlyExits,
+                   (unsigned long long)jit->wasmLimitExits,
+                   (unsigned long long)jit->emitTimeUs);
+            char stats[768];
+            if (jit64StatsJson(jit, stats, sizeof(stats))) printf("BW64JITSTATS: %s\n", stats);
+        }
+    }
 
     if (cpu.yield && cpu.instructionCount < INSN_LIMIT) {
         printf("--x64-run-elf: exit reached cleanly\n");

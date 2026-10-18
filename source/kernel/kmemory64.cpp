@@ -162,6 +162,12 @@ U32 KMemory64::blockPageGenOf(U64 pageNum) {
     return g_blockPageGen[blockSlot(pageNum)].load(std::memory_order_acquire);
 }
 
+U32 KMemory64::blockGenTableAddr() {
+    // wasm32 only: a 64-bit host pointer cannot be addressed by an emitted
+    // i32-offset load. The CPU64 JIT is disabled in Memory64 builds anyway.
+    return sizeof(void*) == 4 ? (U32)(uintptr_t)&g_blockPageGen[0] : 0;
+}
+
 static inline void bw64NoteWriteSlow(U64 pageNum) {
     U32 slot = KMemory64::blockSlot(pageNum);
     if (g_blockPageMark[slot >> 5].load(std::memory_order_relaxed) & (1u << (slot & 31))) {

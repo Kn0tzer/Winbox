@@ -81,12 +81,25 @@ constexpr U32 F_CFOF_MASK = (1u << F_CF) | (1u << F_OF); // 0x801
 
 // Module locals: 0 = state ptr param, 1..16 = i64 GPRs, 17 = i64 RIP,
 // 18 = i32 RFLAGS, 19..27 = i64 scratch, 28..30 = i32 page-generation
-// locals (table address, entry gen of the first/last code page).
-constexpr U32 L_RFLAGS = 18, L_A = 19, L_B = 20, L_R = 21, L_F = 22, L_P = 23;
+// locals (table address, entry gen of the first/last code page),
+// 31 = i64 block entry RIP, 32 = i32 instruction limit for this entry.
+// The generated emitters (jit64gen.inc) use 17/18/19..27 and define their own
+// L_RSP local alias; they never touch 28..32.
+constexpr U32 L_RIP = 17, L_RFLAGS = 18;
+constexpr U32 L_A = 19, L_B = 20, L_R = 21, L_F = 22, L_P = 23;
 constexpr U32 L_T1 = 24, L_T2 = 25, L_STEP = 26, L_CNT = 27;
 constexpr U32 L_GENBASE = 28, L_GEN0 = 29, L_GEN1 = 30;
+constexpr U32 L_ENTRY = 31, L_LIMIT = 32;
+// Locals declaration for the emitted module: 6 groups, in order
+// [17 x i64 = GPRs + RIP][1 x i32 = RFLAGS][9 x i64 = scratch]
+// [3 x i32 = page-gen locals][1 x i64 = entry RIP][1 x i32 = limit].
+constexpr U8 LOCALS[] = {6, 17, 0x7E, 1, 0x7F, 9, 0x7E, 3, 0x7F, 1, 0x7E, 1, 0x7F};
+constexpr U32 LOCALS_BYTES = (U32)sizeof(LOCALS);
 // Guest GPR indices the emitter addresses directly (x86-64 encoding order).
 constexpr U32 R_AX = 0, R_CX = 1, R_DX = 2, R_BP = 5, R_SP = 4;
+// GPR local index of RSP (cpu64.h X64_RSP == 4; the generated stack/string
+// emitters declare the same alias locally).
+constexpr U32 L_RSP = R_SP + 1;
 // Function indices in the emitted module: the two mem imports first, then
 // the defined execute().
 constexpr U32 F_MEMREAD = 0, F_MEMWRITE = 1;
@@ -274,6 +287,19 @@ void emitFlags(Bytes& body, U8 sub, U64 sb, bool isLogic) {
     body.push_back(0xA7); // i32.wrap_i64
     body.push_back(0x72); // i32.or
     local(body, 0x21, L_RFLAGS);
+}
+
+// Set the guest RIP local to `off` bytes past the block entry RIP. Emitted
+// after EVERY instruction so an early exit (store-driven page-generation
+// change or the instruction bound) leaves the exact RIP of the next guest
+// instruction, matching CPU64::execBlock's break points.
+void emitRipAfter(Bytes& body, U32 off) {
+    local(body, 0x20, L_ENTRY);
+    if (off) {
+        i64Const(body, off);
+        body.push_back(0x7C); // i64.add (wraps mod 2^64 like the interpreter)
+    }
+    local(body, 0x21, L_RIP);
 }
 
 // Read a width-masked operand from GPR idx into destLocal.
@@ -484,13 +510,28 @@ void jit64WasmStateInit(Jit64WasmState& state, const U64 gpr[16], U64 rip, U32 r
     for (U32 i = 0; i < 16; i++) state.gpr[i] = gpr[i];
     state.rip = rip;
     state.rflags = rflags;
-    state.reserved = 0;
+    // Emitted-code outputs, reset by the host: the module zeroes execCount and
+    // increments blocksEntered itself, so the host only has to read them.
+    state.blocksEntered = 0;
+    state.execCount = 0;
+    state.memScratch = 0;
+    state.genBase = 0;
+    state.gen0 = 0;
+    state.gen1 = 0;
+    state.limit = JIT64_WASM_UNBOUNDED;
+    state.reserved3 = 0;
 }
 
 void jit64WasmStateRead(const Jit64WasmState& state, U64 gpr[16], U64& rip, U32& rflags) {
     for (U32 i = 0; i < 16; i++) gpr[i] = state.gpr[i];
     rip = state.rip;
     rflags = state.rflags;
+}
+
+void jit64WasmStateSetGens(Jit64WasmState& state, U32 genBase, U32 gen0, U32 gen1) {
+    state.genBase = genBase;
+    state.gen0 = gen0;
+    state.gen1 = gen1;
 }
 
 // Emit a call to env.memRead(addrLocal, size): splits the i64 address to
@@ -656,6 +697,108 @@ void emitStoreGenCheck(Bytes& body, U32 executed, const Jit64Block& block) {
     if (block.slot1 != block.slot0) checkSlot(block.slot1, L_GEN1);
 }
 
+// Before instruction `index`: if the entry's instruction budget is already
+// exhausted, leave the module with execCount = index. Mirrors CPU64::execBlock's
+// `executed < maxInsn` loop bound, so runBounded()/run() keep exact instruction
+// accounting with the JIT active. In production (limit = UNBOUNDED) the branch
+// is never taken.
+void emitLimitCheck(Bytes& body, U32 index) {
+    i32Const(body, index);
+    local(body, 0x20, L_LIMIT);
+    body.push_back(0x4F); // i32.ge_u: index >= limit
+    body.push_back(0x04); // if (void)
+    uleb(body, 0x40);
+    local(body, 0x20, 0);
+    i32Const(body, index);
+    memoryOp(body, 0x36, 2, (U32)offsetof(Jit64WasmState, execCount));
+    body.push_back(0x0C); // br 1: leave the outer block, run the epilogue
+    uleb(body, 1);
+    body.push_back(0x0B); // end if
+}
+
+// Emit one block terminator. `afterOff` is the instruction's end offset (the
+// RIP of the next guest instruction). Jcc/JMP/CALL/RET own the guest RIP here
+// (the caller must NOT also emit emitRipAfter for them); NOP/LEAVE do not, so
+// the generic per-instruction RIP advance still applies to them.
+//
+// Semantics mirror CPU64::step exactly:
+//   CALL rel: nextRip = rip+len; push64(nextRip); rip = nextRip + delta.
+//   JMP  rel: rip = rip + len + delta.
+//   Jcc  cc : rip = cond ? rip+len+delta : rip+len (branchless i64.select).
+//   RET     : rip = pop64().
+//   LEAVE   : RSP = RBP; RBP = pop64().
+void emitTerminator(Bytes& body, const Jit64Op& op, U32 afterOff) {
+    switch (op.kind) {
+    case J64_NOP:
+        return; // no state change; the generic RIP advance is already exact
+    case J64_JCC:
+        // val1 = taken target, val2 = fallthrough, c = condition.
+        local(body, 0x20, L_ENTRY);
+        i64Const(body, (U64)(S64)afterOff + op.delta);
+        body.push_back(0x7C); // i64.add
+        local(body, 0x20, L_ENTRY);
+        i64Const(body, afterOff);
+        body.push_back(0x7C); // i64.add
+        emitCond(body, op.sub);
+        body.push_back(0x1B); // select
+        local(body, 0x21, L_RIP);
+        return;
+    case J64_JMP_REL:
+        local(body, 0x20, L_ENTRY);
+        i64Const(body, (U64)(S64)afterOff + op.delta);
+        body.push_back(0x7C); // i64.add
+        local(body, 0x21, L_RIP);
+        return;
+    case J64_CALL_REL:
+        // RSP -= 8; [RSP] = return address (L_R), then RIP = target.
+        local(body, 0x20, L_ENTRY);
+        i64Const(body, afterOff);
+        body.push_back(0x7C); // i64.add
+        local(body, 0x21, L_R); // L_R = nextRip (return address)
+        local(body, 0x20, L_RSP);
+        i64Const(body, 8);
+        body.push_back(0x7D); // i64.sub
+        local(body, 0x21, L_RSP);
+        emitMemWrite(body, L_RSP, L_R, 8);
+        local(body, 0x20, L_ENTRY);
+        i64Const(body, (U64)(S64)afterOff + op.delta);
+        body.push_back(0x7C); // i64.add
+        local(body, 0x21, L_RIP);
+        return;
+    case J64_RET:
+        // rip = pop64(): L_R = [RSP]; RSP += 8; RIP = L_R.
+        emitMemRead(body, L_RSP, 8);
+        local(body, 0x20, L_RSP);
+        i64Const(body, 8);
+        body.push_back(0x7C); // i64.add
+        local(body, 0x21, L_RSP);
+        local(body, 0x20, L_R);
+        local(body, 0x21, L_RIP);
+        return;
+    case J64_LEAVE:
+        // RSP = RBP; RBP = pop64(). RIP is handled by the generic advance.
+        local(body, 0x20, R_BP + 1);
+        local(body, 0x21, L_RSP);
+        emitMemRead(body, L_RSP, 8);
+        local(body, 0x20, L_RSP);
+        i64Const(body, 8);
+        body.push_back(0x7C); // i64.add
+        local(body, 0x21, L_RSP);
+        local(body, 0x20, L_R);
+        local(body, 0x21, R_BP + 1);
+        return;
+    default:
+        return; // not a terminator
+    }
+}
+
+// True for the kinds that own the guest RIP in emitTerminator (so the caller
+// must not emit a generic RIP advance for them).
+bool jit64OpOwnsRip(Jit64Kind kind) {
+    return kind == J64_JCC || kind == J64_JMP_REL ||
+           kind == J64_CALL_REL || kind == J64_RET;
+}
+
 // Emit one string op (MOVS/STOS/CMPS/SCAS). Returns 0xFF: RSI/RDI/RCX are
 // updated in their locals and published by the epilogue's store-back.
 // Mirrors CPU64::runStringOp exactly: DF (bit 10) selects the +/-size step,
@@ -664,10 +807,10 @@ void emitStoreGenCheck(Bytes& body, U32 executed, const Jit64Block& block) {
 // under 0x67), CMPS/SCAS set flags through the SUB path and honor
 // REPE/REPNE early exit. Memory goes through the imported helpers so the
 
-bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
+bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
+                   std::vector<U8>& output) {
     output.clear();
     if (block.ops.empty() || block.ops.size() > 24) return false;
-    U32 byteCount = 0;
     for (const auto& op : block.ops) {
         if (op.plan != JIT64_FAST || !op.len || op.len > 15) return false;
         // Operand-width acceptance: ALU/shift/TEST/MOVX/IMUL kinds support
@@ -887,16 +1030,63 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             break;
         case J64_STRING:
             break; // validated above
+        case J64_NOP:
+            // 0x90: pure RIP advance. Multi-byte NOPs (0F 1F) never decode
+            // to this kind, so there is nothing else to validate.
+            if (op.len != 1) return false;
+            break;
+        case J64_JCC:
+            // Jcc rel8/rel32: sub = condition 0..15. Always the block
+            // terminator (jit64CompileStream stops after it).
+            if (op.sub > 15 || !op.len) return false;
+            break;
+        case J64_JMP_REL:
+        case J64_CALL_REL:
+        case J64_RET:
+        case J64_LEAVE:
+            // JMP/E8 CALL/C3 RET/C9 LEAVE. All 64-bit near forms in long
+            // mode; RET imm16 (C2) and far/indirect forms never decode to
+            // these kinds.
+            if (!op.len) return false;
+            break;
         default:
-            return false; // MOVZX, control flow, and the rest
+            return false; // SYSCALL, FPU, string-less unknowns, ...
         }
-        byteCount += op.len;
+    }
+    // A taken Jcc/JMP or a CALL/RET continues at a different RIP, which a
+    // straight-line module cannot represent: any terminator must therefore be
+    // the LAST op. jit64CompileStream always stops at them; a hand-built
+    // block that keeps going is rejected instead of being mis-executed.
+    for (size_t i = 0; i + 1 < block.ops.size(); i++) {
+        if (jit64OpOwnsRip(block.ops[i].kind)) return false;
+    }
+
+    // End offset of every instruction: drives the per-instruction RIP update
+    // and the executed count reported by the early exits.
+    U32 n = (U32)block.ops.size();
+    U32 afterOff[24];
+    {
+        U32 off = 0;
+        for (U32 i = 0; i < n; i++) { off += block.ops[i].len; afterOff[i] = off; }
     }
 
     // Param local 0 is the wasm32 host pointer. Locals 1..16 are i64 guest
-    // GPRs, 17 the i64 guest RIP, 18 the i32 RFLAGS, 19..25 i64 scratch.
-    // Guest values are never wasm host addresses.
-    Bytes body = {3, 17, 0x7E, 1, 0x7F, 9, 0x7E}; // +L_STEP/L_CNT
+    // GPRs, 17 the i64 guest RIP, 18 the i32 RFLAGS, 19..27 i64 scratch,
+    // 28..30 the i32 page-generation locals, 31 the i64 entry RIP and 32 the
+    // i32 instruction limit. Guest values are never wasm host addresses.
+    Bytes body(LOCALS, LOCALS + LOCALS_BYTES);
+    // Emitted-code bookkeeping: the module itself zeroes execCount and bumps
+    // blocksEntered. The host only reads them back, so a non-zero
+    // blocksEntered/execCount is proof the emitted code ran.
+    local(body, 0x20, 0);
+    i32Const(body, 0);
+    memoryOp(body, 0x36, 2, (U32)offsetof(Jit64WasmState, execCount));
+    local(body, 0x20, 0);
+    local(body, 0x20, 0);
+    memoryOp(body, 0x28, 2, (U32)offsetof(Jit64WasmState, blocksEntered));
+    i32Const(body, 1);
+    body.push_back(0x6A); // i32.add
+    memoryOp(body, 0x36, 2, (U32)offsetof(Jit64WasmState, blocksEntered));
     for (U32 reg = 0; reg < 16; reg++) {
         local(body, 0x20, 0);
         memoryOp(body, 0x29, 3, reg * 8); // i64.load
@@ -904,12 +1094,34 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
     }
     local(body, 0x20, 0);
     memoryOp(body, 0x29, 3, (U32)offsetof(Jit64WasmState, rip));
-    local(body, 0x21, 17);
+    local(body, 0x21, L_ENTRY);
+    local(body, 0x20, L_ENTRY);
+    local(body, 0x21, L_RIP);
     local(body, 0x20, 0);
     memoryOp(body, 0x28, 2, (U32)offsetof(Jit64WasmState, rflags)); // i32.load
     local(body, 0x21, L_RFLAGS);
+    local(body, 0x20, 0);
+    memoryOp(body, 0x28, 2, (U32)offsetof(Jit64WasmState, genBase));
+    local(body, 0x21, L_GENBASE);
+    local(body, 0x20, 0);
+    memoryOp(body, 0x28, 2, (U32)offsetof(Jit64WasmState, gen0));
+    local(body, 0x21, L_GEN0);
+    local(body, 0x20, 0);
+    memoryOp(body, 0x28, 2, (U32)offsetof(Jit64WasmState, gen1));
+    local(body, 0x21, L_GEN1);
+    local(body, 0x20, 0);
+    memoryOp(body, 0x28, 2, (U32)offsetof(Jit64WasmState, limit));
+    local(body, 0x21, L_LIMIT);
+    // Outer block: every early exit branches here (br 1 from inside an `if`),
+    // and the fallthrough path stores the full instruction count first.
+    body.push_back(0x02); // block
+    body.push_back(0x40); // (void)
 
-    for (const auto& op : block.ops) {
+    for (U32 index = 0; index < n; index++) {
+        const Jit64Op& op = block.ops[index];
+        // Bounded execution: never start an instruction past the entry's
+        // budget (runBounded's instruction accounting, not a semantic limit).
+        emitLimitCheck(body, index);
         switch (op.kind) {
         case J64_MOV_R_IMM:
         case J64_MOV_RM_IMM: {
@@ -1093,6 +1305,18 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             emitStackGen(body, op);
             break;
         }
+        case J64_NOP:
+        case J64_LEAVE:
+        case J64_JCC:
+        case J64_JMP_REL:
+        case J64_CALL_REL:
+        case J64_RET:
+            // Control flow. Jcc/JMP/CALL/RET set the guest RIP themselves;
+            // NOP/LEAVE only advance it (handled below) -- except that a
+            // LEAVE *is* a memory read and CALL *is* a memory write, so both
+            // still go through the store-generation check below.
+            emitTerminator(body, op, afterOff[index]);
+            break;
         default: {
             // Memory-operand ALU/TEST go through emitAluMem (EA in L_T1,
             // memory via the imported helpers); register-direct ALU/TEST
@@ -1107,7 +1331,23 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
             break;
         }
         }
+        // Every instruction updates the guest RIP to the next one, except the
+        // branch kinds that computed their own target above (and RET, which
+        // loaded it from the stack).
+        if (!jit64OpOwnsRip(op.kind)) emitRipAfter(body, afterOff[index]);
+        // A guest store can rewrite a later instruction of this very block
+        // (or another block in either code page): re-read the code pages'
+        // entry generations and leave at the next RIP with the exact executed
+        // count when either moved -- the same break point CPU64::execBlock
+        // uses after every store record.
+        if (jit64OpWritesMemory(op)) emitStoreGenCheck(body, index + 1, block);
     }
+
+    // Fallthrough: every decoded instruction ran (no early exit).
+    local(body, 0x20, 0);
+    i32Const(body, n);
+    memoryOp(body, 0x36, 2, (U32)offsetof(Jit64WasmState, execCount));
+    body.push_back(0x0B); // end outer block
 
     for (U32 reg = 0; reg < 16; reg++) {
         local(body, 0x20, 0);
@@ -1115,9 +1355,7 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
         memoryOp(body, 0x37, 3, reg * 8); // i64.store
     }
     local(body, 0x20, 0);
-    local(body, 0x20, 17);
-    i64Const(body, byteCount);
-    body.push_back(0x7C); // i64.add, modulo 64 bits
+    local(body, 0x20, L_RIP);
     memoryOp(body, 0x37, 3, (U32)offsetof(Jit64WasmState, rip));
     local(body, 0x20, 0);
     local(body, 0x20, L_RFLAGS);
@@ -1134,10 +1372,29 @@ bool jit64EmitWasm(const Jit64Block& block, std::vector<U8>& output) {
     section(module, 1, types);
     // Import section: env.memory, env.memRead (func 0, type 1),
     // env.memWrite (func 1, type 2).
+    //
+    // The memory import's limits must MATCH the host WebAssembly.Memory's
+    // type or instantiation fails with a LinkError: a shared (pthread) host
+    // memory can only be satisfied by a shared import, and an import that
+    // declares a maximum only matches a memory that has one. So:
+    //   shared host  -> {min 1, max 65536, shared}  (any shared wasm32 memory
+    //                   is bounded by 65536 pages, and its min >= 1)
+    //   plain host   -> {min 1}                     (matches with or without a
+    //                   maximum on the host memory)
     Bytes imports = {3,
-        3, 'e', 'n', 'v', 6, 'm', 'e', 'm', 'o', 'r', 'y', 2, 0, 1,
-        3, 'e', 'n', 'v', 7, 'm', 'e', 'm', 'R', 'e', 'a', 'd', 0, 1,
-        3, 'e', 'n', 'v', 8, 'm', 'e', 'm', 'W', 'r', 'i', 't', 'e', 0, 2};
+        3, 'e', 'n', 'v', 6, 'm', 'e', 'm', 'o', 'r', 'y', 2};
+    if (options.sharedMemory) {
+        imports.push_back(0x03); // limits: has-max | shared
+        imports.push_back(1);    // min
+        uleb(imports, 65536);    // max
+    } else {
+        imports.push_back(0x00); // limits: min only
+        imports.push_back(1);    // min
+    }
+    const U8 memReadImport[] = {3, 'e', 'n', 'v', 7, 'm', 'e', 'm', 'R', 'e', 'a', 'd', 0, 1};
+    const U8 memWriteImport[] = {3, 'e', 'n', 'v', 8, 'm', 'e', 'm', 'W', 'r', 'i', 't', 'e', 0, 2};
+    imports.insert(imports.end(), memReadImport, memReadImport + sizeof(memReadImport));
+    imports.insert(imports.end(), memWriteImport, memWriteImport + sizeof(memWriteImport));
     section(module, 2, imports);
     section(module, 3, {1, 0}); // one function, type 0 (function index 2)
     section(module, 7, {1, 7, 'e', 'x', 'e', 'c', 'u', 't', 'e', 0, 2}); // export func 2

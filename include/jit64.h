@@ -150,6 +150,12 @@ struct Jit64Op {
     Jit64OpcodeClass plan = JIT64_FALLBACK;
 };
 
+// Page-generation reader seam: the host installs KMemory64::blockPageGenOf so
+// this TU keeps its no-cpu64/no-SDL dependency. Passing nullptr disables
+// generation validation (lookupByRip then fails closed).
+using Jit64PageGenFn = U32 (*)(U64 pageNum);
+void jit64SetPageGenFn(Jit64PageGenFn fn);
+
 // Page-generation hash slot. MUST match KMemory64::blockSlot exactly: the
 // emitted wasm module addresses the same generation table by this index, so
 // a mismatch would silently check the wrong page. The invalidation test
@@ -214,8 +220,13 @@ public:
     static constexpr U32 SLOTS = 512;
     Jit64BlockCache();
     // Look up a compiled entry valid for `rip` with the given page gens.
-    // Returns nullptr on miss/stale.
+    // Returns nullptr on miss/stale. (Tests and the decode-time insert path.)
     Jit64Block* lookup(U64 rip, U64 page0, U32 gen0, U64 page1, U32 gen1);
+    // Fast path used by the runtime: validate the entry sitting in `rip`'s
+    // slot against the generations of the pages IT recorded (no decode, no
+    // caller-supplied pages). Same contract as CPU64::tryBlockStep: two
+    // atomic generation reads per entry. Returns nullptr on miss/stale.
+    Jit64Block* lookupByRip(U64 rip);
     // Insert (evicts whatever collides). Copies ops.
     Jit64Block* insert(U64 rip, U64 page0, U32 gen0, U64 page1, U32 gen1,
                              const Jit64Op* ops, U32 nOps);
@@ -224,6 +235,12 @@ public:
     // validate an entry without knowing the block length up front.
     Jit64Block* at(U64 rip) { return &m_slots[slotFor(rip)].block; }
     const Jit64Block* at(U64 rip) const { return &m_slots[slotFor(rip)].block; }
+    // Count one execution of the entry at `rip` (per-block diagnostics).
+    void recordExec(U64 rip) {
+        if (rip == 0) return;
+        Jit64Block& b = m_slots[slotFor(rip)].block;
+        if (b.startRip == rip) b.execCount++;
+    }
     void invalidate(U64 rip); // drop one entry (negative-cache support)
     // Drop every entry. releaseWasm=false is for a cache whose table slots
     // belong to a different worker's WebAssembly.Table (never touch those).
@@ -266,28 +283,96 @@ private:
 // self-modifying-risk blocks.
 bool jit64BlockMayStore(const Jit64Op* ops, U32 nOps);
 
+// ---- hotness ----
+// Avoid compiling every one-off startup block: the runtime only emits a block
+// after it has been entered `jit64HotThreshold()` times (BW64_JIT_HOT, 0 =
+// emit on first entry). Counting happens before the decode, so cold code never
+// pays a snapshot + decode + emit.
+U16 jit64HotThreshold();
+class Jit64Hotness {
+public:
+    static constexpr U32 SLOTS = 512;
+    // Bump `rip`'s entry count. Returns true once the count reaches `threshold`
+    // (and from then on for that rip, so a block that is evicted from the
+    // block cache can be re-emitted immediately).
+    bool bump(U64 rip, U16 threshold);
+    void clear();
+private:
+    struct Slot { U64 rip = 0; U16 count = 0; };
+    Slot m_slots[SLOTS];
+};
+
+// ---- engine selection ----
+// The CPU64 JIT has two engines: the emitted-wasm engine (production) and the
+// phase-1 interpreter vehicle (plan validation without a wasm host). Selection
+// is cached on first use and reported by BW64_JIT_ENGINE/state->engine.
+enum Jit64Engine : U8 {
+    JIT64_ENGINE_OFF = 0,    // BW64_JIT is not enabled
+    JIT64_ENGINE_WASM = 1,   // emitted modules executed through wasm
+    JIT64_ENGINE_INTERP = 2, // phase-1: plan validated, run by execBlock
+};
+// BW64_JIT_ENGINE=wasm|interp|off overrides; otherwise wasm when the host can
+// run emitted modules, else interp.
+U8 jit64SelectEngine();
+const char* jit64EngineName(U8 engine);
+
 // Per-CPU JIT state owned by CPU64 (pointer to keep cpu64.h lean; defined
 // here so cpu64.cpp can hold it by pointer without exposing internals).
 struct Jit64State {
     Jit64BlockCache cache;
     Jit64NegativeCache negative;
+    Jit64Hotness hotness;
     U64 blocksCompiled = 0;
     U64 blocksExecuted = 0;
     U64 insnsFast = 0;
     U64 insnsFallback = 0;
-    U64 wasmBlocks = 0;  // blocks executed via emitted wasm modules
-    U64 wasmInsns = 0;   // instructions executed via emitted wasm modules
+    U64 wasmBlocks = 0;  // emitted-module entries (host side, from blocksEntered)
+    U64 wasmInsns = 0;   // instructions retired inside emitted modules
+    U64 wasmEntered = 0; // raw emitted-code blocksEntered counter (proof of execution)
     U64 wasmEarlyExits = 0; // modules that stopped at a page-gen change
+    U64 wasmLimitExits = 0; // modules that stopped at the instruction bound
+    U64 wasmInstantiated = 0; // modules successfully instantiated into a table
     U64 emitRejected = 0;   // blocks the emitter refused (stays interpreted)
     U64 instantiateFailed = 0; // table slot or module creation failure
+    U64 coldLookups = 0;    // entries that missed the block cache
+    U64 coldSkipped = 0;    // cold entries left to the interpreter (hotness)
     U64 compileTimeUs = 0;  // decode + emit + instantiate, cold path only
+    U64 emitTimeUs = 0;     // emit + instantiate only
     U32 wasmOwner = 0;      // worker/table id that owns wasmIndex values
+    bool wasmOwnerSet = false;
+    U32 genBaseAddr = 0;    // KMemory64::blockGenTableAddr() (wasm32 offset)
+    U8 engine = JIT64_ENGINE_OFF; // resolved once by jit64SelectEngine()
 };
 
 // Release all JIT table slots owned by `state` in the *current* worker. Called
 // from CPU64 destruction/freeJit so a cached module does not leak its table
 // entry for the process lifetime. Safe when state is null.
 void jit64ReleaseState(Jit64State* state);
+
+// Drop every cached block/module but keep the state usable (guest thread moved
+// to another host worker: the other worker's table must not be touched, so
+// releaseWasm is false then). Avoids re-inserting indices from a stale table.
+void jit64DropCache(Jit64State* state, bool releaseWasm);
+
+// Process-wide aggregation for the metrics panel (see
+// docs/reports/winbox-jit64-metrics.md): states register at first use and drop
+// out at destruction, so the panel reads live per-CPU counters with no atomic
+// traffic on the block-entry path.
+void jit64RegisterState(Jit64State* state);
+U32 jit64GlobalStatsJson(char* buf, U32 bufSize);
+
+// ---- metrics seam ----
+// One JSON object per call. Contract (see docs/reports/winbox-jit64-metrics.md):
+//   {"cpu64":{"available":b,"enabled":b,"engine":"...","mode":"...",
+//     "hotThreshold":n,"blocksCompiled":n,"blocksEmitted":n,
+//     "blocksInstantiated":n,"blocksEntered":n,"insnsEmitted":n,
+//     "emitRejected":n,"instantiateFailed":n,"fallbacks":n,
+//     "earlyExits":n,"emitMs":f,"emitUs":n,"fallbackInsns":n,
+//     "cacheLookups":n,"cacheHits":n,"cacheInserts":n}}
+// Returns bytes written excluding the NUL, or 0 when the buffer is too small.
+// All *Entered/*Emitted values come from counters the EMITTED CODE itself
+// wrote (see Jit64WasmState), never from decoded-block cache hits.
+U32 jit64StatsJson(const Jit64State* state, char* buf, U32 bufSize);
 
 // Emit a wasm-module stub summary for a compiled block (phase-2 preparation):
 // reports the op plan in a stable text form the wasm emitter will consume.
