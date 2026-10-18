@@ -14,6 +14,11 @@ export default class Cpu64SelftestTest extends ProbeTest {
     const line = await this.waitForLog(page, /=== self-test summary: \d+ passed, \d+ failed ===/, 120000);
     const [, passed, failed] = line.match(/summary: (\d+) passed, (\d+) failed/);
     if (Number(passed) < 327 || Number(failed) !== 0) throw Error(line);
+    if (process.env.BW_TEST_EXPECT_JIT === '1') {
+      const proof = await this.waitForLog(page, /WASM64: blocks=\d+ insns=\d+ entered=\d+/, 5000);
+      const [, blocks, insns, entered] = proof.match(/blocks=(\d+) insns=(\d+) entered=(\d+)/);
+      if (!(Number(blocks) > 0 && Number(insns) > 0 && Number(entered) > 0)) throw Error('No emitted execution: ' + proof);
+    }
     this.testedArchitectures.add('x64');
   }
 }
