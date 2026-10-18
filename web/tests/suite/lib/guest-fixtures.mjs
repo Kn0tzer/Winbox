@@ -18,7 +18,7 @@ const fixtures = {
   // syscalls) share the same source and print the same checksum for the same
   // pass count, so a CPU64 interpreter/JIT difference shows up as a differing
   // checksum in either guest format.
-  jitbench64: ['tools/guest-fixtures/jitbench64.c', '-fno-tree-vectorize'],
+  'jitbench64-pe': ['tools/guest-fixtures/jitbench64.c', '-fno-tree-vectorize'],
   'mshtml-document': ['tools/guest-fixtures/mshtml-document.c', '-lole32', '-loleaut32', '-luuid'],
   'openal-tone': ['tools/guest-fixtures/openal-tone.c', '-lm'],
   'win32-fonts': ['tools/guest-fixtures/win32-fonts.cpp', '-ldwrite', '-lgdi32', '-luser32'],

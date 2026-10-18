@@ -36,6 +36,25 @@
 #include <emscripten/emscripten.h>
 #endif
 
+#ifdef __EMSCRIPTEN__
+#ifdef BOXEDWINE_GUEST_X64
+void jit64PublishMetrics();
+#endif
+#ifdef BOXEDWINE_WASM_JIT
+void wasmJit32PublishMetrics();
+#endif
+static void refreshJitMetrics() {
+#ifdef BOXEDWINE_GUEST_X64
+    jit64PublishMetrics();
+#endif
+#ifdef BOXEDWINE_WASM_JIT
+    wasmJit32PublishMetrics();
+#endif
+}
+#else
+static void refreshJitMetrics() {}
+#endif
+
 // include/log.h declares this; keeping the TU light avoids pulling BString and
 // the whole kernel into a file called from hot paths.
 void klog(const char* msg);
@@ -513,6 +532,7 @@ void bw64_metrics_maybe_emit(void) {
         static const char kPrefix[] = "bw64: METRICS ";
         char buf[6208];
         memcpy(buf, kPrefix, sizeof(kPrefix) - 1);
+        refreshJitMetrics();
         int n = formatJsonLocked(buf + sizeof(kPrefix) - 1,
                                  sizeof(buf) - (sizeof(kPrefix) - 1), early);
         if (n > 0) {
@@ -527,6 +547,7 @@ int bw64_metrics_format_json(char* out, size_t capacity) {
     if (!bw64_metrics_enabled()) return 0;
     uint64_t nowUs = millisToUs(bw64_metrics_now_ms());
     if (g_emitLock.exchange(1, std::memory_order_acquire)) return 0;
+    refreshJitMetrics();
     int n = formatJsonLocked(out, capacity, nowUs);
     g_emitLock.store(0, std::memory_order_release);
     return n;

@@ -217,4 +217,17 @@ extern "C" EMSCRIPTEN_KEEPALIVE int bw64_jit_stats(char* buf, int size) {
     return (int)jit64GlobalStatsJson(buf, (U32)size);
 }
 
+#ifndef BOXEDWINE_WASM_JIT
+// The combined build provides the same convenience entry points in the
+// guest32 statistics TU; single-engine targets still expose both sections.
+extern "C" EMSCRIPTEN_KEEPALIVE int bw64_jit_stats_json(char* buf, int size) {
+    return bw64_jit_stats(buf, size);
+}
+extern "C" EMSCRIPTEN_KEEPALIVE const char* bw64_jit_stats_json_text() {
+    static thread_local char text[3072];
+    if (!jit64GlobalStatsJson(text, sizeof(text))) text[0] = 0;
+    return text;
+}
+#endif
+
 #endif // __EMSCRIPTEN__ && BOXEDWINE_GUEST_X64

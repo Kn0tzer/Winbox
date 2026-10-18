@@ -40,6 +40,12 @@
 #include <cstdarg>
 #include <mutex>
 #include <atomic>
+#ifdef __EMSCRIPTEN__
+#include "bw64metrics.h"
+#ifdef BOXEDWINE_WASM_JIT
+extern "C" int bw32_jit_stats_json(char*, int);
+#endif
+#endif
 #include <vector>
 
 static const Jit64CoveredOpcode kCovered[] = {
@@ -1224,6 +1230,34 @@ static void jit64UnregisterState(Jit64State* state) {
     }
 }
 
+#ifdef __EMSCRIPTEN__
+// Sampled by the frame registry, outside its formatting lock. No metrics
+// atomics or UI publication are added to the generated-code hot path.
+void jit64PublishMetrics() {
+    PublishedStats sum;
+    {
+        std::lock_guard<std::mutex> lock(g_jitStatesMutex);
+        sum = g_retiredStats;
+        for (const auto& entry : g_jitStates) addStats(sum, entry.second);
+    }
+    Bw64JitStats stats{};
+    stats.structSize = sizeof(stats);
+    stats.engine = jit64EngineName(jit64SelectEngine());
+#ifdef BOXEDWINE_BLOCK_EXEC
+    stats.available = jit64WasmAvailable();
+#endif
+    stats.enabled = stats.available && jit64Enabled();
+    stats.blocksEmitted = sum.instantiated;
+    stats.blocksInstantiated = sum.instantiated;
+    stats.blocksEntered = sum.entered;
+    stats.instructionsRetired = sum.insns;
+    stats.fallbacks = sum.fallbacks;
+    stats.emitMicroseconds = sum.emitUs;
+    stats.instantiateMicroseconds = sum.instantiateUs;
+    bw64_jit_stats_publish(BW64_METRICS_ARCH64, &stats);
+}
+#endif
+
 U32 jit64GlobalStatsJson(char* buf, U32 bufSize) {
     if (!buf || bufSize < 64) return 0;
     PublishedStats sum;
@@ -1418,11 +1452,10 @@ U32 jit64StatsJson(const Jit64State* state, char* buf, U32 bufSize) {
     j.add("\"cacheLookups\":%llu,", (unsigned long long)(s ? s->cache.lookups() : 0));
     j.add("\"cacheHits\":%llu,", (unsigned long long)(s ? s->cache.hits() : 0));
     j.add("\"cacheInserts\":%llu},", (unsigned long long)(s ? s->cache.inserts() : 0));
-#if defined(BOXEDWINE_JIT) || defined(BOXEDWINE_WASM_JIT)
-    // The 32-bit guest JIT is a different engine; this TU only knows that the
-    // legacy 32-bit gates are compiled in. The metrics owner fills the real
-    // cpu32 section in the 32-bit target.
-    j.add("\"cpu32\":{\"available\":1,\"enabled\":\"unknown\",\"engine\":\"boxedwine-jit\"}");
+#if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_WASM_JIT)
+    char cpu32[1024];
+    if (bw32_jit_stats_json(cpu32, sizeof(cpu32)) < 0) return 0;
+    j.add("\"cpu32\":%s", cpu32);
 #else
     j.add("\"cpu32\":{\"available\":0,\"enabled\":0,\"engine\":\"unavailable\","
           "\"reason\":\"32-bit JIT not compiled in this target\"}");

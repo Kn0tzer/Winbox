@@ -75,6 +75,10 @@ __asm__(".text\n.global _start\n.type _start,@function\n_start:\n"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 static void jb_write(const char* text, unsigned long len) {
     fwrite(text, 1, (size_t)len, stdout);
     fflush(stdout);
@@ -251,7 +255,23 @@ static void jb_report(uint32_t passes) {
 
 int main(int argc, char** argv) {
     uint32_t passes = jb_parse_passes(argc >= 2 && argv ? argv[1] : (const char*)JB_NULL);
+#ifdef _WIN32
+    LARGE_INTEGER frequency, start, end;
+    if (!QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0) return 2;
+    for (int sample = 0; sample < 4; sample++) {
+        QueryPerformanceCounter(&start);
+        jb_run(passes);
+        QueryPerformanceCounter(&end);
+        char line[256], checksum[17];
+        jb_itoa_hex(g_checksum, checksum);
+        snprintf(line, sizeof(line), "BW_JITBENCH64 {\"sample\":%d,\"ms\":%.3f,\"checksum\":\"%s\",\"passes\":%u}\n",
+            sample, (double)(end.QuadPart - start.QuadPart) * 1000.0 / (double)frequency.QuadPart,
+            checksum, (unsigned)passes);
+        jb_write(line, (unsigned long)strlen(line));
+    }
+#else
     jb_run(passes);
+#endif
     jb_report(passes);
     return 0;
 }
