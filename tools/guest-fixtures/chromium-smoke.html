@@ -4,6 +4,7 @@
 <style>
 body { background: #073b4c; color: white; font: 26px sans-serif; margin: 36px; }
 button, input { font: 26px sans-serif; padding: 12px; }
+label { display: inline-block; background: white; color: black; padding: 12px; }
 #status { background: #118ab2; padding: 20px; }
 input { appearance: none; box-sizing: border-box; width: 400px; height: 60px; line-height: 32px; background: white; color: black; }
 #count { background: #06d6a0; color: #062f21; padding: 16px; }
@@ -12,8 +13,9 @@ input { appearance: none; box-sizing: border-box; width: 400px; height: 60px; li
 <p id="status">Ready to benchmark</p>
 <button id="button">Count clicks</button>
 <button id="benchmark">Run benchmark</button>
+<label for="input">Type here</label>
 <p id="count">Clicks: 0</p>
-<input id="input" placeholder="Type here" autofocus>
+<input id="input" autofocus>
 <p id="typed"></p>
 <canvas id="scene" width="400" height="160" style="display:none;position:fixed;left:480px;top:350px;border:2px solid white"></canvas>
 <script>

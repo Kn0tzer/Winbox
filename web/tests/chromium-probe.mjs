@@ -6,6 +6,7 @@ import { execFileSync, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import { resolve, join } from 'node:path';
+import { cpus, loadavg } from 'node:os';
 import { ProbeTest, withTimeout } from './suite/lib/probe-base.mjs';
 import { attachLoopbackTcpRelay } from './suite/lib/loopback-tcp-relay.mjs';
 
@@ -25,9 +26,10 @@ const chromeArgs = process.env.CHROME_ARGS ? JSON.parse(process.env.CHROME_ARGS)
   '--disable-dev-shm-usage', '--no-first-run', '--no-default-browser-check', '--disable-extensions',
   '--disable-sync', '--disable-breakpad', '--disable-background-networking',
 ];
-const result = { httpFixture, tag, startedAt: new Date().toISOString(), chromeArgs, sceneFrames, pass: false };
+const result = { httpFixture, tag, startedAt: new Date().toISOString(), chromeArgs, sceneFrames, pass: false,
+  host: { arch: process.arch, logicalCpus: cpus().length, cpu: cpus()[0]?.model, loadAverage: loadavg() } };
 const events = [];
-let page, browserCdp, readyCpu, relay;
+let page, browserCdp, readyCpu, sceneCpuBefore, sceneCpuAfter, relay;
 try {
   await probe.setup();
   result.build = probe.buildInfo;
@@ -45,6 +47,10 @@ try {
   const overlay = join(probe._root, '__fixtures/smoke.zip');
   execFileSync('python3', ['tools/make_gamezip.py', stage, overlay], { stdio: 'pipe' });
   page = await probe.newPage();
+  result.runtimeAssetRequests = [];
+  page.on('request', request => {
+    if (/\/boxedwine64\.(?:js|wasm)$/.test(new URL(request.url()).pathname)) result.runtimeAssetRequests.push(request.url());
+  });
   browserCdp = await withTimeout(probe._browser.newBrowserCDPSession(), 5000, 'CPU accounting session');
   page.on('console', message => {
     const match = message.text().match(/BW_CHROMIUM_JSON (\{.*\})/);
@@ -55,6 +61,12 @@ try {
       if (event.event === 'ready') {
         readyCpu = withTimeout(browserCdp.send('SystemInfo.getProcessInfo'), 5000, 'ready CPU snapshot')
           .then(value => ({ value }), error => ({ error: String(error) }));
+      }
+      if (event.event === 'benchmark' || event.event === 'graphics') {
+        const snapshot = withTimeout(browserCdp.send('SystemInfo.getProcessInfo'), 5000, 'scene CPU snapshot')
+          .then(value => ({ value }), error => ({ error: String(error) }));
+        if (event.event === 'benchmark') sceneCpuBefore = snapshot;
+        else sceneCpuAfter = snapshot;
       }
     } catch {}
   });
@@ -140,11 +152,20 @@ try {
   const point = row => ({ x: Number(row[6]) + Number(row[8]) / 2 - result.clickTarget.canvas.x, y: Number(row[7]) + Number(row[9]) / 2 - result.clickTarget.canvas.y });
   result.inputTarget = point(inputWord);
   result.benchmarkTarget = point(benchmarkWord);
+  // Separate Playwright's actionability wait from delivery inside the guest.
+  await page.evaluate(() => {
+    globalThis.bwProbeMouseDown = null;
+    document.addEventListener('mousedown', () => { globalThis.bwProbeMouseDown = Date.now(); }, { capture: true, once: true });
+  });
   const beforeClick = Date.now();
   const target = { x: result.clickTarget.x - result.clickTarget.canvas.x, y: result.clickTarget.y - result.clickTarget.canvas.y };
   await page.locator('#canvas').click({ position: target, timeout: 10000 });
   result.click = await waitEvent(e => e.event === 'click' && e.clicks >= 1, 'mouse click', 30000);
   result.clickLatencyMs = result.click.wallMs - (beforeClick - started);
+  const hostMouseDown = await page.evaluate(() => globalThis.bwProbeMouseDown);
+  if (!Number.isFinite(hostMouseDown)) throw Error('Host mouse-down event was not observed');
+  result.clickActionabilityMs = hostMouseDown - beforeClick;
+  result.clickGuestDeliveryMs = result.click.wallMs - (hostMouseDown - started);
   const beforeFieldClick = Date.now() - started;
   await page.locator('#canvas').click({ position: result.inputTarget, timeout: 10000 });
   result.focus = await waitEvent(e => e.event === 'focus' && e.wallMs >= beforeFieldClick, 'text field focus', 10000);
@@ -157,6 +178,14 @@ try {
   if (result.benchmark.checksum !== 1783293664 || result.benchmark.workload !== 'integer-sum-v2' || result.benchmark.samples.length !== 8) throw Error('Guest benchmark result is incorrect');
   result.graphics = await waitEvent(e => e.event === 'graphics', 'graphics benchmark');
   if (result.graphics.workload !== 'canvas-scene-v1' || result.graphics.frames !== sceneFrames || result.graphics.intervals.length !== sceneFrames || result.graphics.colorful < 1000 || result.graphics.intervals.some(ms => !Number.isFinite(ms) || ms <= 0)) throw Error('Guest graphics benchmark is incorrect');
+  const sceneBefore = await sceneCpuBefore, sceneAfter = await sceneCpuAfter;
+  if (!sceneBefore?.value || !sceneAfter?.value) throw Error('Missing scene CPU snapshots');
+  const rendererBefore = sceneBefore.value.processInfo.find(p => p.id === result.startupCpu.rendererId);
+  const rendererAfter = sceneAfter.value.processInfo.find(p => p.id === result.startupCpu.rendererId);
+  if (!rendererBefore || !rendererAfter) throw Error('Scene renderer identity changed');
+  result.sceneCpu = { rendererSeconds: rendererAfter.cpuTime - rendererBefore.cpuTime,
+    elapsedMs: result.graphics.wallMs - result.benchmark.wallMs,
+    before: sceneBefore.value.processInfo, after: sceneAfter.value.processInfo };
   await page.waitForTimeout(1000);
   await page.screenshot({ path: join(probe.dir, 'interaction.png') });
   result.inputSnapshot = await page.evaluate(() => JSON.parse(globalThis.Module.ccall('bw64_input_snapshot', 'string', [], [])));
