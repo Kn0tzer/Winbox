@@ -3,7 +3,8 @@
 The combined local build provides selectable 32-bit and 64-bit CPU JITs through
 `jit=1`. `jit=0` disables both. They remain opt-in: the 32-bit Chromium candidate
 has a substantial cold-start cost and has not demonstrated a performance gain
-over the deployed optimized interpreter. The live export has not been changed.
+over the earlier deployed optimized interpreter. These measurements preceded the
+[Settings rollout](winbox-jit-ui-20261019.md).
 
 The 32-bit startup failure came from incompatible x87 representations. The
 combined runtime selects SoftFloat's 80-bit state (`KSystem::useF64=false`), while

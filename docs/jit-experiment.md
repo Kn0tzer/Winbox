@@ -3,7 +3,9 @@
 The combined runtime includes both the 32-bit guest WASM JIT and the independent
 CPU64 emitter. Build it with `BW64_BUILD_TARGET=wasm64-mt-jit bash tools/bw64-build.sh`.
 The public runtime parameter `jit=1` requests both engines; `jit=0` disables both.
-Both remain opt-in. The live site still uses the optimized interpreter. See the
+In the launcher, choose **Settings → CPU JIT → On (experimental)**. The saved
+choice applies when you next start or restart a program. It defaults to Off.
+The combined build is deployed at [Winbox](https://kn0tzer.work.gd/wine). See the
 [validation report](reports/winbox-jit-20261018.md) for measured costs and coverage.
 
 The 32-bit backend emits integer and SSE operations. Its x87 backend uses a
