@@ -49,6 +49,8 @@
   <dialog id="settingsDialog" aria-labelledby="settingsTitle"><form method="dialog"><div class="dialog-heading"><h2 id="settingsTitle">Settings</h2><button class="icon-button" aria-label="Close settings"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#x"></use></svg></button></div></form>
     <label for="appearance">Appearance</label><select id="appearance"><option value="system">Match device</option><option value="light">Light</option><option value="dark">Dark</option></select>
     <label for="backend">Graphics</label><select id="backend"><option value="auto">Automatic</option><option value="webgl">WebGL compatibility</option><option value="webgpu">WebGPU experimental</option></select>
+    <label for="jit">CPU JIT</label><select id="jit" aria-describedby="jitHelp"><option value="off">Off</option><option value="on">On (experimental)</option></select>
+    <p id="jitHelp" class="setting-help">Applies when you next start or restart a program. May be slower, especially for 32-bit programs.</p>
     <label for="internet">Program internet access</label><select id="internet"><option value="off">Off</option><option value="on">On (via Wisp)</option></select>
     <p class="setting-help">Applies when you next start a program. Connections go through kn0tzer.work.gd.</p>
     <label for="enhancement">Image enhancement</label><select id="enhancement"><option value="off">Off</option><option value="fsr1">FSR1</option><option value="sgsr1">SGSRv1</option><option value="sharpen">Sharpen only</option></select>

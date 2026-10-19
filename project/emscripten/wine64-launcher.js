@@ -869,6 +869,13 @@
             });
     }
 
+    // Keep the main script, pthread scripts and WASM on the same release even
+    // when the browser still has a cached interpreter-only payload.
+    function runtimeAssetUrl(path, prefix) {
+        var version = param("v");
+        return (prefix || "") + path + (version ? "?v=" + encodeURIComponent(version) : "");
+    }
+
     // --- one boot of the wasm module ----------------------------------------
     // Builds a fresh window.Module against the current run config and appends the
     // emscripten script so it boots. Safe to call repeatedly (teardown first).
@@ -913,6 +920,7 @@
 
         window.Module = {
             arguments: [],
+            locateFile: runtimeAssetUrl,
             canvas: canvas,
             bwGpuFrame: function (json) { if (window.bwGpuFrame) window.bwGpuFrame(json); },
             preRun: [function () {
@@ -1072,7 +1080,7 @@
             var s = document.createElement("script");
             s.id = "boxedwine64-module-script";
             s.async = true;
-            s.src = "boxedwine64.js";
+            s.src = runtimeAssetUrl("boxedwine64.js");
             document.body.appendChild(s);
         }
         if (window.crossOriginIsolated || typeof window.crossOriginIsolated === "undefined") {

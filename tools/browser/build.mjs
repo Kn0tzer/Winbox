@@ -8,6 +8,7 @@ const out = resolve(root, process.env.WINE_BUILD_OUT || 'dist');
 await mkdir(out, { recursive: true });
 if (out === root || out === resolve(root, 'web')) throw new Error('Build output must be separate from source files');
 await copyFile(resolve(root, 'web/direct-folder.mjs'), resolve(out, 'direct-folder.mjs'));
+await copyFile(resolve(root, 'web/frame-metrics.mjs'), resolve(out, 'frame-metrics.mjs'));
 for (const name of ['index.html', 'style.css', 'app.mjs', 'launch.mjs', 'demos.mjs', 'dependencies.mjs', 'package-archive.mjs', 'session-storage.mjs', 'installation.mjs', 'startup.mjs', 'presentation.mjs', 'network.mjs', 'enhancement.mjs', 'enhancement-shaders.mjs', 'files.mjs', 'games.mjs', 'storage.mjs', 'webgpu.mjs', 'shader.mjs', 'naga-rt.mjs', 'vkwebgpu.mjs', 'vk-protocol.mjs', 'vk-log.mjs', 'wgsl-utils.mjs', 'sparse-memfs.js']) await copyFile(resolve(root, 'web', name), resolve(out, name));
 await cp(resolve(root, 'web/assets'), resolve(out, 'assets'), { recursive: true });
 // Built-in game archives are staged under /games so the launcher catalog can
@@ -58,7 +59,9 @@ execFileSync('python3', [resolve(root, 'tools/browser/stage-wine32-fonts.py'), r
 execFileSync('python3', [resolve(root, 'tools/browser/stage-desktop-pin.py'), resolve(out, 'runtime')]);
 await copyFile(resolve(root, 'web/runtime.html'), resolve(out, 'runtime/index.html'));
 // Keep the cached runtime shell and loader together across UI deployments.
-const runtimeVersion = createHash('sha256').update(await readFile(resolve(root, 'web/runtime.html')))
+const runtimeBuild = JSON.parse(await readFile(resolve(out, 'runtime/BUILD_INFO.json'), 'utf8'));
+const runtimeVersion = createHash('sha256').update(runtimeBuild.wasm_sha256).update(runtimeBuild.js_sha256)
+  .update(await readFile(resolve(root, 'web/runtime.html')))
   .update(await readFile(resolve(root, 'project/emscripten/wine64-launcher.js')))
   .update(await readFile(resolve(out, 'runtime/dependencies.json'))).digest('hex').slice(0, 12);
 for (const name of ['app.mjs', 'runtime/index.html']) {

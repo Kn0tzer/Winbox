@@ -36,8 +36,9 @@ function applyMetricsVisibility() {
   $('stats').title = open ? 'Hide frame metrics' : 'Show frame metrics';
   if (metrics) metrics.setOpen(open);
 }
-const settings = { appearance: 'system', graphics: 'auto', internet: 'off', enhancement: 'off', sharpness: 0.5, folderMode: 'copy', metrics: 'on' };
+const settings = { appearance: 'system', graphics: 'auto', jit: 'off', internet: 'off', enhancement: 'off', sharpness: 0.5, folderMode: 'copy', metrics: 'on' };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('wine.launcher.settings.v1') || '{}')); } catch {}
+settings.jit = settings.jit === 'on' ? 'on' : 'off';
 function appearance(value) {
   document.documentElement.dataset.theme = ['light', 'dark'].includes(value) ? value : 'system';
   $('appearance').value = value;
@@ -46,7 +47,7 @@ function appearance(value) {
 }
 appearance(settings.appearance);
 $('backend').value = settings.graphics;
-for (const name of ['internet', 'enhancement', 'sharpness']) {
+for (const name of ['jit', 'internet', 'enhancement', 'sharpness']) {
   $(name).value = settings[name];
   $(name).onchange = () => { settings[name] = name === 'sharpness' ? Number($(name).value) : $(name).value; persistSettings(); };
 }
@@ -138,6 +139,7 @@ async function stop() {
   try { await stopping; } finally { stopping = null; lock(busy); }
 }
 async function launchFrame(query, title, archive = null) {
+  query.set('jit', settings.jit === 'on' ? '1' : '0');
   if (settings.internet === 'on') { query.set('network', '1'); query.set('wisp', '1'); }
   if (settings.enhancement !== 'off') query.set('enhance', '1');
   const frame = document.createElement('iframe'); frame.title = title + ' runtime';

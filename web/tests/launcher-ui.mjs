@@ -26,8 +26,10 @@ try {
   parent.postMessage({wine:true,type:"status",data:"Running..."},location.origin);
   parent.postMessage({wine:true,type:"log",data:"first window mapped"},location.origin);</script>` }));
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
+  assert.equal(await page.getByLabel('CPU JIT', { exact: true }).count(), 1);
   await page.waitForFunction(() => window.wineGames && !document.getElementById('library').hasAttribute('aria-busy'));
   assert.equal(await page.locator('[data-game]').count(), 9);
+  assert.equal(await page.locator('#jit').inputValue(), 'off');
   {
     const modes = await page.evaluate(() => ({
       checked: document.querySelector('input[name="folderMode"]:checked')?.value,
@@ -51,6 +53,7 @@ try {
     await page.waitForFunction(()=>document.getElementById('loading').hidden);
     const query = new URL(await page.locator('#display iframe').getAttribute('src'), page.url()).searchParams;
     assert.equal(query.get('arch'),arch,id);assert.equal(query.get('installation'),executable?'demo-'+id:'demo',id);
+    assert.equal(query.get('jit'), '0', `${id} defaults to the interpreter`);
     if (executable) {assert.equal(query.get('exe'),executable);assert.equal(query.get('gamezipsize'),'12345678');}
     else assert.ok(query.get('p'));
     await page.click('#stop'); await page.locator('#display iframe').waitFor({ state: 'detached' });
@@ -58,6 +61,17 @@ try {
     assert.ok(!await page.locator('#notice').evaluate(element=>element.classList.contains('error')));
   }
   checks.push('All nine demo tiles launch in one click with correct architecture/entry point');
+  await page.click('#settingsButton'); await page.locator('#jit').selectOption('on'); await page.keyboard.press('Escape');
+  await page.reload(); await page.waitForFunction(() => window.wineGames);
+  assert.equal(await page.locator('#jit').inputValue(), 'on');
+  for (const id of ['chromium', 'notepad']) {
+    await page.locator(`[data-game="${id}"]`).click();
+    await page.waitForFunction(() => document.getElementById('loading').hidden);
+    const query = new URL(await page.locator('#display iframe').getAttribute('src'), page.url()).searchParams;
+    assert.equal(query.get('jit'), '1', `${id} receives the saved JIT setting`);
+    await page.click('#stop'); await page.waitForFunction(() => !document.getElementById('folderButton').disabled);
+  }
+  checks.push('CPU JIT defaults off, persists after reload, and enables both x86 and x64 demo runtimes');
   await page.clock.install();
   holdFirstPaint=true;await page.locator('[data-game="notepad"]').click();
   await page.waitForFunction(()=>document.getElementById('status').textContent.includes('first frame'));
@@ -87,6 +101,7 @@ try {
   await page.locator('#display iframe').waitFor();
   let query=new URL(await page.locator('#display iframe').getAttribute('src'),page.url()).searchParams;
   assert.equal(query.get('arch'),'x86');assert.equal(query.get('exe'),'Fixture.exe');
+  assert.equal(query.get('jit'), '1', 'uploaded programs use the same JIT preference');
   await page.waitForFunction(()=>document.getElementById('loading').hidden);
   await page.click('#stop');
   await rm(folder,{recursive:true}); // Saved files must survive removal of the source folder.
@@ -98,9 +113,10 @@ try {
   checks.push('Folder selection auto-detects and auto-starts; persisted folder reruns in one click');
   await page.getByRole('button',{name:'Settings for Fixture'}).click();
   await page.locator('#folderDialog').waitFor({state:'visible'});assert.equal(await page.locator('#executable').inputValue(),'Fixture.exe');await page.keyboard.press('Escape');
-  await page.click('#settingsButton');await page.locator('#appearance').selectOption('dark');await page.keyboard.press('Escape');
+  await page.click('#settingsButton');await page.locator('#appearance').selectOption('dark');await page.locator('#jit').selectOption('off');await page.keyboard.press('Escape');
   await page.screenshot({path:dir+'/desktop-dark.png',fullPage:true,animations:'disabled'});
   await page.reload();await page.waitForFunction(()=>window.wineGames);assert.equal(await page.locator('html').getAttribute('data-theme'),'dark');
+  assert.equal(await page.locator('#jit').inputValue(), 'off');
   checks.push('Native settings dialogs, Escape dismissal and saved appearance work');
   failPortal=true;await page.locator('[data-game="portal"]').click();await page.locator('#playerRetry').waitFor({state:'visible'});assert.match(await page.locator('#status').textContent(),/unavailable/);failPortal=false;
   await page.click('#playerRetry');await page.waitForFunction(()=>document.getElementById('loading').hidden);await page.click('#stop');await page.waitForFunction(()=>!document.getElementById('folderButton').disabled);
@@ -109,6 +125,13 @@ try {
     await page.setViewportSize({width,height:1000});
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`overflow at ${width}px`);
     await page.screenshot({path:`${dir}/width-${width}.png`,fullPage:true,animations:'disabled'});
+    await page.click('#settingsButton');
+    await page.locator('#jit').focus();
+    assert.notEqual(await page.locator('#jit').evaluate(element => getComputedStyle(element).outlineStyle), 'none');
+    const bounds = await page.locator('#jit').boundingBox();
+    assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width && bounds.height >= 44, `JIT control at ${width}px`);
+    await page.screenshot({path:`${dir}/settings-${width}.png`,fullPage:true,animations:'disabled'});
+    await page.keyboard.press('Escape');
   }
   await page.setViewportSize({width:1280,height:1000});await page.evaluate(()=>document.documentElement.style.zoom='2');
   assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'overflow under 200% CSS zoom');
