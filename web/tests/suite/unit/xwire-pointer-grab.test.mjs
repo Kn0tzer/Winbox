@@ -88,6 +88,7 @@ int main(){
 
 test('cursor warps update the queried position and relative baseline without injecting hardware motion', () => {
   const src = readFileSync(new URL('../../../../source/x11wire/xwireconnection.cpp', import.meta.url), 'utf8');
+  const origin = src.match(/static std::pair<int, int> xwireWindowOrigin\([\s\S]*?\n\}/)?.[0];
   const handler = src.match(/case X_WarpPointer: \{[\s\S]*?\n        \}/)?.[0];
   assert.ok(handler);
   const dir = mkdtempSync(join(tmpdir(), 'bw64-pointer-warp-'));
@@ -98,8 +99,9 @@ test('cursor warps update the queried position and relative baseline without inj
 #include <cstring>
 #include <mutex>
 #include <map>
-struct Window{int x=0,y=0;};
-struct XWireServer{std::mutex regMutex;std::map<uint32_t,Window> windows;static XWireServer& instance(){static XWireServer s;return s;}};
+struct Window{int x=0,y=0;uint32_t parent=0;bool isRoot=false;};
+struct XWireServer{std::mutex regMutex;std::map<uint32_t,Window> windows;uint32_t focusWindow=0,presentWindow=0;static XWireServer& instance(){static XWireServer s;return s;}};
+${origin}
 struct Sink{int x=100,y=80,warps=0;void lastPointer(int& a,int& b,uint32_t& s){a=x;b=y;s=0;}void warpPointer(int a,int b){x=a;y=b;++warps;}} sink;
 Sink* g_xwirePresentSink=&sink;
 uint32_t rd32(const uint8_t* p){uint32_t v;memcpy(&v,p,4);return v;}
@@ -147,4 +149,41 @@ int main(){Sink s;s.move(100,80,100,80);assert(s.lastX==100 && s.lastY==80 && s.
     execFileSync('c++', ['-std=c++17', join(dir, 'check.cpp'), '-o', join(dir, 'check')]);
     execFileSync(join(dir, 'check'));
   } finally { rmSync(dir, {recursive:true, force:true}); }
+});
+
+test('offset windows round-trip cursor warps, pointer queries and coordinate translation', () => {
+  const src = readFileSync(new URL('../../../../source/x11wire/xwireconnection.cpp', import.meta.url), 'utf8');
+  const helper = src.match(/static std::pair<int, int> xwireWindowOrigin\([\s\S]*?\n\}/)?.[0] || '';
+  const handlers = ['X_WarpPointer','X_QueryPointer','X_TranslateCoords'].map(n=>src.match(new RegExp(`case ${n}: \\{[\\s\\S]*?\\n        \\}`))?.[0]).join('\n');
+  const dir = mkdtempSync(join(tmpdir(), 'bw64-pointer-origin-'));
+  try {
+    writeFileSync(join(dir,'check.cpp'), `
+#include <cassert>
+#include <cstdint>
+#include <cstring>
+#include <mutex>
+#include <map>
+#include <utility>
+struct Window{int x=0,y=0;uint32_t parent=0;bool isRoot=false;};
+struct XWireServer{std::mutex regMutex;std::map<uint32_t,Window>windows;uint32_t presentWindow=2,focusWindow=2;static XWireServer& instance(){static XWireServer s;return s;}};
+${helper}
+struct Sink{int x=512,y=384;void lastPointer(int& a,int& b,uint32_t& s){a=x;b=y;s=0;}void warpPointer(int a,int b){x=a;y=b;}}sink;Sink* g_xwirePresentSink=&sink;
+uint8_t reply[32];void writeToClient(const uint8_t* p,size_t n){memcpy(reply,p,n);}
+uint32_t rd32(const uint8_t* p){uint32_t v;memcpy(&v,p,4);return v;}uint16_t rd16(const uint8_t* p){uint16_t v;memcpy(&v,p,2);return v;}
+enum{X_WarpPointer=41,X_QueryPointer=38,X_TranslateCoords=40};int rawX=0,rawY=0,relX=0,relY=0;bool relInit=false;
+void dispatch(int op,uint32_t source,uint32_t dest=0,int16_t x=0,int16_t y=0){uint8_t bytes[24]={};memcpy(bytes+4,&source,4);memcpy(bytes+8,&dest,4);auto offset=op==X_WarpPointer ? 20:12;memcpy(bytes+offset,&x,2);memcpy(bytes+offset+2,&y,2);const auto* req=bytes;uint16_t sequence=1;uint32_t rootWindow=1,buttonState=0;switch(op){${handlers}}}
+int at(int offset){return int16_t(rd16(reply+offset));}
+int main(){auto& s=XWireServer::instance();s.windows[1]={0,0,0,true};s.windows[2]={3,9,1,false};s.windows[3]={20,30,2,false};
+ dispatch(X_QueryPointer,1);assert(at(16)==515 && at(18)==393 && at(20)==515 && at(22)==393);
+ dispatch(X_QueryPointer,2);assert(at(16)==515 && at(18)==393 && at(20)==512 && at(22)==384);
+ dispatch(X_TranslateCoords,2,1,512,384);assert(at(12)==515 && at(14)==393);
+ dispatch(X_TranslateCoords,1,2,515,393);assert(at(12)==512 && at(14)==384);
+ dispatch(X_TranslateCoords,3,1,0,0);assert(at(12)==23 && at(14)==39);
+ dispatch(X_WarpPointer,1,1,515,393);assert(sink.x==512 && sink.y==384 && rawX==512 && relY==384);
+ dispatch(X_WarpPointer,0,0,10,-20);assert(sink.x==522 && sink.y==364);
+}
+`);
+    execFileSync('c++',['-std=c++17',join(dir,'check.cpp'),'-o',join(dir,'check')]);
+    execFileSync(join(dir,'check'));
+  } finally {rmSync(dir,{recursive:true,force:true});}
 });

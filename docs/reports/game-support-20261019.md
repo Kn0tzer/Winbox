@@ -130,3 +130,19 @@ request from ordinary cursor moves. Confined guest grabs retain automatic suppor
 Focused regressions cover warp destinations, source rectangles, recentering and
 relative position updates. Live browser verification remains pending on this
 rebuilt runtime; the staged release must be refreshed again before activation.
+
+`portal-warp-live-20261019` verifies real browser pointer lock, native relative
+mode, release through the control, and recapture. Trusted DOM mouse events carry
+deltas while locked. The toolbar wiring and its visible instruction also pass a
+small UI fixture. CDP's simulated Escape key did not trigger Chromium's browser
+unlock, so that is not counted as an Escape acceptance check.
+
+Mouse-look is still unreliable in the live scene. Further inspection finds that
+XQueryPointer and XTranslateCoords assume screen and window coordinates are
+identical, while emitted core motion adds the window origin. Cursor warps also
+stored root positions directly in the window-relative sink. The corrected paths
+share parent-aware origins; root queries add the focused window origin, queried
+window coordinates subtract their own origin, and warps convert back into sink
+coordinates. A failing native regression reproduces the disagreement with a
+window offset by (3,9); it also covers nested window translation and relative
+warps. This build still requires live verification before activation.

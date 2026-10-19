@@ -29,6 +29,19 @@
 #include <utility>
 #include "xwirekeyboard.h"
 
+// Caller holds regMutex. Window positions are parent-relative; SDL pointer
+// positions are relative to the focused content window, not the X11 root.
+static std::pair<int, int> xwireWindowOrigin(const XWireServer& server, uint32_t window) {
+    int x = 0, y = 0;
+    for (unsigned depth = 0; window && depth < 64; ++depth) {
+        auto it = server.windows.find(window);
+        if (it == server.windows.end() || it->second.isRoot) break;
+        x += it->second.x; y += it->second.y;
+        window = it->second.parent;
+    }
+    return {x, y};
+}
+
 // The active presentation sink (platform/sdl sets it during window init). null
 // when headless / -novideo, in which case all PutImage/Map presentation is a
 // no-op and the wire server runs exactly as before.
@@ -1457,52 +1470,50 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
             break;
         }
         case X_QueryPointer: {
-            // Report the pointer over the presented window at its last position
-            // with the current button/modifier mask. Without a reply wine blocks.
-            uint32_t child = 0;
-            {
-                XWireServer& srv = XWireServer::instance();
-                std::lock_guard<std::mutex> lk(srv.regMutex);
-                child = srv.presentWindow;
-            }
             int px = 0, py = 0; uint32_t mod = 0;
             if (g_xwirePresentSink) g_xwirePresentSink->lastPointer(px, py, mod);
-            uint8_t r[32] = {0};
-            r[0] = 1;
-            r[1] = 1;                          // same-screen = True
-            r[2] = (uint8_t)(sequence & 0xff);
-            r[3] = (uint8_t)(sequence >> 8);
-            memcpy(r + 8, &rootWindow, 4);      // root
-            memcpy(r + 12, &child, 4);          // child (window under pointer)
-            int16_t x = (int16_t)px, y = (int16_t)py;
-            memcpy(r + 16, &x, 2);              // root-x
-            memcpy(r + 18, &y, 2);              // root-y
-            memcpy(r + 20, &x, 2);              // win-x
-            memcpy(r + 22, &y, 2);              // win-y
-            uint16_t state = (uint16_t)(mod | buttonState);
-            memcpy(r + 24, &state, 2);          // button+modifier mask
+            uint32_t child = 0;
+            int wx = 0, wy = 0;
+            {
+                auto& srv = XWireServer::instance();
+                std::lock_guard<std::mutex> lk(srv.regMutex);
+                const uint32_t base = srv.focusWindow ? srv.focusWindow : srv.presentWindow;
+                const auto origin = xwireWindowOrigin(srv, base);
+                px += origin.first; py += origin.second;
+                const uint32_t window = rd32(req + 4);
+                const auto queried = xwireWindowOrigin(srv, window);
+                wx = px - queried.first; wy = py - queried.second;
+                child = window == base ? 0 : base;
+            }
+            uint8_t r[32] = {0}; r[0] = 1; r[1] = 1;
+            r[2] = uint8_t(sequence); r[3] = uint8_t(sequence >> 8);
+            memcpy(r + 8, &rootWindow, 4); memcpy(r + 12, &child, 4);
+            int16_t rootX = px, rootY = py, windowX = wx, windowY = wy;
+            memcpy(r + 16, &rootX, 2); memcpy(r + 18, &rootY, 2);
+            memcpy(r + 20, &windowX, 2); memcpy(r + 22, &windowY, 2);
+            uint16_t state = uint16_t(mod | buttonState);
+            memcpy(r + 24, &state, 2);
             writeToClient(r, sizeof(r));
             break;
         }
         case X_TranslateCoords: {
-            // Single-window model: window and root share a coordinate space, so
-            // pass the source coords through unchanged. dst-window = req src-win.
-            int16_t sx = (int16_t)rd16(req + 12);
-            int16_t sy = (int16_t)rd16(req + 14);
+            int x = int16_t(rd16(req + 12)), y = int16_t(rd16(req + 14));
             uint32_t child = 0;
             {
-                XWireServer& srv = XWireServer::instance();
+                auto& srv = XWireServer::instance();
                 std::lock_guard<std::mutex> lk(srv.regMutex);
-                child = srv.presentWindow;
+                const auto source = xwireWindowOrigin(srv, rd32(req + 4));
+                const uint32_t destination = rd32(req + 8);
+                const auto dest = xwireWindowOrigin(srv, destination);
+                x += source.first - dest.first; y += source.second - dest.second;
+                const uint32_t base = srv.focusWindow ? srv.focusWindow : srv.presentWindow;
+                child = destination == base ? 0 : base;
             }
-            uint8_t r[32] = {0};
-            r[0] = 1;
-            r[1] = 1;                          // same-screen = True
-            r[2] = (uint8_t)(sequence & 0xff);
-            r[3] = (uint8_t)(sequence >> 8);
-            memcpy(r + 8, &child, 4);           // child
-            memcpy(r + 12, &sx, 2);             // dst-x
-            memcpy(r + 14, &sy, 2);             // dst-y
+            uint8_t r[32] = {0}; r[0] = 1; r[1] = 1;
+            r[2] = uint8_t(sequence); r[3] = uint8_t(sequence >> 8);
+            memcpy(r + 8, &child, 4);
+            int16_t dx = x, dy = y;
+            memcpy(r + 12, &dx, 2); memcpy(r + 14, &dy, 2);
             writeToClient(r, sizeof(r));
             break;
         }
@@ -1564,19 +1575,24 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
             int px = 0, py = 0; uint32_t state = 0;
             g_xwirePresentSink->lastPointer(px, py, state);
             const uint32_t source = rd32(req + 4), destination = rd32(req + 8);
-            int sx = 0, sy = 0, dx = 0, dy = 0;
+            int sx = 0, sy = 0, dx = 0, dy = 0, baseX = 0, baseY = 0;
             {
                 auto& srv = XWireServer::instance();
                 std::lock_guard<std::mutex> lk(srv.regMutex);
+                const auto base = xwireWindowOrigin(srv, srv.focusWindow ? srv.focusWindow : srv.presentWindow);
+                baseX = base.first; baseY = base.second;
+                px += baseX; py += baseY;
                 if (source) {
                     auto it = srv.windows.find(source);
                     if (it == srv.windows.end()) break;
-                    sx = it->second.x; sy = it->second.y;
+                    const auto origin = xwireWindowOrigin(srv, source);
+                    sx = origin.first; sy = origin.second;
                 }
                 if (destination) {
                     auto it = srv.windows.find(destination);
                     if (it == srv.windows.end()) break;
-                    dx = it->second.x; dy = it->second.y;
+                    const auto origin = xwireWindowOrigin(srv, destination);
+                    dx = origin.first; dy = origin.second;
                 }
             }
             const int left = sx + int16_t(rd16(req + 12));
@@ -1585,9 +1601,9 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
             if (source && (px < left || py < top || (width && px >= left + width) || (height && py >= top + height))) break;
             const int x = (destination ? dx : px) + int16_t(rd16(req + 20));
             const int y = (destination ? dy : py) + int16_t(rd16(req + 22));
-            g_xwirePresentSink->warpPointer(x, y);
+            g_xwirePresentSink->warpPointer(x - baseX, y - baseY);
             // A warp changes the baseline, never a relative hardware delta.
-            rawX = relX = x; rawY = relY = y; relInit = true;
+            rawX = relX = x - baseX; rawY = relY = y - baseY; relInit = true;
             break;
         }
         case X_UngrabPointer: {
@@ -2072,7 +2088,8 @@ void XWireConnection::deliverInputEvents() {
         // Base window root origin. Host coords are relative to the base content
         // (presented at host 0,0), so root coords = host + base origin, and an
         // overlay at root (ox,oy) occupies host [ox-baseX, oy-baseY).
-        baseX = it->second.x; baseY = it->second.y;
+        const auto origin = xwireWindowOrigin(srv, pw);
+        baseX = origin.first; baseY = origin.second;
         restoreFocus = !srv.focusWindow;
     }
     // Wine needs FocusIn to activate its native keyboard target, as well as
@@ -2164,13 +2181,14 @@ void XWireConnection::deliverInputEvents() {
                     XWireWindow& w = kv.second;
                     if (kv.first == presentWindow || w.isRoot) continue;
                     if (!w.mapped || !w.fbW || !w.fbH) continue;
-                    int hx0 = (int)w.x - baseX, hy0 = (int)w.y - baseY;   // host rect
+                    const auto origin = xwireWindowOrigin(srv, kv.first);
+                    int hx0 = origin.first - baseX, hy0 = origin.second - baseY;   // host rect
                     if (eff.x >= hx0 && eff.x < hx0 + (int)w.fbW &&
                         eff.y >= hy0 && eff.y < hy0 + (int)w.fbH &&
                         w.mapSerial >= bestSerial) {
                         bestSerial = w.mapSerial;
                         target = kv.first;
-                        tgtX = w.x; tgtY = w.y;
+                        tgtX = origin.first; tgtY = origin.second;
                     }
                 }
             }
