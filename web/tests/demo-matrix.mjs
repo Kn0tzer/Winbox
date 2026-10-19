@@ -241,25 +241,24 @@ function startMetricsSampler() {
 }
 
 async function sampleMetrics() {
-  const runtimeSnapshot = await page.evaluate(() => {
-    const frame = document.querySelector('#display iframe');
-    const runtime = frame?.contentWindow;
-    let pageTier = null;
-    let jitStats = null;
-    let jitStatsError = null;
-    try { pageTier = window.bwVkTier?.metrics?.() || null; } catch (error) { pageTier = { error: error.message }; }
-    try {
-      const Module = runtime?.Module;
-      if (!Module || typeof Module.ccall !== 'function' || typeof Module.UTF8ToString !== 'function') {
-        jitStatsError = 'runtime Module export is not available';
-      } else {
-        const pointer = Module.ccall('bw64_jit_stats_json_text', 'number', [], []);
-        if (pointer) jitStats = JSON.parse(Module.UTF8ToString(pointer));
-        else jitStatsError = 'bw64_jit_stats_json_text returned a null pointer';
-      }
-    } catch (error) { jitStatsError = error.message || String(error); }
-    return { pageTier, jitStats, jitStatsError };
-  }).catch(error => ({ pageTier: null, jitStats: null, jitStatsError: error.message || String(error) }));
+  const pageTier = await page.evaluate(() => {
+    try { return window.bwVkTier?.metrics?.() || null; }
+    catch (error) { return { error: error.message || String(error) }; }
+  }).catch(() => null);
+  let jitStats = null;
+  let jitStatsError = null;
+  try {
+    const frameHandle = await page.locator('#display iframe').elementHandle();
+    const runtimeFrame = await frameHandle?.contentFrame();
+    if (!runtimeFrame) throw new Error('runtime iframe is not available');
+    jitStats = await runtimeFrame.evaluate(() => {
+      if (typeof Module === 'undefined' || typeof Module.ccall !== 'function' || typeof Module.UTF8ToString !== 'function')
+        throw new Error('runtime Module export is not available');
+      const pointer = Module.ccall('bw64_jit_stats_json_text', 'number', [], []);
+      if (!pointer) throw new Error('bw64_jit_stats_json_text returned a null pointer');
+      return JSON.parse(Module.UTF8ToString(pointer));
+    });
+  } catch (error) { jitStatsError = error.message || String(error); }
   const wasmLine = lastWasmMetricLine;
   const wasmSnapshot = parseWasmMetricLine(wasmLine);
   const record = {
@@ -268,9 +267,9 @@ async function sampleMetrics() {
       wasm: 'runtime iframe console message emitted by Module.print; launcher app feeds bw64: METRICS lines',
       pageTier: 'launcher page window.bwVkTier.metrics()',
     },
-    frameMetricsSnapshot: { wasmConsoleLine: wasmLine, wasm: wasmSnapshot, pageTier: runtimeSnapshot.pageTier },
-    jitStats: runtimeSnapshot.jitStats,
-    jitStatsError: runtimeSnapshot.jitStatsError,
+    frameMetricsSnapshot: { wasmConsoleLine: wasmLine, wasm: wasmSnapshot, pageTier },
+    jitStats,
+    jitStatsError,
   };
   lastMetricsSnapshot = record.frameMetricsSnapshot;
   lastJitStats = record.jitStats;
