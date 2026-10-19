@@ -1,38 +1,34 @@
-# Archived JIT experiment
+# CPU JIT implementation
 
-Status of the CPU64 JIT (updated 2026-10-18 by the Lane-2 consolidation; see
-`docs/reports/winbox-jit64-20261018.md` for evidence and
-`docs/reports/winbox-jit64-metrics.md` for the stats contract):
+The combined runtime includes both the 32-bit guest WASM JIT and the independent
+CPU64 emitter. Build it with `BW64_BUILD_TARGET=wasm64-mt-jit bash tools/bw64-build.sh`.
+The public runtime parameter `jit=1` requests both engines; `jit=0` disables both.
+Both remain opt-in. The live site still uses the optimized interpreter. See the
+[validation report](reports/winbox-jit-20261018.md) for measured costs and coverage.
 
-* **The emitted-wasm engine is implemented and exercised.** `BW64_JIT=1` on a
-  build made with `BW64_JIT_BUILD=1` (which adds
-  `-DBOXEDWINE_BLOCK_EXEC -DBOXEDWINE_BLOCK_CACHE_INFRA -sALLOW_TABLE_GROWTH`)
-  decodes hot blocks, emits one wasm module per block, instantiates it into the
-  host wasm table and calls it through a table index. Arithmetic, memory
-  (through the imported `KMemory64` helpers), flags, string ops, pushes/pops and
-  the block terminators (Jcc/JMP/CALL/RET/LEAVE/NOP) are all emitted.
-* **Execution is proven, not assumed.** The generated modules increment
-  `Jit64WasmState::blocksEntered` and store `Jit64WasmState::execCount`
-  themselves; `scripts/build-jit-wasm.sh` fails if the emitted-code entry
-  counter is zero or disagrees with the host's call count. The earlier prototype
-  (checkpoint `711fbf8b5`) could not emit a single real block: its acceptance
-  switch rejected exactly the terminators its decoder appends last.
-* **Invalidation is inline.** After every guest store the module re-reads the
-  block's code-page generations and leaves at the exact next guest RIP (with the
-  exact retired count) when either moved, mirroring `CPU64::execBlock`'s
-  per-record break. Self-modifying code is therefore bounded to the same
-  behaviour as the block interpreter.
-* **Fallback is total.** Any block with a non-fast op, an emitter refusal, an
-  instantiation failure or a stale page generation runs on the interpreter
-  (`CPU64::tryBlockStep`/`step`); `BW64_JIT` unset keeps the deployed behaviour
-  unchanged. Blocks are only compiled after `BW64_JIT_HOT` entries (default 8).
-* **Not yet a deployment claim.** No Chromium or wine64 timing comparison has
-  been run for CPU64; the production `wasm64-mt` target still builds without
-  `BW64_JIT_BUILD=1` and therefore still runs the interpreter. Enabling it by
-  default needs a representative performance win measured by the integration
-  agent, and one known cost: every emitted memory operand goes through the
-  imported read/write helper (a JS crossing per access), so memory-heavy code is
-  the least likely to win.
+The 32-bit backend emits integer and SSE operations. Its x87 backend uses a
+double-precision cache, so it delegates x87 instructions to the interpreter when
+`KSystem::useF64` is false. This preserves the 80-bit mode required by the combined
+runtime. Standalone builds using the double cache retain native x87 emission.
+
+CPU64 decodes hot blocks and emits WebAssembly arithmetic, memory, flags and
+control flow. Modules import the actual WASM memory helpers and execute through
+worker-local table slots, without a JavaScript crossing on each memory access.
+Unsupported instructions, stale blocks and failed installations use the interpreter.
+The default hotness threshold is eight entries (`BW64_JIT_HOT`).
+
+CPU64 retains modules in an 8192-entry, four-way associative cache. Registered
+code pages have distinct, stable generation slots; unrelated data writes no longer
+invalidate code through hash collisions. After a guest store, generated code checks
+its recorded generations and exits at the next instruction if code changed. The
+bounded 65536-page registry uses a conservative overflow generation if it fills.
+
+Generated code increments its own entry and retirement counters. Decoder activity
+alone is not execution evidence. See [the metrics contract](reports/winbox-jit64-metrics.md)
+for the shared JSON interface and its limits. Correctness and opt-in availability
+do not imply a performance improvement over the deployed interpreter.
+
+The remaining material is historical design research, not the current release status.
 
 Archived commit `3833127bc` (now merged into master's history) preserves the
 advanced x64 WASM emitter and its generators/tests. It predates the current
