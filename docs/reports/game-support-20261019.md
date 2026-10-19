@@ -188,3 +188,46 @@ The focused producer/decoder/renderer checks pass (13 tests), as does type
 checking. This follow-up is not yet in the live release and needs a rebuilt
 native capture and visual check. The original failing shadow frame is saved as
 `portal-coordinates-live-20261019/shadow-white-frame.json.gz`.
+
+## Stencil and shadow checkpoint (20:40 UTC)
+
+The inactive candidate uses native source `ce7049137`, WASM
+`04f55fa29dd2ff4e2da6c63f7e3a97bc1f8831d781c980c55c25e4ab0b714e9a`.
+The native build was clean and both Vulkan shim manifests verify. V2 now carries
+static/dynamic stencil state, independent stencil attachment operations,
+blend constants and rectangle clears for both guest architectures. The renderer
+uses packed depth/stencil storage and preserves per-face operations and dynamic
+references. Focused transport/native/GPU tests and type checking pass. A real
+SwiftShader pixel check writes three masked red pixels, preserves thirteen blue
+pixels and verifies that a partial stencil clear does not reset depth.
+
+`portal-stencil-20261019` reaches the chamber with normal lighting and working
+mouse-look. `shadow-view.png` confirms the white pads beneath the radio/toilet
+shadows are gone. `shadows-corrected-frame.json.gz` captures this result. The
+first portal opens, but the room background is still wrong; traversal has not
+been accepted. There were four unsupported draws during the transition and a
+later rejected frame with a missing GPU buffer binding. The candidate has not
+been activated. The public release described above is unchanged.
+
+The self-contained failure is `portal-stencil-failure-frame.json.gz` (161 MB of
+JSON, 35 MB compressed). Replay reproduces the image with zero unsupported
+operations. The replay harness now fetches large captures over local HTTP and
+its decoder avoids string-iterator allocations. Independent stencil-only
+visualizations show a correct oval for the blue portal (18,165 lit pixels) and
+a correctly bounded partial oval for the nearby orange portal (129,157 pixels).
+Artifacts: `portal-stencil-mask-20261019` and `portal-second-mask-20261019`.
+Thus the remaining scene defect is not explained by an oversized stencil mask.
+
+A separate vertex-layout regression exposed stride enlargement without data
+repacking. The renderer now preserves the original vertex spacing and rebases
+overlapping attributes into extra streams for the installed Dawn version.
+Zero-stride bindings remain constant. The unit regression and real GPU pixel
+check pass; this change alone does not resolve the portal scene defect.
+
+Both native query-result paths currently return successful all-zero results.
+DXVK interprets zero occlusion samples as invisible geometry. Whether this is
+the cause of the remaining Portal scene defect is still a hypothesis.
+`portal-occlusion-off-20261019` is testing the same map with `r_occlusion 0` and
+normal lighting/timing. No query-result workaround has been shipped. An F6
+quicksave attempt did not produce a save file and is not acceptance evidence.
+Gang Beasts remains next after Portal's rendering and traversal acceptance.
