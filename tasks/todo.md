@@ -96,6 +96,6 @@
 
 Contract: `docs/specs/portal-stencil.md`; ordered plan: `tasks/plan.md`.
 
-- [ ] PS1: fail-first native/ABI/V2 tests, state transport, 32/64 shim builds.
+- [x] PS1: fail-first native/ABI/V2 tests, state transport, 32/64 shim builds. Five focused stencil tests and six blend tests pass; type checking and both shim provenance checks pass. Full native build is part of PS3.
 - [ ] PS2: stencil pipeline/depth targets, load/store and clipped clear replay.
 - [ ] PS3: coherent build, live Portal rendering/traversal, deploy and report.

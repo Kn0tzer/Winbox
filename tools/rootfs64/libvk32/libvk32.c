@@ -252,6 +252,11 @@ enum {
     VK64_fn_vkCmdResetQueryPool,
     VK64_fn_vkCmdBeginQuery,
     VK64_fn_vkCmdEndQuery,
+    // Core dynamic raster state. Append-only; old trap IDs stay unchanged.
+    VK64_fn_vkCmdSetBlendConstants = 900,
+    VK64_fn_vkCmdSetStencilCompareMask,
+    VK64_fn_vkCmdSetStencilWriteMask,
+    VK64_fn_vkCmdSetStencilReference,
     VK64_fn__MAX
 };
 
@@ -941,6 +946,22 @@ API void vkCmdBindDescriptorSets(VkCommandBuffer cb, uint32_t bindPoint, VkPipel
     a.a[5] = P(sets); a.a[6] = dynOffCount; a.a[7] = P(dynOffs);
     (void)vk64_trap(VK64_fn_vkCmdBindDescriptorSets, &a);
 }
+API void vkCmdSetBlendConstants(VkCommandBuffer cb, const float* values) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = P(values);
+    (void)vk64_trap(VK64_fn_vkCmdSetBlendConstants, &a);
+}
+API void vkCmdSetStencilCompareMask(VkCommandBuffer cb, uint32_t faces, uint32_t value) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = faces; a.a[2] = value;
+    (void)vk64_trap(VK64_fn_vkCmdSetStencilCompareMask, &a);
+}
+API void vkCmdSetStencilWriteMask(VkCommandBuffer cb, uint32_t faces, uint32_t value) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = faces; a.a[2] = value;
+    (void)vk64_trap(VK64_fn_vkCmdSetStencilWriteMask, &a);
+}
+API void vkCmdSetStencilReference(VkCommandBuffer cb, uint32_t faces, uint32_t value) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = faces; a.a[2] = value;
+    (void)vk64_trap(VK64_fn_vkCmdSetStencilReference, &a);
+}
 API void vkCmdSetViewport(VkCommandBuffer cb, uint32_t first, uint32_t count, const void* viewports) {
     VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = first; a.a[2] = count; a.a[3] = P(viewports);
     (void)vk64_trap(VK64_fn_vkCmdSetViewport, &a);
@@ -1309,6 +1330,11 @@ static const struct procEntry g_procs[] = {
     E(vkInvalidateMappedMemoryRanges, VK64_fn_vkInvalidateMappedMemoryRanges),
     E(vkFlushMappedMemoryRanges, VK64_fn_vkFlushMappedMemoryRanges),
     E(vkCmdSetScissor, VK64_fn_vkCmdSetScissor),
+    E(vkCmdSetBlendConstants, VK64_fn_vkCmdSetBlendConstants),
+    E(vkCmdSetStencilCompareMask, VK64_fn_vkCmdSetStencilCompareMask),
+    E(vkCmdSetStencilWriteMask, VK64_fn_vkCmdSetStencilWriteMask),
+    E(vkCmdSetStencilReference, VK64_fn_vkCmdSetStencilReference),
+
     E(vkCmdDraw, VK64_fn_vkCmdDraw),
     E(vkCmdDrawIndexed, VK64_fn_vkCmdDrawIndexed),
     E(vkCmdBindVertexBuffers, VK64_fn_vkCmdBindVertexBuffers),
@@ -1508,7 +1534,6 @@ TAIL(vkCmdResolveImage)
 TAIL(vkCmdResolveImageKHR)
 TAIL(vkCmdSetBlendConstant)
 TAIL(vkCmdSetDepthBounds)
-TAIL(vkCmdSetStencilReference)
 TAIL(vkCmdPushDescriptorSet)
 TAIL(vkCmdNextSubpass)
 TAIL(vkCmdNextSubpassKHR)

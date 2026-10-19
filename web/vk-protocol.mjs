@@ -56,6 +56,7 @@ export const V2_REC = Object.freeze({
   BUFFER_DATA: 0x09, IMAGE_DATA: 0x0A, SAMPLER: 0x0B, PUSH: 0x0C,
   VIEWPORT: 0x0D, SCISSOR: 0x0E, VERTEX_BIND: 0x0F, INDEX_BIND: 0x10,
   DRAW: 0x11, INLINE_BYTES: 0x12, READBACK: 0x13, IMAGE_COPY: 0x14,
+  STENCIL_STATE: 0x15, BLEND_CONSTANTS: 0x16, CLEAR_ATTACHMENTS: 0x17,
 });
 
 // Vulkan descriptor types (numeric, as the bridge records them).
@@ -110,7 +111,7 @@ export function parseV2Chunk(bytes) {
     if (p + V2_REC_HEADER_LEN > bytes.length) throw new Error('vk64: v2 chunk truncated record header');
     const type = dv.getUint16(p, true);
     const len = dv.getUint32(p + 4, true);
-    if (type < V2_REC.FRAME_BEGIN || type > V2_REC.IMAGE_COPY)
+    if (type < V2_REC.FRAME_BEGIN || type > V2_REC.CLEAR_ATTACHMENTS)
       throw new Error('vk64: v2 unknown record type 0x' + type.toString(16));
     if (len > V2_MAX_RECORD_BYTES || p + V2_REC_HEADER_LEN + len > bytes.length)
       throw new Error('vk64: v2 record 0x' + type.toString(16) + ' truncated (len ' + len + ')');
@@ -338,7 +339,7 @@ export function decodeV2Frame(records, counters = {}) {
         const rpId = v2Hex64(r.u64()), fbId = v2Hex64(r.u64());
         const w = r.u32(), h = r.u32(), natt = r.u32();
         if (natt > 8) throw new Error('vk64: v2 RP_BEGIN attachment count out of range');
-        /** @type {{format:number, loadOp:number, storeOp:number, samples:number, isDepth:number, viewId?:string, imageId?:string}[]} */
+        /** @type {{format:number, loadOp:number, storeOp:number, samples:number, isDepth:number, viewId?:string, imageId?:string, stencilLoadOp?:number, stencilStoreOp?:number, aspectMask?:number}[]} */
         const attachments = [];
         for (let a = 0; a < natt; a++) {
           attachments.push({ format: r.u32(), loadOp: r.u32(), storeOp: r.u32(), samples: r.u32(), isDepth: r.u32() });
@@ -351,6 +352,13 @@ export function decodeV2Frame(records, counters = {}) {
         for (let a = 0; a < natt; a++) {
           attachments[a].viewId = v2Hex64(r.u64());
           attachments[a].imageId = v2Hex64(r.u64());
+        }
+        if (r.left) {
+          if (r.u32() !== 0x31505453 || r.u32() !== natt)
+            throw new Error('vk64: v2 RP_BEGIN invalid stencil tail');
+          for (const attachment of attachments) {
+            attachment.stencilLoadOp = r.u32(); attachment.stencilStoreOp = r.u32(); attachment.aspectMask = r.u32();
+          }
         }
         r.done('RP_BEGIN');
         pass = { rpId, fbId, w, h, attachments, clearColor, clearDepth, clearStencil, ops: [] };
@@ -397,9 +405,18 @@ export function decodeV2Frame(records, counters = {}) {
           vsSpec = readSpec();
           fsSpec = readSpec();
         }
-        let colorBlend, blendConstants;
-        if (r.left) {
-          if (r.u32() !== 0x31444e42) throw new Error('vk64: v2 PIPELINE unknown blend tail');
+        let colorBlend, blendConstants, stencil, blendConstantsDynamic;
+        while (r.left) {
+          const tag = r.u32();
+          if (tag === 0x314e5453) {
+            const enabled = r.u32(), dynamicMask = r.u32(), dynamicBlend = r.u32();
+            if (enabled > 1 || dynamicMask > 7 || dynamicBlend > 1) throw new Error('vk64: v2 PIPELINE invalid stencil flags');
+            const face = () => ({failOp:r.u32(), passOp:r.u32(), depthFailOp:r.u32(), compareOp:r.u32(), compareMask:r.u32(), writeMask:r.u32(), reference:r.u32()});
+            stencil = {enabled, dynamicMask, front:face(), back:face()};
+            blendConstantsDynamic = !!dynamicBlend;
+            continue;
+          }
+          if (tag !== 0x31444e42) throw new Error('vk64: v2 PIPELINE unknown extension tail');
           const count = r.u32();
           if (count > 4) throw new Error('vk64: v2 PIPELINE blend count out of range');
           colorBlend = [];
@@ -410,7 +427,7 @@ export function decodeV2Frame(records, counters = {}) {
           blendConstants = [r.f32(), r.f32(), r.f32(), r.f32()];
         }
         r.done('PIPELINE');
-        const pipe = { pipeId, vsHash, fsHash, topology, cull, front, depthTest, depthWrite, depthOp, blend, vb, va, vsSpec, fsSpec, ...(colorBlend ? { colorBlend, blendConstants } : {}) };
+        const pipe = { pipeId, vsHash, fsHash, topology, cull, front, depthTest, depthWrite, depthOp, blend, vb, va, vsSpec, fsSpec, ...(colorBlend ? { colorBlend, blendConstants } : {}), ...(stencil ? {stencil, blendConstantsDynamic} : {}) };
         frame.pipelines.set(pipeId, pipe);
         needPass().ops.push({ op: 'bindPipe', pipe });
         break;
@@ -513,6 +530,31 @@ export function decodeV2Frame(records, counters = {}) {
           throw new Error('vk64: v2 invalid image copy');
         needPass().ops.push({ op: 'imageCopy', srcImage, dstImage, srcMip, srcLayer, dstMip, dstLayer, srcOrigin, dstOrigin, extent });
         break;
+      }
+      case V2_REC.STENCIL_STATE: {
+        const kind = r.u32(), faces = r.u32(), value = r.u32(); r.done('STENCIL_STATE');
+        if (kind > 2 || (faces & ~3)) throw new Error('vk64: v2 invalid stencil state');
+        needPass().ops.push({op:'stencil', kind, faces, value}); break;
+      }
+      case V2_REC.BLEND_CONSTANTS: {
+        const values = [r.f32(),r.f32(),r.f32(),r.f32()]; r.done('BLEND_CONSTANTS');
+        needPass().ops.push({op:'blendConstants', values}); break;
+      }
+      case V2_REC.CLEAR_ATTACHMENTS: {
+        const count = r.u32();
+        if (count > 8) throw new Error('vk64: v2 clear attachment count out of range');
+        const attachments = [];
+        for (let a = 0; a < count; a++) {
+          const aspectMask=r.u32(), colorAttachment=r.u32(), colorBits=[r.u32(),r.u32(),r.u32(),r.u32()], depth=r.f32(), stencil=r.u32();
+          if (!aspectMask || (aspectMask & ~7) || colorAttachment > 7 || ((aspectMask & 2) && (!Number.isFinite(depth) || depth < 0 || depth > 1)))
+            throw new Error('vk64: v2 invalid clear attachment');
+          attachments.push({aspectMask,colorAttachment,colorBits,depth,stencil});
+        }
+        const rectCount=r.u32();
+        if (rectCount > 4096) throw new Error('vk64: v2 clear rectangle count out of range');
+        const rects=[];
+        for(let a=0;a<rectCount;a++) rects.push({x:r.u32()|0,y:r.u32()|0,w:r.u32(),h:r.u32(),baseLayer:r.u32(),layers:r.u32()});
+        r.done('CLEAR_ATTACHMENTS'); needPass().ops.push({op:'clearAttachments',attachments,rects}); break;
       }
       case V2_REC.VIEWPORT: {
         const v = [r.f32(), r.f32(), r.f32(), r.f32(), r.f32(), r.f32()]; r.done('VIEWPORT');

@@ -250,3 +250,17 @@ Frames without this tail retain the legacy alpha-blending fallback. New frames
 preserve multiplicative shadows, additive effects and attachment write masks.
 This tail carries static pipeline constants; dynamic `vkCmdSetBlendConstants`
 command support is a separate remaining bridge feature.
+
+Stencil extensions (2026-10-19): `PIPELINE` appends `STN1` (`0x314e5453`),
+then u32 enable, dynamic mask (bits 0 compare mask, 1 write mask, 2 reference),
+dynamic blend-constant flag, and front/back faces. Each face has seven u32:
+fail, pass, depth-fail, compare, compare mask, write mask, reference.
+`RP_BEGIN` appends `STP1` (`0x31505453`), attachment count, and three u32 per
+attachment: stencil load, stencil store, aspect mask. Older frames omit these tails.
+
+Records `0x15` (stencil state) carry kind (compare/write/reference = 0/1/2),
+face bits (front 1, back 2), and value, all u32. `0x16` carries four f32 blend
+constants. `0x17` carries a bounded u32 attachment count (max 8), then aspect,
+colour slot, four raw colour u32, f32 depth, and u32 stencil per attachment;
+then a bounded rectangle count (max 4096) and x/y signed 32-bit, width, height,
+base layer, layer count per rectangle. Commands retain recorded order.

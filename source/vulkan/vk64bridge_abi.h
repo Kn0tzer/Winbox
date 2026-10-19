@@ -344,6 +344,11 @@ enum {
     VK64_fn_vkCmdResetQueryPool,                // (cmdBuf, pool, first, count) -> SUCCESS
     VK64_fn_vkCmdBeginQuery,                    // (cmdBuf, pool, query, flags) -> SUCCESS
     VK64_fn_vkCmdEndQuery,                      // (cmdBuf, pool, query) -> SUCCESS
+    // Core dynamic raster state. Append-only; old trap IDs stay unchanged.
+    VK64_fn_vkCmdSetBlendConstants = 900,
+    VK64_fn_vkCmdSetStencilCompareMask,
+    VK64_fn_vkCmdSetStencilWriteMask,
+    VK64_fn_vkCmdSetStencilReference,
     VK64_fn__MAX
 };
 

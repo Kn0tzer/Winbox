@@ -256,6 +256,10 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkCmdBindDescriptorSets,              "vkCmdBindDescriptorSets") \
     X(VK64_fn_vkCmdSetViewport,                     "vkCmdSetViewport")    \
     X(VK64_fn_vkCmdSetScissor,                      "vkCmdSetScissor")     \
+    X(VK64_fn_vkCmdSetBlendConstants, "vkCmdSetBlendConstants") \
+    X(VK64_fn_vkCmdSetStencilCompareMask, "vkCmdSetStencilCompareMask") \
+    X(VK64_fn_vkCmdSetStencilWriteMask, "vkCmdSetStencilWriteMask") \
+    X(VK64_fn_vkCmdSetStencilReference, "vkCmdSetStencilReference") \
     X(VK64_fn_vkCmdDraw,                            "vkCmdDraw")           \
     X(VK64_fn_vkCmdPipelineBarrier,                 "vkCmdPipelineBarrier")\
     X(VK64_fn_vkCmdCopyBufferToImage,               "vkCmdCopyBufferToImage") \
@@ -583,10 +587,20 @@ struct ColorBlend {
     U32 enable = 0, srcColor = 1, dstColor = 0, colorOp = 0;
     U32 srcAlpha = 1, dstAlpha = 0, alphaOp = 0, writeMask = 15;
 };
+struct StencilFace {
+    U32 failOp = 0, passOp = 0, depthFailOp = 0, compareOp = 7;
+    U32 compareMask = 255, writeMask = 255, reference = 0;
+};
+struct StencilState {
+    U32 enabled = 0, dynamicMask = 0;
+    StencilFace front, back;
+};
 struct Pipeline : Obj {
     U32 topology = 0, cull = 0, front = 0, depthTest = 0, depthWrite = 0, depthOp = 0, blend = 0;
     U32 colorBlendCount = 0; ColorBlend colorBlend[VK64_MAX_ATTACH];
     float blendConstants[4] = {};
+    bool blendConstantsDynamic = false;
+    StencilState stencil;
     StageSpec vsSpec, fsSpec;
     U32 nvb = 0, nva = 0;
     bool dynamicVertexStride = false;
@@ -613,9 +627,20 @@ static void captureColorBlend(Pipeline& pipe, const std::vector<T>& states) {
     }
     pipe.blend = pipe.colorBlendCount && pipe.colorBlend[0].enable ? 1 : 0;
 }
+template <class T>
+static void captureStencil(Pipeline& pipe, const T& state) {
+    pipe.stencil.enabled = state.stencilTestEnable;
+    auto face = [](const auto& f) -> StencilFace {
+        return {f.failOp, f.passOp, f.depthFailOp, f.compareOp,
+                f.compareMask, f.writeMask, f.reference};
+    };
+    pipe.stencil.front = face(state.front);
+    pipe.stencil.back = face(state.back);
+}
 struct RenderPass : Obj {
     U32 natt = 0, formats[VK64_MAX_ATTACH] = {0}, loadOps[VK64_MAX_ATTACH] = {0},
         storeOps[VK64_MAX_ATTACH] = {0}, depthFmt = 0;
+    U32 stencilLoadOps[VK64_MAX_ATTACH] = {0}, stencilStoreOps[VK64_MAX_ATTACH] = {0};
     U32 samples[VK64_MAX_ATTACH] = {0};   // v2: per-attachment MSAA sample count
 };
 struct Framebuffer : Obj { U64 rp = 0; U32 natt = 0; U64 views[VK64_MAX_ATTACH] = {0}; U32 w = 0, h = 0; };
@@ -628,7 +653,8 @@ struct Swapchain : Obj { U32 w = 0, h = 0, format = 0, nimg = 0, cur = 0; U64 im
 enum CmdKind : U32 {
     CMD_BEGIN_RP, CMD_END_RP, CMD_BIND_PIPE, CMD_BIND_SETS, CMD_VIEWPORT,
     CMD_SCISSOR, CMD_DRAW, CMD_DRAW_INDEXED, CMD_BARRIER, CMD_COPY_B2I, CMD_PUSH_CONST,
-    CMD_BIND_VB, CMD_BIND_IB, CMD_UPDATE_BUF, CMD_COPY_I2B, CMD_DISPATCH, CMD_COPY_IMAGE
+    CMD_BIND_VB, CMD_BIND_IB, CMD_UPDATE_BUF, CMD_COPY_I2B, CMD_DISPATCH, CMD_COPY_IMAGE,
+    CMD_STENCIL_STATE, CMD_BLEND_CONSTANTS, CMD_CLEAR_ATTACHMENTS
 };
 struct Copy {
     U64 srcBuffer = 0, dstImage = 0, bufOff = 0;
@@ -644,11 +670,17 @@ struct ImageCopy {
     U32 srcMip = 0, srcLayer = 0, dstMip = 0, dstLayer = 0;
     U32 srcOrigin[3] = {}, dstOrigin[3] = {}, extent[3] = {};
 };
+struct ClearAttachmentArg { U32 aspectMask = 0, colorAttachment = 0, value[4] = {}; };
+struct ClearRectArg { int32_t x = 0, y = 0; U32 w = 0, h = 0, baseLayer = 0, layers = 1; };
+static_assert(sizeof(ClearAttachmentArg) == 24 && sizeof(ClearRectArg) == 24, "clear ABI layout");
 struct Cmd {
     U32 kind = 0;
     U64 a = 0, b = 0, c = 0, d = 0;
     float f[8] = {0};
     double clearDepth = 1.0;
+    U32 clearStencil = 0;
+    std::vector<ClearAttachmentArg> clearAttachments;
+    std::vector<ClearRectArg> clearRects;
     U32 vbCount = 0;
     U64 vbBuffers[VK64_MAX_VERT_BINDINGS] = {0}, vbOffsets[VK64_MAX_VERT_BINDINGS] = {0};
     U64 sets[VK64_MAX_SETS] = {0};
@@ -676,6 +708,16 @@ struct Cmd {
     U32 capCount = 0;
     std::vector<float> capPos, capCol;
 };
+template <class T>
+static void captureRenderPassClears(Cmd& command, const RenderPass* pass, const std::vector<T>& values) {
+    if (!pass) return;
+    for (U32 i = 0; i < std::min<U32>(pass->natt, (U32)values.size()); ++i) {
+        if (pass->formats[i] >= 124 && pass->formats[i] <= 130) {
+            command.clearDepth = values[i].depthStencil.depth;
+            command.clearStencil = values[i].depthStencil.stencil;
+        } else if (i == 0) memcpy(command.f, values[i].color.float32, 16);
+    }
+}
 struct CmdBuf : Obj {
     U64 pool = 0;
     std::vector<Cmd> cmds;
@@ -1666,6 +1708,7 @@ enum V2Rec : U32 {
     V2_PUSH = 0x0C, V2_VIEWPORT = 0x0D, V2_SCISSOR = 0x0E,
     V2_VERTEX_BIND = 0x0F, V2_INDEX_BIND = 0x10, V2_DRAW = 0x11,
     V2_INLINE_BYTES = 0x12, V2_READBACK = 0x13, V2_IMAGE_COPY = 0x14,
+    V2_STENCIL_STATE = 0x15, V2_BLEND_CONSTANTS = 0x16, V2_CLEAR_ATTACHMENTS = 0x17,
 };
 const U32 V2_CHUNK_MAGIC = 0x46324B56u;   // 'VK2F' little-endian: bytes 56 4B 32 46
 const U32 V2_CHUNK_VERSION = 2;
@@ -1711,6 +1754,16 @@ static void emitColorBlend(const Pipeline& pipe, ChunkWriter& p) {
     for (float value : pipe.blendConstants) p.f32(value);
 }
 
+
+static void emitStencil(const Pipeline& pipe, ChunkWriter& p) {
+    p.u32(0x314e5453u); // STN1
+    p.u32(pipe.stencil.enabled); p.u32(pipe.stencil.dynamicMask); p.u32(pipe.blendConstantsDynamic ? 1 : 0);
+    auto face = [&](const StencilFace& f) {
+        p.u32(f.failOp); p.u32(f.passOp); p.u32(f.depthFailOp); p.u32(f.compareOp);
+        p.u32(f.compareMask); p.u32(f.writeMask); p.u32(f.reference);
+    };
+    face(pipe.stencil.front); face(pipe.stencil.back);
+}
 
 // One frame under construction: an open chunk plus sealed chunks. Records never
 // straddle chunks; a single oversize record gets a chunk of its own.
@@ -2322,7 +2375,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             if (fb) {
                 for (U32 i = 0; i < fb->natt; i++) {
                     ImageView* v = objOf<ImageView>(fb->views[i], K_IMAGEVIEW, "vkQueueSubmit");
-                    if (v && (v->aspect & 0x2u)) { fbHasDepth = true; break; }
+                    if (v && (v->aspect & 0x6u)) { fbHasDepth = true; break; }
                 }
             }
             (void)fbHasDepth; // V2 carries true intent; JS handles pass matching.
@@ -2358,6 +2411,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 emitSpec(pipe->vsSpec);
                 emitSpec(pipe->fsSpec);
                 emitColorBlend(*pipe, p);
+                emitStencil(*pipe, p);
             });
         };
         auto emitRpBegin = [&](const Cmd& k) {
@@ -2370,15 +2424,20 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     ImageView* v = objOf<ImageView>(rfb->views[i], K_IMAGEVIEW, "vkQueueSubmit");
                     p.u32(rrp->formats[i]); p.u32(rrp->loadOps[i]); p.u32(rrp->storeOps[i]);
                     p.u32(rrp->samples[i] ? rrp->samples[i] : 1);
-                    p.u32(v && (v->aspect & 0x2u) ? 1 : 0);
+                    p.u32(v && (v->aspect & 0x6u) ? 1 : 0);
                 }
                 p.f32(k.f[0]); p.f32(k.f[1]); p.f32(k.f[2]); p.f32(k.f[3]);
-                p.f32((float)k.clearDepth); p.u32(0);
+                p.f32((float)k.clearDepth); p.u32(k.clearStencil);
                 // Optional attachment identity tail, paired with the updated
                 // decoder. Image identity links render and sampled view aliases.
                 for (U32 i = 0; i < rfb->natt; ++i) {
                     auto* view = objOf<ImageView>(rfb->views[i], K_IMAGEVIEW, "vkQueueSubmit");
                     p.u64(rfb->views[i]); p.u64(view ? view->image : 0);
+                }
+                p.u32(0x31505453u); p.u32(rfb->natt); // STP1
+                for (U32 i = 0; i < rfb->natt; ++i) {
+                    auto* view = objOf<ImageView>(rfb->views[i], K_IMAGEVIEW, "vkQueueSubmit");
+                    p.u32(rrp->stencilLoadOps[i]); p.u32(rrp->stencilStoreOps[i]); p.u32(view ? view->aspect : 0);
                 }
             });
         };
@@ -2473,6 +2532,28 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                         if (k.sets[first + i]) emitDescSet(first + i, k.sets[first + i]);
                     break;
                 }
+                case CMD_STENCIL_STATE:
+                    emit(V2_STENCIL_STATE, [&](ChunkWriter& p) { p.u32(k.a); p.u32(k.b); p.u32(k.c); });
+                    break;
+                case CMD_BLEND_CONSTANTS:
+                    emit(V2_BLEND_CONSTANTS, [&](ChunkWriter& p) { for (int i = 0; i < 4; ++i) p.f32(k.f[i]); });
+                    break;
+                case CMD_CLEAR_ATTACHMENTS:
+                    emit(V2_CLEAR_ATTACHMENTS, [&](ChunkWriter& p) {
+                        p.u32((U32)k.clearAttachments.size());
+                        for (const auto& a : k.clearAttachments) {
+                            p.u32(a.aspectMask); p.u32(a.colorAttachment);
+                            for (U32 value : a.value) p.u32(value);
+                            float depth = 1.0f;
+                            if (a.aspectMask & 2) memcpy(&depth, a.value, 4);
+                            p.f32(depth); p.u32(a.aspectMask & 4 ? a.value[1] : 0);
+                        }
+                        p.u32((U32)k.clearRects.size());
+                        for (const auto& r : k.clearRects) {
+                            p.u32((U32)r.x); p.u32((U32)r.y); p.u32(r.w); p.u32(r.h); p.u32(r.baseLayer); p.u32(r.layers);
+                        }
+                    });
+                    break;
                 case CMD_VIEWPORT:
                     emit(V2_VIEWPORT, [&](ChunkWriter& p) {
                         for (int i = 0; i < 6; i++) p.f32(k.f[i]);
@@ -4008,6 +4089,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             rp->formats[i] = atts[i].format;
             rp->loadOps[i] = atts[i].loadOp;
             rp->storeOps[i] = atts[i].storeOp;
+            rp->stencilLoadOps[i] = atts[i].stencilLoadOp;
+            rp->stencilStoreOps[i] = atts[i].stencilStoreOp;
             rp->samples[i] = atts[i].samples;
         }
         if (atts.size() > 1) rp->depthFmt = atts[1].format;
@@ -4055,6 +4138,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             p->depthTest = ds.depthTestEnable;
             p->depthWrite = ds.depthWriteEnable;
             p->depthOp = ds.depthCompareOp;
+            captureStencil(*p, ds);
             // pVertexInputState: binding + attribute descriptions. Recorded
             // because the consumer cannot infer any of it — the draw call carries
             // no format, no stride and no offset — and without it there is no
@@ -4084,9 +4168,12 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             if (readStruct(ci.pDynamicState, dynamic)) {
                 std::vector<VkDynamicState> states;
                 readArray(dynamic.pDynamicStates, dynamic.dynamicStateCount, states);
-                for (auto state : states)
-                    if (state == VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE)
-                        p->dynamicVertexStride = true;
+                for (auto state : states) {
+                    const U32 value = (U32)state;
+                    if (value == (U32)VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE) p->dynamicVertexStride = true;
+                    if (value >= 6 && value <= 8) p->stencil.dynamicMask |= 1u << (value - 6);
+                    if (value == 4) p->blendConstantsDynamic = true;
+                }
             }
             std::vector<VkPipelineColorBlendAttachmentState> blends;
             readArray(cbs.pAttachments, std::min<U32>(cbs.attachmentCount, VK64_MAX_ATTACH), blends);
@@ -4662,15 +4749,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // pClearValues is a guest VA: colour first, then depth/stencil (P1 read
         // index 0 as colour and index 1 as depth).
         std::vector<VkClearValue> clears;
-        readArray(bi.pClearValues, bi.clearValueCount ? (bi.clearValueCount > 2 ? 2 : bi.clearValueCount) : 0, clears);
-        if (clears.size() > 0) {
-            c.f[0] = clears[0].color.float32[0];
-            c.f[1] = clears[0].color.float32[1];
-            c.f[2] = clears[0].color.float32[2];
-            c.f[3] = clears[0].color.float32[3];
-        }
-        if (clears.size() > 1) c.clearDepth = clears[1].depthStencil.depth;
-        else c.clearDepth = 1.0;
+        readArray(bi.pClearValues, std::min<U32>(bi.clearValueCount, VK64_MAX_ATTACH), clears);
+        captureRenderPassClears(c, objOf<RenderPass>(bi.renderPass, K_RENDERPASS, "vkCmdBeginRenderPass"), clears);
         pushCmd(cb, c);
         return 0;
     }
@@ -4694,13 +4774,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         c.a = bi.renderPass;
         c.b = bi.framebuffer;
         std::vector<VkClearValue> clears;
-        readArray(bi.pClearValues, bi.clearValueCount ? (bi.clearValueCount > 2 ? 2 : bi.clearValueCount) : 0, clears);
-        if (clears.size() > 0) {
-            c.f[0] = clears[0].color.float32[0];
-            c.f[1] = clears[0].color.float32[1];
-            c.f[2] = clears[0].color.float32[2];
-            c.f[3] = clears[0].color.float32[3];
-        }
+        readArray(bi.pClearValues, std::min<U32>(bi.clearValueCount, VK64_MAX_ATTACH), clears);
+        captureRenderPassClears(c, objOf<RenderPass>(bi.renderPass, K_RENDERPASS, "vkCmdBeginRenderPass"), clears);
         pushCmd(cb, c);
         return 0;
     }
@@ -4801,6 +4876,14 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         attachment(ri.pDepthAttachment, true);
         // Packed depth/stencil shares one image view and one replay attachment.
         if (!ri.pDepthAttachment) attachment(ri.pStencilAttachment, true);
+        if (ri.pStencilAttachment && fb->natt) {
+            VkRenderingAttachmentInfo stencil = {};
+            if (readStruct(ri.pStencilAttachment, stencil)) {
+                U32 i = fb->natt - 1;
+                rp->stencilLoadOps[i] = stencil.loadOp; rp->stencilStoreOps[i] = stencil.storeOp;
+                memcpy(&c.clearStencil, stencil.clearValue + 4, 4);
+            }
+        }
         rp->natt = fb->natt;
         pushCmd(cb, c);
         return 0;
@@ -4844,6 +4927,23 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         c.b = setCount;
         pushCmd(cb, c);
         return 0;
+    }
+    case VK64_fn_vkCmdSetStencilCompareMask:
+    case VK64_fn_vkCmdSetStencilWriteMask:
+    case VK64_fn_vkCmdSetStencilReference: {
+        CmdBuf* cb = cbOf(args.a[0], "dynamic raster state");
+        if (!cb) return 0;
+        Cmd c; c.kind = CMD_STENCIL_STATE;
+        c.a = fnId == VK64_fn_vkCmdSetStencilCompareMask ? 0 : fnId == VK64_fn_vkCmdSetStencilWriteMask ? 1 : 2;
+        c.b = (U32)args.a[1]; c.c = (U32)args.a[2];
+        pushCmd(cb, c); return 0;
+    }
+    case VK64_fn_vkCmdSetBlendConstants: {
+        CmdBuf* cb = cbOf(args.a[0], "dynamic raster state");
+        if (!cb || !args.a[1]) return 0;
+        Cmd c; c.kind = CMD_BLEND_CONSTANTS;
+        g_mem->memcpyFromGuest(c.f, args.a[1], 16);
+        pushCmd(cb, c); return 0;
     }
     case VK64_fn_vkCmdSetViewport: {
         // (cmdBuf, first, count, pViewports*)
@@ -5230,29 +5330,13 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkCmdClearAttachments:
     case VK64_fn_vkCmdClearAttachmentsKHR: {
-        // (cmdBuf, attachmentCount, pAttachments*, rectCount, pRects*)
-        // Clear attachments within a render pass. Find the current framebuffer
-        // from the most recent BEGIN_RP command and clear the specified attachments.
         CmdBuf* cb = cbOf(args.a[0], "vkCmdClearAttachments");
         if (!cb) return 0;
-        // Find the framebuffer from the last BEGIN_RP
-        U64 fbId = 0;
-        for (auto it = cb->cmds.rbegin(); it != cb->cmds.rend(); ++it) {
-            if (it->kind == CMD_BEGIN_RP) { fbId = it->b; break; }
-        }
-        if (!fbId) return 0;
-        // VkClearAttachment: {aspectMask(0,4), colorAttachment(4,4), clearValue(8,16)}
-        struct VkClearAttachmentL { U32 aspectMask; U32 colorAttachment; U8 clearValue[16]; };
-        U32 nAttach = (U32)args.a[1];
-        std::vector<VkClearAttachmentL> attaches;
-        readArray(args.a[2], nAttach, attaches);
-        // For now, clear the entire framebuffer images (rect handling is complex;
-        // DXVK typically clears full attachments). A full implementation would
-        // parse pRects and clear subregions.
-        // Note: Resolving framebuffer->image requires framebuffer object lookup.
-        // This is a best-effort: if we can't resolve, the clear is skipped but logged.
-        // TODO: Full framebuffer attachment resolution
-        (void)fbId; (void)attaches;
+        if (args.a[1] > 8 || args.a[3] > 4096) { g_frameOverflow = true; return 0; }
+        Cmd c; c.kind = CMD_CLEAR_ATTACHMENTS;
+        readArray(args.a[2], (U32)args.a[1], c.clearAttachments);
+        readArray(args.a[4], (U32)args.a[3], c.clearRects);
+        if (!c.clearAttachments.empty() && !c.clearRects.empty()) pushCmd(cb, c);
         return 0;
     }
     case VK64_fn_vkCmdCopyImage: {
@@ -6889,6 +6973,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             p->depthTest = ds.depthTestEnable;
             p->depthWrite = ds.depthWriteEnable;
             p->depthOp = ds.depthCompareOp;
+            captureStencil(*p, ds);
             // pVertexInputState: binding + attribute descriptions. Recorded
             // because the consumer cannot infer any of it — the draw call carries
             // no format, no stride and no offset — and without it there is no
@@ -6918,9 +7003,12 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             if (readStruct32(ci.pDynamicState, dynamic)) {
                 std::vector<vk32abi::VkDynamicState> states;
                 readArray32(dynamic.pDynamicStates, dynamic.dynamicStateCount, states);
-                for (auto state : states)
-                    if ((U32)state == (U32)VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE)
-                        p->dynamicVertexStride = true;
+                for (auto state : states) {
+                    const U32 value = (U32)state;
+                    if (value == (U32)VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE) p->dynamicVertexStride = true;
+                    if (value >= 6 && value <= 8) p->stencil.dynamicMask |= 1u << (value - 6);
+                    if (value == 4) p->blendConstantsDynamic = true;
+                }
             }
             std::vector<vk32abi::VkPipelineColorBlendAttachmentState> blends;
             readArray32(cbs.pAttachments, std::min<U32>(cbs.attachmentCount, VK64_MAX_ATTACH), blends);
@@ -6967,6 +7055,8 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             rp->formats[i] = atts[i].format;
             rp->loadOps[i] = atts[i].loadOp;
             rp->storeOps[i] = atts[i].storeOp;
+            rp->stencilLoadOps[i] = atts[i].stencilLoadOp;
+            rp->stencilStoreOps[i] = atts[i].stencilStoreOp;
             rp->samples[i] = atts[i].samples;
         }
         if (atts.size() > 1) rp->depthFmt = atts[1].format;
@@ -7195,15 +7285,8 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         // pClearValues is a guest VA: colour first, then depth/stencil (P1 read
         // index 0 as colour and index 1 as depth).
         std::vector<vk32abi::VkClearValue> clears;
-        readArray32(bi.pClearValues, bi.clearValueCount ? (bi.clearValueCount > 2 ? 2 : bi.clearValueCount) : 0, clears);
-        if (clears.size() > 0) {
-            c.f[0] = clears[0].color.float32[0];
-            c.f[1] = clears[0].color.float32[1];
-            c.f[2] = clears[0].color.float32[2];
-            c.f[3] = clears[0].color.float32[3];
-        }
-        if (clears.size() > 1) c.clearDepth = clears[1].depthStencil.depth;
-        else c.clearDepth = 1.0;
+        readArray32(bi.pClearValues, std::min<U32>(bi.clearValueCount, VK64_MAX_ATTACH), clears);
+        captureRenderPassClears(c, objOf32<RenderPass>(bi.renderPass, K_RENDERPASS, "vkCmdBeginRenderPass"), clears);
         pushCmd(cb, c);
         return 0;
     }
@@ -7239,6 +7322,23 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         memcpy(c.sets, cb->sets, sizeof(c.sets)); c.a = args.a[3]; c.b = args.a[4];
         pushCmd(cb, c);
         return 0;
+    }
+    case VK64_fn_vkCmdSetStencilCompareMask:
+    case VK64_fn_vkCmdSetStencilWriteMask:
+    case VK64_fn_vkCmdSetStencilReference: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "dynamic raster state");
+        if (!cb) return 0;
+        Cmd c; c.kind = CMD_STENCIL_STATE;
+        c.a = fnId == VK64_fn_vkCmdSetStencilCompareMask ? 0 : fnId == VK64_fn_vkCmdSetStencilWriteMask ? 1 : 2;
+        c.b = (U32)args.a[1]; c.c = (U32)args.a[2];
+        pushCmd(cb, c); return 0;
+    }
+    case VK64_fn_vkCmdSetBlendConstants: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "dynamic raster state");
+        if (!cb || !args.a[1]) return 0;
+        Cmd c; c.kind = CMD_BLEND_CONSTANTS;
+        g_mem32->memcpyFromGuest(c.f, (U32)args.a[1], 16);
+        pushCmd(cb, c); return 0;
     }
     case VK64_fn_vkCmdSetViewport: {
         // (cmdBuf, first, count, pViewports*)
@@ -7398,35 +7498,13 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     }
     case VK64_fn_vkCmdClearAttachments:
     case VK64_fn_vkCmdClearAttachmentsKHR: {
-        // Clear via the framebuffer of the current render pass.
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdClearAttachments");
         if (!cb) return 0;
-        U64 fbId = 0;
-        for (auto it = cb->cmds.rbegin(); it != cb->cmds.rend(); ++it) {
-            if (it->kind == CMD_BEGIN_RP) { fbId = it->b; break; }
-        }
-        Framebuffer* fb = objOf32<Framebuffer>(fbId, K_FRAMEBUFFER, "vkCmdClearAttachments");
-        if (!fb) return 0;
-        U32 natt = (U32)args.a[1];
-        for (U32 i = 0; i < natt && args.a[2]; i++) {
-            vk32abi::VkClearAttachment att = {};
-            readStruct32((U32)args.a[2] + i * (U32)sizeof(att), att);
-            if (att.colorAttachment >= fb->natt) continue;
-            ImageView* view = objOf32<ImageView>(fb->views[att.colorAttachment], K_IMAGEVIEW, "vkCmdClearAttachments");
-            if (!view) continue;
-            Image* im = objOf32<Image>(view->image, K_IMAGE, "vkCmdClearAttachments");
-            if (!im || !im->mem) continue;
-            DeviceMemory* dmem = objOf32<DeviceMemory>(im->mem, K_MEMORY, "vkCmdClearAttachments");
-            if (!dmem || !dmem->va) continue;
-            U32 pxBytes = fmt_bpp(im->format);
-            U32 pixel; memcpy(&pixel, att.clearValue.color.float32, 4);
-            U64 total = (U64)im->w * im->h * pxBytes;
-            if (im->memOff >= dmem->size) continue;
-            total = std::min(total, dmem->size - im->memOff);
-            U32 va = (U32)(dmem->va + im->memOff);
-            for (U64 off = 0; off < total; off += 4)
-                g_mem32->memcpyToGuest(va + (U32)off, &pixel, 4);
-        }
+        if (args.a[1] > 8 || args.a[3] > 4096) { g_frameOverflow = true; return 0; }
+        Cmd c; c.kind = CMD_CLEAR_ATTACHMENTS;
+        readArray32(args.a[2], (U32)args.a[1], c.clearAttachments);
+        readArray32(args.a[4], (U32)args.a[3], c.clearRects);
+        if (!c.clearAttachments.empty() && !c.clearRects.empty()) pushCmd(cb, c);
         return 0;
     }
     case VK64_fn_vkCmdCopyBuffer: {
@@ -7824,6 +7902,14 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         attachment(ri.pDepthAttachment, true);
         // Packed depth/stencil shares one image view and one replay attachment.
         if (!ri.pDepthAttachment) attachment(ri.pStencilAttachment, true);
+        if (ri.pStencilAttachment && fb->natt) {
+            vk32abi::VkRenderingAttachmentInfo stencil = {};
+            if (readStruct32(ri.pStencilAttachment, stencil)) {
+                U32 i = fb->natt - 1;
+                rp->stencilLoadOps[i] = stencil.loadOp; rp->stencilStoreOps[i] = stencil.storeOp;
+                memcpy(&c.clearStencil, ((const U8*)&stencil.clearValue) + 4, 4);
+            }
+        }
         rp->natt = fb->natt;
         pushCmd(cb, c);
         return 0;
