@@ -1,10 +1,11 @@
 // Replay captured rendering independently of the guest's multi-minute startup.
 // FRAME=/absolute/frame.json.gz PROBE_DIST=/absolute/export node ...
 import { chromium } from '@playwright/test';
-import { readFile, mkdir, writeFile } from 'node:fs/promises';
+import { readFile, mkdir, writeFile, mkdtemp, readdir, symlink, rm } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { serve } from '../../tools/browser/serve.mjs';
 import { acquireProbeSlot } from './probe-slots.mjs';
 import { waitForBuildIdle } from './build-lock.mjs';
@@ -20,11 +21,20 @@ const dir = join(repo, 'test-results', tag);
 await mkdir(dir, { recursive: true });
 const slot = await acquireProbeSlot();
 await waitForBuildIdle();
-let server, browser;
+let server, browser, replayRoot;
 const logs = [];
 const logFile = createWriteStream(join(dir, 'console.log'));
 try {
-  server = await serve(resolve(process.env.PROBE_DIST || join(repo, 'dist')));
+  // Keep large captured frames out of the browser automation transport.
+  // A multi-submit Portal capture can exceed 150 MB of JSON.
+  replayRoot = await mkdtemp(join(tmpdir(), 'bw-frame-replay-'));
+  const exportRoot = resolve(process.env.PROBE_DIST || join(repo, 'dist'));
+  for (const name of await readdir(exportRoot)) {
+    if (name === '__replay-frame.json') throw Error('Reserved replay fixture name');
+    await symlink(join(exportRoot, name), join(replayRoot, name));
+  }
+  await writeFile(join(replayRoot, '__replay-frame.json'), json);
+  server = await serve(replayRoot);
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/local/bin/chromium', headless: true,
     args: ['--no-sandbox', '--disable-dev-shm-usage', '--enable-unsafe-webgpu', '--enable-unsafe-swiftshader',
       '--use-angle=vulkan', '--use-vulkan=swiftshader', '--enable-features=Vulkan'] });
@@ -35,10 +45,10 @@ try {
   // Stop automatic runtime boot in this page: rendering needs only WebGPU.
   await page.route(url => url.pathname.endsWith('/wine64-launcher.js'), route => route.fulfill({ body: '', contentType: 'text/javascript' }));
   await page.goto(`http://127.0.0.1:${server.address().port}/runtime/index.html?replay=1`);
-  const result = await page.evaluate(async ({ json, decode, encode, captureTargets, whiteFragment, passLimit, imageCopy }) => {
+  const result = await page.evaluate(async ({ decode, encode, captureTargets, whiteFragment, passLimit, imageCopy }) => {
     const decodeFrame = (0, eval)(`(${decode})`);
     const encodeFrame = (0, eval)(`(${encode})`);
-    let frame = decodeFrame(json);
+    let frame = decodeFrame(await (await fetch('/__replay-frame.json')).text());
     if (passLimit > 0) {
       frame = frame.submissions?.[0] || frame;
       frame.passes = frame.passes.slice(0, passLimit);
@@ -101,7 +111,7 @@ try {
     }
     return { outcome, elapsedMs, stats: renderer.snapshot(), targets,
       capturedFrameNo: frame.frameNo, roundtripBytes: encodeFrame(frame).length };
-  }, { json, decode: decodeFrame.toString(), encode: encodeFrame.toString(),
+  }, { decode: decodeFrame.toString(), encode: encodeFrame.toString(),
     captureTargets: process.env.CAPTURE_TARGETS === '1', whiteFragment: process.env.DEBUG_FRAGMENT === 'white',
     passLimit: Number(process.env.REPLAY_PASS_LIMIT || 0), imageCopy: process.env.REPLAY_IMAGE_COPY ? JSON.parse(process.env.REPLAY_IMAGE_COPY) : null });
   for (const [index, target] of result.targets.entries()) {
@@ -113,5 +123,7 @@ try {
   console.log(JSON.stringify({ dir, ...result }));
 } finally {
   logFile.end();
-  await browser?.close(); server?.close(); await slot.release();
+  await browser?.close(); server?.close();
+  if (replayRoot) await rm(replayRoot, { recursive: true, force: true });
+  await slot.release();
 }
