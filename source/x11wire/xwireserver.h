@@ -137,7 +137,7 @@ public:
                                     // Input delivery falls back to this when no
                                     // window has presented yet (Vulkan/GL apps
                                     // never PutImage, so presentWindow stays 0).
-    uint32_t pointerGrabClient = 0, pointerGrabWindow = 0; // guarded by regMutex
+    uint32_t pointerGrabClient = 0, pointerGrabWindow = 0, pointerConfineWindow = 0; // guarded by regMutex
     // Persistent-session app switch: when set, the next real (non-override-
     // redirect) window OWNED BY A CONNECTION OPENED AFTER THE ARM (ownerClientBase
     // >= adoptArmClientBase) is forcibly adopted as the base presentWindow,

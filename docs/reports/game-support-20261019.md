@@ -94,3 +94,23 @@ overlay or `LD_LIBRARY_PATH` override. Its log confirms DXVK v2.4.1 and Vulkan32
 initialization from the shared installation. Full live acceptance is ongoing.
 An optional `SCENARIO=direct3d` launcher dependency probe also uploads only a
 small application fixture, without supplying any helper DLLs.
+
+## Live colour verification and mouse capture
+
+`portal-colour-live-20261019` boots the rebuilt emitter into Test Chamber 00
+with normal lighting and post-processing. The live descriptor formats include
+both BGRA linear and sRGB (44/50). At the saved scene, 1,060 frames rendered,
+with zero rejected frames, unknown formats or unsupported operations. Actual
+browser mouse movement changes the view, and keyboard movement changes the
+camera position. The new self-contained `scene-frame.json.gz` retains the view
+formats for further rendering diagnosis. This is not full gameplay acceptance.
+
+The browser cursor remains unlocked during gameplay. Wine's confined
+XGrabPointer was stored only as an ordinary grab, so its ClipCursor request
+could not enable continuous relative input. The server now retains the confine
+window and releases it on ungrab, unmap, destroy and client cleanup. The SDL
+main thread synchronizes confined grabs to relative mode; ordinary pointer
+capture stays absolute. A busy registry defers synchronization without blocking
+the main thread. SDL handles deferred pointer lock and user gesture retries.
+The focused native handler and SDL synchronization regressions pass; the rebuilt
+browser still needs a live capture and release check.

@@ -63,26 +63,26 @@ void xwireRecordInputDelivery(uint8_t code, uint32_t window) {
 #ifdef __EMSCRIPTEN__
 extern "C" EMSCRIPTEN_KEEPALIVE const char* bw64_input_snapshot() {
     static thread_local char result[512];
-    uint32_t focus = 0, present = 0, mask = 0, owner = 0;
+    uint32_t focus = 0, present = 0, mask = 0, owner = 0, confine = 0;
     XWireServer& server = XWireServer::instance();
     bool busy;
     {
         std::unique_lock<std::mutex> lock(server.regMutex, std::try_to_lock);
         busy = !lock.owns_lock();
         if (!busy) {
-            focus = server.focusWindow; present = server.presentWindow;
+            focus = server.focusWindow; present = server.presentWindow; confine = server.pointerConfineWindow;
             auto window = server.windows.find(focus ? focus : present);
             if (window != server.windows.end()) { mask = window->second.eventMask; owner = window->second.ownerClientBase; }
         }
     }
     std::snprintf(result, sizeof(result),
         "{\"ticks\":%llu,\"forwardedKeys\":%llu,\"deliveredKeys\":%llu,\"deliveredMotion\":%llu,"
-        "\"lastWindow\":%u,\"focus\":%u,\"present\":%u,\"mask\":%u,\"owner\":%u,\"phase\":%u,\"pending\":%s,\"busy\":%s}",
+        "\"lastWindow\":%u,\"focus\":%u,\"present\":%u,\"mask\":%u,\"owner\":%u,\"confine\":%u,\"relative\":%s,\"phase\":%u,\"pending\":%s,\"busy\":%s}",
         (unsigned long long)inputTicks.load(std::memory_order_relaxed),
         (unsigned long long)forwardedKeys.load(std::memory_order_relaxed),
         (unsigned long long)deliveredKeys.load(std::memory_order_relaxed),
         (unsigned long long)deliveredMotion.load(std::memory_order_relaxed),
-        lastInputWindow.load(std::memory_order_relaxed), focus, present, mask, owner, inputPhase.load(std::memory_order_relaxed),
+        lastInputWindow.load(std::memory_order_relaxed), focus, present, mask, owner, confine, SDL_GetRelativeMouseMode() ? "true" : "false", inputPhase.load(std::memory_order_relaxed),
         g_xwirePresentSink && g_xwirePresentSink->hasInput() ? "true" : "false", busy ? "true" : "false");
     return result;
 }
@@ -812,6 +812,23 @@ void xwireRunOnMainThread(const std::function<void()>& fn) {
     job.cv.wait(lk, [&]{ return job.done; });
 }
 
+// Wine implements ClipCursor with a confined XGrabPointer. Ordinary capture
+// (menus, window drags) has no confine window and must keep absolute input.
+// SDL owns the browser pointer-lock request and its deferred user gesture retry.
+static void syncXWirePointerCapture() {
+    auto& server = XWireServer::instance();
+    bool confined;
+    {
+        std::unique_lock<std::mutex> lock(server.regMutex, std::try_to_lock);
+        if (!lock.owns_lock()) return;
+        confined = server.pointerGrabClient && server.pointerConfineWindow;
+    }
+    const bool relative = SDL_GetRelativeMouseMode() == SDL_TRUE;
+    if (confined != relative && (!confined || SDL_GetMouseFocus())) {
+        SDL_SetRelativeMouseMode(confined ? SDL_TRUE : SDL_FALSE);
+    }
+}
+
 // Drive present + input from the main loop (main thread). Safe to call when no
 // sink is installed.
 void tickXWirePresent() {
@@ -821,6 +838,7 @@ void tickXWirePresent() {
     // e.g. SDL_CreateWindow for the hidden GL target. Done unconditionally (even
     // with no sink) so a headless-but-GL path still drains.
     drainMainThreadWork();
+    syncXWirePointerCapture();
     xwireRecordInputPhase(2);
     if (g_xwirePresentSink) {
         // Coalesced present: the wire server's draw handlers (PutImage bands,

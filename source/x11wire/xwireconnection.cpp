@@ -735,7 +735,7 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
                     it->second.mapped = false;
                     wasOverlay = (wid != srv.presentWindow && !it->second.isRoot);
                 }
-                if (srv.pointerGrabWindow == wid) srv.pointerGrabClient = srv.pointerGrabWindow = 0;
+                if (srv.pointerGrabWindow == wid || srv.pointerConfineWindow == wid) srv.pointerGrabClient = srv.pointerGrabWindow = srv.pointerConfineWindow = 0;
                 if (srv.focusWindow == wid) srv.focusWindow = 0;
             }
             updateWmState(wid, 0); // WithdrawnState
@@ -750,7 +750,7 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
             srv.windows.erase(wid);
             // A destroyed temporary focus must not strand the host input queue.
             if (srv.focusWindow == wid) srv.focusWindow = 0;
-            if (srv.pointerGrabWindow == wid) srv.pointerGrabClient = srv.pointerGrabWindow = 0;
+            if (srv.pointerGrabWindow == wid || srv.pointerConfineWindow == wid) srv.pointerGrabClient = srv.pointerGrabWindow = srv.pointerConfineWindow = 0;
             break;
         }
         case X_PutImage: {
@@ -1439,7 +1439,7 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
                 auto it = srv.windows.find(window);
                 if (srv.pointerGrabClient && srv.pointerGrabClient != clientIdBase) status = 1; // AlreadyGrabbed
                 else if (it == srv.windows.end() || !it->second.mapped) status = 3; // GrabNotViewable
-                else { srv.pointerGrabClient = clientIdBase; srv.pointerGrabWindow = window; }
+                else { srv.pointerGrabClient = clientIdBase; srv.pointerGrabWindow = window; srv.pointerConfineWindow = rd32(req + 12); }
             }
             uint8_t r[32] = {0}; r[0] = 1; r[1] = status;
             r[2] = uint8_t(sequence); r[3] = uint8_t(sequence >> 8);
@@ -1563,7 +1563,7 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
         case X_UngrabPointer: {
             auto& srv = XWireServer::instance();
             std::lock_guard<std::mutex> lk(srv.regMutex);
-            if (srv.pointerGrabClient == clientIdBase) srv.pointerGrabClient = srv.pointerGrabWindow = 0;
+            if (srv.pointerGrabClient == clientIdBase) srv.pointerGrabClient = srv.pointerGrabWindow = srv.pointerConfineWindow = 0;
             break;
         }
         case X_QueryExtension: {
