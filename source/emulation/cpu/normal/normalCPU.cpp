@@ -82,6 +82,15 @@ void OPCALL onExitSignal(CPU* cpu, DecodedOp* op);
 // not normalOps[inst] must keep an inst that lands in normalDispatch's
 // default: case (see cpu.cpp's lastOp).
 #define NEXT_INTERP_CHAIN()                                                                         \
+    if (!wasmJit32Active) {                                                                          \
+        if (nextOp && nextOp->inst == Callback) {                                                    \
+            cpu->nextOp = nextOp;                                                                   \
+            return;                                                                                 \
+        }                                                                                           \
+        if (nextOp) MUSTTAIL return normalDispatch(cpu, nextOp);                                    \
+        cpu->nextOp = nextOp;                                                                       \
+        return;                                                                                     \
+    }                                                                                               \
     if (nextOp && nextOp->pfn != cpu->thread->process->startJITOp) {                                \
         if (nextOp->inst == Callback) {                                                             \
             cpu->nextOp = nextOp;                                                                   \
@@ -240,6 +249,12 @@ static inline bool normalGetNLE(CPU* cpu) {
 #if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_MULTI_THREADED) && defined(BOXEDWINE_DIRECT_NORMAL_DISPATCH) && !defined(BOXEDWINE_JIT)
 #define CONTINUE_BRANCH() \
     if (cpu->nextOp && static_cast<NormalCPU*>(cpu)->branchBudget > 1) { \
+        --static_cast<NormalCPU*>(cpu)->branchBudget; \
+        MUSTTAIL return normalDispatch(cpu, cpu->nextOp); \
+    }
+#elif defined(__EMSCRIPTEN__) && defined(BOXEDWINE_MULTI_THREADED) && defined(BOXEDWINE_WASM_JIT)
+#define CONTINUE_BRANCH() \
+    if (!wasmJit32Active && cpu->nextOp && static_cast<NormalCPU*>(cpu)->branchBudget > 1) { \
         --static_cast<NormalCPU*>(cpu)->branchBudget; \
         MUSTTAIL return normalDispatch(cpu, cpu->nextOp); \
     }
@@ -651,6 +666,9 @@ void OPCALL firstDynamicOp(CPU* cpu, DecodedOp* op);
 
 NormalCPU::NormalCPU(KMemory* memory) : CPU(memory) {
 #ifdef BOXEDWINE_WASM_JIT
+    // Latch the mode before this CPU can run; JIT off must cost no more than
+    // the interpreter-only build.
+    wasmJit32Enabled();
     // Register with the cpu32 stats registry (the emitted retired-instruction
     // counter lives in this CPU) and latch the run-time controls.
     wasmJit32StatsRegisterCpu(this);
@@ -724,7 +742,7 @@ DecodedOp* NormalCPU::getOp(U32 startIp, U32 jumpTargetFlags) {
 
 void NormalCPU::run() {
 #if defined(BOXEDWINE_WASM_JIT) && !defined(__TEST)
-    if (nextOp) {
+    if (wasmJit32Active && nextOp) {
         // WASM JIT fast exits can carry DecodedOp* values across code-cache
         // invalidation; refetch from the live cache before dereferencing.
         DecodedOp* liveOp = memory->getDecodedOp(getEipAddress());
@@ -751,6 +769,12 @@ void NormalCPU::run() {
     normalDispatch(this, nextOp);
 #else
 #ifdef BOXEDWINE_JIT
+#ifdef BOXEDWINE_WASM_JIT
+    if (!wasmJit32Active) {
+        branchBudget = 64;
+        normalDispatch(this, nextOp);
+    } else
+#endif
     if (nextOp->runCount <= JIT_RUN_COUNT || !calculateCF[0]) {
         firstOp(this, nextOp);
     } else {
