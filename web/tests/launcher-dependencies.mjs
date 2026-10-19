@@ -68,7 +68,22 @@ try {
   // Large real uploads need the storage behavior of a normal browser profile.
   browser = await chromium.launchPersistentContext(process.env.PROFILE || join(temporary, 'profile'), { executablePath: process.env.CHROME_PATH || '/usr/local/bin/chromium',
     viewport: { width: 1280, height: 1000 },
-    args: ['--no-sandbox', '--disable-dev-shm-usage', '--enable-unsafe-swiftshader'] });
+    args: ['--no-sandbox', '--disable-dev-shm-usage', '--enable-unsafe-swiftshader',
+      ...(includes('direct3d') ? ['--enable-unsafe-webgpu', '--use-angle=vulkan', '--use-vulkan=swiftshader', '--enable-features=Vulkan'] : [])] });
+  if (includes('direct3d')) for (const arch of ['x86', 'x64']) {
+    await openLauncher();
+    const folder = join(temporary, 'direct3d-' + arch); await mkdir(join(folder, 'portal'), { recursive: true });
+    // Only the application is uploaded. The Source profile must select the
+    // shared DXVK installation; no overlay, app-local DLL or LD_LIBRARY_PATH.
+    await copyFile(await guestFixture('d3d9-clear9', arch), join(folder, 'hl2.exe'));
+    await writeFile(join(folder, 'portal/gameinfo.txt'), 'fixture');
+    await uploadFolder(folder);
+    await page.waitForFunction(() => document.getElementById('log').textContent.includes('clear9: CAPTURE_READY'), null, { timeout: 180000 });
+    const pixels = await canvasPixels(page, '#vkCanvas');
+    assert.ok(pixels.redDominant > 100000, JSON.stringify(pixels));
+    await page.screenshot({ path: join(directory, 'direct3d-' + arch + '.png'), fullPage: true });
+    checks.push({ name: `shared Direct3D ${arch} folder upload`, pixels }); console.log(JSON.stringify(checks.at(-1)));
+  }
   if (includes('mono')) for (const arch of ['x86', 'x64']) {
     await openLauncher();
     const folder = join(temporary, arch); await mkdir(join(folder, 'nested'), { recursive: true });

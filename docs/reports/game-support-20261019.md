@@ -46,3 +46,21 @@ and can exercise the ordinary launcher without graphics overlays.
 A normal-launcher Portal run is checking the shared Direct3D installation and
 live level rendering/input. Gang Beasts follows Portal; neither game is yet
 claimed fully playable by this report.
+
+## Shared graphics installation
+
+The shared lazy runtime now includes architecture-checked DXVK `d3d9`, `d3d11`
+and `dxgi` DLLs in the canonical Wine PE directories, plus the verified 32-bit
+and 64-bit Vulkan bridges in the system library directories. The manifest
+records each DLL's hash, size and installation path. DXVK's license is included.
+The support archive is `support-44165220e3b9…zip` (205,217,398 bytes).
+
+Source launches select native D3D9; Unity launches select native D3D11/DXGI and
+new Unity profiles request D3D11 explicitly. Overrides derive from the stored
+engine so existing saved uploads also select the installed native libraries.
+
+`portal-launcher-20261019` uses the ordinary Portal demo button, with no graphics
+overlay or `LD_LIBRARY_PATH` override. Its log confirms DXVK v2.4.1 and Vulkan32
+initialization from the shared installation. Full live acceptance is ongoing.
+An optional `SCENARIO=direct3d` launcher dependency probe also uploads only a
+small application fixture, without supplying any helper DLLs.

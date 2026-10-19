@@ -117,6 +117,22 @@ def stage(destination):
         'i386': ROOT / 'tools/rootfs64/libgl32/libGL.so.1',
         'x86_64': ROOT / 'tools/rootfs64/libgl64/libGL.so.1',
     }
+    subprocess.run(['python3', str(ROOT / 'tools/rootfs64/build_vulkan_shims.py'), '--check'], check=True)
+    vulkan = {arch: ROOT / f'tools/rootfs64/libvk{bits}/libvulkan.so.1'
+              for arch, bits in [('i386', '32'), ('x86_64', '64')]}
+    direct3d = {}
+    for arch, bits, machine, target in [
+        ('i386', '32', 0x14c, 'opt/wine-stable/lib/wine/i386-windows'),
+        ('x86_64', '64', 0x8664, 'usr/lib/x86_64-linux-gnu/wine/x86_64-windows'),
+    ]:
+        direct3d[arch] = {}
+        for name in ('d3d9', 'd3d11', 'dxgi'):
+            path = ROOT / f'tools/dxvk/build.w{bits}/src/{name}/{name}.dll'
+            data = path.read_bytes()
+            pe = int.from_bytes(data[60:64], 'little')
+            if data[:2] != b'MZ' or data[pe:pe+4] != b'PE\0\0' or int.from_bytes(data[pe+4:pe+6], 'little') != machine:
+                raise ValueError(f'Incorrect DXVK architecture: {path}')
+            direct3d[arch][name] = {'data': data, 'target': f'{target}/{name}.dll'}
     gecko = ensure_gecko()
     openal = ensure_openal()
     provenance = {
@@ -134,6 +150,12 @@ def stage(destination):
                       for name, entry in openal.items() if name != 'license'},
         },
         'openGL': {arch: mono.digest(path) for arch, path in graphics.items()},
+        'vulkan': {arch: mono.digest(path) for arch, path in vulkan.items()},
+        'direct3D': {
+            'source': json.loads((ROOT / 'tools/dxvk/SOURCES.json').read_text()),
+            'files': {arch: {name: {'sha256': digest(entry['data']), 'bytes': len(entry['data']), 'target': entry['target']}
+                             for name, entry in files.items()} for arch, files in direct3d.items()},
+        },
     }
     destination.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=destination, suffix='.zip', delete=False) as temporary:
@@ -156,6 +178,13 @@ def stage(destination):
                 data = path.read_bytes()
                 for prefix in ['lib', 'usr/lib']:
                     add(f'{prefix}/{arch}-linux-gnu/libGL.so.1', data)
+            for arch, path in vulkan.items():
+                for prefix in ['lib', 'usr/lib']:
+                    add(f'{prefix}/{arch}-linux-gnu/libvulkan.so.1', path.read_bytes())
+            for files in direct3d.values():
+                for entry in files.values():
+                    add(entry['target'], entry['data'])
+            add('opt/winbox/licenses/dxvk-LICENSE', (ROOT / 'tools/dxvk/src/LICENSE').read_bytes())
             # Wine's own loader finds Gecko under /usr/share/wine/gecko, which is
             # checked before the per-prefix installation path. The upstream
             # tarballs are the exact package contents, VERSION file included.

@@ -39,4 +39,13 @@ test('runtime parameters preserve spaces/arguments and always select detected ar
 });
 
 test('a game containing an embedded browser still selects the game',async()=>{const p=await detectProgram([exe('Game.exe'),exe('browser/chrome.exe'),asset('browser/chrome.dll')],{name:'Game'});assert.equal(p.exe,'Game.exe');assert.equal(p.engine,'windows');});
+test('Source and Unity launches select their native Direct3D libraries for demos and saved uploads',()=>{
+ for(const [engine,arch,overrides] of [['source','x86','d3d9=n'],['unity','x64','d3d11=n;dxgi=n']]){
+  const program={...programDefaults(engine),exe:'Game.exe',arch};
+  assert.equal(runtimeParameters(program).get('dlloverrides'),overrides);
+  assert.equal(runtimeParameters(JSON.parse(JSON.stringify(program))).get('dlloverrides'),overrides);
+ }
+ assert.ok(programDefaults('unity').args.includes('-force-d3d11'));
+ assert.equal(runtimeParameters({exe:'App.exe',arch:'x64'}).has('dlloverrides'),false);
+});
 test('rejects a PE signature without the complete image headers and data',async()=>{const file=exe('broken.exe');file.blob=file.blob.slice(0,128);await assert.rejects(detectProgram([file]),/PE|image|headers/i);});

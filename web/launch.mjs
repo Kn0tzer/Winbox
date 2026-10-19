@@ -10,7 +10,7 @@ const chromiumArgs = [
 export function programDefaults(engine = 'windows') {
   const args = engine === 'chromium' ? [...chromiumArgs, 'about:blank']
     : engine === 'source' ? ['-game', 'portal', '-novid', '-windowed', '-w', '1024', '-h', '640']
-    : engine === 'unity' ? ['-screen-width', '1024', '-screen-height', '640', '-screen-fullscreen', '0'] : [];
+    : engine === 'unity' ? ['-force-d3d11', '-screen-width', '1024', '-screen-height', '640', '-screen-fullscreen', '0'] : [];
   return { engine, args, graphics: 'webgl' };
 }
 const normalized = value => String(value).toLowerCase().replace(/\.exe$/i, '').replace(/[^a-z0-9]/g, '');
@@ -51,6 +51,10 @@ export function runtimeParameters(program, { installation = 'demo', archive, arc
   const args = program.args || [];
   if (!Array.isArray(args) || args.length > 32 || args.some(a => typeof a !== 'string' || a.length > 4096 || /[\x00-\x1f]/.test(a))) throw Error('Program arguments must be a JSON array of strings.');
   const query = new URLSearchParams({ installation, arch: program.arch, session: '0', gpu: (graphics || program.graphics) === 'webgpu' ? '1' : '0', gltrace: '0', winedbg: '-all' });
+  // The shared runtime installs DXVK in Wine's architecture-specific DLL path.
+  // Derive this from the stored engine too, so existing saved games get it.
+  if (program.engine === 'source') query.set('dlloverrides', 'd3d9=n');
+  if (program.engine === 'unity') query.set('dlloverrides', 'd3d11=n;dxgi=n');
   if (program.builtin) query.set('p', program.builtin);
   else { query.set('exe', safePath(program.exe)); query.set('args', JSON.stringify(args)); }
   if (archive) {
