@@ -34,23 +34,29 @@ function applyMetricsVisibility() {
   $('metricsHost').hidden = !open;
   $('stats').setAttribute('aria-pressed', String(open));
   $('stats').title = open ? 'Hide frame metrics' : 'Show frame metrics';
+  $('stats').setAttribute('aria-label', $('stats').title);
   if (metrics) metrics.setOpen(open);
 }
-const settings = { appearance: 'system', graphics: 'auto', jit: 'off', internet: 'off', enhancement: 'off', sharpness: 0.5, folderMode: 'copy', metrics: 'on' };
+const settings = { appearance: 'dark', graphics: 'auto', jit: 'off', internet: 'off', enhancement: 'off', sharpness: 0.5, folderMode: 'copy', metrics: 'on' };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('wine.launcher.settings.v1') || '{}')); } catch {}
 settings.jit = settings.jit === 'on' ? 'on' : 'off';
 function appearance(value) {
   document.documentElement.dataset.theme = ['light', 'dark'].includes(value) ? value : 'system';
   $('appearance').value = value;
   const dark = value === 'dark' || (value === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
-  document.querySelector('meta[name="theme-color"]').setAttribute('content', dark ? '#141518' : '#f5f6f8');
+  document.querySelector('meta[name="theme-color"]').setAttribute('content', dark ? '#000000' : '#ffffff');
 }
 appearance(settings.appearance);
 $('backend').value = settings.graphics;
 for (const name of ['jit', 'internet', 'enhancement', 'sharpness']) {
   $(name).value = settings[name];
-  $(name).onchange = () => { settings[name] = name === 'sharpness' ? Number($(name).value) : $(name).value; persistSettings(); };
+  $(name).onchange = () => {
+    settings[name] = name === 'sharpness' ? Number($(name).value) : $(name).value;
+    if (name === 'enhancement') $('sharpnessField').hidden = settings.enhancement === 'off';
+    persistSettings();
+  };
 }
+$('sharpnessField').hidden = settings.enhancement === 'off';
 $('appearance').onchange = () => { settings.appearance = $('appearance').value; appearance(settings.appearance); persistSettings(); };
 $('backend').onchange = () => { settings.graphics = $('backend').value; persistSettings(); };
 function persistSettings() { try { localStorage.setItem('wine.launcher.settings.v1', JSON.stringify(settings)); } catch {} }
@@ -59,17 +65,15 @@ function folderMode() {
     settings.folderMode = 'copy';
     persistSettings();
   }
-  for (const input of document.querySelectorAll('input[name="folderMode"]')) {
-    const radio = /** @type {HTMLInputElement} */ (input);
-    radio.checked = radio.value === settings.folderMode;
-    radio.onchange = () => { settings.folderMode = radio.value; persistSettings(); folderMode(); };
-  }
   $('directMode').disabled = !window.showDirectoryPicker;
-  $('folderButtonLabel').textContent = settings.folderMode === 'direct' ? 'Open folder' : 'Upload folder';
-  $('dropHint').textContent = settings.folderMode === 'direct' ? 'Use Open folder for direct access.' : 'Or drag a folder here to copy it.';
-  if (!window.showDirectoryPicker) $('folderModeHelp').textContent = 'File system access is unavailable in this browser. Use Chrome or Edge for direct access, or select Copy to browser. Saves use browser storage in both modes.';
+  $('folderModeSelect').value = settings.folderMode;
 }
 folderMode();
+$('folderModeSelect').onchange = () => {
+  settings.folderMode = $('folderModeSelect').value;
+  persistSettings();
+  folderMode();
+};
 function message(value, error = false) {
   $('notice').hidden = !value; $('noticeText').textContent = value; $('notice').classList.toggle('error', error);
 }
@@ -102,7 +106,7 @@ function preparing(title) {
   $('launcher').hidden = true; $('player').hidden = false;
   $('runtimeTitle').textContent = title;
   $('mouseCaptureHint').hidden = true;
-  $('captureMouse').textContent = 'Capture mouse'; $('captureMouse').setAttribute('aria-pressed', 'false');
+  $('captureMouse').title = 'Capture mouse'; $('captureMouse').setAttribute('aria-label', 'Capture mouse'); $('captureMouse').setAttribute('aria-pressed', 'false');
   $('loadingTitle').textContent = 'Getting things ready'; $('loading').hidden = false;
   $('launchProgress').hidden = true; $('playerRetry').hidden = true;
   $('loadingActivity').hidden = true; $('loadingElapsed').textContent = '';
@@ -261,10 +265,13 @@ async function startDemo(demo, signal) {
 function renderDemos() {
   const fragment = document.createDocumentFragment();
   for (const demo of demos) {
-    const button = document.createElement('button'); button.type = 'button'; button.className = 'program-card';
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'program-card app-card';
     button.dataset.game = demo.id; button.dataset.launch = ''; button.setAttribute('aria-label', 'Run ' + demo.title);
-    const play = icon('player-play'); play.classList.add('card-play');
-    button.append(icon(demo.icon), text('strong', demo.title), play);
+    const title = text('span', '', 'app-title');
+    const glyph = icon(demo.icon); glyph.classList.add('app-icon');
+    title.append(glyph, text('span', demo.title));
+    if (demo.size) title.append(text('span', formatBytes(demo.size), 'badge'));
+    button.append(title, text('span', demo.description, 'app-desc'));
     button.onclick = () => action(signal => startDemo(demo, signal)); fragment.append(button);
   }
   $('gameCatalog').replaceChildren(fragment); $('gameCatalog').removeAttribute('aria-busy');
@@ -273,16 +280,26 @@ async function refreshLibrary() {
   const packages = await listPackages(); const fragment = document.createDocumentFragment();
   packages.sort((a, b) => String(b.created).localeCompare(String(a.created)));
   for (const pkg of packages) {
-    const item = text('div', '', 'saved-item');
-    const run = document.createElement('button'); run.type = 'button'; run.className = 'saved-run'; run.dataset.launch = '';
-    const copy = text('span', '', 'saved-copy');
-    copy.append(text('strong', pkg.name), text('span', (pkg.mode === 'direct' ? 'Linked folder · ' : 'Browser copy · ') + pkg.files.length.toLocaleString() + ' files · ' + formatBytes(pkg.files.reduce((n, f) => n + f.size, 0))));
-    run.append(icon('folder'), copy); run.onclick = () => action(signal => runSaved(pkg.id, signal));
-    const manage = document.createElement('button'); manage.type = 'button'; manage.className = 'icon-button';
-    manage.setAttribute('aria-label', 'Settings for ' + pkg.name); manage.append(icon('settings')); manage.onclick = () => action(() => manageFolder(pkg.id), { retry: null });
-    item.append(run, manage); fragment.append(item);
+    const item = text('article', '', 'saved-item app-card');
+    const copy = text('div', '', 'saved-copy');
+    copy.append(text('h3', pkg.name, 'saved-title'));
+    const metadata = [];
+    const arch = pkg.program?.arch;
+    if (arch === 'x86' || arch === 'i386') metadata.push('32-bit');
+    else if (arch === 'x64' || arch === 'x86_64' || arch === 'amd64') metadata.push('64-bit');
+    if (pkg.files.length && pkg.files.every(file => Number.isFinite(file.size))) {
+      metadata.push(formatBytes(pkg.files.reduce((total, file) => total + file.size, 0)));
+    }
+    if (metadata.length) copy.append(text('p', metadata.join(' · '), 'saved-metadata'));
+    const actions = text('div', '', 'saved-actions');
+    const run = document.createElement('button'); run.type = 'button'; run.className = 'saved-run button primary'; run.dataset.launch = ''; run.textContent = 'Play';
+    run.onclick = () => action(signal => runSaved(pkg.id, signal));
+    const manage = document.createElement('button'); manage.type = 'button'; manage.className = 'icon-button saved-more';
+    manage.setAttribute('aria-label', 'More for ' + pkg.name); manage.title = 'More'; manage.append(icon('dots'));
+    manage.onclick = () => action(() => manageFolder(pkg.id), { retry: null });
+    actions.append(run, manage); item.append(copy, actions); fragment.append(item);
   }
-  if (!packages.length) fragment.append(text('p', 'Uploaded folders appear here, ready for next time.', 'empty'));
+  if (!packages.length) fragment.append(text('p', 'Folders you open appear here.', 'empty'));
   $('library').replaceChildren(fragment); $('library').removeAttribute('aria-busy');
   $('folderCount').textContent = packages.length ? packages.length.toLocaleString() + ' saved' : '';
 }
@@ -304,7 +321,8 @@ window.addEventListener('message', event => {
   if (type === 'status') { run.status = String(data); const failure = startupFailure(run.status, run.exe); if (failure) startupError(run, failure); else updateStartup(run); }
   if (type === 'error') startupError(run, String(data));
   if (type === 'mouse-capture') {
-    $('captureMouse').textContent = data.locked || data.armed ? 'Release mouse' : 'Capture mouse';
+    $('captureMouse').title = data.locked || data.armed ? 'Release mouse' : 'Capture mouse';
+    $('captureMouse').setAttribute('aria-label', $('captureMouse').title);
     $('captureMouse').setAttribute('aria-pressed', String(Boolean(data.locked || data.armed)));
     const hint = data.error || (data.armed ? 'Click inside the game to capture the mouse. Press Esc to release it.' : data.locked ? 'Mouse captured. Press Esc to release it.' : '');
     $('mouseCaptureHint').textContent = hint; $('mouseCaptureHint').hidden = !hint;
@@ -386,9 +404,17 @@ window.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth =
 window.addEventListener('drop', event => {
   event.preventDefault(); dragDepth = 0; $('dropOverlay').hidden = true;
   if (!event.dataTransfer || busy) return;
-  if (settings.folderMode === 'direct') { message('Use Open folder to grant direct access. To copy a dropped folder instead, select Copy to browser.'); return; }
   const items = Array.from(event.dataTransfer.items), files = Array.from(event.dataTransfer.files);
-  action(async signal => { preparing(files[0]?.name || 'Your folder'); status('Reading the package…'); return importFolder(files.length === 1 && /\.zip$/i.test(files[0].name) ? await fromZip(files[0], { budget: folderLimits, stream: true, signal }) : items.some(item => item.webkitGetAsEntry?.()) ? await fromDrop(items) : await fromFiles(files), files[0]?.name.replace(/\.(zip|exe)$/i, '') || 'Dropped folder', signal); });
+  const singleProgramFile = files.length === 1 && /\.(zip|exe)$/i.test(files[0].name);
+  if (settings.folderMode === 'direct' && !singleProgramFile) { message('To open a dropped folder, select Copy into browser storage in Settings.'); return; }
+  action(async signal => {
+    const name = files[0]?.name || 'Your folder';
+    preparing(name); status('Reading the package…');
+    const entries = singleProgramFile
+      ? (/\.zip$/i.test(files[0].name) ? await fromZip(files[0], { budget: folderLimits, stream: true, signal }) : await fromFiles(files))
+      : items.some(item => item.webkitGetAsEntry?.()) ? await fromDrop(items) : await fromFiles(files);
+    return importFolder(entries, name.replace(/\.(zip|exe)$/i, '') || 'Dropped folder', signal);
+  });
 });
 $('stop').onclick = stop; $('back').onclick = stop;
 $('restart').onclick = () => lastAction && action(lastAction);
