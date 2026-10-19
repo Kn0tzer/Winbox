@@ -97,5 +97,5 @@
 Contract: `docs/specs/portal-stencil.md`; ordered plan: `tasks/plan.md`.
 
 - [x] PS1: fail-first native/ABI/V2 tests, state transport, 32/64 shim builds. Five focused stencil tests and six blend tests pass; type checking and both shim provenance checks pass. Full native build is part of PS3.
-- [ ] PS2: stencil pipeline/depth targets, load/store and clipped clear replay.
+- [x] PS2: stencil pipeline/depth targets, load/store and clipped clear replay. Nineteen focused checks and type checking pass. Real SwiftShader WebGPU pixel test preserves 13 blue pixels, draws three masked red pixels and clears only the requested stencil rectangle, with zero unsupported states.
 - [ ] PS3: coherent build, live Portal rendering/traversal, deploy and report.

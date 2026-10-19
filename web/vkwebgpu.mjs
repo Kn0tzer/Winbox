@@ -920,12 +920,40 @@ export function v2TargetKey(imageId, w, h, samples, isDepth) {
 //
 // Colour attachments retain their guest formats. Linear and sRGB views share
 // storage so switching views preserves both image contents and colour encoding.
-// Depth is currently depth24plus.
+// Depth/stencil attachments retain their formats, masks and independent load/store operations.
 //
 // Anything the page cannot model (an untranslatable module, an unknown vertex
 // format, a second push block) is counted and the frame skipped — the v1
 // discipline.
 // ---------------------------------------------------------------------------
+
+const V2_STENCIL_OPS = /** @type {Record<number,GPUStencilOperation>} */ ({0:'keep',1:'zero',2:'replace',3:'increment-clamp',4:'decrement-clamp',5:'invert',6:'increment-wrap',7:'decrement-wrap'});
+function v2StencilPipeline(pipe, dynamic) {
+  if (!pipe.stencil?.enabled) return pipe;
+  const stencil = {...pipe.stencil, front:{...pipe.stencil.front}, back:{...pipe.stencil.back}};
+  for (const [kind,name] of ['compareMask','writeMask','reference'].entries()) {
+    if (!(stencil.dynamicMask & (1 << kind))) continue;
+    for (const [index,face] of [stencil.front,stencil.back].entries()) {
+      if ((index === 0 && pipe.cull === 1) || (index === 1 && pipe.cull === 2)) continue;
+      if (dynamic[kind][index] === undefined) throw new Error('missing dynamic stencil '+name);
+      face[name] = dynamic[kind][index];
+    }
+  }
+  return {...pipe,stencil};
+}
+function v2StencilState(pipe, depthFormat) {
+  if (!pipe.stencil?.enabled) return {state:{},reference:null};
+  if (!depthFormat.includes('stencil')) throw new Error('stencil pipeline requires a stencil attachment');
+  const {front,back}=pipe.stencil;
+  const active=pipe.cull===1?[back]:pipe.cull===2?[front]:[front,back];
+  for (const field of ['compareMask','writeMask','reference'])
+    if (active.some(f=>(f[field]&255)!==(active[0][field]&255))) throw new Error('incompatible active stencil face '+field);
+  const face=f=>{
+    if (!V2_STENCIL_OPS[f.failOp] || !V2_STENCIL_OPS[f.passOp] || !V2_STENCIL_OPS[f.depthFailOp] || !DEPTH_OP[f.compareOp]) throw new Error('unsupported stencil operation');
+    return {compare:DEPTH_OP[f.compareOp],failOp:V2_STENCIL_OPS[f.failOp],passOp:V2_STENCIL_OPS[f.passOp],depthFailOp:V2_STENCIL_OPS[f.depthFailOp]};
+  };
+  return {state:{stencilFront:face(front),stencilBack:face(back),stencilReadMask:active[0].compareMask&255,stencilWriteMask:active[0].writeMask&255},reference:active[0].reference&255};
+}
 
 // Vulkan and WebGPU use the same component write-mask bits. Keep blend
 // equations per attachment: projected shadows multiply destination colour.
@@ -1255,14 +1283,14 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     return null;
   }
 
-  async function getPipelineFor(pipe, sampleCount, unnegated = false, passHasDepth = false, indexType = 0, colorFormats = [format]) {
+  async function getPipelineFor(pipe, sampleCount, unnegated = false, passHasDepth = false, indexType = 0, colorFormats = [format], depthFormat = 'depth24plus', depthAspects = 6) {
     // WebGPU requires the pipeline's depthStencil state to match the render
     // pass attachments: a pipeline without depthStencil cannot be set in a
     // pass with a depth attachment (Vulkan allows it). Key the cache on the
     // pass depth state and always emit a (possibly disabled) depthStencil
     // when the pass has depth.
     const stripIndexType = pipe.topology === 2 || pipe.topology === 4 ? indexType : undefined;
-    const key = pipe.pipeId + ':ms' + sampleCount + ':topology:' + pipe.topology + ':vb:' + JSON.stringify(pipe.vb) + ':yny' + (unnegated ? '1' : '0') + ':pd' + (passHasDepth ? '1' : '0') + ':dt' + (pipe.depthTest ? '1' : '0') + ':si' + (stripIndexType ?? 'none') + ':colors' + colorFormats.join(',') + ':blend:' + JSON.stringify(pipe.colorBlend ?? pipe.blend);
+    const key = pipe.pipeId + ':ms' + sampleCount + ':topology:' + pipe.topology + ':vb:' + JSON.stringify(pipe.vb) + ':yny' + (unnegated ? '1' : '0') + ':pd' + (passHasDepth ? '1' : '0') + ':dt' + (pipe.depthTest ? '1' : '0') + ':si' + (stripIndexType ?? 'none') + ':colors' + colorFormats.join(',') + ':blend:' + JSON.stringify(pipe.colorBlend ?? pipe.blend) + ':depth:' + depthFormat + ':stencil:' + JSON.stringify(pipe.stencil) + ':aspects:' + depthAspects;
     if (pipelines.has(key)) return pipelines.get(key);
     const vsm = F.shaders.get(pipe.vsHash), fsm = F.shaders.get(pipe.fsHash);
     if (!vsm || !fsm) return { skip: 'missing-shader' };
@@ -1346,10 +1374,15 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       vbWalk.push({ binding: vb.binding, stride, attrs44, scaled, outputStride: arrayStride });
     }
 
-    let colorTargets, blendConstantMode;
+    let colorTargets, blendConstantMode, stencil;
     try {
       colorTargets = colorFormats.map((format, index) => v2BlendTarget(pipe, index, format));
       blendConstantMode = v2BlendConstantMode(pipe);
+      stencil = v2StencilState(pipe, passHasDepth ? depthFormat : '');
+      if (!(depthAspects & 4)) {
+        if (pipe.stencil?.enabled) throw new Error('stencil testing without a stencil aspect');
+        stencil.state.stencilWriteMask = 0;
+      }
     } catch (error) { stats.unsupported++; return { skip: error.message }; }
     device.pushErrorScope('validation');
     const bwPipeT0 = metricsNow();
@@ -1369,8 +1402,9 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
         cullMode: CULL[pipe.cull] || 'none', frontFace: FRONT[pipe.front] || 'ccw',
       },
       depthStencil: passHasDepth ? {
-        format: 'depth24plus',
-        depthWriteEnabled: pipe.depthTest ? !!pipe.depthWrite : false,
+        format: /** @type {GPUTextureFormat} */ (depthFormat),
+        ...stencil.state,
+        depthWriteEnabled: (depthAspects & 2) && pipe.depthTest ? !!pipe.depthWrite : false,
         depthCompare: pipe.depthTest ? (DEPTH_OP[pipe.depthOp] || 'less-equal') : 'always',
       } : undefined,
       multisample: { count: sampleCount },
@@ -1379,9 +1413,34 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     timing.pipelineMs += metricsNow() - bwPipeT0;
     timing.pipelineCount++;
     if (err) { stats.unsupported++; return { skip: 'pipeline-rejected:' + err.message }; }
-    const rec = { key, pipeline, layouts, decls, hasPush, slotOf, maxGroup, vbWalk, stripIndexType, blendConstantMode };
+    const rec = { key, pipeline, layouts, decls, hasPush, slotOf, maxGroup, vbWalk, stripIndexType, blendConstantMode, stencilReference:stencil.reference };
     pipelines.set(key, rec);
     return rec;
+  }
+
+  const clearPipelines = new Map();
+  function attachmentClearPipeline(colorFormats, depthFormat, samples, attachment) {
+    const aspect=attachment.aspectMask;
+    const slot=attachment.colorAttachment;
+    const key=JSON.stringify([colorFormats,depthFormat,samples,aspect,slot]);
+    if(clearPipelines.has(key)) return clearPipelines.get(key);
+    const fields=colorFormats.map((format,i)=>`@location(${i}) c${i}:vec4<${format.endsWith('uint')?'u32':format.endsWith('sint')?'i32':'f32'}>,`);
+    if(aspect&2) fields.push('@builtin(frag_depth) depth:f32,');
+    const outputs=colorFormats.map((format,i)=>`o.c${i}=${format.endsWith('uint')?'data.color':format.endsWith('sint')?'bitcast<vec4<i32>>(data.color)':'bitcast<vec4<f32>>(data.color)'};`).join('');
+    const fs=fields.length?`struct Out{${fields.join('')}}; @fragment fn fs()->Out{var o:Out;${outputs}${aspect&2?'o.depth=data.depth.x;':''}return o;}`:'@fragment fn fs(){}';
+    const code=`struct Data{color:vec4<u32>,depth:vec4<f32>}; @group(0) @binding(0) var<uniform> data:Data;
+      @vertex fn vs(@builtin(vertex_index) i:u32)->@builtin(position) vec4<f32>{let p=array<vec2<f32>,3>(vec2<f32>(-1,-1),vec2<f32>(3,-1),vec2<f32>(-1,3));return vec4<f32>(p[i],0,1);}
+      ${fs}`;
+    const module=device.createShaderModule({code});
+    const layout=device.createBindGroupLayout({entries:[{binding:0,visibility:GPUShaderStage.FRAGMENT,buffer:{type:'uniform'}}]});
+    const pipeline=device.createRenderPipeline({
+      layout:device.createPipelineLayout({bindGroupLayouts:[layout]}),
+      vertex:{module,entryPoint:'vs'},fragment:{module,entryPoint:'fs',targets:colorFormats.map((format,i)=>({format,writeMask:(aspect&1)&&i===slot?15:0}))},
+      primitive:{topology:'triangle-list',cullMode:'none'},multisample:{count:samples},
+      depthStencil:depthFormat?{format:depthFormat,depthWriteEnabled:!!(aspect&2),depthCompare:'always',
+        stencilFront:{compare:'always',passOp:aspect&4?'replace':'keep'},stencilBack:{compare:'always',passOp:aspect&4?'replace':'keep'},stencilReadMask:255,stencilWriteMask:aspect&4?255:0}:undefined,
+    });
+    const rec={pipeline,layout};clearPipelines.set(key,rec);return rec;
   }
 
   // Manifest bindings covering one array element (partial descriptor-array
@@ -1651,7 +1710,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       pipeRec: null, pipeDesc: null, pipeNeg: false, sets: new Map(), setVer: new Map(), inlineMap: new Map(),
       pushBlock: new Uint8Array(V2_PUSH_SIZE), pushDirty: false,
       vbinds: [], ibind: null, viewport: null, scissor: null,
-      pipeBad: false, badPipes: new Map(),
+      pipeBad: false, badPipes: new Map(), dynamicStencil:[[undefined,undefined],[undefined,undefined],[undefined,undefined]], blendConstants:[0,0,0,0],
     };
     const bump = si => st.setVer.set(si, (st.setVer.get(si) || 0) + 1);
 
@@ -1662,7 +1721,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       /** @type {GPURenderPassColorAttachment[]} */
       const colorAttachments = [];
       const passColorFormats = [];
-      let depthView = null, depthAttachment = null;
+      let depthView = null, depthAttachment = null, passDepthFormat = 'depth24plus', passDepthAspects = 6;
       for (const a of p.attachments) {
         const samples = v2PickSampleCount(a.samples || 1);
         // Known VkImage identity: the single-sample (resolve) target is keyed
@@ -1671,10 +1730,12 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
         const knownImage = v2ImageKnown(a.imageId);
         const texBinding = knownImage ? GPUTextureUsage.TEXTURE_BINDING : 0;
         if (a.isDepth) {
+          passDepthFormat = a.format ? v2TextureFormat(a.format, stats) : 'depth24plus';
           const tex = target(v2TargetKey(a.imageId, p.w, p.h, samples, true), {
-            size: [p.w, p.h], sampleCount: samples, format: 'depth24plus',
+            size: [p.w, p.h], sampleCount: samples, format: passDepthFormat,
             usage: GPUTextureUsage.RENDER_ATTACHMENT | texBinding,
           });
+          passDepthAspects = a.aspectMask || (passDepthFormat.includes('stencil') ? 6 : 2);
           depthView = tex.createView();
           depthAttachment = a;
         } else {
@@ -1713,15 +1774,20 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
           depthLoadOp: depthAttachment.loadOp === 0 ? 'load' : 'clear',
           depthStoreOp: depthAttachment.storeOp === 1 ? 'discard' : 'store',
         };
-        passEnc = encoder.beginRenderPass(rpDesc);
-        // Carry over a pipeline bound by an earlier pass (vkd3d binds before
-        // vkCmdBeginRenderPass).
-        if (st.pipeDesc) {
-          const rec = await getPipelineFor(st.pipeDesc, passSamples, st.pipeNeg, !!depthView, st.ibind?.indexType || 0, passColorFormats);
-          st.pipeRec = rec.skip ? null : rec;
-          st.pipeBad = !!rec.skip;
-          if (st.pipeRec) passEnc.setPipeline(st.pipeRec.pipeline);
+        if (depthView && passDepthFormat.includes('stencil')) Object.assign(rpDesc.depthStencilAttachment, {
+          stencilClearValue:p.clearStencil || 0,
+          stencilLoadOp:(depthAttachment.stencilLoadOp ?? depthAttachment.loadOp) === 1 ? 'clear':'load',
+          stencilStoreOp:(depthAttachment.stencilStoreOp ?? depthAttachment.storeOp) === 1 ? 'discard':'store',
+        });
+        if (depthView && !(passDepthAspects & 2)) {
+          delete rpDesc.depthStencilAttachment.depthLoadOp; delete rpDesc.depthStencilAttachment.depthStoreOp;
+          rpDesc.depthStencilAttachment.depthReadOnly=true;
         }
+        if (depthView && passDepthFormat.includes('stencil') && !(passDepthAspects & 4)) {
+          delete rpDesc.depthStencilAttachment.stencilLoadOp; delete rpDesc.depthStencilAttachment.stencilStoreOp;
+          rpDesc.depthStencilAttachment.stencilReadOnly=true;
+        }
+        passEnc = encoder.beginRenderPass(rpDesc);
       } else {
         stats.skips++;
       }
@@ -1747,27 +1813,42 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
             encoder.copyTextureToTexture({ texture: source, origin: op.srcOrigin }, { texture: destination, origin: op.dstOrigin }, op.extent);
             break;
           }
-          case 'bindPipe': {
-            // Vulkan permits a binding before any render pass. Retain it and
-            // create the WebGPU pipeline when its attachment formats are known.
-            st.pipeDesc = op.pipe; st.pipeNeg = false; st.pipeRec = null; st.pipeBad = false;
-            if (!passEnc) break;
-            let rec;
-            try { rec = await getPipelineFor(op.pipe, passSamples, false, !!depthView, st.ibind?.indexType || 0, passColorFormats); }
-            catch (e) { rec = { skip: 'pipeline-threw' }; }
-            if (rec.skip) {
-              if (!st.badPipes.has(op.pipe.pipeId)) {
-                st.badPipes.set(op.pipe.pipeId, rec.skip);
-                stats.skippedDraws = (stats.skippedDraws || 0) + 1;
+          case 'clearAttachments': {
+            if(!passEnc) {stats.unsupported++;break;}
+            for(const attachment of op.attachments) {
+              const aspect=attachment.aspectMask;
+              if(((aspect&1)&&attachment.colorAttachment>=passColorFormats.length) || ((aspect&6)&&!depthView) || ((aspect&4)&&!passDepthFormat.includes('stencil')) || ((aspect&6)&~passDepthAspects)) {stats.unsupported++;continue;}
+              const rec=attachmentClearPipeline(passColorFormats,depthView?passDepthFormat:null,passSamples,attachment);
+              const bytes=new Uint8Array(32),data=new DataView(bytes.buffer);
+              attachment.colorBits.forEach((v,i)=>data.setUint32(i*4,v,true));data.setFloat32(16,attachment.depth,true);
+              const buffer=gpuBufferFor('attachment-clear',bytes,GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST,null);
+              passEnc.setPipeline(rec.pipeline);
+              passEnc.setBindGroup(0,device.createBindGroup({layout:rec.layout,entries:[{binding:0,resource:{buffer}}]}));
+              if(aspect&4) passEnc.setStencilReference(attachment.stencil&255);
+              passEnc.setViewport(0,0,p.w,p.h,0,1);
+              for(const rect of op.rects) {
+                if(rect.baseLayer!==0||rect.layers!==1) {stats.unsupported++;continue;}
+                const x=Math.max(0,rect.x),y=Math.max(0,rect.y),w=Math.min(p.w,rect.x+rect.w)-x,h=Math.min(p.h,rect.y+rect.h)-y;
+                if(w<=0||h<=0) continue;
+                passEnc.setScissorRect(x,y,w,h);passEnc.draw(3,1,0,0);
               }
-              st.pipeRec = null; st.pipeBad = true;
-              console.warn('vkwebgpu: pipeline skipped', op.pipe.pipeId, rec.skip);
-              break;
             }
-            st.pipeRec = rec;
-            if (passEnc) passEnc.setPipeline(rec.pipeline);
+            if(st.pipeRec) passEnc.setPipeline(st.pipeRec.pipeline);
+            const v=st.viewport||[0,0,p.w,p.h,0,1];
+            passEnc.setViewport(v[0],v[3]<0?v[1]+v[3]:v[1],v[2],Math.abs(v[3]),v[4],v[5]);
+            const sc=st.scissor||[0,0,p.w,p.h];
+            passEnc.setScissorRect(sc[0],sc[1],sc[2],sc[3]);
             break;
           }
+          case 'bindPipe': {
+            st.pipeDesc = op.pipe; st.pipeNeg = false; st.pipeRec = null; st.pipeBad = false;
+            break;
+          }
+          case 'stencil': {
+            for (let face=0;face<2;face++) if(op.faces & (1<<face)) st.dynamicStencil[op.kind][face]=op.value;
+            break;
+          }
+          case 'blendConstants': st.blendConstants=op.values; break;
           case 'bindSets': break; // sets resolve from DESC_SET records; ids kept for debugging
           case 'descSet': st.sets.set(op.setIndex, { bindings: op.bindings }); bump(op.setIndex); break;
           case 'inline': st.inlineMap.set(op.setIndex + ':' + op.binding, op.bytes); bump(op.setIndex); break;
@@ -1778,8 +1859,14 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
           case 'ibind': st.ibind = op; break;
           case 'draw': {
             if (skipped) break;
-            if (st.pipeBad || !st.pipeRec) break;
-            if (!passEnc) break;
+            if (!passEnc || !st.pipeDesc) break;
+            let drawPipe;
+            try {drawPipe=v2StencilPipeline(st.pipeDesc,st.dynamicStencil);}
+            catch(error) {stats.unsupported++;stats.skippedDraws=(stats.skippedDraws||0)+1;break;}
+            const selected=await getPipelineFor(drawPipe,passSamples,st.pipeNeg,!!depthView,st.ibind?.indexType||0,passColorFormats,passDepthFormat,passDepthAspects);
+            if(selected.skip) {stats.skippedDraws=(stats.skippedDraws||0)+1;break;}
+            st.pipeRec=selected;
+            passEnc.setPipeline(selected.pipeline);
             if (st.viewport) {
               const [x, y, w, h, md, xmd] = st.viewport;
               if (w > 0 && h !== 0) {
@@ -1790,7 +1877,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
                 // framebuffer mapping bit-for-bit.
                 const negH = h < 0;
                 if (negH !== st.pipeNeg && st.pipeDesc) {
-                  const rec = await getPipelineFor(st.pipeDesc, passSamples, negH, !!depthView, st.ibind?.indexType || 0, passColorFormats);
+                  const rec = await getPipelineFor(drawPipe, passSamples, negH, !!depthView, st.ibind?.indexType || 0, passColorFormats, passDepthFormat, passDepthAspects);
                   if (!rec.skip) { st.pipeRec = rec; st.pipeNeg = negH; if (passEnc) passEnc.setPipeline(rec.pipeline); }
                 }
                 passEnc.setViewport(x, negH ? y + h : y, w, Math.abs(h), md, xmd);
@@ -1801,13 +1888,14 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
               if (w > 0 && h > 0) passEnc.setScissorRect(x | 0, y | 0, w | 0, h | 0);
             }
             if (st.pipeRec.stripIndexType !== undefined && st.pipeRec.stripIndexType !== (st.ibind?.indexType || 0)) {
-              const rec = await getPipelineFor(st.pipeDesc, passSamples, st.pipeNeg, !!depthView, st.ibind?.indexType || 0, passColorFormats);
+              const rec = await getPipelineFor(drawPipe, passSamples, st.pipeNeg, !!depthView, st.ibind?.indexType || 0, passColorFormats, passDepthFormat, passDepthAspects);
               if (rec.skip) break;
               st.pipeRec = rec;
               passEnc.setPipeline(rec.pipeline);
             }
+            if (st.pipeRec.stencilReference !== null) passEnc.setStencilReference(st.pipeRec.stencilReference);
             if (st.pipeRec.blendConstantMode) {
-              const c = st.pipeDesc.blendConstants || [0,0,0,0];
+              const c = st.pipeDesc.blendConstantsDynamic ? st.blendConstants : (st.pipeDesc.blendConstants || [0,0,0,0]);
               passEnc.setBlendConstant(st.pipeRec.blendConstantMode === 'alpha' ? [c[3],c[3],c[3],c[3]] : c);
             }
             for (let g = 0; g <= st.pipeRec.maxGroup; g++) {
