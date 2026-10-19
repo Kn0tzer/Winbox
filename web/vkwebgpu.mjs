@@ -1350,7 +1350,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     /** @type {GPUVertexBufferLayout[]} */
     const buffers = [];
     const vbWalk = [];
-    const slotOf = new Map(); // vulkan binding number -> vertex slot
+    const slotOf = new Map(); // Vulkan binding -> GPU slots and rebased offsets
     for (const vb of pipe.vb) {
       const attributes = [];
       let minStride = 0;
@@ -1364,7 +1364,6 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
         if (scaling) scaled.push({ ...scaling, srcOffset: va.offset, attribute: attributes[attributes.length - 1] });
         minStride = Math.max(minStride, va.offset + (scaling ? scaling.components * scaling.bits / 8 : (V2_VERT_FORMAT_SIZE[vf] || 4)));
       }
-      slotOf.set(vb.binding, buffers.length);
       // Attribute offsets may extend beyond a vertex's stride. They do not
       // change the distance between vertices (zero also means constant data).
       const stride = vb.stride;
@@ -1373,7 +1372,26 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       }
       let arrayStride = scaled.length ? Math.ceil(Math.max(stride, minStride, 4) / 4) * 4 : stride;
       for (const a of scaled) { a.dstOffset = arrayStride; a.attribute.offset = arrayStride; arrayStride += a.components * 4; }
-      buffers.push({ arrayStride, stepMode: vb.inputRate ? 'instance' : 'vertex', attributes });
+      const slots = [];
+      const addStream = (streamAttributes, offset = 0) => {
+        slots.push({slot:buffers.length,offset});
+        buffers.push({arrayStride,stepMode:vb.inputRate?'instance':'vertex',attributes:streamAttributes});
+      };
+      const baseAttributes = [];
+      for (const attribute of attributes) {
+        const size = V2_VERT_FORMAT_SIZE[attribute.format];
+        if (!arrayStride || attribute.offset + size <= arrayStride) baseAttributes.push(attribute);
+        else {
+          // Older Dawn versions require an attribute to fit in its stride.
+          // Rebase another stream onto the same buffer; keep vertex spacing.
+          const offset = Math.floor(attribute.offset / 4) * 4;
+          if (attribute.offset - offset + size > arrayStride) {stats.unsupported++;return {skip:'overlapping-vertex-format'};}
+          addStream([{...attribute,offset:attribute.offset-offset}],offset);
+        }
+      }
+      if (baseAttributes.length || !slots.length) addStream(baseAttributes);
+      if (buffers.length > (device.limits?.maxVertexBuffers || 8)) {stats.unsupported++;return {skip:'vertex-buffer-slot-limit'};}
+      slotOf.set(vb.binding,slots);
       const attrs44 = [];
       for (const va of pipe.va) if (va.binding === vb.binding && va.format === 44) attrs44.push(va.offset);
       vbWalk.push({ binding: vb.binding, stride, attrs44, scaled, outputStride: arrayStride });
@@ -1940,8 +1958,8 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
             }
             const vbSet = new Set();
             for (const vb of st.vbinds) {
-              const slot = st.pipeRec.slotOf.get(vb.binding);
-              if (slot === undefined) continue;
+              const slots = st.pipeRec.slotOf.get(vb.binding);
+              if (!slots) continue;
               const bytes = F.buffers.get(vb.buf);
               const preHash = F.bufHashes ? F.bufHashes.get(vb.buf) : null; // always use bridge hash
               if (!bytes && !preHash) continue;
@@ -1963,11 +1981,13 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
                 gpu = gpuBufferFor(vkey, vbytes, usage, preHash);
               }
               if (!gpu) continue;
-              passEnc.setVertexBuffer(slot, gpu, scaled ? 0 : Math.min(vb.offset, gpu.size));
-              vbSet.add(slot);
+              for (const {slot,offset} of slots) {
+                passEnc.setVertexBuffer(slot, gpu, scaled ? offset : Math.min(vb.offset + offset, gpu.size));
+                vbSet.add(slot);
+              }
             }
             // Slots the guest left unbound (null buffer) still need a buffer.
-            for (const slot of st.pipeRec.slotOf.values()) {
+            for (const {slot} of [...st.pipeRec.slotOf.values()].flat()) {
               if (!vbSet.has(slot)) passEnc.setVertexBuffer(slot, dummyVb, 0);
             }
             let indexed = op.indexed;
