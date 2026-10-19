@@ -819,7 +819,8 @@ void OPCALL firstDynamicOp(CPU* cpu, DecodedOp* op) {
         // done check is for long blocks that get broken up, affects f-22/f-16
         bool shouldStartJit = op->runCount == JIT_RUN_COUNT && op->inst != Done && !(op->flags & OP_FLAG_JIT);
 #endif
-        if (shouldStartJit || !cpu->calculateCF[0]) {
+        bool needsSharedHelpers = (op->flags & OP_FLAG_JIT) && !cpu->calculateCF[0];
+        if (shouldStartJit || needsSharedHelpers) {
             startNewJIT(cpu, cpu->getEipAddress(), op);
         }
     }

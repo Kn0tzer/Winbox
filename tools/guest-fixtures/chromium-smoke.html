@@ -33,6 +33,8 @@ document.getElementById('input').oninput = event => {
 document.getElementById('input').onfocus = () => log('focus', { target: 'input', hasFocus: document.hasFocus() });
 document.getElementById('input').onblur = () => log('blur', { target: 'input' });
 for (const event of ['mousedown', 'mouseup']) document.addEventListener(event, e => log(event, { target: e.target.id, x: e.clientX, y: e.clientY, button: e.button }));
+for (const event of ['keydown', 'keypress', 'keyup']) document.addEventListener(event, e => log(event, { target: e.target.id, key: e.key, code: e.code, keyCode: e.keyCode, defaultPrevented: e.defaultPrevented }));
+document.addEventListener('beforeinput', e => log('beforeinput', { target: e.target.id, inputType: e.inputType, data: e.data, defaultPrevented: e.defaultPrevented }));
 document.title = 'BW_RENDER_OK';
 log('ready', { userAgent: navigator.userAgent });
 const median = values => {

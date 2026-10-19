@@ -85,6 +85,13 @@ int main() {
   jit.doJIT(42, &op);
   assert(std::memcmp(cpu.calculateCF, process.calculateCF, sizeof(cpu.calculateCF)) == 0);
   assert(attempts == 0);
+  // An uncompiled cold block must keep warming up. Missing helpers alone
+  // must not bypass the threshold or repeatedly enter a disabled compiler.
+  std::memset(cpu.calculateCF, 0, sizeof(cpu.calculateCF));
+  op.flags = 0; op.flags2 = 0; op.runCount = 1;
+  firstDynamicOp(&cpu, &op);
+  assert(attempts == 0 && dispatches == 2);
+  assert(cpu.calculateCF[0] == nullptr);
 }
 `);
     for (const defines of [[], ['-D__TEST']]) {
