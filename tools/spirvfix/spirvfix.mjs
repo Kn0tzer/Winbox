@@ -260,8 +260,11 @@ export function splitCombinedSamplers(mod, log) {
     const nm = decodeStr(mod.insns.find(i => i.op === Op.Name && i.words[0] === varId) ?? { words: [] });
     if (nm) {
       addType.push({ op: Op.Name, words: [imgVar, ...strWords(nm)], resultType: null, resultId: null });
-      addType.push({ op: Op.Name, words: [sampVar, ...strWords(nm + '$spl')], resultType: null, resultId: null });
     }
+    // Preserve the guest descriptor source through Naga's WGSL translation.
+    // wgsl-utils reads this generated identifier; the new Binding decoration
+    // remains the WebGPU slot, while sampling state comes from imgBind.
+    addType.push({ op: Op.Name, words: [sampVar, ...strWords(`bw_combined_g${set}_b${imgBind}_v${varId}`)], resultType: null, resultId: null });
     log.push(`spirvfix R1: split combined uniform %${varId} -> image %${imgVar} (set ${set}, binding ${imgBind}) + sampler %${sampVar} (binding ${sampBind})`);
   }
 

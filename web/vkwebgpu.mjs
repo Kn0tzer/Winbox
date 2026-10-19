@@ -1141,7 +1141,9 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       return null;
     }
     persistStats.bufMiss++;
-    b = device.createBuffer({ size: Math.max(4, bytes.length), usage, mappedAtCreation: true });
+    // A valid uint16 index stream can end on a two-byte boundary. WebGPU
+    // requires mapped allocations to be a multiple of four bytes.
+    b = device.createBuffer({ size: Math.max(4, Math.ceil(bytes.length / 4) * 4), usage, mappedAtCreation: true });
     new Uint8Array(b.getMappedRange()).set(bytes.subarray(0, Math.min(bytes.length, b.size)));
     b.unmap();
     persistBufCache.set(ck, b);
@@ -1368,7 +1370,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
           }
         }
       } else if (t === 'sampler' || t === 'sampler_comparison') {
-        const b = bindingForElement(bindings, d.binding, 0);
+        const b = bindingForElement(bindings, d.sourceBinding ?? d.binding, 0);
         let sHex = null;
         if (b && b.kind === 3) sHex = b.obj;
         else if (b && b.kind === 2) sHex = b.range;
@@ -1447,7 +1449,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
         }
         entries.push({ binding: d.binding, resource: d.arrayCount > 1 ? views : views[0] });
       } else if (t === 'sampler' || t === 'sampler_comparison') {
-        const b = bindingForElement(bindings, d.binding, 0);
+        const b = bindingForElement(bindings, d.sourceBinding ?? d.binding, 0);
         let sHex = null;
         if (b && b.kind === 3) sHex = b.obj;
         else if (b && b.kind === 2) sHex = b.range; // combined image sampler's sampler

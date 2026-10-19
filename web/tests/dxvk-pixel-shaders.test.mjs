@@ -2,9 +2,26 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { applySpirvFix, parseSpirv, serializeSpirv } from '../../tools/spirvfix/spirvfix.mjs';
-import { createShaderCache, rewritePushConstantsWGSL } from '../vkwebgpu.mjs';
+import { createShaderCache, rewritePushConstantsWGSL, scanWgslResources } from '../vkwebgpu.mjs';
 import * as naga from '../vendor/naga/node.js';
 const present = new Uint8Array(readFileSync(new URL('../../testdata/spirv/dxvk-live/present.frag.spv', import.meta.url)));
+test('split combined samplers retain their original Vulkan descriptor binding after Naga translation', () => {
+  const raw = new Uint8Array(readFileSync(new URL('../../testdata/spirv/p6-multitex.frag.spv', import.meta.url)));
+  const anonymous = parseSpirv(raw);
+  anonymous.insns = anonymous.insns.filter(i => i.op !== 5); // OpName is optional.
+  for (const source of [raw, serializeSpirv(anonymous)]) {
+    const wgsl = naga.translate({ from: 'spirv', to: 'wgsl', source: applySpirvFix(source).bytes });
+    const resources = scanWgslResources(wgsl);
+    const textures = resources.filter(d => d.type.startsWith('texture_'));
+    const samplers = resources.filter(d => d.type === 'sampler');
+    assert.equal(samplers.length, 2);
+    const split = samplers.filter(d => d.sourceBinding !== undefined);
+    assert.deepEqual(split.map(d => d.sourceBinding), [1]);
+    assert.ok(textures.some(d => d.binding === split[0].sourceBinding));
+    assert.notEqual(split[0].binding, split[0].sourceBinding);
+    assert.ok(samplers.some(d => d.binding === 4 && d.sourceBinding === undefined), 'separate samplers keep their own binding');
+  }
+});
 test('real DXVK SPIR-V 1.6 combined samplers preserve entrypoint interfaces', () => {
   const fixed = applySpirvFix(present);
   assert.doesNotThrow(() => naga.translate({ from: 'spirv', to: 'wgsl', source: fixed.bytes }));

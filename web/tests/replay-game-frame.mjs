@@ -33,7 +33,7 @@ try {
   page.on('console', m => record(`${m.type()}: ${m.text()}`));
   page.on('pageerror', e => record(`pageerror: ${e.message}`));
   // Stop automatic runtime boot in this page: rendering needs only WebGPU.
-  await page.route('**/wine64-launcher.js', route => route.fulfill({ body: '', contentType: 'text/javascript' }));
+  await page.route(url => url.pathname.endsWith('/wine64-launcher.js'), route => route.fulfill({ body: '', contentType: 'text/javascript' }));
   await page.goto(`http://127.0.0.1:${server.address().port}/runtime/index.html?replay=1`);
   const result = await page.evaluate(async ({ json, decode, encode, captureTargets, whiteFragment, passLimit, imageCopy }) => {
     const decodeFrame = (0, eval)(`(${decode})`);

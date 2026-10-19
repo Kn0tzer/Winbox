@@ -25,6 +25,8 @@ const profiles = {
 const game = process.env.GAME || 'portal';
 if (!profiles[game]) throw Error(`Unknown GAME: ${game}`);
 const profile = { ...profiles[game], renderer: process.env.PROBE_RENDERER || profiles[game].renderer };
+const launcherApp = process.env.PROBE_APP === '1';
+const installedDirect3D = launcherApp || process.env.PROBE_INSTALLED_D3D === '1';
 if (!['d3d9', 'd3d11', 'opengl'].includes(profile.renderer)) throw Error(`Invalid renderer: ${profile.renderer}`);
 const tag = process.env.TAG || `${game}-${Date.now()}`;
 if (!/^[\w.-]+$/.test(tag)) throw Error('Invalid TAG');
@@ -33,7 +35,7 @@ await mkdir(dir, { recursive: true });
 const root = await mkdtemp(join(tmpdir(), 'bw-game-'));
 const gamePath = resolve(process.env.GAME_ZIP || `/home/ubuntu/kn0tzer/games/${game === 'celeste' ? 'celeste-drmfree' : game}.zip`);
 const result = { game, profile, tag, startedAt: new Date().toISOString(), menuVerified: false,
-  gameplayVerified: false, pass: false, samples: [] };
+  gameplayVerified: false, installedDirect3D, launcherApp, pass: false, samples: [] };
 let slot, server, browser, browserServer, logFile;
 const logs = [];
 let stopping = false;
@@ -53,7 +55,7 @@ try {
   const overlay = join(dir, 'overlay.zip');
   const assets = [];
   if (process.env.PROBE_ASSET) assets.push([resolve(process.env.PROBE_ASSET), `home/username/apps/${process.env.PROBE_EXE || profile.exe}`]);
-  if (profile.renderer.startsWith('d3d')) {
+  if (profile.renderer.startsWith('d3d') && !installedDirect3D) {
     const arch = profile.arch === 'x86' ? '32' : '64';
     execFileSync('python3', [join(repo, 'tools/rootfs64/build_vulkan_shims.py'), '--check', '--arch', arch]);
     const dlls = profile.renderer === 'd3d9' ? ['d3d9'] : ['d3d11', 'dxgi'];
@@ -103,7 +105,7 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   const launcher = await readFile(resolve(process.env.PROBE_LAUNCHER || join(runtimeRoot, 'runtime/wine64-launcher.js')));
   result.launcherSha256 = createHash('sha256').update(launcher).digest('hex');
-  await page.route('**/wine64-launcher.js', route => route.fulfill({ contentType:'text/javascript', body:launcher }));
+  await page.route(url => url.pathname.endsWith('/wine64-launcher.js'), route => route.fulfill({ contentType:'text/javascript', body:launcher }));
   await page.addInitScript(() => {
     let renderer;
     globalThis.__gameFrames = [];
@@ -134,9 +136,13 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
   page.on('response', r => { if (r.status() >= 400) record(`http-error: ${r.status()} ${new URL(r.url()).pathname}`); });
   const base = `http://127.0.0.1:${server.address().port}`;
   const params = new URLSearchParams({ gamezip: `${base}/game.zip`, gamezipsize: String(result.gameArchive.bytes),
-    overlay: `${base}/evidence/overlay.zip`, overlaysize: String((await stat(overlay)).size),
     arch: profile.arch, exe: process.env.PROBE_EXE || profile.exe, args: process.env.GAME_ARGS || JSON.stringify(profile.args),
-    session: '0', persist: '0', fresh: '1', ldpath: '/home/username/apps' });
+    session: '0', persist: '0', fresh: '1' });
+  if (assets.length || process.env.MONO32_DIR) {
+    params.set('overlay', `${base}/evidence/overlay.zip`);
+    params.set('overlaysize', String((await stat(overlay)).size));
+  }
+  if (!installedDirect3D) params.set('ldpath', '/home/username/apps');
   if (process.env.WINEDEBUG) params.set('winedbg', process.env.WINEDEBUG);
   else if (profile.fixture) params.set('winedbg', '+debugstr');
   if (profile.renderer === 'd3d9') params.set('dlloverrides', 'd3d9=n');
@@ -144,8 +150,19 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
   if (process.env.GLTRACE) params.set('gltrace', process.env.GLTRACE);
   if (process.env.XWIRE === '1') params.set('xwire', '1');
   if (process.env.RIPSAMPLE) params.set('ripsample', '1');
-  result.launchParams = Object.fromEntries(params);
-  await page.goto(`${base}/dist/runtime/index.html?${params}`, { timeout: 60000 });
+  if (launcherApp) {
+    await page.goto(`${base}/dist/`, { timeout: 60000 });
+    await page.locator(`[data-game="${game}"]`).click();
+    const iframe = page.locator('#display iframe');
+    await iframe.waitFor({ timeout: 60000 });
+    const launched = new URL(await iframe.getAttribute('src'), page.url());
+    result.launchParams = Object.fromEntries(launched.searchParams);
+    if (launched.searchParams.has('overlay') || launched.searchParams.has('ldpath'))
+      throw Error('Launcher must use installed graphics libraries');
+  } else {
+    result.launchParams = Object.fromEntries(params);
+    await page.goto(`${base}/dist/runtime/index.html?${params}`, { timeout: 60000 });
+  }
   const cdp = await browser.newBrowserCDPSession();
   result.browser = await cdp.send('Browser.getVersion');
   result.adapter = await page.evaluate(async () => { const a = await navigator.gpu?.requestAdapter();
@@ -162,7 +179,8 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
       await page.keyboard.press('ScrollLock');
     }
     const snap = await page.evaluate(() => {
-      const fs = globalThis.bwRuntime?.fs();
+      const runtime = globalThis.bwRuntime || document.querySelector('#display iframe')?.contentWindow.bwRuntime;
+      const fs = runtime?.fs();
       const guestLogs = {};
       const guestDirectories = {};
       for (const path of ['/root', '/root/home/username', '/root/home/username/apps']) {

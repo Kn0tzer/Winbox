@@ -74,6 +74,7 @@ export function stripNagaFragmentDepth(wgsl) {
 }
 
 export function scanWgslResources(wgsl) {
+  /** @type {Array<{group:number, binding:number, addr:string, name:string, type:string, arrayCount:number, sourceBinding?:number}>} */
   const out = [];
   WGSL_RES_DECL.lastIndex = 0;
   let m;
@@ -85,6 +86,14 @@ export function scanWgslResources(wgsl) {
     const ba = /binding_array<\s*([^,]+?)\s*,\s*(\d+)\s*>/.exec(type);
     if (ba) arrayCount = parseInt(ba[2], 10);
     out.push({ group: +m[1], binding: +m[2], addr, name: m[4], type, arrayCount });
+  }
+  for (const decl of out) {
+    // spirvfix splits a combined image/sampler into two WebGPU bindings.
+    // Its generated sampler name carries the original Vulkan descriptor slot,
+    // including for anonymous SPIR-V resources and aliased shadow samplers.
+    const source = /^bw_combined_g(\d+)_b(\d+)_v\d+(?:_\d*)?$/.exec(decl.name);
+    if (source && +source[1] === decl.group && /^sampler(?:_comparison)?$/.test(decl.type))
+      decl.sourceBinding = +source[2];
   }
   return out;
 }
