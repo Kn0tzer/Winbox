@@ -1365,8 +1365,13 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
         minStride = Math.max(minStride, va.offset + (scaling ? scaling.components * scaling.bits / 8 : (V2_VERT_FORMAT_SIZE[vf] || 4)));
       }
       slotOf.set(vb.binding, buffers.length);
-      const stride = Math.max(vb.stride, minStride, 4);
-      let arrayStride = Math.ceil(stride / 4) * 4;
+      // Attribute offsets may extend beyond a vertex's stride. They do not
+      // change the distance between vertices (zero also means constant data).
+      const stride = vb.stride;
+      if ((!scaled.length && stride % 4) || (scaled.length && !stride)) {
+        stats.unsupported++; return {skip:'vertex-stride:' + stride};
+      }
+      let arrayStride = scaled.length ? Math.ceil(Math.max(stride, minStride, 4) / 4) * 4 : stride;
       for (const a of scaled) { a.dstOffset = arrayStride; a.attribute.offset = arrayStride; arrayStride += a.components * 4; }
       buffers.push({ arrayStride, stepMode: vb.inputRate ? 'instance' : 'vertex', attributes });
       const attrs44 = [];
