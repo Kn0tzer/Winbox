@@ -189,3 +189,23 @@ user; read-only originals and browser-local saves are the default direct policy.
 - **CP5, M:** Resume real Portal menu/map/input acceptance only after Chromium
   works and useful optimization avenues are exhausted. Preserve existing
   Portal preflight and evidence requirements. Depends on CP4.
+
+## Portal stencil support (2026-10-19)
+
+Current user priority is Portal, then Gang Beasts, then optimization. Contract:
+`docs/specs/portal-stencil.md`. Work remains solo and sequential.
+
+- PS1 (L): capture and transport stencil/static/dynamic state through both guest
+  shims and V2 records. Files: Vulkan ABI/shims/bridge, V2 decoder, native and
+  transport tests. Accept exact state round trips, unchanged old trap IDs,
+  bounded records and verified 32/64-bit shim builds. Depends on blend repair.
+- PS2 (L): apply the transported state to matching WebGPU depth/stencil formats
+  and replay clipped attachment clears. Files: renderer, validation fixture,
+  stencil tests. Accept replacement/equal mask behavior, dynamic updates,
+  independent stencil load/store and restored state after partial clears.
+  Run focused tests and type checking. Depends on PS1.
+- PS3 (M): coherent native build, real Portal shadows/opening/traversal check,
+  deployment and compatibility report. Accept normal lighting/input and an
+  intact scene outside the portal opening. Use the existing owned game probe,
+  atomic static release and public hash check. Depends on PS2. Gang Beasts is
+  next only after Portal's remaining rendering issues are resolved.

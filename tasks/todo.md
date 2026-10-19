@@ -91,3 +91,11 @@
 - [x] Stage and automatically mount pinned shared Mono and GL dependencies.
 - [x] Verify Celeste demo and upload, nested managed x86/x64 programs, and FNA input.
 - [x] Pass fast/type/build checks, deploy, verify live and commit locally.
+
+## Portal stencil support (2026-10-19)
+
+Contract: `docs/specs/portal-stencil.md`; ordered plan: `tasks/plan.md`.
+
+- [ ] PS1: fail-first native/ABI/V2 tests, state transport, 32/64 shim builds.
+- [ ] PS2: stencil pipeline/depth targets, load/store and clipped clear replay.
+- [ ] PS3: coherent build, live Portal rendering/traversal, deploy and report.
