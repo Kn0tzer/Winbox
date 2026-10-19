@@ -2183,7 +2183,9 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 // viewId first: the page's DESC_SET bindings name image VIEWS,
                 // while pixel content is deduped per image, so the record carries
                 // the view->image link the page needs.
-                p.u64(viewId); p.u64(view->image); p.u32(tex->w); p.u32(tex->h); p.u32(tex->format);
+                // Sampling interprets the view's format, which may be the sRGB
+                // alias of the image's linear storage. The bytes are identical.
+                p.u64(viewId); p.u64(view->image); p.u32(tex->w); p.u32(tex->h); p.u32(view->format ? view->format : tex->format);
                 p.u64(hash);
                 p.u32(sendPixels ? (U32)bytes.size() : 0);
                 if (sendPixels) p.bytes(bytes);

@@ -5,7 +5,7 @@ import { createVkRenderer2 } from '../../../vkwebgpu.mjs';
 test('replay carries a pipeline bound before the render pass, preserves push constants and sizes attachments', async () => {
   const saved = new Map(['navigator', 'GPUBufferUsage', 'GPUTextureUsage', 'GPUShaderStage', 'GPUMapMode']
     .map(k => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
-  const draws = [], textures = [];
+  const draws = [], textures = [], pipelineFormats = [], views = [];
   let groups = new Map();
   let validationError = null;
   const device = {
@@ -15,10 +15,13 @@ test('replay carries a pipeline bound before the render pass, preserves push con
     createBuffer(d) { if (d.mappedAtCreation) assert.equal(d.size % 4, 0, 'mapped buffers require four-byte allocation alignment');
       return { size: d.size, data: new ArrayBuffer(d.size), getMappedRange() { return this.data; },
       unmap() {}, async mapAsync() {}, destroy() {} }; },
-    createTexture(d) { const t = { label: d.label, width: d.size[0], height: d.size[1],
-      createView() { return { texture: this }; }, destroy() {} }; textures.push(t); return t; },
+    createTexture(d) { const t = { label: d.label, width: d.size[0], height: d.size[1], format: d.format,
+      createView(v = {}) { views.push({ texture: this, format: v.format || this.format });
+        if (v.format && v.format !== this.format) assert.ok(d.viewFormats?.includes(v.format));
+        return { texture: this }; }, destroy() {} }; textures.push(t); return t; },
     createBindGroupLayout: d => d, createPipelineLayout: d => d, createShaderModule: d => d,
     createRenderPipeline(d) {
+      if (d.fragment?.targets.length) pipelineFormats.push(d.fragment.targets.map(t => t.format));
       if (!d.fragment?.targets.length && !d.depthStencil)
         validationError = new Error('No attachment was specified.');
       return d;
@@ -49,7 +52,7 @@ test('replay carries a pipeline bound before the render pass, preserves push con
   const canvas = { width: 64, height: 32, getContext: () => context };
   const context = { configure() {}, unconfigure() {}, getCurrentTexture() { return { width: canvas.width, height: canvas.height }; } };
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: {
-    gpu: { async requestAdapter() { return adapter; }, getPreferredCanvasFormat() { return 'rgba8unorm'; } },
+      gpu: { async requestAdapter() { return adapter; }, getPreferredCanvasFormat() { return 'bgra8unorm'; } },
   } });
   for (const [k, v] of Object.entries({ GPUBufferUsage: { UNIFORM: 1, COPY_DST: 2, VERTEX: 4, MAP_READ: 8, INDEX: 16 },
     GPUTextureUsage: { RENDER_ATTACHMENT: 1, COPY_SRC: 2, COPY_DST: 4, TEXTURE_BINDING: 8 },
@@ -69,11 +72,17 @@ test('replay carries a pipeline bound before the render pass, preserves push con
       shaders: new Map([['v', { code: new Uint8Array(4) }], ['f', { code: new Uint8Array(4) }]]),
       images: new Map(), views: new Map(), samplers: new Map(), buffers: new Map([['uniform', new Uint8Array(768)]]), bufHashes: new Map(),
       passes: [{w:64,h:32,attachments:[],clearColor:[0,0,0,1],ops:[{op:'bindPipe',pipe}]}, pass(32, 1), pass(64, 2)] };
+    frame.passes[1].attachments[0].format = 50; // BGRA sRGB write, then linear alias.
+    frame.passes[2].attachments[0].format = 44;
     const result = await renderer.render(frame);
     assert.equal(result.rendered, true);
     assert.notEqual(draws[0], draws[1]);
     assert.deepEqual(draws.map(b => new Uint8Array(b.data)[0]), [1, 2]);
     assert.equal(textures.find(t => t.label === 'img:image').height, 64);
+    assert.deepEqual(pipelineFormats, [['bgra8unorm-srgb'], ['bgra8unorm']]);
+    const image = textures.find(t => t.label === 'img:image');
+    assert.equal(views.find(v => v.format === 'bgra8unorm-srgb')?.texture, image);
+    assert.equal(views.find(v => v.format === 'bgra8unorm')?.texture, image);
     // Portal also presents draws with an odd number of 16-bit indices.
     frame.buffers.set('indices', new Uint8Array([0, 0, 1, 0, 2, 0]));
     draw.indexed = true; draw.indexCount = 3;

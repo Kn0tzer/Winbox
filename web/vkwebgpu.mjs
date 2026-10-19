@@ -918,10 +918,9 @@ export function v2TargetKey(imageId, w, h, samples, isDepth) {
 // binds feed draw/drawIndexed. The last pass's first colour target is copied
 // to the canvas and read back for the lit/painted counters.
 //
-// Render targets always use the canvas format (the display format); the
-// guest's VkFormat choice is honoured for sampled textures but not for the
-// backbuffer — the bridge's job is to show the frame on this canvas.
-// Likewise depth is always depth24plus.
+// Colour attachments retain their guest formats. Linear and sRGB views share
+// storage so switching views preserves both image contents and colour encoding.
+// Depth is currently depth24plus.
 //
 // Anything the page cannot model (an untranslatable module, an unknown vertex
 // format, a second push block) is counted and the frame skipped — the v1
@@ -949,6 +948,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
 
   const shaders = createShaderCache({ translate, log });
   const pipelines = new Map();   // pipeId:msN -> { pipeline, layouts, decls, hasPush, slotOf, maxGroup, key }
+  let presentPipeline = null;
   const targets = new Map();     // targetKey -> GPUTexture (invalidated on resize; img:/imgd: keys alias by VkImage)
   const stats = {
     frames: 0, rendered: 0, skips: 0, unknownFormats: 0, unsupported: 0,
@@ -1018,6 +1018,13 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   }
 
   let frameTargetSizes = new Map();
+  function colorStorage(viewFormat) {
+    const base = viewFormat.replace(/-srgb$/, '');
+    return { format: base, viewFormats: ['rgba8unorm', 'bgra8unorm'].includes(base) ? [base + '-srgb'] : [] };
+  }
+  function colorMsKey(imageId, w, h, samples, slot) {
+    return v2TargetKey(imageId, w, h, samples, false) + ':ms' + samples + (v2ImageKnown(imageId) ? '' : ':slot' + slot);
+  }
   function target(key, desc) {
     const size = frameTargetSizes.get(key);
     if (size) desc = { ...desc, size };
@@ -1028,7 +1035,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
 
   // Frame-local resource caches, reset by render().
   const F = {
-    shaders: new Map(), images: new Map(), views: new Map(), samplers: new Map(), buffers: new Map(),
+    shaders: new Map(), images: new Map(), views: new Map(), viewFormats: new Map(), samplers: new Map(), buffers: new Map(),
     texCache: new Map(), bufCache: new Map(), sampCache: new Map(), live: [],
   };
 
@@ -1202,14 +1209,14 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     return null;
   }
 
-  async function getPipelineFor(pipe, sampleCount, unnegated = false, passHasDepth = false, indexType = 0, colorCount = 1) {
+  async function getPipelineFor(pipe, sampleCount, unnegated = false, passHasDepth = false, indexType = 0, colorFormats = [format]) {
     // WebGPU requires the pipeline's depthStencil state to match the render
     // pass attachments: a pipeline without depthStencil cannot be set in a
     // pass with a depth attachment (Vulkan allows it). Key the cache on the
     // pass depth state and always emit a (possibly disabled) depthStencil
     // when the pass has depth.
     const stripIndexType = pipe.topology === 2 || pipe.topology === 4 ? indexType : undefined;
-    const key = pipe.pipeId + ':ms' + sampleCount + ':topology:' + pipe.topology + ':vb:' + JSON.stringify(pipe.vb) + ':yny' + (unnegated ? '1' : '0') + ':pd' + (passHasDepth ? '1' : '0') + ':dt' + (pipe.depthTest ? '1' : '0') + ':si' + (stripIndexType ?? 'none') + ':colors' + colorCount;
+    const key = pipe.pipeId + ':ms' + sampleCount + ':topology:' + pipe.topology + ':vb:' + JSON.stringify(pipe.vb) + ':yny' + (unnegated ? '1' : '0') + ':pd' + (passHasDepth ? '1' : '0') + ':dt' + (pipe.depthTest ? '1' : '0') + ':si' + (stripIndexType ?? 'none') + ':colors' + colorFormats.join(',');
     if (pipelines.has(key)) return pipelines.get(key);
     const vsm = F.shaders.get(pipe.vsHash), fsm = F.shaders.get(pipe.fsHash);
     if (!vsm || !fsm) return { skip: 'missing-shader' };
@@ -1303,7 +1310,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       },
       fragment: {
         module: device.createShaderModule({ code: fsR.code }), entryPoint: 'main',
-        targets: Array.from({ length: colorCount }, () => ({ format, blend: pipe.blend ? {
+        targets: colorFormats.map(colorFormat => ({ format: colorFormat, blend: pipe.blend ? {
           color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
           alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } } : undefined })),
       },
@@ -1340,6 +1347,11 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     return fallback;
   }
 
+  function imageForView(viewId, imageId) {
+    const image = F.images.get(imageId), viewFormat = F.viewFormats.get(viewId);
+    return image && viewFormat && viewFormat !== image.format ? { ...image, format: viewFormat } : image;
+  }
+
   // Content fingerprint for one descriptor set: deterministic function of
   // the descriptor contents (resource ids + content hashes). Used as the key
   // for the persistent bind-group cache. Must change whenever the resolved
@@ -1359,13 +1371,13 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
         for (let k = 0; k < n; k++) {
           const b = bindingForElement(bindings, d.binding, k);
           const imgHex = b && b.kind === 2 ? F.views.get(b.obj) : null;
+          const img = imgHex && imageForView(b?.obj, imgHex);
           const ak = imgHex && v2ImageKnown(imgHex)
             ? (targets.has(v2ImageTargetKey(imgHex, false)) ? v2ImageTargetKey(imgHex, false)
               : targets.has(v2ImageTargetKey(imgHex, true)) ? v2ImageTargetKey(imgHex, true) : null)
             : null;
-          if (ak) parts.push('a' + d.binding + ':' + k + ':' + ak);
+          if (ak) parts.push('a' + d.binding + ':' + k + ':' + ak + ':format' + (img?.format || 0));
           else {
-            const img = imgHex && F.images.get(imgHex);
             parts.push('t' + d.binding + ':' + k + ':' + (img ? textureKey(imgHex, img, null, t.startsWith('texture_cube')).ck : 'blank'));
           }
         }
@@ -1444,8 +1456,8 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
             ? (targets.get(v2ImageTargetKey(imgHex, false)) || targets.get(v2ImageTargetKey(imgHex, true)))
             : null;
           if (aliasTex) stats.aliased++;
-          const img = !aliasTex && imgHex && F.images.get(imgHex);
-          views.push(aliasTex ? aliasTex.createView() : (img ? gpuTextureFor(imgHex, img, cube, dimension) : blankTex(cube, dimension)).createView({ dimension: cube ? 'cube' : dimension }));
+          const img = imgHex && imageForView(b?.obj, imgHex);
+          views.push(aliasTex ? aliasTex.createView(img ? { format: v2TextureFormat(img.format, null) } : {}) : (img ? gpuTextureFor(imgHex, img, cube, dimension) : blankTex(cube, dimension)).createView({ dimension: cube ? 'cube' : dimension }));
         }
         entries.push({ binding: d.binding, resource: d.arrayCount > 1 ? views : views[0] });
       } else if (t === 'sampler' || t === 'sampler_comparison') {
@@ -1529,6 +1541,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     }
     F.shaders = frame.shaders; F.images = frame.images;
     F.views = frame.views; F.samplers = frame.samplers; F.buffers = frame.buffers;
+    F.viewFormats = frame.viewFormats || new Map();
     F.bufHashes = frame.bufHashes;
     F.texCache.clear(); F.bufCache.clear(); F.sampCache.clear(); F.live.length = 0;
     // NOTE: persistTexCache/persistBufCache/persistSampCache are NOT cleared —
@@ -1549,10 +1562,20 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     // An attachment can be used by several dynamic rendering subrectangles.
     // Allocate its largest required extent before recording any pass.
     frameTargetSizes = new Map();
-    for (const p of frame.passes) for (const a of p.attachments) {
-      const key = v2TargetKey(a.imageId, p.w, p.h, a.isDepth ? v2PickSampleCount(a.samples || 1) : 1, !!a.isDepth);
+    const reserveTarget = (key, w, h) => {
       const previous = frameTargetSizes.get(key) || [0, 0];
-      frameTargetSizes.set(key, [Math.max(previous[0], p.w), Math.max(previous[1], p.h)]);
+      frameTargetSizes.set(key, [Math.max(previous[0], w), Math.max(previous[1], h)]);
+    };
+    for (const p of frame.passes) {
+      let colorSlot = 0;
+      for (const a of p.attachments) {
+        const samples = v2PickSampleCount(a.samples || 1);
+        reserveTarget(v2TargetKey(a.imageId, p.w, p.h, a.isDepth ? samples : 1, !!a.isDepth), p.w, p.h);
+        if (!a.isDepth) {
+          if (samples > 1) reserveTarget(colorMsKey(a.imageId, p.w, p.h, samples, colorSlot), p.w, p.h);
+          colorSlot++;
+        }
+      }
     }
     for (const [key, size] of frameTargetSizes) {
       const old = targets.get(key);
@@ -1589,6 +1612,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       for (const a of p.attachments) passSamples = Math.max(passSamples, v2PickSampleCount(a.samples || 1));
       /** @type {GPURenderPassColorAttachment[]} */
       const colorAttachments = [];
+      const passColorFormats = [];
       let depthView = null, depthAttachment = null;
       for (const a of p.attachments) {
         const samples = v2PickSampleCount(a.samples || 1);
@@ -1605,16 +1629,20 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
           depthView = tex.createView();
           depthAttachment = a;
         } else {
+          const viewFormat = a.format ? v2TextureFormat(a.format, stats) : format;
+          const storage = colorStorage(viewFormat);
+          const slot = colorAttachments.length;
+          passColorFormats.push(viewFormat);
           const single = target(v2TargetKey(a.imageId, p.w, p.h, 1, false), {
-            size: [p.w, p.h], format,
-            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST | texBinding,
+            size: [p.w, p.h], ...storage,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
           });
-          let view = single.createView(), resolveTarget;
+          let view = single.createView({ format: viewFormat }), resolveTarget;
           if (samples > 1) {
-            const ms = target(v2TargetKey(null, p.w, p.h, samples, false), {
-              size: [p.w, p.h], sampleCount: samples, format, usage: GPUTextureUsage.RENDER_ATTACHMENT,
+            const ms = target(colorMsKey(a.imageId, p.w, p.h, samples, slot), {
+              size: [p.w, p.h], sampleCount: samples, ...storage, usage: GPUTextureUsage.RENDER_ATTACHMENT,
             });
-            view = ms.createView(); resolveTarget = single.createView();
+            view = ms.createView({ format: viewFormat }); resolveTarget = single.createView({ format: viewFormat });
           }
           colorAttachments.push({
             view, resolveTarget,
@@ -1640,7 +1668,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
         // Carry over a pipeline bound by an earlier pass (vkd3d binds before
         // vkCmdBeginRenderPass).
         if (st.pipeDesc) {
-          const rec = await getPipelineFor(st.pipeDesc, passSamples, st.pipeNeg, !!depthView, st.ibind?.indexType || 0, colorAttachments.length);
+          const rec = await getPipelineFor(st.pipeDesc, passSamples, st.pipeNeg, !!depthView, st.ibind?.indexType || 0, passColorFormats);
           st.pipeRec = rec.skip ? null : rec;
           st.pipeBad = !!rec.skip;
           if (st.pipeRec) passEnc.setPipeline(st.pipeRec.pipeline);
@@ -1664,7 +1692,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
             const image = F.images.get(op.dstImage);
             const destination = target(v2ImageTargetKey(op.dstImage, false), {
               size: [Math.max(image?.w || 0, op.dstOrigin[0] + op.extent[0]), Math.max(image?.h || 0, op.dstOrigin[1] + op.extent[1])],
-              format: source.format,
+              ...colorStorage(source.format),
               usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
             });
             encoder.copyTextureToTexture({ texture: source, origin: op.srcOrigin }, { texture: destination, origin: op.dstOrigin }, op.extent);
@@ -1676,7 +1704,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
             st.pipeDesc = op.pipe; st.pipeNeg = false; st.pipeRec = null; st.pipeBad = false;
             if (!passEnc) break;
             let rec;
-            try { rec = await getPipelineFor(op.pipe, passSamples, false, !!depthView, st.ibind?.indexType || 0, colorAttachments.length); }
+            try { rec = await getPipelineFor(op.pipe, passSamples, false, !!depthView, st.ibind?.indexType || 0, passColorFormats); }
             catch (e) { rec = { skip: 'pipeline-threw' }; }
             if (rec.skip) {
               if (!st.badPipes.has(op.pipe.pipeId)) {
@@ -1713,7 +1741,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
                 // framebuffer mapping bit-for-bit.
                 const negH = h < 0;
                 if (negH !== st.pipeNeg && st.pipeDesc) {
-                  const rec = await getPipelineFor(st.pipeDesc, passSamples, negH, !!depthView, st.ibind?.indexType || 0, colorAttachments.length);
+                  const rec = await getPipelineFor(st.pipeDesc, passSamples, negH, !!depthView, st.ibind?.indexType || 0, passColorFormats);
                   if (!rec.skip) { st.pipeRec = rec; st.pipeNeg = negH; if (passEnc) passEnc.setPipeline(rec.pipeline); }
                 }
                 passEnc.setViewport(x, negH ? y + h : y, w, Math.abs(h), md, xmd);
@@ -1724,7 +1752,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
               if (w > 0 && h > 0) passEnc.setScissorRect(x | 0, y | 0, w | 0, h | 0);
             }
             if (st.pipeRec.stripIndexType !== undefined && st.pipeRec.stripIndexType !== (st.ibind?.indexType || 0)) {
-              const rec = await getPipelineFor(st.pipeDesc, passSamples, st.pipeNeg, !!depthView, st.ibind?.indexType || 0, colorAttachments.length);
+              const rec = await getPipelineFor(st.pipeDesc, passSamples, st.pipeNeg, !!depthView, st.ibind?.indexType || 0, passColorFormats);
               if (rec.skip) break;
               st.pipeRec = rec;
               passEnc.setPipeline(rec.pipeline);
@@ -1873,7 +1901,34 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       const presentDest = context.getCurrentTexture();
       if (presentDest.width < presentW || presentDest.height < presentH)
         throw new Error(`canvas texture is ${presentDest.width}x${presentDest.height}, present copy is ${presentW}x${presentH}`);
-      encoder.copyTextureToTexture({ texture: presentTex }, { texture: presentDest }, [presentW, presentH]);
+      if ((presentTex.format || format).replace(/-srgb$/, '') === format.replace(/-srgb$/, '')) {
+        encoder.copyTextureToTexture({ texture: presentTex }, { texture: presentDest }, [presentW, presentH]);
+      } else {
+        // The guest swapchain can be BGRA while the browser canvas is RGBA.
+        // Copying those formats is invalid; a texel load preserves colour
+        // channels and the already encoded sRGB bytes without another gamma step.
+        if (!presentPipeline) {
+          const module = device.createShaderModule({ code: `
+@group(0) @binding(0) var image: texture_2d<f32>;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+ let p = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+ return vec4<f32>(p[i], 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+ return textureLoad(image, vec2<i32>(p.xy), 0);
+}` });
+          presentPipeline = device.createRenderPipeline({ layout: 'auto',
+            vertex: { module, entryPoint: 'vs' }, fragment: { module, entryPoint: 'fs', targets: [{ format }] },
+            primitive: { topology: 'triangle-list' } });
+        }
+        const pass = encoder.beginRenderPass({ colorAttachments: [{ view: presentDest.createView(),
+          loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
+        pass.setPipeline(presentPipeline);
+        pass.setBindGroup(0, device.createBindGroup({ layout: presentPipeline.getBindGroupLayout(0),
+          entries: [{ binding: 0, resource: presentTex.createView() }] }));
+        pass.setViewport(0, 0, presentW, presentH, 0, 1);
+        pass.draw(3); pass.end();
+      }
     }
     gpuTimer.end(encoder, bwGpuSlot);
     const bwSubmitT0 = metricsNow();
@@ -1888,7 +1943,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       await readback.mapAsync(GPUMapMode.READ);
       const rows = new Uint8Array(readback.getMappedRange());
       const [r, g, b, a] = lastClear.map(c => Math.round(c * 255));
-      const bgra = format.startsWith('bgra');
+      const bgra = (presentTex.format || format).startsWith('bgra');
       let lit = 0, painted = 0;
       for (let y = 0; y < presentH; y++) {
         const row = y * bytesPerRow;

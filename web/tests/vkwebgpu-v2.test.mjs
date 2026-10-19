@@ -154,6 +154,15 @@ test('records outside a frame are ignored, not fatal', () => {
 // ---------------------------------------------------------------- decode
 const frameRecords = R => parseV2Chunk(chunk(0, false, ...R)).records;
 
+test('two sampled views retain distinct linear and sRGB formats for the same image', () => {
+  const records = dxvkFrame();
+  records.splice(-1, 0, rec(V2_REC.IMAGE_DATA, new W().u64(0x9ea).u64(0x1111).u32(4).u32(4).u32(43).u64(0x1002).u32(0).buf()));
+  const frame = decodeV2Frame(frameRecords(records));
+  assert.equal(frame.views.get('00000000000009ea'), frame.views.get('00000000000009e9'));
+  assert.equal(frame.viewFormats.get('00000000000009ea'), 43);
+  assert.equal(frame.viewFormats.get('00000000000009e9'), 37);
+});
+
 test('a DXVK-shaped frame decodes to the render model', () => {
   const frame = decodeV2Frame(frameRecords(dxvkFrame()));
   assert.equal(frame.frameNo, 7);

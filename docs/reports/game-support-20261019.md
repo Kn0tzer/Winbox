@@ -47,6 +47,36 @@ A normal-launcher Portal run is checking the shared Direct3D installation and
 live level rendering/input. Gang Beasts follows Portal; neither game is yet
 claimed fully playable by this report.
 
+## Linear and sRGB rendering
+
+The normal-launcher run reaches the menu, chapter selector and Test Chamber 00
+with the repaired textures and no rejected frames. Its level screenshot remains
+too dim, matching the user's observation. The run's menu-only `pass` flag does
+not establish gameplay acceptance.
+
+The renderer previously forced every render target and pipeline attachment to
+the canvas format. Portal alternates BGRA linear (44) and sRGB (50) attachment
+views of the same image. Losing the sRGB write conversion darkens the scene.
+Colour targets now retain their formats, with compatible linear/sRGB views
+sharing storage. Pipeline keys include attachment formats; multisample storage
+also follows the image identity instead of being shared by dimensions alone.
+Presentation converts channels when the guest's BGRA swapchain and browser's
+RGBA canvas cannot be copied directly. It adds no brightness adjustment.
+
+The exact captured frame is substantially brighter after this repair, with
+zero rejected frames: `portal-srgb-present-replay-20261019/frame.png`. The unit
+regression fails before the repair when one image switches from an sRGB write
+view to a linear view, and passes afterward.
+
+Sampled descriptors must preserve view formats too. The native emitter now
+sends the view format in the existing IMAGE_DATA format field, preserving the
+record layout. The decoder retains a format per view, and texture/bind-group
+cache keys distinguish aliases of the same image. Native emission and decoder
+regressions cover simultaneous linear/sRGB aliases. The focused colour tests
+pass (24 tests), as does type checking. Fresh live gameplay verification on the
+rebuilt native emitter remains required. The prepared release has not been
+activated while this rendering work continues.
+
 ## Shared graphics installation
 
 The shared lazy runtime now includes architecture-checked DXVK `d3d9`, `d3d11`

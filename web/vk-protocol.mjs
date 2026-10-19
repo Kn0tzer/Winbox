@@ -319,7 +319,7 @@ export function decodeV2Frame(records, counters = {}) {
   const frame = {
     frameNo, width, height, passes: [],
     shaders: new Map(), pipelines: new Map(), buffers: new Map(),
-    images: new Map(), views: new Map(), samplers: new Map(),
+    images: new Map(), views: new Map(), viewFormats: new Map(), samplers: new Map(),
     bufHashes: new Map(), readbacks: [],
   };
   const implicitPass = () => ({
@@ -463,6 +463,7 @@ export function decodeV2Frame(records, counters = {}) {
           throw new Error('vk64: v2 IMAGE_DATA depth/layers/mips out of range');
         r.done('IMAGE_DATA');
         frame.views.set(viewId, imageId);
+        frame.viewFormats.set(viewId, format);
         // Pixel-less record (pixLen 0): wasm-side dedup, content unchanged
         // since the last full record. The view->image link is still recorded;
         // the texture resolves from the persistent cache via the content hash.
