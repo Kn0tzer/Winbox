@@ -54,6 +54,8 @@ test('confined grabs request SDL relative input on the main thread and release i
 #include <cassert>
 #include <mutex>
 #include <atomic>
+#include <thread>
+#include <future>
 std::atomic<bool> manualPointerCapture{false};
 struct XWireServer{std::mutex regMutex;unsigned pointerGrabClient=0,pointerConfineWindow=0;static XWireServer& instance(){static XWireServer s;return s;}};
 enum{SDL_FALSE=0,SDL_TRUE=1};
@@ -69,9 +71,14 @@ int main(){
  focused=true;syncXWirePointerCapture();assert(calls==1 && relative);
  syncXWirePointerCapture();assert(calls==1);
  s.pointerGrabClient=0;syncXWirePointerCapture();assert(calls==2 && !relative);
- s.pointerGrabClient=1;s.regMutex.lock();syncXWirePointerCapture();s.regMutex.unlock();assert(calls==2);
+ s.pointerGrabClient=1;
+ std::promise<void> held,release;auto released=release.get_future();
+ std::thread owner([&]{std::lock_guard<std::mutex> lock(s.regMutex);held.set_value();released.wait();});
+ held.get_future().wait();syncXWirePointerCapture();assert(calls==2);release.set_value();owner.join();
  syncXWirePointerCapture();assert(calls==3 && relative);
  s.pointerConfineWindow=0;syncXWirePointerCapture();assert(calls==4 && !relative);
+ manualPointerCapture=true;syncXWirePointerCapture();assert(calls==5 && relative);
+ manualPointerCapture=false;syncXWirePointerCapture();assert(calls==6 && !relative);
 }
 `);
     execFileSync('c++', ['-std=c++17', join(dir, 'check.cpp'), '-o', join(dir, 'check')]);
