@@ -23,7 +23,9 @@ export function decodeFrame(json) {
     if (value.$bytes !== undefined) {
       const Type = types[value.$type];
       if (!Type) throw Error(`Unsupported frame array: ${value.$type}`);
-      const bytes = Uint8Array.from(atob(value.$bytes), c => c.charCodeAt(0));
+      const binary = atob(value.$bytes);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
       return new Type(bytes.buffer);
     }
     return value;
