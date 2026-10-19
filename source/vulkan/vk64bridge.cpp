@@ -579,8 +579,14 @@ static void captureStageSpec(U64 specVa, StageSpec& out) {
         memcpy(e.value, data.data() + me.offset, (size_t)me.size);
     }
 }
+struct ColorBlend {
+    U32 enable = 0, srcColor = 1, dstColor = 0, colorOp = 0;
+    U32 srcAlpha = 1, dstAlpha = 0, alphaOp = 0, writeMask = 15;
+};
 struct Pipeline : Obj {
     U32 topology = 0, cull = 0, front = 0, depthTest = 0, depthWrite = 0, depthOp = 0, blend = 0;
+    U32 colorBlendCount = 0; ColorBlend colorBlend[VK64_MAX_ATTACH];
+    float blendConstants[4] = {};
     StageSpec vsSpec, fsSpec;
     U32 nvb = 0, nva = 0;
     bool dynamicVertexStride = false;
@@ -596,6 +602,17 @@ struct Pipeline : Obj {
     U32 vaLocation[VK64_MAX_VERT_ATTRIBS] = {0};
     U64 vs = 0, fs = 0, cs = 0, layout = 0, rp = 0;
 };
+template <class T>
+static void captureColorBlend(Pipeline& pipe, const std::vector<T>& states) {
+    pipe.colorBlendCount = std::min<U32>((U32)states.size(), VK64_MAX_ATTACH);
+    for (U32 i = 0; i < pipe.colorBlendCount; ++i) {
+        const auto& s = states[i];
+        pipe.colorBlend[i] = {s.blendEnable, s.srcColorBlendFactor, s.dstColorBlendFactor,
+                             s.colorBlendOp, s.srcAlphaBlendFactor, s.dstAlphaBlendFactor,
+                             s.alphaBlendOp, s.colorWriteMask};
+    }
+    pipe.blend = pipe.colorBlendCount && pipe.colorBlend[0].enable ? 1 : 0;
+}
 struct RenderPass : Obj {
     U32 natt = 0, formats[VK64_MAX_ATTACH] = {0}, loadOps[VK64_MAX_ATTACH] = {0},
         storeOps[VK64_MAX_ATTACH] = {0}, depthFmt = 0;
@@ -1683,6 +1700,17 @@ struct ChunkWriter {
     void bytes(const U8* p, size_t n) { if (p && n) b.insert(b.end(), p, p + n); }
     void bytes(const std::vector<U8>& v) { bytes(v.data(), v.size()); }
 };
+static void emitColorBlend(const Pipeline& pipe, ChunkWriter& p) {
+    p.u32(0x31444e42u); // BND1: attachment blend equations and write masks
+    p.u32(pipe.colorBlendCount);
+    for (U32 i = 0; i < pipe.colorBlendCount; ++i) {
+        const auto& b = pipe.colorBlend[i];
+        p.u32(b.enable); p.u32(b.srcColor); p.u32(b.dstColor); p.u32(b.colorOp);
+        p.u32(b.srcAlpha); p.u32(b.dstAlpha); p.u32(b.alphaOp); p.u32(b.writeMask);
+    }
+    for (float value : pipe.blendConstants) p.f32(value);
+}
+
 
 // One frame under construction: an open chunk plus sealed chunks. Records never
 // straddle chunks; a single oversize record gets a chunk of its own.
@@ -2329,6 +2357,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 };
                 emitSpec(pipe->vsSpec);
                 emitSpec(pipe->fsSpec);
+                emitColorBlend(*pipe, p);
             });
         };
         auto emitRpBegin = [&](const Cmd& k) {
@@ -4060,8 +4089,9 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                         p->dynamicVertexStride = true;
             }
             std::vector<VkPipelineColorBlendAttachmentState> blends;
-            readArray(cbs.pAttachments, cbs.attachmentCount ? 1 : 0, blends);
-            p->blend = (!blends.empty() && blends[0].blendEnable) ? 1 : 0;
+            readArray(cbs.pAttachments, std::min<U32>(cbs.attachmentCount, VK64_MAX_ATTACH), blends);
+            captureColorBlend(*p, blends);
+            memcpy(p->blendConstants, cbs.blendConstants, sizeof(p->blendConstants));
             std::vector<VkPipelineShaderStageCreateInfo> stages;
             readArray(ci.pStages, ci.stageCount, stages);
             for (const VkPipelineShaderStageCreateInfo& st : stages) {
@@ -6893,8 +6923,9 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                         p->dynamicVertexStride = true;
             }
             std::vector<vk32abi::VkPipelineColorBlendAttachmentState> blends;
-            readArray32(cbs.pAttachments, cbs.attachmentCount ? 1 : 0, blends);
-            p->blend = (!blends.empty() && blends[0].blendEnable) ? 1 : 0;
+            readArray32(cbs.pAttachments, std::min<U32>(cbs.attachmentCount, VK64_MAX_ATTACH), blends);
+            captureColorBlend(*p, blends);
+            memcpy(p->blendConstants, cbs.blendConstants, sizeof(p->blendConstants));
             std::vector<vk32abi::VkPipelineShaderStageCreateInfo> stages;
             readArray32(ci.pStages, ci.stageCount, stages);
             for (const vk32abi::VkPipelineShaderStageCreateInfo& st : stages) {

@@ -169,3 +169,22 @@ window coordinates subtract their own origin, and warps convert back into sink
 coordinates. A failing native regression reproduces the disagreement with a
 window offset by (3,9); it also covers nested window translation and relative
 warps. This build still requires live verification before activation.
+
+## Shadow compositing follow-up
+
+The live vault exposes white rectangular backgrounds beneath projected prop
+shadows (`portal-coordinates-live-20261019/radio-view.png`). The native bridge
+previously reduced colour attachment state to its first blend-enable flag, and
+the renderer substituted alpha blending. Multiplicative shadows need their
+actual source/destination factors, operations and colour write mask. This also
+matters for portal compositing passes that intentionally disable colour writes.
+
+Both native guest ABIs now capture every attachment's colour blend state. A
+bounded append-only `BND1` pipeline tail transports it with static constants.
+The renderer maps Vulkan equations and masks per target, including min/max,
+additive and multiplicative operations. Old captures retain their legacy
+fallback. Dynamic blend constants and stencil state remain separate gaps.
+The focused producer/decoder/renderer checks pass (13 tests), as does type
+checking. This follow-up is not yet in the live release and needs a rebuilt
+native capture and visual check. The original failing shadow frame is saved as
+`portal-coordinates-live-20261019/shadow-white-frame.json.gz`.

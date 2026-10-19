@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 export function createValidationDevice() {
   const saved = new Map(['navigator', 'GPUTextureUsage', 'GPUBufferUsage', 'GPUMapMode', 'GPUShaderStage'].map(k => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
-  const pipelines = [], bound = [], writes = [], textures = [];
+  const pipelines = [], bound = [], writes = [], textures = [], blendConstants = [];
   const texture = d => ({ ...d, width: d.size[0], height: d.size[1], createView(options = {}) { return { texture: this, dimension: options.dimension || '2d' }; }, destroy() { this.destroyed=true; } });
   const device = {
     addEventListener() {}, lost: new Promise(() => {}), pushErrorScope() {}, async popErrorScope() { return null; },
@@ -18,7 +18,7 @@ export function createValidationDevice() {
           assert.equal(p.multisample.count, view.texture.sampleCount || 1, 'pipeline must match the current pass sample count');
           assert.equal(p.fragment.targets.length, d.colorAttachments.length, 'pipeline must match the current pass color attachments');
           currentPipeline = p; bound.push(p);
-        }, draw() {}, setBindGroup() {}, setIndexBuffer(buffer, format) { indexFormat = format; },
+        }, draw() {}, setBlendConstant(value) { blendConstants.push([...value]); }, setBindGroup() {}, setIndexBuffer(buffer, format) { indexFormat = format; },
         drawIndexed() { if (currentPipeline.primitive.topology.endsWith('strip')) assert.equal(currentPipeline.primitive.stripIndexFormat, indexFormat); }, end() {},
       }; }, copyTextureToBuffer() {}, copyTextureToTexture() {}, finish() { return {}; },
     }; }, queue: { submit() {}, writeTexture(d,data,layout,size) { writes.push({d,data:new Uint8Array(data),layout,size}); }, async onSubmittedWorkDone() {} }, destroy() {},
@@ -28,5 +28,5 @@ export function createValidationDevice() {
     async requestAdapter() { return { features: new Set(), async requestDevice() { return device; } }; }, getPreferredCanvasFormat: () => 'rgba8unorm',
   } } });
   for (const k of ['GPUTextureUsage', 'GPUBufferUsage', 'GPUMapMode', 'GPUShaderStage']) Object.defineProperty(globalThis, k, { configurable: true, value: new Proxy({}, { get: () => 1 }) });
-  return {device,canvas,pipelines,bound,writes,textures,restore() {for (const [k, d] of saved) { if (d) Object.defineProperty(globalThis, k, d); else delete globalThis[k]; }}};
+  return {device,canvas,pipelines,bound,writes,textures,blendConstants,restore() {for (const [k, d] of saved) { if (d) Object.defineProperty(globalThis, k, d); else delete globalThis[k]; }}};
 }

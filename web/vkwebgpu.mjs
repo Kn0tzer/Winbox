@@ -926,6 +926,50 @@ export function v2TargetKey(imageId, w, h, samples, isDepth) {
 // format, a second push block) is counted and the frame skipped — the v1
 // discipline.
 // ---------------------------------------------------------------------------
+
+// Vulkan and WebGPU use the same component write-mask bits. Keep blend
+// equations per attachment: projected shadows multiply destination colour.
+const V2_BLEND_FACTORS = /** @type {Record<number, GPUBlendFactor>} */ ({
+  0: 'zero', 1: 'one', 2: 'src', 3: 'one-minus-src', 4: 'dst', 5: 'one-minus-dst',
+  6: 'src-alpha', 7: 'one-minus-src-alpha', 8: 'dst-alpha', 9: 'one-minus-dst-alpha',
+  10: 'constant', 11: 'one-minus-constant', 12: 'constant', 13: 'one-minus-constant',
+  14: 'src-alpha-saturated',
+});
+const V2_BLEND_OPS = /** @type {Record<number, GPUBlendOperation>} */ ({0:'add',1:'subtract',2:'reverse-subtract',3:'min',4:'max'});
+/** @returns {GPUBlendComponent} */
+function v2BlendComponent(src, dst, op, alpha) {
+  if (!V2_BLEND_OPS[op]) throw Error('unsupported-blend-op:' + op);
+  const factor = value => {
+    if (alpha && value === 14) return 'one';
+    if (!V2_BLEND_FACTORS[value]) throw Error('unsupported-blend-factor:' + value);
+    return V2_BLEND_FACTORS[value];
+  };
+  return { operation: V2_BLEND_OPS[op], srcFactor: op >= 3 ? 'one' : factor(src), dstFactor: op >= 3 ? 'one' : factor(dst) };
+}
+/** @returns {GPUColorTargetState} */
+function v2BlendTarget(pipe, index, format) {
+  const b = pipe.colorBlend?.[index];
+  if (!b) return { format, blend: pipe.blend ? {
+    color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
+    alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+  } : undefined };
+  return { format, writeMask: b.writeMask & 15, blend: b.enable ? {
+    color: v2BlendComponent(b.srcColor, b.dstColor, b.colorOp, false),
+    alpha: v2BlendComponent(b.srcAlpha, b.dstAlpha, b.alphaOp, true),
+  } : undefined };
+}
+function v2BlendConstantMode(pipe) {
+  let color = false, alpha = false, used = false;
+  for (const b of pipe.colorBlend || []) if (b.enable) {
+    for (const f of [b.srcColor, b.dstColor]) {
+      color ||= f === 10 || f === 11; alpha ||= f === 12 || f === 13;
+    }
+    used ||= [b.srcColor,b.dstColor,b.srcAlpha,b.dstAlpha].some(f => f >= 10 && f <= 13);
+  }
+  if (color && alpha) throw Error('unsupported-mixed-blend-constants');
+  return used ? (alpha ? 'alpha' : 'color') : null;
+}
+
 /**
  * @param {HTMLCanvasElement} canvas
  * @param {{translate?: (from: string, source: Uint8Array, stage: string, entryPoint?: string, options?: {rasterTopology?: number}) => Promise<string>, log?: (msg: string) => void, onResize?: () => void}} [options]
@@ -1216,7 +1260,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     // pass depth state and always emit a (possibly disabled) depthStencil
     // when the pass has depth.
     const stripIndexType = pipe.topology === 2 || pipe.topology === 4 ? indexType : undefined;
-    const key = pipe.pipeId + ':ms' + sampleCount + ':topology:' + pipe.topology + ':vb:' + JSON.stringify(pipe.vb) + ':yny' + (unnegated ? '1' : '0') + ':pd' + (passHasDepth ? '1' : '0') + ':dt' + (pipe.depthTest ? '1' : '0') + ':si' + (stripIndexType ?? 'none') + ':colors' + colorFormats.join(',');
+    const key = pipe.pipeId + ':ms' + sampleCount + ':topology:' + pipe.topology + ':vb:' + JSON.stringify(pipe.vb) + ':yny' + (unnegated ? '1' : '0') + ':pd' + (passHasDepth ? '1' : '0') + ':dt' + (pipe.depthTest ? '1' : '0') + ':si' + (stripIndexType ?? 'none') + ':colors' + colorFormats.join(',') + ':blend:' + JSON.stringify(pipe.colorBlend ?? pipe.blend);
     if (pipelines.has(key)) return pipelines.get(key);
     const vsm = F.shaders.get(pipe.vsHash), fsm = F.shaders.get(pipe.fsHash);
     if (!vsm || !fsm) return { skip: 'missing-shader' };
@@ -1300,6 +1344,11 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       vbWalk.push({ binding: vb.binding, stride, attrs44, scaled, outputStride: arrayStride });
     }
 
+    let colorTargets, blendConstantMode;
+    try {
+      colorTargets = colorFormats.map((format, index) => v2BlendTarget(pipe, index, format));
+      blendConstantMode = v2BlendConstantMode(pipe);
+    } catch (error) { stats.unsupported++; return { skip: error.message }; }
     device.pushErrorScope('validation');
     const bwPipeT0 = metricsNow();
     const pipeline = device.createRenderPipeline({
@@ -1310,9 +1359,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       },
       fragment: {
         module: device.createShaderModule({ code: fsR.code }), entryPoint: 'main',
-        targets: colorFormats.map(colorFormat => ({ format: colorFormat, blend: pipe.blend ? {
-          color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
-          alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } } : undefined })),
+        targets: colorTargets,
       },
       primitive: {
         topology: V2_TOPOLOGY[pipe.topology] || 'triangle-list',
@@ -1330,7 +1377,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     timing.pipelineMs += metricsNow() - bwPipeT0;
     timing.pipelineCount++;
     if (err) { stats.unsupported++; return { skip: 'pipeline-rejected:' + err.message }; }
-    const rec = { key, pipeline, layouts, decls, hasPush, slotOf, maxGroup, vbWalk, stripIndexType };
+    const rec = { key, pipeline, layouts, decls, hasPush, slotOf, maxGroup, vbWalk, stripIndexType, blendConstantMode };
     pipelines.set(key, rec);
     return rec;
   }
@@ -1756,6 +1803,10 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
               if (rec.skip) break;
               st.pipeRec = rec;
               passEnc.setPipeline(rec.pipeline);
+            }
+            if (st.pipeRec.blendConstantMode) {
+              const c = st.pipeDesc.blendConstants || [0,0,0,0];
+              passEnc.setBlendConstant(st.pipeRec.blendConstantMode === 'alpha' ? [c[3],c[3],c[3],c[3]] : c);
             }
             for (let g = 0; g <= st.pipeRec.maxGroup; g++) {
               if (g === V2_PUSH_GROUP) continue;

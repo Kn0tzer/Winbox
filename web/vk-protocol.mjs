@@ -397,8 +397,20 @@ export function decodeV2Frame(records, counters = {}) {
           vsSpec = readSpec();
           fsSpec = readSpec();
         }
+        let colorBlend, blendConstants;
+        if (r.left) {
+          if (r.u32() !== 0x31444e42) throw new Error('vk64: v2 PIPELINE unknown blend tail');
+          const count = r.u32();
+          if (count > 4) throw new Error('vk64: v2 PIPELINE blend count out of range');
+          colorBlend = [];
+          for (let i = 0; i < count; ++i) colorBlend.push({
+            enable: r.u32(), srcColor: r.u32(), dstColor: r.u32(), colorOp: r.u32(),
+            srcAlpha: r.u32(), dstAlpha: r.u32(), alphaOp: r.u32(), writeMask: r.u32(),
+          });
+          blendConstants = [r.f32(), r.f32(), r.f32(), r.f32()];
+        }
         r.done('PIPELINE');
-        const pipe = { pipeId, vsHash, fsHash, topology, cull, front, depthTest, depthWrite, depthOp, blend, vb, va, vsSpec, fsSpec };
+        const pipe = { pipeId, vsHash, fsHash, topology, cull, front, depthTest, depthWrite, depthOp, blend, vb, va, vsSpec, fsSpec, ...(colorBlend ? { colorBlend, blendConstants } : {}) };
         frame.pipelines.set(pipeId, pipe);
         needPass().ops.push({ op: 'bindPipe', pipe });
         break;

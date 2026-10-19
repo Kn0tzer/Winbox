@@ -240,3 +240,13 @@ rejections. `npm test` green; the existing v1 tests are untouched.
 3. Vertex buffer `BUFFER_DATA` inlines whole buffers; a DXVK frame's dynamic
    VBs can be megabytes — the chunk cap handles the framing, but per-frame
    re-upload cost is unmeasured (§2.10 unknown #4 territory).
+
+The `PIPELINE` record may append a `BND1` tail after its two specialization
+lists: `u32 0x31444e42`, `u32 attachmentCount` (at most four), then one block of
+eight `u32` values per attachment: `enable, srcColor, dstColor, colorOp,
+srcAlpha, dstAlpha, alphaOp, writeMask`. Four `f32` static blend constants follow.
+Factors and operations retain Vulkan enum values; write-mask bits match RGBA.
+Frames without this tail retain the legacy alpha-blending fallback. New frames
+preserve multiplicative shadows, additive effects and attachment write masks.
+This tail carries static pipeline constants; dynamic `vkCmdSetBlendConstants`
+command support is a separate remaining bridge feature.
