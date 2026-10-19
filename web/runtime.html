@@ -34,6 +34,33 @@ if (gameZipUrl?.startsWith('winbox-local:')) {
   };
 }
 installPresentation(document.getElementById('canvas'), size => send('size', size));
+// Capture starts on the next game click so SDL has mouse focus and the browser
+// receives a user gesture. Escape's pointerlockchange clears relative mode.
+let captureArmed = false;
+window.bwSetMouseCapture = enabled => {
+  if (!window.bwRuntime?.ready()) throw Error('Wait for the program to start before capturing the mouse.');
+  captureArmed = enabled;
+  if (!enabled) {
+    window.bwRuntime.call('bw64_pointer_capture', ['number'], [0]);
+    document.exitPointerLock();
+  }
+  send('mouse-capture', { armed: captureArmed, locked: !!document.pointerLockElement });
+};
+document.getElementById('canvas').addEventListener('mousedown', () => {
+  if (!captureArmed) return;
+  captureArmed = false;
+  window.bwRuntime.call('bw64_pointer_capture', ['number'], [1]);
+});
+document.addEventListener('pointerlockchange', () => {
+  const locked = !!document.pointerLockElement;
+  if (!locked && window.bwRuntime?.ready()) window.bwRuntime.call('bw64_pointer_capture', ['number'], [0]);
+  send('mouse-capture', { armed: captureArmed, locked });
+});
+document.addEventListener('pointerlockerror', () => {
+  captureArmed = false;
+  if (window.bwRuntime?.ready()) window.bwRuntime.call('bw64_pointer_capture', ['number'], [0]);
+  send('mouse-capture', { armed: false, locked: false, error: 'Mouse capture was declined. Click Capture mouse, then click inside the game to try again.' });
+});
 if (query.get('enhance') === '1') {
   const getContext = HTMLCanvasElement.prototype.getContext;
   HTMLCanvasElement.prototype.getContext = function (type, attributes) {

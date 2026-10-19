@@ -101,6 +101,8 @@ async function action(fn, { retry = fn } = {}) {
 function preparing(title) {
   $('launcher').hidden = true; $('player').hidden = false;
   $('runtimeTitle').textContent = title;
+  $('mouseCaptureHint').hidden = true;
+  $('captureMouse').textContent = 'Capture mouse'; $('captureMouse').setAttribute('aria-pressed', 'false');
   $('loadingTitle').textContent = 'Getting things ready'; $('loading').hidden = false;
   $('launchProgress').hidden = true; $('playerRetry').hidden = true;
   $('loadingActivity').hidden = true; $('loadingElapsed').textContent = '';
@@ -301,6 +303,12 @@ window.addEventListener('message', event => {
   const { type, data } = event.data;
   if (type === 'status') { run.status = String(data); const failure = startupFailure(run.status, run.exe); if (failure) startupError(run, failure); else updateStartup(run); }
   if (type === 'error') startupError(run, String(data));
+  if (type === 'mouse-capture') {
+    $('captureMouse').textContent = data.locked || data.armed ? 'Release mouse' : 'Capture mouse';
+    $('captureMouse').setAttribute('aria-pressed', String(Boolean(data.locked || data.armed)));
+    const hint = data.error || (data.armed ? 'Click inside the game to capture the mouse. Press Esc to release it.' : data.locked ? 'Mouse captured. Press Esc to release it.' : '');
+    $('mouseCaptureHint').textContent = hint; $('mouseCaptureHint').hidden = !hint;
+  }
   if (type === 'size' && Number.isFinite(data?.width) && Number.isFinite(data?.height) && data.width > 0 && data.height > 0) {
     $('display').style.setProperty('--program-aspect', `${data.width} / ${data.height}`);
   }
@@ -387,6 +395,12 @@ $('restart').onclick = () => lastAction && action(lastAction);
 $('retry').onclick = () => lastAction && action(lastAction);
 $('playerRetry').onclick = () => lastAction && action(lastAction);
 $('stats').onclick = () => { settings.metrics = metricsOpen() ? 'off' : 'on'; persistSettings(); applyMetricsVisibility(); };
+$('captureMouse').onclick = () => {
+  try {
+    current?.frame.contentWindow?.bwSetMouseCapture($('captureMouse').getAttribute('aria-pressed') !== 'true');
+    current?.frame.contentWindow?.document.getElementById('canvas')?.focus({ preventScroll: true });
+  } catch (error) { $('mouseCaptureHint').textContent = errorText(error); $('mouseCaptureHint').hidden = false; }
+};
 $('fullscreen').onclick = () => $('display').requestFullscreen().catch(error => message(errorText(error), true));
 $('settingsButton').onclick = () => $('settingsDialog').showModal();
 for (const dialog of document.querySelectorAll('dialog')) dialog.addEventListener('click', event => { if (event.target === dialog) { const box = dialog.getBoundingClientRect(); if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) dialog.close(); } });

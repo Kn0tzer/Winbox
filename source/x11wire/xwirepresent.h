@@ -36,6 +36,7 @@ struct XWireInputEvent {
     int x = 0, y = 0;          // pointer position in window coords (EvMotion),
                                // or relative delta dx/dy (EvMotionRel)
     uint32_t detail = 0;       // keycode (key events) or button number (button events)
+    bool warped = false;     // synthetic cursor warp, never hardware raw motion
     uint32_t state = 0;        // modifier/button mask
 };
 
@@ -71,6 +72,11 @@ public:
     // modifier/button mask, as tracked by the SDL pump. The wire connection uses
     // this to answer X_QueryPointer so wine's click handler doesn't block.
     virtual void lastPointer(int& x, int& y, uint32_t& state) const = 0;
+
+    // Guest-thread: move the virtual pointer without creating hardware motion.
+    // Browsers cannot warp their physical cursor; subsequent SDL deltas still
+    // move this position, so SetCursorPos/GetCursorPos recentering stays valid.
+    virtual void warpPointer(int x, int y) {}
 
     // Main-thread (doMainLoop): present the most recent submitted frame and pump
     // the host event queue into the input queue. No-op when nothing changed.

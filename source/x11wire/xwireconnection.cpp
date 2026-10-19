@@ -1551,15 +1551,45 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
             break;                             // no reply
         }
         // Reply-less grab/ungrab/pointer requests: accept and no-op so libX11's
-        // stream stays in sync. (X_WarpPointer cursor warp is a no-op for now.)
+        // stream stays in sync.
         case X_SendEvent:
         case X_ChangeActivePointerGrab:
         case X_UngrabKeyboard:
         case X_AllowEvents:
         case X_GrabServer:
         case X_UngrabServer:
-        case X_WarpPointer:
             break;
+        case X_WarpPointer: {
+            if (!g_xwirePresentSink) break;
+            int px = 0, py = 0; uint32_t state = 0;
+            g_xwirePresentSink->lastPointer(px, py, state);
+            const uint32_t source = rd32(req + 4), destination = rd32(req + 8);
+            int sx = 0, sy = 0, dx = 0, dy = 0;
+            {
+                auto& srv = XWireServer::instance();
+                std::lock_guard<std::mutex> lk(srv.regMutex);
+                if (source) {
+                    auto it = srv.windows.find(source);
+                    if (it == srv.windows.end()) break;
+                    sx = it->second.x; sy = it->second.y;
+                }
+                if (destination) {
+                    auto it = srv.windows.find(destination);
+                    if (it == srv.windows.end()) break;
+                    dx = it->second.x; dy = it->second.y;
+                }
+            }
+            const int left = sx + int16_t(rd16(req + 12));
+            const int top = sy + int16_t(rd16(req + 14));
+            const int width = rd16(req + 16), height = rd16(req + 18);
+            if (source && (px < left || py < top || (width && px >= left + width) || (height && py >= top + height))) break;
+            const int x = (destination ? dx : px) + int16_t(rd16(req + 20));
+            const int y = (destination ? dy : py) + int16_t(rd16(req + 22));
+            g_xwirePresentSink->warpPointer(x, y);
+            // A warp changes the baseline, never a relative hardware delta.
+            rawX = relX = x; rawY = relY = y; relInit = true;
+            break;
+        }
         case X_UngrabPointer: {
             auto& srv = XWireServer::instance();
             std::lock_guard<std::mutex> lk(srv.regMutex);
@@ -2089,7 +2119,7 @@ void XWireConnection::deliverInputEvents() {
         const bool motion = ev.type == XWireInputEvent::EvMotionRel || ev.type == XWireInputEvent::EvMotion;
         bool grabbed = false;
         { std::lock_guard<std::mutex> registryLock(srv.regMutex); grabbed = srv.pointerGrabClient != 0; }
-        const auto rawDevices = motion ? input2.rawDevices(rootWindow, grabbed) : std::vector<uint16_t>{};
+        const auto rawDevices = motion && !ev.warped ? input2.rawDevices(rootWindow, grabbed) : std::vector<uint16_t>{};
         const bool rawMotion = !rawDevices.empty();
         if (motion && getenv("BW64_XWIRE"))
             klog_fmt("XWire raw: client=0x%x pid=%u type=%d devices=%u grabbed=%d x=%d y=%d",
@@ -2105,7 +2135,9 @@ void XWireConnection::deliverInputEvents() {
                 }
             }
         }
-        if (ev.type == XWireInputEvent::EvMotionRel) {
+        if (ev.warped) {
+            relX = ev.x; relY = ev.y; relInit = true;
+        } else if (ev.type == XWireInputEvent::EvMotionRel) {
             if (!relInit) {
                 int px = 0, py = 0; uint32_t pm = 0;
                 if (g_xwirePresentSink) g_xwirePresentSink->lastPointer(px, py, pm);

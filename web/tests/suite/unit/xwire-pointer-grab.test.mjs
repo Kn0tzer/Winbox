@@ -53,6 +53,8 @@ test('confined grabs request SDL relative input on the main thread and release i
     writeFileSync(join(dir, 'check.cpp'), `
 #include <cassert>
 #include <mutex>
+#include <atomic>
+std::atomic<bool> manualPointerCapture{false};
 struct XWireServer{std::mutex regMutex;unsigned pointerGrabClient=0,pointerConfineWindow=0;static XWireServer& instance(){static XWireServer s;return s;}};
 enum{SDL_FALSE=0,SDL_TRUE=1};
 int relative=0,calls=0;bool focused=true;
@@ -70,6 +72,69 @@ int main(){
  s.pointerGrabClient=1;s.regMutex.lock();syncXWirePointerCapture();s.regMutex.unlock();assert(calls==2);
  syncXWirePointerCapture();assert(calls==3 && relative);
  s.pointerConfineWindow=0;syncXWirePointerCapture();assert(calls==4 && !relative);
+}
+`);
+    execFileSync('c++', ['-std=c++17', join(dir, 'check.cpp'), '-o', join(dir, 'check')]);
+    execFileSync(join(dir, 'check'));
+  } finally { rmSync(dir, {recursive:true, force:true}); }
+});
+
+test('cursor warps update the queried position and relative baseline without injecting hardware motion', () => {
+  const src = readFileSync(new URL('../../../../source/x11wire/xwireconnection.cpp', import.meta.url), 'utf8');
+  const handler = src.match(/case X_WarpPointer: \{[\s\S]*?\n        \}/)?.[0];
+  assert.ok(handler);
+  const dir = mkdtempSync(join(tmpdir(), 'bw64-pointer-warp-'));
+  try {
+    writeFileSync(join(dir, 'check.cpp'), `
+#include <cassert>
+#include <cstdint>
+#include <cstring>
+#include <mutex>
+#include <map>
+struct Window{int x=0,y=0;};
+struct XWireServer{std::mutex regMutex;std::map<uint32_t,Window> windows;static XWireServer& instance(){static XWireServer s;return s;}};
+struct Sink{int x=100,y=80,warps=0;void lastPointer(int& a,int& b,uint32_t& s){a=x;b=y;s=0;}void warpPointer(int a,int b){x=a;y=b;++warps;}} sink;
+Sink* g_xwirePresentSink=&sink;
+uint32_t rd32(const uint8_t* p){uint32_t v;memcpy(&v,p,4);return v;}
+uint16_t rd16(const uint8_t* p){uint16_t v;memcpy(&v,p,2);return v;}
+enum{X_WarpPointer=41};int rawX=0,rawY=0,relX=0,relY=0;bool relInit=false;
+void warp(uint32_t source,uint32_t dest,int16_t x,int16_t y,int16_t sx=0,int16_t sy=0,uint16_t w=0,uint16_t h=0){
+ uint8_t bytes[24]={};memcpy(bytes+4,&source,4);memcpy(bytes+8,&dest,4);memcpy(bytes+12,&sx,2);memcpy(bytes+14,&sy,2);memcpy(bytes+16,&w,2);memcpy(bytes+18,&h,2);memcpy(bytes+20,&x,2);memcpy(bytes+22,&y,2);const auto* req=bytes;switch(X_WarpPointer){${handler}}
+}
+int main(){
+ auto& s=XWireServer::instance();s.windows[1]={0,0};s.windows[2]={20,30};
+ warp(1,1,512,320);assert(sink.x==512 && sink.y==320 && sink.warps==1 && rawX==512 && rawY==320 && relX==512 && relY==320 && relInit);
+ warp(0,0,-12,4);assert(sink.x==500 && sink.y==324);
+ warp(0,2,10,15);assert(sink.x==30 && sink.y==45);
+ warp(2,1,700,700,0,0,5,5);assert(sink.x==30 && sink.y==45 && sink.warps==3);
+ warp(99,1,700,700);assert(sink.warps==3);
+}
+`);
+    execFileSync('c++', ['-std=c++17', join(dir, 'check.cpp'), '-o', join(dir, 'check')]);
+    execFileSync(join(dir, 'check'));
+  } finally { rmSync(dir, {recursive:true, force:true}); }
+});
+
+test('SDL relative movement advances the queried cursor position after recentering', () => {
+  const src = readFileSync(new URL('../../../../source/x11wire/xwirepresentSDL.cpp', import.meta.url), 'utf8');
+  const motion = src.match(/case SDL_MOUSEMOTION:[\s\S]*?\n                break;/)?.[0];
+  const warp = src.match(/    void warpPointer\(int x, int y\) override \{[\s\S]*?\n    \}/)?.[0].replace(' override', '');
+  assert.ok(motion); assert.ok(warp);
+  const dir = mkdtempSync(join(tmpdir(), 'bw64-relative-position-'));
+  try {
+    writeFileSync(join(dir, 'check.cpp'), `
+#include <cassert>
+#include <mutex>
+struct XWireInputEvent{enum{EvMotion,EvMotionRel}type;int x=0,y=0,state=0;bool warped=false;};
+enum{SDL_MOUSEMOTION=1};bool relative=false;bool SDL_GetRelativeMouseMode(){return relative;}int sdlModState(){return 0;}
+struct Sink{std::mutex pointerMutex;int lastX=0,lastY=0;XWireInputEvent last;void push(XWireInputEvent e){last=e;}
+${warp}
+void move(int x,int y,int dx,int dy){struct{struct{int x,y,xrel,yrel;}motion;}e={{x,y,dx,dy}};XWireInputEvent ie;switch(SDL_MOUSEMOTION){${motion}}}
+};
+int main(){Sink s;s.move(100,80,100,80);assert(s.lastX==100 && s.lastY==80 && s.last.type==XWireInputEvent::EvMotion);
+ s.warpPointer(512,320);relative=true;s.move(0,0,20,-5);assert(s.lastX==532 && s.lastY==315 && s.last.x==20 && s.last.y==-5 && s.last.type==XWireInputEvent::EvMotionRel);
+ s.warpPointer(512,320);s.move(0,0,0,0);assert(s.lastX==512 && s.lastY==320);
+ relative=false;s.move(200,160,20,30);assert(s.lastX==200 && s.lastY==160 && s.last.type==XWireInputEvent::EvMotion);
 }
 `);
     execFileSync('c++', ['-std=c++17', join(dir, 'check.cpp'), '-o', join(dir, 'check')]);

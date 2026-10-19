@@ -114,3 +114,19 @@ capture stays absolute. A busy registry defers synchronization without blocking
 the main thread. SDL handles deferred pointer lock and user gesture retries.
 The focused native handler and SDL synchronization regressions pass; the rebuilt
 browser still needs a live capture and release check.
+
+The next live run (`portal-input-live-20261019`) still reports no confined grab,
+so that bridge alone does not establish capture for Portal. Mouse movement and
+WASD reach the guest, but the camera repeatedly looks toward the floor/ceiling.
+The wire server also discarded XWarpPointer. It now updates the virtual pointer,
+emits synthetic core motion without XI raw motion, and resets relative baselines.
+Relative SDL movement advances the same position returned by XQueryPointer.
+Both SDL sinks protect pointer state against guest-thread warps.
+
+The player toolbar adds **Capture mouse**. After selecting it, clicking inside
+the game invokes SDL relative mode within the browser's user gesture. Escape
+releases it and clears the manual request. This avoids inferring a capture
+request from ordinary cursor moves. Confined guest grabs retain automatic support.
+Focused regressions cover warp destinations, source rectangles, recentering and
+relative position updates. Live browser verification remains pending on this
+rebuilt runtime; the staged release must be refreshed again before activation.

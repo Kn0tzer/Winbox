@@ -969,3 +969,5 @@ dialog select,dialog input {
     transform:none!important;
   }
 }
+
+.capture-hint { margin: 0 0 12px; color: var(--muted); font-size: 13px; }

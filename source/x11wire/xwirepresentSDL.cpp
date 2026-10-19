@@ -50,6 +50,7 @@ namespace {
 std::atomic<uint64_t> inputTicks{0}, forwardedKeys{0}, deliveredKeys{0}, deliveredMotion{0};
 std::atomic<uint32_t> lastInputWindow{0};
 std::atomic<uint32_t> inputPhase{0};
+std::atomic<bool> manualPointerCapture{false};
 }
 
 void xwireRecordInputPhase(uint32_t phase) { inputPhase.store(phase, std::memory_order_relaxed); }
@@ -61,6 +62,11 @@ void xwireRecordInputDelivery(uint8_t code, uint32_t window) {
 }
 
 #ifdef __EMSCRIPTEN__
+extern "C" EMSCRIPTEN_KEEPALIVE int bw64_pointer_capture(int enabled) {
+    manualPointerCapture.store(enabled != 0, std::memory_order_relaxed);
+    return SDL_SetRelativeMouseMode(enabled ? SDL_TRUE : SDL_FALSE);
+}
+
 extern "C" EMSCRIPTEN_KEEPALIVE const char* bw64_input_snapshot() {
     static thread_local char result[512];
     uint32_t focus = 0, present = 0, mask = 0, owner = 0, confine = 0;
@@ -75,14 +81,16 @@ extern "C" EMSCRIPTEN_KEEPALIVE const char* bw64_input_snapshot() {
             if (window != server.windows.end()) { mask = window->second.eventMask; owner = window->second.ownerClientBase; }
         }
     }
+    int pointerX = 0, pointerY = 0; uint32_t pointerState = 0;
+    if (g_xwirePresentSink) g_xwirePresentSink->lastPointer(pointerX, pointerY, pointerState);
     std::snprintf(result, sizeof(result),
         "{\"ticks\":%llu,\"forwardedKeys\":%llu,\"deliveredKeys\":%llu,\"deliveredMotion\":%llu,"
-        "\"lastWindow\":%u,\"focus\":%u,\"present\":%u,\"mask\":%u,\"owner\":%u,\"confine\":%u,\"relative\":%s,\"phase\":%u,\"pending\":%s,\"busy\":%s}",
+        "\"lastWindow\":%u,\"focus\":%u,\"present\":%u,\"mask\":%u,\"owner\":%u,\"confine\":%u,\"pointerX\":%d,\"pointerY\":%d,\"relative\":%s,\"phase\":%u,\"pending\":%s,\"busy\":%s}",
         (unsigned long long)inputTicks.load(std::memory_order_relaxed),
         (unsigned long long)forwardedKeys.load(std::memory_order_relaxed),
         (unsigned long long)deliveredKeys.load(std::memory_order_relaxed),
         (unsigned long long)deliveredMotion.load(std::memory_order_relaxed),
-        lastInputWindow.load(std::memory_order_relaxed), focus, present, mask, owner, confine, SDL_GetRelativeMouseMode() ? "true" : "false", inputPhase.load(std::memory_order_relaxed),
+        lastInputWindow.load(std::memory_order_relaxed), focus, present, mask, owner, confine, pointerX, pointerY, SDL_GetRelativeMouseMode() ? "true" : "false", inputPhase.load(std::memory_order_relaxed),
         g_xwirePresentSink && g_xwirePresentSink->hasInput() ? "true" : "false", busy ? "true" : "false");
     return result;
 }
@@ -319,9 +327,18 @@ public:
     }
 
     void lastPointer(int& x, int& y, uint32_t& state) const override {
-        std::lock_guard<std::mutex> lk(mtx);
+        std::lock_guard<std::mutex> lk(pointerMutex);
         x = lastX; y = lastY;
         state = sdlModState();
+    }
+
+    void warpPointer(int x, int y) override {
+        std::lock_guard<std::mutex> lk(pointerMutex);
+        lastX = x; lastY = y;
+        XWireInputEvent motion;
+        motion.type = XWireInputEvent::EvMotion;
+        motion.x = x; motion.y = y; motion.warped = true;
+        push(motion);
     }
 
     void requestClear() override {
@@ -450,6 +467,7 @@ public:
     // there is exactly ONE SDL_PollEvent in the process. Safe from the main
     // thread; push() is mutex-guarded.
     void forwardSdlEvent(const SDL_Event& e) {
+        std::lock_guard<std::mutex> pointerLock(pointerMutex);
         XWireInputEvent ie;
         switch (e.type) {
             case SDL_KEYDOWN:
@@ -471,6 +489,7 @@ public:
                     // accumulates them into a virtual absolute position.
                     ie.type = XWireInputEvent::EvMotionRel;
                     ie.x = e.motion.xrel; ie.y = e.motion.yrel;
+                    lastX += ie.x; lastY += ie.y;
                 } else {
                     lastX = e.motion.x; lastY = e.motion.y;
                     ie.type = XWireInputEvent::EvMotion;
@@ -481,7 +500,7 @@ public:
                 break;
             case SDL_MOUSEBUTTONDOWN:
             case SDL_MOUSEBUTTONUP: {
-                lastX = e.button.x; lastY = e.button.y;
+                if (!SDL_GetRelativeMouseMode()) { lastX = e.button.x; lastY = e.button.y; }
                 ie.type = (e.type == SDL_MOUSEBUTTONDOWN) ? XWireInputEvent::EvButtonDown
                                                           : XWireInputEvent::EvButtonUp;
                 // X buttons: 1=left,2=middle,3=right
@@ -524,7 +543,9 @@ public:
     // bw64_xwire_mouse_* JS entry points for headless browser input.
     // Safe from any thread: push is mutex-guarded.
     void injectEvent(const XWireInputEvent& ie) {
+        std::lock_guard<std::mutex> pointerLock(pointerMutex);
         XWireInputEvent e2 = ie;
+        if (e2.type == XWireInputEvent::EvMotionRel) { lastX += e2.x; lastY += e2.y; }
         if (e2.type == XWireInputEvent::EvMotion) { lastX = e2.x; lastY = e2.y; }
         if (e2.type == XWireInputEvent::EvButtonDown ||
             e2.type == XWireInputEvent::EvButtonUp) { lastX = e2.x; lastY = e2.y; }
@@ -550,6 +571,7 @@ private:
     bool wantWindow = false;
     uint16_t wantW = 0, wantH = 0;
     std::deque<XWireInputEvent> inputQ;
+    mutable std::mutex pointerMutex;
     int lastX = 0, lastY = 0;
     uint16_t shownW = 0, shownH = 0;     // last size pushed to the host screen
     uint16_t lastPresentW = 0, lastPresentH = 0; // last frame size actually blitted
@@ -588,9 +610,18 @@ public:
     }
 
     void lastPointer(int& x, int& y, uint32_t& state) const override {
-        std::lock_guard<std::mutex> lk(mtx);
+        std::lock_guard<std::mutex> lk(pointerMutex);
         x = lastX; y = lastY;
         state = sdlModState();
+    }
+
+    void warpPointer(int x, int y) override {
+        std::lock_guard<std::mutex> lk(pointerMutex);
+        lastX = x; lastY = y;
+        XWireInputEvent motion;
+        motion.type = XWireInputEvent::EvMotion;
+        motion.x = x; motion.y = y; motion.warped = true;
+        push(motion);
     }
 
     void tickMainThread() override {}
@@ -598,6 +629,7 @@ public:
     // Same translation as the full sink: SDL key/mouse -> XWireInputEvent.
     // Called from the platform input pump and from xwireInjectKey below.
     void forwardSdlEvent(const SDL_Event& e) {
+        std::lock_guard<std::mutex> pointerLock(pointerMutex);
         XWireInputEvent ie;
         switch (e.type) {
             case SDL_KEYDOWN:
@@ -619,6 +651,7 @@ public:
                     // accumulates them into a virtual absolute position.
                     ie.type = XWireInputEvent::EvMotionRel;
                     ie.x = e.motion.xrel; ie.y = e.motion.yrel;
+                    lastX += ie.x; lastY += ie.y;
                 } else {
                     lastX = e.motion.x; lastY = e.motion.y;
                     ie.type = XWireInputEvent::EvMotion;
@@ -629,7 +662,7 @@ public:
                 break;
             case SDL_MOUSEBUTTONDOWN:
             case SDL_MOUSEBUTTONUP: {
-                lastX = e.button.x; lastY = e.button.y;
+                if (!SDL_GetRelativeMouseMode()) { lastX = e.button.x; lastY = e.button.y; }
                 ie.type = (e.type == SDL_MOUSEBUTTONDOWN) ? XWireInputEvent::EvButtonDown
                                                           : XWireInputEvent::EvButtonUp;
                 ie.detail = (e.button.button == SDL_BUTTON_LEFT) ? 1 :
@@ -671,7 +704,9 @@ public:
     // bw64_xwire_mouse_* JS entry points for headless browser input.
     // Safe from any thread: push is mutex-guarded.
     void injectEvent(const XWireInputEvent& ie) {
+        std::lock_guard<std::mutex> pointerLock(pointerMutex);
         XWireInputEvent e2 = ie;
+        if (e2.type == XWireInputEvent::EvMotionRel) { lastX += e2.x; lastY += e2.y; }
         if (e2.type == XWireInputEvent::EvMotion) { lastX = e2.x; lastY = e2.y; }
         if (e2.type == XWireInputEvent::EvButtonDown ||
             e2.type == XWireInputEvent::EvButtonUp) { lastX = e2.x; lastY = e2.y; }
@@ -690,6 +725,7 @@ private:
 
     mutable std::mutex mtx;
     std::deque<XWireInputEvent> inputQ;
+    mutable std::mutex pointerMutex;
     int lastX = 0, lastY = 0;
     std::atomic<bool> inputPending{false};
 };
@@ -821,7 +857,8 @@ static void syncXWirePointerCapture() {
     {
         std::unique_lock<std::mutex> lock(server.regMutex, std::try_to_lock);
         if (!lock.owns_lock()) return;
-        confined = server.pointerGrabClient && server.pointerConfineWindow;
+        confined = manualPointerCapture.load(std::memory_order_relaxed) ||
+                   (server.pointerGrabClient && server.pointerConfineWindow);
     }
     const bool relative = SDL_GetRelativeMouseMode() == SDL_TRUE;
     if (confined != relative && (!confined || SDL_GetMouseFocus())) {
