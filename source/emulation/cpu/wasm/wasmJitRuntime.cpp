@@ -38,7 +38,7 @@
  *                               default, which is disabled until representative acceptance passes.
  *   BW32_JIT_SAFE_MEMORY=0|1    guest memory-ordering policy for MT builds;
  *                               see wasmMemoryOrdering.h. Unset = the
- *                               backend default (enabled).
+ *                               backend default (disabled).
  *   BW32_JIT_STATS=0|1          emit a per-instruction retired counter inside
  *                               generated code. Off by default: it costs a
  *                               load/add/store per guest instruction and a
