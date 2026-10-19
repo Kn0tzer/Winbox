@@ -2,7 +2,7 @@
 
 | Game | Path | Verified status |
 | --- | --- | --- |
-| Portal 1 (`hl2.exe`, 32-bit D3D9 via DXVK→Vulkan32) | `GAME=portal` | Current runtime reaches the main menu and starts a level. SSE3 repair fixes texture allocation overlap. Sampler binding repair restores textures in a captured level replay (`portal-sampler-replay-20261019`). Normal-launcher gameplay acceptance remains open; see `docs/reports/game-support-20261019.md`. |
+| Portal 1 (`hl2.exe`, 32-bit D3D9 via DXVK→Vulkan32) | `GAME=portal` | Live build `57c92c0f498f` renders the relaxation vault with repaired samplers and sRGB formats. Browser mouse-look, walking and jumping work after cursor-coordinate repairs; use Capture mouse in the player toolbar. Portal traversal and broader level acceptance remain open; see `docs/reports/game-support-20261019.md`. |
 | Celeste DRM-free (`Celeste.exe`, 32-bit OpenGL/FNA/Mono) | Demo button or uploaded ZIP; shared runtime libraries | Launcher boot and rendering verified on WASM `46eb53ee9777` through the demo and a saved ZIP upload (`launcher-dependencies-games`, `launcher-dependencies-upload-reopen`). Earlier prologue acceptance on `a97994c0725f` verified menus, movement, jumping and landing (`celeste-playability-oct15/playability.json`). Frame rate and game audio were not measured. |
 | 32-bit GL fixture (`trigl32.exe`) | shim in `/home/username/apps` | Colored triangle, `trigl: RESULT 0`. Verified 2026-10-13 (`gl32-real-shim-01`, `pass:true`). |
 | D3D11 offscreen (`tri11_93`) | staging-texture readback | `LIT=8192`. Verified 2026-10-09. Swapchain Present shows clear color only (open). |

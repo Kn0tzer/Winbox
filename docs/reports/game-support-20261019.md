@@ -4,9 +4,32 @@ Portal takes priority, followed by Gang Beasts. Optimization follows functional
 acceptance of both games. The CPU JIT settings rollout is complete and is not
 being revalidated here.
 
+## Current release
+
+The rendering and input fixes are live at `https://kn0tzer.work.gd/wine` as of
+13:31 UTC. Source: `abde7983b023bf9eb10496020028027594c767f7`; WASM:
+`57c92c0f498f74a20cef004c3cff42407f7c57c642a1ee948452c2e6a6a778e0`.
+Deployment used an atomic directory exchange without restarting a container.
+The previous release is in
+`/home/ubuntu/backups/winbox-games-20261019-133151/winbox`. Public WASM,
+renderer, runtime HTML and build metadata match the staged hashes.
+
+`portal-coordinates-live-20261019` reaches the relaxation vault with normal
+lighting. The camera remains upright at rest; a trusted browser mouse gesture
+turns it, W moves forward, and Space jumps. Its legacy input setting remains
+`m_rawinput 0`. The pointer now recenters at (512,320), with no repeated idle
+motion. Evidence: `awake-idle.png`, `look-right.png`, `walk-forward.png`, `jump.png`
+and matching input/renderer snapshots. At 620 frames there are zero rejected
+frames, unknown formats or unsupported operations. Portal traversal and broader
+level acceptance remain open. Gang Beasts has not yet been tested on this build.
+
+The player toolbar's **Capture mouse** control arms capture on the next game
+click; **Release mouse** exits it. Browser Escape unlock is handled through
+`pointerlockchange`. Restart the page/program to load the new native runtime.
+
 ## Portal rendering
 
-The current combined interpreter/JIT runtime (`7b4ab076519b`) reaches Portal's
+The earlier combined interpreter/JIT runtime (`7b4ab076519b`) reaches Portal's
 main menu and starts a level. The CPU32 SSE3 repair has fixed the earlier DXVK
 allocation overlap: a read-only scan found 95 nonzero offsets among 101 bound
 images, rather than almost every texture sharing offset zero. Evidence:
