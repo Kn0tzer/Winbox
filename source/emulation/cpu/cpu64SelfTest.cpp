@@ -2565,6 +2565,45 @@ int runX64SelfTest() {
         });
     }
 
+    // Test 65a — CMPPS xmm0, xmm1, 1 (LT), packed singles. Low lanes are
+    // 1.0 vs 2.0 (true) and 5.0 vs 2.0 (false), so MOVMSKPS must return 0b01.
+    // IL2CPP emits exactly this pair for vector float compares.
+    {
+        std::vector<U8> code = {
+            0x48, 0xB8, 0x00,0x00,0x80,0x3F,0x00,0x00,0xA0,0x40, // 1.0, 5.0
+            0x66, 0x48, 0x0F, 0x6E, 0xC0,                         // movq xmm0, rax
+            0x48, 0xB8, 0x00,0x00,0x00,0x40,0x00,0x00,0x00,0x40, // 2.0, 2.0
+            0x66, 0x48, 0x0F, 0x6E, 0xC8,                         // movq xmm1, rax
+            0x0F, 0xC2, 0xC1, 0x01,                               // cmpps xmm0, xmm1, 1 (LT)
+            0x0F, 0x50, 0xC0,                                     // movmskps eax, xmm0
+        };
+        runAndCheck(r, "cmpps LT -> 1.0<2.0 lane set (movmskps=1)", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 1;
+        });
+    }
+
+    // Test 65b — CMPPD xmm0, xmm1, 1 (LT), packed doubles: [2.0, 5.0] vs
+    // [3.0, 3.0] → lane 0 true, lane 1 false; MOVMSKPD must return 0b01.
+    {
+        std::vector<U8> code = {
+            0x48, 0xB8, 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x40, // 2.0
+            0x66, 0x48, 0x0F, 0x6E, 0xC0,                         // movq xmm0, rax
+            0x48, 0xB8, 0x00,0x00,0x00,0x00,0x00,0x00,0x14,0x40, // 5.0
+            0x66, 0x48, 0x0F, 0x6E, 0xC8,                         // movq xmm1, rax
+            0x0F, 0x16, 0xC1,                                     // movlhps xmm0, xmm1 → [2.0, 5.0]
+            0x48, 0xB8, 0x00,0x00,0x00,0x00,0x00,0x00,0x08,0x40, // 3.0
+            0x66, 0x48, 0x0F, 0x6E, 0xC8,                         // movq xmm1, rax
+            0x48, 0xB8, 0x00,0x00,0x00,0x00,0x00,0x00,0x08,0x40, // 3.0
+            0x66, 0x48, 0x0F, 0x6E, 0xD0,                         // movq xmm2, rax
+            0x0F, 0x16, 0xCA,                                     // movlhps xmm1, xmm2 → [3.0, 3.0]
+            0x66, 0x0F, 0xC2, 0xC1, 0x01,                         // cmppd xmm0, xmm1, 1 (LT)
+            0x66, 0x0F, 0x50, 0xC0,                               // movmskpd eax, xmm0
+        };
+        runAndCheck(r, "cmppd LT -> 2.0<3.0 lane set (movmskpd=1)", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 1;
+        });
+    }
+
     // Test 66 — XGETBV(0) returns EAX=3 (x87+SSE enabled), EDX=0.
     // Encoding: xor ecx,ecx; xgetbv; shl rdx,32; or rax,rdx.
     {

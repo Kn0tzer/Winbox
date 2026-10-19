@@ -4731,6 +4731,81 @@ dsp_55:
             return used;
         }
 
+        // CMPPS xmm, xmm/m128, imm8   0F C2 /r ib — packed single compare.
+        // Each of the four dwords becomes all-ones/all-zero per the imm8
+        // predicate. IL2CPP compiles vector float comparisons to this plus
+        // MOVMSKPS. Without this the guest stops on the first such compare
+        // (Gang Beasts reached GameAssembly initialization and hit it).
+        if (op2 == 0xC2 && p.rep == 0 && !p.osize16) {
+            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            U64 srcLo = m.isReg ? xmm[m.rmIndex].lo : memory->readq(m.effAddr);
+            U64 srcHi = m.isReg ? xmm[m.rmIndex].hi : memory->readq(m.effAddr + 8);
+            U8 imm = fetchByte(rip + opOff + 2 + m.length);
+            U64 dstBits[2] = { xmm[m.regField].lo, xmm[m.regField].hi };
+            U64 srcBits[2] = { srcLo, srcHi };
+            U64 outBits[2] = { 0, 0 };
+            auto u32f = [](U32 b){ float f; std::memcpy(&f,&b,4); return f; };
+            for (U32 half = 0; half < 2; half++) {
+                for (U32 lane = 0; lane < 2; lane++) {
+                    U32 shift = lane * 32;
+                    float a = u32f((U32)(dstBits[half] >> shift));
+                    float b = u32f((U32)(srcBits[half] >> shift));
+                    bool unordered = std::isnan(a) || std::isnan(b);
+                    bool res;
+                    switch (imm & 7) {
+                        case 0: res = (a == b); break;
+                        case 1: res = (a <  b); break;
+                        case 2: res = (a <= b); break;
+                        case 3: res = unordered; break;
+                        case 4: res = unordered || (a != b); break;
+                        case 5: res = unordered || !(a <  b); break;
+                        case 6: res = unordered || !(a <= b); break;
+                        default: res = !unordered; break;
+                    }
+                    if (res) outBits[half] |= 0xFFFFFFFFULL << shift;
+                }
+            }
+            xmm[m.regField].lo = outBits[0];
+            xmm[m.regField].hi = outBits[1];
+            U32 used = opOff + 2 + m.length + 1; // +imm8
+            rip += used;
+            return used;
+        }
+
+        // CMPPD xmm, xmm/m128, imm8   66 0F C2 /r ib — packed double compare.
+        // Each of the two qwords becomes all-ones/all-zero.
+        if (op2 == 0xC2 && p.rep == 0 && p.osize16) {
+            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            U64 dstBits[2] = { xmm[m.regField].lo, xmm[m.regField].hi };
+            U64 srcBits[2];
+            if (m.isReg) { srcBits[0] = xmm[m.rmIndex].lo; srcBits[1] = xmm[m.rmIndex].hi; }
+            else { srcBits[0] = memory->readq(m.effAddr); srcBits[1] = memory->readq(m.effAddr + 8); }
+            U8 imm = fetchByte(rip + opOff + 2 + m.length);
+            U64 outBits[2] = { 0, 0 };
+            for (U32 lane = 0; lane < 2; lane++) {
+                double a = u64ToDouble(dstBits[lane]);
+                double b = u64ToDouble(srcBits[lane]);
+                bool unordered = std::isnan(a) || std::isnan(b);
+                bool res;
+                switch (imm & 7) {
+                    case 0: res = (a == b); break;
+                    case 1: res = (a <  b); break;
+                    case 2: res = (a <= b); break;
+                    case 3: res = unordered; break;
+                    case 4: res = unordered || (a != b); break;
+                    case 5: res = unordered || !(a <  b); break;
+                    case 6: res = unordered || !(a <= b); break;
+                    default: res = !unordered; break;
+                }
+                outBits[lane] = res ? 0xFFFFFFFFFFFFFFFFULL : 0ULL;
+            }
+            xmm[m.regField].lo = outBits[0];
+            xmm[m.regField].hi = outBits[1];
+            U32 used = opOff + 2 + m.length + 1; // +imm8
+            rip += used;
+            return used;
+        }
+
         // UCOMISD xmm, xmm/m64   66 0F 2E /r
         // COMISD  xmm, xmm/m64   66 0F 2F /r
         // Compare two doubles, set EFLAGS ZF/PF/CF per result. UCOMISD and

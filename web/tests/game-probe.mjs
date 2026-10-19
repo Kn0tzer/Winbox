@@ -94,6 +94,7 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
   browserServer = await chromium.launchServer({ executablePath: process.env.CHROME_PATH || '/usr/local/bin/chromium', headless: true,
     args: ['--no-sandbox', '--disable-dev-shm-usage', '--enable-unsafe-webgpu', '--enable-unsafe-swiftshader',
       '--use-angle=vulkan', '--use-vulkan=swiftshader', '--enable-features=Vulkan',
+      ...(process.env.PROBE_CHROME_ARGS ? JSON.parse(process.env.PROBE_CHROME_ARGS) : []),
       '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0'] });
   await writeFile(join(dir, '.browser.ws'), browserServer.wsEndpoint(), { mode: 0o600 });
   const userData = browserServer.process().spawnargs.find(a => a.startsWith('--user-data-dir='))?.split('=').slice(1).join('=');
@@ -133,6 +134,9 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
   const t0 = Date.now();
   page.on('console', m => record(`[${((Date.now() - t0)/1000).toFixed(1)}s] ${m.type()}: ${m.text()}`));
   page.on('pageerror', e => record(`pageerror: ${e.stack || e.message}`));
+  page.on('crash', () => record('pagecrash: the page crashed'));
+  browserServer.process().on('exit', (code, signal) => { console.error(`browser-exit: code=${code} signal=${signal}`); record(`browser-exit: code=${code} signal=${signal}`); });
+  browserServer.process().stderr?.on('data', d => record('chrome-stderr: ' + String(d).trimEnd()));
   page.on('response', r => { if (r.status() >= 400) record(`http-error: ${r.status()} ${new URL(r.url()).pathname}`); });
   const base = `http://127.0.0.1:${server.address().port}`;
   const params = new URLSearchParams({ gamezip: `${base}/game.zip`, gamezipsize: String(result.gameArchive.bytes),
@@ -143,6 +147,8 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
     params.set('overlaysize', String((await stat(overlay)).size));
   }
   if (!installedDirect3D) params.set('ldpath', '/home/username/apps');
+  if (process.env.PROBE_JIT) params.set('jit', process.env.PROBE_JIT === '0' ? '0' : '1');
+  if (process.env.PROBE_EXTRA) for (const [key, value] of new URLSearchParams(process.env.PROBE_EXTRA)) params.set(key, value);
   if (process.env.WINEDEBUG) params.set('winedbg', process.env.WINEDEBUG);
   else if (profile.fixture) params.set('winedbg', '+debugstr');
   if (profile.renderer === 'd3d9') params.set('dlloverrides', 'd3d9=n');
