@@ -188,7 +188,7 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
         catch (e) { guestDirectories[path] = String(e); }
       }
       for (const path of ['/root/home/username/apps/error_log.txt', '/root/home/username/apps/errorLog.txt', '/root/home/username/apps/ErrorLog.txt',
-        '/root/home/username/apps/player.log', '/root/home/username/apps/console.log',
+        '/root/home/username/apps/player.log', '/root/home/username/apps/console.log', '/root/home/username/apps/portal/console.log',
         '/root/home/username/.wine/drive_c/users/username/AppData/LocalLow/Boneloaf/Gang Beasts/Player.log']) {
         try { guestLogs[path] = fs.readFile(path, {encoding:'utf8'}).slice(-65536); } catch {}
       }
