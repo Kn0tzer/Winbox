@@ -50,3 +50,7 @@ struct Native{U32 blendEnable,srcColorBlendFactor,dstColorBlendFactor,colorBlend
 int main(){Pipeline p;captureColorBlend(p,std::vector<Native>{{1,0,2,0,1,0,0,7},{0,0,2,0,1,0,0,0}});ChunkWriter w;emitColorBlend(p,w);fwrite(w.b.data(),1,w.b.size(),stdout);}
 `);execFileSync('c++',['-std=c++17',join(dir,'check.cpp'),'-o',join(dir,'check')]);const tail=execFileSync(join(dir,'check'));const prefix=payload([]).subarray(0,68);const pipe=decode(new Uint8Array(Buffer.concat([prefix,tail])));assert.deepEqual(pipe.colorBlend,[shadow,mask]);assert.deepEqual(pipe.blendConstants,[0.25,0.5,0.75,1]);}finally{rmSync(dir,{recursive:true,force:true});}
 });
+
+test('min/max operations ignore factor fields and do not require blend constants',async()=>{
+ const gpu=createValidationDevice();try{const r=await createVkRenderer2(gpu.canvas,{translate:async()=> 'fn main() {}'});await r.render(frame({...base(),colorBlend:[{...shadow,colorOp:3,srcColor:10,dstColor:12,alphaOp:4,srcAlpha:15,dstAlpha:13}]}));const b=gpu.pipelines[0].fragment.targets[0].blend;assert.deepEqual(b.color,{operation:'min',srcFactor:'one',dstFactor:'one'});assert.deepEqual(b.alpha,{operation:'max',srcFactor:'one',dstFactor:'one'});assert.deepEqual(gpu.blendConstants,[]);r.destroy();}finally{gpu.restore();}
+});

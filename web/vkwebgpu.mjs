@@ -961,10 +961,12 @@ function v2BlendTarget(pipe, index, format) {
 function v2BlendConstantMode(pipe) {
   let color = false, alpha = false, used = false;
   for (const b of pipe.colorBlend || []) if (b.enable) {
-    for (const f of [b.srcColor, b.dstColor]) {
+    const colorFactors = b.colorOp < 3 ? [b.srcColor,b.dstColor] : [];
+    const alphaFactors = b.alphaOp < 3 ? [b.srcAlpha,b.dstAlpha] : [];
+    for (const f of colorFactors) {
       color ||= f === 10 || f === 11; alpha ||= f === 12 || f === 13;
     }
-    used ||= [b.srcColor,b.dstColor,b.srcAlpha,b.dstAlpha].some(f => f >= 10 && f <= 13);
+    used ||= [...colorFactors,...alphaFactors].some(f => f >= 10 && f <= 13);
   }
   if (color && alpha) throw Error('unsupported-mixed-blend-constants');
   return used ? (alpha ? 'alpha' : 'color') : null;
