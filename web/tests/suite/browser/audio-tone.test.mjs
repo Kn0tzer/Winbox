@@ -1,4 +1,4 @@
-import { ProbeTest } from '../lib/probe-base.mjs';
+import { ProbeTest, extraUrlParams } from '../lib/probe-base.mjs';
 import { check } from '../lib/assert.mjs';
 import { guestFixture } from '../lib/guest-fixtures.mjs';
 
@@ -96,7 +96,12 @@ export default class AudioToneTest extends ProbeTest {
         };
       }
     });
-    await this.bootGuest(page, { arch: 'x64' });
+    const params = new URLSearchParams({
+      p: 'cmd /c echo vkboot', session: '1', persist: '0', fresh: '1', arch: 'x64', ...extraUrlParams(),
+    });
+    await page.goto(`${this._server.url}/runtime/index.html?${params}`);
+    await this.waitForPageFn(page, () => globalThis.bwRuntime?.call?.('bw64_session_ready', [], []) === 1, 600000);
+    await this.waitForLog(page, /session: persistent pins spawned/, 60000);
     await page.locator('#canvas').click({ position: { x: 30, y: 30 } });
     await this.waitForPageFn(page, () => globalThis.__audioCapture.contexts.every(context => context.state === 'running')
       || globalThis.__audioCapture.contexts.length === 0, 10000);
@@ -136,6 +141,10 @@ export default class AudioToneTest extends ProbeTest {
         sampleRate: result.sampleRate, leftHz, rightHz, outputChannels: result.outputChannels,
         leftSamples: result.channels[0].length, rightSamples: result.channels[1].length,
       }, null, 2)));
+      if (arch === 'x64') {
+        // SDL delays device close until the six seconds of queued tone drain.
+        await page.waitForTimeout(6500);
+      }
     }
   }
 }
