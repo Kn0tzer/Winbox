@@ -11,7 +11,7 @@ PREFIX_MEMBER = "home/username/.wine/system.reg"
 PREFIX_ARCHIVES = ("prefix32.zip", "prefix64.zip")
 PREFIX_INF_DIR = "home/username/.wine/drive_c/windows/inf"
 WINE_INF_DIR = Path(__file__).resolve().parent / "wine-infs"
-WINE_INF_FILES = ("winehid.inf", "winexinput.inf")
+WINE_INF_FILES = ("input.inf", "winebus.inf", "winehid.inf", "wineusb.inf", "winexinput.inf")
 WINE_DRIVER_DIRS = {
     "wine32.zip": "opt/wine-stable/lib/wine/i386-windows",
     "wine64.zip": "usr/lib/x86_64-linux-gnu/wine/x86_64-windows",
@@ -123,7 +123,7 @@ def stage_driver_paths(runtime):
 
 
 def stage_prefix_infs(runtime):
-    """Overlay the HID function-driver INFs into both prebuilt Wine prefixes.
+    """Overlay wine.inf's complete driver INF set into both prebuilt prefixes.
 
     These prefixes pin ``.update-timestamp`` to ``disable`` to avoid a full
     wineboot update on every launch. That also skips wine.inf's InfFiles copy

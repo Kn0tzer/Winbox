@@ -76,10 +76,18 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     assert z.comment.decode() == sys.argv[2]
     assert z.read('keep.txt').decode() == sys.argv[3]
     inf_dir = 'home/username/.wine/drive_c/windows/inf/'
+    for name in ('input.inf', 'winebus.inf', 'winehid.inf', 'wineusb.inf', 'winexinput.inf'):
+        assert z.namelist().count(inf_dir + name) == 1
+    input_inf = z.read(inf_dir + 'input.inf').decode()
+    winebus = z.read(inf_dir + 'winebus.inf').decode()
     hid = z.read(inf_dir + 'winehid.inf').decode()
+    wineusb = z.read(inf_dir + 'wineusb.inf').decode()
     xinput = z.read(inf_dir + 'winexinput.inf').decode()
+    assert 'HID\\' in input_inf
+    assert 'root\\winebus' in winebus
     assert 'WINEBUS\\WINE_COMP_HID' in hid
     assert 'ServiceBinary="%12%\\winehid.sys"' in hid
+    assert 'root\\wineusb' in wineusb
     assert 'WINEBUS\\WINE_COMP_XINPUT' in xinput
     assert 'ServiceBinary="%12%\\winexinput.sys"' in xinput
 `, prefix, comment, keep], { stdio: 'pipe' });
