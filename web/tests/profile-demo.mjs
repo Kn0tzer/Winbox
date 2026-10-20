@@ -91,9 +91,11 @@ async function waitForLoadAverageBelowThreshold(summary, deadline) {
 
 async function acquireProbeSlotWithRetries(loadGateSummary, loadGateDeadline, totalDeadline) {
   while (Date.now() < totalDeadline) {
-    const timeoutMs = Math.min(15 * 60 * 1000, totalDeadline - Date.now());
+    // Profile runs share the heavy FIFO queue with demo-matrix and replay
+    // probes. Keep one queue ticket for the full remaining run deadline.
+    const timeoutMs = Math.min(4 * 60 * 60 * 1000, totalDeadline - Date.now());
     try {
-      const slot = await acquireProbeSlot({ timeoutMs });
+      const slot = await acquireProbeSlot({ kind: 'heavy', timeoutMs });
       const currentLoad = readLoadAverage();
       if (currentLoad !== null && currentLoad >= 2.5 && Date.now() < loadGateDeadline) {
         await slot.release();
@@ -106,7 +108,7 @@ async function acquireProbeSlotWithRetries(loadGateSummary, loadGateDeadline, to
     } catch (error) {
       if (!String(error.message).includes('timed out waiting for a probe slot')) throw error;
       if (Date.now() >= totalDeadline) break;
-      console.log('profile-demo: 15-minute probe-slot wait expired; retrying within the 3-hour limit');
+      console.log('profile-demo: probe-slot wait expired; retrying within the 3-hour limit');
       if (Date.now() < loadGateDeadline) await waitForLoadAverageBelowThreshold(loadGateSummary, loadGateDeadline);
     }
   }
