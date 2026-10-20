@@ -14,8 +14,9 @@ export default class Gl32TriangleTest extends ProbeTest {
     const line = await this.waitForLog(page, /trigl: RESULT [01]/, 300000, from);
     check(/RESULT 0/.test(line), `32-bit GL fixture must succeed (${line})`);
     const pixels = await canvasPixels(page);
+    await page.screenshot({ path: this.dir + '/triangle.png' });
     checkGreaterThan(pixels.lit, 0, `32-bit OpenGL triangle must render non-zero pixels (LIT=${pixels.lit})`);
     checkGreaterThan(pixels.varied, 100, 'GL triangle must contain colored pixels, not only window chrome');
-    await page.screenshot({ path: this.dir + '/triangle.png' });
+    checkGreaterThan(pixels.redDominant, 1000, `The triangle must include red-dominant pixels (RED=${pixels.redDominant})`);
   }
 }
