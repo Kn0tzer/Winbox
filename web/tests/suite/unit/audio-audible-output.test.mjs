@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 const devdsp = readFileSync(join(repoRoot, 'source/kernel/devs/devdsp.cpp'), 'utf8');
+const kdspSource = readFileSync(join(repoRoot, 'platform/sdl/kdspaudio.cpp'), 'utf8');
 const kdsp = (() => { try { return readFileSync(join(repoRoot, 'include/kdspaudio.h'), 'utf8'); } catch { return ''; } })();
 
 test('bwPump bypass exists (drain-timer-never-fired → all zeros guard)', () => {
@@ -46,4 +47,11 @@ test('441Hz sine verification path exists (10e1b456 ground truth)', () => {
     } catch {}
   }
   assert.ok(found, '441Hz sine direct-/dev/dsp verification probe must exist (SDL_QueueAudio calls ≠ audible)');
+});
+
+test('DSP output bridge adopts the launch gesture AudioContext when SDL has none', () => {
+  assert.ok(kdspSource.includes('window.bwLaunchAudioContext'),
+    'DSP bridge must reuse the launch gesture AudioContext before returning without a context');
+  assert.ok(kdspSource.includes('ctx = SDL2.audioContext = launchContext'),
+    'the gesture-enabled context must be shared with SDL and the DSP worklet bridge');
 });
