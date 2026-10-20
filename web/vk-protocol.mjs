@@ -493,7 +493,27 @@ function halfToFloat(bits) {
   return sign * (1 + fraction / 1024) * 2 ** (exponent - 15);
 }
 export function v2VertexFormat(vkFormat) { return V2_VERT_FORMAT[vkFormat] || null; }
-export const V2_TOPOLOGY = { 0: 'point-list', 1: 'line-list', 2: 'line-strip', 3: 'triangle-list', 4: 'triangle-strip' };
+export const V2_TOPOLOGY = { 0: 'point-list', 1: 'line-list', 2: 'line-strip', 3: 'triangle-list', 4: 'triangle-strip', 5: 'triangle-list' };
+export function v2TriangleFanIndices(vertexCount, firstVertex = 0) {
+  const out = [];
+  for (let i = 1; i + 1 < vertexCount; i++) out.push(firstVertex, firstVertex + i, firstVertex + i + 1);
+  return new Uint32Array(out);
+}
+export function v2IndexedTriangleFanIndices(bytes, indexType, firstIndex, indexCount, primitiveRestartEnable = false) {
+  const width = indexType ? 4 : 2, view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const restart = indexType ? 0xffffffff : 0xffff, out = [], segment = [];
+  const append = () => {
+    for (let i = 1; i + 1 < segment.length; i++) out.push(segment[0], segment[i], segment[i + 1]);
+    segment.length = 0;
+  };
+  const end = Math.min(firstIndex + indexCount, Math.floor(bytes.byteLength / width));
+  for (let i = firstIndex; i < end; i++) {
+    const value = indexType ? view.getUint32(i * width, true) : view.getUint16(i * width, true);
+    if (primitiveRestartEnable && value === restart) append(); else segment.push(value);
+  }
+  append();
+  return new Uint32Array(out);
+}
 
 // ---------------------------------------------------------------------------
 // decodeV2Frame — validates a sealed record list into the renderable frame
@@ -607,6 +627,7 @@ export function decodeV2Frame(records, counters = {}) {
           fsSpec = readSpec();
         }
         let colorBlend, blendConstants, stencil, blendConstantsDynamic, depthBias;
+        let primitiveRestartEnable = false;
         while (r.left) {
           const tag = r.u32();
           if (tag === 0x314e5453) {
@@ -627,6 +648,12 @@ export function decodeV2Frame(records, counters = {}) {
               depthBiasConstantFactor, depthBiasClamp, depthBiasSlopeFactor};
             continue;
           }
+          if (tag === 0x314e4146) {
+            const restart = r.u32();
+            if (restart > 1) throw new Error('vk64: v2 PIPELINE invalid primitive restart flag');
+            primitiveRestartEnable = !!restart;
+            continue;
+          }
           if (tag !== 0x31444e42) throw new Error('vk64: v2 PIPELINE unknown extension tail');
           const count = r.u32();
           if (count > 4) throw new Error('vk64: v2 PIPELINE blend count out of range');
@@ -638,7 +665,7 @@ export function decodeV2Frame(records, counters = {}) {
           blendConstants = [r.f32(), r.f32(), r.f32(), r.f32()];
         }
         r.done('PIPELINE');
-        const pipe = { pipeId, vsHash, fsHash, topology, cull, front, depthTest, depthWrite, depthOp, blend, vb, va, vsSpec, fsSpec, ...(colorBlend ? { colorBlend, blendConstants } : {}), ...(stencil ? {stencil, blendConstantsDynamic} : {}), ...(depthBias || {}) };
+        const pipe = { pipeId, vsHash, fsHash, topology, cull, front, depthTest, depthWrite, depthOp, blend, vb, va, vsSpec, fsSpec, primitiveRestartEnable, ...(colorBlend ? { colorBlend, blendConstants } : {}), ...(stencil ? {stencil, blendConstantsDynamic} : {}), ...(depthBias || {}) };
         frame.pipelines.set(pipeId, pipe);
         needPass().ops.push({ op: 'bindPipe', pipe });
         break;

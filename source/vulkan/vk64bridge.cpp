@@ -613,6 +613,7 @@ struct StencilState {
 };
 struct Pipeline : Obj {
     U32 topology = 0, cull = 0, front = 0, depthTest = 0, depthWrite = 0, depthOp = 0, blend = 0;
+    U32 primitiveRestartEnable = 0;
     U32 depthBiasEnable = 0, depthClampEnable = 0;
     bool depthBiasDynamic = false;
     float depthBiasConstantFactor = 0.0f, depthBiasClamp = 0.0f, depthBiasSlopeFactor = 0.0f;
@@ -2606,6 +2607,8 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 emitStencil(*pipe, p);
                 emitDepthBias(p, pipe->depthBiasEnable, pipe->depthClampEnable, pipe->depthBiasDynamic ? 1 : 0,
                               pipe->depthBiasConstantFactor, pipe->depthBiasClamp, pipe->depthBiasSlopeFactor);
+                p.u32(0x314e4146u); // FAN1: indexed triangle-fan primitive-restart state
+                p.u32(pipe->primitiveRestartEnable);
             });
         };
         auto emitRpBegin = [&](const Cmd& k) {
@@ -4336,6 +4339,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             readStruct(ci.pDepthStencilState, ds);
             readStruct(ci.pColorBlendState, cbs);
             p->topology = ia.topology;
+            p->primitiveRestartEnable = ia.primitiveRestartEnable;
             p->cull = rs.cullMode;
             p->front = rs.frontFace;
             p->depthBiasEnable = rs.depthBiasEnable; p->depthClampEnable = rs.depthClampEnable;
@@ -7200,6 +7204,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             readStruct32(ci.pDepthStencilState, ds);
             readStruct32(ci.pColorBlendState, cbs);
             p->topology = ia.topology;
+            p->primitiveRestartEnable = ia.primitiveRestartEnable;
             p->cull = rs.cullMode;
             p->front = rs.frontFace;
             p->depthBiasEnable = rs.depthBiasEnable; p->depthClampEnable = rs.depthClampEnable;

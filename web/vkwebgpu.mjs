@@ -5,6 +5,7 @@ import {
   V2_SCALED_VERTEX, V2_TOPOLOGY, V2_UNKNOWN_IMAGE, V2_VERT_FORMAT_SIZE,
   decodeV2Frame, parseV2Chunk, repackScaledVb,
   swizzleBgraVb, v2DepthStencilUploads, v2ImageBlitRegion, v2TextureFormat, v2TextureMipUploadPlan, v2TexturePixels, v2VertexFormat,
+  v2IndexedTriangleFanIndices, v2TriangleFanIndices,
 } from './vk-protocol.mjs';
 import { bwLogRl } from './vk-log.mjs';
 import {
@@ -2172,19 +2173,43 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
             for (const {slot} of [...st.pipeRec.slotOf.values()].flat()) {
               if (!vbSet.has(slot)) passEnc.setVertexBuffer(slot, dummyVb, 0);
             }
-            let indexed = op.indexed;
-            if (indexed && st.ibind) {
-              const bytes = F.buffers.get(st.ibind.buf);
-              const preHash = F.bufHashes ? F.bufHashes.get(st.ibind.buf) : null; // always use bridge hash
-              if (!bytes && !preHash) indexed = false;
-              else {
-                const gpu = gpuBufferFor(st.ibind.buf, bytes, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST, preHash);
-                if (!gpu) indexed = false;
-                else passEnc.setIndexBuffer(gpu, st.ibind.indexType ? 'uint32' : 'uint16', Math.min(st.ibind.offset, gpu.size));
+            const triangleFan = st.pipeDesc?.topology === 5;
+            if (triangleFan) {
+              let indices, cacheKey;
+              if (op.indexed && st.ibind) {
+                const bytes = F.buffers.get(st.ibind.buf);
+                if (!bytes) { stats.unsupported++; break; }
+                const hash = F.bufHashes?.get(st.ibind.buf) || fnv1a(bytes);
+                const indexByteOffset = Math.min(Math.max(0, st.ibind.offset), bytes.byteLength);
+                indices = v2IndexedTriangleFanIndices(bytes.subarray(indexByteOffset), st.ibind.indexType, op.firstIndex, op.indexCount,
+                  !!st.pipeDesc.primitiveRestartEnable);
+                cacheKey = `fan-indexed:${st.ibind.buf}:${hash}:${indexByteOffset}:${op.firstIndex}:${op.indexCount}:${st.ibind.indexType}:${st.pipeDesc.primitiveRestartEnable ? 1 : 0}`;
+              } else if (!op.indexed) {
+                indices = v2TriangleFanIndices(op.vertexCount, op.firstVertex);
+                cacheKey = `fan-vertices:${op.firstVertex}:${op.vertexCount}`;
+              } else { stats.unsupported++; break; }
+              if (indices.length) {
+                const gpu = gpuBufferFor(cacheKey, new Uint8Array(indices.buffer), GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST);
+                if (gpu) {
+                  passEnc.setIndexBuffer(gpu, 'uint32', 0);
+                  passEnc.drawIndexed(indices.length, op.instanceCount, 0, op.indexed ? op.vertexOffset : 0, op.firstInstance);
+                }
               }
-            } else if (indexed) indexed = false;
-            if (indexed) passEnc.drawIndexed(op.indexCount, op.instanceCount, op.firstIndex, op.vertexOffset, op.firstInstance);
-            else if (op.vertexCount > 0) passEnc.draw(op.vertexCount, op.instanceCount, op.firstVertex, op.firstInstance);
+            } else {
+              let indexed = op.indexed;
+              if (indexed && st.ibind) {
+                const bytes = F.buffers.get(st.ibind.buf);
+                const preHash = F.bufHashes ? F.bufHashes.get(st.ibind.buf) : null; // always use bridge hash
+                if (!bytes && !preHash) indexed = false;
+                else {
+                  const gpu = gpuBufferFor(st.ibind.buf, bytes, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST, preHash);
+                  if (!gpu) indexed = false;
+                  else passEnc.setIndexBuffer(gpu, st.ibind.indexType ? 'uint32' : 'uint16', Math.min(st.ibind.offset, gpu.size));
+                }
+              } else if (indexed) indexed = false;
+              if (indexed) passEnc.drawIndexed(op.indexCount, op.instanceCount, op.firstIndex, op.vertexOffset, op.firstInstance);
+              else if (op.vertexCount > 0) passEnc.draw(op.vertexCount, op.instanceCount, op.firstVertex, op.firstInstance);
+            }
             break;
           }
           default: break;
@@ -2368,7 +2393,7 @@ export {
   V2_PUSH_BINDING, V2_PUSH_SIZE, V2_QUEUE_CAP, V2_MAX_SETS, V2_REC,
   v2Hex64, parseV2Chunk, V2FrameAssembler, V2PresentAssembler, V2FrameQueue,
   rgba16UnormToHalf, v2TextureFormat, v2TextureMipUploadPlan, v2ImageBlitRegion,
-  repackScaledVb, v2VertexFormat,
+  v2TriangleFanIndices, v2IndexedTriangleFanIndices, repackScaledVb, v2VertexFormat,
   decodeV2Frame, swizzleBgraVb, V2_UNKNOWN_IMAGE,
 } from './vk-protocol.mjs';
 export {
