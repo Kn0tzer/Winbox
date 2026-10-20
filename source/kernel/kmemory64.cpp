@@ -97,38 +97,75 @@ bool bw64PageHoldsBlocks(U64 pageNum); // defined below, with the block tables
 #endif
 
 namespace {
-struct K64DTlbEntry { const void* mem; U64 page; U8* data; U32 gen; };
+struct K64DTlbEntry {
+    const void* mem;
+    U64 page;
+    U8* data;
+    U64 gen;
+#ifdef BOXEDWINE_BLOCK_CACHE_INFRA
+    U32 blockSlot;
+    bool blockPage;
+#endif
+};
 constexpr U32 K64_DTLB_SIZE = 64; // direct-mapped, per-thread (~2KB)
 thread_local K64DTlbEntry g_k64DTlb[K64_DTLB_SIZE];
-std::atomic<U32> g_k64DTlbGen{1};
+// Low bits track mapping invalidations. High bits track code-page registration
+// changes; a DTLB entry checks the page registry only when that epoch changes.
+std::atomic<U64> g_k64DTlbGen{1};
 
 inline U8* k64DTlbLookup(const void* mem, U64 pageNum) {
-    const K64DTlbEntry& e = g_k64DTlb[pageNum & (K64_DTLB_SIZE - 1)];
-    if (e.mem == mem && e.page == pageNum &&
-        e.gen == g_k64DTlbGen.load(std::memory_order_acquire)) {
-        return e.data;
-    }
-    return nullptr;
-}
-inline void k64DTlbInsert(const void* mem, U64 pageNum, U8* data, U32 observedGen) {
+    K64DTlbEntry& e = g_k64DTlb[pageNum & (K64_DTLB_SIZE - 1)];
+    if (e.mem != mem || e.page != pageNum) return nullptr;
+    const U64 gen = g_k64DTlbGen.load(std::memory_order_acquire);
+    if ((U32)e.gen != (U32)gen) return nullptr;
+    if (e.gen != gen) {
 #ifdef BOXEDWINE_BLOCK_CACHE_INFRA
-    // Block-cache invalidation contract: a page registered as holding decoded
-    // blocks is barred from the data TLB. All its accesses then take the slow
-    // (locked) paths, and only the WRITE slow paths bump its generation — so
-    // the scorching read/write fast paths carry zero extra cost.
+        // Registration invalidates only this page lazily in each thread's TLB.
+        // Other pages retain their cached data pointer and adopt the new epoch.
+        const bool blockPage = bw64PageHoldsBlocks(pageNum);
+        const U32 blockSlot = blockPage ? KMemory64::blockSlot(pageNum) : 0;
+        if (blockPage && (!e.blockPage || e.blockSlot != blockSlot)) {
+            e.mem = nullptr;
+            return nullptr;
+        }
+        e.blockPage = blockPage;
+        e.blockSlot = blockSlot;
+#else
+        return nullptr;
+#endif
+        e.gen = gen;
+    }
+    return e.data;
+}
+inline U8* k64DTlbLookupForWrite(const void* mem, U64 pageNum) {
+#ifdef BOXEDWINE_BLOCK_CACHE_INFRA
+    // Code-page writes must take the slow path so they bump the block
+    // generation. Reads can keep using the cached page buffer.
     if (bw64PageHoldsBlocks(pageNum)) {
-        return;
+        return nullptr;
     }
 #endif
+    return k64DTlbLookup(mem, pageNum);
+}
+inline void k64DTlbInsert(const void* mem, U64 pageNum, U8* data, U64 observedGen) {
     K64DTlbEntry& e = g_k64DTlb[pageNum & (K64_DTLB_SIZE - 1)];
     e.mem = mem;
     e.page = pageNum;
     e.data = data;
     e.gen = observedGen;
+#ifdef BOXEDWINE_BLOCK_CACHE_INFRA
+    e.blockPage = bw64PageHoldsBlocks(pageNum);
+    e.blockSlot = e.blockPage ? KMemory64::blockSlot(pageNum) : 0;
+#endif
 }
 inline void k64DTlbInvalidateAll() {
     g_k64DTlbGen.fetch_add(1, std::memory_order_release);
 }
+#ifdef BOXEDWINE_BLOCK_CACHE_INFRA
+inline void k64DTlbInvalidateCodePageEntries() {
+    g_k64DTlbGen.fetch_add(1ULL << 32, std::memory_order_release);
+}
+#endif
 } // namespace
 
 #ifdef BOXEDWINE_BLOCK_CACHE_INFRA
@@ -174,12 +211,12 @@ void KMemory64::blockPageRegister(U64 pageNum) {
     if (!slot) slot = blockPageSlot(pageNum, true);
     if (!slot) g_blockPageOverflow.store(true, std::memory_order_release);
     g_blockPagesRegistered.store(1, std::memory_order_release);
-    // Writes previously using another thread's data TLB must now observe this
-    // registration. Registered pages cannot re-enter that TLB.
-    k64DTlbInvalidateAll();
+    // Mark a registration epoch. Each thread lazily invalidates only matching
+    // code-page entries; unrelated cached pages remain usable. Write paths also
+    // check the registry and take the generation-bumping slow path.
+    k64DTlbInvalidateCodePageEntries();
     // Another compiler can find a just-claimed tag before its first registrar
-    // has evicted old data TLB entries. Such a compiler must also invalidate
-    // before using this slot; seeing the tag alone is not a completed register.
+    // marks the slot ready, so seeing the tag alone is not a completed register.
     if (slot) g_blockPageReady[slot].store(true, std::memory_order_release);
 }
 
@@ -691,7 +728,7 @@ void KMemory64::memcpyToGuest(U64 dstGuest, const void* src, U64 len) {
     if (len && offsetInPage + len <= K64_PAGE_SIZE &&
         g_strayInit && !g_strayOn && g_memRingInit && !g_memRingOn &&
         g_watchInit && !g_watchAddr) {
-        if (U8* hit = k64DTlbLookup(this, dstGuest >> K64_PAGE_SHIFT)) {
+        if (U8* hit = k64DTlbLookupForWrite(this, dstGuest >> K64_PAGE_SHIFT)) {
             if (bssDiagHit(dstGuest >> K64_PAGE_SHIFT)) {
                 U64 v = 0; std::memcpy(&v, src, len >= 8 ? 8 : (size_t)len);
                 klog_fmt("BSSDIAG W fast: dst=0x%llx hit=%p val=0x%llx",
@@ -723,7 +760,7 @@ void KMemory64::memcpyToGuest(U64 dstGuest, const void* src, U64 len) {
         offsetInPage = dstGuest & K64_PAGE_MASK;
         U64 chunk = K64_PAGE_SIZE - offsetInPage;
         if (chunk > len) chunk = len;
-        U32 observedGen = g_k64DTlbGen.load(std::memory_order_acquire);
+        U64 observedGen = g_k64DTlbGen.load(std::memory_order_acquire);
         U8* data = commitPageLocked(pageNum, K64_PAGE_MAPPED | K64_PAGE_READ | K64_PAGE_WRITE);
         k64DTlbInsert(this, pageNum, data, observedGen);
         if (bssDiagHit(pageNum)) {
@@ -771,7 +808,7 @@ void KMemory64::memcpyFromGuest(void* dst, U64 srcGuest, U64 len) {
         offsetInPage = srcGuest & K64_PAGE_MASK;
         U64 chunk = K64_PAGE_SIZE - offsetInPage;
         if (chunk > len) chunk = len;
-        U32 observedGen = g_k64DTlbGen.load(std::memory_order_acquire);
+        U64 observedGen = g_k64DTlbGen.load(std::memory_order_acquire);
         U8* data = getPageData(pageNum);
         if (data) {
             k64DTlbInsert(this, pageNum, data, observedGen);
@@ -809,7 +846,7 @@ void KMemory64::memsetGuest(U64 dstGuest, U8 value, U64 len) {
 U8 KMemory64::readb(U64 addr) {
     U64 pageNum = addr >> K64_PAGE_SHIFT;
     if (U8* hit = k64DTlbLookup(this, pageNum)) return hit[addr & K64_PAGE_MASK];
-    U32 observedGen = g_k64DTlbGen.load(std::memory_order_acquire);
+    U64 observedGen = g_k64DTlbGen.load(std::memory_order_acquire);
     U8* data = getPageData(pageNum);
     if (data) {
         k64DTlbInsert(this, pageNum, data, observedGen);
@@ -833,15 +870,15 @@ U64 KMemory64::readq(U64 addr) {
 void KMemory64::writeb(U64 addr, U8 value) {
     U64 pageNum = addr >> K64_PAGE_SHIFT;
     if (g_strayInit && !g_strayOn && g_memRingInit && !g_memRingOn) {
-        if (U8* hit = k64DTlbLookup(this, pageNum)) {
+        if (U8* hit = k64DTlbLookupForWrite(this, pageNum)) {
             hit[addr & K64_PAGE_MASK] = value;
             return;
         }
     }
     strayWriteCheck(addr, 1);
     recordMemWrite(addr, 1, value);
-    noteGuestWrite(pageNum); // slow path only — fast path is barred for block pages
-    U32 observedGen = g_k64DTlbGen.load(std::memory_order_acquire);
+    noteGuestWrite(pageNum); // slow path only — registered-page writes bypass the cached hit
+    U64 observedGen = g_k64DTlbGen.load(std::memory_order_acquire);
     U8* data = commitPageLocked(pageNum, K64_PAGE_MAPPED | K64_PAGE_READ | K64_PAGE_WRITE);
     k64DTlbInsert(this, pageNum, data, observedGen);
     data[addr & K64_PAGE_MASK] = value; // commit-on-write (MT-safe)
