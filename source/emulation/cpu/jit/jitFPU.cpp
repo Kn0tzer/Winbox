@@ -1005,34 +1005,11 @@ void JitFPU::dynamic_FCOMI_ST0_STj(DecodedOp* op) {
 }
 
 void JitFPU::dynamic_FISTTP32(DecodedOp* op) {
-    // cpu->fpu.FSTT_I32(cpu, address);
-    // cpu->fpu.FPOP();    
-    write(JitWidth::b32, calculateEaa(op), nullptr, [op, this](MemPtr address) {
-        RegPtr top = getTopReg();
-        FPUReg src(this, top, 0);
-
-        writeHost(JitWidth::b32, address, fpuRegToInt32(src.reg, true));
-        dynamic_FPU_POP(top);
-    });
+    emulateSingleOp();
 }
 
 void JitFPU::dynamic_FISTTP64(DecodedOp* op) {
-    RegPtr top = getTopReg();
-
-    // some apps seem to do a memcpy like thing with data pushed in and out
-    // we don't want the loaded 64-bit int to change because of rounding if its writen directly back out
-    // so if its not already cached (64-bit format vs 80-bit), then do the slow way to keep the 64-bit precision
-    // 
-    // see FPU::FLD_I64
-    IfNotRegCached(top); {
-        JitCodeGen::dynamic_FISTTP64(op);
-    } StartElse(); {
-        write(JitWidth::b64, calculateEaa(op), nullptr, [top, op, this](MemPtr address) {
-            FPUReg src(this, top, 0);
-            storeFPUToInt64(src.reg, address, true);
-            dynamic_FPU_POP(top);
-        });
-    } EndIf();
+    emulateSingleOp();
 }
 
 void JitFPU::dynamic_FIST_DWORD_INTEGER(DecodedOp* op) {
@@ -1116,13 +1093,7 @@ void JitFPU::dynamic_FILD_WORD_INTEGER(DecodedOp* op) {
 
 // SSE3 instruction
 void JitFPU::dynamic_FISTTP16(DecodedOp* op) {
-    write(JitWidth::b16, calculateEaa(op), nullptr, [op, this](MemPtr address) {
-        RegPtr top = getTopReg();
-        FPUReg src(this, top, 0);
-
-        writeHost(JitWidth::b16, address, fpuRegToInt32(src.reg, true));
-        dynamic_FPU_POP(top);
-    });
+    emulateSingleOp();
 }
 
 void JitFPU::dynamic_FIST_WORD_INTEGER(DecodedOp* op) {

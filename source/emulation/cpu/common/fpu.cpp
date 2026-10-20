@@ -405,7 +405,9 @@ void FPU::FST_I16(CPU* cpu, U32 addr) {
 
 void FPU::FSTT_I16(CPU* cpu, U32 addr) {
     if (isRegCached[this->top]) {
-        S16 value = (S16)(this->regCache[this->top].d);
+        double valueAsDouble = this->regCache[this->top].d;
+        double valueAsInt = trunc(valueAsDouble);
+        S16 value = !isfinite(valueAsDouble) || valueAsInt < -32768.0 || valueAsInt > 32767.0 ? (S16)0x8000 : (S16)valueAsInt;
         cpu->memory->writew(addr, value);
     } else {
         cpu->memory->writew(addr, (S16)extF80_to_i32_r_minMag(this->regs[this->top], getSoftExact()));
@@ -414,7 +416,9 @@ void FPU::FSTT_I16(CPU* cpu, U32 addr) {
 
 void FPU::FSTT_I32(CPU* cpu, U32 addr) {
     if (isRegCached[this->top]) {
-        S32 value = (S32)this->regCache[this->top].d;
+        double valueAsDouble = this->regCache[this->top].d;
+        double valueAsInt = trunc(valueAsDouble);
+        S32 value = !isfinite(valueAsDouble) || valueAsInt < -2147483648.0 || valueAsInt > 2147483647.0 ? (S32)0x80000000 : (S32)valueAsInt;
         cpu->memory->writed(addr, value);
     } else {
         cpu->memory->writed(addr, extF80_to_i32_r_minMag(this->regs[this->top], getSoftExact()));
@@ -432,7 +436,10 @@ void FPU::FST_I32(CPU* cpu, U32 addr) {
 
 void FPU::FSTT_I64(CPU* cpu, U32 addr) {
     if (isRegCached[this->top]) {
-        cpu->memory->writeq(addr, (S64)this->regCache[this->top].d);
+        double valueAsDouble = this->regCache[this->top].d;
+        double valueAsInt = trunc(valueAsDouble);
+        S64 value = !isfinite(valueAsDouble) || valueAsInt < -0x1p63 || valueAsInt >= 0x1p63 ? (S64)0x8000000000000000LL : (S64)valueAsInt;
+        cpu->memory->writeq(addr, value);
     } else {
         cpu->memory->writeq(addr, extF80_to_i64_r_minMag(this->regs[this->top], getSoftExact()));
     }

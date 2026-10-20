@@ -1112,6 +1112,46 @@ void testSse3DuplicateMoves() {
         failed("sse3 movddup preserves both DXVK allocation lanes");
 }
 
+void testSse3MonitorMwaitNoop() {
+    const U8 instructions[][3] = {{0x0f, 0x01, 0xc8}, {0x0f, 0x01, 0xc9}};
+    const char* names[] = {"MONITOR", "MWAIT"};
+    for (int n = 0; n < 2; ++n) {
+        initSse();
+        cpu->reg[0].u32 = 0x10203040;
+        cpu->reg[1].u32 = 0x50607080;
+        cpu->reg[2].u32 = 0x90a0b0c0;
+        cpu->reg[3].u32 = 0xd0e0f000;
+        cpu->reg[5].u32 = 0x11223344;
+        cpu->reg[6].u32 = 0x55667788;
+        cpu->reg[7].u32 = 0x99aabbcc;
+        cpu->setFlags(0x8d5 | 2, FMASK_ALL);
+        U32 registers[8];
+        U64 xmm[8][2];
+        U8 memoryBytes[16];
+        for (int i = 0; i < 8; ++i) {
+            registers[i] = cpu->reg[i].u32;
+            xmm[i][0] = cpu->xmm[i].pi.u64[0];
+            xmm[i][1] = cpu->xmm[i].pi.u64[1];
+        }
+        for (int i = 0; i < 16; ++i) {
+            memoryBytes[i] = memory->readb(TEST_HEAP_ADDRESS + MEM_SRC + i);
+        }
+        for (U8 byte : instructions[n]) pushCode8(byte);
+        runTestCPU();
+        cpu->fillFlags();
+        for (int i = 0; i < 8; ++i) {
+            if (cpu->reg[i].u32 != registers[i]) failed("%s preserves GPRs", names[n]);
+            if (cpu->xmm[i].pi.u64[0] != xmm[i][0] || cpu->xmm[i].pi.u64[1] != xmm[i][1])
+                failed("%s preserves XMM", names[n]);
+        }
+        if ((cpu->flags & 0x8d5) != 0x8d5) failed("%s preserves arithmetic flags", names[n]);
+        for (int i = 0; i < 16; ++i) {
+            if (memory->readb(TEST_HEAP_ADDRESS + MEM_SRC + i) != memoryBytes[i])
+                failed("%s preserves memory", names[n]);
+        }
+    }
+}
+
 void testSseMoveUnpack_0x312_0x313_0x316_0x317_0x328_0x329() {
     runSse128RegOnly(0, 0, 0x12, 0xaabbccddeeff2468ULL, 0x1122334455667788ULL, 0x1234567890abcdefULL, 0x24680bdf13579aceULL, 0x24680bdf13579aceULL, 0x1122334455667788ULL, "sse movhlps");
     runSse128(0, 0, 0x14, 0xaabbccddeeff2468ULL, 0x1122334455667788ULL, 0x1234567890abcdefULL, 0x24680bdf13579aceULL, 0x90abcdefeeff2468ULL, 0x12345678aabbccddULL, "sse unpcklps");

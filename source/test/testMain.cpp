@@ -675,6 +675,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testDemandPageIsolation, "Test demand-page isolation"},
     {testSse3DuplicateMoves, "Test SSE3 duplicate moves"},
     {testSse3Haddpd, "Test SSE3 HADDPD"},
+    {testSse3MonitorMwaitNoop, "Test SSE3 MONITOR and MWAIT no-op"},
 };
 
 } // namespace

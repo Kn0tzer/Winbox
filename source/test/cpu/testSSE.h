@@ -12,6 +12,7 @@
 
 void testSse3DuplicateMoves();
 void testSse3Haddpd();
+void testSse3MonitorMwaitNoop();
 void testSseMovups_0x310_0x311();
 void testSseMovss_0xf310_0xf311();
 void testSseLogic_0x354_0x355_0x356_0x357();

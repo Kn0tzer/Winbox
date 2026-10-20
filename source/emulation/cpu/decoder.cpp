@@ -1126,6 +1126,17 @@ const InstructionInfo instructionInfo[] = {
     {0, 0, 128, 0, 0, 0}, // MovapsE128Xmm
     {0, 0, 0, 0, 0, 0}, // HaddpdXmmXmm
     {0, 128, 0, 0, 0, 0}, // HaddpdXmmE128
+    {0, 0, 0, 0, 0, 0}, // HaddpsXmmXmm
+    {0, 128, 0, 0, 0, 0}, // HaddpsXmmE128
+    {0, 0, 0, 0, 0, 0}, // HsubpdXmmXmm
+    {0, 128, 0, 0, 0, 0}, // HsubpdXmmE128
+    {0, 0, 0, 0, 0, 0}, // HsubpsXmmXmm
+    {0, 128, 0, 0, 0, 0}, // HsubpsXmmE128
+    {0, 0, 0, 0, 0, 0}, // AddsubpdXmmXmm
+    {0, 128, 0, 0, 0, 0}, // AddsubpdXmmE128
+    {0, 0, 0, 0, 0, 0}, // AddsubpsXmmXmm
+    {0, 128, 0, 0, 0, 0}, // AddsubpsXmmE128
+    {0, 128, 0, 0, 0, 0}, // LddquXmmE128
     {0, 0, 0, 0, 0, 0}, // MovddupXmmXmm
     {0, 64, 0, 0, 0, 0}, // MovddupXmmE64
     {0, 0, 0, 0, 0, 0}, // MovsldupXmmXmm
@@ -3033,6 +3044,17 @@ const LogInstruction instructionLog[] = {
     {"Movaps", 128, logEXmm},
     {"Haddpd", 0, logXmmXmm},
     {"Haddpd", 128, logXmmE},
+    {"Haddps", 0, logXmmXmm},
+    {"Haddps", 128, logXmmE},
+    {"Hsubpd", 0, logXmmXmm},
+    {"Hsubpd", 128, logXmmE},
+    {"Hsubps", 0, logXmmXmm},
+    {"Hsubps", 128, logXmmE},
+    {"Addsubpd", 0, logXmmXmm},
+    {"Addsubpd", 128, logXmmE},
+    {"Addsubps", 0, logXmmXmm},
+    {"Addsubps", 128, logXmmE},
+    {"Lddqu", 128, logXmmE},
     {"Movddup", 0, logXmmXmm},
     {"Movddup", 64, logXmmE},
     {"Movsldup", 0, logXmmXmm},
@@ -4448,6 +4470,9 @@ public:
     void decode(DecodeData* data, DecodedOp* op) const override {
         U8 rm = data->fetch8();
 
+        if (rm == 0xc8) { op->inst = Nop; return; } // MONITOR is ignored.
+        if (rm == 0xc9) { op->inst = Pause; return; } // MWAIT is treated as PAUSE.
+
         switch (G(rm)) {
         case 0x00: func(data, op, rm, Invalid, SGDT); break;
         case 0x01: func(data, op, rm, Invalid, SIDT); break;
@@ -4468,6 +4493,9 @@ class DecodeGrp7_16 : public DecodeFunc {
 public:
     void decode(DecodeData* data, DecodedOp* op) const override {
         U8 rm = data->fetch8();
+
+        if (rm == 0xc8) { op->inst = Nop; return; } // MONITOR is ignored.
+        if (rm == 0xc9) { op->inst = Pause; return; } // MWAIT is treated as PAUSE.
 
         switch (G(rm)) {
         case 0x00: func(data, op, rm, Invalid, SGDT); break;
@@ -5955,6 +5983,12 @@ DecodeRMr sse0x16d(PunpckhqdqXmmXmm, PunpckhqdqXmmE128);
 DecodeRMr sse0x16e(MovdXmmR32, MovdXmmE32);
 DecodeRMr sse0x16f(MovdqaXmmXmm, MovdqaXmmE128);
 DecodeRMr sse0x17c(HaddpdXmmXmm, HaddpdXmmE128);
+DecodeRMr sse0x17d(HsubpdXmmXmm, HsubpdXmmE128);
+DecodeRMr sse0x1d0(AddsubpdXmmXmm, AddsubpdXmmE128);
+DecodeSSE2 sse0x37c(Invalid, Invalid, HaddpsXmmXmm, HaddpsXmmE128, Invalid, Invalid);
+DecodeSSE2 sse0x37d(Invalid, Invalid, HsubpsXmmXmm, HsubpsXmmE128, Invalid, Invalid);
+DecodeSSE2 sse0x3d0(Invalid, Invalid, AddsubpsXmmXmm, AddsubpsXmmE128, Invalid, Invalid);
+DecodeSSE2 sse0x3f0(Invalid, Invalid, Invalid, LddquXmmE128, Invalid, Invalid);
 DecodeRMr sse0x170(PshufdXmmXmm, PshufdXmmE128, 8);
 DecodeGroup sse0x171(Invalid, Invalid, PsrlwXmm, Invalid, PsrawXmm, Invalid, PsllwXmm, Invalid, 8);
 DecodeGroup sse0x172(Invalid, Invalid, PsrldXmm, Invalid, PsradXmm, Invalid, PslldXmm, Invalid, 8);
@@ -6104,7 +6138,7 @@ const Decode* const decoder[] = {
     &sse0x168, &sse0x169, &sse0x16a, &sse0x16b, &sse0x16c, &sse0x16d, &sse0x16e, &sse0x16f,
     // 0x170
     &sse0x170, &sse0x171, &sse0x172, &sse0x173, &sse0x174, &sse0x175, &sse0x176, nullptr,
-    nullptr, nullptr, nullptr, nullptr, &sse0x17c, nullptr, &sse0x17e, &sse0x17f,
+    nullptr, nullptr, nullptr, nullptr, &sse0x17c, &sse0x17d, &sse0x17e, &sse0x17f,
     // 0x180
     &decodeJo16, &decodeJno16, &decodeJb16, &decodeJnb16, &decodeJz16, &decodeJnz16, &decodeJbe16, &decodeJnbe16,
     &decodeJs16, &decodeJns16, &decodeJp16, &decodeJnp16, &decodeJl16, &decodeJnl16, &decodeJle16, &decodeJnle16,
@@ -6121,7 +6155,7 @@ const Decode* const decoder[] = {
     &decodeXadd8, &decodeXadd16, &sse0x1c2, nullptr, &ssePinsrwXmm, &ssePextrwXmm, &sse0x1c6, nullptr,
     nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
     // 0x1d0
-    nullptr, &sse0x1d1, &sse0x1d2, &sse0x1d3, &sse0x1d4, &sse0x1d5, &sse0x1d6, &ssePmovmskbXmm,
+    &sse0x1d0, &sse0x1d1, &sse0x1d2, &sse0x1d3, &sse0x1d4, &sse0x1d5, &sse0x1d6, &ssePmovmskbXmm,
     &sse0x1d8, &sse0x1d9, &ssePminubXmm, &sse0x1db, &sse0x1dc, &sse0x1dd, &ssePmaxubXmm, &sse0x1df,
     // 0x1e0
     &ssePavgbXmm, &sse0x1e1, &sse0x1e2, &ssePavgwXmm, &ssePmulhuwXmm, &sse0x1e5, &sse0x1e6, &sse0x1e7,
@@ -6200,7 +6234,7 @@ const Decode* const decoder[] = {
     &decodePunpckhbw, &decodePunpckhwd, &decodePunpckhdq, &decodePackssdw, nullptr, nullptr, &decodeMovPqEd, &decodeMovPqQq,
     // 0x370
     &ssePshufwMmx, &decode371MMX, &decode372MMX, &decode373MMX, &decodePcmpeqb, &decodePcmpeqw, &decodePcmpeqd, &decodeEmms,
-    nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &sse0x37e, &decodeMovQqPq,
+    nullptr, nullptr, nullptr, nullptr, &sse0x37c, &sse0x37d, &sse0x37e, &decodeMovQqPq,
     // 0x380
     &decodeJo32, &decodeJno32, &decodeJb32, &decodeJnb32, &decodeJz32, &decodeJnz32, &decodeJbe32, &decodeJnbe32,
     &decodeJs32, &decodeJns32, &decodeJp32, &decodeJnp32, &decodeJl32, &decodeJnl32, &decodeJle32, &decodeJnle32,
@@ -6217,13 +6251,13 @@ const Decode* const decoder[] = {
     &decodeXadd8, &decodeXadd32, &sseCmp, &sse0x3c3, &ssePinsrwMmx, &ssePextrwMmx, &sseShufp, &decodeCmpXchg8b,
     &decodeBswapEAX, &decodeBswapECX, &decodeBswapEDX, &decodeBswapEBX, &decodeBswapESP, &decodeBswapEBP, &decodeBswapESI, &decodeBswapEDI,
     // 0x3d0
-    nullptr, &decodePsrlw, &decodePsrld, &decodePsrlq, &sse0x3d4, &decodePmullw, &sse0x3d6, &ssePmovmskbMmx,
+    &sse0x3d0, &decodePsrlw, &decodePsrld, &decodePsrlq, &sse0x3d4, &decodePmullw, &sse0x3d6, &ssePmovmskbMmx,
     &decodePsubusb, &decodePsubusw, &ssePminubMmx, &decodePand, &decodePaddusb, &decodePaddusw, &ssePmaxubMmx, &decodePandn,
     // 0x3e0
     &ssePavgbMmx, &decodePsraw, &decodePsrad, &ssePavgwMmx, &ssePmulhuwMmx, &decodePmulhw, &sse0x3e6, &sseMovntq,
     &decodePsubsb, &decodePsubsw, &ssePminswMmx, &decodePor, &decodePaddsb, &decodePaddsw, &ssePmaxswMmx, &decodePxor,
     // 0x3f0
-    nullptr, &decodePsllw, &decodePslld, &decodePsllq, &sse0x3f4, &decodePmaddwd, &ssePsadbwMmx, &sseMaskmov,
+    &sse0x3f0, &decodePsllw, &decodePslld, &decodePsllq, &sse0x3f4, &decodePmaddwd, &ssePsadbwMmx, &sseMaskmov,
     &decodePsubb, &decodePsubw, &decodePsubd, &sse0x3fb, &decodePaddb, &decodePaddw, &decodePaddd, nullptr,
 };
 

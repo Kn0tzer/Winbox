@@ -61,6 +61,40 @@ static U32 commonSseRoundToI32(double value, U32 mxcsr, bool truncate) {
     return (U32)(S32)rounded;
 }
 
+static U32 commonSseAddSubF32(U32 aBits, U32 bBits, bool subtract) {
+    const U32 exponentMask = 0x7f800000;
+    const U32 fractionMask = 0x007fffff;
+    const U32 quietBit = 0x00400000;
+    const bool aNan = (aBits & exponentMask) == exponentMask && (aBits & fractionMask) != 0;
+    const bool bNan = (bBits & exponentMask) == exponentMask && (bBits & fractionMask) != 0;
+    if (aNan) return aBits | quietBit;
+    if (bNan) return bBits | quietBit;
+    if ((aBits & exponentMask) == exponentMask && (bBits & exponentMask) == exponentMask) {
+        const bool oppositeSigns = ((aBits ^ bBits) & 0x80000000) != 0;
+        if (subtract ? !oppositeSigns : oppositeSigns) return 0xffc00000;
+    }
+    union { U32 bits; float value; } a{aBits}, b{bBits}, result{};
+    result.value = subtract ? a.value - b.value : a.value + b.value;
+    return result.bits;
+}
+
+static U64 commonSseAddSubF64(U64 aBits, U64 bBits, bool subtract) {
+    const U64 exponentMask = 0x7ff0000000000000ULL;
+    const U64 fractionMask = 0x000fffffffffffffULL;
+    const U64 quietBit = 0x0008000000000000ULL;
+    const bool aNan = (aBits & exponentMask) == exponentMask && (aBits & fractionMask) != 0;
+    const bool bNan = (bBits & exponentMask) == exponentMask && (bBits & fractionMask) != 0;
+    if (aNan) return aBits | quietBit;
+    if (bNan) return bBits | quietBit;
+    if ((aBits & exponentMask) == exponentMask && (bBits & exponentMask) == exponentMask) {
+        const bool oppositeSigns = ((aBits ^ bBits) & 0x8000000000000000ULL) != 0;
+        if (subtract ? !oppositeSigns : oppositeSigns) return 0xfff8000000000000ULL;
+    }
+    union { U64 bits; double value; } a{aBits}, b{bBits}, result{};
+    result.value = subtract ? a.value - b.value : a.value + b.value;
+    return result.bits;
+}
+
 static U32 commonSseRoundF32ToI32(U32 value, U32 mxcsr, bool truncate) {
     union {
         U32 i;
@@ -575,16 +609,98 @@ void common_movapsE128Xmm(CPU* cpu, U32 reg, U32 address) {
 void common_haddpdXmmXmm(CPU* cpu, U32 r1, U32 r2) {
     const simde__m128d dst = cpu->xmm[r1].pd;
     const simde__m128d src = cpu->xmm[r2].pd;
-    cpu->xmm[r1].pd.f64[0] = dst.f64[0] + dst.f64[1];
-    cpu->xmm[r1].pd.f64[1] = src.f64[0] + src.f64[1];
+    cpu->xmm[r1].pi.u64[0] = commonSseAddSubF64(dst.u64[0], dst.u64[1], false);
+    cpu->xmm[r1].pi.u64[1] = commonSseAddSubF64(src.u64[0], src.u64[1], false);
 }
 void common_haddpdXmmE128(CPU* cpu, U32 reg, U32 address) {
     simde__m128d src;
     src.u64[0] = cpu->memory->readq(address);
     src.u64[1] = cpu->memory->readq(address + 8);
     const simde__m128d dst = cpu->xmm[reg].pd;
-    cpu->xmm[reg].pd.f64[0] = dst.f64[0] + dst.f64[1];
-    cpu->xmm[reg].pd.f64[1] = src.f64[0] + src.f64[1];
+    cpu->xmm[reg].pi.u64[0] = commonSseAddSubF64(dst.u64[0], dst.u64[1], false);
+    cpu->xmm[reg].pi.u64[1] = commonSseAddSubF64(src.u64[0], src.u64[1], false);
+}
+void common_haddpsXmmXmm(CPU* cpu, U32 r1, U32 r2) {
+    const simde__m128 dst = cpu->xmm[r1].ps;
+    const simde__m128 src = cpu->xmm[r2].ps;
+    cpu->xmm[r1].pi.u32[0] = commonSseAddSubF32(dst.u32[0], dst.u32[1], false);
+    cpu->xmm[r1].pi.u32[1] = commonSseAddSubF32(dst.u32[2], dst.u32[3], false);
+    cpu->xmm[r1].pi.u32[2] = commonSseAddSubF32(src.u32[0], src.u32[1], false);
+    cpu->xmm[r1].pi.u32[3] = commonSseAddSubF32(src.u32[2], src.u32[3], false);
+}
+void common_haddpsXmmE128(CPU* cpu, U32 reg, U32 address) {
+    simde__m128 src;
+    src.u64[0] = cpu->memory->readq(address);
+    src.u64[1] = cpu->memory->readq(address + 8);
+    const simde__m128 dst = cpu->xmm[reg].ps;
+    cpu->xmm[reg].pi.u32[0] = commonSseAddSubF32(dst.u32[0], dst.u32[1], false);
+    cpu->xmm[reg].pi.u32[1] = commonSseAddSubF32(dst.u32[2], dst.u32[3], false);
+    cpu->xmm[reg].pi.u32[2] = commonSseAddSubF32(src.u32[0], src.u32[1], false);
+    cpu->xmm[reg].pi.u32[3] = commonSseAddSubF32(src.u32[2], src.u32[3], false);
+}
+void common_hsubpdXmmXmm(CPU* cpu, U32 r1, U32 r2) {
+    const simde__m128d dst = cpu->xmm[r1].pd;
+    const simde__m128d src = cpu->xmm[r2].pd;
+    cpu->xmm[r1].pi.u64[0] = commonSseAddSubF64(dst.u64[0], dst.u64[1], true);
+    cpu->xmm[r1].pi.u64[1] = commonSseAddSubF64(src.u64[0], src.u64[1], true);
+}
+void common_hsubpdXmmE128(CPU* cpu, U32 reg, U32 address) {
+    simde__m128d src;
+    src.u64[0] = cpu->memory->readq(address);
+    src.u64[1] = cpu->memory->readq(address + 8);
+    const simde__m128d dst = cpu->xmm[reg].pd;
+    cpu->xmm[reg].pi.u64[0] = commonSseAddSubF64(dst.u64[0], dst.u64[1], true);
+    cpu->xmm[reg].pi.u64[1] = commonSseAddSubF64(src.u64[0], src.u64[1], true);
+}
+void common_hsubpsXmmXmm(CPU* cpu, U32 r1, U32 r2) {
+    const simde__m128 dst = cpu->xmm[r1].ps;
+    const simde__m128 src = cpu->xmm[r2].ps;
+    cpu->xmm[r1].pi.u32[0] = commonSseAddSubF32(dst.u32[0], dst.u32[1], true);
+    cpu->xmm[r1].pi.u32[1] = commonSseAddSubF32(dst.u32[2], dst.u32[3], true);
+    cpu->xmm[r1].pi.u32[2] = commonSseAddSubF32(src.u32[0], src.u32[1], true);
+    cpu->xmm[r1].pi.u32[3] = commonSseAddSubF32(src.u32[2], src.u32[3], true);
+}
+void common_hsubpsXmmE128(CPU* cpu, U32 reg, U32 address) {
+    simde__m128 src;
+    src.u64[0] = cpu->memory->readq(address);
+    src.u64[1] = cpu->memory->readq(address + 8);
+    const simde__m128 dst = cpu->xmm[reg].ps;
+    cpu->xmm[reg].pi.u32[0] = commonSseAddSubF32(dst.u32[0], dst.u32[1], true);
+    cpu->xmm[reg].pi.u32[1] = commonSseAddSubF32(dst.u32[2], dst.u32[3], true);
+    cpu->xmm[reg].pi.u32[2] = commonSseAddSubF32(src.u32[0], src.u32[1], true);
+    cpu->xmm[reg].pi.u32[3] = commonSseAddSubF32(src.u32[2], src.u32[3], true);
+}
+void common_addsubpdXmmXmm(CPU* cpu, U32 r1, U32 r2) {
+    const simde__m128d dst = cpu->xmm[r1].pd;
+    const simde__m128d src = cpu->xmm[r2].pd;
+    cpu->xmm[r1].pi.u64[0] = commonSseAddSubF64(dst.u64[0], src.u64[0], true);
+    cpu->xmm[r1].pi.u64[1] = commonSseAddSubF64(dst.u64[1], src.u64[1], false);
+}
+void common_addsubpdXmmE128(CPU* cpu, U32 reg, U32 address) {
+    simde__m128d src;
+    src.u64[0] = cpu->memory->readq(address);
+    src.u64[1] = cpu->memory->readq(address + 8);
+    const simde__m128d dst = cpu->xmm[reg].pd;
+    cpu->xmm[reg].pi.u64[0] = commonSseAddSubF64(dst.u64[0], src.u64[0], true);
+    cpu->xmm[reg].pi.u64[1] = commonSseAddSubF64(dst.u64[1], src.u64[1], false);
+}
+void common_addsubpsXmmXmm(CPU* cpu, U32 r1, U32 r2) {
+    const simde__m128 dst = cpu->xmm[r1].ps;
+    const simde__m128 src = cpu->xmm[r2].ps;
+    for (int i = 0; i < 4; ++i)
+        cpu->xmm[r1].pi.u32[i] = commonSseAddSubF32(dst.u32[i], src.u32[i], !(i & 1));
+}
+void common_addsubpsXmmE128(CPU* cpu, U32 reg, U32 address) {
+    simde__m128 src;
+    src.u64[0] = cpu->memory->readq(address);
+    src.u64[1] = cpu->memory->readq(address + 8);
+    const simde__m128 dst = cpu->xmm[reg].ps;
+    for (int i = 0; i < 4; ++i)
+        cpu->xmm[reg].pi.u32[i] = commonSseAddSubF32(dst.u32[i], src.u32[i], !(i & 1));
+}
+void common_lddquXmmE128(CPU* cpu, U32 reg, U32 address) {
+    cpu->xmm[reg].pi.u64[0] = cpu->memory->readq(address);
+    cpu->xmm[reg].pi.u64[1] = cpu->memory->readq(address + 8);
 }
 
 // SSE3 duplicate moves preserve bits, including NaN payloads and signed zero.
