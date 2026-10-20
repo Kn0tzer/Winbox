@@ -143,6 +143,7 @@
 #define X64_SYS_mlock             149
 #define X64_SYS_munlock           150
 #define X64_SYS_getrandom         318
+#define X64_SYS_memfd_create      319
 #define X64_SYS_sched_yield       24
 #define X64_SYS_sched_setaffinity 203
 #define X64_SYS_sched_getaffinity 204
@@ -2873,6 +2874,7 @@ static const char* x64SyscallName(U64 nr) {
         case 293: return "pipe2";
         case 302: return "prlimit64";
         case 318: return "getrandom";
+        case 319: return "memfd_create";
         case 334: return "rseq";
         case 435: return "clone3";
         default:  return "?";
@@ -3830,6 +3832,18 @@ void ksyscall64(CPU64* cpu) {
         case X64_SYS_getrandom:
             ret = sys_getrandom64(cpu, a1, a2, a3);
             break;
+        case X64_SYS_memfd_create: {
+            // memfd_create(name, flags). wine's ntdll uses this for its
+            // cross-process shared sections (and libpulse for its shm pool);
+            // without it those initializations fail with ENOSYS and the
+            // client can block forever. The name is a guest pointer, so read
+            // it through the 64-bit memory interface.
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            char name[256] = {0};
+            if (a1) cpu->memory->memcpyFromGuest(name, a1, sizeof(name) - 1);
+            ret = (U64)(S64)(S32)cpu->thread->process->memfd_create(BString::copy(name), (U32)a2);
+            break;
+        }
         case X64_SYS_prlimit64:
             ret = sys_prlimit64_64(cpu, a1, a2, a3, a4);
             break;

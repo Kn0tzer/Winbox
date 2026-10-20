@@ -55,6 +55,7 @@
 #include "mmu/testBrk.h"
 
 void testWaitPid();
+void testMemfdCreate();
 
 namespace {
 
@@ -666,6 +667,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testLockedInc, "Test Multi-threaded locked inc"},
 #endif
     {testWaitPid, "Test waitpid child selection"},
+    {testMemfdCreate, "Test memfd_create flags/ftruncate/MAP_SHARED/read/write"},
     {testDecoderPageBoundary, "Test decoder executable page boundary"},
     {testVk32TrapWitness, "Test vk32 Trap Witness (Stage A)"},
     {testGl32TrapWitness, "Test gl32 Trap Witness (Stage A-GL)"},

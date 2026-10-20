@@ -2443,8 +2443,14 @@ U32 KProcess::writev(KThread* thread, FD handle, U32 iov, S32 iovcnt) {
 }
 
 U32 KProcess::memfd_create(BString name, U32 flags) {
-    std::shared_ptr<FsMemNode> node = std::make_shared<FsMemNode>(1, 1, name);
-    FsMemOpenNode* openNode = new FsMemOpenNode(flags, node);
+    // Each memfd needs its own inode identity: the 64-bit MAP_SHARED page
+    // registry is keyed by (inode, file page), so a constant id would alias
+    // unrelated memfds (e.g. wine's server sections vs libpulse's shm pool)
+    // and let one file's writes appear in the other.
+    static std::atomic<U32> nextMemfdId{0x40000000};
+    U32 id = nextMemfdId.fetch_add(1);
+    std::shared_ptr<FsMemNode> node = std::make_shared<FsMemNode>(id, 1, name);
+    FsMemOpenNode* openNode = new FsMemOpenNode(K_O_RDWR, node);
 
     node->openNode = openNode;
 
