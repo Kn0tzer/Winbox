@@ -15,6 +15,7 @@
 #include "kmemory64.h"
 #include "cpu64.h"
 #include "ripSampler.h"
+#include "../guestprofiler.h"
 #endif
 
 // ELF p_type values reused from loader.cpp. Kept local here to avoid a
@@ -258,8 +259,9 @@ static bool mapSegments(KMemory64* mem, FsOpenNode* openNode,
         }
         // BW64_RIPSAMPLE: the initial wine64/ld.so/glibc images are mapped here
         // (not through sys_mmap64_file), so record them too for RIP resolution.
-        if (ripSamplerEnabled() && modPath) {
-            ripSamplerNoteModule(pid, alignedAddr, mapLen, modPath);
+        if (modPath) {
+            if (ripSamplerEnabled()) ripSamplerNoteModule(pid, alignedAddr, mapLen, modPath);
+            if (bwGuestProfileEnabled()) bwGuestProfileNoteModule(pid, alignedAddr, mapLen, modPath);
         }
         if (seg.filesz > 0) {
             std::vector<U8> buf((size_t)seg.filesz);

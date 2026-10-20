@@ -18,6 +18,7 @@
 #include "syscall64.h"
 #include "ksignal.h"   // K_SIGFPE
 #include "common/splitLock.h"
+#include "../../kernel/guestprofiler.h"
 
 #include <cmath>
 #include <cstring>
@@ -6292,6 +6293,7 @@ unhandled:
 }
 
 void CPU64::run() {
+    const bool guestProfile = bwGuestProfileEnabled();
 #ifdef BOXEDWINE_BLOCK_EXEC
     const bool jitActive = jit64Enabled();
 #endif
@@ -6319,6 +6321,7 @@ void CPU64::run() {
     bool wildFired = false;
 
     while (!yield) {
+        if (guestProfile) bwGuestProfileTick64(this);
         if (tracing && instructionCount >= traceFrom && instructionCount <= traceTo) {
             U64 r = rip;
             klog_fmt("TRACE #%llu RIP=0x%llx %02x %02x %02x %02x  "

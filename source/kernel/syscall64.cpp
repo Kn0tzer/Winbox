@@ -21,6 +21,7 @@
 #include "kunixsocket.h"
 #include "kpoll.h"
 #include "ripSampler.h"
+#include "guestprofiler.h"
 #include "bw64metrics.h"   // live frame-stage metrics (BW64_METRICS, default on)
 #ifdef BOXEDWINE_OPENGL
 #include "../opengl/gl64bridge.h"
@@ -364,16 +365,19 @@ static void crashRingDump(const char* why) {
 // PE image extension, register the destination range [dst, dst+len) under that
 // file's basename. Each section read registers its own slice; the newest-wins
 // resolver in ripSampler stitches them so an address in any section resolves to
-// "wined3d.dll+0xNNN". Gated by ripSamplerEnabled() — zero cost in normal runs.
+// "wined3d.dll+0xNNN". Gated by the optional RIP/guest profilers.
 static void ripSamplerNotePeRead(CPU64* cpu, const KFileDescriptorPtr& fdesc,
                                  U64 dst, U64 len) {
-    if (!ripSamplerEnabled() || len == 0 || !cpu->thread || !cpu->thread->process) return;
+    const bool ripProfile = ripSamplerEnabled();
+    const bool guestProfile = bwGuestProfileEnabled();
+    if ((!ripProfile && !guestProfile) || len == 0 || !cpu->thread || !cpu->thread->process) return;
     std::shared_ptr<KFile> kf = std::dynamic_pointer_cast<KFile>(fdesc->kobject);
     if (!kf || !kf->openFile || !kf->openFile->node) return;
     const BString& path = kf->openFile->node->path;
     // Match PE images by extension (case-insensitive): .dll / .exe.
     if (!path.endsWith(".dll", true) && !path.endsWith(".exe", true)) return;
-    ripSamplerNoteModule((int)cpu->thread->process->id, dst, len, path.c_str());
+    if (guestProfile) bwGuestProfileNoteModule((int)cpu->thread->process->id, dst, len, path.c_str());
+    if (ripProfile) ripSamplerNoteModule((int)cpu->thread->process->id, dst, len, path.c_str());
 }
 
 static U64 sys_write64(CPU64* cpu, U64 fd, U64 buf, U64 count) {
@@ -1541,9 +1545,15 @@ static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
                                             kfile->openFile->node->path.c_str(),
                                             fileBase, seedBuf.data(), (U64)seedBuf.size());
         if ((S64)r < 0) return r;
-        if (ripSamplerEnabled() && kfile->openFile->node) {
-            ripSamplerNoteModule((int)cpu->thread->process->id, aligned, mapLen,
-                                 kfile->openFile->node->path.c_str());
+        if (kfile->openFile->node) {
+            if (ripSamplerEnabled()) {
+                ripSamplerNoteModule((int)cpu->thread->process->id, aligned, mapLen,
+                                     kfile->openFile->node->path.c_str());
+            }
+            if (bwGuestProfileEnabled()) {
+                bwGuestProfileNoteModule((int)cpu->thread->process->id, aligned, mapLen,
+                                         kfile->openFile->node->path.c_str());
+            }
         }
         return addr;
     }
@@ -1634,9 +1644,15 @@ static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
     // resolved to file+offset. This is where wine's x86_64-unix .so halves (where
     // the C code that busy-loops lives) become known. Use the same aligned/mapLen
     // span the BW64_FMMAP trace prints above.
-    if (ripSamplerEnabled() && kfile->openFile->node) {
-        ripSamplerNoteModule((int)cpu->thread->process->id, aligned, mapLen,
-                             kfile->openFile->node->path.c_str());
+    if (kfile->openFile->node) {
+        if (ripSamplerEnabled()) {
+            ripSamplerNoteModule((int)cpu->thread->process->id, aligned, mapLen,
+                                 kfile->openFile->node->path.c_str());
+        }
+        if (bwGuestProfileEnabled()) {
+            bwGuestProfileNoteModule((int)cpu->thread->process->id, aligned, mapLen,
+                                     kfile->openFile->node->path.c_str());
+        }
     }
     return addr;
 }
@@ -1732,6 +1748,7 @@ static U64 sys_execve64(CPU64* cpu, U64 pathAddr, U64 argvAddr, U64 envpAddr) {
     // module ranges would mis-attribute the next image's RIPs. Drop them; the
     // new image's segment maps re-populate the table.
     ripSamplerClearPid((int)cpu->thread->process->id);
+    bwGuestProfileClearPid((int)cpu->thread->process->id);
     std::vector<BString> args;
     std::vector<BString> envs;
     readStringArray64(cpu, argvAddr, args);
