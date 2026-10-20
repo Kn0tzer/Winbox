@@ -22,6 +22,8 @@ const longBoot = ['portal', 'celeste', 'gangbeasts', 'chromium'].includes(demo);
 const mappedTimeout = Number(process.env.MAPPED_TIMEOUT_S || (longBoot ? 900 : 300));
 if (!Number.isFinite(mappedTimeout) || mappedTimeout <= 0) throw new Error('MAPPED_TIMEOUT_S must be a positive number');
 const threadDumpEnabled = process.env.BW_THREAD_DUMP === '1';
+const capturePlayerLog = process.env.BW_CAPTURE_PLAYER_LOG === '1';
+const wineDebug = process.env.BW_WINEDEBUG || '';
 const bootOffsets = longBoot ? [5, 30, 60, 120, 240, 360] : [5, 30, 60, 120];
 const pixelMethod = 'in-page';
 
@@ -92,6 +94,7 @@ try {
     await page.route('**/runtime/index.html*', route => {
       const url = new URL(route.request().url());
       url.searchParams.set('bw64diag', 'threads');
+      if (wineDebug) url.searchParams.set('winedbg', wineDebug);
       return route.continue({ url: url.toString() });
     });
     await page.route('**/wine64-launcher.js*', async route => {
@@ -102,8 +105,37 @@ try {
       threadDumpRuntimeUrl = route.request().frame().url();
       if (new URL(threadDumpRuntimeUrl).searchParams.get('bw64diag') !== 'threads')
         throw new Error(`Thread dump URL flag missing from runtime frame: ${threadDumpRuntimeUrl}`);
-      const instrumented = body.replace(marker,
-        'if (param("bw64diag") === "threads") ENV["BW_THREAD_DUMP"] = "1";\n                ' + marker);
+      const diagnostics = [
+        'if (param("bw64diag") === "threads") {',
+        '  ENV["BW_THREAD_DUMP"] = "1";',
+        '  ENV["BW64_CRASHRING"] = "1";',
+        '  ENV["BW64_WSREAD"] = "1";',
+        '  window.bw64CapturePlayerLogs = function() {',
+        '    var FS = getFS(); if (!FS) return [];',
+        '    var found = [];',
+        '    function capture(path) { try { var stat = FS.stat(path); if (!FS.isFile(stat.mode)) return;',
+        '      var content = FS.readFile(path, { encoding: "utf8" });',
+        '      found.push({ path: path, bytes: stat.size, content: content.length > 524288 ? content.slice(-524288) : content });',
+        '    } catch (e) {} }',
+        '    function walk(path, depth) { if (depth < 0) return; var names; try { names = FS.readdir(path); } catch (e) { return; }',
+        '      for (var i = 0; i < names.length; i++) { var name = names[i]; if (name === "." || name === "..") continue;',
+        '        var child = path + "/" + name; var st; try { st = FS.stat(child); } catch (e) { continue; }',
+        '        if (FS.isDir(st.mode)) walk(child, depth - 1);',
+        '        else if (/^(output_log\\.txt|Player\\.log)$/i.test(name)) capture(child);',
+        '      }',
+        '    }',
+        '    var apps = "/home/username/apps"; var appNames = []; try { appNames = FS.readdir(apps); } catch (e) {}',
+        '    for (var i = 0; i < appNames.length; i++) if (/_Data$/i.test(appNames[i])) {',
+        '      capture(apps + "/" + appNames[i] + "/output_log.txt"); capture(apps + "/" + appNames[i] + "/Player.log");',
+        '    }',
+        '    walk("/home/username/.wine/drive_c/users/username/AppData/LocalLow", 5);',
+        '    walk("/home/username/.wine/drive_c/users/username/Local Settings/Application Data/Unity", 4);',
+        '    return found;',
+        '  };',
+        '}',
+        marker,
+      ].join("\n                ");
+      const instrumented = body.replace(marker, diagnostics);
       threadDumpLauncherPatched = true;
       return route.fulfill({ response, body: instrumented });
     });
@@ -179,6 +211,14 @@ try {
     if (error.name !== 'TimeoutError') throw error;
     const timeoutPath = join(outDir, 'timeout.png');
     await page.screenshot({ path: timeoutPath, fullPage: true }).catch(() => {});
+    if (capturePlayerLog) {
+      const guestLogs = await page.evaluate(() => {
+        const frame = document.querySelector('#display iframe');
+        const capture = frame?.contentWindow?.bw64CapturePlayerLogs;
+        return typeof capture === 'function' ? capture() : { error: 'guest log capture hook unavailable' };
+      }).catch(error => ({ error: error.message || String(error) }));
+      await writeFile(join(outDir, 'player-logs.json'), JSON.stringify(guestLogs, null, 2) + '\n');
+    }
     const pixels = await measurePlayerPixels(page).catch(() => ({ nonblankFraction: null, uniqueColors: null, pixelError: 'measurement failed' }));
     screenshots.push({ name: 'timeout.png', atSeconds: elapsedSeconds(), ...pixels });
     const logText = await readLauncherLog(page);

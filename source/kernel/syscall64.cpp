@@ -2951,6 +2951,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void bw64_dump_guest_threads() {
                  c ? c->reg[7].u32 : 0, c ? c->reg[5].u32 : 0,
                  c ? c->eip.u32 : 0, waitName);
     }
+    if (getenv("BW64_CRASHRING")) crashRingDump("thread-dump");
     klog_fmt("BW_THREAD_DUMP end");
 }
 #endif
