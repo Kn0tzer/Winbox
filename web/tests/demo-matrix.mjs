@@ -74,7 +74,8 @@ try {
     globalThis.__bwAudioOutputMetrics ||= [];
     if (window === window.top) {
       window.addEventListener('message', event => {
-        if (event.origin !== location.origin || event.data?.bw64AudioMetric?.type !== 'bw-audio-metrics') return;
+        const runtimeFrame = document.querySelector('#display iframe');
+        if (event.source !== runtimeFrame?.contentWindow || event.data?.bw64AudioMetric?.type !== 'bw-audio-metrics') return;
         globalThis.__bwAudioOutputMetrics.push({ ...event.data.bw64AudioMetric, observedAtMs: Date.now() });
       });
       return;
@@ -86,7 +87,7 @@ try {
         super(context, name, options);
         this.port.addEventListener('message', event => {
           if (event.data?.type === 'bw-audio-metrics')
-            parent.postMessage({ bw64AudioMetric: event.data }, location.origin);
+            parent.postMessage({ bw64AudioMetric: event.data }, '*');
         });
         this.port.start();
       }
