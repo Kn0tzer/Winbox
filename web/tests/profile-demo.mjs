@@ -57,6 +57,15 @@ if (!Number.isFinite(mappedTimeout) || mappedTimeout <= 0) throw new Error('MAPP
 const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/T/, 'T').slice(0, 15);
 const outDir = resolve(repo, process.env.OUT || join('test-results/profile', `${demo}-jit${jit}-${stamp}`));
 
+let browser;
+let ws;
+let page;
+const sessions = new Map();       // sessionId -> { targetInfo, profileFile, profilerStarted }
+const targets = [];               // { sessionId, targetId, type, url, title, profileFile }
+let windowActive = false;
+let nextId = 0;
+const pending = new Map();
+
 const startWallMs = Date.now();
 const elapsedSeconds = () => Number(((Date.now() - startWallMs) / 1000).toFixed(3));
 const sleep = ms => new Promise(resolveSleep => setTimeout(resolveSleep, ms));
@@ -130,15 +139,6 @@ const chrome = spawn(process.env.CHROME_PATH || '/usr/local/bin/chromium', [
   '--enable-unsafe-swiftshader', '--use-angle=vulkan', '--use-vulkan=swiftshader',
   '--enable-features=Vulkan', '--remote-debugging-port=0', `--user-data-dir=${userDataDir}`, 'about:blank',
 ], { stdio: 'ignore' });
-
-let browser;
-let ws;
-let page;
-const sessions = new Map();       // sessionId -> { targetInfo, profileFile, profilerStarted }
-const targets = [];               // { sessionId, targetId, type, url, title, profileFile }
-let windowActive = false;
-let nextId = 0;
-const pending = new Map();
 
 const loadStart = readLoadAverage();
 const summary = {
