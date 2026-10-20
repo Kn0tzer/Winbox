@@ -12,6 +12,7 @@ class GamepadE2ETest extends ProbeTest {
     this.testedArchitectures.add(arch);
     const params = new URLSearchParams({
       p: 'cmd /c echo vkboot', session: '1', persist: '0', fresh: '1', arch,
+      winedbg: '+plugplay,+hid,+xinput',
       ...extraUrlParams(),
     });
     await page.goto(`${this._server.url}/runtime/index.html?${params}`);
