@@ -107,7 +107,7 @@ struct K64DTlbEntry {
     bool blockPage;
 #endif
 };
-constexpr U32 K64_DTLB_SIZE = 64; // direct-mapped, per-thread (~2KB)
+constexpr U32 K64_DTLB_SIZE = 256; // direct-mapped, per-thread (~8KB)
 thread_local K64DTlbEntry g_k64DTlb[K64_DTLB_SIZE];
 // Low bits track mapping invalidations. High bits track code-page registration
 // changes; a DTLB entry checks the page registry only when that epoch changes.
@@ -760,9 +760,15 @@ void KMemory64::memcpyToGuest(U64 dstGuest, const void* src, U64 len) {
         offsetInPage = dstGuest & K64_PAGE_MASK;
         U64 chunk = K64_PAGE_SIZE - offsetInPage;
         if (chunk > len) chunk = len;
-        U64 observedGen = g_k64DTlbGen.load(std::memory_order_acquire);
-        U8* data = commitPageLocked(pageNum, K64_PAGE_MAPPED | K64_PAGE_READ | K64_PAGE_WRITE);
-        k64DTlbInsert(this, pageNum, data, observedGen);
+        // Reuse cached backing for each chunk of a cross-page span. The
+        // one-page fast path above handles scalar stores; without this lookup,
+        // page-crossing copies would lock and hash every page on every call.
+        U8* data = k64DTlbLookupForWrite(this, pageNum);
+        if (!data) {
+            U64 observedGen = g_k64DTlbGen.load(std::memory_order_acquire);
+            data = commitPageLocked(pageNum, K64_PAGE_MAPPED | K64_PAGE_READ | K64_PAGE_WRITE);
+            k64DTlbInsert(this, pageNum, data, observedGen);
+        }
         if (bssDiagHit(pageNum)) {
             K64Page* pg = getPage(pageNum);
             U64 v = 0; std::memcpy(&v, s, chunk >= 8 ? 8 : (size_t)chunk);
@@ -808,10 +814,16 @@ void KMemory64::memcpyFromGuest(void* dst, U64 srcGuest, U64 len) {
         offsetInPage = srcGuest & K64_PAGE_MASK;
         U64 chunk = K64_PAGE_SIZE - offsetInPage;
         if (chunk > len) chunk = len;
-        U64 observedGen = g_k64DTlbGen.load(std::memory_order_acquire);
-        U8* data = getPageData(pageNum);
+        // Consult the DTLB per chunk as well as for the same-page fast path.
+        // Multi-byte accesses crossing a page otherwise bypassed cached pages
+        // and took pagesMutex + an unordered_map lookup for both chunks.
+        U8* data = k64DTlbLookup(this, pageNum);
+        if (!data) {
+            U64 observedGen = g_k64DTlbGen.load(std::memory_order_acquire);
+            data = getPageData(pageNum);
+            if (data) k64DTlbInsert(this, pageNum, data, observedGen);
+        }
         if (data) {
-            k64DTlbInsert(this, pageNum, data, observedGen);
             ::memcpy(d, data + offsetInPage, (size_t)chunk);
             if (diag) {
                 U64 v = 0; std::memcpy(&v, d, chunk >= 8 ? 8 : (size_t)chunk);
