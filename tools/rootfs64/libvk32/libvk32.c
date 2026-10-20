@@ -257,6 +257,8 @@ enum {
     VK64_fn_vkCmdSetStencilCompareMask,
     VK64_fn_vkCmdSetStencilWriteMask,
     VK64_fn_vkCmdSetStencilReference,
+    VK64_fn_vkCmdCopyQueryPoolResults = 904,
+    VK64_fn_vkCmdSetDepthBias = 905,
     VK64_fn__MAX
 };
 
@@ -950,6 +952,11 @@ API void vkCmdSetBlendConstants(VkCommandBuffer cb, const float* values) {
     VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = P(values);
     (void)vk64_trap(VK64_fn_vkCmdSetBlendConstants, &a);
 }
+API void vkCmdSetDepthBias(VkCommandBuffer cb, float constantFactor, float clamp, float slopeFactor) {
+    union { float f; uint32_t u; } c, k, s; c.f=constantFactor; k.f=clamp; s.f=slopeFactor;
+    VK64Args a = {{0}}; a.a[0]=cb; a.a[1]=c.u; a.a[2]=k.u; a.a[3]=s.u;
+    (void)vk64_trap(VK64_fn_vkCmdSetDepthBias, &a);
+}
 API void vkCmdSetStencilCompareMask(VkCommandBuffer cb, uint32_t faces, uint32_t value) {
     VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = faces; a.a[2] = value;
     (void)vk64_trap(VK64_fn_vkCmdSetStencilCompareMask, &a);
@@ -1060,6 +1067,12 @@ API void vkCmdBeginQuery(VkCommandBuffer cb, VkQueryPool q, uint32_t query, VkFl
 API void vkCmdEndQuery(VkCommandBuffer cb, VkQueryPool q, uint32_t query) {
     VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = q; a.a[2] = query;
     (void)vk64_trap(VK64_fn_vkCmdEndQuery, &a);
+}
+API void vkCmdCopyQueryPoolResults(VkCommandBuffer cb, VkQueryPool q, uint32_t first, uint32_t count,
+                                   VkBuffer dst, uint64_t offset, uint64_t stride, VkFlags flags) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = q; a.a[2] = first; a.a[3] = count;
+    a.a[4] = dst; a.a[5] = offset; a.a[6] = stride; a.a[7] = flags;
+    (void)vk64_trap(VK64_fn_vkCmdCopyQueryPoolResults, &a);
 }
 API void vkCmdUpdateBuffer(VkCommandBuffer cb, VkBuffer dst, uint64_t off,
                            uint64_t size, const void* data) {
@@ -1334,6 +1347,7 @@ static const struct procEntry g_procs[] = {
     E(vkCmdSetStencilCompareMask, VK64_fn_vkCmdSetStencilCompareMask),
     E(vkCmdSetStencilWriteMask, VK64_fn_vkCmdSetStencilWriteMask),
     E(vkCmdSetStencilReference, VK64_fn_vkCmdSetStencilReference),
+    E(vkCmdSetDepthBias, VK64_fn_vkCmdSetDepthBias),
 
     E(vkCmdDraw, VK64_fn_vkCmdDraw),
     E(vkCmdDrawIndexed, VK64_fn_vkCmdDrawIndexed),
@@ -1349,6 +1363,7 @@ static const struct procEntry g_procs[] = {
     E(vkCmdResetQueryPool, VK64_fn_vkCmdResetQueryPool),
     E(vkCmdBeginQuery, VK64_fn_vkCmdBeginQuery),
     E(vkCmdEndQuery, VK64_fn_vkCmdEndQuery),
+    E(vkCmdCopyQueryPoolResults, VK64_fn_vkCmdCopyQueryPoolResults),
     E(vkCmdUpdateBuffer, VK64_fn_vkCmdUpdateBuffer),
     E(vkCmdPipelineBarrier, VK64_fn_vkCmdPipelineBarrier),
     E(vkCmdCopyBufferToImage, VK64_fn_vkCmdCopyBufferToImage),
@@ -1542,7 +1557,6 @@ TAIL(vkCmdWriteTimestamp)
 TAIL(vkCmdWriteTimestamp2)
 TAIL(vkCmdWriteTimestamp2KHR)
 TAIL(vkCmdSetDeviceMask)
-TAIL(vkCmdSetDepthBias)
 TAIL(vkCmdSetDepthBiasEnableEXT)
 TAIL(vkCmdSetLineWidth)
 TAIL(vkCmdSetDepthBiasNV)

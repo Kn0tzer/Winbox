@@ -340,7 +340,7 @@ enum {
     VK64_fn_vkCreateQueryPool,                  // (device, pCreateInfo*, pAllocator, out VkQueryPool*)
     VK64_fn_vkDestroyQueryPool,                 // (device, pool, pAllocator)
     VK64_fn_vkResetQueryPool,                   // (device, pool, first, count) -> SUCCESS
-    VK64_fn_vkGetQueryPoolResults,              // (device, pool, first, count, dataSize, pData*, stride, flags) -> zero-filled SUCCESS
+    VK64_fn_vkGetQueryPoolResults,              // (device, pool, first, count, dataSize, pData*, stride, flags) -> available occlusion/timestamp results
     VK64_fn_vkCmdResetQueryPool,                // (cmdBuf, pool, first, count) -> SUCCESS
     VK64_fn_vkCmdBeginQuery,                    // (cmdBuf, pool, query, flags) -> SUCCESS
     VK64_fn_vkCmdEndQuery,                      // (cmdBuf, pool, query) -> SUCCESS
@@ -349,6 +349,8 @@ enum {
     VK64_fn_vkCmdSetStencilCompareMask,
     VK64_fn_vkCmdSetStencilWriteMask,
     VK64_fn_vkCmdSetStencilReference,
+    VK64_fn_vkCmdCopyQueryPoolResults = 904, // (cmdBuf, pool, first, count, dstBuffer, offset, stride, flags)
+    VK64_fn_vkCmdSetDepthBias = 905,          // (cmdBuf, constantFactor bits, clamp bits, slopeFactor bits)
     VK64_fn__MAX
 };
 

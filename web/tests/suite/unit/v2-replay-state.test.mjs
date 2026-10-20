@@ -9,6 +9,7 @@ test('replay carries a pipeline bound before the render pass, preserves push con
   let groups = new Map();
   let validationError = null;
   const device = {
+    features: new Set(),
     lost: new Promise(() => {}), addEventListener() {}, pushErrorScope() {}, async popErrorScope() {
       const error = validationError; validationError = null; return error;
     },
@@ -46,8 +47,17 @@ test('replay carries a pipeline bound before the render pass, preserves push con
       }, finish() { return {}; },
     }; },
   };
-  const adapter = { features: new Set(['clip-distances']), async requestDevice(d) {
-    assert.ok(d.requiredFeatures.includes('clip-distances')); return device;
+  const limits = {
+    maxTextureDimension1D: 16384, maxTextureDimension2D: 16384, maxTextureDimension3D: 2048,
+    maxTextureArrayLayers: 2048, maxBindGroups: 4, maxSampledTexturesPerShaderStage: 16,
+    maxSamplersPerShaderStage: 16, maxUniformBuffersPerShaderStage: 12, maxStorageBuffersPerShaderStage: 8,
+    maxUniformBufferBindingSize: 65536, maxStorageBufferBindingSize: 134217728, maxBufferSize: 268435456,
+    maxVertexBuffers: 8, maxVertexAttributes: 16, maxColorAttachments: 8, maxInterStageShaderVariables: 16,
+  };
+  const adapter = { features: new Set(['clip-distances']), limits, async requestDevice(d) {
+    assert.ok(d.requiredFeatures.includes('clip-distances'));
+    assert.deepEqual(d.requiredLimits, limits);
+    return device;
   } };
   const canvas = { width: 64, height: 32, getContext: () => context };
   const context = { configure() {}, unconfigure() {}, getCurrentTexture() { return { width: canvas.width, height: canvas.height }; } };

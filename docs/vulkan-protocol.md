@@ -103,13 +103,17 @@ so the decision is pinned to the submit path, never re-read per frame).
 
 ## 3. Schema v2 record catalogue
 
-Image transfers use append-only record `0x14` (`IMAGE_COPY`). Its payload is
+Image transfers use append-only records `0x14` (`IMAGE_COPY`) and `0x19`
+(`IMAGE_BLIT`). IMAGE_COPY's payload is
 `u64 srcImage, u64 dstImage`, followed by thirteen little-endian `u32` fields:
 `srcMip, srcLayer, dstMip, dstLayer, srcX, srcY, srcZ, dstX, dstY, dstZ,
 width, height, depth` (68 bytes total). It occurs outside a render pass and
-retains command ordering. Copy and resolve commands copy the page's rendered
-texture, rather than the guest's stale backing pixels. Current replay supports
-base-level, single-layer 2D transfers; other subresources are rejected explicitly.
+retains command ordering. Copy and resolve commands copy page textures per
+mip/layer, including 3D depth slices, rather than the guest's stale backing pixels.
+IMAGE_BLIT has `u64 srcImage, u64 dstImage`, then `u32 srcMip, srcLayer,
+dstMip, dstLayer, filter` (`0=nearest, 1=linear`), then six signed
+`i32 x,y,z` offsets for the source and six for the destination (84 bytes
+total). It is replayed as a GPU render pass for color subresources.
 
 Frame = **present-to-present**. Records stream across submits; `FRAME_BEGIN`
 is emitted at the first submit-with-draw after a present, `FRAME_END` seals at
@@ -122,12 +126,12 @@ is emitted at the first submit-with-draw after a present, `FRAME_END` seals at
 | 0x03 | `RP_BEGIN` | `u64 rpId, u64 fbId, u32 w, u32 h, u32 nAtt`, then `nAtt × {u32 format, u32 loadOp, u32 storeOp, u32 samples, u32 isDepth}`, then `f32 clearColor[4], f32 clearDepth, u32 clearStencil`, then `nAtt × {u64 viewId, u64 imageId}` (attachment identity tail, in attachment order). The image identity links each render attachment to the sampled-image aliases in `frame.views` that share the same `VkImage`. The ordered sequence of `RP_BEGIN`/`RP_END` pairs **is the render-pass graph**. `samples` comes from `VkAttachmentDescription.samples` (recorded at `vkCreateRenderPass`); `isDepth` from the image view aspect. |
 | 0x04 | `RP_END` | — |
 | 0x05 | `SHADER` | `u8 stage (0=vs,1=fs), u8 pad, u16 pad, u64 hash, u32 codeLen, u8 code[codeLen]`. Emitted at most once per hash per frame; the page caches translated WGSL per hash (existing `createShaderCache`). |
-| 0x06 | `PIPELINE` | `u64 pipeId, u64 vsHash, u64 fsHash, u32 topology, cull, front, depthTest, depthWrite, depthOp, blend, u32 nVb, u32 nVa`, then `nVb × {u32 binding, stride, inputRate}`, `nVa × {u32 location, binding, format, offset}`. The vertex input layout travels with the pipeline that declares it — the one field without which nothing rasterizes (audit P2-NOW item 5). |
+| 0x06 | `PIPELINE` | `u64 pipeId, u64 vsHash, u64 fsHash, u32 topology, cull, front, depthTest, depthWrite, depthOp, blend, u32 nVb, u32 nVa`, then vertex input tables and append-only tails. Optional `FAN1` (`0x314e4146`) carries `u32 primitiveRestartEnable` for indexed triangle fans, expanded to triangle-list indices by the page. |
 | 0x07 | `BIND_SETS` | `u8 firstSet, u8 setCount, u16 pad, u64 setIds[setCount]`. Which descriptor sets are live for subsequent draws. |
 | 0x08 | `DESC_SET` | `u8 setIndex, u8 nBind, u16 pad, u64 layoutId`, then per binding `u32 binding, u32 type (VkDescriptorType), u32 dstArrayElement, u32 count, u8 kind, u8 pad[3], u64 obj, u64 range`. `kind`: 0=none, 1=buffer, 2=image, 3=sampler, 4=inline-bytes. **Binding arrays are explicit**: `dstArrayElement`/`count` are recorded, not collapsed to element 0. |
 | 0x09 | `BUFFER_DATA` | `u64 bufId, u64 offset, u32 len, u8 bytes[len]`. Uniform/storage/vertex/index bytes, at most once per `(bufId,offset,len)` per frame. |
 | 0x0A | `IMAGE_DATA` | `u64 viewId, u64 imageId, u32 w, u32 h, u32 format (VkFormat), u32 pixLen, u8 bytes[pixLen]`. Once per image per frame; `viewId` first because `DESC_SET` bindings name image *views* while this record is deduped per image. |
-| 0x0B | `SAMPLER` | `u64 samplerId, u32 mag, min, mipmap, addrU, addrV, f32 maxAniso` (Vk enums; the page maps them as v1 does). |
+| 0x0B | `SAMPLER` | `u64 samplerId, u32 mag, min, mipmap, addrU, addrV, f32 maxAniso`, followed by the optional compatible `SAM1` (`0x314d4153`) tail: `u32 addrW, f32 mipLodBias, u32 anisotropyEnable, compareEnable, compareOp, f32 minLod, maxLod, u32 borderColor`. Older records end after `maxAniso`; the decoder supplies defaults. Vulkan compare/address/border values are mapped by the page. WebGPU has no mip LOD bias or border-color fields; mip bias is ignored and clamp-to-border maps to clamp-to-edge. |
 | 0x0C | `PUSH` | `u32 offset, u32 size, u32 stageFlags, u8 bytes[size]`. The page overlays each into a 256-byte push-constant block (offset-preserved: a push is an overlay, not a replacement). |
 | 0x0D | `VIEWPORT` | `f32 x, y, w, h, minDepth, maxDepth` |
 | 0x0E | `SCISSOR` | `i32 x, y, u32 w, h` |
@@ -135,6 +139,8 @@ is emitted at the first submit-with-draw after a present, `FRAME_END` seals at
 | 0x10 | `INDEX_BIND` | `u64 bufId, u64 offset, u32 indexType (0=u16,1=u32)`. |
 | 0x11 | `DRAW` | `u32 vertexCount, instanceCount, firstVertex, firstInstance, u8 indexed, u8 pad[3], u32 indexCount, u32 firstIndex, i32 vertexOffset`. Covers `vkCmdDraw` and `vkCmdDrawIndexed`. |
 | 0x12 | `INLINE_BYTES` | `u8 setIndex, u8 pad, u16 pad, u32 binding, u32 dstArrayElement, u32 len, u8 bytes[len]`. Payload for `kind=4` (`INLINE_UNIFORM_BLOCK`) bindings, whose bytes live in guest memory at write time. |
+| 0x18 | `DEPTH_BIAS` | `f32 constantFactor, clamp, slopeFactor`, dynamic `vkCmdSetDepthBias` state in command order. |
+| 0x19 | `IMAGE_BLIT` | `u64 srcImage, u64 dstImage, u32 srcMip, srcLayer, dstMip, dstLayer, filter, i32 srcOffset[2][3], i32 dstOffset[2][3]`; linear/nearest GPU blit, including mip generation. |
 
 Deliberately **not** in v2: secondary command buffers (DXVK doesn't use them
 for D3D9), input attachments, tessellation/geometry stages (pipeline records
@@ -250,6 +256,14 @@ Frames without this tail retain the legacy alpha-blending fallback. New frames
 preserve multiplicative shadows, additive effects and attachment write masks.
 This tail carries static pipeline constants; dynamic `vkCmdSetBlendConstants`
 command support is a separate remaining bridge feature.
+
+Depth-bias extensions (2026-10-20): `PIPELINE` appends `DBS1` (`0x31534244`),
+then u32 `depthBiasEnable, depthClampEnable, depthBiasDynamic`, followed by f32
+`depthBiasConstantFactor, depthBiasClamp, depthBiasSlopeFactor`. Older records
+omit the tail and decode with depth bias/clamp disabled. Dynamic
+`vkCmdSetDepthBias` is record `0x18` above. The WebGPU page rounds the constant
+factor to an integer and applies depth clipping control only when the optional
+`depth-clip-control` device feature is available.
 
 Stencil extensions (2026-10-19): `PIPELINE` appends `STN1` (`0x314e5453`),
 then u32 enable, dynamic mask (bits 0 compare mask, 1 write mask, 2 reference),

@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { decodeV2Frame, V2_REC, createVkRenderer2 } from '../../../vkwebgpu.mjs';
+import { createValidationDevice } from '../fixtures/webgpu-validation-device.mjs';
 
 test('native transfer recording preserves subresources and rejects empty or negative regions', () => {
   const source = readFileSync(new URL('../../../../source/vulkan/vk64bridge.cpp', import.meta.url), 'utf8');
@@ -89,4 +90,33 @@ test('a rendered image is copied between ordered render passes', async () => {
   } finally {
     for (const [k, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, k, descriptor); else delete globalThis[k]; }
   }
+});
+
+test('image copies address array mip subresources and 3D depth slices', async () => {
+  const gpu=createValidationDevice();
+  try {
+    const renderer=await createVkRenderer2(gpu.canvas,{translate:async()=> 'fn main() {}'});
+    const pixels2d=new Uint8Array(8*8*4*2 + 4*4*4*2);
+    const arrayImage={w:8,h:8,d:1,layers:2,mips:2,format:37,pixels:pixels2d};
+    const src='0000000000000001',dst='0000000000000002';
+    const frame=(images,op)=>({frameNo:1,width:8,height:8,shaders:new Map(),images,views:new Map(),samplers:new Map(),buffers:new Map(),bufHashes:new Map(),passes:[{w:8,h:8,attachments:[],ops:[op]}]});
+    let result=await renderer.render(frame(new Map([[src,arrayImage],[dst,{...arrayImage,pixels:pixels2d.slice()}]]),{
+      op:'imageCopy',srcImage:src,dstImage:dst,srcMip:1,srcLayer:1,dstMip:0,dstLayer:0,
+      srcOrigin:[1,2,0],dstOrigin:[3,4,0],extent:[2,2,1],
+    }),{present:false});
+    assert.equal(result.rendered,true);
+    assert.deepEqual(gpu.writes.slice(0,4).map(w=>[w.d.mipLevel,w.d.origin.z]),[[0,0],[1,0],[0,1],[1,1]]);
+    assert.equal(gpu.copies.length,1);
+    assert.deepEqual(gpu.copies[0],{src:{texture:gpu.textures[0],mipLevel:1,origin:[1,2,1]},dst:{texture:gpu.textures[1],mipLevel:0,origin:[3,4,0]},extent:[2,2,1]});
+
+    gpu.copies.length=0;gpu.writes.length=0;gpu.textures.length=0;
+    const pixels3d=new Uint8Array(8*8*4*4 + 4*4*4*2);
+    const volume={w:8,h:8,d:4,layers:1,mips:2,format:37,pixels:pixels3d};
+    result=await renderer.render(frame(new Map([[src,volume],[dst,{...volume,pixels:pixels3d.slice()}]]),{
+      op:'imageCopy',srcImage:src,dstImage:dst,srcMip:1,srcLayer:0,dstMip:0,dstLayer:0,
+      srcOrigin:[1,2,1],dstOrigin:[3,4,0],extent:[2,2,2],
+    }),{present:false});
+    assert.equal(result.rendered,true);
+    assert.deepEqual(gpu.copies[0],{src:{texture:gpu.textures[0],mipLevel:1,origin:[1,2,1]},dst:{texture:gpu.textures[1],mipLevel:0,origin:[3,4,0]},extent:[2,2,2]});
+  } finally {gpu.restore();}
 });

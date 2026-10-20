@@ -256,12 +256,20 @@ enum {
     VK64_fn_vkCmdDispatchBase,
     VK64_fn_vkCmdDispatchIndirect,
     VK64_fn_vkGetBufferDeviceAddress,
+    VK64_fn_vkCreateQueryPool = 849,
+    VK64_fn_vkDestroyQueryPool = 850,
     VK64_fn_vkResetQueryPool = 851,
+    VK64_fn_vkGetQueryPoolResults = 852,
+    VK64_fn_vkCmdResetQueryPool = 853,
+    VK64_fn_vkCmdBeginQuery = 854,
+    VK64_fn_vkCmdEndQuery = 855,
     // Core dynamic raster state. Append-only; old trap IDs stay unchanged.
     VK64_fn_vkCmdSetBlendConstants = 900,
     VK64_fn_vkCmdSetStencilCompareMask,
     VK64_fn_vkCmdSetStencilWriteMask,
     VK64_fn_vkCmdSetStencilReference,
+    VK64_fn_vkCmdCopyQueryPoolResults = 904,
+    VK64_fn_vkCmdSetDepthBias = 905,
     VK64_fn__MAX
 };
 
@@ -910,6 +918,11 @@ API void vkCmdSetBlendConstants(VkCommandBuffer cb, const float* values) {
     VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = P(values);
     (void)vk64_trap(VK64_fn_vkCmdSetBlendConstants, &a);
 }
+API void vkCmdSetDepthBias(VkCommandBuffer cb, float constantFactor, float clamp, float slopeFactor) {
+    union { float f; uint32_t u; } c, k, s; c.f=constantFactor; k.f=clamp; s.f=slopeFactor;
+    VK64Args a = {{0}}; a.a[0]=cb; a.a[1]=c.u; a.a[2]=k.u; a.a[3]=s.u;
+    (void)vk64_trap(VK64_fn_vkCmdSetDepthBias, &a);
+}
 API void vkCmdSetStencilCompareMask(VkCommandBuffer cb, uint32_t faces, uint32_t value) {
     VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = faces; a.a[2] = value;
     (void)vk64_trap(VK64_fn_vkCmdSetStencilCompareMask, &a);
@@ -1150,11 +1163,25 @@ API void vkCmdExecuteCommands(VkCommandBuffer, uint32_t, const VkCommandBuffer*)
 API void vkCmdDispatch(VkCommandBuffer, uint32_t, uint32_t, uint32_t);
 API void vkCmdDispatchBase(VkCommandBuffer, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
 API void vkCmdDispatchIndirect(VkCommandBuffer, VkBuffer, uint64_t);
+API VkResult vkCreateQueryPool(VkDevice, const void*, const void*, VkQueryPool*);
+API void vkDestroyQueryPool(VkDevice, VkQueryPool, const void*);
+API VkResult vkGetQueryPoolResults(VkDevice, VkQueryPool, uint32_t, uint32_t, unsigned long, void*, uint64_t, uint32_t);
+API void vkCmdResetQueryPool(VkCommandBuffer, VkQueryPool, uint32_t, uint32_t);
+API void vkCmdBeginQuery(VkCommandBuffer, VkQueryPool, uint32_t, uint32_t);
+API void vkCmdEndQuery(VkCommandBuffer, VkQueryPool, uint32_t);
+API void vkCmdCopyQueryPoolResults(VkCommandBuffer, VkQueryPool, uint32_t, uint32_t, VkBuffer, uint64_t, uint64_t, uint32_t);
 
 static const struct procEntry g_procs[] = {
     E(vkCmdResolveImage2, VK64_fn_vkCmdResolveImage),
     E(vkCmdResolveImage2KHR, VK64_fn_vkCmdResolveImage),
     E(vkResetQueryPool, VK64_fn_vkResetQueryPool),
+    E(vkCreateQueryPool, VK64_fn_vkCreateQueryPool),
+    E(vkDestroyQueryPool, VK64_fn_vkDestroyQueryPool),
+    E(vkGetQueryPoolResults, VK64_fn_vkGetQueryPoolResults),
+    E(vkCmdResetQueryPool, VK64_fn_vkCmdResetQueryPool),
+    E(vkCmdBeginQuery, VK64_fn_vkCmdBeginQuery),
+    E(vkCmdEndQuery, VK64_fn_vkCmdEndQuery),
+    E(vkCmdCopyQueryPoolResults, VK64_fn_vkCmdCopyQueryPoolResults),
     // --- global ---
     E(vkEnumerateInstanceVersion, VK64_fn_vkEnumerateInstanceVersion),
     E(vkEnumerateInstanceExtensionProperties, VK64_fn_vkEnumerateInstanceExtensionProperties),
@@ -1287,6 +1314,7 @@ static const struct procEntry g_procs[] = {
     E(vkCmdSetStencilCompareMask, VK64_fn_vkCmdSetStencilCompareMask),
     E(vkCmdSetStencilWriteMask, VK64_fn_vkCmdSetStencilWriteMask),
     E(vkCmdSetStencilReference, VK64_fn_vkCmdSetStencilReference),
+    E(vkCmdSetDepthBias, VK64_fn_vkCmdSetDepthBias),
 
     E(vkCmdDraw, VK64_fn_vkCmdDraw),
     E(vkCmdDrawIndexed, VK64_fn_vkCmdDrawIndexed),
@@ -1466,7 +1494,6 @@ TAIL(vkGetPhysicalDeviceSurfaceCapabilities2EXT)
 TAIL(vkGetPhysicalDeviceSurfaceFormats2EXT)
 TAIL(vkGetPhysicalDeviceSurfacePresentModes2EXT)
 TAIL(vkGetPipelineCacheData)
-TAIL(vkGetQueryPoolResults)
 TAIL(vkGetQueryPoolResults64)
 TAIL(vkGetQueryPoolResults64KHR)
 TAIL(vkGetRenderingAreaGranularity)
@@ -1724,8 +1751,39 @@ API void vkCmdDispatchIndirect(VkCommandBuffer commandBuffer, VkBuffer buffer, u
     (void)vk64_trap(VK64_fn_vkCmdDispatchIndirect, &a);
 }
 
-TAIL(vkCreateQueryPool)
-TAIL(vkDestroyQueryPool)
+API VkResult vkCreateQueryPool(VkDevice dev, const void* ci, const void* alloc, VkQueryPool* out) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
+    return (VkResult)vk64_trap(VK64_fn_vkCreateQueryPool, &a);
+}
+API void vkDestroyQueryPool(VkDevice dev, VkQueryPool pool, const void* alloc) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = pool; a.a[2] = P(alloc);
+    (void)vk64_trap(VK64_fn_vkDestroyQueryPool, &a);
+}
+API VkResult vkGetQueryPoolResults(VkDevice dev, VkQueryPool pool, uint32_t first, uint32_t count,
+                                   unsigned long dataSize, void* data, uint64_t stride, uint32_t flags) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = pool; a.a[2] = first; a.a[3] = count;
+    a.a[4] = dataSize; a.a[5] = P(data); a.a[6] = stride; a.a[7] = flags;
+    return (VkResult)vk64_trap(VK64_fn_vkGetQueryPoolResults, &a);
+}
+API void vkCmdResetQueryPool(VkCommandBuffer cb, VkQueryPool pool, uint32_t first, uint32_t count) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = pool; a.a[2] = first; a.a[3] = count;
+    (void)vk64_trap(VK64_fn_vkCmdResetQueryPool, &a);
+}
+API void vkCmdBeginQuery(VkCommandBuffer cb, VkQueryPool pool, uint32_t query, uint32_t flags) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = pool; a.a[2] = query; a.a[3] = flags;
+    (void)vk64_trap(VK64_fn_vkCmdBeginQuery, &a);
+}
+API void vkCmdEndQuery(VkCommandBuffer cb, VkQueryPool pool, uint32_t query) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = pool; a.a[2] = query;
+    (void)vk64_trap(VK64_fn_vkCmdEndQuery, &a);
+}
+API void vkCmdCopyQueryPoolResults(VkCommandBuffer cb, VkQueryPool pool, uint32_t first, uint32_t count,
+                                   VkBuffer dst, uint64_t offset, uint64_t stride, uint32_t flags) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = pool; a.a[2] = first; a.a[3] = count;
+    a.a[4] = dst; a.a[5] = offset; a.a[6] = stride; a.a[7] = flags;
+    (void)vk64_trap(VK64_fn_vkCmdCopyQueryPoolResults, &a);
+}
+
 TAIL(vkGetPipelineLayoutSupport)
 TAIL(vkQueueBindSparse)
 TAIL(vkCmdSetBlendConstant)
@@ -1733,9 +1791,6 @@ TAIL(vkCmdSetDepthBounds)
 TAIL(vkCmdPushDescriptorSet)
 TAIL(vkCmdNextSubpass)
 TAIL(vkCmdNextSubpassKHR)
-TAIL(vkCmdBeginQuery)
-TAIL(vkCmdEndQuery)
-TAIL(vkCmdResetQueryPool)
 TAIL(vkCmdWriteTimestamp)
 TAIL(vkCmdWriteTimestamp2)
 TAIL(vkCmdWriteTimestamp2KHR)
@@ -1743,7 +1798,6 @@ TAIL(vkCmdSetEvent)
 TAIL(vkCmdResetEvent)
 TAIL(vkCmdWaitEvents)
 TAIL(vkCmdSetDeviceMask)
-TAIL(vkCmdSetDepthBias)
 TAIL(vkCmdSetDepthBiasEnableEXT)
 TAIL(vkCmdSetLineWidth)
 TAIL(vkCmdSetDepthBiasNV)

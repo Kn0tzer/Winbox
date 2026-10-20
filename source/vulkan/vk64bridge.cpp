@@ -58,6 +58,7 @@ namespace vk32abi {
 
 #include "vk64bridge.h"
 #include "vk64bridge_abi.h"
+#include "vk_query_results.h"
 #include "cpu64.h"
 #include "kmemory64.h"
 #include "kprocess.h"
@@ -97,6 +98,7 @@ namespace vk32abi {
 #include <set>
 #include <tuple>
 #include <deque>
+#include <chrono>
 
 namespace {
 
@@ -260,6 +262,8 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkCmdSetStencilCompareMask, "vkCmdSetStencilCompareMask") \
     X(VK64_fn_vkCmdSetStencilWriteMask, "vkCmdSetStencilWriteMask") \
     X(VK64_fn_vkCmdSetStencilReference, "vkCmdSetStencilReference") \
+    X(VK64_fn_vkCmdSetDepthBias, "vkCmdSetDepthBias") \
+    X(VK64_fn_vkCmdCopyQueryPoolResults, "vkCmdCopyQueryPoolResults") \
     X(VK64_fn_vkCmdDraw,                            "vkCmdDraw")           \
     X(VK64_fn_vkCmdPipelineBarrier,                 "vkCmdPipelineBarrier")\
     X(VK64_fn_vkCmdCopyBufferToImage,               "vkCmdCopyBufferToImage") \
@@ -513,7 +517,15 @@ struct DescPool  : Obj {};
 struct Surface   : Obj {};
 struct Fence     : Obj { int signalled = 0; };
 struct Event     : Obj { int signalled = 0; };
-struct QueryPool : Obj { U32 type = 0, count = 0; };
+struct QueryPool : Obj { U32 type = 0, count = 0, flags = 0; };
+struct QueryPoolCreateInfo64Local {
+    U32 sType, _pad0; U64 pNext; U32 flags, queryType, queryCount, pipelineStatistics;
+};
+struct QueryPoolCreateInfo32Local {
+    U32 sType, pNext, flags, queryType, queryCount, pipelineStatistics;
+};
+static_assert(sizeof(QueryPoolCreateInfo64Local) == 32, "64-bit VkQueryPoolCreateInfo layout");
+static_assert(sizeof(QueryPoolCreateInfo32Local) == 24, "32-bit VkQueryPoolCreateInfo layout");
 // Timeline semaphores (audit P2-NOW item 3). DXVK puts a u64 wait/signal fence
 // on EVERY command-list flush, so the counter is not optional bookkeeping: it is
 // the only thing that makes vkQueueSubmit's VkTimelineSemaphoreSubmitInfo
@@ -535,7 +547,11 @@ struct Image  : Obj {
 };
 struct ImageView : Obj { U64 image = 0; U32 format = 0, aspect = 0; };
 struct BufferView : Obj { U64 buffer = 0; U32 format = 0; U64 offset = 0, range = 0; };
-struct Sampler : Obj { U32 mag = 0, min = 0, mipmap = 0, addrU = 0, addrV = 0, addrW = 0; float maxAniso = 1.0f; };
+struct Sampler : Obj {
+    U32 mag = 0, min = 0, mipmap = 0, addrU = 0, addrV = 0, addrW = 0;
+    U32 anisotropyEnable = 0, compareEnable = 0, compareOp = 7, borderColor = 0;
+    float mipLodBias = 0.0f, maxAniso = 1.0f, minLod = 0.0f, maxLod = 32.0f;
+};
 struct ShaderModule : Obj {
     U32 stageHint = 0;
     U64 hash = 0;
@@ -597,6 +613,10 @@ struct StencilState {
 };
 struct Pipeline : Obj {
     U32 topology = 0, cull = 0, front = 0, depthTest = 0, depthWrite = 0, depthOp = 0, blend = 0;
+    U32 primitiveRestartEnable = 0;
+    U32 depthBiasEnable = 0, depthClampEnable = 0;
+    bool depthBiasDynamic = false;
+    float depthBiasConstantFactor = 0.0f, depthBiasClamp = 0.0f, depthBiasSlopeFactor = 0.0f;
     U32 colorBlendCount = 0; ColorBlend colorBlend[VK64_MAX_ATTACH];
     float blendConstants[4] = {};
     bool blendConstantsDynamic = false;
@@ -654,7 +674,7 @@ enum CmdKind : U32 {
     CMD_BEGIN_RP, CMD_END_RP, CMD_BIND_PIPE, CMD_BIND_SETS, CMD_VIEWPORT,
     CMD_SCISSOR, CMD_DRAW, CMD_DRAW_INDEXED, CMD_BARRIER, CMD_COPY_B2I, CMD_PUSH_CONST,
     CMD_BIND_VB, CMD_BIND_IB, CMD_UPDATE_BUF, CMD_COPY_I2B, CMD_DISPATCH, CMD_COPY_IMAGE,
-    CMD_STENCIL_STATE, CMD_BLEND_CONSTANTS, CMD_CLEAR_ATTACHMENTS
+    CMD_STENCIL_STATE, CMD_BLEND_CONSTANTS, CMD_CLEAR_ATTACHMENTS, CMD_COPY_QUERY_RESULTS, CMD_DEPTH_BIAS, CMD_BLIT_IMAGE
 };
 struct Copy {
     U64 srcBuffer = 0, dstImage = 0, bufOff = 0;
@@ -669,6 +689,15 @@ struct ImageCopy {
     U64 src = 0, dst = 0;
     U32 srcMip = 0, srcLayer = 0, dstMip = 0, dstLayer = 0;
     U32 srcOrigin[3] = {}, dstOrigin[3] = {}, extent[3] = {};
+};
+struct ImageBlit {
+    U64 src = 0, dst = 0;
+    U32 srcMip = 0, srcLayer = 0, dstMip = 0, dstLayer = 0, filter = 0;
+    int32_t srcOffsets[2][3] = {}, dstOffsets[2][3] = {};
+};
+struct QueryCopy {
+    U64 queryPool = 0, dstBuffer = 0, dstOffset = 0, stride = 0;
+    U32 firstQuery = 0, queryCount = 0, flags = 0;
 };
 struct ClearAttachmentArg { U32 aspectMask = 0, colorAttachment = 0, value[4] = {}; };
 struct ClearRectArg { int32_t x = 0, y = 0; U32 w = 0, h = 0, baseLayer = 0, layers = 1; };
@@ -689,6 +718,8 @@ struct Cmd {
     Copy  copy;
     CopyI2B copyI2B;
     ImageCopy imageCopy;
+    ImageBlit imageBlit;
+    QueryCopy queryCopy;
     // Push constants: the recorded bytes, byte-offset preserved. DXVK pushes
     // constants per-draw for essentially everything, so this is a hot path, not a
     // corner case.
@@ -773,6 +804,20 @@ void recordImageCopy(CmdBuf* cb, U64 src, U64 dst, U32 srcMip, U32 srcLayer, U32
         Cmd c; c.kind = CMD_COPY_IMAGE;
         c.imageCopy = { src, dst, srcMip, srcLayer + layer, dstMip, dstLayer + layer,
                        { (U32)sx, (U32)sy, (U32)sz }, { (U32)dx, (U32)dy, (U32)dz }, { w, h, d } };
+        pushCmd(cb, c);
+    }
+}
+void recordImageBlit(CmdBuf* cb, U64 src, U64 dst, U32 srcMip, U32 srcLayer, U32 dstMip, U32 dstLayer,
+                     U32 filter, const int32_t srcOffsets[2][3], const int32_t dstOffsets[2][3], U32 layers) {
+    if (!cb || !srcOffsets || !dstOffsets) return;
+    for (U32 layer = 0; layer < layers && layer < VK64_MAX_CMDS; ++layer) {
+        Cmd c; c.kind = CMD_BLIT_IMAGE;
+        c.imageBlit.src = src; c.imageBlit.dst = dst;
+        c.imageBlit.srcMip = srcMip; c.imageBlit.srcLayer = srcLayer + layer;
+        c.imageBlit.dstMip = dstMip; c.imageBlit.dstLayer = dstLayer + layer;
+        c.imageBlit.filter = filter;
+        memcpy(c.imageBlit.srcOffsets, srcOffsets, sizeof(c.imageBlit.srcOffsets));
+        memcpy(c.imageBlit.dstOffsets, dstOffsets, sizeof(c.imageBlit.dstOffsets));
         pushCmd(cb, c);
     }
 }
@@ -953,6 +998,58 @@ void emitFrameNow() {
 // Source and destination are BOTH guest ranges, so this is one
 // memcpyFromGuest/memcpyToGuest per row.
 // ---------------------------------------------------------------------------
+static U64 queryHostNanoseconds() {
+    return (U64)std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+static void writeEncodedQueryResults(U64 dst, const vkquery::EncodedResults& encoded) {
+    for (U32 i = 0; i < encoded.countWritten; ++i) {
+        const U64 offset = (U64)i * encoded.strideBytes;
+        writeGuestBytes(dst + offset, encoded.bytes.data() + offset, encoded.resultBytes);
+    }
+}
+
+static VkResult writeQueryResults(QueryPool* pool, U32 first, U32 count,
+                                  U64 dataSize, U64 dst, U64 stride, U32 flags) {
+    if (!pool || !dst || (!g_mem && !g_mem32)) return VK_ERROR_INITIALIZATION_FAILED;
+    constexpr U64 kMaxQueryResultBytes = 1ULL << 20;
+    const U64 writeSize = std::min<U64>(dataSize, kMaxQueryResultBytes);
+    vkquery::EncodedResults encoded = vkquery::encodeResults(
+        pool->type, first, count, pool->count, (size_t)writeSize, stride, flags,
+        1.0, queryHostNanoseconds());
+    if (!encoded.valid) return VK_ERROR_INITIALIZATION_FAILED;
+    writeEncodedQueryResults(dst, encoded);
+    return encoded.complete && writeSize == dataSize ? VK_SUCCESS : VK_INCOMPLETE;
+}
+
+static void execCopyQueryResults(const Cmd& command) {
+    const QueryCopy& copy = command.queryCopy;
+    QueryPool* pool = nullptr;
+    Buffer* buffer = nullptr;
+    DeviceMemory* memory = nullptr;
+    if (g_mem32) {
+        pool = objOf<QueryPool>(copy.queryPool & 0xFFFFFFFFULL, K_QUERYPOOL, "vkCmdCopyQueryPoolResults");
+        buffer = objOf<Buffer>(copy.dstBuffer & 0xFFFFFFFFULL, K_BUFFER, "vkCmdCopyQueryPoolResults");
+        if (buffer) memory = objOf<DeviceMemory>(buffer->mem & 0xFFFFFFFFULL, K_MEMORY, "vkCmdCopyQueryPoolResults");
+    } else {
+        pool = objOf<QueryPool>(copy.queryPool, K_QUERYPOOL, "vkCmdCopyQueryPoolResults");
+        buffer = objOf<Buffer>(copy.dstBuffer, K_BUFFER, "vkCmdCopyQueryPoolResults");
+        if (buffer) memory = objOf<DeviceMemory>(buffer->mem, K_MEMORY, "vkCmdCopyQueryPoolResults");
+    }
+    if (!pool || !buffer || !memory || !memory->va || copy.dstOffset > buffer->size) return;
+    const U64 memoryOffset = buffer->memOff + copy.dstOffset;
+    if (memoryOffset > memory->size) return;
+    const U64 available = std::min<U64>(buffer->size - copy.dstOffset, memory->size - memoryOffset);
+    const U64 size = std::min<U64>(available, 1ULL << 20);
+    vkquery::EncodedResults encoded = vkquery::encodeResults(
+        pool->type, copy.firstQuery, copy.queryCount, pool->count, (size_t)size,
+        copy.stride, copy.flags, 1.0, queryHostNanoseconds());
+    if (!encoded.valid) return;
+    writeEncodedQueryResults(memory->va + memoryOffset, encoded);
+    buffer->dirtyGen = g_bufDirtyTick++;
+}
+
 // vkCmdUpdateBuffer execution: the transfer write lands in guest memory at
 // submit time, exactly like a real implementation would make it visible.
 // Bounds are clamped defensively; a short write still updates its prefix.
@@ -1709,6 +1806,7 @@ enum V2Rec : U32 {
     V2_VERTEX_BIND = 0x0F, V2_INDEX_BIND = 0x10, V2_DRAW = 0x11,
     V2_INLINE_BYTES = 0x12, V2_READBACK = 0x13, V2_IMAGE_COPY = 0x14,
     V2_STENCIL_STATE = 0x15, V2_BLEND_CONSTANTS = 0x16, V2_CLEAR_ATTACHMENTS = 0x17,
+    V2_DEPTH_BIAS = 0x18, V2_IMAGE_BLIT = 0x19,
 };
 const U32 V2_CHUNK_MAGIC = 0x46324B56u;   // 'VK2F' little-endian: bytes 56 4B 32 46
 const U32 V2_CHUNK_VERSION = 2;
@@ -1743,6 +1841,14 @@ struct ChunkWriter {
     void bytes(const U8* p, size_t n) { if (p && n) b.insert(b.end(), p, p + n); }
     void bytes(const std::vector<U8>& v) { bytes(v.data(), v.size()); }
 };
+static void writeSamplerRecordPayload(ChunkWriter& p, U64 id, const Sampler& s) {
+    p.u64(id);
+    p.u32(s.mag); p.u32(s.min); p.u32(s.mipmap);
+    p.u32(s.addrU); p.u32(s.addrV); p.f32(s.maxAniso);
+    p.u32(0x314d4153u); // SAM1
+    p.u32(s.addrW); p.f32(s.mipLodBias); p.u32(s.anisotropyEnable);
+    p.u32(s.compareEnable); p.u32(s.compareOp); p.f32(s.minLod); p.f32(s.maxLod); p.u32(s.borderColor);
+}
 static void emitColorBlend(const Pipeline& pipe, ChunkWriter& p) {
     p.u32(0x31444e42u); // BND1: attachment blend equations and write masks
     p.u32(pipe.colorBlendCount);
@@ -1763,6 +1869,13 @@ static void emitStencil(const Pipeline& pipe, ChunkWriter& p) {
         p.u32(f.compareMask); p.u32(f.writeMask); p.u32(f.reference);
     };
     face(pipe.stencil.front); face(pipe.stencil.back);
+}
+
+static void emitDepthBias(ChunkWriter& p, U32 depthBiasEnable, U32 depthClampEnable,
+                          U32 dynamic, float constantFactor, float clamp, float slopeFactor) {
+    p.u32(0x31534244u); // DBS1
+    p.u32(depthBiasEnable); p.u32(depthClampEnable); p.u32(dynamic);
+    p.f32(constantFactor); p.f32(clamp); p.f32(slopeFactor);
 }
 
 // One frame under construction: an open chunk plus sealed chunks. Records never
@@ -2021,6 +2134,65 @@ static U64 bufferSliceId(U64 buffer, U64 offset) {
 // vkCmdCopyBuffer/vkCmdUpdateBuffer/vkCmdFillBuffer. Lets emitBufferData skip
 // the expensive readGuestRange+hash for static buffers.
 
+// Keep the WebGPU replay format support mirrored in web/vkwebgpu.mjs. These
+// lists include Vulkan formats that the page converts to core WebGPU formats;
+// BC formats are omitted because texture-compression-bc is optional.
+static const U32 kV2SupportedTextureFormats[] = {
+    2, 3, 5, 7, 8, 9, 16, 37, 38, 41, 43, 44, 50, 64, 70, 76, 77, 83,
+    91, 97, 98, 99, 100, 103, 109, 122, 124, 125, 126, 129, 130
+};
+static const U32 kV2SupportedVertexFormats[] = {
+    16, 17, 18, 19, 20, 21, 23, 24, 25, 26, 27, 28, 37, 38, 39, 40, 41, 42,
+    44, 64, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92,
+    93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109
+};
+static const U32 kV2ColorAttachmentFormats[] = {
+    2, 3, 5, 7, 8, 9, 16, 37, 41, 43, 44, 50, 64, 70, 76, 77, 83, 91, 97,
+    98, 99, 100, 103, 109
+};
+static const U32 kV2ColorAttachmentBlendFormats[] = {
+    2, 3, 5, 7, 8, 9, 16, 37, 43, 44, 50, 64, 70, 76, 77, 83, 91, 97
+};
+static const U32 kV2DepthStencilFormats[] = { 124, 125, 126, 129, 130 };
+template <size_t N>
+static bool v2FormatIn(U32 format, const U32 (&formats)[N]) {
+    for (U32 supported : formats) if (format == supported) return true;
+    return false;
+}
+static bool v2FormatIsColorAttachment(U32 format) {
+    return v2FormatIn(format, kV2ColorAttachmentFormats);
+}
+static bool v2FormatIsBlendable(U32 format) {
+    return v2FormatIn(format, kV2ColorAttachmentBlendFormats);
+}
+static bool v2FormatIsDepthStencil(U32 format) {
+    return v2FormatIn(format, kV2DepthStencilFormats);
+}
+static VkFormatFeatureFlags v2FormatFeatureFlags(U32 format) {
+    if (!v2FormatIn(format, kV2SupportedTextureFormats)) return 0;
+    VkFormatFeatureFlags flags = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+        VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    if (v2FormatIsColorAttachment(format)) flags |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
+    if (v2FormatIsBlendable(format)) flags |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
+    if (v2FormatIsDepthStencil(format)) flags |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    return flags;
+}
+static VkFormatFeatureFlags v2FormatBufferFeatureFlags(U32 format) {
+    return v2FormatIn(format, kV2SupportedVertexFormats) ? VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT : 0;
+}
+static VkFormatFeatureFlags2 v2FormatFeatureFlags2(U32 format) {
+    if (!v2FormatIn(format, kV2SupportedTextureFormats)) return 0;
+    // These legacy aliases use the same bit values as VkFormatFeatureFlags2.
+    VkFormatFeatureFlags2 flags = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+        VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    if (v2FormatIsColorAttachment(format)) flags |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
+    if (v2FormatIsBlendable(format)) flags |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
+    if (v2FormatIsDepthStencil(format)) flags |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    return flags;
+}
+static VkFormatFeatureFlags2 v2FormatBufferFeatureFlags2(U32 format) {
+    return v2FormatIn(format, kV2SupportedVertexFormats) ? VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT : 0;
+}
 // Byte size of one vertex of a VkFormat the v2 emitter may see. Only the
 // formats DXVK/D3D9 and the probes produce are listed; an unknown format falls
 // back to 16 (conservative: keeps the clamp above the real value).
@@ -2028,13 +2200,29 @@ U32 v2VertexFormatBytes(U32 fmt) {
     switch (fmt) {
         case VK_FORMAT_R32_SFLOAT: case VK_FORMAT_R32_UINT: case VK_FORMAT_R32_SINT: return 4;
         case VK_FORMAT_R32G32_SFLOAT: case VK_FORMAT_R32G32_UINT: case VK_FORMAT_R32G32_SINT:
-        case VK_FORMAT_R16G16B16A16_SFLOAT: return 8;
-        case VK_FORMAT_R32G32B32_SFLOAT: case VK_FORMAT_R32G32B32_UINT: return 12;
-        case VK_FORMAT_R32G32B32A32_SFLOAT: case VK_FORMAT_R32G32B32A32_UINT: return 16;
+        case VK_FORMAT_R16G16B16A16_SFLOAT: case VK_FORMAT_R16G16B16A16_UNORM:
+        case VK_FORMAT_R16G16B16A16_SNORM: case VK_FORMAT_R16G16B16A16_USCALED:
+        case VK_FORMAT_R16G16B16A16_SSCALED: case VK_FORMAT_R16G16B16A16_UINT:
+        case VK_FORMAT_R16G16B16A16_SINT: return 8;
+        case VK_FORMAT_R16G16_UNORM: case VK_FORMAT_R16G16_SNORM:
+        case VK_FORMAT_R16G16_USCALED: case VK_FORMAT_R16G16_SSCALED:
+        case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R16G16_SINT: case VK_FORMAT_R16G16_SFLOAT: return 4;
+        case VK_FORMAT_R8G8_UNORM: case VK_FORMAT_R8G8_SNORM: case VK_FORMAT_R8G8_USCALED:
+        case VK_FORMAT_R8G8_SSCALED: case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8_SINT: return 2;
+        case VK_FORMAT_R32G32B32_SFLOAT: case VK_FORMAT_R32G32B32_UINT: case VK_FORMAT_R32G32B32_SINT: return 12;
+        case VK_FORMAT_R16G16B16_UNORM: case VK_FORMAT_R16G16B16_SNORM:
+        case VK_FORMAT_R16G16B16_USCALED: case VK_FORMAT_R16G16B16_SSCALED:
+        case VK_FORMAT_R16G16B16_UINT: case VK_FORMAT_R16G16B16_SINT: case VK_FORMAT_R16G16B16_SFLOAT: return 6;
+        case VK_FORMAT_R8G8B8_UNORM: case VK_FORMAT_R8G8B8_SNORM: case VK_FORMAT_R8G8B8_USCALED:
+        case VK_FORMAT_R8G8B8_SSCALED: case VK_FORMAT_R8G8B8_UINT: case VK_FORMAT_R8G8B8_SINT: return 3;
+        case VK_FORMAT_R32G32B32A32_SFLOAT: case VK_FORMAT_R32G32B32A32_UINT:
+        case VK_FORMAT_R32G32B32A32_SINT: return 16;
         case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_B8G8R8A8_UNORM:
-        case VK_FORMAT_R8G8B8A8_SRGB: case VK_FORMAT_B8G8R8A8_SRGB: return 4;
+        case VK_FORMAT_R8G8B8A8_SNORM: case VK_FORMAT_R8G8B8A8_USCALED: case VK_FORMAT_R8G8B8A8_SSCALED:
+        case VK_FORMAT_R8G8B8A8_UINT: case VK_FORMAT_R8G8B8A8_SINT:
+        case VK_FORMAT_R8G8B8A8_SRGB: case VK_FORMAT_B8G8R8A8_SRGB:
+        case VK_FORMAT_A2B10G10R10_UNORM_PACK32: return 4;
         case VK_FORMAT_R8_UNORM: return 1;
-        case VK_FORMAT_R8G8_UNORM: return 2;
         default: return 16;
     }
 }
@@ -2239,9 +2427,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             Sampler* s = objOf<Sampler>(id, K_SAMPLER, "vkQueueSubmit");
             if (!s) return;
             emit(V2_SAMPLER, [&](ChunkWriter& p) {
-                p.u64(id);
-                p.u32(s->mag); p.u32(s->min); p.u32(s->mipmap);
-                p.u32(s->addrU); p.u32(s->addrV); p.f32(s->maxAniso);
+                writeSamplerRecordPayload(p, id, *s);
             });
         };
         auto emitImageDataInner = [&](U64 viewId) {
@@ -2419,6 +2605,10 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 emitSpec(pipe->fsSpec);
                 emitColorBlend(*pipe, p);
                 emitStencil(*pipe, p);
+                emitDepthBias(p, pipe->depthBiasEnable, pipe->depthClampEnable, pipe->depthBiasDynamic ? 1 : 0,
+                              pipe->depthBiasConstantFactor, pipe->depthBiasClamp, pipe->depthBiasSlopeFactor);
+                p.u32(0x314e4146u); // FAN1: indexed triangle-fan primitive-restart state
+                p.u32(pipe->primitiveRestartEnable);
             });
         };
         auto emitRpBegin = [&](const Cmd& k) {
@@ -2545,6 +2735,9 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 case CMD_BLEND_CONSTANTS:
                     emit(V2_BLEND_CONSTANTS, [&](ChunkWriter& p) { for (int i = 0; i < 4; ++i) p.f32(k.f[i]); });
                     break;
+                case CMD_DEPTH_BIAS:
+                    emit(V2_DEPTH_BIAS, [&](ChunkWriter& p) { p.f32(k.f[0]); p.f32(k.f[1]); p.f32(k.f[2]); });
+                    break;
                 case CMD_CLEAR_ATTACHMENTS:
                     emit(V2_CLEAR_ATTACHMENTS, [&](ChunkWriter& p) {
                         p.u32((U32)k.clearAttachments.size());
@@ -2651,6 +2844,17 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                         for (U32 v : copy.srcOrigin) p.u32(v);
                         for (U32 v : copy.dstOrigin) p.u32(v);
                         for (U32 v : copy.extent) p.u32(v);
+                    });
+                    break;
+                }
+                case CMD_BLIT_IMAGE: {
+                    const ImageBlit& blit = k.imageBlit;
+                    emit(V2_IMAGE_BLIT, [&](ChunkWriter& p) {
+                        p.u64(blit.src); p.u64(blit.dst);
+                        p.u32(blit.srcMip); p.u32(blit.srcLayer); p.u32(blit.dstMip); p.u32(blit.dstLayer);
+                        p.u32(blit.filter);
+                        for (const auto& point : blit.srcOffsets) for (int32_t value : point) p.u32((U32)value);
+                        for (const auto& point : blit.dstOffsets) for (int32_t value : point) p.u32((U32)value);
                     });
                     break;
                 }
@@ -2768,6 +2972,7 @@ void fillLimits(Limits& L) {
     L.strictLines = VK_TRUE; L.standardSampleLocations = VK_TRUE;
     L.optimalBufferCopyOffsetAlignment = 1; L.optimalBufferCopyRowPitchAlignment = 1;
     L.nonCoherentAtomSize = 64;
+    L.timestampPeriod = 1.0f; // one Vulkan tick per host-clock nanosecond
 }
 
 void fillProperties(VkPhysicalDeviceProperties* p) {
@@ -2845,8 +3050,8 @@ void fillCoreFeatures(VkPhysicalDeviceFeatures* f) {
      * (no WGSL target stage) instead of silently misrendering. */
     f->geometryShader = VK_TRUE;        /* advertised; NOT implemented (see above) */
     f->tessellationShader = VK_FALSE;   /* stays FALSE: caps max FL at 10_1 */
-    f->depthBiasClamp = VK_TRUE;        /* advertised; clamp approximated */
-    f->depthClamp = VK_TRUE;            /* advertised; see above */
+    f->depthBiasClamp = VK_TRUE;        /* replayed with WebGPU depthBiasClamp */
+    f->depthClamp = VK_TRUE;            /* page requests depth-clip-control when available */
     f->dualSrcBlend = VK_TRUE;          /* advertised; rare in practice */
     f->fillModeNonSolid = VK_TRUE;      /* advertised; wireframe not implemented */
     f->multiViewport = VK_TRUE;         /* advertised; WebGPU supports 1 viewport */
@@ -3486,42 +3691,33 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkGetPhysicalDeviceFormatProperties: {
         // (physDev, format, out VkFormatProperties)
         if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        const U32 format = (U32)args.a[1];
         VkFormatProperties p = {};
-        p.linearTilingFeatures = (VkFormatFeatureFlags)(VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
-            VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
-            VK_FORMAT_FEATURE_TRANSFER_DST_BIT);
-        p.optimalTilingFeatures = (VkFormatFeatureFlags)(p.linearTilingFeatures |
-            VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
-        p.bufferFeatures = (VkFormatFeatureFlags)(VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT |
-            VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT | VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT);
+        p.linearTilingFeatures = v2FormatFeatureFlags(format);
+        p.optimalTilingFeatures = p.linearTilingFeatures;
+        p.bufferFeatures = v2FormatBufferFeatureFlags(format);
         writeStruct(args.a[2], p);
         return VK_SUCCESS;
     }
     case VK64_fn_vkGetPhysicalDeviceFormatProperties2: {
         // (physDev, format, out VkFormatProperties2) + FormatProperties3 pNext.
         if (!args.a[2]) return 0;
+        const U32 format = (U32)args.a[1];
         VkFormatProperties2 p2 = {};
         if (!readStruct(args.a[2], p2)) return 0;
-        VkFormatFeatureFlags img = (VkFormatFeatureFlags)(
-            VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
-            VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT);
+        const VkFormatFeatureFlags img = v2FormatFeatureFlags(format);
         p2.formatProperties.linearTilingFeatures = img;
-        p2.formatProperties.optimalTilingFeatures = (VkFormatFeatureFlags)(img |
-            VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
-        p2.formatProperties.bufferFeatures = (VkFormatFeatureFlags)(
-            VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT | VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT |
-            VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT);
+        p2.formatProperties.optimalTilingFeatures = img;
+        p2.formatProperties.bufferFeatures = v2FormatBufferFeatureFlags(format);
         writeStruct(args.a[2], p2);
         for (U64 cur = p2.pNext; cur && g_mem;) {
             if (g_mem->readd(cur) == VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3) {
                 VkFormatProperties3 p3 = {};
                 g_mem->memcpyFromGuest(&p3, cur, sizeof(p3));
-                // _2 flag values match v1 on the low bits; add color/depth targets.
-                const VkFormatFeatureFlags2 img2 = (VkFormatFeatureFlags2)((U64)img | 0x3800ull);
+                const VkFormatFeatureFlags2 img2 = v2FormatFeatureFlags2(format);
                 p3.linearTilingFeatures = img2;
-                p3.optimalTilingFeatures = (VkFormatFeatureFlags2)((U64)img2 |
-                    (U64)VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | (U64)VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
-                p3.bufferFeatures = (VkFormatFeatureFlags2)p2.formatProperties.bufferFeatures;
+                p3.optimalTilingFeatures = img2;
+                p3.bufferFeatures = v2FormatBufferFeatureFlags2(format);
                 g_mem->memcpyToGuest(cur, &p3, sizeof(p3));
             }
             cur = g_mem->readq(cur + 8);
@@ -3801,8 +3997,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         return f->signalled ? VK_SUCCESS : VK_NOT_READY;
     }
     // D3D9 query sync: events are signalled inline (immediate execution), so
-    // Set is visible to Get immediately. Query results are zero-filled: the
-    // menu path only needs completion, not real occlusion counts.
+    // Set is visible to Get immediately. Occlusion returns one synthetic sample
+    // and timestamps use the host monotonic clock.
     case VK64_fn_vkCreateEvent: {
         if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
@@ -3843,9 +4039,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdWaitEvents:
         return VK_SUCCESS; // immediate execution: nothing to wait for
     case VK64_fn_vkCreateQueryPool: {
-        if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        QueryPoolCreateInfo64Local ci = {};
+        if (!args.a[3] || !readStruct(args.a[1], ci)) return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
-        createObj<QueryPool>(K_QUERYPOOL, id);
+        QueryPool* pool = createObj<QueryPool>(K_QUERYPOOL, id);
+        pool->type = ci.queryType; pool->count = ci.queryCount; pool->flags = ci.flags;
         wr64(args.a[3], id);
         return VK_SUCCESS;
     }
@@ -3855,21 +4053,20 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdBeginQuery:
     case VK64_fn_vkCmdEndQuery:
         return VK_SUCCESS;
+    case VK64_fn_vkCmdCopyQueryPoolResults: {
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdCopyQueryPoolResults");
+        if (!cb) return 0;
+        Cmd c; c.kind = CMD_COPY_QUERY_RESULTS;
+        c.queryCopy = { args.a[1], args.a[4], args.a[5], args.a[6],
+                        (U32)args.a[2], (U32)args.a[3], (U32)args.a[7] };
+        pushCmd(cb, c);
+        return 0;
+    }
     case VK64_fn_vkGetQueryPoolResults: {
         QueryPool* q = objOf<QueryPool>(args.a[1], K_QUERYPOOL, "vkGetQueryPoolResults");
         if (!q || !args.a[5]) return VK_ERROR_INITIALIZATION_FAILED;
-        U64 n = args.a[4];
-        if (n > (1ULL << 20)) n = (1ULL << 20); // clamp garbage sizes
-        if (n && g_mem) {
-            static const U8 zeros[4096] = {};
-            U64 off = 0;
-            while (off < n) {
-                U64 c = n - off > sizeof(zeros) ? sizeof(zeros) : n - off;
-                g_mem->memcpyToGuest(args.a[5] + off, zeros, (size_t)c);
-                off += c;
-            }
-        }
-        return VK_SUCCESS;
+        return writeQueryResults(q, (U32)args.a[2], (U32)args.a[3], args.a[4],
+                                 args.a[5], args.a[6], (U32)args.a[7]);
     }
     case VK64_fn_vkDeviceWaitIdle:
     case VK64_fn_vkQueueWaitIdle:
@@ -4080,7 +4277,9 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         Sampler* s = createObj<Sampler>(K_SAMPLER, id);
         s->mag = ci.magFilter; s->min = ci.minFilter; s->mipmap = ci.mipmapMode;
         s->addrU = ci.addressModeU; s->addrV = ci.addressModeV; s->addrW = ci.addressModeW;
-        s->maxAniso = ci.maxAnisotropy;
+        s->mipLodBias = ci.mipLodBias; s->anisotropyEnable = ci.anisotropyEnable;
+        s->maxAniso = ci.maxAnisotropy; s->compareEnable = ci.compareEnable; s->compareOp = ci.compareOp;
+        s->minLod = ci.minLod; s->maxLod = ci.maxLod; s->borderColor = ci.borderColor;
         wr64(args.a[3], id);
         return VK_SUCCESS;
     }
@@ -4140,8 +4339,12 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             readStruct(ci.pDepthStencilState, ds);
             readStruct(ci.pColorBlendState, cbs);
             p->topology = ia.topology;
+            p->primitiveRestartEnable = ia.primitiveRestartEnable;
             p->cull = rs.cullMode;
             p->front = rs.frontFace;
+            p->depthBiasEnable = rs.depthBiasEnable; p->depthClampEnable = rs.depthClampEnable;
+            p->depthBiasConstantFactor = rs.depthBiasConstantFactor; p->depthBiasClamp = rs.depthBiasClamp;
+            p->depthBiasSlopeFactor = rs.depthBiasSlopeFactor;
             p->depthTest = ds.depthTestEnable;
             p->depthWrite = ds.depthWriteEnable;
             p->depthOp = ds.depthCompareOp;
@@ -4178,6 +4381,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 for (auto state : states) {
                     const U32 value = (U32)state;
                     if (value == (U32)VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE) p->dynamicVertexStride = true;
+                    if (value == (U32)VK_DYNAMIC_STATE_DEPTH_BIAS) p->depthBiasDynamic = true;
                     if (value >= 6 && value <= 8) p->stencil.dynamicMask |= 1u << (value - 6);
                     if (value == 4) p->blendConstantsDynamic = true;
                 }
@@ -4952,6 +5156,13 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         g_mem->memcpyFromGuest(c.f, args.a[1], 16);
         pushCmd(cb, c); return 0;
     }
+    case VK64_fn_vkCmdSetDepthBias: {
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdSetDepthBias");
+        if (!cb) return 0;
+        Cmd c; c.kind = CMD_DEPTH_BIAS;
+        for (U32 i = 0; i < 3; ++i) { U32 bits = (U32)args.a[i + 1]; memcpy(&c.f[i], &bits, sizeof(bits)); }
+        pushCmd(cb, c); return 0;
+    }
     case VK64_fn_vkCmdSetViewport: {
         // (cmdBuf, first, count, pViewports*)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdSetViewport");
@@ -5503,13 +5714,22 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         };
         Image* src = objOf<Image>(args.a[1], K_IMAGE, "vkCmdBlitImage");
         Image* dst = objOf<Image>(args.a[3], K_IMAGE, "vkCmdBlitImage");
+        if (!src || !dst) return 0;
+        U32 nreg = (U32)args.a[5];
+        if (nreg > 1024) return 0;
+        std::vector<VkImageBlitL> regs;
+        readArray(args.a[6], nreg, regs);
+        for (const auto& r : regs) {
+            const int32_t srcOffsets[2][3] = {{r.srcX0, r.srcY0, r.srcZ0}, {r.srcX1, r.srcY1, r.srcZ1}};
+            const int32_t dstOffsets[2][3] = {{r.dstX0, r.dstY0, r.dstZ0}, {r.dstX1, r.dstY1, r.dstZ1}};
+            recordImageBlit(cbOf(args.a[0], "vkCmdBlitImage"), args.a[1], args.a[3],
+                r.srcMip, r.srcBaseLayer, r.dstMip, r.dstBaseLayer, (U32)args.a[7],
+                srcOffsets, dstOffsets, r.srcLayerCount);
+        }
         if (!src || !dst || !src->mem || !dst->mem) return 0;
         DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdBlitImage");
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdBlitImage");
         if (!smem || !dmem || !smem->va || !dmem->va) return 0;
-        U32 nreg = (U32)args.a[5];
-        std::vector<VkImageBlitL> regs;
-        readArray(args.a[6], nreg, regs);
         // U32 filter = (U32)args.a[7]; // 0=NEAREST, 1=LINEAR (currently unused, NEAREST assumed)
         U32 pxBytes = (U32)src->pixBytes;
         if (!pxBytes) pxBytes = 4;
@@ -5563,13 +5783,22 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         };
         Image* src = objOf<Image>(args.a[1], K_IMAGE, "vkCmdBlitImage2");
         Image* dst = objOf<Image>(args.a[2], K_IMAGE, "vkCmdBlitImage2");
+        if (!src || !dst) return 0;
+        U32 nreg = (U32)args.a[3];
+        if (nreg > 1024) return 0;
+        std::vector<VkImageBlit2L> regs;
+        readArray(args.a[4], nreg, regs);
+        for (const auto& r : regs) {
+            const int32_t srcOffsets[2][3] = {{r.srcX0, r.srcY0, r.srcZ0}, {r.srcX1, r.srcY1, r.srcZ1}};
+            const int32_t dstOffsets[2][3] = {{r.dstX0, r.dstY0, r.dstZ0}, {r.dstX1, r.dstY1, r.dstZ1}};
+            recordImageBlit(cbOf(args.a[0], "vkCmdBlitImage2"), args.a[1], args.a[2],
+                r.srcMip, r.srcBaseLayer, r.dstMip, r.dstBaseLayer, (U32)args.a[5],
+                srcOffsets, dstOffsets, r.srcLayerCount);
+        }
         if (!src || !dst || !src->mem || !dst->mem) return 0;
         DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdBlitImage2");
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdBlitImage2");
         if (!smem || !dmem || !smem->va || !dmem->va) return 0;
-        U32 nreg = (U32)args.a[3];
-        std::vector<VkImageBlit2L> regs;
-        readArray(args.a[4], nreg, regs);
         U32 pxBytes = (U32)src->pixBytes;
         if (!pxBytes) pxBytes = 4;
         U32 srcRowPitch = src->w * pxBytes;
@@ -5910,6 +6139,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 // the copy live in (P1 ran these first at submit too).
                 for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
                 for (const Cmd& k : cb->cmds) if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
+                for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_QUERY_RESULTS) execCopyQueryResults(k);
                 frames.push_back({cb, cbId});
             }
         }
@@ -5971,6 +6201,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 if (!cb) continue;
                 for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
                 for (const Cmd& k : cb->cmds) if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
+                for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_QUERY_RESULTS) execCopyQueryResults(k);
                 frames.push_back({cb, (U64)cbi.commandBuffer});
             }
         }
@@ -6571,13 +6802,11 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         // 32-bit VkFormatProperties: 3x u32 (linear@0, optimal@4, buffer@8).
         if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
         U32 dst = (U32)args.a[2];
-        U32 img = (U32)(VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
-            VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT);
+        U32 format = (U32)args.a[1];
+        U32 img = (U32)v2FormatFeatureFlags(format);
         wr32_32(dst + 0, img);
-        wr32_32(dst + 4, (U32)(img | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
-            VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT));
-        wr32_32(dst + 8, (U32)(VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT |
-            VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT | VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT));
+        wr32_32(dst + 4, img);
+        wr32_32(dst + 8, (U32)v2FormatBufferFeatureFlags(format));
         return VK_SUCCESS;
     }
     case VK64_fn_vkGetPhysicalDeviceImageFormatProperties: {
@@ -6598,22 +6827,19 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         // (linear@8, optimal@12, buffer@16).
         if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
         U32 dst = (U32)args.a[2];
-        U32 img = (U32)(VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
-            VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT);
-        U32 optimal = (U32)(img | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
-            VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
-        U32 buffer = (U32)(VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT |
-            VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT | VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT);
+        U32 format = (U32)args.a[1];
+        U32 img = (U32)v2FormatFeatureFlags(format);
+        U32 buffer = (U32)v2FormatBufferFeatureFlags(format);
         wr32_32(dst + 8, img);
-        wr32_32(dst + 12, optimal);
+        wr32_32(dst + 12, img);
         wr32_32(dst + 16, buffer);
         // FormatProperties3 pNext chain (32-bit: sType@0, pNext@4, payload@8)
         for (U32 cur = rd32_32(dst + 4); cur && g_mem32;) {
             if (rd32_32(cur) == (U32)VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3) {
-                U64 img2 = (U64)img | 0x3800ull;
+                U64 img2 = (U64)v2FormatFeatureFlags2(format);
                 wr64_32(cur + 8, img2);
-                wr64_32(cur + 16, img2 | (U64)optimal);
-                wr64_32(cur + 24, (U64)buffer);
+                wr64_32(cur + 16, img2);
+                wr64_32(cur + 24, (U64)v2FormatBufferFeatureFlags2(format));
             }
             cur = rd32_32(cur + 4);
         }
@@ -6765,9 +6991,11 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdWaitEvents:
         return VK_SUCCESS; // immediate execution: nothing to wait for
     case VK64_fn_vkCreateQueryPool: {
-        if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        QueryPoolCreateInfo32Local ci = {};
+        if (!args.a[3] || !readStruct32((U32)args.a[1], ci)) return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
-        createObj32<QueryPool>(K_QUERYPOOL, id);
+        QueryPool* pool = createObj32<QueryPool>(K_QUERYPOOL, id);
+        pool->type = ci.queryType; pool->count = ci.queryCount; pool->flags = ci.flags;
         wr64_32((U32)args.a[3], id);
         return VK_SUCCESS;
     }
@@ -6776,21 +7004,20 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdBeginQuery:
     case VK64_fn_vkCmdEndQuery:
         return VK_SUCCESS;
+    case VK64_fn_vkCmdCopyQueryPoolResults: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdCopyQueryPoolResults");
+        if (!cb) return 0;
+        Cmd c; c.kind = CMD_COPY_QUERY_RESULTS;
+        c.queryCopy = { args.a[1], args.a[4], args.a[5], args.a[6],
+                        (U32)args.a[2], (U32)args.a[3], (U32)args.a[7] };
+        pushCmd(cb, c);
+        return 0;
+    }
     case VK64_fn_vkGetQueryPoolResults: {
         QueryPool* q = objOf32<QueryPool>(args.a[1], K_QUERYPOOL, "vkGetQueryPoolResults");
         if (!q || !args.a[5]) return VK_ERROR_INITIALIZATION_FAILED;
-        U64 n = args.a[4];
-        if (n > (1ULL << 20)) n = (1ULL << 20); // clamp garbage sizes
-        if (n && g_mem32) {
-            static const U8 zeros[4096] = {};
-            U64 off = 0;
-            while (off < n) {
-                U64 c = n - off > sizeof(zeros) ? sizeof(zeros) : n - off;
-                g_mem32->memcpyToGuest((U32)(args.a[5] + off), zeros, (size_t)c);
-                off += c;
-            }
-        }
-        return VK_SUCCESS;
+        return writeQueryResults(q, (U32)args.a[2], (U32)args.a[3], args.a[4],
+                                 (U32)args.a[5], args.a[6], (U32)args.a[7]);
     }
     case VK64_fn_vkResetCommandBuffer: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkResetCommandBuffer");
@@ -6936,7 +7163,9 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         Sampler* s = createObj32<Sampler>(K_SAMPLER, id);
         s->mag = ci.magFilter; s->min = ci.minFilter; s->mipmap = ci.mipmapMode;
         s->addrU = ci.addressModeU; s->addrV = ci.addressModeV; s->addrW = ci.addressModeW;
-        s->maxAniso = ci.maxAnisotropy;
+        s->mipLodBias = ci.mipLodBias; s->anisotropyEnable = ci.anisotropyEnable;
+        s->maxAniso = ci.maxAnisotropy; s->compareEnable = ci.compareEnable; s->compareOp = ci.compareOp;
+        s->minLod = ci.minLod; s->maxLod = ci.maxLod; s->borderColor = ci.borderColor;
         wr64_32(args.a[3], id);
         return VK_SUCCESS;
     }
@@ -6975,8 +7204,12 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             readStruct32(ci.pDepthStencilState, ds);
             readStruct32(ci.pColorBlendState, cbs);
             p->topology = ia.topology;
+            p->primitiveRestartEnable = ia.primitiveRestartEnable;
             p->cull = rs.cullMode;
             p->front = rs.frontFace;
+            p->depthBiasEnable = rs.depthBiasEnable; p->depthClampEnable = rs.depthClampEnable;
+            p->depthBiasConstantFactor = rs.depthBiasConstantFactor; p->depthBiasClamp = rs.depthBiasClamp;
+            p->depthBiasSlopeFactor = rs.depthBiasSlopeFactor;
             p->depthTest = ds.depthTestEnable;
             p->depthWrite = ds.depthWriteEnable;
             p->depthOp = ds.depthCompareOp;
@@ -7013,6 +7246,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 for (auto state : states) {
                     const U32 value = (U32)state;
                     if (value == (U32)VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE) p->dynamicVertexStride = true;
+                    if (value == (U32)VK_DYNAMIC_STATE_DEPTH_BIAS) p->depthBiasDynamic = true;
                     if (value >= 6 && value <= 8) p->stencil.dynamicMask |= 1u << (value - 6);
                     if (value == 4) p->blendConstantsDynamic = true;
                 }
@@ -7345,6 +7579,13 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         if (!cb || !args.a[1]) return 0;
         Cmd c; c.kind = CMD_BLEND_CONSTANTS;
         g_mem32->memcpyFromGuest(c.f, (U32)args.a[1], 16);
+        pushCmd(cb, c); return 0;
+    }
+    case VK64_fn_vkCmdSetDepthBias: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdSetDepthBias");
+        if (!cb) return 0;
+        Cmd c; c.kind = CMD_DEPTH_BIAS;
+        for (U32 i = 0; i < 3; ++i) { U32 bits = (U32)args.a[i + 1]; memcpy(&c.f[i], &bits, sizeof(bits)); }
         pushCmd(cb, c); return 0;
     }
     case VK64_fn_vkCmdSetViewport: {
@@ -7687,6 +7928,20 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         for (U32 i = 0; i < nreg && pReg; i++) {
             vk32abi::VkImageBlit r = {};
             readStruct32(pReg + i * (U32)sizeof(r), r);
+            const int32_t srcOffsets[2][3] = {
+                {r.srcOffsets[0].x, r.srcOffsets[0].y, r.srcOffsets[0].z},
+                {r.srcOffsets[1].x, r.srcOffsets[1].y, r.srcOffsets[1].z},
+            };
+            const int32_t dstOffsets[2][3] = {
+                {r.dstOffsets[0].x, r.dstOffsets[0].y, r.dstOffsets[0].z},
+                {r.dstOffsets[1].x, r.dstOffsets[1].y, r.dstOffsets[1].z},
+            };
+            const U32 filter = fnId == VK64_fn_vkCmdBlitImage ? (U32)args.a[7] : (U32)args.a[5];
+            recordImageBlit(objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdBlitImage"), args.a[1],
+                fnId == VK64_fn_vkCmdBlitImage ? args.a[3] : args.a[2],
+                r.srcSubresource.mipLevel, r.srcSubresource.baseArrayLayer,
+                r.dstSubresource.mipLevel, r.dstSubresource.baseArrayLayer, filter,
+                srcOffsets, dstOffsets, r.srcSubresource.layerCount);
             int32_t srcW = r.srcOffsets[1].x - r.srcOffsets[0].x;
             int32_t srcH = r.srcOffsets[1].y - r.srcOffsets[0].y;
             int32_t dstW = r.dstOffsets[1].x - r.dstOffsets[0].x;
@@ -7970,6 +8225,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 if (!cb) continue;
                 for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
                 for (const Cmd& k : cb->cmds) if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
+                for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_QUERY_RESULTS) execCopyQueryResults(k);
                 frames.push_back({cb, cbId});
             }
         }
