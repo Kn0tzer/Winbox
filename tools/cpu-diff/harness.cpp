@@ -393,6 +393,33 @@ static size_t emitModRMInstruction(std::vector<U8>& out,
     return out.size() - start;
 }
 
+// Emit a legacy SSE4.1 66 0F 3A /r ib instruction with an actual RIP-relative
+// memory operand. The runner maps code and scratch separately, so this setup
+// patches disp32 at runtime to reach RBX+targetOffset, then restores all GP
+// registers and flags before the instruction executes.
+static void emitRipRelative0F3AImm8(std::vector<U8>& out, U8 opcode,
+                                   int regField, U8 imm8, U8 targetOffset,
+                                   bool rexW = false) {
+    out.push_back(0x9C);                         // pushfq
+    out.insert(out.end(), {0x50,0x51});          // push rax; push rcx
+    size_t leaStart=out.size();
+    out.insert(out.end(), {0x48,0x8D,0x05,0,0,0,0}); // lea rax,[rip+instruction end]
+    out.insert(out.end(), {0x48,0x8D,0x4B,targetOffset,0x48,0x29,0xC1}); // rcx=rbx+offset-rax
+    size_t storeStart=out.size();
+    out.insert(out.end(), {0x89,0x0D,0,0,0,0,0x59,0x58,0x9D,0xEB,0x01,0x90});
+    size_t instructionStart=out.size();
+    std::vector<U8> prefixes=rexW?std::vector<U8>{0x66,0x48}:std::vector<U8>{0x66};
+    emitModRMInstruction(out,prefixes,OpcodeMap::Map0F3A,opcode,regField,5,
+                          OperandKind::RipRelative,true,imm8,0);
+    auto patchDisp=[&](size_t at,S32 value) {
+        U32 bits=(U32)value;
+        for(U32 i=0;i<4;i++)out[at+i]=(U8)(bits>>(i*8));
+    };
+    size_t prefixLen=prefixes.size();
+    patchDisp(leaStart+3,(S32)(instructionStart+prefixLen+9-(leaStart+7)));
+    patchDisp(storeStart+2,(S32)(instructionStart+prefixLen+4-(storeStart+6)));
+}
+
 // ALU r/m64, r64  (opcodes 0x01,0x09,0x11,0x19,0x21,0x29,0x31,0x39): dst=rm
 static void eRR(std::vector<U8>& b, U8 op, int dst, int src) {
     eRex(b, true, src, dst); b.push_back(op); eModRM(b, 3, src, dst);
@@ -2059,6 +2086,144 @@ static void buildSsse3Cases(std::vector<TestCase>& out) {
     }
 }
 
+static void buildSse41Cases(std::vector<TestCase>& out) {
+    struct Input { U64 dstLo,dstHi,srcLo,srcHi; };
+    const Input ints[] = {
+        {0xFEDCBA9876543210ULL,0x807F01FF0302FE05ULL,0x0123456789ABCDEFULL,0x80017FFF00FF0102ULL},
+        {0x8000800080008000ULL,0x8000000080000000ULL,0x7FFF7FFF7FFF7FFFULL,0x7FFFFFFF7FFFFFFFULL},
+        {0,0,0,0},
+        {0xFFFFFFFFFFFFFFFFULL,0xFFFFFFFFFFFFFFFFULL,0xFFFFFFFFFFFFFFFFULL,0xFFFFFFFFFFFFFFFFULL},
+        {0x80807FFF00FF0102ULL,0x7F800180FF010203ULL,0x7F800180FF010203ULL,0x80807FFF00FF0102ULL}
+    };
+    const Input floats[] = {
+        {0xC01000003FC00000ULL,0x40400000C0200000ULL,0x4000000040200000ULL,0x3FA00000C0000000ULL}, // 1.5,-2.25, -2.5,3 ; 2,2.5,-2,1.25
+        {0x3FE0000000000000ULL,0xC004000000000000ULL,0x400C000000000000ULL,0x3FF4000000000000ULL},
+        {0,0,0,0},
+        {0xBF8000003F800000ULL,0x40400000C0400000ULL,0x3F000000C0000000ULL,0x400000003F800000ULL},
+        {0x3FC00000C0500000ULL,0x401000003F000000ULL,0xC040000040A00000ULL,0x3F800000C0000000ULL},
+        {0xFF8000007F800000ULL,0xFFC000007FC00000ULL,0x7F800000FF800000ULL,0x7FC00000FFC00000ULL}, // +/-Inf and +/-qNaN float lanes
+        {0x7FF0000000000000ULL,0xFFF0000000000000ULL,0x7FF8000000000000ULL,0xFFF8000000000000ULL}  // +/-Inf and +/-qNaN double lanes
+    };
+    struct Op { const char* name; U8 opcode; };
+    const Op ops[] = {
+        {"pblendvb",0x10},{"blendvps",0x14},{"blendvpd",0x15},
+        {"pmovsx_bw",0x20},{"pmovsx_bd",0x21},{"pmovsx_bq",0x22},
+        {"pmovsx_wd",0x23},{"pmovsx_wq",0x24},{"pmovsx_dq",0x25},
+        {"pmuldq",0x28},{"pcmpeqq",0x29},{"packusdw",0x2B},
+        {"pmovzx_bw",0x30},{"pmovzx_bd",0x31},{"pmovzx_bq",0x32},
+        {"pmovzx_wd",0x33},{"pmovzx_wq",0x34},{"pmovzx_dq",0x35},
+        {"pminsb",0x38},{"pminsd",0x39},{"pminuw",0x3A},{"pminud",0x3B},
+        {"pmaxsb",0x3C},{"pmaxsd",0x3D},{"pmaxuw",0x3E},{"pmaxud",0x3F},
+        {"pmulld",0x40},{"phminposuw",0x41}
+    };
+    auto addOp38=[&](const Op& op,bool memorySource,int sample) {
+        TestCase tc;tc.set="sse41";tc.name=op.name;
+        tc.form=std::string(memorySource?"xmm,m128":"xmm,xmm")+" edge"+std::to_string(sample);
+        tc.code={0x0F,0x10,0x03};
+        if(!memorySource)tc.code.insert(tc.code.end(),{0x0F,0x10,0x4B,0x10});
+        tc.code.insert(tc.code.end(),{0x66,0x0F,0x38,op.opcode,(U8)(memorySource?0x43:0xC1)});
+        if(memorySource)tc.code.push_back(0x10);
+        tc.code.insert(tc.code.end(),{0x0F,0x11,0x03});
+        initRegs(tc,0,MEM_SCRATCH);tc.checkMem=true;tc.memLen=16;
+        memcpy(tc.memInit,&ints[sample].dstLo,8);memcpy(tc.memInit+8,&ints[sample].dstHi,8);
+        memcpy(tc.memInit+16,&ints[sample].srcLo,8);memcpy(tc.memInit+24,&ints[sample].srcHi,8);
+        out.push_back(std::move(tc));
+    };
+    for(const Op& op:ops)for(int sample=0;sample<5;sample++) {
+        addOp38(op,false,sample);addOp38(op,true,sample);
+    }
+    {
+        TestCase tc;tc.set="sse41";tc.name="movntdqa";tc.form="m128 aligned";
+        tc.code={0x66,0x0F,0x38,0x2A,0x43,0x10,0x0F,0x11,0x03};
+        initRegs(tc,0,MEM_SCRATCH);tc.checkMem=true;tc.memLen=16;
+        for(int i=0;i<5;i++) {
+            U64 value[2]={ints[i].srcLo,ints[i].srcHi};memcpy(tc.memInit+16,value,16);
+            out.push_back(tc);
+        }
+    }
+    for(bool memorySource:{false,true}) {
+        TestCase tc;tc.set="sse41";tc.name="ptest";tc.form=memorySource?"xmm,m128 flags":"xmm,xmm flags";
+        tc.code={0x0F,0x10,0x03};
+        if(!memorySource)tc.code.insert(tc.code.end(),{0x0F,0x10,0x4B,0x10});
+        tc.code.insert(tc.code.end(),{0x66,0x0F,0x38,0x17,(U8)(memorySource?0x43:0xC1)});
+        if(memorySource)tc.code.push_back(0x10);
+        initRegs(tc,0,MEM_SCRATCH);tc.checkMem=true;tc.memLen=16;
+        tc.flagsMask=F_CF|F_ZF|F_OF|F_SF|F_AF|F_PF;
+        memcpy(tc.memInit,&ints[0].dstLo,8);memcpy(tc.memInit+8,&ints[0].dstHi,8);
+        memcpy(tc.memInit+16,&ints[0].srcLo,8);memcpy(tc.memInit+24,&ints[0].srcHi,8);
+        out.push_back(std::move(tc));
+    }
+
+    struct ImmOp { const char* name; U8 opcode; };
+    const ImmOp immOps[] = {
+        {"roundps",0x08},{"roundpd",0x09},{"roundss",0x0A},{"roundsd",0x0B},
+        {"blendps",0x0C},{"blendpd",0x0D},{"pblendw",0x0E},
+        {"pextrb",0x14},{"pextrw",0x15},{"pextrd_q",0x16},{"extractps",0x17},
+        {"pinsrb",0x20},{"insertps",0x21},{"pinsrd_q",0x22},
+        {"dpps",0x40},{"dppd",0x41},{"mpsadbw",0x42}
+    };
+    auto immValues=[&](U8 opcode)->std::vector<U8> {
+        if(opcode>=0x08&&opcode<=0x0B)return {0,1,2,3,4,5,6,7};
+        if(opcode==0x42)return {0,1,2,3,4,5,6,7};
+        if(opcode==0x0C||opcode==0x0D||opcode==0x0E)return {0,5,10,15,0xA5};
+        if(opcode==0x40||opcode==0x41)return {0xFF,0xF1,0x8F,0x55,0xAA};
+        if(opcode==0x21)return {0x00,0x40,0xA5,0xF0,0xFF};
+        return {0,1,3,7,0xFF};
+    };
+    auto addImm=[&](const ImmOp& op,U8 imm,bool memorySource,bool ripSource,
+                    bool wide,int sample) {
+        bool extract=op.opcode>=0x14&&op.opcode<=0x17;
+        bool insert=op.opcode>=0x20&&op.opcode<=0x22;
+        TestCase tc;tc.set="sse41";tc.name=op.name;
+        tc.form=std::string(extract?"r/m destination,imm8 ":insert?"r/m source,imm8 ":"xmm,imm8 ")+
+            (ripSource?"[rip+disp32]":memorySource?"memory":"register")+" edge"+std::to_string(sample)+
+            (wide?" rexw":"");
+        initRegs(tc,0,MEM_SCRATCH);tc.checkMem=true;tc.memLen=extract?40:16;
+        bool floatOp=(op.opcode==0x08||op.opcode==0x09||op.opcode==0x0A||op.opcode==0x0B||
+                   op.opcode==0x0C||op.opcode==0x0D||op.opcode==0x0E||
+                   op.opcode==0x40||op.opcode==0x41);
+        const Input& values=floatOp?floats[sample]:ints[sample%5];
+        memcpy(tc.memInit,&values,sizeof(values));
+        if(extract) {
+            tc.code={0x0F,0x10,0x03};
+            if(ripSource)emitRipRelative0F3AImm8(tc.code,op.opcode,0,imm,32,wide);
+            else {
+                std::vector<U8> prefix=wide?std::vector<U8>{0x66,0x48}:std::vector<U8>{0x66};
+                emitModRMInstruction(tc.code,prefix,OpcodeMap::Map0F3A,op.opcode,0,
+                    memorySource?X64_RBX:X64_RAX,
+                    memorySource?OperandKind::BaseMemory:OperandKind::Register,true,imm,0,
+                    memorySource?32:0);
+            }
+            if(!memorySource&&!ripSource)tc.code.insert(tc.code.end(),{0x48,0x89,0x43,0x20});
+        } else {
+            tc.code={0x0F,0x10,0x03};
+            bool gpInsert=op.opcode==0x20||op.opcode==0x22;
+            if(!gpInsert&&!memorySource&&!ripSource)
+                tc.code.insert(tc.code.end(),{0x0F,0x10,0x4B,0x10});
+            if(ripSource)emitRipRelative0F3AImm8(tc.code,op.opcode,0,imm,16,wide);
+            else {
+                std::vector<U8> prefix=wide?std::vector<U8>{0x66,0x48}:std::vector<U8>{0x66};
+                int rm=memorySource?X64_RBX:(gpInsert?X64_RAX:X64_RCX);
+                OperandKind kind=memorySource?OperandKind::BaseMemory:OperandKind::Register;
+                emitModRMInstruction(tc.code,prefix,OpcodeMap::Map0F3A,op.opcode,0,rm,kind,true,imm,0,
+                                     memorySource?16:0);
+            }
+            if(!extract)tc.code.insert(tc.code.end(),{0x0F,0x11,0x03});
+            if(gpInsert&&!memorySource&&!ripSource)tc.r[X64_RAX]=0xFEDCBA9876543210ULL;
+        }
+        out.push_back(std::move(tc));
+    };
+    for(const ImmOp& op:immOps) {
+        int sampleCount=op.opcode>=0x08&&op.opcode<=0x0E?7:5;
+        for(U8 imm:immValues(op.opcode))for(int sample=0;sample<sampleCount;sample++) {
+            bool widthVariant=(op.opcode==0x16||op.opcode==0x22);
+            for(int form=0;form<3;form++)for(int wide=0;wide<(widthVariant?2:1);wide++) {
+                addImm(op,imm,form==1,form==2,wide!=0,sample);
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SSE test builders. Pattern: movups xmm0,[rbx]; movups xmm1,[rbx+16];
 // <op> xmm0,xmm1; movups [rbx],xmm0. 16 bytes at MEM_SCRATCH compared.
@@ -2758,6 +2923,7 @@ int main(int argc, char** argv) {
     buildSseCases(cases);
     buildSse3Cases(cases);
     buildSsse3Cases(cases);
+    buildSse41Cases(cases);
     buildSse2ExtraCases(cases);
     buildCpuidCases(cases);
     buildFaultCases(cases);

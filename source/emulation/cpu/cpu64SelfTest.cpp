@@ -3767,6 +3767,127 @@ int runX64SelfTest() {
         });
     }
 
+    // SSE4.1 0F38 forms: zero vectors cover register and memory dispatch,
+    // with the two existing compare/test forms checking their defined result.
+    {
+        struct Op { const char* name; U8 opcode; };
+        const Op ops[] = {
+            {"pblendvb",0x10},{"blendvps",0x14},{"blendvpd",0x15},
+            {"pmovsx_bw",0x20},{"pmovsx_bd",0x21},{"pmovsx_bq",0x22},
+            {"pmovsx_wd",0x23},{"pmovsx_wq",0x24},{"pmovsx_dq",0x25},
+            {"pmuldq",0x28},{"pcmpeqq",0x29},{"movntdqa",0x2A},{"packusdw",0x2B},
+            {"pmovzx_bw",0x30},{"pmovzx_bd",0x31},{"pmovzx_bq",0x32},
+            {"pmovzx_wd",0x33},{"pmovzx_wq",0x34},{"pmovzx_dq",0x35},
+            {"pminsb",0x38},{"pminsd",0x39},{"pminuw",0x3A},{"pminud",0x3B},
+            {"pmaxsb",0x3C},{"pmaxsd",0x3D},{"pmaxuw",0x3E},{"pmaxud",0x3F},
+            {"pmulld",0x40},{"phminposuw",0x41}
+        };
+        const U64 data=CODE_BASE+0x800;
+        for(const Op& op:ops)for(int memorySource=0;memorySource<(op.opcode==0x2A?1:2);memorySource++) {
+            std::vector<U8> code;
+            if(op.opcode==0x2A)code={0x66,0x0F,0x38,op.opcode,0x43,0x10};
+            else {
+                code={0x0F,0x10,0x03};
+                if(!memorySource)code.insert(code.end(),{0x0F,0x10,0x4B,0x10});
+                code.insert(code.end(),{0x66,0x0F,0x38,op.opcode,(U8)(memorySource?0x43:0xC1)});
+                if(memorySource)code.push_back(0x10);
+            }
+            code.insert(code.end(),{0x0F,0x11,0x03});
+            bool equal=op.opcode==0x29;
+            runAndCheck(r,(std::string("SSE4.1 ")+op.name+(memorySource?" memory":" register")).c_str(),
+                withExit(code),[equal](CPU64& c) {
+                    return c.xmm[0].lo==(equal?~0ULL:0ULL) && c.xmm[0].hi==(equal?~0ULL:0ULL);
+                },[data](CPU64& c) {
+                    c.reg[X64_RBX].setU64(data);c.xmm[0].lo=c.xmm[0].hi=0;
+                    c.xmm[1].lo=c.xmm[1].hi=0;
+                    for(U32 i=0;i<32;i++)c.memory->writeb(data+i,0);
+                });
+        }
+        for(bool memorySource:{false,true}) {
+            std::vector<U8> code={0x0F,0x10,0x03};
+            if(!memorySource)code.insert(code.end(),{0x0F,0x10,0x4B,0x10});
+            code.insert(code.end(),{0x66,0x0F,0x38,0x17,(U8)(memorySource?0x43:0xC1)});
+            if(memorySource)code.push_back(0x10);
+            runAndCheck(r,memorySource?"SSE4.1 PTEST memory flags":"SSE4.1 PTEST register flags",
+                withExit(code),[](CPU64& c) {
+                    return (c.rflags&(X64_CF|X64_ZF|X64_OF|X64_SF|X64_AF|X64_PF))==(X64_CF|X64_ZF);
+                },[data](CPU64& c) {
+                    c.reg[X64_RBX].setU64(data);c.xmm[0].lo=c.xmm[0].hi=0;c.xmm[1].lo=c.xmm[1].hi=0;
+                    for(U32 i=0;i<32;i++)c.memory->writeb(data+i,0);
+                });
+        }
+    }
+
+    // SSE4.1 immediate forms in register, base-memory, and RIP-relative forms.
+    // Zero operands give a compact exact result while verifying the ModR/M,
+    // trailing imm8 length, and the 0F3A dispatch for every opcode.
+    {
+        struct Op { const char* name; U8 opcode; };
+        const Op ops[] = {
+            {"roundps",0x08},{"roundpd",0x09},{"roundss",0x0A},{"roundsd",0x0B},
+            {"blendps",0x0C},{"blendpd",0x0D},{"pblendw",0x0E},
+            {"pextrb",0x14},{"pextrw",0x15},{"pextrd_q",0x16},{"extractps",0x17},
+            {"pinsrb",0x20},{"insertps",0x21},{"pinsrd_q",0x22},
+            {"dpps",0x40},{"dppd",0x41},{"mpsadbw",0x42}
+        };
+        const U64 data=CODE_BASE+0x800;
+        auto appendRip=[&](std::vector<U8>& code,U8 opcode,U8 imm,U8 target,bool wide) {
+            code.insert(code.end(),{0x9C,0x50,0x51});
+            size_t leaStart=code.size();code.insert(code.end(),{0x48,0x8D,0x05,0,0,0,0});
+            code.insert(code.end(),{0x48,0x8D,0x4B,target,0x48,0x29,0xC1});
+            size_t storeStart=code.size();code.insert(code.end(),{0x89,0x0D,0,0,0,0,0x59,0x58,0x9D,0xEB,0x01,0x90});
+            size_t instructionStart=code.size();
+            std::vector<U8> prefixes=wide?std::vector<U8>{0x66,0x48}:std::vector<U8>{0x66};
+            code.insert(code.end(),prefixes.begin(),prefixes.end());
+            code.insert(code.end(),{0x0F,0x3A,opcode,0x05,0,0,0,0,imm});
+            auto patch=[&](size_t at,S32 value){U32 bits=(U32)value;for(U32 i=0;i<4;i++)code[at+i]=(U8)(bits>>(i*8));};
+            size_t prefixLen=prefixes.size();
+            patch(leaStart+3,(S32)(instructionStart+prefixLen+9-(leaStart+7)));
+            patch(storeStart+2,(S32)(instructionStart+prefixLen+4-(storeStart+6)));
+        };
+        for(const Op& op:ops)for(U8 imm:{(U8)0,(U8)7,(U8)0xFF}) {
+            bool extract=op.opcode>=0x14&&op.opcode<=0x17;
+            bool gpInsert=op.opcode==0x20||op.opcode==0x22;
+            bool widthVariant=op.opcode==0x16||op.opcode==0x22;
+            for(int form=0;form<3;form++)for(int wide=0;wide<(widthVariant?2:1);wide++) {
+                bool mem=form==1,ripRel=form==2;
+                std::vector<U8> code={0x0F,0x10,0x03};
+                if(!extract&&!gpInsert)code.insert(code.end(),{0x0F,0x10,0x4B,0x10});
+                if(extract) {
+                    if(ripRel)appendRip(code,op.opcode,imm,32,wide!=0);
+                    else {
+                        if(wide)code.push_back(0x48);
+                        code.insert(code.end(),{0x66,0x0F,0x3A,op.opcode,
+                            (U8)(mem?0x43:0xC0)});
+                        if(mem)code.push_back(0x20);
+                        code.push_back(imm);
+                    }
+                    if(!mem&&!ripRel)code.insert(code.end(),{0x48,0x89,0x43,0x20});
+                } else {
+                    if(ripRel)appendRip(code,op.opcode,imm,16,wide!=0);
+                    else {
+                        if(wide)code.push_back(0x48);
+                        code.insert(code.end(),{0x66,0x0F,0x3A,op.opcode,
+                            (U8)(mem?0x43:gpInsert?0xC0:0xC1)});
+                        if(mem)code.push_back(0x10);
+                        code.push_back(imm);
+                    }
+                    code.insert(code.end(),{0x0F,0x11,0x03});
+                }
+                runAndCheck(r,(std::string("SSE4.1 ")+op.name+" imm8 "+(ripRel?"RIP":mem?"memory":"register")+(wide?" REX.W":"")).c_str(),
+                    withExit(code),[=](CPU64& c) {
+                        if(extract) return c.memory->readq(data+32)==0 &&
+                            (mem||ripRel||c.reg[X64_R15].u64==0);
+                        return c.xmm[0].lo==0&&c.xmm[0].hi==0;
+                    },[=](CPU64& c) {
+                        c.reg[X64_RBX].setU64(data);c.reg[X64_RAX].setU64(0);
+                        c.xmm[0].lo=c.xmm[0].hi=0;c.xmm[1].lo=c.xmm[1].hi=0;
+                        for(U32 i=0;i<40;i++)c.memory->writeb(data+i,0);
+                    });
+            }
+        }
+    }
+
     // Test 75k — MOVSHDUP {1,2,3,4} → {2,2,4,4}; reading .lo (lanes 0,1)
     //   = {2,2}. Inputs are integers placed in float lanes via movq — the
     //   op is a pure lane shuffle, so integer bit patterns work fine.

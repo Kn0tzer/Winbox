@@ -5434,6 +5434,302 @@ dsp_55:
             }
         }
 
+        // ---- Remaining SSE4.1 0F38 packed integer operations ----
+        if (osize66 && p.rep == 0 && op2 == 0x38) {
+            U8 op3b = fetchByte(rip + opOff + 2);
+            const bool supported = op3b == 0x10 || op3b == 0x14 || op3b == 0x15 ||
+                (op3b >= 0x20 && op3b <= 0x25) || op3b == 0x28 ||
+                op3b == 0x2A || op3b == 0x2B ||
+                (op3b >= 0x30 && op3b <= 0x35) || op3b == 0x3A ||
+                op3b == 0x3B || op3b == 0x3E || op3b == 0x3F || op3b == 0x41;
+            if (supported) {
+                ModRM m = decodeModRM(rip + opOff + 3, p, 0);
+                U32 sourceBytes = 16;
+                if (op3b >= 0x20 && op3b <= 0x25) {
+                    const U8 sizes[] = {8,4,2,8,4,8}; sourceBytes=sizes[op3b-0x20];
+                } else if (op3b >= 0x30 && op3b <= 0x35) {
+                    const U8 sizes[] = {8,4,2,8,4,8}; sourceBytes=sizes[op3b-0x30];
+                }
+                U64 sLo = 0, sHi = 0;
+                if (m.isReg) { sLo=xmm[m.rmIndex].lo; sHi=xmm[m.rmIndex].hi; }
+                else if (sourceBytes==16) { sLo=memory->readq(m.effAddr); sHi=memory->readq(m.effAddr+8); }
+                else if (sourceBytes==8) sLo=memory->readq(m.effAddr);
+                else if (sourceBytes==4) sLo=memory->readd(m.effAddr);
+                else if (sourceBytes==2) sLo=memory->readw(m.effAddr);
+                U64 dLo = xmm[m.regField].lo, dHi = xmm[m.regField].hi;
+                U64 nLo = 0, nHi = 0;
+                auto byteAt = [](U64 lo, U64 hi, U32 index) -> U8 {
+                    return index < 8 ? (U8)(lo >> (index * 8))
+                                     : (U8)(hi >> ((index - 8) * 8));
+                };
+                if (op3b == 0x10 || op3b == 0x14 || op3b == 0x15) {
+                    // PBLENDVB / BLENDVPS / BLENDVPD select from SRC when
+                    // the corresponding implicit XMM0 sign bit is set.
+                    U64 maskLo = xmm[0].lo, maskHi = xmm[0].hi;
+                    U8 out[16];
+                    if (op3b == 0x10) {
+                        for (U32 i = 0; i < 16; i++)
+                            out[i] = (byteAt(maskLo,maskHi,i) & 0x80)
+                                ? byteAt(sLo,sHi,i) : byteAt(dLo,dHi,i);
+                    } else if (op3b == 0x14) {
+                        for (U32 lane = 0; lane < 4; lane++) {
+                            U32 dv = (U32)(lane < 2 ? dLo >> (lane*32) : dHi >> ((lane-2)*32));
+                            U32 sv = (U32)(lane < 2 ? sLo >> (lane*32) : sHi >> ((lane-2)*32));
+                            U32 mv = (U32)(lane < 2 ? maskLo >> (lane*32) : maskHi >> ((lane-2)*32));
+                            U32 v = (mv & 0x80000000U) ? sv : dv;
+                            for (U32 b = 0; b < 4; b++) out[lane*4+b] = (U8)(v >> (b*8));
+                        }
+                    } else {
+                        for (U32 lane = 0; lane < 2; lane++) {
+                            U64 dv = lane ? dHi : dLo, sv = lane ? sHi : sLo;
+                            U64 mv = lane ? maskHi : maskLo;
+                            U64 v = (mv >> 63) ? sv : dv;
+                            for (U32 b = 0; b < 8; b++) out[lane*8+b] = (U8)(v >> (b*8));
+                        }
+                    }
+                    for (U32 i = 0; i < 8; i++) {
+                        nLo |= (U64)out[i] << (i*8);
+                        nHi |= (U64)out[i+8] << (i*8);
+                    }
+                } else if (op3b >= 0x20 && op3b <= 0x25) {
+                    // PMOVSX{BW,BD,BQ,WD,WQ,DQ}
+                    U32 srcBits, dstBits;
+                    switch (op3b) {
+                        case 0x20: srcBits=8; dstBits=16; break;
+                        case 0x21: srcBits=8; dstBits=32; break;
+                        case 0x22: srcBits=8; dstBits=64; break;
+                        case 0x23: srcBits=16; dstBits=32; break;
+                        case 0x24: srcBits=16; dstBits=64; break;
+                        default:   srcBits=32; dstBits=64; break;
+                    }
+                    U32 lanes = 128 / dstBits;
+                    U64 src = sLo;
+                    U64 outs[2] = {};
+                    for (U32 i = 0; i < lanes; i++) {
+                        U64 raw = (src >> (i * srcBits)) & ((1ULL << srcBits) - 1);
+                        S64 value = srcBits == 8 ? (S8)raw : srcBits == 16 ? (S16)raw : (S32)raw;
+                        U32 bit = i * dstBits;
+                        U64 encoded = (U64)value;
+                        if (dstBits < 64) encoded &= (1ULL << dstBits) - 1;
+                        outs[bit / 64] |= encoded << (bit & 63);
+                    }
+                    nLo=outs[0]; nHi=outs[1];
+                } else if (op3b >= 0x30 && op3b <= 0x35) {
+                    // PMOVZX{BW,BD,BQ,WD,WQ,DQ}
+                    U32 srcBits, dstBits;
+                    switch (op3b) {
+                        case 0x30: srcBits=8; dstBits=16; break;
+                        case 0x31: srcBits=8; dstBits=32; break;
+                        case 0x32: srcBits=8; dstBits=64; break;
+                        case 0x33: srcBits=16; dstBits=32; break;
+                        case 0x34: srcBits=16; dstBits=64; break;
+                        default:   srcBits=32; dstBits=64; break;
+                    }
+                    U32 lanes = 128 / dstBits;
+                    U64 src = sLo;
+                    U64 outs[2] = {};
+                    for (U32 i = 0; i < lanes; i++) {
+                        U64 value = (src >> (i * srcBits)) & ((1ULL << srcBits) - 1);
+                        U32 bit = i * dstBits;
+                        outs[bit / 64] |= value << (bit & 63);
+                    }
+                    nLo=outs[0]; nHi=outs[1];
+                } else if (op3b == 0x28) { // PMULDQ: signed dword lanes 0 and 2
+                    S64 p0 = (S64)(S32)(U32)dLo * (S32)(U32)sLo;
+                    S64 p1 = (S64)(S32)(U32)(dHi) * (S32)(U32)(sHi);
+                    nLo=(U64)p0; nHi=(U64)p1;
+                } else if (op3b == 0x2A) { // MOVNTDQA m128
+                    if (m.isReg) goto unhandled;
+                    nLo=sLo; nHi=sHi;
+                } else if (op3b == 0x2B) { // PACKUSDW
+                    U16 words[8];
+                    for (U32 i=0;i<8;i++) {
+                        U64 bits = i < 2 ? dLo >> (i*32) :
+                                   i < 4 ? dHi >> ((i-2)*32) :
+                                   i < 6 ? sLo >> ((i-4)*32) : sHi >> ((i-6)*32);
+                        S64 value=(S32)(U32)bits;
+                        words[i]=(U16)(value < 0 ? 0 : value > 65535 ? 65535 : value);
+                    }
+                    for (U32 i=0;i<4;i++) nLo|=(U64)words[i]<<(i*16);
+                    for (U32 i=0;i<4;i++) nHi|=(U64)words[i+4]<<(i*16);
+                } else if (op3b == 0x3A || op3b == 0x3B || op3b == 0x3E || op3b == 0x3F) {
+                    // Unsigned word/dword min/max.
+                    U32 bits = (op3b == 0x3A || op3b == 0x3E) ? 16 : 32;
+                    U32 lanes = 128 / bits;
+                    for (U32 i=0;i<lanes;i++) {
+                        U64 mask = bits == 16 ? 0xFFFFULL : 0xFFFFFFFFULL;
+                        U64 dv = (i < 64/bits ? dLo : dHi) >> ((i%(64/bits))*bits) & mask;
+                        U64 sv = (i < 64/bits ? sLo : sHi) >> ((i%(64/bits))*bits) & mask;
+                        bool isMin = op3b == 0x3A || op3b == 0x3B;
+                        U64 value = isMin ? (dv < sv ? dv : sv) : (dv > sv ? dv : sv);
+                        U32 bit=i*bits;
+                        if (bit < 64) nLo |= value << bit; else nHi |= value << (bit-64);
+                    }
+                } else { // PHMINPOSUW
+                    U16 minValue=0xFFFF; U16 minIndex=0;
+                    for (U32 i=0;i<8;i++) {
+                        U16 value=(U16)((i<4 ? sLo>>(i*16) : sHi>>((i-4)*16)) & 0xFFFF);
+                        if (value < minValue) { minValue=value; minIndex=(U16)i; }
+                    }
+                    nLo=(U64)minValue | ((U64)minIndex<<16);
+                }
+                xmm[m.regField].lo=nLo; xmm[m.regField].hi=nHi;
+                U32 used=opOff+3+m.length; rip+=used; return used;
+            }
+        }
+
+        // ---- SSE4.1 0F3A immediate operations ----
+        if (osize66 && p.rep == 0 && op2 == 0x3A) {
+            U8 op3b=fetchByte(rip+opOff+2);
+            const bool supported = (op3b>=0x08 && op3b<=0x0E) ||
+                (op3b>=0x14 && op3b<=0x17) || (op3b>=0x20 && op3b<=0x22) ||
+                op3b==0x40 || op3b==0x41 || op3b==0x42;
+            if (supported) {
+                ModRM m=decodeModRM(rip+opOff+3,p,1);
+                U8 imm=fetchByte(rip+opOff+3+m.length);
+                U32 sourceBytes=16;
+                if(op3b==0x0A || op3b==0x21)sourceBytes=4;
+                else if(op3b==0x0B)sourceBytes=8;
+                else if(op3b==0x20)sourceBytes=1;
+                else if(op3b==0x22)sourceBytes=rexW?8:4;
+                else if(op3b>=0x14 && op3b<=0x17)sourceBytes=0;
+                U64 sLo=0,sHi=0;
+                if(m.isReg){sLo=xmm[m.rmIndex].lo;sHi=xmm[m.rmIndex].hi;}
+                else if(sourceBytes==16){sLo=memory->readq(m.effAddr);sHi=memory->readq(m.effAddr+8);}
+                else if(sourceBytes==8)sLo=memory->readq(m.effAddr);
+                else if(sourceBytes==4)sLo=memory->readd(m.effAddr);
+                else if(sourceBytes==1)sLo=memory->readb(m.effAddr);
+                U64 dLo=xmm[m.regField].lo,dHi=xmm[m.regField].hi;
+                U32 used=opOff+3+m.length+1;
+                if (op3b==0x08 || op3b==0x09 || op3b==0x0A || op3b==0x0B) {
+                    bool isDouble=op3b==0x09 || op3b==0x0B;
+                    bool scalar=op3b==0x0A || op3b==0x0B;
+                    U32 lanes=isDouble?2:4;
+                    U32 rc=(imm&4)?((mxcsr>>13)&3):(imm&3);
+                    auto roundValue=[&](double value)->double {
+                        if (!std::isfinite(value)) return value;
+                        switch (rc) {
+                            case 1: return std::floor(value);
+                            case 2: return std::ceil(value);
+                            case 3: return std::trunc(value);
+                            default: return std::nearbyint(value);
+                        }
+                    };
+                    U64 outLo=dLo,outHi=dHi;
+                    U32 last=scalar?1:lanes;
+                    for (U32 i=0;i<last;i++) {
+                        if (isDouble) {
+                            U64 bits=i==0?sLo:sHi;
+                            U64 rounded=doubleToU64(roundValue(u64ToDouble(bits)));
+                            if (i==0) outLo=rounded; else outHi=rounded;
+                        } else {
+                            U32 bits=(U32)(i<2?sLo>>(i*32):sHi>>((i-2)*32));
+                            float value; std::memcpy(&value,&bits,4);
+                            float rounded=(float)roundValue(value); U32 result;
+                            std::memcpy(&result,&rounded,4);
+                            if (i<2) outLo=(outLo&~(0xFFFFFFFFULL<<(i*32)))|((U64)result<<(i*32));
+                            else outHi=(outHi&~(0xFFFFFFFFULL<<((i-2)*32)))|((U64)result<<((i-2)*32));
+                        }
+                    }
+                    xmm[m.regField].lo=outLo; xmm[m.regField].hi=outHi;
+                } else if (op3b==0x0C || op3b==0x0D || op3b==0x0E) {
+                    U64 outLo=0,outHi=0;
+                    if (op3b==0x0E) {
+                        for (U32 i=0;i<8;i++) {
+                            U16 d=(U16)(i<4?dLo>>(i*16):dHi>>((i-4)*16));
+                            U16 s=(U16)(i<4?sLo>>(i*16):sHi>>((i-4)*16));
+                            U16 value=(imm&(1U<<i))?s:d;
+                            if(i<4)outLo|=(U64)value<<(i*16);else outHi|=(U64)value<<((i-4)*16);
+                        }
+                    } else {
+                        U32 lanes=op3b==0x0C?4:2,width=op3b==0x0C?32:64;
+                        for(U32 i=0;i<lanes;i++) {
+                            U64 dv=width==32?((i<2?dLo>>(i*32):dHi>>((i-2)*32))&0xFFFFFFFFULL):(i?dHi:dLo);
+                            U64 sv=width==32?((i<2?sLo>>(i*32):sHi>>((i-2)*32))&0xFFFFFFFFULL):(i?sHi:sLo);
+                            U64 value=(imm&(1U<<i))?sv:dv;
+                            if(width==32) {
+                                if(i<2)outLo|=value<<(i*32);else outHi|=value<<((i-2)*32);
+                            } else if(i==0)outLo=value;else outHi=value;
+                        }
+                    }
+                    xmm[m.regField].lo=outLo;xmm[m.regField].hi=outHi;
+                } else if (op3b==0x40 || op3b==0x41) {
+                    bool isDouble=op3b==0x41; U32 lanes=isDouble?2:4;
+                    double sumD=0.0; float sumF=0.0f;
+                    for(U32 i=0;i<lanes;i++) if(imm&(1U<<(i+4))) {
+                        if(isDouble) {
+                            double a=u64ToDouble(i==0?dLo:dHi),b=u64ToDouble(i==0?sLo:sHi);
+                            sumD += a*b;
+                        } else {
+                            U32 ab=(U32)(i<2?dLo>>(i*32):dHi>>((i-2)*32));
+                            U32 bb=(U32)(i<2?sLo>>(i*32):sHi>>((i-2)*32));
+                            float a,b;std::memcpy(&a,&ab,4);std::memcpy(&b,&bb,4);sumF += a*b;
+                        }
+                    }
+                    U64 outLo=0,outHi=0;
+                    for(U32 i=0;i<lanes;i++) if(imm&(1U<<i)) {
+                        if(isDouble) { if(i==0)outLo=doubleToU64(sumD);else outHi=doubleToU64(sumD); }
+                        else {
+                            U32 bits;std::memcpy(&bits,&sumF,4);
+                            if(i<2)outLo|=(U64)bits<<(i*32);else outHi|=(U64)bits<<((i-2)*32);
+                        }
+                    }
+                    xmm[m.regField].lo=outLo;xmm[m.regField].hi=outHi;
+                } else if (op3b==0x42) { // MPSADBW
+                    U32 srcOffset=(imm&3)*4,dstOffset=((imm>>2)&1)*4;
+                    U16 sums[8];
+                    U64 outLo=0,outHi=0;
+                    for(U32 lane=0;lane<8;lane++) {
+                        U32 sum=0;
+                        for(U32 byte=0;byte<4;byte++) {
+                            U8 dv=(dstOffset+lane+byte<8)?(U8)(dLo>>((dstOffset+lane+byte)*8)):
+                                  (U8)(dHi>>((dstOffset+lane+byte-8)*8));
+                            U8 sv=(srcOffset+byte<8)?(U8)(sLo>>((srcOffset+byte)*8)):
+                                  (U8)(sHi>>((srcOffset+byte-8)*8));
+                            sum += dv>sv?dv-sv:sv-dv;
+                        }
+                        sums[lane]=(U16)sum;
+                    }
+                    for(U32 i=0;i<4;i++)outLo|=(U64)sums[i]<<(i*16);
+                    for(U32 i=0;i<4;i++)outHi|=(U64)sums[i+4]<<(i*16);
+                    xmm[m.regField].lo=outLo;xmm[m.regField].hi=outHi;
+                } else if (op3b==0x20 || op3b==0x21 || op3b==0x22) {
+                    if(op3b==0x20) {
+                        U32 lane=imm&15,shift=(lane&7)*8;
+                        U8 value=(U8)loadRM(m,1,rexPresent);
+                        U64* dst=lane<8?&xmm[m.regField].lo:&xmm[m.regField].hi;
+                        *dst=(*dst&~(0xFFULL<<shift))|((U64)value<<shift);
+                    } else if(op3b==0x21) {
+                        U32 sourceLane=(imm>>6)&3;
+                        U32 source=m.isReg?
+                            (U32)((sourceLane<2?xmm[m.rmIndex].lo>>(sourceLane*32):
+                                   xmm[m.rmIndex].hi>>((sourceLane-2)*32))&0xFFFFFFFFULL):
+                            memory->readd(m.effAddr);
+                        U32 destLane=(imm>>4)&3;
+                        if(destLane<2)xmm[m.regField].lo=(xmm[m.regField].lo&~(0xFFFFFFFFULL<<(destLane*32)))|((U64)source<<(destLane*32));
+                        else xmm[m.regField].hi=(xmm[m.regField].hi&~(0xFFFFFFFFULL<<((destLane-2)*32)))|((U64)source<<((destLane-2)*32));
+                        for(U32 i=0;i<4;i++)if(imm&(1U<<i)) {
+                            if(i<2)xmm[m.regField].lo&=~(0xFFFFFFFFULL<<(i*32));
+                            else xmm[m.regField].hi&=~(0xFFFFFFFFULL<<((i-2)*32));
+                        }
+                    } else {
+                        U32 width=rexW?64:32,lane=imm&(rexW?1:3);U64 value=loadRM(m,width/8,rexPresent);
+                        if(width==64) { if(lane==0)xmm[m.regField].lo=value;else xmm[m.regField].hi=value; }
+                        else if(lane<2)xmm[m.regField].lo=(xmm[m.regField].lo&~(0xFFFFFFFFULL<<(lane*32)))|((U64)value<<(lane*32));
+                        else xmm[m.regField].hi=(xmm[m.regField].hi&~(0xFFFFFFFFULL<<((lane-2)*32)))|((U64)value<<((lane-2)*32));
+                    }
+                } else if (op3b==0x17 || op3b==0x15 || op3b==0x16 || op3b==0x14) {
+                    // PEXTRB/W/D/Q and EXTRACTPS write r/m, not the XMM reg.
+                    U32 width=op3b==0x14?8:op3b==0x15?16:op3b==0x17?32:(rexW?64:32);
+                    U32 lane=imm&(op3b==0x14?15:op3b==0x15?7:op3b==0x17?3:(rexW?1:3));
+                    U64 source=lane*width<64?dLo>>(lane*width):dHi>>((lane*width)-64);
+                    if(op3b==0x17) width=32;
+                    storeRM(m,width/8,source,rexPresent);
+                }
+                rip+=used;return used;
+            }
+        }
+
         // CVTSI2SD xmm, r/m32   F2 0F 2A /r       (REX.W → r/m64)
         // Convert int to double; result in low 64 of dst, high unchanged.
         if (op2 == 0x2A && p.rep == 0xF2) {
