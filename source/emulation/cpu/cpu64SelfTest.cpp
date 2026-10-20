@@ -947,6 +947,34 @@ int runX64SelfTest() {
             return (c.reg[X64_R15].u64 & (1ULL << 26)) != 0;
         });
     }
+    {
+        std::vector<U8> code = {
+            0x48,0xBF,0x00,0x08,0x40,0,0,0,0,0, // rdi = code scratch
+            0xB8,0x01,0,0,0, 0x31,0xC9, 0x0F,0xA2,
+            0x89,0x07, 0x89,0x5F,0x04, 0x89,0x4F,0x08, 0x89,0x57,0x0C,
+        };
+        runAndCheck(r, "CPUID leaf 1 topology and feature bits", withExit(code), [](CPU64& c) {
+            return c.memory->readd(CODE_BASE + 0x800) == ((6u << 8) | (15u << 4) | 3u) &&
+                   c.memory->readd(CODE_BASE + 0x804) == ((8u << 8) | (1u << 16)) &&
+                   c.memory->readd(CODE_BASE + 0x808) == ((1u << 13) | (1u << 23)) &&
+                   c.memory->readd(CODE_BASE + 0x80C) == ((1u<<0)|(1u<<4)|(1u<<5)|
+                       (1u<<8)|(1u<<15)|(1u<<19)|(1u<<23)|(1u<<24)|(1u<<25)|(1u<<26));
+        });
+        std::vector<U8> extended = {
+            0x48,0xBF,0x00,0x08,0x40,0,0,0,0,0,
+            0xB8,0x01,0,0,0x80, 0x31,0xC9, 0x0F,0xA2,
+            0x89,0x07, 0x89,0x5F,0x04, 0x89,0x4F,0x08, 0x89,0x57,0x0C,
+        };
+        runAndCheck(r, "CPUID 0x80000001 long-mode features", withExit(extended), [](CPU64& c) {
+            U32 a = c.memory->readd(CODE_BASE + 0x800);
+            U32 b = c.memory->readd(CODE_BASE + 0x804);
+            U32 ecx = c.memory->readd(CODE_BASE + 0x808);
+            U32 edx = c.memory->readd(CODE_BASE + 0x80C);
+            bool ok = a == 0 && b == 0 && ecx == ((1u << 0) | (1u << 8)) &&
+                      edx == ((1u<<29)|(1u<<11)|(1u<<20));
+            return ok;
+        });
+    }
     // Test 32: PXOR xmm0,xmm0 then MOVD eax,xmm0 → 0.
     // Build: load xmm0 with a known nonzero via memory, pxor it, movd eax.
     {

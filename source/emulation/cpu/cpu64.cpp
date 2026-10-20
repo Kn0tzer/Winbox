@@ -2939,20 +2939,23 @@ dsp_55:
                 break;
             case 0x1: {
                 a = (6 << 8) | (15 << 4) | 3; // family 6 stepping 3
-                b = 0;
-                // ECX feature bits: SSE3=0, SSSE3=0, SSE4.1=0, SSE4.2=0,
-                // POPCNT=0 (bit23), XSAVE=0, OSXSAVE=0, AVX=0.
-                c = 0;
+                // EBX: eight 8-byte CLFLUSH units; one logical processor.
+                b = (8u << 8) | (1u << 16);
+                // ECX advertises only CX16 and POPCNT; SSE3+ and AVX stay clear.
+                c = (1u << 13) | (1u << 23);
                 // EDX bits: FPU=0 PDE=1 TSC=4 MSR=5 PAE=6 MCE=7 CX8=8
                 // APIC=9 SEP=11 MTRR=12 PGE=13 MCA=14 CMOV=15 PAT=16
                 // PSE36=17 CLFSH=19 MMX=23 FXSR=24 SSE=25 SSE2=26.
-                d = (1u<<0)|(1u<<4)|(1u<<5)|(1u<<8)|(1u<<15)|(1u<<23)|(1u<<24)|(1u<<25)|(1u<<26);
+                d = (1u<<0)|(1u<<4)|(1u<<5)|(1u<<8)|(1u<<15)|(1u<<19)|
+                    (1u<<23)|(1u<<24)|(1u<<25)|(1u<<26);
                 break;
             }
             case 0x80000000:
                 a = 0x80000001;
                 break;
             case 0x80000001:
+                // ECX: LAHF/SAHF in long mode and PREFETCHW.
+                c = (1u << 0) | (1u << 8);
                 // EDX bit 29 = LM (long mode), bit 11 = SYSCALL, bit 20 = NX.
                 d = (1u<<29)|(1u<<11)|(1u<<20);
                 break;

@@ -166,6 +166,8 @@ struct TestCase {
     U32 expectedNativeSignal = 0;
     U32 expectedEmuSignal = 0;
     U32 expectedEmuTrap = 0;
+    U64 expectedEmuRegs[16] = {};
+    U64 expectedEmuRegsMask[16] = {};
 };
 
 static bool writeAll(int fd, const void* buf, size_t n) {
@@ -1072,6 +1074,7 @@ static void buildMxcsrCases(std::vector<TestCase>& out) {
         });
         initRegs(tc, 0x1122334455667788ULL, MEM_SCRATCH);
         tc.flagsMask = 0; tc.checkMem = true; tc.memLen = 256;
+        memset(tc.memIgnore + 48, 1, 112); // empty x87 stack slots have undefined data
         U32 mxcsr = 0x5F80; memcpy(tc.memInit + 32, &mxcsr, sizeof(mxcsr));
         tc.memIgnore[6] = tc.memIgnore[7] = 1; // FOP is not tracked per instruction.
         memset(tc.memIgnore + 8, 1, 16);        // FIP/FDP may be host addresses.
@@ -1912,6 +1915,39 @@ struct CaseResult {
 
 static CaseResult diffCase(const TestCase& tc, int idx, const NativeResult& n) {
     CaseResult cr; cr.idx = idx;
+    bool hasExpectedEmuRegs = false;
+    for (U64 mask : tc.expectedEmuRegsMask) hasExpectedEmuRegs |= mask != 0;
+    if (hasExpectedEmuRegs) {
+        cr.nativeOk = n.ok;
+        if (!n.ok) {
+            cr.nativeErr = n.timeout ? "native timeout"
+                         : n.crashed ? "native crashed" : "native setup failed";
+            return cr;
+        }
+        EmuResult e[3];
+        for (int k = 0; k < 3; k++)
+            e[k] = runEmu(tc.code.data(), tc.code.size(), tc.r, tc.flagsIn,
+                          tc.checkMem ? tc.memInit : nullptr);
+        cr.emuOk = e[0].ok;
+        cr.emuStable = e[0].ok;
+        if (!cr.emuOk) {
+            cr.emuErr = e[0].err;
+            return cr;
+        }
+        for (int k = 1; k < 3; k++) {
+            if (!e[k].ok || memcmp(e[k].regs, e[0].regs, sizeof(e[0].regs)) != 0)
+                cr.emuStable = false;
+        }
+        bool expected = true;
+        for (int reg = 0; reg < 16; reg++) {
+            U64 mask = tc.expectedEmuRegsMask[reg];
+            if (mask && (e[0].regs[reg] & mask) != (tc.expectedEmuRegs[reg] & mask))
+                expected = false;
+        }
+        cr.match = expected && cr.emuStable;
+        if (!cr.match) cr.mismatchDesc = "emulator CPUID registers differ from advertised feature set";
+        return cr;
+    }
     if (tc.expectedEmuSignal) {
         cr.nativeOk = n.crashed && n.signalNo == tc.expectedNativeSignal;
         if (!cr.nativeOk) {
@@ -2031,6 +2067,30 @@ static CaseResult diffCase(const TestCase& tc, int idx, const NativeResult& n) {
     cr.match = d.empty();
     cr.mismatchDesc = d;
     return cr;
+}
+
+static void buildCpuidCases(std::vector<TestCase>& out) {
+    auto add = [&](U32 leaf, const char* name, U32 eax, U32 ebx, U32 ecx, U32 edx) {
+        TestCase tc; tc.set = "int"; tc.name = "cpuid"; tc.form = name;
+        tc.code = {0xB8,(U8)leaf,(U8)(leaf>>8),(U8)(leaf>>16),(U8)(leaf>>24),
+                   0x31,0xC9,0x0F,0xA2};
+        initRegs(tc,0,0);
+        tc.expectedEmuRegs[X64_RAX] = eax;
+        tc.expectedEmuRegs[X64_RBX] = ebx;
+        tc.expectedEmuRegs[X64_RCX] = ecx;
+        tc.expectedEmuRegs[X64_RDX] = edx;
+        tc.expectedEmuRegsMask[X64_RAX] = 0xFFFFFFFFULL;
+        tc.expectedEmuRegsMask[X64_RBX] = 0xFFFFFFFFULL;
+        tc.expectedEmuRegsMask[X64_RCX] = 0xFFFFFFFFULL;
+        tc.expectedEmuRegsMask[X64_RDX] = 0xFFFFFFFFULL;
+        out.push_back(std::move(tc));
+    };
+    add(1,"leaf 1 topology/features",(6u<<8)|(15u<<4)|3u,
+        (8u<<8)|(1u<<16),(1u<<13)|(1u<<23),
+        (1u<<0)|(1u<<4)|(1u<<5)|(1u<<8)|(1u<<15)|(1u<<19)|
+        (1u<<23)|(1u<<24)|(1u<<25)|(1u<<26));
+    add(0x80000001,"extended long-mode features",0,0,(1u<<0)|(1u<<8),
+        (1u<<29)|(1u<<11)|(1u<<20));
 }
 
 static void buildFaultCases(std::vector<TestCase>& out) {
@@ -2160,6 +2220,7 @@ int main(int argc, char** argv) {
     buildRequestedX87Cases(cases);
     buildSseCases(cases);
     buildSse2ExtraCases(cases);
+    buildCpuidCases(cases);
     buildFaultCases(cases);
     // buildStringCases(cases); // DISABLED: harness cannot handle RSI/RDI per-side checks yet
     std::vector<TimingSpec> timings;
