@@ -418,6 +418,7 @@ bool StartUpArgs::apply() {
     envValues.push_back("PWD="+this->workingDir);
     envValues.push_back(B("DISPLAY=:0"));
     envValues.push_back(B("WINE_FAKE_WAIT_VBLANK=60"));
+    envValues.push_back(B("SDL_JOYSTICK_DISABLE_UDEV=1"));
 
     if (!this->ddrawOverridePath.isEmpty()) {
         envValues.push_back(B("WINEDLLOVERRIDES=ddraw=n,b"));
