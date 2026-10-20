@@ -35,6 +35,19 @@ test('mip upload plan covers every mip and array layer in bridge order', () => {
     [[0,512,[8,4,4]],[512,64,[4,2,2]],[576,8,[2,1,1]]]);
 });
 
+test('compressed mip uploads copy complete blocks at terminal mip levels', () => {
+  const image = {w:512,h:512,d:1,layers:1,mips:10};
+  const plan = v2TextureMipUploadPlan(image, 'bc1-rgba-unorm');
+  assert.deepEqual(plan.slice(-3).map(({mip,offset,byteLength,bytesPerRow,rowsPerImage,extent}) =>
+    ({mip,offset,byteLength,bytesPerRow,rowsPerImage,extent})), [
+    {mip:7,offset:174752,byteLength:8,bytesPerRow:8,rowsPerImage:1,extent:[4,4,1]},
+    {mip:8,offset:174760,byteLength:8,bytesPerRow:8,rowsPerImage:1,extent:[4,4,1]},
+    {mip:9,offset:174768,byteLength:8,bytesPerRow:8,rowsPerImage:1,extent:[4,4,1]},
+  ]);
+  const pixels = new Uint8Array(174776);
+  assert.ok(plan.every(({offset,byteLength}) => pixels.subarray(offset,offset+byteLength).length === byteLength));
+});
+
 test('IMAGE_BLIT signed offsets and filter decode and form a scaled region', () => {
   const frame = decodeV2Frame(frameRecords(bytesForBlit()));
   const op = frame.passes[0].ops[0];

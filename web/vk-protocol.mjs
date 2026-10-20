@@ -343,7 +343,11 @@ export function v2TextureMipUploadPlan(img, format, dimension = '2d') {
       const bytesPerRow = compressed ? Math.ceil(mw / 4) * blockBytes : mw * bpp;
       const rowsPerImage = compressed ? Math.ceil(mh / 4) : mh;
       const byteLength = bytesPerRow * rowsPerImage * md;
-      plan.push({ layer, mip, offset, byteLength, bytesPerRow, rowsPerImage, extent: [mw, mh, md] });
+      // Compressed copies operate on whole blocks. The physical mip extent is
+      // rounded up to a complete block, even when the logical mip is 1–3 texels.
+      const copyWidth = compressed ? Math.ceil(mw / 4) * 4 : mw;
+      const copyHeight = compressed ? Math.ceil(mh / 4) * 4 : mh;
+      plan.push({ layer, mip, offset, byteLength, bytesPerRow, rowsPerImage, extent: [copyWidth, copyHeight, md] });
       offset += byteLength;
     }
   }
