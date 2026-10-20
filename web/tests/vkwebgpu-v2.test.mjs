@@ -415,7 +415,7 @@ test('format maps cover the DXVK set and count the unknown', () => {
   assert.equal(v2TextureFormat(37), 'rgba8unorm');
   assert.equal(v2TextureFormat(129), 'depth24plus-stencil8');
   const counters = {};
-  assert.equal(v2TextureFormat(9999, counters), 'rgba8unorm');
+  assert.equal(v2TextureFormat(9999, counters), null);
   assert.equal(counters.unknownFormats, 1);
   assert.equal(v2VertexFormat(106), 'float32x3');
   assert.equal(v2VertexFormat(37), 'unorm8x4');

@@ -215,25 +215,33 @@ export class V2FrameQueue {
 }
 
 // ---------------------------------------------------------------------------
-// Format maps. VkFormat numbers are the real ones (source/vulkan/vk64_guest.h);
-// an unmapped format falls back to rgba8unorm and is counted, never thrown.
+// Format maps. VkFormat numbers are the real ones (source/vulkan/vk64_guest.h).
+// An unknown format is unsupported; never reinterpret its bytes as RGBA8.
 // ---------------------------------------------------------------------------
 const V2_TEX_FORMAT = {
+  2: 'rgba8unorm', 3: 'rgba8unorm', 5: 'rgba8unorm', 7: 'rgba8unorm', 8: 'rgba8unorm',
   37: 'rgba8unorm', 38: 'rgba8snorm', 43: 'rgba8unorm-srgb', 44: 'bgra8unorm', 50: 'bgra8unorm-srgb',
+  70: 'r16float', 76: 'r16float', 77: 'rg16float', 83: 'rg16float',
   91: 'rgba16float', 97: 'rgba16float',
   9: 'r8unorm', 16: 'rg8unorm', 41: 'rgba8uint', 64: 'rgb10a2unorm', 122: 'rg11b10ufloat',
-  100: 'r32float', 109: 'rgba32float',
+  98: 'r32uint', 99: 'r32sint', 100: 'r32float', 103: 'rg32float', 109: 'rgba32float',
   131: 'bc1-rgba-unorm', 132: 'bc1-rgba-unorm-srgb',
   133: 'bc1-rgba-unorm', 134: 'bc1-rgba-unorm-srgb',
   135: 'bc2-rgba-unorm', 136: 'bc2-rgba-unorm-srgb',
   137: 'bc3-rgba-unorm', 138: 'bc3-rgba-unorm-srgb',
   139: 'bc4-r-unorm', 140: 'bc4-r-snorm', 141: 'bc5-rg-unorm', 142: 'bc5-rg-snorm',
   143: 'bc6h-rgb-ufloat', 144: 'bc6h-rgb-float', 145: 'bc7-rgba-unorm', 146: 'bc7-rgba-unorm-srgb',
-  124: 'depth16unorm', 126: 'depth32float', 129: 'depth24plus-stencil8', 130: 'depth32float-stencil8',
+  124: 'depth16unorm', 125: 'depth24plus', 126: 'depth32float', 129: 'depth24plus-stencil8', 130: 'depth24plus-stencil8',
 };
+const V2_NORM16_FORMATS = new Set([70, 77]);
+const V2_PACKED_RGBA8_FORMATS = new Set([2, 3, 5, 7, 8]);
+const V2_UNKNOWN_FORMATS_REPORTED = new Set();
 // WebGPU has no core normalized RGBA16 texture format. Preserve its range
 // in a filterable RGBA16 float texture instead of interpreting bytes as RGBA8.
 export function rgba16UnormToHalf(bytes) {
+  return unorm16ToHalf(bytes);
+}
+export function unorm16ToHalf(bytes) {
   const out = new Uint8Array(bytes.length);
   const src = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const dst = new DataView(out.buffer);
@@ -251,10 +259,95 @@ export function rgba16UnormToHalf(bytes) {
   }
   return out;
 }
-export function v2TextureFormat(vkFormat, counters) {
-  const f = V2_TEX_FORMAT[vkFormat];
-  if (!f && counters) counters.unknownFormats = (counters.unknownFormats || 0) + 1;
-  return f || 'rgba8unorm';
+function hasTextureFeature(features, name) { return !!features?.has?.(name); }
+export function v2TextureFormat(vkFormat, counters, features) {
+  let f = V2_TEX_FORMAT[vkFormat];
+  if (vkFormat >= 131 && vkFormat <= 146 && !hasTextureFeature(features, 'texture-compression-bc')) f = null;
+  if (V2_NORM16_FORMATS.has(vkFormat)) {
+    const norm16 = hasTextureFeature(features, 'texture-formats-tier1') || hasTextureFeature(features, 'norm16');
+    f = vkFormat === 70 ? (norm16 ? 'r16unorm' : 'r16float') : (norm16 ? 'rg16unorm' : 'rg16float');
+  } else if (vkFormat === 130 && hasTextureFeature(features, 'depth32float-stencil8')) {
+    f = 'depth32float-stencil8';
+  }
+  if (!f) {
+    if (counters) counters.unknownFormats = (counters.unknownFormats || 0) + 1;
+    if (!V2_UNKNOWN_FORMATS_REPORTED.has(vkFormat)) {
+      V2_UNKNOWN_FORMATS_REPORTED.add(vkFormat);
+      console.warn(`[vkwebgpu] unsupported VkFormat ${vkFormat}; skipping image`);
+    }
+    return null;
+  }
+  return f;
+}
+function scalePacked(value, bits) { return Math.round(value * 255 / (2 ** bits - 1)); }
+export function packedUnormToRgba8(vkFormat, bytes) {
+  if (!V2_PACKED_RGBA8_FORMATS.has(vkFormat)) return bytes;
+  const src = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const out = new Uint8Array(Math.floor(bytes.length / 2) * 4);
+  for (let pixel = 0; pixel < Math.floor(bytes.length / 2); pixel++) {
+    const value = src.getUint16(pixel * 2, true);
+    let r, g, b, a = 255;
+    switch (vkFormat) {
+      case 2: // R4G4B4A4: R is the high nibble, A the low nibble.
+        r = scalePacked(value >> 12, 4); g = scalePacked((value >> 8) & 15, 4);
+        b = scalePacked((value >> 4) & 15, 4); a = scalePacked(value & 15, 4); break;
+      case 3: // B4G4R4A4: B is the high nibble, A the low nibble.
+        b = scalePacked(value >> 12, 4); g = scalePacked((value >> 8) & 15, 4);
+        r = scalePacked((value >> 4) & 15, 4); a = scalePacked(value & 15, 4); break;
+      case 5: // B5G6R5: B high, R low.
+        b = scalePacked(value >> 11, 5); g = scalePacked((value >> 5) & 63, 6);
+        r = scalePacked(value & 31, 5); break;
+      case 7: // B5G5R5A1: B high, A low.
+        b = scalePacked(value >> 11, 5); g = scalePacked((value >> 6) & 31, 5);
+        r = scalePacked((value >> 1) & 31, 5); a = (value & 1) ? 255 : 0; break;
+      case 8: // A1R5G5B5: A high, B low.
+        a = (value >> 15) ? 255 : 0; r = scalePacked((value >> 10) & 31, 5);
+        g = scalePacked((value >> 5) & 31, 5); b = scalePacked(value & 31, 5); break;
+    }
+    const offset = pixel * 4;
+    out[offset] = r; out[offset + 1] = g; out[offset + 2] = b; out[offset + 3] = a;
+  }
+  return out;
+}
+export function v2TexturePixels(vkFormat, bytes, features) {
+  const directNorm16 = hasTextureFeature(features, 'texture-formats-tier1') || hasTextureFeature(features, 'norm16');
+  if (vkFormat === 91) return rgba16UnormToHalf(bytes);
+  if (V2_NORM16_FORMATS.has(vkFormat) && !directNorm16) return unorm16ToHalf(bytes);
+  return packedUnormToRgba8(vkFormat, bytes);
+}
+/**
+ * @param {number} vkFormat
+ * @param {Uint8Array} bytes
+ * @param {any} [features]
+ * @returns {{uploads:Array<{aspect:GPUTextureAspect,bytesPerTexel:number,pixels:Uint8Array<ArrayBuffer>}>,skippedDepth:boolean}}
+ */
+export function v2DepthStencilUploads(vkFormat, bytes, features) {
+  const texels = vkFormat === 130 ? Math.floor(bytes.length / 8)
+    : vkFormat === 129 || vkFormat === 125 ? Math.floor(bytes.length / 4)
+      : vkFormat === 124 ? Math.floor(bytes.length / 2)
+        : vkFormat === 126 ? Math.floor(bytes.length / 4) : 0;
+  if (vkFormat === 124 || vkFormat === 126) {
+    const bytesPerTexel = vkFormat === 124 ? 2 : 4;
+    return { uploads: [{ aspect: /** @type {GPUTextureAspect} */ ('depth-only'), bytesPerTexel, pixels: new Uint8Array(bytes.subarray(0, texels * bytesPerTexel)) }], skippedDepth: false };
+  }
+  if (vkFormat === 125) return { uploads: [], skippedDepth: texels > 0 };
+  if (vkFormat === 129 || vkFormat === 130) {
+    const sourceStride = vkFormat === 129 ? 4 : 8;
+    const stencil = new Uint8Array(texels);
+    const source = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    for (let texel = 0; texel < texels; texel++) stencil[texel] = source.getUint8(texel * sourceStride + (vkFormat === 129 ? 3 : 4));
+    const uploads = [{ aspect: /** @type {GPUTextureAspect} */ ('stencil-only'), bytesPerTexel: 1, pixels: stencil }];
+    const supportsDepth32Stencil8 = hasTextureFeature(features, 'depth32float-stencil8');
+    if (vkFormat === 130 && supportsDepth32Stencil8) {
+      const depth = new Uint8Array(texels * 4);
+      for (let texel = 0; texel < texels; texel++)
+        depth.set(bytes.subarray(texel * sourceStride, texel * sourceStride + 4), texel * 4);
+      uploads.unshift({ aspect: /** @type {GPUTextureAspect} */ ('depth-only'), bytesPerTexel: 4, pixels: depth });
+      return { uploads, skippedDepth: false };
+    }
+    return { uploads, skippedDepth: texels > 0 };
+  }
+  return { uploads: [], skippedDepth: false };
 }
 const V2_VERT_FORMAT = {
   100: 'float32', 103: 'float32x2', 106: 'float32x3', 109: 'float32x4',

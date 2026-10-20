@@ -2113,6 +2113,64 @@ static U64 bufferSliceId(U64 buffer, U64 offset) {
 // vkCmdCopyBuffer/vkCmdUpdateBuffer/vkCmdFillBuffer. Lets emitBufferData skip
 // the expensive readGuestRange+hash for static buffers.
 
+// Keep the WebGPU replay format support mirrored in web/vkwebgpu.mjs. These
+// lists include Vulkan formats that the page converts to core WebGPU formats;
+// BC formats are omitted because texture-compression-bc is optional.
+static const U32 kV2SupportedTextureFormats[] = {
+    2, 3, 5, 7, 8, 9, 16, 37, 38, 41, 43, 44, 50, 64, 70, 76, 77, 83,
+    91, 97, 98, 99, 100, 103, 109, 122, 124, 125, 126, 129, 130
+};
+static const U32 kV2SupportedVertexFormats[] = {
+    16, 17, 18, 19, 20, 21, 23, 24, 25, 26, 27, 28, 37, 38, 39, 40, 41, 42,
+    44, 64, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92,
+    93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109
+};
+static const U32 kV2ColorAttachmentFormats[] = {
+    2, 3, 5, 7, 8, 9, 16, 37, 41, 43, 44, 50, 64, 70, 76, 77, 83, 91, 97,
+    98, 99, 100, 103, 109
+};
+static const U32 kV2ColorAttachmentBlendFormats[] = {
+    2, 3, 5, 7, 8, 9, 16, 37, 43, 44, 50, 64, 70, 76, 77, 83, 91, 97
+};
+static const U32 kV2DepthStencilFormats[] = { 124, 125, 126, 129, 130 };
+template <size_t N>
+static bool v2FormatIn(U32 format, const U32 (&formats)[N]) {
+    for (U32 supported : formats) if (format == supported) return true;
+    return false;
+}
+static bool v2FormatIsColorAttachment(U32 format) {
+    return v2FormatIn(format, kV2ColorAttachmentFormats);
+}
+static bool v2FormatIsBlendable(U32 format) {
+    return v2FormatIn(format, kV2ColorAttachmentBlendFormats);
+}
+static bool v2FormatIsDepthStencil(U32 format) {
+    return v2FormatIn(format, kV2DepthStencilFormats);
+}
+static VkFormatFeatureFlags v2FormatFeatureFlags(U32 format) {
+    if (!v2FormatIn(format, kV2SupportedTextureFormats)) return 0;
+    VkFormatFeatureFlags flags = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+        VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    if (v2FormatIsColorAttachment(format)) flags |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
+    if (v2FormatIsBlendable(format)) flags |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
+    if (v2FormatIsDepthStencil(format)) flags |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    return flags;
+}
+static VkFormatFeatureFlags v2FormatBufferFeatureFlags(U32 format) {
+    return v2FormatIn(format, kV2SupportedVertexFormats) ? VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT : 0;
+}
+static VkFormatFeatureFlags2 v2FormatFeatureFlags2(U32 format) {
+    if (!v2FormatIn(format, kV2SupportedTextureFormats)) return 0;
+    VkFormatFeatureFlags2 flags = VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT |
+        VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
+    if (v2FormatIsColorAttachment(format)) flags |= VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT;
+    if (v2FormatIsBlendable(format)) flags |= VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BLEND_BIT;
+    if (v2FormatIsDepthStencil(format)) flags |= VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT;
+    return flags;
+}
+static VkFormatFeatureFlags2 v2FormatBufferFeatureFlags2(U32 format) {
+    return v2FormatIn(format, kV2SupportedVertexFormats) ? VK_FORMAT_FEATURE_2_VERTEX_BUFFER_BIT : 0;
+}
 // Byte size of one vertex of a VkFormat the v2 emitter may see. Only the
 // formats DXVK/D3D9 and the probes produce are listed; an unknown format falls
 // back to 16 (conservative: keeps the clamp above the real value).
@@ -3598,42 +3656,33 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkGetPhysicalDeviceFormatProperties: {
         // (physDev, format, out VkFormatProperties)
         if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        const U32 format = (U32)args.a[1];
         VkFormatProperties p = {};
-        p.linearTilingFeatures = (VkFormatFeatureFlags)(VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
-            VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
-            VK_FORMAT_FEATURE_TRANSFER_DST_BIT);
-        p.optimalTilingFeatures = (VkFormatFeatureFlags)(p.linearTilingFeatures |
-            VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
-        p.bufferFeatures = (VkFormatFeatureFlags)(VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT |
-            VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT | VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT);
+        p.linearTilingFeatures = v2FormatFeatureFlags(format);
+        p.optimalTilingFeatures = p.linearTilingFeatures;
+        p.bufferFeatures = v2FormatBufferFeatureFlags(format);
         writeStruct(args.a[2], p);
         return VK_SUCCESS;
     }
     case VK64_fn_vkGetPhysicalDeviceFormatProperties2: {
         // (physDev, format, out VkFormatProperties2) + FormatProperties3 pNext.
         if (!args.a[2]) return 0;
+        const U32 format = (U32)args.a[1];
         VkFormatProperties2 p2 = {};
         if (!readStruct(args.a[2], p2)) return 0;
-        VkFormatFeatureFlags img = (VkFormatFeatureFlags)(
-            VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
-            VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT);
+        const VkFormatFeatureFlags img = v2FormatFeatureFlags(format);
         p2.formatProperties.linearTilingFeatures = img;
-        p2.formatProperties.optimalTilingFeatures = (VkFormatFeatureFlags)(img |
-            VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
-        p2.formatProperties.bufferFeatures = (VkFormatFeatureFlags)(
-            VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT | VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT |
-            VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT);
+        p2.formatProperties.optimalTilingFeatures = img;
+        p2.formatProperties.bufferFeatures = v2FormatBufferFeatureFlags(format);
         writeStruct(args.a[2], p2);
         for (U64 cur = p2.pNext; cur && g_mem;) {
             if (g_mem->readd(cur) == VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3) {
                 VkFormatProperties3 p3 = {};
                 g_mem->memcpyFromGuest(&p3, cur, sizeof(p3));
-                // _2 flag values match v1 on the low bits; add color/depth targets.
-                const VkFormatFeatureFlags2 img2 = (VkFormatFeatureFlags2)((U64)img | 0x3800ull);
+                const VkFormatFeatureFlags2 img2 = v2FormatFeatureFlags2(format);
                 p3.linearTilingFeatures = img2;
-                p3.optimalTilingFeatures = (VkFormatFeatureFlags2)((U64)img2 |
-                    (U64)VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | (U64)VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
-                p3.bufferFeatures = (VkFormatFeatureFlags2)p2.formatProperties.bufferFeatures;
+                p3.optimalTilingFeatures = img2;
+                p3.bufferFeatures = v2FormatBufferFeatureFlags2(format);
                 g_mem->memcpyToGuest(cur, &p3, sizeof(p3));
             }
             cur = g_mem->readq(cur + 8);
@@ -6699,13 +6748,11 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         // 32-bit VkFormatProperties: 3x u32 (linear@0, optimal@4, buffer@8).
         if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
         U32 dst = (U32)args.a[2];
-        U32 img = (U32)(VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
-            VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT);
+        U32 format = (U32)args.a[1];
+        U32 img = (U32)v2FormatFeatureFlags(format);
         wr32_32(dst + 0, img);
-        wr32_32(dst + 4, (U32)(img | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
-            VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT));
-        wr32_32(dst + 8, (U32)(VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT |
-            VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT | VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT));
+        wr32_32(dst + 4, img);
+        wr32_32(dst + 8, (U32)v2FormatBufferFeatureFlags(format));
         return VK_SUCCESS;
     }
     case VK64_fn_vkGetPhysicalDeviceImageFormatProperties: {
@@ -6726,22 +6773,19 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         // (linear@8, optimal@12, buffer@16).
         if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
         U32 dst = (U32)args.a[2];
-        U32 img = (U32)(VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
-            VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT);
-        U32 optimal = (U32)(img | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
-            VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
-        U32 buffer = (U32)(VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT |
-            VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT | VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT);
+        U32 format = (U32)args.a[1];
+        U32 img = (U32)v2FormatFeatureFlags(format);
+        U32 buffer = (U32)v2FormatBufferFeatureFlags(format);
         wr32_32(dst + 8, img);
-        wr32_32(dst + 12, optimal);
+        wr32_32(dst + 12, img);
         wr32_32(dst + 16, buffer);
         // FormatProperties3 pNext chain (32-bit: sType@0, pNext@4, payload@8)
         for (U32 cur = rd32_32(dst + 4); cur && g_mem32;) {
             if (rd32_32(cur) == (U32)VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3) {
-                U64 img2 = (U64)img | 0x3800ull;
+                U64 img2 = (U64)v2FormatFeatureFlags2(format);
                 wr64_32(cur + 8, img2);
-                wr64_32(cur + 16, img2 | (U64)optimal);
-                wr64_32(cur + 24, (U64)buffer);
+                wr64_32(cur + 16, img2);
+                wr64_32(cur + 24, (U64)v2FormatBufferFeatureFlags2(format));
             }
             cur = rd32_32(cur + 4);
         }

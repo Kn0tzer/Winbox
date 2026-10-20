@@ -3,8 +3,8 @@ import {
   V2FrameAssembler, V2FrameQueue, V2PresentAssembler,
   V2_PUSH_BINDING, V2_PUSH_GROUP, V2_PUSH_SIZE, V2_QUEUE_CAP,
   V2_SCALED_VERTEX, V2_TOPOLOGY, V2_UNKNOWN_IMAGE, V2_VERT_FORMAT_SIZE,
-  decodeV2Frame, parseV2Chunk, repackScaledVb, rgba16UnormToHalf,
-  swizzleBgraVb, v2TextureFormat, v2VertexFormat,
+  decodeV2Frame, parseV2Chunk, repackScaledVb,
+  swizzleBgraVb, v2DepthStencilUploads, v2TextureFormat, v2TexturePixels, v2VertexFormat,
 } from './vk-protocol.mjs';
 import { bwLogRl } from './vk-log.mjs';
 import {
@@ -973,6 +973,26 @@ export function v2TargetKey(imageId, w, h, samples, isDepth) {
 // ---------------------------------------------------------------------------
 
 const V2_STENCIL_OPS = /** @type {Record<number,GPUStencilOperation>} */ ({0:'keep',1:'zero',2:'replace',3:'increment-clamp',4:'decrement-clamp',5:'invert',6:'increment-wrap',7:'decrement-wrap'});
+// VkFormats the bridge advertises, including formats represented through CPU
+// conversion (packed 16-bit colours, R16 UNORM and D32/S8 fallbacks). BC is
+// left out because texture-compression-bc is optional on WebGPU adapters.
+export const V2_SUPPORTED_TEXTURE_FORMATS = Object.freeze([
+  2, 3, 5, 7, 8, 9, 16, 37, 38, 41, 43, 44, 50, 64, 70, 76, 77, 83,
+  91, 97, 98, 99, 100, 103, 109, 122, 124, 125, 126, 129, 130,
+]);
+export const V2_SUPPORTED_VERTEX_FORMATS = Object.freeze([
+  16, 17, 18, 19, 20, 21, 23, 24, 25, 26, 27, 28, 37, 38, 39, 40, 41, 42,
+  44, 64, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92,
+  93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109,
+]);
+export const V2_COLOR_ATTACHMENT_FORMATS = Object.freeze([
+  2, 3, 5, 7, 8, 9, 16, 37, 41, 43, 44, 50, 64, 70, 76, 77, 83, 91, 97,
+  98, 99, 100, 103, 109,
+]);
+export const V2_COLOR_ATTACHMENT_BLEND_FORMATS = Object.freeze([
+  2, 3, 5, 7, 8, 9, 16, 37, 43, 44, 50, 64, 70, 76, 77, 83, 91, 97,
+]);
+export const V2_DEPTH_STENCIL_FORMATS = Object.freeze([124, 125, 126, 129, 130]);
 function v2StencilPipeline(pipe, dynamic) {
   if (!pipe.stencil?.enabled) return pipe;
   const stencil = {...pipe.stencil, front:{...pipe.stencil.front}, back:{...pipe.stencil.back}};
@@ -1053,7 +1073,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   if (!navigator.gpu) throw new Error('WebGPU is unavailable');
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error('No WebGPU adapter');
-  const requiredFeatures = /** @type {GPUFeatureName[]} */ (['texture-compression-bc', 'depth32float-stencil8', 'float32-filterable', 'clip-distances', 'timestamp-query', 'depth-clip-control'])
+  const requiredFeatures = /** @type {GPUFeatureName[]} */ (['texture-compression-bc', 'depth32float-stencil8', 'float32-filterable', 'clip-distances', 'timestamp-query', 'depth-clip-control', 'texture-formats-tier1', 'norm16'])
     .filter(feature => adapter.features.has(feature));
   // The bridge advertises Vulkan limits independently of the adapter (see
   // fillLimits in vk64bridge.cpp), so ask for everything this adapter has
@@ -1206,7 +1226,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   // not double-count).
   function textureKey(imgHex, img, counters, cube = false, dimension = '2d') {
     const w = Math.max(1, img.w), h = Math.max(1, img.h);
-    const fmt = v2TextureFormat(img.format, counters === undefined ? stats : counters);
+    const fmt = v2TextureFormat(img.format, counters === undefined ? stats : counters, device.features);
     const hash = img.hash || (img.pixels && img.pixels.length ? fnv1a(img.pixels) : 'empty');
     const d = dimension === '3d' ? Math.max(1, img.d || 1) : 1;
     return { ck: imgHex + ':' + w + 'x' + h + ':' + fmt + ':' + hash + (cube ? ':cube' : '') + (dimension !== '2d' ? ':' + dimension + ':' + d : ''), w, h, d, fmt };
@@ -1216,6 +1236,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   function gpuTextureFor(imgHex, img, cube = false, dimension = '2d') {
     // Persistent cache: reuse GPUTexture when content is unchanged.
     const { ck, w, h, d, fmt } = textureKey(imgHex, img, undefined, cube, dimension);
+    if (!fmt) return null;
     let entry = persistTexCache.get(ck);
     if (entry) { persistStats.texHits++; return entry.tex; }
     if (!img.pixels || !img.pixels.length) {
@@ -1232,22 +1253,40 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     if (img.pixels && img.pixels.length) {
       const compressed = fmt.startsWith('bc');
       const blockBytes = /^bc[14]-/.test(fmt) ? 8 : 16;
-      const bpp = { r8unorm: 1, rg8unorm: 2, rgba16float: 8, rgba32float: 16 }[fmt] || 4;
+      const sourceBpp = img.format === 130 ? 8 : undefined;
+      const bpp = {
+        r8unorm:1, r8snorm:1, r8uint:1, r8sint:1,
+        rg8unorm:2, rg8snorm:2, rg8uint:2, rg8sint:2,
+        r16unorm:2, r16float:2, rg16unorm:4, rg16float:4, depth16unorm:2,
+        rgba16float:8, rg32float:8, depth32float:4, 'depth32float-stencil8':8, r32uint:4, r32sint:4,
+        rgba32float:16,
+      }[fmt] || 4;
       const rowBytes = compressed ? Math.ceil(w / 4) * blockBytes : w * bpp;
       const rows = compressed ? Math.ceil(h / 4) : h;
       const want = rowBytes * rows;
-      const pixels = img.format === 91 ? rgba16UnormToHalf(img.pixels) : img.pixels;
-      let src = pixels.length >= want * slices ? pixels.subarray(0, want * slices) : pixels;
+      const pixels = v2TexturePixels(img.format, img.pixels, device.features);
+      const sourceWant = compressed ? want : w * (sourceBpp || bpp) * rows;
+      let src = pixels.length >= sourceWant * slices ? pixels.subarray(0, sourceWant * slices) : pixels;
       if (cube) {
         // The bridge stores each face's complete mip chain contiguously.
         // WebGPU's base-level upload needs only the first mip from each face.
-        src = new Uint8Array(want * 6);
+        src = new Uint8Array(sourceWant * 6);
         const faceStride = pixels.length / 6;
-        if (Number.isInteger(faceStride) && faceStride >= want)
+        if (Number.isInteger(faceStride) && faceStride >= sourceWant)
           for (let face = 0; face < 6; face++)
-            src.set(pixels.subarray(face * faceStride, face * faceStride + want), face * want);
+            src.set(pixels.subarray(face * faceStride, face * faceStride + sourceWant), face * sourceWant);
       }
-      device.queue.writeTexture({ texture: t }, src, { bytesPerRow: rowBytes, rowsPerImage: rows }, [w, h, slices]);
+      if (fmt.startsWith('depth')) {
+        // Vulkan packs guest depth/stencil data by format. WebGPU requires a
+        // separate upload for each copyable aspect; opaque depth24plus values
+        // stay available for render passes but cannot be initialized by upload.
+        const { uploads, skippedDepth } = v2DepthStencilUploads(img.format, src, device.features);
+        if (skippedDepth) stats.unsupported++;
+        for (const upload of uploads) device.queue.writeTexture({ texture: t, aspect: upload.aspect }, upload.pixels,
+          { bytesPerRow: w * upload.bytesPerTexel, rowsPerImage: rows }, [w, h, slices]);
+      } else {
+        device.queue.writeTexture({ texture: t }, src, { bytesPerRow: rowBytes, rowsPerImage: rows }, [w, h, slices]);
+      }
     }
     persistTexCache.set(ck, { tex: t, w, h, format: fmt });
     // Also populate frame-local cache for within-frame dedup
@@ -1633,7 +1672,11 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
             : null;
           if (aliasTex) stats.aliased++;
           const img = imgHex && imageForView(b?.obj, imgHex);
-          views.push(aliasTex ? aliasTex.createView(img ? { format: v2TextureFormat(img.format, null) } : {}) : (img ? gpuTextureFor(imgHex, img, cube, dimension) : blankTex(cube, dimension)).createView({ dimension: cube ? 'cube' : dimension }));
+          const imgFormat = img ? v2TextureFormat(img.format, stats, device.features) : null;
+          if (img && !imgFormat) return null;
+          const texture = aliasTex || (img ? gpuTextureFor(imgHex, img, cube, dimension) : blankTex(cube, dimension));
+          if (!texture) return null;
+          views.push(aliasTex ? aliasTex.createView(imgFormat ? { format: imgFormat } : {}) : texture.createView({ dimension: cube ? 'cube' : dimension }));
         }
         entries.push({ binding: d.binding, resource: d.arrayCount > 1 ? views : views[0] });
       } else if (t === 'sampler' || t === 'sampler_comparison') {
@@ -1790,6 +1833,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       const colorAttachments = [];
       const passColorFormats = [];
       let depthView = null, depthAttachment = null, passDepthFormat = 'depth24plus', passDepthAspects = 6;
+      let unsupportedAttachment = false;
       for (const a of p.attachments) {
         const samples = v2PickSampleCount(a.samples || 1);
         // Known VkImage identity: the single-sample (resolve) target is keyed
@@ -1798,7 +1842,8 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
         const knownImage = v2ImageKnown(a.imageId);
         const texBinding = knownImage ? GPUTextureUsage.TEXTURE_BINDING : 0;
         if (a.isDepth) {
-          passDepthFormat = a.format ? v2TextureFormat(a.format, stats) : 'depth24plus';
+          passDepthFormat = a.format ? v2TextureFormat(a.format, stats, device.features) : 'depth24plus';
+          if (!passDepthFormat) { unsupportedAttachment = true; continue; }
           const tex = target(v2TargetKey(a.imageId, p.w, p.h, samples, true), {
             size: [p.w, p.h], sampleCount: samples, format: passDepthFormat,
             usage: GPUTextureUsage.RENDER_ATTACHMENT | texBinding,
@@ -1807,7 +1852,8 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
           depthView = tex.createView();
           depthAttachment = a;
         } else {
-          const viewFormat = a.format ? v2TextureFormat(a.format, stats) : format;
+          const viewFormat = a.format ? v2TextureFormat(a.format, stats, device.features) : format;
+          if (!viewFormat) { unsupportedAttachment = true; continue; }
           const storage = colorStorage(viewFormat);
           const slot = colorAttachments.length;
           passColorFormats.push(viewFormat);
@@ -1830,6 +1876,10 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
           });
           presentTex = single; presentW = p.w; presentH = p.h; lastClear = p.clearColor;
         }
+      }
+      if (unsupportedAttachment) {
+        colorAttachments.length = 0; passColorFormats.length = 0;
+        depthView = null; depthAttachment = null;
       }
       // Passes without attachments (e.g. ops recorded outside a render pass,
       // which Vulkan allows) still update the replay state; they just have no
@@ -1969,6 +2019,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
               const c = st.pipeDesc.blendConstantsDynamic ? st.blendConstants : (st.pipeDesc.blendConstants || [0,0,0,0]);
               passEnc.setBlendConstant(st.pipeRec.blendConstantMode === 'alpha' ? [c[3],c[3],c[3],c[3]] : c);
             }
+            let invalidBindGroup = false;
             for (let g = 0; g <= st.pipeRec.maxGroup; g++) {
               if (g === V2_PUSH_GROUP) continue;
               if (!st.pipeRec.decls.some(d => d.group === g)) continue;
@@ -1980,13 +2031,16 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
               let bg = persistGroupCache.get(ck);
               if (!bg) {
                 persistStats.groupMiss++;
-                bg = device.createBindGroup({ layout: st.pipeRec.layouts[g], entries: bindGroupEntries(st.pipeRec, st.sets, st.inlineMap, g) });
+                const entries = bindGroupEntries(st.pipeRec, st.sets, st.inlineMap, g);
+                if (!entries) { invalidBindGroup = true; break; }
+                bg = device.createBindGroup({ layout: st.pipeRec.layouts[g], entries });
                 persistGroupCache.set(ck, bg);
                 if (persistGroupCache.size > PERSIST_GROUP_CACHE_MAX)
                   persistGroupCache.delete(persistGroupCache.keys().next().value);
               } else persistStats.groupHits++;
               passEnc.setBindGroup(g, bg);
             }
+            if (invalidBindGroup) { stats.skippedDraws = (stats.skippedDraws || 0) + 1; break; }
             if (st.pipeRec.hasPush) {
               // Queue writes all precede the encoded draws at submit time.
               // Give each distinct push state immutable storage so a later
