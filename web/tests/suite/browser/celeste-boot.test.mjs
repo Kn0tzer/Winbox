@@ -4,7 +4,7 @@ import { check, checkIncludes, checkGreaterThan } from '../lib/assert.mjs';
 import { canvasPixels } from '../lib/guest-fixtures.mjs';
 import { writeFile } from 'node:fs/promises';
 export default class CelesteBootTest extends ProbeTest {
-  constructor() { super({ tag: 'celeste-boot', timeoutMs: 1200000 }); }
+  constructor() { super({ tag: 'celeste-boot', timeoutMs: 1200000, probeKind: 'heavy' }); }
   async run({ page }) {
     const game = await this.mountArchive(process.env.CELESTE_ZIP || '/home/ubuntu/kn0tzer/games/celeste-drmfree.zip', 'celeste.zip');
     await this.bootGuest(page, { arch: 'x86', gamezip: game.url, gamezipsize: game.bytes,
