@@ -63,13 +63,14 @@ export const terminalText = text => text
   .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
 
 export class ProbeTest {
-  constructor({ tag, timeoutMs = 900000, distDir = "dist" } = {}) {
+  constructor({ tag, timeoutMs = 900000, distDir = "dist", probeKind = 'light' } = {}) {
     if (!tag || !/^[\w.-]+$/.test(tag)) {
       throw new Error("ProbeTest tag must contain only letters, numbers, _, . or -");
     }
     this.tag = tag;
     this.timeoutMs = timeoutMs;
     this.distDir = distDir;
+    this.probeKind = probeKind;
     this.dir = `test-results/suite-${tag}`;
     this.consoleLines = [];
     this.rawConsoleLines = [];
@@ -83,7 +84,7 @@ export class ProbeTest {
   async setup() {
     await mkdir(this.dir, { recursive: true });
     this._log = createWriteStream(join(this.dir, 'console.log'));
-    this._slot = await acquireProbeSlot({ timeoutMs: this.timeoutMs });
+    this._slot = await acquireProbeSlot({ timeoutMs: this.timeoutMs, kind: this.probeKind });
     await waitForBuildIdle();
     const dist = resolve(process.env.WINE_DIST_DIR || this.distDir);
     this.buildInfo = JSON.parse(await readFile(join(dist, 'runtime/BUILD_INFO.json'), 'utf8'));
