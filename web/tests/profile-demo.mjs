@@ -186,6 +186,8 @@ try {
   // Match demo-matrix's focus click so keyboard input reaches the guest window.
   const displayBox = await page.locator('#display').boundingBox();
   if (displayBox) await page.mouse.click(displayBox.x + displayBox.width / 2, displayBox.y + displayBox.height / 2);
+  const gameFrame = await runtimeFrame(page);
+  if (gameFrame) await gameFrame.locator('#canvas').focus().catch(() => {});
 
   // firstframe: first non-blank frame on the runtime canvas. Used only when
   // PROFILE_START anchored at firstframe.
@@ -237,6 +239,8 @@ try {
 
   summary.windowStartSeconds = elapsedSeconds();
   summary.loadAverageWindowStart = readLoadAverage();
+  const activeGameFrame = await runtimeFrame(page);
+  if (activeGameFrame) await activeGameFrame.locator('#canvas').focus().catch(() => {});
   await page.screenshot({ path: join(outDir, 'window-start.png'), fullPage: true }).catch(() => {});
   const guestReset = await callGuest(page, 'bw64_guest_profile_reset');
   if (guestReset.error) summary.guestProfileError = guestReset.error;
