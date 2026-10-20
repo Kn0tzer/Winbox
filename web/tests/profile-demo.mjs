@@ -54,36 +54,60 @@ function readLoadAverage() {
   catch { return null; }
 }
 
-async function waitForLoadAverageBelowThreshold(summary) {
+async function waitForLoadAverageBelowThreshold(summary, deadline) {
   const waitStartedAt = Date.now();
   let current = readLoadAverage();
-  summary.loadAverageGateStart = current;
-  while (current !== null && current >= 2.5 && Date.now() - waitStartedAt < 45 * 60 * 1000) {
+  if (!('loadAverageGateStart' in summary)) summary.loadAverageGateStart = current;
+  while (current !== null && current >= 2.5 && Date.now() < deadline) {
     console.log(`profile-demo: load average ${current}; waiting 30 seconds before profiling`);
-    await sleep(30_000);
+    await sleep(Math.min(30_000, Math.max(1, deadline - Date.now())));
     current = readLoadAverage();
   }
-  summary.loadAverageWaitSeconds = Number(((Date.now() - waitStartedAt) / 1000).toFixed(1));
+  summary.loadAverageWaitSeconds = Number(((summary.loadAverageWaitSeconds || 0) + (Date.now() - waitStartedAt) / 1000).toFixed(1));
   summary.loadAverageReady = current;
-  summary.loadAverageWaitExpired = current !== null && current >= 2.5;
+  summary.loadAverageWaitExpired = current !== null && current >= 2.5 && Date.now() >= deadline;
 }
 
-// A shared machine can keep another serial probe in flight for a while. Match
-// the task's potentially long hygiene wait instead of failing after the slot
-// helper's shorter default timeout.
-const probeSlot = await acquireProbeSlot({ timeoutMs: 4 * 60 * 60 * 1000 });
+async function acquireProbeSlotWithRetries(loadGateSummary, loadGateDeadline, totalDeadline) {
+  while (Date.now() < totalDeadline) {
+    const timeoutMs = Math.min(15 * 60 * 1000, totalDeadline - Date.now());
+    try {
+      const slot = await acquireProbeSlot({ timeoutMs });
+      const currentLoad = readLoadAverage();
+      if (currentLoad !== null && currentLoad >= 2.5 && Date.now() < loadGateDeadline) {
+        await slot.release();
+        await waitForLoadAverageBelowThreshold(loadGateSummary, loadGateDeadline);
+        continue;
+      }
+      loadGateSummary.loadAverageReady = currentLoad;
+      loadGateSummary.loadAverageWaitExpired = currentLoad !== null && currentLoad >= 2.5 && Date.now() >= loadGateDeadline;
+      return slot;
+    } catch (error) {
+      if (!String(error.message).includes('timed out waiting for a probe slot')) throw error;
+      if (Date.now() >= totalDeadline) break;
+      console.log('profile-demo: 15-minute probe-slot wait expired; retrying within the 3-hour limit');
+      if (Date.now() < loadGateDeadline) await waitForLoadAverageBelowThreshold(loadGateSummary, loadGateDeadline);
+    }
+  }
+  throw new Error('timed out waiting up to 3 hours for a probe slot');
+}
+
+let probeSlot;
 try {
   await mkdir(outDir, { recursive: true });
   await main();
 } finally {
-  await probeSlot.release();
+  await probeSlot?.release();
 }
 
 async function main() {
 await waitForBuildIdle();
 const build = JSON.parse(await readFile(join(repo, 'dist/runtime/BUILD_INFO.json'), 'utf8'));
+const totalDeadline = Date.now() + 3 * 60 * 60 * 1000;
+const loadGateDeadline = Date.now() + 45 * 60 * 1000;
 const loadGateSummary = {};
-await waitForLoadAverageBelowThreshold(loadGateSummary);
+await waitForLoadAverageBelowThreshold(loadGateSummary, loadGateDeadline);
+probeSlot = await acquireProbeSlotWithRetries(loadGateSummary, loadGateDeadline, totalDeadline);
 
 const server = await serve('dist');
 const baseUrl = process.env.BW_TEST_BASE_URL || `http://127.0.0.1:${server.address().port}/`;
