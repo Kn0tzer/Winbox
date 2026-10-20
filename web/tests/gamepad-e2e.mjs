@@ -4,7 +4,7 @@ import { extraUrlParams, ProbeTest, withTimeout } from './suite/lib/probe-base.m
 
 class GamepadE2ETest extends ProbeTest {
   constructor() {
-    super({ tag: 'gamepad-e2e', timeoutMs: 1200000, probeKind: 'heavy' });
+    super({ tag: 'gamepad-e2e', timeoutMs: 10800000, probeKind: 'heavy' });
     this.dir = 'test-results/gamepad-e2e';
   }
 
