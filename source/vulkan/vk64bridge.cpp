@@ -58,6 +58,7 @@ namespace vk32abi {
 
 #include "vk64bridge.h"
 #include "vk64bridge_abi.h"
+#include "vk_query_results.h"
 #include "cpu64.h"
 #include "kmemory64.h"
 #include "kprocess.h"
@@ -97,6 +98,7 @@ namespace vk32abi {
 #include <set>
 #include <tuple>
 #include <deque>
+#include <chrono>
 
 namespace {
 
@@ -260,6 +262,7 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkCmdSetStencilCompareMask, "vkCmdSetStencilCompareMask") \
     X(VK64_fn_vkCmdSetStencilWriteMask, "vkCmdSetStencilWriteMask") \
     X(VK64_fn_vkCmdSetStencilReference, "vkCmdSetStencilReference") \
+    X(VK64_fn_vkCmdCopyQueryPoolResults, "vkCmdCopyQueryPoolResults") \
     X(VK64_fn_vkCmdDraw,                            "vkCmdDraw")           \
     X(VK64_fn_vkCmdPipelineBarrier,                 "vkCmdPipelineBarrier")\
     X(VK64_fn_vkCmdCopyBufferToImage,               "vkCmdCopyBufferToImage") \
@@ -513,7 +516,15 @@ struct DescPool  : Obj {};
 struct Surface   : Obj {};
 struct Fence     : Obj { int signalled = 0; };
 struct Event     : Obj { int signalled = 0; };
-struct QueryPool : Obj { U32 type = 0, count = 0; };
+struct QueryPool : Obj { U32 type = 0, count = 0, flags = 0; };
+struct QueryPoolCreateInfo64Local {
+    U32 sType, _pad0; U64 pNext; U32 flags, queryType, queryCount, pipelineStatistics;
+};
+struct QueryPoolCreateInfo32Local {
+    U32 sType, pNext, flags, queryType, queryCount, pipelineStatistics;
+};
+static_assert(sizeof(QueryPoolCreateInfo64Local) == 32, "64-bit VkQueryPoolCreateInfo layout");
+static_assert(sizeof(QueryPoolCreateInfo32Local) == 24, "32-bit VkQueryPoolCreateInfo layout");
 // Timeline semaphores (audit P2-NOW item 3). DXVK puts a u64 wait/signal fence
 // on EVERY command-list flush, so the counter is not optional bookkeeping: it is
 // the only thing that makes vkQueueSubmit's VkTimelineSemaphoreSubmitInfo
@@ -654,7 +665,7 @@ enum CmdKind : U32 {
     CMD_BEGIN_RP, CMD_END_RP, CMD_BIND_PIPE, CMD_BIND_SETS, CMD_VIEWPORT,
     CMD_SCISSOR, CMD_DRAW, CMD_DRAW_INDEXED, CMD_BARRIER, CMD_COPY_B2I, CMD_PUSH_CONST,
     CMD_BIND_VB, CMD_BIND_IB, CMD_UPDATE_BUF, CMD_COPY_I2B, CMD_DISPATCH, CMD_COPY_IMAGE,
-    CMD_STENCIL_STATE, CMD_BLEND_CONSTANTS, CMD_CLEAR_ATTACHMENTS
+    CMD_STENCIL_STATE, CMD_BLEND_CONSTANTS, CMD_CLEAR_ATTACHMENTS, CMD_COPY_QUERY_RESULTS
 };
 struct Copy {
     U64 srcBuffer = 0, dstImage = 0, bufOff = 0;
@@ -669,6 +680,10 @@ struct ImageCopy {
     U64 src = 0, dst = 0;
     U32 srcMip = 0, srcLayer = 0, dstMip = 0, dstLayer = 0;
     U32 srcOrigin[3] = {}, dstOrigin[3] = {}, extent[3] = {};
+};
+struct QueryCopy {
+    U64 queryPool = 0, dstBuffer = 0, dstOffset = 0, stride = 0;
+    U32 firstQuery = 0, queryCount = 0, flags = 0;
 };
 struct ClearAttachmentArg { U32 aspectMask = 0, colorAttachment = 0, value[4] = {}; };
 struct ClearRectArg { int32_t x = 0, y = 0; U32 w = 0, h = 0, baseLayer = 0, layers = 1; };
@@ -689,6 +704,7 @@ struct Cmd {
     Copy  copy;
     CopyI2B copyI2B;
     ImageCopy imageCopy;
+    QueryCopy queryCopy;
     // Push constants: the recorded bytes, byte-offset preserved. DXVK pushes
     // constants per-draw for essentially everything, so this is a hot path, not a
     // corner case.
@@ -953,6 +969,58 @@ void emitFrameNow() {
 // Source and destination are BOTH guest ranges, so this is one
 // memcpyFromGuest/memcpyToGuest per row.
 // ---------------------------------------------------------------------------
+static U64 queryHostNanoseconds() {
+    return (U64)std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+static void writeEncodedQueryResults(U64 dst, const vkquery::EncodedResults& encoded) {
+    for (U32 i = 0; i < encoded.countWritten; ++i) {
+        const U64 offset = (U64)i * encoded.strideBytes;
+        writeGuestBytes(dst + offset, encoded.bytes.data() + offset, encoded.resultBytes);
+    }
+}
+
+static VkResult writeQueryResults(QueryPool* pool, U32 first, U32 count,
+                                  U64 dataSize, U64 dst, U64 stride, U32 flags) {
+    if (!pool || !dst || (!g_mem && !g_mem32)) return VK_ERROR_INITIALIZATION_FAILED;
+    constexpr U64 kMaxQueryResultBytes = 1ULL << 20;
+    const U64 writeSize = std::min<U64>(dataSize, kMaxQueryResultBytes);
+    vkquery::EncodedResults encoded = vkquery::encodeResults(
+        pool->type, first, count, pool->count, (size_t)writeSize, stride, flags,
+        1.0, queryHostNanoseconds());
+    if (!encoded.valid) return VK_ERROR_INITIALIZATION_FAILED;
+    writeEncodedQueryResults(dst, encoded);
+    return encoded.complete && writeSize == dataSize ? VK_SUCCESS : VK_INCOMPLETE;
+}
+
+static void execCopyQueryResults(const Cmd& command) {
+    const QueryCopy& copy = command.queryCopy;
+    QueryPool* pool = nullptr;
+    Buffer* buffer = nullptr;
+    DeviceMemory* memory = nullptr;
+    if (g_mem32) {
+        pool = objOf32<QueryPool>(copy.queryPool, K_QUERYPOOL, "vkCmdCopyQueryPoolResults");
+        buffer = objOf32<Buffer>(copy.dstBuffer, K_BUFFER, "vkCmdCopyQueryPoolResults");
+        if (buffer) memory = objOf32<DeviceMemory>(buffer->mem, K_MEMORY, "vkCmdCopyQueryPoolResults");
+    } else {
+        pool = objOf<QueryPool>(copy.queryPool, K_QUERYPOOL, "vkCmdCopyQueryPoolResults");
+        buffer = objOf<Buffer>(copy.dstBuffer, K_BUFFER, "vkCmdCopyQueryPoolResults");
+        if (buffer) memory = objOf<DeviceMemory>(buffer->mem, K_MEMORY, "vkCmdCopyQueryPoolResults");
+    }
+    if (!pool || !buffer || !memory || !memory->va || copy.dstOffset > buffer->size) return;
+    const U64 memoryOffset = buffer->memOff + copy.dstOffset;
+    if (memoryOffset > memory->size) return;
+    const U64 available = std::min<U64>(buffer->size - copy.dstOffset, memory->size - memoryOffset);
+    const U64 size = std::min<U64>(available, 1ULL << 20);
+    vkquery::EncodedResults encoded = vkquery::encodeResults(
+        pool->type, copy.firstQuery, copy.queryCount, pool->count, (size_t)size,
+        copy.stride, copy.flags, 1.0, queryHostNanoseconds());
+    if (!encoded.valid) return;
+    writeEncodedQueryResults(memory->va + memoryOffset, encoded);
+    buffer->dirtyGen = g_bufDirtyTick++;
+}
+
 // vkCmdUpdateBuffer execution: the transfer write lands in guest memory at
 // submit time, exactly like a real implementation would make it visible.
 // Bounds are clamped defensively; a short write still updates its prefix.
@@ -2768,6 +2836,7 @@ void fillLimits(Limits& L) {
     L.strictLines = VK_TRUE; L.standardSampleLocations = VK_TRUE;
     L.optimalBufferCopyOffsetAlignment = 1; L.optimalBufferCopyRowPitchAlignment = 1;
     L.nonCoherentAtomSize = 64;
+    L.timestampPeriod = 1.0f; // one Vulkan tick per host-clock nanosecond
 }
 
 void fillProperties(VkPhysicalDeviceProperties* p) {
@@ -3801,8 +3870,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         return f->signalled ? VK_SUCCESS : VK_NOT_READY;
     }
     // D3D9 query sync: events are signalled inline (immediate execution), so
-    // Set is visible to Get immediately. Query results are zero-filled: the
-    // menu path only needs completion, not real occlusion counts.
+    // Set is visible to Get immediately. Occlusion returns one synthetic sample
+    // and timestamps use the host monotonic clock.
     case VK64_fn_vkCreateEvent: {
         if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
@@ -3843,9 +3912,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdWaitEvents:
         return VK_SUCCESS; // immediate execution: nothing to wait for
     case VK64_fn_vkCreateQueryPool: {
-        if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        QueryPoolCreateInfo64Local ci = {};
+        if (!args.a[3] || !readStruct(args.a[1], ci)) return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
-        createObj<QueryPool>(K_QUERYPOOL, id);
+        QueryPool* pool = createObj<QueryPool>(K_QUERYPOOL, id);
+        pool->type = ci.queryType; pool->count = ci.queryCount; pool->flags = ci.flags;
         wr64(args.a[3], id);
         return VK_SUCCESS;
     }
@@ -3855,21 +3926,20 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdBeginQuery:
     case VK64_fn_vkCmdEndQuery:
         return VK_SUCCESS;
+    case VK64_fn_vkCmdCopyQueryPoolResults: {
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdCopyQueryPoolResults");
+        if (!cb) return 0;
+        Cmd c; c.kind = CMD_COPY_QUERY_RESULTS;
+        c.queryCopy = { args.a[1], args.a[4], args.a[5], args.a[6],
+                        (U32)args.a[2], (U32)args.a[3], (U32)args.a[7] };
+        pushCmd(cb, c);
+        return 0;
+    }
     case VK64_fn_vkGetQueryPoolResults: {
         QueryPool* q = objOf<QueryPool>(args.a[1], K_QUERYPOOL, "vkGetQueryPoolResults");
         if (!q || !args.a[5]) return VK_ERROR_INITIALIZATION_FAILED;
-        U64 n = args.a[4];
-        if (n > (1ULL << 20)) n = (1ULL << 20); // clamp garbage sizes
-        if (n && g_mem) {
-            static const U8 zeros[4096] = {};
-            U64 off = 0;
-            while (off < n) {
-                U64 c = n - off > sizeof(zeros) ? sizeof(zeros) : n - off;
-                g_mem->memcpyToGuest(args.a[5] + off, zeros, (size_t)c);
-                off += c;
-            }
-        }
-        return VK_SUCCESS;
+        return writeQueryResults(q, (U32)args.a[2], (U32)args.a[3], args.a[4],
+                                 args.a[5], args.a[6], (U32)args.a[7]);
     }
     case VK64_fn_vkDeviceWaitIdle:
     case VK64_fn_vkQueueWaitIdle:
@@ -5910,6 +5980,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 // the copy live in (P1 ran these first at submit too).
                 for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
                 for (const Cmd& k : cb->cmds) if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
+                for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_QUERY_RESULTS) execCopyQueryResults(k);
                 frames.push_back({cb, cbId});
             }
         }
@@ -5971,6 +6042,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 if (!cb) continue;
                 for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
                 for (const Cmd& k : cb->cmds) if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
+                for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_QUERY_RESULTS) execCopyQueryResults(k);
                 frames.push_back({cb, (U64)cbi.commandBuffer});
             }
         }
@@ -6765,9 +6837,11 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdWaitEvents:
         return VK_SUCCESS; // immediate execution: nothing to wait for
     case VK64_fn_vkCreateQueryPool: {
-        if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        QueryPoolCreateInfo32Local ci = {};
+        if (!args.a[3] || !readStruct32((U32)args.a[1], ci)) return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
-        createObj32<QueryPool>(K_QUERYPOOL, id);
+        QueryPool* pool = createObj32<QueryPool>(K_QUERYPOOL, id);
+        pool->type = ci.queryType; pool->count = ci.queryCount; pool->flags = ci.flags;
         wr64_32((U32)args.a[3], id);
         return VK_SUCCESS;
     }
@@ -6776,21 +6850,20 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdBeginQuery:
     case VK64_fn_vkCmdEndQuery:
         return VK_SUCCESS;
+    case VK64_fn_vkCmdCopyQueryPoolResults: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdCopyQueryPoolResults");
+        if (!cb) return 0;
+        Cmd c; c.kind = CMD_COPY_QUERY_RESULTS;
+        c.queryCopy = { args.a[1], args.a[4], args.a[5], args.a[6],
+                        (U32)args.a[2], (U32)args.a[3], (U32)args.a[7] };
+        pushCmd(cb, c);
+        return 0;
+    }
     case VK64_fn_vkGetQueryPoolResults: {
         QueryPool* q = objOf32<QueryPool>(args.a[1], K_QUERYPOOL, "vkGetQueryPoolResults");
         if (!q || !args.a[5]) return VK_ERROR_INITIALIZATION_FAILED;
-        U64 n = args.a[4];
-        if (n > (1ULL << 20)) n = (1ULL << 20); // clamp garbage sizes
-        if (n && g_mem32) {
-            static const U8 zeros[4096] = {};
-            U64 off = 0;
-            while (off < n) {
-                U64 c = n - off > sizeof(zeros) ? sizeof(zeros) : n - off;
-                g_mem32->memcpyToGuest((U32)(args.a[5] + off), zeros, (size_t)c);
-                off += c;
-            }
-        }
-        return VK_SUCCESS;
+        return writeQueryResults(q, (U32)args.a[2], (U32)args.a[3], args.a[4],
+                                 (U32)args.a[5], args.a[6], (U32)args.a[7]);
     }
     case VK64_fn_vkResetCommandBuffer: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkResetCommandBuffer");
@@ -7970,6 +8043,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 if (!cb) continue;
                 for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
                 for (const Cmd& k : cb->cmds) if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
+                for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_QUERY_RESULTS) execCopyQueryResults(k);
                 frames.push_back({cb, cbId});
             }
         }
