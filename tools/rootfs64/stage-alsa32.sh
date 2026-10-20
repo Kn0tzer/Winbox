@@ -20,8 +20,8 @@ zip -q "$WINE32" \
     usr/lib/i386-linux-gnu/alsa-lib/libasound_module_ctl_oss.so
 zip -q -r "$GLIBC32" etc/asound.conf usr/share/alsa
 
-unzip -Z1 "$WINE32" | grep -qx 'usr/lib/i386-linux-gnu/alsa-lib/libasound_module_pcm_oss.so'
-unzip -Z1 "$WINE32" | grep -qx 'usr/lib/i386-linux-gnu/alsa-lib/libasound_module_ctl_oss.so'
-unzip -Z1 "$GLIBC32" | grep -qx 'etc/asound.conf'
-unzip -Z1 "$GLIBC32" | grep -qx 'usr/share/alsa/alsa.conf'
+unzip -Z1 "$WINE32" | grep -x 'usr/lib/i386-linux-gnu/alsa-lib/libasound_module_pcm_oss.so' >/dev/null
+unzip -Z1 "$WINE32" | grep -x 'usr/lib/i386-linux-gnu/alsa-lib/libasound_module_ctl_oss.so' >/dev/null
+unzip -Z1 "$GLIBC32" | grep -x 'etc/asound.conf' >/dev/null
+unzip -Z1 "$GLIBC32" | grep -x 'usr/share/alsa/alsa.conf' >/dev/null
 echo "stage-alsa32: i386 ALSA-to-OSS bridge staged in $RUNTIME"
