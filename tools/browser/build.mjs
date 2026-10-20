@@ -55,6 +55,8 @@ for (const name of ['glibc-rootfs64.zip', 'wine64.zip', 'prefix64.zip', 'glibc-r
 // Keep pinned archives intact; stage Wine fonts and the DirectWrite Arial alias
 // in the export before recording the final desktop-helper prefix hashes.
 execFileSync('python3', [resolve(root, 'tools/browser/stage-wine32-fonts.py'), resolve(out, 'runtime')]);
+execFileSync('python3', [resolve(root, 'tools/browser/stage-sdl2.py'), resolve(out, 'runtime')]);
+execFileSync('python3', [resolve(root, 'tools/browser/stage-winebus.py'), resolve(out, 'runtime')]);
 // Record final prefix hashes after both font aliases and desktop helpers.
 execFileSync('python3', [resolve(root, 'tools/browser/stage-desktop-pin.py'), resolve(out, 'runtime')]);
 await copyFile(resolve(root, 'web/runtime.html'), resolve(out, 'runtime/index.html'));

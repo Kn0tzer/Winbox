@@ -1,0 +1,13 @@
+These five Wine 8.0 INF payloads are staged into both prebuilt Wine prefixes
+at `C:\windows\inf`. The pinned `.update-timestamp` disables wineboot's
+`wine.inf` `InfFiles` update step, so Plug and Play otherwise cannot match the
+Wine HID and XInput function drivers.
+
+Sources from Wine 8.0, matching the complete `InfFiles` section in `wine.inf`:
+- `dlls/hidclass.sys/input.inf`
+- `dlls/winebus.sys/winebus.inf`
+- `dlls/winehid.sys/winehid.inf`
+- `dlls/wineusb.sys/wineusb.inf`
+- `dlls/winexinput.sys/winexinput.inf`
+
+Wine project files are distributed under LGPL-2.1-or-later.

@@ -57,7 +57,30 @@ test('Wine exports preserve pinned files except desktop helpers and the Wine32 A
     const a = join(repoRoot, 'dist/runtime', z);
     const b = join(repoRoot, 'web/runtime', z);
     if (!existsSync(a) || !existsSync(b)) continue;
-    if (z.startsWith('wine')) assert.equal(sha256File(a), sha256File(b), `${z}: dist vs web must match`);
+    if (z === 'wine32.zip' || z === 'wine64.zip') execFileSync('python3', ['-c', `
+import hashlib, json, pathlib, sys, zipfile
+exported, base, root, archive = map(str, sys.argv[1:])
+arch = 'i386' if archive == 'wine32.zip' else 'amd64'
+triplet = 'i386-linux-gnu' if arch == 'i386' else 'x86_64-linux-gnu'
+source_dir = pathlib.Path(root) / 'tools/rootfs64/sdl2' / arch / 'usr/lib' / triplet
+source = {'usr/lib/' + triplet + '/' + path.name: path.read_bytes()
+          for path in source_dir.glob('*.so*')}
+manifest = json.loads((pathlib.Path(exported).parent / 'sdl2-provenance.json').read_text())
+records = {record['path']: record for record in manifest['files'] if record['archive'] == archive}
+assert set(records) == set(source), f'{archive}: provenance paths differ from staged SDL2 files'
+with zipfile.ZipFile(exported) as actual, zipfile.ZipFile(base) as original:
+    assert len(actual.namelist()) == len(set(actual.namelist())), f'{archive}: duplicate members'
+    assert set(actual.namelist()) == set(original.namelist()) | set(source), f'{archive}: unexpected members'
+    for name in original.namelist():
+        desired = source[name] if name in source else original.read(name)
+        assert actual.read(name) == desired, name
+    for name, data in source.items():
+        record = records[name]
+        assert actual.read(name) == data
+        assert record['bytes'] == len(data)
+        assert record['sha256'] == hashlib.sha256(data).hexdigest()
+`, a, b, repoRoot, z], { stdio: 'pipe' });
+    else if (z.startsWith('wine')) assert.equal(sha256File(a), sha256File(b), `${z}: dist vs web must match`);
     else execFileSync('python3', ['-c', `
 import pathlib, sys, zipfile, json, hashlib, importlib.util
 exported, base, root, arch = map(str, sys.argv[1:])
@@ -66,14 +89,18 @@ paths = {'home/username/' + helper}
 if arch == '64': paths.add('home/username/.wine/drive_c/' + helper)
 expected = (pathlib.Path(root) / 'tools/rootfs64/gltest' / helper).read_bytes()
 registry = 'home/username/.wine/user.reg'
+system_registry = 'home/username/.wine/system.reg'
 spec = importlib.util.spec_from_file_location('fonts', pathlib.Path(root) / 'tools/browser/stage-wine32-fonts.py')
 fonts = importlib.util.module_from_spec(spec); spec.loader.exec_module(fonts)
+winebus_spec = importlib.util.spec_from_file_location('winebus', pathlib.Path(root) / 'tools/browser/stage-winebus.py')
+winebus = importlib.util.module_from_spec(winebus_spec); winebus_spec.loader.exec_module(winebus)
 with zipfile.ZipFile(exported) as actual, zipfile.ZipFile(base) as original:
  assert set(actual.namelist()) == set(original.namelist()) | paths
  assert len(actual.namelist()) == len(set(actual.namelist())), 'duplicate zip members'
  for name in actual.namelist():
   desired = expected if name in paths else original.read(name)
   if arch == '32' and name == registry: desired = fonts.configure_replacements(desired)
+  if arch == '64' and name == system_registry: desired = winebus.patch_registry(desired)
   assert actual.read(name) == desired, name
  if arch == '32':
   record = json.loads((pathlib.Path(exported).parent / 'wine32-font-provenance.json').read_text())

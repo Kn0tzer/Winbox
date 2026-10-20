@@ -395,13 +395,9 @@ U32 KUnixSocketObject::read(KThread* thread, U32 buffer, U32 len) {
 }
 
 U32 KUnixSocketObject::read(KThread* thread, U32 buffer, U32 len, U32 flags) {
-    bool peek = false;
-    if (flags & K_MSG_PEEK) {
-        peek = true;
-        flags &= ~K_MSG_PEEK;
-    }
-    if (flags) {
-        kwarn_fmt("KUnixSocketObject::recvfrom unhandled flags=%x", flags);
+    const KSocketRecvFlags recvFlags = ksocketDecodeRecvFlags(flags);
+    if (recvFlags.unknown) {
+        ksocketWarnUnknownRecvFlagsOnce(recvFlags.unknown);
     }
 
     U32 count = 0;
@@ -416,18 +412,22 @@ U32 KUnixSocketObject::read(KThread* thread, U32 buffer, U32 len, U32 flags) {
         return -K_EPIPE;
     con = nullptr; // don't hold a strong reference to this, if we are blocking then it would prevent the con object from being destroyed when its process is closed
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->lockCond);
-    while (this->recvBuffer.size_used()==0) {
+    while (this->recvBuffer.size_used() == 0 ||
+           (recvFlags.waitAll && this->type == K_SOCK_STREAM && this->recvBuffer.size_used() < len)) {
         if (this->inClosed) {
-            return 0;
+            break;
         }
-        if (!this->blocking) {
-            return -K_EWOULDBLOCK;
+        if (!this->blocking || recvFlags.dontWait) {
+            if (!this->recvBuffer.size_used()) {
+                return -K_EWOULDBLOCK;
+            }
+            break;
         }
         BOXEDWINE_CONDITION_WAIT(this->lockCond);
 #ifdef BOXEDWINE_MULTI_THREADED
-		if (thread->terminating) {
-			return -K_EINTR;
-		}
+        if (thread->terminating) {
+            return -K_EINTR;
+        }
         if (thread->startSignal) {
             thread->startSignal = false;
             return -K_CONTINUE;
@@ -435,7 +435,7 @@ U32 KUnixSocketObject::read(KThread* thread, U32 buffer, U32 len, U32 flags) {
 #endif
     }
     count = std::min(len, (U32)this->recvBuffer.size_used());
-    if (peek) {
+    if (recvFlags.peek) {
         U32 availableOnPage = K_PAGE_SIZE - (buffer & K_PAGE_MASK);
         if (count <= availableOnPage) {
             memory->performOnMemory(buffer, count, false, [this](U8* ram, U32 len) {
@@ -465,6 +465,7 @@ U32 KUnixSocketObject::read(KThread* thread, U32 buffer, U32 len, U32 flags) {
         BOXEDWINE_CONDITION_SIGNAL_ALL(this->lockCond);
     }
 
+    // MSG_TRUNC has no additional effect on this byte-stream receive path.
     return count;
 }
 
@@ -1017,39 +1018,35 @@ U32 KUnixSocketObject::recvmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
     MsgHdr hdr = {};
     U32 result = 0;
     KMemory* memory = thread->memory;
+    const KSocketRecvFlags recvFlags = ksocketDecodeRecvFlags(flags);
+    if (recvFlags.unknown) {
+        ksocketWarnUnknownRecvFlagsOnce(recvFlags.unknown);
+    }
+    readMsgHdr(thread, address, &hdr);
+    U32 requested = 0;
+    for (U32 i = 0; i < hdr.msg_iovlen; i++) {
+        requested += memory->readd(hdr.msg_iov + 8 * i + 4);
+    }
 
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->lockCond);
     while (!this->msgs.size()) {
-        if (this->recvBuffer.size_used()) {
-            readMsgHdr(thread, address, &hdr);        
-            for (U32 i = 0; i < hdr.msg_iovlen; i++) {
-                U32 p = memory->readd(hdr.msg_iov + 8 * i);
-                U32 len = memory->readd(hdr.msg_iov + 8 * i + 4);
-
-                U32 count = std::min(len, (U32)this->recvBuffer.size_used());
-                memory->performOnMemory(p, count, false, [this](U8* ram, U32 len) {
-                    this->recvBuffer.get(ram, len);
-                    return true;
-                    });
-                result += count;
-            }
-            if (this->type==K_SOCK_STREAM)
-                memory->writed(address + 4, 0); // msg_namelen, set to 0 for connected sockets
-            memory->writed(address + 20, 0); // msg_controllen
-            return result;
+        U32 available = (U32)this->recvBuffer.size_used();
+        bool waitForAll = recvFlags.waitAll && this->type == K_SOCK_STREAM && available < requested;
+        if (available && (!waitForAll || this->inClosed || !this->blocking || recvFlags.dontWait)) {
+            break;
         }
         if (this->inClosed) {
             return 0;
         }
-        if (!this->blocking) {
+        if (!this->blocking || recvFlags.dontWait) {
             return -K_EWOULDBLOCK;
         }
         // :TODO: what about a time out
         BOXEDWINE_CONDITION_WAIT(this->lockCond);
 #ifdef BOXEDWINE_MULTI_THREADED
-		if (thread->terminating) {
-			return -K_EINTR;
-		}
+        if (thread->terminating) {
+            return -K_EINTR;
+        }
         if (thread->startSignal) {
             thread->startSignal = false;
             return -K_CONTINUE;
@@ -1057,17 +1054,53 @@ U32 KUnixSocketObject::recvmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
 #endif
     }
 
-    readMsgHdr(thread, address, &hdr);
+    if (!this->msgs.size()) {
+        U32 remaining = std::min((U32)this->recvBuffer.size_used(), requested);
+        std::vector<U8> peekData;
+        if (recvFlags.peek) {
+            peekData.resize(remaining);
+            this->recvBuffer.peek(peekData.data(), remaining);
+        }
+        U32 pos = 0;
+        for (U32 i = 0; i < hdr.msg_iovlen; i++) {
+            U32 p = memory->readd(hdr.msg_iov + 8 * i);
+            U32 len = memory->readd(hdr.msg_iov + 8 * i + 4);
+            U32 count = std::min(len, remaining);
+            if (recvFlags.peek) {
+                if (count) {
+                    memory->memcpy(p, peekData.data() + pos, count);
+                }
+            } else {
+                memory->performOnMemory(p, count, false, [this](U8* ram, U32 len) {
+                    this->recvBuffer.get(ram, len);
+                    return true;
+                    });
+            }
+            result += count;
+            pos += count;
+            remaining -= count;
+        }
+        if (this->type == K_SOCK_STREAM)
+            memory->writed(address + 4, 0); // msg_namelen, set to 0 for connected sockets
+        memory->writed(address + 20, 0); // msg_controllen
+        return result;
+    }
+
     std::shared_ptr<KSocketMsg> msg = this->msgs.front();
-    this->msgs.pop();
+    if (!recvFlags.peek) {
+        this->msgs.pop();
+    }
 
     if (hdr.msg_control) {
-        U32 i=0;
+        U32 i = 0;
 
-        for (;i<hdr.msg_controllen/16 && i<msg->objects.size();i++) {
+        for (; i < hdr.msg_controllen / 16 && i < msg->objects.size(); i++) {
             KFileDescriptorPtr recvFd = thread->process->allocFileDescriptor(msg->objects[i].object, msg->objects[i].accessFlags, 0, -1, 0);
+            if (recvFlags.closeOnExec) {
+                recvFd->descriptorFlags |= FD_CLOEXEC;
+            }
             // BW64_SOCKDTOR: witness the RECEIVER installing a passed fd. The
-            // object is SHARED (same shared_ptr) with the sender's fd — this is
+            // object is SHARED (same shared_ptr) with the sender's fd; this is
             // the share-vs-dup site. Log the kobj + the receiver's new fd + the
             // post-install use_count (how many fd tables now reference it).
             if (std::getenv("BW64_SOCKDTOR")) {
@@ -1080,21 +1113,19 @@ U32 KUnixSocketObject::recvmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
             writeCMsgHdr(thread, hdr.msg_control + i * 16, 16, K_SOL_SOCKET, K_SCM_RIGHTS);
             memory->writed(hdr.msg_control + i * 16 + 12, recvFd->handle);
         }
-		memory->writed(address + 20, i * 16); // msg_controllen
+        memory->writed(address + 20, i * 16); // msg_controllen
     }
     U32 pos = 0;
-    for (U32 i=0;i<hdr.msg_iovlen;i++) {
+    for (U32 i = 0; i < hdr.msg_iovlen; i++) {
         U32 p = memory->readd(hdr.msg_iov + 8 * i);
         U32 len = memory->readd(hdr.msg_iov + 8 * i + 4);
         U32 dataLen = msg->data[pos] | (((U32)msg->data[pos + 1]) << 8) | (((U32)msg->data[pos + 2]) << 16) | (((U32)msg->data[pos + 3]) << 24);
-        pos+=4;
-        if (len<dataLen) {
-            kpanic("unhandled socket msg logic");
-        }
-        memory->memcpy(p, msg->data.data() + pos, dataLen);
-        pos+=dataLen;
-        result+=dataLen;
-    }  
+        pos += 4;
+        U32 copied = std::min(len, dataLen);
+        memory->memcpy(p, msg->data.data() + pos, copied);
+        pos += dataLen;
+        result += recvFlags.truncate ? dataLen : copied;
+    }
     if (!this->connection.expired()) {
         BOXEDWINE_CONDITION_SIGNAL_ALL(this->lockCond);
     }

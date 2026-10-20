@@ -1562,6 +1562,113 @@
         console.error("wine64-launcher unhandledrejection:", ev.reason);
         setStatusText("Boot failed: " + (ev.reason && ev.reason.message ? ev.reason.message : ev.reason));
     });
+    // --- browser Gamepad API -> guest Xbox 360 pad --------------------------
+    // Emscripten SDL never captures DOM input in the headless launcher, so the
+    // page polls navigator.getGamepads() and pushes each changed snapshot into
+    // the guest's /dev/input/event5 pad (bw64_gamepad_update). The C side diffs
+    // against the previous snapshot, so polling every frame is cheap.
+    var gamepadFrame = 0;
+    var gamepadPacked = null;
+    var gamepadDisconnectPending = false;
+    var gamepadDisconnectedIndices = Object.create(null);
+    function gamepadAxisScale(value) {
+        if (typeof value !== "number" || !isFinite(value)) return 0;
+        var scaled = Math.round(value * (value < 0 ? 32768 : 32767));
+        return Math.max(-32768, Math.min(32767, scaled));
+    }
+    function gamepadActivePad() {
+        if (typeof navigator.getGamepads !== "function") return null;
+        var pads = navigator.getGamepads();
+        var fallback = null;
+        for (var i = 0; i < pads.length; i++) {
+            var pad = pads[i];
+            if (!pad || !pad.connected) continue;
+            if (pad.mapping === "standard") return pad;
+            if (!fallback) fallback = pad;
+        }
+        return fallback;
+    }
+    function gamepadSend(connected, buttons, lx, ly, rx, ry, lt, rt, hatx, haty) {
+        var packed = [connected, buttons, lx, ly, rx, ry, lt, rt, hatx, haty].join(",");
+        if (packed === gamepadPacked) return;
+        var result = callExport("bw64_gamepad_update",
+            ["number", "number", "number", "number", "number", "number",
+             "number", "number", "number", "number"],
+            [connected, buttons, lx, ly, rx, ry, lt, rt, hatx, haty]);
+        if (result === null) return; // runtime not up yet; send once it is
+        gamepadPacked = packed;
+    }
+    function gamepadPoll() {
+        gamepadFrame = 0;
+        var pad = gamepadActivePad();
+        if (!pad) {
+            if (gamepadDisconnectPending) {
+                gamepadDisconnectPending = false;
+                gamepadDisconnectedIndices = Object.create(null);
+                gamepadSend(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+                return;
+            }
+            // A Gamepad event is the authoritative lifecycle notification.
+            // Keep polling through transient empty snapshots; disconnect
+            // sends the neutral state and stops this loop after the event.
+            gamepadFrame = requestAnimationFrame(gamepadPoll);
+            return;
+        }
+        if (gamepadDisconnectPending && !gamepadDisconnectedIndices[pad.index]) {
+            // Another controller remains. Keep the virtual device connected
+            // and follow the selected pad after the disconnected one is gone.
+            gamepadDisconnectPending = false;
+            gamepadDisconnectedIndices = Object.create(null);
+        }
+        var source = pad.buttons || [];
+        var button = function (index) {
+            var entry = source[index];
+            return !!(entry && (entry.pressed || entry.value > 0.5));
+        };
+        // bw64_gamepad_update bit order: A,B,X,Y,LB,RB,BACK,START,GUIDE,
+        // LTHUMB,RTHUMB. W3C standard: 0 A,1 B,2 X,3 Y,4 LB,5 RB,6 LT,7 RT,
+        // 8 BACK,9 START,10 LTHUMB,11 RTHUMB,12-15 dpad,16 GUIDE.
+        var buttons = 0;
+        if (button(0)) buttons |= 1 << 0;
+        if (button(1)) buttons |= 1 << 1;
+        if (button(2)) buttons |= 1 << 2;
+        if (button(3)) buttons |= 1 << 3;
+        if (button(4)) buttons |= 1 << 4;
+        if (button(5)) buttons |= 1 << 5;
+        if (button(8)) buttons |= 1 << 6;
+        if (button(9)) buttons |= 1 << 7;
+        if (button(16)) buttons |= 1 << 8;
+        if (button(10)) buttons |= 1 << 9;
+        if (button(11)) buttons |= 1 << 10;
+        var axes = pad.axes || [];
+        var lx = gamepadAxisScale(axes[0] || 0);
+        var ly = gamepadAxisScale(axes[1] || 0); // Gamepad and evdev both use negative for up
+        var rx = gamepadAxisScale(axes[2] || 0);
+        var ry = gamepadAxisScale(axes[3] || 0);
+        var ltValue = source[6] && source[6].value ? source[6].value : 0;
+        var rtValue = source[7] && source[7].value ? source[7].value : 0;
+        var lt = typeof ltValue === "number" && isFinite(ltValue) ? Math.round(Math.max(0, Math.min(1, ltValue)) * 255) : 0;
+        var rt = typeof rtValue === "number" && isFinite(rtValue) ? Math.round(Math.max(0, Math.min(1, rtValue)) * 255) : 0;
+        var hatx = (button(14) ? -1 : 0) + (button(15) ? 1 : 0);
+        var haty = (button(12) ? -1 : 0) + (button(13) ? 1 : 0);
+        gamepadSend(1, buttons, lx, ly, rx, ry, lt, rt, hatx, haty);
+        gamepadFrame = requestAnimationFrame(gamepadPoll);
+    }
+    function gamepadConnected() {
+        gamepadDisconnectPending = false;
+        gamepadDisconnectedIndices = Object.create(null);
+        if (!gamepadFrame) gamepadFrame = requestAnimationFrame(gamepadPoll);
+    }
+    function gamepadDisconnected(event) {
+        gamepadDisconnectPending = true;
+        if (event && event.gamepad && event.gamepad.index >= 0) {
+            gamepadDisconnectedIndices[event.gamepad.index] = true;
+        }
+        if (!gamepadFrame) gamepadFrame = requestAnimationFrame(gamepadPoll);
+    }
+    window.addEventListener("gamepadconnected", gamepadConnected);
+    window.addEventListener("gamepaddisconnected", gamepadDisconnected);
+
     window.bwRuntime = { fs: getFS, ready: sessionReady, call: callExport };
     if (window.setActiveApp) try { window.setActiveApp(PROG || "--version"); } catch (e) {}
     bootWine();

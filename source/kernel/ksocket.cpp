@@ -28,6 +28,12 @@
 #include <string.h>
 #include <stdio.h>
 
+void ksocketWarnUnknownRecvFlagsOnce(U32 flags) {
+    static std::atomic_flag logged = ATOMIC_FLAG_INIT;
+    if (!logged.test_and_set()) {
+        kwarn_fmt("socket recvfrom ignoring unhandled flags=%x", flags);
+    }
+}
 
 
 BString socketAddressName(KMemory* memory, U32 address, U32 len) {
