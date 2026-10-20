@@ -272,6 +272,7 @@ try {
   await Promise.race([inputLoop, sleep(3000)]);
   await page.screenshot({ path: join(outDir, 'window-end.png'), fullPage: true }).catch(() => {});
 
+  await refreshTargetInfo();
   await writeFile(join(outDir, 'targets.json'), JSON.stringify(targets, null, 2) + '\n');
   summary.stage = 'profiled';
 } finally {
@@ -318,6 +319,12 @@ async function handleCdp(message) {
     else item.resolve(message.result);
     return;
   }
+  if (message.method === 'Target.targetInfoChanged') {
+    const info = message.params.targetInfo;
+    const entry = targets.find(target => target.targetId === info.targetId);
+    if (entry) Object.assign(entry, { type: info.type, url: info.url, title: info.title });
+    return;
+  }
   if (message.method === 'Target.attachedToTarget') {
     const { sessionId, targetInfo } = message.params;
     if (sessions.has(sessionId)) return;
@@ -338,6 +345,17 @@ async function handleCdp(message) {
     await stopProfiler(sessionId);
     sessions.delete(sessionId);
   }
+}
+
+async function refreshTargetInfo() {
+  await Promise.all(targets.map(async entry => {
+    try {
+      const { targetInfo } = await cdp('Target.getTargetInfo', { targetId: entry.targetId });
+      if (targetInfo) Object.assign(entry, {
+        type: targetInfo.type, url: targetInfo.url, title: targetInfo.title,
+      });
+    } catch {}
+  }));
 }
 
 async function enableProfiler(sessionId) {
