@@ -146,6 +146,64 @@ test('vector SpecConstantOp folds to scalar lanes + flattened composite', () => 
   assert.ok(wgsl.includes('3.75'), 'folded value is 1.5*2.5 in every lane');
 });
 
+function buildDrawParametersModule() {
+  const words = [];
+  const put = (op, ...ops) => words.push((((ops.length + 1) << 16) | op) >>> 0, ...ops.map(w => w >>> 0));
+  const str = s => {
+    const b = [...s].map(c => c.charCodeAt(0)); b.push(0);
+    while (b.length % 4) b.push(0);
+    const out = [];
+    for (let i = 0; i < b.length; i += 4)
+      out.push((b[i] | (b[i + 1] << 8) | (b[i + 2] << 16) | (b[i + 3] << 24)) >>> 0);
+    return out;
+  };
+  put(17, 1);                              // OpCapability Shader
+  put(17, 4427);                           // OpCapability DrawParameters
+  put(14, 0, 1);                           // OpMemoryModel Logical GLSL450
+  put(15, 0, 13, ...str('main'), 7, 8, 10); // Vertex entry: BaseVertex, VertexIndex, Position
+  put(71, 7, 11, 4424);                    // BaseVertex
+  put(71, 8, 11, 42);                      // VertexIndex
+  put(71, 10, 11, 0);                      // Position
+  put(19, 1);                              // %1 = OpTypeVoid
+  put(21, 2, 32, 1);                       // %2 = OpTypeInt 32 signed
+  put(22, 3, 32);                          // %3 = OpTypeFloat 32
+  put(23, 4, 3, 4);                        // %4 = OpTypeVector %3 4
+  put(33, 5, 1);                           // %5 = OpTypeFunction %1
+  put(32, 6, 1, 2);                        // %6 = OpTypePointer Input %2
+  put(32, 9, 3, 4);                        // %9 = OpTypePointer Output %4
+  put(43, 3, 11, 0);                       // %11 = OpConstant %3 0
+  put(44, 4, 12, 11, 11, 11, 11);          // %12 = OpConstantComposite %4 zero
+  put(59, 6, 7, 1);                        // %7 = OpVariable Input
+  put(59, 6, 8, 1);                        // %8 = OpVariable Input
+  put(59, 9, 10, 3);                       // %10 = OpVariable Output
+  put(54, 1, 13, 0, 5);                    // %13 = OpFunction
+  put(248, 14);                            // %14 = OpLabel
+  put(61, 2, 15, 7);                       // %15 = OpLoad BaseVertex
+  put(61, 2, 16, 8);                       // %16 = OpLoad VertexIndex
+  put(130, 2, 17, 16, 15);                 // %17 = OpISub VertexIndex - BaseVertex
+  put(62, 10, 12);                         // OpStore Position
+  put(253);                                // OpReturn
+  put(56);                                 // OpFunctionEnd
+  const out = new Uint32Array(5 + words.length);
+  out.set([0x07230203, 0x00010000, 0, 18, 0], 0);
+  out.set(words, 5);
+  return new Uint8Array(out.buffer);
+}
+
+test('DrawParameters base builtins become zero while VertexIndex stays a builtin load', () => {
+  const raw = buildDrawParametersModule();
+  const fixed = applySpirvFix(raw);
+  const mod = parseSpirv(fixed.bytes);
+  assert.equal(mod.insns.some(i => i.op === 17 && i.words[0] === 4427), false);
+  assert.equal(mod.insns.some(i => i.op === 71 && i.words[1] === 11 && i.words[2] === 4424), false);
+  const loads = mod.insns.filter(i => i.op === 61);
+  assert.equal(loads.length, 1, 'the VertexIndex load remains');
+  assert.equal(loads[0].words[2], 8);
+  assert.ok(mod.insns.some(i => i.op === 83 && i.words[1] === 15), 'BaseVertex value is copied from zero');
+  const wgsl = String(naga.translate({ from: 'spirv', to: 'wgsl', source: fixed.bytes }));
+  assert.match(wgsl, /@builtin\(vertex_index\)/);
+});
+
 test('toWGSL spirv input validation is unchanged', async () => {
   await assert.rejects(toWGSL('spirv', new Uint8Array(16)), /Invalid SPIR-V byte length/);
   await assert.rejects(toWGSL('spirv', new Uint8Array(20)), /Invalid SPIR-V magic/);

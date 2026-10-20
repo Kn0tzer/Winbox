@@ -860,6 +860,76 @@ function stripUnusedDrawParameters(mod, log) {
   return true;
 }
 
+// DXVK computes SV_VertexID/InstanceID by subtracting BaseVertex/BaseInstance
+// from the corresponding WebGPU builtin. WebGPU's vertex_index and
+// instance_index already include the draw's base values, so make the
+// subtractands zero and keep VertexIndex/InstanceIndex untouched. This means
+// SV_InstanceID includes StartInstanceLocation, the one known D3D deviation.
+function replaceDrawParameterBuiltins(mod, log) {
+  const baseBuiltins = new Map(mod.insns
+    .filter(i => i.op === Op.Decorate && i.words[1] === 11 && [4424, 4425, 4426].includes(i.words[2]))
+    .map(i => [i.words[0], i.words[2]]));
+  if (!baseBuiltins.size) return false;
+
+  const byId = new Map(mod.insns.filter(i => i.resultId != null).map(i => [i.resultId, i]));
+  const variables = new Set();
+  const loads = [];
+  for (const id of baseBuiltins.keys()) {
+    const variable = byId.get(id), pointer = variable && byId.get(variable.words[0]);
+    if (!variable || variable.op !== Op.Variable || variable.words[2] !== 1 ||
+        !pointer || pointer.op !== Op.TypePointer || pointer.words[1] !== 1) {
+      log.push(`spirvfix: left DrawParameters builtin %${id} unchanged (unsupported interface shape)`);
+      return false;
+    }
+    variables.add(id);
+    for (const ins of mod.insns) {
+      if (ins.op === Op.Load && ins.words[2] === id) {
+        const scalar = byId.get(ins.resultType);
+        if (!inFunction(mod, ins) || ins.resultType !== pointer.words[2] || !scalar ||
+            scalar.op !== Op.TypeInt || scalar.words[1] !== 32) {
+          log.push(`spirvfix: left DrawParameters builtin %${id} unchanged (expected a direct 32-bit integer load)`);
+          return false;
+        }
+        loads.push(ins);
+      } else if (ins.op !== Op.Variable && ins.op !== Op.Decorate && ins.op !== Op.Name && ins.op !== Op.EntryPoint &&
+          ins.words.includes(id)) {
+        log.push(`spirvfix: left DrawParameters builtin %${id} unchanged (pointer is used outside OpLoad)`);
+        return false;
+      }
+    }
+  }
+
+  const newId = makeIdSource(mod);
+  const zeroByType = new Map();
+  const constants = [];
+  for (const load of loads) {
+    let zero = zeroByType.get(load.resultType);
+    if (zero == null) {
+      zero = newId();
+      zeroByType.set(load.resultType, zero);
+      constants.push({ op: Op.Constant, words: [load.resultType, zero, 0], resultType: load.resultType, resultId: zero });
+    }
+    load.op = Op.CopyObject;
+    load.words = [load.resultType, load.resultId, zero];
+  }
+
+  mod.insns = mod.insns.filter(i => !((i.op === Op.Variable && variables.has(i.resultId)) ||
+    ((i.op === Op.Decorate || i.op === Op.Name) && variables.has(i.words[0])) ||
+    (i.op === 17 && i.words[0] === 4427)));
+  for (const entry of mod.insns.filter(i => i.op === Op.EntryPoint)) {
+    let start = 2;
+    while (start < entry.words.length) {
+      const word = entry.words[start++];
+      if ([0, 8, 16, 24].some(shift => ((word >>> shift) & 255) === 0)) break;
+    }
+    entry.words = entry.words.slice(0, start).concat(entry.words.slice(start).filter(id => !variables.has(id)));
+  }
+  const firstVariable = mod.insns.findIndex(i => i.op === Op.Variable);
+  mod.insns.splice(firstVariable < 0 ? sections(mod).firstFunc : firstVariable, 0, ...constants);
+  log.push(`spirvfix: replaced ${loads.length} BaseVertex/BaseInstance/DrawIndex load(s) with zero`);
+  return true;
+}
+
 // R6 "strip-index-decorations": naga 30.2.0 rejects fragment entry points
 // carrying OpDecorate Index (32, dual-source blending index) with
 // "Entry point main at Fragment is invalid", even on valid SPIR-V
@@ -1087,9 +1157,14 @@ export function applySpirvFix(bytes, { rasterTopology, specOverrides } = {}) {
     log.push('R4 failed: ' + (e.message || e));
   }
   try {
+    if (replaceDrawParameterBuiltins(mod, log)) applied.push('replace-draw-parameters');
+  } catch (e) {
+    log.push('R5 used DrawParameters rewrite failed: ' + (e.message || e));
+  }
+  try {
     if (stripUnusedDrawParameters(mod, log)) applied.push('strip-draw-parameters');
   } catch (e) {
-    log.push('R5 failed: ' + (e.message || e));
+    log.push('R5 unused DrawParameters rewrite failed: ' + (e.message || e));
   }
   try {
     if (stripIndexDecorations(mod, log)) applied.push('strip-index-decorations');
@@ -1117,4 +1192,4 @@ export function applySpirvFix(bytes, { rasterTopology, specOverrides } = {}) {
   }
 }
 
-export const REWRITES = ['split-combined-sampler', 'fold-spec-constants', 'non-point-builtins', 'tail-demote-to-kill', 'strip-draw-parameters', 'strip-index-decorations', 'strip-signed-zero-inf-nan-preserve', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases'];
+export const REWRITES = ['split-combined-sampler', 'fold-spec-constants', 'non-point-builtins', 'tail-demote-to-kill', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-signed-zero-inf-nan-preserve', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases'];
