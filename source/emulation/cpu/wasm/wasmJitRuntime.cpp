@@ -38,7 +38,7 @@
  *                               default, which is disabled until representative acceptance passes.
  *   BW32_JIT_SAFE_MEMORY=0|1    guest memory-ordering policy for MT builds;
  *                               see wasmMemoryOrdering.h. Unset = the
- *                               backend default (enabled).
+ *                               backend default (disabled).
  *   BW32_JIT_STATS=0|1          emit a per-instruction retired counter inside
  *                               generated code. Off by default: it costs a
  *                               load/add/store per guest instruction and a
@@ -55,9 +55,7 @@
 #include "wasmJitRuntime.h"
 #include "wasmMemoryOrdering.h"
 
-#ifdef BOXEDWINE_MULTI_THREADED
 #include <mutex>
-#endif
 
 namespace {
     // Guest TSO fences only exist in the multi-threaded backend.
@@ -67,8 +65,7 @@ namespace {
     constexpr bool BW32_JIT_DEFAULT_SAFE_MEMORY = false;
 #endif
 
-    // 0 = never read, 1 = enabled, 2 = disabled.
-    std::atomic<int> g_bw32JitEnabled{0};
+    std::once_flag g_bw32JitEnabledInit;
     std::atomic<int> g_bw32JitSafeMemory{-1};
     std::atomic<int> g_bw32JitCollectRetired{0};
 
@@ -87,17 +84,17 @@ namespace {
     }
 }
 
+bool wasmJit32Active = false;
+
 bool wasmJit32Enabled() {
-    int cached = g_bw32JitEnabled.load(std::memory_order_acquire);
-    if (cached == 0) {
+    std::call_once(g_bw32JitEnabledInit, [] {
         // Explicit opt-in while browser acceptance and cold-start costs are
         // evaluated. The public jit=1 parameter sets this before startup.
-        cached = readBoolEnv("BW32_JIT", 0) ? 1 : 2;
-        g_bw32JitEnabled.store(cached, std::memory_order_release);
-        klog(cached == 1 ? "BW32 JIT: enabled (generated modules)"
-                         : "BW32 JIT: disabled by BW32_JIT=0 (interpreter only)");
-    }
-    return cached == 1;
+        wasmJit32Active = readBoolEnv("BW32_JIT", 0) != 0;
+        klog(wasmJit32Active ? "BW32 JIT: enabled (generated modules)"
+                             : "BW32 JIT: disabled by BW32_JIT=0 (interpreter only)");
+    });
+    return wasmJit32Active;
 }
 
 bool wasmJit32SafeMemoryEnabled() {

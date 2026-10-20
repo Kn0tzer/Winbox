@@ -252,11 +252,12 @@ async function sampleMetrics() {
     const runtimeFrame = await frameHandle?.contentFrame();
     if (!runtimeFrame) throw new Error('runtime iframe is not available');
     jitStats = await runtimeFrame.evaluate(() => {
-      if (typeof Module === 'undefined' || typeof Module.ccall !== 'function' || typeof Module.UTF8ToString !== 'function')
+      if (typeof Module === 'undefined' || typeof Module.ccall !== 'function')
         throw new Error('runtime Module export is not available');
-      const pointer = Module.ccall('bw64_jit_stats_json_text', 'number', [], []);
-      if (!pointer) throw new Error('bw64_jit_stats_json_text returned a null pointer');
-      return JSON.parse(Module.UTF8ToString(pointer));
+      const result = Module.ccall('bw64_jit_stats_json_text', 'string', [], []);
+      if (typeof result === 'string') return JSON.parse(result);
+      if (result && typeof Module.UTF8ToString === 'function') return JSON.parse(Module.UTF8ToString(result));
+      throw new Error('bw64_jit_stats_json_text returned no readable text');
     });
   } catch (error) { jitStatsError = error.message || String(error); }
   const wasmLine = lastWasmMetricLine;

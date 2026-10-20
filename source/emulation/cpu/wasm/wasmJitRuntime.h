@@ -23,6 +23,7 @@
 
 // Runtime controls for the 32-bit guest WASM JIT. Each is latched on first
 // use and stable for the process lifetime (see wasmJitRuntime.cpp).
+extern bool wasmJit32Active;
 bool wasmJit32Enabled();
 bool wasmJit32SafeMemoryEnabled();
 bool wasmJit32CollectRetiredInstructions();

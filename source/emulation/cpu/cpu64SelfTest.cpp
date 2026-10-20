@@ -511,6 +511,54 @@ int runX64SelfTest() {
         });
     }
 
+    // Unaligned x86 LOCK/XCHG operands are legal. These cases cover each
+    // width that used to reach a WebAssembly atomic with a misaligned address.
+    {
+        std::vector<U8> code = {
+            0xB8, 0x44, 0x33, 0x22, 0x11,                         // mov eax, 0x11223344
+            0xB9, 0x88, 0x77, 0x66, 0x55,                         // mov ecx, 0x55667788
+            0xF0, 0x0F, 0xB1, 0x4C, 0x24, 0x01,                   // lock cmpxchg [rsp+1], ecx
+        };
+        runAndCheck(r, "unaligned lock cmpxchg [rsp+1],ecx", withExit(code), [](CPU64& c) {
+            return c.memory->readd(STACK_TOP - 16 + 1) == 0x55667788 && c.reg[X64_R15].u32 == 0x11223344;
+        }, [](CPU64& c) {
+            c.memory->writed(STACK_TOP - 16 + 1, 0x11223344);
+        });
+    }
+    {
+        std::vector<U8> code = {
+            0xB8, 0x03, 0x00, 0x00, 0x00,                         // mov eax, 3
+            0xF0, 0x0F, 0xC1, 0x44, 0x24, 0x03,                   // lock xadd [rsp+3], eax
+        };
+        runAndCheck(r, "unaligned lock xadd [rsp+3],eax", withExit(code), [](CPU64& c) {
+            return c.memory->readd(STACK_TOP - 16 + 3) == 0x13 && c.reg[X64_R15].u32 == 0x10;
+        }, [](CPU64& c) {
+            c.memory->writed(STACK_TOP - 16 + 3, 0x10);
+        });
+    }
+    {
+        std::vector<U8> code = {
+            0xF0, 0x48, 0xFF, 0x44, 0x24, 0x05,                   // lock inc qword [rsp+5]
+        };
+        runAndCheck(r, "unaligned lock inc qword [rsp+5]", withExit(code), [](CPU64& c) {
+            return c.memory->readq(STACK_TOP - 16 + 5) == 0x1020304050607081ULL;
+        }, [](CPU64& c) {
+            c.memory->writeq(STACK_TOP - 16 + 5, 0x1020304050607080ULL);
+        });
+    }
+    {
+        std::vector<U8> code = {
+            0x66, 0xB8, 0xCD, 0xAB,                               // mov ax, 0xabcd
+            0x66, 0x87, 0x44, 0x24, 0x02,                         // xchg [rsp+2], ax (implicitly locked)
+            0x4C, 0x0F, 0xB7, 0xF8,                               // movzx r15, ax
+        };
+        runAndCheck(r, "unaligned xchg [rsp+2],ax", withExit(code), [](CPU64& c) {
+            return c.memory->readw(STACK_TOP - 16 + 2) == 0xABCD && c.reg[X64_R15].u64 == 0x1234;
+        }, [](CPU64& c) {
+            c.memory->writew(STACK_TOP - 16 + 2, 0x1234);
+        });
+    }
+
     // Test 18: ROL rax, 4. Rotate 0x1234567890ABCDEF left 4 → 0x234567890ABCDEF1.
     {
         std::vector<U8> code = {
@@ -4660,6 +4708,20 @@ int runX64SelfTest() {
         });
     }
 
+    // Linux rejects misaligned futex words with EINVAL before touching memory.
+    {
+        std::vector<U8> code = {
+            0x48, 0xC7, 0xC0, 0xCA, 0x00, 0x00, 0x00,                     // mov rax, 202
+            0x48, 0xC7, 0xC7, 0x01, 0x00, 0x80, 0x00,                     // mov rdi, 0x800001
+            0x48, 0xC7, 0xC6, 0x81, 0x00, 0x00, 0x00,                     // mov rsi, WAKE_PRIVATE
+            0x48, 0xC7, 0xC2, 0x01, 0x00, 0x00, 0x00,                     // mov rdx, 1
+            0x0F, 0x05,
+        };
+        runAndCheck(r, "futex unaligned uaddr → -EINVAL", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 0xFFFFFFFFFFFFFFEAULL;
+        });
+    }
+
     // Unknown op (e.g. LOCK_PI = 6) → -ENOSYS so glibc falls back to user-space.
     // ENOSYS=38 → 0xFFFFFFFFFFFFFFDA.
     {
@@ -4716,6 +4778,33 @@ int runX64SelfTest() {
             U64 first = c.reg[X64_R14].u64;
             U64 second = c.reg[X64_R15].u64;
             return first == 0x700000000ULL && second == first + 0x1000ULL;
+        });
+    }
+
+    // ptrace is unsupported by the 32-bit kernel too; return EPERM directly so
+    // guest probes do not spin through the unimplemented-syscall path.
+    {
+        std::vector<U8> code = {
+            0x48, 0xC7, 0xC0, 0x65, 0x00, 0x00, 0x00,                     // mov rax, 101 (ptrace)
+            0x0F, 0x05,
+        };
+        runAndCheck(r, "ptrace syscall → -EPERM", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 0xFFFFFFFFFFFFFFFFULL;
+        });
+    }
+
+    // An unknown syscall is reported five times, then once with the
+    // suppression marker. The runner checks the six emitted log lines.
+    {
+        std::vector<U8> code;
+        for (int i = 0; i < 7; ++i) {
+            code.insert(code.end(), {
+                0x48, 0xC7, 0xC0, 0x0F, 0x27, 0x00, 0x00,                 // mov rax, 9999
+                0x0F, 0x05,
+            });
+        }
+        runAndCheck(r, "unknown syscall returns -ENOSYS after rate limiting", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 0xFFFFFFFFFFFFFFDAULL;
         });
     }
 

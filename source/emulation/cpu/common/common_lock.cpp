@@ -16,11 +16,18 @@
  *  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  */
 #include "boxedwine.h"
+#include "splitLock.h"
+
+std::mutex g_splitLockMutex;
 
 #ifdef BOXEDWINE_MULTI_THREADED
 
- // for unaligned cases, this won't be 100% guaranteed accurate if another aligned lock access references the same memory (hopefully that would be rare to have overlapped lock instructions of different memory size)
-BOXEDWINE_MUTEX lockMutex;
+template<typename T>
+static bool commonLockHostAddressIsAligned(CPU* cpu, U32 address) {
+    if ((address & K_PAGE_MASK) + sizeof(T) > K_PAGE_SIZE) return false;
+    U8* hostAddress = cpu->memory->getRamPtr(address, sizeof(T), true);
+    return hostAddress && ((reinterpret_cast<uintptr_t>(hostAddress) & (alignof(T) - 1)) == 0);
+}
 
 /*
     U64 value1 = ((U64)EDX) << 32 | EAX;
@@ -38,8 +45,8 @@ BOXEDWINE_MUTEX lockMutex;
 */
 void common_cmpxchg8b_lock(CPU* cpu, U32 address) {
     U64 expected = ((U64)EDX) << 32 | EAX;
-    if (address & 7) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U64>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         U64 oldValue = cpu->memory->readq(address);
         cpu->fillFlags();
@@ -83,8 +90,8 @@ void common_cmpxchg8b_lock(CPU* cpu, U32 address) {
 */
 void common_cmpxchge32r32_lock(CPU* cpu, U32 address, U32 srcReg) {
     cpu->dst.u32 = EAX;
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->src.u32 = cpu->memory->readd(address);
         cpu->result.u32 = cpu->dst.u32 - cpu->src.u32;
@@ -122,8 +129,8 @@ void common_cmpxchge32r32_lock(CPU* cpu, U32 address, U32 srcReg) {
 */
 void common_cmpxchge16r16_lock(CPU* cpu, U32 address, U32 srcReg) {
     cpu->dst.u16 = AX;
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->src.u16 = cpu->memory->readw(address);
         cpu->result.u16 = cpu->dst.u16 - cpu->src.u16;
@@ -180,8 +187,8 @@ void common_cmpxchge8r8_lock(CPU* cpu, U32 address, U32 srcReg) {
     cpu->reg[op->reg].u32 = tmp;
 */
 void common_xchge32r32_lock(CPU* cpu, U32 address, U32 reg) {
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         U32 tmp = cpu->memory->readd(address);
         cpu->memory->writed(address, cpu->reg[reg].u32);
@@ -200,8 +207,8 @@ void common_xchge32r32_lock(CPU* cpu, U32 address, U32 reg) {
     cpu->reg[op->reg].u16 = tmp;
 */
 void common_xchge16r16_lock(CPU* cpu, U32 address, U32 reg) {
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         U16 tmp = cpu->memory->readw(address);
         cpu->memory->writew(address, cpu->reg[reg].u16);
@@ -236,8 +243,8 @@ void common_xchge8r8_lock(CPU* cpu, U32 address, U32 reg) {
 */
 void common_xaddr32e32_lock(CPU* cpu, U32 address, U32 reg) {
     cpu->src.u32 = cpu->reg[reg].u32;
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u32 = cpu->memory->readd(address);
         cpu->result.u32 = cpu->dst.u32 + cpu->src.u32;
@@ -263,8 +270,8 @@ void common_xaddr32e32_lock(CPU* cpu, U32 address, U32 reg) {
 */
 void common_xaddr16e16_lock(CPU* cpu, U32 address, U32 reg) {
     cpu->src.u16 = cpu->reg[reg].u16;
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u16 = cpu->memory->readw(address);
         cpu->result.u16 = cpu->dst.u16 + cpu->src.u16;
@@ -308,8 +315,8 @@ void common_xaddr8e8_lock(CPU* cpu, U32 address, U32 reg) {
 */
 void common_adde32r32_lock(CPU* cpu, U32 address, U32 reg) {
     cpu->src.u32 = cpu->reg[reg].u32;
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u32 = cpu->memory->readd(address);
         cpu->result.u32 = cpu->dst.u32 + cpu->src.u32;
@@ -333,8 +340,8 @@ void common_adde32r32_lock(CPU* cpu, U32 address, U32 reg) {
 */
 void common_adde16r16_lock(CPU* cpu, U32 address, U32 reg) {
     cpu->src.u16 = cpu->reg[reg].u16;
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u16 = cpu->memory->readw(address);
         cpu->result.u16 = cpu->dst.u16 + cpu->src.u16;
@@ -375,8 +382,8 @@ void common_adde8r8_lock(CPU* cpu, U32 address, U32 reg) {
 */
 void common_add32_mem_lock(CPU* cpu, U32 address, U32 value) {
     cpu->src.u32 = value;
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u32 = cpu->memory->readd(address);
         cpu->result.u32 = cpu->dst.u32 + cpu->src.u32;
@@ -400,8 +407,8 @@ void common_add32_mem_lock(CPU* cpu, U32 address, U32 value) {
 */
 void common_add16_mem_lock(CPU* cpu, U32 address, U32 value) {
     cpu->src.u16 = value;
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u16 = cpu->memory->readw(address);
         cpu->result.u16 = cpu->dst.u16 + cpu->src.u16;
@@ -442,8 +449,8 @@ void common_add8_mem_lock(CPU* cpu, U32 address, U32 value) {
 */
 void common_sube32r32_lock(CPU* cpu, U32 address, U32 reg) {
     cpu->src.u32 = cpu->reg[reg].u32;
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u32 = cpu->memory->readd(address);
         cpu->result.u32 = cpu->dst.u32 - cpu->src.u32;
@@ -467,8 +474,8 @@ void common_sube32r32_lock(CPU* cpu, U32 address, U32 reg) {
 */
 void common_sube16r16_lock(CPU* cpu, U32 address, U32 reg) {
     cpu->src.u16 = cpu->reg[reg].u16;
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u16 = cpu->memory->readw(address);
         cpu->result.u16 = cpu->dst.u16 - cpu->src.u16;
@@ -509,8 +516,8 @@ void common_sube8r8_lock(CPU* cpu, U32 address, U32 reg) {
 */
 void common_sub32_mem_lock(CPU* cpu, U32 address, U32 imm) {
     cpu->src.u32 = imm;
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u32 = cpu->memory->readd(address);
         cpu->result.u32 = cpu->dst.u32 - cpu->src.u32;
@@ -534,8 +541,8 @@ void common_sub32_mem_lock(CPU* cpu, U32 address, U32 imm) {
 */
 void common_sub16_mem_lock(CPU* cpu, U32 address, U32 imm) {
     cpu->src.u16 = imm;
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u16 = cpu->memory->readw(address);
         cpu->result.u16 = cpu->dst.u16 - cpu->src.u16;
@@ -576,8 +583,8 @@ void common_sub8_mem_lock(CPU* cpu, U32 address, U32 imm) {
 */
 void common_ore32r32_lock(CPU* cpu, U32 address, U32 reg) {
     cpu->src.u32 = cpu->reg[reg].u32;
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u32 = cpu->memory->readd(address);
         cpu->result.u32 = cpu->dst.u32 | cpu->src.u32;
@@ -601,8 +608,8 @@ void common_ore32r32_lock(CPU* cpu, U32 address, U32 reg) {
 */
 void common_ore16r16_lock(CPU* cpu, U32 address, U32 reg) {
     cpu->src.u16 = cpu->reg[reg].u16;
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u16 = cpu->memory->readw(address);
         cpu->result.u16 = cpu->dst.u16 | cpu->src.u16;
@@ -644,8 +651,8 @@ void common_ore8r8_lock(CPU* cpu, U32 address, U32 reg) {
 
 void common_or32_mem_lock(CPU* cpu, U32 address, U32 imm) {
     cpu->src.u32 = imm;
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u32 = cpu->memory->readd(address);
         cpu->result.u32 = cpu->dst.u32 | cpu->src.u32;
@@ -669,8 +676,8 @@ void common_or32_mem_lock(CPU* cpu, U32 address, U32 imm) {
 */
 void common_or16_mem_lock(CPU* cpu, U32 address, U32 imm) {
     cpu->src.u16 = imm;
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u16 = cpu->memory->readw(address);
         cpu->result.u16 = cpu->dst.u16 | cpu->src.u16;
@@ -711,8 +718,8 @@ void common_or8_mem_lock(CPU* cpu, U32 address, U32 imm) {
 */
 void common_ande32r32_lock(CPU* cpu, U32 address, U32 reg) {
     cpu->src.u32 = cpu->reg[reg].u32;
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u32 = cpu->memory->readd(address);
         cpu->result.u32 = cpu->dst.u32 & cpu->src.u32;
@@ -736,8 +743,8 @@ void common_ande32r32_lock(CPU* cpu, U32 address, U32 reg) {
 */
 void common_ande16r16_lock(CPU* cpu, U32 address, U32 reg) {
     cpu->src.u16 = cpu->reg[reg].u16;
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u16 = cpu->memory->readw(address);
         cpu->result.u16 = cpu->dst.u16 & cpu->src.u16;
@@ -779,8 +786,8 @@ void common_ande8r8_lock(CPU* cpu, U32 address, U32 reg) {
 
 void common_and32_mem_lock(CPU* cpu, U32 address, U32 imm) {
     cpu->src.u32 = imm;
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u32 = cpu->memory->readd(address);
         cpu->result.u32 = cpu->dst.u32 & cpu->src.u32;
@@ -804,8 +811,8 @@ void common_and32_mem_lock(CPU* cpu, U32 address, U32 imm) {
 */
 void common_and16_mem_lock(CPU* cpu, U32 address, U32 imm) {
     cpu->src.u16 = imm;
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u16 = cpu->memory->readw(address);
         cpu->result.u16 = cpu->dst.u16 & cpu->src.u16;
@@ -846,8 +853,8 @@ void common_and8_mem_lock(CPU* cpu, U32 address, U32 imm) {
 */
 void common_xore32r32_lock(CPU* cpu, U32 address, U32 reg) {
     cpu->src.u32 = cpu->reg[reg].u32;
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u32 = cpu->memory->readd(address);
         cpu->result.u32 = cpu->dst.u32 ^ cpu->src.u32;
@@ -871,8 +878,8 @@ void common_xore32r32_lock(CPU* cpu, U32 address, U32 reg) {
 */
 void common_xore16r16_lock(CPU* cpu, U32 address, U32 reg) {
     cpu->src.u16 = cpu->reg[reg].u16;
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u16 = cpu->memory->readw(address);
         cpu->result.u16 = cpu->dst.u16 ^ cpu->src.u16;
@@ -914,8 +921,8 @@ void common_xore8r8_lock(CPU* cpu, U32 address, U32 reg) {
 
 void common_xor32_mem_lock(CPU* cpu, U32 address, U32 imm) {
     cpu->src.u32 = imm;
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u32 = cpu->memory->readd(address);
         cpu->result.u32 = cpu->dst.u32 ^ cpu->src.u32;
@@ -939,8 +946,8 @@ void common_xor32_mem_lock(CPU* cpu, U32 address, U32 imm) {
 */
 void common_xor16_mem_lock(CPU* cpu, U32 address, U32 imm) {
     cpu->src.u16 = imm;
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u16 = cpu->memory->readw(address);
         cpu->result.u16 = cpu->dst.u16 ^ cpu->src.u16;
@@ -983,8 +990,8 @@ void common_xor8_mem_lock(CPU* cpu, U32 address, U32 imm) {
 void common_adce32r32_lock(CPU* cpu, U32 address, U32 reg) {
     cpu->oldCF = cpu->getCF();
     cpu->src.u32 = cpu->reg[reg].u32;
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u32 = cpu->memory->readd(address);
         cpu->result.u32 = cpu->dst.u32 + cpu->src.u32 + cpu->oldCF;
@@ -1010,8 +1017,8 @@ void common_adce32r32_lock(CPU* cpu, U32 address, U32 reg) {
 void common_adce16r16_lock(CPU* cpu, U32 address, U32 reg) {
     cpu->oldCF = cpu->getCF();
     cpu->src.u16 = cpu->reg[reg].u16;
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u16 = cpu->memory->readw(address);
         cpu->result.u16 = cpu->dst.u16 + cpu->src.u16 + cpu->oldCF;
@@ -1057,8 +1064,8 @@ void common_adce8r8_lock(CPU* cpu, U32 address, U32 reg) {
 void common_adc32_mem_lock(CPU* cpu, U32 address, U32 imm) {
     cpu->oldCF = cpu->getCF();
     cpu->src.u32 = imm;
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u32 = cpu->memory->readd(address);
         cpu->result.u32 = cpu->dst.u32 + cpu->src.u32 + cpu->oldCF;
@@ -1084,8 +1091,8 @@ void common_adc32_mem_lock(CPU* cpu, U32 address, U32 imm) {
 void common_adc16_mem_lock(CPU* cpu, U32 address, U32 imm) {
     cpu->oldCF = cpu->getCF();
     cpu->src.u16 = imm;
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u16 = cpu->memory->readw(address);
         cpu->result.u16 = cpu->dst.u16 + cpu->src.u16 + cpu->oldCF;
@@ -1130,8 +1137,8 @@ void common_adc8_mem_lock(CPU* cpu, U32 address, U32 imm) {
 void common_sbbe32r32_lock(CPU* cpu, U32 address, U32 reg) {
     cpu->oldCF = cpu->getCF();
     cpu->src.u32 = cpu->reg[reg].u32;
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u32 = cpu->memory->readd(address);
         cpu->result.u32 = cpu->dst.u32 - cpu->src.u32 - cpu->oldCF;
@@ -1157,8 +1164,8 @@ void common_sbbe32r32_lock(CPU* cpu, U32 address, U32 reg) {
 void common_sbbe16r16_lock(CPU* cpu, U32 address, U32 reg) {
     cpu->oldCF = cpu->getCF();
     cpu->src.u16 = cpu->reg[reg].u16;
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u16 = cpu->memory->readw(address);
         cpu->result.u16 = cpu->dst.u16 - cpu->src.u16 - cpu->oldCF;
@@ -1204,8 +1211,8 @@ void common_sbbe8r8_lock(CPU* cpu, U32 address, U32 reg) {
 void common_sbb32_mem_lock(CPU* cpu, U32 address, U32 imm) {
     cpu->oldCF = cpu->getCF();
     cpu->src.u32 = imm;
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u32 = cpu->memory->readd(address);
         cpu->result.u32 = cpu->dst.u32 - cpu->src.u32 - cpu->oldCF;
@@ -1231,8 +1238,8 @@ void common_sbb32_mem_lock(CPU* cpu, U32 address, U32 imm) {
 void common_sbb16_mem_lock(CPU* cpu, U32 address, U32 imm) {
     cpu->oldCF = cpu->getCF();
     cpu->src.u16 = imm;
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u16 = cpu->memory->readw(address);
         cpu->result.u16 = cpu->dst.u16 - cpu->src.u16 - cpu->oldCF;
@@ -1276,8 +1283,8 @@ void common_sbb8_mem_lock(CPU* cpu, U32 address, U32 imm) {
 void common_inc32_mem32_lock(CPU* cpu, U32 address) {
     cpu->oldCF = cpu->getCF();
 
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
         cpu->dst.u32 = cpu->memory->readd(address);
         cpu->result.u32 = cpu->dst.u32 + 1;
         cpu->memory->writed(address, cpu->result.u32);
@@ -1301,8 +1308,8 @@ void common_inc32_mem32_lock(CPU* cpu, U32 address) {
 void common_inc16_mem16_lock(CPU* cpu, U32 address) {
     cpu->oldCF = cpu->getCF();
 
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
         cpu->dst.u16 = cpu->memory->readw(address);
         cpu->result.u16 = cpu->dst.u16 + 1;
         cpu->memory->writew(address, cpu->result.u16);
@@ -1343,8 +1350,8 @@ void common_inc8_mem8_lock(CPU* cpu, U32 address) {
 void common_dec32_mem32_lock(CPU* cpu, U32 address) {
     cpu->oldCF = cpu->getCF();
 
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
         cpu->dst.u32 = cpu->memory->readd(address);
         cpu->result.u32 = cpu->dst.u32 - 1;
         cpu->memory->writed(address, cpu->result.u32);
@@ -1368,8 +1375,8 @@ void common_dec32_mem32_lock(CPU* cpu, U32 address) {
 void common_dec16_mem16_lock(CPU* cpu, U32 address) {
     cpu->oldCF = cpu->getCF();
 
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->dst.u16 = cpu->memory->readw(address);
         cpu->result.u16 = cpu->dst.u16 - 1;
@@ -1405,8 +1412,8 @@ void common_dec8_mem8_lock(CPU* cpu, U32 address) {
     cpu->memory->writed(eaa, ~cpu->memory->readd(eaa));
 */
 void common_note32_lock(CPU* cpu, U32 address) {
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
         cpu->memory->writed(address, ~cpu->memory->readd(address));
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
@@ -1427,8 +1434,8 @@ void common_note32_lock(CPU* cpu, U32 address) {
     cpu->memory->writew(eaa, ~cpu->memory->readw(eaa));
 */
 void common_note16_lock(CPU* cpu, U32 address) {
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
         cpu->memory->writew(address, ~cpu->memory->readw(address));
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
@@ -1472,8 +1479,8 @@ void common_note8_lock(CPU* cpu, U32 address) {
 void common_nege32_lock(CPU* cpu, U32 address) {
     cpu->dst.u32 = 0;
 
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->src.u32 = cpu->memory->readd(address);
         cpu->result.u32 = cpu->dst.u32 - cpu->src.u32;
@@ -1505,8 +1512,8 @@ void common_nege32_lock(CPU* cpu, U32 address) {
 void common_nege16_lock(CPU* cpu, U32 address) {
     cpu->dst.u16 = 0;
 
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         cpu->src.u16 = cpu->memory->readw(address);
         cpu->result.u16 = cpu->dst.u16 - cpu->src.u16;
@@ -1563,8 +1570,8 @@ void common_btse32_lock(CPU* cpu, U32 address, U32 mask) {
     U32 oldValue;
 
     cpu->fillFlagsNoCF();
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         oldValue = cpu->memory->readd(address);
         cpu->memory->writed(address, oldValue | mask);
@@ -1587,8 +1594,8 @@ void common_btse16_lock(CPU* cpu, U32 address, U32 mask) {
     U16 oldValue;
 
     cpu->fillFlagsNoCF();
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         oldValue = cpu->memory->readw(address);
         cpu->memory->writew(address, oldValue | mask);
@@ -1612,8 +1619,8 @@ void common_btse32r32_lock(CPU* cpu, U32 address, U32 mask) {
     U32 oldValue;
 
     cpu->fillFlagsNoCF();
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         oldValue = cpu->memory->readd(address);
         cpu->memory->writed(address, oldValue | mask);
@@ -1637,8 +1644,8 @@ void common_btse16r16_lock(CPU* cpu, U32 address, U32 mask) {
     U16 oldValue;
 
     cpu->fillFlagsNoCF();
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         oldValue = cpu->memory->readw(address);
         cpu->memory->writew(address, oldValue | mask);
@@ -1661,8 +1668,8 @@ void common_btre32_lock(CPU* cpu, U32 address, U32 mask) {
     U32 oldValue;
 
     cpu->fillFlagsNoCF();
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         oldValue = cpu->memory->readd(address);
         cpu->memory->writed(address, oldValue & ~mask);
@@ -1684,8 +1691,8 @@ void common_btre16_lock(CPU* cpu, U32 address, U32 mask) {
     U16 oldValue;
 
     cpu->fillFlagsNoCF();
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         oldValue = cpu->memory->readw(address);
         cpu->memory->writew(address, oldValue & ~mask);
@@ -1709,8 +1716,8 @@ void common_btre32r32_lock(CPU* cpu, U32 address, U32 mask) {
     U32 oldValue;
 
     cpu->fillFlagsNoCF();
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         oldValue = cpu->memory->readd(address);
         cpu->memory->writed(address, oldValue & ~mask);
@@ -1734,8 +1741,8 @@ void common_btre16r16_lock(CPU* cpu, U32 address, U32 mask) {
     U16 oldValue;
 
     cpu->fillFlagsNoCF();
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         oldValue = cpu->memory->readw(address);
         cpu->memory->writew(address, oldValue & ~mask);
@@ -1757,8 +1764,8 @@ void common_btce32_lock(CPU* cpu, U32 address, U32 mask) {
     U32 oldValue;
 
     cpu->fillFlagsNoCF();
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         oldValue = cpu->memory->readd(address);
         cpu->memory->writed(address, oldValue ^ mask);
@@ -1780,8 +1787,8 @@ void common_btce16_lock(CPU* cpu, U32 address, U32 mask) {
     U16 oldValue;
 
     cpu->fillFlagsNoCF();
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         oldValue = cpu->memory->readw(address);
         cpu->memory->writew(address, oldValue ^ mask);
@@ -1805,8 +1812,8 @@ void common_btce32r32_lock(CPU* cpu, U32 address, U32 mask) {
     U32 oldValue;
 
     cpu->fillFlagsNoCF();
-    if (address & 3) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U32>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         oldValue = cpu->memory->readd(address);
         cpu->memory->writed(address, oldValue ^ mask);
@@ -1830,8 +1837,8 @@ void common_btce16r16_lock(CPU* cpu, U32 address, U32 mask) {
     U16 oldValue;
 
     cpu->fillFlagsNoCF();
-    if (address & 1) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(lockMutex); // hope for the best
+    if (!commonLockHostAddressIsAligned<U16>(cpu, address)) {
+        std::lock_guard<std::mutex> splitLock(g_splitLockMutex);
 
         oldValue = cpu->memory->readw(address);
         cpu->memory->writew(address, oldValue ^ mask);

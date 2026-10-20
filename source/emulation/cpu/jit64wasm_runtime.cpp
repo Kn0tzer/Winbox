@@ -94,6 +94,8 @@ EM_JS(int, jit64_wasm_take_free_slot_impl, (), {
 // Returns the reserved index, or -1 when the module cannot be instantiated.
 EM_JS(int, jit64_wasm_instantiate_impl,
       (const unsigned char* bytes, unsigned size, int slot, U32 readIndex, U32 writeIndex), {
+    bytes >>>= 0;
+    size >>>= 0;
     try {
         // Copy: the caller's vector may be freed right after this returns.
         var copy = new Uint8Array(wasmMemory.buffer, bytes, size).slice();

@@ -28,26 +28,26 @@ try {
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   assert.equal(await page.getByLabel('CPU JIT', { exact: true }).count(), 1);
   await page.waitForFunction(() => window.wineGames && !document.getElementById('library').hasAttribute('aria-busy'));
-  assert.equal(await page.locator('[data-game]').count(), 9);
+  assert.equal(await page.locator('[data-game]').count(), 8);
   assert.equal(await page.locator('#jit').inputValue(), 'off');
   {
     const modes = await page.evaluate(() => ({
-      checked: document.querySelector('input[name="folderMode"]:checked')?.value,
-      labels: [...document.querySelectorAll('.folder-modes label')].map(label => label.innerText),
+      selected: document.getElementById('folderModeSelect').value,
+      options: [...document.querySelectorAll('#folderModeSelect option')].map(option => option.textContent),
       disabled: document.getElementById('directMode').disabled,
       help: document.getElementById('folderModeHelp').textContent,
       picker: typeof window.showDirectoryPicker,
     }));
-    assert.equal(modes.checked, 'copy');
-    assert.equal(modes.labels.length, 2);
-    for (const label of modes.labels) { assert.match(label, /Pros/); assert.match(label, /Cons/); }
-    assert.match(modes.help, /never changed|Original files are never changed/);
-    if (modes.picker !== 'function') { assert.equal(modes.disabled, true); assert.match(modes.help, /unavailable/); }
-    checks.push('Folder access choice shows explicit pros and cons, defaults to copy, and disables direct access without the picker');
+    assert.equal(modes.selected, 'copy');
+    assert.deepEqual(modes.options, ['Copy into browser storage', 'Read in place (Chrome and Edge)']);
+    assert.match(modes.help, /Copy works everywhere and survives moving the folder/);
+    assert.match(modes.help, /Read in place skips the copy but the folder must stay where it is/);
+    if (modes.picker !== 'function') assert.equal(modes.disabled, true);
+    checks.push('Folder opening select defaults to copy and disables direct access without the picker');
   }
   await page.screenshot({ path: dir + '/desktop-light.png', fullPage: true, animations: 'disabled' });
   checks.push('Fresh library renders without console errors');
-  for (const [id, arch, executable] of [['doom','x64',null],['chromium','x86','chrome.exe'],['portal','x86','hl2.exe'],['celeste','x86','Celeste.exe'],['gangbeasts','x64','Gang Beasts.exe'],['explorer','x64',null],['notepad','x64',null],['cube','x64',null],['snake','x64',null]]) {
+  for (const [id, arch, executable] of [['notepad','x64',null],['explorer','x64',null],['snake','x64',null],['doom','x64',null],['celeste','x86','Celeste.exe'],['chromium','x86','chrome.exe'],['portal','x86','hl2.exe'],['gangbeasts','x64','Gang Beasts.exe']]) {
     await page.locator(`[data-game="${id}"]`).click();
     await page.locator('#display iframe').waitFor();
     await page.waitForFunction(()=>document.getElementById('loading').hidden);
@@ -60,7 +60,7 @@ try {
     await page.waitForFunction(()=>!document.getElementById('folderButton').disabled);
     assert.ok(!await page.locator('#notice').evaluate(element=>element.classList.contains('error')));
   }
-  checks.push('All nine demo tiles launch in one click with correct architecture/entry point');
+  checks.push('All eight demo cards launch in one click with correct architecture and entry point');
   await page.click('#settingsButton'); await page.locator('#jit').selectOption('on'); await page.keyboard.press('Escape');
   await page.reload(); await page.waitForFunction(() => window.wineGames);
   assert.equal(await page.locator('#jit').inputValue(), 'on');
@@ -111,7 +111,7 @@ try {
   query=new URL(await page.locator('#display iframe').getAttribute('src'),page.url()).searchParams;assert.equal(query.get('exe'),'Fixture.exe');await page.waitForFunction(()=>document.getElementById('loading').hidden);await page.click('#stop');
   await page.waitForFunction(()=>!document.getElementById('folderButton').disabled);assert.ok(!await page.locator('#notice').evaluate(element=>element.classList.contains('error')));
   checks.push('Folder selection auto-detects and auto-starts; persisted folder reruns in one click');
-  await page.getByRole('button',{name:'Settings for Fixture'}).click();
+  await page.getByRole('button',{name:'More for Fixture'}).click();
   await page.locator('#folderDialog').waitFor({state:'visible'});assert.equal(await page.locator('#executable').inputValue(),'Fixture.exe');await page.keyboard.press('Escape');
   await page.click('#settingsButton');await page.locator('#appearance').selectOption('dark');await page.locator('#jit').selectOption('off');await page.keyboard.press('Escape');
   await page.screenshot({path:dir+'/desktop-dark.png',fullPage:true,animations:'disabled'});
@@ -151,7 +151,7 @@ try {
     const {listPackages}=await import('./storage.mjs');const {writeStored}=await import('./session-storage.mjs');
     await writeStored((await listPackages())[0].id,[{path:'/root/home/username/save.dat',data:new Uint8Array([4,5,6])}],true);
   });
-  await page.getByRole('button',{name:'Settings for Fixture'}).click();
+  await page.getByRole('button',{name:'More for Fixture'}).click();
   const downloading=page.waitForEvent('download');await page.click('#export');
   const backup=join(temp,'fixture-backup.zip');await(await downloading).saveAs(backup);
   await page.evaluate(async()=>{
