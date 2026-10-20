@@ -2404,13 +2404,30 @@ dsp_38:
         // 0F BB /r — BTC r/m, r       (complement bit)
         if (op2 == 0xA3 || op2 == 0xAB || op2 == 0xB3 || op2 == 0xBB) {
             ModRM m = decodeModRM(rip + opOff + 2, p, 0);
-            std::unique_lock<std::recursive_mutex> atomicLock(cpu64AtomicLockFor(m.effAddr), std::defer_lock);
+            U64 rawIndex = (opSize == 8) ? reg[m.regField].u64 :
+                           (opSize == 4) ? (U64)reg[m.regField].u32 :
+                                           (U64)reg[m.regField].u16;
+            ModRM bitOperand = m;
+            U64 bit;
+            if (m.isReg) {
+                bit = rawIndex & (opSize * 8 - 1);
+            } else {
+                S64 index = opSize == 8 ? (S64)rawIndex :
+                            opSize == 4 ? (S64)(S32)(U32)rawIndex :
+                                          (S64)(S16)(U16)rawIndex;
+                S64 bitsPerOperand = (S64)opSize * 8;
+                S64 operandIndex = index / bitsPerOperand;
+                S64 bitIndex = index % bitsPerOperand;
+                if (bitIndex < 0) {
+                    operandIndex--;
+                    bitIndex += bitsPerOperand;
+                }
+                bitOperand.effAddr += (U64)(operandIndex * (S64)opSize);
+                bit = (U64)bitIndex;
+            }
+            std::unique_lock<std::recursive_mutex> atomicLock(cpu64AtomicLockFor(bitOperand.effAddr), std::defer_lock);
             if (p.lock && op2 != 0xA3 && !m.isReg) atomicLock.lock();
-            U64 v = loadRM(m, opSize, rexPresent);
-            U64 idx = (opSize == 8) ? reg[m.regField].u64 :
-                      (opSize == 4) ? (U64)reg[m.regField].u32 :
-                                      (U64)reg[m.regField].u16;
-            U64 bit = idx & (opSize * 8 - 1);
+            U64 v = loadRM(bitOperand, opSize, rexPresent);
             U64 mask = 1ULL << bit;
             bool old = (v & mask) != 0;
             rflags &= ~X64_CF;
@@ -2420,7 +2437,7 @@ dsp_38:
                 if (op2 == 0xAB) nv |= mask;
                 else if (op2 == 0xB3) nv &= ~mask;
                 else nv ^= mask; // BTC
-                storeRM(m, opSize, nv, rexPresent);
+                storeRM(bitOperand, opSize, nv, rexPresent);
             }
             U32 used = opOff + 2 + m.length;
             rip += used;

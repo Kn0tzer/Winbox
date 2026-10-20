@@ -2949,6 +2949,87 @@ int runX64SelfTest() {
         }
     }
 
+    // Test 65g — register-index BT-family memory forms address a signed bit
+    // string. Offsets 40, -1, and 200 cover forward and backward qword steps.
+    {
+        const U8 opcodes[] = {0xA3,0xAB,0xB3,0xBB};
+        const char* names[] = {"BT", "BTS", "BTR", "BTC"};
+        const S64 indices[] = {40, -1, 200};
+        const U8 bits[] = {40, 63, 8};
+        const S32 deltas[] = {0, -8, 24};
+        for (int op = 0; op < 4; op++) {
+            for (int index = 0; index < 3; index++) {
+                U64 initial = 1ULL << bits[index];
+                U64 expected = (op == 0 || op == 1) ? initial : 0;
+                for (int memoryForm = 0; memoryForm < 2; memoryForm++) {
+                    std::vector<U8> code;
+                    if (memoryForm && op != 0) code.push_back(0xF0); // LOCK RMW
+                    code.insert(code.end(), {0x48,0x0F,opcodes[op]});
+                    if (memoryForm) code.insert(code.end(), {0x73,0x20});
+                    else code.push_back(0xF3); // mod=11, RSI index, RBX destination
+                    code.insert(code.end(), {0x9C,0x58}); // pushfq; pop rax
+                    U64 dataAddr = CODE_BASE + code.size() + EXIT_SYSCALL.size();
+                    if (memoryForm) {
+                        code.insert(code.end(), EXIT_SYSCALL.begin(), EXIT_SYSCALL.end());
+                        code.resize(code.size() + 64, 0);
+                        U64 dataWord = initial;
+                        U64 dataOffset = (U64)(32 + deltas[index]);
+                        for (U8 byte = 0; byte < 8; byte++)
+                            code[(size_t)(dataAddr - CODE_BASE + dataOffset + byte)] =
+                                (U8)(dataWord >> (byte * 8));
+                    } else {
+                        code.insert(code.end(), EXIT_SYSCALL.begin(), EXIT_SYSCALL.end());
+                    }
+                    std::string testName = std::string(memoryForm ? "" : "register ") +
+                        names[op] + " register bit offset " + std::to_string(indices[index]) +
+                        (memoryForm ? " memory" : "");
+                    U64 targetAddr = dataAddr + 32 + deltas[index];
+                    runAndCheck(r, testName.c_str(), code,
+                        [=](CPU64& c) {
+                            U64 actual = memoryForm ? c.memory->readq(targetAddr)
+                                                    : c.reg[X64_RBX].u64;
+                            return actual == expected &&
+                                (((U32)c.reg[X64_R15].u64 & X64_CF) == X64_CF);
+                        },
+                        [=](CPU64& c) {
+                            c.rflags = 0x202;
+                            c.reg[X64_RBX].setU64(memoryForm ? dataAddr : initial);
+                            c.reg[X64_RSI].setU64((U64)indices[index]);
+                        });
+                }
+            }
+        }
+    }
+
+    // Test 65h — immediate 0F BA forms still mask imm8 within the addressed
+    // operand. This RIP-relative locked memory form also verifies its disp32
+    // is based after the trailing immediate byte.
+    {
+        const U8 exts[] = {5,6,7};
+        const char* names[] = {"LOCK BTS RIP-relative imm8",
+                               "LOCK BTR RIP-relative imm8",
+                               "LOCK BTC RIP-relative imm8"};
+        for (int i = 0; i < 3; i++) {
+            std::vector<U8> code = {
+                0xF0,0x48,0x0F,0xBA,(U8)((exts[i] << 3) | 5),
+                0x0E,0x00,0x00,0x00,0xC8, // displacement 14; imm8 200 -> bit 8
+                0x9C,0x58,
+            };
+            U64 dataAddr = CODE_BASE + code.size() + EXIT_SYSCALL.size();
+            code.insert(code.end(), EXIT_SYSCALL.begin(), EXIT_SYSCALL.end());
+            U64 initial = 1ULL << 8;
+            for (U8 byte = 0; byte < 8; byte++)
+                code.push_back((U8)(initial >> (byte * 8)));
+            U64 expected = i == 0 ? initial : 0;
+            runAndCheck(r, names[i], code, [=](CPU64& c) {
+                return c.memory->readq(dataAddr) == expected &&
+                       (((U32)c.reg[X64_R15].u64 & X64_CF) == X64_CF);
+            }, [=](CPU64& c) {
+                c.rflags = 0x202;
+            });
+        }
+    }
+
     // Test 66 — XGETBV(0) returns EAX=3 (x87+SSE enabled), EDX=0.
     // Encoding: xor ecx,ecx; xgetbv; shl rdx,32; or rax,rdx.
     {

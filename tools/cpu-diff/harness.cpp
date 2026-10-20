@@ -961,6 +961,58 @@ static void buildLockedRmwCases(std::vector<TestCase>& out) {
         immMem.flagsMask = F_CF; immMem.checkMem = true; immMem.memLen = 8;
         U64 initial = 8; memcpy(immMem.memInit, &initial, sizeof(initial));
         out.push_back(immMem);
+
+        TestCase immRip; immRip.set = "int"; immRip.name = bitNames[i];
+        immRip.form = "LOCK rip-relative,imm8";
+        initRegs(immRip, 0, MEM_SCRATCH); immRip.flagsIn = 0x202;
+        immRip.flagsMask = F_CF; immRip.checkMem = true; immRip.memLen = 8;
+        emitModRMInstruction(immRip.code, {0xF0,0x48}, OpcodeMap::Map0F,
+            0xBA, bitGroupExt[i], 5, OperandKind::RipRelative,
+            true, 200, 12); // imm8 masks to bit 8; data follows JMP + qword.
+        immRip.code.insert(immRip.code.end(),
+            {0x48,0x8B,0x05,0x05,0,0,0, 0x48,0x89,0x03, 0xEB,0x08});
+        U64 ripInitial = 1ULL << 8;
+        for (U8 byte = 0; byte < 8; byte++) immRip.code.push_back((U8)(ripInitial >> (byte * 8)));
+        out.push_back(immRip);
+    }
+}
+
+// Register-index BT-family memory operands use a signed bit string offset.
+// Choose a base at scratch+32 so offsets 40, -1, and 200 address in-page
+// qwords at scratch+32, +24, and +56 respectively.
+static void buildBitStringCases(std::vector<TestCase>& out) {
+    const U8 opcodes[] = {0xA3,0xAB,0xB3,0xBB};
+    const char* names[] = {"bt-reg-index", "bts-reg-index",
+                           "btr-reg-index", "btc-reg-index"};
+    const S64 indices[] = {40, -1, 200};
+    const U8 bits[] = {40, 63, 8};
+    const S32 deltas[] = {0, -8, 24};
+    for (int op = 0; op < 4; op++) {
+        for (int index = 0; index < 3; index++) {
+            U64 initial = 1ULL << bits[index];
+            U64 rawIndex = (U64)indices[index];
+            for (int form = 0; form < 2; form++) {
+                TestCase tc; tc.set = "int"; tc.name = names[op];
+                tc.form = form == 0 ? "register,reg-index" : "memory,reg-index";
+                initRegs(tc, initial, form == 0 ? 0 : MEM_SCRATCH);
+                tc.r[X64_RCX] = rawIndex;
+                tc.flagsIn = 0x202; tc.flagsMask = F_CF;
+                std::vector<U8> prefix = form == 0 ? std::vector<U8>{0x48} :
+                    (op == 0 ? std::vector<U8>{0x48} : std::vector<U8>{0xF0,0x48});
+                emitModRMInstruction(tc.code, prefix, OpcodeMap::Map0F,
+                    opcodes[op], X64_RCX, form == 0 ? X64_RAX : X64_RBX,
+                    form == 0 ? OperandKind::Register : OperandKind::BaseMemory,
+                    false, 0, 0, form == 1 ? 32 : 0);
+                if (form == 1) {
+                    tc.checkMem = true; tc.memLen = 256;
+                    int targetOffset = 32 + deltas[index];
+                    memcpy(tc.memInit + targetOffset, &initial, sizeof(initial));
+                } else {
+                    tc.r[X64_RAX] = initial;
+                }
+                out.push_back(tc);
+            }
+        }
     }
 }
 
@@ -1633,6 +1685,7 @@ int main(int argc, char** argv) {
     buildByteIncDecCases(cases);
     buildGroupTestCases(cases);
     buildLockedRmwCases(cases);
+    buildBitStringCases(cases);
     buildFpuCases(cases);
     buildSseCases(cases);
     // buildStringCases(cases); // DISABLED: harness cannot handle RSI/RDI per-side checks yet
