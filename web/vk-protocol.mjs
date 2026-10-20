@@ -258,9 +258,21 @@ export function v2TextureFormat(vkFormat, counters) {
 }
 const V2_VERT_FORMAT = {
   100: 'float32', 103: 'float32x2', 106: 'float32x3', 109: 'float32x4',
-  37: 'unorm8x4', 16: 'unorm8x2', 64: 'unorm10-10-10-2',
-  39: 'float32x4', 80: 'float32x2', // scaled inputs are repacked before upload
-  83: 'float16x2', 97: 'float16x4', 77: 'unorm16x2', 91: 'unorm16x4',
+  98: 'uint32', 99: 'sint32',
+  101: 'uint32x2', 102: 'sint32x2', 104: 'uint32x3', 105: 'sint32x3',
+  107: 'uint32x4', 108: 'sint32x4',
+  37: 'unorm8x4', 38: 'snorm8x4', 41: 'uint8x4', 42: 'sint8x4',
+  16: 'unorm8x2', 17: 'snorm8x2', 20: 'uint8x2', 21: 'sint8x2',
+  64: 'unorm10-10-10-2',
+  39: 'float32x4', 40: 'float32x4', 18: 'float32x2', 19: 'float32x2',
+  23: 'float32x3', 24: 'float32x3', 25: 'float32x3', 26: 'float32x3',
+  27: 'uint32x3', 28: 'sint32x3',
+  83: 'float16x2', 97: 'float16x4', 77: 'unorm16x2', 78: 'snorm16x2',
+  79: 'float32x2', 80: 'float32x2',
+  81: 'uint16x2', 82: 'sint16x2', 91: 'unorm16x4', 92: 'snorm16x4',
+  93: 'float32x4', 94: 'float32x4', 95: 'uint16x4', 96: 'sint16x4',
+  84: 'float32x3', 85: 'float32x3', 86: 'float32x3', 87: 'float32x3',
+  88: 'uint32x3', 89: 'sint32x3', 90: 'float32x3',
   // 44 = VK_FORMAT_B8G8R8A8_UNORM. WebGPU has no BGRA vertex format; map to
   // unorm8x4 and swizzle R/B in the uploaded bytes (swizzleBgraVb), so the
   // shader sees Vulkan's component order.
@@ -270,11 +282,35 @@ const V2_VERT_FORMAT = {
 export const V2_VERT_FORMAT_SIZE = {
   'float32': 4, 'float32x2': 8, 'float32x3': 12, 'float32x4': 16,
   'unorm8x2': 2, 'unorm8x4': 4, 'unorm10-10-10-2': 4,
-  'float16x2': 4, 'float16x4': 8, 'unorm16x2': 4, 'unorm16x4': 8,
+  'snorm8x2': 2, 'snorm8x4': 4, 'uint8x2': 2, 'uint8x4': 4, 'sint8x2': 2, 'sint8x4': 4,
+  'float16x2': 4, 'float16x4': 8,
+  'unorm16x2': 4, 'unorm16x4': 8, 'snorm16x2': 4, 'snorm16x4': 8,
+  'uint16x2': 4, 'uint16x4': 8, 'sint16x2': 4, 'sint16x4': 8,
+  'uint32': 4, 'sint32': 4, 'uint32x2': 8, 'sint32x2': 8,
+  'uint32x3': 12, 'sint32x3': 12, 'uint32x4': 16, 'sint32x4': 16,
 };
 export const V2_SCALED_VERTEX = {
+  18: { components: 2, bits: 8, signed: false }, // R8G8_USCALED
+  19: { components: 2, bits: 8, signed: true }, // R8G8_SSCALED
+  23: { components: 3, bits: 8, signed: false, normalized: true }, // R8G8B8_UNORM
+  24: { components: 3, bits: 8, signed: true, normalized: true }, // R8G8B8_SNORM
+  25: { components: 3, bits: 8, signed: false }, // R8G8B8_USCALED
+  26: { components: 3, bits: 8, signed: true }, // R8G8B8_SSCALED
+  27: { components: 3, bits: 8, signed: false, output: 'uint32' }, // R8G8B8_UINT
+  28: { components: 3, bits: 8, signed: true, output: 'sint32' }, // R8G8B8_SINT
   39: { components: 4, bits: 8, signed: false }, // R8G8B8A8_USCALED
+  40: { components: 4, bits: 8, signed: true }, // R8G8B8A8_SSCALED
   80: { components: 2, bits: 16, signed: true }, // R16G16_SSCALED
+  79: { components: 2, bits: 16, signed: false }, // R16G16_USCALED
+  93: { components: 4, bits: 16, signed: false }, // R16G16B16A16_USCALED
+  94: { components: 4, bits: 16, signed: true }, // R16G16B16A16_SSCALED
+  84: { components: 3, bits: 16, signed: false, normalized: true }, // R16G16B16_UNORM
+  85: { components: 3, bits: 16, signed: true, normalized: true }, // R16G16B16_SNORM
+  86: { components: 3, bits: 16, signed: false }, // R16G16B16_USCALED
+  87: { components: 3, bits: 16, signed: true }, // R16G16B16_SSCALED
+  88: { components: 3, bits: 16, signed: false, output: 'uint32' }, // R16G16B16_UINT
+  89: { components: 3, bits: 16, signed: true, output: 'sint32' }, // R16G16B16_SINT
+  90: { components: 3, bits: 16, signed: true, half: true }, // R16G16B16_SFLOAT
 };
 export function repackScaledVb(bytes, inputStride, outputStride, attributes) {
   const count = Math.floor(bytes.length / inputStride);
@@ -286,11 +322,29 @@ export function repackScaledVb(bytes, inputStride, outputStride, attributes) {
     out.set(bytes.subarray(from, from + inputStride), to);
     for (const a of attributes) for (let component = 0; component < a.components; component++) {
       const offset = from + a.srcOffset + component * a.bits / 8;
-      const value = a.bits === 8 ? src.getUint8(offset) : src.getInt16(offset, true);
-      dst.setFloat32(to + a.dstOffset + component * 4, value, true);
+      const value = a.half
+        ? halfToFloat(src.getUint16(offset, true))
+        : a.bits === 8
+          ? (a.signed ? src.getInt8(offset) : src.getUint8(offset))
+          : (a.signed ? src.getInt16(offset, true) : src.getUint16(offset, true));
+      const converted = a.normalized
+        ? (a.signed ? Math.max(-1, value / (2 ** (a.bits - 1) - 1)) : value / (2 ** a.bits - 1))
+        : value;
+      const dstOffset = to + a.dstOffset + component * 4;
+      if (a.output === 'uint32') dst.setUint32(dstOffset, converted, true);
+      else if (a.output === 'sint32') dst.setInt32(dstOffset, converted, true);
+      else dst.setFloat32(dstOffset, converted, true);
     }
   }
   return out;
+}
+function halfToFloat(bits) {
+  const sign = bits & 0x8000 ? -1 : 1;
+  const exponent = (bits >> 10) & 0x1f;
+  const fraction = bits & 0x03ff;
+  if (exponent === 0) return sign * fraction * 2 ** -24;
+  if (exponent === 0x1f) return fraction ? NaN : sign * Infinity;
+  return sign * (1 + fraction / 1024) * 2 ** (exponent - 15);
 }
 export function v2VertexFormat(vkFormat) { return V2_VERT_FORMAT[vkFormat] || null; }
 export const V2_TOPOLOGY = { 0: 'point-list', 1: 'line-list', 2: 'line-strip', 3: 'triangle-list', 4: 'triangle-strip' };
