@@ -1,0 +1,55 @@
+{
+  "nonIdleExclude": ["idle", "idle/waiting"],
+  "rules": [
+    {
+      "stage": "idle/waiting",
+      "match": {
+        "functionName": "^(Atomics\\.wait|.*futex.*|.*Futex.*|__emscripten_thread_sleep|__pthread_cond_wait.*|__timedwait.*|usleep|nanosleep|select|poll|__syscall_poll|__syscall_select)$"
+      }
+    },
+    {
+      "stage": "idle",
+      "match": { "functionName": "^\\(idle\\)$" }
+    },
+    {
+      "stage": "program",
+      "match": { "functionName": "^\\(program\\)$" }
+    },
+    {
+      "stage": "garbage collector",
+      "match": { "functionName": "^\\((garbage collector|GC)\\)$" }
+    },
+    {
+      "stage": "Audio",
+      "match": { "url": "boxedwine-(multithreaded-)?audio|audio-callback-shim" }
+    },
+    {
+      "stage": "X11 wire + SDL present",
+      "match": { "url": "presentation\\.mjs" }
+    },
+    {
+      "stage": "WebGPU replay",
+      "match": { "url": "(vkwebgpu|webgpu)\\.mjs" }
+    },
+    {
+      "stage": "SPIR-V to WGSL",
+      "match": { "url": "(spirvfix|naga-rt|shader|wgsl-utils|enhancement-shaders)\\.mjs" }
+    },
+    {
+      "stage": "Wire protocol encode/decode",
+      "match": { "url": "vk-protocol\\.mjs" }
+    },
+    {
+      "stage": "Other host glue",
+      "match": { "url": "(app|startup|launch|games|demos|files|storage|session-storage|installation|network|direct-folder|package-archive|dependencies|browser|boxedwine-shell|wine64-launcher|frame-metrics)\\.(mjs|js)" }
+    },
+    {
+      "stage": "GL bridge to WebGL2",
+      "match": { "functionName": "^(.*emscripten_webgl.*|.*WebGL.*)$" }
+    },
+    {
+      "stage": "Emscripten runtime",
+      "match": { "url": "boxedwine64\\.js" }
+    }
+  ]
+}
