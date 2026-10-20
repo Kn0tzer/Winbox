@@ -158,6 +158,7 @@ struct TestCase {
     U8 memIgnore[256] = {};   // bytes intentionally not compared (e.g. host FIP/FDP)
     bool checkCfPreserved = false;   // inc/dec: CF must be unchanged
     bool checkFlagsUnchanged = false;// e.g. shift by masked-count 0: no flag change
+    bool ignoreRax = false;   // destination undefined for BSF/BSR with zero source
     bool skipRsiRdi = false;         // string ops: RSI/RDI hold scratch addrs, checked per-side
     bool checkExpectedRax = false;
     U64 expectedRax = 0;
@@ -218,7 +219,11 @@ static std::vector<NativeResult> runNativeBatch(
 
     pid_t pid = fork();
     if (pid == 0) {
-        execl(g_qemuPath.c_str(), "qemu-x86_64", g_runnerPath.c_str(), inTmp, outTmp,
+        // Match the guest's advertised feature generation. Nehalem provides
+        // SSE4.2 and POPCNT without ABM, so F3 0F BC/BD retain BSF/BSR
+        // semantics; MONITOR is disabled because the harness expects #UD.
+        execl(g_qemuPath.c_str(), "qemu-x86_64", "-cpu",
+              "Nehalem-v1,-abm,-monitor", g_runnerPath.c_str(), inTmp, outTmp,
               (char*)nullptr);
         _exit(127);
     }
@@ -857,6 +862,50 @@ static void buildIntCases(std::vector<TestCase>& out) {
                 tc.flagsIn = fl; tc.flagsMask = 0;
                 out.push_back(tc);
             }
+    }
+}
+
+// POPCNT and pre-ABM F3 0F BC/BD behavior. Cover register and memory sources,
+// both 32-bit and 64-bit operand sizes, and zero/negative/boundary bit patterns.
+static void buildPopcntBitScanCases(std::vector<TestCase>& out) {
+    const U64 values[] = {0, 1, 0x100, 0x80000000ULL,
+                          0x8000000000000000ULL, 0xFFFFFFFFFFFFFFFFULL,
+                          0x123456789ABCDEF0ULL};
+    struct Op { const char* name; U8 opcode; U32 flagsMask; };
+    const Op ops[] = {
+        {"popcnt", 0xB8, F_CF | F_ZF | F_OF},
+        {"bsf-f3", 0xBC, F_ZF},
+        {"bsr-f3", 0xBD, F_ZF},
+    };
+    for (const Op& op : ops) {
+        for (bool wide : {false, true}) {
+            for (bool memory : {false, true}) {
+                for (U64 value : values) {
+                    std::vector<U8> code = {0xF3};
+                    if (wide) code.push_back(0x48);
+                    code.push_back(0x0F);
+                    code.push_back(op.opcode);
+                    eModRM(code, memory ? 0 : 3, X64_RAX, X64_RBX);
+
+                    TestCase tc; tc.set = "int"; tc.name = op.name;
+                    tc.form = memory ? (wide ? "r64,[mem]" : "r32,[mem]")
+                                     : (wide ? "r64,r64" : "r32,r32");
+                    tc.code = std::move(code);
+                    initRegs(tc, 0xA55AA55AA55AA55AULL, MEM_SCRATCH);
+                    tc.flagsIn = 0xAD7;
+                    tc.flagsMask = op.flagsMask;
+                    if (memory) {
+                        tc.checkMem = true; tc.memLen = 8;
+                        memcpy(tc.memInit, &value, sizeof(value));
+                    } else {
+                        tc.r[X64_RBX] = value;
+                    }
+                    if (op.opcode != 0xB8 && (wide ? value : (U32)value) == 0)
+                        tc.ignoreRax = true; // BSF/BSR destination is undefined for zero.
+                    out.push_back(std::move(tc));
+                }
+            }
+        }
     }
 }
 
@@ -2850,6 +2899,7 @@ static CaseResult diffCase(const TestCase& tc, int idx, const NativeResult& n) {
     for (int i = 0; i < 16; i++) {
         if (i == X64_RSP) continue;
         if (rbxPatched && i == X64_RBX) continue;
+        if (tc.ignoreRax && i == X64_RAX) continue;
         if (tc.skipRsiRdi && (i == X64_RSI || i == X64_RDI)) continue;
         if (cr.nRegs[i] != cr.eRegs[i]) {
             snprintf(tmp, sizeof(tmp), "%s:n=0x%llx/e=0x%llx ",
@@ -3025,6 +3075,7 @@ int main(int argc, char** argv) {
 
     std::vector<TestCase> cases;
     buildIntCases(cases);
+    buildPopcntBitScanCases(cases);
     buildByteIncDecCases(cases);
     buildGroupTestCases(cases);
     buildLockedRmwCases(cases);

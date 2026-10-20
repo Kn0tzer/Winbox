@@ -2703,36 +2703,24 @@ dsp_38:
             return used;
         }
 
-        // F3 0F B8 — POPCNT r, r/m  (REP prefix selects POPCNT vs BSF)
-        // F3 0F BC — TZCNT (vs 0F BC BSF)
-        // F3 0F BD — LZCNT (vs 0F BD BSR)
-        if ((op2 == 0xB8 && p.rep == 0xF3) ||
-            (op2 == 0xBC && p.rep == 0xF3) ||
-            (op2 == 0xBD && p.rep == 0xF3)) {
+        // F3 0F B8 — POPCNT r, r/m.
+        if (op2 == 0xB8 && p.rep == 0xF3) {
             ModRM m = decodeModRM(rip + opOff + 2, p, 0);
             U64 src = loadRM(m, opSize, rexPresent) & maskFor(opSize);
-            U64 result;
-            if (op2 == 0xB8) { // POPCNT
-                result = __builtin_popcountll(src);
-            } else if (op2 == 0xBC) { // TZCNT
-                result = src ? __builtin_ctzll(src) : opSize * 8;
-            } else { // LZCNT
-                U32 bits = opSize * 8;
-                result = src ? (__builtin_clzll(src) - (64 - bits)) : bits;
-            }
+            U64 result = __builtin_popcountll(src);
             if (opSize == 8) reg[m.regField].setU64(result);
             else if (opSize == 4) reg[m.regField].setU64((U32)result);
             else reg[m.regField].setU16((U16)result);
             rflags &= ~(X64_ZF | X64_CF | X64_OF | X64_SF | X64_PF | X64_AF);
-            if (op2 == 0xB8) { if (result == 0) rflags |= X64_ZF; }
-            else if (op2 == 0xBC) { if (src == 0) rflags |= X64_CF; if ((result & maskFor(opSize)) == 0) rflags |= X64_ZF; }
-            else { if (src == 0) rflags |= X64_CF; if ((result & maskFor(opSize)) == 0) rflags |= X64_ZF; }
+            if (result == 0) rflags |= X64_ZF;
             U32 used = opOff + 2 + m.length;
             rip += used;
             return used;
         }
 
-        // 0F BC — BSF r, r/m  (bit scan forward); 0F BD — BSR (reverse).
+        // 0F BC/BD remain BSF/BSR when F3 is present because ABM is not
+        // advertised; on pre-ABM CPUs the prefix is ignored.
+        // 0F BC — BSF r, r/m (bit scan forward); 0F BD — BSR (reverse).
         if (op2 == 0xBC || op2 == 0xBD) {
             ModRM m = decodeModRM(rip + opOff + 2, p, 0);
             U64 src = loadRM(m, opSize, rexPresent) & maskFor(opSize);

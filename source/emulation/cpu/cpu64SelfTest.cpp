@@ -722,6 +722,70 @@ int runX64SelfTest() {
         });
     }
 
+    // POPCNT memory source and zero-result flags.
+    {
+        std::vector<U8> code = {0xF3, 0x48, 0x0F, 0xB8, 0x05,
+                                0x0C, 0x00, 0x00, 0x00}; // popcnt rax,[rip+12]
+        std::vector<U8> full = withExit(code);
+        const U8 value[8] = {0x01, 0, 0, 0, 0, 0, 0, 0};
+        full.insert(full.end(), value, value + sizeof(value));
+        runAndCheck(r, "popcnt rax,[rip]", full, [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 1 && !(c.rflags & (X64_CF | X64_OF | X64_ZF));
+        });
+    }
+    {
+        std::vector<U8> code = {0xF3, 0x48, 0x0F, 0xB8, 0xC3}; // popcnt rax,rbx
+        runAndCheck(r, "popcnt zero sets ZF and clears CF/OF", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 0 && (c.rflags & X64_ZF) &&
+                   !(c.rflags & (X64_CF | X64_OF));
+        }, [](CPU64& c) {
+            c.reg[X64_RBX].setU64(0);
+            c.rflags |= X64_CF | X64_OF;
+        });
+    }
+
+    // F3 is ignored for BSF/BSR when ABM is not advertised.
+    {
+        std::vector<U8> code = {
+            0x48, 0xC7, 0xC0, 0x5A, 0, 0, 0, // destination sentinel
+            0x48, 0xC7, 0xC3, 0x00, 0x01, 0, 0, // source 0x100
+            0xF3, 0x48, 0x0F, 0xBC, 0xC3, // rep bsf rax,rbx
+        };
+        runAndCheck(r, "F3 BSF keeps BSF semantics", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 8 && !(c.rflags & X64_ZF);
+        });
+    }
+    {
+        std::vector<U8> code = {0xF3, 0x48, 0x0F, 0xBC, 0x05,
+                                0x0C, 0x00, 0x00, 0x00}; // rep bsf rax,[rip+12]
+        std::vector<U8> full = withExit(code);
+        const U8 value[8] = {0x00, 0x01, 0, 0, 0, 0, 0, 0};
+        full.insert(full.end(), value, value + sizeof(value));
+        runAndCheck(r, "F3 BSF memory keeps BSF semantics", full, [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 8 && !(c.rflags & X64_ZF);
+        });
+    }
+    {
+        std::vector<U8> code = {
+            0x48, 0xC7, 0xC0, 0x5A, 0, 0, 0, // destination sentinel
+            0xBB, 0, 0, 0, 0x80, // mov ebx,0x80000000 (zero-extends)
+            0xF3, 0x48, 0x0F, 0xBD, 0xC3, // rep bsr rax,rbx
+        };
+        runAndCheck(r, "F3 BSR keeps BSR semantics", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 31 && !(c.rflags & X64_ZF);
+        });
+    }
+    {
+        std::vector<U8> code = {0xF3, 0x48, 0x0F, 0xBD, 0x05,
+                                0x0C, 0x00, 0x00, 0x00}; // rep bsr rax,[rip+12]
+        std::vector<U8> full = withExit(code);
+        const U8 value[8] = {0x00, 0x00, 0x00, 0x80, 0, 0, 0, 0};
+        full.insert(full.end(), value, value + sizeof(value));
+        runAndCheck(r, "F3 BSR memory keeps BSR semantics", full, [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 31 && !(c.rflags & X64_ZF);
+        });
+    }
+
     // Test 24: BSF rax, rbx where rbx=0x100 → result 8 (low bit set is bit 8).
     {
         std::vector<U8> code = {
