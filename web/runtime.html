@@ -6,13 +6,54 @@ import { installPresentation } from '../presentation.mjs';
 import { loadDependencies } from '../dependencies.mjs';
 const query = new URLSearchParams(location.search);
 const runtimeReleaseId = '__RUNTIME_VERSION__';
+let launchAudioContext = null;
+try {
+  const context = window.parent?.bwLauncherAudioContext;
+  if (context && context.state !== 'closed') launchAudioContext = context;
+} catch {}
+if (launchAudioContext && typeof AudioContext === 'function') {
+  const NativeAudioContext = AudioContext;
+  let claimedLaunchContext = false;
+  window.AudioContext = new Proxy(NativeAudioContext, {
+    construct(target, args, newTarget) {
+      if (!claimedLaunchContext && launchAudioContext) {
+        claimedLaunchContext = true;
+        return launchAudioContext;
+      }
+      return Reflect.construct(target, args, newTarget);
+    },
+  });
+}
+window.bwLaunchAudioContext = launchAudioContext;
+let launcherAudioGestureForwarded = false;
+window.bwLauncherAudioGestureForwarded = false;
+window.bwForwardLauncherAudioGesture = () => {
+  if (launcherAudioGestureForwarded) return true;
+  if (!launchAudioContext || launchAudioContext.state !== 'running') return false;
+  const canvas = document.getElementById('canvas');
+  if (!(canvas instanceof HTMLCanvasElement)) return false;
+  const rect = canvas.getBoundingClientRect();
+  const clientX = rect.left - 1;
+  const clientY = rect.top - 1;
+  canvas.dispatchEvent(new MouseEvent('mousedown', {
+    bubbles: true, cancelable: true, view: window, button: 0, buttons: 1, clientX, clientY,
+  }));
+  canvas.dispatchEvent(new MouseEvent('mouseup', {
+    bubbles: true, cancelable: true, view: window, button: 0, buttons: 0, clientX, clientY,
+  }));
+  launcherAudioGestureForwarded = true;
+  window.bwLauncherAudioGestureForwarded = true;
+  return true;
+};
 window.bwAudioWorkletUrl = () => {
   const url = new URL('../assets/audio-output-worklet.js', location.href);
   url.searchParams.set('v', runtimeReleaseId);
   return url.href;
 };
 let audioGestureSeen = false;
+let audioResumeWarningShown = false;
 const audioGestureTargets = [];
+const observedAudioContexts = new WeakSet();
 function removeAudioGestureListeners() {
   for (const target of audioGestureTargets.splice(0)) {
     target.removeEventListener('pointerdown', onFirstAudioGesture, true);
@@ -30,14 +71,38 @@ function audioUserActivated() {
 function onFirstAudioGesture() {
   audioGestureSeen = true;
   const context = window.Module?.SDL2?.audioContext;
-  if (context?.state === 'suspended') context.resume().catch(() => {});
-  removeAudioGestureListeners();
+  if (context) resumeAudioContext(context);
+}
+function observeAudioContext(context) {
+  if (observedAudioContexts.has(context)) return;
+  observedAudioContexts.add(context);
+  context.addEventListener('statechange', () => {
+    if (context.state === 'running') removeAudioGestureListeners();
+  });
+}
+function resumeAudioContext(context) {
+  if (!context) return;
+  observeAudioContext(context);
+  if (context.state === 'running') { removeAudioGestureListeners(); return; }
+  if (context.state !== 'suspended') return;
+  try {
+    Promise.resolve(context.resume()).then(() => {
+      if (context.state === 'running') removeAudioGestureListeners();
+    }).catch(error => {
+      if (audioResumeWarningShown) return;
+      audioResumeWarningShown = true;
+      console.warn('AudioContext resume waiting for user activation:', error?.name || 'failed');
+    });
+  } catch (error) {
+    if (audioResumeWarningShown) return;
+    audioResumeWarningShown = true;
+    console.warn('AudioContext resume waiting for user activation:', error?.name || 'failed');
+  }
 }
 window.bwResumeAudioContext = context => {
   if (!context) return;
-  const activated = audioUserActivated();
-  if (context.state === 'suspended' && activated) context.resume().catch(() => {});
-  if (context.state !== 'suspended' || activated) removeAudioGestureListeners();
+  if (audioUserActivated() || context.state === 'running') resumeAudioContext(context);
+  else observeAudioContext(context);
 };
 for (const target of [window, document]) {
   target.addEventListener('pointerdown', onFirstAudioGesture, true);

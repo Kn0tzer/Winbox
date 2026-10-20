@@ -163,7 +163,7 @@ async function launchFrame(query, title, archive = null) {
   if (settings.internet === 'on') { query.set('network', '1'); query.set('wisp', '1'); }
   if (settings.enhancement !== 'off') query.set('enhance', '1');
   const frame = document.createElement('iframe'); frame.title = title + ' runtime';
-  frame.allow = 'cross-origin-isolated; fullscreen'; frame.dataset.installation = query.get('installation');
+  frame.allow = 'cross-origin-isolated; fullscreen; autoplay'; frame.dataset.installation = query.get('installation');
   frame.onload = () => {
     try {
       frame.contentDocument.documentElement.style.backgroundColor = '#000';
@@ -287,9 +287,23 @@ async function importFolder(files, name, signal, directory = null) {
   finally { await cleanupExtracted(owned).catch(() => {}); if (owned !== files) await cleanupExtracted(files).catch(() => {}); }
 }
 async function startDemo(demo, signal) {
+  const launcherWindow = /** @type {Window & { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext; bwLauncherAudioContext?: AudioContext; bwLauncherGesturePending?: boolean }} */ (window);
+  const AudioContextCtor = launcherWindow.AudioContext || launcherWindow.webkitAudioContext;
+  if (AudioContextCtor) {
+    try {
+      const context = new AudioContextCtor();
+      launcherWindow.bwLauncherAudioContext = context;
+      if (context.state === 'suspended') context.resume().catch(error => {
+        console.warn('Launcher audio context resume failed:', error?.name || 'failed');
+      });
+    } catch (error) {
+      console.warn('Launcher audio context setup failed:', error?.name || 'failed');
+    }
+  }
   await closeRuntime(); signal.throwIfAborted(); preparing(demo.title); status('Opening ' + demo.title + '…');
   const query = await demoParameters(demo); signal.throwIfAborted();
   if (settings.graphics !== 'auto') query.set('gpu', settings.graphics === 'webgpu' ? '1' : '0');
+  launcherWindow.bwLauncherGesturePending = true;
   await launchFrame(query, demo.title);
 }
 function renderDemos() {
@@ -373,7 +387,14 @@ window.addEventListener('message', event => {
     run.lastLog = performance.now();
     if (String(data).includes('first window mapped')) {
       run.firstMapped = true;
-      run.frame.contentWindow?.document.getElementById('canvas')?.focus({ preventScroll: true });
+      const runtime = /** @type {(Window & { bwForwardLauncherAudioGesture?: () => boolean }) | null} */ (run.frame.contentWindow);
+      const canvas = runtime?.document.getElementById('canvas');
+      canvas?.focus({ preventScroll: true });
+      const launcherWindow = /** @type {Window & { bwLauncherGesturePending?: boolean }} */ (window);
+      if (launcherWindow.bwLauncherGesturePending) {
+        launcherWindow.bwLauncherGesturePending = false;
+        runtime?.bwForwardLauncherAudioGesture?.();
+      }
     }
     updateStartup(run);
   }
