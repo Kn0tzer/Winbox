@@ -67,7 +67,10 @@ async function waitForLoadAverageBelowThreshold(summary) {
   summary.loadAverageWaitExpired = current !== null && current >= 2.5;
 }
 
-const probeSlot = await acquireProbeSlot();
+// A shared machine can keep another serial probe in flight for a while. Match
+// the task's 45-minute hygiene wait instead of failing after the slot helper's
+// shorter default timeout.
+const probeSlot = await acquireProbeSlot({ timeoutMs: 45 * 60 * 1000 });
 try {
   await mkdir(outDir, { recursive: true });
   await main();
