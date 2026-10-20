@@ -798,6 +798,16 @@ U32 CPU64::step() {
 
     U8 op = fetchByte(rip + opOff);
 
+    // Deliver a synchronous, instruction-addressed fault. The test harness
+    // has no attached thread or signal handlers, so an unhandled fault yields
+    // at the faulting RIP; a guest handler instead receives the saved context.
+    auto faultAtInstruction = [&](U32 sig, U32 trapNo) -> U32 {
+        if (raiseSyncFault(sig, trapNo, 0, ipStart)) return 0;
+        if (thread && thread->process) thread->process->signalProcess(sig);
+        yield = true;
+        return 0;
+    };
+
     if (!g_opProfInit) {
         g_opProfInit = true;
         g_opProf = std::getenv("BW64_OPPROF") != nullptr;
@@ -806,6 +816,23 @@ U32 CPU64::step() {
     if (g_opProf) {
         if (op == 0x0F) g_opProfCount[0x0F][fetchByte(rip + opOff + 1)]++;
         else g_opProf1[op]++;
+    }
+
+    // Instructions unavailable in this user-mode CPU model fault at their
+    // original RIP. INT3 retains its debugger/breakpoint yield behavior below.
+    if (op == 0x0F && fetchByte(rip + opOff + 1) == 0x0B) // UD2: #UD
+        return faultAtInstruction(K_SIGILL, 6);
+    if (op == 0xCD || op == 0xF1 || op == 0xF4 || op == 0xFA || op == 0xFB ||
+        (op >= 0x6C && op <= 0x6F) || (op >= 0xE4 && op <= 0xE7) ||
+        (op >= 0xEC && op <= 0xEF) || op == 0x9A || op == 0xEA ||
+        op == 0xCA || op == 0xCB) {
+        return faultAtInstruction(K_SIGSEGV, 13); // #GP in user mode
+    }
+    if (op == 0xFF) {
+        U8 modrmByte = fetchByte(rip + opOff + 1);
+        U8 group = (modrmByte >> 3) & 7;
+        if (group == 3 || group == 5) // far CALL/JMP r/m
+            return faultAtInstruction(K_SIGSEGV, 13);
     }
 
     // ---- Dispatch jump table ----
@@ -6032,8 +6059,7 @@ unhandled:
         dumpMem("RBX ", reg[X64_RBX].u64);
         dumpMem("RBP ", reg[X64_RBP].u64);
     }
-    yield = true;
-    return 0;
+    return faultAtInstruction(K_SIGILL, 6);
 }
 
 void CPU64::run() {

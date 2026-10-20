@@ -119,6 +119,33 @@ void runAndCheck(TestResult& r, const char* name,
     fflush(stdout);
 }
 
+// The isolated self-test CPU has no KThread/signal action to inspect. A
+// synchronous fault therefore takes the native step fault path by yielding
+// with RIP still on the faulting instruction (rather than advancing or
+// silently continuing).
+void runFaultAtRIP(TestResult& r, const char* name,
+                   const std::vector<U8>& instruction) {
+    KMemory64 mem(nullptr);
+    mem.mmapAnonymousFixed(CODE_BASE, 0x1000, 7);
+    mem.mmapAnonymousFixed(STACK_TOP - 0x1000, 0x1000, 3);
+    loadCode(mem, CODE_BASE, instruction);
+    CPU64 cpu(&mem);
+    cpu.rip = CODE_BASE;
+    cpu.reg[X64_RSP].setU64(STACK_TOP - 16);
+    cpu.runBounded(1);
+    bool ok = cpu.yield && cpu.rip == CODE_BASE && cpu.instructionCount == 0;
+    if (ok) {
+        printf("  PASS: %s\n", name);
+        r.passed++;
+    } else {
+        printf("  FAIL: %s (yield=%d RIP=0x%llx instructions=%llu)\n",
+               name, (int)cpu.yield, (unsigned long long)cpu.rip,
+               (unsigned long long)cpu.instructionCount);
+        r.failed++;
+    }
+    fflush(stdout);
+}
+
 // Exit suffix. ksyscall64's exit handler doesn't preserve RAX (it writes
 // the syscall return value back into it), so we stash RAX into R15 first
 // — R15 is callee-saved and untouched by everything below.
@@ -8123,6 +8150,34 @@ int runX64SelfTest() {
     }), [](CPU64& c) {
         return (c.reg[X64_R15].u64 & 0x80ULL) != 0;
     });
+
+    // Synchronous invalid-opcode and user-mode #GP faults stay at the
+    // instruction RIP in this handler-free native self-test harness.
+    runFaultAtRIP(r, "UD2 raises SIGILL at faulting RIP", {0x0F, 0x0B});
+    runFaultAtRIP(r, "unimplemented opcode raises SIGILL", {0x0F, 0xB9, 0xC0});
+    runFaultAtRIP(r, "INT imm8 raises #GP", {0xCD, 0x29});
+    runFaultAtRIP(r, "HLT raises #GP", {0xF4});
+    runFaultAtRIP(r, "CLI raises #GP", {0xFA});
+    runFaultAtRIP(r, "STI raises #GP", {0xFB});
+    runFaultAtRIP(r, "INT1 raises #GP", {0xF1});
+    runFaultAtRIP(r, "IN imm8 forms raise #GP", {0xE4, 0x80});
+    runFaultAtRIP(r, "IN imm16 form raises #GP", {0xE5, 0x80});
+    runFaultAtRIP(r, "OUT imm8 forms raise #GP", {0xE6, 0x80});
+    runFaultAtRIP(r, "OUT imm16 form raises #GP", {0xE7, 0x80});
+    runFaultAtRIP(r, "IN DX byte form raises #GP", {0xEC});
+    runFaultAtRIP(r, "IN DX word/dword form raises #GP", {0xED});
+    runFaultAtRIP(r, "OUT DX byte form raises #GP", {0xEE});
+    runFaultAtRIP(r, "OUT DX word/dword form raises #GP", {0xEF});
+    runFaultAtRIP(r, "INS byte form raises #GP", {0x6C});
+    runFaultAtRIP(r, "INS word/dword form raises #GP", {0x6D});
+    runFaultAtRIP(r, "OUTS byte form raises #GP", {0x6E});
+    runFaultAtRIP(r, "OUTS word/dword form raises #GP", {0x6F});
+    runFaultAtRIP(r, "far CALL direct raises #GP", {0x9A, 0, 0, 0, 0, 0, 0});
+    runFaultAtRIP(r, "far JMP direct raises #GP", {0xEA, 0, 0, 0, 0, 0, 0});
+    runFaultAtRIP(r, "far CALL indirect raises #GP", {0xFF, 0x1B});
+    runFaultAtRIP(r, "far JMP indirect raises #GP", {0xFF, 0x2B});
+    runFaultAtRIP(r, "RETF imm16 raises #GP", {0xCA, 0, 0});
+    runFaultAtRIP(r, "RETF raises #GP", {0xCB});
 
     const char* requireJit = std::getenv("BW64_JIT_VERIFY");
     if (requireJit && std::strcmp(requireJit, "1") == 0) {

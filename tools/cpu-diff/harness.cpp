@@ -42,7 +42,11 @@
 // raiseSyncFault throws DiffFault so the case is reported instead of hanging.
 // ---------------------------------------------------------------------------
 struct DiffFault : std::runtime_error {
-    explicit DiffFault(const std::string& s) : std::runtime_error(s) {}
+    U32 signalNo = 0;
+    U32 trapNo = 0;
+    U64 faultAddr = 0;
+    DiffFault(const std::string& s, U32 sig = 0, U32 trap = 0, U64 addr = 0)
+        : std::runtime_error(s), signalNo(sig), trapNo(trap), faultAddr(addr) {}
 };
 
 void ksyscall64(CPU64* /*cpu*/) { throw DiffFault("unexpected syscall"); }
@@ -52,8 +56,8 @@ thread_local KThread* KThread::runningThread = nullptr;
 void jit64ReleaseState(Jit64State* state) {
     if (state) throw DiffFault("unexpected JIT state in cpu-diff harness");
 }
-bool CPU64::raiseSyncFault(U32 /*sig*/, U32 /*trapNo*/, S32 /*siCode*/, U64 faultAddr) {
-    throw DiffFault("sync fault at guest addr");
+bool CPU64::raiseSyncFault(U32 sig, U32 trapNo, S32 /*siCode*/, U64 faultAddr) {
+    throw DiffFault("sync fault at guest addr", sig, trapNo, faultAddr);
 }
 bool CPU64::deliverPendingSignals() { return false; }
 
@@ -117,7 +121,7 @@ struct QemuCase {
     U8 scratchIn[256] = {};
 };
 struct QemuResult {
-    U32 ok = 0, crashed = 0, timeout = 0, pad = 0;
+    U32 ok = 0, crashed = 0, timeout = 0, signalNo = 0;
     U64 regs[16] = {};
     U32 flags = 0, pad2 = 0;
     U64 rspIn = 0, rbxIn = 0;
@@ -130,6 +134,7 @@ struct NativeResult {
     bool ok = false;
     bool crashed = false;
     bool timeout = false;
+    U32 signalNo = 0;
     U64 regs[16] = {};
     U32 flags = 0;
     U64 rspIn = 0, rbxIn = 0;
@@ -156,6 +161,11 @@ struct TestCase {
     bool skipRsiRdi = false;         // string ops: RSI/RDI hold scratch addrs, checked per-side
     bool checkExpectedRax = false;
     U64 expectedRax = 0;
+    // Fault cases assert the native process signal and the emulator's
+    // synchronous Linux signal/trap mapping independently.
+    U32 expectedNativeSignal = 0;
+    U32 expectedEmuSignal = 0;
+    U32 expectedEmuTrap = 0;
 };
 
 static bool writeAll(int fd, const void* buf, size_t n) {
@@ -241,6 +251,7 @@ static std::vector<NativeResult> runNativeBatch(
                         r.timeout = true;
                     } else {
                         r.crashed = true;
+                        r.signalNo = q.signalNo;
                     }
                 }
             }
@@ -265,6 +276,9 @@ struct EmuResult {
     U8 scratch[256] = {};
     U64 elapsedNs = 0;
     bool yieldAtEnd = false;
+    U32 faultSignal = 0;
+    U32 faultTrap = 0;
+    U64 faultAddr = 0;
 };
 
 static EmuResult runEmu(const U8* code, size_t len, const U64 regsIn[16],
@@ -317,6 +331,9 @@ static EmuResult runEmu(const U8* code, size_t len, const U64 regsIn[16],
     } catch (const DiffFault& f) {
         r.faulted = true;
         r.err = f.what();
+        r.faultSignal = f.signalNo;
+        r.faultTrap = f.trapNo;
+        r.faultAddr = f.faultAddr;
     } catch (const std::exception& e) {
         r.err = std::string("exception: ") + e.what();
     }
@@ -1712,6 +1729,44 @@ struct CaseResult {
 
 static CaseResult diffCase(const TestCase& tc, int idx, const NativeResult& n) {
     CaseResult cr; cr.idx = idx;
+    if (tc.expectedEmuSignal) {
+        cr.nativeOk = n.crashed && n.signalNo == tc.expectedNativeSignal;
+        if (!cr.nativeOk) {
+            cr.nativeErr = n.timeout ? "native timeout"
+                         : n.crashed ? "native signal mismatch"
+                         : n.ok ? "native instruction returned"
+                         : "native setup failed";
+            cr.mismatchDesc = "native-signal=" + std::to_string(n.signalNo) +
+                              " expected=" + std::to_string(tc.expectedNativeSignal);
+            return cr;
+        }
+        EmuResult e[3];
+        for (int k = 0; k < 3; k++)
+            e[k] = runEmu(tc.code.data(), tc.code.size(), tc.r, tc.flagsIn,
+                          tc.checkMem ? tc.memInit : nullptr);
+        auto matchesEmuFault = [&](const EmuResult& result) {
+            return result.faulted && result.faultSignal == tc.expectedEmuSignal &&
+                   result.faultTrap == tc.expectedEmuTrap &&
+                   result.faultAddr == CODE_BASE;
+        };
+        cr.emuOk = matchesEmuFault(e[0]);
+        cr.emuStable = cr.emuOk;
+        for (int k = 1; k < 3; k++)
+            if (!matchesEmuFault(e[k])) cr.emuStable = false;
+        if (!cr.emuOk || !cr.emuStable) {
+            cr.emuErr = e[0].faulted
+                ? "sync signal=" + std::to_string(e[0].faultSignal) +
+                  " trap=" + std::to_string(e[0].faultTrap) +
+                  " addr=0x" + std::to_string(e[0].faultAddr)
+                : e[0].err;
+            cr.mismatchDesc = cr.emuErr + " expected signal=" +
+                              std::to_string(tc.expectedEmuSignal) + " trap=" +
+                              std::to_string(tc.expectedEmuTrap);
+            return cr;
+        }
+        cr.match = true;
+        return cr;
+    }
     if (!n.ok) {
         cr.nativeErr = n.timeout ? "native timeout"
                      : n.crashed ? "native crashed"
@@ -1795,6 +1850,53 @@ static CaseResult diffCase(const TestCase& tc, int idx, const NativeResult& n) {
     return cr;
 }
 
+static void buildFaultCases(std::vector<TestCase>& out) {
+    auto add = [&](const char* name, const char* form,
+                   std::vector<U8> code, U32 nativeSig, U32 emuSig, U32 trap,
+                   bool memoryOperand = false) {
+        TestCase tc; tc.set = "int"; tc.name = name; tc.form = form;
+        tc.code = std::move(code); tc.flagsIn = 0x202;
+        tc.expectedNativeSignal = nativeSig;
+        tc.expectedEmuSignal = emuSig;
+        tc.expectedEmuTrap = trap;
+        if (memoryOperand) {
+            tc.r[X64_RBX] = MEM_SCRATCH;
+            tc.checkMem = true; tc.memLen = 8;
+        }
+        out.push_back(std::move(tc));
+    };
+    add("ud2-fault", "SIGILL/#UD", {0x0F,0x0B}, SIGILL, SIGILL, 6);
+    add("unimplemented-fault", "SIGILL/#UD", {0x0F,0xB9,0xC0}, SIGILL, SIGILL, 6);
+    add("int-fault", "SIGSEGV/#GP", {0xCD,0x01}, SIGSEGV, SIGSEGV, 13);
+    add("int-fault", "SIGSEGV/#GP fastfail 0x29", {0xCD,0x29}, SIGSEGV, SIGSEGV, 13);
+    add("int-fault", "SIGSEGV/#GP fastfail 0x2c", {0xCD,0x2C}, SIGSEGV, SIGSEGV, 13);
+    add("int-fault", "SIGSEGV/#GP fastfail 0x2d", {0xCD,0x2D}, SIGSEGV, SIGSEGV, 13);
+    add("hlt-fault", "SIGSEGV/#GP", {0xF4}, SIGSEGV, SIGSEGV, 13);
+    add("cli-fault", "SIGSEGV/#GP", {0xFA}, SIGSEGV, SIGSEGV, 13);
+    add("sti-fault", "SIGSEGV/#GP", {0xFB}, SIGSEGV, SIGSEGV, 13);
+    // QEMU user-mode reports ICEBP as SIGILL; this emulator follows the
+    // requested user fault mapping of SIGSEGV with trap number 13.
+    add("int1-fault", "native SIGILL; emulator SIGSEGV/#GP", {0xF1}, SIGILL, SIGSEGV, 13);
+    const std::vector<std::pair<const char*, std::vector<U8>>> io = {
+        {"in-imm8", {0xE4,0x80}}, {"in-imm16", {0xE5,0x80}},
+        {"out-imm8", {0xE6,0x80}}, {"out-imm16", {0xE7,0x80}},
+        {"in-dx8", {0xEC}}, {"in-dx-width", {0xED}},
+        {"out-dx8", {0xEE}}, {"out-dx-width", {0xEF}},
+        {"ins8", {0x6C}}, {"ins-width", {0x6D}},
+        {"outs8", {0x6E}}, {"outs-width", {0x6F}},
+    };
+    for (const auto& c : io)
+        add(c.first, "SIGSEGV/#GP", c.second, SIGSEGV, SIGSEGV, 13);
+    // Direct far transfers are invalid in 64-bit mode (#UD); the requested
+    // emulator contract reports the user-mode fault as SIGSEGV/#GP.
+    add("far-call", "native SIGILL; emulator SIGSEGV/#GP", {0x9A,0,0,0,0,0,0}, SIGILL, SIGSEGV, 13);
+    add("far-jmp", "native SIGILL; emulator SIGSEGV/#GP", {0xEA,0,0,0,0,0,0}, SIGILL, SIGSEGV, 13);
+    add("far-call", "indirect memory SIGSEGV/#GP", {0xFF,0x1B}, SIGSEGV, SIGSEGV, 13, true);
+    add("far-jmp", "indirect memory SIGSEGV/#GP", {0xFF,0x2B}, SIGSEGV, SIGSEGV, 13, true);
+    add("retf", "imm16 SIGSEGV/#GP", {0xCA,0,0}, SIGSEGV, SIGSEGV, 13);
+    add("retf", "SIGSEGV/#GP", {0xCB}, SIGSEGV, SIGSEGV, 13);
+}
+
 // ---------------------------------------------------------------------------
 // Aggregation + reporting.
 // ---------------------------------------------------------------------------
@@ -1822,12 +1924,14 @@ static void writeJson(const std::string& path,
         fprintf(f, "%s{\"idx\":%zu,\"set\":\"%s\",\"name\":\"%s\",\"form\":\"%s\",\"bytes\":\"%s\","
                    "\"native_ok\":%s,\"emu_ok\":%s,\"emu_stable\":%s,\"match\":%s,"
                    "\"native_flags\":\"0x%x\",\"emu_flags\":\"0x%x\",\"flags_mask\":\"0x%x\","
+                   "\"expected_native_signal\":%u,\"expected_emu_signal\":%u,\"expected_emu_trap\":%u,"
                    "\"emu_err\":\"%s\",\"mismatch\":\"%s\"",
                 i ? ",\n" : "", i, tc.set.c_str(), tc.name.c_str(), tc.form.c_str(),
                 hexBytes(tc.code).c_str(),
                 cr.nativeOk ? "true" : "false", cr.emuOk ? "true" : "false",
                 cr.emuStable ? "true" : "false", cr.match ? "true" : "false",
                 cr.nFlags, cr.eFlags, tc.flagsMask,
+                tc.expectedNativeSignal, tc.expectedEmuSignal, tc.expectedEmuTrap,
                 cr.emuErr.c_str(), cr.mismatchDesc.c_str());
         if (tc.checkMem && cr.nativeOk && cr.emuOk) {
             fprintf(f, ",\"scratch_n\":\"");
@@ -1871,6 +1975,7 @@ int main(int argc, char** argv) {
     buildPackedConversionCases(cases);
     buildFpuCases(cases);
     buildSseCases(cases);
+    buildFaultCases(cases);
     // buildStringCases(cases); // DISABLED: harness cannot handle RSI/RDI per-side checks yet
     std::vector<TimingSpec> timings;
     buildTimings(timings);
