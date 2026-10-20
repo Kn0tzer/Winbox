@@ -27,7 +27,8 @@ const fixtures = {
   'gl-framebuffer': ['tools/guest-fixtures/gl-framebuffer.c', '-lopengl32', '-lgdi32', '-luser32'],
 };
 const elfFixtures = { 'shared-mapping': ['tools/guest-fixtures/shared-mapping.c', '-static'] };
-elfFixtures['dsptone-stereo'] = ['tools/guest-fixtures/dsptone.c', '-static', '-lm', '-DBW64_DSPS_TONE_ELF'];
+elfFixtures['dsptone-stereo'] = ['tools/guest-fixtures/dsptone.c', '-nostdlib', '-fno-builtin', '-fno-stack-protector',
+  '-fno-pie', '-no-pie', '-Wl,-e,_start', '-DBW64_DSPS_TONE_ELF'];
 elfFixtures['fork-mapping'] = ['tools/guest-fixtures/fork-mapping.c', '-static', '-pthread'];
 elfFixtures['cpu32-sse3'] = ['tools/guest-fixtures/cpu32-sse3.c', '-static', '-msse3', '-nostdlib', '-fno-builtin', '-fno-stack-protector', '-fno-pie', '-no-pie'];
 elfFixtures['cpu32-jit-growth'] = ['tools/guest-fixtures/cpu32-jit-growth.c', '-static', '-msse3', '-nostdlib', '-fno-builtin', '-fno-stack-protector', '-fno-pie', '-no-pie'];
