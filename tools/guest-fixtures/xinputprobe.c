@@ -36,11 +36,14 @@ int main(void) {
                 current.rt = xinput.Gamepad.bRightTrigger;
             }
             if (!have_previous[index] || !same_state(&current, &previous[index])) {
-                printf("t=%lu idx=%lu rc=%lu buttons=%04x lx=%d ly=%d lt=%u rt=%u\n",
+                char line[160];
+                snprintf(line, sizeof(line), "t=%lu idx=%lu rc=%lu buttons=%04x lx=%d ly=%d lt=%u rt=%u\n",
                     (unsigned long)elapsed, (unsigned long)index,
                     (unsigned long)current.rc, current.buttons, current.lx, current.ly,
                     current.lt, current.rt);
+                fputs(line, stdout);
                 fflush(stdout);
+                OutputDebugStringA(line);
                 previous[index] = current;
                 have_previous[index] = TRUE;
             }

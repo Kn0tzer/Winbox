@@ -4,7 +4,7 @@ import { extraUrlParams, ProbeTest, withTimeout } from './suite/lib/probe-base.m
 
 class GamepadE2ETest extends ProbeTest {
   constructor() {
-    super({ tag: 'gamepad-e2e', timeoutMs: 1200000 });
+    super({ tag: 'gamepad-e2e', timeoutMs: 1200000, probeKind: 'heavy' });
     this.dir = 'test-results/gamepad-e2e';
   }
 
@@ -86,7 +86,7 @@ class GamepadE2ETest extends ProbeTest {
       await this.stageFile(activePage, exe, resolve(`tools/guest-fixtures/${exe}`));
       await activePage.evaluate(() => window.__gamepadTest.dispatchConnected());
       await this.waitForLog(activePage, /bw64_gamepad_update: first snapshot connected=1/, 15000);
-      const from = await this.spawnGuest(activePage, exe, { arch, env: 'WINEDEBUG=+plugplay,+hid,+xinput' });
+      const from = await this.spawnGuest(activePage, exe, { arch, env: 'WINEDEBUG=+plugplay,+hid,+xinput,+debugstr' });
       await this.waitForLog(activePage, /idx=0 rc=0\b/, 90000, from);
 
       await activePage.waitForTimeout(5000);
@@ -103,9 +103,9 @@ class GamepadE2ETest extends ProbeTest {
 
       const lines = this.consoleLines.slice(from)
         .map(line => line.slice(line.indexOf('t=')))
-        .filter(line => /^t=\d+ idx=\d+ rc=\d+ buttons=[0-9a-f]+ lx=-?\d+ ly=-?\d+ lt=\d+ rt=\d+$/i.test(line));
+        .filter(line => /t=\d+ idx=\d+ rc=\d+ buttons=[0-9a-f]+ lx=-?\d+ ly=-?\d+ lt=\d+ rt=\d+/i.test(line));
       const states = lines.map(line => {
-        const match = line.match(/^t=(\d+) idx=(\d+) rc=(\d+) buttons=([0-9a-f]+) lx=(-?\d+) ly=(-?\d+) lt=(\d+) rt=(\d+)$/i);
+        const match = line.match(/t=(\d+) idx=(\d+) rc=(\d+) buttons=([0-9a-f]+) lx=(-?\d+) ly=(-?\d+) lt=(\d+) rt=(\d+)/i);
         return {
           t: Number(match[1]), idx: Number(match[2]), rc: Number(match[3]),
           buttons: Number.parseInt(match[4], 16), lx: Number(match[5]), ly: Number(match[6]),
