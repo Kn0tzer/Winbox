@@ -206,8 +206,13 @@ function updateStartup(run, sample = false) {
     return;
   }
   const progress = startupProgress(run.status, run.lastLog, run.hasFrame, performance.now(), run.startedAt, run.firstMapped);
-  $('loadingTitle').textContent = progress.title; status(progress.detail);
-  $('loadingActivity').textContent = progress.activity; $('loadingActivity').hidden = !progress.activity;
+  const waitingForFrame = progress.title === 'Waiting for the first frame';
+  $('loadingTitle').textContent = progress.title;
+  status(waitingForFrame
+    ? 'The program is running. Large games can take several minutes to show their first frame.'
+    : progress.detail);
+  $('loadingActivity').textContent = progress.activity;
+  $('loadingActivity').hidden = waitingForFrame || !progress.activity;
   $('loadingElapsed').textContent = progress.elapsed;
 }
 function startupError(run, value) {
