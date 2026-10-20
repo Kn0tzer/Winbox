@@ -14,7 +14,7 @@
 //   MAPPED_TIMEOUT_S  seconds to wait for the first window (demo-matrix default)
 //   OUT               output directory
 import { spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readlinkSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,10 +22,22 @@ import { WebSocket } from 'ws';
 import { chromium } from '@playwright/test';
 import { serve } from '../../tools/browser/serve.mjs';
 import { acquireProbeSlot } from './probe-slots.mjs';
-import { waitForBuildIdle } from './build-lock.mjs';
+import { buildInProgress, buildLockInfo, waitForBuildIdle } from './build-lock.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 process.chdir(repo);
+
+async function waitForOwnBuildIdle() {
+  if (!buildInProgress()) return;
+  const info = buildLockInfo();
+  let ownerCwd = null;
+  try { if (info) ownerCwd = readlinkSync(`/proc/${info.pid}/cwd`); } catch {}
+  if (ownerCwd && ownerCwd !== repo && !ownerCwd.startsWith(`${repo}/`)) {
+    console.log(`profile-demo: ignoring build in separate worktree ${ownerCwd}`);
+    return;
+  }
+  await waitForBuildIdle();
+}
 
 const demos = ['notepad', 'explorer', 'snake', 'doom', 'celeste', 'chromium', 'portal', 'gangbeasts'];
 const demo = process.env.DEMO;
@@ -101,7 +113,7 @@ try {
 }
 
 async function main() {
-await waitForBuildIdle();
+await waitForOwnBuildIdle();
 const build = JSON.parse(await readFile(join(repo, 'dist/runtime/BUILD_INFO.json'), 'utf8'));
 const totalDeadline = Date.now() + 3 * 60 * 60 * 1000;
 const loadGateDeadline = Date.now() + 45 * 60 * 1000;
