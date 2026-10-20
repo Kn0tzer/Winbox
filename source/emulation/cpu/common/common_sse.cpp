@@ -390,6 +390,10 @@ static void commonSse41Apply38(CPU* cpu, U8* destination, const U8* source, U8 o
         }
         break;
     }
+    case 0x37: // PCMPGTQ
+        for (U32 lane = 0; lane < 2; ++lane)
+            commonSse41WriteLane(result, lane, 8, commonSse41SignedLane(a, lane, 8) > commonSse41SignedLane(b, lane, 8) ? ~(U64)0 : 0);
+        break;
     case 0x29: // PCMPEQQ
         for (U32 lane = 0; lane < 2; ++lane) commonSse41WriteLane(result, lane, 8, commonSse41ReadLane(a, lane, 8) == commonSse41ReadLane(b, lane, 8) ? ~(U64)0 : 0);
         break;
@@ -666,12 +670,216 @@ static U64 commonSse41F64Add(U64 aBits, U64 bBits) {
     return resultBits;
 }
 
+static U32 commonCrc32Update(U32 crc, U32 value, U32 bytes) {
+    for (U32 i = 0; i < bytes; ++i) {
+        crc ^= (U8)(value >> (i * 8));
+        for (U32 bit = 0; bit < 8; ++bit) crc = (crc >> 1) ^ (0x82f63b78 & (0 - (crc & 1)));
+    }
+    return crc;
+}
+
+void common_crc32RR(CPU* cpu, U32 reg, U32 rm, U32 opcodeAndSize) {
+    U32 size = (opcodeAndSize >> 8) & 0xff;
+    U32 value = size == 1 ? *cpu->reg8[rm] : (size == 2 ? cpu->reg[rm].u16 : cpu->reg[rm].u32);
+    cpu->reg[reg].u32 = commonCrc32Update(cpu->reg[reg].u32, value, size);
+}
+
+void common_crc32RE(CPU* cpu, U32 reg, U32 address, U32 opcodeAndSize) {
+    U32 size = (opcodeAndSize >> 8) & 0xff;
+    U32 value = size == 1 ? cpu->memory->readb(address) : (size == 2 ? cpu->memory->readw(address) : cpu->memory->readd(address));
+    cpu->reg[reg].u32 = commonCrc32Update(cpu->reg[reg].u32, value, size);
+}
+
+static U32 commonPopcount32(U32 value) {
+    U32 count = 0;
+    while (value) {
+        value &= value - 1;
+        count++;
+    }
+    return count;
+}
+
+static void commonPopcntFlags(CPU* cpu, U32 count) {
+    cpu->fillFlags();
+    cpu->flags &= ~(AF | OF | SF | CF | PF | ZF);
+    if (!count) cpu->flags |= ZF;
+}
+
+void common_popcntR16R16(CPU* cpu, U32 reg, U32 rm) {
+    U32 count = commonPopcount32(cpu->reg[rm].u16);
+    cpu->reg[reg].u16 = (U16)count;
+    commonPopcntFlags(cpu, count);
+}
+
+void common_popcntR16E16(CPU* cpu, U32 reg, U32 address) {
+    U32 count = commonPopcount32(cpu->memory->readw(address));
+    cpu->reg[reg].u16 = (U16)count;
+    commonPopcntFlags(cpu, count);
+}
+
+void common_popcntR32R32(CPU* cpu, U32 reg, U32 rm) {
+    U32 count = commonPopcount32(cpu->reg[rm].u32);
+    cpu->reg[reg].u32 = count;
+    commonPopcntFlags(cpu, count);
+}
+
+void common_popcntR32E32(CPU* cpu, U32 reg, U32 address) {
+    U32 count = commonPopcount32(cpu->memory->readd(address));
+    cpu->reg[reg].u32 = count;
+    commonPopcntFlags(cpu, count);
+}
+
+static S32 commonPcmpValue(const U8* data, U32 index, U32 type) {
+    switch (type & 3) {
+    case 0: return data[index];
+    case 1: return data[index * 2] | (data[index * 2 + 1] << 8);
+    case 2: return (S8)data[index];
+    default: return (S16)(data[index * 2] | (data[index * 2 + 1] << 8));
+    }
+}
+
+static S32 commonPcmpExplicitLength(U32 value, bool words) {
+    S32 limit = words ? 8 : 16;
+    S64 length = (S32)value;
+    if (length > limit) length = limit;
+    if (length < -limit) length = -limit;
+    return length < 0 ? (S32)-length : (S32)length;
+}
+
+static S32 commonPcmpImplicitLength(const U8* data, bool words) {
+    S32 limit = words ? 8 : 16;
+    S32 length = 0;
+    if (words) {
+        while (length < limit && (data[length * 2] | (data[length * 2 + 1] << 8))) length++;
+    } else {
+        while (length < limit && data[length]) length++;
+    }
+    return length;
+}
+
+static U32 commonPcmpStr(CPU* cpu, const U8* d, const U8* s, U8 ctrl, S32 valids, S32 validd) {
+    U32 upper = (ctrl & 1) ? 7 : 15;
+    U32 res = 0;
+    valids--;
+    validd--;
+
+    cpu->fillFlags();
+    cpu->flags &= ~(AF | OF | SF | CF | PF | ZF);
+    if (valids < (S32)upper) cpu->flags |= ZF;
+    if (validd < (S32)upper) cpu->flags |= SF;
+
+    switch ((ctrl >> 2) & 3) {
+    case 0: // equal any
+        for (S32 j = valids; j >= 0; --j) {
+            res <<= 1;
+            S32 v = commonPcmpValue(s, j, ctrl & 3);
+            for (S32 i = validd; i >= 0; --i) res |= (v == commonPcmpValue(d, i, ctrl & 3));
+        }
+        break;
+    case 1: // ranges
+        for (S32 j = valids; j >= 0; --j) {
+            res <<= 1;
+            S32 v = commonPcmpValue(s, j, ctrl & 3);
+            for (S32 i = ((validd - 1) | 1); i >= 0; i -= 2)
+                res |= (commonPcmpValue(d, i, ctrl & 3) >= v && commonPcmpValue(d, i - 1, ctrl & 3) <= v);
+        }
+        break;
+    case 2: { // equal each
+        S32 maxv = valids > validd ? valids : validd;
+        S32 minv = valids < validd ? valids : validd;
+        res = (1u << (upper - maxv)) - 1;
+        res <<= (maxv - minv);
+        for (S32 i = minv; i >= 0; --i) {
+            res <<= 1;
+            res |= (commonPcmpValue(s, i, ctrl & 3) == commonPcmpValue(d, i, ctrl & 3));
+        }
+        break;
+    }
+    case 3: // equal ordered
+        if (validd == -1) {
+            res = (2u << upper) - 1;
+            break;
+        }
+        for (S32 j = (valids == (S32)upper ? valids : valids - validd); j >= 0; --j) {
+            res <<= 1;
+            U32 v = 1;
+            for (S32 i = (valids - j < validd ? valids - j : validd); i >= 0; --i)
+                v &= (commonPcmpValue(s, i + j, ctrl & 3) == commonPcmpValue(d, i, ctrl & 3));
+            res |= v;
+        }
+        break;
+    }
+
+    switch ((ctrl >> 4) & 3) {
+    case 1: res ^= (2u << upper) - 1; break;
+    case 3: res ^= (1u << (valids + 1)) - 1; break;
+    default: break;
+    }
+    if (res) cpu->flags |= CF;
+    if (res & 1) cpu->flags |= OF;
+    return res;
+}
+
+static void commonPcmpWriteMask(CPU* cpu, U32 res, bool words) {
+    U8 mask[16];
+    if (words) {
+        for (U32 i = 0; i < 8; ++i) {
+            U16 value = (res & (1u << i)) ? 0xffff : 0;
+            memcpy(mask + i * 2, &value, sizeof(value));
+        }
+    } else {
+        for (U32 i = 0; i < 16; ++i) mask[i] = (res & (1u << i)) ? 0xff : 0;
+    }
+    memcpy(&cpu->xmm[0].pi.u64[0], mask, sizeof(mask));
+}
+
+static U32 commonPcmpHighestBit(U32 value) {
+    U32 index = 0;
+    while (value >>= 1) index++;
+    return index;
+}
+
+static U32 commonPcmpLowestBit(U32 value) {
+    U32 index = 0;
+    while (!(value & 1)) {
+        value >>= 1;
+        index++;
+    }
+    return index;
+}
+
+static void commonSse42Pcmp(CPU* cpu, const U8* a, const U8* b, U8 opcode, U8 imm) {
+    bool words = (imm & 1) != 0;
+    S32 valids, validd;
+    if (opcode == 0x60 || opcode == 0x61) { // PCMPESTR*
+        valids = commonPcmpExplicitLength(cpu->reg[regDX].u32, words);
+        validd = commonPcmpExplicitLength(cpu->reg[regAX].u32, words);
+    } else { // PCMPISTR*
+        valids = commonPcmpImplicitLength(b, words);
+        validd = commonPcmpImplicitLength(a, words);
+    }
+    U32 res = commonPcmpStr(cpu, a, b, imm, valids, validd);
+    if (opcode == 0x60 || opcode == 0x62) { // PCMP*STRM
+        if (imm & 0x40) commonPcmpWriteMask(cpu, res, words);
+        else {
+            cpu->xmm[0].pi.u64[0] = res;
+            cpu->xmm[0].pi.u64[1] = 0;
+        }
+    } else { // PCMP*STRI
+        cpu->reg[regCX].u32 = res ? ((imm & 0x40) ? commonPcmpHighestBit(res) : commonPcmpLowestBit(res)) : (16u >> (imm & 1));
+    }
+}
+
 void common_sse41_3aRR(CPU* cpu, U32 reg, U32 rm, U32 packedOpcodeAndImm) {
     U8 opcode = (U8)(packedOpcodeAndImm >> 8), imm = (U8)packedOpcodeAndImm;
     U8 a[16], b[16], result[16];
     memcpy(a, &cpu->xmm[reg].pi.u64[0], sizeof(a));
     memcpy(b, &cpu->xmm[rm].pi.u64[0], sizeof(b));
     memcpy(result, a, sizeof(result));
+    if (opcode >= 0x60 && opcode <= 0x63) {
+        commonSse42Pcmp(cpu, a, b, opcode, imm);
+        return;
+    }
     if ((opcode >= 0x08 && opcode <= 0x0e) || opcode == 0x21 || (opcode >= 0x40 && opcode <= 0x42)) {
         commonSse41Apply3a(cpu, result, a, b, opcode, imm);
         memcpy(&cpu->xmm[reg].pi.u64[0], result, sizeof(result));
@@ -714,6 +922,10 @@ void common_sse41_3aRE(CPU* cpu, U32 reg, U32 address, U32 packedOpcodeAndImm) {
     }
     U32 readSize = (opcode == 0x0a || opcode == 0x21) ? 4 : ((opcode == 0x0b) ? 8 : (opcode == 0x20 ? 1 : (opcode == 0x22 ? 4 : 16)));
     commonSse41ReadMemory(cpu, address, b, readSize);
+    if (opcode >= 0x60 && opcode <= 0x63) {
+        commonSse42Pcmp(cpu, a, b, opcode, imm);
+        return;
+    }
     if ((opcode >= 0x08 && opcode <= 0x0e) || opcode == 0x21 || (opcode >= 0x40 && opcode <= 0x42)) {
         commonSse41Apply3a(cpu, result, a, b, opcode, opcode == 0x21 ? (imm & 0x3f) : imm);
         memcpy(&cpu->xmm[reg].pi.u64[0], result, sizeof(result));

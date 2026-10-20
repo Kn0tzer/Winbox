@@ -1504,6 +1504,14 @@ const InstructionInfo instructionInfo[] = {
     {0, 128, 0, 0, 0, 0}, // Sse41_3ARE
     {0, 0, 0, AF|OF|SF|CF|PF|ZF, 0, 0, 0}, // Sse41PtestRR
     {0, 128, 0, AF|OF|SF|CF|PF|ZF, 0, 0, 0}, // Sse41PtestRE
+    {0, 0, 0, 0, 0, 0}, // Crc32RR
+    {0, 32, 0, 0, 0, 0}, // Crc32RE
+    {0, 0, 0, ZF, 0, OF|SF|CF|AF|PF, 0}, // PopcntR16R16
+    {0, 16, 0, ZF, 0, OF|SF|CF|AF|PF, 0}, // PopcntR16E16
+    {0, 0, 0, ZF, 0, OF|SF|CF|AF|PF, 0}, // PopcntR32R32
+    {0, 32, 0, ZF, 0, OF|SF|CF|AF|PF, 0}, // PopcntR32E32
+    {0, 0, 0, CF|OF|SF|ZF, 0, AF|PF, 0}, // Sse42PcmpRR
+    {0, 128, 0, CF|OF|SF|ZF, 0, AF|PF, 0}, // Sse42PcmpRE
     { 0, 0, 0, 0, 0, 0 }, // None
     {DECODE_BRANCH_NO_CACHE, 0, 0, 0, 0, 0}, // Callback
     {DECODE_BRANCH_NO_CACHE, 0, 0, 0, 0, 0}, // Done
@@ -3438,6 +3446,14 @@ const LogInstruction instructionLog[] = {
     {"SSE4.1", 128, logXmmE},
     {"PTEST", 128, logXmmXmm},
     {"PTEST", 128, logXmmE},
+    {"CRC32", 32, logRR},
+    {"CRC32", 32, logER},
+    {"POPCNT", 16, logRR},
+    {"POPCNT", 16, logER},
+    {"POPCNT", 32, logRR},
+    {"POPCNT", 32, logER},
+    {"PCMPxSTRx", 128, logXmmXmm},
+    {"PCMPxSTRx", 128, logXmmE},
 };
 #endif
 class DecodeData {
@@ -4999,6 +5015,31 @@ public:
     }
 };
 
+class DecodePopcnt : public Decode {
+public:
+    DecodePopcnt(bool is16) : is16(is16) {}
+    void decode(DecodeData* data, DecodedOp* op) const override {
+        U8 rm = data->fetch8();
+        if (!op->repZero) {
+            op->inst = Invalid;
+            op->reg = rm;
+            op->imm = data->inst;
+            return;
+        }
+        op->reg = G(rm);
+        if (rm >= 0xc0) {
+            op->inst = is16 ? PopcntR16R16 : PopcntR32R32;
+            op->rm = E(rm);
+        } else {
+            op->inst = is16 ? PopcntR16E16 : PopcntR32E32;
+            decodeEa(data, op, rm);
+        }
+    }
+
+private:
+    bool is16;
+};
+
 class DecodePrefetchw : public DecodeFunc {
 public:
     void decode(DecodeData* data, DecodedOp* op) const override {
@@ -5021,10 +5062,27 @@ public:
         bool isPalignr = palignr && opcode == 0x0f;
         bool isSse41 = sse41 && (palignr ?
             ((opcode >= 0x08 && opcode <= 0x0e) || (opcode >= 0x14 && opcode <= 0x17) ||
-             (opcode >= 0x20 && opcode <= 0x22) || (opcode >= 0x40 && opcode <= 0x42)) :
+             (opcode >= 0x20 && opcode <= 0x22) || (opcode >= 0x40 && opcode <= 0x42) ||
+             (opcode >= 0x60 && opcode <= 0x63)) :
             (opcode == 0x10 || opcode == 0x14 || opcode == 0x15 || opcode == 0x17 ||
              (opcode >= 0x20 && opcode <= 0x25) || (opcode >= 0x28 && opcode <= 0x2b) ||
-             (opcode >= 0x30 && opcode <= 0x35) || (opcode >= 0x38 && opcode <= 0x41)));
+             (opcode >= 0x30 && opcode <= 0x37) || (opcode >= 0x38 && opcode <= 0x41)));
+        // F2 0F 38 F0/F1 is CRC32, not an XMM/MMX op. The source width is encoded
+        // in the upper bits of imm (8-bit form, or 16-bit when the 66 prefix is set).
+        if (!palignr && op->repNotZero && (opcode == 0xf0 || opcode == 0xf1)) {
+            U32 size = opcode == 0xf0 ? 1 : (xmm ? 2 : 4);
+            if (rm >= 0xc0) {
+                op->inst = Crc32RR;
+                op->reg = G(rm);
+                op->rm = E(rm);
+            } else {
+                op->inst = Crc32RE;
+                op->reg = G(rm);
+                decodeEa(data, op, rm);
+            }
+            op->imm = (size << 8) | opcode;
+            return;
+        }
         bool isSsse3 = !palignr && ((opcode <= 0x0b) || (opcode >= 0x1c && opcode <= 0x1e));
         bool valid = isPalignr || isSse41 || isSsse3;
         if (!valid) {
@@ -5049,11 +5107,11 @@ public:
         op->reg = G(rm);
         if (rm >= 0xc0) {
             op->rm = E(rm);
-            op->inst = isSse41 ? (palignr ? Sse41_3ARR : (opcode == 0x17 ? Sse41PtestRR : Sse41_38RR)) :
+            op->inst = isSse41 ? (palignr ? ((opcode >= 0x60 && opcode <= 0x63) ? Sse42PcmpRR : Sse41_3ARR) : (opcode == 0x17 ? Sse41PtestRR : Sse41_38RR)) :
                 (isPalignr ? (xmm ? PalignrXmmRR : PalignrMmxRR) : (xmm ? Ssse3XmmRR : Ssse3MmxRR));
         } else {
             decodeEa(data, op, rm);
-            op->inst = isSse41 ? (palignr ? Sse41_3ARE : (opcode == 0x17 ? Sse41PtestRE : Sse41_38RE)) :
+            op->inst = isSse41 ? (palignr ? ((opcode >= 0x60 && opcode <= 0x63) ? Sse42PcmpRE : Sse41_3ARE) : (opcode == 0x17 ? Sse41PtestRE : Sse41_38RE)) :
                 (isPalignr ? (xmm ? PalignrXmmRE : PalignrMmxRE) : (xmm ? Ssse3XmmRE : Ssse3MmxRE));
         }
         op->imm = isSse41 && palignr ? ((U32)opcode << 8) | data->fetch8() : (isPalignr ? data->fetch8() : opcode);
@@ -5653,6 +5711,8 @@ DecodeRM decodeBtsEwGw(BtsR16R16, BtsE16R16);                    // BTS Ew,Gw
 DecodeRM decodeBtsEdGd(BtsR32R32, BtsE32R32);                    // BTS Ed,Gd
 DecodeRM decodeBtrEwGw(BtrR16R16, BtrE16R16);                    // BTR Ew,Gw
 DecodeRM decodeBtrEdGd(BtrR32R32, BtrE32R32);                    // BTR Ed,Gd
+// F3 0F BC/BD keep pre-ABM BSF/BSR semantics here (the rep prefix is
+// ignored, it does not select TZCNT/LZCNT).
 DecodeRMr decodeBsfGwEw(BsfR16R16, BsfR16E16);                   // BSF Gw,Ew
 DecodeRMr decodeBsfGdEd(BsfR32R32, BsfR32E32);                   // BSF Gd,Ed
 DecodeRMr decodeBsrGwEw(BsrR16R16, BsrR16E16);                   // BSR Gw,Ew
@@ -6071,6 +6131,8 @@ DecodeSSE2 sse0x37c(Invalid, Invalid, HaddpsXmmXmm, HaddpsXmmE128, Invalid, Inva
 DecodeSSE2 sse0x37d(Invalid, Invalid, HsubpsXmmXmm, HsubpsXmmE128, Invalid, Invalid);
 DecodeSSE2 sse0x3d0(Invalid, Invalid, AddsubpsXmmXmm, AddsubpsXmmE128, Invalid, Invalid);
 DecodeSSE2 sse0x3f0(Invalid, Invalid, Invalid, LddquXmmE128, Invalid, Invalid);
+DecodePopcnt decodePopcnt16(true);
+DecodePopcnt decodePopcnt32(false);
 DecodeThreeByteSSSE3 decodeSSSE3Mmx(false, false);
 DecodeThreeByteSSSE3 decodeSSSE3Xmm(true, false, true);
 DecodeThreeByteSSSE3 decodePalignrMmx(false, true);
@@ -6236,7 +6298,7 @@ const Decode* const decoder[] = {
     &decodePushGs16, &decodePopGs16, nullptr, &decodeBtsEwGw, &decodeDshrEwGw, &decodeDshrClEwGw, nullptr, &decodeDimulGwEw,
     // 0x1b0
     &decodeCmpXchgEbGb, &decodeCmpXchgEwGw, &decodeLss, &decodeBtrEwGw, &decodeLfs, &decodeLgs, &decodeMovGwXz8, &decodeMovGwEw,
-    nullptr, nullptr, &decodeGroup8_16, &decodeBtcEwGw, &decodeBsfGwEw, &decodeBsrGwEw, &decodeMovGwSx8, &decodeMovGwEw,
+    &decodePopcnt16, nullptr, &decodeGroup8_16, &decodeBtcEwGw, &decodeBsfGwEw, &decodeBsrGwEw, &decodeMovGwSx8, &decodeMovGwEw,
     // 0x1c0
     &decodeXadd8, &decodeXadd16, &sse0x1c2, nullptr, &ssePinsrwXmm, &ssePextrwXmm, &sse0x1c6, nullptr,
     nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
@@ -6332,7 +6394,7 @@ const Decode* const decoder[] = {
     &decodePushGs32, &decodePopGs32, nullptr, &decodeBtsEdGd, &decodeDshrEdGd, &decodeDshrClEdGd, &decode3EA, &decodeDimulGdEd,
     // 0x3b0
     &decodeCmpXchgEbGb, &decodeCmpXchgEdGd, &decodeLss32, &decodeBtrEdGd, &decodeLfs32, &decodeLgs32, &decodeMovGdXz8, &decodeMovGdXz16,
-    nullptr, nullptr, &decodeGroup8_32, &decodeBtcEdGd, &decodeBsfGdEd, &decodeBsrGdEd, &decodeMovGdSx8, &decodeMovGdSx16,
+    &decodePopcnt32, nullptr, &decodeGroup8_32, &decodeBtcEdGd, &decodeBsfGdEd, &decodeBsrGdEd, &decodeMovGdSx8, &decodeMovGdSx16,
     // 0x3c0
     &decodeXadd8, &decodeXadd32, &sseCmp, &sse0x3c3, &ssePinsrwMmx, &ssePextrwMmx, &sseShufp, &decodeCmpXchg8b,
     &decodeBswapEAX, &decodeBswapECX, &decodeBswapEDX, &decodeBswapEBX, &decodeBswapESP, &decodeBswapEBP, &decodeBswapESI, &decodeBswapEDI,

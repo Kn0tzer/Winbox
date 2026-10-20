@@ -1538,6 +1538,15 @@ enum Instruction {
     Sse41PtestRR,
     Sse41PtestRE,
 
+    Crc32RR,
+    Crc32RE,
+    PopcntR16R16,
+    PopcntR16E16,
+    PopcntR32R32,
+    PopcntR32E32,
+    Sse42PcmpRR,
+    Sse42PcmpRE,
+
     None,
     Callback,
     Done,

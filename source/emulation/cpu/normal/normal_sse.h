@@ -49,3 +49,51 @@ void OPCALL normal_sse41_3ARE(CPU* cpu, DecodedOp* op) {
     common_sse41_3aRE(cpu, op->reg, eaa(cpu, op), op->imm);
     NEXT();
 }
+
+void OPCALL normal_crc32RR(CPU* cpu, DecodedOp* op) {
+    START_OP(cpu, op);
+    common_crc32RR(cpu, op->reg, op->rm, op->imm);
+    NEXT();
+}
+
+void OPCALL normal_crc32RE(CPU* cpu, DecodedOp* op) {
+    START_OP(cpu, op);
+    common_crc32RE(cpu, op->reg, eaa(cpu, op), op->imm);
+    NEXT();
+}
+
+void OPCALL normal_popcntR16R16(CPU* cpu, DecodedOp* op) {
+    START_OP(cpu, op);
+    common_popcntR16R16(cpu, op->reg, op->rm);
+    NEXT();
+}
+
+void OPCALL normal_popcntR16E16(CPU* cpu, DecodedOp* op) {
+    START_OP(cpu, op);
+    common_popcntR16E16(cpu, op->reg, eaa(cpu, op));
+    NEXT();
+}
+
+void OPCALL normal_popcntR32R32(CPU* cpu, DecodedOp* op) {
+    START_OP(cpu, op);
+    common_popcntR32R32(cpu, op->reg, op->rm);
+    NEXT();
+}
+
+void OPCALL normal_popcntR32E32(CPU* cpu, DecodedOp* op) {
+    START_OP(cpu, op);
+    common_popcntR32E32(cpu, op->reg, eaa(cpu, op));
+    NEXT();
+}
+
+void OPCALL normal_sse42PcmpRR(CPU* cpu, DecodedOp* op) {
+    START_OP(cpu, op);
+    common_sse41_3aRR(cpu, op->reg, op->rm, op->imm);
+    NEXT();
+}
+
+void OPCALL normal_sse42PcmpRE(CPU* cpu, DecodedOp* op) {
+    START_OP(cpu, op);
+    common_sse41_3aRE(cpu, op->reg, eaa(cpu, op), op->imm);
+    NEXT();
+}
