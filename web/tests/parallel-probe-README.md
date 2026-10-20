@@ -8,15 +8,27 @@ That was a workaround, not a requirement — the user asked for it to be fixed.
 
 ## The new world: slot-based concurrency
 
-`web/tests/probe-slots.mjs` implements N atomic probe slots (default **2**,
-override with `PROBE_SLOTS` env).
+`web/tests/probe-slots.mjs` maintains separate heavy and light pools in the
+same directory, `/tmp/bw64-probe-slots/` by default. Each pool has two slots:
+heavy uses `slot-0 … slot-1` (`PROBE_SLOTS`), and light uses
+`light-0 … light-1` (`PROBE_LIGHT_SLOTS`).
 
-- Slots live in `/tmp/bw64-probe-slots/slot-0 … slot-(N-1)`, one file per slot.
-- Acquisition is atomic via `O_CREAT|O_EXCL`; a probe waits (polling every 2s,
-  default timeout 15 min) for a free slot instead of aborting.
-- A slot whose owner pid is dead is reclaimed automatically (crash-safe).
-- Backward compatible: if a legacy `/tmp/bw64-probe.lock` is held by a live
-  process, new probes wait for it. New probes never create the legacy lock.
+- Heavy probes include `demo-matrix`, `profile-demo`, replay probes, and
+  `celeste-boot`. Heavy is the default for direct `acquireProbeSlot()` calls.
+- Suite browser tests use the light pool by default through `ProbeTest`.
+- Each pool has its own FIFO queue. Acquisition polls every 2 seconds; dead
+  waiters and dead slot owners are removed automatically.
+- The default wait timeout is 4 hours (`PROBE_SLOT_TIMEOUT_MS`). Retry loops
+  around slot acquisition are unnecessary. Callers can still pass
+  `acquireProbeSlot({ timeoutMs })` for a shorter explicit limit.
+- Slot files contain only the owner PID. `info-slot-*.json` and
+  `info-light-*.json` sidecars record the owner, worktree, arguments, start
+  time, and `DEMO`/`JIT` values. Sidecars are removed with their slots.
+- Run `node web/tests/probe-slots.mjs status` to list holders and waiters for
+  both pools, including owner liveness and age.
+- A live legacy `/tmp/bw64-probe.lock` still blocks both kinds. New probes do
+  not create that legacy lock. `tools/bw64-build.sh` checks only heavy
+  `slot-*` files, so light suite tests do not block builds.
 
 Usage in a probe:
 
@@ -32,27 +44,19 @@ try {
 
 All 22 lock-using probe scripts in `web/tests/` were migrated to this helper.
 
-## Why 2 slots, and when to raise it
+## Why separate heavy and light slots
 
-The box has 4 CPUs and 23 GB RAM. Constraints per probe class:
+Long game, profile, and replay probes hold a heavy slot for many minutes. The
+suite browser tests use light slots, so they can continue while heavy probes
+run. Each pool defaults to two slots and can be sized independently with
+`PROBE_SLOTS` and `PROBE_LIGHT_SLOTS`.
 
-| Probe class | Chromium flags | Bottleneck | Safe concurrency |
-|---|---|---|---|
-| Boot / non-GUI (`novideo=1`) | `--disable-gpu --disable-software-rasterizer --disable-webgl` | wasm compile + Wine boot, ~1 CPU each | 3–4 |
-| Graphics (SwiftShader WebGPU) | `--enable-unsafe-swiftshader --use-vulkan=swiftshader …` | SwiftShader software rasterization, ~2–3 CPUs each | 2 |
-
-Rules of thumb:
-
-- **2 concurrent graphics probes**: verified working (see below).
-- **3–4 concurrent `novideo` boot probes**: fine; they barely touch the GPU path.
-- **Don't mix** 2 graphics probes + boot probes on 4 CPUs and expect full speed;
-  the graphics probes will dominate. Stagger graphics-probe launches by ~30s so
-  wasm compilation doesn't collide.
-- Each probe serves `dist/` from its own HTTP server on a random port (`serve()`
-  uses port 0) — no port conflicts. Playwright gives each `chromium.launch()`
-  a fresh `--user-data-dir` — no profile conflicts.
-
-Raise slots with `PROBE_SLOTS=4` (boot probes) or keep 2 for graphics work.
+FIFO queues give each waiter its turn as a slot becomes free. The four-hour
+default wait avoids wrapping probes in retries. Slot metadata sidecars make it
+possible to identify the worktree and command behind a holder; use
+`node web/tests/probe-slots.mjs status` to inspect both queues and their
+holders. The build guard reads only heavy `slot-*` files, so light suite tests
+do not prevent a build from starting.
 
 ## Verification
 
