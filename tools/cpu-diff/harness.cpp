@@ -1824,6 +1824,104 @@ static void buildMmxCases(std::vector<TestCase>& out) {
     }
 }
 
+// SSE3 instructions: exercise both register and memory sources where the
+// architecture defines them, and keep NaN payload bytes out of exact compares.
+static void buildSse3Cases(std::vector<TestCase>& out) {
+    struct Op { const char* name; std::vector<U8> prefix; U8 opcode; bool doubles; };
+    const Op ops[] = {
+        {"addsubps", {0xF2}, 0xD0, false}, {"addsubpd", {0x66}, 0xD0, true},
+        {"haddps", {0xF2}, 0x7C, false}, {"haddpd", {0x66}, 0x7C, true},
+        {"hsubps", {0xF2}, 0x7D, false}, {"hsubpd", {0x66}, 0x7D, true}
+    };
+    auto addPair = [&](const Op& op, bool memorySource, bool edge) {
+        TestCase tc; tc.set = "sse"; tc.name = op.name;
+        tc.form = std::string(memorySource ? "xmm,m128" : "xmm,xmm") + (edge ? " edge" : " normal");
+        tc.code = {0x0F,0x10,0x03,0x0F,0x10,0x4B,0x10}; // xmm0/1 <- [rbx]/[rbx+16]
+        tc.code.insert(tc.code.end(), op.prefix.begin(), op.prefix.end());
+        tc.code.insert(tc.code.end(), {0x0F,op.opcode,
+            (U8)(memorySource ? 0x43 : 0xC1)});
+        if (memorySource) tc.code.push_back(0x10);
+        tc.code.insert(tc.code.end(), {0x0F,0x11,0x03});
+        initRegs(tc, 0, MEM_SCRATCH); tc.checkMem = true; tc.memLen = 16;
+        if (op.doubles) {
+            U64 dst[2] = {0x4014000000000000ULL,0xC008000000000000ULL}; // 5,-3
+            U64 src[2] = {0x4000000000000000ULL,0x4010000000000000ULL}; // 2,4
+            if (edge) {
+                dst[0] = 0x7FF0000000000000ULL; dst[1] = 0x7FF8000000000000ULL;
+                src[0] = 0xFFF0000000000000ULL; src[1] = 0;
+                if (op.opcode == 0xD0 || op.opcode == 0x7C) {
+                    if (op.opcode == 0xD0) memset(tc.memIgnore + 8, 0xFF, 8);
+                    else memset(tc.memIgnore, 0xFF, 8);
+                } else memset(tc.memIgnore, 0xFF, 8);
+            }
+            memcpy(tc.memInit, dst, sizeof(dst)); memcpy(tc.memInit + 16, src, sizeof(src));
+        } else {
+            U32 dst[4] = {0x40A00000U,0xC0400000U,0,0x41000000U}; // 5,-3,0,8
+            U32 src[4] = {0x40000000U,0x40800000U,0xC0A00000U,0xC1000000U}; // 2,4,-5,-8
+            if (edge) {
+                dst[0] = 0x7F800000U; dst[1] = 0xFF800000U;
+                dst[2] = 0x7FC00000U; dst[3] = 0;
+                src[0] = 0; src[1] = 0xFF800000U;
+                src[2] = 0x3F800000U; src[3] = 0x80000000U;
+                if (op.opcode == 0xD0) memset(tc.memIgnore + 8, 0xFF, 4);
+                else if (op.opcode == 0x7C || op.opcode == 0x7D)
+                    memset(tc.memIgnore, 0xFF, 8);
+            }
+            memcpy(tc.memInit, dst, sizeof(dst)); memcpy(tc.memInit + 16, src, sizeof(src));
+        }
+        out.push_back(std::move(tc));
+    };
+    for (const Op& op : ops) {
+        addPair(op, false, false); addPair(op, true, false);
+        addPair(op, false, true); addPair(op, true, true);
+    }
+
+    for (int which = 0; which < 3; which++) {
+        TestCase tc; tc.set = "sse";
+        tc.name = which == 0 ? "movsldup" : which == 1 ? "movshdup" : "movddup";
+        tc.form = "register/memory source";
+        U8 opcode = which == 0 ? 0x12 : which == 1 ? 0x16 : 0x12;
+        std::vector<U8> prefix = which == 2 ? std::vector<U8>{0xF2} : std::vector<U8>{0xF3};
+        tc.code = {0x0F,0x10,0x4B,0x10};
+        tc.code.insert(tc.code.end(), prefix.begin(), prefix.end());
+        tc.code.insert(tc.code.end(), {0x0F,opcode,0xC1});
+        tc.code.insert(tc.code.end(), {0x0F,0x11,0x03});
+        initRegs(tc, 0, MEM_SCRATCH); tc.checkMem = true; tc.memLen = 16;
+        U32 src[4] = {0x3F800000U,0xC0000000U,0x7FC00000U,0x7F800000U};
+        memcpy(tc.memInit + 16, src, sizeof(src));
+        out.push_back(tc);
+
+        tc.form = "memory source";
+        tc.code.clear();
+        if (which == 2) {
+            tc.code.insert(tc.code.end(), prefix.begin(), prefix.end());
+            tc.code.insert(tc.code.end(), {0x0F,opcode,0x43,0x10});
+        } else {
+            tc.code.insert(tc.code.end(), {0x0F,0x10,0x03});
+            tc.code.insert(tc.code.end(), prefix.begin(), prefix.end());
+            tc.code.insert(tc.code.end(), {0x0F,opcode,0x43,0x10});
+        }
+        tc.code.insert(tc.code.end(), {0x0F,0x11,0x03});
+        out.push_back(std::move(tc));
+    }
+    {
+        TestCase tc; tc.set = "sse"; tc.name = "lddqu"; tc.form = "m128";
+        tc.code = {0xF2,0x0F,0xF0,0x43,0x10,0x0F,0x11,0x03};
+        initRegs(tc, 0, MEM_SCRATCH); tc.checkMem = true; tc.memLen = 16;
+        U64 src[2] = {0x0123456789ABCDEFULL,0xFEDCBA9876543210ULL};
+        memcpy(tc.memInit + 16, src, sizeof(src)); out.push_back(std::move(tc));
+    }
+    for (U8 op3 : {0xC8,0xC9}) {
+        TestCase tc; tc.set = "sse"; tc.name = op3 == 0xC8 ? "monitor" : "mwait";
+        tc.form = "fixed /0 (QEMU user-mode lacks MONITOR/MWAIT)";
+        tc.code = {0x31,0xC0,0x31,0xC9,0x31,0xD2,0x0F,0x01,op3,
+                   0x48,0xB8,42,0,0,0,0,0,0,0};
+        initRegs(tc, 0, 0); tc.checkExpectedRax = true; tc.expectedRax = 42;
+        tc.expectedNativeSignal = SIGILL;
+        out.push_back(std::move(tc));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SSE test builders. Pattern: movups xmm0,[rbx]; movups xmm1,[rbx+16];
 // <op> xmm0,xmm1; movups [rbx],xmm0. 16 bytes at MEM_SCRATCH compared.
@@ -2193,6 +2291,31 @@ static CaseResult diffCase(const TestCase& tc, int idx, const NativeResult& n) {
     CaseResult cr; cr.idx = idx;
     bool hasExpectedEmuRegs = false;
     for (U64 mask : tc.expectedEmuRegsMask) hasExpectedEmuRegs |= mask != 0;
+    if (tc.expectedNativeSignal && !tc.expectedEmuSignal && tc.checkExpectedRax) {
+        // QEMU's configured CPU omits MONITOR. Keep its #UD as the native
+        // reference and separately assert the requested BoxedWine no-op.
+        cr.nativeOk = n.crashed && n.signalNo == tc.expectedNativeSignal;
+        if (!cr.nativeOk) {
+            cr.nativeErr = n.timeout ? "native timeout"
+                         : n.crashed ? "native signal mismatch"
+                         : n.ok ? "native instruction returned"
+                         : "native setup failed";
+            return cr;
+        }
+        EmuResult e[3];
+        for (int k = 0; k < 3; k++)
+            e[k] = runEmu(tc.code.data(), tc.code.size(), tc.r, tc.flagsIn,
+                          tc.checkMem ? tc.memInit : nullptr);
+        cr.emuOk = e[0].ok;
+        cr.emuStable = e[0].ok;
+        if (!cr.emuOk) { cr.emuErr = e[0].err; return cr; }
+        for (int k = 1; k < 3; k++)
+            if (!e[k].ok || memcmp(e[k].regs, e[0].regs, sizeof(e[0].regs)) != 0)
+                cr.emuStable = false;
+        cr.match = cr.emuStable && e[0].regs[X64_RAX] == tc.expectedRax;
+        if (!cr.match) cr.mismatchDesc = "emulator no-op result differs from expected RAX";
+        return cr;
+    }
     if (hasExpectedEmuRegs) {
         cr.nativeOk = n.ok;
         if (!n.ok) {
@@ -2496,6 +2619,7 @@ int main(int argc, char** argv) {
     buildRequestedX87Cases(cases);
     buildMmxCases(cases);
     buildSseCases(cases);
+    buildSse3Cases(cases);
     buildSse2ExtraCases(cases);
     buildCpuidCases(cases);
     buildFaultCases(cases);

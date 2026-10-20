@@ -4600,6 +4600,13 @@ dsp_55:
         //   0F 01 F9   RDTSCP   — read TSC and processor ID
         if (op2 == 0x01) {
             U8 op3 = fetchByte(rip + opOff + 2);
+            if (op3 == 0xC8 || op3 == 0xC9) {
+                // MONITOR/MWAIT are user-mode hints with no modeled monitor
+                // state; MWAIT follows PAUSE's harmless no-op behavior here.
+                U32 used = opOff + 3;
+                rip += used;
+                return used;
+            }
             if (op3 == 0xD0) {
                 // XGETBV: glibc calls it via __get_cpu_features to decide
                 // which XMM state is enabled. We advertise legacy XSAVE
@@ -5100,6 +5107,50 @@ dsp_55:
                 xmm[m.regField].lo = (U64)fu32(r[0]) | ((U64)fu32(r[1]) << 32);
                 xmm[m.regField].hi = (U64)fu32(r[2]) | ((U64)fu32(r[3]) << 32);
             }
+            U32 used = opOff + 2 + m.length;
+            rip += used;
+            return used;
+        }
+
+        // SSE3 ADDSUBPS/ADDSUBPD alternate subtract and add by element index.
+        // F2 0F D0 performs PS (subtract even lanes, add odd); 66 0F D0 does
+        // the same over the two packed doubles.
+        if (op2 == 0xD0 && (p.rep == 0xF2 || osize66)) {
+            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            U64 srcLo, srcHi;
+            if (m.isReg) { srcLo = xmm[m.rmIndex].lo; srcHi = xmm[m.rmIndex].hi; }
+            else { srcLo = memory->readq(m.effAddr); srcHi = memory->readq(m.effAddr + 8); }
+            if (osize66) {
+                double d0 = u64ToDouble(xmm[m.regField].lo);
+                double d1 = u64ToDouble(xmm[m.regField].hi);
+                double s0 = u64ToDouble(srcLo);
+                double s1 = u64ToDouble(srcHi);
+                xmm[m.regField].lo = doubleToU64(d0 - s0);
+                xmm[m.regField].hi = doubleToU64(d1 + s1);
+            } else {
+                auto u32f = [](U32 b) { float f; std::memcpy(&f, &b, 4); return f; };
+                auto fu32 = [](float f) { U32 b; std::memcpy(&b, &f, 4); return b; };
+                U32 dst[4] = {(U32)xmm[m.regField].lo, (U32)(xmm[m.regField].lo >> 32),
+                              (U32)xmm[m.regField].hi, (U32)(xmm[m.regField].hi >> 32)};
+                U32 src[4] = {(U32)srcLo, (U32)(srcLo >> 32), (U32)srcHi, (U32)(srcHi >> 32)};
+                U32 out[4];
+                for (int lane = 0; lane < 4; lane++) {
+                    float a = u32f(dst[lane]), b = u32f(src[lane]);
+                    out[lane] = fu32((lane & 1) ? a + b : a - b);
+                }
+                xmm[m.regField].lo = (U64)out[0] | ((U64)out[1] << 32);
+                xmm[m.regField].hi = (U64)out[2] | ((U64)out[3] << 32);
+            }
+            U32 used = opOff + 2 + m.length;
+            rip += used;
+            return used;
+        }
+
+        if (p.rep == 0xF2 && op2 == 0xF0) { // LDDQU xmm,m128
+            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            if (m.isReg) goto unhandled;
+            xmm[m.regField].lo = memory->readq(m.effAddr);
+            xmm[m.regField].hi = memory->readq(m.effAddr + 8);
             U32 used = opOff + 2 + m.length;
             rip += used;
             return used;

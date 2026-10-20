@@ -8381,6 +8381,77 @@ int runX64SelfTest() {
     }
 
     {
+        const U64 psA0 = 0xC040000040A00000ULL; // {5,-3}
+        const U64 psA1 = 0x4100000000000000ULL; // {0,8}
+        const U64 psB0 = 0x4080000040000000ULL; // {2,4}
+        const U64 psB1 = 0xC1000000C0A00000ULL; // {-5,-8}
+        auto initPs = [=](CPU64& c) {
+            c.xmm[0].lo = psA0; c.xmm[0].hi = psA1;
+            c.xmm[1].lo = psB0; c.xmm[1].hi = psB1;
+        };
+        runAndCheck(r, "SSE3 ADDSUBPS register form", withExit({0xF2,0x0F,0xD0,0xC1}),
+            [](CPU64& c) { return c.xmm[0].lo == 0x3F80000040400000ULL &&
+                                  c.xmm[0].hi == 0x0000000040A00000ULL; }, initPs);
+        runAndCheck(r, "SSE3 ADDSUBPS memory form", withExit({0xF2,0x0F,0xD0,0x03}),
+            [](CPU64& c) { return c.xmm[0].lo == 0x3F80000040400000ULL &&
+                                  c.xmm[0].hi == 0x0000000040A00000ULL; }, [=](CPU64& c) {
+                c.reg[X64_RBX].setU64(X87_SCRATCH);
+                c.xmm[0].lo = psA0; c.xmm[0].hi = psA1;
+                c.memory->writeq(X87_SCRATCH, psB0); c.memory->writeq(X87_SCRATCH + 8, psB1);
+            });
+
+        runAndCheck(r, "SSE3 HADDPS register form", withExit({0xF2,0x0F,0x7C,0xC1}),
+            [](CPU64& c) { return c.xmm[0].lo == 0x4100000040000000ULL &&
+                                  c.xmm[0].hi == 0xC150000040C00000ULL; }, initPs);
+        runAndCheck(r, "SSE3 HSUBPS memory form", withExit({0xF2,0x0F,0x7D,0x03}),
+            [](CPU64& c) { return c.xmm[0].lo == 0xC100000041000000ULL &&
+                                  c.xmm[0].hi == 0x40400000C0000000ULL; }, [=](CPU64& c) {
+                c.reg[X64_RBX].setU64(X87_SCRATCH);
+                c.xmm[0].lo = psA0; c.xmm[0].hi = psA1;
+                c.memory->writeq(X87_SCRATCH, psB0); c.memory->writeq(X87_SCRATCH + 8, psB1);
+            });
+
+        const U64 pdA0 = 0xC008000000000000ULL, pdB0 = 0x4010000000000000ULL;
+        runAndCheck(r, "SSE3 ADDSUBPD register form", withExit({0x66,0x0F,0xD0,0xC1}),
+            [](CPU64& c) { return c.xmm[0].lo == 0x4008000000000000ULL &&
+                                  c.xmm[0].hi == 0x3FF0000000000000ULL; }, [=](CPU64& c) {
+                c.xmm[0].lo = 0x4014000000000000ULL; c.xmm[0].hi = pdA0;
+                c.xmm[1].lo = 0x4000000000000000ULL; c.xmm[1].hi = pdB0;
+            });
+        runAndCheck(r, "SSE3 HADDPD memory form", withExit({0x66,0x0F,0x7C,0x03}),
+            [](CPU64& c) { return c.xmm[0].lo == 0x4000000000000000ULL &&
+                                  c.xmm[0].hi == 0x4018000000000000ULL; }, [=](CPU64& c) {
+                c.reg[X64_RBX].setU64(X87_SCRATCH);
+                c.xmm[0].lo = 0x4014000000000000ULL; c.xmm[0].hi = pdA0;
+                c.memory->writeq(X87_SCRATCH, 0x4000000000000000ULL);
+                c.memory->writeq(X87_SCRATCH + 8, pdB0);
+            });
+        runAndCheck(r, "SSE3 HSUBPD register form", withExit({0x66,0x0F,0x7D,0xC1}),
+            [](CPU64& c) { return c.xmm[0].lo == 0x4020000000000000ULL &&
+                                  c.xmm[0].hi == 0xC000000000000000ULL; }, [=](CPU64& c) {
+                c.xmm[0].lo = 0x4014000000000000ULL; c.xmm[0].hi = pdA0;
+                c.xmm[1].lo = 0x4000000000000000ULL; c.xmm[1].hi = pdB0;
+            });
+
+        runAndCheck(r, "SSE3 LDDQU memory form", withExit({0xF2,0x0F,0xF0,0x03}),
+            [](CPU64& c) { return c.xmm[0].lo == 0x0123456789ABCDEFULL &&
+                                  c.xmm[0].hi == 0xFEDCBA9876543210ULL; }, [](CPU64& c) {
+                c.reg[X64_RBX].setU64(X87_SCRATCH);
+                c.memory->writeq(X87_SCRATCH, 0x0123456789ABCDEFULL);
+                c.memory->writeq(X87_SCRATCH + 8, 0xFEDCBA9876543210ULL);
+            });
+        runAndCheck(r, "SSE3 MOVDDUP duplicates low double", withExit({0xF2,0x0F,0x12,0xC1}),
+            [](CPU64& c) { return c.xmm[0].lo == 0x3FF8000000000000ULL &&
+                                  c.xmm[0].hi == 0x3FF8000000000000ULL; }, [](CPU64& c) {
+                c.xmm[1].lo = 0x3FF8000000000000ULL; c.xmm[1].hi = 0xC004000000000000ULL;
+            });
+        runAndCheck(r, "SSE3 MONITOR is a no-op hint", withExit({0x0F,0x01,0xC8}),
+            [](CPU64& c) { return c.reg[X64_R15].u64 == 0; });
+        runAndCheck(r, "SSE3 MWAIT is a no-op hint", withExit({0x0F,0x01,0xC9}),
+            [](CPU64& c) { return c.reg[X64_R15].u64 == 0; });
+    }
+
+    {
         U64 maddDstLo = (U64)(U16)1 | ((U64)(U16)2 << 16) |
                         ((U64)(U16)(S16)-3 << 32) | ((U64)(U16)4 << 48);
         U64 maddDstHi = (U64)(U16)5 | ((U64)(U16)6 << 16) |
