@@ -171,6 +171,11 @@ async function launchFrame(query, title, archive = null) {
   metrics = installFrameMetrics({
     tierProvider: () => (current === run ? metricsTier : null),
     open: metricsOpen(),
+    onVisibilityChange: open => {
+      settings.metrics = open ? 'on' : 'off';
+      persistSettings();
+      applyMetricsVisibility();
+    },
   });
   metrics.setRunState('running');
   $('metricsHost').replaceChildren(metrics.element);

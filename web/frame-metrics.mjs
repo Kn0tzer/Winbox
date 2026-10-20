@@ -432,20 +432,24 @@ export function createMetricsPanel({ doc = globalThis.document, onClose = null }
   if (onClose) close.onclick = onClose;
   head.append(title, status, close);
 
-  const headLine = el('p', 'metrics-headline');
+  const scroll = el('div', 'metrics-scroll');
+  const summaryRows = el('dl', 'metrics-rows metrics-summary');
+  const more = el('details', 'metrics-more');
+  const moreTitle = el('summary', '', 'More');
+  const moreContent = el('div', 'metrics-more-content');
   const legend = el('p', 'metrics-legend',
     'measured / inactive / unavailable / stale \u00b7 a wall span, not OS CPU \u00b7 overlapping stages are never summed');
   const body = el('div', 'metrics-body');
-
-  root.append(head, headLine, legend, body);
+  moreContent.append(legend, body);
+  more.append(moreTitle, moreContent);
+  scroll.append(summaryRows, more);
+  root.append(head, scroll);
 
   /** @type {Map<string, {row: any, label: any, value: any, unit: any, note: any}>} */
   const rowCache = new Map();
   /** @type {Map<string, {section: any, title: any, rows: any}>} */
   const groupCache = new Map();
   const setData = (node, key, value) => { (/** @type {any} */ (node)).dataset[key] = value; };
-  let lastHeadline = '';
-
   function setText(node, value) {
     if (node.textContent !== value) node.textContent = value;
   }
@@ -488,11 +492,6 @@ export function createMetricsPanel({ doc = globalThis.document, onClose = null }
     setOpen(open) { root.hidden = !open; },
     /** One cheap refresh; called at ~1 Hz by the app shell. */
     update(view) {
-      const headline = view.headline || {};
-      const text = 'FPS ' + formatFps(headline.fps) + ' \u00b7 frame ' + formatMs(headline.frameMs)
-        + (headline.path ? ' \u00b7 path ' + headline.path : '')
-        + (view.arch ? ' \u00b7 ' + view.arch : '');
-      if (text !== lastHeadline) { setText(headLine, text); lastHeadline = text; }
       setText(status, view.stale
         ? 'stale ' + formatAge(view.wasmAgeMs)
         : (view.enabled ? 'live' : 'disabled'));
@@ -500,23 +499,41 @@ export function createMetricsPanel({ doc = globalThis.document, onClose = null }
       setData(root, 'stale', view.stale ? '1' : '0');
 
       const seen = new Set();
+      const seenGroups = new Set();
       for (const group of view.groups || []) {
-        const cached = ensureGroup(group);
-        seen.add(group.id);
+        const summary = group.id === 'frames' || group.id === 'jit'
+          ? group.rows || []
+          : group.id === 'gpu' ? (group.rows || []).filter(row => row.id === 'gpuExec') : [];
+        const summaryIds = new Set(summary.map(row => row.id));
+        const detailRows = (group.rows || []).filter(row => !summaryIds.has(row.id));
         for (const row of group.rows || []) {
           const entry = ensureRow(group, row);
           seen.add(row.id);
           const value = row.value === null || row.value === undefined ? '--' : String(row.value);
           if (entry.value.textContent !== value) entry.value.textContent = value;
-          const unit = row.unit ? String(row.unit) : '';
+          let unit = row.unit ? String(row.unit) : '';
+          let noteText = String(row.note || '');
+          if (summaryIds.has(row.id)) {
+            if (group.id === 'jit') {
+              const blockEntries = noteText.match(/^([^\u00b7]*?\bblock entries)(?:\s*\u00b7|$)/);
+              if (blockEntries) unit = blockEntries[1].trim();
+            }
+            noteText = '';
+          }
           if (entry.unit.textContent !== unit) entry.unit.textContent = unit;
-          if (entry.note.textContent !== String(row.note || '')) entry.note.textContent = String(row.note || '');
+          if (entry.note.textContent !== noteText) entry.note.textContent = noteText;
           if ((/** @type {any} */ (entry.row)).dataset.state !== row.state) setData(entry.row, 'state', row.state);
-          cached.rows.append(entry.row);   // no-op when already in place
+          if (summaryIds.has(row.id)) summaryRows.append(entry.row);
+          else if (detailRows.length) ensureGroup(group).rows.append(entry.row);
+        }
+        if (detailRows.length) {
+          const cached = ensureGroup(group);
+          seenGroups.add(group.id);
+          for (const row of detailRows) cached.rows.append(rowCache.get(row.id).row);
         }
       }
       for (const [id, entry] of rowCache) if (!seen.has(id)) { entry.row.remove(); rowCache.delete(id); }
-      for (const [id, cached] of groupCache) if (!seen.has(id)) { cached.section.remove(); groupCache.delete(id); }
+      for (const [id, cached] of groupCache) if (!seenGroups.has(id)) { cached.section.remove(); groupCache.delete(id); }
     },
     destroy() { root.remove(); rowCache.clear(); groupCache.clear(); },
   };
