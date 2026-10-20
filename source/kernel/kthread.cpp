@@ -1064,16 +1064,11 @@ void KThread::signalTrap(U32 code) {
 }
 
 void KThread::signalIllegalInstruction(int code) {
-    KSigAction* action = &this->process->sigActions[K_SIGILL];
-    if (action->handlerAndSigAction == K_SIG_DFL) {
-        DecodedOp* op = cpu->getNextOp();
-        kpanic_fmt("%s tid=%04X eip=%08X Illegal instruction but no signal handler set up for it: %s (%X)", process->name.c_str(), cpu->thread->id, cpu->eip.u32, op->name(), op->inst);
-    }
     memset(this->process->sigActions[K_SIGILL].sigInfo, 0, sizeof(this->process->sigActions[K_SIGILL].sigInfo));
     this->process->sigActions[K_SIGILL].sigInfo[0] = K_SIGILL;
     this->process->sigActions[K_SIGILL].sigInfo[2] = code;
     this->process->sigActions[K_SIGILL].sigInfo[3] = cpu->eip.u32;
-    this->runSignal(K_SIGILL, 13, 0); // blocking signal, signalfd can't handle this
+    this->runSignal(K_SIGILL, 6, 0); // #UD
 }
 
 bool KThread::runSignals() {

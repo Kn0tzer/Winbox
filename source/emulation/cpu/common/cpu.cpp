@@ -268,7 +268,7 @@ void CPU::prepareException(int code, int error) {
     const KProcessPtr& process = this->thread->process;
 
      // blocking signals, signalfd can't handle these
-    if (code==EXCEPTION_GP && (process->sigActions[K_SIGSEGV].handlerAndSigAction!=K_SIG_IGN && process->sigActions[K_SIGSEGV].handlerAndSigAction!=K_SIG_DFL)) {
+    if (code==EXCEPTION_GP) {
         process->sigActions[K_SIGSEGV].sigInfo[0] = K_SIGSEGV;		
         process->sigActions[K_SIGSEGV].sigInfo[1] = error;
         process->sigActions[K_SIGSEGV].sigInfo[2] = 0;

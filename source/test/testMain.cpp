@@ -24,6 +24,8 @@
 #include "cpu/testCMov.h"
 #include "cpu/testCmp.h"
 #include "cpu/testCPU.h"
+#include "cpu/testCpuSystem.h"
+#include "cpu/testCpuDiff32Generated.h"
 #include "cpu/testDecoderPageBoundary.h"
 #include "cpu/testFPU.h"
 #include "cpu/testIncDec.h"
@@ -61,6 +63,8 @@ namespace {
 int totalFails = 0;
 
 const TestEntry TEST_ENTRIES[] = {
+    {testCpuSystemInstructions, "CPU32 system instruction fault and store behavior"},
+    {testCpuDiff32Generated, "CPU32 QEMU differential instruction cases"},
 #ifdef BOXEDWINE_WASM_JIT
     {testWasmJitControlTransfer, "WASM JIT interpreter-backed control transfer"},
         {testWasmJitTerminatedCpu, "WASM JIT terminated CPU cache lifetime"},

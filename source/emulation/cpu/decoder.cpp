@@ -4449,11 +4449,35 @@ public:
         case 0x01: func(data, op, rm, Invalid, SIDT); break;
         case 0x02: func(data, op, rm, Invalid, LGDT); break;
         case 0x03: func(data, op, rm, Invalid, LIDT); break;
-        case 0x04: func(data, op, rm, SMSWRreg, SMSW); break;
+        case 0x04:
+            func(data, op, rm, SMSWRreg, SMSW);
+            if (rm >= 0xC0) op->imm = 32;
+            break;
         case 0x06: func(data, op, rm, LMSWRreg, LMSW); break;
         case 0x07: func(data, op, rm, Invalid, INVLPG); break;
         default: op->inst = Invalid; op->reg = rm; op->imm = data->inst; break;
         }	
+    }
+};
+
+class DecodeGrp7_16 : public DecodeFunc {
+public:
+    void decode(DecodeData* data, DecodedOp* op) const override {
+        U8 rm = data->fetch8();
+
+        switch (G(rm)) {
+        case 0x00: func(data, op, rm, Invalid, SGDT); break;
+        case 0x01: func(data, op, rm, Invalid, SIDT); break;
+        case 0x02: func(data, op, rm, Invalid, LGDT); break;
+        case 0x03: func(data, op, rm, Invalid, LIDT); break;
+        case 0x04:
+            func(data, op, rm, SMSWRreg, SMSW);
+            if (rm >= 0xC0) op->imm = 16;
+            break;
+        case 0x06: func(data, op, rm, LMSWRreg, LMSW); break;
+        case 0x07: func(data, op, rm, Invalid, INVLPG); break;
+        default: op->inst = Invalid; op->reg = rm; op->imm = data->inst; break;
+        }
     }
 };
 
@@ -5468,6 +5492,7 @@ DecodeGrp5_32 decodeGroup5_32;                                   // GRP5 Ed
 DecodeGrp6_16 decodeGroup6_16;                                   // GRP6
 DecodeGrp6_32 decodeGroup6_32;                                   // GRP6
 DecodeGrp7_32 decodeGroup7_32;                                   // GRP7
+DecodeGrp7_16 decodeGroup7_16;                                   // GRP7
 DecodeGrp8_16 decodeGroup8_16;
 DecodeGrp8_32 decodeGroup8_32;
 
@@ -6039,7 +6064,7 @@ const Decode* const decoder[] = {
     &decodeLock, &decodeICEBP, &decodeRepNZ, &decodeRepZ, &decodeHlt, &decodeCmc, &decodeGroup3_8, &decodeGroup3_16,
     &decodeClc, &decodeStc, &decodeCli, &decodeSti, &decodeCld, &decodeStd, &decodeGroup4_8, &decodeGroup5_16,
     // 0x100
-    &decodeGroup6_16, nullptr, &decodeLar16, &decodeLsl16, nullptr, nullptr, nullptr, nullptr,
+    &decodeGroup6_16, &decodeGroup7_16, &decodeLar16, &decodeLsl16, nullptr, nullptr, nullptr, nullptr,
     nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
     // 0x110
     &sse2Movupd, &sse2Movupd_r, &sseMov0x112, &sseMov0x113, &sseMov0x114, &sseMov0x115, &sseMov0x116, &sseMov0x117,

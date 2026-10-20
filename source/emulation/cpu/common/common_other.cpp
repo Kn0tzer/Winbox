@@ -54,16 +54,16 @@ void common_int80(CPU* cpu){
     ksyscall(cpu, 2);
 }
 void common_intIb(CPU* cpu){
-    cpu->thread->signalIllegalInstruction(5);// 5=ILL_PRVOPC  // :TODO: just a guess
+	cpu->thread->signalIllegalInstruction(5);// ILL_PRVOPC
 }
 void common_int3(CPU* cpu) {
     cpu->thread->signalTrap(1);// 1=TRAP_BRKPT
 }
 void common_ud2(CPU* cpu) {
-    cpu->thread->signalIllegalInstruction(5);// 5=ILL_PRVOPC  // :TODO: just a guess
+	cpu->thread->signalIllegalInstruction(2);
 }
 void common_hlt(CPU* cpu) {
-    kpanic("Hlt");
+	cpu->thread->signalIllegalInstruction(5);
 }
 void common_cpuid(CPU* cpu){
     cpu->cpuid();
@@ -168,9 +168,9 @@ void common_fxrstor(CPU* cpu, U32 address) {
 }
 
 void common_xsave(CPU* cpu, U32 address) {
-    kpanic("xsave not implemented");
+	cpu->thread->signalIllegalInstruction(2);
 }
 
 void common_xrstor(CPU* cpu, U32 address) {
-    kpanic("xrstore not implemented");
+	cpu->thread->signalIllegalInstruction(2);
 }

@@ -1,0 +1,50 @@
+#include "boxedwine.h"
+#ifdef __TEST
+#include "testCPU.h"
+
+namespace {
+struct CpuDiff32Case { const char* name; U32 inputGpr[8]; U32 gpr[8]; U32 inputFlags; U32 flags; U64 inputXmm[8][2]; U64 xmm[8][2]; U64 inputMmx[8]; U64 mmx[8]; U8 inputMemory[64]; U8 memory[64]; U8 code[15]; U8 codeLength; S8 memoryRegister; };
+const CpuDiff32Case CASES[] = {
+    {
+        "into-overflow-clear",
+        {0x00000001, 0x00000002, 0x00000003, 0x00000004, 0x00001000, 0x00000006, 0x00000007, 0x00000008},
+        {0x00000001, 0x00000002, 0x00000003, 0x00000004, 0x00001000, 0x00000006, 0x00000007, 0x00000008},
+        0x00000000, 0x00000000,
+        {{0x0000000000000000ULL, 0x0000000000000000ULL}, {0x0101010101010101ULL, 0x0101010101010101ULL}, {0x0202020202020202ULL, 0x0202020202020202ULL}, {0x0303030303030303ULL, 0x0303030303030303ULL}, {0x0404040404040404ULL, 0x0404040404040404ULL}, {0x0505050505050505ULL, 0x0505050505050505ULL}, {0x0606060606060606ULL, 0x0606060606060606ULL}, {0x0707070707070707ULL, 0x0707070707070707ULL}},
+        {{0x0000000000000000ULL, 0x0000000000000000ULL}, {0x0101010101010101ULL, 0x0101010101010101ULL}, {0x0202020202020202ULL, 0x0202020202020202ULL}, {0x0303030303030303ULL, 0x0303030303030303ULL}, {0x0404040404040404ULL, 0x0404040404040404ULL}, {0x0505050505050505ULL, 0x0505050505050505ULL}, {0x0606060606060606ULL, 0x0606060606060606ULL}, {0x0707070707070707ULL, 0x0707070707070707ULL}},
+        {0x0000000000000000ULL, 0x0000000000000001ULL, 0x0000000000000002ULL, 0x0000000000000003ULL, 0x0000000000000004ULL, 0x0000000000000005ULL, 0x0000000000000006ULL, 0x0000000000000007ULL},
+        {0x0000000000000000ULL, 0x0000000000000001ULL, 0x0000000000000002ULL, 0x0000000000000003ULL, 0x0000000000000004ULL, 0x0000000000000005ULL, 0x0000000000000006ULL, 0x0000000000000007ULL},
+        {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+        {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+        {0xce, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, 1, -1
+    },
+};
+}
+
+void testCpuDiff32Generated() {
+    auto& context = testContext();
+    for (const auto& test : CASES) {
+        testNewInstruction(0);
+        CPU* cpu = context.cpu;
+        for (int i = 0; i < 8; ++i) {
+            cpu->reg[i].u32 = test.inputGpr[i];
+            cpu->xmm[i].pi.u64[0] = test.inputXmm[i][0];
+            cpu->xmm[i].pi.u64[1] = test.inputXmm[i][1];
+            cpu->fpu.getMMX(i)->q = test.inputMmx[i];
+        }
+        cpu->setFlags(test.inputFlags | 2, FMASK_ALL);
+        for (int i = 0; i < 64; ++i) context.memory->writeb(TEST_HEAP_ADDRESS + 0x100 + i, test.inputMemory[i]);
+        if (test.memoryRegister >= 0) cpu->reg[test.memoryRegister].u32 = 0x100;
+        for (int i = 0; i < test.codeLength; ++i) testPushCode8(test.code[i]);
+        testRunCPU();
+        cpu->fillFlags();
+        for (int i = 0; i < 8; ++i) {
+            if (cpu->reg[i].u32 != test.gpr[i]) testFail("%s gpr%d expected=%08x actual=%08x", test.name, i, test.gpr[i], cpu->reg[i].u32);
+            if (cpu->xmm[i].pi.u64[0] != test.xmm[i][0] || cpu->xmm[i].pi.u64[1] != test.xmm[i][1]) testFail("%s xmm%d", test.name, i);
+            if (cpu->fpu.getMMX(i)->q != test.mmx[i]) testFail("%s mm%d", test.name, i);
+        }
+        if ((cpu->flags & 0x8d5) != test.flags) testFail("%s flags expected=%08x actual=%08x", test.name, test.flags, cpu->flags & 0x8d5);
+        for (int i = 0; i < 64; ++i) if (context.memory->readb(TEST_HEAP_ADDRESS + 0x100 + i) != test.memory[i]) testFail("%s memory[%d]", test.name, i);
+    }
+}
+#endif
