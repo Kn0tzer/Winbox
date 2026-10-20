@@ -600,6 +600,10 @@ h1 {
   overflow-wrap: anywhere;
 }
 
+.loading.waiting-for-frame #status {
+  width: min(700px, 100%);
+}
+
 .loading progress {
   display: block;
   width: min(520px, 100%);

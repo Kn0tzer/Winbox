@@ -119,6 +119,7 @@ function preparing(title) {
   $('mouseCaptureHint').hidden = true;
   $('captureMouse').title = 'Capture mouse'; $('captureMouse').setAttribute('aria-label', 'Capture mouse'); $('captureMouse').setAttribute('aria-pressed', 'false');
   $('loading').classList.remove('error-screen');
+  $('loading').classList.remove('waiting-for-frame');
   $('loadingTitle').textContent = 'Getting things ready'; $('loading').hidden = false;
   $('launchProgress').hidden = true; $('playerRetry').hidden = true;
   $('loadingErrorActions').hidden = true;
@@ -220,6 +221,7 @@ function updateStartup(run, sample = false) {
   }
   const progress = startupProgress(run.status, run.lastLog, run.hasFrame, performance.now(), run.startedAt, run.firstMapped);
   const waitingForFrame = progress.title === 'Waiting for the first frame';
+  $('loading').classList.toggle('waiting-for-frame', waitingForFrame);
   $('loadingTitle').textContent = progress.title;
   status(waitingForFrame
     ? 'The program is running. Large games can take several minutes to show their first frame.'
