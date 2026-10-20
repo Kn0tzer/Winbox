@@ -902,7 +902,7 @@ public:
     U32 m_profileSplitTargetEip = 0;
 
     // virtual commitJIT is inherited from JitCodeGen and calls createStartJITCode
-    void commitJIT(DecodedOp* op) override;
+    void commitJIT(DecodedOp* op, std::unique_lock<std::recursive_mutex>* memoryLock) override;
 
 protected:
     // Helpers used internally during code generation

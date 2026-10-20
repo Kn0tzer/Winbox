@@ -105,6 +105,7 @@ void DecodedOpCache::removeStartAt(U32 address, U32 len, bool becauseOfWrite) {
 	U8* pageWriteCounts = nullptr;
 	if (becauseOfWrite) {
 		pageWriteCounts = getWriteCounts(pageIndex, true);
+		++pageGenerations[pageIndex];
 	}
 	DecodedOpPageCache* page = getPageCache(pageIndex, false);
 	if (!page && !pageWriteCounts) {
@@ -130,6 +131,11 @@ void DecodedOpCache::removeStartAt(U32 address, U32 len, bool becauseOfWrite) {
 			}
 		}
 	}
+}
+
+U64 DecodedOpCache::getPageGeneration(U32 pageIndex) const {
+	auto found = pageGenerations.find(pageIndex);
+	return found == pageGenerations.end() ? 0 : found->second;
 }
 
 DecodedOp* DecodedOpCache::getPreviousOp(U32 address, U32* foundAddress, DecodedOpPageCache** foundPage) {
