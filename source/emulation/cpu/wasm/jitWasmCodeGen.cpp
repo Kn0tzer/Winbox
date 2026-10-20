@@ -60,6 +60,7 @@
 #include <vector>
 
 void OPCALL firstDynamicOp(CPU* cpu, DecodedOp* op);
+void clearJitBlock(const std::vector<void*>& jitOps);
 
 // Wall clock for the cpu32 statistics seam. Always available (unlike the
 // BOXEDWINE_WASM_JIT_PROFILE-only wasmJitProfileNowNs) because emit and
@@ -668,6 +669,10 @@ struct WasmJitMtPendingBlock {
     U32 blockOpCount = 0;
     U32 emulatedLen = 0;
     bool needsMemoryPageArrays = false;
+    std::vector<U32> decodedOpAddresses;
+    std::vector<DecodedOp*> decodedOps;
+    std::vector<U32> codePages;
+    std::vector<U64> codePageGenerations;
     std::vector<U8> bytes;
     std::vector<U32> relocValues;
 };
@@ -702,6 +707,8 @@ static WasmJitBatchEntryId g_wasmJitMtNextPendingId = 1;
 static U64 g_wasmJitMtNextSealedRequestId = 1;
 static U64 g_wasmJitMtPendingRawBytes = 0;
 static WasmJitMtRuntimeStats g_wasmJitMtRuntimeStats;
+static thread_local U32 g_wasmJitMtCodegenDepth = 0;
+static thread_local std::vector<std::pair<CPU*, WasmJitFlushRequest>> g_wasmJitMtDeferredFlushes;
 static std::mutex g_wasmJitMtGroupWorkerStatsMutex;
 static std::atomic<U64> g_wasmJitMtGroupInstanceCreations{0};
 static std::atomic<U64> g_wasmJitMtGroupInstanceReuses{0};
@@ -5313,9 +5320,35 @@ struct WasmJitMtFlushEntry {
     U32 blockOpCount = 0;
     U32 emulatedLen = 0;
     bool needsMemoryPageArrays = false;
+    std::vector<U32> decodedOpAddresses;
+    std::vector<DecodedOp*> decodedOps;
+    std::vector<U32> codePages;
+    std::vector<U64> codePageGenerations;
     std::vector<U8> bytes;
     std::vector<U32> relocValues;
 };
+
+static bool wasmJitMtFlushEntryDecodedOpsStillCurrent(const WasmJitMtFlushEntry& entry) {
+    for (size_t i = 0; i < entry.decodedOpAddresses.size(); ++i) {
+        if (entry.memory->getDecodedOp(entry.decodedOpAddresses[i]) != entry.decodedOps[i]) {
+            return false;
+        }
+    }
+    return entry.decodedOpAddresses.size() == entry.blockOpCount &&
+        entry.decodedOps.size() == entry.blockOpCount;
+}
+
+static bool wasmJitMtFlushEntryStillCurrent(const WasmJitMtFlushEntry& entry) {
+    if (!wasmJitMtFlushEntryDecodedOpsStillCurrent(entry)) {
+        return false;
+    }
+    for (size_t i = 0; i < entry.codePages.size(); ++i) {
+        if (entry.memory->getCodePageGeneration(entry.codePages[i]) != entry.codePageGenerations[i]) {
+            return false;
+        }
+    }
+    return true;
+}
 
 static bool isNestedMtWasmJitEntry(const WasmJitMtPendingBlock& pending, DecodedOp* op) {
     return op != pending.op && ((op->flags2 & OP_FLAG2_WASM_JIT_PENDING) ||
@@ -5496,6 +5529,11 @@ static void recordMtRuntimeFlushReasonLocked(WasmJitFlushReason reason) {
 }
 
 static void clearMtRuntimeBatch(const std::vector<WasmJitMtFlushEntry>& entries, bool permanentFailure) {
+    KMemory* memory = entries.empty() ? nullptr : entries.front().memory;
+    std::unique_lock<std::recursive_mutex> memoryLock;
+    if (memory) {
+        memoryLock = std::unique_lock<std::recursive_mutex>(memory->mutex);
+    }
     std::lock_guard<std::mutex> lock(g_wasmJitMtPendingMutex);
     for (const WasmJitMtFlushEntry& snapshot : entries) {
         auto found = g_wasmJitMtPendingBlocks.find(snapshot.id);
@@ -5538,10 +5576,12 @@ static void flushMtRuntimeBatch(CPU* cpu, const WasmJitFlushRequest& request) {
 
     std::vector<WasmJitMtFlushEntry> entries;
     std::vector<S32> unusedSlots;
+    std::unique_lock<std::recursive_mutex> memoryLock(cpu->memory->mutex);
     {
         std::lock_guard<std::mutex> lock(g_wasmJitMtPendingMutex);
         entries.reserve(request.entries.size());
         bool valid = true;
+        bool alreadySealed = false;
         for (WasmJitBatchEntryId id : request.entries) {
             auto found = g_wasmJitMtPendingBlocks.find(id);
             if (found == g_wasmJitMtPendingBlocks.end()) {
@@ -5549,11 +5589,15 @@ static void flushMtRuntimeBatch(CPU* cpu, const WasmJitFlushRequest& request) {
                 break;
             }
             WasmJitMtPendingBlock& pending = *found->second;
+            alreadySealed = alreadySealed || pending.state == WasmJitMtPendingState::Sealed;
             if (pending.state != WasmJitMtPendingState::Open ||
                     pending.memory != request.key.memory || pending.mappedFileKey != request.key.mappedFileKey) {
                 valid = false;
                 break;
             }
+        }
+        if (alreadySealed) {
+            return;
         }
         if (!valid) {
             for (WasmJitBatchEntryId id : request.entries) {
@@ -5594,12 +5638,17 @@ static void flushMtRuntimeBatch(CPU* cpu, const WasmJitFlushRequest& request) {
             snapshot.blockOpCount = pending.blockOpCount;
             snapshot.emulatedLen = pending.emulatedLen;
             snapshot.needsMemoryPageArrays = pending.needsMemoryPageArrays;
+            snapshot.decodedOpAddresses = pending.decodedOpAddresses;
+            snapshot.decodedOps = pending.decodedOps;
+            snapshot.codePages = pending.codePages;
+            snapshot.codePageGenerations = pending.codePageGenerations;
             snapshot.bytes = pending.bytes;
             snapshot.relocValues = pending.relocValues;
             entries.push_back(std::move(snapshot));
         }
         recordMtRuntimeFlushReasonLocked(request.reason);
     }
+    memoryLock.unlock();
 
     std::vector<WasmJitMergeInput> inputs;
     inputs.reserve(entries.size());
@@ -5675,6 +5724,7 @@ static void flushMtRuntimeBatch(CPU* cpu, const WasmJitFlushRequest& request) {
     }
 
 #ifdef __TEST
+    memoryLock.lock();
     S32 cancelEntryIndex = -1;
     {
         std::lock_guard<std::mutex> lock(g_wasmJitMtPendingMutex);
@@ -5699,19 +5749,8 @@ static void flushMtRuntimeBatch(CPU* cpu, const WasmJitFlushRequest& request) {
         cpu->memory->clearOpCache();
         *replacementOp = cpu->getOp(replacementAddress, 0);
     }
+    memoryLock.unlock();
 #endif
-
-    std::vector<bool> live(entries.size(), false);
-    {
-        std::lock_guard<std::mutex> lock(g_wasmJitMtPendingMutex);
-        for (size_t i = 0; i < entries.size(); ++i) {
-            auto found = g_wasmJitMtPendingBlocks.find(entries[i].id);
-            live[i] = found != g_wasmJitMtPendingBlocks.end() &&
-                found->second->state == WasmJitMtPendingState::Sealed &&
-                found->second->op == entries[i].op &&
-                found->second->memory == entries[i].memory;
-        }
-    }
 
     std::vector<std::unique_ptr<U32[]>> relocArrays;
     relocArrays.reserve(entries.size());
@@ -5761,6 +5800,7 @@ static void flushMtRuntimeBatch(CPU* cpu, const WasmJitFlushRequest& request) {
         return;
     }
 
+    memoryLock.lock();
     {
         std::lock_guard<std::mutex> lock(g_wasmJitMtPendingMutex);
         ++g_wasmJitMtRuntimeStats.groupedModules;
@@ -5776,16 +5816,23 @@ static void flushMtRuntimeBatch(CPU* cpu, const WasmJitFlushRequest& request) {
                 continue;
             }
             WasmJitMtPendingBlock& pending = *found->second;
-            if (live[i] && pending.state == WasmJitMtPendingState::Sealed &&
-                    pending.op == entries[i].op && pending.memory == entries[i].memory) {
+            bool stillCurrent = wasmJitMtFlushEntryStillCurrent(entries[i]);
+            bool decodedOpsStillCurrent = wasmJitMtFlushEntryDecodedOpsStillCurrent(entries[i]);
+            bool stillPending = pending.state == WasmJitMtPendingState::Sealed &&
+                    pending.op == entries[i].op && pending.memory == entries[i].memory;
+            if (stillCurrent && stillPending) {
                 publishMtPendingBlock(pending, slots[i]);
             } else {
+                if (decodedOpsStillCurrent && stillPending) {
+                    failMtPendingBlock(pending);
+                }
                 ++g_wasmJitMtRuntimeStats.cancelledEntries;
                 unusedSlots.push_back(slots[i]);
             }
             eraseMtPendingBlockLocked(entries[i].id);
         }
     }
+    memoryLock.unlock();
     std::vector<KMemory*> retiredMemories;
     for (S32 tableIndex : unusedSlots) {
         KMemory* slotMemory = wasmJitMtRetireSlot(tableIndex);
@@ -5800,9 +5847,24 @@ static void flushMtRuntimeBatch(CPU* cpu, const WasmJitFlushRequest& request) {
     }
 }
 
+static void drainDeferredMtRuntimeBatches(KMemory* memory) {
+    (void)memory;
+    std::vector<std::pair<CPU*, WasmJitFlushRequest>> deferred;
+    deferred.swap(g_wasmJitMtDeferredFlushes);
+    for (const auto& flush : deferred) {
+        if (flush.first) {
+            flushMtRuntimeBatch(flush.first, flush.second);
+        }
+    }
+}
+
 static void submitMtPendingWasmJitBlock(CPU* cpu, DecodedOp* op, U32 address, U32 blockOpCount,
         U32 emulatedLen, U32 mappedFileKey, bool needsMemoryPageArrays,
         std::vector<U8>&& bytes, std::vector<U32>&& relocValues) {
+    std::unique_lock<std::recursive_mutex> memoryLock(cpu->memory->mutex);
+    if (cpu->memory->getDecodedOp(address) != op) {
+        return;
+    }
     auto pending = std::make_unique<WasmJitMtPendingBlock>();
     pending->memory = cpu->memory;
     pending->process = cpu->thread->process.get();
@@ -5812,6 +5874,28 @@ static void submitMtPendingWasmJitBlock(CPU* cpu, DecodedOp* op, U32 address, U3
     pending->blockOpCount = blockOpCount;
     pending->emulatedLen = emulatedLen;
     pending->needsMemoryPageArrays = needsMemoryPageArrays;
+    DecodedOp* decodedOp = op;
+    U32 decodedAddress = address;
+    for (U32 i = 0; i < blockOpCount && decodedOp; ++i) {
+        pending->decodedOpAddresses.push_back(decodedAddress);
+        pending->decodedOps.push_back(decodedOp);
+        decodedAddress += decodedOp->len;
+        decodedOp = decodedOp->next;
+    }
+    if (pending->decodedOps.size() != blockOpCount) {
+        return;
+    }
+    if (emulatedLen) {
+        U32 firstPage = address >> K_PAGE_SHIFT;
+        U32 lastPage = (address + emulatedLen - 1) >> K_PAGE_SHIFT;
+        for (U32 page = firstPage;; ++page) {
+            pending->codePages.push_back(page);
+            pending->codePageGenerations.push_back(cpu->memory->getCodePageGeneration(page));
+            if (page == lastPage) {
+                break;
+            }
+        }
+    }
     pending->bytes = std::move(bytes);
     pending->relocValues = std::move(relocValues);
 
@@ -5841,8 +5925,13 @@ static void submitMtPendingWasmJitBlock(CPU* cpu, DecodedOp* op, U32 address, U3
         g_wasmJitMtRuntimeStats.rawInputBytes += rawBytes;
         flushes = g_wasmJitMtBatchPolicy.enqueue(id, key, byteCharge);
     }
+    memoryLock.unlock();
     for (const WasmJitFlushRequest& flush : flushes) {
-        flushMtRuntimeBatch(cpu, flush);
+        if (g_wasmJitMtCodegenDepth) {
+            g_wasmJitMtDeferredFlushes.emplace_back(cpu, flush);
+        } else {
+            flushMtRuntimeBatch(cpu, flush);
+        }
     }
 }
 
@@ -5853,13 +5942,11 @@ void wasmJitHandlePendingHit(CPU* cpu, DecodedOp* op) {
         std::lock_guard<std::mutex> lock(g_wasmJitMtPendingMutex);
         auto byOp = g_wasmJitMtPendingByOp.find(op);
         if (byOp == g_wasmJitMtPendingByOp.end()) {
-            op->flags2 &= ~OP_FLAG2_WASM_JIT_PENDING;
             return;
         }
         auto found = g_wasmJitMtPendingBlocks.find(byOp->second);
         if (found == g_wasmJitMtPendingBlocks.end()) {
             g_wasmJitMtPendingByOp.erase(byOp);
-            op->flags2 &= ~OP_FLAG2_WASM_JIT_PENDING;
             return;
         }
         WasmJitMtPendingBlock& pending = *found->second;
@@ -13464,7 +13551,9 @@ bool JitWasmCodeGen::shouldStopBlockBefore(U32 eip, DecodedOp* op) {
 #endif
 }
 
-void JitWasmCodeGen::commitJIT(DecodedOp* op) {
+void JitWasmCodeGen::commitJIT(DecodedOp* op,
+        std::unique_lock<std::recursive_mutex>* memoryLock) {
+    (void)memoryLock;
     // Finalize the WASM function body and the module binary.
     if (m_directLoopOpen) {
         m_emitter.emitEnd();
@@ -13524,6 +13613,75 @@ void JitWasmCodeGen::commitJIT(DecodedOp* op) {
     U64 instantiateStartUs = wasmJitProfileNowNs();
 #endif
 #ifdef BOXEDWINE_MULTI_THREADED
+    // A direct install (persistence hit, anonymous block, or groups disabled)
+    // uses the same lock boundary as the batch flush: snapshot the decoded
+    // chain and page generations while locked, instantiate unlocked, then
+    // validate again before publishing any table index.
+    WasmJitMtFlushEntry directSnapshot;
+    bool directSnapshotReady = false;
+    bool directInstallStale = false;
+    auto snapshotDirectBlock = [&]() {
+        directSnapshot.memory = cpu->memory;
+        directSnapshot.op = op;
+        directSnapshot.address = this->startingEip;
+        directSnapshot.blockOpCount = this->blockOpCount;
+        directSnapshot.emulatedLen = this->emulatedLen;
+        DecodedOp* decodedOp = op;
+        U32 decodedAddress = this->startingEip;
+        for (U32 i = 0; i < this->blockOpCount && decodedOp; ++i) {
+            directSnapshot.decodedOpAddresses.push_back(decodedAddress);
+            directSnapshot.decodedOps.push_back(decodedOp);
+            decodedAddress += decodedOp->len;
+            decodedOp = decodedOp->next;
+        }
+        if (directSnapshot.decodedOps.size() != this->blockOpCount) {
+            return false;
+        }
+        if (this->emulatedLen) {
+            U32 firstPage = this->startingEip >> K_PAGE_SHIFT;
+            U32 lastPage = (this->startingEip + this->emulatedLen - 1) >> K_PAGE_SHIFT;
+            for (U32 page = firstPage;; ++page) {
+                directSnapshot.codePages.push_back(page);
+                directSnapshot.codePageGenerations.push_back(
+                    cpu->memory->getCodePageGeneration(page));
+                if (page == lastPage) {
+                    break;
+                }
+            }
+        }
+        directSnapshotReady = true;
+        return true;
+    };
+    auto instantiateDirect = [&](auto&& instantiate, int& result) {
+        if (!memoryLock || !memoryLock->owns_lock()) {
+            return false;
+        }
+        if (!directSnapshotReady && !snapshotDirectBlock()) {
+            return false;
+        }
+        memoryLock->unlock();
+        try {
+            result = instantiate();
+        } catch (...) {
+            memoryLock->lock();
+            throw;
+        }
+        memoryLock->lock();
+        if (wasmJitMtFlushEntryStillCurrent(directSnapshot)) {
+            return true;
+        }
+        if (wasmJitMtFlushEntryDecodedOpsStillCurrent(directSnapshot)) {
+            WasmJitMtPendingBlock failed;
+            failed.memory = cpu->memory;
+            failed.process = cpu->thread->process.get();
+            failed.op = op;
+            failed.blockOpCount = this->blockOpCount;
+            failed.emulatedLen = this->emulatedLen;
+            failMtPendingBlock(failed);
+        }
+        return false;
+    };
+
     // When persistence is active, check the piped-group registry first, then
     // the flat persistent cache (primed from the server zip before main()
     // ran, extended by every worker as it compiles). On a group hit the
@@ -13591,13 +13749,17 @@ void JitWasmCodeGen::commitJIT(DecodedOp* op) {
             // Compile/instantiate outside the mutex — first touch of a large
             // merged group should not serialize other workers' commits.
             S32 groupLookupResult = WASM_JIT_MT_BROKER_LOOKUP_NONE;
-            tableIdx = boxedwine_wasm_instantiate_group_mt(
-                groupBytes, groupSize,
-                g_wasmHelperTable, WASM_HELPER_COUNT,
-                &bwJitTableNextSlot,
-                groupExportName, groupKind, groupIdentity, groupModuleRef.memoryId,
-                groupModuleRef.memoryIncarnation, groupModuleRef.moduleId, groupRepresentedBlockCount,
-                groupBrokerEnabled, &groupLookupResult);
+            if (!instantiateDirect([&]() {
+                    return boxedwine_wasm_instantiate_group_mt(
+                        groupBytes, groupSize,
+                        g_wasmHelperTable, WASM_HELPER_COUNT,
+                        &bwJitTableNextSlot,
+                        groupExportName, groupKind, groupIdentity, groupModuleRef.memoryId,
+                        groupModuleRef.memoryIncarnation, groupModuleRef.moduleId,
+                        groupRepresentedBlockCount, groupBrokerEnabled, &groupLookupResult);
+                }, tableIdx)) {
+                directInstallStale = true;
+            }
             if (tableIdx >= 0) {
                 bool accepted = false;
                 bool retiredOwner = false;
@@ -13637,6 +13799,13 @@ void JitWasmCodeGen::commitJIT(DecodedOp* op) {
                         groupKind, groupIdentity, releaseInstance);
                     tableIdx = -1;
                 }
+            }
+            if (directInstallStale) {
+                if (tableIdx >= 0 && usedGroup) {
+                    clearJitBlock({(void*)(uintptr_t)(U32)tableIdx});
+                }
+                instantiateTimer.finish(tableIdx >= 0);
+                return;
             }
             // On instantiation failure fall through to the flat/fresh path
             // (cachedBytes was not read for a group hit; the fresh binary
@@ -13712,18 +13881,21 @@ void JitWasmCodeGen::commitJIT(DecodedOp* op) {
                 moduleRef = {0, owner.memoryId, owner.memoryIncarnation};
             }
         }
-        tableIdx = boxedwine_wasm_instantiate_mt(
-            instBytes,
-            instSize,
-            g_wasmHelperTable,
-            WASM_HELPER_COUNT,
-            &bwJitTableNextSlot,
-            moduleRef.moduleId,
-            moduleRef.memoryId,
-            moduleRef.memoryIncarnation,
-            brokerEnabled && moduleRef.moduleId,
-            &lookupResult
-        );
+        if (!instantiateDirect([&]() {
+                return boxedwine_wasm_instantiate_mt(
+                    instBytes,
+                    instSize,
+                    g_wasmHelperTable,
+                    WASM_HELPER_COUNT,
+                    &bwJitTableNextSlot,
+                    moduleRef.moduleId,
+                    moduleRef.memoryId,
+                    moduleRef.memoryIncarnation,
+                    brokerEnabled && moduleRef.moduleId,
+                    &lookupResult);
+            }, tableIdx)) {
+            directInstallStale = true;
+        }
         if (tableIdx >= 0) {
             bool accepted = false;
             {
@@ -13837,6 +14009,12 @@ void JitWasmCodeGen::commitJIT(DecodedOp* op) {
     }
 #endif
 
+#ifdef BOXEDWINE_MULTI_THREADED
+    if (directInstallStale && tableIdx < 0) {
+        return;
+    }
+#endif
+
     if (tableIdx < 0) {
         delete[] relocArr;
         // Instantiation failed — fall back to the normal CPU interpreter
@@ -13909,6 +14087,10 @@ void JitWasmCodeGen::commitJIT(DecodedOp* op) {
             g_wasmJitMtModulesBySlot[tableIdx] = moduleRef;
             wasmJitMtRecordLookupLocked(moduleRef, lookupResult);
         }
+    }
+    if (directInstallStale) {
+        clearJitBlock({(void*)(uintptr_t)(U32)tableIdx});
+        return;
     }
 #endif
 
@@ -14471,9 +14653,17 @@ void startNewJIT(CPU* cpu, U32 address, DecodedOp* op) {
 #ifdef BOXEDWINE_WASM_JIT_PROFILE
     U64 jitStartUs = wasmJitProfileNowNs();
 #endif
+#ifdef BOXEDWINE_MULTI_THREADED
+    ++g_wasmJitMtCodegenDepth;
+#endif
     JitCodeGen* jit = startNewJIT(cpu);
     jit->doJIT(address, op);
     delete jit;
+#ifdef BOXEDWINE_MULTI_THREADED
+    if (--g_wasmJitMtCodegenDepth == 0) {
+        drainDeferredMtRuntimeBatches(cpu->memory);
+    }
+#endif
     // Wall time spent emitting bytecode for this block (metrics seam emitMs).
     wasmJit32StatsAddEmitNs(wasmJit32NowNs() - emitStartNs);
 #ifdef BOXEDWINE_WASM_JIT_PROFILE

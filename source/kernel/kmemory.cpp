@@ -542,6 +542,10 @@ U32 KMemory::getPageFlags(U32 page) {
     return data->mmu[page].flags;
 }
 
+U64 KMemory::getCodePageGeneration(U32 page) {
+    return data->opCache.getPageGeneration(page);
+}
+
 DecodedOp** KMemory::getDecodedOpLocation(U32 address) {
     return data->opCache.getLocation(address);
 }

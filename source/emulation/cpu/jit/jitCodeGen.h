@@ -20,6 +20,7 @@
 #define __JIT_CODE_GEN_H__
 
 #include "jit.h"
+#include <mutex>
 
 // Implementation of JIT that is host instruction independent
 class JitCodeGen : public Jit {
@@ -190,7 +191,7 @@ protected:
     virtual void nakedCall(RegPtr reg) = 0;
     virtual void nakedReturn() = 0;
 
-    virtual void commitJIT(DecodedOp* op);
+    virtual void commitJIT(DecodedOp* op, std::unique_lock<std::recursive_mutex>* memoryLock);
     virtual U8* createStartJITCode() = 0;
     virtual bool compileOps(DecodedOp* op);
     virtual U8* createDynamicExecutableMemory(U32* pSize = nullptr);

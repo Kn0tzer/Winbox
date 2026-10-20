@@ -42,6 +42,7 @@ public:
 	~DecodedOpCache();
 
 	DecodedOp* get(U32 address);
+	U64 getPageGeneration(U32 pageIndex) const;
 	DecodedOp** getLocation(U32 address);
 	DecodedOp* getPreviousOpAndRemoveIfOverlapping(U32 address);
 	void remove(U32 address, U32 len, bool becauseOfWrite);
@@ -73,6 +74,7 @@ private:
 	// Without this, there will be timing issues that only occasionally show up in debug mode, but become more obvious when running games multiple
 	// times, like with automation
 	std::map<U32, std::vector<DecodedOp*>> pendingDeallocs;
+	std::map<U32, U64> pageGenerations;
 };
 
 #endif

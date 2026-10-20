@@ -142,6 +142,9 @@ public:
     void logPageFault(KThread* thread, U32 address);
     
     U32 getPageFlags(U32 page);
+    // Version of guest code bytes on a page. Callers that need a stable
+    // snapshot must hold mutex while reading this value.
+    U64 getCodePageGeneration(U32 page);
 
     bool canRead(U32 page) { return (getPageFlags(page) & PAGE_READ) != 0; }
     bool canWrite(U32 page) { return (getPageFlags(page) & PAGE_WRITE) != 0; }

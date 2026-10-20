@@ -726,7 +726,7 @@ bool JitCodeGen::compileOps(DecodedOp* op) {
 }
 
 void JitCodeGen::doJIT(U32 address, DecodedOp* op) {
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(cpu->memory->mutex);
+    std::unique_lock<std::recursive_mutex> memoryLock(cpu->memory->mutex);
     if (!cpu->thread->process->startJITOp) {
         JitCodeGen* jit = startNewJIT(cpu);
         cpu->thread->process->syncToHost = jit->createSyncToHost();
@@ -784,33 +784,39 @@ void JitCodeGen::doJIT(U32 address, DecodedOp* op) {
         return;    
     }    
     onBlockPreCommit(op);
-    commitJIT(op);
+    commitJIT(op, &memoryLock);
 }
 
 void OPCALL firstDynamicOp(CPU* cpu, DecodedOp* op) {
     bool allowStartJit = true;
     bool executePendingNormally = false;
+    bool needsPostCompileValidation = false;
 #ifdef BOXEDWINE_WASM_JIT
-    if (op->flags2 & OP_FLAG2_WASM_JIT_PENDING) {
 #ifdef BOXEDWINE_MULTI_THREADED
-        executePendingNormally = true;
-        std::unique_lock<std::recursive_mutex> lock(cpu->memory->mutex);
-        DecodedOp* liveOp = cpu->memory->getDecodedOp(cpu->getEipAddress());
-        if (liveOp != op) {
-            return;
+    if (op->flags2 & OP_FLAG2_WASM_JIT_PENDING) {
+        bool isPending = false;
+        {
+            std::unique_lock<std::recursive_mutex> lock(cpu->memory->mutex);
+            if (cpu->memory->getDecodedOp(cpu->getEipAddress()) != op) {
+                return;
+            }
+            isPending = (op->flags2 & OP_FLAG2_WASM_JIT_PENDING) != 0;
         }
-        if (op->flags2 & OP_FLAG2_WASM_JIT_PENDING) {
+        if (isPending) {
+            executePendingNormally = true;
+            needsPostCompileValidation = true;
             wasmJitHandlePendingHit(cpu, op);
+            allowStartJit = false;
         }
+    }
 #else
+    if (op->flags2 & OP_FLAG2_WASM_JIT_PENDING) {
         wasmJitHandlePendingHit(cpu, op);
-#endif
         allowStartJit = false;
-#ifndef BOXEDWINE_MULTI_THREADED
     } else if (wasmJitCompilationPaused()) {
         allowStartJit = false;
-#endif
     }
+#endif
 #endif
     if (allowStartJit) {
 #ifdef __TEST
@@ -821,6 +827,7 @@ void OPCALL firstDynamicOp(CPU* cpu, DecodedOp* op) {
 #endif
         bool needsSharedHelpers = (op->flags & OP_FLAG_JIT) && !cpu->calculateCF[0];
         if (shouldStartJit || needsSharedHelpers) {
+            needsPostCompileValidation = true;
             startNewJIT(cpu, cpu->getEipAddress(), op);
         }
     }
@@ -841,6 +848,12 @@ void OPCALL firstDynamicOp(CPU* cpu, DecodedOp* op) {
     op->runCount++;
 #endif
 #ifdef BOXEDWINE_WASM_JIT
+    if (needsPostCompileValidation) {
+        std::unique_lock<std::recursive_mutex> lock(cpu->memory->mutex);
+        if (cpu->memory->getDecodedOp(cpu->getEipAddress()) != op) {
+            return;
+        }
+    }
     // Callback ops store the callback address in pfn, so dispatch warmup ops
     // through the normal table until the op is replaced with startJITOp.
     if (!executePendingNormally && op->pfn == cpu->thread->process->startJITOp) {
@@ -1019,7 +1032,8 @@ U8* JitCodeGen::createEmulateSingleOp() {
     return createDynamicExecutableMemory();
 }
 
-void JitCodeGen::commitJIT(DecodedOp* op) {
+void JitCodeGen::commitJIT(DecodedOp* op, std::unique_lock<std::recursive_mutex>* memoryLock) {
+    (void)memoryLock;
     if (!blockOpCount) {
         return;
     }
