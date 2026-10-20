@@ -62,7 +62,8 @@ void loadCode(KMemory64& mem, U64 addr, const std::vector<U8>& bytes) {
 // "mov rax,60; xor rdi,rdi; syscall" (exit(0)).
 void runAndCheck(TestResult& r, const char* name,
                  const std::vector<U8>& code,
-                 std::function<bool(CPU64&)> verify) {
+                 std::function<bool(CPU64&)> verify,
+                 std::function<void(CPU64&)> initialize = {}) {
     KMemory64 mem(nullptr);
     mem.mmapAnonymousFixed(CODE_BASE, 0x1000, 7); // RWX
     mem.mmapAnonymousFixed(STACK_TOP - 0x1000, 0x1000, 3); // RW
@@ -71,6 +72,7 @@ void runAndCheck(TestResult& r, const char* name,
     CPU64 cpu(&mem);
     cpu.rip = CODE_BASE;
     cpu.reg[X64_RSP].setU64(STACK_TOP - 16);
+    if (initialize) initialize(cpu);
 
     // runBounded enforces an instruction cap so a buggy test can't
     // peg the host. cpu.run() has an unbounded while-loop and would hang.
@@ -2602,6 +2604,255 @@ int runX64SelfTest() {
         runAndCheck(r, "cmppd LT -> 2.0<3.0 lane set (movmskpd=1)", withExit(code), [](CPU64& c) {
             return c.reg[X64_R15].u64 == 1;
         });
+    }
+
+    // Test 65c — imm8 ModR/M decoding. The memory data follows the exit
+    // suffix, so each RIP-relative displacement is exactly 12 bytes from the
+    // end of its instruction. These cases cover register, [RBX], and
+    // RIP-relative forms for every implemented 0F C2/C4/C6 immediate form.
+    {
+        const U64 dstLo = 0xBF8000003F800000ULL; // -1.0, 1.0
+        const U64 dstHi = 0x7F8000007FC00000ULL; // +inf, qNaN
+        const U64 srcLo = 0x0000000040000000ULL; //  2.0, 0.0
+        const U64 srcHi = 0xFF8000003F800000ULL; // -inf, 1.0
+        const std::vector<U8> floatData = {
+            0x00,0x00,0x00,0x40, 0x00,0x00,0x00,0x00,
+            0x00,0x00,0x80,0x3F, 0x00,0x00,0x80,0xFF
+        }; // [2.0, +0.0, 1.0, -inf]
+        const std::vector<U8> doubleData = {
+            0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x40,
+            0x00,0x00,0x00,0x00,0x00,0x00,0xF0,0x7F
+        }; // [2.0, +inf]
+
+        auto vectorImm = [&](const char* opName, const std::vector<U8>& prefix,
+                             U8 opcode, U8 imm, int form, U64 expectedLo,
+                             U64 expectedHi, U64 initialLo, U64 initialHi,
+                             const std::vector<U8>& data,
+                             U64 xmm1Lo, U64 xmm1Hi) {
+            std::vector<U8> insn = prefix;
+            insn.push_back(0x0F); insn.push_back(opcode);
+            if (form == 0) insn.push_back(0xC1);      // xmm0, xmm1
+            else if (form == 1) insn.push_back(0x03); // xmm0, [rbx]
+            else insn.push_back(0x05);                // xmm0, [rip+disp32]
+            if (form == 2) {
+                // The exit suffix is 12 bytes. RIP points here after imm8,
+                // so disp32=12 targets the inline memory operand after it.
+                insn.insert(insn.end(), {0x0C,0x00,0x00,0x00});
+            }
+            insn.push_back(imm);
+            std::vector<U8> code = withExit(insn);
+            code.insert(code.end(), data.begin(), data.end());
+            std::string testName = std::string(opName) +
+                (form == 0 ? " register" : form == 1 ? " memory" : " RIP-relative");
+            runAndCheck(r, testName.c_str(), code,
+                [=](CPU64& c) {
+                    return c.xmm[0].lo == expectedLo && c.xmm[0].hi == expectedHi;
+                },
+                [=, &insn](CPU64& c) {
+                    c.xmm[0].lo = initialLo; c.xmm[0].hi = initialHi;
+                    c.xmm[1].lo = xmm1Lo; c.xmm[1].hi = xmm1Hi;
+                    if (form == 1) {
+                        c.reg[X64_RBX].setU64(CODE_BASE + insn.size() + EXIT_SYSCALL.size());
+                    }
+                });
+        };
+
+        const U64 shufflePsLo = 0xBF8000003F800000ULL; // lanes 0,1 = 1.0, -1.0
+        const U64 shufflePsHi = 0xFF8000003F800000ULL; // lanes 2,3 = 1.0, -inf
+        for (int form = 0; form < 3; form++) {
+            vectorImm("shufps imm8", {}, 0xC6, 0xE4, form,
+                      shufflePsLo, shufflePsHi, dstLo, dstHi,
+                      floatData, srcLo, srcHi);
+        }
+
+        const U64 shufflePdLo = 0x3FF0000000000000ULL; // dst low = 1.0
+        const U64 shufflePdHi = 0x7FF0000000000000ULL; // src high = +inf
+        for (int form = 0; form < 3; form++) {
+            vectorImm("shufpd imm8", {0x66}, 0xC6, 0x02, form,
+                      shufflePdLo, shufflePdHi,
+                      0x3FF0000000000000ULL, 0xBFF0000000000000ULL, doubleData,
+                      0x7FF8000000000000ULL, 0x7FF0000000000000ULL);
+        }
+
+        const U64 cmpPsLo = 0xFFFFFFFFFFFFFFFFULL; // 1<2 and -1<0
+        const U64 cmpPsHi = 0;                     // NaN unordered, inf !< inf
+        for (int form = 0; form < 3; form++) {
+            vectorImm("cmpps imm8", {}, 0xC2, 0x01, form,
+                      cmpPsLo, cmpPsHi, dstLo, dstHi, floatData,
+                      srcLo, 0x7F8000007FC00000ULL);
+        }
+
+        const U64 cmpPdLo = 0xFFFFFFFFFFFFFFFFULL; // 1.0 < 2.0
+        const U64 cmpPdHi = 0;                     // NaN < +inf is false
+        for (int form = 0; form < 3; form++) {
+            vectorImm("cmppd imm8", {0x66}, 0xC2, 0x01, form,
+                      cmpPdLo, cmpPdHi,
+                      0x3FF0000000000000ULL, 0x7FF8000000000000ULL, doubleData,
+                      0x4000000000000000ULL, 0x7FF0000000000000ULL);
+        }
+
+        const U64 cmpSdLo = 0xFFFFFFFFFFFFFFFFULL;
+        const U64 cmpSdHi = 0x7FF8000000000000ULL;
+        for (int form = 0; form < 3; form++) {
+            vectorImm("cmpsd imm8", {0xF2}, 0xC2, 0x01, form,
+                      cmpSdLo, cmpSdHi,
+                      0x3FF0000000000000ULL, 0x7FF8000000000000ULL, doubleData,
+                      0x4000000000000000ULL, 0x7FF0000000000000ULL);
+        }
+
+        const U64 cmpSsLo = (dstLo & 0xFFFFFFFF00000000ULL) | 0xFFFFFFFFULL;
+        const U64 cmpSsHi = dstHi;
+        for (int form = 0; form < 3; form++) {
+            vectorImm("cmpss imm8", {0xF3}, 0xC2, 0x01, form,
+                      cmpSsLo, cmpSsHi, dstLo, dstHi, floatData,
+                      srcLo, srcHi);
+        }
+
+        const U32 scalarPsEdges[] = {0x7FC00000, 0xFF800000, 0x7F800000};
+        const U64 scalarPdEdges[] = {0x7FF8000000000000ULL,
+                                     0xFFF0000000000000ULL,
+                                     0x7FF0000000000000ULL};
+        for (int form = 0; form < 3; form++) {
+            std::vector<U8> psData(16, 0), pdData(16, 0);
+            std::memcpy(psData.data(), &scalarPsEdges[form], sizeof(U32));
+            std::memcpy(pdData.data(), &scalarPdEdges[form], sizeof(U64));
+            bool less = form == 2; // 1.0 < +infinity; NaN and -infinity are false.
+            vectorImm("cmpss imm8 NaN/Inf", {0xF3}, 0xC2, 0x01, form,
+                      (dstLo & 0xFFFFFFFF00000000ULL) | (less ? 0xFFFFFFFFULL : 0),
+                      dstHi, dstLo, dstHi, psData, scalarPsEdges[form], 0);
+            vectorImm("cmpsd imm8 NaN/Inf", {0xF2}, 0xC2, 0x01, form,
+                      less ? 0xFFFFFFFFFFFFFFFFULL : 0,
+                      0x7FF8000000000000ULL,
+                      0x3FF0000000000000ULL, 0x7FF8000000000000ULL,
+                      pdData, scalarPdEdges[form], 0);
+        }
+
+        // PINSRW takes a GPR in register form and m16 in memory forms. Lane 6
+        // uses the second qword so the immediate and source position are both
+        // observable.
+        const U64 pinsLo = 0x1111222233334444ULL;
+        const U64 pinsHiReg = 0x5555800077778888ULL;
+        const U64 pinsHiMem = 0x5555A55A77778888ULL;
+        for (int form = 0; form < 3; form++) {
+            std::vector<U8> insn = {0x66,0x0F,0xC4};
+            if (form == 0) insn.push_back(0xC1);
+            else if (form == 1) insn.push_back(0x03);
+            else insn.push_back(0x05);
+            if (form == 2) insn.insert(insn.end(), {0x0C,0x00,0x00,0x00});
+            insn.push_back(0x06);
+            std::vector<U8> code = withExit(insn);
+            std::vector<U8> data = {0x5A,0xA5,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+            code.insert(code.end(), data.begin(), data.end());
+            std::string name = std::string("pinsrw imm8 ") +
+                (form == 0 ? "register" : form == 1 ? "memory" : "RIP-relative");
+            runAndCheck(r, name.c_str(), code,
+                [=](CPU64& c) {
+                    return c.xmm[0].lo == pinsLo &&
+                           c.xmm[0].hi == (form == 0 ? pinsHiReg : pinsHiMem);
+                },
+                [=, &insn](CPU64& c) {
+                    c.xmm[0].lo = pinsLo; c.xmm[0].hi = 0x5555666677778888ULL;
+                    c.reg[X64_RCX].setU64(0x8000);
+                    if (form == 1) {
+                        c.reg[X64_RBX].setU64(CODE_BASE + insn.size() + EXIT_SYSCALL.size());
+                    }
+                });
+        }
+
+        // 66 0F C5 PEXTRW reads an XMM register; the legacy form has no
+        // memory-source encoding. Immediate 6 selects word 6 of XMM1.
+        runAndCheck(r, "pextrw imm8 register", withExit({
+            0x66,0x0F,0xC5,0xC1,0x06
+        }), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 0xDDEE;
+        }, [](CPU64& c) {
+            c.xmm[1].lo = 0x7788556633441122ULL;
+            c.xmm[1].hi = 0xFF00DDEEBBCC99AAULL;
+        });
+    }
+
+    // Test 65d — FE /0,/1 have no immediate. Verify register, [RBX], and
+    // RIP-relative byte operands, including result flags and CF preservation.
+    {
+        for (U8 sub = 0; sub < 2; sub++) {
+            const U8 initial = sub == 0 ? 0x7F : 0x80;
+            const U8 expected = sub == 0 ? 0x80 : 0x7F;
+            const U32 expectedFlags = X64_CF | X64_OF | (sub == 0 ? X64_SF : 0);
+            for (int form = 0; form < 3; form++) {
+                std::vector<U8> insn = {0xFE};
+                if (form == 0) insn.push_back(sub == 0 ? 0xC0 : 0xC8);
+                else if (form == 1) insn.push_back(sub == 0 ? 0x03 : 0x0B);
+                else {
+                    insn.push_back(sub == 0 ? 0x05 : 0x0D);
+                    // Two flag-capture bytes and the 12-byte exit suffix
+                    // precede the data, so disp32=14 from the instruction end.
+                    insn.insert(insn.end(), {0x0E,0x00,0x00,0x00});
+                }
+                std::vector<U8> code = insn;
+                code.insert(code.end(), {0x9C,0x5A}); // pushfq; pop rdx
+                code.insert(code.end(), EXIT_SYSCALL.begin(), EXIT_SYSCALL.end());
+                code.push_back(initial);
+                std::string name = std::string(sub == 0 ? "inc m8" : "dec m8") +
+                    (form == 0 ? " register" : form == 1 ? " memory" : " RIP-relative");
+                runAndCheck(r, name.c_str(), code,
+                    [=](CPU64& c) {
+                        U8 actual = form == 0 ? (U8)c.reg[X64_R15].u64
+                            : c.memory->readb(CODE_BASE + insn.size() + 2 + EXIT_SYSCALL.size());
+                        return actual == expected &&
+                               (((U32)c.reg[X64_RDX].u64) & (X64_CF | X64_OF | X64_SF)) == expectedFlags;
+                    },
+                    [=, &insn](CPU64& c) {
+                        c.reg[X64_RAX].setU64(initial);
+                        c.rflags = 0x202 | X64_CF;
+                        if (form == 1) {
+                            c.reg[X64_RBX].setU64(CODE_BASE + insn.size() + 2 + EXIT_SYSCALL.size());
+                        }
+                    });
+            }
+        }
+    }
+
+    // Test 65e — F6/F7 /0 TEST immediates: imm8, imm16, and imm32, each with
+    // register, base-memory, and RIP-relative operands. The RIP displacement
+    // spans the two-byte flag capture and 12-byte exit suffix (disp32=14).
+    {
+        struct GroupTestSpec {
+            const char* name;
+            std::vector<U8> prefix;
+            U8 opcode;
+            std::vector<U8> immediate;
+            std::vector<U8> data;
+        };
+        GroupTestSpec specs[] = {
+            {"test f6 imm8", {}, 0xF6, {0x0F}, {0xF0}},
+            {"test f7 imm16", {0x66}, 0xF7, {0x0F,0x00}, {0xF0,0x00}},
+            {"test f7 imm32", {0x48}, 0xF7, {0x0F,0x00,0x00,0x00},
+             {0xF0,0x00,0x00,0x00,0x00,0x00,0x00,0x00}},
+        };
+        for (const auto& spec : specs) {
+            for (int form = 0; form < 3; form++) {
+                std::vector<U8> insn = spec.prefix;
+                insn.push_back(spec.opcode);
+                insn.push_back(form == 0 ? 0xC0 : form == 1 ? 0x03 : 0x05);
+                if (form == 2) insn.insert(insn.end(), {0x0E,0x00,0x00,0x00});
+                insn.insert(insn.end(), spec.immediate.begin(), spec.immediate.end());
+                std::vector<U8> code = insn;
+                code.insert(code.end(), {0x9C,0x58}); // pushfq; pop rax
+                code.insert(code.end(), EXIT_SYSCALL.begin(), EXIT_SYSCALL.end());
+                code.insert(code.end(), spec.data.begin(), spec.data.end());
+                std::string name = std::string(spec.name) +
+                    (form == 0 ? " register" : form == 1 ? " memory" : " RIP-relative");
+                runAndCheck(r, name.c_str(), code, [](CPU64& c) {
+                    const U32 defined = X64_CF | X64_PF | X64_ZF | X64_SF | X64_OF;
+                    return (((U32)c.reg[X64_R15].u64) & defined) == (X64_PF | X64_ZF);
+                }, [=, &insn, &spec](CPU64& c) {
+                    c.reg[X64_RAX].setU64(0xF0);
+                    if (form == 1) {
+                        c.reg[X64_RBX].setU64(CODE_BASE + insn.size() + 2 + EXIT_SYSCALL.size());
+                    }
+                });
+            }
+        }
     }
 
     // Test 66 — XGETBV(0) returns EAX=3 (x87+SSE enabled), EDX=0.

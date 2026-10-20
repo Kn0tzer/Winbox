@@ -49,6 +49,9 @@ void ksyscall64(CPU64* /*cpu*/) { throw DiffFault("unexpected syscall"); }
 U64 KSystem::getSystemTimeAsMicroSeconds() { return 0; }
 void KProcess::signalProcess(U32 /*signal*/) { throw DiffFault("unexpected signalProcess"); }
 thread_local KThread* KThread::runningThread = nullptr;
+void jit64ReleaseState(Jit64State* state) {
+    if (state) throw DiffFault("unexpected JIT state in cpu-diff harness");
+}
 bool CPU64::raiseSyncFault(U32 /*sig*/, U32 /*trapNo*/, S32 /*siCode*/, U64 faultAddr) {
     throw DiffFault("sync fault at guest addr");
 }
@@ -332,6 +335,42 @@ static void eModRM(std::vector<U8>& b, int mod, int reg, int rm) {
 static void eU32(std::vector<U8>& b, U32 v) {
     for (int i = 0; i < 4; i++) b.push_back((U8)(v >> (i * 8)));
 }
+
+enum class OpcodeMap { Legacy, Map0F, Map0F38, Map0F3A, X87 };
+enum class OperandKind { Register, BaseMemory, RipRelative };
+
+// Emit a ModR/M instruction for the legacy, 0F, 0F38, 0F3A, or x87 maps.
+// `ripGapBytes` counts bytes emitted after this instruction before inline data;
+// the disp32 is based on the end of the complete instruction, including imm8.
+static size_t emitModRMInstruction(std::vector<U8>& out,
+                                   const std::vector<U8>& prefixes,
+                                   OpcodeMap map, U8 opcode,
+                                   int regField, int rmField,
+                                   OperandKind operand,
+                                   bool hasImm8 = false, U8 imm8 = 0,
+                                   U32 ripGapBytes = 0, U8 baseDisp8 = 0) {
+    size_t start = out.size();
+    out.insert(out.end(), prefixes.begin(), prefixes.end());
+    if (map == OpcodeMap::Map0F || map == OpcodeMap::Map0F38 ||
+        map == OpcodeMap::Map0F3A) {
+        out.push_back(0x0F);
+        if (map == OpcodeMap::Map0F38) out.push_back(0x38);
+        if (map == OpcodeMap::Map0F3A) out.push_back(0x3A);
+    }
+    out.push_back(opcode);
+    if (operand == OperandKind::Register) {
+        eModRM(out, 3, regField, rmField);
+    } else if (operand == OperandKind::BaseMemory) {
+        eModRM(out, baseDisp8 ? 1 : 0, regField, rmField);
+        if (baseDisp8) out.push_back(baseDisp8);
+    } else {
+        eModRM(out, 0, regField, 5);
+        eU32(out, ripGapBytes);
+    }
+    if (hasImm8) out.push_back(imm8);
+    return out.size() - start;
+}
+
 // ALU r/m64, r64  (opcodes 0x01,0x09,0x11,0x19,0x21,0x29,0x31,0x39): dst=rm
 static void eRR(std::vector<U8>& b, U8 op, int dst, int src) {
     eRex(b, true, src, dst); b.push_back(op); eModRM(b, 3, src, dst);
@@ -772,6 +811,93 @@ static void buildIntCases(std::vector<TestCase>& out) {
     }
 }
 
+// FE /0,/1 byte INC/DEC: cover register, ordinary memory, and RIP-relative
+// memory operands. The RIP-relative form reads the modified inline byte back
+// into EAX before jumping over the data, making both the value and flags
+// observable without treating code bytes as differential scratch memory.
+static void buildByteIncDecCases(std::vector<TestCase>& out) {
+    for (U8 sub = 0; sub < 2; sub++) {
+        const U8 initial = sub == 0 ? 0x7F : 0x80;
+        for (int form = 0; form < 3; form++) {
+            TestCase tc; tc.set = "int";
+            tc.name = sub == 0 ? "inc" : "dec";
+            tc.form = form == 0 ? "r/m8,register" :
+                      form == 1 ? "r/m8,memory" : "r/m8,rip-relative";
+            initRegs(tc, initial, form == 1 ? MEM_SCRATCH : 0);
+            tc.flagsIn = 0x203; // CF must survive FE /0 and /1.
+            tc.flagsMask = F_PF | F_AF | F_ZF | F_SF | F_OF;
+            tc.checkCfPreserved = true;
+            std::vector<U8>& b = tc.code;
+            if (form == 0) {
+                emitModRMInstruction(b, {}, OpcodeMap::Legacy, 0xFE,
+                                     sub, X64_RAX, OperandKind::Register);
+            } else if (form == 1) {
+                emitModRMInstruction(b, {}, OpcodeMap::Legacy, 0xFE,
+                                     sub, X64_RBX, OperandKind::BaseMemory);
+                tc.checkMem = true; tc.memLen = 1; tc.memInit[0] = initial;
+            } else {
+                // First instruction ends at offset 6. MOVZX is seven bytes,
+                // then EB 01 skips the byte. Thus its disp32 is 9; the read
+                // back instruction has a two-byte gap to that same data.
+                emitModRMInstruction(b, {}, OpcodeMap::Legacy, 0xFE,
+                                     sub, 5, OperandKind::RipRelative, false, 0, 9);
+                emitModRMInstruction(b, {}, OpcodeMap::Map0F, 0xB6,
+                                     0, 5, OperandKind::RipRelative, false, 0, 2);
+                b.push_back(0xEB); b.push_back(0x01);
+                b.push_back(initial);
+            }
+            out.push_back(tc);
+        }
+    }
+}
+
+// Group 3 TEST immediate forms exercise the decoder's runtime-selected
+// trailing immediate width: F6 /0 imm8, F7 /0 imm16, and F7 /0 imm32.
+static void buildGroupTestCases(std::vector<TestCase>& out) {
+    struct Spec {
+        const char* name;
+        std::vector<U8> prefix;
+        U8 opcode;
+        std::vector<U8> immediate;
+        std::vector<U8> data;
+    };
+    Spec specs[] = {
+        {"test", {}, 0xF6, {0x0F}, {0xF0}},
+        {"test", {0x66}, 0xF7, {0x0F,0x00}, {0xF0,0x00}},
+        {"test", {0x48}, 0xF7, {0x0F,0x00,0x00,0x00},
+         {0xF0,0x00,0x00,0x00,0x00,0x00,0x00,0x00}},
+    };
+    for (const auto& spec : specs) {
+        for (int form = 0; form < 3; form++) {
+            TestCase tc; tc.set = "int"; tc.name = spec.name;
+            tc.form = form == 0 ? "r/m,imm" :
+                      form == 1 ? "memory,imm" : "rip-relative,imm";
+            initRegs(tc, 0xF0, MEM_SCRATCH);
+            tc.flagsMask = F_CF | F_PF | F_ZF | F_SF | F_OF;
+            std::vector<U8>& b = tc.code;
+            OperandKind operand = form == 0 ? OperandKind::Register :
+                                  form == 1 ? OperandKind::BaseMemory :
+                                              OperandKind::RipRelative;
+            int rm = form == 0 ? X64_RAX : X64_RBX;
+            emitModRMInstruction(b, spec.prefix, OpcodeMap::Legacy,
+                                 spec.opcode, 0, rm, operand,
+                                 spec.immediate.size() == 1, 0x0F,
+                                 form == 2 ? 2 : 0);
+            if (spec.immediate.size() > 1)
+                b.insert(b.end(), spec.immediate.begin(), spec.immediate.end());
+            if (form == 1) {
+                tc.checkMem = true; tc.memLen = (int)spec.data.size();
+                memcpy(tc.memInit, spec.data.data(), spec.data.size());
+            }
+            if (form == 2) {
+                b.push_back(0xEB); b.push_back((U8)spec.data.size());
+                b.insert(b.end(), spec.data.begin(), spec.data.end());
+            }
+            out.push_back(tc);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // FPU test builders (x87). Pattern: finit; fldX; fldY; fop_p; fstp [rbx].
 // Result compared via 8 bytes at MEM_SCRATCH (rbx = MEM_SCRATCH).
@@ -994,6 +1120,98 @@ static void buildSseCases(std::vector<TestCase>& out) {
             memcpy(tc.memInit, fA2, 16); memcpy(tc.memInit + 16, fB2, 16);
             out.push_back(tc);
         }
+    }
+
+    // Immediate 0F-map forms exercise all operand shapes, including a true
+    // RIP-relative m128 whose inline data follows a jump-over-data sequence.
+    // The encoder computes displacement from the end of ModR/M + disp + imm8.
+    U32 dstPs[] = {0x3F800000, 0xBF800000, 0x7FC00000, 0x7F800000};
+    U32 srcPs[] = {0x40000000, 0x00000000, 0x3F800000, 0xFF800000};
+    U64 dstPd[] = {0x3FF0000000000000ULL, 0x7FF8000000000000ULL};
+    U64 srcPd[] = {0x4000000000000000ULL, 0x7FF0000000000000ULL};
+    U8 dstBytes[16] = {}, dstPdBytes[16] = {};
+    U8 srcPsBytes[16] = {}, srcPdBytes[16] = {};
+    U8 pinsData[16] = {0x5A, 0xA5};
+    memcpy(dstBytes, dstPs, sizeof(dstPs));
+    memcpy(dstPdBytes, dstPd, sizeof(dstPd));
+    memcpy(srcPsBytes, srcPs, sizeof(srcPs));
+    memcpy(srcPdBytes, srcPd, sizeof(srcPd));
+    auto addImmCase = [&](const char* name, const std::vector<U8>& prefix,
+                          U8 opcode, U8 imm8, const U8* destinationData,
+                          const U8* sourceData, int form, bool pinsrw) {
+        TestCase tc; tc.set = "sse"; tc.name = name;
+        tc.form = pinsrw ? "xmm,r32/m16,imm8" :
+                  form == 0 ? "xmm,xmm,imm8" :
+                  form == 1 ? "xmm,m128,imm8" : "xmm,[rip+disp32],imm8";
+        initRegs(tc, 0, MEM_SCRATCH);
+        tc.flagsMask = 0; tc.checkMem = true; tc.memLen = 16;
+        memcpy(tc.memInit, destinationData, 16);
+        memcpy(tc.memInit + 16, sourceData, 16);
+
+        std::vector<U8> b;
+        emitModRMInstruction(b, {}, OpcodeMap::Map0F, 0x10, 0, 3,
+                             OperandKind::BaseMemory); // movups xmm0,[rbx]
+        if (!pinsrw && form == 0) {
+            emitModRMInstruction(b, {}, OpcodeMap::Map0F, 0x10, 1, 3,
+                                 OperandKind::BaseMemory, false, 0, 0, 16);
+        }
+        OperandKind operand = form == 0 ? OperandKind::Register :
+                              form == 1 ? OperandKind::BaseMemory :
+                                          OperandKind::RipRelative;
+        int rm = form == 0 ? (pinsrw ? X64_RCX : 1) : X64_RBX;
+        // Three bytes for MOVUPS [rbx],xmm0 and two bytes for JMP over the
+        // inline 16-byte source, so the RIP-relative displacement is five.
+        emitModRMInstruction(b, prefix, OpcodeMap::Map0F, opcode, 0, rm,
+                             operand, true, imm8,
+                             form == 2 ? (strcmp(name, "cmppd") == 0 ? 20 : 5) : 0,
+                             form == 1 ? 16 : 0);
+        emitModRMInstruction(b, {}, OpcodeMap::Map0F, 0x11, 0, 3,
+                             OperandKind::BaseMemory); // movups [rbx],xmm0
+        if (form == 2) {
+            if (strcmp(name, "cmppd") == 0)
+                b.insert(b.end(), 15, 0x90); // align the RIP-relative m128 to 16 bytes
+            b.push_back(0xEB); b.push_back(16); // jump over the inline source
+            b.insert(b.end(), sourceData, sourceData + 16);
+        }
+        tc.code = b;
+        if (pinsrw && form == 0) tc.r[X64_RCX] = 0xA55A;
+        out.push_back(tc);
+    };
+
+    for (int form = 0; form < 3; form++) {
+        addImmCase("shufps", {}, 0xC6, 0xE4, dstBytes, srcPsBytes, form, false);
+        addImmCase("shufpd", {0x66}, 0xC6, 0x02, dstPdBytes, srcPdBytes, form, false);
+        addImmCase("cmpss", {0xF3}, 0xC2, 0x01, dstBytes, srcPsBytes, form, false);
+        addImmCase("cmpsd", {0xF2}, 0xC2, 0x01, dstPdBytes, srcPdBytes, form, false);
+        addImmCase("cmpps", {}, 0xC2, 0x01, dstBytes, srcPsBytes, form, false);
+        addImmCase("cmppd", {0x66}, 0xC2, 0x01, dstPdBytes, srcPdBytes, form, false);
+        addImmCase("pinsrw", {0x66}, 0xC4, 0x06, dstBytes, pinsData, form, true);
+    }
+
+    U32 scalarPsBits[] = {0x7FC00000, 0xFF800000, 0x7F800000}; // NaN, -inf, +inf
+    U64 scalarPdBits[] = {0x7FF8000000000000ULL, 0xFFF0000000000000ULL,
+                          0x7FF0000000000000ULL};
+    for (int form = 0; form < 3; form++) {
+        U8 specialPs[16] = {}, specialPd[16] = {};
+        memcpy(specialPs, &scalarPsBits[form], sizeof(U32));
+        memcpy(specialPd, &scalarPdBits[form], sizeof(U64));
+        addImmCase("cmpss-edge", {0xF3}, 0xC2, 0x01,
+                   dstBytes, specialPs, form, false);
+        addImmCase("cmpsd-edge", {0xF2}, 0xC2, 0x01,
+                   dstPdBytes, specialPd, form, false);
+    }
+
+    // 66 0F C5 is register-source PEXTRW. Its source operand is an XMM
+    // register by definition, so this encoding has no memory form.
+    {
+        TestCase tc; tc.set = "sse"; tc.name = "pextrw"; tc.form = "r32,xmm,imm8";
+        tc.code = {0x0F,0x10,0x0B,             // movups xmm1,[rbx]
+                   0x66,0x0F,0xC5,0xC1,0x06}; // pextrw eax,xmm1,6
+        initRegs(tc, 0, MEM_SCRATCH); tc.flagsMask = 0;
+        tc.checkMem = true; tc.memLen = 16;
+        U16 words[8] = {0x1122,0x3344,0x5566,0x7788,0x99AA,0xBBCC,0xDDEE,0xFF00};
+        memcpy(tc.memInit, words, sizeof(words));
+        out.push_back(tc);
     }
 }
 
@@ -1346,6 +1564,8 @@ int main(int argc, char** argv) {
 
     std::vector<TestCase> cases;
     buildIntCases(cases);
+    buildByteIncDecCases(cases);
+    buildGroupTestCases(cases);
     buildFpuCases(cases);
     buildSseCases(cases);
     // buildStringCases(cases); // DISABLED: harness cannot handle RSI/RDI per-side checks yet

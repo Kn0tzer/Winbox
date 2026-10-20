@@ -1690,15 +1690,14 @@ dsp_30:
 dsp_31:
     if (op == 0xF6 || op == 0xF7) {
         U32 size = (op == 0xF6) ? 1 : opSize;
-        // Decode with NO trailing immediate: only the /0 TEST subform carries
-        // an immediate, and the sub-opcode lives in the ModRM reg field which
-        // we can't know until we decode. trailingImmBytes ONLY shifts the
-        // RIP-relative effective address (disp is relative to end-of-insn), so
-        // a blanket nonzero value mis-addresses the no-immediate subforms (DIV/
-        // IDIV/NOT/NEG/MUL/IMUL) by the immediate width — a real bug that made
-        // a RIP-relative `divq [rip+disp]` read 4 bytes past its operand. We
-        // fix up the TEST operand's RIP-relative address below, once we know it.
-        ModRM m = decodeModRM(rip + opOff + 1, p, 0);
+        // Only /0 TEST carries an immediate. Inspect its sub-opcode before
+        // decoding so RIP-relative operands use the end of the complete
+        // instruction; the other group-3 forms have no trailing immediate.
+        U8 groupSub = (fetchByte(rip + opOff + 1) >> 3) & 0x7;
+        U32 immBytes = groupSub == 0
+            ? (size == 1 ? 1 : size == 2 ? 2 : 4)
+            : 0;
+        ModRM m = decodeModRM(rip + opOff + 1, p, immBytes);
         U8 sub = m.regField & 0x7;
         if (sub == 0) {
             U64 imm; U32 immLen;
@@ -1713,10 +1712,6 @@ dsp_31:
                 S32 i32 = (S32)fetchDword(immAddr);
                 imm = (U64)(S64)i32; immLen = 4;
             }
-            // RIP-relative TEST: the disp is relative to the address after the
-            // whole instruction, which includes this immediate. decodeModRM
-            // computed effAddr with trailing=0, so add the immediate length.
-            if (m.isRipRel) m.effAddr += immLen;
             U64 a = loadRM(m, size, rexPresent);
             flagsLogic(rflags, a & imm, size);
             U32 used = opOff + 1 + m.length + immLen;
@@ -1927,7 +1922,7 @@ dsp_31:
     // startup hits this (INC byte ptr [rip+disp32] on a refcount/flag byte).
 dsp_32:
     if (op == 0xFE) {
-        ModRM m = decodeModRM(rip + opOff + 1, p, 1);
+        ModRM m = decodeModRM(rip + opOff + 1, p, 0);
         U8 sub = m.regField & 0x7;
         if (sub == 0 || sub == 1) {
             U64 a = loadRM(m, 1, rexPresent);
@@ -3822,7 +3817,7 @@ dsp_55:
         // SHUFPD — 66 0F C6 /r ib. 2-qword shuffle: bit 0 picks dst lane,
         // bit 1 picks src lane.
         if (op2 == 0xC6) {
-            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            ModRM m = decodeModRM(rip + opOff + 2, p, 1);
             U8 imm = fetchByte(rip + opOff + 2 + m.length);
             U64 srcLo, srcHi;
             if (m.isReg) {
@@ -3862,7 +3857,7 @@ dsp_55:
         // PEXTRW — 66 0F C5 /r ib. Extract one word from xmm[rmIndex] (imm8
         // & 7 selects the lane) into r32/r64.
         if (op2 == 0xC5 && osize66) {
-            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            ModRM m = decodeModRM(rip + opOff + 2, p, 1);
             U8 imm = fetchByte(rip + opOff + 2 + m.length);
             if (m.isReg) {
                 int lane = imm & 7;
@@ -3877,7 +3872,7 @@ dsp_55:
         // PINSRW — 66 0F C4 /r ib. Insert low 16 of r32 (or m16) into xmm[reg]
         // at lane (imm8 & 7).
         if (op2 == 0xC4 && osize66) {
-            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            ModRM m = decodeModRM(rip + opOff + 2, p, 1);
             U8 imm = fetchByte(rip + opOff + 2 + m.length);
             U16 v;
             if (m.isReg) v = (U16)reg[m.rmIndex].u32;
@@ -4708,7 +4703,7 @@ dsp_55:
         // predicates (imm8 & 7): 0 EQ, 1 LT, 2 LE, 3 UNORD, 4 NEQ, 5 NLT,
         // 6 NLE, 7 ORD. winex11/win32u emits CMPSD ...,6 (NLE) for clamp math.
         if (op2 == 0xC2 && p.rep == 0xF2) {
-            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            ModRM m = decodeModRM(rip + opOff + 2, p, 1);
             U64 srcBits = m.isReg ? xmm[m.rmIndex].lo : memory->readq(m.effAddr);
             U8 imm = fetchByte(rip + opOff + 2 + m.length);
             double a = u64ToDouble(xmm[m.regField].lo);
@@ -4737,7 +4732,7 @@ dsp_55:
         // MOVMSKPS. Without this the guest stops on the first such compare
         // (Gang Beasts reached GameAssembly initialization and hit it).
         if (op2 == 0xC2 && p.rep == 0 && !p.osize16) {
-            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            ModRM m = decodeModRM(rip + opOff + 2, p, 1);
             U64 srcLo = m.isReg ? xmm[m.rmIndex].lo : memory->readq(m.effAddr);
             U64 srcHi = m.isReg ? xmm[m.rmIndex].hi : memory->readq(m.effAddr + 8);
             U8 imm = fetchByte(rip + opOff + 2 + m.length);
@@ -4775,7 +4770,7 @@ dsp_55:
         // CMPPD xmm, xmm/m128, imm8   66 0F C2 /r ib — packed double compare.
         // Each of the two qwords becomes all-ones/all-zero.
         if (op2 == 0xC2 && p.rep == 0 && p.osize16) {
-            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            ModRM m = decodeModRM(rip + opOff + 2, p, 1);
             U64 dstBits[2] = { xmm[m.regField].lo, xmm[m.regField].hi };
             U64 srcBits[2];
             if (m.isReg) { srcBits[0] = xmm[m.rmIndex].lo; srcBits[1] = xmm[m.rmIndex].hi; }
@@ -4970,7 +4965,7 @@ dsp_55:
         // CMPSD; writes an all-ones/all-zero 32-bit mask into dst's low 32 bits
         // (rest of the low qword preserved). Same imm8 predicates as CMPSD.
         if (op2 == 0xC2 && p.rep == 0xF3) {
-            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            ModRM m = decodeModRM(rip + opOff + 2, p, 1);
             U32 srcBits = m.isReg
                 ? (U32)(xmm[m.rmIndex].lo & 0xFFFFFFFFULL)
                 : memory->readd(m.effAddr);
