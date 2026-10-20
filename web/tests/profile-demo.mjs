@@ -145,8 +145,9 @@ try {
   // firstframe: first non-blank frame on the runtime canvas. Used only when
   // PROFILE_START anchored at firstframe.
   let firstFrameDeadline = null;
-  if (startAnchor === 'firstframe') firstFrameDeadline = Date.now() + mappedTimeout * 1000;
-  const frameStart = Date.now();
+  if (startAnchor === 'firstframe') {
+    firstFrameDeadline = startWallMs + (summary.tClick ?? summary.tMapped) * 1000 + mappedTimeout * 1000;
+  }
   while (startAnchor === 'firstframe' && summary.tFirstFrame === null) {
     if (await hasVisibleFrame(page)) {
       summary.tFirstFrame = elapsedSeconds();
@@ -155,22 +156,29 @@ try {
     const now = Date.now();
     const fallbackStart = firstFrameDeadline - profileSeconds * 1000;
     if (now >= firstFrameDeadline) {
-      // No frame before the mapped timeout: profile the PROFILE_S seconds
-      // before the deadline instead (as required for portal).
-      summary.fallback = true;
-      console.error('profile-demo: no first frame before timeout; profiling the last',
-        profileSeconds, 's before the timeout');
+      if (demo === 'portal') {
+        // No frame before Portal's mapped timeout: use the final profile window.
+        summary.fallback = true;
+        console.error('profile-demo: no first frame before timeout; profiling the last',
+          profileSeconds, 's before the timeout');
+      } else {
+        summary.stage = 'no-first-frame';
+        await page.screenshot({ path: join(outDir, 'timeout.png'), fullPage: true }).catch(() => {});
+        await writeFile(join(outDir, 'log-tail.txt'),
+          ((await page.locator('#log').textContent().catch(() => '')) || '').split('\n').slice(-400).join('\n') + '\n');
+      }
       break;
     }
-    if (summary.fallback) break;
-    if (now >= fallbackStart) {
+    if (demo === 'portal' && now >= fallbackStart) {
       // Arm the fallback so startAt lands exactly profileSeconds before the deadline.
       summary.fallback = true;
       console.error('profile-demo: no first frame yet; arming fallback window before timeout');
       break;
     }
-    await sleep(Math.min(250, Math.max(50, frameStart + mappedTimeout * 1000 - now)));
+    await sleep(Math.min(250, Math.max(50, firstFrameDeadline - now)));
   }
+
+  if (summary.stage === 'no-first-frame') return;
 
   let startAtMs;
   if (summary.fallback) {
