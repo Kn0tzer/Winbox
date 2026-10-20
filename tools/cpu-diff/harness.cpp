@@ -150,9 +150,12 @@ struct TestCase {
     bool checkMem = false;    // compare MEM_SCRATCH bytes
     int memLen = 0;
     U8 memInit[256] = {};     // initial scratch content
+    U8 memIgnore[256] = {};   // bytes intentionally not compared (e.g. host FIP/FDP)
     bool checkCfPreserved = false;   // inc/dec: CF must be unchanged
     bool checkFlagsUnchanged = false;// e.g. shift by masked-count 0: no flag change
     bool skipRsiRdi = false;         // string ops: RSI/RDI hold scratch addrs, checked per-side
+    bool checkExpectedRax = false;
+    U64 expectedRax = 0;
 };
 
 static bool writeAll(int fd, const void* buf, size_t n) {
@@ -1016,6 +1019,98 @@ static void buildBitStringCases(std::vector<TestCase>& out) {
     }
 }
 
+// MXCSR and the legacy FXSAVE64/FXRSTOR64 memory formats.
+static void buildMxcsrCases(std::vector<TestCase>& out) {
+    {
+        TestCase tc; tc.set = "sse"; tc.name = "ldmxcsr-stmxcsr";
+        tc.form = "memory,m32";
+        tc.code = {0x0F,0xAE,0x53,0x20,       // ldmxcsr [rbx+32]
+                   0x0F,0xAE,0x5B,0x24};      // stmxcsr [rbx+36]
+        initRegs(tc, 0, MEM_SCRATCH); tc.flagsMask = 0;
+        tc.checkMem = true; tc.memLen = 40;
+        U32 value = 0x5F80; memcpy(tc.memInit + 32, &value, sizeof(value));
+        out.push_back(tc);
+    }
+    {
+        TestCase tc; tc.set = "sse"; tc.name = "fxsave-fxrstor";
+        tc.form = "memory,m512byte";
+        tc.code = {0x0F,0xAE,0x53,0x20,      // ldmxcsr [rbx+32]
+                   0x66,0x48,0x0F,0x6E,0xC0}; // movq xmm0,rax
+        // The native runner starts with host XMM state, so initialize every
+        // other XMM register before comparing a complete FXSAVE image.
+        for (int i = 1; i < 16; i++) {
+            tc.code.push_back(0x66);
+            if (i >= 8) tc.code.push_back(0x45); // REX.R+B selects xmm8..15
+            tc.code.insert(tc.code.end(), {0x0F,0xEF,
+                (U8)(0xC0 | ((i & 7) << 3) | (i & 7))});
+        }
+        tc.code.insert(tc.code.end(), {
+            0xD9,0xE8,                       // fld1
+            0x0F,0xAE,0x03,                  // fxsave [rbx]
+            0x66,0x0F,0xEF,0xC0,            // pxor xmm0,xmm0
+            0xDB,0xE3,                       // fninit
+            0x0F,0xAE,0x0B,                  // fxrstor [rbx]
+            0x66,0x48,0x0F,0x7E,0xC2,       // movq rdx,xmm0
+            0xDD,0x5B,0x40,                 // fstp qword [rbx+64]
+        });
+        initRegs(tc, 0x1122334455667788ULL, MEM_SCRATCH);
+        tc.flagsMask = 0; tc.checkMem = true; tc.memLen = 256;
+        U32 mxcsr = 0x5F80; memcpy(tc.memInit + 32, &mxcsr, sizeof(mxcsr));
+        tc.memIgnore[6] = tc.memIgnore[7] = 1; // FOP is not tracked per instruction.
+        memset(tc.memIgnore + 8, 1, 16);        // FIP/FDP may be host addresses.
+        out.push_back(tc);
+    }
+
+    struct ScalarConvert {
+        const char* name;
+        U8 prefix;
+        bool isDouble;
+        U64 positiveBits;
+        U64 negativeBits;
+    };
+    const ScalarConvert conversions[] = {
+        {"cvtss2si-mxcsr", 0xF3, false, 0x40200000, 0xC0200000},
+        {"cvtsd2si-mxcsr", 0xF2, true, 0x4004000000000000ULL,
+                                    0xC004000000000000ULL},
+    };
+    const U32 rcBits[] = {0x0000,0x2000,0x4000,0x6000};
+    const S64 expected[4][2] = {{2,-2},{2,-3},{3,-2},{2,-2}};
+    for (const auto& convert : conversions) {
+        for (int rc = 0; rc < 4; rc++) {
+            for (int sign = 0; sign < 2; sign++) {
+                U64 bits = sign ? convert.negativeBits : convert.positiveBits;
+                U32 mxcsr = 0x1F80 | rcBits[rc];
+                for (int form = 0; form < 2; form++) {
+                    TestCase tc; tc.set = "sse"; tc.name = convert.name;
+                    tc.form = form == 0 ? "register-xmm" : "memory-scalar";
+                    initRegs(tc, bits, MEM_SCRATCH);
+                    tc.flagsMask = 0; tc.checkMem = true; tc.memLen = 48;
+                    memcpy(tc.memInit + 32, &mxcsr, sizeof(mxcsr));
+                    if (form == 1) {
+                        if (convert.isDouble) memcpy(tc.memInit + 40, &bits, 8);
+                        else { U32 raw = (U32)bits; memcpy(tc.memInit + 40, &raw, 4); }
+                    }
+                    tc.code = {0x0F,0xAE,0x53,0x20}; // ldmxcsr [rbx+32]
+                    if (form == 0) {
+                        if (convert.isDouble)
+                            tc.code.insert(tc.code.end(), {0x66,0x48,0x0F,0x6E,0xC0});
+                        else
+                            tc.code.insert(tc.code.end(), {0x66,0x0F,0x6E,0xC0});
+                        tc.code.insert(tc.code.end(), {convert.prefix,0x48,0x0F,0x2D,0xC0});
+                    } else {
+                        tc.code.insert(tc.code.end(),
+                            {convert.prefix,0x48,0x0F,0x2D,0x43,0x28});
+                    }
+                    tc.r[X64_RBX] = MEM_SCRATCH;
+                    tc.checkExpectedRax = true;
+                    tc.expectedRax = (U64)expected[rc][sign];
+                    out.push_back(tc);
+                }
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // FPU test builders (x87). Pattern: finit; fldX; fldY; fop_p; fstp [rbx].
 // Result compared via 8 bytes at MEM_SCRATCH (rbx = MEM_SCRATCH).
@@ -1520,6 +1615,12 @@ static std::string hexBytes(const std::vector<U8>& b) {
     return s;
 }
 
+static bool scratchEqual(const U8* a, const U8* b, const U8* ignore, int len) {
+    for (int i = 0; i < len; i++)
+        if (!ignore[i] && a[i] != b[i]) return false;
+    return true;
+}
+
 struct CaseResult {
     int idx = -1;
     bool nativeOk = false;
@@ -1556,7 +1657,8 @@ static CaseResult diffCase(const TestCase& tc, int idx, const NativeResult& n) {
         if (!e[k].ok ||
             memcmp(e[k].regs, e[0].regs, sizeof(e[0].regs)) != 0 ||
             e[k].flags != e[0].flags ||
-            (tc.checkMem && memcmp(e[k].scratch, e[0].scratch, (size_t)tc.memLen) != 0))
+            (tc.checkMem && !scratchEqual(e[k].scratch, e[0].scratch,
+                                          tc.memIgnore, tc.memLen)))
             cr.emuStable = false;
     }
     memcpy(cr.eRegs, e[0].regs, sizeof(cr.eRegs)); cr.eFlags = e[0].flags;
@@ -1592,13 +1694,17 @@ static CaseResult diffCase(const TestCase& tc, int idx, const NativeResult& n) {
             d += tmp;
         }
     }
+    if (tc.checkExpectedRax && cr.nRegs[X64_RAX] != tc.expectedRax)
+        d += "native-rax-unexpected ";
+    if (tc.checkExpectedRax && cr.eRegs[X64_RAX] != tc.expectedRax)
+        d += "emu-rax-unexpected ";
     U32 nf = cr.nFlags & tc.flagsMask, ef = cr.eFlags & tc.flagsMask;
     if (nf != ef) {
         snprintf(tmp, sizeof(tmp), "flags(mask 0x%x):n=0x%x/e=0x%x ",
                  tc.flagsMask, nf, ef);
         d += tmp;
     }
-    if (tc.checkMem && memcmp(cr.nMem, cr.eMem, (size_t)tc.memLen) != 0)
+    if (tc.checkMem && !scratchEqual(cr.nMem, cr.eMem, tc.memIgnore, tc.memLen))
         d += "scratch-mem ";
     // native sanity + emulator check for CF preservation
     if (tc.checkCfPreserved) {
@@ -1686,6 +1792,7 @@ int main(int argc, char** argv) {
     buildGroupTestCases(cases);
     buildLockedRmwCases(cases);
     buildBitStringCases(cases);
+    buildMxcsrCases(cases);
     buildFpuCases(cases);
     buildSseCases(cases);
     // buildStringCases(cases); // DISABLED: harness cannot handle RSI/RDI per-side checks yet

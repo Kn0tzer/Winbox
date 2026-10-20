@@ -3030,6 +3030,159 @@ int runX64SelfTest() {
         }
     }
 
+    // Test 65i — MXCSR default, clone state, load/store, and reserved-bit #GP.
+    {
+        runAndCheck(r, "MXCSR default is 0x1F80", withExit({}), [](CPU64& c) {
+            return c.mxcsr == 0x1F80;
+        });
+        runAndCheck(r, "CPU64 clone copies MXCSR", withExit({}), [](CPU64& c) {
+            CPU64 clone(c.memory);
+            clone.cloneRegistersFrom(&c);
+            return clone.mxcsr == 0x5F80;
+        }, [](CPU64& c) {
+            c.mxcsr = 0x5F80;
+        });
+
+        {
+            std::vector<U8> code = {0x0F,0xAE,0x13, 0x0F,0xAE,0x5B,0x04};
+            U64 dataAddr = CODE_BASE + code.size() + EXIT_SYSCALL.size();
+            code.insert(code.end(), EXIT_SYSCALL.begin(), EXIT_SYSCALL.end());
+            U32 input = 0x5F80;
+            for (U8 byte = 0; byte < 4; byte++) code.push_back((U8)(input >> (byte * 8)));
+            code.insert(code.end(), 4, 0);
+            runAndCheck(r, "LDMXCSR/STMXCSR memory", code, [=](CPU64& c) {
+                return c.mxcsr == input && c.memory->readd(dataAddr + 4) == input;
+            }, [=](CPU64& c) {
+                c.reg[X64_RBX].setU64(dataAddr);
+            });
+        }
+
+        {
+            std::vector<U8> code = {0x0F,0xAE,0x15, 0x0C,0x00,0x00,0x00};
+            U64 dataAddr = CODE_BASE + code.size() + EXIT_SYSCALL.size();
+            code.insert(code.end(), EXIT_SYSCALL.begin(), EXIT_SYSCALL.end());
+            U32 invalid = 0x00010000;
+            for (U8 byte = 0; byte < 4; byte++) code.push_back((U8)(invalid >> (byte * 8)));
+            runAndCheck(r, "LDMXCSR reserved bits raise #GP", code, [](CPU64& c) {
+                return c.yield && c.rip == CODE_BASE && c.mxcsr == 0x1F80;
+            });
+        }
+    }
+
+    // Test 65j — FXSAVE/FXRSTOR round-trip FCW/FSW/FTW/FOP, MXCSR, all x87
+    // 80-bit stack slots, and all 16 XMM registers in the 512-byte layout.
+    {
+        std::vector<U8> code = {
+            0x0F,0xAE,0x03,                         // fxsave [rbx]
+            0x0F,0xAE,0x93,0x00,0x02,0x00,0x00,   // ldmxcsr [rbx+512]
+            0x66,0x0F,0xEF,0xC0,                  // pxor xmm0,xmm0
+            0xDB,0xE3,                             // fninit
+            0x0F,0xAE,0x0B,                        // fxrstor [rbx]
+            0x0F,0xAE,0x9B,0x10,0x02,0x00,0x00, // stmxcsr [rbx+528]
+        };
+        while ((code.size() + EXIT_SYSCALL.size()) & 15) code.push_back(0x90);
+        U64 dataAddr = CODE_BASE + code.size() + EXIT_SYSCALL.size();
+        code.insert(code.end(), EXIT_SYSCALL.begin(), EXIT_SYSCALL.end());
+        code.resize(code.size() + 532, 0);
+        U32 replacementMxcsr = 0x1F80;
+        for (U8 byte = 0; byte < 4; byte++)
+            code[(size_t)(dataAddr - CODE_BASE + 512 + byte)] =
+                (U8)(replacementMxcsr >> (byte * 8));
+
+        runAndCheck(r, "FXSAVE64/FXRSTOR64 full state round-trip", code,
+            [=](CPU64& c) {
+                if (c.mxcsr != 0x3F80 || c.fpu.cw != 0x077F || c.fpu.top != 6 ||
+                    c.fpu.envData[1] != 0x456 || c.fpu.tags[6] == TAG_Empty ||
+                    c.fpu.tags[7] == TAG_Empty ||
+                    c.memory->readw(dataAddr + 0) != 0x077F ||
+                    c.memory->readw(dataAddr + 2) != (U16)c.fpu.SW() ||
+                    c.memory->readb(dataAddr + 4) != 0xC0 ||
+                    c.memory->readw(dataAddr + 6) != 0x456 ||
+                    c.memory->readq(dataAddr + 8) != 0 ||
+                    c.memory->readq(dataAddr + 16) != 0 ||
+                    c.memory->readd(dataAddr + 24) != 0x3F80 ||
+                    c.memory->readd(dataAddr + 28) != 0xFFFF ||
+                    c.memory->readd(dataAddr + 528) != 0x3F80) return false;
+                U64 low, high;
+                c.fpu.ST80(c.fpu.STV(0), &low, &high);
+                if (c.memory->readq(dataAddr + 32) != low ||
+                    c.memory->readw(dataAddr + 40) != (U16)high) return false;
+                for (int i = 0; i < 16; i++) {
+                    if (c.xmm[i].lo != (0x1111222233334444ULL + (U64)i) ||
+                        c.xmm[i].hi != (0xAAAABBBBCCCCDDDDULL + (U64)i) ||
+                        c.memory->readq(dataAddr + 160 + i * 16) != c.xmm[i].lo ||
+                        c.memory->readq(dataAddr + 168 + i * 16) != c.xmm[i].hi)
+                        return false;
+                }
+                for (U64 offset = 416; offset < 512; offset += 8)
+                    if (c.memory->readq(dataAddr + offset) != 0) return false;
+                return true;
+            }, [=](CPU64& c) {
+                c.reg[X64_RBX].setU64(dataAddr);
+                c.mxcsr = 0x3F80;
+                c.fpu.FINIT();
+                c.fpu.SetCW(0x077F);
+                c.fpu.envData[1] = 0x456;
+                c.fpu.PREP_PUSH();
+                c.fpu.FLD_F64(0x4004000000000000ULL, c.fpu.STV(0)); // 2.5
+                c.fpu.PREP_PUSH();
+                c.fpu.FLD_F64(0x3FF8000000000000ULL, c.fpu.STV(0)); // 1.5
+                for (int i = 0; i < 16; i++) {
+                    c.xmm[i].lo = 0x1111222233334444ULL + (U64)i;
+                    c.xmm[i].hi = 0xAAAABBBBCCCCDDDDULL + (U64)i;
+                }
+            });
+    }
+
+    // Test 65k — scalar CVTSS2SI/CVTSD2SI honor MXCSR.RC for register and
+    // memory sources, including positive and negative halfway values.
+    {
+        struct ScalarConvert {
+            const char* name;
+            U8 prefix;
+            bool isDouble;
+            U64 positiveBits;
+            U64 negativeBits;
+        };
+        const ScalarConvert conversions[] = {
+            {"CVTSS2SI",0xF3,false,0x40200000,0xC0200000},
+            {"CVTSD2SI",0xF2,true,0x4004000000000000ULL,0xC004000000000000ULL},
+        };
+        const U32 rcBits[] = {0x0000,0x2000,0x4000,0x6000};
+        const S64 expected[4][2] = {{2,-2},{2,-3},{3,-2},{2,-2}};
+        const char* rcNames[] = {"nearest", "down", "up", "zero"};
+        for (const auto& convert : conversions) {
+            for (int rc = 0; rc < 4; rc++) {
+                for (int sign = 0; sign < 2; sign++) {
+                    U64 bits = sign ? convert.negativeBits : convert.positiveBits;
+                    for (int form = 0; form < 2; form++) {
+                        std::vector<U8> code = {convert.prefix,0x48,0x0F,0x2D,
+                                                (U8)(form == 0 ? 0xC0 : 0x03)};
+                        U64 dataAddr = CODE_BASE + code.size() + EXIT_SYSCALL.size();
+                        code.insert(code.end(), EXIT_SYSCALL.begin(), EXIT_SYSCALL.end());
+                        if (form == 1) {
+                            U8 width = convert.isDouble ? 8 : 4;
+                            for (U8 byte = 0; byte < width; byte++)
+                                code.push_back((U8)(bits >> (byte * 8)));
+                        }
+                        std::string testName = std::string(convert.name) + " " +
+                            rcNames[rc] + (sign ? " -2.5 " : " +2.5 ") +
+                            (form == 0 ? "register" : "memory");
+                        runAndCheck(r, testName.c_str(), code,
+                            [=](CPU64& c) {
+                                return c.reg[X64_R15].u64 == (U64)expected[rc][sign];
+                            },
+                            [=](CPU64& c) {
+                                c.mxcsr = 0x1F80 | rcBits[rc];
+                                if (form == 0) c.xmm[0].lo = bits;
+                                else c.reg[X64_RBX].setU64(dataAddr);
+                            });
+                    }
+                }
+            }
+        }
+    }
+
     // Test 66 — XGETBV(0) returns EAX=3 (x87+SSE enabled), EDX=0.
     // Encoding: xor ecx,ecx; xgetbv; shl rdx,32; or rax,rdx.
     {

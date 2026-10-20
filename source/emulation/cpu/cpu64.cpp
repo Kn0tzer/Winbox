@@ -75,8 +75,38 @@ static inline void cpu64_fpu_compare(FPU& f, double a, double b) {
     }
 }
 
+static inline double cpu64RoundByMxcsr(double value, U32 mxcsr) {
+    switch ((mxcsr >> 13) & 3) {
+        case 1: return std::floor(value);
+        case 2: return std::ceil(value);
+        case 3: return std::trunc(value);
+        default: {
+            // Round-to-nearest, ties-to-even without depending on the host's
+            // process-wide floating-point rounding mode.
+            double lower = std::floor(value);
+            double fraction = value - lower;
+            if (fraction < 0.5) return lower;
+            if (fraction > 0.5) return lower + 1.0;
+            return std::fmod(std::fabs(lower), 2.0) == 0.0 ? lower : lower + 1.0;
+        }
+    }
+}
+
+static inline U64 cpu64ConvertFpToInt(double value, bool is64, bool truncate,
+                                      U32 mxcsr) {
+    if (!std::isfinite(value)) return is64 ? 0x8000000000000000ULL : 0x80000000U;
+    double rounded = truncate ? std::trunc(value) : cpu64RoundByMxcsr(value, mxcsr);
+    double minValue = is64 ? -0x1p63 : -0x1p31;
+    double maxValue = is64 ?  0x1p63 :  0x1p31;
+    if (rounded < minValue || rounded >= maxValue)
+        return is64 ? 0x8000000000000000ULL : 0x80000000U;
+    S64 result = (S64)rounded;
+    return is64 ? (U64)result : (U32)(S32)result;
+}
+
 CPU64::CPU64(KMemory64* memory) : memory(memory) {
     reg[X64_RSP].setU64(0);
+    mxcsr = 0x1F80;
     fpu.FINIT();
 }
 
@@ -97,6 +127,7 @@ void CPU64::cloneRegistersFrom(const CPU64* from) {
     rflags = from->rflags;
     fsbase = from->fsbase;
     gsbase = from->gsbase;
+    mxcsr = from->mxcsr;
     for (int i = 0; i < 16; i++) {
         xmm[i] = from->xmm[i];
     }
@@ -2321,9 +2352,9 @@ dsp_38:
         //   F3 0F 5A CVTSS2SD   F2 0F 5A CVTSD2SS   0F 5A CVTPS2PD
         //   66 0F 5A CVTPD2PS  F3 0F 2A CVTSI2SS   F2 0F 2A CVTSI2SD
         //   F3 0F 2D/2C CVT(T)SS2SI   F2 0F 2D/2C CVT(T)SD2SI
-        // MXCSR is not modeled (LDMXCSR/STMXCSR are no-ops), so the rounding
-        // conversions use the default round-to-nearest mode. Out-of-range and
-        // NaN inputs yield the integer indefinite value, per the SDM. Unity's
+        // Non-truncating float-to-integer conversions use MXCSR.RC.
+        // Out-of-range and NaN inputs yield the integer indefinite value,
+        // per the SDM. Unity's
         // startup (rsqrtps -> cvtss2sd -> movsd) and Mono's time/GC paths hit
         // these immediately.
         if ((p.rep == 0xF3 && (op2 == 0x5A || op2 == 0x2A || op2 == 0x2D || op2 == 0x2C)) ||
@@ -2382,18 +2413,9 @@ dsp_38:
                                        : memory->readd(m.effAddr);
                     v = (double)u32f(bits);
                 }
-                double r = trunc ? std::trunc(v) : std::nearbyint(v);
-                if (i64) {
-                    if (!std::isfinite(r) || r < -9223372036854775808.0 || r >= 9223372036854775808.0)
-                        reg[m.regField].setU64(0x8000000000000000ULL);
-                    else
-                        reg[m.regField].setU64((U64)(S64)r);
-                } else {
-                    if (!std::isfinite(r) || r < -2147483648.0 || r >= 2147483648.0)
-                        reg[m.regField].setU32(0x80000000U);
-                    else
-                        reg[m.regField].setU32((U32)(S32)r);
-                }
+                U64 converted = cpu64ConvertFpToInt(v, i64, trunc, mxcsr);
+                if (i64) reg[m.regField].setU64(converted);
+                else     reg[m.regField].setU32((U32)converted);
             }
             U32 used = opOff + 2 + m.length;
             rip += used;
@@ -5252,7 +5274,7 @@ dsp_55:
     // 0F AE group: FXSAVE(/0) FXRSTOR(/1) LDMXCSR(/2) STMXCSR(/3) and the
     // mod==11 register forms MFENCE/LFENCE/SFENCE (/5,/6,/7).
     //
-    // FXSAVE/FXRSTOR MUST round-trip the XMM registers: glibc's lazy PLT
+    // FXSAVE/FXRSTOR MUST round-trip the full legacy x87/SSE state: glibc's lazy PLT
     // resolver _dl_runtime_resolve_fxsave does FXSAVE before calling
     // _dl_fixup (which clobbers XMM0-7 internally) and FXRSTOR after, so the
     // caller's float/double arguments survive symbol resolution. When these
@@ -5260,9 +5282,9 @@ dsp_55:
     // PLT (e.g. printf("%.5f", x)) saw XMM0 clobbered -> the argument read as
     // 0.0 -> "0.00000"; later calls bound the GOT and skipped the resolver,
     // so they were correct. That "first %f prints 0" was the real bug (NOT
-    // x87 80-bit precision). We model the legacy 512-byte FXSAVE area only
-    // for the XMM block (offset 160, 16 regs x 16 bytes); MXCSR/x87 state is
-    // not modeled here but the resolver doesn't depend on it.
+    // x87 80-bit precision). The legacy 512-byte layout is used in 64-bit
+    // mode; FIP/FDP are written as zero because this interpreter does not
+    // track those pointers.
     if (op == 0x0F && fetchByte(rip + opOff + 1) == 0xAE) {
         U8 aeModrm = fetchByte(rip + opOff + 2);
         U8 aeReg = (aeModrm >> 3) & 7;
@@ -5270,21 +5292,78 @@ dsp_55:
         ModRM m = decodeModRM(rip + opOff + 2, p, 0);
         U32 used = opOff + 2 + m.length;
         if (aeMod != 3 && aeReg == 0) {
-            // FXSAVE m512byte — save XMM0..15 into the legacy area.
+            // FXSAVE m512byte legacy 64-bit layout.
+            memory->writew(m.effAddr + 0, (U16)fpu.cw);
+            memory->writew(m.effAddr + 2, (U16)fpu.SW());
+            U8 abridgedTag = 0;
+            for (U32 i = 0; i < 8; i++) {
+                if (fpu.isMMXInUse || fpu.tags[i] != TAG_Empty)
+                    abridgedTag |= (U8)(1U << i);
+            }
+            memory->writeb(m.effAddr + 4, abridgedTag);
+            memory->writeb(m.effAddr + 5, 0);
+            memory->writew(m.effAddr + 6, (U16)(fpu.envData[1] & 0x7FF));
+            memory->writeq(m.effAddr + 8, 0);  // FIP: not tracked
+            memory->writeq(m.effAddr + 16, 0); // FDP: not tracked
+            memory->writed(m.effAddr + 24, mxcsr);
+            memory->writed(m.effAddr + 28, 0xFFFF);
+            for (int i = 0; i < 8; i++) {
+                U64 low, high;
+                fpu.ST80(fpu.STV(i), &low, &high);
+                U64 slot = m.effAddr + 32 + i * 16;
+                memory->writeq(slot, low);
+                memory->writew(slot + 8, (U16)high);
+                memory->writew(slot + 10, 0);
+                memory->writed(slot + 12, 0);
+            }
             for (int i = 0; i < 16; i++) {
                 memory->writeq(m.effAddr + 160 + i * 16,     xmm[i].lo);
                 memory->writeq(m.effAddr + 160 + i * 16 + 8, xmm[i].hi);
             }
+            for (U64 offset = 416; offset < 512; offset += 8)
+                memory->writeq(m.effAddr + offset, 0);
         } else if (aeMod != 3 && aeReg == 1) {
-            // FXRSTOR m512byte — restore XMM0..15 from the legacy area.
+            // FXRSTOR m512byte restores MXCSR, x87 stack/control state and
+            // all 16 XMM registers from the legacy 64-bit layout.
+            U32 savedMxcsr = memory->readd(m.effAddr + 24);
+            if (savedMxcsr & 0xFFFF0000) {
+                if (raiseSyncFault(K_SIGSEGV, /*trapNo #GP*/13, 0, rip)) return 0;
+                if (thread) thread->process->signalProcess(K_SIGSEGV);
+                yield = true;
+                return 0;
+            }
+            fpu.SetCW(memory->readw(m.effAddr + 0));
+            fpu.SetSW(memory->readw(m.effAddr + 2));
+            fpu.SetTagFromAbridged(memory->readb(m.effAddr + 4));
+            fpu.isMMXInUse = false;
+            fpu.envData[0] = 0;
+            fpu.envData[1] = memory->readw(m.effAddr + 6) & 0x7FF;
+            fpu.envData[2] = 0;
+            fpu.envData[3] = 0;
+            for (int i = 0; i < 8; i++) {
+                U64 slot = m.effAddr + 32 + i * 16;
+                fpu.LD80(fpu.STV(i), memory->readq(slot),
+                         (S16)memory->readw(slot + 8));
+            }
+            mxcsr = savedMxcsr;
             for (int i = 0; i < 16; i++) {
                 xmm[i].lo = memory->readq(m.effAddr + 160 + i * 16);
                 xmm[i].hi = memory->readq(m.effAddr + 160 + i * 16 + 8);
             }
+        } else if (aeMod != 3 && aeReg == 2) {
+            U32 loadedMxcsr = memory->readd(m.effAddr);
+            if (loadedMxcsr & 0xFFFF0000) {
+                if (raiseSyncFault(K_SIGSEGV, /*trapNo #GP*/13, 0, rip)) return 0;
+                if (thread) thread->process->signalProcess(K_SIGSEGV);
+                yield = true;
+                return 0;
+            }
+            mxcsr = loadedMxcsr;
+        } else if (aeMod != 3 && aeReg == 3) {
+            memory->writed(m.effAddr, mxcsr);
         }
-        // LDMXCSR(/2), STMXCSR(/3) and the fences remain no-ops: we don't
-        // model MXCSR exception/rounding bits, and memory ordering is moot
-        // for a single-stepped interpreter.
+        // Memory ordering for the mod==11 fences is moot in this single-step
+        // interpreter; MXCSR is handled above.
         rip += used;
         return used;
     }
