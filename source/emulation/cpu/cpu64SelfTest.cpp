@@ -1020,9 +1020,24 @@ int runX64SelfTest() {
         runAndCheck(r, "CPUID leaf 1 topology and feature bits", withExit(code), [](CPU64& c) {
             return c.memory->readd(CODE_BASE + 0x800) == ((6u << 8) | (15u << 4) | 3u) &&
                    c.memory->readd(CODE_BASE + 0x804) == ((8u << 8) | (1u << 16)) &&
-                   c.memory->readd(CODE_BASE + 0x808) == ((1u << 13) | (1u << 23)) &&
+                   c.memory->readd(CODE_BASE + 0x808) == ((1u << 0) | (1u << 9) |
+                       (1u << 13) | (1u << 19) | (1u << 20) | (1u << 23)) &&
                    c.memory->readd(CODE_BASE + 0x80C) == ((1u<<0)|(1u<<4)|(1u<<5)|
                        (1u<<8)|(1u<<15)|(1u<<19)|(1u<<23)|(1u<<24)|(1u<<25)|(1u<<26));
+        });
+        runAndCheck(r, "CPUID leaf 0 maximum basic leaf is 7", withExit({
+            0x31, 0xC0, 0x0F, 0xA2, // xor eax,eax; cpuid
+        }), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 7;
+        });
+        runAndCheck(r, "CPUID leaf 7 subleaf 0 has no extensions", withExit({
+            0xB8, 0x07, 0x00, 0x00, 0x00, // mov eax,7
+            0x31, 0xC9, 0x0F, 0xA2,       // xor ecx,ecx; cpuid
+            0x48, 0x09, 0xD8,             // or rax,rbx
+            0x48, 0x09, 0xC8,             // or rax,rcx
+            0x48, 0x09, 0xD0,             // or rax,rdx
+        }), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 0;
         });
         std::vector<U8> extended = {
             0x48,0xBF,0x00,0x08,0x40,0,0,0,0,0,

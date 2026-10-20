@@ -3051,17 +3051,15 @@ dsp_54:
 dsp_55:
     if (op == 0xF9) { rflags |=  X64_CF; rip += opOff + 1; return opOff + 1; }
 
-    // CPUID (0F A2). Return a conservative feature set: SSE2 only, no SSE3+,
-    // no AVX. glibc IFUNC dispatchers consult ECX feature bits and select the
-    // simpler implementations when AVX/SSSE3 are clear, which keeps us off
-    // unimplemented vector opcodes during memcpy/strcmp.
+    // CPUID (0F A2). Report the implemented baseline through SSE4.2/POPCNT;
+    // AVX, BMI, and other unsupported extensions stay clear.
     if (op == 0x0F && fetchByte(rip + opOff + 1) == 0xA2) {
         U32 leaf = reg[X64_RAX].u32;
         U32 sub  = reg[X64_RCX].u32;
         U32 a = 0, b = 0, c = 0, d = 0;
         switch (leaf) {
             case 0x0:
-                a = 0x1; // max leaf
+                a = 0x7; // max basic leaf
                 // "Genu" "ineI" "ntel"
                 b = 0x756E6547; d = 0x49656E69; c = 0x6C65746E;
                 break;
@@ -3069,8 +3067,9 @@ dsp_55:
                 a = (6 << 8) | (15 << 4) | 3; // family 6 stepping 3
                 // EBX: eight 8-byte CLFLUSH units; one logical processor.
                 b = (8u << 8) | (1u << 16);
-                // ECX advertises only CX16 and POPCNT; SSE3+ and AVX stay clear.
-                c = (1u << 13) | (1u << 23);
+                // ECX: SSE3, SSSE3, CX16, SSE4.1, SSE4.2, POPCNT.
+                c = (1u << 0) | (1u << 9) | (1u << 13) | (1u << 19) |
+                    (1u << 20) | (1u << 23);
                 // EDX bits: FPU=0 PDE=1 TSC=4 MSR=5 PAE=6 MCE=7 CX8=8
                 // APIC=9 SEP=11 MTRR=12 PGE=13 MCA=14 CMOV=15 PAT=16
                 // PSE36=17 CLFSH=19 MMX=23 FXSR=24 SSE=25 SSE2=26.
@@ -3078,6 +3077,9 @@ dsp_55:
                     (1u<<23)|(1u<<24)|(1u<<25)|(1u<<26);
                 break;
             }
+            case 0x7:
+                // Subleaf 0 and all later subleaves advertise no extensions.
+                break;
             case 0x80000000:
                 a = 0x80000001;
                 break;

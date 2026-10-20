@@ -2950,10 +2950,12 @@ static void buildCpuidCases(std::vector<TestCase>& out) {
         tc.expectedEmuRegsMask[X64_RDX] = 0xFFFFFFFFULL;
         out.push_back(std::move(tc));
     };
+    add(0,"leaf 0 maximum basic leaf and vendor",7,0x756E6547,0x6C65746E,0x49656E69);
     add(1,"leaf 1 topology/features",(6u<<8)|(15u<<4)|3u,
-        (8u<<8)|(1u<<16),(1u<<13)|(1u<<23),
+        (8u<<8)|(1u<<16),(1u<<0)|(1u<<9)|(1u<<13)|(1u<<19)|(1u<<20)|(1u<<23),
         (1u<<0)|(1u<<4)|(1u<<5)|(1u<<8)|(1u<<15)|(1u<<19)|
         (1u<<23)|(1u<<24)|(1u<<25)|(1u<<26));
+    add(7,"leaf 7 subleaf 0 has no extensions",0,0,0,0);
     add(0x80000001,"extended long-mode features",0,0,(1u<<0)|(1u<<8),
         (1u<<29)|(1u<<11)|(1u<<20));
 }

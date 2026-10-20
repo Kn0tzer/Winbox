@@ -53,10 +53,10 @@ FsOpenNode* openCpuInfo(const std::shared_ptr<FsNode>& node, U32 flags, U32 data
 			result += "coma_bug	: no\n";
 			result += "fpu		: yes\n";
 			result += "fpu_exception	: yes\n";
-			result += "cpuid level\t: 1\n";
+			result += "cpuid level\t: 7\n";
 			result += "wp		: yes\n";
 			// Keep this list in sync with CPU64 CPUID leaves 1 and 0x80000001.
-			result += "flags\t\t: fpu tsc msr cx8 cmov clflush mmx fxsr sse sse2 cx16 popcnt nx syscall lm lahf_lm 3dnowprefetch\n";
+			result += "flags\t\t: fpu tsc msr cx8 cmov clflush mmx fxsr sse sse2 pni ssse3 sse4_1 sse4_2 popcnt cx16 nx syscall lm lahf_lm 3dnowprefetch\n";
 			result += "bugs		: cpu_meltdown spectre_v1 spectre_v2 spec_store_bypass l1tf mds swapgs itlb_multihit\n";
 			result += "bogomips	: "; result += Platform::getCpuFreqMHz(); result += ".00\n";
 			result += "clflush size	: 64\n";
