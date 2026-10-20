@@ -1028,9 +1028,9 @@ static void execCopyQueryResults(const Cmd& command) {
     Buffer* buffer = nullptr;
     DeviceMemory* memory = nullptr;
     if (g_mem32) {
-        pool = objOf32<QueryPool>(copy.queryPool, K_QUERYPOOL, "vkCmdCopyQueryPoolResults");
-        buffer = objOf32<Buffer>(copy.dstBuffer, K_BUFFER, "vkCmdCopyQueryPoolResults");
-        if (buffer) memory = objOf32<DeviceMemory>(buffer->mem, K_MEMORY, "vkCmdCopyQueryPoolResults");
+        pool = objOf<QueryPool>(copy.queryPool & 0xFFFFFFFFULL, K_QUERYPOOL, "vkCmdCopyQueryPoolResults");
+        buffer = objOf<Buffer>(copy.dstBuffer & 0xFFFFFFFFULL, K_BUFFER, "vkCmdCopyQueryPoolResults");
+        if (buffer) memory = objOf<DeviceMemory>(buffer->mem & 0xFFFFFFFFULL, K_MEMORY, "vkCmdCopyQueryPoolResults");
     } else {
         pool = objOf<QueryPool>(copy.queryPool, K_QUERYPOOL, "vkCmdCopyQueryPoolResults");
         buffer = objOf<Buffer>(copy.dstBuffer, K_BUFFER, "vkCmdCopyQueryPoolResults");
@@ -2181,15 +2181,16 @@ static VkFormatFeatureFlags v2FormatBufferFeatureFlags(U32 format) {
 }
 static VkFormatFeatureFlags2 v2FormatFeatureFlags2(U32 format) {
     if (!v2FormatIn(format, kV2SupportedTextureFormats)) return 0;
-    VkFormatFeatureFlags2 flags = VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT |
-        VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
-    if (v2FormatIsColorAttachment(format)) flags |= VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT;
-    if (v2FormatIsBlendable(format)) flags |= VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BLEND_BIT;
-    if (v2FormatIsDepthStencil(format)) flags |= VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT;
+    // These legacy aliases use the same bit values as VkFormatFeatureFlags2.
+    VkFormatFeatureFlags2 flags = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+        VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    if (v2FormatIsColorAttachment(format)) flags |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
+    if (v2FormatIsBlendable(format)) flags |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
+    if (v2FormatIsDepthStencil(format)) flags |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
     return flags;
 }
 static VkFormatFeatureFlags2 v2FormatBufferFeatureFlags2(U32 format) {
-    return v2FormatIn(format, kV2SupportedVertexFormats) ? VK_FORMAT_FEATURE_2_VERTEX_BUFFER_BIT : 0;
+    return v2FormatIn(format, kV2SupportedVertexFormats) ? VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT : 0;
 }
 // Byte size of one vertex of a VkFormat the v2 emitter may see. Only the
 // formats DXVK/D3D9 and the probes produce are listed; an unknown format falls
@@ -5710,6 +5711,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         Image* src = objOf<Image>(args.a[1], K_IMAGE, "vkCmdBlitImage");
         Image* dst = objOf<Image>(args.a[3], K_IMAGE, "vkCmdBlitImage");
         if (!src || !dst) return 0;
+        U32 nreg = (U32)args.a[5];
+        if (nreg > 1024) return 0;
+        std::vector<VkImageBlitL> regs;
+        readArray(args.a[6], nreg, regs);
         for (const auto& r : regs) {
             const int32_t srcOffsets[2][3] = {{r.srcX0, r.srcY0, r.srcZ0}, {r.srcX1, r.srcY1, r.srcZ1}};
             const int32_t dstOffsets[2][3] = {{r.dstX0, r.dstY0, r.dstZ0}, {r.dstX1, r.dstY1, r.dstZ1}};
@@ -5721,9 +5726,6 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdBlitImage");
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdBlitImage");
         if (!smem || !dmem || !smem->va || !dmem->va) return 0;
-        U32 nreg = (U32)args.a[5];
-        std::vector<VkImageBlitL> regs;
-        readArray(args.a[6], nreg, regs);
         // U32 filter = (U32)args.a[7]; // 0=NEAREST, 1=LINEAR (currently unused, NEAREST assumed)
         U32 pxBytes = (U32)src->pixBytes;
         if (!pxBytes) pxBytes = 4;
@@ -5778,6 +5780,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         Image* src = objOf<Image>(args.a[1], K_IMAGE, "vkCmdBlitImage2");
         Image* dst = objOf<Image>(args.a[2], K_IMAGE, "vkCmdBlitImage2");
         if (!src || !dst) return 0;
+        U32 nreg = (U32)args.a[3];
+        if (nreg > 1024) return 0;
+        std::vector<VkImageBlit2L> regs;
+        readArray(args.a[4], nreg, regs);
         for (const auto& r : regs) {
             const int32_t srcOffsets[2][3] = {{r.srcX0, r.srcY0, r.srcZ0}, {r.srcX1, r.srcY1, r.srcZ1}};
             const int32_t dstOffsets[2][3] = {{r.dstX0, r.dstY0, r.dstZ0}, {r.dstX1, r.dstY1, r.dstZ1}};
@@ -5789,9 +5795,6 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdBlitImage2");
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdBlitImage2");
         if (!smem || !dmem || !smem->va || !dmem->va) return 0;
-        U32 nreg = (U32)args.a[3];
-        std::vector<VkImageBlit2L> regs;
-        readArray(args.a[4], nreg, regs);
         U32 pxBytes = (U32)src->pixBytes;
         if (!pxBytes) pxBytes = 4;
         U32 srcRowPitch = src->w * pxBytes;

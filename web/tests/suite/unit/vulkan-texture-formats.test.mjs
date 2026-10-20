@@ -94,5 +94,5 @@ test('bridge format-support tables match the page tables', async () => {
   assert.match(cpp, /case VK64_fn_vkGetPhysicalDeviceFormatProperties:[\s\S]*?v2FormatFeatureFlags\(format\)/);
   assert.match(cpp, /case VK64_fn_vkGetPhysicalDeviceFormatProperties2:[\s\S]*?v2FormatFeatureFlags\(format\)/);
   assert.match(cpp, /if \(v2FormatIsBlendable\(format\)\) flags \|= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT/);
-  assert.match(cpp, /if \(v2FormatIsBlendable\(format\)\) flags \|= VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BLEND_BIT/);
+  assert.match(cpp, /static VkFormatFeatureFlags2 v2FormatFeatureFlags2[\s\S]*?if \(v2FormatIsBlendable\(format\)\) flags \|= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT/);
 });
