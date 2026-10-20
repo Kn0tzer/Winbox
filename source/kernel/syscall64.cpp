@@ -22,6 +22,9 @@
 #include "kpoll.h"
 #include "ripSampler.h"
 #include "bw64metrics.h"   // live frame-stage metrics (BW64_METRICS, default on)
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 #ifdef BOXEDWINE_OPENGL
 #include "../opengl/gl64bridge.h"
 #include "../opengl/gl64bridge_abi.h"
@@ -2881,8 +2884,73 @@ static const char* x64SyscallName(U64 nr) {
     }
 }
 
+#ifdef __EMSCRIPTEN__
+static std::atomic<U32> bwThreadDumpMaxTid{0};
+static inline bool bwThreadDumpEnabled() {
+    static const bool enabled = []() {
+        const char* value = getenv("BW_THREAD_DUMP");
+        return value && strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
+// Called by the demo diagnostic timer only when the runtime URL opts in with
+// ?bw64diag=threads. The wrapper maps that URL flag to BW_THREAD_DUMP before
+// Emscripten caches ENV, so normal launches do not emit these snapshots.
+extern "C" EMSCRIPTEN_KEEPALIVE void bw64_dump_guest_threads() {
+    if (!bwThreadDumpEnabled()) return;
+
+    U32 maxTid = bwThreadDumpMaxTid.load(std::memory_order_relaxed);
+    klog_fmt("BW_THREAD_DUMP begin maxTid=%u", maxTid);
+    for (U32 tid = 1; tid <= maxTid; ++tid) {
+        KThread* thread = KSystem::getThreadById(tid);
+        if (!thread || !thread->process) continue;
+        const U32 pid = thread->process->id;
+        const bool blocked = thread->waitingCond != nullptr;
+        const char* state = blocked ? "blocked" : "running";
+        const char* waitName = blocked ? thread->waitingCond->name.c_str() : "-";
+#ifdef BOXEDWINE_GUEST_X64
+        if (thread->cpu64) {
+            CPU64* c = thread->cpu64;
+            const U64 nr = c->reg[X64_RAX].u64;
+            const U64 rip = blocked ? c->syscallRip : c->rip;
+            klog_fmt("BW_THREAD_DUMP pid=%u tid=%u state=%s syscall=%s(#%llu) args=0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx rip=0x%llx wait=%s",
+                     pid, thread->id, state,
+                     blocked ? x64SyscallName(nr) : "-",
+                     (unsigned long long)(blocked ? nr : 0),
+                     (unsigned long long)c->reg[X64_RDI].u64,
+                     (unsigned long long)c->reg[X64_RSI].u64,
+                     (unsigned long long)c->reg[X64_RDX].u64,
+                     (unsigned long long)c->reg[X64_R10].u64,
+                     (unsigned long long)c->reg[X64_R8].u64,
+                     (unsigned long long)c->reg[X64_R9].u64,
+                     (unsigned long long)rip, waitName);
+            continue;
+        }
+#endif
+        CPU* c = thread->cpu;
+        const U32 nr = c ? c->reg[0].u32 : 0;
+        klog_fmt("BW_THREAD_DUMP pid=%u tid=%u state=%s syscall=%s(#%u) args=0x%x,0x%x,0x%x,0x%x,0x%x,0x%x rip=0x%x wait=%s",
+                 pid, thread->id, state, blocked ? "x86" : "-", blocked ? nr : 0,
+                 c ? c->reg[3].u32 : 0, c ? c->reg[1].u32 : 0,
+                 c ? c->reg[2].u32 : 0, c ? c->reg[6].u32 : 0,
+                 c ? c->reg[7].u32 : 0, c ? c->reg[5].u32 : 0,
+                 c ? c->eip.u32 : 0, waitName);
+    }
+    klog_fmt("BW_THREAD_DUMP end");
+}
+#endif
+
 void ksyscall64(CPU64* cpu) {
     if (!cpu) return;
+#ifdef __EMSCRIPTEN__
+    if (cpu->thread) {
+        U32 tid = cpu->thread->id;
+        U32 seen = bwThreadDumpMaxTid.load(std::memory_order_relaxed);
+        while (seen < tid && !bwThreadDumpMaxTid.compare_exchange_weak(
+                   seen, tid, std::memory_order_relaxed, std::memory_order_relaxed)) {}
+    }
+#endif
     U64 nr   = cpu->reg[X64_RAX].u64;
     U64 a1   = cpu->reg[X64_RDI].u64;
     U64 a2   = cpu->reg[X64_RSI].u64;

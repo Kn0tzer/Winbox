@@ -21,6 +21,7 @@ const outDir = resolve(repo, process.env.OUT || defaultOut);
 const longBoot = ['portal', 'celeste', 'gangbeasts', 'chromium'].includes(demo);
 const mappedTimeout = Number(process.env.MAPPED_TIMEOUT_S || (longBoot ? 900 : 300));
 if (!Number.isFinite(mappedTimeout) || mappedTimeout <= 0) throw new Error('MAPPED_TIMEOUT_S must be a positive number');
+const threadDumpEnabled = process.env.BW_THREAD_DUMP === '1';
 const bootOffsets = longBoot ? [5, 30, 60, 120, 240, 360] : [5, 30, 60, 120];
 const pixelMethod = 'in-page';
 
@@ -37,6 +38,10 @@ let startedAt = 0;
 let tClick = null;
 let tMapped = null;
 let mappedAt = null;
+let threadDumpTimer = null;
+let threadDumpAttempts = 0;
+let threadDumpInvocations = 0;
+let threadDumpRuntimeUrl = '';
 let sampling = false;
 let samplerPromise = null;
 let lastWasmMetricLine = null;
@@ -49,6 +54,7 @@ const httpErrors = [];
 const screenshots = [];
 let savedLogText = '';
 let consoleErrorCount = 0;
+let threadDumpLauncherPatched = false;
 
 const elapsedSeconds = () => Number(((Date.now() - startedAt) / 1000).toFixed(3));
 
@@ -67,6 +73,41 @@ try {
     ],
   });
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  if (threadDumpEnabled) {
+    await page.addInitScript(() => {
+      if (window.top !== window) return;
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'src');
+      if (!descriptor?.set || !descriptor?.get) throw new Error('Cannot instrument runtime iframe src');
+      Object.defineProperty(HTMLIFrameElement.prototype, 'src', {
+        configurable: true,
+        enumerable: descriptor.enumerable,
+        get() { return descriptor.get.call(this); },
+        set(value) {
+          const url = new URL(value, document.baseURI);
+          if (url.pathname.endsWith('/runtime/index.html')) url.searchParams.set('bw64diag', 'threads');
+          descriptor.set.call(this, url.toString());
+        },
+      });
+    });
+    await page.route('**/runtime/index.html*', route => {
+      const url = new URL(route.request().url());
+      url.searchParams.set('bw64diag', 'threads');
+      return route.continue({ url: url.toString() });
+    });
+    await page.route('**/wine64-launcher.js*', async route => {
+      const response = await route.fetch();
+      const body = await response.text();
+      const marker = 'if (param("unimpldump") === "1") ENV["BW64_UNIMPLDUMP"] = "1";';
+      if (!body.includes(marker)) throw new Error('Could not install thread dump URL flag in Wine launcher');
+      threadDumpRuntimeUrl = route.request().frame().url();
+      if (new URL(threadDumpRuntimeUrl).searchParams.get('bw64diag') !== 'threads')
+        throw new Error(`Thread dump URL flag missing from runtime frame: ${threadDumpRuntimeUrl}`);
+      const instrumented = body.replace(marker,
+        'if (param("bw64diag") === "threads") ENV["BW_THREAD_DUMP"] = "1";\n                ' + marker);
+      threadDumpLauncherPatched = true;
+      return route.fulfill({ response, body: instrumented });
+    });
+  }
   startedAt = Date.now();
   page.on('console', message => {
     const text = message.text();
@@ -101,6 +142,36 @@ try {
 
   await page.locator(`[data-game="${demo}"]`).click();
   tClick = elapsedSeconds();
+  if (threadDumpEnabled) {
+    threadDumpTimer = setInterval(async () => {
+      threadDumpAttempts++;
+      try {
+        const frameHandle = await page.locator('#display iframe').elementHandle();
+        const runtimeFrame = await frameHandle?.contentFrame();
+        if (!runtimeFrame) throw new Error('runtime iframe is not available');
+        const invoked = await runtimeFrame.evaluate(() => {
+          if (typeof Module === 'undefined') throw new Error('runtime Module is not available');
+          if (typeof Module._bw64_dump_guest_threads === 'function') {
+            Module._bw64_dump_guest_threads();
+            return 'export';
+          }
+          if (typeof Module.ccall === 'function') {
+            Module.ccall('bw64_dump_guest_threads', null, [], []);
+            return 'ccall';
+          }
+          throw new Error('thread dump export is not available');
+        });
+        threadDumpInvocations++;
+        const line = `[${elapsedSeconds().toFixed(1)}s] BW_THREAD_DUMP_DRIVER invoked via ${invoked} (#${threadDumpInvocations})`;
+        consoleLines.push(line);
+        console.log(line);
+      } catch (error) {
+        const line = `[${elapsedSeconds().toFixed(1)}s] BW_THREAD_DUMP_DRIVER attempt failed: ${error.message || error}`;
+        consoleLines.push(line);
+        console.error(line);
+      }
+    }, 60000);
+  }
   try {
     await page.waitForFunction(() => document.getElementById('log')?.textContent.includes('first window mapped'), null,
       { timeout: mappedTimeout * 1000 });
@@ -117,6 +188,8 @@ try {
       demo, jit: Number(jit), build, tClick, tMapped: null, clickToMappedSeconds: null,
       screenshots, pageErrorCount: pageErrors.length, consoleErrorCount: countConsoleErrors(),
       lastMetricsSnapshot, lastJitStats, stage: 'not-mapped', pixelMethod, httpErrorCount: httpErrors.length,
+      threadDumpEnabled, threadDumpLauncherPatched, threadDumpRuntimeUrl,
+      threadDumpAttempts, threadDumpInvocations,
     }, null, 2) + '\n');
     console.log(JSON.stringify({ demo, jit: Number(jit), stage: 'not-mapped', outDir: relative(repo, outDir) }));
     return;
@@ -147,6 +220,7 @@ try {
     finalScreenshot: screenshots.at(-1), pageErrors: summary.pageErrorCount, consoleErrors: summary.consoleErrorCount,
     outDir: relative(repo, outDir) }));
 } finally {
+  clearInterval(threadDumpTimer);
   sampling = false;
   await samplerPromise?.catch(() => {});
   await browser?.close().catch(() => {});
