@@ -2977,6 +2977,40 @@ dsp_55:
     if (op == 0x0F) {
         U8 op2 = fetchByte(rip + opOff + 1);
         bool osize66 = p.osize16; // for SSE this means "use packed-integer form"
+        if (op2 == 0x77 && !p.osize16 && p.rep == 0) {
+            // EMMS: end MMX state and mark all x87 stack registers empty.
+            fpu.SetTag(0xFFFFFFFF);
+            fpu.isMMXInUse = false;
+            U32 used = opOff + 2;
+            rip += used;
+            return used;
+        }
+        if (op2 == 0x2B && p.rep == 0) {
+            // MOVNTPS / MOVNTPD are memory-only non-temporal 128-bit stores.
+            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            if (m.isReg) goto unhandled;
+            memory->writeq(m.effAddr, xmm[m.regField].lo);
+            memory->writeq(m.effAddr + 8, xmm[m.regField].hi);
+            U32 used = opOff + 2 + m.length;
+            rip += used;
+            return used;
+        }
+        if (op2 == 0xF7 && osize66 && p.rep == 0) {
+            // MASKMOVDQU xmm1,xmm2: store selected data bytes to [RDI].
+            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            if (!m.isReg) goto unhandled;
+            U64 data[2] = {xmm[m.regField].lo, xmm[m.regField].hi};
+            U64 mask[2] = {xmm[m.rmIndex].lo, xmm[m.rmIndex].hi};
+            U64 addr = reg[X64_RDI].u64;
+            for (U32 i = 0; i < 16; i++) {
+                U8 maskByte = (U8)(mask[i / 8] >> ((i % 8) * 8));
+                if (maskByte & 0x80)
+                    memory->writeb(addr + i, (U8)(data[i / 8] >> ((i % 8) * 8)));
+            }
+            U32 used = opOff + 2 + m.length;
+            rip += used;
+            return used;
+        }
         // MOVAPS/MOVAPD xmm, xmm/m128       — 0F 28 (load) / 0F 29 (store)
         // MOVUPS/MOVUPD                     — 0F 10/11
         // MOVDQA xmm, xmm/m128              — 66 0F 6F (load) / 66 0F 7F (store)
@@ -3781,6 +3815,64 @@ dsp_55:
             }
             xmm[m.regField].lo = oLo;
             xmm[m.regField].hi = oHi;
+            U32 used = opOff + 2 + m.length;
+            rip += used;
+            return used;
+        }
+        // PMADDWD — 66 0F F5 /r. Multiply signed word pairs and add each
+        // adjacent pair into a wrapping signed dword result.
+        if (op2 == 0xF5 && osize66) {
+            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            U64 srcLo, srcHi;
+            if (m.isReg) {
+                srcLo = xmm[m.rmIndex].lo;
+                srcHi = xmm[m.rmIndex].hi;
+            } else {
+                srcLo = memory->readq(m.effAddr);
+                srcHi = memory->readq(m.effAddr + 8);
+            }
+            U64 dst[2] = {xmm[m.regField].lo, xmm[m.regField].hi};
+            U64 src[2] = {srcLo, srcHi};
+            U32 result[4];
+            for (int pair = 0; pair < 4; pair++) {
+                int half = pair / 2;
+                int lane = (pair % 2) * 2;
+                S16 a = (S16)(dst[half] >> (lane * 16));
+                S16 b = (S16)(dst[half] >> ((lane + 1) * 16));
+                S16 c = (S16)(src[half] >> (lane * 16));
+                S16 d = (S16)(src[half] >> ((lane + 1) * 16));
+                S64 sum = (S64)a * c + (S64)b * d;
+                result[pair] = (U32)sum;
+            }
+            xmm[m.regField].lo = (U64)result[0] | ((U64)result[1] << 32);
+            xmm[m.regField].hi = (U64)result[2] | ((U64)result[3] << 32);
+            U32 used = opOff + 2 + m.length;
+            rip += used;
+            return used;
+        }
+        // PAVGW — 66 0F E3 /r. Unsigned word average rounded toward +infinity.
+        if (op2 == 0xE3 && osize66) {
+            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            U64 srcLo, srcHi;
+            if (m.isReg) {
+                srcLo = xmm[m.rmIndex].lo;
+                srcHi = xmm[m.rmIndex].hi;
+            } else {
+                srcLo = memory->readq(m.effAddr);
+                srcHi = memory->readq(m.effAddr + 8);
+            }
+            U64 dst[2] = {xmm[m.regField].lo, xmm[m.regField].hi};
+            U64 src[2] = {srcLo, srcHi};
+            for (int half = 0; half < 2; half++) {
+                U64 result = 0;
+                for (int lane = 0; lane < 4; lane++) {
+                    U32 a = (dst[half] >> (lane * 16)) & 0xFFFF;
+                    U32 b = (src[half] >> (lane * 16)) & 0xFFFF;
+                    result |= (U64)((a + b + 1) >> 1) << (lane * 16);
+                }
+                if (half == 0) xmm[m.regField].lo = result;
+                else xmm[m.regField].hi = result;
+            }
             U32 used = opOff + 2 + m.length;
             rip += used;
             return used;

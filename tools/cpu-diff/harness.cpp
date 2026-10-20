@@ -1413,6 +1413,73 @@ static void buildRequestedX87Cases(std::vector<TestCase>& out) {
     }
 }
 
+static void buildSse2ExtraCases(std::vector<TestCase>& out) {
+    const S16 maddDst[8] = {1,2,-3,4,5,6,7,8};
+    const S16 maddSrc[8] = {2,3,4,5,-1,2,3,4};
+    const U16 avgDst[8] = {0,1,65535,65534,30000,20000,10,11};
+    const U16 avgSrc[8] = {1,2,1,3,35535,45536,11,10};
+    for (int op = 0; op < 2; op++) {
+        for (int form = 0; form < 2; form++) {
+            TestCase tc; tc.set = "sse";
+            tc.name = op == 0 ? "pmaddwd" : "pavgw";
+            tc.form = form == 0 ? "xmm,xmm" : "xmm,m128";
+            initRegs(tc, 0, MEM_SCRATCH);
+            tc.flagsMask = 0; tc.checkMem = true; tc.memLen = 32;
+            if (op == 0) {
+                memcpy(tc.memInit, maddDst, sizeof(maddDst));
+                memcpy(tc.memInit + 16, maddSrc, sizeof(maddSrc));
+            } else {
+                memcpy(tc.memInit, avgDst, sizeof(avgDst));
+                memcpy(tc.memInit + 16, avgSrc, sizeof(avgSrc));
+            }
+            tc.code = {0x0F,0x10,0x03}; // movups xmm0,[rbx]
+            if (form == 0) tc.code.insert(tc.code.end(), {0x0F,0x10,0x4B,0x10});
+            tc.code.push_back(0x66);
+            tc.code.push_back(0x0F);
+            tc.code.push_back(op == 0 ? 0xF5 : 0xE3);
+            if (form == 0) tc.code.push_back(0xC1);
+            else tc.code.insert(tc.code.end(), {0x43,0x10});
+            tc.code.insert(tc.code.end(), {0x0F,0x11,0x03}); // movups [rbx],xmm0
+            out.push_back(std::move(tc));
+        }
+    }
+    for (bool pd : {false,true}) {
+        TestCase tc; tc.set = "sse"; tc.name = pd ? "movntpd" : "movntps";
+        tc.form = "memory-only m128";
+        initRegs(tc,0,MEM_SCRATCH); tc.flagsMask = 0;
+        tc.checkMem = true; tc.memLen = 32;
+        const U64 value[2] = {0x0123456789ABCDEFULL,0xFEDCBA9876543210ULL};
+        memcpy(tc.memInit + 16,value,sizeof(value));
+        tc.code = {0x0F,0x10,0x43,0x10}; // movups xmm0,[rbx+16]
+        if (pd) tc.code.push_back(0x66);
+        tc.code.insert(tc.code.end(), {0x0F,0x2B,0x03});
+        out.push_back(std::move(tc));
+    }
+    {
+        TestCase tc; tc.set = "sse"; tc.name = "maskmovdqu";
+        tc.form = "implicit [rdi],xmm,xmm";
+        initRegs(tc,0,MEM_SCRATCH); tc.flagsMask = 0;
+        tc.checkMem = true; tc.memLen = 16;
+        tc.skipRsiRdi = true; // native/emulator RDI are distinct scratch addresses
+        for (int i = 0; i < 16; i++) tc.memInit[i] = 0xA0 + i;
+        tc.code = {0x66,0x0F,0xF7,0xC1};
+        const U8 data[16] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16};
+        U8 mask[16];
+        for (int i = 0; i < 16; i++) mask[i] = (i % 3 == 0) ? 0x80 : 0x7F;
+        memcpy(tc.memInit + 16,data,16);
+        memcpy(tc.memInit + 32,mask,16);
+        // Load data/mask, MASKMOVDQU [RDI], then inspect through RBX.
+        tc.code = {0x48,0x8D,0x3B, 0x0F,0x10,0x43,0x10, 0x0F,0x10,0x4B,0x20,
+                   0x66,0x0F,0xF7,0xC1};
+        out.push_back(std::move(tc));
+    }
+    {
+        TestCase tc; tc.set = "int"; tc.name = "emms"; tc.form = "no-operand";
+        tc.code = {0x0F,0x77}; initRegs(tc,0,0); tc.flagsMask = 0;
+        out.push_back(std::move(tc));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // String ops test builders. Pattern: set RSI/RDI/RCX, init memory,
 // execute string op, verify registers and memory.
@@ -2092,6 +2159,7 @@ int main(int argc, char** argv) {
     buildFpuCases(cases);
     buildRequestedX87Cases(cases);
     buildSseCases(cases);
+    buildSse2ExtraCases(cases);
     buildFaultCases(cases);
     // buildStringCases(cases); // DISABLED: harness cannot handle RSI/RDI per-side checks yet
     std::vector<TimingSpec> timings;

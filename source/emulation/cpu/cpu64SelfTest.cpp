@@ -8352,6 +8352,106 @@ int runX64SelfTest() {
         }
     }
 
+    {
+        U64 maddDstLo = (U64)(U16)1 | ((U64)(U16)2 << 16) |
+                        ((U64)(U16)(S16)-3 << 32) | ((U64)(U16)4 << 48);
+        U64 maddDstHi = (U64)(U16)5 | ((U64)(U16)6 << 16) |
+                        ((U64)(U16)7 << 32) | ((U64)(U16)8 << 48);
+        U64 maddSrcLo = (U64)(U16)2 | ((U64)(U16)3 << 16) |
+                        ((U64)(U16)4 << 32) | ((U64)(U16)5 << 48);
+        U64 maddSrcHi = (U64)(U16)(S16)-1 | ((U64)(U16)2 << 16) |
+                        ((U64)(U16)3 << 32) | ((U64)(U16)4 << 48);
+        runAndCheck(r, "SSE2 PMADDWD register form", withExit({
+            0x66,0x0F,0xF5,0xC1
+        }), [](CPU64& c) {
+            return c.xmm[0].lo == (8ULL | (8ULL << 32)) &&
+                   c.xmm[0].hi == (7ULL | (53ULL << 32));
+        }, [=](CPU64& c) {
+            c.xmm[0].lo = maddDstLo; c.xmm[0].hi = maddDstHi;
+            c.xmm[1].lo = maddSrcLo; c.xmm[1].hi = maddSrcHi;
+        });
+        runAndCheck(r, "SSE2 PMADDWD memory form", withExit({
+            0x66,0x0F,0xF5,0x03
+        }), [](CPU64& c) {
+            return c.xmm[0].lo == (8ULL | (8ULL << 32)) &&
+                   c.xmm[0].hi == (7ULL | (53ULL << 32));
+        }, [=](CPU64& c) {
+            c.reg[X64_RBX].setU64(X87_SCRATCH);
+            c.xmm[0].lo = maddDstLo; c.xmm[0].hi = maddDstHi;
+            c.memory->writeq(X87_SCRATCH,maddSrcLo);
+            c.memory->writeq(X87_SCRATCH+8,maddSrcHi);
+        });
+
+        U64 avgDstLo = 0ULL | (1ULL << 16) | (0xFFFFULL << 32) | (0xFFFEULL << 48);
+        U64 avgDstHi = 30000ULL | (20000ULL << 16) | (10ULL << 32) | (11ULL << 48);
+        U64 avgSrcLo = 1ULL | (2ULL << 16) | (1ULL << 32) | (3ULL << 48);
+        U64 avgSrcHi = 35535ULL | (45536ULL << 16) | (11ULL << 32) | (10ULL << 48);
+        auto checkAverage = [](CPU64& c) {
+            return c.xmm[0].lo == (1ULL | (2ULL << 16) | (0x8000ULL << 32) |
+                                   (0x8001ULL << 48)) &&
+                   c.xmm[0].hi == (32768ULL | (32768ULL << 16) |
+                                   (11ULL << 32) | (11ULL << 48));
+        };
+        runAndCheck(r, "SSE2 PAVGW register form", withExit({
+            0x66,0x0F,0xE3,0xC1
+        }), checkAverage, [=](CPU64& c) {
+            c.xmm[0].lo = avgDstLo; c.xmm[0].hi = avgDstHi;
+            c.xmm[1].lo = avgSrcLo; c.xmm[1].hi = avgSrcHi;
+        });
+        runAndCheck(r, "SSE2 PAVGW memory form", withExit({
+            0x66,0x0F,0xE3,0x03
+        }), checkAverage, [=](CPU64& c) {
+            c.reg[X64_RBX].setU64(X87_SCRATCH);
+            c.xmm[0].lo = avgDstLo; c.xmm[0].hi = avgDstHi;
+            c.memory->writeq(X87_SCRATCH,avgSrcLo);
+            c.memory->writeq(X87_SCRATCH+8,avgSrcHi);
+        });
+
+        const U64 ntLo = 0x0123456789ABCDEFULL;
+        const U64 ntHi = 0xFEDCBA9876543210ULL;
+        for (bool pd : {false,true}) {
+            std::vector<U8> code;
+            if (pd) code.push_back(0x66);
+            code.insert(code.end(), {0x0F,0x2B,0x03});
+            runAndCheck(r, pd ? "SSE2 MOVNTPD memory store" : "SSE MOVNTPS memory store",
+                withExit(code), [=](CPU64& c) {
+                    return c.memory->readq(X87_SCRATCH) == ntLo &&
+                           c.memory->readq(X87_SCRATCH+8) == ntHi;
+                }, [=](CPU64& c) {
+                    c.reg[X64_RBX].setU64(X87_SCRATCH);
+                    c.xmm[0].lo = ntLo; c.xmm[0].hi = ntHi;
+                });
+        }
+
+        runAndCheck(r, "SSE2 MASKMOVDQU masked bytes to [RDI]", withExit({
+            0x66,0x0F,0xF7,0xC1
+        }), [=](CPU64& c) {
+            for (int i = 0; i < 16; i++) {
+                U8 expected = (i % 3 == 0) ? (U8)(i + 1) : (U8)(0xA0 + i);
+                if (c.memory->readb(X87_SCRATCH + i) != expected) return false;
+            }
+            return true;
+        }, [=](CPU64& c) {
+            c.reg[X64_RDI].setU64(X87_SCRATCH);
+            for (int i = 0; i < 16; i++) {
+                U64* lanes = i < 8 ? &c.xmm[0].lo : &c.xmm[0].hi;
+                U32 shift = (i & 7) * 8;
+                *lanes |= (U64)(i + 1) << shift;
+                lanes = i < 8 ? &c.xmm[1].lo : &c.xmm[1].hi;
+                *lanes |= (U64)((i % 3 == 0) ? 0x80 : 0x7F) << shift;
+                c.memory->writeb(X87_SCRATCH+i, (U8)(0xA0+i));
+            }
+        });
+
+        runAndCheck(r, "SSE EMMS empties modeled x87 tags", withExit({
+            0x0F,0x77
+        }), [](CPU64& c) {
+            if (c.fpu.isMMXInUse) return false;
+            for (int i = 0; i < 8; i++) if (c.fpu.tags[i] != TAG_Empty) return false;
+            return true;
+        }, [](CPU64& c) { c.fpu.startMMX(); });
+    }
+
     const char* requireJit = std::getenv("BW64_JIT_VERIFY");
     if (requireJit && std::strcmp(requireJit, "1") == 0) {
         printf("JIT64: engine=%s blocks=%llu insns=%llu\n", r.engine,
