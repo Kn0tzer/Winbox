@@ -37,7 +37,7 @@ function applyMetricsVisibility() {
   $('stats').setAttribute('aria-label', $('stats').title);
   if (metrics) metrics.setOpen(open);
 }
-const settings = { appearance: 'dark', graphics: 'auto', jit: 'off', internet: 'off', enhancement: 'off', sharpness: 0.5, folderMode: 'copy', metrics: 'on' };
+const settings = { appearance: 'dark', graphics: 'auto', jit: 'off', internet: 'off', enhancement: 'off', sharpness: 0.5, folderMode: 'copy', metrics: 'off' };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('wine.launcher.settings.v1') || '{}')); } catch {}
 settings.jit = settings.jit === 'on' ? 'on' : 'off';
 function appearance(value) {
