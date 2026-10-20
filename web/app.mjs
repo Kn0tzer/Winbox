@@ -79,6 +79,17 @@ function message(value, error = false) {
 }
 function status(value) { $('status').textContent = value; }
 function log(value) { $('log').textContent = ($('log').textContent + '\n' + value).slice(-48000); }
+function showPlayerError(value) {
+  $('loading').hidden = false;
+  $('loading').classList.add('error-screen');
+  $('loadingTitle').textContent = 'The program stopped';
+  status(value);
+  $('loadingActivity').hidden = true;
+  $('launchProgress').hidden = true;
+  $('loadingElapsed').hidden = true;
+  $('loadingErrorActions').hidden = false;
+  $('playerRetry').hidden = !lastAction;
+}
 function errorText(error) {
   if (error?.name === 'QuotaExceededError') return 'This browser is out of storage. Delete an unused folder or free some space, then try again.';
   return error?.message || String(error);
@@ -92,12 +103,12 @@ async function action(fn, { retry = fn } = {}) {
   if (busy || stopping) return;
   lock(true); operation = new AbortController(); const active = operation;
   if (retry) lastAction = retry;
-  $('retry').hidden = true; $('playerRetry').hidden = true;
+  $('retry').hidden = true; $('playerRetry').hidden = true; $('loadingErrorActions').hidden = true;
   try { await fn(active.signal); }
   catch (error) {
     if (active.signal.aborted) return;
     const value = errorText(error); message(value, true);
-    if (!$('player').hidden) { $('loading').hidden = false; $('loadingTitle').textContent = 'Could not start this program'; status(value); $('loadingActivity').hidden = true; $('playerRetry').hidden = !lastAction; }
+    if (!$('player').hidden) showPlayerError(value);
     $('retry').hidden = !lastAction;
     if ($('folderDialog').open) { $('folderError').hidden = false; $('folderError').textContent = value; }
   } finally { if (operation === active) operation = null; lock(false); }
@@ -107,9 +118,11 @@ function preparing(title) {
   $('runtimeTitle').textContent = title;
   $('mouseCaptureHint').hidden = true;
   $('captureMouse').title = 'Capture mouse'; $('captureMouse').setAttribute('aria-label', 'Capture mouse'); $('captureMouse').setAttribute('aria-pressed', 'false');
+  $('loading').classList.remove('error-screen');
   $('loadingTitle').textContent = 'Getting things ready'; $('loading').hidden = false;
   $('launchProgress').hidden = true; $('playerRetry').hidden = true;
-  $('loadingActivity').hidden = true; $('loadingElapsed').textContent = '';
+  $('loadingErrorActions').hidden = true;
+  $('loadingActivity').hidden = true; $('loadingElapsed').hidden = false; $('loadingElapsed').textContent = '';
   $('display').style.removeProperty('--program-aspect');
   $('log').textContent = ''; message('');
   $('runtimeTitle').setAttribute('tabindex', '-1'); $('runtimeTitle').focus({ preventScroll: true });
@@ -217,8 +230,7 @@ function updateStartup(run, sample = false) {
 }
 function startupError(run, value) {
   run.failed = true; clearInterval(run.progressTimer);
-  $('loading').hidden = false; $('loadingTitle').textContent = 'The program could not continue'; status(value);
-  $('loadingActivity').hidden = true; $('launchProgress').hidden = true; $('playerRetry').hidden = !lastAction;
+  showPlayerError(value);
 }
 async function runSaved(id, signal) {
   let pkg = await getPackage(id);
@@ -436,6 +448,13 @@ $('stop').onclick = stop; $('back').onclick = stop;
 $('restart').onclick = () => lastAction && action(lastAction);
 $('retry').onclick = () => lastAction && action(lastAction);
 $('playerRetry').onclick = () => lastAction && action(lastAction);
+$('playerShowLog').onclick = () => {
+  const diagnostics = $('log').closest('details');
+  if (!diagnostics) return;
+  diagnostics.open = true;
+  diagnostics.scrollIntoView({ block: 'nearest' });
+  diagnostics.querySelector('summary')?.focus({ preventScroll: true });
+};
 $('stats').onclick = () => { settings.metrics = metricsOpen() ? 'off' : 'on'; persistSettings(); applyMetricsVisibility(); };
 $('captureMouse').onclick = () => {
   try {

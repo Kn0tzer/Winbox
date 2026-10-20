@@ -71,7 +71,10 @@
             <p id="loadingActivity" class="loading-activity" role="status" aria-live="polite" hidden></p>
             <progress id="launchProgress" aria-label="Program preparation" hidden></progress>
             <p id="loadingElapsed" class="loading-elapsed"></p>
-            <button id="playerRetry" class="button" type="button" hidden>Try again</button>
+            <div id="loadingErrorActions" class="loading-actions" hidden>
+              <button id="playerRetry" class="button primary" type="button" hidden>Try again</button>
+              <button id="playerShowLog" class="button" type="button">Show technical log</button>
+            </div>
           </div>
           <div id="metricsHost" class="metrics-host" hidden></div>
         </div>

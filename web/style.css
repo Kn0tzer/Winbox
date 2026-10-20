@@ -579,8 +579,8 @@ h1 {
   justify-content: center;
   gap: 12px;
   padding: 32px;
-  background: #000;
-  color: #e0e0e0;
+  background: var(--bg);
+  color: var(--text);
   text-align: center;
 }
 
@@ -627,6 +627,30 @@ h1 {
 
 .loading .loading-elapsed {
   font-size: 0.75rem;
+}
+
+.loading.error-screen #status {
+  display: -webkit-box;
+  max-height: calc(1.5em * 3);
+  overflow: hidden;
+  color: var(--muted);
+  font: 0.8rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: center;
+  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.loading-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.loading-actions .button {
+  min-width: 132px;
 }
 
 .diagnostics {
