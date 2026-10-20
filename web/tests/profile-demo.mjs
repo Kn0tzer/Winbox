@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { chromium } from '@playwright/test';
 import { serve } from '../../tools/browser/serve.mjs';
+import { acquireProbeSlot } from './probe-slots.mjs';
 import { waitForBuildIdle } from './build-lock.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -66,8 +67,13 @@ async function waitForLoadAverageBelowThreshold(summary) {
   summary.loadAverageWaitExpired = current !== null && current >= 2.5;
 }
 
-await mkdir(outDir, { recursive: true });
-await main();
+const probeSlot = await acquireProbeSlot();
+try {
+  await mkdir(outDir, { recursive: true });
+  await main();
+} finally {
+  await probeSlot.release();
+}
 
 async function main() {
 await waitForBuildIdle();
