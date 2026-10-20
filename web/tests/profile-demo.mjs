@@ -209,13 +209,13 @@ try {
   windowActive = false;
 
   for (const sessionId of [...sessions.keys()]) await stopProfiler(sessionId);
-  await Promise.race([inputLoop, sleep(3000)]);
-
-  await page.screenshot({ path: join(outDir, 'window-end.png'), fullPage: true }).catch(() => {});
   const guestJson = await callGuest(page, 'bw64_guest_profile_json');
   if (guestJson.error) summary.guestProfileError = guestJson.error;
   else await writeFile(join(outDir, 'guest-profile.json'), guestJson.value + '\n');
   summary.guestProfileBytes = guestJson.value ? guestJson.value.length : 0;
+
+  await Promise.race([inputLoop, sleep(3000)]);
+  await page.screenshot({ path: join(outDir, 'window-end.png'), fullPage: true }).catch(() => {});
 
   await writeFile(join(outDir, 'targets.json'), JSON.stringify(targets, null, 2) + '\n');
   summary.stage = 'profiled';
