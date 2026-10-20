@@ -1050,6 +1050,68 @@ dialog input[type="range"] {
   }
 }
 
+@media (max-height: 900px) {
+  #settingsDialog {
+    padding: 20px;
+  }
+
+  #settingsDialog .dialog-heading {
+    margin-bottom: 16px;
+  }
+
+  #settingsDialog .settings-group + .settings-group {
+    margin-top: 16px;
+  }
+
+  #settingsDialog .settings-group-title {
+    margin-bottom: 8px;
+  }
+
+  #settingsDialog .setting-field + .setting-field {
+    margin-top: 12px;
+  }
+
+  #settingsDialog label {
+    margin-bottom: 6px;
+  }
+
+  #settingsDialog .setting-help {
+    margin-top: 6px;
+    line-height: 1.4;
+  }
+}
+
+@media (max-height: 850px) {
+  #settingsDialog {
+    padding-block: 16px;
+  }
+
+  #settingsDialog .dialog-heading {
+    margin-bottom: 12px;
+  }
+
+  #settingsDialog .settings-group + .settings-group {
+    margin-top: 12px;
+  }
+
+  #settingsDialog .settings-group-title {
+    margin-bottom: 6px;
+  }
+
+  #settingsDialog .setting-field + .setting-field {
+    margin-top: 8px;
+  }
+
+  #settingsDialog label {
+    margin-bottom: 4px;
+  }
+
+  #settingsDialog .setting-help {
+    margin-top: 4px;
+    line-height: 1.35;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
