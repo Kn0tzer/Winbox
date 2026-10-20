@@ -22,6 +22,9 @@
 #include "ksignal.h"
 #include "kscheduler.h"
 #include "knativesystem.h"
+#ifdef BOXEDWINE_GUEST_X64
+#include "kmemory64.h"
+#endif
 
 #include <array>
 #include <mutex>
@@ -182,6 +185,9 @@ public:
     ~DevInputGamepad() override;
 
     U32 ioctl(KThread* thread, U32 request) override;
+#ifdef BOXEDWINE_GUEST_X64
+    U32 ioctl64(U32 request, U64 argAddr, KMemory64* memory) override;
+#endif
 
     std::array<S32, 0x12> axes{};
     std::array<bool, GAMEPAD_BTN_THUMBR + 1> buttons{};
@@ -707,6 +713,104 @@ U32 DevInputGamepad::ioctl(KThread* thread, U32 request) {
         return -K_EINVAL;
     }
 }
+
+#ifdef BOXEDWINE_GUEST_X64
+static U32 copyGamepadString64(KMemory64* memory, U64 address, U32 len, const char* value) {
+    U32 copyLen = std::min((U32)strlen(value) + 1, len);
+    if (copyLen) {
+        memory->memcpyToGuest(address, value, copyLen);
+    }
+    return copyLen;
+}
+
+static U32 writeGamepadBitmap64(KMemory64* memory, U64 address, U32 len, const U32* codes, U32 count) {
+    memory->memsetGuest(address, 0, len);
+    U32 lastBit = 0;
+    for (U32 i = 0; i < count; i++) {
+        if (codes[i] / 8 < len) {
+            U64 byteAddress = address + codes[i] / 8;
+            memory->writeb(byteAddress, memory->readb(byteAddress) | (1u << (codes[i] % 8)));
+        }
+        lastBit = std::max(lastBit, codes[i]);
+    }
+    return (lastBit + 8) / 8;
+}
+
+U32 DevInputGamepad::ioctl64(U32 request, U64 argAddr, KMemory64* memory) {
+    U32 cmd = request & 0xffff;
+    U32 len = (request & 0x1fff0000) >> 16;
+
+    switch (cmd) {
+    case 0x4501: // EVIOCGVERSION
+        if (len < 4) return -K_EINVAL;
+        memory->writed(argAddr, 0x010001);
+        return 4;
+    case 0x4502: // EVIOCGID
+        if (len < 8) return -K_EINVAL;
+        memory->writew(argAddr, this->bustype);
+        memory->writew(argAddr + 2, this->vendor);
+        memory->writew(argAddr + 4, this->product);
+        memory->writew(argAddr + 6, this->version);
+        return 0;
+    case 0x4506: // EVIOCGNAME
+        return copyGamepadString64(memory, argAddr, len, "Microsoft X-Box 360 pad");
+    case 0x4507: // EVIOCGPHYS
+        return copyGamepadString64(memory, argAddr, len, "usb-boxedwine/input0");
+    case 0x4508: // EVIOCGUNIQ
+        if (len) memory->writeb(argAddr, 0);
+        return 0;
+    case 0x4509: // EVIOCGPROP
+        memory->memsetGuest(argAddr, 0, len);
+        return std::min(len, 4u);
+    case 0x4518: { // EVIOCGKEY
+        BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->bufferCond);
+        memory->memsetGuest(argAddr, 0, len);
+        for (U32 code : gamepadButtons) {
+            if (this->buttons[code] && code / 8 < len) {
+                U64 byteAddress = argAddr + code / 8;
+                memory->writeb(byteAddress, memory->readb(byteAddress) | (1u << (code % 8)));
+            }
+        }
+        return 0;
+    }
+    case 0x4520: { // EVIOCGBIT(EV_SYN)
+        static const U32 eventTypes[] = {K_EV_SYN, K_EV_KEY, K_EV_ABS};
+        return writeGamepadBitmap64(memory, argAddr, len, eventTypes, 3);
+    }
+    case 0x4521: // EVIOCGBIT(EV_KEY)
+        return writeGamepadBitmap64(memory, argAddr, len, gamepadButtons,
+                                    (U32)(sizeof(gamepadButtons) / sizeof(gamepadButtons[0])));
+    case 0x4522: // EVIOCGBIT(EV_REL): valid query, no relative axes
+        memory->memsetGuest(argAddr, 0, len);
+        return 0;
+    case 0x4523: { // EVIOCGBIT(EV_ABS)
+        static const U32 axes[] = {GAMEPAD_ABS_X, GAMEPAD_ABS_Y, GAMEPAD_ABS_Z, GAMEPAD_ABS_RX,
+                                   GAMEPAD_ABS_RY, GAMEPAD_ABS_RZ, GAMEPAD_ABS_HAT0X, GAMEPAD_ABS_HAT0Y};
+        return writeGamepadBitmap64(memory, argAddr, len, axes, (U32)(sizeof(axes) / sizeof(axes[0])));
+    }
+    case 0x4535: // EVIOCGBIT(EV_FF): no force-feedback capabilities
+        memory->memsetGuest(argAddr, 0, len);
+        return 0;
+    case 0x4590: // EVIOCGRAB
+        return 0;
+    default:
+        if (cmd >= 0x4540 && cmd <= 0x4551) { // EVIOCGABS(axis)
+            U32 axis = cmd - 0x4540;
+            GamepadAxisInfo info;
+            if (!getGamepadAxisInfo(axis, info) || len < 24) return -K_EINVAL;
+            BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->bufferCond);
+            memory->writed(argAddr, (U32)this->axes[axis]);
+            memory->writed(argAddr + 4, (U32)info.min);
+            memory->writed(argAddr + 8, (U32)info.max);
+            memory->writed(argAddr + 12, (U32)info.fuzz);
+            memory->writed(argAddr + 16, (U32)info.flat);
+            memory->writed(argAddr + 20, 0);
+            return 0;
+        }
+        return -K_EINVAL;
+    }
+}
+#endif
 
 U32 DevInputKeyboard::ioctl(KThread* thread, U32 request) {
     CPU* cpu = thread->cpu;
