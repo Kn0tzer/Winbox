@@ -3,6 +3,10 @@
 // and synchronous clear-color readback working while the rest of the bridge is
 // still on the WebGL2 fallback path.
 
+import { toWGSL } from './shader.mjs';
+import { liftForNaga } from './naga-rt.mjs';
+import { uniformLayout, packUniforms, convertIndices, blendFactor, stateKey } from './gl-webgpu-utils.mjs';
+
 const GL = Object.freeze({
   ARRAY_BUFFER: 0x8892, ARRAY_BUFFER_BINDING: 0x8894,
   ELEMENT_ARRAY_BUFFER: 0x8893, ELEMENT_ARRAY_BUFFER_BINDING: 0x8895,
@@ -28,6 +32,111 @@ const GL = Object.freeze({
 });
 
 const clamp01 = value => Math.min(1, Math.max(0, Number(value) || 0));
+
+const TYPE_ENUM = new Map([
+  ['float', 0x1406], ['int', 0x1404], ['uint', 0x1405], ['bool', 0x8b56],
+  ['vec2', 0x8b50], ['vec3', 0x8b51], ['vec4', 0x8b52],
+  ['ivec2', 0x8b53], ['ivec3', 0x8b54], ['ivec4', 0x8b55],
+  ['bvec2', 0x8b57], ['bvec3', 0x8b58], ['bvec4', 0x8b59],
+  ['uvec2', 0x8dc6], ['uvec3', 0x8dc7], ['uvec4', 0x8dc8],
+  ['mat2', 0x8b5a], ['mat3', 0x8b5b], ['mat4', 0x8b5c],
+  ['mat2x3', 0x8b65], ['mat2x4', 0x8b66], ['mat3x2', 0x8b67],
+  ['mat3x4', 0x8b68], ['mat4x2', 0x8b69], ['mat4x3', 0x8b6a],
+  ['sampler2D', 0x8b5e],
+]);
+
+const SAMPLER_VERTEX_BASE = 2;
+const SAMPLER_FRAGMENT_BASE = 18;
+
+function componentCount(type) {
+  const vector = /^(?:b|i|u)?vec([234])$/.exec(type);
+  if (vector) return Number(vector[1]);
+  const matrix = /^mat([234])(?:x([234]))?$/.exec(type);
+  return matrix ? Number(matrix[1]) * Number(matrix[2] || matrix[1]) : 1;
+}
+
+function glslDeclarations(source, qualifier) {
+  const result = [];
+  const re = new RegExp(`^[ \\t]*(?:layout\\s*\\(([^)]*)\\)\\s*)?${qualifier}[ \\t]+([A-Za-z_]\\w*)[ \\t]+([A-Za-z_]\\w*)(?:[ \\t]*\\[[ \\t]*(\\d+)[ \\t]*\\])?[ \\t]*;[ \\t]*$`, 'gm');
+  for (const match of source.matchAll(re)) result.push({ full: match[0], layout: match[1] || '', type: match[2], name: match[3], arrayLength: Number(match[4] || 1) });
+  return result;
+}
+
+function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(), interfaceLocations = new Map()) {
+  let code = String(source || '');
+  const uniforms = glslDeclarations(code, 'uniform');
+  const fields = [];
+  const samplers = [];
+  const activeUniforms = [];
+  for (const uniform of uniforms) {
+    if (uniform.type === 'sampler2D') {
+      const base = (stage === 'vertex' ? SAMPLER_VERTEX_BASE : SAMPLER_FRAGMENT_BASE) + samplers.length * 2;
+      samplers.push({ name: uniform.name, textureBinding: base, samplerBinding: base + 1, arrayLength: uniform.arrayLength });
+      activeUniforms.push({ name: uniform.name, type: uniform.type, arrayLength: uniform.arrayLength, sampler: true });
+    } else {
+      fields.push({ name: uniform.name, type: uniform.type, arrayLength: uniform.arrayLength });
+      activeUniforms.push({ name: uniform.name, type: uniform.type, arrayLength: uniform.arrayLength, sampler: false });
+    }
+    code = code.replace(uniform.full, '');
+  }
+
+  let layout = { fields: [], size: 0 };
+  if (fields.length) {
+    layout = uniformLayout(fields);
+    // OpenGL loose uniforms become one std140 interface block per shader
+    // stage. The field offsets below are the CPU upload contract; samplers
+    // stay separate because WGSL represents each as a texture+sampler pair.
+    const binding = stage === 'vertex' ? 0 : 1;
+    const declarations = fields.map(field => `${field.type} ${field.name}${field.arrayLength > 1 ? `[${field.arrayLength}]` : ''};`).join('\n');
+    const body = code;
+    const names = fields.map(field => field.name).sort((a, b) => b.length - a.length);
+    if (names.length) {
+      const escaped = names.map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+      code = body.replace(new RegExp(`\\b(${escaped})\\b`, 'g'), (_match, name) => `bw_globals.${name}`);
+    } else code = body;
+    code = `layout(std140, binding = ${binding}) uniform Globals {\n${declarations}\n} bw_globals;\n${code}`;
+  }
+
+  for (const sampler of samplers) {
+    const escaped = sampler.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    code = code.replace(new RegExp(`\\btexture2D?\\s*\\(\\s*${escaped}\\s*,`, 'g'), `texture(sampler2D(${sampler.name}_bw_t, ${sampler.name}_bw_s),`);
+    const array = sampler.arrayLength > 1 ? `[${sampler.arrayLength}]` : '';
+    code = `layout(binding = ${sampler.textureBinding}) uniform texture2D ${sampler.name}_bw_t${array};\nlayout(binding = ${sampler.samplerBinding}) uniform sampler ${sampler.name}_bw_s${array};\n${code}`;
+  }
+
+  if (stage === 'vertex' && attributeBindings.size) {
+    code = code.replace(/^[ \t]*(?:layout\s*\(([^)]*)\)\s*)?(?:in|attribute)[ \t]+([A-Za-z_]\w*)[ \t]+([A-Za-z_]\w*)[ \t]*;[ \t]*$/gm,
+      (line, layoutText, type, name) => {
+        if (!attributeBindings.has(name)) return line;
+        return `layout(location = ${attributeBindings.get(name)}) in ${type} ${name};`;
+      });
+  }
+
+  if (stage === 'vertex') {
+    // GLSL uses clip-space z in [-w,+w], while WebGPU clips z in [0,w].
+    // Insert the remap at the end of main so later shader assignments cannot overwrite it.
+    const main = /void\s+main\s*\([^)]*\)\s*\{/m.exec(code);
+    if (main) {
+      let depth = 1, cursor = main.index + main[0].length;
+      for (; cursor < code.length && depth; cursor++) {
+        if (code[cursor] === '{') depth++;
+        else if (code[cursor] === '}') depth--;
+      }
+      if (!depth) code = code.slice(0, cursor - 1) + '\n  gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5;\n' + code.slice(cursor - 1);
+    }
+  }
+  const lifted = liftForNaga(code, stage, interfaceLocations);
+  if (!lifted.ok) throw new Error(`GLSL lift failed (${lifted.reason}): ${lifted.detail || ''}`);
+  return { code: lifted.code, layout, activeUniforms, samplers };
+}
+
+function parseStageInputs(source, stage) {
+  const qualifier = stage === 'vertex' ? '(?:in|attribute)' : 'out';
+  return glslDeclarations(source, qualifier).map((item, index) => {
+    const match = /(?:^|,)\s*location\s*=\s*(\d+)/.exec(item.layout);
+    return { name: item.name, type: item.type, arrayLength: item.arrayLength, location: match ? Number(match[1]) : index };
+  });
+}
 
 function bytesOf(data) {
   if (typeof data === 'number') return new Uint8Array(Math.max(0, data));
@@ -383,60 +492,129 @@ export class WebGPUGL {
     return buffer.gpu;
   }
 
-  createShader(type) { const shader = { id: this._nextId++, type, source: '', compiled: false }; this._shaders.add(shader); return shader; }
+  createShader(type) { const shader = { id: this._nextId++, type, source: '', compiled: false, infoLog: '' }; this._shaders.add(shader); return shader; }
   deleteShader(shader) { this._shaders.delete(shader); }
   isShader(shader) { return this._shaders.has(shader); }
   shaderSource(shader, source) { if (shader) shader.source = String(source); }
-  compileShader(shader) { if (shader) shader.compiled = true; }
+  compileShader(shader) {
+    if (!shader) return;
+    // Translation happens at link time so bindAttribLocation calls made after
+    // compileShader still affect the emitted WGSL locations.
+    shader.compiled = true; shader.infoLog = '';
+  }
   getShaderParameter(shader, parameter) { return parameter === GL.COMPILE_STATUS ? !!shader?.compiled : 0; }
-  getShaderInfoLog() { return ''; }
+  getShaderInfoLog(shader) { return shader?.infoLog || ''; }
   getShaderSource(shader) { return shader?.source || ''; }
   getShaderPrecisionFormat() { return { rangeMin: 0, rangeMax: 0, precision: 0 }; }
-  createProgram() { const program = { id: this._nextId++, shaders: [], attributes: new Map() }; this._programs.add(program); return program; }
-  deleteProgram(program) { this._programs.delete(program); }
+  createProgram() { const program = { id: this._nextId++, shaders: [], attributes: new Map(), attributeLocations: new Map(), attributeInfo: [], uniformInfo: [], uniformValues: new Map(), uniformLocations: new Map(), stages: {}, infoLog: '' }; this._programs.add(program); return program; }
+  deleteProgram(program) { this._programs.delete(program); if (this._currentProgram === program) this._currentProgram = null; }
   isProgram(program) { return this._programs.has(program); }
   attachShader(program, shader) { if (program && shader) program.shaders.push(shader); }
   detachShader(program, shader) { if (program) program.shaders = program.shaders.filter(item => item !== shader); }
   bindAttribLocation(program, index, name) { if (program) program.attributes.set(String(name), index | 0); }
-  linkProgram(program) { if (program) program.linked = true; }
+  linkProgram(program) {
+    if (!program) return;
+    const shaders = program.shaders.filter(shader => shader.compiled);
+    const vertex = shaders.find(shader => shader.type === GL.VERTEX_SHADER);
+    const fragment = shaders.find(shader => shader.type === GL.FRAGMENT_SHADER);
+    program.linked = Boolean(vertex && fragment);
+    program.infoLog = program.linked ? '' : 'A vertex and fragment shader are required';
+    program.attributeLocations.clear(); program.attributeInfo = [];
+    program.uniformInfo = []; program.uniformLocations.clear(); program.uniformValues.clear();
+    program.stages = {};
+    if (!program.linked) { program.linkPromise = Promise.resolve(false); return; }
+
+    for (const declaration of parseStageInputs(vertex.source, 'vertex')) {
+      const location = program.attributes.has(declaration.name) ? program.attributes.get(declaration.name) : declaration.location;
+      program.attributeLocations.set(declaration.name, location);
+      program.attributeInfo.push({ name: declaration.name, size: declaration.arrayLength, type: TYPE_ENUM.get(declaration.type) || 0x1406 });
+    }
+    for (const shader of [vertex, fragment]) {
+      for (const declaration of glslDeclarations(shader.source, 'uniform')) {
+        if (program.uniformInfo.some(info => info.name.replace(/\[0\]$/, '') === declaration.name)) continue;
+        const name = declaration.arrayLength > 1 ? `${declaration.name}[0]` : declaration.name;
+        const info = { name, baseName: declaration.name, size: declaration.arrayLength, type: TYPE_ENUM.get(declaration.type) || 0x1406 };
+        program.uniformInfo.push(info);
+        const location = { program, name: declaration.name, id: this._uniformLocations.size };
+        this._uniformLocations.set(`${program.id}:${declaration.name}`, location);
+        program.uniformLocations.set(declaration.name, location);
+        program.uniformValues.set(declaration.name, declaration.type === 'sampler2D' ? 0 : new Float32Array(Math.max(1, declaration.arrayLength) * componentCount(declaration.type)));
+      }
+    }
+    const locationRegistry = new Map();
+    program.linkPromise = this.ready.then(async () => {
+      for (const [shader, stage] of [[vertex, 'vertex'], [fragment, 'fragment']]) {
+        const prepared = rewriteGlslForWebGPU(shader.source, stage, program.attributes, locationRegistry);
+        const wgsl = await toWGSL('glsl', prepared.code, stage);
+        if (!wgsl) throw new Error(`${stage} shader translated to empty WGSL`);
+        const activeInputs = stage === 'vertex'
+          ? [...prepared.code.matchAll(/layout\s*\([^)]*location\s*=\s*(\d+)[^)]*\)\s*in\s+([A-Za-z_]\w*)\s+([A-Za-z_]\w*)/g)]
+          : [];
+        for (const match of activeInputs) program.attributeLocations.set(match[3], Number(match[1]));
+        program.stages[stage] = { wgsl, layout: prepared.layout, activeUniforms: prepared.activeUniforms, samplers: prepared.samplers };
+      }
+      program.linked = true;
+      return true;
+    }).catch(error => {
+      program.linked = false;
+      program.infoLog = String(error?.message || error);
+      this._log(`gl-webgpu: program ${program.id} link failed: ${program.infoLog}`);
+      return false;
+    });
+  }
   validateProgram() {}
   useProgram(program) { this._currentProgram = program || null; }
-  getProgramParameter(program, parameter) { return parameter === GL.LINK_STATUS ? !!program?.linked : parameter === 0x8b85 ? (program?.shaders?.length || 0) : 0; }
-  getProgramInfoLog() { return ''; }
+  getProgramParameter(program, parameter) {
+    if (parameter === GL.LINK_STATUS) return !!program?.linked;
+    if (parameter === 0x8b85) return program?.shaders?.length || 0;
+    if (parameter === 0x8b86) return program?.uniformInfo?.length || 0;
+    if (parameter === 0x8b89) return program?.attributeInfo?.length || 0;
+    return 0;
+  }
+  getProgramInfoLog(program) { return program?.infoLog || ''; }
   getAttachedShaders(program) { return program?.shaders?.slice() || []; }
   getAttribLocation(program, name) {
     if (!program) return -1;
-    if (!program.attributes.has(name)) program.attributes.set(name, program.attributes.size);
-    return program.attributes.get(name);
+    return program.attributeLocations.has(name) ? program.attributeLocations.get(name) : program.attributes.has(name) ? program.attributes.get(name) : -1;
   }
   getUniformLocation(program, name) {
     if (!program) return null;
-    const key = `${program.id}:${name}`;
-    if (!this._uniformLocations.has(key)) this._uniformLocations.set(key, { program, name, id: this._uniformLocations.size });
-    return this._uniformLocations.get(key);
+    const base = String(name).replace(/\[0\]$/, '');
+    if (program.uniformLocations.has(base)) return program.uniformLocations.get(base);
+    const info = program.uniformInfo.find(item => item.baseName === base);
+    if (!info) return null;
+    const key = `${program.id}:${base}`;
+    if (!this._uniformLocations.has(key)) this._uniformLocations.set(key, { program, name: base, id: this._uniformLocations.size });
+    const location = this._uniformLocations.get(key);
+    program.uniformLocations.set(base, location);
+    return location;
   }
-  getActiveAttrib() { return null; }
-  getActiveUniform() { return null; }
-  getUniform() { return 0; }
-  uniform1f() {}
-  uniform1fv() {}
-  uniform1i() {}
-  uniform1iv() {}
-  uniform2f() {}
-  uniform2fv() {}
-  uniform2i() {}
-  uniform2iv() {}
-  uniform3f() {}
-  uniform3fv() {}
-  uniform3i() {}
-  uniform3iv() {}
-  uniform4f() {}
-  uniform4fv() {}
-  uniform4i() {}
-  uniform4iv() {}
-  uniformMatrix2fv() {}
-  uniformMatrix3fv() {}
-  uniformMatrix4fv() {}
+  getActiveAttrib(program, index) { const item = program?.attributeInfo?.[index]; return item ? { ...item } : null; }
+  getActiveUniform(program, index) { const item = program?.uniformInfo?.[index]; return item ? { name: item.name, size: item.size, type: item.type } : null; }
+  _setUniform(location, value) {
+    if (!location?.program || location.program !== this._currentProgram) return;
+    location.program.uniformValues.set(location.name, ArrayBuffer.isView(value) ? value.slice() : Array.isArray(value) ? value.slice() : value);
+  }
+  getUniform(program, location) { return program?.uniformValues.get(location?.name) ?? 0; }
+  uniform1f(location, x) { this._setUniform(location, Number(x)); }
+  uniform1fv(location, value) { this._setUniform(location, value); }
+  uniform1i(location, x) { this._setUniform(location, Number(x) | 0); }
+  uniform1iv(location, value) { this._setUniform(location, value); }
+  uniform2f(location, x, y) { this._setUniform(location, [x, y]); }
+  uniform2fv(location, value) { this._setUniform(location, value); }
+  uniform2i(location, x, y) { this._setUniform(location, [x | 0, y | 0]); }
+  uniform2iv(location, value) { this._setUniform(location, value); }
+  uniform3f(location, x, y, z) { this._setUniform(location, [x, y, z]); }
+  uniform3fv(location, value) { this._setUniform(location, value); }
+  uniform3i(location, x, y, z) { this._setUniform(location, [x | 0, y | 0, z | 0]); }
+  uniform3iv(location, value) { this._setUniform(location, value); }
+  uniform4f(location, x, y, z, w) { this._setUniform(location, [x, y, z, w]); }
+  uniform4fv(location, value) { this._setUniform(location, value); }
+  uniform4i(location, x, y, z, w) { this._setUniform(location, [x | 0, y | 0, z | 0, w | 0]); }
+  uniform4iv(location, value) { this._setUniform(location, value); }
+  uniformMatrix2fv(location, transpose, value) { this._setUniform(location, value); }
+  uniformMatrix3fv(location, transpose, value) { this._setUniform(location, value); }
+  uniformMatrix4fv(location, transpose, value) { this._setUniform(location, value); }
   drawArrays() {}
   drawElements() {}
   drawArraysInstanced() {}
