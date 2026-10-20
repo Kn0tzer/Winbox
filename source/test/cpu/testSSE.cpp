@@ -14,6 +14,7 @@
 #include "testSSE.h"
 #include "testCPU.h"
 #include "testX86Util.h"
+#include "ksignal.h"
 #include <bit>
 
 #define cpu (testContext().cpu)
@@ -1508,6 +1509,28 @@ void testSse2Convert_0x12a_0x32a_0x12c_0x32c_0x12d_0x32d_0x15a_0x35a_0x15b_0x35b
     testSse128Op(0, 0x66, 0xe6, 0x1111222233334444ULL, 0x5555666677778888ULL, hugeNeg, posFrac, 0x0000138880000000ULL, 0, 0, 0, "sse2 cvttpd2dq pos frac");
     testSse128Op(0, 0xf2, 0xe6, 0x1111222233334444ULL, 0x5555666677778888ULL, hugePos, negWhole, 0xffffec7880000000ULL, 0, 0, 0, "sse2 cvtpd2dq");
     testSse128Op(0, 0xf3, 0xe6, 0x1111222233334444ULL, 0x5555666677778888ULL, 0xffffec78075bcd15ULL, 0x1234567890abcdefULL, bitsFromDouble(123456789.0), bitsFromDouble(-5000.0), 0, 0, "sse2 cvtdq2pd");
+}
+
+void testSseLdmxcsrReserved() {
+    auto& context = testContext();
+    initSse();
+    memory->writed(TEST_HEAP_ADDRESS + MEM_SRC, 0x00010000);
+
+    KSigAction& action = context.process->sigActions[K_SIGSEGV];
+    action.reset();
+    action.handlerAndSigAction = TEST_CODE_ADDRESS + 0x100;
+    action.flags = K_SA_SIGINFO;
+    memory->writeb(TEST_CODE_ADDRESS + 0x100, 0xcd);
+    memory->writeb(TEST_CODE_ADDRESS + 0x101, 0x97);
+
+    pushCode8(0x0f);
+    pushCode8(0xae);
+    emitDirectAddressModRM(2, MEM_SRC);
+    runTestCPU();
+    if (action.sigInfo[0] != K_SIGSEGV || action.sigInfo[4] != 13)
+        failed("sse ldmxcsr reserved bits expected SIGSEGV trap 13, got signal=%u trap=%u", action.sigInfo[0], action.sigInfo[4]);
+    action.reset();
+    testNewInstruction(0);
 }
 
 void testSse2CompareFlags_0x12e_0x12f() {

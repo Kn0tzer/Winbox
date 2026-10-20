@@ -4994,6 +4994,7 @@ public:
             case 6: func(data, op, rm, Mfence, Invalid); break;
             case 7: func(data, op, rm, Sfence, Clflush); break;
         }
+        if (G(rm) == 2 && rm < 0xc0) op->flags |= OP_FLAG_NO_JIT;
     }
 };
 

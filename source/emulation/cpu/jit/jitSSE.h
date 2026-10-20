@@ -484,8 +484,8 @@ public:
 	void dynamic_cvtdq2pdXmmE128(DecodedOp* op) override { opXmmE128(op, &JitSSE::cvtdq2pdXmmXmm, false); }
 	void dynamic_cvtdq2psXmmXmm(DecodedOp* op) override { opXmmXmm(op, &JitSSE::cvtdq2psXmmXmm, false); }
 	void dynamic_cvtdq2psXmmE128(DecodedOp* op) override { opXmmE128(op, &JitSSE::cvtdq2psXmmXmm, false); }
-	void dynamic_cvtpd2dqXmmXmm(DecodedOp* op) override { opXmmXmm(op, &JitSSE::cvtpd2dqXmmXmm, false); } // top bits in dest are zero'd
-	void dynamic_cvtpd2dqXmmE128(DecodedOp* op) override { opXmmE128(op, &JitSSE::cvtpd2dqXmmXmm, false); }
+	void dynamic_cvtpd2dqXmmXmm(DecodedOp* op) override { emulateSingleOp(); }
+	void dynamic_cvtpd2dqXmmE128(DecodedOp* op) override { emulateSingleOp(); }
 	void dynamic_cvtpd2psXmmXmm(DecodedOp* op) override { opXmmXmm(op, &JitSSE::cvtpd2psXmmXmm, false); } // top bits in dest are zero'd
 	void dynamic_cvtpd2psXmmE128(DecodedOp* op) override { opXmmE128(op, &JitSSE::cvtpd2psXmmXmm, false); }
 	void dynamic_cvtpd2piMmxXmm(DecodedOp* op) override;
@@ -501,8 +501,8 @@ public:
 	void dynamic_cvtsi2sdXmmE32(DecodedOp* op) override;
 	void dynamic_cvttsd2siR32Xmm(DecodedOp* op) override;
 	void dynamic_cvttsd2siR32E64(DecodedOp* op) override;
-	void dynamic_cvtps2dqXmmXmm(DecodedOp* op) override { opXmmXmm(op, &JitSSE::cvtps2dqXmmXmm, false); }
-	void dynamic_cvtps2dqXmmE128(DecodedOp* op) override { opXmmE128(op, &JitSSE::cvtps2dqXmmXmm, false); }
+	void dynamic_cvtps2dqXmmXmm(DecodedOp* op) override { emulateSingleOp(); }
+	void dynamic_cvtps2dqXmmE128(DecodedOp* op) override { emulateSingleOp(); }
 	void dynamic_cvtps2pdXmmXmm(DecodedOp* op) override { opXmmXmm(op, &JitSSE::cvtps2pdXmmXmm, false); }
 	void dynamic_cvtps2pdXmmE64(DecodedOp* op) override { opXmmE64(op, &JitSSE::cvtps2pdXmmXmm, false); }
 	void dynamic_cvtsd2ssXmmXmm(DecodedOp* op) override { opXmmXmm(op, &JitSSE::cvtsd2ssXmmXmm); }

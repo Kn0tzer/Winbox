@@ -48,3 +48,4 @@ void Jit::dynamic_popcntR32R32(DecodedOp* op) { currentLazyFlags=FLAGS_NONE;emul
 void Jit::dynamic_popcntR32E32(DecodedOp* op) { currentLazyFlags=FLAGS_NONE;emulateSingleOp(); }
 void Jit::dynamic_sse42PcmpRR(DecodedOp* op) { currentLazyFlags=FLAGS_NONE;emulateSingleOp(); }
 void Jit::dynamic_sse42PcmpRE(DecodedOp* op) { currentLazyFlags=FLAGS_NONE;emulateSingleOp(); }
+void Jit::dynamic_ldmxcsr(DecodedOp* op) { emulateSingleOp(); }

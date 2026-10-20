@@ -39,6 +39,7 @@
 
 void common_sse41_3aRR(CPU* cpu, U32 reg, U32 rm, U32 packedOpcodeAndImm);
 void common_sse41_3aRE(CPU* cpu, U32 reg, U32 address, U32 packedOpcodeAndImm);
+bool common_ldmxcsr(CPU* cpu, U32 reg, U32 address);
 void common_crc32RR(CPU* cpu, U32 reg, U32 rm, U32 opcodeAndSize);
 void common_crc32RE(CPU* cpu, U32 reg, U32 address, U32 opcodeAndSize);
 void common_popcntR16R16(CPU* cpu, U32 reg, U32 rm);

@@ -9,9 +9,10 @@ import subprocess
 import sys
 
 GPR_NAMES = ("eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi")
-RESULT_SIZE = 32 + 4 + 8 * 16 + 8 * 8 + 64
+RESULT_FIXED_SIZE = 32 + 4 + 4 + 8 * 16 + 8 * 8 + 64
 MEMORY_OFFSET = 0x100
 ARITH_FLAGS = 0x8D5
+MEMORY_TAIL_MAX = 960
 
 
 def little_bytes(value, size):
@@ -50,6 +51,13 @@ def parse_case(case, index):
         memory = bytes(memory)
     if not isinstance(memory, bytes) or len(memory) != 64:
         raise ValueError(f"{name}: memory must be exactly 64 bytes (hex string or byte list)")
+    memory_tail = case.get("memory_tail", b"")
+    if isinstance(memory_tail, str):
+        memory_tail = bytes.fromhex(memory_tail)
+    elif isinstance(memory_tail, list):
+        memory_tail = bytes(memory_tail)
+    if not isinstance(memory_tail, bytes) or len(memory_tail) > MEMORY_TAIL_MAX:
+        raise ValueError(f"{name}: memory_tail must contain at most {MEMORY_TAIL_MAX} bytes")
     memory_register = case.get("memory_register")
     if memory_register is not None:
         if isinstance(memory_register, str):
@@ -64,8 +72,15 @@ def parse_case(case, index):
         "xmm": xmm_bytes,
         "mmx": [int(value) & 0xFFFFFFFFFFFFFFFF for value in mmx],
         "memory": memory,
+        "memory_tail": memory_tail,
+        "memory_size": len(memory) + len(memory_tail),
+        "mxcsr": int(case.get("mxcsr", 0x1F80)) & 0xFFFFFFFF,
         "memory_register": memory_register,
     }
+
+
+def result_size(case):
+    return RESULT_FIXED_SIZE + len(case["memory_tail"])
 
 
 def bytes_directive(data):
@@ -84,6 +99,7 @@ def build_assembly(cases):
         lines += [f"    movl $mmx_{index}, %eax"]
         for reg in range(8):
             lines += [f"    movq {reg * 8}(%eax), %mm{reg}"]
+        lines += [f"    movl $0x{case['mxcsr']:08x}, mxcsr_{index}", f"    ldmxcsr mxcsr_{index}"]
         lines += ["    movl startup_esp, %esp", f"    movl ${case['eflags'] | 2}, %eax", "    pushl %eax", "    popfl"]
         for reg, value in enumerate(case["gpr"]):
             if reg != case["memory_register"]:
@@ -95,34 +111,41 @@ def build_assembly(cases):
         for reg, name in enumerate(GPR_NAMES):
             lines += [f"    movl %{name}, result_{index}+{reg * 4}"]
         lines += ["    seto %cl", "    lahf", "    movzbl %ah, %eax", f"    andl $0xd5, %eax", "    movzbl %cl, %edx", "    shll $11, %edx", "    orl %edx, %eax", f"    movl %eax, result_{index}+32"]
+        lines += [f"    stmxcsr result_{index}+36"]
         for reg in range(8):
-            lines += [f"    movdqu %xmm{reg}, result_{index}+{36 + reg * 16}"]
+            lines += [f"    movdqu %xmm{reg}, result_{index}+{40 + reg * 16}"]
         for reg in range(8):
-            lines += [f"    movq %mm{reg}, result_{index}+{164 + reg * 8}"]
-        lines += [f"    movl $memory_{index}, %esi", f"    movl $result_{index}+228, %edi", "    movl $64, %ecx", "    cld", "    rep movsb"]
-        lines += ["    movl $4, %eax", "    movl $1, %ebx", f"    movl $result_{index}, %ecx", f"    movl ${RESULT_SIZE}, %edx", "    int $0x80"]
+            lines += [f"    movq %mm{reg}, result_{index}+{168 + reg * 8}"]
+        lines += [f"    movl $memory_{index}, %esi", f"    movl $result_{index}+232, %edi", f"    movl ${case['memory_size']}, %ecx", "    cld", "    rep movsb"]
+        lines += ["    movl $4, %eax", "    movl $1, %ebx", f"    movl $result_{index}, %ecx", f"    movl ${result_size(case)}, %edx", "    int $0x80"]
     lines += ["    movl $1, %eax", "    xorl %ebx, %ebx", "    int $0x80"]
     lines += [".section .data", "startup_esp:", "    .long 0"]
     for index, case in enumerate(cases):
         lines += [".balign 16", f"xmm_{index}:", f"    .byte {bytes_directive(b''.join(case['xmm']))}"]
         lines += [f"mmx_{index}:", f"    .byte {bytes_directive(b''.join(little_bytes(v, 8) for v in case['mmx']))}"]
-        lines += [".balign 16", f"memory_{index}:", f"    .byte {bytes_directive(case['memory'])}"]
-        lines += [f"result_{index}:", f"    .zero {RESULT_SIZE}"]
+        lines += [f"mxcsr_{index}:", f"    .long {case['mxcsr']}"]
+        lines += [".balign 16", f"memory_{index}:", f"    .byte {bytes_directive(case['memory'] + case['memory_tail'])}"]
+        lines += [f"result_{index}:", f"    .zero {result_size(case)}"]
     return "\n".join(lines) + "\n"
 
 
 def unpack_results(cases, output):
-    if len(output) != len(cases) * RESULT_SIZE:
-        raise RuntimeError(f"qemu returned {len(output)} bytes; expected {len(cases) * RESULT_SIZE}")
+    expected_size = sum(result_size(case) for case in cases)
+    if len(output) != expected_size:
+        raise RuntimeError(f"qemu returned {len(output)} bytes; expected {expected_size}")
     results = []
+    offset = 0
     for index, case in enumerate(cases):
-        data = output[index * RESULT_SIZE:(index + 1) * RESULT_SIZE]
+        size = result_size(case)
+        data = output[offset:offset + size]
+        offset += size
         gpr = list(struct.unpack_from("<8I", data, 0))
         eflags = struct.unpack_from("<I", data, 32)[0] & ARITH_FLAGS
-        xmm = [data[36 + reg * 16:52 + reg * 16].hex() for reg in range(8)]
-        mmx = list(struct.unpack_from("<8Q", data, 164))
-        memory = data[228:292].hex()
-        results.append({"name": case["name"], "gpr": gpr, "eflags": eflags, "xmm": xmm, "mmx": mmx, "memory": memory})
+        mxcsr = struct.unpack_from("<I", data, 36)[0]
+        xmm = [data[40 + reg * 16:56 + reg * 16].hex() for reg in range(8)]
+        mmx = list(struct.unpack_from("<8Q", data, 168))
+        memory = data[232:232 + case["memory_size"]].hex()
+        results.append({"name": case["name"], "gpr": gpr, "eflags": eflags, "mxcsr": mxcsr, "xmm": xmm, "mmx": mmx, "memory": memory})
     return results
 
 
@@ -141,7 +164,7 @@ def build_cpp(cases, results):
         '#include "testCPU.h"',
         '',
         'namespace {',
-        'struct CpuDiff32Case { const char* name; U32 inputGpr[8]; U32 gpr[8]; U32 inputFlags; U32 flags; U64 inputXmm[8][2]; U64 xmm[8][2]; U64 inputMmx[8]; U64 mmx[8]; U8 inputMemory[64]; U8 memory[64]; U8 code[15]; U8 codeLength; S8 memoryRegister; };',
+        'struct CpuDiff32Case { const char* name; U32 inputGpr[8]; U32 gpr[8]; U32 inputFlags; U32 flags; U32 inputMxcsr; U32 mxcsr; U64 inputXmm[8][2]; U64 xmm[8][2]; U64 inputMmx[8]; U64 mmx[8]; U8 inputMemory[64]; U8 memory[64]; U8 inputMemoryTail[960]; U8 memoryTail[960]; U8 code[15]; U8 codeLength; S8 memoryRegister; U16 memorySize; };',
         'const CpuDiff32Case CASES[] = {'
     ]
     for case, result in zip(cases, results):
@@ -156,18 +179,21 @@ def build_cpp(cases, results):
             input_xmm += [cpp_u64(int.from_bytes(input_raw[:8], "little")), cpp_u64(int.from_bytes(input_raw[8:], "little"))]
             output_xmm += [cpp_u64(int.from_bytes(output_raw[:8], "little")), cpp_u64(int.from_bytes(output_raw[8:], "little"))]
         output_memory = bytes.fromhex(result["memory"])
+        input_memory = case["memory"] + case["memory_tail"]
         code = list(case["bytes"])
         code += [0] * (15 - len(code))
         lines += ['    {', f'        "{case["name"]}",']
         lines += [f'        {{{", ".join(f"0x{v:08x}" for v in case["gpr"])}}},']
         lines += [f'        {{{", ".join(f"0x{v:08x}" for v in expected_gpr)}}},']
         lines += [f'        0x{case["eflags"] & ARITH_FLAGS:08x}, 0x{result["eflags"]:08x},']
+        lines += [f'        0x{case["mxcsr"]:08x}, 0x{result["mxcsr"]:08x},']
         lines += [f'        {{{", ".join("{" + input_xmm[i] + ", " + input_xmm[i + 1] + "}" for i in range(0, 16, 2))}}},']
         lines += [f'        {{{", ".join("{" + output_xmm[i] + ", " + output_xmm[i + 1] + "}" for i in range(0, 16, 2))}}},']
         lines += [f'        {{{", ".join(cpp_u64(v) for v in case["mmx"])}}},']
         lines += [f'        {{{", ".join(cpp_u64(v) for v in result["mmx"])}}},']
-        lines += [f'        {{{cpp_bytes(case["memory"])}}},', f'        {{{cpp_bytes(output_memory)}}},']
-        lines += [f'        {{{cpp_bytes(bytes(code))}}}, {len(case["bytes"])}, {case["memory_register"] if case["memory_register"] is not None else -1}']
+        lines += [f'        {{{cpp_bytes(input_memory[:64])}}},', f'        {{{cpp_bytes(output_memory[:64])}}},']
+        lines += [f'        {{{cpp_bytes(input_memory[64:])}}},', f'        {{{cpp_bytes(output_memory[64:])}}},']
+        lines += [f'        {{{cpp_bytes(bytes(code))}}}, {len(case["bytes"])}, {case["memory_register"] if case["memory_register"] is not None else -1}, {case["memory_size"]}']
         lines += ['    },']
     lines += [
         '};',
@@ -184,8 +210,10 @@ def build_cpp(cases, results):
         '            cpu->xmm[i].pi.u64[1] = test.inputXmm[i][1];',
         '            cpu->fpu.getMMX(i)->q = test.inputMmx[i];',
         '        }',
+        '        cpu->mxcsr = test.inputMxcsr;',
         '        cpu->setFlags(test.inputFlags | 2, FMASK_ALL);',
         '        for (int i = 0; i < 64; ++i) context.memory->writeb(TEST_HEAP_ADDRESS + 0x100 + i, test.inputMemory[i]);',
+        '        for (int i = 64; i < test.memorySize; ++i) context.memory->writeb(TEST_HEAP_ADDRESS + 0x100 + i, test.inputMemoryTail[i - 64]);',
         '        if (test.memoryRegister >= 0) cpu->reg[test.memoryRegister].u32 = 0x100;',
         '        for (int i = 0; i < test.codeLength; ++i) testPushCode8(test.code[i]);',
         '        testRunCPU();',
@@ -196,7 +224,8 @@ def build_cpp(cases, results):
         '            if (cpu->fpu.getMMX(i)->q != test.mmx[i]) testFail("%s mm%d expected=%016llx actual=%016llx", test.name, i, (unsigned long long)test.mmx[i], (unsigned long long)cpu->fpu.getMMX(i)->q);',
         '        }',
         '        if ((cpu->flags & 0x8d5) != test.flags) testFail("%s flags expected=%08x actual=%08x", test.name, test.flags, cpu->flags & 0x8d5);',
-        '        for (int i = 0; i < 64; ++i) if (context.memory->readb(TEST_HEAP_ADDRESS + 0x100 + i) != test.memory[i]) testFail("%s memory[%d] expected=%02x actual=%02x", test.name, i, test.memory[i], context.memory->readb(TEST_HEAP_ADDRESS + 0x100 + i));',
+        '        if ((cpu->mxcsr & 0x6000) != (test.mxcsr & 0x6000)) testFail("%s MXCSR.RC expected=%08x actual=%08x", test.name, test.mxcsr & 0x6000, cpu->mxcsr & 0x6000);',
+        '        for (int i = 0; i < test.memorySize; ++i) { U8 expected = i < 64 ? test.memory[i] : test.memoryTail[i - 64]; U8 actual = context.memory->readb(TEST_HEAP_ADDRESS + 0x100 + i); if (actual != expected) testFail("%s memory[%d] expected=%02x actual=%02x", test.name, i, expected, actual); }',
         '    }',
         '}',
         '#endif',

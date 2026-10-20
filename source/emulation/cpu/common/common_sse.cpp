@@ -1824,8 +1824,14 @@ void common_stmxcsr(CPU* cpu, U32 reg, U32 address) {
     cpu->memory->writed(address, cpu->mxcsr);
 }
 
-void common_ldmxcsr(CPU* cpu, U32 reg, U32 address) {
-    cpu->mxcsr = cpu->memory->readd(address);
+bool common_ldmxcsr(CPU* cpu, U32 reg, U32 address) {
+    U32 value = cpu->memory->readd(address);
+    if (value & 0xffff0000) {
+        cpu->prepareException(EXCEPTION_GP, 0);
+        return false;
+    }
+    cpu->mxcsr = value;
+    return true;
 }
 
 void common_sfence(CPU* cpu) {

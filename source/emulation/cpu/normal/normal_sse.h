@@ -97,3 +97,12 @@ void OPCALL normal_sse42PcmpRE(CPU* cpu, DecodedOp* op) {
     common_sse41_3aRE(cpu, op->reg, eaa(cpu, op), op->imm);
     NEXT();
 }
+
+void OPCALL normal_ldmxcsr(CPU* cpu, DecodedOp* op) {
+    START_OP(cpu, op);
+    if (!common_ldmxcsr(cpu, op->reg, eaa(cpu, op))) {
+        NEXT_DONE();
+        return;
+    }
+    NEXT();
+}
