@@ -900,7 +900,7 @@ void hopFrameToPage(const std::string& json) {
     // must not fault the guest.
     MAIN_THREAD_EM_ASM({
         if (globalThis.window && window.bwVkFrame) {
-            try { window.bwVkFrame(UTF8ToString($0)); } catch (e) { console.warn('vk64: bwVkFrame failed', e); }
+            try { window.bwVkFrame(UTF8ToString($0 >>> 0)); } catch (e) { console.warn('vk64: bwVkFrame failed', e); }
         }
     }, json.c_str());
 #else
@@ -1968,7 +1968,7 @@ void hopV2ToPage() {
                             // One memcpy: a subarray view is unsafe to retain because
                             // wasm memory growth detaches every live view.
                             // Use HEAPU8 directly (Module.HEAPU8 may not be in scope).
-                            const bytes = new Uint8Array(HEAPU8.buffer, $0, $1).slice();
+                            const bytes = new Uint8Array(HEAPU8.buffer, $0 >>> 0, $1 >>> 0).slice();
                             window.bwVkChunk(bytes, $2);
                         } catch (e) { console.warn('vk64: bwVkChunk failed', e); }
                     }
@@ -2054,7 +2054,7 @@ static bool waitForReadbackFlag(U32 flagPtr, int timeoutMs) {
 #ifdef __EMSCRIPTEN__
     int r = EM_ASM_INT({
         try {
-            var view = new Int32Array(HEAPU8.buffer, $0, 1);
+            var view = new Int32Array(HEAPU8.buffer, $0 >>> 0, 1);
             var res = Atomics.wait(view, 0, 0, $1);
             return res === 'ok' ? 1 : 0;
         } catch (e) { return -1; }
@@ -2077,7 +2077,7 @@ static void hopV2LastToPage() {
         MAIN_THREAD_EM_ASM({
             if (globalThis.window && window.bwVkChunk) {
                 try {
-                    const bytes = new Uint8Array(HEAPU8.buffer, $0, $1).slice();
+                    const bytes = new Uint8Array(HEAPU8.buffer, $0 >>> 0, $1 >>> 0).slice();
                     window.bwVkChunk(bytes, $2);
                 } catch (e) {}
             }

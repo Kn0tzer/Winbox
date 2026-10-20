@@ -1148,6 +1148,7 @@ static std::atomic<U64> g_wasmJitTransitionFetchNextTargetOther{0};
 EM_JS(void, boxedwine_wasm_record_transition_profile, (U64 total, U64 yieldCount,
       U64 jit, U64 interior, U64 nullTarget, U64 noFlag, U64 noTable, U64 pfn, U64 other,
       const char* interiorTopPtr), {
+    interiorTopPtr >>>= 0;
     if (!Module.wasmJitInteriorProfileLines) Module.wasmJitInteriorProfileLines = [];
     var interiorTop = UTF8ToString(interiorTopPtr);
     var line = '[WASM JIT transitions] fetchNext=' + Number(total) +
@@ -2274,6 +2275,10 @@ static void wasmPrepareBlockEnter(CPU* cpu, KMemoryData* memoryData) {
 EM_JS(int, boxedwine_wasm_instantiate,
       (const void* bytes, int size, const void** importFns, int importCount),
 {
+    bytes >>>= 0;
+    size >>>= 0;
+    importFns >>>= 0;
+    importCount >>>= 0;
     if (Module.wasmJitReleaseGeneration === undefined) {
         Module.wasmJitReleaseGeneration = 0;
     }
@@ -2382,6 +2387,12 @@ EM_JS(void, boxedwine_wasm_log_runtime_stats, (U64 compiledBlocks, U64 browserMo
 });
 
 EM_JS(int, boxedwine_wasm_instantiate_runtime_batch, (const void* bytes, int size, const void** importFns, int importCount, int entryCount, int* outputSlots), {
+    bytes >>>= 0;
+    size >>>= 0;
+    importFns >>>= 0;
+    importCount >>>= 0;
+    entryCount >>>= 0;
+    outputSlots >>>= 0;
     if (Module.wasmJitReleaseGeneration === undefined) {
         Module.wasmJitReleaseGeneration = 0;
     }
@@ -2430,7 +2441,7 @@ EM_JS(int, boxedwine_wasm_instantiate_runtime_batch, (const void* bytes, int siz
         var group = {module: module, instance: instance, slots: new Set(allocated)};
         Module.wasmJitRuntimeGroups.set(groupId, group);
         for (var i = 0; i < allocated.length; ++i) {
-            HEAP32[(outputSlots >> 2) + i] = allocated[i];
+            HEAP32[(outputSlots >>> 2) + i] = allocated[i];
             Module.wasmJitRuntimeGroupBySlot.set(allocated[i], groupId);
         }
         Module.wasmJitRuntimeModuleCount = (Module.wasmJitRuntimeModuleCount || 0) + 1;
@@ -2471,6 +2482,7 @@ EM_JS(void, boxedwine_wasm_test_reset_oom_state, (), {
 });
 
 EM_JS(void, wasmJitTestFailBatchAfterSlots, (S32 slotCount), {
+    slotCount >>>= 0;
     Module.wasmJitTestFailBatchAfterSlots = slotCount;
 });
 
@@ -2572,6 +2584,10 @@ EM_JS(int, boxedwine_wasm_profile_split_before, (U32 blockStartEip, U32 currentE
 EM_JS(int, boxedwine_wasm_lookup_cached,
       (U32 eip, U32 blockHash, const void** importFns, int importCount, U32 relocBase, U32 relocCount, U32 memId),
 {
+    importFns >>>= 0;
+    importCount >>>= 0;
+    relocBase >>>= 0;
+    relocCount >>>= 0;
     if (!Module.wasmJitStats) {
         Module.wasmJitStats = { hits: 0, misses: 0, eipMisses: 0, hashMisses: 0, stale: 0, cachedInstalls: 0, freshCompiled: 0, saved: 0, eipMissSamples: [], hashMissSamples: [] };
     }
@@ -2942,6 +2958,15 @@ EM_JS(void, boxedwine_wasm_save_block,
        U32 cpuBlockInstructionCountOffset, U32 cpuYieldOffset, U32 contextTimeRemainingPtr,
        U32 relocCount),
 {
+    bytes >>>= 0;
+    size >>>= 0;
+    opCount >>>= 0;
+    emulatedLen >>>= 0;
+    next1Count >>>= 0;
+    next2Count >>>= 0;
+    jumpCount >>>= 0;
+    contextTimeRemainingPtr >>>= 0;
+    relocCount >>>= 0;
     function hex32(v) { return ('00000000' + ((v >>> 0).toString(16))).slice(-8); }
     var eipKey = hex32(eip);
     var hashKey = hex32(blockHash);
@@ -3010,6 +3035,8 @@ EM_JS(void, boxedwine_wasm_save_block,
 // and IDB but not in the exported manifest.
 EM_JS(void, wasm_jit_js_store_entry, (U32 eip, U32 blockHash, const void* bytes, int size),
 {
+    bytes >>>= 0;
+    size >>>= 0;
     function hex32(v) { return ('00000000' + ((v >>> 0).toString(16))).slice(-8); }
     var eipKey = hex32(eip);
     var hashKey = hex32(blockHash);
@@ -3054,13 +3081,19 @@ EM_JS(int, boxedwine_wasm_instantiate_mt,
       (const void* bytes, int size, const void** importFns, int importCount, int* nextSlotPtr,
        U32 moduleId, U32 memoryId, U32 memoryIncarnation, S32 brokerEnabled, S32* lookupResultPtr),
 {
-    HEAP32[lookupResultPtr >> 2] = 0;
+    bytes >>>= 0;
+    size >>>= 0;
+    importFns >>>= 0;
+    importCount >>>= 0;
+    nextSlotPtr >>>= 0;
+    lookupResultPtr >>>= 0;
+    HEAP32[lookupResultPtr >>> 2] = 0;
     try {
         var wasmBytes = new Uint8Array(HEAPU8.buffer, bytes, size);
         var lookup = globalThis.bwWasmJitBrokerGetOrCompile(moduleId, memoryId, memoryIncarnation,
             wasmBytes, brokerEnabled !== 0, 1, 1);
         var mod = lookup.module;
-        HEAP32[lookupResultPtr >> 2] = lookup.source;
+        HEAP32[lookupResultPtr >>> 2] = lookup.source;
 
         var helpers = {};
         var view = new Int32Array(HEAP32.buffer, importFns, importCount);
@@ -3179,6 +3212,10 @@ EM_JS(void, boxedwine_wasm_release_broker_memory_mt,
     (U32 memoryId, U32 memoryIncarnation, const U32* moduleIds, U32 count,
      const S32* tableSlots, U32 slotCount, S32 retireOwner,
      U32 groupKind, U32 groupIdentity, S32 releaseGroupInstance), {
+    moduleIds >>>= 0;
+    count >>>= 0;
+    tableSlots >>>= 0;
+    slotCount >>>= 0;
     var ids = count ? Array.from(new Uint32Array(HEAPU8.buffer, moduleIds, count)) : [];
     var slots = slotCount ? Array.from(new Int32Array(HEAPU8.buffer, tableSlots, slotCount)) : [];
     var groupInstanceKeys = [];
@@ -3198,6 +3235,10 @@ EM_JS(void, boxedwine_wasm_release_broker_memory_mt,
 EM_JS(void, boxedwine_wasm_release_broker_batches_mt,
     (const U32* records, U32 recordCount, const U32* moduleIds,
      const S32* tableSlots), {
+    records >>>= 0;
+    recordCount >>>= 0;
+    moduleIds >>>= 0;
+    tableSlots >>>= 0;
     var rows = new Uint32Array(HEAPU8.buffer, records, recordCount * 10);
     for (var i = 0; i < recordCount; ++i) {
         var base = i * 10;
@@ -3257,7 +3298,15 @@ EM_JS(int, boxedwine_wasm_instantiate_group_mt,
        int* nextSlotPtr, const char* exportNamePtr, U32 groupKind, U32 groupIdentity, U32 memoryId,
        U32 memoryIncarnation, U32 moduleId, U32 representedBlockCount, S32 brokerEnabled, S32* lookupResultPtr),
 {
-    HEAP32[lookupResultPtr >> 2] = 0;
+    bytes >>>= 0;
+    size >>>= 0;
+    importFns >>>= 0;
+    importCount >>>= 0;
+    nextSlotPtr >>>= 0;
+    exportNamePtr >>>= 0;
+    representedBlockCount >>>= 0;
+    lookupResultPtr >>>= 0;
+    HEAP32[lookupResultPtr >>> 2] = 0;
     try {
         if (typeof globalThis.bwWasmJitMtGroupInstanceKey !== 'function') {
             throw new Error('missing MT group instance key helper');
@@ -3281,7 +3330,7 @@ EM_JS(int, boxedwine_wasm_instantiate_group_mt,
             var wasmBytes = new Uint8Array(HEAPU8.buffer, bytes, size);
             var lookup = globalThis.bwWasmJitBrokerGetOrCompile(moduleId, memoryId, memoryIncarnation,
                 wasmBytes, brokerEnabled !== 0, 2, representedBlockCount);
-            HEAP32[lookupResultPtr >> 2] = lookup.source;
+            HEAP32[lookupResultPtr >>> 2] = lookup.source;
             var helpers = {};
             var view = new Int32Array(HEAP32.buffer, importFns, importCount);
             for (var i = 0; i < importCount; i++) {
@@ -3345,9 +3394,17 @@ EM_JS(int, boxedwine_wasm_instantiate_runtime_group_mt,
        U32 groupIdentity, U32 moduleId, U32 memoryId, U32 memoryIncarnation,
        S32 brokerEnabled, S32* lookupResultPtr),
 {
-    HEAP32[lookupResultPtr >> 2] = 0;
+    bytes >>>= 0;
+    size >>>= 0;
+    importFns >>>= 0;
+    importCount >>>= 0;
+    nextSlotPtr >>>= 0;
+    entryCount >>>= 0;
+    outputSlots >>>= 0;
+    lookupResultPtr >>>= 0;
+    HEAP32[lookupResultPtr >>> 2] = 0;
     for (var i = 0; i < entryCount; ++i) {
-        HEAP32[(outputSlots >> 2) + i] = -1;
+        HEAP32[(outputSlots >>> 2) + i] = -1;
     }
     var instanceKey;
     var inst;
@@ -3388,7 +3445,7 @@ EM_JS(int, boxedwine_wasm_instantiate_runtime_group_mt,
             var lookup = globalThis.bwWasmJitBrokerGetOrCompile(
                 moduleId, memoryId, memoryIncarnation, wasmBytes,
                 brokerEnabled !== 0, 2, entryCount);
-            HEAP32[lookupResultPtr >> 2] = lookup.source;
+            HEAP32[lookupResultPtr >>> 2] = lookup.source;
 #ifdef __TEST
             if (lookup.source === 1) {
                 Module.wasmJitMtRuntimeGroupConstructionCount =
@@ -3462,7 +3519,7 @@ EM_JS(int, boxedwine_wasm_instantiate_runtime_group_mt,
             var slot = reservedSlot + i;
             wasmTable.set(slot, functions[i]);
             installedCount = i + 1;
-            HEAP32[(outputSlots >> 2) + i] = slot;
+            HEAP32[(outputSlots >>> 2) + i] = slot;
 #ifdef __TEST
             if (Module.wasmJitTestFailMtRuntimeGroupAfterSlots >= 0 &&
                     installedCount >= Module.wasmJitTestFailMtRuntimeGroupAfterSlots) {
@@ -3491,7 +3548,7 @@ EM_JS(int, boxedwine_wasm_instantiate_runtime_group_mt,
             globalThis.bwWasmJitMtForgetGroupInstance(instanceKey);
         }
         for (var i = 0; i < entryCount; ++i) {
-            HEAP32[(outputSlots >> 2) + i] = -1;
+            HEAP32[(outputSlots >>> 2) + i] = -1;
         }
         var oom = !forcedFailure && error && error.bwWasmJitBrokerOom === true;
         if (oom && typeof globalThis.bwWasmJitMtBlockFreshGroupConstruction === 'function') {
@@ -3513,7 +3570,14 @@ EM_JS(int, boxedwine_wasm_install_existing_group_mt,
        int tableIndex, const char* exportNamePtr, U32 groupKind, U32 groupIdentity, U32 memoryId,
        U32 memoryIncarnation, U32 moduleId, U32 representedBlockCount, S32 brokerEnabled, S32* lookupResultPtr),
 {
-    HEAP32[lookupResultPtr >> 2] = 0;
+    bytes >>>= 0;
+    size >>>= 0;
+    importFns >>>= 0;
+    importCount >>>= 0;
+    exportNamePtr >>>= 0;
+    representedBlockCount >>>= 0;
+    lookupResultPtr >>>= 0;
+    HEAP32[lookupResultPtr >>> 2] = 0;
     try {
         if (tableIndex < 0) {
             return 0;
@@ -3543,7 +3607,7 @@ EM_JS(int, boxedwine_wasm_install_existing_group_mt,
             var wasmBytes = new Uint8Array(HEAPU8.buffer, bytes, size);
             var lookup = globalThis.bwWasmJitBrokerGetOrCompile(moduleId, memoryId, memoryIncarnation,
                 wasmBytes, brokerEnabled !== 0, 2, representedBlockCount);
-            HEAP32[lookupResultPtr >> 2] = lookup.source;
+            HEAP32[lookupResultPtr >>> 2] = lookup.source;
             var helpers = {};
             var view = new Int32Array(HEAP32.buffer, importFns, importCount);
             for (var i = 0; i < importCount; i++) {
@@ -3597,7 +3661,12 @@ EM_JS(int, boxedwine_wasm_install_existing_mt,
       (const void* bytes, int size, const void** importFns, int importCount, int tableIndex,
        U32 moduleId, U32 memoryId, U32 memoryIncarnation, S32 brokerEnabled, S32* lookupResultPtr),
 {
-    HEAP32[lookupResultPtr >> 2] = 0;
+    bytes >>>= 0;
+    size >>>= 0;
+    importFns >>>= 0;
+    importCount >>>= 0;
+    lookupResultPtr >>>= 0;
+    HEAP32[lookupResultPtr >>> 2] = 0;
     try {
         if (tableIndex < 0) {
             return 0;
@@ -3610,7 +3679,7 @@ EM_JS(int, boxedwine_wasm_install_existing_mt,
         var lookup = globalThis.bwWasmJitBrokerGetOrCompile(moduleId, memoryId, memoryIncarnation,
             wasmBytes, brokerEnabled !== 0, 1, 1);
         var mod = lookup.module;
-        HEAP32[lookupResultPtr >> 2] = lookup.source;
+        HEAP32[lookupResultPtr >>> 2] = lookup.source;
 
         var helpers = {};
         var view = new Int32Array(HEAP32.buffer, importFns, importCount);
@@ -3672,6 +3741,8 @@ EM_JS(int, boxedwine_wasm_install_existing_mt,
 EM_JS(void, wasm_jit_mt_populate_js_cache_entry,
       (U32 eip, U32 blockHash, const void* bytes, int size),
 {
+    bytes >>>= 0;
+    size >>>= 0;
     var key = 'v5-' + ('00000000' + ((eip >>> 0).toString(16))).slice(-8) +
               '-'   + ('00000000' + ((blockHash >>> 0).toString(16))).slice(-8);
     var binary = new Uint8Array(HEAPU8.buffer, bytes, size).slice();
@@ -3745,6 +3816,14 @@ EM_JS(void, wasm_jit_mt_populate_js_meta_entry,
        U32 cpuBlockInstructionCountOffset, U32 cpuYieldOffset, U32 contextTimeRemainingPtr,
        U32 relocCount),
 {
+    wasmSize >>>= 0;
+    opCount >>>= 0;
+    emulatedLen >>>= 0;
+    next1Count >>>= 0;
+    next2Count >>>= 0;
+    jumpCount >>>= 0;
+    contextTimeRemainingPtr >>>= 0;
+    relocCount >>>= 0;
     var key = 'v5-' + ('00000000' + ((eip >>> 0).toString(16))).slice(-8) +
               '-'   + ('00000000' + ((blockHash >>> 0).toString(16))).slice(-8);
     Module.wasmJitRuntimeConstants = {
@@ -3779,6 +3858,7 @@ EM_JS(void, wasm_jit_mt_populate_js_meta_entry,
 // boxedwine-jit-profile.txt sidecar.
 EM_JS(void, wasm_jit_mt_populate_js_profile_line, (const char* line),
 {
+    line >>>= 0;
     if (!Module.wasmJitInteriorProfileLines) Module.wasmJitInteriorProfileLines = [];
     Module.wasmJitInteriorProfileLines.push(UTF8ToString(line));
     if (Module.wasmJitInteriorProfileLines.length > 256) {
@@ -3851,6 +3931,9 @@ EM_JS(void, boxedwine_wasm_jit_enable_slot_capture, (), {
 });
 
 EM_JS(void, boxedwine_wasm_call_block_traced, (int tableIndex, int cpuPtr, int relocBase, U32 guestEip, U32 opCount), {
+    cpuPtr >>>= 0;
+    relocBase >>>= 0;
+    opCount >>>= 0;
     try {
         var fn = wasmTable.get(tableIndex);
         if (!fn) {
@@ -3979,6 +4062,8 @@ EM_JS(void, boxedwine_wasm_free_block, (int tableIndex),
 // slot populated in its own JS/WASM table yet.
 EM_JS(int, boxedwine_wasm_slot_check, (int tableIndex, int cpuPtr, int opPtr),
 {
+    cpuPtr >>>= 0;
+    opPtr >>>= 0;
     try {
         var hasFn = tableIndex >= 0 && tableIndex < wasmTable.length && !!wasmTable.get(tableIndex);
         if (hasFn) return 1;
@@ -6119,6 +6204,7 @@ bool wasmJitTestInstallMtRuntimeGroup(const std::vector<U8>& bytes, U32 entryCou
 }
 
 EM_JS(void, wasmJitTestFailMtRuntimeGroupAfterSlots, (S32 slotCount), {
+    slotCount >>>= 0;
     Module.wasmJitTestFailMtRuntimeGroupAfterSlots = slotCount;
 });
 
@@ -6139,9 +6225,10 @@ EM_JS(void, wasmJitTestResetMtRuntimeGroupConstructorStats, (), {
 
 EM_JS(void, wasmJitTestCopyMtRuntimeGroupConstructorStats,
         (WasmJitMtRuntimeGroupConstructorStatsSnapshot* snapshot), {
+    snapshot >>>= 0;
     var stats = globalThis.bwWasmJitMtRuntimeGroupConstructorStats || {};
-    HEAPU32[(snapshot >> 2) + 0] = stats.moduleAttempts || 0;
-    HEAPU32[(snapshot >> 2) + 1] = stats.instanceAttempts || 0;
+    HEAPU32[(snapshot >>> 2) + 0] = stats.moduleAttempts || 0;
+    HEAPU32[(snapshot >>> 2) + 1] = stats.instanceAttempts || 0;
 });
 
 WasmJitMtRuntimeGroupConstructorStatsSnapshot wasmJitTestGetMtRuntimeGroupConstructorStats() {
@@ -6292,6 +6379,7 @@ bool wasmJitTestAddMtSealedRequestForStats(KMemory* memory, U32 mappedFileKey,
 }
 
 EM_JS(void, wasmJitTestBrokerStatsSnapshotFailureJs, (S32* done), {
+    done >>>= 0;
     if (typeof ENVIRONMENT_IS_PTHREAD !== 'undefined' && ENVIRONMENT_IS_PTHREAD) {
         postMessage({
             cmd: 'callHandler',
@@ -6323,6 +6411,7 @@ bool wasmJitTestBrokerStatsSnapshotFailureCompletes() {
 EM_JS(void, wasmJitTestBrokerIncompleteStatsJs,
         (U32 expectedCreations, U32 expectedReuses, U32 expectedBrokerHits,
          U32 expectedLocalCompiles, S32* done), {
+    done >>>= 0;
     if (typeof ENVIRONMENT_IS_PTHREAD !== 'undefined' && ENVIRONMENT_IS_PTHREAD) {
         postMessage({
             cmd: 'callHandler',
@@ -6363,6 +6452,7 @@ bool wasmJitTestBrokerIncompleteStats(U32 expectedCreations,
 }
 
 EM_JS(void, wasmJitTestResetMtScheduleThreadPreloadStatsJs, (S32* done), {
+    done >>>= 0;
     if (typeof ENVIRONMENT_IS_PTHREAD !== 'undefined' && ENVIRONMENT_IS_PTHREAD) {
         postMessage({
             cmd: 'callHandler',
@@ -11536,7 +11626,7 @@ void JitWasmCodeGen::bsrReg(JitWidth w, RegPtr reg, RegPtr rm) {
 void JitWasmCodeGen::absReg(JitWidth w, RegPtr reg)                          { emulateSingleOp(); }
 
 void JitWasmCodeGen::byteSwapReg32(RegPtr reg) {
-    // bswap: ((v & 0xff)<<24) | ((v & 0xff00)<<8) | ((v>>8)&0xff00) | (v>>24)
+    // bswap: ((v & 0xff)<<24) | ((v & 0xff00)<<8) | ((v>>8)&0xff00) | (v >> 24)
     // Fall back to single-op emulation for correctness.
     emulateSingleOp();
 }
