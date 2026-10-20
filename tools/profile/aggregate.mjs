@@ -65,15 +65,19 @@ for (const file of files) {
     const key = `${frame.functionName || '(anonymous)'}\u0000${frame.url || ''}`;
     selfUs.set(key, (selfUs.get(key) || 0) + delta);
   }
-  // Main wasm module = the wasm:// url with the most functions (the runtime
-  // module has thousands; each JIT-emitted block module has a handful).
+  // Main wasm module = the fetched boxedwine64.wasm URL when available. Some
+  // profilers instead expose it as wasm://, where the largest function set is
+  // the best fallback. Dynamic JIT blocks are separate wasm:// modules.
   const nodeCountByWasmUrl = new Map();
+  let fetchedMainWasmUrl = null;
   for (const node of profile.nodes || []) {
     const url = node.callFrame?.url || '';
+    if (/\/boxedwine64\.wasm(?:[?#]|$)/i.test(url)) fetchedMainWasmUrl = url;
     if (url.startsWith('wasm://')) nodeCountByWasmUrl.set(url, (nodeCountByWasmUrl.get(url) || 0) + 1);
   }
-  let mainWasmUrl = null, mainWasmNodes = -1;
+  let mainWasmUrl = fetchedMainWasmUrl, mainWasmNodes = -1;
   for (const [url, count] of nodeCountByWasmUrl) {
+    if (mainWasmUrl) break;
     if (count > mainWasmNodes) { mainWasmUrl = url; mainWasmNodes = count; }
   }
   const meta = targetMeta.get(file) || {};
@@ -173,6 +177,10 @@ function classify(name, url, target) {
     if (rule.url && !rule.url.test(url)) continue;
     return rule.stage;
   }
+  // Profiling builds expose the main Emscripten module by its fetched wasm
+  // URL, while dynamic JIT blocks use wasm:// URLs. Resolve C++ names in the
+  // main module through symbols.json before leaving them unclassified.
+  if (/\/boxedwine64\.wasm(?:[?#]|$)/i.test(url)) return sourceStage(name) || 'unclassified';
   if (url.startsWith('wasm://')) return sourceStage(name) || 'unclassified';
   return 'unclassified';
 }

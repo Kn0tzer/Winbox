@@ -4,7 +4,7 @@
     {
       "stage": "idle/waiting",
       "match": {
-        "functionName": "^(Atomics\\.wait|.*futex.*|.*Futex.*|__emscripten_thread_sleep|__pthread_cond_wait.*|__timedwait.*|usleep|nanosleep|select|poll|__syscall_poll|__syscall_select)$"
+        "functionName": "^(Atomics\\.wait|.*futex.*|.*Futex.*|__emscripten_thread_sleep|__pthread_cond_.*wait|__pthread_mutex_(lock|trylock)|__timedwait.*|usleep|nanosleep|select|poll|__syscall_poll|__syscall_select)$"
       }
     },
     {
@@ -22,6 +22,54 @@
     {
       "stage": "Audio",
       "match": { "url": "boxedwine-(multithreaded-)?audio|audio-callback-shim" }
+    },
+    {
+      "stage": "64-bit CPU JIT compiler",
+      "match": { "functionName": "^CPU64::(tryJitStep|tryWasmExec|tryBlockStep)\\(" }
+    },
+    {
+      "stage": "64-bit CPU JIT-compiled code",
+      "match": { "functionName": "^CPU64::execWasmBlock\\(" }
+    },
+    {
+      "stage": "Guest memory/MMU",
+      "match": { "functionName": "^jit64Mem(Read|Write)$" }
+    },
+    {
+      "stage": "Guest memory/MMU",
+      "match": { "functionName": "K64Page" }
+    },
+    {
+      "stage": "64-bit CPU JIT compiler",
+      "match": { "functionName": "^(emitFlags|orFlagBit)$" }
+    },
+    {
+      "stage": "X11 wire + SDL present",
+      "match": { "functionName": "^(Blit_3or4_to_3or4__inversed_rgb|SDL_UpdateTexture|putImageData|requestAnimationFrame)$" }
+    },
+    {
+      "stage": "Emscripten runtime",
+      "match": { "functionName": "^(wasm-to-js|Module|Instance|do_proxy|emscripten_builtin_(malloc|free)|getenv|__pthread_mutex_unlock|__thread_proxy.*|printf_core|__udivmodti4)$" }
+    },
+    {
+      "stage": "Audio",
+      "match": { "functionName": "^Soft_Ring_Buffer_Ex<.*>::putbytes_" }
+    },
+    {
+      "stage": "Kernel syscalls + VFS",
+      "match": { "functionName": "^BoxedWineCondition::(addParentCondition|parentSnapshot)\\(" }
+    },
+    {
+      "stage": "idle/waiting",
+      "match": { "functionName": "^BoxedWineCondition::waitWithTimeout\\(" }
+    },
+    {
+      "stage": "Other host glue",
+      "match": { "functionName": "^(now|append|put|set|grow|get buffer|bw64_metrics_.*)$" }
+    },
+    {
+      "stage": "Other host glue",
+      "match": { "functionName": "^(recordSample|bwGuestProfile.*)$" }
     },
     {
       "stage": "X11 wire + SDL present",
