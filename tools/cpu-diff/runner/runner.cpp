@@ -112,7 +112,7 @@ struct NativeResult {
     U32 ok = 0;       // ran to completion
     U32 crashed = 0;  // died by signal
     U32 timeout = 0;
-    U32 pad = 0;
+    U32 signalNo = 0; // WTERMSIG when crashed
     U64 regs[16] = {};
     U32 flags = 0;
     U32 pad2 = 0;
@@ -213,6 +213,7 @@ int main(int argc, char** argv) {
             r.timeout = 1;
         } else if (WIFSIGNALED(wstatus)) {
             r.crashed = 1;
+            r.signalNo = (U32)WTERMSIG(wstatus);
         } else if (WEXITSTATUS(wstatus) == 0) {
             if (!readAll(pipefd[0], &r, sizeof(r))) r.crashed = 1;
         } else {
