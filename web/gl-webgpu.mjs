@@ -55,6 +55,38 @@ function componentCount(type) {
   return matrix ? Number(matrix[1]) * Number(matrix[2] || matrix[1]) : 1;
 }
 
+const GL_TOPOLOGY = new Map([[0x0000, 'point-list'], [0x0001, 'line-list'], [0x0002, 'line-strip'], [0x0004, 'triangle-list'], [0x0005, 'triangle-strip']]);
+const GL_COMPARE = new Map([[0x0200, 'never'], [0x0201, 'less'], [0x0202, 'equal'], [0x0203, 'less-equal'], [0x0204, 'greater'], [0x0205, 'not-equal'], [0x0206, 'greater-equal'], [0x0207, 'always']]);
+const GL_BLEND_OP = new Map([[0x8006, 'add'], [0x800a, 'subtract'], [0x800b, 'reverse-subtract'], [0x8007, 'min'], [0x8008, 'max']]);
+const signedType = type => [0x1400, 0x1402, 0x1404].includes(type);
+function halfToFloat(value) {
+  const sign = (value & 0x8000) ? -1 : 1, exponent = (value >> 10) & 0x1f, fraction = value & 0x3ff;
+  if (exponent === 0) return sign * 2 ** -14 * (fraction / 1024);
+  if (exponent === 31) return fraction ? NaN : sign * Infinity;
+  return sign * 2 ** (exponent - 15) * (1 + fraction / 1024);
+}
+
+function nativeVertexFormat(attribute) {
+  const { type, size, normalized, integer } = attribute;
+  const suffix = size === 1 ? '' : `x${size}`;
+  if (type === 0x1406) return `float32${suffix}`;
+  if (type === 0x1404) return `sint32${suffix}`;
+  if (type === 0x1405) return `uint32${suffix}`;
+  const small = {
+    '5120:true': `snorm8${suffix}`, '5121:true': `unorm8${suffix}`,
+    '5122:true': `snorm16${suffix}`, '5123:true': `unorm16${suffix}`,
+    '5120:false': `sint8${suffix}`, '5121:false': `uint8${suffix}`,
+    '5122:false': `sint16${suffix}`, '5123:false': `uint16${suffix}`,
+    '5131:false': `float16${suffix}`,
+  };
+  const format = small[`${type}:${normalized}`];
+  if (!format) return null;
+  if ([0x1400, 0x1401, 0x1402, 0x1403, 0x140b].includes(type) && size !== 2 && size !== 4) return null;
+  if (type === 0x8363) return null;
+  if (!integer && !normalized && [0x1400, 0x1401, 0x1402, 0x1403].includes(type)) return null;
+  return format;
+}
+
 function glslDeclarations(source, qualifier) {
   const result = [];
   const re = new RegExp(`^[ \\t]*(?:layout\\s*\\(([^)]*)\\)\\s*)?${qualifier}[ \\t]+([A-Za-z_]\\w*)[ \\t]+([A-Za-z_]\\w*)(?:[ \\t]*\\[[ \\t]*(\\d+)[ \\t]*\\])?[ \\t]*;[ \\t]*$`, 'gm');
@@ -177,6 +209,16 @@ export class WebGPUGL {
     this._elementArrayBuffer = null;
     this._currentProgram = null;
     this._enabled = new Set();
+    this._blend = { srcRGB: 1, dstRGB: 0, srcAlpha: 1, dstAlpha: 0, equationRGB: 0x8006, equationAlpha: 0x8006 };
+    this._blendColor = [0, 0, 0, 0];
+    this._depthFunc = 0x0201;
+    this._depthMask = true;
+    this._cullFace = 0x0405;
+    this._frontFace = 0x0901;
+    this._colorMask = [true, true, true, true];
+    this._pipelineCache = new Map();
+    this._clearPipelineCache = new Map();
+    this._constantBuffers = new Map();
     this._buffers = new Set();
     this._shaders = new Set();
     this._programs = new Set();
@@ -275,42 +317,90 @@ export class WebGPUGL {
     try { this.onFailure?.(error); } catch {}
   }
 
-  _clearGpu(mask) {
+  async _clearGpu(mask, state) {
     this._ensureTargets(this._width, this._height);
+    const scissor = state.enabled.has(0x0c11);
+    const fullColor = (mask & GL.COLOR_BUFFER_BIT) && state.colorMask.every(Boolean) && !scissor;
+    const fullDepth = (mask & GL.DEPTH_BUFFER_BIT) && state.depthMask && !scissor;
+    const partialColor = (mask & GL.COLOR_BUFFER_BIT) && !fullColor && state.colorMask.some(Boolean);
+    const partialDepth = (mask & GL.DEPTH_BUFFER_BIT) && !fullDepth && state.depthMask;
+    if (!fullColor && !fullDepth && !partialColor && !partialDepth) return;
     const encoder = this._device.createCommandEncoder();
     const descriptor = {
       colorAttachments: [{
         view: this._colorTexture.createView(),
-        clearValue: { r: this._clear[0], g: this._clear[1], b: this._clear[2], a: this._clear[3] },
-        loadOp: mask & GL.COLOR_BUFFER_BIT ? 'clear' : 'load', storeOp: 'store',
+        clearValue: { r: state.color[0], g: state.color[1], b: state.color[2], a: state.color[3] },
+        loadOp: fullColor ? 'clear' : 'load', storeOp: 'store',
       }],
       depthStencilAttachment: {
         view: this._depthTexture.createView(),
-        depthClearValue: this._clearDepth,
-        depthLoadOp: mask & GL.DEPTH_BUFFER_BIT ? 'clear' : 'load',
+        depthClearValue: state.depth,
+        depthLoadOp: fullDepth ? 'clear' : 'load',
         depthStoreOp: 'store',
       },
     };
     const pass = encoder.beginRenderPass(descriptor);
+    if (partialColor || partialDepth) this._drawClearRect(pass, state, partialColor, partialDepth);
     pass.end();
     this._device.queue.submit([encoder.finish()]);
   }
 
-  _clearPixels(mask) {
+  _drawClearRect(pass, state, clearColor, clearDepth) {
+    const color = state.color.map(value => Number(value).toPrecision(8)).join(',');
+    const depth = Number(state.depth).toPrecision(8);
+    const mask = state.colorMask.reduce((bits, enabled, index) => enabled && clearColor ? bits | (1 << index) : bits, 0);
+    const key = stateKey([color, depth, mask, clearColor, clearDepth, this._format]);
+    let pipeline = this._clearPipelineCache.get(key);
+    if (!pipeline) {
+      const fields = [];
+      if (clearColor) fields.push('@location(0) color: vec4<f32>,');
+      if (clearDepth) fields.push('@builtin(frag_depth) depth: f32,');
+      const value = `${clearColor ? `color: vec4<f32>(${color}),` : ''}${clearDepth ? `depth: ${depth},` : ''}`;
+      const code = `struct Out { ${fields.join(' ')} };\n@vertex fn vs(@builtin(vertex_index) i:u32)->@builtin(position) vec4<f32>{var p=array<vec2<f32>,3>(vec2<f32>(-1.0,-1.0),vec2<f32>(3.0,-1.0),vec2<f32>(-1.0,3.0));return vec4<f32>(p[i],0.0,1.0);}\n@fragment fn fs()->Out{return Out(${value});}`;
+      pipeline = this._device.createRenderPipeline({
+        layout: 'auto', vertex: { module: this._device.createShaderModule({ code }), entryPoint: 'vs' },
+        fragment: { module: this._device.createShaderModule({ code }), entryPoint: 'fs', targets: [{ format: this._format, writeMask: mask }] },
+        primitive: { topology: 'triangle-list' },
+        depthStencil: { format: 'depth24plus', depthWriteEnabled: clearDepth, depthCompare: 'always' },
+      });
+      this._clearPipelineCache.set(key, pipeline);
+    }
+    pass.setPipeline(pipeline);
+    pass.setViewport(0, 0, this._width, this._height, 0, 1);
+    if (state.enabled.has(0x0c11)) {
+      const [sx, sy, sw, sh] = state.scissor;
+      const left = Math.max(0, sx), top = Math.max(0, this._height - sy - sh);
+      pass.setScissorRect(left, top, Math.max(0, Math.min(this._width - left, sw)), Math.max(0, Math.min(this._height - top, sh)));
+    }
+    pass.draw(3);
+  }
+
+  _clearPixels(mask, state) {
     if (!(mask & GL.COLOR_BUFFER_BIT)) return;
-    const rgba = this._clear.map(value => Math.round(clamp01(value) * 255));
-    for (let i = 0; i < this._pixels.length; i += 4) {
-      this._pixels[i] = rgba[0]; this._pixels[i + 1] = rgba[1];
-      this._pixels[i + 2] = rgba[2]; this._pixels[i + 3] = rgba[3];
+    const rgba = state.color.map(value => Math.round(clamp01(value) * 255));
+    let left = 0, right = this._width, top = 0, bottom = this._height;
+    if (state.enabled.has(0x0c11)) {
+      const [x, y, width, height] = state.scissor;
+      left = Math.max(0, x); right = Math.min(this._width, x + width);
+      top = Math.max(0, this._height - y - height); bottom = Math.min(this._height, this._height - y);
+    }
+    for (let y = top; y < bottom; y++) for (let x = left; x < right; x++) {
+      const i = (y * this._width + x) * 4;
+      for (let channel = 0; channel < 4; channel++) if (state.colorMask[channel]) this._pixels[i + channel] = rgba[channel];
     }
   }
 
   clearColor(r, g, b, a) { this._clear = [clamp01(r), clamp01(g), clamp01(b), clamp01(a)]; }
   clearDepth(value) { this._clearDepth = clamp01(value); }
-  clear(mask) { this._clearPixels(mask); this._enqueue(() => this._clearGpu(mask)); }
+  clear(mask) {
+    const state = { color: [...this._clear], depth: this._clearDepth, enabled: new Set(this._enabled), colorMask: [...this._colorMask], depthMask: this._depthMask, scissor: [...this._scissor] };
+    this._clearPixels(mask, state);
+    this._enqueue(() => this._clearGpu(mask, state));
+  }
   viewport(x, y, width, height) {
     this._viewport = [x | 0, y | 0, width | 0, height | 0];
-    this._ensureTargets(Math.max(1, x + width), Math.max(1, y + height));
+    if (!this._drawFramebuffer && (x + width > this._width || y + height > this._height))
+      this._ensureTargets(Math.max(this._width, x + width), Math.max(this._height, y + height));
   }
   scissor(x, y, width, height) { this._scissor = [x | 0, y | 0, width | 0, height | 0]; }
   enable(capability) { this._enabled.add(capability); }
@@ -386,7 +476,7 @@ export class WebGPUGL {
   // S2a keeps the original client bytes because WebGPU buffers cannot be read
   // synchronously. GPU copies are created lazily with every buffer role the GL
   // bridge may assign, then refreshed from this shadow before a draw.
-  createBuffer() { const object = { id: this._nextId++, data: new Uint8Array(), gpu: null, dirty: true }; this._buffers.add(object); return object; }
+  createBuffer() { const object = { id: this._nextId++, data: new Uint8Array(), gpu: null, dirty: true, version: 0, vertexCache: new Map() }; this._buffers.add(object); return object; }
   deleteBuffer(buffer) {
     if (!buffer) return;
     buffer.gpu?.destroy(); buffer.gpu = null; this._buffers.delete(buffer);
@@ -409,13 +499,13 @@ export class WebGPUGL {
     if (!buffer) return;
     const length = typeof data === 'number' ? Math.max(0, data | 0) : bytesOf(data).length;
     buffer.data = typeof data === 'number' ? new Uint8Array(length) : bytesOf(data);
-    buffer.usage = usage; buffer.dirty = true;
+    buffer.usage = usage; buffer.dirty = true; buffer.version++; buffer.vertexCache.clear();
   }
   bufferSubData(target, offset, data) {
     const buffer = this._boundBuffer(target);
     if (!buffer) return;
     const bytes = bytesOf(data), next = new Uint8Array(Math.max(buffer.data.length, offset + bytes.length));
-    next.set(buffer.data); next.set(bytes, offset); buffer.data = next; buffer.dirty = true;
+    next.set(buffer.data); next.set(bytes, offset); buffer.data = next; buffer.dirty = true; buffer.version++; buffer.vertexCache.clear();
   }
   getBufferParameter(target, parameter) {
     const buffer = this._boundBuffer(target);
@@ -490,6 +580,71 @@ export class WebGPUGL {
     }
     buffer.dirty = false;
     return buffer.gpu;
+  }
+
+  _vertexSpec(attribute) {
+    const buffer = attribute.buffer;
+    const sourceBytes = attribute.type === 0x1400 || attribute.type === 0x1401 ? 1
+      : [0x1402, 0x1403, 0x140b].includes(attribute.type) ? 2 : 4;
+    const native = nativeVertexFormat(attribute);
+    if (native && buffer) return {
+      format: native,
+      arrayStride: attribute.stride || sourceBytes * attribute.size,
+      offset: attribute.offset,
+      buffer: this._syncBuffer(buffer),
+      stepMode: attribute.divisor ? 'instance' : 'vertex',
+    };
+    if (buffer) {
+      const key = stateKey([buffer.version, attribute.index, attribute.type, attribute.size, attribute.normalized, attribute.integer, attribute.stride, attribute.offset]);
+      let cached = buffer.vertexCache.get(key);
+      if (!cached) {
+        const inView = new DataView(buffer.data.buffer, buffer.data.byteOffset, buffer.data.byteLength);
+        const inStride = attribute.stride || sourceBytes * attribute.size;
+        const count = Math.max(1, Math.floor(Math.max(0, buffer.data.length - attribute.offset) / inStride));
+        const componentSize = 4, out = new Uint8Array(count * attribute.size * componentSize);
+        const view = new DataView(out.buffer);
+        const signed = attribute.type === 0x1400 || attribute.type === 0x1402 || attribute.type === 0x1404;
+        for (let vertex = 0; vertex < count; vertex++) for (let component = 0; component < attribute.size; component++) {
+          const offset = attribute.offset + vertex * inStride + component * sourceBytes;
+          let value = 0;
+          if (offset + sourceBytes <= buffer.data.length) {
+            if (attribute.type === 0x1400) value = inView.getInt8(offset);
+            else if (attribute.type === 0x1401) value = inView.getUint8(offset);
+            else if (attribute.type === 0x1402) value = inView.getInt16(offset, true);
+            else if (attribute.type === 0x1403) value = inView.getUint16(offset, true);
+            else if (attribute.type === 0x1404) value = inView.getInt32(offset, true);
+            else if (attribute.type === 0x1405) value = inView.getUint32(offset, true);
+            else if (attribute.type === 0x1406) value = inView.getFloat32(offset, true);
+            else if (attribute.type === 0x140b) value = halfToFloat(inView.getUint16(offset, true));
+          }
+          if (attribute.normalized) {
+            if (attribute.type === 0x1400) value = Math.max(-1, value / 127);
+            else if (attribute.type === 0x1401) value /= 255;
+            else if (attribute.type === 0x1402) value = Math.max(-1, value / 32767);
+            else if (attribute.type === 0x1403) value /= 65535;
+          }
+          const dst = (vertex * attribute.size + component) * 4;
+          if (attribute.integer) signed ? view.setInt32(dst, value | 0, true) : view.setUint32(dst, value >>> 0, true);
+          else view.setFloat32(dst, Number(value), true);
+        }
+        const gpu = this._device.createBuffer({ size: Math.max(4, out.byteLength), usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+        if (out.byteLength) this._device.queue.writeBuffer(gpu, 0, out);
+        cached = { gpu, arrayStride: Math.max(4, attribute.size * 4) };
+        buffer.vertexCache.set(key, cached);
+      }
+      return { format: `${attribute.integer ? (signedType(attribute.type) ? 'sint32' : 'uint32') : 'float32'}${attribute.size === 1 ? '' : `x${attribute.size}`}`,
+        arrayStride: cached.arrayStride, offset: 0, buffer: cached.gpu, stepMode: attribute.divisor ? 'instance' : 'vertex' };
+    }
+
+    const key = stateKey([attribute.index, ...attribute.current]);
+    let gpu = this._constantBuffers.get(key);
+    if (!gpu) {
+      const data = attribute.integer ? new Int32Array(attribute.current) : new Float32Array(attribute.current);
+      gpu = this._device.createBuffer({ size: 16, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+      this._device.queue.writeBuffer(gpu, 0, data);
+      this._constantBuffers.set(key, gpu);
+    }
+    return { format: attribute.integer ? 'sint32x4' : 'float32x4', arrayStride: 16, offset: 0, buffer: gpu, stepMode: 'instance' };
   }
 
   createShader(type) { const shader = { id: this._nextId++, type, source: '', compiled: false, infoLog: '' }; this._shaders.add(shader); return shader; }
@@ -615,20 +770,180 @@ export class WebGPUGL {
   uniformMatrix2fv(location, transpose, value) { this._setUniform(location, value); }
   uniformMatrix3fv(location, transpose, value) { this._setUniform(location, value); }
   uniformMatrix4fv(location, transpose, value) { this._setUniform(location, value); }
-  drawArrays() {}
-  drawElements() {}
-  drawArraysInstanced() {}
-  drawElementsInstanced() {}
-  blendFunc() {}
-  blendFuncSeparate() {}
-  blendEquation() {}
-  blendEquationSeparate() {}
-  colorMask() {}
-  depthMask() {}
-  depthFunc() {}
-  cullFace() {}
-  frontFace() {}
-  scissor() {}
+
+  _drawSnapshot() {
+    const attributes = new Map();
+    for (const [index, attribute] of this._vao.attributes) attributes.set(index, { ...attribute, current: new Float32Array(attribute.current) });
+    const program = this._currentProgram;
+    return {
+      program, uniformValues: new Map([...(program?.uniformValues || [])].map(([name, value]) => [name, ArrayBuffer.isView(value) ? value.slice() : Array.isArray(value) ? value.slice() : value])),
+      attributes, elementArrayBuffer: this._vao.elementArrayBuffer,
+      viewport: [...this._viewport], scissor: [...this._scissor],
+      enabled: new Set(this._enabled), blend: { ...this._blend }, blendColor: [...this._blendColor],
+      depthFunc: this._depthFunc, depthMask: this._depthMask, cullFace: this._cullFace,
+      frontFace: this._frontFace, colorMask: [...this._colorMask],
+      drawFramebuffer: this._drawFramebuffer,
+    };
+  }
+
+  drawArrays(mode, first, count) { this._enqueue(() => this._draw(this._drawSnapshot(), mode, first, count, null, 1)); }
+  drawElements(mode, count, type, offset) { this._enqueue(() => this._draw(this._drawSnapshot(), mode, 0, count, { type, offset }, 1)); }
+  drawArraysInstanced(mode, first, count, instances) { this._enqueue(() => this._draw(this._drawSnapshot(), mode, first, count, null, instances)); }
+  drawElementsInstanced(mode, count, type, offset, instances) { this._enqueue(() => this._draw(this._drawSnapshot(), mode, 0, count, { type, offset }, instances)); }
+
+  _indexValues(buffer, type, offset, count) {
+    if (!buffer || ![0x1401, 0x1403, 0x1405].includes(type)) return null;
+    const size = type === 0x1401 ? 1 : type === 0x1403 ? 2 : 4;
+    if (offset < 0 || offset + count * size > buffer.data.length) return null;
+    const view = new DataView(buffer.data.buffer, buffer.data.byteOffset, buffer.data.byteLength);
+    const values = new Uint32Array(count);
+    for (let i = 0; i < count; i++) values[i] = type === 0x1401 ? view.getUint8(offset + i)
+      : type === 0x1403 ? view.getUint16(offset + i * 2, true) : view.getUint32(offset + i * 4, true);
+    return values;
+  }
+
+  _rewriteTopology(mode, first, count, indices) {
+    if (mode === 0x0006) {
+      const source = indices || Uint32Array.from({ length: count }, (_, i) => first + i), out = [];
+      for (let i = 1; i + 1 < source.length; i++) out.push(source[0], source[i], source[i + 1]);
+      return { topology: 'triangle-list', indices: Uint32Array.from(out) };
+    }
+    if (mode === 0x0002) {
+      const source = indices || Uint32Array.from({ length: count }, (_, i) => first + i), out = [];
+      for (let i = 0; i < source.length; i++) out.push(source[i], source[(i + 1) % source.length]);
+      return { topology: 'line-list', indices: Uint32Array.from(out) };
+    }
+    return { topology: GL_TOPOLOGY.get(mode), indices };
+  }
+
+  _blendDescriptor(state) {
+    const operation = GL_BLEND_OP.get(state.blend.equationRGB), alphaOperation = GL_BLEND_OP.get(state.blend.equationAlpha);
+    if (!operation || !alphaOperation) throw new Error('unsupported GL blend equation');
+    return {
+      color: { srcFactor: blendFactor(state.blend.srcRGB), dstFactor: blendFactor(state.blend.dstRGB), operation },
+      alpha: { srcFactor: blendFactor(state.blend.srcAlpha), dstFactor: blendFactor(state.blend.dstAlpha), operation: alphaOperation },
+    };
+  }
+
+  _vertexLayouts(program, attributes) {
+    const locations = [...program.attributeLocations.entries()].sort((a, b) => a[1] - b[1]);
+    const layouts = [], buffers = [];
+    for (const [name, location] of locations) {
+      const attribute = attributes.get(location) || { index: location, enabled: false, buffer: null, size: 4, type: 0x1406, normalized: false, integer: false, stride: 0, offset: 0, divisor: 0, current: new Float32Array([0, 0, 0, 1]) };
+      if (attribute.enabled && attribute.buffer) {
+        const spec = this._vertexSpec(attribute);
+        layouts.push({ arrayStride: spec.arrayStride, stepMode: spec.stepMode, attributes: [{ shaderLocation: location, offset: 0, format: spec.format }] });
+        buffers.push({ slot: layouts.length - 1, buffer: spec.buffer, offset: spec.offset });
+      } else {
+        const spec = this._vertexSpec(attribute);
+        layouts.push({ arrayStride: spec.arrayStride, stepMode: 'instance', attributes: [{ shaderLocation: location, offset: 0, format: spec.format }] });
+        buffers.push({ slot: layouts.length - 1, buffer: spec.buffer, offset: 0 });
+      }
+    }
+    return { layouts, buffers };
+  }
+
+  _pipelineFor(program, state, vertex, topology, targetFormat = this._format, depthFormat = 'depth24plus') {
+    const blendEnabled = state.enabled.has(0x0be2), depthEnabled = state.enabled.has(0x0b71);
+    const cullEnabled = state.enabled.has(0x0b44);
+    const cull = cullEnabled ? (state.cullFace === 0x0404 ? 'front' : state.cullFace === 0x0408 ? 'front-and-back' : 'back') : 'none';
+    const blend = blendEnabled ? this._blendDescriptor(state) : undefined;
+    const writeMask = state.colorMask.reduce((mask, enabled, index) => enabled ? mask | (1 << index) : mask, 0);
+    const depthCompare = depthEnabled ? GL_COMPARE.get(state.depthFunc) : 'always';
+    if (!depthCompare) throw new Error('unsupported GL depth comparison');
+    const key = stateKey({
+      program: program.id, vertex: vertex.layouts, topology, blend, depth: [depthEnabled, depthCompare, state.depthMask],
+      cull, frontFace: state.frontFace, colorMask: writeMask, targetFormat, depthFormat,
+    });
+    if (this._pipelineCache.has(key)) return this._pipelineCache.get(key);
+    const vertexModule = this._device.createShaderModule({ code: program.stages.vertex.wgsl });
+    const fragmentModule = this._device.createShaderModule({ code: program.stages.fragment.wgsl });
+    const descriptor = {
+      layout: 'auto',
+      vertex: { module: vertexModule, entryPoint: 'main', buffers: vertex.layouts },
+      fragment: { module: fragmentModule, entryPoint: 'main', targets: [{ format: targetFormat, writeMask, ...(blend ? { blend } : {}) }] },
+      primitive: { topology, frontFace: state.frontFace === 0x0900 ? 'cw' : 'ccw', cullMode: cull === 'front-and-back' ? 'front' : cull },
+      depthStencil: { format: depthFormat, depthWriteEnabled: depthEnabled && state.depthMask, depthCompare },
+    };
+    const pipeline = this._device.createRenderPipeline(descriptor);
+    this._pipelineCache.set(key, pipeline);
+    return pipeline;
+  }
+
+  async _uniformBindGroup(program, pipeline, uniformValues) {
+    const entries = [];
+    for (const [stage, binding] of [['vertex', 0], ['fragment', 1]]) {
+      const record = program.stages[stage];
+      if (!record?.layout?.fields?.length) continue;
+      let buffer = program.uniformGpu?.[stage];
+      const size = Math.max(16, record.layout.size);
+      if (!buffer || buffer.size !== size) {
+        buffer?.destroy();
+        buffer = this._device.createBuffer({ size, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        program.uniformGpu ||= {};
+        program.uniformGpu[stage] = buffer;
+      }
+      const packed = packUniforms(record.layout, Object.fromEntries(record.layout.fields.map(field => [field.name, uniformValues.get(field.name)])));
+      this._device.queue.writeBuffer(buffer, 0, packed);
+      entries.push({ binding, resource: { buffer, offset: 0, size } });
+    }
+    if (!entries.length) return null;
+    return this._device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries });
+  }
+
+  async _draw(state, mode, first, count, indexed, instances) {
+    const program = state.program;
+    if (!program || !program.linkPromise || count <= 0 || instances <= 0) return;
+    if (!(await program.linkPromise)) return;
+    if (state.cullFace === 0x0408 && state.enabled.has(0x0b44)) return;
+    const topologyData = this._rewriteTopology(mode, first, count, indexed ? this._indexValues(state.elementArrayBuffer, indexed.type, indexed.offset, count) : null);
+    if (!topologyData.topology || (indexed && !topologyData.indices)) return;
+    const topology = topologyData.topology;
+    const vertex = this._vertexLayouts(program, state.attributes);
+    const viewport = state.viewport;
+    const pipeline = this._pipelineFor(program, state, vertex, topology);
+    const encoder = this._device.createCommandEncoder();
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{ view: this._colorTexture.createView(), loadOp: 'load', storeOp: 'store' }],
+      depthStencilAttachment: { view: this._depthTexture.createView(), depthLoadOp: 'load', depthStoreOp: 'store' },
+    });
+    pass.setPipeline(pipeline);
+    for (const item of vertex.buffers) pass.setVertexBuffer(item.slot, item.buffer, item.offset);
+    const bindGroup = await this._uniformBindGroup(program, pipeline, state.uniformValues);
+    if (bindGroup) pass.setBindGroup(0, bindGroup);
+    const x = Math.max(0, viewport[0]), y = Math.max(0, this._height - viewport[1] - viewport[3]);
+    pass.setViewport(x, y, Math.max(0, viewport[2]), Math.max(0, viewport[3]), 0, 1);
+    if (state.enabled.has(0x0c11)) {
+      const [sx, sy, sw, sh] = state.scissor;
+      const left = Math.max(0, sx), top = Math.max(0, this._height - sy - sh);
+      pass.setScissorRect(left, top, Math.max(0, Math.min(this._width - left, sw)), Math.max(0, Math.min(this._height - top, sh)));
+    }
+    if (state.enabled.has(0x0be2)) pass.setBlendConstant({ r: state.blendColor[0], g: state.blendColor[1], b: state.blendColor[2], a: state.blendColor[3] });
+    let temporaryIndex = null;
+    if (topologyData.indices) {
+      const max = topologyData.indices.reduce((value, index) => Math.max(value, index), 0);
+      const values = max <= 0xffff ? Uint16Array.from(topologyData.indices) : Uint32Array.from(topologyData.indices);
+      temporaryIndex = this._device.createBuffer({ size: Math.max(4, values.byteLength), usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
+      this._device.queue.writeBuffer(temporaryIndex, 0, values);
+      pass.setIndexBuffer(temporaryIndex, values instanceof Uint16Array ? 'uint16' : 'uint32');
+      pass.drawIndexed(values.length, instances, 0, 0, 0);
+    } else pass.draw(count, instances, first, 0);
+    pass.end();
+    this._device.queue.submit([encoder.finish()]);
+    if (temporaryIndex) this._device.queue.onSubmittedWorkDone().then(() => temporaryIndex.destroy()).catch(() => {});
+  }
+
+  blendFunc(src, dst) { this.blendFuncSeparate(src, dst, src, dst); }
+  blendFuncSeparate(srcRGB, dstRGB, srcAlpha, dstAlpha) { Object.assign(this._blend, { srcRGB, dstRGB, srcAlpha, dstAlpha }); }
+  blendEquation(mode) { this.blendEquationSeparate(mode, mode); }
+  blendEquationSeparate(rgb, alpha) { this._blend.equationRGB = rgb; this._blend.equationAlpha = alpha; }
+  blendColor(r, g, b, a) { this._blendColor = [r, g, b, a].map(clamp01); }
+  colorMask(r, g, b, a) { this._colorMask = [!!r, !!g, !!b, !!a]; }
+  depthMask(enabled) { this._depthMask = !!enabled; }
+  depthFunc(func) { this._depthFunc = func | 0; }
+  cullFace(mode) { this._cullFace = mode | 0; }
+  frontFace(mode) { this._frontFace = mode | 0; }
+  scissor(x, y, width, height) { this._scissor = [x | 0, y | 0, width | 0, height | 0]; }
   stencilFunc() {}
   stencilFuncSeparate() {}
   stencilOp() {}
