@@ -71,8 +71,8 @@ class GamepadE2ETest extends ProbeTest {
       // The pin-spawn message only says the services were queued. Wait until
       // Wine's one-shot service and PnP initialization processes have exited
       // before starting XInput, so its first query cannot race bus setup.
-      await this.waitForLog(activePage, /CPU64: exit syscall, status=0.*services\.exe/, 120000);
-      await this.waitForLog(activePage, /CPU64: exit syscall, status=0.*winedevice\.exe/, 120000);
+      await this.waitForLog(activePage, /CPU64: exit(?:_group)? syscall, status=0.*services\.exe/, 120000);
+      await this.waitForLog(activePage, /CPU64: exit(?:_group)? syscall, status=0.*winedevice\.exe/, 120000);
       const runtimeFrame = await activePage.evaluate(() => ({
         path: location.pathname,
         ready: window.bwRuntime?.call?.('bw64_session_ready', [], []) === 1,
