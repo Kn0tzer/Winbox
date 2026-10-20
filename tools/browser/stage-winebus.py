@@ -8,6 +8,10 @@ import zipfile
 
 
 PREFIX_MEMBER = "home/username/.wine/system.reg"
+WINE_DRIVER_DIRS = {
+    "wine32.zip": "opt/wine-stable/lib/wine/i386-windows",
+    "wine64.zip": "usr/lib/x86_64-linux-gnu/wine/x86_64-windows",
+}
 REGISTRY_SECTIONS = (
     r'''[System\\CurrentControlSet\\Control\\Class\\{4d36e97d-e325-11ce-bfc1-08002be10318}] 1791272934
 #time=1dd556722a11766
@@ -56,8 +60,67 @@ def patch_registry(data):
     return (text.rstrip() + "\n\n" + "\n\n".join(missing) + "\n").encode("utf-8")
 
 
+def stage_driver_paths(runtime):
+    """Mirror built-in drivers under system32/drivers in both Wine archives.
+
+    The prefix's system32.link points at each architecture's *-windows tree,
+    while Wine services request driver images from system32/drivers/*.sys.
+    The base archives store these images at the root of that tree.
+    """
+    changed = False
+    for archive_name, windows_dir in WINE_DRIVER_DIRS.items():
+        archive = runtime / archive_name
+        if not archive.is_file():
+            raise ValueError(f"Wine runtime archive does not exist: {archive}")
+        with zipfile.ZipFile(archive, "r") as original:
+            prefix = windows_dir + "/"
+            payload = {}
+            source_info = {}
+            for entry in original.infolist():
+                relative = entry.filename[len(prefix):] if entry.filename.startswith(prefix) else ""
+                if not relative or "/" in relative or not relative.lower().endswith(".sys"):
+                    continue
+                destination = f"{windows_dir}/drivers/{relative}"
+                payload[destination] = original.read(entry)
+                source_info[destination] = entry
+            if not payload:
+                raise ValueError(f"No built-in .sys drivers found under {windows_dir} in {archive}")
+
+            names = [entry.filename for entry in original.infolist()]
+            unchanged = all(
+                names.count(name) == 1 and original.read(name) == data
+                for name, data in payload.items()
+            )
+            if unchanged:
+                continue
+
+            fd, temp_name = tempfile.mkstemp(prefix=archive.name + ".", suffix=".tmp", dir=archive.parent)
+            os.close(fd)
+            temporary = Path(temp_name)
+            try:
+                with zipfile.ZipFile(temporary, "w") as updated:
+                    updated.comment = original.comment
+                    for entry in original.infolist():
+                        if entry.filename not in payload:
+                            updated.writestr(entry, original.read(entry))
+                    for name, data in sorted(payload.items()):
+                        source = source_info[name]
+                        info = zipfile.ZipInfo(name, date_time=source.date_time)
+                        info.compress_type = source.compress_type
+                        info.create_system = source.create_system
+                        info.external_attr = source.external_attr
+                        updated.writestr(info, data)
+                os.chmod(temporary, archive.stat().st_mode & 0o777)
+                os.replace(temporary, archive)
+            finally:
+                temporary.unlink(missing_ok=True)
+            changed = True
+    return changed
+
+
 def stage(runtime):
     runtime = Path(runtime).resolve()
+    changed = stage_driver_paths(runtime)
     prefix = runtime / "prefix64.zip"
     if not prefix.is_file():
         raise ValueError(f"64-bit prefix archive does not exist: {prefix}")
@@ -67,7 +130,7 @@ def stage(runtime):
         old_registry = original.read(PREFIX_MEMBER)
         new_registry = patch_registry(old_registry)
         if new_registry == old_registry:
-            return False
+            return changed
         fd, temp_name = tempfile.mkstemp(prefix=prefix.name + ".", suffix=".tmp", dir=prefix.parent)
         os.close(fd)
         temporary = Path(temp_name)
@@ -94,4 +157,4 @@ if __name__ == "__main__":
     parser.add_argument("runtime", type=Path, help="generated export runtime directory")
     args = parser.parse_args()
     changed = stage(args.runtime)
-    print(f"prefix64.zip: WineBus SDL registry {'added' if changed else 'already present'}")
+    print(f"WineBus runtime paths {'updated' if changed else 'already present'}")
