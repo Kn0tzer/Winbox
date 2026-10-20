@@ -11,9 +11,11 @@ tools/bw64-build.sh --check        # idle / live / initializing / dead owner
 ```
 
 The wrapper resolves its repository from its own path, restores pinned
-runtime inputs, takes an atomic lock and refuses live probe slots. A live
-owner keeps the lock regardless of age. An incomplete/malformed owner record
-blocks the build; readers also wait. Only a validated dead PID can be reclaimed.
+runtime inputs, takes an atomic lock and refuses live heavy probe slots. It
+checks only `slot-*` files; light `light-*` suite slots do not block builds. A
+live owner keeps the lock regardless of age. An incomplete/malformed owner
+record blocks the build; readers also wait. Only a validated dead PID can be
+reclaimed.
 `BW64_BUILD_WAIT_SECONDS` bounds the wait. `EMSDK` selects the SDK when emcc
 is not already active; `JOBS` controls compilation.
 
@@ -53,9 +55,16 @@ try {
 ```
 
 Callers release slots during cleanup; later probes reclaim abandoned slots
-whose PID is dead. Existing helpers bound the wait. Keep the
-runtime lock/slot directories shared across local processes. Tests of lock
-behavior use isolated temporary directories.
+whose PID is dead. Direct probe callers use the heavy pool by default, with
+two slots; browser suite `ProbeTest` instances use the light pool by default,
+also with two slots. Heavy slots coordinate game, profile, replay, and
+`celeste-boot` probes. Each kind has a FIFO wait queue and a four-hour default
+wait (`PROBE_SLOT_TIMEOUT_MS`), so callers do not need retry loops. Slot files
+contain only the PID; `info-<slotfilename>.json` sidecars hold owner details.
+Use `node web/tests/probe-slots.mjs status` to inspect holders and waiters for
+both kinds. The legacy `/tmp/bw64-probe.lock` check still applies to both
+kinds. Keep the runtime lock/slot directories shared across local processes.
+Tests of lock behavior use isolated temporary directories.
 
 Raw outputs live in ignored `test-results/<tag>/`. Keep the summary, hashes,
 console errors and screenshots together. Curated reports are committed under
