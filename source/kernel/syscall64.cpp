@@ -17,6 +17,7 @@
 #include "ksocket.h"
 #include <thread>   // std::this_thread::yield() for sched_yield
 #include <mutex>    // std::recursive_mutex for BW64_SERIAL_TEARDOWN
+#include <unordered_map>
 #include "kunixsocket.h"
 #include "kpoll.h"
 #include "ripSampler.h"
@@ -54,6 +55,7 @@
 #define X64_SYS_shmdt             67
 #define X64_SYS_rt_sigaction      13
 #define X64_SYS_rt_sigprocmask    14
+#define X64_SYS_ptrace            101
 #define X64_SYS_ioctl             16
 #define X64_SYS_pread64           17
 #define X64_SYS_writev            20
@@ -2817,6 +2819,7 @@ static const char* x64SyscallName(U64 nr) {
         case 98: return "getrusage";
         case 99: return "sysinfo";
         case 100: return "times";
+        case X64_SYS_ptrace: return "ptrace";
         case 102: return "getuid";
         case 105: return "setuid";
         case 106: return "setgid";
@@ -4381,6 +4384,9 @@ void ksyscall64(CPU64* cpu) {
             // back to plain mutexes.
             ret = (U64)-K_ENOSYS;
             break;
+        case X64_SYS_ptrace:
+            ret = (U64)-K_EPERM;
+            break;
         case X64_SYS_exit:
             ret = sys_exit64(cpu, a1, false);
             break;
@@ -4398,16 +4404,33 @@ void ksyscall64(CPU64* cpu) {
             ret = 0;
             break;
         default:
-            klog_fmt("ksyscall64: unimplemented syscall #%llu (%s) at RIP=0x%llx — RDI=0x%llx RSI=0x%llx RDX=0x%llx R10=0x%llx R8=0x%llx R9=0x%llx",
-                     (unsigned long long)nr,
-                     x64SyscallName(nr),
-                     (unsigned long long)cpu->rip,
-                     (unsigned long long)a1,
-                     (unsigned long long)a2,
-                     (unsigned long long)a3,
-                     (unsigned long long)a4,
-                     (unsigned long long)a5,
-                     (unsigned long long)a6);
+            {
+                static std::mutex unimplementedLogMutex;
+                static std::unordered_map<U64, U32> unimplementedLogCounts;
+                const U32 pid = cpu->thread && cpu->thread->process
+                    ? cpu->thread->process->id : 0;
+                const U64 key = ((U64)pid << 32) | (U32)nr;
+                U32 reportCount;
+                {
+                    std::lock_guard<std::mutex> lock(unimplementedLogMutex);
+                    reportCount = ++unimplementedLogCounts[key];
+                }
+                if (reportCount <= 5) {
+                    klog_fmt("ksyscall64: unimplemented syscall #%llu (%s) at RIP=0x%llx — RDI=0x%llx RSI=0x%llx RDX=0x%llx R10=0x%llx R8=0x%llx R9=0x%llx",
+                             (unsigned long long)nr,
+                             x64SyscallName(nr),
+                             (unsigned long long)cpu->rip,
+                             (unsigned long long)a1,
+                             (unsigned long long)a2,
+                             (unsigned long long)a3,
+                             (unsigned long long)a4,
+                             (unsigned long long)a5,
+                             (unsigned long long)a6);
+                } else if (reportCount == 6) {
+                    klog_fmt("ksyscall64: unimplemented syscall #%llu (%s) (further reports suppressed)",
+                             (unsigned long long)nr, x64SyscallName(nr));
+                }
+            }
             // TEMP DIAGNOSTIC: dump the bytes around the syscall RIP and the
             // full register set so we can tell a real Linux syscall from a
             // wine __wine_unix_call / NT thunk landing here. syscallRip points

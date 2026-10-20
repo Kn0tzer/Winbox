@@ -4417,6 +4417,33 @@ int runX64SelfTest() {
         });
     }
 
+    // ptrace is unsupported by the 32-bit kernel too; return EPERM directly so
+    // guest probes do not spin through the unimplemented-syscall path.
+    {
+        std::vector<U8> code = {
+            0x48, 0xC7, 0xC0, 0x65, 0x00, 0x00, 0x00,                     // mov rax, 101 (ptrace)
+            0x0F, 0x05,
+        };
+        runAndCheck(r, "ptrace syscall → -EPERM", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 0xFFFFFFFFFFFFFFFFULL;
+        });
+    }
+
+    // An unknown syscall is reported five times, then once with the
+    // suppression marker. The runner checks the six emitted log lines.
+    {
+        std::vector<U8> code;
+        for (int i = 0; i < 7; ++i) {
+            code.insert(code.end(), {
+                0x48, 0xC7, 0xC0, 0x0F, 0x27, 0x00, 0x00,                 // mov rax, 9999
+                0x0F, 0x05,
+            });
+        }
+        runAndCheck(r, "unknown syscall returns -ENOSYS after rate limiting", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 0xFFFFFFFFFFFFFFDAULL;
+        });
+    }
+
     // ---- Milestone B5: signal-syscall stubs ----
 
     // pause(34) → -EINTR (we never deliver, so loop-retry is the honest answer)
