@@ -17,6 +17,7 @@
 #include "kmemory64.h"
 #include "syscall64.h"
 #include "ksignal.h"   // K_SIGFPE
+#include "common/splitLock.h"
 
 #include <cmath>
 #include <cstring>
@@ -29,16 +30,11 @@
 // pthread mutexes/condvars — which rely on these instructions being atomic —
 // would race without this.
 //
-// We keep the existing (verified) loadRM/runAlu/storeRM RMW logic intact and
-// only serialize it under a lock keyed on the operand's guest address. A single
-// global mutex would serialize EVERY locked op across all threads even when
-// they touch unrelated words (glibc hammers distinct futex/lock words from
-// different threads), so instead we hash the operand's page address into a
-// bank of locks: two threads working different pages take different locks and
-// run in parallel. Two ops on the same word always collide on the same lock,
-// which is exactly the atomicity we need. Recursive so a guest exception/signal
-// path that re-enters can't self-deadlock; cheap and uncontended in the
-// single-threaded build.
+// Aligned operands use sharded recursive mutexes, so unrelated locked words
+// can proceed concurrently. Unaligned operands use g_splitLockMutex and plain
+// guest-memory reads/writes: WebAssembly atomic instructions trap on a
+// misaligned host address. Recursive locks also let a guest exception/signal
+// path re-enter an aligned operation without self-deadlocking.
 //
 // CPU64_ATOMIC_LOCKS must be a power of two so the mask is a single AND.
 #define CPU64_ATOMIC_LOCKS 256
@@ -51,6 +47,30 @@ static std::recursive_mutex g_cpu64AtomicLocks[CPU64_ATOMIC_LOCKS];
 static inline std::recursive_mutex& cpu64AtomicLockFor(U64 effAddr) {
     return g_cpu64AtomicLocks[(effAddr >> K64_PAGE_SHIFT) & (CPU64_ATOMIC_LOCKS - 1)];
 }
+
+class CPU64AtomicLock {
+public:
+    CPU64AtomicLock(KMemory64* memory, U64 effAddr, U32 width, std::defer_lock_t)
+        : memory(memory), effAddr(effAddr), width(width),
+          alignedLock(cpu64AtomicLockFor(effAddr), std::defer_lock),
+          splitLock(g_splitLockMutex, std::defer_lock) {}
+
+    void lock() {
+        U8* hostAddress = memory->getRamPtr(effAddr, width);
+        if (!hostAddress || (reinterpret_cast<uintptr_t>(hostAddress) & (width - 1))) {
+            splitLock.lock();
+        } else {
+            alignedLock.lock();
+        }
+    }
+
+private:
+    KMemory64* memory;
+    U64 effAddr;
+    U32 width;
+    std::unique_lock<std::recursive_mutex> alignedLock;
+    std::unique_lock<std::mutex> splitLock;
+};
 
 // FPU status-word C0/C2/C3 bit positions (see Intel SDM Vol 1 §8.1.3).
 // We can't reuse the macros in fpu.cpp because they're file-local there.
@@ -75,8 +95,38 @@ static inline void cpu64_fpu_compare(FPU& f, double a, double b) {
     }
 }
 
+static inline double cpu64RoundByMxcsr(double value, U32 mxcsr) {
+    switch ((mxcsr >> 13) & 3) {
+        case 1: return std::floor(value);
+        case 2: return std::ceil(value);
+        case 3: return std::trunc(value);
+        default: {
+            // Round-to-nearest, ties-to-even without depending on the host's
+            // process-wide floating-point rounding mode.
+            double lower = std::floor(value);
+            double fraction = value - lower;
+            if (fraction < 0.5) return lower;
+            if (fraction > 0.5) return lower + 1.0;
+            return std::fmod(std::fabs(lower), 2.0) == 0.0 ? lower : lower + 1.0;
+        }
+    }
+}
+
+static inline U64 cpu64ConvertFpToInt(double value, bool is64, bool truncate,
+                                      U32 mxcsr) {
+    if (!std::isfinite(value)) return is64 ? 0x8000000000000000ULL : 0x80000000U;
+    double rounded = truncate ? std::trunc(value) : cpu64RoundByMxcsr(value, mxcsr);
+    double minValue = is64 ? -0x1p63 : -0x1p31;
+    double maxValue = is64 ?  0x1p63 :  0x1p31;
+    if (rounded < minValue || rounded >= maxValue)
+        return is64 ? 0x8000000000000000ULL : 0x80000000U;
+    S64 result = (S64)rounded;
+    return is64 ? (U64)result : (U32)(S32)result;
+}
+
 CPU64::CPU64(KMemory64* memory) : memory(memory) {
     reg[X64_RSP].setU64(0);
+    mxcsr = 0x1F80;
     fpu.FINIT();
 }
 
@@ -97,6 +147,7 @@ void CPU64::cloneRegistersFrom(const CPU64* from) {
     rflags = from->rflags;
     fsbase = from->fsbase;
     gsbase = from->gsbase;
+    mxcsr = from->mxcsr;
     for (int i = 0; i < 16; i++) {
         xmm[i] = from->xmm[i];
     }
@@ -767,6 +818,16 @@ U32 CPU64::step() {
 
     U8 op = fetchByte(rip + opOff);
 
+    // Deliver a synchronous, instruction-addressed fault. The test harness
+    // has no attached thread or signal handlers, so an unhandled fault yields
+    // at the faulting RIP; a guest handler instead receives the saved context.
+    auto faultAtInstruction = [&](U32 sig, U32 trapNo) -> U32 {
+        if (raiseSyncFault(sig, trapNo, 0, ipStart)) return 0;
+        if (thread && thread->process) thread->process->signalProcess(sig);
+        yield = true;
+        return 0;
+    };
+
     if (!g_opProfInit) {
         g_opProfInit = true;
         g_opProf = std::getenv("BW64_OPPROF") != nullptr;
@@ -775,6 +836,23 @@ U32 CPU64::step() {
     if (g_opProf) {
         if (op == 0x0F) g_opProfCount[0x0F][fetchByte(rip + opOff + 1)]++;
         else g_opProf1[op]++;
+    }
+
+    // Instructions unavailable in this user-mode CPU model fault at their
+    // original RIP. INT3 retains its debugger/breakpoint yield behavior below.
+    if (op == 0x0F && fetchByte(rip + opOff + 1) == 0x0B) // UD2: #UD
+        return faultAtInstruction(K_SIGILL, 6);
+    if (op == 0xCD || op == 0xF1 || op == 0xF4 || op == 0xFA || op == 0xFB ||
+        (op >= 0x6C && op <= 0x6F) || (op >= 0xE4 && op <= 0xE7) ||
+        (op >= 0xEC && op <= 0xEF) || op == 0x9A || op == 0xEA ||
+        op == 0xCA || op == 0xCB) {
+        return faultAtInstruction(K_SIGSEGV, 13); // #GP in user mode
+    }
+    if (op == 0xFF) {
+        U8 modrmByte = fetchByte(rip + opOff + 1);
+        U8 group = (modrmByte >> 3) & 7;
+        if (group == 3 || group == 5) // far CALL/JMP r/m
+            return faultAtInstruction(K_SIGSEGV, 13);
     }
 
     // ---- Dispatch jump table ----
@@ -1113,7 +1191,7 @@ dsp_6:
             ModRM m = decodeModRM(rip + opOff + 1, p, 0);
             // `lock add`/`lock or`/`lock and`/... on a memory dest must be an
             // atomic RMW across host threads (glibc futex/lock words use these).
-            std::unique_lock<std::recursive_mutex> atomicLock(cpu64AtomicLockFor(m.effAddr), std::defer_lock);
+            CPU64AtomicLock atomicLock(memory, m.effAddr, size, std::defer_lock);
             if (p.lock && destIsRM && !m.isReg) atomicLock.lock();
             U64 a, b;
             if (destIsRM) {
@@ -1186,7 +1264,7 @@ dsp_7:
                 imm = (U64)(S64)i32; immLen = 4;
             }
         }
-        std::unique_lock<std::recursive_mutex> atomicLock(cpu64AtomicLockFor(m.effAddr), std::defer_lock);
+        CPU64AtomicLock atomicLock(memory, m.effAddr, size, std::defer_lock);
         if (p.lock && !m.isReg) atomicLock.lock();
         U64 a = loadRM(m, size, rexPresent);
         runAlu(aluOp, size, true, a, imm, m, rexPresent);
@@ -1369,7 +1447,7 @@ dsp_18:
         // XCHG with a memory operand is implicitly atomic on x86 (LOCK is
         // assumed); serialize it across host threads so glibc's spinlock
         // acquire (xchg [lock], eax) is correct under real threading.
-        std::unique_lock<std::recursive_mutex> atomicLock(cpu64AtomicLockFor(m.effAddr), std::defer_lock);
+        CPU64AtomicLock atomicLock(memory, m.effAddr, size, std::defer_lock);
         if (!m.isReg) atomicLock.lock();
         U64 a = loadRM(m, size, rexPresent);
         U64 b = (size == 1) ? readReg8(m.regField, rexPresent)
@@ -1690,15 +1768,14 @@ dsp_30:
 dsp_31:
     if (op == 0xF6 || op == 0xF7) {
         U32 size = (op == 0xF6) ? 1 : opSize;
-        // Decode with NO trailing immediate: only the /0 TEST subform carries
-        // an immediate, and the sub-opcode lives in the ModRM reg field which
-        // we can't know until we decode. trailingImmBytes ONLY shifts the
-        // RIP-relative effective address (disp is relative to end-of-insn), so
-        // a blanket nonzero value mis-addresses the no-immediate subforms (DIV/
-        // IDIV/NOT/NEG/MUL/IMUL) by the immediate width — a real bug that made
-        // a RIP-relative `divq [rip+disp]` read 4 bytes past its operand. We
-        // fix up the TEST operand's RIP-relative address below, once we know it.
-        ModRM m = decodeModRM(rip + opOff + 1, p, 0);
+        // Only /0 TEST carries an immediate. Inspect its sub-opcode before
+        // decoding so RIP-relative operands use the end of the complete
+        // instruction; the other group-3 forms have no trailing immediate.
+        U8 groupSub = (fetchByte(rip + opOff + 1) >> 3) & 0x7;
+        U32 immBytes = groupSub == 0
+            ? (size == 1 ? 1 : size == 2 ? 2 : 4)
+            : 0;
+        ModRM m = decodeModRM(rip + opOff + 1, p, immBytes);
         U8 sub = m.regField & 0x7;
         if (sub == 0) {
             U64 imm; U32 immLen;
@@ -1713,10 +1790,6 @@ dsp_31:
                 S32 i32 = (S32)fetchDword(immAddr);
                 imm = (U64)(S64)i32; immLen = 4;
             }
-            // RIP-relative TEST: the disp is relative to the address after the
-            // whole instruction, which includes this immediate. decodeModRM
-            // computed effAddr with trailing=0, so add the immediate length.
-            if (m.isRipRel) m.effAddr += immLen;
             U64 a = loadRM(m, size, rexPresent);
             flagsLogic(rflags, a & imm, size);
             U32 used = opOff + 1 + m.length + immLen;
@@ -1724,6 +1797,8 @@ dsp_31:
             return used;
         }
         if (sub == 2) { // NOT — no flags affected
+            CPU64AtomicLock atomicLock(memory, m.effAddr, size, std::defer_lock);
+            if (p.lock && !m.isReg) atomicLock.lock();
             U64 a = loadRM(m, size, rexPresent);
             storeRM(m, size, ~a, rexPresent);
             U32 used = opOff + 1 + m.length;
@@ -1731,6 +1806,8 @@ dsp_31:
             return used;
         }
         if (sub == 3) { // NEG — same as 0 - r/m, flags set per SUB.
+            CPU64AtomicLock atomicLock(memory, m.effAddr, size, std::defer_lock);
+            if (p.lock && !m.isReg) atomicLock.lock();
             U64 a = loadRM(m, size, rexPresent);
             U64 r = (U64)0 - a;
             flagsSub(rflags, 0, a, r, size);
@@ -1927,9 +2004,11 @@ dsp_31:
     // startup hits this (INC byte ptr [rip+disp32] on a refcount/flag byte).
 dsp_32:
     if (op == 0xFE) {
-        ModRM m = decodeModRM(rip + opOff + 1, p, 1);
+        ModRM m = decodeModRM(rip + opOff + 1, p, 0);
         U8 sub = m.regField & 0x7;
         if (sub == 0 || sub == 1) {
+            CPU64AtomicLock atomicLock(memory, m.effAddr, 1, std::defer_lock);
+            if (p.lock && !m.isReg) atomicLock.lock();
             U64 a = loadRM(m, 1, rexPresent);
             U64 r = (sub == 0) ? a + 1 : a - 1;
             // INC/DEC preserve CF; other flags per ADD/SUB of 1.
@@ -1952,6 +2031,8 @@ dsp_33:
         ModRM m = decodeModRM(rip + opOff + 1, p, 0);
         U8 sub = m.regField & 0x7;
         if (sub == 0 || sub == 1) {
+            CPU64AtomicLock atomicLock(memory, m.effAddr, opSize, std::defer_lock);
+            if (p.lock && !m.isReg) atomicLock.lock();
             U64 a = loadRM(m, opSize, rexPresent);
             U64 r = (sub == 0) ? a + 1 : a - 1;
             // INC/DEC don't affect CF; preserve it. Other flags per ADD/SUB.
@@ -2201,7 +2282,7 @@ dsp_38:
             ModRM m = decodeModRM(rip + opOff + 2, p, 0);
             // CMPXCHG is glibc's mutex fast path; make the read-compare-write
             // atomic across host threads when the operand is in memory.
-            std::unique_lock<std::recursive_mutex> atomicLock(cpu64AtomicLockFor(m.effAddr), std::defer_lock);
+            CPU64AtomicLock atomicLock(memory, m.effAddr, size, std::defer_lock);
             if (!m.isReg) atomicLock.lock();
             U64 dest = loadRM(m, size, rexPresent);
             U64 acc = (size == 1) ? reg[X64_RAX].u8
@@ -2237,7 +2318,7 @@ dsp_38:
         if (op2 == 0xC7) {
             ModRM m = decodeModRM(rip + opOff + 2, p, 0);
             if (!m.isReg && (m.regField & 0x7) == 1) {
-                std::unique_lock<std::recursive_mutex> atomicLock(cpu64AtomicLockFor(m.effAddr), std::defer_lock);
+                CPU64AtomicLock atomicLock(memory, m.effAddr, (p.rex & 0x08) ? 16 : 8, std::defer_lock);
                 atomicLock.lock();
                 if (!(p.rex & 0x08)) {
                     U64 acc = ((U64)reg[X64_RDX].u32 << 32) | reg[X64_RAX].u32;
@@ -2320,9 +2401,9 @@ dsp_38:
         //   F3 0F 5A CVTSS2SD   F2 0F 5A CVTSD2SS   0F 5A CVTPS2PD
         //   66 0F 5A CVTPD2PS  F3 0F 2A CVTSI2SS   F2 0F 2A CVTSI2SD
         //   F3 0F 2D/2C CVT(T)SS2SI   F2 0F 2D/2C CVT(T)SD2SI
-        // MXCSR is not modeled (LDMXCSR/STMXCSR are no-ops), so the rounding
-        // conversions use the default round-to-nearest mode. Out-of-range and
-        // NaN inputs yield the integer indefinite value, per the SDM. Unity's
+        // Non-truncating float-to-integer conversions use MXCSR.RC.
+        // Out-of-range and NaN inputs yield the integer indefinite value,
+        // per the SDM. Unity's
         // startup (rsqrtps -> cvtss2sd -> movsd) and Mono's time/GC paths hit
         // these immediately.
         if ((p.rep == 0xF3 && (op2 == 0x5A || op2 == 0x2A || op2 == 0x2D || op2 == 0x2C)) ||
@@ -2381,18 +2462,9 @@ dsp_38:
                                        : memory->readd(m.effAddr);
                     v = (double)u32f(bits);
                 }
-                double r = trunc ? std::trunc(v) : std::nearbyint(v);
-                if (i64) {
-                    if (!std::isfinite(r) || r < -9223372036854775808.0 || r >= 9223372036854775808.0)
-                        reg[m.regField].setU64(0x8000000000000000ULL);
-                    else
-                        reg[m.regField].setU64((U64)(S64)r);
-                } else {
-                    if (!std::isfinite(r) || r < -2147483648.0 || r >= 2147483648.0)
-                        reg[m.regField].setU32(0x80000000U);
-                    else
-                        reg[m.regField].setU32((U32)(S32)r);
-                }
+                U64 converted = cpu64ConvertFpToInt(v, i64, trunc, mxcsr);
+                if (i64) reg[m.regField].setU64(converted);
+                else     reg[m.regField].setU32((U32)converted);
             }
             U32 used = opOff + 2 + m.length;
             rip += used;
@@ -2403,11 +2475,30 @@ dsp_38:
         // 0F BB /r — BTC r/m, r       (complement bit)
         if (op2 == 0xA3 || op2 == 0xAB || op2 == 0xB3 || op2 == 0xBB) {
             ModRM m = decodeModRM(rip + opOff + 2, p, 0);
-            U64 v = loadRM(m, opSize, rexPresent);
-            U64 idx = (opSize == 8) ? reg[m.regField].u64 :
-                      (opSize == 4) ? (U64)reg[m.regField].u32 :
-                                      (U64)reg[m.regField].u16;
-            U64 bit = idx & (opSize * 8 - 1);
+            U64 rawIndex = (opSize == 8) ? reg[m.regField].u64 :
+                           (opSize == 4) ? (U64)reg[m.regField].u32 :
+                                           (U64)reg[m.regField].u16;
+            ModRM bitOperand = m;
+            U64 bit;
+            if (m.isReg) {
+                bit = rawIndex & (opSize * 8 - 1);
+            } else {
+                S64 index = opSize == 8 ? (S64)rawIndex :
+                            opSize == 4 ? (S64)(S32)(U32)rawIndex :
+                                          (S64)(S16)(U16)rawIndex;
+                S64 bitsPerOperand = (S64)opSize * 8;
+                S64 operandIndex = index / bitsPerOperand;
+                S64 bitIndex = index % bitsPerOperand;
+                if (bitIndex < 0) {
+                    operandIndex--;
+                    bitIndex += bitsPerOperand;
+                }
+                bitOperand.effAddr += (U64)(operandIndex * (S64)opSize);
+                bit = (U64)bitIndex;
+            }
+            CPU64AtomicLock atomicLock(memory, bitOperand.effAddr, opSize, std::defer_lock);
+            if (p.lock && op2 != 0xA3 && !m.isReg) atomicLock.lock();
+            U64 v = loadRM(bitOperand, opSize, rexPresent);
             U64 mask = 1ULL << bit;
             bool old = (v & mask) != 0;
             rflags &= ~X64_CF;
@@ -2417,7 +2508,7 @@ dsp_38:
                 if (op2 == 0xAB) nv |= mask;
                 else if (op2 == 0xB3) nv &= ~mask;
                 else nv ^= mask; // BTC
-                storeRM(m, opSize, nv, rexPresent);
+                storeRM(bitOperand, opSize, nv, rexPresent);
             }
             U32 used = opOff + 2 + m.length;
             rip += used;
@@ -2429,6 +2520,8 @@ dsp_38:
             ModRM m = decodeModRM(rip + opOff + 2, p, 1);
             U8 sub = m.regField & 0x7;
             if (sub >= 4 && sub <= 7) {
+                CPU64AtomicLock atomicLock(memory, m.effAddr, opSize, std::defer_lock);
+                if (p.lock && sub != 4 && !m.isReg) atomicLock.lock();
                 U64 v = loadRM(m, opSize, rexPresent);
                 U8 imm = fetchByte(rip + opOff + 2 + m.length);
                 U64 bit = imm & (opSize * 8 - 1);
@@ -2558,7 +2651,7 @@ dsp_38:
             ModRM m = decodeModRM(rip + opOff + 2, p, 0);
             // XADD (LOCK XADD) backs glibc's atomic counters; serialize the
             // memory RMW across host threads.
-            std::unique_lock<std::recursive_mutex> atomicLock(cpu64AtomicLockFor(m.effAddr), std::defer_lock);
+            CPU64AtomicLock atomicLock(memory, m.effAddr, size, std::defer_lock);
             if (!m.isReg) atomicLock.lock();
             U64 d = loadRM(m, size, rexPresent);
             U64 s = (size == 1) ? readReg8(m.regField, rexPresent)
@@ -2868,20 +2961,23 @@ dsp_55:
                 break;
             case 0x1: {
                 a = (6 << 8) | (15 << 4) | 3; // family 6 stepping 3
-                b = 0;
-                // ECX feature bits: SSE3=0, SSSE3=0, SSE4.1=0, SSE4.2=0,
-                // POPCNT=0 (bit23), XSAVE=0, OSXSAVE=0, AVX=0.
-                c = 0;
+                // EBX: eight 8-byte CLFLUSH units; one logical processor.
+                b = (8u << 8) | (1u << 16);
+                // ECX advertises only CX16 and POPCNT; SSE3+ and AVX stay clear.
+                c = (1u << 13) | (1u << 23);
                 // EDX bits: FPU=0 PDE=1 TSC=4 MSR=5 PAE=6 MCE=7 CX8=8
                 // APIC=9 SEP=11 MTRR=12 PGE=13 MCA=14 CMOV=15 PAT=16
                 // PSE36=17 CLFSH=19 MMX=23 FXSR=24 SSE=25 SSE2=26.
-                d = (1u<<0)|(1u<<4)|(1u<<5)|(1u<<8)|(1u<<15)|(1u<<23)|(1u<<24)|(1u<<25)|(1u<<26);
+                d = (1u<<0)|(1u<<4)|(1u<<5)|(1u<<8)|(1u<<15)|(1u<<19)|
+                    (1u<<23)|(1u<<24)|(1u<<25)|(1u<<26);
                 break;
             }
             case 0x80000000:
                 a = 0x80000001;
                 break;
             case 0x80000001:
+                // ECX: LAHF/SAHF in long mode and PREFETCHW.
+                c = (1u << 0) | (1u << 8);
                 // EDX bit 29 = LM (long mode), bit 11 = SYSCALL, bit 20 = NX.
                 d = (1u<<29)|(1u<<11)|(1u<<20);
                 break;
@@ -2906,6 +3002,40 @@ dsp_55:
     if (op == 0x0F) {
         U8 op2 = fetchByte(rip + opOff + 1);
         bool osize66 = p.osize16; // for SSE this means "use packed-integer form"
+        if (op2 == 0x77 && !p.osize16 && p.rep == 0) {
+            // EMMS: end MMX state and mark all x87 stack registers empty.
+            fpu.SetTag(0xFFFFFFFF);
+            fpu.isMMXInUse = false;
+            U32 used = opOff + 2;
+            rip += used;
+            return used;
+        }
+        if (op2 == 0x2B && p.rep == 0) {
+            // MOVNTPS / MOVNTPD are memory-only non-temporal 128-bit stores.
+            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            if (m.isReg) goto unhandled;
+            memory->writeq(m.effAddr, xmm[m.regField].lo);
+            memory->writeq(m.effAddr + 8, xmm[m.regField].hi);
+            U32 used = opOff + 2 + m.length;
+            rip += used;
+            return used;
+        }
+        if (op2 == 0xF7 && osize66 && p.rep == 0) {
+            // MASKMOVDQU xmm1,xmm2: store selected data bytes to [RDI].
+            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            if (!m.isReg) goto unhandled;
+            U64 data[2] = {xmm[m.regField].lo, xmm[m.regField].hi};
+            U64 mask[2] = {xmm[m.rmIndex].lo, xmm[m.rmIndex].hi};
+            U64 addr = reg[X64_RDI].u64;
+            for (U32 i = 0; i < 16; i++) {
+                U8 maskByte = (U8)(mask[i / 8] >> ((i % 8) * 8));
+                if (maskByte & 0x80)
+                    memory->writeb(addr + i, (U8)(data[i / 8] >> ((i % 8) * 8)));
+            }
+            U32 used = opOff + 2 + m.length;
+            rip += used;
+            return used;
+        }
         // MOVAPS/MOVAPD xmm, xmm/m128       — 0F 28 (load) / 0F 29 (store)
         // MOVUPS/MOVUPD                     — 0F 10/11
         // MOVDQA xmm, xmm/m128              — 66 0F 6F (load) / 66 0F 7F (store)
@@ -3714,6 +3844,64 @@ dsp_55:
             rip += used;
             return used;
         }
+        // PMADDWD — 66 0F F5 /r. Multiply signed word pairs and add each
+        // adjacent pair into a wrapping signed dword result.
+        if (op2 == 0xF5 && osize66) {
+            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            U64 srcLo, srcHi;
+            if (m.isReg) {
+                srcLo = xmm[m.rmIndex].lo;
+                srcHi = xmm[m.rmIndex].hi;
+            } else {
+                srcLo = memory->readq(m.effAddr);
+                srcHi = memory->readq(m.effAddr + 8);
+            }
+            U64 dst[2] = {xmm[m.regField].lo, xmm[m.regField].hi};
+            U64 src[2] = {srcLo, srcHi};
+            U32 result[4];
+            for (int pair = 0; pair < 4; pair++) {
+                int half = pair / 2;
+                int lane = (pair % 2) * 2;
+                S16 a = (S16)(dst[half] >> (lane * 16));
+                S16 b = (S16)(dst[half] >> ((lane + 1) * 16));
+                S16 c = (S16)(src[half] >> (lane * 16));
+                S16 d = (S16)(src[half] >> ((lane + 1) * 16));
+                S64 sum = (S64)a * c + (S64)b * d;
+                result[pair] = (U32)sum;
+            }
+            xmm[m.regField].lo = (U64)result[0] | ((U64)result[1] << 32);
+            xmm[m.regField].hi = (U64)result[2] | ((U64)result[3] << 32);
+            U32 used = opOff + 2 + m.length;
+            rip += used;
+            return used;
+        }
+        // PAVGW — 66 0F E3 /r. Unsigned word average rounded toward +infinity.
+        if (op2 == 0xE3 && osize66) {
+            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            U64 srcLo, srcHi;
+            if (m.isReg) {
+                srcLo = xmm[m.rmIndex].lo;
+                srcHi = xmm[m.rmIndex].hi;
+            } else {
+                srcLo = memory->readq(m.effAddr);
+                srcHi = memory->readq(m.effAddr + 8);
+            }
+            U64 dst[2] = {xmm[m.regField].lo, xmm[m.regField].hi};
+            U64 src[2] = {srcLo, srcHi};
+            for (int half = 0; half < 2; half++) {
+                U64 result = 0;
+                for (int lane = 0; lane < 4; lane++) {
+                    U32 a = (dst[half] >> (lane * 16)) & 0xFFFF;
+                    U32 b = (src[half] >> (lane * 16)) & 0xFFFF;
+                    result |= (U64)((a + b + 1) >> 1) << (lane * 16);
+                }
+                if (half == 0) xmm[m.regField].lo = result;
+                else xmm[m.regField].hi = result;
+            }
+            U32 used = opOff + 2 + m.length;
+            rip += used;
+            return used;
+        }
         // PMULUDQ — 66 0F F4 /r. Multiply unsigned dwords in lanes 0 and 2,
         // producing two 64-bit results.
         if (op2 == 0xF4 && osize66) {
@@ -3822,7 +4010,7 @@ dsp_55:
         // SHUFPD — 66 0F C6 /r ib. 2-qword shuffle: bit 0 picks dst lane,
         // bit 1 picks src lane.
         if (op2 == 0xC6) {
-            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            ModRM m = decodeModRM(rip + opOff + 2, p, 1);
             U8 imm = fetchByte(rip + opOff + 2 + m.length);
             U64 srcLo, srcHi;
             if (m.isReg) {
@@ -3862,7 +4050,7 @@ dsp_55:
         // PEXTRW — 66 0F C5 /r ib. Extract one word from xmm[rmIndex] (imm8
         // & 7 selects the lane) into r32/r64.
         if (op2 == 0xC5 && osize66) {
-            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            ModRM m = decodeModRM(rip + opOff + 2, p, 1);
             U8 imm = fetchByte(rip + opOff + 2 + m.length);
             if (m.isReg) {
                 int lane = imm & 7;
@@ -3877,7 +4065,7 @@ dsp_55:
         // PINSRW — 66 0F C4 /r ib. Insert low 16 of r32 (or m16) into xmm[reg]
         // at lane (imm8 & 7).
         if (op2 == 0xC4 && osize66) {
-            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            ModRM m = decodeModRM(rip + opOff + 2, p, 1);
             U8 imm = fetchByte(rip + opOff + 2 + m.length);
             U16 v;
             if (m.isReg) v = (U16)reg[m.rmIndex].u32;
@@ -4686,17 +4874,15 @@ dsp_55:
 
         // CVTSD2SI r32, xmm/m64   F2 0F 2D /r     (REX.W → r64)
         // CVTTSD2SI r32, xmm/m64  F2 0F 2C /r     (REX.W → r64) — truncate
-        // Convert double to signed int. Compilers emit 2C (truncate) far
-        // more often than 2D (current rounding) because C's int cast is
-        // defined as truncate. Bodies are identical here — our 2D path
-        // already truncates via C cast — so the only difference is which
-        // opcode bytes we accept.
+        // Convert double to signed int with MXCSR.RC for 2D and truncation
+        // for 2C. This fallback shares the same invalid-result handling.
         if ((op2 == 0x2D || op2 == 0x2C) && p.rep == 0xF2) {
             ModRM m = decodeModRM(rip + opOff + 2, p, 0);
             U64 srcBits = m.isReg ? xmm[m.rmIndex].lo : memory->readq(m.effAddr);
             double d = u64ToDouble(srcBits);
-            if (rexW) reg[m.regField].setU64((U64)(S64)d);
-            else      reg[m.regField].setU32((U32)(S32)d);
+            U64 converted = cpu64ConvertFpToInt(d, rexW, op2 == 0x2C, mxcsr);
+            if (rexW) reg[m.regField].setU64(converted);
+            else      reg[m.regField].setU32((U32)converted);
             U32 used = opOff + 2 + m.length;
             rip += used;
             return used;
@@ -4708,7 +4894,7 @@ dsp_55:
         // predicates (imm8 & 7): 0 EQ, 1 LT, 2 LE, 3 UNORD, 4 NEQ, 5 NLT,
         // 6 NLE, 7 ORD. winex11/win32u emits CMPSD ...,6 (NLE) for clamp math.
         if (op2 == 0xC2 && p.rep == 0xF2) {
-            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            ModRM m = decodeModRM(rip + opOff + 2, p, 1);
             U64 srcBits = m.isReg ? xmm[m.rmIndex].lo : memory->readq(m.effAddr);
             U8 imm = fetchByte(rip + opOff + 2 + m.length);
             double a = u64ToDouble(xmm[m.regField].lo);
@@ -4737,7 +4923,7 @@ dsp_55:
         // MOVMSKPS. Without this the guest stops on the first such compare
         // (Gang Beasts reached GameAssembly initialization and hit it).
         if (op2 == 0xC2 && p.rep == 0 && !p.osize16) {
-            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            ModRM m = decodeModRM(rip + opOff + 2, p, 1);
             U64 srcLo = m.isReg ? xmm[m.rmIndex].lo : memory->readq(m.effAddr);
             U64 srcHi = m.isReg ? xmm[m.rmIndex].hi : memory->readq(m.effAddr + 8);
             U8 imm = fetchByte(rip + opOff + 2 + m.length);
@@ -4775,7 +4961,7 @@ dsp_55:
         // CMPPD xmm, xmm/m128, imm8   66 0F C2 /r ib — packed double compare.
         // Each of the two qwords becomes all-ones/all-zero.
         if (op2 == 0xC2 && p.rep == 0 && p.osize16) {
-            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            ModRM m = decodeModRM(rip + opOff + 2, p, 1);
             U64 dstBits[2] = { xmm[m.regField].lo, xmm[m.regField].hi };
             U64 srcBits[2];
             if (m.isReg) { srcBits[0] = xmm[m.rmIndex].lo; srcBits[1] = xmm[m.rmIndex].hi; }
@@ -4950,17 +5136,16 @@ dsp_55:
 
         // CVTSS2SI  r32/r64, xmm/m32  F3 0F 2D /r
         // CVTTSS2SI r32/r64, xmm/m32  F3 0F 2C /r  — truncating variant
-        // Same rationale as F2 0x2C: compilers prefer the truncating form
-        // for C int casts; our 2D path already uses C cast (truncate) so
-        // the body is shared.
+        // 2D follows MXCSR.RC; 2C truncates toward zero.
         if ((op2 == 0x2D || op2 == 0x2C) && p.rep == 0xF3) {
             ModRM m = decodeModRM(rip + opOff + 2, p, 0);
             U32 srcBits = m.isReg
                 ? (U32)(xmm[m.rmIndex].lo & 0xFFFFFFFFULL)
                 : memory->readd(m.effAddr);
             float f = u32ToFloat(srcBits);
-            if (rexW) reg[m.regField].setU64((U64)(S64)f);
-            else      reg[m.regField].setU32((U32)(S32)f);
+            U64 converted = cpu64ConvertFpToInt((double)f, rexW, op2 == 0x2C, mxcsr);
+            if (rexW) reg[m.regField].setU64(converted);
+            else      reg[m.regField].setU32((U32)converted);
             U32 used = opOff + 2 + m.length;
             rip += used;
             return used;
@@ -4970,7 +5155,7 @@ dsp_55:
         // CMPSD; writes an all-ones/all-zero 32-bit mask into dst's low 32 bits
         // (rest of the low qword preserved). Same imm8 predicates as CMPSD.
         if (op2 == 0xC2 && p.rep == 0xF3) {
-            ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            ModRM m = decodeModRM(rip + opOff + 2, p, 1);
             U32 srcBits = m.isReg
                 ? (U32)(xmm[m.rmIndex].lo & 0xFFFFFFFFULL)
                 : memory->readd(m.effAddr);
@@ -5122,16 +5307,17 @@ dsp_55:
                     U32 bits; std::memcpy(&bits, &f, 4); nDw[i] = bits;
                 }
             } else if (osize66) {
-                // CVTPS2DQ: dwords are float bits, write rounded ints.
+                // CVTPS2DQ: dwords are float bits, use MXCSR.RC and the
+                // integer-indefinite result for NaN, infinity, or overflow.
                 for (int i = 0; i < 4; i++) {
                     float f; std::memcpy(&f, &dwords[i], 4);
-                    nDw[i] = (U32)(S32)std::lrintf(f);
+                    nDw[i] = (U32)cpu64ConvertFpToInt((double)f, false, false, mxcsr);
                 }
             } else if (p.rep == 0xF3) {
                 // CVTTPS2DQ: float → int truncating.
                 for (int i = 0; i < 4; i++) {
                     float f; std::memcpy(&f, &dwords[i], 4);
-                    nDw[i] = (U32)(S32)f;
+                    nDw[i] = (U32)cpu64ConvertFpToInt((double)f, false, true, mxcsr);
                 }
             } else {
                 goto unhandled; // F2 0F 5B is not defined
@@ -5167,13 +5353,9 @@ dsp_55:
                 double d0, d1;
                 std::memcpy(&d0, &sLo, 8); std::memcpy(&d1, &sHi, 8);
                 U32 i0, i1;
-                if (osize66) { // truncate toward zero
-                    i0 = (U32)(S32)d0;
-                    i1 = (U32)(S32)d1;
-                } else {       // round to nearest (current rounding mode)
-                    i0 = (U32)(S32)std::lrint(d0);
-                    i1 = (U32)(S32)std::lrint(d1);
-                }
+                bool truncate = osize66;
+                i0 = (U32)cpu64ConvertFpToInt(d0, false, truncate, mxcsr);
+                i1 = (U32)cpu64ConvertFpToInt(d1, false, truncate, mxcsr);
                 xmm[m.regField].lo = ((U64)i0) | (((U64)i1) << 32);
                 xmm[m.regField].hi = 0;
             }
@@ -5230,7 +5412,7 @@ dsp_55:
     // 0F AE group: FXSAVE(/0) FXRSTOR(/1) LDMXCSR(/2) STMXCSR(/3) and the
     // mod==11 register forms MFENCE/LFENCE/SFENCE (/5,/6,/7).
     //
-    // FXSAVE/FXRSTOR MUST round-trip the XMM registers: glibc's lazy PLT
+    // FXSAVE/FXRSTOR MUST round-trip the full legacy x87/SSE state: glibc's lazy PLT
     // resolver _dl_runtime_resolve_fxsave does FXSAVE before calling
     // _dl_fixup (which clobbers XMM0-7 internally) and FXRSTOR after, so the
     // caller's float/double arguments survive symbol resolution. When these
@@ -5238,9 +5420,9 @@ dsp_55:
     // PLT (e.g. printf("%.5f", x)) saw XMM0 clobbered -> the argument read as
     // 0.0 -> "0.00000"; later calls bound the GOT and skipped the resolver,
     // so they were correct. That "first %f prints 0" was the real bug (NOT
-    // x87 80-bit precision). We model the legacy 512-byte FXSAVE area only
-    // for the XMM block (offset 160, 16 regs x 16 bytes); MXCSR/x87 state is
-    // not modeled here but the resolver doesn't depend on it.
+    // x87 80-bit precision). The legacy 512-byte layout is used in 64-bit
+    // mode; FIP/FDP are written as zero because this interpreter does not
+    // track those pointers.
     if (op == 0x0F && fetchByte(rip + opOff + 1) == 0xAE) {
         U8 aeModrm = fetchByte(rip + opOff + 2);
         U8 aeReg = (aeModrm >> 3) & 7;
@@ -5248,21 +5430,78 @@ dsp_55:
         ModRM m = decodeModRM(rip + opOff + 2, p, 0);
         U32 used = opOff + 2 + m.length;
         if (aeMod != 3 && aeReg == 0) {
-            // FXSAVE m512byte — save XMM0..15 into the legacy area.
+            // FXSAVE m512byte legacy 64-bit layout.
+            memory->writew(m.effAddr + 0, (U16)fpu.cw);
+            memory->writew(m.effAddr + 2, (U16)fpu.SW());
+            U8 abridgedTag = 0;
+            for (U32 i = 0; i < 8; i++) {
+                if (fpu.isMMXInUse || fpu.tags[i] != TAG_Empty)
+                    abridgedTag |= (U8)(1U << i);
+            }
+            memory->writeb(m.effAddr + 4, abridgedTag);
+            memory->writeb(m.effAddr + 5, 0);
+            memory->writew(m.effAddr + 6, (U16)(fpu.envData[1] & 0x7FF));
+            memory->writeq(m.effAddr + 8, 0);  // FIP: not tracked
+            memory->writeq(m.effAddr + 16, 0); // FDP: not tracked
+            memory->writed(m.effAddr + 24, mxcsr);
+            memory->writed(m.effAddr + 28, 0xFFFF);
+            for (int i = 0; i < 8; i++) {
+                U64 low, high;
+                fpu.ST80(fpu.STV(i), &low, &high);
+                U64 slot = m.effAddr + 32 + i * 16;
+                memory->writeq(slot, low);
+                memory->writew(slot + 8, (U16)high);
+                memory->writew(slot + 10, 0);
+                memory->writed(slot + 12, 0);
+            }
             for (int i = 0; i < 16; i++) {
                 memory->writeq(m.effAddr + 160 + i * 16,     xmm[i].lo);
                 memory->writeq(m.effAddr + 160 + i * 16 + 8, xmm[i].hi);
             }
+            for (U64 offset = 416; offset < 512; offset += 8)
+                memory->writeq(m.effAddr + offset, 0);
         } else if (aeMod != 3 && aeReg == 1) {
-            // FXRSTOR m512byte — restore XMM0..15 from the legacy area.
+            // FXRSTOR m512byte restores MXCSR, x87 stack/control state and
+            // all 16 XMM registers from the legacy 64-bit layout.
+            U32 savedMxcsr = memory->readd(m.effAddr + 24);
+            if (savedMxcsr & 0xFFFF0000) {
+                if (raiseSyncFault(K_SIGSEGV, /*trapNo #GP*/13, 0, rip)) return 0;
+                if (thread) thread->process->signalProcess(K_SIGSEGV);
+                yield = true;
+                return 0;
+            }
+            fpu.SetCW(memory->readw(m.effAddr + 0));
+            fpu.SetSW(memory->readw(m.effAddr + 2));
+            fpu.SetTagFromAbridged(memory->readb(m.effAddr + 4));
+            fpu.isMMXInUse = false;
+            fpu.envData[0] = 0;
+            fpu.envData[1] = memory->readw(m.effAddr + 6) & 0x7FF;
+            fpu.envData[2] = 0;
+            fpu.envData[3] = 0;
+            for (int i = 0; i < 8; i++) {
+                U64 slot = m.effAddr + 32 + i * 16;
+                fpu.LD80(fpu.STV(i), memory->readq(slot),
+                         (S16)memory->readw(slot + 8));
+            }
+            mxcsr = savedMxcsr;
             for (int i = 0; i < 16; i++) {
                 xmm[i].lo = memory->readq(m.effAddr + 160 + i * 16);
                 xmm[i].hi = memory->readq(m.effAddr + 160 + i * 16 + 8);
             }
+        } else if (aeMod != 3 && aeReg == 2) {
+            U32 loadedMxcsr = memory->readd(m.effAddr);
+            if (loadedMxcsr & 0xFFFF0000) {
+                if (raiseSyncFault(K_SIGSEGV, /*trapNo #GP*/13, 0, rip)) return 0;
+                if (thread) thread->process->signalProcess(K_SIGSEGV);
+                yield = true;
+                return 0;
+            }
+            mxcsr = loadedMxcsr;
+        } else if (aeMod != 3 && aeReg == 3) {
+            memory->writed(m.effAddr, mxcsr);
         }
-        // LDMXCSR(/2), STMXCSR(/3) and the fences remain no-ops: we don't
-        // model MXCSR exception/rounding bits, and memory ordering is moot
-        // for a single-stepped interpreter.
+        // Memory ordering for the mod==11 fences is moot in this single-step
+        // interpreter; MXCSR is handled above.
         rip += used;
         return used;
     }
@@ -5279,6 +5518,34 @@ dsp_59:
         ModRM m = decodeModRM(rip + opOff + 1, p, 0);
         U32 used = opOff + 1 + m.length;
         U8 sub = m.regField & 7; // x87 sub-opcode, ignore REX.R
+        auto x87Value = [&]() -> double {
+            return fpu.isRegCached[fpu.top] ? fpu.regCache[fpu.top].d
+                                             : (double)fpu.getF64(fpu.top);
+        };
+        auto storeX87Environment = [&](U64 addr) {
+            memory->writed(addr + 0, fpu.CW());
+            memory->writed(addr + 4, fpu.SW());
+            memory->writed(addr + 8, (U32)fpu.GetTag(nullptr));
+            for (int n = 0; n < 4; n++)
+                memory->writed(addr + 12 + n * 4, fpu.envData[n]);
+        };
+        auto loadX87Environment = [&](U64 addr) {
+            U32 control = memory->readd(addr + 0);
+            fpu.sw = memory->readd(addr + 4);
+            fpu.SetTag(memory->readd(addr + 8));
+            for (int n = 0; n < 4; n++)
+                fpu.envData[n] = memory->readd(addr + 12 + n * 4);
+            fpu.SetCW((U16)control);
+            fpu.top = (fpu.sw >> 11) & 7;
+        };
+        auto truncateX87Integer = [](double value, U32 bits) -> U64 {
+            double lower = bits == 64 ? -0x1p63 : -(double)(1ULL << (bits - 1));
+            double upperExclusive = bits == 64 ? 0x1p63 : (double)(1ULL << (bits - 1));
+            if (!std::isfinite(value) || value < lower || value >= upperExclusive)
+                return 1ULL << (bits - 1); // masked invalid conversion: integer indefinite
+            S64 truncated = (S64)std::trunc(value);
+            return (U64)truncated & (bits == 64 ? ~0ULL : ((1ULL << bits) - 1));
+        };
         if (!m.isReg) {
             // memory form
             if (op == 0xD9 && sub == 0) {
@@ -5301,11 +5568,19 @@ dsp_59:
                 U32 bits = memory->readd(m.effAddr);
                 fpu.FLD_F32(bits, 8);
                 fpu.FSUB(fpu.STV(0), 8);
+            } else if (op == 0xD8 && sub == 5) {
+                // FSUBR m32fp — ST(0) = memory - ST(0).
+                fpu.FLD_F32(memory->readd(m.effAddr), 8);
+                fpu.FSUBR(fpu.STV(0), 8);
             } else if (op == 0xD8 && sub == 6) {
                 // FDIV m32fp — ST(0) /= float32 at memory
                 U32 bits = memory->readd(m.effAddr);
                 fpu.FLD_F32(bits, 8);
                 fpu.FDIV(fpu.STV(0), 8);
+            } else if (op == 0xD8 && sub == 7) {
+                // FDIVR m32fp — ST(0) = memory / ST(0).
+                fpu.FLD_F32(memory->readd(m.effAddr), 8);
+                fpu.FDIVR(fpu.STV(0), 8);
             } else if (op == 0xD9 && sub == 2) {
                 // FST m32fp — convert TOS to f32, store, no pop
                 double d;
@@ -5327,6 +5602,23 @@ dsp_59:
                 union { float f; U32 i; } u; u.f = (float)d;
                 memory->writed(m.effAddr, u.i);
                 fpu.FPOP();
+            } else if (op == 0xDD && sub == 2) {
+                // FST m64fp — store TOS without popping.
+                U64 bits;
+                if (fpu.isRegCached[fpu.top]) {
+                    bits = fpu.regCache[fpu.top].l;
+                } else {
+                    union { double d; U64 u; } u; u.d = fpu.getF64(fpu.top);
+                    bits = u.u;
+                }
+                memory->writeq(m.effAddr, bits);
+            } else if (op == 0xD9 && sub == 4) {
+                // FLDENV m28byte — 64-bit environment operand layout.
+                loadX87Environment(m.effAddr);
+            } else if (op == 0xD9 && sub == 6) {
+                // FNSTENV m28byte stores first, then masks all exceptions.
+                storeX87Environment(m.effAddr);
+                fpu.SetCW((U16)(fpu.CW() | 0x003F));
             } else if (op == 0xD9 && sub == 5) {
                 // D9 /5 = FLDCW m16 — load FPU control word. Our soft FPU
                 // honors the rounding bits inside FROUND; we store the
@@ -5347,6 +5639,10 @@ dsp_59:
                 U64 bits = memory->readq(m.effAddr);
                 fpu.PREP_PUSH();
                 fpu.FLD_F64(bits, fpu.STV(0));
+            } else if (op == 0xDD && sub == 1) {
+                // FISTTP m64int — truncate toward zero, then pop.
+                memory->writeq(m.effAddr, truncateX87Integer(x87Value(), 64));
+                fpu.FPOP();
             } else if (op == 0xDD && sub == 3) {
                 // FSTP m64fp — store TOS bits, pop
                 U64 bits;
@@ -5358,6 +5654,25 @@ dsp_59:
                 }
                 memory->writeq(m.effAddr, bits);
                 fpu.FPOP();
+            } else if (op == 0xDD && sub == 4) {
+                // FRSTOR m108byte — restore environment and all eight ST slots.
+                loadX87Environment(m.effAddr);
+                for (int n = 0; n < 8; n++) {
+                    U64 slot = m.effAddr + 28 + n * 10;
+                    fpu.LD80(fpu.STV(n), memory->readq(slot),
+                             memory->readw(slot + 8));
+                }
+            } else if (op == 0xDD && sub == 6) {
+                // FNSAVE m108byte — save then reinitialize the x87 state.
+                storeX87Environment(m.effAddr);
+                for (int n = 0; n < 8; n++) {
+                    U64 low = 0, high = 0;
+                    fpu.ST80(fpu.STV(n), &low, &high);
+                    U64 slot = m.effAddr + 28 + n * 10;
+                    memory->writeq(slot, low);
+                    memory->writew(slot + 8, (U16)high);
+                }
+                fpu.FINIT();
             } else if (op == 0xDC && sub == 0) {
                 // FADD m64fp — load operand into scratch slot 8, add to ST(0)
                 U64 bits = memory->readq(m.effAddr);
@@ -5462,6 +5777,10 @@ dsp_59:
                 S32 v = (S32)memory->readd(m.effAddr);
                 fpu.PREP_PUSH();
                 fpu.FLD_I32(v, fpu.STV(0));
+            } else if (op == 0xDB && sub == 1) {
+                // FISTTP m32int — truncate toward zero, then pop.
+                memory->writed(m.effAddr, (U32)truncateX87Integer(x87Value(), 32));
+                fpu.FPOP();
             } else if (op == 0xDB && (sub == 2 || sub == 3)) {
                 // FIST m32int (sub=2) / FISTP m32int (sub=3) — round per CW
                 S32 v;
@@ -5504,6 +5823,10 @@ dsp_59:
                 S16 v = (S16)memory->readw(m.effAddr);
                 fpu.PREP_PUSH();
                 fpu.FLD_I16(v, fpu.STV(0));
+            } else if (op == 0xDF && sub == 1) {
+                // FISTTP m16int — truncate toward zero, then pop.
+                memory->writew(m.effAddr, (U16)truncateX87Integer(x87Value(), 16));
+                fpu.FPOP();
             } else if (op == 0xDF && (sub == 2 || sub == 3)) {
                 // FIST m16int (sub=2) / FISTP m16int (sub=3)
                 S16 v;
@@ -5565,7 +5888,18 @@ dsp_59:
         } else {
             // register form (mod==11)
             U8 i = modrmByte & 7; // ST(i) selector
-            if (op == 0xD9 && (modrmByte & 0xF8) == 0xC0) {
+            U8 x87RegGroup = modrmByte & 0xF8;
+            if ((op == 0xDA || op == 0xDB) &&
+                (x87RegGroup == 0xC0 || x87RegGroup == 0xC8 ||
+                 x87RegGroup == 0xD0 || x87RegGroup == 0xD8)) {
+                // FCMOVcc ST(0),ST(i). Conditions are B/E/BE/U for DA and
+                // their inverses NB/NE/NBE/NU for DB.
+                U8 condition = x87RegGroup == 0xC0 ? 2
+                             : x87RegGroup == 0xC8 ? 4
+                             : x87RegGroup == 0xD0 ? 6 : 10;
+                if (op == 0xDB) condition++;
+                if (evalCC(condition)) fpu.FST(fpu.STV(i), fpu.STV(0));
+            } else if (op == 0xD9 && (modrmByte & 0xF8) == 0xC0) {
                 // D9 C0+i = FLD ST(i)
                 U32 src = fpu.STV(i);
                 fpu.PREP_PUSH();
@@ -5584,6 +5918,9 @@ dsp_59:
             } else if (op == 0xD9 && modrmByte == 0xE1) {
                 // D9 E1 = FABS — absolute value of ST(0)
                 fpu.FABS();
+            } else if (op == 0xD9 && modrmByte == 0xE4) {
+                // D9 E4 = FTST — compare ST(0) to zero in x87 condition codes.
+                fpu.FTST(nullptr);
             } else if (op == 0xD9 && modrmByte == 0xE5) {
                 // D9 E5 = FXAM — classify ST(0) into C3/C2/C0 and sign into C1.
                 fpu.FXAM();
@@ -5611,6 +5948,12 @@ dsp_59:
             } else if (op == 0xD9 && modrmByte == 0xF5) {
                 // D9 F5 = FPREM1 - partial remainder (IEEE)
                 fpu.FPREM1();
+            } else if (op == 0xD9 && modrmByte == 0xF6) {
+                // D9 F6 = FDECSTP
+                fpu.FDECSTP();
+            } else if (op == 0xD9 && modrmByte == 0xF7) {
+                // D9 F7 = FINCSTP
+                fpu.FINCSTP();
             } else if (op == 0xD9 && modrmByte == 0xF0) {
                 // D9 F0 = F2XM1 — 2^x - 1
                 fpu.F2XM1();
@@ -5626,6 +5969,9 @@ dsp_59:
             } else if (op == 0xD9 && modrmByte == 0xF4) {
                 // D9 F4 = FXTRACT — extract exponent and significand
                 fpu.FXTRACT();
+            } else if (op == 0xD9 && modrmByte == 0xFA) {
+                // D9 FA = FSQRT
+                fpu.FSQRT();
             } else if (op == 0xD9 && modrmByte == 0xF8) {
                 // D9 F8 = FPREM — partial remainder
                 fpu.FPREM();
@@ -5655,6 +6001,10 @@ dsp_59:
                 // DD C0+i = FFREE ST(i) — mark ST(i) as empty (TAG_Empty).
                 fpu.tags[fpu.STV(i)] = TAG_Empty;
                 fpu.isRegCached[fpu.STV(i)] = false;
+            } else if (op == 0xDF && (modrmByte & 0xF8) == 0xC0) {
+                // DF C0+i = FFREEP ST(i) — free the slot and pop ST(0).
+                fpu.FFREE_STi(fpu.STV(i));
+                fpu.FPOP();
             } else if (op == 0xDD && (modrmByte & 0xF8) == 0xD0) {
                 // DD D0+i = FST ST(i) — copy ST(0) into ST(i), no pop.
                 U32 src = fpu.STV(0);
@@ -5833,8 +6183,9 @@ dsp_59:
                     rflags |= X64_CF;
                 }
                 // a > b: no flags set
-            } else if (op == 0xDF && (modrmByte & 0xF8) == 0xF0) {
-                // DF F0+i = FCOMIP ST(0), ST(i) — same as FCOMI, then pop.
+            } else if (op == 0xDF && ((modrmByte & 0xF8) == 0xE8 ||
+                                      (modrmByte & 0xF8) == 0xF0)) {
+                // DF E8+i = FUCOMIP; DF F0+i = FCOMIP. Compare then pop.
                 U32 si = fpu.STV(i);
                 double a = fpu.isRegCached[fpu.top] ? fpu.regCache[fpu.top].d : fpu.getF64(fpu.top);
                 double b = fpu.isRegCached[si]      ? fpu.regCache[si].d      : fpu.getF64(si);
@@ -5937,8 +6288,7 @@ unhandled:
         dumpMem("RBX ", reg[X64_RBX].u64);
         dumpMem("RBP ", reg[X64_RBP].u64);
     }
-    yield = true;
-    return 0;
+    return faultAtInstruction(K_SIGILL, 6);
 }
 
 void CPU64::run() {

@@ -18,7 +18,7 @@ void bwGpuCapture(GLGuestCPU* cpu, U64 fn, const GL64Args& args) {
         // Synchronous proxy copies the string before its C++ storage is freed.
         // Only one hop per frame, never one hop per vertex.
         MAIN_THREAD_EM_ASM({
-            if (globalThis.window && window.bwGpuFrame) window.bwGpuFrame(UTF8ToString($0));
+            if (globalThis.window && window.bwGpuFrame) window.bwGpuFrame(UTF8ToString($0 >>> 0));
         }, json.c_str());
         bwGpuCommands.str(""); bwGpuCommands.clear(); bwGpuCommandCount = 0; bwGpuOverflow = false;
         return;

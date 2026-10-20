@@ -564,4 +564,51 @@ void testXaddE32R32_0x3c1() {
     runXaddCases(32, XADD32_CASES, caseCount(XADD32_CASES), "xadd r/m32,r32 3c1");
 }
 
+void testUnalignedSplitLockOperations() {
+    const U32 stackOffset = 0x1000;
+    auto stackAddress = [&](U32 offset) {
+        return cpu->seg[SS].address + stackOffset + offset;
+    };
+
+    newInstruction(0);
+    cpu->reg[R_SP].u32 = stackOffset;
+    cpu->reg[R_AX].u32 = 5;
+    cpu->reg[R_CX].u32 = 9;
+    memory->writed(stackAddress(1), 5);
+    pushCode8(0xf0); pushCode8(0x0f); pushCode8(0xb1); pushCode8(0x4c); pushCode8(0x24); pushCode8(0x01);
+    runTestCPU();
+    if (memory->readd(stackAddress(1)) != 9 || cpu->reg[R_AX].u32 != 5 || !cpu->getZF()) {
+        failed("unaligned lock cmpxchg [esp+1],ecx");
+    }
+
+    newInstruction(0);
+    cpu->reg[R_SP].u32 = stackOffset;
+    cpu->reg[R_AX].u32 = 3;
+    memory->writed(stackAddress(3), 10);
+    pushCode8(0xf0); pushCode8(0x0f); pushCode8(0xc1); pushCode8(0x44); pushCode8(0x24); pushCode8(0x03);
+    runTestCPU();
+    if (memory->readd(stackAddress(3)) != 13 || cpu->reg[R_AX].u32 != 10) {
+        failed("unaligned lock xadd [esp+3],eax");
+    }
+
+    newInstruction(0);
+    cpu->reg[R_SP].u32 = stackOffset;
+    memory->writed(stackAddress(5), 9);
+    pushCode8(0xf0); pushCode8(0xff); pushCode8(0x44); pushCode8(0x24); pushCode8(0x05);
+    runTestCPU();
+    if (memory->readd(stackAddress(5)) != 10) {
+        failed("unaligned lock inc dword [esp+5]");
+    }
+
+    newInstruction(0);
+    cpu->reg[R_SP].u32 = stackOffset;
+    cpu->reg[R_AX].u32 = 0xabcd;
+    memory->writew(stackAddress(2), 0x1234);
+    pushCode8(0x66); pushCode8(0x87); pushCode8(0x44); pushCode8(0x24); pushCode8(0x02);
+    runTestCPU();
+    if (memory->readw(stackAddress(2)) != 0xabcd || cpu->reg[R_AX].u32 != 0x1234) {
+        failed("unaligned xchg [esp+2],ax");
+    }
+}
+
 #endif

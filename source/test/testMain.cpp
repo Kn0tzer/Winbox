@@ -641,6 +641,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testXaddE8R8_0x3c0, "Test Xadd E8,R8 3c0"},
     {testXaddE16R16_0x1c1, "Test Xadd E16,R16 1c1"},
     {testXaddE32R32_0x3c1, "Test Xadd E32,R32 3c1"},
+    {testUnalignedSplitLockOperations, "Test unaligned split-lock operations"},
     {testSseCompareImmediate_0x3c2, "Test SSE Compare Immediate 3c2"},
     {testSseInsertExtractShuffle_0x1c4_0x3c4_0x1c5_0x3c5_0x3c6, "Test SSE Insert/Extract/Shuffle"},
     {testCmpXchg8b_0x3c7, "Test CmpXchg8b 3c7"},

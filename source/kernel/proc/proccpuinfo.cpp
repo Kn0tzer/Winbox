@@ -53,10 +53,10 @@ FsOpenNode* openCpuInfo(const std::shared_ptr<FsNode>& node, U32 flags, U32 data
 			result += "coma_bug	: no\n";
 			result += "fpu		: yes\n";
 			result += "fpu_exception	: yes\n";
-			result += "cpuid level	: 22\n"; // :TODO: is this right?
+			result += "cpuid level\t: 1\n";
 			result += "wp		: yes\n";
-			// :TODO: probably not right, this is just what my current processor spit out
-			result += "flags		: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ss nx pdpe1gb rdtscp lm constant_tsc arch_perfmon xtopology tsc_reliable nonstop_tsc cpuid pni pclmulqdq fma cx16 x2apic movbe popcnt tsc_deadline_timer aes f16c hypervisor lahf_lm abm 3dnowprefetch cpuid_fault pti ssbd ibrs ibpb stibp fsgsbase tsc_adjust bmi1 smep bmi2 invpcid mpx adx smap clflushopt xsaveopt arat flush_l1d arch_capabilities\n";
+			// Keep this list in sync with CPU64 CPUID leaves 1 and 0x80000001.
+			result += "flags\t\t: fpu tsc msr cx8 cmov clflush mmx fxsr sse sse2 cx16 popcnt nx syscall lm lahf_lm 3dnowprefetch\n";
 			result += "bugs		: cpu_meltdown spectre_v1 spectre_v2 spec_store_bypass l1tf mds swapgs itlb_multihit\n";
 			result += "bogomips	: "; result += Platform::getCpuFreqMHz(); result += ".00\n";
 			result += "clflush size	: 64\n";

@@ -3247,7 +3247,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                     EM_ASM({ try {
                         if (typeof GLctx === 'undefined') return;
                         var r = GLctx.getMultisamplefv($0, $1);
-                        if (r && r.length >= 2) { HEAPF32[$2 >> 2] = r[0]; HEAPF32[($2 + 4) >> 2] = r[1]; }
+                        if (r && r.length >= 2) { HEAPF32[$2 >>> 2] = r[0]; HEAPF32[($2 + 4) >>> 2] = r[1]; }
                     } catch (e) {} }, (int)pname, (int)idx, (int)(uintptr_t)vp);
                 });
                 cpu->memory->memcpyToGuest(args.a[2], v, sizeof(v));
@@ -4170,7 +4170,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                         if (typeof GLctx === 'undefined') return;
                         var r = GLctx.getIndexedParameter($0, $1);
                         if (r && r.length !== undefined) r = r[0];
-                        HEAPU8[$2] = r ? 1 : 0;
+                        HEAPU8[$2 >>> 0] = r ? 1 : 0;
                     } catch (e) {} }, (int)pname, (int)idx, (int)(uintptr_t)vp);
                 });
 #else

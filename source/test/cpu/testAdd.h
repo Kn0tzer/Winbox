@@ -37,5 +37,6 @@ void testXaddE8R8_0x1c0();
 void testXaddE8R8_0x3c0();
 void testXaddE16R16_0x1c1();
 void testXaddE32R32_0x3c1();
+void testUnalignedSplitLockOperations();
 
 #endif
