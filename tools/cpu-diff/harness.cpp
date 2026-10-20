@@ -2224,6 +2224,120 @@ static void buildSse41Cases(std::vector<TestCase>& out) {
     }
 }
 
+static void buildSse42Cases(std::vector<TestCase>& out) {
+    struct QwordPair { U64 dstLo,dstHi,srcLo,srcHi; };
+    const QwordPair qwordPairs[] = {
+        {0x7FFFFFFFFFFFFFFFULL,0x8000000000000000ULL,0x8000000000000000ULL,0x7FFFFFFFFFFFFFFFULL},
+        {0xFFFFFFFFFFFFFFFFULL,0,0,0xFFFFFFFFFFFFFFFFULL},
+        {0,0,0,0},
+        {0x8000000000000000ULL,0x7FFFFFFFFFFFFFFFULL,0x7FFFFFFFFFFFFFFFULL,0x8000000000000000ULL},
+        {0x0102030405060708ULL,0xFEDCBA9876543210ULL,0x0102030405060709ULL,0xFEDCBA987654320FULL}
+    };
+    for (int sample=0;sample<5;sample++) for (bool memorySource:{false,true}) {
+        TestCase tc; tc.set="sse42"; tc.name="pcmpgtq";
+        tc.form=memorySource?"xmm,m128":"xmm,xmm";
+        tc.code={0x0F,0x10,0x03};
+        if(!memorySource)tc.code.insert(tc.code.end(),{0x0F,0x10,0x4B,0x10});
+        tc.code.insert(tc.code.end(),{0x66,0x0F,0x38,0x37,(U8)(memorySource?0x43:0xC1)});
+        if(memorySource)tc.code.push_back(0x10);
+        tc.code.insert(tc.code.end(),{0x0F,0x11,0x03});
+        initRegs(tc,0,MEM_SCRATCH); tc.checkMem=true; tc.memLen=32;
+        U64 dst[2]={qwordPairs[sample].dstLo,qwordPairs[sample].dstHi};
+        U64 src[2]={qwordPairs[sample].srcLo,qwordPairs[sample].srcHi};
+        memcpy(tc.memInit,dst,16);memcpy(tc.memInit+16,src,16);
+        out.push_back(std::move(tc));
+    }
+
+    struct CrcSpec { const char* name; U8 opcode; U8 sourceBytes; bool wide; };
+    const CrcSpec crcSpecs[] = {
+        {"crc32_8",0xF0,1,false},{"crc32_8",0xF0,1,true},
+        {"crc32_16",0xF1,2,false},{"crc32_32",0xF1,4,false},
+        {"crc32_64",0xF1,8,true}
+    };
+    U32 crcSeed=0xC001D00DU;
+    auto nextCrcRandom=[&]() -> U32 {
+        crcSeed ^= crcSeed << 13; crcSeed ^= crcSeed >> 17; crcSeed ^= crcSeed << 5;
+        return crcSeed;
+    };
+    for(const CrcSpec& spec:crcSpecs)for(int sample=0;sample<8;sample++)
+        for(bool memorySource:{false,true}) {
+            TestCase tc;tc.set="sse42";tc.name=spec.name;
+            tc.form=std::string(memorySource?"r/m memory ":"r/m register ")+std::to_string(spec.sourceBytes*8)+
+                    (spec.wide?" source, r64":" source, r32")+" edge"+std::to_string(sample);
+            std::vector<U8> prefixes;
+            if(spec.sourceBytes==2)prefixes.push_back(0x66);
+            prefixes.push_back(0xF2);
+            if(spec.wide)prefixes.push_back(0x48);
+            emitModRMInstruction(tc.code,prefixes,OpcodeMap::Map0F38,spec.opcode,
+                X64_RAX,memorySource?X64_RBX:X64_RCX,
+                memorySource?OperandKind::BaseMemory:OperandKind::Register,
+                false,0,0,memorySource?0x10:0);
+            tc.code.insert(tc.code.end(),{0x48,0x89,0x43,0x20});
+            initRegs(tc,nextCrcRandom(),MEM_SCRATCH);tc.r[X64_RCX]=nextCrcRandom();
+            tc.flagsIn=0xAD7;tc.flagsMask=F_ALL6;tc.checkMem=true;tc.memLen=40;
+            U64 value=((U64)nextCrcRandom()<<32)|nextCrcRandom();
+            memcpy(tc.memInit+16,&value,sizeof(value));
+            out.push_back(std::move(tc));
+        }
+
+    U32 randomState=0x91E10DA5U;
+    auto nextRandom=[&]() -> U32 {
+        randomState ^= randomState << 13; randomState ^= randomState >> 17;
+        randomState ^= randomState << 5; return randomState;
+    };
+    const U8 opcodes[]={0x60,0x61,0x62,0x63};
+    const char* names[]={"pcmpestrm","pcmpestri","pcmpistrm","pcmpistri"};
+    for(U32 instruction=0;instruction<4;instruction++)for(int sample=0;sample<200;sample++)
+        for(int form=0;form<3;form++) {
+            U8 first[16],second[16];
+            for(U32 i=0;i<16;i++) { first[i]=(U8)nextRandom(); second[i]=(U8)nextRandom(); }
+            U8 control=(U8)(nextRandom()&0x7F); // imm8[7] is reserved/undefined.
+            U32 count=(control&1)?8:16;
+            if(sample%4!=0) {
+                U32 lane=nextRandom()%count;
+                first[lane*((control&1)?2:1)]=0;
+                if(control&1)first[lane*2+1]=0;
+            }
+            if(sample%3!=0) {
+                U32 lane=nextRandom()%count;
+                second[lane*((control&1)?2:1)]=0;
+                if(control&1)second[lane*2+1]=0;
+            }
+
+            TestCase tc;tc.set="sse42";tc.name=names[instruction];
+            bool explicitLength=instruction<2;
+            bool maskResult=instruction==0||instruction==2;
+            bool wide=explicitLength&&(sample%7==0);
+            tc.form=std::string(explicitLength?"explicit ":"implicit ")+
+                (form==0?"register":form==1?"memory":"RIP-relative")+
+                " random"+std::to_string(sample)+(wide?" REX.W":"");
+            tc.code={0x0F,0x10,0x03}; // XMM0 = first input at [RBX].
+            if(form==0)tc.code.insert(tc.code.end(),{0x0F,0x10,0x4B,0x10});
+            if(form==2)emitRipRelative0F3AImm8(tc.code,opcodes[instruction],0,control,16,wide);
+            else {
+                std::vector<U8> prefixes=wide?std::vector<U8>{0x66,0x48}:std::vector<U8>{0x66};
+                emitModRMInstruction(tc.code,prefixes,OpcodeMap::Map0F3A,opcodes[instruction],
+                    0,form==0?X64_RCX:X64_RBX,
+                    form==0?OperandKind::Register:OperandKind::BaseMemory,
+                    true,control,0,form==1?0x10:0);
+            }
+            if(maskResult)tc.code.insert(tc.code.end(),{0x0F,0x11,0x43,0x20});
+            else tc.code.insert(tc.code.end(),{0x89,0x4B,0x20}); // Save ECX index.
+            initRegs(tc,0,MEM_SCRATCH);tc.flagsMask=F_ALL6;
+            if(explicitLength) {
+                S32 limit=(control&1)?8:16;
+                S32 len1=(S32)(nextRandom()%(U32)(limit*2+9))-limit-4;
+                S32 len2=(S32)(nextRandom()%(U32)(limit*2+9))-limit-4;
+                if(sample%37==0)len1=std::numeric_limits<S32>::min();
+                if(sample%41==0)len2=std::numeric_limits<S32>::max();
+                tc.r[X64_RAX]=(U64)(S64)len1;tc.r[X64_RDX]=(U64)(S64)len2;
+            }
+            tc.checkMem=true;tc.memLen=48;
+            memcpy(tc.memInit,first,16);memcpy(tc.memInit+16,second,16);
+            out.push_back(std::move(tc));
+        }
+}
+
 // ---------------------------------------------------------------------------
 // SSE test builders. Pattern: movups xmm0,[rbx]; movups xmm1,[rbx+16];
 // <op> xmm0,xmm1; movups [rbx],xmm0. 16 bytes at MEM_SCRATCH compared.
@@ -2924,6 +3038,7 @@ int main(int argc, char** argv) {
     buildSse3Cases(cases);
     buildSsse3Cases(cases);
     buildSse41Cases(cases);
+    buildSse42Cases(cases);
     buildSse2ExtraCases(cases);
     buildCpuidCases(cases);
     buildFaultCases(cases);

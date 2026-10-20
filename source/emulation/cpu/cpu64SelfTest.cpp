@@ -3888,6 +3888,112 @@ int runX64SelfTest() {
         }
     }
 
+    // SSE4.2 packed-string opcodes use explicit or implicit lengths and an
+    // imm8 control byte. Exercise every opcode in register, base-memory, and
+    // RIP-relative forms; zero inputs produce a fully defined empty result.
+    {
+        const char* names[] = {"PCMPESTRM","PCMPESTRI","PCMPISTRM","PCMPISTRI"};
+        const U8 opcodes[] = {0x60,0x61,0x62,0x63};
+        const U64 input=CODE_BASE+0x800;
+        for(U32 op=0;op<4;op++)for(U32 form=0;form<3;form++) {
+            std::vector<U8> code={0x0F,0x10,0x03}; // XMM0 = first input.
+            if(form==0)code.insert(code.end(),{0x0F,0x10,0x4B,0x10});
+            size_t instructionStart=code.size();
+            code.insert(code.end(),{0x66,0x0F,0x3A,opcodes[op],
+                (U8)(form==0?0xC1:form==1?0x43:0x05)});
+            if(form==1)code.push_back(0x10);
+            if(form==2)code.insert(code.end(),{0,0,0,0});
+            code.push_back(0); // imm8: unsigned bytes, equal-any, positive, bit-mask.
+            bool maskResult=op==0||op==2;
+            if(!maskResult)code.insert(code.end(),{0x89,0xC8}); // EAX = ECX.
+            if(form==2) {
+                code.insert(code.end(),EXIT_SYSCALL.begin(),EXIT_SYSCALL.end());
+                size_t dataOffset=code.size();
+                code.insert(code.end(),16,0); // inline source follows the exit suffix.
+                S32 displacement=(S32)dataOffset-(S32)(instructionStart+10);
+                U32 bits=(U32)displacement;
+                size_t dispOffset=instructionStart+5;
+                for(U32 i=0;i<4;i++)code[dispOffset+i]=(U8)(bits>>(i*8));
+            } else {
+                code=withExit(std::move(code));
+            }
+            runAndCheck(r,(std::string("SSE4.2 ")+names[op]+" "+
+                           (form==0?"register":form==1?"memory":"RIP-relative")).c_str(),
+                code,[maskResult](CPU64& c) {
+                    bool output=maskResult?(c.xmm[0].lo==0&&c.xmm[0].hi==0):
+                                           c.reg[X64_R15].u64==16;
+                    U32 flags=X64_CF|X64_ZF|X64_SF|X64_OF|X64_AF|X64_PF;
+                    return output&&(c.rflags&flags)==(X64_ZF|X64_SF);
+                },[input](CPU64& c) {
+                    c.reg[X64_RBX].setU64(input);
+                    c.reg[X64_RAX].setU64(0);c.reg[X64_RDX].setU64(0);
+                    c.xmm[0].lo=c.xmm[0].hi=0;c.xmm[1].lo=c.xmm[1].hi=0;
+                    for(U32 i=0;i<32;i++)c.memory->writeb(input+i,0);
+                });
+        }
+    }
+
+    // PCMPGTQ compares signed qwords in both register and memory forms.
+    {
+        const U64 input=CODE_BASE+0x800;
+        for(bool memorySource:{false,true}) {
+            std::vector<U8> code={0x0F,0x10,0x03};
+            if(!memorySource)code.insert(code.end(),{0x0F,0x10,0x4B,0x10});
+            code.insert(code.end(),{0x66,0x0F,0x38,0x37,(U8)(memorySource?0x43:0xC1)});
+            if(memorySource)code.push_back(0x10);
+            runAndCheck(r,memorySource?"SSE4.2 PCMPGTQ memory":"SSE4.2 PCMPGTQ register",
+                withExit(code),[](CPU64& c) {
+                    return c.xmm[0].lo==~0ULL&&c.xmm[0].hi==0;
+                },[input](CPU64& c) {
+                    c.reg[X64_RBX].setU64(input);
+                    c.xmm[0].lo=~0ULL;c.xmm[0].hi=2;
+                    c.xmm[1].lo=~1ULL;c.xmm[1].hi=2;
+                    c.memory->writeq(input,~0ULL);c.memory->writeq(input+8,2);
+                    c.memory->writeq(input+16,~1ULL);c.memory->writeq(input+24,2);
+                });
+        }
+    }
+
+    // CRC32C byte/word/dword/qword sources with 32-bit and 64-bit destinations.
+    {
+        auto updateCrc=[](U32 crc,U64 value,U32 bytes) {
+            for(U32 i=0;i<bytes;i++) {
+                crc^=(U8)(value>>(i*8));
+                for(U32 bit=0;bit<8;bit++)crc=(crc>>1)^((crc&1)?0x82F63B78U:0);
+            }
+            return crc;
+        };
+        struct Spec { const char* name; U8 opcode; U8 bytes; bool wide; };
+        const Spec specs[]={{"CRC32 r32,r/m8",0xF0,1,false},
+                            {"CRC32 r64,r/m8",0xF0,1,true},
+                            {"CRC32 r32,r/m16",0xF1,2,false},
+                            {"CRC32 r32,r/m32",0xF1,4,false},
+                            {"CRC32 r64,r/m64",0xF1,8,true}};
+        const U64 input=CODE_BASE+0x800;
+        const U32 seed=0x12345678U;
+        const U64 value=0xFEDCBA9876543210ULL;
+        for(const Spec& spec:specs)for(bool memorySource:{false,true}) {
+            std::vector<U8> code={0x48,0xB8};
+            for(U32 i=0;i<8;i++)code.push_back((U8)((U64)seed>>(i*8)));
+            code.insert(code.end(),{0x48,0xB9});
+            for(U32 i=0;i<8;i++)code.push_back((U8)(value>>(i*8)));
+            if(spec.bytes==2)code.push_back(0x66);
+            code.push_back(0xF2);
+            if(spec.wide)code.push_back(0x48);
+            code.insert(code.end(),{0x0F,0x38,spec.opcode,(U8)(memorySource?0x43:0xC1)});
+            if(memorySource)code.push_back(0x10);
+            code.insert(code.end(),{0x48,0x89,0x43,0x20});
+            runAndCheck(r,(std::string("SSE4.2 ")+spec.name+
+                           (memorySource?" memory":" register")).c_str(),
+                withExit(code),[=](CPU64& c) {
+                    return c.reg[X64_R15].u64==updateCrc(seed,value,spec.bytes);
+                },[=](CPU64& c) {
+                    c.reg[X64_RBX].setU64(input);
+                    for(U32 i=0;i<spec.bytes;i++)c.memory->writeb(input+16+i,(U8)(value>>(i*8)));
+                });
+        }
+    }
+
     // Test 75k — MOVSHDUP {1,2,3,4} → {2,2,4,4}; reading .lo (lanes 0,1)
     //   = {2,2}. Inputs are integers placed in float lanes via movq — the
     //   op is a pure lane shuffle, so integer bit patterns work fine.

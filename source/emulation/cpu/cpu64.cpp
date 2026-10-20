@@ -104,6 +104,146 @@ static inline U64 cpu64ConvertFpToInt(double value, bool is64, bool truncate,
     return is64 ? (U64)result : (U32)(S32)result;
 }
 
+static inline U32 cpu64StringElement(U64 lo, U64 hi, U32 index, U32 bits) {
+    U32 bit = index * bits;
+    U64 lane = bit < 64 ? lo >> bit : hi >> (bit - 64);
+    return (U32)(lane & (bits == 8 ? 0xFFU : 0xFFFFU));
+}
+
+static inline bool cpu64StringElementCompare(U32 a, U32 b, U32 bits,
+                                              bool isSigned, U32 operation) {
+    if (isSigned) {
+        S32 sa = bits == 8 ? (S8)a : (S16)a;
+        S32 sb = bits == 8 ? (S8)b : (S16)b;
+        if (operation == 0) return sa == sb;
+        if (operation == 1) return sb >= sa;
+        return sb <= sa;
+    }
+    if (operation == 0) return a == b;
+    if (operation == 1) return b >= a;
+    return b <= a;
+}
+
+struct CPU64PackedStringResult {
+    U32 mask;
+    U32 length1;
+    U32 length2;
+};
+
+static inline U32 cpu64StringLength(S64 length, U32 limit) {
+    if (length >= (S64)limit || length <= -(S64)limit) return limit;
+    return (U32)(length < 0 ? -length : length);
+}
+
+static inline CPU64PackedStringResult cpu64ComparePackedStrings(
+    U64 firstLo, U64 firstHi, U64 secondLo, U64 secondHi,
+    U8 control, bool explicitLength, S64 inputLength1, S64 inputLength2) {
+    const U32 bits = (control & 1) ? 16 : 8;
+    const U32 count = (control & 1) ? 8 : 16;
+    const bool isSigned = (control & 2) != 0;
+    const U32 aggregation = (control >> 2) & 3;
+    U32 length1 = count, length2 = count;
+    if (explicitLength) {
+        length1 = cpu64StringLength(inputLength1, count);
+        length2 = cpu64StringLength(inputLength2, count);
+    } else {
+        for (U32 i = 0; i < count; i++) {
+            if (cpu64StringElement(firstLo, firstHi, i, bits) == 0) {
+                length1 = i;
+                break;
+            }
+        }
+        for (U32 i = 0; i < count; i++) {
+            if (cpu64StringElement(secondLo, secondHi, i, bits) == 0) {
+                length2 = i;
+                break;
+            }
+        }
+    }
+
+    U32 result = 0;
+    if (aggregation == 0) { // equal any: each second-string element vs all first
+        for (U32 j = 0; j < count; j++) {
+            bool found = false;
+            if (j < length2) {
+                for (U32 i = 0; i < count; i++) {
+                    if (i < length1 && cpu64StringElementCompare(
+                            cpu64StringElement(firstLo, firstHi, i, bits),
+                            cpu64StringElement(secondLo, secondHi, j, bits),
+                            bits, isSigned, 0)) {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (found) result |= 1U << j;
+        }
+    } else if (aggregation == 1) { // ranges: even/odd first-string bounds
+        for (U32 j = 0; j < count; j++) {
+            if (j >= length2) continue;
+            U32 value = cpu64StringElement(secondLo, secondHi, j, bits);
+            for (U32 i = 0; i < count; i += 2) {
+                if (i + 1 >= length1) continue;
+                U32 lower = cpu64StringElement(firstLo, firstHi, i, bits);
+                U32 upper = cpu64StringElement(firstLo, firstHi, i + 1, bits);
+                if (cpu64StringElementCompare(lower, value, bits, isSigned, 1) &&
+                    cpu64StringElementCompare(upper, value, bits, isSigned, 2)) {
+                    result |= 1U << j;
+                    break;
+                }
+            }
+        }
+    } else if (aggregation == 2) { // equal each; invalid pairs follow SDM table
+        for (U32 i = 0; i < count; i++) {
+            bool valid1 = i < length1, valid2 = i < length2;
+            bool equal = valid1 == valid2 &&
+                (!valid1 || cpu64StringElementCompare(
+                    cpu64StringElement(firstLo, firstHi, i, bits),
+                    cpu64StringElement(secondLo, secondHi, i, bits), bits,
+                    isSigned, 0));
+            if (equal) result |= 1U << i;
+        }
+    } else { // equal ordered: first string searched within the second string
+        for (U32 start = 0; start < count; start++) {
+            bool matched = true;
+            for (U32 i = 0; i < count - start; i++) {
+                bool valid1 = i < length1;
+                bool valid2 = start + i < length2;
+                if (!valid1) continue; // invalid first-string lanes are wildcards
+                if (!valid2 || !cpu64StringElementCompare(
+                        cpu64StringElement(firstLo, firstHi, i, bits),
+                        cpu64StringElement(secondLo, secondHi, start + i, bits),
+                        bits, isSigned, 0)) {
+                    matched = false;
+                    break;
+                }
+            }
+            if (matched) result |= 1U << start;
+        }
+    }
+
+    const U32 resultMask = (1U << count) - 1;
+    U32 polarity = (control >> 4) & 3;
+    if (polarity == 1) {
+        result = (~result) & resultMask;
+    } else if (polarity == 3) {
+        for (U32 i = 0; i < count; i++) {
+            if (i < length2) result ^= 1U << i;
+        }
+    }
+    return {result, length1, length2};
+}
+
+static inline U32 cpu64Crc32c(U32 crc, U64 value, U32 sourceBytes) {
+    constexpr U32 polynomial = 0x82F63B78U; // reflected CRC-32C / Castagnoli
+    for (U32 byte = 0; byte < sourceBytes; byte++) {
+        crc ^= (U8)(value >> (byte * 8));
+        for (U32 bit = 0; bit < 8; bit++)
+            crc = (crc >> 1) ^ ((crc & 1) ? polynomial : 0);
+    }
+    return crc;
+}
+
 CPU64::CPU64(KMemory64* memory) : memory(memory) {
     reg[X64_RSP].setU64(0);
     mxcsr = 0x1F80;
@@ -4779,6 +4919,111 @@ dsp_55:
                 fpu.startMMX();
                 fpu.getMMX(m.regField & 7)->q = result;
                 U32 used = opOff + 3 + m.length + (palignr ? 1 : 0);
+                rip += used;
+                return used;
+            }
+        }
+
+        if (p.rep == 0xF2 && op2 == 0x38) {
+            U8 op3 = fetchByte(rip + opOff + 2);
+            if (op3 == 0xF0 || op3 == 0xF1) { // CRC32 r32/r64, r/m8/16/32/64
+                ModRM m = decodeModRM(rip + opOff + 3, p, 0);
+                U32 sourceBytes = op3 == 0xF0 ? 1 : rexW ? 8 : osize66 ? 2 : 4;
+                U64 source = loadRM(m, sourceBytes, rexPresent);
+                U32 crc = cpu64Crc32c(reg[m.regField].u32, source, sourceBytes);
+                if (rexW) reg[m.regField].setU64(crc);
+                else      reg[m.regField].setU32(crc);
+                U32 used = opOff + 3 + m.length;
+                rip += used;
+                return used;
+            }
+        }
+
+        if (osize66 && p.rep == 0 && op2 == 0x38 &&
+            fetchByte(rip + opOff + 2) == 0x37) { // PCMPGTQ
+            ModRM m = decodeModRM(rip + opOff + 3, p, 0);
+            U64 sourceLo, sourceHi;
+            if (m.isReg) {
+                sourceLo = xmm[m.rmIndex].lo;
+                sourceHi = xmm[m.rmIndex].hi;
+            } else {
+                sourceLo = memory->readq(m.effAddr);
+                sourceHi = memory->readq(m.effAddr + 8);
+            }
+            U64 destLo = xmm[m.regField].lo;
+            U64 destHi = xmm[m.regField].hi;
+            xmm[m.regField].lo = (S64)destLo > (S64)sourceLo ? ~0ULL : 0;
+            xmm[m.regField].hi = (S64)destHi > (S64)sourceHi ? ~0ULL : 0;
+            U32 used = opOff + 3 + m.length;
+            rip += used;
+            return used;
+        }
+
+        if (osize66 && p.rep == 0 && op2 == 0x3A) {
+            U8 op3 = fetchByte(rip + opOff + 2);
+            if (op3 >= 0x60 && op3 <= 0x63) {
+                ModRM m = decodeModRM(rip + opOff + 3, p, 1);
+                U8 control = fetchByte(rip + opOff + 3 + m.length);
+                U64 firstLo = xmm[m.regField].lo, firstHi = xmm[m.regField].hi;
+                U64 secondLo, secondHi;
+                if (m.isReg) {
+                    secondLo = xmm[m.rmIndex].lo;
+                    secondHi = xmm[m.rmIndex].hi;
+                } else {
+                    secondLo = memory->readq(m.effAddr);
+                    secondHi = memory->readq(m.effAddr + 8);
+                }
+                bool explicitLength = op3 == 0x60 || op3 == 0x61;
+                S64 length1 = rexW ? (S64)reg[X64_RAX].u64
+                                  : (S64)(S32)reg[X64_RAX].u32;
+                S64 length2 = rexW ? (S64)reg[X64_RDX].u64
+                                  : (S64)(S32)reg[X64_RDX].u32;
+                CPU64PackedStringResult result = cpu64ComparePackedStrings(
+                    firstLo, firstHi, secondLo, secondHi, control,
+                    explicitLength, length1, length2);
+                U32 count = (control & 1) ? 8 : 16;
+                U32 flags = (result.mask ? X64_CF : 0) |
+                            (result.length2 < count ? X64_ZF : 0) |
+                            (result.length1 < count ? X64_SF : 0) |
+                            ((result.mask & 1) ? X64_OF : 0);
+                rflags &= ~(X64_CF | X64_ZF | X64_SF | X64_OF | X64_AF | X64_PF);
+                rflags |= flags;
+
+                if (op3 == 0x60 || op3 == 0x62) { // PCMPESTRM / PCMPISTRM
+                    U64 outLo = 0, outHi = 0;
+                    if (control & 0x40) {
+                        U32 bits = (control & 1) ? 16 : 8;
+                        U32 lanes = 128 / bits;
+                        for (U32 i = 0; i < lanes; i++) {
+                            U32 value = (result.mask & (1U << i))
+                                ? (bits == 8 ? 0xFFU : 0xFFFFU) : 0;
+                            if (bits == 8) {
+                                if (i < 8) outLo |= (U64)value << (i * 8);
+                                else       outHi |= (U64)value << ((i - 8) * 8);
+                            } else {
+                                if (i < 4) outLo |= (U64)value << (i * 16);
+                                else       outHi |= (U64)value << ((i - 4) * 16);
+                            }
+                        }
+                    } else {
+                        outLo = result.mask;
+                    }
+                    xmm[0].lo = outLo;
+                    xmm[0].hi = outHi;
+                } else { // PCMPESTRI / PCMPISTRI
+                    S32 index = (S32)count;
+                    if (control & 0x40) {
+                        for (S32 i = (S32)count - 1; i >= 0; i--) {
+                            if (result.mask & (1U << i)) { index = i; break; }
+                        }
+                    } else {
+                        for (U32 i = 0; i < count; i++) {
+                            if (result.mask & (1U << i)) { index = (S32)i; break; }
+                        }
+                    }
+                    reg[X64_RCX].setU32((U32)index);
+                }
+                U32 used = opOff + 3 + m.length + 1;
                 rip += used;
                 return used;
             }
