@@ -150,12 +150,12 @@ async function launchFrame(query, title, archive = null) {
   if (settings.enhancement !== 'off') query.set('enhance', '1');
   const frame = document.createElement('iframe'); frame.title = title + ' runtime';
   frame.allow = 'cross-origin-isolated; fullscreen'; frame.dataset.installation = query.get('installation');
-  frame.addEventListener('load', () => {
+  frame.onload = () => {
     try {
       frame.contentDocument.documentElement.style.backgroundColor = '#000';
       frame.contentDocument.body.style.backgroundColor = '#000';
     } catch { /* Runtime presentation remains isolated if the frame is unavailable. */ }
-  }, { once: true });
+  };
   const run = { frame, archive, generation: ++generation, renderer: null, vkReady: null, canvas: null,
     lastLog: null, firstMapped: false, hasFrame: false, failed: false, status: '', progressTimer: null, probe: null,
     startedAt: performance.now(), enhancer: null, enhancerPending: false, exe: query.get('exe') || '' };
