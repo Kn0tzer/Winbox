@@ -15,8 +15,9 @@ class GamepadE2ETest extends ProbeTest {
       ...extraUrlParams(),
     });
     await page.goto(`${this._server.url}/runtime/index.html?${params}`);
-    // The generic boot helper also waits for the desktop pin's window log.
-    // This input test needs only the exported guest session to accept spawns.
+    // The generic boot helper also waits for the desktop pin's window log,
+    // which is unavailable in this headless probe. The test waits separately
+    // for the persistent service pins before launching its guest fixture.
     await this.waitForPageFn(page, () =>
       globalThis.bwRuntime?.call?.('bw64_session_ready', [], []) === 1, 600000);
   }
@@ -64,6 +65,9 @@ class GamepadE2ETest extends ProbeTest {
       });
 
       await this.bootGamepadRuntime(activePage, arch);
+      await this.waitForLog(activePage,
+        /session: persistent pins spawned; Wine owns service initialization/, 120000);
+      await activePage.waitForTimeout(3000);
       const runtimeFrame = await activePage.evaluate(() => ({
         path: location.pathname,
         ready: window.bwRuntime?.call?.('bw64_session_ready', [], []) === 1,
