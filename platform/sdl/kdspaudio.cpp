@@ -245,7 +245,8 @@ static void bwAudioEnsureBridge(Uint32 sourceRate, Uint32 sourceChannels) {
 		var SDL2 = Module['SDL2'] || (Module['SDL2'] = {});
 		var ctx = SDL2.audioContext;
 		if (!ctx) return;
-		if (ctx.state === 'suspended' && navigator.userActivation && navigator.userActivation.hasBeenActive) ctx.resume().catch(function() {});
+		if (window.bwResumeAudioContext) window.bwResumeAudioContext(ctx);
+		else if (ctx.state === 'suspended' && navigator.userActivation && navigator.userActivation.hasBeenActive) ctx.resume().catch(function() {});
 		var outputChannels = $4;
 		var buffer = HEAPF32.buffer;
 		var sameConfig = SDL2.bwNodeCtx === ctx && SDL2.bwNodeChannels === outputChannels && SDL2.bwNodeRate === $5;

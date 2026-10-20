@@ -11,6 +11,46 @@ window.bwAudioWorkletUrl = () => {
   url.searchParams.set('v', runtimeReleaseId);
   return url.href;
 };
+let audioGestureSeen = false;
+const audioGestureTargets = [];
+function removeAudioGestureListeners() {
+  for (const target of audioGestureTargets.splice(0)) {
+    target.removeEventListener('pointerdown', onFirstAudioGesture, true);
+    target.removeEventListener('keydown', onFirstAudioGesture, true);
+  }
+}
+function audioUserActivated() {
+  if (audioGestureSeen || navigator.userActivation?.hasBeenActive) return true;
+  try {
+    return window.parent !== window && window.parent.navigator.userActivation?.hasBeenActive === true;
+  } catch {
+    return false;
+  }
+}
+function onFirstAudioGesture() {
+  audioGestureSeen = true;
+  const context = window.Module?.SDL2?.audioContext;
+  if (context?.state === 'suspended') context.resume().catch(() => {});
+  removeAudioGestureListeners();
+}
+window.bwResumeAudioContext = context => {
+  if (!context) return;
+  const activated = audioUserActivated();
+  if (context.state === 'suspended' && activated) context.resume().catch(() => {});
+  if (context.state !== 'suspended' || activated) removeAudioGestureListeners();
+};
+for (const target of [window, document]) {
+  target.addEventListener('pointerdown', onFirstAudioGesture, true);
+  target.addEventListener('keydown', onFirstAudioGesture, true);
+  audioGestureTargets.push(target);
+}
+try {
+  if (window.parent !== window) {
+    window.parent.addEventListener('pointerdown', onFirstAudioGesture, true);
+    window.parent.addEventListener('keydown', onFirstAudioGesture, true);
+    audioGestureTargets.push(window.parent);
+  }
+} catch {}
 const id = query.get('installation');
 // Lazy game payload (M8): a game zip mounted on-demand via bw64url/HTTP Range,
 // bypassing IndexedDB, the 768 MiB checkEntries cap, and the MEMFS copy.

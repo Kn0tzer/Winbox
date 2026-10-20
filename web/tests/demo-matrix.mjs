@@ -35,9 +35,11 @@ let page;
 let build;
 let startedAt = 0;
 let tClick = null;
+let demoClickAtMs = null;
 let tMapped = null;
 let mappedAt = null;
 let gameplayStartedAt = null;
+let audioStartBeforePlayerClick = null;
 let sampling = false;
 let samplerPromise = null;
 let lastWasmMetricLine = null;
@@ -124,6 +126,7 @@ try {
 
   await page.locator(`[data-game="${demo}"]`).click();
   tClick = elapsedSeconds();
+  demoClickAtMs = Date.now();
   try {
     await page.waitForFunction(() => document.getElementById('log')?.textContent.includes('first window mapped'), null,
       { timeout: mappedTimeout * 1000 });
@@ -153,6 +156,17 @@ try {
     if (due > Date.now()) await page.waitForTimeout(due - Date.now());
     await takeScreenshot(`boot-${seconds}s.png`);
   }
+  audioStartBeforePlayerClick = await page.evaluate(() => {
+    const frame = document.querySelector('#display iframe');
+    const runtime = frame?.contentWindow;
+    const context = runtime?.Module?.SDL2?.audioContext;
+    return {
+      checkedAtMs: Date.now(),
+      crossOriginIsolated: runtime?.crossOriginIsolated === true,
+      contextState: context?.state || null,
+      worklet: runtime?.Module?.SDL2?.bwAudioWorklet === true,
+    };
+  });
   await page.mouse.click(...await displayCenter());
   await runInputScript();
   sampling = false;
@@ -165,6 +179,8 @@ try {
     screenshots, pageErrorCount: pageErrors.length, consoleErrorCount: countConsoleErrors(),
     lastMetricsSnapshot, lastJitStats, stage: 'mapped', pixelMethod, httpErrorCount: httpErrors.length,
     gameplayStartedAtMs: gameplayStartedAt,
+    demoClickAtMs,
+    audioStartBeforePlayerClick,
   };
   await writeFile(join(outDir, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
   console.log(JSON.stringify({ demo, jit: Number(jit), stage: 'mapped', clickToMappedSeconds: summary.clickToMappedSeconds,
