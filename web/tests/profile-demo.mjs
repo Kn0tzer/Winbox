@@ -79,6 +79,7 @@ try {
 }
 
 async function main() {
+await waitForLoadAverageBelowThreshold(summary);
 await waitForBuildIdle();
 const build = JSON.parse(await readFile(join(repo, 'dist/runtime/BUILD_INFO.json'), 'utf8'));
 
@@ -192,8 +193,6 @@ try {
     startAtMs = startWallMs + (summary.tFirstFrame ?? summary.tMapped) * 1000 + startOffsetS * 1000;
   }
   if (startAtMs > Date.now()) await sleep(startAtMs - Date.now());
-
-  await waitForLoadAverageBelowThreshold(summary);
 
   summary.windowStartSeconds = elapsedSeconds();
   summary.loadAverageWindowStart = readLoadAverage();
