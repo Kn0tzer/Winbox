@@ -1719,6 +1719,8 @@ dsp_31:
             return used;
         }
         if (sub == 2) { // NOT — no flags affected
+            std::unique_lock<std::recursive_mutex> atomicLock(cpu64AtomicLockFor(m.effAddr), std::defer_lock);
+            if (p.lock && !m.isReg) atomicLock.lock();
             U64 a = loadRM(m, size, rexPresent);
             storeRM(m, size, ~a, rexPresent);
             U32 used = opOff + 1 + m.length;
@@ -1726,6 +1728,8 @@ dsp_31:
             return used;
         }
         if (sub == 3) { // NEG — same as 0 - r/m, flags set per SUB.
+            std::unique_lock<std::recursive_mutex> atomicLock(cpu64AtomicLockFor(m.effAddr), std::defer_lock);
+            if (p.lock && !m.isReg) atomicLock.lock();
             U64 a = loadRM(m, size, rexPresent);
             U64 r = (U64)0 - a;
             flagsSub(rflags, 0, a, r, size);
@@ -1925,6 +1929,8 @@ dsp_32:
         ModRM m = decodeModRM(rip + opOff + 1, p, 0);
         U8 sub = m.regField & 0x7;
         if (sub == 0 || sub == 1) {
+            std::unique_lock<std::recursive_mutex> atomicLock(cpu64AtomicLockFor(m.effAddr), std::defer_lock);
+            if (p.lock && !m.isReg) atomicLock.lock();
             U64 a = loadRM(m, 1, rexPresent);
             U64 r = (sub == 0) ? a + 1 : a - 1;
             // INC/DEC preserve CF; other flags per ADD/SUB of 1.
@@ -2398,6 +2404,8 @@ dsp_38:
         // 0F BB /r — BTC r/m, r       (complement bit)
         if (op2 == 0xA3 || op2 == 0xAB || op2 == 0xB3 || op2 == 0xBB) {
             ModRM m = decodeModRM(rip + opOff + 2, p, 0);
+            std::unique_lock<std::recursive_mutex> atomicLock(cpu64AtomicLockFor(m.effAddr), std::defer_lock);
+            if (p.lock && op2 != 0xA3 && !m.isReg) atomicLock.lock();
             U64 v = loadRM(m, opSize, rexPresent);
             U64 idx = (opSize == 8) ? reg[m.regField].u64 :
                       (opSize == 4) ? (U64)reg[m.regField].u32 :
@@ -2424,6 +2432,8 @@ dsp_38:
             ModRM m = decodeModRM(rip + opOff + 2, p, 1);
             U8 sub = m.regField & 0x7;
             if (sub >= 4 && sub <= 7) {
+                std::unique_lock<std::recursive_mutex> atomicLock(cpu64AtomicLockFor(m.effAddr), std::defer_lock);
+                if (p.lock && sub != 4 && !m.isReg) atomicLock.lock();
                 U64 v = loadRM(m, opSize, rexPresent);
                 U8 imm = fetchByte(rip + opOff + 2 + m.length);
                 U64 bit = imm & (opSize * 8 - 1);

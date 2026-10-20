@@ -898,6 +898,72 @@ static void buildGroupTestCases(std::vector<TestCase>& out) {
     }
 }
 
+// LOCK-prefixed scalar RMW operations. Register forms establish the same
+// result/flag behavior without LOCK (LOCK on a register is #UD); memory forms
+// use the scratch qword and carry LOCK where the architecture permits it.
+static void buildLockedRmwCases(std::vector<TestCase>& out) {
+    auto addPair = [&](const char* name, const std::vector<U8>& regCode,
+                       const std::vector<U8>& memCode, U64 value, U8 size,
+                       U32 flagsIn, U32 flagsMask, bool flagsUnchanged) {
+        TestCase regCase; regCase.set = "int"; regCase.name = name;
+        regCase.form = "register"; regCase.code = regCode;
+        initRegs(regCase, value, 0); regCase.flagsIn = flagsIn;
+        regCase.flagsMask = flagsMask;
+        regCase.checkFlagsUnchanged = flagsUnchanged;
+        out.push_back(regCase);
+
+        TestCase memCase; memCase.set = "int"; memCase.name = name;
+        memCase.form = "LOCK memory"; memCase.code = memCode;
+        initRegs(memCase, 0, MEM_SCRATCH); memCase.flagsIn = flagsIn;
+        memCase.flagsMask = flagsMask;
+        memCase.checkFlagsUnchanged = flagsUnchanged;
+        memCase.checkMem = true; memCase.memLen = size;
+        memcpy(memCase.memInit, &value, size);
+        out.push_back(memCase);
+    };
+
+    const U32 incFlags = F_CF | F_PF | F_AF | F_ZF | F_SF | F_OF;
+    addPair("inc-lock", {0xFE,0xC0}, {0xF0,0xFE,0x03}, 0x7F, 1,
+            0x203, incFlags, false);
+    addPair("dec-lock", {0xFE,0xC8}, {0xF0,0xFE,0x0B}, 0x80, 1,
+            0x203, incFlags, false);
+
+    const U32 allFlags = F_ALL6;
+    const U32 allSet = 0x202 | allFlags;
+    addPair("not-lock-m8", {0xF6,0xD0}, {0xF0,0xF6,0x13}, 0x55, 1,
+            allSet, 0, true);
+    addPair("neg-lock-m8", {0xF6,0xD8}, {0xF0,0xF6,0x1B}, 0x80, 1,
+            0x202, allFlags, false);
+    addPair("not-lock-m64", {0x48,0xF7,0xD0}, {0xF0,0x48,0xF7,0x13},
+            0x00FF00FF00FF00FFULL, 8, allSet, 0, true);
+    addPair("neg-lock-m64", {0x48,0xF7,0xD8}, {0xF0,0x48,0xF7,0x1B},
+            0x8000000000000000ULL, 8, 0x202, allFlags, false);
+
+    const U8 bitOps[] = {0xAB,0xB3,0xBB};
+    const U8 bitGroupExt[] = {5,6,7};
+    const char* bitNames[] = {"bts-lock", "btr-lock", "btc-lock"};
+    for (int i = 0; i < 3; i++) {
+        addPair(bitNames[i], {0x48,0x0F,bitOps[i],0xC8},
+                {0xF0,0x48,0x0F,bitOps[i],0x0B}, 8, 8, 0x202, F_CF, false);
+        out[out.size() - 2].r[X64_RCX] = 3;
+        out[out.size() - 1].r[X64_RCX] = 3;
+        TestCase immReg; immReg.set = "int"; immReg.name = bitNames[i];
+        immReg.form = "register,imm8";
+        immReg.code = {0x48,0x0F,0xBA,
+                       (U8)(0xC0 | (bitGroupExt[i] << 3)), 3};
+        initRegs(immReg, 8, 0); immReg.flagsIn = 0x202; immReg.flagsMask = F_CF;
+        out.push_back(immReg);
+        TestCase immMem; immMem.set = "int"; immMem.name = bitNames[i];
+        immMem.form = "LOCK memory,imm8";
+        immMem.code = {0xF0,0x48,0x0F,0xBA,
+                       (U8)((bitGroupExt[i] << 3) | X64_RBX), 3};
+        initRegs(immMem, 0, MEM_SCRATCH); immMem.flagsIn = 0x202;
+        immMem.flagsMask = F_CF; immMem.checkMem = true; immMem.memLen = 8;
+        U64 initial = 8; memcpy(immMem.memInit, &initial, sizeof(initial));
+        out.push_back(immMem);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // FPU test builders (x87). Pattern: finit; fldX; fldY; fop_p; fstp [rbx].
 // Result compared via 8 bytes at MEM_SCRATCH (rbx = MEM_SCRATCH).
@@ -1566,6 +1632,7 @@ int main(int argc, char** argv) {
     buildIntCases(cases);
     buildByteIncDecCases(cases);
     buildGroupTestCases(cases);
+    buildLockedRmwCases(cases);
     buildFpuCases(cases);
     buildSseCases(cases);
     // buildStringCases(cases); // DISABLED: harness cannot handle RSI/RDI per-side checks yet

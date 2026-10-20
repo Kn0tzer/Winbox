@@ -2855,6 +2855,100 @@ int runX64SelfTest() {
         }
     }
 
+    // Test 65f — LOCK-prefixed scalar RMW instructions use the same result
+    // and flag semantics as their register forms, and preserve unrelated flags.
+    {
+        auto checkRmw = [&](const char* name, const std::vector<U8>& insn,
+                            bool memoryForm, U8 size, U64 initial, U64 expected,
+                            U64 rcx, U32 flagsIn, U32 flagsMask,
+                            U32 expectedFlags, bool unchangedFlags) {
+            U32 wantedFlags = unchangedFlags ? (flagsIn & flagsMask) : expectedFlags;
+            std::vector<U8> code = insn;
+            code.insert(code.end(), {0x9C,0x58}); // pushfq; pop rax; withExit saves flags in R15
+            U64 dataAddr = CODE_BASE + code.size() + EXIT_SYSCALL.size();
+            if (memoryForm) {
+                code.insert(code.end(), EXIT_SYSCALL.begin(), EXIT_SYSCALL.end());
+                for (U8 i = 0; i < size; i++) code.push_back((U8)(initial >> (i * 8)));
+            } else {
+                code.insert(code.end(), EXIT_SYSCALL.begin(), EXIT_SYSCALL.end());
+            }
+            runAndCheck(r, name, code,
+                [=](CPU64& c) {
+                    U64 actual = memoryForm
+                        ? (size == 1 ? c.memory->readb(dataAddr) : c.memory->readq(dataAddr))
+                        : c.reg[X64_RBX].u64;
+                    U32 flags = (U32)c.reg[X64_R15].u64 & flagsMask;
+                    return actual == expected && flags == wantedFlags;
+                },
+                [=](CPU64& c) {
+                    c.reg[X64_RBX].setU64(memoryForm ? dataAddr : initial);
+                    c.reg[X64_RSI].setU64(rcx);
+                    c.rflags = flagsIn;
+                    if (memoryForm) c.reg[X64_RBX].setU64(dataAddr);
+                });
+        };
+
+        const U32 incFlags = X64_CF | X64_PF | X64_AF | X64_ZF | X64_SF | X64_OF;
+        const U32 allFlags = incFlags;
+        const U32 allSet = 0x202 | allFlags;
+        checkRmw("INC r/m8 register", {0xFE,0xC3}, false, 1,
+                 0x7F, 0x80, 0, 0x203, incFlags,
+                 X64_CF | X64_AF | X64_SF | X64_OF, false);
+        checkRmw("LOCK INC m8 [RBX]", {0xF0,0xFE,0x03}, true, 1,
+                 0x7F, 0x80, 0, 0x203, incFlags,
+                 X64_CF | X64_AF | X64_SF | X64_OF, false);
+        checkRmw("DEC r/m8 register", {0xFE,0xCB}, false, 1,
+                 0x80, 0x7F, 0, 0x203, incFlags,
+                 X64_CF | X64_AF | X64_OF, false);
+        checkRmw("LOCK DEC m8 [RBX]", {0xF0,0xFE,0x0B}, true, 1,
+                 0x80, 0x7F, 0, 0x203, incFlags,
+                 X64_CF | X64_AF | X64_OF, false);
+
+        checkRmw("NOT r/m8 register", {0xF6,0xD3}, false, 1,
+                 0x55, 0xAA, 0, allSet, allFlags, allFlags, true);
+        checkRmw("LOCK NOT m8 [RBX]", {0xF0,0xF6,0x13}, true, 1,
+                 0x55, 0xAA, 0, allSet, allFlags, allFlags, true);
+        checkRmw("NEG r/m8 register", {0xF6,0xDB}, false, 1,
+                 0x80, 0x80, 0, 0x202, allFlags,
+                 X64_CF | X64_SF | X64_OF, false);
+        checkRmw("LOCK NEG m8 [RBX]", {0xF0,0xF6,0x1B}, true, 1,
+                 0x80, 0x80, 0, 0x202, allFlags,
+                 X64_CF | X64_SF | X64_OF, false);
+        checkRmw("NOT r/m64 register", {0x48,0xF7,0xD3}, false, 8,
+                 0x00FF00FF00FF00FFULL, 0xFF00FF00FF00FF00ULL,
+                 0, allSet, allFlags, allFlags, true);
+        checkRmw("LOCK NOT m64 [RBX]", {0xF0,0x48,0xF7,0x13}, true, 8,
+                 0x00FF00FF00FF00FFULL, 0xFF00FF00FF00FF00ULL,
+                 0, allSet, allFlags, allFlags, true);
+        checkRmw("NEG r/m64 register", {0x48,0xF7,0xDB}, false, 8,
+                 0x8000000000000000ULL, 0x8000000000000000ULL,
+                 0, 0x202, allFlags, X64_CF | X64_PF | X64_SF | X64_OF, false);
+        checkRmw("LOCK NEG m64 [RBX]", {0xF0,0x48,0xF7,0x1B}, true, 8,
+                 0x8000000000000000ULL, 0x8000000000000000ULL,
+                 0, 0x202, allFlags, X64_CF | X64_PF | X64_SF | X64_OF, false);
+
+        const U8 bitOpcodes[] = {0xAB,0xB3,0xBB};
+        const U8 bitExts[] = {5,6,7};
+        const char* bitNames[] = {"BTS", "BTR", "BTC"};
+        for (int i = 0; i < 3; i++) {
+            U64 expected = i == 0 ? 8 : 0;
+            std::string regName = std::string(bitNames[i]) + " r64,rcx";
+            checkRmw(regName.c_str(), {0x48,0x0F,bitOpcodes[i],0xF3}, false, 8,
+                     8, expected, 3, 0x202, X64_CF, X64_CF, false);
+            std::string memName = std::string("LOCK ") + bitNames[i] + " [RBX],rcx";
+            checkRmw(memName.c_str(), {0xF0,0x48,0x0F,bitOpcodes[i],0x33},
+                     true, 8, 8, expected, 3, 0x202, X64_CF, X64_CF, false);
+            U8 regModRM = (U8)(0xC3 | (bitExts[i] << 3));
+            std::string immRegName = std::string(bitNames[i]) + " r64,imm8";
+            checkRmw(immRegName.c_str(), {0x48,0x0F,0xBA,regModRM,0x03},
+                     false, 8, 8, expected, 0, 0x202, X64_CF, X64_CF, false);
+            U8 memModRM = (U8)((bitExts[i] << 3) | X64_RBX);
+            std::string immMemName = std::string("LOCK ") + bitNames[i] + " [RBX],imm8";
+            checkRmw(immMemName.c_str(), {0xF0,0x48,0x0F,0xBA,memModRM,0x03},
+                     true, 8, 8, expected, 0, 0x202, X64_CF, X64_CF, false);
+        }
+    }
+
     // Test 66 — XGETBV(0) returns EAX=3 (x87+SSE enabled), EDX=0.
     // Encoding: xor ecx,ecx; xgetbv; shl rdx,32; or rax,rdx.
     {
