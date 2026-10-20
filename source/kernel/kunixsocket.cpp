@@ -24,6 +24,29 @@
 #include "ksignal.h"
 #include "../x11wire/xwireserver.h"
 #include "../x11wire/xwireconnection.h"
+#include <mutex>
+#include <unordered_map>
+
+namespace {
+std::mutex g_unixSocketPriorityMutex;
+std::unordered_map<const KUnixSocketObject*, U32> g_unixSocketPriorities;
+
+void setUnixSocketPriority(const KUnixSocketObject* socket, U32 priority) {
+    std::lock_guard<std::mutex> lock(g_unixSocketPriorityMutex);
+    g_unixSocketPriorities[socket] = priority;
+}
+
+U32 getUnixSocketPriority(const KUnixSocketObject* socket) {
+    std::lock_guard<std::mutex> lock(g_unixSocketPriorityMutex);
+    auto it = g_unixSocketPriorities.find(socket);
+    return it == g_unixSocketPriorities.end() ? 0 : it->second;
+}
+
+void eraseUnixSocketPriority(const KUnixSocketObject* socket) {
+    std::lock_guard<std::mutex> lock(g_unixSocketPriorityMutex);
+    g_unixSocketPriorities.erase(socket);
+}
+}
 
 KUnixSocketObject::KUnixSocketObject(U32 domain, U32 type, U32 protocol) : KSocketObject(KTYPE_UNIX_SOCKET, domain, type, protocol), 
     lockCond(std::make_shared<BoxedWineCondition>(B("KUnixSocketObject::lockCond"))), recvBuffer(128)
@@ -31,6 +54,7 @@ KUnixSocketObject::KUnixSocketObject(U32 domain, U32 type, U32 protocol) : KSock
 }
 
 KUnixSocketObject::~KUnixSocketObject() {
+    eraseUnixSocketPriority(this);
     if (this->node) {
         std::shared_ptr<FsNode> parent = this->node->getParent().lock();
         if (parent) {
@@ -103,6 +127,82 @@ KUnixSocketObject::~KUnixSocketObject() {
         }
         BOXEDWINE_CONDITION_SIGNAL_ALL(this->lockCond);
     }
+}
+
+void KUnixSocketObject::recordOwner(KThread* thread) {
+    if (!thread || !thread->process) return;
+    this->lastOwnerPid.store(thread->process->id, std::memory_order_relaxed);
+    this->lastOwnerTid.store(thread->id, std::memory_order_relaxed);
+}
+
+static bool debugQueueTrackingEnabled() {
+    static const bool enabled = []() {
+        const char* value = getenv("BW_THREAD_DUMP");
+        return value && strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
+void KUnixSocketObject::recordQueueWrite(KThread* thread, U64 bytes, bool message) {
+    if (!debugQueueTrackingEnabled()) return;
+    if (thread && thread->process) {
+        this->queueWriterPid.store(thread->process->id, std::memory_order_relaxed);
+        this->queueWriterTid.store(thread->id, std::memory_order_relaxed);
+    }
+    if (bytes) this->queueBytesIn.fetch_add(bytes, std::memory_order_relaxed);
+    if (message) this->queueMessagesIn.fetch_add(1, std::memory_order_relaxed);
+}
+
+void KUnixSocketObject::recordQueueRead(KThread* thread, U64 bytes, bool message) {
+    if (!debugQueueTrackingEnabled()) return;
+    if (thread && thread->process) {
+        this->queueReaderPid.store(thread->process->id, std::memory_order_relaxed);
+        this->queueReaderTid.store(thread->id, std::memory_order_relaxed);
+    }
+    if (bytes) this->queueBytesOut.fetch_add(bytes, std::memory_order_relaxed);
+    if (message) this->queueMessagesOut.fetch_add(1, std::memory_order_relaxed);
+}
+
+void KUnixSocketObject::debugDumpReadWait(U32 waiterPid, U32 waiterTid, FD fd) {
+    std::shared_ptr<KUnixSocketObject> peer;
+    size_t ownPending = 0;
+    {
+        BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->lockCond);
+        ownPending = this->recvBuffer.size_used();
+        peer = this->connection.lock();
+    }
+
+    size_t peerPending = 0;
+    U32 peerPid = 0;
+    U32 peerTid = 0;
+    if (peer) {
+        {
+            BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(peer->lockCond);
+            peerPending = peer->recvBuffer.size_used();
+        }
+        peerPid = peer->lastOwnerPid.load(std::memory_order_relaxed);
+        peerTid = peer->lastOwnerTid.load(std::memory_order_relaxed);
+    }
+    klog_fmt("BW_THREAD_DUMP socket_read pid=%u tid=%u fd=%d socket=%p peer=%p ownPending=%llu peerPending=%llu peerOwner=%u/%u ownQueue=%llu/%llu:w%u/%u:r%u/%u:m%llu/%llu peerQueue=%llu/%llu:w%u/%u:r%u/%u:m%llu/%llu inClosed=%d outClosed=%d",
+             waiterPid, waiterTid, (int)fd, (void*)this,
+             peer ? (void*)peer.get() : nullptr,
+             (unsigned long long)ownPending, (unsigned long long)peerPending,
+             peerPid, peerTid,
+             (unsigned long long)this->debugQueueBytesIn(),
+             (unsigned long long)this->debugQueueBytesOut(),
+             this->debugQueueWriterPid(), this->debugQueueWriterTid(),
+             this->debugQueueReaderPid(), this->debugQueueReaderTid(),
+             (unsigned long long)this->debugQueueMessagesIn(),
+             (unsigned long long)this->debugQueueMessagesOut(),
+             (unsigned long long)(peer ? peer->debugQueueBytesIn() : 0),
+             (unsigned long long)(peer ? peer->debugQueueBytesOut() : 0),
+             peer ? peer->debugQueueWriterPid() : 0,
+             peer ? peer->debugQueueWriterTid() : 0,
+             peer ? peer->debugQueueReaderPid() : 0,
+             peer ? peer->debugQueueReaderTid() : 0,
+             (unsigned long long)(peer ? peer->debugQueueMessagesIn() : 0),
+             (unsigned long long)(peer ? peer->debugQueueMessagesOut() : 0),
+             (int)this->inClosed, (int)this->outClosed);
 }
 
 void KUnixSocketObject::setBlocking(bool blocking) {
@@ -206,10 +306,12 @@ U32 KUnixSocketObject::internal_write(KThread* thread, const std::shared_ptr<KUn
         con->recvBuffer.put(ram, len);
         return true;
         });
+    con->recordQueueWrite(thread, len, false);
     return len;
 }
 
 U32 KUnixSocketObject::writev(KThread* thread, U32 iov, S32 iovcnt) {
+    this->recordOwner(thread);
     S32 len=0;
     std::shared_ptr<KUnixSocketObject> con = this->connection.lock();
     KMemory* memory = thread->memory;
@@ -244,6 +346,7 @@ U32 KUnixSocketObject::writev(KThread* thread, U32 iov, S32 iovcnt) {
 }
 
 U32 KUnixSocketObject::write(KThread* thread, U32 buffer, U32 len) {
+    this->recordOwner(thread);
     this->pid = thread->process->id; // kind of a hack to do this here
     std::shared_ptr<KUnixSocketObject> con = this->connection.lock();
     U32 result;
@@ -262,6 +365,7 @@ U32 KUnixSocketObject::write(KThread* thread, U32 buffer, U32 len) {
 }
 
 U32 KUnixSocketObject::writeNative(U8* buffer, U32 len) {
+    this->recordOwner(KThread::currentThread());
     if (this->type == K_SOCK_DGRAM) {
         if (!strcmp(this->destAddress.data, "/dev/log")) {
             klog_fmt("%s", buffer);
@@ -319,6 +423,7 @@ U32 KUnixSocketObject::writeNative(U8* buffer, U32 len) {
     {
         BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(con->lockCond);
         con->recvBuffer.put(buffer, len);
+        con->recordQueueWrite(KThread::currentThread(), len, false);
         BOXEDWINE_CONDITION_SIGNAL_ALL(con->lockCond);
     }
     con->onPeerWrote();
@@ -346,6 +451,7 @@ U32 KUnixSocketObject::unixsocket_write_native_nowait(const std::shared_ptr<KObj
         BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(con->lockCond);
         //printf("SOCKET write len=%d bufferSize=%d pos=%d\n", len, s->connection->recvBufferLen, s->connection->recvBufferWritePos);
         con->recvBuffer.put(value, len);
+        con->recordQueueWrite(KThread::currentThread(), (U64)len, false);
         BOXEDWINE_CONDITION_SIGNAL_ALL(con->lockCond);
     }
     con->onPeerWrote();
@@ -353,6 +459,7 @@ U32 KUnixSocketObject::unixsocket_write_native_nowait(const std::shared_ptr<KObj
 }
 
 U32 KUnixSocketObject::readNative(U8* buffer, U32 len) {
+    this->recordOwner(KThread::currentThread());
     std::shared_ptr<KUnixSocketObject> con = this->connection.lock();
     if (!this->inClosed && !con)
         return -K_EPIPE;
@@ -385,6 +492,7 @@ U32 KUnixSocketObject::readNative(U8* buffer, U32 len) {
         len = (U32)this->recvBuffer.size_used();
     }
     this->recvBuffer.get(buffer, len);
+    this->recordQueueRead(KThread::currentThread(), len, false);
     BOXEDWINE_CONDITION_SIGNAL_ALL(this->lockCond);
     //printf("    readNative: %0.8X size=%d capacity=%d writeLen=%d", (int)&this->recvBuffer, (int)this->recvBuffer.size(), (int)this->recvBuffer.capacity(), len);
     return len;
@@ -395,6 +503,7 @@ U32 KUnixSocketObject::read(KThread* thread, U32 buffer, U32 len) {
 }
 
 U32 KUnixSocketObject::read(KThread* thread, U32 buffer, U32 len, U32 flags) {
+    this->recordOwner(thread);
     const KSocketRecvFlags recvFlags = ksocketDecodeRecvFlags(flags);
     if (recvFlags.unknown) {
         ksocketWarnUnknownRecvFlagsOnce(recvFlags.unknown);
@@ -459,6 +568,7 @@ U32 KUnixSocketObject::read(KThread* thread, U32 buffer, U32 len, U32 flags) {
             this->recvBuffer.get(ram, len);
             return true;
             });
+        this->recordQueueRead(thread, count, false);
     }
     con = this->connection.lock();
     if (con) {
@@ -550,6 +660,7 @@ U32 KUnixSocketObject::bind(KThread* thread, const KFileDescriptorPtr& fd, U32 a
 }
 
 U32 KUnixSocketObject::connect(KThread* thread, const KFileDescriptorPtr& fd, U32 address, U32 len) {
+    this->recordOwner(thread);
     KMemory* memory = thread->memory;
 
     if (len < 2) {
@@ -688,6 +799,7 @@ U32 KUnixSocketObject::listen(KThread* thread, const KFileDescriptorPtr& fd, U32
 }
 
 U32 KUnixSocketObject::accept(KThread* thread, const KFileDescriptorPtr& fd, U32 address, U32 len, U32 flags) {
+    this->recordOwner(thread);
     std::shared_ptr<KUnixSocketObject> pendingConnection;
     {
         BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->lockCond);
@@ -716,6 +828,7 @@ U32 KUnixSocketObject::accept(KThread* thread, const KFileDescriptorPtr& fd, U32
 
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(pendingConnection->lockCond);
     std::shared_ptr<KUnixSocketObject> resultSocket = std::make_shared<KUnixSocketObject>(domain, type, protocol);
+    resultSocket->recordOwner(thread);
     KFileDescriptorPtr result = thread->process->allocFileDescriptor(resultSocket, K_O_RDWR, 0, -1, 0);
 
     if (flags & FD_CLOEXEC) {
@@ -828,6 +941,11 @@ U32 KUnixSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& fd,
                     kpanic("KUnixSocketObject::setsockopt SO_SNDBUF expecting len of 4");
                 this->sendLen = memory->readd(value);
                 break;
+            case K_SO_PRIORITY:
+                if (len != 4)
+                    kpanic("KUnixSocketObject::setsockopt SO_PRIORITY expecting len of 4");
+                setUnixSocketPriority(this, memory->readd(value));
+                break;
             case K_SO_PASSCRED:
                 break;
             case K_SO_ATTACH_FILTER:
@@ -862,6 +980,11 @@ U32 KUnixSocketObject::getsockopt(KThread* thread, const KFileDescriptorPtr& fd,
             if (len != 4)
                 kpanic("KUnixSocketObject::getsockopt K_SO_TYPE expecting len of 4");
             memory->writed(value, this->type);
+        } else if (name == K_SO_PRIORITY) {
+            if (len != 4)
+                kpanic("KUnixSocketObject::getsockopt SO_PRIORITY expecting len of 4");
+            memory->writed(value, getUnixSocketPriority(this));
+            memory->writed(len_address, 4);
         } else if (name == K_SO_PEERCRED) {
             if (this->domain!=K_AF_UNIX) {
                 return -K_EINVAL; // :TODO: is this right
@@ -895,6 +1018,7 @@ U32 KUnixSocketObject::writePipeClosed(KThread* thread, bool noSignal) {
 }
 
 U32 KUnixSocketObject::sendmsg(KThread* thread, const KFileDescriptorPtr& fd, U32 address, U32 flags) {
+    this->recordOwner(thread);
     MsgHdr hdr = {};
     KMemory* memory = thread->memory;
     U32 result = 0;
@@ -974,6 +1098,7 @@ U32 KUnixSocketObject::sendmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
                 result++;
             }
         }
+        con->recordQueueWrite(thread, result, false);
         BOXEDWINE_CONDITION_SIGNAL_ALL(con->lockCond);
         if (getenv("BW64_XWIRE")) {
             klog_fmt("KUnixSocket::sendmsg datalen=%d to XWire peer via recvBuffer", (int)result);
@@ -1005,6 +1130,7 @@ U32 KUnixSocketObject::sendmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
         }
     }
     con->msgs.push(msg);
+    con->recordQueueWrite(thread, (U64)msg->data.size(), true);
     BOXEDWINE_CONDITION_SIGNAL_ALL(con->lockCond);
 
     if (getenv("BW64_XWIRE")) {
@@ -1015,6 +1141,7 @@ U32 KUnixSocketObject::sendmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
 }
 
 U32 KUnixSocketObject::recvmsg(KThread* thread, const KFileDescriptorPtr& fd, U32 address, U32 flags) {
+    this->recordOwner(thread);
     MsgHdr hdr = {};
     U32 result = 0;
     KMemory* memory = thread->memory;
@@ -1083,12 +1210,16 @@ U32 KUnixSocketObject::recvmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
         if (this->type == K_SOCK_STREAM)
             memory->writed(address + 4, 0); // msg_namelen, set to 0 for connected sockets
         memory->writed(address + 20, 0); // msg_controllen
+        if (!recvFlags.peek) {
+            this->recordQueueRead(thread, result, false);
+        }
         return result;
     }
 
     std::shared_ptr<KSocketMsg> msg = this->msgs.front();
     if (!recvFlags.peek) {
         this->msgs.pop();
+        this->recordQueueRead(thread, (U64)msg->data.size(), true);
     }
 
     if (hdr.msg_control) {

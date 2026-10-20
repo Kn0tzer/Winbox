@@ -95,19 +95,21 @@ U32 FsMemOpenNode::readNative(U8* buffer, U32 len) {
 U32 FsMemOpenNode::writeNative(U8* buffer, U32 len) {
     if (len==0)
         return 0;
+    U32 remaining = len;
     this->lastModifiedTime = KSystem::getSystemTimeAsMicroSeconds() / 1000l;
     if (this->pos < (S64)this->buffer.size()) {
-        U32 todo = len;
-        if (this->buffer.size()-(U64)this->pos < len) {
+        U32 todo = remaining;
+        if (this->buffer.size()-(U64)this->pos < remaining) {
             todo = (U32)(this->buffer.size()-this->pos);
         }
-        len -= todo;
+        remaining -= todo;
         memcpy(&this->buffer[(U32)this->pos], buffer, todo);
         this->pos+=todo;
         buffer+=todo;
     }
-    if (len) {
-        std::copy(buffer, buffer+len, std::back_inserter(this->buffer));
+    if (remaining) {
+        std::copy(buffer, buffer+remaining, std::back_inserter(this->buffer));
+        this->pos = (S64)this->buffer.size();
     }
     return len;
 }

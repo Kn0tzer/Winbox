@@ -22,6 +22,8 @@
 #include "kscheduler.h"
 #include "kunixsocket.h"
 
+#include <atomic>
+
 static void clearPollData(KThread* thread, KPollData* data, U32 count) {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(thread->process->fdsMutex);
     for (U32 i = 0; i < count; i++, data++) {
@@ -32,12 +34,28 @@ static void clearPollData(KThread* thread, KPollData* data, U32 count) {
     }
 }
 
-S32 internal_poll(KThread* thread, KPollData* data, U32 count, U32 timeout) {
+static S32 internal_poll_impl(KThread* thread, KPollData* data, U32 count, U32 timeout,
+                              std::atomic<bool>* epollRestart, bool* restartRequested) {
     KPollData* firstData=data;
+
+    if (restartRequested) {
+        *restartRequested = false;
+    }
 
     while (true) {        
         S32 result = 0;
         BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(thread->pollCond);
+
+        // epoll_ctl changed the registration set while this wait was asleep.
+        // The epoll caller owns rebuilding its KPollData snapshot; return to it
+        // without resetting the wait deadline so it can poll the new state.
+        if (epollRestart && epollRestart->exchange(false, std::memory_order_acq_rel)) {
+            if (restartRequested) {
+                *restartRequested = true;
+            }
+            return 0;
+        }
+
         bool interrupted = !thread->inSignal && thread->interrupted;
         
         if (interrupted)
@@ -164,6 +182,12 @@ S32 internal_poll(KThread* thread, KPollData* data, U32 count, U32 timeout) {
             BOXEDWINE_CONDITION_WAIT_TIMEOUT(thread->pollCond, timeout - elapsed);
         }
         clearPollData(thread, firstData, count);
+        if (epollRestart && epollRestart->exchange(false, std::memory_order_acq_rel)) {
+            if (restartRequested) {
+                *restartRequested = true;
+            }
+            return 0;
+        }
 #ifdef BOXEDWINE_MULTI_THREADED
 		if (KThread::currentThread()->terminating) {
 			return -K_EINTR;
@@ -174,6 +198,15 @@ S32 internal_poll(KThread* thread, KPollData* data, U32 count, U32 timeout) {
         }
 #endif        
     }
+}
+
+S32 internal_poll(KThread* thread, KPollData* data, U32 count, U32 timeout) {
+    return internal_poll_impl(thread, data, count, timeout, nullptr, nullptr);
+}
+
+S32 internal_epoll_poll(KThread* thread, KPollData* data, U32 count, U32 timeout,
+                         std::atomic<bool>* epollRestart, bool* restartRequested) {
+    return internal_poll_impl(thread, data, count, timeout, epollRestart, restartRequested);
 }
 
 U32 kpoll(KThread* thread, U32 pfds, U32 nfds, U32 timeout) {

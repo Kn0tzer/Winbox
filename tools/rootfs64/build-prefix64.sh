@@ -152,6 +152,7 @@ find "$STAGE/$DRIVE_C/users" -type d -empty -exec touch '{}/.keep' \;
 # HKCU\Software\Wine\Direct3D). Belt-and-suspenders vs the GL-extension fence gate
 # (we also don't advertise GL_ARB_sync/NV_fence/APPLE_fence).
 USER_REG="$STAGE/$PREFIX_IN_ZIP/user.reg"
+python3 "$HERE/set-prefix-audio.py" "$USER_REG"
 if [ -f "$USER_REG" ] && ! grep -q '^\[Software\\\\Wine\\\\Direct3D\]' "$USER_REG"; then
   echo "=== injecting [Software\\Wine\\Direct3D] csmt=0 into user.reg ==="
   cat >> "$USER_REG" <<'REGEOF'

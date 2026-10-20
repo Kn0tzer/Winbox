@@ -23,6 +23,8 @@
 #include "kstat.h"
 #include "bufferaccess.h"
 #include <atomic>
+#include <mutex>
+#include <unordered_map>
 
 #ifdef WIN32
 #undef BOOL
@@ -57,6 +59,27 @@ void closesocket(int socket) { close(socket); }
 #endif
 
 #endif
+
+namespace {
+std::mutex g_nativeSocketPriorityMutex;
+std::unordered_map<const KNativeSocketObject*, U32> g_nativeSocketPriorities;
+
+void setNativeSocketPriority(const KNativeSocketObject* socket, U32 priority) {
+    std::lock_guard<std::mutex> lock(g_nativeSocketPriorityMutex);
+    g_nativeSocketPriorities[socket] = priority;
+}
+
+U32 getNativeSocketPriority(const KNativeSocketObject* socket) {
+    std::lock_guard<std::mutex> lock(g_nativeSocketPriorityMutex);
+    auto it = g_nativeSocketPriorities.find(socket);
+    return it == g_nativeSocketPriorities.end() ? 0 : it->second;
+}
+
+void eraseNativeSocketPriority(const KNativeSocketObject* socket) {
+    std::lock_guard<std::mutex> lock(g_nativeSocketPriorityMutex);
+    g_nativeSocketPriorities.erase(socket);
+}
+}
 
 #define K_SIOCGIFHWADDR 0x8927
 #define K_SIOCGIFCONF 0x8912
@@ -491,6 +514,7 @@ KNativeSocketObject::KNativeSocketObject(U32 domain, U32 type, U32 protocol) : K
 }
 
 KNativeSocketObject::~KNativeSocketObject() {
+    eraseNativeSocketPriority(this);
     LOG_SOCK("native socket: %x close", nativeSocket);
     closesocket(this->nativeSocket);    
     removeWaitingSocket(this->nativeSocket);
@@ -1299,6 +1323,16 @@ U32 KNativeSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& f
                 this->sendLen = memory->readd(value);
                 ::setsockopt(this->nativeSocket, SOL_SOCKET, SO_SNDBUF, (const char*)&this->sendLen, 4);
                 break;
+            case K_SO_PRIORITY:
+                if (len != 4)
+                    kpanic("KNativeSocketObject::setsockopt SO_PRIORITY expecting len of 4");
+                v = memory->readd(value);
+                setNativeSocketPriority(this, v);
+#ifdef SO_PRIORITY
+                if (this->nativeSocket >= 0)
+                    ::setsockopt(this->nativeSocket, SOL_SOCKET, SO_PRIORITY, (const char*)&v, 4);
+#endif
+                break;
             case K_SO_SNDTIMEO:            
                 if (len != 8) {
                     kpanic("KNativeSocketObject::setsockopt SO_SNDTIMEO expecting len of 8");
@@ -1422,6 +1456,12 @@ U32 KNativeSocketObject::getsockopt(KThread* thread, const KFileDescriptorPtr& f
                 kpanic("KNativeSocketObject::getsockopt K_SO_TYPE expecting len of 4");
             memory->writed(value, this->type);
             retrievedValue = this->type;
+        } else if (name == K_SO_PRIORITY) {
+            if (len != 4)
+                kpanic("KNativeSocketObject::getsockopt SO_PRIORITY expecting len of 4");
+            retrievedValue = getNativeSocketPriority(this);
+            memory->writed(value, retrievedValue);
+            memory->writed(len_address, 4);
         } else if (name == K_SO_OOBINLINE) {
             if (len != 4)
                 kpanic("KNativeSocketObject::getsockopt SO_OOBINLINE expecting len of 4");

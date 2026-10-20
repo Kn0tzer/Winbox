@@ -21,6 +21,9 @@ const outDir = resolve(repo, process.env.OUT || defaultOut);
 const longBoot = ['portal', 'celeste', 'gangbeasts', 'chromium'].includes(demo);
 const mappedTimeout = Number(process.env.MAPPED_TIMEOUT_S || (longBoot ? 900 : 300));
 if (!Number.isFinite(mappedTimeout) || mappedTimeout <= 0) throw new Error('MAPPED_TIMEOUT_S must be a positive number');
+const threadDumpEnabled = process.env.BW_THREAD_DUMP === '1';
+const capturePlayerLog = process.env.BW_CAPTURE_PLAYER_LOG === '1';
+const wineDebug = process.env.BW_WINEDEBUG || '';
 const bootOffsets = longBoot ? [5, 30, 60, 120, 240, 360] : [5, 30, 60, 120];
 const pixelMethod = 'in-page';
 
@@ -38,6 +41,10 @@ let tMapped = null;
 let mappedAt = null;
 let gameplayStartedAt = null;
 let audioStartBeforePlayerClick = null;
+let threadDumpTimer = null;
+let threadDumpAttempts = 0;
+let threadDumpInvocations = 0;
+let threadDumpRuntimeUrl = '';
 let sampling = false;
 let samplerPromise = null;
 let lastWasmMetricLine = null;
@@ -50,6 +57,7 @@ const httpErrors = [];
 const screenshots = [];
 let savedLogText = '';
 let consoleErrorCount = 0;
+let threadDumpLauncherPatched = false;
 
 const elapsedSeconds = () => Number(((Date.now() - startedAt) / 1000).toFixed(3));
 
@@ -93,6 +101,71 @@ try {
       }
     };
   });
+  if (threadDumpEnabled) {
+    await page.addInitScript(() => {
+      if (window.top !== window) return;
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'src');
+      if (!descriptor?.set || !descriptor?.get) throw new Error('Cannot instrument runtime iframe src');
+      Object.defineProperty(HTMLIFrameElement.prototype, 'src', {
+        configurable: true,
+        enumerable: descriptor.enumerable,
+        get() { return descriptor.get.call(this); },
+        set(value) {
+          const url = new URL(value, document.baseURI);
+          if (url.pathname.endsWith('/runtime/index.html')) url.searchParams.set('bw64diag', 'threads');
+          descriptor.set.call(this, url.toString());
+        },
+      });
+    });
+    await page.route('**/runtime/index.html*', route => {
+      const url = new URL(route.request().url());
+      url.searchParams.set('bw64diag', 'threads');
+      if (wineDebug) url.searchParams.set('winedbg', wineDebug);
+      return route.continue({ url: url.toString() });
+    });
+    await page.route('**/wine64-launcher.js*', async route => {
+      const response = await route.fetch();
+      const body = await response.text();
+      const marker = 'if (param("unimpldump") === "1") ENV["BW64_UNIMPLDUMP"] = "1";';
+      if (!body.includes(marker)) throw new Error('Could not install thread dump URL flag in Wine launcher');
+      threadDumpRuntimeUrl = route.request().frame().url();
+      if (new URL(threadDumpRuntimeUrl).searchParams.get('bw64diag') !== 'threads')
+        throw new Error(`Thread dump URL flag missing from runtime frame: ${threadDumpRuntimeUrl}`);
+      const diagnostics = [
+        'if (param("bw64diag") === "threads") {',
+        '  ENV["BW_THREAD_DUMP"] = "1";',
+        '  ENV["BW64_CRASHRING"] = "1";',
+        '  ENV["BW64_WSREAD"] = "1";',
+        '  window.bw64CapturePlayerLogs = function() {',
+        '    var FS = getFS(); if (!FS) return [];',
+        '    var found = [];',
+        '    function capture(path) { try { var stat = FS.stat(path); if (!FS.isFile(stat.mode)) return;',
+        '      var content = FS.readFile(path, { encoding: "utf8" });',
+        '      found.push({ path: path, bytes: stat.size, content: content.length > 524288 ? content.slice(-524288) : content });',
+        '    } catch (e) {} }',
+        '    function walk(path, depth) { if (depth < 0) return; var names; try { names = FS.readdir(path); } catch (e) { return; }',
+        '      for (var i = 0; i < names.length; i++) { var name = names[i]; if (name === "." || name === "..") continue;',
+        '        var child = path + "/" + name; var st; try { st = FS.stat(child); } catch (e) { continue; }',
+        '        if (FS.isDir(st.mode)) walk(child, depth - 1);',
+        '        else if (/^(output_log\\.txt|Player\\.log)$/i.test(name)) capture(child);',
+        '      }',
+        '    }',
+        '    var apps = "/home/username/apps"; var appNames = []; try { appNames = FS.readdir(apps); } catch (e) {}',
+        '    for (var i = 0; i < appNames.length; i++) if (/_Data$/i.test(appNames[i])) {',
+        '      capture(apps + "/" + appNames[i] + "/output_log.txt"); capture(apps + "/" + appNames[i] + "/Player.log");',
+        '    }',
+        '    walk("/home/username/.wine/drive_c/users/username/AppData/LocalLow", 5);',
+        '    walk("/home/username/.wine/drive_c/users/username/Local Settings/Application Data/Unity", 4);',
+        '    return found;',
+        '  };',
+        '}',
+        marker,
+      ].join("\n                ");
+      const instrumented = body.replace(marker, diagnostics);
+      threadDumpLauncherPatched = true;
+      return route.fulfill({ response, body: instrumented });
+    });
+  }
   startedAt = Date.now();
   page.on('console', message => {
     const text = message.text();
@@ -121,11 +194,49 @@ try {
     await launchDemoGame(page, demo, { mappedTimeout, onClick: () => {
       tClick = elapsedSeconds();
       demoClickAtMs = Date.now();
+      if (threadDumpEnabled) {
+        threadDumpTimer = setInterval(async () => {
+          threadDumpAttempts++;
+          try {
+            const frameHandle = await page.locator('#display iframe').elementHandle();
+            const runtimeFrame = await frameHandle?.contentFrame();
+            if (!runtimeFrame) throw new Error('runtime iframe is not available');
+            const invoked = await runtimeFrame.evaluate(() => {
+              if (typeof Module === 'undefined') throw new Error('runtime Module is not available');
+              if (typeof Module._bw64_dump_guest_threads === 'function') {
+                Module._bw64_dump_guest_threads();
+                return 'export';
+              }
+              if (typeof Module.ccall === 'function') {
+                Module.ccall('bw64_dump_guest_threads', null, [], []);
+                return 'ccall';
+              }
+              throw new Error('thread dump export is not available');
+            });
+            threadDumpInvocations++;
+            const line = `[${elapsedSeconds().toFixed(1)}s] BW_THREAD_DUMP_DRIVER invoked via ${invoked} (#${threadDumpInvocations})`;
+            consoleLines.push(line);
+            console.log(line);
+          } catch (error) {
+            const line = `[${elapsedSeconds().toFixed(1)}s] BW_THREAD_DUMP_DRIVER attempt failed: ${error.message || error}`;
+            consoleLines.push(line);
+            console.error(line);
+          }
+        }, 60000);
+      }
     } });
   } catch (error) {
     if (error.name !== 'TimeoutError') throw error;
     const timeoutPath = join(outDir, 'timeout.png');
     await page.screenshot({ path: timeoutPath, fullPage: true }).catch(() => {});
+    if (capturePlayerLog) {
+      const guestLogs = await page.evaluate(() => {
+        const frame = document.querySelector('#display iframe');
+        const capture = frame?.contentWindow?.bw64CapturePlayerLogs;
+        return typeof capture === 'function' ? capture() : { error: 'guest log capture hook unavailable' };
+      }).catch(error => ({ error: error.message || String(error) }));
+      await writeFile(join(outDir, 'player-logs.json'), JSON.stringify(guestLogs, null, 2) + '\n');
+    }
     const pixels = await measurePlayerPixels(page).catch(() => ({ nonblankFraction: null, uniqueColors: null, pixelError: 'measurement failed' }));
     screenshots.push({ name: 'timeout.png', atSeconds: elapsedSeconds(), ...pixels });
     const audioAfterNoInput = await page.evaluate(() => {
@@ -165,6 +276,8 @@ try {
       screenshots, pageErrorCount: pageErrors.length, consoleErrorCount: countConsoleErrors(),
       lastMetricsSnapshot, lastJitStats, stage: 'not-mapped', pixelMethod, httpErrorCount: httpErrors.length,
       audioAfterNoInput, audioMetricEvents: audioOutputMetrics.length, nonzeroOutputFrames, autoplayPassed,
+      threadDumpEnabled, threadDumpLauncherPatched, threadDumpRuntimeUrl,
+      threadDumpAttempts, threadDumpInvocations,
     }, null, 2) + '\n');
     console.log(JSON.stringify({ demo, jit: Number(jit), stage: 'not-mapped', audioAfterNoInput,
       audioMetricEvents: audioOutputMetrics.length, nonzeroOutputFrames, autoplayPassed, outDir: relative(repo, outDir) }));
@@ -258,6 +371,8 @@ try {
       lastMetricsSnapshot, lastJitStats, stage: 'mapped-no-input', pixelMethod, httpErrorCount: httpErrors.length,
       demoClickAtMs, audioStartBeforePlayerClick, audioAfterNoInput, observeMs,
       audioTimeline, audioMetricEvents: audioOutputMetrics.length, nonzeroOutputFrames, autoplayPassed,
+      threadDumpEnabled, threadDumpLauncherPatched, threadDumpRuntimeUrl,
+      threadDumpAttempts, threadDumpInvocations,
     };
     await writeFile(join(outDir, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
     console.log(JSON.stringify({ demo, jit: Number(jit), stage: 'mapped-no-input',
@@ -280,12 +395,15 @@ try {
     gameplayStartedAtMs: gameplayStartedAt,
     demoClickAtMs,
     audioStartBeforePlayerClick,
+    threadDumpEnabled, threadDumpLauncherPatched, threadDumpRuntimeUrl,
+    threadDumpAttempts, threadDumpInvocations,
   };
   await writeFile(join(outDir, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
   console.log(JSON.stringify({ demo, jit: Number(jit), stage: 'mapped', clickToMappedSeconds: summary.clickToMappedSeconds,
     finalScreenshot: screenshots.at(-1), pageErrors: summary.pageErrorCount, consoleErrors: summary.consoleErrorCount,
     outDir: relative(repo, outDir) }));
 } finally {
+  clearInterval(threadDumpTimer);
   sampling = false;
   await samplerPromise?.catch(() => {});
   await browser?.close().catch(() => {});
