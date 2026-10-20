@@ -572,6 +572,16 @@ void OPCALL normal_larr16e16(CPU* cpu, DecodedOp* op) {
     cpu->reg[op->reg].u16 = cpu->lar(cpu->memory->readw(eaa(cpu, op)), cpu->reg[op->reg].u16);
     NEXT();
 }
+void OPCALL normal_larr32r32(CPU* cpu, DecodedOp* op) {
+    START_OP(cpu, op);
+    cpu->reg[op->reg].u32 = cpu->lar(cpu->reg[op->rm].u16, cpu->reg[op->reg].u32);
+    NEXT();
+}
+void OPCALL normal_larr32e32(CPU* cpu, DecodedOp* op) {
+    START_OP(cpu, op);
+    cpu->reg[op->reg].u32 = cpu->lar(cpu->memory->readw(eaa(cpu, op)), cpu->reg[op->reg].u32);
+    NEXT();
+}
 void OPCALL normal_lslr16r16(CPU* cpu, DecodedOp* op) {
     START_OP(cpu, op);
     cpu->reg[op->reg].u16 = cpu->lsl(cpu->reg[op->rm].u16, cpu->reg[op->reg].u16);

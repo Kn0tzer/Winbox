@@ -765,6 +765,8 @@ const InstructionInfo instructionInfo[] = {
 
     {0, 0, 0, ZF, 0, 0, 0}, // LarR16R16
     {0, 16, 0, ZF, 0, 0, 0}, // LarR16E16
+    {0, 0, 0, ZF, 0, 0, 0}, // LarR32R32
+    {0, 16, 0, ZF, 0, 0, 0}, // LarR32E32
     {0, 0, 0, ZF, 0, 0, 0}, // LslR16R16
     {0, 16, 0, ZF, 0, 0, 0}, // LslR16E16
     {0, 0, 0, ZF, 0, 0, 0}, // LslR32R32
@@ -2669,6 +2671,8 @@ const LogInstruction instructionLog[] = {
 
     {"Lar", 16, logRR},
     {"Lar", 16, logRE},
+    {"Lar", 32, logRR},
+    {"Lar", 32, logRE},
     {"Lsl", 16, logRR},
     {"Lsl", 16, logRE},
     {"Lsl", 32, logRR},
@@ -4939,6 +4943,18 @@ public:
     }
 };
 
+class DecodePrefetchw : public DecodeFunc {
+public:
+    void decode(DecodeData* data, DecodedOp* op) const override {
+        U8 rm = data->fetch8();
+        if (G(rm) == 0 || G(rm) == 1) {
+            func(data, op, rm, Nop, Nop);
+        } else {
+            op->inst = Invalid; op->reg = rm; op->imm = data->inst;
+        }
+    }
+};
+
 class DecodeNopRm : public DecodeFunc {
 public:
     void decode(DecodeData* data, DecodedOp* op) const override {
@@ -5722,6 +5738,7 @@ DecodeRepNZ decodeRepNZ;                                         // REPNZ
 DecodeRepZ decodeRepZ;                                           // REPZ
 
 DecodeRMr decodeLar16(LarR16R16, LarR16E16);                      // LAR
+DecodeRMr decodeLar32(LarR32R32, LarR32E32);                      // LAR
 DecodeRMr decodeLsl16(LslR16R16, LslR16E16);                      // LSL
 DecodeRMr decodeLsl32(LslR32R32, LslR32E32);                      // LSL
 
@@ -6004,6 +6021,7 @@ DecodeRMr sseShufp(ShufpsXmmXmm, ShufpsXmmE128, 8);
 DecodeRMr sseUnpckhp(UnpckhpsXmmXmm, UnpckhpsXmmE128);
 DecodeRMr sseUnpcklp(UnpcklpsXmmXmm, UnpcklpsXmmE128);
 Decode318 seePrefetch;
+DecodePrefetchw decodePrefetchw;
 DecodeNopRm nopRm;
 DecodeSSE2 sseCmp(CmppsXmmXmm, CmppsXmmE128, CmpsdXmmXmm, CmpsdXmmE64, CmpssXmmXmm, CmpssXmmE32, 8);
 DecodeRMr sseComis(ComissXmmXmm, ComissXmmE32);
@@ -6065,7 +6083,7 @@ const Decode* const decoder[] = {
     &decodeClc, &decodeStc, &decodeCli, &decodeSti, &decodeCld, &decodeStd, &decodeGroup4_8, &decodeGroup5_16,
     // 0x100
     &decodeGroup6_16, &decodeGroup7_16, &decodeLar16, &decodeLsl16, nullptr, nullptr, nullptr, nullptr,
-    nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+    nullptr, nullptr, nullptr, nullptr, nullptr, &decodePrefetchw, nullptr, nullptr,
     // 0x110
     &sse2Movupd, &sse2Movupd_r, &sseMov0x112, &sseMov0x113, &sseMov0x114, &sseMov0x115, &sseMov0x116, &sseMov0x117,
     nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &decodeHintNop,
@@ -6097,8 +6115,8 @@ const Decode* const decoder[] = {
     &decodePushFs16, &decodePopFs16, &decodeCPUID, &decodeBtEwGw, &decodeDshlEwGw, &decodeDshlClEwGw, nullptr, nullptr,
     &decodePushGs16, &decodePopGs16, nullptr, &decodeBtsEwGw, &decodeDshrEwGw, &decodeDshrClEwGw, nullptr, &decodeDimulGwEw,
     // 0x1b0
-    &decodeCmpXchgEbGb, &decodeCmpXchgEwGw, &decodeLss, &decodeBtrEwGw, &decodeLfs, &decodeLgs, &decodeMovGwXz8, &decodeMovEwGw,
-    nullptr, nullptr, &decodeGroup8_16, &decodeBtcEwGw, &decodeBsfGwEw, &decodeBsrGwEw, &decodeMovGwSx8, nullptr,
+    &decodeCmpXchgEbGb, &decodeCmpXchgEwGw, &decodeLss, &decodeBtrEwGw, &decodeLfs, &decodeLgs, &decodeMovGwXz8, &decodeMovGwEw,
+    nullptr, nullptr, &decodeGroup8_16, &decodeBtcEwGw, &decodeBsfGwEw, &decodeBsrGwEw, &decodeMovGwSx8, &decodeMovGwEw,
     // 0x1c0
     &decodeXadd8, &decodeXadd16, &sse0x1c2, nullptr, &ssePinsrwXmm, &ssePextrwXmm, &sse0x1c6, nullptr,
     nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
@@ -6160,8 +6178,8 @@ const Decode* const decoder[] = {
     &decodeLock, &decodeICEBP, &decodeRepNZ, &decodeRepZ, &decodeHlt, &decodeCmc, &decodeGroup3_8, &decodeGroup3_32,
     &decodeClc, &decodeStc, &decodeCli, &decodeSti, &decodeCld, &decodeStd, &decodeGroup4_8, &decodeGroup5_32,
     // 0x300
-    &decodeGroup6_32, &decodeGroup7_32, nullptr, &decodeLsl32, nullptr, nullptr, nullptr, nullptr,
-    nullptr, nullptr, nullptr, &decodeUD2, nullptr, nullptr, nullptr, nullptr,
+    &decodeGroup6_32, &decodeGroup7_32, &decodeLar32, &decodeLsl32, nullptr, nullptr, nullptr, nullptr,
+    nullptr, nullptr, nullptr, &decodeUD2, nullptr, &decodePrefetchw, nullptr, nullptr,
     // 0x310
     &sseMov0x310, &sseMov0x311, &sseMov0x312, &sseMov0x313, &sseUnpcklp, &sseUnpckhp, &sseMov0x316, &sseMov0x317,
     &seePrefetch, &nopRm, &nopRm, &nopRm, &nopRm, &nopRm, &nopRm, &decodeHintNop,

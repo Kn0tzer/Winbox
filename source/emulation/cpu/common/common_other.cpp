@@ -74,6 +74,12 @@ void common_larr16r16(CPU* cpu, U32 dstReg, U32 srcReg){
 void common_larr16e16(CPU* cpu, U32 reg, U32 address){
     cpu->reg[reg].u16 = cpu->lar(cpu->memory->readw(address), cpu->reg[reg].u16);
 }
+void common_larr32r32(CPU* cpu, U32 dstReg, U32 srcReg){
+    cpu->reg[dstReg].u32 = cpu->lar(cpu->reg[srcReg].u16, cpu->reg[dstReg].u32);
+}
+void common_larr32e32(CPU* cpu, U32 reg, U32 address){
+    cpu->reg[reg].u32 = cpu->lar(cpu->memory->readw(address), cpu->reg[reg].u32);
+}
 
 U32 common_lar(CPU* cpu, U32 selector, U32 ar) {
     return cpu->lar(selector, ar);
