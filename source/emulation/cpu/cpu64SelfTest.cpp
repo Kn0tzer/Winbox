@@ -8179,6 +8179,179 @@ int runX64SelfTest() {
     runFaultAtRIP(r, "RETF imm16 raises #GP", {0xCA, 0, 0});
     runFaultAtRIP(r, "RETF raises #GP", {0xCB});
 
+    // Requested x87 forms. The scratch area is inside the mapped code page so
+    // each case can inspect stores and the public FPU state after execution.
+    const U64 X87_SCRATCH = CODE_BASE + 0x800;
+    auto useX87Scratch = [=](CPU64& c) {
+        c.reg[X64_RBX].setU64(X87_SCRATCH);
+    };
+    {
+        runAndCheck(r, "x87 DD /2 FST m64 stores without pop", withExit({
+            0xDB,0xE3, 0xD9,0xE8, 0xD9,0xE8, 0xD8,0xC0, 0xDD,0x13
+        }), [=](CPU64& c) {
+            return c.memory->readq(X87_SCRATCH) == 0x4000000000000000ULL &&
+                   c.fpu.top == 6 && c.fpu.tags[6] != TAG_Empty;
+        }, useX87Scratch);
+
+        float five = 5.0f;
+        U32 fiveBits;
+        std::memcpy(&fiveBits, &five, sizeof(fiveBits));
+        runAndCheck(r, "x87 D8 /5 FSUBR m32 (5-2=3)", withExit({
+            0xDB,0xE3, 0xD9,0xE8, 0xD9,0xE8, 0xD8,0xC0,
+            0xD8,0x2B, 0xD9,0x5B,0x04
+        }), [=](CPU64& c) {
+            union { U32 u; float f; } result; result.u = c.memory->readd(X87_SCRATCH + 4);
+            return result.f == 3.0f;
+        }, [=](CPU64& c) {
+            useX87Scratch(c);
+            c.memory->writed(X87_SCRATCH, fiveBits);
+        });
+
+        float eight = 8.0f;
+        U32 eightBits;
+        std::memcpy(&eightBits, &eight, sizeof(eightBits));
+        runAndCheck(r, "x87 D8 /7 FDIVR m32 (8/2=4)", withExit({
+            0xDB,0xE3, 0xD9,0xE8, 0xD9,0xE8, 0xD8,0xC0,
+            0xD8,0x3B, 0xD9,0x5B,0x04
+        }), [=](CPU64& c) {
+            union { U32 u; float f; } result; result.u = c.memory->readd(X87_SCRATCH + 4);
+            return result.f == 4.0f;
+        }, [=](CPU64& c) {
+            useX87Scratch(c);
+            c.memory->writed(X87_SCRATCH, eightBits);
+        });
+
+        runAndCheck(r, "x87 D8 FSUBR ST(0),ST(1)", withExit({
+            0xDB,0xE3, 0xD9,0xEE, 0xD9,0xE8, 0xD8,0xE9, 0xDD,0x1B
+        }), [=](CPU64& c) {
+            return c.memory->readq(X87_SCRATCH) == 0xBFF0000000000000ULL;
+        }, useX87Scratch);
+
+        runAndCheck(r, "x87 D8 FDIVR ST(0),ST(1)", withExit({
+            0xDB,0xE3, 0xD9,0xE8, 0xD9,0xE8, 0xD8,0xC0,
+            0xD9,0xE8, 0xD8,0xF9, 0xDD,0x1B
+        }), [=](CPU64& c) {
+            return c.memory->readq(X87_SCRATCH) == 0x4000000000000000ULL;
+        }, useX87Scratch);
+    }
+
+    {
+        runAndCheck(r, "x87 FLDENV/FNSTENV 28-byte layout", withExit({
+            0xD9,0x23, 0xD9,0x33
+        }), [=](CPU64& c) {
+            bool ok = c.fpu.CW() == 0x0B7F && c.fpu.top == 7 &&
+                      c.fpu.envData[0] == 0x11111111 &&
+                      c.fpu.envData[1] == 0x22222222 &&
+                      c.memory->readd(X87_SCRATCH + 0) == 0x0B40 &&
+                      c.memory->readd(X87_SCRATCH + 4) == 0x3800 &&
+                      c.memory->readd(X87_SCRATCH + 8) == 0x0000FFFF &&
+                      c.memory->readd(X87_SCRATCH + 12) == 0x11111111 &&
+                      c.memory->readd(X87_SCRATCH + 16) == 0x22222222 &&
+                      c.memory->readd(X87_SCRATCH + 20) == 0x33333333 &&
+                      c.memory->readd(X87_SCRATCH + 24) == 0x44444444;
+            return ok;
+        }, [=](CPU64& c) {
+            useX87Scratch(c);
+            c.memory->writed(X87_SCRATCH + 0, 0x0B40);
+            c.memory->writed(X87_SCRATCH + 4, 0x3800);
+            c.memory->writed(X87_SCRATCH + 8, 0xFFFFFFFF);
+            c.memory->writed(X87_SCRATCH + 12, 0x11111111);
+            c.memory->writed(X87_SCRATCH + 16, 0x22222222);
+            c.memory->writed(X87_SCRATCH + 20, 0x33333333);
+            c.memory->writed(X87_SCRATCH + 24, 0x44444444);
+        });
+
+        runAndCheck(r, "x87 D9 FA FSQRT m64 input", withExit({
+            0xDB,0xE3, 0xDD,0x43,0x08, 0xD9,0xFA, 0xDD,0x5B,0x10
+        }), [=](CPU64& c) {
+            return c.memory->readq(X87_SCRATCH + 16) == 0x4000000000000000ULL;
+        }, [=](CPU64& c) {
+            useX87Scratch(c);
+            c.memory->writeq(X87_SCRATCH + 8, 0x4010000000000000ULL);
+        });
+
+        runAndCheck(r, "x87 D9 E4 FTST sets equal condition", withExit({
+            0xDB,0xE3, 0xD9,0xEE, 0xD9,0xE4, 0xDF,0xE0
+        }), [](CPU64& c) {
+            return (c.reg[X64_R15].u64 & 0x4500) == 0x4000;
+        });
+
+        runAndCheck(r, "x87 DF E9 FUCOMIP sets CF and pops", withExit({
+            0xDB,0xE3, 0xD9,0xE8, 0xD9,0xEE, 0xDF,0xE9
+        }), [](CPU64& c) {
+            return (c.rflags & X64_CF) != 0 && c.fpu.top == 7;
+        });
+
+        struct FcmovCase { const char* name; U8 op; U8 modrm; U32 flags; };
+        const FcmovCase fcmov[] = {
+            {"FCMOVB", 0xDA,0xC1,X64_CF}, {"FCMOVE",0xDA,0xC9,X64_ZF},
+            {"FCMOVBE",0xDA,0xD1,X64_CF}, {"FCMOVU",0xDA,0xD9,X64_PF},
+            {"FCMOVNB",0xDB,0xC1,0}, {"FCMOVNE",0xDB,0xC9,0},
+            {"FCMOVNBE",0xDB,0xD1,0}, {"FCMOVNU",0xDB,0xD9,0},
+        };
+        for (const auto& x : fcmov) {
+            std::vector<U8> code = {0xDB,0xE3, 0xD9,0xE8, 0xD9,0xEE,
+                                    x.op,x.modrm, 0xDD,0x1B};
+            runAndCheck(r, (std::string("x87 ") + x.name + " moves on true condition").c_str(),
+                withExit(code), [=](CPU64& c) {
+                    return c.memory->readq(X87_SCRATCH) == 0x3FF0000000000000ULL;
+                }, [=](CPU64& c) {
+                    useX87Scratch(c);
+                    c.rflags = (c.rflags & ~((U32)X64_CF | X64_ZF | X64_PF)) | x.flags;
+                });
+        }
+
+        runAndCheck(r, "x87 DF C1 FFREEP frees and pops", withExit({
+            0xDB,0xE3, 0xD9,0xE8, 0xD9,0xEE, 0xDF,0xC1
+        }), [](CPU64& c) {
+            return c.fpu.top == 7 && c.fpu.tags[6] == TAG_Empty &&
+                   c.fpu.tags[7] == TAG_Empty;
+        });
+        runAndCheck(r, "x87 D9 F6 FDECSTP", withExit({
+            0xDB,0xE3, 0xD9,0xE8, 0xD9,0xF6
+        }), [](CPU64& c) { return c.fpu.top == 6; });
+        runAndCheck(r, "x87 D9 F7 FINCSTP", withExit({
+            0xDB,0xE3, 0xD9,0xE8, 0xD9,0xF7
+        }), [](CPU64& c) { return c.fpu.top == 0; });
+
+        runAndCheck(r, "x87 DD /6 FNSAVE + DD /4 FRSTOR 108-byte layout", withExit({
+            0xDB,0xE3, 0xD9,0xE8, 0xD9,0xEE,
+            0xDD,0x33, 0xD9,0xBB,0x78,0,0,0,
+            0xDD,0x23, 0xDD,0x9B,0x80,0,0,0
+        }), [=](CPU64& c) {
+            return c.memory->readw(X87_SCRATCH) == 0x037F &&
+                   c.memory->readw(X87_SCRATCH + 120) == 0x037F &&
+                   c.memory->readq(X87_SCRATCH + 28) == 0 &&
+                   c.memory->readw(X87_SCRATCH + 36) == 0 &&
+                   c.memory->readq(X87_SCRATCH + 38) == 0x8000000000000000ULL &&
+                   c.memory->readw(X87_SCRATCH + 46) == 0x3FFF &&
+                   c.memory->readq(X87_SCRATCH + 128) == 0 &&
+                   c.fpu.top == 7 && c.fpu.getF64(c.fpu.STV(0)) == 1.0;
+        }, useX87Scratch);
+
+        struct FisttpCase { const char* name; U8 op; };
+        const FisttpCase fisttp[] = {
+            {"m16",0xDF}, {"m32",0xDB}, {"m64",0xDD},
+        };
+        for (const auto& x : fisttp) {
+            std::vector<U8> code = {0xDB,0xE3, 0xDD,0x43,0x08,
+                                    x.op,0x0B}; // FISTTP m16/m32/m64 [RBX]
+            runAndCheck(r, (std::string("x87 FISTTP ") + x.name + " truncates toward zero").c_str(),
+                withExit(code), [=](CPU64& c) {
+                    U64 value = x.op == 0xDF ? c.memory->readw(X87_SCRATCH)
+                               : x.op == 0xDB ? c.memory->readd(X87_SCRATCH)
+                                             : c.memory->readq(X87_SCRATCH);
+                    U64 expected = x.op == 0xDF ? 0xFFFD
+                                 : x.op == 0xDB ? 0xFFFFFFFDULL
+                                                : 0xFFFFFFFFFFFFFFFDULL;
+                    return value == expected;
+                }, [=](CPU64& c) {
+                    useX87Scratch(c);
+                    c.memory->writeq(X87_SCRATCH + 8, 0xC00E000000000000ULL); // -3.75
+                });
+        }
+    }
+
     const char* requireJit = std::getenv("BW64_JIT_VERIFY");
     if (requireJit && std::strcmp(requireJit, "1") == 0) {
         printf("JIT64: engine=%s blocks=%llu insns=%llu\n", r.engine,

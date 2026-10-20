@@ -5401,6 +5401,34 @@ dsp_59:
         ModRM m = decodeModRM(rip + opOff + 1, p, 0);
         U32 used = opOff + 1 + m.length;
         U8 sub = m.regField & 7; // x87 sub-opcode, ignore REX.R
+        auto x87Value = [&]() -> double {
+            return fpu.isRegCached[fpu.top] ? fpu.regCache[fpu.top].d
+                                             : (double)fpu.getF64(fpu.top);
+        };
+        auto storeX87Environment = [&](U64 addr) {
+            memory->writed(addr + 0, fpu.CW());
+            memory->writed(addr + 4, fpu.SW());
+            memory->writed(addr + 8, (U32)fpu.GetTag(nullptr));
+            for (int n = 0; n < 4; n++)
+                memory->writed(addr + 12 + n * 4, fpu.envData[n]);
+        };
+        auto loadX87Environment = [&](U64 addr) {
+            U32 control = memory->readd(addr + 0);
+            fpu.sw = memory->readd(addr + 4);
+            fpu.SetTag(memory->readd(addr + 8));
+            for (int n = 0; n < 4; n++)
+                fpu.envData[n] = memory->readd(addr + 12 + n * 4);
+            fpu.SetCW((U16)control);
+            fpu.top = (fpu.sw >> 11) & 7;
+        };
+        auto truncateX87Integer = [](double value, U32 bits) -> U64 {
+            double lower = bits == 64 ? -0x1p63 : -(double)(1ULL << (bits - 1));
+            double upperExclusive = bits == 64 ? 0x1p63 : (double)(1ULL << (bits - 1));
+            if (!std::isfinite(value) || value < lower || value >= upperExclusive)
+                return 1ULL << (bits - 1); // masked invalid conversion: integer indefinite
+            S64 truncated = (S64)std::trunc(value);
+            return (U64)truncated & (bits == 64 ? ~0ULL : ((1ULL << bits) - 1));
+        };
         if (!m.isReg) {
             // memory form
             if (op == 0xD9 && sub == 0) {
@@ -5423,11 +5451,19 @@ dsp_59:
                 U32 bits = memory->readd(m.effAddr);
                 fpu.FLD_F32(bits, 8);
                 fpu.FSUB(fpu.STV(0), 8);
+            } else if (op == 0xD8 && sub == 5) {
+                // FSUBR m32fp — ST(0) = memory - ST(0).
+                fpu.FLD_F32(memory->readd(m.effAddr), 8);
+                fpu.FSUBR(fpu.STV(0), 8);
             } else if (op == 0xD8 && sub == 6) {
                 // FDIV m32fp — ST(0) /= float32 at memory
                 U32 bits = memory->readd(m.effAddr);
                 fpu.FLD_F32(bits, 8);
                 fpu.FDIV(fpu.STV(0), 8);
+            } else if (op == 0xD8 && sub == 7) {
+                // FDIVR m32fp — ST(0) = memory / ST(0).
+                fpu.FLD_F32(memory->readd(m.effAddr), 8);
+                fpu.FDIVR(fpu.STV(0), 8);
             } else if (op == 0xD9 && sub == 2) {
                 // FST m32fp — convert TOS to f32, store, no pop
                 double d;
@@ -5449,6 +5485,23 @@ dsp_59:
                 union { float f; U32 i; } u; u.f = (float)d;
                 memory->writed(m.effAddr, u.i);
                 fpu.FPOP();
+            } else if (op == 0xDD && sub == 2) {
+                // FST m64fp — store TOS without popping.
+                U64 bits;
+                if (fpu.isRegCached[fpu.top]) {
+                    bits = fpu.regCache[fpu.top].l;
+                } else {
+                    union { double d; U64 u; } u; u.d = fpu.getF64(fpu.top);
+                    bits = u.u;
+                }
+                memory->writeq(m.effAddr, bits);
+            } else if (op == 0xD9 && sub == 4) {
+                // FLDENV m28byte — 64-bit environment operand layout.
+                loadX87Environment(m.effAddr);
+            } else if (op == 0xD9 && sub == 6) {
+                // FNSTENV m28byte stores first, then masks all exceptions.
+                storeX87Environment(m.effAddr);
+                fpu.SetCW((U16)(fpu.CW() | 0x003F));
             } else if (op == 0xD9 && sub == 5) {
                 // D9 /5 = FLDCW m16 — load FPU control word. Our soft FPU
                 // honors the rounding bits inside FROUND; we store the
@@ -5469,6 +5522,10 @@ dsp_59:
                 U64 bits = memory->readq(m.effAddr);
                 fpu.PREP_PUSH();
                 fpu.FLD_F64(bits, fpu.STV(0));
+            } else if (op == 0xDD && sub == 1) {
+                // FISTTP m64int — truncate toward zero, then pop.
+                memory->writeq(m.effAddr, truncateX87Integer(x87Value(), 64));
+                fpu.FPOP();
             } else if (op == 0xDD && sub == 3) {
                 // FSTP m64fp — store TOS bits, pop
                 U64 bits;
@@ -5480,6 +5537,25 @@ dsp_59:
                 }
                 memory->writeq(m.effAddr, bits);
                 fpu.FPOP();
+            } else if (op == 0xDD && sub == 4) {
+                // FRSTOR m108byte — restore environment and all eight ST slots.
+                loadX87Environment(m.effAddr);
+                for (int n = 0; n < 8; n++) {
+                    U64 slot = m.effAddr + 28 + n * 10;
+                    fpu.LD80(fpu.STV(n), memory->readq(slot),
+                             memory->readw(slot + 8));
+                }
+            } else if (op == 0xDD && sub == 6) {
+                // FNSAVE m108byte — save then reinitialize the x87 state.
+                storeX87Environment(m.effAddr);
+                for (int n = 0; n < 8; n++) {
+                    U64 low = 0, high = 0;
+                    fpu.ST80(fpu.STV(n), &low, &high);
+                    U64 slot = m.effAddr + 28 + n * 10;
+                    memory->writeq(slot, low);
+                    memory->writew(slot + 8, (U16)high);
+                }
+                fpu.FINIT();
             } else if (op == 0xDC && sub == 0) {
                 // FADD m64fp — load operand into scratch slot 8, add to ST(0)
                 U64 bits = memory->readq(m.effAddr);
@@ -5584,6 +5660,10 @@ dsp_59:
                 S32 v = (S32)memory->readd(m.effAddr);
                 fpu.PREP_PUSH();
                 fpu.FLD_I32(v, fpu.STV(0));
+            } else if (op == 0xDB && sub == 1) {
+                // FISTTP m32int — truncate toward zero, then pop.
+                memory->writed(m.effAddr, (U32)truncateX87Integer(x87Value(), 32));
+                fpu.FPOP();
             } else if (op == 0xDB && (sub == 2 || sub == 3)) {
                 // FIST m32int (sub=2) / FISTP m32int (sub=3) — round per CW
                 S32 v;
@@ -5626,6 +5706,10 @@ dsp_59:
                 S16 v = (S16)memory->readw(m.effAddr);
                 fpu.PREP_PUSH();
                 fpu.FLD_I16(v, fpu.STV(0));
+            } else if (op == 0xDF && sub == 1) {
+                // FISTTP m16int — truncate toward zero, then pop.
+                memory->writew(m.effAddr, (U16)truncateX87Integer(x87Value(), 16));
+                fpu.FPOP();
             } else if (op == 0xDF && (sub == 2 || sub == 3)) {
                 // FIST m16int (sub=2) / FISTP m16int (sub=3)
                 S16 v;
@@ -5687,7 +5771,18 @@ dsp_59:
         } else {
             // register form (mod==11)
             U8 i = modrmByte & 7; // ST(i) selector
-            if (op == 0xD9 && (modrmByte & 0xF8) == 0xC0) {
+            U8 x87RegGroup = modrmByte & 0xF8;
+            if ((op == 0xDA || op == 0xDB) &&
+                (x87RegGroup == 0xC0 || x87RegGroup == 0xC8 ||
+                 x87RegGroup == 0xD0 || x87RegGroup == 0xD8)) {
+                // FCMOVcc ST(0),ST(i). Conditions are B/E/BE/U for DA and
+                // their inverses NB/NE/NBE/NU for DB.
+                U8 condition = x87RegGroup == 0xC0 ? 2
+                             : x87RegGroup == 0xC8 ? 4
+                             : x87RegGroup == 0xD0 ? 6 : 10;
+                if (op == 0xDB) condition++;
+                if (evalCC(condition)) fpu.FST(fpu.STV(i), fpu.STV(0));
+            } else if (op == 0xD9 && (modrmByte & 0xF8) == 0xC0) {
                 // D9 C0+i = FLD ST(i)
                 U32 src = fpu.STV(i);
                 fpu.PREP_PUSH();
@@ -5706,6 +5801,9 @@ dsp_59:
             } else if (op == 0xD9 && modrmByte == 0xE1) {
                 // D9 E1 = FABS — absolute value of ST(0)
                 fpu.FABS();
+            } else if (op == 0xD9 && modrmByte == 0xE4) {
+                // D9 E4 = FTST — compare ST(0) to zero in x87 condition codes.
+                fpu.FTST(nullptr);
             } else if (op == 0xD9 && modrmByte == 0xE5) {
                 // D9 E5 = FXAM — classify ST(0) into C3/C2/C0 and sign into C1.
                 fpu.FXAM();
@@ -5733,6 +5831,12 @@ dsp_59:
             } else if (op == 0xD9 && modrmByte == 0xF5) {
                 // D9 F5 = FPREM1 - partial remainder (IEEE)
                 fpu.FPREM1();
+            } else if (op == 0xD9 && modrmByte == 0xF6) {
+                // D9 F6 = FDECSTP
+                fpu.FDECSTP();
+            } else if (op == 0xD9 && modrmByte == 0xF7) {
+                // D9 F7 = FINCSTP
+                fpu.FINCSTP();
             } else if (op == 0xD9 && modrmByte == 0xF0) {
                 // D9 F0 = F2XM1 — 2^x - 1
                 fpu.F2XM1();
@@ -5748,6 +5852,9 @@ dsp_59:
             } else if (op == 0xD9 && modrmByte == 0xF4) {
                 // D9 F4 = FXTRACT — extract exponent and significand
                 fpu.FXTRACT();
+            } else if (op == 0xD9 && modrmByte == 0xFA) {
+                // D9 FA = FSQRT
+                fpu.FSQRT();
             } else if (op == 0xD9 && modrmByte == 0xF8) {
                 // D9 F8 = FPREM — partial remainder
                 fpu.FPREM();
@@ -5777,6 +5884,10 @@ dsp_59:
                 // DD C0+i = FFREE ST(i) — mark ST(i) as empty (TAG_Empty).
                 fpu.tags[fpu.STV(i)] = TAG_Empty;
                 fpu.isRegCached[fpu.STV(i)] = false;
+            } else if (op == 0xDF && (modrmByte & 0xF8) == 0xC0) {
+                // DF C0+i = FFREEP ST(i) — free the slot and pop ST(0).
+                fpu.FFREE_STi(fpu.STV(i));
+                fpu.FPOP();
             } else if (op == 0xDD && (modrmByte & 0xF8) == 0xD0) {
                 // DD D0+i = FST ST(i) — copy ST(0) into ST(i), no pop.
                 U32 src = fpu.STV(0);
@@ -5955,8 +6066,9 @@ dsp_59:
                     rflags |= X64_CF;
                 }
                 // a > b: no flags set
-            } else if (op == 0xDF && (modrmByte & 0xF8) == 0xF0) {
-                // DF F0+i = FCOMIP ST(0), ST(i) — same as FCOMI, then pop.
+            } else if (op == 0xDF && ((modrmByte & 0xF8) == 0xE8 ||
+                                      (modrmByte & 0xF8) == 0xF0)) {
+                // DF E8+i = FUCOMIP; DF F0+i = FCOMIP. Compare then pop.
                 U32 si = fpu.STV(i);
                 double a = fpu.isRegCached[fpu.top] ? fpu.regCache[fpu.top].d : fpu.getF64(fpu.top);
                 double b = fpu.isRegCached[si]      ? fpu.regCache[si].d      : fpu.getF64(si);

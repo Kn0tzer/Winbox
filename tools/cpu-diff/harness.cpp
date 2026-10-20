@@ -1297,6 +1297,122 @@ static void buildFpuCases(std::vector<TestCase>& out) {
     }
 }
 
+// Additional x87 state, conditional-move, and truncating-store instructions
+// requested for the CPU64 instruction audit.
+static void buildRequestedX87Cases(std::vector<TestCase>& out) {
+    auto addMem = [&](const char* name, const char* form,
+                      const std::vector<U8>& code, int memLen) -> TestCase& {
+        TestCase tc; tc.set = "fpu"; tc.name = name; tc.form = form;
+        tc.code = code; initRegs(tc, 0, MEM_SCRATCH);
+        tc.flagsMask = 0; tc.checkMem = true; tc.memLen = memLen;
+        out.push_back(tc);
+        return out.back();
+    };
+    {
+        TestCase& tc = addMem("fst-m64", "memory,m64", {
+            0xDB,0xE3, 0xDD,0x43,0x08, 0xDD,0x13
+        }, 16);
+        const U64 value = 0xC004000000000000ULL; // -2.5
+        memcpy(tc.memInit + 8, &value, sizeof(value));
+    }
+    for (int op = 0; op < 2; op++) {
+        TestCase& tc = addMem(op == 0 ? "fsubr-m32" : "fdivr-m32",
+                              "memory,m32", {
+            0xDB,0xE3, 0xD9,0xE8, 0xD9,0xE8, 0xD8,0xC0,
+            0xD8,(U8)(op == 0 ? 0x6B : 0x7B),0x10,
+            0xDD,0x1B
+        }, 24);
+        const float value = op == 0 ? 5.0f : 8.0f;
+        memcpy(tc.memInit + 16, &value, sizeof(value));
+    }
+    {
+        TestCase& tc = addMem("fsubr-register", "ST0,ST1", {
+            0xDB,0xE3,0xD9,0xEE,0xD9,0xE8,0xD8,0xE9,0xDD,0x1B
+        }, 8);
+        (void)tc;
+    }
+    {
+        TestCase& tc = addMem("fdivr-register", "ST0,ST1", {
+            0xDB,0xE3,0xD9,0xE8,0xD9,0xE8,0xD8,0xC0,
+            0xD9,0xE8,0xD8,0xF9,0xDD,0x1B
+        }, 8);
+        (void)tc;
+    }
+    {
+        TestCase& tc = addMem("fldenv-fnstenv", "memory,m28", {0xD9,0x23,0xD9,0x33}, 28);
+        const U32 env[] = {0x037F,0x0000,0xFFFF,0,0,0,0};
+        memcpy(tc.memInit, env, sizeof(env));
+        memset(tc.memIgnore + 12, 1, 16); // native FIP/FOP/FDP differ by code address
+    }
+    {
+        TestCase& tc = addMem("fsqrt", "ST0", {
+            0xDB,0xE3,0xDD,0x43,0x08,0xD9,0xFA,0xDD,0x5B,0x10
+        }, 24);
+        const U64 value = 0x4010000000000000ULL; // 4.0
+        memcpy(tc.memInit + 8, &value, sizeof(value));
+    }
+    {
+        TestCase& tc = addMem("ftst", "ST0", {
+            0xDB,0xE3,0xD9,0xEE,0xD9,0xE4,0xDF,0xE0,0x48,0x89,0x03
+        }, 8);
+        tc.flagsMask = 0;
+    }
+    {
+        TestCase& tc = addMem("fucomip", "ST0,ST1", {
+            0xDB,0xE3,0xD9,0xE8,0xD9,0xEE,0xDF,0xE9,0xDD,0x33
+        }, 108);
+        tc.flagsMask = F_CF | F_ZF | F_PF;
+        memset(tc.memIgnore + 12, 1, 16);
+        memset(tc.memIgnore + 38, 1, 70); // empty x87 stack slots are undefined
+    }
+    struct Fcmov { const char* name; U8 op, modrm; U32 flags; };
+    const Fcmov cmovs[] = {
+        {"fcmovb",0xDA,0xC1,F_CF}, {"fcmove",0xDA,0xC9,F_ZF},
+        {"fcmovbe",0xDA,0xD1,F_CF}, {"fcmovu",0xDA,0xD9,F_PF},
+        {"fcmovnb",0xDB,0xC1,0}, {"fcmovne",0xDB,0xC9,0},
+        {"fcmovnbe",0xDB,0xD1,0}, {"fcmovnu",0xDB,0xD9,0},
+    };
+    for (const auto& x : cmovs) {
+        TestCase& tc = addMem(x.name, "ST0,ST(i)", {
+            0xDB,0xE3,0xD9,0xE8,0xD9,0xEE,x.op,x.modrm,0xDD,0x1B
+        }, 8);
+        tc.flagsIn = 0x202 | x.flags;
+    }
+    {
+        TestCase& tc = addMem("ffreep", "ST(i)", {
+            0xDB,0xE3,0xD9,0xE8,0xD9,0xEE,0xDF,0xC1,0xDD,0x33
+        }, 108);
+        memset(tc.memIgnore + 12, 1, 16);
+        memset(tc.memIgnore + 28, 1, 80); // all slots are empty after FFREEP
+    }
+    for (U8 op : std::vector<U8>{0xF6,0xF7}) {
+        TestCase& tc = addMem(op == 0xF6 ? "fdecstp" : "fincstp", "ST", {
+            0xDB,0xE3,0xD9,0xE8,0xD9,op,0xDF,0xE0,0x48,0x89,0x03
+        }, 8);
+        (void)tc;
+    }
+    {
+        TestCase& tc = addMem("fnsave-frstor", "memory,m108", {
+            0xDB,0xE3,0xD9,0xE8,0xD9,0xEE,0xDD,0x33,
+            0xD9,0xBB,0x78,0,0,0,0xDD,0x23,
+            0xDD,0x9B,0x80,0,0,0
+        }, 136);
+        memset(tc.memIgnore + 12, 1, 16);
+        memset(tc.memIgnore + 48, 1, 60); // the remaining saved slots are empty
+    }
+    const std::vector<std::pair<const char*, U8>> fisttpOps = {
+        {"fisttp-m16",0xDF}, {"fisttp-m32",0xDB}, {"fisttp-m64",0xDD}
+    };
+    for (const auto& x : fisttpOps) {
+        int size = x.second == 0xDF ? 2 : x.second == 0xDB ? 4 : 8;
+        TestCase& tc = addMem(x.first, "memory,truncate", {
+            0xDB,0xE3,0xDD,0x43,0x10,x.second,0x0B
+        }, 16 + size);
+        const U64 value = 0xC00E000000000000ULL; // -3.75
+        memcpy(tc.memInit + 16, &value, sizeof(value));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // String ops test builders. Pattern: set RSI/RDI/RCX, init memory,
 // execute string op, verify registers and memory.
@@ -1974,6 +2090,7 @@ int main(int argc, char** argv) {
     buildMxcsrCases(cases);
     buildPackedConversionCases(cases);
     buildFpuCases(cases);
+    buildRequestedX87Cases(cases);
     buildSseCases(cases);
     buildFaultCases(cases);
     // buildStringCases(cases); // DISABLED: harness cannot handle RSI/RDI per-side checks yet
