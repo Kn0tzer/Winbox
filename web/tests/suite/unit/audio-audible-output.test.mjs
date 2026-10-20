@@ -54,4 +54,18 @@ test('DSP output bridge adopts the launch gesture AudioContext when SDL has none
     'DSP bridge must reuse the launch gesture AudioContext before returning without a context');
   assert.ok(kdspSource.includes('ctx = SDL2.audioContext = launchContext'),
     'the gesture-enabled context must be shared with SDL and the DSP worklet bridge');
+  assert.ok(kdspSource.includes("if (typeof window !== 'undefined') {\n\t\t\tvar launchContext = window.bwLaunchAudioContext"),
+    'the gesture-enabled context must replace an existing SDL context, not only fill an empty slot');
+});
+
+test('runtime keeps the launcher-owned AudioContext open until the iframe unloads', () => {
+  const runtimeHtml = readFileSync(join(repoRoot, 'web/runtime.html'), 'utf8');
+  assert.ok(runtimeHtml.includes('keepLauncherContextOpen'),
+    'SDL must not close the launcher-owned AudioContext during audio device turnover');
+  assert.ok(runtimeHtml.includes("window.addEventListener('pagehide'"),
+    'the launcher AudioContext close method must be restored when the runtime iframe unloads');
+  assert.ok(runtimeHtml.includes("launchAudioContext.state !== 'closed'"),
+    'every SDL AudioContext construction must reuse the active launcher context after SDL resets its reference');
+  assert.ok(!runtimeHtml.includes('claimedLaunchContext'),
+    'AudioContext reuse must not be limited to SDL’s first construction');
 });

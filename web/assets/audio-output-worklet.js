@@ -12,6 +12,11 @@ class BWAudioOutputProcessor extends AudioWorkletProcessor {
     this.totalNonzeroFrames = 0;
     this.reportOutputFrames = 0;
     this.reportNonzeroFrames = 0;
+    this.totalFramesRead = 0;
+    this.totalUnderrunFrames = 0;
+    this.reportUnderrunFrames = 0;
+    this.reportInputPeak = 0;
+    this.reportOutputPeak = 0;
     this.failed = false;
     this.ring = new Float32Array(config.buffer, config.ringOffset, this.ringFrames * this.channels);
     this.writeIndex = new Uint32Array(config.buffer, config.writeOffset, 1);
@@ -43,8 +48,12 @@ class BWAudioOutputProcessor extends AudioWorkletProcessor {
               const indexB = (((read + next) & this.mask) * this.channels) + sourceChannel;
               const a = this.ring[indexA];
               const b = this.ring[indexB];
+              this.reportInputPeak = Math.max(this.reportInputPeak, Math.abs(a), Math.abs(b));
               output[channel][frame] = a + (b - a) * fraction;
             }
+          } else {
+            this.totalUnderrunFrames++;
+            this.reportUnderrunFrames++;
           }
           this.phase += this.step;
         }
@@ -56,6 +65,7 @@ class BWAudioOutputProcessor extends AudioWorkletProcessor {
           this.phase -= consumed;
         }
         Atomics.store(this.readIndex, 0, (read + consumed) >>> 0);
+        this.totalFramesRead += consumed;
       }
     } catch {
       this.failed = true;
@@ -66,7 +76,9 @@ class BWAudioOutputProcessor extends AudioWorkletProcessor {
     for (let frame = 0; frame < frameCount; frame++) {
       let audible = false;
       for (let channel = 0; channel < output.length; channel++) {
-        if (Math.abs(output[channel][frame]) > 0.001) { audible = true; break; }
+        const sample = Math.abs(output[channel][frame]);
+        this.reportOutputPeak = Math.max(this.reportOutputPeak, sample);
+        if (sample > 0.001) audible = true;
       }
       if (audible) nonzeroFrames++;
     }
@@ -81,10 +93,22 @@ class BWAudioOutputProcessor extends AudioWorkletProcessor {
         nonzeroOutputFrames: this.reportNonzeroFrames,
         totalOutputFrames: this.totalOutputFrames,
         totalNonzeroOutputFrames: this.totalNonzeroFrames,
+        framesWritten: Atomics.load(this.writeIndex, 0) >>> 0,
+        framesRead: this.totalFramesRead,
+        underrunFrames: this.reportUnderrunFrames,
+        totalUnderrunFrames: this.totalUnderrunFrames,
+        availableFrames: available,
+        rateIn: this.sourceRate,
+        rateOut: sampleRate,
+        inputPeak: this.reportInputPeak,
+        outputPeak: this.reportOutputPeak,
         workletError: this.failed,
       });
       this.reportOutputFrames = 0;
       this.reportNonzeroFrames = 0;
+      this.reportUnderrunFrames = 0;
+      this.reportInputPeak = 0;
+      this.reportOutputPeak = 0;
     }
     return true;
   }

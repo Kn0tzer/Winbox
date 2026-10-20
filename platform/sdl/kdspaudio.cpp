@@ -244,7 +244,7 @@ static void bwAudioEnsureBridge(Uint32 sourceRate, Uint32 sourceChannels) {
 	EM_ASM({
 		var SDL2 = Module['SDL2'] || (Module['SDL2'] = {});
 		var ctx = SDL2.audioContext;
-		if (!ctx && typeof window !== 'undefined') {
+		if (typeof window !== 'undefined') {
 			var launchContext = window.bwLaunchAudioContext;
 			if (launchContext && launchContext.state !== 'closed') ctx = SDL2.audioContext = launchContext;
 		}

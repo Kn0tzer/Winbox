@@ -148,6 +148,7 @@ try {
         contextState: sdlContext?.state || launchContext?.state || null,
         sdlContextState: sdlContext?.state || null,
         launchContextState: launchContext?.state || null,
+        sdlUsesLaunchContext: Boolean(sdlContext && launchContext && sdlContext === launchContext),
         iframeAllow: frame?.allow || '',
         worklet: runtime?.Module?.SDL2?.bwAudioWorklet === true,
         launcherGestureForwarded: runtime?.bwLauncherAudioGestureForwarded === true,
@@ -199,6 +200,7 @@ try {
       contextState: context?.state || launchContext?.state || null,
       sdlContextState: context?.state || null,
       launchContextState: launchContext?.state || null,
+      sdlUsesLaunchContext: Boolean(context && launchContext && context === launchContext),
       iframeAllow: frame?.allow || '',
       worklet: runtime?.Module?.SDL2?.bwAudioWorklet === true,
       launcherGestureForwarded: runtime?.bwLauncherAudioGestureForwarded === true,
@@ -230,6 +232,7 @@ try {
         contextState: context?.state || launchContext?.state || null,
         sdlContextState: context?.state || null,
         launchContextState: launchContext?.state || null,
+        sdlUsesLaunchContext: Boolean(context && launchContext && context === launchContext),
         iframeAllow: frame?.allow || '',
         worklet: runtime?.Module?.SDL2?.bwAudioWorklet === true,
         launcherGestureForwarded: runtime?.bwLauncherAudioGestureForwarded === true,
@@ -252,6 +255,7 @@ try {
       contextState: row.audioRuntime?.contextState || null,
       sdlContextState: row.audioRuntime?.sdlContextState || null,
       launchContextState: row.audioRuntime?.launchContextState || null,
+      sdlUsesLaunchContext: row.audioRuntime?.sdlUsesLaunchContext === true,
       worklet: row.audioRuntime?.worklet === true,
       launcherGestureForwarded: row.audioRuntime?.launcherGestureForwarded === true,
     }));
@@ -403,6 +407,8 @@ async function sampleMetrics() {
       contextState: globalThis.Module?.SDL2?.audioContext?.state || globalThis.bwLaunchAudioContext?.state || null,
       sdlContextState: globalThis.Module?.SDL2?.audioContext?.state || null,
       launchContextState: globalThis.bwLaunchAudioContext?.state || null,
+      sdlUsesLaunchContext: Boolean(globalThis.Module?.SDL2?.audioContext &&
+        globalThis.Module.SDL2.audioContext === globalThis.bwLaunchAudioContext),
       frameActivation: navigator.userActivation ? {
         isActive: navigator.userActivation.isActive,
         hasBeenActive: navigator.userActivation.hasBeenActive,

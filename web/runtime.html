@@ -12,12 +12,32 @@ try {
   if (context && context.state !== 'closed') launchAudioContext = context;
 } catch {}
 if (launchAudioContext && typeof AudioContext === 'function') {
+  const originalClose = launchAudioContext.close;
+  const closeDescriptor = Object.getOwnPropertyDescriptor(launchAudioContext, 'close');
+  const keepLauncherContextOpen = () => Promise.resolve();
+  Object.defineProperty(launchAudioContext, 'close', {
+    configurable: true,
+    writable: true,
+    value: keepLauncherContextOpen,
+  });
+  window.addEventListener('pagehide', () => {
+    if (launchAudioContext.close !== keepLauncherContextOpen) return;
+    if (closeDescriptor) Object.defineProperty(launchAudioContext, 'close', closeDescriptor);
+    else {
+      delete launchAudioContext.close;
+      if (launchAudioContext.close !== originalClose) {
+        Object.defineProperty(launchAudioContext, 'close', {
+          configurable: true,
+          writable: true,
+          value: originalClose,
+        });
+      }
+    }
+  }, { once: true });
   const NativeAudioContext = AudioContext;
-  let claimedLaunchContext = false;
   window.AudioContext = new Proxy(NativeAudioContext, {
     construct(target, args, newTarget) {
-      if (!claimedLaunchContext && launchAudioContext) {
-        claimedLaunchContext = true;
+      if (launchAudioContext && launchAudioContext.state !== 'closed') {
         return launchAudioContext;
       }
       return Reflect.construct(target, args, newTarget);
