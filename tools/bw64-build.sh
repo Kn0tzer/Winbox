@@ -20,11 +20,21 @@ INFO_FILE="$LOCKDIR/info"
 PROBE_SLOT_DIR="${PROBE_SLOT_DIR:-/tmp/bw64-probe-slots}"
 WAIT_SECONDS="${BW64_BUILD_WAIT_SECONDS:-600}"
 OWNER="${BW64_BUILD_OWNER:-build:$$}"
+# BW64_PROFILE=1 adds --profiling-funcs at link time so the CPU profiler can
+# attribute samples to named wasm functions. It changes only the link flags and
+# is recorded in BUILD_INFO.json; unset means the flags are identical to before.
+PROFILE="${BW64_PROFILE:-0}"
+case "$PROFILE" in 0|1) ;; *) echo "[bw64-build] FATAL: BW64_PROFILE must be 0 or 1" >&2; exit 2 ;; esac
+MAKE_LDFLAGS=()
+if [[ "$PROFILE" == 1 ]]; then
+    MAKE_LDFLAGS+=("EXTRA_LDFLAGS=--profiling-funcs")
+fi
 mode="${1:-}"
 case "$mode" in ''|--check|--export-only) ;; *) echo "Usage: $0 [--check|--export-only]" >&2; exit 2 ;; esac
 [[ "$WAIT_SECONDS" =~ ^[0-9]+$ ]] || { echo 'BW64_BUILD_WAIT_SECONDS must be nonnegative' >&2; exit 2; }
 log() { echo "[bw64-build] $*"; }
 die() { echo "[bw64-build] FATAL: $*" >&2; exit 1; }
+if [[ "$PROFILE" == 1 ]]; then log 'profiling functions enabled (--profiling-funcs)'; fi
 pid_alive() { kill -0 "$1" 2>/dev/null || ps -p "$1" -o pid= >/dev/null 2>&1; }
 read_owner() {
     local raw
@@ -88,14 +98,14 @@ if [[ "$mode" != --export-only ]]; then
     fi
     version=$(emcc --version)
     [[ "$version" == *" 6.0.9 "* ]] || die 'the pinned build requires Emscripten 6.0.9'
-    make -C "$EMSCRIPTEN_DIR" "$TARGET" MAKEFLAGS="-j${JOBS:-2}"
+    make -C "$EMSCRIPTEN_DIR" "$TARGET" MAKEFLAGS="-j${JOBS:-2}" "${MAKE_LDFLAGS[@]}"
 fi
 WASM="$BUILD_OUT/boxedwine64.wasm"
 JS="$BUILD_OUT/boxedwine64.js"
 [[ -f "$WASM" && -f "$JS" ]] || die 'missing compiled runtime; run the full build first'
 magic=$(od -An -tx1 -N4 "$WASM" | tr -d ' \n')
 [[ "$magic" == 0061736d ]] || die "invalid WASM magic: $WASM"
-export BW64_PROVENANCE_OWNER="$OWNER" BW64_PROVENANCE_PID="$$"
+export BW64_PROVENANCE_OWNER="$OWNER" BW64_PROVENANCE_PID="$$" BW64_PROFILE="$PROFILE"
 python3 - "$REPO" "$BUILD_OUT" "$mode" <<'PYCODE'
 import hashlib, json, os, pathlib, subprocess, sys
 from datetime import datetime, timezone
@@ -124,6 +134,7 @@ else:
     'wasm_sha256': wasm_hash,
     'wasm_bytes': (build / 'boxedwine64.wasm').stat().st_size,
     'js_sha256': js_hash,
+    'profiling': os.environ.get('BW64_PROFILE') == '1',
     'builder': os.environ['BW64_PROVENANCE_OWNER'] + ' (pid ' + os.environ['BW64_PROVENANCE_PID'] + ')',
 }
 (build / 'BUILD_INFO.json').write_text(json.dumps(info, indent=2) + '\n')
