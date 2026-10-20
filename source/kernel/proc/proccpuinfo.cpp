@@ -64,11 +64,11 @@ FsOpenNode* openCpuInfo(const std::shared_ptr<FsNode>& node, U32 flags, U32 data
 			result += "coma_bug	: no\n";
 			result += "fpu		: yes\n";
 			result += "fpu_exception	: yes\n";
-			result += is64Bit ? "cpuid level\t: 1\n" : "cpuid level\t: 7\n";
+			result += "cpuid level\t: 7\n";
 			result += "wp		: yes\n";
 			// Keep this list in sync with CPU64 CPUID leaves 1 and 0x80000001.
 			if (is64Bit) {
-				result += "flags\t\t: fpu tsc msr cx8 cmov clflush mmx fxsr sse sse2 cx16 popcnt nx syscall lm lahf_lm 3dnowprefetch\n";
+				result += "flags\t\t: fpu tsc msr cx8 cmov clflush mmx fxsr sse sse2 pni ssse3 sse4_1 sse4_2 popcnt cx16 nx syscall lm lahf_lm 3dnowprefetch\n";
 			} else {
 				result += "flags\t\t: fpu tsc msr cx8 pge cmov clflush mmx fxsr sse sse2 pni ssse3 sse4_1 sse4_2 popcnt\n";
 			}
