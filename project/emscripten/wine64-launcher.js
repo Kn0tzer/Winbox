@@ -1593,7 +1593,7 @@
         if (packed === gamepadPacked) return;
         var result = callExport("bw64_gamepad_update",
             ["number", "number", "number", "number", "number", "number",
-             "number", "number", "number", "number", "number"],
+             "number", "number", "number", "number"],
             [connected, buttons, lx, ly, rx, ry, lt, rt, hatx, haty]);
         if (result === null) return; // runtime not up yet; send once it is
         gamepadPacked = packed;

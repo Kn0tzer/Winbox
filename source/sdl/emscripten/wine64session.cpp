@@ -397,6 +397,10 @@ extern "C" EMSCRIPTEN_KEEPALIVE void bw64_xwire_key(int sdlScancode, int down) {
 // events. Safe from the browser main thread (DevInputGamepad is mutex-guarded).
 extern void onGamepadState(int connected, int buttons, int lx, int ly, int rx, int ry, int lt, int rt, int hatx, int haty);
 extern "C" EMSCRIPTEN_KEEPALIVE void bw64_gamepad_update(int connected, int buttons, int lx, int ly, int rx, int ry, int lt, int rt, int hatx, int haty) {
+    static std::once_flag firstGamepadUpdateLog;
+    std::call_once(firstGamepadUpdateLog, [=]() {
+        klog_fmt("bw64_gamepad_update: first snapshot connected=%d buttons=0x%x lx=%d ly=%d rt=%d", connected, buttons, lx, ly, rt);
+    });
     onGamepadState(connected, buttons, lx, ly, rx, ry, lt, rt, hatx, haty);
 }
 

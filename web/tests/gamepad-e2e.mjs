@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { extraUrlParams, ProbeTest } from './suite/lib/probe-base.mjs';
+import { extraUrlParams, ProbeTest, withTimeout } from './suite/lib/probe-base.mjs';
 
 class GamepadE2ETest extends ProbeTest {
   constructor() {
@@ -85,6 +85,7 @@ class GamepadE2ETest extends ProbeTest {
       const exe = `xinputprobe-${arch}.exe`;
       await this.stageFile(activePage, exe, resolve(`tools/guest-fixtures/${exe}`));
       await activePage.evaluate(() => window.__gamepadTest.dispatchConnected());
+      await this.waitForLog(activePage, /bw64_gamepad_update: first snapshot connected=1/, 15000);
       const from = await this.spawnGuest(activePage, exe, { arch, env: 'WINEDEBUG=+plugplay,+hid,+xinput' });
       await this.waitForLog(activePage, /idx=0 rc=0\b/, 90000, from);
 
@@ -134,6 +135,6 @@ try {
   page = await test.newPage();
   await test.run({ page });
 } finally {
-  await page?.close().catch(() => {});
+  if (page) await withTimeout(page.close(), 10000, 'gamepad page close').catch(() => {});
   await test.teardown();
 }
