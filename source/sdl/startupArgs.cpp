@@ -72,6 +72,14 @@ void createSysfs(const std::shared_ptr<FsNode> rootNode);
 
 U32 StartUpArgs::uiType;
 
+class FsInputDirectoryNode : public FsFileNode {
+public:
+    FsInputDirectoryNode(U32 id, const std::shared_ptr<FsNode>& parent)
+        : FsFileNode(id, 0, B("/dev/input"), B(""), B(""), true, false, parent) {}
+
+    U64 lastModified() override { return 1000; }
+};
+
 FsOpenNode* openKernelCommandLine(const std::shared_ptr<FsNode>& node, U32 flags, U32 data) {
     return new BufferAccess(node, flags, B(""));
 }
@@ -118,7 +126,11 @@ void StartUpArgs::buildVirtualFileSystem() {
 
     std::shared_ptr<FsNode> rootNode = Fs::getNodeFromLocalPath(B(""), B("/"), true);
     std::shared_ptr<FsNode> devNode = Fs::addFileNode(B("/dev"), B(""), rootNode->nativePath.stringByApppendingPath("dev"), true, rootNode);
-    std::shared_ptr<FsNode> inputNode = Fs::addFileNode(B("/dev/input"), B(""), B(""), true, devNode);
+    std::shared_ptr<FsFileNode> inputDirectory = Fs::addFileNode(B("/dev/input"), B(""), B(""), true, devNode);
+    U32 inputDirectoryId = inputDirectory->id;
+    inputDirectory->removeNodeFromParent();
+    std::shared_ptr<FsNode> inputNode = std::make_shared<FsInputDirectoryNode>(inputDirectoryId, devNode);
+    devNode->addChild(inputNode);
     KSystem::procNode = Fs::addFileNode(B("/proc"), B(""), B(""), true, rootNode);
     std::shared_ptr<FsNode> procSysNode = Fs::addFileNode(B("/proc/sys"), B(""), B(""), true, KSystem::procNode);
     std::shared_ptr<FsNode> procSysKernelNode = Fs::addFileNode(B("/proc/sys/kernel"), B(""), B(""), true, procSysNode);
