@@ -1,0 +1,181 @@
+/*
+ *  Copyright (C) 2012-2026  The BoxedWine Team
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) any later version.
+ */
+
+#include "boxedwine.h"
+
+#ifdef __TEST
+
+#include "../../io/fsfilenode.h"
+#include "../cpu/testCPU.h"
+#include "kepoll.h"
+#include "ksocket.h"
+#include "kunixsocket.h"
+
+#include <atomic>
+#include <chrono>
+#include <thread>
+
+namespace {
+constexpr U32 kEpollCtlAdd = 1;
+constexpr U32 kEpollCtlMod = 3;
+constexpr U32 kEpollIn = 0x001;
+constexpr U32 kEpollEt = 0x80000000u;
+constexpr U32 kWaitTimeoutMs = 500;
+constexpr U32 kEventAddress = TEST_HEAP_ADDRESS + 0x100;
+constexpr U32 kResultAddress = TEST_HEAP_ADDRESS + 0x120;
+constexpr U32 kPayloadAddress = TEST_HEAP_ADDRESS + 0x200;
+constexpr U32 kIovAddress = TEST_HEAP_ADDRESS + 0x220;
+constexpr U32 kMessageAddress = TEST_HEAP_ADDRESS + 0x240;
+
+class TestUnixSocket : public KUnixSocketObject {
+public:
+    explicit TestUnixSocket(U32 type) : KUnixSocketObject(K_AF_UNIX, type, 0) {}
+
+    U32 registeredWaiters() const { return lockCond->parentsCount(); }
+};
+
+using TestUnixSocketPtr = std::shared_ptr<TestUnixSocket>;
+
+void makePair(U32 type, TestUnixSocketPtr& sender, TestUnixSocketPtr& receiver) {
+    sender = std::make_shared<TestUnixSocket>(type);
+    receiver = std::make_shared<TestUnixSocket>(type);
+    sender->connection = receiver;
+    receiver->connection = sender;
+    sender->connected = true;
+    receiver->connected = true;
+}
+
+bool waitForRegistration(const TestUnixSocketPtr& socket) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (socket->registeredWaiters() != 0) {
+            return true;
+        }
+        std::this_thread::yield();
+    }
+    return false;
+}
+
+void ensureFdNode(KProcessPtr process) {
+    if (!process->fdNode) {
+        process->fdNode = std::make_shared<FsFileNode>(0x3FFFFFFF, 0, B("/proc/test/fd"), B(""), B(""), true, false, nullptr);
+    }
+}
+
+bool runEpollWake(TestContext& context, U32 socketType, U32 eventMask, bool modifyWhileBlocked,
+                  bool closePeer, const char* caseName) {
+    KProcessPtr process = context.process;
+    KThread* thread = context.thread;
+    KMemory* memory = context.memory;
+    ensureFdNode(process);
+
+    TestUnixSocketPtr sender;
+    TestUnixSocketPtr receiver;
+    makePair(socketType, sender, receiver);
+
+    KFileDescriptorPtr receiverFd = process->allocFileDescriptor(receiver, K_O_RDWR, 0, -1, 0);
+    KFileDescriptorPtr epollFd;
+    std::shared_ptr<KEPoll> epoll = std::make_shared<KEPoll>();
+    epollFd = process->allocFileDescriptor(epoll, K_O_RDWR, 0, -1, 0);
+
+    auto writeEvent = [&](U32 events) {
+        memory->writed(kEventAddress, events);
+        memory->writeq(kEventAddress + 4, 0x123456789ABCDEF0ull);
+    };
+    writeEvent(modifyWhileBlocked ? 0 : eventMask);
+    U32 result = epoll->ctl(memory, kEpollCtlAdd, receiverFd->handle, kEventAddress);
+    if ((S32)result != 0) {
+        testFail("%s epoll_ctl(ADD) returned %d", caseName, (S32)result);
+        process->close(epollFd->handle);
+        process->close(receiverFd->handle);
+        return false;
+    }
+
+    std::atomic<S32> waitResult{-999};
+    std::thread waiter([&]() {
+        KThread::setCurrentThread(thread);
+        waitResult.store((S32)epoll->wait(thread, kResultAddress, 4, kWaitTimeoutMs), std::memory_order_release);
+    });
+
+    if (!waitForRegistration(receiver)) {
+        testFail("%s epoll waiter never registered on the socket condition", caseName);
+        waiter.join();
+        process->close(epollFd->handle);
+        process->close(receiverFd->handle);
+        return false;
+    }
+
+    if (modifyWhileBlocked) {
+        writeEvent(eventMask);
+        result = epoll->ctl(memory, kEpollCtlMod, receiverFd->handle, kEventAddress);
+        if ((S32)result != 0) {
+            testFail("%s epoll_ctl(MOD) returned %d", caseName, (S32)result);
+            waiter.join();
+            process->close(epollFd->handle);
+            process->close(receiverFd->handle);
+            return false;
+        }
+    }
+
+    if (closePeer) {
+        KFileDescriptorPtr senderFd = process->allocFileDescriptor(sender, K_O_RDWR, 0, -1, 0);
+        process->close(senderFd->handle);
+        sender.reset();
+        senderFd.reset();
+    } else if (socketType == K_SOCK_DGRAM) {
+        memory->writeb(kPayloadAddress, 0x5A);
+        memory->writed(kIovAddress, kPayloadAddress);
+        memory->writed(kIovAddress + 4, 1);
+        memory->writed(kMessageAddress, 0); // msg_name
+        memory->writed(kMessageAddress + 4, 0); // msg_namelen
+        memory->writed(kMessageAddress + 8, kIovAddress);
+        memory->writed(kMessageAddress + 12, 1); // msg_iovlen
+        memory->writed(kMessageAddress + 16, 0); // msg_control
+        memory->writed(kMessageAddress + 20, 0); // msg_controllen
+        memory->writed(kMessageAddress + 24, 0); // msg_flags
+        result = sender->sendmsg(thread, KFileDescriptorPtr(), kMessageAddress, 0);
+        if ((S32)result < 0 || result != 1) {
+            testFail("%s sendmsg returned %d", caseName, (S32)result);
+        }
+    } else {
+        U8 payload = 0x5A;
+        result = sender->writeNative(&payload, 1);
+        if ((S32)result < 0 || result != 1) {
+            testFail("%s writeNative returned %d", caseName, (S32)result);
+        }
+    }
+
+    waiter.join();
+    S32 actual = waitResult.load(std::memory_order_acquire);
+    if (actual != 1) {
+        testFail("%s epoll waiter returned %d, expected one event", caseName, actual);
+    } else {
+        U32 actualEvents = memory->readd(kResultAddress);
+        if ((actualEvents & kEpollIn) == 0) {
+            testFail("%s epoll event mask was 0x%X, expected EPOLLIN", caseName, actualEvents);
+        }
+    }
+
+    process->close(epollFd->handle);
+    process->close(receiverFd->handle);
+    return actual == 1;
+}
+}
+
+void testUnixSocketWakeup() {
+    TestContext& context = testContext();
+    runEpollWake(context, K_SOCK_STREAM, kEpollIn, false, false, "SOCK_STREAM level-triggered");
+    runEpollWake(context, K_SOCK_STREAM, kEpollIn | kEpollEt, false, false, "SOCK_STREAM EPOLLET");
+    runEpollWake(context, K_SOCK_SEQPACKET, kEpollIn, false, false, "SOCK_SEQPACKET level-triggered");
+    runEpollWake(context, K_SOCK_DGRAM, kEpollIn, false, false, "SOCK_DGRAM level-triggered");
+    runEpollWake(context, K_SOCK_STREAM, kEpollIn, true, false, "EPOLL_CTL_MOD while waiter blocked");
+    runEpollWake(context, K_SOCK_STREAM, kEpollIn, false, true, "close peer wakes epoll waiter");
+}
+
+#endif
