@@ -3183,6 +3183,145 @@ int runX64SelfTest() {
         }
     }
 
+    // Test 65l — packed float-to-int conversions return integer-indefinite
+    // for NaN, infinities, and out-of-range lanes in register and memory forms.
+    {
+        struct PackedConvert {
+            const char* name;
+            U8 prefix;
+            U8 opcode;
+            bool isDouble;
+            bool truncate;
+        };
+        const PackedConvert conversions[] = {
+            {"CVTPS2DQ",0x66,0x5B,false,false},
+            {"CVTTPS2DQ",0xF3,0x5B,false,true},
+            {"CVTPD2DQ",0xF2,0xE6,true,false},
+            {"CVTTPD2DQ",0x66,0xE6,true,true},
+        };
+        const U32 psInputs[][4] = {
+            {0x3FCCCCCD,0xC02CCCCC,0x00000000,0x7FC00000},
+            {0x7F800000,0xFF800000,0x4F000000,0xCF000001},
+        };
+        const U32 psExpected[][4] = {
+            {2,0xFFFFFFFD,0,0x80000000},
+            {0x80000000,0x80000000,0x80000000,0x80000000},
+        };
+        const U32 psTruncExpected[][4] = {
+            {1,0xFFFFFFFE,0,0x80000000},
+            {0x80000000,0x80000000,0x80000000,0x80000000},
+        };
+        const U64 pdInputs[][2] = {
+            {0x3FF999999999999AULL,0xC00599999999999AULL}, // 1.6, -2.7
+            {0x7FF8000000000000ULL,0x7FF0000000000000ULL}, // NaN, +inf
+            {0xFFF0000000000000ULL,0x41E0000000000000ULL}, // -inf, 2^31
+        };
+        const U32 pdExpected[][2] = {{2,0xFFFFFFFD},
+            {0x80000000,0x80000000},{0x80000000,0x80000000}};
+        const U32 pdTruncExpected[][2] = {{1,0xFFFFFFFE},
+            {0x80000000,0x80000000},{0x80000000,0x80000000}};
+
+        for (const auto& convert : conversions) {
+            int dataSets = convert.isDouble ? 3 : 2;
+            for (int dataSet = 0; dataSet < dataSets; dataSet++) {
+                U8 source[16] = {};
+                U32 outLanes[4] = {};
+                if (convert.isDouble) {
+                    memcpy(source, pdInputs[dataSet], sizeof(pdInputs[dataSet]));
+                    const U32* expected = convert.truncate
+                        ? pdTruncExpected[dataSet] : pdExpected[dataSet];
+                    outLanes[0] = expected[0]; outLanes[1] = expected[1];
+                } else {
+                    memcpy(source, psInputs[dataSet], sizeof(psInputs[dataSet]));
+                    const U32 (*expected)[4] = convert.truncate
+                        ? psTruncExpected : psExpected;
+                    memcpy(outLanes, expected[dataSet], sizeof(outLanes));
+                }
+                U64 expectedLo = (U64)outLanes[0] | ((U64)outLanes[1] << 32);
+                U64 expectedHi = (U64)outLanes[2] | ((U64)outLanes[3] << 32);
+                for (int form = 0; form < 2; form++) {
+                    std::vector<U8> code = {convert.prefix,0x0F,convert.opcode,
+                                            (U8)(form == 0 ? 0xC0 : 0x03)};
+                    U64 dataAddr = CODE_BASE + code.size() + EXIT_SYSCALL.size();
+                    code.insert(code.end(), EXIT_SYSCALL.begin(), EXIT_SYSCALL.end());
+                    if (form == 1) code.insert(code.end(), source, source + 16);
+                    std::string testName = std::string(convert.name) +
+                        (form == 0 ? " register" : " memory") +
+                        " lane set " + std::to_string(dataSet);
+                    runAndCheck(r, testName.c_str(), code, [=](CPU64& c) {
+                        return c.xmm[0].lo == expectedLo && c.xmm[0].hi == expectedHi;
+                    }, [=](CPU64& c) {
+                        c.mxcsr = 0x1F80;
+                        if (form == 0) {
+                            memcpy(&c.xmm[0].lo, source, 8);
+                            memcpy(&c.xmm[0].hi, source + 8, 8);
+                        } else {
+                            c.reg[X64_RBX].setU64(dataAddr);
+                        }
+                    });
+                }
+            }
+        }
+    }
+
+    // Test 65m — packed non-truncating conversions follow all four MXCSR.RC
+    // modes for positive and negative halfway lanes, from register and memory.
+    {
+        struct RoundConvert { const char* name; U8 prefix; U8 opcode; bool isDouble; };
+        const RoundConvert conversions[] = {
+            {"CVTPS2DQ",0x66,0x5B,false},
+            {"CVTPD2DQ",0xF2,0xE6,true},
+        };
+        const U32 rcBits[] = {0x0000,0x2000,0x4000,0x6000};
+        const S32 psExpected[][4] = {
+            {2,-2,0,2},{2,-3,0,1},{3,-2,0,2},{2,-2,0,1},
+        };
+        const S32 pdExpected[][2] = {{2,-2},{2,-3},{3,-2},{2,-2}};
+        const char* rcNames[] = {"nearest", "down", "up", "zero"};
+        U32 psSource[4] = {0x40200000,0xC0200000,0x00000000,0x3FC00000};
+        U64 pdSource[2] = {0x4004000000000000ULL,0xC004000000000000ULL};
+        for (const auto& convert : conversions) {
+            for (int rc = 0; rc < 4; rc++) {
+                for (int form = 0; form < 2; form++) {
+                    std::vector<U8> code = {0x0F,0xAE,0x53,0x10}; // ldmxcsr [rbx+16]
+                    if (form == 0) code.insert(code.end(), {0x0F,0x10,0x03}); // movups xmm0,[rbx]
+                    code.insert(code.end(), {convert.prefix,0x0F,convert.opcode,
+                                             (U8)(form == 0 ? 0xC0 : 0x03)});
+                    U64 dataAddr = CODE_BASE + code.size() + EXIT_SYSCALL.size();
+                    code.insert(code.end(), EXIT_SYSCALL.begin(), EXIT_SYSCALL.end());
+                    if (convert.isDouble) {
+                        for (U64 lane : pdSource)
+                            for (U8 byte = 0; byte < 8; byte++)
+                                code.push_back((U8)(lane >> (byte * 8)));
+                    } else {
+                        for (U32 lane : psSource)
+                            for (U8 byte = 0; byte < 4; byte++)
+                                code.push_back((U8)(lane >> (byte * 8)));
+                    }
+                    U32 mxcsr = 0x1F80 | rcBits[rc];
+                    for (U8 byte = 0; byte < 4; byte++)
+                        code.push_back((U8)(mxcsr >> (byte * 8)));
+                    std::string name = std::string(convert.name) + " " + rcNames[rc] +
+                        (form == 0 ? " register" : " memory");
+                    runAndCheck(r, name.c_str(), code, [=](CPU64& c) {
+                        if (convert.isDouble) {
+                            U64 lo = (U32)pdExpected[rc][0] |
+                                     ((U64)(U32)pdExpected[rc][1] << 32);
+                            return c.xmm[0].lo == lo && c.xmm[0].hi == 0;
+                        }
+                        U64 lo = (U32)psExpected[rc][0] |
+                                 ((U64)(U32)psExpected[rc][1] << 32);
+                        U64 hi = (U32)psExpected[rc][2] |
+                                 ((U64)(U32)psExpected[rc][3] << 32);
+                        return c.xmm[0].lo == lo && c.xmm[0].hi == hi;
+                    }, [=](CPU64& c) {
+                        c.reg[X64_RBX].setU64(dataAddr);
+                    });
+                }
+            }
+        }
+    }
+
     // Test 66 — XGETBV(0) returns EAX=3 (x87+SSE enabled), EDX=0.
     // Encoding: xor ecx,ecx; xgetbv; shl rdx,32; or rax,rdx.
     {

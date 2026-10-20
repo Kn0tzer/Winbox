@@ -1073,13 +1073,13 @@ static void buildMxcsrCases(std::vector<TestCase>& out) {
         {"cvtsd2si-mxcsr", 0xF2, true, 0x4004000000000000ULL,
                                     0xC004000000000000ULL},
     };
-    const U32 rcBits[] = {0x0000,0x2000,0x4000,0x6000};
+    const U32 packedRcBits[] = {0x0000,0x2000,0x4000,0x6000};
     const S64 expected[4][2] = {{2,-2},{2,-3},{3,-2},{2,-2}};
     for (const auto& convert : conversions) {
         for (int rc = 0; rc < 4; rc++) {
             for (int sign = 0; sign < 2; sign++) {
                 U64 bits = sign ? convert.negativeBits : convert.positiveBits;
-                U32 mxcsr = 0x1F80 | rcBits[rc];
+                U32 mxcsr = 0x1F80 | packedRcBits[rc];
                 for (int form = 0; form < 2; form++) {
                     TestCase tc; tc.set = "sse"; tc.name = convert.name;
                     tc.form = form == 0 ? "register-xmm" : "memory-scalar";
@@ -1106,6 +1106,81 @@ static void buildMxcsrCases(std::vector<TestCase>& out) {
                     tc.expectedRax = (U64)expected[rc][sign];
                     out.push_back(tc);
                 }
+            }
+        }
+    }
+
+    struct RoundConvert { const char* name; U8 prefix; U8 opcode; bool isDouble; };
+    const RoundConvert rounded[] = {
+        {"cvtps2dq-mxcsr",0x66,0x5B,false},
+        {"cvtpd2dq-mxcsr",0xF2,0xE6,true},
+    };
+    const U32 rcBits[] = {0x0000,0x2000,0x4000,0x6000};
+    const U32 psSource[4] = {0x40200000,0xC0200000,0x00000000,0x3FC00000};
+    const U64 pdSource[2] = {0x4004000000000000ULL,0xC004000000000000ULL};
+    for (const auto& convert : rounded) {
+        for (int rc = 0; rc < 4; rc++) {
+            for (int form = 0; form < 2; form++) {
+                TestCase tc; tc.set = "sse"; tc.name = convert.name;
+                tc.form = form == 0 ? "xmm,xmm" : "xmm,m128";
+                initRegs(tc, 0, MEM_SCRATCH); tc.flagsMask = 0;
+                tc.checkMem = true; tc.memLen = 52;
+                if (convert.isDouble) memcpy(tc.memInit + 16, pdSource, sizeof(pdSource));
+                else memcpy(tc.memInit + 16, psSource, sizeof(psSource));
+                U32 mxcsr = 0x1F80 | rcBits[rc];
+                memcpy(tc.memInit + 48, &mxcsr, sizeof(mxcsr));
+                tc.code = {0x0F,0xAE,0x53,0x30}; // ldmxcsr [rbx+48]
+                if (form == 0)
+                    tc.code.insert(tc.code.end(), {0x0F,0x10,0x43,0x10});
+                tc.code.insert(tc.code.end(), {convert.prefix,0x0F,convert.opcode,
+                    (U8)(form == 0 ? 0xC0 : 0x43)});
+                if (form == 1) tc.code.push_back(0x10);
+                tc.code.insert(tc.code.end(), {0x0F,0x11,0x03});
+                out.push_back(tc);
+            }
+        }
+    }
+}
+
+// Packed float-to-signed-dword conversions cover normal lanes, negative and
+// zero values, NaN, infinities, and both sides of the signed-32 range.
+static void buildPackedConversionCases(std::vector<TestCase>& out) {
+    struct Convert { const char* name; U8 prefix; U8 opcode; bool isDouble; };
+    const Convert conversions[] = {
+        {"cvtps2dq",0x66,0x5B,false},
+        {"cvttps2dq",0xF3,0x5B,false},
+        {"cvtpd2dq",0xF2,0xE6,true},
+        {"cvttpd2dq",0x66,0xE6,true},
+    };
+    const U32 psInputs[][4] = {
+        {0x3FCCCCCD,0xC02CCCCC,0x00000000,0x7FC00000},
+        {0x7F800000,0xFF800000,0x4F000000,0xCF000001},
+    };
+    const U64 pdInputs[][2] = {
+        {0x3FF999999999999AULL,0xC00599999999999AULL},
+        {0x7FF8000000000000ULL,0x7FF0000000000000ULL},
+        {0xFFF0000000000000ULL,0x41E0000000000000ULL},
+    };
+    for (const auto& convert : conversions) {
+        int dataSets = convert.isDouble ? 3 : 2;
+        for (int dataSet = 0; dataSet < dataSets; dataSet++) {
+            U8 source[16] = {};
+            if (convert.isDouble) memcpy(source, pdInputs[dataSet], sizeof(pdInputs[dataSet]));
+            else memcpy(source, psInputs[dataSet], sizeof(psInputs[dataSet]));
+            for (int form = 0; form < 2; form++) {
+                TestCase tc; tc.set = "sse"; tc.name = convert.name;
+                tc.form = form == 0 ? "xmm,xmm" : "xmm,m128";
+                initRegs(tc, 0, MEM_SCRATCH); tc.flagsMask = 0;
+                tc.checkMem = true; tc.memLen = 32;
+                memcpy(tc.memInit + 16, source, sizeof(source));
+                if (form == 0)
+                    tc.code.insert(tc.code.end(), {0x0F,0x10,0x43,0x10}); // movups xmm0,[rbx+16]
+                tc.code.push_back(convert.prefix);
+                tc.code.insert(tc.code.end(), {0x0F,convert.opcode,
+                    (U8)(form == 0 ? 0xC0 : 0x43)});
+                if (form == 1) tc.code.push_back(0x10); // [rbx+16]
+                tc.code.insert(tc.code.end(), {0x0F,0x11,0x03}); // movups [rbx],xmm0
+                out.push_back(tc);
             }
         }
     }
@@ -1793,6 +1868,7 @@ int main(int argc, char** argv) {
     buildLockedRmwCases(cases);
     buildBitStringCases(cases);
     buildMxcsrCases(cases);
+    buildPackedConversionCases(cases);
     buildFpuCases(cases);
     buildSseCases(cases);
     // buildStringCases(cases); // DISABLED: harness cannot handle RSI/RDI per-side checks yet

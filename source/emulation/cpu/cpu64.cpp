@@ -4730,17 +4730,15 @@ dsp_55:
 
         // CVTSD2SI r32, xmm/m64   F2 0F 2D /r     (REX.W → r64)
         // CVTTSD2SI r32, xmm/m64  F2 0F 2C /r     (REX.W → r64) — truncate
-        // Convert double to signed int. Compilers emit 2C (truncate) far
-        // more often than 2D (current rounding) because C's int cast is
-        // defined as truncate. Bodies are identical here — our 2D path
-        // already truncates via C cast — so the only difference is which
-        // opcode bytes we accept.
+        // Convert double to signed int with MXCSR.RC for 2D and truncation
+        // for 2C. This fallback shares the same invalid-result handling.
         if ((op2 == 0x2D || op2 == 0x2C) && p.rep == 0xF2) {
             ModRM m = decodeModRM(rip + opOff + 2, p, 0);
             U64 srcBits = m.isReg ? xmm[m.rmIndex].lo : memory->readq(m.effAddr);
             double d = u64ToDouble(srcBits);
-            if (rexW) reg[m.regField].setU64((U64)(S64)d);
-            else      reg[m.regField].setU32((U32)(S32)d);
+            U64 converted = cpu64ConvertFpToInt(d, rexW, op2 == 0x2C, mxcsr);
+            if (rexW) reg[m.regField].setU64(converted);
+            else      reg[m.regField].setU32((U32)converted);
             U32 used = opOff + 2 + m.length;
             rip += used;
             return used;
@@ -4994,17 +4992,16 @@ dsp_55:
 
         // CVTSS2SI  r32/r64, xmm/m32  F3 0F 2D /r
         // CVTTSS2SI r32/r64, xmm/m32  F3 0F 2C /r  — truncating variant
-        // Same rationale as F2 0x2C: compilers prefer the truncating form
-        // for C int casts; our 2D path already uses C cast (truncate) so
-        // the body is shared.
+        // 2D follows MXCSR.RC; 2C truncates toward zero.
         if ((op2 == 0x2D || op2 == 0x2C) && p.rep == 0xF3) {
             ModRM m = decodeModRM(rip + opOff + 2, p, 0);
             U32 srcBits = m.isReg
                 ? (U32)(xmm[m.rmIndex].lo & 0xFFFFFFFFULL)
                 : memory->readd(m.effAddr);
             float f = u32ToFloat(srcBits);
-            if (rexW) reg[m.regField].setU64((U64)(S64)f);
-            else      reg[m.regField].setU32((U32)(S32)f);
+            U64 converted = cpu64ConvertFpToInt((double)f, rexW, op2 == 0x2C, mxcsr);
+            if (rexW) reg[m.regField].setU64(converted);
+            else      reg[m.regField].setU32((U32)converted);
             U32 used = opOff + 2 + m.length;
             rip += used;
             return used;
@@ -5166,16 +5163,17 @@ dsp_55:
                     U32 bits; std::memcpy(&bits, &f, 4); nDw[i] = bits;
                 }
             } else if (osize66) {
-                // CVTPS2DQ: dwords are float bits, write rounded ints.
+                // CVTPS2DQ: dwords are float bits, use MXCSR.RC and the
+                // integer-indefinite result for NaN, infinity, or overflow.
                 for (int i = 0; i < 4; i++) {
                     float f; std::memcpy(&f, &dwords[i], 4);
-                    nDw[i] = (U32)(S32)std::lrintf(f);
+                    nDw[i] = (U32)cpu64ConvertFpToInt((double)f, false, false, mxcsr);
                 }
             } else if (p.rep == 0xF3) {
                 // CVTTPS2DQ: float → int truncating.
                 for (int i = 0; i < 4; i++) {
                     float f; std::memcpy(&f, &dwords[i], 4);
-                    nDw[i] = (U32)(S32)f;
+                    nDw[i] = (U32)cpu64ConvertFpToInt((double)f, false, true, mxcsr);
                 }
             } else {
                 goto unhandled; // F2 0F 5B is not defined
@@ -5211,13 +5209,9 @@ dsp_55:
                 double d0, d1;
                 std::memcpy(&d0, &sLo, 8); std::memcpy(&d1, &sHi, 8);
                 U32 i0, i1;
-                if (osize66) { // truncate toward zero
-                    i0 = (U32)(S32)d0;
-                    i1 = (U32)(S32)d1;
-                } else {       // round to nearest (current rounding mode)
-                    i0 = (U32)(S32)std::lrint(d0);
-                    i1 = (U32)(S32)std::lrint(d1);
-                }
+                bool truncate = osize66;
+                i0 = (U32)cpu64ConvertFpToInt(d0, false, truncate, mxcsr);
+                i1 = (U32)cpu64ConvertFpToInt(d1, false, truncate, mxcsr);
                 xmm[m.regField].lo = ((U64)i0) | (((U64)i1) << 32);
                 xmm[m.regField].hi = 0;
             }
