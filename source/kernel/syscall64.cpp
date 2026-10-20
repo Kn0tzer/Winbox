@@ -19,6 +19,7 @@
 #include <mutex>    // std::recursive_mutex for BW64_SERIAL_TEARDOWN
 #include <unordered_map>
 #include "kunixsocket.h"
+#include "kepoll.h"
 #include "kpoll.h"
 #include "ripSampler.h"
 #include "bw64metrics.h"   // live frame-stage metrics (BW64_METRICS, default on)
@@ -2925,6 +2926,19 @@ extern "C" EMSCRIPTEN_KEEPALIVE void bw64_dump_guest_threads() {
                      (unsigned long long)c->reg[X64_R8].u64,
                      (unsigned long long)c->reg[X64_R9].u64,
                      (unsigned long long)rip, waitName);
+            if (blocked && thread->process &&
+                (nr == X64_SYS_read || nr == X64_SYS_readv || nr == X64_SYS_recvfrom || nr == X64_SYS_recvmsg)) {
+                KFileDescriptorPtr fd = thread->process->getFileDescriptor((FD)c->reg[X64_RDI].u64);
+                std::shared_ptr<KUnixSocketObject> socket = fd && fd->kobject
+                    ? std::dynamic_pointer_cast<KUnixSocketObject>(fd->kobject) : nullptr;
+                if (socket) socket->debugDumpReadWait(pid, thread->id, (FD)c->reg[X64_RDI].u64);
+            }
+            if (blocked && thread->process && nr == X64_SYS_epoll_wait) {
+                KFileDescriptorPtr fd = thread->process->getFileDescriptor((FD)c->reg[X64_RDI].u64);
+                std::shared_ptr<KEPoll> epoll = fd && fd->kobject
+                    ? std::dynamic_pointer_cast<KEPoll>(fd->kobject) : nullptr;
+                if (epoll) epoll->debugDumpRegistrations(thread->process.get(), pid, thread->id);
+            }
             continue;
         }
 #endif

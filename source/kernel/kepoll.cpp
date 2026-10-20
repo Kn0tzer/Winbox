@@ -230,3 +230,28 @@ U32 KEPoll::wait(KThread* thread, U32 events, U32 maxevents, U32 timeout) {
     }
     return result;
 }
+
+void KEPoll::debugDumpRegistrations(KProcess* process, U32 pid, U32 tid) {
+    for (const auto& entry : this->data) {
+        const Data* registration = entry.value;
+        if (!registration) continue;
+        KFileDescriptorPtr fd = process ? process->getFileDescriptor((FD)registration->fd) : nullptr;
+        bool readable = fd && fd->kobject && fd->kobject->isReadReady();
+        bool writable = fd && fd->kobject && fd->kobject->isWriteReady();
+        U32 mask = registration->events;
+        char flags[48] = {0};
+        int offset = 0;
+        auto appendFlag = [&](const char* name) {
+            if (offset && offset < (int)sizeof(flags) - 1) flags[offset++] = '|';
+            offset += snprintf(flags + offset, sizeof(flags) - offset, "%s", name);
+        };
+        if (mask & 0x001) appendFlag("IN");
+        if (mask & 0x004) appendFlag("OUT");
+        if (mask & 0x80000000u) appendFlag("ET");
+        if (mask & 0x40000000u) appendFlag("ONESHOT");
+        if (!offset) strcpy(flags, "-");
+        klog_fmt("BW_THREAD_DUMP epoll_fd pid=%u tid=%u fd=%u events=0x%x flags=%s readable=%d writable=%d object=%p",
+                 pid, tid, registration->fd, mask, flags, (int)readable,
+                 (int)writable, fd && fd->kobject ? (void*)fd->kobject.get() : nullptr);
+    }
+}

@@ -50,6 +50,7 @@ public:
 
     U32 ctl(KMemory* memory, U32 op, FD fd, U32 address);
     U32 wait(KThread* thread, U32 events, U32 maxevents, U32 timeout);
+    void debugDumpRegistrations(KProcess* process, U32 pid, U32 tid);
 private:
     class Data {
     public:

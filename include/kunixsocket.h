@@ -76,6 +76,7 @@ public:
     static U32 unixsocket_write_native_nowait(const std::shared_ptr<KObject>& obj, U8* value, int len);
 
     void signalReadReady();
+    void debugDumpReadWait(U32 waiterPid, U32 waiterTid, FD fd);
 
     // Called on the *receiving* peer after another socket appends bytes to this
     // object's recvBuffer (the three put sites in internal_write/writeNative/
@@ -108,9 +109,12 @@ protected:
     Soft_Ring_Buffer recvBuffer;
     std::queue<std::shared_ptr<KSocketMsg> > msgs;
     U32 pid = 0;
+    std::atomic<U32> lastOwnerPid{0};
+    std::atomic<U32> lastOwnerTid{0};
 
     U32 internal_write(KThread* thread, const std::shared_ptr<KUnixSocketObject>& con, BOXEDWINE_CONDITION& cond, U32 buffer, U32 len);
     U32 writePipeClosed(KThread* thread, bool noSignal);
+    void recordOwner(KThread* thread);
 };
 
 #endif
