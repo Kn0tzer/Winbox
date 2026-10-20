@@ -5942,6 +5942,9 @@ unhandled:
 }
 
 void CPU64::run() {
+#ifdef BOXEDWINE_BLOCK_EXEC
+    const bool jitActive = jit64Enabled();
+#endif
     // Optional instruction tracer for bring-up debugging. Gated on env so it
     // never costs anything in normal runs. BOXEDWINE64_TRACE_FROM/TO bound the
     // instructionCount window; each traced step prints RIP + the leading
@@ -6025,8 +6028,8 @@ void CPU64::run() {
             }
         }
 #ifdef BOXEDWINE_BLOCK_EXEC
-        {
-            // Phase-1 JIT fast path (active only when BW64_JIT=1; no-op otherwise).
+        if (jitActive) {
+            // CPU64 block machinery is skipped entirely when BW64_JIT is off.
             U32 jn = tryJitStep();
             if (jn) {
                 instructionCount += jn;
@@ -6153,6 +6156,7 @@ __attribute__((always_inline)) inline CPU64::ModRM CPU64::resolveRecipe(const BR
 }
 
 bool CPU64::buildBlock(U64 startRip, BBlock& b) {
+    if (!jit64Enabled()) return false;
     b.startRip = 0;
     b.n = 0;
     U64 r = startRip;
@@ -6510,6 +6514,7 @@ U32 CPU64::execWasmBlock(const Jit64Block& block, U64 maxInsn) {
 }
 
 U32 CPU64::tryWasmExec(U64 maxInsn) {
+    if (!jit64Enabled()) return 0;
     U64 r = rip;
     // Fast path: a cached emitted block, validated against ITS OWN recorded
     // pages (two atomic generation reads) -- no decode, no snapshot.
@@ -6689,6 +6694,7 @@ void CPU64::freeJit() {
 }
 
 U32 CPU64::tryBlockStep(U64 maxInsn) {
+    if (!jit64Enabled()) return 0;
     U64 r = rip;
     U32 neg = (U32)((r ^ (r >> 10)) & 1023);
     if (blockNegCache[neg] == r) return 0;
@@ -6729,6 +6735,9 @@ U32 CPU64::tryBlockStep(U64 maxInsn) {
 #endif // BOXEDWINE_BLOCK_EXEC
 
 U64 CPU64::runBounded(U64 maxInsn) {
+#ifdef BOXEDWINE_BLOCK_EXEC
+    const bool jitActive = jit64Enabled();
+#endif
     static const char* tf = std::getenv("BOXEDWINE64_TRACE_FROM");
     static const char* tt = std::getenv("BOXEDWINE64_TRACE_TO");
     U64 traceFrom = tf ? std::strtoull(tf, nullptr, 0) : (U64)-1;
@@ -6752,8 +6761,8 @@ U64 CPU64::runBounded(U64 maxInsn) {
                      (unsigned long long)xmm[1].hi, (unsigned long long)xmm[1].lo);
         }
 #ifdef BOXEDWINE_BLOCK_EXEC
-        {
-            // Phase-1 JIT fast path (active only when BW64_JIT=1; no-op otherwise).
+        if (jitActive) {
+            // CPU64 block machinery is skipped entirely when BW64_JIT is off.
             U32 jn = tryJitStep(maxInsn - ran);
             if (jn) {
                 instructionCount += jn;
