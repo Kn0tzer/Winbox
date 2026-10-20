@@ -1137,6 +1137,14 @@ const InstructionInfo instructionInfo[] = {
     {0, 0, 0, 0, 0, 0}, // AddsubpsXmmXmm
     {0, 128, 0, 0, 0, 0}, // AddsubpsXmmE128
     {0, 128, 0, 0, 0, 0}, // LddquXmmE128
+    {0, 0, 0, 0, 0, 0}, // Ssse3MmxRR
+    {0, 64, 0, 0, 0, 0}, // Ssse3MmxRE
+    {0, 0, 0, 0, 0, 0}, // Ssse3XmmRR
+    {0, 128, 0, 0, 0, 0}, // Ssse3XmmRE
+    {0, 0, 0, 0, 0, 0}, // PalignrMmxRR
+    {0, 64, 0, 0, 0, 0}, // PalignrMmxRE
+    {0, 0, 0, 0, 0, 0}, // PalignrXmmRR
+    {0, 128, 0, 0, 0, 0}, // PalignrXmmRE
     {0, 0, 0, 0, 0, 0}, // MovddupXmmXmm
     {0, 64, 0, 0, 0, 0}, // MovddupXmmE64
     {0, 0, 0, 0, 0, 0}, // MovsldupXmmXmm
@@ -3055,6 +3063,14 @@ const LogInstruction instructionLog[] = {
     {"Addsubps", 0, logXmmXmm},
     {"Addsubps", 128, logXmmE},
     {"Lddqu", 128, logXmmE},
+    {"SSSE3", 64, logMM},
+    {"SSSE3", 64, logME},
+    {"SSSE3", 128, logXmmXmm},
+    {"SSSE3", 128, logXmmE},
+    {"PALIGNR", 64, logMM},
+    {"PALIGNR", 64, logME},
+    {"PALIGNR", 128, logXmmI},
+    {"PALIGNR", 128, logXmmE},
     {"Movddup", 0, logXmmXmm},
     {"Movddup", 64, logXmmE},
     {"Movsldup", 0, logXmmXmm},
@@ -4983,6 +4999,37 @@ public:
     }
 };
 
+class DecodeThreeByteSSSE3 : public Decode {
+public:
+    DecodeThreeByteSSSE3(bool xmm, bool palignr) : xmm(xmm), palignr(palignr) {}
+
+    void decode(DecodeData* data, DecodedOp* op) const override {
+        U8 opcode = data->fetch8();
+        U8 rm = data->fetch8();
+        bool valid = palignr ? opcode == 0x0f :
+            ((opcode <= 0x0b) || (opcode >= 0x1c && opcode <= 0x1e));
+        if (!valid) {
+            op->inst = Invalid;
+            op->reg = rm;
+            op->imm = data->inst;
+            return;
+        }
+        op->reg = G(rm);
+        if (rm >= 0xc0) {
+            op->rm = E(rm);
+            op->inst = palignr ? (xmm ? PalignrXmmRR : PalignrMmxRR) : (xmm ? Ssse3XmmRR : Ssse3MmxRR);
+        } else {
+            decodeEa(data, op, rm);
+            op->inst = palignr ? (xmm ? PalignrXmmRE : PalignrMmxRE) : (xmm ? Ssse3XmmRE : Ssse3MmxRE);
+        }
+        op->imm = palignr ? data->fetch8() : opcode;
+    }
+
+private:
+    bool xmm;
+    bool palignr;
+};
+
 class DecodeNopRm : public DecodeFunc {
 public:
     void decode(DecodeData* data, DecodedOp* op) const override {
@@ -5989,6 +6036,10 @@ DecodeSSE2 sse0x37c(Invalid, Invalid, HaddpsXmmXmm, HaddpsXmmE128, Invalid, Inva
 DecodeSSE2 sse0x37d(Invalid, Invalid, HsubpsXmmXmm, HsubpsXmmE128, Invalid, Invalid);
 DecodeSSE2 sse0x3d0(Invalid, Invalid, AddsubpsXmmXmm, AddsubpsXmmE128, Invalid, Invalid);
 DecodeSSE2 sse0x3f0(Invalid, Invalid, Invalid, LddquXmmE128, Invalid, Invalid);
+DecodeThreeByteSSSE3 decodeSSSE3Mmx(false, false);
+DecodeThreeByteSSSE3 decodeSSSE3Xmm(true, false);
+DecodeThreeByteSSSE3 decodePalignrMmx(false, true);
+DecodeThreeByteSSSE3 decodePalignrXmm(true, true);
 DecodeRMr sse0x170(PshufdXmmXmm, PshufdXmmE128, 8);
 DecodeGroup sse0x171(Invalid, Invalid, PsrlwXmm, Invalid, PsrawXmm, Invalid, PsllwXmm, Invalid, 8);
 DecodeGroup sse0x172(Invalid, Invalid, PsrldXmm, Invalid, PsradXmm, Invalid, PslldXmm, Invalid, 8);
@@ -6126,7 +6177,7 @@ const Decode* const decoder[] = {
     &sse2Movapd, &sse2Movapd_r, &sseMov0x12a, &sseMov0x12b, &sseMov0x12c, &sseMov0x12d, &sseMov0x12e, &sseMov0x12f,
     // 0x130
     nullptr, &decodeRdtsc, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-    nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+    &decodeSSSE3Xmm, nullptr, &decodePalignrXmm, nullptr, nullptr, nullptr, nullptr, nullptr,
     // 0x140
     &decodeCmovO_16, &decodeCmovNO_16, &decodeCmovB_16, &decodeCmovNB_16, &decodeCmovZ_16, &decodeCmovNZ_16, &decodeCmovBE_16, &decodeCmovNBE_16,
     &decodeCmovS_16, &decodeCmovNS_16, &decodeCmovP_16, &decodeCmovNP_16, &decodeCmovL_16, &decodeCmovNL_16, &decodeCmovLE_16, &decodeCmovNLE_16,
@@ -6222,7 +6273,7 @@ const Decode* const decoder[] = {
     &sseMovapsXE, &sseMovapsEX, &sseCvt2a, &sseMovnt, &sseCvt2c, &sseCvt2d, &sseUcomis, &sseComis,
     // 0x330
     nullptr, &decodeRdtsc, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-    nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+    &decodeSSSE3Mmx, nullptr, &decodePalignrMmx, nullptr, nullptr, nullptr, nullptr, nullptr,
     // 0x340
     &decodeCmovO_32, &decodeCmovNO_32, &decodeCmovB_32, &decodeCmovNB_32, &decodeCmovZ_32, &decodeCmovNZ_32, &decodeCmovBE_32, &decodeCmovNBE_32,
     &decodeCmovS_32, &decodeCmovNS_32, &decodeCmovP_32, &decodeCmovNP_32, &decodeCmovL_32, &decodeCmovNL_32, &decodeCmovLE_32, &decodeCmovNLE_32,

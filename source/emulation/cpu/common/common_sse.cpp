@@ -95,6 +95,203 @@ static U64 commonSseAddSubF64(U64 aBits, U64 bBits, bool subtract) {
     return result.bits;
 }
 
+static U32 commonSSSE3ReadLane(const U8* data, U32 index, U32 width) {
+    U32 result = 0;
+    for (U32 i = 0; i < width; ++i) result |= (U32)data[index * width + i] << (i * 8);
+    return result;
+}
+
+static void commonSSSE3WriteLane(U8* data, U32 index, U32 width, U32 value) {
+    for (U32 i = 0; i < width; ++i) data[index * width + i] = (U8)(value >> (i * 8));
+}
+
+static S32 commonSSSE3SignedLane(const U8* data, U32 index, U32 width) {
+    U32 value = commonSSSE3ReadLane(data, index, width);
+    if (width == 1) return (value & 0x80) ? (S32)value - 0x100 : (S32)value;
+    if (width == 2) return (value & 0x8000) ? (S32)value - 0x10000 : (S32)value;
+    S32 result;
+    memcpy(&result, &value, sizeof(result));
+    return result;
+}
+
+static S32 commonSSSE3SaturateS16(S32 value) {
+    return value > 32767 ? 32767 : (value < -32768 ? -32768 : value);
+}
+
+static void commonSSSE3Apply(U8* destination, const U8* source, U32 size, U8 opcode) {
+    U8 a[16], b[16], result[16] = {};
+    memcpy(a, destination, size);
+    memcpy(b, source, size);
+    const U32 byteCount = size;
+    switch (opcode) {
+    case 0x00: // PSHUFB
+        for (U32 i = 0; i < byteCount; ++i) {
+            U8 selector = b[i];
+            result[i] = (selector & 0x80) ? 0 : a[selector & (byteCount - 1)];
+        }
+        break;
+    case 0x01: // PHADDW
+    case 0x05: // PHSUBW
+    case 0x03: // PHADDSW
+    case 0x07: // PHSUBSW
+        for (U32 half = 0; half < 2; ++half) {
+            const U8* input = half ? b : a;
+            U32 outputBase = half * (byteCount / 2);
+            for (U32 i = 0; i < byteCount / 4; ++i) {
+                S32 left = commonSSSE3SignedLane(input, i * 2, 2);
+                S32 right = commonSSSE3SignedLane(input, i * 2 + 1, 2);
+                S32 value;
+                if (opcode == 0x01) value = (S16)(commonSSSE3ReadLane(input, i * 2, 2) + commonSSSE3ReadLane(input, i * 2 + 1, 2));
+                else if (opcode == 0x05) value = (S16)(commonSSSE3ReadLane(input, i * 2, 2) - commonSSSE3ReadLane(input, i * 2 + 1, 2));
+                else if (opcode == 0x03) value = commonSSSE3SaturateS16(left + right);
+                else value = commonSSSE3SaturateS16(left - right);
+                commonSSSE3WriteLane(result + outputBase, i, 2, (U16)value);
+            }
+        }
+        break;
+    case 0x02: // PHADDD
+    case 0x06: // PHSUBD
+        for (U32 half = 0; half < 2; ++half) {
+            const U8* input = half ? b : a;
+            U32 outputBase = half * (byteCount / 2);
+            for (U32 i = 0; i < byteCount / 8; ++i) {
+                U32 left = commonSSSE3ReadLane(input, i * 2, 4);
+                U32 right = commonSSSE3ReadLane(input, i * 2 + 1, 4);
+                commonSSSE3WriteLane(result + outputBase, i, 4, opcode == 0x02 ? left + right : left - right);
+            }
+        }
+        break;
+    case 0x04: // PMADDUBSW
+        for (U32 i = 0; i < byteCount / 2; ++i) {
+            S32 left = (S32)a[i * 2] * commonSSSE3SignedLane(b, i * 2, 1);
+            S32 right = (S32)a[i * 2 + 1] * commonSSSE3SignedLane(b, i * 2 + 1, 1);
+            commonSSSE3WriteLane(result, i, 2, (U16)commonSSSE3SaturateS16(left + right));
+        }
+        break;
+    case 0x08: case 0x09: case 0x0a: // PSIGNB/W/D
+        for (U32 i = 0; i < byteCount / (opcode == 0x08 ? 1 : (opcode == 0x09 ? 2 : 4)); ++i) {
+            const S32 laneWidth = opcode == 0x08 ? 1 : (opcode == 0x09 ? 2 : 4);
+            U32 value = commonSSSE3ReadLane(a, i, laneWidth);
+            S32 sign = commonSSSE3SignedLane(b, i, laneWidth);
+            if (sign == 0) value = 0;
+            else if (sign < 0) value = (U32)0 - value;
+            commonSSSE3WriteLane(result, i, laneWidth, value);
+        }
+        break;
+    case 0x0b: // PMULHRSW
+        for (U32 i = 0; i < byteCount / 2; ++i) {
+            S32 product = commonSSSE3SignedLane(a, i, 2) * commonSSSE3SignedLane(b, i, 2);
+            S32 rounded = product + 0x4000;
+            S32 value = rounded >= 0 ? rounded / 32768 : -((-rounded + 32767) / 32768);
+            commonSSSE3WriteLane(result, i, 2, (U16)value);
+        }
+        break;
+    case 0x1c: case 0x1d: case 0x1e: // PABSB/W/D
+        for (U32 i = 0; i < byteCount / (opcode == 0x1c ? 1 : (opcode == 0x1d ? 2 : 4)); ++i) {
+            const U32 laneWidth = opcode == 0x1c ? 1 : (opcode == 0x1d ? 2 : 4);
+            U32 value = commonSSSE3ReadLane(b, i, laneWidth);
+            if (commonSSSE3SignedLane(b, i, laneWidth) < 0) value = (U32)0 - value;
+            commonSSSE3WriteLane(result, i, laneWidth, value);
+        }
+        break;
+    default:
+        return;
+    }
+    memcpy(destination, result, size);
+}
+
+static void commonSSSE3Align(U8* destination, const U8* source, U32 size, U8 shift) {
+    U8 a[16], b[16], result[16] = {};
+    memcpy(a, destination, size);
+    memcpy(b, source, size);
+    for (U32 i = 0; i < size; ++i) {
+        U32 index = i + shift;
+        if (index < size) result[i] = b[index];
+        else if (index < size * 2) result[i] = a[index - size];
+    }
+    memcpy(destination, result, size);
+}
+
+void common_ssse3MmxRR(CPU* cpu, U32 reg, U32 rm, U8 opcode) {
+    U64 source = cpu->fpu.getMMX((U8)rm)->q;
+    MMX_reg* destination = cpu->fpu.getMMX((U8)reg);
+    cpu->fpu.startMMX();
+    U8 dst[8], src[8];
+    memcpy(dst, &destination->q, sizeof(U64));
+    memcpy(src, &source, sizeof(U64));
+    commonSSSE3Apply(dst, src, sizeof(U64), opcode);
+    memcpy(&destination->q, dst, sizeof(U64));
+}
+
+void common_ssse3MmxRE(CPU* cpu, U32 reg, U32 address, U8 opcode) {
+    U64 source = cpu->memory->readq(address);
+    MMX_reg* destination = cpu->fpu.getMMX((U8)reg);
+    cpu->fpu.startMMX();
+    U8 dst[8], src[8];
+    memcpy(dst, &destination->q, sizeof(U64));
+    memcpy(src, &source, sizeof(U64));
+    commonSSSE3Apply(dst, src, sizeof(U64), opcode);
+    memcpy(&destination->q, dst, sizeof(U64));
+}
+
+void common_ssse3XmmRR(CPU* cpu, U32 reg, U32 rm, U8 opcode) {
+    U8 dst[16], src[16];
+    memcpy(dst, &cpu->xmm[reg].pi.u64[0], sizeof(dst));
+    memcpy(src, &cpu->xmm[rm].pi.u64[0], sizeof(src));
+    commonSSSE3Apply(dst, src, sizeof(dst), opcode);
+    memcpy(&cpu->xmm[reg].pi.u64[0], dst, sizeof(dst));
+}
+
+void common_ssse3XmmRE(CPU* cpu, U32 reg, U32 address, U8 opcode) {
+    U8 dst[16], src[16];
+    U64 low = cpu->memory->readq(address), high = cpu->memory->readq(address + 8);
+    memcpy(src, &low, sizeof(low));
+    memcpy(src + sizeof(low), &high, sizeof(high));
+    memcpy(dst, &cpu->xmm[reg].pi.u64[0], sizeof(dst));
+    commonSSSE3Apply(dst, src, sizeof(dst), opcode);
+    memcpy(&cpu->xmm[reg].pi.u64[0], dst, sizeof(dst));
+}
+
+void common_palignrMmxRR(CPU* cpu, U32 reg, U32 rm, U8 shift) {
+    U64 source = cpu->fpu.getMMX((U8)rm)->q;
+    MMX_reg* destination = cpu->fpu.getMMX((U8)reg);
+    cpu->fpu.startMMX();
+    U8 dst[8], src[8];
+    memcpy(dst, &destination->q, sizeof(U64));
+    memcpy(src, &source, sizeof(U64));
+    commonSSSE3Align(dst, src, sizeof(U64), shift);
+    memcpy(&destination->q, dst, sizeof(U64));
+}
+
+void common_palignrMmxRE(CPU* cpu, U32 reg, U32 address, U8 shift) {
+    U64 source = cpu->memory->readq(address);
+    MMX_reg* destination = cpu->fpu.getMMX((U8)reg);
+    cpu->fpu.startMMX();
+    U8 dst[8], src[8];
+    memcpy(dst, &destination->q, sizeof(U64));
+    memcpy(src, &source, sizeof(U64));
+    commonSSSE3Align(dst, src, sizeof(U64), shift);
+    memcpy(&destination->q, dst, sizeof(U64));
+}
+
+void common_palignrXmmRR(CPU* cpu, U32 reg, U32 rm, U8 shift) {
+    U8 dst[16], src[16];
+    memcpy(dst, &cpu->xmm[reg].pi.u64[0], sizeof(dst));
+    memcpy(src, &cpu->xmm[rm].pi.u64[0], sizeof(src));
+    commonSSSE3Align(dst, src, sizeof(dst), shift);
+    memcpy(&cpu->xmm[reg].pi.u64[0], dst, sizeof(dst));
+}
+
+void common_palignrXmmRE(CPU* cpu, U32 reg, U32 address, U8 shift) {
+    U8 dst[16], src[16];
+    U64 low = cpu->memory->readq(address), high = cpu->memory->readq(address + 8);
+    memcpy(src, &low, sizeof(low));
+    memcpy(src + sizeof(low), &high, sizeof(high));
+    memcpy(dst, &cpu->xmm[reg].pi.u64[0], sizeof(dst));
+    commonSSSE3Align(dst, src, sizeof(dst), shift);
+    memcpy(&cpu->xmm[reg].pi.u64[0], dst, sizeof(dst));
+}
+
 static U32 commonSseRoundF32ToI32(U32 value, U32 mxcsr, bool truncate) {
     union {
         U32 i;
