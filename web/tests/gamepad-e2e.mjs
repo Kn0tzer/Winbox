@@ -1,11 +1,24 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { ProbeTest } from './suite/lib/probe-base.mjs';
+import { extraUrlParams, ProbeTest } from './suite/lib/probe-base.mjs';
 
 class GamepadE2ETest extends ProbeTest {
   constructor() {
     super({ tag: 'gamepad-e2e', timeoutMs: 1200000 });
     this.dir = 'test-results/gamepad-e2e';
+  }
+
+  async bootGamepadRuntime(page, arch) {
+    this.testedArchitectures.add(arch);
+    const params = new URLSearchParams({
+      p: 'cmd /c echo vkboot', session: '1', persist: '0', fresh: '1', arch,
+      ...extraUrlParams(),
+    });
+    await page.goto(`${this._server.url}/runtime/index.html?${params}`);
+    // The generic boot helper also waits for the desktop pin's window log.
+    // This input test needs only the exported guest session to accept spawns.
+    await this.waitForPageFn(page, () =>
+      globalThis.bwRuntime?.call?.('bw64_session_ready', [], []) === 1, 600000);
   }
 
   async run({ page }) {
@@ -48,14 +61,22 @@ class GamepadE2ETest extends ProbeTest {
             pad.timestamp = performance.now();
           },
         };
-        dispatchConnected();
       });
 
-      await this.bootGuest(activePage, { arch });
+      await this.bootGamepadRuntime(activePage, arch);
+      const runtimeFrame = await activePage.evaluate(() => ({
+        path: location.pathname,
+        ready: window.bwRuntime?.call?.('bw64_session_ready', [], []) === 1,
+        gamepadId: navigator.getGamepads()[0]?.id,
+      }));
+      if (!runtimeFrame.path.endsWith('/runtime/index.html') || !runtimeFrame.ready ||
+          runtimeFrame.gamepadId !== 'Xbox 360 Controller (XInput STANDARD GAMEPAD)') {
+        throw new Error(`${arch} fake gamepad was not installed in the active runtime frame: ${JSON.stringify(runtimeFrame)}`);
+      }
       const exe = `xinputprobe-${arch}.exe`;
       await this.stageFile(activePage, exe, resolve(`tools/guest-fixtures/${exe}`));
       await activePage.evaluate(() => window.__gamepadTest.dispatchConnected());
-      const from = await this.spawnGuest(activePage, exe, { arch });
+      const from = await this.spawnGuest(activePage, exe, { arch, env: 'WINEDEBUG=+plugplay,+hid,+xinput' });
       await this.waitForLog(activePage, /idx=0 rc=0\b/, 90000, from);
 
       await activePage.waitForTimeout(5000);

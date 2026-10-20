@@ -8,9 +8,7 @@
 #include <memory>
 
 FsOpenNode* openDevInputGamepad(const std::shared_ptr<FsNode>& node, U32 flags, U32 data);
-void onGamepadAxis(U32 code, S32 value);
-void onGamepadButton(U32 code, bool down);
-void onGamepadSync();
+void onGamepadState(int connected, int buttons, int lx, int ly, int rx, int ry, int lt, int rt, int hatx, int haty);
 
 namespace {
 
@@ -58,23 +56,16 @@ void testGamepadInput() {
     U8 records[8 * 16] = {};
     expectGamepadValue("idle event5 read", device->readNative(records, 16), (U32)-K_EWOULDBLOCK);
 
-    // These are the host-to-evdev callbacks used by the SDL controller handler.
-    onGamepadAxis(0x00, 32767);
-    onGamepadSync();
-    onGamepadButton(0x130, true);
-    onGamepadSync();
-    onGamepadAxis(0x05, 255);
-    onGamepadSync();
-    onGamepadAxis(0x11, -1);
-    onGamepadSync();
+    // A browser poll delivers one snapshot; changed key and axis events share
+    // one SYN_REPORT and an unchanged snapshot produces no records.
+    onGamepadState(1, 1 << 0, 32767, 0, 0, 0, 0, 255, 0, -1);
 
     U32 bytesRead = device->readNative(records, sizeof(records));
-    expectGamepadValue("gamepad input record bytes", bytesRead, sizeof(records));
+    expectGamepadValue("gamepad input record bytes", bytesRead, 5 * 16);
     const U32* words = reinterpret_cast<const U32*>(records);
-    const U32 expectedCodes[] = {0x00000003, 0x00000000, 0x01300001, 0x00000000,
-                                 0x00050003, 0x00000000, 0x00110003, 0x00000000};
-    const S32 expectedValues[] = {32767, 0, 1, 0, 255, 0, -1, 0};
-    for (U32 i = 0; i < 8; i++) {
+    const U32 expectedCodes[] = {0x01300001, 0x00000003, 0x00050003, 0x00110003, 0x00000000};
+    const S32 expectedValues[] = {1, 32767, 255, -1, 0};
+    for (U32 i = 0; i < 5; i++) {
         expectGamepadValue("gamepad event code", words[i * 4 + 2], expectedCodes[i]);
         expectGamepadValue("gamepad event value", words[i * 4 + 3], (U32)expectedValues[i]);
         if (i && (words[i * 4] < words[(i - 1) * 4] ||
@@ -82,6 +73,8 @@ void testGamepadInput() {
             testFail("gamepad event timestamps went backwards");
         }
     }
+    onGamepadState(1, 1 << 0, 32767, 0, 0, 0, 0, 255, 0, -1);
+    expectGamepadValue("unchanged gamepad snapshot", device->readNative(records, 16), (U32)-K_EWOULDBLOCK);
 
     expectGamepadValue("EVIOCGVERSION return", gamepadIoctl(device.get(), context, inputIoctl(0x4501, 4)), 4);
     expectGamepadValue("EVIOCGVERSION value", context.memory->readd(GAMEPAD_IO_BUFFER), 0x010001);
@@ -135,8 +128,15 @@ void testGamepadInput() {
 
     expectGamepadValue("unknown gamepad ioctl", gamepadIoctl(device.get(), context, 0xdead), (U32)-K_EINVAL);
 
-    onGamepadButton(0x130, false);
-    onGamepadSync();
+    onGamepadState(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    bytesRead = device->readNative(records, sizeof(records));
+    expectGamepadValue("disconnect event record bytes", bytesRead, 5 * 16);
+    const U32 disconnectCodes[] = {0x01300001, 0x00000003, 0x00050003, 0x00110003, 0x00000000};
+    const S32 disconnectValues[] = {0, 0, 0, 0, 0};
+    for (U32 i = 0; i < 5; i++) {
+        expectGamepadValue("disconnect event code", words[i * 4 + 2], disconnectCodes[i]);
+        expectGamepadValue("disconnect event value", words[i * 4 + 3], (U32)disconnectValues[i]);
+    }
 }
 
 #endif

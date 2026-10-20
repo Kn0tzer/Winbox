@@ -1569,6 +1569,8 @@
     // against the previous snapshot, so polling every frame is cheap.
     var gamepadFrame = 0;
     var gamepadPacked = null;
+    var gamepadDisconnectPending = false;
+    var gamepadDisconnectedIndices = Object.create(null);
     function gamepadAxisScale(value) {
         if (typeof value !== "number" || !isFinite(value)) return 0;
         var scaled = Math.round(value * (value < 0 ? 32768 : 32767));
@@ -1600,8 +1602,23 @@
         gamepadFrame = 0;
         var pad = gamepadActivePad();
         if (!pad) {
-            gamepadSend(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+            if (gamepadDisconnectPending) {
+                gamepadDisconnectPending = false;
+                gamepadDisconnectedIndices = Object.create(null);
+                gamepadSend(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+                return;
+            }
+            // A Gamepad event is the authoritative lifecycle notification.
+            // Keep polling through transient empty snapshots; disconnect
+            // sends the neutral state and stops this loop after the event.
+            gamepadFrame = requestAnimationFrame(gamepadPoll);
             return;
+        }
+        if (gamepadDisconnectPending && !gamepadDisconnectedIndices[pad.index]) {
+            // Another controller remains. Keep the virtual device connected
+            // and follow the selected pad after the disconnected one is gone.
+            gamepadDisconnectPending = false;
+            gamepadDisconnectedIndices = Object.create(null);
         }
         var source = pad.buttons || [];
         var button = function (index) {
@@ -1625,24 +1642,29 @@
         if (button(11)) buttons |= 1 << 10;
         var axes = pad.axes || [];
         var lx = gamepadAxisScale(axes[0] || 0);
-        var ly = -gamepadAxisScale(axes[1] || 0); // evdev: up is negative
+        var ly = gamepadAxisScale(axes[1] || 0); // Gamepad and evdev both use negative for up
         var rx = gamepadAxisScale(axes[2] || 0);
-        var ry = -gamepadAxisScale(axes[3] || 0);
-        var lt = Math.round((source[6] && source[6].value ? source[6].value : 0) * 255);
-        var rt = Math.round((source[7] && source[7].value ? source[7].value : 0) * 255);
+        var ry = gamepadAxisScale(axes[3] || 0);
+        var ltValue = source[6] && source[6].value ? source[6].value : 0;
+        var rtValue = source[7] && source[7].value ? source[7].value : 0;
+        var lt = typeof ltValue === "number" && isFinite(ltValue) ? Math.round(Math.max(0, Math.min(1, ltValue)) * 255) : 0;
+        var rt = typeof rtValue === "number" && isFinite(rtValue) ? Math.round(Math.max(0, Math.min(1, rtValue)) * 255) : 0;
         var hatx = (button(14) ? -1 : 0) + (button(15) ? 1 : 0);
         var haty = (button(12) ? -1 : 0) + (button(13) ? 1 : 0);
         gamepadSend(1, buttons, lx, ly, rx, ry, lt, rt, hatx, haty);
         gamepadFrame = requestAnimationFrame(gamepadPoll);
     }
     function gamepadConnected() {
+        gamepadDisconnectPending = false;
+        gamepadDisconnectedIndices = Object.create(null);
         if (!gamepadFrame) gamepadFrame = requestAnimationFrame(gamepadPoll);
     }
-    function gamepadDisconnected() {
-        if (gamepadActivePad()) return;
-        if (gamepadFrame) cancelAnimationFrame(gamepadFrame);
-        gamepadFrame = 0;
-        gamepadSend(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    function gamepadDisconnected(event) {
+        gamepadDisconnectPending = true;
+        if (event && event.gamepad && event.gamepad.index >= 0) {
+            gamepadDisconnectedIndices[event.gamepad.index] = true;
+        }
+        if (!gamepadFrame) gamepadFrame = requestAnimationFrame(gamepadPoll);
     }
     window.addEventListener("gamepadconnected", gamepadConnected);
     window.addEventListener("gamepaddisconnected", gamepadDisconnected);
