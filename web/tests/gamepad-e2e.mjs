@@ -12,7 +12,7 @@ class GamepadE2ETest extends ProbeTest {
     this.testedArchitectures.add(arch);
     const params = new URLSearchParams({
       p: 'cmd /c echo vkboot', session: '1', persist: '0', fresh: '1', arch,
-      winedbg: '+plugplay,+hid,+xinput',
+      winedbg: '+plugplay,+hid,+xinput,+loaddll',
       ...extraUrlParams(),
     });
     await page.goto(`${this._server.url}/runtime/index.html?${params}`);
@@ -26,7 +26,13 @@ class GamepadE2ETest extends ProbeTest {
   async run({ page }) {
     const results = {};
     let activePage = page;
-    for (const arch of ['x64', 'x86']) {
+    const architectures = process.env.BW_GAMEPAD_ARCH
+      ? [process.env.BW_GAMEPAD_ARCH]
+      : ['x64', 'x86'];
+    if (architectures.some(arch => !['x64', 'x86'].includes(arch))) {
+      throw new Error(`Unsupported BW_GAMEPAD_ARCH: ${process.env.BW_GAMEPAD_ARCH}`);
+    }
+    for (const arch of architectures) {
       if (arch === 'x86') {
         await activePage.close();
         activePage = await this.newPage();
@@ -86,7 +92,7 @@ class GamepadE2ETest extends ProbeTest {
       await this.stageFile(activePage, exe, resolve(`tools/guest-fixtures/${exe}`));
       await activePage.evaluate(() => window.__gamepadTest.dispatchConnected());
       await this.waitForLog(activePage, /bw64_gamepad_update: first snapshot connected=1/, 15000);
-      const from = await this.spawnGuest(activePage, exe, { arch, env: 'WINEDEBUG=+plugplay,+hid,+xinput,+debugstr' });
+      const from = await this.spawnGuest(activePage, exe, { arch, env: 'WINEDEBUG=+plugplay,+hid,+xinput,+loaddll,+debugstr' });
       await this.waitForLog(activePage, /idx=0 rc=0\b/, 90000, from);
 
       await activePage.waitForTimeout(5000);
