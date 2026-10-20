@@ -56,6 +56,8 @@ void bw64SessionRememberContext(const BString& workingDir, const std::vector<BSt
 #include "knativeaudio.h"
 #include "knativesocket.h"
 
+FsOpenNode* openDevInputGamepad(const std::shared_ptr<FsNode>& node, U32 flags, U32 data);
+
 #ifndef BOXEDWINE_DISABLE_UI
 #include "../ui/data/globalSettings.h"
 #endif
@@ -152,6 +154,7 @@ void StartUpArgs::buildVirtualFileSystem() {
     Fs::addVirtualFile(B("/dev/input/mice"), openDevInputTouch, K__S_IWRITE | K__S_IREAD | K__S_IFCHR, k_mdev(0xd, 0x43), inputNode);
     Fs::addVirtualFile(B("/dev/input/event3"), openDevInputTouch, K__S_IWRITE|K__S_IREAD|K__S_IFCHR, k_mdev(0xd, 0x43), inputNode);
     Fs::addVirtualFile(B("/dev/input/event4"), openDevInputKeyboard, K__S_IWRITE|K__S_IREAD|K__S_IFCHR, k_mdev(0xd, 0x44), inputNode);
+    Fs::addVirtualFile(B("/dev/input/event5"), openDevInputGamepad, K__S_IWRITE|K__S_IREAD|K__S_IFCHR, k_mdev(0xd, 0x45), inputNode);
 	Fs::addVirtualFile(B("/dev/dsp"), openDevDsp, K__S_IWRITE | K__S_IREAD | K__S_IFCHR, k_mdev(14, 3), devNode);
 	Fs::addVirtualFile(B("/dev/mixer"), openDevMixer, K__S_IWRITE | K__S_IREAD | K__S_IFCHR, k_mdev(14, 0), devNode);
     Fs::addVirtualFile(B("/dev/sequencer"), openDevSequencer, K__S_IWRITE | K__S_IREAD | K__S_IFCHR, k_mdev(14, 1), devNode);
