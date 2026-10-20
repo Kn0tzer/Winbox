@@ -42,15 +42,22 @@
 // raiseSyncFault throws DiffFault so the case is reported instead of hanging.
 // ---------------------------------------------------------------------------
 struct DiffFault : std::runtime_error {
-    explicit DiffFault(const std::string& s) : std::runtime_error(s) {}
+    U32 signalNo = 0;
+    U32 trapNo = 0;
+    U64 faultAddr = 0;
+    DiffFault(const std::string& s, U32 sig = 0, U32 trap = 0, U64 addr = 0)
+        : std::runtime_error(s), signalNo(sig), trapNo(trap), faultAddr(addr) {}
 };
 
 void ksyscall64(CPU64* /*cpu*/) { throw DiffFault("unexpected syscall"); }
 U64 KSystem::getSystemTimeAsMicroSeconds() { return 0; }
 void KProcess::signalProcess(U32 /*signal*/) { throw DiffFault("unexpected signalProcess"); }
 thread_local KThread* KThread::runningThread = nullptr;
-bool CPU64::raiseSyncFault(U32 /*sig*/, U32 /*trapNo*/, S32 /*siCode*/, U64 faultAddr) {
-    throw DiffFault("sync fault at guest addr");
+void jit64ReleaseState(Jit64State* state) {
+    if (state) throw DiffFault("unexpected JIT state in cpu-diff harness");
+}
+bool CPU64::raiseSyncFault(U32 sig, U32 trapNo, S32 /*siCode*/, U64 faultAddr) {
+    throw DiffFault("sync fault at guest addr", sig, trapNo, faultAddr);
 }
 bool CPU64::deliverPendingSignals() { return false; }
 
@@ -114,7 +121,7 @@ struct QemuCase {
     U8 scratchIn[256] = {};
 };
 struct QemuResult {
-    U32 ok = 0, crashed = 0, timeout = 0, pad = 0;
+    U32 ok = 0, crashed = 0, timeout = 0, signalNo = 0;
     U64 regs[16] = {};
     U32 flags = 0, pad2 = 0;
     U64 rspIn = 0, rbxIn = 0;
@@ -127,6 +134,7 @@ struct NativeResult {
     bool ok = false;
     bool crashed = false;
     bool timeout = false;
+    U32 signalNo = 0;
     U64 regs[16] = {};
     U32 flags = 0;
     U64 rspIn = 0, rbxIn = 0;
@@ -147,9 +155,19 @@ struct TestCase {
     bool checkMem = false;    // compare MEM_SCRATCH bytes
     int memLen = 0;
     U8 memInit[256] = {};     // initial scratch content
+    U8 memIgnore[256] = {};   // bytes intentionally not compared (e.g. host FIP/FDP)
     bool checkCfPreserved = false;   // inc/dec: CF must be unchanged
     bool checkFlagsUnchanged = false;// e.g. shift by masked-count 0: no flag change
     bool skipRsiRdi = false;         // string ops: RSI/RDI hold scratch addrs, checked per-side
+    bool checkExpectedRax = false;
+    U64 expectedRax = 0;
+    // Fault cases assert the native process signal and the emulator's
+    // synchronous Linux signal/trap mapping independently.
+    U32 expectedNativeSignal = 0;
+    U32 expectedEmuSignal = 0;
+    U32 expectedEmuTrap = 0;
+    U64 expectedEmuRegs[16] = {};
+    U64 expectedEmuRegsMask[16] = {};
 };
 
 static bool writeAll(int fd, const void* buf, size_t n) {
@@ -235,6 +253,7 @@ static std::vector<NativeResult> runNativeBatch(
                         r.timeout = true;
                     } else {
                         r.crashed = true;
+                        r.signalNo = q.signalNo;
                     }
                 }
             }
@@ -259,6 +278,9 @@ struct EmuResult {
     U8 scratch[256] = {};
     U64 elapsedNs = 0;
     bool yieldAtEnd = false;
+    U32 faultSignal = 0;
+    U32 faultTrap = 0;
+    U64 faultAddr = 0;
 };
 
 static EmuResult runEmu(const U8* code, size_t len, const U64 regsIn[16],
@@ -311,6 +333,9 @@ static EmuResult runEmu(const U8* code, size_t len, const U64 regsIn[16],
     } catch (const DiffFault& f) {
         r.faulted = true;
         r.err = f.what();
+        r.faultSignal = f.signalNo;
+        r.faultTrap = f.trapNo;
+        r.faultAddr = f.faultAddr;
     } catch (const std::exception& e) {
         r.err = std::string("exception: ") + e.what();
     }
@@ -332,6 +357,42 @@ static void eModRM(std::vector<U8>& b, int mod, int reg, int rm) {
 static void eU32(std::vector<U8>& b, U32 v) {
     for (int i = 0; i < 4; i++) b.push_back((U8)(v >> (i * 8)));
 }
+
+enum class OpcodeMap { Legacy, Map0F, Map0F38, Map0F3A, X87 };
+enum class OperandKind { Register, BaseMemory, RipRelative };
+
+// Emit a ModR/M instruction for the legacy, 0F, 0F38, 0F3A, or x87 maps.
+// `ripGapBytes` counts bytes emitted after this instruction before inline data;
+// the disp32 is based on the end of the complete instruction, including imm8.
+static size_t emitModRMInstruction(std::vector<U8>& out,
+                                   const std::vector<U8>& prefixes,
+                                   OpcodeMap map, U8 opcode,
+                                   int regField, int rmField,
+                                   OperandKind operand,
+                                   bool hasImm8 = false, U8 imm8 = 0,
+                                   U32 ripGapBytes = 0, U8 baseDisp8 = 0) {
+    size_t start = out.size();
+    out.insert(out.end(), prefixes.begin(), prefixes.end());
+    if (map == OpcodeMap::Map0F || map == OpcodeMap::Map0F38 ||
+        map == OpcodeMap::Map0F3A) {
+        out.push_back(0x0F);
+        if (map == OpcodeMap::Map0F38) out.push_back(0x38);
+        if (map == OpcodeMap::Map0F3A) out.push_back(0x3A);
+    }
+    out.push_back(opcode);
+    if (operand == OperandKind::Register) {
+        eModRM(out, 3, regField, rmField);
+    } else if (operand == OperandKind::BaseMemory) {
+        eModRM(out, baseDisp8 ? 1 : 0, regField, rmField);
+        if (baseDisp8) out.push_back(baseDisp8);
+    } else {
+        eModRM(out, 0, regField, 5);
+        eU32(out, ripGapBytes);
+    }
+    if (hasImm8) out.push_back(imm8);
+    return out.size() - start;
+}
+
 // ALU r/m64, r64  (opcodes 0x01,0x09,0x11,0x19,0x21,0x29,0x31,0x39): dst=rm
 static void eRR(std::vector<U8>& b, U8 op, int dst, int src) {
     eRex(b, true, src, dst); b.push_back(op); eModRM(b, 3, src, dst);
@@ -772,6 +833,379 @@ static void buildIntCases(std::vector<TestCase>& out) {
     }
 }
 
+// FE /0,/1 byte INC/DEC: cover register, ordinary memory, and RIP-relative
+// memory operands. The RIP-relative form reads the modified inline byte back
+// into EAX before jumping over the data, making both the value and flags
+// observable without treating code bytes as differential scratch memory.
+static void buildByteIncDecCases(std::vector<TestCase>& out) {
+    for (U8 sub = 0; sub < 2; sub++) {
+        const U8 initial = sub == 0 ? 0x7F : 0x80;
+        for (int form = 0; form < 3; form++) {
+            TestCase tc; tc.set = "int";
+            tc.name = sub == 0 ? "inc" : "dec";
+            tc.form = form == 0 ? "r/m8,register" :
+                      form == 1 ? "r/m8,memory" : "r/m8,rip-relative";
+            initRegs(tc, initial, form == 1 ? MEM_SCRATCH : 0);
+            tc.flagsIn = 0x203; // CF must survive FE /0 and /1.
+            tc.flagsMask = F_PF | F_AF | F_ZF | F_SF | F_OF;
+            tc.checkCfPreserved = true;
+            std::vector<U8>& b = tc.code;
+            if (form == 0) {
+                emitModRMInstruction(b, {}, OpcodeMap::Legacy, 0xFE,
+                                     sub, X64_RAX, OperandKind::Register);
+            } else if (form == 1) {
+                emitModRMInstruction(b, {}, OpcodeMap::Legacy, 0xFE,
+                                     sub, X64_RBX, OperandKind::BaseMemory);
+                tc.checkMem = true; tc.memLen = 1; tc.memInit[0] = initial;
+            } else {
+                // First instruction ends at offset 6. MOVZX is seven bytes,
+                // then EB 01 skips the byte. Thus its disp32 is 9; the read
+                // back instruction has a two-byte gap to that same data.
+                emitModRMInstruction(b, {}, OpcodeMap::Legacy, 0xFE,
+                                     sub, 5, OperandKind::RipRelative, false, 0, 9);
+                emitModRMInstruction(b, {}, OpcodeMap::Map0F, 0xB6,
+                                     0, 5, OperandKind::RipRelative, false, 0, 2);
+                b.push_back(0xEB); b.push_back(0x01);
+                b.push_back(initial);
+            }
+            out.push_back(tc);
+        }
+    }
+}
+
+// Group 3 TEST immediate forms exercise the decoder's runtime-selected
+// trailing immediate width: F6 /0 imm8, F7 /0 imm16, and F7 /0 imm32.
+static void buildGroupTestCases(std::vector<TestCase>& out) {
+    struct Spec {
+        const char* name;
+        std::vector<U8> prefix;
+        U8 opcode;
+        std::vector<U8> immediate;
+        std::vector<U8> data;
+    };
+    Spec specs[] = {
+        {"test", {}, 0xF6, {0x0F}, {0xF0}},
+        {"test", {0x66}, 0xF7, {0x0F,0x00}, {0xF0,0x00}},
+        {"test", {0x48}, 0xF7, {0x0F,0x00,0x00,0x00},
+         {0xF0,0x00,0x00,0x00,0x00,0x00,0x00,0x00}},
+    };
+    for (const auto& spec : specs) {
+        for (int form = 0; form < 3; form++) {
+            TestCase tc; tc.set = "int"; tc.name = spec.name;
+            tc.form = form == 0 ? "r/m,imm" :
+                      form == 1 ? "memory,imm" : "rip-relative,imm";
+            initRegs(tc, 0xF0, MEM_SCRATCH);
+            tc.flagsMask = F_CF | F_PF | F_ZF | F_SF | F_OF;
+            std::vector<U8>& b = tc.code;
+            OperandKind operand = form == 0 ? OperandKind::Register :
+                                  form == 1 ? OperandKind::BaseMemory :
+                                              OperandKind::RipRelative;
+            int rm = form == 0 ? X64_RAX : X64_RBX;
+            emitModRMInstruction(b, spec.prefix, OpcodeMap::Legacy,
+                                 spec.opcode, 0, rm, operand,
+                                 spec.immediate.size() == 1, 0x0F,
+                                 form == 2 ? 2 : 0);
+            if (spec.immediate.size() > 1)
+                b.insert(b.end(), spec.immediate.begin(), spec.immediate.end());
+            if (form == 1) {
+                tc.checkMem = true; tc.memLen = (int)spec.data.size();
+                memcpy(tc.memInit, spec.data.data(), spec.data.size());
+            }
+            if (form == 2) {
+                b.push_back(0xEB); b.push_back((U8)spec.data.size());
+                b.insert(b.end(), spec.data.begin(), spec.data.end());
+            }
+            out.push_back(tc);
+        }
+    }
+}
+
+// LOCK-prefixed scalar RMW operations. Register forms establish the same
+// result/flag behavior without LOCK (LOCK on a register is #UD); memory forms
+// use the scratch qword and carry LOCK where the architecture permits it.
+static void buildLockedRmwCases(std::vector<TestCase>& out) {
+    auto addPair = [&](const char* name, const std::vector<U8>& regCode,
+                       const std::vector<U8>& memCode, U64 value, U8 size,
+                       U32 flagsIn, U32 flagsMask, bool flagsUnchanged) {
+        TestCase regCase; regCase.set = "int"; regCase.name = name;
+        regCase.form = "register"; regCase.code = regCode;
+        initRegs(regCase, value, 0); regCase.flagsIn = flagsIn;
+        regCase.flagsMask = flagsMask;
+        regCase.checkFlagsUnchanged = flagsUnchanged;
+        out.push_back(regCase);
+
+        TestCase memCase; memCase.set = "int"; memCase.name = name;
+        memCase.form = "LOCK memory"; memCase.code = memCode;
+        initRegs(memCase, 0, MEM_SCRATCH); memCase.flagsIn = flagsIn;
+        memCase.flagsMask = flagsMask;
+        memCase.checkFlagsUnchanged = flagsUnchanged;
+        memCase.checkMem = true; memCase.memLen = size;
+        memcpy(memCase.memInit, &value, size);
+        out.push_back(memCase);
+    };
+
+    const U32 incFlags = F_CF | F_PF | F_AF | F_ZF | F_SF | F_OF;
+    addPair("inc-lock", {0xFE,0xC0}, {0xF0,0xFE,0x03}, 0x7F, 1,
+            0x203, incFlags, false);
+    addPair("dec-lock", {0xFE,0xC8}, {0xF0,0xFE,0x0B}, 0x80, 1,
+            0x203, incFlags, false);
+
+    const U32 allFlags = F_ALL6;
+    const U32 allSet = 0x202 | allFlags;
+    addPair("not-lock-m8", {0xF6,0xD0}, {0xF0,0xF6,0x13}, 0x55, 1,
+            allSet, 0, true);
+    addPair("neg-lock-m8", {0xF6,0xD8}, {0xF0,0xF6,0x1B}, 0x80, 1,
+            0x202, allFlags, false);
+    addPair("not-lock-m64", {0x48,0xF7,0xD0}, {0xF0,0x48,0xF7,0x13},
+            0x00FF00FF00FF00FFULL, 8, allSet, 0, true);
+    addPair("neg-lock-m64", {0x48,0xF7,0xD8}, {0xF0,0x48,0xF7,0x1B},
+            0x8000000000000000ULL, 8, 0x202, allFlags, false);
+
+    const U8 bitOps[] = {0xAB,0xB3,0xBB};
+    const U8 bitGroupExt[] = {5,6,7};
+    const char* bitNames[] = {"bts-lock", "btr-lock", "btc-lock"};
+    for (int i = 0; i < 3; i++) {
+        addPair(bitNames[i], {0x48,0x0F,bitOps[i],0xC8},
+                {0xF0,0x48,0x0F,bitOps[i],0x0B}, 8, 8, 0x202, F_CF, false);
+        out[out.size() - 2].r[X64_RCX] = 3;
+        out[out.size() - 1].r[X64_RCX] = 3;
+        TestCase immReg; immReg.set = "int"; immReg.name = bitNames[i];
+        immReg.form = "register,imm8";
+        immReg.code = {0x48,0x0F,0xBA,
+                       (U8)(0xC0 | (bitGroupExt[i] << 3)), 3};
+        initRegs(immReg, 8, 0); immReg.flagsIn = 0x202; immReg.flagsMask = F_CF;
+        out.push_back(immReg);
+        TestCase immMem; immMem.set = "int"; immMem.name = bitNames[i];
+        immMem.form = "LOCK memory,imm8";
+        immMem.code = {0xF0,0x48,0x0F,0xBA,
+                       (U8)((bitGroupExt[i] << 3) | X64_RBX), 3};
+        initRegs(immMem, 0, MEM_SCRATCH); immMem.flagsIn = 0x202;
+        immMem.flagsMask = F_CF; immMem.checkMem = true; immMem.memLen = 8;
+        U64 initial = 8; memcpy(immMem.memInit, &initial, sizeof(initial));
+        out.push_back(immMem);
+
+        TestCase immRip; immRip.set = "int"; immRip.name = bitNames[i];
+        immRip.form = "LOCK rip-relative,imm8";
+        initRegs(immRip, 0, MEM_SCRATCH); immRip.flagsIn = 0x202;
+        immRip.flagsMask = F_CF; immRip.checkMem = true; immRip.memLen = 8;
+        emitModRMInstruction(immRip.code, {0xF0,0x48}, OpcodeMap::Map0F,
+            0xBA, bitGroupExt[i], 5, OperandKind::RipRelative,
+            true, 200, 12); // imm8 masks to bit 8; data follows JMP + qword.
+        immRip.code.insert(immRip.code.end(),
+            {0x48,0x8B,0x05,0x05,0,0,0, 0x48,0x89,0x03, 0xEB,0x08});
+        U64 ripInitial = 1ULL << 8;
+        for (U8 byte = 0; byte < 8; byte++) immRip.code.push_back((U8)(ripInitial >> (byte * 8)));
+        out.push_back(immRip);
+    }
+}
+
+// Register-index BT-family memory operands use a signed bit string offset.
+// Choose a base at scratch+32 so offsets 40, -1, and 200 address in-page
+// qwords at scratch+32, +24, and +56 respectively.
+static void buildBitStringCases(std::vector<TestCase>& out) {
+    const U8 opcodes[] = {0xA3,0xAB,0xB3,0xBB};
+    const char* names[] = {"bt-reg-index", "bts-reg-index",
+                           "btr-reg-index", "btc-reg-index"};
+    const S64 indices[] = {40, -1, 200};
+    const U8 bits[] = {40, 63, 8};
+    const S32 deltas[] = {0, -8, 24};
+    for (int op = 0; op < 4; op++) {
+        for (int index = 0; index < 3; index++) {
+            U64 initial = 1ULL << bits[index];
+            U64 rawIndex = (U64)indices[index];
+            for (int form = 0; form < 2; form++) {
+                TestCase tc; tc.set = "int"; tc.name = names[op];
+                tc.form = form == 0 ? "register,reg-index" : "memory,reg-index";
+                initRegs(tc, initial, form == 0 ? 0 : MEM_SCRATCH);
+                tc.r[X64_RCX] = rawIndex;
+                tc.flagsIn = 0x202; tc.flagsMask = F_CF;
+                std::vector<U8> prefix = form == 0 ? std::vector<U8>{0x48} :
+                    (op == 0 ? std::vector<U8>{0x48} : std::vector<U8>{0xF0,0x48});
+                emitModRMInstruction(tc.code, prefix, OpcodeMap::Map0F,
+                    opcodes[op], X64_RCX, form == 0 ? X64_RAX : X64_RBX,
+                    form == 0 ? OperandKind::Register : OperandKind::BaseMemory,
+                    false, 0, 0, form == 1 ? 32 : 0);
+                if (form == 1) {
+                    tc.checkMem = true; tc.memLen = 256;
+                    int targetOffset = 32 + deltas[index];
+                    memcpy(tc.memInit + targetOffset, &initial, sizeof(initial));
+                } else {
+                    tc.r[X64_RAX] = initial;
+                }
+                out.push_back(tc);
+            }
+        }
+    }
+}
+
+// MXCSR and the legacy FXSAVE64/FXRSTOR64 memory formats.
+static void buildMxcsrCases(std::vector<TestCase>& out) {
+    {
+        TestCase tc; tc.set = "sse"; tc.name = "ldmxcsr-stmxcsr";
+        tc.form = "memory,m32";
+        tc.code = {0x0F,0xAE,0x53,0x20,       // ldmxcsr [rbx+32]
+                   0x0F,0xAE,0x5B,0x24};      // stmxcsr [rbx+36]
+        initRegs(tc, 0, MEM_SCRATCH); tc.flagsMask = 0;
+        tc.checkMem = true; tc.memLen = 40;
+        U32 value = 0x5F80; memcpy(tc.memInit + 32, &value, sizeof(value));
+        out.push_back(tc);
+    }
+    {
+        TestCase tc; tc.set = "sse"; tc.name = "fxsave-fxrstor";
+        tc.form = "memory,m512byte";
+        tc.code = {0x0F,0xAE,0x53,0x20,      // ldmxcsr [rbx+32]
+                   0x66,0x48,0x0F,0x6E,0xC0}; // movq xmm0,rax
+        // The native runner starts with host XMM state, so initialize every
+        // other XMM register before comparing a complete FXSAVE image.
+        for (int i = 1; i < 16; i++) {
+            tc.code.push_back(0x66);
+            if (i >= 8) tc.code.push_back(0x45); // REX.R+B selects xmm8..15
+            tc.code.insert(tc.code.end(), {0x0F,0xEF,
+                (U8)(0xC0 | ((i & 7) << 3) | (i & 7))});
+        }
+        tc.code.insert(tc.code.end(), {
+            0xD9,0xE8,                       // fld1
+            0x0F,0xAE,0x03,                  // fxsave [rbx]
+            0x66,0x0F,0xEF,0xC0,            // pxor xmm0,xmm0
+            0xDB,0xE3,                       // fninit
+            0x0F,0xAE,0x0B,                  // fxrstor [rbx]
+            0x66,0x48,0x0F,0x7E,0xC2,       // movq rdx,xmm0
+            0xDD,0x5B,0x40,                 // fstp qword [rbx+64]
+        });
+        initRegs(tc, 0x1122334455667788ULL, MEM_SCRATCH);
+        tc.flagsMask = 0; tc.checkMem = true; tc.memLen = 256;
+        memset(tc.memIgnore + 48, 1, 112); // empty x87 stack slots have undefined data
+        U32 mxcsr = 0x5F80; memcpy(tc.memInit + 32, &mxcsr, sizeof(mxcsr));
+        tc.memIgnore[6] = tc.memIgnore[7] = 1; // FOP is not tracked per instruction.
+        memset(tc.memIgnore + 8, 1, 16);        // FIP/FDP may be host addresses.
+        out.push_back(tc);
+    }
+
+    struct ScalarConvert {
+        const char* name;
+        U8 prefix;
+        bool isDouble;
+        U64 positiveBits;
+        U64 negativeBits;
+    };
+    const ScalarConvert conversions[] = {
+        {"cvtss2si-mxcsr", 0xF3, false, 0x40200000, 0xC0200000},
+        {"cvtsd2si-mxcsr", 0xF2, true, 0x4004000000000000ULL,
+                                    0xC004000000000000ULL},
+    };
+    const U32 packedRcBits[] = {0x0000,0x2000,0x4000,0x6000};
+    const S64 expected[4][2] = {{2,-2},{2,-3},{3,-2},{2,-2}};
+    for (const auto& convert : conversions) {
+        for (int rc = 0; rc < 4; rc++) {
+            for (int sign = 0; sign < 2; sign++) {
+                U64 bits = sign ? convert.negativeBits : convert.positiveBits;
+                U32 mxcsr = 0x1F80 | packedRcBits[rc];
+                for (int form = 0; form < 2; form++) {
+                    TestCase tc; tc.set = "sse"; tc.name = convert.name;
+                    tc.form = form == 0 ? "register-xmm" : "memory-scalar";
+                    initRegs(tc, bits, MEM_SCRATCH);
+                    tc.flagsMask = 0; tc.checkMem = true; tc.memLen = 48;
+                    memcpy(tc.memInit + 32, &mxcsr, sizeof(mxcsr));
+                    if (form == 1) {
+                        if (convert.isDouble) memcpy(tc.memInit + 40, &bits, 8);
+                        else { U32 raw = (U32)bits; memcpy(tc.memInit + 40, &raw, 4); }
+                    }
+                    tc.code = {0x0F,0xAE,0x53,0x20}; // ldmxcsr [rbx+32]
+                    if (form == 0) {
+                        if (convert.isDouble)
+                            tc.code.insert(tc.code.end(), {0x66,0x48,0x0F,0x6E,0xC0});
+                        else
+                            tc.code.insert(tc.code.end(), {0x66,0x0F,0x6E,0xC0});
+                        tc.code.insert(tc.code.end(), {convert.prefix,0x48,0x0F,0x2D,0xC0});
+                    } else {
+                        tc.code.insert(tc.code.end(),
+                            {convert.prefix,0x48,0x0F,0x2D,0x43,0x28});
+                    }
+                    tc.r[X64_RBX] = MEM_SCRATCH;
+                    tc.checkExpectedRax = true;
+                    tc.expectedRax = (U64)expected[rc][sign];
+                    out.push_back(tc);
+                }
+            }
+        }
+    }
+
+    struct RoundConvert { const char* name; U8 prefix; U8 opcode; bool isDouble; };
+    const RoundConvert rounded[] = {
+        {"cvtps2dq-mxcsr",0x66,0x5B,false},
+        {"cvtpd2dq-mxcsr",0xF2,0xE6,true},
+    };
+    const U32 rcBits[] = {0x0000,0x2000,0x4000,0x6000};
+    const U32 psSource[4] = {0x40200000,0xC0200000,0x00000000,0x3FC00000};
+    const U64 pdSource[2] = {0x4004000000000000ULL,0xC004000000000000ULL};
+    for (const auto& convert : rounded) {
+        for (int rc = 0; rc < 4; rc++) {
+            for (int form = 0; form < 2; form++) {
+                TestCase tc; tc.set = "sse"; tc.name = convert.name;
+                tc.form = form == 0 ? "xmm,xmm" : "xmm,m128";
+                initRegs(tc, 0, MEM_SCRATCH); tc.flagsMask = 0;
+                tc.checkMem = true; tc.memLen = 52;
+                if (convert.isDouble) memcpy(tc.memInit + 16, pdSource, sizeof(pdSource));
+                else memcpy(tc.memInit + 16, psSource, sizeof(psSource));
+                U32 mxcsr = 0x1F80 | rcBits[rc];
+                memcpy(tc.memInit + 48, &mxcsr, sizeof(mxcsr));
+                tc.code = {0x0F,0xAE,0x53,0x30}; // ldmxcsr [rbx+48]
+                if (form == 0)
+                    tc.code.insert(tc.code.end(), {0x0F,0x10,0x43,0x10});
+                tc.code.insert(tc.code.end(), {convert.prefix,0x0F,convert.opcode,
+                    (U8)(form == 0 ? 0xC0 : 0x43)});
+                if (form == 1) tc.code.push_back(0x10);
+                tc.code.insert(tc.code.end(), {0x0F,0x11,0x03});
+                out.push_back(tc);
+            }
+        }
+    }
+}
+
+// Packed float-to-signed-dword conversions cover normal lanes, negative and
+// zero values, NaN, infinities, and both sides of the signed-32 range.
+static void buildPackedConversionCases(std::vector<TestCase>& out) {
+    struct Convert { const char* name; U8 prefix; U8 opcode; bool isDouble; };
+    const Convert conversions[] = {
+        {"cvtps2dq",0x66,0x5B,false},
+        {"cvttps2dq",0xF3,0x5B,false},
+        {"cvtpd2dq",0xF2,0xE6,true},
+        {"cvttpd2dq",0x66,0xE6,true},
+    };
+    const U32 psInputs[][4] = {
+        {0x3FCCCCCD,0xC02CCCCC,0x00000000,0x7FC00000},
+        {0x7F800000,0xFF800000,0x4F000000,0xCF000001},
+    };
+    const U64 pdInputs[][2] = {
+        {0x3FF999999999999AULL,0xC00599999999999AULL},
+        {0x7FF8000000000000ULL,0x7FF0000000000000ULL},
+        {0xFFF0000000000000ULL,0x41E0000000000000ULL},
+    };
+    for (const auto& convert : conversions) {
+        int dataSets = convert.isDouble ? 3 : 2;
+        for (int dataSet = 0; dataSet < dataSets; dataSet++) {
+            U8 source[16] = {};
+            if (convert.isDouble) memcpy(source, pdInputs[dataSet], sizeof(pdInputs[dataSet]));
+            else memcpy(source, psInputs[dataSet], sizeof(psInputs[dataSet]));
+            for (int form = 0; form < 2; form++) {
+                TestCase tc; tc.set = "sse"; tc.name = convert.name;
+                tc.form = form == 0 ? "xmm,xmm" : "xmm,m128";
+                initRegs(tc, 0, MEM_SCRATCH); tc.flagsMask = 0;
+                tc.checkMem = true; tc.memLen = 32;
+                memcpy(tc.memInit + 16, source, sizeof(source));
+                if (form == 0)
+                    tc.code.insert(tc.code.end(), {0x0F,0x10,0x43,0x10}); // movups xmm0,[rbx+16]
+                tc.code.push_back(convert.prefix);
+                tc.code.insert(tc.code.end(), {0x0F,convert.opcode,
+                    (U8)(form == 0 ? 0xC0 : 0x43)});
+                if (form == 1) tc.code.push_back(0x10); // [rbx+16]
+                tc.code.insert(tc.code.end(), {0x0F,0x11,0x03}); // movups [rbx],xmm0
+                out.push_back(tc);
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // FPU test builders (x87). Pattern: finit; fldX; fldY; fop_p; fstp [rbx].
 // Result compared via 8 bytes at MEM_SCRATCH (rbx = MEM_SCRATCH).
@@ -863,6 +1297,189 @@ static void buildFpuCases(std::vector<TestCase>& out) {
         memcpy(tc.memInit + 8,&epsilon,sizeof(epsilon));
         tc.flagsMask = 0; tc.checkMem = true; tc.memLen = 8;
         out.push_back(tc);
+    }
+}
+
+// Additional x87 state, conditional-move, and truncating-store instructions
+// requested for the CPU64 instruction audit.
+static void buildRequestedX87Cases(std::vector<TestCase>& out) {
+    auto addMem = [&](const char* name, const char* form,
+                      const std::vector<U8>& code, int memLen) -> TestCase& {
+        TestCase tc; tc.set = "fpu"; tc.name = name; tc.form = form;
+        tc.code = code; initRegs(tc, 0, MEM_SCRATCH);
+        tc.flagsMask = 0; tc.checkMem = true; tc.memLen = memLen;
+        out.push_back(tc);
+        return out.back();
+    };
+    {
+        TestCase& tc = addMem("fst-m64", "memory,m64", {
+            0xDB,0xE3, 0xDD,0x43,0x08, 0xDD,0x13
+        }, 16);
+        const U64 value = 0xC004000000000000ULL; // -2.5
+        memcpy(tc.memInit + 8, &value, sizeof(value));
+    }
+    for (int op = 0; op < 2; op++) {
+        TestCase& tc = addMem(op == 0 ? "fsubr-m32" : "fdivr-m32",
+                              "memory,m32", {
+            0xDB,0xE3, 0xD9,0xE8, 0xD9,0xE8, 0xD8,0xC0,
+            0xD8,(U8)(op == 0 ? 0x6B : 0x7B),0x10,
+            0xDD,0x1B
+        }, 24);
+        const float value = op == 0 ? 5.0f : 8.0f;
+        memcpy(tc.memInit + 16, &value, sizeof(value));
+    }
+    {
+        TestCase& tc = addMem("fsubr-register", "ST0,ST1", {
+            0xDB,0xE3,0xD9,0xEE,0xD9,0xE8,0xD8,0xE9,0xDD,0x1B
+        }, 8);
+        (void)tc;
+    }
+    {
+        TestCase& tc = addMem("fdivr-register", "ST0,ST1", {
+            0xDB,0xE3,0xD9,0xE8,0xD9,0xE8,0xD8,0xC0,
+            0xD9,0xE8,0xD8,0xF9,0xDD,0x1B
+        }, 8);
+        (void)tc;
+    }
+    {
+        TestCase& tc = addMem("fldenv-fnstenv", "memory,m28", {0xD9,0x23,0xD9,0x33}, 28);
+        const U32 env[] = {0x037F,0x0000,0xFFFF,0,0,0,0};
+        memcpy(tc.memInit, env, sizeof(env));
+        memset(tc.memIgnore + 12, 1, 16); // native FIP/FOP/FDP differ by code address
+    }
+    {
+        TestCase& tc = addMem("fsqrt", "ST0", {
+            0xDB,0xE3,0xDD,0x43,0x08,0xD9,0xFA,0xDD,0x5B,0x10
+        }, 24);
+        const U64 value = 0x4010000000000000ULL; // 4.0
+        memcpy(tc.memInit + 8, &value, sizeof(value));
+    }
+    {
+        TestCase& tc = addMem("ftst", "ST0", {
+            0xDB,0xE3,0xD9,0xEE,0xD9,0xE4,0xDF,0xE0,0x48,0x89,0x03
+        }, 8);
+        tc.flagsMask = 0;
+    }
+    {
+        TestCase& tc = addMem("fucomip", "ST0,ST1", {
+            0xDB,0xE3,0xD9,0xE8,0xD9,0xEE,0xDF,0xE9,0xDD,0x33
+        }, 108);
+        tc.flagsMask = F_CF | F_ZF | F_PF;
+        memset(tc.memIgnore + 12, 1, 16);
+        memset(tc.memIgnore + 38, 1, 70); // empty x87 stack slots are undefined
+    }
+    struct Fcmov { const char* name; U8 op, modrm; U32 flags; };
+    const Fcmov cmovs[] = {
+        {"fcmovb",0xDA,0xC1,F_CF}, {"fcmove",0xDA,0xC9,F_ZF},
+        {"fcmovbe",0xDA,0xD1,F_CF}, {"fcmovu",0xDA,0xD9,F_PF},
+        {"fcmovnb",0xDB,0xC1,0}, {"fcmovne",0xDB,0xC9,0},
+        {"fcmovnbe",0xDB,0xD1,0}, {"fcmovnu",0xDB,0xD9,0},
+    };
+    for (const auto& x : cmovs) {
+        TestCase& tc = addMem(x.name, "ST0,ST(i)", {
+            0xDB,0xE3,0xD9,0xE8,0xD9,0xEE,x.op,x.modrm,0xDD,0x1B
+        }, 8);
+        tc.flagsIn = 0x202 | x.flags;
+    }
+    {
+        TestCase& tc = addMem("ffreep", "ST(i)", {
+            0xDB,0xE3,0xD9,0xE8,0xD9,0xEE,0xDF,0xC1,0xDD,0x33
+        }, 108);
+        memset(tc.memIgnore + 12, 1, 16);
+        memset(tc.memIgnore + 28, 1, 80); // all slots are empty after FFREEP
+    }
+    for (U8 op : std::vector<U8>{0xF6,0xF7}) {
+        TestCase& tc = addMem(op == 0xF6 ? "fdecstp" : "fincstp", "ST", {
+            0xDB,0xE3,0xD9,0xE8,0xD9,op,0xDF,0xE0,0x48,0x89,0x03
+        }, 8);
+        (void)tc;
+    }
+    {
+        TestCase& tc = addMem("fnsave-frstor", "memory,m108", {
+            0xDB,0xE3,0xD9,0xE8,0xD9,0xEE,0xDD,0x33,
+            0xD9,0xBB,0x78,0,0,0,0xDD,0x23,
+            0xDD,0x9B,0x80,0,0,0
+        }, 136);
+        memset(tc.memIgnore + 12, 1, 16);
+        memset(tc.memIgnore + 48, 1, 60); // the remaining saved slots are empty
+    }
+    const std::vector<std::pair<const char*, U8>> fisttpOps = {
+        {"fisttp-m16",0xDF}, {"fisttp-m32",0xDB}, {"fisttp-m64",0xDD}
+    };
+    for (const auto& x : fisttpOps) {
+        int size = x.second == 0xDF ? 2 : x.second == 0xDB ? 4 : 8;
+        TestCase& tc = addMem(x.first, "memory,truncate", {
+            0xDB,0xE3,0xDD,0x43,0x10,x.second,0x0B
+        }, 16 + size);
+        const U64 value = 0xC00E000000000000ULL; // -3.75
+        memcpy(tc.memInit + 16, &value, sizeof(value));
+    }
+}
+
+static void buildSse2ExtraCases(std::vector<TestCase>& out) {
+    const S16 maddDst[8] = {1,2,-3,4,5,6,7,8};
+    const S16 maddSrc[8] = {2,3,4,5,-1,2,3,4};
+    const U16 avgDst[8] = {0,1,65535,65534,30000,20000,10,11};
+    const U16 avgSrc[8] = {1,2,1,3,35535,45536,11,10};
+    for (int op = 0; op < 2; op++) {
+        for (int form = 0; form < 2; form++) {
+            TestCase tc; tc.set = "sse";
+            tc.name = op == 0 ? "pmaddwd" : "pavgw";
+            tc.form = form == 0 ? "xmm,xmm" : "xmm,m128";
+            initRegs(tc, 0, MEM_SCRATCH);
+            tc.flagsMask = 0; tc.checkMem = true; tc.memLen = 32;
+            if (op == 0) {
+                memcpy(tc.memInit, maddDst, sizeof(maddDst));
+                memcpy(tc.memInit + 16, maddSrc, sizeof(maddSrc));
+            } else {
+                memcpy(tc.memInit, avgDst, sizeof(avgDst));
+                memcpy(tc.memInit + 16, avgSrc, sizeof(avgSrc));
+            }
+            tc.code = {0x0F,0x10,0x03}; // movups xmm0,[rbx]
+            if (form == 0) tc.code.insert(tc.code.end(), {0x0F,0x10,0x4B,0x10});
+            tc.code.push_back(0x66);
+            tc.code.push_back(0x0F);
+            tc.code.push_back(op == 0 ? 0xF5 : 0xE3);
+            if (form == 0) tc.code.push_back(0xC1);
+            else tc.code.insert(tc.code.end(), {0x43,0x10});
+            tc.code.insert(tc.code.end(), {0x0F,0x11,0x03}); // movups [rbx],xmm0
+            out.push_back(std::move(tc));
+        }
+    }
+    for (bool pd : {false,true}) {
+        TestCase tc; tc.set = "sse"; tc.name = pd ? "movntpd" : "movntps";
+        tc.form = "memory-only m128";
+        initRegs(tc,0,MEM_SCRATCH); tc.flagsMask = 0;
+        tc.checkMem = true; tc.memLen = 32;
+        const U64 value[2] = {0x0123456789ABCDEFULL,0xFEDCBA9876543210ULL};
+        memcpy(tc.memInit + 16,value,sizeof(value));
+        tc.code = {0x0F,0x10,0x43,0x10}; // movups xmm0,[rbx+16]
+        if (pd) tc.code.push_back(0x66);
+        tc.code.insert(tc.code.end(), {0x0F,0x2B,0x03});
+        out.push_back(std::move(tc));
+    }
+    {
+        TestCase tc; tc.set = "sse"; tc.name = "maskmovdqu";
+        tc.form = "implicit [rdi],xmm,xmm";
+        initRegs(tc,0,MEM_SCRATCH); tc.flagsMask = 0;
+        tc.checkMem = true; tc.memLen = 16;
+        tc.skipRsiRdi = true; // native/emulator RDI are distinct scratch addresses
+        for (int i = 0; i < 16; i++) tc.memInit[i] = 0xA0 + i;
+        tc.code = {0x66,0x0F,0xF7,0xC1};
+        const U8 data[16] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16};
+        U8 mask[16];
+        for (int i = 0; i < 16; i++) mask[i] = (i % 3 == 0) ? 0x80 : 0x7F;
+        memcpy(tc.memInit + 16,data,16);
+        memcpy(tc.memInit + 32,mask,16);
+        // Load data/mask, MASKMOVDQU [RDI], then inspect through RBX.
+        tc.code = {0x48,0x8D,0x3B, 0x0F,0x10,0x43,0x10, 0x0F,0x10,0x4B,0x20,
+                   0x66,0x0F,0xF7,0xC1};
+        out.push_back(std::move(tc));
+    }
+    {
+        TestCase tc; tc.set = "int"; tc.name = "emms"; tc.form = "no-operand";
+        tc.code = {0x0F,0x77}; initRegs(tc,0,0); tc.flagsMask = 0;
+        out.push_back(std::move(tc));
     }
 }
 
@@ -994,6 +1611,98 @@ static void buildSseCases(std::vector<TestCase>& out) {
             memcpy(tc.memInit, fA2, 16); memcpy(tc.memInit + 16, fB2, 16);
             out.push_back(tc);
         }
+    }
+
+    // Immediate 0F-map forms exercise all operand shapes, including a true
+    // RIP-relative m128 whose inline data follows a jump-over-data sequence.
+    // The encoder computes displacement from the end of ModR/M + disp + imm8.
+    U32 dstPs[] = {0x3F800000, 0xBF800000, 0x7FC00000, 0x7F800000};
+    U32 srcPs[] = {0x40000000, 0x00000000, 0x3F800000, 0xFF800000};
+    U64 dstPd[] = {0x3FF0000000000000ULL, 0x7FF8000000000000ULL};
+    U64 srcPd[] = {0x4000000000000000ULL, 0x7FF0000000000000ULL};
+    U8 dstBytes[16] = {}, dstPdBytes[16] = {};
+    U8 srcPsBytes[16] = {}, srcPdBytes[16] = {};
+    U8 pinsData[16] = {0x5A, 0xA5};
+    memcpy(dstBytes, dstPs, sizeof(dstPs));
+    memcpy(dstPdBytes, dstPd, sizeof(dstPd));
+    memcpy(srcPsBytes, srcPs, sizeof(srcPs));
+    memcpy(srcPdBytes, srcPd, sizeof(srcPd));
+    auto addImmCase = [&](const char* name, const std::vector<U8>& prefix,
+                          U8 opcode, U8 imm8, const U8* destinationData,
+                          const U8* sourceData, int form, bool pinsrw) {
+        TestCase tc; tc.set = "sse"; tc.name = name;
+        tc.form = pinsrw ? "xmm,r32/m16,imm8" :
+                  form == 0 ? "xmm,xmm,imm8" :
+                  form == 1 ? "xmm,m128,imm8" : "xmm,[rip+disp32],imm8";
+        initRegs(tc, 0, MEM_SCRATCH);
+        tc.flagsMask = 0; tc.checkMem = true; tc.memLen = 16;
+        memcpy(tc.memInit, destinationData, 16);
+        memcpy(tc.memInit + 16, sourceData, 16);
+
+        std::vector<U8> b;
+        emitModRMInstruction(b, {}, OpcodeMap::Map0F, 0x10, 0, 3,
+                             OperandKind::BaseMemory); // movups xmm0,[rbx]
+        if (!pinsrw && form == 0) {
+            emitModRMInstruction(b, {}, OpcodeMap::Map0F, 0x10, 1, 3,
+                                 OperandKind::BaseMemory, false, 0, 0, 16);
+        }
+        OperandKind operand = form == 0 ? OperandKind::Register :
+                              form == 1 ? OperandKind::BaseMemory :
+                                          OperandKind::RipRelative;
+        int rm = form == 0 ? (pinsrw ? X64_RCX : 1) : X64_RBX;
+        // Three bytes for MOVUPS [rbx],xmm0 and two bytes for JMP over the
+        // inline 16-byte source, so the RIP-relative displacement is five.
+        emitModRMInstruction(b, prefix, OpcodeMap::Map0F, opcode, 0, rm,
+                             operand, true, imm8,
+                             form == 2 ? (strcmp(name, "cmppd") == 0 ? 20 : 5) : 0,
+                             form == 1 ? 16 : 0);
+        emitModRMInstruction(b, {}, OpcodeMap::Map0F, 0x11, 0, 3,
+                             OperandKind::BaseMemory); // movups [rbx],xmm0
+        if (form == 2) {
+            if (strcmp(name, "cmppd") == 0)
+                b.insert(b.end(), 15, 0x90); // align the RIP-relative m128 to 16 bytes
+            b.push_back(0xEB); b.push_back(16); // jump over the inline source
+            b.insert(b.end(), sourceData, sourceData + 16);
+        }
+        tc.code = b;
+        if (pinsrw && form == 0) tc.r[X64_RCX] = 0xA55A;
+        out.push_back(tc);
+    };
+
+    for (int form = 0; form < 3; form++) {
+        addImmCase("shufps", {}, 0xC6, 0xE4, dstBytes, srcPsBytes, form, false);
+        addImmCase("shufpd", {0x66}, 0xC6, 0x02, dstPdBytes, srcPdBytes, form, false);
+        addImmCase("cmpss", {0xF3}, 0xC2, 0x01, dstBytes, srcPsBytes, form, false);
+        addImmCase("cmpsd", {0xF2}, 0xC2, 0x01, dstPdBytes, srcPdBytes, form, false);
+        addImmCase("cmpps", {}, 0xC2, 0x01, dstBytes, srcPsBytes, form, false);
+        addImmCase("cmppd", {0x66}, 0xC2, 0x01, dstPdBytes, srcPdBytes, form, false);
+        addImmCase("pinsrw", {0x66}, 0xC4, 0x06, dstBytes, pinsData, form, true);
+    }
+
+    U32 scalarPsBits[] = {0x7FC00000, 0xFF800000, 0x7F800000}; // NaN, -inf, +inf
+    U64 scalarPdBits[] = {0x7FF8000000000000ULL, 0xFFF0000000000000ULL,
+                          0x7FF0000000000000ULL};
+    for (int form = 0; form < 3; form++) {
+        U8 specialPs[16] = {}, specialPd[16] = {};
+        memcpy(specialPs, &scalarPsBits[form], sizeof(U32));
+        memcpy(specialPd, &scalarPdBits[form], sizeof(U64));
+        addImmCase("cmpss-edge", {0xF3}, 0xC2, 0x01,
+                   dstBytes, specialPs, form, false);
+        addImmCase("cmpsd-edge", {0xF2}, 0xC2, 0x01,
+                   dstPdBytes, specialPd, form, false);
+    }
+
+    // 66 0F C5 is register-source PEXTRW. Its source operand is an XMM
+    // register by definition, so this encoding has no memory form.
+    {
+        TestCase tc; tc.set = "sse"; tc.name = "pextrw"; tc.form = "r32,xmm,imm8";
+        tc.code = {0x0F,0x10,0x0B,             // movups xmm1,[rbx]
+                   0x66,0x0F,0xC5,0xC1,0x06}; // pextrw eax,xmm1,6
+        initRegs(tc, 0, MEM_SCRATCH); tc.flagsMask = 0;
+        tc.checkMem = true; tc.memLen = 16;
+        U16 words[8] = {0x1122,0x3344,0x5566,0x7788,0x99AA,0xBBCC,0xDDEE,0xFF00};
+        memcpy(tc.memInit, words, sizeof(words));
+        out.push_back(tc);
     }
 }
 
@@ -1184,6 +1893,12 @@ static std::string hexBytes(const std::vector<U8>& b) {
     return s;
 }
 
+static bool scratchEqual(const U8* a, const U8* b, const U8* ignore, int len) {
+    for (int i = 0; i < len; i++)
+        if (!ignore[i] && a[i] != b[i]) return false;
+    return true;
+}
+
 struct CaseResult {
     int idx = -1;
     bool nativeOk = false;
@@ -1200,6 +1915,77 @@ struct CaseResult {
 
 static CaseResult diffCase(const TestCase& tc, int idx, const NativeResult& n) {
     CaseResult cr; cr.idx = idx;
+    bool hasExpectedEmuRegs = false;
+    for (U64 mask : tc.expectedEmuRegsMask) hasExpectedEmuRegs |= mask != 0;
+    if (hasExpectedEmuRegs) {
+        cr.nativeOk = n.ok;
+        if (!n.ok) {
+            cr.nativeErr = n.timeout ? "native timeout"
+                         : n.crashed ? "native crashed" : "native setup failed";
+            return cr;
+        }
+        EmuResult e[3];
+        for (int k = 0; k < 3; k++)
+            e[k] = runEmu(tc.code.data(), tc.code.size(), tc.r, tc.flagsIn,
+                          tc.checkMem ? tc.memInit : nullptr);
+        cr.emuOk = e[0].ok;
+        cr.emuStable = e[0].ok;
+        if (!cr.emuOk) {
+            cr.emuErr = e[0].err;
+            return cr;
+        }
+        for (int k = 1; k < 3; k++) {
+            if (!e[k].ok || memcmp(e[k].regs, e[0].regs, sizeof(e[0].regs)) != 0)
+                cr.emuStable = false;
+        }
+        bool expected = true;
+        for (int reg = 0; reg < 16; reg++) {
+            U64 mask = tc.expectedEmuRegsMask[reg];
+            if (mask && (e[0].regs[reg] & mask) != (tc.expectedEmuRegs[reg] & mask))
+                expected = false;
+        }
+        cr.match = expected && cr.emuStable;
+        if (!cr.match) cr.mismatchDesc = "emulator CPUID registers differ from advertised feature set";
+        return cr;
+    }
+    if (tc.expectedEmuSignal) {
+        cr.nativeOk = n.crashed && n.signalNo == tc.expectedNativeSignal;
+        if (!cr.nativeOk) {
+            cr.nativeErr = n.timeout ? "native timeout"
+                         : n.crashed ? "native signal mismatch"
+                         : n.ok ? "native instruction returned"
+                         : "native setup failed";
+            cr.mismatchDesc = "native-signal=" + std::to_string(n.signalNo) +
+                              " expected=" + std::to_string(tc.expectedNativeSignal);
+            return cr;
+        }
+        EmuResult e[3];
+        for (int k = 0; k < 3; k++)
+            e[k] = runEmu(tc.code.data(), tc.code.size(), tc.r, tc.flagsIn,
+                          tc.checkMem ? tc.memInit : nullptr);
+        auto matchesEmuFault = [&](const EmuResult& result) {
+            return result.faulted && result.faultSignal == tc.expectedEmuSignal &&
+                   result.faultTrap == tc.expectedEmuTrap &&
+                   result.faultAddr == CODE_BASE;
+        };
+        cr.emuOk = matchesEmuFault(e[0]);
+        cr.emuStable = cr.emuOk;
+        for (int k = 1; k < 3; k++)
+            if (!matchesEmuFault(e[k])) cr.emuStable = false;
+        if (!cr.emuOk || !cr.emuStable) {
+            cr.emuErr = e[0].faulted
+                ? "sync signal=" + std::to_string(e[0].faultSignal) +
+                  " trap=" + std::to_string(e[0].faultTrap) +
+                  " addr=0x" + std::to_string(e[0].faultAddr)
+                : e[0].err;
+            cr.mismatchDesc = cr.emuErr + " expected signal=" +
+                              std::to_string(tc.expectedEmuSignal) + " trap=" +
+                              std::to_string(tc.expectedEmuTrap);
+            return cr;
+        }
+        cr.match = true;
+        return cr;
+    }
     if (!n.ok) {
         cr.nativeErr = n.timeout ? "native timeout"
                      : n.crashed ? "native crashed"
@@ -1220,7 +2006,8 @@ static CaseResult diffCase(const TestCase& tc, int idx, const NativeResult& n) {
         if (!e[k].ok ||
             memcmp(e[k].regs, e[0].regs, sizeof(e[0].regs)) != 0 ||
             e[k].flags != e[0].flags ||
-            (tc.checkMem && memcmp(e[k].scratch, e[0].scratch, (size_t)tc.memLen) != 0))
+            (tc.checkMem && !scratchEqual(e[k].scratch, e[0].scratch,
+                                          tc.memIgnore, tc.memLen)))
             cr.emuStable = false;
     }
     memcpy(cr.eRegs, e[0].regs, sizeof(cr.eRegs)); cr.eFlags = e[0].flags;
@@ -1256,13 +2043,17 @@ static CaseResult diffCase(const TestCase& tc, int idx, const NativeResult& n) {
             d += tmp;
         }
     }
+    if (tc.checkExpectedRax && cr.nRegs[X64_RAX] != tc.expectedRax)
+        d += "native-rax-unexpected ";
+    if (tc.checkExpectedRax && cr.eRegs[X64_RAX] != tc.expectedRax)
+        d += "emu-rax-unexpected ";
     U32 nf = cr.nFlags & tc.flagsMask, ef = cr.eFlags & tc.flagsMask;
     if (nf != ef) {
         snprintf(tmp, sizeof(tmp), "flags(mask 0x%x):n=0x%x/e=0x%x ",
                  tc.flagsMask, nf, ef);
         d += tmp;
     }
-    if (tc.checkMem && memcmp(cr.nMem, cr.eMem, (size_t)tc.memLen) != 0)
+    if (tc.checkMem && !scratchEqual(cr.nMem, cr.eMem, tc.memIgnore, tc.memLen))
         d += "scratch-mem ";
     // native sanity + emulator check for CF preservation
     if (tc.checkCfPreserved) {
@@ -1276,6 +2067,77 @@ static CaseResult diffCase(const TestCase& tc, int idx, const NativeResult& n) {
     cr.match = d.empty();
     cr.mismatchDesc = d;
     return cr;
+}
+
+static void buildCpuidCases(std::vector<TestCase>& out) {
+    auto add = [&](U32 leaf, const char* name, U32 eax, U32 ebx, U32 ecx, U32 edx) {
+        TestCase tc; tc.set = "int"; tc.name = "cpuid"; tc.form = name;
+        tc.code = {0xB8,(U8)leaf,(U8)(leaf>>8),(U8)(leaf>>16),(U8)(leaf>>24),
+                   0x31,0xC9,0x0F,0xA2};
+        initRegs(tc,0,0);
+        tc.expectedEmuRegs[X64_RAX] = eax;
+        tc.expectedEmuRegs[X64_RBX] = ebx;
+        tc.expectedEmuRegs[X64_RCX] = ecx;
+        tc.expectedEmuRegs[X64_RDX] = edx;
+        tc.expectedEmuRegsMask[X64_RAX] = 0xFFFFFFFFULL;
+        tc.expectedEmuRegsMask[X64_RBX] = 0xFFFFFFFFULL;
+        tc.expectedEmuRegsMask[X64_RCX] = 0xFFFFFFFFULL;
+        tc.expectedEmuRegsMask[X64_RDX] = 0xFFFFFFFFULL;
+        out.push_back(std::move(tc));
+    };
+    add(1,"leaf 1 topology/features",(6u<<8)|(15u<<4)|3u,
+        (8u<<8)|(1u<<16),(1u<<13)|(1u<<23),
+        (1u<<0)|(1u<<4)|(1u<<5)|(1u<<8)|(1u<<15)|(1u<<19)|
+        (1u<<23)|(1u<<24)|(1u<<25)|(1u<<26));
+    add(0x80000001,"extended long-mode features",0,0,(1u<<0)|(1u<<8),
+        (1u<<29)|(1u<<11)|(1u<<20));
+}
+
+static void buildFaultCases(std::vector<TestCase>& out) {
+    auto add = [&](const char* name, const char* form,
+                   std::vector<U8> code, U32 nativeSig, U32 emuSig, U32 trap,
+                   bool memoryOperand = false) {
+        TestCase tc; tc.set = "int"; tc.name = name; tc.form = form;
+        tc.code = std::move(code); tc.flagsIn = 0x202;
+        tc.expectedNativeSignal = nativeSig;
+        tc.expectedEmuSignal = emuSig;
+        tc.expectedEmuTrap = trap;
+        if (memoryOperand) {
+            tc.r[X64_RBX] = MEM_SCRATCH;
+            tc.checkMem = true; tc.memLen = 8;
+        }
+        out.push_back(std::move(tc));
+    };
+    add("ud2-fault", "SIGILL/#UD", {0x0F,0x0B}, SIGILL, SIGILL, 6);
+    add("unimplemented-fault", "SIGILL/#UD", {0x0F,0xB9,0xC0}, SIGILL, SIGILL, 6);
+    add("int-fault", "SIGSEGV/#GP", {0xCD,0x01}, SIGSEGV, SIGSEGV, 13);
+    add("int-fault", "SIGSEGV/#GP fastfail 0x29", {0xCD,0x29}, SIGSEGV, SIGSEGV, 13);
+    add("int-fault", "SIGSEGV/#GP fastfail 0x2c", {0xCD,0x2C}, SIGSEGV, SIGSEGV, 13);
+    add("int-fault", "SIGSEGV/#GP fastfail 0x2d", {0xCD,0x2D}, SIGSEGV, SIGSEGV, 13);
+    add("hlt-fault", "SIGSEGV/#GP", {0xF4}, SIGSEGV, SIGSEGV, 13);
+    add("cli-fault", "SIGSEGV/#GP", {0xFA}, SIGSEGV, SIGSEGV, 13);
+    add("sti-fault", "SIGSEGV/#GP", {0xFB}, SIGSEGV, SIGSEGV, 13);
+    // QEMU user-mode reports ICEBP as SIGILL; this emulator follows the
+    // requested user fault mapping of SIGSEGV with trap number 13.
+    add("int1-fault", "native SIGILL; emulator SIGSEGV/#GP", {0xF1}, SIGILL, SIGSEGV, 13);
+    const std::vector<std::pair<const char*, std::vector<U8>>> io = {
+        {"in-imm8", {0xE4,0x80}}, {"in-imm16", {0xE5,0x80}},
+        {"out-imm8", {0xE6,0x80}}, {"out-imm16", {0xE7,0x80}},
+        {"in-dx8", {0xEC}}, {"in-dx-width", {0xED}},
+        {"out-dx8", {0xEE}}, {"out-dx-width", {0xEF}},
+        {"ins8", {0x6C}}, {"ins-width", {0x6D}},
+        {"outs8", {0x6E}}, {"outs-width", {0x6F}},
+    };
+    for (const auto& c : io)
+        add(c.first, "SIGSEGV/#GP", c.second, SIGSEGV, SIGSEGV, 13);
+    // Direct far transfers are invalid in 64-bit mode (#UD); the requested
+    // emulator contract reports the user-mode fault as SIGSEGV/#GP.
+    add("far-call", "native SIGILL; emulator SIGSEGV/#GP", {0x9A,0,0,0,0,0,0}, SIGILL, SIGSEGV, 13);
+    add("far-jmp", "native SIGILL; emulator SIGSEGV/#GP", {0xEA,0,0,0,0,0,0}, SIGILL, SIGSEGV, 13);
+    add("far-call", "indirect memory SIGSEGV/#GP", {0xFF,0x1B}, SIGSEGV, SIGSEGV, 13, true);
+    add("far-jmp", "indirect memory SIGSEGV/#GP", {0xFF,0x2B}, SIGSEGV, SIGSEGV, 13, true);
+    add("retf", "imm16 SIGSEGV/#GP", {0xCA,0,0}, SIGSEGV, SIGSEGV, 13);
+    add("retf", "SIGSEGV/#GP", {0xCB}, SIGSEGV, SIGSEGV, 13);
 }
 
 // ---------------------------------------------------------------------------
@@ -1305,12 +2167,14 @@ static void writeJson(const std::string& path,
         fprintf(f, "%s{\"idx\":%zu,\"set\":\"%s\",\"name\":\"%s\",\"form\":\"%s\",\"bytes\":\"%s\","
                    "\"native_ok\":%s,\"emu_ok\":%s,\"emu_stable\":%s,\"match\":%s,"
                    "\"native_flags\":\"0x%x\",\"emu_flags\":\"0x%x\",\"flags_mask\":\"0x%x\","
+                   "\"expected_native_signal\":%u,\"expected_emu_signal\":%u,\"expected_emu_trap\":%u,"
                    "\"emu_err\":\"%s\",\"mismatch\":\"%s\"",
                 i ? ",\n" : "", i, tc.set.c_str(), tc.name.c_str(), tc.form.c_str(),
                 hexBytes(tc.code).c_str(),
                 cr.nativeOk ? "true" : "false", cr.emuOk ? "true" : "false",
                 cr.emuStable ? "true" : "false", cr.match ? "true" : "false",
                 cr.nFlags, cr.eFlags, tc.flagsMask,
+                tc.expectedNativeSignal, tc.expectedEmuSignal, tc.expectedEmuTrap,
                 cr.emuErr.c_str(), cr.mismatchDesc.c_str());
         if (tc.checkMem && cr.nativeOk && cr.emuOk) {
             fprintf(f, ",\"scratch_n\":\"");
@@ -1346,8 +2210,18 @@ int main(int argc, char** argv) {
 
     std::vector<TestCase> cases;
     buildIntCases(cases);
+    buildByteIncDecCases(cases);
+    buildGroupTestCases(cases);
+    buildLockedRmwCases(cases);
+    buildBitStringCases(cases);
+    buildMxcsrCases(cases);
+    buildPackedConversionCases(cases);
     buildFpuCases(cases);
+    buildRequestedX87Cases(cases);
     buildSseCases(cases);
+    buildSse2ExtraCases(cases);
+    buildCpuidCases(cases);
+    buildFaultCases(cases);
     // buildStringCases(cases); // DISABLED: harness cannot handle RSI/RDI per-side checks yet
     std::vector<TimingSpec> timings;
     buildTimings(timings);

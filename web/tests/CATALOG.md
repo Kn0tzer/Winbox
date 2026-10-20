@@ -9,6 +9,7 @@ it does not prove that every supported API or a game works.
 
 ```sh
 npm test
+DEMO=notepad JIT=0 node web/tests/demo-matrix.mjs
 node web/tests/suite/runner.mjs --unit --filter=spirvfix
 bash scripts/build-jit-wasm.sh --selftest-only
 make -C project/linux test

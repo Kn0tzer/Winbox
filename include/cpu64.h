@@ -66,6 +66,9 @@ public:
     // before main() runs.
     struct Xmm { U64 lo = 0; U64 hi = 0; };
     Xmm   xmm[16] = {};
+    // MXCSR controls SSE conversion rounding. SSE arithmetic itself remains
+    // round-to-nearest in this interpreter.
+    U32   mxcsr = 0x1F80;
 
     // x87 FPU state — shared with the 32-bit CPU's FPU implementation. We
     // only use the register-side methods (FLD/FADD/...) and do all memory

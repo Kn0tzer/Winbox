@@ -27,10 +27,11 @@
  *
  * Those fences cost real time on memory-heavy MT workloads, so the policy is
  * latched once at startup: `true` keeps the fences, `false` leaves only a
- * compiler barrier. Builds default to safe (the ARM64 ordering repair); the
- * unsafe mode is available only as an explicit diagnostic override. Whatever is chosen is
- * latched before any CPU exists and mixed into the emitted-block cache
- * identity, so a fenced and an unfenced module can never be confused.
+ * compiler barrier. Builds default to off, matching the previously deployed
+ * interpreter; `safemem=1` restores fences to diagnose ordering bugs on weakly
+ * ordered hosts. Whatever is chosen is latched before any CPU exists and mixed
+ * into the emitted-block cache identity, so a fenced and an unfenced module
+ * can never be confused.
  *
  * Single-threaded and native builds are unaffected by this policy.
  */
@@ -40,7 +41,7 @@
 
 #if defined(BOXEDWINE_WASM_JIT) && defined(BOXEDWINE_MULTI_THREADED)
 
-constexpr bool WASM_JIT_DEFAULT_SAFE_MEMORY = true;
+constexpr bool WASM_JIT_DEFAULT_SAFE_MEMORY = false;
 
 // Configure once at startup, before any CPU can execute guest instructions.
 // Shared by all pthreads and guest processes; never changed afterward.

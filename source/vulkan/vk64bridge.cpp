@@ -1872,6 +1872,13 @@ extern "C"
 EMSCRIPTEN_KEEPALIVE
 #endif
 void bw64_vkprof_enable() { g_vkProfForce = true; }
+// BW64_VKTRACE is not reachable from pthread workers via getenv(), so the
+// launcher can force the trap log through this shared global instead.
+extern "C"
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+void bw64_vktrace_enable() { g_traceEnv = 1; g_traceEnvInit = true; }
 inline bool vkProfEnabled() {
     if (!g_vkProfFirstFrameDone) return false;
     if (g_vkProfForce) return true;

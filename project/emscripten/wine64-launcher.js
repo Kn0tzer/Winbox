@@ -941,6 +941,7 @@
                 if (param("gltrace") && param("gltrace") !== "0") ENV["BW64_GLTRACE"] = param("gltrace");
                 if (param("vkprof") === "1") ENV["BW64_VKPROF"] = "1";
                 if (param("framelog") === "1") ENV["BW64_FRAMELOG"] = "1";
+                if (param("vktrace") === "1") ENV["BW64_VKTRACE"] = "1";
                 if (param("winmmbypass") === "1") ENV["WINEDLLOVERRIDES"] = "winmm=n";
                 if (param("bssdiag") && param("bssdiag") !== "0") ENV["BW64_BSSDIAG"] = param("bssdiag") === "1" ? "img" : param("bssdiag");
                 if (param("ripsample") === "1") {
@@ -1044,6 +1045,15 @@
                     if (M && typeof M.ccall === "function") {
                         try { M.ccall("bw64_vkprof_enable", null, [], []); }
                         catch (e) { console.warn("bw64_vkprof_enable failed: " + e); }
+                    }
+                }
+                // BW64_VKTRACE (?vktrace=1): same worker/getenv problem as
+                // vkprof; force the trap log from the main thread instead.
+                if (param("vktrace") === "1") {
+                    var M = liveModule || window.Module;
+                    if (M && typeof M.ccall === "function") {
+                        try { M.ccall("bw64_vktrace_enable", null, [], []); }
+                        catch (e) { console.warn("bw64_vktrace_enable failed: " + e); }
                     }
                 }
                 // BW64_METRICS (?metrics=0): live frame-stage metrics are ON by
