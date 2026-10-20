@@ -743,48 +743,78 @@ export function foldSpecConstants(mod, log, specOverrides) {
     (remaining.length ? `, ${remaining.length} UNSUPPORTED (left as-is)` : ''));
   return true;
 }
-// Non-point rasterization ignores PointSize and has undefined PointCoord.
-// Keep their computations in Private variables only with known line/triangle
-// topology. Point and unknown topology retain naga's strict unsupported error.
-function privatizePointBuiltins(mod, log, topology) {
-  if (![1, 2, 3, 4].includes(topology)) return false;
-  const builtins = mod.insns.filter(i => i.op === Op.Decorate && i.words[1] === 11
-    && [1, 16].includes(i.words[2]));
-  if (!builtins.length) return false;
+// WebGPU has no point size or point-coordinate builtin. Drop PointSize stores
+// for every topology and substitute the center for PointCoord reads. True
+// point sprites need quad expansion in the renderer, which is out of scope.
+function stripPointBuiltins(mod, log) {
+  const decorations = mod.insns.filter(i => i.op === Op.Decorate && i.words[1] === 11 && [1, 16].includes(i.words[2]));
+  if (!decorations.length) return false;
   const byId = new Map(mod.insns.filter(i => i.resultId != null).map(i => [i.resultId, i]));
-  const ids = new Set(builtins.map(i => i.words[0]));
-  // Pointer-chain result types would need independent storage-class rewriting.
-  if (mod.insns.some(i => [65, 66, 67].includes(i.op) && ids.has(i.words[2]))) return false;
-  if (builtins.some(deco => {
-    const variable = byId.get(deco.words[0]), pointer = variable && byId.get(variable.words[0]);
-    const storage = deco.words[2] === 1 ? 3 : 1;
-    return !variable || !pointer || pointer.op !== Op.TypePointer
-      || variable.words[2] !== storage || pointer.words[1] !== storage;
-  })) return false;
-  const add = [], newId = makeIdSource(mod);
-  for (const deco of builtins) {
-    const variable = byId.get(deco.words[0]), pointer = variable && byId.get(variable.words[0]);
-    if (!variable || !pointer || pointer.op !== Op.TypePointer) return false;
-    const storage = deco.words[2] === 1 ? 3 : 1;
-    if (variable.words[2] !== storage || pointer.words[1] !== storage) return false;
-    let privatePointer = mod.insns.concat(add).find(i => i.op === Op.TypePointer && i.words[1] === 6 && i.words[2] === pointer.words[2]);
-    if (!privatePointer) {
-      const id = newId();
-      privatePointer = { op: Op.TypePointer, words: [id, 6, pointer.words[2]], resultId: id, resultType: null };
-      add.push(privatePointer);
+  const ids = new Set(decorations.map(i => i.words[0]));
+  const rewrites = [];
+  const pointLoadCount = (() => {
+    let count = 0;
+    const ids = new Set(decorations.map(i => i.words[0]));
+    for (const ins of mod.insns) if (ins.op === Op.Load && ids.has(ins.words[2])) count++;
+    return count;
+  })();
+  const removedStores = new Set();
+  const constants = [];
+  const constantByKey = new Map();
+  const newId = makeIdSource(mod);
+  const constant = (typeId, value) => {
+    const key = `${typeId}:${value}`;
+    if (constantByKey.has(key)) return constantByKey.get(key);
+    const type = byId.get(typeId);
+    if (!type) throw new Error(`missing point builtin value type %${typeId}`);
+    let id, ins;
+    if (type.op === Op.TypeFloat && type.words[1] === 32) {
+      const bits = value === 0.5 ? 0x3f000000 : 0;
+      const found = mod.insns.find(i => i.op === Op.Constant && i.resultType === typeId && i.words[2] === bits);
+      if (found) { constantByKey.set(key, found.resultId); return found.resultId; }
+      id = newId(); ins = { op: Op.Constant, words: [typeId, id, bits], resultType: typeId, resultId: id };
+    } else if (type.op === Op.TypeVector && type.words[2] === 2) {
+      const scalarType = byId.get(type.words[1]);
+      if (!scalarType || scalarType.op !== Op.TypeFloat || scalarType.words[1] !== 32)
+        throw new Error('PointCoord must be vec2<f32>');
+      const component = constant(type.words[1], value);
+      id = newId(); ins = { op: Op.ConstantComposite, words: [typeId, id, component, component], resultType: typeId, resultId: id };
+    } else throw new Error(`unsupported point builtin value type %${typeId}`);
+    constants.push(ins); constantByKey.set(key, id); return id;
+  };
+
+  for (const deco of decorations) {
+    const id = deco.words[0], builtin = deco.words[2];
+    const variable = byId.get(id), pointer = variable && byId.get(variable.words[0]);
+    const storage = builtin === 1 ? 3 : 1;
+    if (!variable || variable.op !== Op.Variable || !pointer || pointer.op !== Op.TypePointer ||
+        variable.words[2] !== storage || pointer.words[1] !== storage) {
+      log.push(`spirvfix: left point builtin %${id} unchanged (unsupported interface shape)`);
+      return false;
     }
-    variable.words[0] = privatePointer.resultId; variable.resultType = privatePointer.resultId; variable.words[2] = 6;
-    if (deco.words[2] === 16) {
-      const zero = newId();
-      add.push({ op: Op.ConstantNull, words: [pointer.words[2], zero], resultType: pointer.words[2], resultId: zero });
-      variable.words[3] = zero; // zero is one permitted value of non-point PointCoord
+    for (const ins of mod.insns) {
+      if (ins === variable || ins.op === Op.Decorate || ins.op === 72 || ins.op === Op.Name || ins.op === Op.EntryPoint) continue;
+      if (builtin === 1 && ins.op === 62 && ins.words[0] === id) {
+        removedStores.add(ins); continue;
+      }
+      if (ins.op === 61 && ins.words[2] === id) {
+        const zero = constant(ins.resultType, builtin === 16 ? 0.5 : 0);
+        rewrites.push({ ins, zero }); continue;
+      }
+      if ([65, 66, 67, 68, 70, 83].includes(ins.op) && ins.words[2] === id) {
+        log.push(`spirvfix: left point builtin %${id} unchanged (pointer is used outside direct loads/stores)`);
+        return false;
+      }
     }
   }
-  mod.insns = mod.insns.filter(i => !builtins.includes(i));
-  // New types/constants must precede the globals that use them.
-  const firstVariable = mod.insns.findIndex(i => i.op === Op.Variable);
-  mod.insns.splice(firstVariable < 0 ? sections(mod).firstFunc : firstVariable, 0, ...add);
-  if (mod.header.version < 0x00010400) for (const entry of mod.insns.filter(i => i.op === Op.EntryPoint)) {
+
+  for (const { ins, zero } of rewrites) {
+    ins.op = Op.CopyObject;
+    ins.words = [ins.resultType, ins.resultId, zero];
+  }
+  mod.insns = mod.insns.filter(i => !removedStores.has(i) &&
+    !((i.op === Op.Variable || i.op === Op.Decorate || i.op === Op.Name) && ids.has(i.resultId ?? i.words[0])));
+  for (const entry of mod.insns.filter(i => i.op === Op.EntryPoint)) {
     let start = 2;
     while (start < entry.words.length) {
       const word = entry.words[start++];
@@ -792,7 +822,9 @@ function privatizePointBuiltins(mod, log, topology) {
     }
     entry.words = entry.words.slice(0, start).concat(entry.words.slice(start).filter(id => !ids.has(id)));
   }
-  log.push(`spirvfix: privatized ${builtins.length} unused point builtin(s) for non-point topology ${topology}`);
+  const firstVariable = mod.insns.findIndex(i => i.op === Op.Variable || i.op === Op.Function);
+  mod.insns.splice(firstVariable < 0 ? mod.insns.length : firstVariable, 0, ...constants);
+  log.push(`spirvfix: stripped ${decorations.filter(i => i.words[2] === 1).length} PointSize output(s) and replaced ${pointLoadCount} point builtin load(s)`);
   return true;
 }
 
@@ -1327,7 +1359,7 @@ function pruneSpecializedAliases(mod, log) {
 
 // --- entry point -------------------------------------------------------------
 /** @param {Uint8Array} bytes @param {{rasterTopology?: number, specOverrides?: {constantID: number, value: Uint8Array}[]}} [options] */
-export function applySpirvFix(bytes, { rasterTopology, specOverrides } = {}) {
+export function applySpirvFix(bytes, { specOverrides } = {}) {
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const log = [], applied = [];
   let mod;
@@ -1347,7 +1379,7 @@ export function applySpirvFix(bytes, { rasterTopology, specOverrides } = {}) {
     log.push('R2 failed: ' + (e.message || e));
   }
   try {
-    if (privatizePointBuiltins(mod, log, rasterTopology)) applied.push('non-point-builtins');
+    if (stripPointBuiltins(mod, log)) applied.push('strip-point-builtins');
   } catch (e) {
     log.push('R3 failed: ' + (e.message || e));
   }
@@ -1398,4 +1430,4 @@ export function applySpirvFix(bytes, { rasterTopology, specOverrides } = {}) {
   }
 }
 
-export const REWRITES = ['split-combined-sampler', 'fold-spec-constants', 'non-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-signed-zero-inf-nan-preserve', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases'];
+export const REWRITES = ['split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-signed-zero-inf-nan-preserve', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases'];

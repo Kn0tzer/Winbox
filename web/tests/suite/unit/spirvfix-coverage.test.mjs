@@ -8,7 +8,7 @@
 //
 // R1: split-combined-sampler — split OpTypeSampledImage uniforms
 // R2: fold-spec-constants — evaluate specialization constants
-// R3: non-point-builtins — point builtin handling
+// R3: strip-point-builtins — remove unsupported point size/coordinate values
 // R4: tail-demote-to-kill — lower OpDemoteToHelperInvocation
 // R5: strip-draw-parameters — remove unused DrawParameters capability
 // R6: strip-index-decorations — remove Index decorations naga rejects
@@ -30,7 +30,7 @@ test('REWRITES exports every rule', () => {
   assert.deepEqual(REWRITES, [
     'split-combined-sampler',
     'fold-spec-constants',
-    'non-point-builtins',
+    'strip-point-builtins',
     'tail-demote-to-kill',
     'lower-mid-shader-discard',
     'replace-draw-parameters',

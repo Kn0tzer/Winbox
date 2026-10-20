@@ -295,6 +295,32 @@ test('kill in a non-entry function sets private state and defers kill to entry r
   assert.doesNotThrow(() => naga.validate(naga.parseWgsl(wgsl)));
 });
 
+test('PointSize writes disappear and PointCoord loads become the center', () => {
+  for (const [file, builtin] of [['dxvk-live/tri9.vert.spv', 1], ['dxvk-live/tri9.frag.spv', 16]]) {
+    const raw = bytesOf(file), before = parseSpirv(raw);
+    const builtinId = before.insns.find(i => i.op === 71 && i.words[1] === 11 && i.words[2] === builtin).words[0];
+    const pointLoads = before.insns.filter(i => i.op === 61 && i.words[2] === builtinId);
+    const pointStores = before.insns.filter(i => i.op === 62 && i.words[0] === builtinId);
+    const fixed = applySpirvFix(raw, { rasterTopology: 0 });
+    assert.ok(fixed.applied.includes('strip-point-builtins'));
+    const after = parseSpirv(fixed.bytes);
+    assert.equal(after.insns.some(i => i.op === 71 && i.words[1] === 11 && i.words[2] === builtin), false);
+    assert.equal(after.insns.some(i => i.op === 59 && i.resultId === builtinId), false);
+    assert.equal(after.insns.some(i => i.op === 62 && i.words[0] === builtinId), false);
+    if (builtin === 1) assert.equal(pointStores.length > 0, true, 'the original PointSize output was written');
+    else for (const load of pointLoads) {
+      const copy = after.insns.find(i => i.op === 83 && i.resultId === load.resultId);
+      const value = copy && after.insns.find(i => i.resultId === copy.words[2]);
+      assert.equal(value?.op, 44, 'PointCoord reads use a constant vec2');
+      assert.deepEqual(value.words.slice(2).map(id => after.insns.find(i => i.resultId === id)?.words[2]),
+        [0x3f000000, 0x3f000000], 'the constant is (0.5, 0.5)');
+    }
+    const wgsl = String(naga.translate({ from: 'spirv', to: 'wgsl', source: fixed.bytes }));
+    assert.doesNotMatch(wgsl, /@builtin\(point_size\)|@builtin\(point_coord\)/);
+    assert.doesNotThrow(() => naga.validate(naga.parseWgsl(wgsl)));
+  }
+});
+
 test('toWGSL spirv input validation is unchanged', async () => {
   await assert.rejects(toWGSL('spirv', new Uint8Array(16)), /Invalid SPIR-V byte length/);
   await assert.rejects(toWGSL('spirv', new Uint8Array(20)), /Invalid SPIR-V magic/);
