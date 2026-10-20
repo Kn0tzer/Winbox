@@ -4668,8 +4668,209 @@ dsp_55:
         //   Concatenate dest:src into a 32-byte temp, then right-shift it
         //   by imm8 bytes, take the low 16 bytes. Used by some glibc
         //   memcpy variants and Wine's CRT.
+        if ((op2 == 0x38 || op2 == 0x3A) && p.rep == 0 && !osize66) {
+            U8 op3 = fetchByte(rip + opOff + 2);
+            bool palignr = op2 == 0x3A && op3 == 0x0F;
+            bool packed = op2 == 0x38 &&
+                (op3 == 0x00 || (op3 >= 0x01 && op3 <= 0x0B) ||
+                 (op3 >= 0x1C && op3 <= 0x1E));
+            if (palignr || packed) {
+                ModRM m = decodeModRM(rip + opOff + 3, p, palignr ? 1 : 0);
+                U64 d = fpu.getMMX(m.regField & 7)->q;
+                U64 s = m.isReg ? fpu.getMMX(m.rmIndex & 7)->q : memory->readq(m.effAddr);
+                U64 result = 0;
+                if (palignr) {
+                    U8 imm = fetchByte(rip + opOff + 3 + m.length);
+                    if (imm < 16) {
+                        for (U32 i = 0; i < 8; i++) {
+                            U32 idx = imm + i;
+                            U8 value = idx < 8 ? (U8)(s >> (idx * 8))
+                                     : idx < 16 ? (U8)(d >> ((idx - 8) * 8)) : 0;
+                            result |= (U64)value << (i * 8);
+                        }
+                    }
+                } else {
+                    U8 db[8], sb[8], out[8] = {};
+                    for (U32 i = 0; i < 8; i++) {
+                        db[i] = (U8)(d >> (i * 8));
+                        sb[i] = (U8)(s >> (i * 8));
+                    }
+                    auto sat16 = [](S64 x) -> U16 {
+                        if (x < -32768) x = -32768;
+                        if (x > 32767) x = 32767;
+                        return (U16)x;
+                    };
+                    if (op3 == 0x00) { // PSHUFB
+                        for (U32 i = 0; i < 8; i++)
+                            out[i] = (sb[i] & 0x80) ? 0 : db[sb[i] & 7];
+                    } else if (op3 == 0x1C) { // PABSB
+                        for (U32 i = 0; i < 8; i++) {
+                            S32 x = (S8)sb[i]; out[i] = (U8)(x < 0 ? -x : x);
+                        }
+                    } else if (op3 == 0x1D) { // PABSW
+                        for (U32 i = 0; i < 4; i++) {
+                            S32 x = (S16)(U16)(s >> (i * 16));
+                            U16 v = (U16)(x < 0 ? -x : x);
+                            result |= (U64)v << (i * 16);
+                        }
+                    } else if (op3 == 0x1E) { // PABSD
+                        for (U32 i = 0; i < 2; i++) {
+                            S64 x = (S32)(U32)(s >> (i * 32));
+                            U32 v = (U32)(x < 0 ? -x : x);
+                            result |= (U64)v << (i * 32);
+                        }
+                    } else if (op3 == 0x01 || op3 == 0x03 || op3 == 0x05 || op3 == 0x07) {
+                        U16 r[4] = {};
+                        for (U32 pair = 0; pair < 2; pair++) {
+                            S64 da = (S16)(U16)(d >> (pair * 32));
+                            S64 dbb = (S16)(U16)(d >> (pair * 32 + 16));
+                            S64 sa = (S16)(U16)(s >> (pair * 32));
+                            S64 sbb = (S16)(U16)(s >> (pair * 32 + 16));
+                            if (op3 == 0x01) {
+                                r[pair] = (U16)((U16)da + (U16)dbb);
+                                r[pair + 2] = (U16)((U16)sa + (U16)sbb);
+                            } else if (op3 == 0x03) {
+                                r[pair] = sat16(da + dbb); r[pair + 2] = sat16(sa + sbb);
+                            } else if (op3 == 0x05) {
+                                r[pair] = (U16)((U16)da - (U16)dbb);
+                                r[pair + 2] = (U16)((U16)sa - (U16)sbb);
+                            } else {
+                                r[pair] = sat16(da - dbb); r[pair + 2] = sat16(sa - sbb);
+                            }
+                        }
+                        for (U32 i = 0; i < 4; i++) result |= (U64)r[i] << (i * 16);
+                    } else if (op3 == 0x02 || op3 == 0x06) {
+                        U32 d0 = (U32)d, d1 = (U32)(d >> 32);
+                        U32 s0 = (U32)s, s1 = (U32)(s >> 32);
+                        U32 lo = op3 == 0x02 ? d0 + d1 : d0 - d1;
+                        U32 hi = op3 == 0x02 ? s0 + s1 : s0 - s1;
+                        result = (U64)lo | ((U64)hi << 32);
+                    } else if (op3 == 0x04) { // PMADDUBSW
+                        for (U32 i = 0; i < 4; i++) {
+                            S64 sum = (S64)db[i * 2] * (S8)sb[i * 2] +
+                                      (S64)db[i * 2 + 1] * (S8)sb[i * 2 + 1];
+                            result |= (U64)sat16(sum) << (i * 16);
+                        }
+                    } else if (op3 == 0x08) { // PSIGNB
+                        for (U32 i = 0; i < 8; i++) {
+                            S64 x = (S8)db[i], sign = (S8)sb[i];
+                            out[i] = (U8)(sign < 0 ? -x : sign == 0 ? 0 : x);
+                        }
+                    } else if (op3 == 0x09 || op3 == 0x0B) { // PSIGNW / PMULHRSW
+                        for (U32 i = 0; i < 4; i++) {
+                            S64 a = (S16)(U16)(d >> (i * 16));
+                            S64 b = (S16)(U16)(s >> (i * 16));
+                            U16 value;
+                            if (op3 == 0x09) value = (U16)(b < 0 ? -a : b == 0 ? 0 : a);
+                            else value = (U16)(((a * b + 0x4000) >> 15));
+                            result |= (U64)value << (i * 16);
+                        }
+                    } else if (op3 == 0x0A) { // PSIGND
+                        for (U32 i = 0; i < 2; i++) {
+                            S64 a = (S32)(U32)(d >> (i * 32));
+                            S64 b = (S32)(U32)(s >> (i * 32));
+                            result |= (U64)(U32)(b < 0 ? -a : b == 0 ? 0 : a) << (i * 32);
+                        }
+                    }
+                    if (op3 == 0x00 || op3 == 0x08 || op3 == 0x1C) {
+                        for (U32 i = 0; i < 8; i++) result |= (U64)out[i] << (i * 8);
+                    }
+                }
+                fpu.startMMX();
+                fpu.getMMX(m.regField & 7)->q = result;
+                U32 used = opOff + 3 + m.length + (palignr ? 1 : 0);
+                rip += used;
+                return used;
+            }
+        }
+
         if ((op2 == 0x38 || op2 == 0x3A) && osize66) {
             U8 op3 = fetchByte(rip + opOff + 2);
+            if (op2 == 0x38 && (op3 == 0x03 || op3 == 0x04 ||
+                                op3 == 0x05 || op3 == 0x06 ||
+                                op3 == 0x07 || op3 == 0x0B)) {
+                // Remaining SSSE3 horizontal, mixed multiply, and rounded
+                // high-word multiply operations.
+                ModRM m = decodeModRM(rip + opOff + 3, p, 0);
+                U64 sLo, sHi;
+                if (m.isReg) {
+                    sLo = xmm[m.rmIndex].lo; sHi = xmm[m.rmIndex].hi;
+                } else {
+                    sLo = memory->readq(m.effAddr);
+                    sHi = memory->readq(m.effAddr + 8);
+                }
+                U8 d[16], s[16], out[16] = {};
+                for (U32 i = 0; i < 8; i++) {
+                    d[i] = (U8)(xmm[m.regField].lo >> (i * 8));
+                    d[i + 8] = (U8)(xmm[m.regField].hi >> (i * 8));
+                    s[i] = (U8)(sLo >> (i * 8));
+                    s[i + 8] = (U8)(sHi >> (i * 8));
+                }
+                auto sat16 = [](S64 x) -> U16 {
+                    if (x < -32768) x = -32768;
+                    if (x > 32767) x = 32767;
+                    return (U16)x;
+                };
+                if (op3 == 0x03 || op3 == 0x05 || op3 == 0x07) {
+                    for (U32 side = 0; side < 2; side++) {
+                        const U8* in = side == 0 ? d : s;
+                        for (U32 pair = 0; pair < 4; pair++) {
+                            S64 a = (S16)(U16)(in[pair * 4] | ((U16)in[pair * 4 + 1] << 8));
+                            S64 b = (S16)(U16)(in[pair * 4 + 2] | ((U16)in[pair * 4 + 3] << 8));
+                            S64 value = op3 == 0x03 ? a + b : a - b;
+                            U16 packed = (op3 == 0x03 || op3 == 0x07)
+                                ? sat16(value) : (U16)value;
+                            U32 lane = side * 4 + pair;
+                            out[lane * 2] = (U8)packed;
+                            out[lane * 2 + 1] = (U8)(packed >> 8);
+                        }
+                    }
+                } else if (op3 == 0x06) { // PHSUBD
+                    for (U32 side = 0; side < 2; side++) {
+                        const U8* in = side == 0 ? d : s;
+                        for (U32 pair = 0; pair < 2; pair++) {
+                            U32 a = (U32)in[pair * 8] |
+                                    ((U32)in[pair * 8 + 1] << 8) |
+                                    ((U32)in[pair * 8 + 2] << 16) |
+                                    ((U32)in[pair * 8 + 3] << 24);
+                            U32 b = (U32)in[pair * 8 + 4] |
+                                    ((U32)in[pair * 8 + 5] << 8) |
+                                    ((U32)in[pair * 8 + 6] << 16) |
+                                    ((U32)in[pair * 8 + 7] << 24);
+                            U32 value = a - b;
+                            U32 lane = side * 2 + pair;
+                            for (U32 byte = 0; byte < 4; byte++)
+                                out[lane * 4 + byte] = (U8)(value >> (byte * 8));
+                        }
+                    }
+                } else if (op3 == 0x04) { // PMADDUBSW
+                    for (U32 i = 0; i < 8; i++) {
+                        S64 value = (S64)d[i * 2] * (S8)s[i * 2] +
+                                    (S64)d[i * 2 + 1] * (S8)s[i * 2 + 1];
+                        U16 packed = sat16(value);
+                        out[i * 2] = (U8)packed;
+                        out[i * 2 + 1] = (U8)(packed >> 8);
+                    }
+                } else { // PMULHRSW
+                    for (U32 i = 0; i < 8; i++) {
+                        S64 a = (S16)(U16)(d[i * 2] | ((U16)d[i * 2 + 1] << 8));
+                        S64 b = (S16)(U16)(s[i * 2] | ((U16)s[i * 2 + 1] << 8));
+                        U16 packed = (U16)((a * b + 0x4000) >> 15);
+                        out[i * 2] = (U8)packed;
+                        out[i * 2 + 1] = (U8)(packed >> 8);
+                    }
+                }
+                U64 nLo = 0, nHi = 0;
+                for (U32 i = 0; i < 8; i++) {
+                    nLo |= (U64)out[i] << (i * 8);
+                    nHi |= (U64)out[i + 8] << (i * 8);
+                }
+                xmm[m.regField].lo = nLo;
+                xmm[m.regField].hi = nHi;
+                U32 used = opOff + 3 + m.length;
+                rip += used;
+                return used;
+            }
             if (op2 == 0x38 && op3 == 0x00) {
                 // PSHUFB
                 ModRM m = decodeModRM(rip + opOff + 3, p, 0);
@@ -4830,19 +5031,21 @@ dsp_55:
 
                 U64 nLo = 0, nHi = 0;
                 if (op3 == 0x1C) {            // PABSB
-                    S8 d[16]; unpackB(dLo, dHi, d);
+                    S8 d[16]; unpackB(sLo, sHi, d);
                     S8 r[16];
                     for (int i = 0; i < 16; i++) r[i] = (S8)(d[i] < 0 ? -d[i] : d[i]);
                     packB(r, nLo, nHi);
                 } else if (op3 == 0x1D) {     // PABSW
-                    S16 d[8]; unpackW(dLo, dHi, d);
+                    S16 d[8]; unpackW(sLo, sHi, d);
                     S16 r[8];
                     for (int i = 0; i < 8; i++) r[i] = (S16)(d[i] < 0 ? -d[i] : d[i]);
                     packW(r, nLo, nHi);
                 } else if (op3 == 0x1E) {     // PABSD
-                    S32 d[4]; unpackD(dLo, dHi, d);
+                    S32 d[4]; unpackD(sLo, sHi, d);
                     S32 r[4];
-                    for (int i = 0; i < 4; i++) r[i] = (d[i] < 0 ? -d[i] : d[i]);
+                    for (int i = 0; i < 4; i++) {
+                        S64 x = d[i]; r[i] = (S32)(x < 0 ? -x : x);
+                    }
                     packD(r, nLo, nHi);
                 } else if (op3 == 0x01) {     // PHADDW
                     S16 d[8], s[8]; unpackW(dLo, dHi, d); unpackW(sLo, sHi, s);
@@ -4854,10 +5057,11 @@ dsp_55:
                     packW(r, nLo, nHi);
                 } else if (op3 == 0x02) {     // PHADDD
                     S32 d[4], s[4]; unpackD(dLo, dHi, d); unpackD(sLo, sHi, s);
-                    S32 r[4];
-                    r[0]=d[0]+d[1]; r[1]=d[2]+d[3];
-                    r[2]=s[0]+s[1]; r[3]=s[2]+s[3];
-                    packD(r, nLo, nHi);
+                    U32 r[4];
+                    r[0]=(U32)d[0]+(U32)d[1]; r[1]=(U32)d[2]+(U32)d[3];
+                    r[2]=(U32)s[0]+(U32)s[1]; r[3]=(U32)s[2]+(U32)s[3];
+                    nLo = (U64)r[0] | ((U64)r[1] << 32);
+                    nHi = (U64)r[2] | ((U64)r[3] << 32);
                 } else if (op3 == 0x08) {     // PSIGNB
                     S8 d[16], s[16]; unpackB(dLo, dHi, d); unpackB(sLo, sHi, s);
                     S8 r[16];
@@ -4873,8 +5077,10 @@ dsp_55:
                 } else {                       // PSIGND (0x0A)
                     S32 d[4], s[4]; unpackD(dLo, dHi, d); unpackD(sLo, sHi, s);
                     S32 r[4];
-                    for (int i = 0; i < 4; i++)
-                        r[i] = (s[i] < 0 ? -d[i] : (s[i] == 0 ? 0 : d[i]));
+                    for (int i = 0; i < 4; i++) {
+                        S64 x = d[i];
+                        r[i] = (S32)(s[i] < 0 ? -x : (s[i] == 0 ? 0 : x));
+                    }
                     packD(r, nLo, nHi);
                 }
                 xmm[m.regField].lo = nLo;

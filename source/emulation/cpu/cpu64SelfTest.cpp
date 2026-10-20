@@ -3660,6 +3660,64 @@ int runX64SelfTest() {
         });
     }
 
+    // Remaining SSSE3 XMM operations, with both register and memory sources.
+    {
+        struct Ssse3Case { const char* name; U8 opcode; U64 dstLo, dstHi, srcLo, srcHi, outLo, outHi; };
+        const Ssse3Case cases[] = {
+            {"phaddsw",0x03,0xFFFE800000017FFFULL,0x00060005FF380064ULL,
+             0x0004000300020001ULL,0x0008000700060005ULL,
+             0x000BFF9C80007FFFULL,0x000F000B00070003ULL},
+            {"pmaddubsw",0x04,0x070605040302FFFFULL,0,
+             0x040302017F807F7FULL,0,
+             0x002E000E007D7FFFULL,0},
+            {"phsubw",0x05,0x0004FFFB0003000AULL,0,
+             0xFFFFFFF800020007ULL,0,
+             0x00000000FFF70007ULL,0x00000000FFF90005ULL},
+            {"phsubd",0x06,0x000000030000000AULL,0x0000000600000014ULL,
+             0x0000000200000007ULL,0x0000000400000009ULL,
+             0x0000000E00000007ULL,0x0000000500000005ULL},
+            {"phsubsw",0x07,0x00018000FFFF7FFFULL,0,
+             0x0001FFFF7FFF8000ULL,0,
+             0x0000000080007FFFULL,0x00000000FFFE8000ULL},
+            {"pmulhrsw",0x0B,0x7FFF8000C0004000ULL,0,
+             0x7FFF8000C0004000ULL,0,
+             0x7FFE800020002000ULL,0}
+        };
+        const U64 data = CODE_BASE + 0x800;
+        for (const Ssse3Case& item : cases) {
+            for (int memorySource = 0; memorySource < 2; memorySource++) {
+                std::vector<U8> code = {0x66,0x0F,0x38,item.opcode,
+                    (U8)(memorySource ? 0x03 : 0xC1)};
+                runAndCheck(r, (std::string(item.name) + (memorySource ? " memory" : " register")).c_str(),
+                    withExit(code), [item](CPU64& c) {
+                        return c.xmm[0].lo == item.outLo && c.xmm[0].hi == item.outHi;
+                    }, [item,data](CPU64& c) {
+                        c.xmm[0].lo = item.dstLo; c.xmm[0].hi = item.dstHi;
+                        c.xmm[1].lo = item.srcLo; c.xmm[1].hi = item.srcHi;
+                        c.reg[X64_RBX].setU64(data);
+                        c.memory->writeq(data,item.srcLo);
+                        c.memory->writeq(data+8,item.srcHi);
+                    });
+            }
+        }
+    }
+
+    // PALIGNR's immediate follows ModR/M and its RIP-relative source begins
+    // after a short jump, so this also checks the instruction-end RIP base.
+    {
+        std::vector<U8> code = {0x66,0x0F,0x3A,0x0F,0x05,0x02,0,0,0,0x05,
+                                0xEB,0x10};
+        const U8 src[16] = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15};
+        code.insert(code.end(),src,src+sizeof(src));
+        runAndCheck(r,"palignr rip-relative imm8 source",withExit(code),[](CPU64& c) {
+            return c.xmm[0].lo == 0x0C0B0A0908070605ULL &&
+                   c.xmm[0].hi == 0x14131211100F0E0DULL;
+        },[](CPU64& c) {
+            c.xmm[0].lo = 0x1716151413121110ULL;
+            c.xmm[0].hi = 0x1F1E1D1C1B1A1918ULL;
+        });
+    }
+
     // ---- SSE4.1 packed dword PMULLD / PMINSD / PMAXSD ----
 
     // Test 75h — PMULLD {2,3} * {7,7} = {14,21} → 0x000000150000000E
@@ -8658,6 +8716,97 @@ int runX64SelfTest() {
             [](CPU64& c) { return c.fpu.getMMX(0)->q == 0xFFFFFFFE00000002ULL; }, [](CPU64& c) {
                 c.xmm[1].lo = 0x3FF8000000000000ULL;
                 c.xmm[1].hi = 0xC004000000000000ULL;
+            });
+
+        auto ssse3MmxReference = [](U8 op, U64 d, U64 s) -> U64 {
+            U8 db[8], sb[8], out[8] = {};
+            for (int i = 0; i < 8; i++) { db[i] = (U8)(d >> (i*8)); sb[i] = (U8)(s >> (i*8)); }
+            auto sat16 = [](S64 x) -> U16 { return (U16)(x < -32768 ? -32768 : x > 32767 ? 32767 : x); };
+            U64 result = 0;
+            if (op == 0x00) {
+                for (int i = 0; i < 8; i++) out[i] = sb[i] & 0x80 ? 0 : db[sb[i] & 7];
+                for (int i = 0; i < 8; i++) result |= (U64)out[i] << (i*8);
+            } else if (op == 0x1C) {
+                for (int i = 0; i < 8; i++) { S32 x = (S8)sb[i]; out[i] = (U8)(x < 0 ? -x : x); }
+                for (int i = 0; i < 8; i++) result |= (U64)out[i] << (i*8);
+            } else if (op == 0x1D) {
+                for (int i = 0; i < 4; i++) { S32 x = (S16)(U16)(s >> (i*16)); result |= (U64)(U16)(x < 0 ? -x : x) << (i*16); }
+            } else if (op == 0x1E) {
+                for (int i = 0; i < 2; i++) { S64 x = (S32)(U32)(s >> (i*32)); result |= (U64)(U32)(x < 0 ? -x : x) << (i*32); }
+            } else if (op == 0x01 || op == 0x03 || op == 0x05 || op == 0x07) {
+                U16 lanes[4];
+                for (int side = 0; side < 2; side++) for (int pair = 0; pair < 2; pair++) {
+                    U64 v = side ? s : d;
+                    S64 a = (S16)(U16)(v >> (pair*32));
+                    S64 b = (S16)(U16)(v >> (pair*32+16));
+                    S64 x = (op == 0x01 || op == 0x03) ? a+b : a-b;
+                    lanes[side*2+pair] = (op == 0x03 || op == 0x07) ? sat16(x) : (U16)x;
+                }
+                for (int i = 0; i < 4; i++) result |= (U64)lanes[i] << (i*16);
+            } else if (op == 0x02 || op == 0x06) {
+                U32 d0=(U32)d,d1=(U32)(d>>32),s0=(U32)s,s1=(U32)(s>>32);
+                result = (U64)(op == 0x02 ? d0+d1 : d0-d1) |
+                         ((U64)(op == 0x02 ? s0+s1 : s0-s1) << 32);
+            } else if (op == 0x04) {
+                for (int i = 0; i < 4; i++) {
+                    S64 x=(S64)db[i*2]*(S8)sb[i*2]+(S64)db[i*2+1]*(S8)sb[i*2+1];
+                    result |= (U64)sat16(x) << (i*16);
+                }
+            } else if (op == 0x08) {
+                for (int i = 0; i < 8; i++) { S64 x=(S8)db[i],sgn=(S8)sb[i]; out[i]=(U8)(sgn<0?-x:sgn==0?0:x); }
+                for (int i = 0; i < 8; i++) result |= (U64)out[i] << (i*8);
+            } else if (op == 0x09 || op == 0x0B) {
+                for (int i = 0; i < 4; i++) {
+                    S64 a=(S16)(U16)(d>>(i*16)),b=(S16)(U16)(s>>(i*16));
+                    U16 x=op==0x09?(U16)(b<0?-a:b==0?0:a):(U16)((a*b+0x4000)>>15);
+                    result |= (U64)x << (i*16);
+                }
+            } else if (op == 0x0A) {
+                for (int i = 0; i < 2; i++) {
+                    S64 a=(S32)(U32)(d>>(i*32)),b=(S32)(U32)(s>>(i*32));
+                    result |= (U64)(U32)(b<0?-a:b==0?0:a) << (i*32);
+                }
+            }
+            return result;
+        };
+        const U8 ssse3Ops[] = {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
+                               0x08,0x09,0x0A,0x0B,0x1C,0x1D,0x1E};
+        const U64 mmxDst = 0xFEDCBA9876543210ULL;
+        const U64 mmxSrc = 0x0123456789ABCDEFULL;
+        const U64 mmxMem = CODE_BASE + 0x800;
+        for (U8 op : ssse3Ops) {
+            U64 expected = ssse3MmxReference(op,mmxDst,mmxSrc);
+            for (int memorySource = 0; memorySource < 2; memorySource++) {
+                std::vector<U8> code = {0x0F,0x38,op,(U8)(memorySource?0x03:0xC1)};
+                runAndCheck(r,(std::string("MMX SSSE3 ") + std::to_string(op) +
+                               (memorySource ? " memory" : " register")).c_str(),
+                    withExit(code),[=](CPU64& c) {
+                        return c.fpu.getMMX(0)->q == expected && c.fpu.top == 0 && c.fpu.isMMXInUse;
+                    },[=](CPU64& c) {
+                        c.fpu.startMMX(); c.fpu.getMMX(0)->q=mmxDst;
+                        c.fpu.getMMX(1)->q=mmxSrc;
+                        c.reg[X64_RBX].setU64(mmxMem); c.memory->writeq(mmxMem,mmxSrc);
+                    });
+            }
+        }
+        runAndCheck(r,"MMX PALIGNR register source with imm8",withExit({0x0F,0x3A,0x0F,0xC1,0x05}),
+            [](CPU64& c) { return c.fpu.getMMX(0)->q==0x1413121110070605ULL; },[](CPU64& c) {
+                c.fpu.startMMX(); c.fpu.getMMX(0)->q=0x1716151413121110ULL;
+                c.fpu.getMMX(1)->q=0x0706050403020100ULL;
+            });
+        runAndCheck(r,"MMX PALIGNR memory source with imm8",withExit({0x0F,0x3A,0x0F,0x43,0x08,0x05}),
+            [](CPU64& c) { return c.fpu.getMMX(0)->q==0x1413121110070605ULL; },[](CPU64& c) {
+                c.fpu.startMMX(); c.fpu.getMMX(0)->q=0x1716151413121110ULL;
+                c.reg[X64_RBX].setU64(mmxMem); c.memory->writeq(mmxMem+8,0x0706050403020100ULL);
+            });
+        std::vector<U8> mmxPalignRip = {0x0F,0x3A,0x0F,0x05,0x02,0,0,0,0x05,0xEB,0x08};
+        const U64 mmxAlignSrc = 0x0706050403020100ULL;
+        for (int i=0;i<8;i++) mmxPalignRip.push_back((U8)(mmxAlignSrc>>(i*8)));
+        mmxPalignRip.insert(mmxPalignRip.end(),{0x0F,0x7F,0x03});
+        runAndCheck(r,"MMX PALIGNR RIP-relative source with imm8",withExit(mmxPalignRip),
+            [](CPU64& c) { return c.memory->readq(CODE_BASE+0x800)==0x1413121110070605ULL; },[](CPU64& c) {
+                c.fpu.startMMX(); c.fpu.getMMX(0)->q=0x1716151413121110ULL;
+                c.reg[X64_RBX].setU64(CODE_BASE+0x800);
             });
     }
 

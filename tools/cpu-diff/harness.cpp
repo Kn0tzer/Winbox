@@ -1922,6 +1922,143 @@ static void buildSse3Cases(std::vector<TestCase>& out) {
     }
 }
 
+// SSSE3's 0F38 integer operations exist in both XMM and MMX forms. Exercise
+// every opcode with register and memory sources across ordinary, zero, sign,
+// saturation, and all-ones patterns. PALIGNR additionally covers RIP-relative
+// memory so the imm8 participates in effective-address calculation.
+static void buildSsse3Cases(std::vector<TestCase>& out) {
+    struct Op { const char* name; U8 opcode; };
+    const Op ops[] = {
+        {"pshufb",0x00},{"phaddw",0x01},{"phaddd",0x02},
+        {"phaddsw",0x03},{"pmaddubsw",0x04},{"phsubw",0x05},
+        {"phsubd",0x06},{"phsubsw",0x07},{"psignb",0x08},
+        {"psignw",0x09},{"psignd",0x0A},{"pmulhrsw",0x0B},
+        {"pabsb",0x1C},{"pabsw",0x1D},{"pabsd",0x1E}
+    };
+    struct Input { U64 dstLo, dstHi, srcLo, srcHi; };
+    const Input samples[] = {
+        {0xFEDCBA9876543210ULL,0x807F01FF0302FE05ULL,
+         0x0123456789ABCDEFULL,0x80017FFF00FF0102ULL},
+        {0x8000800080008000ULL,0x8000000080000000ULL,
+         0x7FFF7FFF7FFF7FFFULL,0x7FFFFFFF7FFFFFFFULL},
+        {0,0,0,0},
+        {0xFFFFFFFFFFFFFFFFULL,0xFFFFFFFFFFFFFFFFULL,
+         0xFFFFFFFFFFFFFFFFULL,0xFFFFFFFFFFFFFFFFULL},
+        {0x80807FFF00FF0102ULL,0x7F800180FF010203ULL,
+         0x7F800180FF010203ULL,0x80807FFF00FF0102ULL}
+    };
+    auto addPacked = [&](const Op& op, bool xmmForm, bool memorySource,
+                         int sample) {
+        TestCase tc; tc.set = "ssse3"; tc.name = op.name;
+        tc.form = std::string(xmmForm ? "xmm," : "mm,") +
+                  (memorySource ? (xmmForm ? "m128" : "m64") :
+                                  (xmmForm ? "xmm" : "mm")) +
+                  " edge" + std::to_string(sample);
+        if (xmmForm) {
+            tc.code = {0x0F,0x10,0x03};
+            if (!memorySource) tc.code.insert(tc.code.end(),{0x0F,0x10,0x4B,0x10});
+            tc.code.insert(tc.code.end(),{0x66,0x0F,0x38,op.opcode,
+                (U8)(memorySource ? 0x43 : 0xC1)});
+            if (memorySource) tc.code.push_back(0x10);
+            tc.code.insert(tc.code.end(),{0x0F,0x11,0x03});
+            initRegs(tc,0,MEM_SCRATCH); tc.checkMem=true; tc.memLen=16;
+            U64 dst[2]={samples[sample].dstLo,samples[sample].dstHi};
+            U64 src[2]={samples[sample].srcLo,samples[sample].srcHi};
+            memcpy(tc.memInit,dst,16); memcpy(tc.memInit+16,src,16);
+        } else {
+            tc.code = {0x0F,0x6F,0x03};
+            if (!memorySource) tc.code.insert(tc.code.end(),{0x0F,0x6F,0x4B,0x08});
+            tc.code.insert(tc.code.end(),{0x0F,0x38,op.opcode,
+                (U8)(memorySource ? 0x43 : 0xC1)});
+            if (memorySource) tc.code.push_back(0x08);
+            tc.code.insert(tc.code.end(),{0x0F,0x7F,0x03});
+            initRegs(tc,0,MEM_SCRATCH); tc.checkMem=true; tc.memLen=8;
+            memcpy(tc.memInit,&samples[sample].dstLo,8);
+            memcpy(tc.memInit+8,&samples[sample].srcLo,8);
+        }
+        out.push_back(std::move(tc));
+    };
+    for (const Op& op : ops) {
+        for (int sample = 0; sample < 5; sample++) {
+            addPacked(op,true,false,sample); addPacked(op,true,true,sample);
+            addPacked(op,false,false,sample); addPacked(op,false,true,sample);
+        }
+    }
+
+    auto addAlign = [&](bool xmmForm, bool memorySource, bool ripSource,
+                        int sample) {
+        TestCase tc; tc.set = "ssse3"; tc.name = "palignr";
+        tc.form = std::string(xmmForm ? "xmm," : "mm,") +
+            (ripSource ? "[rip+disp32]" : memorySource ? "memory" : "register") +
+            ",imm8 edge" + std::to_string(sample);
+        if (xmmForm) {
+            tc.code = {0x0F,0x10,0x03};
+            if (!memorySource && !ripSource)
+                tc.code.insert(tc.code.end(),{0x0F,0x10,0x4B,0x10});
+            if (ripSource) {
+                // QEMU user-mode faults when PALIGNR's RIP-relative 128-bit
+                // source points into the executable snippet itself. Patch its
+                // disp32 at runtime to point at the equivalent scratch m128;
+                // the executed form remains PALIGNR xmm,[rip+disp32],imm8.
+                tc.code.push_back(0x9C); // pushfq
+                tc.code.insert(tc.code.end(),{0x50,0x51}); // push rax; push rcx
+                size_t leaStart=tc.code.size();
+                tc.code.insert(tc.code.end(),{0x48,0x8D,0x05,0,0,0,0}); // lea rax,[rip+palign_end]
+                tc.code.insert(tc.code.end(),{0x48,0x8D,0x4B,0x10,0x48,0x29,0xC1}); // rcx=rbx+16-rax
+                size_t storeStart=tc.code.size();
+                tc.code.insert(tc.code.end(),{0x89,0x0D,0,0,0,0,0x59,0x58,0x9D,0xEB,0x01,0x90}); // patch; restore state; branch past NOP
+                size_t palignStart=tc.code.size();
+                emitModRMInstruction(tc.code,{0x66},OpcodeMap::Map0F3A,0x0F,
+                    0,5,OperandKind::RipRelative,true,5,0);
+                auto patchDisp = [&](size_t at, S32 value) {
+                    U32 bits=(U32)value;
+                    for (U32 i=0;i<4;i++) tc.code[at+i]=(U8)(bits>>(i*8));
+                };
+                patchDisp(leaStart+3,(S32)(palignStart+10-(leaStart+7)));
+                patchDisp(storeStart+2,(S32)(palignStart+5-(storeStart+6)));
+            } else {
+                tc.code.insert(tc.code.end(),{0x66,0x0F,0x3A,0x0F,
+                    (U8)(memorySource ? 0x43 : 0xC1)});
+                if (memorySource) tc.code.push_back(0x10);
+                tc.code.push_back(5);
+            }
+            tc.code.insert(tc.code.end(),{0x0F,0x11,0x03});
+            initRegs(tc,0,MEM_SCRATCH); tc.checkMem=true; tc.memLen=16;
+            U64 dst[2]={samples[sample].dstLo,samples[sample].dstHi};
+            U64 src[2]={samples[sample].srcLo,samples[sample].srcHi};
+            memcpy(tc.memInit,dst,16); memcpy(tc.memInit+16,src,16);
+        } else {
+            tc.code = {0x0F,0x6F,0x03};
+            if (!memorySource && !ripSource)
+                tc.code.insert(tc.code.end(),{0x0F,0x6F,0x4B,0x08});
+            if (ripSource) {
+                emitModRMInstruction(tc.code,{},OpcodeMap::Map0F3A,0x0F,
+                    0,5,OperandKind::RipRelative,true,5,2);
+                tc.code.insert(tc.code.end(),{0xEB,0x08});
+                U64 src=samples[sample].srcLo;
+                const U8* p=reinterpret_cast<const U8*>(&src);
+                tc.code.insert(tc.code.end(),p,p+8);
+            } else {
+                tc.code.insert(tc.code.end(),{0x0F,0x3A,0x0F,
+                    (U8)(memorySource ? 0x43 : 0xC1)});
+                if (memorySource) tc.code.push_back(0x08);
+                tc.code.push_back(5);
+            }
+            tc.code.insert(tc.code.end(),{0x0F,0x7F,0x03});
+            initRegs(tc,0,MEM_SCRATCH); tc.checkMem=true; tc.memLen=8;
+            memcpy(tc.memInit,&samples[sample].dstLo,8);
+            memcpy(tc.memInit+8,&samples[sample].srcLo,8);
+        }
+        out.push_back(std::move(tc));
+    };
+    for (int sample=0; sample<5; sample++) {
+        addAlign(true,false,false,sample); addAlign(true,true,false,sample);
+        addAlign(true,true,true,sample);
+        addAlign(false,false,false,sample); addAlign(false,true,false,sample);
+        addAlign(false,true,true,sample);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SSE test builders. Pattern: movups xmm0,[rbx]; movups xmm1,[rbx+16];
 // <op> xmm0,xmm1; movups [rbx],xmm0. 16 bytes at MEM_SCRATCH compared.
@@ -2620,6 +2757,7 @@ int main(int argc, char** argv) {
     buildMmxCases(cases);
     buildSseCases(cases);
     buildSse3Cases(cases);
+    buildSsse3Cases(cases);
     buildSse2ExtraCases(cases);
     buildCpuidCases(cases);
     buildFaultCases(cases);
