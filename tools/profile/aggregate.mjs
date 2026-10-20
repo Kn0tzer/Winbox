@@ -287,6 +287,7 @@ function groupFor(file, exe) {
   if (/^d3d12\.dll$/.test(base) || /^libvkd3d/.test(base)) return 'vkd3d';
   if (base === 'libvulkan.so.1' || /^libvk64/.test(base)) return 'Vulkan shim';
   if (/\.(dll|so|so\.[0-9]+)$/.test(base) || /wine|windows|system32/.test(file.toLowerCase())) return 'Wine';
+  if (base.endsWith('.exe')) return 'game exe';
   return 'other';
 }
 
