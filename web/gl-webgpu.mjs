@@ -75,6 +75,8 @@ export class WebGPUGL {
     this._framebufferObjects = new Set();
     this._renderbuffers = new Set();
     this._vaos = new Set();
+    this._defaultVao = { id: 0, elementArrayBuffer: null, attributes: new Map() };
+    this._vao = this._defaultVao;
     this._uniformLocations = new Map();
     this._attributes = new Map();
     this._pixels = new Uint8Array(0);
@@ -272,45 +274,114 @@ export class WebGPUGL {
   getSupportedExtensions() { return []; }
   getExtension() { return null; }
 
-  // Emscripten's fixed-function shim sets up transient buffers/program objects
-  // before drawing. The full WebGPU implementations arrive with S2; these
-  // records keep context initialization and a clear-only guest alive for S1.
-  createBuffer() { const object = { id: this._nextId++, data: new Uint8Array() }; this._buffers.add(object); return object; }
-  deleteBuffer(buffer) { this._buffers.delete(buffer); }
+  // S2a keeps the original client bytes because WebGPU buffers cannot be read
+  // synchronously. GPU copies are created lazily with every buffer role the GL
+  // bridge may assign, then refreshed from this shadow before a draw.
+  createBuffer() { const object = { id: this._nextId++, data: new Uint8Array(), gpu: null, dirty: true }; this._buffers.add(object); return object; }
+  deleteBuffer(buffer) {
+    if (!buffer) return;
+    buffer.gpu?.destroy(); buffer.gpu = null; this._buffers.delete(buffer);
+    if (this._arrayBuffer === buffer) this._arrayBuffer = null;
+    if (this._elementArrayBuffer === buffer) this._elementArrayBuffer = null;
+    for (const vao of [this._defaultVao, ...this._vaos]) {
+      if (vao.elementArrayBuffer === buffer) vao.elementArrayBuffer = null;
+      for (const attribute of vao.attributes.values()) if (attribute.buffer === buffer) attribute.buffer = null;
+    }
+  }
   isBuffer(buffer) { return this._buffers.has(buffer); }
-  bindBuffer(target, buffer) { if (target === GL.ARRAY_BUFFER) this._arrayBuffer = buffer || null; else if (target === GL.ELEMENT_ARRAY_BUFFER) this._elementArrayBuffer = buffer || null; }
-  bufferData(target, data) { const buffer = target === GL.ARRAY_BUFFER ? this._arrayBuffer : this._elementArrayBuffer; if (buffer) buffer.data = bytesOf(data); }
+  bindBuffer(target, buffer) {
+    const value = buffer || null;
+    if (target === GL.ARRAY_BUFFER) this._arrayBuffer = value;
+    else if (target === GL.ELEMENT_ARRAY_BUFFER) { this._elementArrayBuffer = value; this._vao.elementArrayBuffer = value; }
+  }
+  _boundBuffer(target) { return target === GL.ARRAY_BUFFER ? this._arrayBuffer : target === GL.ELEMENT_ARRAY_BUFFER ? this._elementArrayBuffer : null; }
+  bufferData(target, data, usage = GL.STATIC_DRAW) {
+    const buffer = this._boundBuffer(target);
+    if (!buffer) return;
+    const length = typeof data === 'number' ? Math.max(0, data | 0) : bytesOf(data).length;
+    buffer.data = typeof data === 'number' ? new Uint8Array(length) : bytesOf(data);
+    buffer.usage = usage; buffer.dirty = true;
+  }
   bufferSubData(target, offset, data) {
-    const buffer = target === GL.ARRAY_BUFFER ? this._arrayBuffer : this._elementArrayBuffer;
+    const buffer = this._boundBuffer(target);
     if (!buffer) return;
     const bytes = bytesOf(data), next = new Uint8Array(Math.max(buffer.data.length, offset + bytes.length));
-    next.set(buffer.data); next.set(bytes, offset); buffer.data = next;
+    next.set(buffer.data); next.set(bytes, offset); buffer.data = next; buffer.dirty = true;
   }
   getBufferParameter(target, parameter) {
-    const buffer = target === GL.ARRAY_BUFFER ? this._arrayBuffer : this._elementArrayBuffer;
-    return parameter === 0x8764 ? (buffer?.data?.length || 0) : 0;
+    const buffer = this._boundBuffer(target);
+    if (parameter === 0x8764) return buffer?.data?.length || 0;
+    if (parameter === 0x8765) return buffer?.usage || GL.STATIC_DRAW;
+    return 0;
   }
-  createVertexArray() { const object = { id: this._nextId++ }; this._vaos.add(object); return object; }
-  deleteVertexArray(vao) { this._vaos.delete(vao); }
+  _attribute(index) {
+    index |= 0;
+    let attribute = this._vao.attributes.get(index);
+    if (!attribute) {
+      attribute = { index, enabled: false, buffer: null, size: 4, type: 0x1406, normalized: false, stride: 0, offset: 0, integer: false, divisor: 0, current: new Float32Array([0, 0, 0, 1]) };
+      this._vao.attributes.set(index, attribute);
+    }
+    return attribute;
+  }
+  createVertexArray() { const object = { id: this._nextId++, elementArrayBuffer: null, attributes: new Map() }; this._vaos.add(object); return object; }
+  deleteVertexArray(vao) { this._vaos.delete(vao); if (this._vao === vao) this.bindVertexArray(null); }
   isVertexArray(vao) { return this._vaos.has(vao); }
-  bindVertexArray(vao) { this._vao = vao || null; }
-  enableVertexAttribArray() {}
-  disableVertexAttribArray() {}
-  vertexAttribPointer() {}
-  vertexAttribIPointer() {}
-  vertexAttribDivisor() {}
-  vertexAttrib1f() {}
-  vertexAttrib2f() {}
-  vertexAttrib3f() {}
-  vertexAttrib4f() {}
+  bindVertexArray(vao) {
+    this._vao = vao || this._defaultVao;
+    this._elementArrayBuffer = this._vao.elementArrayBuffer;
+  }
+  enableVertexAttribArray(index) { this._attribute(index).enabled = true; }
+  disableVertexAttribArray(index) { this._attribute(index).enabled = false; }
+  vertexAttribPointer(index, size, type, normalized, stride, offset) {
+    Object.assign(this._attribute(index), { buffer: this._arrayBuffer, size: size | 0, type: type | 0, normalized: !!normalized, stride: stride | 0, offset: offset | 0, integer: false });
+  }
+  vertexAttribIPointer(index, size, type, stride, offset) {
+    Object.assign(this._attribute(index), { buffer: this._arrayBuffer, size: size | 0, type: type | 0, normalized: false, stride: stride | 0, offset: offset | 0, integer: true });
+  }
+  vertexAttribDivisor(index, divisor) { this._attribute(index).divisor = divisor | 0; }
+  vertexAttrib1f(index, x) { this._attribute(index).current.set([x, 0, 0, 1]); }
+  vertexAttrib2f(index, x, y) { this._attribute(index).current.set([x, y, 0, 1]); }
+  vertexAttrib3f(index, x, y, z) { this._attribute(index).current.set([x, y, z, 1]); }
+  vertexAttrib4f(index, x, y, z, w) { this._attribute(index).current.set([x, y, z, w]); }
   vertexAttrib1fv(index, value) { this.vertexAttrib1f(index, value[0]); }
   vertexAttrib2fv(index, value) { this.vertexAttrib2f(index, value[0], value[1]); }
   vertexAttrib3fv(index, value) { this.vertexAttrib3f(index, value[0], value[1], value[2]); }
   vertexAttrib4fv(index, value) { this.vertexAttrib4f(index, value[0], value[1], value[2], value[3]); }
-  vertexAttribI4i() {}
-  vertexAttribI4ui() {}
-  getVertexAttrib() { return 0; }
-  getVertexAttribOffset() { return 0; }
+  vertexAttribI4i(index, x, y, z, w) { this.vertexAttrib4f(index, x, y, z, w); }
+  vertexAttribI4ui(index, x, y, z, w) { this.vertexAttrib4f(index, x, y, z, w); }
+  getVertexAttrib(index, parameter) {
+    const a = this._attribute(index);
+    switch (parameter) {
+      case 0x8622: return a.enabled;
+      case 0x8623: return a.size;
+      case 0x8624: return a.stride;
+      case 0x8625: return a.type;
+      case 0x8626: return a.current;
+      case 0x886a: return a.normalized;
+      case 0x889f: return a.buffer;
+      case 0x88fd: return a.integer;
+      case 0x88fe: return a.divisor;
+      default: return 0;
+    }
+  }
+  getVertexAttribOffset(index) { return this._attribute(index).offset; }
+
+  _syncBuffer(buffer) {
+    if (!buffer) return null;
+    const usage = GPUBufferUsage.COPY_DST | GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX | GPUBufferUsage.UNIFORM | GPUBufferUsage.STORAGE;
+    const size = Math.max(4, Math.ceil(buffer.data.length / 4) * 4);
+    if (!buffer.gpu || buffer.gpu.size !== size || buffer.gpuUsage !== usage) {
+      buffer.gpu?.destroy();
+      buffer.gpu = this._device.createBuffer({ size, usage });
+      buffer.gpuUsage = usage; buffer.dirty = true;
+    }
+    if (buffer.dirty && buffer.data.length) {
+      const padded = buffer.data.length % 4 ? new Uint8Array(size).map((_, i) => buffer.data[i] || 0) : buffer.data;
+      this._device.queue.writeBuffer(buffer.gpu, 0, padded);
+    }
+    buffer.dirty = false;
+    return buffer.gpu;
+  }
 
   createShader(type) { const shader = { id: this._nextId++, type, source: '', compiled: false }; this._shaders.add(shader); return shader; }
   deleteShader(shader) { this._shaders.delete(shader); }
