@@ -1,6 +1,6 @@
 // web/tests/suite/unit/spirvfix-coverage.test.mjs — Full spirvfix rewrite coverage.
 //
-// spirvfix applies nine rewrite rules to make DXVK shaders translatable
+// spirvfix applies eleven rewrite rules to make DXVK shaders translatable
 // by naga. Each rule must be tested for:
 //   (a) BASIC: fires when its trigger condition is present
 //   (b) NEGATIVE: does NOT fire when trigger is absent
@@ -8,7 +8,7 @@
 //
 // R1: split-combined-sampler — split OpTypeSampledImage uniforms
 // R2: fold-spec-constants — evaluate specialization constants
-// R3: non-point-builtins — privatize point-size builtins per topology
+// R3: non-point-builtins — point builtin handling
 // R4: tail-demote-to-kill — lower OpDemoteToHelperInvocation
 // R5: strip-draw-parameters — remove unused DrawParameters capability
 // R6: strip-index-decorations — remove Index decorations naga rejects
@@ -26,12 +26,14 @@ const decorate = (target, dec, ...params) => ({ op: 71, words: [target, dec, ...
 const entryPoint = (model, id) => ({ op: 15, words: [model, id, 0x6E69616D, 0] });
 
 // Rule-specific coverage also lives in the specialization and corpus tests.
-test('REWRITES exports all nine rules', () => {
+test('REWRITES exports every rule', () => {
   assert.deepEqual(REWRITES, [
     'split-combined-sampler',
     'fold-spec-constants',
     'non-point-builtins',
     'tail-demote-to-kill',
+    'lower-mid-shader-discard',
+    'replace-draw-parameters',
     'strip-draw-parameters',
     'strip-index-decorations',
     'strip-signed-zero-inf-nan-preserve',

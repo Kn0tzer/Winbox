@@ -90,6 +90,7 @@ for (let op = 87; op <= 251; op++) {
   if (![99, 218, 219, 220, 221, 224, 225, 228, 246, 247, 248, 249, 250, 251,
         252, 253, 255, 256, 257, 258].includes(op)) HAS_TYPE_ID.add(op);
 }
+HAS_TYPE_ID.add(5381); // OpIsHelperInvocationEXT: result type + result id
 // opcodes with a result-id but no result-type (labels; untyped type decls)
 const HAS_ID_ONLY = new Set([19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
   31, 32, 33, 45, 248]);
@@ -798,9 +799,16 @@ function privatizePointBuiltins(mod, log, topology) {
 // Demote continues helper execution; Kill terminates it. Lower only a demote
 // immediately followed by an acyclic chain of branch-only blocks ending in
 // void return: no subsequent derivatives, writes or helper queries can differ.
-function lowerTailDemotes(mod, log) {
-  const demotes = mod.insns.filter(i => i.op === 5380);
-  if (!demotes.length || mod.insns.some(i => i.op === 5381)) return false;
+function lowerTailDemotes(mod, log, protectedKills = new Set()) {
+  const entryFunctions = new Set(mod.insns.filter(i => i.op === Op.EntryPoint && i.words[0] === 4).map(i => i.words[1]));
+  const demotes = [];
+  let functionId = null;
+  for (const ins of mod.insns) {
+    if (ins.op === Op.Function) functionId = ins.resultId;
+    else if (ins.op === Op.FunctionEnd) functionId = null;
+    else if (ins.op === 5380 && entryFunctions.has(functionId)) demotes.push(ins);
+  }
+  if (!demotes.length) return false;
   const blocks = new Map(); let block = null;
   for (const i of mod.insns) {
     if (i.op === Op.Label) { block = []; blocks.set(i.words[0], block); }
@@ -828,18 +836,210 @@ function lowerTailDemotes(mod, log) {
       && store.words[0] === load.words[2] && store.words[1] === clamp.words[1]
       && ret.op === 253;
   };
+  const tails = [];
   for (const d of demotes) {
     const next = mod.insns[mod.insns.indexOf(d) + 1];
-    if (!next || next.op !== 249 || !pureReturn(next.words[0])) return false;
+    if (next?.op === 249 && pureReturn(next.words[0])) tails.push({ demote: d, branch: next });
   }
-  for (const d of demotes) {
-    const at = mod.insns.indexOf(d);
-    d.op = 252; d.words = [];
-    mod.insns.splice(at + 1, 1); // Kill is the block terminator, replacing branch
+  if (!tails.length) return false;
+  for (const { demote, branch } of tails) {
+    demote.op = 252; demote.words = [];
+    protectedKills.add(demote);
+    mod.insns.splice(mod.insns.indexOf(branch), 1); // Kill is the block terminator, replacing branch
   }
-  mod.insns = mod.insns.filter(i => !(i.op === 17 && i.words[0] === 5379)
-    && !(i.op === 10 && new TextDecoder().decode(new Uint8Array(strOf(i, 0))) === 'SPV_EXT_demote_to_helper_invocation'));
-  log.push(`spirvfix: lowered ${demotes.length} terminal demote(s) with no helper continuation`);
+  if (!mod.insns.some(i => i.op === 5380 || i.op === 5381)) {
+    mod.insns = mod.insns.filter(i => !(i.op === 17 && i.words[0] === 5379) &&
+      !(i.op === 10 && new TextDecoder().decode(new Uint8Array(strOf(i, 0))) === 'SPV_EXT_demote_to_helper_invocation'));
+  }
+  log.push(`spirvfix: lowered ${tails.length} terminal demote(s) with no helper continuation`);
+  return true;
+}
+
+// Delay mid-shader fragment discard until each entry return so derivatives,
+// helper checks and later samples still execute. Non-entry functions share a
+// private flag because their function-local state cannot reach the entry tail.
+function lowerMidShaderDiscards(mod, log, protectedKills = new Set()) {
+  const entryFunctions = new Set(mod.insns.filter(i => i.op === Op.EntryPoint && i.words[0] === 4).map(i => i.words[1]));
+  const functions = [];
+  let fn = null, block = null;
+  for (const ins of mod.insns) {
+    if (ins.op === Op.Function) {
+      fn = { id: ins.resultId, declaration: ins, blocks: [] };
+      functions.push(fn); block = null;
+    } else if (ins.op === Op.FunctionEnd) {
+      fn = null; block = null;
+    } else if (fn && ins.op === Op.Label) {
+      block = { id: ins.words[0], instructions: [ins] };
+      fn.blocks.push(block);
+    } else if (block) block.instructions.push(ins);
+  }
+
+  const successors = instructions => {
+    const term = instructions.at(-1);
+    if (term?.op === 249) return [term.words[0]];
+    if (term?.op === 250) return [term.words[1], term.words[2]];
+    if (term?.op === 251) return [term.words[1], ...term.words.slice(3).filter((_, i) => i % 2 === 0)];
+    return [];
+  };
+  const regions = new Map();
+  for (const fn of functions) {
+    const labels = new Map(fn.blocks.map(b => [b.id, b]));
+    for (const header of fn.blocks) {
+      const merge = header.instructions.find(i => i.op === 247 || i.op === 246);
+      if (!merge) continue;
+      const loop = merge.op === 246;
+      const mergeId = merge.words[0], continueId = loop ? merge.words[1] : null;
+      const starts = successors(header.instructions);
+      const inside = new Set(), todo = [...starts];
+      while (todo.length) {
+        const id = todo.pop();
+        if (id === mergeId || id === continueId || inside.has(id)) continue;
+        const current = labels.get(id);
+        if (!current) continue;
+        inside.add(id); todo.push(...successors(current.instructions));
+      }
+      const list = regions.get(fn.id) ?? [];
+      list.push({ target: loop ? continueId : mergeId, labels: inside });
+      regions.set(fn.id, list);
+    }
+  }
+
+  const resumeTarget = (fn, block) => {
+    const candidates = (regions.get(fn.id) || []).filter(r => r.labels.has(block.id));
+    if (candidates.length) return candidates.sort((a, b) => a.labels.size - b.labels.size)[0].target;
+    const returns = fn.blocks.filter(b => b.instructions.at(-1)?.op === 253);
+    if (returns.length) return returns.at(-1).id;
+    return null;
+  };
+  const sites = [];
+  const isHelperReads = mod.insns.filter(i => i.op === 5381);
+  for (const f of functions) for (const b of f.blocks) for (const ins of b.instructions) {
+    if (protectedKills.has(ins)) continue;
+    if (![5380, 252, 4416].includes(ins.op)) continue;
+    const entry = entryFunctions.has(f.id);
+    // An entry Kill with no structured continuation is already the tail.
+    if (entry && ins.op !== 5380 && !(regions.get(f.id) || []).some(r => r.labels.has(b.id))) continue;
+    const target = ins.op === 5380 ? null : resumeTarget(f, b);
+    if (ins.op !== 5380 && target == null) {
+      if (entry) continue; // entry Kill outside structured flow is already the tail
+      const returnType = mod.insns.find(i => i.resultId === f.declaration.words[0]);
+      if (returnType?.op !== Op.TypeVoid) {
+        log.push(`spirvfix: left discard in function %${f.id} unchanged (no void continuation block)`);
+        continue;
+      }
+    }
+    sites.push({ fn: f, block: b, ins, entry, target });
+  }
+  if (!sites.length && !isHelperReads.length) return false;
+
+  const newId = makeIdSource(mod);
+  const byId = new Map(mod.insns.filter(i => i.resultId != null).map(i => [i.resultId, i]));
+  const synthesizedReturns = new Map();
+  for (const site of sites) {
+    if (site.entry || site.target != null) continue;
+    let target = synthesizedReturns.get(site.fn.id);
+    if (target == null) {
+      target = newId(); synthesizedReturns.set(site.fn.id, target);
+      const end = mod.insns.findIndex(i => i.op === Op.FunctionEnd && mod.insns.indexOf(i) > mod.insns.indexOf(site.fn.declaration));
+      mod.insns.splice(end < 0 ? mod.insns.length : end, 0,
+        { op: Op.Label, words: [target], resultType: null, resultId: target },
+        { op: 253, words: [], resultType: null, resultId: null });
+    }
+    site.target = target;
+  }
+  let boolType = mod.insns.find(i => i.op === Op.TypeBool)?.resultId;
+  const typeAdds = [];
+  let boolTypeAdd = null;
+  if (boolType == null) {
+    boolType = newId();
+    boolTypeAdd = { op: Op.TypeBool, words: [boolType], resultType: null, resultId: boolType };
+  }
+  const pointerFor = storage => {
+    const found = mod.insns.find(i => i.op === Op.TypePointer && i.words[1] === storage && i.words[2] === boolType);
+    if (found) return found.resultId;
+    const id = newId();
+    typeAdds.push({ op: Op.TypePointer, words: [id, storage, boolType], resultType: null, resultId: id });
+    return id;
+  };
+  const privatePointer = pointerFor(6);
+  const localPointer = sites.length ? pointerFor(7) : null;
+  const falseId = mod.insns.find(i => i.op === Op.ConstantFalse && i.resultType === boolType)?.resultId ?? newId();
+  const trueId = mod.insns.find(i => i.op === Op.ConstantTrue && i.resultType === boolType)?.resultId ?? newId();
+  const constantAdds = [];
+  if (!byId.has(falseId)) constantAdds.push({ op: Op.ConstantFalse, words: [boolType, falseId], resultType: boolType, resultId: falseId });
+  if (!byId.has(trueId)) constantAdds.push({ op: Op.ConstantTrue, words: [boolType, trueId], resultType: boolType, resultId: trueId });
+  const helperState = newId();
+  const privateVariable = { op: Op.Variable, words: [privatePointer, helperState, 6, falseId], resultType: privatePointer, resultId: helperState };
+  const localVariables = new Map();
+  if (sites.length) for (const id of entryFunctions) localVariables.set(id, newId());
+
+  if (boolTypeAdd) {
+    const firstConstant = mod.insns.findIndex(i => [41, 42, 43, 44, 45, 46, 48, 49, 50, 51, 52, 59, 54].includes(i.op));
+    mod.insns.splice(firstConstant < 0 ? mod.insns.length : firstConstant, 0, boolTypeAdd);
+  }
+  const firstVariable = mod.insns.findIndex(i => i.op === Op.Variable || i.op === Op.Function);
+  mod.insns.splice(firstVariable < 0 ? mod.insns.length : firstVariable, 0, ...constantAdds);
+  const firstGlobalVariable = mod.insns.findIndex(i => i.op === Op.Variable || i.op === Op.Function);
+  mod.insns.splice(firstGlobalVariable < 0 ? mod.insns.length : firstGlobalVariable, 0, ...typeAdds);
+  const firstFunction = mod.insns.findIndex(i => i.op === Op.Function);
+  mod.insns.splice(firstFunction < 0 ? mod.insns.length : firstFunction, 0, privateVariable);
+
+  for (const f of functions) {
+    if (!entryFunctions.has(f.id)) continue;
+    const localId = localVariables.get(f.id);
+    const firstBlock = f.blocks[0];
+    if (!firstBlock) continue;
+    const labelAt = mod.insns.indexOf(firstBlock.instructions[0]);
+    let insertAt = labelAt + 1;
+    while (mod.insns[insertAt]?.op === Op.Variable && mod.insns[insertAt].words[2] === SC.Function) insertAt++;
+    const setup = [];
+    if (localId != null) setup.push(
+      { op: Op.Variable, words: [localPointer, localId, SC.Function], resultType: localPointer, resultId: localId },
+      { op: Op.Store, words: [localId, falseId], resultType: null, resultId: null });
+    setup.push({ op: Op.Store, words: [helperState, falseId], resultType: null, resultId: null });
+    mod.insns.splice(insertAt, 0, ...setup);
+  }
+
+  for (const site of sites) {
+    const localId = site.entry ? localVariables.get(site.fn.id) : null;
+    const stores = [
+      { op: Op.Store, words: [helperState, trueId], resultType: null, resultId: null },
+      ...(localId == null ? [] : [{ op: Op.Store, words: [localId, trueId], resultType: null, resultId: null }]),
+    ];
+    const index = mod.insns.indexOf(site.ins);
+    if (index < 0) continue;
+    if (site.ins.op === 5380) mod.insns.splice(index, 1, ...stores);
+    else mod.insns.splice(index, 1, ...stores, { op: 249, words: [site.target], resultType: null, resultId: null });
+  }
+
+  for (const read of isHelperReads) {
+    read.op = Op.Load;
+    read.words = [boolType, read.resultId, helperState];
+  }
+
+  const returns = mod.insns.filter(i => i.op === 253 && functions.some(f => entryFunctions.has(f.id) && f.blocks.some(b => b.instructions.includes(i))));
+  for (const ret of returns) {
+    const localId = [...localVariables.entries()].find(([id]) => functions.find(f => f.id === id)?.blocks.some(b => b.instructions.includes(ret)))?.[1];
+    if (localId == null) continue;
+    const loadLocal = newId(), loadGlobal = newId(), condition = newId(), killLabel = newId(), mergeLabel = newId();
+    const at = mod.insns.indexOf(ret);
+    mod.insns.splice(at, 1,
+      { op: Op.Load, words: [boolType, loadLocal, localId], resultType: boolType, resultId: loadLocal },
+      { op: Op.Load, words: [boolType, loadGlobal, helperState], resultType: boolType, resultId: loadGlobal },
+      { op: 166, words: [boolType, condition, loadLocal, loadGlobal], resultType: boolType, resultId: condition },
+      { op: 247, words: [mergeLabel, 0], resultType: null, resultId: null },
+      { op: 250, words: [condition, killLabel, mergeLabel], resultType: null, resultId: null },
+      { op: Op.Label, words: [killLabel], resultType: null, resultId: killLabel },
+      { op: 252, words: [], resultType: null, resultId: null },
+      { op: Op.Label, words: [mergeLabel], resultType: null, resultId: mergeLabel },
+      ret);
+  }
+
+  if (!mod.insns.some(i => i.op === 5380 || i.op === 5381)) {
+    mod.insns = mod.insns.filter(i => !(i.op === 17 && i.words[0] === 5379) &&
+      !(i.op === 10 && new TextDecoder().decode(new Uint8Array(strOf(i, 0))) === 'SPV_EXT_demote_to_helper_invocation'));
+  }
+  log.push(`spirvfix: delayed ${sites.length} mid-shader discard operation(s)${isHelperReads.length ? ` and lowered ${isHelperReads.length} helper query/query(ies)` : ''}`);
   return true;
 }
 
@@ -1151,10 +1351,16 @@ export function applySpirvFix(bytes, { rasterTopology, specOverrides } = {}) {
   } catch (e) {
     log.push('R3 failed: ' + (e.message || e));
   }
+  const protectedTailDemoteKills = new Set();
   try {
-    if (lowerTailDemotes(mod, log)) applied.push('tail-demote-to-kill');
+    if (lowerTailDemotes(mod, log, protectedTailDemoteKills)) applied.push('tail-demote-to-kill');
   } catch (e) {
     log.push('R4 failed: ' + (e.message || e));
+  }
+  try {
+    if (lowerMidShaderDiscards(mod, log, protectedTailDemoteKills)) applied.push('lower-mid-shader-discard');
+  } catch (e) {
+    log.push('R4 mid-shader discard rewrite failed: ' + (e.message || e));
   }
   try {
     if (replaceDrawParameterBuiltins(mod, log)) applied.push('replace-draw-parameters');
@@ -1192,4 +1398,4 @@ export function applySpirvFix(bytes, { rasterTopology, specOverrides } = {}) {
   }
 }
 
-export const REWRITES = ['split-combined-sampler', 'fold-spec-constants', 'non-point-builtins', 'tail-demote-to-kill', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-signed-zero-inf-nan-preserve', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases'];
+export const REWRITES = ['split-combined-sampler', 'fold-spec-constants', 'non-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-signed-zero-inf-nan-preserve', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases'];

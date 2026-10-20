@@ -47,7 +47,10 @@ test('demote with continuing shader computation retains strict rejection', () =>
   module.insns.splice(demote + 1, 0, { op: 83, words: [value.resultType, id, value.resultId], resultType: value.resultType, resultId: id });
   const fixed = applySpirvFix(serializeSpirv(module), { rasterTopology: 3 });
   assert.ok(!fixed.applied.includes('tail-demote-to-kill'));
-  assert.throws(() => naga.translate({ from: 'spirv', to: 'wgsl', source: fixed.bytes }), /Demote/);
+  assert.ok(fixed.applied.includes('lower-mid-shader-discard'));
+  assert.equal(parseSpirv(fixed.bytes).insns.some(i => i.op === 5380), false);
+  const wgsl = String(naga.translate({ from: 'spirv', to: 'wgsl', source: fixed.bytes }));
+  assert.doesNotThrow(() => naga.validate(naga.parseWgsl(wgsl)));
 });
 test('shader cache separates non-point translation from point and unknown contexts', async () => {
   const code = live('tri9.vert.spv'), cache = createShaderCache({ log() {} });
