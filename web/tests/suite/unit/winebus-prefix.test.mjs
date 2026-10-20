@@ -38,6 +38,7 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     assert '[System\\\\CurrentControlSet\\\\Services\\\\winebus]' in reg
     assert '"ImagePath"="C:\\\\windows\\\\system32\\\\drivers\\\\winebus.sys"' in reg
     assert '"InfPath"="winebus.inf"' in reg
+    assert not any(line.endswith('\\\\') for line in reg.splitlines()), 'registry continuations must be single backslashes'
 `, archive, registryPath], { stdio: 'pipe' });
   } finally {
     rmSync(root, { recursive: true, force: true });
