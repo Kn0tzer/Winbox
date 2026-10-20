@@ -196,7 +196,7 @@ wasm64-mt-jit: export EXTRA_CPP_FLAGS := -DBOXEDWINE_BLOCK_EXEC=1 -DBOXEDWINE_BL
 wasm64-mt-jit: export BUILD_DIR := Build/Wasm64MtJit
 wasm64-mt-jit: export SHELL_FILE := shell.html
 wasm64-mt-jit: export TARGET_EXEC := boxedwine64.html
-wasm64-mt-jit: export EXTRA_LD_FLAGS := -pthread -sFETCH=1 -sPTHREAD_POOL_SIZE=32 -sPROXY_TO_PTHREAD=1 -sOFFSCREENCANVAS_SUPPORT=1 -sOFFSCREENCANVASES_TO_PTHREAD=\#gl64canvas -sOFFSCREEN_FRAMEBUFFER=1 -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4294967296 -sLEGACY_GL_EMULATION=1 -sMAX_WEBGL_VERSION=2 -sASSERTIONS=0 --js-library=boxedwine-multithreaded-audio.js --pre-js=boxedwine-wasm-jit-module-broker.js --pre-js=boxedwine-audio-callback-shim.js -sALLOW_TABLE_GROWTH
+wasm64-mt-jit: export EXTRA_LD_FLAGS := -pthread -sFETCH=1 -sPTHREAD_POOL_SIZE=32 -sPROXY_TO_PTHREAD=1 -sOFFSCREENCANVAS_SUPPORT=1 -sOFFSCREENCANVASES_TO_PTHREAD=\#gl64canvas -sOFFSCREEN_FRAMEBUFFER=1 -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4294967296 -sLEGACY_GL_EMULATION=1 -sMAX_WEBGL_VERSION=2 -sASSERTIONS=0 --js-library=boxedwine-multithreaded-audio.js --pre-js=boxedwine-wasm-jit-module-broker.js --pre-js=boxedwine-audio-callback-shim.js --pre-js=gl-webgpu-bootstrap.js -sALLOW_TABLE_GROWTH
 wasm64-mt-jit: export ASSET_FILES := boxedwine.css boxedwine-shell.js wine64.html wine64-launcher.js coi-serviceworker.js $(ZIP_ASSET_FILES)
 
 cpus := $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1)

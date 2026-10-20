@@ -117,6 +117,7 @@ EMSCRIPTEN_WEBGL_CONTEXT_HANDLE g_emCtx = 0;     // WebGL2 context (main thread)
 GLuint        g_emFbo     = 0;            // offscreen render target
 GLuint        g_emColorTex = 0;
 GLuint        g_emDepthRb  = 0;
+bool          g_emWebGpu = false;
 void*         g_glContext = nullptr;      // sentinel only; real ctx is g_emCtx
 #else
 SDL_Window*   g_hiddenWindow = nullptr;   // hidden, GL-capable
@@ -395,6 +396,32 @@ bool ensureContext() {
         }
         emscripten_webgl_make_context_current(g_emCtx);
         emBuildFbo(g_drawW, g_drawH);
+        // Keep the actual WebGL2 context alive as the fallback, but let the
+        // bridge's GLctx calls target a WebGPU-backed WebGL-shaped object when
+        // explicitly selected. The bootstrap loads the factory before main().
+        const char* glBackend = getenv("BW64_GL_BACKEND");
+        const int requestWebGpu = glBackend && !strcmp(glBackend, "webgpu");
+        g_emWebGpu = EM_ASM_INT({
+            if (!$2 || typeof globalThis.bwGlCreateContext !== 'function' ||
+                typeof GL === 'undefined' || !GL.contexts) return 0;
+            var context = GL.contexts[$0];
+            if (!context || !context.GLctx) return 0;
+            var webgpu = globalThis.bwGlCreateContext(context.GLctx, $1);
+            if (!webgpu) return 0;
+            var fallback = context.GLctx;
+            context.GLctx = webgpu;
+            GLctx = webgpu;
+            webgpu.onFailure = function (error) {
+                if (context.GLctx === webgpu) {
+                    context.GLctx = fallback;
+                    GLctx = fallback;
+                }
+                try { console.warn('gl-webgpu: restored WebGL2 after device failure', error); } catch (_) {}
+            };
+            return 1;
+        }, g_emCtx, g_emFbo, requestWebGpu);
+        if (requestWebGpu && !g_emWebGpu)
+            klog_fmt("gl64: WebGPU context unavailable; continuing with WebGL2");
         // LEGACY_GL_EMULATION's immediate-mode state (GLImmediate.matrix /
         // matrixStack / temp vertex buffers / TexEnvJIT) is initialized by
         // GLImmediate.init(), which Emscripten only registers as a
@@ -533,7 +560,8 @@ bool ensureContext() {
             klog_fmt("gl64: GLImmediate init rc=%d (rc%%100: 2=init-ok 3=init-threw "
                      "+4=quadIndexBuf +10=matrix +20=vbuf +40=rendererCache fallback; "
                      "rc/100=matrix.length)", gli);
-        klog_fmt("gl64: host GL up (WebGL2) — vendor='%s' renderer='%s' version='%s'",
+        klog_fmt("gl64: host GL up (%s) — vendor='%s' renderer='%s' version='%s'",
+                 g_emWebGpu ? "WebGPU" : "WebGL2",
                  (const char*)glGetString(GL_VENDOR),
                  (const char*)glGetString(GL_RENDERER),
                  (const char*)glGetString(GL_VERSION));
