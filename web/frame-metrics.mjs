@@ -509,7 +509,10 @@ export function createMetricsPanel({ doc = globalThis.document, onClose = null }
         for (const row of group.rows || []) {
           const entry = ensureRow(group, row);
           seen.add(row.id);
-          const value = row.value === null || row.value === undefined ? '--' : String(row.value);
+          let value = row.value === null || row.value === undefined ? '--' : String(row.value);
+          if (group.id === 'jit' && summaryIds.has(row.id) && value.includes(' \u00b7 ')) {
+            value = value.slice(0, value.indexOf(' \u00b7 '));
+          }
           if (entry.value.textContent !== value) entry.value.textContent = value;
           let unit = row.unit ? String(row.unit) : '';
           let noteText = String(row.note || '');
