@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ensure the prebooted 64-bit Wine prefix starts its SDL-capable WineBus."""
+"""Stage WineBus drivers and the inf files used by the prebooted prefixes."""
 import argparse
 import os
 from pathlib import Path
@@ -8,6 +8,10 @@ import zipfile
 
 
 PREFIX_MEMBER = "home/username/.wine/system.reg"
+PREFIX_ARCHIVES = ("prefix32.zip", "prefix64.zip")
+PREFIX_INF_DIR = "home/username/.wine/drive_c/windows/inf"
+WINE_INF_DIR = Path(__file__).resolve().parent / "wine-infs"
+WINE_INF_FILES = ("winehid.inf", "winexinput.inf")
 WINE_DRIVER_DIRS = {
     "wine32.zip": "opt/wine-stable/lib/wine/i386-windows",
     "wine64.zip": "usr/lib/x86_64-linux-gnu/wine/x86_64-windows",
@@ -118,9 +122,58 @@ def stage_driver_paths(runtime):
     return changed
 
 
+def stage_prefix_infs(runtime):
+    """Overlay the HID function-driver INFs into both prebuilt Wine prefixes.
+
+    These prefixes pin ``.update-timestamp`` to ``disable`` to avoid a full
+    wineboot update on every launch. That also skips wine.inf's InfFiles copy
+    step, so Plug and Play otherwise cannot match Wine's HID/XInput drivers.
+    """
+    changed = False
+    payload = {
+        f"{PREFIX_INF_DIR}/{name}": (WINE_INF_DIR / name).read_bytes()
+        for name in WINE_INF_FILES
+    }
+    for archive_name in PREFIX_ARCHIVES:
+        archive = runtime / archive_name
+        if not archive.is_file():
+            raise ValueError(f"Wine prefix archive does not exist: {archive}")
+        with zipfile.ZipFile(archive, "r") as original:
+            names = [entry.filename for entry in original.infolist()]
+            unchanged = all(
+                names.count(name) == 1 and original.read(name) == data
+                for name, data in payload.items()
+            )
+            if unchanged:
+                continue
+
+            fd, temp_name = tempfile.mkstemp(prefix=archive.name + ".", suffix=".tmp", dir=archive.parent)
+            os.close(fd)
+            temporary = Path(temp_name)
+            try:
+                with zipfile.ZipFile(temporary, "w") as updated:
+                    updated.comment = original.comment
+                    for entry in original.infolist():
+                        if entry.filename not in payload:
+                            updated.writestr(entry, original.read(entry))
+                    for name, data in sorted(payload.items()):
+                        info = zipfile.ZipInfo(name, date_time=(2023, 2, 18, 0, 0, 0))
+                        info.compress_type = zipfile.ZIP_DEFLATED
+                        info.create_system = 3
+                        info.external_attr = 0o100644 << 16
+                        updated.writestr(info, data)
+                os.chmod(temporary, archive.stat().st_mode & 0o777)
+                os.replace(temporary, archive)
+            finally:
+                temporary.unlink(missing_ok=True)
+            changed = True
+    return changed
+
+
 def stage(runtime):
     runtime = Path(runtime).resolve()
     changed = stage_driver_paths(runtime)
+    changed = stage_prefix_infs(runtime) or changed
     prefix = runtime / "prefix64.zip"
     if not prefix.is_file():
         raise ValueError(f"64-bit prefix archive does not exist: {prefix}")

@@ -5,11 +5,12 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-test('WineBus registry and driver paths are staged idempotently for both architectures', () => {
+test('WineBus drivers and HID/XInput INFs are staged into the runtime and prefixes', () => {
   const root = mkdtempSync(join(tmpdir(), 'boxedwine-winebus-'));
   const runtime = join(root, 'runtime');
   mkdirSync(runtime);
   const archive = join(runtime, 'prefix64.zip');
+  const prefix32 = join(runtime, 'prefix32.zip');
   const registryPath = 'home/username/.wine/system.reg';
   try {
     execFileSync('python3', ['-c', String.raw`
@@ -19,6 +20,12 @@ with zipfile.ZipFile(sys.argv[1], 'w') as z:
     z.writestr(sys.argv[2], '[System\\\\CurrentControlSet\\\\Services\\\\MountMgr]\n"Start"=dword:00000002\n')
     z.writestr('keep.txt', 'keep me')
 `, archive, registryPath], { stdio: 'pipe' });
+    execFileSync('python3', ['-c', String.raw`
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], 'w') as z:
+    z.comment = b'keep 32-bit prefix comment'
+    z.writestr('keep.txt', 'keep 32-bit prefix')
+`, prefix32], { stdio: 'pipe' });
     const driverArchives = [
       ['wine32.zip', 'opt/wine-stable/lib/wine/i386-windows'],
       ['wine64.zip', 'usr/lib/x86_64-linux-gnu/wine/x86_64-windows'],
@@ -36,10 +43,10 @@ for name, directory in zip(sys.argv[1::2], sys.argv[2::2]):
 
     const script = resolve('tools/browser/stage-winebus.py');
     execFileSync('python3', [script, runtime], { stdio: 'pipe' });
-    const once = [archive, ...driverArchives.map(([name]) => join(runtime, name))]
+    const once = [archive, prefix32, ...driverArchives.map(([name]) => join(runtime, name))]
       .map(path => readFileSync(path));
     execFileSync('python3', [script, runtime], { stdio: 'pipe' });
-    const twice = [archive, ...driverArchives.map(([name]) => join(runtime, name))]
+    const twice = [archive, prefix32, ...driverArchives.map(([name]) => join(runtime, name))]
       .map(path => readFileSync(path));
     twice.forEach((contents, index) => {
       assert.deepEqual(contents, once[index], 'a second export pass must leave archives unchanged');
@@ -58,6 +65,25 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     assert '"InfPath"="winebus.inf"' in reg
     assert not any(line.endswith('\\\\') for line in reg.splitlines()), 'registry continuations must be single backslashes'
 `, archive, registryPath], { stdio: 'pipe' });
+
+    for (const [prefix, comment, keep] of [
+      [archive, 'keep archive comment', 'keep me'],
+      [prefix32, 'keep 32-bit prefix comment', 'keep 32-bit prefix'],
+    ]) {
+      execFileSync('python3', ['-c', String.raw`
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as z:
+    assert z.comment.decode() == sys.argv[2]
+    assert z.read('keep.txt').decode() == sys.argv[3]
+    inf_dir = 'home/username/.wine/drive_c/windows/inf/'
+    hid = z.read(inf_dir + 'winehid.inf').decode()
+    xinput = z.read(inf_dir + 'winexinput.inf').decode()
+    assert 'WINEBUS\\WINE_COMP_HID' in hid
+    assert 'ServiceBinary="%12%\\winehid.sys"' in hid
+    assert 'WINEBUS\\WINE_COMP_XINPUT' in xinput
+    assert 'ServiceBinary="%12%\\winexinput.sys"' in xinput
+`, prefix, comment, keep], { stdio: 'pipe' });
+    }
 
     for (const [name, directory] of driverArchives) {
       execFileSync('python3', ['-c', String.raw`
