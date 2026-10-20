@@ -103,6 +103,8 @@ void testGamepadInput() {
     expectGamepadValue("EVIOCGKEY capability BTN_A", context.memory->readb(GAMEPAD_IO_BUFFER + 0x130 / 8) & (1 << (0x130 % 8)), 1);
     gamepadIoctl(device.get(), context, inputIoctl(0x4518, 40));
     expectGamepadValue("EVIOCGKEY current BTN_A", context.memory->readb(GAMEPAD_IO_BUFFER + 0x130 / 8) & (1 << (0x130 % 8)), 1);
+    expectGamepadValue("EVIOCGBIT(EV_REL) return", gamepadIoctl(device.get(), context, inputIoctl(0x4522, 8)), 0);
+    expectGamepadValue("EVIOCGBIT(EV_REL) absent", context.memory->readd(GAMEPAD_IO_BUFFER), 0);
     gamepadIoctl(device.get(), context, inputIoctl(0x4523, 3));
     expectGamepadValue("EVIOCGABS capability byte 0", context.memory->readb(GAMEPAD_IO_BUFFER), 0x3f);
     expectGamepadValue("EVIOCGABS capability byte 2", context.memory->readb(GAMEPAD_IO_BUFFER + 2), 0x03);

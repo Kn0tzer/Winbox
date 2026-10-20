@@ -677,6 +677,9 @@ U32 DevInputGamepad::ioctl(KThread* thread, U32 request) {
     }
     case 0x4521: // EVIOCGBIT(EV_KEY)
         return writeGamepadBitmap(memory, buffer, len, gamepadButtons, (U32)(sizeof(gamepadButtons) / sizeof(gamepadButtons[0])));
+    case 0x4522: // EVIOCGBIT(EV_REL): valid query, no relative axes
+        memory->memset(buffer, 0, len);
+        return 0;
     case 0x4523: { // EVIOCGBIT(EV_ABS)
         static const U32 axes[] = {GAMEPAD_ABS_X, GAMEPAD_ABS_Y, GAMEPAD_ABS_Z, GAMEPAD_ABS_RX,
                                    GAMEPAD_ABS_RY, GAMEPAD_ABS_RZ, GAMEPAD_ABS_HAT0X, GAMEPAD_ABS_HAT0Y};
