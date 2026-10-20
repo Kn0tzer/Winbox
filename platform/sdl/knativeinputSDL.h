@@ -58,11 +58,6 @@ public:
     int lastY = 0;
     U32 width = 0;
     U32 height = 0;           
-    void* gameController = nullptr;
-    S32 gameControllerInstanceId = -1;
-    S32 gameControllerHatX = 0;
-    S32 gameControllerHatY = 0;
-
     bool handlSdlEvent(SDL_Event* e);
 };
 

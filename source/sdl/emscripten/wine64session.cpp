@@ -388,6 +388,18 @@ extern "C" EMSCRIPTEN_KEEPALIVE void bw64_xwire_key(int sdlScancode, int down) {
     xwireInjectKey((uint32_t)sdlScancode, down);
 }
 
+// bw64_gamepad_update: deliver one polled browser gamepad snapshot to the
+// guest's Xbox 360 evdev device (/dev/input/event5). The page polls
+// navigator.getGamepads() because Emscripten SDL never captures DOM input in
+// the headless launcher. buttons is a bitmask ordered A,B,X,Y,LB,RB,BACK,START,
+// GUIDE,LTHUMB,RTHUMB; sticks are -32768..32767 (Y up negative); triggers
+// 0..255; hats -1/0/1. Diffs against the last snapshot and queues only changed
+// events. Safe from the browser main thread (DevInputGamepad is mutex-guarded).
+extern void onGamepadState(int connected, int buttons, int lx, int ly, int rx, int ry, int lt, int rt, int hatx, int haty);
+extern "C" EMSCRIPTEN_KEEPALIVE void bw64_gamepad_update(int connected, int buttons, int lx, int ly, int rx, int ry, int lt, int rt, int hatx, int haty) {
+    onGamepadState(connected, buttons, lx, ly, rx, ry, lt, rt, hatx, haty);
+}
+
 // bw64_xwire_mouse_move(x, y): absolute pointer position in guest window coords.
 // bw64_xwire_mouse_rel(dx, dy): relative deltas (FPS mouse-look).
 // bw64_xwire_mouse_button(button, down): X11 button 1=left,2=middle,3=right,8=X1,9=X2.

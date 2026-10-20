@@ -28,11 +28,6 @@
 #include "../../source/x11wire/xwirepresent.h"
 #endif
 
-extern void onGamepadAxis(U32 code, S32 value);
-extern void onGamepadButton(U32 code, bool down);
-extern void onGamepadSync();
-extern void onGamepadDisconnected();
-
 U32 sdlCustomEvent;
 
 KNativeInputSDL::KNativeInputSDL(U32 cx, U32 cy, int scaleX, int scaleY) {
@@ -589,87 +584,7 @@ bool KNativeInputSDL::handlSdlEvent(SDL_Event* e) {
     // for the 64-bit path (its 32-bit X server is dead code) and keeps QUIT etc.
     xwireForwardSdlEvent(*e);
 #endif
-    if (e->type == SDL_CONTROLLERDEVICEADDED) {
-        if (!gameController && SDL_IsGameController(e->cdevice.which)) {
-            SDL_GameController* controller = SDL_GameControllerOpen(e->cdevice.which);
-            if (controller) {
-                gameController = controller;
-                gameControllerInstanceId = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(controller));
-                gameControllerHatX = 0;
-                gameControllerHatY = 0;
-                onGamepadSync();
-            }
-        }
-    } else if (e->type == SDL_CONTROLLERDEVICEREMOVED) {
-        if (gameController && e->cdevice.which == gameControllerInstanceId) {
-            onGamepadDisconnected();
-            SDL_GameControllerClose((SDL_GameController*)gameController);
-            gameController = nullptr;
-            gameControllerInstanceId = -1;
-            gameControllerHatX = 0;
-            gameControllerHatY = 0;
-        }
-    } else if (gameController && e->type == SDL_CONTROLLERAXISMOTION && e->caxis.which == gameControllerInstanceId) {
-        U32 code = 0;
-        S32 value = e->caxis.value;
-        switch (e->caxis.axis) {
-        case SDL_CONTROLLER_AXIS_LEFTX: code = 0x00; break; // ABS_X
-        case SDL_CONTROLLER_AXIS_LEFTY: code = 0x01; break; // ABS_Y
-        case SDL_CONTROLLER_AXIS_RIGHTX: code = 0x03; break; // ABS_RX
-        case SDL_CONTROLLER_AXIS_RIGHTY: code = 0x04; break; // ABS_RY
-        case SDL_CONTROLLER_AXIS_TRIGGERLEFT:
-            code = 0x02; // ABS_Z
-            value = value * 255 / 32767;
-            break;
-        case SDL_CONTROLLER_AXIS_TRIGGERRIGHT:
-            code = 0x05; // ABS_RZ
-            value = value * 255 / 32767;
-            break;
-        default: break;
-        }
-        if (code || e->caxis.axis == SDL_CONTROLLER_AXIS_LEFTX) {
-            onGamepadAxis(code, value);
-            onGamepadSync();
-        }
-    } else if (gameController && (e->type == SDL_CONTROLLERBUTTONDOWN || e->type == SDL_CONTROLLERBUTTONUP) &&
-               e->cbutton.which == gameControllerInstanceId) {
-        const bool down = e->type == SDL_CONTROLLERBUTTONDOWN;
-        U32 code = 0;
-        switch (e->cbutton.button) {
-        case SDL_CONTROLLER_BUTTON_A: code = 0x130; break; // BTN_A
-        case SDL_CONTROLLER_BUTTON_B: code = 0x131; break; // BTN_B
-        case SDL_CONTROLLER_BUTTON_X: code = 0x133; break; // BTN_X
-        case SDL_CONTROLLER_BUTTON_Y: code = 0x134; break; // BTN_Y
-        case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: code = 0x136; break; // BTN_TL
-        case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: code = 0x137; break; // BTN_TR
-        case SDL_CONTROLLER_BUTTON_BACK: code = 0x13a; break; // BTN_SELECT
-        case SDL_CONTROLLER_BUTTON_START: code = 0x13b; break; // BTN_START
-        case SDL_CONTROLLER_BUTTON_GUIDE: code = 0x13c; break; // BTN_MODE
-        case SDL_CONTROLLER_BUTTON_LEFTSTICK: code = 0x13d; break; // BTN_THUMBL
-        case SDL_CONTROLLER_BUTTON_RIGHTSTICK: code = 0x13e; break; // BTN_THUMBR
-        case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
-            gameControllerHatX = down ? -1 : (gameControllerHatX == -1 ? 0 : gameControllerHatX);
-            onGamepadAxis(0x10, gameControllerHatX); // ABS_HAT0X
-            break;
-        case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
-            gameControllerHatX = down ? 1 : (gameControllerHatX == 1 ? 0 : gameControllerHatX);
-            onGamepadAxis(0x10, gameControllerHatX); // ABS_HAT0X
-            break;
-        case SDL_CONTROLLER_BUTTON_DPAD_UP:
-            gameControllerHatY = down ? -1 : (gameControllerHatY == -1 ? 0 : gameControllerHatY);
-            onGamepadAxis(0x11, gameControllerHatY); // ABS_HAT0Y
-            break;
-        case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-            gameControllerHatY = down ? 1 : (gameControllerHatY == 1 ? 0 : gameControllerHatY);
-            onGamepadAxis(0x11, gameControllerHatY); // ABS_HAT0Y
-            break;
-        default: break;
-        }
-        if (code) {
-            onGamepadButton(code, down);
-        }
-        onGamepadSync();
-    } else if (e->type == SDL_MOUSEMOTION) {
+    if (e->type == SDL_MOUSEMOTION) {
         BOXEDWINE_RECORDER_HANDLE_MOUSE_MOVE(e->motion.x, e->motion.y);
         if (!mouseMove(e->motion.x, e->motion.y, false)) {
             onMouseMove(e->motion.x, e->motion.y, false);

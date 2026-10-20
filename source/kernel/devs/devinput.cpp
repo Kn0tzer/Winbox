@@ -24,6 +24,7 @@
 #include "knativesystem.h"
 
 #include <array>
+#include <mutex>
 #include <string.h>
 
 #include "../../io/fsvirtualopennode.h"
@@ -1065,6 +1066,61 @@ void onGamepadSync() {
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(gamepadEvents->bufferCond);
     postSendEvent(gamepadEvents, time);
     BOXEDWINE_CONDITION_SIGNAL_ALL(gamepadEvents->bufferCond);
+}
+
+// onGamepadState: apply one polled pad snapshot (bitmask buttons in the order
+// A,B,X,Y,LB,RB,BACK,START,GUIDE,LTHUMB,RTHUMB; sticks -32768..32767 with Y up
+// negative; triggers 0..255; hats -1/0/1). Diffs against the previous snapshot
+// so only changed EV_KEY/EV_ABS events and one SYN_REPORT are queued. Called
+// from the browser main thread via bw64_gamepad_update().
+void onGamepadDisconnected();
+
+static std::mutex gamepadStateMutex;
+static U32 gamepadStateButtons = 0;
+static S32 gamepadStateAxes[8] = {0};
+static bool gamepadStateConnected = false;
+
+static void resetGamepadStateLocked() {
+    gamepadStateButtons = 0;
+    for (S32& value : gamepadStateAxes) {
+        value = 0;
+    }
+    gamepadStateConnected = false;
+}
+
+void onGamepadState(int connected, int buttons, int lx, int ly, int rx, int ry, int lt, int rt, int hatx, int haty) {
+    std::lock_guard<std::mutex> lock(gamepadStateMutex);
+    if (!connected) {
+        if (gamepadStateConnected) {
+            onGamepadDisconnected();
+        }
+        resetGamepadStateLocked();
+        return;
+    }
+    const S32 values[8] = {lx, ly, lt, rx, ry, rt, hatx, haty}; // matches gamepadAxes order
+    bool changed = !gamepadStateConnected;
+    for (U32 i = 0; i < sizeof(gamepadButtons) / sizeof(gamepadButtons[0]); i++) {
+        const bool down = (buttons & (1 << i)) != 0;
+        const bool wasDown = (gamepadStateButtons & (1 << i)) != 0;
+        if (down != wasDown) {
+            onGamepadButton(gamepadButtons[i], down);
+            changed = true;
+        }
+    }
+    for (U32 i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
+        if (values[i] != gamepadStateAxes[i]) {
+            onGamepadAxis(gamepadAxes[i].code, values[i]);
+            changed = true;
+        }
+    }
+    gamepadStateButtons = (U32)buttons;
+    for (U32 i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
+        gamepadStateAxes[i] = values[i];
+    }
+    gamepadStateConnected = true;
+    if (changed) {
+        onGamepadSync();
+    }
 }
 
 void onGamepadDisconnected() {
