@@ -1,0 +1,347 @@
+{
+  "version": 1,
+  "hash": "sha256",
+  "modules": [
+    {
+      "hash": "0b06f2bbb884773fb68a041df15b2fb998a7cc43c452605b0ca8ff5b71f75552",
+      "file": "0b06f2bbb884773fb68a041df15b2fb998a7cc43c452605b0ca8ff5b71f75552.spv",
+      "stages": [
+        "fragment"
+      ],
+      "sources": [
+        {
+          "kind": "existing-testdata",
+          "path": "testdata/spirv/p3-explicit.frag.spv"
+        }
+      ]
+    },
+    {
+      "hash": "0f7cebadfa601a73c1dc1c3e91c938132e8f06d7b8ffee8a37f1d6ffe01ee054",
+      "file": "0f7cebadfa601a73c1dc1c3e91c938132e8f06d7b8ffee8a37f1d6ffe01ee054.spv",
+      "stages": [
+        "fragment"
+      ],
+      "sources": [
+        {
+          "kind": "existing-testdata",
+          "path": "testdata/spirv/p2-separate.frag.spv"
+        }
+      ]
+    },
+    {
+      "hash": "20944398d1065cd783d1b652a93a7cf8b72ce66a7475fa18f31188ed01c3d9a7",
+      "file": "20944398d1065cd783d1b652a93a7cf8b72ce66a7475fa18f31188ed01c3d9a7.spv",
+      "stages": [
+        "vertex"
+      ],
+      "sources": [
+        {
+          "kind": "frame-capture",
+          "path": "portal-colour-live-20261019/scene-frame.json.gz"
+        },
+        {
+          "kind": "frame-capture",
+          "path": "portal-coordinates-live-20261019/portal-composite-frame.json.gz"
+        },
+        {
+          "kind": "frame-capture",
+          "path": "portal-coordinates-live-20261019/shadow-white-frame.json.gz"
+        },
+        {
+          "kind": "frame-capture",
+          "path": "portal-playability-oct15/black-frame.json.gz"
+        },
+        {
+          "kind": "frame-capture",
+          "path": "portal-resume-20261019/scene-frame.json.gz"
+        },
+        {
+          "kind": "frame-capture",
+          "path": "portal-stencil-20261019/portal-stencil-failure-frame.json.gz"
+        },
+        {
+          "kind": "frame-capture",
+          "path": "portal-stencil-20261019/shadows-corrected-frame.json.gz"
+        },
+        {
+          "kind": "existing-testdata",
+          "path": "testdata/spirv/dxvk-live/present.vert.spv"
+        }
+      ]
+    },
+    {
+      "hash": "30b8c3a749b806e71091de30556825583595f4930552142c930e36a16f1061c8",
+      "file": "30b8c3a749b806e71091de30556825583595f4930552142c930e36a16f1061c8.spv",
+      "stages": [
+        "fragment"
+      ],
+      "sources": [
+        {
+          "kind": "existing-testdata",
+          "path": "testdata/spirv/p1-vkcube.frag.spv"
+        }
+      ]
+    },
+    {
+      "hash": "31950677e83cb8b8c4fcf1dae5563e622c4cdf11cb0d074cdeb32910eb1eff9b",
+      "file": "31950677e83cb8b8c4fcf1dae5563e622c4cdf11cb0d074cdeb32910eb1eff9b.spv",
+      "stages": [
+        "vertex"
+      ],
+      "sources": [
+        {
+          "kind": "existing-testdata",
+          "path": "testdata/spirv/p7-shadow.vert.spv"
+        }
+      ]
+    },
+    {
+      "hash": "389af3418f73d9a6d9248af40dc54b8625eb9158da89fbfb3afa82a59e0d52fa",
+      "file": "389af3418f73d9a6d9248af40dc54b8625eb9158da89fbfb3afa82a59e0d52fa.spv",
+      "stages": [
+        "vertex"
+      ],
+      "sources": [
+        {
+          "kind": "existing-testdata",
+          "path": "testdata/spirv/p4-speconst.vert.spv"
+        }
+      ]
+    },
+    {
+      "hash": "3d6583180dbad7ddeb3316cdfb0efa110af8380a627eeb8d2bd16ff568f995ae",
+      "file": "3d6583180dbad7ddeb3316cdfb0efa110af8380a627eeb8d2bd16ff568f995ae.spv",
+      "stages": [
+        "vertex"
+      ],
+      "sources": [
+        {
+          "kind": "existing-testdata",
+          "path": "testdata/spirv/p8-lighting.vert.spv"
+        }
+      ]
+    },
+    {
+      "hash": "41206f80b34c795a8b804bd44ce2ac52352db38cc3b54606c1ed028034a36c5b",
+      "file": "41206f80b34c795a8b804bd44ce2ac52352db38cc3b54606c1ed028034a36c5b.spv",
+      "stages": [
+        "fragment"
+      ],
+      "sources": [
+        {
+          "kind": "frame-capture",
+          "path": "portal-colour-live-20261019/scene-frame.json.gz"
+        },
+        {
+          "kind": "frame-capture",
+          "path": "portal-coordinates-live-20261019/portal-composite-frame.json.gz"
+        },
+        {
+          "kind": "frame-capture",
+          "path": "portal-coordinates-live-20261019/shadow-white-frame.json.gz"
+        },
+        {
+          "kind": "frame-capture",
+          "path": "portal-playability-oct15/black-frame.json.gz"
+        },
+        {
+          "kind": "frame-capture",
+          "path": "portal-resume-20261019/scene-frame.json.gz"
+        },
+        {
+          "kind": "frame-capture",
+          "path": "portal-stencil-20261019/portal-stencil-failure-frame.json.gz"
+        },
+        {
+          "kind": "frame-capture",
+          "path": "portal-stencil-20261019/shadows-corrected-frame.json.gz"
+        }
+      ]
+    },
+    {
+      "hash": "4395e6e87b1463214d5b49247e6c54844b4180cf23da095bc59734a1d69fa249",
+      "file": "4395e6e87b1463214d5b49247e6c54844b4180cf23da095bc59734a1d69fa249.spv",
+      "stages": [
+        "fragment"
+      ],
+      "sources": [
+        {
+          "kind": "existing-testdata",
+          "path": "testdata/spirv/p8-lighting.frag.spv"
+        }
+      ]
+    },
+    {
+      "hash": "48ffd3b2aafcd92bd2a12915f05e1a79e6ce9bdd98a4df4b77c0c3010285ae9e",
+      "file": "48ffd3b2aafcd92bd2a12915f05e1a79e6ce9bdd98a4df4b77c0c3010285ae9e.spv",
+      "stages": [
+        "fragment"
+      ],
+      "sources": [
+        {
+          "kind": "existing-testdata",
+          "path": "testdata/spirv/p5-pushconst.frag.spv"
+        }
+      ]
+    },
+    {
+      "hash": "6c3b82001b99dc3ea7e0e55119cbd93626793d2b889da0d92a1ce43636387aa8",
+      "file": "6c3b82001b99dc3ea7e0e55119cbd93626793d2b889da0d92a1ce43636387aa8.spv",
+      "stages": [
+        "vertex"
+      ],
+      "sources": [
+        {
+          "kind": "existing-testdata",
+          "path": "testdata/spirv/p2-separate.vert.spv"
+        }
+      ]
+    },
+    {
+      "hash": "6ca976faa01fa0dcec1dbaf84214e1808e4b3d8155976f2959db72abfe8c3d7a",
+      "file": "6ca976faa01fa0dcec1dbaf84214e1808e4b3d8155976f2959db72abfe8c3d7a.spv",
+      "stages": [
+        "vertex"
+      ],
+      "sources": [
+        {
+          "kind": "existing-testdata",
+          "path": "testdata/spirv/dxvk-live/tri9.vert.spv"
+        }
+      ]
+    },
+    {
+      "hash": "74dcd55ebcff4d20ecd0965decd09cc2f1cb378d72f1f079dce14f0c8919330b",
+      "file": "74dcd55ebcff4d20ecd0965decd09cc2f1cb378d72f1f079dce14f0c8919330b.spv",
+      "stages": [
+        "vertex"
+      ],
+      "sources": [
+        {
+          "kind": "existing-testdata",
+          "path": "testdata/spirv/p6-multitex.vert.spv"
+        }
+      ]
+    },
+    {
+      "hash": "91d10968d1c00704f32addb456c0b680dda068e3a367da2f0cda6c36bc840f7e",
+      "file": "91d10968d1c00704f32addb456c0b680dda068e3a367da2f0cda6c36bc840f7e.spv",
+      "stages": [
+        "fragment"
+      ],
+      "sources": [
+        {
+          "kind": "existing-testdata",
+          "path": "testdata/spirv/p6-multitex.frag.spv"
+        }
+      ]
+    },
+    {
+      "hash": "98daeddbaf830e6f3dcee6ac7d66e0bc6c0b843d55689c2158b6edd87f4582ef",
+      "file": "98daeddbaf830e6f3dcee6ac7d66e0bc6c0b843d55689c2158b6edd87f4582ef.spv",
+      "stages": [
+        "vertex"
+      ],
+      "sources": [
+        {
+          "kind": "existing-testdata",
+          "path": "testdata/spirv/p1-vkcube.vert.spv"
+        }
+      ]
+    },
+    {
+      "hash": "c2a31144f2c9049d82d42501feb7e8edf7f0eb85f501afbeeb0085bf24153298",
+      "file": "c2a31144f2c9049d82d42501feb7e8edf7f0eb85f501afbeeb0085bf24153298.spv",
+      "stages": [
+        "vertex"
+      ],
+      "sources": [
+        {
+          "kind": "existing-testdata",
+          "path": "testdata/spirv/p3-explicit.vert.spv"
+        }
+      ]
+    },
+    {
+      "hash": "c9660b1487adfa3ce01c1f021d37c1e9bc19f109eda38b091caad44c493cce0b",
+      "file": "c9660b1487adfa3ce01c1f021d37c1e9bc19f109eda38b091caad44c493cce0b.spv",
+      "stages": [
+        "fragment"
+      ],
+      "sources": [
+        {
+          "kind": "existing-testdata",
+          "path": "testdata/spirv/dxvk-live/present.frag.spv"
+        }
+      ]
+    },
+    {
+      "hash": "cb69beb2d1f7442339372dc5a8cd6942203acb1a11062e8cad95f2485c3f036c",
+      "file": "cb69beb2d1f7442339372dc5a8cd6942203acb1a11062e8cad95f2485c3f036c.spv",
+      "stages": [
+        "fragment"
+      ],
+      "sources": [
+        {
+          "kind": "existing-testdata",
+          "path": "testdata/spirv/p7-shadow.frag.spv"
+        }
+      ]
+    },
+    {
+      "hash": "deae6fc1bf24a9a04d0144aff376676b204b295f848a14519c8efddd1f89f445",
+      "file": "deae6fc1bf24a9a04d0144aff376676b204b295f848a14519c8efddd1f89f445.spv",
+      "stages": [
+        "fragment"
+      ],
+      "sources": [
+        {
+          "kind": "existing-testdata",
+          "path": "testdata/spirv/p4-speconst.frag.spv"
+        }
+      ]
+    },
+    {
+      "hash": "f136879115876efe597716ce22f98da7fc23aa8c8915480e17878ab00a3c7726",
+      "file": "f136879115876efe597716ce22f98da7fc23aa8c8915480e17878ab00a3c7726.spv",
+      "stages": [
+        "vertex"
+      ],
+      "sources": [
+        {
+          "kind": "existing-testdata",
+          "path": "testdata/spirv/p5-pushconst.vert.spv"
+        }
+      ]
+    },
+    {
+      "hash": "fab4e04835ec9e6f5b8829e256f599d0a405096eced353c68936b6a0ae2a4aa2",
+      "file": "fab4e04835ec9e6f5b8829e256f599d0a405096eced353c68936b6a0ae2a4aa2.spv",
+      "stages": [
+        "fragment"
+      ],
+      "sources": [
+        {
+          "kind": "existing-testdata",
+          "path": "testdata/spirv/dxvk-live/tri9.frag.spv"
+        }
+      ]
+    }
+  ],
+  "baseline": {
+    "measured": "2026-10-20",
+    "total": 21,
+    "ok": 19,
+    "failed": 2,
+    "failureClasses": [
+      {
+        "firstLine": "Unsupported builtin value: PointCoord",
+        "count": 1
+      },
+      {
+        "firstLine": "Unsupported builtin value: PointSize",
+        "count": 1
+      }
+    ]
+  }
+}
