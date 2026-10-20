@@ -56,6 +56,7 @@
 
 void testWaitPid();
 void testMemfdCreate();
+void testSocketPriority();
 
 namespace {
 
@@ -668,6 +669,7 @@ const TestEntry TEST_ENTRIES[] = {
 #endif
     {testWaitPid, "Test waitpid child selection"},
     {testMemfdCreate, "Test memfd_create flags/ftruncate/MAP_SHARED/read/write"},
+    {testSocketPriority, "Test SO_PRIORITY on socket classes"},
     {testDecoderPageBoundary, "Test decoder executable page boundary"},
     {testVk32TrapWitness, "Test vk32 Trap Witness (Stage A)"},
     {testGl32TrapWitness, "Test gl32 Trap Witness (Stage A-GL)"},

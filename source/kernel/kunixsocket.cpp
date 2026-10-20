@@ -24,6 +24,29 @@
 #include "ksignal.h"
 #include "../x11wire/xwireserver.h"
 #include "../x11wire/xwireconnection.h"
+#include <mutex>
+#include <unordered_map>
+
+namespace {
+std::mutex g_unixSocketPriorityMutex;
+std::unordered_map<const KUnixSocketObject*, U32> g_unixSocketPriorities;
+
+void setUnixSocketPriority(const KUnixSocketObject* socket, U32 priority) {
+    std::lock_guard<std::mutex> lock(g_unixSocketPriorityMutex);
+    g_unixSocketPriorities[socket] = priority;
+}
+
+U32 getUnixSocketPriority(const KUnixSocketObject* socket) {
+    std::lock_guard<std::mutex> lock(g_unixSocketPriorityMutex);
+    auto it = g_unixSocketPriorities.find(socket);
+    return it == g_unixSocketPriorities.end() ? 0 : it->second;
+}
+
+void eraseUnixSocketPriority(const KUnixSocketObject* socket) {
+    std::lock_guard<std::mutex> lock(g_unixSocketPriorityMutex);
+    g_unixSocketPriorities.erase(socket);
+}
+}
 
 KUnixSocketObject::KUnixSocketObject(U32 domain, U32 type, U32 protocol) : KSocketObject(KTYPE_UNIX_SOCKET, domain, type, protocol), 
     lockCond(std::make_shared<BoxedWineCondition>(B("KUnixSocketObject::lockCond"))), recvBuffer(128)
@@ -31,6 +54,7 @@ KUnixSocketObject::KUnixSocketObject(U32 domain, U32 type, U32 protocol) : KSock
 }
 
 KUnixSocketObject::~KUnixSocketObject() {
+    eraseUnixSocketPriority(this);
     if (this->node) {
         std::shared_ptr<FsNode> parent = this->node->getParent().lock();
         if (parent) {
@@ -827,6 +851,11 @@ U32 KUnixSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& fd,
                     kpanic("KUnixSocketObject::setsockopt SO_SNDBUF expecting len of 4");
                 this->sendLen = memory->readd(value);
                 break;
+            case K_SO_PRIORITY:
+                if (len != 4)
+                    kpanic("KUnixSocketObject::setsockopt SO_PRIORITY expecting len of 4");
+                setUnixSocketPriority(this, memory->readd(value));
+                break;
             case K_SO_PASSCRED:
                 break;
             case K_SO_ATTACH_FILTER:
@@ -861,6 +890,11 @@ U32 KUnixSocketObject::getsockopt(KThread* thread, const KFileDescriptorPtr& fd,
             if (len != 4)
                 kpanic("KUnixSocketObject::getsockopt K_SO_TYPE expecting len of 4");
             memory->writed(value, this->type);
+        } else if (name == K_SO_PRIORITY) {
+            if (len != 4)
+                kpanic("KUnixSocketObject::getsockopt SO_PRIORITY expecting len of 4");
+            memory->writed(value, getUnixSocketPriority(this));
+            memory->writed(len_address, 4);
         } else if (name == K_SO_PEERCRED) {
             if (this->domain!=K_AF_UNIX) {
                 return -K_EINVAL; // :TODO: is this right

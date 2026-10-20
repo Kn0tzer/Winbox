@@ -22,6 +22,29 @@
 #include "ksocket.h"
 #include "kstat.h"
 #include "ksignal.h"
+#include <mutex>
+#include <unordered_map>
+
+namespace {
+std::mutex g_netlinkPriorityMutex;
+std::unordered_map<const KNetLinkObject*, U32> g_netlinkPriorities;
+
+void setNetlinkPriority(const KNetLinkObject* socket, U32 priority) {
+    std::lock_guard<std::mutex> lock(g_netlinkPriorityMutex);
+    g_netlinkPriorities[socket] = priority;
+}
+
+U32 getNetlinkPriority(const KNetLinkObject* socket) {
+    std::lock_guard<std::mutex> lock(g_netlinkPriorityMutex);
+    auto it = g_netlinkPriorities.find(socket);
+    return it == g_netlinkPriorities.end() ? 0 : it->second;
+}
+
+void eraseNetlinkPriority(const KNetLinkObject* socket) {
+    std::lock_guard<std::mutex> lock(g_netlinkPriorityMutex);
+    g_netlinkPriorities.erase(socket);
+}
+}
 
 KNetLinkObject::KNetLinkObject(U32 domain, U32 type, U32 protocol) : KSocketObject(KTYPE_UNIX_SOCKET, domain, type, protocol),
 lockCond(std::make_shared<BoxedWineCondition>(B("KNetLinkObject::lockCond")))
@@ -29,6 +52,7 @@ lockCond(std::make_shared<BoxedWineCondition>(B("KNetLinkObject::lockCond")))
 }
 
 KNetLinkObject::~KNetLinkObject() {
+    eraseNetlinkPriority(this);
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->lockCond);
     BOXEDWINE_CONDITION_SIGNAL_ALL(this->lockCond);
 }
@@ -313,13 +337,18 @@ U32 KNetLinkObject::setsockopt(KThread* thread, const KFileDescriptorPtr& fd, U3
             break;
         case K_SO_PASSCRED:
             break;
+        case K_SO_PRIORITY:
+            if (len != 4)
+                kpanic("KNetLinkObject::setsockopt SO_PRIORITY expecting len of 4");
+            setNetlinkPriority(this, memory->readd(value));
+            break;
         case K_SO_ATTACH_FILTER:
             break;
         default:
-            kwarn_fmt("KUnixSocketObject::setsockopt name %d not implemented", name);
+            kwarn_fmt("KNetLinkObject::setsockopt name %d not implemented", name);
         }
     } else {
-        kwarn_fmt("KUnixSocketObject::setsockopt level %d not implemented", level);
+        kwarn_fmt("KNetLinkObject::setsockopt level %d not implemented", level);
     }
     return 0;
 }
@@ -345,12 +374,17 @@ U32 KNetLinkObject::getsockopt(KThread* thread, const KFileDescriptorPtr& fd, U3
             if (len != 4)
                 kpanic("KNetLinkObject::getsockopt K_SO_TYPE expecting len of 4");
             memory->writed(value, this->type);
+        } else if (name == K_SO_PRIORITY) {
+            if (len != 4)
+                kpanic("KNetLinkObject::getsockopt SO_PRIORITY expecting len of 4");
+            memory->writed(value, getNetlinkPriority(this));
+            memory->writed(len_address, 4);
         } else {
-            kwarn_fmt("KUnixSocketObject::getsockopt name %d not implemented", name);
+            kwarn_fmt("KNetLinkObject::getsockopt name %d not implemented", name);
             return -K_EINVAL;
         }
     } else {
-        kwarn_fmt("KUnixSocketObject::getsockopt level %d not implemented", level);
+        kwarn_fmt("KNetLinkObject::getsockopt level %d not implemented", level);
         return -K_EINVAL;
     }
     return 0;
