@@ -1,0 +1,11 @@
+i386 ALSA-to-OSS files for the 32-bit Wine overlay and glibc rootfs.
+
+The plugins and ALSA configuration were copied from the locally available
+Debian i386 extraction at /home/ubuntu/wine32-stage/img386, populated by the
+offline package libasound2-plugins_1.2.7.1-1_i386.deb in
+/home/ubuntu/wine32-stage/debpool. The 64-bit counterpart is staged from
+tools/rootfs64/alsa by build-wine64-zip.sh.
+
+After copying the runtime input archives into a real web/runtime directory,
+run tools/rootfs64/stage-alsa32.sh web/runtime. It adds the OSS plugins to
+wine32.zip and the ALSA config plus asound.conf to glibc-rootfs32.zip.
