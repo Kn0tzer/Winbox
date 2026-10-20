@@ -19,6 +19,8 @@ const fixtures = {
   // pass count, so a CPU64 interpreter/JIT difference shows up as a differing
   // checksum in either guest format.
   'jitbench64-pe': ['tools/guest-fixtures/jitbench64.c', '-fno-tree-vectorize'],
+  'jitbench32-pe': ['tools/guest-fixtures/jitbench32.c', '-fno-tree-vectorize'],
+  'jitbenchmix-pe': ['tools/guest-fixtures/jitbenchmix.c', '-fno-tree-vectorize'],
   'mshtml-document': ['tools/guest-fixtures/mshtml-document.c', '-lole32', '-loleaut32', '-luuid'],
   'openal-tone': ['tools/guest-fixtures/openal-tone.c', '-lm'],
   'win32-fonts': ['tools/guest-fixtures/win32-fonts.cpp', '-ldwrite', '-lgdi32', '-luser32'],
@@ -34,6 +36,7 @@ elfFixtures['cpu32-branches'] = ['tools/guest-fixtures/cpu32-branches.c', '-stat
 elfFixtures['jitbench64'] = ['tools/guest-fixtures/jitbench64.c', '-static', '-nostdlib', '-fno-builtin',
   '-fno-stack-protector', '-fno-pie', '-no-pie', '-fno-tree-vectorize', '-DJITBENCH_FREESTANDING'];
 const managedFixtures = { 'mono-runtime': ['tools/guest-fixtures/mono-runtime.cs'] };
+const architectureOptions = { 'jitbenchmix-pe': { x86: ['-mfpmath=387'], x64: [] } };
 managedFixtures['fna-runtime'] = ['tools/guest-fixtures/fna-runtime.cs',
   '-r:tools/rootfs64/mono32/mono/mono-2.0/lib/mono/gac/FNA/22.9.1.0__0738eb9f132ed756/FNA.dll'];
 for (const name of ['clear9', 'texquad9', 'vshade9', 'scene9'])
@@ -52,18 +55,26 @@ export async function guestFixture(name, arch = 'x86') {
     : `${arch === 'x86' ? 'i686' : 'x86_64'}-w64-mingw32-${driver}`;
   const version = execFileSync(compiler, ['--version'], { encoding: 'utf8' }).split('\n')[0];
   const linkOptions = driver === 'g++' ? ['-static-libgcc', '-static-libstdc++'] : [];
-  const options = managed ? ['-optimize+', '-platform:x86', '-sdk:4.5', ...libraries] : ['-O2', ...linkOptions, ...libraries];
+  const options = managed ? ['-optimize+', '-platform:x86', '-sdk:4.5', ...libraries]
+    : ['-O2', ...(architectureOptions[name]?.[arch] || []), ...linkOptions, ...libraries];
   const digest = createHash('sha256').update(await readFile(join(root, source))).update(version)
     .update(JSON.stringify({ options, name, arch }));
   for (const option of libraries) if (option.startsWith('-r:')) digest.update(await readFile(option.slice(3)));
   const hash = digest.digest('hex');
   const dir = join(root, 'tools/guest-fixtures/build', hash);
   const output = join(dir, `${name}-${arch}.${linux ? 'elf' : 'exe'}`);
-  try { await stat(output); return output; } catch {}
+  const compilerArgs = managed ? [...options, '-out:' + output, join(root, source)]
+    : ['-O2', ...(architectureOptions[name]?.[arch] || []), ...linkOptions,
+      '-o', output, join(root, source), ...libraries];
+  try {
+    await stat(output);
+    if (!architectureOptions[name]?.[arch]?.length) return output;
+    const provenance = JSON.parse(await readFile(join(dir, 'provenance.json'), 'utf8'));
+    if (JSON.stringify(provenance.compilerArgs) === JSON.stringify(compilerArgs)) return output;
+  } catch {}
   await mkdir(dir, { recursive: true });
-  execFileSync(compiler, managed ? [...options, '-out:' + output, join(root, source)]
-    : ['-O2', ...linkOptions, '-o', output, join(root, source), ...libraries], { stdio: 'pipe' });
-  await writeFile(join(dir, 'provenance.json'), JSON.stringify({ source, compiler: version, options, hash, arch }, null, 2));
+  execFileSync(compiler, compilerArgs, { stdio: 'pipe' });
+  await writeFile(join(dir, 'provenance.json'), JSON.stringify({ source, compiler: version, options, compilerArgs, hash, arch }, null, 2));
   return output;
 }
 
