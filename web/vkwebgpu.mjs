@@ -69,6 +69,28 @@ export const MAX_UNIFORM_RANGE = 65536; // guaranteed maxUniformBufferBindingSiz
 const DEPTH_OP = { 0: 'never', 1: 'less', 2: 'equal', 3: 'less-equal', 4: 'greater', 5: 'not-equal', 6: 'greater-equal', 7: 'always' };
 const CULL = { 0: 'none', 1: 'front', 2: 'back' };
 const FRONT = { 0: 'ccw', 1: 'cw' };
+export function v2SamplerLayoutType(shaderType) {
+  return shaderType === 'sampler_comparison' ? 'comparison' : shaderType === 'sampler' ? 'filtering' : null;
+}
+export function v2TextureSampleType(textureType, elementType) {
+  if (textureType.startsWith('texture_depth')) return 'depth';
+  return elementType === 'i32' ? 'sint' : elementType === 'u32' ? 'uint' : 'float';
+}
+export function v2SamplerDescriptor(s) {
+  const filtersLinear = s.mag === 'linear' && s.min === 'linear' && s.mipmap === 'linear';
+  const lodMinClamp = Math.max(0, Number.isFinite(s.minLod) ? s.minLod : 0);
+  const lodMaxClamp = Math.max(lodMinClamp, Number.isFinite(s.maxLod) ? s.maxLod : 32);
+  const descriptor = {
+    magFilter: s.mag, minFilter: s.min, mipmapFilter: s.mipmap,
+    addressModeU: s.addrU, addressModeV: s.addrV, addressModeW: s.addrW,
+    lodMinClamp, lodMaxClamp,
+    maxAnisotropy: s.anisotropyEnable && filtersLinear ? Math.max(1, Math.min(16, Math.round(s.maxAnisotropy) || 1)) : 1,
+  };
+  if (s.compareEnable) descriptor.compare = DEPTH_OP[s.compareOp] || 'always';
+  // WebGPU has no mipLodBias field, so this Vulkan value is retained in the record and ignored here.
+  // WebGPU has no borderColor field; CLAMP_TO_BORDER was mapped to clamp-to-edge by the decoder.
+  return descriptor;
+}
 const TEX_FORMAT = {
   R8G8B8A8_UNORM: 'rgba8unorm', R8G8B8A8_SRGB: 'rgba8unorm-srgb',
   B8G8R8A8_UNORM: 'bgra8unorm', B8G8R8A8_SRGB: 'bgra8unorm-srgb',
@@ -1236,10 +1258,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     // Persistent cache: samplers are defined by parameters, never change.
     let sm = persistSampCache.get(sampHex);
     if (sm) { persistStats.sampHits++; return sm; }
-    sm = device.createSampler({
-      magFilter: s.mag, minFilter: s.min, mipmapFilter: s.mipmap,
-      addressModeU: s.addrU, addressModeV: s.addrV, maxAnisotropy: s.maxAnisotropy,
-    });
+    sm = device.createSampler(v2SamplerDescriptor(s));
     persistSampCache.set(sampHex, sm);
     F.sampCache.set(sampHex, sm);
     return sm;
@@ -1266,12 +1285,12 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     const t = decl.type;
     if (t.startsWith('texture_') && !t.startsWith('texture_storage')) {
       const elem = /texture_\w+<(\w+)>/.exec(t)?.[1] || 'f32';
-      const sampleType = elem === 'i32' ? 'sint' : elem === 'u32' ? 'uint' : elem === 'f32' ? 'float' : 'float';
+      const sampleType = v2TextureSampleType(t, elem);
       const viewDimension = t.startsWith('texture_cube') ? 'cube' : t.includes('_array') ? '2d-array' : t.startsWith('texture_3d') ? '3d' : t.startsWith('texture_1d') ? '1d' : '2d';
-      return { binding: decl.binding, visibility: vis, texture: { sampleType: t.startsWith('texture_depth') ? 'depth' : sampleType, viewDimension, multisampled: false } };
+      return { binding: decl.binding, visibility: vis, texture: { sampleType, viewDimension, multisampled: false } };
     }
-    if (t === 'sampler' || t === 'sampler_comparison')
-      return { binding: decl.binding, visibility: vis, sampler: { type: t === 'sampler_comparison' ? 'comparison' : 'filtering' } };
+    const samplerType = v2SamplerLayoutType(t);
+    if (samplerType) return { binding: decl.binding, visibility: vis, sampler: { type: samplerType } };
     if (decl.addr === 'uniform')
       return { binding: decl.binding, visibility: vis, buffer: { type: 'uniform' } };
     if (decl.addr.startsWith('storage')) {
@@ -1597,7 +1616,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
         if (b && b.kind === 3) sHex = b.obj;
         else if (b && b.kind === 2) sHex = b.range; // combined image sampler's sampler
         const s = sHex && F.samplers.get(sHex);
-        entries.push({ binding: d.binding, resource: s ? gpuSamplerFor(sHex, s) : device.createSampler() });
+        entries.push({ binding: d.binding, resource: s ? gpuSamplerFor(sHex, s) : device.createSampler(t === 'sampler_comparison' ? { compare: 'always' } : {}) });
       } else if (d.addr === 'uniform' || d.addr.startsWith('storage')) {
         const isStorage = d.addr.startsWith('storage');
         const mk = k => {

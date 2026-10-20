@@ -5,7 +5,8 @@ export const MAX_DRAWS = 4096;
 
 // Vulkan enums, mapped once (the numeric tables are P1's, host/p1render.mjs).
 export const FILTER = { 0: 'nearest', 1: 'linear' };
-export const ADDR = { 0: 'repeat', 1: 'mirror-repeat', 2: 'clamp-to-edge', 3: 'clamp-to-edge' };
+// WebGPU has no border addressing or mirror-clamp mode; both use clamp-to-edge.
+export const ADDR = { 0: 'repeat', 1: 'mirror-repeat', 2: 'clamp-to-edge', 3: 'clamp-to-edge', 4: 'clamp-to-edge' };
 // ===========================================================================
 // Schema v2 — binary framed records (docs/vulkan-protocol.md §2-3). The v1 JSON
 // manifest (parseManifest/createVkRenderer in vkwebgpu.mjs) is vkcube-shaped: one frame
@@ -503,11 +504,22 @@ export function decodeV2Frame(records, counters = {}) {
       case V2_REC.SAMPLER: {
         const id = v2Hex64(r.u64());
         const mag = r.u32(), min = r.u32(), mipmap = r.u32(), addrU = r.u32(), addrV = r.u32();
-        const maxAniso = r.f32(); r.done('SAMPLER');
+        const maxAniso = r.f32();
+        // The original record ended at maxAniso. Defaults preserve old captures;
+        // old records used maxAniso alone to request anisotropic filtering.
+        let addrW = 2, mipLodBias = 0, anisotropyEnable = maxAniso > 1;
+        let compareEnable = false, compareOp = 7, minLod = 0, maxLod = 32, borderColor = 0;
+        if (r.left) {
+          if (r.u32() !== 0x314d4153) throw new Error('vk64: v2 SAMPLER unknown extension tail');
+          addrW = r.u32(); mipLodBias = r.f32(); anisotropyEnable = !!r.u32();
+          compareEnable = !!r.u32(); compareOp = r.u32(); minLod = r.f32(); maxLod = r.f32(); borderColor = r.u32();
+        }
+        r.done('SAMPLER');
         frame.samplers.set(id, {
           mag: FILTER[mag] || 'nearest', min: FILTER[min] || 'nearest', mipmap: FILTER[mipmap] || 'nearest',
-          addrU: ADDR[addrU] || 'clamp-to-edge', addrV: ADDR[addrV] || 'clamp-to-edge',
+          addrU: ADDR[addrU] || 'clamp-to-edge', addrV: ADDR[addrV] || 'clamp-to-edge', addrW: ADDR[addrW] || 'clamp-to-edge',
           maxAnisotropy: Math.max(1, Math.min(16, Math.round(maxAniso) || 1)),
+          anisotropyEnable, compareEnable, compareOp, mipLodBias, minLod, maxLod, borderColor,
         });
         break;
       }

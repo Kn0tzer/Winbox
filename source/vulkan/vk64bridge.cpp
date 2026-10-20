@@ -546,7 +546,11 @@ struct Image  : Obj {
 };
 struct ImageView : Obj { U64 image = 0; U32 format = 0, aspect = 0; };
 struct BufferView : Obj { U64 buffer = 0; U32 format = 0; U64 offset = 0, range = 0; };
-struct Sampler : Obj { U32 mag = 0, min = 0, mipmap = 0, addrU = 0, addrV = 0, addrW = 0; float maxAniso = 1.0f; };
+struct Sampler : Obj {
+    U32 mag = 0, min = 0, mipmap = 0, addrU = 0, addrV = 0, addrW = 0;
+    U32 anisotropyEnable = 0, compareEnable = 0, compareOp = 7, borderColor = 0;
+    float mipLodBias = 0.0f, maxAniso = 1.0f, minLod = 0.0f, maxLod = 32.0f;
+};
 struct ShaderModule : Obj {
     U32 stageHint = 0;
     U64 hash = 0;
@@ -1811,6 +1815,14 @@ struct ChunkWriter {
     void bytes(const U8* p, size_t n) { if (p && n) b.insert(b.end(), p, p + n); }
     void bytes(const std::vector<U8>& v) { bytes(v.data(), v.size()); }
 };
+static void writeSamplerRecordPayload(ChunkWriter& p, U64 id, const Sampler& s) {
+    p.u64(id);
+    p.u32(s.mag); p.u32(s.min); p.u32(s.mipmap);
+    p.u32(s.addrU); p.u32(s.addrV); p.f32(s.maxAniso);
+    p.u32(0x314d4153u); // SAM1
+    p.u32(s.addrW); p.f32(s.mipLodBias); p.u32(s.anisotropyEnable);
+    p.u32(s.compareEnable); p.u32(s.compareOp); p.f32(s.minLod); p.f32(s.maxLod); p.u32(s.borderColor);
+}
 static void emitColorBlend(const Pipeline& pipe, ChunkWriter& p) {
     p.u32(0x31444e42u); // BND1: attachment blend equations and write masks
     p.u32(pipe.colorBlendCount);
@@ -2307,9 +2319,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             Sampler* s = objOf<Sampler>(id, K_SAMPLER, "vkQueueSubmit");
             if (!s) return;
             emit(V2_SAMPLER, [&](ChunkWriter& p) {
-                p.u64(id);
-                p.u32(s->mag); p.u32(s->min); p.u32(s->mipmap);
-                p.u32(s->addrU); p.u32(s->addrV); p.f32(s->maxAniso);
+                writeSamplerRecordPayload(p, id, *s);
             });
         };
         auto emitImageDataInner = [&](U64 viewId) {
@@ -4150,7 +4160,9 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         Sampler* s = createObj<Sampler>(K_SAMPLER, id);
         s->mag = ci.magFilter; s->min = ci.minFilter; s->mipmap = ci.mipmapMode;
         s->addrU = ci.addressModeU; s->addrV = ci.addressModeV; s->addrW = ci.addressModeW;
-        s->maxAniso = ci.maxAnisotropy;
+        s->mipLodBias = ci.mipLodBias; s->anisotropyEnable = ci.anisotropyEnable;
+        s->maxAniso = ci.maxAnisotropy; s->compareEnable = ci.compareEnable; s->compareOp = ci.compareOp;
+        s->minLod = ci.minLod; s->maxLod = ci.maxLod; s->borderColor = ci.borderColor;
         wr64(args.a[3], id);
         return VK_SUCCESS;
     }
@@ -7009,7 +7021,9 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         Sampler* s = createObj32<Sampler>(K_SAMPLER, id);
         s->mag = ci.magFilter; s->min = ci.minFilter; s->mipmap = ci.mipmapMode;
         s->addrU = ci.addressModeU; s->addrV = ci.addressModeV; s->addrW = ci.addressModeW;
-        s->maxAniso = ci.maxAnisotropy;
+        s->mipLodBias = ci.mipLodBias; s->anisotropyEnable = ci.anisotropyEnable;
+        s->maxAniso = ci.maxAnisotropy; s->compareEnable = ci.compareEnable; s->compareOp = ci.compareOp;
+        s->minLod = ci.minLod; s->maxLod = ci.maxLod; s->borderColor = ci.borderColor;
         wr64_32(args.a[3], id);
         return VK_SUCCESS;
     }

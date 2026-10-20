@@ -14,6 +14,7 @@ import {
   v2TextureFormat, v2VertexFormat, v2Hex64,
   v2TargetKey, v2ImageTargetKey, v2ImageKnown, V2_UNKNOWN_IMAGE,
   wgslUniformSizes, parseMinBindingSize,
+  v2SamplerDescriptor, v2SamplerLayoutType, v2TextureSampleType,
 } from '../vkwebgpu.mjs';
 
 // --- LE fixture writer (mirrors the C++ ChunkWriter) ---
@@ -74,7 +75,8 @@ function dxvkFrame(frameNo = 7) {
   R.push(rec(V2_REC.IMAGE_DATA, cat(
     new W().u64(0x9e9).u64(0x1111).u32(4).u32(4).u32(37).u64(0x1002).u32(64).buf(), new Uint8Array(64).fill(7)
   )));
-  R.push(rec(V2_REC.SAMPLER, new W().u64(0x5a5a).u32(1).u32(1).u32(1).u32(2).u32(2).f32(4).buf()));
+  R.push(rec(V2_REC.SAMPLER, new W().u64(0x5a5a).u32(1).u32(1).u32(1).u32(3).u32(3).f32(8).u32(0x314d4153)
+    .u32(4).f32(1.25).u32(1).u32(1).u32(3).f32(2.5).f32(9.5).u32(4).buf()));
   R.push(rec(V2_REC.PUSH, cat(new W().u32(0).u32(16).u32(0x1f).buf(), new Uint8Array(16).fill(0xaa))));
   R.push(rec(V2_REC.PUSH, cat(new W().u32(16).u32(16).u32(0x1f).buf(), new Uint8Array(16).fill(0xbb))));
   R.push(rec(V2_REC.VIEWPORT, new W().f32(0).f32(0).f32(800).f32(600).f32(0).f32(1).buf()));
@@ -205,6 +207,14 @@ test('render-target cache keys alias by VkImage identity', () => {
   assert.ok(frame.shaders.has('59496e6684bf0791'));
   assert.ok(frame.shaders.has('88f8a5cebeefd8c1'));
 
+  const sampler = frame.samplers.get('0000000000005a5a');
+  assert.deepEqual(sampler, {
+    mag: 'linear', min: 'linear', mipmap: 'linear',
+    addrU: 'clamp-to-edge', addrV: 'clamp-to-edge', addrW: 'clamp-to-edge',
+    maxAnisotropy: 8, anisotropyEnable: true, compareEnable: true, compareOp: 3,
+    mipLodBias: 1.25, minLod: 2.5, maxLod: 9.5, borderColor: 4,
+  });
+
   const pipe = frame.pipelines.get('0000000000000099');
   assert.equal(pipe.topology, 3);
   assert.equal(pipe.vb.length, 1);
@@ -245,6 +255,35 @@ test('render-target cache keys alias by VkImage identity', () => {
   assert.equal(img.pixels.length, 64);
   assert.equal(frame.views.get('00000000000009e9'), '0000000000001111', 'view->image link resolves');
   assert.equal(frame.samplers.get('0000000000005a5a').mag, 'linear');
+});
+
+test('legacy sampler records retain defaults and comparison samplers map to WebGPU descriptors', () => {
+  const records = dxvkFrame();
+  const index = records.findIndex(r => r[0] === (V2_REC.SAMPLER & 255) && r[1] === 0);
+  assert.notEqual(index, -1);
+  records[index] = rec(V2_REC.SAMPLER, new W().u64(0x5a5a).u32(1).u32(1).u32(1).u32(2).u32(2).f32(4).buf());
+  const legacy = decodeV2Frame(frameRecords(records)).samplers.get('0000000000005a5a');
+  assert.equal(legacy.compareEnable, false);
+  assert.equal(legacy.addrW, 'clamp-to-edge');
+  assert.equal(legacy.minLod, 0);
+  assert.equal(legacy.maxLod, 32);
+
+  const descriptor = v2SamplerDescriptor({
+    mag: 'linear', min: 'linear', mipmap: 'linear', addrU: 'repeat', addrV: 'clamp-to-edge', addrW: 'mirror-repeat',
+    maxAnisotropy: 24, anisotropyEnable: true, compareEnable: true, compareOp: 3,
+    mipLodBias: 4, minLod: 2, maxLod: 10,
+  });
+  assert.deepEqual(descriptor, {
+    magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear',
+    addressModeU: 'repeat', addressModeV: 'clamp-to-edge', addressModeW: 'mirror-repeat',
+    lodMinClamp: 2, lodMaxClamp: 10, maxAnisotropy: 16, compare: 'less-equal',
+  });
+  assert.equal(v2SamplerLayoutType('sampler_comparison'), 'comparison');
+  assert.equal(v2TextureSampleType('texture_depth_2d', 'f32'), 'depth');
+  assert.equal(v2SamplerDescriptor({ ...legacy, mag: 'nearest' }).maxAnisotropy, 1);
+  const clampedLod = v2SamplerDescriptor({ ...legacy, minLod: -1, maxLod: -2 });
+  assert.equal(clampedLod.lodMinClamp, 0);
+  assert.equal(clampedLod.lodMaxClamp, 0);
 });
 
 test('malformed frames are rejected with a reason', () => {
