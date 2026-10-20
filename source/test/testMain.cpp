@@ -64,6 +64,7 @@ int totalFails = 0;
 
 const TestEntry TEST_ENTRIES[] = {
     {testCpuSystemInstructions, "CPU32 system instruction fault and store behavior"},
+    {testCpuCpuidAndCpuInfo, "CPU32 CPUID and proc cpuinfo architecture"},
     {testCpuDiff32Generated, "CPU32 QEMU differential instruction cases"},
     {testSseLdmxcsrReserved, "SSE LDMXCSR reserved bits fault"},
 #ifdef BOXEDWINE_WASM_JIT

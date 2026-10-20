@@ -3,6 +3,9 @@
 #include "testCPU.h"
 #include "ksignal.h"
 #include "testCpuSystem.h"
+#include "cpuinfo.h"
+#include "../../io/fsopennode.h"
+#include "../../io/fsfilenode.h"
 
 namespace {
 void emit(const U8* code, size_t size) {
@@ -91,5 +94,78 @@ void testCpuSystemInstructions() {
     testNewInstruction(0); emit(into, sizeof(into)); testRunCPU();
     if (context.cpu->getOF()) testFail("INTO cleared OF unexpectedly");
     runTrapCase("INTO", into, sizeof(into), 4, OF);
+}
+
+void testCpuCpuidAndCpuInfo() {
+    auto& context = testContext();
+    CPU* cpu = context.cpu;
+    U32 oldPentiumLevel = KSystem::pentiumLevel;
+    KSystem::pentiumLevel = 4;
+
+    auto checkCpuid = [&](U32 leaf, U32 eax, U32 ebx, U32 ecx, U32 edx) {
+        cpu->reg[0].u32 = leaf;
+        cpu->reg[1].u32 = 0xffffffff;
+        cpu->reg[2].u32 = 0xaaaaaaaa;
+        cpu->reg[3].u32 = 0x55555555;
+        cpu->cpuid();
+        if (cpu->reg[0].u32 != eax || cpu->reg[3].u32 != ebx ||
+                cpu->reg[1].u32 != ecx || cpu->reg[2].u32 != edx)
+            testFail("CPUID leaf %08x expected %08x:%08x:%08x:%08x got %08x:%08x:%08x:%08x",
+                leaf, eax, ebx, ecx, edx, cpu->reg[0].u32, cpu->reg[3].u32, cpu->reg[1].u32, cpu->reg[2].u32);
+    };
+
+    checkCpuid(0, 7, 0x756e6547, 0x6c65746e, 0x49656e69);
+    checkCpuid(1, 0x000006fb, 0x00010800, 0x00980201, 0x0788a131);
+    checkCpuid(7, 0, 0, 0, 0);
+    checkCpuid(0x80000000, 0x80000004, 0, 0, 0);
+    checkCpuid(0x80000001, 0, 0, 0, 0);
+    KSystem::pentiumLevel = oldPentiumLevel;
+
+    std::shared_ptr<FsNode> oldProcNode = KSystem::procNode;
+    if (!KSystem::procNode)
+        KSystem::procNode = std::make_shared<FsFileNode>(0, 0, B("/proc"), B(""), B(""), true, false, nullptr);
+    const bool oldIs64Bit = context.process->is64Bit;
+    auto readCpuInfo = [&](bool is64Bit) {
+        context.process->is64Bit = is64Bit;
+        std::unique_ptr<FsOpenNode> file(openCpuInfo(KSystem::procNode, K_O_RDONLY, 0));
+        if (!file) {
+            context.process->is64Bit = oldIs64Bit;
+            testFail("/proc/cpuinfo open failed");
+            return std::string();
+        }
+        U8 buffer[8192] = {};
+        U32 length = file->readNative(buffer, sizeof(buffer));
+        context.process->is64Bit = oldIs64Bit;
+        return std::string((const char*)buffer, length);
+    };
+    std::string cpuInfo32 = readCpuInfo(false);
+    std::string cpuInfo64 = readCpuInfo(true);
+    const char* expected32[] = {
+        "cpu family\t: 6\n",
+        "model\t\t: 15\n",
+        "stepping\t: 11\n",
+        "cpuid level\t: 7\n",
+        "flags\t\t: fpu tsc msr cx8 pge cmov clflush mmx fxsr sse sse2 pni ssse3 sse4_1 sse4_2 popcnt\n",
+        "clflush size\t: 64\n",
+        "address sizes\t: 32 bits physical, 32 bits virtual\n"
+    };
+    for (const char* line : expected32) {
+        if (cpuInfo32.find(line) == std::string::npos) testFail("/proc/cpuinfo 32-bit missing line: %s", line);
+    }
+    const char* expected64[] = {
+        "cpu family\t: 15\n",
+        "model\t\t: 4\n",
+        "model name\t: Intel(R) Pentium(R) 4 CPU 3.00GHz\n",
+        "stepping\t: 1\n",
+        "cpuid level\t: 1\n",
+        "flags\t\t: fpu tsc msr cx8 cmov clflush mmx fxsr sse sse2 cx16 popcnt nx syscall lm lahf_lm 3dnowprefetch\n",
+        "address sizes\t: 43 bits physical, 48 bits virtual\n"
+    };
+    for (const char* line : expected64) {
+        if (cpuInfo64.find(line) == std::string::npos) testFail("/proc/cpuinfo 64-bit missing line: %s", line);
+    }
+    KSystem::procNode = oldProcNode;
+    context.process->is64Bit = oldIs64Bit;
+    testNewInstruction(0);
 }
 #endif
