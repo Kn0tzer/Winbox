@@ -135,6 +135,7 @@ is emitted at the first submit-with-draw after a present, `FRAME_END` seals at
 | 0x10 | `INDEX_BIND` | `u64 bufId, u64 offset, u32 indexType (0=u16,1=u32)`. |
 | 0x11 | `DRAW` | `u32 vertexCount, instanceCount, firstVertex, firstInstance, u8 indexed, u8 pad[3], u32 indexCount, u32 firstIndex, i32 vertexOffset`. Covers `vkCmdDraw` and `vkCmdDrawIndexed`. |
 | 0x12 | `INLINE_BYTES` | `u8 setIndex, u8 pad, u16 pad, u32 binding, u32 dstArrayElement, u32 len, u8 bytes[len]`. Payload for `kind=4` (`INLINE_UNIFORM_BLOCK`) bindings, whose bytes live in guest memory at write time. |
+| 0x18 | `DEPTH_BIAS` | `f32 constantFactor, clamp, slopeFactor`, dynamic `vkCmdSetDepthBias` state in command order. |
 
 Deliberately **not** in v2: secondary command buffers (DXVK doesn't use them
 for D3D9), input attachments, tessellation/geometry stages (pipeline records
@@ -250,6 +251,14 @@ Frames without this tail retain the legacy alpha-blending fallback. New frames
 preserve multiplicative shadows, additive effects and attachment write masks.
 This tail carries static pipeline constants; dynamic `vkCmdSetBlendConstants`
 command support is a separate remaining bridge feature.
+
+Depth-bias extensions (2026-10-20): `PIPELINE` appends `DBS1` (`0x31534244`),
+then u32 `depthBiasEnable, depthClampEnable, depthBiasDynamic`, followed by f32
+`depthBiasConstantFactor, depthBiasClamp, depthBiasSlopeFactor`. Older records
+omit the tail and decode with depth bias/clamp disabled. Dynamic
+`vkCmdSetDepthBias` is record `0x18` above. The WebGPU page rounds the constant
+factor to an integer and applies depth clipping control only when the optional
+`depth-clip-control` device feature is available.
 
 Stencil extensions (2026-10-19): `PIPELINE` appends `STN1` (`0x314e5453`),
 then u32 enable, dynamic mask (bits 0 compare mask, 1 write mask, 2 reference),

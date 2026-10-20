@@ -57,7 +57,7 @@ export const V2_REC = Object.freeze({
   BUFFER_DATA: 0x09, IMAGE_DATA: 0x0A, SAMPLER: 0x0B, PUSH: 0x0C,
   VIEWPORT: 0x0D, SCISSOR: 0x0E, VERTEX_BIND: 0x0F, INDEX_BIND: 0x10,
   DRAW: 0x11, INLINE_BYTES: 0x12, READBACK: 0x13, IMAGE_COPY: 0x14,
-  STENCIL_STATE: 0x15, BLEND_CONSTANTS: 0x16, CLEAR_ATTACHMENTS: 0x17,
+  STENCIL_STATE: 0x15, BLEND_CONSTANTS: 0x16, CLEAR_ATTACHMENTS: 0x17, DEPTH_BIAS: 0x18,
 });
 
 // Vulkan descriptor types (numeric, as the bridge records them).
@@ -112,7 +112,7 @@ export function parseV2Chunk(bytes) {
     if (p + V2_REC_HEADER_LEN > bytes.length) throw new Error('vk64: v2 chunk truncated record header');
     const type = dv.getUint16(p, true);
     const len = dv.getUint32(p + 4, true);
-    if (type < V2_REC.FRAME_BEGIN || type > V2_REC.CLEAR_ATTACHMENTS)
+    if (type < V2_REC.FRAME_BEGIN || type > V2_REC.DEPTH_BIAS)
       throw new Error('vk64: v2 unknown record type 0x' + type.toString(16));
     if (len > V2_MAX_RECORD_BYTES || p + V2_REC_HEADER_LEN + len > bytes.length)
       throw new Error('vk64: v2 record 0x' + type.toString(16) + ' truncated (len ' + len + ')');
@@ -406,7 +406,7 @@ export function decodeV2Frame(records, counters = {}) {
           vsSpec = readSpec();
           fsSpec = readSpec();
         }
-        let colorBlend, blendConstants, stencil, blendConstantsDynamic;
+        let colorBlend, blendConstants, stencil, blendConstantsDynamic, depthBias;
         while (r.left) {
           const tag = r.u32();
           if (tag === 0x314e5453) {
@@ -415,6 +415,16 @@ export function decodeV2Frame(records, counters = {}) {
             const face = () => ({failOp:r.u32(), passOp:r.u32(), depthFailOp:r.u32(), compareOp:r.u32(), compareMask:r.u32(), writeMask:r.u32(), reference:r.u32()});
             stencil = {enabled, dynamicMask, front:face(), back:face()};
             blendConstantsDynamic = !!dynamicBlend;
+            continue;
+          }
+          if (tag === 0x31534244) {
+            const depthBiasEnable = r.u32(), depthClampEnable = r.u32(), depthBiasDynamic = r.u32();
+            const depthBiasConstantFactor = r.f32(), depthBiasClamp = r.f32(), depthBiasSlopeFactor = r.f32();
+            if (depthBiasEnable > 1 || depthClampEnable > 1 || depthBiasDynamic > 1 ||
+                !Number.isFinite(depthBiasConstantFactor) || !Number.isFinite(depthBiasClamp) || !Number.isFinite(depthBiasSlopeFactor))
+              throw new Error('vk64: v2 PIPELINE invalid depth-bias state');
+            depthBias = {depthBiasEnable, depthClampEnable, depthBiasDynamic: !!depthBiasDynamic,
+              depthBiasConstantFactor, depthBiasClamp, depthBiasSlopeFactor};
             continue;
           }
           if (tag !== 0x31444e42) throw new Error('vk64: v2 PIPELINE unknown extension tail');
@@ -428,7 +438,7 @@ export function decodeV2Frame(records, counters = {}) {
           blendConstants = [r.f32(), r.f32(), r.f32(), r.f32()];
         }
         r.done('PIPELINE');
-        const pipe = { pipeId, vsHash, fsHash, topology, cull, front, depthTest, depthWrite, depthOp, blend, vb, va, vsSpec, fsSpec, ...(colorBlend ? { colorBlend, blendConstants } : {}), ...(stencil ? {stencil, blendConstantsDynamic} : {}) };
+        const pipe = { pipeId, vsHash, fsHash, topology, cull, front, depthTest, depthWrite, depthOp, blend, vb, va, vsSpec, fsSpec, ...(colorBlend ? { colorBlend, blendConstants } : {}), ...(stencil ? {stencil, blendConstantsDynamic} : {}), ...(depthBias || {}) };
         frame.pipelines.set(pipeId, pipe);
         needPass().ops.push({ op: 'bindPipe', pipe });
         break;
@@ -567,6 +577,11 @@ export function decodeV2Frame(records, counters = {}) {
         const rects=[];
         for(let a=0;a<rectCount;a++) rects.push({x:r.u32()|0,y:r.u32()|0,w:r.u32(),h:r.u32(),baseLayer:r.u32(),layers:r.u32()});
         r.done('CLEAR_ATTACHMENTS'); needPass().ops.push({op:'clearAttachments',attachments,rects}); break;
+      }
+      case V2_REC.DEPTH_BIAS: {
+        const constantFactor = r.f32(), clamp = r.f32(), slopeFactor = r.f32(); r.done('DEPTH_BIAS');
+        if (![constantFactor, clamp, slopeFactor].every(Number.isFinite)) throw new Error('vk64: v2 invalid depth bias');
+        needPass().ops.push({op:'depthBias',constantFactor,clamp,slopeFactor}); break;
       }
       case V2_REC.VIEWPORT: {
         const v = [r.f32(), r.f32(), r.f32(), r.f32(), r.f32(), r.f32()]; r.done('VIEWPORT');

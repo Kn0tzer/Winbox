@@ -9,6 +9,7 @@ test('replay carries a pipeline bound before the render pass, preserves push con
   let groups = new Map();
   let validationError = null;
   const device = {
+    features: new Set(),
     lost: new Promise(() => {}), addEventListener() {}, pushErrorScope() {}, async popErrorScope() {
       const error = validationError; validationError = null; return error;
     },

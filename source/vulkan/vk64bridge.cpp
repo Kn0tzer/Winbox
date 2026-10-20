@@ -262,6 +262,7 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkCmdSetStencilCompareMask, "vkCmdSetStencilCompareMask") \
     X(VK64_fn_vkCmdSetStencilWriteMask, "vkCmdSetStencilWriteMask") \
     X(VK64_fn_vkCmdSetStencilReference, "vkCmdSetStencilReference") \
+    X(VK64_fn_vkCmdSetDepthBias, "vkCmdSetDepthBias") \
     X(VK64_fn_vkCmdCopyQueryPoolResults, "vkCmdCopyQueryPoolResults") \
     X(VK64_fn_vkCmdDraw,                            "vkCmdDraw")           \
     X(VK64_fn_vkCmdPipelineBarrier,                 "vkCmdPipelineBarrier")\
@@ -612,6 +613,9 @@ struct StencilState {
 };
 struct Pipeline : Obj {
     U32 topology = 0, cull = 0, front = 0, depthTest = 0, depthWrite = 0, depthOp = 0, blend = 0;
+    U32 depthBiasEnable = 0, depthClampEnable = 0;
+    bool depthBiasDynamic = false;
+    float depthBiasConstantFactor = 0.0f, depthBiasClamp = 0.0f, depthBiasSlopeFactor = 0.0f;
     U32 colorBlendCount = 0; ColorBlend colorBlend[VK64_MAX_ATTACH];
     float blendConstants[4] = {};
     bool blendConstantsDynamic = false;
@@ -669,7 +673,7 @@ enum CmdKind : U32 {
     CMD_BEGIN_RP, CMD_END_RP, CMD_BIND_PIPE, CMD_BIND_SETS, CMD_VIEWPORT,
     CMD_SCISSOR, CMD_DRAW, CMD_DRAW_INDEXED, CMD_BARRIER, CMD_COPY_B2I, CMD_PUSH_CONST,
     CMD_BIND_VB, CMD_BIND_IB, CMD_UPDATE_BUF, CMD_COPY_I2B, CMD_DISPATCH, CMD_COPY_IMAGE,
-    CMD_STENCIL_STATE, CMD_BLEND_CONSTANTS, CMD_CLEAR_ATTACHMENTS, CMD_COPY_QUERY_RESULTS
+    CMD_STENCIL_STATE, CMD_BLEND_CONSTANTS, CMD_CLEAR_ATTACHMENTS, CMD_COPY_QUERY_RESULTS, CMD_DEPTH_BIAS
 };
 struct Copy {
     U64 srcBuffer = 0, dstImage = 0, bufOff = 0;
@@ -1781,6 +1785,7 @@ enum V2Rec : U32 {
     V2_VERTEX_BIND = 0x0F, V2_INDEX_BIND = 0x10, V2_DRAW = 0x11,
     V2_INLINE_BYTES = 0x12, V2_READBACK = 0x13, V2_IMAGE_COPY = 0x14,
     V2_STENCIL_STATE = 0x15, V2_BLEND_CONSTANTS = 0x16, V2_CLEAR_ATTACHMENTS = 0x17,
+    V2_DEPTH_BIAS = 0x18,
 };
 const U32 V2_CHUNK_MAGIC = 0x46324B56u;   // 'VK2F' little-endian: bytes 56 4B 32 46
 const U32 V2_CHUNK_VERSION = 2;
@@ -1843,6 +1848,13 @@ static void emitStencil(const Pipeline& pipe, ChunkWriter& p) {
         p.u32(f.compareMask); p.u32(f.writeMask); p.u32(f.reference);
     };
     face(pipe.stencil.front); face(pipe.stencil.back);
+}
+
+static void emitDepthBias(ChunkWriter& p, U32 depthBiasEnable, U32 depthClampEnable,
+                          U32 dynamic, float constantFactor, float clamp, float slopeFactor) {
+    p.u32(0x31534244u); // DBS1
+    p.u32(depthBiasEnable); p.u32(depthClampEnable); p.u32(dynamic);
+    p.f32(constantFactor); p.f32(clamp); p.f32(slopeFactor);
 }
 
 // One frame under construction: an open chunk plus sealed chunks. Records never
@@ -2497,6 +2509,8 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 emitSpec(pipe->fsSpec);
                 emitColorBlend(*pipe, p);
                 emitStencil(*pipe, p);
+                emitDepthBias(p, pipe->depthBiasEnable, pipe->depthClampEnable, pipe->depthBiasDynamic ? 1 : 0,
+                              pipe->depthBiasConstantFactor, pipe->depthBiasClamp, pipe->depthBiasSlopeFactor);
             });
         };
         auto emitRpBegin = [&](const Cmd& k) {
@@ -2622,6 +2636,9 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     break;
                 case CMD_BLEND_CONSTANTS:
                     emit(V2_BLEND_CONSTANTS, [&](ChunkWriter& p) { for (int i = 0; i < 4; ++i) p.f32(k.f[i]); });
+                    break;
+                case CMD_DEPTH_BIAS:
+                    emit(V2_DEPTH_BIAS, [&](ChunkWriter& p) { p.f32(k.f[0]); p.f32(k.f[1]); p.f32(k.f[2]); });
                     break;
                 case CMD_CLEAR_ATTACHMENTS:
                     emit(V2_CLEAR_ATTACHMENTS, [&](ChunkWriter& p) {
@@ -2924,8 +2941,8 @@ void fillCoreFeatures(VkPhysicalDeviceFeatures* f) {
      * (no WGSL target stage) instead of silently misrendering. */
     f->geometryShader = VK_TRUE;        /* advertised; NOT implemented (see above) */
     f->tessellationShader = VK_FALSE;   /* stays FALSE: caps max FL at 10_1 */
-    f->depthBiasClamp = VK_TRUE;        /* advertised; clamp approximated */
-    f->depthClamp = VK_TRUE;            /* advertised; see above */
+    f->depthBiasClamp = VK_TRUE;        /* replayed with WebGPU depthBiasClamp */
+    f->depthClamp = VK_TRUE;            /* page requests depth-clip-control when available */
     f->dualSrcBlend = VK_TRUE;          /* advertised; rare in practice */
     f->fillModeNonSolid = VK_TRUE;      /* advertised; wireframe not implemented */
     f->multiViewport = VK_TRUE;         /* advertised; WebGPU supports 1 viewport */
@@ -4224,6 +4241,9 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             p->topology = ia.topology;
             p->cull = rs.cullMode;
             p->front = rs.frontFace;
+            p->depthBiasEnable = rs.depthBiasEnable; p->depthClampEnable = rs.depthClampEnable;
+            p->depthBiasConstantFactor = rs.depthBiasConstantFactor; p->depthBiasClamp = rs.depthBiasClamp;
+            p->depthBiasSlopeFactor = rs.depthBiasSlopeFactor;
             p->depthTest = ds.depthTestEnable;
             p->depthWrite = ds.depthWriteEnable;
             p->depthOp = ds.depthCompareOp;
@@ -4260,6 +4280,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 for (auto state : states) {
                     const U32 value = (U32)state;
                     if (value == (U32)VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE) p->dynamicVertexStride = true;
+                    if (value == (U32)VK_DYNAMIC_STATE_DEPTH_BIAS) p->depthBiasDynamic = true;
                     if (value >= 6 && value <= 8) p->stencil.dynamicMask |= 1u << (value - 6);
                     if (value == 4) p->blendConstantsDynamic = true;
                 }
@@ -5032,6 +5053,13 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         if (!cb || !args.a[1]) return 0;
         Cmd c; c.kind = CMD_BLEND_CONSTANTS;
         g_mem->memcpyFromGuest(c.f, args.a[1], 16);
+        pushCmd(cb, c); return 0;
+    }
+    case VK64_fn_vkCmdSetDepthBias: {
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdSetDepthBias");
+        if (!cb) return 0;
+        Cmd c; c.kind = CMD_DEPTH_BIAS;
+        for (U32 i = 0; i < 3; ++i) { U32 bits = (U32)args.a[i + 1]; memcpy(&c.f[i], &bits, sizeof(bits)); }
         pushCmd(cb, c); return 0;
     }
     case VK64_fn_vkCmdSetViewport: {
@@ -7064,6 +7092,9 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             p->topology = ia.topology;
             p->cull = rs.cullMode;
             p->front = rs.frontFace;
+            p->depthBiasEnable = rs.depthBiasEnable; p->depthClampEnable = rs.depthClampEnable;
+            p->depthBiasConstantFactor = rs.depthBiasConstantFactor; p->depthBiasClamp = rs.depthBiasClamp;
+            p->depthBiasSlopeFactor = rs.depthBiasSlopeFactor;
             p->depthTest = ds.depthTestEnable;
             p->depthWrite = ds.depthWriteEnable;
             p->depthOp = ds.depthCompareOp;
@@ -7100,6 +7131,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 for (auto state : states) {
                     const U32 value = (U32)state;
                     if (value == (U32)VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE) p->dynamicVertexStride = true;
+                    if (value == (U32)VK_DYNAMIC_STATE_DEPTH_BIAS) p->depthBiasDynamic = true;
                     if (value >= 6 && value <= 8) p->stencil.dynamicMask |= 1u << (value - 6);
                     if (value == 4) p->blendConstantsDynamic = true;
                 }
@@ -7432,6 +7464,13 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         if (!cb || !args.a[1]) return 0;
         Cmd c; c.kind = CMD_BLEND_CONSTANTS;
         g_mem32->memcpyFromGuest(c.f, (U32)args.a[1], 16);
+        pushCmd(cb, c); return 0;
+    }
+    case VK64_fn_vkCmdSetDepthBias: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdSetDepthBias");
+        if (!cb) return 0;
+        Cmd c; c.kind = CMD_DEPTH_BIAS;
+        for (U32 i = 0; i < 3; ++i) { U32 bits = (U32)args.a[i + 1]; memcpy(&c.f[i], &bits, sizeof(bits)); }
         pushCmd(cb, c); return 0;
     }
     case VK64_fn_vkCmdSetViewport: {

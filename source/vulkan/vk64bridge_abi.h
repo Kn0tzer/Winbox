@@ -350,6 +350,7 @@ enum {
     VK64_fn_vkCmdSetStencilWriteMask,
     VK64_fn_vkCmdSetStencilReference,
     VK64_fn_vkCmdCopyQueryPoolResults = 904, // (cmdBuf, pool, first, count, dstBuffer, offset, stride, flags)
+    VK64_fn_vkCmdSetDepthBias = 905,          // (cmdBuf, constantFactor bits, clamp bits, slopeFactor bits)
     VK64_fn__MAX
 };
 

@@ -37,7 +37,7 @@ test('V2_REC has all expected record types', () => {
     'SHADER', 'PIPELINE', 'BIND_SETS', 'DESC_SET',
     'BUFFER_DATA', 'IMAGE_DATA', 'SAMPLER', 'PUSH',
     'VIEWPORT', 'SCISSOR', 'VERTEX_BIND', 'INDEX_BIND',
-    'DRAW', 'INLINE_BYTES', 'READBACK',
+    'DRAW', 'INLINE_BYTES', 'READBACK', 'DEPTH_BIAS',
   ];
   for (const e of expected) {
     assert.ok(v2rec[e] !== undefined, `V2_REC must define ${e}`);

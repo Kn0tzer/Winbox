@@ -69,6 +69,22 @@ export const MAX_UNIFORM_RANGE = 65536; // guaranteed maxUniformBufferBindingSiz
 const DEPTH_OP = { 0: 'never', 1: 'less', 2: 'equal', 3: 'less-equal', 4: 'greater', 5: 'not-equal', 6: 'greater-equal', 7: 'always' };
 const CULL = { 0: 'none', 1: 'front', 2: 'back' };
 const FRONT = { 0: 'ccw', 1: 'cw' };
+export function v2DepthBiasState(pipe) {
+  return pipe.depthBiasEnable ? {
+    depthBias: Math.round(pipe.depthBiasConstantFactor || 0),
+    depthBiasClamp: pipe.depthBiasClamp || 0,
+    depthBiasSlopeScale: pipe.depthBiasSlopeFactor || 0,
+  } : { depthBias: 0, depthBiasClamp: 0, depthBiasSlopeScale: 0 };
+}
+export function v2PrimitiveState(pipe, hasDepthClipControl, indexType = 0) {
+  const stripIndexType = pipe.topology === 2 || pipe.topology === 4 ? indexType : undefined;
+  return {
+    topology: V2_TOPOLOGY[pipe.topology] || 'triangle-list',
+    stripIndexFormat: /** @type {GPUIndexFormat|undefined} */ (stripIndexType === undefined ? undefined : stripIndexType ? 'uint32' : 'uint16'),
+    cullMode: CULL[pipe.cull] || 'none', frontFace: FRONT[pipe.front] || 'ccw',
+    ...(pipe.depthClampEnable && hasDepthClipControl ? {unclippedDepth:true} : {}),
+  };
+}
 export function v2SamplerLayoutType(shaderType) {
   return shaderType === 'sampler_comparison' ? 'comparison' : shaderType === 'sampler' ? 'filtering' : null;
 }
@@ -459,7 +475,7 @@ export async function createVkRenderer(canvas, { translate, log = defaultLog } =
   if (!adapter) throw new Error('No WebGPU adapter');
   // The adapter's own feature set (not the v2 renderer's preference list) decides
   // whether genuine GPU timing is possible on this legacy path.
-  const requiredFeatures = /** @type {GPUFeatureName[]} */ (['texture-compression-bc', 'depth32float-stencil8', 'float32-filterable', 'clip-distances', 'timestamp-query'])
+  const requiredFeatures = /** @type {GPUFeatureName[]} */ (['texture-compression-bc', 'depth32float-stencil8', 'float32-filterable', 'clip-distances', 'timestamp-query', 'depth-clip-control'])
     .filter(feature => adapter.features.has(feature));
   const device = await adapter.requestDevice({ requiredFeatures });
   const errors = [];
@@ -1030,7 +1046,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   if (!navigator.gpu) throw new Error('WebGPU is unavailable');
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error('No WebGPU adapter');
-  const requiredFeatures = /** @type {GPUFeatureName[]} */ (['texture-compression-bc', 'depth32float-stencil8', 'float32-filterable', 'clip-distances', 'timestamp-query'])
+  const requiredFeatures = /** @type {GPUFeatureName[]} */ (['texture-compression-bc', 'depth32float-stencil8', 'float32-filterable', 'clip-distances', 'timestamp-query', 'depth-clip-control'])
     .filter(feature => adapter.features.has(feature));
   const device = await adapter.requestDevice({ requiredFeatures });
   const errors = [];
@@ -1309,7 +1325,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     // pass depth state and always emit a (possibly disabled) depthStencil
     // when the pass has depth.
     const stripIndexType = pipe.topology === 2 || pipe.topology === 4 ? indexType : undefined;
-    const key = pipe.pipeId + ':ms' + sampleCount + ':topology:' + pipe.topology + ':vb:' + JSON.stringify(pipe.vb) + ':yny' + (unnegated ? '1' : '0') + ':pd' + (passHasDepth ? '1' : '0') + ':dt' + (pipe.depthTest ? '1' : '0') + ':si' + (stripIndexType ?? 'none') + ':colors' + colorFormats.join(',') + ':blend:' + JSON.stringify(pipe.colorBlend ?? pipe.blend) + ':depth:' + depthFormat + ':stencil:' + JSON.stringify(pipe.stencil) + ':aspects:' + depthAspects;
+    const key = pipe.pipeId + ':ms' + sampleCount + ':topology:' + pipe.topology + ':vb:' + JSON.stringify(pipe.vb) + ':yny' + (unnegated ? '1' : '0') + ':pd' + (passHasDepth ? '1' : '0') + ':dt' + (pipe.depthTest ? '1' : '0') + ':si' + (stripIndexType ?? 'none') + ':colors' + colorFormats.join(',') + ':blend:' + JSON.stringify(pipe.colorBlend ?? pipe.blend) + ':depth:' + depthFormat + ':stencil:' + JSON.stringify(pipe.stencil) + ':db:' + JSON.stringify([pipe.depthBiasEnable,pipe.depthBiasConstantFactor,pipe.depthBiasClamp,pipe.depthBiasSlopeFactor,pipe.depthClampEnable]) + ':aspects:' + depthAspects;
     if (pipelines.has(key)) return pipelines.get(key);
     const vsm = F.shaders.get(pipe.vsHash), fsm = F.shaders.get(pipe.fsHash);
     if (!vsm || !fsm) return { skip: 'missing-shader' };
@@ -1438,14 +1454,11 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
         module: device.createShaderModule({ code: fsR.code }), entryPoint: 'main',
         targets: colorTargets,
       },
-      primitive: {
-        topology: V2_TOPOLOGY[pipe.topology] || 'triangle-list',
-        stripIndexFormat: stripIndexType === undefined ? undefined : stripIndexType ? 'uint32' : 'uint16',
-        cullMode: CULL[pipe.cull] || 'none', frontFace: FRONT[pipe.front] || 'ccw',
-      },
+      primitive: v2PrimitiveState(pipe, device.features?.has('depth-clip-control') === true, indexType),
       depthStencil: passHasDepth ? {
         format: /** @type {GPUTextureFormat} */ (depthFormat),
         ...stencil.state,
+        ...v2DepthBiasState(pipe),
         depthWriteEnabled: (depthAspects & 2) && pipe.depthTest ? !!pipe.depthWrite : false,
         depthCompare: pipe.depthTest ? (DEPTH_OP[pipe.depthOp] || 'less-equal') : 'always',
       } : undefined,
@@ -1752,7 +1765,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       pipeRec: null, pipeDesc: null, pipeNeg: false, sets: new Map(), setVer: new Map(), inlineMap: new Map(),
       pushBlock: new Uint8Array(V2_PUSH_SIZE), pushDirty: false,
       vbinds: [], ibind: null, viewport: null, scissor: null,
-      pipeBad: false, badPipes: new Map(), dynamicStencil:[[undefined,undefined],[undefined,undefined],[undefined,undefined]], blendConstants:[0,0,0,0],
+      pipeBad: false, badPipes: new Map(), dynamicStencil:[[undefined,undefined],[undefined,undefined],[undefined,undefined]], blendConstants:[0,0,0,0], depthBias:null,
     };
     const bump = si => st.setVer.set(si, (st.setVer.get(si) || 0) + 1);
 
@@ -1891,6 +1904,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
             break;
           }
           case 'blendConstants': st.blendConstants=op.values; break;
+          case 'depthBias': st.depthBias=op; break;
           case 'bindSets': break; // sets resolve from DESC_SET records; ids kept for debugging
           case 'descSet': st.sets.set(op.setIndex, { bindings: op.bindings }); bump(op.setIndex); break;
           case 'inline': st.inlineMap.set(op.setIndex + ':' + op.binding, op.bytes); bump(op.setIndex); break;
@@ -1905,6 +1919,8 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
             let drawPipe;
             try {drawPipe=v2StencilPipeline(st.pipeDesc,st.dynamicStencil);}
             catch(error) {stats.unsupported++;stats.skippedDraws=(stats.skippedDraws||0)+1;break;}
+            if (drawPipe.depthBiasDynamic && st.depthBias)
+              drawPipe = {...drawPipe,depthBiasConstantFactor:st.depthBias.constantFactor,depthBiasClamp:st.depthBias.clamp,depthBiasSlopeFactor:st.depthBias.slopeFactor};
             const selected=await getPipelineFor(drawPipe,passSamples,st.pipeNeg,!!depthView,st.ibind?.indexType||0,passColorFormats,passDepthFormat,passDepthAspects);
             if(selected.skip) {stats.skippedDraws=(stats.skippedDraws||0)+1;break;}
             st.pipeRec=selected;
