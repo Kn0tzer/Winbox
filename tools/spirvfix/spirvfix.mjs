@@ -90,6 +90,7 @@ for (let op = 87; op <= 251; op++) {
   if (![99, 218, 219, 220, 221, 224, 225, 228, 246, 247, 248, 249, 250, 251,
         252, 253, 255, 256, 257, 258].includes(op)) HAS_TYPE_ID.add(op);
 }
+HAS_TYPE_ID.add(5381); // OpIsHelperInvocationEXT: result type + result id
 // opcodes with a result-id but no result-type (labels; untyped type decls)
 const HAS_ID_ONLY = new Set([19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
   31, 32, 33, 45, 248]);
@@ -742,48 +743,78 @@ export function foldSpecConstants(mod, log, specOverrides) {
     (remaining.length ? `, ${remaining.length} UNSUPPORTED (left as-is)` : ''));
   return true;
 }
-// Non-point rasterization ignores PointSize and has undefined PointCoord.
-// Keep their computations in Private variables only with known line/triangle
-// topology. Point and unknown topology retain naga's strict unsupported error.
-function privatizePointBuiltins(mod, log, topology) {
-  if (![1, 2, 3, 4].includes(topology)) return false;
-  const builtins = mod.insns.filter(i => i.op === Op.Decorate && i.words[1] === 11
-    && [1, 16].includes(i.words[2]));
-  if (!builtins.length) return false;
+// WebGPU has no point size or point-coordinate builtin. Drop PointSize stores
+// for every topology and substitute the center for PointCoord reads. True
+// point sprites need quad expansion in the renderer, which is out of scope.
+function stripPointBuiltins(mod, log) {
+  const decorations = mod.insns.filter(i => i.op === Op.Decorate && i.words[1] === 11 && [1, 16].includes(i.words[2]));
+  if (!decorations.length) return false;
   const byId = new Map(mod.insns.filter(i => i.resultId != null).map(i => [i.resultId, i]));
-  const ids = new Set(builtins.map(i => i.words[0]));
-  // Pointer-chain result types would need independent storage-class rewriting.
-  if (mod.insns.some(i => [65, 66, 67].includes(i.op) && ids.has(i.words[2]))) return false;
-  if (builtins.some(deco => {
-    const variable = byId.get(deco.words[0]), pointer = variable && byId.get(variable.words[0]);
-    const storage = deco.words[2] === 1 ? 3 : 1;
-    return !variable || !pointer || pointer.op !== Op.TypePointer
-      || variable.words[2] !== storage || pointer.words[1] !== storage;
-  })) return false;
-  const add = [], newId = makeIdSource(mod);
-  for (const deco of builtins) {
-    const variable = byId.get(deco.words[0]), pointer = variable && byId.get(variable.words[0]);
-    if (!variable || !pointer || pointer.op !== Op.TypePointer) return false;
-    const storage = deco.words[2] === 1 ? 3 : 1;
-    if (variable.words[2] !== storage || pointer.words[1] !== storage) return false;
-    let privatePointer = mod.insns.concat(add).find(i => i.op === Op.TypePointer && i.words[1] === 6 && i.words[2] === pointer.words[2]);
-    if (!privatePointer) {
-      const id = newId();
-      privatePointer = { op: Op.TypePointer, words: [id, 6, pointer.words[2]], resultId: id, resultType: null };
-      add.push(privatePointer);
+  const ids = new Set(decorations.map(i => i.words[0]));
+  const rewrites = [];
+  const pointLoadCount = (() => {
+    let count = 0;
+    const ids = new Set(decorations.map(i => i.words[0]));
+    for (const ins of mod.insns) if (ins.op === Op.Load && ids.has(ins.words[2])) count++;
+    return count;
+  })();
+  const removedStores = new Set();
+  const constants = [];
+  const constantByKey = new Map();
+  const newId = makeIdSource(mod);
+  const constant = (typeId, value) => {
+    const key = `${typeId}:${value}`;
+    if (constantByKey.has(key)) return constantByKey.get(key);
+    const type = byId.get(typeId);
+    if (!type) throw new Error(`missing point builtin value type %${typeId}`);
+    let id, ins;
+    if (type.op === Op.TypeFloat && type.words[1] === 32) {
+      const bits = value === 0.5 ? 0x3f000000 : 0;
+      const found = mod.insns.find(i => i.op === Op.Constant && i.resultType === typeId && i.words[2] === bits);
+      if (found) { constantByKey.set(key, found.resultId); return found.resultId; }
+      id = newId(); ins = { op: Op.Constant, words: [typeId, id, bits], resultType: typeId, resultId: id };
+    } else if (type.op === Op.TypeVector && type.words[2] === 2) {
+      const scalarType = byId.get(type.words[1]);
+      if (!scalarType || scalarType.op !== Op.TypeFloat || scalarType.words[1] !== 32)
+        throw new Error('PointCoord must be vec2<f32>');
+      const component = constant(type.words[1], value);
+      id = newId(); ins = { op: Op.ConstantComposite, words: [typeId, id, component, component], resultType: typeId, resultId: id };
+    } else throw new Error(`unsupported point builtin value type %${typeId}`);
+    constants.push(ins); constantByKey.set(key, id); return id;
+  };
+
+  for (const deco of decorations) {
+    const id = deco.words[0], builtin = deco.words[2];
+    const variable = byId.get(id), pointer = variable && byId.get(variable.words[0]);
+    const storage = builtin === 1 ? 3 : 1;
+    if (!variable || variable.op !== Op.Variable || !pointer || pointer.op !== Op.TypePointer ||
+        variable.words[2] !== storage || pointer.words[1] !== storage) {
+      log.push(`spirvfix: left point builtin %${id} unchanged (unsupported interface shape)`);
+      return false;
     }
-    variable.words[0] = privatePointer.resultId; variable.resultType = privatePointer.resultId; variable.words[2] = 6;
-    if (deco.words[2] === 16) {
-      const zero = newId();
-      add.push({ op: Op.ConstantNull, words: [pointer.words[2], zero], resultType: pointer.words[2], resultId: zero });
-      variable.words[3] = zero; // zero is one permitted value of non-point PointCoord
+    for (const ins of mod.insns) {
+      if (ins === variable || ins.op === Op.Decorate || ins.op === 72 || ins.op === Op.Name || ins.op === Op.EntryPoint) continue;
+      if (builtin === 1 && ins.op === 62 && ins.words[0] === id) {
+        removedStores.add(ins); continue;
+      }
+      if (ins.op === 61 && ins.words[2] === id) {
+        const zero = constant(ins.resultType, builtin === 16 ? 0.5 : 0);
+        rewrites.push({ ins, zero }); continue;
+      }
+      if ([65, 66, 67, 68, 70, 83].includes(ins.op) && ins.words[2] === id) {
+        log.push(`spirvfix: left point builtin %${id} unchanged (pointer is used outside direct loads/stores)`);
+        return false;
+      }
     }
   }
-  mod.insns = mod.insns.filter(i => !builtins.includes(i));
-  // New types/constants must precede the globals that use them.
-  const firstVariable = mod.insns.findIndex(i => i.op === Op.Variable);
-  mod.insns.splice(firstVariable < 0 ? sections(mod).firstFunc : firstVariable, 0, ...add);
-  if (mod.header.version < 0x00010400) for (const entry of mod.insns.filter(i => i.op === Op.EntryPoint)) {
+
+  for (const { ins, zero } of rewrites) {
+    ins.op = Op.CopyObject;
+    ins.words = [ins.resultType, ins.resultId, zero];
+  }
+  mod.insns = mod.insns.filter(i => !removedStores.has(i) &&
+    !((i.op === Op.Variable || i.op === Op.Decorate || i.op === Op.Name) && ids.has(i.resultId ?? i.words[0])));
+  for (const entry of mod.insns.filter(i => i.op === Op.EntryPoint)) {
     let start = 2;
     while (start < entry.words.length) {
       const word = entry.words[start++];
@@ -791,16 +822,25 @@ function privatizePointBuiltins(mod, log, topology) {
     }
     entry.words = entry.words.slice(0, start).concat(entry.words.slice(start).filter(id => !ids.has(id)));
   }
-  log.push(`spirvfix: privatized ${builtins.length} unused point builtin(s) for non-point topology ${topology}`);
+  const firstVariable = mod.insns.findIndex(i => i.op === Op.Variable || i.op === Op.Function);
+  mod.insns.splice(firstVariable < 0 ? mod.insns.length : firstVariable, 0, ...constants);
+  log.push(`spirvfix: stripped ${decorations.filter(i => i.words[2] === 1).length} PointSize output(s) and replaced ${pointLoadCount} point builtin load(s)`);
   return true;
 }
 
 // Demote continues helper execution; Kill terminates it. Lower only a demote
 // immediately followed by an acyclic chain of branch-only blocks ending in
 // void return: no subsequent derivatives, writes or helper queries can differ.
-function lowerTailDemotes(mod, log) {
-  const demotes = mod.insns.filter(i => i.op === 5380);
-  if (!demotes.length || mod.insns.some(i => i.op === 5381)) return false;
+function lowerTailDemotes(mod, log, protectedKills = new Set()) {
+  const entryFunctions = new Set(mod.insns.filter(i => i.op === Op.EntryPoint && i.words[0] === 4).map(i => i.words[1]));
+  const demotes = [];
+  let functionId = null;
+  for (const ins of mod.insns) {
+    if (ins.op === Op.Function) functionId = ins.resultId;
+    else if (ins.op === Op.FunctionEnd) functionId = null;
+    else if (ins.op === 5380 && entryFunctions.has(functionId)) demotes.push(ins);
+  }
+  if (!demotes.length) return false;
   const blocks = new Map(); let block = null;
   for (const i of mod.insns) {
     if (i.op === Op.Label) { block = []; blocks.set(i.words[0], block); }
@@ -828,18 +868,210 @@ function lowerTailDemotes(mod, log) {
       && store.words[0] === load.words[2] && store.words[1] === clamp.words[1]
       && ret.op === 253;
   };
+  const tails = [];
   for (const d of demotes) {
     const next = mod.insns[mod.insns.indexOf(d) + 1];
-    if (!next || next.op !== 249 || !pureReturn(next.words[0])) return false;
+    if (next?.op === 249 && pureReturn(next.words[0])) tails.push({ demote: d, branch: next });
   }
-  for (const d of demotes) {
-    const at = mod.insns.indexOf(d);
-    d.op = 252; d.words = [];
-    mod.insns.splice(at + 1, 1); // Kill is the block terminator, replacing branch
+  if (!tails.length) return false;
+  for (const { demote, branch } of tails) {
+    demote.op = 252; demote.words = [];
+    protectedKills.add(demote);
+    mod.insns.splice(mod.insns.indexOf(branch), 1); // Kill is the block terminator, replacing branch
   }
-  mod.insns = mod.insns.filter(i => !(i.op === 17 && i.words[0] === 5379)
-    && !(i.op === 10 && new TextDecoder().decode(new Uint8Array(strOf(i, 0))) === 'SPV_EXT_demote_to_helper_invocation'));
-  log.push(`spirvfix: lowered ${demotes.length} terminal demote(s) with no helper continuation`);
+  if (!mod.insns.some(i => i.op === 5380 || i.op === 5381)) {
+    mod.insns = mod.insns.filter(i => !(i.op === 17 && i.words[0] === 5379) &&
+      !(i.op === 10 && new TextDecoder().decode(new Uint8Array(strOf(i, 0))) === 'SPV_EXT_demote_to_helper_invocation'));
+  }
+  log.push(`spirvfix: lowered ${tails.length} terminal demote(s) with no helper continuation`);
+  return true;
+}
+
+// Delay mid-shader fragment discard until each entry return so derivatives,
+// helper checks and later samples still execute. Non-entry functions share a
+// private flag because their function-local state cannot reach the entry tail.
+function lowerMidShaderDiscards(mod, log, protectedKills = new Set()) {
+  const entryFunctions = new Set(mod.insns.filter(i => i.op === Op.EntryPoint && i.words[0] === 4).map(i => i.words[1]));
+  const functions = [];
+  let fn = null, block = null;
+  for (const ins of mod.insns) {
+    if (ins.op === Op.Function) {
+      fn = { id: ins.resultId, declaration: ins, blocks: [] };
+      functions.push(fn); block = null;
+    } else if (ins.op === Op.FunctionEnd) {
+      fn = null; block = null;
+    } else if (fn && ins.op === Op.Label) {
+      block = { id: ins.words[0], instructions: [ins] };
+      fn.blocks.push(block);
+    } else if (block) block.instructions.push(ins);
+  }
+
+  const successors = instructions => {
+    const term = instructions.at(-1);
+    if (term?.op === 249) return [term.words[0]];
+    if (term?.op === 250) return [term.words[1], term.words[2]];
+    if (term?.op === 251) return [term.words[1], ...term.words.slice(3).filter((_, i) => i % 2 === 0)];
+    return [];
+  };
+  const regions = new Map();
+  for (const fn of functions) {
+    const labels = new Map(fn.blocks.map(b => [b.id, b]));
+    for (const header of fn.blocks) {
+      const merge = header.instructions.find(i => i.op === 247 || i.op === 246);
+      if (!merge) continue;
+      const loop = merge.op === 246;
+      const mergeId = merge.words[0], continueId = loop ? merge.words[1] : null;
+      const starts = successors(header.instructions);
+      const inside = new Set(), todo = [...starts];
+      while (todo.length) {
+        const id = todo.pop();
+        if (id === mergeId || id === continueId || inside.has(id)) continue;
+        const current = labels.get(id);
+        if (!current) continue;
+        inside.add(id); todo.push(...successors(current.instructions));
+      }
+      const list = regions.get(fn.id) ?? [];
+      list.push({ target: loop ? continueId : mergeId, labels: inside });
+      regions.set(fn.id, list);
+    }
+  }
+
+  const resumeTarget = (fn, block) => {
+    const candidates = (regions.get(fn.id) || []).filter(r => r.labels.has(block.id));
+    if (candidates.length) return candidates.sort((a, b) => a.labels.size - b.labels.size)[0].target;
+    const returns = fn.blocks.filter(b => b.instructions.at(-1)?.op === 253);
+    if (returns.length) return returns.at(-1).id;
+    return null;
+  };
+  const sites = [];
+  const isHelperReads = mod.insns.filter(i => i.op === 5381);
+  for (const f of functions) for (const b of f.blocks) for (const ins of b.instructions) {
+    if (protectedKills.has(ins)) continue;
+    if (![5380, 252, 4416].includes(ins.op)) continue;
+    const entry = entryFunctions.has(f.id);
+    // An entry Kill with no structured continuation is already the tail.
+    if (entry && ins.op !== 5380 && !(regions.get(f.id) || []).some(r => r.labels.has(b.id))) continue;
+    const target = ins.op === 5380 ? null : resumeTarget(f, b);
+    if (ins.op !== 5380 && target == null) {
+      if (entry) continue; // entry Kill outside structured flow is already the tail
+      const returnType = mod.insns.find(i => i.resultId === f.declaration.words[0]);
+      if (returnType?.op !== Op.TypeVoid) {
+        log.push(`spirvfix: left discard in function %${f.id} unchanged (no void continuation block)`);
+        continue;
+      }
+    }
+    sites.push({ fn: f, block: b, ins, entry, target });
+  }
+  if (!sites.length && !isHelperReads.length) return false;
+
+  const newId = makeIdSource(mod);
+  const byId = new Map(mod.insns.filter(i => i.resultId != null).map(i => [i.resultId, i]));
+  const synthesizedReturns = new Map();
+  for (const site of sites) {
+    if (site.entry || site.target != null) continue;
+    let target = synthesizedReturns.get(site.fn.id);
+    if (target == null) {
+      target = newId(); synthesizedReturns.set(site.fn.id, target);
+      const end = mod.insns.findIndex(i => i.op === Op.FunctionEnd && mod.insns.indexOf(i) > mod.insns.indexOf(site.fn.declaration));
+      mod.insns.splice(end < 0 ? mod.insns.length : end, 0,
+        { op: Op.Label, words: [target], resultType: null, resultId: target },
+        { op: 253, words: [], resultType: null, resultId: null });
+    }
+    site.target = target;
+  }
+  let boolType = mod.insns.find(i => i.op === Op.TypeBool)?.resultId;
+  const typeAdds = [];
+  let boolTypeAdd = null;
+  if (boolType == null) {
+    boolType = newId();
+    boolTypeAdd = { op: Op.TypeBool, words: [boolType], resultType: null, resultId: boolType };
+  }
+  const pointerFor = storage => {
+    const found = mod.insns.find(i => i.op === Op.TypePointer && i.words[1] === storage && i.words[2] === boolType);
+    if (found) return found.resultId;
+    const id = newId();
+    typeAdds.push({ op: Op.TypePointer, words: [id, storage, boolType], resultType: null, resultId: id });
+    return id;
+  };
+  const privatePointer = pointerFor(6);
+  const localPointer = sites.length ? pointerFor(7) : null;
+  const falseId = mod.insns.find(i => i.op === Op.ConstantFalse && i.resultType === boolType)?.resultId ?? newId();
+  const trueId = mod.insns.find(i => i.op === Op.ConstantTrue && i.resultType === boolType)?.resultId ?? newId();
+  const constantAdds = [];
+  if (!byId.has(falseId)) constantAdds.push({ op: Op.ConstantFalse, words: [boolType, falseId], resultType: boolType, resultId: falseId });
+  if (!byId.has(trueId)) constantAdds.push({ op: Op.ConstantTrue, words: [boolType, trueId], resultType: boolType, resultId: trueId });
+  const helperState = newId();
+  const privateVariable = { op: Op.Variable, words: [privatePointer, helperState, 6, falseId], resultType: privatePointer, resultId: helperState };
+  const localVariables = new Map();
+  if (sites.length) for (const id of entryFunctions) localVariables.set(id, newId());
+
+  if (boolTypeAdd) {
+    const firstConstant = mod.insns.findIndex(i => [41, 42, 43, 44, 45, 46, 48, 49, 50, 51, 52, 59, 54].includes(i.op));
+    mod.insns.splice(firstConstant < 0 ? mod.insns.length : firstConstant, 0, boolTypeAdd);
+  }
+  const firstVariable = mod.insns.findIndex(i => i.op === Op.Variable || i.op === Op.Function);
+  mod.insns.splice(firstVariable < 0 ? mod.insns.length : firstVariable, 0, ...constantAdds);
+  const firstGlobalVariable = mod.insns.findIndex(i => i.op === Op.Variable || i.op === Op.Function);
+  mod.insns.splice(firstGlobalVariable < 0 ? mod.insns.length : firstGlobalVariable, 0, ...typeAdds);
+  const firstFunction = mod.insns.findIndex(i => i.op === Op.Function);
+  mod.insns.splice(firstFunction < 0 ? mod.insns.length : firstFunction, 0, privateVariable);
+
+  for (const f of functions) {
+    if (!entryFunctions.has(f.id)) continue;
+    const localId = localVariables.get(f.id);
+    const firstBlock = f.blocks[0];
+    if (!firstBlock) continue;
+    const labelAt = mod.insns.indexOf(firstBlock.instructions[0]);
+    let insertAt = labelAt + 1;
+    while (mod.insns[insertAt]?.op === Op.Variable && mod.insns[insertAt].words[2] === SC.Function) insertAt++;
+    const setup = [];
+    if (localId != null) setup.push(
+      { op: Op.Variable, words: [localPointer, localId, SC.Function], resultType: localPointer, resultId: localId },
+      { op: Op.Store, words: [localId, falseId], resultType: null, resultId: null });
+    setup.push({ op: Op.Store, words: [helperState, falseId], resultType: null, resultId: null });
+    mod.insns.splice(insertAt, 0, ...setup);
+  }
+
+  for (const site of sites) {
+    const localId = site.entry ? localVariables.get(site.fn.id) : null;
+    const stores = [
+      { op: Op.Store, words: [helperState, trueId], resultType: null, resultId: null },
+      ...(localId == null ? [] : [{ op: Op.Store, words: [localId, trueId], resultType: null, resultId: null }]),
+    ];
+    const index = mod.insns.indexOf(site.ins);
+    if (index < 0) continue;
+    if (site.ins.op === 5380) mod.insns.splice(index, 1, ...stores);
+    else mod.insns.splice(index, 1, ...stores, { op: 249, words: [site.target], resultType: null, resultId: null });
+  }
+
+  for (const read of isHelperReads) {
+    read.op = Op.Load;
+    read.words = [boolType, read.resultId, helperState];
+  }
+
+  const returns = mod.insns.filter(i => i.op === 253 && functions.some(f => entryFunctions.has(f.id) && f.blocks.some(b => b.instructions.includes(i))));
+  for (const ret of returns) {
+    const localId = [...localVariables.entries()].find(([id]) => functions.find(f => f.id === id)?.blocks.some(b => b.instructions.includes(ret)))?.[1];
+    if (localId == null) continue;
+    const loadLocal = newId(), loadGlobal = newId(), condition = newId(), killLabel = newId(), mergeLabel = newId();
+    const at = mod.insns.indexOf(ret);
+    mod.insns.splice(at, 1,
+      { op: Op.Load, words: [boolType, loadLocal, localId], resultType: boolType, resultId: loadLocal },
+      { op: Op.Load, words: [boolType, loadGlobal, helperState], resultType: boolType, resultId: loadGlobal },
+      { op: 166, words: [boolType, condition, loadLocal, loadGlobal], resultType: boolType, resultId: condition },
+      { op: 247, words: [mergeLabel, 0], resultType: null, resultId: null },
+      { op: 250, words: [condition, killLabel, mergeLabel], resultType: null, resultId: null },
+      { op: Op.Label, words: [killLabel], resultType: null, resultId: killLabel },
+      { op: 252, words: [], resultType: null, resultId: null },
+      { op: Op.Label, words: [mergeLabel], resultType: null, resultId: mergeLabel },
+      ret);
+  }
+
+  if (!mod.insns.some(i => i.op === 5380 || i.op === 5381)) {
+    mod.insns = mod.insns.filter(i => !(i.op === 17 && i.words[0] === 5379) &&
+      !(i.op === 10 && new TextDecoder().decode(new Uint8Array(strOf(i, 0))) === 'SPV_EXT_demote_to_helper_invocation'));
+  }
+  log.push(`spirvfix: delayed ${sites.length} mid-shader discard operation(s)${isHelperReads.length ? ` and lowered ${isHelperReads.length} helper query/query(ies)` : ''}`);
   return true;
 }
 
@@ -857,6 +1089,76 @@ function stripUnusedDrawParameters(mod, log) {
   if (used) return false;
   mod.insns = mod.insns.filter(i => !(i.op === 17 && i.words[0] === 4427));
   log.push('spirvfix: stripped unused OpCapability DrawParameters');
+  return true;
+}
+
+// DXVK computes SV_VertexID/InstanceID by subtracting BaseVertex/BaseInstance
+// from the corresponding WebGPU builtin. WebGPU's vertex_index and
+// instance_index already include the draw's base values, so make the
+// subtractands zero and keep VertexIndex/InstanceIndex untouched. This means
+// SV_InstanceID includes StartInstanceLocation, the one known D3D deviation.
+function replaceDrawParameterBuiltins(mod, log) {
+  const baseBuiltins = new Map(mod.insns
+    .filter(i => i.op === Op.Decorate && i.words[1] === 11 && [4424, 4425, 4426].includes(i.words[2]))
+    .map(i => [i.words[0], i.words[2]]));
+  if (!baseBuiltins.size) return false;
+
+  const byId = new Map(mod.insns.filter(i => i.resultId != null).map(i => [i.resultId, i]));
+  const variables = new Set();
+  const loads = [];
+  for (const id of baseBuiltins.keys()) {
+    const variable = byId.get(id), pointer = variable && byId.get(variable.words[0]);
+    if (!variable || variable.op !== Op.Variable || variable.words[2] !== 1 ||
+        !pointer || pointer.op !== Op.TypePointer || pointer.words[1] !== 1) {
+      log.push(`spirvfix: left DrawParameters builtin %${id} unchanged (unsupported interface shape)`);
+      return false;
+    }
+    variables.add(id);
+    for (const ins of mod.insns) {
+      if (ins.op === Op.Load && ins.words[2] === id) {
+        const scalar = byId.get(ins.resultType);
+        if (!inFunction(mod, ins) || ins.resultType !== pointer.words[2] || !scalar ||
+            scalar.op !== Op.TypeInt || scalar.words[1] !== 32) {
+          log.push(`spirvfix: left DrawParameters builtin %${id} unchanged (expected a direct 32-bit integer load)`);
+          return false;
+        }
+        loads.push(ins);
+      } else if (ins.op !== Op.Variable && ins.op !== Op.Decorate && ins.op !== Op.Name && ins.op !== Op.EntryPoint &&
+          ins.words.includes(id)) {
+        log.push(`spirvfix: left DrawParameters builtin %${id} unchanged (pointer is used outside OpLoad)`);
+        return false;
+      }
+    }
+  }
+
+  const newId = makeIdSource(mod);
+  const zeroByType = new Map();
+  const constants = [];
+  for (const load of loads) {
+    let zero = zeroByType.get(load.resultType);
+    if (zero == null) {
+      zero = newId();
+      zeroByType.set(load.resultType, zero);
+      constants.push({ op: Op.Constant, words: [load.resultType, zero, 0], resultType: load.resultType, resultId: zero });
+    }
+    load.op = Op.CopyObject;
+    load.words = [load.resultType, load.resultId, zero];
+  }
+
+  mod.insns = mod.insns.filter(i => !((i.op === Op.Variable && variables.has(i.resultId)) ||
+    ((i.op === Op.Decorate || i.op === Op.Name) && variables.has(i.words[0])) ||
+    (i.op === 17 && i.words[0] === 4427)));
+  for (const entry of mod.insns.filter(i => i.op === Op.EntryPoint)) {
+    let start = 2;
+    while (start < entry.words.length) {
+      const word = entry.words[start++];
+      if ([0, 8, 16, 24].some(shift => ((word >>> shift) & 255) === 0)) break;
+    }
+    entry.words = entry.words.slice(0, start).concat(entry.words.slice(start).filter(id => !variables.has(id)));
+  }
+  const firstVariable = mod.insns.findIndex(i => i.op === Op.Variable);
+  mod.insns.splice(firstVariable < 0 ? sections(mod).firstFunc : firstVariable, 0, ...constants);
+  log.push(`spirvfix: replaced ${loads.length} BaseVertex/BaseInstance/DrawIndex load(s) with zero`);
   return true;
 }
 
@@ -1057,7 +1359,7 @@ function pruneSpecializedAliases(mod, log) {
 
 // --- entry point -------------------------------------------------------------
 /** @param {Uint8Array} bytes @param {{rasterTopology?: number, specOverrides?: {constantID: number, value: Uint8Array}[]}} [options] */
-export function applySpirvFix(bytes, { rasterTopology, specOverrides } = {}) {
+export function applySpirvFix(bytes, { specOverrides } = {}) {
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const log = [], applied = [];
   let mod;
@@ -1077,19 +1379,30 @@ export function applySpirvFix(bytes, { rasterTopology, specOverrides } = {}) {
     log.push('R2 failed: ' + (e.message || e));
   }
   try {
-    if (privatizePointBuiltins(mod, log, rasterTopology)) applied.push('non-point-builtins');
+    if (stripPointBuiltins(mod, log)) applied.push('strip-point-builtins');
   } catch (e) {
     log.push('R3 failed: ' + (e.message || e));
   }
+  const protectedTailDemoteKills = new Set();
   try {
-    if (lowerTailDemotes(mod, log)) applied.push('tail-demote-to-kill');
+    if (lowerTailDemotes(mod, log, protectedTailDemoteKills)) applied.push('tail-demote-to-kill');
   } catch (e) {
     log.push('R4 failed: ' + (e.message || e));
   }
   try {
+    if (lowerMidShaderDiscards(mod, log, protectedTailDemoteKills)) applied.push('lower-mid-shader-discard');
+  } catch (e) {
+    log.push('R4 mid-shader discard rewrite failed: ' + (e.message || e));
+  }
+  try {
+    if (replaceDrawParameterBuiltins(mod, log)) applied.push('replace-draw-parameters');
+  } catch (e) {
+    log.push('R5 used DrawParameters rewrite failed: ' + (e.message || e));
+  }
+  try {
     if (stripUnusedDrawParameters(mod, log)) applied.push('strip-draw-parameters');
   } catch (e) {
-    log.push('R5 failed: ' + (e.message || e));
+    log.push('R5 unused DrawParameters rewrite failed: ' + (e.message || e));
   }
   try {
     if (stripIndexDecorations(mod, log)) applied.push('strip-index-decorations');
@@ -1117,4 +1430,4 @@ export function applySpirvFix(bytes, { rasterTopology, specOverrides } = {}) {
   }
 }
 
-export const REWRITES = ['split-combined-sampler', 'fold-spec-constants', 'non-point-builtins', 'tail-demote-to-kill', 'strip-draw-parameters', 'strip-index-decorations', 'strip-signed-zero-inf-nan-preserve', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases'];
+export const REWRITES = ['split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-signed-zero-inf-nan-preserve', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases'];

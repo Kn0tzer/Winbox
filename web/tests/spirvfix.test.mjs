@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { applySpirvFix, parseSpirv, REWRITES } from '../../tools/spirvfix/spirvfix.mjs';
+import { applySpirvFix, parseSpirv, serializeSpirv, REWRITES } from '../../tools/spirvfix/spirvfix.mjs';
 import * as naga from '../vendor/naga/node.js';
 import { toWGSL } from '../shader.mjs';
 
@@ -144,6 +144,181 @@ test('vector SpecConstantOp folds to scalar lanes + flattened composite', () => 
     'no SpecConstant* instructions remain');
   const wgsl = String(naga.translate({ from: 'spirv', to: 'wgsl', source: bytes }));
   assert.ok(wgsl.includes('3.75'), 'folded value is 1.5*2.5 in every lane');
+});
+
+function buildDrawParametersModule() {
+  const words = [];
+  const put = (op, ...ops) => words.push((((ops.length + 1) << 16) | op) >>> 0, ...ops.map(w => w >>> 0));
+  const str = s => {
+    const b = [...s].map(c => c.charCodeAt(0)); b.push(0);
+    while (b.length % 4) b.push(0);
+    const out = [];
+    for (let i = 0; i < b.length; i += 4)
+      out.push((b[i] | (b[i + 1] << 8) | (b[i + 2] << 16) | (b[i + 3] << 24)) >>> 0);
+    return out;
+  };
+  put(17, 1);                              // OpCapability Shader
+  put(17, 4427);                           // OpCapability DrawParameters
+  put(14, 0, 1);                           // OpMemoryModel Logical GLSL450
+  put(15, 0, 13, ...str('main'), 7, 8, 10); // Vertex entry: BaseVertex, VertexIndex, Position
+  put(71, 7, 11, 4424);                    // BaseVertex
+  put(71, 8, 11, 42);                      // VertexIndex
+  put(71, 10, 11, 0);                      // Position
+  put(19, 1);                              // %1 = OpTypeVoid
+  put(21, 2, 32, 1);                       // %2 = OpTypeInt 32 signed
+  put(22, 3, 32);                          // %3 = OpTypeFloat 32
+  put(23, 4, 3, 4);                        // %4 = OpTypeVector %3 4
+  put(33, 5, 1);                           // %5 = OpTypeFunction %1
+  put(32, 6, 1, 2);                        // %6 = OpTypePointer Input %2
+  put(32, 9, 3, 4);                        // %9 = OpTypePointer Output %4
+  put(43, 3, 11, 0);                       // %11 = OpConstant %3 0
+  put(44, 4, 12, 11, 11, 11, 11);          // %12 = OpConstantComposite %4 zero
+  put(59, 6, 7, 1);                        // %7 = OpVariable Input
+  put(59, 6, 8, 1);                        // %8 = OpVariable Input
+  put(59, 9, 10, 3);                       // %10 = OpVariable Output
+  put(54, 1, 13, 0, 5);                    // %13 = OpFunction
+  put(248, 14);                            // %14 = OpLabel
+  put(61, 2, 15, 7);                       // %15 = OpLoad BaseVertex
+  put(61, 2, 16, 8);                       // %16 = OpLoad VertexIndex
+  put(130, 2, 17, 16, 15);                 // %17 = OpISub VertexIndex - BaseVertex
+  put(62, 10, 12);                         // OpStore Position
+  put(253);                                // OpReturn
+  put(56);                                 // OpFunctionEnd
+  const out = new Uint32Array(5 + words.length);
+  out.set([0x07230203, 0x00010000, 0, 18, 0], 0);
+  out.set(words, 5);
+  return new Uint8Array(out.buffer);
+}
+
+test('DrawParameters base builtins become zero while VertexIndex stays a builtin load', () => {
+  const raw = buildDrawParametersModule();
+  const fixed = applySpirvFix(raw);
+  const mod = parseSpirv(fixed.bytes);
+  assert.equal(mod.insns.some(i => i.op === 17 && i.words[0] === 4427), false);
+  assert.equal(mod.insns.some(i => i.op === 71 && i.words[1] === 11 && i.words[2] === 4424), false);
+  const loads = mod.insns.filter(i => i.op === 61);
+  assert.equal(loads.length, 1, 'the VertexIndex load remains');
+  assert.equal(loads[0].words[2], 8);
+  assert.ok(mod.insns.some(i => i.op === 83 && i.words[1] === 15), 'BaseVertex value is copied from zero');
+  const wgsl = String(naga.translate({ from: 'spirv', to: 'wgsl', source: fixed.bytes }));
+  assert.match(wgsl, /@builtin\(vertex_index\)/);
+});
+
+function buildMidDiscardBeforeSampleModule(discardOpcode = 252) {
+  const mod = parseSpirv(bytesOf('p1-vkcube.frag.spv'));
+  let next = mod.header.bound;
+  const boolType = next++, condition = next++, killLabel = next++, mergeLabel = next++, helperResult = next++;
+  mod.header.bound = next;
+  const make = (op, words, resultType = null, resultId = null) => ({ op, words, resultType, resultId });
+  const stringWords = value => {
+    const bytes = [...value].map(c => c.charCodeAt(0)); bytes.push(0);
+    while (bytes.length % 4) bytes.push(0);
+    const words = [];
+    for (let i = 0; i < bytes.length; i += 4)
+      words.push((bytes[i] | (bytes[i + 1] << 8) | (bytes[i + 2] << 16) | (bytes[i + 3] << 24)) >>> 0);
+    return words;
+  };
+  const lastType = mod.insns.findIndex(i => [41, 42, 43, 44, 45, 46, 48, 49, 50, 51, 52, 59, 54].includes(i.op));
+  mod.insns.splice(lastType < 0 ? mod.insns.length : lastType, 0,
+    make(20, [boolType], null, boolType));                    // OpTypeBool
+  let firstVariable = mod.insns.findIndex(i => i.op === 59 || i.op === 54);
+  mod.insns.splice(firstVariable, 0,
+    make(41, [boolType, condition], boolType, condition));    // OpConstantTrue
+  const capabilities = mod.insns.filter(i => i.op === 17);
+  const capAt = mod.insns.indexOf(capabilities.at(-1)) + 1;
+  mod.insns.splice(capAt, 0, make(17, [5379]));               // DemoteToHelperInvocation
+  const extension = make(10, stringWords('SPV_EXT_demote_to_helper_invocation'));
+  mod.insns.splice(capAt + 1, 0, extension);
+  const sampledType = mod.insns.find(i => i.op === 27).resultId;
+  const firstSampleLoad = mod.insns.find(i => i.op === 61 && i.resultType === sampledType);
+  const at = mod.insns.indexOf(firstSampleLoad);
+  mod.insns.splice(at, 0,
+    make(247, [mergeLabel, 0]),                          // OpSelectionMerge
+    make(250, [condition, killLabel, mergeLabel]),       // if (true) discard
+    make(248, [killLabel], null, killLabel),
+    make(discardOpcode, []),
+    ...(discardOpcode === 5380 ? [make(249, [mergeLabel])] : []), // Demote continues in the helper block
+    make(248, [mergeLabel], null, mergeLabel),
+    make(5381, [boolType, helperResult], boolType, helperResult)); // OpIsHelperInvocationEXT
+  return serializeSpirv(mod);
+}
+
+test('mid-shader discard, demote and terminate in an if continue to sampling and validate', () => {
+  for (const discardOpcode of [252, 5380, 4416]) {
+    const fixed = applySpirvFix(buildMidDiscardBeforeSampleModule(discardOpcode));
+    assert.ok(fixed.applied.includes('lower-mid-shader-discard'));
+    const mod = parseSpirv(fixed.bytes);
+    assert.equal(mod.insns.some(i => i.op === 5380 || i.op === 5381 || i.op === 4416), false,
+      `discard opcode ${discardOpcode} was lowered`);
+    assert.ok(mod.insns.some(i => i.op === 87), 'texture sample remains after the discard branch');
+    const wgsl = String(naga.translate({ from: 'spirv', to: 'wgsl', source: fixed.bytes }));
+    assert.match(wgsl, /textureSample/);
+    assert.doesNotThrow(() => naga.validate(naga.parseWgsl(wgsl)));
+  }
+});
+
+function buildNonEntryKillBeforeSampleModule() {
+  const mod = parseSpirv(bytesOf('p1-vkcube.frag.spv'));
+  const voidType = mod.insns.find(i => i.op === 19).resultId;
+  const functionType = mod.insns.find(i => i.op === 33 && i.words[1] === voidType).resultId;
+  const helperFunction = mod.header.bound++, helperLabel = mod.header.bound++, callResult = mod.header.bound++;
+  const sampledType = mod.insns.find(i => i.op === 27).resultId;
+  const firstSampleLoad = mod.insns.find(i => i.op === 61 && i.resultType === sampledType);
+  mod.insns.splice(mod.insns.indexOf(firstSampleLoad), 0, {
+    op: 57, words: [voidType, callResult, helperFunction], resultType: voidType, resultId: callResult,
+  });
+  mod.insns.push(
+    { op: 54, words: [voidType, helperFunction, 0, functionType], resultType: voidType, resultId: helperFunction },
+    { op: 248, words: [helperLabel], resultType: null, resultId: helperLabel },
+    { op: 252, words: [], resultType: null, resultId: null },
+    { op: 56, words: [], resultType: null, resultId: null },
+  );
+  return serializeSpirv(mod);
+}
+
+test('kill in a non-entry function sets private state and defers kill to entry return', () => {
+  const fixed = applySpirvFix(buildNonEntryKillBeforeSampleModule());
+  assert.ok(fixed.applied.includes('lower-mid-shader-discard'));
+  const mod = parseSpirv(fixed.bytes);
+  const entry = mod.insns.find(i => i.op === 15 && i.words[0] === 4).words[1];
+  const helper = mod.insns.find(i => i.op === 54 && i.words[1] !== entry).words[1];
+  let fn = null, helperHasKill = false;
+  for (const ins of mod.insns) {
+    if (ins.op === 54) fn = ins.words[1];
+    else if (ins.op === 56) fn = null;
+    else if (fn === helper && ins.op === 252) helperHasKill = true;
+  }
+  assert.equal(helperHasKill, false, 'helper returns to the entry function after setting the flag');
+  assert.ok(mod.insns.some(i => i.op === 59 && i.words[2] === 6), 'private helper/discard state exists');
+  const wgsl = String(naga.translate({ from: 'spirv', to: 'wgsl', source: fixed.bytes }));
+  assert.match(wgsl, /textureSample/);
+  assert.doesNotThrow(() => naga.validate(naga.parseWgsl(wgsl)));
+});
+
+test('PointSize writes disappear and PointCoord loads become the center', () => {
+  for (const [file, builtin] of [['dxvk-live/tri9.vert.spv', 1], ['dxvk-live/tri9.frag.spv', 16]]) {
+    const raw = bytesOf(file), before = parseSpirv(raw);
+    const builtinId = before.insns.find(i => i.op === 71 && i.words[1] === 11 && i.words[2] === builtin).words[0];
+    const pointLoads = before.insns.filter(i => i.op === 61 && i.words[2] === builtinId);
+    const pointStores = before.insns.filter(i => i.op === 62 && i.words[0] === builtinId);
+    const fixed = applySpirvFix(raw, { rasterTopology: 0 });
+    assert.ok(fixed.applied.includes('strip-point-builtins'));
+    const after = parseSpirv(fixed.bytes);
+    assert.equal(after.insns.some(i => i.op === 71 && i.words[1] === 11 && i.words[2] === builtin), false);
+    assert.equal(after.insns.some(i => i.op === 59 && i.resultId === builtinId), false);
+    assert.equal(after.insns.some(i => i.op === 62 && i.words[0] === builtinId), false);
+    if (builtin === 1) assert.equal(pointStores.length > 0, true, 'the original PointSize output was written');
+    else for (const load of pointLoads) {
+      const copy = after.insns.find(i => i.op === 83 && i.resultId === load.resultId);
+      const value = copy && after.insns.find(i => i.resultId === copy.words[2]);
+      assert.equal(value?.op, 44, 'PointCoord reads use a constant vec2');
+      assert.deepEqual(value.words.slice(2).map(id => after.insns.find(i => i.resultId === id)?.words[2]),
+        [0x3f000000, 0x3f000000], 'the constant is (0.5, 0.5)');
+    }
+    const wgsl = String(naga.translate({ from: 'spirv', to: 'wgsl', source: fixed.bytes }));
+    assert.doesNotMatch(wgsl, /@builtin\(point_size\)|@builtin\(point_coord\)/);
+    assert.doesNotThrow(() => naga.validate(naga.parseWgsl(wgsl)));
+  }
 });
 
 test('toWGSL spirv input validation is unchanged', async () => {
