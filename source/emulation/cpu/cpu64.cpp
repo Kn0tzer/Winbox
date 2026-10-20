@@ -8037,11 +8037,42 @@ U32 CPU64::tryWasmExec(U64 maxInsn) {
     for (U32 i = 0; i < (U32)sizeof(snap); i++) snap[i] = fetchByte(r + i);
     Jit64Op ops[24];
     U32 n = jit64CompileStream(r, snap, (U32)sizeof(snap), ops, 24, true);
-    if (n < 2) { m_jit->negative.add(r, gen0Entry); m_jit->insnsFallback++; return 0; }
+    auto recordRejectedOpcode = [&](U32 offset) {
+        U8 opcode = 0, opcode2 = 0;
+        if (!jit64OpcodeBytes(snap + offset, (U32)sizeof(snap) - offset, opcode, opcode2)) return;
+        if (opcode == 0x0F) m_jit->reject0FOpcode[opcode2].fetch_add(1, std::memory_order_relaxed);
+        else m_jit->rejectOpcode[opcode].fetch_add(1, std::memory_order_relaxed);
+    };
+    if (n < 2) {
+        U32 offset = 0;
+        bool counted = false;
+        for (U32 i = 0; i < n; ++i) {
+            if (ops[i].plan != JIT64_FAST) {
+                recordRejectedOpcode(offset);
+                counted = true;
+                break;
+            }
+            offset += ops[i].len;
+        }
+        const bool endedAtControlFlow = n == 1 && ops[0].plan == JIT64_FAST &&
+            (ops[0].kind == J64_CALL_REL || ops[0].kind == J64_JMP_REL ||
+             ops[0].kind == J64_JCC || ops[0].kind == J64_RET || ops[0].kind == J64_SYSCALL);
+        if (!counted && !endedAtControlFlow) recordRejectedOpcode(offset);
+        m_jit->negative.add(r, gen0Entry);
+        m_jit->insnsFallback++;
+        return 0;
+    }
     U32 len = 0;
+    U32 offset = 0;
     for (U32 i = 0; i < n; i++) {
-        if (ops[i].plan != JIT64_FAST) { m_jit->negative.add(r, gen0Entry); m_jit->insnsFallback++; return 0; }
+        if (ops[i].plan != JIT64_FAST) {
+            recordRejectedOpcode(offset);
+            m_jit->negative.add(r, gen0Entry);
+            m_jit->insnsFallback++;
+            return 0;
+        }
         len += ops[i].len;
+        offset += ops[i].len;
     }
     if (!verifyJitPlanAgainstBlock(r, ops, n)) { m_jit->insnsFallback++; return 0; }
     const U64 page1 = jit64PageOf(r + len - 1);
