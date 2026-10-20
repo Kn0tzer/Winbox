@@ -69,6 +69,13 @@ export const MAX_UNIFORM_RANGE = 65536; // guaranteed maxUniformBufferBindingSiz
 const DEPTH_OP = { 0: 'never', 1: 'less', 2: 'equal', 3: 'less-equal', 4: 'greater', 5: 'not-equal', 6: 'greater-equal', 7: 'always' };
 const CULL = { 0: 'none', 1: 'front', 2: 'back' };
 const FRONT = { 0: 'ccw', 1: 'cw' };
+export const REQUIRED_LIMIT_KEYS = Object.freeze([
+  'maxTextureDimension1D', 'maxTextureDimension2D', 'maxTextureDimension3D', 'maxTextureArrayLayers',
+  'maxBindGroups', 'maxSampledTexturesPerShaderStage', 'maxSamplersPerShaderStage',
+  'maxUniformBuffersPerShaderStage', 'maxStorageBuffersPerShaderStage',
+  'maxUniformBufferBindingSize', 'maxStorageBufferBindingSize', 'maxBufferSize',
+  'maxVertexBuffers', 'maxVertexAttributes', 'maxColorAttachments', 'maxInterStageShaderVariables',
+]);
 export function v2DepthBiasState(pipe) {
   return pipe.depthBiasEnable ? {
     depthBias: Math.round(pipe.depthBiasConstantFactor || 0),
@@ -1048,7 +1055,13 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   if (!adapter) throw new Error('No WebGPU adapter');
   const requiredFeatures = /** @type {GPUFeatureName[]} */ (['texture-compression-bc', 'depth32float-stencil8', 'float32-filterable', 'clip-distances', 'timestamp-query', 'depth-clip-control'])
     .filter(feature => adapter.features.has(feature));
-  const device = await adapter.requestDevice({ requiredFeatures });
+  // The bridge advertises Vulkan limits independently of the adapter (see
+  // fillLimits in vk64bridge.cpp), so ask for everything this adapter has
+  // instead of WebGPU's conservative defaults (2048 px textures, 4 buffers).
+  /** @type {Record<string, number>} */
+  const requiredLimits = {};
+  if (adapter.limits) for (const key of REQUIRED_LIMIT_KEYS) requiredLimits[key] = adapter.limits[key];
+  const device = await adapter.requestDevice({ requiredFeatures, requiredLimits });
   const errors = [];
   device.addEventListener('uncapturederror', e => log('vk64: v2 page tier WebGPU error: ' + (e.error?.message || e.error)));
   device.lost.then(info => errors.push('Device lost: ' + info.reason + ' ' + info.message));
