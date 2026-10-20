@@ -16,10 +16,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 STAGE=/home/ubuntu/wine32-stage/stage
 ROOTFS32=/home/ubuntu/wine32-stage/rootfs32
-WORK=/tmp/build-prefix32
+WORK="${WINBOX_PREFIX32_WORK:-/tmp/build-prefix32}"
 PREFIX=$WORK/prefix
 W32ROOT=$WORK/wine32root
-OUT_ZIP=/tmp/prefix32.zip
+OUT_ZIP="${WINBOX_PREFIX32_OUT:-/tmp/prefix32.zip}"
 
 rm -rf "$WORK"
 mkdir -p "$WORK"
@@ -64,6 +64,7 @@ mkdir -p "$PKG/home/username/.wine/dosdevices" \
          "$PKG/home/username/.wine/drive_c/windows"
 cp "$PREFIX/system.reg" "$PREFIX/user.reg" "$PREFIX/userdef.reg" \
    "$PKG/home/username/.wine/"
+python3 "$HERE/rootfs64/set-prefix-audio.py" "$PKG/home/username/.wine/user.reg"
 printf "disable\n" > "$PKG/home/username/.wine/.update-timestamp"
 printf "../drive_c" > "$PKG/home/username/.wine/dosdevices/c(_colon_).link"
 printf "/" > "$PKG/home/username/.wine/dosdevices/z(_colon_).link"
@@ -100,6 +101,7 @@ fi
 
 # 5. Zip it.
 rm -f "$OUT_ZIP"
+mkdir -p "$(dirname "$OUT_ZIP")"
 (cd "$PKG" && zip -q -r "$OUT_ZIP" home)
 echo "Built $OUT_ZIP ($(stat -c%s "$OUT_ZIP") bytes)"
 grep -q '"PROCESSOR_ARCHITECTURE"="x86"' "$PKG/home/username/.wine/system.reg" \

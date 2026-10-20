@@ -21,8 +21,8 @@
     },
     {
       "path": "web/runtime/prefix64.zip",
-      "bytes": 18955998,
-      "sha256": "bd318e723c566dc5af1dbe767d5b89b05c7b3dbd9c5c7bd9cb5ffb5886407351"
+      "bytes": 19063582,
+      "sha256": "e58d2a87400f99ef5ce80e7ed63b04b476655578c51e4c812cff4bcf298e6701"
     },
     {
       "path": "web/runtime/glibc-rootfs32.zip",
@@ -36,8 +36,8 @@
     },
     {
       "path": "web/runtime/prefix32.zip",
-      "bytes": 5914534,
-      "sha256": "ca99eb6ddbc85dc7c3a000b4c2415457a7e8e6c19e4bcecb8c26d37787f1e959"
+      "bytes": 184005,
+      "sha256": "2fe077fd923ceafa96792a049371b924eba1a2b342509b266193ab8d4adbdaf9"
     },
     {
       "path": "tools/browser/slang/slang-wasm.js",
