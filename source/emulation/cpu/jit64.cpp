@@ -40,6 +40,7 @@
 #include <cstdarg>
 #include <mutex>
 #include <atomic>
+#include <algorithm>
 #ifdef __EMSCRIPTEN__
 #include "bw64metrics.h"
 #ifdef BOXEDWINE_WASM_JIT
@@ -1010,6 +1011,21 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16) {
     }
 }
 
+bool jit64OpcodeBytes(const U8* bytes, U32 byteCount, U8& opcode, U8& opcode2) {
+    opcode = 0;
+    opcode2 = 0;
+    if (!bytes || byteCount == 0) return false;
+    PrefixInfo p;
+    U32 opOff = scanPrefixes(bytes, byteCount, p);
+    if (opOff >= byteCount) return false;
+    opcode = bytes[opOff];
+    if (opcode == 0x0F) {
+        if (opOff + 1 >= byteCount) return false;
+        opcode2 = bytes[opOff + 1];
+    }
+    return true;
+}
+
 U32 jit64CompileStream(U64 ripBase, const U8* bytes, U32 byteCount,
                        Jit64Op* opsOut, U32 maxOps, bool stopAtControlFlow) {
     if (!bytes || !opsOut || maxOps == 0) return 0;
@@ -1213,6 +1229,8 @@ void addStats(PublishedStats& a, const PublishedStats& b) {
 std::mutex g_jitStatesMutex;
 std::vector<std::pair<Jit64State*, PublishedStats>> g_jitStates;
 PublishedStats g_retiredStats;
+U64 g_retiredRejectOpcode[256]{};
+U64 g_retiredReject0FOpcode[256]{};
 }
 
 void jit64RegisterState(Jit64State* state) {
@@ -1238,6 +1256,10 @@ static void jit64UnregisterState(Jit64State* state) {
             // Destruction runs after this CPU stopped executing. Preserve its
             // final counts so process-wide totals never decrease on exit.
             addStats(g_retiredStats, readOwnedStats(*state));
+            for (U32 i = 0; i < 256; ++i) {
+                g_retiredRejectOpcode[i] += state->rejectOpcode[i].load(std::memory_order_relaxed);
+                g_retiredReject0FOpcode[i] += state->reject0FOpcode[i].load(std::memory_order_relaxed);
+            }
             g_jitStates.erase(it);
             return;
         }
@@ -1275,10 +1297,22 @@ void jit64PublishMetrics() {
 U32 jit64GlobalStatsJson(char* buf, U32 bufSize) {
     if (!buf || bufSize < 64) return 0;
     PublishedStats sum;
+    U64 rejectOpcode[256]{};
+    U64 reject0FOpcode[256]{};
     {
         std::lock_guard<std::mutex> lock(g_jitStatesMutex);
         sum = g_retiredStats;
-        for (const auto& entry : g_jitStates) addStats(sum, entry.second);
+        for (U32 i = 0; i < 256; ++i) {
+            rejectOpcode[i] = g_retiredRejectOpcode[i];
+            reject0FOpcode[i] = g_retiredReject0FOpcode[i];
+        }
+        for (const auto& entry : g_jitStates) {
+            addStats(sum, entry.second);
+            for (U32 i = 0; i < 256; ++i) {
+                rejectOpcode[i] += entry.first->rejectOpcode[i].load(std::memory_order_relaxed);
+                reject0FOpcode[i] += entry.first->reject0FOpcode[i].load(std::memory_order_relaxed);
+            }
+        }
     }
     static thread_local Jit64State totals;
     totals.blocksCompiled = sum.compiled;
@@ -1295,6 +1329,10 @@ U32 jit64GlobalStatsJson(char* buf, U32 bufSize) {
     totals.coldSkipped = sum.skipped;
     totals.emitTimeUs = sum.emitUs;
     totals.instantiateTimeUs = sum.instantiateUs;
+    for (U32 i = 0; i < 256; ++i) {
+        totals.rejectOpcode[i].store(rejectOpcode[i], std::memory_order_relaxed);
+        totals.reject0FOpcode[i].store(reject0FOpcode[i], std::memory_order_relaxed);
+    }
     return jit64StatsJson(&totals, buf, bufSize);
 }
 
@@ -1466,7 +1504,33 @@ U32 jit64StatsJson(const Jit64State* state, char* buf, U32 bufSize) {
     j.add("\"fallbackInsns\":%llu,", (unsigned long long)(s ? s->insnsFallback : 0));
     j.add("\"cacheLookups\":%llu,", (unsigned long long)(s ? s->cache.lookups() : 0));
     j.add("\"cacheHits\":%llu,", (unsigned long long)(s ? s->cache.hits() : 0));
-    j.add("\"cacheInserts\":%llu},", (unsigned long long)(s ? s->cache.inserts() : 0));
+    j.add("\"cacheInserts\":%llu,", (unsigned long long)(s ? s->cache.inserts() : 0));
+    struct RejectCount { U64 count; U16 opcode; };
+    std::vector<RejectCount> rejected;
+    rejected.reserve(512);
+    if (s) {
+        for (U32 i = 0; i < 256; ++i) {
+            U64 count = s->rejectOpcode[i].load(std::memory_order_relaxed);
+            if (count) rejected.push_back({count, (U16)i});
+            count = s->reject0FOpcode[i].load(std::memory_order_relaxed);
+            if (count) rejected.push_back({count, (U16)(0x100 + i)});
+        }
+    }
+    std::sort(rejected.begin(), rejected.end(), [](const RejectCount& a, const RejectCount& b) {
+        if (a.count != b.count) return a.count > b.count;
+        return a.opcode < b.opcode;
+    });
+    j.add("\"rejectTop\":[");
+    for (size_t i = 0; i < rejected.size() && i < 20; ++i) {
+        char opcode[6];
+        if (rejected[i].opcode >= 0x100)
+            std::snprintf(opcode, sizeof(opcode), "0F %02X", (unsigned)(U8)(rejected[i].opcode - 0x100));
+        else
+            std::snprintf(opcode, sizeof(opcode), "%02X", (unsigned)rejected[i].opcode);
+        j.add("%s{\"op\":\"%s\",\"count\":%llu}", i ? "," : "", opcode,
+              (unsigned long long)rejected[i].count);
+    }
+    j.add("]},");
 #if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_WASM_JIT)
     char cpu32[1024];
     if (bw32_jit_stats_json(cpu32, sizeof(cpu32)) < 0) return 0;

@@ -1181,6 +1181,43 @@ static void testEngineAndStats() {
     CHECK(jit64StatsJson(nullptr, buf, 8) == 0, "small stats buffer must report 0");
 }
 
+static void testRejectedOpcodeStats() {
+    char buf[4096];
+    const U8 prefixed0F[] = {0xF3, 0x66, 0x0F, 0xAF, 0xC0};
+    U8 opcode = 0, opcode2 = 0;
+    CHECK(jit64OpcodeBytes(prefixed0F, sizeof(prefixed0F), opcode, opcode2) &&
+          opcode == 0x0F && opcode2 == 0xAF, "opcode bytes skip prefixes for 0F map");
+    const U8 prefixedOneByte[] = {0x48, 0xF7, 0xE0};
+    CHECK(jit64OpcodeBytes(prefixedOneByte, sizeof(prefixedOneByte), opcode, opcode2) &&
+          opcode == 0xF7 && opcode2 == 0, "opcode bytes skip REX for one-byte map");
+
+    Jit64State state;
+    state.rejectOpcode[0xF7].store(2);
+    state.reject0FOpcode[0xAF].store(9);
+    U32 used = jit64StatsJson(&state, buf, sizeof(buf));
+    CHECK(used > 0, "reject stats JSON produced nothing");
+    if (used) {
+        std::string json(buf, used);
+        CHECK(json.find("\"rejectTop\":[{\"op\":\"0F AF\",\"count\":9},{\"op\":\"F7\",\"count\":2}]") != std::string::npos,
+              "rejectTop must combine and order one-byte and 0F opcodes");
+    }
+
+    Jit64State published;
+    jit64RegisterState(&published);
+    published.rejectOpcode[0xF7].store(3);
+    published.reject0FOpcode[0xAF].store(12);
+    jit64PublishState(&published);
+    published.rejectOpcode[0xF7].store(4);
+    published.reject0FOpcode[0xAF].store(13);
+    CHECK(jit64GlobalStatsJson(buf, sizeof(buf)) > 0, "aggregate reject JSON produced nothing");
+    CHECK(std::strstr(buf, "\"rejectTop\":[{\"op\":\"0F AF\",\"count\":13},{\"op\":\"F7\",\"count\":4}]") != nullptr,
+          "aggregate reject stats must read live atomic counts");
+    jit64ReleaseState(&published);
+    CHECK(jit64GlobalStatsJson(buf, sizeof(buf)) > 0, "retired reject JSON produced nothing");
+    CHECK(std::strstr(buf, "\"rejectTop\":[{\"op\":\"0F AF\",\"count\":13},{\"op\":\"F7\",\"count\":4}]") != nullptr,
+          "aggregate reject stats must retain retired counts");
+}
+
 static void testPublishedStats() {
     char buf[2048];
     Jit64State state;
@@ -1229,6 +1266,7 @@ int main(int argc, char** argv) {
     testCacheCollisions();
     testLookupByRip();
     testEngineAndStats();
+    testRejectedOpcodeStats();
     testPublishedStats();
     printf("  %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

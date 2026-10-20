@@ -37,6 +37,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <atomic>
 #include <vector>
 
 // NOTE: intentionally NOT gated on BOXEDWINE_GUEST_X64 so the native
@@ -209,6 +210,9 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16);
 // `stopAtControlFlow` terminates after CALL/JMP/JCC/RET/SYSCALL (inclusive).
 U32 jit64CompileStream(U64 ripBase, const U8* bytes, U32 byteCount,
                        Jit64Op* opsOut, U32 maxOps, bool stopAtControlFlow);
+// Return the opcode map bytes after any legacy, REX, and segment prefixes.
+// opcode2 is filled only for the 0x0F map.
+bool jit64OpcodeBytes(const U8* bytes, U32 byteCount, U8& opcode, U8& opcode2);
 
 // Block cache. Bounded four-way associative table keyed on startRip; validity
 // additionally requires matching page generations (same contract as the
@@ -340,6 +344,8 @@ struct Jit64State {
     U64 compileTimeUs = 0;  // decode + emit + instantiate, cold path only
     U64 emitTimeUs = 0;     // WebAssembly byte emission only
     U64 instantiateTimeUs = 0; // module creation and table installation
+    std::atomic<U64> rejectOpcode[256]{}; // rejected one-byte opcode counts
+    std::atomic<U64> reject0FOpcode[256]{}; // rejected 0F xx opcode counts
     U32 wasmOwner = 0;      // worker/table id that owns wasmIndex values
     bool wasmOwnerSet = false;
     U32 genBaseAddr = 0;    // KMemory64::blockGenTableAddr() (wasm32 offset)
