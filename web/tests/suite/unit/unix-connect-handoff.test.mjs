@@ -63,7 +63,9 @@ struct KUnixSocketObject:KObject {
  void setBlocking(bool b)override{blocking=b;}
  U32 connect(KThread*,const KFileDescriptorPtr&,U32,U32);
  U32 accept(KThread*,const KFileDescriptorPtr&,U32,U32,U32);
+ void recordOwner(KThread*) {}
 };
+inline void eraseUnixSocketPriority(const KUnixSocketObject* socket) {(void)socket;}
 struct XWireServer {static bool isXDisplayPath(const char*){return false;}static XWireServer& instance(){static XWireServer s;return s;}bool acceptConnection(std::shared_ptr<KUnixSocketObject>){return false;}};
 `;
   const main=String.raw`

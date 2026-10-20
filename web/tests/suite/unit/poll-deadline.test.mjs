@@ -7,9 +7,17 @@ import { tmpdir } from 'node:os';
 
 test('real poll loop preserves deadlines across spurious wakes and consecutive sleeps', () => {
   const src = readFileSync(process.env.BW64_POLL_SOURCE || new URL('../../../../source/kernel/kpoll.cpp', import.meta.url), 'utf8');
-  const start = src.indexOf('S32 internal_poll('); assert.ok(start >= 0);
-  let end = src.indexOf('{', start), depth = 1;
-  for (++end; depth && end < src.length; ++end) { if (src[end] === '{') ++depth; if (src[end] === '}') --depth; }
+  const sliceFunction = (needle) => {
+    const start = src.indexOf(needle);
+    if (start < 0) throw new Error(`Missing function: ${needle}`);
+    let end = src.indexOf('{', start), depth = 1;
+    for (++end; depth && end < src.length; ++end) { if (src[end] === '{') ++depth; if (src[end] === '}') --depth; }
+    return src.slice(start, end);
+  };
+  // internal_poll is now a thin wrapper over internal_poll_impl, which carries
+  // the deadline arithmetic; compile both so the real loop is exercised.
+  const impl = sliceFunction('S32 internal_poll_impl(');
+  const wrapper = sliceFunction('S32 internal_poll(');
   const dir = mkdtempSync(join(tmpdir(), 'bw64-poll-deadline-'));
   try {
     writeFileSync(join(dir, 'check.cpp'), `
@@ -20,6 +28,7 @@ test('real poll loop preserves deadlines across spurious wakes and consecutive s
 #include <cstdlib>
 #include <cstdio>
 #include <algorithm>
+#include <atomic>
 using U32=uint32_t;using S32=int32_t;
 constexpr int K_POLLIN=1,K_POLLPRI=2,K_POLLOUT=4,K_POLLERR=8,K_POLLHUP=16,K_POLLNVAL=32,KTYPE_UNIX_SOCKET=3,K_EINTR=4;
 struct KSystem {static U32 now;static U32 getMilliesSinceStart(){return now;}};U32 KSystem::now=1000;
@@ -37,7 +46,8 @@ struct Process {int id=1,fdsMutex=0;KFileDescriptor* getFileDescriptor_nolock(in
 struct KThread {bool inSignal=false,interrupted=false;U32 condStartWaitTime=0;int pollCond=0;Process* process;};
 struct KPollData {int fd=0;U32 events=0,revents=0;};
 void clearPollData(KThread*,KPollData*,U32){}
-${src.slice(start, end)}
+${impl}
+${wrapper}
 int main(){
  Process process;KThread thread;thread.process=&process;
  for(int i=0;i<4;i++){U32 before=KSystem::now;assert(internal_poll(&thread,nullptr,0,100)==0);assert(KSystem::now-before==100);assert(thread.condStartWaitTime==0);}

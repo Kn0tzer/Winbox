@@ -33,7 +33,7 @@ struct Process {
   OpCallback startJITOp{}; void* calculateCF[FLAGS_NULL]{};
 };
 struct Thread { Process* process; };
-struct Memory { std::mutex mutex; };
+struct Memory { std::recursive_mutex mutex; };
 struct CPU {
   Thread* thread; Memory* memory; void* calculateCF[FLAGS_NULL]{};
   U32 getEipAddress() { return 42; }
@@ -55,7 +55,7 @@ struct JitCodeGen {
   void createHelpers() {} void initDynamicOps() {}
   bool calculateLongestBlock(DecodedOp*) { attempts++; return false; }
   bool compileOps(DecodedOp*) { return false; }
-  void onBlockPreCommit(DecodedOp*) {} void commitJIT(DecodedOp*) {}
+  void onBlockPreCommit(DecodedOp*) {} void commitJIT(DecodedOp*, std::unique_lock<std::recursive_mutex>*) {}
 };
 JitCodeGen* startNewJIT(CPU* cpu) { return new JitCodeGen{cpu}; }
 void startNewJIT(CPU* cpu, U32 address, DecodedOp* op) {

@@ -157,8 +157,8 @@ void testCpuCpuidAndCpuInfo() {
         "model\t\t: 4\n",
         "model name\t: Intel(R) Pentium(R) 4 CPU 3.00GHz\n",
         "stepping\t: 1\n",
-        "cpuid level\t: 1\n",
-        "flags\t\t: fpu tsc msr cx8 cmov clflush mmx fxsr sse sse2 cx16 popcnt nx syscall lm lahf_lm 3dnowprefetch\n",
+        "cpuid level\t: 7\n",
+        "flags\t\t: fpu tsc msr cx8 cmov clflush mmx fxsr sse sse2 pni ssse3 sse4_1 sse4_2 popcnt cx16 nx syscall lm lahf_lm 3dnowprefetch\n",
         "address sizes\t: 43 bits physical, 48 bits virtual\n"
     };
     for (const char* line : expected64) {
