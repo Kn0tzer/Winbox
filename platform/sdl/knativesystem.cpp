@@ -51,7 +51,7 @@ static KOpenGLPtr opengl;
 static KVulkanPtr vulkan;
 
 bool KNativeSystem::init(VideoOption videoOption, bool allowAudio) {
-    U32 flags = SDL_INIT_EVENTS;
+    U32 flags = SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER;
 
     if (videoOption != VIDEO_NO_WINDOW) {
         flags |= SDL_INIT_VIDEO;
