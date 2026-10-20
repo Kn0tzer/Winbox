@@ -170,19 +170,33 @@ U32 KNetLinkObject::readNative(U8* buffer, U32 len) {
 }
 
 U32 KNetLinkObject::read(KThread* thread, U32 buffer, U32 len) {
-    U32 count = 0;
-    KMemory* memory = thread->memory;
+    return read(thread, buffer, len, 0);
+}
 
+U32 KNetLinkObject::read(KThread* thread, U32 buffer, U32 len, U32 flags) {
+    const KSocketRecvFlags recvFlags = ksocketDecodeRecvFlags(flags);
+    if (recvFlags.unknown) {
+        ksocketWarnUnknownRecvFlagsOnce(recvFlags.unknown);
+    }
+    if (!len) {
+        return 0;
+    }
+
+    KMemory* memory = thread->memory;
     if (!memory->canWrite(buffer, len)) {
         return -K_EFAULT;
     }
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->lockCond);
-    while (this->recvBuffer.size() == 0) {
+    while (this->recvBuffer.empty() ||
+           (recvFlags.waitAll && this->type == K_SOCK_STREAM && this->recvBuffer.size() < len)) {
         if (this->inClosed) {
-            return 0;
+            break;
         }
-        if (!this->blocking) {
-            return -K_EWOULDBLOCK;
+        if (!this->blocking || recvFlags.dontWait) {
+            if (this->recvBuffer.empty()) {
+                return -K_EWOULDBLOCK;
+            }
+            break;
         }
         BOXEDWINE_CONDITION_WAIT(this->lockCond);
 #ifdef BOXEDWINE_MULTI_THREADED
@@ -195,15 +209,23 @@ U32 KNetLinkObject::read(KThread* thread, U32 buffer, U32 len) {
         }
 #endif
     }
-    count = std::min(len, (U32)this->recvBuffer.size());
-    memory->performOnMemory(buffer, count, false, [this](U8* ram, U32 len) {
-        std::copy(this->recvBuffer.begin(), this->recvBuffer.begin() + len, ram);
-        this->recvBuffer.erase(this->recvBuffer.begin(), this->recvBuffer.begin() + len);
-        return true;
-        });
-
+    const U32 available = (U32)this->recvBuffer.size();
+    const U32 count = std::min(len, available);
+    if (recvFlags.peek) {
+        memory->performOnMemory(buffer, count, false, [this](U8* ram, U32 len) {
+            std::copy(this->recvBuffer.begin(), this->recvBuffer.begin() + len, ram);
+            return true;
+            });
+    } else {
+        memory->performOnMemory(buffer, count, false, [this](U8* ram, U32 len) {
+            std::copy(this->recvBuffer.begin(), this->recvBuffer.begin() + len, ram);
+            this->recvBuffer.erase(this->recvBuffer.begin(), this->recvBuffer.begin() + len);
+            return true;
+            });
+    }
     BOXEDWINE_CONDITION_SIGNAL_ALL(this->lockCond);
-    return count;
+    // Netlink is message-oriented, so MSG_TRUNC reports the available length.
+    return recvFlags.truncate ? available : count;
 }
 
 U32 KNetLinkObject::stat(KProcess* process, U32 address, bool is64) {
@@ -645,10 +667,7 @@ U32 KNetLinkObject::sendto(KThread* thread, const KFileDescriptorPtr& fd, U32 me
 
 U32 KNetLinkObject::recvfrom(KThread* thread, const KFileDescriptorPtr& fd, U32 buffer, U32 length, U32 flags, U32 address, U32 address_len) {
     if (address == 0) {
-        if (flags) {
-            kpanic_fmt("KUnixSocketObject::recvfrom unhandled flags=%x", flags);
-        }
-        return read(thread, buffer, length);
+        return read(thread, buffer, length, flags);
     }
     if (address) {
         if (afBound) {
@@ -659,5 +678,5 @@ U32 KNetLinkObject::recvfrom(KThread* thread, const KFileDescriptorPtr& fd, U32 
             memory->writed(address + 8, this->afBound->nl_groups);
         }
     }
-    return read(thread, buffer, length);
+    return read(thread, buffer, length, flags);
 }

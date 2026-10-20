@@ -54,6 +54,7 @@
 #include "mmu/testSelfModifying.h"
 #include "mmu/testBrk.h"
 #include "process/testGamepadInput.h"
+#include "process/testSocketRecvFlags.h"
 
 void testWaitPid();
 
@@ -667,6 +668,7 @@ const TestEntry TEST_ENTRIES[] = {
 #endif
     {testWaitPid, "Test waitpid child selection"},
     {testGamepadInput, "Test Xbox gamepad evdev input"},
+    {testSocketRecvFlags, "Test socket receive flags"},
     {testDecoderPageBoundary, "Test decoder executable page boundary"},
     {testVk32TrapWitness, "Test vk32 Trap Witness (Stage A)"},
     {testGl32TrapWitness, "Test gl32 Trap Witness (Stage A-GL)"},
