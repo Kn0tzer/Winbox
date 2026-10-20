@@ -673,7 +673,7 @@ enum CmdKind : U32 {
     CMD_BEGIN_RP, CMD_END_RP, CMD_BIND_PIPE, CMD_BIND_SETS, CMD_VIEWPORT,
     CMD_SCISSOR, CMD_DRAW, CMD_DRAW_INDEXED, CMD_BARRIER, CMD_COPY_B2I, CMD_PUSH_CONST,
     CMD_BIND_VB, CMD_BIND_IB, CMD_UPDATE_BUF, CMD_COPY_I2B, CMD_DISPATCH, CMD_COPY_IMAGE,
-    CMD_STENCIL_STATE, CMD_BLEND_CONSTANTS, CMD_CLEAR_ATTACHMENTS, CMD_COPY_QUERY_RESULTS, CMD_DEPTH_BIAS
+    CMD_STENCIL_STATE, CMD_BLEND_CONSTANTS, CMD_CLEAR_ATTACHMENTS, CMD_COPY_QUERY_RESULTS, CMD_DEPTH_BIAS, CMD_BLIT_IMAGE
 };
 struct Copy {
     U64 srcBuffer = 0, dstImage = 0, bufOff = 0;
@@ -688,6 +688,11 @@ struct ImageCopy {
     U64 src = 0, dst = 0;
     U32 srcMip = 0, srcLayer = 0, dstMip = 0, dstLayer = 0;
     U32 srcOrigin[3] = {}, dstOrigin[3] = {}, extent[3] = {};
+};
+struct ImageBlit {
+    U64 src = 0, dst = 0;
+    U32 srcMip = 0, srcLayer = 0, dstMip = 0, dstLayer = 0, filter = 0;
+    int32_t srcOffsets[2][3] = {}, dstOffsets[2][3] = {};
 };
 struct QueryCopy {
     U64 queryPool = 0, dstBuffer = 0, dstOffset = 0, stride = 0;
@@ -712,6 +717,7 @@ struct Cmd {
     Copy  copy;
     CopyI2B copyI2B;
     ImageCopy imageCopy;
+    ImageBlit imageBlit;
     QueryCopy queryCopy;
     // Push constants: the recorded bytes, byte-offset preserved. DXVK pushes
     // constants per-draw for essentially everything, so this is a hot path, not a
@@ -797,6 +803,20 @@ void recordImageCopy(CmdBuf* cb, U64 src, U64 dst, U32 srcMip, U32 srcLayer, U32
         Cmd c; c.kind = CMD_COPY_IMAGE;
         c.imageCopy = { src, dst, srcMip, srcLayer + layer, dstMip, dstLayer + layer,
                        { (U32)sx, (U32)sy, (U32)sz }, { (U32)dx, (U32)dy, (U32)dz }, { w, h, d } };
+        pushCmd(cb, c);
+    }
+}
+void recordImageBlit(CmdBuf* cb, U64 src, U64 dst, U32 srcMip, U32 srcLayer, U32 dstMip, U32 dstLayer,
+                     U32 filter, const int32_t srcOffsets[2][3], const int32_t dstOffsets[2][3], U32 layers) {
+    if (!cb || !srcOffsets || !dstOffsets) return;
+    for (U32 layer = 0; layer < layers && layer < VK64_MAX_CMDS; ++layer) {
+        Cmd c; c.kind = CMD_BLIT_IMAGE;
+        c.imageBlit.src = src; c.imageBlit.dst = dst;
+        c.imageBlit.srcMip = srcMip; c.imageBlit.srcLayer = srcLayer + layer;
+        c.imageBlit.dstMip = dstMip; c.imageBlit.dstLayer = dstLayer + layer;
+        c.imageBlit.filter = filter;
+        memcpy(c.imageBlit.srcOffsets, srcOffsets, sizeof(c.imageBlit.srcOffsets));
+        memcpy(c.imageBlit.dstOffsets, dstOffsets, sizeof(c.imageBlit.dstOffsets));
         pushCmd(cb, c);
     }
 }
@@ -1785,7 +1805,7 @@ enum V2Rec : U32 {
     V2_VERTEX_BIND = 0x0F, V2_INDEX_BIND = 0x10, V2_DRAW = 0x11,
     V2_INLINE_BYTES = 0x12, V2_READBACK = 0x13, V2_IMAGE_COPY = 0x14,
     V2_STENCIL_STATE = 0x15, V2_BLEND_CONSTANTS = 0x16, V2_CLEAR_ATTACHMENTS = 0x17,
-    V2_DEPTH_BIAS = 0x18,
+    V2_DEPTH_BIAS = 0x18, V2_IMAGE_BLIT = 0x19,
 };
 const U32 V2_CHUNK_MAGIC = 0x46324B56u;   // 'VK2F' little-endian: bytes 56 4B 32 46
 const U32 V2_CHUNK_VERSION = 2;
@@ -2820,6 +2840,17 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                         for (U32 v : copy.srcOrigin) p.u32(v);
                         for (U32 v : copy.dstOrigin) p.u32(v);
                         for (U32 v : copy.extent) p.u32(v);
+                    });
+                    break;
+                }
+                case CMD_BLIT_IMAGE: {
+                    const ImageBlit& blit = k.imageBlit;
+                    emit(V2_IMAGE_BLIT, [&](ChunkWriter& p) {
+                        p.u64(blit.src); p.u64(blit.dst);
+                        p.u32(blit.srcMip); p.u32(blit.srcLayer); p.u32(blit.dstMip); p.u32(blit.dstLayer);
+                        p.u32(blit.filter);
+                        for (const auto& point : blit.srcOffsets) for (int32_t value : point) p.u32((U32)value);
+                        for (const auto& point : blit.dstOffsets) for (int32_t value : point) p.u32((U32)value);
                     });
                     break;
                 }
@@ -5678,6 +5709,14 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         };
         Image* src = objOf<Image>(args.a[1], K_IMAGE, "vkCmdBlitImage");
         Image* dst = objOf<Image>(args.a[3], K_IMAGE, "vkCmdBlitImage");
+        if (!src || !dst) return 0;
+        for (const auto& r : regs) {
+            const int32_t srcOffsets[2][3] = {{r.srcX0, r.srcY0, r.srcZ0}, {r.srcX1, r.srcY1, r.srcZ1}};
+            const int32_t dstOffsets[2][3] = {{r.dstX0, r.dstY0, r.dstZ0}, {r.dstX1, r.dstY1, r.dstZ1}};
+            recordImageBlit(cbOf(args.a[0], "vkCmdBlitImage"), args.a[1], args.a[3],
+                r.srcMip, r.srcBaseLayer, r.dstMip, r.dstBaseLayer, (U32)args.a[7],
+                srcOffsets, dstOffsets, r.srcLayerCount);
+        }
         if (!src || !dst || !src->mem || !dst->mem) return 0;
         DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdBlitImage");
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdBlitImage");
@@ -5738,6 +5777,14 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         };
         Image* src = objOf<Image>(args.a[1], K_IMAGE, "vkCmdBlitImage2");
         Image* dst = objOf<Image>(args.a[2], K_IMAGE, "vkCmdBlitImage2");
+        if (!src || !dst) return 0;
+        for (const auto& r : regs) {
+            const int32_t srcOffsets[2][3] = {{r.srcX0, r.srcY0, r.srcZ0}, {r.srcX1, r.srcY1, r.srcZ1}};
+            const int32_t dstOffsets[2][3] = {{r.dstX0, r.dstY0, r.dstZ0}, {r.dstX1, r.dstY1, r.dstZ1}};
+            recordImageBlit(cbOf(args.a[0], "vkCmdBlitImage2"), args.a[1], args.a[2],
+                r.srcMip, r.srcBaseLayer, r.dstMip, r.dstBaseLayer, (U32)args.a[5],
+                srcOffsets, dstOffsets, r.srcLayerCount);
+        }
         if (!src || !dst || !src->mem || !dst->mem) return 0;
         DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdBlitImage2");
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdBlitImage2");
@@ -7873,6 +7920,20 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         for (U32 i = 0; i < nreg && pReg; i++) {
             vk32abi::VkImageBlit r = {};
             readStruct32(pReg + i * (U32)sizeof(r), r);
+            const int32_t srcOffsets[2][3] = {
+                {r.srcOffsets[0].x, r.srcOffsets[0].y, r.srcOffsets[0].z},
+                {r.srcOffsets[1].x, r.srcOffsets[1].y, r.srcOffsets[1].z},
+            };
+            const int32_t dstOffsets[2][3] = {
+                {r.dstOffsets[0].x, r.dstOffsets[0].y, r.dstOffsets[0].z},
+                {r.dstOffsets[1].x, r.dstOffsets[1].y, r.dstOffsets[1].z},
+            };
+            const U32 filter = fnId == VK64_fn_vkCmdBlitImage ? (U32)args.a[7] : (U32)args.a[5];
+            recordImageBlit(objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdBlitImage"), args.a[1],
+                fnId == VK64_fn_vkCmdBlitImage ? args.a[3] : args.a[2],
+                r.srcSubresource.mipLevel, r.srcSubresource.baseArrayLayer,
+                r.dstSubresource.mipLevel, r.dstSubresource.baseArrayLayer, filter,
+                srcOffsets, dstOffsets, r.srcSubresource.layerCount);
             int32_t srcW = r.srcOffsets[1].x - r.srcOffsets[0].x;
             int32_t srcH = r.srcOffsets[1].y - r.srcOffsets[0].y;
             int32_t dstW = r.dstOffsets[1].x - r.dstOffsets[0].x;

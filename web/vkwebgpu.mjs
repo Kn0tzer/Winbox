@@ -4,7 +4,7 @@ import {
   V2_PUSH_BINDING, V2_PUSH_GROUP, V2_PUSH_SIZE, V2_QUEUE_CAP,
   V2_SCALED_VERTEX, V2_TOPOLOGY, V2_UNKNOWN_IMAGE, V2_VERT_FORMAT_SIZE,
   decodeV2Frame, parseV2Chunk, repackScaledVb,
-  swizzleBgraVb, v2DepthStencilUploads, v2TextureFormat, v2TexturePixels, v2VertexFormat,
+  swizzleBgraVb, v2DepthStencilUploads, v2ImageBlitRegion, v2TextureFormat, v2TextureMipUploadPlan, v2TexturePixels, v2VertexFormat,
 } from './vk-protocol.mjs';
 import { bwLogRl } from './vk-log.mjs';
 import {
@@ -1093,6 +1093,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
 
   const shaders = createShaderCache({ translate, log });
   const pipelines = new Map();   // pipeId:msN -> { pipeline, layouts, decls, hasPush, slotOf, maxGroup, key }
+  const blitPipelines = new Map();
   let presentPipeline = null;
   const targets = new Map();     // targetKey -> GPUTexture (invalidated on resize; img:/imgd: keys alias by VkImage)
   const stats = {
@@ -1172,10 +1173,53 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   }
   function target(key, desc) {
     const size = frameTargetSizes.get(key);
-    if (size) desc = { ...desc, size };
+    const imageId = /^imgd?:([0-9a-f]{16})(?:$|:)/.exec(key)?.[1];
+    const image = imageId && F.images.get(imageId);
+    if (size) {
+      const dims = desc.size || size;
+      desc = { ...desc, size: [Math.max(size[0], dims[0]), Math.max(size[1], dims[1]), ...(dims[2] ? [dims[2]] : [])] };
+    }
+    if (image && !desc.sampleCount) {
+      const dims = desc.size || [image.w, image.h];
+      desc = { ...desc, mipLevelCount: Math.max(1, image.mips || 1),
+        size: [Math.max(dims[0], image.w), Math.max(dims[1], image.h), Math.max(dims[2] || 0, image.layers || 1)] };
+    }
     let t = targets.get(key);
     if (!t) { t = device.createTexture({ ...desc, label: key }); targets.set(key, t); }
     return t;
+  }
+  function imageBlitPipeline(format, filter) {
+    const key = format + ':' + filter;
+    let rec = blitPipelines.get(key);
+    if (rec) return rec;
+    const linear = filter === 1;
+    const sample = linear ? `
+ let dim = vec2<i32>(textureDimensions(source, 0));
+ let p = clamp(input.uv * vec2<f32>(dim) - vec2<f32>(0.5), vec2<f32>(0.0), vec2<f32>(dim - vec2<i32>(1)));
+ let i = vec2<i32>(floor(p)); let f = fract(p);
+ let a = textureLoad(source, i, 0); let b = textureLoad(source, min(i + vec2<i32>(1, 0), dim - vec2<i32>(1)), 0);
+ let c = textureLoad(source, min(i + vec2<i32>(0, 1), dim - vec2<i32>(1)), 0);
+ let d = textureLoad(source, min(i + vec2<i32>(1, 1), dim - vec2<i32>(1)), 0);
+ return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);` : `
+ let dim = vec2<i32>(textureDimensions(source, 0));
+ let p = clamp(vec2<i32>(floor(input.uv * vec2<f32>(dim))), vec2<i32>(0), dim - vec2<i32>(1));
+ return textureLoad(source, p, 0);`;
+    const module = device.createShaderModule({ code: `
+struct Params { sourceRect: vec4<f32> };
+struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> };
+@group(0) @binding(0) var source: texture_2d<f32>;
+@group(0) @binding(1) var<uniform> params: Params;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> Out {
+ let p = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+ let uv = array<vec2<f32>, 3>(vec2<f32>(0.0, 0.0), vec2<f32>(2.0, 0.0), vec2<f32>(0.0, 2.0));
+ var out: Out; out.position = vec4<f32>(p[i], 0.0, 1.0); out.uv = params.sourceRect.xy + uv[i] * params.sourceRect.zw; return out;
+}
+@fragment fn fs(input: Out) -> @location(0) vec4<f32> {${sample}
+}` });
+    rec = device.createRenderPipeline({ layout: 'auto', vertex: { module, entryPoint: 'vs' },
+      fragment: { module, entryPoint: 'fs', targets: [{ format }] }, primitive: { topology: 'triangle-list' } });
+    blitPipelines.set(key, rec);
+    return rec;
   }
 
   // Frame-local resource caches, reset by render().
@@ -1229,63 +1273,45 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     const fmt = v2TextureFormat(img.format, counters === undefined ? stats : counters, device.features);
     const hash = img.hash || (img.pixels && img.pixels.length ? fnv1a(img.pixels) : 'empty');
     const d = dimension === '3d' ? Math.max(1, img.d || 1) : 1;
-    return { ck: imgHex + ':' + w + 'x' + h + ':' + fmt + ':' + hash + (cube ? ':cube' : '') + (dimension !== '2d' ? ':' + dimension + ':' + d : ''), w, h, d, fmt };
+    const layers = dimension === '3d' ? 1 : Math.max(cube ? 6 : 1, img.layers || 1);
+    const mips = Math.max(1, img.mips || 1);
+    return { ck: imgHex + ':' + w + 'x' + h + ':' + fmt + ':' + hash + ':' + dimension + ':' + d + ':' + layers + ':' + mips, w, h, d, layers, mips, fmt };
   }
 
-  /** @param {string} imgHex @param {any} img @param {boolean} [cube] @param {GPUTextureDimension} [dimension] */
+  /** @param {string} imgHex @param {any} img @param {boolean} [cube] @param {string} [dimension] */
   function gpuTextureFor(imgHex, img, cube = false, dimension = '2d') {
     // Persistent cache: reuse GPUTexture when content is unchanged.
-    const { ck, w, h, d, fmt } = textureKey(imgHex, img, undefined, cube, dimension);
+    const { ck, w, h, d, layers, mips, fmt } = textureKey(imgHex, img, undefined, cube, dimension);
     if (!fmt) return null;
     let entry = persistTexCache.get(ck);
     if (entry) { persistStats.texHits++; return entry.tex; }
-    if (!img.pixels || !img.pixels.length) {
-      // Deduped record for a texture the page never uploaded (wasm only
-      // dedups after a full send, so this should not happen). Safe fallback.
-      return blankTex(cube, dimension);
-    }
     persistStats.texMiss++;
-    const slices = cube ? 6 : d;
+    const textureDimension = dimension === '3d' ? '3d' : dimension === '1d' ? '1d' : '2d';
+    const slices = dimension === '3d' ? d : layers;
+    let usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC;
+    if (V2_COLOR_ATTACHMENT_FORMATS.includes(img.format)) usage |= GPUTextureUsage.RENDER_ATTACHMENT;
     const t = device.createTexture({
-      size: [w, h, slices], format: fmt, dimension,
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC,
+      size: [w, h, slices], format: fmt, dimension: textureDimension, mipLevelCount: mips, usage,
     });
     if (img.pixels && img.pixels.length) {
-      const compressed = fmt.startsWith('bc');
-      const blockBytes = /^bc[14]-/.test(fmt) ? 8 : 16;
-      const sourceBpp = img.format === 130 ? 8 : undefined;
-      const bpp = {
-        r8unorm:1, r8snorm:1, r8uint:1, r8sint:1,
-        rg8unorm:2, rg8snorm:2, rg8uint:2, rg8sint:2,
-        r16unorm:2, r16float:2, rg16unorm:4, rg16float:4, depth16unorm:2,
-        rgba16float:8, rg32float:8, depth32float:4, 'depth32float-stencil8':8, r32uint:4, r32sint:4,
-        rgba32float:16,
-      }[fmt] || 4;
-      const rowBytes = compressed ? Math.ceil(w / 4) * blockBytes : w * bpp;
-      const rows = compressed ? Math.ceil(h / 4) : h;
-      const want = rowBytes * rows;
       const pixels = v2TexturePixels(img.format, img.pixels, device.features);
-      const sourceWant = compressed ? want : w * (sourceBpp || bpp) * rows;
-      let src = pixels.length >= sourceWant * slices ? pixels.subarray(0, sourceWant * slices) : pixels;
-      if (cube) {
-        // The bridge stores each face's complete mip chain contiguously.
-        // WebGPU's base-level upload needs only the first mip from each face.
-        src = new Uint8Array(sourceWant * 6);
-        const faceStride = pixels.length / 6;
-        if (Number.isInteger(faceStride) && faceStride >= sourceWant)
-          for (let face = 0; face < 6; face++)
-            src.set(pixels.subarray(face * faceStride, face * faceStride + sourceWant), face * sourceWant);
-      }
-      if (fmt.startsWith('depth')) {
-        // Vulkan packs guest depth/stencil data by format. WebGPU requires a
-        // separate upload for each copyable aspect; opaque depth24plus values
-        // stay available for render passes but cannot be initialized by upload.
-        const { uploads, skippedDepth } = v2DepthStencilUploads(img.format, src, device.features);
-        if (skippedDepth) stats.unsupported++;
-        for (const upload of uploads) device.queue.writeTexture({ texture: t, aspect: upload.aspect }, upload.pixels,
-          { bytesPerRow: w * upload.bytesPerTexel, rowsPerImage: rows }, [w, h, slices]);
-      } else {
-        device.queue.writeTexture({ texture: t }, src, { bytesPerRow: rowBytes, rowsPerImage: rows }, [w, h, slices]);
+      const plan = v2TextureMipUploadPlan(img, fmt, dimension);
+      for (const subresource of plan) {
+        const src = pixels.subarray(subresource.offset, subresource.offset + subresource.byteLength);
+        const origin = { x: 0, y: 0, z: dimension === '3d' ? 0 : subresource.layer };
+        const extent = subresource.extent;
+        if (fmt.startsWith('depth')) {
+          // Vulkan packs guest depth/stencil data by format. WebGPU requires a
+          // separate upload for each copyable aspect; opaque depth24plus values
+          // stay available for render passes but cannot be initialized by upload.
+          const { uploads, skippedDepth } = v2DepthStencilUploads(img.format, src, device.features);
+          if (skippedDepth) stats.unsupported++;
+          for (const upload of uploads) device.queue.writeTexture({ texture: t, mipLevel: subresource.mip, origin, aspect: upload.aspect }, upload.pixels,
+            { bytesPerRow: subresource.bytesPerRow / (subresource.extent[0] || 1) * upload.bytesPerTexel, rowsPerImage: subresource.rowsPerImage }, extent);
+        } else {
+          device.queue.writeTexture({ texture: t, mipLevel: subresource.mip, origin }, src,
+            { bytesPerRow: subresource.bytesPerRow, rowsPerImage: subresource.rowsPerImage }, extent);
+        }
       }
     }
     persistTexCache.set(ck, { tex: t, w, h, format: fmt });
@@ -1332,7 +1358,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     return sm;
   }
 
-  /** @param {boolean} [cube] @param {GPUTextureDimension} [dimension] */
+  /** @param {boolean} [cube] @param {string} [dimension] */
   const blankTex = (cube = false, dimension = '2d') => {
     const key = cube ? '\0blank-cube' : dimension !== '2d' ? '\0blank-' + dimension : '\0blank';
     // Persistent bind groups retain this view between frames. Its texture
@@ -1340,7 +1366,8 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     let entry = persistTexCache.get(key);
     if (!entry) {
       const layers = cube ? 6 : 1;
-      const t = device.createTexture({ size: [1, 1, layers], dimension, format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+      const textureDimension = dimension === '3d' ? '3d' : dimension === '1d' ? '1d' : '2d';
+      const t = device.createTexture({ size: [1, 1, layers], dimension: textureDimension, format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
       device.queue.writeTexture({ texture: t }, new Uint8Array(4 * layers), { bytesPerRow: 4, rowsPerImage: 1 }, [1, 1, layers]);
       entry = { tex: t }; persistTexCache.set(key, entry);
     }
@@ -1666,7 +1693,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
           // earlier in the frame, sample the texture actually rendered into —
           // its IMAGE_DATA record carries the view->image link but no pixels.
           const cube = t.startsWith('texture_cube');
-          const dimension = t.startsWith('texture_1d') ? '1d' : t.startsWith('texture_3d') ? '3d' : '2d';
+          const dimension = t.startsWith('texture_1d') ? '1d' : t.startsWith('texture_3d') ? '3d' : t.includes('_array') ? '2d-array' : cube ? 'cube' : '2d';
           const aliasTex = !cube && dimension === '2d' && v2ImageKnown(imgHex)
             ? (targets.get(v2ImageTargetKey(imgHex, false)) || targets.get(v2ImageTargetKey(imgHex, true)))
             : null;
@@ -1849,7 +1876,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
             usage: GPUTextureUsage.RENDER_ATTACHMENT | texBinding,
           });
           passDepthAspects = a.aspectMask || (passDepthFormat.includes('stencil') ? 6 : 2);
-          depthView = tex.createView();
+          depthView = tex.createView({ dimension: '2d', baseMipLevel: 0, mipLevelCount: 1, baseArrayLayer: 0, arrayLayerCount: 1 });
           depthAttachment = a;
         } else {
           const viewFormat = a.format ? v2TextureFormat(a.format, stats, device.features) : format;
@@ -1861,12 +1888,13 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
             size: [p.w, p.h], ...storage,
             usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
           });
-          let view = single.createView({ format: viewFormat }), resolveTarget;
+          let view = single.createView({ format: viewFormat, dimension: '2d', baseMipLevel: 0, mipLevelCount: 1, baseArrayLayer: 0, arrayLayerCount: 1 }), resolveTarget;
           if (samples > 1) {
             const ms = target(colorMsKey(a.imageId, p.w, p.h, samples, slot), {
               size: [p.w, p.h], sampleCount: samples, ...storage, usage: GPUTextureUsage.RENDER_ATTACHMENT,
             });
-            view = ms.createView({ format: viewFormat }); resolveTarget = single.createView({ format: viewFormat });
+            view = ms.createView({ format: viewFormat, dimension: '2d', baseMipLevel: 0, mipLevelCount: 1, baseArrayLayer: 0, arrayLayerCount: 1 });
+            resolveTarget = single.createView({ format: viewFormat, dimension: '2d', baseMipLevel: 0, mipLevelCount: 1, baseArrayLayer: 0, arrayLayerCount: 1 });
           }
           colorAttachments.push({
             view, resolveTarget,
@@ -1917,18 +1945,70 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
         switch (op.op) {
           case 'imageCopy': {
             if (passEnc) throw new Error('image copy inside a render pass');
-            if (op.srcMip || op.dstMip || op.srcLayer || op.dstLayer || op.extent[2] !== 1 || op.srcOrigin[2] || op.dstOrigin[2])
-              throw new Error('image copy subresource is not supported by the base-level replay');
+            const srcImage = F.images.get(op.srcImage), dstImage = F.images.get(op.dstImage);
+            const imageDimension = image => image?.d > 1 ? '3d' : image?.layers > 1 ? '2d-array' : '2d';
             const source = targets.get(v2ImageTargetKey(op.srcImage, false)) ||
-              (F.images.has(op.srcImage) && gpuTextureFor(op.srcImage, F.images.get(op.srcImage)));
+              (srcImage && gpuTextureFor(op.srcImage, srcImage, false, imageDimension(srcImage)));
             if (!source) throw new Error('image copy source missing: ' + op.srcImage);
-            const image = F.images.get(op.dstImage);
-            const destination = target(v2ImageTargetKey(op.dstImage, false), {
-              size: [Math.max(image?.w || 0, op.dstOrigin[0] + op.extent[0]), Math.max(image?.h || 0, op.dstOrigin[1] + op.extent[1])],
-              ...colorStorage(source.format),
-              usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
-            });
-            encoder.copyTextureToTexture({ texture: source, origin: op.srcOrigin }, { texture: destination, origin: op.dstOrigin }, op.extent);
+            let destination = targets.get(v2ImageTargetKey(op.dstImage, false)) || targets.get(v2ImageTargetKey(op.dstImage, true));
+            if (!destination && dstImage) destination = gpuTextureFor(op.dstImage, dstImage, false, imageDimension(dstImage));
+            if (!destination) {
+              destination = target(v2ImageTargetKey(op.dstImage, false), {
+                size: [op.dstOrigin[0] + op.extent[0], op.dstOrigin[1] + op.extent[1]],
+                ...colorStorage(source.format),
+                usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
+              });
+            }
+            if (!destination) throw new Error('image copy destination missing: ' + op.dstImage);
+            if (srcImage?.d > 1 || dstImage?.d > 1) {
+              encoder.copyTextureToTexture({ texture: source, mipLevel: op.srcMip, origin: op.srcOrigin },
+                { texture: destination, mipLevel: op.dstMip, origin: op.dstOrigin }, op.extent);
+            } else {
+              for (let layer = 0; layer < op.extent[2]; layer++) {
+                encoder.copyTextureToTexture({ texture: source, mipLevel: op.srcMip,
+                  origin: [op.srcOrigin[0], op.srcOrigin[1], op.srcLayer + op.srcOrigin[2] + layer] },
+                { texture: destination, mipLevel: op.dstMip,
+                  origin: [op.dstOrigin[0], op.dstOrigin[1], op.dstLayer + op.dstOrigin[2] + layer] }, [op.extent[0], op.extent[1], 1]);
+              }
+            }
+            break;
+          }
+          case 'imageBlit': {
+            if (passEnc) throw new Error('image blit inside a render pass');
+            const srcImage = F.images.get(op.srcImage), dstImage = F.images.get(op.dstImage);
+            if (!srcImage || !dstImage || srcImage.d > 1 || dstImage.d > 1 ||
+                !V2_COLOR_ATTACHMENT_FORMATS.includes(dstImage.format)) { stats.unsupported++; break; }
+            const region = v2ImageBlitRegion(op, srcImage, dstImage);
+            const srcFormat = v2TextureFormat(srcImage.format, stats, device.features);
+            const dstFormat = v2TextureFormat(dstImage.format, stats, device.features);
+            if (!region || !srcFormat || !dstFormat || /(?:uint|sint)/.test(srcFormat) || /(?:uint|sint)/.test(dstFormat)) {
+              stats.unsupported++; break;
+            }
+            const imageDimension = image => image.layers > 1 ? '2d-array' : '2d';
+            const source = targets.get(v2ImageTargetKey(op.srcImage, false)) ||
+              (F.images.has(op.srcImage) && gpuTextureFor(op.srcImage, srcImage, false, imageDimension(srcImage)));
+            const destination = targets.get(v2ImageTargetKey(op.dstImage, false)) ||
+              (F.images.has(op.dstImage) && gpuTextureFor(op.dstImage, dstImage, false, imageDimension(dstImage)));
+            if (!source || !destination || source === destination && op.srcMip === op.dstMip && op.srcLayer === op.dstLayer) {
+              stats.unsupported++; break;
+            }
+            try {
+              const pipeline = imageBlitPipeline(dstFormat, op.filter);
+              const srcView = source.createView({ format: srcFormat, dimension: '2d', baseMipLevel: op.srcMip,
+                mipLevelCount: 1, baseArrayLayer: op.srcLayer, arrayLayerCount: 1 });
+              const dstView = destination.createView({ format: dstFormat, dimension: '2d', baseMipLevel: op.dstMip,
+                mipLevelCount: 1, baseArrayLayer: op.dstLayer, arrayLayerCount: 1 });
+              const params = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM, mappedAtCreation: true });
+              new Float32Array(params.getMappedRange()).set(region.sourceRect); params.unmap(); F.live.push(params);
+              const group = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [
+                { binding: 0, resource: srcView }, { binding: 1, resource: { buffer: params } },
+              ] });
+              const pass = encoder.beginRenderPass({ colorAttachments: [{ view: dstView, loadOp: 'load', storeOp: 'store' }] });
+              pass.setPipeline(pipeline); pass.setBindGroup(0, group);
+              pass.setViewport(region.viewport[0], region.viewport[1], region.viewport[2], region.viewport[3], 0, 1); pass.draw(3); pass.end();
+            } catch {
+              stats.unsupported++;
+            }
             break;
           }
           case 'clearAttachments': {
@@ -2287,7 +2367,8 @@ export {
   V2_MAX_RECORD_BYTES, V2_MAX_FRAME_RECORDS, V2_PUSH_GROUP,
   V2_PUSH_BINDING, V2_PUSH_SIZE, V2_QUEUE_CAP, V2_MAX_SETS, V2_REC,
   v2Hex64, parseV2Chunk, V2FrameAssembler, V2PresentAssembler, V2FrameQueue,
-  rgba16UnormToHalf, v2TextureFormat, repackScaledVb, v2VertexFormat,
+  rgba16UnormToHalf, v2TextureFormat, v2TextureMipUploadPlan, v2ImageBlitRegion,
+  repackScaledVb, v2VertexFormat,
   decodeV2Frame, swizzleBgraVb, V2_UNKNOWN_IMAGE,
 } from './vk-protocol.mjs';
 export {

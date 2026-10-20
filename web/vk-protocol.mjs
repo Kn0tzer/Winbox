@@ -58,6 +58,7 @@ export const V2_REC = Object.freeze({
   VIEWPORT: 0x0D, SCISSOR: 0x0E, VERTEX_BIND: 0x0F, INDEX_BIND: 0x10,
   DRAW: 0x11, INLINE_BYTES: 0x12, READBACK: 0x13, IMAGE_COPY: 0x14,
   STENCIL_STATE: 0x15, BLEND_CONSTANTS: 0x16, CLEAR_ATTACHMENTS: 0x17, DEPTH_BIAS: 0x18,
+  IMAGE_BLIT: 0x19,
 });
 
 // Vulkan descriptor types (numeric, as the bridge records them).
@@ -73,6 +74,7 @@ class V2Reader {
   u8() { this.need(1, 'u8'); return this.dv.getUint8(this.p++); }
   u16() { this.need(2, 'u16'); const v = this.dv.getUint16(this.p, true); this.p += 2; return v; }
   u32() { this.need(4, 'u32'); const v = this.dv.getUint32(this.p, true); this.p += 4; return v; }
+  i32() { this.need(4, 'i32'); const v = this.dv.getInt32(this.p, true); this.p += 4; return v; }
   u64() { this.need(8, 'u64'); const v = this.dv.getBigUint64(this.p, true); this.p += 8; return v; }
   f32() { this.need(4, 'f32'); const v = this.dv.getFloat32(this.p, true); this.p += 4; return v; }
   bytes(n) {
@@ -112,7 +114,7 @@ export function parseV2Chunk(bytes) {
     if (p + V2_REC_HEADER_LEN > bytes.length) throw new Error('vk64: v2 chunk truncated record header');
     const type = dv.getUint16(p, true);
     const len = dv.getUint32(p + 4, true);
-    if (type < V2_REC.FRAME_BEGIN || type > V2_REC.DEPTH_BIAS)
+    if (type < V2_REC.FRAME_BEGIN || type > V2_REC.IMAGE_BLIT)
       throw new Error('vk64: v2 unknown record type 0x' + type.toString(16));
     if (len > V2_MAX_RECORD_BYTES || p + V2_REC_HEADER_LEN + len > bytes.length)
       throw new Error('vk64: v2 record 0x' + type.toString(16) + ' truncated (len ' + len + ')');
@@ -314,6 +316,53 @@ export function v2TexturePixels(vkFormat, bytes, features) {
   if (vkFormat === 91) return rgba16UnormToHalf(bytes);
   if (V2_NORM16_FORMATS.has(vkFormat) && !directNorm16) return unorm16ToHalf(bytes);
   return packedUnormToRgba8(vkFormat, bytes);
+}
+const V2_TEXTURE_UPLOAD_BPP = Object.freeze({
+  r8unorm:1, r8snorm:1, r8uint:1, r8sint:1,
+  rg8unorm:2, rg8snorm:2, rg8uint:2, rg8sint:2,
+  rgba8unorm:4, 'rgba8unorm-srgb':4, rgba8snorm:4, rgba8uint:4, rgba8sint:4,
+  bgra8unorm:4, 'bgra8unorm-srgb':4, 'rgb10a2unorm':4,
+  r16unorm:2, r16float:2, rg16unorm:4, rg16float:4, rgba16float:8,
+  rg32float:8, rgba32float:16, r32float:4, r32uint:4, r32sint:4,
+  depth16unorm:2, depth24plus:4, depth32float:4, 'depth24plus-stencil8':4, 'depth32float-stencil8':8,
+});
+/** Return byte offsets and writeTexture extents for the bridge's layer-major mip-chain image layout. */
+export function v2TextureMipUploadPlan(img, format, dimension = '2d') {
+  const w = Math.max(1, img.w || 1), h = dimension === '1d' ? 1 : Math.max(1, img.h || 1);
+  const d = dimension === '3d' ? Math.max(1, img.d || 1) : 1;
+  const layers = dimension === '3d' ? 1 : Math.max(dimension === 'cube' ? 6 : 1, img.layers || 1);
+  const mips = Math.max(1, img.mips || 1), compressed = format.startsWith('bc');
+  const blockBytes = /^bc[14]-/.test(format) ? 8 : 16;
+  const bpp = V2_TEXTURE_UPLOAD_BPP[format] || 4;
+  const plan = [];
+  let offset = 0;
+  for (let layer = 0; layer < layers; layer++) {
+    for (let mip = 0; mip < mips; mip++) {
+      const mw = Math.max(1, w >> mip), mh = Math.max(1, h >> mip);
+      const md = dimension === '3d' ? Math.max(1, d >> mip) : 1;
+      const bytesPerRow = compressed ? Math.ceil(mw / 4) * blockBytes : mw * bpp;
+      const rowsPerImage = compressed ? Math.ceil(mh / 4) : mh;
+      const byteLength = bytesPerRow * rowsPerImage * md;
+      plan.push({ layer, mip, offset, byteLength, bytesPerRow, rowsPerImage, extent: [mw, mh, md] });
+      offset += byteLength;
+    }
+  }
+  return plan;
+}
+/** Convert a Vulkan 2D color blit region to a render viewport and normalized source rectangle. */
+export function v2ImageBlitRegion(op, srcImage, dstImage) {
+  const srcW = Math.max(1, srcImage.w >> op.srcMip), srcH = Math.max(1, srcImage.h >> op.srcMip);
+  const dstW = Math.max(1, dstImage.w >> op.dstMip), dstH = Math.max(1, dstImage.h >> op.dstMip);
+  const [s0, s1] = op.srcOffsets, [d0, d1] = op.dstOffsets;
+  if (Math.abs(s1[2] - s0[2]) !== 1 || Math.abs(d1[2] - d0[2]) !== 1 ||
+      [...s0, ...s1].some((v, axis) => v < 0 || v > (axis % 3 === 0 ? srcW : axis % 3 === 1 ? srcH : Math.max(1, srcImage.d || 1))) ||
+      [...d0, ...d1].some((v, axis) => v < 0 || v > (axis % 3 === 0 ? dstW : axis % 3 === 1 ? dstH : Math.max(1, dstImage.d || 1))))
+    return null;
+  const x0 = Math.min(d0[0], d1[0]), y0 = Math.min(d0[1], d1[1]);
+  const width = Math.abs(d1[0] - d0[0]), height = Math.abs(d1[1] - d0[1]);
+  const sx0 = d1[0] < d0[0] ? s1[0] : s0[0], sy0 = d1[1] < d0[1] ? s1[1] : s0[1];
+  const sx1 = d1[0] < d0[0] ? s0[0] : s1[0], sy1 = d1[1] < d0[1] ? s0[1] : s1[1];
+  return { viewport: [x0, y0, width, height], sourceRect: [sx0 / srcW, sy0 / srcH, (sx1 - sx0) / srcW, (sy1 - sy0) / srcH], srcW, srcH, dstW, dstH };
 }
 /**
  * @param {number} vkFormat
@@ -698,6 +747,20 @@ export function decodeV2Frame(records, counters = {}) {
             [...srcOrigin, ...dstOrigin].some(n => n > MAX_DIMENSION) || pass?.attachments.length)
           throw new Error('vk64: v2 invalid image copy');
         needPass().ops.push({ op: 'imageCopy', srcImage, dstImage, srcMip, srcLayer, dstMip, dstLayer, srcOrigin, dstOrigin, extent });
+        break;
+      }
+      case V2_REC.IMAGE_BLIT: {
+        const srcImage = v2Hex64(r.u64()), dstImage = v2Hex64(r.u64());
+        const srcMip = r.u32(), srcLayer = r.u32(), dstMip = r.u32(), dstLayer = r.u32(), filter = r.u32();
+        const srcOffsets = [[r.i32(), r.i32(), r.i32()], [r.i32(), r.i32(), r.i32()]];
+        const dstOffsets = [[r.i32(), r.i32(), r.i32()], [r.i32(), r.i32(), r.i32()]];
+        r.done('IMAGE_BLIT');
+        if (srcImage === V2_UNKNOWN_IMAGE || dstImage === V2_UNKNOWN_IMAGE || filter > 1 ||
+            [...srcOffsets.flat(), ...dstOffsets.flat()].some(v => Math.abs(v) > MAX_DIMENSION) ||
+            srcOffsets[0][0] === srcOffsets[1][0] || srcOffsets[0][1] === srcOffsets[1][1] ||
+            dstOffsets[0][0] === dstOffsets[1][0] || dstOffsets[0][1] === dstOffsets[1][1] || pass?.attachments.length)
+          throw new Error('vk64: v2 invalid image blit');
+        needPass().ops.push({ op: 'imageBlit', srcImage, dstImage, srcMip, srcLayer, dstMip, dstLayer, filter, srcOffsets, dstOffsets });
         break;
       }
       case V2_REC.STENCIL_STATE: {

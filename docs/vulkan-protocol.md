@@ -103,13 +103,17 @@ so the decision is pinned to the submit path, never re-read per frame).
 
 ## 3. Schema v2 record catalogue
 
-Image transfers use append-only record `0x14` (`IMAGE_COPY`). Its payload is
+Image transfers use append-only records `0x14` (`IMAGE_COPY`) and `0x19`
+(`IMAGE_BLIT`). IMAGE_COPY's payload is
 `u64 srcImage, u64 dstImage`, followed by thirteen little-endian `u32` fields:
 `srcMip, srcLayer, dstMip, dstLayer, srcX, srcY, srcZ, dstX, dstY, dstZ,
 width, height, depth` (68 bytes total). It occurs outside a render pass and
-retains command ordering. Copy and resolve commands copy the page's rendered
-texture, rather than the guest's stale backing pixels. Current replay supports
-base-level, single-layer 2D transfers; other subresources are rejected explicitly.
+retains command ordering. Copy and resolve commands copy page textures per
+mip/layer, including 3D depth slices, rather than the guest's stale backing pixels.
+IMAGE_BLIT has `u64 srcImage, u64 dstImage`, then `u32 srcMip, srcLayer,
+dstMip, dstLayer, filter` (`0=nearest, 1=linear`), then six signed
+`i32 x,y,z` offsets for the source and six for the destination (84 bytes
+total). It is replayed as a GPU render pass for color subresources.
 
 Frame = **present-to-present**. Records stream across submits; `FRAME_BEGIN`
 is emitted at the first submit-with-draw after a present, `FRAME_END` seals at
@@ -136,6 +140,7 @@ is emitted at the first submit-with-draw after a present, `FRAME_END` seals at
 | 0x11 | `DRAW` | `u32 vertexCount, instanceCount, firstVertex, firstInstance, u8 indexed, u8 pad[3], u32 indexCount, u32 firstIndex, i32 vertexOffset`. Covers `vkCmdDraw` and `vkCmdDrawIndexed`. |
 | 0x12 | `INLINE_BYTES` | `u8 setIndex, u8 pad, u16 pad, u32 binding, u32 dstArrayElement, u32 len, u8 bytes[len]`. Payload for `kind=4` (`INLINE_UNIFORM_BLOCK`) bindings, whose bytes live in guest memory at write time. |
 | 0x18 | `DEPTH_BIAS` | `f32 constantFactor, clamp, slopeFactor`, dynamic `vkCmdSetDepthBias` state in command order. |
+| 0x19 | `IMAGE_BLIT` | `u64 srcImage, u64 dstImage, u32 srcMip, srcLayer, dstMip, dstLayer, filter, i32 srcOffset[2][3], i32 dstOffset[2][3]`; linear/nearest GPU blit, including mip generation. |
 
 Deliberately **not** in v2: secondary command buffers (DXVK doesn't use them
 for D3D9), input attachments, tessellation/geometry stages (pipeline records
