@@ -57,6 +57,7 @@ function readLoadAverage() {
 async function waitForLoadAverageBelowThreshold(summary) {
   const waitStartedAt = Date.now();
   let current = readLoadAverage();
+  summary.loadAverageGateStart = current;
   while (current !== null && current >= 2.5 && Date.now() - waitStartedAt < 45 * 60 * 1000) {
     console.log(`profile-demo: load average ${current}; waiting 30 seconds before profiling`);
     await sleep(30_000);
@@ -79,9 +80,10 @@ try {
 }
 
 async function main() {
-await waitForLoadAverageBelowThreshold(summary);
 await waitForBuildIdle();
 const build = JSON.parse(await readFile(join(repo, 'dist/runtime/BUILD_INFO.json'), 'utf8'));
+const loadGateSummary = {};
+await waitForLoadAverageBelowThreshold(loadGateSummary);
 
 const server = await serve('dist');
 const baseUrl = process.env.BW_TEST_BASE_URL || `http://127.0.0.1:${server.address().port}/`;
@@ -105,6 +107,7 @@ const pending = new Map();
 const loadStart = readLoadAverage();
 const summary = {
   demo, jit: Number(jit), build, profileStart: startSpec, profileSeconds,
+  ...loadGateSummary,
   loadAverageRunStart: loadStart, loadAverageWindowStart: null, loadAverageEnd: null,
   startedAt: new Date().toISOString(), tClick: null, tMapped: null, tFirstFrame: null,
   windowStartSeconds: null, windowEndSeconds: null, fallback: false, stage: 'running',
