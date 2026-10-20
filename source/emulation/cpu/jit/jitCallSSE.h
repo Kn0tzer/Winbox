@@ -37,3 +37,6 @@
 #define SSE_RR_EDI(name) void Jit::dynamic_##name(DecodedOp* op) {emulateSingleOp();}
 
 #include "../common/common_sse_def.h"
+
+void Jit::dynamic_sse41_3ARR(DecodedOp* op) { emulateSingleOp(); }
+void Jit::dynamic_sse41_3ARE(DecodedOp* op) { emulateSingleOp(); }

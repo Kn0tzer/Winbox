@@ -1498,6 +1498,12 @@ const InstructionInfo instructionInfo[] = {
     {0, 16, 16, CF, 0, OF|SF|AF|PF, 0}, // BtcE16_Lock,
     {0, 32, 32, CF, 0, OF|SF|AF|PF, 0}, // BtcE32R32_Lock,
     {0, 32, 32, CF, 0, OF|SF|AF|PF, 0}, // BtcE32_Lock,    
+    {0, 0, 0, 0, 0, 0}, // Sse41_38RR
+    {0, 128, 0, 0, 0, 0}, // Sse41_38RE
+    {0, 0, 0, 0, 0, 0}, // Sse41_3ARR
+    {0, 128, 0, 0, 0, 0}, // Sse41_3ARE
+    {0, 0, 0, AF|OF|SF|CF|PF|ZF, 0, 0, 0}, // Sse41PtestRR
+    {0, 128, 0, AF|OF|SF|CF|PF|ZF, 0, 0, 0}, // Sse41PtestRE
     { 0, 0, 0, 0, 0, 0 }, // None
     {DECODE_BRANCH_NO_CACHE, 0, 0, 0, 0, 0}, // Callback
     {DECODE_BRANCH_NO_CACHE, 0, 0, 0, 0, 0}, // Done
@@ -3426,6 +3432,12 @@ const LogInstruction instructionLog[] = {
     {"L Btc", 16, logE, true},
     {"L Btc", 32, logER},
     {"L Btc", 32, logE, true},
+    {"SSE4.1", 128, logXmmXmm},
+    {"SSE4.1", 128, logXmmE},
+    {"SSE4.1", 128, logXmmI},
+    {"SSE4.1", 128, logXmmE},
+    {"PTEST", 128, logXmmXmm},
+    {"PTEST", 128, logXmmE},
 };
 #endif
 class DecodeData {
@@ -5001,33 +5013,56 @@ public:
 
 class DecodeThreeByteSSSE3 : public Decode {
 public:
-    DecodeThreeByteSSSE3(bool xmm, bool palignr) : xmm(xmm), palignr(palignr) {}
+    DecodeThreeByteSSSE3(bool xmm, bool palignr, bool sse41 = false) : xmm(xmm), palignr(palignr), sse41(sse41) {}
 
     void decode(DecodeData* data, DecodedOp* op) const override {
         U8 opcode = data->fetch8();
         U8 rm = data->fetch8();
-        bool valid = palignr ? opcode == 0x0f :
-            ((opcode <= 0x0b) || (opcode >= 0x1c && opcode <= 0x1e));
+        bool isPalignr = palignr && opcode == 0x0f;
+        bool isSse41 = sse41 && (palignr ?
+            ((opcode >= 0x08 && opcode <= 0x0e) || (opcode >= 0x14 && opcode <= 0x17) ||
+             (opcode >= 0x20 && opcode <= 0x22) || (opcode >= 0x40 && opcode <= 0x42)) :
+            (opcode == 0x10 || opcode == 0x14 || opcode == 0x15 || opcode == 0x17 ||
+             (opcode >= 0x20 && opcode <= 0x25) || (opcode >= 0x28 && opcode <= 0x2b) ||
+             (opcode >= 0x30 && opcode <= 0x35) || (opcode >= 0x38 && opcode <= 0x41)));
+        bool isSsse3 = !palignr && ((opcode <= 0x0b) || (opcode >= 0x1c && opcode <= 0x1e));
+        bool valid = isPalignr || isSse41 || isSsse3;
         if (!valid) {
             op->inst = Invalid;
             op->reg = rm;
             op->imm = data->inst;
             return;
         }
+        if (isSse41 && (opcode == 0x2a) && (rm >= 0xc0)) {
+            op->inst = Invalid;
+            op->reg = rm;
+            op->imm = data->inst;
+            return;
+        }
+        if (isSse41 && palignr && opcode == 0x15 && (rm >= 0xc0)) {
+            op->inst = Invalid;
+            op->reg = rm;
+            op->imm = data->inst;
+            data->fetch8();
+            return;
+        }
         op->reg = G(rm);
         if (rm >= 0xc0) {
             op->rm = E(rm);
-            op->inst = palignr ? (xmm ? PalignrXmmRR : PalignrMmxRR) : (xmm ? Ssse3XmmRR : Ssse3MmxRR);
+            op->inst = isSse41 ? (palignr ? Sse41_3ARR : (opcode == 0x17 ? Sse41PtestRR : Sse41_38RR)) :
+                (isPalignr ? (xmm ? PalignrXmmRR : PalignrMmxRR) : (xmm ? Ssse3XmmRR : Ssse3MmxRR));
         } else {
             decodeEa(data, op, rm);
-            op->inst = palignr ? (xmm ? PalignrXmmRE : PalignrMmxRE) : (xmm ? Ssse3XmmRE : Ssse3MmxRE);
+            op->inst = isSse41 ? (palignr ? Sse41_3ARE : (opcode == 0x17 ? Sse41PtestRE : Sse41_38RE)) :
+                (isPalignr ? (xmm ? PalignrXmmRE : PalignrMmxRE) : (xmm ? Ssse3XmmRE : Ssse3MmxRE));
         }
-        op->imm = palignr ? data->fetch8() : opcode;
+        op->imm = isSse41 && palignr ? ((U32)opcode << 8) | data->fetch8() : (isPalignr ? data->fetch8() : opcode);
     }
 
 private:
     bool xmm;
     bool palignr;
+    bool sse41;
 };
 
 class DecodeNopRm : public DecodeFunc {
@@ -6037,9 +6072,9 @@ DecodeSSE2 sse0x37d(Invalid, Invalid, HsubpsXmmXmm, HsubpsXmmE128, Invalid, Inva
 DecodeSSE2 sse0x3d0(Invalid, Invalid, AddsubpsXmmXmm, AddsubpsXmmE128, Invalid, Invalid);
 DecodeSSE2 sse0x3f0(Invalid, Invalid, Invalid, LddquXmmE128, Invalid, Invalid);
 DecodeThreeByteSSSE3 decodeSSSE3Mmx(false, false);
-DecodeThreeByteSSSE3 decodeSSSE3Xmm(true, false);
+DecodeThreeByteSSSE3 decodeSSSE3Xmm(true, false, true);
 DecodeThreeByteSSSE3 decodePalignrMmx(false, true);
-DecodeThreeByteSSSE3 decodePalignrXmm(true, true);
+DecodeThreeByteSSSE3 decodePalignrXmm(true, true, true);
 DecodeRMr sse0x170(PshufdXmmXmm, PshufdXmmE128, 8);
 DecodeGroup sse0x171(Invalid, Invalid, PsrlwXmm, Invalid, PsrawXmm, Invalid, PsllwXmm, Invalid, 8);
 DecodeGroup sse0x172(Invalid, Invalid, PsrldXmm, Invalid, PsradXmm, Invalid, PslldXmm, Invalid, 8);

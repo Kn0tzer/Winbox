@@ -1531,6 +1531,13 @@ enum Instruction {
     BtcE32R32_Lock,
     BtcE32_Lock,
 
+    Sse41_38RR,
+    Sse41_38RE,
+    Sse41_3ARR,
+    Sse41_3ARE,
+    Sse41PtestRR,
+    Sse41PtestRE,
+
     None,
     Callback,
     Done,

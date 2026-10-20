@@ -37,4 +37,7 @@
 #define SSE_RR_EDI(name) void common_##name(CPU* cpu, U32 r1, U32 r2, U32 address);
 #include "../common/common_sse_def.h"
 
+void common_sse41_3aRR(CPU* cpu, U32 reg, U32 rm, U32 packedOpcodeAndImm);
+void common_sse41_3aRE(CPU* cpu, U32 reg, U32 address, U32 packedOpcodeAndImm);
+
 #endif

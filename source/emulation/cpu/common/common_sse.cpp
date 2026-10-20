@@ -292,6 +292,442 @@ void common_palignrXmmRE(CPU* cpu, U32 reg, U32 address, U8 shift) {
     memcpy(&cpu->xmm[reg].pi.u64[0], dst, sizeof(dst));
 }
 
+static U32 commonSse41ReadMemory(CPU* cpu, U32 address, U8* output, U32 size) {
+    memset(output, 0, 16);
+    for (U32 i = 0; i < size; ++i) output[i] = cpu->memory->readb(address + i);
+    return size;
+}
+
+static U32 commonSse41MemorySize38(U8 opcode) {
+    switch (opcode) {
+    case 0x20: case 0x23: case 0x30: case 0x33: return 8;
+    case 0x21: case 0x24: case 0x31: case 0x34: return 4;
+    case 0x22: case 0x32: return 2;
+    case 0x25: case 0x35: return 8;
+    default: return 16;
+    }
+}
+
+static S64 commonSse41SignedLane(const U8* data, U32 index, U32 width) {
+    U64 value = 0;
+    for (U32 i = 0; i < width; ++i) value |= (U64)data[index * width + i] << (i * 8);
+    if (width < 8 && (value & ((U64)1 << (width * 8 - 1)))) value |= ~(((U64)1 << (width * 8)) - 1);
+    S64 result;
+    memcpy(&result, &value, sizeof(result));
+    return result;
+}
+
+static U64 commonSse41ReadLane(const U8* data, U32 index, U32 width) {
+    U64 result = 0;
+    for (U32 i = 0; i < width; ++i) result |= (U64)data[index * width + i] << (i * 8);
+    return result;
+}
+
+static void commonSse41WriteLane(U8* data, U32 index, U32 width, U64 value) {
+    for (U32 i = 0; i < width; ++i) data[index * width + i] = (U8)(value >> (i * 8));
+}
+
+static void commonSse41Ptest(CPU* cpu, const U8* destination, const U8* source) {
+    U32 anyAnd = 0, anyNotAnd = 0;
+    for (U32 i = 0; i < 16; ++i) {
+        anyAnd |= destination[i] & source[i];
+        anyNotAnd |= (U8)~destination[i] & source[i];
+    }
+    cpu->fillFlags();
+    cpu->flags &= ~(AF | OF | SF | CF | PF | ZF);
+    if (!anyAnd) cpu->flags |= ZF;
+    if (!anyNotAnd) cpu->flags |= CF;
+}
+
+static void commonSse41Apply38(CPU* cpu, U8* destination, const U8* source, U8 opcode) {
+    U8 a[16], b[16], result[16] = {};
+    memcpy(a, destination, sizeof(a));
+    memcpy(b, source, sizeof(b));
+    switch (opcode) {
+    case 0x10: { // PBLENDVB, implicit XMM0 byte mask
+        U8 mask[16];
+        memcpy(mask, &cpu->xmm[0].pi.u64[0], sizeof(mask));
+        for (U32 i = 0; i < 16; ++i) result[i] = (mask[i] & 0x80) ? b[i] : a[i];
+        break;
+    }
+    case 0x14: case 0x15: { // BLENDVPS / BLENDVPD, implicit XMM0
+        U8 mask[16];
+        memcpy(mask, &cpu->xmm[0].pi.u64[0], sizeof(mask));
+        U32 width = opcode == 0x14 ? 4 : 8;
+        for (U32 lane = 0; lane < 16 / width; ++lane) {
+            U32 signByte = lane * width + width - 1;
+            memcpy(result + lane * width, (mask[signByte] & 0x80) ? b + lane * width : a + lane * width, width);
+        }
+        break;
+    }
+    case 0x17: { // PTEST
+        commonSse41Ptest(cpu, a, b);
+        return;
+    }
+    case 0x20: case 0x21: case 0x22: case 0x23: case 0x24: case 0x25:
+    case 0x30: case 0x31: case 0x32: case 0x33: case 0x34: case 0x35: { // PMOVSX / PMOVZX
+        bool signExtend = opcode < 0x30;
+        U8 base = signExtend ? 0x20 : 0x30;
+        U32 sourceWidth, destinationWidth;
+        switch (opcode - base) {
+        case 0: sourceWidth = 1; destinationWidth = 2; break;
+        case 1: sourceWidth = 1; destinationWidth = 4; break;
+        case 2: sourceWidth = 1; destinationWidth = 8; break;
+        case 3: sourceWidth = 2; destinationWidth = 4; break;
+        case 4: sourceWidth = 2; destinationWidth = 8; break;
+        default: sourceWidth = 4; destinationWidth = 8; break;
+        }
+        for (U32 lane = 0; lane < 16 / destinationWidth; ++lane) {
+            U64 value = signExtend ? (U64)commonSse41SignedLane(b, lane, sourceWidth) : commonSse41ReadLane(b, lane, sourceWidth);
+            commonSse41WriteLane(result, lane, destinationWidth, value);
+        }
+        break;
+    }
+    case 0x28: { // PMULDQ: signed dword products in lanes 0 and 2
+        for (U32 lane = 0; lane < 2; ++lane) {
+            S64 product = commonSse41SignedLane(a, lane * 2, 4) * commonSse41SignedLane(b, lane * 2, 4);
+            commonSse41WriteLane(result, lane, 8, (U64)product);
+        }
+        break;
+    }
+    case 0x29: // PCMPEQQ
+        for (U32 lane = 0; lane < 2; ++lane) commonSse41WriteLane(result, lane, 8, commonSse41ReadLane(a, lane, 8) == commonSse41ReadLane(b, lane, 8) ? ~(U64)0 : 0);
+        break;
+    case 0x2a: // MOVNTDQA
+        memcpy(result, b, sizeof(result));
+        break;
+    case 0x2b: // PACKUSDW
+        for (U32 lane = 0; lane < 4; ++lane) {
+            S64 value = commonSse41SignedLane(a, lane, 4);
+            commonSse41WriteLane(result, lane, 2, value < 0 ? 0 : (value > 65535 ? 65535 : (U64)value));
+        }
+        for (U32 lane = 0; lane < 4; ++lane) {
+            S64 value = commonSse41SignedLane(b, lane, 4);
+            commonSse41WriteLane(result, lane + 4, 2, value < 0 ? 0 : (value > 65535 ? 65535 : (U64)value));
+        }
+        break;
+    case 0x38: case 0x39: case 0x3a: case 0x3b: // PMINSB/PMINSD/PMINUW/PMINUD
+    case 0x3c: case 0x3d: case 0x3e: case 0x3f: { // PMAXSB/PMAXSD/PMAXUW/PMAXUD
+        U32 width = (opcode == 0x38 || opcode == 0x3c) ? 1 : ((opcode == 0x39 || opcode == 0x3d) ? 4 : ((opcode == 0x3a || opcode == 0x3e) ? 2 : 4));
+        bool signedCompare = opcode == 0x38 || opcode == 0x39 || opcode == 0x3c || opcode == 0x3d;
+        bool takeMinimum = opcode <= 0x3b;
+        for (U32 lane = 0; lane < 16 / width; ++lane) {
+            U64 av = commonSse41ReadLane(a, lane, width), bv = commonSse41ReadLane(b, lane, width);
+            bool chooseA = signedCompare ? (takeMinimum ? commonSse41SignedLane(a, lane, width) <= commonSse41SignedLane(b, lane, width) : commonSse41SignedLane(a, lane, width) >= commonSse41SignedLane(b, lane, width))
+                : (takeMinimum ? av <= bv : av >= bv);
+            commonSse41WriteLane(result, lane, width, chooseA ? av : bv);
+        }
+        break;
+    }
+    case 0x40: // PMULLD
+        for (U32 lane = 0; lane < 4; ++lane) commonSse41WriteLane(result, lane, 4, (U32)(commonSse41ReadLane(a, lane, 4) * commonSse41ReadLane(b, lane, 4)));
+        break;
+    case 0x41: { // PHMINPOSUW
+        U32 minimum = 0xffff, index = 0;
+        for (U32 lane = 0; lane < 8; ++lane) {
+            U32 value = (U32)commonSse41ReadLane(b, lane, 2);
+            if (value < minimum) { minimum = value; index = lane; }
+        }
+        commonSse41WriteLane(result, 0, 2, minimum);
+        commonSse41WriteLane(result, 1, 2, index);
+        break;
+    }
+    default:
+        return;
+    }
+    memcpy(destination, result, sizeof(result));
+}
+
+void common_sse41_38RR(CPU* cpu, U32 reg, U32 rm, U8 opcode) {
+    U8 destination[16], source[16];
+    memcpy(destination, &cpu->xmm[reg].pi.u64[0], sizeof(destination));
+    memcpy(source, &cpu->xmm[rm].pi.u64[0], sizeof(source));
+    commonSse41Apply38(cpu, destination, source, opcode);
+    memcpy(&cpu->xmm[reg].pi.u64[0], destination, sizeof(destination));
+}
+
+void common_sse41_38RE(CPU* cpu, U32 reg, U32 address, U8 opcode) {
+    U8 destination[16], source[16];
+    memcpy(destination, &cpu->xmm[reg].pi.u64[0], sizeof(destination));
+    commonSse41ReadMemory(cpu, address, source, commonSse41MemorySize38(opcode));
+    commonSse41Apply38(cpu, destination, source, opcode);
+    memcpy(&cpu->xmm[reg].pi.u64[0], destination, sizeof(destination));
+}
+
+void common_sse41ptestRR(CPU* cpu, U32 reg, U32 rm) {
+    U8 destination[16], source[16];
+    memcpy(destination, &cpu->xmm[reg].pi.u64[0], sizeof(destination));
+    memcpy(source, &cpu->xmm[rm].pi.u64[0], sizeof(source));
+    commonSse41Ptest(cpu, destination, source);
+}
+
+void common_sse41ptestRE(CPU* cpu, U32 reg, U32 address) {
+    U8 destination[16], source[16];
+    memcpy(destination, &cpu->xmm[reg].pi.u64[0], sizeof(destination));
+    commonSse41ReadMemory(cpu, address, source, 16);
+    commonSse41Ptest(cpu, destination, source);
+}
+
+static U32 commonSse41RoundF32(U32 bits, U32 mode) {
+    U32 exponent = bits & 0x7f800000;
+    if (exponent == 0x7f800000) return (bits & 0x007fffff) ? bits | 0x00400000 : bits;
+    float input;
+    memcpy(&input, &bits, sizeof(input));
+    double value = input;
+    double rounded;
+    switch (mode) {
+    case ROUND_Down: rounded = floor(value); break;
+    case ROUND_Up: rounded = ceil(value); break;
+    case ROUND_Chop: rounded = value < 0 ? ceil(value) : floor(value); break;
+    default: {
+        double lower = floor(value), fraction = value - lower;
+        if (fraction < 0.5) rounded = lower;
+        else if (fraction > 0.5) rounded = lower + 1.0;
+        else rounded = fmod(fabs(lower), 2.0) == 0.0 ? lower : lower + 1.0;
+        break;
+    }
+    }
+    if (rounded == 0.0 && (bits & 0x80000000)) rounded = -0.0;
+    float result = (float)rounded;
+    U32 resultBits;
+    memcpy(&resultBits, &result, sizeof(resultBits));
+    if ((bits & 0x7f800000) == 0x7f800000 && (bits & 0x007fffff)) resultBits = bits | 0x00400000;
+    return resultBits;
+}
+
+static U64 commonSse41RoundF64(U64 bits, U32 mode) {
+    if ((bits & 0x7ff0000000000000ULL) == 0x7ff0000000000000ULL) return (bits & 0x000fffffffffffffULL) ? bits | 0x0008000000000000ULL : bits;
+    double value;
+    memcpy(&value, &bits, sizeof(value));
+    double rounded;
+    switch (mode) {
+    case ROUND_Down: rounded = floor(value); break;
+    case ROUND_Up: rounded = ceil(value); break;
+    case ROUND_Chop: rounded = value < 0 ? ceil(value) : floor(value); break;
+    default: {
+        double lower = floor(value), fraction = value - lower;
+        if (fraction < 0.5) rounded = lower;
+        else if (fraction > 0.5) rounded = lower + 1.0;
+        else rounded = fmod(fabs(lower), 2.0) == 0.0 ? lower : lower + 1.0;
+        break;
+    }
+    }
+    U64 result;
+    if (rounded == 0.0 && (bits >> 63)) rounded = -0.0;
+    memcpy(&result, &rounded, sizeof(result));
+    return result;
+}
+
+static U32 commonSse41RoundMode(CPU* cpu, U8 imm) {
+    if (imm & 4) return (cpu->mxcsr >> 13) & 3;
+    return imm & 3;
+}
+
+static void commonSse41StoreMemory(CPU* cpu, U32 address, U64 value, U32 size) {
+    for (U32 i = 0; i < size; ++i) cpu->memory->writeb(address + i, (U8)(value >> (i * 8)));
+}
+
+static U32 commonSse41F32Multiply(U32 aBits, U32 bBits);
+static U32 commonSse41F32Add(U32 aBits, U32 bBits);
+static U64 commonSse41F64Multiply(U64 aBits, U64 bBits);
+static U64 commonSse41F64Add(U64 aBits, U64 bBits);
+
+static void commonSse41Apply3a(CPU* cpu, U8* result, const U8* a, const U8* b, U8 opcode, U8 imm) {
+    memcpy(result, a, 16);
+    switch (opcode) {
+    case 0x08: case 0x0a: { // ROUNDPS / ROUNDSS
+        U32 lanes = opcode == 0x0a ? 1 : 4;
+        U32 mode = commonSse41RoundMode(cpu, imm);
+        for (U32 lane = 0; lane < lanes; ++lane) commonSse41WriteLane(result, lane, 4, commonSse41RoundF32((U32)commonSse41ReadLane(b, lane, 4), mode));
+        break;
+    }
+    case 0x09: case 0x0b: { // ROUNDPD / ROUNDSD
+        U32 lanes = opcode == 0x0b ? 1 : 2;
+        U32 mode = commonSse41RoundMode(cpu, imm);
+        for (U32 lane = 0; lane < lanes; ++lane) commonSse41WriteLane(result, lane, 8, commonSse41RoundF64(commonSse41ReadLane(b, lane, 8), mode));
+        break;
+    }
+    case 0x0c: case 0x0d: { // BLENDPS / BLENDPD
+        U32 width = opcode == 0x0c ? 4 : 8;
+        for (U32 lane = 0; lane < 16 / width; ++lane)
+            memcpy(result + lane * width, (imm & (1 << lane)) ? b + lane * width : a + lane * width, width);
+        break;
+    }
+    case 0x0e: // PBLENDW
+        for (U32 lane = 0; lane < 8; ++lane)
+            commonSse41WriteLane(result, lane, 2, commonSse41ReadLane((imm & (1 << lane)) ? b : a, lane, 2));
+        break;
+    case 0x21: { // INSERTPS
+        U32 sourceLane = (imm >> 6) & 3, destinationLane = (imm >> 4) & 3;
+        commonSse41WriteLane(result, destinationLane, 4, commonSse41ReadLane(b, sourceLane, 4));
+        for (U32 lane = 0; lane < 4; ++lane) if (imm & (1 << lane)) commonSse41WriteLane(result, lane, 4, 0);
+        break;
+    }
+    case 0x40: { // DPPS
+        U32 sum = 0;
+        for (U32 lane = 0; lane < 4; ++lane) if (imm & (1 << (lane + 4))) {
+            U32 abits = (U32)commonSse41ReadLane(a, lane, 4), bbits = (U32)commonSse41ReadLane(b, lane, 4);
+            sum = commonSse41F32Add(sum, commonSse41F32Multiply(abits, bbits));
+        }
+        for (U32 lane = 0; lane < 4; ++lane) commonSse41WriteLane(result, lane, 4, (imm & (1 << lane)) ? sum : 0);
+        break;
+    }
+    case 0x41: { // DPPD
+        U64 sum = 0;
+        for (U32 lane = 0; lane < 2; ++lane) if (imm & (1 << (lane + 4))) {
+            U64 abits = commonSse41ReadLane(a, lane, 8), bbits = commonSse41ReadLane(b, lane, 8);
+            sum = commonSse41F64Add(sum, commonSse41F64Multiply(abits, bbits));
+        }
+        for (U32 lane = 0; lane < 2; ++lane) commonSse41WriteLane(result, lane, 8, (imm & (1 << lane)) ? sum : 0);
+        break;
+    }
+    case 0x42: { // MPSADBW
+        U32 aBase = (imm & 4) ? 4 : 0, bBase = (imm & 3) * 4;
+        for (U32 lane = 0; lane < 8; ++lane) {
+            U32 sum = 0;
+            for (U32 byte = 0; byte < 4; ++byte) {
+                U32 av = a[aBase + lane + byte], bv = b[bBase + byte];
+                sum += av > bv ? av - bv : bv - av;
+            }
+            commonSse41WriteLane(result, lane, 2, sum);
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+static U32 commonSse41F32Multiply(U32 aBits, U32 bBits) {
+    const U32 exponentMask = 0x7f800000, fractionMask = 0x007fffff, quietBit = 0x00400000;
+    bool aNan = (aBits & exponentMask) == exponentMask && (aBits & fractionMask);
+    bool bNan = (bBits & exponentMask) == exponentMask && (bBits & fractionMask);
+    if (aNan) return aBits | quietBit;
+    if (bNan) return bBits | quietBit;
+    bool aInf = (aBits & exponentMask) == exponentMask;
+    bool bInf = (bBits & exponentMask) == exponentMask;
+    bool aZero = (aBits & 0x7fffffff) == 0;
+    bool bZero = (bBits & 0x7fffffff) == 0;
+    if ((aInf && bZero) || (bInf && aZero)) return 0xffc00000;
+    float a, b, result;
+    memcpy(&a, &aBits, sizeof(a)); memcpy(&b, &bBits, sizeof(b));
+    result = a * b;
+    U32 resultBits;
+    memcpy(&resultBits, &result, sizeof(resultBits));
+    return resultBits;
+}
+
+static U32 commonSse41F32Add(U32 aBits, U32 bBits) {
+    const U32 exponentMask = 0x7f800000, fractionMask = 0x007fffff, quietBit = 0x00400000;
+    bool aNan = (aBits & exponentMask) == exponentMask && (aBits & fractionMask);
+    bool bNan = (bBits & exponentMask) == exponentMask && (bBits & fractionMask);
+    if (aNan) return aBits | quietBit;
+    if (bNan) return bBits | quietBit;
+    if ((aBits & exponentMask) == exponentMask && (bBits & exponentMask) == exponentMask && ((aBits ^ bBits) & 0x80000000)) return 0xffc00000;
+    float a, b, result;
+    memcpy(&a, &aBits, sizeof(a)); memcpy(&b, &bBits, sizeof(b));
+    result = a + b;
+    U32 resultBits;
+    memcpy(&resultBits, &result, sizeof(resultBits));
+    return resultBits;
+}
+
+static U64 commonSse41F64Multiply(U64 aBits, U64 bBits) {
+    const U64 exponentMask = 0x7ff0000000000000ULL, fractionMask = 0x000fffffffffffffULL, quietBit = 0x0008000000000000ULL;
+    bool aNan = (aBits & exponentMask) == exponentMask && (aBits & fractionMask);
+    bool bNan = (bBits & exponentMask) == exponentMask && (bBits & fractionMask);
+    if (aNan) return aBits | quietBit;
+    if (bNan) return bBits | quietBit;
+    bool aInf = (aBits & exponentMask) == exponentMask;
+    bool bInf = (bBits & exponentMask) == exponentMask;
+    bool aZero = (aBits & 0x7fffffffffffffffULL) == 0;
+    bool bZero = (bBits & 0x7fffffffffffffffULL) == 0;
+    if ((aInf && bZero) || (bInf && aZero)) return 0xfff8000000000000ULL;
+    double a, b, result;
+    memcpy(&a, &aBits, sizeof(a)); memcpy(&b, &bBits, sizeof(b));
+    result = a * b;
+    U64 resultBits;
+    memcpy(&resultBits, &result, sizeof(resultBits));
+    return resultBits;
+}
+
+static U64 commonSse41F64Add(U64 aBits, U64 bBits) {
+    const U64 exponentMask = 0x7ff0000000000000ULL, fractionMask = 0x000fffffffffffffULL, quietBit = 0x0008000000000000ULL;
+    bool aNan = (aBits & exponentMask) == exponentMask && (aBits & fractionMask);
+    bool bNan = (bBits & exponentMask) == exponentMask && (bBits & fractionMask);
+    if (aNan) return aBits | quietBit;
+    if (bNan) return bBits | quietBit;
+    if ((aBits & exponentMask) == exponentMask && (bBits & exponentMask) == exponentMask && ((aBits ^ bBits) >> 63)) return 0xfff8000000000000ULL;
+    double a, b, result;
+    memcpy(&a, &aBits, sizeof(a)); memcpy(&b, &bBits, sizeof(b));
+    result = a + b;
+    U64 resultBits;
+    memcpy(&resultBits, &result, sizeof(resultBits));
+    return resultBits;
+}
+
+void common_sse41_3aRR(CPU* cpu, U32 reg, U32 rm, U32 packedOpcodeAndImm) {
+    U8 opcode = (U8)(packedOpcodeAndImm >> 8), imm = (U8)packedOpcodeAndImm;
+    U8 a[16], b[16], result[16];
+    memcpy(a, &cpu->xmm[reg].pi.u64[0], sizeof(a));
+    memcpy(b, &cpu->xmm[rm].pi.u64[0], sizeof(b));
+    memcpy(result, a, sizeof(result));
+    if ((opcode >= 0x08 && opcode <= 0x0e) || opcode == 0x21 || (opcode >= 0x40 && opcode <= 0x42)) {
+        commonSse41Apply3a(cpu, result, a, b, opcode, imm);
+        memcpy(&cpu->xmm[reg].pi.u64[0], result, sizeof(result));
+        return;
+    }
+    switch (opcode) {
+    case 0x14: { // PEXTRB r/m8, xmm, imm8
+        U8 value = (U8)commonSse41ReadLane(a, imm & 15, 1);
+        cpu->reg[rm].u32 = value;
+        return;
+    }
+    case 0x16: case 0x17: { // PEXTRD / EXTRACTPS r/m32, xmm, imm8
+        cpu->reg[rm].u32 = (U32)commonSse41ReadLane(a, imm & 3, 4);
+        return;
+    }
+    case 0x20: { // PINSRB xmm, r/m8, imm8
+        U8 value = *cpu->reg8[rm];
+        commonSse41WriteLane(result, imm & 15, 1, value);
+        break;
+    }
+    case 0x22: // PINSRD
+        commonSse41WriteLane(result, imm & 3, 4, cpu->reg[rm].u32);
+        break;
+    default:
+        return;
+    }
+    memcpy(&cpu->xmm[reg].pi.u64[0], result, sizeof(result));
+}
+
+void common_sse41_3aRE(CPU* cpu, U32 reg, U32 address, U32 packedOpcodeAndImm) {
+    U8 opcode = (U8)(packedOpcodeAndImm >> 8), imm = (U8)packedOpcodeAndImm;
+    U8 a[16], b[16], result[16];
+    memcpy(a, &cpu->xmm[reg].pi.u64[0], sizeof(a));
+    memcpy(result, a, sizeof(result));
+    if (opcode == 0x14 || opcode == 0x15 || opcode == 0x16 || opcode == 0x17) {
+        U32 width = opcode == 0x14 ? 1 : (opcode == 0x15 ? 2 : 4);
+        U64 value = commonSse41ReadLane(a, imm & (opcode == 0x14 ? 15 : (opcode == 0x15 ? 7 : 3)), width);
+        commonSse41StoreMemory(cpu, address, value, width);
+        return;
+    }
+    U32 readSize = (opcode == 0x0a || opcode == 0x21) ? 4 : ((opcode == 0x0b) ? 8 : (opcode == 0x20 ? 1 : (opcode == 0x22 ? 4 : 16)));
+    commonSse41ReadMemory(cpu, address, b, readSize);
+    if ((opcode >= 0x08 && opcode <= 0x0e) || opcode == 0x21 || (opcode >= 0x40 && opcode <= 0x42)) {
+        commonSse41Apply3a(cpu, result, a, b, opcode, opcode == 0x21 ? (imm & 0x3f) : imm);
+        memcpy(&cpu->xmm[reg].pi.u64[0], result, sizeof(result));
+        return;
+    }
+    switch (opcode) {
+    case 0x20: commonSse41WriteLane(result, imm & 15, 1, b[0]); break;
+    case 0x22: commonSse41WriteLane(result, imm & 3, 4, commonSse41ReadLane(b, 0, 4)); break;
+    default:
+        return;
+    }
+    memcpy(&cpu->xmm[reg].pi.u64[0], result, sizeof(result));
+}
+
 static U32 commonSseRoundF32ToI32(U32 value, U32 mxcsr, bool truncate) {
     union {
         U32 i;

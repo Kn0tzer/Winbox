@@ -37,3 +37,15 @@
 #define SSE_RR_EDI(name) void OPCALL normal_##name(CPU* cpu, DecodedOp* op) {START_OP(cpu, op); common_##name(cpu, op->reg, op->rm, EDI+cpu->seg[op->base].address);NEXT();}
 
 #include "../common/common_sse_def.h"
+
+void OPCALL normal_sse41_3ARR(CPU* cpu, DecodedOp* op) {
+    START_OP(cpu, op);
+    common_sse41_3aRR(cpu, op->reg, op->rm, op->imm);
+    NEXT();
+}
+
+void OPCALL normal_sse41_3ARE(CPU* cpu, DecodedOp* op) {
+    START_OP(cpu, op);
+    common_sse41_3aRE(cpu, op->reg, eaa(cpu, op), op->imm);
+    NEXT();
+}
