@@ -20,6 +20,7 @@
 #include "kdspaudio.h"
 #include <SDL.h>
 #include <algorithm>
+#include <atomic>
 #include "../../source/kernel/devs/oss.h"
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -225,84 +226,135 @@ public:
 // threads with different Module objects).
 #define BW_RING_FRAMES (1 << 20)
 #define BW_RING_MASK (BW_RING_FRAMES - 1)
-static float bwRing[BW_RING_FRAMES];
-static volatile Uint32 bwRingWrite = 0; // producer (writeAudio), unbounded
-static volatile Uint32 bwRingRead = 0;  // consumer (bridge onaudioprocess), unbounded
+#define BW_RING_CHANNELS 2
+static float bwRing[BW_RING_FRAMES * BW_RING_CHANNELS];
+static std::atomic<Uint32> bwRingWrite{0}; // producer (writeAudio), unbounded frame index
+static std::atomic<Uint32> bwRingRead{0};  // consumer (bridge onaudioprocess), unbounded frame index
+static Uint32 bwRingChannels = 1;
+static Uint32 bwInputChannels = 1;
+static Uint32 bwSourceRate = 48000;
 static bool bwBridgeArmed = false;
 static bool pumpLogged = false; // one-time diagnostic: peak of first pushed audio
 
-static void bwAudioEnsureBridge() {
+static void bwAudioEnsureBridge(Uint32 sourceRate, Uint32 sourceChannels) {
+	bwRingChannels = std::min(sourceChannels, (Uint32)BW_RING_CHANNELS);
+	bwInputChannels = sourceChannels;
+	bwSourceRate = sourceRate;
 	// Idempotent per AudioContext; recreates if SDL made a new context.
 	EM_ASM({
 		var SDL2 = Module['SDL2'] || (Module['SDL2'] = {});
 		var ctx = SDL2.audioContext;
 		if (!ctx) return;
-		if (ctx.state === 'suspended' && navigator.userActivation && navigator.userActivation.hasBeenActive) {
-			try { ctx.resume(); } catch (e) {}
-		}
-		if (!SDL2.bwNode || SDL2.bwNodeCtx !== ctx) {
-			if (SDL2.bwNode) { try { SDL2.bwNode.disconnect(); } catch (e) {} }
-			var ring = HEAPF32.subarray($0 >> 2, ($0 >> 2) + $3);
-			var wIdx = HEAPU32.subarray($1 >> 2, ($1 >> 2) + 1);
-			var rIdx = HEAPU32.subarray($2 >> 2, ($2 >> 2) + 1);
-			var mask = $3 - 1;
-			var node = ctx.createScriptProcessor(4096, 0, 1);
-			node.onaudioprocess = function(e) {
-				var out = e.outputBuffer.getChannelData(0);
-				var w = wIdx[0] >>> 0;
-				var r = rIdx[0] >>> 0;
-				var used = (w - r) >>> 0;
-				if (used > $3) used = $3;
-				var n = used < out.length ? used : out.length;
-				for (var i = 0; i < n; i++) {
-					out[i] = ring[(r + i) & mask];
+		if (ctx.state === 'suspended' && navigator.userActivation && navigator.userActivation.hasBeenActive) ctx.resume().catch(function() {});
+		var outputChannels = $4;
+		var buffer = HEAPF32.buffer;
+		var sameConfig = SDL2.bwNodeCtx === ctx && SDL2.bwNodeChannels === outputChannels && SDL2.bwNodeRate === $5;
+		if (SDL2.bwNode && sameConfig) return;
+		if (SDL2.bwNode) { try { SDL2.bwNode.disconnect(); } catch (e) {} }
+		var ring = new Float32Array(buffer, $0, $3 * outputChannels);
+		var wIdx = new Uint32Array(buffer, $1, 1);
+		var rIdx = new Uint32Array(buffer, $2, 1);
+		var mask = $3 - 1;
+		var step = $5 / ctx.sampleRate;
+		var phase = 0;
+		var node = ctx.createScriptProcessor(4096, 0, outputChannels);
+		node.onaudioprocess = function(e) {
+			var outputs = [];
+			for (var c = 0; c < outputChannels; c++) {
+				outputs[c] = e.outputBuffer.getChannelData(c);
+				outputs[c].fill(0);
+			}
+			var w = Atomics.load(wIdx, 0) >>> 0;
+			var r = Atomics.load(rIdx, 0) >>> 0;
+			var used = (w - r) >>> 0;
+			if (used > $3) used = $3;
+			for (var i = 0; i < outputs[0].length; i++) {
+				var base = Math.floor(phase);
+				if (base >= used) { phase += step; continue; }
+				var next = base + 1 < used ? base + 1 : base;
+				var fraction = phase - base;
+				for (var c = 0; c < outputChannels; c++) {
+					var a = ring[((r + base) & mask) * outputChannels + c];
+					var b = ring[((r + next) & mask) * outputChannels + c];
+					outputs[c][i] = a + (b - a) * fraction;
 				}
-				if (n < out.length) out.fill(0, n);
-				rIdx[0] = (r + n) >>> 0;
-			};
-			node.connect(ctx.destination);
-			SDL2.bwNode = node;
-			SDL2.bwNodeCtx = ctx;
-		}
-	}, bwRing, (int)&bwRingWrite, (int)&bwRingRead, BW_RING_FRAMES);
+				phase += step;
+			}
+			var consumed = Math.floor(phase);
+			if (consumed > used) { consumed = used; phase = 0; }
+			else phase -= consumed;
+			Atomics.store(rIdx, 0, (r + consumed) >>> 0);
+		};
+		node.connect(ctx.destination);
+		SDL2.bwNode = node;
+		SDL2.bwNodeCtx = ctx;
+		SDL2.bwNodeChannels = outputChannels;
+		SDL2.bwNodeRate = $5;
+		SDL2.bwAudioWorklet = false;
+	}, bwRing, (int)&bwRingWrite, (int)&bwRingRead, BW_RING_FRAMES, bwRingChannels, bwSourceRate);
 	bwBridgeArmed = true;
 }
 
 // Frames currently in the ring (for closeAudio drain-wait).
 static Uint32 bwAudioRingUsed() {
-	Uint32 w = bwRingWrite;
-	Uint32 r = bwRingRead;
+	Uint32 w = bwRingWrite.load(std::memory_order_acquire);
+	Uint32 r = bwRingRead.load(std::memory_order_acquire);
 	Uint32 used = w - r;
 	return used > BW_RING_FRAMES ? BW_RING_FRAMES : used;
 }
 
-// Push F32 frames into the ring. Single producer. Drops oldest on overflow.
+// Push interleaved F32 frames into the ring. Single producer. Channels above
+// stereo are downmixed to two outputs by averaging even and odd source lanes.
 static void bwAudioPushJs(const Uint8* bytes, Uint32 byteLen) {
-	Uint32 frames = byteLen / 4;
+	Uint32 sourceChannels = bwInputChannels;
+	Uint32 outputChannels = bwRingChannels;
+	if (!sourceChannels || !outputChannels) return;
+	Uint32 frames = byteLen / (4 * sourceChannels);
 	if (!frames || !bwBridgeArmed) return;
 	const float* samples = (const float*)bytes;
-	Uint32 w = bwRingWrite;
-	Uint32 r = bwRingRead;
-	Uint32 used = w - r;
-	if (used > BW_RING_FRAMES) used = BW_RING_FRAMES;
-	Uint32 free = BW_RING_FRAMES - used - 1;
-	if (frames > free) {
+	Uint32 w = bwRingWrite.load(std::memory_order_relaxed);
+	Uint32 r;
+	Uint32 free;
+	for (;;) {
+		r = bwRingRead.load(std::memory_order_acquire);
+		Uint32 used = w - r;
+		if (used > BW_RING_FRAMES) used = BW_RING_FRAMES;
+		free = BW_RING_FRAMES - used - 1;
+		if (frames <= free) break;
 		Uint32 drop = frames - free;
-		bwRingRead = r + drop;
-		r += drop;
+		if (bwRingRead.compare_exchange_weak(r, r + drop, std::memory_order_acq_rel)) {
+			r += drop;
+			break;
+		}
 	}
-	Uint32 wi = w & BW_RING_MASK;
-	Uint32 first = BW_RING_FRAMES - wi;
-	if (first > frames) first = frames;
-	memcpy(&bwRing[wi], samples, first * 4);
-	if (frames > first) {
-		memcpy(bwRing, samples + first, (frames - first) * 4);
+	for (Uint32 frame = 0; frame < frames; frame++) {
+		Uint32 ringIndex = ((w + frame) & BW_RING_MASK) * outputChannels;
+		if (sourceChannels <= 2) {
+			for (Uint32 channel = 0; channel < outputChannels; channel++)
+				bwRing[ringIndex + channel] = samples[frame * sourceChannels + channel];
+		} else {
+			for (Uint32 channel = 0; channel < outputChannels; channel++) {
+				float sum = 0;
+				Uint32 count = 0;
+				for (Uint32 source = channel; source < sourceChannels; source += 2) {
+					sum += samples[frame * sourceChannels + source];
+					count++;
+				}
+				if (!count) {
+					for (Uint32 source = 0; source < sourceChannels; source++) {
+						sum += samples[frame * sourceChannels + source];
+						count++;
+					}
+				}
+				bwRing[ringIndex + channel] = sum / count;
+			}
+		}
 	}
-	bwRingWrite = w + frames;
+	bwRingWrite.store(w + frames, std::memory_order_release);
 	if (!pumpLogged) {
 		pumpLogged = true;
 		float peak = 0;
-		for (Uint32 i = 0; i < frames; i++) {
+		for (Uint32 i = 0; i < frames * sourceChannels; i++) {
 			float a = samples[i] < 0 ? -samples[i] : samples[i];
 			if (a > peak) peak = a;
 		}
@@ -424,7 +476,8 @@ void KDspAudioSdl::openAudio(U32 format, U32 freq, U32 channels) {
 #ifdef __EMSCRIPTEN__
 	// SDL's emscripten driver pump does not deliver audio in this build;
 	// feed our own Web Audio bridge instead.
-	bwAudioEnsureBridge();
+	bwRingRead.store(bwRingWrite.load(std::memory_order_acquire), std::memory_order_release);
+	bwAudioEnsureBridge(this->got.freq, this->got.channels);
 	this->bwPump = true;
 	klog_fmt("bwPump: bridge armed");
 #endif
