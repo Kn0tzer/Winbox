@@ -238,6 +238,9 @@ void KEPoll::debugDumpRegistrations(KProcess* process, U32 pid, U32 tid) {
         KFileDescriptorPtr fd = process ? process->getFileDescriptor((FD)registration->fd) : nullptr;
         bool readable = fd && fd->kobject && fd->kobject->isReadReady();
         bool writable = fd && fd->kobject && fd->kobject->isWriteReady();
+        std::shared_ptr<KUnixSocketObject> socket = fd && fd->kobject
+            ? std::dynamic_pointer_cast<KUnixSocketObject>(fd->kobject) : nullptr;
+        std::shared_ptr<KUnixSocketObject> peer = socket ? socket->connection.lock() : nullptr;
         U32 mask = registration->events;
         char flags[48] = {0};
         int offset = 0;
@@ -250,8 +253,19 @@ void KEPoll::debugDumpRegistrations(KProcess* process, U32 pid, U32 tid) {
         if (mask & 0x80000000u) appendFlag("ET");
         if (mask & 0x40000000u) appendFlag("ONESHOT");
         if (!offset) strcpy(flags, "-");
-        klog_fmt("BW_THREAD_DUMP epoll_fd pid=%u tid=%u fd=%u events=0x%x flags=%s readable=%d writable=%d object=%p",
+        klog_fmt("BW_THREAD_DUMP epoll_fd pid=%u tid=%u fd=%u events=0x%x flags=%s readable=%d writable=%d object=%p recv=%llu msgs=%llu queue=%llu/%llu:w%u/%u:r%u/%u:m%llu/%llu peer=%p",
                  pid, tid, registration->fd, mask, flags, (int)readable,
-                 (int)writable, fd && fd->kobject ? (void*)fd->kobject.get() : nullptr);
+                 (int)writable, fd && fd->kobject ? (void*)fd->kobject.get() : nullptr,
+                 (unsigned long long)(socket ? socket->debugRecvUsed() : 0),
+                 (unsigned long long)(socket ? socket->debugMsgsSize() : 0),
+                 (unsigned long long)(socket ? socket->debugQueueBytesIn() : 0),
+                 (unsigned long long)(socket ? socket->debugQueueBytesOut() : 0),
+                 socket ? socket->debugQueueWriterPid() : 0,
+                 socket ? socket->debugQueueWriterTid() : 0,
+                 socket ? socket->debugQueueReaderPid() : 0,
+                 socket ? socket->debugQueueReaderTid() : 0,
+                 (unsigned long long)(socket ? socket->debugQueueMessagesIn() : 0),
+                 (unsigned long long)(socket ? socket->debugQueueMessagesOut() : 0),
+                 peer ? (void*)peer.get() : nullptr);
     }
 }

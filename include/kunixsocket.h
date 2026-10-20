@@ -94,6 +94,14 @@ public:
     size_t debugRecvUsed() { return recvBuffer.size_used(); }
     size_t debugMsgsSize() { return msgs.size(); }
     bool debugInClosed() { return inClosed; }
+    U64 debugQueueBytesIn() { return queueBytesIn.load(std::memory_order_relaxed); }
+    U64 debugQueueBytesOut() { return queueBytesOut.load(std::memory_order_relaxed); }
+    U64 debugQueueMessagesIn() { return queueMessagesIn.load(std::memory_order_relaxed); }
+    U64 debugQueueMessagesOut() { return queueMessagesOut.load(std::memory_order_relaxed); }
+    U32 debugQueueWriterPid() { return queueWriterPid.load(std::memory_order_relaxed); }
+    U32 debugQueueWriterTid() { return queueWriterTid.load(std::memory_order_relaxed); }
+    U32 debugQueueReaderPid() { return queueReaderPid.load(std::memory_order_relaxed); }
+    U32 debugQueueReaderTid() { return queueReaderTid.load(std::memory_order_relaxed); }
     // pendingConnections total vs the subset whose weak_ptr is still live. If
     // total>0 but live==0, the listen socket is spuriously read-ready forever
     // (expired entries never get accept()'d away) — the epoll busy-spin.
@@ -111,10 +119,20 @@ protected:
     U32 pid = 0;
     std::atomic<U32> lastOwnerPid{0};
     std::atomic<U32> lastOwnerTid{0};
+    std::atomic<U64> queueBytesIn{0};
+    std::atomic<U64> queueBytesOut{0};
+    std::atomic<U64> queueMessagesIn{0};
+    std::atomic<U64> queueMessagesOut{0};
+    std::atomic<U32> queueWriterPid{0};
+    std::atomic<U32> queueWriterTid{0};
+    std::atomic<U32> queueReaderPid{0};
+    std::atomic<U32> queueReaderTid{0};
 
     U32 internal_write(KThread* thread, const std::shared_ptr<KUnixSocketObject>& con, BOXEDWINE_CONDITION& cond, U32 buffer, U32 len);
     U32 writePipeClosed(KThread* thread, bool noSignal);
     void recordOwner(KThread* thread);
+    void recordQueueWrite(KThread* thread, U64 bytes, bool message);
+    void recordQueueRead(KThread* thread, U64 bytes, bool message);
 };
 
 #endif
