@@ -300,11 +300,15 @@ SHELL_LDFLAGS := $(if $(filter %.html,$(TARGET_EXEC)),--shell-file $(SHELL_FILE)
 # guest's loader can fopen() a real x86_64 ELF straight off the host disk
 # (NODERAWFS replaces the whole VFS and is mutually exclusive with idbfs).
 FS_LDFLAGS ?= -s FORCE_FILESYSTEM -lidbfs.js
+# Optional extra link flags supplied by the caller (e.g. bw64-build.sh passes
+# --profiling-funcs when BW64_PROFILE=1). Empty by default so ordinary builds
+# link with exactly the same flags as before.
+EXTRA_LDFLAGS ?=
 # -O3 on the LINK matters independently of the per-file -O3 in CPPFLAGS: emcc
 # treats link-time -O as its own setting (default -O0), and it is what enables
 # the binaryen/wasm-opt passes over the final module + optimized JS glue. Without
 # it the shipped .wasm is the unoptimized LTO-less concatenation of the objects.
-LDFLAGS = -O3 $(FS_LDFLAGS) -s USE_SDL=2 -s USE_ZLIB=1 -fwasm-exceptions -s INITIAL_MEMORY=536870912 $(SHELL_LDFLAGS) -s EXPORTED_RUNTIME_METHODS='["addRunDependency", "removeRunDependency","ERRNO_CODES","ccall","FS","abort","wasmMemory"]' -mtail-call $(EXTRA_LD_FLAGS) $(BW64_LINK_DIAGNOSTICS)
+LDFLAGS = -O3 $(FS_LDFLAGS) -s USE_SDL=2 -s USE_ZLIB=1 -fwasm-exceptions -s INITIAL_MEMORY=536870912 $(SHELL_LDFLAGS) -s EXPORTED_RUNTIME_METHODS='["addRunDependency", "removeRunDependency","ERRNO_CODES","ccall","FS","abort","wasmMemory"]' -mtail-call $(EXTRA_LD_FLAGS) $(EXTRA_LDFLAGS) $(BW64_LINK_DIAGNOSTICS)
 
 #$(TEST_BUILD_DIR)/boxedwineTest: $(TEST_OBJS)
 #	$(CC) $(TEST_OBJS) -o $@ $(LDFLAGS)

@@ -1,0 +1,103 @@
+{
+  "nonIdleExclude": ["idle", "idle/waiting"],
+  "rules": [
+    {
+      "stage": "idle/waiting",
+      "match": {
+        "functionName": "^(Atomics\\.wait|.*futex.*|.*Futex.*|__emscripten_thread_sleep|__pthread_cond_.*wait|__pthread_mutex_(lock|trylock)|__timedwait.*|usleep|nanosleep|select|poll|__syscall_poll|__syscall_select)$"
+      }
+    },
+    {
+      "stage": "idle",
+      "match": { "functionName": "^\\(idle\\)$" }
+    },
+    {
+      "stage": "program",
+      "match": { "functionName": "^\\(program\\)$" }
+    },
+    {
+      "stage": "garbage collector",
+      "match": { "functionName": "^\\((garbage collector|GC)\\)$" }
+    },
+    {
+      "stage": "Audio",
+      "match": { "url": "boxedwine-(multithreaded-)?audio|audio-callback-shim" }
+    },
+    {
+      "stage": "64-bit CPU JIT compiler",
+      "match": { "functionName": "^CPU64::(tryJitStep|tryWasmExec|tryBlockStep)\\(" }
+    },
+    {
+      "stage": "64-bit CPU JIT-compiled code",
+      "match": { "functionName": "^CPU64::execWasmBlock\\(" }
+    },
+    {
+      "stage": "Guest memory/MMU",
+      "match": { "functionName": "^jit64Mem(Read|Write)$" }
+    },
+    {
+      "stage": "Guest memory/MMU",
+      "match": { "functionName": "K64Page" }
+    },
+    {
+      "stage": "64-bit CPU JIT compiler",
+      "match": { "functionName": "^(emitFlags|orFlagBit)$" }
+    },
+    {
+      "stage": "X11 wire + SDL present",
+      "match": { "functionName": "^(Blit_3or4_to_3or4__inversed_rgb|SDL_UpdateTexture|putImageData|requestAnimationFrame)$" }
+    },
+    {
+      "stage": "Emscripten runtime",
+      "match": { "functionName": "^(wasm-to-js|Module|Instance|do_proxy|emscripten_builtin_(malloc|free)|getenv|__pthread_mutex_unlock|__thread_proxy.*|printf_core|__udivmodti4)$" }
+    },
+    {
+      "stage": "Audio",
+      "match": { "functionName": "^Soft_Ring_Buffer_Ex<.*>::putbytes_" }
+    },
+    {
+      "stage": "Kernel syscalls + VFS",
+      "match": { "functionName": "^BoxedWineCondition::(addParentCondition|parentSnapshot)\\(" }
+    },
+    {
+      "stage": "idle/waiting",
+      "match": { "functionName": "^BoxedWineCondition::waitWithTimeout\\(" }
+    },
+    {
+      "stage": "Other host glue",
+      "match": { "functionName": "^(now|append|put|set|grow|get buffer|bw64_metrics_.*)$" }
+    },
+    {
+      "stage": "Other host glue",
+      "match": { "functionName": "^(recordSample|bwGuestProfile.*)$" }
+    },
+    {
+      "stage": "X11 wire + SDL present",
+      "match": { "url": "presentation\\.mjs" }
+    },
+    {
+      "stage": "WebGPU replay",
+      "match": { "url": "(vkwebgpu|webgpu)\\.mjs" }
+    },
+    {
+      "stage": "SPIR-V to WGSL",
+      "match": { "url": "(spirvfix|naga-rt|shader|wgsl-utils|enhancement-shaders)\\.mjs" }
+    },
+    {
+      "stage": "Wire protocol encode/decode",
+      "match": { "url": "vk-protocol\\.mjs" }
+    },
+    {
+      "stage": "Other host glue",
+      "match": { "url": "(app|startup|launch|games|demos|files|storage|session-storage|installation|network|direct-folder|package-archive|dependencies|browser|boxedwine-shell|wine64-launcher|frame-metrics)\\.(mjs|js)" }
+    },
+    {
+      "stage": "GL bridge to WebGL2",
+      "match": { "functionName": "^(.*emscripten_webgl.*|.*WebGL.*)$" }
+    },
+    {
+      "stage": "Emscripten runtime",
+      "match": { "url": "boxedwine64\\.js" }
+    }
+  ]
+}

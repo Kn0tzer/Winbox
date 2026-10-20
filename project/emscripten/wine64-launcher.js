@@ -981,6 +981,11 @@
                 // survive the boot -env argv -> execve chain.
                 if (param("envedump") === "1") ENV["BW64_ENVDUMP"] = "1";
                 if (param("wscount") === "1") ENV["BW64_WSCOUNT"] = "1";
+                // ?guestprof=1 (or a parent page carrying guestprof=1) enables
+                // the guest-PC sampler (BW_GUEST_PROFILE): per mapped-file guest
+                // RIP attribution for the host profiler runs.
+                if (param("guestprof") === "1") ENV["BW_GUEST_PROFILE"] = "1";
+                else { try { if (new URLSearchParams(window.parent.location.search).get("guestprof") === "1") ENV["BW_GUEST_PROFILE"] = "1"; } catch (e) {} }
                 // Public JIT switch: ?jit=0|1 selects the guest CPU engine for
                 // BOTH architectures (jit=0 = interpreter everywhere, jit=1 =
                 // generated code where the build provides it). Absent leaves

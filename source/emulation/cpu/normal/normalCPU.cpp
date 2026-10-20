@@ -26,6 +26,7 @@
 #include "../armv7/armv7CPU.h"
 #include "../armv8/armv8CPU.h"
 #include "../../../util/ptrpool.h"
+#include "../../../kernel/guestprofiler.h"
 #include "../wasm/wasmMemoryOrdering.h"
 #include "../wasm/wasmJitRuntime.h"
 #ifdef BOXEDWINE_WASM_JIT
@@ -848,6 +849,7 @@ DecodedOp* NormalCPU::getOp(U32 startIp, U32 jumpTargetFlags) {
 }
 
 void NormalCPU::run() {
+    if (bwGuestProfileEnabled()) bwGuestProfileTick32(this);
 #if defined(BOXEDWINE_WASM_JIT) && !defined(__TEST)
     if (wasmJit32Active && nextOp) {
         // WASM JIT fast exits can carry DecodedOp* values across code-cache

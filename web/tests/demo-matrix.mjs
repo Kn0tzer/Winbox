@@ -24,9 +24,7 @@ if (!Number.isFinite(mappedTimeout) || mappedTimeout <= 0) throw new Error('MAPP
 const bootOffsets = longBoot ? [5, 30, 60, 120, 240, 360] : [5, 30, 60, 120];
 const pixelMethod = 'in-page';
 
-await mkdir(outDir, { recursive: true });
 const metricsPath = join(outDir, 'metrics.jsonl');
-await writeFile(metricsPath, '');
 
 let slot;
 let server;
@@ -57,6 +55,8 @@ const elapsedSeconds = () => Number(((Date.now() - startedAt) / 1000).toFixed(3)
 
 async function main() {
 try {
+  await mkdir(outDir, { recursive: true });
+  await writeFile(metricsPath, '');
   await waitForBuildIdle();
   slot = await acquireProbeSlot();
   build = JSON.parse(await readFile(join(repo, 'dist/runtime/BUILD_INFO.json'), 'utf8'));
@@ -116,21 +116,12 @@ try {
 
   const baseUrl = process.env.BW_TEST_BASE_URL || `http://127.0.0.1:${server.address().port}/`;
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => window.wineGames, null, { timeout: 60000 });
-  await page.click('#settingsButton');
-  await page.locator('#jit').selectOption(jit === '1' ? 'on' : 'off');
-  await page.keyboard.press('Escape');
-  await page.reload();
-  await page.waitForFunction(() => window.wineGames, null, { timeout: 60000 });
-  const actualJit = await page.locator('#jit').inputValue();
-  if (actualJit !== (jit === '1' ? 'on' : 'off')) throw new Error(`Settings reload selected JIT=${actualJit}, expected ${jit}`);
-
-  await page.locator(`[data-game="${demo}"]`).click();
-  tClick = elapsedSeconds();
-  demoClickAtMs = Date.now();
+  await applyJitSetting(page, jit);
   try {
-    await page.waitForFunction(() => document.getElementById('log')?.textContent.includes('first window mapped'), null,
-      { timeout: mappedTimeout * 1000 });
+    await launchDemoGame(page, demo, { mappedTimeout, onClick: () => {
+      tClick = elapsedSeconds();
+      demoClickAtMs = Date.now();
+    } });
   } catch (error) {
     if (error.name !== 'TimeoutError') throw error;
     const timeoutPath = join(outDir, 'timeout.png');
@@ -307,7 +298,7 @@ try {
 }
 }
 
-await main();
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
 
 function countConsoleErrors() {
   return consoleErrorCount;
@@ -481,7 +472,23 @@ async function holdKey(key, durationMs) {
   finally { await page.keyboard.up(key); }
 }
 
-async function runInputScript() {
+export async function playInputScript(page, demo, { screenshot = null, center = null } = {}) {
+  const inputScreenshot = async label => screenshot ? screenshot(label) : null;
+  const inputAction = async (label, action, settleMs = 1500) => {
+    await action();
+    await page.waitForTimeout(settleMs);
+    await inputScreenshot(label);
+  };
+  const displayCenter = center || (async () => {
+    const box = await page.locator('#display').boundingBox();
+    if (!box) throw new Error('#display has no bounding box');
+    return [box.x + box.width / 2, box.y + box.height / 2];
+  });
+  const holdKey = async (key, durationMs) => {
+    await page.keyboard.down(key);
+    try { await page.waitForTimeout(durationMs); }
+    finally { await page.keyboard.up(key); }
+  };
   if (demo === 'notepad') {
     await inputAction('type-first-line', () => page.keyboard.type('winbox works 123', { delay: 80 }));
     await inputAction('enter', () => page.keyboard.press('Enter'));
@@ -535,4 +542,26 @@ async function runInputScript() {
     await inputAction('right', () => holdKey('ArrowRight', 1000));
     await inputAction('space', () => page.keyboard.press('Space'));
   }
+}
+
+async function runInputScript() {
+  await playInputScript(page, demo, { screenshot: inputScreenshot, center: displayCenter });
+}
+
+export async function applyJitSetting(page, jit) {
+  await page.waitForFunction(() => window.wineGames, null, { timeout: 60000 });
+  await page.click('#settingsButton');
+  await page.locator('#jit').selectOption(jit === '1' ? 'on' : 'off');
+  await page.keyboard.press('Escape');
+  await page.reload();
+  await page.waitForFunction(() => window.wineGames, null, { timeout: 60000 });
+  const actualJit = await page.locator('#jit').inputValue();
+  if (actualJit !== (jit === '1' ? 'on' : 'off')) throw new Error(`Settings reload selected JIT=${actualJit}, expected ${jit}`);
+}
+
+export async function launchDemoGame(page, demo, { mappedTimeout, onClick = null } = {}) {
+  await page.locator(`[data-game="${demo}"]`).click();
+  if (onClick) onClick();
+  await page.waitForFunction(() => document.getElementById('log')?.textContent.includes('first window mapped'), null,
+    { timeout: mappedTimeout * 1000 });
 }
