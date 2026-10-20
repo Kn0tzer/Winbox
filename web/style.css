@@ -579,8 +579,8 @@ h1 {
   justify-content: center;
   gap: 12px;
   padding: 32px;
-  background: #000;
-  color: #e0e0e0;
+  background: var(--bg);
+  color: var(--text);
   text-align: center;
 }
 
@@ -598,6 +598,10 @@ h1 {
   font-size: 0.85rem;
   line-height: 1.5;
   overflow-wrap: anywhere;
+}
+
+.loading.waiting-for-frame #status {
+  width: min(700px, 100%);
 }
 
 .loading progress {
@@ -627,6 +631,30 @@ h1 {
 
 .loading .loading-elapsed {
   font-size: 0.75rem;
+}
+
+.loading.error-screen #status {
+  display: -webkit-box;
+  max-height: calc(1.5em * 3);
+  overflow: hidden;
+  color: var(--muted);
+  font: 0.8rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: center;
+  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.loading-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.loading-actions .button {
+  min-width: 132px;
 }
 
 .diagnostics {
@@ -663,23 +691,28 @@ h1 {
 .metrics-host {
   position: absolute;
   z-index: 4;
-  top: 10px;
-  left: 10px;
-  max-width: min(420px, calc(100% - 20px));
-  max-height: calc(100% - 20px);
-  overflow: auto;
-  overscroll-behavior: contain;
-  pointer-events: auto;
+  top: 12px;
+  right: 12px;
+  width: min(300px, calc(100vw - 24px));
+  height: calc(100% - 24px);
+  max-height: calc(100% - 24px);
+  pointer-events: none;
 }
 
 .metrics-panel {
+  display: flex;
+  max-height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
   padding: 10px 12px 12px;
-  border: 1px solid #333;
+  border: 1px solid var(--line);
   border-radius: 12px;
-  background: rgb(10 10 10 / 94%);
-  color: #e0e0e0;
-  font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
-  box-shadow: 0 10px 24px rgb(0 0 0 / 35%);
+  background: rgb(0 0 0 / 80%);
+  color: #f0f0f0;
+  font: 12px/1.45 'Open Runde', system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
 }
 
 .metrics-panel[hidden] {
@@ -688,6 +721,7 @@ h1 {
 
 .metrics-head {
   display: flex;
+  flex: none;
   align-items: center;
   gap: 8px;
 }
@@ -695,23 +729,21 @@ h1 {
 .metrics-title {
   flex: 1;
   margin: 0;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
 }
 
 .metrics-status {
   padding: 1px 6px;
-  border: 1px solid #555;
+  border: 1px solid #666;
   border-radius: 999px;
   color: #ccc;
-  font-size: 10px;
+  font-size: 11px;
   white-space: nowrap;
 }
 
 .metrics-status[data-state="measured"] {
-  border-color: #aaa;
+  border-color: #999;
   color: #fff;
 }
 
@@ -722,6 +754,7 @@ h1 {
 }
 
 .metrics-close {
+  pointer-events: auto;
   padding: 4px 5px;
   border: 0;
   border-radius: 6px;
@@ -737,30 +770,32 @@ h1 {
   color: #fff;
 }
 
-.metrics-headline {
-  margin: 6px 0 0;
-  overflow: hidden;
-  color: #ddd;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.metrics-scroll {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+  overscroll-behavior: contain;
+  pointer-events: auto;
 }
 
 .metrics-legend {
-  margin: 2px 0 8px;
-  color: #999;
-  font-size: 10px;
+  margin: 10px 0 8px;
+  color: #aaa;
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .metrics-group + .metrics-group {
   margin-top: 10px;
   padding-top: 8px;
-  border-top: 1px solid #333;
+  border-top: 1px solid #444;
 }
 
 .metrics-group-title {
   margin: 0 0 4px;
-  color: #aaa;
-  font-size: 10px;
+  color: #c0c0c0;
+  font-size: 11px;
+  font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -769,11 +804,16 @@ h1 {
   margin: 0;
 }
 
+.metrics-summary {
+  padding: 4px 0;
+}
+
 .metrics-row {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 0 10px;
-  padding: 3px 0 3px 5px;
+  min-width: 0;
+  padding: 4px 0 4px 7px;
   border-left: 2px solid transparent;
 }
 
@@ -788,8 +828,10 @@ h1 {
 }
 
 .metrics-label {
+  min-width: 0;
   color: #ddd;
-  overflow-wrap: anywhere;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 .metrics-row[data-state="inactive"] .metrics-label,
@@ -799,13 +841,18 @@ h1 {
 }
 
 .metrics-value {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-end;
   margin: 0;
   text-align: right;
-  white-space: nowrap;
 }
 
 .metrics-number {
   color: #fff;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .metrics-row[data-state="unavailable"] .metrics-number,
@@ -814,16 +861,41 @@ h1 {
 }
 
 .metrics-unit {
-  margin-left: 5px;
-  color: #999;
-  font-size: 10px;
+  margin: 0;
+  color: #aaa;
+  font-size: 11px;
+  text-align: right;
 }
 
 .metrics-note {
   grid-column: 1 / -1;
   margin: 0;
-  color: #999;
-  font-size: 10px;
+  color: #aaa;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.metrics-more {
+  margin-top: 5px;
+  border-top: 1px solid #444;
+  pointer-events: auto;
+}
+
+.metrics-more > summary {
+  min-height: 36px;
+  padding: 7px 0;
+  color: #ddd;
+  cursor: pointer;
+  font-weight: 600;
+  list-style-position: inside;
+}
+
+.metrics-more-content {
+  padding: 0 0 4px;
+}
+
+.metrics-body {
+  min-width: 0;
 }
 
 dialog {

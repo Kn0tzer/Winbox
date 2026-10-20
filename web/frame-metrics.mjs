@@ -187,7 +187,7 @@ export function createMetricsModel({ staleAfterMs = STALE_AFTER_MS } = {}) {
             id: 'presentCount', label: 'Presented frames', value: formatCount(present?.count ?? null),
             unit: 'in the last ' + formatMs(wasm?.winMs ?? null) + ' window',
             state: wasmState(!!present?.count),
-            note: present ? ('path ' + present.path + ' — vulkan ' + formatCount(present.vk) + ', vulkan32 ' + formatCount(present.vk32) + ', sdl ' + formatCount(present.sdl)) : 'no runtime snapshot yet',
+            note: present ? ('path ' + present.path + ', vulkan ' + formatCount(present.vk) + ', vulkan32 ' + formatCount(present.vk32) + ', sdl ' + formatCount(present.sdl)) : 'no runtime snapshot yet',
           },
         ],
       });
@@ -338,7 +338,7 @@ export function createMetricsModel({ staleAfterMs = STALE_AFTER_MS } = {}) {
         unavailableRows.push({
           id: 'unavailable-runtime', label: 'runtime stages', value: 'unavailable', unit: '',
           state: STATE.UNAVAILABLE,
-          note: 'no `bw64: METRICS` snapshot received yet — the runtime may predate this instrumentation',
+          note: 'no `bw64: METRICS` snapshot received yet. The runtime may predate this instrumentation.',
         });
       }
       groups.push({ id: 'layers', title: 'Guest layers (not host-visible)', rows: unavailableRows });
@@ -432,20 +432,26 @@ export function createMetricsPanel({ doc = globalThis.document, onClose = null }
   if (onClose) close.onclick = onClose;
   head.append(title, status, close);
 
-  const headLine = el('p', 'metrics-headline');
+  const scroll = el('div', 'metrics-scroll');
+  const summaryRows = el('dl', 'metrics-rows metrics-summary');
+  const more = el('details', 'metrics-more');
+  const moreTitle = el('summary', '', 'More');
+  const moreContent = el('div', 'metrics-more-content');
   const legend = el('p', 'metrics-legend',
     'measured / inactive / unavailable / stale \u00b7 a wall span, not OS CPU \u00b7 overlapping stages are never summed');
   const body = el('div', 'metrics-body');
-
-  root.append(head, headLine, legend, body);
+  moreContent.append(legend, body);
+  more.append(moreTitle, moreContent);
+  scroll.append(summaryRows, more);
+  root.append(head, scroll);
 
   /** @type {Map<string, {row: any, label: any, value: any, unit: any, note: any}>} */
   const rowCache = new Map();
+  /** @type {Map<string, {row: any, label: any, value: any, unit: any, note: any}>} */
+  const summaryCache = new Map();
   /** @type {Map<string, {section: any, title: any, rows: any}>} */
   const groupCache = new Map();
   const setData = (node, key, value) => { (/** @type {any} */ (node)).dataset[key] = value; };
-  let lastHeadline = '';
-
   function setText(node, value) {
     if (node.textContent !== value) node.textContent = value;
   }
@@ -482,17 +488,29 @@ export function createMetricsPanel({ doc = globalThis.document, onClose = null }
     return cached;
   }
 
+  function ensureSummaryRow(row) {
+    let cached = summaryCache.get(row.id);
+    if (!cached) {
+      const line = el('div', 'metrics-row');
+      const label = el('dt', 'metrics-label', row.label);
+      const valueBox = el('dd', 'metrics-value');
+      const value = el('span', 'metrics-number');
+      const unit = el('span', 'metrics-unit');
+      const note = el('p', 'metrics-note');
+      valueBox.append(value, unit);
+      line.append(label, valueBox, note);
+      cached = { row: line, label, value, unit, note };
+      summaryCache.set(row.id, cached);
+    }
+    return cached;
+  }
+
   return {
     element: root,
     get hidden() { return root.hidden; },
     setOpen(open) { root.hidden = !open; },
     /** One cheap refresh; called at ~1 Hz by the app shell. */
     update(view) {
-      const headline = view.headline || {};
-      const text = 'FPS ' + formatFps(headline.fps) + ' \u00b7 frame ' + formatMs(headline.frameMs)
-        + (headline.path ? ' \u00b7 path ' + headline.path : '')
-        + (view.arch ? ' \u00b7 ' + view.arch : '');
-      if (text !== lastHeadline) { setText(headLine, text); lastHeadline = text; }
       setText(status, view.stale
         ? 'stale ' + formatAge(view.wasmAgeMs)
         : (view.enabled ? 'live' : 'disabled'));
@@ -500,25 +518,55 @@ export function createMetricsPanel({ doc = globalThis.document, onClose = null }
       setData(root, 'stale', view.stale ? '1' : '0');
 
       const seen = new Set();
+      const seenGroups = new Set();
+      const seenSummary = new Set();
       for (const group of view.groups || []) {
-        const cached = ensureGroup(group);
-        seen.add(group.id);
+        const summary = group.id === 'frames' || group.id === 'jit'
+          ? group.rows || []
+          : group.id === 'gpu' ? (group.rows || []).filter(row => row.id === 'gpuExec') : [];
+        const summaryIds = new Set(summary.map(row => row.id));
+        const detailRows = group.id === 'frames' ? [] : group.rows || [];
         for (const row of group.rows || []) {
           const entry = ensureRow(group, row);
           seen.add(row.id);
           const value = row.value === null || row.value === undefined ? '--' : String(row.value);
           if (entry.value.textContent !== value) entry.value.textContent = value;
           const unit = row.unit ? String(row.unit) : '';
+          const noteText = String(row.note || '');
+          if (detailRows.length) ensureGroup(group).rows.append(entry.row);
+
+          if (summaryIds.has(row.id)) {
+            const summaryEntry = ensureSummaryRow(row);
+            const summaryValue = group.id === 'jit' && value.includes(' \u00b7 ')
+              ? value.slice(0, value.indexOf(' \u00b7 ')) : value;
+            let summaryUnit = unit;
+            if (group.id === 'jit') {
+              const blockEntries = noteText.match(/^([^\u00b7]*?\bblock entries)(?:\s*\u00b7|$)/);
+              if (blockEntries) summaryUnit = blockEntries[1].trim();
+            }
+            setText(summaryEntry.label, row.label);
+            setText(summaryEntry.value, summaryValue);
+            setText(summaryEntry.unit, summaryUnit);
+            setText(summaryEntry.note, '');
+            if ((/** @type {any} */ (summaryEntry.row)).dataset.state !== row.state) setData(summaryEntry.row, 'state', row.state);
+            seenSummary.add(row.id);
+            summaryRows.append(summaryEntry.row);
+          }
           if (entry.unit.textContent !== unit) entry.unit.textContent = unit;
-          if (entry.note.textContent !== String(row.note || '')) entry.note.textContent = String(row.note || '');
+          if (entry.note.textContent !== noteText) entry.note.textContent = noteText;
           if ((/** @type {any} */ (entry.row)).dataset.state !== row.state) setData(entry.row, 'state', row.state);
-          cached.rows.append(entry.row);   // no-op when already in place
+        }
+        if (detailRows.length) {
+          const cached = ensureGroup(group);
+          seenGroups.add(group.id);
+          for (const row of detailRows) cached.rows.append(rowCache.get(row.id).row);
         }
       }
       for (const [id, entry] of rowCache) if (!seen.has(id)) { entry.row.remove(); rowCache.delete(id); }
-      for (const [id, cached] of groupCache) if (!seen.has(id)) { cached.section.remove(); groupCache.delete(id); }
+      for (const [id, entry] of summaryCache) if (!seenSummary.has(id)) { entry.row.remove(); summaryCache.delete(id); }
+      for (const [id, cached] of groupCache) if (!seenGroups.has(id)) { cached.section.remove(); groupCache.delete(id); }
     },
-    destroy() { root.remove(); rowCache.clear(); groupCache.clear(); },
+    destroy() { root.remove(); rowCache.clear(); summaryCache.clear(); groupCache.clear(); },
   };
 }
 

@@ -35,8 +35,11 @@ let page;
 let build;
 let startedAt = 0;
 let tClick = null;
+let demoClickAtMs = null;
 let tMapped = null;
 let mappedAt = null;
+let gameplayStartedAt = null;
+let audioStartBeforePlayerClick = null;
 let sampling = false;
 let samplerPromise = null;
 let lastWasmMetricLine = null;
@@ -67,6 +70,29 @@ try {
     ],
   });
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  await page.addInitScript(() => {
+    globalThis.__bwAudioOutputMetrics ||= [];
+    if (window === window.top) {
+      window.addEventListener('message', event => {
+        const runtimeFrame = document.querySelector('#display iframe');
+        if (event.source !== runtimeFrame?.contentWindow || event.data?.bw64AudioMetric?.type !== 'bw-audio-metrics') return;
+        globalThis.__bwAudioOutputMetrics.push({ ...event.data.bw64AudioMetric, observedAtMs: Date.now() });
+      });
+      return;
+    }
+    const NativeWorkletNode = globalThis.AudioWorkletNode;
+    if (!NativeWorkletNode) return;
+    globalThis.AudioWorkletNode = class extends NativeWorkletNode {
+      constructor(context, name, options) {
+        super(context, name, options);
+        this.port.addEventListener('message', event => {
+          if (event.data?.type === 'bw-audio-metrics')
+            parent.postMessage({ bw64AudioMetric: event.data }, '*');
+        });
+        this.port.start();
+      }
+    };
+  });
   startedAt = Date.now();
   page.on('console', message => {
     const text = message.text();
@@ -101,6 +127,7 @@ try {
 
   await page.locator(`[data-game="${demo}"]`).click();
   tClick = elapsedSeconds();
+  demoClickAtMs = Date.now();
   try {
     await page.waitForFunction(() => document.getElementById('log')?.textContent.includes('first window mapped'), null,
       { timeout: mappedTimeout * 1000 });
@@ -110,6 +137,35 @@ try {
     await page.screenshot({ path: timeoutPath, fullPage: true }).catch(() => {});
     const pixels = await measurePlayerPixels(page).catch(() => ({ nonblankFraction: null, uniqueColors: null, pixelError: 'measurement failed' }));
     screenshots.push({ name: 'timeout.png', atSeconds: elapsedSeconds(), ...pixels });
+    const audioAfterNoInput = await page.evaluate(() => {
+      const frame = document.querySelector('#display iframe');
+      const runtime = frame?.contentWindow;
+      const sdlContext = runtime?.Module?.SDL2?.audioContext;
+      const launchContext = runtime?.bwLaunchAudioContext || runtime?.parent?.bwLauncherAudioContext;
+      return {
+        checkedAtMs: Date.now(),
+        crossOriginIsolated: runtime?.crossOriginIsolated === true,
+        contextState: sdlContext?.state || launchContext?.state || null,
+        sdlContextState: sdlContext?.state || null,
+        launchContextState: launchContext?.state || null,
+        sdlUsesLaunchContext: Boolean(sdlContext && launchContext && sdlContext === launchContext),
+        iframeAllow: frame?.allow || '',
+        worklet: runtime?.Module?.SDL2?.bwAudioWorklet === true,
+        launcherGestureForwarded: runtime?.bwLauncherAudioGestureForwarded === true,
+        frameActivation: runtime?.navigator?.userActivation ? {
+          isActive: runtime.navigator.userActivation.isActive,
+          hasBeenActive: runtime.navigator.userActivation.hasBeenActive,
+        } : null,
+        parentActivation: runtime?.parent?.navigator?.userActivation ? {
+          isActive: runtime.parent.navigator.userActivation.isActive,
+          hasBeenActive: runtime.parent.navigator.userActivation.hasBeenActive,
+        } : null,
+        audioOutputMetrics: globalThis.__bwAudioOutputMetrics || [],
+      };
+    }).catch(() => null);
+    const audioOutputMetrics = audioAfterNoInput?.audioOutputMetrics || [];
+    const nonzeroOutputFrames = audioOutputMetrics.reduce((total, metric) => total + Number(metric.nonzeroOutputFrames || 0), 0);
+    const autoplayPassed = audioAfterNoInput?.contextState === 'running' && nonzeroOutputFrames > 0;
     const logText = await readLauncherLog(page);
     await writeFile(join(outDir, 'log-tail.txt'), logText.split('\n').slice(-400).join('\n') + '\n');
     await saveLogs(page);
@@ -117,8 +173,11 @@ try {
       demo, jit: Number(jit), build, tClick, tMapped: null, clickToMappedSeconds: null,
       screenshots, pageErrorCount: pageErrors.length, consoleErrorCount: countConsoleErrors(),
       lastMetricsSnapshot, lastJitStats, stage: 'not-mapped', pixelMethod, httpErrorCount: httpErrors.length,
+      audioAfterNoInput, audioMetricEvents: audioOutputMetrics.length, nonzeroOutputFrames, autoplayPassed,
     }, null, 2) + '\n');
-    console.log(JSON.stringify({ demo, jit: Number(jit), stage: 'not-mapped', outDir: relative(repo, outDir) }));
+    console.log(JSON.stringify({ demo, jit: Number(jit), stage: 'not-mapped', audioAfterNoInput,
+      audioMetricEvents: audioOutputMetrics.length, nonzeroOutputFrames, autoplayPassed, outDir: relative(repo, outDir) }));
+    if (process.env.AUDIO_AUTOPLAY_REQUIRE === '1' && !autoplayPassed) process.exitCode = 1;
     return;
   }
 
@@ -129,6 +188,92 @@ try {
     const due = mappedAt + seconds * 1000;
     if (due > Date.now()) await page.waitForTimeout(due - Date.now());
     await takeScreenshot(`boot-${seconds}s.png`);
+  }
+  audioStartBeforePlayerClick = await page.evaluate(() => {
+    const frame = document.querySelector('#display iframe');
+    const runtime = frame?.contentWindow;
+    const context = runtime?.Module?.SDL2?.audioContext;
+    const launchContext = runtime?.bwLaunchAudioContext || runtime?.parent?.bwLauncherAudioContext;
+    return {
+      checkedAtMs: Date.now(),
+      crossOriginIsolated: runtime?.crossOriginIsolated === true,
+      contextState: context?.state || launchContext?.state || null,
+      sdlContextState: context?.state || null,
+      launchContextState: launchContext?.state || null,
+      sdlUsesLaunchContext: Boolean(context && launchContext && context === launchContext),
+      iframeAllow: frame?.allow || '',
+      worklet: runtime?.Module?.SDL2?.bwAudioWorklet === true,
+      launcherGestureForwarded: runtime?.bwLauncherAudioGestureForwarded === true,
+      frameActivation: runtime?.navigator?.userActivation ? {
+        isActive: runtime.navigator.userActivation.isActive,
+        hasBeenActive: runtime.navigator.userActivation.hasBeenActive,
+      } : null,
+      parentActivation: runtime?.parent?.navigator?.userActivation ? {
+        isActive: runtime.parent.navigator.userActivation.isActive,
+        hasBeenActive: runtime.parent.navigator.userActivation.hasBeenActive,
+      } : null,
+    };
+  });
+  if (process.env.AUDIO_AUTOPLAY_ONLY === '1') {
+    const observeMs = Number(process.env.AUDIO_AUTOPLAY_OBSERVE_MS || 30000);
+    await page.waitForTimeout(observeMs);
+    sampling = false;
+    await samplerPromise;
+    await sampleMetrics();
+    await saveLogs(page);
+    const audioAfterNoInput = await page.evaluate(() => {
+      const frame = document.querySelector('#display iframe');
+      const runtime = frame?.contentWindow;
+      const context = runtime?.Module?.SDL2?.audioContext;
+      const launchContext = runtime?.bwLaunchAudioContext || runtime?.parent?.bwLauncherAudioContext;
+      return {
+        checkedAtMs: Date.now(),
+        crossOriginIsolated: runtime?.crossOriginIsolated === true,
+        contextState: context?.state || launchContext?.state || null,
+        sdlContextState: context?.state || null,
+        launchContextState: launchContext?.state || null,
+        sdlUsesLaunchContext: Boolean(context && launchContext && context === launchContext),
+        iframeAllow: frame?.allow || '',
+        worklet: runtime?.Module?.SDL2?.bwAudioWorklet === true,
+        launcherGestureForwarded: runtime?.bwLauncherAudioGestureForwarded === true,
+        frameActivation: runtime?.navigator?.userActivation ? {
+          isActive: runtime.navigator.userActivation.isActive,
+          hasBeenActive: runtime.navigator.userActivation.hasBeenActive,
+        } : null,
+        parentActivation: runtime?.parent?.navigator?.userActivation ? {
+          isActive: runtime.parent.navigator.userActivation.isActive,
+          hasBeenActive: runtime.parent.navigator.userActivation.hasBeenActive,
+        } : null,
+      };
+    });
+    const metricRows = (await readFile(metricsPath, 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line));
+    const audioOutputMetrics = metricRows.flatMap(row => row.audioOutputMetrics || [])
+      .filter(metric => metric.observedAtMs >= demoClickAtMs);
+    const nonzeroOutputFrames = audioOutputMetrics.reduce((total, metric) => total + Number(metric.nonzeroOutputFrames || 0), 0);
+    const audioTimeline = metricRows.map(row => ({
+      atSeconds: row.atSeconds,
+      contextState: row.audioRuntime?.contextState || null,
+      sdlContextState: row.audioRuntime?.sdlContextState || null,
+      launchContextState: row.audioRuntime?.launchContextState || null,
+      sdlUsesLaunchContext: row.audioRuntime?.sdlUsesLaunchContext === true,
+      worklet: row.audioRuntime?.worklet === true,
+      launcherGestureForwarded: row.audioRuntime?.launcherGestureForwarded === true,
+    }));
+    const autoplayPassed = audioAfterNoInput.contextState === 'running' && nonzeroOutputFrames > 0;
+    const summary = {
+      demo, jit: Number(jit), build, tClick, tMapped,
+      clickToMappedSeconds: Number((tMapped - tClick).toFixed(3)),
+      screenshots, pageErrorCount: pageErrors.length, consoleErrorCount: countConsoleErrors(),
+      lastMetricsSnapshot, lastJitStats, stage: 'mapped-no-input', pixelMethod, httpErrorCount: httpErrors.length,
+      demoClickAtMs, audioStartBeforePlayerClick, audioAfterNoInput, observeMs,
+      audioTimeline, audioMetricEvents: audioOutputMetrics.length, nonzeroOutputFrames, autoplayPassed,
+    };
+    await writeFile(join(outDir, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
+    console.log(JSON.stringify({ demo, jit: Number(jit), stage: 'mapped-no-input',
+      audioStartBeforePlayerClick, audioAfterNoInput, audioMetricEvents: audioOutputMetrics.length,
+      nonzeroOutputFrames, autoplayPassed, observeMs, outDir: relative(repo, outDir) }));
+    if (process.env.AUDIO_AUTOPLAY_REQUIRE === '1' && !autoplayPassed) process.exitCode = 1;
+    return;
   }
   await page.mouse.click(...await displayCenter());
   await runInputScript();
@@ -141,6 +286,9 @@ try {
     clickToMappedSeconds: Number((tMapped - tClick).toFixed(3)),
     screenshots, pageErrorCount: pageErrors.length, consoleErrorCount: countConsoleErrors(),
     lastMetricsSnapshot, lastJitStats, stage: 'mapped', pixelMethod, httpErrorCount: httpErrors.length,
+    gameplayStartedAtMs: gameplayStartedAt,
+    demoClickAtMs,
+    audioStartBeforePlayerClick,
   };
   await writeFile(join(outDir, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
   console.log(JSON.stringify({ demo, jit: Number(jit), stage: 'mapped', clickToMappedSeconds: summary.clickToMappedSeconds,
@@ -247,10 +395,31 @@ async function sampleMetrics() {
   }).catch(() => null);
   let jitStats = null;
   let jitStatsError = null;
+  let audioRuntime = null;
   try {
     const frameHandle = await page.locator('#display iframe').elementHandle();
     const runtimeFrame = await frameHandle?.contentFrame();
     if (!runtimeFrame) throw new Error('runtime iframe is not available');
+    audioRuntime = await runtimeFrame.evaluate(() => ({
+      crossOriginIsolated: globalThis.crossOriginIsolated,
+      worklet: globalThis.Module?.SDL2?.bwAudioWorklet === true,
+      launcherGestureForwarded: globalThis.bwLauncherAudioGestureForwarded === true,
+      contextState: globalThis.Module?.SDL2?.audioContext?.state || globalThis.bwLaunchAudioContext?.state || null,
+      sdlContextState: globalThis.Module?.SDL2?.audioContext?.state || null,
+      launchContextState: globalThis.bwLaunchAudioContext?.state || null,
+      sdlUsesLaunchContext: Boolean(globalThis.Module?.SDL2?.audioContext &&
+        globalThis.Module.SDL2.audioContext === globalThis.bwLaunchAudioContext),
+      frameActivation: navigator.userActivation ? {
+        isActive: navigator.userActivation.isActive,
+        hasBeenActive: navigator.userActivation.hasBeenActive,
+      } : null,
+      parentActivation: (() => {
+        try {
+          const activation = parent.navigator.userActivation;
+          return activation ? { isActive: activation.isActive, hasBeenActive: activation.hasBeenActive } : null;
+        } catch { return null; }
+      })(),
+    }));
     jitStats = await runtimeFrame.evaluate(() => {
       if (typeof Module === 'undefined' || typeof Module.ccall !== 'function')
         throw new Error('runtime Module export is not available');
@@ -264,6 +433,9 @@ async function sampleMetrics() {
   const wasmSnapshot = parseWasmMetricLine(wasmLine);
   const record = {
     atSeconds: elapsedSeconds(),
+    gameplayStartedAtMs: gameplayStartedAt,
+    audioOutputMetrics: await page.evaluate(() => globalThis.__bwAudioOutputMetrics?.splice(0) || []),
+    audioRuntime,
     frameMetricsSource: {
       wasm: 'runtime iframe console message emitted by Module.print; launcher app feeds bw64: METRICS lines',
       pageTier: 'launcher page window.bwVkTier.metrics()',
@@ -330,6 +502,7 @@ async function runInputScript() {
   } else if (demo === 'doom') {
     for (let i = 1; i <= 4; i++) await inputAction(`enter-${i}`, () => page.keyboard.press('Enter'));
     await page.waitForTimeout(5000);
+    gameplayStartedAt = Date.now();
     await inputAction('forward', () => holdKey('ArrowUp', 2000));
     await inputAction('control', () => page.keyboard.press('Control'));
     await inputAction('turn-left', () => holdKey('ArrowLeft', 1000));

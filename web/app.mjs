@@ -37,7 +37,7 @@ function applyMetricsVisibility() {
   $('stats').setAttribute('aria-label', $('stats').title);
   if (metrics) metrics.setOpen(open);
 }
-const settings = { appearance: 'dark', graphics: 'auto', jit: 'off', internet: 'off', enhancement: 'off', sharpness: 0.5, folderMode: 'copy', metrics: 'on' };
+const settings = { appearance: 'dark', graphics: 'auto', jit: 'off', internet: 'off', enhancement: 'off', sharpness: 0.5, folderMode: 'copy', metrics: 'off' };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('wine.launcher.settings.v1') || '{}')); } catch {}
 settings.jit = settings.jit === 'on' ? 'on' : 'off';
 function appearance(value) {
@@ -79,6 +79,17 @@ function message(value, error = false) {
 }
 function status(value) { $('status').textContent = value; }
 function log(value) { $('log').textContent = ($('log').textContent + '\n' + value).slice(-48000); }
+function showPlayerError(value) {
+  $('loading').hidden = false;
+  $('loading').classList.add('error-screen');
+  $('loadingTitle').textContent = 'The program stopped';
+  status(value);
+  $('loadingActivity').hidden = true;
+  $('launchProgress').hidden = true;
+  $('loadingElapsed').hidden = true;
+  $('loadingErrorActions').hidden = false;
+  $('playerRetry').hidden = !lastAction;
+}
 function errorText(error) {
   if (error?.name === 'QuotaExceededError') return 'This browser is out of storage. Delete an unused folder or free some space, then try again.';
   return error?.message || String(error);
@@ -92,12 +103,12 @@ async function action(fn, { retry = fn } = {}) {
   if (busy || stopping) return;
   lock(true); operation = new AbortController(); const active = operation;
   if (retry) lastAction = retry;
-  $('retry').hidden = true; $('playerRetry').hidden = true;
+  $('retry').hidden = true; $('playerRetry').hidden = true; $('loadingErrorActions').hidden = true;
   try { await fn(active.signal); }
   catch (error) {
     if (active.signal.aborted) return;
     const value = errorText(error); message(value, true);
-    if (!$('player').hidden) { $('loading').hidden = false; $('loadingTitle').textContent = 'Could not start this program'; status(value); $('loadingActivity').hidden = true; $('playerRetry').hidden = !lastAction; }
+    if (!$('player').hidden) showPlayerError(value);
     $('retry').hidden = !lastAction;
     if ($('folderDialog').open) { $('folderError').hidden = false; $('folderError').textContent = value; }
   } finally { if (operation === active) operation = null; lock(false); }
@@ -107,9 +118,12 @@ function preparing(title) {
   $('runtimeTitle').textContent = title;
   $('mouseCaptureHint').hidden = true;
   $('captureMouse').title = 'Capture mouse'; $('captureMouse').setAttribute('aria-label', 'Capture mouse'); $('captureMouse').setAttribute('aria-pressed', 'false');
+  $('loading').classList.remove('error-screen');
+  $('loading').classList.remove('waiting-for-frame');
   $('loadingTitle').textContent = 'Getting things ready'; $('loading').hidden = false;
   $('launchProgress').hidden = true; $('playerRetry').hidden = true;
-  $('loadingActivity').hidden = true; $('loadingElapsed').textContent = '';
+  $('loadingErrorActions').hidden = true;
+  $('loadingActivity').hidden = true; $('loadingElapsed').hidden = false; $('loadingElapsed').textContent = '';
   $('display').style.removeProperty('--program-aspect');
   $('log').textContent = ''; message('');
   $('runtimeTitle').setAttribute('tabindex', '-1'); $('runtimeTitle').focus({ preventScroll: true });
@@ -149,7 +163,7 @@ async function launchFrame(query, title, archive = null) {
   if (settings.internet === 'on') { query.set('network', '1'); query.set('wisp', '1'); }
   if (settings.enhancement !== 'off') query.set('enhance', '1');
   const frame = document.createElement('iframe'); frame.title = title + ' runtime';
-  frame.allow = 'cross-origin-isolated; fullscreen'; frame.dataset.installation = query.get('installation');
+  frame.allow = 'cross-origin-isolated; fullscreen; autoplay'; frame.dataset.installation = query.get('installation');
   frame.onload = () => {
     try {
       frame.contentDocument.documentElement.style.backgroundColor = '#000';
@@ -171,6 +185,11 @@ async function launchFrame(query, title, archive = null) {
   metrics = installFrameMetrics({
     tierProvider: () => (current === run ? metricsTier : null),
     open: metricsOpen(),
+    onVisibilityChange: open => {
+      settings.metrics = open ? 'on' : 'off';
+      persistSettings();
+      applyMetricsVisibility();
+    },
   });
   metrics.setRunState('running');
   $('metricsHost').replaceChildren(metrics.element);
@@ -201,14 +220,19 @@ function updateStartup(run, sample = false) {
     return;
   }
   const progress = startupProgress(run.status, run.lastLog, run.hasFrame, performance.now(), run.startedAt, run.firstMapped);
-  $('loadingTitle').textContent = progress.title; status(progress.detail);
-  $('loadingActivity').textContent = progress.activity; $('loadingActivity').hidden = !progress.activity;
+  const waitingForFrame = progress.title === 'Waiting for the first frame';
+  $('loading').classList.toggle('waiting-for-frame', waitingForFrame);
+  $('loadingTitle').textContent = progress.title;
+  status(waitingForFrame
+    ? 'The program is running. Large games can take several minutes to show their first frame.'
+    : progress.detail);
+  $('loadingActivity').textContent = progress.activity;
+  $('loadingActivity').hidden = waitingForFrame || !progress.activity;
   $('loadingElapsed').textContent = progress.elapsed;
 }
 function startupError(run, value) {
   run.failed = true; clearInterval(run.progressTimer);
-  $('loading').hidden = false; $('loadingTitle').textContent = 'The program could not continue'; status(value);
-  $('loadingActivity').hidden = true; $('launchProgress').hidden = true; $('playerRetry').hidden = !lastAction;
+  showPlayerError(value);
 }
 async function runSaved(id, signal) {
   let pkg = await getPackage(id);
@@ -263,9 +287,23 @@ async function importFolder(files, name, signal, directory = null) {
   finally { await cleanupExtracted(owned).catch(() => {}); if (owned !== files) await cleanupExtracted(files).catch(() => {}); }
 }
 async function startDemo(demo, signal) {
+  const launcherWindow = /** @type {Window & { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext; bwLauncherAudioContext?: AudioContext; bwLauncherGesturePending?: boolean }} */ (window);
+  const AudioContextCtor = launcherWindow.AudioContext || launcherWindow.webkitAudioContext;
+  if (AudioContextCtor) {
+    try {
+      const context = new AudioContextCtor();
+      launcherWindow.bwLauncherAudioContext = context;
+      if (context.state === 'suspended') context.resume().catch(error => {
+        console.warn('Launcher audio context resume failed:', error?.name || 'failed');
+      });
+    } catch (error) {
+      console.warn('Launcher audio context setup failed:', error?.name || 'failed');
+    }
+  }
   await closeRuntime(); signal.throwIfAborted(); preparing(demo.title); status('Opening ' + demo.title + '…');
   const query = await demoParameters(demo); signal.throwIfAborted();
   if (settings.graphics !== 'auto') query.set('gpu', settings.graphics === 'webgpu' ? '1' : '0');
+  launcherWindow.bwLauncherGesturePending = true;
   await launchFrame(query, demo.title);
 }
 function renderDemos() {
@@ -349,7 +387,14 @@ window.addEventListener('message', event => {
     run.lastLog = performance.now();
     if (String(data).includes('first window mapped')) {
       run.firstMapped = true;
-      run.frame.contentWindow?.document.getElementById('canvas')?.focus({ preventScroll: true });
+      const runtime = /** @type {(Window & { bwForwardLauncherAudioGesture?: () => boolean }) | null} */ (run.frame.contentWindow);
+      const canvas = runtime?.document.getElementById('canvas');
+      canvas?.focus({ preventScroll: true });
+      const launcherWindow = /** @type {Window & { bwLauncherGesturePending?: boolean }} */ (window);
+      if (launcherWindow.bwLauncherGesturePending) {
+        launcherWindow.bwLauncherGesturePending = false;
+        runtime?.bwForwardLauncherAudioGesture?.();
+      }
     }
     updateStartup(run);
   }
@@ -426,6 +471,13 @@ $('stop').onclick = stop; $('back').onclick = stop;
 $('restart').onclick = () => lastAction && action(lastAction);
 $('retry').onclick = () => lastAction && action(lastAction);
 $('playerRetry').onclick = () => lastAction && action(lastAction);
+$('playerShowLog').onclick = () => {
+  const diagnostics = $('log').closest('details');
+  if (!diagnostics) return;
+  diagnostics.open = true;
+  diagnostics.scrollIntoView({ block: 'nearest' });
+  diagnostics.querySelector('summary')?.focus({ preventScroll: true });
+};
 $('stats').onclick = () => { settings.metrics = metricsOpen() ? 'off' : 'on'; persistSettings(); applyMetricsVisibility(); };
 $('captureMouse').onclick = () => {
   try {
