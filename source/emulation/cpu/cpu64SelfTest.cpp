@@ -8480,6 +8480,116 @@ int runX64SelfTest() {
         }, [](CPU64& c) { c.fpu.startMMX(); });
     }
 
+    {
+        const U64 mmxData = CODE_BASE + 0x800;
+        const U64 a = 0xFEDCBA9876543210ULL;
+        const U64 b = 0x0123456789ABCDEFULL;
+        auto initMmx = [=](CPU64& c) {
+            c.fpu.startMMX();
+            c.fpu.getMMX(0)->q = a;
+            c.fpu.getMMX(1)->q = b;
+        };
+        runAndCheck(r, "MMX PADDQ register form", withExit({0x0F,0xD4,0xC1}),
+            [=](CPU64& c) {
+                return c.fpu.getMMX(0)->q == a + b && c.fpu.top == 0 && c.fpu.isMMXInUse;
+            }, initMmx);
+        runAndCheck(r, "MMX PADDQ memory form", withExit({0x0F,0xD4,0x03}),
+            [=](CPU64& c) {
+                return c.fpu.getMMX(0)->q == a + b && c.fpu.top == 0 && c.fpu.isMMXInUse;
+            }, [=](CPU64& c) {
+                c.reg[X64_RBX].setU64(mmxData);
+                c.fpu.startMMX(); c.fpu.getMMX(0)->q = a;
+                c.memory->writeq(mmxData, b);
+            });
+
+        std::vector<U8> ripShuffle = withExit({0x0F,0x70,0x05,0x0C,0,0,0,0x1B});
+        const U64 shuffleSource = 0x0605040302010000ULL;
+        for (int i = 0; i < 8; i++) ripShuffle.push_back((U8)(shuffleSource >> (i * 8)));
+        runAndCheck(r, "MMX PSHUFW RIP-relative source with imm8", ripShuffle,
+            [](CPU64& c) {
+                return c.fpu.getMMX(0)->q == 0x0000020104030605ULL &&
+                       c.fpu.top == 0 && c.fpu.isMMXInUse;
+            }, [](CPU64& c) {
+                c.fpu.startMMX(); c.fpu.getMMX(0)->q = 0xFFFFFFFFFFFFFFFFULL;
+            });
+
+        runAndCheck(r, "MMX MOVQ REX.W source and x87 alias state", withExit({
+            0x48,0xB8,0x88,0x77,0x66,0x55,0x44,0x33,0x22,0x11,
+            0x48,0x0F,0x6E,0xC0
+        }), [](CPU64& c) {
+            if (c.fpu.getMMX(0)->q != 0x1122334455667788ULL ||
+                c.fpu.top != 0 || !c.fpu.isMMXInUse) return false;
+            for (int i = 0; i < 8; i++) if (c.fpu.tags[i] == TAG_Empty) return false;
+            return true;
+        });
+
+        auto initPair = [=](CPU64& c) {
+            c.fpu.startMMX(); c.fpu.getMMX(0)->q = a; c.fpu.getMMX(1)->q = b;
+        };
+        runAndCheck(r, "MMX PUNPCKLBW interleaves low lanes", withExit({0x0F,0x60,0xC1}),
+            [](CPU64& c) { return c.fpu.getMMX(0)->q == 0x8976AB54CD32EF10ULL; }, initPair);
+        runAndCheck(r, "MMX PACKSSDW saturates dword lanes", withExit({0x0F,0x6B,0xC1}),
+            [](CPU64& c) { return c.fpu.getMMX(0)->q == 0x7FFF800080007FFFULL; }, initPair);
+        runAndCheck(r, "MMX PSRLW imm8 shifts each word lane", withExit({0x0F,0x71,0xD0,0x04}),
+            [](CPU64& c) { return c.fpu.getMMX(0)->q == 0x0FED0BA907650321ULL; }, initPair);
+        runAndCheck(r, "MMX PINSRW register source and imm8", withExit({0x0F,0xC4,0xC1,0x02}),
+            [](CPU64& c) { return c.fpu.getMMX(0)->q == 0xFEDCCDEF76543210ULL; }, [=](CPU64& c) {
+                initPair(c); c.reg[X64_RCX].setU64(0xCDEF);
+            });
+        runAndCheck(r, "MMX PINSRW memory source and imm8", withExit({0x0F,0xC4,0x43,0x08,0x02}),
+            [=](CPU64& c) { return c.fpu.getMMX(0)->q == 0xFEDCCDEF76543210ULL; },
+            [=](CPU64& c) {
+                c.reg[X64_RBX].setU64(mmxData);
+                c.memory->writeq(mmxData, a); c.memory->writew(mmxData + 8, 0xCDEF);
+                c.fpu.startMMX(); c.fpu.getMMX(0)->q = a;
+            });
+        std::vector<U8> pinsRip = withExit({0x0F,0xC4,0x05,0x0C,0,0,0,0x02});
+        pinsRip.push_back(0xEF); pinsRip.push_back(0xCD);
+        runAndCheck(r, "MMX PINSRW RIP-relative memory source and imm8", pinsRip,
+            [](CPU64& c) { return c.fpu.getMMX(0)->q == 0xFEDCCDEF76543210ULL; }, initPair);
+        runAndCheck(r, "MMX PEXTRW imm8 extracts selected word", withExit({0x0F,0xC5,0xC0,0x02}),
+            [](CPU64& c) { return c.reg[X64_R15].u64 == 0xBA98; }, [=](CPU64& c) {
+                c.fpu.startMMX(); c.fpu.getMMX(0)->q = a;
+            });
+        runAndCheck(r, "MMX PMOVMSKB extracts sign bits", withExit({0x0F,0xD7,0xC0}),
+            [](CPU64& c) { return c.reg[X64_R15].u64 == 0xC8; }, [=](CPU64& c) {
+                c.fpu.startMMX(); c.fpu.getMMX(0)->q = 0x80FF017F80010203ULL;
+            });
+        runAndCheck(r, "MMX MOVD writes GP register", withExit({0x0F,0x7E,0xC0}),
+            [](CPU64& c) { return c.reg[X64_R15].u64 == 0x76543210ULL; }, [=](CPU64& c) {
+                c.fpu.startMMX(); c.fpu.getMMX(0)->q = a;
+            });
+        runAndCheck(r, "MMX MOVQ2DQ transfers MMX to XMM", withExit({0xF3,0x0F,0xD6,0xC0}),
+            [=](CPU64& c) { return c.xmm[0].lo == a && c.xmm[0].hi == 0; }, [=](CPU64& c) {
+                c.fpu.startMMX(); c.fpu.getMMX(0)->q = a;
+            });
+        runAndCheck(r, "MMX MOVDQ2Q transfers XMM to MMX", withExit({0xF2,0x0F,0xD6,0xC0}),
+            [=](CPU64& c) { return c.fpu.getMMX(0)->q == a; }, [=](CPU64& c) {
+                c.xmm[0].lo = a; c.xmm[0].hi = 0x8877665544332211ULL;
+            });
+        runAndCheck(r, "MMX CVTPI2PS converts two signed dwords", withExit({0x0F,0x2A,0xC1}),
+            [](CPU64& c) {
+                U32 lo = 0x3F800000U, hi = 0xC0000000U;
+                return (U32)c.xmm[0].lo == lo && (U32)(c.xmm[0].lo >> 32) == hi;
+            }, [=](CPU64& c) {
+                c.fpu.startMMX(); c.fpu.getMMX(1)->q = 0xFFFFFFFE00000001ULL;
+            });
+        runAndCheck(r, "MMX CVTPS2PI converts two packed singles", withExit({0x0F,0x2D,0xC1}),
+            [](CPU64& c) { return c.fpu.getMMX(0)->q == 0xFFFFFFFE00000002ULL; }, [](CPU64& c) {
+                c.xmm[1].lo = 0xC02000003FE00000ULL;
+            });
+        runAndCheck(r, "MMX CVTPI2PD converts two signed dwords", withExit({0x66,0x0F,0x2A,0xC1}),
+            [](CPU64& c) { return c.xmm[0].lo == 0x3FF0000000000000ULL &&
+                                  c.xmm[0].hi == 0xC000000000000000ULL; }, [](CPU64& c) {
+                c.fpu.startMMX(); c.fpu.getMMX(1)->q = 0xFFFFFFFE00000001ULL;
+            });
+        runAndCheck(r, "MMX CVTPD2PI converts two packed doubles", withExit({0x66,0x0F,0x2D,0xC1}),
+            [](CPU64& c) { return c.fpu.getMMX(0)->q == 0xFFFFFFFE00000002ULL; }, [](CPU64& c) {
+                c.xmm[1].lo = 0x3FF8000000000000ULL;
+                c.xmm[1].hi = 0xC004000000000000ULL;
+            });
+    }
+
     const char* requireJit = std::getenv("BW64_JIT_VERIFY");
     if (requireJit && std::strcmp(requireJit, "1") == 0) {
         printf("JIT64: engine=%s blocks=%llu insns=%llu\n", r.engine,

@@ -1549,6 +1549,282 @@ static void buildStringCases(std::vector<TestCase>& out) {
 }
 
 // ---------------------------------------------------------------------------
+// MMX test builders. MM registers alias the x87 state, but the differential
+// harness observes their 64-bit payload through MOVQ stores to the scratch page.
+static void buildMmxCases(std::vector<TestCase>& out) {
+    const U64 dst = 0xFEDCBA9876543210ULL;
+    const U64 src = 0x0123456789ABCDEFULL;
+    auto addBinary = [&](const char* name, U8 opcode, bool memorySource,
+                         U64 dst, U64 src, const std::string& formSuffix) {
+        TestCase tc; tc.set = "mmx"; tc.name = name;
+        tc.form = std::string(memorySource ? "mm,m64" : "mm,mm") + formSuffix;
+        tc.code = {0x0F,0x6F,0x03}; // movq mm0,[rbx]
+        if (memorySource) {
+            tc.code.insert(tc.code.end(), {0x0F,opcode,0x43,0x08}); // mm0,[rbx+8]
+        } else {
+            tc.code.insert(tc.code.end(), {0x0F,0x6F,0x4B,0x08,
+                                           0x0F,opcode,0xC1}); // mm0,mm1
+        }
+        tc.code.insert(tc.code.end(), {0x0F,0x7F,0x03}); // movq [rbx],mm0
+        initRegs(tc, 0, MEM_SCRATCH);
+        tc.checkMem = true; tc.memLen = 8;
+        memcpy(tc.memInit, &dst, sizeof(dst));
+        memcpy(tc.memInit + 8, &src, sizeof(src));
+        out.push_back(std::move(tc));
+    };
+
+    struct MmxOp { const char* name; U8 opcode; };
+    const MmxOp packedOps[] = {
+        {"punpcklbw",0x60},{"punpcklwd",0x61},{"punpckldq",0x62},
+        {"packsswb",0x63},{"pcmpgtb",0x64},{"pcmpgtw",0x65},{"pcmpgtd",0x66},
+        {"packuswb",0x67},{"punpckhbw",0x68},{"punpckhwd",0x69},{"punpckhdq",0x6A},
+        {"packssdw",0x6B},{"pcmpeqb",0x74},{"pcmpeqw",0x75},{"pcmpeqd",0x76},
+        {"psrlw",0xD1},{"psrld",0xD2},{"psrlq",0xD3},{"paddq",0xD4},{"pmullw",0xD5},
+        {"psubusb",0xD8},{"psubusw",0xD9},{"pminub",0xDA},{"pand",0xDB},
+        {"paddusb",0xDC},{"paddusw",0xDD},{"pmaxub",0xDE},{"pandn",0xDF},
+        {"pavgb",0xE0},{"psraw",0xE1},{"psrad",0xE2},{"pavgw",0xE3},
+        {"pmulhuw",0xE4},{"pmulhw",0xE5},{"psubsb",0xE8},{"psubsw",0xE9},
+        {"pminsw",0xEA},{"por",0xEB},{"paddsb",0xEC},{"paddsw",0xED},
+        {"pmaxsw",0xEE},{"pxor",0xEF},{"psllw",0xF1},{"pslld",0xF2},
+        {"psllq",0xF3},{"pmuludq",0xF4},{"pmaddwd",0xF5},{"psadbw",0xF6},
+        {"psubb",0xF8},{"psubw",0xF9},{"psubd",0xFA},{"psubq",0xFB},
+        {"paddb",0xFC},{"paddw",0xFD},{"paddd",0xFE}
+    };
+    const U64 values[][2] = {
+        {0xFEDCBA9876543210ULL, 0x0123456789ABCDEFULL},
+        {0x80807FFF00FF0102ULL, 0x7F800180FF010203ULL},
+        {0, 0},
+        {0xFFFFFFFFFFFFFFFFULL, 1},
+        {0x8000800080008000ULL, 0x7FFF7FFF7FFF7FFFULL}
+    };
+    for (const auto& op : packedOps)
+        for (int sample = 0; sample < 5; sample++)
+            for (int memorySource = 0; memorySource < 2; memorySource++)
+                addBinary(op.name, op.opcode, memorySource != 0,
+                          values[sample][0], values[sample][1], " edge" + std::to_string(sample));
+
+    auto addShuffle = [&](const char* form, bool memorySource, bool ripRelative) {
+        TestCase tc; tc.set = "mmx"; tc.name = "pshufw"; tc.form = form;
+        tc.code = {0x0F,0x6F,0x03};
+        if (ripRelative) {
+            tc.code.insert(tc.code.end(), {0x0F,0x70,0x05,0x02,0,0,0,0x1B,
+                                           0xEB,0x08});
+            const U64 inlineSource = 0x0605040302010000ULL;
+            const U8* p = reinterpret_cast<const U8*>(&inlineSource);
+            tc.code.insert(tc.code.end(), p, p + sizeof(inlineSource));
+        } else if (memorySource) {
+            tc.code.insert(tc.code.end(), {0x0F,0x70,0x43,0x08,0x1B});
+        } else {
+            tc.code.insert(tc.code.end(), {0x0F,0x6F,0x4B,0x08,
+                                           0x0F,0x70,0xC1,0x1B});
+        }
+        tc.code.insert(tc.code.end(), {0x0F,0x7F,0x03});
+        initRegs(tc, 0, MEM_SCRATCH);
+        tc.checkMem = true; tc.memLen = 8;
+        memcpy(tc.memInit, &dst, sizeof(dst));
+        memcpy(tc.memInit + 8, &src, sizeof(src));
+        out.push_back(std::move(tc));
+    };
+    addShuffle("mm,mm,imm8", false, false);
+    addShuffle("mm,m64,imm8", true, false);
+    addShuffle("mm,[rip+disp32],imm8", true, true);
+
+    for (int opcode : {0x71, 0x72, 0x73}) {
+        int width = opcode == 0x71 ? 16 : opcode == 0x72 ? 32 : 64;
+        std::vector<int> exts = opcode == 0x73 ? std::vector<int>{2,6} : std::vector<int>{2,4,6};
+        for (int ext : exts) {
+            TestCase tc; tc.set = "mmx"; tc.name = "shift-imm";
+            tc.form = "group /" + std::to_string(ext) + " width" + std::to_string(width);
+            tc.code = {0x0F,0x6F,0x03, 0x0F,(U8)opcode,
+                       (U8)(0xC0 | (ext << 3)),(U8)(width / 4), 0x0F,0x7F,0x03};
+            initRegs(tc, 0, MEM_SCRATCH); tc.checkMem = true; tc.memLen = 8;
+            U64 initial = 0x80017FFF00FF0102ULL;
+            memcpy(tc.memInit, &initial, sizeof(initial));
+            out.push_back(std::move(tc));
+        }
+    }
+
+    auto addMmxImmediate = [&](const char* name, bool memorySource, bool ripSource) {
+        TestCase tc; tc.set = "mmx"; tc.name = name;
+        tc.form = ripSource ? "mm,[rip+disp32],imm8" :
+                  memorySource ? "mm,m16,imm8" : "mm,mm,imm8";
+        tc.code = {0x0F,0x6F,0x03};
+        if (ripSource) {
+            tc.code.insert(tc.code.end(), {0x0F,0xC4,0x05,0x02,0,0,0,0x05,
+                                           0xEB,0x02,0x00,0x80});
+        } else if (memorySource) {
+            tc.code.insert(tc.code.end(), {0x0F,0xC4,0x43,0x08,0x05});
+        } else {
+            tc.code.insert(tc.code.end(), {0x0F,0x6F,0x4B,0x08,0x0F,0xC4,0xC1,0x05});
+        }
+        tc.code.insert(tc.code.end(), {0x0F,0x7F,0x03});
+        initRegs(tc, 0, MEM_SCRATCH); tc.checkMem = true; tc.memLen = 8;
+        U64 initial = 0xFEDCBA9876543210ULL, src = 0x0123456789ABCDEFULL;
+        memcpy(tc.memInit, &initial, 8); memcpy(tc.memInit + 8, &src, 8);
+        out.push_back(std::move(tc));
+    };
+    addMmxImmediate("pinsrw", false, false);
+    addMmxImmediate("pinsrw", true, false);
+    addMmxImmediate("pinsrw", true, true);
+
+    auto addMmxExtract = [&](const char* name, U8 opcode, U8 imm) {
+        TestCase tc; tc.set = "mmx"; tc.name = name; tc.form = "mm,imm8";
+        tc.code = {0x0F,0x6F,0x03,0x0F,opcode,0xC0,imm,0x89,0x43,0x10};
+        initRegs(tc, 0, MEM_SCRATCH); tc.checkMem = true; tc.memLen = 20;
+        U64 initial = 0xFEDCBA9876543210ULL;
+        memcpy(tc.memInit, &initial, 8);
+        out.push_back(std::move(tc));
+    };
+    addMmxExtract("pextrw", 0xC5, 2);
+    {
+        TestCase tc; tc.set = "mmx"; tc.name = "pmovmskb"; tc.form = "r32,mm";
+        tc.code = {0x0F,0x6F,0x03,0x0F,0xD7,0xC0,0x89,0x43,0x10};
+        initRegs(tc, 0, MEM_SCRATCH); tc.checkMem = true; tc.memLen = 20;
+        U64 initial = 0x80FF017F80010203ULL; memcpy(tc.memInit, &initial, 8);
+        out.push_back(std::move(tc));
+    }
+
+    auto addMove = [&](const char* name, bool toMmx, bool wide) {
+        TestCase tc; tc.set = "mmx"; tc.name = name; tc.form = wide ? "r64/mm" : "r32/mm";
+        if (toMmx) {
+            if (wide) tc.code = {0x48,0xB8,0x88,0x77,0x66,0x55,0x44,0x33,0x22,0x11,
+                                 0x48,0x0F,0x6E,0xC0,0x48,0x0F,0x7E,0x43,0x10};
+            else tc.code = {0xB8,0x88,0x77,0x66,0x55,0x0F,0x6E,0xC0,0x0F,0x7E,0x43,0x10};
+        } else {
+            tc.code = {0x0F,0x6F,0x03,0x0F,0x7F,0x43,0x10};
+        }
+        initRegs(tc, 0, MEM_SCRATCH); tc.checkMem = true; tc.memLen = 24;
+        U64 initial = 0x0123456789ABCDEFULL; memcpy(tc.memInit, &initial, 8);
+        out.push_back(std::move(tc));
+    };
+    addMove("movd-gp-mmx", true, false);
+    addMove("movq-gp-mmx", true, true);
+    addMove("movq-mm-mem", false, true);
+    {
+        TestCase tc; tc.set = "mmx"; tc.name = "movd-mem-mmx"; tc.form = "m32,mm";
+        tc.code = {0x0F,0x6E,0x43,0x08,0x0F,0x7F,0x03};
+        initRegs(tc, 0, MEM_SCRATCH); tc.checkMem = true; tc.memLen = 16;
+        U32 input = 0x89ABCDEFU; memcpy(tc.memInit + 8, &input, 4);
+        out.push_back(std::move(tc));
+    }
+    {
+        TestCase tc; tc.set = "mmx"; tc.name = "movd-mmx-mem"; tc.form = "mm,m32";
+        tc.code = {0x0F,0x6F,0x43,0x08,0x0F,0x7E,0x03};
+        initRegs(tc, 0, MEM_SCRATCH); tc.checkMem = true; tc.memLen = 8;
+        U64 input = 0xFEDCBA9876543210ULL; memcpy(tc.memInit + 8, &input, 8);
+        out.push_back(std::move(tc));
+    }
+    {
+        TestCase tc; tc.set = "mmx"; tc.name = "movd-mmx-gp"; tc.form = "mm,r32";
+        tc.code = {0x0F,0x6F,0x43,0x08,0x0F,0x7E,0xC0,0x89,0x43,0x10};
+        initRegs(tc, 0, MEM_SCRATCH); tc.checkMem = true; tc.memLen = 20;
+        U64 input = 0xFEDCBA9876543210ULL; memcpy(tc.memInit + 8, &input, 8);
+        out.push_back(std::move(tc));
+    }
+    {
+        TestCase tc; tc.set = "mmx"; tc.name = "movq-mm-mm"; tc.form = "mm,mm";
+        tc.code = {0x0F,0x6F,0x4B,0x08,0x0F,0x6F,0xC1,0x0F,0x7F,0xC0,
+                   0x0F,0x7F,0x03};
+        initRegs(tc, 0, MEM_SCRATCH); tc.checkMem = true; tc.memLen = 8;
+        U64 input = 0xFEDCBA9876543210ULL; memcpy(tc.memInit + 8, &input, 8);
+        out.push_back(std::move(tc));
+    }
+
+    auto addMmxSpecial = [&](const char* name, std::vector<U8> body,
+                             const U8* source, size_t sourceSize, int memLen) {
+        TestCase tc; tc.set = "mmx"; tc.name = name; tc.form = "memory/register";
+        tc.code = std::move(body); initRegs(tc, 0, MEM_SCRATCH);
+        tc.checkMem = true; tc.memLen = memLen;
+        if (source) memcpy(tc.memInit + 16, source, sourceSize);
+        out.push_back(std::move(tc));
+    };
+    U64 mmxValue = 0x80017FFF00FF0102ULL;
+    {
+        std::vector<U8> body = {0x0F,0x6F,0x43,0x10,0x0F,0xE7,0x03};
+        addMmxSpecial("movntq", body, (const U8*)&mmxValue, 8, 24);
+    }
+    {
+        TestCase tc; tc.set = "mmx"; tc.name = "maskmovq"; tc.form = "mm,mm,[rdi]";
+        tc.code = {0x48,0x89,0xDF,0x0F,0x6F,0x43,0x10,0x0F,0x6F,0x4B,0x18,
+                   0x0F,0xF7,0xC1};
+        initRegs(tc, 0, MEM_SCRATCH); tc.skipRsiRdi = true; tc.checkMem = true; tc.memLen = 32;
+        U64 data = 0x8877665544332211ULL, mask = 0x80FF017F80010203ULL;
+        memcpy(tc.memInit + 16, &data, 8); memcpy(tc.memInit + 24, &mask, 8);
+        out.push_back(std::move(tc));
+    }
+
+    auto addMmxConversion = [&](const char* name, bool toXmm, bool useDouble,
+                                bool truncate, bool memorySource, int sample) {
+        TestCase tc; tc.set = "mmx"; tc.name = name;
+        tc.form = std::string(memorySource ? "memory-source" : "register-source") +
+                  (useDouble ? "-pd" : "-ps") + "-edge" + std::to_string(sample);
+        const U8* fp = nullptr; size_t fpSize = 0;
+        U64 mmSource = sample == 1 ? 0 : sample == 2 ? 0x800000007FFFFFFFULL
+                                                      : 0xFFFFFFFFFFFFFFFEULL;
+        if (useDouble) {
+            static const U64 doubles[][2] = {
+                {0x3FFC000000000000ULL,0xC004000000000000ULL}, // 1.75, -2.5
+                {0x7FF8000000000000ULL,0x7FF0000000000000ULL}, // NaN, +Inf
+                {0xFFF0000000000000ULL,0x43E0000000000000ULL}, // -Inf, 2^63
+                {0,0x8000000000000000ULL}                      // +0, -0
+            };
+            fp = (const U8*)doubles[sample]; fpSize = 16;
+        } else {
+            static const U32 singles[][2] = {
+                {0x3FE00000U,0xC0200000U}, // 1.75, -2.5
+                {0x7FC00000U,0x7F800000U}, // NaN, +Inf
+                {0xFF800000U,0x4F000000U}, // -Inf, 2^31
+                {0,0x80000000U}            // +0, -0
+            };
+            fp = (const U8*)singles[sample]; fpSize = 8;
+        }
+        if (toXmm) {
+            if (!memorySource) tc.code = {0x0F,0x6F,0x4B,0x20}; // mm1 <- [rbx+32]
+            if (!useDouble) tc.code.insert(tc.code.end(), {0x66,0x0F,0xEF,0xC0});
+            if (useDouble) tc.code.insert(tc.code.end(), {0x66,0x0F,0x2A,
+                                                           (U8)(memorySource ? 0x43 : 0xC1)});
+            else tc.code.insert(tc.code.end(), {0x0F,0x2A,
+                                                  (U8)(memorySource ? 0x43 : 0xC1)});
+            if (memorySource) tc.code.push_back(0x20);
+            if (useDouble) tc.code.insert(tc.code.end(), {0x66,0x0F,0x11,0x03});
+            else tc.code.insert(tc.code.end(), {0x0F,0x11,0x03});
+        } else {
+            U8 op = truncate ? 0x2C : 0x2D;
+            if (!memorySource) {
+                if (useDouble) tc.code.insert(tc.code.end(), {0x66,0x0F,0x10,0x4B,0x10});
+                else tc.code.insert(tc.code.end(), {0x0F,0x10,0x4B,0x10});
+            }
+            if (useDouble) tc.code.insert(tc.code.end(), {0x66,0x0F,op,
+                                                           (U8)(memorySource ? 0x43 : 0xC1)});
+            else tc.code.insert(tc.code.end(), {0x0F,op,(U8)(memorySource ? 0x43 : 0xC1)});
+            if (memorySource) tc.code.push_back(0x10);
+            tc.code.insert(tc.code.end(), {0x0F,0x7F,0x03});
+        }
+        initRegs(tc, 0, MEM_SCRATCH); tc.checkMem = true; tc.memLen = 32;
+        if (toXmm) {
+            memcpy(tc.memInit + 32, &mmSource, 8);
+        } else {
+            memcpy(tc.memInit + 16, fp, fpSize);
+        }
+        out.push_back(std::move(tc));
+    };
+    for (int sample = 0; sample < 4; sample++) {
+        addMmxConversion("cvtpi2ps", true, false, false, false, sample);
+        addMmxConversion("cvtpi2ps", true, false, false, true, sample);
+        addMmxConversion("cvtpi2pd", true, true, false, false, sample);
+        addMmxConversion("cvtpi2pd", true, true, false, true, sample);
+        addMmxConversion("cvtps2pi", false, false, false, false, sample);
+        addMmxConversion("cvttps2pi", false, false, true, false, sample);
+        addMmxConversion("cvtps2pi", false, false, false, true, sample);
+        addMmxConversion("cvttps2pi", false, false, true, true, sample);
+        addMmxConversion("cvtpd2pi", false, true, false, false, sample);
+        addMmxConversion("cvttpd2pi", false, true, true, false, sample);
+        addMmxConversion("cvtpd2pi", false, true, false, true, sample);
+        addMmxConversion("cvttpd2pi", false, true, true, true, sample);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SSE test builders. Pattern: movups xmm0,[rbx]; movups xmm1,[rbx+16];
 // <op> xmm0,xmm1; movups [rbx],xmm0. 16 bytes at MEM_SCRATCH compared.
 // ---------------------------------------------------------------------------
@@ -2218,6 +2494,7 @@ int main(int argc, char** argv) {
     buildPackedConversionCases(cases);
     buildFpuCases(cases);
     buildRequestedX87Cases(cases);
+    buildMmxCases(cases);
     buildSseCases(cases);
     buildSse2ExtraCases(cases);
     buildCpuidCases(cases);
