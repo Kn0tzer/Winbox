@@ -37,6 +37,7 @@ let startedAt = 0;
 let tClick = null;
 let tMapped = null;
 let mappedAt = null;
+let gameplayStartedAt = null;
 let sampling = false;
 let samplerPromise = null;
 let lastWasmMetricLine = null;
@@ -67,6 +68,28 @@ try {
     ],
   });
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  await page.addInitScript(() => {
+    globalThis.__bwAudioOutputMetrics ||= [];
+    if (window === window.top) {
+      window.addEventListener('message', event => {
+        if (event.origin !== location.origin || event.data?.bw64AudioMetric?.type !== 'bw-audio-metrics') return;
+        globalThis.__bwAudioOutputMetrics.push({ ...event.data.bw64AudioMetric, observedAtMs: Date.now() });
+      });
+      return;
+    }
+    const NativeWorkletNode = globalThis.AudioWorkletNode;
+    if (!NativeWorkletNode) return;
+    globalThis.AudioWorkletNode = class extends NativeWorkletNode {
+      constructor(context, name, options) {
+        super(context, name, options);
+        this.port.addEventListener('message', event => {
+          if (event.data?.type === 'bw-audio-metrics')
+            parent.postMessage({ bw64AudioMetric: event.data }, location.origin);
+        });
+        this.port.start();
+      }
+    };
+  });
   startedAt = Date.now();
   page.on('console', message => {
     const text = message.text();
@@ -141,6 +164,7 @@ try {
     clickToMappedSeconds: Number((tMapped - tClick).toFixed(3)),
     screenshots, pageErrorCount: pageErrors.length, consoleErrorCount: countConsoleErrors(),
     lastMetricsSnapshot, lastJitStats, stage: 'mapped', pixelMethod, httpErrorCount: httpErrors.length,
+    gameplayStartedAtMs: gameplayStartedAt,
   };
   await writeFile(join(outDir, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
   console.log(JSON.stringify({ demo, jit: Number(jit), stage: 'mapped', clickToMappedSeconds: summary.clickToMappedSeconds,
@@ -247,10 +271,16 @@ async function sampleMetrics() {
   }).catch(() => null);
   let jitStats = null;
   let jitStatsError = null;
+  let audioRuntime = null;
   try {
     const frameHandle = await page.locator('#display iframe').elementHandle();
     const runtimeFrame = await frameHandle?.contentFrame();
     if (!runtimeFrame) throw new Error('runtime iframe is not available');
+    audioRuntime = await runtimeFrame.evaluate(() => ({
+      crossOriginIsolated: globalThis.crossOriginIsolated,
+      worklet: globalThis.Module?.SDL2?.bwAudioWorklet === true,
+      contextState: globalThis.Module?.SDL2?.audioContext?.state || null,
+    }));
     jitStats = await runtimeFrame.evaluate(() => {
       if (typeof Module === 'undefined' || typeof Module.ccall !== 'function')
         throw new Error('runtime Module export is not available');
@@ -264,6 +294,9 @@ async function sampleMetrics() {
   const wasmSnapshot = parseWasmMetricLine(wasmLine);
   const record = {
     atSeconds: elapsedSeconds(),
+    gameplayStartedAtMs: gameplayStartedAt,
+    audioOutputMetrics: await page.evaluate(() => globalThis.__bwAudioOutputMetrics?.splice(0) || []),
+    audioRuntime,
     frameMetricsSource: {
       wasm: 'runtime iframe console message emitted by Module.print; launcher app feeds bw64: METRICS lines',
       pageTier: 'launcher page window.bwVkTier.metrics()',
@@ -330,6 +363,7 @@ async function runInputScript() {
   } else if (demo === 'doom') {
     for (let i = 1; i <= 4; i++) await inputAction(`enter-${i}`, () => page.keyboard.press('Enter'));
     await page.waitForTimeout(5000);
+    gameplayStartedAt = Date.now();
     await inputAction('forward', () => holdKey('ArrowUp', 2000));
     await inputAction('control', () => page.keyboard.press('Control'));
     await inputAction('turn-left', () => holdKey('ArrowLeft', 1000));

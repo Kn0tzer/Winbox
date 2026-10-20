@@ -5,6 +5,12 @@ import { safePath, checkEntries, folderLimits } from '../files.mjs';
 import { installPresentation } from '../presentation.mjs';
 import { loadDependencies } from '../dependencies.mjs';
 const query = new URLSearchParams(location.search);
+const runtimeReleaseId = '__RUNTIME_VERSION__';
+window.bwAudioWorkletUrl = () => {
+  const url = new URL('../assets/audio-output-worklet.js', location.href);
+  url.searchParams.set('v', runtimeReleaseId);
+  return url.href;
+};
 const id = query.get('installation');
 // Lazy game payload (M8): a game zip mounted on-demand via bw64url/HTTP Range,
 // bypassing IndexedDB, the 768 MiB checkEntries cap, and the MEMFS copy.

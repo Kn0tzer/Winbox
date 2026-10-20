@@ -249,48 +249,86 @@ static void bwAudioEnsureBridge(Uint32 sourceRate, Uint32 sourceChannels) {
 		var outputChannels = $4;
 		var buffer = HEAPF32.buffer;
 		var sameConfig = SDL2.bwNodeCtx === ctx && SDL2.bwNodeChannels === outputChannels && SDL2.bwNodeRate === $5;
-		if (SDL2.bwNode && sameConfig) return;
+		if ((SDL2.bwNode || SDL2.bwNodePending) && sameConfig) return;
 		if (SDL2.bwNode) { try { SDL2.bwNode.disconnect(); } catch (e) {} }
-		var ring = new Float32Array(buffer, $0, $3 * outputChannels);
-		var wIdx = new Uint32Array(buffer, $1, 1);
-		var rIdx = new Uint32Array(buffer, $2, 1);
-		var mask = $3 - 1;
-		var step = $5 / ctx.sampleRate;
-		var phase = 0;
-		var node = ctx.createScriptProcessor(4096, 0, outputChannels);
-		node.onaudioprocess = function(e) {
-			var outputs = [];
-			for (var c = 0; c < outputChannels; c++) {
-				outputs[c] = e.outputBuffer.getChannelData(c);
-				outputs[c].fill(0);
-			}
-			var w = Atomics.load(wIdx, 0) >>> 0;
-			var r = Atomics.load(rIdx, 0) >>> 0;
-			var used = (w - r) >>> 0;
-			if (used > $3) used = $3;
-			for (var i = 0; i < outputs[0].length; i++) {
-				var base = Math.floor(phase);
-				if (base >= used) { phase += step; continue; }
-				var next = base + 1 < used ? base + 1 : base;
-				var fraction = phase - base;
-				for (var c = 0; c < outputChannels; c++) {
-					var a = ring[((r + base) & mask) * outputChannels + c];
-					var b = ring[((r + next) & mask) * outputChannels + c];
-					outputs[c][i] = a + (b - a) * fraction;
-				}
-				phase += step;
-			}
-			var consumed = Math.floor(phase);
-			if (consumed > used) { consumed = used; phase = 0; }
-			else phase -= consumed;
-			Atomics.store(rIdx, 0, (r + consumed) >>> 0);
-		};
-		node.connect(ctx.destination);
-		SDL2.bwNode = node;
+		var generation = (SDL2.bwGeneration || 0) + 1;
+		SDL2.bwGeneration = generation;
+		SDL2.bwNode = null;
+		SDL2.bwNodePending = false;
 		SDL2.bwNodeCtx = ctx;
 		SDL2.bwNodeChannels = outputChannels;
 		SDL2.bwNodeRate = $5;
-		SDL2.bwAudioWorklet = false;
+		if (ctx.audioWorklet && typeof AudioWorkletNode === 'function') {
+			if (typeof SharedArrayBuffer !== 'function' || !(buffer instanceof SharedArrayBuffer)) {
+				console.error('AudioWorklet needs a shared WebAssembly memory buffer.');
+				return;
+			}
+			var moduleUrl = window.bwAudioWorkletUrl ? window.bwAudioWorkletUrl() : new URL('../assets/audio-output-worklet.js', location.href).href;
+			var options = {};
+			options.numberOfInputs = 0;
+			options.numberOfOutputs = 1;
+			options.outputChannelCount = [outputChannels];
+			options.channelCount = outputChannels;
+			options.channelCountMode = 'explicit';
+			options.processorOptions = {};
+			options.processorOptions.buffer = buffer;
+			options.processorOptions.ringOffset = $0;
+			options.processorOptions.writeOffset = $1;
+			options.processorOptions.readOffset = $2;
+			options.processorOptions.ringFrames = $3;
+			options.processorOptions.channels = outputChannels;
+			options.processorOptions.sourceRate = $5;
+			SDL2.bwNodePending = true;
+			ctx.audioWorklet.addModule(moduleUrl).then(function() {
+				if (SDL2.bwGeneration !== generation) return;
+				var node = new AudioWorkletNode(ctx, 'bw-audio-output', options);
+				node.connect(ctx.destination);
+				SDL2.bwNode = node;
+				SDL2.bwNodePending = false;
+				SDL2.bwAudioWorklet = true;
+			}).catch(function(error) {
+				if (SDL2.bwGeneration === generation) SDL2.bwNodePending = false;
+				console.error('AudioWorklet failed to load:', error);
+			});
+		} else {
+			var ring = new Float32Array(buffer, $0, $3 * outputChannels);
+			var wIdx = new Uint32Array(buffer, $1, 1);
+			var rIdx = new Uint32Array(buffer, $2, 1);
+			var mask = $3 - 1;
+			var step = $5 / ctx.sampleRate;
+			var phase = 0;
+			var node = ctx.createScriptProcessor(4096, 0, outputChannels);
+			node.onaudioprocess = function(e) {
+				var outputs = [];
+				for (var c = 0; c < outputChannels; c++) {
+					outputs[c] = e.outputBuffer.getChannelData(c);
+					outputs[c].fill(0);
+				}
+				var w = Atomics.load(wIdx, 0) >>> 0;
+				var r = Atomics.load(rIdx, 0) >>> 0;
+				var used = (w - r) >>> 0;
+				if (used > $3) used = $3;
+				for (var i = 0; i < outputs[0].length; i++) {
+					var base = Math.floor(phase);
+					if (base >= used) { phase += step; continue; }
+					var next = base + 1 < used ? base + 1 : base;
+					var fraction = phase - base;
+					for (var c = 0; c < outputChannels; c++) {
+						var a = ring[((r + base) & mask) * outputChannels + c];
+						var b = ring[((r + next) & mask) * outputChannels + c];
+						outputs[c][i] = a + (b - a) * fraction;
+					}
+					phase += step;
+				}
+				var consumed = Math.floor(phase);
+				if (consumed > used) { consumed = used; phase = 0; }
+				else phase -= consumed;
+				Atomics.store(rIdx, 0, (r + consumed) >>> 0);
+			};
+			node.connect(ctx.destination);
+			SDL2.bwNode = node;
+			SDL2.bwAudioWorklet = false;
+		}
 	}, bwRing, (int)&bwRingWrite, (int)&bwRingRead, BW_RING_FRAMES, bwRingChannels, bwSourceRate);
 	bwBridgeArmed = true;
 }

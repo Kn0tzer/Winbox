@@ -39,7 +39,7 @@ export default class AudioToneTest extends ProbeTest {
   constructor() { super({ tag: 'audio-tone', timeoutMs: 1800000 }); }
   async run({ page }) {
     await page.addInitScript(() => {
-      globalThis.__audioCapture = { contexts: [], channels: [], outputChannels: 0,
+      globalThis.__audioCapture = { contexts: [], channels: [], outputChannels: 0, worklets: 0,
         crossOriginIsolated: globalThis.crossOriginIsolated };
       const capture = buffer => {
         const count = buffer.numberOfChannels;
@@ -77,7 +77,24 @@ export default class AudioToneTest extends ProbeTest {
           };
         }
       };
-
+      const RealWorkletNode = globalThis.AudioWorkletNode;
+      if (RealWorkletNode) {
+        globalThis.AudioWorkletNode = class extends RealWorkletNode {
+          constructor(context, name, options) {
+            super(context, name, options);
+            globalThis.__audioCapture.worklets++;
+            const channels = options.outputChannelCount?.[0] || options.channelCount || 2;
+            const tap = context.__testCreateScriptProcessor(1024, channels, 1);
+            const silent = context.createGain();
+            silent.gain.value = 0;
+            tap.onaudioprocess = event => capture(event.inputBuffer);
+            this.connect(tap);
+            tap.connect(silent);
+            silent.connect(context.destination);
+            globalThis.__audioCapture.outputChannels = channels;
+          }
+        };
+      }
     });
     await this.bootGuest(page, { arch: 'x64' });
     await page.locator('#canvas').click({ position: { x: 30, y: 30 } });
@@ -103,6 +120,7 @@ export default class AudioToneTest extends ProbeTest {
       const result = await page.evaluate(() => ({
         sampleRate: globalThis.__audioCapture.contexts[0]?.sampleRate || 48000,
         outputChannels: globalThis.__audioCapture.outputChannels,
+        worklets: globalThis.__audioCapture.worklets,
         crossOriginIsolated: globalThis.__audioCapture.crossOriginIsolated,
         channels: globalThis.__audioCapture.channels.map(samples => samples.slice()),
       }));
@@ -110,6 +128,8 @@ export default class AudioToneTest extends ProbeTest {
       const rightHz = frequency(result.channels[1], result.sampleRate);
       check(result.outputChannels === 2, `${arch} DSP output must expose two channels, got ${result.outputChannels}`);
       check(result.crossOriginIsolated === true, 'Audio runtime must be cross-origin isolated');
+      if (process.env.BW_EXPECT_AUDIO_WORKLET !== '0')
+        check(result.worklets > 0, 'AudioWorkletNode must carry the shared audio ring');
       check(leftHz >= 418 && leftHz <= 462, `${arch} left channel frequency ${leftHz}Hz is outside 440Hz ±5%`);
       check(rightHz >= 418 && rightHz <= 462, `${arch} right channel frequency ${rightHz}Hz is outside 440Hz ±5%`);
       await import('node:fs/promises').then(fs => fs.writeFile(`${this.dir}/audio-${arch}.json`, JSON.stringify({
