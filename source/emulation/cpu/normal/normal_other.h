@@ -176,12 +176,12 @@ void OPCALL normal_retn32(CPU* cpu, DecodedOp* op) {
 }
 void OPCALL normal_invalid(CPU* cpu, DecodedOp* op) {
     START_OP(cpu, op);
-    cpu->thread->signalIllegalInstruction(5);
+    cpu->thread->signalIllegalInstruction(2);
     NEXT_DONE();
 }
 void OPCALL normal_ud2(CPU* cpu, DecodedOp* op) {
     START_OP(cpu, op);
-    cpu->thread->signalIllegalInstruction(5);
+    cpu->thread->signalIllegalInstruction(2);
     NEXT_DONE();
 }
 void OPCALL normal_int80(CPU* cpu, DecodedOp* op) {
@@ -224,7 +224,7 @@ void OPCALL normal_int3(CPU* cpu, DecodedOp* op) {
 }
 void OPCALL normal_intIb(CPU* cpu, DecodedOp* op) {
     START_OP(cpu, op);
-    cpu->thread->signalIllegalInstruction(5);// 5=ILL_PRVOPC  // :TODO: just a guess
+    cpu->thread->signalIllegalInstruction(5);
     NEXT_DONE();
 }
 void OPCALL normal_xlat(CPU* cpu, DecodedOp* op) {
@@ -238,7 +238,8 @@ void OPCALL normal_xlat(CPU* cpu, DecodedOp* op) {
 }
 void OPCALL normal_hlt(CPU* cpu, DecodedOp* op) {
     START_OP(cpu, op);
-    kpanic("Hlt");
+    cpu->thread->signalIllegalInstruction(5);
+    NEXT_DONE();
 }
 void OPCALL normal_cmc(CPU* cpu, DecodedOp* op) {
     START_OP(cpu, op);
@@ -569,6 +570,16 @@ void OPCALL normal_larr16r16(CPU* cpu, DecodedOp* op) {
 void OPCALL normal_larr16e16(CPU* cpu, DecodedOp* op) {
     START_OP(cpu, op);
     cpu->reg[op->reg].u16 = cpu->lar(cpu->memory->readw(eaa(cpu, op)), cpu->reg[op->reg].u16);
+    NEXT();
+}
+void OPCALL normal_larr32r32(CPU* cpu, DecodedOp* op) {
+    START_OP(cpu, op);
+    cpu->reg[op->reg].u32 = cpu->lar(cpu->reg[op->rm].u16, cpu->reg[op->reg].u32);
+    NEXT();
+}
+void OPCALL normal_larr32e32(CPU* cpu, DecodedOp* op) {
+    START_OP(cpu, op);
+    cpu->reg[op->reg].u32 = cpu->lar(cpu->memory->readw(eaa(cpu, op)), cpu->reg[op->reg].u32);
     NEXT();
 }
 void OPCALL normal_lslr16r16(CPU* cpu, DecodedOp* op) {

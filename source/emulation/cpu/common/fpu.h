@@ -131,6 +131,7 @@ public:
     void startMMX();
 
     MMX_reg* getMMX(U8 r) {
+        getReg(r);
         return (MMX_reg*)&regs[r].signif;
     }
     void FINIT();

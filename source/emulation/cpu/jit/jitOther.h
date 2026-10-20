@@ -506,6 +506,12 @@ void Jit::dynamic_larr16r16(DecodedOp* op) {
 void Jit::dynamic_larr16e16(DecodedOp* op) {
     emulateSingleOp();
 }
+void Jit::dynamic_larr32r32(DecodedOp* op) {
+    emulateSingleOp();
+}
+void Jit::dynamic_larr32e32(DecodedOp* op) {
+    emulateSingleOp();
+}
 void Jit::dynamic_lslr16r16(DecodedOp* op) {
     emulateSingleOp();
 }

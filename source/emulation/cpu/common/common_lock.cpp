@@ -29,6 +29,31 @@ static bool commonLockHostAddressIsAligned(CPU* cpu, U32 address) {
     return hostAddress && ((reinterpret_cast<uintptr_t>(hostAddress) & (alignof(T) - 1)) == 0);
 }
 
+static void lockFaultingAccess(CPU* cpu, U32 address, U32 size) {
+    switch (size) {
+    case 1: {
+        U8 value = cpu->memory->readb(address);
+        cpu->memory->writeb(address, value);
+        break;
+    }
+    case 2: {
+        U16 value = cpu->memory->readw(address);
+        cpu->memory->writew(address, value);
+        break;
+    }
+    case 4: {
+        U32 value = cpu->memory->readd(address);
+        cpu->memory->writed(address, value);
+        break;
+    }
+    case 8: {
+        U64 value = cpu->memory->readq(address);
+        cpu->memory->writeq(address, value);
+        break;
+    }
+    }
+}
+
 /*
     U64 value1 = ((U64)EDX) << 32 | EAX;
     U64 value2 = cpu->memory->readq(address);
@@ -65,6 +90,14 @@ void common_cmpxchg8b_lock(CPU* cpu, U32 address) {
         cpu->fillFlags();
 
         LockData64* p = (LockData64*)cpu->memory->getRamPtr(address, 8, true);
+
+        if (!p) {
+
+            lockFaultingAccess(cpu, address, 8);
+
+            return;
+
+        }
         std::atomic_ref<U64> mem(p->data);
 
         if (mem.compare_exchange_strong(expected, value)) {
@@ -102,6 +135,10 @@ void common_cmpxchge32r32_lock(CPU* cpu, U32 address, U32 srcReg) {
         }
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
         U32 expected = EAX;
         U32 desired = cpu->reg[srcReg].u32;
@@ -141,6 +178,10 @@ void common_cmpxchge16r16_lock(CPU* cpu, U32 address, U32 srcReg) {
         }
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
         U16 expected = AX;
         U16 desired = cpu->reg[srcReg].u16;
@@ -167,6 +208,10 @@ void common_cmpxchge16r16_lock(CPU* cpu, U32 address, U32 srcReg) {
 */
 void common_cmpxchge8r8_lock(CPU* cpu, U32 address, U32 srcReg) {
     LockData8* p = (LockData8*)cpu->memory->getRamPtr(address, 1, true);
+    if (!p) {
+        lockFaultingAccess(cpu, address, 1);
+        return;
+    }
     std::atomic_ref<U8> mem(p->data);
     U8 expected = AL;
     U8 desired = *cpu->reg8[srcReg];
@@ -195,6 +240,10 @@ void common_xchge32r32_lock(CPU* cpu, U32 address, U32 reg) {
         cpu->reg[reg].u32 = tmp;
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
         cpu->reg[reg].u32 = mem.exchange(cpu->reg[reg].u32);
     }
@@ -215,6 +264,10 @@ void common_xchge16r16_lock(CPU* cpu, U32 address, U32 reg) {
         cpu->reg[reg].u16 = tmp;
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
         cpu->reg[reg].u16 = mem.exchange(cpu->reg[reg].u16);
     }
@@ -228,6 +281,10 @@ void common_xchge16r16_lock(CPU* cpu, U32 address, U32 reg) {
 */
 void common_xchge8r8_lock(CPU* cpu, U32 address, U32 reg) {
     LockData8* p = (LockData8*)cpu->memory->getRamPtr(address, 1, true);
+    if (!p) {
+        lockFaultingAccess(cpu, address, 1);
+        return;
+    }
     std::atomic_ref<U8> mem(p->data);
     *cpu->reg8[reg] = mem.exchange(*cpu->reg8[reg]);
 }
@@ -251,6 +308,10 @@ void common_xaddr32e32_lock(CPU* cpu, U32 address, U32 reg) {
         cpu->memory->writed(address, cpu->result.u32);
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
         cpu->dst.u32 = mem.fetch_add(cpu->reg[reg].u32);
         cpu->result.u32 = cpu->dst.u32 + cpu->src.u32;
@@ -278,6 +339,10 @@ void common_xaddr16e16_lock(CPU* cpu, U32 address, U32 reg) {
         cpu->memory->writew(address, cpu->result.u16);
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
         cpu->dst.u16 = mem.fetch_add(cpu->reg[reg].u16);
         cpu->result.u16 = cpu->dst.u16 + cpu->src.u16;
@@ -297,6 +362,10 @@ void common_xaddr16e16_lock(CPU* cpu, U32 address, U32 reg) {
 */
 void common_xaddr8e8_lock(CPU* cpu, U32 address, U32 reg) {
     LockData8* p = (LockData8*)cpu->memory->getRamPtr(address, 1, true);
+    if (!p) {
+        lockFaultingAccess(cpu, address, 1);
+        return;
+    }
     std::atomic_ref<U8> mem(p->data);
     cpu->src.u8 = *cpu->reg8[reg];
     cpu->dst.u8 = mem.fetch_add(*cpu->reg8[reg]);
@@ -323,6 +392,10 @@ void common_adde32r32_lock(CPU* cpu, U32 address, U32 reg) {
         cpu->memory->writed(address, cpu->result.u32);
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
         cpu->dst.u32 = mem.fetch_add(cpu->src.u32);
         cpu->result.u32 = cpu->dst.u32 + cpu->src.u32;
@@ -348,6 +421,10 @@ void common_adde16r16_lock(CPU* cpu, U32 address, U32 reg) {
         cpu->memory->writew(address, cpu->result.u16);
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
         cpu->dst.u16 = mem.fetch_add(cpu->src.u16);
         cpu->result.u16 = cpu->dst.u16 + cpu->src.u16;
@@ -365,6 +442,10 @@ void common_adde16r16_lock(CPU* cpu, U32 address, U32 reg) {
 */
 void common_adde8r8_lock(CPU* cpu, U32 address, U32 reg) {
     LockData8* p = (LockData8*)cpu->memory->getRamPtr(address, 1, true);
+    if (!p) {
+        lockFaultingAccess(cpu, address, 1);
+        return;
+    }
     std::atomic_ref<U8> mem(p->data);
     cpu->src.u8 = *cpu->reg8[reg];
     cpu->dst.u8 = mem.fetch_add(cpu->src.u8);
@@ -390,6 +471,10 @@ void common_add32_mem_lock(CPU* cpu, U32 address, U32 value) {
         cpu->memory->writed(address, cpu->result.u32);
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
         cpu->dst.u32 = mem.fetch_add(cpu->src.u32);
         cpu->result.u32 = cpu->dst.u32 + cpu->src.u32;
@@ -415,6 +500,10 @@ void common_add16_mem_lock(CPU* cpu, U32 address, U32 value) {
         cpu->memory->writew(address, cpu->result.u16);
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
         cpu->dst.u16 = mem.fetch_add(cpu->src.u16);
         cpu->result.u16 = cpu->dst.u16 + cpu->src.u16;
@@ -432,6 +521,10 @@ void common_add16_mem_lock(CPU* cpu, U32 address, U32 value) {
 */
 void common_add8_mem_lock(CPU* cpu, U32 address, U32 value) {
     LockData8* p = (LockData8*)cpu->memory->getRamPtr(address, 1, true);
+    if (!p) {
+        lockFaultingAccess(cpu, address, 1);
+        return;
+    }
     std::atomic_ref<U8> mem(p->data);
     cpu->src.u8 = value;
     cpu->dst.u8 = mem.fetch_add(cpu->src.u8);
@@ -457,6 +550,10 @@ void common_sube32r32_lock(CPU* cpu, U32 address, U32 reg) {
         cpu->memory->writed(address, cpu->result.u32);
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
         cpu->dst.u32 = mem.fetch_sub(cpu->src.u32);
         cpu->result.u32 = cpu->dst.u32 - cpu->src.u32;
@@ -482,6 +579,10 @@ void common_sube16r16_lock(CPU* cpu, U32 address, U32 reg) {
         cpu->memory->writew(address, cpu->result.u16);
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
         cpu->dst.u16 = mem.fetch_sub(cpu->src.u16);
         cpu->result.u16 = cpu->dst.u16 - cpu->src.u16;
@@ -499,6 +600,10 @@ void common_sube16r16_lock(CPU* cpu, U32 address, U32 reg) {
 */
 void common_sube8r8_lock(CPU* cpu, U32 address, U32 reg) {
     LockData8* p = (LockData8*)cpu->memory->getRamPtr(address, 1, true);
+    if (!p) {
+        lockFaultingAccess(cpu, address, 1);
+        return;
+    }
     std::atomic_ref<U8> mem(p->data);
     cpu->src.u8 = *cpu->reg8[reg];
     cpu->dst.u8 = mem.fetch_sub(cpu->src.u8);
@@ -524,6 +629,10 @@ void common_sub32_mem_lock(CPU* cpu, U32 address, U32 imm) {
         cpu->memory->writed(address, cpu->result.u32);
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
         cpu->dst.u32 = mem.fetch_sub(cpu->src.u32);
         cpu->result.u32 = cpu->dst.u32 - cpu->src.u32;
@@ -549,6 +658,10 @@ void common_sub16_mem_lock(CPU* cpu, U32 address, U32 imm) {
         cpu->memory->writew(address, cpu->result.u16);
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
         cpu->dst.u16 = mem.fetch_sub(cpu->src.u16);
         cpu->result.u16 = cpu->dst.u16 - cpu->src.u16;
@@ -566,6 +679,10 @@ void common_sub16_mem_lock(CPU* cpu, U32 address, U32 imm) {
 */
 void common_sub8_mem_lock(CPU* cpu, U32 address, U32 imm) {
     LockData8* p = (LockData8*)cpu->memory->getRamPtr(address, 1, true);
+    if (!p) {
+        lockFaultingAccess(cpu, address, 1);
+        return;
+    }
     std::atomic_ref<U8> mem(p->data);
     cpu->src.u8 = imm;
     cpu->dst.u8 = mem.fetch_sub(cpu->src.u8);
@@ -591,6 +708,10 @@ void common_ore32r32_lock(CPU* cpu, U32 address, U32 reg) {
         cpu->memory->writed(address, cpu->result.u32);
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
         cpu->dst.u32 = mem.fetch_or(cpu->src.u32);
         cpu->result.u32 = cpu->dst.u32 | cpu->src.u32;
@@ -616,6 +737,10 @@ void common_ore16r16_lock(CPU* cpu, U32 address, U32 reg) {
         cpu->memory->writew(address, cpu->result.u16);
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
         cpu->dst.u16 = mem.fetch_or(cpu->src.u16);
         cpu->result.u16 = cpu->dst.u16 | cpu->src.u16;
@@ -633,6 +758,10 @@ void common_ore16r16_lock(CPU* cpu, U32 address, U32 reg) {
 */
 void common_ore8r8_lock(CPU* cpu, U32 address, U32 reg) {
     LockData8* p = (LockData8*)cpu->memory->getRamPtr(address, 1, true);
+    if (!p) {
+        lockFaultingAccess(cpu, address, 1);
+        return;
+    }
     std::atomic_ref<U8> mem(p->data);
     cpu->src.u8 = *cpu->reg8[reg];
     cpu->dst.u8 = mem.fetch_or(cpu->src.u8);
@@ -659,6 +788,10 @@ void common_or32_mem_lock(CPU* cpu, U32 address, U32 imm) {
         cpu->memory->writed(address, cpu->result.u32);
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
         cpu->dst.u32 = mem.fetch_or(cpu->src.u32);
         cpu->result.u32 = cpu->dst.u32 | cpu->src.u32;
@@ -684,6 +817,10 @@ void common_or16_mem_lock(CPU* cpu, U32 address, U32 imm) {
         cpu->memory->writew(address, cpu->result.u16);
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
         cpu->dst.u16 = mem.fetch_or(cpu->src.u16);
         cpu->result.u16 = cpu->dst.u16 | cpu->src.u16;
@@ -701,6 +838,10 @@ void common_or16_mem_lock(CPU* cpu, U32 address, U32 imm) {
 */
 void common_or8_mem_lock(CPU* cpu, U32 address, U32 imm) {
     LockData8* p = (LockData8*)cpu->memory->getRamPtr(address, 1, true);
+    if (!p) {
+        lockFaultingAccess(cpu, address, 1);
+        return;
+    }
     std::atomic_ref<U8> mem(p->data);
     cpu->src.u8 = imm;
     cpu->dst.u8 = mem.fetch_or(cpu->src.u8);
@@ -726,6 +867,10 @@ void common_ande32r32_lock(CPU* cpu, U32 address, U32 reg) {
         cpu->memory->writed(address, cpu->result.u32);
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
         cpu->dst.u32 = mem.fetch_and(cpu->src.u32);
         cpu->result.u32 = cpu->dst.u32 & cpu->src.u32;
@@ -751,6 +896,10 @@ void common_ande16r16_lock(CPU* cpu, U32 address, U32 reg) {
         cpu->memory->writew(address, cpu->result.u16);
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
         cpu->dst.u16 = mem.fetch_and(cpu->src.u16);
         cpu->result.u16 = cpu->dst.u16 & cpu->src.u16;
@@ -768,6 +917,10 @@ void common_ande16r16_lock(CPU* cpu, U32 address, U32 reg) {
 */
 void common_ande8r8_lock(CPU* cpu, U32 address, U32 reg) {
     LockData8* p = (LockData8*)cpu->memory->getRamPtr(address, 1, true);
+    if (!p) {
+        lockFaultingAccess(cpu, address, 1);
+        return;
+    }
     std::atomic_ref<U8> mem(p->data);
     cpu->src.u8 = *cpu->reg8[reg];
     cpu->dst.u8 = mem.fetch_and(cpu->src.u8);
@@ -794,6 +947,10 @@ void common_and32_mem_lock(CPU* cpu, U32 address, U32 imm) {
         cpu->memory->writed(address, cpu->result.u32);
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
         cpu->dst.u32 = mem.fetch_and(cpu->src.u32);
         cpu->result.u32 = cpu->dst.u32 & cpu->src.u32;
@@ -819,6 +976,10 @@ void common_and16_mem_lock(CPU* cpu, U32 address, U32 imm) {
         cpu->memory->writew(address, cpu->result.u16);
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
         cpu->dst.u16 = mem.fetch_and(cpu->src.u16);
         cpu->result.u16 = cpu->dst.u16 & cpu->src.u16;
@@ -836,6 +997,10 @@ void common_and16_mem_lock(CPU* cpu, U32 address, U32 imm) {
 */
 void common_and8_mem_lock(CPU* cpu, U32 address, U32 imm) {
     LockData8* p = (LockData8*)cpu->memory->getRamPtr(address, 1, true);
+    if (!p) {
+        lockFaultingAccess(cpu, address, 1);
+        return;
+    }
     std::atomic_ref<U8> mem(p->data);
     cpu->src.u8 = imm;
     cpu->dst.u8 = mem.fetch_and(cpu->src.u8);
@@ -861,6 +1026,10 @@ void common_xore32r32_lock(CPU* cpu, U32 address, U32 reg) {
         cpu->memory->writed(address, cpu->result.u32);
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
         cpu->dst.u32 = mem.fetch_xor(cpu->src.u32);
         cpu->result.u32 = cpu->dst.u32 ^ cpu->src.u32;
@@ -886,6 +1055,10 @@ void common_xore16r16_lock(CPU* cpu, U32 address, U32 reg) {
         cpu->memory->writew(address, cpu->result.u16);
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
         cpu->dst.u16 = mem.fetch_xor(cpu->src.u16);
         cpu->result.u16 = cpu->dst.u16 ^ cpu->src.u16;
@@ -903,6 +1076,10 @@ void common_xore16r16_lock(CPU* cpu, U32 address, U32 reg) {
 */
 void common_xore8r8_lock(CPU* cpu, U32 address, U32 reg) {
     LockData8* p = (LockData8*)cpu->memory->getRamPtr(address, 1, true);
+    if (!p) {
+        lockFaultingAccess(cpu, address, 1);
+        return;
+    }
     std::atomic_ref<U8> mem(p->data);
     cpu->src.u8 = *cpu->reg8[reg];
     cpu->dst.u8 = mem.fetch_xor(cpu->src.u8);
@@ -929,6 +1106,10 @@ void common_xor32_mem_lock(CPU* cpu, U32 address, U32 imm) {
         cpu->memory->writed(address, cpu->result.u32);
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
         cpu->dst.u32 = mem.fetch_xor(cpu->src.u32);
         cpu->result.u32 = cpu->dst.u32 ^ cpu->src.u32;
@@ -954,6 +1135,10 @@ void common_xor16_mem_lock(CPU* cpu, U32 address, U32 imm) {
         cpu->memory->writew(address, cpu->result.u16);
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
         cpu->dst.u16 = mem.fetch_xor(cpu->src.u16);
         cpu->result.u16 = cpu->dst.u16 ^ cpu->src.u16;
@@ -971,6 +1156,10 @@ void common_xor16_mem_lock(CPU* cpu, U32 address, U32 imm) {
 */
 void common_xor8_mem_lock(CPU* cpu, U32 address, U32 imm) {
     LockData8* p = (LockData8*)cpu->memory->getRamPtr(address, 1, true);
+    if (!p) {
+        lockFaultingAccess(cpu, address, 1);
+        return;
+    }
     std::atomic_ref<U8> mem(p->data);
     cpu->src.u8 = imm;
     cpu->dst.u8 = mem.fetch_xor(cpu->src.u8);
@@ -998,6 +1187,10 @@ void common_adce32r32_lock(CPU* cpu, U32 address, U32 reg) {
         cpu->memory->writed(address, cpu->result.u32);
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
         cpu->dst.u32 = mem.fetch_add(cpu->src.u32 + cpu->oldCF);
         cpu->result.u32 = cpu->dst.u32 + cpu->src.u32 + cpu->oldCF;
@@ -1025,6 +1218,10 @@ void common_adce16r16_lock(CPU* cpu, U32 address, U32 reg) {
         cpu->memory->writew(address, cpu->result.u16);
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
         cpu->dst.u16 = mem.fetch_add(cpu->src.u16 + cpu->oldCF);
         cpu->result.u16 = cpu->dst.u16 + cpu->src.u16 + cpu->oldCF;
@@ -1043,6 +1240,10 @@ void common_adce16r16_lock(CPU* cpu, U32 address, U32 reg) {
 */
 void common_adce8r8_lock(CPU* cpu, U32 address, U32 reg) {
     LockData8* p = (LockData8*)cpu->memory->getRamPtr(address, 1, true);
+    if (!p) {
+        lockFaultingAccess(cpu, address, 1);
+        return;
+    }
     std::atomic_ref<U8> mem(p->data);
     cpu->oldCF = cpu->getCF();
     cpu->src.u8 = *cpu->reg8[reg];
@@ -1072,6 +1273,10 @@ void common_adc32_mem_lock(CPU* cpu, U32 address, U32 imm) {
         cpu->memory->writed(address, cpu->result.u32);
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
         cpu->dst.u32 = mem.fetch_add(cpu->src.u32 + cpu->oldCF);
         cpu->result.u32 = cpu->dst.u32 + cpu->src.u32 + cpu->oldCF;
@@ -1099,6 +1304,10 @@ void common_adc16_mem_lock(CPU* cpu, U32 address, U32 imm) {
         cpu->memory->writew(address, cpu->result.u16);
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
         cpu->dst.u16 = mem.fetch_add(cpu->src.u16 + cpu->oldCF);
         cpu->result.u16 = cpu->dst.u16 + cpu->src.u16 + cpu->oldCF;
@@ -1117,6 +1326,10 @@ void common_adc16_mem_lock(CPU* cpu, U32 address, U32 imm) {
 */
 void common_adc8_mem_lock(CPU* cpu, U32 address, U32 imm) {
     LockData8* p = (LockData8*)cpu->memory->getRamPtr(address, 1, true);
+    if (!p) {
+        lockFaultingAccess(cpu, address, 1);
+        return;
+    }
     std::atomic_ref<U8> mem(p->data);
     cpu->oldCF = cpu->getCF();
     cpu->src.u8 = imm;
@@ -1145,6 +1358,10 @@ void common_sbbe32r32_lock(CPU* cpu, U32 address, U32 reg) {
         cpu->memory->writed(address, cpu->result.u32);
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
         cpu->dst.u32 = mem.fetch_sub(cpu->src.u32 + cpu->oldCF);
         cpu->result.u32 = cpu->dst.u32 - cpu->src.u32 - cpu->oldCF;
@@ -1172,6 +1389,10 @@ void common_sbbe16r16_lock(CPU* cpu, U32 address, U32 reg) {
         cpu->memory->writew(address, cpu->result.u16);
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
         cpu->dst.u16 = mem.fetch_sub(cpu->src.u16 + cpu->oldCF);
         cpu->result.u16 = cpu->dst.u16 - cpu->src.u16 - cpu->oldCF;
@@ -1190,6 +1411,10 @@ void common_sbbe16r16_lock(CPU* cpu, U32 address, U32 reg) {
 */
 void common_sbbe8r8_lock(CPU* cpu, U32 address, U32 reg) {
     LockData8* p = (LockData8*)cpu->memory->getRamPtr(address, 1, true);
+    if (!p) {
+        lockFaultingAccess(cpu, address, 1);
+        return;
+    }
     std::atomic_ref<U8> mem(p->data);
     cpu->oldCF = cpu->getCF();
     cpu->src.u8 = *cpu->reg8[reg];
@@ -1219,6 +1444,10 @@ void common_sbb32_mem_lock(CPU* cpu, U32 address, U32 imm) {
         cpu->memory->writed(address, cpu->result.u32);
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
         cpu->dst.u32 = mem.fetch_sub(cpu->src.u32 + cpu->oldCF);
         cpu->result.u32 = cpu->dst.u32 - cpu->src.u32 - cpu->oldCF;
@@ -1246,6 +1475,10 @@ void common_sbb16_mem_lock(CPU* cpu, U32 address, U32 imm) {
         cpu->memory->writew(address, cpu->result.u16);
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
         cpu->dst.u16 = mem.fetch_sub(cpu->src.u16 + cpu->oldCF);
         cpu->result.u16 = cpu->dst.u16 - cpu->src.u16 - cpu->oldCF;
@@ -1264,6 +1497,10 @@ void common_sbb16_mem_lock(CPU* cpu, U32 address, U32 imm) {
 */
 void common_sbb8_mem_lock(CPU* cpu, U32 address, U32 imm) {
     LockData8* p = (LockData8*)cpu->memory->getRamPtr(address, 1, true);
+    if (!p) {
+        lockFaultingAccess(cpu, address, 1);
+        return;
+    }
     std::atomic_ref<U8> mem(p->data);
     cpu->oldCF = cpu->getCF();
     cpu->src.u8 = imm;
@@ -1290,6 +1527,10 @@ void common_inc32_mem32_lock(CPU* cpu, U32 address) {
         cpu->memory->writed(address, cpu->result.u32);
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
         cpu->dst.u32 = mem.fetch_add(1);
         cpu->result.u32 = cpu->dst.u32 + 1;
@@ -1315,6 +1556,10 @@ void common_inc16_mem16_lock(CPU* cpu, U32 address) {
         cpu->memory->writew(address, cpu->result.u16);
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
         cpu->dst.u16 = mem.fetch_add(1);
         cpu->result.u16 = cpu->dst.u16 + 1;
@@ -1332,6 +1577,10 @@ void common_inc16_mem16_lock(CPU* cpu, U32 address) {
 */
 void common_inc8_mem8_lock(CPU* cpu, U32 address) {
     LockData8* p = (LockData8*)cpu->memory->getRamPtr(address, 1, true);
+    if (!p) {
+        lockFaultingAccess(cpu, address, 1);
+        return;
+    }
     std::atomic_ref<U8> mem(p->data);
     cpu->oldCF = cpu->getCF();
     cpu->dst.u8 = mem.fetch_add(1);
@@ -1357,6 +1606,10 @@ void common_dec32_mem32_lock(CPU* cpu, U32 address) {
         cpu->memory->writed(address, cpu->result.u32);
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
         cpu->dst.u32 = mem.fetch_sub(1);
         cpu->result.u32 = cpu->dst.u32 - 1;
@@ -1383,6 +1636,10 @@ void common_dec16_mem16_lock(CPU* cpu, U32 address) {
         cpu->memory->writew(address, cpu->result.u16);
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
         cpu->dst.u16 = mem.fetch_sub(1);
         cpu->result.u16 = cpu->dst.u16 - 1;
@@ -1400,6 +1657,10 @@ void common_dec16_mem16_lock(CPU* cpu, U32 address) {
 */
 void common_dec8_mem8_lock(CPU* cpu, U32 address) {
     LockData8* p = (LockData8*)cpu->memory->getRamPtr(address, 1, true);
+    if (!p) {
+        lockFaultingAccess(cpu, address, 1);
+        return;
+    }
     std::atomic_ref<U8> mem(p->data);
     cpu->oldCF = cpu->getCF();
     cpu->dst.u8 = mem.fetch_sub(1);
@@ -1417,6 +1678,10 @@ void common_note32_lock(CPU* cpu, U32 address) {
         cpu->memory->writed(address, ~cpu->memory->readd(address));
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
 
         while (true) {
@@ -1439,6 +1704,10 @@ void common_note16_lock(CPU* cpu, U32 address) {
         cpu->memory->writew(address, ~cpu->memory->readw(address));
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
 
         while (true) {
@@ -1457,6 +1726,10 @@ void common_note16_lock(CPU* cpu, U32 address) {
 */
 void common_note8_lock(CPU* cpu, U32 address) {
     LockData8* p = (LockData8*)cpu->memory->getRamPtr(address, 1, true);
+    if (!p) {
+        lockFaultingAccess(cpu, address, 1);
+        return;
+    }
     std::atomic_ref<U8> mem(p->data);
 
     while (true) {
@@ -1487,6 +1760,10 @@ void common_nege32_lock(CPU* cpu, U32 address) {
         cpu->memory->writed(address, cpu->result.u32);
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
 
         while (true) {
@@ -1521,6 +1798,10 @@ void common_nege16_lock(CPU* cpu, U32 address) {
         cpu->memory->writew(address, cpu->result.u16);
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
 
         while (true) {
@@ -1545,6 +1826,10 @@ void common_nege16_lock(CPU* cpu, U32 address) {
 */
 void common_nege8_lock(CPU* cpu, U32 address) {
     LockData8* p = (LockData8*)cpu->memory->getRamPtr(address, 1, true);
+    if (!p) {
+        lockFaultingAccess(cpu, address, 1);
+        return;
+    }
     std::atomic_ref<U8> mem(p->data);
 
     cpu->dst.u8 = 0;
@@ -1577,6 +1862,10 @@ void common_btse32_lock(CPU* cpu, U32 address, U32 mask) {
         cpu->memory->writed(address, oldValue | mask);
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
         oldValue = mem.fetch_or(mask);
     }
@@ -1601,6 +1890,10 @@ void common_btse16_lock(CPU* cpu, U32 address, U32 mask) {
         cpu->memory->writew(address, oldValue | mask);
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
         oldValue = mem.fetch_or(mask);
     }
@@ -1626,6 +1919,10 @@ void common_btse32r32_lock(CPU* cpu, U32 address, U32 mask) {
         cpu->memory->writed(address, oldValue | mask);
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
         oldValue = mem.fetch_or(mask);
     }
@@ -1651,6 +1948,10 @@ void common_btse16r16_lock(CPU* cpu, U32 address, U32 mask) {
         cpu->memory->writew(address, oldValue | mask);
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
         oldValue = mem.fetch_or(mask);
     }
@@ -1675,6 +1976,10 @@ void common_btre32_lock(CPU* cpu, U32 address, U32 mask) {
         cpu->memory->writed(address, oldValue & ~mask);
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
         oldValue = mem.fetch_and(~mask);
     }
@@ -1698,6 +2003,10 @@ void common_btre16_lock(CPU* cpu, U32 address, U32 mask) {
         cpu->memory->writew(address, oldValue & ~mask);
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
         oldValue = mem.fetch_and(~mask);
     }
@@ -1723,6 +2032,10 @@ void common_btre32r32_lock(CPU* cpu, U32 address, U32 mask) {
         cpu->memory->writed(address, oldValue & ~mask);
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
         oldValue = mem.fetch_and(~mask);
     }
@@ -1748,6 +2061,10 @@ void common_btre16r16_lock(CPU* cpu, U32 address, U32 mask) {
         cpu->memory->writew(address, oldValue & ~mask);
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
         oldValue = mem.fetch_and(~mask);
     }
@@ -1771,6 +2088,10 @@ void common_btce32_lock(CPU* cpu, U32 address, U32 mask) {
         cpu->memory->writed(address, oldValue ^ mask);
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
         oldValue = mem.fetch_xor(mask);
     }
@@ -1794,6 +2115,10 @@ void common_btce16_lock(CPU* cpu, U32 address, U32 mask) {
         cpu->memory->writew(address, oldValue ^ mask);
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
         oldValue = mem.fetch_xor(mask);
     }
@@ -1819,6 +2144,10 @@ void common_btce32r32_lock(CPU* cpu, U32 address, U32 mask) {
         cpu->memory->writed(address, oldValue ^ mask);
     } else {
         LockData32* p = (LockData32*)cpu->memory->getRamPtr(address, 4, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 4);
+            return;
+        }
         std::atomic_ref<U32> mem(p->data);
         oldValue = mem.fetch_xor(mask);
     }
@@ -1844,6 +2173,10 @@ void common_btce16r16_lock(CPU* cpu, U32 address, U32 mask) {
         cpu->memory->writew(address, oldValue ^ mask);
     } else {
         LockData16* p = (LockData16*)cpu->memory->getRamPtr(address, 2, true);
+        if (!p) {
+            lockFaultingAccess(cpu, address, 2);
+            return;
+        }
         std::atomic_ref<U16> mem(p->data);
         oldValue = mem.fetch_xor(mask);
     }

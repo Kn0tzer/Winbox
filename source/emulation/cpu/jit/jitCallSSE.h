@@ -37,3 +37,15 @@
 #define SSE_RR_EDI(name) void Jit::dynamic_##name(DecodedOp* op) {emulateSingleOp();}
 
 #include "../common/common_sse_def.h"
+
+void Jit::dynamic_sse41_3ARR(DecodedOp* op) { emulateSingleOp(); }
+void Jit::dynamic_sse41_3ARE(DecodedOp* op) { emulateSingleOp(); }
+void Jit::dynamic_crc32RR(DecodedOp* op) { emulateSingleOp(); }
+void Jit::dynamic_crc32RE(DecodedOp* op) { emulateSingleOp(); }
+void Jit::dynamic_popcntR16R16(DecodedOp* op) { currentLazyFlags=FLAGS_NONE;emulateSingleOp(); }
+void Jit::dynamic_popcntR16E16(DecodedOp* op) { currentLazyFlags=FLAGS_NONE;emulateSingleOp(); }
+void Jit::dynamic_popcntR32R32(DecodedOp* op) { currentLazyFlags=FLAGS_NONE;emulateSingleOp(); }
+void Jit::dynamic_popcntR32E32(DecodedOp* op) { currentLazyFlags=FLAGS_NONE;emulateSingleOp(); }
+void Jit::dynamic_sse42PcmpRR(DecodedOp* op) { currentLazyFlags=FLAGS_NONE;emulateSingleOp(); }
+void Jit::dynamic_sse42PcmpRE(DecodedOp* op) { currentLazyFlags=FLAGS_NONE;emulateSingleOp(); }
+void Jit::dynamic_ldmxcsr(DecodedOp* op) { emulateSingleOp(); }

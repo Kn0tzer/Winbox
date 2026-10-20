@@ -268,7 +268,7 @@ void CPU::prepareException(int code, int error) {
     const KProcessPtr& process = this->thread->process;
 
      // blocking signals, signalfd can't handle these
-    if (code==EXCEPTION_GP && (process->sigActions[K_SIGSEGV].handlerAndSigAction!=K_SIG_IGN && process->sigActions[K_SIGSEGV].handlerAndSigAction!=K_SIG_DFL)) {
+    if (code==EXCEPTION_GP) {
         process->sigActions[K_SIGSEGV].sigInfo[0] = K_SIGSEGV;		
         process->sigActions[K_SIGSEGV].sigInfo[1] = error;
         process->sigActions[K_SIGSEGV].sigInfo[2] = 0;
@@ -401,26 +401,22 @@ void CPU::cpuid() {
     CPU* cpu = this;
     switch (EAX) {
         case 0:	/* Vendor ID String and maximum level? */
-            EAX=2;  /* Maximum level */
+            EAX=7;  /* Maximum basic leaf */
             EBX='G' | ('e' << 8) | ('n' << 16) | ('u'<< 24);
             EDX='i' | ('n' << 8) | ('e' << 16) | ('I'<< 24);
             ECX='n' | ('t' << 8) | ('e' << 16) | ('l'<< 24);
             break;
         case 1:	/* get processor type/family/model/stepping and feature flags */
-            EBX=0;			/* Not Supported */
-            ECX=0;			/* No features */
+            EAX=0x6FB;		/* Core 2 era family/model/stepping */
+            EBX=0x00010800; /* CLFLUSH line size 8 and one logical processor */
+            ECX=(1<<0) | (1<<9) | (1<<19) | (1<<20) | (1<<23);
             EDX=1;	        /* FPU */
-            if (KSystem::pentiumLevel==2) {
-                EAX=0x633;		/* intel pentium 2 */
-            } else if (KSystem::pentiumLevel==3) {
-                EAX=0x686;		/* Intel Pentium III 733 MHz */
+            if (KSystem::pentiumLevel==3 || KSystem::pentiumLevel==4) {
                 EDX|= (1<<24);    // FXSAVE, FXRESTOR
                 EDX|= (1<<25);    // SSE
-            } else if (KSystem::pentiumLevel==4) {
-                EAX=0xF07;		/* Intel Pentium 4 1.4 GHz */
+            }
+            if (KSystem::pentiumLevel==4) {
                 EDX|= (1<<19);    // CLFLUSH
-                EDX|= (1<<24);    // FXSAVE, FXRESTOR
-                EDX|= (1<<25);    // SSE
                 EDX|= (1<<26);    // SSE2
             }          
             EDX|= (1<<4);     /* RDTSC */
@@ -436,8 +432,17 @@ void CPU::cpuid() {
             ECX=0;
             EDX=0x0C040843;
             break;
+        case 7:
+            EAX = 0;
+            EBX = 0;
+            ECX = 0;
+            EDX = 0;
+            break;
         case 0x80000000:
             EAX = 0x80000004;
+            EBX = 0;
+            ECX = 0;
+            EDX = 0;
             break;
         case 0x80000001:
             EAX = 0;

@@ -24,6 +24,8 @@
 #include "cpu/testCMov.h"
 #include "cpu/testCmp.h"
 #include "cpu/testCPU.h"
+#include "cpu/testCpuSystem.h"
+#include "cpu/testCpuDiff32Generated.h"
 #include "cpu/testDecoderPageBoundary.h"
 #include "cpu/testFPU.h"
 #include "cpu/testIncDec.h"
@@ -61,6 +63,10 @@ namespace {
 int totalFails = 0;
 
 const TestEntry TEST_ENTRIES[] = {
+    {testCpuSystemInstructions, "CPU32 system instruction fault and store behavior"},
+    {testCpuCpuidAndCpuInfo, "CPU32 CPUID and proc cpuinfo architecture"},
+    {testCpuDiff32Generated, "CPU32 QEMU differential instruction cases"},
+    {testSseLdmxcsrReserved, "SSE LDMXCSR reserved bits fault"},
 #ifdef BOXEDWINE_WASM_JIT
     {testWasmJitControlTransfer, "WASM JIT interpreter-backed control transfer"},
         {testWasmJitTerminatedCpu, "WASM JIT terminated CPU cache lifetime"},
@@ -672,6 +678,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testDemandPageIsolation, "Test demand-page isolation"},
     {testSse3DuplicateMoves, "Test SSE3 duplicate moves"},
     {testSse3Haddpd, "Test SSE3 HADDPD"},
+    {testSse3MonitorMwaitNoop, "Test SSE3 MONITOR and MWAIT no-op"},
 };
 
 } // namespace

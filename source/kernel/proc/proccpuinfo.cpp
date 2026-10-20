@@ -24,7 +24,11 @@
 #include <string.h>
 
 FsOpenNode* openCpuInfo(const std::shared_ptr<FsNode>& node, U32 flags, U32 data) {
-	static BString result;
+	static BString result32;
+	static BString result64;
+	KThread* thread = KThread::currentThread();
+	bool is64Bit = thread && thread->process && thread->process->is64Bit;
+	BString& result = is64Bit ? result64 : result32;
 	if (result.length() == 0) {
 		U32 count = Platform::getCpuCount();
 #ifdef BOXEDWINE_MULTI_THREADED
@@ -35,10 +39,17 @@ FsOpenNode* openCpuInfo(const std::shared_ptr<FsNode>& node, U32 flags, U32 data
 		for (U32 i = 0; i < count; i++) {
 			result += "processor	: "; result += i; result += "\n";
 			result += "vendor_id	: GenuineIntel\n";
-			result += "cpu family	: 15\n";
-			result += "model		: 4\n";
-			result += "model name	: Intel(R) Pentium(R) 4 CPU 3.00GHz\n";
-			result += "stepping	: 1\n";
+			if (is64Bit) {
+				result += "cpu family	: 15\n";
+				result += "model		: 4\n";
+				result += "model name	: Intel(R) Pentium(R) 4 CPU 3.00GHz\n";
+				result += "stepping	: 1\n";
+			} else {
+				result += "cpu family	: 6\n";
+				result += "model		: 15\n";
+				result += "model name	: Intel(R) Core(TM)2 CPU\n";
+				result += "stepping	: 11\n";
+			}
 			result += "microcode	: 0xc6\n";
 			result += "cpu MHz		: "; result += Platform::getCpuFreqMHz(); result += "\n";
 			result += "cache size	: 1024 KB\n";
@@ -53,15 +64,19 @@ FsOpenNode* openCpuInfo(const std::shared_ptr<FsNode>& node, U32 flags, U32 data
 			result += "coma_bug	: no\n";
 			result += "fpu		: yes\n";
 			result += "fpu_exception	: yes\n";
-			result += "cpuid level\t: 1\n";
+			result += is64Bit ? "cpuid level\t: 1\n" : "cpuid level\t: 7\n";
 			result += "wp		: yes\n";
 			// Keep this list in sync with CPU64 CPUID leaves 1 and 0x80000001.
-			result += "flags\t\t: fpu tsc msr cx8 cmov clflush mmx fxsr sse sse2 cx16 popcnt nx syscall lm lahf_lm 3dnowprefetch\n";
+			if (is64Bit) {
+				result += "flags\t\t: fpu tsc msr cx8 cmov clflush mmx fxsr sse sse2 cx16 popcnt nx syscall lm lahf_lm 3dnowprefetch\n";
+			} else {
+				result += "flags\t\t: fpu tsc msr cx8 pge cmov clflush mmx fxsr sse sse2 pni ssse3 sse4_1 sse4_2 popcnt\n";
+			}
 			result += "bugs		: cpu_meltdown spectre_v1 spectre_v2 spec_store_bypass l1tf mds swapgs itlb_multihit\n";
 			result += "bogomips	: "; result += Platform::getCpuFreqMHz(); result += ".00\n";
 			result += "clflush size	: 64\n";
 			result += "cache_alignment	: 64\n";
-			result += "address sizes	: 43 bits physical, 48 bits virtual\n";
+			result += is64Bit ? "address sizes	: 43 bits physical, 48 bits virtual\n" : "address sizes	: 32 bits physical, 32 bits virtual\n";
 			result += "power management:\n";
 		}
 	}

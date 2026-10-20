@@ -424,15 +424,11 @@ void JitSSE::dynamic_cvtsi2sdXmmE32(DecodedOp* op) {
 }
 
 void JitSSE::dynamic_cvttsd2siR32Xmm(DecodedOp* op) {
-    SSERegPtr rm = loadCpuXMMReg(op->rm);
-    cvttsd2siR32Xmm(getReg(op->reg, -1, false), rm);
+    emulateSingleOp();
 }
 
 void JitSSE::dynamic_cvttsd2siR32E64(DecodedOp* op) {
-    read(JitWidth::b64, calculateEaa(op), [op, this](MemPtr address) {
-        SSERegPtr tmp = loadXMMFromMem64(SSE_TMP_INDEX, address);
-        cvttsd2siR32Xmm(getReg(op->reg, -1, false), tmp);
-    });
+    emulateSingleOp();
 }
 
 void JitSSE::dynamic_movqXmmXmm(DecodedOp* op) {

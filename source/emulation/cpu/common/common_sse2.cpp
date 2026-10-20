@@ -73,6 +73,15 @@ static double commonSse2F64FromBits(U64 value) {
     return f.d;
 }
 
+static U32 commonSse2RoundF32ToI32(U32 value, U32 mxcsr) {
+    union {
+        U32 i;
+        float f;
+    } bits;
+    bits.i = value;
+    return commonSse2RoundToI32((double)bits.f, mxcsr, false);
+}
+
 void common_addpdXmmXmm(CPU* cpu, U32 r1, U32 r2) {
     cpu->xmm[r1].pd = simde_mm_add_pd(cpu->xmm[r1].pd, cpu->xmm[r2].pd);
 }
@@ -880,14 +889,17 @@ void common_cvtpd2piMmxE128(CPU* cpu, U32 reg, U32 address) {
 }
 
 void common_cvtpd2dqXmmXmm(CPU* cpu, U32 r1, U32 r2) {
-    cpu->xmm[r1].pi = simde_mm_cvtpd_epi32(cpu->xmm[r2].pd);
+    U32 low = commonSse2RoundToI32(commonSse2F64FromBits(cpu->xmm[r2].pd.u64[0]), cpu->mxcsr, false);
+    U32 high = commonSse2RoundToI32(commonSse2F64FromBits(cpu->xmm[r2].pd.u64[1]), cpu->mxcsr, false);
+    cpu->xmm[r1].pi.u64[0] = (U64)low | ((U64)high << 32);
+    cpu->xmm[r1].pi.u64[1] = 0;
 }
 
 void common_cvtpd2dqXmmE128(CPU* cpu, U32 reg, U32 address) {
-    simde__m128d value;
-    value.u64[0] = cpu->memory->readq(address);
-    value.u64[1] = cpu->memory->readq(address+8);
-    cpu->xmm[reg].pi = simde_mm_cvtpd_epi32(value);
+    U32 low = commonSse2RoundToI32(commonSse2F64FromBits(cpu->memory->readq(address)), cpu->mxcsr, false);
+    U32 high = commonSse2RoundToI32(commonSse2F64FromBits(cpu->memory->readq(address + 8)), cpu->mxcsr, false);
+    cpu->xmm[reg].pi.u64[0] = (U64)low | ((U64)high << 32);
+    cpu->xmm[reg].pi.u64[1] = 0;
 }
 
 void common_cvtpd2psXmmXmm(CPU* cpu, U32 r1, U32 r2) {
@@ -914,14 +926,17 @@ void common_cvtpi2pdXmmE64(CPU* cpu, U32 reg, U32 address) {
 }
 
 void common_cvtps2dqXmmXmm(CPU* cpu, U32 r1, U32 r2) {
-    cpu->xmm[r1].pi = simde_mm_cvtps_epi32(cpu->xmm[r2].ps);
+    U32 result[4];
+    for (U32 i = 0; i < 4; ++i) result[i] = commonSse2RoundF32ToI32(cpu->xmm[r2].ps.u32[i], cpu->mxcsr);
+    cpu->xmm[r1].pi.u64[0] = (U64)result[0] | ((U64)result[1] << 32);
+    cpu->xmm[r1].pi.u64[1] = (U64)result[2] | ((U64)result[3] << 32);
 }
 
 void common_cvtps2dqXmmE128(CPU* cpu, U32 reg, U32 address) {
-    simde__m128 value;
-    value.u64[0] = cpu->memory->readq(address);
-    value.u64[1] = cpu->memory->readq(address+8);
-    cpu->xmm[reg].pi = simde_mm_cvtps_epi32(value);
+    U32 result[4];
+    for (U32 i = 0; i < 4; ++i) result[i] = commonSse2RoundF32ToI32(cpu->memory->readd(address + i * 4), cpu->mxcsr);
+    cpu->xmm[reg].pi.u64[0] = (U64)result[0] | ((U64)result[1] << 32);
+    cpu->xmm[reg].pi.u64[1] = (U64)result[2] | ((U64)result[3] << 32);
 }
 
 void common_cvtps2pdXmmXmm(CPU* cpu, U32 r1, U32 r2) {
@@ -1006,13 +1021,11 @@ void common_cvttps2dqXmmE128(CPU* cpu,U32 reg, U32 address ) {
 }
 
 void common_cvttsd2siR32Xmm(CPU* cpu, U32 r1, U32 r2) {
-    cpu->reg[r1].u32 = simde_mm_cvttsd_si32(cpu->xmm[r2].pd);
+    cpu->reg[r1].u32 = commonSse2RoundToI32(commonSse2F64FromBits(cpu->xmm[r2].pd.u64[0]), cpu->mxcsr, true);
 }
 
 void common_cvttsd2siR32E64(CPU* cpu, U32 reg, U32 address) {
-    simde__m128d value;
-    value.u64[0] = cpu->memory->readq(address);
-    cpu->reg[reg].u32 = simde_mm_cvttsd_si32(value);
+    cpu->reg[reg].u32 = commonSse2RoundToI32(commonSse2F64FromBits(cpu->memory->readq(address)), cpu->mxcsr, true);
 }
 
 void common_movqXmmXmm(CPU* cpu, U32 r1, U32 r2) {

@@ -17,6 +17,7 @@
  */
 
 #include "boxedwine.h"
+#include "ksignal.h"
 
 #include "../decoder.h"
 #include "normalCPU.h"
@@ -308,9 +309,82 @@ void OPCALL normal_sidt(CPU* cpu, DecodedOp* op) {
     U32 eaa = eaa(cpu, op);
     cpu->memory->writew(eaa, 1023); // limit
     cpu->memory->writed(eaa + 2, 0); // base
-#ifdef _DEBUG
-    klog("sidt not implemented");
-#endif
+    NEXT();
+}
+
+void OPCALL normal_sgdt(CPU* cpu, DecodedOp* op) {
+    START_OP(cpu, op);
+    U32 eaa = eaa(cpu, op);
+    cpu->memory->writew(eaa, 0x7f);
+    cpu->memory->writed(eaa + 2, 0);
+    NEXT();
+}
+
+void OPCALL normal_sldt(CPU* cpu, DecodedOp* op) {
+    START_OP(cpu, op);
+    if (op->inst == SLDTReg) {
+        cpu->reg[op->reg].u16 = 0;
+    } else {
+        cpu->memory->writew(eaa(cpu, op), 0);
+    }
+    NEXT();
+}
+
+void OPCALL normal_str(CPU* cpu, DecodedOp* op) {
+    START_OP(cpu, op);
+    if (op->inst == STRReg) {
+        cpu->reg[op->reg].u16 = 0;
+    } else {
+        cpu->memory->writew(eaa(cpu, op), 0);
+    }
+    NEXT();
+}
+
+void OPCALL normal_smsw(CPU* cpu, DecodedOp* op) {
+    START_OP(cpu, op);
+    if (op->inst == SMSWRreg) {
+        if (op->imm == 32) {
+            cpu->reg[op->reg].u32 = 0x80050033;
+        } else {
+            cpu->reg[op->reg].u16 = 0x0033;
+        }
+    } else {
+        cpu->memory->writew(eaa(cpu, op), 0x0033);
+    }
+    NEXT();
+}
+
+void OPCALL normal_verrreg(CPU* cpu, DecodedOp* op) {
+    START_OP(cpu, op);
+    cpu->verr(cpu->reg[op->rm].u16);
+    NEXT();
+}
+
+void OPCALL normal_verwreg(CPU* cpu, DecodedOp* op) {
+    START_OP(cpu, op);
+    cpu->verw(cpu->reg[op->rm].u16);
+    NEXT();
+}
+
+void OPCALL normal_privilegedFault(CPU* cpu, DecodedOp* op) {
+    START_OP(cpu, op);
+    cpu->prepareException(EXCEPTION_GP, 0);
+    NEXT_DONE();
+}
+
+void OPCALL normal_intO(CPU* cpu, DecodedOp* op) {
+    START_OP(cpu, op);
+    if (cpu->getOF()) {
+        KSigAction* action = &cpu->thread->process->sigActions[K_SIGSEGV];
+        memset(action->sigInfo, 0, sizeof(action->sigInfo));
+        action->sigInfo[0] = K_SIGSEGV;
+        action->sigInfo[2] = 0;
+        action->sigInfo[3] = cpu->eip.u32;
+        action->sigInfo[4] = 4;
+        cpu->thread->runSignal(K_SIGSEGV, 4, 0);
+        NEXT_DONE();
+        return;
+    }
     NEXT();
 }
 
@@ -607,6 +681,23 @@ static void OPCALL normalDispatch(CPU* cpu, DecodedOp* op) {
 #undef INIT_CPU_LOCK
 #endif
         case SIDT:     MUSTTAIL return normal_sidt(cpu, op);
+        case SGDT:     MUSTTAIL return normal_sgdt(cpu, op);
+        case SLDTReg:
+        case SLDTE16:  MUSTTAIL return normal_sldt(cpu, op);
+        case STRReg:
+        case STRE16:   MUSTTAIL return normal_str(cpu, op);
+        case SMSWRreg:
+        case SMSW:     MUSTTAIL return normal_smsw(cpu, op);
+        case LLDTR16:
+        case LLDTE16:
+        case LTRR16:
+        case LTRE16:   MUSTTAIL return normal_privilegedFault(cpu, op);
+        case LGDT:
+        case LIDT:
+        case LMSWRreg:
+        case LMSW:
+        case INVLPG:   MUSTTAIL return normal_privilegedFault(cpu, op);
+        case IntO:     MUSTTAIL return normal_intO(cpu, op);
         case Callback: MUSTTAIL return onExitSignal(cpu, op);
         case TestEnd:  MUSTTAIL return onTestEnd(cpu, op);
         default:
@@ -637,25 +728,26 @@ static void initNormalOps() {
 #endif
 #undef INIT_CPU
 
-    normalOps[SLDTReg] = nullptr;
-    normalOps[SLDTE16] = nullptr;
-    normalOps[STRReg] = nullptr;
-    normalOps[STRE16] = nullptr;
-    normalOps[LLDTR16] = nullptr;
-    normalOps[LLDTE16] = nullptr;
-    normalOps[LTRR16] = nullptr;
-    normalOps[LTRE16] = nullptr;
-    normalOps[VERRR16] = nullptr;
-    normalOps[VERWR16] = nullptr;
-    normalOps[SGDT] = nullptr;
+    normalOps[SLDTReg] = normal_sldt;
+    normalOps[SLDTE16] = normal_sldt;
+    normalOps[STRReg] = normal_str;
+    normalOps[STRE16] = normal_str;
+    normalOps[LLDTR16] = normal_privilegedFault;
+    normalOps[LLDTE16] = normal_privilegedFault;
+    normalOps[LTRR16] = normal_privilegedFault;
+    normalOps[LTRE16] = normal_privilegedFault;
+    normalOps[VERRR16] = normal_verrreg;
+    normalOps[VERWR16] = normal_verwreg;
+    normalOps[SGDT] = normal_sgdt;
     normalOps[SIDT] = normal_sidt;
-    normalOps[LGDT] = nullptr;
-    normalOps[LIDT] = nullptr;
-    normalOps[SMSWRreg] = nullptr;
-    normalOps[SMSW] = nullptr;
-    normalOps[LMSWRreg] = nullptr;
-    normalOps[LMSW] = nullptr;
-    normalOps[INVLPG] = nullptr;
+    normalOps[LGDT] = normal_privilegedFault;
+    normalOps[LIDT] = normal_privilegedFault;
+    normalOps[SMSWRreg] = normal_smsw;
+    normalOps[SMSW] = normal_smsw;
+    normalOps[LMSWRreg] = normal_privilegedFault;
+    normalOps[LMSW] = normal_privilegedFault;
+    normalOps[INVLPG] = normal_privilegedFault;
+    normalOps[IntO] = normal_intO;
     normalOps[Callback] = onExitSignal;
     normalOps[TestEnd] = onTestEnd;
 }
@@ -719,6 +811,21 @@ DecodedOp* NormalCPU::getOp(U32 startIp, U32 jumpTargetFlags) {
                 if (!nextOp->pfn) {
                     nextOp->pfn = getFunctionForOp(nextOp);
                 }
+#ifdef BOXEDWINE_JIT
+                // These older system instructions have null entries in the JIT
+                // opcode table; keep them on the normal interpreter path.
+                switch (nextOp->inst) {
+                case SLDTReg: case SLDTE16: case STRReg: case STRE16:
+                case LLDTR16: case LLDTE16: case LTRR16: case LTRE16:
+                case VERRR16: case VERWR16: case SGDT: case SIDT: case LGDT: case LIDT:
+                case SMSWRreg: case SMSW: case LMSWRreg: case LMSW: case INVLPG:
+                    nextOp->flags |= OP_FLAG_NO_JIT;
+                    nextOp->runCount = JIT_RUN_COUNT + 1;
+                    break;
+                default:
+                    break;
+                }
+#endif
                 if (memory->isAddressDynamic(address, nextOp->len)) {
                     nextOp->flags |= OP_FLAG_NO_JIT;
 #ifdef BOXEDWINE_JIT

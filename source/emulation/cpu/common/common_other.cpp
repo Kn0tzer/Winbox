@@ -54,16 +54,16 @@ void common_int80(CPU* cpu){
     ksyscall(cpu, 2);
 }
 void common_intIb(CPU* cpu){
-    cpu->thread->signalIllegalInstruction(5);// 5=ILL_PRVOPC  // :TODO: just a guess
+	cpu->thread->signalIllegalInstruction(5);// ILL_PRVOPC
 }
 void common_int3(CPU* cpu) {
     cpu->thread->signalTrap(1);// 1=TRAP_BRKPT
 }
 void common_ud2(CPU* cpu) {
-    cpu->thread->signalIllegalInstruction(5);// 5=ILL_PRVOPC  // :TODO: just a guess
+	cpu->thread->signalIllegalInstruction(2);
 }
 void common_hlt(CPU* cpu) {
-    kpanic("Hlt");
+	cpu->thread->signalIllegalInstruction(5);
 }
 void common_cpuid(CPU* cpu){
     cpu->cpuid();
@@ -73,6 +73,12 @@ void common_larr16r16(CPU* cpu, U32 dstReg, U32 srcReg){
 }
 void common_larr16e16(CPU* cpu, U32 reg, U32 address){
     cpu->reg[reg].u16 = cpu->lar(cpu->memory->readw(address), cpu->reg[reg].u16);
+}
+void common_larr32r32(CPU* cpu, U32 dstReg, U32 srcReg){
+    cpu->reg[dstReg].u32 = cpu->lar(cpu->reg[srcReg].u16, cpu->reg[dstReg].u32);
+}
+void common_larr32e32(CPU* cpu, U32 reg, U32 address){
+    cpu->reg[reg].u32 = cpu->lar(cpu->memory->readw(address), cpu->reg[reg].u32);
 }
 
 U32 common_lar(CPU* cpu, U32 selector, U32 ar) {
@@ -141,13 +147,15 @@ void common_fxsave(CPU* cpu, U32 address) {
     cpu->memory->writed(address + 24, cpu->mxcsr); // mxcsr
     cpu->memory->writed(address + 28, 0xFFFF); // mxcsr mask
 
-    for (int i=0;i<8;i++) {
-        U32 index = (cpu->fpu.GetTop() - i) & 7;
-        cpu->fpu.ST80(cpu, address+32+index*16, i);
+    U32 top = cpu->fpu.GetTop();
+    for (U32 i = 0; i < 8; ++i) {
+        U32 index = (i - top) & 7;
+        U32 slot = address + 32 + index * 16;
+        cpu->fpu.ST80(cpu, slot, i);
     }
-    for (int i=0;i<8;i++) {
-        cpu->memory->writeq(address+160+i*16, cpu->xmm[i].pi.u64[0]);
-        cpu->memory->writeq(address+168+i*16, cpu->xmm[i].pi.u64[1]);
+    for (U32 i = 0; i < 8; ++i) {
+        cpu->memory->writeq(address + 160 + i * 16, cpu->xmm[i].pi.u64[0]);
+        cpu->memory->writeq(address + 168 + i * 16, cpu->xmm[i].pi.u64[1]);
     }
 }
 
@@ -156,8 +164,9 @@ void common_fxrstor(CPU* cpu, U32 address) {
     cpu->fpu.SetSW(cpu->memory->readw(address+2));
     cpu->fpu.SetTagFromAbridged(cpu->memory->readb(address+4));
     cpu->mxcsr = cpu->memory->readd(address + 24);
-    for (int i=0;i<8;i++) {
-        U32 index = (cpu->fpu.GetTop() - i) & 7;
+    U32 top = cpu->fpu.GetTop();
+    for (U32 i = 0; i < 8; ++i) {
+        U32 index = (i - top) & 7;
         cpu->fpu.LD80(i, cpu->memory->readq(address + 32 + index * 16), cpu->memory->readw(address + 40 + index * 16));
     }
     for (int i=0;i<8;i++) {
@@ -168,9 +177,9 @@ void common_fxrstor(CPU* cpu, U32 address) {
 }
 
 void common_xsave(CPU* cpu, U32 address) {
-    kpanic("xsave not implemented");
+	cpu->thread->signalIllegalInstruction(2);
 }
 
 void common_xrstor(CPU* cpu, U32 address) {
-    kpanic("xrstore not implemented");
+	cpu->thread->signalIllegalInstruction(2);
 }
