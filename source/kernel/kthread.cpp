@@ -434,6 +434,7 @@ void KThread::clearFutexes() {
 }
 
 U32 KThread::futex(U32 addr, U32 op, U32 value, U32 pTime, U32 val2, U32 val3, bool time64) {
+    if (addr & 3) return -K_EINVAL;
     U64 ramAddress = 0;
     U32 cmd = (op & FUTEX_CMD_MASK);
     bool isPrivate = (op & FUTEX_PRIVATE_FLAG) != 0;
@@ -594,6 +595,7 @@ U32 KThread::futex(U32 addr, U32 op, U32 value, U32 pTime, U32 val2, U32 val3, b
 // Only WAIT/WAKE (+_BITSET, +_PRIVATE) are real. REQUEUE/CMP_REQUEUE/WAKE_OP
 // return 0 (no kernel migration); anything else -ENOSYS.
 S64 KThread::futex64(U64 addr, U32 op, U32 value, U64 timeoutAddr, U32 val3) {
+    if (addr & 3) return -K_EINVAL;
     KMemory64* mem = process ? process->memory64 : nullptr;
     if (!mem) return -K_ENOSYS;
 

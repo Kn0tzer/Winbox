@@ -1842,6 +1842,7 @@ static U64 sys_readlink64(CPU64* cpu, U64 pathAddr, U64 buf, U64 sz) {
 // uaddr==0 → -EFAULT for all ops (matches kernel).
 static U64 sys_futex64(CPU64* cpu, U64 uaddr, U32 op, U32 val, U64 timeoutAddr, U32 val3) {
     if (uaddr == 0) return (U64)-K_EFAULT;
+    if (uaddr & 3) return (U64)-K_EINVAL;
 
     // Real path: when this CPU64 is driven by a scheduled KThread inside a
     // process (the only way multiple threads exist), delegate to the shared

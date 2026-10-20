@@ -17,6 +17,7 @@
 #include "kmemory64.h"
 #include "syscall64.h"
 #include "ksignal.h"   // K_SIGFPE
+#include "common/splitLock.h"
 
 #include <cmath>
 #include <cstring>
@@ -29,16 +30,11 @@
 // pthread mutexes/condvars — which rely on these instructions being atomic —
 // would race without this.
 //
-// We keep the existing (verified) loadRM/runAlu/storeRM RMW logic intact and
-// only serialize it under a lock keyed on the operand's guest address. A single
-// global mutex would serialize EVERY locked op across all threads even when
-// they touch unrelated words (glibc hammers distinct futex/lock words from
-// different threads), so instead we hash the operand's page address into a
-// bank of locks: two threads working different pages take different locks and
-// run in parallel. Two ops on the same word always collide on the same lock,
-// which is exactly the atomicity we need. Recursive so a guest exception/signal
-// path that re-enters can't self-deadlock; cheap and uncontended in the
-// single-threaded build.
+// Aligned operands use sharded recursive mutexes, so unrelated locked words
+// can proceed concurrently. Unaligned operands use g_splitLockMutex and plain
+// guest-memory reads/writes: WebAssembly atomic instructions trap on a
+// misaligned host address. Recursive locks also let a guest exception/signal
+// path re-enter an aligned operation without self-deadlocking.
 //
 // CPU64_ATOMIC_LOCKS must be a power of two so the mask is a single AND.
 #define CPU64_ATOMIC_LOCKS 256
@@ -51,6 +47,30 @@ static std::recursive_mutex g_cpu64AtomicLocks[CPU64_ATOMIC_LOCKS];
 static inline std::recursive_mutex& cpu64AtomicLockFor(U64 effAddr) {
     return g_cpu64AtomicLocks[(effAddr >> K64_PAGE_SHIFT) & (CPU64_ATOMIC_LOCKS - 1)];
 }
+
+class CPU64AtomicLock {
+public:
+    CPU64AtomicLock(KMemory64* memory, U64 effAddr, U32 width, std::defer_lock_t)
+        : memory(memory), effAddr(effAddr), width(width),
+          alignedLock(cpu64AtomicLockFor(effAddr), std::defer_lock),
+          splitLock(g_splitLockMutex, std::defer_lock) {}
+
+    void lock() {
+        U8* hostAddress = memory->getRamPtr(effAddr, width);
+        if (!hostAddress || (reinterpret_cast<uintptr_t>(hostAddress) & (width - 1))) {
+            splitLock.lock();
+        } else {
+            alignedLock.lock();
+        }
+    }
+
+private:
+    KMemory64* memory;
+    U64 effAddr;
+    U32 width;
+    std::unique_lock<std::recursive_mutex> alignedLock;
+    std::unique_lock<std::mutex> splitLock;
+};
 
 // FPU status-word C0/C2/C3 bit positions (see Intel SDM Vol 1 §8.1.3).
 // We can't reuse the macros in fpu.cpp because they're file-local there.
@@ -1171,7 +1191,7 @@ dsp_6:
             ModRM m = decodeModRM(rip + opOff + 1, p, 0);
             // `lock add`/`lock or`/`lock and`/... on a memory dest must be an
             // atomic RMW across host threads (glibc futex/lock words use these).
-            std::unique_lock<std::recursive_mutex> atomicLock(cpu64AtomicLockFor(m.effAddr), std::defer_lock);
+            CPU64AtomicLock atomicLock(memory, m.effAddr, size, std::defer_lock);
             if (p.lock && destIsRM && !m.isReg) atomicLock.lock();
             U64 a, b;
             if (destIsRM) {
@@ -1244,7 +1264,7 @@ dsp_7:
                 imm = (U64)(S64)i32; immLen = 4;
             }
         }
-        std::unique_lock<std::recursive_mutex> atomicLock(cpu64AtomicLockFor(m.effAddr), std::defer_lock);
+        CPU64AtomicLock atomicLock(memory, m.effAddr, size, std::defer_lock);
         if (p.lock && !m.isReg) atomicLock.lock();
         U64 a = loadRM(m, size, rexPresent);
         runAlu(aluOp, size, true, a, imm, m, rexPresent);
@@ -1427,7 +1447,7 @@ dsp_18:
         // XCHG with a memory operand is implicitly atomic on x86 (LOCK is
         // assumed); serialize it across host threads so glibc's spinlock
         // acquire (xchg [lock], eax) is correct under real threading.
-        std::unique_lock<std::recursive_mutex> atomicLock(cpu64AtomicLockFor(m.effAddr), std::defer_lock);
+        CPU64AtomicLock atomicLock(memory, m.effAddr, size, std::defer_lock);
         if (!m.isReg) atomicLock.lock();
         U64 a = loadRM(m, size, rexPresent);
         U64 b = (size == 1) ? readReg8(m.regField, rexPresent)
@@ -1777,7 +1797,7 @@ dsp_31:
             return used;
         }
         if (sub == 2) { // NOT — no flags affected
-            std::unique_lock<std::recursive_mutex> atomicLock(cpu64AtomicLockFor(m.effAddr), std::defer_lock);
+            CPU64AtomicLock atomicLock(memory, m.effAddr, size, std::defer_lock);
             if (p.lock && !m.isReg) atomicLock.lock();
             U64 a = loadRM(m, size, rexPresent);
             storeRM(m, size, ~a, rexPresent);
@@ -1786,7 +1806,7 @@ dsp_31:
             return used;
         }
         if (sub == 3) { // NEG — same as 0 - r/m, flags set per SUB.
-            std::unique_lock<std::recursive_mutex> atomicLock(cpu64AtomicLockFor(m.effAddr), std::defer_lock);
+            CPU64AtomicLock atomicLock(memory, m.effAddr, size, std::defer_lock);
             if (p.lock && !m.isReg) atomicLock.lock();
             U64 a = loadRM(m, size, rexPresent);
             U64 r = (U64)0 - a;
@@ -1987,7 +2007,7 @@ dsp_32:
         ModRM m = decodeModRM(rip + opOff + 1, p, 0);
         U8 sub = m.regField & 0x7;
         if (sub == 0 || sub == 1) {
-            std::unique_lock<std::recursive_mutex> atomicLock(cpu64AtomicLockFor(m.effAddr), std::defer_lock);
+            CPU64AtomicLock atomicLock(memory, m.effAddr, 1, std::defer_lock);
             if (p.lock && !m.isReg) atomicLock.lock();
             U64 a = loadRM(m, 1, rexPresent);
             U64 r = (sub == 0) ? a + 1 : a - 1;
@@ -2011,6 +2031,8 @@ dsp_33:
         ModRM m = decodeModRM(rip + opOff + 1, p, 0);
         U8 sub = m.regField & 0x7;
         if (sub == 0 || sub == 1) {
+            CPU64AtomicLock atomicLock(memory, m.effAddr, opSize, std::defer_lock);
+            if (p.lock && !m.isReg) atomicLock.lock();
             U64 a = loadRM(m, opSize, rexPresent);
             U64 r = (sub == 0) ? a + 1 : a - 1;
             // INC/DEC don't affect CF; preserve it. Other flags per ADD/SUB.
@@ -2260,7 +2282,7 @@ dsp_38:
             ModRM m = decodeModRM(rip + opOff + 2, p, 0);
             // CMPXCHG is glibc's mutex fast path; make the read-compare-write
             // atomic across host threads when the operand is in memory.
-            std::unique_lock<std::recursive_mutex> atomicLock(cpu64AtomicLockFor(m.effAddr), std::defer_lock);
+            CPU64AtomicLock atomicLock(memory, m.effAddr, size, std::defer_lock);
             if (!m.isReg) atomicLock.lock();
             U64 dest = loadRM(m, size, rexPresent);
             U64 acc = (size == 1) ? reg[X64_RAX].u8
@@ -2296,7 +2318,7 @@ dsp_38:
         if (op2 == 0xC7) {
             ModRM m = decodeModRM(rip + opOff + 2, p, 0);
             if (!m.isReg && (m.regField & 0x7) == 1) {
-                std::unique_lock<std::recursive_mutex> atomicLock(cpu64AtomicLockFor(m.effAddr), std::defer_lock);
+                CPU64AtomicLock atomicLock(memory, m.effAddr, (p.rex & 0x08) ? 16 : 8, std::defer_lock);
                 atomicLock.lock();
                 if (!(p.rex & 0x08)) {
                     U64 acc = ((U64)reg[X64_RDX].u32 << 32) | reg[X64_RAX].u32;
@@ -2474,7 +2496,7 @@ dsp_38:
                 bitOperand.effAddr += (U64)(operandIndex * (S64)opSize);
                 bit = (U64)bitIndex;
             }
-            std::unique_lock<std::recursive_mutex> atomicLock(cpu64AtomicLockFor(bitOperand.effAddr), std::defer_lock);
+            CPU64AtomicLock atomicLock(memory, bitOperand.effAddr, opSize, std::defer_lock);
             if (p.lock && op2 != 0xA3 && !m.isReg) atomicLock.lock();
             U64 v = loadRM(bitOperand, opSize, rexPresent);
             U64 mask = 1ULL << bit;
@@ -2498,7 +2520,7 @@ dsp_38:
             ModRM m = decodeModRM(rip + opOff + 2, p, 1);
             U8 sub = m.regField & 0x7;
             if (sub >= 4 && sub <= 7) {
-                std::unique_lock<std::recursive_mutex> atomicLock(cpu64AtomicLockFor(m.effAddr), std::defer_lock);
+                CPU64AtomicLock atomicLock(memory, m.effAddr, opSize, std::defer_lock);
                 if (p.lock && sub != 4 && !m.isReg) atomicLock.lock();
                 U64 v = loadRM(m, opSize, rexPresent);
                 U8 imm = fetchByte(rip + opOff + 2 + m.length);
@@ -2629,7 +2651,7 @@ dsp_38:
             ModRM m = decodeModRM(rip + opOff + 2, p, 0);
             // XADD (LOCK XADD) backs glibc's atomic counters; serialize the
             // memory RMW across host threads.
-            std::unique_lock<std::recursive_mutex> atomicLock(cpu64AtomicLockFor(m.effAddr), std::defer_lock);
+            CPU64AtomicLock atomicLock(memory, m.effAddr, size, std::defer_lock);
             if (!m.isReg) atomicLock.lock();
             U64 d = loadRM(m, size, rexPresent);
             U64 s = (size == 1) ? readReg8(m.regField, rexPresent)
