@@ -1446,7 +1446,7 @@ U64 jit64WarmupInstructions() {
             unsigned long long value = std::strtoull(env, &end, 10);
             if (end != env && *end == '\0') return (U64)value;
         }
-        return 0;
+        return 0ULL;
     }();
     return cached;
 }
