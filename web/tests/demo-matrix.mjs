@@ -24,7 +24,11 @@ if (!Number.isFinite(mappedTimeout) || mappedTimeout <= 0) throw new Error('MAPP
 const threadDumpEnabled = process.env.BW_THREAD_DUMP === '1';
 const capturePlayerLog = process.env.BW_CAPTURE_PLAYER_LOG === '1';
 const wineDebug = process.env.BW_WINEDEBUG || '';
-const bootOffsets = longBoot ? [5, 30, 60, 120, 240, 360] : [5, 30, 60, 120];
+const mappedOnly = process.env.MAPPED_ONLY === '1';
+if (mappedOnly && process.env.AUDIO_AUTOPLAY_ONLY !== '1') {
+  throw new Error('MAPPED_ONLY requires AUDIO_AUTOPLAY_ONLY=1');
+}
+const bootOffsets = mappedOnly ? [] : (longBoot ? [5, 30, 60, 120, 240, 360] : [5, 30, 60, 120]);
 const pixelMethod = 'in-page';
 
 const metricsPath = join(outDir, 'metrics.jsonl');

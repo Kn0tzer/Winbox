@@ -1401,7 +1401,7 @@ U16 jit64HotThreshold() {
     static int cached = -1;
     if (cached < 0) {
         const char* env = std::getenv("BW64_JIT_HOT");
-        int value = env ? std::atoi(env) : 8;
+        int value = env ? std::atoi(env) : 24;
         if (value < 0) value = 0;
         if (value > 65535) value = 65535;
         cached = value;
