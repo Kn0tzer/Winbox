@@ -24,6 +24,13 @@ void internal_kpanic(BString msg);
 
 void kpanic(const char* msg);
 
+// Browser recover policy and counters. Recovery defaults on for Emscripten
+// runtimes and off for native builds unless BW64_RECOVER overrides it.
+bool bw64RecoverEnabled();
+void bw64RecoverNoteSkippedInstruction(bool loggedRip);
+void bw64RecoverNoteSigillFallback();
+extern "C" const char* bw64_recover_stats_json_text();
+
 template <class... Args>
 #ifdef BOXEDWINE_MSVC
 __declspec(noreturn)

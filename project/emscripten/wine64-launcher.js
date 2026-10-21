@@ -1006,6 +1006,10 @@
                     ENV["BW32_JIT"] = "1";
                     ENV["BW64_JIT"] = "1";
                 }
+                // ?recover=0|1 selects the host-side fault recovery policy.
+                // Keep absent at the compiled default (on in browser builds).
+                if (param("recover") === "0" || param("recover") === "1")
+                    ENV["BW64_RECOVER"] = param("recover");
                 // CPU64 hotness and dispatch A/B controls. Values are fixed to
                 // numeric ranges before entering the guest environment; 65535
                 // is the explicit no-compile sentinel for ?jithot=.
