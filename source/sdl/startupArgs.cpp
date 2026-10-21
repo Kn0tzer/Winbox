@@ -56,8 +56,6 @@ void bw64SessionRememberContext(const BString& workingDir, const std::vector<BSt
 #include "knativeaudio.h"
 #include "knativesocket.h"
 
-FsOpenNode* openDevInputGamepad(const std::shared_ptr<FsNode>& node, U32 flags, U32 data);
-
 #ifndef BOXEDWINE_DISABLE_UI
 #include "../ui/data/globalSettings.h"
 #endif
@@ -71,14 +69,6 @@ void x11_init();
 void createSysfs(const std::shared_ptr<FsNode> rootNode);
 
 U32 StartUpArgs::uiType;
-
-class FsInputDirectoryNode : public FsFileNode {
-public:
-    FsInputDirectoryNode(U32 id, const std::shared_ptr<FsNode>& parent)
-        : FsFileNode(id, 0, B("/dev/input"), B(""), B(""), true, false, parent) {}
-
-    U64 lastModified() override { return 1000; }
-};
 
 FsOpenNode* openKernelCommandLine(const std::shared_ptr<FsNode>& node, U32 flags, U32 data) {
     return new BufferAccess(node, flags, B(""));
@@ -126,11 +116,7 @@ void StartUpArgs::buildVirtualFileSystem() {
 
     std::shared_ptr<FsNode> rootNode = Fs::getNodeFromLocalPath(B(""), B("/"), true);
     std::shared_ptr<FsNode> devNode = Fs::addFileNode(B("/dev"), B(""), rootNode->nativePath.stringByApppendingPath("dev"), true, rootNode);
-    std::shared_ptr<FsFileNode> inputDirectory = Fs::addFileNode(B("/dev/input"), B(""), B(""), true, devNode);
-    U32 inputDirectoryId = inputDirectory->id;
-    inputDirectory->removeNodeFromParent();
-    std::shared_ptr<FsNode> inputNode = std::make_shared<FsInputDirectoryNode>(inputDirectoryId, devNode);
-    devNode->addChild(inputNode);
+    std::shared_ptr<FsNode> inputNode = Fs::addFileNode(B("/dev/input"), B(""), B(""), true, devNode);
     KSystem::procNode = Fs::addFileNode(B("/proc"), B(""), B(""), true, rootNode);
     std::shared_ptr<FsNode> procSysNode = Fs::addFileNode(B("/proc/sys"), B(""), B(""), true, KSystem::procNode);
     std::shared_ptr<FsNode> procSysKernelNode = Fs::addFileNode(B("/proc/sys/kernel"), B(""), B(""), true, procSysNode);
@@ -166,7 +152,6 @@ void StartUpArgs::buildVirtualFileSystem() {
     Fs::addVirtualFile(B("/dev/input/mice"), openDevInputTouch, K__S_IWRITE | K__S_IREAD | K__S_IFCHR, k_mdev(0xd, 0x43), inputNode);
     Fs::addVirtualFile(B("/dev/input/event3"), openDevInputTouch, K__S_IWRITE|K__S_IREAD|K__S_IFCHR, k_mdev(0xd, 0x43), inputNode);
     Fs::addVirtualFile(B("/dev/input/event4"), openDevInputKeyboard, K__S_IWRITE|K__S_IREAD|K__S_IFCHR, k_mdev(0xd, 0x44), inputNode);
-    Fs::addVirtualFile(B("/dev/input/event5"), openDevInputGamepad, K__S_IWRITE|K__S_IREAD|K__S_IFCHR, k_mdev(0xd, 0x45), inputNode);
 	Fs::addVirtualFile(B("/dev/dsp"), openDevDsp, K__S_IWRITE | K__S_IREAD | K__S_IFCHR, k_mdev(14, 3), devNode);
 	Fs::addVirtualFile(B("/dev/mixer"), openDevMixer, K__S_IWRITE | K__S_IREAD | K__S_IFCHR, k_mdev(14, 0), devNode);
     Fs::addVirtualFile(B("/dev/sequencer"), openDevSequencer, K__S_IWRITE | K__S_IREAD | K__S_IFCHR, k_mdev(14, 1), devNode);
@@ -430,7 +415,6 @@ bool StartUpArgs::apply() {
     envValues.push_back("PWD="+this->workingDir);
     envValues.push_back(B("DISPLAY=:0"));
     envValues.push_back(B("WINE_FAKE_WAIT_VBLANK=60"));
-    envValues.push_back(B("SDL_JOYSTICK_DISABLE_UDEV=1"));
 
     if (!this->ddrawOverridePath.isEmpty()) {
         envValues.push_back(B("WINEDLLOVERRIDES=ddraw=n,b"));

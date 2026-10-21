@@ -35,39 +35,7 @@
 
 #define K_MSG_OOB 1
 #define	K_MSG_PEEK     0x2
-#define K_MSG_DONTROUTE 0x4
-#define K_MSG_PROXY 0x10
-#define K_MSG_TRUNC 0x20
-#define K_MSG_DONTWAIT 0x40
-#define K_MSG_WAITALL 0x100
 #define K_MSG_NOSIGNAL 0x4000
-#define K_MSG_CMSG_CLOEXEC 0x40000000
-
-struct KSocketRecvFlags {
-    bool peek;
-    bool truncate;
-    bool dontWait;
-    bool waitAll;
-    bool closeOnExec;
-    U32 ignored;
-    U32 unknown;
-};
-
-inline KSocketRecvFlags ksocketDecodeRecvFlags(U32 flags) {
-    const U32 ignored = K_MSG_NOSIGNAL | K_MSG_DONTROUTE | K_MSG_PROXY;
-    const U32 supported = K_MSG_PEEK | K_MSG_TRUNC | K_MSG_DONTWAIT | K_MSG_WAITALL | K_MSG_CMSG_CLOEXEC;
-    return {
-        (flags & K_MSG_PEEK) != 0,
-        (flags & K_MSG_TRUNC) != 0,
-        (flags & K_MSG_DONTWAIT) != 0,
-        (flags & K_MSG_WAITALL) != 0,
-        (flags & K_MSG_CMSG_CLOEXEC) != 0,
-        flags & ignored,
-        flags & ~(ignored | supported)
-    };
-}
-
-void ksocketWarnUnknownRecvFlagsOnce(U32 flags);
 
 #define K_SHUT_RD      0
 #define K_SHUT_WR      1
