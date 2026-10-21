@@ -2567,6 +2567,12 @@ static U64 sys_sendmsg64(CPU64* cpu, U64 fd, U64 msg64, U64 flags) {
     if (!base) return (U64)-K_EFAULT;
     KMemory* m32 = thread->memory;
 
+    const U64 name64 = cpu->memory->readq(msg64);
+    const U32 nameLength = name64 ? cpu->memory->readd(msg64 + 8) : 0;
+    if (nameLength > 256) return (U64)-K_EINVAL;
+    const U32 name32 = nameLength ? bounceSockaddrTo32(cpu, name64, nameLength, nullptr) : 0;
+    if (nameLength && !name32) return (U64)-K_EFAULT;
+
     U64 iov     = cpu->memory->readq(msg64 + 16);
     U64 iovlen  = cpu->memory->readq(msg64 + 24);
     U64 control = cpu->memory->readq(msg64 + 32);
@@ -2591,8 +2597,8 @@ static U64 sys_sendmsg64(CPU64* cpu, U64 fd, U64 msg64, U64 flags) {
     // Build the 32-bit msghdr: a single iovec covering the gathered blob.
     m32->writed(base + MSG_SCRATCH_IOV + 0, dataAddr);
     m32->writed(base + MSG_SCRATCH_IOV + 4, total);
-    m32->writed(base + MSG_SCRATCH_HDR + 0, 0);                    // msg_name
-    m32->writed(base + MSG_SCRATCH_HDR + 4, 0);                    // msg_namelen
+    m32->writed(base + MSG_SCRATCH_HDR + 0, name32);               // msg_name
+    m32->writed(base + MSG_SCRATCH_HDR + 4, nameLength);           // msg_namelen
     m32->writed(base + MSG_SCRATCH_HDR + 8, base + MSG_SCRATCH_IOV); // msg_iov
     m32->writed(base + MSG_SCRATCH_HDR + 12, total ? 1 : 0);       // msg_iovlen
     U32 ctl32 = 0, ctllen32 = 0;
@@ -2672,6 +2678,11 @@ static U64 sys_recvmsg64(CPU64* cpu, U64 fd, U64 msg64, U64 flags) {
     if (!base) return (U64)-K_EFAULT;
     KMemory* m32 = thread->memory;
 
+    const U64 name64 = cpu->memory->readq(msg64);
+    const U32 nameLength = name64 ? cpu->memory->readd(msg64 + 8) : 0;
+    const U32 name32 = name64 ? bounceSockaddrTo32(cpu, 0, std::min<U32>(nameLength, 256), nullptr) : 0;
+    if (name64 && !name32) return (U64)-K_EFAULT;
+
     U64 iov     = cpu->memory->readq(msg64 + 16);
     U64 iovlen  = cpu->memory->readq(msg64 + 24);
     U64 control = cpu->memory->readq(msg64 + 32);
@@ -2683,7 +2694,7 @@ static U64 sys_recvmsg64(CPU64* cpu, U64 fd, U64 msg64, U64 flags) {
     U32 want = 0;
     for (U64 i = 0; i < iovlen; i++) {
         U64 l = cpu->memory->readq(iov + 16 * i + 8);
-        want += (U32)l;
+        want += (U32)std::min<U64>(l, dataCap - want);
     }
     if (want > dataCap) want = dataCap;
 
@@ -2691,8 +2702,8 @@ static U64 sys_recvmsg64(CPU64* cpu, U64 fd, U64 msg64, U64 flags) {
     U32 cmCap = MSG_SCRATCH_DATA - MSG_SCRATCH_CMSG; // room for cmsg records
     m32->writed(base + MSG_SCRATCH_IOV + 0, dataAddr);
     m32->writed(base + MSG_SCRATCH_IOV + 4, want);
-    m32->writed(base + MSG_SCRATCH_HDR + 0, 0);
-    m32->writed(base + MSG_SCRATCH_HDR + 4, 0);
+    m32->writed(base + MSG_SCRATCH_HDR + 0, name32);
+    m32->writed(base + MSG_SCRATCH_HDR + 4, std::min<U32>(nameLength, 256));
     m32->writed(base + MSG_SCRATCH_HDR + 8, base + MSG_SCRATCH_IOV);
     m32->writed(base + MSG_SCRATCH_HDR + 12, 1);
     m32->writed(base + MSG_SCRATCH_HDR + 16, (control && ctllen) ? cmArea : 0);
@@ -2717,8 +2728,21 @@ static U64 sys_recvmsg64(CPU64* cpu, U64 fd, U64 msg64, U64 flags) {
     }
     if ((S32)rc < 0) return (U64)(S64)(S32)rc;
 
+    const U32 outNameLength = m32->readd(base + MSG_SCRATCH_HDR + 4);
+    if (name64) {
+        const U32 count = std::min<U32>(std::min<U32>(nameLength, outNameLength), 256);
+        U8 address[256];
+        if (count) {
+            m32->memcpy(address, name32, count);
+            cpu->memory->memcpyToGuest(name64, address, count);
+        }
+    }
+    cpu->memory->writed(msg64 + 8, outNameLength);
+    cpu->memory->writed(msg64 + 48, m32->readd(base + MSG_SCRATCH_HDR + 24));
+
     // Scatter the received bytes back into the 64-bit iov segments.
-    U32 remaining = (U32)rc;
+    // MSG_TRUNC may return the full datagram length, exceeding bytes buffered.
+    U32 remaining = std::min<U32>(rc, want);
     U32 off = 0;
     for (U64 i = 0; i < iovlen && remaining; i++) {
         U64 b = cpu->memory->readq(iov + 16 * i);
