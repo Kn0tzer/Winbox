@@ -865,44 +865,48 @@ void traceLegacyDrawState(GLenum mode, GLsizei count, GLenum type) {
 
 void webGpuFixedCall(const char* method, double a = 0, double b = 0, double c = 0,
                      double d = 0, double e = 0, int count = 0) {
-    EM_ASM({
+    EM_ASM((() => {
         try {
-            var method = UTF8ToString($0), target = GLctx;
+            var method = UTF8ToString($0);
+            var target = GLctx;
             if (target && typeof target[method] === 'function')
                 target[method].apply(target, [$1, $2, $3, $4, $5].slice(0, $6));
         } catch (error) { console.error('gl64 fixed-function call failed', error); }
-    }, method, a, b, c, d, e, count);
+    })(), method, a, b, c, d, e, count);
 }
 
 void webGpuFixedCall6(const char* method, double a, double b, double c, double d, double e, double f) {
-    EM_ASM({
+    EM_ASM((() => {
         try {
-            var method = UTF8ToString($0), target = GLctx;
+            var method = UTF8ToString($0);
+            var target = GLctx;
             if (target && typeof target[method] === 'function')
                 target[method].call(target, $1, $2, $3, $4, $5, $6);
         } catch (error) { console.error('gl64 fixed-function call failed', error); }
-    }, method, a, b, c, d, e, f);
+    })(), method, a, b, c, d, e, f);
 }
 
 void webGpuFixedMatrixCall(const char* method, const GLfloat* matrix) {
-    EM_ASM({
+    EM_ASM((() => {
         try {
-            var method = UTF8ToString($0), target = GLctx;
+            var method = UTF8ToString($0);
+            var target = GLctx;
             if (target && typeof target[method] === 'function')
                 target[method].call(target, HEAPF32.slice($1 >>> 2, ($1 >>> 2) + 16));
         } catch (error) { console.error('gl64 fixed-function matrix failed', error); }
-    }, method, matrix);
+    })(), method, matrix);
 }
 
 void webGpuFixedTexEnvArrayCall(const char* method, GLenum target, GLenum pname,
                                 const GLfloat* values, size_t count) {
-    EM_ASM({
+    EM_ASM((() => {
         try {
-            var method = UTF8ToString($0), ctx = GLctx;
+            var method = UTF8ToString($0);
+            var ctx = GLctx;
             if (ctx && typeof ctx[method] === 'function')
                 ctx[method].call(ctx, $1, $2, HEAPF32.slice($3 >>> 2, ($3 >>> 2) + $4));
         } catch (error) { console.error('gl64 fixed-function texture environment failed', error); }
-    }, method, target, pname, values, count);
+    })(), method, target, pname, values, count);
 }
 
 int webGpuFixedDraw(GLenum mode, GLint first, GLsizei count, bool indexed, GLenum type,
@@ -930,7 +934,7 @@ int webGpuFixedDraw(GLenum mode, GLint first, GLsizei count, bool indexed, GLenu
     writeArray(24, texCoordArray, texCoord);
     packet[33] = (U32)(uintptr_t)(indexData.empty() ? nullptr : indexData.data());
     packet[34] = (U32)indexData.size();
-    return EM_ASM_INT({
+    return EM_ASM_INT((() => {
         try {
             var p = $0 >>> 2;
             var word = i => HEAPU32[p + i] >>> 0;
@@ -953,7 +957,7 @@ int webGpuFixedDraw(GLenum mode, GLint first, GLsizei count, bool indexed, GLenu
             }
             return GLctx.fixedFunctionDrawArrays(mode, first, count, arrays) ? 1 : 0;
         } catch (error) { console.error('gl64 fixed-function draw failed', error); return 0; }
-    }, packet);
+    })(), packet);
 }
 #endif
 
