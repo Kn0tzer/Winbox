@@ -65,6 +65,15 @@ function legacyLockHeld() {
   return false;
 }
 
+// A build waiting for probes to drain publishes build-pending; new probes hold back so the build is not starved.
+function buildPending() {
+  const file = join(SLOT_DIR, 'build-pending');
+  if (!existsSync(file)) return false;
+  if (pidAlive(pidFromFile(file))) return true;
+  unlinkIfPresent(file);
+  return false;
+}
+
 function removeDeadWaiters(kind) {
   const prefix = waiterPrefix(kind);
   const names = readdirSync(SLOT_DIR).filter(name => name.startsWith(prefix)).sort();
@@ -232,7 +241,7 @@ export async function acquireProbeSlot({ timeoutMs, kind } = {}) {
       const queue = removeDeadWaiters(kind);
       const queueIndex = queue.indexOf(waiter.name);
       const free = freeSlotCount(kind);
-      if (!legacyLockHeld() && queueIndex >= 0 && queueIndex < free) {
+      if (!legacyLockHeld() && !buildPending() && queueIndex >= 0 && queueIndex < free) {
         for (let i = 0; i < SLOT_COUNTS[kind]; i++) {
           const slot = createSlot(kind, i);
           if (!slot) continue;
