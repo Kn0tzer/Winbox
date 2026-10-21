@@ -36,3 +36,19 @@ jitbench32.test.mjs passed with stable checksums. Baseline first low-load pair: 
 ## Remaining
 
 B3 was not attempted because the three-build limit was used by the 3× threshold, 10× threshold, and B1 evaluation. The final JIT1 notepad startup target of within 10% of JIT0 remains unmet.
+
+## C1–C3: post-merge startup cost
+
+Merged `fix/winbox-chromium-20261018` at `3f4b8650d` and performed one post-merge build. The mapped-only notepad runs used the same merged build and began below load 4.
+
+| Post-merge startup | clickToMapped |
+|---|---:|
+| JIT0 | 39.931 s |
+| JIT1 | 76.034 s |
+| Ratio / gap | 1.90× / 36.103 s |
+
+At JIT1 map, CPU64 had hot threshold 80 and compiled, emitted, and instantiated 21,226 blocks. It recorded 94,145,798 block entries and 16,531,225 cold skips. `emitUs` was 590,815 (0.591 s); `instantiateUs` was 5,711,369 (5.711 s); combined compile and instantiate time was 6,302,184 µs (6.302 s), 17.5% of the startup gap. CPU64 recorded 6,444 emit rejects, zero instantiation failures, and top rejected opcodes `0F 28` (3,816), `FF` (3,686), `0F 11` (3,382), `0F 29` (3,129), and `89` (2,513).
+
+CPU32 JIT was enabled but compiled, entered, and instantiated zero blocks. Its `rejectDelegated` count was zero and all other reported fallback counters were zero. CPU64 compile and instantiate time therefore does not explain most of the extra startup time. Per the conditional scope, the further hotness sweep and startup grace gate were skipped; the startup result also remained above 1.3×, so C3 was not eligible.
+
+The post-merge jit64 suite passed with matching checksums. Warm medians were JIT0 1,537 ms and JIT1 831 ms, a 1.850× speedup at hot threshold 80. This remains above the 1.8× floor. The 1.3× notepad startup goal remains unmet.
