@@ -1021,6 +1021,15 @@
                     if (Number.isFinite(parsedJitMax))
                         ENV["BW64_JIT_MAX"] = String(Math.min(0xFFFFFFFF, Math.floor(parsedJitMax)));
                 }
+                var jitVerify = param("jitverify");
+                if (jitVerify === "0") ENV["BW64_JIT_VERIFY_EXECUTIONS"] = "0";
+                else if (jitVerify === "1") ENV["BW64_JIT_VERIFY_EXECUTIONS"] = "3";
+                var jitWarm = param("jitwarm");
+                if (jitWarm !== null && /^\d+$/.test(jitWarm)) {
+                    var parsedJitWarm = Number(jitWarm);
+                    if (Number.isFinite(parsedJitWarm))
+                        ENV["BW64_JIT_WARMUP_INSN"] = String(Math.min(Number.MAX_SAFE_INTEGER, Math.floor(parsedJitWarm)));
+                }
                 var jitDispatch = param("jitdispatch");
                 if (jitDispatch === "0" || jitDispatch === "1")
                     ENV["BW64_JIT_FAST_DISPATCH"] = jitDispatch;

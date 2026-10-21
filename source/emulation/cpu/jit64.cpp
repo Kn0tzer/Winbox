@@ -1148,6 +1148,7 @@ Jit64Block* Jit64BlockCache::insert(U64 rip, U64 page0, U32 gen0, U64 page1, U32
     for (U32 i = 0; i < nOps; i++) if (ops[i].plan == JIT64_FAST) b.fastCount++;
     b.executable = (b.fastCount == nOps);
     b.execCount = 0;
+    b.verifyRemaining = jit64VerifyExecutions();
     return &b;
 }
 
@@ -1221,11 +1222,13 @@ struct PublishedStats {
     U64 compiled = 0, instantiated = 0, blocks = 0, insns = 0, entered = 0, emitted = 0;
     U64 earlyExits = 0, limitExits = 0, rejected = 0, instFailed = 0;
     U64 fallbacks = 0, skipped = 0, emitUs = 0, instantiateUs = 0;
+    U64 verifyChecks = 0, verifyRejected = 0;
 };
 PublishedStats readOwnedStats(const Jit64State& s) {
     return {s.blocksCompiled, s.wasmInstantiated, s.wasmBlocks, s.wasmInsns,
         s.wasmEntered, s.wasmEmitted, s.wasmEarlyExits, s.wasmLimitExits, s.emitRejected,
-        s.instantiateFailed, s.insnsFallback, s.coldSkipped, s.emitTimeUs, s.instantiateTimeUs};
+        s.instantiateFailed, s.insnsFallback, s.coldSkipped, s.emitTimeUs, s.instantiateTimeUs,
+        s.verifyChecks, s.verifyRejected};
 }
 void addStats(PublishedStats& a, const PublishedStats& b) {
     a.emitted += b.emitted; a.compiled += b.compiled; a.instantiated += b.instantiated;
@@ -1233,6 +1236,7 @@ void addStats(PublishedStats& a, const PublishedStats& b) {
     a.earlyExits += b.earlyExits; a.limitExits += b.limitExits;
     a.rejected += b.rejected; a.instFailed += b.instFailed;
     a.fallbacks += b.fallbacks; a.skipped += b.skipped; a.emitUs += b.emitUs; a.instantiateUs += b.instantiateUs;
+    a.verifyChecks += b.verifyChecks; a.verifyRejected += b.verifyRejected;
 }
 std::mutex g_jitStatesMutex;
 std::vector<std::pair<Jit64State*, PublishedStats>> g_jitStates;
@@ -1337,6 +1341,8 @@ U32 jit64GlobalStatsJson(char* buf, U32 bufSize) {
     totals.coldSkipped = sum.skipped;
     totals.emitTimeUs = sum.emitUs;
     totals.instantiateTimeUs = sum.instantiateUs;
+    totals.verifyChecks = sum.verifyChecks;
+    totals.verifyRejected = sum.verifyRejected;
     for (U32 i = 0; i < 256; ++i) {
         totals.rejectOpcode[i].store(rejectOpcode[i], std::memory_order_relaxed);
         totals.reject0FOpcode[i].store(reject0FOpcode[i], std::memory_order_relaxed);
@@ -1410,13 +1416,39 @@ U16 jit64HotThreshold() {
     if (cached < 0) {
         const char* env = std::getenv("BW64_JIT_HOT");
         char* end = nullptr;
-        long value = env ? std::strtol(env, &end, 10) : 80;
-        if (env && (end == env || *end != '\0')) value = 80;
+        long value = env ? std::strtol(env, &end, 10) : 500;
+        if (env && (end == env || *end != '\0')) value = 500;
         if (value < 0) value = 0;
         if (value >= 65535) value = 65535;
         cached = (int)value;
     }
     return (U16)cached;
+}
+
+U8 jit64VerifyExecutions() {
+    static const U8 cached = [] {
+        const char* env = std::getenv("BW64_JIT_VERIFY_EXECUTIONS");
+        char* end = nullptr;
+        long value = env ? std::strtol(env, &end, 10) : 3;
+        if (env && (end == env || *end != '\0')) value = 3;
+        if (value < 0) value = 0;
+        if (value > 3) value = 3;
+        return (U8)value;
+    }();
+    return cached;
+}
+
+U64 jit64WarmupInstructions() {
+    static const U64 cached = [] {
+        const char* env = std::getenv("BW64_JIT_WARMUP_INSN");
+        if (env && env[0]) {
+            char* end = nullptr;
+            unsigned long long value = std::strtoull(env, &end, 10);
+            if (end != env && *end == '\0') return (U64)value;
+        }
+        return 2000000000ULL;
+    }();
+    return cached;
 }
 
 U64 jit64MaxBlocks() {
@@ -1506,6 +1538,9 @@ U32 jit64StatsJson(const Jit64State* state, char* buf, U32 bufSize) {
     j.add("\"engine\":\"%s\",", jit64EngineName(jit64SelectEngine()));
     j.add("\"mode\":\"%s\",", jit64WasmEngineMode());
     j.add("\"hotThreshold\":%u,", (unsigned)jit64HotThreshold());
+    j.add("\"warmupInstructions\":%llu,", (unsigned long long)jit64WarmupInstructions());
+    j.add("\"verifyChecks\":%llu,", (unsigned long long)(s ? s->verifyChecks : 0));
+    j.add("\"verifyRejected\":%llu,", (unsigned long long)(s ? s->verifyRejected : 0));
     j.add("\"blocksCompiled\":%llu,", (unsigned long long)(s ? s->blocksCompiled : 0));
     j.add("\"blocksEmitted\":%llu,", (unsigned long long)(s ? s->wasmEmitted : 0));
     j.add("\"blocksInstantiated\":%llu,", (unsigned long long)(s ? s->wasmInstantiated : 0));
