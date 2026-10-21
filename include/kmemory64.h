@@ -22,6 +22,7 @@
 
 class KProcess;
 class KThread;
+class KMemory64;
 
 // Sparse 64-bit guest memory with lazy page backing, mmap reservations,
 // shared file mappings, pinned futex buffers and a per-thread data cache.
@@ -293,10 +294,109 @@ private:
     // pagesMutex; returns the committed buffer. Closes a lost-write race where two
     // host threads first-touching the same page each `new` a buffer and one
     // thread's write lands in an orphaned buffer (see definition).
-    U8* commitPageLocked(U64 pageNum, U32 flagsIfNew);
+    U8* commitPageLocked(U64 pageNum, U32 flagsIfNew, U32* flagsOut = nullptr);
     K64Page* getPage(U64 pageNum) const;
-    U8* getPageData(U64 pageNum) const;
+    U8* getPageData(U64 pageNum, U32* flagsOut = nullptr) const;
+    U8 readbSlow(U64 addr);
+    void writebSlow(U64 addr, U8 value);
 };
+
+
+namespace K64DTlb {
+inline constexpr U32 SIZE = 256;
+struct Entry {
+    const KMemory64* mem;
+    U64 page;
+    U8* data;
+    U64 gen;
+    U32 flags;
+#ifdef BOXEDWINE_BLOCK_CACHE_INFRA
+    U32 blockSlot;
+    bool blockPage;
+#endif
+};
+#if defined(__GNUC__) && !defined(__EMSCRIPTEN__) && !defined(_WIN32)
+inline thread_local Entry entries[SIZE] __attribute__((tls_model("initial-exec")));
+#else
+inline thread_local Entry entries[SIZE];
+#endif
+extern std::atomic<U64> generation;
+inline constexpr U32 FAST_SCALAR_READ = 0x10000;
+inline constexpr U32 FAST_BYTE_WRITE = 0x20000;
+inline constexpr U32 FAST_SCALAR_WRITE = 0x40000;
+inline __attribute__((always_inline)) Entry* lookup(const KMemory64* mem, U64 pageNum) {
+    Entry& e = entries[pageNum & (SIZE - 1)];
+    if (e.mem != mem || e.page != pageNum) return nullptr;
+    const U64 gen = generation.load(std::memory_order_acquire);
+    if (e.gen != gen) return nullptr;
+    return &e;
+}
+
+template<typename T, bool checkScalarRead = true>
+inline __attribute__((always_inline)) bool tryRead(const KMemory64* mem, U64 addr, T& value) {
+    const U64 offset = addr & K64_PAGE_MASK;
+    if (offset + sizeof(T) > K64_PAGE_SIZE) return false;
+    Entry* e = lookup(mem, addr >> K64_PAGE_SHIFT);
+    if (!e || (e->flags & K64_PAGE_READ) == 0 ||
+        (checkScalarRead && (e->flags & FAST_SCALAR_READ) == 0)) return false;
+    std::memcpy(&value, e->data + offset, sizeof(T));
+    return true;
+}
+
+template<typename T>
+inline __attribute__((always_inline)) bool tryWrite(const KMemory64* mem, U64 addr, const T& value) {
+    const U64 offset = addr & K64_PAGE_MASK;
+    if (offset + sizeof(T) > K64_PAGE_SIZE) return false;
+    Entry* e = lookup(mem, addr >> K64_PAGE_SHIFT);
+    const U32 fastFlag = sizeof(T) == 1 ? FAST_BYTE_WRITE : FAST_SCALAR_WRITE;
+    if (!e || (e->flags & K64_PAGE_WRITE) == 0 || (e->flags & fastFlag) == 0) return false;
+    std::memcpy(e->data + offset, &value, sizeof(T));
+    return true;
+}
+}
+
+#ifdef BOXEDWINE_BLOCK_CACHE_INFRA
+bool bw64PageHoldsBlocks(U64 pageNum);
+#endif
+
+inline __attribute__((always_inline)) U8 KMemory64::readb(U64 addr) {
+    U8 value;
+    return K64DTlb::tryRead<U8, false>(this, addr, value) ? value : readbSlow(addr);
+}
+inline __attribute__((always_inline)) U16 KMemory64::readw(U64 addr) {
+    U16 value;
+    if (K64DTlb::tryRead(this, addr, value)) return value;
+    memcpyFromGuest(&value, addr, sizeof(value));
+    return value;
+}
+inline __attribute__((always_inline)) U32 KMemory64::readd(U64 addr) {
+    U32 value;
+    if (K64DTlb::tryRead(this, addr, value)) return value;
+    memcpyFromGuest(&value, addr, sizeof(value));
+    return value;
+}
+inline __attribute__((always_inline)) U64 KMemory64::readq(U64 addr) {
+    U64 value;
+    if (K64DTlb::tryRead(this, addr, value)) return value;
+    memcpyFromGuest(&value, addr, sizeof(value));
+    return value;
+}
+inline __attribute__((always_inline)) void KMemory64::writeb(U64 addr, U8 value) {
+    if (K64DTlb::tryWrite(this, addr, value)) return;
+    writebSlow(addr, value);
+}
+inline __attribute__((always_inline)) void KMemory64::writew(U64 addr, U16 value) {
+    if (K64DTlb::tryWrite(this, addr, value)) return;
+    memcpyToGuest(addr, &value, sizeof(value));
+}
+inline __attribute__((always_inline)) void KMemory64::writed(U64 addr, U32 value) {
+    if (K64DTlb::tryWrite(this, addr, value)) return;
+    memcpyToGuest(addr, &value, sizeof(value));
+}
+inline __attribute__((always_inline)) void KMemory64::writeq(U64 addr, U64 value) {
+    if (K64DTlb::tryWrite(this, addr, value)) return;
+    memcpyToGuest(addr, &value, sizeof(value));
+}
 
 // BW64_MEMRING dump (see kmemory64.cpp): print the recent wineserver guest-write
 // ring, flagging any write near `nearAddr` (a malloc-dump corrupted-chunk

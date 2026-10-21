@@ -44,32 +44,40 @@ int main() {
 });
 
 test('a pointer captured before remap cannot be cached with the newer generation', () => {
+  const header = readFileSync(new URL('../../../../include/kmemory64.h', import.meta.url), 'utf8');
   const source = readFileSync(new URL('../../../../source/kernel/kmemory64.cpp', import.meta.url), 'utf8');
-  const cache = source.slice(source.indexOf('struct K64DTlbEntry'), source.indexOf('inline void k64DTlbInvalidateAll()'));
+  const classStart = header.indexOf('class KMemory64 {');
+  const entryStart = header.indexOf('namespace K64DTlb {', classStart);
+  const lookupStart = header.indexOf('inline __attribute__((always_inline)) Entry* lookup', entryStart);
+  const entryDecl = header.slice(entryStart, lookupStart);
+  const lookupEnd = header.indexOf('\n}', lookupStart) + 2;
+  const lookup = header.slice(lookupStart, lookupEnd);
+  const insertStart = source.indexOf('inline void k64DTlbInsert(');
+  const insertEnd = source.indexOf('\ninline void k64DTlbInvalidateAll()', insertStart);
+  const insert = source.slice(insertStart, insertEnd);
   const dir = mkdtempSync(join(tmpdir(), 'bw64-cache-generation-'));
   try {
     writeFileSync(join(dir, 'check.cpp'), `
 #include <cstdint>
 #include <atomic>
 #include <cassert>
-#include <type_traits>
 using U8 = uint8_t; using U32 = uint32_t; using U64 = uint64_t;
-${cache}
-// Exercise the old signature too, so this regression fails before the fix.
-template<class Function> void insert(Function f, const void* mem, U64 page, U8* data, U32 observed) {
-    if constexpr (std::is_invocable_v<Function, const void*, U64, U8*, U32>) f(mem, page, data, observed);
-    else f(mem, page, data);
+class KMemory64 {};
+${entryDecl}
+std::atomic<U64> generation{1};
+${lookup}
 }
+${insert}
 int main() {
     U8 oldBacking[4096] = {}, newBacking[4096] = {};
-    const void* memory = oldBacking;
-    U32 observed = g_k64DTlbGen.load();
+    KMemory64 memory;
+    U64 observed = K64DTlb::generation.load();
     // The caller captured oldBacking, then a sibling remapped the page.
-    g_k64DTlbGen.fetch_add(1);
-    insert(k64DTlbInsert, memory, 7, oldBacking, observed);
-    assert(k64DTlbLookup(memory, 7) == nullptr);
-    insert(k64DTlbInsert, memory, 7, newBacking, g_k64DTlbGen.load());
-    assert(k64DTlbLookup(memory, 7) == newBacking);
+    K64DTlb::generation.fetch_add(1);
+    k64DTlbInsert(&memory, 7, oldBacking, 0, 0, observed);
+    assert(K64DTlb::lookup(&memory, 7) == nullptr);
+    k64DTlbInsert(&memory, 7, newBacking, 0, 0, K64DTlb::generation.load());
+    assert(K64DTlb::lookup(&memory, 7)->data == newBacking);
 }
 `);
     execFileSync('c++', ['-std=c++17', join(dir, 'check.cpp'), '-o', join(dir, 'check')], { stdio: 'pipe', timeout: 30000 });
