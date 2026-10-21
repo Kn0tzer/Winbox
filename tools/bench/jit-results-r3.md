@@ -50,3 +50,8 @@ One diagnostic retry with `BW_TEST_URL_PARAMS='jitverify=0'` passed the suite: J
 - Default-verifier `jit64` suite speedup is unmeasured because its JIT-on startup timed out. The 3.008× result disables verification.
 - The 1.3× startup target is unmet for Notepad, Celeste, and Portal. The Celeste `jithot` sweep did not affect CPU32 JIT startup.
 - Post-change JIT0 demo controls were not rerun; JIT0 values in the comparison are the supplied baselines.
+## Round 4: CPU32/CPU64 switch split
+
+The requested Round 4 matrix was not run. The single authorized WASM build attempt stopped during compilation at `source/emulation/cpu/jit64.cpp:1449` because the warm-up lambda returned inconsistent integer types. The source fix (`return 0ULL`) was committed as `bc918d412`, but Round 4 allows only one build, so there is no fresh runtime containing the CPU32/CPU64 switch split. The existing runtime predates this change and cannot answer the A/B/C comparison.
+
+No Round 4 mapped timings, Snake verifier comparison, jit64 browser-suite result with final defaults, or fresh-build native self-test result are available. Current source candidates are `jit=1` CPU64 only, CPU32 JIT opt-in via `jit32=1`, verifier default off, and warm-up default zero; these choices are unvalidated against the requested timing matrix. The Snake engine attribution remains unconfirmed. Earlier evidence points toward CPU32 JIT because Snake is a 32-bit guest and CPU64 emitted no blocks during the hotness sweep, but that does not replace the requested same-build comparison.
