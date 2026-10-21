@@ -59,13 +59,19 @@ The JS bridge returns a separate snapshot:
 
 The `wasm64-mt-jit` build and browser export passed on 2026-10-21. The build
 record reports WASM SHA-256
-`9c7ec911f01e51c472f5d91a3efe09e46f61f83e0f7cd0ce10bb8a9268e4391a`.
-The existing native CPU64 cache binary passed **907 tests, 0 failed**. The R4
+`9c7ec911f01e51c472f5d91a3efe09e46f61f83e0f7cd0ce10bb8a9268e4391a`. The R4
 Node bridge, GL WebGPU, and Vulkan pipeline unit tests passed **9 tests, 0
 failed**.
 
-The requested notepad matrix (`DEMO=notepad JIT=0` and `JIT=1`) and native CPU32
-self-test were not run. Load stayed above the required 6.0 threshold, peaking at
-14.95, while other lanes held both browser probe slots. The matrix acquires a
-slot at `web/tests/demo-matrix.mjs:73`; the CPU32 target would require the native
-build listed at `tools/browser/README.md:73`. Those checks remain outstanding.
+The current native CPU64 cache target was rebuilt and passed **907 tests, 0
+failed**. Notepad mapped in both required browser runs: JIT=0 in 60.7 seconds
+and JIT=1 in 90.7 seconds. Both had zero page errors and zero HTTP errors. Each
+reported 67 console errors; inspection showed repeated Emscripten GL-emulation
+warnings.
+
+The CPU32 test target now builds after adding its missing `ksignal.h` include,
+but the CPU32 recovery test aborts. The full suite run (`boxedwine 0 0 1`) and a
+single isolated retry (`boxedwine 2 1 1`) both stopped at the third test with
+`recover: kpanic #1: LabelAlreadyBound` and exit 134. The test is registered at
+`source/test/testMain.cpp:68` and implemented at
+`source/test/cpu/testMisc.cpp:1941`. No further retry was made.
