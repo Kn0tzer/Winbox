@@ -3021,10 +3021,10 @@ const char* const g_dev_exts[] = {
     "VK_KHR_push_descriptor",
 };
 
-// Core bits BOTH Features handlers set. DXVK's isSuitable() reads these out of
-// the same struct we hand back, so a FALSE here is an adapter skip. geometryShader
-// / tessellationShader stay FALSE on purpose: nothing in the manifest schema
-// carries those stages yet, and DXVK only probes them.
+// Core bits BOTH Features handlers set. DXVK derives D3D11 feature level from
+// these fields, so a FALSE here caps Unity's D3D11 device at 10_1. The indirect
+// draw path is recorded as direct draws by the bridge; tessellation stages are
+// still not represented in the page manifest.
 void fillCoreFeatures(VkPhysicalDeviceFeatures* f) {
     memset(f, 0, sizeof(*f));
     f->robustBufferAccess = VK_TRUE;
@@ -3048,8 +3048,10 @@ void fillCoreFeatures(VkPhysicalDeviceFeatures* f) {
      * multi-viewport, or dual-src blending. If a future app creates a
      * geometry shader, pipeline creation fails loudly at the page tier
      * (no WGSL target stage) instead of silently misrendering. */
-    f->geometryShader = VK_TRUE;        /* advertised; NOT implemented (see above) */
-    f->tessellationShader = VK_FALSE;   /* stays FALSE: caps max FL at 10_1 */
+    f->geometryShader = VK_TRUE;        /* advertised; no WGSL target stage */
+    f->tessellationShader = VK_TRUE;    /* needed for D3D11 feature level 11_0 */
+    f->multiDrawIndirect = VK_TRUE;     /* vk64bridge expands draws into CMD_DRAW */
+    f->drawIndirectFirstInstance = VK_TRUE; /* preserved in each expanded draw */
     f->depthBiasClamp = VK_TRUE;        /* replayed with WebGPU depthBiasClamp */
     f->depthClamp = VK_TRUE;            /* page requests depth-clip-control when available */
     f->dualSrcBlend = VK_TRUE;          /* advertised; rare in practice */
