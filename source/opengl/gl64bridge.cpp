@@ -74,6 +74,7 @@
 #include <atomic>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <mutex>
 #include <cmath>
@@ -94,9 +95,13 @@ static inline void bw_glMaterialf(GLenum face, GLenum pname, GLfloat v) {
     GLfloat p[1] = { v }; glMaterialfv(face, pname, p);
 }
 static inline void bw_glColorMaterial(GLenum, GLenum) { /* glemu folds glColor */ }
+// WebGL2 has no shade-model state. Smooth interpolation is the default and
+// Emscripten's generated GL entry point is only a TODO warning, so swallow it.
+static inline void bw_glShadeModel(GLenum) {}
 #define glLightf        bw_glLightf
 #define glMaterialf     bw_glMaterialf
 #define glColorMaterial bw_glColorMaterial
+#define glShadeModel    bw_glShadeModel
 #endif
 
 // ---------------------------------------------------------------------------
@@ -752,6 +757,94 @@ U64 g_procBurstCount = 0;
 // know a programmable-pipeline frame was produced (vs. the immediate-mode path).
 std::atomic<bool> g_glDrew{false};
 
+#ifdef __EMSCRIPTEN__
+struct LegacyClientArray {
+    GLint size = 4;
+    GLenum type = GL_FLOAT;
+    GLsizei stride = 0;
+    U64 pointer = 0;
+    bool configured = false;
+    bool bufferBacked = false;
+    bool enabled = false;
+};
+LegacyClientArray g_legacyVertexArray{3, GL_FLOAT, 0, 0, false, false, false};
+LegacyClientArray g_legacyColorArray{4, GL_FLOAT, 0, 0, false, false, false};
+LegacyClientArray g_legacyTexCoordArray{4, GL_FLOAT, 0, 0, false, false, false};
+GLuint g_legacyArrayBuffer = 0;
+GLuint g_legacyElementArrayBuffer = 0;
+
+size_t legacyTypeSize(GLenum type) {
+    switch (type) {
+        case GL_BYTE: case GL_UNSIGNED_BYTE: return 1;
+        case GL_SHORT: case GL_UNSIGNED_SHORT: return 2;
+        case GL_INT: case GL_UNSIGNED_INT: case GL_FLOAT: return 4;
+        case GL_DOUBLE: return 8;
+        default: return 0;
+    }
+}
+
+bool copyLegacyArray(GLGuestCPU* cpu, const LegacyClientArray& array, U32 lastIndex,
+                     std::vector<U8>& copy) {
+    if (!array.enabled || !array.configured || !array.pointer || array.bufferBacked) return true;
+    const size_t component = legacyTypeSize(array.type);
+    if (!component || array.size < 1 || array.size > 4) return false;
+    const size_t element = component * (size_t)array.size;
+    const size_t stride = array.stride > 0 ? (size_t)array.stride : element;
+    const size_t bytes = (size_t)lastIndex * stride + element;
+    if (bytes > 64u * 1024u * 1024u) return false;
+    copy.resize(bytes);
+    cpu->memory->memcpyFromGuest(copy.data(), array.pointer, bytes);
+    return true;
+}
+
+bool copyLegacyIndices(GLGuestCPU* cpu, GLenum type, GLsizei count, U64 pointer,
+                       std::vector<U8>& copy, U32& lastIndex) {
+    size_t element = type == GL_UNSIGNED_BYTE ? 1 :
+                     type == GL_UNSIGNED_SHORT ? 2 :
+                     type == GL_UNSIGNED_INT ? 4 : 0;
+    if (!element || count < 0 || count > 4 * 1024 * 1024 || !pointer) return false;
+    copy.resize((size_t)count * element);
+    cpu->memory->memcpyFromGuest(copy.data(), pointer, copy.size());
+    lastIndex = 0;
+    for (GLsizei i = 0; i < count; ++i) {
+        U32 value = 0;
+        if (element == 1) value = copy[(size_t)i];
+        else if (element == 2) value = (U32)copy[(size_t)i * 2] | ((U32)copy[(size_t)i * 2 + 1] << 8);
+        else value = (U32)copy[(size_t)i * 4] | ((U32)copy[(size_t)i * 4 + 1] << 8) |
+                     ((U32)copy[(size_t)i * 4 + 2] << 16) | ((U32)copy[(size_t)i * 4 + 3] << 24);
+        if (value > lastIndex) lastIndex = value;
+    }
+    return true;
+}
+
+void traceLegacyDrawState(GLenum mode, GLsizei count, GLenum type) {
+    static bool reported = false;
+    if (reported || !getenv("BW64_GLTRACE")) return;
+    reported = true;
+    GLint viewport[4] = {}, program = 0, fbo = 0, texture = 0;
+    GLint arrayBuffer = 0, elementBuffer = 0, depthFunc = 0;
+    GLint srcBlend = 0, dstBlend = 0;
+    GLboolean depthMask = GL_FALSE;
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fbo);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture);
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &arrayBuffer);
+    glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &elementBuffer);
+    glGetIntegerv(GL_DEPTH_FUNC, &depthFunc);
+    glGetIntegerv(GL_BLEND_SRC_RGB, &srcBlend);
+    glGetIntegerv(GL_BLEND_DST_RGB, &dstBlend);
+    glGetBooleanv(GL_DEPTH_WRITEMASK, &depthMask);
+    GLint attrs[4] = {};
+    for (GLuint i = 0; i < 4; ++i) glGetVertexAttribiv(i, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &attrs[i]);
+    klog_fmt("gl64 DRAWSTATE: mode=0x%x count=%d type=0x%x viewport=%d,%d,%d,%d fbo=%d complete=0x%x program=%d tex2d=%d arrayBuf=%d elemBuf=%d depth=%d/%d/0x%x blend=%d/%d/%d attrs=%d%d%d%d",
+        mode, count, type, viewport[0], viewport[1], viewport[2], viewport[3], fbo,
+        glCheckFramebufferStatus(GL_FRAMEBUFFER), program, texture, arrayBuffer, elementBuffer,
+        (int)glIsEnabled(GL_DEPTH_TEST), (int)depthMask, depthFunc,
+        (int)glIsEnabled(GL_BLEND), srcBlend, dstBlend, attrs[0], attrs[1], attrs[2], attrs[3]);
+}
+#endif
+
 // Translate wined3d's desktop-GLSL (#version 120/130) shader source into the
 // GLSL ES 3.00 dialect WebGL2 requires. WebGL2 rejects `#version 120` outright,
 // and the legacy `attribute`/`varying`/`gl_FragData`/`texture2D` keywords don't
@@ -1401,6 +1494,10 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
     // guarded by g_glMutex (held above).
     g_lastFnIdx = (g_lastFnIdx + 1) & 7;
     g_lastFnIds[g_lastFnIdx] = fnId;
+    GL64Args args = {};
+    if (argsAddr) {
+        cpu->memory->memcpyFromGuest(&args, argsAddr, sizeof(args));
+    }
     // BW64_GLTRACE=2 logs every trapped fnId (verbose). NB: getenv is unreliable on
     // guest worker threads in this pthread build (Module.ENV isn't always wired to
     // workers), so this can stay silent even when GL is flowing — it's a best-effort
@@ -1408,6 +1505,20 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
     if (const char* gt = getenv("BW64_GLTRACE")) {
         if (gt[0] == '2')
             klog_fmt("gl64: call fnId=%llu", (unsigned long long)fnId);
+        else if (fnId != GL64_fn_traceProc && fnId != 0) {
+            char* end = nullptr;
+            long limit = std::strtol(gt, &end, 10);
+            if (end != gt && *end == '\0' && limit > 0) {
+                static U64 tracedCalls = 0;
+                if (tracedCalls < (U64)limit) {
+                    tracedCalls++;
+                    klog_fmt("gl64 TRACE[%llu]: fnId=%llu args=%llx,%llx,%llx,%llx",
+                        (unsigned long long)tracedCalls, (unsigned long long)fnId,
+                        (unsigned long long)args.a[0], (unsigned long long)args.a[1],
+                        (unsigned long long)args.a[2], (unsigned long long)args.a[3]);
+                }
+            }
+        }
         // C7: proc-resolution bursts mark wined3d adapter (re-)init: every
         // init re-resolves ~500 GL names through glXGetProcAddressARB. A burst
         // START after a long gap = a fresh adapter init (loop iteration).
@@ -1423,11 +1534,6 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                      bridgeElapsedSec(), (unsigned long long)g_procBurstCount);
         }
     }
-    GL64Args args = {};
-    if (argsAddr) {
-        cpu->memory->memcpyFromGuest(&args, argsAddr, sizeof(args));
-    }
-
 #ifdef __EMSCRIPTEN__
     bwGpuCapture(cpu, fnId, args);
 #endif
@@ -1637,6 +1743,74 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glShadeModel:
             if (g_glContext) GL_MT(glShadeModel((GLenum)ai(args,0)));
             return 0;
+#ifdef __EMSCRIPTEN__
+        case GL64_fn_glEnableClientState:
+        case GL64_fn_glDisableClientState: {
+            GLenum array = (GLenum)ai(args,0);
+            bool enabled = fnId == GL64_fn_glEnableClientState;
+            if (array == GL_VERTEX_ARRAY) g_legacyVertexArray.enabled = enabled;
+            else if (array == GL_COLOR_ARRAY) g_legacyColorArray.enabled = enabled;
+            else if (array == GL_TEXTURE_COORD_ARRAY) g_legacyTexCoordArray.enabled = enabled;
+            if (g_glContext) GL_MT(enabled ? glEnableClientState(array) : glDisableClientState(array));
+            return 0;
+        }
+        case GL64_fn_glVertexPointer:
+        case GL64_fn_glColorPointer:
+        case GL64_fn_glTexCoordPointer: {
+            LegacyClientArray* array = fnId == GL64_fn_glVertexPointer ? &g_legacyVertexArray :
+                                       fnId == GL64_fn_glColorPointer ? &g_legacyColorArray : &g_legacyTexCoordArray;
+            array->size = (GLint)ai(args,0);
+            array->type = (GLenum)ai(args,1);
+            array->stride = (GLsizei)ai(args,2);
+            array->pointer = args.a[3];
+            array->configured = true;
+            array->bufferBacked = g_legacyArrayBuffer != 0;
+            if (array->bufferBacked && g_glContext) {
+                GLint size = array->size;
+                GLenum type = array->type;
+                GLsizei stride = array->stride;
+                const void* offset = (const void*)(uintptr_t)array->pointer;
+                glOnMain([&] {
+                    if (fnId == GL64_fn_glVertexPointer) glVertexPointer(size, type, stride, offset);
+                    else if (fnId == GL64_fn_glColorPointer) glColorPointer(size, type, stride, offset);
+                    else glTexCoordPointer(size, type, stride, offset);
+                });
+            }
+            return 0;
+        }
+        case GL64_fn_glAlphaFunc:
+            if (g_glContext) GL_MT(glAlphaFunc((GLenum)ai(args,0), af(args,1)));
+            return 0;
+        case GL64_fn_glTexEnvf:
+            if (g_glContext) GL_MT(glTexEnvf((GLenum)ai(args,0), (GLenum)ai(args,1), af(args,2)));
+            return 0;
+        case GL64_fn_glTexEnvi:
+            if (g_glContext) GL_MT(glTexEnvi((GLenum)ai(args,0), (GLenum)ai(args,1), (GLint)ai(args,2)));
+            return 0;
+        case GL64_fn_glTexEnvfv:
+        case GL64_fn_glTexEnviv: {
+            if (g_glContext && args.a[2]) {
+                const bool isInt = fnId == GL64_fn_glTexEnviv;
+                const size_t n = ai(args,1) == 0x2201 /*GL_TEXTURE_ENV_COLOR*/ ? 4 : 1;
+                if (isInt && n == 1) {
+                    GLint value = 0;
+                    cpu->memory->memcpyFromGuest(&value, args.a[2], sizeof(value));
+                    GL_MT(glTexEnvi((GLenum)ai(args,0), (GLenum)ai(args,1), value));
+                } else {
+                    std::vector<GLfloat> values(n);
+                    if (isInt) {
+                        std::vector<GLint> integers(n);
+                        cpu->memory->memcpyFromGuest(integers.data(), args.a[2], n * sizeof(GLint));
+                        for (size_t i = 0; i < n; ++i) values[i] = (GLfloat)integers[i];
+                    } else {
+                        cpu->memory->memcpyFromGuest(values.data(), args.a[2], n * sizeof(GLfloat));
+                    }
+                    GL_MT(glTexEnvfv((GLenum)ai(args,0), (GLenum)ai(args,1), values.data()));
+                }
+            }
+            return 0;
+        }
+#endif
         case GL64_fn_glDepthFunc:
             if (g_glContext) GL_MT(glDepthFunc((GLenum)ai(args,0)));
             return 0;
@@ -2258,7 +2432,13 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             return 0;
         }
         case GL64_fn_glBindBuffer:
-            if (g_glContext) GL_MT(glBindBuffer((GLenum)ai(args,0), (GLuint)ai(args,1)));
+            if (g_glContext) {
+                GLenum target = (GLenum)ai(args,0);
+                GLuint buffer = (GLuint)ai(args,1);
+                if (target == GL_ARRAY_BUFFER) g_legacyArrayBuffer = buffer;
+                else if (target == GL_ELEMENT_ARRAY_BUFFER) g_legacyElementArrayBuffer = buffer;
+                GL_MT(glBindBuffer(target, buffer));
+            }
             return 0;
         case GL64_fn_glBufferData: {
             if (g_glContext) {
@@ -2327,8 +2507,20 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glDrawArrays:
             if (g_glContext) {
                 GLenum mode=(GLenum)ai(args,0); GLint first=(GLint)ai(args,1); GLsizei count=(GLsizei)ai(args,2);
-                glOnMain([&]{ bindDrawTarget();
-                              glDrawArrays(mode, first, count); });
+                std::vector<U8> vertex, color, texCoord;
+                U64 lastIndex64 = first < 0 ? 0 : (U64)(U32)first + (count > 0 ? (U32)count - 1 : 0);
+                bool copied = first >= 0 && count >= 0 && lastIndex64 <= 0xffffffffu &&
+                    copyLegacyArray(cpu, g_legacyVertexArray, (U32)lastIndex64, vertex) &&
+                    copyLegacyArray(cpu, g_legacyColorArray, (U32)lastIndex64, color) &&
+                    copyLegacyArray(cpu, g_legacyTexCoordArray, (U32)lastIndex64, texCoord);
+                glOnMain([&]{
+                    bindDrawTarget();
+                    if (copied && !vertex.empty()) glVertexPointer(g_legacyVertexArray.size, g_legacyVertexArray.type, g_legacyVertexArray.stride, vertex.data());
+                    if (copied && !color.empty()) glColorPointer(g_legacyColorArray.size, g_legacyColorArray.type, g_legacyColorArray.stride, color.data());
+                    if (copied && !texCoord.empty()) glTexCoordPointer(g_legacyTexCoordArray.size, g_legacyTexCoordArray.type, g_legacyTexCoordArray.stride, texCoord.data());
+                    traceLegacyDrawState(mode, count, 0);
+                    glDrawArrays(mode, first, count);
+                });
                 g_glDrew = true;
             }
             return 0;
@@ -2336,10 +2528,24 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             if (g_glContext) {
                 GLenum mode=(GLenum)ai(args,0); GLsizei count=(GLsizei)ai(args,1); GLenum type=(GLenum)ai(args,2);
                 const void* indices = (const void*)(uintptr_t)args.a[3];
+                std::vector<U8> indexData, vertex, color, texCoord;
+                U32 lastIndex = 0;
+                bool copied = g_legacyElementArrayBuffer ||
+                    (copyLegacyIndices(cpu, type, count, args.a[3], indexData, lastIndex) &&
+                     copyLegacyArray(cpu, g_legacyVertexArray, lastIndex, vertex) &&
+                     copyLegacyArray(cpu, g_legacyColorArray, lastIndex, color) &&
+                     copyLegacyArray(cpu, g_legacyTexCoordArray, lastIndex, texCoord));
+                if (!g_legacyElementArrayBuffer && copied) indices = indexData.data();
                 static std::atomic<bool> once{false};
                 if (!once.exchange(true)) klog_fmt("gl64 DRAW: first glDrawElements mode=0x%x count=%d", mode, count);
-                glOnMain([&]{ bindDrawTarget();
-                              glDrawElements(mode, count, type, indices); });
+                glOnMain([&]{
+                    bindDrawTarget();
+                    if (copied && !vertex.empty()) glVertexPointer(g_legacyVertexArray.size, g_legacyVertexArray.type, g_legacyVertexArray.stride, vertex.data());
+                    if (copied && !color.empty()) glColorPointer(g_legacyColorArray.size, g_legacyColorArray.type, g_legacyColorArray.stride, color.data());
+                    if (copied && !texCoord.empty()) glTexCoordPointer(g_legacyTexCoordArray.size, g_legacyTexCoordArray.type, g_legacyTexCoordArray.stride, texCoord.data());
+                    traceLegacyDrawState(mode, count, type);
+                    glDrawElements(mode, count, type, indices);
+                });
                 g_glDrew = true;
             }
             return 0;
@@ -2348,8 +2554,22 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 GLenum mode=(GLenum)ai(args,0); GLuint start=(GLuint)ai(args,1); GLuint end=(GLuint)ai(args,2);
                 GLsizei count=(GLsizei)ai(args,3); GLenum type=(GLenum)ai(args,4);
                 const void* indices = (const void*)(uintptr_t)args.a[5];
-                glOnMain([&]{ bindDrawTarget();
-                              glDrawRangeElements(mode, start, end, count, type, indices); });
+                std::vector<U8> indexData, vertex, color, texCoord;
+                U32 lastIndex = 0;
+                bool copied = g_legacyElementArrayBuffer ||
+                    (copyLegacyIndices(cpu, type, count, args.a[5], indexData, lastIndex) &&
+                     copyLegacyArray(cpu, g_legacyVertexArray, lastIndex, vertex) &&
+                     copyLegacyArray(cpu, g_legacyColorArray, lastIndex, color) &&
+                     copyLegacyArray(cpu, g_legacyTexCoordArray, lastIndex, texCoord));
+                if (!g_legacyElementArrayBuffer && copied) indices = indexData.data();
+                glOnMain([&]{
+                    bindDrawTarget();
+                    if (copied && !vertex.empty()) glVertexPointer(g_legacyVertexArray.size, g_legacyVertexArray.type, g_legacyVertexArray.stride, vertex.data());
+                    if (copied && !color.empty()) glColorPointer(g_legacyColorArray.size, g_legacyColorArray.type, g_legacyColorArray.stride, color.data());
+                    if (copied && !texCoord.empty()) glTexCoordPointer(g_legacyTexCoordArray.size, g_legacyTexCoordArray.type, g_legacyTexCoordArray.stride, texCoord.data());
+                    traceLegacyDrawState(mode, count, type);
+                    glDrawRangeElements(mode, start, end, count, type, indices);
+                });
                 g_glDrew = true;
             }
             return 0;

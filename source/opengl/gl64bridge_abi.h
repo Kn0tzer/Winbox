@@ -474,6 +474,20 @@ enum {
     GL64_fn_glUniform4uiv = 868,
     GL64_fn_glGetUniformuiv = 869,      // (program, location*, out params*)
 
+    // Legacy fixed-function calls used by GL 1.x renderers. Client-array
+    // pointers are guest addresses; the host bridge snapshots their data at
+    // draw time before passing it to Emscripten's legacy GL emulation.
+    GL64_fn_glEnableClientState = 870,  // (array)
+    GL64_fn_glDisableClientState,      // (array)
+    GL64_fn_glVertexPointer,           // (size, type, stride, guest pointer)
+    GL64_fn_glColorPointer,            // (size, type, stride, guest pointer)
+    GL64_fn_glTexCoordPointer,         // (size, type, stride, guest pointer)
+    GL64_fn_glAlphaFunc,               // (func, ref:float)
+    GL64_fn_glTexEnvf,                 // (target, pname, param:float)
+    GL64_fn_glTexEnvi,                 // (target, pname, param)
+    GL64_fn_glTexEnvfv,                // (target, pname, params*)
+    GL64_fn_glTexEnviv,                // (target, pname, params*)
+
     GL64_fn__MAX
 };
 
