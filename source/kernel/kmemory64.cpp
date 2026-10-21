@@ -92,78 +92,42 @@ std::shared_ptr<SharedFilePage> getSharedFilePage(U64 identity, U64 offsetPage,
 // Entries are tagged with the owning KMemory64* because kernel code on one
 // thread can touch another process's memory (fork ctid writes, ptrace-style
 // peeks), and one host thread serves exactly one running guest thread.
-#ifdef BOXEDWINE_BLOCK_CACHE_INFRA
-bool bw64PageHoldsBlocks(U64 pageNum); // defined below, with the block tables
-#endif
+namespace K64DTlb {
+std::atomic<U64> generation{1};
+}
 
 namespace {
-struct K64DTlbEntry {
-    const void* mem;
-    U64 page;
-    U8* data;
-    U64 gen;
-#ifdef BOXEDWINE_BLOCK_CACHE_INFRA
-    U32 blockSlot;
-    bool blockPage;
-#endif
-};
-constexpr U32 K64_DTLB_SIZE = 256; // direct-mapped, per-thread (~8KB)
-thread_local K64DTlbEntry g_k64DTlb[K64_DTLB_SIZE];
-// Low bits track mapping invalidations. High bits track code-page registration
-// changes; a DTLB entry checks the page registry only when that epoch changes.
-std::atomic<U64> g_k64DTlbGen{1};
-
 inline U8* k64DTlbLookup(const void* mem, U64 pageNum) {
-    K64DTlbEntry& e = g_k64DTlb[pageNum & (K64_DTLB_SIZE - 1)];
-    if (e.mem != mem || e.page != pageNum) return nullptr;
-    const U64 gen = g_k64DTlbGen.load(std::memory_order_acquire);
-    if ((U32)e.gen != (U32)gen) return nullptr;
-    if (e.gen != gen) {
-#ifdef BOXEDWINE_BLOCK_CACHE_INFRA
-        // Registration invalidates only this page lazily in each thread's TLB.
-        // Other pages retain their cached data pointer and adopt the new epoch.
-        const bool blockPage = bw64PageHoldsBlocks(pageNum);
-        const U32 blockSlot = blockPage ? KMemory64::blockSlot(pageNum) : 0;
-        if (blockPage && (!e.blockPage || e.blockSlot != blockSlot)) {
-            e.mem = nullptr;
-            return nullptr;
-        }
-        e.blockPage = blockPage;
-        e.blockSlot = blockSlot;
-#else
-        return nullptr;
-#endif
-        e.gen = gen;
-    }
-    return e.data;
+    K64DTlb::Entry* entry = K64DTlb::lookup(static_cast<const KMemory64*>(mem), pageNum);
+    return entry ? entry->data : nullptr;
 }
-inline U8* k64DTlbLookupForWrite(const void* mem, U64 pageNum) {
+inline K64DTlb::Entry* k64DTlbEntryForWrite(const void* mem, U64 pageNum) {
+    K64DTlb::Entry* entry = K64DTlb::lookup(static_cast<const KMemory64*>(mem), pageNum);
 #ifdef BOXEDWINE_BLOCK_CACHE_INFRA
-    // Code-page writes must take the slow path so they bump the block
-    // generation. Reads can keep using the cached page buffer.
-    if (bw64PageHoldsBlocks(pageNum)) {
-        return nullptr;
-    }
+    if (entry && entry->blockPage) return nullptr;
 #endif
-    return k64DTlbLookup(mem, pageNum);
+    return entry;
 }
-inline void k64DTlbInsert(const void* mem, U64 pageNum, U8* data, U64 observedGen) {
-    K64DTlbEntry& e = g_k64DTlb[pageNum & (K64_DTLB_SIZE - 1)];
-    e.mem = mem;
+inline void k64DTlbInsert(const void* mem, U64 pageNum, U8* data, U32 flags, U32 fastFlags,
+                          U64 observedGen) {
+    K64DTlb::Entry& e = K64DTlb::entries[pageNum & (K64DTlb::SIZE - 1)];
+    e.mem = static_cast<const KMemory64*>(mem);
     e.page = pageNum;
     e.data = data;
+    e.flags = flags | fastFlags;
     e.gen = observedGen;
 #ifdef BOXEDWINE_BLOCK_CACHE_INFRA
     e.blockPage = bw64PageHoldsBlocks(pageNum);
     e.blockSlot = e.blockPage ? KMemory64::blockSlot(pageNum) : 0;
+    if (e.blockPage) e.flags &= ~(K64DTlb::FAST_BYTE_WRITE | K64DTlb::FAST_SCALAR_WRITE);
 #endif
 }
 inline void k64DTlbInvalidateAll() {
-    g_k64DTlbGen.fetch_add(1, std::memory_order_release);
+    K64DTlb::generation.fetch_add(1, std::memory_order_release);
 }
 #ifdef BOXEDWINE_BLOCK_CACHE_INFRA
 inline void k64DTlbInvalidateCodePageEntries() {
-    g_k64DTlbGen.fetch_add(1ULL << 32, std::memory_order_release);
+    K64DTlb::generation.fetch_add(1ULL << 32, std::memory_order_release);
 }
 #endif
 } // namespace
@@ -328,10 +292,15 @@ K64Page* KMemory64::getPage(U64 pageNum) const {
     return it == pages.end() ? nullptr : it->second.get();
 }
 
-U8* KMemory64::getPageData(U64 pageNum) const {
+U8* KMemory64::getPageData(U64 pageNum, U32* flagsOut) const {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
     auto it = pages.find(pageNum);
-    return it == pages.end() ? nullptr : it->second->data;
+    if (it == pages.end()) {
+        if (flagsOut) *flagsOut = 0;
+        return nullptr;
+    }
+    if (flagsOut) *flagsOut = it->second->flags;
+    return it->second->data;
 }
 
 K64Page* KMemory64::getOrAllocPage(U64 pageNum, U32 flagsIfNew) {
@@ -365,9 +334,10 @@ K64Page* KMemory64::getOrAllocPage(U64 pageNum, U32 flagsIfNew) {
 // makes first-touch commit atomic so no write is lost. (Once committed, `data`
 // is stable — munmap/PROT_NONE only decommit unpinned pages wine isn't actively
 // writing — so the subsequent lock-free memcpy is safe.)
-U8* KMemory64::commitPageLocked(U64 pageNum, U32 flagsIfNew) {
+U8* KMemory64::commitPageLocked(U64 pageNum, U32 flagsIfNew, U32* flagsOut) {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
     K64Page* page = getOrAllocPage(pageNum, flagsIfNew); // recursive mutex: re-enter OK
+    if (flagsOut) *flagsOut = page->flags;
     return page->commit();
 }
 
@@ -425,7 +395,6 @@ U64 KMemory64::mmapAnonymousFixed(U64 addr, U64 len, U32 prot) {
             // MAP_FIXED anonymous/private replacement must not zero or keep
             // aliasing the old file's shared buffer in other processes.
             page->decommit();
-            k64DTlbInvalidateAll();
         }
         // Lazy commit: a FRESH reservation gets NO backing buffer — it reads as
         // zero (memcpyFromGuest zero-fills an uncommitted page) and only commits
@@ -438,6 +407,7 @@ U64 KMemory64::mmapAnonymousFixed(U64 addr, U64 len, U32 prot) {
             ::memset(page->data, 0, K64_PAGE_SIZE);
         }
     }
+    k64DTlbInvalidateAll(); // flags may have changed even when the backing pointer did not
     // Keep the reservation map authoritative for the mmap region. A MAP_FIXED
     // landing here (wine remapping inside an earlier reservation, or the
     // allocator's own commit) updates `ranges` so later gap searches see the
@@ -492,7 +462,6 @@ U64 KMemory64::mmapSharedFile(U64 addr, U64 len, U32 prot, U64 fileIdentity, con
         // Replaced private backing remains alive for in-flight accesses, but
         // subsequent cached accesses must use the new shared mapping.
         page->adoptShared(shared->data);
-        k64DTlbInvalidateAll();
         if (std::getenv("BW64_SHAREMAP")) {
             klog_fmt("SHAREMAP: pid=%u %s fpage=%llu guest=0x%llx path='%s'",
                      (unsigned)(process ? process->id : 0), created ? "CREATE" : "ALIAS ",
@@ -500,6 +469,7 @@ U64 KMemory64::mmapSharedFile(U64 addr, U64 len, U32 prot, U64 fileIdentity, con
                      (unsigned long long)((pageStart + i) << K64_PAGE_SHIFT), p.c_str());
         }
     }
+    k64DTlbInvalidateAll();
     if (pageStart >= K64_MMAP_BASE_PAGE) {
         BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(mmapMutex);
         rangeInsertLocked(pageStart, pageCount, prot, (U8)MMAP_ANON);
@@ -601,6 +571,7 @@ U64 KMemory64::mprotect(U64 addr, U64 len, U32 prot) {
         U32 preserved = it->second->flags & (K64_PAGE_SHARED | K64_PAGE_PINNED);
         it->second->flags = newFlags | preserved;
     }
+    k64DTlbInvalidateAll(); // refresh cached permission bits on the next access
     return addr;
 }
 
@@ -654,10 +625,11 @@ static bool g_bssDiagInit = false;
 static void initBssDiag() {
     g_bssDiagInit = true;
     const char* e = std::getenv("BW64_BSSDIAG");
-    if (!e) return;
-    if (e[0] == 'i' && e[1] == 'm' && e[2] == 'g') { g_bssDiagPage = 1; }
-    else g_bssDiagPage = std::strtoull(e, nullptr, 0) >> K64_PAGE_SHIFT;
-    klog_fmt("BSSDIAG: armed for page 0x%llx", (unsigned long long)g_bssDiagPage);
+    if (e) {
+        if (e[0] == 'i' && e[1] == 'm' && e[2] == 'g') { g_bssDiagPage = 1; }
+        else g_bssDiagPage = std::strtoull(e, nullptr, 0) >> K64_PAGE_SHIFT;
+        klog_fmt("BSSDIAG: armed for page 0x%llx", (unsigned long long)g_bssDiagPage);
+    }
 }
 // Defined here (klog_fmt available) for K64Page methods in kmemory64.h.
 // Logs buffer pointer changes when BW64_BSSDIAG is set.
@@ -728,13 +700,16 @@ void KMemory64::memcpyToGuest(U64 dstGuest, const void* src, U64 len) {
     if (len && offsetInPage + len <= K64_PAGE_SIZE &&
         g_strayInit && !g_strayOn && g_memRingInit && !g_memRingOn &&
         g_watchInit && !g_watchAddr) {
-        if (U8* hit = k64DTlbLookupForWrite(this, dstGuest >> K64_PAGE_SHIFT)) {
-            if (bssDiagHit(dstGuest >> K64_PAGE_SHIFT)) {
+        const U64 pageNum = dstGuest >> K64_PAGE_SHIFT;
+        if (K64DTlb::Entry* entry = k64DTlbEntryForWrite(this, pageNum)) {
+            const bool diag = bssDiagHit(pageNum);
+            if (!diag) entry->flags |= K64DTlb::FAST_SCALAR_WRITE;
+            if (diag) {
                 U64 v = 0; std::memcpy(&v, src, len >= 8 ? 8 : (size_t)len);
                 klog_fmt("BSSDIAG W fast: dst=0x%llx hit=%p val=0x%llx",
-                         (unsigned long long)dstGuest, (void*)hit, (unsigned long long)v);
+                         (unsigned long long)dstGuest, (void*)entry->data, (unsigned long long)v);
             }
-            ::memcpy(hit + offsetInPage, src, (size_t)len);
+            ::memcpy(entry->data + offsetInPage, src, (size_t)len);
             return;
         }
     }
@@ -746,6 +721,8 @@ void KMemory64::memcpyToGuest(U64 dstGuest, const void* src, U64 len) {
         recordMemWrite(dstGuest, len, v);
     }
     if (!g_watchInit) initWatch();
+    const bool scalarWriteFastAllowed = g_strayInit && !g_strayOn && g_memRingInit && !g_memRingOn &&
+                                        g_watchInit && !g_watchAddr;
     if (g_watchAddr && dstGuest < g_watchAddr + g_watchLen && dstGuest + len > g_watchAddr) {
         U64 v = 0;
         U64 within = (g_watchAddr >= dstGuest) ? (g_watchAddr - dstGuest) : 0;
@@ -763,13 +740,19 @@ void KMemory64::memcpyToGuest(U64 dstGuest, const void* src, U64 len) {
         // Reuse cached backing for each chunk of a cross-page span. The
         // one-page fast path above handles scalar stores; without this lookup,
         // page-crossing copies would lock and hash every page on every call.
-        U8* data = k64DTlbLookupForWrite(this, pageNum);
+        const bool diag = bssDiagHit(pageNum);
+        K64DTlb::Entry* entry = k64DTlbEntryForWrite(this, pageNum);
+        U8* data = entry ? entry->data : nullptr;
         if (!data) {
-            U64 observedGen = g_k64DTlbGen.load(std::memory_order_acquire);
-            data = commitPageLocked(pageNum, K64_PAGE_MAPPED | K64_PAGE_READ | K64_PAGE_WRITE);
-            k64DTlbInsert(this, pageNum, data, observedGen);
+            U64 observedGen = K64DTlb::generation.load(std::memory_order_acquire);
+            U32 pageFlags = 0;
+            data = commitPageLocked(pageNum, K64_PAGE_MAPPED | K64_PAGE_READ | K64_PAGE_WRITE, &pageFlags);
+            const U32 fastFlags = scalarWriteFastAllowed && !diag ? K64DTlb::FAST_SCALAR_WRITE : 0;
+            k64DTlbInsert(this, pageNum, data, pageFlags, fastFlags, observedGen);
+        } else if (scalarWriteFastAllowed && !diag) {
+            entry->flags |= K64DTlb::FAST_SCALAR_WRITE;
         }
-        if (bssDiagHit(pageNum)) {
+        if (diag) {
             K64Page* pg = getPage(pageNum);
             U64 v = 0; std::memcpy(&v, s, chunk >= 8 ? 8 : (size_t)chunk);
             klog_fmt("BSSDIAG W slow: dst=0x%llx data=%p pageData=%p val=0x%llx",
@@ -789,13 +772,16 @@ void KMemory64::memcpyFromGuest(void* dst, U64 srcGuest, U64 len) {
     // pagesMutex + map lookup entirely.
     U64 offsetInPage = srcGuest & K64_PAGE_MASK;
     if (len && offsetInPage + len <= K64_PAGE_SIZE) {
-        if (U8* hit = k64DTlbLookup(this, srcGuest >> K64_PAGE_SHIFT)) {
-            if (bssDiagHit(srcGuest >> K64_PAGE_SHIFT)) {
-                U64 v = 0; ::memcpy(&v, hit + offsetInPage, len >= 8 ? 8 : (size_t)len);
+        const U64 pageNum = srcGuest >> K64_PAGE_SHIFT;
+        if (K64DTlb::Entry* entry = K64DTlb::lookup(this, pageNum)) {
+            const bool diag = bssDiagHit(pageNum);
+            if (!diag) entry->flags |= K64DTlb::FAST_SCALAR_READ;
+            if (diag) {
+                U64 v = 0; ::memcpy(&v, entry->data + offsetInPage, len >= 8 ? 8 : (size_t)len);
                 klog_fmt("BSSDIAG R fast: addr=0x%llx hit=%p val=0x%llx",
-                         (unsigned long long)srcGuest, (void*)hit, (unsigned long long)v);
+                         (unsigned long long)srcGuest, (void*)entry->data, (unsigned long long)v);
             }
-            ::memcpy(dst, hit + offsetInPage, (size_t)len);
+            ::memcpy(dst, entry->data + offsetInPage, (size_t)len);
             return;
         }
     }
@@ -817,11 +803,19 @@ void KMemory64::memcpyFromGuest(void* dst, U64 srcGuest, U64 len) {
         // Consult the DTLB per chunk as well as for the same-page fast path.
         // Multi-byte accesses crossing a page otherwise bypassed cached pages
         // and took pagesMutex + an unordered_map lookup for both chunks.
-        U8* data = k64DTlbLookup(this, pageNum);
+        const bool pageDiag = bssDiagHit(pageNum);
+        K64DTlb::Entry* entry = K64DTlb::lookup(this, pageNum);
+        U8* data = entry ? entry->data : nullptr;
         if (!data) {
-            U64 observedGen = g_k64DTlbGen.load(std::memory_order_acquire);
-            data = getPageData(pageNum);
-            if (data) k64DTlbInsert(this, pageNum, data, observedGen);
+            U64 observedGen = K64DTlb::generation.load(std::memory_order_acquire);
+            U32 pageFlags = 0;
+            data = getPageData(pageNum, &pageFlags);
+            if (data) {
+                const U32 fastFlags = pageDiag ? 0 : K64DTlb::FAST_SCALAR_READ;
+                k64DTlbInsert(this, pageNum, data, pageFlags, fastFlags, observedGen);
+            }
+        } else if (!pageDiag) {
+            entry->flags |= K64DTlb::FAST_SCALAR_READ;
         }
         if (data) {
             ::memcpy(d, data + offsetInPage, (size_t)chunk);
@@ -855,44 +849,37 @@ void KMemory64::memsetGuest(U64 dstGuest, U8 value, U64 len) {
     }
 }
 
-U8 KMemory64::readb(U64 addr) {
+U8 KMemory64::readbSlow(U64 addr) {
     U64 pageNum = addr >> K64_PAGE_SHIFT;
     if (U8* hit = k64DTlbLookup(this, pageNum)) return hit[addr & K64_PAGE_MASK];
-    U64 observedGen = g_k64DTlbGen.load(std::memory_order_acquire);
-    U8* data = getPageData(pageNum);
+    U64 observedGen = K64DTlb::generation.load(std::memory_order_acquire);
+    U32 pageFlags = 0;
+    U8* data = getPageData(pageNum, &pageFlags);
     if (data) {
-        k64DTlbInsert(this, pageNum, data, observedGen);
+        k64DTlbInsert(this, pageNum, data, pageFlags, 0, observedGen);
         return data[addr & K64_PAGE_MASK];
     }
     return 0;
 }
 
-U16 KMemory64::readw(U64 addr) {
-    U16 v; memcpyFromGuest(&v, addr, 2); return v;
-}
-
-U32 KMemory64::readd(U64 addr) {
-    U32 v; memcpyFromGuest(&v, addr, 4); return v;
-}
-
-U64 KMemory64::readq(U64 addr) {
-    U64 v; memcpyFromGuest(&v, addr, 8); return v;
-}
-
-void KMemory64::writeb(U64 addr, U8 value) {
+void KMemory64::writebSlow(U64 addr, U8 value) {
     U64 pageNum = addr >> K64_PAGE_SHIFT;
     if (g_strayInit && !g_strayOn && g_memRingInit && !g_memRingOn) {
-        if (U8* hit = k64DTlbLookupForWrite(this, pageNum)) {
-            hit[addr & K64_PAGE_MASK] = value;
+        if (K64DTlb::Entry* entry = k64DTlbEntryForWrite(this, pageNum)) {
+            entry->flags |= K64DTlb::FAST_BYTE_WRITE;
+            entry->data[addr & K64_PAGE_MASK] = value;
             return;
         }
     }
     strayWriteCheck(addr, 1);
     recordMemWrite(addr, 1, value);
     noteGuestWrite(pageNum); // slow path only — registered-page writes bypass the cached hit
-    U64 observedGen = g_k64DTlbGen.load(std::memory_order_acquire);
-    U8* data = commitPageLocked(pageNum, K64_PAGE_MAPPED | K64_PAGE_READ | K64_PAGE_WRITE);
-    k64DTlbInsert(this, pageNum, data, observedGen);
+    U64 observedGen = K64DTlb::generation.load(std::memory_order_acquire);
+    U32 pageFlags = 0;
+    U8* data = commitPageLocked(pageNum, K64_PAGE_MAPPED | K64_PAGE_READ | K64_PAGE_WRITE, &pageFlags);
+    const U32 fastFlags = g_strayInit && !g_strayOn && g_memRingInit && !g_memRingOn
+        ? K64DTlb::FAST_BYTE_WRITE : 0;
+    k64DTlbInsert(this, pageNum, data, pageFlags, fastFlags, observedGen);
     data[addr & K64_PAGE_MASK] = value; // commit-on-write (MT-safe)
 }
 
@@ -924,9 +911,5 @@ U8* KMemory64::getRamPtr(U64 addr, U32 len) {
     }
     return data + offsetInPage;
 }
-
-void KMemory64::writew(U64 addr, U16 value) { memcpyToGuest(addr, &value, 2); }
-void KMemory64::writed(U64 addr, U32 value) { memcpyToGuest(addr, &value, 4); }
-void KMemory64::writeq(U64 addr, U64 value) { memcpyToGuest(addr, &value, 8); }
 
 #endif // BOXEDWINE_GUEST_X64
