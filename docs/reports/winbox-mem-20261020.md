@@ -46,7 +46,7 @@ The page map remains a sparse `std::unordered_map`; I skipped replacing it in th
 
 The single build for this round completed successfully. `BUILD_INFO.json` records source `4397d28a84f8e39ab1dce79743f6ba3298a43f1b`, five dirty files, and WASM SHA-256 `d0a0e83cfda83eea17ff0e053966e7697aea2a3b72b6f1f2c5346c791f08c8bb` (6,210,807 bytes). Browser `cpu64-selftest` and `memory-shared` each passed.
 
-The `jit64` probe ran with `BW_TEST_JIT64_MODES=0` and `BW_TEST_URL_PARAMS='jit=0'`. A separate build delayed its start; once the guest ran, load rose above the required 4 threshold (observed at 12.00), so I stopped it after two samples (4,262 ms and 5,744 ms). Those values are invalid and are not used as the after result. The reference warm median remains 1,047 ms; a valid after measurement is pending. Since `jit64.test.mjs` supports JIT-off mode, the `jitbench` fallback is unnecessary.
+The `jit64` probe ran with `BW_TEST_JIT64_MODES=0` and `BW_TEST_URL_PARAMS='jit=0'`. A separate build delayed its start; once the guest ran, load rose above the required 4 threshold (observed at 12.00), so I stopped it after two samples (4,262 ms and 5,744 ms). Those values are invalid and are not used as the after result. The reference warm median remains 1,047 ms; there is no valid after measurement. After stopping that run, load stayed above 4 while other lanes held the available probe slots and ran timed work, so I did not start another attempt. Since `jit64.test.mjs` supports JIT-off mode, the `jitbench` fallback is unnecessary.
 
 ## WASM and browser validation
 
