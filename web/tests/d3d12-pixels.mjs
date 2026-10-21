@@ -28,6 +28,13 @@ const resultTag = triExeName.replace(/\.exe$/i, "");
 const resultRe = new RegExp(resultTag + ": RESULT [01]");
 const failRe = new RegExp(resultTag + ": FAIL");
 
+function withTestUrlParams(rawUrl) {
+  const url = new URL(rawUrl);
+  for (const [key, value] of new URLSearchParams(process.env.BW_TEST_URL_PARAMS || ""))
+    url.searchParams.set(key, value);
+  return url.toString();
+}
+
 // Simple clear-color analysis: count pixels far from the page-tier default
 // background (0,40,100). A working clear shows cornflower (100,149,237).
 function clearPixels(png) {
@@ -134,7 +141,7 @@ const timeout = Number(process.env.TIMEOUT || 1800000);
 let summary = { passed: false }, pixels = null;
 const provenance = [];
 try {
-  await page.goto(`http://127.0.0.1:${server.address().port}/runtime/index.html?p=cmd%20%2Fc%20echo%20vkboot&session=1&novideo=1&persist=0&gltrace=0`);
+  await page.goto(withTestUrlParams(`http://127.0.0.1:${server.address().port}/runtime/index.html?p=cmd%20%2Fc%20echo%20vkboot&session=1&novideo=1&persist=0&gltrace=0`));
   await page.waitForFunction(() => window.bwRuntime?.ready?.() === true, null, { timeout });
   console.log("SESSION READY");
   const assets = [
@@ -188,7 +195,8 @@ try {
     const stats = await page.evaluate(() => window.bwVkStats?.());
     if (stats?.v2?.rendered > lastRendered) {
       lastRendered = stats.v2.rendered;
-      shot = await page.evaluate(() => document.getElementById("vkCanvas")?.toDataURL("image/png"));
+      // WebGPU's backing texture is not readable with toDataURL after present.
+      shot = await page.locator("#vkCanvas").screenshot();
       await page.screenshot({ path: `${dir}/page.png` });
     }
     if (Date.now() - lastPrint > 15000) {
@@ -205,9 +213,9 @@ try {
     await page.waitForTimeout(250);
   }
   const stats = await page.evaluate(() => window.bwVkStats?.());
-  if (!shot) shot = await page.evaluate(() => document.getElementById("vkCanvas")?.toDataURL("image/png"));
+  if (!shot) shot = await page.locator("#vkCanvas").screenshot().catch(() => null);
   if (shot) {
-    const bytes = Buffer.from(shot.split(",")[1], "base64");
+    const bytes = shot;
     await writeFile(`${dir}/canvas.png`, bytes);
     pixels = drawMode ? drawPixels(bytes) : clearPixels(bytes);
   }
