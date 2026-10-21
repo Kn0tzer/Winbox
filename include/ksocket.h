@@ -36,6 +36,7 @@
 #define K_MSG_OOB 1
 #define	K_MSG_PEEK     0x2
 #define K_MSG_NOSIGNAL 0x4000
+#define K_MSG_DONTWAIT 0x40
 
 #define K_SHUT_RD      0
 #define K_SHUT_WR      1

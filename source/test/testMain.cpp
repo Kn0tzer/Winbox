@@ -57,6 +57,7 @@
 #include "mmu/testBrk.h"
 
 void testWaitPid();
+void testInetDatagramLoopback();
 
 namespace {
 
@@ -672,6 +673,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testLockedInc, "Test Multi-threaded locked inc"},
 #endif
     {testWaitPid, "Test waitpid child selection"},
+    {testInetDatagramLoopback, "Test AF_INET UDP loopback socket"},
     {testDecoderPageBoundary, "Test decoder executable page boundary"},
     {testVk32TrapWitness, "Test vk32 Trap Witness (Stage A)"},
     {testGl32TrapWitness, "Test gl32 Trap Witness (Stage A-GL)"},

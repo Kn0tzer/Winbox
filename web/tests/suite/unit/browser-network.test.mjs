@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { runInNewContext } from 'node:vm';
 
-test('browser TCP is opt-in while Unix and Netlink IPC remain available', () => {
+test('browser TCP is opt-in while guest UDP loopback and local IPC remain available', () => {
   const source = readFileSync('source/kernel/ksocket.cpp', 'utf8');
   const start = source.indexOf('U32 ksocket(');
   const end = source.indexOf('#define IS_NOT_SOCKET', start);
@@ -43,7 +43,9 @@ int main(int argc,char** argv){
  const U32 tcp=ksocket(K_AF_INET,K_SOCK_STREAM,6);
  assert((tcp!=denied)==enabled && "exact network opt-in must control IPv4 TCP");
  assert((ksocket(K_AF_INET,K_SOCK_STREAM,0)!=denied)==enabled);
- assert(ksocket(K_AF_INET,K_SOCK_DGRAM,17)==denied);
+ assert(ksocket(K_AF_INET,K_SOCK_DGRAM,0)!=denied && "IPv4 UDP loopback works without the relay");
+ assert(ksocket(K_AF_INET,K_SOCK_DGRAM,17)!=denied && "IPv4 UDP loopback works without the relay");
+ assert(ksocket(K_AF_INET,K_SOCK_DGRAM,6)==denied);
  assert(ksocket(K_AF_INET,K_SOCK_STREAM,1)==denied);
  assert(ksocket(K_AF_INET6,K_SOCK_STREAM,6)==denied);
  assert(ksocket(17,K_SOCK_STREAM,0)==denied);

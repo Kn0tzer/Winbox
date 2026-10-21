@@ -25,6 +25,7 @@
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
+#include <map>
 
 #ifdef WIN32
 #undef BOOL
@@ -78,6 +79,14 @@ U32 getNativeSocketPriority(const KNativeSocketObject* socket) {
 void eraseNativeSocketPriority(const KNativeSocketObject* socket) {
     std::lock_guard<std::mutex> lock(g_nativeSocketPriorityMutex);
     g_nativeSocketPriorities.erase(socket);
+}
+
+std::mutex g_loopbackUdpMutex;
+std::map<U16, std::weak_ptr<KNativeSocketObject>> g_loopbackUdpSockets;
+U16 g_nextLoopbackUdpPort = 49152;
+
+bool isGuestLoopbackAddress(U32 address) {
+    return address == 0 || (address >> 24) == 127;
 }
 }
 
@@ -490,6 +499,12 @@ KNativeSocketObject::KNativeSocketObject(U32 domain, U32 type, U32 protocol) : K
         this->error = -K_EPROTOTYPE;
         nativeProtocol = IPPROTO_IP;
     }
+#if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_GUEST_X64)
+    if (domain == K_AF_INET && type == K_SOCK_DGRAM && (protocol == 0 || protocol == 17)) {
+        this->loopbackDatagram = true;
+        return;
+    }
+#endif
     this->nativeSocket = (S32)socket(AF_INET, nativeType, nativeProtocol);
     if (this->nativeSocket < 0) {
 #ifdef WIN32
@@ -515,9 +530,15 @@ KNativeSocketObject::KNativeSocketObject(U32 domain, U32 type, U32 protocol) : K
 
 KNativeSocketObject::~KNativeSocketObject() {
     eraseNativeSocketPriority(this);
+    if (this->loopbackDatagram && this->loopbackPort) {
+        std::lock_guard<std::mutex> lock(g_loopbackUdpMutex);
+        g_loopbackUdpSockets.erase(this->loopbackPort);
+    }
     LOG_SOCK("native socket: %x close", nativeSocket);
-    closesocket(this->nativeSocket);    
-    removeWaitingSocket(this->nativeSocket);
+    if (this->nativeSocket >= 0) {
+        closesocket(this->nativeSocket);
+        removeWaitingSocket(this->nativeSocket);
+    }
     this->nativeSocket = 0;
     {
         BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->readingCond);
@@ -830,6 +851,8 @@ S64 KNativeSocketObject::getPos() {
 }
 
 void KNativeSocketObject::setBlocking(bool blocking) {
+    if (this->loopbackDatagram) { this->blocking = blocking; return; }
+
     this->blocking = blocking;
 #ifdef BOXEDWINE_MULTI_THREADED
     setNativeBlocking(this->nativeSocket, blocking);
@@ -865,6 +888,8 @@ bool KNativeSocketObject::supportsLocks() {
 }
 
 bool KNativeSocketObject::isOpen() {
+    if (this->loopbackDatagram) return true;
+
     /*
     fd_set          sready = {};
     struct timeval  nowait = { 0 };
@@ -884,6 +909,11 @@ bool KNativeSocketObject::isOpen() {
 }
 
 bool KNativeSocketObject::isPriorityReadReady() {
+    if (this->loopbackDatagram) {
+        std::lock_guard<std::mutex> lock(this->loopbackPacketsMutex);
+        return !this->loopbackPackets.empty();
+    }
+
     fd_set          sready = {};
     struct timeval  nowait = { 0 };
 
@@ -899,6 +929,11 @@ bool KNativeSocketObject::isPriorityReadReady() {
 }
 
 bool KNativeSocketObject::isReadReady() {
+    if (this->loopbackDatagram) {
+        std::lock_guard<std::mutex> lock(this->loopbackPacketsMutex);
+        return !this->loopbackPackets.empty();
+    }
+
     fd_set          sready = {};
     struct timeval  nowait = { 0 };
 
@@ -915,6 +950,8 @@ bool KNativeSocketObject::isReadReady() {
 }
 
 bool KNativeSocketObject::isWriteReady() {
+    if (this->loopbackDatagram) return true;
+
     fd_set          sready = {};
     struct timeval  nowait = { 0 };
 
@@ -927,6 +964,21 @@ bool KNativeSocketObject::isWriteReady() {
 }
 
 void KNativeSocketObject::waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) {
+    if (this->loopbackDatagram) {
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(waitingNodeMutex);
+        if (events & K_POLLIN) {
+            BOXEDWINE_CONDITION_ADD_PARENT(this->readingCond, parentCondition);
+        } else {
+            BOXEDWINE_CONDITION_REMOVE_PARENT(this->readingCond, parentCondition);
+        }
+        if (events & K_POLLOUT) {
+            BOXEDWINE_CONDITION_ADD_PARENT(this->writingCond, parentCondition);
+        } else {
+            BOXEDWINE_CONDITION_REMOVE_PARENT(this->writingCond, parentCondition);
+        }
+        return;
+    }
+
 #ifdef BOXEDWINE_MULTI_THREADED
     const std::lock_guard<std::recursive_mutex> lifecycleLock(checkWaitingNativeSocketsThreadMutex);
 #endif
@@ -949,7 +1001,9 @@ void KNativeSocketObject::waitForEvents(BOXEDWINE_CONDITION& parentCondition, U3
     }
 }
 
-U32 KNativeSocketObject::writeNative(U8* buffer, U32 len) {    
+U32 KNativeSocketObject::writeNative(U8* buffer, U32 len) {
+    if (this->loopbackDatagram) return -K_EOPNOTSUPP;
+
     S32 result = (S32)::send(this->nativeSocket, (const char*)buffer, len, 0);
     LOG_SOCK("native socket: %x writeNative len=%d result=%x", nativeSocket, len, result);
     if (result>=0) {            
@@ -961,6 +1015,8 @@ U32 KNativeSocketObject::writeNative(U8* buffer, U32 len) {
 }
 
 U32 KNativeSocketObject::readNative(U8* buffer, U32 len) {
+    if (this->loopbackDatagram) return -K_EOPNOTSUPP;
+
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(readingCond);
     S32 result = (S32)::recv(this->nativeSocket, (char*)buffer, len, 0);
 
@@ -1002,8 +1058,186 @@ static void writeSockAddrIn(struct sockaddr_in* addr, KMemory* memory, U32 addre
     memory->memcpy(address+4, &addr->sin_addr, 4);
 }
     
+U32 KNativeSocketObject::bindLoopback(U32 address, U16 port) {
+    if (!this->loopbackDatagram || !isGuestLoopbackAddress(address)) {
+        return -K_EADDRNOTAVAIL;
+    }
+    std::shared_ptr<KNativeSocketObject> self =
+        std::dynamic_pointer_cast<KNativeSocketObject>(shared_from_this());
+    std::lock_guard<std::mutex> lock(g_loopbackUdpMutex);
+    if (this->loopbackPort) return -K_EINVAL;
+
+    auto portAvailable = [](U16 candidate) {
+        auto it = g_loopbackUdpSockets.find(candidate);
+        if (it == g_loopbackUdpSockets.end()) return true;
+        if (it->second.expired()) {
+            g_loopbackUdpSockets.erase(it);
+            return true;
+        }
+        return false;
+    };
+    if (!port) {
+        for (U32 attempt = 0; attempt < 16384; ++attempt) {
+            const U16 candidate = g_nextLoopbackUdpPort++;
+            if (g_nextLoopbackUdpPort < 49152) g_nextLoopbackUdpPort = 49152;
+            if (candidate && portAvailable(candidate)) {
+                port = candidate;
+                break;
+            }
+        }
+        if (!port) return -K_EADDRINUSE;
+    } else if (!portAvailable(port)) {
+        return -K_EADDRINUSE;
+    }
+
+    this->loopbackAddress = address;
+    this->loopbackPort = port;
+    g_loopbackUdpSockets[port] = self;
+    this->error = 0;
+    return 0;
+}
+
+U32 KNativeSocketObject::ensureLoopbackBound() {
+    if (this->loopbackPort) return 0;
+    return this->bindLoopback(0x7f000001u, 0);
+}
+
+U32 KNativeSocketObject::sendLoopbackBytes(KThread* thread, const U8* bytes, U32 length, U32 flags,
+                                            const struct sockaddr_in* destination, bool hasDestination) {
+    (void)thread;
+    if (length > 65507) return -K_EMSGSIZE;
+    if (flags & ~(K_MSG_OOB | K_MSG_NOSIGNAL | K_MSG_DONTWAIT)) {
+        kwarn_fmt("loopback UDP sendto unsupported flags: %x", flags);
+    }
+
+    U32 destinationAddress = 0;
+    U16 destinationPort = 0;
+    if (hasDestination) {
+        if (!destination || destination->sin_family != AF_INET) return -K_EAFNOSUPPORT;
+        destinationAddress = ntohl(destination->sin_addr.s_addr);
+        destinationPort = ntohs(destination->sin_port);
+    } else if (this->connected) {
+        destinationAddress = this->loopbackPeerAddress;
+        destinationPort = this->loopbackPeerPort;
+    } else {
+        return -K_EDESTADDRREQ;
+    }
+
+    if (!isGuestLoopbackAddress(destinationAddress)) return -K_EHOSTUNREACH;
+    if (!destinationAddress) destinationAddress = 0x7f000001u;
+    U32 result = this->ensureLoopbackBound();
+    if ((S32)result < 0) return result;
+    if (!destinationPort) {
+        this->error = 0;
+        return length;
+    }
+
+    std::shared_ptr<KNativeSocketObject> target;
+    {
+        std::lock_guard<std::mutex> lock(g_loopbackUdpMutex);
+        auto it = g_loopbackUdpSockets.find(destinationPort);
+        if (it != g_loopbackUdpSockets.end()) {
+            target = it->second.lock();
+            if (!target) g_loopbackUdpSockets.erase(it);
+        }
+    }
+    if (target && target->loopbackDatagram &&
+        (!target->loopbackAddress || target->loopbackAddress == destinationAddress)) {
+        LoopbackPacket packet;
+        if (length) packet.bytes.assign(bytes, bytes + length);
+        packet.sourceAddress = this->loopbackAddress ? this->loopbackAddress : 0x7f000001u;
+        packet.sourcePort = this->loopbackPort;
+        {
+            std::lock_guard<std::mutex> lock(target->loopbackPacketsMutex);
+            if (target->loopbackPackets.size() >= 1024) return -K_ENOBUFS;
+            target->loopbackPackets.push_back(std::move(packet));
+        }
+        BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(target->readingCond);
+        BOXEDWINE_CONDITION_SIGNAL_ALL(target->readingCond);
+    }
+    this->error = 0;
+    return length;
+}
+
+U32 KNativeSocketObject::sendLoopbackTo(KThread* thread, U32 message, U32 length, U32 flags,
+                                         U32 destinationAddress, U32 destinationLength) {
+    KMemory* memory = thread->memory;
+    if (length > 65507) return -K_EMSGSIZE;
+    if (length && !memory->canRead(message, length)) return -K_EFAULT;
+    std::vector<U8> bytes(length);
+    if (length) memory->memcpy(bytes.data(), message, length);
+
+    struct sockaddr_in destination = {};
+    const bool hasDestination = destinationAddress != 0;
+    if (hasDestination) {
+        if (destinationLength < sizeof(destination)) return -K_EINVAL;
+        if (memory->readw(destinationAddress) != K_AF_INET) return -K_EAFNOSUPPORT;
+        readSockAddrIn(&destination, memory, destinationAddress);
+    }
+    return this->sendLoopbackBytes(thread, bytes.data(), length, flags,
+                                   hasDestination ? &destination : nullptr, hasDestination);
+}
+
+U32 KNativeSocketObject::recvLoopbackFrom(KThread* thread, U32 buffer, U32 length, U32 flags,
+                                           U32 address, U32 addressLength) {
+    KMemory* memory = thread->memory;
+    if (length && !memory->canWrite(buffer, length)) return -K_EFAULT;
+    if (address && !memory->canWrite(address, sizeof(struct sockaddr_in))) return -K_EFAULT;
+    if (addressLength && !memory->canWrite(addressLength, 4)) return -K_EFAULT;
+    if (flags & ~(K_MSG_OOB | K_MSG_PEEK | K_MSG_NOSIGNAL | K_MSG_DONTWAIT)) {
+        kwarn_fmt("loopback UDP recvfrom unsupported flags: %x", flags);
+    }
+
+    LoopbackPacket packet;
+    const bool peek = (flags & K_MSG_PEEK) != 0;
+    BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->readingCond);
+    for (;;) {
+        bool available = false;
+        {
+            std::lock_guard<std::mutex> lock(this->loopbackPacketsMutex);
+            if (!this->loopbackPackets.empty()) {
+                packet = this->loopbackPackets.front();
+                if (!peek) this->loopbackPackets.pop_front();
+                available = true;
+            }
+        }
+        if (available) break;
+        if (!this->blocking || (flags & K_MSG_DONTWAIT)) {
+            this->error = K_EWOULDBLOCK;
+            return -K_EWOULDBLOCK;
+        }
+        BOXEDWINE_CONDITION_WAIT(this->readingCond);
+#ifdef BOXEDWINE_MULTI_THREADED
+        KThread* current = KThread::currentThread();
+        if (current && current->terminating) return -K_EINTR;
+#endif
+    }
+
+    const U32 copied = std::min<U32>(length, (U32)packet.bytes.size());
+    if (copied) memory->memcpy(buffer, packet.bytes.data(), copied);
+    if (address) {
+        struct sockaddr_in source = {};
+        source.sin_family = AF_INET;
+        source.sin_port = htons(packet.sourcePort);
+        source.sin_addr.s_addr = htonl(packet.sourceAddress);
+        writeSockAddrIn(&source, memory, address);
+    }
+    if (addressLength) memory->writed(addressLength, sizeof(struct sockaddr_in));
+    this->error = 0;
+    return copied;
+}
+
 U32 KNativeSocketObject::bind(KThread* thread, const KFileDescriptorPtr& fd, U32 address, U32 len) {
     KMemory* memory = thread->memory;
+    if (this->loopbackDatagram) {
+        if (len < sizeof(struct sockaddr_in)) return -K_EINVAL;
+        if (memory->readw(address) != K_AF_INET) return -K_EAFNOSUPPORT;
+        struct sockaddr_in addr = {};
+        readSockAddrIn(&addr, memory, address);
+        return this->bindLoopback(ntohl(addr.sin_addr.s_addr), ntohs(addr.sin_port));
+    }
+
+
 
     U32 family = memory->readw(address);
     if (family == K_AF_INET) {
@@ -1025,6 +1259,22 @@ U32 KNativeSocketObject::bind(KThread* thread, const KFileDescriptorPtr& fd, U32
 }
 
 U32 KNativeSocketObject::connect(KThread* thread, const KFileDescriptorPtr& fd, U32 address, U32 len) {
+    if (this->loopbackDatagram) {
+        if (len < sizeof(struct sockaddr_in)) return -K_EINVAL;
+        if (thread->memory->readw(address) != K_AF_INET) return -K_EAFNOSUPPORT;
+        struct sockaddr_in peer = {};
+        readSockAddrIn(&peer, thread->memory, address);
+        U32 peerAddress = ntohl(peer.sin_addr.s_addr);
+        if (!isGuestLoopbackAddress(peerAddress)) return -K_EHOSTUNREACH;
+        U32 result = this->ensureLoopbackBound();
+        if ((S32)result < 0) return result;
+        this->loopbackPeerAddress = peerAddress ? peerAddress : 0x7f000001u;
+        this->loopbackPeerPort = ntohs(peer.sin_port);
+        this->connected = true;
+        this->error = 0;
+        return 0;
+    }
+
     char buffer[1024] = {};
     U32 result = 0;
     KMemory* memory = thread->memory;
@@ -1139,6 +1389,8 @@ U32 KNativeSocketObject::connect(KThread* thread, const KFileDescriptorPtr& fd, 
 }
 
 U32 KNativeSocketObject::listen(KThread* thread, const KFileDescriptorPtr& fd, U32 backlog) {
+    if (this->loopbackDatagram) return -K_EOPNOTSUPP;
+
     S32 result = ::listen(this->nativeSocket, backlog);
     LOG_SOCK("native socket: %x list result=%x", nativeSocket, result);
     if (result>=0) {
@@ -1152,6 +1404,8 @@ U32 KNativeSocketObject::listen(KThread* thread, const KFileDescriptorPtr& fd, U
 }
 
 U32 KNativeSocketObject::accept(KThread* thread, const KFileDescriptorPtr& fd, U32 address, U32 len, U32 flags) {
+    if (this->loopbackDatagram) return -K_EOPNOTSUPP;
+
     struct sockaddr_in addr = {};
     socklen_t addrlen = sizeof(struct sockaddr);
     KMemory* memory = thread->memory;
@@ -1190,6 +1444,18 @@ U32 KNativeSocketObject::accept(KThread* thread, const KFileDescriptorPtr& fd, U
     
 U32 KNativeSocketObject::getsockname(KThread* thread, const KFileDescriptorPtr& fd, U32 address, U32 plen) {
     KMemory* memory = thread->memory;
+    if (this->loopbackDatagram) {
+        struct sockaddr_in addr = {};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(this->loopbackPort);
+        addr.sin_addr.s_addr = htonl(this->loopbackPort ? this->loopbackAddress : 0);
+        writeSockAddrIn(&addr, memory, address);
+        memory->writed(plen, sizeof(addr));
+        this->error = 0;
+        return 0;
+    }
+
+
 
     //socklen_t len = (socklen_t)memory->readd( plen);
     struct sockaddr_in addr = {0};
@@ -1207,6 +1473,17 @@ U32 KNativeSocketObject::getsockname(KThread* thread, const KFileDescriptorPtr& 
 }
 
 U32 KNativeSocketObject::getpeername(KThread* thread, const KFileDescriptorPtr& fd, U32 address, U32 plen) {
+    if (this->loopbackDatagram) {
+        if (!this->connected) return -K_ENOTCONN;
+        struct sockaddr_in peer = {};
+        peer.sin_family = AF_INET;
+        peer.sin_port = htons(this->loopbackPeerPort);
+        peer.sin_addr.s_addr = htonl(this->loopbackPeerAddress);
+        writeSockAddrIn(&peer, thread->memory, address);
+        thread->memory->writed(plen, sizeof(peer));
+        return 0;
+    }
+
     KMemory* memory = thread->memory;
     //socklen_t len = (socklen_t)memory->readd( plen);
     struct sockaddr_in addr = {0};
@@ -1225,6 +1502,13 @@ U32 KNativeSocketObject::getpeername(KThread* thread, const KFileDescriptorPtr& 
 }
 
 U32 KNativeSocketObject::shutdown(KThread* thread, const KFileDescriptorPtr& fd, U32 how) {
+    if (this->loopbackDatagram) {
+        if (how != K_SHUT_RD && how != K_SHUT_WR && how != K_SHUT_RDWR) return -K_EINVAL;
+        if (how == K_SHUT_RD || how == K_SHUT_RDWR) this->inClosed = true;
+        if (how == K_SHUT_WR || how == K_SHUT_RDWR) this->outClosed = true;
+        return 0;
+    }
+
     LOG_SOCK("native socket: %x shutdown", nativeSocket);
     if (::shutdown(this->nativeSocket, how) == 0)
         return 0;
@@ -1232,6 +1516,12 @@ U32 KNativeSocketObject::shutdown(KThread* thread, const KFileDescriptorPtr& fd,
 }
 
 U32 KNativeSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& fd, U32 level, U32 name, U32 value, U32 len) {
+    if (this->loopbackDatagram) {
+        if (level != K_SOL_SOCKET && level != K_IPPROTO_IP) return -K_ENOPROTOOPT;
+        this->error = 0;
+        return 0;
+    }
+
     KMemory* memory = thread->memory;
 
     LOG_SOCK("%x native socket: %x setsockopt level=%x name=%x value=%x", thread->id, nativeSocket, memory->readd(value));
@@ -1417,6 +1707,39 @@ U32 KNativeSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& f
 
 U32 KNativeSocketObject::getsockopt(KThread* thread, const KFileDescriptorPtr& fd, U32 level, U32 name, U32 value, U32 len_address) {
     KMemory* memory = thread->memory;
+    if (this->loopbackDatagram) {
+        if (level != K_SOL_SOCKET) return -K_ENOPROTOOPT;
+        U32 result = 0;
+        switch (name) {
+        case K_SO_ERROR:
+            result = this->error;
+            this->error = 0;
+            break;
+        case K_SO_TYPE:
+            result = K_SOCK_DGRAM;
+            break;
+        case K_SO_PROTOCOL:
+            result = this->protocol;
+            break;
+        case K_SO_RCVBUF:
+            result = this->recvLen;
+            break;
+        case K_SO_SNDBUF:
+            result = this->sendLen;
+            break;
+        case K_SO_BROADCAST:
+        case K_SO_REUSEADDR:
+            result = 0;
+            break;
+        default:
+            return -K_EINVAL;
+        }
+        memory->writed(value, result);
+        memory->writed(len_address, 4);
+        return 0;
+    }
+
+
     socklen_t len = (socklen_t)memory->readd(len_address);
     S32 result = 0;
     U32 retrievedValue = 0;
@@ -1703,6 +2026,8 @@ U32 KNativeSocketObject::recvmsg(KThread* thread, const KFileDescriptorPtr& fd, 
 }
 
 U32 KNativeSocketObject::sendto(KThread* thread, const KFileDescriptorPtr& fd, U32 message, U32 length, U32 flags, U32 dest_addr, U32 dest_len) {
+    if (this->loopbackDatagram) return this->sendLoopbackTo(thread, message, length, flags, dest_addr, dest_len);
+
     KMemory* memory = thread->memory;
     U32 nativeFlags = 0;
     struct sockaddr_in dest = { 0 };
@@ -1736,6 +2061,8 @@ U32 KNativeSocketObject::sendto(KThread* thread, const KFileDescriptorPtr& fd, U
 }
 
 U32 KNativeSocketObject::recvfrom(KThread* thread, const KFileDescriptorPtr& fd, U32 buffer, U32 length, U32 flags, U32 address, U32 address_len) {
+    if (this->loopbackDatagram) return this->recvLoopbackFrom(thread, buffer, length, flags, address, address_len);
+
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(readingCond);
     U32 nativeFlags = 0;
     KMemory* memory = thread->memory;

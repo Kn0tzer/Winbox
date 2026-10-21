@@ -83,7 +83,10 @@ U32 ksocket(U32 domain, U32 type, U32 protocol) {
             const char* value = getenv("BW64_NETWORK_RELAY");
             return value && strcmp(value, "1") == 0;
         }();
-        if (!relayEnabled || domain != K_AF_INET || type != K_SOCK_STREAM || (protocol != 0 && protocol != 6)) {
+        const bool guestLoopbackUdp =
+            domain == K_AF_INET && type == K_SOCK_DGRAM && (protocol == 0 || protocol == 17);
+        if (!guestLoopbackUdp &&
+            (!relayEnabled || domain != K_AF_INET || type != K_SOCK_STREAM || (protocol != 0 && protocol != 6))) {
             return -K_EAFNOSUPPORT;
         }
     }
