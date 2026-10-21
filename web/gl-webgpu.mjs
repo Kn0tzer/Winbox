@@ -20,6 +20,7 @@ const GL = Object.freeze({
   PIXEL_PACK_BUFFER_BINDING: 0x88ed, PIXEL_UNPACK_BUFFER_BINDING: 0x88ef,
   CURRENT_PROGRAM: 0x8b8d, VERSION: 0x1f02, VENDOR: 0x1f00,
   RENDERER: 0x1f01, SHADING_LANGUAGE_VERSION: 0x8b8c,
+  MAX_TEXTURE_SIZE: 0x0d33,
   MAX_TEXTURE_IMAGE_UNITS: 0x8872, MAX_COMBINED_TEXTURE_IMAGE_UNITS: 0x8b4d,
   MAX_VERTEX_ATTRIBS: 0x8869,
   NO_ERROR: 0, INVALID_ENUM: 0x0500, INVALID_VALUE: 0x0501,
@@ -99,7 +100,19 @@ function glslDeclarations(source, qualifier) {
 }
 
 function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(), interfaceLocations = new Map()) {
-  let code = String(source || '');
+  // ES precision hints do not change WGSL behavior; strip them before parsing
+  // declarations because Naga's GLSL 450 frontend rejects variable precision qualifiers.
+  let code = String(source || '')
+    .replace(/^[ \t]*precision[ \t]+(?:lowp|mediump|highp)[ \t]+(?:float|int)[ \t]*;[ \t]*$/gm, '')
+    .replace(/\b(?:lowp|mediump|highp)\b/g, '');
+  // Uniform reflection needs literal array lengths before it moves declarations
+  // into a block that may precede the guest's #define line (Mindustry's LENGTH).
+  const integerDefines = new Map(
+    [...code.matchAll(/^[ \t]*#define[ \t]+([A-Za-z_]\w*)[ \t]+(\d+)[ \t]*(?:\/\/[^\n]*)?$/gm)]
+      .map((match) => [match[1], match[2]]),
+  );
+  if (integerDefines.size) code = code.replace(/\[[ \t]*([A-Za-z_]\w*)[ \t]*\]/g,
+    (match, name) => integerDefines.has(name) ? `[${integerDefines.get(name)}]` : match);
   const uniforms = glslDeclarations(code, 'uniform');
   const fields = [];
   const samplers = [];
@@ -469,6 +482,7 @@ export class WebGPUGL {
       case GL.PACK_ROW_LENGTH: return this._pack.rowLength;
       case GL.PACK_SKIP_ROWS: return this._pack.skipRows;
       case GL.PACK_SKIP_PIXELS: return this._pack.skipPixels;
+      case GL.MAX_TEXTURE_SIZE: return this._device?.limits?.maxTextureDimension2D || 8192;
       case 0x0cf5: return this._unpack.alignment;
       case GL.MAX_TEXTURE_IMAGE_UNITS: return 8;
       case GL.MAX_COMBINED_TEXTURE_IMAGE_UNITS: return 8;

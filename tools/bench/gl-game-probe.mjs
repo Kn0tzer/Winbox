@@ -45,6 +45,7 @@ const gameRoot = resolve(process.env.GAME_ROOT || profile.root);
 const exe = process.env.GAME_EXE || profile.exe;
 const arch = process.env.GAME_ARCH || profile.arch;
 const args = process.env.GAME_ARGS ? JSON.parse(process.env.GAME_ARGS) : profile.args;
+const glVersion = process.env.GL_VERSION || '3.2';
 if (!['x86', 'x64'].includes(arch) || !Array.isArray(args) || args.some(arg => typeof arg !== 'string'))
   throw new Error('Invalid GAME_ARCH or GAME_ARGS');
 
@@ -90,6 +91,7 @@ const result = {
   exe,
   arch,
   args,
+  glVersion,
   backend: 'WebGPU default',
   gameRoot,
   gameZip,
@@ -155,6 +157,7 @@ try {
     exe,
     arch,
     args: JSON.stringify(args),
+    glversion: glVersion,
     session: '0',
     persist: '0',
     fresh: '1',
