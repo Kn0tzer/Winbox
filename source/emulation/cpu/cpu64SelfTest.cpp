@@ -278,6 +278,34 @@ int runX64SelfTest() {
                     [](CPU64& c) { c.reg[X64_R12].setU64(2); });
     }
 
+    // The verifier's two engines must see one stable base-memory snapshot,
+    // while their writes remain isolated until the caller commits a match.
+    {
+        KMemory64 mem(nullptr);
+        mem.mmapAnonymousFixed(CODE_BASE, 0x1000, 7);
+        const U64 address = CODE_BASE + 0x800;
+        const U64 original = 0x1122334455667788ULL;
+        mem.writeq(address, original);
+
+        K64JitVerifyMemory interp;
+        mem.beginJitVerifyOverlay(interp);
+        mem.writeq(address, 0xFFEEDDCCBBAA0099ULL);
+        bool ok = mem.readq(address) == 0xFFEEDDCCBBAA0099ULL;
+        mem.endJitVerifyOverlay();
+        ok = ok && mem.readq(address) == original && interp.writes.size() == 8;
+
+        K64JitVerifyMemory jit;
+        jit.initialBytes = std::move(interp.initialBytes);
+        mem.beginJitVerifyOverlay(jit);
+        mem.writed(address + 4, 0xAABBCCDD);
+        U64 combined = mem.readq(address);
+        mem.endJitVerifyOverlay();
+        ok = ok && combined == 0xAABBCCDD55667788ULL &&
+             mem.readq(address) == original && jit.writes.size() == 4;
+        printf("  %s: JIT repro: differential memory overlays isolate writes\n", ok ? "PASS" : "FAIL");
+        ok ? r.passed++ : r.failed++;
+    }
+
     // Keep the regression fixture runnable on its own. The full loader
     // suite has WASM-only high-address cases, while this focused mode lets
     // the interpreter and emitted-code paths be compared independently.
