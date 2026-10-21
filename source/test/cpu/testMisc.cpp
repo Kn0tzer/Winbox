@@ -15,6 +15,7 @@
 #include "testCPU.h"
 #include "testX86Util.h"
 #include "testAsmJit.h"
+#include "ksignal.h"
 
 
 #define cpu (testContext().cpu)
