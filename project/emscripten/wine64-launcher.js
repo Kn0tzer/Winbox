@@ -936,6 +936,11 @@
                 // Emscripten libc reads the generated global ENV object, not
                 // Module.ENV. Set it before getEnvStrings caches the environment.
                 // Diagnostic flags are opt-in, fixed names (never arbitrary env).
+                // GL-on-WebGPU is the default after the triangle and framebuffer
+                // smoke fixtures pass. Use glbackend=webgl2 to retain the legacy
+                // context explicitly.
+                var glBackend = param("bwGlBackend") || param("glbackend");
+                if (!glBackend || glBackend === "webgpu") ENV["BW64_GL_BACKEND"] = "webgpu";
                 // Opt-in: only set when ?gltrace=1 is passed explicitly. gltrace=0 or absent
                 // leaves it unset (the C side checks existence via getenv, not value).
                 if (param("gltrace") && param("gltrace") !== "0") ENV["BW64_GLTRACE"] = param("gltrace");

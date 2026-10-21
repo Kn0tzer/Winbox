@@ -49,10 +49,9 @@ digraph Winbox {
   vkd3d [label="vkd3d", fillcolor="#f4effa", color="#9a7bc4"];
   bridge [label="Vulkan bridge", fillcolor="#edf4ff", color="#7096ce"];
   shader [label="SPIR-V → WGSL", fillcolor="#f0f4fb", color="#9aafc8"];
-  glbridge [label="GL bridge", fillcolor="#f4effa", color="#9a7bc4"];
+  glbridge [label="GL-on-WebGPU translation", fillcolor="#f4effa", color="#9a7bc4"];
   webgpu [label="WebGPU", fillcolor="#e9f6fb", color="#58a0bd"];
-  webgl [label="WebGL2", fillcolor="#e9f6fb", color="#58a0bd"];
-  glsubset [label="GL subset\nexperimental", style="rounded,dashed,filled", fillcolor="#faf7ff", color="#9a7bc4", fontcolor="#76579f"];
+  webgl [label="WebGL2 fallback", fillcolor="#e9f6fb", color="#58a0bd"];
   player [label="Browser canvas\ninput and audio processing", fillcolor="#eaf7f1", color="#62a889", penwidth=2];
 
   x86 -> wine;
@@ -65,9 +64,8 @@ digraph Winbox {
   d3d12 -> vkd3d -> bridge;
   vulkan -> bridge;
   bridge -> shader -> webgpu;
-  gl -> glbridge -> webgl;
-  gl -> glsubset [style=dashed, color="#8a68b4", fontcolor="#76579f"];
-  glsubset -> webgpu [style=dashed, color="#8a68b4"];
+  gl -> glbridge -> webgpu;
+  glbridge -> webgl [style=dashed, color="#8a68b4", fontcolor="#76579f", xlabel="device unavailable"];
   webgpu -> player;
   webgl -> player;
 
@@ -75,7 +73,7 @@ digraph Winbox {
   { rank=same; x86; x64; }
   { rank=same; d3d; d3d12; vulkan; gl; }
   { rank=same; dxvk; vkd3d; glbridge; }
-  { rank=same; bridge; glsubset; }
+  { rank=same; bridge; glbridge; }
   { rank=same; shader; }
   { rank=same; webgpu; webgl; }
 }
