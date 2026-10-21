@@ -55,6 +55,13 @@ function componentCount(type) {
   return matrix ? Number(matrix[1]) * Number(matrix[2] || matrix[1]) : 1;
 }
 
+function identityMatrix() { return new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]); }
+function mulMat4(matrix, vector) {
+  const out = new Array(4);
+  for (let row = 0; row < 4; row++) out[row] = matrix[row] * vector[0] + matrix[4 + row] * vector[1] + matrix[8 + row] * vector[2] + matrix[12 + row] * vector[3];
+  return out;
+}
+
 const GL_TOPOLOGY = new Map([[0x0000, 'point-list'], [0x0001, 'line-list'], [0x0002, 'line-strip'], [0x0004, 'triangle-list'], [0x0005, 'triangle-strip']]);
 const GL_COMPARE = new Map([[0x0200, 'never'], [0x0201, 'less'], [0x0202, 'equal'], [0x0203, 'less-equal'], [0x0204, 'greater'], [0x0205, 'not-equal'], [0x0206, 'greater-equal'], [0x0207, 'always']]);
 const GL_BLEND_OP = new Map([[0x8006, 'add'], [0x800a, 'subtract'], [0x800b, 'reverse-subtract'], [0x8007, 'min'], [0x8008, 'max']]);
@@ -382,7 +389,7 @@ export class WebGPUGL {
     if (state.enabled.has(0x0c11)) {
       const [x, y, width, height] = state.scissor;
       left = Math.max(0, x); right = Math.min(this._width, x + width);
-      top = Math.max(0, this._height - y - height); bottom = Math.min(this._height, this._height - y);
+      top = Math.max(0, y); bottom = Math.min(this._height, y + height);
     }
     for (let y = top; y < bottom; y++) for (let x = left; x < right; x++) {
       const i = (y * this._width + x) * 4;
@@ -786,10 +793,108 @@ export class WebGPUGL {
     };
   }
 
-  drawArrays(mode, first, count) { this._enqueue(() => this._draw(this._drawSnapshot(), mode, first, count, null, 1)); }
-  drawElements(mode, count, type, offset) { this._enqueue(() => this._draw(this._drawSnapshot(), mode, 0, count, { type, offset }, 1)); }
-  drawArraysInstanced(mode, first, count, instances) { this._enqueue(() => this._draw(this._drawSnapshot(), mode, first, count, null, instances)); }
-  drawElementsInstanced(mode, count, type, offset, instances) { this._enqueue(() => this._draw(this._drawSnapshot(), mode, 0, count, { type, offset }, instances)); }
+  drawArrays(mode, first, count) { const state = this._drawSnapshot(); this._mirrorDraw(state, mode, first, count, null); this._enqueue(() => this._draw(state, mode, first, count, null, 1)); }
+  drawElements(mode, count, type, offset) { const element = { type, offset }, state = this._drawSnapshot(); this._mirrorDraw(state, mode, 0, count, element); this._enqueue(() => this._draw(state, mode, 0, count, element, 1)); }
+  drawArraysInstanced(mode, first, count, instances) { const state = this._drawSnapshot(); this._mirrorDraw(state, mode, first, count, null); this._enqueue(() => this._draw(state, mode, first, count, null, instances)); }
+  drawElementsInstanced(mode, count, type, offset, instances) { const element = { type, offset }, state = this._drawSnapshot(); this._mirrorDraw(state, mode, 0, count, element); this._enqueue(() => this._draw(state, mode, 0, count, element, instances)); }
+
+  _mirrorAttribute(attribute, vertex) {
+    const result = [0, 0, 0, 1];
+    if (!attribute?.enabled || !attribute.buffer) return attribute?.current ? [...attribute.current] : result;
+    const buffer = attribute.buffer, view = new DataView(buffer.data.buffer, buffer.data.byteOffset, buffer.data.byteLength);
+    const bytes = [0x1400, 0x1401].includes(attribute.type) ? 1 : [0x1402, 0x1403, 0x140b].includes(attribute.type) ? 2 : 4;
+    const stride = attribute.stride || attribute.size * bytes;
+    for (let component = 0; component < Math.min(4, attribute.size); component++) {
+      const offset = attribute.offset + vertex * stride + component * bytes;
+      if (offset < 0 || offset + bytes > buffer.data.length) continue;
+      let value = attribute.type === 0x1400 ? view.getInt8(offset)
+        : attribute.type === 0x1401 ? view.getUint8(offset)
+          : attribute.type === 0x1402 ? view.getInt16(offset, true)
+            : attribute.type === 0x1403 ? view.getUint16(offset, true)
+              : attribute.type === 0x1404 ? view.getInt32(offset, true)
+                : attribute.type === 0x1405 ? view.getUint32(offset, true)
+                  : attribute.type === 0x1406 ? view.getFloat32(offset, true)
+                    : attribute.type === 0x140b ? halfToFloat(view.getUint16(offset, true)) : 0;
+      if (attribute.normalized) value = attribute.type === 0x1400 ? Math.max(-1, value / 127)
+        : attribute.type === 0x1401 ? value / 255
+          : attribute.type === 0x1402 ? Math.max(-1, value / 32767)
+            : attribute.type === 0x1403 ? value / 65535 : value;
+      result[component] = value;
+    }
+    return result;
+  }
+
+  _mirrorDraw(state, mode, first, count, indexed) {
+    // The GL bridge reads synchronously for its X11 software present. WebGPU
+    // cannot expose queue results synchronously, so mirror the fixed-function
+    // untextured vertex-color subset on the CPU while the GPU remains the real
+    // renderer. Other programmable draws need direct-canvas presentation.
+    if (!this._isDefaultFramebuffer(state.drawFramebuffer) || !state.program || this._textures.size) return;
+    const program = state.program;
+    const position = program.attributeInfo.find(item => /position/i.test(item.name));
+    const color = program.attributeInfo.find(item => /color/i.test(item.name));
+    if (!position || !color || program.uniformInfo.some(item => item.type === 0x8b5e)) return;
+    let vertices = indexed ? this._indexValues(state.elementArrayBuffer, indexed.type, indexed.offset, count)
+      : Uint32Array.from({ length: count }, (_, i) => first + i);
+    if (!vertices) return;
+    if (mode === 0x0006) {
+      const fan = [];
+      for (let i = 1; i + 1 < vertices.length; i++) fan.push(vertices[0], vertices[i], vertices[i + 1]);
+      vertices = Uint32Array.from(fan);
+    } else if (mode === 0x0005) {
+      const strip = [];
+      for (let i = 0; i + 2 < vertices.length; i++) strip.push(...(i & 1 ? [vertices[i + 1], vertices[i], vertices[i + 2]] : [vertices[i], vertices[i + 1], vertices[i + 2]]));
+      vertices = Uint32Array.from(strip);
+    }
+    if (mode !== 0x0004 && mode !== 0x0005 && mode !== 0x0006) return;
+    const posAttr = state.attributes.get(program.attributeLocations.get(position.name));
+    const colorAttr = state.attributes.get(program.attributeLocations.get(color.name));
+    const model = program.uniformValues.get('u_modelView') || identityMatrix();
+    const projection = program.uniformValues.get('u_projection') || identityMatrix();
+    const viewport = state.viewport;
+    const transform = index => {
+      const p = this._mirrorAttribute(posAttr, index);
+      const viewPosition = mulMat4(model, p), clip = mulMat4(projection, viewPosition);
+      const w = clip[3];
+      if (!Number.isFinite(w) || Math.abs(w) < 1e-8) return null;
+      const nx = clip[0] / w, ny = clip[1] / w;
+      return { x: viewport[0] + (nx + 1) * viewport[2] * 0.5, y: viewport[1] + (ny + 1) * viewport[3] * 0.5, color: this._mirrorAttribute(colorAttr, index) };
+    };
+    for (let i = 0; i + 2 < vertices.length; i += 3) {
+      const triangle = [transform(vertices[i]), transform(vertices[i + 1]), transform(vertices[i + 2])];
+      if (triangle.some(vertex => !vertex)) continue;
+      this._rasterizeMirrorTriangle(triangle, state);
+    }
+  }
+
+  _isDefaultFramebuffer(framebuffer) {
+    return framebuffer == null || framebuffer === 0 || framebuffer === this._defaultFramebuffer || !this._framebufferObjects.has(framebuffer);
+  }
+
+  _rasterizeMirrorTriangle(vertices, state) {
+    const edge = (a, b, x, y) => (x - a.x) * (b.y - a.y) - (y - a.y) * (b.x - a.x);
+    const area = edge(vertices[0], vertices[1], vertices[2].x, vertices[2].y);
+    if (!area || (state.enabled.has(0x0b44) && (state.cullFace === 0x0405 ? area > 0 : area < 0))) return;
+    const minX = Math.max(0, Math.floor(Math.min(...vertices.map(v => v.x))));
+    const maxX = Math.min(this._width - 1, Math.ceil(Math.max(...vertices.map(v => v.x))));
+    const minY = Math.max(0, Math.floor(Math.min(...vertices.map(v => v.y))));
+    const maxY = Math.min(this._height - 1, Math.ceil(Math.max(...vertices.map(v => v.y))));
+    const scissor = state.enabled.has(0x0c11) ? state.scissor : [0, 0, this._width, this._height];
+    const left = Math.max(minX, scissor[0]), right = Math.min(maxX, scissor[0] + scissor[2]);
+    const bottom = Math.max(minY, scissor[1]), top = Math.min(maxY, scissor[1] + scissor[3]);
+    for (let y = bottom; y <= top; y++) for (let x = left; x <= right; x++) {
+      const px = x + 0.5, py = y + 0.5;
+      const a = edge(vertices[1], vertices[2], px, py) / area;
+      const b = edge(vertices[2], vertices[0], px, py) / area;
+      const c = 1 - a - b;
+      if (a < 0 || b < 0 || c < 0) continue;
+      const offset = (y * this._width + x) * 4;
+      for (let channel = 0; channel < 4; channel++) if (state.colorMask[channel]) {
+        const value = a * vertices[0].color[channel] + b * vertices[1].color[channel] + c * vertices[2].color[channel];
+        this._pixels[offset + channel] = Math.round(clamp01(value) * 255);
+      }
+    }
+  }
 
   _indexValues(buffer, type, offset, count) {
     if (!buffer || ![0x1401, 0x1403, 0x1405].includes(type)) return null;
@@ -893,8 +998,8 @@ export class WebGPUGL {
 
   async _draw(state, mode, first, count, indexed, instances) {
     const program = state.program;
-    if (!program || !program.linkPromise || count <= 0 || instances <= 0) return;
-    if (!(await program.linkPromise)) return;
+    if (!program || !program.linkPromise) return;
+    if (count <= 0 || instances <= 0 || !(await program.linkPromise)) return;
     if (state.cullFace === 0x0408 && state.enabled.has(0x0b44)) return;
     const topologyData = this._rewriteTopology(mode, first, count, indexed ? this._indexValues(state.elementArrayBuffer, indexed.type, indexed.offset, count) : null);
     if (!topologyData.topology || (indexed && !topologyData.indices)) return;
