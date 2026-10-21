@@ -685,6 +685,8 @@ const TestEntry TEST_ENTRIES[] = {
     {testSse3DuplicateMoves, "Test SSE3 duplicate moves"},
     {testSse3Haddpd, "Test SSE3 HADDPD"},
     {testSse3MonitorMwaitNoop, "Test SSE3 MONITOR and MWAIT no-op"},
+    // Last: known to abort with asmjit LabelAlreadyBound (exit 134) so it must not hide other tests.
+    {testRecoverUnknownInstruction, "CPU32 unknown opcode recovery and UD2 fault"},
 };
 
 } // namespace

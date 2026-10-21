@@ -263,6 +263,8 @@ public:
 #endif
     FPU         fpu;
     U64		    instructionCount = 0;
+    U32         recoverInvalidRip = (U32)-1;
+    U8          recoverInvalidFaultsAtRip = 0;
     U32         blockInstructionCount = 0;
     bool        yield = false;
     U32         cpl = 0;

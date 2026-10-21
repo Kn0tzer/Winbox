@@ -20,26 +20,148 @@
 #include "bwlog.h"
 #include "knativethread.h"
 #include "knativesystem.h"
+#include "kthread.h"
+#include "kprocess.h"
+#include "ksignal.h"
 
 #include <stdio.h>
+#include <cstdio>
+#include <atomic>
+#include <cstdlib>
+#include <cstring>
+#include <mutex>
+#include <set>
+#include <string>
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+#define BW64_RECOVER_KEEPALIVE EMSCRIPTEN_KEEPALIVE
+#else
+#define BW64_RECOVER_KEEPALIVE
+#endif
 
 #ifdef BOXEDWINE_MSVC
 #include <Windows.h>
 #endif
 
 static BOXEDWINE_MUTEX logMutex;
+static std::atomic<unsigned long long> g_recoverPanics{0};
+static std::atomic<unsigned long long> g_recoverSkippedInstructions{0};
+static std::atomic<unsigned long long> g_recoverLoggedRips{0};
+static std::atomic<unsigned long long> g_recoverSigillFallbacks{0};
+static std::atomic<unsigned long long> g_recoverUnsupportedCases{0};
+static thread_local bool g_recoverPanicInProgress = false;
+#ifdef __TEST
+static thread_local int g_recoverTestOverride = -1;
+#endif
+static std::mutex g_recoverRipMutex;
+static std::set<std::pair<unsigned, U64>> g_recoverLoggedRipSet;
+static std::set<std::string> g_recoverLoggedOnceSet;
+
+bool bw64RecoverEnabled() {
+#ifdef __TEST
+    if (g_recoverTestOverride >= 0) return g_recoverTestOverride != 0;
+#endif
+    const char* value = std::getenv("BW64_RECOVER");
+    if (value && value[0] == '0') return false;
+    if (value && value[0] == '1') return true;
+#ifdef __EMSCRIPTEN__
+    return true;
+#else
+    return false;
+#endif
+}
+
+#ifdef __TEST
+void bw64RecoverSetTestOverride(int enabled) {
+    g_recoverTestOverride = enabled;
+}
+#endif
+
+void bw64RecoverNoteSkippedInstruction(bool loggedRip) {
+    g_recoverSkippedInstructions.fetch_add(1, std::memory_order_relaxed);
+    if (loggedRip) g_recoverLoggedRips.fetch_add(1, std::memory_order_relaxed);
+}
+
+void bw64RecoverNoteSigillFallback() {
+    g_recoverSigillFallbacks.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool bw64RecoverClaimRip(unsigned architecture, U64 rip) {
+    std::lock_guard<std::mutex> lock(g_recoverRipMutex);
+    const auto key = std::make_pair(architecture, rip);
+    if (g_recoverLoggedRipSet.find(key) != g_recoverLoggedRipSet.end() ||
+        g_recoverLoggedRipSet.size() >= 200) return false;
+    g_recoverLoggedRipSet.insert(key);
+    return true;
+}
+
+void bw64RecoverLogOnce(const char* key, const char* message) {
+    if (!bw64RecoverEnabled() || !key || !message) return;
+    {
+        std::lock_guard<std::mutex> lock(g_recoverRipMutex);
+        if (g_recoverLoggedOnceSet.find(key) != g_recoverLoggedOnceSet.end() ||
+            g_recoverLoggedOnceSet.size() >= 512) return;
+        g_recoverLoggedOnceSet.insert(key);
+    }
+    g_recoverUnsupportedCases.fetch_add(1, std::memory_order_relaxed);
+    BString recovered = BString::copy("recover: ");
+    recovered += message;
+    recovered += "\n";
+    internal_log(recovered, stdout);
+}
+
+extern "C" BW64_RECOVER_KEEPALIVE const char* bw64_recover_stats_json_text() {
+    static thread_local char text[256];
+    std::snprintf(text, sizeof(text),
+                  "{\"enabled\":%s,\"panics\":%llu,\"skippedInstructions\":%llu,\"loggedRips\":%llu,\"sigillFallbacks\":%llu,\"unsupportedCases\":%llu}",
+                  bw64RecoverEnabled() ? "true" : "false",
+                  g_recoverPanics.load(std::memory_order_relaxed),
+                  g_recoverSkippedInstructions.load(std::memory_order_relaxed),
+                  g_recoverLoggedRips.load(std::memory_order_relaxed),
+                  g_recoverSigillFallbacks.load(std::memory_order_relaxed),
+                  g_recoverUnsupportedCases.load(std::memory_order_relaxed));
+    return text;
+}
 
 void kpanic(const char* msg) {
     internal_kpanic(BString::copy(msg));
 }
 
 void internal_kpanic(BString msg) {
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(logMutex);
-    if (KSystem::logFile.isOpen()) {
-        KSystem::logFile.write(msg);
+    KThread* guestThread = nullptr;
+    KProcessPtr guestProcess;
+    if (bw64RecoverEnabled() && !g_recoverPanicInProgress) {
+        guestThread = KThread::currentThread();
+        if (guestThread) guestProcess = guestThread->process;
     }
-    fwrite(msg.c_str(), 1, msg.length(), stderr);
-    fflush(stderr);
+    if (guestThread && guestProcess) {
+        const unsigned long long count = g_recoverPanics.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (count == 1 || count % 100 == 0) {
+            BString recovered = count == 1
+                ? BString::copy("recover: kpanic #1: ") + msg
+                : BString::valueOf("recover: kpanic count=") + BString::valueOf(count) + BString::copy(" (rate-limited): ") + msg;
+            if (!recovered.endsWith('\n')) recovered += "\n";
+            {
+                BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(logMutex);
+                if (KSystem::logFile.isOpen()) KSystem::logFile.write(recovered);
+                fwrite(recovered.c_str(), 1, recovered.length(), stderr);
+                fflush(stderr);
+            }
+        }
+        // Reuse normal exit_group teardown: siblings in this process stop, and
+        // the emulator only becomes idle when this was its final process.
+        g_recoverPanicInProgress = true;
+        guestProcess->exitgroup(guestThread, 128 + K_SIGABRT);
+        throw 1; // Unwind the guest C++ call stack; runThreadSlice catches this.
+    }
+    {
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(logMutex);
+        if (KSystem::logFile.isOpen()) {
+            KSystem::logFile.write(msg);
+        }
+        fwrite(msg.c_str(), 1, msg.length(), stderr);
+        fflush(stderr);
+    }
 #if defined(BOXEDWINE_MSVC) && defined(_DEBUG)
     OutputDebugStringA(msg.c_str());
 #endif

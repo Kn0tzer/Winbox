@@ -874,9 +874,17 @@ U32 KUnixSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& fd,
             case K_SO_ATTACH_FILTER:
                 break;
             default:
+                if (bw64RecoverEnabled()) {
+                    bw64RecoverLogOnce("socket.unix.setsockopt", "unsupported Unix socket option; returned EINVAL");
+                    return -K_EINVAL;
+                }
                 kwarn_fmt("KUnixSocketObject::setsockopt name %d not implemented", name);
         }
     } else {
+        if (bw64RecoverEnabled()) {
+            bw64RecoverLogOnce("socket.unix.setsockopt.level", "unsupported Unix socket option level; returned EINVAL");
+            return -K_EINVAL;
+        }
         kwarn_fmt("KUnixSocketObject::setsockopt level %d not implemented", level);
     }
     return 0;
@@ -917,11 +925,13 @@ U32 KUnixSocketObject::getsockopt(KThread* thread, const KFileDescriptorPtr& fd,
             memory->writed(value + 4, thread->process->userId);
             memory->writed(value + 8, thread->process->groupId);
         } else {
-            kwarn_fmt("KUnixSocketObject::getsockopt name %d not implemented", name);
+            if (bw64RecoverEnabled()) bw64RecoverLogOnce("socket.unix.getsockopt", "unsupported Unix getsockopt option; returned EINVAL");
+            else kwarn_fmt("KUnixSocketObject::getsockopt name %d not implemented", name);
             return -K_EINVAL;
         }
     } else {
-        kwarn_fmt("KUnixSocketObject::getsockopt level %d not implemented", level);
+        if (bw64RecoverEnabled()) bw64RecoverLogOnce("socket.unix.getsockopt.level", "unsupported Unix getsockopt level; returned EINVAL");
+        else kwarn_fmt("KUnixSocketObject::getsockopt level %d not implemented", level);
         return -K_EINVAL;
     }
     return 0;

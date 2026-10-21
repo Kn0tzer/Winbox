@@ -17,7 +17,9 @@
 #include "../../kernel/loader/loader64.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <string>
 #include <vector>
 
 // Minimal in-process smoke test for the x86-64 interpreter. Builds tiny
@@ -144,6 +146,15 @@ void runFaultAtRIP(TestResult& r, const char* name,
         r.failed++;
     }
     fflush(stdout);
+}
+
+void setRecoverPolicyForTest(bool enabled) {
+#ifdef BOXEDWINE_MSVC
+    _putenv_s("BW64_RECOVER", enabled ? "1" : "");
+#else
+    if (enabled) setenv("BW64_RECOVER", "1", 1);
+    else unsetenv("BW64_RECOVER");
+#endif
 }
 
 // Exit suffix. ksyscall64's exit handler doesn't preserve RAX (it writes
@@ -8632,10 +8643,29 @@ int runX64SelfTest() {
         return (c.reg[X64_R15].u64 & 0x80ULL) != 0;
     });
 
+    const char* oldRecoverValue = std::getenv("BW64_RECOVER");
+    const bool hadRecoverValue = oldRecoverValue != nullptr;
+    const std::string savedRecoverValue = oldRecoverValue ? oldRecoverValue : "";
+    setRecoverPolicyForTest(false);
+
     // Synchronous invalid-opcode and user-mode #GP faults stay at the
     // instruction RIP in this handler-free native self-test harness.
     runFaultAtRIP(r, "UD2 raises SIGILL at faulting RIP", {0x0F, 0x0B});
     runFaultAtRIP(r, "unimplemented opcode raises SIGILL", {0x0F, 0xB9, 0xC0});
+    setRecoverPolicyForTest(true);
+    runAndCheck(r, "recover skips unknown 0F opcode with ModRM length", withExit({
+        0x0F, 0xB9, 0xC0,                         // unknown opcode + register ModRM
+        0xB8, 0x78, 0x56, 0x34, 0x12             // mov eax,0x12345678 proves continuation
+    }), [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0x12345678ULL;
+    });
+    runFaultAtRIP(r, "recover never skips UD2", {0x0F, 0x0B});
+#ifdef BOXEDWINE_MSVC
+    _putenv_s("BW64_RECOVER", hadRecoverValue ? savedRecoverValue.c_str() : "");
+#else
+    if (hadRecoverValue) setenv("BW64_RECOVER", savedRecoverValue.c_str(), 1);
+    else unsetenv("BW64_RECOVER");
+#endif
     runFaultAtRIP(r, "INT imm8 raises #GP", {0xCD, 0x29});
     runFaultAtRIP(r, "HLT raises #GP", {0xF4});
     runFaultAtRIP(r, "CLI raises #GP", {0xFA});

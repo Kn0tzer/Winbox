@@ -288,6 +288,10 @@ U32 KSystem::ugetrlimit(KThread * thread, U32 resource, U32 rlim) {
             memory->writed(rlim + 4, MAX_ADDRESS_SPACE);
             break;
         default:
+            if (bw64RecoverEnabled()) {
+                bw64RecoverLogOnce("syscall.ugetrlimit.resource", "unsupported ugetrlimit resource; returned EINVAL");
+                return -K_EINVAL;
+            }
             kpanic_fmt("ugetrlimit resource %d not implemented", resource);
     }
     return 0;
@@ -305,6 +309,10 @@ U32 KSystem::clock_gettime(KThread* thread, U32 clock_id, U32 tp) {
         memory->writed(tp, (U32)(diff / 1000000l));
         memory->writed(tp + 4, (U32)(diff % 1000000l) * 1000);
     } else {
+        if (bw64RecoverEnabled()) {
+            bw64RecoverLogOnce("syscall.clock_gettime.clock", "unsupported clock_gettime clock id; returned EINVAL");
+            return -K_EINVAL;
+        }
         kpanic_fmt("Unknown clock id for clock_gettime: %d",clock_id);
     }
     return 0;
@@ -324,6 +332,10 @@ U32 KSystem::clock_gettime64(KThread* thread, U32 clock_id, U32 tp) {
         memory->writed(tp + 8, (U32)(diff % 1000000l) * 1000);
     }
     else {
+        if (bw64RecoverEnabled()) {
+            bw64RecoverLogOnce("syscall.clock_gettime64.clock", "unsupported clock_gettime64 clock id; returned EINVAL");
+            return -K_EINVAL;
+        }
         kpanic_fmt("Unknown clock id for clock_gettime64: %d", clock_id);
     }
     return 0;
@@ -1019,6 +1031,10 @@ U32 KSystem::prlimit64(KThread* thread, U32 pid, U32 resource, U32 newlimit, U32
 #endif
             break;
         default:
+            if (bw64RecoverEnabled()) {
+                bw64RecoverLogOnce("syscall.prlimit64.resource", "unsupported prlimit64 resource; returned EINVAL");
+                return -K_EINVAL;
+            }
             kpanic_fmt("prlimit64 resource %d not handled", resource);
     }
     return 0;

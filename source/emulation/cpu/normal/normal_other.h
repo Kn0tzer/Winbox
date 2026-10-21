@@ -18,6 +18,89 @@
 
 #include "../common/common_other.h"
 
+static U32 recoverInvalid32Length(CPU* cpu, U32 ip) {
+    U32 pos = 0;
+    bool operand16 = false;
+    bool address16 = false;
+    U8 first = 0;
+    while (pos < 14) {
+        U8 b = cpu->memory->readb(ip + pos);
+        if (b == 0x66) operand16 = true;
+        else if (b == 0x67) address16 = true;
+        else if (b == 0xF0 || b == 0xF2 || b == 0xF3 || b == 0x26 ||
+                 b == 0x2E || b == 0x36 || b == 0x3E || b == 0x64 || b == 0x65) {}
+        else break;
+        pos++;
+    }
+    if (pos >= 14) return 0;
+    first = cpu->memory->readb(ip + pos++);
+    U8 second = 0;
+    U32 map = 0;
+    if (first == 0xCC) return 0;
+    if (first == 0x0F) {
+        second = cpu->memory->readb(ip + pos++);
+        if (second == 0x0B) return 0; // UD2 always faults.
+        if (second == 0x38 || second == 0x3A) {
+            map = second == 0x38 ? 2 : 3;
+            ++pos;
+        } else map = 1;
+    }
+    bool modrm = false;
+    U32 imm = 0;
+    if (map == 1) {
+        modrm = !((second >= 0x80 && second <= 0x8F) || second == 0x05 ||
+                  second == 0x06 || second == 0x07 || second == 0x08 ||
+                  second == 0x09 || second == 0x0B ||
+                  (second >= 0x30 && second <= 0x35) || second == 0x37 ||
+                  second == 0x77 || second == 0xA0 || second == 0xA1 ||
+                  second == 0xA2 || second == 0xA8 || second == 0xA9 ||
+                  second == 0xAA || (second >= 0xC8 && second <= 0xCF));
+        if (second == 0x0F || second == 0xBA || second == 0xA4 ||
+            second == 0xAC || second == 0xC2 || second == 0xC4 ||
+            second == 0xC5 || second == 0xC6) imm = 1;
+    } else if (map == 2 || map == 3) {
+        modrm = true;
+        imm = map == 3 ? 1 : 0;
+    } else {
+        modrm = (first <= 0x3B && (first & 7) <= 3) || first == 0x62 ||
+                 first == 0x63 || (first >= 0x69 && first <= 0x6B) ||
+                 (first >= 0x80 && first <= 0x8F) || first == 0xC0 ||
+                 first == 0xC1 || (first >= 0xC4 && first <= 0xC7) ||
+                 (first >= 0xD0 && first <= 0xD3) ||
+                 (first >= 0xD8 && first <= 0xDF) || first == 0xF6 ||
+                 first == 0xF7 || first == 0xFE || first == 0xFF;
+        if ((first >= 0x70 && first <= 0x7F) || first == 0x6A ||
+            first == 0x80 || first == 0x82 || first == 0x83 || first == 0xA8 ||
+            first == 0xC0 || first == 0xC1 || first == 0xC6 || first == 0xD4 ||
+            first == 0xD5 || (first >= 0xE0 && first <= 0xE7) || first == 0xEB)
+            imm = 1;
+        else if (first == 0x68 || first == 0x69 || first == 0x81 ||
+                 first == 0xA9 || first == 0xC7 || first == 0xE8 || first == 0xE9)
+            imm = operand16 ? 2 : 4;
+        else if (first >= 0xB8 && first <= 0xBF) imm = operand16 ? 2 : 4;
+        else if (first >= 0xB0 && first <= 0xB7) imm = 1;
+        if (first == 0xF6 || first == 0xF7) {
+            U8 group = (cpu->memory->readb(ip + pos) >> 3) & 7;
+            if (group <= 1) imm = first == 0xF6 ? 1 : (operand16 ? 2 : 4);
+        }
+    }
+    if (modrm) {
+        U8 m = cpu->memory->readb(ip + pos++);
+        U8 mode = m >> 6;
+        U8 rm = m & 7;
+        if (!address16 && mode != 3 && rm == 4) {
+            U8 sib = cpu->memory->readb(ip + pos++);
+            if (mode == 0 && (sib & 7) == 5) pos += 4;
+        } else if (address16 && mode == 0 && rm == 6) pos += 2;
+        if (mode == 0 && !(!address16 && rm == 4) && rm == 5) pos += address16 ? 0 : 4;
+        else if (mode == 1) pos += 1;
+        else if (mode == 2) pos += address16 ? 2 : 4;
+    }
+    pos += imm;
+    return pos <= 15 ? pos : 0;
+}
+
+
 void OPCALL normal_bound16(CPU* cpu, DecodedOp* op){
     START_OP(cpu, op);
     if (common_bound16(cpu, op->reg, eaa(cpu, op))) {
@@ -176,11 +259,32 @@ void OPCALL normal_retn32(CPU* cpu, DecodedOp* op) {
 }
 void OPCALL normal_invalid(CPU* cpu, DecodedOp* op) {
     START_OP(cpu, op);
+    if (bw64RecoverEnabled()) {
+        U32 ip = cpu->getEipAddress();
+        U32 length = recoverInvalid32Length(cpu, ip);
+        if (ip != cpu->recoverInvalidRip) {
+            cpu->recoverInvalidRip = ip;
+            cpu->recoverInvalidFaultsAtRip = 0;
+        }
+        if (length && cpu->recoverInvalidFaultsAtRip < 3) {
+            cpu->recoverInvalidFaultsAtRip++;
+            bool firstAtRip = bw64RecoverClaimRip(32, ip);
+            if (firstAtRip) {
+                klog_fmt("recover: skipped CPU32 opcode at EIP=0x%x len=%u", ip, length);
+            }
+            bw64RecoverNoteSkippedInstruction(firstAtRip);
+            cpu->eip.u32 += length;
+            NEXT_DONE();
+            return;
+        }
+        bw64RecoverNoteSigillFallback();
+    }
     cpu->thread->signalIllegalInstruction(2);
     NEXT_DONE();
 }
 void OPCALL normal_ud2(CPU* cpu, DecodedOp* op) {
     START_OP(cpu, op);
+    if (bw64RecoverEnabled()) bw64RecoverNoteSigillFallback();
     cpu->thread->signalIllegalInstruction(2);
     NEXT_DONE();
 }

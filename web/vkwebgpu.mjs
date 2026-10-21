@@ -8,6 +8,7 @@ import {
   v2IndexedTriangleFanIndices, v2TriangleFanIndices,
 } from './vk-protocol.mjs';
 import { bwLogRl } from './vk-log.mjs';
+import { bridgeRecoveryStats, reportBridgeFailure } from './bridge-recovery.mjs';
 import {
   parseMinBindingSize, rewritePushConstantsWGSL, rewriteResolvedDxvkPresent,
   scanWgslResources, stripNagaFragmentDepth, stripNagaYNegation, wgslUniformSizes,
@@ -322,6 +323,11 @@ function defaultLog(msg) {
   try { if (typeof globalThis.bwRuntimeLog === 'function') globalThis.bwRuntimeLog(msg); } catch { /* ignore */ }
 }
 
+function rememberRecoveryError(errors, value) {
+  errors.push(String(value));
+  if (errors.length > 32) errors.shift();
+}
+
 const metricsNow = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
 // Present pacing for the live panel: real presented-frame timestamps (the page
@@ -487,8 +493,12 @@ export async function createVkRenderer(canvas, { translate, log = defaultLog } =
     .filter(feature => adapter.features.has(feature));
   const device = await adapter.requestDevice({ requiredFeatures });
   const errors = [];
-  device.addEventListener('uncapturederror', e => log('vk64: page tier WebGPU error: ' + (e.error?.message || e.error)));
-  device.lost.then(info => errors.push('Device lost: ' + info.reason + ' ' + info.message));
+  device.addEventListener('uncapturederror', e => {
+    const message = 'WebGPU validation error: ' + (e.error?.message || e.error);
+    rememberRecoveryError(errors, message);
+    reportBridgeFailure('vkwebgpu.uncaptured', e.error || new Error(message), log);
+  });
+  device.lost.then(info => rememberRecoveryError(errors, 'Device lost: ' + info.reason + ' ' + info.message));
 
   const context = canvas.getContext('webgpu');
   if (!context) throw new Error('No WebGPU canvas context');
@@ -503,7 +513,7 @@ export async function createVkRenderer(canvas, { translate, log = defaultLog } =
     frames: 0, rendered: 0, skips: 0,
     litPixels: 0, paintedPixels: 0, totalPixels: 0, width: 0, height: 0,
   };
-  const snapshot = () => ({ ...stats, ...shaders.stats });
+  const snapshot = () => ({ ...stats, ...shaders.stats, recover: bridgeRecoveryStats() });
   // Live metrics for the legacy (v1 manifest) path — same shape as renderer2.
   const pacer = createFramePacer();
   const gpuTimer = createGpuTimer(device, adapter, { log });
@@ -713,7 +723,7 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
   const stopped = () => ({ rendered: false, reason: 'destroyed' });
   const state = { received: 0, rendered: 0, rejected: 0, errors: [], last: null,
     litPixels: 0, paintedPixels: 0, totalPixels: 0 };
-  const stats = () => ({ ...state, errors: state.errors.slice(-8), pipeline: renderer?.snapshot() || null,
+  const stats = () => ({ ...state, errors: state.errors.slice(-8), recover: bridgeRecoveryStats(), pipeline: renderer?.snapshot() || null,
     v2: { ...v2state, queue: v2queue.size, pipeline2: renderer2?.snapshot() || null } });
   // Page-tier metrics for the live panel: present pacing plus the host-side
   // stage spans of whichever renderer owns this presentation path. `null`
@@ -785,8 +795,8 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
       return result;
     } catch (e) {
       state.rejected++;
-      state.errors.push(String(e.message || e));
-      log('vk64: page tier frame rejected — ' + (e.message || e));
+      rememberRecoveryError(state.errors, e.message || e);
+      reportBridgeFailure('vkwebgpu.frame', e, log);
       return { rendered: false, reason: String(e.message || e) };
     }
   }
@@ -827,8 +837,8 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
           const learned = attempt < 4 && renderer2.learnMinBindingSize(message);
           if (!learned) {
             v2state.rejected++;
-            state.errors.push('v2: ' + message);
-            log('vk64: v2 page tier frame rejected \u2014 ' + message);
+            rememberRecoveryError(state.errors, 'v2: ' + message);
+            reportBridgeFailure('vkwebgpu.v2-frame', e, log);
             return { rendered: false, reason: message };
           }
           log('vk64: v2 frame ' + (f?.frameNo ?? '?') + ' retry ' + (attempt + 1) +
@@ -838,8 +848,8 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
     } catch (e) {
       v2state.rejected++;
       const message = String(e.message || e);
-      state.errors.push('v2: ' + message);
-      log('vk64: v2 page tier frame rejected \u2014 ' + message);
+      rememberRecoveryError(state.errors, 'v2: ' + message);
+      reportBridgeFailure('vkwebgpu.v2-frame', e, log);
       return { rendered: false, reason: message };
     }
   }
@@ -854,8 +864,8 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
     try { parsed = parseV2Chunk(bytes); }
     catch (e) {
       v2state.rejected++;
-      state.errors.push('v2 chunk: ' + String(e.message || e));
-      log('vk64: v2 chunk rejected \u2014 ' + (e.message || e));
+      rememberRecoveryError(state.errors, 'v2 chunk: ' + String(e.message || e));
+      reportBridgeFailure('vkwebgpu.v2-chunk', e, log);
       return Promise.resolve({ rendered: false, reason: 'bad-chunk' });
     }
     const recs = v2asm.ingest(parsed);
@@ -865,8 +875,8 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
     try { decoded = decodeV2Frame(recs); }
     catch (e) {
       v2state.rejected++;
-      state.errors.push('v2 frame: ' + String(e.message || e));
-      log('vk64: v2 frame rejected \u2014 ' + (e.message || e));
+      rememberRecoveryError(state.errors, 'v2 frame: ' + String(e.message || e));
+      reportBridgeFailure('vkwebgpu.v2-frame-decode', e, log);
       return Promise.resolve({ rendered: false, reason: String(e.message || e) });
     }
     const presented = v2present.push(decoded, flags);
@@ -1084,8 +1094,12 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   if (adapter.limits) for (const key of REQUIRED_LIMIT_KEYS) requiredLimits[key] = adapter.limits[key];
   const device = await adapter.requestDevice({ requiredFeatures, requiredLimits });
   const errors = [];
-  device.addEventListener('uncapturederror', e => log('vk64: v2 page tier WebGPU error: ' + (e.error?.message || e.error)));
-  device.lost.then(info => errors.push('Device lost: ' + info.reason + ' ' + info.message));
+  device.addEventListener('uncapturederror', e => {
+    const message = 'WebGPU validation error: ' + (e.error?.message || e.error);
+    rememberRecoveryError(errors, message);
+    reportBridgeFailure('vkwebgpu.uncaptured', e.error || new Error(message), log);
+  });
+  device.lost.then(info => rememberRecoveryError(errors, 'Device lost: ' + info.reason + ' ' + info.message));
 
   const context = canvas.getContext('webgpu');
   if (!context) throw new Error('No WebGPU canvas context');
@@ -1107,7 +1121,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   const pacer = createFramePacer();
   const gpuTimer = createGpuTimer(device, adapter, { log });
   const timing = { renderMs: 0, renderCount: 0, submitMs: 0, submitCount: 0, pipelineMs: 0, pipelineCount: 0 };
-  const snapshot = () => ({ ...stats, ...shaders.stats, persist: { ...persistStats } });
+  const snapshot = () => ({ ...stats, ...shaders.stats, persist: { ...persistStats }, recover: bridgeRecoveryStats() });
   // Page-tier metrics for the live panel: every field is measured on the page.
   const metrics = () => {
     const pace = pacer.snapshot();

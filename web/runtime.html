@@ -4,6 +4,18 @@ import { getPackage } from '../storage.mjs';
 import { safePath, checkEntries, folderLimits } from '../files.mjs';
 import { installPresentation } from '../presentation.mjs';
 import { loadDependencies } from '../dependencies.mjs';
+import { bridgeRecoveryStats, recoverBridgeCall, reportBridgeFailure } from '../bridge-recovery.mjs';
+const send = (type, data) => {
+  try { return parent.postMessage({ wine: true, type, data }, location.origin); }
+  catch (error) { reportBridgeFailure('runtime.post-message', error); return false; }
+};
+window.addEventListener('error', event => {
+  reportBridgeFailure('runtime.page-error', new Error(event.message || 'page error'), message => send('log', message));
+});
+window.addEventListener('unhandledrejection', event => {
+  reportBridgeFailure('runtime.unhandled-rejection', event.reason, message => send('log', message));
+});
+window.bwRecoverBridgeStats = bridgeRecoveryStats;
 const query = new URLSearchParams(location.search);
 const runtimeReleaseId = '__RUNTIME_VERSION__';
 let launchAudioContext = null;
@@ -144,7 +156,6 @@ const id = query.get('installation');
 const gameZipUrl = query.get('gamezip');
 const gameZipSize = Number(query.get('gamezipsize') || 0);
 const pkg = (!gameZipUrl && id && id !== 'demo' && !id.startsWith('demo-')) ? await getPackage(id) : null;
-const send = (type, data) => parent.postMessage({ wine: true, type, data }, location.origin);
 // The native ZIP reader proxies range requests onto this document's main
 // thread. Local archives are answered from original File slices by the shell;
 // all ordinary fetches retain the browser's standard behavior.
@@ -205,31 +216,29 @@ if (query.get('network') === '1' && query.get('wisp') === '1') {
   window.bwConfigureNetwork = (sockfs, dns) => installWispSockets(sockfs, dns, bridge);
   addEventListener('pagehide', () => bridge.destroy(), { once: true });
 }
-window.addEventListener('error', event => send('error', event.message || 'Runtime error. Restart the program to try again.'));
-window.addEventListener('unhandledrejection', event => send('error', event.reason?.message || String(event.reason)));
 window.bwRuntimeStatus = text => send('status', text);
 window.bwRuntimeLog = text => send('log', text);
 window.bwRuntimeError = text => send('error', text);
 // Every launch gets the same installed libraries. The guest's normal loaders
 // request Mono/graphics files lazily, regardless of demo, upload or EXE name.
 window.bwDependencySpec = await loadDependencies(new URL('dependencies.json?v=__RUNTIME_VERSION__', location.href));
-window.bwGpuFrame = json => send('gpu', JSON.parse(json));
+window.bwGpuFrame = recoverBridgeCall('runtime.gpu-frame', json => send('gpu', JSON.parse(json)), undefined);
 // vk64 page tier (tasks/p1-final.md §2.9): the Vulkan bridge hops ONE frame
 // manifest per present into window.bwVkFrame, which becomes a 'vk' message to
 // the app shell — the sibling of the 'gpu' branch. The string is forwarded
 // unparsed on purpose: web/vkwebgpu.mjs owns decoding (and the host manifest's
 // missing '}' on its vs/fs wrapper objects is repaired there, not here, so a
 // guest frame can never fault this bridge).
-window.bwVkFrame = json => send('vk', json);
+window.bwVkFrame = recoverBridgeCall('runtime.vk-frame', json => send('vk', json), undefined);
 // Schema v2 (tasks/schema-v2.md): the bridge hops binary chunk bytes per
 // MAIN_THREAD_EM_ASM into window.bwVkChunk. Forwarded to the app shell as a
 // 'vk2' message with the buffer transferred (zero-copy); the top-level
 // self-host path below routes it straight into the tier instead.
-window.bwVkChunk = (bytes, flags) => {
+window.bwVkChunk = recoverBridgeCall('runtime.vk-chunk', (bytes, flags) => {
   const msg = { wine: true, type: 'vk2', data: { bytes, flags } };
   try { parent.postMessage(msg, location.origin, [bytes.buffer]); }
   catch (e) { parent.postMessage(msg, location.origin); }
-};
+}, undefined);
 // When THIS page is the top-level one (window.parent === window — the scratch-vk
 // probe drives /runtime/index.html directly) there is no app shell to own the
 // renderer, so the page hosts the page tier itself: the tier module is imported

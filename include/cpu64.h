@@ -173,6 +173,8 @@ public:
     // RIP is advanced so reExecuteSyscall can rewind to it.
     U64  syscallRip = 0;
     U64  instructionCount = 0;
+    U64  recoverLastRip = (U64)-1;
+    U8   recoverFaultsAtRip = 0;
 
     void run();
     // Run up to maxInsn instructions or until yield / decode failure.
