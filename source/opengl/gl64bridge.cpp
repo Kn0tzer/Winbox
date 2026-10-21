@@ -82,24 +82,43 @@
 
 #ifdef __EMSCRIPTEN__
 // Emscripten's -sLEGACY_GL_EMULATION supplies most fixed-function entry points,
-// but a few FFP lighting/material scalars are missing from its glemu and don't
-// link: glLightf, glMaterialf, glColorMaterial. The *fv (vector) variants DO
-// link, so route the scalars through them (1-element param). glColorMaterial has
-// no glemu equivalent — Emscripten's FFP shader synthesis already folds glColor
-// into the material, so a no-op preserves the visible result. These shims keep
-// the bridge's call sites (GL_MT(glLightf(...)) etc.) unchanged.
+// but some variants are absent or throw TODO errors in library_glemu.js. Keep
+// those bridge calls linkable and nonfatal. Scalar lighting/material calls use
+// their vector variants; color material is already folded into glemu's shader.
 static inline void bw_glLightf(GLenum light, GLenum pname, GLfloat v) {
     GLfloat p[1] = { v }; glLightfv(light, pname, p);
 }
 static inline void bw_glMaterialf(GLenum face, GLenum pname, GLfloat v) {
     GLfloat p[1] = { v }; glMaterialfv(face, pname, p);
 }
+static inline void bw_glTexEnviv(GLenum target, GLenum pname, const GLint* params) {
+    if (!params) return;
+    if (pname == 0x2201 /* GL_TEXTURE_ENV_COLOR */) {
+        GLfloat values[4] = { (GLfloat)params[0], (GLfloat)params[1],
+                              (GLfloat)params[2], (GLfloat)params[3] };
+        glTexEnvfv(target, pname, values);
+    } else {
+        glTexEnvi(target, pname, params[0]);
+    }
+}
+// glemu has a throwing TODO implementation for glTexGenfv and no glTexGeniv.
+static inline void bw_glTexGenfv(GLenum, GLenum, const GLfloat*) {}
+static inline void bw_glTexGeniv(GLenum, GLenum, const GLint*) {}
+// These integer entry points are absent from glemu and not needed by its shader
+// synthesis; accept them as harmless no-ops if a guest calls them.
+static inline void bw_glLightModeliv(GLenum, const GLint*) {}
+static inline void bw_glMaterialiv(GLenum, GLenum, const GLint*) {}
 static inline void bw_glColorMaterial(GLenum, GLenum) { /* glemu folds glColor */ }
 // WebGL2 has no shade-model state. Smooth interpolation is the default and
 // Emscripten's generated GL entry point is only a TODO warning, so swallow it.
 static inline void bw_glShadeModel(GLenum) {}
 #define glLightf        bw_glLightf
 #define glMaterialf     bw_glMaterialf
+#define glTexEnviv      bw_glTexEnviv
+#define glTexGenfv      bw_glTexGenfv
+#define glTexGeniv      bw_glTexGeniv
+#define glLightModeliv  bw_glLightModeliv
+#define glMaterialiv    bw_glMaterialiv
 #define glColorMaterial bw_glColorMaterial
 #define glShadeModel    bw_glShadeModel
 #endif
