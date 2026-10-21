@@ -241,7 +241,8 @@ private:
     // (BW64_JIT_VERIFY=1). Returns false when the two decoders disagree, which
     // keeps the block on the interpreter (drift guard).
     bool verifyJitPlanAgainstBlock(U64 rip, const struct Jit64Op* ops, U32 n);
-    U32 step();
+    U32 step(bool trackJitBlockBoundary = false);
+    bool m_jitBlockBoundaryAfterStep = false;
 
     U8  fetchByte(U64 addr);
     U32 fetchDword(U64 addr);

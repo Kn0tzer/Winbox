@@ -874,7 +874,7 @@ static void refWatchInit() {
         g_refObjAddr = 0x400000000ULL + 0x30170ULL; // PIE base + release_object
 }
 
-U32 CPU64::step() {
+U32 CPU64::step(bool trackJitBlockBoundary) {
     U64 ipStart = rip;
 
     // BW64_REFWATCH probe: catch wineserver's double-release at release_object
@@ -958,6 +958,34 @@ U32 CPU64::step() {
     U32 opSize = rexW ? 8u : (p.osize16 ? 2u : 4u);
 
     U8 op = fetchByte(rip + opOff);
+
+    // Fast JIT dispatch needs another probe after control flow, where execution
+    // reaches a new basic-block entry. Ordinary fallthrough instructions stay
+    // on the interpreter without paying JIT/cache lookup costs.
+    if (trackJitBlockBoundary) {
+        m_jitBlockBoundaryAfterStep = false;
+        switch (op) {
+        case 0x0F: {
+            U8 op2 = fetchByte(rip + opOff + 1);
+            m_jitBlockBoundaryAfterStep =
+                (op2 >= 0x80 && op2 <= 0x8F) || op2 == 0x05 || op2 == 0x07 ||
+                op2 == 0x34 || op2 == 0x35;
+            break;
+        }
+        case 0xFF: {
+            U8 group = (fetchByte(rip + opOff + 1) >> 3) & 7;
+            m_jitBlockBoundaryAfterStep = group == 2 || group == 3 || group == 4 || group == 5;
+            break;
+        }
+        default:
+            m_jitBlockBoundaryAfterStep =
+                (op >= 0x70 && op <= 0x7F) || (op >= 0xE0 && op <= 0xE3) ||
+                op == 0xE8 || op == 0xE9 || op == 0xEB ||
+                op == 0xC2 || op == 0xC3 || op == 0xCA || op == 0xCB || op == 0xCF ||
+                op == 0xCC || op == 0x9A || op == 0xEA;
+            break;
+        }
+    }
 
     // Deliver a synchronous, instruction-addressed fault. The test harness
     // has no attached thread or signal handlers, so an unhandled fault yields
@@ -7442,8 +7470,11 @@ unhandled:
 
 void CPU64::run() {
     const bool guestProfile = bwGuestProfileEnabled();
+    bool fastJitDispatch = false;
+    bool jitBlockEntry = true;
 #ifdef BOXEDWINE_BLOCK_EXEC
     const bool jitActive = jit64Enabled();
+    fastJitDispatch = jitActive && jit64FastDispatchEnabled();
 #endif
     // Optional instruction tracer for bring-up debugging. Gated on env so it
     // never costs anything in normal runs. BOXEDWINE64_TRACE_FROM/TO bound the
@@ -7529,13 +7560,17 @@ void CPU64::run() {
             }
         }
 #ifdef BOXEDWINE_BLOCK_EXEC
-        if (jitActive) {
-            // CPU64 block machinery is skipped entirely when BW64_JIT is off.
+        if (jitActive && (!fastJitDispatch || jitBlockEntry)) {
+            // In fast mode the wasm path is queried only at block entries.
             U32 jn = tryJitStep();
             if (jn) {
                 instructionCount += jn;
+                jitBlockEntry = true;
                 continue;
             }
+        }
+        if (jitActive && !fastJitDispatch) {
+            // Preserve the legacy decoded-block engine only in A/B legacy mode.
             U32 bn = tryBlockStep();
             if (bn) {
                 instructionCount += bn;
@@ -7543,8 +7578,9 @@ void CPU64::run() {
             }
         }
 #endif
-        U32 n = step();
+        U32 n = step(fastJitDispatch);
         if (n == 0) break;
+        if (fastJitDispatch) jitBlockEntry = m_jitBlockBoundaryAfterStep;
         instructionCount++;
         // A thread killed from outside (persistent-session app switch kills the
         // previous app) is only MARKED terminating — nothing interrupts a
@@ -8031,8 +8067,12 @@ U32 CPU64::tryWasmExec(U64 maxInsn) {
     // snapshot + decode again (no page of a rejected block is registered, so
     // the entry simply stays until this page is written).
     if (m_jit->negative.rejected(r, gen0Entry)) { m_jit->insnsFallback++; return 0; }
-    // Hotness: do not compile every one-off startup block.
-    if (!m_jit->hotness.bump(r, jit64HotThreshold())) { m_jit->coldSkipped++; return 0; }
+    // Hotness: do not compile every one-off startup block. The saturated
+    // threshold is reserved as an explicit no-compile mode for dispatch-cost
+    // measurements; still update the counter so it measures the full cold path.
+    const U16 hotThreshold = jit64HotThreshold();
+    const bool isHot = m_jit->hotness.bump(r, hotThreshold);
+    if (hotThreshold == 65535 || !isHot) { m_jit->coldSkipped++; return 0; }
 
     const U64 t0 = jit64NowUs();
     // Snapshot up to 15 bytes/insn * 24 recs for the JIT decoder.
@@ -8267,8 +8307,11 @@ U32 CPU64::tryBlockStep(U64 maxInsn) {
 #endif // BOXEDWINE_BLOCK_EXEC
 
 U64 CPU64::runBounded(U64 maxInsn) {
+    bool fastJitDispatch = false;
+    bool jitBlockEntry = true;
 #ifdef BOXEDWINE_BLOCK_EXEC
     const bool jitActive = jit64Enabled();
+    fastJitDispatch = jitActive && jit64FastDispatchEnabled();
 #endif
     static const char* tf = std::getenv("BOXEDWINE64_TRACE_FROM");
     static const char* tt = std::getenv("BOXEDWINE64_TRACE_TO");
@@ -8293,14 +8336,16 @@ U64 CPU64::runBounded(U64 maxInsn) {
                      (unsigned long long)xmm[1].hi, (unsigned long long)xmm[1].lo);
         }
 #ifdef BOXEDWINE_BLOCK_EXEC
-        if (jitActive) {
-            // CPU64 block machinery is skipped entirely when BW64_JIT is off.
+        if (jitActive && (!fastJitDispatch || jitBlockEntry)) {
             U32 jn = tryJitStep(maxInsn - ran);
             if (jn) {
                 instructionCount += jn;
                 ran += jn;
+                jitBlockEntry = true;
                 continue;
             }
+        }
+        if (jitActive && !fastJitDispatch) {
             U32 bn = tryBlockStep(maxInsn - ran);
             if (bn) {
                 instructionCount += bn;
@@ -8309,8 +8354,9 @@ U64 CPU64::runBounded(U64 maxInsn) {
             }
         }
 #endif
-        U32 n = step();
+        U32 n = step(fastJitDispatch);
         if (n == 0) break;
+        if (fastJitDispatch) jitBlockEntry = m_jitBlockBoundaryAfterStep;
         instructionCount++;
         ran++;
     }

@@ -82,6 +82,27 @@ try {
     ],
   });
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  const extraUrlParams = [...new URLSearchParams(process.env.BW_TEST_URL_PARAMS || '')];
+  if (extraUrlParams.length) {
+    // Change the iframe's actual src before navigation. A route URL rewrite
+    // changes the fetch URL but leaves window.location.search unchanged.
+    await page.addInitScript(params => {
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'src');
+      if (!descriptor?.set || !descriptor?.get) throw new Error('Cannot instrument runtime iframe src');
+      Object.defineProperty(HTMLIFrameElement.prototype, 'src', {
+        configurable: true,
+        enumerable: descriptor.enumerable,
+        get() { return descriptor.get.call(this); },
+        set(value) {
+          const url = new URL(value, document.baseURI);
+          if (url.pathname.endsWith('/runtime/index.html')) {
+            for (const [key, paramValue] of params) url.searchParams.set(key, paramValue);
+          }
+          descriptor.set.call(this, url.toString());
+        },
+      });
+    }, extraUrlParams);
+  }
   await page.addInitScript(() => {
     globalThis.__bwAudioOutputMetrics ||= [];
     if (window === window.top) {

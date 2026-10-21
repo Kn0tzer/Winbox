@@ -52,3 +52,79 @@ At JIT1 map, CPU64 had hot threshold 80 and compiled, emitted, and instantiated 
 CPU32 JIT was enabled but compiled, entered, and instantiated zero blocks. Its `rejectDelegated` count was zero and all other reported fallback counters were zero. CPU64 compile and instantiate time therefore does not explain most of the extra startup time. Per the conditional scope, the further hotness sweep and startup grace gate were skipped; the startup result also remained above 1.3×, so C3 was not eligible.
 
 The post-merge jit64 suite passed with matching checksums. Warm medians were JIT0 1,537 ms and JIT1 831 ms, a 1.850× speedup at hot threshold 80. This remains above the 1.8× floor. The 1.3× notepad startup goal remains unmet.
+
+## D1–D4: cold dispatch experiment
+
+The single experiment build added `?jithot=<n>` to set `BW64_JIT_HOT` before guest startup (`65535` is the explicit no-compile sentinel) and `?jitdispatch=0|1` for the dispatch A/B. `jitgrace` was not needed to isolate the overhead.
+
+The mapped-only samples below started with host load below 4. The before samples used legacy per-instruction dispatch; after samples used the optimized basic-block-entry dispatch. JIT0 was repeated after the change and stayed effectively unchanged (39.864 → 39.871 s). The first optimized hotness-80 run had the same default threshold because the test URL injector had not yet appended the parameter; its stats confirm threshold 80 and fast dispatch was the default. The explicit `jithot` setter was validated by the 500, 65535, and jit64 runs.
+
+| Mode | Before dispatch change | After dispatch change | After / JIT0 |
+|---|---:|---:|---:|
+| JIT0 | 39.864 s | 39.871 s | 1.000× |
+| JIT1, hotness 65535 | no map; Notepad exited (no usable timing) | 46.335 s | 1.162× |
+| JIT1, hotness 80 | 56.730 s | 52.476 s | 1.316× |
+| JIT1, hotness 500 | 50.774 s | 47.230 s | 1.185× |
+
+The legacy-path 65535 attempt used the corrected URL and `jitdispatch=0`, but Notepad exited with status 1 at about 48 s; the probe then timed out without a mapped result or stats. This makes it an invalid no-compile baseline. The optimized 65535 run mapped successfully and compiled no blocks.
+
+The optimized path probes the CPU64 WebAssembly JIT at block entries after control-flow instructions and skips the legacy decoded-block probe. This avoids running `tryJitStep()` and `tryBlockStep()` on each interpreted instruction. At hotness 80, cold skips fell from 16,237,130 to 6,065,800; at the no-compile threshold the run recorded 886,301 cold skips, 0 compiled blocks, and 0 µs emit/instantiate time. That puts JIT-enabled no-compile startup 6.464 s (16.2%) behind JIT0. Hotness 500 is the fastest successful JIT1 startup measured and is within 1.3× of JIT0; hotness 80 narrowly misses that bound at 1.316×.
+
+The post-change jit64 suite passed with matching checksums. Warm medians were JIT0 1,605 ms and JIT1 597 ms, a 2.688× speedup, above the 1.8× floor.
+
+65535 run stats JSON at map:
+
+```json
+{
+  "cpu64": {
+    "available": 1,
+    "enabled": 1,
+    "engine": "wasm",
+    "mode": "idle",
+    "hotThreshold": 65535,
+    "blocksCompiled": 0,
+    "blocksEmitted": 0,
+    "blocksInstantiated": 0,
+    "blocksEntered": 0,
+    "insnsEmitted": 0,
+    "rawEnteredCounter": 0,
+    "earlyExits": 0,
+    "limitExits": 0,
+    "emitRejected": 0,
+    "instantiateFailed": 0,
+    "fallbacks": 0,
+    "coldSkipped": 886301,
+    "emitUs": 0,
+    "instantiateUs": 0,
+    "emitMs": 0,
+    "fallbackInsns": 0,
+    "cacheLookups": 0,
+    "cacheHits": 0,
+    "cacheInserts": 0,
+    "rejectTop": []
+  },
+  "cpu32": {
+    "engine": "wasm-jit",
+    "available": true,
+    "enabled": true,
+    "safeMemory": false,
+    "retiredCounting": true,
+    "retiredScope": "completed nonbranch native instructions; excludes interpreter fallback",
+    "blocksEmitted": 0,
+    "blocksEntered": 0,
+    "blocksInstantiated": 0,
+    "instructionsRetired": 0,
+    "emitMs": 0,
+    "instantiateMs": 0,
+    "fallbacks": {
+      "emulateSingleOp": 0,
+      "slotMiss": 0,
+      "installFailure": 0,
+      "disabled": 0,
+      "rejectDelegated": 0
+    }
+  }
+}
+```
+
+The experiment confirms that per-instruction JIT probing accounted for much of the cold-start overhead. The remaining 6.464 s no-compile gap is measurable; this one-build experiment did not isolate the cost further. The 1.3× startup target is met at hotness 500 (1.185×), while the no-compile diagnostic and default hotness 80 remain above that ratio.

@@ -263,6 +263,10 @@ private:
 // Runtime flag: BW64_JIT=1 enables the JIT path; anything else (or unset)
 // keeps the interpreter. Cached after first read (zero cost when off).
 bool jit64Enabled();
+// Dispatch at basic-block entries only instead of probing both JIT block
+// engines on every interpreted instruction (BW64_JIT_FAST_DISPATCH=0 keeps
+// the old per-instruction behavior for A/B measurement).
+bool jit64FastDispatchEnabled();
 
 // Small negative cache: rips whose block cannot be emitted stay on the
 // interpreter without paying a 360-byte instruction snapshot + decode on

@@ -1001,6 +1001,18 @@
                     ENV["BW32_JIT"] = "1";
                     ENV["BW64_JIT"] = "1";
                 }
+                // CPU64 hotness and dispatch A/B controls. Values are fixed to
+                // numeric ranges before entering the guest environment; 65535
+                // is the explicit no-compile sentinel for ?jithot=.
+                var jitHot = param("jithot");
+                if (jitHot !== null && /^\d+$/.test(jitHot)) {
+                    var parsedJitHot = Number(jitHot);
+                    ENV["BW64_JIT_HOT"] = String(!Number.isFinite(parsedJitHot) || parsedJitHot >= 65535
+                        ? 65535 : Math.floor(parsedJitHot));
+                }
+                var jitDispatch = param("jitdispatch");
+                if (jitDispatch === "0" || jitDispatch === "1")
+                    ENV["BW64_JIT_FAST_DISPATCH"] = jitDispatch;
                 // ?safemem=1 asks the multi-threaded 32-bit JIT for x86 TSO
                 // guest-memory fences (correct on weakly ordered hosts, slower
                 // on memory-heavy multi-threaded guests). See

@@ -103,6 +103,14 @@ bool jit64Enabled() {
     return enabled;
 }
 
+bool jit64FastDispatchEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("BW64_JIT_FAST_DISPATCH");
+        return !value || value[0] != '0';
+    }();
+    return enabled;
+}
+
 // ---- byte-level prefix scan (mirrors CPU64::consumePrefixes) ----
 struct PrefixInfo {
     U8 rex = 0;
@@ -1401,10 +1409,12 @@ U16 jit64HotThreshold() {
     static int cached = -1;
     if (cached < 0) {
         const char* env = std::getenv("BW64_JIT_HOT");
-        int value = env ? std::atoi(env) : 80;
+        char* end = nullptr;
+        long value = env ? std::strtol(env, &end, 10) : 80;
+        if (env && (end == env || *end != '\0')) value = 80;
         if (value < 0) value = 0;
-        if (value > 65535) value = 65535;
-        cached = value;
+        if (value >= 65535) value = 65535;
+        cached = (int)value;
     }
     return (U16)cached;
 }
