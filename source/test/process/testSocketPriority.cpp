@@ -16,6 +16,23 @@
 #include "ksocket.h"
 #include "kunixsocket.h"
 #include "../cpu/testCPU.h"
+#include "../../opengl/gl64clientarray.h"
+
+void testGl64ClientArrayIndexRange() {
+    const std::uint8_t indices[] = { 9, 0, 0, 0, 2, 0, 0, 0, 7, 0, 0, 0 };
+    GL64ClientArrayRange range;
+    if (!gl64ComputeIndexRange(indices, sizeof(indices), 3, 4, range) ||
+        range.first != 2 || range.last != 9) {
+        testFail("GL64 client-array index range expected 2..9");
+    }
+    if (!gl64ComputeDrawArrayRange(4, 3, range) || range.first != 4 || range.last != 6)
+        testFail("GL64 DrawArrays range expected 4..6");
+    std::uint8_t rebased[] = { 9, 0, 0, 0, 2, 0, 0, 0, 7, 0, 0, 0 };
+    if (!gl64RebaseIndexData(rebased, sizeof(rebased), 3, 4, 2) ||
+        rebased[0] != 7 || rebased[4] != 0 || rebased[8] != 5) {
+        testFail("GL64 index rebasing failed for base vertex 2");
+    }
+}
 
 static void checkSocketPriority(KSocketObject& socket, const char* socketName, U32 priority) {
     TestContext& context = testContext();

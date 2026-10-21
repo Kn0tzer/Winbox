@@ -1038,7 +1038,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     return result;
   }
 
-  _fixedArrayAttribute(index, spec, data, color, temporaryBuffers) {
+  _fixedArrayAttribute(index, spec, data, color, temporaryBuffers, baseVertex = 0) {
     const attribute = { index, enabled: !!spec?.enabled, buffer: null, size: spec?.size || (color ? 4 : 4),
       type: spec?.type || 0x1406, normalized: false, stride: spec?.stride || 0, offset: 0, integer: false, divisor: 0,
       current: new Float32Array(color ? this._fixedFunction.color : [0, 0, 0, 1]) };
@@ -1051,8 +1051,12 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       temporaryBuffers.push(buffer);
       Object.assign(attribute, { buffer, type: 0x1406, stride: 0, offset: 0 });
     } else if (pointer?.buffer) {
+      const componentBytes = [0x1400, 0x1401].includes(pointer.type) ? 1
+        : [0x1402, 0x1403, 0x140b].includes(pointer.type) ? 2 : pointer.type === 0x140a ? 8 : 4;
+      const stride = pointer.stride || pointer.size * componentBytes;
       Object.assign(attribute, { buffer: pointer.buffer, type: pointer.type, size: pointer.size,
-        stride: pointer.stride, offset: pointer.offset, normalized: color && [0x1400, 0x1401, 0x1402, 0x1403].includes(pointer.type) });
+        stride: pointer.stride, offset: pointer.offset + Math.max(0, baseVertex | 0) * stride,
+        normalized: color && [0x1400, 0x1401, 0x1402, 0x1403].includes(pointer.type) });
     }
     return attribute;
   }
@@ -1074,10 +1078,11 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
 
     const temporaryBuffers = [];
     const attributes = new Map();
-    const position = this._fixedArrayAttribute(0, arrays.vertex, arrays.vertexData, false, temporaryBuffers);
-    const color = this._fixedArrayAttribute(1, arrays.color, arrays.colorData, true, temporaryBuffers);
+    const baseVertex = arrays.baseVertex | 0;
+    const position = this._fixedArrayAttribute(0, arrays.vertex, arrays.vertexData, false, temporaryBuffers, baseVertex);
+    const color = this._fixedArrayAttribute(1, arrays.color, arrays.colorData, true, temporaryBuffers, baseVertex);
     const texCoord = textureEnabled
-      ? this._fixedArrayAttribute(2, arrays.texCoord, arrays.texCoordData, false, temporaryBuffers)
+      ? this._fixedArrayAttribute(2, arrays.texCoord, arrays.texCoordData, false, temporaryBuffers, baseVertex)
       : { index: 2, enabled: false, buffer: null, size: 4, type: 0x1406, normalized: false, stride: 0, offset: 0, integer: false, divisor: 0, current: new Float32Array([0, 0, 0, 1]) };
     if (!position.enabled || (!position.buffer && !this._fixedFunctionPointers.get(0)?.buffer)) return false;
     attributes.set(0, position); attributes.set(1, color); if (textureEnabled) attributes.set(2, texCoord);

@@ -597,6 +597,8 @@ API void glDisable(GLenum c) { GL64Args a={{0}}; a.a[0]=c; (void)gl64_trap(GL64_
 API void glShadeModel(GLenum m){ GL64Args a={{0}}; a.a[0]=m; (void)gl64_trap(GL64_fn_glShadeModel,&a); }
 API void glEnableClientState(GLenum array) { GL64Args a={{0}}; a.a[0]=array; (void)gl64_trap(GL64_fn_glEnableClientState,&a); }
 API void glDisableClientState(GLenum array) { GL64Args a={{0}}; a.a[0]=array; (void)gl64_trap(GL64_fn_glDisableClientState,&a); }
+API void glLockArraysEXT(GLint first, GLsizei count) { (void)first; (void)count; }
+API void glUnlockArraysEXT(void) {}
 API void glVertexPointer(GLint size, GLenum type, GLsizei stride, const void* pointer) { GL64Args a={{0}}; a.a[0]=(uint64_t)(uint32_t)size; a.a[1]=type; a.a[2]=(uint64_t)(uint32_t)stride; a.a[3]=(uint64_t)(uintptr_t)pointer; (void)gl64_trap(GL64_fn_glVertexPointer,&a); }
 API void glColorPointer(GLint size, GLenum type, GLsizei stride, const void* pointer) { GL64Args a={{0}}; a.a[0]=(uint64_t)(uint32_t)size; a.a[1]=type; a.a[2]=(uint64_t)(uint32_t)stride; a.a[3]=(uint64_t)(uintptr_t)pointer; (void)gl64_trap(GL64_fn_glColorPointer,&a); }
 API void glTexCoordPointer(GLint size, GLenum type, GLsizei stride, const void* pointer) { GL64Args a={{0}}; a.a[0]=(uint64_t)(uint32_t)size; a.a[1]=type; a.a[2]=(uint64_t)(uint32_t)stride; a.a[3]=(uint64_t)(uintptr_t)pointer; (void)gl64_trap(GL64_fn_glTexCoordPointer,&a); }
@@ -1307,6 +1309,7 @@ static const struct procEntry g_procs[] = {
     E(glXSwapIntervalSGI),
     E(glClearColor), E(glClear), E(glClearDepth), E(glViewport), E(glEnable),
     E(glDisable), E(glShadeModel), E(glEnableClientState), E(glDisableClientState),
+    E(glLockArraysEXT), E(glUnlockArraysEXT),
     E(glVertexPointer), E(glColorPointer), E(glTexCoordPointer), E(glAlphaFunc),
     E(glTexEnvf), E(glTexEnvi), E(glTexEnvfv), E(glTexEnviv),
     E(glDepthFunc), E(glCullFace), E(glFrontFace),

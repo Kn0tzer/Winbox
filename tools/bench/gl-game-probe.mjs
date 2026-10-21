@@ -52,6 +52,13 @@ if (!['x86', 'x64'].includes(arch) || !Array.isArray(args) || args.some(arg => t
 const outputDir = resolve(process.env.OUT || join(workRoot, 'evidence', game));
 const gameZip = resolve(process.env.GAME_ZIP || join(workRoot, `${game}-probe.zip`));
 const dist = resolve(process.env.WINE_DIST_DIR || join(repo, 'dist'));
+const mapTimeoutSeconds = Number(process.env.MAP_TIMEOUT_SECONDS || 8 * 60);
+const captureSeconds = process.env.CAPTURE_SECONDS
+  ? process.env.CAPTURE_SECONDS.split(',').map(value => Number(value.trim()))
+  : [60, 120, 240];
+if (!Number.isFinite(mapTimeoutSeconds) || mapTimeoutSeconds <= 0 ||
+    captureSeconds.some(value => !Number.isFinite(value) || value <= 0))
+  throw new Error('MAP_TIMEOUT_SECONDS and CAPTURE_SECONDS must be positive seconds');
 await mkdir(outputDir, { recursive: true });
 
 const zipScript = String.raw`import os, sys, zipfile
@@ -179,7 +186,7 @@ try {
   await page.goto(result.launchUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
   record(`launched ${game} through gamezip import: ${exe}`);
 
-  const mapDeadline = launchAt + 8 * 60 * 1000;
+  const mapDeadline = launchAt + mapTimeoutSeconds * 1000;
   let mappedAt = 0;
   while (Date.now() < mapDeadline) {
     mappedAt = await page.evaluate(() => globalThis.__bwGlGameProbe?.mappedAt || 0);
@@ -194,8 +201,7 @@ try {
     await page.screenshot({ path, fullPage: true });
     result.captures.push({ label: 'timeout', secondsAfterLaunch: Number(((Date.now() - launchAt) / 1000).toFixed(1)), path });
   } else {
-    const milestones = [60, 120, 240];
-    for (const seconds of milestones) {
+    for (const seconds of captureSeconds) {
       const due = mappedAt + seconds * 1000;
       while (Date.now() < due) await page.waitForTimeout(Math.min(1000, due - Date.now()));
       const sample = await page.evaluate(() => ({

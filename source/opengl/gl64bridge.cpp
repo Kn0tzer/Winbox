@@ -29,6 +29,7 @@
 
 #include "gl64bridge.h"
 #include "gl64bridge_abi.h"
+#include "gl64clientarray.h"
 #include "cpu64.h"
 #include "kmemory64.h"
 #include "kmemory.h"
@@ -802,38 +803,100 @@ size_t legacyTypeSize(GLenum type) {
     }
 }
 
-bool copyLegacyArray(GLGuestCPU* cpu, const LegacyClientArray& array, U32 lastIndex,
-                     std::vector<U8>& copy) {
-    if (!array.enabled || !array.configured || !array.pointer || array.bufferBacked) return true;
+bool copyLegacyArray(GLGuestCPU* cpu, const LegacyClientArray& array,
+                     U32 firstIndex, U32 lastIndex, std::vector<U8>& copy) {
+    if (!array.enabled) return true;
+    if (array.bufferBacked) return true;
+    if (!array.configured || !array.pointer || lastIndex < firstIndex) return false;
     const size_t component = legacyTypeSize(array.type);
     if (!component || array.size < 1 || array.size > 4) return false;
     const size_t element = component * (size_t)array.size;
     const size_t stride = array.stride > 0 ? (size_t)array.stride : element;
-    const size_t bytes = (size_t)lastIndex * stride + element;
+    const U64 startOffset = (U64)firstIndex * stride;
+    const U64 byteCount = (U64)(lastIndex - firstIndex) * stride + element;
+    if (array.pointer > UINT64_MAX - startOffset || byteCount > SIZE_MAX) return false;
+    const size_t bytes = (size_t)byteCount;
     if (bytes > 64u * 1024u * 1024u) return false;
     copy.resize(bytes);
-    cpu->memory->memcpyFromGuest(copy.data(), array.pointer, bytes);
+    cpu->memory->memcpyFromGuest(copy.data(), array.pointer + startOffset, bytes);
     return true;
 }
 
 bool copyLegacyIndices(GLGuestCPU* cpu, GLenum type, GLsizei count, U64 pointer,
-                       std::vector<U8>& copy, U32& lastIndex) {
+                       std::vector<U8>& copy, U32& firstIndex, U32& lastIndex) {
     size_t element = type == GL_UNSIGNED_BYTE ? 1 :
                      type == GL_UNSIGNED_SHORT ? 2 :
                      type == GL_UNSIGNED_INT ? 4 : 0;
-    if (!element || count < 0 || count > 4 * 1024 * 1024 || !pointer) return false;
+    if (!element || count < 0 || count > 4 * 1024 * 1024) return false;
+    if (!count) { copy.clear(); firstIndex = lastIndex = 0; return true; }
+    if (!pointer) return false;
     copy.resize((size_t)count * element);
     cpu->memory->memcpyFromGuest(copy.data(), pointer, copy.size());
-    lastIndex = 0;
-    for (GLsizei i = 0; i < count; ++i) {
-        U32 value = 0;
-        if (element == 1) value = copy[(size_t)i];
-        else if (element == 2) value = (U32)copy[(size_t)i * 2] | ((U32)copy[(size_t)i * 2 + 1] << 8);
-        else value = (U32)copy[(size_t)i * 4] | ((U32)copy[(size_t)i * 4 + 1] << 8) |
-                     ((U32)copy[(size_t)i * 4 + 2] << 16) | ((U32)copy[(size_t)i * 4 + 3] << 24);
-        if (value > lastIndex) lastIndex = value;
-    }
+    GL64ClientArrayRange range;
+    if (!gl64ComputeIndexRange(copy.data(), copy.size(), (size_t)count, element, range)) return false;
+    firstIndex = range.first;
+    lastIndex = range.last;
     return true;
+}
+
+double legacyVertexComponent(const std::vector<U8>& data, const LegacyClientArray& array,
+                            U32 baseIndex, U32 vertexIndex, GLint componentIndex) {
+    if (vertexIndex < baseIndex || componentIndex < 0 || componentIndex >= array.size) return 0.0;
+    const size_t componentBytes = legacyTypeSize(array.type);
+    if (!componentBytes) return 0.0;
+    const size_t stride = array.stride > 0 ? (size_t)array.stride : componentBytes * (size_t)array.size;
+    const U64 offset = (U64)(vertexIndex - baseIndex) * stride + (U64)componentIndex * componentBytes;
+    if (offset > data.size() || componentBytes > data.size() - (size_t)offset) return 0.0;
+    const U8* source = data.data() + (size_t)offset;
+    switch (array.type) {
+        case GL_BYTE: { S8 value; std::memcpy(&value, source, sizeof(value)); return value; }
+        case GL_UNSIGNED_BYTE: { U8 value; std::memcpy(&value, source, sizeof(value)); return value; }
+        case GL_SHORT: { S16 value; std::memcpy(&value, source, sizeof(value)); return value; }
+        case GL_UNSIGNED_SHORT: { U16 value; std::memcpy(&value, source, sizeof(value)); return value; }
+        case GL_INT: { S32 value; std::memcpy(&value, source, sizeof(value)); return value; }
+        case GL_UNSIGNED_INT: { U32 value; std::memcpy(&value, source, sizeof(value)); return value; }
+        case GL_FLOAT: { float value; std::memcpy(&value, source, sizeof(value)); return value; }
+        case GL_DOUBLE: { double value; std::memcpy(&value, source, sizeof(value)); return value; }
+        default: return 0.0;
+    }
+}
+
+void traceLegacyClientDraw(GLenum mode, GLsizei count, GLenum type,
+                           const LegacyClientArray& vertexArray, const LegacyClientArray& colorArray,
+                           const LegacyClientArray& texCoordArray, U32 firstIndex, U32 lastIndex,
+                           bool rangeKnown, const std::vector<U8>& vertexData,
+                           const std::vector<U8>& indexData, size_t indexBytes) {
+    if (!getenv("BW64_GLTRACE")) return;
+    std::string vertices;
+    if (count > 0 && vertexArray.enabled && !vertexData.empty() && rangeKnown) {
+        const U32 verticesToLog = std::min<U32>(4, (U32)count);
+        const U32 elementCount = indexBytes ? (U32)(indexData.size() / indexBytes) : 0;
+        for (U32 i = 0; i < verticesToLog; ++i) {
+            U32 vertex = firstIndex + i;
+            if (indexBytes && i < elementCount) {
+                vertex = 0;
+                for (size_t byte = 0; byte < indexBytes; ++byte)
+                    vertex |= (U32)indexData[(size_t)i * indexBytes + byte] << (byte * 8);
+            }
+            if (vertex < firstIndex || vertex > lastIndex) continue;
+            char item[128];
+            std::snprintf(item, sizeof(item), "%s%u=(%.3f,%.3f,%.3f)", i ? "," : "",
+                vertex, legacyVertexComponent(vertexData, vertexArray, firstIndex, vertex, 0),
+                legacyVertexComponent(vertexData, vertexArray, firstIndex, vertex, 1),
+                legacyVertexComponent(vertexData, vertexArray, firstIndex, vertex, 2));
+            vertices += item;
+        }
+    }
+    if (vertices.empty()) vertices = "unavailable";
+    if (rangeKnown) {
+        klog_fmt("gl64 CLIENTDRAW: mode=0x%x count=%d type=0x%x arrays=%d/%d/%d stride=%d/%d/%d range=%u..%u first4=%s",
+            mode, count, type, vertexArray.enabled, colorArray.enabled, texCoordArray.enabled,
+            vertexArray.stride, colorArray.stride, texCoordArray.stride, firstIndex, lastIndex, vertices.c_str());
+    } else {
+        klog_fmt("gl64 CLIENTDRAW: mode=0x%x count=%d type=0x%x arrays=%d/%d/%d stride=%d/%d/%d range=unknown first4=%s",
+            mode, count, type, vertexArray.enabled, colorArray.enabled, texCoordArray.enabled,
+            vertexArray.stride, colorArray.stride, texCoordArray.stride, vertices.c_str());
+    }
 }
 
 void traceLegacyDrawState(GLenum mode, GLsizei count, GLenum type) {
@@ -910,12 +973,12 @@ void webGpuFixedTexEnvArrayCall(const char* method, GLenum target, GLenum pname,
 }
 
 int webGpuFixedDraw(GLenum mode, GLint first, GLsizei count, bool indexed, GLenum type,
-                    U64 offset, const std::vector<U8>& indexData,
+                    U64 offset, U32 baseVertex, const std::vector<U8>& indexData,
                     const LegacyClientArray& vertexArray, const LegacyClientArray& colorArray,
                     const LegacyClientArray& texCoordArray, const std::vector<U8>& vertex,
                     const std::vector<U8>& color, const std::vector<U8>& texCoord) {
     if (!g_emWebGpu) return 0;
-    U32 packet[35] = {
+    U32 packet[36] = {
         mode, (U32)first, (U32)count, indexed ? 1u : 0u, type, (U32)offset,
     };
     auto writeArray = [&](size_t base, const LegacyClientArray& array, const std::vector<U8>& data) {
@@ -934,6 +997,7 @@ int webGpuFixedDraw(GLenum mode, GLint first, GLsizei count, bool indexed, GLenu
     writeArray(24, texCoordArray, texCoord);
     packet[33] = (U32)(uintptr_t)(indexData.empty() ? nullptr : indexData.data());
     packet[34] = (U32)indexData.size();
+    packet[35] = baseVertex;
     return EM_ASM_INT((() => {
         try {
             var p = $0 >>> 2;
@@ -947,7 +1011,7 @@ int webGpuFixedDraw(GLenum mode, GLint first, GLsizei count, bool indexed, GLenu
             var arrays = {
                 vertex: readArray(6), color: readArray(15), texCoord: readArray(24),
                 vertexData: bytes(word(13), word(14)), colorData: bytes(word(22), word(23)),
-                texCoordData: bytes(word(31), word(32)),
+                texCoordData: bytes(word(31), word(32)), baseVertex: word(35),
             };
             if (!GLctx || typeof GLctx.fixedFunctionDrawArrays !== 'function') return 0;
             var mode = word(0), first = signed(1), count = signed(2), indexed = !!word(3);
@@ -2739,20 +2803,23 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             if (g_glContext) {
                 GLenum mode=(GLenum)ai(args,0); GLint first=(GLint)ai(args,1); GLsizei count=(GLsizei)ai(args,2);
                 std::vector<U8> vertex, color, texCoord;
-                U64 lastIndex64 = first < 0 ? 0 : (U64)(U32)first + (count > 0 ? (U32)count - 1 : 0);
-                bool copied = first >= 0 && count >= 0 && lastIndex64 <= 0xffffffffu &&
-                    copyLegacyArray(cpu, g_legacyVertexArray, (U32)lastIndex64, vertex) &&
-                    copyLegacyArray(cpu, g_legacyColorArray, (U32)lastIndex64, color) &&
-                    copyLegacyArray(cpu, g_legacyTexCoordArray, (U32)lastIndex64, texCoord);
+                GL64ClientArrayRange range;
+                bool rangeKnown = gl64ComputeDrawArrayRange(first, count, range);
+                bool copied = rangeKnown &&
+                    copyLegacyArray(cpu, g_legacyVertexArray, range.first, range.last, vertex) &&
+                    copyLegacyArray(cpu, g_legacyColorArray, range.first, range.last, color) &&
+                    copyLegacyArray(cpu, g_legacyTexCoordArray, range.first, range.last, texCoord);
+                traceLegacyClientDraw(mode, count, 0, g_legacyVertexArray, g_legacyColorArray,
+                    g_legacyTexCoordArray, range.first, range.last, rangeKnown, vertex, {}, 0);
                 glOnMain([&]{
                     bindDrawTarget();
-                    if (copied && webGpuFixedDraw(mode, first, count, false, 0, 0, {},
+                    if (copied && webGpuFixedDraw(mode, 0, count, false, 0, 0, range.first, {},
                         g_legacyVertexArray, g_legacyColorArray, g_legacyTexCoordArray, vertex, color, texCoord)) return;
                     if (copied && !vertex.empty()) glVertexPointer(g_legacyVertexArray.size, g_legacyVertexArray.type, g_legacyVertexArray.stride, vertex.data());
                     if (copied && !color.empty()) glColorPointer(g_legacyColorArray.size, g_legacyColorArray.type, g_legacyColorArray.stride, color.data());
                     if (copied && !texCoord.empty()) glTexCoordPointer(g_legacyTexCoordArray.size, g_legacyTexCoordArray.type, g_legacyTexCoordArray.stride, texCoord.data());
                     traceLegacyDrawState(mode, count, 0);
-                    glDrawArrays(mode, first, count);
+                    glDrawArrays(mode, vertex.empty() ? first : 0, count);
                 });
                 g_glDrew = true;
             }
@@ -2762,18 +2829,28 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 GLenum mode=(GLenum)ai(args,0); GLsizei count=(GLsizei)ai(args,1); GLenum type=(GLenum)ai(args,2);
                 const void* indices = (const void*)(uintptr_t)args.a[3];
                 std::vector<U8> indexData, vertex, color, texCoord;
-                U32 lastIndex = 0;
-                bool copied = g_legacyElementArrayBuffer ||
-                    (copyLegacyIndices(cpu, type, count, args.a[3], indexData, lastIndex) &&
-                     copyLegacyArray(cpu, g_legacyVertexArray, lastIndex, vertex) &&
-                     copyLegacyArray(cpu, g_legacyColorArray, lastIndex, color) &&
-                     copyLegacyArray(cpu, g_legacyTexCoordArray, lastIndex, texCoord));
+                U32 firstIndex = 0, lastIndex = 0;
+                const size_t indexBytes = type == GL_UNSIGNED_BYTE ? 1 : type == GL_UNSIGNED_SHORT ? 2 : type == GL_UNSIGNED_INT ? 4 : 0;
+                const bool indexBufferBacked = g_legacyElementArrayBuffer != 0;
+                bool rangeKnown = !indexBufferBacked &&
+                    copyLegacyIndices(cpu, type, count, args.a[3], indexData, firstIndex, lastIndex);
+                bool copied = indexBufferBacked || rangeKnown;
+                if (copied && rangeKnown) {
+                    copied = copyLegacyArray(cpu, g_legacyVertexArray, firstIndex, lastIndex, vertex) &&
+                        copyLegacyArray(cpu, g_legacyColorArray, firstIndex, lastIndex, color) &&
+                        copyLegacyArray(cpu, g_legacyTexCoordArray, firstIndex, lastIndex, texCoord);
+                }
+                traceLegacyClientDraw(mode, count, type, g_legacyVertexArray, g_legacyColorArray,
+                    g_legacyTexCoordArray, firstIndex, lastIndex, rangeKnown, vertex, indexData, indexBytes);
+                if (rangeKnown && !gl64RebaseIndexData(indexData.data(), indexData.size(),
+                    (size_t)count, indexBytes, firstIndex)) copied = false;
                 if (!g_legacyElementArrayBuffer && copied) indices = indexData.data();
                 static std::atomic<bool> once{false};
                 if (!once.exchange(true)) klog_fmt("gl64 DRAW: first glDrawElements mode=0x%x count=%d", mode, count);
                 glOnMain([&]{
                     bindDrawTarget();
-                    if (copied && webGpuFixedDraw(mode, 0, count, true, type, (U64)(uintptr_t)args.a[3], indexData,
+                    if (copied && webGpuFixedDraw(mode, 0, count, true, type, (U64)(uintptr_t)args.a[3],
+                        rangeKnown ? firstIndex : 0, indexData,
                         g_legacyVertexArray, g_legacyColorArray, g_legacyTexCoordArray, vertex, color, texCoord)) return;
                     if (copied && !vertex.empty()) glVertexPointer(g_legacyVertexArray.size, g_legacyVertexArray.type, g_legacyVertexArray.stride, vertex.data());
                     if (copied && !color.empty()) glColorPointer(g_legacyColorArray.size, g_legacyColorArray.type, g_legacyColorArray.stride, color.data());
@@ -2790,22 +2867,33 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 GLsizei count=(GLsizei)ai(args,3); GLenum type=(GLenum)ai(args,4);
                 const void* indices = (const void*)(uintptr_t)args.a[5];
                 std::vector<U8> indexData, vertex, color, texCoord;
-                U32 lastIndex = 0;
-                bool copied = g_legacyElementArrayBuffer ||
-                    (copyLegacyIndices(cpu, type, count, args.a[5], indexData, lastIndex) &&
-                     copyLegacyArray(cpu, g_legacyVertexArray, lastIndex, vertex) &&
-                     copyLegacyArray(cpu, g_legacyColorArray, lastIndex, color) &&
-                     copyLegacyArray(cpu, g_legacyTexCoordArray, lastIndex, texCoord));
+                U32 firstIndex = 0, lastIndex = 0;
+                const size_t indexBytes = type == GL_UNSIGNED_BYTE ? 1 : type == GL_UNSIGNED_SHORT ? 2 : type == GL_UNSIGNED_INT ? 4 : 0;
+                const bool indexBufferBacked = g_legacyElementArrayBuffer != 0;
+                bool rangeKnown = !indexBufferBacked &&
+                    copyLegacyIndices(cpu, type, count, args.a[5], indexData, firstIndex, lastIndex);
+                bool copied = indexBufferBacked || rangeKnown;
+                if (copied && rangeKnown) {
+                    copied = copyLegacyArray(cpu, g_legacyVertexArray, firstIndex, lastIndex, vertex) &&
+                        copyLegacyArray(cpu, g_legacyColorArray, firstIndex, lastIndex, color) &&
+                        copyLegacyArray(cpu, g_legacyTexCoordArray, firstIndex, lastIndex, texCoord);
+                }
+                traceLegacyClientDraw(mode, count, type, g_legacyVertexArray, g_legacyColorArray,
+                    g_legacyTexCoordArray, firstIndex, lastIndex, rangeKnown, vertex, indexData, indexBytes);
+                if (rangeKnown && !gl64RebaseIndexData(indexData.data(), indexData.size(),
+                    (size_t)count, indexBytes, firstIndex)) copied = false;
                 if (!g_legacyElementArrayBuffer && copied) indices = indexData.data();
                 glOnMain([&]{
                     bindDrawTarget();
-                    if (copied && webGpuFixedDraw(mode, 0, count, true, type, (U64)(uintptr_t)args.a[5], indexData,
+                    if (copied && webGpuFixedDraw(mode, 0, count, true, type, (U64)(uintptr_t)args.a[5],
+                        rangeKnown ? firstIndex : 0, indexData,
                         g_legacyVertexArray, g_legacyColorArray, g_legacyTexCoordArray, vertex, color, texCoord)) return;
                     if (copied && !vertex.empty()) glVertexPointer(g_legacyVertexArray.size, g_legacyVertexArray.type, g_legacyVertexArray.stride, vertex.data());
                     if (copied && !color.empty()) glColorPointer(g_legacyColorArray.size, g_legacyColorArray.type, g_legacyColorArray.stride, color.data());
                     if (copied && !texCoord.empty()) glTexCoordPointer(g_legacyTexCoordArray.size, g_legacyTexCoordArray.type, g_legacyTexCoordArray.stride, texCoord.data());
                     traceLegacyDrawState(mode, count, type);
-                    glDrawRangeElements(mode, start, end, count, type, indices);
+                    glDrawRangeElements(mode, rangeKnown ? 0 : start,
+                        rangeKnown ? lastIndex - firstIndex : end, count, type, indices);
                 });
                 g_glDrew = true;
             }

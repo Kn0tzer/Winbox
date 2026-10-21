@@ -79,3 +79,47 @@ test('program-zero fixed-function array draws use the current constant color', a
     gpu.restore();
   }
 });
+
+test('program-zero fixed-function draws advance buffer-backed pointers by the staged base vertex', async () => {
+  const gpu = createValidationDevice();
+  try {
+    gpu.device.queue.writeBuffer = () => {};
+    gpu.device.createBindGroup = descriptor => descriptor;
+    const createPipeline = gpu.device.createRenderPipeline;
+    gpu.device.createRenderPipeline = descriptor => {
+      descriptor.getBindGroupLayout = () => ({ });
+      return createPipeline(descriptor);
+    };
+    const offsets = [];
+    const createEncoder = gpu.device.createCommandEncoder;
+    gpu.device.createCommandEncoder = () => {
+      const encoder = createEncoder();
+      const beginPass = encoder.beginRenderPass;
+      encoder.beginRenderPass = descriptor => {
+        const pass = beginPass(descriptor);
+        const setVertexBuffer = pass.setVertexBuffer;
+        pass.setVertexBuffer = (slot, buffer, offset) => {
+          offsets.push({ slot, offset });
+          setVertexBuffer(slot, buffer, offset);
+        };
+        return pass;
+      };
+      return encoder;
+    };
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    const buffer = gl.createBuffer();
+    gl.bindBuffer(0x8892, buffer);
+    gl.bufferData(0x8892, new Float32Array([0, 0, 0, 0, 1, 1, 1, 0, -1, 1, 1, 0]), 0x88e4);
+    gl.fixedFunctionPointer(0, 3, 0x1406, 16, 0);
+    const arrays = {
+      vertex: { enabled: true, configured: true, size: 3, type: 0x1406, stride: 16 },
+      color: { enabled: false }, texCoord: { enabled: false }, baseVertex: 2,
+    };
+    assert.equal(gl.fixedFunctionDrawArrays(0x0004, 0, 3, arrays), true);
+    await gl._ops;
+    assert.equal(offsets.find(binding => binding.slot === 0)?.offset, 32);
+  } finally {
+    gpu.restore();
+  }
+});
