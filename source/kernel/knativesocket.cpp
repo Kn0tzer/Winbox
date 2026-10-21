@@ -662,7 +662,22 @@ struct ifconf {
 
 U32 KNativeSocketObject::ioctl(KThread* thread, U32 request) {
     CPU* cpu = thread->cpu;
-    if (request == 0x541b) {        
+    if (request == 0x541b) {
+        // Guest-local sockets have no host transport to query (accepted TCP
+        // endpoints use nativeSocket == -1). Wine uses this for FIONREAD.
+        if (this->loopbackDatagram || (this->loopbackStream &&
+            (this->loopbackPort || this->loopbackStreamConnected || this->nativeSocket < 0))) {
+            U32 available = 0;
+            if (this->loopbackDatagram) {
+                std::lock_guard<std::mutex> lock(this->loopbackPacketsMutex);
+                if (!this->loopbackPackets.empty()) available = (U32)this->loopbackPackets.front().bytes.size();
+            } else {
+                std::lock_guard<std::mutex> lock(this->loopbackStreamMutex);
+                available = (U32)this->loopbackStreamBytes.size();
+            }
+            thread->memory->writed(IOCTL_ARG1, available);
+            return 0;
+        }
 #ifdef WIN32
         u_long value=0;
         U32 result = ioctlsocket(this->nativeSocket, FIONREAD, &value);
@@ -738,6 +753,11 @@ U32 KNativeSocketObject::ioctl(KThread* thread, U32 request) {
 #endif
     } else if (request == 0x5421) {
         U32 address = IOCTL_ARG1;
+        if (this->loopbackDatagram || (this->loopbackStream &&
+            (this->loopbackPort || this->loopbackStreamConnected || this->nativeSocket < 0))) {
+            this->blocking = thread->memory->readd(address) == 0;
+            return 0;
+        }
 #ifdef WIN32
         u_long value = thread->memory->readd(address);
         U32 result = ioctlsocket(this->nativeSocket, FIONBIO, &value);
