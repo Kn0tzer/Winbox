@@ -1,7 +1,4 @@
-// Small first-pass GLctx replacement for the WebGPU backend. The complete GL
-// API is being added in stages; this slice keeps context creation, clear, swap,
-// and synchronous clear-color readback working while the rest of the bridge is
-// still on the WebGL2 fallback path.
+// WebGL2-shaped GLctx replacement backed by WebGPU for the GL64 bridge.
 
 import { toWGSL } from './shader.mjs';
 import { liftForNaga } from './naga-rt.mjs';
@@ -434,6 +431,9 @@ export class WebGPUGL {
 
   clearColor(r, g, b, a) { this._clear = [clamp01(r), clamp01(g), clamp01(b), clamp01(a)]; }
   clearDepth(value) { this._clearDepth = clamp01(value); }
+  // WebGL2 removed glShadeModel; its surviving smooth interpolation matches
+  // the default GL_SMOOTH behavior used by the fixed-function bridge.
+  shadeModel(_mode) {}
   clear(mask) {
     const state = { color: [...this._clear], depth: this._clearDepth, enabled: new Set(this._enabled), colorMask: [...this._colorMask], depthMask: this._depthMask, scissor: [...this._scissor], framebuffer: this._drawFramebuffer };
     this._clearPixels(mask, state);
