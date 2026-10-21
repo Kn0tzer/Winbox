@@ -54,6 +54,8 @@ void testInetDatagramLoopback() {
         testFail("AF_INET datagram socket creation failed: %d", socket->error);
         return;
     }
+    // Exercise the in-guest loopback endpoint used by browser AF_INET UDP.
+    socket->loopbackDatagram = true;
     KFileDescriptorPtr fd = std::make_shared<KFileDescriptor>(
         context.process, socket, K_O_RDWR | K_O_NONBLOCK, FD_CLOEXEC, 3);
     socket->setBlocking(false);
