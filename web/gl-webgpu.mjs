@@ -210,6 +210,7 @@ export class WebGPUGL {
     this._viewport = [0, 0, canvas.width || 1, canvas.height || 1];
     this._scissor = [...this._viewport];
     this._pack = { alignment: 4, rowLength: 0, skipRows: 0, skipPixels: 0 };
+    this._unpack = { alignment: 4, flipY: false, premultiplyAlpha: false, rowLength: 0, skipRows: 0, skipPixels: 0 };
     this._drawFramebuffer = defaultFramebuffer;
     this._readFramebuffer = defaultFramebuffer;
     this._arrayBuffer = null;
@@ -230,8 +231,13 @@ export class WebGPUGL {
     this._shaders = new Set();
     this._programs = new Set();
     this._textures = new Set();
+    this._textureRecords = new WeakMap();
     this._framebufferObjects = new Set();
     this._renderbuffers = new Set();
+    this._textureUnits = Array.from({ length: 16 }, () => ({ [GL.TEXTURE_2D]: null }));
+    this._activeTextureUnit = 0;
+    this._boundRenderbuffer = null;
+    this._defaultWhiteTexture = null;
     this._vaos = new Set();
     this._defaultVao = { id: 0, elementArrayBuffer: null, attributes: new Map() };
     this._vao = this._defaultVao;
@@ -294,7 +300,7 @@ export class WebGPUGL {
     this._configureCanvas();
     this._colorTexture = this._device.createTexture({
       size: [width, height, 1], format: this._format,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
     });
     this._depthTexture = this._device.createTexture({
       size: [width, height, 1], format: 'depth24plus',
@@ -324,39 +330,66 @@ export class WebGPUGL {
     try { this.onFailure?.(error); } catch {}
   }
 
+  _framebufferForTarget(target) {
+    return target === GL.READ_FRAMEBUFFER ? this._readFramebuffer : this._drawFramebuffer;
+  }
+
+  _targetFor(framebuffer = this._drawFramebuffer) {
+    if (this._isDefaultFramebuffer(framebuffer)) return {
+      default: true, framebuffer, colorTexture: this._colorTexture, depthTexture: this._depthTexture,
+      pixels: this._pixels, width: this._width, height: this._height, format: this._format, depthFormat: 'depth24plus',
+    };
+    const object = framebuffer;
+    const colorAttachment = object?.attachments?.get(0x8ce0);
+    if (!colorAttachment) return null;
+    const color = colorAttachment.type === 'texture' ? colorAttachment.object : colorAttachment.object;
+    const depthAttachment = object.attachments.get(0x8d00) || object.attachments.get(0x821a);
+    const depth = depthAttachment?.object || null;
+    const colorTexture = colorAttachment.type === 'texture' ? color?.gpu : color?.gpu;
+    const depthTexture = depth ? depth.gpu : null;
+    return {
+      default: false, framebuffer: object, colorObject: color, depthObject: depth,
+      colorTexture, depthTexture,
+      pixels: color?.pixels || null,
+      width: color?.width || 0, height: color?.height || 0,
+      format: color?.format || 'rgba8unorm', depthFormat: depth?.format || null,
+    };
+  }
+
   async _clearGpu(mask, state) {
-    this._ensureTargets(this._width, this._height);
+    const target = this._targetFor(state.framebuffer);
+    if (!target?.colorTexture || !target.width || !target.height) return;
     const scissor = state.enabled.has(0x0c11);
     const fullColor = (mask & GL.COLOR_BUFFER_BIT) && state.colorMask.every(Boolean) && !scissor;
-    const fullDepth = (mask & GL.DEPTH_BUFFER_BIT) && state.depthMask && !scissor;
+    const fullDepth = target.depthTexture && (mask & GL.DEPTH_BUFFER_BIT) && state.depthMask && !scissor;
     const partialColor = (mask & GL.COLOR_BUFFER_BIT) && !fullColor && state.colorMask.some(Boolean);
-    const partialDepth = (mask & GL.DEPTH_BUFFER_BIT) && !fullDepth && state.depthMask;
+    const partialDepth = target.depthTexture && (mask & GL.DEPTH_BUFFER_BIT) && !fullDepth && state.depthMask;
     if (!fullColor && !fullDepth && !partialColor && !partialDepth) return;
     const encoder = this._device.createCommandEncoder();
     const descriptor = {
       colorAttachments: [{
-        view: this._colorTexture.createView(),
+        view: target.colorTexture.createView(),
         clearValue: { r: state.color[0], g: state.color[1], b: state.color[2], a: state.color[3] },
         loadOp: fullColor ? 'clear' : 'load', storeOp: 'store',
       }],
-      depthStencilAttachment: {
-        view: this._depthTexture.createView(),
+    };
+    if (target.depthTexture) descriptor.depthStencilAttachment = {
+        view: target.depthTexture.createView(),
         depthClearValue: state.depth,
         depthLoadOp: fullDepth ? 'clear' : 'load',
         depthStoreOp: 'store',
-      },
-    };
+      };
     const pass = encoder.beginRenderPass(descriptor);
-    if (partialColor || partialDepth) this._drawClearRect(pass, state, partialColor, partialDepth);
+    if (partialColor || partialDepth) this._drawClearRect(pass, state, partialColor, partialDepth, target);
     pass.end();
     this._device.queue.submit([encoder.finish()]);
   }
 
-  _drawClearRect(pass, state, clearColor, clearDepth) {
+  _drawClearRect(pass, state, clearColor, clearDepth, target) {
     const color = state.color.map(value => Number(value).toPrecision(8)).join(',');
     const depth = Number(state.depth).toPrecision(8);
     const mask = state.colorMask.reduce((bits, enabled, index) => enabled && clearColor ? bits | (1 << index) : bits, 0);
-    const key = stateKey([color, depth, mask, clearColor, clearDepth, this._format]);
+    const key = stateKey([color, depth, mask, clearColor, clearDepth, target.format, target.depthFormat]);
     let pipeline = this._clearPipelineCache.get(key);
     if (!pipeline) {
       const fields = [];
@@ -366,18 +399,18 @@ export class WebGPUGL {
       const code = `struct Out { ${fields.join(' ')} };\n@vertex fn vs(@builtin(vertex_index) i:u32)->@builtin(position) vec4<f32>{var p=array<vec2<f32>,3>(vec2<f32>(-1.0,-1.0),vec2<f32>(3.0,-1.0),vec2<f32>(-1.0,3.0));return vec4<f32>(p[i],0.0,1.0);}\n@fragment fn fs()->Out{return Out(${value});}`;
       pipeline = this._device.createRenderPipeline({
         layout: 'auto', vertex: { module: this._device.createShaderModule({ code }), entryPoint: 'vs' },
-        fragment: { module: this._device.createShaderModule({ code }), entryPoint: 'fs', targets: [{ format: this._format, writeMask: mask }] },
+        fragment: { module: this._device.createShaderModule({ code }), entryPoint: 'fs', targets: [{ format: target.format, writeMask: mask }] },
         primitive: { topology: 'triangle-list' },
-        depthStencil: { format: 'depth24plus', depthWriteEnabled: clearDepth, depthCompare: 'always' },
+        ...(target.depthTexture ? { depthStencil: { format: target.depthFormat || 'depth24plus', depthWriteEnabled: clearDepth, depthCompare: 'always' } } : {}),
       });
       this._clearPipelineCache.set(key, pipeline);
     }
     pass.setPipeline(pipeline);
-    pass.setViewport(0, 0, this._width, this._height, 0, 1);
+    pass.setViewport(0, 0, target.width, target.height, 0, 1);
     if (state.enabled.has(0x0c11)) {
       const [sx, sy, sw, sh] = state.scissor;
-      const left = Math.max(0, sx), top = Math.max(0, this._height - sy - sh);
-      pass.setScissorRect(left, top, Math.max(0, Math.min(this._width - left, sw)), Math.max(0, Math.min(this._height - top, sh)));
+      const left = Math.max(0, sx), top = Math.max(0, target.height - sy - sh);
+      pass.setScissorRect(left, top, Math.max(0, Math.min(target.width - left, sw)), Math.max(0, Math.min(target.height - top, sh)));
     }
     pass.draw(3);
   }
@@ -385,28 +418,30 @@ export class WebGPUGL {
   _clearPixels(mask, state) {
     if (!(mask & GL.COLOR_BUFFER_BIT)) return;
     const rgba = state.color.map(value => Math.round(clamp01(value) * 255));
-    let left = 0, right = this._width, top = 0, bottom = this._height;
+    const target = this._targetFor(state.framebuffer), pixels = target?.pixels;
+    if (!target || !pixels) return;
+    let left = 0, right = target.width, top = 0, bottom = target.height;
     if (state.enabled.has(0x0c11)) {
       const [x, y, width, height] = state.scissor;
-      left = Math.max(0, x); right = Math.min(this._width, x + width);
-      top = Math.max(0, y); bottom = Math.min(this._height, y + height);
+      left = Math.max(0, x); right = Math.min(target.width, x + width);
+      top = Math.max(0, y); bottom = Math.min(target.height, y + height);
     }
     for (let y = top; y < bottom; y++) for (let x = left; x < right; x++) {
-      const i = (y * this._width + x) * 4;
-      for (let channel = 0; channel < 4; channel++) if (state.colorMask[channel]) this._pixels[i + channel] = rgba[channel];
+      const i = (y * target.width + x) * 4;
+      for (let channel = 0; channel < 4; channel++) if (state.colorMask[channel]) pixels[i + channel] = rgba[channel];
     }
   }
 
   clearColor(r, g, b, a) { this._clear = [clamp01(r), clamp01(g), clamp01(b), clamp01(a)]; }
   clearDepth(value) { this._clearDepth = clamp01(value); }
   clear(mask) {
-    const state = { color: [...this._clear], depth: this._clearDepth, enabled: new Set(this._enabled), colorMask: [...this._colorMask], depthMask: this._depthMask, scissor: [...this._scissor] };
+    const state = { color: [...this._clear], depth: this._clearDepth, enabled: new Set(this._enabled), colorMask: [...this._colorMask], depthMask: this._depthMask, scissor: [...this._scissor], framebuffer: this._drawFramebuffer };
     this._clearPixels(mask, state);
     this._enqueue(() => this._clearGpu(mask, state));
   }
   viewport(x, y, width, height) {
     this._viewport = [x | 0, y | 0, width | 0, height | 0];
-    if (!this._drawFramebuffer && (x + width > this._width || y + height > this._height))
+    if (this._isDefaultFramebuffer(this._drawFramebuffer) && (x + width > this._width || y + height > this._height))
       this._ensureTargets(Math.max(this._width, x + width), Math.max(this._height, y + height));
   }
   scissor(x, y, width, height) { this._scissor = [x | 0, y | 0, width | 0, height | 0]; }
@@ -426,11 +461,15 @@ export class WebGPUGL {
       case GL.READ_FRAMEBUFFER_BINDING: return this._readFramebuffer;
       case GL.ARRAY_BUFFER_BINDING: return this._arrayBuffer;
       case GL.ELEMENT_ARRAY_BUFFER_BINDING: return this._elementArrayBuffer;
+      case GL.TEXTURE_BINDING_2D: return this._textureUnits[this._activeTextureUnit]?.[GL.TEXTURE_2D]?.handle || null;
+      case GL.RENDERBUFFER_BINDING: return this._boundRenderbuffer;
+      case 0x84e0: return 0x84c0 + this._activeTextureUnit;
       case GL.CURRENT_PROGRAM: return this._currentProgram;
       case GL.PACK_ALIGNMENT: return this._pack.alignment;
       case GL.PACK_ROW_LENGTH: return this._pack.rowLength;
       case GL.PACK_SKIP_ROWS: return this._pack.skipRows;
       case GL.PACK_SKIP_PIXELS: return this._pack.skipPixels;
+      case 0x0cf5: return this._unpack.alignment;
       case GL.MAX_TEXTURE_IMAGE_UNITS: return 8;
       case GL.MAX_COMBINED_TEXTURE_IMAGE_UNITS: return 8;
       case 0x8869: return 16; // GL_MAX_VERTEX_ATTRIBS
@@ -444,24 +483,32 @@ export class WebGPUGL {
     else if (parameter === GL.PACK_ROW_LENGTH) this._pack.rowLength = Math.max(0, value | 0);
     else if (parameter === GL.PACK_SKIP_ROWS) this._pack.skipRows = Math.max(0, value | 0);
     else if (parameter === GL.PACK_SKIP_PIXELS) this._pack.skipPixels = Math.max(0, value | 0);
+    else if (parameter === 0x0cf5) this._unpack.alignment = Math.max(1, value | 0);
+    else if (parameter === 0x0cf2) this._unpack.rowLength = Math.max(0, value | 0);
+    else if (parameter === 0x0cf3) this._unpack.skipRows = Math.max(0, value | 0);
+    else if (parameter === 0x0cf4) this._unpack.skipPixels = Math.max(0, value | 0);
+    else if (parameter === 0x9240) this._unpack.flipY = !!value;
+    else if (parameter === 0x9241) this._unpack.premultiplyAlpha = !!value;
   }
 
   readPixels(x, y, width, height, format, type, destination) {
     if (!(destination instanceof Uint8Array) && !(destination instanceof Uint8ClampedArray)) return;
     if (format !== 0x1908 || type !== 0x1401) return;
+    const target = this._targetFor(this._readFramebuffer), pixels = target?.pixels;
+    if (!target || !pixels) return;
     const rowLength = this._pack.rowLength || width;
     const rawStride = rowLength * 4;
     const stride = Math.ceil(rawStride / this._pack.alignment) * this._pack.alignment;
     const base = this._pack.skipRows * stride + this._pack.skipPixels * 4;
     for (let row = 0; row < height; row++) {
       const sourceY = y + row;
-      if (sourceY < 0 || sourceY >= this._height) continue;
+      if (sourceY < 0 || sourceY >= target.height) continue;
       for (let col = 0; col < width; col++) {
         const sourceX = x + col;
-        if (sourceX < 0 || sourceX >= this._width) continue;
-        const src = (sourceY * this._width + sourceX) * 4;
+        if (sourceX < 0 || sourceX >= target.width) continue;
+        const src = (sourceY * target.width + sourceX) * 4;
         const dst = base + row * stride + col * 4;
-        if (dst + 4 <= destination.length) destination.set(this._pixels.subarray(src, src + 4), dst);
+        if (dst + 4 <= destination.length) destination.set(pixels.subarray(src, src + 4), dst);
       }
     }
   }
@@ -968,7 +1015,7 @@ export class WebGPUGL {
       vertex: { module: vertexModule, entryPoint: 'main', buffers: vertex.layouts },
       fragment: { module: fragmentModule, entryPoint: 'main', targets: [{ format: targetFormat, writeMask, ...(blend ? { blend } : {}) }] },
       primitive: { topology, frontFace: state.frontFace === 0x0900 ? 'cw' : 'ccw', cullMode: cull === 'front-and-back' ? 'front' : cull },
-      depthStencil: { format: depthFormat, depthWriteEnabled: depthEnabled && state.depthMask, depthCompare },
+      ...(depthFormat ? { depthStencil: { format: depthFormat, depthWriteEnabled: depthEnabled && state.depthMask, depthCompare } } : {}),
     };
     const pipeline = this._device.createRenderPipeline(descriptor);
     this._pipelineCache.set(key, pipeline);
@@ -992,8 +1039,29 @@ export class WebGPUGL {
       this._device.queue.writeBuffer(buffer, 0, packed);
       entries.push({ binding, resource: { buffer, offset: 0, size } });
     }
+    for (const stage of ['vertex', 'fragment']) {
+      const record = program.stages[stage];
+      for (const sampler of record?.samplers || []) {
+        const unitValue = uniformValues.get(sampler.name);
+        const unit = Number(ArrayBuffer.isView(unitValue) ? unitValue[0] : unitValue ?? 0) | 0;
+        const texture = this._textureUnits[unit]?.[GL.TEXTURE_2D] || this._whiteTexture();
+        const gpu = this._ensureTextureGpu(texture);
+        if (!gpu) continue;
+        entries.push({ binding: sampler.textureBinding, resource: gpu.createView() });
+        entries.push({ binding: sampler.samplerBinding, resource: this._samplerFor(texture) });
+      }
+    }
     if (!entries.length) return null;
     return this._device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries });
+  }
+
+  _whiteTexture() {
+    if (this._defaultWhiteTexture) return this._defaultWhiteTexture;
+    const texture = this.createTexture();
+    texture.width = texture.height = 1; texture.pixels = new Uint8Array([255, 255, 255, 255]);
+    texture.levels.set(0, { width: 1, height: 1, pixels: texture.pixels });
+    this._defaultWhiteTexture = texture;
+    return texture;
   }
 
   async _draw(state, mode, first, count, indexed, instances) {
@@ -1004,24 +1072,26 @@ export class WebGPUGL {
     const topologyData = this._rewriteTopology(mode, first, count, indexed ? this._indexValues(state.elementArrayBuffer, indexed.type, indexed.offset, count) : null);
     if (!topologyData.topology || (indexed && !topologyData.indices)) return;
     const topology = topologyData.topology;
+    const target = this._targetFor(state.drawFramebuffer);
+    if (!target?.colorTexture) return;
     const vertex = this._vertexLayouts(program, state.attributes);
     const viewport = state.viewport;
-    const pipeline = this._pipelineFor(program, state, vertex, topology);
+    const pipeline = this._pipelineFor(program, state, vertex, topology, target.format, target.depthTexture ? target.depthFormat || 'depth24plus' : null);
     const encoder = this._device.createCommandEncoder();
     const pass = encoder.beginRenderPass({
-      colorAttachments: [{ view: this._colorTexture.createView(), loadOp: 'load', storeOp: 'store' }],
-      depthStencilAttachment: { view: this._depthTexture.createView(), depthLoadOp: 'load', depthStoreOp: 'store' },
+      colorAttachments: [{ view: target.colorTexture.createView(), loadOp: 'load', storeOp: 'store' }],
+      ...(target.depthTexture ? { depthStencilAttachment: { view: target.depthTexture.createView(), depthLoadOp: 'load', depthStoreOp: 'store' } } : {}),
     });
     pass.setPipeline(pipeline);
     for (const item of vertex.buffers) pass.setVertexBuffer(item.slot, item.buffer, item.offset);
     const bindGroup = await this._uniformBindGroup(program, pipeline, state.uniformValues);
     if (bindGroup) pass.setBindGroup(0, bindGroup);
-    const x = Math.max(0, viewport[0]), y = Math.max(0, this._height - viewport[1] - viewport[3]);
+    const x = Math.max(0, viewport[0]), y = Math.max(0, target.height - viewport[1] - viewport[3]);
     pass.setViewport(x, y, Math.max(0, viewport[2]), Math.max(0, viewport[3]), 0, 1);
     if (state.enabled.has(0x0c11)) {
       const [sx, sy, sw, sh] = state.scissor;
-      const left = Math.max(0, sx), top = Math.max(0, this._height - sy - sh);
-      pass.setScissorRect(left, top, Math.max(0, Math.min(this._width - left, sw)), Math.max(0, Math.min(this._height - top, sh)));
+      const left = Math.max(0, sx), top = Math.max(0, target.height - sy - sh);
+      pass.setScissorRect(left, top, Math.max(0, Math.min(target.width - left, sw)), Math.max(0, Math.min(target.height - top, sh)));
     }
     if (state.enabled.has(0x0be2)) pass.setBlendConstant({ r: state.blendColor[0], g: state.blendColor[1], b: state.blendColor[2], a: state.blendColor[3] });
     let temporaryIndex = null;
@@ -1057,35 +1127,241 @@ export class WebGPUGL {
   polygonOffset() {}
   sampleCoverage() {}
 
-  createTexture() { const texture = { id: this._nextId++ }; this._textures.add(texture); return texture; }
-  deleteTexture(texture) { this._textures.delete(texture); }
-  isTexture(texture) { return this._textures.has(texture); }
-  bindTexture() {}
-  texImage2D() {}
-  texSubImage2D() {}
-  texParameteri() {}
-  texParameterf() {}
-  generateMipmap() {}
-  activeTexture() {}
-  createFramebuffer() { const object = { id: this._nextId++ }; this._framebufferObjects.add(object); return object; }
-  deleteFramebuffer(framebuffer) { this._framebufferObjects.delete(framebuffer); }
+  _newTextureRecord(handle = null) {
+    const texture = { id: this._nextId++, target: GL.TEXTURE_2D, width: 0, height: 0, format: 'rgba8unorm', levels: new Map(), params: new Map([[0x2800, 0x2601], [0x2801, 0x2703], [0x2802, 0x812f], [0x2803, 0x812f]]), gpu: null, gpuMipCount: 0 };
+    texture.handle = handle || texture;
+    if (handle && (typeof handle === 'object' || typeof handle === 'function')) this._textureRecords.set(handle, texture);
+    if (texture.handle === texture) this._textureRecords.set(texture, texture);
+    this._textures.add(texture); return texture;
+  }
+  _textureRecord(texture) {
+    if (!texture) return null;
+    if (this._textures.has(texture)) return texture;
+    if ((typeof texture === 'object' || typeof texture === 'function') && this._textureRecords.has(texture)) return this._textureRecords.get(texture);
+    return this._newTextureRecord(texture);
+  }
+  createTexture() { return this._newTextureRecord(); }
+  deleteTexture(texture) {
+    texture = this._textureRecord(texture);
+    if (!texture) return;
+    texture.gpu?.destroy(); texture.gpu = null; this._textures.delete(texture);
+    for (const unit of this._textureUnits) if (unit[GL.TEXTURE_2D] === texture) unit[GL.TEXTURE_2D] = null;
+    for (const framebuffer of this._framebufferObjects) for (const [attachment, record] of framebuffer.attachments)
+      if (record.type === 'texture' && record.object === texture) framebuffer.attachments.delete(attachment);
+  }
+  isTexture(texture) { return !!texture && (this._textures.has(texture) || ((typeof texture === 'object' || typeof texture === 'function') && this._textureRecords.has(texture))); }
+  _boundTexture(target = GL.TEXTURE_2D) { return this._textureUnits[this._activeTextureUnit]?.[target] || null; }
+  bindTexture(target, texture) {
+    if (target === GL.TEXTURE_2D) this._textureUnits[this._activeTextureUnit][target] = this._textureRecord(texture);
+  }
+  _rgbaPixels(width, height, format, type, data) {
+    const rgba = new Uint8Array(width * height * 4);
+    if (!data) return rgba;
+    const source = data.data && ArrayBuffer.isView(data.data) ? data.data : data;
+    if (!ArrayBuffer.isView(source)) return rgba;
+    const componentCount = format === 0x1907 ? 3 : format === 0x1906 || format === 0x1909 ? 1 : format === 0x190a ? 2 : 4;
+    const componentBytes = type === 0x1406 ? 4 : type === 0x1403 || type === 0x1402 ? 2 : 1;
+    const rowPixels = this._unpack.rowLength || width;
+    const rowBytes = Math.ceil(rowPixels * componentCount * componentBytes / this._unpack.alignment) * this._unpack.alignment;
+    const base = this._unpack.skipRows * rowBytes + this._unpack.skipPixels * componentCount * componentBytes;
+    const bytes = new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    for (let y = 0; y < height; y++) {
+      const inputY = this._unpack.flipY ? height - 1 - y : y;
+      for (let x = 0; x < width; x++) {
+        const input = base + inputY * rowBytes + x * componentCount * componentBytes;
+        const output = (y * width + x) * 4;
+        let values = [0, 0, 0, 255];
+        for (let c = 0; c < componentCount; c++) {
+          let value = 0;
+          if (input + (c + 1) * componentBytes <= bytes.length) value = componentBytes === 4
+            ? Math.round(clamp01(view.getFloat32(input + c * componentBytes, true)) * 255)
+            : componentBytes === 2 ? Math.round(view.getUint16(input + c * componentBytes, true) / 257) : view.getUint8(input + c);
+          if (format === 0x1906 || format === 0x1909) values[c === 0 ? 3 : c] = value;
+          else if (format === 0x190a) { values[c === 0 ? 0 : 3] = value; }
+          else values[c] = value;
+        }
+        if (this._unpack.premultiplyAlpha && componentCount === 4) for (let c = 0; c < 3; c++) values[c] = Math.round(values[c] * values[3] / 255);
+        rgba.set(values, output);
+      }
+    }
+    return rgba;
+  }
+  _uploadRows(pixels, width, height) {
+    const result = new Uint8Array(pixels.length);
+    for (let y = 0; y < height; y++) result.set(pixels.subarray(y * width * 4, (y + 1) * width * 4), (height - 1 - y) * width * 4);
+    return result;
+  }
+  _ensureTextureGpu(texture) {
+    if (!texture?.width || !texture?.height) return null;
+    const levels = Math.floor(Math.log2(Math.max(texture.width, texture.height))) + 1;
+    if (!texture.gpu || texture.gpuMipCount !== levels) {
+      texture.gpu?.destroy();
+      texture.gpu = this._device.createTexture({ size: [texture.width, texture.height, 1], mipLevelCount: levels, format: texture.format,
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC | GPUTextureUsage.RENDER_ATTACHMENT });
+      texture.gpuMipCount = levels;
+    }
+    for (const [level, record] of texture.levels) {
+      if (level >= levels) continue;
+      this._device.queue.writeTexture({ texture: texture.gpu, mipLevel: level }, this._uploadRows(record.pixels, record.width, record.height),
+        { bytesPerRow: record.width * 4, rowsPerImage: record.height }, [record.width, record.height, 1]);
+    }
+    return texture.gpu;
+  }
+  texImage2D(...args) {
+    const [target, level, internalFormat] = args;
+    let width, height, format, type, data;
+    if (args.length >= 9) [, , , width, height, , format, type, data] = args;
+    else if (args.length >= 6) {
+      [, , , format, type, data] = args;
+      width = data?.width || 0; height = data?.height || 0;
+    } else return;
+    const texture = this._boundTexture(target);
+    if (!texture || target !== GL.TEXTURE_2D || width < 0 || height < 0) return;
+    width |= 0; height |= 0;
+    if (level === 0) {
+      texture.width = width; texture.height = height;
+      texture.format = internalFormat === 0x1908 || internalFormat === 0x8058 || internalFormat === 0x8059 ? 'rgba8unorm' : 'rgba8unorm';
+    }
+    const levelWidth = Math.max(1, texture.width >> level), levelHeight = Math.max(1, texture.height >> level);
+    texture.levels.set(level, { width: levelWidth, height: levelHeight, pixels: this._rgbaPixels(levelWidth, levelHeight, format, type, data) });
+    if (level === 0) texture.pixels = texture.levels.get(0).pixels;
+    this._enqueue(() => this._ensureTextureGpu(texture));
+  }
+  texSubImage2D(...args) {
+    const [target, level, xoffset, yoffset, width, height, format, type, data] = args;
+    const texture = this._boundTexture(target), record = texture?.levels.get(level);
+    if (!texture || !record || target !== GL.TEXTURE_2D) return;
+    const patch = this._rgbaPixels(width, height, format, type, data);
+    for (let y = 0; y < height; y++) {
+      const dstY = yoffset + y;
+      if (dstY < 0 || dstY >= record.height) continue;
+      const left = Math.max(0, xoffset), right = Math.min(record.width, xoffset + width);
+      if (right > left) record.pixels.set(patch.subarray((y * width + left - xoffset) * 4, (y * width + right - xoffset) * 4), (dstY * record.width + left) * 4);
+    }
+    if (level === 0) texture.pixels = record.pixels;
+    this._enqueue(() => {
+      const gpu = this._ensureTextureGpu(texture);
+      if (!gpu) return;
+      const gpuRows = this._uploadRows(patch, width, height);
+      this._device.queue.writeTexture({ texture: gpu, mipLevel: level, origin: [xoffset, record.height - yoffset - height, 0] }, gpuRows,
+        { bytesPerRow: width * 4, rowsPerImage: height }, [width, height, 1]);
+    });
+  }
+  texParameteri(target, parameter, value) { const texture = this._boundTexture(target); if (texture) texture.params.set(parameter, value); }
+  texParameterf(target, parameter, value) { this.texParameteri(target, parameter, value); }
+  _samplerFor(texture) {
+    texture.samplerCache ||= new Map();
+    const cacheKey = stateKey([...texture.params.entries()].sort((a, b) => a[0] - b[0]));
+    if (texture.samplerCache.has(cacheKey)) return texture.samplerCache.get(cacheKey);
+    const address = value => value === 0x2901 ? 'repeat' : value === 0x8370 ? 'mirror-repeat' : 'clamp-to-edge';
+    const filter = value => value === 0x2600 ? 'nearest' : 'linear';
+    const min = texture.params.get(0x2801) ?? 0x2703, mag = texture.params.get(0x2800) ?? 0x2601;
+    const sampler = this._device.createSampler({ addressModeU: address(texture.params.get(0x2802)), addressModeV: address(texture.params.get(0x2803)),
+      magFilter: filter(mag), minFilter: filter(min === 0x2600 || min === 0x2601 ? min : min === 0x2700 || min === 0x2701 || min === 0x2702 ? 0x2600 : 0x2601),
+      mipmapFilter: min === 0x2700 || min === 0x2702 || min === 0x2704 ? 'nearest' : 'linear', lodMinClamp: 0, lodMaxClamp: min === 0x2600 || min === 0x2601 ? 0 : 32 });
+    texture.samplerCache.set(cacheKey, sampler);
+    return sampler;
+  }
+  generateMipmap(target) {
+    const texture = this._boundTexture(target), base = texture?.levels.get(0);
+    if (!texture || !base) return;
+    let prior = base, level = 1;
+    while (prior.width > 1 || prior.height > 1) {
+      const width = Math.max(1, prior.width >> 1), height = Math.max(1, prior.height >> 1), pixels = new Uint8Array(width * height * 4);
+      for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) for (let c = 0; c < 4; c++) {
+        let total = 0, count = 0;
+        for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) {
+          const sx = Math.min(prior.width - 1, x * 2 + dx), sy = Math.min(prior.height - 1, y * 2 + dy);
+          total += prior.pixels[(sy * prior.width + sx) * 4 + c]; count++;
+        }
+        pixels[(y * width + x) * 4 + c] = Math.round(total / count);
+      }
+      const record = { width, height, pixels };
+      texture.levels.set(level++, record); prior = record;
+    }
+    this._enqueue(() => this._ensureTextureGpu(texture));
+  }
+  activeTexture(texture) { this._activeTextureUnit = Math.max(0, Math.min(this._textureUnits.length - 1, (texture | 0) - 0x84c0)); }
+  createFramebuffer() { const object = { id: this._nextId++, attachments: new Map() }; this._framebufferObjects.add(object); return object; }
+  deleteFramebuffer(framebuffer) { this._framebufferObjects.delete(framebuffer); if (this._drawFramebuffer === framebuffer) this._drawFramebuffer = 0; if (this._readFramebuffer === framebuffer) this._readFramebuffer = 0; }
   isFramebuffer(framebuffer) { return this._framebufferObjects.has(framebuffer); }
   bindFramebuffer(target, framebuffer) {
-    if (target === GL.READ_FRAMEBUFFER) this._readFramebuffer = framebuffer || 0;
-    else if (target === GL.DRAW_FRAMEBUFFER) this._drawFramebuffer = framebuffer || 0;
-    else { this._readFramebuffer = framebuffer || 0; this._drawFramebuffer = framebuffer || 0; }
+    const value = framebuffer || 0;
+    if (target === GL.READ_FRAMEBUFFER) this._readFramebuffer = value;
+    else if (target === GL.DRAW_FRAMEBUFFER) this._drawFramebuffer = value;
+    else { this._readFramebuffer = value; this._drawFramebuffer = value; }
   }
-  framebufferTexture2D() {}
-  framebufferRenderbuffer() {}
-  checkFramebufferStatus() { return GL.FRAMEBUFFER_COMPLETE; }
-  createRenderbuffer() { const object = { id: this._nextId++ }; this._renderbuffers.add(object); return object; }
-  deleteRenderbuffer(object) { this._renderbuffers.delete(object); }
+  _boundFramebuffer(target) { return this._framebufferForTarget(target); }
+  framebufferTexture2D(target, attachment, textarget, texture, level = 0) {
+    const framebuffer = this._boundFramebuffer(target);
+    if (!framebuffer?.attachments) return;
+    if (!texture) framebuffer.attachments.delete(attachment);
+    else framebuffer.attachments.set(attachment, { type: 'texture', object: this._textureRecord(texture), target: textarget, level });
+  }
+  framebufferRenderbuffer(target, attachment, renderbufferTarget, renderbuffer) {
+    const framebuffer = this._boundFramebuffer(target);
+    if (!framebuffer?.attachments) return;
+    if (!renderbuffer) framebuffer.attachments.delete(attachment);
+    else framebuffer.attachments.set(attachment, { type: 'renderbuffer', object: renderbuffer });
+  }
+  checkFramebufferStatus(target) {
+    const framebuffer = this._boundFramebuffer(target);
+    if (this._isDefaultFramebuffer(framebuffer)) return GL.FRAMEBUFFER_COMPLETE;
+    const color = framebuffer?.attachments?.get(0x8ce0), depth = framebuffer?.attachments?.get(0x8d00) || framebuffer?.attachments?.get(0x821a);
+    const valid = attachment => attachment?.object && attachment.object.width > 0 && attachment.object.height > 0;
+    return valid(color) || valid(depth) ? GL.FRAMEBUFFER_COMPLETE : 0x8cd7;
+  }
+  createRenderbuffer() { const object = { id: this._nextId++, width: 0, height: 0, format: 'depth24plus', internalFormat: 0, gpu: null, pixels: null }; this._renderbuffers.add(object); return object; }
+  deleteRenderbuffer(object) { if (!object) return; object.gpu?.destroy(); this._renderbuffers.delete(object); for (const framebuffer of this._framebufferObjects) for (const [key, record] of framebuffer.attachments) if (record.object === object) framebuffer.attachments.delete(key); }
   isRenderbuffer(object) { return this._renderbuffers.has(object); }
-  bindRenderbuffer() {}
-  renderbufferStorage() {}
-  getRenderbufferParameter() { return 0; }
-  getFramebufferAttachmentParameter() { return 0; }
-  blitFramebuffer() {}
+  bindRenderbuffer(target, object) { if (target === 0x8d41) this._boundRenderbuffer = object || null; }
+  renderbufferStorage(target, internalFormat, width, height) {
+    const buffer = this._boundRenderbuffer;
+    if (!buffer || target !== 0x8d41) return;
+    buffer.gpu?.destroy(); buffer.width = width | 0; buffer.height = height | 0; buffer.internalFormat = internalFormat;
+    buffer.format = [0x81a5, 0x81a6, 0x81a7, 0x8cac].includes(internalFormat) ? (internalFormat === 0x8cac ? 'depth32float' : 'depth24plus') : 'rgba8unorm';
+    buffer.pixels = new Uint8Array(Math.max(0, buffer.width * buffer.height * 4));
+    this._enqueue(() => {
+      if (!buffer.width || !buffer.height) return;
+      buffer.gpu = this._device.createTexture({ size: [buffer.width, buffer.height, 1], format: buffer.format,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING });
+    });
+  }
+  getRenderbufferParameter(target, parameter) {
+    if (!this._boundRenderbuffer) return 0;
+    return parameter === 0x8d42 ? this._boundRenderbuffer.internalFormat : parameter === 0x8d43 ? this._boundRenderbuffer.width : parameter === 0x8d44 ? this._boundRenderbuffer.height : 0;
+  }
+  getFramebufferAttachmentParameter(target, attachment, parameter) {
+    const record = this._boundFramebuffer(target)?.attachments?.get(attachment);
+    if (!record) return 0;
+    if (parameter === 0x8cd0) return record.type === 'texture' ? 0x1702 : 0x8d41;
+    if (parameter === 0x8cd1) return record.type === 'texture' ? record.object.handle : 0;
+    if (parameter === 0x8cd2) return record.level || 0;
+    return 0;
+  }
+  blitFramebuffer(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter) {
+    if (!(mask & GL.COLOR_BUFFER_BIT)) return;
+    const source = this._targetFor(this._readFramebuffer), destination = this._targetFor(this._drawFramebuffer);
+    if (!source?.pixels || !destination?.pixels) return;
+    const sx = Math.min(srcX0, srcX1), sy = Math.min(srcY0, srcY1), sw = Math.abs(srcX1 - srcX0), sh = Math.abs(srcY1 - srcY0);
+    const dx = Math.min(dstX0, dstX1), dy = Math.min(dstY0, dstY1), dw = Math.abs(dstX1 - dstX0), dh = Math.abs(dstY1 - dstY0);
+    for (let y = 0; y < dh; y++) for (let x = 0; x < dw; x++) {
+      const srcX = sx + Math.min(sw - 1, Math.floor(x * sw / Math.max(1, dw)));
+      const srcY = sy + Math.min(sh - 1, Math.floor(y * sh / Math.max(1, dh)));
+      const destX = dx + x, destY = dy + y;
+      if (srcX < 0 || srcY < 0 || srcX >= source.width || srcY >= source.height || destX < 0 || destY < 0 || destX >= destination.width || destY >= destination.height) continue;
+      const src = (srcY * source.width + srcX) * 4, dst = (destY * destination.width + destX) * 4;
+      destination.pixels.set(source.pixels.subarray(src, src + 4), dst);
+    }
+    this._enqueue(() => {
+      if (!source.colorTexture || !destination.colorTexture || srcX1 < srcX0 || dstY1 < dstY0 || sw !== dw || sh !== dh) return;
+      const encoder = this._device.createCommandEncoder();
+      encoder.copyTextureToTexture({ texture: source.colorTexture, origin: [sx, source.height - sy - sh, 0] },
+        { texture: destination.colorTexture, origin: [dx, destination.height - dy - dh, 0] }, [sw, sh, 1]);
+      this._device.queue.submit([encoder.finish()]);
+    });
+  }
   drawBuffers() {}
   readBuffer() {}
 }
