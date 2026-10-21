@@ -84,6 +84,7 @@ let server;
 let browser;
 let serverRoot;
 const lines = [];
+const pendingConsole = [];
 const pageErrors = [];
 let appLaunchFailure = '';
 const result = {
@@ -104,7 +105,7 @@ const record = line => {
   lines.push(line);
   if (line.includes('wine: failed to open') && line.includes(exe)) appLaunchFailure = line;
   if (/pageerror|http-error|first window mapped|gl-webgpu|gl64: host GL|TODO:|Unhandled exception|failed to open/.test(line))
-    process.stdout.write(line + '\n');
+    process.stdout.write(line.split('\n')[0].slice(0, 500) + '\n');
 };
 
 try {
@@ -140,7 +141,17 @@ try {
       if (!state.mappedAt && line.includes('first window mapped')) state.mappedAt = Date.now();
     });
   });
-  page.on('console', message => record(`console ${message.type()}: ${message.text()}`));
+  page.on('console', message => {
+    pendingConsole.push((async () => {
+      const values = [];
+      for (const arg of message.args()) {
+        try { values.push(await arg.jsonValue()); }
+        catch { values.push(arg.toString()); }
+      }
+      const rendered = values.map(value => typeof value === 'string' ? value : JSON.stringify(value)).join(' ');
+      record(`console ${message.type()}: ${rendered || message.text()}`);
+    })());
+  });
   page.on('pageerror', error => {
     const line = `pageerror: ${error.stack || error.message}`;
     pageErrors.push(line);
@@ -208,6 +219,7 @@ try {
   result.error = error.stack || String(error);
   result.finishedAt = new Date().toISOString();
 } finally {
+  await Promise.allSettled(pendingConsole);
   await writeFile(join(outputDir, 'console.log'), lines.join('\n') + (lines.length ? '\n' : ''));
   await writeFile(join(outputDir, 'summary.json'), JSON.stringify(result, null, 2));
   await browser?.close().catch(() => {});
