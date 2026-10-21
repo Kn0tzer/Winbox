@@ -1429,8 +1429,8 @@ U8 jit64VerifyExecutions() {
     static const U8 cached = [] {
         const char* env = std::getenv("BW64_JIT_VERIFY_EXECUTIONS");
         char* end = nullptr;
-        long value = env ? std::strtol(env, &end, 10) : 3;
-        if (env && (end == env || *end != '\0')) value = 3;
+        long value = env ? std::strtol(env, &end, 10) : 0;
+        if (env && (end == env || *end != '\0')) value = 0;
         if (value < 0) value = 0;
         if (value > 3) value = 3;
         return (U8)value;
@@ -1446,7 +1446,7 @@ U64 jit64WarmupInstructions() {
             unsigned long long value = std::strtoull(env, &end, 10);
             if (end != env && *end == '\0') return (U64)value;
         }
-        return 2000000000ULL;
+        return 0;
     }();
     return cached;
 }

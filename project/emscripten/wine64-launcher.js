@@ -991,20 +991,21 @@
                 // RIP attribution for the host profiler runs.
                 if (param("guestprof") === "1") ENV["BW_GUEST_PROFILE"] = "1";
                 else { try { if (new URLSearchParams(window.parent.location.search).get("guestprof") === "1") ENV["BW_GUEST_PROFILE"] = "1"; } catch (e) {} }
-                // Public JIT switch: ?jit=0|1 selects the guest CPU engine for
-                // BOTH architectures (jit=0 = interpreter everywhere, jit=1 =
-                // generated code where the build provides it). Absent leaves
-                // each engine at its compiled-in default. These must be host
-                // environment variables: they are read (and latched) by host
-                // code, so guest environment variables cannot switch them.
-                // BW32_JIT is the 32-bit guest (cpu32/WASM JIT) engine;
-                // BW64_JIT belongs to the 64-bit guest engine.
+                // Public JIT switches: ?jit=0 disables both guest engines;
+                // ?jit=1 enables CPU64 only; ?jit32=1 also enables CPU32, or
+                // enables CPU32 by itself when jit is absent. ?jit32=0 forces
+                // CPU32 off. These are host environment variables, read and
+                // latched before guest startup.
                 if (param("jit") === "0") {
                     ENV["BW32_JIT"] = "0";
                     ENV["BW64_JIT"] = "0";
                 } else if (param("jit") === "1") {
-                    ENV["BW32_JIT"] = "1";
+                    ENV["BW32_JIT"] = "0";
                     ENV["BW64_JIT"] = "1";
+                }
+                if (param("jit") !== "0") {
+                    if (param("jit32") === "1") ENV["BW32_JIT"] = "1";
+                    else if (param("jit32") === "0") ENV["BW32_JIT"] = "0";
                 }
                 // CPU64 hotness and dispatch A/B controls. Values are fixed to
                 // numeric ranges before entering the guest environment; 65535
