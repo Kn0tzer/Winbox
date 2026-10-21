@@ -876,6 +876,10 @@ static void refWatchInit() {
 
 U32 CPU64::step(bool trackJitBlockBoundary) {
     U64 ipStart = rip;
+    if (ipStart != recoverLastRip) {
+        recoverLastRip = ipStart;
+        recoverFaultsAtRip = 0;
+    }
 
     // BW64_REFWATCH probe: catch wineserver's double-release at release_object
     // entry, one instruction before the assert. See the big comment above.
@@ -1009,8 +1013,10 @@ U32 CPU64::step(bool trackJitBlockBoundary) {
 
     // Instructions unavailable in this user-mode CPU model fault at their
     // original RIP. INT3 retains its debugger/breakpoint yield behavior below.
-    if (op == 0x0F && fetchByte(rip + opOff + 1) == 0x0B) // UD2: #UD
+    if (op == 0x0F && fetchByte(rip + opOff + 1) == 0x0B) { // UD2: #UD
+        if (bw64RecoverEnabled()) bw64RecoverNoteSigillFallback();
         return faultAtInstruction(K_SIGILL, 6);
+    }
     if (op == 0xCD || op == 0xF1 || op == 0xF4 || op == 0xFA || op == 0xFB ||
         (op >= 0x6C && op <= 0x6F) || (op >= 0xE4 && op <= 0xE7) ||
         (op >= 0xEC && op <= 0xEF) || op == 0x9A || op == 0xEA ||
@@ -7414,6 +7420,102 @@ dsp_59:
     }
 
 unhandled:
+    auto recoverInstructionLength = [&]() -> U32 {
+        U32 pos = opOff;
+        U8 first = op;
+        U8 second = 0;
+        U8 third = 0;
+        U32 map = 0;
+        if (first == 0x0F) {
+            second = fetchByte(ipStart + pos + 1);
+            if (second == 0x38 || second == 0x3A) {
+                map = second == 0x38 ? 2 : 3;
+                third = fetchByte(ipStart + pos + 2);
+                pos += 3;
+            } else {
+                map = 1;
+                pos += 2;
+            }
+        } else {
+            pos++;
+        }
+
+        bool hasModrm = false;
+        U32 immediate = 0;
+        if (map == 2 || map == 3) {
+            hasModrm = true;
+            immediate = map == 3 ? 1 : 0;
+        } else if (map == 1) {
+            hasModrm = !((second >= 0x80 && second <= 0x8F) ||
+                         second == 0x05 || second == 0x06 || second == 0x07 ||
+                         second == 0x08 || second == 0x09 || second == 0x0B ||
+                         (second >= 0x30 && second <= 0x35) || second == 0x37 ||
+                         second == 0x77 || second == 0xA0 || second == 0xA1 ||
+                         second == 0xA2 || second == 0xA8 || second == 0xA9 ||
+                         second == 0xAA || (second >= 0xC8 && second <= 0xCF));
+            if (second == 0x0F || second == 0xBA || second == 0xA4 ||
+                second == 0xAC || second == 0xC2 || second == 0xC4 ||
+                second == 0xC5 || second == 0xC6) immediate = 1;
+        } else {
+            hasModrm = (first <= 0x3B && (first & 7) <= 3) ||
+                        first == 0x62 || first == 0x63 ||
+                        (first >= 0x69 && first <= 0x6B) ||
+                        (first >= 0x80 && first <= 0x8F) ||
+                        first == 0xC0 || first == 0xC1 ||
+                        (first >= 0xC4 && first <= 0xC7) ||
+                        (first >= 0xD0 && first <= 0xD3) ||
+                        (first >= 0xD8 && first <= 0xDF) ||
+                        first == 0xF6 || first == 0xF7 || first == 0xFE || first == 0xFF;
+            if ((first >= 0x70 && first <= 0x7F) || first == 0x6A ||
+                first == 0x80 || first == 0x82 || first == 0x83 ||
+                first == 0xA8 || first == 0xC0 || first == 0xC1 ||
+                first == 0xC6 || first == 0xD4 || first == 0xD5 ||
+                (first >= 0xE0 && first <= 0xE7) || first == 0xEB) immediate = 1;
+            else if (first == 0x68 || first == 0x69 || first == 0x81 ||
+                     first == 0xA9 || first == 0xC7 || first == 0xE8 || first == 0xE9)
+                immediate = p.osize16 ? 2 : 4;
+            else if (first >= 0xB8 && first <= 0xBF)
+                immediate = (p.rex & 8) ? 8 : (p.osize16 ? 2 : 4);
+            else if (first >= 0xB0 && first <= 0xB7) immediate = 1;
+            if (first == 0xF6 || first == 0xF7) {
+                U8 group = (fetchByte(ipStart + pos) >> 3) & 7;
+                if (group <= 1) immediate = first == 0xF6 ? 1 : (p.osize16 ? 2 : 4);
+            }
+        }
+
+        if (hasModrm) {
+            U8 modrm = fetchByte(ipStart + pos++);
+            U8 mod = modrm >> 6;
+            U8 rm = modrm & 7;
+            if (mod != 3 && rm == 4) {
+                U8 sib = fetchByte(ipStart + pos++);
+                if (mod == 0 && (sib & 7) == 5) pos += 4;
+            }
+            if (mod == 0 && rm == 5) pos += 4;
+            else if (mod == 1) pos += 1;
+            else if (mod == 2) pos += 4;
+        }
+        pos += immediate;
+        return (pos <= 15 && pos > opOff) ? pos : 0;
+    };
+
+    if (bw64RecoverEnabled()) {
+        U32 length = recoverInstructionLength();
+        if (length && recoverFaultsAtRip < 3) {
+            recoverFaultsAtRip++;
+            bool firstAtRip = bw64RecoverClaimRip(64, ipStart);
+            if (firstAtRip) {
+                klog_fmt("recover: skipped CPU64 opcode at RIP=0x%llx len=%u bytes=%02x %02x %02x %02x",
+                         (unsigned long long)ipStart, length,
+                         fetchByte(ipStart), fetchByte(ipStart + 1),
+                         fetchByte(ipStart + 2), fetchByte(ipStart + 3));
+            }
+            bw64RecoverNoteSkippedInstruction(firstAtRip);
+            rip = ipStart + length;
+            return length;
+        }
+        bw64RecoverNoteSigillFallback();
+    }
     // Unimplemented. Print enough leading bytes to identify the opcode
     // in the Intel SDM tables and bail out so we don't silently loop.
     klog_fmt("CPU64: unimpl opcode at RIP=0x%llx bytes=%02x %02x %02x %02x %02x %02x %02x (rex=0x%02x osz=%d asz=%d seg=%02x rep=%02x)",

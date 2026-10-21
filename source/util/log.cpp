@@ -29,6 +29,8 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <set>
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
 #define BW64_RECOVER_KEEPALIVE EMSCRIPTEN_KEEPALIVE
@@ -46,20 +48,31 @@ static std::atomic<unsigned long long> g_recoverSkippedInstructions{0};
 static std::atomic<unsigned long long> g_recoverLoggedRips{0};
 static std::atomic<unsigned long long> g_recoverSigillFallbacks{0};
 static thread_local bool g_recoverPanicInProgress = false;
+#ifdef __TEST
+static thread_local int g_recoverTestOverride = -1;
+#endif
+static std::mutex g_recoverRipMutex;
+static std::set<std::pair<unsigned, U64>> g_recoverLoggedRipSet;
 
 bool bw64RecoverEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("BW64_RECOVER");
-        if (value && value[0] == '0') return false;
-        if (value && value[0] == '1') return true;
-#ifdef __EMSCRIPTEN__
-        return true;
-#else
-        return false;
+#ifdef __TEST
+    if (g_recoverTestOverride >= 0) return g_recoverTestOverride != 0;
 #endif
-    }();
-    return enabled;
+    const char* value = std::getenv("BW64_RECOVER");
+    if (value && value[0] == '0') return false;
+    if (value && value[0] == '1') return true;
+#ifdef __EMSCRIPTEN__
+    return true;
+#else
+    return false;
+#endif
 }
+
+#ifdef __TEST
+void bw64RecoverSetTestOverride(int enabled) {
+    g_recoverTestOverride = enabled;
+}
+#endif
 
 void bw64RecoverNoteSkippedInstruction(bool loggedRip) {
     g_recoverSkippedInstructions.fetch_add(1, std::memory_order_relaxed);
@@ -68,6 +81,15 @@ void bw64RecoverNoteSkippedInstruction(bool loggedRip) {
 
 void bw64RecoverNoteSigillFallback() {
     g_recoverSigillFallbacks.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool bw64RecoverClaimRip(unsigned architecture, U64 rip) {
+    std::lock_guard<std::mutex> lock(g_recoverRipMutex);
+    const auto key = std::make_pair(architecture, rip);
+    if (g_recoverLoggedRipSet.find(key) != g_recoverLoggedRipSet.end() ||
+        g_recoverLoggedRipSet.size() >= 200) return false;
+    g_recoverLoggedRipSet.insert(key);
+    return true;
 }
 
 extern "C" BW64_RECOVER_KEEPALIVE const char* bw64_recover_stats_json_text() {

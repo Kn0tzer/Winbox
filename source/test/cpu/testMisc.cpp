@@ -16,6 +16,7 @@
 #include "testX86Util.h"
 #include "testAsmJit.h"
 
+
 #define cpu (testContext().cpu)
 #define memory (testContext().memory)
 #define pushCode8 testPushCode8
@@ -1933,6 +1934,28 @@ void testStc_0x2f9() {
 
 void testBswap_0x3c8_0x3cf() {
     runBswapCases("bswap 3c8-3cf");
+}
+
+void testRecoverUnknownInstruction() {
+    bw64RecoverSetTestOverride(1);
+
+    newInstruction(0);
+    pushCode8(0x0F); pushCode8(0xB9); pushCode8(0xC0); // unknown 0F opcode + ModRM
+    pushCode8(0xB8); pushCode32(0x12345678);           // continuation proves length=3
+    runTestCPU();
+    if (cpu->reg[0].u32 != 0x12345678)
+        failed("recover did not continue after a length-decoded CPU32 opcode");
+
+    newInstruction(0);
+    pushCode8(0x0F); pushCode8(0x0B); // UD2 remains a fatal SIGILL
+    bool continued = cpu->runNextSingleOp();
+    if (continued || cpu->eip.u32 != 0 ||
+        testContext().process->sigActions[K_SIGILL].sigInfo[0] != K_SIGILL ||
+        testContext().process->sigActions[K_SIGILL].sigInfo[3] != 0) {
+        failed("recover skipped CPU32 UD2 instead of raising SIGILL at its EIP");
+    }
+
+    bw64RecoverSetTestOverride(-1);
 }
 
 #endif

@@ -43,5 +43,6 @@ void testClc_0x2f8();
 void testStc_0x0f9();
 void testStc_0x2f9();
 void testBswap_0x3c8_0x3cf();
+void testRecoverUnknownInstruction();
 
 #endif

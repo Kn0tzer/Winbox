@@ -29,6 +29,10 @@ void kpanic(const char* msg);
 bool bw64RecoverEnabled();
 void bw64RecoverNoteSkippedInstruction(bool loggedRip);
 void bw64RecoverNoteSigillFallback();
+bool bw64RecoverClaimRip(unsigned architecture, U64 rip);
+#ifdef __TEST
+void bw64RecoverSetTestOverride(int enabled);
+#endif
 extern "C" const char* bw64_recover_stats_json_text();
 
 template <class... Args>
