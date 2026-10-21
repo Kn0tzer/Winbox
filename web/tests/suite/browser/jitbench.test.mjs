@@ -6,16 +6,29 @@ import { ProbeTest, extraUrlParams } from '../lib/probe-base.mjs';
 import { guestFixture } from '../lib/guest-fixtures.mjs';
 
 const MODE_ORDER = ['0', '1', '1', '0'];
-const FIXTURES = [
+const ALL_FIXTURES = [
   { name: 'jitbench32', fixture: 'jitbench32-pe', arch: 'x86', pattern: /BW_JITBENCH32 sample=(\d+) ms=([\d.]+) checksum=([a-f0-9]+) passes=(\d+)/, donePattern: /BW_JITBENCH32 sample=3 / },
   { name: 'jitbench64', fixture: 'jitbench64-pe', arch: 'x64', pattern: /BW_JITBENCH64 sample=(\d+) ms=([\d.]+) checksum=([a-f0-9]+) passes=(\d+)/, donePattern: /BW_JITBENCH64 sample=3 / },
   { name: 'jitbenchmix-x86', fixture: 'jitbenchmix-pe', arch: 'x86', pattern: /BW_JITBENCHMIX arch=x86 sample=(\d+) ms=([\d.]+) checksum=([a-f0-9]+)/, donePattern: /BW_JITBENCHMIX arch=x86 sample=3 / },
   { name: 'jitbenchmix-x64', fixture: 'jitbenchmix-pe', arch: 'x64', pattern: /BW_JITBENCHMIX arch=x64 sample=(\d+) ms=([\d.]+) checksum=([a-f0-9]+)/, donePattern: /BW_JITBENCHMIX arch=x64 sample=3 / },
 ];
+const requestedFixtures = process.env.BW_TEST_JITBENCH_FIXTURES?.split(',').map(name => name.trim()).filter(Boolean);
+const FIXTURES = requestedFixtures
+  ? ALL_FIXTURES.filter(fixture => requestedFixtures.includes(fixture.name))
+  : ALL_FIXTURES;
+if (requestedFixtures && (requestedFixtures.length === 0 || FIXTURES.length !== requestedFixtures.length)) {
+  throw new Error(`Unknown BW_TEST_JITBENCH_FIXTURES selection: ${requestedFixtures.join(',')}`);
+}
 
 function loadSnapshot() {
   const [oneMinute, fiveMinutes, fifteenMinutes] = loadavg();
   return { at: new Date().toISOString(), oneMinute, fiveMinutes, fifteenMinutes };
+}
+
+async function waitForLowLoad(maxOneMinute = 4) {
+  while (loadSnapshot().oneMinute >= maxOneMinute) {
+    await new Promise(resolve => setTimeout(resolve, 5000));
+  }
 }
 
 function median(values) {
@@ -82,6 +95,7 @@ export default class JitbenchTest extends ProbeTest {
     try {
       for (const fixture of FIXTURES) {
         for (let modeIndex = 0; modeIndex < MODE_ORDER.length; modeIndex++) {
+          await waitForLowLoad();
           if (results.length !== 0) {
             await activePage.close();
             activePage = await this.newPage();
