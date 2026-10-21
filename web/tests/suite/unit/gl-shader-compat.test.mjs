@@ -11,6 +11,7 @@ const cases = [
   ['libGDX SpriteBatch fragment', 'libgdx-spritebatch.frag.glsl', 'fragment', 'libgdx'],
   ['Mindustry vertex', 'mindustry.vert.glsl', 'vertex', 'mindustry'],
   ['Mindustry fragment', 'mindustry.frag.glsl', 'fragment', 'mindustry'],
+  ['Mindustry Convolve1dFilter fragment', 'mindustry-convolve-1d.frag.glsl', 'fragment', 'mindustry'],
   ['quake3e generic vertex', 'quake3e-generic.vert.glsl', 'vertex', 'quake3e'],
   ['quake3e generic fragment', 'quake3e-generic.frag.glsl', 'fragment', 'quake3e'],
 ];
