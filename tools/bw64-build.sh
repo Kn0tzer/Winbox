@@ -79,6 +79,20 @@ trap 'exit 143' TERM
 log "lock acquired (pid=$$)"
 # Probe slots contain exactly one PID, never a concatenation of arbitrary digits.
 if [[ "${BW64_BUILD_FORCE:-0}" != 1 ]]; then
+    # Hold new probes back (probe-slots.mjs honours build-pending) and wait up to BW64_BUILD_WAIT_MIN for running probes to finish.
+    mkdir -p "$PROBE_SLOT_DIR"; echo "$$" > "$PROBE_SLOT_DIR/build-pending"
+    trap 'rm -f "$PROBE_SLOT_DIR/build-pending"; cleanup' EXIT
+    wait_deadline=$((SECONDS + ${BW64_BUILD_WAIT_MIN:-60} * 60))
+    while :; do
+        busy=0
+        for slot in "$PROBE_SLOT_DIR"/slot-* "$PROBE_SLOT_DIR"/light-* /tmp/bw64-probe.lock; do
+            [[ -e "$slot" ]] || continue
+            pid=$(cat "$slot" 2>/dev/null) || continue
+            [[ "$pid" =~ ^[1-9][0-9]*$ ]] && pid_alive "$pid" && busy=1
+        done
+        [[ $busy == 0 || $SECONDS -ge $wait_deadline ]] && break
+        sleep 15
+    done
     for slot in "$PROBE_SLOT_DIR"/slot-* /tmp/bw64-probe.lock; do
         [[ -e "$slot" ]] || continue
         pid=$(cat "$slot" 2>/dev/null) || die "cannot read probe slot: $slot"
