@@ -99,6 +99,12 @@ function glslDeclarations(source, qualifier) {
   return result;
 }
 
+function shaderDumpEnabled() {
+  if (globalThis.glshaderdump) return true;
+  const search = globalThis.location?.search;
+  return typeof search === 'string' && new URLSearchParams(search).has('glshaderdump');
+}
+
 function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(), interfaceLocations = new Map()) {
   // ES precision hints do not change WGSL behavior; strip them before parsing
   // declarations because Naga's GLSL 450 frontend rejects variable precision qualifiers.
@@ -768,7 +774,15 @@ export class WebGPUGL {
     program.linkPromise = this.ready.then(async () => {
       for (const [shader, stage] of [[vertex, 'vertex'], [fragment, 'fragment']]) {
         const prepared = rewriteGlslForWebGPU(shader.source, stage, program.attributes, locationRegistry);
-        const wgsl = await toWGSL('glsl', prepared.code, stage);
+        let wgsl;
+        try {
+          wgsl = await toWGSL('glsl', prepared.code, stage);
+        } catch (error) {
+          if (shaderDumpEnabled()) {
+            console.error(`gl-webgpu: ${stage} shader translation failed:`, error, `\n--- GLSL sent to Naga ---\n${prepared.code}`);
+          }
+          throw error;
+        }
         if (!wgsl) throw new Error(`${stage} shader translated to empty WGSL`);
         const activeInputs = stage === 'vertex'
           ? [...prepared.code.matchAll(/layout\s*\([^)]*location\s*=\s*(\d+)[^)]*\)\s*in\s+([A-Za-z_]\w*)\s+([A-Za-z_]\w*)/g)]
