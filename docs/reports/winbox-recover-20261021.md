@@ -69,9 +69,12 @@ and JIT=1 in 90.7 seconds. Both had zero page errors and zero HTTP errors. Each
 reported 67 console errors; inspection showed repeated Emscripten GL-emulation
 warnings.
 
-The CPU32 test target now builds after adding its missing `ksignal.h` include,
-but the CPU32 recovery test aborts. The full suite run (`boxedwine 0 0 1`) and a
-single isolated retry (`boxedwine 2 1 1`) both stopped at the third test with
-`recover: kpanic #1: LabelAlreadyBound` and exit 134. The test is registered at
+The CPU32 test target builds after adding its missing `ksignal.h` include. On
+the requested single rerun, the full suite (`boxedwine 0 0 1`) reported 2 tests
+passed, then aborted in the third test with `recover: kpanic #1:
+LabelAlreadyBound` and exit 134. Giving the unknown-opcode and UD2 snippets
+separate guest code offsets did not resolve the abort. The remaining 608 tests
+did not run. The main checkout had no existing CPU32 test binary, so its
+baseline suite was skipped. The failing test is registered at
 `source/test/testMain.cpp:68` and implemented at
-`source/test/cpu/testMisc.cpp:1941`. No further retry was made.
+`source/test/cpu/testMisc.cpp:1941`.

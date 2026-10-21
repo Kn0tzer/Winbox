@@ -1941,6 +1941,8 @@ void testRecoverUnknownInstruction() {
     bw64RecoverSetTestOverride(1);
 
     newInstruction(0);
+    cpu->eip.u32 = 0;
+    testContext().codeIp = TEST_CODE_ADDRESS;
     pushCode8(0x0F); pushCode8(0xB9); pushCode8(0xC0); // unknown 0F opcode + ModRM
     pushCode8(0xB8); pushCode32(0x12345678);           // continuation proves length=3
     runTestCPU();
@@ -1948,11 +1950,14 @@ void testRecoverUnknownInstruction() {
         failed("recover did not continue after a length-decoded CPU32 opcode");
 
     newInstruction(0);
+    // Keep this sequence in its own code-cache/JIT label scope.
+    cpu->eip.u32 = 0x100;
+    testContext().codeIp = TEST_CODE_ADDRESS + 0x100;
     pushCode8(0x0F); pushCode8(0x0B); // UD2 remains a fatal SIGILL
     bool continued = cpu->runNextSingleOp();
-    if (continued || cpu->eip.u32 != 0 ||
+    if (continued || cpu->eip.u32 != 0x100 ||
         testContext().process->sigActions[K_SIGILL].sigInfo[0] != K_SIGILL ||
-        testContext().process->sigActions[K_SIGILL].sigInfo[3] != 0) {
+        testContext().process->sigActions[K_SIGILL].sigInfo[3] != 0x100) {
         failed("recover skipped CPU32 UD2 instead of raising SIGILL at its EIP");
     }
 
