@@ -1365,17 +1365,7 @@ U32 KNativeSocketObject::sendLoopbackTo(KThread* thread, U32 message, U32 length
                                    hasDestination ? &destination : nullptr, hasDestination);
 }
 
-U32 KNativeSocketObject::recvLoopbackFrom(KThread* thread, U32 buffer, U32 length, U32 flags,
-                                           U32 address, U32 addressLength) {
-    KMemory* memory = thread->memory;
-    if (length && !memory->canWrite(buffer, length)) return -K_EFAULT;
-    if (address && !memory->canWrite(address, sizeof(struct sockaddr_in))) return -K_EFAULT;
-    if (addressLength && !memory->canWrite(addressLength, 4)) return -K_EFAULT;
-    if (flags & ~(K_MSG_OOB | K_MSG_PEEK | K_MSG_NOSIGNAL | K_MSG_DONTWAIT)) {
-        kwarn_fmt("loopback UDP recvfrom unsupported flags: %x", flags);
-    }
-
-    LoopbackPacket packet;
+U32 KNativeSocketObject::takeLoopbackPacket(LoopbackPacket& packet, U32 flags) {
     const bool peek = (flags & K_MSG_PEEK) != 0;
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->readingCond);
     for (;;) {
@@ -1399,6 +1389,23 @@ U32 KNativeSocketObject::recvLoopbackFrom(KThread* thread, U32 buffer, U32 lengt
         if (current && current->terminating) return -K_EINTR;
 #endif
     }
+
+    return 0;
+}
+
+U32 KNativeSocketObject::recvLoopbackFrom(KThread* thread, U32 buffer, U32 length, U32 flags,
+                                           U32 address, U32 addressLength) {
+    KMemory* memory = thread->memory;
+    if (length && !memory->canWrite(buffer, length)) return -K_EFAULT;
+    if (address && !memory->canWrite(address, sizeof(struct sockaddr_in))) return -K_EFAULT;
+    if (addressLength && !memory->canWrite(addressLength, 4)) return -K_EFAULT;
+    if (flags & ~(K_MSG_OOB | K_MSG_PEEK | K_MSG_NOSIGNAL | K_MSG_DONTWAIT)) {
+        kwarn_fmt("loopback UDP recvfrom unsupported flags: %x", flags);
+    }
+
+    LoopbackPacket packet;
+    U32 result = this->takeLoopbackPacket(packet, flags);
+    if ((S32)result < 0) return result;
 
     const U32 copied = std::min<U32>(length, (U32)packet.bytes.size());
     if (copied) memory->memcpy(buffer, packet.bytes.data(), copied);
@@ -2351,6 +2358,13 @@ U32 KNativeSocketObject::sendmsg(KThread* thread, const KFileDescriptorPtr& fd, 
         readSockAddrIn(&dest, memory, hdr.msg_name);
     }
 
+    if (this->loopbackDatagram) {
+        if (hdr.msg_namelen && (!hdr.msg_name || hdr.msg_namelen < sizeof(dest))) return -K_EINVAL;
+        if (hdr.msg_namelen && thread->memory->readw(hdr.msg_name) != K_AF_INET) return -K_EAFNOSUPPORT;
+        return this->sendLoopbackBytes(thread, buffer, len, flags,
+                                       hdr.msg_namelen ? &dest : nullptr, hdr.msg_namelen != 0);
+    }
+
     U32 nativeFlags = 0;
     if (flags & K_MSG_OOB)
         nativeFlags |= MSG_OOB;
@@ -2396,6 +2410,45 @@ U32 KNativeSocketObject::recvmsg(KThread* thread, const KFileDescriptorPtr& fd, 
         }
     }
     readMsgHdr(thread, address, &hdr);    
+
+    if (this->loopbackDatagram) {
+        // Wine uses recvmsg for UDP as well as TCP. Receive exactly one
+        // packet, then scatter it; receiving once per iovec loses boundaries.
+        if (hdr.msg_iovlen > 1024) return -K_EMSGSIZE;
+        if (hdr.msg_iovlen && hdr.msg_iov > 0xffffffffu - hdr.msg_iovlen * 8) return -K_EFAULT;
+        struct Vector { U32 address; U32 length; };
+        std::vector<Vector> vectors;
+        for (U32 i = 0; i < hdr.msg_iovlen; ++i) {
+            Vector v = {memory->readd(hdr.msg_iov + i * 8), memory->readd(hdr.msg_iov + i * 8 + 4)};
+            if (v.length && !memory->canWrite(v.address, v.length)) return -K_EFAULT;
+            vectors.push_back(v);
+        }
+        const U32 nameLength = std::min<U32>(hdr.msg_namelen, sizeof(struct sockaddr_in));
+        if (hdr.msg_name && nameLength && !memory->canWrite(hdr.msg_name, nameLength)) return -K_EFAULT;
+        LoopbackPacket packet;
+        U32 received = this->takeLoopbackPacket(packet, loopbackFlags);
+        if ((S32)received < 0) return received;
+        U32 copied = 0;
+        for (const auto& v : vectors) {
+            const U32 count = std::min<U32>(v.length, (U32)packet.bytes.size() - copied);
+            if (count) memory->memcpy(v.address, packet.bytes.data() + copied, count);
+            copied += count;
+            if (copied == packet.bytes.size()) break;
+        }
+        if (hdr.msg_name && nameLength) {
+            struct sockaddr_in source = {};
+            source.sin_family = AF_INET;
+            source.sin_port = htons(packet.sourcePort);
+            source.sin_addr.s_addr = htonl(packet.sourceAddress);
+            memory->memcpy(hdr.msg_name, &source, nameLength);
+        }
+        memory->writed(address + 4, hdr.msg_name ? sizeof(struct sockaddr_in) : 0);
+        memory->writed(address + 20, 0);
+        const U32 msgTrunc = 0x20; // Linux MSG_TRUNC (also an input flag).
+        memory->writed(address + 24, copied < packet.bytes.size() ? msgTrunc : 0);
+        this->error = 0;
+        return (loopbackFlags & msgTrunc) ? (U32)packet.bytes.size() : copied;
+    }
 
     for (U32 i = 0; i < hdr.msg_iovlen; i++) {
         U32 p = memory->readd(hdr.msg_iov + 8 * i);
