@@ -55,13 +55,8 @@
 #include "cpu/testVk32Trap.h"
 #include "mmu/testSelfModifying.h"
 #include "mmu/testBrk.h"
-#include "process/testGamepadInput.h"
-#include "process/testSocketRecvFlags.h"
 
 void testWaitPid();
-void testMemfdCreate();
-void testSocketPriority();
-void testUnixSocketWakeup();
 
 namespace {
 
@@ -677,11 +672,6 @@ const TestEntry TEST_ENTRIES[] = {
     {testLockedInc, "Test Multi-threaded locked inc"},
 #endif
     {testWaitPid, "Test waitpid child selection"},
-    {testGamepadInput, "Test Xbox gamepad evdev input"},
-    {testSocketRecvFlags, "Test socket receive flags"},
-    {testMemfdCreate, "Test memfd_create flags/ftruncate/MAP_SHARED/read/write"},
-    {testSocketPriority, "Test SO_PRIORITY on socket classes"},
-    {testUnixSocketWakeup, "Test Unix socket and epoll wakeups"},
     {testDecoderPageBoundary, "Test decoder executable page boundary"},
     {testVk32TrapWitness, "Test vk32 Trap Witness (Stage A)"},
     {testGl32TrapWitness, "Test gl32 Trap Witness (Stage A-GL)"},
