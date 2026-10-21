@@ -40,6 +40,7 @@ test('program-zero fixed-function indexed draws build a textured alpha-test pipe
 
     assert.equal(gpu.indexedDraws.length, 1);
     assert.equal(gpu.pipelines.length, 1);
+    assert.ok(gl._pixels.some(value => value > 0), 'fixed-function transform must populate synchronous mirror pixels');
     const fragment = gpu.pipelines[0].fragment.module.code;
     assert.match(fragment, /textureSample/);
     assert.match(fragment, /discard/);
@@ -72,6 +73,7 @@ test('program-zero fixed-function array draws use the current constant color', a
     await gl._ops;
     assert.deepEqual(logs, []);
     assert.equal(gpu.draws.length, 1);
+    assert.ok(gl._pixels.some(value => value > 0), 'constant color must populate synchronous mirror pixels');
     assert.equal([...gl._fixedFunctionProgramCache.values()][0].attributeInfo[1].name, 'a_color');
   } finally {
     gpu.restore();

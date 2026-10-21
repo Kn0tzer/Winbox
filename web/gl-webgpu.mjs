@@ -994,6 +994,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       attributes: new Map(), attributeLocations: new Map([['a_position', 0], ['a_color', 1], ...(texture ? [['a_texCoord', 2]] : [])]),
       attributeInfo: [{ name: 'a_position', size: 1, type: 0x8b52 }, { name: 'a_color', size: 1, type: 0x8b52 }, ...(texture ? [{ name: 'a_texCoord', size: 1, type: 0x8b52 }] : [])],
       uniformInfo: [], uniformLocations: new Map(), uniformValues: new Map(),
+      fixedFunction: { texture, colorArray, alphaEnabled, alphaFunc, alphaRef: this._fixedFunction.alphaRef, texEnv },
       stages: {
         vertex: { wgsl: vertex, layout: vertexLayout, activeUniforms: [], samplers: [] },
         fragment: { wgsl: fragment, layout: fragmentLayout, activeUniforms: [], samplers: texture ? [{ name: 'u_fixedTexture', textureBinding: 2, samplerBinding: 3, arrayLength: 1 }] : [] },
@@ -1063,6 +1064,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     const alphaTestEnabled = this._enabled.has(0x0bc0);
     const fixed = this._fixedFunction;
     const program = this._fixedFunctionProgram(textureEnabled, colorArray, alphaTestEnabled, fixed.alphaFunc, fixed.texEnv);
+    program.fixedFunction.alphaRef = fixed.alphaRef;
     const stackTop = stack => stack[stack.length - 1];
     const mvp = multiplyMatrix4(stackTop(fixed.projection), stackTop(fixed.modelview));
     program.uniformValues.set('u_mvp', mvp);
@@ -1152,9 +1154,10 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     // renderer. Other programmable draws need direct-canvas presentation.
     if (!this._isDefaultFramebuffer(state.drawFramebuffer) || !state.program) return;
     const program = state.program;
+    const fixed = program.fixedFunction;
     const position = program.attributeInfo.find(item => /position/i.test(item.name));
     const color = program.attributeInfo.find(item => /color/i.test(item.name));
-    if (!position || !color || program.uniformInfo.some(item => item.type === 0x8b5e)) return;
+    if (!position || !color || (!fixed && program.uniformInfo.some(item => item.type === 0x8b5e))) return;
     let vertices = indexed ? this._indexValues(state.elementArrayBuffer, indexed.type, indexed.offset, count)
       : Uint32Array.from({ length: count }, (_, i) => first + i);
     if (!vertices) return;
@@ -1170,16 +1173,28 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (mode !== 0x0004 && mode !== 0x0005 && mode !== 0x0006) return;
     const posAttr = state.attributes.get(program.attributeLocations.get(position.name));
     const colorAttr = state.attributes.get(program.attributeLocations.get(color.name));
+    const texCoordAttr = fixed?.texture ? state.attributes.get(program.attributeLocations.get('a_texCoord')) : null;
+    const fixedMvp = fixed ? program.uniformValues.get('u_mvp') || identityMatrix() : null;
+    const fixedTexMatrix = fixed ? program.uniformValues.get('u_texMatrix') || identityMatrix() : null;
     const model = program.uniformValues.get('u_modelView') || identityMatrix();
     const projection = program.uniformValues.get('u_projection') || identityMatrix();
     const viewport = state.viewport;
     const transform = index => {
       const p = this._mirrorAttribute(posAttr, index);
-      const viewPosition = mulMat4(model, p), clip = mulMat4(projection, viewPosition);
+      const viewPosition = fixed ? null : mulMat4(model, p);
+      const clip = fixed ? mulMat4(fixedMvp, p) : mulMat4(projection, viewPosition);
       const w = clip[3];
       if (!Number.isFinite(w) || Math.abs(w) < 1e-8) return null;
       const nx = clip[0] / w, ny = clip[1] / w;
-      return { x: viewport[0] + (nx + 1) * viewport[2] * 0.5, y: viewport[1] + (ny + 1) * viewport[3] * 0.5, color: this._mirrorAttribute(colorAttr, index) };
+      const vertex = { x: viewport[0] + (nx + 1) * viewport[2] * 0.5,
+        y: viewport[1] + (ny + 1) * viewport[3] * 0.5,
+        z: clamp01((clip[2] / w + 1) * 0.5), color: this._mirrorAttribute(colorAttr, index) };
+      if (fixed?.texture) {
+        const coordinates = this._mirrorAttribute(texCoordAttr, index);
+        const transformed = mulMat4(fixedTexMatrix, [coordinates[0], coordinates[1], 0, 1]);
+        vertex.texCoord = [transformed[0] / (transformed[3] || 1), transformed[1] / (transformed[3] || 1)];
+      }
+      return vertex;
     };
     for (let i = 0; i + 2 < vertices.length; i += 3) {
       const triangle = [transform(vertices[i]), transform(vertices[i + 1]), transform(vertices[i + 2])];
@@ -1203,6 +1218,51 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     const scissor = state.enabled.has(0x0c11) ? state.scissor : [0, 0, this._width, this._height];
     const left = Math.max(minX, scissor[0]), right = Math.min(maxX, scissor[0] + scissor[2]);
     const bottom = Math.max(minY, scissor[1]), top = Math.min(maxY, scissor[1] + scissor[3]);
+    const fixed = state.program?.fixedFunction;
+    const textureUnit = Number(state.program?.uniformValues.get('u_fixedTexture') ?? 0) | 0;
+    const texture = fixed?.texture ? this._textureUnits[textureUnit]?.[GL.TEXTURE_2D] || this._whiteTexture() : null;
+    const sampleTexture = (u, v) => {
+      if (!texture?.pixels || !texture.width || !texture.height) return [1, 1, 1, 1];
+      const wrap = (value, mode) => {
+        if (mode === 0x2901) return value - Math.floor(value);
+        if (mode === 0x8370) { const mirrored = ((value % 2) + 2) % 2; return mirrored <= 1 ? mirrored : 2 - mirrored; }
+        return clamp01(value);
+      };
+      u = wrap(u, texture.params.get(0x2802) ?? 0x812f);
+      v = wrap(v, texture.params.get(0x2803) ?? 0x812f);
+      const tx = Math.min(texture.width - 1, Math.floor(u * texture.width));
+      const ty = Math.min(texture.height - 1, Math.floor(v * texture.height));
+      const offset = (ty * texture.width + tx) * 4;
+      return Array.from(texture.pixels.subarray(offset, offset + 4), value => value / 255);
+    };
+    const compareAlpha = (func, alpha, reference) => {
+      switch (func) {
+        case 0x0200: return false; case 0x0201: return alpha < reference;
+        case 0x0202: return alpha === reference; case 0x0203: return alpha <= reference;
+        case 0x0204: return alpha > reference; case 0x0205: return alpha !== reference;
+        case 0x0206: return alpha >= reference; default: return true;
+      }
+    };
+    const factor = (mode, source, destination, channel) => {
+      switch (mode) {
+        case 0x0000: return 0; case 0x0001: return 1;
+        case 0x0300: return source[channel]; case 0x0301: return 1 - source[channel];
+        case 0x0302: return source[3]; case 0x0303: return 1 - source[3];
+        case 0x0304: return destination[3]; case 0x0305: return 1 - destination[3];
+        case 0x0306: return destination[channel]; case 0x0307: return 1 - destination[channel];
+        case 0x8001: return state.blendColor[channel]; case 0x8004: return 1 - state.blendColor[channel];
+        default: return 1;
+      }
+    };
+    const blend = (source, destination, sourceMode, destinationMode, operation, channel) => {
+      if (operation === 0x8007) return Math.min(source[channel], destination[channel]);
+      if (operation === 0x8008) return Math.max(source[channel], destination[channel]);
+      const s = source[channel] * factor(sourceMode, source, destination, channel);
+      const d = destination[channel] * factor(destinationMode, source, destination, channel);
+      if (operation === 0x800a) return s - d;
+      if (operation === 0x800b) return d - s;
+      return s + d;
+    };
     for (let y = bottom; y <= top; y++) for (let x = left; x <= right; x++) {
       const px = x + 0.5, py = y + 0.5;
       const a = edge(vertices[1], vertices[2], px, py) / area;
@@ -1210,8 +1270,24 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       const c = 1 - a - b;
       if (a < 0 || b < 0 || c < 0) continue;
       const offset = (y * this._width + x) * 4;
+      const source = [0, 1, 2, 3].map(channel =>
+        a * vertices[0].color[channel] + b * vertices[1].color[channel] + c * vertices[2].color[channel]);
+      if (fixed?.texture && texture) {
+        const u = a * vertices[0].texCoord[0] + b * vertices[1].texCoord[0] + c * vertices[2].texCoord[0];
+        const v = a * vertices[0].texCoord[1] + b * vertices[1].texCoord[1] + c * vertices[2].texCoord[1];
+        const texel = sampleTexture(u, v);
+        if (fixed.texEnv === 0x1e01) source.splice(0, 4, ...texel);
+        else if (fixed.texEnv === 0x2101) for (let channel = 0; channel < 3; channel++) source[channel] = source[channel] * (1 - texel[3]) + texel[channel] * texel[3];
+        else for (let channel = 0; channel < 4; channel++) source[channel] *= texel[channel];
+      }
+      if (fixed?.alphaEnabled && !compareAlpha(fixed.alphaFunc, source[3], fixed.alphaRef)) continue;
+      const destination = Array.from(this._pixels.subarray(offset, offset + 4), value => value / 255);
       for (let channel = 0; channel < 4; channel++) if (state.colorMask[channel]) {
-        const value = a * vertices[0].color[channel] + b * vertices[1].color[channel] + c * vertices[2].color[channel];
+        const value = state.enabled.has(0x0be2)
+          ? blend(source, destination, channel === 3 ? state.blend.srcAlpha : state.blend.srcRGB,
+            channel === 3 ? state.blend.dstAlpha : state.blend.dstRGB,
+            channel === 3 ? state.blend.equationAlpha : state.blend.equationRGB, channel)
+          : source[channel];
         this._pixels[offset + channel] = Math.round(clamp01(value) * 255);
       }
     }
