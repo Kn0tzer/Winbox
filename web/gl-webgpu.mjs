@@ -890,7 +890,7 @@ export class WebGPUGL {
     // cannot expose queue results synchronously, so mirror the fixed-function
     // untextured vertex-color subset on the CPU while the GPU remains the real
     // renderer. Other programmable draws need direct-canvas presentation.
-    if (!this._isDefaultFramebuffer(state.drawFramebuffer) || !state.program || this._textures.size) return;
+    if (!this._isDefaultFramebuffer(state.drawFramebuffer) || !state.program) return;
     const program = state.program;
     const position = program.attributeInfo.find(item => /position/i.test(item.name));
     const color = program.attributeInfo.find(item => /color/i.test(item.name));
