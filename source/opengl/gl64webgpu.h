@@ -33,13 +33,14 @@ void bwGpuCapture(GLGuestCPU* cpu, U64 fn, const GL64Args& args) {
     enum { Integer, Float, Double, Matrix } kind = Integer;
     switch (fn) {
         case GL64_fn_glClearColor: case GL64_fn_glColor4f: count = 4; kind = Float; break;
+        case GL64_fn_glColor4ub: count = 4; break;
         case GL64_fn_glColor3f: case GL64_fn_glNormal3f: case GL64_fn_glVertex3f:
         case GL64_fn_glTranslatef: case GL64_fn_glScalef: count = 3; kind = Float; break;
         case GL64_fn_glVertex2f: count = 2; kind = Float; break;
         case GL64_fn_glRotatef: count = 4; kind = Float; break;
         case GL64_fn_glClearDepth: count = 1; kind = Double; break;
         case GL64_fn_glFrustum: case GL64_fn_glOrtho: count = 6; kind = Double; break;
-        case GL64_fn_glMultMatrixf: count = 16; kind = Matrix; break;
+        case GL64_fn_glLoadMatrixf: case GL64_fn_glMultMatrixf: count = 16; kind = Matrix; break;
         case GL64_fn_glViewport: count = 4; break;
         case GL64_fn_glClear: case GL64_fn_glEnable: case GL64_fn_glDisable:
         case GL64_fn_glShadeModel: case GL64_fn_glDepthFunc: case GL64_fn_glCullFace:

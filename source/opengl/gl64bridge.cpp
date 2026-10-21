@@ -862,6 +862,99 @@ void traceLegacyDrawState(GLenum mode, GLsizei count, GLenum type) {
         (int)glIsEnabled(GL_DEPTH_TEST), (int)depthMask, depthFunc,
         (int)glIsEnabled(GL_BLEND), srcBlend, dstBlend, attrs[0], attrs[1], attrs[2], attrs[3]);
 }
+
+void webGpuFixedCall(const char* method, double a = 0, double b = 0, double c = 0,
+                     double d = 0, double e = 0, int count = 0) {
+    EM_ASM({
+        try {
+            var method = UTF8ToString($0), target = GLctx;
+            if (target && typeof target[method] === 'function')
+                target[method].apply(target, [$1, $2, $3, $4, $5].slice(0, $6));
+        } catch (error) { console.error('gl64 fixed-function call failed', error); }
+    }, method, a, b, c, d, e, count);
+}
+
+void webGpuFixedCall6(const char* method, double a, double b, double c, double d, double e, double f) {
+    EM_ASM({
+        try {
+            var method = UTF8ToString($0), target = GLctx;
+            if (target && typeof target[method] === 'function')
+                target[method].call(target, $1, $2, $3, $4, $5, $6);
+        } catch (error) { console.error('gl64 fixed-function call failed', error); }
+    }, method, a, b, c, d, e, f);
+}
+
+void webGpuFixedMatrixCall(const char* method, const GLfloat* matrix) {
+    EM_ASM({
+        try {
+            var method = UTF8ToString($0), target = GLctx;
+            if (target && typeof target[method] === 'function')
+                target[method].call(target, HEAPF32.slice($1 >>> 2, ($1 >>> 2) + 16));
+        } catch (error) { console.error('gl64 fixed-function matrix failed', error); }
+    }, method, matrix);
+}
+
+void webGpuFixedTexEnvArrayCall(const char* method, GLenum target, GLenum pname,
+                                const GLfloat* values, size_t count) {
+    EM_ASM({
+        try {
+            var method = UTF8ToString($0), ctx = GLctx;
+            if (ctx && typeof ctx[method] === 'function')
+                ctx[method].call(ctx, $1, $2, HEAPF32.slice($3 >>> 2, ($3 >>> 2) + $4));
+        } catch (error) { console.error('gl64 fixed-function texture environment failed', error); }
+    }, method, target, pname, values, count);
+}
+
+int webGpuFixedDraw(GLenum mode, GLint first, GLsizei count, bool indexed, GLenum type,
+                    U64 offset, const std::vector<U8>& indexData,
+                    const LegacyClientArray& vertexArray, const LegacyClientArray& colorArray,
+                    const LegacyClientArray& texCoordArray, const std::vector<U8>& vertex,
+                    const std::vector<U8>& color, const std::vector<U8>& texCoord) {
+    if (!g_emWebGpu) return 0;
+    U32 packet[35] = {
+        mode, (U32)first, (U32)count, indexed ? 1u : 0u, type, (U32)offset,
+    };
+    auto writeArray = [&](size_t base, const LegacyClientArray& array, const std::vector<U8>& data) {
+        packet[base + 0] = array.enabled ? 1u : 0u;
+        packet[base + 1] = array.configured ? 1u : 0u;
+        packet[base + 2] = (U32)array.size;
+        packet[base + 3] = array.type;
+        packet[base + 4] = (U32)array.stride;
+        packet[base + 5] = array.bufferBacked ? 1u : 0u;
+        packet[base + 6] = (U32)array.pointer;
+        packet[base + 7] = (U32)(uintptr_t)(data.empty() ? nullptr : data.data());
+        packet[base + 8] = (U32)data.size();
+    };
+    writeArray(6, vertexArray, vertex);
+    writeArray(15, colorArray, color);
+    writeArray(24, texCoordArray, texCoord);
+    packet[33] = (U32)(uintptr_t)(indexData.empty() ? nullptr : indexData.data());
+    packet[34] = (U32)indexData.size();
+    return EM_ASM_INT({
+        try {
+            var p = $0 >>> 2;
+            var word = i => HEAPU32[p + i] >>> 0;
+            var signed = i => HEAP32[p + i] | 0;
+            var bytes = (ptr, size) => size ? HEAPU8.slice(ptr >>> 0, (ptr >>> 0) + (size >>> 0)) : new Uint8Array(0);
+            var readArray = (base) => ({
+                enabled: !!word(base), configured: !!word(base + 1), size: signed(base + 2),
+                type: word(base + 3), stride: signed(base + 4), bufferBacked: !!word(base + 5), pointer: word(base + 6),
+            });
+            var arrays = {
+                vertex: readArray(6), color: readArray(15), texCoord: readArray(24),
+                vertexData: bytes(word(13), word(14)), colorData: bytes(word(22), word(23)),
+                texCoordData: bytes(word(31), word(32)),
+            };
+            if (!GLctx || typeof GLctx.fixedFunctionDrawArrays !== 'function') return 0;
+            var mode = word(0), first = signed(1), count = signed(2), indexed = !!word(3);
+            if (indexed) {
+                if (typeof GLctx.fixedFunctionDrawElements !== 'function') return 0;
+                return GLctx.fixedFunctionDrawElements(mode, count, word(4), word(5), bytes(word(33), word(34)), arrays) ? 1 : 0;
+            }
+            return GLctx.fixedFunctionDrawArrays(mode, first, count, arrays) ? 1 : 0;
+        } catch (error) { console.error('gl64 fixed-function draw failed', error); return 0; }
+    }, packet);
+}
 #endif
 
 // Translate wined3d's desktop-GLSL (#version 120/130) shader source into the
@@ -1770,7 +1863,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             if (array == GL_VERTEX_ARRAY) g_legacyVertexArray.enabled = enabled;
             else if (array == GL_COLOR_ARRAY) g_legacyColorArray.enabled = enabled;
             else if (array == GL_TEXTURE_COORD_ARRAY) g_legacyTexCoordArray.enabled = enabled;
-            if (g_glContext) GL_MT(enabled ? glEnableClientState(array) : glDisableClientState(array));
+            if (g_glContext && !g_emWebGpu) GL_MT(enabled ? glEnableClientState(array) : glDisableClientState(array));
             return 0;
         }
         case GL64_fn_glVertexPointer:
@@ -1784,7 +1877,12 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             array->pointer = args.a[3];
             array->configured = true;
             array->bufferBacked = g_legacyArrayBuffer != 0;
-            if (array->bufferBacked && g_glContext) {
+            if (array->bufferBacked && g_glContext && g_emWebGpu) {
+                const int index = fnId == GL64_fn_glVertexPointer ? 0 :
+                                  fnId == GL64_fn_glColorPointer ? 1 : 2;
+                glOnMain([&] { webGpuFixedCall("fixedFunctionPointer", index, array->size,
+                    array->type, array->stride, (double)array->pointer, 5); });
+            } else if (array->bufferBacked && g_glContext) {
                 GLint size = array->size;
                 GLenum type = array->type;
                 GLsizei stride = array->stride;
@@ -1798,13 +1896,22 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             return 0;
         }
         case GL64_fn_glAlphaFunc:
-            if (g_glContext) GL_MT(glAlphaFunc((GLenum)ai(args,0), af(args,1)));
+            if (g_glContext) {
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("alphaFunc", ai(args,0), af(args,1), 0, 0, 0, 2));
+                else GL_MT(glAlphaFunc((GLenum)ai(args,0), af(args,1)));
+            }
             return 0;
         case GL64_fn_glTexEnvf:
-            if (g_glContext) GL_MT(glTexEnvf((GLenum)ai(args,0), (GLenum)ai(args,1), af(args,2)));
+            if (g_glContext) {
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("texEnvf", ai(args,0), ai(args,1), af(args,2), 0, 0, 3));
+                else GL_MT(glTexEnvf((GLenum)ai(args,0), (GLenum)ai(args,1), af(args,2)));
+            }
             return 0;
         case GL64_fn_glTexEnvi:
-            if (g_glContext) GL_MT(glTexEnvi((GLenum)ai(args,0), (GLenum)ai(args,1), (GLint)ai(args,2)));
+            if (g_glContext) {
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("texEnvi", ai(args,0), ai(args,1), ai(args,2), 0, 0, 3));
+                else GL_MT(glTexEnvi((GLenum)ai(args,0), (GLenum)ai(args,1), (GLint)ai(args,2)));
+            }
             return 0;
         case GL64_fn_glTexEnvfv:
         case GL64_fn_glTexEnviv: {
@@ -1814,7 +1921,8 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 if (isInt && n == 1) {
                     GLint value = 0;
                     cpu->memory->memcpyFromGuest(&value, args.a[2], sizeof(value));
-                    GL_MT(glTexEnvi((GLenum)ai(args,0), (GLenum)ai(args,1), value));
+                    if (g_emWebGpu) GL_MT(webGpuFixedCall("texEnvi", ai(args,0), ai(args,1), value, 0, 0, 3));
+                    else GL_MT(glTexEnvi((GLenum)ai(args,0), (GLenum)ai(args,1), value));
                 } else {
                     std::vector<GLfloat> values(n);
                     if (isInt) {
@@ -1824,7 +1932,9 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                     } else {
                         cpu->memory->memcpyFromGuest(values.data(), args.a[2], n * sizeof(GLfloat));
                     }
-                    GL_MT(glTexEnvfv((GLenum)ai(args,0), (GLenum)ai(args,1), values.data()));
+                    if (g_emWebGpu) GL_MT(webGpuFixedTexEnvArrayCall(isInt ? "texEnviv" : "texEnvfv",
+                        (GLenum)ai(args,0), (GLenum)ai(args,1), values.data(), n));
+                    else GL_MT(glTexEnvfv((GLenum)ai(args,0), (GLenum)ai(args,1), values.data()));
                 }
             }
             return 0;
@@ -1963,46 +2073,144 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             return 0;
         }
         case GL64_fn_glColor3f:
-            if (g_glContext) RECORD_IMM(GL64_fn_glColor3f, af(args,0), af(args,1), af(args,2), 0,
-                                        glColor3f(af(args,0), af(args,1), af(args,2)));
+            if (g_glContext) {
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("color3f", af(args,0), af(args,1), af(args,2), 0, 0, 3));
+                else
+#endif
+                    RECORD_IMM(GL64_fn_glColor3f, af(args,0), af(args,1), af(args,2), 0,
+                                glColor3f(af(args,0), af(args,1), af(args,2)));
+            }
             return 0;
         case GL64_fn_glColor4f:
-            if (g_glContext) RECORD_IMM(GL64_fn_glColor4f, af(args,0), af(args,1), af(args,2), af(args,3),
-                                        glColor4f(af(args,0), af(args,1), af(args,2), af(args,3)));
+            if (g_glContext) {
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("color4f", af(args,0), af(args,1), af(args,2), af(args,3), 0, 4));
+                else
+#endif
+                    RECORD_IMM(GL64_fn_glColor4f, af(args,0), af(args,1), af(args,2), af(args,3),
+                                glColor4f(af(args,0), af(args,1), af(args,2), af(args,3)));
+            }
+            return 0;
+        case GL64_fn_glColor4ub:
+            if (g_glContext) {
+                const GLubyte r = (GLubyte)ai(args,0), g = (GLubyte)ai(args,1);
+                const GLubyte b = (GLubyte)ai(args,2), a = (GLubyte)ai(args,3);
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("color4ub", r, g, b, a, 0, 4));
+                else RECORD_IMM(GL64_fn_glColor4f, r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f,
+                                glColor4f(r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f));
+#else
+                GL_MT(glColor4f(r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f));
+#endif
+            }
             return 0;
 
         // === core GL: matrices ===========================================
         case GL64_fn_glMatrixMode:
-            if (g_glContext) GL_MT(glMatrixMode((GLenum)ai(args,0)));
+            if (g_glContext) {
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("matrixMode", ai(args,0), 0, 0, 0, 0, 1));
+                else
+#endif
+                    GL_MT(glMatrixMode((GLenum)ai(args,0)));
+            }
             return 0;
         case GL64_fn_glLoadIdentity:
-            if (g_glContext) GL_MT(glLoadIdentity());
+            if (g_glContext) {
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("loadIdentity"));
+                else
+#endif
+                    GL_MT(glLoadIdentity());
+            }
             return 0;
         case GL64_fn_glPushMatrix:
-            if (g_glContext) GL_MT(glPushMatrix());
+            if (g_glContext) {
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("pushMatrix"));
+                else
+#endif
+                    GL_MT(glPushMatrix());
+            }
             return 0;
         case GL64_fn_glPopMatrix:
-            if (g_glContext) GL_MT(glPopMatrix());
+            if (g_glContext) {
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("popMatrix"));
+                else
+#endif
+                    GL_MT(glPopMatrix());
+            }
             return 0;
         case GL64_fn_glFrustum:
-            if (g_glContext) GL_MT(glFrustum(ad(args,0), ad(args,1), ad(args,2), ad(args,3), ad(args,4), ad(args,5)));
+            if (g_glContext) {
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedCall6("frustum", ad(args,0), ad(args,1), ad(args,2), ad(args,3), ad(args,4), ad(args,5)));
+                else
+#endif
+                    GL_MT(glFrustum(ad(args,0), ad(args,1), ad(args,2), ad(args,3), ad(args,4), ad(args,5)));
+            }
             return 0;
         case GL64_fn_glOrtho:
-            if (g_glContext) GL_MT(glOrtho(ad(args,0), ad(args,1), ad(args,2), ad(args,3), ad(args,4), ad(args,5)));
+            if (g_glContext) {
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedCall6("ortho", ad(args,0), ad(args,1), ad(args,2), ad(args,3), ad(args,4), ad(args,5)));
+                else
+#endif
+                    GL_MT(glOrtho(ad(args,0), ad(args,1), ad(args,2), ad(args,3), ad(args,4), ad(args,5)));
+            }
             return 0;
         case GL64_fn_glTranslatef:
-            if (g_glContext) GL_MT(glTranslatef(af(args,0), af(args,1), af(args,2)));
+            if (g_glContext) {
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("translatef", af(args,0), af(args,1), af(args,2), 0, 0, 3));
+                else
+#endif
+                    GL_MT(glTranslatef(af(args,0), af(args,1), af(args,2)));
+            }
             return 0;
         case GL64_fn_glRotatef:
-            if (g_glContext) GL_MT(glRotatef(af(args,0), af(args,1), af(args,2), af(args,3)));
+            if (g_glContext) {
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("rotatef", af(args,0), af(args,1), af(args,2), af(args,3), 0, 4));
+                else
+#endif
+                    GL_MT(glRotatef(af(args,0), af(args,1), af(args,2), af(args,3)));
+            }
             return 0;
         case GL64_fn_glScalef:
-            if (g_glContext) GL_MT(glScalef(af(args,0), af(args,1), af(args,2)));
+            if (g_glContext) {
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("scalef", af(args,0), af(args,1), af(args,2), 0, 0, 3));
+                else
+#endif
+                    GL_MT(glScalef(af(args,0), af(args,1), af(args,2)));
+            }
             return 0;
-        case GL64_fn_glMultMatrixf: {
+        case GL64_fn_glLoadMatrixf:
+        case GL64_fn_glLoadMatrixd:
+        case GL64_fn_glMultMatrixf:
+        case GL64_fn_glMultMatrixd: {
             // readFloats reads guest memory — keep it on the calling thread, then
             // hand the local matrix to the GL call on the GL thread.
-            if (g_glContext) { float m[16]; readFloats(cpu, args.a[0], m, 16); GL_MT(glMultMatrixf(m)); }
+            if (g_glContext && args.a[0]) {
+                const bool isDouble = fnId == GL64_fn_glLoadMatrixd || fnId == GL64_fn_glMultMatrixd;
+                const bool isLoad = fnId == GL64_fn_glLoadMatrixf || fnId == GL64_fn_glLoadMatrixd;
+                float m[16];
+                if (isDouble) {
+                    double values[16]; cpu->memory->memcpyFromGuest(values, args.a[0], sizeof(values));
+                    for (int i = 0; i < 16; ++i) m[i] = (float)values[i];
+                } else readFloats(cpu, args.a[0], m, 16);
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedMatrixCall(isLoad
+                    ? (isDouble ? "loadMatrixd" : "loadMatrixf")
+                    : (isDouble ? "multMatrixd" : "multMatrixf"), m));
+                else
+#endif
+                    if (isLoad) GL_MT(glLoadMatrixf(m));
+                    else GL_MT(glMultMatrixf(m));
+            }
             return 0;
         }
 
@@ -2534,6 +2742,8 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                     copyLegacyArray(cpu, g_legacyTexCoordArray, (U32)lastIndex64, texCoord);
                 glOnMain([&]{
                     bindDrawTarget();
+                    if (copied && webGpuFixedDraw(mode, first, count, false, 0, 0, {},
+                        g_legacyVertexArray, g_legacyColorArray, g_legacyTexCoordArray, vertex, color, texCoord)) return;
                     if (copied && !vertex.empty()) glVertexPointer(g_legacyVertexArray.size, g_legacyVertexArray.type, g_legacyVertexArray.stride, vertex.data());
                     if (copied && !color.empty()) glColorPointer(g_legacyColorArray.size, g_legacyColorArray.type, g_legacyColorArray.stride, color.data());
                     if (copied && !texCoord.empty()) glTexCoordPointer(g_legacyTexCoordArray.size, g_legacyTexCoordArray.type, g_legacyTexCoordArray.stride, texCoord.data());
@@ -2559,6 +2769,8 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 if (!once.exchange(true)) klog_fmt("gl64 DRAW: first glDrawElements mode=0x%x count=%d", mode, count);
                 glOnMain([&]{
                     bindDrawTarget();
+                    if (copied && webGpuFixedDraw(mode, 0, count, true, type, (U64)(uintptr_t)args.a[3], indexData,
+                        g_legacyVertexArray, g_legacyColorArray, g_legacyTexCoordArray, vertex, color, texCoord)) return;
                     if (copied && !vertex.empty()) glVertexPointer(g_legacyVertexArray.size, g_legacyVertexArray.type, g_legacyVertexArray.stride, vertex.data());
                     if (copied && !color.empty()) glColorPointer(g_legacyColorArray.size, g_legacyColorArray.type, g_legacyColorArray.stride, color.data());
                     if (copied && !texCoord.empty()) glTexCoordPointer(g_legacyTexCoordArray.size, g_legacyTexCoordArray.type, g_legacyTexCoordArray.stride, texCoord.data());
@@ -2583,6 +2795,8 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 if (!g_legacyElementArrayBuffer && copied) indices = indexData.data();
                 glOnMain([&]{
                     bindDrawTarget();
+                    if (copied && webGpuFixedDraw(mode, 0, count, true, type, (U64)(uintptr_t)args.a[5], indexData,
+                        g_legacyVertexArray, g_legacyColorArray, g_legacyTexCoordArray, vertex, color, texCoord)) return;
                     if (copied && !vertex.empty()) glVertexPointer(g_legacyVertexArray.size, g_legacyVertexArray.type, g_legacyVertexArray.stride, vertex.data());
                     if (copied && !color.empty()) glColorPointer(g_legacyColorArray.size, g_legacyColorArray.type, g_legacyColorArray.stride, color.data());
                     if (copied && !texCoord.empty()) glTexCoordPointer(g_legacyTexCoordArray.size, g_legacyTexCoordArray.type, g_legacyTexCoordArray.stride, texCoord.data());
