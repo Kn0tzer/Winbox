@@ -24,7 +24,7 @@ Wasm provenance: d3dconf1/d3d9 ran on pre-01:14 UTC wasm; all other runs on the
 | D3D9  | 15    | 13*           | 0          | 2            | 17100     | 32    |
 | D3D10 | 7     | 6             | 0          | 1            | 0         | 30    |
 | D3D11 | 13    | 11            | 0          | 2            | 0‡        | n/a   |
-| D3D12 | 20    | 18            | 0          | 2            | 0         | 10    |
+| D3D12 | 20    | 19            | 0          | 1§           | 208554    | 20    |
 
 \* D3D9 "working" includes ops whose log lines arrived after capture but are
   confirmed OK by the guest's own DONE tally (present_first, vs_handasm_bonus).
@@ -32,6 +32,7 @@ Wasm provenance: d3dconf1/d3d9 ran on pre-01:14 UTC wasm; all other runs on the
 † D3D11 offscreen rendering verified separately (tri11_93: LIT=8192 via
   staging-texture readback).
 ‡ D3D11 swapchain Present: CORRECTED 2026-10-09 - prior 0 lit px was a measurement error. Two independent probes show 29130 lit px with correct RGB, pixel-identical to D3D10 verified output; chunk forensics confirm identical bridge output. Swapchain WORKS (fixed by 88cdd449).
+§ D3D12's one non-pass is the expected `device_FL_12_0` E_INVALIDARG; the implementation targets FL 11_0.
 
 ## D3D9 (DXVK d3d9.dll) — 13/15
 
@@ -73,16 +74,24 @@ CRITICAL BUG (filed): repeated D3D11CreateDevice create/release cycles in one
   d11swap1, 7th call in d3dconf11). Repro: d11swap.exe. The pipeline had to be
   split into a separate exe (d3dconf11b) to avoid it.
 
-## D3D12 (vkd3d-proton d3d12.dll) — 18/20
+## D3D12 (vkd3d-proton d3d12.dll) — 19/20 (updated 2026-10-21)
 
 Working: DLL loads; D3D12CreateDevice FL 11_0; command queue/allocator/list;
   DXGI factory; swapchain; RTV heap; root signature serialize+create; PSO;
-  vertex buffer upload; fence; draw+present loop (guest OK).
-Broken:
+  vertex buffer upload; fence; draw+present loop. `draw_present_10f` reports OK,
+  decodes 20 draw calls across captured frames, and the composited canvas has
+  208554 lit pixels (center RGB 127,64,64). The separate `tri12draw.exe`
+  compositor screenshot has 136556 non-clear triangle pixels (37994 red-dominant).
+Accepted unsupported request:
   - `device_FL_12_0` FAIL hr=0x80070057 (E_INVALIDARG; expected — vkd3d
-    targets 11_0 here)
-  - `draw_present_10f`: guest OK, 10 draws executed, litPixels=0 — known
-    byte-less BUFFER_DATA dedup desync (separate fix lane).
+    targets 11_0 here).
+Finding: the previous `litPixels=0` was a measurement false negative. The
+  D3D12 pixel probes used `HTMLCanvasElement.toDataURL()` after WebGPU present;
+  it reads an empty back buffer. Chromium's composited canvas screenshot shows
+  the RGB triangle. V2 for `tri12draw` contains the bound 112-byte vertex buffer
+  with hash `01883b488503ad48`; its first three submits send bytes and later
+  hash-only records reuse it. No buffer-data desync or Vulkan surface failure
+  reproduced.
 
 ## Raw tables
 
@@ -97,5 +106,8 @@ See `buckets.json` in each run dir; per-op logs in `console-<api>.log`.
 3. D3D11 multi-device exit(0): `tools/dxvk/probe/d11swap.exe` — 3rd
    D3D11CreateDevice create/release exits process with status 0.
    Run: web/tests/run-single.sh d11swap.
-4. D3D12 no-paint: `tools/vkd3d/probe/d3dconf12.exe` — dedup desync lane owns.
+4. D3D12 pixel capture: `tools/vkd3d/probe/d3dconf12.exe`; use a composited
+   canvas screenshot (the WebGPU backing texture is not readable via toDataURL).
+   The former no-paint result was not reproduced; byte-less buffer records reused
+   the buffer already present in the page cache.
 5. D3D9 formats: CheckDeviceType A8R8G8B8/X1R5G5B5 → D3DERR_NOTAVAILABLE.

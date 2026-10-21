@@ -22,6 +22,13 @@ await mkdir(dir, { recursive: true });
 // SUITES env: comma-separated subset of suite ids to run (default: all).
 const onlySuites = (process.env.SUITES || "").split(",").map(s => s.trim()).filter(Boolean);
 
+function withTestUrlParams(rawUrl) {
+  const url = new URL(rawUrl);
+  for (const [key, value] of new URLSearchParams(process.env.BW_TEST_URL_PARAMS || ""))
+    url.searchParams.set(key, value);
+  return url.toString();
+}
+
 const suites = [
   {
     id: "d3d9", exe: "d3dconf9.exe", exePath: "tools/d3dtests/d3dconf9.exe",
@@ -152,7 +159,7 @@ async function runSuite(s) {
   const suiteStart = Date.now();
   const res = { exe: s.exe, ops: [], pixels: null, decodedDraws: 0, done: false, wallMs: 0 };
   try {
-    await page.goto(`http://127.0.0.1:${server.address().port}/runtime/index.html?p=cmd%20%2Fc%20echo%20vkboot&session=1&novideo=1&persist=0&gltrace=0`);
+    await page.goto(withTestUrlParams(`http://127.0.0.1:${server.address().port}/runtime/index.html?p=cmd%20%2Fc%20echo%20vkboot&session=1&novideo=1&persist=0&gltrace=0`));
     await page.waitForFunction(() => window.bwRuntime?.ready?.() === true, null, { timeout });
     const bt = Date.now() + timeout;
     while (!logs.some(l => /^log: vkboot\s*$/.test(l))) {
@@ -216,9 +223,10 @@ async function runSuite(s) {
       if (errors.some(l => /unreachable|memory access out of bounds|Aborted/.test(l))) break;
       await page.waitForTimeout(1000);
     }
-    const shot = await page.evaluate(() => document.getElementById("vkCanvas")?.toDataURL("image/png"));
+    // Use Chromium's composited output; WebGPU's presented texture is not readable via toDataURL.
+    const shot = await page.locator("#vkCanvas").screenshot().catch(() => null);
     if (shot) {
-      const bytes = Buffer.from(shot.split(",")[1], "base64");
+      const bytes = shot;
       await writeFile(`${dir}/canvas-${s.id}.png`, bytes);
       try { res.pixels = litPixels(bytes, s.clear); } catch (e) { res.pixels = { error: e.message }; }
     }
