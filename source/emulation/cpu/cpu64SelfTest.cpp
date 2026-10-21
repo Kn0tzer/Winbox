@@ -87,6 +87,14 @@ void runAndCheck(TestResult& r, const char* name,
         r.emitRejected += cpu.jit()->emitRejected;
         r.instantiateFailed += cpu.jit()->instantiateFailed;
         r.engine = jit64EngineName(cpu.jit()->engine);
+        if (std::strncmp(name, "JIT repro:", 10) == 0) {
+            printf("  JIT64-CASE: engine=%s blocks=%llu wasmBlocks=%llu entered=%llu\n",
+                   r.engine,
+                   (unsigned long long)cpu.jit()->blocksExecuted,
+                   (unsigned long long)cpu.jit()->wasmBlocks,
+                   (unsigned long long)cpu.jit()->wasmEntered);
+            fflush(stdout);
+        }
     }
     bool hung = (!cpu.yield && cpu.instructionCount >= INSN_LIMIT);
     if (hung) {
@@ -226,6 +234,57 @@ int runX64SelfTest() {
         runAndCheck(r, "xor sets ZF, jz taken", withExit(code), [](CPU64& c) {
             return c.reg[X64_R15].u64 == 0xAA;
         });
+    }
+
+    // Regression for compiled `cmp r13d,1; jz rel32` blocks. This is the
+    // exact instruction sequence dumped at the first failing snake block.
+    // Keep the branch target at offset 0x9F (the rel32 is +0x95 from the
+    // branch's next RIP), with both outcomes checked against the interpreter.
+    {
+        std::vector<U8> code = {
+            0x41, 0x83, 0xFD, 0x01,                   // cmp r13d, 1
+            0x0F, 0x84, 0x95, 0x00, 0x00, 0x00,       // jz +0x95
+            0xB8, 0x00, 0x00, 0x00, 0x00,             // mov eax, 0 (not taken)
+            0xE9, 0x90, 0x00, 0x00, 0x00,             // jmp over padding
+        };
+        code.resize(159, 0x90);
+        code.insert(code.end(), {0xB8, 0x01, 0x00, 0x00, 0x00}); // mov eax, 1
+        runAndCheck(r, "JIT repro: cmp r13d,1; jz rel32 (not taken)", withExit(code),
+                    [](CPU64& c) { return c.reg[X64_R15].u64 == 0; },
+                    [](CPU64& c) { c.reg[X64_R13].setU64(0); });
+        runAndCheck(r, "JIT repro: cmp r13d,1; jz rel32 (taken)", withExit(code),
+                    [](CPU64& c) { return c.reg[X64_R15].u64 == 1; },
+                    [](CPU64& c) { c.reg[X64_R13].setU64(1); });
+    }
+
+    // The other dumped startup block: test r12b,2; jnz rel32. Keep the
+    // target at offset 0x1FC and check both flag outcomes against the
+    // interpreter so byte-register selection and the following Jcc share a
+    // single compiled block.
+    {
+        std::vector<U8> code = {
+            0x41, 0xF6, 0xC4, 0x02,                   // test r12b, 2
+            0x0F, 0x85, 0xF2, 0x01, 0x00, 0x00,       // jnz +0x1F2
+            0xB8, 0x00, 0x00, 0x00, 0x00,             // mov eax, 0 (not taken)
+            0xE9, 0xED, 0x01, 0x00, 0x00,             // jmp to exit suffix
+        };
+        code.resize(508, 0x90);
+        code.insert(code.end(), {0xB8, 0x01, 0x00, 0x00, 0x00}); // mov eax, 1
+        runAndCheck(r, "JIT repro: test r12b,2; jnz rel32 (not taken)", withExit(code),
+                    [](CPU64& c) { return c.reg[X64_R15].u64 == 0; },
+                    [](CPU64& c) { c.reg[X64_R12].setU64(0); });
+        runAndCheck(r, "JIT repro: test r12b,2; jnz rel32 (taken)", withExit(code),
+                    [](CPU64& c) { return c.reg[X64_R15].u64 == 1; },
+                    [](CPU64& c) { c.reg[X64_R12].setU64(2); });
+    }
+
+    // Keep the regression fixture runnable on its own. The full loader
+    // suite has WASM-only high-address cases, while this focused mode lets
+    // the interpreter and emitted-code paths be compared independently.
+    const char* reproOnly = std::getenv("BW64_CPU64_SELFTEST_REPRO_ONLY");
+    if (reproOnly && std::strcmp(reproOnly, "1") == 0) {
+        printf("=== self-test summary: %d passed, %d failed ===\n\n", r.passed, r.failed);
+        return r.failed == 0 ? 0 : 1;
     }
 
     // Test 6: call + ret. Layout: jmp over func, then call func, then exit.

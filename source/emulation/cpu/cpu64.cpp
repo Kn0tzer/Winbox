@@ -8177,7 +8177,9 @@ U32 CPU64::tryWasmExec(U64 maxInsn) {
             bytes[i * 2 + 1] = hex[snap[i] & 0x0F];
         }
         bytes[len * 2] = '\0';
-        klog_fmt("JIT64: compiled index=%llu rip=0x%llx len=%u bytes=%s",
+        U32 guestPid = thread && thread->process ? thread->process->id : 0;
+        klog_fmt("JIT64: compiled pid=%u index=%llu rip=0x%llx len=%u bytes=%s",
+                 guestPid,
                  (unsigned long long)m_jit->blocksCompiled,
                  (unsigned long long)r, (unsigned)len, bytes);
     }
