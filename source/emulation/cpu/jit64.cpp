@@ -1419,6 +1419,18 @@ U16 jit64HotThreshold() {
     return (U16)cached;
 }
 
+U64 jit64MaxBlocks() {
+    static const U64 cached = [] {
+        const char* env = std::getenv("BW64_JIT_MAX");
+        if (!env) return ~(U64)0;
+        char* end = nullptr;
+        unsigned long long value = std::strtoull(env, &end, 10);
+        if (end == env || *end != '\0') return ~(U64)0;
+        return (U64)value;
+    }();
+    return cached;
+}
+
 bool Jit64Hotness::bump(U64 rip, U16 threshold) {
     if (rip == 0) return false;
     if (threshold == 0) return true; // emit on first entry

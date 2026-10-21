@@ -1015,6 +1015,12 @@
                     ENV["BW64_JIT_HOT"] = String(!Number.isFinite(parsedJitHot) || parsedJitHot >= 65535
                         ? 65535 : Math.floor(parsedJitHot));
                 }
+                var jitMax = param("jitmax");
+                if (jitMax !== null && /^\d+$/.test(jitMax)) {
+                    var parsedJitMax = Number(jitMax);
+                    if (Number.isFinite(parsedJitMax))
+                        ENV["BW64_JIT_MAX"] = String(Math.min(0xFFFFFFFF, Math.floor(parsedJitMax)));
+                }
                 var jitDispatch = param("jitdispatch");
                 if (jitDispatch === "0" || jitDispatch === "1")
                     ENV["BW64_JIT_FAST_DISPATCH"] = jitDispatch;

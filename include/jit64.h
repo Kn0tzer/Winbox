@@ -297,6 +297,9 @@ bool jit64BlockMayStore(const Jit64Op* ops, U32 nOps);
 // emit on first entry). Counting happens before the decode, so cold code never
 // pays a snapshot + decode + emit.
 U16 jit64HotThreshold();
+// Optional per-CPU cap on successfully compiled blocks (BW64_JIT_MAX).
+// The default is unlimited; zero disables compilation.
+U64 jit64MaxBlocks();
 class Jit64Hotness {
 public:
     static constexpr U32 SLOTS = 8192;
@@ -331,6 +334,8 @@ struct Jit64State {
     Jit64NegativeCache negative;
     Jit64Hotness hotness;
     U64 blocksCompiled = 0;
+    U64 maxBlocks = ~(U64)0;
+    bool canCompile() const { return blocksCompiled < maxBlocks; }
     U64 blocksExecuted = 0;
     U64 insnsFast = 0;
     U64 insnsFallback = 0;

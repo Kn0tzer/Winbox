@@ -8061,6 +8061,7 @@ U32 CPU64::tryWasmExec(U64 maxInsn) {
         return execWasmBlock(*hit, maxInsn);
     }
     m_jit->coldLookups++;
+    if (!m_jit->canCompile()) { m_jit->coldSkipped++; return 0; }
     const U64 page0 = jit64PageOf(r);
     const U32 gen0Entry = KMemory64::blockPageGenOf(page0);
     // A rip already known unemittable at this generation never pays the
@@ -8168,6 +8169,18 @@ U32 CPU64::tryWasmExec(U64 maxInsn) {
     block->wasmIndex = index;
     m_jit->wasmInstantiated++;
     m_jit->blocksCompiled++;
+    if (m_jit->maxBlocks != ~(U64)0 && m_jit->blocksCompiled == m_jit->maxBlocks) {
+        static const char hex[] = "0123456789abcdef";
+        char bytes[sizeof(snap) * 2 + 1];
+        for (U32 i = 0; i < len; i++) {
+            bytes[i * 2] = hex[snap[i] >> 4];
+            bytes[i * 2 + 1] = hex[snap[i] & 0x0F];
+        }
+        bytes[len * 2] = '\0';
+        klog_fmt("JIT64: compiled index=%llu rip=0x%llx len=%u bytes=%s",
+                 (unsigned long long)m_jit->blocksCompiled,
+                 (unsigned long long)r, (unsigned)len, bytes);
+    }
     m_jit->compileTimeUs += jit64NowUs() - t0;
     // Compilation can take long enough for another guest thread to rewrite
     // these pages. Do not enter the just-built stale block even once.
@@ -8207,6 +8220,7 @@ U32 CPU64::tryJitInterpStep(U64 maxInsn) {
     }
     const Jit64Block* hit = m_jit->cache.lookup(r, bb.page0, bb.gen0, bb.page1, bb.gen1);
     if (!hit) {
+        if (!m_jit->canCompile()) { m_jit->insnsFallback++; return 0; }
         hit = m_jit->cache.insert(r, bb.page0, bb.gen0, bb.page1, bb.gen1, ops, n);
         m_jit->blocksCompiled++;
     }
@@ -8250,6 +8264,7 @@ void CPU64::ensureJit() {
     if (!m_jit) {
         m_jit = new Jit64State();
         m_jit->engine = jit64SelectEngine();
+        m_jit->maxBlocks = jit64MaxBlocks();
         m_jit->wasmOwner = jit64WasmOwnerId();
         m_jit->genBaseAddr = KMemory64::blockGenTableAddr();
         // Generation reader for the runtime's cache validation, and membership
