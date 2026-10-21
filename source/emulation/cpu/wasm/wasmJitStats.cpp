@@ -188,6 +188,7 @@ int bw32_jit_stats_json(char* out, int outSize) {
         && writer.put(",\"slotMiss\":") && writer.putU64(snapshot.fallbacks[(U32)WasmJit32Fallback::SlotMiss])
         && writer.put(",\"installFailure\":") && writer.putU64(snapshot.fallbacks[(U32)WasmJit32Fallback::InstallFailure])
         && writer.put(",\"disabled\":") && writer.putU64(snapshot.fallbacks[(U32)WasmJit32Fallback::Disabled])
+        && writer.put(",\"rejectDelegated\":") && writer.putU64(snapshot.fallbacks[(U32)WasmJit32Fallback::RejectDelegated])
         && writer.put("}")
         && writer.put(",\"sampledAtMs\":") && writer.putU64(snapshot.sampledAtMs)
         && writer.put("}");

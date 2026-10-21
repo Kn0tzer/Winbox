@@ -72,7 +72,8 @@ enum class WasmJit32Fallback : uint32_t {
     SlotMiss = 1,          // table slot not ready in this worker
     InstallFailure = 2,    // module rejected / instantiation failed
     Disabled = 3,          // BW32_JIT=0 (or written-code opt-out) refused it
-    Count = 4,
+    RejectDelegated = 4,    // block kept on interpreter due to delegation cost
+    Count = 5,
 };
 
 struct WasmJit32StatsSnapshot {

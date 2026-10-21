@@ -42,6 +42,10 @@
 
 #include <atomic>
 #include <cstddef>
+
+// A block with repeated interpreter delegation cannot amortize the full-state
+// handoff cost. Keep the accepted count local and easy to tune.
+constexpr U32 kJit32MaxDelegated = 1;
 #include <bit>      // std::bit_cast (C++20) — used in boxedwine_wasm_call_block
 #include <deque>
 #include <emscripten.h>
@@ -12997,6 +13001,7 @@ void JitWasmCodeGen::callHostFunctionWithResult(RegPtr result, void* address,
 
 void JitWasmCodeGen::emulateSingleOp() {
     m_emulatedCurrentOp = true;
+    ++m_delegatedOps;
     // One instruction handed to the interpreter instead of emitted code. This
     // is the backend's supported-instruction fallback, counted by reason in
     // the metrics seam (a hot fallback is the signal to inline it).
@@ -13383,6 +13388,7 @@ void JitWasmCodeGen::preCompile(DecodedOp* op, bool skippedOp) {
     // emitBailoutCheck — it needs the post-write next-op EIP.
     if (this->blockOpCount == 0) {
         m_wasmBlockStartOp = op;
+        m_delegatedOps = 0;
         m_preCompileBlockHash = 2166136261u;
 #ifdef BOXEDWINE_MULTI_THREADED
         // Separate fenced and unfenced modules, including grouped caches.
@@ -13554,6 +13560,18 @@ bool JitWasmCodeGen::shouldStopBlockBefore(U32 eip, DecodedOp* op) {
 void JitWasmCodeGen::commitJIT(DecodedOp* op,
         std::unique_lock<std::recursive_mutex>* memoryLock) {
     (void)memoryLock;
+    // A multi-delegation block pays repeated full-state syncs; a delegated
+    // instruction in a loop pays that cost on every backedge. Cache these
+    // blocks as interpreter-only before producing a WASM module.
+    if (m_delegatedOps > kJit32MaxDelegated ||
+            (m_delegatedOps != 0 && m_hasDirectLoopCandidate)) {
+        wasmJit32StatsFallback(WasmJit32Fallback::RejectDelegated);
+        DecodedOp* rejectedOp = m_wasmBlockStartOp;
+        for (U32 i = 0; i < this->blockOpCount && rejectedOp; ++i, rejectedOp = rejectedOp->next) {
+            rejectedOp->runCount = 0xff;
+        }
+        return;
+    }
     // Finalize the WASM function body and the module binary.
     if (m_directLoopOpen) {
         m_emitter.emitEnd();
