@@ -532,6 +532,7 @@ static U32 syscall_socketcall(CPU* cpu, U32 eipCount) {
         case 1: // SYS_SOCKET
             SYS_LOG1(SYSCALL_SOCKET, cpu, "SYS_SOCKET: domain=%d(%s) type=%d(%s) protocol=%d(%s)", SARG2, SARG2==K_AF_UNIX?"AF_UNIX":(SARG2==K_AF_INET)?"AF_INET":"", (SARG3 & 0xFF), (SARG3 & 0xFF)==K_SOCK_STREAM?"SOCK_STREAM":((SARG3 & 0xFF)==K_SOCK_DGRAM)?"AF_SOCK_DGRAM":"", SARG4, (SARG4 == 0)?"IPPROTO_IP":(SARG4==6)?"IPPROTO_TCP":(SARG4==17)?"IPPROTO_UDP":"");
             result = ksocket(SARG2, SARG3 & 0xFF, SARG4);
+            kwarnSocketCreateFailure(cpu->thread, SARG2, SARG3, SARG4, (S32)result, "socket");
             break;
         case 2: // SYS_BIND
             SYS_LOG1(SYSCALL_SOCKET, cpu, "SYS_BIND: socket=%d address=%X(%s) len=%d", SARG2, SARG3, socketAddressName(memory, SARG3, SARG4).c_str(), SARG4);
@@ -560,6 +561,7 @@ static U32 syscall_socketcall(CPU* cpu, U32 eipCount) {
         case 8: // SYS_SOCKETPAIR
             SYS_LOG1(SYSCALL_SOCKET, cpu, "SYS_SOCKETPAIR: af=%d(%s) type=%d(%s) socks=%X", SARG2, SARG2==K_AF_UNIX?"AF_UNIX":(SARG2==K_AF_INET)?"AF_INET":"", SARG3, SARG3==K_SOCK_STREAM?"SOCK_STREAM":(SARG3==K_SOCK_DGRAM)?"AF_SOCK_DGRAM":"", SARG5);
             result = ksocketpair(cpu->thread, SARG2, SARG3, SARG4, SARG5, 0);
+            kwarnSocketCreateFailure(cpu->thread, SARG2, SARG3, SARG4, (S32)result, "socketpair");
             break;
         case 9: // SYS_SEND
             SYS_LOG1(SYSCALL_SOCKET, cpu, "SYS_SEND: socket=%d buffer=%X len=%d flags=%X", SARG2, SARG3, SARG4, SARG5);
@@ -1711,6 +1713,7 @@ static U32 syscall_memfd_create(CPU* cpu, U32 eipCount) {
 U32 syscall_socket(CPU* cpu, U32 eipCount) {
     SYS_LOG1(SYSCALL_SOCKET, cpu, "socket domain=%d(%s) type=%d(%s) protocol=%d(%s)", ARG1, ARG1==K_AF_UNIX?"AF_UNIX":(ARG1==K_AF_INET)?"AF_INET":"", (ARG2 & 0xFF), (ARG2 & 0xFF)==K_SOCK_STREAM?"SOCK_STREAM":((ARG2 & 0xFF)==K_SOCK_DGRAM)?"AF_SOCK_DGRAM":"", ARG3, (ARG3 == 0)?"IPPROTO_IP":(ARG3==6)?"IPPROTO_TCP":(ARG3==17)?"IPPROTO_UDP":"");
     U32 result = ksocket(ARG1, ARG2 & 0xFF, ARG3);
+    kwarnSocketCreateFailure(cpu->thread, ARG1, ARG2, ARG3, (S32)result, "socket");
     SYS_LOG(SYSCALL_SOCKET, cpu, " result=%d(0x%X)\n", result, result);
     return result;
 }
@@ -1718,6 +1721,7 @@ U32 syscall_socket(CPU* cpu, U32 eipCount) {
 U32 syscall_socketpair(CPU* cpu, U32 eipCount) {
     SYS_LOG1(SYSCALL_SOCKET, cpu, "socketpair af=%d(%s) type=%d(%s) socks=%X", ARG1, ARG1==K_AF_UNIX?"AF_UNIX":(ARG1==K_AF_INET)?"AF_INET":"", ARG2, ARG2==K_SOCK_STREAM?"SOCK_STREAM":(ARG2==K_SOCK_DGRAM)?"AF_SOCK_DGRAM":"", ARG4);
     U32 result = ksocketpair(cpu->thread, ARG1, ARG2, ARG3, ARG4, 0);
+    kwarnSocketCreateFailure(cpu->thread, ARG1, ARG2, ARG3, (S32)result, "socketpair");
     SYS_LOG(SYSCALL_SOCKET, cpu, " result=%d(0x%X)\n", result, result);
     return result;
 }
