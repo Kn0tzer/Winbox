@@ -36,6 +36,7 @@
 #define K_MSG_OOB 1
 #define	K_MSG_PEEK     0x2
 #define K_MSG_NOSIGNAL 0x4000
+#define K_MSG_DONTWAIT 0x40
 
 #define K_SHUT_RD      0
 #define K_SHUT_WR      1
@@ -124,6 +125,7 @@
 #define K_TCP_NOTSENT_LOWAT	25	
 
 U32 ksocket(U32 domain, U32 type, U32 protocol);
+void kwarnSocketCreateFailure(KThread* thread, U32 domain, U32 type, U32 protocol, S32 result, const char* operation);
 U32 kbind(KThread* thread, U32 socket, U32 address, U32 len);
 U32 kconnect(KThread* thread, U32 socket, U32 address, U32 len);
 U32 klisten(KThread* thread, U32 socket, U32 backog);

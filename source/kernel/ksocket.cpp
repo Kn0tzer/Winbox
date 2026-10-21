@@ -27,8 +27,29 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <mutex>
+#include <set>
+#include <tuple>
 
+static std::mutex g_socketCreateWarningMutex;
+static std::set<std::tuple<U32, U32, U32>> g_warnedSocketCreateErrors;
 
+void kwarnSocketCreateFailure(KThread* thread, U32 domain, U32 type, U32 protocol, S32 result, const char* operation) {
+    if (result >= 0) return;
+    const S32 error = -result;
+    if (error != K_EAFNOSUPPORT && error != K_EPROTONOSUPPORT && error != K_EINVAL) return;
+    {
+        std::lock_guard<std::mutex> lock(g_socketCreateWarningMutex);
+        if (!g_warnedSocketCreateErrors.insert(std::make_tuple(domain, type, protocol)).second) return;
+    }
+    const char* exe = "<unknown>";
+    if (thread && thread->process) {
+        if (thread->process->exe.length()) exe = thread->process->exe.c_str();
+        else if (thread->process->name.length()) exe = thread->process->name.c_str();
+    }
+    kwarn_fmt("guest %s failed: domain=%u type=0x%x protocol=%u errno=%d exe=%s",
+              operation ? operation : "socket", domain, type, protocol, error, exe);
+}
 
 BString socketAddressName(KMemory* memory, U32 address, U32 len) {
     if (!address) {
@@ -62,7 +83,12 @@ U32 ksocket(U32 domain, U32 type, U32 protocol) {
             const char* value = getenv("BW64_NETWORK_RELAY");
             return value && strcmp(value, "1") == 0;
         }();
-        if (!relayEnabled || domain != K_AF_INET || type != K_SOCK_STREAM || (protocol != 0 && protocol != 6)) {
+        const bool guestLoopbackUdp =
+            domain == K_AF_INET && type == K_SOCK_DGRAM && (protocol == 0 || protocol == 17);
+        const bool guestLoopbackTcp =
+            domain == K_AF_INET && type == K_SOCK_STREAM && (protocol == 0 || protocol == 6);
+        if (!guestLoopbackUdp && !guestLoopbackTcp &&
+            (!relayEnabled || domain != K_AF_INET || type != K_SOCK_STREAM || (protocol != 0 && protocol != 6))) {
             return -K_EAFNOSUPPORT;
         }
     }
@@ -338,12 +364,10 @@ S32 ksocketpairFds(KThread* thread, U32 af, U32 type, U32 protocol, U32 flags, F
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(thread->process->fdsMutex);
 
     if (af!=K_AF_UNIX) {
-        kwarn_fmt("socketpair with adress family %d not implemented", af);
-        return -1;
+        return -K_EAFNOSUPPORT;
     }
     if (type!=K_SOCK_DGRAM && type!=K_SOCK_STREAM) {
-        kwarn_fmt("socketpair with type %d not implemented", type);
-        return -1;
+        return -K_EINVAL;
     }
     fd1 = ksocket(af, type, protocol);
     fd2 = ksocket(af, type, protocol);

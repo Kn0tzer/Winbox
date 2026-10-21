@@ -29,6 +29,7 @@
 
 #include "gl64bridge.h"
 #include "gl64bridge_abi.h"
+#include "gl64clientarray.h"
 #include "cpu64.h"
 #include "kmemory64.h"
 #include "kmemory.h"
@@ -74,6 +75,7 @@
 #include <atomic>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <mutex>
 #include <cmath>
@@ -81,22 +83,45 @@
 
 #ifdef __EMSCRIPTEN__
 // Emscripten's -sLEGACY_GL_EMULATION supplies most fixed-function entry points,
-// but a few FFP lighting/material scalars are missing from its glemu and don't
-// link: glLightf, glMaterialf, glColorMaterial. The *fv (vector) variants DO
-// link, so route the scalars through them (1-element param). glColorMaterial has
-// no glemu equivalent — Emscripten's FFP shader synthesis already folds glColor
-// into the material, so a no-op preserves the visible result. These shims keep
-// the bridge's call sites (GL_MT(glLightf(...)) etc.) unchanged.
+// but some variants are absent or throw TODO errors in library_glemu.js. Keep
+// those bridge calls linkable and nonfatal. Scalar lighting/material calls use
+// their vector variants; color material is already folded into glemu's shader.
 static inline void bw_glLightf(GLenum light, GLenum pname, GLfloat v) {
     GLfloat p[1] = { v }; glLightfv(light, pname, p);
 }
 static inline void bw_glMaterialf(GLenum face, GLenum pname, GLfloat v) {
     GLfloat p[1] = { v }; glMaterialfv(face, pname, p);
 }
+static inline void bw_glTexEnviv(GLenum target, GLenum pname, const GLint* params) {
+    if (!params) return;
+    if (pname == 0x2201 /* GL_TEXTURE_ENV_COLOR */) {
+        GLfloat values[4] = { (GLfloat)params[0], (GLfloat)params[1],
+                              (GLfloat)params[2], (GLfloat)params[3] };
+        glTexEnvfv(target, pname, values);
+    } else {
+        glTexEnvi(target, pname, params[0]);
+    }
+}
+// glemu has a throwing TODO implementation for glTexGenfv and no glTexGeniv.
+static inline void bw_glTexGenfv(GLenum, GLenum, const GLfloat*) {}
+static inline void bw_glTexGeniv(GLenum, GLenum, const GLint*) {}
+// These integer entry points are absent from glemu and not needed by its shader
+// synthesis; accept them as harmless no-ops if a guest calls them.
+static inline void bw_glLightModeliv(GLenum, const GLint*) {}
+static inline void bw_glMaterialiv(GLenum, GLenum, const GLint*) {}
 static inline void bw_glColorMaterial(GLenum, GLenum) { /* glemu folds glColor */ }
+// WebGL2 has no shade-model state. Smooth interpolation is the default and
+// Emscripten's generated GL entry point is only a TODO warning, so swallow it.
+static inline void bw_glShadeModel(GLenum) {}
 #define glLightf        bw_glLightf
 #define glMaterialf     bw_glMaterialf
+#define glTexEnviv      bw_glTexEnviv
+#define glTexGenfv      bw_glTexGenfv
+#define glTexGeniv      bw_glTexGeniv
+#define glLightModeliv  bw_glLightModeliv
+#define glMaterialiv    bw_glMaterialiv
 #define glColorMaterial bw_glColorMaterial
+#define glShadeModel    bw_glShadeModel
 #endif
 
 // ---------------------------------------------------------------------------
@@ -752,6 +777,254 @@ U64 g_procBurstCount = 0;
 // know a programmable-pipeline frame was produced (vs. the immediate-mode path).
 std::atomic<bool> g_glDrew{false};
 
+#ifdef __EMSCRIPTEN__
+struct LegacyClientArray {
+    GLint size = 4;
+    GLenum type = GL_FLOAT;
+    GLsizei stride = 0;
+    U64 pointer = 0;
+    bool configured = false;
+    bool bufferBacked = false;
+    bool enabled = false;
+};
+LegacyClientArray g_legacyVertexArray{3, GL_FLOAT, 0, 0, false, false, false};
+LegacyClientArray g_legacyColorArray{4, GL_FLOAT, 0, 0, false, false, false};
+LegacyClientArray g_legacyTexCoordArray{4, GL_FLOAT, 0, 0, false, false, false};
+GLuint g_legacyArrayBuffer = 0;
+GLuint g_legacyElementArrayBuffer = 0;
+
+size_t legacyTypeSize(GLenum type) {
+    switch (type) {
+        case GL_BYTE: case GL_UNSIGNED_BYTE: return 1;
+        case GL_SHORT: case GL_UNSIGNED_SHORT: return 2;
+        case GL_INT: case GL_UNSIGNED_INT: case GL_FLOAT: return 4;
+        case GL_DOUBLE: return 8;
+        default: return 0;
+    }
+}
+
+bool copyLegacyArray(GLGuestCPU* cpu, const LegacyClientArray& array,
+                     U32 firstIndex, U32 lastIndex, std::vector<U8>& copy) {
+    if (!array.enabled) return true;
+    if (array.bufferBacked) return true;
+    if (!array.configured || !array.pointer || lastIndex < firstIndex) return false;
+    const size_t component = legacyTypeSize(array.type);
+    if (!component || array.size < 1 || array.size > 4) return false;
+    const size_t element = component * (size_t)array.size;
+    const size_t stride = array.stride > 0 ? (size_t)array.stride : element;
+    const U64 startOffset = (U64)firstIndex * stride;
+    const U64 byteCount = (U64)(lastIndex - firstIndex) * stride + element;
+    if (array.pointer > UINT64_MAX - startOffset || byteCount > SIZE_MAX) return false;
+    const size_t bytes = (size_t)byteCount;
+    if (bytes > 64u * 1024u * 1024u) return false;
+    copy.resize(bytes);
+    cpu->memory->memcpyFromGuest(copy.data(), array.pointer + startOffset, bytes);
+    return true;
+}
+
+bool copyLegacyIndices(GLGuestCPU* cpu, GLenum type, GLsizei count, U64 pointer,
+                       std::vector<U8>& copy, U32& firstIndex, U32& lastIndex) {
+    size_t element = type == GL_UNSIGNED_BYTE ? 1 :
+                     type == GL_UNSIGNED_SHORT ? 2 :
+                     type == GL_UNSIGNED_INT ? 4 : 0;
+    if (!element || count < 0 || count > 4 * 1024 * 1024) return false;
+    if (!count) { copy.clear(); firstIndex = lastIndex = 0; return true; }
+    if (!pointer) return false;
+    copy.resize((size_t)count * element);
+    cpu->memory->memcpyFromGuest(copy.data(), pointer, copy.size());
+    GL64ClientArrayRange range;
+    if (!gl64ComputeIndexRange(copy.data(), copy.size(), (size_t)count, element, range)) return false;
+    firstIndex = range.first;
+    lastIndex = range.last;
+    return true;
+}
+
+double legacyVertexComponent(const std::vector<U8>& data, const LegacyClientArray& array,
+                            U32 baseIndex, U32 vertexIndex, GLint componentIndex) {
+    if (vertexIndex < baseIndex || componentIndex < 0 || componentIndex >= array.size) return 0.0;
+    const size_t componentBytes = legacyTypeSize(array.type);
+    if (!componentBytes) return 0.0;
+    const size_t stride = array.stride > 0 ? (size_t)array.stride : componentBytes * (size_t)array.size;
+    const U64 offset = (U64)(vertexIndex - baseIndex) * stride + (U64)componentIndex * componentBytes;
+    if (offset > data.size() || componentBytes > data.size() - (size_t)offset) return 0.0;
+    const U8* source = data.data() + (size_t)offset;
+    switch (array.type) {
+        case GL_BYTE: { S8 value; std::memcpy(&value, source, sizeof(value)); return value; }
+        case GL_UNSIGNED_BYTE: { U8 value; std::memcpy(&value, source, sizeof(value)); return value; }
+        case GL_SHORT: { S16 value; std::memcpy(&value, source, sizeof(value)); return value; }
+        case GL_UNSIGNED_SHORT: { U16 value; std::memcpy(&value, source, sizeof(value)); return value; }
+        case GL_INT: { S32 value; std::memcpy(&value, source, sizeof(value)); return value; }
+        case GL_UNSIGNED_INT: { U32 value; std::memcpy(&value, source, sizeof(value)); return value; }
+        case GL_FLOAT: { float value; std::memcpy(&value, source, sizeof(value)); return value; }
+        case GL_DOUBLE: { double value; std::memcpy(&value, source, sizeof(value)); return value; }
+        default: return 0.0;
+    }
+}
+
+void traceLegacyClientDraw(GLenum mode, GLsizei count, GLenum type,
+                           const LegacyClientArray& vertexArray, const LegacyClientArray& colorArray,
+                           const LegacyClientArray& texCoordArray, U32 firstIndex, U32 lastIndex,
+                           bool rangeKnown, const std::vector<U8>& vertexData,
+                           const std::vector<U8>& indexData, size_t indexBytes) {
+    if (!getenv("BW64_GLTRACE")) return;
+    std::string vertices;
+    if (count > 0 && vertexArray.enabled && !vertexData.empty() && rangeKnown) {
+        const U32 verticesToLog = std::min<U32>(4, (U32)count);
+        const U32 elementCount = indexBytes ? (U32)(indexData.size() / indexBytes) : 0;
+        for (U32 i = 0; i < verticesToLog; ++i) {
+            U32 vertex = firstIndex + i;
+            if (indexBytes && i < elementCount) {
+                vertex = 0;
+                for (size_t byte = 0; byte < indexBytes; ++byte)
+                    vertex |= (U32)indexData[(size_t)i * indexBytes + byte] << (byte * 8);
+            }
+            if (vertex < firstIndex || vertex > lastIndex) continue;
+            char item[128];
+            std::snprintf(item, sizeof(item), "%s%u=(%.3f,%.3f,%.3f)", i ? "," : "",
+                vertex, legacyVertexComponent(vertexData, vertexArray, firstIndex, vertex, 0),
+                legacyVertexComponent(vertexData, vertexArray, firstIndex, vertex, 1),
+                legacyVertexComponent(vertexData, vertexArray, firstIndex, vertex, 2));
+            vertices += item;
+        }
+    }
+    if (vertices.empty()) vertices = "unavailable";
+    if (rangeKnown) {
+        klog_fmt("gl64 CLIENTDRAW: mode=0x%x count=%d type=0x%x arrays=%d/%d/%d stride=%d/%d/%d range=%u..%u first4=%s",
+            mode, count, type, vertexArray.enabled, colorArray.enabled, texCoordArray.enabled,
+            vertexArray.stride, colorArray.stride, texCoordArray.stride, firstIndex, lastIndex, vertices.c_str());
+    } else {
+        klog_fmt("gl64 CLIENTDRAW: mode=0x%x count=%d type=0x%x arrays=%d/%d/%d stride=%d/%d/%d range=unknown first4=%s",
+            mode, count, type, vertexArray.enabled, colorArray.enabled, texCoordArray.enabled,
+            vertexArray.stride, colorArray.stride, texCoordArray.stride, vertices.c_str());
+    }
+}
+
+void traceLegacyDrawState(GLenum mode, GLsizei count, GLenum type) {
+    static bool reported = false;
+    if (reported || !getenv("BW64_GLTRACE")) return;
+    reported = true;
+    GLint viewport[4] = {}, program = 0, fbo = 0, texture = 0;
+    GLint arrayBuffer = 0, elementBuffer = 0, depthFunc = 0;
+    GLint srcBlend = 0, dstBlend = 0;
+    GLboolean depthMask = GL_FALSE;
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fbo);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture);
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &arrayBuffer);
+    glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &elementBuffer);
+    glGetIntegerv(GL_DEPTH_FUNC, &depthFunc);
+    glGetIntegerv(GL_BLEND_SRC_RGB, &srcBlend);
+    glGetIntegerv(GL_BLEND_DST_RGB, &dstBlend);
+    glGetBooleanv(GL_DEPTH_WRITEMASK, &depthMask);
+    GLint attrs[4] = {};
+    for (GLuint i = 0; i < 4; ++i) glGetVertexAttribiv(i, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &attrs[i]);
+    klog_fmt("gl64 DRAWSTATE: mode=0x%x count=%d type=0x%x viewport=%d,%d,%d,%d fbo=%d complete=0x%x program=%d tex2d=%d arrayBuf=%d elemBuf=%d depth=%d/%d/0x%x blend=%d/%d/%d attrs=%d%d%d%d",
+        mode, count, type, viewport[0], viewport[1], viewport[2], viewport[3], fbo,
+        glCheckFramebufferStatus(GL_FRAMEBUFFER), program, texture, arrayBuffer, elementBuffer,
+        (int)glIsEnabled(GL_DEPTH_TEST), (int)depthMask, depthFunc,
+        (int)glIsEnabled(GL_BLEND), srcBlend, dstBlend, attrs[0], attrs[1], attrs[2], attrs[3]);
+}
+
+void webGpuFixedCall(const char* method, double a = 0, double b = 0, double c = 0,
+                     double d = 0, double e = 0, int count = 0) {
+    EM_ASM((() => {
+        try {
+            var method = UTF8ToString($0);
+            var target = GLctx;
+            if (target && typeof target[method] === 'function')
+                target[method].apply(target, [$1, $2, $3, $4, $5].slice(0, $6));
+        } catch (error) { console.error('gl64 fixed-function call failed', error); }
+    })(), method, a, b, c, d, e, count);
+}
+
+void webGpuFixedCall6(const char* method, double a, double b, double c, double d, double e, double f) {
+    EM_ASM((() => {
+        try {
+            var method = UTF8ToString($0);
+            var target = GLctx;
+            if (target && typeof target[method] === 'function')
+                target[method].call(target, $1, $2, $3, $4, $5, $6);
+        } catch (error) { console.error('gl64 fixed-function call failed', error); }
+    })(), method, a, b, c, d, e, f);
+}
+
+void webGpuFixedMatrixCall(const char* method, const GLfloat* matrix) {
+    EM_ASM((() => {
+        try {
+            var method = UTF8ToString($0);
+            var target = GLctx;
+            if (target && typeof target[method] === 'function')
+                target[method].call(target, HEAPF32.slice($1 >>> 2, ($1 >>> 2) + 16));
+        } catch (error) { console.error('gl64 fixed-function matrix failed', error); }
+    })(), method, matrix);
+}
+
+void webGpuFixedTexEnvArrayCall(const char* method, GLenum target, GLenum pname,
+                                const GLfloat* values, size_t count) {
+    EM_ASM((() => {
+        try {
+            var method = UTF8ToString($0);
+            var ctx = GLctx;
+            if (ctx && typeof ctx[method] === 'function')
+                ctx[method].call(ctx, $1, $2, HEAPF32.slice($3 >>> 2, ($3 >>> 2) + $4));
+        } catch (error) { console.error('gl64 fixed-function texture environment failed', error); }
+    })(), method, target, pname, values, count);
+}
+
+int webGpuFixedDraw(GLenum mode, GLint first, GLsizei count, bool indexed, GLenum type,
+                    U64 offset, U32 baseVertex, const std::vector<U8>& indexData,
+                    const LegacyClientArray& vertexArray, const LegacyClientArray& colorArray,
+                    const LegacyClientArray& texCoordArray, const std::vector<U8>& vertex,
+                    const std::vector<U8>& color, const std::vector<U8>& texCoord) {
+    if (!g_emWebGpu) return 0;
+    U32 packet[36] = {
+        mode, (U32)first, (U32)count, indexed ? 1u : 0u, type, (U32)offset,
+    };
+    auto writeArray = [&](size_t base, const LegacyClientArray& array, const std::vector<U8>& data) {
+        packet[base + 0] = array.enabled ? 1u : 0u;
+        packet[base + 1] = array.configured ? 1u : 0u;
+        packet[base + 2] = (U32)array.size;
+        packet[base + 3] = array.type;
+        packet[base + 4] = (U32)array.stride;
+        packet[base + 5] = array.bufferBacked ? 1u : 0u;
+        packet[base + 6] = (U32)array.pointer;
+        packet[base + 7] = (U32)(uintptr_t)(data.empty() ? nullptr : data.data());
+        packet[base + 8] = (U32)data.size();
+    };
+    writeArray(6, vertexArray, vertex);
+    writeArray(15, colorArray, color);
+    writeArray(24, texCoordArray, texCoord);
+    packet[33] = (U32)(uintptr_t)(indexData.empty() ? nullptr : indexData.data());
+    packet[34] = (U32)indexData.size();
+    packet[35] = baseVertex;
+    return EM_ASM_INT((() => {
+        try {
+            var p = $0 >>> 2;
+            var word = i => HEAPU32[p + i] >>> 0;
+            var signed = i => HEAP32[p + i] | 0;
+            var bytes = (ptr, size) => size ? HEAPU8.slice(ptr >>> 0, (ptr >>> 0) + (size >>> 0)) : new Uint8Array(0);
+            var readArray = (base) => ({
+                enabled: !!word(base), configured: !!word(base + 1), size: signed(base + 2),
+                type: word(base + 3), stride: signed(base + 4), bufferBacked: !!word(base + 5), pointer: word(base + 6),
+            });
+            var arrays = {
+                vertex: readArray(6), color: readArray(15), texCoord: readArray(24),
+                vertexData: bytes(word(13), word(14)), colorData: bytes(word(22), word(23)),
+                texCoordData: bytes(word(31), word(32)), baseVertex: word(35),
+            };
+            if (!GLctx || typeof GLctx.fixedFunctionDrawArrays !== 'function') return 0;
+            var mode = word(0), first = signed(1), count = signed(2), indexed = !!word(3);
+            if (indexed) {
+                if (typeof GLctx.fixedFunctionDrawElements !== 'function') return 0;
+                return GLctx.fixedFunctionDrawElements(mode, count, word(4), word(5), bytes(word(33), word(34)), arrays) ? 1 : 0;
+            }
+            return GLctx.fixedFunctionDrawArrays(mode, first, count, arrays) ? 1 : 0;
+        } catch (error) { console.error('gl64 fixed-function draw failed', error); return 0; }
+    })(), packet);
+}
+#endif
+
 // Translate wined3d's desktop-GLSL (#version 120/130) shader source into the
 // GLSL ES 3.00 dialect WebGL2 requires. WebGL2 rejects `#version 120` outright,
 // and the legacy `attribute`/`varying`/`gl_FragData`/`texture2D` keywords don't
@@ -1401,6 +1674,10 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
     // guarded by g_glMutex (held above).
     g_lastFnIdx = (g_lastFnIdx + 1) & 7;
     g_lastFnIds[g_lastFnIdx] = fnId;
+    GL64Args args = {};
+    if (argsAddr) {
+        cpu->memory->memcpyFromGuest(&args, argsAddr, sizeof(args));
+    }
     // BW64_GLTRACE=2 logs every trapped fnId (verbose). NB: getenv is unreliable on
     // guest worker threads in this pthread build (Module.ENV isn't always wired to
     // workers), so this can stay silent even when GL is flowing — it's a best-effort
@@ -1408,6 +1685,20 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
     if (const char* gt = getenv("BW64_GLTRACE")) {
         if (gt[0] == '2')
             klog_fmt("gl64: call fnId=%llu", (unsigned long long)fnId);
+        else if (fnId != GL64_fn_traceProc && fnId != 0) {
+            char* end = nullptr;
+            long limit = std::strtol(gt, &end, 10);
+            if (end != gt && *end == '\0' && limit > 0) {
+                static U64 tracedCalls = 0;
+                if (tracedCalls < (U64)limit) {
+                    tracedCalls++;
+                    klog_fmt("gl64 TRACE[%llu]: fnId=%llu args=%llx,%llx,%llx,%llx",
+                        (unsigned long long)tracedCalls, (unsigned long long)fnId,
+                        (unsigned long long)args.a[0], (unsigned long long)args.a[1],
+                        (unsigned long long)args.a[2], (unsigned long long)args.a[3]);
+                }
+            }
+        }
         // C7: proc-resolution bursts mark wined3d adapter (re-)init: every
         // init re-resolves ~500 GL names through glXGetProcAddressARB. A burst
         // START after a long gap = a fresh adapter init (loop iteration).
@@ -1423,11 +1714,6 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                      bridgeElapsedSec(), (unsigned long long)g_procBurstCount);
         }
     }
-    GL64Args args = {};
-    if (argsAddr) {
-        cpu->memory->memcpyFromGuest(&args, argsAddr, sizeof(args));
-    }
-
 #ifdef __EMSCRIPTEN__
     bwGpuCapture(cpu, fnId, args);
 #endif
@@ -1637,6 +1923,91 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glShadeModel:
             if (g_glContext) GL_MT(glShadeModel((GLenum)ai(args,0)));
             return 0;
+#ifdef __EMSCRIPTEN__
+        case GL64_fn_glEnableClientState:
+        case GL64_fn_glDisableClientState: {
+            GLenum array = (GLenum)ai(args,0);
+            bool enabled = fnId == GL64_fn_glEnableClientState;
+            if (array == GL_VERTEX_ARRAY) g_legacyVertexArray.enabled = enabled;
+            else if (array == GL_COLOR_ARRAY) g_legacyColorArray.enabled = enabled;
+            else if (array == GL_TEXTURE_COORD_ARRAY) g_legacyTexCoordArray.enabled = enabled;
+            if (g_glContext && !g_emWebGpu) GL_MT(enabled ? glEnableClientState(array) : glDisableClientState(array));
+            return 0;
+        }
+        case GL64_fn_glVertexPointer:
+        case GL64_fn_glColorPointer:
+        case GL64_fn_glTexCoordPointer: {
+            LegacyClientArray* array = fnId == GL64_fn_glVertexPointer ? &g_legacyVertexArray :
+                                       fnId == GL64_fn_glColorPointer ? &g_legacyColorArray : &g_legacyTexCoordArray;
+            array->size = (GLint)ai(args,0);
+            array->type = (GLenum)ai(args,1);
+            array->stride = (GLsizei)ai(args,2);
+            array->pointer = args.a[3];
+            array->configured = true;
+            array->bufferBacked = g_legacyArrayBuffer != 0;
+            if (array->bufferBacked && g_glContext && g_emWebGpu) {
+                const int index = fnId == GL64_fn_glVertexPointer ? 0 :
+                                  fnId == GL64_fn_glColorPointer ? 1 : 2;
+                glOnMain([&] { webGpuFixedCall("fixedFunctionPointer", index, array->size,
+                    array->type, array->stride, (double)array->pointer, 5); });
+            } else if (array->bufferBacked && g_glContext) {
+                GLint size = array->size;
+                GLenum type = array->type;
+                GLsizei stride = array->stride;
+                const void* offset = (const void*)(uintptr_t)array->pointer;
+                glOnMain([&] {
+                    if (fnId == GL64_fn_glVertexPointer) glVertexPointer(size, type, stride, offset);
+                    else if (fnId == GL64_fn_glColorPointer) glColorPointer(size, type, stride, offset);
+                    else glTexCoordPointer(size, type, stride, offset);
+                });
+            }
+            return 0;
+        }
+        case GL64_fn_glAlphaFunc:
+            if (g_glContext) {
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("alphaFunc", ai(args,0), af(args,1), 0, 0, 0, 2));
+                else GL_MT(glAlphaFunc((GLenum)ai(args,0), af(args,1)));
+            }
+            return 0;
+        case GL64_fn_glTexEnvf:
+            if (g_glContext) {
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("texEnvf", ai(args,0), ai(args,1), af(args,2), 0, 0, 3));
+                else GL_MT(glTexEnvf((GLenum)ai(args,0), (GLenum)ai(args,1), af(args,2)));
+            }
+            return 0;
+        case GL64_fn_glTexEnvi:
+            if (g_glContext) {
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("texEnvi", ai(args,0), ai(args,1), ai(args,2), 0, 0, 3));
+                else GL_MT(glTexEnvi((GLenum)ai(args,0), (GLenum)ai(args,1), (GLint)ai(args,2)));
+            }
+            return 0;
+        case GL64_fn_glTexEnvfv:
+        case GL64_fn_glTexEnviv: {
+            if (g_glContext && args.a[2]) {
+                const bool isInt = fnId == GL64_fn_glTexEnviv;
+                const size_t n = ai(args,1) == 0x2201 /*GL_TEXTURE_ENV_COLOR*/ ? 4 : 1;
+                if (isInt && n == 1) {
+                    GLint value = 0;
+                    cpu->memory->memcpyFromGuest(&value, args.a[2], sizeof(value));
+                    if (g_emWebGpu) GL_MT(webGpuFixedCall("texEnvi", ai(args,0), ai(args,1), value, 0, 0, 3));
+                    else GL_MT(glTexEnvi((GLenum)ai(args,0), (GLenum)ai(args,1), value));
+                } else {
+                    std::vector<GLfloat> values(n);
+                    if (isInt) {
+                        std::vector<GLint> integers(n);
+                        cpu->memory->memcpyFromGuest(integers.data(), args.a[2], n * sizeof(GLint));
+                        for (size_t i = 0; i < n; ++i) values[i] = (GLfloat)integers[i];
+                    } else {
+                        cpu->memory->memcpyFromGuest(values.data(), args.a[2], n * sizeof(GLfloat));
+                    }
+                    if (g_emWebGpu) GL_MT(webGpuFixedTexEnvArrayCall(isInt ? "texEnviv" : "texEnvfv",
+                        (GLenum)ai(args,0), (GLenum)ai(args,1), values.data(), n));
+                    else GL_MT(glTexEnvfv((GLenum)ai(args,0), (GLenum)ai(args,1), values.data()));
+                }
+            }
+            return 0;
+        }
+#endif
         case GL64_fn_glDepthFunc:
             if (g_glContext) GL_MT(glDepthFunc((GLenum)ai(args,0)));
             return 0;
@@ -1770,46 +2141,144 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             return 0;
         }
         case GL64_fn_glColor3f:
-            if (g_glContext) RECORD_IMM(GL64_fn_glColor3f, af(args,0), af(args,1), af(args,2), 0,
-                                        glColor3f(af(args,0), af(args,1), af(args,2)));
+            if (g_glContext) {
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("color3f", af(args,0), af(args,1), af(args,2), 0, 0, 3));
+                else
+#endif
+                    RECORD_IMM(GL64_fn_glColor3f, af(args,0), af(args,1), af(args,2), 0,
+                                glColor3f(af(args,0), af(args,1), af(args,2)));
+            }
             return 0;
         case GL64_fn_glColor4f:
-            if (g_glContext) RECORD_IMM(GL64_fn_glColor4f, af(args,0), af(args,1), af(args,2), af(args,3),
-                                        glColor4f(af(args,0), af(args,1), af(args,2), af(args,3)));
+            if (g_glContext) {
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("color4f", af(args,0), af(args,1), af(args,2), af(args,3), 0, 4));
+                else
+#endif
+                    RECORD_IMM(GL64_fn_glColor4f, af(args,0), af(args,1), af(args,2), af(args,3),
+                                glColor4f(af(args,0), af(args,1), af(args,2), af(args,3)));
+            }
+            return 0;
+        case GL64_fn_glColor4ub:
+            if (g_glContext) {
+                const GLubyte r = (GLubyte)ai(args,0), g = (GLubyte)ai(args,1);
+                const GLubyte b = (GLubyte)ai(args,2), a = (GLubyte)ai(args,3);
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("color4ub", r, g, b, a, 0, 4));
+                else RECORD_IMM(GL64_fn_glColor4f, r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f,
+                                glColor4f(r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f));
+#else
+                GL_MT(glColor4f(r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f));
+#endif
+            }
             return 0;
 
         // === core GL: matrices ===========================================
         case GL64_fn_glMatrixMode:
-            if (g_glContext) GL_MT(glMatrixMode((GLenum)ai(args,0)));
+            if (g_glContext) {
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("matrixMode", ai(args,0), 0, 0, 0, 0, 1));
+                else
+#endif
+                    GL_MT(glMatrixMode((GLenum)ai(args,0)));
+            }
             return 0;
         case GL64_fn_glLoadIdentity:
-            if (g_glContext) GL_MT(glLoadIdentity());
+            if (g_glContext) {
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("loadIdentity"));
+                else
+#endif
+                    GL_MT(glLoadIdentity());
+            }
             return 0;
         case GL64_fn_glPushMatrix:
-            if (g_glContext) GL_MT(glPushMatrix());
+            if (g_glContext) {
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("pushMatrix"));
+                else
+#endif
+                    GL_MT(glPushMatrix());
+            }
             return 0;
         case GL64_fn_glPopMatrix:
-            if (g_glContext) GL_MT(glPopMatrix());
+            if (g_glContext) {
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("popMatrix"));
+                else
+#endif
+                    GL_MT(glPopMatrix());
+            }
             return 0;
         case GL64_fn_glFrustum:
-            if (g_glContext) GL_MT(glFrustum(ad(args,0), ad(args,1), ad(args,2), ad(args,3), ad(args,4), ad(args,5)));
+            if (g_glContext) {
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedCall6("frustum", ad(args,0), ad(args,1), ad(args,2), ad(args,3), ad(args,4), ad(args,5)));
+                else
+#endif
+                    GL_MT(glFrustum(ad(args,0), ad(args,1), ad(args,2), ad(args,3), ad(args,4), ad(args,5)));
+            }
             return 0;
         case GL64_fn_glOrtho:
-            if (g_glContext) GL_MT(glOrtho(ad(args,0), ad(args,1), ad(args,2), ad(args,3), ad(args,4), ad(args,5)));
+            if (g_glContext) {
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedCall6("ortho", ad(args,0), ad(args,1), ad(args,2), ad(args,3), ad(args,4), ad(args,5)));
+                else
+#endif
+                    GL_MT(glOrtho(ad(args,0), ad(args,1), ad(args,2), ad(args,3), ad(args,4), ad(args,5)));
+            }
             return 0;
         case GL64_fn_glTranslatef:
-            if (g_glContext) GL_MT(glTranslatef(af(args,0), af(args,1), af(args,2)));
+            if (g_glContext) {
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("translatef", af(args,0), af(args,1), af(args,2), 0, 0, 3));
+                else
+#endif
+                    GL_MT(glTranslatef(af(args,0), af(args,1), af(args,2)));
+            }
             return 0;
         case GL64_fn_glRotatef:
-            if (g_glContext) GL_MT(glRotatef(af(args,0), af(args,1), af(args,2), af(args,3)));
+            if (g_glContext) {
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("rotatef", af(args,0), af(args,1), af(args,2), af(args,3), 0, 4));
+                else
+#endif
+                    GL_MT(glRotatef(af(args,0), af(args,1), af(args,2), af(args,3)));
+            }
             return 0;
         case GL64_fn_glScalef:
-            if (g_glContext) GL_MT(glScalef(af(args,0), af(args,1), af(args,2)));
+            if (g_glContext) {
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("scalef", af(args,0), af(args,1), af(args,2), 0, 0, 3));
+                else
+#endif
+                    GL_MT(glScalef(af(args,0), af(args,1), af(args,2)));
+            }
             return 0;
-        case GL64_fn_glMultMatrixf: {
+        case GL64_fn_glLoadMatrixf:
+        case GL64_fn_glLoadMatrixd:
+        case GL64_fn_glMultMatrixf:
+        case GL64_fn_glMultMatrixd: {
             // readFloats reads guest memory — keep it on the calling thread, then
             // hand the local matrix to the GL call on the GL thread.
-            if (g_glContext) { float m[16]; readFloats(cpu, args.a[0], m, 16); GL_MT(glMultMatrixf(m)); }
+            if (g_glContext && args.a[0]) {
+                const bool isDouble = fnId == GL64_fn_glLoadMatrixd || fnId == GL64_fn_glMultMatrixd;
+                const bool isLoad = fnId == GL64_fn_glLoadMatrixf || fnId == GL64_fn_glLoadMatrixd;
+                float m[16];
+                if (isDouble) {
+                    double values[16]; cpu->memory->memcpyFromGuest(values, args.a[0], sizeof(values));
+                    for (int i = 0; i < 16; ++i) m[i] = (float)values[i];
+                } else readFloats(cpu, args.a[0], m, 16);
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedMatrixCall(isLoad
+                    ? (isDouble ? "loadMatrixd" : "loadMatrixf")
+                    : (isDouble ? "multMatrixd" : "multMatrixf"), m));
+                else
+#endif
+                    if (isLoad) GL_MT(glLoadMatrixf(m));
+                    else GL_MT(glMultMatrixf(m));
+            }
             return 0;
         }
 
@@ -2258,7 +2727,13 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             return 0;
         }
         case GL64_fn_glBindBuffer:
-            if (g_glContext) GL_MT(glBindBuffer((GLenum)ai(args,0), (GLuint)ai(args,1)));
+            if (g_glContext) {
+                GLenum target = (GLenum)ai(args,0);
+                GLuint buffer = (GLuint)ai(args,1);
+                if (target == GL_ARRAY_BUFFER) g_legacyArrayBuffer = buffer;
+                else if (target == GL_ELEMENT_ARRAY_BUFFER) g_legacyElementArrayBuffer = buffer;
+                GL_MT(glBindBuffer(target, buffer));
+            }
             return 0;
         case GL64_fn_glBufferData: {
             if (g_glContext) {
@@ -2327,8 +2802,25 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glDrawArrays:
             if (g_glContext) {
                 GLenum mode=(GLenum)ai(args,0); GLint first=(GLint)ai(args,1); GLsizei count=(GLsizei)ai(args,2);
-                glOnMain([&]{ bindDrawTarget();
-                              glDrawArrays(mode, first, count); });
+                std::vector<U8> vertex, color, texCoord;
+                GL64ClientArrayRange range;
+                bool rangeKnown = gl64ComputeDrawArrayRange(first, count, range);
+                bool copied = rangeKnown &&
+                    copyLegacyArray(cpu, g_legacyVertexArray, range.first, range.last, vertex) &&
+                    copyLegacyArray(cpu, g_legacyColorArray, range.first, range.last, color) &&
+                    copyLegacyArray(cpu, g_legacyTexCoordArray, range.first, range.last, texCoord);
+                traceLegacyClientDraw(mode, count, 0, g_legacyVertexArray, g_legacyColorArray,
+                    g_legacyTexCoordArray, range.first, range.last, rangeKnown, vertex, {}, 0);
+                glOnMain([&]{
+                    bindDrawTarget();
+                    if (copied && webGpuFixedDraw(mode, 0, count, false, 0, 0, range.first, {},
+                        g_legacyVertexArray, g_legacyColorArray, g_legacyTexCoordArray, vertex, color, texCoord)) return;
+                    if (copied && !vertex.empty()) glVertexPointer(g_legacyVertexArray.size, g_legacyVertexArray.type, g_legacyVertexArray.stride, vertex.data());
+                    if (copied && !color.empty()) glColorPointer(g_legacyColorArray.size, g_legacyColorArray.type, g_legacyColorArray.stride, color.data());
+                    if (copied && !texCoord.empty()) glTexCoordPointer(g_legacyTexCoordArray.size, g_legacyTexCoordArray.type, g_legacyTexCoordArray.stride, texCoord.data());
+                    traceLegacyDrawState(mode, count, 0);
+                    glDrawArrays(mode, vertex.empty() ? first : 0, count);
+                });
                 g_glDrew = true;
             }
             return 0;
@@ -2336,10 +2828,36 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             if (g_glContext) {
                 GLenum mode=(GLenum)ai(args,0); GLsizei count=(GLsizei)ai(args,1); GLenum type=(GLenum)ai(args,2);
                 const void* indices = (const void*)(uintptr_t)args.a[3];
+                std::vector<U8> indexData, vertex, color, texCoord;
+                U32 firstIndex = 0, lastIndex = 0;
+                const size_t indexBytes = type == GL_UNSIGNED_BYTE ? 1 : type == GL_UNSIGNED_SHORT ? 2 : type == GL_UNSIGNED_INT ? 4 : 0;
+                const bool indexBufferBacked = g_legacyElementArrayBuffer != 0;
+                bool rangeKnown = !indexBufferBacked &&
+                    copyLegacyIndices(cpu, type, count, args.a[3], indexData, firstIndex, lastIndex);
+                bool copied = indexBufferBacked || rangeKnown;
+                if (copied && rangeKnown) {
+                    copied = copyLegacyArray(cpu, g_legacyVertexArray, firstIndex, lastIndex, vertex) &&
+                        copyLegacyArray(cpu, g_legacyColorArray, firstIndex, lastIndex, color) &&
+                        copyLegacyArray(cpu, g_legacyTexCoordArray, firstIndex, lastIndex, texCoord);
+                }
+                traceLegacyClientDraw(mode, count, type, g_legacyVertexArray, g_legacyColorArray,
+                    g_legacyTexCoordArray, firstIndex, lastIndex, rangeKnown, vertex, indexData, indexBytes);
+                if (rangeKnown && !gl64RebaseIndexData(indexData.data(), indexData.size(),
+                    (size_t)count, indexBytes, firstIndex)) copied = false;
+                if (!g_legacyElementArrayBuffer && copied) indices = indexData.data();
                 static std::atomic<bool> once{false};
                 if (!once.exchange(true)) klog_fmt("gl64 DRAW: first glDrawElements mode=0x%x count=%d", mode, count);
-                glOnMain([&]{ bindDrawTarget();
-                              glDrawElements(mode, count, type, indices); });
+                glOnMain([&]{
+                    bindDrawTarget();
+                    if (copied && webGpuFixedDraw(mode, 0, count, true, type, (U64)(uintptr_t)args.a[3],
+                        rangeKnown ? firstIndex : 0, indexData,
+                        g_legacyVertexArray, g_legacyColorArray, g_legacyTexCoordArray, vertex, color, texCoord)) return;
+                    if (copied && !vertex.empty()) glVertexPointer(g_legacyVertexArray.size, g_legacyVertexArray.type, g_legacyVertexArray.stride, vertex.data());
+                    if (copied && !color.empty()) glColorPointer(g_legacyColorArray.size, g_legacyColorArray.type, g_legacyColorArray.stride, color.data());
+                    if (copied && !texCoord.empty()) glTexCoordPointer(g_legacyTexCoordArray.size, g_legacyTexCoordArray.type, g_legacyTexCoordArray.stride, texCoord.data());
+                    traceLegacyDrawState(mode, count, type);
+                    glDrawElements(mode, count, type, indices);
+                });
                 g_glDrew = true;
             }
             return 0;
@@ -2348,8 +2866,35 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 GLenum mode=(GLenum)ai(args,0); GLuint start=(GLuint)ai(args,1); GLuint end=(GLuint)ai(args,2);
                 GLsizei count=(GLsizei)ai(args,3); GLenum type=(GLenum)ai(args,4);
                 const void* indices = (const void*)(uintptr_t)args.a[5];
-                glOnMain([&]{ bindDrawTarget();
-                              glDrawRangeElements(mode, start, end, count, type, indices); });
+                std::vector<U8> indexData, vertex, color, texCoord;
+                U32 firstIndex = 0, lastIndex = 0;
+                const size_t indexBytes = type == GL_UNSIGNED_BYTE ? 1 : type == GL_UNSIGNED_SHORT ? 2 : type == GL_UNSIGNED_INT ? 4 : 0;
+                const bool indexBufferBacked = g_legacyElementArrayBuffer != 0;
+                bool rangeKnown = !indexBufferBacked &&
+                    copyLegacyIndices(cpu, type, count, args.a[5], indexData, firstIndex, lastIndex);
+                bool copied = indexBufferBacked || rangeKnown;
+                if (copied && rangeKnown) {
+                    copied = copyLegacyArray(cpu, g_legacyVertexArray, firstIndex, lastIndex, vertex) &&
+                        copyLegacyArray(cpu, g_legacyColorArray, firstIndex, lastIndex, color) &&
+                        copyLegacyArray(cpu, g_legacyTexCoordArray, firstIndex, lastIndex, texCoord);
+                }
+                traceLegacyClientDraw(mode, count, type, g_legacyVertexArray, g_legacyColorArray,
+                    g_legacyTexCoordArray, firstIndex, lastIndex, rangeKnown, vertex, indexData, indexBytes);
+                if (rangeKnown && !gl64RebaseIndexData(indexData.data(), indexData.size(),
+                    (size_t)count, indexBytes, firstIndex)) copied = false;
+                if (!g_legacyElementArrayBuffer && copied) indices = indexData.data();
+                glOnMain([&]{
+                    bindDrawTarget();
+                    if (copied && webGpuFixedDraw(mode, 0, count, true, type, (U64)(uintptr_t)args.a[5],
+                        rangeKnown ? firstIndex : 0, indexData,
+                        g_legacyVertexArray, g_legacyColorArray, g_legacyTexCoordArray, vertex, color, texCoord)) return;
+                    if (copied && !vertex.empty()) glVertexPointer(g_legacyVertexArray.size, g_legacyVertexArray.type, g_legacyVertexArray.stride, vertex.data());
+                    if (copied && !color.empty()) glColorPointer(g_legacyColorArray.size, g_legacyColorArray.type, g_legacyColorArray.stride, color.data());
+                    if (copied && !texCoord.empty()) glTexCoordPointer(g_legacyTexCoordArray.size, g_legacyTexCoordArray.type, g_legacyTexCoordArray.stride, texCoord.data());
+                    traceLegacyDrawState(mode, count, type);
+                    glDrawRangeElements(mode, rangeKnown ? 0 : start,
+                        rangeKnown ? lastIndex - firstIndex : end, count, type, indices);
+                });
                 g_glDrew = true;
             }
             return 0;

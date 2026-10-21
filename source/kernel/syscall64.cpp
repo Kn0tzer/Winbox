@@ -3646,7 +3646,11 @@ void ksyscall64(CPU64* cpu) {
             if (sockFlags & 0x800)   passFlags |= K_O_NONBLOCK;
             FD fd1 = 0, fd2 = 0;
             S32 rc = ksocketpairFds(cpu->thread, (U32)a1, type, (U32)a3, passFlags, fd1, fd2);
-            if (rc) { ret = (U64)(S64)rc; break; }
+            if (rc) {
+                kwarnSocketCreateFailure(cpu->thread, (U32)a1, (U32)a2, (U32)a3, rc, "socketpair");
+                ret = (U64)(S64)rc;
+                break;
+            }
             cpu->memory->writed(a4, (U32)fd1);
             cpu->memory->writed(a4 + 4, (U32)fd2);
             ret = 0;
@@ -3667,6 +3671,7 @@ void ksyscall64(CPU64* cpu) {
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
             U32 sockType = (U32)a2 & 0xFF;
             FD sfd = (FD)(S32)ksocket((U32)a1, sockType, (U32)a3);
+            kwarnSocketCreateFailure(cpu->thread, (U32)a1, (U32)a2, (U32)a3, (S32)sfd, "socket");
             if ((S32)sfd >= 0) {
                 if ((U32)a2 & 0x80000) cpu->thread->process->fcntrl(cpu->thread, sfd, K_F_SETFD, FD_CLOEXEC);
                 if ((U32)a2 & 0x800)   cpu->thread->process->fcntrl(cpu->thread, sfd, K_F_SETFL, K_O_NONBLOCK);

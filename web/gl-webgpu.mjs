@@ -54,6 +54,15 @@ function componentCount(type) {
 }
 
 function identityMatrix() { return new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]); }
+function multiplyMatrix4(a, b) {
+  const out = new Float32Array(16);
+  for (let column = 0; column < 4; column++) for (let row = 0; row < 4; row++) {
+    let value = 0;
+    for (let k = 0; k < 4; k++) value += a[k * 4 + row] * b[column * 4 + k];
+    out[column * 4 + row] = value;
+  }
+  return out;
+}
 function mulMat4(matrix, vector) {
   const out = new Array(4);
   for (let row = 0; row < 4; row++) out[row] = matrix[row] * vector[0] + matrix[4 + row] * vector[1] + matrix[8 + row] * vector[2] + matrix[12 + row] * vector[3];
@@ -99,12 +108,27 @@ function glslDeclarations(source, qualifier) {
   return result;
 }
 
-function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(), interfaceLocations = new Map()) {
+function shaderDumpEnabled() {
+  if (globalThis.glshaderdump) return true;
+  const search = globalThis.location?.search;
+  return typeof search === 'string' && new URLSearchParams(search).has('glshaderdump');
+}
+
+export function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(), interfaceLocations = new Map()) {
   // ES precision hints do not change WGSL behavior; strip them before parsing
   // declarations because Naga's GLSL 450 frontend rejects variable precision qualifiers.
-  let code = String(source || '')
+  let code = String(source || '').replace(/\r\n?/g, '\n').replace(/\\[ \t]*\n[ \t]*/g, '')
+    // GL_ES precision guards carry no shader behavior after the precision
+    // declaration is removed, and Naga does not need their preprocessor.
+    .replace(/^[ \t]*#ifdef[ \t]+GL_ES[ \t]*\n([\s\S]*?)^[ \t]*#endif[ \t]*$/gm, '$1')
     .replace(/^[ \t]*precision[ \t]+(?:lowp|mediump|highp)[ \t]+(?:float|int)[ \t]*;[ \t]*$/gm, '')
     .replace(/\b(?:lowp|mediump|highp)\b/g, '');
+  if (/\bgl_ModelViewProjectionMatrix\b/.test(code)) {
+    code = code.replace(/\bgl_ModelViewProjectionMatrix\b/g, 'bw_ModelViewProjectionMatrix');
+    if (!/\buniform\s+mat4\s+bw_ModelViewProjectionMatrix\b/.test(code)) {
+      code = `uniform mat4 bw_ModelViewProjectionMatrix;\n${code}`;
+    }
+  }
   // Uniform reflection needs literal array lengths before it moves declarations
   // into a block that may precede the guest's #define line (Mindustry's LENGTH).
   const integerDefines = new Map(
@@ -148,7 +172,7 @@ function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(), inte
 
   for (const sampler of samplers) {
     const escaped = sampler.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    code = code.replace(new RegExp(`\\btexture2D?\\s*\\(\\s*${escaped}\\s*,`, 'g'), `texture(sampler2D(${sampler.name}_bw_t, ${sampler.name}_bw_s),`);
+    code = code.replace(new RegExp(`\\btexture(?:2D)?\\s*\\(\\s*${escaped}\\s*,`, 'g'), `texture(sampler2D(${sampler.name}_bw_t, ${sampler.name}_bw_s),`);
     const array = sampler.arrayLength > 1 ? `[${sampler.arrayLength}]` : '';
     code = `layout(binding = ${sampler.textureBinding}) uniform texture2D ${sampler.name}_bw_t${array};\nlayout(binding = ${sampler.samplerBinding}) uniform sampler ${sampler.name}_bw_s${array};\n${code}`;
   }
@@ -226,6 +250,13 @@ export class WebGPUGL {
     this._arrayBuffer = null;
     this._elementArrayBuffer = null;
     this._currentProgram = null;
+    this._fixedFunctionProgramCache = new Map();
+    this._fixedFunctionPointers = new Map();
+    this._fixedFunction = {
+      matrixMode: 0x1700,
+      modelview: [identityMatrix()], projection: [identityMatrix()], texture: [identityMatrix()],
+      color: [1, 1, 1, 1], alphaFunc: 0x0207, alphaRef: 0, texEnv: 0x2100,
+    };
     this._enabled = new Set();
     this._blend = { srcRGB: 1, dstRGB: 0, srcAlpha: 1, dstAlpha: 0, equationRGB: 0x8006, equationAlpha: 0x8006 };
     this._blendColor = [0, 0, 0, 0];
@@ -447,6 +478,72 @@ export class WebGPUGL {
   // WebGL2 removed glShadeModel; its surviving smooth interpolation matches
   // the default GL_SMOOTH behavior used by the fixed-function bridge.
   shadeModel(_mode) {}
+  _fixedMatrixStack() {
+    const mode = this._fixedFunction.matrixMode;
+    return mode === 0x1701 ? this._fixedFunction.projection
+      : mode === 0x1702 ? this._fixedFunction.texture : this._fixedFunction.modelview;
+  }
+  matrixMode(mode) { this._fixedFunction.matrixMode = mode | 0; }
+  loadIdentity() { this._fixedMatrixStack()[this._fixedMatrixStack().length - 1] = identityMatrix(); }
+  loadMatrixf(matrix) {
+    if (!matrix || matrix.length < 16) return;
+    this._fixedMatrixStack()[this._fixedMatrixStack().length - 1] = Float32Array.from(matrix).subarray(0, 16);
+  }
+  loadMatrixd(matrix) { this.loadMatrixf(matrix); }
+  multMatrixf(matrix) {
+    if (!matrix || matrix.length < 16) return;
+    const stack = this._fixedMatrixStack(), top = stack.length - 1;
+    stack[top] = multiplyMatrix4(stack[top], Float32Array.from(matrix).subarray(0, 16));
+  }
+  multMatrixd(matrix) { this.multMatrixf(matrix); }
+  pushMatrix() { const stack = this._fixedMatrixStack(); stack.push(new Float32Array(stack[stack.length - 1])); }
+  popMatrix() { const stack = this._fixedMatrixStack(); if (stack.length > 1) stack.pop(); }
+  ortho(left, right, bottom, top, near, far) {
+    const m = identityMatrix();
+    m[0] = 2 / (right - left); m[5] = 2 / (top - bottom); m[10] = -2 / (far - near);
+    m[12] = -(right + left) / (right - left); m[13] = -(top + bottom) / (top - bottom);
+    m[14] = -(far + near) / (far - near);
+    this.multMatrixf(m);
+  }
+  frustum(left, right, bottom, top, near, far) {
+    const m = new Float32Array(16);
+    m[0] = 2 * near / (right - left); m[5] = 2 * near / (top - bottom);
+    m[8] = (right + left) / (right - left); m[9] = (top + bottom) / (top - bottom);
+    m[10] = -(far + near) / (far - near); m[11] = -1;
+    m[14] = -(2 * far * near) / (far - near);
+    this.multMatrixf(m);
+  }
+  translatef(x, y, z) {
+    const m = identityMatrix(); m[12] = x; m[13] = y; m[14] = z; this.multMatrixf(m);
+  }
+  rotatef(angle, x, y, z) {
+    const length = Math.hypot(x, y, z);
+    if (!length) return;
+    x /= length; y /= length; z /= length;
+    const radians = angle * Math.PI / 180, c = Math.cos(radians), s = Math.sin(radians), t = 1 - c;
+    this.multMatrixf(new Float32Array([
+      x * x * t + c, y * x * t + z * s, z * x * t - y * s, 0,
+      x * y * t - z * s, y * y * t + c, z * y * t + x * s, 0,
+      x * z * t + y * s, y * z * t - x * s, z * z * t + c, 0,
+      0, 0, 0, 1,
+    ]));
+  }
+  scalef(x, y, z) { this.multMatrixf(new Float32Array([x, 0, 0, 0, 0, y, 0, 0, 0, 0, z, 0, 0, 0, 0, 1])); }
+  color3f(r, g, b) { this._fixedFunction.color = [r, g, b, 1].map(clamp01); }
+  color4f(r, g, b, a) { this._fixedFunction.color = [r, g, b, a].map(clamp01); }
+  color4ub(r, g, b, a) { this.color4f(r / 255, g / 255, b / 255, a / 255); }
+  alphaFunc(func, reference) { this._fixedFunction.alphaFunc = func | 0; this._fixedFunction.alphaRef = clamp01(reference); }
+  texEnvi(target, pname, value) {
+    if (target === 0x2300 && pname === 0x2200) this._fixedFunction.texEnv = value | 0;
+  }
+  texEnvf(target, pname, value) { this.texEnvi(target, pname, value); }
+  texEnvfv(target, pname, values) { if (pname === 0x2201) this._fixedFunction.texEnvColor = Array.from(values || []); }
+  texEnviv(target, pname, values) { this.texEnvfv(target, pname, values); }
+  fixedFunctionPointer(index, size, type, stride, offset) {
+    this._fixedFunctionPointers.set(index | 0, {
+      buffer: this._arrayBuffer, size: size | 0, type: type | 0, stride: stride | 0, offset: offset | 0,
+    });
+  }
   clear(mask) {
     const state = { color: [...this._clear], depth: this._clearDepth, enabled: new Set(this._enabled), colorMask: [...this._colorMask], depthMask: this._depthMask, scissor: [...this._scissor], framebuffer: this._drawFramebuffer };
     this._clearPixels(mask, state);
@@ -768,7 +865,15 @@ export class WebGPUGL {
     program.linkPromise = this.ready.then(async () => {
       for (const [shader, stage] of [[vertex, 'vertex'], [fragment, 'fragment']]) {
         const prepared = rewriteGlslForWebGPU(shader.source, stage, program.attributes, locationRegistry);
-        const wgsl = await toWGSL('glsl', prepared.code, stage);
+        let wgsl;
+        try {
+          wgsl = await toWGSL('glsl', prepared.code, stage);
+        } catch (error) {
+          if (shaderDumpEnabled()) {
+            console.error(`gl-webgpu: ${stage} shader translation failed:`, error, `\n--- GLSL sent to Naga ---\n${prepared.code}`);
+          }
+          throw error;
+        }
         if (!wgsl) throw new Error(`${stage} shader translated to empty WGSL`);
         const activeInputs = stage === 'vertex'
           ? [...prepared.code.matchAll(/layout\s*\([^)]*location\s*=\s*(\d+)[^)]*\)\s*in\s+([A-Za-z_]\w*)\s+([A-Za-z_]\w*)/g)]
@@ -854,8 +959,170 @@ export class WebGPUGL {
     };
   }
 
-  drawArrays(mode, first, count) { const state = this._drawSnapshot(); this._mirrorDraw(state, mode, first, count, null); this._enqueue(() => this._draw(state, mode, first, count, null, 1)); }
-  drawElements(mode, count, type, offset) { const element = { type, offset }, state = this._drawSnapshot(); this._mirrorDraw(state, mode, 0, count, element); this._enqueue(() => this._draw(state, mode, 0, count, element, 1)); }
+  _fixedFunctionProgram(texture, colorArray, alphaEnabled, alphaFunc, texEnv) {
+    const key = stateKey([texture, colorArray, alphaEnabled ? alphaFunc : 0x0207, texture ? texEnv : 0]);
+    if (this._fixedFunctionProgramCache.has(key)) return this._fixedFunctionProgramCache.get(key);
+    const vertexLayout = uniformLayout([{ name: 'u_mvp', type: 'mat4' }, { name: 'u_texMatrix', type: 'mat4' }]);
+    const fragmentLayout = alphaEnabled ? uniformLayout([{ name: 'u_alphaRef', type: 'float' }]) : { fields: [], size: 0 };
+    const vertex = `struct VertexGlobals { u_mvp: mat4x4<f32>, u_texMatrix: mat4x4<f32> };
+@group(0) @binding(0) var<uniform> globals: VertexGlobals;
+struct VertexInput { @location(0) position: vec4<f32>, @location(1) color: vec4<f32>${texture ? ', @location(2) texCoord: vec4<f32>' : ''} };
+struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color: vec4<f32>${texture ? ', @location(1) texCoord: vec2<f32>' : ''} };
+@vertex fn main(input: VertexInput) -> VertexOutput { var output: VertexOutput; let clip = globals.u_mvp * input.position; output.position = vec4<f32>(clip.x, clip.y, (clip.z + clip.w) * 0.5, clip.w); output.color = input.color; ${texture ? 'output.texCoord = (globals.u_texMatrix * vec4<f32>(input.texCoord.xy, 0.0, 1.0)).xy;' : ''} return output; }`;
+    const fragmentInput = `struct FragmentInput { @location(0) color: vec4<f32>${texture ? ', @location(1) texCoord: vec2<f32>' : ''} };`;
+    const fragmentGlobals = alphaEnabled
+      ? 'struct FragmentGlobals { u_alphaRef: f32 };\n@group(0) @binding(1) var<uniform> fragmentGlobals: FragmentGlobals;'
+      : '';
+    const sampler = texture
+      ? '@group(0) @binding(2) var fixedTexture: texture_2d<f32>;\n@group(0) @binding(3) var fixedSampler: sampler;'
+      : '';
+    let colorExpression = 'input.color';
+    let texExpression = texture ? 'textureSample(fixedTexture, fixedSampler, input.texCoord)' : '';
+    if (texture && texEnv === 0x1e01) colorExpression = texExpression;
+    else if (texture && texEnv === 0x2101) colorExpression = `vec4<f32>(mix(input.color.rgb, ${texExpression}.rgb, ${texExpression}.a), input.color.a)`;
+    else if (texture) colorExpression = `input.color * ${texExpression}`;
+    const alphaCompare = new Map([
+      [0x0200, 'false'], [0x0201, 'color.a < fragmentGlobals.u_alphaRef'],
+      [0x0202, 'color.a == fragmentGlobals.u_alphaRef'], [0x0203, 'color.a <= fragmentGlobals.u_alphaRef'],
+      [0x0204, 'color.a > fragmentGlobals.u_alphaRef'], [0x0205, 'color.a != fragmentGlobals.u_alphaRef'],
+      [0x0206, 'color.a >= fragmentGlobals.u_alphaRef'], [0x0207, 'true'],
+    ]).get(alphaFunc) || 'true';
+    const alphaCheck = alphaEnabled ? `if (!(${alphaCompare})) { discard; }` : '';
+    const fragment = `${fragmentInput}\n${fragmentGlobals}\n${sampler}\n@fragment fn main(input: FragmentInput) -> @location(0) vec4<f32> { let color = ${colorExpression}; ${alphaCheck} return color; }`;
+    const program = {
+      id: this._nextId++, linked: true, linkPromise: Promise.resolve(true), infoLog: '',
+      attributes: new Map(), attributeLocations: new Map([['a_position', 0], ['a_color', 1], ...(texture ? [['a_texCoord', 2]] : [])]),
+      attributeInfo: [{ name: 'a_position', size: 1, type: 0x8b52 }, { name: 'a_color', size: 1, type: 0x8b52 }, ...(texture ? [{ name: 'a_texCoord', size: 1, type: 0x8b52 }] : [])],
+      uniformInfo: [], uniformLocations: new Map(), uniformValues: new Map(),
+      fixedFunction: { texture, colorArray, alphaEnabled, alphaFunc, alphaRef: this._fixedFunction.alphaRef, texEnv },
+      stages: {
+        vertex: { wgsl: vertex, layout: vertexLayout, activeUniforms: [], samplers: [] },
+        fragment: { wgsl: fragment, layout: fragmentLayout, activeUniforms: [], samplers: texture ? [{ name: 'u_fixedTexture', textureBinding: 2, samplerBinding: 3, arrayLength: 1 }] : [] },
+      },
+    };
+    this._fixedFunctionProgramCache.set(key, program);
+    return program;
+  }
+
+  _fixedArrayFloatData(data, spec, color) {
+    if (!data?.byteLength || !spec?.size) return null;
+    const componentBytes = spec.type === 0x1400 || spec.type === 0x1401 ? 1
+      : spec.type === 0x1402 || spec.type === 0x1403 ? 2
+        : spec.type === 0x140a ? 8 : 4;
+    const size = Math.max(1, Math.min(4, spec.size | 0));
+    const elementBytes = componentBytes * size;
+    const stride = spec.stride > 0 ? spec.stride : elementBytes;
+    const count = Math.max(0, Math.floor((data.byteLength - elementBytes) / stride) + 1);
+    if (!count) return null;
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength), result = new Float32Array(count * size);
+    const read = offset => spec.type === 0x1400 ? view.getInt8(offset)
+      : spec.type === 0x1401 ? view.getUint8(offset)
+        : spec.type === 0x1402 ? view.getInt16(offset, true)
+          : spec.type === 0x1403 ? view.getUint16(offset, true)
+            : spec.type === 0x1404 ? view.getInt32(offset, true)
+              : spec.type === 0x1405 ? view.getUint32(offset, true)
+                : spec.type === 0x1406 ? view.getFloat32(offset, true)
+                  : spec.type === 0x140a ? view.getFloat64(offset, true) : 0;
+    for (let i = 0; i < count; i++) for (let c = 0; c < size; c++) {
+      let value = read(i * stride + c * componentBytes);
+      if (color) {
+        if (spec.type === 0x1400) value = Math.max(-1, value / 127);
+        else if (spec.type === 0x1401) value /= 255;
+        else if (spec.type === 0x1402) value = Math.max(-1, value / 32767);
+        else if (spec.type === 0x1403) value /= 65535;
+        else if (spec.type === 0x1404) value = Math.max(-1, value / 2147483647);
+        else if (spec.type === 0x1405) value /= 4294967295;
+      }
+      result[i * size + c] = value;
+    }
+    return result;
+  }
+
+  _fixedArrayAttribute(index, spec, data, color, temporaryBuffers, baseVertex = 0) {
+    const attribute = { index, enabled: !!spec?.enabled, buffer: null, size: spec?.size || (color ? 4 : 4),
+      type: spec?.type || 0x1406, normalized: false, stride: spec?.stride || 0, offset: 0, integer: false, divisor: 0,
+      current: new Float32Array(color ? this._fixedFunction.color : [0, 0, 0, 1]) };
+    if (!attribute.enabled) return attribute;
+    const pointer = this._fixedFunctionPointers.get(index);
+    const values = this._fixedArrayFloatData(data, spec, color);
+    if (values) {
+      const buffer = this.createBuffer();
+      buffer.data = new Uint8Array(values.buffer.slice(0)); buffer.dirty = true; buffer.version++;
+      temporaryBuffers.push(buffer);
+      Object.assign(attribute, { buffer, type: 0x1406, stride: 0, offset: 0 });
+    } else if (pointer?.buffer) {
+      const componentBytes = [0x1400, 0x1401].includes(pointer.type) ? 1
+        : [0x1402, 0x1403, 0x140b].includes(pointer.type) ? 2 : pointer.type === 0x140a ? 8 : 4;
+      const stride = pointer.stride || pointer.size * componentBytes;
+      Object.assign(attribute, { buffer: pointer.buffer, type: pointer.type, size: pointer.size,
+        stride: pointer.stride, offset: pointer.offset + Math.max(0, baseVertex | 0) * stride,
+        normalized: color && [0x1400, 0x1401, 0x1402, 0x1403].includes(pointer.type) });
+    }
+    return attribute;
+  }
+
+  _fixedFunctionDraw(mode, first, count, indexed, arrays) {
+    if (this._currentProgram || count <= 0) return false;
+    const textureEnabled = this._enabled.has(GL.TEXTURE_2D);
+    const colorArray = !!arrays.color?.enabled;
+    const alphaTestEnabled = this._enabled.has(0x0bc0);
+    const fixed = this._fixedFunction;
+    const program = this._fixedFunctionProgram(textureEnabled, colorArray, alphaTestEnabled, fixed.alphaFunc, fixed.texEnv);
+    program.fixedFunction.alphaRef = fixed.alphaRef;
+    const stackTop = stack => stack[stack.length - 1];
+    const mvp = multiplyMatrix4(stackTop(fixed.projection), stackTop(fixed.modelview));
+    program.uniformValues.set('u_mvp', mvp);
+    program.uniformValues.set('u_texMatrix', stackTop(fixed.texture));
+    if (fixed.alphaFunc !== 0x0207) program.uniformValues.set('u_alphaRef', fixed.alphaRef);
+    if (textureEnabled) program.uniformValues.set('u_fixedTexture', this._activeTextureUnit);
+
+    const temporaryBuffers = [];
+    const attributes = new Map();
+    const baseVertex = arrays.baseVertex | 0;
+    const position = this._fixedArrayAttribute(0, arrays.vertex, arrays.vertexData, false, temporaryBuffers, baseVertex);
+    const color = this._fixedArrayAttribute(1, arrays.color, arrays.colorData, true, temporaryBuffers, baseVertex);
+    const texCoord = textureEnabled
+      ? this._fixedArrayAttribute(2, arrays.texCoord, arrays.texCoordData, false, temporaryBuffers, baseVertex)
+      : { index: 2, enabled: false, buffer: null, size: 4, type: 0x1406, normalized: false, stride: 0, offset: 0, integer: false, divisor: 0, current: new Float32Array([0, 0, 0, 1]) };
+    if (!position.enabled || (!position.buffer && !this._fixedFunctionPointers.get(0)?.buffer)) return false;
+    attributes.set(0, position); attributes.set(1, color); if (textureEnabled) attributes.set(2, texCoord);
+
+    let elementBuffer = this._elementArrayBuffer;
+    let elementOffset = 0;
+    let elementType = indexed?.type;
+    if (indexed?.bytes?.byteLength) {
+      elementBuffer = this.createBuffer(); elementBuffer.data = bytesOf(indexed.bytes); elementBuffer.dirty = true; elementBuffer.version++;
+      temporaryBuffers.push(elementBuffer);
+    } else if (indexed) elementOffset = indexed.offset || 0;
+
+    const previousVao = this._vao, previousProgram = this._currentProgram;
+    this._vao = { id: -1, elementArrayBuffer: elementBuffer, attributes };
+    this._elementArrayBuffer = elementBuffer;
+    this._currentProgram = program;
+    const state = this._drawSnapshot();
+    state.fixedTemporaryBuffers = temporaryBuffers;
+    this._vao = previousVao; this._elementArrayBuffer = previousVao.elementArrayBuffer; this._currentProgram = previousProgram;
+    const element = indexed ? { type: elementType, offset: elementOffset } : null;
+    this._mirrorDraw(state, mode, first, count, element);
+    this._enqueue(() => this._draw(state, mode, first, count, element, 1));
+    return true;
+  }
+
+  fixedFunctionDrawArrays(mode, first, count, arrays) {
+    return this._fixedFunctionDraw(mode, first, count, null, arrays);
+  }
+  fixedFunctionDrawElements(mode, count, type, offset, indexBytes, arrays) {
+    return this._fixedFunctionDraw(mode, 0, count, { type, offset, bytes: indexBytes }, arrays);
+  }
+
+  drawArrays(mode, first, count) {
+    if (!this._currentProgram && this._fixedFunctionDraw(mode, first, count, null, this._fixedFunctionLegacyArrays || {})) return;
+    const state = this._drawSnapshot(); this._mirrorDraw(state, mode, first, count, null); this._enqueue(() => this._draw(state, mode, first, count, null, 1));
+  }
+  drawElements(mode, count, type, offset) {
+    if (!this._currentProgram && this._fixedFunctionDraw(mode, 0, count, { type, offset }, this._fixedFunctionLegacyArrays || {})) return;
+    const element = { type, offset }, state = this._drawSnapshot(); this._mirrorDraw(state, mode, 0, count, element); this._enqueue(() => this._draw(state, mode, 0, count, element, 1));
+  }
   drawArraysInstanced(mode, first, count, instances) { const state = this._drawSnapshot(); this._mirrorDraw(state, mode, first, count, null); this._enqueue(() => this._draw(state, mode, first, count, null, instances)); }
   drawElementsInstanced(mode, count, type, offset, instances) { const element = { type, offset }, state = this._drawSnapshot(); this._mirrorDraw(state, mode, 0, count, element); this._enqueue(() => this._draw(state, mode, 0, count, element, instances)); }
 
@@ -892,9 +1159,10 @@ export class WebGPUGL {
     // renderer. Other programmable draws need direct-canvas presentation.
     if (!this._isDefaultFramebuffer(state.drawFramebuffer) || !state.program) return;
     const program = state.program;
+    const fixed = program.fixedFunction;
     const position = program.attributeInfo.find(item => /position/i.test(item.name));
     const color = program.attributeInfo.find(item => /color/i.test(item.name));
-    if (!position || !color || program.uniformInfo.some(item => item.type === 0x8b5e)) return;
+    if (!position || !color || (!fixed && program.uniformInfo.some(item => item.type === 0x8b5e))) return;
     let vertices = indexed ? this._indexValues(state.elementArrayBuffer, indexed.type, indexed.offset, count)
       : Uint32Array.from({ length: count }, (_, i) => first + i);
     if (!vertices) return;
@@ -910,16 +1178,28 @@ export class WebGPUGL {
     if (mode !== 0x0004 && mode !== 0x0005 && mode !== 0x0006) return;
     const posAttr = state.attributes.get(program.attributeLocations.get(position.name));
     const colorAttr = state.attributes.get(program.attributeLocations.get(color.name));
+    const texCoordAttr = fixed?.texture ? state.attributes.get(program.attributeLocations.get('a_texCoord')) : null;
+    const fixedMvp = fixed ? program.uniformValues.get('u_mvp') || identityMatrix() : null;
+    const fixedTexMatrix = fixed ? program.uniformValues.get('u_texMatrix') || identityMatrix() : null;
     const model = program.uniformValues.get('u_modelView') || identityMatrix();
     const projection = program.uniformValues.get('u_projection') || identityMatrix();
     const viewport = state.viewport;
     const transform = index => {
       const p = this._mirrorAttribute(posAttr, index);
-      const viewPosition = mulMat4(model, p), clip = mulMat4(projection, viewPosition);
+      const viewPosition = fixed ? null : mulMat4(model, p);
+      const clip = fixed ? mulMat4(fixedMvp, p) : mulMat4(projection, viewPosition);
       const w = clip[3];
       if (!Number.isFinite(w) || Math.abs(w) < 1e-8) return null;
       const nx = clip[0] / w, ny = clip[1] / w;
-      return { x: viewport[0] + (nx + 1) * viewport[2] * 0.5, y: viewport[1] + (ny + 1) * viewport[3] * 0.5, color: this._mirrorAttribute(colorAttr, index) };
+      const vertex = { x: viewport[0] + (nx + 1) * viewport[2] * 0.5,
+        y: viewport[1] + (ny + 1) * viewport[3] * 0.5,
+        z: clamp01((clip[2] / w + 1) * 0.5), color: this._mirrorAttribute(colorAttr, index) };
+      if (fixed?.texture) {
+        const coordinates = this._mirrorAttribute(texCoordAttr, index);
+        const transformed = mulMat4(fixedTexMatrix, [coordinates[0], coordinates[1], 0, 1]);
+        vertex.texCoord = [transformed[0] / (transformed[3] || 1), transformed[1] / (transformed[3] || 1)];
+      }
+      return vertex;
     };
     for (let i = 0; i + 2 < vertices.length; i += 3) {
       const triangle = [transform(vertices[i]), transform(vertices[i + 1]), transform(vertices[i + 2])];
@@ -943,6 +1223,51 @@ export class WebGPUGL {
     const scissor = state.enabled.has(0x0c11) ? state.scissor : [0, 0, this._width, this._height];
     const left = Math.max(minX, scissor[0]), right = Math.min(maxX, scissor[0] + scissor[2]);
     const bottom = Math.max(minY, scissor[1]), top = Math.min(maxY, scissor[1] + scissor[3]);
+    const fixed = state.program?.fixedFunction;
+    const textureUnit = Number(state.program?.uniformValues.get('u_fixedTexture') ?? 0) | 0;
+    const texture = fixed?.texture ? this._textureUnits[textureUnit]?.[GL.TEXTURE_2D] || this._whiteTexture() : null;
+    const sampleTexture = (u, v) => {
+      if (!texture?.pixels || !texture.width || !texture.height) return [1, 1, 1, 1];
+      const wrap = (value, mode) => {
+        if (mode === 0x2901) return value - Math.floor(value);
+        if (mode === 0x8370) { const mirrored = ((value % 2) + 2) % 2; return mirrored <= 1 ? mirrored : 2 - mirrored; }
+        return clamp01(value);
+      };
+      u = wrap(u, texture.params.get(0x2802) ?? 0x812f);
+      v = wrap(v, texture.params.get(0x2803) ?? 0x812f);
+      const tx = Math.min(texture.width - 1, Math.floor(u * texture.width));
+      const ty = Math.min(texture.height - 1, Math.floor(v * texture.height));
+      const offset = (ty * texture.width + tx) * 4;
+      return Array.from(texture.pixels.subarray(offset, offset + 4), value => value / 255);
+    };
+    const compareAlpha = (func, alpha, reference) => {
+      switch (func) {
+        case 0x0200: return false; case 0x0201: return alpha < reference;
+        case 0x0202: return alpha === reference; case 0x0203: return alpha <= reference;
+        case 0x0204: return alpha > reference; case 0x0205: return alpha !== reference;
+        case 0x0206: return alpha >= reference; default: return true;
+      }
+    };
+    const factor = (mode, source, destination, channel) => {
+      switch (mode) {
+        case 0x0000: return 0; case 0x0001: return 1;
+        case 0x0300: return source[channel]; case 0x0301: return 1 - source[channel];
+        case 0x0302: return source[3]; case 0x0303: return 1 - source[3];
+        case 0x0304: return destination[3]; case 0x0305: return 1 - destination[3];
+        case 0x0306: return destination[channel]; case 0x0307: return 1 - destination[channel];
+        case 0x8001: return state.blendColor[channel]; case 0x8004: return 1 - state.blendColor[channel];
+        default: return 1;
+      }
+    };
+    const blend = (source, destination, sourceMode, destinationMode, operation, channel) => {
+      if (operation === 0x8007) return Math.min(source[channel], destination[channel]);
+      if (operation === 0x8008) return Math.max(source[channel], destination[channel]);
+      const s = source[channel] * factor(sourceMode, source, destination, channel);
+      const d = destination[channel] * factor(destinationMode, source, destination, channel);
+      if (operation === 0x800a) return s - d;
+      if (operation === 0x800b) return d - s;
+      return s + d;
+    };
     for (let y = bottom; y <= top; y++) for (let x = left; x <= right; x++) {
       const px = x + 0.5, py = y + 0.5;
       const a = edge(vertices[1], vertices[2], px, py) / area;
@@ -950,8 +1275,24 @@ export class WebGPUGL {
       const c = 1 - a - b;
       if (a < 0 || b < 0 || c < 0) continue;
       const offset = (y * this._width + x) * 4;
+      const source = [0, 1, 2, 3].map(channel =>
+        a * vertices[0].color[channel] + b * vertices[1].color[channel] + c * vertices[2].color[channel]);
+      if (fixed?.texture && texture) {
+        const u = a * vertices[0].texCoord[0] + b * vertices[1].texCoord[0] + c * vertices[2].texCoord[0];
+        const v = a * vertices[0].texCoord[1] + b * vertices[1].texCoord[1] + c * vertices[2].texCoord[1];
+        const texel = sampleTexture(u, v);
+        if (fixed.texEnv === 0x1e01) source.splice(0, 4, ...texel);
+        else if (fixed.texEnv === 0x2101) for (let channel = 0; channel < 3; channel++) source[channel] = source[channel] * (1 - texel[3]) + texel[channel] * texel[3];
+        else for (let channel = 0; channel < 4; channel++) source[channel] *= texel[channel];
+      }
+      if (fixed?.alphaEnabled && !compareAlpha(fixed.alphaFunc, source[3], fixed.alphaRef)) continue;
+      const destination = Array.from(this._pixels.subarray(offset, offset + 4), value => value / 255);
       for (let channel = 0; channel < 4; channel++) if (state.colorMask[channel]) {
-        const value = a * vertices[0].color[channel] + b * vertices[1].color[channel] + c * vertices[2].color[channel];
+        const value = state.enabled.has(0x0be2)
+          ? blend(source, destination, channel === 3 ? state.blend.srcAlpha : state.blend.srcRGB,
+            channel === 3 ? state.blend.dstAlpha : state.blend.dstRGB,
+            channel === 3 ? state.blend.equationAlpha : state.blend.equationRGB, channel)
+          : source[channel];
         this._pixels[offset + channel] = Math.round(clamp01(value) * 255);
       }
     }
@@ -1120,6 +1461,12 @@ export class WebGPUGL {
     pass.end();
     this._device.queue.submit([encoder.finish()]);
     if (temporaryIndex) this._device.queue.onSubmittedWorkDone().then(() => temporaryIndex.destroy()).catch(() => {});
+    if (state.fixedTemporaryBuffers?.length) this._device.queue.onSubmittedWorkDone().then(() => {
+      for (const buffer of state.fixedTemporaryBuffers) {
+        buffer.gpu?.destroy();
+        this._buffers.delete(buffer);
+      }
+    }).catch(() => {});
   }
 
   blendFunc(src, dst) { this.blendFuncSeparate(src, dst, src, dst); }

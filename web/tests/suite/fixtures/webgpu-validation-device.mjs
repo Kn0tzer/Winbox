@@ -7,6 +7,7 @@ export function createValidationDevice() {
     addEventListener() {}, lost: new Promise(() => {}), pushErrorScope() {}, async popErrorScope() { return null; },
     createTexture(d) { const t=texture(d);textures.push(t);return t; },
     createBuffer(d) { const bytes = new ArrayBuffer(d.size); const b = { ...d, data: bytes, getMappedRange: () => bytes, async mapAsync() {}, unmap() {}, destroy() {} }; buffers.push(b); return b; },
+    createSampler(d) { return d; },
     createBindGroupLayout: d => d, createPipelineLayout: d => d, createShaderModule: d => d,
     createBindGroup(d) { for(const e of d.entries) { const l=d.layout.entries.find(l=>l.binding===e.binding);if(l.texture) assert.equal(e.resource.dimension,l.texture.viewDimension); }return d; },
     createRenderPipeline(d) { d.getBindGroupLayout = () => ({ entries: [{binding:0,texture:{viewDimension:'2d'}},{binding:1,buffer:{}}] }); pipelines.push(d); return d; },
@@ -20,7 +21,7 @@ export function createValidationDevice() {
             assert.equal(p.fragment.targets.length, d.colorAttachments.length, 'pipeline must match the current pass color attachments');
           }
           currentPipeline = p; bound.push(p);
-        }, draw() {draws.push(currentPipeline);}, setStencilReference(n) {stencilReferences.push(n);}, setViewport(...v) {viewports.push(v);}, setScissorRect(...v) {scissors.push(v);}, setBlendConstant(value) { blendConstants.push([...value]); }, setBindGroup() {}, setIndexBuffer(buffer, format, offset) { indexFormat = format; indexBindings.push({buffer,format,offset}); },
+        }, draw() {draws.push(currentPipeline);}, setStencilReference(n) {stencilReferences.push(n);}, setViewport(...v) {viewports.push(v);}, setScissorRect(...v) {scissors.push(v);}, setBlendConstant(value) { blendConstants.push([...value]); }, setBindGroup() {}, setVertexBuffer() {}, setIndexBuffer(buffer, format, offset) { indexFormat = format; indexBindings.push({buffer,format,offset}); },
         drawIndexed(...args) { if (currentPipeline.primitive.topology.endsWith('strip')) assert.equal(currentPipeline.primitive.stripIndexFormat, indexFormat); indexedDraws.push(args); }, end() {},
       }; }, copyTextureToBuffer() {}, copyTextureToTexture(src,dst,extent) { copies.push({src,dst,extent}); }, finish() { return {}; },
     }; }, queue: { submit() {}, writeTexture(d,data,layout,size) { writes.push({d,data:new Uint8Array(data),layout,size}); }, async onSubmittedWorkDone() {} }, destroy() {},

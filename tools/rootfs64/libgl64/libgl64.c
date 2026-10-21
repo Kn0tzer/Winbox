@@ -382,7 +382,17 @@ enum {
     GL64_fn_glUniform2uiv = 866,
     GL64_fn_glUniform3uiv = 867,
     GL64_fn_glUniform4uiv = 868,
-    GL64_fn_glGetUniformuiv = 869
+    GL64_fn_glGetUniformuiv = 869,
+    GL64_fn_glEnableClientState = 870,
+    GL64_fn_glDisableClientState,
+    GL64_fn_glVertexPointer,
+    GL64_fn_glColorPointer,
+    GL64_fn_glTexCoordPointer,
+    GL64_fn_glAlphaFunc,
+    GL64_fn_glTexEnvf,
+    GL64_fn_glTexEnvi,
+    GL64_fn_glTexEnvfv,
+    GL64_fn_glTexEnviv
 };
 
 // ---- the trap ---------------------------------------------------------------
@@ -585,6 +595,18 @@ API void glViewport(GLint x, GLint y, GLsizei w, GLsizei h) {
 API void glEnable(GLenum c)  { GL64Args a={{0}}; a.a[0]=c; (void)gl64_trap(GL64_fn_glEnable,&a); }
 API void glDisable(GLenum c) { GL64Args a={{0}}; a.a[0]=c; (void)gl64_trap(GL64_fn_glDisable,&a); }
 API void glShadeModel(GLenum m){ GL64Args a={{0}}; a.a[0]=m; (void)gl64_trap(GL64_fn_glShadeModel,&a); }
+API void glEnableClientState(GLenum array) { GL64Args a={{0}}; a.a[0]=array; (void)gl64_trap(GL64_fn_glEnableClientState,&a); }
+API void glDisableClientState(GLenum array) { GL64Args a={{0}}; a.a[0]=array; (void)gl64_trap(GL64_fn_glDisableClientState,&a); }
+API void glLockArraysEXT(GLint first, GLsizei count) { (void)first; (void)count; }
+API void glUnlockArraysEXT(void) {}
+API void glVertexPointer(GLint size, GLenum type, GLsizei stride, const void* pointer) { GL64Args a={{0}}; a.a[0]=(uint64_t)(uint32_t)size; a.a[1]=type; a.a[2]=(uint64_t)(uint32_t)stride; a.a[3]=(uint64_t)(uintptr_t)pointer; (void)gl64_trap(GL64_fn_glVertexPointer,&a); }
+API void glColorPointer(GLint size, GLenum type, GLsizei stride, const void* pointer) { GL64Args a={{0}}; a.a[0]=(uint64_t)(uint32_t)size; a.a[1]=type; a.a[2]=(uint64_t)(uint32_t)stride; a.a[3]=(uint64_t)(uintptr_t)pointer; (void)gl64_trap(GL64_fn_glColorPointer,&a); }
+API void glTexCoordPointer(GLint size, GLenum type, GLsizei stride, const void* pointer) { GL64Args a={{0}}; a.a[0]=(uint64_t)(uint32_t)size; a.a[1]=type; a.a[2]=(uint64_t)(uint32_t)stride; a.a[3]=(uint64_t)(uintptr_t)pointer; (void)gl64_trap(GL64_fn_glTexCoordPointer,&a); }
+API void glAlphaFunc(GLenum func, GLfloat ref) { GL64Args a={{0}}; a.a[0]=func; a.a[1]=F2U(ref); (void)gl64_trap(GL64_fn_glAlphaFunc,&a); }
+API void glTexEnvf(GLenum target, GLenum pname, GLfloat param) { GL64Args a={{0}}; a.a[0]=target; a.a[1]=pname; a.a[2]=F2U(param); (void)gl64_trap(GL64_fn_glTexEnvf,&a); }
+API void glTexEnvi(GLenum target, GLenum pname, GLint param) { GL64Args a={{0}}; a.a[0]=target; a.a[1]=pname; a.a[2]=(uint64_t)(uint32_t)param; (void)gl64_trap(GL64_fn_glTexEnvi,&a); }
+API void glTexEnvfv(GLenum target, GLenum pname, const GLfloat* params) { GL64Args a={{0}}; a.a[0]=target; a.a[1]=pname; a.a[2]=(uint64_t)(uintptr_t)params; (void)gl64_trap(GL64_fn_glTexEnvfv,&a); }
+API void glTexEnviv(GLenum target, GLenum pname, const GLint* params) { GL64Args a={{0}}; a.a[0]=target; a.a[1]=pname; a.a[2]=(uint64_t)(uintptr_t)params; (void)gl64_trap(GL64_fn_glTexEnviv,&a); }
 API void glDepthFunc(GLenum f){ GL64Args a={{0}}; a.a[0]=f; (void)gl64_trap(GL64_fn_glDepthFunc,&a); }
 API void glCullFace(GLenum m) { GL64Args a={{0}}; a.a[0]=m; (void)gl64_trap(GL64_fn_glCullFace,&a); }
 API void glFrontFace(GLenum m){ GL64Args a={{0}}; a.a[0]=m; (void)gl64_trap(GL64_fn_glFrontFace,&a); }
@@ -1286,7 +1308,11 @@ static const struct procEntry g_procs[] = {
     E(glXWaitGL), E(glXWaitX), E(glXSwapIntervalEXT), E(glXSwapIntervalMESA),
     E(glXSwapIntervalSGI),
     E(glClearColor), E(glClear), E(glClearDepth), E(glViewport), E(glEnable),
-    E(glDisable), E(glShadeModel), E(glDepthFunc), E(glCullFace), E(glFrontFace),
+    E(glDisable), E(glShadeModel), E(glEnableClientState), E(glDisableClientState),
+    E(glLockArraysEXT), E(glUnlockArraysEXT),
+    E(glVertexPointer), E(glColorPointer), E(glTexCoordPointer), E(glAlphaFunc),
+    E(glTexEnvf), E(glTexEnvi), E(glTexEnvfv), E(glTexEnviv),
+    E(glDepthFunc), E(glCullFace), E(glFrontFace),
     E(glHint), E(glFlush), E(glFinish), E(glGetError), E(glGetString),
     E(glGetIntegerv), E(glGetFloatv), E(glColor3f), E(glColor4f),
     E(glMatrixMode), E(glLoadIdentity), E(glPushMatrix), E(glPopMatrix),
