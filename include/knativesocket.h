@@ -74,10 +74,20 @@ public:
     S32 nativeSocket;
     bool connecting;
     bool loopbackDatagram = false;
+    bool loopbackStream = false;
+    bool loopbackStreamConnected = false;
+    bool loopbackStreamPeerEof = false;
+    bool loopbackReuseAddress = false;
+    U32 loopbackStreamBacklog = 0;
     U32 loopbackAddress = 0;
     U16 loopbackPort = 0;
     U32 loopbackPeerAddress = 0;
     U16 loopbackPeerPort = 0;
+
+    std::weak_ptr<KNativeSocketObject> loopbackStreamPeer;
+    std::deque<std::shared_ptr<KNativeSocketObject>> loopbackAcceptQueue;
+    std::deque<U8> loopbackStreamBytes;
+    std::mutex loopbackStreamMutex;
 
     struct LoopbackPacket {
         std::vector<U8> bytes;
@@ -88,6 +98,11 @@ public:
     std::mutex loopbackPacketsMutex;
 
     U32 bindLoopback(U32 address, U16 port);
+    U32 bindLoopbackStream(U32 address, U16 port);
+    U32 takeLoopbackStreamConnection(std::shared_ptr<KNativeSocketObject>& accepted, bool nonblocking = false);
+    U32 sendLoopbackStream(const U8* bytes, U32 length, U32 flags);
+    U32 recvLoopbackStream(U8* bytes, U32 length, U32 flags);
+    void closeLoopbackStream();
     U32 ensureLoopbackBound();
     U32 sendLoopbackBytes(KThread* thread, const U8* bytes, U32 length, U32 flags,
                           const struct sockaddr_in* destination, bool hasDestination);

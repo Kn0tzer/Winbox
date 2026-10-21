@@ -85,7 +85,9 @@ U32 ksocket(U32 domain, U32 type, U32 protocol) {
         }();
         const bool guestLoopbackUdp =
             domain == K_AF_INET && type == K_SOCK_DGRAM && (protocol == 0 || protocol == 17);
-        if (!guestLoopbackUdp &&
+        const bool guestLoopbackTcp =
+            domain == K_AF_INET && type == K_SOCK_STREAM && (protocol == 0 || protocol == 6);
+        if (!guestLoopbackUdp && !guestLoopbackTcp &&
             (!relayEnabled || domain != K_AF_INET || type != K_SOCK_STREAM || (protocol != 0 && protocol != 6))) {
             return -K_EAFNOSUPPORT;
         }

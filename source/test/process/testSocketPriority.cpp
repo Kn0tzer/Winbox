@@ -115,6 +115,122 @@ void testInetDatagramLoopback() {
     }
 }
 
+void testInetStreamLoopback() {
+    TestContext& context = testContext();
+    constexpr U32 address = TEST_HEAP_ADDRESS + 0x500;
+    constexpr U32 name = TEST_HEAP_ADDRESS + 0x540;
+    constexpr U32 nameLength = TEST_HEAP_ADDRESS + 0x580;
+    constexpr U32 optionValue = TEST_HEAP_ADDRESS + 0x5c0;
+    constexpr U32 optionLength = TEST_HEAP_ADDRESS + 0x5c4;
+    const U32 family = K_AF_INET;
+
+    auto server = std::make_shared<KNativeSocketObject>(family, K_SOCK_STREAM, 6);
+    auto client = std::make_shared<KNativeSocketObject>(family, K_SOCK_STREAM, 6);
+    if (server->error || client->error) {
+        testFail("AF_INET stream socket creation failed");
+        return;
+    }
+    // Exercise the browser-local transport on native builds without making a
+    // host TCP connection.
+    server->loopbackStream = true;
+    client->loopbackStream = true;
+    KFileDescriptorPtr serverFd = std::make_shared<KFileDescriptor>(context.process, server, K_O_RDWR, 0, 30);
+    KFileDescriptorPtr clientFd = std::make_shared<KFileDescriptor>(
+        context.process, client, K_O_RDWR | K_O_NONBLOCK, FD_CLOEXEC, 31);
+    client->setBlocking(false);
+    if (client->isBlocking() || !(clientFd->accessFlags & K_O_NONBLOCK) ||
+        !(clientFd->descriptorFlags & FD_CLOEXEC)) {
+        testFail("AF_INET stream nonblocking/cloexec flags were not retained");
+        return;
+    }
+
+    context.memory->writed(optionValue, 1);
+    U32 result = server->setsockopt(context.thread, serverFd, K_SOL_SOCKET,
+                                    K_SO_REUSEADDR, optionValue, 4);
+    context.memory->writed(optionLength, 4);
+    if ((S32)result || (S32)server->getsockopt(context.thread, serverFd, K_SOL_SOCKET,
+                                                K_SO_REUSEADDR, optionValue, optionLength) ||
+        context.memory->readd(optionValue) != 1) {
+        testFail("AF_INET stream SO_REUSEADDR did not round-trip");
+        return;
+    }
+
+    context.memory->writew(address, K_AF_INET);
+    context.memory->writew(address + 2, 0);
+    context.memory->writeb(address + 4, 127);
+    context.memory->writeb(address + 5, 0);
+    context.memory->writeb(address + 6, 0);
+    context.memory->writeb(address + 7, 1);
+    result = server->bind(context.thread, serverFd, address, 16);
+    if ((S32)result || (S32)server->listen(context.thread, serverFd, 4)) {
+        testFail("AF_INET stream bind/listen on 127.0.0.1:0 failed");
+        return;
+    }
+
+    context.memory->writed(nameLength, 16);
+    result = server->getsockname(context.thread, serverFd, name, nameLength);
+    if ((S32)result || context.memory->readd(nameLength) != 16 ||
+        (context.memory->readb(name + 2) == 0 && context.memory->readb(name + 3) == 0)) {
+        testFail("AF_INET stream getsockname did not return an assigned port");
+        return;
+    }
+    auto refused = std::make_shared<KNativeSocketObject>(family, K_SOCK_STREAM, 6);
+    refused->loopbackStream = true;
+    KFileDescriptorPtr refusedFd = std::make_shared<KFileDescriptor>(context.process, refused, K_O_RDWR, 0, 33);
+    const U16 listeningPort = (U16)((context.memory->readb(name + 2) << 8) | context.memory->readb(name + 3));
+    const U16 refusedPort = listeningPort == 65535 ? 1 : listeningPort + 1;
+    context.memory->writeb(name + 2, (refusedPort >> 8) & 0xff);
+    context.memory->writeb(name + 3, refusedPort & 0xff);
+    if ((S32)refused->connect(context.thread, refusedFd, name, 16) != -K_ECONNREFUSED) {
+        testFail("AF_INET stream connect to a non-listening port did not return ECONNREFUSED");
+        return;
+    }
+    // Restore the listening endpoint's address for the successful client.
+    context.memory->writeb(name + 2, (listeningPort >> 8) & 0xff);
+    context.memory->writeb(name + 3, listeningPort & 0xff);
+    result = client->connect(context.thread, clientFd, name, 16);
+    if ((S32)result || !server->isReadReady() || !client->isWriteReady()) {
+        testFail("AF_INET stream loopback connect/readiness failed: %d", (S32)result);
+        return;
+    }
+
+    std::shared_ptr<KNativeSocketObject> accepted;
+    result = server->takeLoopbackStreamConnection(accepted);
+    if ((S32)result < 0 || !accepted) {
+        testFail("AF_INET stream loopback accept failed: %d", (S32)result);
+        return;
+    }
+    KFileDescriptorPtr acceptedFd = std::make_shared<KFileDescriptor>(context.process, accepted, K_O_RDWR, 0, 32);
+    const U8 request[] = {'p', 'i', 'n', 'g'};
+    U8 buffer[8] = {};
+    const U32 sent = client->writeNative((U8*)request, sizeof(request));
+    const bool serverReady = accepted->isReadReady();
+    const U32 receivedRequest = accepted->readNative(buffer, sizeof(buffer));
+    if ((S32)sent != (S32)sizeof(request) || !serverReady ||
+        (S32)receivedRequest != (S32)sizeof(request) || memcmp(buffer, request, sizeof(request)) != 0) {
+        testFail("AF_INET stream client-to-server data failed: sent=%d ready=%d received=%d first=%d",
+                 (S32)sent, serverReady ? 1 : 0, (S32)receivedRequest, buffer[0]);
+        return;
+    }
+
+    const U8 response[] = {'p', 'o', 'n', 'g'};
+    result = accepted->writeNative((U8*)response, sizeof(response));
+    memset(buffer, 0, sizeof(buffer));
+    if ((S32)result != (S32)sizeof(response) || !client->isReadReady() ||
+        (S32)client->readNative(buffer, sizeof(buffer)) != (S32)sizeof(response) ||
+        memcmp(buffer, response, sizeof(response)) != 0) {
+        testFail("AF_INET stream server-to-client loopback data failed");
+        return;
+    }
+
+    accepted.reset();
+    acceptedFd.reset();
+    if (!client->isReadReady() || client->readNative(buffer, sizeof(buffer)) != 0) {
+        testFail("AF_INET stream close did not produce readable EOF");
+        return;
+    }
+}
+
 void testSocketPriority() {
     KUnixSocketObject unixSocket(K_AF_UNIX, K_SOCK_STREAM, 0);
     KNetLinkObject netlinkSocket(K_AF_NETLINK, K_SOCK_DGRAM, 0);
