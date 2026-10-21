@@ -31,6 +31,7 @@
 #include <cstring>
 #include <mutex>
 #include <set>
+#include <string>
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
 #define BW64_RECOVER_KEEPALIVE EMSCRIPTEN_KEEPALIVE
@@ -47,12 +48,14 @@ static std::atomic<unsigned long long> g_recoverPanics{0};
 static std::atomic<unsigned long long> g_recoverSkippedInstructions{0};
 static std::atomic<unsigned long long> g_recoverLoggedRips{0};
 static std::atomic<unsigned long long> g_recoverSigillFallbacks{0};
+static std::atomic<unsigned long long> g_recoverUnsupportedCases{0};
 static thread_local bool g_recoverPanicInProgress = false;
 #ifdef __TEST
 static thread_local int g_recoverTestOverride = -1;
 #endif
 static std::mutex g_recoverRipMutex;
 static std::set<std::pair<unsigned, U64>> g_recoverLoggedRipSet;
+static std::set<std::string> g_recoverLoggedOnceSet;
 
 bool bw64RecoverEnabled() {
 #ifdef __TEST
@@ -92,15 +95,31 @@ bool bw64RecoverClaimRip(unsigned architecture, U64 rip) {
     return true;
 }
 
+void bw64RecoverLogOnce(const char* key, const char* message) {
+    if (!bw64RecoverEnabled() || !key || !message) return;
+    {
+        std::lock_guard<std::mutex> lock(g_recoverRipMutex);
+        if (g_recoverLoggedOnceSet.find(key) != g_recoverLoggedOnceSet.end() ||
+            g_recoverLoggedOnceSet.size() >= 512) return;
+        g_recoverLoggedOnceSet.insert(key);
+    }
+    g_recoverUnsupportedCases.fetch_add(1, std::memory_order_relaxed);
+    BString recovered = BString::copy("recover: ");
+    recovered += message;
+    recovered += "\n";
+    internal_log(recovered, stdout);
+}
+
 extern "C" BW64_RECOVER_KEEPALIVE const char* bw64_recover_stats_json_text() {
     static thread_local char text[256];
     std::snprintf(text, sizeof(text),
-                  "{\"enabled\":%s,\"panics\":%llu,\"skippedInstructions\":%llu,\"loggedRips\":%llu,\"sigillFallbacks\":%llu}",
+                  "{\"enabled\":%s,\"panics\":%llu,\"skippedInstructions\":%llu,\"loggedRips\":%llu,\"sigillFallbacks\":%llu,\"unsupportedCases\":%llu}",
                   bw64RecoverEnabled() ? "true" : "false",
                   g_recoverPanics.load(std::memory_order_relaxed),
                   g_recoverSkippedInstructions.load(std::memory_order_relaxed),
                   g_recoverLoggedRips.load(std::memory_order_relaxed),
-                  g_recoverSigillFallbacks.load(std::memory_order_relaxed));
+                  g_recoverSigillFallbacks.load(std::memory_order_relaxed),
+                  g_recoverUnsupportedCases.load(std::memory_order_relaxed));
     return text;
 }
 

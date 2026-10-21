@@ -245,6 +245,15 @@ U32 syscall_signalfd4(KThread* thread, S32 fildes, U32 mask, U32 maskSize, U32 f
     KFileDescriptorPtr fd;
     KMemory* memory = thread->memory;
 
+    if (bw64RecoverEnabled() && (flags & ~(K_O_CLOEXEC | K_O_NONBLOCK))) {
+        bw64RecoverLogOnce("syscall.signalfd4.flags", "unsupported signalfd4 flags; returned EINVAL");
+        return -K_EINVAL;
+    }
+    if (bw64RecoverEnabled() && maskSize != 4 && maskSize != 8) {
+        bw64RecoverLogOnce("syscall.signalfd4.mask_size", "unsupported signalfd4 mask size; returned EINVAL");
+        return -K_EINVAL;
+    }
+
     if (fildes>=0) {
         fd = thread->process->getFileDescriptor(fildes);
         if (!fd)

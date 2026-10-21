@@ -812,7 +812,11 @@ U32 KNativeSocketObject::ioctl(KThread* thread, U32 request) {
         return 0;
 #endif
     } else {
-        kwarn_fmt("KNativeSocketObject::ioctl request=%x not implemented", request);
+        if (bw64RecoverEnabled()) {
+            bw64RecoverLogOnce("ioctl.unsupported", "unsupported ioctl on file descriptor; returned ENOTTY");
+        } else {
+            kwarn_fmt("KNativeSocketObject::ioctl request=%x not implemented", request);
+        }
     }
     return -K_ENOTTY;
 }
@@ -1267,7 +1271,8 @@ U32 KNativeSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& f
 #endif
             break;
         default:
-            kwarn_fmt("KNativeSocketObject::setsockopt IPPROTO_IP name %d not implemented", name);
+            if (bw64RecoverEnabled()) bw64RecoverLogOnce("socket.native.setsockopt.ip", "unsupported IP socket option; returned EINVAL");
+            else kwarn_fmt("KNativeSocketObject::setsockopt IPPROTO_IP name %d not implemented", name);
             return -K_EINVAL;
         }
     }
@@ -1305,7 +1310,8 @@ U32 KNativeSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& f
 #endif
             break;
         default:
-            kwarn_fmt("KNativeSocketObject::setsockopt IPPROTO_TCP name %d not implemented", name);
+            if (bw64RecoverEnabled()) bw64RecoverLogOnce("socket.native.setsockopt.tcp", "unsupported TCP socket option; returned EINVAL");
+            else kwarn_fmt("KNativeSocketObject::setsockopt IPPROTO_TCP name %d not implemented", name);
             return -K_EINVAL;
         }
     } else if (level == K_SOL_SOCKET) {
@@ -1404,11 +1410,13 @@ U32 KNativeSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& f
                 }
                 break;
             default:
-                kwarn_fmt("KNativeSocketObject::setsockopt SOL_SOCKET name %d not implemented", name);
+                if (bw64RecoverEnabled()) bw64RecoverLogOnce("socket.native.setsockopt.sol", "unsupported SOL_SOCKET option; returned EINVAL");
+                else kwarn_fmt("KNativeSocketObject::setsockopt SOL_SOCKET name %d not implemented", name);
                 return -K_EINVAL;
         }
     } else {
-        kwarn_fmt("KNativeSocketObject::setsockopt level %d not implemented", level);
+        if (bw64RecoverEnabled()) bw64RecoverLogOnce("socket.native.setsockopt.level", "unsupported socket option level; returned EINVAL");
+        else kwarn_fmt("KNativeSocketObject::setsockopt level %d not implemented", level);
         return -K_EINVAL;
     }
     this->error = 0;
@@ -1550,11 +1558,13 @@ U32 KNativeSocketObject::getsockopt(KThread* thread, const KFileDescriptorPtr& f
                 memory->writed(value, type);
             }
         } else {
-            kwarn_fmt("KNativeSocketObject::getsockopt name %d not implemented", name);
+            if (bw64RecoverEnabled()) bw64RecoverLogOnce("socket.native.getsockopt.sol", "unsupported SOL_SOCKET getsockopt option; returned EINVAL");
+            else kwarn_fmt("KNativeSocketObject::getsockopt name %d not implemented", name);
             return -K_EINVAL;
         }
     } else {
-        kwarn_fmt("KNativeSocketObject::getsockopt level %d not implemented", level);
+        if (bw64RecoverEnabled()) bw64RecoverLogOnce("socket.native.getsockopt.level", "unsupported getsockopt level; returned EINVAL");
+        else kwarn_fmt("KNativeSocketObject::getsockopt level %d not implemented", level);
         return -K_EINVAL;
     }
     LOG_SOCK("%x native socket: %x getsockopt level=%x name=%x value=%x result=%x", thread->id, nativeSocket, level, name, retrievedValue, result);

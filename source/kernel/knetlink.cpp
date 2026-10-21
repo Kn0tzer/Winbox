@@ -345,9 +345,17 @@ U32 KNetLinkObject::setsockopt(KThread* thread, const KFileDescriptorPtr& fd, U3
         case K_SO_ATTACH_FILTER:
             break;
         default:
+            if (bw64RecoverEnabled()) {
+                bw64RecoverLogOnce("socket.netlink.setsockopt", "unsupported netlink socket option; returned EINVAL");
+                return -K_EINVAL;
+            }
             kwarn_fmt("KNetLinkObject::setsockopt name %d not implemented", name);
         }
     } else {
+        if (bw64RecoverEnabled()) {
+            bw64RecoverLogOnce("socket.netlink.setsockopt.level", "unsupported netlink socket option level; returned EINVAL");
+            return -K_EINVAL;
+        }
         kwarn_fmt("KNetLinkObject::setsockopt level %d not implemented", level);
     }
     return 0;
@@ -380,11 +388,13 @@ U32 KNetLinkObject::getsockopt(KThread* thread, const KFileDescriptorPtr& fd, U3
             memory->writed(value, getNetlinkPriority(this));
             memory->writed(len_address, 4);
         } else {
-            kwarn_fmt("KNetLinkObject::getsockopt name %d not implemented", name);
+            if (bw64RecoverEnabled()) bw64RecoverLogOnce("socket.netlink.getsockopt", "unsupported netlink getsockopt option; returned EINVAL");
+            else kwarn_fmt("KNetLinkObject::getsockopt name %d not implemented", name);
             return -K_EINVAL;
         }
     } else {
-        kwarn_fmt("KNetLinkObject::getsockopt level %d not implemented", level);
+        if (bw64RecoverEnabled()) bw64RecoverLogOnce("socket.netlink.getsockopt.level", "unsupported netlink getsockopt level; returned EINVAL");
+        else kwarn_fmt("KNetLinkObject::getsockopt level %d not implemented", level);
         return -K_EINVAL;
     }
     return 0;

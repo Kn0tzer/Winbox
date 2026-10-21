@@ -1519,7 +1519,11 @@ U32 KProcess::ioctl(KThread* thread, FD fildes, U32 request) {
     if (fd == nullptr) {
         return -K_EBADF;
     }
-    return fd->kobject->ioctl(thread, request);
+    U32 result = fd->kobject->ioctl(thread, request);
+    if (bw64RecoverEnabled() && result == (U32)-K_ENOTTY) {
+        bw64RecoverLogOnce("ioctl.unsupported", "unsupported ioctl on file descriptor; returned ENOTTY");
+    }
+    return result;
 }
 
 U32 KProcess::umask(U32 umask) {	
@@ -1746,6 +1750,10 @@ U32 KProcess::fstatfs64(FD fildes, U32 address) {
 U32 KProcess::setitimer(U32 which, U32 newValue, U32 oldValue) {
 
     if (which != 0) { // ITIMER_REAL
+        if (bw64RecoverEnabled()) {
+            bw64RecoverLogOnce("syscall.setitimer.which", "unsupported setitimer timer kind; returned EINVAL");
+            return -K_EINVAL;
+        }
         kpanic_fmt("setitimer which=%d not supported", which);
     }
     if (oldValue) {
@@ -2473,7 +2481,11 @@ U32 KProcess::prctl(U32 option, U32 arg2) {
     } else if (option == 38) { // PR_SET_NO_NEW_PRIVS
         return 0;
     } else {
-        kwarn_fmt("prctl not implemented for option: %d", option);
+        if (bw64RecoverEnabled()) {
+            bw64RecoverLogOnce("syscall.prctl.option", "unsupported prctl option; returned EINVAL");
+        } else {
+            kwarn_fmt("prctl not implemented for option: %d", option);
+        }
     }
     return -K_EINVAL;
 }
@@ -2686,6 +2698,10 @@ U32 KProcess::fcntrl(KThread* thread, FD fildes, U32 cmd, U32 arg) {
             }
         case K_F_SETSIG: {
             if (arg != K_SIGIO) {
+                if (bw64RecoverEnabled()) {
+                    bw64RecoverLogOnce("syscall.fcntl.setsig", "unsupported fcntl F_SETSIG value; returned EINVAL");
+                    return -K_EINVAL;
+                }
                 kpanic("fcntl F_SETSIG not implemented");
             }
             return 0;
@@ -2711,7 +2727,11 @@ U32 KProcess::fcntrl(KThread* thread, FD fildes, U32 cmd, U32 arg) {
             return -K_EINVAL;
         }
         default:
-            kwarn_fmt("fcntl: unknown command: %d", cmd);
+            if (bw64RecoverEnabled()) {
+                bw64RecoverLogOnce("syscall.fcntl.unknown", "unsupported fcntl command; returned EINVAL");
+            } else {
+                kwarn_fmt("fcntl: unknown command: %d", cmd);
+            }
             return -K_EINVAL;
     }
 }

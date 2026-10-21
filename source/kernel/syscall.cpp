@@ -599,6 +599,10 @@ static U32 syscall_socketcall(CPU* cpu, U32 eipCount) {
             break;
         //case 18: // SYS_ACCEPT4
         default:
+            if (bw64RecoverEnabled()) {
+                bw64RecoverLogOnce("syscall.socketcall.unknown", "unsupported socketcall operation; returned ENOSYS");
+                return -K_ENOSYS;
+            }
             kpanic_fmt("Unknown socket syscall: %d",ARG1);
     }
     SYS_LOG(SYSCALL_SOCKET, cpu, " result=%d(0x%X)\n", result, result);
@@ -655,6 +659,10 @@ static U32 syscall_ipc(CPU* cpu, U32 eipCount) {
         SYS_LOG1(SYSCALL_SYSTEM|SYSCALL_MEMORY, cpu, "ipc: IPCOP_shmctl shmid=%d cmd=%d buf=%X", ARG2, ARG3, ARG5);
         result = KSystem::shmctl(cpu->thread, ARG2, ARG3, ARG5);
     } else {
+        if (bw64RecoverEnabled()) {
+            bw64RecoverLogOnce("syscall.ipc.unknown", "unsupported IPC operation; returned ENOSYS");
+            return -K_ENOSYS;
+        }
         kpanic_fmt("__NR_ipc op %d not implemented", ARG1);
         result = 0;
     }
@@ -898,6 +906,10 @@ static U32 syscall_mremap(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_vm86(CPU* cpu, U32 eipCount) {
+    if (bw64RecoverEnabled()) {
+        bw64RecoverLogOnce("syscall.vm86", "vm86 is unsupported; returned ENOSYS");
+        return -K_ENOSYS;
+    }
     kpanic("Application tried to enter DOS mode (vm86).  BoxedWine does not support this.");
     return 0;
 }
@@ -1163,6 +1175,10 @@ static U32 syscall_mincore(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_madvise(CPU* cpu, U32 eipCount) {    
+    if (bw64RecoverEnabled() && ARG3 > 16) {
+        bw64RecoverLogOnce("syscall.madvise.unknown", "unsupported madvise advice; returned EINVAL");
+        return -K_EINVAL;
+    }
     U32 result = 0;
     SYS_LOG1(SYSCALL_MEMORY, cpu, "madvise: address=%X len=%d advise=%d result=%d(0x%X) IGNORED\n", ARG1, ARG2, ARG3, result, result);
     return result;
@@ -1358,6 +1374,10 @@ static U32 syscall_sched_setaffinity(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_sched_getaffinity(CPU* cpu, U32 eipCount) {    
+    if (bw64RecoverEnabled()) {
+        bw64RecoverLogOnce("syscall.sched_getaffinity", "sched_getaffinity is unsupported; returned ENOSYS");
+        return -K_ENOSYS;
+    }
 #ifdef _DEBUG
      kwarn("__NR_sched_getaffinity not implemented");
 #endif
@@ -1691,6 +1711,10 @@ static U32 syscall_getrandom(CPU* cpu, U32 eipCount) {
     static std::uniform_int_distribution<size_t> dist{ 0, 255 };
 
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "getrandom buf=%X buflen=%d flags=%X", ARG1, ARG2, ARG3);
+    if (bw64RecoverEnabled() && (ARG3 & ~7u)) {
+        bw64RecoverLogOnce("syscall.getrandom.flags", "unsupported getrandom flags; returned EINVAL");
+        return -K_EINVAL;
+    }
     U32 buf = ARG1;
     U32 count = ARG2;
     for (U32 i=0;i<count;i++) {

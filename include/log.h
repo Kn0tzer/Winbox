@@ -30,6 +30,7 @@ bool bw64RecoverEnabled();
 void bw64RecoverNoteSkippedInstruction(bool loggedRip);
 void bw64RecoverNoteSigillFallback();
 bool bw64RecoverClaimRip(unsigned architecture, U64 rip);
+void bw64RecoverLogOnce(const char* key, const char* message);
 #ifdef __TEST
 void bw64RecoverSetTestOverride(int enabled);
 #endif
