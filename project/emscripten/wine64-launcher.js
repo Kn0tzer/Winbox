@@ -1060,7 +1060,7 @@
             },
             setStatus: function (text) { if (text) setStatusText(text); },
             onAbort: function (reason) { if (window.bwRuntimeError) window.bwRuntimeError('The runtime aborted: ' + reason); },
-            onExit: function (code) { if (window.bwRuntimeError) window.bwRuntimeError('The runtime exited before continuing (code ' + code + '). Check Show logs for the cause.'); },
+            onExit: function (code) { if (window.bwRuntimeLog) window.bwRuntimeLog('The runtime exited with code ' + code + '.'); },
             onRuntimeInitialized: function () {
                 runtimeInitialized = true;
                 // BW64_VKPROF (?vkprof=1): the vk64 bridge runs on a Web Worker
@@ -1579,14 +1579,12 @@
         var detail = (error && error.stack) ? error.stack
                    : (msg && msg !== "Script error.") ? (msg + (file ? " @ " + file + ":" + line + ":" + col : ""))
                    : "opaque error (no detail available — usually a cross-origin script error or a wasm abort logged separately above)";
-        setStatusText("Exception: " + (typeof msg === "string" ? msg : "see console"));
         console.error("wine64-launcher window.onerror:", detail, { msg: msg, file: file, line: line, col: col, error: error });
     };
     window.addEventListener("unhandledrejection", function (ev) {
         // A rejected promise in the boot chain (e.g. the rootfs fetch) otherwise
         // shows up only as the vague onerror. Log the real reason.
         console.error("wine64-launcher unhandledrejection:", ev.reason);
-        setStatusText("Boot failed: " + (ev.reason && ev.reason.message ? ev.reason.message : ev.reason));
     });
     window.bwRuntime = { fs: getFS, ready: sessionReady, call: callExport };
     if (window.setActiveApp) try { window.setActiveApp(PROG || "--version"); } catch (e) {}

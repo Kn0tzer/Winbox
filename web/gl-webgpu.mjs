@@ -3,6 +3,7 @@
 import { toWGSL } from './shader.mjs';
 import { liftForNaga } from './naga-rt.mjs';
 import { uniformLayout, packUniforms, convertIndices, blendFactor, stateKey } from './gl-webgpu-utils.mjs';
+import { createRecoveringBridge, reportBridgeFailure } from './bridge-recovery.mjs';
 
 const GL = Object.freeze({
   ARRAY_BUFFER: 0x8892, ARRAY_BUFFER_BINDING: 0x8894,
@@ -281,6 +282,8 @@ export class WebGPUGL {
     const device = await adapter.requestDevice();
     this._adapter = adapter;
     this._device = device;
+    device.addEventListener('uncapturederror', event => this._reportFailure(event.error || new Error('uncaptured WebGPU error')));
+    device.lost?.then(info => this._reportFailure(new Error(`WebGPU device lost: ${info.reason} ${info.message}`))).catch(error => this._reportFailure(error));
     this._format = navigator.gpu.getPreferredCanvasFormat();
     this._configureCanvas();
     this._ensureTargets(this._width, this._height);
@@ -334,10 +337,8 @@ export class WebGPUGL {
   }
 
   _reportFailure(error) {
-    if (this._logError) return;
-    this._logError = true;
-    try { this._log('gl-webgpu: ' + (error?.message || error)); } catch {}
-    try { this.onFailure?.(error); } catch {}
+    const first = reportBridgeFailure('gl-webgpu', error, this._log);
+    if (first) try { this.onFailure?.(error); } catch {}
   }
 
   _framebufferForTarget(target) {
@@ -390,31 +391,45 @@ export class WebGPUGL {
         depthStoreOp: 'store',
       };
     const pass = encoder.beginRenderPass(descriptor);
-    if (partialColor || partialDepth) this._drawClearRect(pass, state, partialColor, partialDepth, target);
+    if (partialColor || partialDepth) await this._drawClearRect(pass, state, partialColor, partialDepth, target);
     pass.end();
     this._device.queue.submit([encoder.finish()]);
   }
 
-  _drawClearRect(pass, state, clearColor, clearDepth, target) {
+  async _drawClearRect(pass, state, clearColor, clearDepth, target) {
     const color = state.color.map(value => Number(value).toPrecision(8)).join(',');
     const depth = Number(state.depth).toPrecision(8);
     const mask = state.colorMask.reduce((bits, enabled, index) => enabled && clearColor ? bits | (1 << index) : bits, 0);
     const key = stateKey([color, depth, mask, clearColor, clearDepth, target.format, target.depthFormat]);
     let pipeline = this._clearPipelineCache.get(key);
-    if (!pipeline) {
+    if (!this._clearPipelineCache.has(key)) {
       const fields = [];
       if (clearColor) fields.push('@location(0) color: vec4<f32>,');
       if (clearDepth) fields.push('@builtin(frag_depth) depth: f32,');
       const value = `${clearColor ? `color: vec4<f32>(${color}),` : ''}${clearDepth ? `depth: ${depth},` : ''}`;
       const code = `struct Out { ${fields.join(' ')} };\n@vertex fn vs(@builtin(vertex_index) i:u32)->@builtin(position) vec4<f32>{var p=array<vec2<f32>,3>(vec2<f32>(-1.0,-1.0),vec2<f32>(3.0,-1.0),vec2<f32>(-1.0,3.0));return vec4<f32>(p[i],0.0,1.0);}\n@fragment fn fs()->Out{return Out(${value});}`;
-      pipeline = this._device.createRenderPipeline({
-        layout: 'auto', vertex: { module: this._device.createShaderModule({ code }), entryPoint: 'vs' },
-        fragment: { module: this._device.createShaderModule({ code }), entryPoint: 'fs', targets: [{ format: target.format, writeMask: mask }] },
-        primitive: { topology: 'triangle-list' },
-        ...(target.depthTexture ? { depthStencil: { format: target.depthFormat || 'depth24plus', depthWriteEnabled: clearDepth, depthCompare: 'always' } } : {}),
-      });
-      this._clearPipelineCache.set(key, pipeline);
+      let scopeOpen = false;
+      try {
+        this._device.pushErrorScope('validation');
+        scopeOpen = true;
+        pipeline = this._device.createRenderPipeline({
+          layout: 'auto', vertex: { module: this._device.createShaderModule({ code }), entryPoint: 'vs' },
+          fragment: { module: this._device.createShaderModule({ code }), entryPoint: 'fs', targets: [{ format: target.format, writeMask: mask }] },
+          primitive: { topology: 'triangle-list' },
+          ...(target.depthTexture ? { depthStencil: { format: target.depthFormat || 'depth24plus', depthWriteEnabled: clearDepth, depthCompare: 'always' } } : {}),
+        });
+        const validationError = await this._device.popErrorScope();
+        scopeOpen = false;
+        if (validationError) throw new Error(validationError.message || 'WebGPU rejected the clear pipeline');
+        this._clearPipelineCache.set(key, pipeline);
+      } catch (error) {
+        if (scopeOpen) try { await this._device.popErrorScope(); } catch {}
+        this._clearPipelineCache.set(key, null);
+        this._reportFailure(error);
+        return;
+      }
     }
+    if (!pipeline) return;
     pass.setPipeline(pipeline);
     pass.setViewport(0, 0, target.width, target.height, 0, 1);
     if (state.enabled.has(0x0c11)) {
@@ -781,7 +796,7 @@ export class WebGPUGL {
     }).catch(error => {
       program.linked = false;
       program.infoLog = String(error?.message || error);
-      this._log(`gl-webgpu: program ${program.id} link failed: ${program.infoLog}`);
+      this._reportFailure(new Error(`program ${program.id} link failed: ${program.infoLog}`));
       return false;
     });
   }
@@ -1009,7 +1024,7 @@ export class WebGPUGL {
     return { layouts, buffers };
   }
 
-  _pipelineFor(program, state, vertex, topology, targetFormat = this._format, depthFormat = 'depth24plus') {
+  async _pipelineFor(program, state, vertex, topology, targetFormat = this._format, depthFormat = 'depth24plus') {
     const blendEnabled = state.enabled.has(0x0be2), depthEnabled = state.enabled.has(0x0b71);
     const cullEnabled = state.enabled.has(0x0b44);
     const cull = cullEnabled ? (state.cullFace === 0x0404 ? 'front' : state.cullFace === 0x0408 ? 'front-and-back' : 'back') : 'none';
@@ -1022,18 +1037,31 @@ export class WebGPUGL {
       cull, frontFace: state.frontFace, colorMask: writeMask, targetFormat, depthFormat,
     });
     if (this._pipelineCache.has(key)) return this._pipelineCache.get(key);
-    const vertexModule = this._device.createShaderModule({ code: program.stages.vertex.wgsl });
-    const fragmentModule = this._device.createShaderModule({ code: program.stages.fragment.wgsl });
-    const descriptor = {
-      layout: 'auto',
-      vertex: { module: vertexModule, entryPoint: 'main', buffers: vertex.layouts },
-      fragment: { module: fragmentModule, entryPoint: 'main', targets: [{ format: targetFormat, writeMask, ...(blend ? { blend } : {}) }] },
-      primitive: { topology, frontFace: state.frontFace === 0x0900 ? 'cw' : 'ccw', cullMode: cull === 'front-and-back' ? 'front' : cull },
-      ...(depthFormat ? { depthStencil: { format: depthFormat, depthWriteEnabled: depthEnabled && state.depthMask, depthCompare } } : {}),
-    };
-    const pipeline = this._device.createRenderPipeline(descriptor);
-    this._pipelineCache.set(key, pipeline);
-    return pipeline;
+    let scopeOpen = false;
+    try {
+      this._device.pushErrorScope('validation');
+      scopeOpen = true;
+      const vertexModule = this._device.createShaderModule({ code: program.stages.vertex.wgsl });
+      const fragmentModule = this._device.createShaderModule({ code: program.stages.fragment.wgsl });
+      const descriptor = {
+        layout: 'auto',
+        vertex: { module: vertexModule, entryPoint: 'main', buffers: vertex.layouts },
+        fragment: { module: fragmentModule, entryPoint: 'main', targets: [{ format: targetFormat, writeMask, ...(blend ? { blend } : {}) }] },
+        primitive: { topology, frontFace: state.frontFace === 0x0900 ? 'cw' : 'ccw', cullMode: cull === 'front-and-back' ? 'front' : cull },
+        ...(depthFormat ? { depthStencil: { format: depthFormat, depthWriteEnabled: depthEnabled && state.depthMask, depthCompare } } : {}),
+      };
+      const pipeline = this._device.createRenderPipeline(descriptor);
+      const validationError = await this._device.popErrorScope();
+      scopeOpen = false;
+      if (validationError) throw new Error(validationError.message || 'WebGPU rejected the render pipeline');
+      this._pipelineCache.set(key, pipeline);
+      return pipeline;
+    } catch (error) {
+      if (scopeOpen) try { await this._device.popErrorScope(); } catch {}
+      this._pipelineCache.set(key, null);
+      this._reportFailure(error);
+      return null;
+    }
   }
 
   async _uniformBindGroup(program, pipeline, uniformValues) {
@@ -1090,7 +1118,8 @@ export class WebGPUGL {
     if (!target?.colorTexture) return;
     const vertex = this._vertexLayouts(program, state.attributes);
     const viewport = state.viewport;
-    const pipeline = this._pipelineFor(program, state, vertex, topology, target.format, target.depthTexture ? target.depthFormat || 'depth24plus' : null);
+    const pipeline = await this._pipelineFor(program, state, vertex, topology, target.format, target.depthTexture ? target.depthFormat || 'depth24plus' : null);
+    if (!pipeline) return; // A failed shader/pipeline is a skipped draw.
     const encoder = this._device.createCommandEncoder();
     const pass = encoder.beginRenderPass({
       colorAttachments: [{ view: target.colorTexture.createView(), loadOp: 'load', storeOp: 'store' }],
@@ -1388,9 +1417,9 @@ export function createWebGPUGLContext(originalContext, defaultFramebuffer = 0, l
   const height = Math.max(1, originalContext?.canvas?.height | 0);
   try {
     const canvas = new OffscreenCanvas(width, height);
-    return new WebGPUGL(canvas, { fallbackContext: originalContext, defaultFramebuffer, log });
+    return createRecoveringBridge(new WebGPUGL(canvas, { fallbackContext: originalContext, defaultFramebuffer, log }), { name: 'gl-webgpu' });
   } catch (error) {
-    log('gl-webgpu: context setup failed — ' + (error?.message || error));
+    reportBridgeFailure('gl-webgpu.context', error, log);
     return null;
   }
 }
