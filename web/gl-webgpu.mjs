@@ -105,12 +105,21 @@ function shaderDumpEnabled() {
   return typeof search === 'string' && new URLSearchParams(search).has('glshaderdump');
 }
 
-function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(), interfaceLocations = new Map()) {
+export function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(), interfaceLocations = new Map()) {
   // ES precision hints do not change WGSL behavior; strip them before parsing
   // declarations because Naga's GLSL 450 frontend rejects variable precision qualifiers.
-  let code = String(source || '')
+  let code = String(source || '').replace(/\r\n?/g, '\n').replace(/\\[ \t]*\n[ \t]*/g, '')
+    // GL_ES precision guards carry no shader behavior after the precision
+    // declaration is removed, and Naga does not need their preprocessor.
+    .replace(/^[ \t]*#ifdef[ \t]+GL_ES[ \t]*\n([\s\S]*?)^[ \t]*#endif[ \t]*$/gm, '$1')
     .replace(/^[ \t]*precision[ \t]+(?:lowp|mediump|highp)[ \t]+(?:float|int)[ \t]*;[ \t]*$/gm, '')
     .replace(/\b(?:lowp|mediump|highp)\b/g, '');
+  if (/\bgl_ModelViewProjectionMatrix\b/.test(code)) {
+    code = code.replace(/\bgl_ModelViewProjectionMatrix\b/g, 'bw_ModelViewProjectionMatrix');
+    if (!/\buniform\s+mat4\s+bw_ModelViewProjectionMatrix\b/.test(code)) {
+      code = `uniform mat4 bw_ModelViewProjectionMatrix;\n${code}`;
+    }
+  }
   // Uniform reflection needs literal array lengths before it moves declarations
   // into a block that may precede the guest's #define line (Mindustry's LENGTH).
   const integerDefines = new Map(
@@ -154,7 +163,7 @@ function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(), inte
 
   for (const sampler of samplers) {
     const escaped = sampler.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    code = code.replace(new RegExp(`\\btexture2D?\\s*\\(\\s*${escaped}\\s*,`, 'g'), `texture(sampler2D(${sampler.name}_bw_t, ${sampler.name}_bw_s),`);
+    code = code.replace(new RegExp(`\\btexture(?:2D)?\\s*\\(\\s*${escaped}\\s*,`, 'g'), `texture(sampler2D(${sampler.name}_bw_t, ${sampler.name}_bw_s),`);
     const array = sampler.arrayLength > 1 ? `[${sampler.arrayLength}]` : '';
     code = `layout(binding = ${sampler.textureBinding}) uniform texture2D ${sampler.name}_bw_t${array};\nlayout(binding = ${sampler.samplerBinding}) uniform sampler ${sampler.name}_bw_s${array};\n${code}`;
   }

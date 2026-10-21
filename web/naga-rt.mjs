@@ -66,6 +66,7 @@ export function liftForNaga(srcIn, stage, locMap = new Map()) {
       const num = vm[1], es = vm[2] === 'es';
       if (num === '300' && es) mode = 'es300';
       else if (num === '100' || num === '120' || num === '130') mode = 'legacy';
+      else if (num === '150' && !es) mode = 'modern';
       else return { ok: false, reason: 'unsupported-version', version: num + (es ? ' es' : '') };
     } else {
       mode = LEGACY_TOKEN_RE.test(src) ? 'legacy' : 'es300';
@@ -79,7 +80,7 @@ export function liftForNaga(srcIn, stage, locMap = new Map()) {
       // (gl64bridge.cpp translateGlslToEs300) so raw sources lift too.
       src = wordReplace(src, 'texture2DProj', 'textureProj');
       src = wordReplace(src, 'texture2DLod', 'textureLod');
-      src = wordReplace(src, 'texture2D', 'texture');
+      src = src.replace(/\btexture2D(?=[ \t]*\()/g, 'texture');
       src = wordReplace(src, 'texture3D', 'texture');
       src = wordReplace(src, 'textureCube', 'texture');
       src = wordReplace(src, 'shadow2DProj', 'textureProj');
@@ -109,6 +110,10 @@ export function liftForNaga(srcIn, stage, locMap = new Map()) {
       if (stage === 'fragment' && /\bbw_FragColor\b/.test(src)) decls.push('out vec4 bw_FragColor;');
       src = 'precision highp float;\nprecision highp int;\n' + decls.join('\n') + (decls.length ? '\n' : '') + src;
     }
+
+    // Naga does not implement all GLSL interface qualifiers. Erase those
+    // hints, while keeping `flat` because integer stage values require it.
+    src = src.replace(/^[ \t]*invariant[ \t]+gl_Position[ \t]*;[ \t]*$/gm, '');
 
     // b+c. one source-order pass: split combined sampler2D uniforms into
     // texture2D+sampler pairs and give every uniform a layout(binding=N).
@@ -142,18 +147,18 @@ export function liftForNaga(srcIn, stage, locMap = new Map()) {
     // location span N..N+size-1 — Naga rejects a following varying inside that
     // span with "Multiple bindings at location N are present" (measured against
     // the shipped 30.0.1 build), so the registry advances by the array length.
-    src = src.replace(/^[ \t]*(layout\s*\([^)]*\)\s*)?((?:flat|smooth|noperspective|invariant)[ \t]+)*(in|out)[ \t]+([^;{}]+);[ \t]*$/gm, (m, lay, quals, dir, declList) => {
-      if (lay) return m;
-      quals = quals || '';
+    src = src.replace(/^[ \t]*(layout\s*\([^)]*\)\s*)?((?:(?:centroid|sample|patch|flat|smooth|noperspective|invariant|precise)[ \t]+)*)(in|out)[ \t]+([^;{}]+);[ \t]*$/gm, (m, lay, quals, dir, declList) => {
+      const flat = /\bflat\b/.test(quals || '') ? 'flat ' : '';
+      if (lay) return `${lay}${flat}${dir} ${declList};`;
       const ns = stage === 'vertex' ? (dir === 'in' ? 'a' : 'v') : (dir === 'in' ? 'v' : 'o');
       const out = [];
       for (const decl of splitDeclarators(declList.trim())) {
         const dm = /^(.+?)[ \t]+([A-Za-z_]\w*)[ \t]*(\[[^\]]*\])?$/.exec(decl);
-        if (!dm) { out.push(`layout(location=${locationFor(locMap, ns, decl, 1, null)}) ${quals}${dir} ${decl};`); continue; }
+        if (!dm) { out.push(`layout(location=${locationFor(locMap, ns, decl, 1, null)}) ${flat}${dir} ${decl};`); continue; }
         const name = dm[2];
         const span = /^\[(\d+)\]$/.test(dm[3] || '') ? parseInt(dm[3].slice(1, -1), 10) : 1;
         const pinned = stage === 'fragment' && dir === 'out' && name === 'bw_FragColor' ? 0 : null;
-        out.push(`layout(location=${locationFor(locMap, ns, name, span, pinned)}) ${quals}${dir} ${decl};`);
+        out.push(`layout(location=${locationFor(locMap, ns, name, span, pinned)}) ${flat}${dir} ${decl};`);
       }
       return out.join('\n');
     });
