@@ -65,7 +65,6 @@ int totalFails = 0;
 const TestEntry TEST_ENTRIES[] = {
     {testCpuSystemInstructions, "CPU32 system instruction fault and store behavior"},
     {testCpuCpuidAndCpuInfo, "CPU32 CPUID and proc cpuinfo architecture"},
-    {testRecoverUnknownInstruction, "CPU32 unknown opcode recovery and UD2 fault"},
     {testCpuDiff32Generated, "CPU32 QEMU differential instruction cases"},
     {testSseLdmxcsrReserved, "SSE LDMXCSR reserved bits fault"},
 #ifdef BOXEDWINE_WASM_JIT
@@ -680,6 +679,8 @@ const TestEntry TEST_ENTRIES[] = {
     {testSse3DuplicateMoves, "Test SSE3 duplicate moves"},
     {testSse3Haddpd, "Test SSE3 HADDPD"},
     {testSse3MonitorMwaitNoop, "Test SSE3 MONITOR and MWAIT no-op"},
+    // Last: known to abort with asmjit LabelAlreadyBound (exit 134) so it must not hide other tests.
+    {testRecoverUnknownInstruction, "CPU32 unknown opcode recovery and UD2 fault"},
 };
 
 } // namespace
