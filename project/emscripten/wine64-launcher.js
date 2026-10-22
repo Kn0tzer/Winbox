@@ -1022,6 +1022,17 @@
                 var jitDispatch = param("jitdispatch");
                 if (jitDispatch === "0" || jitDispatch === "1")
                     ENV["BW64_JIT_FAST_DISPATCH"] = jitDispatch;
+                // ?jit32hot=<1..254> moves the entry count at which a 32-bit
+                // guest block is compiled (host env BW32_JIT_HOT). The default
+                // stays at the compiled-in value, so an absent parameter keeps
+                // the historical policy. Values outside the range are ignored by
+                // the runtime rather than clamped into a different policy.
+                var jit32Hot = param("jit32hot");
+                if (jit32Hot !== null && /^[0-9]{1,3}$/.test(jit32Hot)) {
+                    var parsedJit32Hot = Number(jit32Hot);
+                    if (parsedJit32Hot >= 1 && parsedJit32Hot <= 254)
+                        ENV["BW32_JIT_HOT"] = String(parsedJit32Hot);
+                }
                 // ?safemem=1 asks the multi-threaded 32-bit JIT for x86 TSO
                 // guest-memory fences (correct on weakly ordered hosts, slower
                 // on memory-heavy multi-threaded guests). See

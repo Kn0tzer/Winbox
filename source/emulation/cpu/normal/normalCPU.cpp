@@ -255,8 +255,27 @@ static inline bool normalGetNLE(CPU* cpu) {
         MUSTTAIL return normalDispatch(cpu, cpu->nextOp); \
     }
 #elif defined(__EMSCRIPTEN__) && defined(BOXEDWINE_MULTI_THREADED) && defined(BOXEDWINE_WASM_JIT)
+// With generated code on, a branch target leaves the direct-dispatch chain for
+// run(), which refetches the decoded op and re-runs the JIT probe. That is
+// required for a target that generated code must enter (pfn is the block
+// trampoline), for one whose compilation is still in flight (the pending-hit
+// bookkeeping lives in the probe), and for one that has not reached the
+// hotness threshold yet (the probe owns that counter).
+//
+// It is pure overhead for a target the JIT has already ruled out: those ops
+// keep their interpreter handler and their runCount cannot change again unless
+// the code cache invalidates them, which resets runCount itself. Keeping the
+// chain for them means the interpreter runs rejected or uncompilable code at
+// interpreter-only speed instead of probe speed. Chain a bounded number of
+// blocks, exactly like the interpreter-only build.
+static inline bool normalChainPastJitEntry(CPU* cpu, DecodedOp* op) {
+    return op->pfn != cpu->thread->process->startJITOp &&
+        !(op->flags2 & OP_FLAG2_WASM_JIT_PENDING) &&
+        op->runCount >= wasmJit32HotThreshold();
+}
 #define CONTINUE_BRANCH() \
-    if (!wasmJit32Active && cpu->nextOp && static_cast<NormalCPU*>(cpu)->branchBudget > 1) { \
+    if (cpu->nextOp && static_cast<NormalCPU*>(cpu)->branchBudget > 1 && \
+        (!wasmJit32Active || normalChainPastJitEntry(cpu, cpu->nextOp))) { \
         --static_cast<NormalCPU*>(cpu)->branchBudget; \
         MUSTTAIL return normalDispatch(cpu, cpu->nextOp); \
     }
@@ -821,7 +840,7 @@ DecodedOp* NormalCPU::getOp(U32 startIp, U32 jumpTargetFlags) {
                 case VERRR16: case VERWR16: case SGDT: case SIDT: case LGDT: case LIDT:
                 case SMSWRreg: case SMSW: case LMSWRreg: case LMSW: case INVLPG:
                     nextOp->flags |= OP_FLAG_NO_JIT;
-                    nextOp->runCount = JIT_RUN_COUNT + 1;
+                    nextOp->runCount = (U8)wasmJit32DecidedRunCount();
                     break;
                 default:
                     break;
@@ -830,7 +849,7 @@ DecodedOp* NormalCPU::getOp(U32 startIp, U32 jumpTargetFlags) {
                 if (memory->isAddressDynamic(address, nextOp->len)) {
                     nextOp->flags |= OP_FLAG_NO_JIT;
 #ifdef BOXEDWINE_JIT
-                    nextOp->runCount = JIT_RUN_COUNT + 1;
+                    nextOp->runCount = (U8)wasmJit32DecidedRunCount();
 #endif
                 }
                 address += nextOp->len;
@@ -882,8 +901,21 @@ void NormalCPU::run() {
     if (!wasmJit32Active) {
         branchBudget = 64;
         normalDispatch(this, nextOp);
-    } else
+    } else {
+        // Re-arm the bounded direct-dispatch chain. CONTINUE_BRANCH uses it to
+        // keep running code the JIT has ruled out; one probe per run() entry is
+        // enough for the rest.
+        branchBudget = 64;
+        if (nextOp->runCount < wasmJit32HotThreshold() || !calculateCF[0]) {
+            firstOp(this, nextOp);
+        } else {
+            if (nextOp->inst == Callback) onExitSignal(this, nextOp); else nextOp->pfn(this, nextOp);
+#if !defined(BOXEDWINE_MULTI_THREADED)
+            this->blockInstructionCount += nextOp->blockOpCount;
 #endif
+        }
+    }
+#else
     if (nextOp->runCount <= JIT_RUN_COUNT || !calculateCF[0]) {
         firstOp(this, nextOp);
     } else {
@@ -892,6 +924,7 @@ void NormalCPU::run() {
         this->blockInstructionCount += nextOp->blockOpCount;
 #endif
     }
+#endif
 #else
     if (nextOp->inst == Callback) onExitSignal(this, nextOp); else nextOp->pfn(this, nextOp);
 #endif
