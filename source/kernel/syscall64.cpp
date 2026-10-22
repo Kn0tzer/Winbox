@@ -3028,6 +3028,12 @@ static void bwDumpGuestStack(CPU64* c, U32 pid, U32 tid) {
                      (unsigned long long)mem->readq(frame + 0x18), (unsigned long long)mem->readq(frame + 0x30),
                      (unsigned long long)mem->readq(frame + 0x38), (unsigned long long)mem->readq(frame + 0x20),
                      (unsigned long long)mem->readq(frame + 0x28), (unsigned long long)winRsp);
+            // Wait calls take a handle array through r10/rdx: show the first handles.
+            const U64 hp = mem->readq(frame + 0x18);
+            if (hp && readable(hp, 32))
+                klog_fmt("BW_THREAD_DUMP syscallmem pid=%u tid=%u [rdx]=%08x %08x %08x %08x %08x %08x %08x %08x", pid, tid,
+                         mem->readd(hp), mem->readd(hp + 4), mem->readd(hp + 8), mem->readd(hp + 12),
+                         mem->readd(hp + 16), mem->readd(hp + 20), mem->readd(hp + 24), mem->readd(hp + 28));
         }
     }
     // A candidate return address must follow a call instruction.
