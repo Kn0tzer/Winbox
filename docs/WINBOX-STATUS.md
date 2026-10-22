@@ -18,6 +18,7 @@ Merged: solhang socket/loopback fixes, solq3 WebGPU fixed-function menus and fra
 ## Workflow speedups
 - New worktree: `/home/ubuntu/scripts/winbox-wt-prep.sh <worktree>` (offline assets; local manifest is assume-unchanged, never commit it).
 - Build ~15 min with `BW64_BUILD_TARGET=wasm64-mt-jit JOBS=2 BINARYEN_CORES=2`; builds serialize on /tmp/bw64-build.lock.d and wait for probes to drain.
+- Wait for load with ONE call, no polling: `/home/ubuntu/scripts/winbox-wait-load.sh [max_load=5] [max_min=9]` (exits when load is low or after the timeout; then proceed and note the load). Builds and probes already queue by themselves (build lock, probe slots).
 - Probe slots: web/tests/probe-slots.mjs; demo matrix `DEMO=x JIT=y OUT=... MAPPED_TIMEOUT_S=n node web/tests/demo-matrix.mjs`.
 - Bisect by building a detached worktree of the suspect commit; only compare runtimes built from the same base.
 - Never wait with `pgrep -f` patterns that match your own command; wait on a done-file instead.
