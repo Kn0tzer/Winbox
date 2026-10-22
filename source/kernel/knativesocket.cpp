@@ -1884,6 +1884,13 @@ U32 KNativeSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& f
         return 0;
     }
     if (this->loopbackStream && (this->loopbackPort || this->loopbackStreamConnected || this->nativeSocket < 0)) {
+        // Guest streams deliver writes immediately; retain the TCP option
+        // value without requiring a host socket (Java's pipe sets NODELAY).
+        if (level == K_IPPROTO_TCP && name == K_TCP_NODELAY) {
+            if (len != 4) return -K_EINVAL;
+            this->loopbackNoDelay = thread->memory->readd(value) != 0;
+            return 0;
+        }
         if (level == K_SOL_SOCKET && len == 4 &&
             (name == K_SO_REUSEADDR || name == K_SO_RCVBUF || name == K_SO_SNDBUF)) {
             const U32 option = thread->memory->readd(value);
@@ -2134,6 +2141,12 @@ U32 KNativeSocketObject::getsockopt(KThread* thread, const KFileDescriptorPtr& f
     }
     if (this->loopbackStream &&
         (this->loopbackPort || this->loopbackStreamConnected || this->nativeSocket < 0)) {
+        if (level == K_IPPROTO_TCP && name == K_TCP_NODELAY) {
+            if (memory->readd(len_address) < 4) return -K_EINVAL;
+            memory->writed(value, this->loopbackNoDelay ? 1 : 0);
+            memory->writed(len_address, 4);
+            return 0;
+        }
         if (level == K_SOL_SOCKET && (name == K_SO_ERROR || name == K_SO_TYPE || name == K_SO_PROTOCOL ||
             name == K_SO_RCVBUF || name == K_SO_SNDBUF || name == K_SO_REUSEADDR ||
             name == K_SO_ACCEPTCONN || name == K_SO_BROADCAST)) {

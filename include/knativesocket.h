@@ -78,6 +78,7 @@ public:
     bool loopbackStreamConnected = false;
     bool loopbackStreamPeerEof = false;
     bool loopbackReuseAddress = false;
+    bool loopbackNoDelay = false;
     U32 loopbackStreamBacklog = 0;
     U32 loopbackAddress = 0;
     U16 loopbackPort = 0;
