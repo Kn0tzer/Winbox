@@ -119,7 +119,7 @@ struct Condition{std::set<Condition*> parents;U32 parentsCount(){return parents.
 #define BOXEDWINE_CONDITION_REMOVE_PARENT(c,p) (c)->removeParentCondition(p)
 #define BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(m) const std::lock_guard<std::recursive_mutex> listLock(m)
 static std::recursive_mutex waitingNodeMutex,checkWaitingNativeSocketsThreadMutex;
-struct KNativeSocketObject:std::enable_shared_from_this<KNativeSocketObject>{virtual ~KNativeSocketObject()=default;int nativeSocket=7;BOXEDWINE_CONDITION readingCond=std::make_shared<Condition>(),writingCond=std::make_shared<Condition>();void waitForEvents(BOXEDWINE_CONDITION&,U32);};
+struct KNativeSocketObject:std::enable_shared_from_this<KNativeSocketObject>{virtual ~KNativeSocketObject()=default;int nativeSocket=7;bool loopbackDatagram=false,loopbackStream=false,loopbackStreamConnected=false;U32 loopbackPort=0;BOXEDWINE_CONDITION readingCond=std::make_shared<Condition>(),writingCond=std::make_shared<Condition>();void waitForEvents(BOXEDWINE_CONDITION&,U32);};
 static bool monitored=false;
 static void addWaitingNativeSocket(const std::shared_ptr<KNativeSocketObject>&){monitored=true;}
 static void removeWaitingSocket(int){monitored=false;}
@@ -176,19 +176,23 @@ test('native recvmsg preserves contiguous scatter positions for large vectors an
 #include <memory>
 #include <vector>
 #include <array>
+#include <deque>
+#include <mutex>
 #include <cstring>
 #include <algorithm>
 #include <sys/socket.h>
 #include <netinet/in.h>
-using U32=uint32_t;using U8=uint8_t;using S32=int32_t;
-constexpr U32 K_MSG_PEEK=2,K_PAGE_SIZE=4096,K_SOCK_STREAM=1;
+using U32=uint32_t;using U8=uint8_t;using U16=uint16_t;using S32=int32_t;
+constexpr U32 K_MSG_PEEK=2,K_PAGE_SIZE=4096,K_SOCK_STREAM=1,K_EMSGSIZE=90,K_EFAULT=14,K_EAGAIN=11;
 #define BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(c)
 #define LOG_SOCK(...)
+static bool isGuestLoopbackAddress(U32 address){return address==0 || (address>>24)==127;}
 #define kwarn_fmt(...)
 struct MsgHdr{U32 msg_iov=256,msg_iovlen=2,msg_name=0,msg_namelen=0;};static MsgHdr fixture;
 struct KMemory{U32 lengths[2]={8192,4};std::array<U8,16384> bytes{};
  U32 readd(U32 address){U32 slot=(address-256)/8;return (address-256)%8 ? lengths[slot] : (slot ? 8192 : 0);}
- void writed(U32,U32){}void memcpy(U32 address,const char* buffer,U32 size){assert(address+size<=bytes.size());std::memcpy(bytes.data()+address,buffer,size);}
+ bool canWrite(U32 address,U32 size) const {return address<=bytes.size() && size<=bytes.size()-address;}
+ void writed(U32,U32){}void memcpy(U32 address,const void* buffer,U32 size){assert(address+size<=bytes.size());std::memcpy(bytes.data()+address,buffer,size);}
 };
 struct KThread{KMemory* memory;};using KFileDescriptorPtr=int;
 static void readMsgHdr(KThread*,U32,MsgHdr* out){*out=fixture;}
@@ -196,7 +200,7 @@ static void writeSockAddrIn(sockaddr_in*,KMemory*,U32){}
 static std::vector<U8> stream(5000,'x');static size_t cursor=0;
 static int receive(int,char* buffer,size_t length,int flags,sockaddr*,socklen_t*){size_t count=std::min(length,stream.size()-cursor);std::memcpy(buffer,stream.data()+cursor,count);if(!(flags&MSG_PEEK))cursor+=count;return count;}
 #define recvfrom receive
-struct KNativeSocketObject:std::enable_shared_from_this<KNativeSocketObject>{virtual ~KNativeSocketObject()=default;U32 type=K_SOCK_STREAM,error=0;int nativeSocket=3;U32 recvmsg(KThread*,const KFileDescriptorPtr&,U32,U32);};
+struct KNativeSocketObject:std::enable_shared_from_this<KNativeSocketObject>{struct LoopbackPacket{std::vector<U8> bytes;U32 sourceAddress=0;U16 sourcePort=0;};virtual ~KNativeSocketObject()=default;U32 type=K_SOCK_STREAM,error=0;int nativeSocket=3;bool loopbackDatagram=false,loopbackStream=false,loopbackStreamConnected=false;U16 loopbackPort=0;std::mutex loopbackStreamMutex;U32 recvLoopbackStream(U8*,U32,U32){return 0;}U32 takeLoopbackPacket(LoopbackPacket&,U32){return U32(-K_EAGAIN);}U32 recvmsg(KThread*,const KFileDescriptorPtr&,U32,U32);};
 static U32 handleNativeSocketError(const std::shared_ptr<KNativeSocketObject>&,bool){return U32(-1);}
 ${source.slice(start,end)}
 int main(){auto socket=std::make_shared<KNativeSocketObject>();KMemory memory;KThread thread{&memory};
@@ -216,17 +220,30 @@ test('browser TCP distinguishes pending nonblocking connects from blocking compl
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <deque>
+#include <mutex>
+#include <algorithm>
+#include <map>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <unistd.h>
 using U32=uint32_t;using U16=uint16_t;using S32=int32_t;
 #define __EMSCRIPTEN__ 1
 #define BOXEDWINE_MULTI_THREADED 1
 #define LOG_SOCK(...)
-constexpr U32 K_AF_INET=2,K_EINVAL=22,K_ECONNREFUSED=111,K_EWOULDBLOCK=11,K_EINPROGRESS=115;
+constexpr U32 K_AF_INET=2,K_EINVAL=22,K_EAFNOSUPPORT=97,K_EHOSTUNREACH=113,K_EISCONN=106,K_ECONNREFUSED=111,K_EWOULDBLOCK=11,K_EINPROGRESS=115;
+static bool isGuestLoopbackAddress(U32 address){return address==0 || (address>>24)==127;}
+struct Condition{std::mutex m;};
+struct KNativeSocketObject;
+static std::mutex g_loopbackTcpMutex;
+static std::map<U16,std::weak_ptr<KNativeSocketObject>> g_loopbackTcpSockets;
+#define BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(c)
+#define BOXEDWINE_CONDITION_SIGNAL_ALL(c)
 struct KMemory{U16 readw(U32){return K_AF_INET;}unsigned char readb(U32){return 0;}void memcpy(char* buffer,U32,U32 len){std::memset(buffer,0,len);}};
 struct KThread{KMemory* memory;};using KFileDescriptorPtr=int;
-struct KNativeSocketObject:std::enable_shared_from_this<KNativeSocketObject>{virtual ~KNativeSocketObject()=default;U32 error=0;int nativeSocket=3;bool connected=false,connecting=false,blocking=false;U32 connect(KThread*,const KFileDescriptorPtr&,U32,U32);};
+struct KNativeSocketObject:std::enable_shared_from_this<KNativeSocketObject>{virtual ~KNativeSocketObject()=default;U32 domain=AF_INET,type=SOCK_STREAM,protocol=0,error=0;int nativeSocket=3;bool connected=false,connecting=false,blocking=false,loopbackDatagram=false,loopbackStream=false,loopbackStreamConnected=false,listening=false;U32 loopbackAddress=0,loopbackPeerAddress=0,loopbackStreamBacklog=0;U16 loopbackPort=0,loopbackPeerPort=0;std::weak_ptr<KNativeSocketObject> loopbackStreamPeer;std::deque<std::shared_ptr<KNativeSocketObject>> loopbackAcceptQueue;std::mutex loopbackStreamMutex;std::shared_ptr<Condition> readingCond=std::make_shared<Condition>();KNativeSocketObject()=default;KNativeSocketObject(U32 d,U32 t,U32 p):domain(d),type(t),protocol(p){}U32 bindLoopbackStream(U32,U16){return 0;}U32 ensureLoopbackBound(){return 0;}U32 connect(KThread*,const KFileDescriptorPtr&,U32,U32);};
+static void closesocket(int fd){::close(fd);}
 static void readSockAddrIn(sockaddr_in* address,KMemory*,U32){address->sin_family=AF_INET;}
 static int nativeError=0,polls=0;
 static int nativeConnect(int,const sockaddr*,socklen_t){return 0;}
