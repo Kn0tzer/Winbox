@@ -173,6 +173,7 @@ struct Jit64Block {
     U32 fastCount = 0;  // ops with plan == JIT64_FAST
     bool executable = false; // true iff fastCount == ops.size() && ops not empty
     U64 execCount = 0;  // times this block was entered via jit (stats)
+    U8 verifyRemaining = 0; // initial executions compared with the interpreter
     // Phase-2 wasm module slot: -1 = not attempted, >= 0 = instantiated
     // table index from jit64WasmInstantiate, -2 = emission rejected (the
     // emitter is deterministic per block, so rejection is never retried).
@@ -297,6 +298,15 @@ bool jit64BlockMayStore(const Jit64Op* ops, U32 nOps);
 // emit on first entry). Counting happens before the decode, so cold code never
 // pays a snapshot + decode + emit.
 U16 jit64HotThreshold();
+// Differentially compare the first N executions of each emitted block. The
+// runtime defaults to three; BW64_JIT_VERIFY_EXECUTIONS=0 disables it.
+U8 jit64VerifyExecutions();
+// Guest instructions interpreted before enabling CPU64 JIT dispatch.
+// BW64_JIT_WARMUP_INSN=0 disables the startup gate.
+U64 jit64WarmupInstructions();
+// Optional per-CPU cap on successfully compiled blocks (BW64_JIT_MAX).
+// The default is unlimited; zero disables compilation.
+U64 jit64MaxBlocks();
 class Jit64Hotness {
 public:
     static constexpr U32 SLOTS = 8192;
@@ -331,6 +341,8 @@ struct Jit64State {
     Jit64NegativeCache negative;
     Jit64Hotness hotness;
     U64 blocksCompiled = 0;
+    U64 maxBlocks = ~(U64)0;
+    bool canCompile() const { return blocksCompiled < maxBlocks; }
     U64 blocksExecuted = 0;
     U64 insnsFast = 0;
     U64 insnsFallback = 0;
@@ -348,6 +360,8 @@ struct Jit64State {
     U64 compileTimeUs = 0;  // decode + emit + instantiate, cold path only
     U64 emitTimeUs = 0;     // WebAssembly byte emission only
     U64 instantiateTimeUs = 0; // module creation and table installation
+    U64 verifyChecks = 0;   // emitted blocks compared with the interpreter
+    U64 verifyRejected = 0; // compiled blocks rejected after a differential check
     std::atomic<U64> rejectOpcode[256]{}; // rejected one-byte opcode counts
     std::atomic<U64> reject0FOpcode[256]{}; // rejected 0F xx opcode counts
     U32 wasmOwner = 0;      // worker/table id that owns wasmIndex values

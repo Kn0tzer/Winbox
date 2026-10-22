@@ -7574,9 +7574,12 @@ void CPU64::run() {
     const bool guestProfile = bwGuestProfileEnabled();
     bool fastJitDispatch = false;
     bool jitBlockEntry = true;
+    bool jitActive = false;
+    U64 jitWarmup = 0;
 #ifdef BOXEDWINE_BLOCK_EXEC
-    const bool jitActive = jit64Enabled();
+    jitActive = jit64Enabled();
     fastJitDispatch = jitActive && jit64FastDispatchEnabled();
+    jitWarmup = jit64WarmupInstructions();
 #endif
     // Optional instruction tracer for bring-up debugging. Gated on env so it
     // never costs anything in normal runs. BOXEDWINE64_TRACE_FROM/TO bound the
@@ -7600,9 +7603,17 @@ void CPU64::run() {
     RipHist ring[32] = {};
     int ringPos = 0;
     bool wildFired = false;
+    bool jitWarmupLogged = false;
 
     while (!yield) {
         if (guestProfile) bwGuestProfileTick64(this);
+        const bool jitReady = jitActive && jitWarmupCount >= jitWarmup;
+        if (jitReady && jitWarmup && !jitWarmupLogged) {
+            jitWarmupLogged = true;
+            klog_fmt("JIT64: warmup complete pid=%u instructions=%llu",
+                     (unsigned)(thread && thread->process ? thread->process->id : 0),
+                     (unsigned long long)jitWarmupCount);
+        }
         if (tracing && instructionCount >= traceFrom && instructionCount <= traceTo) {
             U64 r = rip;
             klog_fmt("TRACE #%llu RIP=0x%llx %02x %02x %02x %02x  "
@@ -7662,7 +7673,7 @@ void CPU64::run() {
             }
         }
 #ifdef BOXEDWINE_BLOCK_EXEC
-        if (jitActive && (!fastJitDispatch || jitBlockEntry)) {
+        if (jitReady && (!fastJitDispatch || jitBlockEntry)) {
             // In fast mode the wasm path is queried only at block entries.
             U32 jn = tryJitStep();
             if (jn) {
@@ -7671,7 +7682,7 @@ void CPU64::run() {
                 continue;
             }
         }
-        if (jitActive && !fastJitDispatch) {
+        if (jitReady && !fastJitDispatch) {
             // Preserve the legacy decoded-block engine only in A/B legacy mode.
             U32 bn = tryBlockStep();
             if (bn) {
@@ -7680,10 +7691,13 @@ void CPU64::run() {
             }
         }
 #endif
-        U32 n = step(fastJitDispatch);
+        U32 n = step(jitReady && fastJitDispatch);
         if (n == 0) break;
-        if (fastJitDispatch) jitBlockEntry = m_jitBlockBoundaryAfterStep;
+        if (jitReady && fastJitDispatch) jitBlockEntry = m_jitBlockBoundaryAfterStep;
         instructionCount++;
+#ifdef BOXEDWINE_BLOCK_EXEC
+        if (jitActive && jitWarmupCount < jitWarmup) jitWarmupCount++;
+#endif
         // A thread killed from outside (persistent-session app switch kills the
         // previous app) is only MARKED terminating — nothing interrupts a
         // CPU-bound guest loop that never blocks in a syscall (DOOM busy-spins
@@ -8152,6 +8166,101 @@ U32 CPU64::execWasmBlock(const Jit64Block& block, U64 maxInsn) {
     return executed;
 }
 
+U32 CPU64::verifyWasmBlock(Jit64Block& block, U64 maxInsn) {
+    if (!block.verifyRemaining) return execWasmBlock(block, maxInsn);
+    if (!memory || block.ops.empty()) return 0;
+
+    const U64 startRip = block.startRip;
+    U64 savedGpr[X64_REG_COUNT];
+    for (U32 i = 0; i < X64_REG_COUNT; i++) savedGpr[i] = reg[i].u64;
+    const U64 savedRip = rip;
+    const U32 savedFlags = rflags;
+    m_jit->verifyChecks++;
+    auto reject = [&](const char* reason, U32 interpDone, U32 jitDone) -> U32 {
+        for (U32 i = 0; i < X64_REG_COUNT; i++) reg[i].setU64(savedGpr[i]);
+        rip = savedRip;
+        rflags = savedFlags;
+        U32 gen = KMemory64::blockPageGenOf(block.page0);
+        m_jit->negative.add(startRip, gen);
+        m_jit->verifyRejected++;
+        klog_fmt("JIT64 VERIFY reject pid=%u rip=0x%llx reason=%s interp=%u jit=%u",
+                 (unsigned)(thread && thread->process ? thread->process->id : 0),
+                 (unsigned long long)startRip, reason, interpDone, jitDone);
+        m_jit->cache.invalidate(startRip);
+        m_jit->insnsFallback++;
+        if (m_jit->verifyRejected == 1) jit64PublishState(m_jit);
+        return 0;
+    };
+
+    // A repeated string instruction can touch an unbounded number of bytes.
+    // Keep its first execution interpreted instead of building a huge journal.
+    for (const Jit64Op& op : block.ops)
+        if (op.kind == J64_STRING) return reject("string block", 0, 0);
+
+    const U64 wanted64 = maxInsn < block.ops.size() ? maxInsn : (U64)block.ops.size();
+    if (!wanted64) return 0;
+    CPU64 interpreter(memory);
+    interpreter.cloneRegistersFrom(this);
+    K64JitVerifyMemory interpMemory;
+    memory->beginJitVerifyOverlay(interpMemory);
+    U32 interpDone = 0;
+    while ((U64)interpDone < wanted64) {
+        U32 n = interpreter.step(false);
+        if (!n) break;
+        interpDone += n;
+        if (interpMemory.wroteRegisteredCodePage) break;
+    }
+    memory->endJitVerifyOverlay();
+    if (interpMemory.wroteRegisteredCodePage)
+        return reject("interpreter wrote compiled code page", interpDone, 0);
+
+    K64JitVerifyMemory jitMemory;
+    jitMemory.initialBytes = std::move(interpMemory.initialBytes);
+    memory->beginJitVerifyOverlay(jitMemory);
+    U32 jitDone = execWasmBlock(block, maxInsn);
+    memory->endJitVerifyOverlay();
+    if (jitMemory.wroteRegisteredCodePage)
+        return reject("JIT wrote compiled code page", interpDone, jitDone);
+
+    U32 regMismatch = X64_REG_COUNT;
+    for (U32 i = 0; i < X64_REG_COUNT; i++) {
+        if (reg[i].u64 != interpreter.reg[i].u64) { regMismatch = i; break; }
+    }
+    bool writesMatch = interpMemory.writes.size() == jitMemory.writes.size();
+    if (writesMatch) {
+        for (const auto& write : interpMemory.writes) {
+            auto other = jitMemory.writes.find(write.first);
+            if (other == jitMemory.writes.end() || other->second != write.second) {
+                writesMatch = false;
+                break;
+            }
+        }
+    }
+    const bool matches = jitDone == interpDone && regMismatch == X64_REG_COUNT &&
+        rip == interpreter.rip && rflags == interpreter.rflags && writesMatch;
+    if (!matches) {
+        if (regMismatch < X64_REG_COUNT) {
+            klog_fmt("JIT64 VERIFY register mismatch rip=0x%llx reg=%u interp=0x%llx jit=0x%llx",
+                     (unsigned long long)startRip, regMismatch,
+                     (unsigned long long)interpreter.reg[regMismatch].u64,
+                     (unsigned long long)reg[regMismatch].u64);
+        }
+        if (rip != interpreter.rip || rflags != interpreter.rflags || !writesMatch || jitDone != interpDone) {
+            klog_fmt("JIT64 VERIFY state mismatch rip=0x%llx interpRip=0x%llx jitRip=0x%llx interpFlags=0x%x jitFlags=0x%x writes=%u/%u",
+                     (unsigned long long)startRip,
+                     (unsigned long long)interpreter.rip, (unsigned long long)rip,
+                     interpreter.rflags, rflags,
+                     (unsigned)interpMemory.writes.size(), (unsigned)jitMemory.writes.size());
+        }
+        return reject("architectural state or memory writes differ", interpDone, jitDone);
+    }
+
+    for (const auto& write : jitMemory.writes) memory->writeb(write.first, write.second);
+    block.verifyRemaining--;
+    if (m_jit->verifyChecks == 1) jit64PublishState(m_jit);
+    return jitDone;
+}
+
 U32 CPU64::tryWasmExec(U64 maxInsn) {
     if (!jit64Enabled()) return 0;
     U64 r = rip;
@@ -8160,9 +8269,10 @@ U32 CPU64::tryWasmExec(U64 maxInsn) {
     Jit64Block* hit = m_jit->cache.lookupByRip(r);
     if (hit) {
         if (hit->wasmIndex < 0) { m_jit->insnsFallback++; return 0; }
-        return execWasmBlock(*hit, maxInsn);
+        return hit->verifyRemaining ? verifyWasmBlock(*hit, maxInsn) : execWasmBlock(*hit, maxInsn);
     }
     m_jit->coldLookups++;
+    if (!m_jit->canCompile()) { m_jit->coldSkipped++; return 0; }
     const U64 page0 = jit64PageOf(r);
     const U32 gen0Entry = KMemory64::blockPageGenOf(page0);
     // A rip already known unemittable at this generation never pays the
@@ -8270,6 +8380,20 @@ U32 CPU64::tryWasmExec(U64 maxInsn) {
     block->wasmIndex = index;
     m_jit->wasmInstantiated++;
     m_jit->blocksCompiled++;
+    if (m_jit->maxBlocks != ~(U64)0 && m_jit->blocksCompiled == m_jit->maxBlocks) {
+        static const char hex[] = "0123456789abcdef";
+        char bytes[sizeof(snap) * 2 + 1];
+        for (U32 i = 0; i < len; i++) {
+            bytes[i * 2] = hex[snap[i] >> 4];
+            bytes[i * 2 + 1] = hex[snap[i] & 0x0F];
+        }
+        bytes[len * 2] = '\0';
+        U32 guestPid = thread && thread->process ? thread->process->id : 0;
+        klog_fmt("JIT64: compiled pid=%u index=%llu rip=0x%llx len=%u bytes=%s",
+                 guestPid,
+                 (unsigned long long)m_jit->blocksCompiled,
+                 (unsigned long long)r, (unsigned)len, bytes);
+    }
     m_jit->compileTimeUs += jit64NowUs() - t0;
     // Compilation can take long enough for another guest thread to rewrite
     // these pages. Do not enter the just-built stale block even once.
@@ -8279,7 +8403,7 @@ U32 CPU64::tryWasmExec(U64 maxInsn) {
         m_jit->insnsFallback++;
         return 0;
     }
-    return execWasmBlock(*block, maxInsn);
+    return block->verifyRemaining ? verifyWasmBlock(*block, maxInsn) : execWasmBlock(*block, maxInsn);
 }
 #else // !BOXEDWINE_BLOCK_CACHE_INFRA
 U32 CPU64::execWasmBlock(const Jit64Block&, U64) { return 0; }
@@ -8309,6 +8433,7 @@ U32 CPU64::tryJitInterpStep(U64 maxInsn) {
     }
     const Jit64Block* hit = m_jit->cache.lookup(r, bb.page0, bb.gen0, bb.page1, bb.gen1);
     if (!hit) {
+        if (!m_jit->canCompile()) { m_jit->insnsFallback++; return 0; }
         hit = m_jit->cache.insert(r, bb.page0, bb.gen0, bb.page1, bb.gen1, ops, n);
         m_jit->blocksCompiled++;
     }
@@ -8352,6 +8477,7 @@ void CPU64::ensureJit() {
     if (!m_jit) {
         m_jit = new Jit64State();
         m_jit->engine = jit64SelectEngine();
+        m_jit->maxBlocks = jit64MaxBlocks();
         m_jit->wasmOwner = jit64WasmOwnerId();
         m_jit->genBaseAddr = KMemory64::blockGenTableAddr();
         // Generation reader for the runtime's cache validation, and membership
@@ -8411,8 +8537,9 @@ U32 CPU64::tryBlockStep(U64 maxInsn) {
 U64 CPU64::runBounded(U64 maxInsn) {
     bool fastJitDispatch = false;
     bool jitBlockEntry = true;
+    bool jitActive = false;
 #ifdef BOXEDWINE_BLOCK_EXEC
-    const bool jitActive = jit64Enabled();
+    jitActive = jit64Enabled();
     fastJitDispatch = jitActive && jit64FastDispatchEnabled();
 #endif
     static const char* tf = std::getenv("BOXEDWINE64_TRACE_FROM");
@@ -8423,6 +8550,7 @@ U64 CPU64::runBounded(U64 maxInsn) {
 
     U64 ran = 0;
     while (!yield && ran < maxInsn) {
+        const bool jitReady = jitActive;
         if (tracing && instructionCount >= traceFrom && instructionCount <= traceTo) {
             U64 r = rip;
             klog_fmt("TRACE #%llu RIP=0x%llx %02x %02x %02x %02x  "
@@ -8438,7 +8566,7 @@ U64 CPU64::runBounded(U64 maxInsn) {
                      (unsigned long long)xmm[1].hi, (unsigned long long)xmm[1].lo);
         }
 #ifdef BOXEDWINE_BLOCK_EXEC
-        if (jitActive && (!fastJitDispatch || jitBlockEntry)) {
+        if (jitReady && (!fastJitDispatch || jitBlockEntry)) {
             U32 jn = tryJitStep(maxInsn - ran);
             if (jn) {
                 instructionCount += jn;
@@ -8447,7 +8575,7 @@ U64 CPU64::runBounded(U64 maxInsn) {
                 continue;
             }
         }
-        if (jitActive && !fastJitDispatch) {
+        if (jitReady && !fastJitDispatch) {
             U32 bn = tryBlockStep(maxInsn - ran);
             if (bn) {
                 instructionCount += bn;
@@ -8456,9 +8584,9 @@ U64 CPU64::runBounded(U64 maxInsn) {
             }
         }
 #endif
-        U32 n = step(fastJitDispatch);
+        U32 n = step(jitReady && fastJitDispatch);
         if (n == 0) break;
-        if (fastJitDispatch) jitBlockEntry = m_jitBlockBoundaryAfterStep;
+        if (jitReady && fastJitDispatch) jitBlockEntry = m_jitBlockBoundaryAfterStep;
         instructionCount++;
         ran++;
     }

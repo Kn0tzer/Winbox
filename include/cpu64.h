@@ -175,6 +175,7 @@ public:
     U64  instructionCount = 0;
     U64  recoverLastRip = (U64)-1;
     U8   recoverFaultsAtRip = 0;
+    U64  jitWarmupCount = 0; // guest instructions retired before enabling JIT dispatch
 
     void run();
     // Run up to maxInsn instructions or until yield / decode failure.
@@ -239,6 +240,7 @@ private:
     // Call one cached emitted module and commit its guest state. Returns the
     // instructions the emitted code reports having retired (0 = did not run).
     U32 execWasmBlock(const struct Jit64Block& block, U64 maxInsn);
+    U32 verifyWasmBlock(struct Jit64Block& block, U64 maxInsn);
     // Validate the JIT decode plan against the interpreter's BBlock builder
     // (BW64_JIT_VERIFY=1). Returns false when the two decoders disagree, which
     // keeps the block on the interpreter (drift guard).

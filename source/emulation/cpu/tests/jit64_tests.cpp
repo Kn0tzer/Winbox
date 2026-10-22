@@ -1113,6 +1113,19 @@ static void testHotness() {
     CHECK(t1 == jit64HotThreshold(), "hot threshold not cached");
 }
 
+static void testCompileLimit() {
+    Jit64State state;
+    state.maxBlocks = 2;
+    CHECK(state.canCompile(), "compile limit blocked the first block");
+    state.blocksCompiled = 1;
+    CHECK(state.canCompile(), "compile limit blocked before the cap");
+    state.blocksCompiled = 2;
+    CHECK(!state.canCompile(), "compile limit allowed a block past the cap");
+    state.maxBlocks = 0;
+    state.blocksCompiled = 0;
+    CHECK(!state.canCompile(), "zero compile limit allowed a block");
+}
+
 static void testCacheCollisions() {
     Jit64BlockCache cache;
     Jit64Op op;
@@ -1263,6 +1276,7 @@ int main(int argc, char** argv) {
     testX87NeverJitted();
     testTerminatorEmission();
     testHotness();
+    testCompileLimit();
     testCacheCollisions();
     testLookupByRip();
     testEngineAndStats();

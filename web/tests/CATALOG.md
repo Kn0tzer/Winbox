@@ -9,7 +9,9 @@ it does not prove that every supported API or a game works.
 
 ```sh
 npm test
+# JIT=1 selects CPU64 only; set JIT32=1 to include the CPU32 JIT.
 DEMO=notepad JIT=0 node web/tests/demo-matrix.mjs
+DEMO=notepad JIT=1 JIT32=1 node web/tests/demo-matrix.mjs
 node web/tests/suite/runner.mjs --unit --filter=spirvfix
 bash scripts/build-jit-wasm.sh --selftest-only
 make -C project/linux test

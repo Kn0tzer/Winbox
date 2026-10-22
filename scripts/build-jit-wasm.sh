@@ -89,6 +89,7 @@ for mode in interp blocks; do
         "$REPO/source/emulation/cpu/cpu64.cpp" \
         "$REPO/source/emulation/cpu/jit64.cpp" \
         "$REPO/source/emulation/cpu/jit64wasm.cpp" \
+        "$REPO/source/emulation/cpu/common/common_lock.cpp" \
         "$REPO/source/kernel/kmemory64.cpp" \
         "$REPO/source/util/bstring.cpp" \
         "$BUILD_TMP/inv_fpu.o" "$BUILD_TMP"/softfloat/*.o \
