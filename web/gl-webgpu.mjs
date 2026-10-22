@@ -268,6 +268,7 @@ export class WebGPUGL {
     this._colorMask = [true, true, true, true];
     this._pipelineCache = new Map();
     this._clearPipelineCache = new Map();
+    this._blitPipelineCache = new Map();
     this._constantBuffers = new Map();
     this._buffers = new Set();
     this._shaders = new Set();
@@ -1757,6 +1758,53 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (parameter === 0x8cd2) return record.level || 0;
     return 0;
   }
+  async _blitColorFormats(source, destination, sx, sy, width, height, dx, dy, filter) {
+    // RGBA texture attachments and the browser's BGRA surface cannot be copied
+    // byte-for-byte. A render pass performs the channel-format conversion.
+    let pipeline = this._blitPipelineCache.get(destination.format);
+    if (!pipeline) {
+      const code = `
+struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> };
+@group(0) @binding(0) var<uniform> sourceRect: vec4<f32>;
+@group(0) @binding(1) var sourceTexture: texture_2d<f32>;
+@group(0) @binding(2) var sourceSampler: sampler;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> Out {
+  let p = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+  var out: Out; out.position = vec4<f32>(p[i], 0.0, 1.0);
+  out.uv = vec2<f32>(p[i].x * 0.5 + 0.5, 0.5 - p[i].y * 0.5); return out;
+}
+@fragment fn fs(input: Out) -> @location(0) vec4<f32> {
+  return textureSampleLevel(sourceTexture, sourceSampler, sourceRect.xy + input.uv * sourceRect.zw, 0.0);
+}`;
+      const module = this._device.createShaderModule({ code });
+      pipeline = this._device.createRenderPipeline({ layout: 'auto',
+        vertex: { module, entryPoint: 'vs' },
+        fragment: { module, entryPoint: 'fs', targets: [{ format: destination.format }] },
+        primitive: { topology: 'triangle-list' } });
+      this._blitPipelineCache.set(destination.format, pipeline);
+    }
+    const uniform = this._device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this._device.queue.writeBuffer(uniform, 0, new Float32Array([
+      sx / source.width, (source.height - sy - height) / source.height, width / source.width, height / source.height,
+    ]));
+    const sampling = filter === 0x2600 ? 'nearest' : 'linear';
+    const bindGroup = this._device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: { buffer: uniform } },
+      { binding: 1, resource: source.colorTexture.createView({ baseMipLevel: source.colorMipLevel || 0, mipLevelCount: 1 }) },
+      { binding: 2, resource: this._device.createSampler({ minFilter: sampling, magFilter: sampling }) },
+    ] });
+    const encoder = this._device.createCommandEncoder();
+    const pass = encoder.beginRenderPass({ colorAttachments: [{
+      view: destination.colorTexture.createView({ baseMipLevel: destination.colorMipLevel || 0, mipLevelCount: 1 }),
+      loadOp: 'load', storeOp: 'store',
+    }] });
+    pass.setPipeline(pipeline); pass.setBindGroup(0, bindGroup);
+    pass.setViewport(dx, destination.height - dy - height, width, height, 0, 1);
+    pass.draw(3); pass.end();
+    this._device.queue.submit([encoder.finish()]);
+    this._device.queue.onSubmittedWorkDone().then(() => uniform.destroy()).catch(() => {});
+  }
+
   blitFramebuffer(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter) {
     if (!(mask & GL.COLOR_BUFFER_BIT)) return;
     const source = this._targetFor(this._readFramebuffer), destination = this._targetFor(this._drawFramebuffer);
@@ -1773,9 +1821,11 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     }
     this._enqueue(() => {
       if (!source.colorTexture || !destination.colorTexture || srcX1 < srcX0 || dstY1 < dstY0 || sw !== dw || sh !== dh) return;
+      if (source.format !== destination.format)
+        return this._blitColorFormats(source, destination, sx, sy, sw, sh, dx, dy, filter);
       const encoder = this._device.createCommandEncoder();
-      encoder.copyTextureToTexture({ texture: source.colorTexture, origin: [sx, source.height - sy - sh, 0] },
-        { texture: destination.colorTexture, origin: [dx, destination.height - dy - dh, 0] }, [sw, sh, 1]);
+      encoder.copyTextureToTexture({ texture: source.colorTexture, mipLevel: source.colorMipLevel || 0, origin: [sx, source.height - sy - sh, 0] },
+        { texture: destination.colorTexture, mipLevel: destination.colorMipLevel || 0, origin: [dx, destination.height - dy - dh, 0] }, [sw, sh, 1]);
       this._device.queue.submit([encoder.finish()]);
     });
   }
