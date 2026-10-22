@@ -8,7 +8,7 @@ notepad 56/61, snake 47/54, doom 47/54, celeste 22/52, portal 25/47 - all mapped
 Merged: solhang socket/loopback fixes, solq3 WebGPU fixed-function menus and framebuffer mip fix. Q3 and Mindustry not re-verified end to end.
 
 ## Open problems
-1. mem2 branch `lane/winbox-mem2-20261021` (a84238b6c, KMemory64 open-addressed page table, native +18% page stride): DO NOT MERGE. Bisected: main without it maps notepad; with it Wine stalls after start.exe and never maps. Lane thr_2y9kiyujhs asked to fix.
+1. mem2 branch `lane/winbox-mem2-20261021` (KMemory64 open-addressed page table): ABANDONED. After a hash-mixer fix (b74b64436) native random reads are -13.6% and 8 MiB stride -2.7% vs main, notepad unverified (build-lock timeouts), snake took 225 s. Not worth more effort; main stays without it.
 2. Q3 draws nothing (client arrays), Mindustry stuck at 82% (errno 5 loop), Gang Beasts no swapchain: Luna takeover lanes in flight.
 3. jitpar lane (JIT correctness/startup, snake jit=1 root cause): round 4 pending.
 4. Portal blank screenshot; CPU32 JIT slower than interpreter; CPU32 recovery test LabelAlreadyBound (test reordered last).
