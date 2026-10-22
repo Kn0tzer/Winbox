@@ -2975,6 +2975,35 @@ static void bwDumpGuestStack(CPU64* c, U32 pid, U32 tid) {
         if (m.base) ++nMods;
         link = mem->readq(link);
     }
+    // Name the code the thread is executing when rip is outside every loader-list
+    // module (anonymous/unlisted mapping): report the page flags and the nearest
+    // preceding MZ/ELF header so a JIT'd or manually mapped image can be spotted.
+    {
+        const U64 rip = c->rip;
+        bool inMod = false;
+        for (int m = 0; m < nMods; ++m)
+            if (rip >= mods[m].base && rip - mods[m].base < mods[m].size) {
+                klog_fmt("BW_THREAD_DUMP rip pid=%u tid=%u %s+0x%llx", pid, tid,
+                         mods[m].name[0] ? mods[m].name : "?", (unsigned long long)(rip - mods[m].base));
+                inMod = true;
+                break;
+            }
+        if (!inMod) {
+            const U64 page = rip >> 12;
+            const bool mapped = mem->isPageMapped(page);
+            U64 hdr = 0; const char* kind = "none";
+            for (U64 back = 0; back < 4096 && mapped; ++back) {
+                U64 a = (page - back) << 12;
+                if (!readable(a, 4)) break;
+                U32 w = mem->readd(a);
+                if ((w & 0xffff) == 0x5a4d) { hdr = a; kind = "MZ"; break; }
+                if (w == 0x464c457f) { hdr = a; kind = "ELF"; break; }
+            }
+            klog_fmt("BW_THREAD_DUMP rip pid=%u tid=%u unlisted rip=0x%llx mapped=%d flags=0x%x nearestHdr=%s@0x%llx",
+                     pid, tid, (unsigned long long)rip, mapped ? 1 : 0,
+                     mapped ? mem->getPageFlags(page) : 0, kind, (unsigned long long)hdr);
+        }
+    }
     const U64 rsp = c->reg[X64_RSP].u64;
     int hits = 0;
     for (U64 i = 0; i < 6144 && hits < 48; ++i) {
