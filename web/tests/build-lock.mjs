@@ -62,7 +62,9 @@ export function buildLockInfo() {
 
 // Wait until no build holds the lock. Throws on timeout so a stuck build
 // fails loudly instead of hanging the probe forever.
-export async function waitForBuildIdle({ timeoutMs = 600000, pollMs = 5000 } = {}) {
+// Match the build coordinator's 60-minute probe-drain window. A build holds
+// this lock while existing probes finish, so new probes must wait just as long.
+export async function waitForBuildIdle({ timeoutMs = 60 * 60 * 1000, pollMs = 5000 } = {}) {
   const t0 = Date.now();
   let warned = false;
   for (;;) {
