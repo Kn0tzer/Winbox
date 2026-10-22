@@ -262,20 +262,21 @@ static inline bool normalGetNLE(CPU* cpu) {
 // bookkeeping lives in the probe), and for one that has not reached the
 // hotness threshold yet (the probe owns that counter).
 //
-// It is pure overhead for a target the JIT has already ruled out: those ops
-// keep their interpreter handler and their runCount cannot change again unless
-// the code cache invalidates them, which resets runCount itself. Keeping the
-// chain for them means the interpreter runs rejected or uncompilable code at
-// interpreter-only speed instead of probe speed. Chain a bounded number of
-// blocks, exactly like the interpreter-only build.
-static inline bool normalChainPastJitEntry(CPU* cpu, DecodedOp* op) {
-    return op->pfn != cpu->thread->process->startJITOp &&
+// It is pure overhead for a target the JIT has already ruled out: such an op
+// keeps its plain interpreter handler (pfn is the handler for its opcode, not
+// the block trampoline or the compiler entry) and its runCount cannot change
+// again unless the code cache invalidates the op, which resets runCount itself.
+// Keeping the chain for it means the interpreter runs rejected or uncompilable
+// code at interpreter-only speed instead of probe speed. Chain a bounded number
+// of blocks, exactly like the interpreter-only build.
+static inline bool normalChainPastJitEntry(DecodedOp* op) {
+    return op->pfn == NormalCPU::getFunctionForOp(op) &&
         !(op->flags2 & OP_FLAG2_WASM_JIT_PENDING) &&
         op->runCount >= wasmJit32HotThreshold();
 }
 #define CONTINUE_BRANCH() \
     if (cpu->nextOp && static_cast<NormalCPU*>(cpu)->branchBudget > 1 && \
-        (!wasmJit32Active || normalChainPastJitEntry(cpu, cpu->nextOp))) { \
+        (!wasmJit32Active || normalChainPastJitEntry(cpu->nextOp))) { \
         --static_cast<NormalCPU*>(cpu)->branchBudget; \
         MUSTTAIL return normalDispatch(cpu, cpu->nextOp); \
     }
