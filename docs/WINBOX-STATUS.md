@@ -3,9 +3,9 @@
 Main branch: `fix/winbox-chromium-20261018` in /home/ubuntu/boxedwine64 (local only, unpushed, undeployed).
 Last merged: glsh, recover, gb, loopback sockets, WebGPU GL (HEAD 723b3a056 builds and maps notepad jit=0 in 43 s). Earlier final report: docs/reports/winbox-finish-20261020.md.
 
-## Demo matrix (older runtime built 2026-10-21 03:01; seconds click -> mapped, jit0/jit1)
-notepad 40/54, snake 29/fail, doom fail/45, celeste 22/53, portal 25/47, gangbeasts not mapped.
-JIT=1 startup is ~1.3-2.3x slower than JIT=0; the earlier "JIT breaks Wine startup" bug is fixed (jitfix), snake and doom still have one failing mode each.
+## Demo matrix on integ build 2026-10-22 (main + solhang + solq3 commits; seconds click -> mapped, jit0/jit1)
+notepad 56/61, snake 47/54, doom 47/54, celeste 22/52, portal 25/47 - all mapped. gangbeasts not mapped (either setting).
+Merged: solhang socket/loopback fixes, solq3 WebGPU fixed-function menus and framebuffer mip fix. Q3 and Mindustry not re-verified end to end.
 
 ## Open problems
 1. mem2 branch `lane/winbox-mem2-20261021` (a84238b6c, KMemory64 open-addressed page table, native +18% page stride): DO NOT MERGE. Bisected: main without it maps notepad; with it Wine stalls after start.exe and never maps. Lane thr_2y9kiyujhs asked to fix.
