@@ -9,11 +9,11 @@ Merged: solhang socket/loopback fixes, solq3 WebGPU fixed-function menus and fra
 
 ## Open problems
 1. mem2 branch `lane/winbox-mem2-20261021` (a84238b6c, KMemory64 open-addressed page table, native +18% page stride): DO NOT MERGE. Bisected: main without it maps notepad; with it Wine stalls after start.exe and never maps. Lane thr_2y9kiyujhs asked to fix.
-2. Q3 draws nothing (client arrays), Mindustry stuck at 82% (errno 5 loop), Gang Beasts no swapchain: Sol lanes solq3/solhang in flight.
+2. Q3 draws nothing (client arrays), Mindustry stuck at 82% (errno 5 loop), Gang Beasts no swapchain: Luna takeover lanes in flight.
 3. jitpar lane (JIT correctness/startup, snake jit=1 root cause): round 4 pending.
 4. Portal blank screenshot; CPU32 JIT slower than interpreter; CPU32 recovery test LabelAlreadyBound (test reordered last).
 5. Unit suite: 150/151 pass. Only `native-socket-safety` fails (3 subtests): its extracted-source stubs lack the new loopback members (loopbackStream, loopbackDatagram, ensureLoopbackBound, ...). Hand to solhang after its socket work lands, since it is editing the same functions. Fixed here: build-lock, browser-network, cpu64-opcode-coverage, xwire-focus (stale tests, not product bugs).
-6. Codex lanes returned 429s from ~01:00 UTC 2026-10-22 despite the session window showing allowed (next session reset 05:50 UTC); lanes stalled mid-task, partial work committed on their branches.
+6. Codex is back (Luna only; Sol access gone). Sol lanes stopped; Luna lanes thr_km7i552v9i (Q3) and thr_aeh57tei89 (Mindustry/Gang Beasts hangs + native-socket-safety stubs) took over their worktrees. jitpar (thr_5annabscvc) and mem2 (thr_2y9kiyujhs) resumed.
 
 ## Workflow speedups
 - New worktree: `/home/ubuntu/scripts/winbox-wt-prep.sh <worktree>` (offline assets; local manifest is assume-unchanged, never commit it).
