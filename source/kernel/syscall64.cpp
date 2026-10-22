@@ -2390,6 +2390,46 @@ bool CPU64::deliverPendingSignals() {
     return false;
 }
 
+// Blocked-syscall variant of deliverPendingSignals (see cpu64.h). The thread is
+// inside a SYSCALL (cpu->rip is already past the instruction, syscallRip is the
+// instruction itself, RAX still holds the syscall number). Wine suspends/queries
+// a thread (SuspendThread, GetThreadContext, APC nudges) by tgkill(SIGUSR1) and
+// expects the signal to break the thread out of whatever server wait it is in;
+// without this a thread parked in a wineserver socket read never runs its
+// handler and the requester (e.g. a Boehm GC stop-the-world) waits forever.
+bool CPU64::interruptSyscallWithSignal(bool allowRestart) {
+    if (!this->thread) return false;
+    U64 pending;
+    {
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->thread->pendingSignalsMutex);
+        pending = this->thread->pendingSignals & ~this->sigMask;
+    }
+    if (!pending) return false;
+    const U64 savedRip = this->rip;
+    const U64 savedRax = this->reg[X64_RAX].u64;
+    for (U32 sig = 1; sig <= 64; sig++) {
+        U64 bit = 1ULL << (sig - 1);
+        if (!(pending & bit)) continue;
+        const SigAction& sa = this->sigActions[sig];
+        if (!sa.installed || sa.handler == 0 || sa.handler == 1) continue;
+        if (allowRestart && (sa.flags & 0x10000000 /*SA_RESTART*/)) {
+            // Re-run the SYSCALL after the handler returns: same RAX (number),
+            // same argument registers; RCX/R11 are re-clobbered by SYSCALL.
+            this->rip = this->syscallRip;
+        } else {
+            this->reg[X64_RAX].setU64((U64)(S64)-K_EINTR);
+        }
+        if (deliverSignalSync(this, sig)) {
+            BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->thread->pendingSignalsMutex);
+            this->thread->pendingSignals &= ~bit;
+            return true;
+        }
+        this->rip = savedRip;
+        this->reg[X64_RAX].setU64(savedRax);
+    }
+    return false;
+}
+
 // Synchronously deliver a hardware-trap-derived signal (SIGFPE on #DE,
 // SIGSEGV on a page fault, ...) at the faulting instruction. Unlike
 // deliverSignalSync (used for raise()/tgkill self), this synthesizes a real
@@ -3542,6 +3582,22 @@ void ksyscall64(CPU64* cpu) {
                     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(target->pendingSignalsMutex);
                     target->pendingSignals |= (1ULL << (sig - 1));
                 }
+                // A target parked in a blocking syscall (wineserver socket read,
+                // poll, futex, sleep) never reaches a scheduler slice or the
+                // 64k-instruction check, so kick the condition it sleeps on;
+                // its wait loop sees pendingSignals and calls
+                // interruptSyscallWithSignal. Waits that are not on a condition
+                // fall back to their short timed slices (see
+                // BOXEDWINE_CONDITION_WAIT_SIGNALABLE).
+#ifdef BOXEDWINE_MULTI_THREADED
+                {
+                    BOXEDWINE_CONDITION cond = target->waitingCond;
+                    if (cond) {
+                        BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(cond);
+                        BOXEDWINE_CONDITION_SIGNAL_ALL(cond);
+                    }
+                }
+#endif
                 ret = 0;
                 break;
             }

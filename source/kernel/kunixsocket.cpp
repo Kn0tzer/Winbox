@@ -407,7 +407,7 @@ U32 KUnixSocketObject::readNative(U8* buffer, U32 len) {
         if (!this->blocking) {
             return -K_EWOULDBLOCK;
         }
-        BOXEDWINE_CONDITION_WAIT(this->lockCond);
+        BOXEDWINE_CONDITION_WAIT_SIGNALABLE(this->lockCond);
 #ifdef BOXEDWINE_MULTI_THREADED
         KThread* thread = KThread::currentThread();
         // audio thread will call this function without a thread
@@ -419,6 +419,11 @@ U32 KUnixSocketObject::readNative(U8* buffer, U32 len) {
                 thread->startSignal = false;
                 return -K_CONTINUE;
             }
+#ifdef BOXEDWINE_GUEST_X64
+            if (thread->interruptBlockedSyscall()) {
+                return -K_EINTR;
+            }
+#endif
         }
 #endif
     }
@@ -465,7 +470,7 @@ U32 KUnixSocketObject::read(KThread* thread, U32 buffer, U32 len, U32 flags) {
         if (!this->blocking) {
             return -K_EWOULDBLOCK;
         }
-        BOXEDWINE_CONDITION_WAIT(this->lockCond);
+        BOXEDWINE_CONDITION_WAIT_SIGNALABLE(this->lockCond);
 #ifdef BOXEDWINE_MULTI_THREADED
 		if (thread->terminating) {
 			return -K_EINTR;
@@ -474,6 +479,11 @@ U32 KUnixSocketObject::read(KThread* thread, U32 buffer, U32 len, U32 flags) {
             thread->startSignal = false;
             return -K_CONTINUE;
         }
+#ifdef BOXEDWINE_GUEST_X64
+        if (thread->interruptBlockedSyscall()) {
+            return -K_EINTR;
+        }
+#endif
 #endif
     }
     count = std::min(len, (U32)this->recvBuffer.size_used());
@@ -1097,7 +1107,7 @@ U32 KUnixSocketObject::recvmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
             return -K_EWOULDBLOCK;
         }
         // :TODO: what about a time out
-        BOXEDWINE_CONDITION_WAIT(this->lockCond);
+        BOXEDWINE_CONDITION_WAIT_SIGNALABLE(this->lockCond);
 #ifdef BOXEDWINE_MULTI_THREADED
 		if (thread->terminating) {
 			return -K_EINTR;
@@ -1106,6 +1116,11 @@ U32 KUnixSocketObject::recvmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
             thread->startSignal = false;
             return -K_CONTINUE;
         }
+#ifdef BOXEDWINE_GUEST_X64
+        if (thread->interruptBlockedSyscall()) {
+            return -K_EINTR;
+        }
+#endif
 #endif
     }
 

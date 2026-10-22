@@ -730,7 +730,10 @@ S64 KThread::futex64(U64 addr, U32 op, U32 value, U64 timeoutAddr, U32 val3) {
                     // rt_sigreturn resumes the guest).
                     bool delivered;
                     if (this->cpu64) {
-                        delivered = this->cpu64->deliverPendingSignals();
+                        // Interrupt the futex like Linux does (EINTR; wine's futex
+                        // users re-check the word and wait again), not a fresh
+                        // slice-start delivery that left RAX = the syscall number.
+                        delivered = this->cpu64->interruptSyscallWithSignal(false);
                     } else {
                         delivered = runSignals();
                     }
@@ -749,7 +752,11 @@ S64 KThread::futex64(U64 addr, U32 op, U32 value, U64 timeoutAddr, U32 val3) {
                         freeFutex(f);
                         return -K_ETIMEDOUT;
                     }
-                    f->cond->waitWithTimeout(boxedWineCriticalSection, (U32)diff);
+                    // 64-bit guest threads re-check pendingSignals at least every
+                    // 200 ms so a tgkill that raced the wait registration is not lost.
+                    f->cond->waitWithTimeout(boxedWineCriticalSection, this->cpu64 && (U32)diff > 200 ? 200 : (U32)diff);
+                } else if (this->cpu64) {
+                    f->cond->waitWithTimeout(boxedWineCriticalSection, 200);
                 } else {
                     f->cond->wait(boxedWineCriticalSection);
                 }
@@ -1082,6 +1089,12 @@ void KThread::signalIllegalInstruction(int code) {
     this->process->sigActions[K_SIGILL].sigInfo[3] = cpu->eip.u32;
     this->runSignal(K_SIGILL, 6, 0); // #UD
 }
+
+#if defined(BOXEDWINE_GUEST_X64) && defined(BOXEDWINE_MULTI_THREADED)
+bool KThread::interruptBlockedSyscall(bool allowRestart) {
+    return this->cpu64 && this->pendingSignals && this->cpu64->interruptSyscallWithSignal(allowRestart);
+}
+#endif
 
 bool KThread::runSignals() {
     U64 mask = this->inSignal ? this->inSigMask : this->sigMask;

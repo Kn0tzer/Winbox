@@ -175,11 +175,19 @@ static S32 internal_poll_impl(KThread* thread, KPollData* data, U32 count, U32 t
                 return 0;
         }
         if (timeout>0xF0000000) {
-            BOXEDWINE_CONDITION_WAIT(thread->pollCond);
+            BOXEDWINE_CONDITION_WAIT_SIGNALABLE(thread->pollCond);
         } else {
             // Keep the original deadline. Subtracting total elapsed time from
             // an already-reduced timeout returns early after spurious wakes.
-            BOXEDWINE_CONDITION_WAIT_TIMEOUT(thread->pollCond, timeout - elapsed);
+            U32 waitMs = timeout - elapsed;
+#if defined(BOXEDWINE_GUEST_X64) && defined(BOXEDWINE_MULTI_THREADED)
+            // 64-bit guest threads re-check pendingSignals at least every 200 ms
+            // (see BOXEDWINE_CONDITION_WAIT_SIGNALABLE).
+            if (thread->cpu64 && waitMs > 200) {
+                waitMs = 200;
+            }
+#endif
+            BOXEDWINE_CONDITION_WAIT_TIMEOUT(thread->pollCond, waitMs);
         }
         clearPollData(thread, firstData, count);
         if (epollRestart && epollRestart->exchange(false, std::memory_order_acq_rel)) {
@@ -196,6 +204,14 @@ static S32 internal_poll_impl(KThread* thread, KPollData* data, U32 count, U32 t
             KThread::currentThread()->startSignal = false;
             return -K_CONTINUE;
         }
+#ifdef BOXEDWINE_GUEST_X64
+        // A cross-thread tgkill (Wine's SIGUSR1: SuspendThread/GetThreadContext)
+        // interrupts the wait like a Linux signal would.
+        if (KThread::currentThread()->interruptBlockedSyscall(false)) {
+            thread->condStartWaitTime = 0;
+            return -K_EINTR;
+        }
+#endif
 #endif        
     }
 }
