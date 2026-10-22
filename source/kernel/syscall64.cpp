@@ -2936,6 +2936,63 @@ static inline bool bwThreadDumpEnabled() {
     return enabled;
 }
 
+// Best-effort guest stack walk for BW_THREAD_DUMP. Scans the qwords above the
+// guest RSP for values that fall inside a PE image in the PEB loader list
+// (candidate return addresses) and prints module+RVA. It is a heuristic scan
+// (no unwind info), but it names the Windows module/function a thread is in
+// even when the host-visible rip is just the libc syscall stub. Every read is
+// guarded by isPageMapped so a racing/stale RSP cannot fault the dumper.
+static void bwDumpGuestStack(CPU64* c, U32 pid, U32 tid) {
+    KMemory64* mem = c->memory;
+    if (!mem || !c->gsbase) return;
+    auto readable = [&](U64 addr, U64 len) {
+        for (U64 page = addr >> 12; page <= (addr + len - 1) >> 12; ++page)
+            if (!mem->isPageMapped(page)) return false;
+        return true;
+    };
+    if (!readable(c->gsbase + 0x60, 8)) return;
+    U64 peb = mem->readq(c->gsbase + 0x60);
+    if (!peb || !readable(peb + 0x18, 8)) return;
+    U64 ldr = mem->readq(peb + 0x18);
+    if (!ldr || !readable(ldr + 0x10, 8)) return;
+    struct Mod { U64 base; U64 size; char name[40]; };
+    Mod mods[96]; int nMods = 0;
+    const U64 head = ldr + 0x10;
+    U64 link = mem->readq(head);
+    for (int i = 0; i < 128 && link && link != head && nMods < 96; ++i) {
+        if (!readable(link, 0x68)) break;
+        Mod& m = mods[nMods];
+        m.base = mem->readq(link + 0x30);
+        m.size = mem->readd(link + 0x40);
+        m.name[0] = 0;
+        U16 nlen = mem->readw(link + 0x58);
+        U64 nbuf = mem->readq(link + 0x60);
+        if (m.base && nlen && nlen < 80 && nbuf && readable(nbuf, nlen)) {
+            int n = nlen / 2; if (n > 38) n = 38;
+            for (int k = 0; k < n; ++k) { U16 ch = mem->readw(nbuf + (U64)k * 2); m.name[k] = ch < 128 ? (char)ch : '?'; }
+            m.name[n] = 0;
+        }
+        if (m.base) ++nMods;
+        link = mem->readq(link);
+    }
+    const U64 rsp = c->reg[X64_RSP].u64;
+    int hits = 0;
+    for (U64 i = 0; i < 6144 && hits < 48; ++i) {
+        U64 at = rsp + i * 8;
+        if (!readable(at, 8)) break;
+        U64 v = mem->readq(at);
+        for (int m = 0; m < nMods; ++m) {
+            if (v >= mods[m].base && v - mods[m].base < mods[m].size) {
+                klog_fmt("BW_THREAD_DUMP stack pid=%u tid=%u +0x%llx %s+0x%llx", pid, tid,
+                         (unsigned long long)(i * 8), mods[m].name[0] ? mods[m].name : "?",
+                         (unsigned long long)(v - mods[m].base));
+                ++hits;
+                break;
+            }
+        }
+    }
+}
+
 // Called by the demo diagnostic timer only when the runtime URL opts in with
 // ?bw64diag=threads. The wrapper maps that URL flag to BW_THREAD_DUMP before
 // Emscripten caches ENV, so normal launches do not emit these snapshots.
@@ -2980,6 +3037,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void bw64_dump_guest_threads() {
                     ? std::dynamic_pointer_cast<KEPoll>(fd->kobject) : nullptr;
                 if (epoll) epoll->debugDumpRegistrations(thread->process.get(), pid, thread->id);
             }
+            bwDumpGuestStack(c, pid, thread->id);
             continue;
         }
 #endif
