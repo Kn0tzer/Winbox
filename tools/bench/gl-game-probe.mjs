@@ -128,6 +128,8 @@ try {
   await symlink(gameZip, join(serverRoot, 'game.zip'));
   server = await serve(serverRoot);
   slot = await acquireProbeSlot();
+  // Load waiting is caller-managed with winbox-wait-load.sh. After its single
+  // bounded wait, launch even if the machine remains busy instead of polling.
   browser = await chromium.launch({
     executablePath: process.env.CHROME_PATH || '/usr/local/bin/chromium',
     headless: true,

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { defaultBuildLockTimeoutMs } from '../../build-lock.mjs';
 
 const wrapper = resolve('tools/bw64-build.sh');
 
@@ -77,4 +78,13 @@ test('live and malformed probe slots reject a build before any asset mutation', 
       assert.equal(existsSync(lock), false);
     }
   });
+});
+
+test('build-lock timeout stays at ten minutes unless a positive integer override is set', () => {
+  assert.equal(defaultBuildLockTimeoutMs(''), 600000);
+  assert.equal(defaultBuildLockTimeoutMs(undefined), 600000);
+  assert.equal(defaultBuildLockTimeoutMs('2700000'), 2700000);
+  assert.equal(defaultBuildLockTimeoutMs('60000.5'), 600000);
+  assert.equal(defaultBuildLockTimeoutMs('-1'), 600000);
+  assert.equal(defaultBuildLockTimeoutMs('not-a-number'), 600000);
 });
