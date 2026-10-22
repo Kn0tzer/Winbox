@@ -30,3 +30,37 @@ for (const [name, mask] of [['color', 0x4000], ['depth', 0x0100], ['color and de
     }
   });
 }
+
+test('texture framebuffer render attachments select exactly one mip level', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const createEncoder = gpu.device.createCommandEncoder;
+    gpu.device.createCommandEncoder = () => {
+      const encoder = createEncoder();
+      const beginPass = encoder.beginRenderPass;
+      encoder.beginRenderPass = descriptor => {
+        for (const attachment of descriptor.colorAttachments) {
+          assert.equal(attachment.view.options.mipLevelCount, 1, 'render attachments cannot include a texture mip chain');
+        }
+        return beginPass(descriptor);
+      };
+      return encoder;
+    };
+    const logs = [];
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    const texture = gl.createTexture();
+    gl.bindTexture(0x0de1, texture);
+    gl.texImage2D(0x0de1, 0, 0x1908, 80, 60, 0, 0x1908, 0x1401, null);
+    gl.bindFramebuffer(0x8d40, gl.createFramebuffer());
+    gl.framebufferTexture2D(0x8d40, 0x8ce0, 0x0de1, texture, 0);
+    gl.clearColor(1, 0, 0, 1);
+    gl.clear(0x4000);
+    await gl._ops;
+    assert.deepEqual(logs, []);
+    assert.equal(gpu.passes.length, 1);
+    const pixel = new Uint8Array(4);
+    gl.readPixels(40, 30, 1, 1, 0x1908, 0x1401, pixel);
+    assert.deepEqual([...pixel], [255, 0, 0, 255]);
+  } finally { gpu.restore(); }
+});

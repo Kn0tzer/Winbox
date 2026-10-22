@@ -389,11 +389,13 @@ export class WebGPUGL {
     const depth = depthAttachment?.object || null;
     const colorTexture = colorAttachment.type === 'texture' ? color?.gpu : color?.gpu;
     const depthTexture = depth ? depth.gpu : null;
+    const colorMipLevel = colorAttachment.level || 0;
+    const level = color?.levels?.get(colorMipLevel);
     return {
       default: false, framebuffer: object, colorObject: color, depthObject: depth,
-      colorTexture, depthTexture,
-      pixels: color?.pixels || null,
-      width: color?.width || 0, height: color?.height || 0,
+      colorTexture, depthTexture, colorMipLevel, depthMipLevel: depthAttachment?.level || 0,
+      pixels: level?.pixels || color?.pixels || null,
+      width: level?.width || color?.width || 0, height: level?.height || color?.height || 0,
       format: color?.format || 'rgba8unorm', depthFormat: depth?.format || null,
     };
   }
@@ -410,13 +412,13 @@ export class WebGPUGL {
     const encoder = this._device.createCommandEncoder();
     const descriptor = {
       colorAttachments: [{
-        view: target.colorTexture.createView(),
+        view: target.colorTexture.createView({ baseMipLevel: target.colorMipLevel || 0, mipLevelCount: 1 }),
         clearValue: { r: state.color[0], g: state.color[1], b: state.color[2], a: state.color[3] },
         loadOp: fullColor ? 'clear' : 'load', storeOp: 'store',
       }],
     };
     if (target.depthTexture) descriptor.depthStencilAttachment = {
-        view: target.depthTexture.createView(),
+        view: target.depthTexture.createView({ baseMipLevel: target.depthMipLevel || 0, mipLevelCount: 1 }),
         depthClearValue: state.depth,
         depthLoadOp: fullDepth ? 'clear' : 'load',
         depthStoreOp: 'store',
@@ -1485,8 +1487,8 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (!pipeline) return; // A failed shader/pipeline is a skipped draw.
     const encoder = this._device.createCommandEncoder();
     const pass = encoder.beginRenderPass({
-      colorAttachments: [{ view: target.colorTexture.createView(), loadOp: 'load', storeOp: 'store' }],
-      ...(target.depthTexture ? { depthStencilAttachment: { view: target.depthTexture.createView(), depthLoadOp: 'load', depthStoreOp: 'store' } } : {}),
+      colorAttachments: [{ view: target.colorTexture.createView({ baseMipLevel: target.colorMipLevel || 0, mipLevelCount: 1 }), loadOp: 'load', storeOp: 'store' }],
+      ...(target.depthTexture ? { depthStencilAttachment: { view: target.depthTexture.createView({ baseMipLevel: target.depthMipLevel || 0, mipLevelCount: 1 }), depthLoadOp: 'load', depthStoreOp: 'store' } } : {}),
     });
     pass.setPipeline(pipeline);
     for (const item of vertex.buffers) pass.setVertexBuffer(item.slot, item.buffer, item.offset);
