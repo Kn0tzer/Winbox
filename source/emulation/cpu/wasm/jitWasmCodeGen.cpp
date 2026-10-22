@@ -4174,7 +4174,7 @@ static void disableWasmJitBlockAfterSlotMiss(DecodedOp* op) {
         cur->flags &= ~OP_FLAG_JIT;
         cur->flags |= OP_FLAG_NO_JIT;
         cur->flags2 &= ~OP_FLAG2_WASM_JIT_MEM_ARRAYS;
-        cur->runCount = JIT_RUN_COUNT + 1;
+        cur->runCount = (U8)wasmJit32DecidedRunCount();
         cur->blockStart = nullptr;
         cur->blockOpCount = 0;
         cur->blockLen = 0;
@@ -4763,7 +4763,7 @@ static bool isNestedWasmJitEntry(const WasmJitPendingBlock& pending, DecodedOp* 
 static void markPendingBlock(WasmJitPendingBlock& pending) {
     pending.op->blockLen = pending.emulatedLen;
     pending.op->blockOpCount = pending.blockOpCount;
-    pending.op->runCount = JIT_RUN_COUNT;
+    pending.op->runCount = (U8)wasmJit32HotThreshold();
     DecodedOp* cur = pending.op;
     for (U32 i = 0; i < pending.blockOpCount && cur; ++i) {
         DecodedOp* owner = cur->blockStart;
@@ -4841,7 +4841,7 @@ static void failPendingWasmJitBlock(WasmJitPendingBlock& pending) {
             cur->pfn = NormalCPU::getFunctionForOp(cur);
             cur->flags &= ~OP_FLAG_JIT;
             cur->flags2 &= ~(OP_FLAG2_WASM_JIT_PENDING | OP_FLAG2_WASM_JIT_MEM_ARRAYS);
-            cur->runCount = JIT_RUN_COUNT + 1;
+            cur->runCount = (U8)wasmJit32DecidedRunCount();
             if (cur->blockStart == pending.op) {
                 cur->blockStart = nullptr;
                 cur->blockOpCount = 0;
@@ -5362,7 +5362,7 @@ static bool isNestedMtWasmJitEntry(const WasmJitMtPendingBlock& pending, Decoded
 static void markMtPendingBlock(WasmJitMtPendingBlock& pending) {
     pending.op->blockLen = pending.emulatedLen;
     pending.op->blockOpCount = pending.blockOpCount;
-    pending.op->runCount = JIT_RUN_COUNT;
+    pending.op->runCount = (U8)wasmJit32HotThreshold();
     DecodedOp* cur = pending.op;
     for (U32 i = 0; i < pending.blockOpCount && cur; ++i) {
         DecodedOp* owner = cur->blockStart;
@@ -5389,7 +5389,7 @@ static void failMtPendingBlock(WasmJitMtPendingBlock& pending) {
             cur->pfn = NormalCPU::getFunctionForOp(cur);
             cur->flags &= ~OP_FLAG_JIT;
             cur->flags2 &= ~(OP_FLAG2_WASM_JIT_PENDING | OP_FLAG2_WASM_JIT_MEM_ARRAYS);
-            cur->runCount = JIT_RUN_COUNT + 1;
+            cur->runCount = (U8)wasmJit32DecidedRunCount();
             if (cur->blockStart == pending.op) {
                 cur->blockStart = nullptr;
                 cur->blockOpCount = 0;

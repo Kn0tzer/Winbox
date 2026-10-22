@@ -26,6 +26,11 @@ using U32 = unsigned; using U8 = unsigned char; using LazyFlagType = unsigned;
 constexpr U32 OP_FLAG_JIT = 1, JIT_RUN_COUNT = 3, Done = 99;
 constexpr U32 OP_FLAG2_WASM_JIT_PENDING = 1;
 constexpr U32 FLAGS_NULL = 4, FLAGS_ADD64 = 5, FLAGS_NEG64 = 6, CS = 0;
+// jitCodeGen.cpp compares runCount against the latched 32-bit hot threshold
+// (BW32_JIT_HOT, default JIT_RUN_COUNT). The harness pins it to the compiled-in
+// default so the extracted firstDynamicOp still tests the warm-up and helper
+// logic rather than the policy value.
+U32 wasmJit32HotThreshold() { return JIT_RUN_COUNT; }
 struct CPU; struct DecodedOp;
 using OpCallback = void (*)(CPU*, DecodedOp*);
 struct Process {

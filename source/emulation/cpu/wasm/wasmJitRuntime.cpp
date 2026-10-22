@@ -123,6 +123,37 @@ bool wasmJit32GroupsDisabled() {
     return disabled;
 }
 
+U32 wasmJit32HotThreshold() {
+    // Latched once: the value decides when a block is handed to the generator,
+    // and every reader (run()'s probe gate, the generator trigger, the
+    // direct-dispatch chain rule) must see the same number for the whole
+    // session. DecodedOp::runCount is a U8 with JIT_RUN_COUNT+1 as the
+    // "decided" sentinel and 0xff as "never compile again", so the useful
+    // range stops one below the sentinel.
+    static const U32 threshold = [] {
+        const char* raw = std::getenv("BW32_JIT_HOT");
+        if (!raw || !raw[0]) {
+            return (U32)JIT_RUN_COUNT;
+        }
+        char* end = nullptr;
+        unsigned long parsed = std::strtoul(raw, &end, 10);
+        if (end == raw || parsed == 0 || parsed > 254) {
+            klog_fmt("BW32 JIT: ignoring BW32_JIT_HOT=%s (expected 1..254)", raw);
+            return (U32)JIT_RUN_COUNT;
+        }
+        klog_fmt("BW32 JIT: hot threshold %lu (BW32_JIT_HOT)", parsed);
+        return (U32)parsed;
+    }();
+    return threshold;
+}
+
+U32 wasmJit32DecidedRunCount() {
+    U32 threshold = wasmJit32HotThreshold();
+    // runCount is a U8; 0xff is the "never compile this op again" value that
+    // firstDynamicOp and the reject paths already use.
+    return threshold >= 254 ? 0xff : threshold + 1;
+}
+
 bool wasmJit32TrapTraceEnabled() {
     static const bool enabled = readBoolEnv("BW32_JIT_TRAP_TRACE", 0) != 0;
     return enabled;
