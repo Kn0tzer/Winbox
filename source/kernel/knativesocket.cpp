@@ -2393,7 +2393,14 @@ U32 KNativeSocketObject::sendmsg(KThread* thread, const KFileDescriptorPtr& fd, 
 }
 
 U32 KNativeSocketObject::recvmsg(KThread* thread, const KFileDescriptorPtr& fd, U32 address, U32 flags) {
-    BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(readingCond);
+#ifdef BOXEDWINE_MULTI_THREADED
+    // Guest queue readers take this nonrecursive condition mutex themselves.
+    // Taking it here as well deadlocks Wine's recvmsg during Java's TCP pipe
+    // handshake, even when the entire secret is already queued.
+    std::unique_lock<std::mutex> boxedWineCriticalSection(readingCond->m, std::defer_lock);
+    if (!this->loopbackDatagram && !(this->loopbackStream &&
+        (this->loopbackStreamConnected || this->nativeSocket < 0))) boxedWineCriticalSection.lock();
+#endif
     KMemory* memory = thread->memory;
     const U32 loopbackFlags = flags;
     char tmp[K_PAGE_SIZE] = { 0 };

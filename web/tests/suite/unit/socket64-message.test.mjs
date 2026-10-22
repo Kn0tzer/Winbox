@@ -58,7 +58,7 @@ int main(){auto guest=std::make_unique<Memory>();auto scratch=std::make_unique<M
  // MSG_TRUNC requests its full length. Copy only bytes actually received.
  auto init=[&](){guest->writeq(0,256);guest->writed(8,16);guest->writeq(16,128);guest->writeq(24,1);guest->writeq(32,0);guest->writeq(40,0);guest->writed(48,0);guest->writeq(128,512);guest->writeq(136,4);guest->writed(256,0x12340002);};
  init();assert(sys_sendmsg64(&c,3,0,0)==4);assert(sentName&&sentNameLength==16&&scratch->readd(sentName)==0x12340002);
- init();guest->writeq(136,70000);guest->bytes[512+65024]=0xa5;assert(sys_recvmsg64(&c,3,0,0x20)==65507);assert(guest->readd(256)==0x12340002);assert(guest->readd(8)==16&&guest->readd(48)==0x20);assert(guest->readd(512)==0x64636261);assert(scratch->dataReads==65024&&guest->bytes[512+65024]==0xa5);
+ init();guest->writed(256,0xdeadbeef);guest->writeq(136,70000);guest->bytes[512+65024]=0xa5;assert(sys_recvmsg64(&c,3,0,0x20)==65507);assert(guest->readd(256)==0x12340002);assert(guest->readd(8)==16&&guest->readd(48)==0x20);assert(guest->readd(512)==0x64636261);assert(scratch->dataReads==65024&&guest->bytes[512+65024]==0xa5);
 }
 `);
     const build = spawnSync('c++', ['-std=c++20', '-pthread', join(dir, 'check.cpp'), '-o', join(dir, 'check')], { encoding: 'utf8' });
