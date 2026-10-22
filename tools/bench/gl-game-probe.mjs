@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { loadavg, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { serve } from '../../tools/browser/serve.mjs';
 import { acquireProbeSlot } from '../../web/tests/probe-slots.mjs';
@@ -128,12 +128,6 @@ try {
   await symlink(gameZip, join(serverRoot, 'game.zip'));
   server = await serve(serverRoot);
   slot = await acquireProbeSlot();
-  // A queued probe can be admitted long after the caller's load check.
-  // Check again with the slot held, immediately before the timed launch.
-  while (loadavg()[0] >= 5) {
-    process.stdout.write(`[gl-game-probe] waiting for 1-minute load below 5: ${loadavg()[0]}\n`);
-    await new Promise(resolveWait => setTimeout(resolveWait, 10000));
-  }
   browser = await chromium.launch({
     executablePath: process.env.CHROME_PATH || '/usr/local/bin/chromium',
     headless: true,
