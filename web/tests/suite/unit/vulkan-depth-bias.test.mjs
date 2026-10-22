@@ -62,7 +62,7 @@ test('pipeline depth bias rounds constantFactor and enables unclipped depth only
 test('native depth-bias tail emission round-trips through the V2 decoder', () => {
   const bridge = readFileSync(join(root,'source/vulkan/vk64bridge.cpp'),'utf8');
   const emitter = bridge.match(/static void emitDepthBias\([\s\S]*?\n\}/)[0];
-  const dir = mkdtempSync(join('/tmp/winbox-finish/work-G1/','depth-bias-'));
+  const dir = mkdtempSync(join('/tmp/','depth-bias-'));
   try {
     const source=join(dir,'depth-bias.cpp'), binary=join(dir,'depth-bias');
     writeFileSync(source,`
@@ -94,7 +94,7 @@ test('32-bit and 64-bit guest shims forward vkCmdSetDepthBias float bits through
     const source=original.replace(/static inline uint64_t vk64_trap\(uint64_t fnId, VK64Args\* args\) \{[\s\S]*?\n\}/,
       'static uint64_t capturedFn; static VK64Args capturedArgs; static inline uint64_t vk64_trap(uint64_t fnId, VK64Args* args) { capturedFn=fnId; if(args) capturedArgs=*args; return 0; }');
     assert.notEqual(source,original);
-    const dir=mkdtempSync(join('/tmp/winbox-finish/work-G1/',`depth-bias-shim-${arch}-`));
+    const dir=mkdtempSync(join('/tmp/',`depth-bias-shim-${arch}-`));
     try {
       const check=`
 int check_depth_bias(void){vkCmdSetDepthBias(1,1.25f,-0.5f,2.75f);return !(capturedFn==905 && capturedArgs.a[0]==1 && capturedArgs.a[1]==0x3fa00000 && capturedArgs.a[2]==0xbf000000 && capturedArgs.a[3]==0x40300000);}
