@@ -13,7 +13,7 @@ JIT=1 startup is ~1.3-2.3x slower than JIT=0; the earlier "JIT breaks Wine start
 3. jitpar lane (JIT correctness/startup, snake jit=1 root cause): round 4 pending.
 4. Portal blank screenshot; CPU32 JIT slower than interpreter; CPU32 recovery test LabelAlreadyBound (test reordered last).
 5. Unit suite: 150/151 pass. Only `native-socket-safety` fails (3 subtests): its extracted-source stubs lack the new loopback members (loopbackStream, loopbackDatagram, ensureLoopbackBound, ...). Hand to solhang after its socket work lands, since it is editing the same functions. Fixed here: build-lock, browser-network, cpu64-opcode-coverage, xwire-focus (stale tests, not product bugs).
-6. Codex plan hit 429 rate limits until about 00:50 UTC 2026-10-22 (resetsAtMs 1792630237000); all lanes paused until then.
+6. Codex lanes returned 429s from ~01:00 UTC 2026-10-22 despite the session window showing allowed (next session reset 05:50 UTC); lanes stalled mid-task, partial work committed on their branches.
 
 ## Workflow speedups
 - New worktree: `/home/ubuntu/scripts/winbox-wt-prep.sh <worktree>` (offline assets; local manifest is assume-unchanged, never commit it).
