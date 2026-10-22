@@ -61,14 +61,14 @@ The matrix uses A = both JITs off, B = CPU64 only, and C = CPU64 + CPU32. All ru
 | Demo | A: JIT0 | B: CPU64 only | C: CPU64 + CPU32 |
 |---|---:|---:|---:|
 | Notepad | 46.879 s | 75.715 s | 168.957 s |
-| Snake | Not mapped by 300 s | 61.729 s (verifier default) | queued |
+| Snake | Not mapped by 300 s | 61.729 s (verifier default) | 118.546 s |
 | Celeste | pending | pending | pending |
 | Portal | pending | pending | pending |
 | Doom | pending | pending | pending |
 
-Notepad B is 1.62× A and C is 3.61× A, so CPU64-only has already missed the 1.3× target for this demo. The C run was delayed behind a shared build and ran while other probes were active; its timing is confounded. Snake A logged `wine64 snake.exe` exiting with status 1 in `imm32.dll` even though both engines were disabled. Snake B mapped, so the failure is not currently attributable to CPU32; the A case will be retried once. The explicit Snake B `jitverify=0` comparison and C result are still pending.
+Notepad B is 1.62× A and C is 3.61× A, so CPU64-only has already missed the 1.3× target for this demo. The C run was delayed behind a shared build and ran while other probes were active; its timing is confounded. Snake A logged `wine64 snake.exe` exiting with status 1 in `imm32.dll` even though both engines were disabled. Snake B (CPU64 only) and C (CPU64 + CPU32) both mapped, so these runs do not attribute the A failure to either JIT engine. The Snake A retry and explicit B `jitverify=0` comparison are still pending.
 
-The first three Notepad runs and Snake A/B were launched after load readings below 3, but some were queued behind shared builds and probes, so the actual run-time load was not consistently controlled. The measurements above are recorded as observed and should be treated with that limitation.
+The first three Notepad runs and Snake A/B were launched after load readings below 3, but some were queued behind shared builds and probes, so the actual run-time load was not consistently controlled. Snake C was launched at load 9.76 while probes were active. The measurements above are recorded as observed and should be treated with that limitation.
 
 ### Defaults and remaining checks
 
