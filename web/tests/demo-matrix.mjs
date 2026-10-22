@@ -83,6 +83,8 @@ try {
   });
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   const extraUrlParams = [...new URLSearchParams(process.env.BW_TEST_URL_PARAMS || '')];
+  // The launcher reads the frame URL, not a route.continue fetch rewrite.
+  if (wineDebug) extraUrlParams.push(['winedbg', wineDebug]);
   if (extraUrlParams.length) {
     // Change the iframe's actual src before navigation. A route URL rewrite
     // changes the fetch URL but leaves window.location.search unchanged.

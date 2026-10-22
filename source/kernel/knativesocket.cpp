@@ -662,7 +662,22 @@ struct ifconf {
 
 U32 KNativeSocketObject::ioctl(KThread* thread, U32 request) {
     CPU* cpu = thread->cpu;
-    if (request == 0x541b) {        
+    if (request == 0x541b) {
+        // Guest-local sockets have no host transport to query (accepted TCP
+        // endpoints use nativeSocket == -1). Wine uses this for FIONREAD.
+        if (this->loopbackDatagram || (this->loopbackStream &&
+            (this->loopbackPort || this->loopbackStreamConnected || this->nativeSocket < 0))) {
+            U32 available = 0;
+            if (this->loopbackDatagram) {
+                std::lock_guard<std::mutex> lock(this->loopbackPacketsMutex);
+                if (!this->loopbackPackets.empty()) available = (U32)this->loopbackPackets.front().bytes.size();
+            } else {
+                std::lock_guard<std::mutex> lock(this->loopbackStreamMutex);
+                available = (U32)this->loopbackStreamBytes.size();
+            }
+            thread->memory->writed(IOCTL_ARG1, available);
+            return 0;
+        }
 #ifdef WIN32
         u_long value=0;
         U32 result = ioctlsocket(this->nativeSocket, FIONREAD, &value);
@@ -738,6 +753,11 @@ U32 KNativeSocketObject::ioctl(KThread* thread, U32 request) {
 #endif
     } else if (request == 0x5421) {
         U32 address = IOCTL_ARG1;
+        if (this->loopbackDatagram || (this->loopbackStream &&
+            (this->loopbackPort || this->loopbackStreamConnected || this->nativeSocket < 0))) {
+            this->blocking = thread->memory->readd(address) == 0;
+            return 0;
+        }
 #ifdef WIN32
         u_long value = thread->memory->readd(address);
         U32 result = ioctlsocket(this->nativeSocket, FIONBIO, &value);
@@ -1345,17 +1365,7 @@ U32 KNativeSocketObject::sendLoopbackTo(KThread* thread, U32 message, U32 length
                                    hasDestination ? &destination : nullptr, hasDestination);
 }
 
-U32 KNativeSocketObject::recvLoopbackFrom(KThread* thread, U32 buffer, U32 length, U32 flags,
-                                           U32 address, U32 addressLength) {
-    KMemory* memory = thread->memory;
-    if (length && !memory->canWrite(buffer, length)) return -K_EFAULT;
-    if (address && !memory->canWrite(address, sizeof(struct sockaddr_in))) return -K_EFAULT;
-    if (addressLength && !memory->canWrite(addressLength, 4)) return -K_EFAULT;
-    if (flags & ~(K_MSG_OOB | K_MSG_PEEK | K_MSG_NOSIGNAL | K_MSG_DONTWAIT)) {
-        kwarn_fmt("loopback UDP recvfrom unsupported flags: %x", flags);
-    }
-
-    LoopbackPacket packet;
+U32 KNativeSocketObject::takeLoopbackPacket(LoopbackPacket& packet, U32 flags) {
     const bool peek = (flags & K_MSG_PEEK) != 0;
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->readingCond);
     for (;;) {
@@ -1379,6 +1389,23 @@ U32 KNativeSocketObject::recvLoopbackFrom(KThread* thread, U32 buffer, U32 lengt
         if (current && current->terminating) return -K_EINTR;
 #endif
     }
+
+    return 0;
+}
+
+U32 KNativeSocketObject::recvLoopbackFrom(KThread* thread, U32 buffer, U32 length, U32 flags,
+                                           U32 address, U32 addressLength) {
+    KMemory* memory = thread->memory;
+    if (length && !memory->canWrite(buffer, length)) return -K_EFAULT;
+    if (address && !memory->canWrite(address, sizeof(struct sockaddr_in))) return -K_EFAULT;
+    if (addressLength && !memory->canWrite(addressLength, 4)) return -K_EFAULT;
+    if (flags & ~(K_MSG_OOB | K_MSG_PEEK | K_MSG_NOSIGNAL | K_MSG_DONTWAIT)) {
+        kwarn_fmt("loopback UDP recvfrom unsupported flags: %x", flags);
+    }
+
+    LoopbackPacket packet;
+    U32 result = this->takeLoopbackPacket(packet, flags);
+    if ((S32)result < 0) return result;
 
     const U32 copied = std::min<U32>(length, (U32)packet.bytes.size());
     if (copied) memory->memcpy(buffer, packet.bytes.data(), copied);
@@ -1857,6 +1884,13 @@ U32 KNativeSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& f
         return 0;
     }
     if (this->loopbackStream && (this->loopbackPort || this->loopbackStreamConnected || this->nativeSocket < 0)) {
+        // Guest streams deliver writes immediately; retain the TCP option
+        // value without requiring a host socket (Java's pipe sets NODELAY).
+        if (level == K_IPPROTO_TCP && name == K_TCP_NODELAY) {
+            if (len != 4) return -K_EINVAL;
+            this->loopbackNoDelay = thread->memory->readd(value) != 0;
+            return 0;
+        }
         if (level == K_SOL_SOCKET && len == 4 &&
             (name == K_SO_REUSEADDR || name == K_SO_RCVBUF || name == K_SO_SNDBUF)) {
             const U32 option = thread->memory->readd(value);
@@ -2107,6 +2141,12 @@ U32 KNativeSocketObject::getsockopt(KThread* thread, const KFileDescriptorPtr& f
     }
     if (this->loopbackStream &&
         (this->loopbackPort || this->loopbackStreamConnected || this->nativeSocket < 0)) {
+        if (level == K_IPPROTO_TCP && name == K_TCP_NODELAY) {
+            if (memory->readd(len_address) < 4) return -K_EINVAL;
+            memory->writed(value, this->loopbackNoDelay ? 1 : 0);
+            memory->writed(len_address, 4);
+            return 0;
+        }
         if (level == K_SOL_SOCKET && (name == K_SO_ERROR || name == K_SO_TYPE || name == K_SO_PROTOCOL ||
             name == K_SO_RCVBUF || name == K_SO_SNDBUF || name == K_SO_REUSEADDR ||
             name == K_SO_ACCEPTCONN || name == K_SO_BROADCAST)) {
@@ -2331,6 +2371,13 @@ U32 KNativeSocketObject::sendmsg(KThread* thread, const KFileDescriptorPtr& fd, 
         readSockAddrIn(&dest, memory, hdr.msg_name);
     }
 
+    if (this->loopbackDatagram) {
+        if (hdr.msg_namelen && (!hdr.msg_name || hdr.msg_namelen < sizeof(dest))) return -K_EINVAL;
+        if (hdr.msg_namelen && thread->memory->readw(hdr.msg_name) != K_AF_INET) return -K_EAFNOSUPPORT;
+        return this->sendLoopbackBytes(thread, buffer, len, flags,
+                                       hdr.msg_namelen ? &dest : nullptr, hdr.msg_namelen != 0);
+    }
+
     U32 nativeFlags = 0;
     if (flags & K_MSG_OOB)
         nativeFlags |= MSG_OOB;
@@ -2359,7 +2406,14 @@ U32 KNativeSocketObject::sendmsg(KThread* thread, const KFileDescriptorPtr& fd, 
 }
 
 U32 KNativeSocketObject::recvmsg(KThread* thread, const KFileDescriptorPtr& fd, U32 address, U32 flags) {
-    BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(readingCond);
+#ifdef BOXEDWINE_MULTI_THREADED
+    // Guest queue readers take this nonrecursive condition mutex themselves.
+    // Taking it here as well deadlocks Wine's recvmsg during Java's TCP pipe
+    // handshake, even when the entire secret is already queued.
+    std::unique_lock<std::mutex> boxedWineCriticalSection(readingCond->m, std::defer_lock);
+    if (!this->loopbackDatagram && !(this->loopbackStream &&
+        (this->loopbackStreamConnected || this->nativeSocket < 0))) boxedWineCriticalSection.lock();
+#endif
     KMemory* memory = thread->memory;
     const U32 loopbackFlags = flags;
     char tmp[K_PAGE_SIZE] = { 0 };
@@ -2376,6 +2430,45 @@ U32 KNativeSocketObject::recvmsg(KThread* thread, const KFileDescriptorPtr& fd, 
         }
     }
     readMsgHdr(thread, address, &hdr);    
+
+    if (this->loopbackDatagram) {
+        // Wine uses recvmsg for UDP as well as TCP. Receive exactly one
+        // packet, then scatter it; receiving once per iovec loses boundaries.
+        if (hdr.msg_iovlen > 1024) return -K_EMSGSIZE;
+        if (hdr.msg_iovlen && hdr.msg_iov > 0xffffffffu - hdr.msg_iovlen * 8) return -K_EFAULT;
+        struct Vector { U32 address; U32 length; };
+        std::vector<Vector> vectors;
+        for (U32 i = 0; i < hdr.msg_iovlen; ++i) {
+            Vector v = {memory->readd(hdr.msg_iov + i * 8), memory->readd(hdr.msg_iov + i * 8 + 4)};
+            if (v.length && !memory->canWrite(v.address, v.length)) return -K_EFAULT;
+            vectors.push_back(v);
+        }
+        const U32 nameLength = std::min<U32>(hdr.msg_namelen, sizeof(struct sockaddr_in));
+        if (hdr.msg_name && nameLength && !memory->canWrite(hdr.msg_name, nameLength)) return -K_EFAULT;
+        LoopbackPacket packet;
+        U32 received = this->takeLoopbackPacket(packet, loopbackFlags);
+        if ((S32)received < 0) return received;
+        U32 copied = 0;
+        for (const auto& v : vectors) {
+            const U32 count = std::min<U32>(v.length, (U32)packet.bytes.size() - copied);
+            if (count) memory->memcpy(v.address, packet.bytes.data() + copied, count);
+            copied += count;
+            if (copied == packet.bytes.size()) break;
+        }
+        if (hdr.msg_name && nameLength) {
+            struct sockaddr_in source = {};
+            source.sin_family = AF_INET;
+            source.sin_port = htons(packet.sourcePort);
+            source.sin_addr.s_addr = htonl(packet.sourceAddress);
+            memory->memcpy(hdr.msg_name, &source, nameLength);
+        }
+        memory->writed(address + 4, hdr.msg_name ? sizeof(struct sockaddr_in) : 0);
+        memory->writed(address + 20, 0);
+        const U32 msgTrunc = 0x20; // Linux MSG_TRUNC (also an input flag).
+        memory->writed(address + 24, copied < packet.bytes.size() ? msgTrunc : 0);
+        this->error = 0;
+        return (loopbackFlags & msgTrunc) ? (U32)packet.bytes.size() : copied;
+    }
 
     for (U32 i = 0; i < hdr.msg_iovlen; i++) {
         U32 p = memory->readd(hdr.msg_iov + 8 * i);
