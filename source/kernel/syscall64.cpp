@@ -2988,7 +2988,7 @@ static void bwDumpGuestStack(CPU64* c, U32 pid, U32 tid) {
                 inMod = true;
                 break;
             }
-        if (!inMod) {
+        if (!inMod && (rip >> 20) != 0x700) { // 0x700... is the emulator's own syscall stub page
             const U64 page = rip >> 12;
             const bool mapped = mem->isPageMapped(page);
             U64 hdr = 0; const char* kind = "none";
@@ -3004,18 +3004,54 @@ static void bwDumpGuestStack(CPU64* c, U32 pid, U32 tid) {
                      mapped ? mem->getPageFlags(page) : 0, kind, (unsigned long long)hdr);
         }
     }
+    // A thread inside a Wine syscall runs on the TEB kernel stack, so RSP is not on
+    // the Windows stack. Recover the Windows RSP as the lowest value in the first
+    // qwords of the kernel stack that points into [NtTib.StackLimit, StackBase)
+    // (the saved syscall frame), then walk the Windows stack from there.
+    const U64 stackBase = readable(c->gsbase + 8, 8) ? mem->readq(c->gsbase + 8) : 0;
+    const U64 stackLimit = readable(c->gsbase + 0x10, 8) ? mem->readq(c->gsbase + 0x10) : 0;
     const U64 rsp = c->reg[X64_RSP].u64;
+    const bool haveTib = stackBase > stackLimit && stackBase - stackLimit < (1ull << 32);
+    U64 winRsp = rsp;
+    if (haveTib && !(rsp >= stackLimit && rsp < stackBase)) {
+        U64 best = 0;
+        for (U64 i = 0; i < 512; ++i) {
+            U64 at = rsp + i * 8;
+            if (!readable(at, 8)) break;
+            U64 v = mem->readq(at);
+            if (v >= stackLimit && v < stackBase && (v & 7) == 0 && (!best || v < best)) best = v;
+        }
+        if (best) winRsp = best;
+    }
+    // A candidate return address must follow a call instruction.
+    auto afterCall = [&](U64 v) {
+        if (!readable(v - 8, 8)) return false;
+        if (mem->readb(v - 5) == 0xE8) return true;
+        if (mem->readb(v - 6) == 0xFF && (mem->readb(v - 5) & 0xF8) == 0x90) return true;
+        if (mem->readb(v - 6) == 0xFF && mem->readb(v - 5) == 0x15) return true;
+        if (mem->readb(v - 2) == 0xFF && (mem->readb(v - 1) & 0xF8) == 0xD0) return true;
+        if (mem->readb(v - 3) == 0xFF && (mem->readb(v - 2) & 0xF8) == 0x50) return true;
+        if (mem->readb(v - 3) == 0x41 && mem->readb(v - 2) == 0xFF && (mem->readb(v - 1) & 0xF8) == 0xD0) return true;
+        if (mem->readb(v - 7) == 0xFF && mem->readb(v - 6) == 0x14) return true;
+        return false;
+    };
+    klog_fmt("BW_THREAD_DUMP winstack pid=%u tid=%u rsp=0x%llx winRsp=0x%llx tib=[0x%llx,0x%llx)", pid, tid,
+             (unsigned long long)rsp, (unsigned long long)winRsp,
+             (unsigned long long)stackLimit, (unsigned long long)stackBase);
     int hits = 0;
     for (U64 i = 0; i < 6144 && hits < 48; ++i) {
-        U64 at = rsp + i * 8;
+        U64 at = winRsp + i * 8;
         if (!readable(at, 8)) break;
+        if (haveTib && at >= stackBase) break;
         U64 v = mem->readq(at);
         for (int m = 0; m < nMods; ++m) {
             if (v >= mods[m].base && v - mods[m].base < mods[m].size) {
-                klog_fmt("BW_THREAD_DUMP stack pid=%u tid=%u +0x%llx %s+0x%llx", pid, tid,
-                         (unsigned long long)(i * 8), mods[m].name[0] ? mods[m].name : "?",
-                         (unsigned long long)(v - mods[m].base));
-                ++hits;
+                if (afterCall(v)) {
+                    klog_fmt("BW_THREAD_DUMP stack pid=%u tid=%u +0x%llx %s+0x%llx", pid, tid,
+                             (unsigned long long)(i * 8), mods[m].name[0] ? mods[m].name : "?",
+                             (unsigned long long)(v - mods[m].base));
+                    ++hits;
+                }
                 break;
             }
         }
