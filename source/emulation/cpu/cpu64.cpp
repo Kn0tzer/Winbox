@@ -995,6 +995,15 @@ U32 CPU64::step(bool trackJitBlockBoundary) {
     // has no attached thread or signal handlers, so an unhandled fault yields
     // at the faulting RIP; a guest handler instead receives the saved context.
     auto faultAtInstruction = [&](U32 sig, U32 trapNo) -> U32 {
+        if (trapNo == 13 && std::getenv("BW64_UNIMPLDUMP")) {
+            klog_fmt("CPU64: #GP at RIP=0x%llx bytes=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+                     (unsigned long long)ipStart,
+                     fetchByte(ipStart), fetchByte(ipStart + 1), fetchByte(ipStart + 2),
+                     fetchByte(ipStart + 3), fetchByte(ipStart + 4), fetchByte(ipStart + 5),
+                     fetchByte(ipStart + 6), fetchByte(ipStart + 7), fetchByte(ipStart + 8),
+                     fetchByte(ipStart + 9), fetchByte(ipStart + 10), fetchByte(ipStart + 11),
+                     fetchByte(ipStart + 12), fetchByte(ipStart + 13), fetchByte(ipStart + 14));
+        }
         if (raiseSyncFault(sig, trapNo, 0, ipStart)) return 0;
         if (thread && thread->process) thread->process->signalProcess(sig);
         yield = true;
@@ -1016,6 +1025,21 @@ U32 CPU64::step(bool trackJitBlockBoundary) {
     if (op == 0x0F && fetchByte(rip + opOff + 1) == 0x0B) { // UD2: #UD
         if (bw64RecoverEnabled()) bw64RecoverNoteSigillFallback();
         return faultAtInstruction(K_SIGILL, 6);
+    }
+    // Browser recovery treats an absent I/O port as returning zero. Support
+    // the single non-REP INSD form used by the Q3 startup probe; strict mode
+    // still raises the architectural user-mode #GP below.
+    if (op == 0x6D && p.rep == 0 && bw64RecoverEnabled()) {
+        const U32 size = p.osize16 ? 2 : 4;
+        const U64 dst = p.asize32 ? (U64)reg[X64_RDI].u32 : reg[X64_RDI].u64;
+        if (size == 2) memory->writew(dst, 0);
+        else memory->writed(dst, 0);
+        const S64 step = (rflags & X64_DF) ? -(S64)size : (S64)size;
+        if (p.asize32) reg[X64_RDI].setU32(reg[X64_RDI].u32 + (U32)step);
+        else reg[X64_RDI].setU64(reg[X64_RDI].u64 + (U64)step);
+        U32 used = opOff + 1;
+        rip += used;
+        return used;
     }
     if (op == 0xCD || op == 0xF1 || op == 0xF4 || op == 0xFA || op == 0xFB ||
         (op >= 0x6C && op <= 0x6F) || (op >= 0xE4 && op <= 0xE7) ||

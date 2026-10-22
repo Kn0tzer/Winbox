@@ -150,10 +150,9 @@ void runFaultAtRIP(TestResult& r, const char* name,
 
 void setRecoverPolicyForTest(bool enabled) {
 #ifdef BOXEDWINE_MSVC
-    _putenv_s("BW64_RECOVER", enabled ? "1" : "");
+    _putenv_s("BW64_RECOVER", enabled ? "1" : "0");
 #else
-    if (enabled) setenv("BW64_RECOVER", "1", 1);
-    else unsetenv("BW64_RECOVER");
+    setenv("BW64_RECOVER", enabled ? "1" : "0", 1);
 #endif
 }
 
@@ -8659,13 +8658,33 @@ int runX64SelfTest() {
     }), [](CPU64& c) {
         return c.reg[X64_R15].u64 == 0x12345678ULL;
     });
+    const U64 recoverInsdDst = CODE_BASE + 0x800;
+    runAndCheck(r, "recover emulates INSD from an absent port as zero", withExit({
+        0x6D,                                     // insd [rdi], dx
+        0x48, 0x89, 0xF8                          // mov rax,rdi (save updated destination)
+    }), [=](CPU64& c) {
+        return c.memory->readd(recoverInsdDst) == 0 &&
+               c.reg[X64_R15].u64 == recoverInsdDst + 4;
+    }, [=](CPU64& c) {
+        c.memory->writed(recoverInsdDst, 0xDEADBEEF);
+        c.reg[X64_RDI].setU64(recoverInsdDst);
+        c.reg[X64_RDX].setU64(0x80);
+    });
+    const U64 recoverInswDst = CODE_BASE + 0x810;
+    runAndCheck(r, "recover emulates operand-size-prefixed INSW", withExit({
+        0x66, 0x6D,                               // insw [rdi], dx
+        0x48, 0x89, 0xF8                          // mov rax,rdi (save updated destination)
+    }), [=](CPU64& c) {
+        return c.memory->readw(recoverInswDst) == 0 &&
+               c.memory->readw(recoverInswDst + 2) == 0xBEEF &&
+               c.reg[X64_R15].u64 == recoverInswDst + 2;
+    }, [=](CPU64& c) {
+        c.memory->writed(recoverInswDst, 0xBEEFCAFE);
+        c.reg[X64_RDI].setU64(recoverInswDst);
+        c.reg[X64_RDX].setU64(0x80);
+    });
     runFaultAtRIP(r, "recover never skips UD2", {0x0F, 0x0B});
-#ifdef BOXEDWINE_MSVC
-    _putenv_s("BW64_RECOVER", hadRecoverValue ? savedRecoverValue.c_str() : "");
-#else
-    if (hadRecoverValue) setenv("BW64_RECOVER", savedRecoverValue.c_str(), 1);
-    else unsetenv("BW64_RECOVER");
-#endif
+    setRecoverPolicyForTest(false);
     runFaultAtRIP(r, "INT imm8 raises #GP", {0xCD, 0x29});
     runFaultAtRIP(r, "HLT raises #GP", {0xF4});
     runFaultAtRIP(r, "CLI raises #GP", {0xFA});
@@ -8689,6 +8708,12 @@ int runX64SelfTest() {
     runFaultAtRIP(r, "far JMP indirect raises #GP", {0xFF, 0x2B});
     runFaultAtRIP(r, "RETF imm16 raises #GP", {0xCA, 0, 0});
     runFaultAtRIP(r, "RETF raises #GP", {0xCB});
+#ifdef BOXEDWINE_MSVC
+    _putenv_s("BW64_RECOVER", hadRecoverValue ? savedRecoverValue.c_str() : "");
+#else
+    if (hadRecoverValue) setenv("BW64_RECOVER", savedRecoverValue.c_str(), 1);
+    else unsetenv("BW64_RECOVER");
+#endif
 
     // Requested x87 forms. The scratch area is inside the mapped code page so
     // each case can inspect stores and the public FPU state after execution.
