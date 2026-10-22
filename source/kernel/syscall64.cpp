@@ -3005,23 +3005,30 @@ static void bwDumpGuestStack(CPU64* c, U32 pid, U32 tid) {
         }
     }
     // A thread inside a Wine syscall runs on the TEB kernel stack, so RSP is not on
-    // the Windows stack. Recover the Windows RSP as the lowest value in the first
-    // qwords of the kernel stack that points into [NtTib.StackLimit, StackBase)
-    // (the saved syscall frame), then walk the Windows stack from there.
+    // the Windows stack. Wine keeps the saved PE register state in a struct
+    // syscall_frame whose address lives at TEB+0x328 (see __wine_syscall_dispatcher:
+    // rax 0x00, rdx 0x18, rsi 0x20, rdi 0x28, r8 0x30, r9 0x38, r10 0x40, rip 0x70,
+    // rsp 0x88). Walk the Windows stack from the saved rsp and report the saved rip.
     const U64 stackBase = readable(c->gsbase + 8, 8) ? mem->readq(c->gsbase + 8) : 0;
     const U64 stackLimit = readable(c->gsbase + 0x10, 8) ? mem->readq(c->gsbase + 0x10) : 0;
     const U64 rsp = c->reg[X64_RSP].u64;
     const bool haveTib = stackBase > stackLimit && stackBase - stackLimit < (1ull << 32);
     U64 winRsp = rsp;
-    if (haveTib && !(rsp >= stackLimit && rsp < stackBase)) {
-        U64 best = 0;
-        for (U64 i = 0; i < 512; ++i) {
-            U64 at = rsp + i * 8;
-            if (!readable(at, 8)) break;
-            U64 v = mem->readq(at);
-            if (v >= stackLimit && v < stackBase && (v & 7) == 0 && (!best || v < best)) best = v;
+    if (!(haveTib && rsp >= stackLimit && rsp < stackBase) && readable(c->gsbase + 0x328, 8)) {
+        const U64 frame = mem->readq(c->gsbase + 0x328);
+        if (frame && readable(frame, 0xa0)) {
+            winRsp = mem->readq(frame + 0x88);
+            const U64 frip = mem->readq(frame + 0x70);
+            const char* fmod = "?"; U64 fo = 0;
+            for (int m = 0; m < nMods; ++m)
+                if (frip >= mods[m].base && frip - mods[m].base < mods[m].size) { fmod = mods[m].name; fo = frip - mods[m].base; break; }
+            klog_fmt("BW_THREAD_DUMP syscallframe pid=%u tid=%u rip=0x%llx %s+0x%llx rax=0x%llx r10=0x%llx rdx=0x%llx r8=0x%llx r9=0x%llx rsi=0x%llx rdi=0x%llx rsp=0x%llx",
+                     pid, tid, (unsigned long long)frip, fmod, (unsigned long long)fo,
+                     (unsigned long long)mem->readq(frame + 0x00), (unsigned long long)mem->readq(frame + 0x40),
+                     (unsigned long long)mem->readq(frame + 0x18), (unsigned long long)mem->readq(frame + 0x30),
+                     (unsigned long long)mem->readq(frame + 0x38), (unsigned long long)mem->readq(frame + 0x20),
+                     (unsigned long long)mem->readq(frame + 0x28), (unsigned long long)winRsp);
         }
-        if (best) winRsp = best;
     }
     // A candidate return address must follow a call instruction.
     auto afterCall = [&](U64 v) {
@@ -3039,7 +3046,7 @@ static void bwDumpGuestStack(CPU64* c, U32 pid, U32 tid) {
              (unsigned long long)rsp, (unsigned long long)winRsp,
              (unsigned long long)stackLimit, (unsigned long long)stackBase);
     int hits = 0;
-    for (U64 i = 0; i < 6144 && hits < 48; ++i) {
+    for (U64 i = 0; i < 6144 && hits < 64; ++i) {
         U64 at = winRsp + i * 8;
         if (!readable(at, 8)) break;
         if (haveTib && at >= stackBase) break;
