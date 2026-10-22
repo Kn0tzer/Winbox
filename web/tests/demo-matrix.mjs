@@ -25,6 +25,8 @@ const longBoot = ['portal', 'celeste', 'gangbeasts', 'chromium'].includes(demo);
 const mappedTimeout = Number(process.env.MAPPED_TIMEOUT_S || (longBoot ? 900 : 300));
 if (!Number.isFinite(mappedTimeout) || mappedTimeout <= 0) throw new Error('MAPPED_TIMEOUT_S must be a positive number');
 const threadDumpEnabled = process.env.BW_THREAD_DUMP === '1';
+const threadDumpIntervalMs = Number(process.env.BW_THREAD_DUMP_INTERVAL_S || 60) * 1000;
+if (!Number.isFinite(threadDumpIntervalMs) || threadDumpIntervalMs < 1000) throw new Error('BW_THREAD_DUMP_INTERVAL_S must be at least 1');
 const capturePlayerLog = process.env.BW_CAPTURE_PLAYER_LOG === '1';
 const wineDebug = process.env.BW_WINEDEBUG || '';
 const mappedOnly = process.env.MAPPED_ONLY === '1';
@@ -254,7 +256,7 @@ try {
             consoleLines.push(line);
             console.error(line);
           }
-        }, 60000);
+        }, threadDumpIntervalMs);
       }
     } });
   } catch (error) {

@@ -82,6 +82,13 @@ public:
     void seg_mapper(U32 address, bool readFault, bool writeFault, bool throwException=true);
     void seg_access(U32 address, bool readFault, bool writeFault, bool throwException=true);
     bool runSignals();
+#if defined(BOXEDWINE_GUEST_X64) && defined(BOXEDWINE_MULTI_THREADED)
+    // Called by a blocking wait loop (socket read, poll, futex, sleep) after it
+    // wakes: if a cross-thread signal is pending on this 64-bit guest thread,
+    // deliver it now (CPU64::interruptSyscallWithSignal) and return true - the
+    // caller must then abandon the wait and return -K_EINTR.
+    bool interruptBlockedSyscall(bool allowRestart = true);
+#endif
     void runSignal(U32 signal, U32 trapNo, U32 errorNo);
     void signalIllegalInstruction(int code);   
     void signalTrap(U32 code);
@@ -251,5 +258,20 @@ public:
 void OPCALL onExitSignal(CPU* cpu, DecodedOp* op);
 
 void common_signalIllegalInstruction(CPU* cpu, int code);
+
+#if defined(BOXEDWINE_GUEST_X64) && defined(BOXEDWINE_MULTI_THREADED)
+// Wait on `cond`, but let a 64-bit guest thread wake every 200 ms so that a
+// signal armed between its pendingSignals check and the wait (tgkill can only
+// kick a condition that is already registered in thread->waitingCond) is never
+// lost. Other threads wait exactly as before.
+#define BOXEDWINE_CONDITION_WAIT_SIGNALABLE(cond) \
+    do { \
+        KThread* bwSigThread = KThread::currentThread(); \
+        if (bwSigThread && bwSigThread->cpu64) { BOXEDWINE_CONDITION_WAIT_TIMEOUT(cond, 200); } \
+        else { BOXEDWINE_CONDITION_WAIT(cond); } \
+    } while (0)
+#else
+#define BOXEDWINE_CONDITION_WAIT_SIGNALABLE(cond) BOXEDWINE_CONDITION_WAIT(cond)
+#endif
 
 #endif

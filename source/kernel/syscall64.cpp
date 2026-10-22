@@ -2390,6 +2390,46 @@ bool CPU64::deliverPendingSignals() {
     return false;
 }
 
+// Blocked-syscall variant of deliverPendingSignals (see cpu64.h). The thread is
+// inside a SYSCALL (cpu->rip is already past the instruction, syscallRip is the
+// instruction itself, RAX still holds the syscall number). Wine suspends/queries
+// a thread (SuspendThread, GetThreadContext, APC nudges) by tgkill(SIGUSR1) and
+// expects the signal to break the thread out of whatever server wait it is in;
+// without this a thread parked in a wineserver socket read never runs its
+// handler and the requester (e.g. a Boehm GC stop-the-world) waits forever.
+bool CPU64::interruptSyscallWithSignal(bool allowRestart) {
+    if (!this->thread) return false;
+    U64 pending;
+    {
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->thread->pendingSignalsMutex);
+        pending = this->thread->pendingSignals & ~this->sigMask;
+    }
+    if (!pending) return false;
+    const U64 savedRip = this->rip;
+    const U64 savedRax = this->reg[X64_RAX].u64;
+    for (U32 sig = 1; sig <= 64; sig++) {
+        U64 bit = 1ULL << (sig - 1);
+        if (!(pending & bit)) continue;
+        const SigAction& sa = this->sigActions[sig];
+        if (!sa.installed || sa.handler == 0 || sa.handler == 1) continue;
+        if (allowRestart && (sa.flags & 0x10000000 /*SA_RESTART*/)) {
+            // Re-run the SYSCALL after the handler returns: same RAX (number),
+            // same argument registers; RCX/R11 are re-clobbered by SYSCALL.
+            this->rip = this->syscallRip;
+        } else {
+            this->reg[X64_RAX].setU64((U64)(S64)-K_EINTR);
+        }
+        if (deliverSignalSync(this, sig)) {
+            BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->thread->pendingSignalsMutex);
+            this->thread->pendingSignals &= ~bit;
+            return true;
+        }
+        this->rip = savedRip;
+        this->reg[X64_RAX].setU64(savedRax);
+    }
+    return false;
+}
+
 // Synchronously deliver a hardware-trap-derived signal (SIGFPE on #DE,
 // SIGSEGV on a page fault, ...) at the faulting instruction. Unlike
 // deliverSignalSync (used for raise()/tgkill self), this synthesizes a real
@@ -2936,6 +2976,141 @@ static inline bool bwThreadDumpEnabled() {
     return enabled;
 }
 
+// Best-effort guest stack walk for BW_THREAD_DUMP. Scans the qwords above the
+// guest RSP for values that fall inside a PE image in the PEB loader list
+// (candidate return addresses) and prints module+RVA. It is a heuristic scan
+// (no unwind info), but it names the Windows module/function a thread is in
+// even when the host-visible rip is just the libc syscall stub. Every read is
+// guarded by isPageMapped so a racing/stale RSP cannot fault the dumper.
+static void bwDumpGuestStack(CPU64* c, U32 pid, U32 tid) {
+    KMemory64* mem = c->memory;
+    if (!mem || !c->gsbase) return;
+    auto readable = [&](U64 addr, U64 len) {
+        for (U64 page = addr >> 12; page <= (addr + len - 1) >> 12; ++page)
+            if (!mem->isPageMapped(page)) return false;
+        return true;
+    };
+    if (!readable(c->gsbase + 0x60, 8)) return;
+    U64 peb = mem->readq(c->gsbase + 0x60);
+    if (!peb || !readable(peb + 0x18, 8)) return;
+    U64 ldr = mem->readq(peb + 0x18);
+    if (!ldr || !readable(ldr + 0x10, 8)) return;
+    struct Mod { U64 base; U64 size; char name[40]; };
+    Mod mods[96]; int nMods = 0;
+    const U64 head = ldr + 0x10;
+    U64 link = mem->readq(head);
+    for (int i = 0; i < 128 && link && link != head && nMods < 96; ++i) {
+        if (!readable(link, 0x68)) break;
+        Mod& m = mods[nMods];
+        m.base = mem->readq(link + 0x30);
+        m.size = mem->readd(link + 0x40);
+        m.name[0] = 0;
+        U16 nlen = mem->readw(link + 0x58);
+        U64 nbuf = mem->readq(link + 0x60);
+        if (m.base && nlen && nlen < 80 && nbuf && readable(nbuf, nlen)) {
+            int n = nlen / 2; if (n > 38) n = 38;
+            for (int k = 0; k < n; ++k) { U16 ch = mem->readw(nbuf + (U64)k * 2); m.name[k] = ch < 128 ? (char)ch : '?'; }
+            m.name[n] = 0;
+        }
+        if (m.base) ++nMods;
+        link = mem->readq(link);
+    }
+    // Name the code the thread is executing when rip is outside every loader-list
+    // module (anonymous/unlisted mapping): report the page flags and the nearest
+    // preceding MZ/ELF header so a JIT'd or manually mapped image can be spotted.
+    {
+        const U64 rip = c->rip;
+        bool inMod = false;
+        for (int m = 0; m < nMods; ++m)
+            if (rip >= mods[m].base && rip - mods[m].base < mods[m].size) {
+                klog_fmt("BW_THREAD_DUMP rip pid=%u tid=%u %s+0x%llx", pid, tid,
+                         mods[m].name[0] ? mods[m].name : "?", (unsigned long long)(rip - mods[m].base));
+                inMod = true;
+                break;
+            }
+        if (!inMod && (rip >> 20) != 0x700) { // 0x700... is the emulator's own syscall stub page
+            const U64 page = rip >> 12;
+            const bool mapped = mem->isPageMapped(page);
+            U64 hdr = 0; const char* kind = "none";
+            for (U64 back = 0; back < 4096 && mapped; ++back) {
+                U64 a = (page - back) << 12;
+                if (!readable(a, 4)) break;
+                U32 w = mem->readd(a);
+                if ((w & 0xffff) == 0x5a4d) { hdr = a; kind = "MZ"; break; }
+                if (w == 0x464c457f) { hdr = a; kind = "ELF"; break; }
+            }
+            klog_fmt("BW_THREAD_DUMP rip pid=%u tid=%u unlisted rip=0x%llx mapped=%d flags=0x%x nearestHdr=%s@0x%llx",
+                     pid, tid, (unsigned long long)rip, mapped ? 1 : 0,
+                     mapped ? mem->getPageFlags(page) : 0, kind, (unsigned long long)hdr);
+        }
+    }
+    // A thread inside a Wine syscall runs on the TEB kernel stack, so RSP is not on
+    // the Windows stack. Wine keeps the saved PE register state in a struct
+    // syscall_frame whose address lives at TEB+0x328 (see __wine_syscall_dispatcher:
+    // rax 0x00, rdx 0x18, rsi 0x20, rdi 0x28, r8 0x30, r9 0x38, r10 0x40, rip 0x70,
+    // rsp 0x88). Walk the Windows stack from the saved rsp and report the saved rip.
+    const U64 stackBase = readable(c->gsbase + 8, 8) ? mem->readq(c->gsbase + 8) : 0;
+    const U64 stackLimit = readable(c->gsbase + 0x10, 8) ? mem->readq(c->gsbase + 0x10) : 0;
+    const U64 rsp = c->reg[X64_RSP].u64;
+    const bool haveTib = stackBase > stackLimit && stackBase - stackLimit < (1ull << 32);
+    U64 winRsp = rsp;
+    if (!(haveTib && rsp >= stackLimit && rsp < stackBase) && readable(c->gsbase + 0x328, 8)) {
+        const U64 frame = mem->readq(c->gsbase + 0x328);
+        if (frame && readable(frame, 0xa0)) {
+            winRsp = mem->readq(frame + 0x88);
+            const U64 frip = mem->readq(frame + 0x70);
+            const char* fmod = "?"; U64 fo = 0;
+            for (int m = 0; m < nMods; ++m)
+                if (frip >= mods[m].base && frip - mods[m].base < mods[m].size) { fmod = mods[m].name; fo = frip - mods[m].base; break; }
+            klog_fmt("BW_THREAD_DUMP syscallframe pid=%u tid=%u rip=0x%llx %s+0x%llx rax=0x%llx r10=0x%llx rdx=0x%llx r8=0x%llx r9=0x%llx rsi=0x%llx rdi=0x%llx rsp=0x%llx",
+                     pid, tid, (unsigned long long)frip, fmod, (unsigned long long)fo,
+                     (unsigned long long)mem->readq(frame + 0x00), (unsigned long long)mem->readq(frame + 0x40),
+                     (unsigned long long)mem->readq(frame + 0x18), (unsigned long long)mem->readq(frame + 0x30),
+                     (unsigned long long)mem->readq(frame + 0x38), (unsigned long long)mem->readq(frame + 0x20),
+                     (unsigned long long)mem->readq(frame + 0x28), (unsigned long long)winRsp);
+            // Wait calls take a handle array through r10/rdx: show the first handles.
+            const U64 hp = mem->readq(frame + 0x18);
+            if (hp && readable(hp, 32))
+                klog_fmt("BW_THREAD_DUMP syscallmem pid=%u tid=%u [rdx]=%08x %08x %08x %08x %08x %08x %08x %08x", pid, tid,
+                         mem->readd(hp), mem->readd(hp + 4), mem->readd(hp + 8), mem->readd(hp + 12),
+                         mem->readd(hp + 16), mem->readd(hp + 20), mem->readd(hp + 24), mem->readd(hp + 28));
+        }
+    }
+    // A candidate return address must follow a call instruction.
+    auto afterCall = [&](U64 v) {
+        if (!readable(v - 8, 8)) return false;
+        if (mem->readb(v - 5) == 0xE8) return true;
+        if (mem->readb(v - 6) == 0xFF && (mem->readb(v - 5) & 0xF8) == 0x90) return true;
+        if (mem->readb(v - 6) == 0xFF && mem->readb(v - 5) == 0x15) return true;
+        if (mem->readb(v - 2) == 0xFF && (mem->readb(v - 1) & 0xF8) == 0xD0) return true;
+        if (mem->readb(v - 3) == 0xFF && (mem->readb(v - 2) & 0xF8) == 0x50) return true;
+        if (mem->readb(v - 3) == 0x41 && mem->readb(v - 2) == 0xFF && (mem->readb(v - 1) & 0xF8) == 0xD0) return true;
+        if (mem->readb(v - 7) == 0xFF && mem->readb(v - 6) == 0x14) return true;
+        return false;
+    };
+    klog_fmt("BW_THREAD_DUMP winstack pid=%u tid=%u rsp=0x%llx winRsp=0x%llx tib=[0x%llx,0x%llx)", pid, tid,
+             (unsigned long long)rsp, (unsigned long long)winRsp,
+             (unsigned long long)stackLimit, (unsigned long long)stackBase);
+    int hits = 0;
+    for (U64 i = 0; i < 6144 && hits < 64; ++i) {
+        U64 at = winRsp + i * 8;
+        if (!readable(at, 8)) break;
+        if (haveTib && at >= stackBase) break;
+        U64 v = mem->readq(at);
+        for (int m = 0; m < nMods; ++m) {
+            if (v >= mods[m].base && v - mods[m].base < mods[m].size) {
+                if (afterCall(v)) {
+                    klog_fmt("BW_THREAD_DUMP stack pid=%u tid=%u +0x%llx %s+0x%llx", pid, tid,
+                             (unsigned long long)(i * 8), mods[m].name[0] ? mods[m].name : "?",
+                             (unsigned long long)(v - mods[m].base));
+                    ++hits;
+                }
+                break;
+            }
+        }
+    }
+}
+
 // Called by the demo diagnostic timer only when the runtime URL opts in with
 // ?bw64diag=threads. The wrapper maps that URL flag to BW_THREAD_DUMP before
 // Emscripten caches ENV, so normal launches do not emit these snapshots.
@@ -2980,6 +3155,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void bw64_dump_guest_threads() {
                     ? std::dynamic_pointer_cast<KEPoll>(fd->kobject) : nullptr;
                 if (epoll) epoll->debugDumpRegistrations(thread->process.get(), pid, thread->id);
             }
+            bwDumpGuestStack(c, pid, thread->id);
             continue;
         }
 #endif
@@ -3406,6 +3582,22 @@ void ksyscall64(CPU64* cpu) {
                     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(target->pendingSignalsMutex);
                     target->pendingSignals |= (1ULL << (sig - 1));
                 }
+                // A target parked in a blocking syscall (wineserver socket read,
+                // poll, futex, sleep) never reaches a scheduler slice or the
+                // 64k-instruction check, so kick the condition it sleeps on;
+                // its wait loop sees pendingSignals and calls
+                // interruptSyscallWithSignal. Waits that are not on a condition
+                // fall back to their short timed slices (see
+                // BOXEDWINE_CONDITION_WAIT_SIGNALABLE).
+#ifdef BOXEDWINE_MULTI_THREADED
+                {
+                    BOXEDWINE_CONDITION cond = target->waitingCond;
+                    if (cond) {
+                        BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(cond);
+                        BOXEDWINE_CONDITION_SIGNAL_ALL(cond);
+                    }
+                }
+#endif
                 ret = 0;
                 break;
             }
