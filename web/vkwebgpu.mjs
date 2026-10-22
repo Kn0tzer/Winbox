@@ -64,7 +64,8 @@ import {
 //
 // Exposed for the page tier (window.bwVkFrame is wired in web/runtime.html, the
 // 'vk' message branch in web/app.mjs): installVkPageTier() and createVkRenderer().
-import { toWGSL } from './shader.mjs';
+import { toWGSL, warmPersistentShaders } from './shader.mjs';
+import { persistentShaderCache } from './shader-cache.mjs';
 
 export const MAX_MANIFEST_BYTES = 8 * 1024 * 1024; // a frame's JSON + inline payloads
 export const MAX_UNIFORM_RANGE = 65536; // guaranteed maxUniformBufferBindingSize
@@ -276,12 +277,19 @@ function b64ToBytes(b64) {
 /**
  * @param {{translate?: (from: string, source: Uint8Array, stage: string, entryPoint?: string, options?: {rasterTopology?: number}) => Promise<string>, log?: (msg: string) => void}} [options]
  */
-export function createShaderCache({ translate = toWGSL, log = defaultLog } = {}) {
+export function createShaderCache({ translate = toWGSL, log = defaultLog, device = null } = {}) {
   const wgsl = new Map();      // key -> WGSL
   // translateMs measures the SPIR-V -> WGSL translation itself. Modules are
   // cached per hash/topology/spec key, so this is milliseconds per translation
   // EVENT, not milliseconds per frame; `translated` is the event count.
-  const stats = { translated: 0, overridden: 0, rejected: 0, hits: 0, translateMs: 0 };
+  const stats = { translated: 0, overridden: 0, rejected: 0, hits: 0, persistentHits: 0, translateMs: 0 };
+  const persistentEnabled = new URLSearchParams(globalThis.location?.search || '').get('shadercache') === '1';
+  const appId = new URLSearchParams(globalThis.location?.search || '').get('installation') || 'unknown';
+  if (persistentEnabled && device) {
+    const warm = () => warmPersistentShaders(appId, device, (key, code) => { if (key.startsWith('spirv:')) wgsl.set(key.slice(6), code); });
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(() => { warm().catch(() => {}); }, { timeout: 1500 });
+    else setTimeout(() => warm().catch(() => {}), 0);
+  }
   return {
     stats,
     async get(stage, mod, options = {}) {
@@ -291,6 +299,10 @@ export function createShaderCache({ translate = toWGSL, log = defaultLog } = {})
       const specKey = (options.specOverrides || []).map(e => e.constantID + ':' + Array.from(e.value).join(',')).join(';');
       const key = stage + ':' + mod.hash + ':' + mod.size + ':topology:' + (options.rasterTopology ?? 'unknown') + ':spec:' + specKey;
       if (wgsl.has(key)) { stats.hits++; return wgsl.get(key); }
+      if (persistentEnabled) {
+        const cached = await persistentShaderCache.get('spirv:' + key);
+        if (cached?.wgsl) { wgsl.set(key, cached.wgsl); stats.persistentHits++; await persistentShaderCache.record(appId, 'spirv:' + key); return cached.wgsl; }
+      }
       const override = FS_OVERRIDES.get(mod.hash + ':' + mod.size);
       if (override) { wgsl.set(key, override); stats.overridden++; return override; }
       const bwTranslateT0 = metricsNow();
@@ -307,6 +319,7 @@ export function createShaderCache({ translate = toWGSL, log = defaultLog } = {})
         if (!code) throw new Error('empty translation');
         stats.translateMs += metricsNow() - bwTranslateT0;
         wgsl.set(key, code); stats.translated++;
+        if (persistentEnabled) { await persistentShaderCache.put('spirv:' + key, code, { stage, hash: mod.hash, size: mod.size }); await persistentShaderCache.record(appId, 'spirv:' + key); }
         return code;
       } catch (e) {
         stats.translateMs += metricsNow() - bwTranslateT0;
@@ -505,7 +518,7 @@ export async function createVkRenderer(canvas, { translate, log = defaultLog } =
   const format = navigator.gpu.getPreferredCanvasFormat();
   context.configure({ device, format, alphaMode: 'opaque', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST });
 
-  const shaders = createShaderCache({ translate, log });
+  const shaders = createShaderCache({ translate, log, device });
   const pipelines = new Map();     // pipeline key -> GPURenderPipeline
   const uniformSize = new Map();   // vs hash -> working uniform range
   const live = [];                 // buffers released after the frame's work is done
@@ -517,14 +530,15 @@ export async function createVkRenderer(canvas, { translate, log = defaultLog } =
   // Live metrics for the legacy (v1 manifest) path — same shape as renderer2.
   const pacer = createFramePacer();
   const gpuTimer = createGpuTimer(device, adapter, { log });
-  const timing = { renderMs: 0, renderCount: 0, submitMs: 0, submitCount: 0, pipelineMs: 0, pipelineCount: 0 };
+  const timing = { renderMs: 0, renderCount: 0, submitMs: 0, submitCount: 0, pipelineMs: 0, pipelineCount: 0, shaderModuleMs: 0, shaderModuleCount: 0 };
   const metrics = () => {
     const pace = pacer.snapshot();
     return {
       presents: pace.presents, windowMs: pace.windowMs, fps: pace.fps, frameMs: pace.frameMs,
       gpu: gpuTimer.snapshot(),
-      translate: { ms: shaders.stats.translateMs || 0, count: shaders.stats.translated + shaders.stats.overridden + shaders.stats.rejected },
+      translate: { ms: shaders.stats.translateMs || 0, count: shaders.stats.translated + shaders.stats.overridden + shaders.stats.rejected, persistentHits: shaders.stats.persistentHits },
       pipeline: { ms: timing.pipelineMs, count: timing.pipelineCount },
+      shaderModule: { ms: timing.shaderModuleMs, count: timing.shaderModuleCount },
       submit: { ms: timing.submitMs, count: timing.submitCount },
       render: { ms: timing.renderMs, count: timing.renderCount },
       skipped: stats.skips, unsupported: 0,
@@ -604,8 +618,10 @@ export async function createVkRenderer(canvas, { translate, log = defaultLog } =
     const key = [vsWgsl.length, fsWgsl.length, man.cull, man.front, man.depthTest, man.depthWrite, man.depthOp].join(':');
     let pipeline = null, bgl = null;
     if (!pipelines.has(key)) {
+      const bwModuleT0 = metricsNow();
       const vsModule = device.createShaderModule({ code: vsWgsl });
       const fsModule = device.createShaderModule({ code: fsWgsl });
+      timing.shaderModuleMs += metricsNow() - bwModuleT0; timing.shaderModuleCount += 2;
       device.pushErrorScope('validation');
       const bwPipeT0 = metricsNow();
       bgl = device.createBindGroupLayout({ entries: [
@@ -1106,7 +1122,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   const format = navigator.gpu.getPreferredCanvasFormat();
   context.configure({ device, format, alphaMode: 'opaque', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST });
 
-  const shaders = createShaderCache({ translate, log });
+  const shaders = createShaderCache({ translate, log, device });
   const pipelines = new Map();   // pipeId:msN -> { pipeline, layouts, decls, hasPush, slotOf, maxGroup, key }
   const blitPipelines = new Map();
   let presentPipeline = null;
@@ -1120,7 +1136,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   // only from the timestamp timer below.
   const pacer = createFramePacer();
   const gpuTimer = createGpuTimer(device, adapter, { log });
-  const timing = { renderMs: 0, renderCount: 0, submitMs: 0, submitCount: 0, pipelineMs: 0, pipelineCount: 0 };
+  const timing = { renderMs: 0, renderCount: 0, submitMs: 0, submitCount: 0, pipelineMs: 0, pipelineCount: 0, shaderModuleMs: 0, shaderModuleCount: 0 };
   const snapshot = () => ({ ...stats, ...shaders.stats, persist: { ...persistStats }, recover: bridgeRecoveryStats() });
   // Page-tier metrics for the live panel: every field is measured on the page.
   const metrics = () => {
@@ -1128,8 +1144,9 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
     return {
       presents: pace.presents, windowMs: pace.windowMs, fps: pace.fps, frameMs: pace.frameMs,
       gpu: gpuTimer.snapshot(),
-      translate: { ms: shaders.stats.translateMs || 0, count: shaders.stats.translated + shaders.stats.overridden + shaders.stats.rejected },
+      translate: { ms: shaders.stats.translateMs || 0, count: shaders.stats.translated + shaders.stats.overridden + shaders.stats.rejected, persistentHits: shaders.stats.persistentHits },
       pipeline: { ms: timing.pipelineMs, count: timing.pipelineCount },
+      shaderModule: { ms: timing.shaderModuleMs, count: timing.shaderModuleCount },
       submit: { ms: timing.submitMs, count: timing.submitCount },
       render: { ms: timing.renderMs, count: timing.renderCount },
       skipped: stats.skips, unsupported: stats.unsupported,
@@ -1537,15 +1554,19 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       }
     } catch (error) { stats.unsupported++; return { skip: error.message }; }
     device.pushErrorScope('validation');
+    const bwModuleT0 = metricsNow();
+    const vertexModule = device.createShaderModule({ code: vsR.code });
+    const fragmentModule = device.createShaderModule({ code: fsR.code });
+    timing.shaderModuleMs += metricsNow() - bwModuleT0; timing.shaderModuleCount += 2;
     const bwPipeT0 = metricsNow();
     const pipeline = device.createRenderPipeline({
       layout: device.createPipelineLayout({ bindGroupLayouts: layouts }),
       vertex: {
-        module: device.createShaderModule({ code: vsR.code }), entryPoint: 'main',
+        module: vertexModule, entryPoint: 'main',
         buffers: buffers.length ? buffers : undefined,
       },
       fragment: {
-        module: device.createShaderModule({ code: fsR.code }), entryPoint: 'main',
+        module: fragmentModule, entryPoint: 'main',
         targets: colorTargets,
       },
       primitive: v2PrimitiveState(pipe, device.features?.has('depth-clip-control') === true, indexType),

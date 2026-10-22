@@ -270,6 +270,12 @@ export function createMetricsModel({ staleAfterMs = STALE_AFTER_MS } = {}) {
             note: 'milliseconds per translation EVENT (modules are cached, so this is not per frame)',
           },
           {
+            id: 'shaderModule', label: 'Shader module creation', value: formatMs(pagePace?.shaderModule?.ms ?? null),
+            unit: formatCount(pagePace?.shaderModule?.count ?? null) + ' modules',
+            state: pagePace ? (pagePace.shaderModule?.count ? STATE.MEASURED : STATE.INACTIVE) : STATE.UNAVAILABLE,
+            note: 'createShaderModule calls on newly built Vulkan pipelines',
+          },
+          {
             id: 'pipeline', label: 'Pipeline creation', value: formatMs(pagePace?.pipeline?.ms ?? null),
             unit: formatCount(pagePace?.pipeline?.count ?? null) + ' pipelines',
             state: pagePace ? (pagePace.pipeline?.count ? STATE.MEASURED : STATE.INACTIVE) : STATE.UNAVAILABLE,
