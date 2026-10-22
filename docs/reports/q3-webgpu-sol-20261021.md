@@ -150,11 +150,47 @@ menu, including the title, menu entries, and copyright line. Evidence is under
 `/tmp/winbox-finish/r3/work-luna-q3/evidence/q3/`. Since the later captures are
 visible, no additional frame trace was needed.
 
-The pending JS change handles RGBA framebuffer-to-BGRA canvas blits with a
-format-converting WebGPU render pass and uses the selected mip level on the
-same-format copy path. The focused `gl-webgpu` unit suite passed (3 files), the
+The committed JS change in `5849b5503` handles RGBA framebuffer-to-BGRA canvas
+blits with a format-converting WebGPU render pass and uses the selected mip
+level on the same-format copy path. The focused `gl-webgpu` unit suite passed (3 files), the
 `gl-shader-compat` suite passed (1 file), and the GL32 browser suite passed all
 three gates: triangle, framebuffer, and WebGPU clear.
 
 The menu is visible, but the animated logo still has rendering artifacts.
 Gameplay and other unexercised GL features remain outside this verification.
+
+## Map-start follow-up (Luna, 2026-10-22)
+
+The one-shot `/home/ubuntu/scripts/winbox-wait-load.sh` call timed out after
+nine minutes at load 8.59, so I proceeded as instructed. The probe's original
+ten-minute build-lock limit expired while another lane's build was still live.
+Commit `3322747fc` makes that limit configurable with
+`BUILD_LOCK_TIMEOUT_MS` (default remains ten minutes) and removes the probe's
+second, repeated load poll. All five `build-lock.test.mjs` tests pass.
+
+With `+map q3dm1`, the probe mapped after 81.4 seconds on build
+`7954964929f0`. Its +60s composited screenshot shows the Quake logo, and +240s
+shows a textured Q3DM1 scene behind the game's loading overlay. I inspected the
+screenshots directly. WebGPU was active, with no browser errors, bridge
+failures, or WebGL2 fallback. The evidence is in
+`/tmp/winbox-finish/r3/work-luna-q3/evidence/q3-map-r3/`.
+
+A longer run mapped after 90.1 seconds and captured +240s, +360s, +480s, and
++600s. At +240s and +360s the same Q3DM1 environment is rendered while the
+overlay advances through sound and BSP loading. The +480s and +600s captures
+show a guest `PRIV_INSTRUCTION` exception at address `0x10270`; the client does
+not reach an active match. Screenshots, summary, and console log are in
+`/tmp/winbox-finish/r3/work-luna-q3/evidence/q3-map-r4/`.
+
+The longer trace decodes 5,825 GL calls across 33 swaps, including 330
+client-array draws and 1,037 texture uploads. It reports no called bridge
+stubs, and the probe reports no WebGPU failures or page errors. The exercised
+scene uses vertex/color/texture arrays, textures, matrices, clears, scissor,
+depth, blend, cull, and active texture selection. No client-active-texture or
+multi-coordinate calls appear before the guest exception, so I found no
+evidence that an unimplemented GL entry point caused it. The map environment
+renders through WebGPU, but active gameplay remains blocked by the guest
+instruction exception; I made no speculative GL changes.
+
+The +60s black capture was not reproduced on the map-start run: that sample is
+the visible Quake logo. No first-frame timing change was needed for this path.
