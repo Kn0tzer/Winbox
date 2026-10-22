@@ -60,9 +60,15 @@ export function buildLockInfo() {
   return readInfo();
 }
 
+export function defaultBuildLockTimeoutMs(value = process.env.BUILD_LOCK_TIMEOUT_MS) {
+  if (value == null || value === '') return 600000;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 600000;
+}
+
 // Wait until no build holds the lock. Throws on timeout so a stuck build
 // fails loudly instead of hanging the probe forever.
-export async function waitForBuildIdle({ timeoutMs = 600000, pollMs = 5000 } = {}) {
+export async function waitForBuildIdle({ timeoutMs = defaultBuildLockTimeoutMs(), pollMs = 5000 } = {}) {
   const t0 = Date.now();
   let warned = false;
   for (;;) {
