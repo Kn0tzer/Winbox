@@ -69,7 +69,7 @@ test('live and malformed probe slots reject a build before any asset mutation', 
       writeFileSync(join(slots, 'slot-0'), contents);
       const build = spawnSync('bash', [wrapper, '--export-only'], {
         encoding: 'utf8',
-        env: { ...process.env, PROBE_SLOT_DIR: slots, BW64_BUILD_FORCE: '0' },
+        env: { ...process.env, PROBE_SLOT_DIR: slots, BW64_BUILD_FORCE: '0', BW64_BUILD_WAIT_MIN: '0' },
       });
       assert.equal(build.status, 1);
       assert.match(build.stderr, /probe (activity|slot)/);

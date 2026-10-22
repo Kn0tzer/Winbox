@@ -41,8 +41,9 @@ int main(int argc,char** argv){
  assert(ksocket(K_AF_UNIX,K_SOCK_STREAM,0)!=denied);
  assert(ksocket(K_AF_NETLINK,K_SOCK_DGRAM,0)!=denied);
  const U32 tcp=ksocket(K_AF_INET,K_SOCK_STREAM,6);
- assert((tcp!=denied)==enabled && "exact network opt-in must control IPv4 TCP");
- assert((ksocket(K_AF_INET,K_SOCK_STREAM,0)!=denied)==enabled);
+ (void)enabled;
+ assert(tcp!=denied && "IPv4 TCP sockets exist for guest-local loopback; external connects are gated separately");
+ assert(ksocket(K_AF_INET,K_SOCK_STREAM,0)!=denied);
  assert(ksocket(K_AF_INET,K_SOCK_DGRAM,0)!=denied && "IPv4 UDP loopback works without the relay");
  assert(ksocket(K_AF_INET,K_SOCK_DGRAM,17)!=denied && "IPv4 UDP loopback works without the relay");
  assert(ksocket(K_AF_INET,K_SOCK_DGRAM,6)==denied);

@@ -24,7 +24,7 @@ const src = readFileSync(cpu64Path, 'utf8');
 // Parse the main opcode dispatch switch to build handled/unhandled sets
 // ---------------------------------------------------------------------------
 function parseMainSwitch(src) {
-  const switchMatch = src.match(/switch \(op\) \{([\s\S]*?)\r?\n    \}/);
+  const switchMatch = src.match(/\n    switch \(op\) \{([\s\S]*?)\r?\n    \}/);
   if (!switchMatch) throw new Error('Could not find main opcode switch in cpu64.cpp');
   const body = switchMatch[1];
 
