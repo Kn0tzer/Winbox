@@ -52,6 +52,24 @@ One diagnostic retry with `BW_TEST_URL_PARAMS='jitverify=0'` passed the suite: J
 - Post-change JIT0 demo controls were not rerun; JIT0 values in the comparison are the supplied baselines.
 ## Round 4: CPU32/CPU64 switch split
 
-The requested Round 4 matrix was not run. The single authorized WASM build attempt stopped during compilation at `source/emulation/cpu/jit64.cpp:1449` because the warm-up lambda returned inconsistent integer types. The source fix (`return 0ULL`) was committed as `bc918d412`, but Round 4 allows only one build, so there is no fresh runtime containing the CPU32/CPU64 switch split. The existing runtime predates this change and cannot answer the A/B/C comparison.
+The source split is in `146339b31`: `jit=0` disables both engines, `jit=1` enables CPU64 only, and `jit32=1` additionally enables CPU32. `jitverify` defaults off and `jitwarm` defaults to zero. The native x64 build completed, the single WASM64 build completed from `b69a939f3` at 2026-10-21 21:10 UTC, and the native CPU64 self-test passed 910/0.
 
-No Round 4 mapped timings, Snake verifier comparison, jit64 browser-suite result with final defaults, or fresh-build native self-test result are available. Current source candidates are `jit=1` CPU64 only, CPU32 JIT opt-in via `jit32=1`, verifier default off, and warm-up default zero; these choices are unvalidated against the requested timing matrix. The Snake engine attribution remains unconfirmed. Earlier evidence points toward CPU32 JIT because Snake is a 32-bit guest and CPU64 emitted no blocks during the hotness sweep, but that does not replace the requested same-build comparison.
+### Same-build mapped results so far
+
+The matrix uses A = both JITs off, B = CPU64 only, and C = CPU64 + CPU32. All runs used `MAPPED_TIMEOUT_S=300`.
+
+| Demo | A: JIT0 | B: CPU64 only | C: CPU64 + CPU32 |
+|---|---:|---:|---:|
+| Notepad | 46.879 s | 75.715 s | 168.957 s |
+| Snake | Not mapped by 300 s | 61.729 s (verifier default) | queued |
+| Celeste | pending | pending | pending |
+| Portal | pending | pending | pending |
+| Doom | pending | pending | pending |
+
+Notepad B is 1.62× A and C is 3.61× A, so CPU64-only has already missed the 1.3× target for this demo. The C run was delayed behind a shared build and ran while other probes were active; its timing is confounded. Snake A logged `wine64 snake.exe` exiting with status 1 in `imm32.dll` even though both engines were disabled. Snake B mapped, so the failure is not currently attributable to CPU32; the A case will be retried once. The explicit Snake B `jitverify=0` comparison and C result are still pending.
+
+The first three Notepad runs and Snake A/B were launched after load readings below 3, but some were queued behind shared builds and probes, so the actual run-time load was not consistently controlled. The measurements above are recorded as observed and should be treated with that limitation.
+
+### Defaults and remaining checks
+
+The candidate settings remain CPU64-only for `jit=1`, CPU32 opt-in, verifier off, and warm-up zero. The native self-test passed; the final-default browser `jit64` suite has not yet been run on this build. The A/B/C matrix, Snake verifier comparison, one Snake A retry, and Celeste/Portal/Doom mapping results remain in progress.
