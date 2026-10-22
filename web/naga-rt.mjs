@@ -149,8 +149,21 @@ export function liftForNaga(srcIn, stage, locMap = new Map()) {
     // the shipped 30.0.1 build), so the registry advances by the array length.
     src = src.replace(/^[ \t]*(layout\s*\([^)]*\)\s*)?((?:(?:centroid|sample|patch|flat|smooth|noperspective|invariant|precise)[ \t]+)*)(in|out)[ \t]+([^;{}]+);[ \t]*$/gm, (m, lay, quals, dir, declList) => {
       const flat = /\bflat\b/.test(quals || '') ? 'flat ' : '';
-      if (lay) return `${lay}${flat}${dir} ${declList};`;
       const ns = stage === 'vertex' ? (dir === 'in' ? 'a' : 'v') : (dir === 'in' ? 'v' : 'o');
+      if (lay) {
+        const explicit = /\blocation\s*=\s*(\d+)/.exec(lay);
+        if (explicit) {
+          let location = Number(explicit[1]);
+          for (const decl of splitDeclarators(declList.trim())) {
+            const dm = /^(.+?)[ \t]+([A-Za-z_]\w*)[ \t]*(\[[^\]]*\])?$/.exec(decl);
+            const name = dm ? dm[2] : decl;
+            const span = dm && /^\[(\d+)\]$/.test(dm[3] || '') ? parseInt(dm[3].slice(1, -1), 10) : 1;
+            reserveLocation(locMap, ns, name, span, location);
+            location += Math.max(1, span | 0);
+          }
+        }
+        return `${lay}${flat}${dir} ${declList};`;
+      }
       const out = [];
       for (const decl of splitDeclarators(declList.trim())) {
         const dm = /^(.+?)[ \t]+([A-Za-z_]\w*)[ \t]*(\[[^\]]*\])?$/.exec(decl);
@@ -201,10 +214,14 @@ function locationFor(locMap, ns, name, span, pinned) {
   const existing = locMap.get(key);
   if (existing !== undefined) return existing;
   const n = pinned !== null ? pinned : (locMap.get('#!' + ns) || 0);
-  locMap.set(key, n);
-  const next = n + Math.max(1, span | 0);
+  return reserveLocation(locMap, ns, name, span, n);
+}
+
+function reserveLocation(locMap, ns, name, span, location) {
+  locMap.set(ns + ':' + name, location);
+  const next = location + Math.max(1, span | 0);
   if ((locMap.get('#!' + ns) || 0) < next) locMap.set('#!' + ns, next);
-  return n;
+  return location;
 }
 
 function firstMeaningfulLine(src) {

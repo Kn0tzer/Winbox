@@ -46,6 +46,7 @@ const TYPE_ENUM = new Map([
 
 const SAMPLER_VERTEX_BASE = 2;
 const SAMPLER_FRAGMENT_BASE = 18;
+let shaderFailureDumped = false;
 
 function componentCount(type) {
   const vector = /^(?:b|i|u)?vec([234])$/.exec(type);
@@ -109,12 +110,6 @@ function glslDeclarations(source, qualifier) {
   return result;
 }
 
-function shaderDumpEnabled() {
-  if (globalThis.glshaderdump) return true;
-  const search = globalThis.location?.search;
-  return typeof search === 'string' && new URLSearchParams(search).has('glshaderdump');
-}
-
 export function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(), interfaceLocations = new Map()) {
   // ES precision hints do not change WGSL behavior; strip them before parsing
   // declarations because Naga's GLSL 450 frontend rejects variable precision qualifiers.
@@ -122,6 +117,15 @@ export function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(
     // GL_ES precision guards carry no shader behavior after the precision
     // declaration is removed, and Naga does not need their preprocessor.
     .replace(/^[ \t]*#ifdef[ \t]+GL_ES[ \t]*\n([\s\S]*?)^[ \t]*#endif[ \t]*$/gm, '$1')
+    // Desktop GLSL commonly defines ES precision qualifiers as empty macros
+    // under #ifndef GL_ES. Remove that compatibility-only guard before stripping
+    // the qualifiers, or the now-empty #define lines are invalid GLSL to Naga.
+    .replace(/^[ \t]*#ifndef[ \t]+GL_ES[ \t]*\n([\s\S]*?)^[ \t]*#endif[ \t]*$/gm, (whole, body) => {
+      const lines = body.split('\n').map(line => line.trim())
+        .filter(line => line && !line.startsWith('//') && !line.startsWith('/*') && !line.startsWith('*'));
+      return lines.length && lines.every(line => /^#define[ \t]+(?:lowp|mediump|highp)(?:[ \t]+.*)?$/.test(line)) ? '' : whole;
+    })
+    .replace(/^[ \t]*#define[ \t]+(?:lowp|mediump|highp)(?:[ \t]+[^\n]*)?[ \t]*$/gm, '')
     .replace(/^[ \t]*precision[ \t]+(?:lowp|mediump|highp)[ \t]+(?:float|int)[ \t]*;[ \t]*$/gm, '')
     .replace(/\b(?:lowp|mediump|highp)\b/g, '');
   if (/\bgl_ModelViewProjectionMatrix\b/.test(code)) {
@@ -879,18 +883,17 @@ export class WebGPUGL {
       }
     }
     const locationRegistry = new Map();
+    let failingShader = null;
+    let failingStage = 'unknown';
+    let failingPreparedCode = '';
     program.linkPromise = this.ready.then(async () => {
       for (const [shader, stage] of [[vertex, 'vertex'], [fragment, 'fragment']]) {
+        failingShader = shader;
+        failingStage = stage;
+        failingPreparedCode = '';
         const prepared = rewriteGlslForWebGPU(shader.source, stage, program.attributes, locationRegistry);
-        let wgsl;
-        try {
-          wgsl = await toWGSL('glsl', prepared.code, stage);
-        } catch (error) {
-          if (shaderDumpEnabled()) {
-            console.error(`gl-webgpu: ${stage} shader translation failed:`, error, `\n--- GLSL sent to Naga ---\n${prepared.code}`);
-          }
-          throw error;
-        }
+        failingPreparedCode = prepared.code;
+        const wgsl = await toWGSL('glsl', prepared.code, stage);
         if (!wgsl) throw new Error(`${stage} shader translated to empty WGSL`);
         const activeInputs = stage === 'vertex'
           ? [...prepared.code.matchAll(/layout\s*\([^)]*location\s*=\s*(\d+)[^)]*\)\s*in\s+([A-Za-z_]\w*)\s+([A-Za-z_]\w*)/g)]
@@ -903,6 +906,11 @@ export class WebGPUGL {
     }).catch(error => {
       program.linked = false;
       program.infoLog = String(error?.message || error);
+      if (failingShader && !shaderFailureDumped) {
+        shaderFailureDumped = true;
+        this._log(`gl-webgpu: ${failingStage} shader preparation/translation failed: ${program.infoLog}` +
+          `\n--- Guest GLSL ---\n${failingShader.source}\n--- GLSL after WebGPU pre-pass ---\n${failingPreparedCode}`);
+      }
       this._reportFailure(new Error(`program ${program.id} link failed: ${program.infoLog}`));
       return false;
     });

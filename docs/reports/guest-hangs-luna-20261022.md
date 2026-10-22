@@ -16,6 +16,36 @@ I built commit `e00a6c105b46` with the requested `wasm64-mt-jit` target. The bui
 
 The game did not render a usable menu. The +60 second screenshot is black. The probe logged `program 5 link failed: UnexpectedNewLine`, then a WebGL2 `getAttribLocation` TypeError and a fallback from WebGPU to WebGL2. Its summary reports `mapped: true`, `webgpuActive: false`, and a page error, so the probe exits 1 despite the successful window map. This remaining failure is in the GL rendering path.
 
+### WebGPU shader failure
+
+The diagnostic probe captured program 5's vertex shader. It contains the common desktop GLSL precision compatibility block:
+
+```glsl
+#ifndef GL_ES
+#define lowp
+#define mediump
+#define highp
+#endif
+```
+
+`rewriteGlslForWebGPU` removed the precision words but only handled the corresponding `#ifdef GL_ES` form. That left empty `#define` directives in the GLSL passed to Naga, which rejected the vertex shader as `UnexpectedNewLine`. The failed link then called the bridge's device-failure callback, which restored WebGL2; Emscripten subsequently passed the bridge's JavaScript program object to native WebGL2, producing the `getAttribLocation` TypeError.
+
+The translator now removes `#ifndef GL_ES` blocks only when their non-comment contents are precision qualifier macro definitions, and removes standalone `lowp`/`mediump`/`highp` macro definitions before stripping precision qualifiers. Other `#ifndef GL_ES` blocks are preserved. The shader failure logger now emits the first failed shader's guest source and pre-pass GLSL through the bridge logger, including failures before Naga translation.
+
+The new `gl-es-precision-macros.vert.glsl` fixture is copied from the captured guest shader. It failed with `UnexpectedNewLine` before the precision-macro fix and now translates through the pre-pass and Naga.
+
+That fix exposed a second issue in `liftForNaga`: when the pre-pass added `layout(location = 0)` for the bound `a_position`, the allocator did not reserve that explicit location. It then assigned location 0 to the unbound `a_texCoord0`, and Naga rejected the vertex entry point. The allocator now records explicit interface locations and advances the namespace counter before assigning automatic locations. The mixed explicit/automatic location test failed on the duplicate 0 and now passes with `a_position` at 0 and `a_texCoord0` at 1.
+
+The shader compatibility suite now passes all 10 tests. The post-macro-fix probe mapped in 290.3 seconds and cleared `UnexpectedNewLine`, but exposed the duplicate-location validation failure; the final probe with both fixes is in progress. One `winbox-wait-load.sh 5 9` invocation timed out at load 8.67 after nine minutes, so the queued probe proceeded under the requested timeout rule. No WASM rebuild was needed; only the local browser export was refreshed.
+
+Diagnostic artifacts:
+
+- Full shader source and console: `/tmp/winbox-finish/r3/work-luna-hang/mindustry-shader-dump/run3/console.log`
+- Diagnostic summary: `/tmp/winbox-finish/r3/work-luna-hang/mindustry-shader-dump/run3/summary.json`
+- Diagnostic screenshot: `/tmp/winbox-finish/r3/work-luna-hang/mindustry-shader-dump/run3/mapped-plus-60s.png`
+- Post-macro-fix summary: `/tmp/winbox-finish/r3/work-luna-hang/mindustry-shader-dump/verify1/summary.json`
+- Post-macro-fix screenshot: `/tmp/winbox-finish/r3/work-luna-hang/mindustry-shader-dump/verify1/mapped-plus-60s.png`
+
 Evidence:
 
 - Build log: `/tmp/winbox-finish/r3/work-luna-hang/build1.log`
