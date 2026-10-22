@@ -998,7 +998,7 @@ int webGpuFixedDraw(GLenum mode, GLint first, GLsizei count, bool indexed, GLenu
     packet[33] = (U32)(uintptr_t)(indexData.empty() ? nullptr : indexData.data());
     packet[34] = (U32)indexData.size();
     packet[35] = baseVertex;
-    return EM_ASM_INT((() => {
+    return EM_ASM_INT({ return (() => {
         try {
             var p = $0 >>> 2;
             var word = i => HEAPU32[p + i] >>> 0;
@@ -1021,7 +1021,7 @@ int webGpuFixedDraw(GLenum mode, GLint first, GLsizei count, bool indexed, GLenu
             }
             return GLctx.fixedFunctionDrawArrays(mode, first, count, arrays) ? 1 : 0;
         } catch (error) { console.error('gl64 fixed-function draw failed', error); return 0; }
-    })(), packet);
+    })(); }, packet);
 }
 #endif
 
@@ -1692,10 +1692,15 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 static U64 tracedCalls = 0;
                 if (tracedCalls < (U64)limit) {
                     tracedCalls++;
-                    klog_fmt("gl64 TRACE[%llu]: fnId=%llu args=%llx,%llx,%llx,%llx",
-                        (unsigned long long)tracedCalls, (unsigned long long)fnId,
-                        (unsigned long long)args.a[0], (unsigned long long)args.a[1],
-                        (unsigned long long)args.a[2], (unsigned long long)args.a[3]);
+                    std::string arguments;
+                    for (int i = 0; i < GL64_MAX_ARGS; ++i) {
+                        char value[24];
+                        std::snprintf(value, sizeof(value), "%s%llx", i ? "," : "",
+                            (unsigned long long)args.a[i]);
+                        arguments += value;
+                    }
+                    klog_fmt("gl64 TRACE[%llu]: fnId=%llu args=%s",
+                        (unsigned long long)tracedCalls, (unsigned long long)fnId, arguments.c_str());
                 }
             }
         }
@@ -1915,10 +1920,16 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             }
             return 0;
         case GL64_fn_glEnable:
-            if (g_glContext) GL_MT(glEnable((GLenum)ai(args,0)));
-            return 0;
         case GL64_fn_glDisable:
-            if (g_glContext) GL_MT(glDisable((GLenum)ai(args,0)));
+            if (g_glContext) {
+#ifdef __EMSCRIPTEN__
+                // The legacy emulator consumes GL_TEXTURE_2D/GL_ALPHA_TEST.
+                // Our direct fixed-function renderer owns this state instead.
+                if (g_emWebGpu) GL_MT(webGpuFixedCall(fnId == GL64_fn_glEnable ? "enable" : "disable", ai(args,0), 0, 0, 0, 0, 1));
+                else
+#endif
+                    GL_MT(fnId == GL64_fn_glEnable ? glEnable((GLenum)ai(args,0)) : glDisable((GLenum)ai(args,0)));
+            }
             return 0;
         case GL64_fn_glShadeModel:
             if (g_glContext) GL_MT(glShadeModel((GLenum)ai(args,0)));
@@ -2143,7 +2154,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glColor3f:
             if (g_glContext) {
 #ifdef __EMSCRIPTEN__
-                if (g_emWebGpu) GL_MT(webGpuFixedCall("color3f", af(args,0), af(args,1), af(args,2), 0, 0, 3));
+                if (g_emWebGpu && !g_inImmediate) GL_MT(webGpuFixedCall("color3f", af(args,0), af(args,1), af(args,2), 0, 0, 3));
                 else
 #endif
                     RECORD_IMM(GL64_fn_glColor3f, af(args,0), af(args,1), af(args,2), 0,
@@ -2153,7 +2164,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glColor4f:
             if (g_glContext) {
 #ifdef __EMSCRIPTEN__
-                if (g_emWebGpu) GL_MT(webGpuFixedCall("color4f", af(args,0), af(args,1), af(args,2), af(args,3), 0, 4));
+                if (g_emWebGpu && !g_inImmediate) GL_MT(webGpuFixedCall("color4f", af(args,0), af(args,1), af(args,2), af(args,3), 0, 4));
                 else
 #endif
                     RECORD_IMM(GL64_fn_glColor4f, af(args,0), af(args,1), af(args,2), af(args,3),
@@ -2165,7 +2176,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 const GLubyte r = (GLubyte)ai(args,0), g = (GLubyte)ai(args,1);
                 const GLubyte b = (GLubyte)ai(args,2), a = (GLubyte)ai(args,3);
 #ifdef __EMSCRIPTEN__
-                if (g_emWebGpu) GL_MT(webGpuFixedCall("color4ub", r, g, b, a, 0, 4));
+                if (g_emWebGpu && !g_inImmediate) GL_MT(webGpuFixedCall("color4ub", r, g, b, a, 0, 4));
                 else RECORD_IMM(GL64_fn_glColor4f, r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f,
                                 glColor4f(r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f));
 #else
@@ -2270,6 +2281,15 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                     double values[16]; cpu->memory->memcpyFromGuest(values, args.a[0], sizeof(values));
                     for (int i = 0; i < 16; ++i) m[i] = (float)values[i];
                 } else readFloats(cpu, args.a[0], m, 16);
+                if (getenv("BW64_GLTRACE")) {
+                    std::string values;
+                    for (int i = 0; i < 16; ++i) {
+                        char value[40];
+                        std::snprintf(value, sizeof(value), "%s%.9g", i ? "," : "", m[i]);
+                        values += value;
+                    }
+                    klog_fmt("gl64 MATRIX: fnId=%llu values=%s", (unsigned long long)fnId, values.c_str());
+                }
 #ifdef __EMSCRIPTEN__
                 if (g_emWebGpu) GL_MT(webGpuFixedMatrixCall(isLoad
                     ? (isDouble ? "loadMatrixd" : "loadMatrixf")
@@ -2322,6 +2342,31 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glEnd:
             if (g_glContext) {
 #ifdef __EMSCRIPTEN__
+                // Immediate and client-array draws must use the same matrices
+                // and current attributes on WebGPU, without glemu synthesizing a
+                // second independent fixed-function state machine.
+                if (g_emWebGpu) {
+                    std::vector<GLfloat> commands;
+                    for (const ImmOp& op : g_immOps) {
+                        if (op.fn == GL64_fn_glColor3f || op.fn == GL64_fn_glColor4f) {
+                            commands.insert(commands.end(), {0, op.f[0], op.f[1], op.f[2],
+                                op.fn == GL64_fn_glColor3f ? 1.0f : op.f[3]});
+                        } else if (op.fn == GL64_fn_glVertex2f || op.fn == GL64_fn_glVertex3f) {
+                            commands.insert(commands.end(), {1, op.f[0], op.f[1],
+                                op.fn == GL64_fn_glVertex2f ? 0.0f : op.f[2], 1});
+                        }
+                    }
+                    glOnMain([&] {
+                        bindDrawTarget();
+                        EM_ASM({ GLctx.fixedFunctionImmediateDraw($0,
+                            HEAPF32.slice($1 >>> 2, ($1 >>> 2) + $2)); },
+                            g_immMode, commands.data(), commands.size());
+                    });
+                    g_inImmediate = false;
+                    g_immOps.clear();
+                    g_glDrew = true;
+                    return 0;
+                }
                 // Single cross-thread hop: replay the whole primitive block.
                 GLenum mode = g_immMode;
                 glOnMain([&]{
@@ -2469,7 +2514,9 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 // gt=="3" → only log misses (the worklist); else log everything.
                 bool hit = args.a[1] != 0;
                 if (gt[0] != '3' || !hit)
-                    klog_fmt("gl64 PROC %s %s", hit ? "HIT " : "MISS", name);
+                    klog_fmt("gl64 PROC %s %s args=%llx,%llx,%llx,%llx", args.a[1] == 2 ? "STUB" : hit ? "HIT " : "MISS", name,
+                        (unsigned long long)args.a[2], (unsigned long long)args.a[3],
+                        (unsigned long long)args.a[4], (unsigned long long)args.a[5]);
             }
             return 0;
         }

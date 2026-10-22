@@ -123,3 +123,94 @@ test('program-zero fixed-function draws advance buffer-backed pointers by the st
     gpu.restore();
   }
 });
+
+test('immediate-mode vertices retain their individual colors and use the fixed-function matrices', async () => {
+  const gpu = createValidationDevice();
+  try {
+    gpu.device.queue.writeBuffer = () => {};
+    gpu.device.createBindGroup = descriptor => descriptor;
+    const createPipeline = gpu.device.createRenderPipeline;
+    gpu.device.createRenderPipeline = descriptor => {
+      descriptor.getBindGroupLayout = () => ({});
+      return createPipeline(descriptor);
+    };
+    const logs = [];
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    gl.matrixMode(0x1701);
+    gl.ortho(0, 4, 0, 4, -1, 1);
+    // Commands are [kind, x/r, y/g, z/b, w/a]; 0=color, 1=vertex.
+    gl.fixedFunctionImmediateDraw(4, new Float32Array([
+      0, 1, 0, 0, 1, 1, 0, 0, 0, 1,
+      0, 0, 1, 0, 1, 1, 4, 0, 0, 1,
+      0, 0, 0, 1, 1, 1, 0, 4, 0, 1,
+    ]));
+    await gl._ops;
+    assert.deepEqual(logs, []);
+    assert.equal(gpu.draws.length, 1);
+    assert.ok(gl._pixels.some((value, i) => i % 4 === 0 && value > 100), 'red must survive immediate-mode recording and projection');
+    assert.deepEqual(gl._fixedFunction.color, [0, 0, 1, 1], 'the last immediate color remains current');
+  } finally { gpu.restore(); }
+});
+
+test('queued fixed-function GPU draws retain the texture bound at each draw', async () => {
+  const gpu = createValidationDevice();
+  try {
+    gpu.device.queue.writeBuffer = () => {};
+    const sampled = [];
+    gpu.device.createBindGroup = descriptor => {
+      sampled.push(descriptor.entries.find(entry => entry.binding === 2)?.resource.texture);
+      return descriptor;
+    };
+    const createPipeline = gpu.device.createRenderPipeline;
+    gpu.device.createRenderPipeline = descriptor => {
+      descriptor.getBindGroupLayout = () => ({});
+      return createPipeline(descriptor);
+    };
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    gl.enable(0x0de1);
+    const arrays = {
+      vertex: { enabled: true, size: 2, type: 0x1406, stride: 0 },
+      color: { enabled: false }, texCoord: { enabled: false },
+      vertexData: new Float32Array([-1, -1, 1, -1, 0, 1]),
+    };
+    const textures = [];
+    for (const pixel of [[255, 0, 0, 255], [0, 255, 0, 255]]) {
+      const texture = gl.createTexture(); textures.push(texture);
+      gl.bindTexture(0x0de1, texture);
+      gl.texImage2D(0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, new Uint8Array(pixel));
+      gl.fixedFunctionDrawArrays(4, 0, 3, arrays);
+    }
+    await gl._ops;
+    assert.equal(sampled.length, 2);
+    assert.equal(sampled[0], textures[0].gpu, 'first GPU draw must sample the first texture');
+    assert.equal(sampled[1], textures[1].gpu, 'second GPU draw must sample the second texture');
+  } finally { gpu.restore(); }
+});
+
+test('odd uint16 index counts use aligned GPU uploads without drawing padding', async () => {
+  const gpu = createValidationDevice();
+  try {
+    gpu.device.queue.writeBuffer = (buffer, offset, data) => {
+      assert.equal(data.byteLength % 4, 0, 'WebGPU writeBuffer byte count must be aligned');
+    };
+    gpu.device.createBindGroup = descriptor => descriptor;
+    const createPipeline = gpu.device.createRenderPipeline;
+    gpu.device.createRenderPipeline = descriptor => {
+      descriptor.getBindGroupLayout = () => ({});
+      return createPipeline(descriptor);
+    };
+    const logs = [];
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    const arrays = { vertex: { enabled: true, size: 2, type: 0x1406, stride: 0 },
+      color: { enabled: false }, texCoord: { enabled: false },
+      vertexData: new Float32Array([-1, -1, 1, -1, 0, 1]) };
+    gl.fixedFunctionDrawElements(4, 3, 0x1403, 0, new Uint16Array([0, 1, 2]), arrays);
+    await gl._ops;
+    assert.deepEqual(logs, []);
+    assert.equal(gpu.indexedDraws.length, 1);
+    assert.equal(gpu.indexedDraws[0][0], 3, 'padding must not add an index');
+  } finally { gpu.restore(); }
+});

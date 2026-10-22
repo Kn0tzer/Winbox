@@ -82,3 +82,38 @@ test('GL shim registration count is substantial', () => {
   assert.ok(registered.size >= 100,
     `GL shim registers only ${registered.size} functions; expected 100+ for real GL apps`);
 });
+
+// Source coverage alone missed a shipped libGL whose client-array exports were
+// still one-byte return instructions. Inspect ELF64 dynamic symbols as well.
+function elf64FunctionSizes(bytes) {
+  assert.equal(bytes.subarray(0, 4).toString('hex'), '7f454c46');
+  assert.equal(bytes[4], 2, '64-bit guest shim');
+  assert.equal(bytes[5], 1, 'little-endian guest shim');
+  assert.equal(bytes.readUInt16LE(18), 62, 'x86-64 guest machine');
+  const sections = Number(bytes.readBigUInt64LE(40));
+  const stride = bytes.readUInt16LE(58), count = bytes.readUInt16LE(60);
+  const result = new Map();
+  for (let i = 0; i < count; i++) {
+    const section = sections + i * stride;
+    if (bytes.readUInt32LE(section + 4) !== 11) continue; // SHT_DYNSYM
+    const start = Number(bytes.readBigUInt64LE(section + 24));
+    const size = Number(bytes.readBigUInt64LE(section + 32));
+    const entrySize = Number(bytes.readBigUInt64LE(section + 56));
+    const strings = sections + bytes.readUInt32LE(section + 40) * stride;
+    const stringStart = Number(bytes.readBigUInt64LE(strings + 24));
+    for (let symbol = start; symbol < start + size; symbol += entrySize) {
+      if ((bytes[symbol + 4] & 15) !== 2) continue; // STT_FUNC
+      const nameStart = stringStart + bytes.readUInt32LE(symbol);
+      const name = bytes.toString('utf8', nameStart, bytes.indexOf(0, nameStart));
+      result.set(name, Number(bytes.readBigUInt64LE(symbol + 16)));
+    }
+  }
+  return result;
+}
+
+test('bundled 64-bit GL client-array entry points contain real trap wrappers', () => {
+  const sizes = elf64FunctionSizes(readFileSync(process.env.BW64_GL_SHIM_BINARY || join(repoRoot, 'tools/rootfs64/libgl64/libGL.so.1')));
+  for (const name of ['glEnableClientState', 'glDisableClientState', 'glVertexPointer', 'glColorPointer', 'glTexCoordPointer', 'glAlphaFunc', 'glTexEnvi', 'glLoadMatrixf', 'glLoadMatrixd', 'glMultMatrixd', 'glColor4ub', 'glActiveTextureARB']) {
+    assert.ok(sizes.get(name) > 8, `${name} is missing or a no-op in the bundled guest binary; rebuild tools/rootfs64/libgl64/libGL.so.1`);
+  }
+});

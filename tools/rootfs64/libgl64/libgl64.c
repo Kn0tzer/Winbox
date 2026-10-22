@@ -392,7 +392,11 @@ enum {
     GL64_fn_glTexEnvf,
     GL64_fn_glTexEnvi,
     GL64_fn_glTexEnvfv,
-    GL64_fn_glTexEnviv
+    GL64_fn_glTexEnviv,
+    GL64_fn_glColor4ub = 880,
+    GL64_fn_glLoadMatrixf,
+    GL64_fn_glLoadMatrixd,
+    GL64_fn_glMultMatrixd
 };
 
 // ---- the trap ---------------------------------------------------------------
@@ -745,6 +749,10 @@ API void glOrtho(GLdouble l,GLdouble r,GLdouble b,GLdouble t,GLdouble n,GLdouble
 API void glTranslatef(GLfloat x,GLfloat y,GLfloat z){ GL64Args a={{0}}; a.a[0]=F2U(x);a.a[1]=F2U(y);a.a[2]=F2U(z); (void)gl64_trap(GL64_fn_glTranslatef,&a); }
 API void glRotatef(GLfloat ang,GLfloat x,GLfloat y,GLfloat z){ GL64Args a={{0}}; a.a[0]=F2U(ang);a.a[1]=F2U(x);a.a[2]=F2U(y);a.a[3]=F2U(z); (void)gl64_trap(GL64_fn_glRotatef,&a); }
 API void glScalef(GLfloat x,GLfloat y,GLfloat z){ GL64Args a={{0}}; a.a[0]=F2U(x);a.a[1]=F2U(y);a.a[2]=F2U(z); (void)gl64_trap(GL64_fn_glScalef,&a); }
+API void glLoadMatrixf(const GLfloat* m){ GL64Args a={{0}}; a.a[0]=(uint64_t)(uintptr_t)m; (void)gl64_trap(GL64_fn_glLoadMatrixf,&a); }
+API void glLoadMatrixd(const GLdouble* m){ GL64Args a={{0}}; a.a[0]=(uint64_t)(uintptr_t)m; (void)gl64_trap(GL64_fn_glLoadMatrixd,&a); }
+API void glMultMatrixd(const GLdouble* m){ GL64Args a={{0}}; a.a[0]=(uint64_t)(uintptr_t)m; (void)gl64_trap(GL64_fn_glMultMatrixd,&a); }
+API void glColor4ub(GLubyte r, GLubyte g, GLubyte b, GLubyte alpha){ GL64Args a={{0}}; a.a[0]=r; a.a[1]=g; a.a[2]=b; a.a[3]=alpha; (void)gl64_trap(GL64_fn_glColor4ub,&a); }
 API void glMultMatrixf(const GLfloat* m){ GL64Args a={{0}}; a.a[0]=(uint64_t)(uintptr_t)m; (void)gl64_trap(GL64_fn_glMultMatrixf,&a); }
 
 API void glLightfv(GLenum light,GLenum pname,const GLfloat* params){ GL64Args a={{0}}; a.a[0]=light;a.a[1]=pname;a.a[2]=(uint64_t)(uintptr_t)params; (void)gl64_trap(GL64_fn_glLightfv,&a); }
@@ -1294,10 +1302,13 @@ API void glGetUniformuiv(GLuint program, const GLint* locs, GLuint* params){ GL6
 typedef void (*GLproc)(void);
 
 static void gl64_noop(void) { /* unimplemented GL entry — ignore for first light */ }
+// ARB spelling of the core multitexture selector uses the same ABI.
+API void glActiveTextureARB(GLenum texture) { glActiveTexture(texture); }
 
 struct procEntry { const char* name; GLproc fn; };
 #define E(n) { #n, (GLproc)n }
 static const struct procEntry g_procs[] = {
+    E(glActiveTextureARB),
     E(glXQueryVersion), E(glXQueryExtension), E(glXQueryExtensionsString),
     E(glXQueryServerString), E(glXGetClientString), E(glXChooseVisual),
     E(glXCreateContext), E(glXCreateContextAttribsARB), E(glXCreateNewContext),
@@ -1317,6 +1328,7 @@ static const struct procEntry g_procs[] = {
     E(glGetIntegerv), E(glGetFloatv), E(glColor3f), E(glColor4f),
     E(glMatrixMode), E(glLoadIdentity), E(glPushMatrix), E(glPopMatrix),
     E(glFrustum), E(glOrtho), E(glTranslatef), E(glRotatef), E(glScalef),
+    E(glLoadMatrixf), E(glLoadMatrixd), E(glMultMatrixd), E(glColor4ub),
     E(glMultMatrixf), E(glLightfv), E(glLightf), E(glMaterialfv), E(glMaterialf),
     E(glColorMaterial), E(glNormal3f), E(glBegin), E(glEnd), E(glVertex2f),
     E(glVertex3f),
