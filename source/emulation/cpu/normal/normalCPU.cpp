@@ -264,15 +264,19 @@ static inline bool normalGetNLE(CPU* cpu) {
 //
 // It is pure overhead for a target the JIT has already ruled out: such an op
 // keeps its plain interpreter handler (pfn is the handler for its opcode, not
-// the block trampoline or the compiler entry) and its runCount cannot change
-// again unless the code cache invalidates the op, which resets runCount itself.
-// Keeping the chain for it means the interpreter runs rejected or uncompilable
-// code at interpreter-only speed instead of probe speed. Chain a bounded number
-// of blocks, exactly like the interpreter-only build.
+// the block trampoline or the compiler entry) and its runCount is past the
+// trigger, so only run()'s probe could change it — and that probe cannot
+// compile an op it already ruled out. runCount above the threshold is exactly
+// the "decided" state the JIT itself writes (see wasmJit32DecidedRunCount);
+// an op at the threshold itself still needs the probe, because that call is
+// the one that starts the generator. Keeping the chain for decided ops means
+// the interpreter runs rejected or uncompilable code at interpreter-only speed
+// instead of probe speed. Chain a bounded number of blocks, exactly like the
+// interpreter-only build.
 static inline bool normalChainPastJitEntry(DecodedOp* op) {
     return op->pfn == NormalCPU::getFunctionForOp(op) &&
         !(op->flags2 & OP_FLAG2_WASM_JIT_PENDING) &&
-        op->runCount >= wasmJit32HotThreshold();
+        op->runCount > wasmJit32HotThreshold();
 }
 #define CONTINUE_BRANCH() \
     if (cpu->nextOp && static_cast<NormalCPU*>(cpu)->branchBudget > 1 && \
@@ -905,9 +909,11 @@ void NormalCPU::run() {
     } else {
         // Re-arm the bounded direct-dispatch chain. CONTINUE_BRANCH uses it to
         // keep running code the JIT has ruled out; one probe per run() entry is
-        // enough for the rest.
+        // enough for the rest. The comparison stays inclusive: an op sitting
+        // exactly at the threshold must reach firstDynamicOp, because that call
+        // is where the generator is started.
         branchBudget = 64;
-        if (nextOp->runCount < wasmJit32HotThreshold() || !calculateCF[0]) {
+        if (nextOp->runCount <= wasmJit32HotThreshold() || !calculateCF[0]) {
             firstOp(this, nextOp);
         } else {
             if (nextOp->inst == Callback) onExitSignal(this, nextOp); else nextOp->pfn(this, nextOp);
