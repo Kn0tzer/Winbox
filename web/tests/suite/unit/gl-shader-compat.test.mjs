@@ -13,6 +13,7 @@ const cases = [
   ['Mindustry fragment', 'mindustry.frag.glsl', 'fragment', 'mindustry'],
   ['Mindustry Convolve1dFilter fragment', 'mindustry-convolve-1d.frag.glsl', 'fragment', 'mindustry'],
   ['GL_ES precision macro compatibility vertex', 'gl-es-precision-macros.vert.glsl', 'vertex', 'gl-es'],
+  ['GL_ES precision conditional fragment', 'gl-es-precision-else.frag.glsl', 'fragment', 'gl-es'],
   ['quake3e generic vertex', 'quake3e-generic.vert.glsl', 'vertex', 'quake3e'],
   ['quake3e generic fragment', 'quake3e-generic.frag.glsl', 'fragment', 'quake3e'],
 ];

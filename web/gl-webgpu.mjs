@@ -110,21 +110,25 @@ function glslDeclarations(source, qualifier) {
   return result;
 }
 
+function precisionCompatibilityBody(body) {
+  const lines = body.split('\n').map(line => line.trim())
+    .filter(line => line && !line.startsWith('//') && !line.startsWith('/*') && !line.startsWith('*'));
+  return lines.every(line =>
+    /^precision[ \t]+(?:lowp|mediump|highp)[ \t]+(?:float|int)[ \t]*;[ \t]*(?:\/\/.*)?$/.test(line) ||
+    /^#define[ \t]+(?:lowp|mediump|highp)(?:[ \t]+.*)?$/.test(line));
+}
+
+function stripPrecisionCompatibilityGuards(source) {
+  return source.replace(/^[ \t]*#(?:ifdef|ifndef)[ \t]+GL_ES[ \t]*\n([\s\S]*?)^[ \t]*#endif[ \t]*$/gm, (whole, body) => {
+    const branches = body.split(/^[ \t]*#else\b[^\n]*$/m);
+    return branches.length <= 2 && branches.every(precisionCompatibilityBody) ? '' : whole;
+  });
+}
+
 export function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(), interfaceLocations = new Map()) {
   // ES precision hints do not change WGSL behavior; strip them before parsing
   // declarations because Naga's GLSL 450 frontend rejects variable precision qualifiers.
-  let code = String(source || '').replace(/\r\n?/g, '\n').replace(/\\[ \t]*\n[ \t]*/g, '')
-    // GL_ES precision guards carry no shader behavior after the precision
-    // declaration is removed, and Naga does not need their preprocessor.
-    .replace(/^[ \t]*#ifdef[ \t]+GL_ES[ \t]*\n([\s\S]*?)^[ \t]*#endif[ \t]*$/gm, '$1')
-    // Desktop GLSL commonly defines ES precision qualifiers as empty macros
-    // under #ifndef GL_ES. Remove that compatibility-only guard before stripping
-    // the qualifiers, or the now-empty #define lines are invalid GLSL to Naga.
-    .replace(/^[ \t]*#ifndef[ \t]+GL_ES[ \t]*\n([\s\S]*?)^[ \t]*#endif[ \t]*$/gm, (whole, body) => {
-      const lines = body.split('\n').map(line => line.trim())
-        .filter(line => line && !line.startsWith('//') && !line.startsWith('/*') && !line.startsWith('*'));
-      return lines.length && lines.every(line => /^#define[ \t]+(?:lowp|mediump|highp)(?:[ \t]+.*)?$/.test(line)) ? '' : whole;
-    })
+  let code = stripPrecisionCompatibilityGuards(String(source || '').replace(/\r\n?/g, '\n').replace(/\\[ \t]*\n[ \t]*/g, ''))
     .replace(/^[ \t]*#define[ \t]+(?:lowp|mediump|highp)(?:[ \t]+[^\n]*)?[ \t]*$/gm, '')
     .replace(/^[ \t]*precision[ \t]+(?:lowp|mediump|highp)[ \t]+(?:float|int)[ \t]*;[ \t]*$/gm, '')
     .replace(/\b(?:lowp|mediump|highp)\b/g, '');

@@ -30,13 +30,15 @@ The diagnostic probe captured program 5's vertex shader. It contains the common 
 
 `rewriteGlslForWebGPU` removed the precision words but only handled the corresponding `#ifdef GL_ES` form. That left empty `#define` directives in the GLSL passed to Naga, which rejected the vertex shader as `UnexpectedNewLine`. The failed link then called the bridge's device-failure callback, which restored WebGL2; Emscripten subsequently passed the bridge's JavaScript program object to native WebGL2, producing the `getAttribLocation` TypeError.
 
-The translator now removes `#ifndef GL_ES` blocks only when their non-comment contents are precision qualifier macro definitions, and removes standalone `lowp`/`mediump`/`highp` macro definitions before stripping precision qualifiers. Other `#ifndef GL_ES` blocks are preserved. The shader failure logger now emits the first failed shader's guest source and pre-pass GLSL through the bridge logger, including failures before Naga translation.
+The translator removes a `#ifndef GL_ES` or `#ifdef GL_ES` guard only when every branch contains precision declarations and/or `lowp`/`mediump`/`highp` compatibility macros. It removes standalone precision macro definitions before stripping precision qualifiers. Other GL_ES conditionals are preserved, so an `#else` is not detached from its block. The shader failure logger emits the first failed shader's guest source and pre-pass GLSL through the bridge logger, including failures before Naga translation.
 
 The new `gl-es-precision-macros.vert.glsl` fixture is copied from the captured guest shader. It failed with `UnexpectedNewLine` before the precision-macro fix and now translates through the pre-pass and Naga.
 
 That fix exposed a second issue in `liftForNaga`: when the pre-pass added `layout(location = 0)` for the bound `a_position`, the allocator did not reserve that explicit location. It then assigned location 0 to the unbound `a_texCoord0`, and Naga rejected the vertex entry point. The allocator now records explicit interface locations and advances the namespace counter before assigning automatic locations. The mixed explicit/automatic location test failed on the duplicate 0 and now passes with `a_position` at 0 and `a_texCoord0` at 1.
 
-The shader compatibility suite now passes all 10 tests. The post-macro-fix probe mapped in 290.3 seconds and cleared `UnexpectedNewLine`, but exposed the duplicate-location validation failure; the final probe with both fixes is in progress. One `winbox-wait-load.sh 5 9` invocation timed out at load 8.67 after nine minutes, so the queued probe proceeded under the requested timeout rule. No WASM rebuild was needed; only the local browser export was refreshed.
+The next probe exposed a fragment conditional with `#else`: the previous precision handling removed the opening `#ifdef GL_ES` and `#endif`, leaving `#else` outside a block. The new `gl-es-precision-else.frag.glsl` fixture reproduced `ElseOutsideOfBlock`; after the guard fix it translates through Naga.
+
+The shader compatibility suite now passes all 11 tests. The post-macro-fix probe mapped in 290.3 seconds and cleared `UnexpectedNewLine`, but exposed the duplicate-location validation failure. The next probe mapped in 334.1 seconds; the vertex stage passed and exposed `ElseOutsideOfBlock` in the fragment stage. A final probe with all three fixes is now queued. One `winbox-wait-load.sh 5 9` invocation timed out at load 8.67 after nine minutes, so the queued probe proceeded under the requested timeout rule. No WASM rebuild was needed; only the local browser export was refreshed.
 
 Diagnostic artifacts:
 
@@ -45,6 +47,8 @@ Diagnostic artifacts:
 - Diagnostic screenshot: `/tmp/winbox-finish/r3/work-luna-hang/mindustry-shader-dump/run3/mapped-plus-60s.png`
 - Post-macro-fix summary: `/tmp/winbox-finish/r3/work-luna-hang/mindustry-shader-dump/verify1/summary.json`
 - Post-macro-fix screenshot: `/tmp/winbox-finish/r3/work-luna-hang/mindustry-shader-dump/verify1/mapped-plus-60s.png`
+- Post-location-fix summary: `/tmp/winbox-finish/r3/work-luna-hang/mindustry-shader-dump/verify2/summary.json`
+- Post-location-fix screenshot: `/tmp/winbox-finish/r3/work-luna-hang/mindustry-shader-dump/verify2/mapped-plus-60s.png`
 
 Evidence:
 
