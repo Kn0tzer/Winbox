@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { tmpdir } from 'node:os';
+import { loadavg, tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { serve } from '../../tools/browser/serve.mjs';
 import { acquireProbeSlot } from '../../web/tests/probe-slots.mjs';
@@ -128,6 +128,12 @@ try {
   await symlink(gameZip, join(serverRoot, 'game.zip'));
   server = await serve(serverRoot);
   slot = await acquireProbeSlot();
+  // A queued probe can be admitted long after the caller's load check.
+  // Check again with the slot held, immediately before the timed launch.
+  while (loadavg()[0] >= 5) {
+    process.stdout.write(`[gl-game-probe] waiting for 1-minute load below 5: ${loadavg()[0]}\n`);
+    await new Promise(resolveWait => setTimeout(resolveWait, 10000));
+  }
   browser = await chromium.launch({
     executablePath: process.env.CHROME_PATH || '/usr/local/bin/chromium',
     headless: true,
@@ -227,6 +233,9 @@ try {
   result.finishedAt = new Date().toISOString();
 } finally {
   await Promise.allSettled(pendingConsole);
+  result.webgpuActive = lines.some(line => line.includes('host GL up (WebGPU)'))
+    && !lines.some(line => line.includes('restored WebGL2'));
+  result.webgpuFailures = lines.filter(line => /bridge-recover: gl-webgpu|gl64 fixed-function .*failed/.test(line));
   await writeFile(join(outputDir, 'console.log'), lines.join('\n') + (lines.length ? '\n' : ''));
   await writeFile(join(outputDir, 'summary.json'), JSON.stringify(result, null, 2));
   await browser?.close().catch(() => {});
@@ -235,4 +244,4 @@ try {
   if (serverRoot) await rm(serverRoot, { recursive: true, force: true });
   record(JSON.stringify({ game, mapped: result.mapped, mappedWaitSeconds: result.mappedWaitSeconds, error: result.error || null, outputDir }));
 }
-if (!result.mapped || result.error || pageErrors.length) process.exitCode = 1;
+if (!result.mapped || !result.webgpuActive || result.webgpuFailures?.length || result.error || pageErrors.length) process.exitCode = 1;

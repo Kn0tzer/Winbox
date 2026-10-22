@@ -389,11 +389,13 @@ export class WebGPUGL {
     const depth = depthAttachment?.object || null;
     const colorTexture = colorAttachment.type === 'texture' ? color?.gpu : color?.gpu;
     const depthTexture = depth ? depth.gpu : null;
+    const colorMipLevel = colorAttachment.level || 0;
+    const level = color?.levels?.get(colorMipLevel);
     return {
       default: false, framebuffer: object, colorObject: color, depthObject: depth,
-      colorTexture, depthTexture,
-      pixels: color?.pixels || null,
-      width: color?.width || 0, height: color?.height || 0,
+      colorTexture, depthTexture, colorMipLevel, depthMipLevel: depthAttachment?.level || 0,
+      pixels: level?.pixels || color?.pixels || null,
+      width: level?.width || color?.width || 0, height: level?.height || color?.height || 0,
       format: color?.format || 'rgba8unorm', depthFormat: depth?.format || null,
     };
   }
@@ -410,13 +412,13 @@ export class WebGPUGL {
     const encoder = this._device.createCommandEncoder();
     const descriptor = {
       colorAttachments: [{
-        view: target.colorTexture.createView(),
+        view: target.colorTexture.createView({ baseMipLevel: target.colorMipLevel || 0, mipLevelCount: 1 }),
         clearValue: { r: state.color[0], g: state.color[1], b: state.color[2], a: state.color[3] },
         loadOp: fullColor ? 'clear' : 'load', storeOp: 'store',
       }],
     };
     if (target.depthTexture) descriptor.depthStencilAttachment = {
-        view: target.depthTexture.createView(),
+        view: target.depthTexture.createView({ baseMipLevel: target.depthMipLevel || 0, mipLevelCount: 1 }),
         depthClearValue: state.depth,
         depthLoadOp: fullDepth ? 'clear' : 'load',
         depthStoreOp: 'store',
@@ -437,7 +439,7 @@ export class WebGPUGL {
       const fields = [];
       if (clearColor) fields.push('@location(0) color: vec4<f32>,');
       if (clearDepth) fields.push('@builtin(frag_depth) depth: f32,');
-      const value = `${clearColor ? `color: vec4<f32>(${color}),` : ''}${clearDepth ? `depth: ${depth},` : ''}`;
+      const value = [clearColor ? `vec4<f32>(${color})` : null, clearDepth ? depth : null].filter(value => value !== null).join(',');
       const code = `struct Out { ${fields.join(' ')} };\n@vertex fn vs(@builtin(vertex_index) i:u32)->@builtin(position) vec4<f32>{var p=array<vec2<f32>,3>(vec2<f32>(-1.0,-1.0),vec2<f32>(3.0,-1.0),vec2<f32>(-1.0,3.0));return vec4<f32>(p[i],0.0,1.0);}\n@fragment fn fs()->Out{return Out(${value});}`;
       let scopeOpen = false;
       try {
@@ -447,7 +449,7 @@ export class WebGPUGL {
           layout: 'auto', vertex: { module: this._device.createShaderModule({ code }), entryPoint: 'vs' },
           fragment: { module: this._device.createShaderModule({ code }), entryPoint: 'fs', targets: [{ format: target.format, writeMask: mask }] },
           primitive: { topology: 'triangle-list' },
-          ...(target.depthTexture ? { depthStencil: { format: target.depthFormat || 'depth24plus', depthWriteEnabled: clearDepth, depthCompare: 'always' } } : {}),
+          ...(target.depthTexture ? { depthStencil: { format: target.depthFormat || 'depth24plus', depthWriteEnabled: Boolean(clearDepth), depthCompare: 'always' } } : {}),
         });
         const validationError = await this._device.popErrorScope();
         scopeOpen = false;
@@ -970,7 +972,7 @@ export class WebGPUGL {
       enabled: new Set(this._enabled), blend: { ...this._blend }, blendColor: [...this._blendColor],
       depthFunc: this._depthFunc, depthMask: this._depthMask, cullFace: this._cullFace,
       frontFace: this._frontFace, colorMask: [...this._colorMask],
-      drawFramebuffer: this._drawFramebuffer,
+      drawFramebuffer: this._drawFramebuffer, textureUnits: this._textureUnits.map(unit => ({ ...unit })),
     };
   }
 
@@ -1121,6 +1123,28 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     this._mirrorDraw(state, mode, first, count, element);
     this._enqueue(() => this._draw(state, mode, first, count, element, 1));
     return true;
+  }
+
+  fixedFunctionImmediateDraw(mode, commands) {
+    const vertices = [], colors = [];
+    for (let i = 0; i + 4 < commands.length; i += 5) {
+      const values = Array.from(commands.subarray(i + 1, i + 5));
+      if (commands[i] === 0) this.color4f(...values);
+      else if (commands[i] === 1) { vertices.push(...values); colors.push(...this._fixedFunction.color); }
+    }
+    const count = vertices.length / 4;
+    if (!count) return true;
+    const arrays = {
+      vertex: { enabled: true, size: 4, type: 0x1406, stride: 0 },
+      color: { enabled: true, size: 4, type: 0x1406, stride: 0 }, texCoord: { enabled: false },
+      vertexData: new Float32Array(vertices), colorData: new Float32Array(colors),
+    };
+    if (mode === 0x0007) {
+      const indices = [];
+      for (let i = 0; i + 3 < count; i += 4) indices.push(i, i + 1, i + 2, i, i + 2, i + 3);
+      return this.fixedFunctionDrawElements(4, indices.length, 0x1405, 0, new Uint32Array(indices), arrays);
+    }
+    return this.fixedFunctionDrawArrays(mode === 0x0009 ? 6 : mode, 0, count, arrays);
   }
 
   fixedFunctionDrawArrays(mode, first, count, arrays) {
@@ -1405,7 +1429,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     }
   }
 
-  async _uniformBindGroup(program, pipeline, uniformValues) {
+  async _uniformBindGroup(program, pipeline, uniformValues, textureUnits = this._textureUnits) {
     const entries = [];
     for (const [stage, binding] of [['vertex', 0], ['fragment', 1]]) {
       const record = program.stages[stage];
@@ -1427,7 +1451,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       for (const sampler of record?.samplers || []) {
         const unitValue = uniformValues.get(sampler.name);
         const unit = Number(ArrayBuffer.isView(unitValue) ? unitValue[0] : unitValue ?? 0) | 0;
-        const texture = this._textureUnits[unit]?.[GL.TEXTURE_2D] || this._whiteTexture();
+        const texture = textureUnits[unit]?.[GL.TEXTURE_2D] || this._whiteTexture();
         const gpu = this._ensureTextureGpu(texture);
         if (!gpu) continue;
         entries.push({ binding: sampler.textureBinding, resource: gpu.createView() });
@@ -1463,12 +1487,12 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (!pipeline) return; // A failed shader/pipeline is a skipped draw.
     const encoder = this._device.createCommandEncoder();
     const pass = encoder.beginRenderPass({
-      colorAttachments: [{ view: target.colorTexture.createView(), loadOp: 'load', storeOp: 'store' }],
-      ...(target.depthTexture ? { depthStencilAttachment: { view: target.depthTexture.createView(), depthLoadOp: 'load', depthStoreOp: 'store' } } : {}),
+      colorAttachments: [{ view: target.colorTexture.createView({ baseMipLevel: target.colorMipLevel || 0, mipLevelCount: 1 }), loadOp: 'load', storeOp: 'store' }],
+      ...(target.depthTexture ? { depthStencilAttachment: { view: target.depthTexture.createView({ baseMipLevel: target.depthMipLevel || 0, mipLevelCount: 1 }), depthLoadOp: 'load', depthStoreOp: 'store' } } : {}),
     });
     pass.setPipeline(pipeline);
     for (const item of vertex.buffers) pass.setVertexBuffer(item.slot, item.buffer, item.offset);
-    const bindGroup = await this._uniformBindGroup(program, pipeline, state.uniformValues);
+    const bindGroup = await this._uniformBindGroup(program, pipeline, state.uniformValues, state.textureUnits);
     if (bindGroup) pass.setBindGroup(0, bindGroup);
     const x = Math.max(0, viewport[0]), y = Math.max(0, target.height - viewport[1] - viewport[3]);
     pass.setViewport(x, y, Math.max(0, viewport[2]), Math.max(0, viewport[3]), 0, 1);
@@ -1482,8 +1506,11 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (topologyData.indices) {
       const max = topologyData.indices.reduce((value, index) => Math.max(value, index), 0);
       const values = max <= 0xffff ? Uint16Array.from(topologyData.indices) : Uint32Array.from(topologyData.indices);
-      temporaryIndex = this._device.createBuffer({ size: Math.max(4, values.byteLength), usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
-      this._device.queue.writeBuffer(temporaryIndex, 0, values);
+      const indexSize = Math.max(4, Math.ceil(values.byteLength / 4) * 4);
+      const upload = values.byteLength % 4 ? new Uint8Array(indexSize) : values;
+      if (upload !== values) upload.set(new Uint8Array(values.buffer, values.byteOffset, values.byteLength));
+      temporaryIndex = this._device.createBuffer({ size: indexSize, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
+      this._device.queue.writeBuffer(temporaryIndex, 0, upload);
       pass.setIndexBuffer(temporaryIndex, values instanceof Uint16Array ? 'uint16' : 'uint32');
       pass.drawIndexed(values.length, instances, 0, 0, 0);
     } else pass.draw(count, instances, first, 0);
