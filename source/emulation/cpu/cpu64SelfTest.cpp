@@ -8988,7 +8988,7 @@ int runX64SelfTest() {
     // io_uring and pidfd_getfd are deliberately rejected by the central
     // once-per-number syscall logger. Keep syscall-layer errno coverage for
     // every operation so they cannot drift into silent success.
-    for (U32 syscallNumber : {425u, 426u, 427u, 438u}) {
+    for (U32 syscallNumber : {334u, 425u, 426u, 427u, 438u}) {
         std::vector<U8> code = {
             0xB8, (U8)syscallNumber, (U8)(syscallNumber >> 8),
             (U8)(syscallNumber >> 16), (U8)(syscallNumber >> 24), // mov eax, nr
