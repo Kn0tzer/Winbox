@@ -2110,13 +2110,20 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
   }
 
   blendFunc(src, dst) { this.blendFuncSeparate(src, dst, src, dst); }
-  blendFuncSeparate(srcRGB, dstRGB, srcAlpha, dstAlpha) { Object.assign(this._blend, { srcRGB, dstRGB, srcAlpha, dstAlpha }); }
+  blendFuncSeparate(srcRGB, dstRGB, srcAlpha, dstAlpha) {
+    try { for (const factor of [srcRGB, dstRGB, srcAlpha, dstAlpha]) blendFactor(factor); }
+    catch { this._recordError(GL.INVALID_ENUM); return; }
+    Object.assign(this._blend, { srcRGB, dstRGB, srcAlpha, dstAlpha });
+  }
   blendEquation(mode) { this.blendEquationSeparate(mode, mode); }
-  blendEquationSeparate(rgb, alpha) { this._blend.equationRGB = rgb; this._blend.equationAlpha = alpha; }
+  blendEquationSeparate(rgb, alpha) {
+    if (!GL_BLEND_OP.has(rgb) || !GL_BLEND_OP.has(alpha)) { this._recordError(GL.INVALID_ENUM); return; }
+    this._blend.equationRGB = rgb; this._blend.equationAlpha = alpha;
+  }
   blendColor(r, g, b, a) { this._blendColor = [r, g, b, a].map(clamp01); }
   colorMask(r, g, b, a) { this._colorMask = [!!r, !!g, !!b, !!a]; }
   depthMask(enabled) { this._depthMask = !!enabled; }
-  depthFunc(func) { this._depthFunc = func | 0; }
+  depthFunc(func) { if (!GL_COMPARE.has(func)) { this._recordError(GL.INVALID_ENUM); return; } this._depthFunc = func | 0; }
   depthRange(near, far) { this._depthRange = [clamp01(near), clamp01(far)]; }
   clipControl(origin, depth) {
     if (![0x8ca1, 0x8ca2].includes(origin) || ![0x935e, 0x935f].includes(depth)) { this._recordError(GL.INVALID_ENUM); return; }
@@ -2127,8 +2134,8 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     for (const program of this._programs) if (program.shaders?.length) this.linkProgram(program);
   }
   getClipControl() { return [...this._clipControl]; }
-  cullFace(mode) { this._cullFace = mode | 0; }
-  frontFace(mode) { this._frontFace = mode | 0; }
+  cullFace(mode) { if (![0x0404, 0x0405, 0x0408].includes(mode)) { this._recordError(GL.INVALID_ENUM); return; } this._cullFace = mode | 0; }
+  frontFace(mode) { if (![0x0900, 0x0901].includes(mode)) { this._recordError(GL.INVALID_ENUM); return; } this._frontFace = mode | 0; }
   scissor(x, y, width, height) {
     if (width < 0 || height < 0) { this._recordError(GL.INVALID_VALUE); return; }
     this._scissor = [x | 0, y | 0, width | 0, height | 0];

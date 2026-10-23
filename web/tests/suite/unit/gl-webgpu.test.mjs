@@ -358,6 +358,24 @@ test('common invalid GL enums and values latch spec errors without mutating buff
   } finally { gpu.restore(); }
 });
 
+test('blend/depth/cull enums fail synchronously with INVALID_ENUM before async pipeline setup', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: () => {} });
+    await gl.ready;
+    gl.blendEquation(0xdead);
+    assert.equal(gl.getError(), 0x0500);
+    gl.blendFunc(0xdead, 1);
+    assert.equal(gl.getError(), 0x0500);
+    gl.depthFunc(0xdead);
+    assert.equal(gl.getError(), 0x0500);
+    gl.cullFace(0xdead);
+    assert.equal(gl.getError(), 0x0500);
+    gl.frontFace(0xdead);
+    assert.equal(gl.getError(), 0x0500);
+  } finally { gpu.restore(); }
+});
+
 test('valid but unsupported GL buffer targets reject loudly with INVALID_OPERATION', async () => {
   const gpu = createValidationDevice(), logs = [];
   try {
