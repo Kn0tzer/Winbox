@@ -605,4 +605,137 @@ int main() {
         while (!g_objs.empty()) dropObj(g_objs.begin()->first);
         puts("PASS: GUARD unsupported features are rejected loudly (geometry/tess pipelines, unimplemented fn, compute dispatch, renderless submit)");
     }
+
+    // GUARD (advertised-but-unimplemented + 32/64 disagreement): the core feature
+    // block is ONE function for both guests, the unimplemented bits are FALSE, and
+    // the chained-struct fills are shared so a 32-bit guest is answered like a
+    // 64-bit one.
+    {
+        auto call64 = [&](U32 fn, U64 a0 = 0, U64 a1 = 0, U64 a2 = 0, U64 a3 = 0) -> U64 {
+            VK64Args a{}; a.a[0] = a0; a.a[1] = a1; a.a[2] = a2; a.a[3] = a3;
+            memory.memcpyToGuest(128, &a, sizeof(a));
+            return vk64Bridge(&cpu, fn, 128);
+        };
+        VkPhysicalDeviceFeatures f64{};
+        assert(call64(VK64_fn_vkGetPhysicalDeviceFeatures, 0, 8192) == VK_SUCCESS);
+        memory.memcpyFromGuest(&f64, 8192, sizeof(f64));
+        assert(f64.geometryShader && f64.imageCubeArray && f64.textureCompressionBC);
+        assert(!f64.shaderInt64 && !f64.shaderFloat64 && !f64.shaderStorageImageExtendedFormats);
+        assert(!f64.shaderStorageImageReadWithoutFormat && !f64.shaderStorageImageWriteWithoutFormat);
+        assert(!f64.sparseBinding && !f64.wideLines && !f64.logicOp);
+        // 32-bit guest: previously only robustBufferAccess was set.
+        VkPhysicalDeviceFeatures f32{};
+        VK32Args a32{}; a32.a[1] = 8192;
+        memory32.memcpyToGuest(128, &a32, sizeof(a32));
+        assert(vk32Bridge(&cpu32, VK64_fn_vkGetPhysicalDeviceFeatures, 128) == 0);
+        memory32.memcpyFromGuest(&f32, 8192, sizeof(f32));
+        assert(memcmp(&f32, &f64, sizeof(f32)) == 0);
+        // Chained Vulkan12 / 11 / 13 / FP16 structs: same answers on both sides.
+        auto chain64 = [&]() {
+            VkPhysicalDeviceVulkan12Features v12{}; v12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+            VkPhysicalDeviceVulkan11Features v11{}; v11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+            VkPhysicalDeviceShaderFloat16Int8Features fp{}; fp.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+            v12.pNext = 16384; v11.pNext = 20480;
+            memory.memcpyToGuest(12288, &v12, sizeof(v12));
+            memory.memcpyToGuest(16384, &v11, sizeof(v11));
+            memory.memcpyToGuest(20480, &fp, sizeof(fp));
+            VkPhysicalDeviceFeatures2 f2{}; f2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2; f2.pNext = 12288;
+            memory.memcpyToGuest(10240, &f2, sizeof(f2));
+            assert(call64(VK64_fn_vkGetPhysicalDeviceFeatures2, 0, 10240) == VK_SUCCESS);
+            memory.memcpyFromGuest(&v12, 12288, sizeof(v12));
+            memory.memcpyFromGuest(&v11, 16384, sizeof(v11));
+            memory.memcpyFromGuest(&fp, 20480, sizeof(fp));
+            assert(v12.timelineSemaphore && !v12.bufferDeviceAddress && v12.samplerMirrorClampToEdge);
+            assert(v11.shaderDrawParameters && !v11.multiview && !v11.variablePointers && !v11.storageBuffer16BitAccess);
+            assert(!fp.shaderFloat16 && !fp.shaderInt8);
+        };
+        chain64();
+        {
+            vk32abi::VkPhysicalDeviceVulkan12Features v12{}; v12.sType = vk32abi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+            vk32abi::VkPhysicalDeviceVulkan11Features v11{}; v11.sType = vk32abi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+            vk32abi::VkPhysicalDeviceShaderFloat16Int8Features fp{}; fp.sType = vk32abi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+            v12.pNext = 16384; v11.pNext = 20480;
+            memory32.memcpyToGuest(12288, &v12, sizeof(v12));
+            memory32.memcpyToGuest(16384, &v11, sizeof(v11));
+            memory32.memcpyToGuest(20480, &fp, sizeof(fp));
+            U8 f2[8 + 220] = {}; U32 st = vk32abi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2; memcpy(f2, &st, 4);
+            U32 next = 12288; memcpy(f2 + 4, &next, 4);
+            memory32.memcpyToGuest(10240, f2, sizeof(f2));
+            VK32Args b32{}; b32.a[1] = 10240;
+            memory32.memcpyToGuest(128, &b32, sizeof(b32));
+            assert(vk32Bridge(&cpu32, VK64_fn_vkGetPhysicalDeviceFeatures2, 128) == 0);
+            memory32.memcpyFromGuest(&v12, 12288, sizeof(v12));
+            memory32.memcpyFromGuest(&v11, 16384, sizeof(v11));
+            memory32.memcpyFromGuest(&fp, 20480, sizeof(fp));
+            assert(v12.timelineSemaphore && !v12.bufferDeviceAddress && v12.samplerMirrorClampToEdge);
+            assert(v11.shaderDrawParameters && !v11.multiview && !v11.variablePointers && !v11.storageBuffer16BitAccess);
+            assert(!fp.shaderFloat16 && !fp.shaderInt8);
+        }
+        // Unknown sType: left exactly as the guest set it (used to zero 512 bytes
+        // past the struct, clobbering the next chained struct) and counted.
+        {
+            U32 unknown[8] = {0x7fff0000u, 0, 20480 + 0, 0, 0xAAAAAAAAu, 0xAAAAAAAAu, 0xAAAAAAAAu, 0xAAAAAAAAu};
+            memory.memcpyToGuest(24576, unknown, sizeof(unknown));
+            VkPhysicalDeviceFeatures2 f2{}; f2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2; f2.pNext = 24576;
+            memory.memcpyToGuest(10240, &f2, sizeof(f2));
+            const U32 before = vk64BridgeUnsupportedCount("features2-struct");
+            memory.writeq(24576 + 8, 0);
+            assert(call64(VK64_fn_vkGetPhysicalDeviceFeatures2, 0, 10240) == VK_SUCCESS);
+            assert(memory.readd(24576 + 16) == 0xAAAAAAAAu && memory.readd(24576 + 28) == 0xAAAAAAAAu);
+            assert(vk64BridgeUnsupportedCount("features2-struct") == before + 1);
+        }
+        puts("PASS: GUARD advertised features are truthful and identical for 32-bit and 64-bit guests");
+
+        // GUARD (silent capability use): SPIR-V that declares capabilities or
+        // resources the page tier cannot honour is reported at vkCreateShaderModule.
+        auto module = [&](const std::vector<U32>& body) {
+            std::vector<U32> code = {0x07230203u, 0x00010500u, 0, 64, 0};
+            code.insert(code.end(), body.begin(), body.end());
+            memory.memcpyToGuest(28672, code.data(), code.size() * 4);
+            VkShaderModuleCreateInfo ci{}; ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+            ci.codeSize = code.size() * 4; ci.pCode = 28672;
+            memory.memcpyToGuest(26624, &ci, sizeof(ci));
+            U64 devId; createObj<Device>(K_DEVICE, devId);
+            return call64(VK64_fn_vkCreateShaderModule, devId, 26624, 0, 27648);
+        };
+        const U32 f64Before = vk64BridgeUnsupportedCount("spirv-capability:Float64");
+        const U32 cullBefore = vk64BridgeUnsupportedCount("spirv-capability:CullDistance");
+        assert(module({(2u << 16) | 17u, 10u, (2u << 16) | 17u, 33u, (2u << 16) | 17u, 1u}) == VK_SUCCESS);
+        assert(vk64BridgeUnsupportedCount("spirv-capability:Float64") == f64Before + 1);
+        assert(vk64BridgeUnsupportedCount("spirv-capability:CullDistance") == cullBefore + 1);
+        // %1 = OpTypeStruct; %2 = OpTypePointer StorageBuffer %1; %3 = OpVariable %2 StorageBuffer
+        const U32 sbBefore = vk64BridgeUnsupportedCount("spirv-storage-buffer-write");
+        assert(module({(2u << 16) | 30u, 1u, (4u << 16) | 32u, 2u, 12u, 1u, (4u << 16) | 59u, 2u, 3u, 12u}) == VK_SUCCESS);
+        assert(vk64BridgeUnsupportedCount("spirv-storage-buffer-write") == sbBefore + 1);
+        // ... the same variable decorated NonWritable is read-only and is not reported.
+        assert(module({(3u << 16) | 71u, 3u, 24u, (2u << 16) | 30u, 1u, (4u << 16) | 32u, 2u, 12u, 1u,
+                       (4u << 16) | 59u, 2u, 3u, 12u}) == VK_SUCCESS);
+        assert(vk64BridgeUnsupportedCount("spirv-storage-buffer-write") == sbBefore + 1);
+        const U32 badBefore = vk64BridgeUnsupportedCount("spirv-malformed");
+        assert(module({(0u << 16) | 17u}) == VK_SUCCESS);
+        assert(vk64BridgeUnsupportedCount("spirv-malformed") == badBefore + 1);
+        puts("PASS: GUARD SPIR-V capabilities and storage-buffer stores are reported at vkCreateShaderModule");
+
+        // GUARD: sampler state WebGPU cannot honour is reported at vkCreateSampler.
+        {
+            VkSamplerCreateInfo sc{}; sc.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+            sc.addressModeU = (VkSamplerAddressMode)4; sc.addressModeV = (VkSamplerAddressMode)3; sc.mipLodBias = 0.5f;
+            sc.borderColor = (VkBorderColor)2;
+            memory.memcpyToGuest(30720, &sc, sizeof(sc));
+            U64 dev2; createObj<Device>(K_DEVICE, dev2);
+            const U32 m0 = vk64BridgeUnsupportedCount("mirror-clamp-to-edge");
+            const U32 b0 = vk64BridgeUnsupportedCount("sampler-border-colour");
+            const U32 l0 = vk64BridgeUnsupportedCount("sampler-mip-lod-bias");
+            assert(call64(VK64_fn_vkCreateSampler, dev2, 30720, 0, 31744) == VK_SUCCESS);
+            assert(vk64BridgeUnsupportedCount("mirror-clamp-to-edge") == m0 + 1);
+            assert(vk64BridgeUnsupportedCount("sampler-border-colour") == b0 + 1);
+            assert(vk64BridgeUnsupportedCount("sampler-mip-lod-bias") == l0 + 1);
+            sc.addressModeU = sc.addressModeV = (VkSamplerAddressMode)0; sc.mipLodBias = 0;
+            memory.memcpyToGuest(30720, &sc, sizeof(sc));
+            assert(call64(VK64_fn_vkCreateSampler, dev2, 30720, 0, 31744) == VK_SUCCESS);
+            assert(vk64BridgeUnsupportedCount("mirror-clamp-to-edge") == m0 + 1);
+            puts("PASS: GUARD unsupported sampler state is reported at vkCreateSampler");
+        }
+        while (!g_objs.empty()) dropObj(g_objs.begin()->first);
+    }
 }

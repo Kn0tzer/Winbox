@@ -439,6 +439,122 @@ static void vk64Unsupported(const char* feature, const char* detail = "") {
 }
 
 // ---------------------------------------------------------------------------
+// SPIR-V audit. vkCreateShaderModule scans each module once for the capabilities
+// and resource shapes the WebGPU tier cannot honour and reports every one as
+// "vk64: UNSUPPORTED spirv-<what>" (never rejects: the module may still be
+// harmless, and the page tier decides whether translation fails). This is what
+// backs the "exception" rows of source/vulkan/vk-capabilities.json for features
+// that have no pipeline-state representation (cull distance, 64-bit types,
+// storage-buffer stores, storage images, ...).
+// ---------------------------------------------------------------------------
+// Sampler state the WebGPU tier cannot honour. Reported once per sampler, not per draw.
+static void vk64AuditSampler(U32 addrU, U32 addrV, U32 addrW, float mipLodBias, U32 borderColor) {
+    if (addrU == 4 || addrV == 4 || addrW == 4)   // VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE
+        vk64Unsupported("mirror-clamp-to-edge", "WebGPU has no mirror-clamp; sampler uses mirror-repeat/clamp");
+    if (addrU == 3 || addrV == 3 || addrW == 3)    // CLAMP_TO_BORDER
+        vk64Unsupported("sampler-border-colour", ("WebGPU has no border addressing; clamp-to-edge used, borderColor=" + std::to_string(borderColor)).c_str());
+    if (mipLodBias != 0.0f) vk64Unsupported("sampler-mip-lod-bias", "WebGPU samplers have no LOD bias; ignored");
+}
+
+static const char* vk64SpirvCapabilityName(U32 cap) {
+    switch (cap) {
+        case 2: return "Geometry";            case 3: return "Tessellation";
+        case 9: return "Float16";             case 10: return "Float64";
+        case 11: return "Int64";              case 12: return "Int64Atomics";
+        case 22: return "Int16";              case 23: return "TessellationPointSize";
+        case 24: return "GeometryPointSize";  case 25: return "ImageGatherExtended";
+        case 27: return "StorageImageMultisample";
+        case 33: return "CullDistance";       case 35: return "SampleRateShading";
+        case 39: return "Int8";               case 41: return "SparseResidency";
+        case 42: return "MinLod";             case 49: return "StorageImageExtendedFormats";
+        case 52: return "InterpolationFunction";
+        case 57: return "MultiViewport";
+        case 4433: return "StorageBuffer16BitAccess";
+        case 4434: return "UniformAndStorageBuffer16BitAccess";
+        case 4435: return "StoragePushConstant16";
+        case 4436: return "StorageInputOutput16";
+        case 4439: return "MultiView";
+        case 4441: return "VariablePointersStorageBuffer";
+        case 4442: return "VariablePointers";
+        case 4448: return "StorageBuffer8BitAccess";
+        case 4449: return "UniformAndStorageBuffer8BitAccess";
+        case 4450: return "StoragePushConstant8";
+        case 5345: return "ShaderViewportIndexLayerEXT";
+        case 5301: return nullptr;            // ShaderNonUniform: harmless on its own
+        // Descriptor-indexing capabilities: the descriptor model keeps ONE resource per
+        // binding number, so a shader that indexes an array of resources by a runtime
+        // value cannot be honoured. These are the loud half of the descriptor-indexing
+        // "exception" rows in vk-capabilities.json.
+        case 5302: return "RuntimeDescriptorArray";
+        case 5303: return "InputAttachmentArrayDynamicIndexing";
+        case 5304: return "UniformTexelBufferArrayDynamicIndexing";
+        case 5305: return "StorageTexelBufferArrayDynamicIndexing";
+        case 5306: return "UniformBufferArrayNonUniformIndexing";
+        case 5307: return "SampledImageArrayNonUniformIndexing";
+        case 5308: return "StorageBufferArrayNonUniformIndexing";
+        case 5309: return "StorageImageArrayNonUniformIndexing";
+        default: return nullptr;
+    }
+}
+static void vk64AuditSpirv(const std::vector<U8>& code) {
+    if (code.size() < 20 || (code.size() & 3)) { vk64Unsupported("spirv-malformed", "size not a multiple of 4 or no header"); return; }
+    const size_t nw = code.size() / 4;
+    std::vector<U32> w(nw);
+    memcpy(w.data(), code.data(), code.size());
+    if (w[0] != 0x07230203u) { vk64Unsupported("spirv-malformed", "bad magic"); return; }
+    struct Ptr { U32 sc, pointee; };
+    std::unordered_map<U32, Ptr> ptrs;
+    std::unordered_map<U32, U32> arrays;             // array / runtime-array id -> element type
+    std::unordered_map<U32, U32> structMembers;      // struct id -> member count
+    std::unordered_map<U32, std::set<U32>> memberNonWritable;
+    std::set<U32> nonWritable, bufferBlock;
+    struct Var { U32 id, type, sc; };
+    std::vector<Var> vars;
+    bool storageImage = false, compute = false;
+    std::set<U32> caps;
+    for (size_t i = 5; i < nw;) {
+        const U32 op = w[i] & 0xFFFF, len = w[i] >> 16;
+        if (!len || i + len > nw) { vk64Unsupported("spirv-malformed", "truncated instruction"); return; }
+        switch (op) {
+            case 17: if (len >= 2) caps.insert(w[i + 1]); break;                       // OpCapability
+            case 15: if (len >= 2 && w[i + 1] == 5) compute = true; break;             // OpEntryPoint GLCompute
+            case 30: if (len >= 2) structMembers[w[i + 1]] = len - 2; break;           // OpTypeStruct
+            case 28: case 29: if (len >= 3) arrays[w[i + 1]] = w[i + 2]; break;        // OpTypeArray/RuntimeArray
+            case 32: if (len >= 4) ptrs[w[i + 1]] = {w[i + 2], w[i + 3]}; break;       // OpTypePointer
+            case 25: if (len >= 9 && w[i + 7] == 2) storageImage = true; break;        // OpTypeImage, Sampled==2
+            case 59: if (len >= 4) vars.push_back({w[i + 2], w[i + 1], w[i + 3]}); break; // OpVariable
+            case 71: if (len >= 3) {                                                   // OpDecorate
+                if (w[i + 2] == 24) nonWritable.insert(w[i + 1]);
+                if (w[i + 2] == 3) bufferBlock.insert(w[i + 1]);
+            } break;
+            case 72: if (len >= 4 && w[i + 3] == 24) memberNonWritable[w[i + 1]].insert(w[i + 2]); break; // OpMemberDecorate
+            default: break;
+        }
+        i += len;
+    }
+    for (U32 c : caps) {
+        const char* name = vk64SpirvCapabilityName(c);
+        if (name) vk64Unsupported(("spirv-capability:" + std::string(name)).c_str(), "shader declares a capability the WebGPU tier lacks");
+    }
+    if (compute) vk64Unsupported("spirv-compute-entry", "compute entry point; no compute path in the V2 protocol");
+    if (storageImage) vk64Unsupported("spirv-storage-image", "storage images are bound blank by the page tier");
+    for (const Var& v : vars) {
+        auto pt = ptrs.find(v.type);
+        if (pt == ptrs.end()) continue;
+        U32 t = pt->second.pointee;
+        for (int d = 0; d < 4; d++) { auto a = arrays.find(t); if (a == arrays.end()) break; t = a->second; }
+        const bool ssbo = v.sc == 12 || (v.sc == 2 && bufferBlock.count(t));
+        if (!ssbo) continue;
+        if (nonWritable.count(v.id)) continue;
+        auto m = memberNonWritable.find(t);
+        auto n = structMembers.find(t);
+        if (m != memberNonWritable.end() && n != structMembers.end() && m->second.size() >= n->second) continue;
+        vk64Unsupported("spirv-storage-buffer-write", "shader may store to a storage buffer; the page tier has no GPU->guest readback");
+        break;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Guest memory helpers. EVERY guest pointer arrives here as a VA and is only
 // ever read/written through these.
 // ---------------------------------------------------------------------------
@@ -735,6 +851,7 @@ struct PipelineAudit {
     U32 sampleCount = 1;
     bool logicOp = false, depthBounds = false, sampleShading = false, alphaToOne = false;
     bool rasterizerDiscard = false;
+    bool vertexDivisor = false;   // VkVertexInputBindingDivisorDescriptionEXT.divisor != 1
 };
 static const U32 kV2SupportedStageMask = 0x1u | 0x10u;     // VERTEX | FRAGMENT
 // Returns true when the pipeline must be rejected with VK_ERROR_FEATURE_NOT_PRESENT.
@@ -755,6 +872,8 @@ static bool vk64AuditGraphicsPipeline(const PipelineAudit& a) {
     if (a.sampleShading) vk64Unsupported("sample-shading", "ignored; per-fragment shading");
     if (a.alphaToOne) vk64Unsupported("alpha-to-one", "ignored");
     if (a.viewportCount > 1) vk64Unsupported("multi-viewport", "only viewport 0 is used");
+    if (a.vertexDivisor) vk64Unsupported("vertex-attribute-divisor", "divisor != 1 rendered as per-instance step");
+    if (a.sampleCount != 1 && a.sampleCount != 4) vk64Unsupported("sample-count", "WebGPU supports 1x and 4x only");
     return reject;
 }
 struct RenderPass : Obj {
@@ -3233,43 +3352,46 @@ const char* const g_dev_exts[] = {
 // still not represented in the page manifest.
 void fillCoreFeatures(VkPhysicalDeviceFeatures* f) {
     memset(f, 0, sizeof(*f));
+    // Every TRUE below is listed in source/vulkan/vk-capabilities.json with
+    // status "implemented" or "exception" (+ the loud-rejection it falls back to);
+    // web/tests/suite/unit/vk-capabilities.test.mjs diffs the two, so a bit cannot
+    // be advertised without a manifest entry.
     f->robustBufferAccess = VK_TRUE;
     f->fullDrawIndexUint32 = VK_TRUE;
     f->imageCubeArray = VK_TRUE;        /* D3D11 cube arrays */
     f->independentBlend = VK_TRUE;      /* D3D11 independent blend targets */
-    f->shaderInt64 = VK_TRUE;           /* wiki: 64-bit int types required */
-    f->shaderFloat64 = VK_TRUE;         /* d3d11 double-precision shaders exist */
-    f->shaderStorageImageExtendedFormats = VK_TRUE;
-    f->shaderStorageImageReadWithoutFormat = VK_TRUE;
-    f->shaderStorageImageWriteWithoutFormat = VK_TRUE;
     f->shaderClipDistance = VK_TRUE;
     f->samplerAnisotropy = VK_TRUE;
+    /* NOT advertised (nothing in the page tier implements them, and DXVK /
+     * vkd3d degrade gracefully): shaderInt64, shaderFloat64,
+     * shaderStorageImageExtendedFormats, shaderStorageImage{Read,Write}WithoutFormat
+     * (storage images are bound blank), sparse*, wideLines, largePoints,
+     * alphaToOne, depthBounds, logicOp, pipelineStatisticsQuery. */
     /* D3D11 baseline: DXVK D3D11Device::GetDeviceFeatures hard-requires the
      * below for feature level 10_1, and checkFeatureSupport gates ALL of
      * D3D11 device creation on them. WebGPU cannot implement several (no
-     * geometry stage, no wireframe fill, single viewport, no dual-source
-     * blend, no sample-rate shading), so they are advertised for device
-     * creation. This is safe for FL 9_3 targets: 9_x has no geometry /
-     * tessellation stages and real 9_3 apps do not use wireframe,
-     * multi-viewport, or dual-src blending. If a future app creates a
-     * geometry shader, pipeline creation fails loudly at the page tier
-     * (no WGSL target stage) instead of silently misrendering. */
-    f->geometryShader = VK_TRUE;        /* advertised; no WGSL target stage */
-    f->tessellationShader = VK_TRUE;    /* needed for D3D11 feature level 11_0 */
+     * geometry stage, no wireframe fill, single viewport, no sample-rate
+     * shading), so they are "exception" rows in the manifest: advertised so
+     * the device can be created, and any pipeline that actually USES the
+     * feature is rejected or reported by vk64AuditGraphicsPipeline() with a
+     * greppable "vk64: UNSUPPORTED <feature>" line. FL 9_3 targets (D3D9, Portal)
+     * have no geometry/tessellation stages and never trip these. */
+    f->geometryShader = VK_TRUE;        /* exception: geometry-stage -> VK_ERROR_FEATURE_NOT_PRESENT */
+    f->tessellationShader = VK_TRUE;    /* exception: tessellation-*-stage, patch-list-topology */
     f->multiDrawIndirect = VK_TRUE;     /* vk64bridge expands draws into CMD_DRAW */
     f->drawIndirectFirstInstance = VK_TRUE; /* preserved in each expanded draw */
     f->depthBiasClamp = VK_TRUE;        /* replayed with WebGPU depthBiasClamp */
     f->depthClamp = VK_TRUE;            /* page requests depth-clip-control when available */
-    f->dualSrcBlend = VK_TRUE;          /* advertised; rare in practice */
-    f->fillModeNonSolid = VK_TRUE;      /* advertised; wireframe not implemented */
-    f->multiViewport = VK_TRUE;         /* advertised; WebGPU supports 1 viewport */
+    f->dualSrcBlend = VK_TRUE;          /* exception: page throws unsupported-blend-factor */
+    f->fillModeNonSolid = VK_TRUE;      /* exception: polygon-mode-line/point reported */
+    f->multiViewport = VK_TRUE;         /* exception: multi-viewport reported */
     f->occlusionQueryPrecise = VK_TRUE;
-    f->sampleRateShading = VK_TRUE;     /* advertised; rare in practice */
-    f->shaderCullDistance = VK_TRUE;    /* advertised; rare in practice */
+    f->sampleRateShading = VK_TRUE;     /* exception: sample-shading reported */
+    f->shaderCullDistance = VK_TRUE;    /* exception: WGSL has no cull_distance */
     f->shaderImageGatherExtended = VK_TRUE;
     f->textureCompressionBC = VK_TRUE;  /* needs browser texture-compression-bc */
-    f->fragmentStoresAndAtomics = VK_TRUE;
-    f->vertexPipelineStoresAndAtomics = VK_TRUE;
+    f->fragmentStoresAndAtomics = VK_TRUE;       /* exception: storage buffers are snapshots */
+    f->vertexPipelineStoresAndAtomics = VK_TRUE; /* exception: storage buffers are snapshots */
 }
 
 // ---------------------------------------------------------------------------
@@ -3300,19 +3422,26 @@ void fillCoreFeatures(VkPhysicalDeviceFeatures* f) {
             g_mem->memcpyToGuest((addr), &f_, sizeof(f_));                     \
         }                                                                      \
     } while (0)
-inline void fillRobustness2(VkPhysicalDeviceRobustness2FeaturesEXT& f) {
+// Every fill function is a template over the struct type so the 64-bit walker
+// (vk64_guest.h structs) and the 32-bit walker (vk32abi structs) answer from ONE
+// definition: a bit cannot be TRUE for a 32-bit guest and FALSE for a 64-bit
+// one. Each TRUE below has a row in source/vulkan/vk-capabilities.json, with
+// status "implemented" or "exception" (advertised only because DXVK/vkd3d gate
+// device creation on it; use of it is rejected or reported loudly). The
+// vk-capabilities unit test diffs the two so they cannot drift.
+template <class T> inline void fillRobustness2(T& f) {
     f.robustBufferAccess2 = VK_TRUE;
     f.robustImageAccess2 = VK_TRUE;
     f.nullDescriptor = VK_TRUE;
 }
-inline void fillMaintenance5(VkPhysicalDeviceMaintenance5Features& f) {
-        f.maintenance5 = VK_TRUE;
+template <class T> inline void fillMaintenance5(T& f) {
+    f.maintenance5 = VK_TRUE;
 }
-inline void fillMaintenance6(VkPhysicalDeviceMaintenance6Features& f) {
-        f.maintenance6 = VK_TRUE;
+template <class T> inline void fillMaintenance6(T& f) {
+    f.maintenance6 = VK_TRUE;
 }
-inline void fillTransformFeedback(VkPhysicalDeviceTransformFeedbackFeaturesEXT& f) {
-    f.transformFeedback = VK_TRUE;
+template <class T> inline void fillTransformFeedback(T& f) {
+    f.transformFeedback = VK_TRUE;      // exception: vkCmd*TransformFeedback* -> "fn:" UNSUPPORTED
     f.geometryStreams = VK_TRUE;
 }
 // vk64_guest.h (the trimmed Vulkan header this TU builds against) does not
@@ -3375,13 +3504,26 @@ static_assert(sizeof(Vk64VertexAttributeDivisorFeaturesEXT) == 24,
               "divisor features mirror layout");
 static_assert(sizeof(Vk64Vulkan13Properties) == 216,
               "1.3 properties mirror layout");
+struct Vk32VertexAttributeDivisorFeaturesEXT {
+    VkStructureType sType;
+    U32             pNext;
+    VkBool32        vertexAttributeInstanceRateDivisor;
+    VkBool32        vertexAttributeInstanceRateZeroDivisor;
+};
+static_assert(sizeof(Vk32VertexAttributeDivisorFeaturesEXT) == 16, "32-bit divisor features mirror layout");
 // vkd3d-proton device-creation gate (device.c:2495): requires BOTH divisor
-// features. Same advertisement-only caveat as g_dev_exts above.
-inline void fillVertexAttributeDivisor(Vk64VertexAttributeDivisorFeaturesEXT& f) {
+// features. Exception: a pipeline with a divisor other than 1 is reported by
+// vk64AuditGraphicsPipeline ("vertex-attribute-divisor") and rendered with 1.
+template <class T> inline void fillVertexAttributeDivisor(T& f) {
     f.vertexAttributeInstanceRateDivisor = VK_TRUE;
     f.vertexAttributeInstanceRateZeroDivisor = VK_TRUE;
 }
-inline void fillDescriptorIndexing(VkPhysicalDeviceDescriptorIndexingFeatures& f) {
+// Exception group: descriptor-indexing bits are vkd3d-proton hard gates
+// (state.c:8352). Descriptor sets are read at submit time so update-after-bind
+// and partially-bound are real; runtime arrays / non-uniform indexing of image
+// arrays need shader-side binding arrays the WebGPU tier lacks, so a shader
+// that uses them fails at pipeline creation in the page tier (noteUnsupported).
+template <class T> inline void fillDescriptorIndexing(T& f) {
     f.shaderInputAttachmentArrayDynamicIndexing = VK_TRUE;
     f.shaderUniformTexelBufferArrayDynamicIndexing = VK_TRUE;
     f.shaderStorageTexelBufferArrayDynamicIndexing = VK_TRUE;
@@ -3403,34 +3545,21 @@ inline void fillDescriptorIndexing(VkPhysicalDeviceDescriptorIndexingFeatures& f
     f.descriptorBindingVariableDescriptorCount = VK_TRUE;
     f.runtimeDescriptorArray = VK_TRUE;
 }
-inline void fillFloat16Int8(VkPhysicalDeviceShaderFloat16Int8Features& f) {
-        f.shaderFloat16 = VK_TRUE;
-    f.shaderInt8 = VK_TRUE;
+// shaderFloat16 / shaderInt8 / 16-bit and 8-bit storage / scalar block layout
+// are NOT advertised: WGSL has no 8-bit types and the f16 extension is not
+// wired through the shader translator. DXVK and vkd3d fall back to 32-bit.
+template <class T> inline void fillFloat16Int8(T&) {}
+template <class T> inline void fillStorage16(T&) {}
+template <class T> inline void fillStorage8(T&) {}
+template <class T> inline void fillScalarBlockLayout(T&) {}
+template <class T> inline void fillDepthClipEnable(T& f) {
+    f.depthClipEnable = VK_TRUE;        // page requests depth-clip-control when the browser has it
 }
-inline void fillStorage16(VkPhysicalDevice16BitStorageFeatures& f) {
-    f.storageBuffer16BitAccess = VK_TRUE;
-    f.uniformAndStorageBuffer16BitAccess = VK_TRUE;
-    f.storagePushConstant16 = VK_TRUE;
-    f.storageInputOutput16 = VK_TRUE;
-}
-inline void fillStorage8(VkPhysicalDevice8BitStorageFeatures& f) {
-    f.storageBuffer8BitAccess = VK_TRUE;
-    f.uniformAndStorageBuffer8BitAccess = VK_TRUE;
-    f.storagePushConstant8 = VK_TRUE;
-}
-inline void fillScalarBlockLayout(VkPhysicalDeviceScalarBlockLayoutFeatures& f) {
-        f.scalarBlockLayout = VK_TRUE;
-}
-inline void fillDepthClipEnable(VkPhysicalDeviceDepthClipEnableFeaturesEXT& f) {
-        f.depthClipEnable = VK_TRUE;
-}
-inline void fillVulkan12Features(VkPhysicalDeviceVulkan12Features& f) {
+template <class T> inline void fillVulkan12Features(T& f) {
     // timelineSemaphore is emulated honestly under immediate execution (u64
     // counter per semaphore; a wait for a value the queue already ran past
     // returns SUCCESS, and a wait for a FUTURE value with timeout 0 returns
-    // VK_TIMEOUT). bufferDeviceAddress stays FALSE until the P3 BDA audit proves
-    // DXVK never consumes it: the benign tail returns an error CODE, and if DXVK
-    // treated that as an address it would be catastrophic, not cosmetic.
+    // VK_TIMEOUT). bufferDeviceAddress stays FALSE: nothing hands out addresses.
     f.timelineSemaphore = VK_TRUE;
     f.bufferDeviceAddress = VK_FALSE;
     f.descriptorIndexing = VK_TRUE;
@@ -3444,30 +3573,18 @@ inline void fillVulkan12Features(VkPhysicalDeviceVulkan12Features& f) {
     f.descriptorBindingPartiallyBound = VK_TRUE;
     f.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
     f.runtimeDescriptorArray = VK_TRUE;
-    f.samplerMirrorClampToEdge = VK_TRUE;   // vkd3d-proton hard gate (device.c:2636)
-    // vkd3d-proton bindless hard gate (state.c:8352). Same advertisement-only
-    // caveat as the divisor/push_descriptor entries: the clear/triangle probes
-    // never exercise real bindless heaps; page-side support is follow-up.
+    f.samplerMirrorClampToEdge = VK_TRUE;   // exception: vkd3d-proton hard gate (device.c:2636); WebGPU has no mirror-clamp
     f.shaderStorageTexelBufferArrayNonUniformIndexing = VK_TRUE;
     f.shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
     f.descriptorBindingVariableDescriptorCount = VK_TRUE;
 }
-inline void fillVulkan11Features(VkPhysicalDeviceVulkan11Features& f) {
-    f.storageBuffer16BitAccess = VK_TRUE;
-    f.uniformAndStorageBuffer16BitAccess = VK_TRUE;
-    f.storagePushConstant16 = VK_TRUE;
-    f.multiview = VK_TRUE;
-    f.multiviewGeometryShader = VK_FALSE;
-    f.multiviewTessellationShader = VK_FALSE;
-    f.variablePointers = VK_TRUE;
-    f.variablePointersStorageBuffer = VK_TRUE;
-    f.shaderDrawParameters = VK_TRUE;       // vkd3d-proton hard gate (device.c:2658)
-    f.protectedMemory = VK_FALSE;
+template <class T> inline void fillVulkan11Features(T& f) {
+    // multiview, variablePointers*, 16-bit storage: not advertised (see above).
+    f.shaderDrawParameters = VK_TRUE;       // exception: vkd3d-proton hard gate (device.c:2658)
 }
-inline void fillVulkan13Features(VkPhysicalDeviceVulkan13Features& f) {
+template <class T> inline void fillVulkan13Features(T& f) {
     // DXVK D3D11 baseline hard-requires shaderDemoteToHelperInvocation
-    // (d3d11_device.cpp GetDeviceFeatures). Advertised; demote-vs-kill
-    // nuances are not observable at FL 9_3.
+    // (d3d11_device.cpp GetDeviceFeatures). Exception: demote-vs-kill nuances.
     f.shaderDemoteToHelperInvocation = VK_TRUE;
 }
 
@@ -3504,12 +3621,11 @@ void walkFeatures2(U64 pNextAddr) {
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES:
                 SET_FEATURES(cur, fillVulkan13Features, VkPhysicalDeviceVulkan13Features); break;
             default:
-                if (cur && g_mem) {
-                    static const U8 zeros[512] = {};
-                    g_mem->memcpyToGuest(cur + 16, zeros, sizeof(zeros));
-                    klog_fmt("vk64: Features2 pNext sType=%u not modeled, zeroed (extension disabled)",
-                             (unsigned)sType);
-                }
+                // Unknown sType: the struct's size is unknown, so it is left exactly
+                // as the guest set it (the Vulkan contract is that the app zeroes
+                // feature structs; blindly zeroing 512 bytes here used to clobber the
+                // NEXT chained struct). Counted so a missing model is visible.
+                vk64Unsupported("features2-struct", ("sType=" + std::to_string(sType) + " not modeled, left as-is").c_str());
                 break;
         }
         cur = g_mem->readq(cur + 8);      /* pNext is at offset 8 in every struct */
@@ -4491,6 +4607,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         s->mipLodBias = ci.mipLodBias; s->anisotropyEnable = ci.anisotropyEnable;
         s->maxAniso = ci.maxAnisotropy; s->compareEnable = ci.compareEnable; s->compareOp = ci.compareOp;
         s->minLod = ci.minLod; s->maxLod = ci.maxLod; s->borderColor = ci.borderColor;
+        vk64AuditSampler(ci.addressModeU, ci.addressModeV, ci.addressModeW, ci.mipLodBias, ci.borderColor);
         wr64(args.a[3], id);
         return VK_SUCCESS;
     }
@@ -4614,6 +4731,14 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 audit.rasterizerDiscard = rs.rasterizerDiscardEnable;
                 audit.logicOp = cbs.logicOpEnable;
                 audit.depthBounds = ds.depthBoundsTestEnable;
+                if (readStruct(ci.pVertexInputState, vi))
+                    for (U64 cur = vi.pNext; cur && g_mem; cur = g_mem->readq(cur + 8)) {
+                        if (g_mem->readd(cur) != 1000190001u) continue;   // VkPipelineVertexInputDivisorStateCreateInfoEXT
+                        const U32 cnt = std::min<U32>(g_mem->readd(cur + 16), 64);
+                        const U64 arr = g_mem->readq(cur + 24);
+                        for (U32 k = 0; k < cnt && arr; k++)
+                            if (g_mem->readd(arr + (U64)k * 8 + 4) != 1) audit.vertexDivisor = true;
+                    }
                 VkPipelineViewportStateCreateInfo vp = {};
                 if (readStruct(ci.pViewportState, vp)) audit.viewportCount = vp.viewportCount;
                 VkPipelineMultisampleStateCreateInfo ms = {};
@@ -4717,6 +4842,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         m->code.resize((size_t)ci.codeSize);
         g_mem->memcpyFromGuest(m->code.data(), ci.pCode, ci.codeSize);
         m->hash = blob_hash(m->code.data(), m->code.size());
+        vk64AuditSpirv(m->code);
         wr64(args.a[3], id);
         klog_fmt("vk64: vkCreateShaderModule %llu bytes (hash %016llx)",
                  (unsigned long long)ci.codeSize, (unsigned long long)m->hash);
@@ -6703,18 +6829,18 @@ inline void vk32_writeLimits(U32 lim) {
 // These mirror the 64-bit walkers with 32-bit offsets.
 // ---------------------------------------------------------------------------
 namespace {
-// Fill every VkBool32 payload dword of a 32-bit feature struct with VK_TRUE.
-// hostSize = sizeof(host struct); guestSize = sizeof(win32 guest struct).
-// Dwords written are clamped to the guest size: for structs where the host
-// (8-aligned uint64_t pNext) has trailing padding the win32 guest lacks,
-// (hostSize-16)/4 would write past the end of the guest struct.
-inline void vk32_fillFeatures32(U32 addr, size_t hostSize, size_t guestSize) {
-    if (!addr || !g_mem32 || hostSize < 16 || guestSize < 8) return;
-    U32 hostN = (U32)((hostSize - 16) / 4);
-    U32 guestN = (U32)((guestSize - 8) / 4);
-    U32 n = hostN < guestN ? hostN : guestN;
-    for (U32 i = 0; i < n; i++) wr32_32(addr + 8 + i * 4, (U32)VK_TRUE);
-}
+// One arm of the 32-bit Features2 walk: same shape as SET_FEATURES, over the
+// vk32abi (4-byte pNext) struct and the SAME shared fill function, so the 32-bit
+// and 64-bit guests are answered identically.
+#define SET_FEATURES32(addr, fn, T)                                           \
+    do {                                                                       \
+        if ((addr) && g_mem32) {                                               \
+            T f_ = {};                                                         \
+            readStruct32((addr), f_);                                          \
+            fn(f_);                                                            \
+            writeStruct32((addr), f_);                                         \
+        }                                                                      \
+    } while (0)
 // 32-bit field writers: hostOff = offsetof(host struct, field); valid for
 // fields before any uint64_t that carries host 8-alignment padding.
 inline void vk32_w32f(U32 base, size_t hostOff, U32 v) {
@@ -6729,35 +6855,36 @@ void vk32_walkFeatures2(U32 pNextAddr) {
         U32 sType = rd32_32(cur);
         switch (sType) {
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceRobustness2FeaturesEXT), 20); break;
+                SET_FEATURES32(cur, fillRobustness2, vk32abi::VkPhysicalDeviceRobustness2FeaturesEXT); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceMaintenance5Features), 12); break;
+                SET_FEATURES32(cur, fillMaintenance5, vk32abi::VkPhysicalDeviceMaintenance5Features); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_6_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceMaintenance6Features), 12); break;
+                SET_FEATURES32(cur, fillMaintenance6, vk32abi::VkPhysicalDeviceMaintenance6Features); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceTransformFeedbackFeaturesEXT), sizeof(VkPhysicalDeviceTransformFeedbackFeaturesEXT) - 8); break;
+                SET_FEATURES32(cur, fillTransformFeedback, vk32abi::VkPhysicalDeviceTransformFeedbackFeaturesEXT); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT:
-                vk32_fillFeatures32(cur, sizeof(Vk64VertexAttributeDivisorFeaturesEXT), sizeof(Vk64VertexAttributeDivisorFeaturesEXT) - 8); break;
+                SET_FEATURES32(cur, fillVertexAttributeDivisor, Vk32VertexAttributeDivisorFeaturesEXT); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceDescriptorIndexingFeatures), sizeof(VkPhysicalDeviceDescriptorIndexingFeatures) - 8); break;
+                SET_FEATURES32(cur, fillDescriptorIndexing, vk32abi::VkPhysicalDeviceDescriptorIndexingFeatures); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceShaderFloat16Int8Features), sizeof(VkPhysicalDeviceShaderFloat16Int8Features) - 8); break;
+                SET_FEATURES32(cur, fillFloat16Int8, vk32abi::VkPhysicalDeviceShaderFloat16Int8Features); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDevice16BitStorageFeatures), sizeof(VkPhysicalDevice16BitStorageFeatures) - 8); break;
+                SET_FEATURES32(cur, fillStorage16, vk32abi::VkPhysicalDevice16BitStorageFeatures); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDevice8BitStorageFeatures), 20); break;
+                SET_FEATURES32(cur, fillStorage8, vk32abi::VkPhysicalDevice8BitStorageFeatures); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceScalarBlockLayoutFeatures), 12); break;
+                SET_FEATURES32(cur, fillScalarBlockLayout, vk32abi::VkPhysicalDeviceScalarBlockLayoutFeatures); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceDepthClipEnableFeaturesEXT), 12); break;
+                SET_FEATURES32(cur, fillDepthClipEnable, vk32abi::VkPhysicalDeviceDepthClipEnableFeaturesEXT); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceVulkan12Features), 196); break;
+                SET_FEATURES32(cur, fillVulkan12Features, vk32abi::VkPhysicalDeviceVulkan12Features); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceVulkan11Features), sizeof(VkPhysicalDeviceVulkan11Features) - 8); break;
+                SET_FEATURES32(cur, fillVulkan11Features, vk32abi::VkPhysicalDeviceVulkan11Features); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceVulkan13Features), 68); break;
+                SET_FEATURES32(cur, fillVulkan13Features, vk32abi::VkPhysicalDeviceVulkan13Features); break;
             default:
-                break; // unknown: leave as the guest set it
+                vk64Unsupported("features2-struct", ("sType=" + std::to_string(sType) + " not modeled, left as-is (32-bit)").c_str());
+                break;
         }
         cur = rd32_32(cur + 4); // pNext at +4 in 32-bit layout
     }
@@ -6970,8 +7097,10 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkGetPhysicalDeviceFeatures: {
         VK64_DROP_IF(return 0, !args.a[1]);
         U32 dst = (U32)args.a[1];
-        for (U32 i = 0; i < 220; i += 4) wr32_32(dst + i, 0);
-        wr32_32(dst + 0, 1);
+        VkPhysicalDeviceFeatures f = {};
+        fillCoreFeatures(&f);       // same answer as the 64-bit guest (all-VkBool32 struct, identical layout)
+        static_assert(sizeof(f) == 220, "VkPhysicalDeviceFeatures is 55 VkBool32");
+        g_mem32->memcpyToGuest(dst, &f, sizeof(f));
         return 0;
     }
     case VK64_fn_vkGetPhysicalDeviceMemoryProperties: {
@@ -7012,8 +7141,9 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         if (!args.a[1]) return VK_ERROR_INITIALIZATION_FAILED;
         U32 dst = (U32)args.a[1];
         U32 feat = dst + 8;
-        for (U32 i = 0; i < 220; i += 4) wr32_32(feat + i, 0);
-        wr32_32(feat + 0, 1); // robustBufferAccess
+        VkPhysicalDeviceFeatures f = {};
+        fillCoreFeatures(&f);
+        g_mem32->memcpyToGuest(feat, &f, sizeof(f));
         vk32_walkFeatures2(rd32_32(dst + 4));
         return VK_SUCCESS;
     }
@@ -7440,6 +7570,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         s->mipLodBias = ci.mipLodBias; s->anisotropyEnable = ci.anisotropyEnable;
         s->maxAniso = ci.maxAnisotropy; s->compareEnable = ci.compareEnable; s->compareOp = ci.compareOp;
         s->minLod = ci.minLod; s->maxLod = ci.maxLod; s->borderColor = ci.borderColor;
+        vk64AuditSampler(ci.addressModeU, ci.addressModeV, ci.addressModeW, ci.mipLodBias, ci.borderColor);
         wr64_32(args.a[3], id);
         return VK_SUCCESS;
     }
@@ -7452,6 +7583,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             m->code.resize(ci.codeSize);
             g_mem32->memcpyFromGuest(m->code.data(), ci.pCode, ci.codeSize);
             m->hash = blob_hash(m->code.data(), m->code.size());
+            vk64AuditSpirv(m->code);
         }
         wr64_32((U32)args.a[3], id);
         return VK_SUCCESS;
@@ -7542,6 +7674,17 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 audit.rasterizerDiscard = rs.rasterizerDiscardEnable;
                 audit.logicOp = cbs.logicOpEnable;
                 audit.depthBounds = ds.depthBoundsTestEnable;
+                {
+                    vk32abi::VkPipelineVertexInputStateCreateInfo vi32 = {};
+                    if (readStruct32(ci.pVertexInputState, vi32))
+                        for (U32 cur = vi32.pNext; cur && g_mem32; cur = rd32_32(cur + 4)) {
+                            if (rd32_32(cur) != 1000190001u) continue;
+                            const U32 cnt = std::min<U32>(rd32_32(cur + 8), 64);
+                            const U32 arr = rd32_32(cur + 12);
+                            for (U32 k = 0; k < cnt && arr; k++)
+                                if (rd32_32(arr + k * 8 + 4) != 1) audit.vertexDivisor = true;
+                        }
+                }
                 vk32abi::VkPipelineViewportStateCreateInfo vp = {};
                 if (readStruct32(ci.pViewportState, vp)) audit.viewportCount = vp.viewportCount;
                 vk32abi::VkPipelineMultisampleStateCreateInfo ms = {};
