@@ -2229,26 +2229,26 @@ static U64 sys_sigaltstack64(CPU64* cpu, U64 ssPtr, U64 oldSsPtr) {
 // We write 8 bytes (one U64 with bit 0 set) and return 8. Userspace then
 // counts the bits to get nproc, which is exactly what we want it to see.
 static U64 sys_sched_getaffinity64(CPU64* cpu, U64 pid, U64 cpusetsize, U64 maskPtr) {
-    (void)pid; // ignore — we model one process
-    if (cpusetsize == 0 || (cpusetsize & 7)) return (U64)-K_EINVAL;
+    if (pid && cpu->thread && cpu->thread->id != pid) return (U64)-K_ESRCH;
+    if (cpusetsize < 8) return (U64)-K_EINVAL;
     if (!maskPtr) return (U64)-K_EFAULT;
     if (!cpu->memory) return (U64)-K_EFAULT;
-
-    // Write 1 in the low qword (CPU 0 is in our affinity set), zero the rest
-    // up to cpusetsize. Userspace inspects only the bytes the kernel wrote
-    // (which is our return value), so 8 bytes is enough.
-    cpu->memory->writeq(maskPtr, 1);
-    for (U64 off = 8; off < cpusetsize && off < 1024; off += 8) {
-        cpu->memory->writeq(maskPtr + off, 0);
-    }
+    if (!sys_rangeMapped64(cpu, maskPtr, 8)) return (U64)-K_EFAULT;
+    // Linux writes the kernel cpumask width and returns that byte count even
+    // when userspace supplied a larger cpu_set_t.
+    cpu->memory->writeq(maskPtr, cpu->affinityMask);
     return 8;
 }
 
-// sched_setaffinity(2): silently accept any mask — we don't actually move
-// the thread anywhere, but reject obviously bogus calls.
 static U64 sys_sched_setaffinity64(CPU64* cpu, U64 pid, U64 cpusetsize, U64 maskPtr) {
-    (void)cpu; (void)pid; (void)maskPtr;
-    if (cpusetsize == 0 || (cpusetsize & 7)) return (U64)-K_EINVAL;
+    if (pid && cpu->thread && cpu->thread->id != pid) return (U64)-K_ESRCH;
+    if (cpusetsize < 8 || cpusetsize > 1024) return (U64)-K_EINVAL;
+    if (!maskPtr || !cpu->memory) return (U64)-K_EFAULT;
+    if (!sys_rangeMapped64(cpu, maskPtr, 8)) return (U64)-K_EFAULT;
+    // Only virtual CPU 0 is online. Linux drops offline CPUs from the
+    // requested mask, but rejects a request that has no online CPU selected.
+    if ((cpu->memory->readq(maskPtr) & 1) == 0) return (U64)-K_EINVAL;
+    cpu->affinityMask = 1;
     return 0;
 }
 

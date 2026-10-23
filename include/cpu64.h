@@ -60,6 +60,7 @@ public:
     U32   rflags = 0x202; // IF | reserved bit 1
     U64   fsbase = 0;     // x86-64: set via arch_prctl(ARCH_SET_FS)
     U64   gsbase = 0;
+    U64   affinityMask = 1; // the virtual machine exposes one schedulable CPU
     U64   currentInstructionRip = 0;
     bool  memoryFaultPending = false;
     U64   memoryFaultAddress = 0;

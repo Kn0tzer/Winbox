@@ -350,6 +350,15 @@ void runMemorySyscallValidation(TestResult& r) {
                 [](CPU64& c) { return c.reg[X64_R15].u64 == 0; });
     runAndCheck(r, "getrandom returns EFAULT for unmapped output", call(318, 0x70000000, 8, 0),
                 [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_EFAULT; });
+    runAndCheck(r, "sched_setaffinity accepts online CPU 0", call(203, 0, 8, STACK_PAGE + 0x300),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == 0; },
+                [](CPU64& c) { c.memory->writeq(STACK_TOP - 0xD00, 1); });
+    runAndCheck(r, "sched_setaffinity rejects an empty online mask", call(203, 0, 8, STACK_PAGE + 0x300),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_EINVAL; });
+    runAndCheck(r, "sched_getaffinity returns the virtual CPU mask", call(204, 0, 8, STACK_PAGE + 0x300),
+                [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 8 && c.memory->readq(STACK_TOP - 0xD00) == 1;
+    }, [](CPU64& c) { c.memory->writeq(STACK_TOP - 0xD00, ~0ULL); });
 }
 
 void runUnmappedSamePageFetchFault(TestResult& r) {
