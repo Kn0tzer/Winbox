@@ -77,6 +77,18 @@ test('core GL 2.1 immediate-mode functions are shim-registered', () => {
   }
 });
 
+test('ARB multitexture entry points route through dedicated bridge ABI handlers', () => {
+  for (const name of ['glMultiTexCoord2fARB', 'glClientActiveTextureARB']) {
+    assert.ok(registered.has(`GL64_fn_${name}`), `${name} must resolve to a guest shim wrapper`);
+    assert.match(shimSrc, new RegExp(`API void ${name}\\(`), `${name} must be exported by libgl64`);
+    assert.ok(handlers.has(`GL64_fn_${name}`), `${name} must have a host bridge implementation`);
+  }
+  for (const source of [abiSrc, shimSrc]) {
+    assert.match(source, /GL64_fn_glMultiTexCoord2fARB\s*=\s*884,[^\n]*\n\s*GL64_fn_glClientActiveTextureARB/,
+      'the shared ABI and guest shim must assign the same consecutive IDs');
+  }
+});
+
 test('GL shim registration count is substantial', () => {
   // The shim should register hundreds of functions, not just a handful
   assert.ok(registered.size >= 100,

@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { WebGPUGL } from '../../../gl-webgpu.mjs';
 import { createValidationDevice } from '../fixtures/webgpu-validation-device.mjs';
+import * as naga from '../../../vendor/naga/node.js';
 
 test('program-zero fixed-function indexed draws build a textured alpha-test pipeline', async () => {
   const gpu = createValidationDevice();
@@ -212,5 +213,120 @@ test('odd uint16 index counts use aligned GPU uploads without drawing padding', 
     assert.deepEqual(logs, []);
     assert.equal(gpu.indexedDraws.length, 1);
     assert.equal(gpu.indexedDraws[0][0], 3, 'padding must not add an index');
+  } finally { gpu.restore(); }
+});
+
+test('program-zero fixed-function draws sample both enabled texture units with separate UV arrays', async () => {
+  const gpu = createValidationDevice();
+  try {
+    gpu.device.queue.writeBuffer = () => {};
+    const sampled = new Map();
+    gpu.device.createBindGroup = descriptor => {
+      for (const entry of descriptor.entries) {
+        if (entry.binding === 2 || entry.binding === 4) sampled.set(entry.binding, entry.resource.texture);
+      }
+      return descriptor;
+    };
+    const createPipeline = gpu.device.createRenderPipeline;
+    gpu.device.createRenderPipeline = descriptor => {
+      descriptor.getBindGroupLayout = () => ({});
+      return createPipeline(descriptor);
+    };
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    const draws = [];
+    const draw = gl._draw.bind(gl);
+    gl._draw = async (...args) => { draws.push(args[0]); return draw(...args); };
+    const textures = [];
+    for (const pixel of [[255, 0, 0, 255], [128, 128, 255, 255]]) {
+      gl.activeTexture(0x84c0 + textures.length);
+      gl.enable(0x0de1);
+      assert.equal(gl.isEnabled(0x0de1), true, 'texture enable state belongs to the active server unit');
+      const texture = gl.createTexture();
+      textures.push(texture);
+      gl.bindTexture(0x0de1, texture);
+      gl.texImage2D(0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, new Uint8Array(pixel));
+    }
+    gl.activeTexture(0x84c1);
+    gl.disable(0x0de1);
+    assert.equal(gl.isEnabled(0x0de1), false);
+    gl.activeTexture(0x84c0);
+    assert.equal(gl.isEnabled(0x0de1), true, 'disabling unit 1 must preserve unit 0 state');
+    gl.activeTexture(0x84c1);
+    gl.enable(0x0de1);
+    gl.clientActiveTexture(0x84c0);
+    gl.multiTexCoord2f(0x84c1, 0.25, 0.75);
+    gl.activeTexture(0x84c0);
+    gl.texEnvi(0x2300, 0x2200, 0x1e01);
+    gl.activeTexture(0x84c1);
+    gl.texEnvi(0x2300, 0x2200, 0x2100);
+
+    const arrays = {
+      vertex: { enabled: true, configured: true, size: 2, type: 0x1406, stride: 0 },
+      color: { enabled: false },
+      texCoord: { enabled: true, configured: true, size: 2, type: 0x1406, stride: 0 },
+      texCoord1: { enabled: true, configured: true, size: 2, type: 0x1406, stride: 0 },
+      vertexData: new Float32Array([-1, -1, 1, -1, 0, 1]),
+      texCoordData: new Float32Array([0, 0, 1, 0, 0.5, 1]),
+      texCoordData1: new Float32Array([0.25, 0.75, 0.75, 0.75, 0.5, 0.25]),
+    };
+    assert.equal(gl.fixedFunctionDrawArrays(4, 0, 3, arrays), true);
+    await gl._ops;
+
+    const program = [...gl._fixedFunctionProgramCache.values()][0];
+    assert.equal(draws.length, 1);
+    assert.deepEqual([...new Float32Array(draws[0].attributes.get(2).buffer.data.buffer),
+      ...new Float32Array(draws[0].attributes.get(3).buffer.data.buffer)],
+    [0, 0, 1, 0, 0.5, 1, 0.25, 0.75, 0.75, 0.75, 0.5, 0.25],
+    'unit 0 and unit 1 arrays must remain separate through bridge staging');
+    assert.match(gpu.pipelines[0].vertex.module.code, /@location\(3\) texCoord1/);
+    assert.match(gpu.pipelines[0].fragment.module.code, /textureSample\(fixedTexture0/);
+    assert.match(gpu.pipelines[0].fragment.module.code, /textureSample\(fixedTexture1/);
+    assert.match(gpu.pipelines[0].fragment.module.code, /color = texel0;/);
+    assert.match(gpu.pipelines[0].fragment.module.code, /color = color \* texel1;/);
+    assert.equal(program.stages.fragment.samplers.length, 2);
+    assert.doesNotThrow(() => naga.validate(naga.parseWgsl(program.stages.vertex.wgsl)), 'two-unit vertex WGSL must validate');
+    assert.doesNotThrow(() => naga.validate(naga.parseWgsl(program.stages.fragment.wgsl)), 'two-unit fragment WGSL must validate');
+    assert.equal(sampled.get(2), textures[0].gpu);
+    assert.equal(sampled.get(4), textures[1].gpu);
+    assert.deepEqual(gl._fixedFunction.currentTexCoords[1], [0.25, 0.75, 0, 1]);
+    const center = (2 * gpu.canvas.width + 2) * 4;
+    assert.deepEqual(Array.from(gl._pixels.subarray(center, center + 4)), [128, 0, 0, 255],
+      'the synchronous compositor mirror must combine lightmap texture unit 1');
+  } finally { gpu.restore(); }
+});
+
+test('immediate multi-texture coordinates are captured per unit at each vertex', async () => {
+  const gpu = createValidationDevice();
+  try {
+    gpu.device.queue.writeBuffer = () => {};
+    gpu.device.createBindGroup = descriptor => descriptor;
+    const createPipeline = gpu.device.createRenderPipeline;
+    gpu.device.createRenderPipeline = descriptor => {
+      descriptor.getBindGroupLayout = () => ({});
+      return createPipeline(descriptor);
+    };
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    gl.activeTexture(0x84c0); gl.enable(0x0de1);
+    gl.activeTexture(0x84c1); gl.enable(0x0de1);
+    const draws = [];
+    const draw = gl._draw.bind(gl);
+    gl._draw = async (...args) => { draws.push(args[0]); return draw(...args); };
+    gl.fixedFunctionImmediateDraw(4, new Float32Array([
+      2, 0x84c0, 0.2, 0.3, 0, 2, 0x84c1, 0.8, 0.7, 0,
+      1, -1, -1, 0, 1,
+      2, 0x84c0, 0.4, 0.5, 0, 2, 0x84c1, 0.6, 0.9, 0,
+      1, 1, -1, 0, 1,
+      1, 0, 1, 0, 1,
+    ]));
+    await gl._ops;
+    assert.equal(draws.length, 1);
+    const coords = slot => [...new Float32Array(draws[0].attributes.get(slot).buffer.data.buffer)]
+      .map(value => Math.round(value * 1e6) / 1e6);
+    assert.deepEqual(coords(2),
+      [0.2, 0.3, 0.4, 0.5, 0.4, 0.5]);
+    assert.deepEqual(coords(3),
+      [0.8, 0.7, 0.6, 0.9, 0.6, 0.9]);
   } finally { gpu.restore(); }
 });

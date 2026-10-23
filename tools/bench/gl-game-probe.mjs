@@ -20,7 +20,8 @@ const profiles = {
     root: join(workRoot, 'q3/game/app'),
     exe: 'quake3e.x64.exe',
     arch: 'x64',
-    args: ['+set', 'r_fullscreen', '0', '+set', 'cl_renderer', 'opengl1'],
+    args: ['+set', 'r_fullscreen', '0', '+set', 'cl_renderer', 'opengl1',
+      '+set', 'r_vbo', '0', '+map', 'q3dm1'],
     skip: new Set([
       'spearmint-1.0.3-windows.zip',
       'baseq3/pak9hqq37.pk3',
