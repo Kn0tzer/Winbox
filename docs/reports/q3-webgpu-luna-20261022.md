@@ -193,21 +193,21 @@ glXQueryDrawable
 ```
 
 Those `MISS` records are not NULL returns. The `glXGetProcAddressARB` fallback
-in `libgl64.c` returns the non-null `gl64_noop` stub for an unknown name. The
-two missing GL entrypoints are a separate incompleteness: the bridge advertises
-`GL_ARB_multitexture`, but does not provide real implementations of
-`glMultiTexCoord2fARB` and `glClientActiveTextureARB`. They do not match the
-faulting call's two-argument `glGenProgramsARB` signature, and they do not
+in `libgl64.c` returns the non-null `gl64_noop` stub for an unknown name. At the
+time of those runs, the two missing GL entrypoints were a real incompleteness:
+the bridge advertised `GL_ARB_multitexture` but lacked working
+`glMultiTexCoord2fARB` and `glClientActiveTextureARB`. Commit `30a921c26` later
+added their ABI handlers and WebGPU fixed-function behavior. They did not match
+the faulting call's two-argument `glGenProgramsARB` signature and did not
 explain the zero callback slot.
 
-The extension gate is already withholding unsupported ARB vertex/fragment
-programs. Advertising them and returning placeholder functions would let Q3
-enter ARB shader compilation without a compatible WebGPU implementation. The
-safe fix is in the renderer caller: keep VBO/ARB program compilation unreachable
-when `qglGenProgramsARB` is null, or implement the full ARB program path. That
-renderer source is not part of this Boxedwine worktree. I made no bridge-code
-change; the two previously logged multitexture misses need a separate decision
-between real support and removing that extension from the advertised set.
+The extension gate is withholding unsupported ARB vertex/fragment programs.
+Advertising them and returning placeholder functions would let Q3 enter ARB
+shader compilation without a compatible WebGPU implementation. The probe now
+sets `r_vbo 0` to keep that path disabled, and commit `30a921c26` implements the
+two previously missing multitexture entrypoints. The renderer source is outside
+this Boxedwine worktree, so the probe's Build 6 result is still needed to
+confirm that Quake3e stays on its client-array path.
 
 I attempted one miss-only diagnostic probe using the copied Build 5 export and
 the same Q3 map/recovery settings. It stayed queued behind other heavy probes
@@ -246,3 +246,38 @@ ABI/handler/proc registration, and the Q3 `r_vbo`/map arguments. Node syntax
 checks and `git diff --check` also passed. I did not build or run the browser
 probe: this source is awaiting the scheduled Build 6 export, so visual map
 rendering and first-frame timing remain unverified for these changes.
+
+## Q3 extension advertisement audit (Luna, 2026-10-23)
+
+I compared the extension gates and proc lists in Quake3e's `renderer/tr_init.c`
+and `renderer/qgl.h` with the guest `GL_EXTENSIONS` and `glGetStringi` lists,
+the `libgl64` proc table, and the bridge handlers. The monolithic and indexed
+extension lists currently contain the same 17 tokens (the new unit test checks
+their ordered equality).
+
+Only two advertised extensions activate Q3's extension-init proc lookups:
+
+| Advertised token | Q3 proc lookups | Result |
+| --- | --- | --- |
+| `GL_ARB_multitexture` | `glMultiTexCoord2fARB`, `glActiveTextureARB`, `glClientActiveTextureARB` | All resolve to implemented wrappers and dedicated bridge handling. The WebGPU fixed-function path retains separate unit 0/1 coordinates and samples both enabled units. |
+| `GL_ARB_vertex_buffer_object` | `glGenBuffersARB`, `glDeleteBuffersARB`, `glBindBufferARB`, `glBufferDataARB` | All four resolve to wrappers forwarding to their implemented core entrypoints. The probe's `+set r_vbo 0` keeps Q3's world-VBO/ARB-program path disabled. |
+
+The extension-init features whose bridge path is missing, deliberately stubbed,
+or not supported by the Q3 WebGPU renderer remain absent from both extension
+queries: compiled vertex arrays; texture edge/border clamp; texture env combine
+and add; anisotropic filtering; ARB/S3TC compression; ARB vertex/fragment
+programs; and the EXT framebuffer-object/blit pair. In particular,
+`glLockArraysEXT` and `glUnlockArraysEXT` are no-op hint functions, but
+`GL_EXT_compiled_vertex_array` is not advertised, so Quake3e does not resolve or
+call them from its extension initializer. The same applies to the other
+withheld feature branches. Q3's FBO initializer requires both EXT framebuffer
+tokens, and its ARB program initializer requires both ARB program tokens; neither
+gate is satisfied by the current string.
+
+Added `q3-gl-extension-coverage.test.mjs` to assert that the two advertised Q3
+paths have registered, non-fallback wrappers and that the unsupported Q3
+feature tokens stay absent in both string forms. This audit found no remaining
+Q3 extension-gate/proc mismatch after the multitexture implementation; it
+needed regression coverage and report correction, not another bridge behavior
+change. The focused GL/Q3 unit command passed 39 tests, with 0 failures. No
+build or browser probe was run; Build 6 verification remains pending.
