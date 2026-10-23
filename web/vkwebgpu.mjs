@@ -79,6 +79,12 @@ export const REQUIRED_LIMIT_KEYS = Object.freeze([
   'maxUniformBufferBindingSize', 'maxStorageBufferBindingSize', 'maxBufferSize',
   'maxVertexBuffers', 'maxVertexAttributes', 'maxColorAttachments', 'maxInterStageShaderVariables',
 ]);
+/** Count a skipped-draw reason (first 100 characters) in a per-pass diagnostic map. */
+function v2DiagNoteSkip(map, reason) {
+  const key = String(reason).slice(0, 100);
+  map[key] = (map[key] || 0) + 1;
+}
+
 // Opt-in per-pass colour readback diagnostic (URL `?bwPassReadback=N`): every Nth
 // frame, copy each render pass's single-sample colour targets back and report
 // average / constant colour plus the vs/fs hashes drawn, to localise which pass
@@ -2055,7 +2061,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       /** @type {GPURenderPassColorAttachment[]} */
       const colorAttachments = [];
       const passColorFormats = [];
-      const passDiagTargets = [], passDiagDraws = { draws: 0, vs: new Set(), fs: new Set(), list: [] }, passDiagStart = { unsupported: stats.unsupported, blank: blankUses };
+      const passDiagTargets = [], passDiagDraws = { draws: 0, raw: 0, skips: {}, vs: new Set(), fs: new Set(), list: [] }, passDiagStart = { unsupported: stats.unsupported, blank: blankUses };
       let depthView = null, depthAttachment = null, passDepthFormat = 'depth24plus', passDepthAspects = 6;
       let unsupportedAttachment = false;
       for (const a of p.attachments) {
@@ -2286,18 +2292,19 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           case 'vbind': st.vbinds = op.binds; break;
           case 'ibind': st.ibind = op; break;
           case 'draw': {
-            if (skipped) break;
-            if (!passEnc || !st.pipeDesc) break;
+            if (diagOn) passDiagDraws.raw++;
+            if (skipped) { if (diagOn) v2DiagNoteSkip(passDiagDraws.skips, 'pass-skipped'); break; }
+            if (!passEnc || !st.pipeDesc) { if (diagOn) v2DiagNoteSkip(passDiagDraws.skips, !passEnc ? 'no-encoder' : 'no-pipeline-bound'); break; }
             if (diagOn) { passDiagDraws.draws++; passDiagDraws.vs.add(st.pipeDesc.vsHash); passDiagDraws.fs.add(st.pipeDesc.fsHash); if (passDiagDraws.list.length < 24) passDiagDraws.list.push([st.pipeDesc.vsHash, st.pipeDesc.fsHash, op.indexed ? op.indexCount : op.vertexCount, op.instanceCount, v2DiagDescribeBindings(st.sets, F, targets)]); }
             let drawPipe;
             try {drawPipe=v2StencilPipeline(st.pipeDesc,st.dynamicStencil);}
-            catch(error) {stats.unsupported++;stats.skippedDraws=(stats.skippedDraws||0)+1;break;}
+            catch(error) {stats.unsupported++;stats.skippedDraws=(stats.skippedDraws||0)+1;if (diagOn) v2DiagNoteSkip(passDiagDraws.skips, 'stencil:' + error.message);break;}
             if ((drawPipe.cullDynamic && st.cull !== undefined) || (drawPipe.frontDynamic && st.front !== undefined))
               drawPipe = {...drawPipe, ...(drawPipe.cullDynamic && st.cull !== undefined ? {cull:st.cull} : {}), ...(drawPipe.frontDynamic && st.front !== undefined ? {front:st.front} : {})};
             if (drawPipe.depthBiasDynamic && st.depthBias)
               drawPipe = {...drawPipe,depthBiasConstantFactor:st.depthBias.constantFactor,depthBiasClamp:st.depthBias.clamp,depthBiasSlopeFactor:st.depthBias.slopeFactor};
             const selected=await getPipelineFor(drawPipe,passSamples,st.pipeNeg,!!depthView,st.ibind?.indexType||0,passColorFormats,passDepthFormat,passDepthAspects);
-            if(selected.skip) {stats.skippedDraws=(stats.skippedDraws||0)+1;break;}
+            if(selected.skip) {stats.skippedDraws=(stats.skippedDraws||0)+1;if (diagOn) v2DiagNoteSkip(passDiagDraws.skips, selected.skip);break;}
             st.pipeRec=selected;
             passEnc.setPipeline(selected.pipeline);
             if (st.viewport) {
@@ -2451,7 +2458,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       }
       if (passEnc) passEnc.end();
       if (diagOn && passEnc && diagPasses.length < diagCfg.maxPasses) {
-        const entry = { pass: diagPasses.length, w: p.w, h: p.h, loadClear: p.attachments.map(a => a.loadOp === 1), draws: passDiagDraws.draws,
+        const entry = { pass: diagPasses.length, w: p.w, h: p.h, loadClear: p.attachments.map(a => a.loadOp === 1), draws: passDiagDraws.draws, rawDraws: passDiagDraws.raw, skips: passDiagDraws.skips,
           vs: [...passDiagDraws.vs].slice(0, 8), fs: [...passDiagDraws.fs].slice(0, 8), list: passDiagDraws.list,
           unsupported: stats.unsupported - passDiagStart.unsupported, blank: blankUses - passDiagStart.blank, census: v2DiagImageCensus(F), targets: [] };
         for (const t of passDiagTargets) {
