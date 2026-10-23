@@ -2,7 +2,6 @@
 #define BW_VK_QUERY_RESULTS_H
 
 #include <algorithm>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -26,19 +25,6 @@ struct EncodedResults {
     uint64_t strideBytes = 0;
 };
 
-// Vulkan timestamps are host-clock nanoseconds divided by timestampPeriod.
-// Keep equal or regressing clock samples strictly increasing across queries.
-inline uint64_t timestampTicks(uint64_t hostNanoseconds, double timestampPeriod) {
-    static uint64_t last = 0;
-    if (!std::isfinite(timestampPeriod) || timestampPeriod <= 0.0) timestampPeriod = 1.0;
-    const long double ticks = static_cast<long double>(hostNanoseconds) / timestampPeriod;
-    uint64_t value = ticks >= static_cast<long double>(std::numeric_limits<uint64_t>::max())
-        ? std::numeric_limits<uint64_t>::max() : static_cast<uint64_t>(ticks);
-    if (value <= last && last != std::numeric_limits<uint64_t>::max()) value = last + 1;
-    last = value;
-    return value;
-}
-
 inline void writeUnsigned(std::vector<uint8_t>& bytes, size_t offset, uint64_t value, size_t width) {
     for (size_t i = 0; i < width && offset + i < bytes.size(); ++i)
         bytes[offset + i] = static_cast<uint8_t>(value >> (i * 8));
@@ -54,12 +40,12 @@ inline uint64_t readUnsigned(const std::vector<uint8_t>& bytes, size_t offset, s
 inline EncodedResults encodeResults(uint32_t queryType, uint32_t firstQuery,
                                     uint32_t queryCount, uint32_t poolCount,
                                     size_t dataSize, uint64_t stride, uint32_t flags,
-                                    double timestampPeriod, uint64_t hostNanoseconds,
-                                    const std::vector<uint64_t>& values = {},
-                                    const std::vector<uint8_t>& availability = {}) {
+                                    const std::vector<uint64_t>& values,
+                                    const std::vector<uint8_t>& availability) {
     EncodedResults out;
     if ((queryType != VKQUERY_OCCLUSION && queryType != VKQUERY_TIMESTAMP) ||
-        firstQuery > poolCount || queryCount > poolCount - firstQuery) return out;
+        firstQuery > poolCount || queryCount > poolCount - firstQuery ||
+        values.size() < poolCount || availability.size() < poolCount) return out;
     const size_t width = (flags & VKQUERY_64_BIT) ? 8 : 4;
     const size_t resultSize = width * ((flags & VKQUERY_WITH_AVAILABILITY) ? 2 : 1);
     if (!stride) stride = resultSize;
@@ -78,16 +64,13 @@ inline EncodedResults encodeResults(uint32_t queryType, uint32_t firstQuery,
             break;
         }
         const size_t offset = static_cast<size_t>(offset64);
-        // Occlusion is a nonzero placeholder; precise mode still reports an
-        // approximate sample count because this bridge does not rasterize queries.
         const uint32_t index = firstQuery + i;
-        const bool available = availability.empty() || (index < availability.size() && availability[index] != 0);
+        const bool available = availability[index] != 0;
         if (!available && !(flags & VKQUERY_PARTIAL)) {
             out.complete = false;
             break;
         }
-        const uint64_t value = !values.empty() && index < values.size() ? values[index]
-            : queryType == VKQUERY_OCCLUSION ? 1 : timestampTicks(hostNanoseconds, timestampPeriod);
+        const uint64_t value = values[index];
         writeUnsigned(out.bytes, offset, available ? value : 0, width);
         if (flags & VKQUERY_WITH_AVAILABILITY)
             writeUnsigned(out.bytes, offset + width, available ? 1 : 0, width);

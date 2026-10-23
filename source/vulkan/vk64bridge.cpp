@@ -894,7 +894,7 @@ enum CmdKind : U32 {
     CMD_SCISSOR, CMD_DRAW, CMD_DRAW_INDEXED, CMD_BARRIER, CMD_COPY_B2I, CMD_PUSH_CONST,
     CMD_BIND_VB, CMD_BIND_IB, CMD_UPDATE_BUF, CMD_COPY_I2B, CMD_DISPATCH, CMD_COPY_IMAGE,
     CMD_STENCIL_STATE, CMD_BLEND_CONSTANTS, CMD_CLEAR_ATTACHMENTS, CMD_COPY_QUERY_RESULTS, CMD_DEPTH_BIAS, CMD_BLIT_IMAGE,
-    CMD_RASTER_STATE, CMD_CLEAR_DS_IMAGE, CMD_RESET_QUERY, CMD_WRITE_TIMESTAMP
+    CMD_RASTER_STATE, CMD_CLEAR_DS_IMAGE, CMD_RESET_QUERY
 };
 struct Copy {
     U64 srcBuffer = 0, dstImage = 0, bufOff = 0;
@@ -1221,11 +1221,6 @@ void emitFrameNow() {
 // Source and destination are BOTH guest ranges, so this is one
 // memcpyFromGuest/memcpyToGuest per row.
 // ---------------------------------------------------------------------------
-static U64 queryHostNanoseconds() {
-    return (U64)std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-
 static void writeEncodedQueryResults(U64 dst, const vkquery::EncodedResults& encoded) {
     for (U32 i = 0; i < encoded.countWritten; ++i) {
         const U64 offset = (U64)i * encoded.strideBytes;
@@ -1244,7 +1239,7 @@ static VkResult writeQueryResults(QueryPool* pool, U32 first, U32 count,
     const U64 writeSize = std::min<U64>(dataSize, kMaxQueryResultBytes);
     vkquery::EncodedResults encoded = vkquery::encodeResults(
         pool->type, first, count, pool->count, (size_t)writeSize, stride, flags,
-        1.0, queryHostNanoseconds(), pool->results, pool->available);
+        pool->results, pool->available);
     if (!encoded.valid) return VK_ERROR_INITIALIZATION_FAILED;
     writeEncodedQueryResults(dst, encoded);
     return encoded.complete && writeSize == dataSize ? VK_SUCCESS : VK_INCOMPLETE;
@@ -1271,7 +1266,7 @@ static void execCopyQueryResults(const Cmd& command) {
     const U64 size = std::min<U64>(available, 1ULL << 20);
     vkquery::EncodedResults encoded = vkquery::encodeResults(
         pool->type, copy.firstQuery, copy.queryCount, pool->count, (size_t)size,
-        copy.stride, copy.flags, 1.0, queryHostNanoseconds(), pool->results, pool->available);
+        copy.stride, copy.flags, pool->results, pool->available);
     VK64_DROP_IF(return, !encoded.valid);
     writeEncodedQueryResults(memory->va + memoryOffset, encoded);
     buffer->dirtyGen = g_bufDirtyTick++;
@@ -1283,11 +1278,6 @@ static void execQueryCommand(const Cmd& command) {
         VK64_DROP_IF(return, !pool || command.b > pool->count);
         const U32 count = std::min<U64>(command.c, pool->count - command.b);
         for (U32 i = 0; i < count; ++i) { pool->results[command.b + i] = 0; pool->available[command.b + i] = 0; }
-    } else if (command.kind == CMD_WRITE_TIMESTAMP) {
-        QueryPool* pool = objOf<QueryPool>(command.a, K_QUERYPOOL, "vkCmdWriteTimestamp");
-        VK64_DROP_IF(return, !pool || pool->type != vkquery::VKQUERY_TIMESTAMP || command.b >= pool->count);
-        pool->results[command.b] = vkquery::timestampTicks(queryHostNanoseconds(), 1.0);
-        pool->available[command.b] = 1;
     }
 }
 
@@ -3185,7 +3175,6 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 case CMD_UPDATE_BUF:
                 case CMD_COPY_QUERY_RESULTS:
                 case CMD_RESET_QUERY:
-                case CMD_WRITE_TIMESTAMP:
                     break;
                 case CMD_DISPATCH:
                     // The V2 protocol is render-only: no compute pipeline or
@@ -6443,7 +6432,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 for (const Cmd& k : cb->cmds) {
                     if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
                     else if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
-                    else if (k.kind == CMD_RESET_QUERY || k.kind == CMD_WRITE_TIMESTAMP) execQueryCommand(k);
+                    else if (k.kind == CMD_RESET_QUERY) execQueryCommand(k);
                     else if (k.kind == CMD_COPY_QUERY_RESULTS) execCopyQueryResults(k);
                 }
                 frames.push_back({cb, cbId});
@@ -6506,7 +6495,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 for (const Cmd& k : cb->cmds) {
                     if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
                     else if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
-                    else if (k.kind == CMD_RESET_QUERY || k.kind == CMD_WRITE_TIMESTAMP) execQueryCommand(k);
+                    else if (k.kind == CMD_RESET_QUERY) execQueryCommand(k);
                     else if (k.kind == CMD_COPY_QUERY_RESULTS) execCopyQueryResults(k);
                 }
                 frames.push_back({cb, (U64)cbi.commandBuffer});
@@ -8618,7 +8607,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 for (const Cmd& k : cb->cmds) {
                     if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
                     else if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
-                    else if (k.kind == CMD_RESET_QUERY || k.kind == CMD_WRITE_TIMESTAMP) execQueryCommand(k);
+                    else if (k.kind == CMD_RESET_QUERY) execQueryCommand(k);
                     else if (k.kind == CMD_COPY_QUERY_RESULTS) execCopyQueryResults(k);
                 }
                 frames.push_back({cb, cbId});
