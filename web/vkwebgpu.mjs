@@ -1735,7 +1735,10 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           if (img && !imgFormat) return null;
           const texture = aliasTex || (img ? gpuTextureFor(imgHex, img, cube, dimension) : blankTex(cube, dimension, t.startsWith('texture_depth')));
           if (!texture) return null;
-          views.push(aliasTex ? aliasTex.createView(imgFormat ? { format: imgFormat } : {}) : texture.createView({ dimension: cube ? 'cube' : dimension }));
+          // A combined depth/stencil texture can only be bound one aspect at a
+          // time: integer element types read the stencil, the rest the depth.
+          const aspect = String(texture.format || '').includes('stencil') ? (/<[ui]32>/.test(t) ? 'stencil-only' : 'depth-only') : undefined;
+          views.push(aliasTex ? aliasTex.createView({ ...(imgFormat ? { format: imgFormat } : {}), ...(aspect ? { aspect } : {}) }) : texture.createView({ dimension: cube ? 'cube' : dimension, ...(aspect ? { aspect } : {}) }));
         }
         entries.push({ binding: d.binding, resource: d.arrayCount > 1 ? views : views[0] });
       } else if (t === 'sampler' || t === 'sampler_comparison') {
