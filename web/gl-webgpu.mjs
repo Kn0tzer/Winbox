@@ -347,6 +347,9 @@ export class WebGPUGL {
     this._defaultBufferSelection = { draw: 0x0405, read: 0x0405 };
     this._bufferSelections = new WeakMap();
     this._gpuWrittenFramebuffers = new WeakSet();
+    this._readbackSlots = [];
+    this._readbackNext = 0;
+    this._frameDirty = false;
     this._error = GL.NO_ERROR;
     this._arrayBuffer = null;
     this._elementArrayBuffer = null;
@@ -692,6 +695,7 @@ export class WebGPUGL {
   }
   clear(mask) {
     const state = { color: [...this._clear], depth: this._clearDepth, enabled: new Set(this._enabled), colorMask: [...this._colorMask], depthMask: this._depthMask, scissor: [...this._scissor], framebuffer: this._drawFramebuffer };
+    if ((mask & GL.COLOR_BUFFER_BIT) && this._bufferSelection(state.framebuffer).draw !== GL.NONE) this._frameDirty = true;
     this._clearPixels(mask, state);
     this._enqueue(() => this._clearGpu(mask, state));
   }
@@ -821,28 +825,45 @@ export class WebGPUGL {
     const canvasTexture = this._context.getCurrentTexture();
     encoder.copyTextureToTexture({ texture: this._colorTexture }, { texture: canvasTexture }, [this._width, this._height, 1]);
     this._device.queue.submit([encoder.finish()]);
-    this._startReadback();
+    if (this._frameDirty) {
+      this._frameDirty = false;
+      if (!this._startReadback()) this._frameDirty = true;
+    }
   }
 
   // The bridge's X11 present reads the default framebuffer with a synchronous
-  // glReadPixels, but WebGPU only exposes queue results asynchronously. Every
-  // present therefore copies the colour target into a staging buffer; when the
-  // map resolves, the bottom-up RGBA frame replaces the CPU shadow that
+  // glReadPixels, but WebGPU only exposes queue results asynchronously. Changed
+  // color frames copy through one of two reusable staging buffers; when the map
+  // resolves, the bottom-up RGBA frame replaces the CPU shadow that
   // readPixels serves. Programmable draws (FNA, Mindustry) reach the screen
   // only this way. The image lags the draw calls by about one swap.
   _startReadback() {
-    if (this._readbackBusy || !this._colorTexture) return;
+    if (!this._colorTexture) return false;
     const width = this._width, height = this._height, format = this._format;
     const bytesPerRow = Math.ceil(width * 4 / 256) * 256;
-    if (!this._readbackBuffer || this._readbackBuffer.size !== bytesPerRow * height) {
-      this._readbackBuffer?.destroy();
-      this._readbackBuffer = this._device.createBuffer({ size: bytesPerRow * height, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const size = bytesPerRow * height;
+    if (this._readbackSlots.length < 2) {
+      while (this._readbackSlots.length < 2) this._readbackSlots.push({ buffer: null, busy: false });
     }
-    const buffer = this._readbackBuffer;
+    let slot = null;
+    for (let offset = 0; offset < this._readbackSlots.length; offset++) {
+      const index = (this._readbackNext + offset) % this._readbackSlots.length;
+      if (!this._readbackSlots[index].busy) {
+        slot = this._readbackSlots[index];
+        this._readbackNext = (index + 1) % this._readbackSlots.length;
+        break;
+      }
+    }
+    if (!slot) return false;
+    if (!slot.buffer || slot.buffer.size !== size) {
+      slot.buffer?.destroy();
+      slot.buffer = this._device.createBuffer({ size, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    }
+    const buffer = slot.buffer;
     const encoder = this._device.createCommandEncoder();
     encoder.copyTextureToBuffer({ texture: this._colorTexture }, { buffer, bytesPerRow, rowsPerImage: height }, [width, height, 1]);
     this._device.queue.submit([encoder.finish()]);
-    this._readbackBusy = true;
+    slot.busy = true;
     buffer.mapAsync(GPUMapMode.READ).then(() => {
       const source = new Uint8Array(buffer.getMappedRange());
       const swap = format === 'bgra8unorm' || format === 'bgra8unorm-srgb';
@@ -859,7 +880,8 @@ export class WebGPUGL {
         this._gpuFrames = (this._gpuFrames || 0) + 1;
       }
       buffer.unmap();
-    }).catch(error => this._reportFailure(error)).finally(() => { this._readbackBusy = false; });
+    }).catch(error => this._reportFailure(error)).finally(() => { slot.busy = false; });
+    return true;
   }
   _recordError(error) { if (this._error === GL.NO_ERROR) this._error = error; }
   getError() { const error = this._error; this._error = GL.NO_ERROR; return error; }
@@ -1408,16 +1430,18 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
 
   drawArrays(mode, first, count) {
     if (this._bufferSelection(this._drawFramebuffer).draw === GL.NONE) return;
+    if (count > 0) this._frameDirty = true;
     if (!this._currentProgram && this._fixedFunctionDraw(mode, first, count, null, this._fixedFunctionLegacyArrays || {})) return;
     const state = this._drawSnapshot(); this._mirrorDraw(state, mode, first, count, null); this._enqueue(() => this._draw(state, mode, first, count, null, 1));
   }
   drawElements(mode, count, type, offset) {
     if (this._bufferSelection(this._drawFramebuffer).draw === GL.NONE) return;
+    if (count > 0) this._frameDirty = true;
     if (!this._currentProgram && this._fixedFunctionDraw(mode, 0, count, { type, offset }, this._fixedFunctionLegacyArrays || {})) return;
     const element = { type, offset }, state = this._drawSnapshot(); this._mirrorDraw(state, mode, 0, count, element); this._enqueue(() => this._draw(state, mode, 0, count, element, 1));
   }
-  drawArraysInstanced(mode, first, count, instances) { const state = this._drawSnapshot(); this._mirrorDraw(state, mode, first, count, null); this._enqueue(() => this._draw(state, mode, first, count, null, instances)); }
-  drawElementsInstanced(mode, count, type, offset, instances) { const element = { type, offset }, state = this._drawSnapshot(); this._mirrorDraw(state, mode, 0, count, element); this._enqueue(() => this._draw(state, mode, 0, count, element, instances)); }
+  drawArraysInstanced(mode, first, count, instances) { const state = this._drawSnapshot(); if (state.drawBuffer === GL.NONE) return; if (count > 0 && instances > 0) this._frameDirty = true; this._mirrorDraw(state, mode, first, count, null); this._enqueue(() => this._draw(state, mode, first, count, null, instances)); }
+  drawElementsInstanced(mode, count, type, offset, instances) { const element = { type, offset }, state = this._drawSnapshot(); if (state.drawBuffer === GL.NONE) return; if (count > 0 && instances > 0) this._frameDirty = true; this._mirrorDraw(state, mode, 0, count, element); this._enqueue(() => this._draw(state, mode, 0, count, element, instances)); }
 
   _mirrorAttribute(attribute, vertex) {
     const result = [0, 0, 0, 1];
@@ -2140,6 +2164,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     if (!(mask & GL.COLOR_BUFFER_BIT)) return;
     const source = this._targetFor(this._readFramebuffer), destination = this._targetFor(this._drawFramebuffer);
     if (!source?.pixels || !destination?.pixels) return;
+    if (destination.default) this._frameDirty = true;
     const sx = Math.min(srcX0, srcX1), sy = Math.min(srcY0, srcY1), sw = Math.abs(srcX1 - srcX0), sh = Math.abs(srcY1 - srcY0);
     const dx = Math.min(dstX0, dstX1), dy = Math.min(dstY0, dstY1), dw = Math.abs(dstX1 - dstX0), dh = Math.abs(dstY1 - dstY0);
     for (let y = 0; y < dh; y++) for (let x = 0; x < dw; x++) {

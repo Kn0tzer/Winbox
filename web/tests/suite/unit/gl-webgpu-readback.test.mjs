@@ -102,6 +102,11 @@ test('default framebuffer glReadPixels serves the GPU readback after a present',
     assert.deepEqual([...pixel], [0, 0, 0, 0], 'before any present the CPU shadow is served');
     gl.flush();
     await gl._ops;
+    assert.equal(copies.length, 0, 'an unchanged frame skips GPU readback');
+    gl.clearColor(1, 0, 0, 1);
+    gl.clear(0x4000);
+    gl.flush();
+    await gl._ops;
     await new Promise(resolve => setTimeout(resolve, 0));
     assert.equal(copies.length, 1, 'a present copies the colour target into a staging buffer');
     assert.ok(copies[0].destination.bytesPerRow % 256 === 0, 'WebGPU requires 256-byte aligned rows');
@@ -109,5 +114,12 @@ test('default framebuffer glReadPixels serves the GPU readback after a present',
     assert.deepEqual([...pixel], [255, 0, 0, 255], 'GL row 0 is the bottom of the image, BGRA becomes RGBA');
     gl.readPixels(0, gl._height - 1, 1, 1, 0x1908, 0x1401, pixel);
     assert.deepEqual([...pixel], [30, 20, 10, 255], 'the top row reads back last in GL order');
+    for (let frame = 0; frame < 3; frame++) {
+      gl.clear(0x4000);
+      gl.flush();
+      await gl._ops;
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    assert.equal(staging.length, 2, 'readback staging reuses two buffers instead of allocating per frame');
   } finally { gpu.restore(); }
 });
