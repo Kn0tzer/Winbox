@@ -39,6 +39,8 @@ test('REWRITES exports every rule', () => {
     'strip-signed-zero-inf-nan-preserve',
     'strip-unused-physical-storage-buffer',
     'prune-specialized-aliases',
+    'flat-integer-varyings',
+    'fragment-layer-to-zero',
   ]);
 });
 
