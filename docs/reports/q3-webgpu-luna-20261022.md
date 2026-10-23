@@ -146,3 +146,71 @@ CPU64 now checks each instruction page before interpreter or JIT execution. An u
 The CPU64 self-tests now cover the null indirect call stopping at its first unmapped fetch, non-executable fetches, permission-cache invalidation after `munmap`, and preservation of #GP for `INSD`, `INSW`, and `HLT` in recovery mode. I did not compile or run these tests because you are scheduling builds. No post-fix browser probe has run; this commit needs to be included in the next scheduled build to verify the Wine SEH path and Q3 progress.
 
 Evidence: [wild-jump console log](/tmp/winbox-finish/r3/work-luna-q3/evidence/build5-map-wildjump-trace/console.log), [wild-jump summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/build5-map-wildjump-trace/summary.json), [Build 5 Q3 executable in the copied probe archive](/tmp/winbox-finish/r3/work-luna-q3/q3-probe.zip).
+
+## Null callback at Q3 RVA `0x9ff2e`, 2026-10-23
+
+The indirect call is Q3's `qglGenProgramsARB(1, &vbo_vp[index])` in
+`CompileVertexProgram`, followed by construction of the `!!ARBvp1.0` source
+through `BuildVP`. The PE has no usable symbols/PDB, so this identification is
+from the call ABI (`n = 1`, output-program pointer), the `vbo_vp` indexed slot,
+and the embedded vertex-program strings immediately after the call. The matching
+Quake3e source is [`tr_vbo.c`](https://github.com/ec-/Quake3e/blob/main/code/renderer/tr_vbo.c#L141-L210)
+and its `CompileVertexProgram` caller at
+[`tr_vbo.c#L450-L457`](https://github.com/ec-/Quake3e/blob/main/code/renderer/tr_vbo.c#L450-L457).
+
+`qglGenProgramsARB` is populated only when both
+`GL_ARB_vertex_program` and `GL_ARB_fragment_program` are present in the
+extension string. Quake3e's resolver gates that lookup on both tokens in
+[`tr_init.c#L523-L535`](https://github.com/ec-/Quake3e/blob/main/code/renderer/tr_init.c#L523-L535).
+The current `libgl64.c` extension string advertises multitexture, VBO, shader
+objects, and vertex/fragment *shaders*, but not either ARB *program* extension
+([`libgl64.c`](../../tools/rootfs64/libgl64/libgl64.c), extension string and
+`g_extList`). Therefore Q3 leaves `qglGenProgramsARB` null by design; there is
+no `glGenProgramsARB` GetProcAddress miss in the saved logs. The call still
+being reached means the renderer's VBO/program path ran without its required
+ARB-program pointer. Current Quake3e source has an outer null check in
+`R_BuildWorldVBO`, while `CompileVertexProgram` itself has no pointer check.
+The saved stripped binary does not establish which caller/gate differed or was
+bypassed at runtime.
+
+The Build 5 wild-jump log has no proc-resolution records, so it cannot supply
+the exact GetProcAddress list for that run. The earlier proc-traced Q3 runs
+`q3-map-r3` and `q3-map-r4` both recorded these misses:
+
+```text
+glClientActiveTextureARB
+glMultiTexCoord2fARB
+glXAllocateMemoryNV
+glXCopyContext
+glXCreatePbuffer
+glXCreatePixmap
+glXCreateWindow
+glXDestroyPbuffer
+glXDestroyPixmap
+glXDestroyWindow
+glXFreeMemoryNV
+glXQueryDrawable
+```
+
+Those `MISS` records are not NULL returns. The `glXGetProcAddressARB` fallback
+in `libgl64.c` returns the non-null `gl64_noop` stub for an unknown name. The
+two missing GL entrypoints are a separate incompleteness: the bridge advertises
+`GL_ARB_multitexture`, but does not provide real implementations of
+`glMultiTexCoord2fARB` and `glClientActiveTextureARB`. They do not match the
+faulting call's two-argument `glGenProgramsARB` signature, and they do not
+explain the zero callback slot.
+
+The extension gate is already withholding unsupported ARB vertex/fragment
+programs. Advertising them and returning placeholder functions would let Q3
+enter ARB shader compilation without a compatible WebGPU implementation. The
+safe fix is in the renderer caller: keep VBO/ARB program compilation unreachable
+when `qglGenProgramsARB` is null, or implement the full ARB program path. That
+renderer source is not part of this Boxedwine worktree. I made no bridge-code
+change; the two previously logged multitexture misses need a separate decision
+between real support and removing that extension from the advertised set.
+
+I attempted one miss-only diagnostic probe using the copied Build 5 export and
+the same Q3 map/recovery settings. It stayed queued behind other heavy probes
+for 18 minutes and never launched; I stopped it before browser startup. The
+proc-name evidence above is therefore explicitly from `q3-map-r3/r4`, not the
+Build 5 wild-jump run. No build was run.
