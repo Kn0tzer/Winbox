@@ -137,6 +137,25 @@ export function rewriteMultisampledTextures(wgsl) {
   return code;
 }
 
+/**
+ * The GPUTextureViewDimension a WGSL sampled-texture type requires: the single
+ * source for both the bind group layout entry and the view bound to it, since
+ * Dawn rejects any pipeline whose layout dimension differs from the shader's.
+ * Covers texture_{1d,2d,2d_array,3d,cube,cube_array}, their texture_depth_*
+ * and multisampled forms (multisampled textures are rewritten to 2d before
+ * the layout is built). Returns null for anything that is not a sampled
+ * texture, including texture_storage_*.
+ * @param {string} type
+ * @returns {'1d'|'2d'|'2d-array'|'3d'|'cube'|'cube-array'|null}
+ */
+export function wgslTextureViewDimension(type) {
+  const m = /^texture_(?:depth_)?(?:multisampled_)?(1d|2d|3d|cube)(_array)?\b/.exec(type);
+  if (!m) return null;
+  const base = m[1];
+  if (m[2]) return base === 'cube' ? 'cube-array' : base === '2d' ? '2d-array' : null;
+  return /** @type {any} */ (base);
+}
+
 export function scanWgslResources(wgsl) {
   /** @type {Array<{group:number, binding:number, addr:string, name:string, type:string, arrayCount:number, sourceBinding?:number}>} */
   const out = [];

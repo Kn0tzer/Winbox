@@ -7,11 +7,11 @@ import {
   swizzleBgraVb, v2DepthStencilUploads, v2ImageBlitRegion, v2TextureFormat, v2TextureMipUploadPlan, v2TexturePixels, v2VertexFormat,
   v2IndexedTriangleFanIndices, v2TriangleFanIndices,
 } from './vk-protocol.mjs';
-import { bwLogRl } from './vk-log.mjs';
+import { bwLog, bwLogRl } from './vk-log.mjs';
 import { bridgeRecoveryStats, reportBridgeFailure } from './bridge-recovery.mjs';
 import {
   parseMinBindingSize, rewritePushConstantsWGSL, rewriteResolvedDxvkPresent,
-  matchFragmentInputsToVertexOutputs, rewriteMultisampledTextures, scanWgslResources, stripNagaFragmentDepth, stripNagaYNegation, wgslUniformSizes,
+  matchFragmentInputsToVertexOutputs, rewriteMultisampledTextures, scanWgslResources, stripNagaFragmentDepth, stripNagaYNegation, wgslTextureViewDimension, wgslUniformSizes,
 } from './wgsl-utils.mjs';
 // web/vkwebgpu.mjs — the BROWSER PAGE TIER for the vk64 trap boundary: the
 // consumer for the FRAME-JSON manifest that source/vulkan/vk64bridge.cpp hops
@@ -1244,7 +1244,18 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   const pacer = createFramePacer();
   const gpuTimer = createGpuTimer(device, adapter, { log });
   const timing = { renderMs: 0, renderCount: 0, submitMs: 0, submitCount: 0, pipelineMs: 0, pipelineCount: 0, shaderModuleMs: 0, shaderModuleCount: 0 };
-  const snapshot = () => ({ ...stats, ...shaders.stats, persist: { ...persistStats }, recover: bridgeRecoveryStats() });
+  // "No silent drops": every command the replay ignores, substitutes or degrades is counted per
+  // reason and logged on a power-of-two schedule (first 4 occurrences, then the 8th, 16th, ...).
+  const dropReasons = new Map();
+  function noteDrop(reason, detail = '') {
+    const n = (dropReasons.get(reason) || 0) + 1;
+    dropReasons.set(reason, n);
+    if (n <= 4 || (n & (n - 1)) === 0) bwLog(1, 'vulkan', 'v2 dropped ' + reason + ' x' + n + (detail ? ' (' + String(detail).slice(0, 300) + ')' : ''));
+    return n;
+  }
+  const noteUnsupported = (reason, detail) => { stats.unsupported++; return noteDrop(reason, detail); };
+  const noteSkippedDraw = (reason, detail) => { stats.skippedDraws = (stats.skippedDraws || 0) + 1; return noteDrop(reason, detail); };
+  const snapshot = () => ({ ...stats, ...shaders.stats, persist: { ...persistStats }, recover: bridgeRecoveryStats(), dropReasons: Object.fromEntries(dropReasons) });
   // Page-tier metrics for the live panel: every field is measured on the page.
   const metrics = () => {
     const pace = pacer.snapshot();
@@ -1417,7 +1428,8 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     const fmt = v2TextureFormat(img.format, counters === undefined ? stats : counters, device.features);
     const hash = img.hash || (img.pixels && img.pixels.length ? fnv1a(img.pixels) : 'empty');
     const d = dimension === '3d' ? Math.max(1, img.d || 1) : 1;
-    const layers = dimension === '3d' ? 1 : Math.max(cube ? 6 : 1, img.layers || 1);
+    // A cube view needs 6 layers; a cube-array view a multiple of 6.
+    const layers = dimension === '3d' ? 1 : cube ? Math.max(6, Math.ceil((img.layers || 1) / 6) * 6) : Math.max(1, img.layers || 1);
     const mips = Math.max(1, img.mips || 1);
     return { ck: imgHex + ':' + w + 'x' + h + ':' + fmt + ':' + hash + ':' + dimension + ':' + d + ':' + layers + ':' + mips, w, h, d, layers, mips, fmt };
   }
@@ -1454,7 +1466,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           // separate upload for each copyable aspect; opaque depth24plus values
           // stay available for render passes but cannot be initialized by upload.
           const { uploads, skippedDepth } = v2DepthStencilUploads(img.format, src, device.features);
-          if (skippedDepth) stats.unsupported++;
+          if (skippedDepth) noteUnsupported('depth-upload-opaque-format', img.format);
           for (const upload of uploads) device.queue.writeTexture({ texture: t, mipLevel: subresource.mip, origin, aspect: upload.aspect }, upload.pixels,
             { bytesPerRow: subresource.bytesPerRow / (subresource.extent[0] || 1) * upload.bytesPerTexel, rowsPerImage: subresource.rowsPerImage }, extent);
         } else {
@@ -1542,7 +1554,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     if (t.startsWith('texture_') && !t.startsWith('texture_storage')) {
       const elem = /texture_\w+<(\w+)>/.exec(t)?.[1] || 'f32';
       const sampleType = v2TextureSampleType(t, elem);
-      const viewDimension = t.startsWith('texture_cube') ? 'cube' : t.includes('_array') ? '2d-array' : t.startsWith('texture_3d') ? '3d' : t.startsWith('texture_1d') ? '1d' : '2d';
+      const viewDimension = wgslTextureViewDimension(t) || '2d';
       return { binding: decl.binding, visibility: vis, texture: { sampleType, viewDimension, multisampled: false } };
     }
     const samplerType = v2SamplerLayoutType(t);
@@ -1579,7 +1591,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     fsWgsl = matchFragmentInputsToVertexOutputs(vsWgsl, fsWgsl);
     const vsR = rewritePushConstantsWGSL(vsWgsl), fsR = rewritePushConstantsWGSL(fsWgsl);
     const pushBlocks = vsR.pushBlocks + fsR.pushBlocks;
-    if (vsR.pushBlocks > 1 || fsR.pushBlocks > 1) { stats.unsupported++; return { skip: 'multi-push-block' }; }
+    if (vsR.pushBlocks > 1 || fsR.pushBlocks > 1) { noteUnsupported('multi-push-block'); return { skip: 'multi-push-block' }; }
     const hasPush = pushBlocks > 0;
 
     const declarations = scanWgslResources(vsR.code).concat(scanWgslResources(fsR.code));
@@ -1603,7 +1615,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     const byGroup = new Map();
     for (const d of decls) {
       if (d.group > 2 && !(d.group === V2_PUSH_GROUP && d.binding === V2_PUSH_BINDING && d.addr === 'uniform')) {
-        stats.unsupported++; return { skip: 'group-out-of-range' };
+        noteUnsupported('group-out-of-range', d.group); return { skip: 'group-out-of-range' };
       }
       if (!byGroup.has(d.group)) byGroup.set(d.group, []);
       byGroup.get(d.group).push(d);
@@ -1615,7 +1627,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       const entries = [];
       for (const d of byGroup.get(g) || []) {
         const e = layoutEntryFor(d);
-        if (!e) { stats.unsupported++; return { skip: 'decl-kind:' + d.type }; }
+        if (!e) { noteUnsupported('decl-kind', d.type); return { skip: 'decl-kind:' + d.type }; }
         entries.push(e);
       }
       if (g === V2_PUSH_GROUP && hasPush && !entries.some(e => e.binding === V2_PUSH_BINDING))
@@ -1635,7 +1647,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       for (const va of pipe.va) {
         if (va.binding !== vb.binding) continue;
         const vf = v2VertexFormat(va.format);
-        if (!vf) { stats.unsupported++; return { skip: 'vertex-format:' + va.format }; }
+        if (!vf) { noteUnsupported('vertex-format', va.format); return { skip: 'vertex-format:' + va.format }; }
         attributes.push({ shaderLocation: va.location, offset: va.offset, format: vf });
         const scaling = V2_SCALED_VERTEX[va.format];
         if (scaling) scaled.push({ ...scaling, srcOffset: va.offset, attribute: attributes[attributes.length - 1] });
@@ -1645,7 +1657,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       // change the distance between vertices (zero also means constant data).
       const stride = vb.stride;
       if ((!scaled.length && stride % 4) || (scaled.length && !stride)) {
-        stats.unsupported++; return {skip:'vertex-stride:' + stride};
+        noteUnsupported('vertex-stride', stride); return {skip:'vertex-stride:' + stride};
       }
       let arrayStride = scaled.length ? Math.ceil(Math.max(stride, minStride, 4) / 4) * 4 : stride;
       for (const a of scaled) { a.dstOffset = arrayStride; a.attribute.offset = arrayStride; arrayStride += a.components * 4; }
@@ -1662,12 +1674,12 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           // Older Dawn versions require an attribute to fit in its stride.
           // Rebase another stream onto the same buffer; keep vertex spacing.
           const offset = Math.floor(attribute.offset / 4) * 4;
-          if (attribute.offset - offset + size > arrayStride) {stats.unsupported++;return {skip:'overlapping-vertex-format'};}
+          if (attribute.offset - offset + size > arrayStride) {noteUnsupported('overlapping-vertex-format');return {skip:'overlapping-vertex-format'};}
           addStream([{...attribute,offset:attribute.offset-offset}],offset);
         }
       }
       if (baseAttributes.length || !slots.length) addStream(baseAttributes);
-      if (buffers.length > (device.limits?.maxVertexBuffers || 8)) {stats.unsupported++;return {skip:'vertex-buffer-slot-limit'};}
+      if (buffers.length > (device.limits?.maxVertexBuffers || 8)) {noteUnsupported('vertex-buffer-slot-limit', buffers.length);return {skip:'vertex-buffer-slot-limit'};}
       slotOf.set(vb.binding,slots);
       const attrs44 = [];
       for (const va of pipe.va) if (va.binding === vb.binding && va.format === 44) attrs44.push(va.offset);
@@ -1683,7 +1695,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         if (pipe.stencil?.enabled) throw new Error('stencil testing without a stencil aspect');
         stencil.state.stencilWriteMask = 0;
       }
-    } catch (error) { stats.unsupported++; return { skip: error.message }; }
+    } catch (error) { noteUnsupported('pipeline-build-threw', error.message); return { skip: error.message }; }
     device.pushErrorScope('validation');
     const bwModuleT0 = metricsNow();
     const vertexModule = device.createShaderModule({ code: vsR.code });
@@ -1716,7 +1728,14 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     const err = await device.popErrorScope();
     timing.pipelineMs += metricsNow() - bwPipeT0;
     timing.pipelineCount++;
-    if (err) { stats.unsupported++; return { skip: 'pipeline-rejected:' + err.message }; }
+    if (err) {
+      noteUnsupported('pipeline-rejected', err.message.split(' - ')[0]);
+      // Surface the offending declarations: Dawn's message names only group/binding.
+      const where = /@group\((\d+)\) @binding\((\d+)\)/.exec(err.message);
+      const decl = where ? [['vs', vsR.code], ['fs', fsR.code]].flatMap(([stage, code]) =>
+        code.split('\n').filter(l => l.includes(`@group(${where[1]}) @binding(${where[2]})`)).map(l => stage + ': ' + l.trim())).join(' | ') : '';
+      return { skip: 'pipeline-rejected:' + err.message.split(' - ')[0] + (decl ? ' [' + decl + ']' : '') };
+    }
     const rec = { key, pipeline, layouts, decls, hasPush, slotOf, maxGroup, vbWalk, stripIndexType, blendConstantMode, stencilReference:stencil.reference };
     pipelines.set(key, rec);
     return rec;
@@ -1780,6 +1799,8 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       if (group === V2_PUSH_GROUP) continue;
       if (t.startsWith('texture_') && !t.startsWith('texture_storage')) {
         const n = Math.max(1, d.arrayCount || 1);
+        const dimension = wgslTextureViewDimension(t) || '2d';
+        const cube = dimension === 'cube' || dimension === 'cube-array';
         for (let k = 0; k < n; k++) {
           const b = bindingForElement(bindings, d.binding, k);
           const imgHex = b && b.kind === 2 ? F.views.get(b.obj) : null;
@@ -1790,7 +1811,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
             : null;
           if (ak) parts.push('a' + d.binding + ':' + k + ':' + ak + ':format' + (img?.format || 0));
           else {
-            parts.push('t' + d.binding + ':' + k + ':' + (img ? textureKey(imgHex, img, null, t.startsWith('texture_cube')).ck : 'blank'));
+            parts.push('t' + d.binding + ':' + k + ':' + (img ? textureKey(imgHex, img, null, cube, dimension).ck : 'blank'));
           }
         }
       } else if (t === 'sampler' || t === 'sampler_comparison') {
@@ -1862,17 +1883,17 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           // Sampled-image alias replay: when this VkImage was a render target
           // earlier in the frame, sample the texture actually rendered into —
           // its IMAGE_DATA record carries the view->image link but no pixels.
-          const cube = t.startsWith('texture_cube');
-          const dimension = t.startsWith('texture_1d') ? '1d' : t.startsWith('texture_3d') ? '3d' : t.includes('_array') ? '2d-array' : cube ? 'cube' : '2d';
+          const dimension = wgslTextureViewDimension(t) || '2d';
+          const cube = dimension === 'cube' || dimension === 'cube-array';
           let aliasTex = !cube && dimension === '2d' && v2ImageKnown(imgHex)
             ? (targets.get(v2ImageTargetKey(imgHex, false)) || targets.get(v2ImageTargetKey(imgHex, true)))
             : null;
           if (aliasTex) stats.aliased++;
           const img = imgHex && imageForView(b?.obj, imgHex);
           const imgFormat = img ? v2TextureFormat(img.format, stats, device.features) : null;
-          if (img && !imgFormat) return null;
+          if (img && !imgFormat) { noteDrop('bind-group-image-format-unsupported', img.format); return null; }
           let texture = aliasTex || (img ? gpuTextureFor(imgHex, img, cube, dimension) : blankTex(cube, dimension, t.startsWith('texture_depth')));
-          if (!texture) return null;
+          if (!texture) { noteDrop('bind-group-texture-unavailable', imgHex); return null; }
           // WebGPU ties the shader's sample type to the texture format: a
           // depth texture cannot satisfy texture_2d<f32> (D3D11 shaders sample
           // depth targets as plain floats) and a colour texture cannot satisfy
@@ -1889,7 +1910,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           // time (and then takes no format override): integer element types read
           // the stencil, the rest the depth.
           const aspect = String(texture.format || '').includes('stencil') ? (/<[ui]32>/.test(t) ? 'stencil-only' : 'depth-only') : undefined;
-          views.push(aliasTex ? aliasTex.createView(aspect ? { aspect } : imgFormat ? { format: imgFormat } : {}) : texture.createView({ dimension: cube ? 'cube' : dimension, ...(aspect ? { aspect } : {}) }));
+          views.push(aliasTex ? aliasTex.createView(aspect ? { aspect } : imgFormat ? { format: imgFormat } : {}) : texture.createView({ dimension, ...(aspect ? { aspect } : {}) }));
         }
         entries.push({ binding: d.binding, resource: d.arrayCount > 1 ? views : views[0] });
       } else if (t === 'sampler' || t === 'sampler_comparison') {
@@ -1961,7 +1982,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           entries.push({ binding: d.binding, resource: mk(0) });
         }
       } else if (t.startsWith('texture_storage')) {
-        stats.unsupported++; // DXVK's D3D9 path rarely writes storage images
+        noteUnsupported('storage-texture-binding-blank', d.type); // DXVK's D3D9 path rarely writes storage images
         entries.push({ binding: d.binding, resource: blankTex().createView() });
       }
     }
@@ -2073,7 +2094,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         const texBinding = knownImage ? GPUTextureUsage.TEXTURE_BINDING : 0;
         if (a.isDepth) {
           passDepthFormat = a.format ? v2TextureFormat(a.format, stats, device.features) : 'depth24plus';
-          if (!passDepthFormat) { unsupportedAttachment = true; continue; }
+          if (!passDepthFormat) { noteUnsupported('pass-depth-format-unsupported', a.format); unsupportedAttachment = true; continue; }
           const tex = target(v2TargetKey(a.imageId, p.w, p.h, samples, true), {
             size: [p.w, p.h], sampleCount: samples, format: passDepthFormat,
             usage: GPUTextureUsage.RENDER_ATTACHMENT | texBinding,
@@ -2083,7 +2104,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           depthAttachment = a;
         } else {
           const viewFormat = a.format ? v2TextureFormat(a.format, stats, device.features) : format;
-          if (!viewFormat) { unsupportedAttachment = true; continue; }
+          if (!viewFormat) { noteUnsupported('pass-color-format-unsupported', a.format); unsupportedAttachment = true; continue; }
           const storage = colorStorage(viewFormat);
           const slot = colorAttachments.length;
           passColorFormats.push(viewFormat);
@@ -2181,12 +2202,12 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
             if (passEnc) throw new Error('image blit inside a render pass');
             const srcImage = F.images.get(op.srcImage), dstImage = F.images.get(op.dstImage);
             if (!srcImage || !dstImage || srcImage.d > 1 || dstImage.d > 1 ||
-                !V2_COLOR_ATTACHMENT_FORMATS.includes(dstImage.format)) { stats.unsupported++; break; }
+                !V2_COLOR_ATTACHMENT_FORMATS.includes(dstImage.format)) { noteUnsupported('blit-unsupported-images', op.srcImage + '->' + op.dstImage); break; }
             const region = v2ImageBlitRegion(op, srcImage, dstImage);
             const srcFormat = v2TextureFormat(srcImage.format, stats, device.features);
             const dstFormat = v2TextureFormat(dstImage.format, stats, device.features);
             if (!region || !srcFormat || !dstFormat || /(?:uint|sint)/.test(srcFormat) || /(?:uint|sint)/.test(dstFormat)) {
-              stats.unsupported++; break;
+              noteUnsupported('blit-region-or-format', `${srcImage.format}->${dstImage.format}`); break;
             }
             const imageDimension = image => image.layers > 1 ? '2d-array' : '2d';
             const source = targets.get(v2ImageTargetKey(op.srcImage, false)) ||
@@ -2194,7 +2215,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
             const destination = targets.get(v2ImageTargetKey(op.dstImage, false)) ||
               (F.images.has(op.dstImage) && gpuTextureFor(op.dstImage, dstImage, false, imageDimension(dstImage)));
             if (!source || !destination || source === destination && op.srcMip === op.dstMip && op.srcLayer === op.dstLayer) {
-              stats.unsupported++; break;
+              noteUnsupported('blit-missing-or-self-copy', op.srcImage + '->' + op.dstImage); break;
             }
             try {
               const pipeline = imageBlitPipeline(dstFormat, op.filter);
@@ -2210,16 +2231,16 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
               const pass = encoder.beginRenderPass({ colorAttachments: [{ view: dstView, loadOp: 'load', storeOp: 'store' }] });
               pass.setPipeline(pipeline); pass.setBindGroup(0, group);
               pass.setViewport(region.viewport[0], region.viewport[1], region.viewport[2], region.viewport[3], 0, 1); pass.draw(3); pass.end();
-            } catch {
-              stats.unsupported++;
+            } catch (error) {
+              noteUnsupported('blit-threw', error.message);
             }
             break;
           }
           case 'clearAttachments': {
-            if(!passEnc) {stats.unsupported++;break;}
+            if(!passEnc) {noteUnsupported('clear-attachments-outside-pass');break;}
             for(const attachment of op.attachments) {
               const aspect=attachment.aspectMask;
-              if(((aspect&1)&&attachment.colorAttachment>=passColorFormats.length) || ((aspect&6)&&!depthView) || ((aspect&4)&&!passDepthFormat.includes('stencil')) || ((aspect&6)&~passDepthAspects)) {stats.unsupported++;continue;}
+              if(((aspect&1)&&attachment.colorAttachment>=passColorFormats.length) || ((aspect&6)&&!depthView) || ((aspect&4)&&!passDepthFormat.includes('stencil')) || ((aspect&6)&~passDepthAspects)) {noteUnsupported('clear-attachment-not-in-pass', 'aspect=' + aspect + ' slot=' + attachment.colorAttachment);continue;}
               const rec=attachmentClearPipeline(passColorFormats,depthView?passDepthFormat:null,passSamples,attachment);
               const bytes=new Uint8Array(32),data=new DataView(bytes.buffer);
               attachment.colorBits.forEach((v,i)=>data.setUint32(i*4,v,true));data.setFloat32(16,attachment.depth,true);
@@ -2229,7 +2250,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
               if(aspect&4) passEnc.setStencilReference(attachment.stencil&255);
               passEnc.setViewport(0,0,p.w,p.h,0,1);
               for(const rect of op.rects) {
-                if(rect.baseLayer!==0||rect.layers!==1) {stats.unsupported++;continue;}
+                if(rect.baseLayer!==0||rect.layers!==1) {noteUnsupported('clear-rect-layers', rect.baseLayer + '+' + rect.layers);continue;}
                 const x=Math.max(0,rect.x),y=Math.max(0,rect.y),w=Math.min(p.w,rect.x+rect.w)-x,h=Math.min(p.h,rect.y+rect.h)-y;
                 if(w<=0||h<=0) continue;
                 passEnc.setScissorRect(x,y,w,h);passEnc.draw(3,1,0,0);
@@ -2255,7 +2276,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           case 'rasterState': st[op.which]=op.value; break;
           case 'imageClearDS': {
             // vkCmdClearDepthStencilImage: one clearing render pass per cleared mip/layer.
-            if (passEnc) { stats.unsupported++; break; }
+            if (passEnc) { noteUnsupported('clear-ds-inside-pass'); break; }
             const img = F.images.get(op.image);
             let tex = targets.get(v2ImageTargetKey(op.image, true));
             if (!tex && img) {
@@ -2264,7 +2285,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
                 size: [img.w, img.h], format: fmt, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
               });
             }
-            if (!tex || !tex.format.startsWith('depth')) { stats.unsupported++; break; }
+            if (!tex || !tex.format.startsWith('depth')) { noteUnsupported('clear-ds-no-depth-texture', op.image); break; }
             const hasStencil = tex.format.includes('stencil');
             for (const rg of op.ranges) {
               const levels = rg.levelCount === 0xffffffff ? tex.mipLevelCount - rg.baseMip : rg.levelCount;
@@ -2293,18 +2314,18 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           case 'ibind': st.ibind = op; break;
           case 'draw': {
             if (diagOn) passDiagDraws.raw++;
-            if (skipped) { if (diagOn) v2DiagNoteSkip(passDiagDraws.skips, 'pass-skipped'); break; }
-            if (!passEnc || !st.pipeDesc) { if (diagOn) v2DiagNoteSkip(passDiagDraws.skips, !passEnc ? 'no-encoder' : 'no-pipeline-bound'); break; }
+            if (skipped) { noteSkippedDraw('draw-pass-skipped'); if (diagOn) v2DiagNoteSkip(passDiagDraws.skips, 'pass-skipped'); break; }
+            if (!passEnc || !st.pipeDesc) { noteSkippedDraw(!passEnc ? 'draw-no-encoder' : 'draw-no-pipeline-bound'); if (diagOn) v2DiagNoteSkip(passDiagDraws.skips, !passEnc ? 'no-encoder' : 'no-pipeline-bound'); break; }
             if (diagOn) { passDiagDraws.draws++; passDiagDraws.vs.add(st.pipeDesc.vsHash); passDiagDraws.fs.add(st.pipeDesc.fsHash); if (passDiagDraws.list.length < 24) passDiagDraws.list.push([st.pipeDesc.vsHash, st.pipeDesc.fsHash, op.indexed ? op.indexCount : op.vertexCount, op.instanceCount, v2DiagDescribeBindings(st.sets, F, targets)]); }
             let drawPipe;
             try {drawPipe=v2StencilPipeline(st.pipeDesc,st.dynamicStencil);}
-            catch(error) {stats.unsupported++;stats.skippedDraws=(stats.skippedDraws||0)+1;if (diagOn) v2DiagNoteSkip(passDiagDraws.skips, 'stencil:' + error.message);break;}
+            catch(error) {noteUnsupported('draw-stencil-pipeline', error.message);noteSkippedDraw('draw-stencil-pipeline');if (diagOn) v2DiagNoteSkip(passDiagDraws.skips, 'stencil:' + error.message);break;}
             if ((drawPipe.cullDynamic && st.cull !== undefined) || (drawPipe.frontDynamic && st.front !== undefined))
               drawPipe = {...drawPipe, ...(drawPipe.cullDynamic && st.cull !== undefined ? {cull:st.cull} : {}), ...(drawPipe.frontDynamic && st.front !== undefined ? {front:st.front} : {})};
             if (drawPipe.depthBiasDynamic && st.depthBias)
               drawPipe = {...drawPipe,depthBiasConstantFactor:st.depthBias.constantFactor,depthBiasClamp:st.depthBias.clamp,depthBiasSlopeFactor:st.depthBias.slopeFactor};
             const selected=await getPipelineFor(drawPipe,passSamples,st.pipeNeg,!!depthView,st.ibind?.indexType||0,passColorFormats,passDepthFormat,passDepthAspects);
-            if(selected.skip) {stats.skippedDraws=(stats.skippedDraws||0)+1;if (diagOn) v2DiagNoteSkip(passDiagDraws.skips, 'vs=' + st.pipeDesc.vsHash + ' fs=' + st.pipeDesc.fsHash + ' ' + selected.skip);break;}
+            if(selected.skip) {noteSkippedDraw('draw-pipeline-skipped', 'vs=' + st.pipeDesc.vsHash + ' fs=' + st.pipeDesc.fsHash + ' ' + String(selected.skip).slice(0, 160));if (diagOn) v2DiagNoteSkip(passDiagDraws.skips, 'vs=' + st.pipeDesc.vsHash + ' fs=' + st.pipeDesc.fsHash + ' ' + selected.skip);break;}
             st.pipeRec=selected;
             passEnc.setPipeline(selected.pipeline);
             if (st.viewport) {
@@ -2331,7 +2352,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
             }
             if (st.pipeRec.stripIndexType !== undefined && st.pipeRec.stripIndexType !== (st.ibind?.indexType || 0)) {
               const rec = await getPipelineFor(drawPipe, passSamples, st.pipeNeg, !!depthView, st.ibind?.indexType || 0, passColorFormats, passDepthFormat, passDepthAspects);
-              if (rec.skip) break;
+              if (rec.skip) { noteSkippedDraw('draw-strip-index-pipeline-skipped', rec.skip); break; }
               st.pipeRec = rec;
               passEnc.setPipeline(rec.pipeline);
             }
@@ -2361,7 +2382,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
               } else persistStats.groupHits++;
               passEnc.setBindGroup(g, bg);
             }
-            if (invalidBindGroup) { stats.skippedDraws = (stats.skippedDraws || 0) + 1; break; }
+            if (invalidBindGroup) { noteSkippedDraw('draw-bind-group-invalid', 'vs=' + st.pipeDesc.vsHash + ' fs=' + st.pipeDesc.fsHash); break; }
             if (st.pipeRec.hasPush) {
               // Queue writes all precede the encoded draws at submit time.
               // Give each distinct push state immutable storage so a later
@@ -2385,7 +2406,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
               if (!slots) continue;
               const bytes = F.buffers.get(vb.buf);
               const preHash = F.bufHashes ? F.bufHashes.get(vb.buf) : null; // always use bridge hash
-              if (!bytes && !preHash) continue;
+              if (!bytes && !preHash) { noteDrop('draw-vertex-buffer-missing', 'buf=' + vb.buf + ' binding=' + vb.binding); continue; }
               let vkey = vb.buf, vbytes = bytes;
               const walk = (st.pipeRec.vbWalk || []).find(w => w.binding === vb.binding);
               const swizzled = walk && walk.attrs44.length;
@@ -2403,7 +2424,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
                 if (scaled && vbytes) vbytes = repackScaledVb(vbytes.subarray(vb.offset), walk.stride, walk.outputStride, walk.scaled);
                 gpu = gpuBufferFor(vkey, vbytes, usage, preHash);
               }
-              if (!gpu) continue;
+              if (!gpu) { noteDrop('draw-vertex-buffer-gpu-failed', 'buf=' + vb.buf + ' binding=' + vb.binding); continue; }
               for (const {slot,offset} of slots) {
                 passEnc.setVertexBuffer(slot, gpu, scaled ? offset : Math.min(vb.offset + offset, gpu.size));
                 vbSet.add(slot);
@@ -2418,7 +2439,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
               let indices, cacheKey;
               if (op.indexed && st.ibind) {
                 const bytes = F.buffers.get(st.ibind.buf);
-                if (!bytes) { stats.unsupported++; break; }
+                if (!bytes) { noteUnsupported('draw-fan-index-bytes-missing', st.ibind.buf); noteSkippedDraw('draw-fan-index-bytes-missing'); break; }
                 const hash = F.bufHashes?.get(st.ibind.buf) || fnv1a(bytes);
                 const indexByteOffset = Math.min(Math.max(0, st.ibind.offset), bytes.byteLength);
                 indices = v2IndexedTriangleFanIndices(bytes.subarray(indexByteOffset), st.ibind.indexType, op.firstIndex, op.indexCount,
@@ -2427,7 +2448,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
               } else if (!op.indexed) {
                 indices = v2TriangleFanIndices(op.vertexCount, op.firstVertex);
                 cacheKey = `fan-vertices:${op.firstVertex}:${op.vertexCount}`;
-              } else { stats.unsupported++; break; }
+              } else { noteUnsupported('draw-fan-indexed-without-index-buffer'); noteSkippedDraw('draw-fan-indexed-without-index-buffer'); break; }
               if (indices.length) {
                 const gpu = gpuBufferFor(cacheKey, new Uint8Array(indices.buffer), GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST);
                 if (gpu) {
@@ -2440,19 +2461,19 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
               if (indexed && st.ibind) {
                 const bytes = F.buffers.get(st.ibind.buf);
                 const preHash = F.bufHashes ? F.bufHashes.get(st.ibind.buf) : null; // always use bridge hash
-                if (!bytes && !preHash) indexed = false;
+                if (!bytes && !preHash) { noteDrop('draw-index-buffer-missing-as-nonindexed', st.ibind.buf); indexed = false; }
                 else {
                   const gpu = gpuBufferFor(st.ibind.buf, bytes, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST, preHash);
-                  if (!gpu) indexed = false;
+                  if (!gpu) { noteDrop('draw-index-buffer-gpu-failed-as-nonindexed', st.ibind.buf); indexed = false; }
                   else passEnc.setIndexBuffer(gpu, st.ibind.indexType ? 'uint32' : 'uint16', Math.min(st.ibind.offset, gpu.size));
                 }
-              } else if (indexed) indexed = false;
+              } else if (indexed) { noteDrop('draw-indexed-without-index-buffer-as-nonindexed'); indexed = false; }
               if (indexed) passEnc.drawIndexed(op.indexCount, op.instanceCount, op.firstIndex, op.vertexOffset, op.firstInstance);
               else if (op.vertexCount > 0) passEnc.draw(op.vertexCount, op.instanceCount, op.firstVertex, op.firstInstance);
             }
             break;
           }
-          default: break;
+          default: noteUnsupported('unknown-replay-op', op.op); break;
         }
         if (skipped) break;
       }
