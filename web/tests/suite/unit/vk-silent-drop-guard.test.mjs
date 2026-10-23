@@ -25,7 +25,7 @@ test('bridge drop guards always log before discarding work', () => {
 });
 
 test('render submit command default paths report unsupported commands', () => {
-  const commandSwitch = body(bridge, 'switch (k.kind)');
+  const commandSwitch = body(bridge.slice(bridge.lastIndexOf('switch (k.kind)')), 'switch (k.kind)');
   assert.match(commandSwitch, /case CMD_DISPATCH:[\s\S]*?vk64Unsupported\("compute-dispatch"/);
   assert.match(commandSwitch, /default:[\s\S]*?vk64Unsupported\("unknown-cmd-kind"/);
 });
