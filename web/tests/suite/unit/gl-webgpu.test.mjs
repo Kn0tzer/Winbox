@@ -78,3 +78,36 @@ test('GL depthRange is stored and applied to WebGPU draw viewports', async () =>
     gpu.restore();
   }
 });
+
+test('draw and read buffer selection is honored and GL errors latch until read', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: () => {} });
+    await gl.ready;
+    assert.equal(gl.getParameter(0x8824), 1, 'the WebGPU backend exposes one supported draw buffer');
+    gl.drawBuffers([0x0405]);
+    assert.equal(gl.getParameter(0x8825), 0x0405);
+    const framebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(0x8d40, framebuffer);
+    assert.equal(gl.getParameter(0x8825), 0x8ce0, 'framebuffers default to COLOR_ATTACHMENT0');
+    gl.drawBuffers([0]);
+    gl.bindFramebuffer(0x8d40, 0);
+    assert.equal(gl.getParameter(0x8825), 0x0405, 'default framebuffer selection is independent');
+    gl.bindFramebuffer(0x8d40, framebuffer);
+    assert.equal(gl.getParameter(0x8825), 0, 'draw buffer selection is retained by its framebuffer');
+    gl.bindFramebuffer(0x8d40, 0);
+    gl.drawBuffers([0xdead]);
+    assert.equal(gl.getError(), 0x0500, 'unknown draw buffer enum raises INVALID_ENUM');
+    assert.equal(gl.getError(), 0, 'reading the GL error clears the latched error');
+    gl.drawBuffers([]);
+    assert.equal(gl.getParameter(0x8825), 0, 'an empty draw-buffer list disables color output');
+    gl.drawBuffers([0x0405]);
+
+    const pixel = new Uint8Array([9, 8, 7, 6]);
+    gl.readBuffer(0);
+    gl.readPixels(0, 0, 1, 1, 0x1908, 0x1401, pixel);
+    assert.deepEqual([...pixel], [9, 8, 7, 6], 'NONE leaves the destination untouched');
+    gl.readBuffer(0xdead);
+    assert.equal(gl.getError(), 0x0500);
+  } finally { gpu.restore(); }
+});

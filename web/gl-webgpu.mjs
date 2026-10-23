@@ -24,6 +24,8 @@ const GL = Object.freeze({
   MAX_TEXTURE_SIZE: 0x0d33,
   MAX_TEXTURE_IMAGE_UNITS: 0x8872, MAX_COMBINED_TEXTURE_IMAGE_UNITS: 0x8b4d,
   MAX_VERTEX_ATTRIBS: 0x8869,
+  MAX_DRAW_BUFFERS: 0x8824, DRAW_BUFFER0: 0x8825,
+  BACK: 0x0405, NONE: 0,
   NO_ERROR: 0, INVALID_ENUM: 0x0500, INVALID_VALUE: 0x0501,
   INVALID_OPERATION: 0x0502, OUT_OF_MEMORY: 0x0505,
   COMPILE_STATUS: 0x8b81, LINK_STATUS: 0x8b82, INFO_LOG_LENGTH: 0x8b84,
@@ -341,6 +343,9 @@ export class WebGPUGL {
     this._unpack = { alignment: 4, flipY: false, premultiplyAlpha: false, rowLength: 0, skipRows: 0, skipPixels: 0 };
     this._drawFramebuffer = defaultFramebuffer;
     this._readFramebuffer = defaultFramebuffer;
+    this._defaultBufferSelection = { draw: 0x0405, read: 0x0405 };
+    this._bufferSelections = new WeakMap();
+    this._error = GL.NO_ERROR;
     this._arrayBuffer = null;
     this._elementArrayBuffer = null;
     this._currentProgram = null;
@@ -476,6 +481,12 @@ export class WebGPUGL {
     return target === GL.READ_FRAMEBUFFER ? this._readFramebuffer : this._drawFramebuffer;
   }
 
+  _bufferSelection(framebuffer) {
+    return this._framebufferObjects.has(framebuffer)
+      ? this._bufferSelections.get(framebuffer) || { draw: 0x8ce0, read: 0x8ce0 }
+      : this._defaultBufferSelection;
+  }
+
   _targetFor(framebuffer = this._drawFramebuffer) {
     if (this._isDefaultFramebuffer(framebuffer)) return {
       default: true, framebuffer, colorTexture: this._colorTexture, depthTexture: this._depthTexture,
@@ -503,6 +514,7 @@ export class WebGPUGL {
   async _clearGpu(mask, state) {
     const target = this._targetFor(state.framebuffer);
     if (!target?.colorTexture || !target.width || !target.height) return;
+    if ((state.drawBuffer ?? this._bufferSelection(state.framebuffer).draw) === GL.NONE) mask &= ~GL.COLOR_BUFFER_BIT;
     const scissor = state.enabled.has(0x0c11);
     const fullColor = (mask & GL.COLOR_BUFFER_BIT) && state.colorMask.every(Boolean) && !scissor;
     const fullDepth = target.depthTexture && (mask & GL.DEPTH_BUFFER_BIT) && state.depthMask && !scissor;
@@ -574,7 +586,7 @@ export class WebGPUGL {
   }
 
   _clearPixels(mask, state) {
-    if (!(mask & GL.COLOR_BUFFER_BIT)) return;
+    if (!(mask & GL.COLOR_BUFFER_BIT) || (state.drawBuffer ?? this._bufferSelection(state.framebuffer).draw) === GL.NONE) return;
     const rgba = state.color.map(value => Math.round(clamp01(value) * 255));
     const target = this._targetFor(state.framebuffer), pixels = target?.pixels;
     if (!target || !pixels) return;
@@ -704,6 +716,7 @@ export class WebGPUGL {
       case GL.SCISSOR_BOX: return new Int32Array(this._scissor);
       case GL.DRAW_FRAMEBUFFER_BINDING: case GL.FRAMEBUFFER_BINDING: return this._drawFramebuffer;
       case GL.READ_FRAMEBUFFER_BINDING: return this._readFramebuffer;
+      case GL.DRAW_BUFFER0: return this._bufferSelection(this._drawFramebuffer).draw;
       case GL.ARRAY_BUFFER_BINDING: return this._arrayBuffer;
       case GL.ELEMENT_ARRAY_BUFFER_BINDING: return this._elementArrayBuffer;
       case GL.TEXTURE_BINDING_2D: return this._textureUnits[this._activeTextureUnit]?.[GL.TEXTURE_2D]?.handle || null;
@@ -718,6 +731,7 @@ export class WebGPUGL {
       case 0x0cf5: return this._unpack.alignment;
       case GL.MAX_TEXTURE_IMAGE_UNITS: return 8;
       case GL.MAX_COMBINED_TEXTURE_IMAGE_UNITS: return 8;
+      case GL.MAX_DRAW_BUFFERS: return 1;
       case 0x8869: return 16; // GL_MAX_VERTEX_ATTRIBS
       case GL.FRAMEBUFFER_COMPLETE: return GL.FRAMEBUFFER_COMPLETE;
       default: return 0;
@@ -738,6 +752,7 @@ export class WebGPUGL {
   }
 
   readPixels(x, y, width, height, format, type, destination) {
+    if (this._bufferSelection(this._readFramebuffer).read === GL.NONE) return;
     if (!(destination instanceof Uint8Array) && !(destination instanceof Uint8ClampedArray)) return;
     if (format !== 0x1908 || type !== 0x1401) return;
     const target = this._targetFor(this._readFramebuffer);
@@ -810,7 +825,8 @@ export class WebGPUGL {
       buffer.unmap();
     }).catch(error => this._reportFailure(error)).finally(() => { this._readbackBusy = false; });
   }
-  getError() { return GL.NO_ERROR; }
+  _recordError(error) { if (this._error === GL.NO_ERROR) this._error = error; }
+  getError() { const error = this._error; this._error = GL.NO_ERROR; return error; }
   isContextLost() { return false; }
   getContextAttributes() { return { alpha: true, depth: true, stencil: false, antialias: false, premultipliedAlpha: true, preserveDrawingBuffer: true }; }
   getSupportedExtensions() { return []; }
@@ -1137,7 +1153,8 @@ export class WebGPUGL {
       enabled: new Set(this._enabled), blend: { ...this._blend }, blendColor: [...this._blendColor],
       depthFunc: this._depthFunc, depthMask: this._depthMask, cullFace: this._cullFace,
       frontFace: this._frontFace, colorMask: [...this._colorMask],
-      drawFramebuffer: this._drawFramebuffer, textureUnits: this._textureUnits.map(unit => ({ ...unit })),
+      drawFramebuffer: this._drawFramebuffer, drawBuffer: this._bufferSelection(this._drawFramebuffer).draw,
+      textureUnits: this._textureUnits.map(unit => ({ ...unit })),
     };
   }
 
@@ -1354,10 +1371,12 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
   }
 
   drawArrays(mode, first, count) {
+    if (this._bufferSelection(this._drawFramebuffer).draw === GL.NONE) return;
     if (!this._currentProgram && this._fixedFunctionDraw(mode, first, count, null, this._fixedFunctionLegacyArrays || {})) return;
     const state = this._drawSnapshot(); this._mirrorDraw(state, mode, first, count, null); this._enqueue(() => this._draw(state, mode, first, count, null, 1));
   }
   drawElements(mode, count, type, offset) {
+    if (this._bufferSelection(this._drawFramebuffer).draw === GL.NONE) return;
     if (!this._currentProgram && this._fixedFunctionDraw(mode, 0, count, { type, offset }, this._fixedFunctionLegacyArrays || {})) return;
     const element = { type, offset }, state = this._drawSnapshot(); this._mirrorDraw(state, mode, 0, count, element); this._enqueue(() => this._draw(state, mode, 0, count, element, 1));
   }
@@ -1971,7 +1990,12 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     this._enqueue(() => this._ensureTextureGpu(texture));
   }
   activeTexture(texture) { this._activeTextureUnit = Math.max(0, Math.min(this._textureUnits.length - 1, (texture | 0) - 0x84c0)); }
-  createFramebuffer() { const object = { id: this._nextId++, attachments: new Map() }; this._framebufferObjects.add(object); return object; }
+  createFramebuffer() {
+    const object = { id: this._nextId++, attachments: new Map() };
+    this._framebufferObjects.add(object);
+    this._bufferSelections.set(object, { draw: 0x8ce0, read: 0x8ce0 });
+    return object;
+  }
   deleteFramebuffer(framebuffer) { this._framebufferObjects.delete(framebuffer); if (this._drawFramebuffer === framebuffer) this._drawFramebuffer = 0; if (this._readFramebuffer === framebuffer) this._readFramebuffer = 0; }
   isFramebuffer(framebuffer) { return this._framebufferObjects.has(framebuffer); }
   bindFramebuffer(target, framebuffer) {
@@ -2099,8 +2123,23 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       this._device.queue.submit([encoder.finish()]);
     });
   }
-  drawBuffers() {}
-  readBuffer() {}
+  drawBuffers(buffers) {
+    const values = Array.from(buffers || []);
+    if (!values.length) { this._bufferSelection(this._drawFramebuffer).draw = GL.NONE; return; }
+    if (values.length > 1) { this._recordError(GL.INVALID_OPERATION); return; }
+    const defaultFramebuffer = this._isDefaultFramebuffer(this._drawFramebuffer);
+    const expected = defaultFramebuffer ? GL.BACK : 0x8ce0;
+    if (values[0] !== GL.NONE && values[0] !== GL.BACK && !(values[0] >= 0x8ce0 && values[0] <= 0x8cff)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (values[0] !== GL.NONE && values[0] !== expected) { this._recordError(GL.INVALID_OPERATION); return; }
+    this._bufferSelection(this._drawFramebuffer).draw = values[0];
+  }
+  readBuffer(mode) {
+    const defaultFramebuffer = this._isDefaultFramebuffer(this._readFramebuffer);
+    const expected = defaultFramebuffer ? GL.BACK : 0x8ce0;
+    if (mode !== GL.NONE && mode !== GL.BACK && !(mode >= 0x8ce0 && mode <= 0x8cff)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (mode !== GL.NONE && mode !== expected) { this._recordError(GL.INVALID_OPERATION); return; }
+    this._bufferSelection(this._readFramebuffer).read = mode;
+  }
 }
 
 /** Create a context object for the GL64 bridge's post-create GLctx hook. */
