@@ -93,7 +93,7 @@ void testPidfd64Syscalls() {
         ksyscall64(&cpu);
         return cpu.reg[X64_RAX].u64;
     };
-    U64 fd = syscall(434, process->id, 0x80000 | 0x800, 0, 0);
+    U64 fd = syscall(434, process->id, 0x80000, 0, 0);
     if ((S64)fd < 0) {
         testFail("pidfd_open(self) returned %lld", (long long)(S64)fd);
         return;

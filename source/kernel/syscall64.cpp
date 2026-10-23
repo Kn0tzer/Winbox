@@ -4133,14 +4133,13 @@ void ksyscall64(CPU64* cpu) {
             break;
         }
         case X64_SYS_pidfd_open: {
-            constexpr U64 PIDFD_NONBLOCK = 0x800;
             constexpr U64 O_CLOEXEC = 0x80000;
-            if (a2 & ~(PIDFD_NONBLOCK | O_CLOEXEC)) { ret = (U64)-K_EINVAL; break; }
+            if (a2 & ~O_CLOEXEC) { ret = (U64)-K_EINVAL; break; }
             if (!cpu->thread || !cpu->thread->process || a1 > UINT32_MAX) { ret = (U64)-K_ESRCH; break; }
             const U32 pid = a1 ? (U32)a1 : cpu->thread->process->id;
             KProcessPtr target = pid == cpu->thread->process->id ? cpu->thread->process : KSystem::getProcess(pid);
             if (!target) { ret = (U64)-K_ESRCH; break; }
-            std::shared_ptr<KPidFd> object = std::make_shared<KPidFd>(target, (a2 & PIDFD_NONBLOCK) != 0);
+            std::shared_ptr<KPidFd> object = std::make_shared<KPidFd>(target, false);
             const U32 descriptorFlags = (a2 & O_CLOEXEC) ? FD_CLOEXEC : 0;
             KFileDescriptorPtr result = cpu->thread->process->allocFileDescriptor(object, K_O_RDWR, descriptorFlags, -1, 0);
             ret = result ? result->handle : (U64)-K_EMFILE;
