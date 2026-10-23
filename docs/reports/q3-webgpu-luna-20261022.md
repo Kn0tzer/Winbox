@@ -243,9 +243,8 @@ in CPU-backed window presentation/readback.
 The focused GL/Q3 unit run passed 35 tests, including Naga validation of the
 two-texture WGSL, separate unit-0/unit-1 UV buffers, immediate-mode coordinates,
 ABI/handler/proc registration, and the Q3 `r_vbo`/map arguments. Node syntax
-checks and `git diff --check` also passed. I did not build or run the browser
-probe: this source is awaiting the scheduled Build 6 export, so visual map
-rendering and first-frame timing remain unverified for these changes.
+checks and `git diff --check` also passed. At the time of this entry the source
+was awaiting Build 6; the browser verification is recorded below.
 
 ## Q3 extension advertisement audit (Luna, 2026-10-23)
 
@@ -279,5 +278,35 @@ paths have registered, non-fallback wrappers and that the unsupported Q3
 feature tokens stay absent in both string forms. This audit found no remaining
 Q3 extension-gate/proc mismatch after the multitexture implementation; it
 needed regression coverage and report correction, not another bridge behavior
-change. The focused GL/Q3 unit command passed 39 tests, with 0 failures. No
-build or browser probe was run; Build 6 verification remains pending.
+change. The focused GL/Q3 unit command passed 39 tests, with 0 failures. That
+static audit did not build or probe; Build 6 browser results follow.
+
+## Build 6 Q3 browser verification (Luna, 2026-10-23)
+
+I ran the existing Q3 archive against the read-only Build 6 dist from
+`integ/winbox-20261022b`, Git SHA `4f603f50f71a9e4dd6d2c0c3b32fca53acbb31af`
+(`wasm_sha256` prefix `b0438f56f93a`). Both probes used JIT and recovery,
+`+set r_vbo 0`, and `+map q3dm1`; no build was run.
+
+The initial run mapped the first SDL window 126.8 seconds after launch. Its
+60-second capture showed Q3's renderer initialization console. At +120 and +240
+seconds the screen showed the Quake logo and `CONNECTING TO LOCALHOST / AWAITING
+CONNECTION...0`. An extended run mapped the first window in 76.4 seconds and
+captured at +360 seconds. That screenshot showed the richly textured Q3DM1
+arena view, distinct from the packaged 128x128 `levelshots/Q3DM1.jpg`, with
+`LOADING Q3DM1`, `CONNECTING TO LOCALHOST`, and `LOADING... MAPS/Q3DM1.BSP`
+overlaid. This confirms that a Q3DM1 view is drawn through the WebGPU GL path,
+but the map load has not completed and gameplay/control is not confirmed.
+
+Both runs reported `gl64: host GL up (WebGPU)`, no WebGPU bridge failures, no
+page errors, and no probe exception. The trace logged the first indexed GL draw
+(`mode=0x4`, 12 indices). The next visible blocker is the local-host connection
+and BSP load remaining in progress. Wine also logged `getaddrinfo Failed to
+resolve your host name IP` and a guest UDP socket failure for domain 10
+(AF_INET6), errno 97. Those network diagnostics may be related to the local
+connect wait, but their causal link is not established; trace the Q3 local
+server/client handshake next. FPS is not established: one SDL metrics sample in
+the initial run reported 2.0 FPS / 502.92 ms, while the later capture had no
+usable presentation sample.
+
+Evidence: [Build 6 +120s capture](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-4f603f50f/mapped-plus-120s.png), [Build 6 +240s capture](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-4f603f50f/mapped-plus-240s.png), [Build 6 +360s capture](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-4f603f50f-360/mapped-plus-360s.png), [initial run summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-4f603f50f/summary.json), [extended run summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-4f603f50f-360/summary.json), and [extended run console](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-4f603f50f-360/console.log).
