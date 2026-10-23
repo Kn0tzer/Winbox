@@ -46,8 +46,14 @@ const exe = process.env.GAME_EXE || profile.exe;
 const arch = process.env.GAME_ARCH || profile.arch;
 const args = process.env.GAME_ARGS ? JSON.parse(process.env.GAME_ARGS) : profile.args;
 const glVersion = process.env.GL_VERSION || '3.2';
+const probeJit = process.env.PROBE_JIT ?? '0';
+const probeRecover = process.env.PROBE_RECOVER ?? '1';
+const wildJump = process.env.WILDJUMP === '1';
+const unimplDump = process.env.UNIMPLDUMP === '1';
 if (!['x86', 'x64'].includes(arch) || !Array.isArray(args) || args.some(arg => typeof arg !== 'string'))
   throw new Error('Invalid GAME_ARCH or GAME_ARGS');
+if (!['0', '1'].includes(probeJit) || !['0', '1'].includes(probeRecover))
+  throw new Error('PROBE_JIT and PROBE_RECOVER must be 0 or 1');
 
 const outputDir = resolve(process.env.OUT || join(workRoot, 'evidence', game));
 const gameZip = resolve(process.env.GAME_ZIP || join(workRoot, `${game}-probe.zip`));
@@ -101,6 +107,10 @@ const result = {
   args,
   glVersion,
   backend: 'WebGPU default',
+  jit: probeJit,
+  recover: probeRecover,
+  wildJump,
+  unimplDump,
   gameRoot,
   gameZip,
   outputDir,
@@ -111,7 +121,7 @@ const result = {
 const record = line => {
   lines.push(line);
   if (line.includes('wine: failed to open') && line.includes(exe)) appLaunchFailure = line;
-  if (/pageerror|http-error|first window mapped|gl-webgpu|gl64: host GL|TODO:|Unhandled exception|failed to open/.test(line))
+  if (/pageerror|http-error|first window mapped|gl-webgpu|gl64: host GL|TODO:|Unhandled exception|failed to open|BW64_WILDJUMP|CPU64:.*(?:unimpl|#GP)/.test(line))
     process.stdout.write(line.split('\n')[0].slice(0, 500) + '\n');
 };
 
@@ -181,7 +191,11 @@ try {
     session: '0',
     persist: '0',
     fresh: '1',
+    jit: probeJit,
+    recover: probeRecover,
   });
+  if (wildJump) query.set('wildjump', '1');
+  if (unimplDump) query.set('unimpldump', '1');
   if (process.env.GL_TRACE) query.set('gltrace', process.env.GL_TRACE);
   const launchAt = Date.now();
   result.launchUrl = `${base}/dist/runtime/index.html?${query}`;
