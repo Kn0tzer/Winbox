@@ -3,12 +3,13 @@
 Main branch: `fix/winbox-chromium-20261018` in /home/ubuntu/boxedwine64 (local only, unpushed, undeployed).
 Last merged: glsh, recover, gb, loopback sockets, WebGPU GL (HEAD 723b3a056 builds and maps notepad jit=0 in 43 s). Earlier final report: docs/reports/winbox-finish-20261020.md.
 
-## Demo matrix on integ build 2026-10-22 (main + solhang + solq3 commits; seconds click -> mapped, jit0/jit1)
-notepad 56/61, snake 47/54, doom 47/54, celeste 22/52, portal 25/47 - all mapped. gangbeasts not mapped (either setting).
-Merged: solhang socket/loopback fixes, solq3 WebGPU fixed-function menus and framebuffer mip fix. Q3 and Mindustry not re-verified end to end.
+## Demo matrix on integ build 2026-10-22/23 (main + solhang + solq3 + jitpar + gb2 + cpu32b; seconds click -> mapped, jit0/jit1)
+notepad 78/122, snake 79/82, celeste 27/31, portal 30/38, doom 53/85, gangbeasts 207/204 - ALL MAP (first time for Gang Beasts: wine suspend-thread signals now interrupt blocked 64-bit syscalls). Notepad/snake times were measured under load ~10. Unit suite 159/159.
+Next integ build (in progress) adds: Portal BC textures + menu (lane portal), Q3 INSD recover, shader cache (optional, default off).
+Unmerged/abandoned: mem2 (abandoned). CPU32 JIT (cpu32b) lane stopped on the free-tier limit (resets 27 Oct); its 4 commits are merged.
 
 ## Open problems
-1. mem2 branch `lane/winbox-mem2-20261021` (a84238b6c, KMemory64 open-addressed page table, native +18% page stride): DO NOT MERGE. Bisected: main without it maps notepad; with it Wine stalls after start.exe and never maps. Lane thr_2y9kiyujhs asked to fix.
+1. mem2 branch `lane/winbox-mem2-20261021` (KMemory64 open-addressed page table): ABANDONED. After a hash-mixer fix (b74b64436) native random reads are -13.6% and 8 MiB stride -2.7% vs main, notepad unverified (build-lock timeouts), snake took 225 s. Not worth more effort; main stays without it.
 2. Q3 draws nothing (client arrays), Mindustry stuck at 82% (errno 5 loop), Gang Beasts no swapchain: Luna takeover lanes in flight.
 3. jitpar lane (JIT correctness/startup, snake jit=1 root cause): round 4 pending.
 4. Portal blank screenshot; CPU32 JIT slower than interpreter; CPU32 recovery test LabelAlreadyBound (test reordered last).

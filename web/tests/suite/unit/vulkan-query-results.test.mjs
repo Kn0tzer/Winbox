@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(fileURLToPath(new URL('../../../../', import.meta.url)));
-const tempRoot = '/tmp/winbox-finish/work-G1';
+const tempRoot = '/tmp';
 
 test('native Vulkan query result encoding handles widths, availability, flags and timestamps', () => {
   const dir = mkdtempSync(join(tempRoot, 'query-results-'));

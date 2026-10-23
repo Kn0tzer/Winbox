@@ -26,6 +26,7 @@
 #include "../../softmmu/kmemory_soft.h"
 
 #ifdef BOXEDWINE_WASM_JIT
+#include "../wasm/wasmJitRuntime.h"
 void wasmJitHandlePendingHit(CPU* cpu, DecodedOp* op);
 #ifndef BOXEDWINE_MULTI_THREADED
 bool wasmJitCompilationPaused();
@@ -819,11 +820,14 @@ void OPCALL firstDynamicOp(CPU* cpu, DecodedOp* op) {
 #endif
 #endif
     if (allowStartJit) {
-#ifdef __TEST
-        bool shouldStartJit = op->runCount == 0;
+        // The trigger compares against the same latched threshold run() uses to
+        // decide whether the probe is still needed (BW32_JIT_HOT, default
+        // JIT_RUN_COUNT), so a raised threshold never strands a block that is
+        // still counting.
+#ifndef __TEST
+        bool shouldStartJit = op->runCount == wasmJit32HotThreshold() && op->inst != Done && !(op->flags & OP_FLAG_JIT);
 #else
-        // done check is for long blocks that get broken up, affects f-22/f-16
-        bool shouldStartJit = op->runCount == JIT_RUN_COUNT && op->inst != Done && !(op->flags & OP_FLAG_JIT);
+        bool shouldStartJit = op->runCount == 0;
 #endif
         bool needsSharedHelpers = (op->flags & OP_FLAG_JIT) && !cpu->calculateCF[0];
         if (shouldStartJit || needsSharedHelpers) {

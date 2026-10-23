@@ -182,6 +182,7 @@ public:
     U64  instructionCount = 0;
     U64  recoverLastRip = (U64)-1;
     U8   recoverFaultsAtRip = 0;
+    U64  jitWarmupCount = 0; // guest instructions retired before enabling JIT dispatch
 
     void run();
     // Run up to maxInsn instructions or until yield / decode failure.
@@ -214,6 +215,19 @@ public:
     // before it runs guest code, so the frame is built while the thread is
     // parked. Returns true if a signal was delivered (rip now in a handler).
     bool deliverPendingSignals();
+
+    // Same delivery, but for a thread that is BLOCKED INSIDE a syscall (socket
+    // read, poll, futex, sleep) when a cross-thread tkill/tgkill arrives — the
+    // way Linux interrupts a sleeping syscall with a signal. Builds the handler
+    // frame so that, on rt_sigreturn, the syscall either restarts (handler has
+    // SA_RESTART and `allowRestart`: the saved RIP is rewound to the SYSCALL
+    // instruction and RAX keeps the syscall number) or returns -EINTR. Pass
+    // allowRestart=false for the poll/select/sleep family, which Linux never
+    // restarts. The caller then abandons its
+    // wait and returns -K_EINTR (the value written to RAX is irrelevant, the
+    // frame already holds the right one). Returns false (nothing changed) if no
+    // deliverable signal is pending.
+    bool interruptSyscallWithSignal(bool allowRestart = true);
 
     void push64(U64 value);
     U64  pop64();
@@ -252,6 +266,7 @@ private:
     // Call one cached emitted module and commit its guest state. Returns the
     // instructions the emitted code reports having retired (0 = did not run).
     U32 execWasmBlock(const struct Jit64Block& block, U64 maxInsn);
+    U32 verifyWasmBlock(struct Jit64Block& block, U64 maxInsn);
     // Validate the JIT decode plan against the interpreter's BBlock builder
     // (BW64_JIT_VERIFY=1). Returns false when the two decoders disagree, which
     // keeps the block on the interpreter (drift guard).

@@ -27,6 +27,20 @@ extern bool wasmJit32Active;
 bool wasmJit32Enabled();
 bool wasmJit32SafeMemoryEnabled();
 bool wasmJit32CollectRetiredInstructions();
+// The runCount value every reader must agree on once the JIT has ruled a block
+// out (rejected, failed installation, slot miss, or an op that can never be
+// compiled). It must be strictly above the hot threshold, or run()'s probe
+// would hand the block back to the generator on every later entry.
+U32 wasmJit32DecidedRunCount();
+// BW32_JIT_HOT=<1..254> moves the entry count at which a 32-bit guest block is
+// handed to the code generator. The compile cost of one block is only amortized
+// by a block that is entered far more often than JIT_RUN_COUNT (which is also
+// the compiled-in default), so a browser session that runs a lot of cold code
+// pays for blocks that never pay it back. Decided against JIT_RUN_COUNT when
+// unset, so an unset value keeps the historical policy. Diagnostic +
+// measurement knob: it changes only which blocks are compiled, never what a
+// compiled block does.
+U32 wasmJit32HotThreshold();
 // BW32_JIT_NO_GROUPS=1: install each generated block as its own module instead
 // of merging blocks into shared runtime groups (see jitWasmCodeGen.cpp).
 bool wasmJit32GroupsDisabled();

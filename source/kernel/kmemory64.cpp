@@ -21,6 +21,8 @@
 #include <mutex>
 #include <atomic>
 
+thread_local bool g_k64JitVerifyOverlayActive = false;
+
 // ---------------------------------------------------------------------------
 // Process-shared file mappings (MAP_SHARED). A single host buffer per
 // (file identity, page-aligned file offset) is aliased by every process that maps
@@ -34,6 +36,9 @@
 // life of the process (server section is tiny + long-lived); we never evict.
 // ---------------------------------------------------------------------------
 namespace {
+thread_local KMemory64* g_jitVerifyMemory = nullptr;
+thread_local K64JitVerifyMemory* g_jitVerifyOverlay = nullptr;
+
 struct SharedFilePage {
     U8 data[K64_PAGE_SIZE];
 };
@@ -60,6 +65,71 @@ std::shared_ptr<SharedFilePage> getSharedFilePage(U64 identity, U64 offsetPage,
     return page;
 }
 } // namespace
+
+void KMemory64::beginJitVerifyOverlay(K64JitVerifyMemory& overlay) {
+    g_jitVerifyMemory = this;
+    g_jitVerifyOverlay = &overlay;
+    g_k64JitVerifyOverlayActive = true;
+}
+
+void KMemory64::endJitVerifyOverlay() {
+    if (g_jitVerifyMemory == this) {
+        g_jitVerifyOverlay = nullptr;
+        g_jitVerifyMemory = nullptr;
+        g_k64JitVerifyOverlayActive = false;
+    }
+}
+
+bool KMemory64::jitVerifyRead(U64 addr, void* dst, U64 len) {
+    if (!g_k64JitVerifyOverlayActive || g_jitVerifyMemory != this || !g_jitVerifyOverlay)
+        return false;
+    U8* out = (U8*)dst;
+    for (U64 i = 0; i < len; i++) {
+        const U64 at = addr + i;
+        auto written = g_jitVerifyOverlay->writes.find(at);
+        if (written != g_jitVerifyOverlay->writes.end()) {
+            out[i] = written->second;
+            continue;
+        }
+        auto initial = g_jitVerifyOverlay->initialBytes.find(at);
+        if (initial != g_jitVerifyOverlay->initialBytes.end()) {
+            out[i] = initial->second;
+            continue;
+        }
+        U8 value = 0;
+        memcpyFromGuestRaw(&value, at, sizeof(value));
+        g_jitVerifyOverlay->initialBytes.emplace(at, value);
+        out[i] = value;
+    }
+    return true;
+}
+
+bool KMemory64::jitVerifyWrite(U64 addr, const void* src, U64 len) {
+    if (!g_k64JitVerifyOverlayActive || g_jitVerifyMemory != this || !g_jitVerifyOverlay)
+        return false;
+    const U8* in = (const U8*)src;
+    for (U64 i = 0; i < len; i++) {
+        const U64 at = addr + i;
+        if (g_jitVerifyOverlay->initialBytes.find(at) == g_jitVerifyOverlay->initialBytes.end()) {
+            U8 original = 0;
+            memcpyFromGuestRaw(&original, at, sizeof(original));
+            g_jitVerifyOverlay->initialBytes.emplace(at, original);
+        }
+        g_jitVerifyOverlay->writes[at] = in[i];
+#ifdef BOXEDWINE_BLOCK_CACHE_INFRA
+        if (bw64PageHoldsBlocks(at >> K64_PAGE_SHIFT))
+            g_jitVerifyOverlay->wroteRegisteredCodePage = true;
+#endif
+    }
+    return true;
+}
+
+bool KMemory64::jitVerifyFill(U64 addr, U8 value, U64 len) {
+    if (!g_k64JitVerifyOverlayActive || g_jitVerifyMemory != this || !g_jitVerifyOverlay)
+        return false;
+    for (U64 i = 0; i < len; i++) jitVerifyWrite(addr + i, &value, sizeof(value));
+    return true;
+}
 
 // K_EINVAL / K_ENOMEM live in the existing kernel headers. We return
 // (U64)-errno from mmap-style calls following the 32-bit convention.
@@ -706,6 +776,7 @@ void kmemory64DumpMemRing(U64 nearAddr) {
 }
 
 void KMemory64::memcpyToGuest(U64 dstGuest, const void* src, U64 len) {
+    if (g_k64JitVerifyOverlayActive && jitVerifyWrite(dstGuest, src, len)) return;
     // Data-TLB fast path. Only when every gated write diagnostic (straywrite /
     // memring / watch) is confirmed OFF — the slow path is what initializes
     // those gates, so the first few writes always go the long way. Writes
@@ -782,6 +853,11 @@ void KMemory64::memcpyToGuest(U64 dstGuest, const void* src, U64 len) {
 }
 
 void KMemory64::memcpyFromGuest(void* dst, U64 srcGuest, U64 len) {
+    if (g_k64JitVerifyOverlayActive && jitVerifyRead(srcGuest, dst, len)) return;
+    memcpyFromGuestRaw(dst, srcGuest, len);
+}
+
+void KMemory64::memcpyFromGuestRaw(void* dst, U64 srcGuest, U64 len) {
     // Data-TLB fast path: the whole span inside one already-seen page (the
     // overwhelmingly common case — every operand read lands here) skips the
     // pagesMutex + map lookup entirely.
@@ -850,6 +926,7 @@ void KMemory64::memcpyFromGuest(void* dst, U64 srcGuest, U64 len) {
 }
 
 void KMemory64::memsetGuest(U64 dstGuest, U8 value, U64 len) {
+    if (g_k64JitVerifyOverlayActive && jitVerifyFill(dstGuest, value, len)) return;
     noteGuestWriteRange(dstGuest, len);
     strayWriteCheck(dstGuest, len);
     while (len) {

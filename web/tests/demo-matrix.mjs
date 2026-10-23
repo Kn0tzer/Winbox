@@ -13,8 +13,11 @@ process.chdir(repo);
 const demos = ['notepad', 'explorer', 'snake', 'doom', 'celeste', 'chromium', 'portal', 'gangbeasts'];
 const demo = process.env.DEMO;
 if (!demos.includes(demo)) throw new Error(`DEMO is required and must be one of: ${demos.join(' ')}`);
+// JIT=1 selects CPU64; JIT32=1 additionally selects CPU32. JIT=0 disables both.
 const jit = process.env.JIT ?? '0';
 if (jit !== '0' && jit !== '1') throw new Error('JIT must be 0 or 1');
+const jit32 = process.env.JIT32;
+if (jit32 !== undefined && jit32 !== '0' && jit32 !== '1') throw new Error('JIT32 must be 0 or 1');
 const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/T/, 'T').slice(0, 15);
 const defaultOut = join('test-results/demo-matrix', `${demo}-jit${jit}-${stamp}`);
 const outDir = resolve(repo, process.env.OUT || defaultOut);
@@ -22,6 +25,8 @@ const longBoot = ['portal', 'celeste', 'gangbeasts', 'chromium'].includes(demo);
 const mappedTimeout = Number(process.env.MAPPED_TIMEOUT_S || (longBoot ? 900 : 300));
 if (!Number.isFinite(mappedTimeout) || mappedTimeout <= 0) throw new Error('MAPPED_TIMEOUT_S must be a positive number');
 const threadDumpEnabled = process.env.BW_THREAD_DUMP === '1';
+const threadDumpIntervalMs = Number(process.env.BW_THREAD_DUMP_INTERVAL_S || 60) * 1000;
+if (!Number.isFinite(threadDumpIntervalMs) || threadDumpIntervalMs < 1000) throw new Error('BW_THREAD_DUMP_INTERVAL_S must be at least 1');
 const capturePlayerLog = process.env.BW_CAPTURE_PLAYER_LOG === '1';
 const wineDebug = process.env.BW_WINEDEBUG || '';
 const mappedOnly = process.env.MAPPED_ONLY === '1';
@@ -82,7 +87,9 @@ try {
     ],
   });
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
-  const extraUrlParams = [...new URLSearchParams(process.env.BW_TEST_URL_PARAMS || '')];
+  const runtimeParams = new URLSearchParams(process.env.BW_TEST_URL_PARAMS || '');
+  if (jit32 !== undefined) runtimeParams.set('jit32', jit32);
+  const extraUrlParams = [...runtimeParams];
   // The launcher reads the frame URL, not a route.continue fetch rewrite.
   if (wineDebug) extraUrlParams.push(['winedbg', wineDebug]);
   if (extraUrlParams.length) {
@@ -249,7 +256,7 @@ try {
             consoleLines.push(line);
             console.error(line);
           }
-        }, 60000);
+        }, threadDumpIntervalMs);
       }
     } });
   } catch (error) {

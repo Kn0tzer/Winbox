@@ -32,7 +32,9 @@ export default class Jit64Test extends ProbeTest {
     for (const jit of modes) {
       if (jit === '1') { await page.close(); page = await this.newPage(); }
       const bootFrom = this.consoleLines.length;
-      await this.bootGuest(page, { arch: 'x64', jit, winedbg: '+debugstr' });
+      // This suite measures warmed JIT throughput; bypass the game-startup
+      // dispatch gate so the 10–15M instruction benchmark reaches compiled code.
+      await this.bootGuest(page, { arch: 'x64', jit, jitwarm: '0', winedbg: '+debugstr' });
       await this.waitForLog(page, /session: persistent pins spawned; Wine owns service initialization/, 120000, bootFrom);
       await this.waitForLog(page, /CPU64: exit_group syscall, status=0 .*wineboot\.exe--init/, 120000, bootFrom);
       await this.stageFile(page, 'jitbench64.exe', await guestFixture('jitbench64-pe', 'x64'));

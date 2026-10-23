@@ -39,8 +39,8 @@ import { waitForBuildIdle } from "../../build-lock.mjs";
 import { runtimeCodeHash } from './runtime-evidence.mjs';
 
 // Extra runtime URL parameters for A/B runs, e.g.
-//   BW_TEST_URL_PARAMS='jit=1&jitstats=1&safemem=1' node web/tests/suite/runner.mjs --filter=cpu32
-// They select the guest CPU engine (jit=0|1) and its diagnostics through the
+//   BW_TEST_URL_PARAMS='jit=1&jit32=1&jitstats=1&safemem=1' node web/tests/suite/runner.mjs --filter=cpu32
+// They select CPU64 (jit=0|1), CPU32 (jit32=0|1), and diagnostics through the
 // same public parameters the launcher uses. Applied AFTER each test's own
 // parameters, so a test can be run against either engine without edits.
 export function extraUrlParams() {

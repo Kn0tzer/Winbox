@@ -66,7 +66,7 @@ test('native 64-bit and 32-bit blit paths record image subresource, filter and o
   assert.ok(structure && method);
   assert.ok((bridge.match(/recordImageBlit\(/g) || []).length >= 4, 'both ABI handlers call the shared recorder');
   assert.match(bridge, /emit\(V2_IMAGE_BLIT,[\s\S]*?blit\.filter/);
-  const directory = mkdtempSync('/tmp/winbox-finish/work-G1/image-blit-');
+  const directory = mkdtempSync('/tmp/image-blit-');
   try {
     const source = join(directory, 'check.cpp'), binary = join(directory, 'check');
     writeFileSync(source, `

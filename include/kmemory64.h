@@ -107,6 +107,19 @@ struct K64Page {
     bool committed() const { return data != nullptr; }
 };
 
+// Per-execution shadow for CPU64 JIT differential checks. Reads use a shared
+// initial-byte snapshot and each engine records its own writes, so the two
+// executions see the same input without cloning the guest address space.
+struct K64JitVerifyMemory {
+    std::unordered_map<U64, U8> initialBytes;
+    std::unordered_map<U64, U8> writes;
+    bool wroteRegisteredCodePage = false;
+};
+
+// Fast gate for scalar memory accessors. False in normal execution, so the
+// differential overlay adds only one unlikely thread-local branch.
+extern thread_local bool g_k64JitVerifyOverlayActive;
+
 class KMemory64 {
 public:
     explicit KMemory64(KProcess* process);
@@ -185,6 +198,14 @@ public:
     void memcpyToGuest(U64 dstGuest, const void* src, U64 len);
     void memcpyFromGuest(void* dst, U64 srcGuest, U64 len);
     void memsetGuest(U64 dstGuest, U8 value, U64 len);
+
+    // Scoped per-thread overlay used only while a compiled block is checked
+    // against the interpreter. Overlay writes never touch guest memory.
+    void beginJitVerifyOverlay(K64JitVerifyMemory& overlay);
+    void endJitVerifyOverlay();
+    bool jitVerifyRead(U64 addr, void* dst, U64 len);
+    bool jitVerifyWrite(U64 addr, const void* src, U64 len);
+    bool jitVerifyFill(U64 addr, U8 value, U64 len);
 
     // Scalar accessors. Single-byte/word/dword/qword. No alignment check;
     // crossing a page boundary is handled by going through memcpy.
@@ -306,6 +327,7 @@ private:
     U8* getPageData(U64 pageNum, U32* flagsOut = nullptr) const;
     U8 readbSlow(U64 addr);
     void writebSlow(U64 addr, U8 value);
+    void memcpyFromGuestRaw(void* dst, U64 srcGuest, U64 len);
 };
 
 
@@ -368,39 +390,47 @@ bool bw64PageHoldsBlocks(U64 pageNum);
 
 inline __attribute__((always_inline)) U8 KMemory64::readb(U64 addr) {
     U8 value;
+    if (g_k64JitVerifyOverlayActive && jitVerifyRead(addr, &value, sizeof(value))) return value;
     return K64DTlb::tryRead<U8, false>(this, addr, value) ? value : readbSlow(addr);
 }
 inline __attribute__((always_inline)) U16 KMemory64::readw(U64 addr) {
     U16 value;
+    if (g_k64JitVerifyOverlayActive && jitVerifyRead(addr, &value, sizeof(value))) return value;
     if (K64DTlb::tryRead(this, addr, value)) return value;
     memcpyFromGuest(&value, addr, sizeof(value));
     return value;
 }
 inline __attribute__((always_inline)) U32 KMemory64::readd(U64 addr) {
     U32 value;
+    if (g_k64JitVerifyOverlayActive && jitVerifyRead(addr, &value, sizeof(value))) return value;
     if (K64DTlb::tryRead(this, addr, value)) return value;
     memcpyFromGuest(&value, addr, sizeof(value));
     return value;
 }
 inline __attribute__((always_inline)) U64 KMemory64::readq(U64 addr) {
     U64 value;
+    if (g_k64JitVerifyOverlayActive && jitVerifyRead(addr, &value, sizeof(value))) return value;
     if (K64DTlb::tryRead(this, addr, value)) return value;
     memcpyFromGuest(&value, addr, sizeof(value));
     return value;
 }
 inline __attribute__((always_inline)) void KMemory64::writeb(U64 addr, U8 value) {
+    if (g_k64JitVerifyOverlayActive && jitVerifyWrite(addr, &value, sizeof(value))) return;
     if (K64DTlb::tryWrite(this, addr, value)) return;
     writebSlow(addr, value);
 }
 inline __attribute__((always_inline)) void KMemory64::writew(U64 addr, U16 value) {
+    if (g_k64JitVerifyOverlayActive && jitVerifyWrite(addr, &value, sizeof(value))) return;
     if (K64DTlb::tryWrite(this, addr, value)) return;
     memcpyToGuest(addr, &value, sizeof(value));
 }
 inline __attribute__((always_inline)) void KMemory64::writed(U64 addr, U32 value) {
+    if (g_k64JitVerifyOverlayActive && jitVerifyWrite(addr, &value, sizeof(value))) return;
     if (K64DTlb::tryWrite(this, addr, value)) return;
     memcpyToGuest(addr, &value, sizeof(value));
 }
 inline __attribute__((always_inline)) void KMemory64::writeq(U64 addr, U64 value) {
+    if (g_k64JitVerifyOverlayActive && jitVerifyWrite(addr, &value, sizeof(value))) return;
     if (K64DTlb::tryWrite(this, addr, value)) return;
     memcpyToGuest(addr, &value, sizeof(value));
 }

@@ -16,8 +16,9 @@ test('shared mapping replacement retains in-flight private backing pointers', ()
 #include <cstdlib>
 #include <vector>
 #include <memory>
+#include <unordered_map>
 #include <cassert>
-using U8 = uint8_t; using U32 = uint32_t;
+using U8 = uint8_t; using U32 = uint32_t; using U64 = uint64_t;
 #define K64_PAGE_SIZE 4096
 void bssBufDiagLog(const char*, const void*, const void*) {}
 ${header.slice(start, end)}
@@ -61,7 +62,7 @@ test('a pointer captured before remap cannot be cached with the newer generation
 #include <cstdint>
 #include <atomic>
 #include <cassert>
-using U8 = uint8_t; using U32 = uint32_t; using U64 = uint64_t;
+using U8 = uint8_t; using U32 = uint32_t; using U64 = uint64_t; using U64 = uint64_t;
 class KMemory64 {};
 ${entryDecl}
 std::atomic<U64> generation{1};

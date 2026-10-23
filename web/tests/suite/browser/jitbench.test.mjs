@@ -5,7 +5,16 @@ import { loadavg } from 'node:os';
 import { ProbeTest, extraUrlParams } from '../lib/probe-base.mjs';
 import { guestFixture } from '../lib/guest-fixtures.mjs';
 
-const MODE_ORDER = ['0', '1', '1', '0'];
+// Mode order is a JIT flag sequence. The default alternates so a load drift
+// cancels out; BW_TEST_JITBENCH_MODES shortens focused runs (for example
+// '0,1' for one pair, or '0,1,0,1' for two pairs).
+const MODE_ORDER = (process.env.BW_TEST_JITBENCH_MODES?.split(',').map(mode => mode.trim()) ?? ['0', '1', '1', '0']);
+if (MODE_ORDER.some(mode => mode !== '0' && mode !== '1')) {
+  throw new Error('BW_TEST_JITBENCH_MODES accepts only 0 and 1');
+}
+// The inner load gate is the shared-host guard; hosts running other lanes can
+// raise it and must record the observed load with the numbers.
+const MAX_ONE_MINUTE_LOAD = Number(process.env.BW_TEST_JITBENCH_MAX_LOAD || 4);
 const ALL_FIXTURES = [
   { name: 'jitbench32', fixture: 'jitbench32-pe', arch: 'x86', pattern: /BW_JITBENCH32 sample=(\d+) ms=([\d.]+) checksum=([a-f0-9]+) passes=(\d+)/, donePattern: /BW_JITBENCH32 sample=3 / },
   { name: 'jitbench64', fixture: 'jitbench64-pe', arch: 'x64', pattern: /BW_JITBENCH64 sample=(\d+) ms=([\d.]+) checksum=([a-f0-9]+) passes=(\d+)/, donePattern: /BW_JITBENCH64 sample=3 / },
@@ -25,7 +34,7 @@ function loadSnapshot() {
   return { at: new Date().toISOString(), oneMinute, fiveMinutes, fifteenMinutes };
 }
 
-async function waitForLowLoad(maxOneMinute = 4) {
+async function waitForLowLoad(maxOneMinute = MAX_ONE_MINUTE_LOAD) {
   while (loadSnapshot().oneMinute >= maxOneMinute) {
     await new Promise(resolve => setTimeout(resolve, 5000));
   }
