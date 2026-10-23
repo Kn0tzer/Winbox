@@ -19,6 +19,8 @@
 #ifndef __SYNCHRONIZATION_H__
 #define __SYNCHRONIZATION_H__
 
+#include <atomic>
+
 class BoxedWineCondition;
 
 class BoxedWineConditionChild {
@@ -51,6 +53,10 @@ public:
     std::mutex m;
     std::condition_variable c;
     U32 lockOwner = 0;
+    // Optional notify-to-resume profiling. Enabled only with BW_WAKE_PROFILE=1.
+    std::atomic<U64> wakeSequence{0};
+    std::atomic<U64> wakeSignalMicroseconds{0};
+    U8 wakeProfileCategory = 0;
 
 private:
     std::vector<std::weak_ptr<BoxedWineCondition>> parents;
