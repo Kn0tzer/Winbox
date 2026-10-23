@@ -3314,48 +3314,22 @@ void fillProperties(VkPhysicalDeviceProperties* p) {
 
 const char* const g_inst_exts[] = {
     "VK_KHR_surface", "VK_KHR_win32_surface", "VK_KHR_xcb_surface",
-    "VK_KHR_xlib_surface", "VK_EXT_headless_surface", "VK_EXT_debug_utils",
+    "VK_KHR_xlib_surface", "VK_EXT_headless_surface",
 };
 
-// The DXVK-required DEVICE extension set. Advertising an extension is pure
-// reporting here: vkCreateDevice stays lenient about names it does not know, so
-// this changes only what DXVK's isSuitable()/createDevice() decides to enable —
-// but that is the whole init wall (audit P2-NOW item 1): with only
-// VK_KHR_swapchain present, DXVK skips the adapter with "Device does not
-// support required feature" and never reaches a triangle.
-//
-// Every name here is either behaviour-free for us (load_store_op_none,
-// depth_clip_enable, maintenance5/6 — the recorder already treats load/store and
-// cull conservatively) or has its behaviour implemented alongside (robustness2
-// nullDescriptor -> a Binding may legitimately stay unbound; transform_feedback
-// -> the Xfb query/write calls fall into the benign tail). VK_KHR_maintenance6 is
-// present for DXVK >= 2.7.1 / master; a 2.4.x pin simply never asks for it.
+// Only extensions whose exposed behavior works end-to-end are enumerated.
 const char* const g_dev_exts[] = {
     "VK_KHR_swapchain",
-    "VK_KHR_maintenance5",
-    "VK_KHR_maintenance6",
     "VK_KHR_load_store_op_none",
     "VK_EXT_robustness2",           // HARD requirement (nullDescriptor + robustBufferAccess2)
-    "VK_EXT_transform_feedback",    // D3D10/11 stream output
     "VK_EXT_depth_clip_enable",
-    // D3D12 (vkd3d-proton) device-creation gates. CAVEAT: advertised so
-    // vkd3d_init_device_caps passes; the clear/triangle probes never exercise
-    // real divisor/push-descriptor behavior. Actual usage needs page-side
-    // replay support -- follow-up, not built here.
-    "VK_EXT_vertex_attribute_divisor",
-    "VK_KHR_push_descriptor",
 };
 
-// Core bits BOTH Features handlers set. DXVK derives D3D11 feature level from
-// these fields, so a FALSE here caps Unity's D3D11 device at 10_1. The indirect
-// draw path is recorded as direct draws by the bridge; tessellation stages are
-// still not represented in the page manifest.
+// Core bits reported to guests. Unsupported paths remain FALSE.
 void fillCoreFeatures(VkPhysicalDeviceFeatures* f) {
     memset(f, 0, sizeof(*f));
-    // Every TRUE below is listed in source/vulkan/vk-capabilities.json with
-    // status "implemented" or "exception" (+ the loud-rejection it falls back to);
-    // web/tests/suite/unit/vk-capabilities.test.mjs diffs the two, so a bit cannot
-    // be advertised without a manifest entry.
+    // Every TRUE below is listed as implemented in vk-capabilities.json; the
+    // unit test checks assignments and manifest entries stay in sync.
     f->robustBufferAccess = VK_TRUE;
     f->fullDrawIndexUint32 = VK_TRUE;
     f->imageCubeArray = VK_TRUE;        /* D3D11 cube arrays */
@@ -3367,31 +3341,14 @@ void fillCoreFeatures(VkPhysicalDeviceFeatures* f) {
      * shaderStorageImageExtendedFormats, shaderStorageImage{Read,Write}WithoutFormat
      * (storage images are bound blank), sparse*, wideLines, largePoints,
      * alphaToOne, depthBounds, logicOp, pipelineStatisticsQuery. */
-    /* D3D11 baseline: DXVK D3D11Device::GetDeviceFeatures hard-requires the
-     * below for feature level 10_1, and checkFeatureSupport gates ALL of
-     * D3D11 device creation on them. WebGPU cannot implement several (no
-     * geometry stage, no wireframe fill, single viewport, no sample-rate
-     * shading), so they are "exception" rows in the manifest: advertised so
-     * the device can be created, and any pipeline that actually USES the
-     * feature is rejected or reported by vk64AuditGraphicsPipeline() with a
-     * greppable "vk64: UNSUPPORTED <feature>" line. FL 9_3 targets (D3D9, Portal)
-     * have no geometry/tessellation stages and never trip these. */
-    f->geometryShader = VK_TRUE;        /* exception: geometry-stage -> VK_ERROR_FEATURE_NOT_PRESENT */
-    f->tessellationShader = VK_TRUE;    /* exception: tessellation-*-stage, patch-list-topology */
+    /* Only end-to-end implemented features are reported true. Unsupported
+     * features remain false so DXVK/vkd3d cannot select an invalid path. */
     f->multiDrawIndirect = VK_TRUE;     /* vk64bridge expands draws into CMD_DRAW */
     f->drawIndirectFirstInstance = VK_TRUE; /* preserved in each expanded draw */
     f->depthBiasClamp = VK_TRUE;        /* replayed with WebGPU depthBiasClamp */
     f->depthClamp = VK_TRUE;            /* page requests depth-clip-control when available */
-    f->dualSrcBlend = VK_TRUE;          /* exception: page throws unsupported-blend-factor */
-    f->fillModeNonSolid = VK_TRUE;      /* exception: polygon-mode-line/point reported */
-    f->multiViewport = VK_TRUE;         /* exception: multi-viewport reported */
     f->occlusionQueryPrecise = VK_TRUE;
-    f->sampleRateShading = VK_TRUE;     /* exception: sample-shading reported */
-    f->shaderCullDistance = VK_TRUE;    /* exception: WGSL has no cull_distance */
-    f->shaderImageGatherExtended = VK_TRUE;
     f->textureCompressionBC = VK_TRUE;  /* needs browser texture-compression-bc */
-    f->fragmentStoresAndAtomics = VK_TRUE;       /* exception: storage buffers are snapshots */
-    f->vertexPipelineStoresAndAtomics = VK_TRUE; /* exception: storage buffers are snapshots */
 }
 
 // ---------------------------------------------------------------------------
@@ -3422,27 +3379,17 @@ void fillCoreFeatures(VkPhysicalDeviceFeatures* f) {
             g_mem->memcpyToGuest((addr), &f_, sizeof(f_));                     \
         }                                                                      \
     } while (0)
-// Every fill function is a template over the struct type so the 64-bit walker
-// (vk64_guest.h structs) and the 32-bit walker (vk32abi structs) answer from ONE
-// definition: a bit cannot be TRUE for a 32-bit guest and FALSE for a 64-bit
-// one. Each TRUE below has a row in source/vulkan/vk-capabilities.json, with
-// status "implemented" or "exception" (advertised only because DXVK/vkd3d gate
-// device creation on it; use of it is rejected or reported loudly). The
-// vk-capabilities unit test diffs the two so they cannot drift.
+// Every TRUE bit has an `implemented` row in source/vulkan/vk-capabilities.json.
 template <class T> inline void fillRobustness2(T& f) {
     f.robustBufferAccess2 = VK_TRUE;
     f.robustImageAccess2 = VK_TRUE;
     f.nullDescriptor = VK_TRUE;
 }
 template <class T> inline void fillMaintenance5(T& f) {
-    f.maintenance5 = VK_TRUE;
 }
 template <class T> inline void fillMaintenance6(T& f) {
-    f.maintenance6 = VK_TRUE;
 }
 template <class T> inline void fillTransformFeedback(T& f) {
-    f.transformFeedback = VK_TRUE;      // exception: vkCmd*TransformFeedback* -> "fn:" UNSUPPORTED
-    f.geometryStreams = VK_TRUE;
 }
 // vk64_guest.h (the trimmed Vulkan header this TU builds against) does not
 // define VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT or
@@ -3515,8 +3462,6 @@ static_assert(sizeof(Vk32VertexAttributeDivisorFeaturesEXT) == 16, "32-bit divis
 // features. Exception: a pipeline with a divisor other than 1 is reported by
 // vk64AuditGraphicsPipeline ("vertex-attribute-divisor") and rendered with 1.
 template <class T> inline void fillVertexAttributeDivisor(T& f) {
-    f.vertexAttributeInstanceRateDivisor = VK_TRUE;
-    f.vertexAttributeInstanceRateZeroDivisor = VK_TRUE;
 }
 // Exception group: descriptor-indexing bits are vkd3d-proton hard gates
 // (state.c:8352). Descriptor sets are read at submit time so update-after-bind
@@ -3524,26 +3469,6 @@ template <class T> inline void fillVertexAttributeDivisor(T& f) {
 // arrays need shader-side binding arrays the WebGPU tier lacks, so a shader
 // that uses them fails at pipeline creation in the page tier (noteUnsupported).
 template <class T> inline void fillDescriptorIndexing(T& f) {
-    f.shaderInputAttachmentArrayDynamicIndexing = VK_TRUE;
-    f.shaderUniformTexelBufferArrayDynamicIndexing = VK_TRUE;
-    f.shaderStorageTexelBufferArrayDynamicIndexing = VK_TRUE;
-    f.shaderUniformBufferArrayNonUniformIndexing = VK_TRUE;
-    f.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
-    f.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
-    f.shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
-    f.shaderInputAttachmentArrayNonUniformIndexing = VK_TRUE;
-    f.shaderUniformTexelBufferArrayNonUniformIndexing = VK_TRUE;
-    f.shaderStorageTexelBufferArrayNonUniformIndexing = VK_TRUE;
-    f.descriptorBindingUniformBufferUpdateAfterBind = VK_TRUE;
-    f.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
-    f.descriptorBindingStorageImageUpdateAfterBind = VK_TRUE;
-    f.descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE;
-    f.descriptorBindingUniformTexelBufferUpdateAfterBind = VK_TRUE;
-    f.descriptorBindingStorageTexelBufferUpdateAfterBind = VK_TRUE;
-    f.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
-    f.descriptorBindingPartiallyBound = VK_TRUE;
-    f.descriptorBindingVariableDescriptorCount = VK_TRUE;
-    f.runtimeDescriptorArray = VK_TRUE;
 }
 // shaderFloat16 / shaderInt8 / 16-bit and 8-bit storage / scalar block layout
 // are NOT advertised: WGSL has no 8-bit types and the f16 extension is not
@@ -3562,21 +3487,6 @@ template <class T> inline void fillVulkan12Features(T& f) {
     // VK_TIMEOUT). bufferDeviceAddress stays FALSE: nothing hands out addresses.
     f.timelineSemaphore = VK_TRUE;
     f.bufferDeviceAddress = VK_FALSE;
-    f.descriptorIndexing = VK_TRUE;
-    f.shaderInputAttachmentArrayDynamicIndexing = VK_TRUE;
-    f.shaderUniformTexelBufferArrayDynamicIndexing = VK_TRUE;
-    f.shaderStorageTexelBufferArrayDynamicIndexing = VK_TRUE;
-    f.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
-    f.shaderUniformBufferArrayNonUniformIndexing = VK_TRUE;
-    f.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
-    f.shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
-    f.descriptorBindingPartiallyBound = VK_TRUE;
-    f.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
-    f.runtimeDescriptorArray = VK_TRUE;
-    f.samplerMirrorClampToEdge = VK_TRUE;   // exception: vkd3d-proton hard gate (device.c:2636); WebGPU has no mirror-clamp
-    f.shaderStorageTexelBufferArrayNonUniformIndexing = VK_TRUE;
-    f.shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
-    f.descriptorBindingVariableDescriptorCount = VK_TRUE;
 }
 template <class T> inline void fillVulkan11Features(T& f) {
     // multiview, variablePointers*, 16-bit storage: not advertised (see above).

@@ -56,6 +56,17 @@ test('every advertised extension has a manifest row and every row is advertised'
   }
 });
 
+test('no advertised feature or extension may use an exception status', () => {
+  for (const [name, row] of Object.entries(manifest.features)) {
+    assert.equal(row.status, 'implemented', `${name} must be implemented before advertisement`);
+  }
+  for (const [scope, entries] of Object.entries(manifest.extensions)) {
+    for (const [name, row] of Object.entries(entries)) {
+      assert.equal(row.status, 'implemented', `${scope} ${name} must be implemented before advertisement`);
+    }
+  }
+});
+
 test('features that are not implemented are not advertised', () => {
   const adv = advertisedFeatures();
   for (const k of manifest.notAdvertised) assert.ok(!adv.has(k), `${k} must stay FALSE`);

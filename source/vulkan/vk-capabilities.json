@@ -1,390 +1,165 @@
 {
- "_comment": "Truthful-capability manifest. web/tests/suite/unit/vk-capabilities.test.mjs diffs this against the TRUE assignments in source/vulkan/vk64bridge.cpp. status: implemented = works end to end; exception = advertised only because DXVK/vkd3d gate device creation, and `reject` is a token that must appear in the source where the unsupported use is reported loudly. Anything else must NOT be advertised (notAdvertised).",
- "features": {
-  "fillCoreFeatures.robustBufferAccess": {
-   "status": "implemented"
-  },
-  "fillCoreFeatures.fullDrawIndexUint32": {
-   "status": "implemented"
-  },
-  "fillCoreFeatures.imageCubeArray": {
-   "status": "implemented"
-  },
-  "fillCoreFeatures.independentBlend": {
-   "status": "implemented"
-  },
-  "fillCoreFeatures.shaderClipDistance": {
-   "status": "implemented"
-  },
-  "fillCoreFeatures.samplerAnisotropy": {
-   "status": "implemented"
-  },
-  "fillCoreFeatures.multiDrawIndirect": {
-   "status": "implemented"
-  },
-  "fillCoreFeatures.drawIndirectFirstInstance": {
-   "status": "implemented"
-  },
-  "fillCoreFeatures.depthBiasClamp": {
-   "status": "implemented"
-  },
-  "fillCoreFeatures.depthClamp": {
-   "status": "implemented"
-  },
-  "fillCoreFeatures.occlusionQueryPrecise": {
-   "status": "implemented"
-  },
-  "fillCoreFeatures.textureCompressionBC": {
-   "status": "implemented"
-  },
-  "fillCoreFeatures.geometryShader": {
-   "status": "exception",
-   "reject": "geometry-stage",
-   "why": "DXVK D3D11 feature-level 10_0 gate"
-  },
-  "fillCoreFeatures.tessellationShader": {
-   "status": "exception",
-   "reject": "tessellation-control-stage",
-   "why": "DXVK D3D11 feature-level 11_0 gate"
-  },
-  "fillCoreFeatures.dualSrcBlend": {
-   "status": "exception",
-   "reject": "unsupported-blend-factor",
-   "why": "DXVK D3D11 gate; page throws on src1 blend factors"
-  },
-  "fillCoreFeatures.fillModeNonSolid": {
-   "status": "exception",
-   "reject": "polygon-mode-line",
-   "why": "DXVK D3D11 gate"
-  },
-  "fillCoreFeatures.multiViewport": {
-   "status": "exception",
-   "reject": "multi-viewport",
-   "why": "DXVK D3D11 gate"
-  },
-  "fillCoreFeatures.sampleRateShading": {
-   "status": "exception",
-   "reject": "sample-shading",
-   "why": "DXVK D3D11 gate"
-  },
-  "fillCoreFeatures.shaderCullDistance": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "DXVK D3D11 gate; WGSL has no cull_distance"
-  },
-  "fillCoreFeatures.shaderImageGatherExtended": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "DXVK D3D11 gate; WGSL gather offsets must be const"
-  },
-  "fillCoreFeatures.fragmentStoresAndAtomics": {
-   "status": "exception",
-   "reject": "spirv-storage-buffer-write",
-   "why": "DXVK D3D11 gate; storage buffers are snapshots"
-  },
-  "fillCoreFeatures.vertexPipelineStoresAndAtomics": {
-   "status": "exception",
-   "reject": "spirv-storage-buffer-write",
-   "why": "DXVK D3D11 gate; storage buffers are snapshots"
-  },
-  "fillRobustness2.robustBufferAccess2": {
-   "status": "implemented"
-  },
-  "fillRobustness2.robustImageAccess2": {
-   "status": "implemented"
-  },
-  "fillRobustness2.nullDescriptor": {
-   "status": "implemented"
-  },
-  "fillMaintenance5.maintenance5": {
-   "status": "exception",
-   "reject": "no handler",
-   "why": "some maintenance5 commands are not bridged yet"
-  },
-  "fillMaintenance6.maintenance6": {
-   "status": "exception",
-   "reject": "no handler",
-   "why": "some maintenance6 commands are not bridged yet"
-  },
-  "fillTransformFeedback.transformFeedback": {
-   "status": "exception",
-   "reject": "no handler",
-   "why": "DXVK D3D11 gate; vkCmd*TransformFeedback* are unimplemented"
-  },
-  "fillTransformFeedback.geometryStreams": {
-   "status": "exception",
-   "reject": "no handler",
-   "why": "DXVK D3D11 gate"
-  },
-  "fillVertexAttributeDivisor.vertexAttributeInstanceRateDivisor": {
-   "status": "exception",
-   "reject": "vertex-attribute-divisor",
-   "why": "vkd3d gate"
-  },
-  "fillVertexAttributeDivisor.vertexAttributeInstanceRateZeroDivisor": {
-   "status": "exception",
-   "reject": "vertex-attribute-divisor",
-   "why": "vkd3d gate"
-  },
-  "fillDepthClipEnable.depthClipEnable": {
-   "status": "implemented"
-  },
-  "fillDescriptorIndexing.shaderInputAttachmentArrayDynamicIndexing": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate; one resource per binding number"
-  },
-  "fillDescriptorIndexing.shaderUniformTexelBufferArrayDynamicIndexing": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate; one resource per binding number"
-  },
-  "fillDescriptorIndexing.shaderStorageTexelBufferArrayDynamicIndexing": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate; one resource per binding number"
-  },
-  "fillDescriptorIndexing.shaderUniformBufferArrayNonUniformIndexing": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate; one resource per binding number"
-  },
-  "fillDescriptorIndexing.shaderSampledImageArrayNonUniformIndexing": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate; one resource per binding number"
-  },
-  "fillDescriptorIndexing.shaderStorageBufferArrayNonUniformIndexing": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate; one resource per binding number"
-  },
-  "fillDescriptorIndexing.shaderStorageImageArrayNonUniformIndexing": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate; one resource per binding number"
-  },
-  "fillDescriptorIndexing.shaderInputAttachmentArrayNonUniformIndexing": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate; one resource per binding number"
-  },
-  "fillDescriptorIndexing.shaderUniformTexelBufferArrayNonUniformIndexing": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate; one resource per binding number"
-  },
-  "fillDescriptorIndexing.shaderStorageTexelBufferArrayNonUniformIndexing": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate; one resource per binding number"
-  },
-  "fillDescriptorIndexing.descriptorBindingUniformBufferUpdateAfterBind": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate; one resource per binding number"
-  },
-  "fillDescriptorIndexing.descriptorBindingSampledImageUpdateAfterBind": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate; one resource per binding number"
-  },
-  "fillDescriptorIndexing.descriptorBindingStorageImageUpdateAfterBind": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate; one resource per binding number"
-  },
-  "fillDescriptorIndexing.descriptorBindingStorageBufferUpdateAfterBind": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate; one resource per binding number"
-  },
-  "fillDescriptorIndexing.descriptorBindingUniformTexelBufferUpdateAfterBind": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate; one resource per binding number"
-  },
-  "fillDescriptorIndexing.descriptorBindingStorageTexelBufferUpdateAfterBind": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate; one resource per binding number"
-  },
-  "fillDescriptorIndexing.descriptorBindingUpdateUnusedWhilePending": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate; one resource per binding number"
-  },
-  "fillDescriptorIndexing.descriptorBindingPartiallyBound": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate; one resource per binding number"
-  },
-  "fillDescriptorIndexing.descriptorBindingVariableDescriptorCount": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate; one resource per binding number"
-  },
-  "fillDescriptorIndexing.runtimeDescriptorArray": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate; one resource per binding number"
-  },
-  "fillVulkan12Features.timelineSemaphore": {
-   "status": "implemented"
-  },
-  "fillVulkan12Features.descriptorIndexing": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "umbrella for the descriptor-indexing bits"
-  },
-  "fillVulkan12Features.shaderInputAttachmentArrayDynamicIndexing": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate"
-  },
-  "fillVulkan12Features.shaderUniformTexelBufferArrayDynamicIndexing": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate"
-  },
-  "fillVulkan12Features.shaderStorageTexelBufferArrayDynamicIndexing": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate"
-  },
-  "fillVulkan12Features.shaderUniformBufferArrayNonUniformIndexing": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate"
-  },
-  "fillVulkan12Features.shaderSampledImageArrayNonUniformIndexing": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate"
-  },
-  "fillVulkan12Features.shaderStorageBufferArrayNonUniformIndexing": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate"
-  },
-  "fillVulkan12Features.shaderStorageImageArrayNonUniformIndexing": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate"
-  },
-  "fillVulkan12Features.shaderStorageTexelBufferArrayNonUniformIndexing": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate"
-  },
-  "fillVulkan12Features.descriptorBindingUpdateUnusedWhilePending": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate"
-  },
-  "fillVulkan12Features.descriptorBindingPartiallyBound": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate"
-  },
-  "fillVulkan12Features.descriptorBindingVariableDescriptorCount": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate"
-  },
-  "fillVulkan12Features.runtimeDescriptorArray": {
-   "status": "exception",
-   "reject": "spirv-capability",
-   "why": "vkd3d bindless gate"
-  },
-  "fillVulkan12Features.samplerMirrorClampToEdge": {
-   "status": "exception",
-   "reject": "mirror-clamp-to-edge",
-   "why": "vkd3d gate; WebGPU has no mirror-clamp"
-  },
-  "fillVulkan11Features.shaderDrawParameters": {
-   "status": "implemented"
-  },
-  "fillVulkan13Features.shaderDemoteToHelperInvocation": {
-   "status": "implemented"
-  }
- },
- "extensions": {
-  "instance": {
-   "VK_KHR_surface": {
-    "status": "implemented"
-   },
-   "VK_KHR_win32_surface": {
-    "status": "implemented"
-   },
-   "VK_KHR_xcb_surface": {
-    "status": "implemented"
-   },
-   "VK_KHR_xlib_surface": {
-    "status": "implemented"
-   },
-   "VK_EXT_headless_surface": {
-    "status": "implemented"
-   },
-   "VK_EXT_debug_utils": {
-    "status": "exception",
-    "reject": "no handler",
-    "why": "vkCmdBeginDebugUtilsLabelEXT etc. are unimplemented"
-   }
-  },
-  "device": {
-   "VK_KHR_swapchain": {
-    "status": "implemented"
-   },
-   "VK_KHR_maintenance5": {
-    "status": "exception",
-    "reject": "no handler"
-   },
-   "VK_KHR_maintenance6": {
-    "status": "exception",
-    "reject": "no handler"
-   },
-   "VK_KHR_load_store_op_none": {
-    "status": "implemented"
-   },
-   "VK_EXT_robustness2": {
-    "status": "implemented"
-   },
-   "VK_EXT_transform_feedback": {
-    "status": "exception",
-    "reject": "no handler"
-   },
-   "VK_EXT_depth_clip_enable": {
-    "status": "implemented"
-   },
-   "VK_EXT_vertex_attribute_divisor": {
-    "status": "exception",
-    "reject": "vertex-attribute-divisor"
-   },
-   "VK_KHR_push_descriptor": {
-    "status": "exception",
-    "reject": "no handler"
-   }
-  }
- },
- "notAdvertised": [
-  "fillCoreFeatures.shaderInt64",
-  "fillCoreFeatures.shaderFloat64",
-  "fillCoreFeatures.shaderStorageImageExtendedFormats",
-  "fillCoreFeatures.shaderStorageImageReadWithoutFormat",
-  "fillCoreFeatures.shaderStorageImageWriteWithoutFormat",
-  "fillCoreFeatures.sparseBinding",
-  "fillCoreFeatures.sparseResidencyBuffer",
-  "fillCoreFeatures.sparseResidencyImage2D",
-  "fillCoreFeatures.wideLines",
-  "fillCoreFeatures.largePoints",
-  "fillCoreFeatures.alphaToOne",
-  "fillCoreFeatures.depthBounds",
-  "fillCoreFeatures.logicOp",
-  "fillCoreFeatures.pipelineStatisticsQuery",
-  "fillVulkan12Features.bufferDeviceAddress",
-  "fillVulkan11Features.multiview",
-  "fillVulkan11Features.variablePointers",
-  "fillVulkan11Features.storageBuffer16BitAccess"
- ]
+  "_comment": "Truthful capability manifest. Every listed feature and extension is implemented end-to-end. Unsupported capabilities belong in notAdvertised. The unit test diffs this manifest against feature assignments and extension enumeration.",
+  "features": {
+    "fillCoreFeatures.robustBufferAccess": {
+      "status": "implemented"
+    },
+    "fillCoreFeatures.fullDrawIndexUint32": {
+      "status": "implemented"
+    },
+    "fillCoreFeatures.imageCubeArray": {
+      "status": "implemented"
+    },
+    "fillCoreFeatures.independentBlend": {
+      "status": "implemented"
+    },
+    "fillCoreFeatures.shaderClipDistance": {
+      "status": "implemented"
+    },
+    "fillCoreFeatures.samplerAnisotropy": {
+      "status": "implemented"
+    },
+    "fillCoreFeatures.multiDrawIndirect": {
+      "status": "implemented"
+    },
+    "fillCoreFeatures.drawIndirectFirstInstance": {
+      "status": "implemented"
+    },
+    "fillCoreFeatures.depthBiasClamp": {
+      "status": "implemented"
+    },
+    "fillCoreFeatures.depthClamp": {
+      "status": "implemented"
+    },
+    "fillCoreFeatures.occlusionQueryPrecise": {
+      "status": "implemented"
+    },
+    "fillCoreFeatures.textureCompressionBC": {
+      "status": "implemented"
+    },
+    "fillRobustness2.robustBufferAccess2": {
+      "status": "implemented"
+    },
+    "fillRobustness2.robustImageAccess2": {
+      "status": "implemented"
+    },
+    "fillRobustness2.nullDescriptor": {
+      "status": "implemented"
+    },
+    "fillDepthClipEnable.depthClipEnable": {
+      "status": "implemented"
+    },
+    "fillVulkan12Features.timelineSemaphore": {
+      "status": "implemented"
+    },
+    "fillVulkan11Features.shaderDrawParameters": {
+      "status": "implemented"
+    },
+    "fillVulkan13Features.shaderDemoteToHelperInvocation": {
+      "status": "implemented"
+    }
+  },
+  "extensions": {
+    "instance": {
+      "VK_KHR_surface": {
+        "status": "implemented"
+      },
+      "VK_KHR_win32_surface": {
+        "status": "implemented"
+      },
+      "VK_KHR_xcb_surface": {
+        "status": "implemented"
+      },
+      "VK_KHR_xlib_surface": {
+        "status": "implemented"
+      },
+      "VK_EXT_headless_surface": {
+        "status": "implemented"
+      }
+    },
+    "device": {
+      "VK_KHR_swapchain": {
+        "status": "implemented"
+      },
+      "VK_KHR_load_store_op_none": {
+        "status": "implemented"
+      },
+      "VK_EXT_robustness2": {
+        "status": "implemented"
+      },
+      "VK_EXT_depth_clip_enable": {
+        "status": "implemented"
+      }
+    }
+  },
+  "notAdvertised": [
+    "fillCoreFeatures.alphaToOne",
+    "fillCoreFeatures.depthBounds",
+    "fillCoreFeatures.dualSrcBlend",
+    "fillCoreFeatures.fillModeNonSolid",
+    "fillCoreFeatures.fragmentStoresAndAtomics",
+    "fillCoreFeatures.geometryShader",
+    "fillCoreFeatures.largePoints",
+    "fillCoreFeatures.logicOp",
+    "fillCoreFeatures.multiViewport",
+    "fillCoreFeatures.pipelineStatisticsQuery",
+    "fillCoreFeatures.sampleRateShading",
+    "fillCoreFeatures.shaderCullDistance",
+    "fillCoreFeatures.shaderFloat64",
+    "fillCoreFeatures.shaderImageGatherExtended",
+    "fillCoreFeatures.shaderInt64",
+    "fillCoreFeatures.shaderStorageImageExtendedFormats",
+    "fillCoreFeatures.shaderStorageImageReadWithoutFormat",
+    "fillCoreFeatures.shaderStorageImageWriteWithoutFormat",
+    "fillCoreFeatures.sparseBinding",
+    "fillCoreFeatures.sparseResidencyBuffer",
+    "fillCoreFeatures.sparseResidencyImage2D",
+    "fillCoreFeatures.tessellationShader",
+    "fillCoreFeatures.vertexPipelineStoresAndAtomics",
+    "fillCoreFeatures.wideLines",
+    "fillDescriptorIndexing.descriptorBindingPartiallyBound",
+    "fillDescriptorIndexing.descriptorBindingSampledImageUpdateAfterBind",
+    "fillDescriptorIndexing.descriptorBindingStorageBufferUpdateAfterBind",
+    "fillDescriptorIndexing.descriptorBindingStorageImageUpdateAfterBind",
+    "fillDescriptorIndexing.descriptorBindingStorageTexelBufferUpdateAfterBind",
+    "fillDescriptorIndexing.descriptorBindingUniformBufferUpdateAfterBind",
+    "fillDescriptorIndexing.descriptorBindingUniformTexelBufferUpdateAfterBind",
+    "fillDescriptorIndexing.descriptorBindingUpdateUnusedWhilePending",
+    "fillDescriptorIndexing.descriptorBindingVariableDescriptorCount",
+    "fillDescriptorIndexing.runtimeDescriptorArray",
+    "fillDescriptorIndexing.shaderInputAttachmentArrayDynamicIndexing",
+    "fillDescriptorIndexing.shaderInputAttachmentArrayNonUniformIndexing",
+    "fillDescriptorIndexing.shaderSampledImageArrayNonUniformIndexing",
+    "fillDescriptorIndexing.shaderStorageBufferArrayNonUniformIndexing",
+    "fillDescriptorIndexing.shaderStorageImageArrayNonUniformIndexing",
+    "fillDescriptorIndexing.shaderStorageTexelBufferArrayDynamicIndexing",
+    "fillDescriptorIndexing.shaderStorageTexelBufferArrayNonUniformIndexing",
+    "fillDescriptorIndexing.shaderUniformBufferArrayNonUniformIndexing",
+    "fillDescriptorIndexing.shaderUniformTexelBufferArrayDynamicIndexing",
+    "fillDescriptorIndexing.shaderUniformTexelBufferArrayNonUniformIndexing",
+    "fillMaintenance5.maintenance5",
+    "fillMaintenance6.maintenance6",
+    "fillTransformFeedback.geometryStreams",
+    "fillTransformFeedback.transformFeedback",
+    "fillVertexAttributeDivisor.vertexAttributeInstanceRateDivisor",
+    "fillVertexAttributeDivisor.vertexAttributeInstanceRateZeroDivisor",
+    "fillVulkan11Features.multiview",
+    "fillVulkan11Features.storageBuffer16BitAccess",
+    "fillVulkan11Features.variablePointers",
+    "fillVulkan12Features.bufferDeviceAddress",
+    "fillVulkan12Features.descriptorBindingPartiallyBound",
+    "fillVulkan12Features.descriptorBindingUpdateUnusedWhilePending",
+    "fillVulkan12Features.descriptorBindingVariableDescriptorCount",
+    "fillVulkan12Features.descriptorIndexing",
+    "fillVulkan12Features.runtimeDescriptorArray",
+    "fillVulkan12Features.samplerMirrorClampToEdge",
+    "fillVulkan12Features.shaderInputAttachmentArrayDynamicIndexing",
+    "fillVulkan12Features.shaderSampledImageArrayNonUniformIndexing",
+    "fillVulkan12Features.shaderStorageBufferArrayNonUniformIndexing",
+    "fillVulkan12Features.shaderStorageImageArrayNonUniformIndexing",
+    "fillVulkan12Features.shaderStorageTexelBufferArrayDynamicIndexing",
+    "fillVulkan12Features.shaderStorageTexelBufferArrayNonUniformIndexing",
+    "fillVulkan12Features.shaderUniformBufferArrayNonUniformIndexing",
+    "fillVulkan12Features.shaderUniformTexelBufferArrayDynamicIndexing"
+  ]
 }
