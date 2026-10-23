@@ -1432,12 +1432,8 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       const p = this._mirrorAttribute(posAttr, index);
       const viewPosition = fixed ? null : mulMat4(model, p);
       const clip = fixed ? mulMat4(fixedMvp, p) : mulMat4(projection, viewPosition);
-      const w = clip[3];
-      if (!Number.isFinite(w) || Math.abs(w) < 1e-8) return null;
-      const nx = clip[0] / w, ny = clip[1] / w;
-      const vertex = { x: viewport[0] + (nx + 1) * viewport[2] * 0.5,
-        y: viewport[1] + (ny + 1) * viewport[3] * 0.5,
-        z: clamp01((clip[2] / w + 1) * 0.5), color: this._mirrorAttribute(colorAttr, index) };
+      if (clip.some(value => !Number.isFinite(value))) return null;
+      const vertex = { clip, color: this._mirrorAttribute(colorAttr, index) };
       if (fixed?.texture) {
         vertex.texCoords = new Map();
         for (const { unit, attribute, matrix } of textureCoordinates) {
@@ -1448,10 +1444,65 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       }
       return vertex;
     };
+    const clipPlanes = [
+      clip => clip[0] + clip[3], clip => clip[3] - clip[0],
+      clip => clip[1] + clip[3], clip => clip[3] - clip[1],
+      clip => clip[2] + clip[3], clip => clip[3] - clip[2],
+    ];
+    const interpolate = (a, b, t) => {
+      const vertex = {
+        clip: a.clip.map((value, i) => value + (b.clip[i] - value) * t),
+        color: a.color.map((value, i) => value + (b.color[i] - value) * t),
+      };
+      if (a.texCoords || b.texCoords) {
+        vertex.texCoords = new Map();
+        for (const unit of new Set([...(a.texCoords?.keys() || []), ...(b.texCoords?.keys() || [])])) {
+          const aUV = a.texCoords?.get(unit) || [0, 0], bUV = b.texCoords?.get(unit) || [0, 0];
+          vertex.texCoords.set(unit, aUV.map((value, i) => value + (bUV[i] - value) * t));
+        }
+      }
+      return vertex;
+    };
+    const clipTriangle = vertices => {
+      let polygon = vertices;
+      for (const distanceToPlane of clipPlanes) {
+        const clipped = [];
+        let previous = polygon[polygon.length - 1];
+        let previousDistance = distanceToPlane(previous.clip);
+        for (const current of polygon) {
+          const currentDistance = distanceToPlane(current.clip);
+          const previousInside = previousDistance >= 0;
+          const currentInside = currentDistance >= 0;
+          if (previousInside !== currentInside) {
+            const t = previousDistance / (previousDistance - currentDistance);
+            clipped.push(interpolate(previous, current, t));
+          }
+          if (currentInside) clipped.push(current);
+          previous = current;
+          previousDistance = currentDistance;
+        }
+        polygon = clipped;
+        if (polygon.length < 3) return [];
+      }
+      return polygon.map(vertex => {
+        const w = vertex.clip[3];
+        if (!(w > 1e-8)) return null;
+        const invW = 1 / w, nx = vertex.clip[0] * invW, ny = vertex.clip[1] * invW;
+        return {
+          x: viewport[0] + (nx + 1) * viewport[2] * 0.5,
+          y: viewport[1] + (ny + 1) * viewport[3] * 0.5,
+          z: clamp01((vertex.clip[2] * invW + 1) * 0.5), invW,
+          color: vertex.color, texCoords: vertex.texCoords,
+        };
+      });
+    };
     for (let i = 0; i + 2 < vertices.length; i += 3) {
-      const triangle = [transform(vertices[i]), transform(vertices[i + 1]), transform(vertices[i + 2])];
-      if (triangle.some(vertex => !vertex)) continue;
-      this._rasterizeMirrorTriangle(triangle, state);
+      const transformed = [transform(vertices[i]), transform(vertices[i + 1]), transform(vertices[i + 2])];
+      if (transformed.some(vertex => !vertex)) continue;
+      const polygon = clipTriangle(transformed);
+      if (polygon.length < 3 || polygon.some(vertex => !vertex)) continue;
+      for (let j = 1; j + 1 < polygon.length; j++)
+        this._rasterizeMirrorTriangle([polygon[0], polygon[j], polygon[j + 1]], state);
     }
   }
 
@@ -1522,14 +1573,19 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       const b = edge(vertices[2], vertices[0], px, py) / area;
       const c = 1 - a - b;
       if (a < 0 || b < 0 || c < 0) continue;
+      const reciprocalW = a * vertices[0].invW + b * vertices[1].invW + c * vertices[2].invW;
+      if (!Number.isFinite(reciprocalW) || Math.abs(reciprocalW) < 1e-12) continue;
+      const wa = a * vertices[0].invW / reciprocalW;
+      const wb = b * vertices[1].invW / reciprocalW;
+      const wc = c * vertices[2].invW / reciprocalW;
       const offset = (y * this._width + x) * 4;
       const source = [0, 1, 2, 3].map(channel =>
-        a * vertices[0].color[channel] + b * vertices[1].color[channel] + c * vertices[2].color[channel]);
+        wa * vertices[0].color[channel] + wb * vertices[1].color[channel] + wc * vertices[2].color[channel]);
       if (fixed?.texture) {
         for (const unit of textureUnits) {
           const coordinates = vertices.map(vertex => vertex.texCoords?.get(unit) || [0, 0]);
-          const u = a * coordinates[0][0] + b * coordinates[1][0] + c * coordinates[2][0];
-          const v = a * coordinates[0][1] + b * coordinates[1][1] + c * coordinates[2][1];
+          const u = wa * coordinates[0][0] + wb * coordinates[1][0] + wc * coordinates[2][0];
+          const v = wa * coordinates[0][1] + wb * coordinates[1][1] + wc * coordinates[2][1];
           const texel = sampleTexture(textures.get(unit), u, v);
           const texEnv = fixed.texEnv[unit];
           if (texEnv === 0x1e01) source.splice(0, 4, ...texel);

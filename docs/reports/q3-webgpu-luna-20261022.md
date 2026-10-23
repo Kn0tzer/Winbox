@@ -574,3 +574,52 @@ causes it. The local network handshake is already past `CS_ACTIVE`, so no
 loopback networking fix is indicated by this input test.
 
 Evidence: [+840s before W](/tmp/winbox-finish/r3/work-luna-q3/evidence/build9-q3-forward-input-20261023/mapped-plus-840s.png), [after W keydown/up](/tmp/winbox-finish/r3/work-luna-q3/evidence/build9-q3-forward-input-20261023/mapped-plus-840s-after-w.png), [summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/build9-q3-forward-input-20261023/summary.json), and [console/metrics log](/tmp/winbox-finish/r3/work-luna-q3/evidence/build9-q3-forward-input-20261023/console.log).
+
+## Player-view clipping diagnosis and fix (2026-10-23)
+
+I traced a representative Q3DM1 world draw in the GL bridge. It is a triangle
+draw (`mode=0x4`) with `GL_UNSIGNED_INT` indices (`type=0x1405`), enabled
+position/color/texture-coordinate arrays, and a 16-byte position stride. The
+logged index range and sampled coordinates are within the BSP's world-space
+coordinate range. The projection and modelview matrices are ordinary Q3
+perspective/view transforms. This trace does not support a bad index type,
+array stride, or pointer offset as the source of the long streak polygons.
+
+The distortion came from the CPU compositor mirror. `readbackAndPresent()` in
+the native bridge obtains the default framebuffer through `glReadPixels`, and
+the WebGPU module answers from its CPU pixel mirror. Before this fix,
+`_mirrorDraw()` divided each vertex by clip `w` before clipping the triangle.
+Q3's perspective view includes triangles that cross the eye or near plane; a
+vertex with negative or near-zero `w` therefore projected to an unbounded or
+flipped screen coordinate and painted a large streak. The mirror now clips the
+triangle against all six homogeneous GL clip planes first, triangulates the
+remaining polygon, then divides by `w`. It also uses perspective-correct
+interpolation for color and texture coordinates.
+
+The new fixed-function regression test builds a triangle with one vertex
+behind the eye and the other two on the near-facing bottom edge. Before the
+fix, the mirror painted its center pixel; after clipping, that pixel remains
+transparent. The test failed before the implementation change and passes now.
+The focused file passes 9/9 tests; `node --test web/tests/suite/unit/gl-webgpu*.test.mjs`
+passes 19/19. `git diff --check` is clean. No C++ changes or build were needed.
+
+I then ran the same Build 9 integration WASM (`9a446989e646`) twice: once with
+the exported JS and once with this worktree's `gl-webgpu.mjs` overlaid into a
+temporary copy of the export. The patched screenshot at mapped+1080s shows
+Q3DM1's HUD, weapon, sky, and arena objects without the broad diagonal streak
+polygons visible in the unpatched capture. Some surfaces remain very dark or
+absent, so the scene is not fully correct. Pixel comparison reports 858,079
+changed pixels between the two +1080s captures. Both runs report WebGPU active
+and no page errors or WebGPU failures.
+
+For input, I held W for 30 seconds in the patched run. Across the roughly
+31-second interval the probe recorded one SDL present; the view matrix
+translation changed from `(1819.12, -59.9638, -1518.62)` to
+`(1818.22, -85.1204, -1474.60)`, and the screenshot changed by 420,278 pixels.
+The follow-up capture 30 seconds later was identical to the post-input capture.
+This is consistent with the game processing movement and producing a new
+frame during the hold, though without a no-input control it does not prove the
+key caused every matrix change. Rendering remains extremely sparse (about
+0.03 presents/s during this interval; the overlay still reads 0 fps).
+
+Evidence: [unpatched +1080s view](/tmp/winbox-finish/r3/work-luna-q3/evidence/build9-late-input-20261023/mapped-plus-1080s.png), [patched +1080s view](/tmp/winbox-finish/r3/work-luna-q3/evidence/build9-js-clip-20261023/mapped-plus-1080s.png), [patched after W](/tmp/winbox-finish/r3/work-luna-q3/evidence/build9-js-clip-20261023/mapped-plus-1080s-after-w.png), [patched probe summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/build9-js-clip-20261023/summary.json), [array trace and metrics](/tmp/winbox-finish/r3/work-luna-q3/evidence/build9-array-trace-input-20261023/console.log), and [patched probe log](/tmp/winbox-finish/r3/work-luna-q3/evidence/build9-js-clip-20261023/console.log).
