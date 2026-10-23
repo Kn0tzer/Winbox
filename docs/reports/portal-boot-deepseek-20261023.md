@@ -115,3 +115,35 @@ number is the one the probe originally reported.
   would need to beat the interpreter without the known regressions.
 - The 0.67 fps post-menu measurement is a separate rendering-throughput issue;
   it does not affect time to first visible menu.
+
+## Build-5 C++ lever (not measured here)
+
+The 2 MiB / 512 MiB change in this follow-up commit is not built or measured in
+this worktree; it is the candidate for integration build 5.
+
+- `source/io/fszipurl.cpp`: `BLOCK_SIZE` 512 KiB -> 2 MiB and
+  `MAX_CACHED_BLOCKS` 512 -> 256, keeping the C++ LRU at 512 MiB.
+- `project/emscripten/wine64-launcher.js`: the read-ahead now accepts both
+  512 KiB and 2 MiB Range requests. For 2 MiB blocks it prefetches two blocks
+  (4 MiB) ahead and uses a byte-capped 192 MiB JS LRU, so the larger C++ block
+  does not lose the read-ahead behavior measured above.
+
+Reasoning for the expected win: the deflated probe made about 16,068 512 KiB
+block fetches for 8,034 MB. The same data at 2 MiB is about 4,017 synchronous
+proxy waits, a 4x reduction in the main-thread scheduling stalls that the JS
+read-ahead only partially hides. The 512 MiB C++ cache holds 256 blocks, enough
+to cover most of the app's 608 MB stored working set and to reduce the 704
+evictions seen at 256 MiB. The trade-off is up to 2 MiB of overfetch per miss;
+Portal's texture reads are large and sequential, and the 2 MiB read-ahead
+window is the same one the measured JS prefetch already used (four 512 KiB
+blocks).
+
+Unit tests, without a full build:
+
+- `web/tests/suite/unit/fszipurl-block-cache.test.mjs`: asserts the 2 MiB/512 MiB
+  constants and eviction log arithmetic, extracts the launcher read-ahead with
+  a mock server, and checks a 2 MiB request fetches two blocks ahead and the
+  next 2 MiB block is a cache hit.
+- `node --test` on the new test plus `vfs-socket-isolation` and
+  `packaging-prefix`: 17 passed, 0 failed.
+- `node --check project/emscripten/wine64-launcher.js`: pass.

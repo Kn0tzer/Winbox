@@ -88,10 +88,11 @@
         if (typeof fetch !== "function" || globalThis.__bwLazyZipPrefetch) return;
         globalThis.__bwLazyZipPrefetch = true;
         var nativeFetch = fetch.bind(globalThis);
-        var BLOCK = 512 * 1024;
-        var AHEAD = 4;
-        var MAX_BLOCKS = 384;
+        var BLOCK_512K = 512 * 1024;
+        var BLOCK_2M = 2 * 1024 * 1024;
+        var MAX_CACHE_BYTES = 192 * 1024 * 1024;
         var cache = new Map();
+        var cacheBytes = 0;
         var pending = new Map();
         var totals = new Map();
 
@@ -109,9 +110,17 @@
         }
 
         function put(key, buffer) {
-            if (cache.has(key)) cache.delete(key);
+            if (cache.has(key)) {
+                cacheBytes -= cache.get(key).byteLength;
+                cache.delete(key);
+            }
             cache.set(key, buffer);
-            while (cache.size > MAX_BLOCKS) cache.delete(cache.keys().next().value);
+            cacheBytes += buffer.byteLength;
+            while (cacheBytes > MAX_CACHE_BYTES) {
+                var oldest = cache.keys().next().value;
+                cacheBytes -= cache.get(oldest).byteLength;
+                cache.delete(oldest);
+            }
         }
 
         function block(url, start, end) {
@@ -146,10 +155,12 @@
 
         function prefetch(url, start, end) {
             if (/\/wine(?:32|64)\.zip|\/support-[^/]+\.zip/.test(url)) return;
+            var span = end - start + 1;
+            var ahead = span === BLOCK_2M ? 2 : 4;
             var total = totals.get(url);
-            for (var i = 1; i <= AHEAD; i++) {
-                var nextStart = start + i * BLOCK;
-                var nextEnd = nextStart + (end - start);
+            for (var i = 1; i <= ahead; i++) {
+                var nextStart = start + i * span;
+                var nextEnd = nextStart + span - 1;
                 if (total && nextEnd >= total) break;
                 if (cache.has(url + "|" + nextStart + "|" + nextEnd) || pending.has(url + "|" + nextStart + "|" + nextEnd)) continue;
                 block(url, nextStart, nextEnd).catch(function () {});
@@ -164,7 +175,8 @@
             if (!match) return nativeFetch(input, init);
             var start = Number(match[1]);
             var end = Number(match[2]);
-            if (end < start || end - start + 1 !== BLOCK) return nativeFetch(input, init);
+            var span = end - start + 1;
+            if (end < start || (span !== BLOCK_512K && span !== BLOCK_2M)) return nativeFetch(input, init);
             var key = url + "|" + start + "|" + end;
             if (cache.has(key)) {
                 var hit = cache.get(key);
@@ -206,7 +218,7 @@
     var CHUNKED = param("chunked") === "1"; // fetch zips as <zip>.partNNN via manifest
     // Lazy rootfs (M7): don't
     // download wine64.zip (~196MB) up front — mount it FROM ITS URL. The C++
-    // side (source/io/fszipurl.cpp) fetches 512KB block ranges on demand with
+    // side (source/io/fszipurl.cpp) fetches 2MB block ranges on demand with
     // sync XHR on the guest worker threads (~55MB actually read for a boot =
     // 65% less transfer, measured). glibc+prefix (~28MB) stay eager: they're
     // small and hold the boot-critical loader bits. Validated: 13/13 local

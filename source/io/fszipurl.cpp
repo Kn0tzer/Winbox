@@ -103,7 +103,7 @@ static int bw64SyncFetchRange(const char* url, double start, double endIncl, U8*
 
 namespace {
 
-constexpr U64 BLOCK_SIZE = 512 * 1024;
+constexpr U64 BLOCK_SIZE = 2 * 1024 * 1024;
 
 struct UrlPart {
     BString url;
@@ -120,7 +120,7 @@ struct RangedFile {
     std::atomic<U64> lastLogged{0};
     std::mutex m;
     std::condition_variable fetchCv; // signaled when an in-flight block fetch finishes
-    // LRU block cache: 512KB blocks, capped at MAX_CACHED_BLOCKS (256MB).
+    // LRU block cache: 2MB blocks, capped at MAX_CACHED_BLOCKS (512MB).
     // Locking discipline: m is held for cache lookup/insertion/eviction and for
     // the memcpy out of a cached block, but NEVER across the synchronous
     // network fetch. A cache miss releases m while fetching, so one thread's
@@ -129,7 +129,7 @@ struct RangedFile {
     // threads that miss on the same block wait on fetchCv instead of
     // duplicating the fetch. Eviction is transparent: a later read of an
     // evicted block just re-fetches it.
-    static constexpr size_t MAX_CACHED_BLOCKS = 512; // 512 x 512KB = 256MB
+    static constexpr size_t MAX_CACHED_BLOCKS = 256; // 256 x 2MB = 512MB
     struct BlockEntry {
         std::unique_ptr<U8[]> data;
         std::list<U64>::iterator lruIt; // position in lruOrder, front = MRU
@@ -251,9 +251,9 @@ struct RangedFile {
                 }
                 if (evicted - lastEvictLogged >= 64) {
                     lastEvictLogged = evicted;
-                    klog_fmt("fszipurl: LRU evicted %llu blocks (%llu MB total), cache capped at 256MB",
+                    klog_fmt("fszipurl: LRU evicted %llu blocks (%llu MB total), cache capped at 512MB",
                              (unsigned long long)evicted,
-                             (unsigned long long)(evicted >> 1));
+                             (unsigned long long)((evicted * BLOCK_SIZE) >> 20));
                 }
             }
         } catch (...) {
@@ -407,7 +407,7 @@ unzFile fsZipUrlOpen(BString spec) {
     fns.opaque = &slot;
     unzFile z = unzOpen2_64(spec.c_str(), &fns);
     if (z) {
-        klog_fmt("fszipurl: mounted %llu MB zip lazily (%d part(s), 512KB blocks)",
+        klog_fmt("fszipurl: mounted %llu MB zip lazily (%d part(s), 2MB blocks)",
                  (unsigned long long)(f->total >> 20), (int)f->parts.size());
     } else {
         g_registry.erase(std::string(spec.c_str()));
