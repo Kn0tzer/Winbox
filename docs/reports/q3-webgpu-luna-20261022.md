@@ -368,6 +368,11 @@ Evidence: [IPv4-only +60s console capture](/tmp/winbox-finish/r3/work-luna-q3/ev
 
 ## Q3 present latency measurement, 2026-10-23
 
+**Retrospective correction:** this measurement ran at roughly 9 load average on
+a four-core host. Treat the rates below as contaminated raw history only; they
+do not support a performance or present-bound conclusion. The later Build 6
+rerun below also did not reach the requested quiet-host threshold.
+
 I ran the Q3 probe against the read-only Build 6 export (`4f603f50f71a`, WASM build ID `b0438f56f93a`) with JIT and recovery enabled, `+set net_enabled 1`, and `+map q3dm1`. The first window mapped 117.9 seconds after probe launch. The +90-second composited capture still shows `CONNECTING TO LOCALHOST / AWAITING CONNECTION...0`; it is not the BSP asset-loading screen, so these timings do not measure Q3's per-chunk map loader.
 
 For the 30-second interval ending at mapped+90s, the timestamped metrics stream recorded 22 frames at the XWire SDL sink (0.73 frames/s over the nominal interval). The metric stream covered 19.55 seconds of that interval; it had a 12.5-second gap and its last record was 8.15 seconds before the screenshot. Because metrics emit only after GL/audio/present activity, that gap means the presentation counter is a lower bound if a final frame was not followed by another metrics event. One `gl64 PHASE: swap` marker appeared in the interval, but this trace is best-effort on guest worker threads and is not a reliable exact swap count.
@@ -384,3 +389,65 @@ The present path explains why the old 500 ms sample is not evidence of a GPU com
 This source and runtime evidence does not show a per-present GPU round trip. The main-thread bridge hop is synchronous, but the SDL compositor runs after the hop signals the guest, and current telemetry cannot attribute its time per swap. I made no async-swap change and ran no build. There is no post-change timing to compare; the 27.94 ms figure is an average over all GL bridge calls, not a per-present result.
 
 Evidence: [mapped+90s screenshot](/tmp/winbox-finish/r3/work-luna-q3/evidence/present-metric-window-jit1-20261023/mapped-plus-90s.png), [full probe summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/present-metric-window-jit1-20261023/summary.json), and [console log](/tmp/winbox-finish/r3/work-luna-q3/evidence/present-metric-window-jit1-20261023/console.log). The temporary probe instrumentation used to retain the 30-second event window was reverted after capture.
+
+## Build 6 Q3 12-minute progression and metrics run (2026-10-23)
+
+I waited once with `/home/ubuntu/scripts/winbox-wait-load.sh 3 15`. It timed out
+after 15 minutes with load 8.51 (threshold 3), so I proceeded and recorded the
+actual load. `/proc/loadavg` at probe start was `7.90 7.46 7.97`; at probe end
+it was `6.89 7.87 8.06` (1-, 5-, and 15-minute averages). This was not a
+quiet-host measurement and its throughput must not be compared as an
+uncontended performance result.
+
+The single probe used the read-only Build 6 dist (`4f603f50f71a9e4dd6d2c0c3b32fca53acbb31af`, WASM build ID `b0438f56f93a`), JIT and recovery enabled, and
+`+set net_enabled 1 +set developer 1 +set com_printf 1 +map q3dm1` (along with
+the existing windowed OpenGL1 and `r_vbo 0` settings). The first window mapped
+92.2 seconds after launch. I captured at mapped+120, +240, +360, +480, +600,
+and +720 seconds.
+
+The +120s and +240s screenshots still show `CONNECTING TO LOCALHOST / AWAITING
+CONNECTION...0`. By +360s that specific wait has cleared and Q3 is presenting
+the Q3DM1 loading screen with `LOADING... MAPS/Q3DM1.BSP`. Later captures show
+asset progress (`SHOTGUN`, then `CELLS`) over the textured 3D arena background.
+At +720s it is still on the `CELLS` loading screen; no playable gameplay frame
+was captured. The `CONNECTING TO LOCALHOST` heading remains during map/asset
+loading, so this run proves transition into the BSP/asset loader, not completion
+of the client/server handshake. Since it left `AWAITING CONNECTION`, I did not
+start the proposed NA_LOOPBACK trace. `developer 1` and `com_printf 1` were
+passed, but the guest log contained no useful Q3 network diagnostics.
+
+Across the mapped 12-minute stream, the first metrics record was at mapped+1.5s
+and the last at mapped+719.8s. The JIT counter advanced by 1,586,687,603 retired
+instructions over 718.35 measured seconds: **2.21 million instructions/s**.
+The SDL sink recorded 92 presented frames over the same span: **0.128
+presents/s**. These are observed aggregate rates under the high host load above,
+not a clean estimate of Q3's unconstrained CPU throughput or GPU presentation
+latency. The metric stream is activity-triggered and can omit a trailing frame
+that is not followed by another metrics event; the SDL count is therefore a
+lower bound.
+
+The activity-triggered 30-second SDL present counts were:
+
+| Mapped interval | SDL presents | Mapped interval | SDL presents |
+| --- | ---: | --- | ---: |
+| 0–30s | 43 | 30–60s | 0 |
+| 60–90s | 32 | 90–120s | 0 |
+| 120–150s | 0 | 150–180s | 0 |
+| 180–210s | 0 | 210–240s | 0 |
+| 240–270s | 0 | 270–300s | 1 |
+| 300–330s | 2 | 330–360s | 1 |
+| 360–390s | 0 | 390–420s | 0 |
+| 420–450s | 0 | 450–480s | 0 |
+| 480–510s | 1 | 510–540s | 0 |
+| 540–570s | 5 | 570–600s | 1 |
+| 600–630s | 1 | 630–660s | 1 |
+| 660–690s | 1 | 690–720s | 3 |
+
+The counters are XWire SDL sink presents, not direct `SwapBuffers` calls. A
+missing metrics record means there was no GL/audio/present activity to trigger
+an emission in that interval; instruction-rate coverage is consequently
+aggregated between the first and last available cumulative JIT snapshots.
+Neither the high-load run nor its sparse per-window telemetry justifies making
+the SwapBuffers path asynchronous yet. No source change or build was made.
+
+Evidence: [mapped+120s](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-q3-quiet-12min-20261023/mapped-plus-120s.png), [mapped+240s](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-q3-quiet-12min-20261023/mapped-plus-240s.png), [mapped+360s](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-q3-quiet-12min-20261023/mapped-plus-360s.png), [mapped+480s](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-q3-quiet-12min-20261023/mapped-plus-480s.png), [mapped+600s](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-q3-quiet-12min-20261023/mapped-plus-600s.png), [mapped+720s](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-q3-quiet-12min-20261023/mapped-plus-720s.png), [summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-q3-quiet-12min-20261023/summary.json), and [full metrics/console log](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-q3-quiet-12min-20261023/console.log).
