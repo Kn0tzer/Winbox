@@ -21,6 +21,8 @@ def registry(architecture: str, user: bool = False) -> bytes:
                            ("winebus", "00000003"), ("wineusb", "00000003")):
         lines.extend((f"[System\\\\CurrentControlSet\\\\Services\\\\{service}] 1",
                       f'"Start"=dword:{start}', ""))
+    lines.extend((r"[Software\\Microsoft\\Windows\\CurrentVersion\\RunServices] 1",
+                  r'"winemenubuilder"="C:\\windows\\system32\\winemenubuilder.exe -a -r"', ""))
     lines.extend((
         r"[Software\\Microsoft\\WindowsRuntime\\ActivatableClassId\\Windows.Gaming.Input.Gamepad] 1",
         r"[Software\\Microsoft\\WindowsRuntime\\ActivatableClassId\\Windows.Gaming.Input.RawGameController] 1",
@@ -69,6 +71,38 @@ class PrefixPackagingTests(unittest.TestCase):
         self.assertIn('"csmt"=dword:00000000', patched)
         self.assertEqual(prefixes._audio_registry(patched).count('"Audio"="alsa"'), 1)
 
+    def test_browser_prefix_removes_only_winemenubuilder_runservices_entry(self):
+        original = (b'WINE REGISTRY Version 2\n#arch=win32\n\n'
+                    b'[Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\RunServices] 1\n'
+                    b'"winemenubuilder"="C:\\\\windows\\\\system32\\\\winemenubuilder.exe -a -r"\n'
+                    b'"other-service"="C:\\\\windows\\\\system32\\\\keep.exe"\n\n'
+                    b'[Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run] 1\n'
+                    b'"winemenubuilder"="leave this unrelated key alone"\n')
+        patched, removed = prefixes.strip_browser_menu_runservices(original)
+        self.assertEqual(removed, 1)
+        self.assertNotIn(b'"winemenubuilder"=', patched.split(b'[Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run]')[0])
+        self.assertIn(b'"other-service"="C:\\\\windows\\\\system32\\\\keep.exe"', patched)
+        self.assertIn(b'"winemenubuilder"="leave this unrelated key alone"', patched)
+
+    def test_prefix_archive_sanitizer_changes_only_the_browser_runservice_value(self):
+        with tempfile.TemporaryDirectory() as temp:
+            archive_path = Path(temp) / "prefix32.zip"
+            entries = valid_entries("win32")
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                for name, data in entries.items():
+                    archive.writestr(name, data)
+            self.assertEqual(prefixes.sanitize_prefix_archive(archive_path), 2)
+            with zipfile.ZipFile(archive_path) as archive:
+                system = archive.read(prefixes.PREFIX + "system.reg")
+                self.assertNotIn(b'"winemenubuilder"=', system)
+                self.assertIn(b'"Start"=dword:00000003', system)
+                self.assertIn(b"RpcSs", system)
+                self.assertIn(b"PlugPlay", system)
+                self.assertIn(b"WINEBUS", system)
+                self.assertIn(b"WINEUSB", system)
+                self.assertEqual(archive.read(prefixes.PREFIX + ".update-timestamp"), b"disable\n")
+            self.assertEqual(prefixes.sanitize_prefix_archive(archive_path), 0)
+
     def test_boot_overlay_adds_state_without_dropping_app_payloads(self):
         with tempfile.TemporaryDirectory() as temp:
             temp = Path(temp)
@@ -104,6 +138,10 @@ class PrefixPackagingTests(unittest.TestCase):
                 self.assertEqual(archive.read(prefixes.PREFIX + ".update-timestamp"), b"disable\n")
                 self.assertEqual(archive.read(prefixes.PREFIX + "drive_c/windows/inf/winehid.inf"), b"booted HID INF\n")
                 self.assertIn(b'"Audio"="alsa"', archive.read(prefixes.PREFIX + "user.reg"))
+                system = archive.read(prefixes.PREFIX + "system.reg")
+                self.assertNotIn(b'"winemenubuilder"=', system)
+                self.assertIn(b"RpcSs", system)
+                self.assertIn(b"PlugPlay", system)
 
     def test_guard_requires_completed_marker_and_enabled_services(self):
         entries = valid_entries("win32")

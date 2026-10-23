@@ -204,6 +204,11 @@ else
   exit 1
 fi
 
+# Wine's first boot adds winemenubuilder.exe to RunServices for host Start Menu
+# integration. The browser prefix has no host menu, and that extra startup
+# process races cold application initialization; retain all actual Wine services.
+python3 "$PREFIX_HELPER" sanitize --archive "$ZIP"
+
 # The 32-bit builder runs native wineboot twice. Preserve any existing audio
 # setting in its archive; do not add one here because an explicit ALSA override
 # increased click-to-mapped time in the browser measurements.

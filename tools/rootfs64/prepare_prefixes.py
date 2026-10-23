@@ -22,6 +22,8 @@ CONTROLLER_KEYS = (
     "System\\\\CurrentControlSet\\\\Enum\\\\ROOT\\\\WINE\\\\WINEBUS",
     "System\\\\CurrentControlSet\\\\Enum\\\\ROOT\\\\WINE\\\\WINEUSB",
 )
+RUNSERVICES_KEY = "software\\microsoft\\windows\\currentversion\\runservices"
+MENU_BUILDER_VALUE = re.compile(r'^\s*"winemenubuilder"\s*=', re.IGNORECASE)
 
 
 def _zip_contents(path: Path) -> tuple[dict[str, tuple[zipfile.ZipInfo, bytes]], dict[str, bytes]]:
@@ -40,6 +42,53 @@ def _write_zip(path: Path, records: dict[str, tuple[zipfile.ZipInfo, bytes]]) ->
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for name, (info, data) in records.items():
             archive.writestr(info, data)
+
+
+def strip_browser_menu_runservices(data: bytes) -> tuple[bytes, int]:
+    """Remove Wine's host shell menu integration from a browser prefix hive.
+
+    wine.inf registers winemenubuilder.exe -a -r under RunServices. The browser
+    has no host Start Menu to integrate, and the extra process races application
+    startup on a cold prefix. Leave other RunServices values and ordinary Run
+    values untouched; service registrations such as RpcSs and PlugPlay are not
+    involved.
+    """
+    lines = data.decode("utf-8", errors="replace").splitlines(keepends=True)
+    output: list[str] = []
+    section = ""
+    removed = 0
+    for line in lines:
+        stripped = line.rstrip("\r\n")
+        if stripped.startswith("[") and "]" in stripped:
+            section = stripped[1:stripped.index("]")].replace("\\\\", "\\").casefold()
+        if section == RUNSERVICES_KEY and MENU_BUILDER_VALUE.match(stripped):
+            removed += 1
+            continue
+        output.append(line)
+    return "".join(output).encode("utf-8"), removed
+
+
+def sanitize_prefix_archive(path: Path) -> int:
+    """Strip browser-irrelevant menu integration from all prefix registry hives."""
+    records, contents = _zip_contents(path)
+    removed = 0
+    for hive in HIVES:
+        name = PREFIX + hive
+        if name not in contents:
+            continue
+        data, count = strip_browser_menu_runservices(contents[name])
+        if count:
+            records[name] = (records[name][0], data)
+            contents[name] = data
+            removed += count
+    if removed:
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        try:
+            _write_zip(temporary, records)
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return removed
 
 
 def _audio_registry(text: str) -> str:
@@ -239,6 +288,12 @@ def package_boot_state(base_zip: Path, boot_state: Path, output: Path) -> None:
     records[user_reg] = (records[user_reg][0], user_data)
     contents[user_reg] = user_data
 
+    for hive in HIVES:
+        name = PREFIX + hive
+        data, _ = strip_browser_menu_runservices(contents[name])
+        records[name] = (records[name][0], data)
+        contents[name] = data
+
     _validate_prefix(contents, "win64", require_full_init=True)
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(output.suffix + ".tmp")
@@ -347,6 +402,9 @@ def main() -> None:
     check_one.add_argument("--archive", type=Path, required=True)
     check_one.add_argument("--arch", choices=("win32", "win64"), required=True)
 
+    sanitize = commands.add_parser("sanitize", help="remove browser-irrelevant winemenubuilder autostart from a prefix archive")
+    sanitize.add_argument("--archive", type=Path, required=True)
+
     args = parser.parse_args()
     if args.command == "prepare":
         package_boot_state(args.base, args.boot_state, args.output)
@@ -367,6 +425,9 @@ def main() -> None:
     elif args.command == "check-one":
         validate_prefix_zip(args.archive, args.arch)
         print(f"Preinitialized {args.arch} prefix passed package checks.")
+    elif args.command == "sanitize":
+        removed = sanitize_prefix_archive(args.archive)
+        print(f"Removed {removed} winemenubuilder RunServices value(s) from {args.archive}.")
 
 
 if __name__ == "__main__":
