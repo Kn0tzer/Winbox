@@ -48,7 +48,8 @@ not a disposition.
 | `web/gl-webgpu.mjs:1547` | Fixed-function alpha comparison and texenv combinations are partial; Quake III lightmap/multitexture paths can render dark or missing. | Breaks Quake III surfaces | OPEN |
 | `web/gl-webgpu.mjs:1240,1669` | Fixed-function shader and CPU mirror support modulate, replace, decal, and add; uncommon texture environment combine modes remain unimplemented. Dark/absent Q3 surfaces still need a targeted reproduction. | Breaks uncommon fixed-function materials | OPEN |
 | `web/gl-webgpu.mjs:1954-2035` | `texImage2D`/`texSubImage2D` previously expanded legacy `ALPHA`, `LUMINANCE`, `LUMINANCE_ALPHA`, `RED`, and `RG` channels incorrectly; expansion is corrected and covered. Celeste's title screenshot remains unverified. | Breaks glyph/sprite atlases | IMPLEMENTED (`web/tests/suite/unit/gl-webgpu-texture.test.mjs`); Celeste visual confirmation OPEN |
-| `source/opengl/es/esopengl.c:86` | `glIndexMask` panics when called by a compatibility guest. | Breaks real callers | OPEN |
+| `source/opengl/es/esopengl.c:31` | `glClearIndex` has no effect because the bridge exposes only RGBA visuals (`glcommon.cpp:1140-1142`). It now returns without panicking. | Harmless in RGBA mode | NOT-A-GAP (color-index buffers are not exposed by this bridge) |
+| `source/opengl/es/esopengl.c:86` | `glIndexMask` has no effect because the bridge exposes only RGBA visuals (`glcommon.cpp:1140-1142`). It now returns without panicking. | Harmless in RGBA mode | NOT-A-GAP (color-index buffers are not exposed by this bridge) |
 | `source/opengl/es/esopengl.c:94` | `glAlphaFunc` panics; alpha-tested fixed-function textures disappear. | Breaks compatibility games | OPEN |
 | `source/opengl/es/esopengl.c:102` | `glLogicOp` panics. | Breaks callers using logic ops | OPEN |
 | `source/opengl/es/esopengl.c:114` | `glPointSize` panics; point sprites/points cannot be sized. | Breaks point rendering | OPEN |
@@ -67,7 +68,7 @@ not a disposition.
 | `source/opengl/glMarshal.cpp:237` | Unsupported pixel format/type combinations panic in marshaling rather than returning guest GL error. | Breaks invalid-input handling | OPEN |
 | `web/bridge-recovery.mjs:9,41` | Recovery detection/logging catches exceptions to preserve fallback, but log callback failure is silently ignored. | Harmless unless diagnostic callback itself fails | NOT-A-GAP (recovery must not fail because logging failed) |
 | `web/gl-webgpu.mjs:477,571,1714` | Failure callback and error-scope cleanup catches prevent secondary errors from replacing the primary device/validation failure. | Harmless cleanup paths | NOT-A-GAP (primary error is reported before cleanup) |
-| `source/opengl/es/khash.h:308` | Shrinking is an optimization TODO; hash table correctness does not depend on shrinking. | Harmless memory/performance behavior | OPEN |
+| `source/opengl/es/khash.h:308` | Shrinking after removal is an optimization TODO; lookup/insertion correctness is independent of shrinking and the table already grows as needed. | Harmless memory/performance behavior | NOT-A-GAP (resize-on-growth remains implemented at `khash.h:235-279`) |
 | `source/opengl/es/glshim.c:37,145` | Dynamic type and texture-target TODOs need caller review; target handling may exclude valid texture behavior. | Could break callers | OPEN |
 | `source/opengl/glcommon.cpp:1318,1346` | Non-empty X pixmap/window attribute lists panic. | Breaks callers using those attributes | OPEN |
 

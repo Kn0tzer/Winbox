@@ -29,7 +29,8 @@
 struct DisplayList* activeList;
 
 void es_glClearIndex( GLfloat c ) {
-    kpanic("glClearIndex not implemeented");
+    // The ES bridge always creates an RGBA visual; color-index state has no target.
+    (void)c;
 }
 
 #define COMPILE_OR_RUN_1(func, arg1, arg1Type)	\
@@ -83,7 +84,8 @@ void es_glClear( GLbitfield mask ) {
 }
 
 void es_glIndexMask( GLuint mask ) {
-    kpanic("glIndexMask not implemented");
+    // glX visuals exposed by glcommon are RGBA, where the index mask has no effect.
+    (void)mask;
 }
 
 void es_glColorMask( GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha ) {

@@ -16,7 +16,9 @@ import { fileURLToPath } from 'node:url';
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 const abiSrc = readFileSync(join(repoRoot, 'source/opengl/gl64bridge_abi.h'), 'utf8');
 const bridgeSrc = readFileSync(join(repoRoot, 'source/opengl/gl64bridge.cpp'), 'utf8');
+const glCommonSrc = readFileSync(join(repoRoot, 'source/opengl/glcommon.cpp'), 'utf8');
 const shimSrc = readFileSync(join(repoRoot, 'tools/rootfs64/libgl64/libgl64.c'), 'utf8');
+const esOpenGlSrc = readFileSync(join(repoRoot, 'source/opengl/es/esopengl.c'), 'utf8');
 const webGpuGlSrc = readFileSync(join(repoRoot, 'web/gl-webgpu.mjs'), 'utf8');
 
 function getAbiFunctions(src) {
@@ -82,6 +84,15 @@ test('native transform-feedback calls are forwarded to the loud WebGPUGL rejecti
   assert.match(bridgeSrc, /case GL64_fn_glEndTransformFeedback:\s*if \(g_glContext\) GL_MT\(glEndTransformFeedback/);
   assert.match(webGpuGlSrc, /beginTransformFeedback\(\) \{ this\._rejectUnsupported\('transform feedback', GL\.INVALID_OPERATION\); \}/);
   assert.doesNotMatch(bridgeSrc, /case GL64_fn_glBeginTransformFeedback:\s*case GL64_fn_glEndTransformFeedback:/);
+});
+
+test('RGBA-only ES visuals do not panic on color-index operations with no RGBA effect', () => {
+  assert.match(glCommonSrc, /case GLX_RENDER_TYPE:[\s\S]{0,220}GLX_RGBA_BIT/);
+  for (const name of ['es_glClearIndex', 'es_glIndexMask']) {
+    const body = new RegExp(`void ${name}\\s*\\([^)]*\\)\\s*\\{([^}]*)\\}`).exec(esOpenGlSrc)?.[1] || '';
+    assert.match(body, /\(void\)/, `${name} should be a documented RGBA no-op`);
+    assert.doesNotMatch(body, /kpanic/);
+  }
 });
 
 test('core GL 2.1 immediate-mode functions are shim-registered', () => {
