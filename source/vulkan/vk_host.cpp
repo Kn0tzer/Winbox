@@ -3979,9 +3979,10 @@ void vk_CmdPushDescriptorSetWithTemplate(CPU* cpu) {
     VkDescriptorUpdateTemplate descriptorUpdateTemplate = (VkDescriptorUpdateTemplate)cpu->memory->readq(ARG2);
     VkPipelineLayout layout = (VkPipelineLayout)cpu->memory->readq(ARG3);
     uint32_t set = (uint32_t)ARG4;
-    void* pData = nullptr;
-    kpanic("vkCmdPushDescriptorSetWithTemplate not implemented");
+    U32 dataSize = calculateUpdateDescriptorSetWithTemplateDataSize(pBoxedInfo, descriptorUpdateTemplate);
+    const void* pData = ARG5 && dataSize ? cpu->memory->lockReadOnlyMemory(ARG5, dataSize) : nullptr;
     pBoxedInfo->pvkCmdPushDescriptorSetWithTemplate(commandBuffer, descriptorUpdateTemplate, layout, set, pData);
+    cpu->memory->unlockMemory((U8*)pData);
 }
 void vk_CmdPushDescriptorSetWithTemplateKHR(CPU* cpu) {
     VkCommandBuffer commandBuffer = (VkCommandBuffer)getVulkanPtr(cpu->memory, ARG1);
@@ -3989,9 +3990,10 @@ void vk_CmdPushDescriptorSetWithTemplateKHR(CPU* cpu) {
     VkDescriptorUpdateTemplate descriptorUpdateTemplate = (VkDescriptorUpdateTemplate)cpu->memory->readq(ARG2);
     VkPipelineLayout layout = (VkPipelineLayout)cpu->memory->readq(ARG3);
     uint32_t set = (uint32_t)ARG4;
-    void* pData = nullptr;
-    kpanic("vkCmdPushDescriptorSetWithTemplateKHR not implemented");
+    U32 dataSize = calculateUpdateDescriptorSetWithTemplateDataSize(pBoxedInfo, descriptorUpdateTemplate);
+    const void* pData = ARG5 && dataSize ? cpu->memory->lockReadOnlyMemory(ARG5, dataSize) : nullptr;
     pBoxedInfo->pvkCmdPushDescriptorSetWithTemplateKHR(commandBuffer, descriptorUpdateTemplate, layout, set, pData);
+    cpu->memory->unlockMemory((U8*)pData);
 }
 void vk_SetHdrMetadataEXT(CPU* cpu) {
     VkDevice device = (VkDevice)getVulkanPtr(cpu->memory, ARG1);
@@ -4665,11 +4667,11 @@ void vk_GetMemoryHostPointerPropertiesEXT(CPU* cpu) {
     VkDevice device = (VkDevice)getVulkanPtr(cpu->memory, ARG1);
     BoxedVulkanInfo* pBoxedInfo = getInfoFromHandle(cpu->memory, ARG1);
     VkExternalMemoryHandleTypeFlagBits handleType = (VkExternalMemoryHandleTypeFlagBits)ARG2;
-    void* pHostPointer = nullptr;
-    kpanic("vkGetMemoryHostPointerPropertiesEXT not implemented");
-    MarshalVkMemoryHostPointerPropertiesEXT pMemoryHostPointerProperties(pBoxedInfo, cpu->memory, ARG4);
-    EAX = (U32)pBoxedInfo->pvkGetMemoryHostPointerPropertiesEXT(device, handleType, pHostPointer, &pMemoryHostPointerProperties.s);
-    MarshalVkMemoryHostPointerPropertiesEXT::write(pBoxedInfo, cpu->memory, ARG4, &pMemoryHostPointerProperties.s);
+    (void)device;
+    (void)handleType;
+    static bool shown;
+    if (!shown) { klog("vkGetMemoryHostPointerPropertiesEXT: unsupported guest host pointer; VK_ERROR_INVALID_EXTERNAL_HANDLE"); shown = true; }
+    EAX = (U32)VK_ERROR_INVALID_EXTERNAL_HANDLE;
 }
 void vk_CmdWriteBufferMarkerAMD(CPU* cpu) {
     VkCommandBuffer commandBuffer = (VkCommandBuffer)getVulkanPtr(cpu->memory, ARG1);
@@ -4879,9 +4881,10 @@ void vk_CmdDrawIndexedIndirectCountAMD(CPU* cpu) {
 void vk_CmdSetCheckpointNV(CPU* cpu) {
     VkCommandBuffer commandBuffer = (VkCommandBuffer)getVulkanPtr(cpu->memory, ARG1);
     BoxedVulkanInfo* pBoxedInfo = getInfoFromHandle(cpu->memory, ARG1);
-    void* pCheckpointMarker = nullptr;
-    kpanic("vkCmdSetCheckpointNV not implemented");
-    pBoxedInfo->pvkCmdSetCheckpointNV(commandBuffer, pCheckpointMarker);
+    (void)commandBuffer;
+    (void)pBoxedInfo;
+    static bool shown;
+    if (!shown) { klog("vkCmdSetCheckpointNV: optional diagnostic checkpoint ignored"); shown = true; }
 }
 void vk_GetQueueCheckpointDataNV(CPU* cpu) {
     VkQueue queue = (VkQueue)getVulkanPtr(cpu->memory, ARG1);
@@ -7508,53 +7511,38 @@ void vk_CmdBindDescriptorBufferEmbeddedSamplersEXT(CPU* cpu) {
 }
 // return type: VkResult(4 bytes)
 void vk_GetBufferOpaqueCaptureDescriptorDataEXT(CPU* cpu) {
-    VkDevice device = (VkDevice)getVulkanPtr(cpu->memory, ARG1);
-    BoxedVulkanInfo* pBoxedInfo = getInfoFromHandle(cpu->memory, ARG1);
-    MarshalVkBufferCaptureDescriptorDataInfoEXT local_pInfo(pBoxedInfo, cpu->memory, ARG2);
-    VkBufferCaptureDescriptorDataInfoEXT* pInfo = &local_pInfo.s;
-    void* pData = nullptr;
-    kpanic("vkGetBufferOpaqueCaptureDescriptorDataEXT not implemented");
-    EAX = (U32)pBoxedInfo->pvkGetBufferOpaqueCaptureDescriptorDataEXT(device, pInfo, pData);
+    (void)cpu->memory->readq(ARG1);
+    static bool shown;
+    if (!shown) { klog("vkGetBufferOpaqueCaptureDescriptorDataEXT: unsupported capture-replay data; VK_ERROR_FEATURE_NOT_PRESENT"); shown = true; }
+    EAX = (U32)VK_ERROR_FEATURE_NOT_PRESENT;
 }
 // return type: VkResult(4 bytes)
 void vk_GetImageOpaqueCaptureDescriptorDataEXT(CPU* cpu) {
-    VkDevice device = (VkDevice)getVulkanPtr(cpu->memory, ARG1);
-    BoxedVulkanInfo* pBoxedInfo = getInfoFromHandle(cpu->memory, ARG1);
-    MarshalVkImageCaptureDescriptorDataInfoEXT local_pInfo(pBoxedInfo, cpu->memory, ARG2);
-    VkImageCaptureDescriptorDataInfoEXT* pInfo = &local_pInfo.s;
-    void* pData = nullptr;
-    kpanic("vkGetImageOpaqueCaptureDescriptorDataEXT not implemented");
-    EAX = (U32)pBoxedInfo->pvkGetImageOpaqueCaptureDescriptorDataEXT(device, pInfo, pData);
+    (void)cpu->memory->readq(ARG1);
+    static bool shown;
+    if (!shown) { klog("vkGetImageOpaqueCaptureDescriptorDataEXT: unsupported capture-replay data; VK_ERROR_FEATURE_NOT_PRESENT"); shown = true; }
+    EAX = (U32)VK_ERROR_FEATURE_NOT_PRESENT;
 }
 // return type: VkResult(4 bytes)
 void vk_GetImageViewOpaqueCaptureDescriptorDataEXT(CPU* cpu) {
-    VkDevice device = (VkDevice)getVulkanPtr(cpu->memory, ARG1);
-    BoxedVulkanInfo* pBoxedInfo = getInfoFromHandle(cpu->memory, ARG1);
-    MarshalVkImageViewCaptureDescriptorDataInfoEXT local_pInfo(pBoxedInfo, cpu->memory, ARG2);
-    VkImageViewCaptureDescriptorDataInfoEXT* pInfo = &local_pInfo.s;
-    void* pData = nullptr;
-    kpanic("vkGetImageViewOpaqueCaptureDescriptorDataEXT not implemented");
-    EAX = (U32)pBoxedInfo->pvkGetImageViewOpaqueCaptureDescriptorDataEXT(device, pInfo, pData);
+    (void)cpu->memory->readq(ARG1);
+    static bool shown;
+    if (!shown) { klog("vkGetImageViewOpaqueCaptureDescriptorDataEXT: unsupported capture-replay data; VK_ERROR_FEATURE_NOT_PRESENT"); shown = true; }
+    EAX = (U32)VK_ERROR_FEATURE_NOT_PRESENT;
 }
 // return type: VkResult(4 bytes)
 void vk_GetSamplerOpaqueCaptureDescriptorDataEXT(CPU* cpu) {
-    VkDevice device = (VkDevice)getVulkanPtr(cpu->memory, ARG1);
-    BoxedVulkanInfo* pBoxedInfo = getInfoFromHandle(cpu->memory, ARG1);
-    MarshalVkSamplerCaptureDescriptorDataInfoEXT local_pInfo(pBoxedInfo, cpu->memory, ARG2);
-    VkSamplerCaptureDescriptorDataInfoEXT* pInfo = &local_pInfo.s;
-    void* pData = nullptr;
-    kpanic("vkGetSamplerOpaqueCaptureDescriptorDataEXT not implemented");
-    EAX = (U32)pBoxedInfo->pvkGetSamplerOpaqueCaptureDescriptorDataEXT(device, pInfo, pData);
+    (void)cpu->memory->readq(ARG1);
+    static bool shown;
+    if (!shown) { klog("vkGetSamplerOpaqueCaptureDescriptorDataEXT: unsupported capture-replay data; VK_ERROR_FEATURE_NOT_PRESENT"); shown = true; }
+    EAX = (U32)VK_ERROR_FEATURE_NOT_PRESENT;
 }
 // return type: VkResult(4 bytes)
 void vk_GetAccelerationStructureOpaqueCaptureDescriptorDataEXT(CPU* cpu) {
-    VkDevice device = (VkDevice)getVulkanPtr(cpu->memory, ARG1);
-    BoxedVulkanInfo* pBoxedInfo = getInfoFromHandle(cpu->memory, ARG1);
-    MarshalVkAccelerationStructureCaptureDescriptorDataInfoEXT local_pInfo(pBoxedInfo, cpu->memory, ARG2);
-    VkAccelerationStructureCaptureDescriptorDataInfoEXT* pInfo = &local_pInfo.s;
-    void* pData = nullptr;
-    kpanic("vkGetAccelerationStructureOpaqueCaptureDescriptorDataEXT not implemented");
-    EAX = (U32)pBoxedInfo->pvkGetAccelerationStructureOpaqueCaptureDescriptorDataEXT(device, pInfo, pData);
+    (void)cpu->memory->readq(ARG1);
+    static bool shown;
+    if (!shown) { klog("vkGetAccelerationStructureOpaqueCaptureDescriptorDataEXT: unsupported capture-replay data; VK_ERROR_FEATURE_NOT_PRESENT"); shown = true; }
+    EAX = (U32)VK_ERROR_FEATURE_NOT_PRESENT;
 }
 void vk_SetDeviceMemoryPriorityEXT(CPU* cpu) {
     VkDevice device = (VkDevice)getVulkanPtr(cpu->memory, ARG1);
@@ -7691,12 +7679,9 @@ void vk_GetDescriptorSetLayoutHostMappingInfoVALVE(CPU* cpu) {
     MarshalVkDescriptorSetLayoutHostMappingInfoVALVE::write(pBoxedInfo, cpu->memory, ARG3, &pHostMapping.s);
 }
 void vk_GetDescriptorSetHostMappingVALVE(CPU* cpu) {
-    VkDevice device = (VkDevice)getVulkanPtr(cpu->memory, ARG1);
-    BoxedVulkanInfo* pBoxedInfo = getInfoFromHandle(cpu->memory, ARG1);
-    VkDescriptorSet descriptorSet = (VkDescriptorSet)cpu->memory->readq(ARG2);
-    void** ppData = nullptr;
-    kpanic("vkGetDescriptorSetHostMappingVALVE not implemented");
-    pBoxedInfo->pvkGetDescriptorSetHostMappingVALVE(device, descriptorSet, ppData);
+    static bool shown;
+    if (!shown) { klog("vkGetDescriptorSetHostMappingVALVE: host descriptor mapping unavailable; returned null"); shown = true; }
+    if (ARG3) cpu->memory->writeq(ARG3, 0);
 }
 // return type: VkResult(4 bytes)
 void vk_CreateMicromapEXT(CPU* cpu) {
