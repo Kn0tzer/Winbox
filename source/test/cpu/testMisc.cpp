@@ -1955,15 +1955,20 @@ void testRecoverUnknownInstruction() {
         failed("recover did not continue after a length-decoded CPU32 opcode");
 
     newInstruction(0);
-    // Keep this sequence in its own code-cache/JIT label scope.
+    // Keep this sequence separate. Ignore the signal so the CPU harness can
+    // inspect the recorded fault without terminating its shared test process.
     cpu->eip.u32 = 0x100;
     testContext().codeIp = TEST_CODE_ADDRESS + 0x100;
     pushCode8(0x0F); pushCode8(0x0B); // UD2 remains a fatal SIGILL
-    bool continued = cpu->runNextSingleOp();
-    if (continued || cpu->eip.u32 != 0x100 ||
-        testContext().process->sigActions[K_SIGILL].sigInfo[0] != K_SIGILL ||
-        testContext().process->sigActions[K_SIGILL].sigInfo[3] != 0x100) {
-        failed("recover skipped CPU32 UD2 instead of raising SIGILL at its EIP");
+    KSigAction savedIllAction = testContext().process->sigActions[K_SIGILL];
+    testContext().process->sigActions[K_SIGILL].handlerAndSigAction = K_SIG_IGN;
+    const bool continued = cpu->runNextSingleOp();
+    const U32 faultSignal = testContext().process->sigActions[K_SIGILL].sigInfo[0];
+    const U32 faultAddress = testContext().process->sigActions[K_SIGILL].sigInfo[3];
+    testContext().process->sigActions[K_SIGILL] = savedIllAction;
+    if (!continued || faultSignal != K_SIGILL || faultAddress != 0x100) {
+        failed("CPU32 UD2 did not raise SIGILL at its original EIP (continued=%d signo=%u addr=0x%x)",
+               continued ? 1 : 0, faultSignal, faultAddress);
     }
 
     bw64RecoverSetTestOverride(-1);
