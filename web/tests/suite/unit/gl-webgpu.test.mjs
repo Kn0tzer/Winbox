@@ -386,3 +386,38 @@ test('valid but unsupported GL buffer targets reject loudly with INVALID_OPERATI
     assert.ok(logs.some(line => line.includes('buffer target 0x8a11')));
   } finally { gpu.restore(); }
 });
+
+test('state and texture entry points report invalid enums, values, and operations', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    gl.getParameter(0xdead);
+    assert.equal(gl.getError(), 0x0500);
+    gl.pixelStorei(0xdead, 1);
+    assert.equal(gl.getError(), 0x0500);
+    gl.pixelStorei(0x0d05, 3);
+    assert.equal(gl.getError(), 0x0501);
+    gl.matrixMode(0xdead);
+    assert.equal(gl.getError(), 0x0500);
+    gl.popMatrix();
+    assert.equal(gl.getError(), 0x0502, 'matrix stack underflow is INVALID_OPERATION');
+    gl.isEnabled(0xdead);
+    assert.equal(gl.getError(), 0x0500);
+    gl.bindTexture(0xdead, gl.createTexture());
+    assert.equal(gl.getError(), 0x0500);
+    gl.bindTexture(0x8513, gl.createTexture());
+    assert.equal(gl.getError(), 0x0502, 'valid cube-map targets are explicitly rejected');
+    assert.ok(logs.some(line => line.includes('texture target 0x8513')));
+    gl.texImage2D(0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, new Uint8Array(4));
+    assert.equal(gl.getError(), 0x0502, 'allocating storage without a bound texture is invalid');
+    const texture = gl.createTexture();
+    gl.bindTexture(0x0de1, texture);
+    gl.texImage2D(0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, new Uint8Array(4));
+    assert.equal(gl.getError(), 0);
+    gl.texParameteri(0x0de1, 0xdead, 1);
+    assert.equal(gl.getError(), 0x0500);
+    gl.texSubImage2D(0x0de1, 0, 1, 0, 1, 1, 0x1908, 0x1401, new Uint8Array(4));
+    assert.equal(gl.getError(), 0x0501, 'texture subimage bounds are validated');
+  } finally { gpu.restore(); }
+});
