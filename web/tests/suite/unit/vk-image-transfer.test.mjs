@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 test('image uploads preserve BC mip/layer offsets, row padding, and allocation bounds', () => {
   const source = readFileSync(new URL('../../../../source/vulkan/vk64bridge.cpp', import.meta.url), 'utf8');
   const helpers = source.slice(source.indexOf('struct FormatBlock'), source.indexOf('const char* fmt_name'));
-  const copy = source.slice(source.indexOf('void execCopy('), source.indexOf('std::vector<U8> readGuestRange'));
+  const copy = source.slice(source.indexOf('static void execCopyFail('), source.indexOf('std::vector<U8> readGuestRange'));
   const dir = mkdtempSync(join(tmpdir(), 'vk-image-transfer-'));
   try {
     writeFileSync(join(dir, 'check.cpp'), `
@@ -17,6 +17,9 @@ test('image uploads preserve BC mip/layer offsets, row padding, and allocation b
 #include <cstdint>
 #include <algorithm>
 #include <vector>
+#include <string>
+#include <unordered_map>
+#define klog_fmt(...) ((void)0)
 using U32 = uint32_t; using U64 = uint64_t; using U8 = uint8_t;
 enum {K_BUFFER, K_IMAGE, K_MEMORY};
 struct Image { U32 w=8,h=8,d=1,mips=3,layers=2,format=133,copied=0; U64 mem=4,memOff=0; } image;
