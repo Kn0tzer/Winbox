@@ -49,9 +49,10 @@ test('record registry fails loudly on unknown types (0x13 silent-drop guard)', (
   assert.ok(page.includes('READBACK'), 'READBACK (0x13) must be known (e294e5c2 every-readback-rejected fix)');
 });
 
-test('16MB chunk cap (4MB too small → vertex loss)', () => {
-  assert.ok(page.includes('V2_MAX_CHUNK_BYTES') && page.includes('16 * 1024 * 1024'),
-    'ingest cap must be 16MB (4MB cap dropped full emissions; 88cdd449 1MB prefix + resend)');
+test('chunk cap fits a full mip chain (Portal 2048² menu background)', () => {
+  assert.ok(page.includes('V2_MAX_CHUNK_BYTES') && page.includes('128 * 1024 * 1024'),
+    'ingest cap must be 128MB: IMAGE_DATA carries the whole mip chain in one record, ' +
+    'and Portal 2048² RGBA + mips is ~22MB (the old 16MB cap rejected it)');
 });
 
 test('IMAGE_DATA carries viewId before imageId', () => {

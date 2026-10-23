@@ -203,7 +203,9 @@ function updateStartup(run, sample = false) {
   if (sample && run.firstMapped && !run.hasFrame) {
     try {
       run.probe ||= Object.assign(document.createElement('canvas'), { width: 32, height: 20 });
-      run.hasFrame = Boolean(run.renderer?.frames) || visibleFrame($('vkCanvas') || run.frame.contentWindow?.document.getElementById('canvas'), run.probe);
+      const tierStats = metricsTier?.stats?.();
+      run.hasFrame = Boolean(run.renderer?.frames || tierStats?.v2?.rendered > 0)
+        || visibleFrame($('vkCanvas') || run.canvas, run.probe);
     } catch { /* The runtime document may still be navigating. */ }
   }
   if (run.hasFrame) {

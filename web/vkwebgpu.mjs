@@ -986,10 +986,12 @@ export function v2TargetKey(imageId, w, h, samples, isDepth) {
 const V2_STENCIL_OPS = /** @type {Record<number,GPUStencilOperation>} */ ({0:'keep',1:'zero',2:'replace',3:'increment-clamp',4:'decrement-clamp',5:'invert',6:'increment-wrap',7:'decrement-wrap'});
 // VkFormats the bridge advertises, including formats represented through CPU
 // conversion (packed 16-bit colours, R16 UNORM and D32/S8 fallbacks). BC is
-// left out because texture-compression-bc is optional on WebGPU adapters.
+// included because the bridge enables textureCompressionBC; v2TextureFormat
+// still rejects it when the WebGPU adapter lacks texture-compression-bc.
 export const V2_SUPPORTED_TEXTURE_FORMATS = Object.freeze([
   2, 3, 5, 7, 8, 9, 16, 37, 38, 41, 43, 44, 50, 64, 70, 76, 77, 83,
   91, 97, 98, 99, 100, 103, 109, 122, 124, 125, 126, 129, 130,
+  131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146,
 ]);
 export const V2_SUPPORTED_VERTEX_FORMATS = Object.freeze([
   16, 17, 18, 19, 20, 21, 23, 24, 25, 26, 27, 28, 37, 38, 39, 40, 41, 42,
@@ -1249,8 +1251,12 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
   // resources, which is small for real apps).
   const persistTexCache = new Map();  // imgHex:hash -> {tex, w, h, format}
   const persistBufCache = new Map();  // bufHex:usage:hash -> GPUBuffer
+  // Content hash -> GPUBuffer, independent of the VkBuffer id. A byte-less
+  // record names content the page may have uploaded under another buffer id
+  // (or in an earlier presentation); this lets it recover the real bytes.
+  const persistBufByHash = new Map(); // hash:usage -> GPUBuffer
   const persistSampCache = new Map(); // sampHex -> GPUSampler
-  const persistStats = { texHits: 0, texMiss: 0, bufHits: 0, bufMiss: 0, sampHits: 0, groupHits: 0, groupMiss: 0 };
+  const persistStats = { texHits: 0, texMiss: 0, bufHits: 0, bufMiss: 0, bufHashHits: 0, bufUnresolved: 0, sampHits: 0, groupHits: 0, groupMiss: 0 };
   let persistDummyVb = null;
   // Persistent bind-group cache: pipeKey|group|fingerprint -> GPUBindGroup.
   // The fingerprint captures descriptor content (resource ids + content
@@ -1267,6 +1273,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     ? Math.max(1, Math.floor(window.__bwStatsEvery)) : 30;
   // Shared zero buffer for missing uniform bindings (was allocated per draw).
   const ZERO4096 = new Uint8Array(4096);
+  const ZERO64K = new Uint8Array(65536);
 
   // Fast FNV-1a hash for Uint8Array content comparison.
   function fnv1a(bytes) {
@@ -1301,6 +1308,11 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     let entry = persistTexCache.get(ck);
     if (entry) { persistStats.texHits++; return entry.tex; }
     persistStats.texMiss++;
+    if (w >= 1024 || h >= 1024) {
+      persistStats.largeTexFormats ||= {};
+      const key = `${w}x${h}:${img.format}->${fmt}`;
+      persistStats.largeTexFormats[key] = (persistStats.largeTexFormats[key] || 0) + 1;
+    }
     const textureDimension = dimension === '3d' ? '3d' : dimension === '1d' ? '1d' : '2d';
     const slices = dimension === '3d' ? d : layers;
     let usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC;
@@ -1348,8 +1360,13 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     let b = persistBufCache.get(ck);
     if (b) { persistStats.bufHits++; return b; }
     if (!bytes) {
-      // Deduped record for a buffer the page never uploaded (wasm only
-      // dedups after a full send, so this should not happen). Safe fallback.
+      // Deduped record whose full payload the page never received (the
+      // producer used to drop complete frames when its chunk ring filled).
+      // The bridge hash names the content, so recover any earlier upload of
+      // the same bytes even under a different VkBuffer id.
+      const hk = preHash ? preHash + ':' + usage : null;
+      b = hk ? persistBufByHash.get(hk) : null;
+      if (b) { persistStats.bufHashHits++; persistBufCache.set(ck, b); return b; }
       return null;
     }
     persistStats.bufMiss++;
@@ -1359,6 +1376,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     new Uint8Array(b.getMappedRange()).set(bytes.subarray(0, Math.min(bytes.length, b.size)));
     b.unmap();
     persistBufCache.set(ck, b);
+    if (preHash) persistBufByHash.set(preHash + ':' + usage, b);
     F.bufCache.set(bufHex + ':' + usage, b);
     return b;
   }
@@ -1772,7 +1790,15 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
             }
             bufHex += ':min' + minSize;
           }
-          return { buffer: gpuBufferFor(bufHex, bytes, (isStorage ? GPUBufferUsage.STORAGE : GPUBufferUsage.UNIFORM) | GPUBufferUsage.COPY_DST, preHash) };
+          const usage = (isStorage ? GPUBufferUsage.STORAGE : GPUBufferUsage.UNIFORM) | GPUBufferUsage.COPY_DST;
+          const gpu = gpuBufferFor(bufHex, bytes, usage, preHash);
+          if (gpu) return { buffer: gpu };
+          // Last resort: a null buffer makes createBindGroup throw and the
+          // whole frame (including menu text) disappears. Keep the frame and
+          // this binding's draws alive with zeros until the bridge resends.
+          persistStats.bufUnresolved++;
+          const fallback = minSize > ZERO64K.length ? new Uint8Array(minSize) : ZERO64K;
+          return { buffer: gpuBufferFor(bufHex + ':unresolved', fallback, usage, null) };
         };
         if (d.arrayCount > 1) {
           const arr = [];

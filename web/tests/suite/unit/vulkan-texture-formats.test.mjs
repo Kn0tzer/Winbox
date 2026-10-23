@@ -68,10 +68,12 @@ test('unmapped formats are counted and do not receive a fallback texture format'
   assert.equal(counters.unknownFormats, 1);
 });
 
-test('BC formats are mapped only when texture-compression-bc is enabled', () => {
+test('BC formats are supported and mapped only when texture-compression-bc is enabled', () => {
   assert.equal(v2TextureFormat(131), null);
   assert.equal(v2TextureFormat(131, null, new Set(['texture-compression-bc'])), 'bc1-rgba-unorm');
-  assert.ok(!V2_SUPPORTED_TEXTURE_FORMATS.some(format => format >= 131 && format <= 146));
+  assert.ok(V2_SUPPORTED_TEXTURE_FORMATS.some(format => format >= 131 && format <= 146));
+  for (let format = 131; format <= 146; format++)
+    assert.notEqual(v2TextureFormat(format, null, new Set(['texture-compression-bc'])), null, `VkFormat ${format}`);
 });
 
 test('bridge format-support tables match the page tables', async () => {
