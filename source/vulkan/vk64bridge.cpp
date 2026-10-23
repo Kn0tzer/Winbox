@@ -6339,7 +6339,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         CmdBuf* primary = cbOf(args.a[0], "vkCmdExecuteCommands");
         VK64_DROP_IF(return 0, !primary);
         U32 count = (U32)args.a[1];
-        if (!count || count > 16) return 0;
+        if (!count) return 0;
+        VK64_DROP_IF(return 0, !args.a[2]);
         for (U32 i = 0; i < count; i++) {
             U64 secId = rd64(args.a[2] + (U64)i * 8);
             CmdBuf* sec = cbOf(secId, "vkCmdExecuteCommands");
@@ -8473,10 +8474,20 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdExecuteCommands");
         VK64_DROP_IF(return 0, !cb);
         U32 n = (U32)args.a[1];
-        for (U32 i = 0; i < n && args.a[2]; i++) {
+        if (n && !args.a[2]) { vk64DropLog("n && !pCommandBuffers", __LINE__); return 0; }
+        for (U32 i = 0; i < n; i++) {
             CmdBuf* secondary = objOf32<CmdBuf>(rd32_32((U32)args.a[2] + i * 4), K_CMDBUF, "vkCmdExecuteCommands");
             VK64_DROP_IF(continue, !secondary);
             for (const auto& c : secondary->cmds) pushCmd(cb, c);
+            if (secondary->nvb > cb->nvb) {
+                cb->nvb = secondary->nvb;
+                memcpy(cb->vbs, secondary->vbs, sizeof(cb->vbs));
+                memcpy(cb->vbOff, secondary->vbOff, sizeof(cb->vbOff));
+            }
+            if (secondary->ib) {
+                cb->ib = secondary->ib; cb->ibOff = secondary->ibOff; cb->ibType = secondary->ibType;
+            }
+            if (secondary->pipe) cb->pipe = secondary->pipe;
         }
         return 0;
     }
