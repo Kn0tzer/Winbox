@@ -1765,15 +1765,27 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           // its IMAGE_DATA record carries the view->image link but no pixels.
           const cube = t.startsWith('texture_cube');
           const dimension = t.startsWith('texture_1d') ? '1d' : t.startsWith('texture_3d') ? '3d' : t.includes('_array') ? '2d-array' : cube ? 'cube' : '2d';
-          const aliasTex = !cube && dimension === '2d' && v2ImageKnown(imgHex)
+          let aliasTex = !cube && dimension === '2d' && v2ImageKnown(imgHex)
             ? (targets.get(v2ImageTargetKey(imgHex, false)) || targets.get(v2ImageTargetKey(imgHex, true)))
             : null;
           if (aliasTex) stats.aliased++;
           const img = imgHex && imageForView(b?.obj, imgHex);
           const imgFormat = img ? v2TextureFormat(img.format, stats, device.features) : null;
           if (img && !imgFormat) return null;
-          const texture = aliasTex || (img ? gpuTextureFor(imgHex, img, cube, dimension) : blankTex(cube, dimension, t.startsWith('texture_depth')));
+          let texture = aliasTex || (img ? gpuTextureFor(imgHex, img, cube, dimension) : blankTex(cube, dimension, t.startsWith('texture_depth')));
           if (!texture) return null;
+          // WebGPU ties the shader's sample type to the texture format: a
+          // depth texture cannot satisfy texture_2d<f32> (D3D11 shaders sample
+          // depth targets as plain floats) and a colour texture cannot satisfy
+          // texture_depth_2d. One mismatch invalidates the whole bind group
+          // and with it the frame, so bind a blank placeholder of the type the
+          // shader asks for and count it.
+          const wantsDepth = t.startsWith('texture_depth'), isDepthFormat = /^depth/.test(String(texture.format));
+          if (isDepthFormat !== wantsDepth && !(isDepthFormat && /<[ui]32>/.test(t) && String(texture.format).includes('stencil'))) {
+            texture = blankTex(cube, dimension, wantsDepth);
+            aliasTex = null;
+            stats.sampleTypePlaceholders = (stats.sampleTypePlaceholders || 0) + 1;
+          }
           // A combined depth/stencil texture can only be bound one aspect at a
           // time (and then takes no format override): integer element types read
           // the stencil, the rest the depth.
