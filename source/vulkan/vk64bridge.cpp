@@ -405,6 +405,40 @@ static void vk64DropLog(const char* cond, int line) {
 #define VK64_DROP_IF(action, ...) do { if (__VA_ARGS__) { vk64DropLog(#__VA_ARGS__, __LINE__); action; } } while (0)
 
 // ---------------------------------------------------------------------------
+// "Rejected loudly". A guest asked for a Vulkan feature the WebGPU page tier
+// cannot execute (geometry/tessellation stages, sparse binding, transform
+// feedback, ...). The bridge answers with the correct VkResult where the entry
+// point has one, and ALWAYS calls vk64Unsupported() so the request is greppable:
+//     vk64: UNSUPPORTED <feature> (<detail>) in <fn> x<n> (<total> total)
+// The first 4 hits per feature are logged, then the 8th, 16th, 32nd, ... Counts
+// are queryable per feature (vk64BridgeUnsupportedCount) for tests and metrics.
+// docs/known-gaps/vulkan.md lists every feature name that can appear here.
+// ---------------------------------------------------------------------------
+static U64 g_unsupportedTotal = 0;
+static std::map<std::string, U32>& vk64UnsupportedCounts() {
+    static std::map<std::string, U32> counts;
+    return counts;
+}
+static std::mutex& vk64UnsupportedLock() { static std::mutex lock; return lock; }
+U64 vk64BridgeUnsupportedTotal() {
+    std::lock_guard<std::mutex> guard(vk64UnsupportedLock());
+    return g_unsupportedTotal;
+}
+U32 vk64BridgeUnsupportedCount(const char* feature) {
+    std::lock_guard<std::mutex> guard(vk64UnsupportedLock());
+    auto it = vk64UnsupportedCounts().find(feature);
+    return it == vk64UnsupportedCounts().end() ? 0 : it->second;
+}
+static void vk64Unsupported(const char* feature, const char* detail = "") {
+    std::lock_guard<std::mutex> guard(vk64UnsupportedLock());
+    ++g_unsupportedTotal;
+    U32& n = vk64UnsupportedCounts()[feature];
+    if (++n <= 4 || (n & (n - 1)) == 0)
+        klog_fmt("vk64: UNSUPPORTED %s (%s) in %s x%u (%llu total)", feature, detail,
+                 fnName(g_dropFn), n, (unsigned long long)g_unsupportedTotal);
+}
+
+// ---------------------------------------------------------------------------
 // Guest memory helpers. EVERY guest pointer arrives here as a VA and is only
 // ever read/written through these.
 // ---------------------------------------------------------------------------
@@ -686,6 +720,42 @@ static void captureStencil(Pipeline& pipe, const T& state) {
     };
     pipe.stencil.front = face(state.front);
     pipe.stencil.back = face(state.back);
+}
+
+// Everything vkCreateGraphicsPipelines does not model is reported here, once
+// per feature (rate-limited, greppable "vk64: UNSUPPORTED <feature>"). Stages
+// with no V2 representation cannot be approximated, so they fail the pipeline
+// with VK_ERROR_FEATURE_NOT_PRESENT; state the page tier cannot honour only
+// degrades rendering, so those are reported and the pipeline is still built.
+struct PipelineAudit {
+    U32 stageMask = 0;            // OR of VkShaderStageFlagBits
+    U32 topology = 0;
+    U32 polygonMode = 0;
+    U32 viewportCount = 0;
+    U32 sampleCount = 1;
+    bool logicOp = false, depthBounds = false, sampleShading = false, alphaToOne = false;
+    bool rasterizerDiscard = false;
+};
+static const U32 kV2SupportedStageMask = 0x1u | 0x10u;     // VERTEX | FRAGMENT
+// Returns true when the pipeline must be rejected with VK_ERROR_FEATURE_NOT_PRESENT.
+static bool vk64AuditGraphicsPipeline(const PipelineAudit& a) {
+    bool reject = false;
+    const U32 extra = a.stageMask & ~kV2SupportedStageMask;
+    if (extra & 0x2u)  { vk64Unsupported("tessellation-control-stage", "pipeline rejected"); reject = true; }
+    if (extra & 0x4u)  { vk64Unsupported("tessellation-evaluation-stage", "pipeline rejected"); reject = true; }
+    if (extra & 0x8u)  { vk64Unsupported("geometry-stage", "pipeline rejected"); reject = true; }
+    if (extra & 0x40u) { vk64Unsupported("task-stage", "pipeline rejected"); reject = true; }
+    if (extra & 0x80u) { vk64Unsupported("mesh-stage", "pipeline rejected"); reject = true; }
+    if (extra & ~(0x2u | 0x4u | 0x8u | 0x40u | 0x80u)) { vk64Unsupported("unknown-graphics-stage", "pipeline rejected"); reject = true; }
+    if (a.topology == 10) { vk64Unsupported("patch-list-topology", "pipeline rejected"); reject = true; }
+    else if (a.topology >= 6) { vk64Unsupported("adjacency-topology", "pipeline rejected"); reject = true; }
+    if (a.polygonMode != 0) vk64Unsupported(a.polygonMode == 1 ? "polygon-mode-line" : "polygon-mode-point", "rendered filled");
+    if (a.logicOp) vk64Unsupported("logic-op", "ignored; blending state used instead");
+    if (a.depthBounds) vk64Unsupported("depth-bounds-test", "ignored");
+    if (a.sampleShading) vk64Unsupported("sample-shading", "ignored; per-fragment shading");
+    if (a.alphaToOne) vk64Unsupported("alpha-to-one", "ignored");
+    if (a.viewportCount > 1) vk64Unsupported("multi-viewport", "only viewport 0 is used");
+    return reject;
 }
 struct RenderPass : Obj {
     U32 natt = 0, formats[VK64_MAX_ATTACH] = {0}, loadOps[VK64_MAX_ATTACH] = {0},
@@ -2430,7 +2500,18 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         U64 fbId = 0;
         for (const Cmd& k : st->cmds) if (k.kind == CMD_BEGIN_RP) { fbId = k.b; break; }
         Framebuffer* fb = objOf<Framebuffer>(fbId, K_FRAMEBUFFER, "vkQueueSubmit");
-        if (!fb) { klog_fmt("vk64: submit(v2): frame %u has no framebuffer, skipped", g_frameNo); continue; }
+        if (!fb) {
+            // No render pass: a pure transfer/compute command buffer (vkd3d-proton
+            // copy queues, mip generation, depth clears). The decoder replays
+            // these in an implicit pass, so they are sent as a 1x1 frame.
+            // Command buffers with nothing the page can execute are legitimately
+            // empty (barriers only) and stay skipped.
+            bool relevant = false;
+            for (const Cmd& k : st->cmds)
+                if (k.kind == CMD_COPY_IMAGE || k.kind == CMD_BLIT_IMAGE || k.kind == CMD_CLEAR_DS_IMAGE ||
+                    k.kind == CMD_COPY_I2B || k.kind == CMD_DISPATCH) { relevant = true; break; }
+            if (!relevant) continue;
+        }
         // A render-pass load clear changes its attachment without a draw.
         // Preserve it for later submissions that sample the cleared image.
         g_v2SubmitFrames++;
@@ -2741,7 +2822,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         bool ovf = g_frameOverflow;
         g_frameOverflow = false;
         emit(V2_FRAME_BEGIN, [&](ChunkWriter& p) {
-            p.u32(g_frameNo); p.u32(fb->w); p.u32(fb->h); p.u32(ovf ? 1 : 0);
+            p.u32(g_frameNo); p.u32(fb ? fb->w : 1); p.u32(fb ? fb->h : 1); p.u32(ovf ? 1 : 0);
         });
 
         U32 nDraw = 0, nPush = 0;
@@ -2981,7 +3062,22 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     }
                     break;
                 }
-                default: break;
+                // Executed eagerly at record/submit time (see the CMD_* handlers
+                // for COPY_B2I / UPDATE_BUF / COPY_QUERY_RESULTS) or no-ops in
+                // snapshot replay (BARRIER): nothing to put on the wire.
+                case CMD_BARRIER:
+                case CMD_COPY_B2I:
+                case CMD_UPDATE_BUF:
+                case CMD_COPY_QUERY_RESULTS:
+                    break;
+                case CMD_DISPATCH:
+                    // The V2 protocol is render-only: no compute pipeline or
+                    // dispatch record exists. Never silently drop it.
+                    vk64Unsupported("compute-dispatch", "vkCmdDispatch* has no V2 record; results are not produced");
+                    break;
+                default:
+                    vk64Unsupported("unknown-cmd-kind", "submit emit loop met a command kind with no V2 record");
+                    break;
             }
         }
 
@@ -2994,7 +3090,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         for (const auto& c : qd.chunks) totalBytes += c.size();
         if (vkFrameLog())
             klog_fmt("vk64: FRAME %u built (v2): %ux%u draws=%u pushes=%u chunks=%u bytes=%zu",
-                     g_frameNo, fb->w, fb->h, (unsigned)nDraw, (unsigned)nPush,
+                     g_frameNo, fb ? fb->w : 1, fb ? fb->h : 1, (unsigned)nDraw, (unsigned)nPush,
                      (unsigned)qd.chunks.size(), totalBytes);
         if (vkDumpV2()) {
             std::string dump = "vk64: FRAME " + std::to_string(g_frameNo) + " v2 records:";
@@ -3645,6 +3741,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         VK64Args a0 = {};
         if (argsAddr && g_mem) g_mem->memcpyFromGuest(&a0, argsAddr, sizeof(a0));
         klog_fmt("vk64: asked-for (unimplemented): %s", guestStr(a0.a[0]).c_str());
+        vk64Unsupported(("fn:" + guestStr(a0.a[0])).c_str(), "entry point not implemented; returned VK_ERROR_FEATURE_NOT_PRESENT");
         return (U64)(int64_t)VK_ERROR_FEATURE_NOT_PRESENT;
     }
     if (fnId == VK64_fn_traceProc) {
@@ -4438,6 +4535,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             return VK_ERROR_INITIALIZATION_FAILED;
         std::vector<VkGraphicsPipelineCreateInfo> cis;
         readArray(args.a[3], n, cis);
+        VkResult result = VK_SUCCESS;
         for (U32 i = 0; i < n; i++) {
             const VkGraphicsPipelineCreateInfo& ci = cis[i];
             U64 id = 0;
@@ -4508,6 +4606,29 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             memcpy(p->blendConstants, cbs.blendConstants, sizeof(p->blendConstants));
             std::vector<VkPipelineShaderStageCreateInfo> stages;
             readArray(ci.pStages, ci.stageCount, stages);
+            {
+                PipelineAudit audit;
+                for (const auto& st : stages) audit.stageMask |= (U32)st.stage;
+                audit.topology = ia.topology;
+                audit.polygonMode = rs.polygonMode;
+                audit.rasterizerDiscard = rs.rasterizerDiscardEnable;
+                audit.logicOp = cbs.logicOpEnable;
+                audit.depthBounds = ds.depthBoundsTestEnable;
+                VkPipelineViewportStateCreateInfo vp = {};
+                if (readStruct(ci.pViewportState, vp)) audit.viewportCount = vp.viewportCount;
+                VkPipelineMultisampleStateCreateInfo ms = {};
+                if (readStruct(ci.pMultisampleState, ms)) {
+                    audit.sampleCount = (U32)ms.rasterizationSamples;
+                    audit.sampleShading = ms.sampleShadingEnable;
+                    audit.alphaToOne = ms.alphaToOneEnable;
+                }
+                if (vk64AuditGraphicsPipeline(audit)) {
+                    dropObj(id);
+                    wr64(args.a[5] + (U64)i * 8, 0);
+                    result = VK_ERROR_FEATURE_NOT_PRESENT;
+                    continue;
+                }
+            }
             for (const VkPipelineShaderStageCreateInfo& st : stages) {
                 if (st.stage == VK_SHADER_STAGE_VERTEX_BIT) {
                     p->vs = st.module;
@@ -4522,7 +4643,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             p->rp = ci.renderPass;
             wr64(args.a[5] + (U64)i * 8, id);
         }
-        return VK_SUCCESS;
+        return result;
     }
     case VK64_fn_vkCreateComputePipelines: {
         // (device, cache, n, pCreateInfos*, pAllocator, out VkPipeline*)
@@ -6490,6 +6611,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // what keeps an un-ported entry point harmless here too.
         klog_fmt("vk64: unimplemented fnId=%llu (%s) -> benign error",
                  (unsigned long long)fnId, fnName(fnId));
+        vk64Unsupported((std::string("fn:") + fnName(fnId)).c_str(), "no handler; returned VK_ERROR_FEATURE_NOT_PRESENT");
         return (U64)(int64_t)VK_ERROR_FEATURE_NOT_PRESENT;
     }
 }
@@ -6759,6 +6881,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         VK32Args a0 = {};
         if (argsAddr && g_mem32) g_mem32->memcpyFromGuest(&a0, argsAddr, sizeof(a0));
         klog_fmt("vk32: asked-for (unimplemented): %s", guestStr32((U32)a0.a[0]).c_str());
+        vk64Unsupported(("fn32:" + guestStr32((U32)a0.a[0])).c_str(), "entry point not implemented; returned VK_ERROR_FEATURE_NOT_PRESENT");
         return (U64)(int64_t)VK_ERROR_FEATURE_NOT_PRESENT;
     }
     if (fnId == VK64_fn_traceProc) {
@@ -7340,6 +7463,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             return VK_ERROR_INITIALIZATION_FAILED;
         std::vector<vk32abi::VkGraphicsPipelineCreateInfo> cis;
         readArray32(args.a[3], n, cis);
+        VkResult result = VK_SUCCESS;
         for (U32 i = 0; i < n; i++) {
             const vk32abi::VkGraphicsPipelineCreateInfo& ci = cis[i];
             U64 id = 0;
@@ -7410,6 +7534,29 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             memcpy(p->blendConstants, cbs.blendConstants, sizeof(p->blendConstants));
             std::vector<vk32abi::VkPipelineShaderStageCreateInfo> stages;
             readArray32(ci.pStages, ci.stageCount, stages);
+            {
+                PipelineAudit audit;
+                for (const auto& st : stages) audit.stageMask |= (U32)st.stage;
+                audit.topology = ia.topology;
+                audit.polygonMode = rs.polygonMode;
+                audit.rasterizerDiscard = rs.rasterizerDiscardEnable;
+                audit.logicOp = cbs.logicOpEnable;
+                audit.depthBounds = ds.depthBoundsTestEnable;
+                vk32abi::VkPipelineViewportStateCreateInfo vp = {};
+                if (readStruct32(ci.pViewportState, vp)) audit.viewportCount = vp.viewportCount;
+                vk32abi::VkPipelineMultisampleStateCreateInfo ms = {};
+                if (readStruct32(ci.pMultisampleState, ms)) {
+                    audit.sampleCount = (U32)ms.rasterizationSamples;
+                    audit.sampleShading = ms.sampleShadingEnable;
+                    audit.alphaToOne = ms.alphaToOneEnable;
+                }
+                if (vk64AuditGraphicsPipeline(audit)) {
+                    dropObj(id);
+                    wr64_32(args.a[5] + (U64)i * 8, 0);
+                    result = VK_ERROR_FEATURE_NOT_PRESENT;
+                    continue;
+                }
+            }
             for (const vk32abi::VkPipelineShaderStageCreateInfo& st : stages) {
                 if ((U32)st.stage == (U32)VK_SHADER_STAGE_VERTEX_BIT) {
                     p->vs = st.module;
@@ -7424,7 +7571,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             p->rp = ci.renderPass;
             wr64_32(args.a[5] + (U64)i * 8, id);
         }
-        return VK_SUCCESS;
+        return result;
     }
     case VK64_fn_vkCreatePipelineLayout: {
         vk32abi::VkPipelineLayoutCreateInfo ci = {};
@@ -8737,6 +8884,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
 
     default:
         klog_fmt("vk32: unimplemented fn id %u (%s)", fnId, fnName(fnId));
+        vk64Unsupported((std::string("fn32:") + fnName(fnId)).c_str(), "no handler; returned VK_ERROR_FEATURE_NOT_PRESENT");
         return (U64)(int64_t)VK_ERROR_FEATURE_NOT_PRESENT;
     }
 }

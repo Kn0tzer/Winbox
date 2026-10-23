@@ -2,7 +2,7 @@ import {
   ADDR, FILTER, MAX_DIMENSION, MAX_DRAWS,
   V2FrameAssembler, V2FrameQueue, V2PresentAssembler,
   V2_PUSH_BINDING, V2_PUSH_GROUP, V2_PUSH_SIZE, V2_QUEUE_CAP,
-  V2_SCALED_VERTEX, V2_TOPOLOGY, V2_UNKNOWN_IMAGE, V2_VERT_FORMAT_SIZE,
+  V2_SCALED_VERTEX, V2_TOPOLOGY, v2HasColourPass, v2PresentIndex, V2_UNKNOWN_IMAGE, V2_VERT_FORMAT_SIZE,
   decodeV2Frame, parseV2Chunk, repackScaledVb,
   swizzleBgraVb, v2DepthStencilUploads, v2ImageBlitRegion, v2TextureFormat, v2TextureMipUploadPlan, v2TexturePixels, v2VertexFormat,
   v2IndexedTriangleFanIndices, v2TriangleFanIndices,
@@ -1993,14 +1993,18 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
   async function render(frame, { present = true } = {}) {
     const bwRenderT0 = metricsNow();
     if (destroyed) throw new Error('page tier destroyed');
+    // A submission with no colour attachment (copy/blit/clear-only command
+    // buffers) must still execute, but it cannot be the one that presents.
     if (frame.submissions) {
       let result;
+      const presentAt = v2PresentIndex(frame.submissions);
       for (let i = 0; i < frame.submissions.length; i++) {
-        result = await render(frame.submissions[i], { present: present && i === frame.submissions.length - 1 });
+        result = await render(frame.submissions[i], { present: present && i === presentAt });
         if (!result?.rendered) return result;
       }
       return result;
     }
+    if (present && !v2HasColourPass(frame)) present = false;
     F.shaders = frame.shaders; F.images = frame.images;
     F.views = frame.views; F.samplers = frame.samplers; F.buffers = frame.buffers;
     F.viewFormats = frame.viewFormats || new Map();

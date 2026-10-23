@@ -108,6 +108,7 @@ void vkCmdBindVertexBuffers2(U64, U32, U32, const U64*, const U64*, const U64*, 
 void vkCmdUpdateBuffer(U64, U64, U64, U64, const void*);
 void vkUpdateDescriptorSets(U64, U32, const void*, U32, const void*);
 void vkCmdBindVertexBuffers2EXT(U64, U32, U32, const U64*, const U64*, const U64*, const U64*);
+void vkCmdDispatch(U64, U32, U32, U32);
 }
 int main() {
     g_mem = &memory;
@@ -529,4 +530,79 @@ int main() {
     puts("PASS: dynamic rendering attachment ABI, manifest metadata, stride/binding snapshots, cleanup");
     puts("PASS: command-pool isolation, child destruction, full reset, virtual destruction");
     puts("PASS: WithCount viewport/scissor core+EXT and coherent mapped ranges");
+
+    // GUARD (silent drop): features the bridge cannot honour are reported by
+    // vk64Unsupported() under a stable feature name and answered with the
+    // right VkResult. A test that finds these counters at zero means the
+    // feature went silent again.
+    {
+        U64 devId; createObj<Device>(K_DEVICE, devId);
+        const size_t objectsBefore = g_objs.size();
+        // Pipeline with a geometry stage: rejected, handle written as 0, no leak.
+        VkPipelineShaderStageCreateInfo stages[2] = {};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; stages[1].stage = VK_SHADER_STAGE_GEOMETRY_BIT;
+        memory.memcpyToGuest(3072, stages, sizeof(stages));
+        VkPipelineInputAssemblyStateCreateInfo ia{}; ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        memory.memcpyToGuest(3328, &ia, sizeof(ia));
+        VkGraphicsPipelineCreateInfo gp{}; gp.stageCount = 2; gp.pStages = 3072; gp.pInputAssemblyState = 3328;
+        memory.memcpyToGuest(3456, &gp, sizeof(gp));
+        memory.writeq(3840, 0xdeadbeefULL);
+        assert(vk64BridgeUnsupportedCount("geometry-stage") == 0);
+        assert((S64)vkCreateGraphicsPipelines(devId, 0, 1, (void*)3456, nullptr, (void*)3840) == VK_ERROR_FEATURE_NOT_PRESENT);
+        assert(memory.readq(3840) == 0);
+        assert(vk64BridgeUnsupportedCount("geometry-stage") == 1);
+        assert(g_objs.size() == objectsBefore);
+        // Tessellation topology (patch list) is also rejected, vertex-only stays accepted.
+        ia.topology = (VkPrimitiveTopology)10; stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        memory.memcpyToGuest(3072, stages, sizeof(stages)); memory.memcpyToGuest(3328, &ia, sizeof(ia));
+        assert((S64)vkCreateGraphicsPipelines(devId, 0, 1, (void*)3456, nullptr, (void*)3840) == VK_ERROR_FEATURE_NOT_PRESENT);
+        assert(vk64BridgeUnsupportedCount("patch-list-topology") == 1);
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; memory.memcpyToGuest(3328, &ia, sizeof(ia));
+        assert(vkCreateGraphicsPipelines(devId, 0, 1, (void*)3456, nullptr, (void*)3840) == VK_SUCCESS);
+        assert(memory.readq(3840) != 0);
+        // Unimplemented entry point reached through the bridge is counted per function name.
+        memory.memcpyToGuest(3900, "vkFooBar", 9);
+        VK64Args unimpl{}; unimpl.a[0] = 3900;
+        memory.memcpyToGuest(128, &unimpl, sizeof(unimpl));
+        assert((S64)vk64Bridge(&cpu, VK64_fn_unimplemented, 128) == VK_ERROR_FEATURE_NOT_PRESENT);
+        assert(vk64BridgeUnsupportedCount("fn:vkFooBar") == 1);
+        // Compute dispatch has no V2 record: submitting one is reported, never dropped quietly.
+        U64 cbDispatchId; auto* cbDispatch = createObj<CmdBuf>(K_CMDBUF, cbDispatchId);
+        vkCmdDispatch(cbDispatchId, 1, 1, 1);
+        assert(vk64BridgeUnsupportedCount("compute-dispatch") == 0);
+        serializeSubmitV2({{cbDispatch, cbDispatchId}});
+        assert(vk64BridgeUnsupportedCount("compute-dispatch") == 1);
+        g_v2Pending.clear();
+        // GUARD (silent drop): a command buffer with no render pass but with an image
+        // copy used to be skipped ("no framebuffer, skipped"); it now becomes a 1x1
+        // frame carrying the copy, while a barrier-only command buffer stays empty.
+        g_v2Pending.clear();
+        U64 cbCopyId; auto* cbCopy = createObj<CmdBuf>(K_CMDBUF, cbCopyId);
+        Cmd copyCmd; copyCmd.kind = CMD_COPY_IMAGE; copyCmd.imageCopy.src = 11; copyCmd.imageCopy.dst = 12;
+        copyCmd.imageCopy.extent[0] = 4; copyCmd.imageCopy.extent[1] = 4; copyCmd.imageCopy.extent[2] = 1;
+        pushCmd(cbCopy, copyCmd);
+        serializeSubmitV2({{cbCopy, cbCopyId}});
+        assert(g_v2Pending.size() == 1);
+        bool sawBegin = false, sawCopy = false;
+        for (const auto& chunk : g_v2Pending.back().chunks) {
+            for (size_t at = 16; at < chunk.size();) {
+                U32 type, len; memcpy(&type, chunk.data() + at, 4); memcpy(&len, chunk.data() + at + 4, 4);
+                if (type == V2_FRAME_BEGIN) {
+                    U32 w, h; memcpy(&w, chunk.data() + at + 12, 4); memcpy(&h, chunk.data() + at + 16, 4);
+                    assert(w == 1 && h == 1); sawBegin = true;
+                }
+                if (type == V2_IMAGE_COPY) sawCopy = true;
+                at += 8 + len;
+            }
+        }
+        assert(sawBegin && sawCopy);
+        g_v2Pending.clear();
+        U64 cbBarrierId; auto* cbBarrier = createObj<CmdBuf>(K_CMDBUF, cbBarrierId);
+        Cmd barrierCmd; barrierCmd.kind = CMD_BARRIER; pushCmd(cbBarrier, barrierCmd);
+        serializeSubmitV2({{cbBarrier, cbBarrierId}});
+        assert(g_v2Pending.empty());
+        while (!g_objs.empty()) dropObj(g_objs.begin()->first);
+        puts("PASS: GUARD unsupported features are rejected loudly (geometry/tess pipelines, unimplemented fn, compute dispatch, renderless submit)");
+    }
 }

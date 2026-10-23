@@ -167,6 +167,22 @@ export class V2FrameAssembler {
 // push() drops the oldest past the cap; takeLatest() returns the newest and
 // drops everything older (latest-frame-wins); clear() drains (resize hook).
 // ---------------------------------------------------------------------------
+/** True when any pass of a decoded frame renders to a colour attachment. */
+export function v2HasColourPass(frame) {
+  return frame.passes.some(p => p.attachments.some(a => !a.isDepth));
+}
+/**
+ * Which submission of a present batch presents: the last one that renders to a
+ * colour attachment. Trailing copy/blit/clear-only submissions still execute
+ * but cannot present (they have no colour target and would resize the canvas
+ * to their 1x1 placeholder frame).
+ */
+export function v2PresentIndex(submissions) {
+  let at = submissions.length - 1;
+  while (at > 0 && !v2HasColourPass(submissions[at])) at--;
+  return at;
+}
+
 export class V2PresentAssembler {
   constructor() { this.pending = []; }
   push(frame, flags = 0) {
