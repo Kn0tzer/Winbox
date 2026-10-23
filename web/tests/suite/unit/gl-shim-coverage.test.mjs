@@ -95,6 +95,16 @@ test('RGBA-only ES visuals do not panic on color-index operations with no RGBA e
   }
 });
 
+test('GLX pixmap/window attributes reject once and return None instead of panicking', () => {
+  for (const [name, warning] of [['gl_common_XCreatePixmap', 'glXCreatePixmap: unsupported attrib_list'], ['gl_common_XCreateWindow', 'glXCreateWindow: unsupported attrib_list']]) {
+    const body = new RegExp(`void ${name}\\s*\\([^)]*\\)\\s*\\{([\\s\\S]*?)\\n\\}`).exec(glCommonSrc)?.[1] || '';
+    assert.ok(body.includes(warning), `${name} must identify unsupported attributes`);
+    assert.match(body, /attribWarning\.test_and_set\(\)/, `${name} warning must be rate-limited`);
+    assert.match(body, /EAX\s*=\s*0;/, `${name} returns None on unsupported attributes`);
+    assert.doesNotMatch(body, /kpanic/);
+  }
+});
+
 test('core GL 2.1 immediate-mode functions are shim-registered', () => {
   // These are the functions the verified GL triangle uses
   const core = [

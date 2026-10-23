@@ -70,7 +70,8 @@ not a disposition.
 | `web/gl-webgpu.mjs:477,571,1714` | Failure callback and error-scope cleanup catches prevent secondary errors from replacing the primary device/validation failure. | Harmless cleanup paths | NOT-A-GAP (primary error is reported before cleanup) |
 | `source/opengl/es/khash.h:308` | Shrinking after removal is an optimization TODO; lookup/insertion correctness is independent of shrinking and the table already grows as needed. | Harmless memory/performance behavior | NOT-A-GAP (resize-on-growth remains implemented at `khash.h:235-279`) |
 | `source/opengl/es/glshim.c:37,145` | Dynamic type and texture-target TODOs need caller review; target handling may exclude valid texture behavior. | Could break callers | OPEN |
-| `source/opengl/glcommon.cpp:1318,1346` | Non-empty X pixmap/window attribute lists panic. | Breaks callers using those attributes | OPEN |
+| `source/opengl/glcommon.cpp:1318` | GLX pixmap texture attributes are not supported; a non-empty list now logs once and returns `None` instead of panicking. Empty lists remain accepted. | Breaks callers using texture-from-pixmap | REJECTED-LOUDLY (`web/tests/suite/unit/gl-shim-coverage.test.mjs`) |
+| `source/opengl/glcommon.cpp:1346` | GLX window attributes are not supported; a non-empty list now logs once and returns `None` instead of panicking. Empty lists remain accepted. | Breaks callers using window attributes | REJECTED-LOUDLY (`web/tests/suite/unit/gl-shim-coverage.test.mjs`) |
 
 ## Audit notes
 

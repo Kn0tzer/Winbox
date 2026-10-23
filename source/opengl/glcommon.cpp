@@ -38,6 +38,7 @@
 #include "glfunctions.h"
 
 #include "glMarshal.h"
+#include <atomic>
 
 #ifndef GL_TEXTURE_DEPTH
 #define GL_TEXTURE_DEPTH 0x8071
@@ -1306,6 +1307,7 @@ void gl_common_XMakeContextCurrent(CPU* cpu) {
 
 // GLXPixmap glXCreatePixmap(Display* dpy, GLXFBConfig config, Pixmap pixmap, const int* attrib_list)
 void gl_common_XCreatePixmap(CPU* cpu) {
+    static std::atomic_flag attribWarning = ATOMIC_FLAG_INIT;
     XServer* server = XServer::getServer();
     CLXFBConfigPtr cfg = server->getFbConfig(ARG2);
     XPixmapPtr pixmap = server->getPixmap(ARG3);
@@ -1313,9 +1315,10 @@ void gl_common_XCreatePixmap(CPU* cpu) {
         EAX = 0;
         return;
     }
-    if (ARG4) {
-        // not set by wine
-        kpanic("gl_common_XCreatePixmap attrib_list not implemented");
+    if (ARG4 && cpu->memory->readd(ARG4) != 0) {
+        if (!attribWarning.test_and_set()) klog_fmt("glXCreatePixmap: unsupported attrib_list; returning None");
+        EAX = 0;
+        return;
     }
     pixmap->isOpenGL = true;
     EAX = ARG3; // the return must be a drawable, if we need config, maybe store on the actual pixmap
@@ -1333,6 +1336,7 @@ void gl_common_XDestroyPixmap(CPU* cpu) {
 
 // GLXWindow glXCreateWindow(Display* dpy, GLXFBConfig config, Window win, const int* attrib_list)
 void gl_common_XCreateWindow(CPU* cpu) {
+    static std::atomic_flag attribWarning = ATOMIC_FLAG_INIT;
     KThread* thread = cpu->thread;
     XServer* server = XServer::getServer();
     CLXFBConfigPtr cfg = server->getFbConfig(ARG2);
@@ -1341,9 +1345,10 @@ void gl_common_XCreateWindow(CPU* cpu) {
         EAX = 0;
         return;
     }
-    if (ARG4) {
-        // not set by wine
-        kpanic("gl_common_XCreateWindow attrib_list not implemented");
+    if (ARG4 && cpu->memory->readd(ARG4) != 0) {
+        if (!attribWarning.test_and_set()) klog_fmt("glXCreateWindow: unsupported attrib_list; returning None");
+        EAX = 0;
+        return;
     }
     win->isOpenGL = true;
     KNativeSystem::getOpenGL()->glCreateWindow(thread, win, cfg);    
