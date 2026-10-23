@@ -216,6 +216,26 @@ Not added. The traces show Unity running, presenting and creating Vulkan resourc
 `connect`/`accept`/`KThread::sleep`/`epoll_wait` waiting for a signal. They remain the same latent
 hang class (below) and should be added only if a trace shows one.
 
+### Build-9 result: texture uploads were dropped by a shim layout bug (fixed)
+
+Build 9's `execCopy` diagnostics never fired, while a guest trace showed 151 `vkCmdCopyBufferToImage2`
+traps. Cause: `tools/rootfs64/libvk64/libvk64.c` unpacked `VkCopyBufferToImageInfo2`,
+`VkCopyImageInfo2` and `VkBlitImageInfo2` with a spurious pad after `dstImageLayout`. `regionCount` was
+read from the wrong offset (garbage > 1024) and the bridge's `nreg > 1024` guard returned silently. So
+no DXVK texture upload, image-to-image copy or blit ever executed, and every sampled texture was
+all-zero (pass-readback census `nonZero: 0`).
+
+Fix: remove the pads (`regionCount@36/pRegions@40` for B2I, `@44/@48` for image copy/blit, `filter@56`)
+and add `offsetof` static asserts. The bridge's 64-bit B2I2 handler now also forwards
+mip/layer/depth/oz. The shim is a guest rootfs artifact: the fix needs a rootfs repackage, not a wasm
+rebuild; the bridge mip/layer part needs the next wasm build.
+
+Verification (gb-pr7: build-9 wasm + rebuilt shim via `PROBE_VULKAN_SHIM`, JIT=1): `execCopy B2I ok`
+logs appear (#1..#128, 24 first-row all-zero sources of 128), the frame-0 scene pass now has 259 draws
+with non-zero sampled textures (census 7 of 9 non-zero). The canvas is still black afterwards: at frames
+160+ the camera pass has 0 draws and only post/UI passes run, which looks like Unity not yet submitting
+a scene at that point rather than a bridge fault. Frame 0 also reports 6 unsupported draws.
+
 ## Residual / next
 
 - Other blocking sites not covered: `connect`/`accept`, `KThread::sleep`, `epoll_wait`, and any
