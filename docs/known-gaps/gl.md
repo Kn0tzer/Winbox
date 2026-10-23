@@ -61,7 +61,7 @@ not a disposition.
 | `source/opengl/gl64bridge.cpp:2676,2737` | Shader and program deletion now reach the owning GL thread synchronously; attached/in-use objects follow GL's deferred destruction semantics. | Can leak or alter shader lifecycle | IMPLEMENTED (`web/tests/suite/unit/gl-shim-coverage.test.mjs`) |
 | `source/opengl/gl64bridge.cpp:2874` | `glMapBufferRange` returns zero as unsupported; valid mapping users cannot access buffer storage. | Breaks buffer mapping callers | OPEN |
 | `source/opengl/gl64bridge.cpp:3342,1384` | Framebuffer names are generated in the guest namespace and copied to guest memory before lazy host allocation. | Corrupts guest state | IMPLEMENTED (`web/tests/suite/unit/gl-shim-coverage.test.mjs`) |
-| `source/opengl/gl64bridge.cpp:3431` | `framebufferTexture` catches and swallows host exceptions. | Silently drops attachment operation | OPEN |
+| `source/opengl/gl64bridge.cpp:3431` | `framebufferTexture` host exceptions are rate-limited logged with the GL function name and latch `INVALID_OPERATION` on WebGPUGL. | Silently drops attachment operation | IMPLEMENTED (`web/tests/suite/unit/gl-shim-coverage.test.mjs`) |
 | `source/opengl/gl64bridge.cpp:3742-3747,3867,3941` | Several GL state/texture bridge operations swallow JS exceptions. | Silently drops valid operations/errors | OPEN |
 | `source/opengl/gl64bridge.cpp:4520-4689` | Multiple blend/draw wrappers catch and discard JS exceptions. | Silently drops valid operations/errors | OPEN |
 | `source/opengl/gl64bridge.cpp:4710-4735` | Best-effort no-op dispatch cases need individual ABI/caller audit and visible error handling. | Can break valid guest calls | OPEN |

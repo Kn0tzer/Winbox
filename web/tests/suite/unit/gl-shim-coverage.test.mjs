@@ -75,6 +75,15 @@ test('shader and program deletion follow OpenGL object lifetime semantics', () =
   assert.match(bridgeSrc, /case GL64_fn_glDeleteProgram:\s*if \(g_glContext\) GL_MT\(glDeleteProgram\(\(GLuint\)ai\(args,0\)\)\)/);
 });
 
+test('framebufferTexture host exceptions log once and latch GL_INVALID_OPERATION', () => {
+  const body = /case GL64_fn_glFramebufferTexture:([\s\S]*?)case GL64_fn_glFramebufferTextureLayer:/.exec(bridgeSrc)?.[1] || '';
+  assert.match(body, /catch \(e\)/);
+  assert.match(body, /__bw64glBridgeErrors\.has\('glFramebufferTexture'\)/);
+  assert.match(body, /gl64 glFramebufferTexture failed:/);
+  assert.match(body, /GLctx\._recordError\(0x0502\)/);
+  assert.doesNotMatch(body, /catch \(e\) \{\s*\}/);
+});
+
 test('empty WebGPUGL methods stay in the audited no-op inventory', () => {
   const emptyMethods = [...webGpuGlSrc.matchAll(/^  ([A-Za-z_$][\w$]*)\([^\n]*\) \{\s*\}/gm)]
     .map((match) => match[1]).sort();

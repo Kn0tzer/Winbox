@@ -3450,7 +3450,15 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                     GLuint hostTex = ensureHostTexture(guestTex);
                     EM_ASM({ try {
                         if (typeof GLctx === 'undefined') return;
-                        GLctx.framebufferTexture($0, $1, $2, $3); } catch (e) {} },
+                        GLctx.framebufferTexture($0, $1, $2, $3);
+                      } catch (e) {
+                        if (!globalThis.__bw64glBridgeErrors) globalThis.__bw64glBridgeErrors = new Set();
+                        if (!globalThis.__bw64glBridgeErrors.has('glFramebufferTexture')) {
+                          globalThis.__bw64glBridgeErrors.add('glFramebufferTexture');
+                          console.warn('gl64 glFramebufferTexture failed:', e);
+                        }
+                        if (GLctx && typeof GLctx._recordError === 'function') GLctx._recordError(0x0502);
+                      } },
                       (int)tgt, (int)att, (int)hostTex, (int)lvl); });
             }
             return 0;
