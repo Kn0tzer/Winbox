@@ -84,6 +84,101 @@
 (function () {
     "use strict";
 
+    (function installLazyZipPrefetch() {
+        if (typeof fetch !== "function" || globalThis.__bwLazyZipPrefetch) return;
+        globalThis.__bwLazyZipPrefetch = true;
+        var nativeFetch = fetch.bind(globalThis);
+        var BLOCK = 512 * 1024;
+        var AHEAD = 4;
+        var MAX_BLOCKS = 384;
+        var cache = new Map();
+        var pending = new Map();
+        var totals = new Map();
+
+        function rangeOf(init) {
+            try {
+                var headers = init && init.headers;
+                if (!headers) return null;
+                if (typeof headers.get === "function") return headers.get("Range");
+                var keys = Object.keys(headers);
+                for (var i = 0; i < keys.length; i++) {
+                    if (keys[i].toLowerCase() === "range") return headers[keys[i]];
+                }
+            } catch (e) {}
+            return null;
+        }
+
+        function put(key, buffer) {
+            if (cache.has(key)) cache.delete(key);
+            cache.set(key, buffer);
+            while (cache.size > MAX_BLOCKS) cache.delete(cache.keys().next().value);
+        }
+
+        function block(url, start, end) {
+            var key = url + "|" + start + "|" + end;
+            var hit = cache.get(key);
+            if (hit) {
+                cache.delete(key);
+                cache.set(key, hit);
+                return Promise.resolve(hit);
+            }
+            var inflight = pending.get(key);
+            if (inflight) return inflight;
+            var job = nativeFetch(url, { headers: { Range: "bytes=" + start + "-" + end }, cache: "no-store" })
+                .then(function (response) {
+                    if (response.status !== 206) throw new Error("range " + response.status);
+                    var contentRange = response.headers.get("Content-Range") || "";
+                    var total = /\/(\d+)$/.exec(contentRange);
+                    if (total) totals.set(url, Number(total[1]));
+                    return response.arrayBuffer();
+                })
+                .then(function (buffer) {
+                    pending.delete(key);
+                    put(key, buffer);
+                    return buffer;
+                }, function (error) {
+                    pending.delete(key);
+                    throw error;
+                });
+            pending.set(key, job);
+            return job;
+        }
+
+        function prefetch(url, start, end) {
+            if (/\/wine(?:32|64)\.zip|\/support-[^/]+\.zip/.test(url)) return;
+            var total = totals.get(url);
+            for (var i = 1; i <= AHEAD; i++) {
+                var nextStart = start + i * BLOCK;
+                var nextEnd = nextStart + (end - start);
+                if (total && nextEnd >= total) break;
+                if (cache.has(url + "|" + nextStart + "|" + nextEnd) || pending.has(url + "|" + nextStart + "|" + nextEnd)) continue;
+                block(url, nextStart, nextEnd).catch(function () {});
+            }
+        }
+
+        globalThis.fetch = function (input, init) {
+            var url = typeof input === "string" ? input : input && input.url;
+            var range = rangeOf(init);
+            if (!url || !range) return nativeFetch(input, init);
+            var match = /^bytes=(\d+)-(\d+)$/.exec(range);
+            if (!match) return nativeFetch(input, init);
+            var start = Number(match[1]);
+            var end = Number(match[2]);
+            if (end < start || end - start + 1 !== BLOCK) return nativeFetch(input, init);
+            var key = url + "|" + start + "|" + end;
+            if (cache.has(key)) {
+                var hit = cache.get(key);
+                cache.delete(key);
+                cache.set(key, hit);
+                return Promise.resolve(new Response(hit, { status: 206, headers: { "Content-Range": "bytes " + start + "-" + end + "/*" } }));
+            }
+            return block(url, start, end).then(function (buffer) {
+                prefetch(url, start, end);
+                return new Response(buffer, { status: 206, headers: { "Content-Range": "bytes " + start + "-" + end + "/*" } });
+            });
+        };
+    })();
+
     // 32-bit guest support (step 4+5): ?arch=x86 selects the 32-bit runtime
     // (glibc-rootfs32.zip + wine32.zip + prefix32.zip, /usr/lib/wine/wine).
     // Default (absent/anything else) is the 64-bit path, unchanged.
