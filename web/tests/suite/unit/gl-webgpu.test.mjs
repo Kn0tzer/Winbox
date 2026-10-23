@@ -402,6 +402,19 @@ test('invalid framebuffer and renderbuffer targets raise INVALID_ENUM without ch
   } finally { gpu.restore(); }
 });
 
+test('getError retains each distinct pending GL error until individually read', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    gl.enable(0xdead);
+    gl.viewport(0, 0, -1, 1);
+    const seen = [gl.getError(), gl.getError()].sort((a, b) => a - b);
+    assert.deepEqual(seen, [0x0500, 0x0501]);
+    assert.equal(gl.getError(), 0);
+  } finally { gpu.restore(); }
+});
+
 test('state and texture entry points report invalid enums, values, and operations', async () => {
   const gpu = createValidationDevice(), logs = [];
   try {

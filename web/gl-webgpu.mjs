@@ -416,7 +416,7 @@ export class WebGPUGL {
     this._readbackSlots = [];
     this._readbackNext = 0;
     this._frameDirty = false;
-    this._error = GL.NO_ERROR;
+    this._errors = new Set();
     this._arrayBuffer = null;
     this._elementArrayBuffer = null;
     this._pixelPackBuffer = null;
@@ -1022,8 +1022,12 @@ export class WebGPUGL {
     }).catch(error => this._reportFailure(error)).finally(() => { slot.busy = false; });
     return true;
   }
-  _recordError(error) { if (this._error === GL.NO_ERROR) this._error = error; }
-  getError() { const error = this._error; this._error = GL.NO_ERROR; return error; }
+  _recordError(error) { if (error !== GL.NO_ERROR) this._errors.add(error); }
+  getError() {
+    const error = this._errors.values().next().value ?? GL.NO_ERROR;
+    if (error !== GL.NO_ERROR) this._errors.delete(error);
+    return error;
+  }
   isContextLost() { return false; }
   getContextAttributes() { return { alpha: true, depth: true, stencil: true, antialias: false, premultipliedAlpha: true, preserveDrawingBuffer: true }; }
   getSupportedExtensions() { return ['WEBGL_compressed_texture_s3tc', 'ANGLE_instanced_arrays', 'OES_vertex_array_object', 'EXT_read_format_bgra', 'EXT_texture_filter_anisotropic', 'EXT_sRGB']; }
