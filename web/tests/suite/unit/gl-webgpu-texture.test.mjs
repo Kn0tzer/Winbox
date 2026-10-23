@@ -37,6 +37,27 @@ test('texSubImage2D applies the same legacy single-channel expansion as texImage
   } finally { gpu.restore(); }
 });
 
+test('sRGB texture formats retain sRGB GPU sampling formats for regular and S3TC uploads', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: () => {} });
+    await gl.ready;
+    const texture = gl.createTexture();
+    gl.bindTexture(0x0de1, texture);
+    gl.texImage2D(0x0de1, 0, 0x8c43, 1, 1, 0, 0x1908, 0x1401, new Uint8Array([128, 64, 32, 255]));
+    await gl._ops;
+    assert.equal(texture.format, 'rgba8unorm-srgb');
+    assert.equal(texture.gpu.format, 'rgba8unorm-srgb');
+
+    const compressed = gl.createTexture();
+    gl.bindTexture(0x0de1, compressed);
+    gl.compressedTexImage2D(0x0de1, 0, 0x8c4f, 4, 4, 0, 16, new Uint8Array([255, 255, 255, 255, 255, 255, 255, 255, 0x00, 0xf8, 0x00, 0xf8, 0, 0, 0, 0]));
+    await gl._ops;
+    assert.equal(compressed.format, 'rgba8unorm-srgb');
+    assert.equal(compressed.gpu.format, 'rgba8unorm-srgb');
+  } finally { gpu.restore(); }
+});
+
 test('the S3TC extension decodes DXT1, DXT3, and DXT5 blocks without GPU features', async () => {
   const gpu = createValidationDevice();
   try {

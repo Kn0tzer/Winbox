@@ -1760,7 +1760,10 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       const tx = Math.min(texture.width - 1, Math.floor(u * texture.width));
       const ty = Math.min(texture.height - 1, Math.floor(v * texture.height));
       const offset = (ty * texture.width + tx) * 4;
-      return Array.from(texture.pixels.subarray(offset, offset + 4), value => value / 255);
+      const rgba = Array.from(texture.pixels.subarray(offset, offset + 4), value => value / 255);
+      if (texture.format?.endsWith('-srgb')) for (let channel = 0; channel < 3; channel++)
+        rgba[channel] = rgba[channel] <= 0.04045 ? rgba[channel] / 12.92 : ((rgba[channel] + 0.055) / 1.055) ** 2.4;
+      return rgba;
     };
     const compareAlpha = (func, alpha, reference) => {
       switch (func) {
@@ -2208,7 +2211,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     width |= 0; height |= 0;
     if (level === 0) {
       texture.width = width; texture.height = height;
-      texture.format = internalFormat === 0x1908 || internalFormat === 0x8058 || internalFormat === 0x8059 ? 'rgba8unorm' : 'rgba8unorm';
+      texture.format = [0x8c41, 0x8c43, 0x8c40, 0x8c42].includes(internalFormat) ? 'rgba8unorm-srgb' : 'rgba8unorm';
     }
     const levelWidth = Math.max(1, texture.width >> level), levelHeight = Math.max(1, texture.height >> level);
     texture.levels.set(level, { width: levelWidth, height: levelHeight, pixels: this._rgbaPixels(levelWidth, levelHeight, format, type, data) });
@@ -2251,6 +2254,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     const texture = this._boundTexture(target);
     if (!texture) { this._recordError(GL.INVALID_OPERATION); return; }
     texture.width = width; texture.height = height; texture.internalFormat = format;
+    texture.format = [0x8c4c, 0x8c4d, 0x8c4e, 0x8c4f].includes(format) ? 'rgba8unorm-srgb' : 'rgba8unorm';
     texture.levels.set(level, { width, height, pixels });
     if (level === 0) texture.pixels = pixels;
     this._enqueue(() => this._ensureTextureGpu(texture));
