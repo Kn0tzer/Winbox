@@ -496,3 +496,56 @@ commit in a new integration dist; it will show whether this exception was the
 last blocker or whether the client remains at `AWAITING SNAPSHOT`.
 
 Evidence: [+360s BSP / textured arena](/tmp/winbox-finish/r3/work-luna-q3/evidence/build8-q3-25min-nodiag-20261023/mapped-plus-360s.png), [+720s awaiting snapshot](/tmp/winbox-finish/r3/work-luna-q3/evidence/build8-q3-25min-nodiag-20261023/mapped-plus-720s.png), [+960s final capture](/tmp/winbox-finish/r3/work-luna-q3/evidence/build8-q3-25min-nodiag-20261023/mapped-plus-960s.png), [probe summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/build8-q3-25min-nodiag-20261023/summary.json), and [metrics and error log](/tmp/winbox-finish/r3/work-luna-q3/evidence/build8-q3-25min-nodiag-20261023/console.log).
+
+## Build 8 depth-range re-probe: active client reached (2026-10-23)
+
+I reran Q3 against the read-only Build 8 integration dist (`72315a6d5a98`,
+WASM build ID `ba9aa2ed6a32`) with JIT and recovery enabled. The launch used
+windowed OpenGL1, `r_vbo 0`, IPv4 networking, developer logging, and `+map
+q3dm1`. The shared-load waiter returned `load 1.50 < 5: go`; one start sample was
+`0.99 3.62 5.65`. The first window mapped 81.9 seconds after launch. The
+probe took screenshots every 120 seconds and enabled guest thread/syscall
+diagnostics.
+
+The +120s and +240s screenshots still show `AWAITING CONNECTION`. By +360s it
+is loading `MAPS/Q3DM1.BSP`; the +600s capture shows game-media loading, and
++720s/+840s show asset loading. At +960s it shows `AWAITING SNAPSHOT`. This
+wait clears by +1080s: the screenshot reports `Going from CS_PRIMED to
+CS_ACTIVE for UnnamedPlayer` and `ServerCommand: 1: print "UnnamedPlayer
+entered the game"`, then displays the player HUD and Q3DM1 scene. This is
+positive evidence that the local client/listen-server handshake completed;
+the earlier Build 6 `AWAITING CONNECTION` diagnosis does not describe this run.
+The syscall trace records 15 `sendmsg`, 1,958 `recvmsg`, and 4 `recvfrom`
+calls in Q3 PID 10. Those counts alone do not identify loopback packets.
+
+The client is in the game, but the view is not yet playable. The +1080s through
++1440s screenshots show large stretched polygons over the arena, with the HUD
+visible; the FPS overlay reports 0 in +1320s and +1440s. The probe did not send
+keyboard or mouse input, so input response remains unverified. There were no
+`GLctx.depthRange` exceptions, WebGPU recovery failures, or browser page errors.
+
+Thread evidence points at rendering activity rather than the former snapshot
+wait: the sampled Q3 main thread (PID 10/TID 11) remained at
+`libGL.so.1+0x270f`, inside the GL wrapper region previously mapped to the
+tail of `glDrawElements`. Its final thread dump is `state=running`, with a
+caller frame at `opengl32.dll+0x942b2` and Q3 renderer frames on the stack. The
+separate PID 14/TID 15 thread is blocked in `epoll_wait`; it is not evidence of
+a starved Q3 server thread. The screenshot's `CS_ACTIVE` transition confirms
+that server/client progress did occur. This probe therefore does not justify a
+loopback networking change; the remaining blocker is the broken/sparse
+in-game rendering, followed by an input-response check.
+
+Across the metrics stream from guest counters 188,612,314 to 1,925,528,504,
+1.737 billion guest instructions retired over 1,435 seconds (about 1.21 million
+instructions/s). The 927 emitted metric records sum to 94 SDL sink presents
+(about 0.066 presents/s). The guest trace adds overhead, so treat the instruction rate as a traced average,
+not an unconstrained performance figure. SDL telemetry is activity-triggered,
+so the present count may be a lower bound. No end-of-run host load sample was
+available.
+
+The browser page closed after the +1440s capture, before the requested +1560s
+through +1800s captures. The probe ended with `page.waitForTimeout: Target
+page, context or browser has been closed`; no page error or WebGPU failure was
+recorded before that. No code fix was identified or build run in this probe.
+
+Evidence: [+960s, awaiting snapshot](/tmp/winbox-finish/r3/work-luna-q3/evidence/build8-depthrange-fixed-q3-30min-20261023/mapped-plus-960s.png), [+1080s, CS_ACTIVE and player view](/tmp/winbox-finish/r3/work-luna-q3/evidence/build8-depthrange-fixed-q3-30min-20261023/mapped-plus-1080s.png), [+1440s, latest view](/tmp/winbox-finish/r3/work-luna-q3/evidence/build8-depthrange-fixed-q3-30min-20261023/mapped-plus-1440s.png), [probe summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/build8-depthrange-fixed-q3-30min-20261023/summary.json), and [metrics/thread/syscall trace](/tmp/winbox-finish/r3/work-luna-q3/evidence/build8-depthrange-fixed-q3-30min-20261023/console.log).
