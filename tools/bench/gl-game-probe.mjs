@@ -65,9 +65,16 @@ const mapTimeoutSeconds = Number(process.env.MAP_TIMEOUT_SECONDS || 8 * 60);
 const captureSeconds = process.env.CAPTURE_SECONDS
   ? process.env.CAPTURE_SECONDS.split(',').map(value => Number(value.trim()))
   : [60, 120, 240];
+const probeForwardAtSeconds = process.env.PROBE_FORWARD_AT_SECONDS === undefined
+  ? null
+  : Number(process.env.PROBE_FORWARD_AT_SECONDS);
+const probeForwardHoldMs = Number(process.env.PROBE_FORWARD_HOLD_MS || 3000);
 if (!Number.isFinite(mapTimeoutSeconds) || mapTimeoutSeconds <= 0 ||
-    captureSeconds.some(value => !Number.isFinite(value) || value <= 0))
-  throw new Error('MAP_TIMEOUT_SECONDS and CAPTURE_SECONDS must be positive seconds');
+    captureSeconds.some(value => !Number.isFinite(value) || value <= 0) ||
+    (probeForwardAtSeconds !== null &&
+      (!Number.isFinite(probeForwardAtSeconds) || !captureSeconds.includes(probeForwardAtSeconds))) ||
+    !Number.isFinite(probeForwardHoldMs) || probeForwardHoldMs <= 0)
+  throw new Error('Invalid map timeout, capture schedule, or forward-input probe setting');
 await mkdir(outputDir, { recursive: true });
 
 const zipScript = String.raw`import os, sys, zipfile
@@ -283,6 +290,20 @@ try {
       result.captures.push({ label, secondsAfterMapped: seconds, path, sample });
       record(`${label}: ${path}`);
       await writeFile(join(outputDir, 'summary.json'), JSON.stringify(result, null, 2));
+      if (seconds === probeForwardAtSeconds) {
+        const inputPath = join(outputDir, `${label}-after-w.png`);
+        await page.keyboard.down('w');
+        try {
+          await page.waitForTimeout(probeForwardHoldMs);
+        } finally {
+          await page.keyboard.up('w').catch(() => {});
+        }
+        await page.waitForTimeout(1000);
+        await page.screenshot({ path: inputPath, fullPage: true });
+        result.inputProbe = { key: 'w', binding: '+forward', holdMs: probeForwardHoldMs, path: inputPath };
+        record(`forward input probe: ${inputPath}`);
+        await writeFile(join(outputDir, 'summary.json'), JSON.stringify(result, null, 2));
+      }
     }
   }
   result.pageErrors = pageErrors;

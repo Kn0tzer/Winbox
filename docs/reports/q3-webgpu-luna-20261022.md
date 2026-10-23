@@ -549,3 +549,28 @@ page, context or browser has been closed`; no page error or WebGPU failure was
 recorded before that. No code fix was identified or build run in this probe.
 
 Evidence: [+960s, awaiting snapshot](/tmp/winbox-finish/r3/work-luna-q3/evidence/build8-depthrange-fixed-q3-30min-20261023/mapped-plus-960s.png), [+1080s, CS_ACTIVE and player view](/tmp/winbox-finish/r3/work-luna-q3/evidence/build8-depthrange-fixed-q3-30min-20261023/mapped-plus-1080s.png), [+1440s, latest view](/tmp/winbox-finish/r3/work-luna-q3/evidence/build8-depthrange-fixed-q3-30min-20261023/mapped-plus-1440s.png), [probe summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/build8-depthrange-fixed-q3-30min-20261023/summary.json), and [metrics/thread/syscall trace](/tmp/winbox-finish/r3/work-luna-q3/evidence/build8-depthrange-fixed-q3-30min-20261023/console.log).
+
+## Newer integration build W-key input check (2026-10-23)
+
+While the prior input attempt was queued, the integration dist refreshed at
+11:17 UTC. This focused probe therefore used the newer prebuilt runtime from
+integration SHA `577a6c9d9752cdb78c4a17258cc1a94a7c83b6dc` (WASM SHA/build ID
+`10ef3489d8a6`), with no build started here. It reached `CS_ACTIVE` by
+mapped+840s and again displayed the server message that UnnamedPlayer entered
+the game.
+
+I added opt-in `PROBE_FORWARD_AT_SECONDS` / `PROBE_FORWARD_HOLD_MS` support to
+the GL game probe. At +840s it captured the active view, sent W keydown for
+3 seconds, released W, waited 1 second, and captured again. The saved
+`q3config.cfg` binds W to `+forward`. ImageMagick `compare -metric AE` reports
+zero changed pixels between the two screenshots. Thus the browser sent the
+keyboard event but the game produced no visible movement or new rendered frame
+in response. The probe summary reports WebGPU active, no WebGPU failures, no
+page errors, and no probe exception. One adjacent 500ms metrics record had one
+SDL present; subsequent records had zero presents, while the last sampled GL
+stage accumulator was 16.53 seconds. This supports investigating the stalled
+or sparse in-game GL/render path next; it does not identify which bridge call
+causes it. The local network handshake is already past `CS_ACTIVE`, so no
+loopback networking fix is indicated by this input test.
+
+Evidence: [+840s before W](/tmp/winbox-finish/r3/work-luna-q3/evidence/build9-q3-forward-input-20261023/mapped-plus-840s.png), [after W keydown/up](/tmp/winbox-finish/r3/work-luna-q3/evidence/build9-q3-forward-input-20261023/mapped-plus-840s-after-w.png), [summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/build9-q3-forward-input-20261023/summary.json), and [console/metrics log](/tmp/winbox-finish/r3/work-luna-q3/evidence/build9-q3-forward-input-20261023/console.log).
