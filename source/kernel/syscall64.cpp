@@ -1916,7 +1916,7 @@ static U64 sys_readlink64(CPU64* cpu, U64 pathAddr, U64 buf, U64 sz) {
 //   Anything else: -ENOSYS so glibc takes the user-space fallback.
 //
 // uaddr==0 → -EFAULT for all ops (matches kernel).
-static U64 sys_futex64(CPU64* cpu, U64 uaddr, U32 op, U32 val, U64 timeoutAddr, U32 val3) {
+static U64 sys_futex64(CPU64* cpu, U64 uaddr, U32 op, U32 val, U64 timeoutAddr, U64 uaddr2, U32 val3) {
     if (uaddr == 0) return (U64)-K_EFAULT;
     if (uaddr & 3) return (U64)-K_EINVAL;
 
@@ -1924,7 +1924,7 @@ static U64 sys_futex64(CPU64* cpu, U64 uaddr, U32 op, U32 val, U64 timeoutAddr, 
     // process (the only way multiple threads exist), delegate to the shared
     // futex table so WAIT actually blocks and WAKE actually wakes siblings.
     if (cpu->thread && cpu->thread->process && cpu->thread->process->memory64) {
-        S64 r = cpu->thread->futex64(uaddr, op, val, timeoutAddr, val3);
+        S64 r = cpu->thread->futex64(uaddr, op, val, timeoutAddr, uaddr2, val3);
         if (r == K_FUTEX64_PARKED) {
             // Single-threaded cooperative park: don't write RAX, rewind the
             // SYSCALL on yield so it re-runs after we're woken.
@@ -1961,9 +1961,23 @@ static U64 sys_futex64(CPU64* cpu, U64 uaddr, U32 op, U32 val, U64 timeoutAddr, 
         case X64_FUTEX_REQUEUE:
         case X64_FUTEX_CMP_REQUEUE:
         case X64_FUTEX_WAKE_OP:
-            return 0;
-        default:
+        case 6: // FUTEX_LOCK_PI
+        case 7: // FUTEX_UNLOCK_PI
+        case 8: // FUTEX_TRYLOCK_PI
+        case 11: // FUTEX_WAIT_REQUEUE_PI
+        case 12: // FUTEX_CMP_REQUEUE_PI
+        default: {
+            static std::mutex reportMutex;
+            static std::unordered_set<U32> reportedOps;
+            const U32 cmd = op & ~(X64_FUTEX_PRIVATE_FLAG | X64_FUTEX_CLOCK_REALTIME);
+            bool first;
+            {
+                std::lock_guard<std::mutex> lock(reportMutex);
+                first = reportedOps.insert(cmd).second;
+            }
+            if (first) klog_fmt("ksyscall64: unsupported threadless futex operation %u (op=0x%x); returned -ENOSYS", cmd, op);
             return (U64)-K_ENOSYS;
+        }
     }
 }
 
@@ -4640,7 +4654,7 @@ void ksyscall64(CPU64* cpu) {
             ret = cpu->thread ? cpu->thread->id : 1;
             break;
         case X64_SYS_futex:
-            ret = sys_futex64(cpu, a1, (U32)a2, (U32)a3, a4, (U32)a6);
+            ret = sys_futex64(cpu, a1, (U32)a2, (U32)a3, a4, a5, (U32)a6);
             break;
         case X64_SYS_poll:
         case X64_SYS_ppoll: {

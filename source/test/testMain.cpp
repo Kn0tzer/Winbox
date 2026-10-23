@@ -58,6 +58,7 @@
 
 void testWaitPid();
 void testSyscall64DispatchGuard();
+void testFutex64DispatchGuard();
 void testInetDatagramLoopback();
 void testInetStreamLoopback();
 void testGl64ClientArrayIndexRange();
@@ -677,6 +678,7 @@ const TestEntry TEST_ENTRIES[] = {
 #endif
     {testWaitPid, "Test waitpid child selection"},
     {testSyscall64DispatchGuard, "Test x64 syscall fallback guard"},
+    {testFutex64DispatchGuard, "Test x64 futex dispatch guard"},
     {testInetDatagramLoopback, "Test AF_INET UDP loopback socket"},
     {testInetStreamLoopback, "Test AF_INET TCP loopback socket"},
     {testGl64ClientArrayIndexRange, "Test GL64 client-array index range"},
