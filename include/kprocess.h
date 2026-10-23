@@ -424,6 +424,7 @@ public:
     std::shared_ptr<FsNode> processNode; // in /proc/<pid>
     std::shared_ptr<FsNode> taskNode; // in /proc/<pid>/task
     std::shared_ptr<FsNode> fdNode; // in /proc/<pid>/fd
+    U32 membarrierRegistrations = 0; // per-process MEMBARRIER_CMD_REGISTER_* mask
 };
 
 #endif

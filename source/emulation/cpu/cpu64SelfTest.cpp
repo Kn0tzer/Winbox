@@ -9000,6 +9000,23 @@ int runX64SelfTest() {
             return c.reg[X64_R15].u64 == (U64)-K_ENOSYS;
         });
     }
+    auto membarrierCode = [](U32 command) {
+        return withExit({
+            0xB8, 0x44, 0x01, 0x00, 0x00,             // mov eax, 324
+            0xBF, (U8)command, (U8)(command >> 8),
+            (U8)(command >> 16), (U8)(command >> 24), // mov edi, command
+            0x31, 0xF6,                               // xor esi, esi (flags)
+            0x31, 0xD2,                               // xor edx, edx (cpu id)
+            0x0F, 0x05,                               // syscall
+            0x49, 0x89, 0xC7                          // mov r15, rax
+        });
+    };
+    runAndCheck(r, "membarrier QUERY returns supported command mask", membarrierCode(0),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == 511; });
+    runAndCheck(r, "membarrier GLOBAL executes successfully", membarrierCode(1),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == 0; });
+    runAndCheck(r, "membarrier rejects unknown command", membarrierCode(0x40000000),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_EINVAL; });
     runFaultAtRIP(r, "recover preserves #GP for INSD", {0x6D});
     runFaultAtRIP(r, "recover preserves #GP for operand-size-prefixed INSW", {0x66, 0x6D});
     runFaultAtRIP(r, "recover preserves #GP for HLT", {0xF4});

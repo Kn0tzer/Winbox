@@ -5182,6 +5182,54 @@ void ksyscall64(CPU64* cpu) {
         case X64_SYS_clock_nanosleep:
             ret = sys_nanosleep64(cpu, a3, true, a1, a2);
             break;
+        case X64_SYS_membarrier: {
+            // Linux 6.x command bits. The single-process virtual CPU makes
+            // the expedited operation a sequentially consistent host fence.
+            constexpr U32 QUERY = 0;
+            constexpr U32 GLOBAL = 1;
+            constexpr U32 GLOBAL_EXPEDITED = 2;
+            constexpr U32 REGISTER_GLOBAL_EXPEDITED = 4;
+            constexpr U32 PRIVATE_EXPEDITED = 8;
+            constexpr U32 REGISTER_PRIVATE_EXPEDITED = 16;
+            constexpr U32 PRIVATE_EXPEDITED_SYNC_CORE = 32;
+            constexpr U32 REGISTER_PRIVATE_EXPEDITED_SYNC_CORE = 64;
+            constexpr U32 PRIVATE_EXPEDITED_RSEQ = 128;
+            constexpr U32 REGISTER_PRIVATE_EXPEDITED_RSEQ = 256;
+            constexpr U32 SUPPORTED = QUERY | GLOBAL | GLOBAL_EXPEDITED |
+                REGISTER_GLOBAL_EXPEDITED | PRIVATE_EXPEDITED |
+                REGISTER_PRIVATE_EXPEDITED | PRIVATE_EXPEDITED_SYNC_CORE |
+                REGISTER_PRIVATE_EXPEDITED_SYNC_CORE | PRIVATE_EXPEDITED_RSEQ |
+                REGISTER_PRIVATE_EXPEDITED_RSEQ;
+            const U32 command = (U32)a1;
+            const U32 flags = (U32)a2;
+            if (flags != 0 || a3 != 0) { ret = (U64)-K_EINVAL; break; }
+            if (command == QUERY) { ret = SUPPORTED; break; }
+            if (command & ~SUPPORTED) { ret = (U64)-K_EINVAL; break; }
+            if (command == REGISTER_GLOBAL_EXPEDITED) { ret = 0; break; }
+            if (command == REGISTER_PRIVATE_EXPEDITED ||
+                command == REGISTER_PRIVATE_EXPEDITED_SYNC_CORE ||
+                command == REGISTER_PRIVATE_EXPEDITED_RSEQ) {
+                if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+                cpu->thread->process->membarrierRegistrations |= command;
+                ret = 0;
+                break;
+            }
+            if (command == PRIVATE_EXPEDITED ||
+                command == PRIVATE_EXPEDITED_SYNC_CORE ||
+                command == PRIVATE_EXPEDITED_RSEQ) {
+                if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+                const U32 registration = command == PRIVATE_EXPEDITED ? REGISTER_PRIVATE_EXPEDITED :
+                    command == PRIVATE_EXPEDITED_SYNC_CORE ? REGISTER_PRIVATE_EXPEDITED_SYNC_CORE :
+                    REGISTER_PRIVATE_EXPEDITED_RSEQ;
+                if (!(cpu->thread->process->membarrierRegistrations & registration)) {
+                    ret = (U64)-K_EPERM;
+                    break;
+                }
+            }
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            ret = 0;
+            break;
+        }
         case X64_SYS_rseq:
             // No rseq implementation: report through the common ENOSYS path.
             ret = unimplementedSyscall64(nr);
