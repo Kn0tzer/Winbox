@@ -38,6 +38,7 @@ void waitTimeout(U32 ms){KSystem::now+=wake<wakes.size()?std::min(ms,wakes[wake+
 #define BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(m) ((void)0)
 #define BOXEDWINE_CONDITION_WAIT_TIMEOUT(c,ms) waitTimeout(ms)
 #define BOXEDWINE_CONDITION_WAIT(c) assert(false)
+#define BOXEDWINE_CONDITION_WAIT_SIGNALABLE(c) assert(false)
 #define klog_fmt(...) ((void)0)
 struct KObject {virtual ~KObject()=default;int type=0;void waitForEvents(int,int){}bool isOpen(){return true;}bool isPriorityReadReady(){return false;}bool isReadReady(){return false;}bool isWriteReady(){return false;}};
 struct KUnixSocketObject:KObject {long debugRecvUsed(){return 0;}long debugMsgsSize(){return 0;}bool debugInClosed(){return false;}long debugPendingTotal(){return 0;}long debugPendingLive(){return 0;}};

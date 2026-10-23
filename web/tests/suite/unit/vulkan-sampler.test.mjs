@@ -15,7 +15,7 @@ test('native sampler emission encodes the SAM1 tail and the decoder reads all st
   assert.equal((bridge.match(/s->anisotropyEnable = ci\.anisotropyEnable/g) || []).length, 2,
     'both 32-bit and 64-bit VkSamplerCreateInfo paths capture anisotropy state');
 
-  const dir = mkdtempSync(join('/tmp/winbox-finish/work-G1/', 'sampler-'));
+  const dir = mkdtempSync(join('/tmp/', 'sampler-'));
   try {
     const source = join(dir, 'sampler.cpp'), binary = join(dir, 'sampler');
     writeFileSync(source, `
