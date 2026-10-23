@@ -2985,6 +2985,34 @@ static U64 sys_mincore64(CPU64* cpu, U64 addr, U64 length, U64 vec) {
     return 0;
 }
 
+static bool sys_rangeMapped64(CPU64* cpu, U64 addr, U64 length) {
+    if (!cpu || !cpu->memory || !length || addr > ~0ULL - (length - 1)) return false;
+    const U64 first = addr >> K64_PAGE_SHIFT;
+    const U64 last = (addr + length - 1) >> K64_PAGE_SHIFT;
+    for (U64 page = first;; ++page) {
+        if (!cpu->memory->isPageMapped(page)) return false;
+        if (page == last) break;
+    }
+    return true;
+}
+
+static U64 sys_madvise64(CPU64* cpu, U64 addr, U64 length, U64 advice) {
+    // Linux advice values are hints. The emulator does not have a host paging
+    // policy to tune, but validates the mapped range and accepts the stable
+    // advice values so runtimes can make their normal allocation decisions.
+    switch (advice) {
+        case 0: case 1: case 2: case 3: case 4: case 8: case 9:
+        case 10: case 11: case 12: case 13: case 14: case 15: case 16:
+        case 17: case 18: case 19: case 20: case 21: case 22: case 23:
+        case 25: case 102: case 103:
+            break;
+        default:
+            return (U64)-K_EINVAL;
+    }
+    if (!length || addr > ~0ULL - (length - 1)) return (U64)-K_EINVAL;
+    return sys_rangeMapped64(cpu, addr, length) ? 0 : (U64)-K_ENOMEM;
+}
+
 // Linux v6.12 arch/x86/entry/syscalls/syscall_64.tbl (common + 64 ABI).
 // Keep the ABI names here complete through syscall 450 so every unknown
 // dispatch logs the meaningful Linux name, including newly encountered gaps.
@@ -3853,15 +3881,33 @@ void ksyscall64(CPU64* cpu) {
             ret = 0;
             break;
         case X64_SYS_set_robust_list:
-        case X64_SYS_madvise:
         case X64_SYS_fadvise64:
-            // ld-linux makes these calls before main; safe to no-op.
             // fadvise64(fd, offset, len, advice): a pure readahead hint
             // (fontconfig POSIX_FADV_WILLNEED/RANDOM on its cache mmaps).
             // The interpreter has no page cache to advise, so ignoring it is
             // correct — the data is still read on demand.
             ret = 0;
             break;
+        case X64_SYS_madvise:
+            ret = sys_madvise64(cpu, a1, a2, a3);
+            break;
+        case 26: { // msync(addr, length, flags)
+            constexpr U32 MS_ASYNC = 1;
+            constexpr U32 MS_INVALIDATE = 2;
+            constexpr U32 MS_SYNC = 4;
+            if ((a1 & K64_PAGE_MASK) || !a2 || (a3 & ~(MS_ASYNC | MS_INVALIDATE | MS_SYNC)) ||
+                ((a3 & MS_ASYNC) && (a3 & MS_SYNC)) || !(a3 & (MS_ASYNC | MS_SYNC))) {
+                ret = (U64)-K_EINVAL;
+            } else if (!sys_rangeMapped64(cpu, a1, a2)) {
+                ret = (U64)-K_ENOMEM;
+            } else {
+                // Guest shared writes are already committed to the in-memory
+                // backing store; the validated sync operation has no host
+                // page cache to flush.
+                ret = 0;
+            }
+            break;
+        }
         case X64_SYS_ioctl: {
             // ioctl(fd, request, arg). The old blanket no-op (return 0) made
             // wine believe a device-type probe on a regular file SUCCEEDED, so
@@ -4715,13 +4761,27 @@ void ksyscall64(CPU64* cpu) {
             if (a2) cpu->memory->writed(a2, 0);
             ret = 0;
             break;
-        case X64_SYS_mlockall:
+        case X64_SYS_mlockall: {
+            constexpr U32 MCL_CURRENT = 1, MCL_FUTURE = 2, MCL_ONFAULT = 4;
+            ret = ((a1 & ~(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT)) ||
+                   ((a1 & MCL_ONFAULT) && !(a1 & (MCL_CURRENT | MCL_FUTURE))))
+                ? (U64)-K_EINVAL : 0;
+            break;
+        }
         case X64_SYS_munlockall:
-        case X64_SYS_mlock:
-        case X64_SYS_munlock:
-            // We never page guest memory out, so locking is a no-op success.
             ret = 0;
             break;
+        case X64_SYS_mlock:
+        case X64_SYS_munlock: {
+            if (!a2 || a1 > ~0ULL - a2 || a1 + a2 > ~0ULL - K64_PAGE_MASK) {
+                ret = (U64)-K_EINVAL;
+                break;
+            }
+            const U64 start = a1 & ~K64_PAGE_MASK;
+            const U64 end = (a1 + a2 + K64_PAGE_MASK) & ~K64_PAGE_MASK;
+            ret = sys_rangeMapped64(cpu, start, end - start) ? 0 : (U64)-K_ENOMEM;
+            break;
+        }
         case X64_SYS_clock_gettime:
             ret = sys_clock_gettime64(cpu, a1, a2);
             break;
@@ -5300,7 +5360,6 @@ void ksyscall64(CPU64* cpu) {
             break;
         case 74:  // fsync(fd)
         case 75:  // fdatasync(fd)
-        case 26:  // msync(addr,len,flags)
         case X64_SYS_sync_file_range:
             // Our VFS writes are effectively synchronous (no host page cache to
             // flush for the guest's purposes), so a flush is a successful no-op.

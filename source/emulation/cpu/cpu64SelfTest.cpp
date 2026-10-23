@@ -301,6 +301,38 @@ void runDataProtectionFaults(TestResult& r) {
     fflush(stdout);
 }
 
+std::vector<U8> withExit(std::vector<U8> code);
+
+void runMemorySyscallValidation(TestResult& r) {
+    auto call = [](U32 nr, U64 address, U64 length, U64 thirdArg) {
+        std::vector<U8> code = {0xB8, (U8)nr, (U8)(nr >> 8), (U8)(nr >> 16), (U8)(nr >> 24)};
+        auto imm64 = [&code](U8 rexOpcode, U64 value) {
+            code.push_back(0x48); code.push_back(rexOpcode);
+            for (U32 i = 0; i < 8; ++i) code.push_back((U8)(value >> (i * 8)));
+        };
+        imm64(0xBF, address); // mov rdi, address
+        imm64(0xBE, length);  // mov rsi, length
+        imm64(0xBA, thirdArg);// mov rdx, flags/advice
+        code.insert(code.end(), {0x0F, 0x05, 0x49, 0x89, 0xC7});
+        return withExit(code);
+    };
+    constexpr U64 STACK_PAGE = STACK_TOP - 0x1000;
+    runAndCheck(r, "msync validates mapped page and MS_SYNC", call(26, STACK_PAGE, 0x1000, 4),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == 0; });
+    runAndCheck(r, "msync rejects unsupported flags", call(26, STACK_PAGE, 0x1000, 8),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_EINVAL; });
+    runAndCheck(r, "msync rejects unmapped range", call(26, 0x70000000, 0x1000, 4),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_ENOMEM; });
+    runAndCheck(r, "mlock accepts mapped range", call(149, STACK_PAGE, 0x1000, 0),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == 0; });
+    runAndCheck(r, "mlock rejects unmapped range", call(149, 0x70000000, 0x1000, 0),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_ENOMEM; });
+    runAndCheck(r, "madvise accepts known advice and rejects unknown values", call(28, STACK_PAGE, 0x1000, 4),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == 0; });
+    runAndCheck(r, "madvise rejects unknown advice", call(28, STACK_PAGE, 0x1000, 999),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_EINVAL; });
+}
+
 void runUnmappedSamePageFetchFault(TestResult& r) {
     KMemory64 mem(nullptr);
     mem.mmapAnonymousFixed(CODE_BASE, 0x1000, 7);
@@ -8984,6 +9016,7 @@ int runX64SelfTest() {
     runNullIndirectCallFault(r);
     runNonExecutableFetchFault(r);
     runDataProtectionFaults(r);
+    runMemorySyscallValidation(r);
     runUnmappedSamePageFetchFault(r);
     // io_uring and pidfd_getfd are deliberately rejected by the central
     // once-per-number syscall logger. Keep syscall-layer errno coverage for
