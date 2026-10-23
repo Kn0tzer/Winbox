@@ -52,6 +52,34 @@ tools/rootfs64/build-prefix64.sh now starts from the pinned browser prefix by de
 
 tools/rootfs64/test_prepare_prefixes.py adds six unit tests for boot-state overlay, marker and registry validation, service settings, controller/HID state, and linked ALSA/service/D3D runtime payloads. The unit tests, tools/browser/bootstrap.py --check, and the guard against both pinned prefix/runtime pairs passed. One WASM build was used; no second build was run.
 
-## Open work
+## Follow-up: full-init Snake failure and browser startup path
 
-A packaged prefix marker cannot skip wineboot --init itself. Avoiding that remaining startup path requires a launcher-level change, outside the owned paths for this task. The full-init candidate was not kept because it did not improve startup; its Snake probe did not map within 300 seconds and logged guest exit_group status 1 in imm32.dll, whose root cause was not isolated. The smaller Audio override trial was slower. ALSA playback and end-to-end controller input were not separately exercised; only runtime payloads and registry keys were checked. The separate 32-bit prefix builder, tools/build-prefix32.sh, was not changed, and no new initialized state is shipped in either prefix archive.
+I compared the pinned and full-init `system.reg`, `user.reg`, `userdef.reg`, and `system32.link` entries. `system32.link` resolves to the same Wine runtime in both prefixes, and neither archive carries a replacement `imm32.dll`. The `Keyboard Layout\\Preload` value is also identical (`"1"="00000409"`). Full init adds empty CTF `SystemShared`/`TIP` keys and NLS `Language` values (`Default`/`InstallLanguage` = `0409`); those state differences remain present in the successful Snake differential below.
+
+The material startup difference was `[Software\\Microsoft\\Windows\\CurrentVersion\\RunServices]`: the pinned prefix has no value there, while full init adds `winemenubuilder.exe -a -r`. The full-init trace opens and starts this helper twice. With `WINEDEBUG=+loaddll,+imm,+err`, Wine loads builtin `imm32.dll`, `DllMain` process attach completes, and `ImeInquire` runs; there is no imm32 error. The earlier `exit_group status=1` had a return address symbolized inside `imm32.dll`, but the debug trace does not show an imm32 failure. This was a cold-start race associated with the optional RunServices helper, not an IME registry or DLL mismatch.
+
+For the differential, I removed only the `winemenubuilder` RunServices value from a disposable full-init archive. Snake then mapped in 117.091 s with JIT0; the other CTF/NLS state and all Wine service registrations remained intact. `prepare_prefixes.py sanitize` now removes that one host Start Menu integration value when packaging either prefix architecture and when exporting the pinned archives to `dist/runtime`. It leaves other RunServices entries, normal Run entries, RpcSs, PlugPlay, winebus, and wineusb unchanged. The pinned source ZIPs and `tools/browser/runtime-assets.json` were not re-pinned or edited; `tools/browser/bootstrap.py --check` remains the source hash guard.
+
+## Launcher behavior and measurements
+
+The existing normal app path already runs `wine64 <program>` (or the 32-bit `wine <program>`) directly against the initialized prefix. Only the explicit boot probe passes `wineboot --init`. Wine 11's `wineboot -u` is an update operation, not a skip switch ([Wine 11.0 `wineboot.c`](https://raw.githubusercontent.com/wine-mirror/wine/wine-11.0/programs/wineboot/wineboot.c)). Starting only a persistent `wineserver` does not start the GUI-required service stack, so it is not a working shortcut. I added a unit guard for these launcher paths, but did not add an unsafe mode that suppresses required service startup.
+
+Same-build click-to-mapped measurements from `demo-matrix.mjs`:
+
+| 64-bit demo | JIT0 before | JIT0 after | JIT1 before | JIT1 after |
+| --- | ---: | ---: | ---: | ---: |
+| Notepad | 62.663 s | 79.183 s | 83.824 s | 63.709 s |
+| Snake | 52.231 s | 53.232 s | 84.042 s | 55.631 s |
+
+The post-export 64-bit prefix had zero RunServices values to remove, so the packaging cleanup did not change its bytes or startup path. The timing spread is noise across runs, not a demonstrated 64-bit improvement. The post-export probes used the harness's mapped-only mode and reported `stage=mapped-no-input`.
+
+The 32-bit pinned prefix had one `winemenubuilder` RunServices value, which the exported prefix removed. Notepad mapped at 21.4 s (JIT0) and 21.636 s (JIT1) before; it mapped at 19.085 s and 18.826 s after. Snake is not present in `prefix32.zip`, so there is no valid 32-bit Snake measurement.
+
+## Tests and remaining work
+
+- `tools/rootfs64/test_prepare_prefixes.py` now checks the narrow registry edit, archive idempotence, and retention of service/controller entries.
+- `web/tests/suite/unit/prefix-launch-mode.test.mjs` checks direct app launch for both architectures and session modes, plus the explicit boot-probe path.
+- `web/tests/suite/unit/provenance-artifacts.test.mjs` checks that exported prefixes equal the pinned archives with only the sanitizer and existing desktop/font staging changes.
+- Verification: Python prefix unit tests, launcher/provenance unit tests, shell and JS syntax checks, both exported prefix package checks, and the pinned-asset hash guard.
+
+The 32-bit prefix cleanup measured a 2.3–2.8 s Notepad improvement in these runs. The pinned 64-bit prefix was already free of the helper, and this work did not improve its startup. Wine 11 still starts services on the first Wine server instance; a supported way to skip that service startup was not found. ALSA playback and end-to-end controller input were not separately exercised; their packaged drivers and registry keys were preserved by the sanitizer.
