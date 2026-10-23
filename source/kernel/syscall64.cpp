@@ -4633,6 +4633,61 @@ void ksyscall64(CPU64* cpu) {
             ret = (U64)(S64)(S32)cpu->thread->process->memfd_create(BString::copy(name), (U32)a2);
             break;
         }
+        case X64_SYS_timerfd_create:
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            ret = (U64)(S64)(S32)cpu->thread->process->timerfd_create((U32)a1, (U32)a2);
+            break;
+        case X64_SYS_timerfd_settime:
+        case X64_SYS_timerfd_gettime: {
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            KProcessPtr process = cpu->thread->process;
+            KFileDescriptorPtr fd = process->getFileDescriptor((FD)a1);
+            if (!fd) { ret = (U64)-K_EBADF; break; }
+            std::shared_ptr<KTimer> timer = std::dynamic_pointer_cast<KTimer>(fd->kobject);
+            if (!timer) { ret = (U64)-K_EINVAL; break; }
+            if (nr == X64_SYS_timerfd_gettime) {
+                if (!a2) { ret = (U64)-K_EFAULT; break; }
+                const U64 interval = timer->getMicroInterval();
+                const U64 next = timer->getMicroNextTimer();
+                const U64 now = timer->getClockNowMicroseconds();
+                const U64 remaining = next > now ? next - now : 0;
+                cpu->memory->writeq(a2, interval / 1000000);
+                cpu->memory->writeq(a2 + 8, (interval % 1000000) * 1000);
+                cpu->memory->writeq(a2 + 16, remaining / 1000000);
+                cpu->memory->writeq(a2 + 24, (remaining % 1000000) * 1000);
+                ret = 0;
+                break;
+            }
+            constexpr U32 TFD_TIMER_ABSTIME = 1;
+            if ((a2 & ~TFD_TIMER_ABSTIME) != 0) { ret = (U64)-K_EINVAL; break; }
+            if (!a3) { ret = (U64)-K_EFAULT; break; }
+            const S64 intervalSec = (S64)cpu->memory->readq(a3);
+            const S64 intervalNsec = (S64)cpu->memory->readq(a3 + 8);
+            const S64 valueSec = (S64)cpu->memory->readq(a3 + 16);
+            const S64 valueNsec = (S64)cpu->memory->readq(a3 + 24);
+            if (intervalSec < 0 || valueSec < 0 || intervalNsec < 0 || intervalNsec >= 1000000000 ||
+                valueNsec < 0 || valueNsec >= 1000000000 ||
+                (U64)intervalSec > UINT64_MAX / 1000000 || (U64)valueSec > UINT64_MAX / 1000000) {
+                ret = (U64)-K_EINVAL;
+                break;
+            }
+            if (a4) {
+                const U64 interval = timer->getMicroInterval();
+                const U64 next = timer->getMicroNextTimer();
+                const U64 now = timer->getClockNowMicroseconds();
+                const U64 remaining = next > now ? next - now : 0;
+                cpu->memory->writeq(a4, interval / 1000000);
+                cpu->memory->writeq(a4 + 8, (interval % 1000000) * 1000);
+                cpu->memory->writeq(a4 + 16, remaining / 1000000);
+                cpu->memory->writeq(a4 + 24, (remaining % 1000000) * 1000);
+            }
+            const U64 interval = (U64)intervalSec * 1000000 + (U64)intervalNsec / 1000;
+            U64 next = (U64)valueSec * 1000000 + (U64)valueNsec / 1000;
+            if (next && !(a2 & TFD_TIMER_ABSTIME)) next += timer->getClockNowMicroseconds();
+            timer->setTimes(interval, next);
+            ret = 0;
+            break;
+        }
         case X64_SYS_prlimit64:
             ret = sys_prlimit64_64(cpu, a1, a2, a3, a4);
             break;

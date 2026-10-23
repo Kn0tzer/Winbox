@@ -31,7 +31,7 @@ private:
 
 class KTimer : public KObject {
 public:
-    KTimer();
+    explicit KTimer(U32 clockId = 0);
     virtual ~KTimer();
 
     // From KObject
@@ -66,6 +66,7 @@ public:
     U64 getMicroNextTimer() {
         return microNextTimer;
     }
+    U64 getClockNowMicroseconds() const;
 
     void setTimes(U64 microInterval, U64 microNextTimer);
 
@@ -74,6 +75,7 @@ private:
 
     U64 microInterval = 0; // if 0 then the timer will only fire once
     U64 microNextTimer = 0;
+    U32 clockId = 0; // CLOCK_REALTIME=0, CLOCK_MONOTONIC=1
 
     bool blocking = true;
     U64 numberOfExpirations = 0;

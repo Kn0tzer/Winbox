@@ -3201,7 +3201,9 @@ U32 KProcess::utimesat64(FD dirfd, BString path, U32 times, U32 flags) {
 }
 
 U32 KProcess::timerfd_create(U32 clockid, U32 flags) {
-    std::shared_ptr<KTimer> o = std::make_shared<KTimer>();
+    if (clockid != 0 && clockid != 1) return -K_EINVAL; // REALTIME / MONOTONIC
+    if (flags & ~(K_O_CLOEXEC | K_O_NONBLOCK)) return -K_EINVAL;
+    std::shared_ptr<KTimer> o = std::make_shared<KTimer>(clockid);
     KFileDescriptorPtr fd = allocFileDescriptor(o, K_O_RDONLY, 0, -1, 0);
 
     if (flags & K_O_CLOEXEC) {
@@ -3219,7 +3221,7 @@ U32 KProcess::timerfd_settime(U32 fildes, U32 flags, U32 newValue, U32 oldValue)
     if (!fd) {
         return -K_EBADF;
     }
-    if (fd->kobject->type != KTYPE_SIGNAL) {
+    if (fd->kobject->type != KTYPE_TIMER) {
         return -K_EINVAL;
     }
     if (!newValue) {
@@ -3237,7 +3239,7 @@ U32 KProcess::timerfd_settime(U32 fildes, U32 flags, U32 newValue, U32 oldValue)
             memory->writed(oldValue + 8, 0);
             memory->writed(oldValue + 12, 0);
         } else {
-            U64 currentTime = KSystem::getSystemTimeAsMicroSeconds();
+            U64 currentTime = timer->getClockNowMicroseconds();
             S64 diff = (S64)microNextTimer - (S64)currentTime;
             if (diff < 0) {
                 memory->writed(oldValue + 8, 0);
@@ -3263,7 +3265,7 @@ U32 KProcess::timerfd_gettime(U32 fildes, U32 value) {
     if (!fd) {
         return -K_EBADF;
     }
-    if (fd->kobject->type != KTYPE_SIGNAL) {
+    if (fd->kobject->type != KTYPE_TIMER) {
         return -K_EINVAL;
     }
     if (!value) {
@@ -3280,7 +3282,7 @@ U32 KProcess::timerfd_gettime(U32 fildes, U32 value) {
         memory->writed(value + 8, 0);
         memory->writed(value + 12, 0);
     } else {
-        U64 currentTime = KSystem::getSystemTimeAsMicroSeconds();
+        U64 currentTime = timer->getClockNowMicroseconds();
         S64 diff = (S64)microNextTimer - (S64)currentTime;
         if (diff < 0) {
             memory->writed(value + 8, 0);

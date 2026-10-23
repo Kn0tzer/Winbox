@@ -25,7 +25,7 @@ bool KRunTimer::run() {
     if (!timer->microInterval) {
         return true; // remove timer
     } else {
-        U64 now = KSystem::getSystemTimeAsMicroSeconds();
+        U64 now = timer->getClockNowMicroseconds();
         timer->microNextTimer = now + timer->microInterval;
         this->millies = (U32)(timer->microInterval / 1000) + KSystem::getMilliesSinceStart();
         return false; // keep timer going
@@ -38,7 +38,7 @@ KTimerCallback::~KTimerCallback() {
     }
 }
 
-KTimer::KTimer() : KObject(KTYPE_TIMER), waitCond(std::make_shared<BoxedWineCondition>(B("KTimer::waitCond"))), timer(this) {
+KTimer::KTimer(U32 clockId) : KObject(KTYPE_TIMER), clockId(clockId), waitCond(std::make_shared<BoxedWineCondition>(B("KTimer::waitCond"))), timer(this) {
 }
 
 KTimer::~KTimer() {
@@ -120,6 +120,7 @@ U32 KTimer::writeNative(U8* buffer, U32 len) {
 }
 
 U32 KTimer::read(KThread* thread, U32 buffer, U32 len) {
+    if (len != 8) return -K_EINVAL;
     U64 value = 0;
     U32 result = readNative((U8*)&value, 8);
     if ((S32)result > 0) {
@@ -129,9 +130,11 @@ U32 KTimer::read(KThread* thread, U32 buffer, U32 len) {
 }
 
 U32 KTimer::readNative(U8* buffer, U32 len) {
+    if (len != 8) return -K_EINVAL;
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(waitCond);
     if (numberOfExpirations > 0) {
         *(U64*)buffer = numberOfExpirations;
+        numberOfExpirations = 0;
         return 8;
     }
     if (!blocking) {
@@ -151,6 +154,7 @@ U32 KTimer::readNative(U8* buffer, U32 len) {
 #endif
         if (numberOfExpirations > 0) {
             *(U64*)buffer = numberOfExpirations;
+            numberOfExpirations = 0;
             return 8;
         }
     }
@@ -176,8 +180,10 @@ void KTimer::setTimes(U64 microInterval, U64 microNextTimer) {
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(waitCond);
     this->microInterval = microInterval;
     this->microNextTimer = microNextTimer;
+    numberOfExpirations = 0;
     removeTimer(&timer);
-    U64 now = KSystem::getSystemTimeAsMicroSeconds();
+    if (!microNextTimer) return; // disarmed timer
+    U64 now = getClockNowMicroseconds();
     S64 diff = microNextTimer - now;
     if (diff < 0) {
         numberOfExpirations++;
@@ -190,4 +196,9 @@ void KTimer::setTimes(U64 microInterval, U64 microNextTimer) {
         timer.millies = (U32)(diff / 1000) + KSystem::getMilliesSinceStart();
         addTimer(&timer);
     }
+}
+
+U64 KTimer::getClockNowMicroseconds() const {
+    return clockId == 1 ? (U64)KSystem::getMilliesSinceStart() * 1000ULL
+                        : KSystem::getSystemTimeAsMicroSeconds();
 }

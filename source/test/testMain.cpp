@@ -62,6 +62,10 @@ void testFutex64DispatchGuard();
 void testInetDatagramLoopback();
 void testInetStreamLoopback();
 void testGl64ClientArrayIndexRange();
+void testTimerfdCore();
+#ifdef BOXEDWINE_GUEST_X64
+void testTimerfd64Syscalls();
+#endif
 
 namespace {
 
@@ -679,6 +683,10 @@ const TestEntry TEST_ENTRIES[] = {
     {testWaitPid, "Test waitpid child selection"},
     {testSyscall64DispatchGuard, "Test x64 syscall fallback guard"},
     {testFutex64DispatchGuard, "Test x64 futex dispatch guard"},
+    {testTimerfdCore, "Test timerfd descriptor and expiration semantics"},
+#ifdef BOXEDWINE_GUEST_X64
+    {testTimerfd64Syscalls, "Test x64 timerfd syscall ABI"},
+#endif
     {testInetDatagramLoopback, "Test AF_INET UDP loopback socket"},
     {testInetStreamLoopback, "Test AF_INET TCP loopback socket"},
     {testGl64ClientArrayIndexRange, "Test GL64 client-array index range"},
