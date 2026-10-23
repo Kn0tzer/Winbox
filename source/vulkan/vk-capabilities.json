@@ -31,9 +31,6 @@
     "fillCoreFeatures.depthClamp": {
       "status": "implemented"
     },
-    "fillCoreFeatures.occlusionQueryPrecise": {
-      "status": "implemented"
-    },
     "fillCoreFeatures.textureCompressionBC": {
       "status": "implemented"
     },
@@ -102,6 +99,7 @@
     "fillCoreFeatures.largePoints",
     "fillCoreFeatures.logicOp",
     "fillCoreFeatures.multiViewport",
+    "fillCoreFeatures.occlusionQueryPrecise",
     "fillCoreFeatures.pipelineStatisticsQuery",
     "fillCoreFeatures.sampleRateShading",
     "fillCoreFeatures.shaderCullDistance",

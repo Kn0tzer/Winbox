@@ -3347,7 +3347,6 @@ void fillCoreFeatures(VkPhysicalDeviceFeatures* f) {
     f->drawIndirectFirstInstance = VK_TRUE; /* preserved in each expanded draw */
     f->depthBiasClamp = VK_TRUE;        /* replayed with WebGPU depthBiasClamp */
     f->depthClamp = VK_TRUE;            /* page requests depth-clip-control when available */
-    f->occlusionQueryPrecise = VK_TRUE;
     f->textureCompressionBC = VK_TRUE;  /* needs browser texture-compression-bc */
 }
 

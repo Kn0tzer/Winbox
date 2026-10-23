@@ -67,6 +67,11 @@ test('no advertised feature or extension may use an exception status', () => {
   }
 });
 
+test('precise occlusion queries remain disabled while the bridge reports synthetic counts', () => {
+  assert.ok(manifest.notAdvertised.includes('fillCoreFeatures.occlusionQueryPrecise'));
+  assert.doesNotMatch(bridge, /f->occlusionQueryPrecise\s*=\s*VK_TRUE/);
+});
+
 test('features that are not implemented are not advertised', () => {
   const adv = advertisedFeatures();
   for (const k of manifest.notAdvertised) assert.ok(!adv.has(k), `${k} must stay FALSE`);
