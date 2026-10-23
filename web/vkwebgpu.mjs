@@ -1017,6 +1017,14 @@ function v2StencilPipeline(pipe, dynamic) {
   }
   return {...pipe,stencil};
 }
+// Intersect a Vulkan scissor with the pass extent (WebGPU requires containment).
+// Returns null when nothing remains.
+function clampScissor(sc, width, height) {
+  const x0 = Math.max(0, sc[0] | 0), y0 = Math.max(0, sc[1] | 0);
+  const x1 = Math.min(width, (sc[0] | 0) + (sc[2] | 0)), y1 = Math.min(height, (sc[1] | 0) + (sc[3] | 0));
+  return x1 > x0 && y1 > y0 ? [x0, y0, x1 - x0, y1 - y0] : null;
+}
+
 function v2StencilState(pipe, depthFormat) {
   if (!pipe.stencil?.enabled) return {state:{},reference:null};
   if (!depthFormat.includes('stencil')) throw new Error('stencil pipeline requires a stencil attachment');
@@ -1374,16 +1382,20 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
   }
 
   /** @param {boolean} [cube] @param {string} [dimension] */
-  const blankTex = (cube = false, dimension = '2d') => {
-    const key = cube ? '\0blank-cube' : dimension !== '2d' ? '\0blank-' + dimension : '\0blank';
+  const blankTex = (cube = false, dimension = '2d', depth = false) => {
+    const key = (cube ? '\0blank-cube' : dimension !== '2d' ? '\0blank-' + dimension : '\0blank') + (depth ? '-depth' : '');
     // Persistent bind groups retain this view between frames. Its texture
     // must live as long as the renderer, like ordinary cached image textures.
     let entry = persistTexCache.get(key);
     if (!entry) {
       const layers = cube ? 6 : 1;
       const textureDimension = dimension === '3d' ? '3d' : dimension === '1d' ? '1d' : '2d';
-      const t = device.createTexture({ size: [1, 1, layers], dimension: textureDimension, format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
-      device.queue.writeTexture({ texture: t }, new Uint8Array(4 * layers), { bytesPerRow: 4, rowsPerImage: 1 }, [1, 1, layers]);
+      // A shader sampling texture_depth_* only accepts a depth-format view
+      // (WebGPU sample type 'depth'); a colour placeholder invalidates the
+      // whole bind group. Depth textures start zeroed and cannot be written
+      // with writeTexture, so the zero fill is the placeholder value.
+      const t = device.createTexture({ size: [1, 1, layers], dimension: textureDimension, format: depth ? 'depth32float' : 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | (depth ? 0 : GPUTextureUsage.COPY_DST) });
+      if (!depth) device.queue.writeTexture({ texture: t }, new Uint8Array(4 * layers), { bytesPerRow: 4, rowsPerImage: 1 }, [1, 1, layers]);
       entry = { tex: t }; persistTexCache.set(key, entry);
     }
     return entry.tex;
@@ -1716,7 +1728,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           const img = imgHex && imageForView(b?.obj, imgHex);
           const imgFormat = img ? v2TextureFormat(img.format, stats, device.features) : null;
           if (img && !imgFormat) return null;
-          const texture = aliasTex || (img ? gpuTextureFor(imgHex, img, cube, dimension) : blankTex(cube, dimension));
+          const texture = aliasTex || (img ? gpuTextureFor(imgHex, img, cube, dimension) : blankTex(cube, dimension, t.startsWith('texture_depth')));
           if (!texture) return null;
           views.push(aliasTex ? aliasTex.createView(imgFormat ? { format: imgFormat } : {}) : texture.createView({ dimension: cube ? 'cube' : dimension }));
         }
@@ -1868,6 +1880,11 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     const bump = si => st.setVer.set(si, (st.setVer.get(si) || 0) + 1);
 
     for (const p of frame.passes) {
+      // The selected pipeline is specific to one pass's attachment state (formats,
+      // sample count, depth). The bound pipeline *description* carries over; the
+      // WebGPU pipeline is re-resolved at the next draw. A stale rec here made
+      // clearAttachments re-set an incompatible pipeline in a later pass.
+      st.pipeRec = null;
       // --- targets for this pass (MSAA-aware) ---
       let passSamples = 1;
       for (const a of p.attachments) passSamples = Math.max(passSamples, v2PickSampleCount(a.samples || 1));
@@ -2049,8 +2066,8 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
             if(st.pipeRec) passEnc.setPipeline(st.pipeRec.pipeline);
             const v=st.viewport||[0,0,p.w,p.h,0,1];
             passEnc.setViewport(v[0],v[3]<0?v[1]+v[3]:v[1],v[2],Math.abs(v[3]),v[4],v[5]);
-            const sc=st.scissor||[0,0,p.w,p.h];
-            passEnc.setScissorRect(sc[0],sc[1],sc[2],sc[3]);
+            const sc=clampScissor(st.scissor||[0,0,p.w,p.h],p.w,p.h);
+            if(sc) passEnc.setScissorRect(sc[0],sc[1],sc[2],sc[3]);
             break;
           }
           case 'bindPipe': {
@@ -2100,8 +2117,10 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
               }
             }
             if (st.scissor) {
-              const [x, y, w, h] = st.scissor;
-              if (w > 0 && h > 0) passEnc.setScissorRect(x | 0, y | 0, w | 0, h | 0);
+              // The scissor persists across passes and may come from a larger
+              // framebuffer; Vulkan clips it, WebGPU rejects the whole frame.
+              const sc = clampScissor(st.scissor, p.w, p.h);
+              if (sc) passEnc.setScissorRect(sc[0], sc[1], sc[2], sc[3]);
             }
             if (st.pipeRec.stripIndexType !== undefined && st.pipeRec.stripIndexType !== (st.ibind?.indexType || 0)) {
               const rec = await getPipelineFor(drawPipe, passSamples, st.pipeNeg, !!depthView, st.ibind?.indexType || 0, passColorFormats, passDepthFormat, passDepthAspects);
