@@ -4692,7 +4692,7 @@ void ksyscall64(CPU64* cpu) {
                 memory->writeq(a1, KSystem::getMilliesSinceStart() / 1000);      // uptime
                 memory->writeq(a1 + 32, 1024ULL * 1024 * 1024);                  // totalram
                 memory->writeq(a1 + 40, 768ULL * 1024 * 1024);                   // freeram
-                memory->writew(a1 + 80, (U16)KSystem::processes.size());         // procs
+                memory->writew(a1 + 80, 1);                                      // procs
                 memory->writed(a1 + 104, 1);                                     // mem_unit
             }
             ret = 0;
