@@ -715,7 +715,6 @@ static_assert(sizeof(QueryPoolCreateInfo32Local) == 24, "32-bit VkQueryPoolCreat
 // with timeout 0 against a value the queue has not reached, returns VK_TIMEOUT.
 struct Semaphore : Obj {
     int signalled = 0;          /* binary semaphores keep the old flag */
-    int isTimeline = 0;
     U64  counter = 0;
 };
 struct DeviceMemory : Obj { U64 size = 0, va = 0; U32 memIndex = 0; bool wasMapped = false; };
@@ -6415,23 +6414,22 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         readArray(args.a[2], n, sis);
         std::vector<std::pair<CmdBuf*, U64>> frames;
         for (U32 i = 0; i < n; i++) {
-            // VkTimelineSemaphoreSubmitInfo in pNext: the per-batch wait/signal
-            // VALUES that make a u64 semaphore mean anything. DXVK writes one of
-            // these on every flush (its tracking fence), so ignoring the chain
-            // means the counter never moves and every later wait reads stale.
+            std::vector<U64> waitIds, signalIds;
+            readArray(sis[i].pWaitSemaphores, sis[i].waitSemaphoreCount, waitIds);
+            readArray(sis[i].pSignalSemaphores, sis[i].signalSemaphoreCount, signalIds);
+            for (U64 semId : waitIds) {
+                Semaphore* sem = objOf<Semaphore>(semId, K_SEMAPHORE, "vkQueueSubmit");
+                if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
+                if (!sem->signalled) {
+                    vk64Unsupported("binary-semaphore-wait", "wait was not signalled before the synchronous submit; VK_ERROR_UNKNOWN");
+                    return VK_ERROR_UNKNOWN;
+                }
+                sem->signalled = 0;
+            }
             for (U64 cur = sis[i].pNext; cur && g_mem;) {
                 if (g_mem->readd(cur) == VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO) {
-                    VkTimelineSemaphoreSubmitInfo ti = {};
-                    g_mem->memcpyFromGuest(&ti, cur, sizeof(ti));
-                    // Queue waits are ordered by the browser's single WebGPU
-                    // queue. Never fabricate a host-visible timeline signal here.
-                    for (U32 sg = 0; sg < ti.signalSemaphoreValueCount; sg++) {
-                        U64 semId = rd64(sis[i].pSignalSemaphores + (U64)sg * 8);
-                        U64 val   = rd64(ti.pSignalSemaphoreValues + (U64)sg * 8);
-                        Semaphore* s = objOf<Semaphore>(semId, K_SEMAPHORE, "vkQueueSubmit");
-                        if (s && val > s->counter) s->counter = val;
-                    }
-                    break;
+                    vk64Unsupported("timeline-semaphore", "timeline submit is not connected to WebGPU replay; VK_ERROR_FEATURE_NOT_PRESENT");
+                    return VK_ERROR_FEATURE_NOT_PRESENT;
                 }
                 cur = g_mem->readq(cur + 8);
             }
@@ -6448,6 +6446,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                     else if (k.kind == CMD_COPY_QUERY_RESULTS) execCopyQueryResults(k);
                 }
                 frames.push_back({cb, cbId});
+            }
+            for (U64 semId : signalIds) {
+                Semaphore* sem = objOf<Semaphore>(semId, K_SEMAPHORE, "vkQueueSubmit");
+                if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
+                sem->signalled = 1;
             }
         }
         if (vkTrace()) klog_fmt("vk64: vkQueueSubmit(%u batches, %u command buffers)", (unsigned)n, (unsigned)frames.size());
@@ -6493,11 +6496,24 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             std::vector<VkSemaphoreSubmitInfo> waits, signals;
             readArray(sis[i].pWaitSemaphoreInfos, sis[i].waitSemaphoreInfoCount, waits);
             readArray(sis[i].pSignalSemaphoreInfos, sis[i].signalSemaphoreInfoCount, signals);
-            // The page queue preserves command submission order; waits must not
-            // mutate the host-observable timeline counter.
+            for (auto& w : waits) {
+                Semaphore* sem = objOf<Semaphore>((U64)w.semaphore, K_SEMAPHORE, "vkQueueSubmit2");
+                if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
+                if (w.value || !sem->signalled) {
+                    vk64Unsupported(w.value ? "timeline-semaphore" : "binary-semaphore-wait",
+                                    "submit2 wait cannot be completed by the synchronous bridge; VK_ERROR_UNKNOWN");
+                    return w.value ? VK_ERROR_FEATURE_NOT_PRESENT : VK_ERROR_UNKNOWN;
+                }
+                sem->signalled = 0;
+            }
             for (auto& sg : signals) {
                 Semaphore* s = objOf<Semaphore>((U64)sg.semaphore, K_SEMAPHORE, "vkQueueSubmit2");
-                if (s && sg.value > s->counter) s->counter = sg.value;
+                if (!s) return VK_ERROR_INITIALIZATION_FAILED;
+                if (sg.value) {
+                    vk64Unsupported("timeline-semaphore", "submit2 timeline signal is not supported; VK_ERROR_FEATURE_NOT_PRESENT");
+                    return VK_ERROR_FEATURE_NOT_PRESENT;
+                }
+                s->signalled = 1;
             }
             std::vector<VkCommandBufferSubmitInfo> cbis;
             readArray(sis[i].pCommandBufferInfos, sis[i].commandBufferInfoCount, cbis);
@@ -6551,6 +6567,15 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         double vkprofPresentT0 = vkProfNow(); // BW64_VKPROF (additive)
         VkPresentInfoKHR pi = {};
         if (!readStruct(args.a[1], pi)) return VK_ERROR_INITIALIZATION_FAILED;
+        for (U32 i = 0; i < pi.waitSemaphoreCount; ++i) {
+            Semaphore* sem = objOf<Semaphore>(rd64(pi.pWaitSemaphores + (U64)i * 8), K_SEMAPHORE, "vkQueuePresentKHR");
+            if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
+            if (!sem->signalled) {
+                vk64Unsupported("binary-semaphore-present-wait", "present wait was not signalled; VK_ERROR_UNKNOWN");
+                return VK_ERROR_UNKNOWN;
+            }
+            sem->signalled = 0;
+        }
         for (U32 i = 0; i < pi.swapchainCount; i++) {
             U64 scId = rd64(pi.pSwapchains + (U64)i * 8);
             Swapchain* sc = objOf<Swapchain>(scId, K_SWAPCHAIN, "vkQueuePresentKHR");
@@ -7697,9 +7722,9 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         return VK_SUCCESS;
     }
     case VK64_fn_vkCreateSemaphore: {
-        if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
         vk32abi::VkSemaphoreCreateInfo ci = {};
-        readStruct32(args.a[1], ci);
+        if (!objOf32<Device>(args.a[0], K_DEVICE, "vkCreateSemaphore") ||
+            !readStruct32(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
         for (U32 cur = ci.pNext, n = 0; cur && n < 64; ++n) {
             if (rd32_32(cur) == VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO) {
                 vk32abi::VkSemaphoreTypeCreateInfo ti = {};
@@ -8601,26 +8626,53 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 vk32abi::VkSubmitInfo2 si = {};
                 readStruct32(args.a[2] + (U64)s * sizeof(si), si);
                 cmdCount = si.commandBufferInfoCount; pCmd = si.pCommandBufferInfos;
+                for (U32 i = 0; i < si.waitSemaphoreInfoCount; ++i) {
+                    vk32abi::VkSemaphoreSubmitInfo wait = {};
+                    readStruct32(si.pWaitSemaphoreInfos + (U64)i * sizeof(wait), wait);
+                    auto* sem = objOf32<Semaphore>(wait.semaphore, K_SEMAPHORE, "vkQueueSubmit2");
+                    if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
+                    if (wait.value || !sem->signalled) {
+                        vk64Unsupported(wait.value ? "timeline-semaphore" : "binary-semaphore-wait",
+                                        "submit2 wait cannot be completed by the synchronous bridge");
+                        return wait.value ? VK_ERROR_FEATURE_NOT_PRESENT : VK_ERROR_UNKNOWN;
+                    }
+                    sem->signalled = 0;
+                }
                 for (U32 i = 0; i < si.signalSemaphoreInfoCount; ++i) {
                     vk32abi::VkSemaphoreSubmitInfo signal = {};
                     readStruct32(si.pSignalSemaphoreInfos + (U64)i * sizeof(signal), signal);
                     auto* sem = objOf32<Semaphore>(signal.semaphore, K_SEMAPHORE, "vkQueueSubmit2");
-                    if (sem) sem->counter = std::max<U64>(sem->counter, signal.value);
+                    if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
+                    if (signal.value) {
+                        vk64Unsupported("timeline-semaphore", "submit2 timeline signal is not supported");
+                        return VK_ERROR_FEATURE_NOT_PRESENT;
+                    }
+                    sem->signalled = 1;
                 }
             } else {
                 vk32abi::VkSubmitInfo si = {};
                 readStruct32(args.a[2] + (U64)s * sizeof(si), si);
                 cmdCount = si.commandBufferCount; pCmd = si.pCommandBuffers;
+                for (U32 i = 0; i < si.waitSemaphoreCount; ++i) {
+                    auto* sem = objOf32<Semaphore>(rd64_32(si.pWaitSemaphores + i * 8), K_SEMAPHORE, "vkQueueSubmit");
+                    if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
+                    if (!sem->signalled) {
+                        vk64Unsupported("binary-semaphore-wait", "wait was not signalled before synchronous submit");
+                        return VK_ERROR_UNKNOWN;
+                    }
+                    sem->signalled = 0;
+                }
                 for (U32 cur = si.pNext, n = 0; cur && n < 64; ++n) {
                     if (rd32_32(cur) == VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO) {
-                        vk32abi::VkTimelineSemaphoreSubmitInfo ti = {};
-                        readStruct32(cur, ti);
-                        for (U32 i = 0; i < std::min(ti.signalSemaphoreValueCount, si.signalSemaphoreCount); ++i) {
-                            auto* sem = objOf32<Semaphore>(rd64_32(si.pSignalSemaphores + i * 8), K_SEMAPHORE, "vkQueueSubmit");
-                            if (sem) sem->counter = std::max(sem->counter, rd64_32(ti.pSignalSemaphoreValues + i * 8));
-                        }
+                        vk64Unsupported("timeline-semaphore", "timeline submit is not connected to WebGPU replay");
+                        return VK_ERROR_FEATURE_NOT_PRESENT;
                     }
                     cur = rd32_32(cur + 4);
+                }
+                for (U32 i = 0; i < si.signalSemaphoreCount; ++i) {
+                    auto* sem = objOf32<Semaphore>(rd64_32(si.pSignalSemaphores + i * 8), K_SEMAPHORE, "vkQueueSubmit");
+                    if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
+                    sem->signalled = 1;
                 }
             }
             for (U32 i = 0; i < cmdCount && pCmd; i++) {
@@ -8662,10 +8714,21 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         // VkPresentInfoKHR 32-bit: 32 bytes. swapchainCount at +16,
         // pSwapchains at +20, pImageIndices at +24, pResults at +28.
         U32 pi = (U32)args.a[1];
+        U32 waitCount = rd32_32(pi + 8);
+        U32 waitSemaphores = rd32_32(pi + 12);
         U32 scCount = rd32_32(pi + 16);
         U32 pSc = rd32_32(pi + 20);
         U32 pIdx = rd32_32(pi + 24);
         U32 pRes = rd32_32(pi + 28);
+        for (U32 i = 0; i < waitCount; ++i) {
+            auto* sem = objOf32<Semaphore>(rd64_32(waitSemaphores + i * 8), K_SEMAPHORE, "vkQueuePresentKHR");
+            if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
+            if (!sem->signalled) {
+                vk64Unsupported("binary-semaphore-present-wait", "present wait was not signalled; VK_ERROR_UNKNOWN");
+                return VK_ERROR_UNKNOWN;
+            }
+            sem->signalled = 0;
+        }
         for (U32 i = 0; i < scCount && pSc; i++) {
             U64 scId = rd64_32(pSc + i * 8);
             Swapchain* sc = objOf32<Swapchain>(scId, K_SWAPCHAIN, "vkQueuePresentKHR");
