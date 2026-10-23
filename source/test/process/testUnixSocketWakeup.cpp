@@ -14,6 +14,7 @@
 #include "../../io/fsfilenode.h"
 #include "../cpu/testCPU.h"
 #include "kepoll.h"
+#include "kevent.h"
 #include "ksocket.h"
 #include "kunixsocket.h"
 
@@ -205,6 +206,54 @@ void testUnixSocketOptions() {
                                kPayloadAddress, 2) != -K_EINVAL) {
         testFail("Unix setsockopt accepted a short integer value");
     }
+}
+
+void testEpollOneShotAndFlags() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->fdNode) {
+        process->fdNode = std::make_shared<FsFileNode>(0x3FFFFFFF, 0, B("/proc/test/fd"), B(""), B(""), true, false, nullptr);
+    }
+    auto event = std::make_shared<KEvent>();
+    event->counter = 1;
+    KFileDescriptorPtr eventFd = process->allocFileDescriptor(event, K_O_RDWR, 0, -1, 0);
+    auto epoll = std::make_shared<KEPoll>();
+    KFileDescriptorPtr epollFd = process->allocFileDescriptor(epoll, K_O_RDWR, 0, -1, 0);
+    auto writeRegistration = [&](U32 flags) {
+        context.memory->writed(kEventAddress, flags);
+        context.memory->writeq(kEventAddress + 4, 0xAABBCCDDEEFF0011ULL);
+        return epoll->ctl(context.memory, kEpollCtlAdd, (FD)eventFd->handle, kEventAddress);
+    };
+    U32 result = writeRegistration(kEpollIn | 0x40000000u); // EPOLLONESHOT
+    if ((S32)result != 0) {
+        testFail("EPOLL_CTL_ADD EPOLLONESHOT returned %d", (S32)result);
+        process->close(epollFd->handle); process->close(eventFd->handle);
+        return;
+    }
+    if (epoll->wait(context.thread, kResultAddress, 1, 0) != 1 ||
+        epoll->wait(context.thread, kResultAddress, 1, 0) != 0) {
+        testFail("EPOLLONESHOT did not disable the registration after one event");
+    }
+    context.memory->writed(kEventAddress, kEpollIn | 0x40000000u);
+    context.memory->writeq(kEventAddress + 4, 0xAABBCCDDEEFF0011ULL);
+    if ((S32)epoll->ctl(context.memory, kEpollCtlMod, (FD)eventFd->handle, kEventAddress) != 0 ||
+        epoll->wait(context.thread, kResultAddress, 1, 0) != 1) {
+        testFail("EPOLL_CTL_MOD failed to rearm EPOLLONESHOT");
+    }
+    process->close(epollFd->handle);
+
+    auto exclusive = std::make_shared<KEPoll>();
+    KFileDescriptorPtr exclusiveFd = process->allocFileDescriptor(exclusive, K_O_RDWR, 0, -1, 0);
+    context.memory->writed(kEventAddress, kEpollIn | 0x10000000u); // EPOLLEXCLUSIVE
+    context.memory->writeq(kEventAddress + 4, 1);
+    if ((S32)exclusive->ctl(context.memory, kEpollCtlAdd, (FD)eventFd->handle, kEventAddress) != 0) {
+        testFail("EPOLL_CTL_ADD rejected valid EPOLLEXCLUSIVE");
+    }
+    if ((S32)exclusive->ctl(context.memory, kEpollCtlMod, (FD)eventFd->handle, kEventAddress) != -K_EINVAL) {
+        testFail("EPOLL_CTL_MOD accepted EPOLLEXCLUSIVE");
+    }
+    process->close(exclusiveFd->handle);
+    process->close(eventFd->handle);
 }
 
 void testUnixSocketWakeup() {

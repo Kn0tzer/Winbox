@@ -206,6 +206,22 @@ U32 KEPoll::ctl(KMemory* memory, U32 op, FD fd, U32 address) {
     {
         std::lock_guard<std::mutex> lock(g_epollDataMutex);
         Data* existing = this->data[fd];
+        U32 requestedEvents = 0;
+        U64 requestedData = 0;
+        if (op != K_EPOLL_CTL_DEL) {
+            requestedEvents = memory->readd(address);
+            requestedData = memory->readq(address + 4);
+            constexpr U32 EPOLLIN = 0x001, EPOLLPRI = 0x002, EPOLLOUT = 0x004;
+            constexpr U32 EPOLLRDHUP = 0x2000, EPOLLWAKEUP = 0x20000000;
+            constexpr U32 EPOLLEXCLUSIVE = 0x10000000, EPOLLET = 0x80000000;
+            constexpr U32 EPOLLONESHOT = 0x40000000;
+            constexpr U32 allowed = EPOLLIN | EPOLLPRI | EPOLLOUT | EPOLLRDHUP |
+                EPOLLWAKEUP | EPOLLEXCLUSIVE | EPOLLET | EPOLLONESHOT;
+            if (requestedEvents & ~allowed) return -K_EINVAL;
+            if ((requestedEvents & EPOLLEXCLUSIVE) &&
+                (op != K_EPOLL_CTL_ADD || !(requestedEvents & (EPOLLIN | EPOLLOUT)) ||
+                 (requestedEvents & (EPOLLONESHOT | EPOLLWAKEUP)))) return -K_EINVAL;
+        }
 
         switch (op) {
             case K_EPOLL_CTL_ADD:
@@ -214,8 +230,8 @@ U32 KEPoll::ctl(KMemory* memory, U32 op, FD fd, U32 address) {
                 }
                 existing = new Data();
                 existing->fd = fd;
-                existing->events = memory->readd(address);
-                existing->data = memory->readq(address + 4);
+                existing->events = requestedEvents;
+                existing->data = requestedData;
                 this->data.set(fd, existing);
                 break;
             case K_EPOLL_CTL_DEL:
@@ -227,8 +243,9 @@ U32 KEPoll::ctl(KMemory* memory, U32 op, FD fd, U32 address) {
             case K_EPOLL_CTL_MOD:
                 if (!existing)
                     return -K_ENOENT;
-                existing->events = memory->readd(address);
-                existing->data = memory->readq(address + 4);
+                existing->events = requestedEvents;
+                existing->data = requestedData;
+                existing->enabled = true; // EPOLL_CTL_MOD rearms EPOLLONESHOT
                 break;
             default:
                 return -K_EINVAL;
@@ -249,6 +266,7 @@ U32 KEPoll::wait(KThread* thread, U32 events, U32 maxevents, U32 timeout) {
             std::lock_guard<std::mutex> lock(g_epollDataMutex);
             for (const auto& n : this->data) {
                 Data* next = n.value;
+                if (!next->enabled) continue;
                 KPollData pollData = {};
                 pollData.events = next->events;
                 pollData.fd = next->fd;
@@ -303,6 +321,12 @@ U32 KEPoll::wait(KThread* thread, U32 events, U32 maxevents, U32 timeout) {
                 }
                 memory->writed(events + result * 12, data.revents);
                 memory->writeq(events + result * 12 + 4, data.data);
+                {
+                    std::lock_guard<std::mutex> lock(g_epollDataMutex);
+                    Data* registration = this->data[data.fd];
+                    if (registration && (registration->events & 0x40000000u))
+                        registration->enabled = false;
+                }
                 result++;
                 if (result>=(S32)maxevents) {
                     kwarn("possible starvation in epoll, more events are ready than can be received.");

@@ -5328,6 +5328,33 @@ void ksyscall64(CPU64* cpu) {
             ret = (U64)(S64)(S32)rc;
             break;
         }
+        case 441: { // epoll_pwait2(epfd, events, maxevents, timeout*, sigmask*, sigsetsize)
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_EBADF; break; }
+            if (!a2 || !a3 || a3 > 64) { ret = (U64)-K_EINVAL; break; }
+            U32 timeoutMs = 0xffffffffu;
+            if (a4) {
+                const S64 sec = (S64)cpu->memory->readq(a4);
+                const S64 nsec = (S64)cpu->memory->readq(a4 + 8);
+                if (sec < 0 || nsec < 0 || nsec >= 1000000000) { ret = (U64)-K_EINVAL; break; }
+                const U64 totalMs = (U64)sec * 1000 + ((U64)nsec + 999999) / 1000000;
+                timeoutMs = (U32)std::min<U64>(totalMs, 0xfffffffeu);
+            }
+            if (a5 && a6 != 8) { ret = (U64)-K_EINVAL; break; }
+            const U64 oldMask = cpu->thread->sigMask;
+            if (a5) cpu->thread->sigMask = cpu->memory->readq(a5);
+            const U32 maxevents = (U32)a3;
+            U32 ev32 = bounceSockaddrTo32(cpu, 0, maxevents * 12, nullptr);
+            if (!ev32) { cpu->thread->sigMask = oldMask; ret = (U64)-K_EFAULT; break; }
+            U32 rc = cpu->thread->process->epollwait(cpu->thread, (FD)a1, ev32, maxevents, timeoutMs);
+            cpu->thread->sigMask = oldMask;
+            if ((S32)rc > 0) {
+                U8 tmp[64 * 12];
+                cpu->thread->memory->memcpy(tmp, ev32, rc * 12);
+                cpu->memory->memcpyToGuest(a2, tmp, rc * 12);
+            }
+            ret = (U64)(S64)(S32)rc;
+            break;
+        }
         case X64_SYS_getdents64:
             ret = sys_getdents64_real(cpu, a1, a2, a3);
             break;

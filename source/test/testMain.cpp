@@ -64,6 +64,7 @@ void testInetStreamLoopback();
 void testGl64ClientArrayIndexRange();
 void testTimerfdCore();
 void testUnixSocketOptions();
+void testEpollOneShotAndFlags();
 #ifdef BOXEDWINE_GUEST_X64
 void testTimerfd64Syscalls();
 void testCopyFileRange64Syscall();
@@ -687,6 +688,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testFutex64DispatchGuard, "Test x64 futex dispatch guard"},
     {testTimerfdCore, "Test timerfd descriptor and expiration semantics"},
     {testUnixSocketOptions, "Test Unix socket SOL_SOCKET options"},
+    {testEpollOneShotAndFlags, "Test epoll one-shot and exclusive flags"},
 #ifdef BOXEDWINE_GUEST_X64
     {testTimerfd64Syscalls, "Test x64 timerfd syscall ABI"},
     {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},
