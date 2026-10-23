@@ -2469,7 +2469,8 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     const value = framebuffer || 0;
     if (target === GL.READ_FRAMEBUFFER) this._readFramebuffer = value;
     else if (target === GL.DRAW_FRAMEBUFFER) this._drawFramebuffer = value;
-    else { this._readFramebuffer = value; this._drawFramebuffer = value; }
+    else if (target === GL.FRAMEBUFFER) { this._readFramebuffer = value; this._drawFramebuffer = value; }
+    else this._recordError(GL.INVALID_ENUM);
   }
   _boundFramebuffer(target) { return this._framebufferForTarget(target); }
   framebufferTexture2D(target, attachment, textarget, texture, level = 0) {
@@ -2494,7 +2495,10 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
   createRenderbuffer() { const object = { id: this._nextId++, width: 0, height: 0, format: 'depth24plus', internalFormat: 0, gpu: null, pixels: null }; this._renderbuffers.add(object); return object; }
   deleteRenderbuffer(object) { if (!object) return; object.gpu?.destroy(); this._renderbuffers.delete(object); for (const framebuffer of this._framebufferObjects) for (const [key, record] of framebuffer.attachments) if (record.object === object) framebuffer.attachments.delete(key); }
   isRenderbuffer(object) { return this._renderbuffers.has(object); }
-  bindRenderbuffer(target, object) { if (target === 0x8d41) this._boundRenderbuffer = object || null; }
+  bindRenderbuffer(target, object) {
+    if (target !== 0x8d41) { this._recordError(GL.INVALID_ENUM); return; }
+    this._boundRenderbuffer = object || null;
+  }
   renderbufferStorage(target, internalFormat, width, height) {
     const buffer = this._boundRenderbuffer;
     if (!buffer || target !== 0x8d41) return;

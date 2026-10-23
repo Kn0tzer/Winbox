@@ -387,6 +387,21 @@ test('valid but unsupported GL buffer targets reject loudly with INVALID_OPERATI
   } finally { gpu.restore(); }
 });
 
+test('invalid framebuffer and renderbuffer targets raise INVALID_ENUM without changing bindings', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    const framebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(0xdead, framebuffer);
+    assert.equal(gl.getError(), 0x0500);
+    assert.equal(gl.getParameter(0x8ca6), 0, 'invalid framebuffer target must preserve both bindings');
+    gl.bindRenderbuffer(0xdead, gl.createRenderbuffer());
+    assert.equal(gl.getError(), 0x0500);
+    assert.equal(gl.getParameter(0x8ca7), null, 'invalid renderbuffer target must preserve the binding');
+  } finally { gpu.restore(); }
+});
+
 test('state and texture entry points report invalid enums, values, and operations', async () => {
   const gpu = createValidationDevice(), logs = [];
   try {
