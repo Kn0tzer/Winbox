@@ -122,3 +122,21 @@ Evidence:
 - Diagnostic run summary and all 212k console lines: `/tmp/winbox-finish/r6/mindustry-diagnostics/summary.json` and `console.log`.
 - Black captures: `/tmp/winbox-finish/r6/mindustry-diagnostics/mapped-plus-{60,120,180}s.png`.
 - Probe run: JIT=0, build ID `3a6bd71f8778`, WebGPU active, map at 470.9 s; no WASM build.
+
+## Long JIT run and WebGPU shader / syscall blockers (2026-10-23)
+
+The user asked to distinguish a slow Java startup from a stuck guest and requested a long JIT=1 window with periodic captures. On the supplied build-5 runtime, Mindustry's first mapped screenshot is still the BoxedWine startup splash, not the game menu. JIT=1 took 429.2 seconds to reach that window. It logged Mindustry content and GL/Java initialization (`[I] [GL] Version`, `[JAVA] Version 25.0.1`, `[RAM] Available: 259.5 MB`), but no later Mindustry progress lines appeared during the 25-minute observation. The screenshots stayed black.
+
+CPU64's retired-instruction counter initially increased at about 5.7 million instructions/sec, slowed to about 1 million/sec, and then stopped. At +1500 seconds it was 4.199 billion instructions; this by itself could have indicated very slow JVM work. The exact failure log from that run instead identifies a translator failure at about +332 seconds: the vertex shader declares an `out mat4 v_model`, which Naga rejects as an invalid vertex entry point. The shader was submitted on WebGPU; the recovery layer then attempted a WebGL2 query on the failed program and emitted an error. The run ended without a menu.
+
+I added generic lowering for matrix-valued GLSL stage interfaces: each matrix varying becomes one vector varying per column, and the matrix is reconstructed or split around `main`. The unit regression compiles the vertex/fragment pair through the bundled Naga path. This fix is not tied to Mindustry shader names.
+
+With that fix, a WebGPU-only JIT=1 rerun (`PROBE_RECOVER=0`) reported `webgpuActive: true`, no WebGPU failures, and no page errors. It still showed no menu. The guest instruction counter reached 3.686 billion by +360 seconds and remained exactly there through +900 seconds. The console then showed an unimplemented x86-64 syscall #27 (`mincore`) followed by JVM `EXCEPTION_PRIV_INSTRUCTION` and `exit_group(3)`. SoLoud's audio-thread mutex assertion occurred during shutdown and is secondary. This proves the later state is a process crash rather than a long-running JVM wait. The current source now implements generic x64 `mincore`, returns residency from committed guest pages, and validates the queried pages and output vector before writing. A focused C++-snippet unit test covers mapped/resident pages and invalid arguments/ranges. This C++ change has not been built, as requested.
+
+Mindustry's `Mindustry.json` does not set `-Xint`, `-Xshare`, `TieredStopAtLevel`, `-Xmx`, or `UseSerialGC`. JVM flag experiments were not useful after the runs exposed a GLSL translation failure and then a deterministic unimplemented-syscall crash. We do not yet have a measured time-to-menu or a usable hot-JVM profile; the current evidence says the app cannot get there on build 5 until the C++ syscall change is built and retested.
+
+Evidence:
+
+- JIT=1 25-minute run: `/tmp/winbox-finish/r7/mindustry-jit1-25min/summary.json`, `console.log`, and `mapped-plus-*.png`.
+- WebGPU-only run after matrix varying lowering: `/tmp/winbox-finish/r8/mindustry-jit1-matrixfix/summary.json`, `console.log`, and `mapped-plus-{420,600,900}s.png`.
+- Existing runtime build ID: `3a6bd71f8778`; no WASM build was run and the integration worktree was not modified.

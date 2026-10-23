@@ -264,13 +264,18 @@ try {
         record(`BW_THREAD_DUMP_DRIVER invoked via ${invoked}`);
         await page.waitForTimeout(250);
       }
-      const sample = await page.evaluate(() => ({
-        at: Date.now(),
-        canvas: [...document.querySelectorAll('canvas')].map(canvas => ({ id: canvas.id, width: canvas.width, height: canvas.height })),
-        gl: globalThis.bwGlStats || null,
-        runtimeReady: Boolean(globalThis.bwRuntime?.ready?.()),
-        messages: globalThis.__bwGlGameProbe?.messages.slice(-12) || [],
-      }));
+      const sample = await page.evaluate(() => {
+        const messages = globalThis.__bwGlGameProbe?.messages || [];
+        return {
+          at: Date.now(),
+          canvas: [...document.querySelectorAll('canvas')].map(canvas => ({ id: canvas.id, width: canvas.width, height: canvas.height })),
+          gl: globalThis.bwGlStats || null,
+          runtimeReady: Boolean(globalThis.bwRuntime?.ready?.()),
+          messages: messages.slice(-12),
+          progress: messages.filter(message => /\[(?:I|W|E)\]/.test(message.line)),
+          metrics: messages.filter(message => message.line.startsWith('bw64: METRICS ')).slice(-4),
+        };
+      });
       const label = `mapped-plus-${seconds}s`;
       const path = join(outputDir, `${label}.png`);
       await page.screenshot({ path, fullPage: true });

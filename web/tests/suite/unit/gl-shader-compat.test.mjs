@@ -32,6 +32,40 @@ test('engine GLSL fixtures translate through the WebGPU pre-pass and real Naga r
   }
 });
 
+test('matrix varyings lower to column vectors accepted by Naga for both stages', () => {
+  const locations = new Map();
+  const vertexSource = `#version 300 es
+in vec4 a_position;
+out vec4 v_position;
+out mat4 v_model;
+uniform mat4 u_model;
+uniform mat4 u_projection;
+void main() {
+  v_position = a_position;
+  v_model = u_model;
+  gl_Position = u_projection * u_model * a_position;
+}`;
+  const fragmentSource = `#version 300 es
+in vec4 v_position;
+in mat4 v_model;
+out vec4 bw_FragColor;
+void main() {
+  bw_FragColor = v_model * v_position;
+}`;
+  const vertex = rewriteGlslForWebGPU(vertexSource, 'vertex', new Map([['a_position', 0]]), locations);
+  const fragment = rewriteGlslForWebGPU(fragmentSource, 'fragment', new Map(), locations);
+
+  assert.doesNotThrow(() => naga.translate({ from: 'glsl', to: 'wgsl', source: vertex.code, parse: { stage: 'vertex' } }));
+  assert.doesNotThrow(() => naga.translate({ from: 'glsl', to: 'wgsl', source: fragment.code, parse: { stage: 'fragment' } }));
+  assert.match(vertex.code, /mat4 v_model;/);
+  assert.match(fragment.code, /v_model = mat4\(bw64_varying_v_model_c0, bw64_varying_v_model_c1, bw64_varying_v_model_c2, bw64_varying_v_model_c3\);/);
+  for (let column = 0; column < 4; column++) {
+    const location = column + 1;
+    assert.match(vertex.code, new RegExp(`layout\\(\\s*location\\s*=\\s*${location}\\) out vec4 bw64_varying_v_model_c${column}`));
+    assert.match(fragment.code, new RegExp(`layout\\(\\s*location\\s*=\\s*${location}\\) in vec4 bw64_varying_v_model_c${column}`));
+  }
+});
+
 test('explicit vertex attribute bindings reserve locations before automatic inputs', () => {
   const source = readFileSync(resolve(fixtureDir, 'gl-es-precision-macros.vert.glsl'), 'utf8');
   const prepared = rewriteGlslForWebGPU(source, 'vertex', new Map([['a_position', 0]]), new Map());

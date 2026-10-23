@@ -125,6 +125,88 @@ function stripPrecisionCompatibilityGuards(source) {
   });
 }
 
+function lowerMatrixStageInterfacesForNaga(source) {
+  const inputs = [];
+  const outputs = [];
+  let transformed = false;
+  const code = source.replace(
+    /^([ \t]*)(?:layout\s*\(([^)]*)\)\s*)?((?:(?:centroid|sample|patch|flat|smooth|noperspective|invariant|precise)[ \t]+)*)(in|out)[ \t]+(mat[234](?:x[234])?)[ \t]+([A-Za-z_]\w*)[ \t]*(?:\[(\d+)\])?[ \t]*;[ \t]*$/gm,
+    (line, indent, layoutText, qualifiers, direction, matrixType, name, arrayText) => {
+      const dimensions = /^mat([234])(?:x([234]))?$/.exec(matrixType);
+      if (!dimensions) return line;
+      const columns = Number(dimensions[1]);
+      const rows = Number(dimensions[2] || dimensions[1]);
+      const arrayLength = arrayText ? Number(arrayText) : 1;
+      if (!Number.isSafeInteger(arrayLength) || arrayLength < 1) return line;
+      transformed = true;
+      const vectorType = `vec${rows}`;
+      const arraySuffix = arrayText ? `[${arrayLength}]` : '';
+      const explicitLocation = /\blocation\s*=\s*(\d+)/.exec(layoutText || '');
+      const generated = [];
+      for (let column = 0; column < columns; column++) {
+        const varyingName = `bw64_varying_${name}_c${column}`;
+        let layout = '';
+        if (layoutText !== undefined) {
+          let nextLayout = layoutText;
+          if (explicitLocation) {
+            const location = Number(explicitLocation[1]) + column * arrayLength;
+            nextLayout = nextLayout.replace(/\blocation\s*=\s*\d+/, `location = ${location}`);
+          }
+          layout = `layout(${nextLayout}) `;
+        }
+        generated.push(`${indent}${layout}${qualifiers || ''}${direction} ${vectorType} ${varyingName}${arraySuffix};`);
+      }
+      generated.unshift(`${indent}${matrixType} ${name}${arraySuffix};`);
+      const matrixValue = (element = null) => `mat${dimensions[1]}${dimensions[2] ? `x${dimensions[2]}` : ''}(${Array.from({ length: columns }, (_, column) => {
+        const varyingName = `bw64_varying_${name}_c${column}`;
+        return element === null ? varyingName : `${varyingName}[${element}]`;
+      }).join(', ')})`;
+      if (direction === 'in') {
+        for (let element = 0; element < arrayLength; element++) {
+          const target = arrayText ? `${name}[${element}]` : name;
+          inputs.push(`${target} = ${matrixValue(arrayText ? element : null)};`);
+        }
+      } else {
+        for (let element = 0; element < arrayLength; element++) {
+          for (let column = 0; column < columns; column++) {
+            const varyingName = `bw64_varying_${name}_c${column}`;
+            const target = arrayText ? `${varyingName}[${element}]` : varyingName;
+            const value = arrayText ? `${name}[${element}][${column}]` : `${name}[${column}]`;
+            outputs.push(`${target} = ${value};`);
+          }
+        }
+      }
+      return generated.join('\n');
+    },
+  );
+  if (!transformed) return code;
+  const main = /void\s+main\s*\([^)]*\)\s*\{/m.exec(code);
+  if (!main) throw new Error('matrix stage interface requires void main()');
+  let depth = 1, cursor = main.index + main[0].length;
+  for (; cursor < code.length && depth; cursor++) {
+    if (code[cursor] === '{') depth++;
+    else if (code[cursor] === '}') depth--;
+  }
+  if (depth) throw new Error('matrix stage interface has an unterminated main()');
+  let result = code;
+  if (inputs.length) {
+    const start = main.index + main[0].length;
+    result = result.slice(0, start) + `\n${inputs.join('\n')}\n` + result.slice(start);
+  }
+  if (outputs.length) {
+    // Find main again because input initialization may have shifted its close brace.
+    const updatedMain = /void\s+main\s*\([^)]*\)\s*\{/m.exec(result);
+    let end = updatedMain.index + updatedMain[0].length, bodyDepth = 1;
+    for (; end < result.length && bodyDepth; end++) {
+      if (result[end] === '{') bodyDepth++;
+      else if (result[end] === '}') bodyDepth--;
+    }
+    const close = end - 1;
+    result = result.slice(0, close) + `\n${outputs.join('\n')}\n` + result.slice(close);
+  }
+  return result;
+}
+
 export function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(), interfaceLocations = new Map()) {
   // ES precision hints do not change WGSL behavior; strip them before parsing
   // declarations because Naga's GLSL 450 frontend rejects variable precision qualifiers.
@@ -207,6 +289,9 @@ export function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(
       if (!depth) code = code.slice(0, cursor - 1) + '\n  gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5;\n' + code.slice(cursor - 1);
     }
   }
+  // WGSL entry-point interfaces cannot carry matrices. Lower matrix stage IO
+  // into one vec per column and reconstruct the GLSL matrix inside main().
+  code = lowerMatrixStageInterfacesForNaga(code);
   const lifted = liftForNaga(code, stage, interfaceLocations);
   if (!lifted.ok) throw new Error(`GLSL lift failed (${lifted.reason}): ${lifted.detail || ''}`);
   return { code: lifted.code, layout, activeUniforms, samplers };
