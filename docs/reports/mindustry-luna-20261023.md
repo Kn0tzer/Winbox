@@ -80,3 +80,45 @@ Evidence:
 - Corrected JIT=0: `/tmp/winbox-finish/r5/mindustry-jit0-corrected/summary.json`, `console.log`, `mapped-plus-60s.png`.
 - Corrected JIT=1: `/tmp/winbox-finish/r5/mindustry-jit1-corrected/summary.json`, `console.log`, and `mapped-plus-{60,120,240}s.png`.
 - Bounded GL trace: `/tmp/winbox-finish/r5/mindustry-jit0-gltrace/summary.json`, `console.log`, `mapped-plus-60s.png`.
+
+## Build 5 guest-thread diagnosis (2026-10-23)
+
+I reused the guest diagnostics from `thr_5annabscvc` against the corrected build-5 runtime without rebuilding WASM. The probe patched the served `wine64-launcher.js` to enable thread snapshots, crash ring/socket-read diagnostics, `BW64_TRACE_EXE=Mindustry.exe`, memory samples, and RIP heartbeats. It also invoked `bw64_dump_guest_threads()` at +60, +120, and +180 seconds after the first mapped window. The launcher patch succeeded (`diagnosticLauncherPatched: true`), runtime build ID was `3a6bd71f8778`, and the probe reached the window after 470.9 seconds. All three screenshots remain black; WebGPU was active and `webgpuFailures` and `pageErrors` are empty.
+
+### Thread inventory and wait sites
+
+The first snapshot contains 24 guest threads across PIDs 10, 14, 22, and 38. PID 10 is Mindustry's main Wine process (the filtered syscall trace matches `Mindustry.exe`). Its 18 observed threads were TID 11, TIDs 44–55, and TIDs 57–61. The repeated snapshots show the same inventory and state classes:
+
+- PID 10/TID 11, the application main thread, is **running in every snapshot**, not blocked in a syscall. Its RIP moves through `jvm.dll` (for example `+0x79a0e9` at +120 seconds and `+0x466090` at +180 seconds). The first native stack includes JVM frames such as `jvm.dll+0x7a02af`, `+0x9a2b84`, `+0x290bd0`, and ends at `Mindustry.exe+0xd216`, `+0xc550`, `+0xbb9c`. Across all three snapshots there are no `libGL`, LWJGL, or GL bridge frames on this thread.
+- PID 10/TIDs 44–46 and 50–54 are blocked in `futex(#202)`, with sampled libc RIPs around `libc.so.6+0xdb829` / `+0xd22ec` and wait addresses in `0x70970c0e8..0x70970c138`.
+- PID 10/TIDs 47–49, 55, 58, and 59 are blocked in `read(#0)` with `wait=KUnixSocketObject::lockCond` (fds include `0x1e`, `0x22`, `0x26`, `0x3e`, `0x4c`, `0x51`).
+- PID 10/TID 60 was blocked on `futex(#202)` at `0x7d1ada00`; TID 61 and the adjacent stack frames are in `winealsa.drv` (`+0x3a83` and `+0x1842`), identifying this as the audio worker path rather than rendering.
+- PID 14/TID 15 is blocked in `epoll_wait(#232)` with `wait=KThread::pollCond`.
+- PIDs 22 (TIDs 23–24) and 38 (TIDs 39–41) are blocked in `read(#0)` / `KUnixSocketObject::lockCond`.
+
+RIP heartbeat offsets for the same inventory (nearest samples around the three snapshots) are:
+
+| Threads | Sampled RIPs |
+| --- | --- |
+| PID 10/TID 11 | `jvm.dll+0x805012`, `zip.dll+0x3d03`, `jvm.dll+0x28a6c6`; snapshot stack tails include `Mindustry.exe+0xd216/+0xc550/+0xbb9c` |
+| PID 10/TIDs 44–46, 50–51, 54 | `libc.so.6+0xdb829` |
+| PID 10/TIDs 47–49, 55, 58–59 | `libc.so.6+0xd22ec` |
+| PID 10/TID 52 | `libc.so.6+0xdb829` or `+0xa944f` |
+| PID 10/TID 53 | `libc.so.6+0xa944f` or `jvm.dll+0x695dc0` |
+| PID 10/TID 57 | `libc.so.6+0xdb829`, `+0x69dd4`, or `+0xe48ba` |
+| PID 10/TID 60 | `libc.so.6+0x6012b` or `arc64.dll+0x265bd/+0x5f700` |
+| PID 10/TID 61 | `libc.so.6+0xd22ec`, `+0x60193`, `+0xd238f`, or `winealsa.drv+0x1842` |
+| PID 14/TID 15 | `0x700108ef3` (sampler reports unmapped), blocked in `epoll_wait` |
+| PID 22/TIDs 23–24; PID 38/TIDs 39–41 | `libc.so.6+0xd22ec` |
+
+The trace also records `pselect6` with `nfds=0`, repeated futex operations, and a read on fd `0x54`; none changes the main-thread state reported by the snapshots. The guest ELF RIPs are mapped to `libc.so.6` by the RIP sampler; the host libc installed for this diagnostic is not the guest binary, so I did not infer libc function names from host symbols.
+
+### Diagnosis
+
+There is no concrete blocked wait site on Mindustry's application main thread in this capture: it remains runnable in JVM code. The observable futex, socket-read, epoll, and ALSA waits belong to helper threads. The snapshots therefore rule out the suspected main-thread X11 event wait, GLX/EGL call, and an unnotified futex as the immediate cause. They also show that the main thread has not entered a native GL/LWJGL call at the sampled points. The concrete blocker is earlier in the guest Java/JVM execution path, between GL initialization and the first GL submission; these artifacts do not resolve the active Java frame to a Java method, so they cannot identify a missing extension query or prove which Java operation is looping. No renderer or C++ fix is justified by this evidence.
+
+Evidence:
+
+- Diagnostic run summary and all 212k console lines: `/tmp/winbox-finish/r6/mindustry-diagnostics/summary.json` and `console.log`.
+- Black captures: `/tmp/winbox-finish/r6/mindustry-diagnostics/mapped-plus-{60,120,180}s.png`.
+- Probe run: JIT=0, build ID `3a6bd71f8778`, WebGPU active, map at 470.9 s; no WASM build.
