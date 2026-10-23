@@ -36,7 +36,7 @@ const root = await mkdtemp(join(tmpdir(), 'bw-game-'));
 const gamePath = resolve(process.env.GAME_ZIP || `/home/ubuntu/kn0tzer/games/${game === 'celeste' ? 'celeste-drmfree' : game}.zip`);
 const result = { game, profile, tag, startedAt: new Date().toISOString(), menuVerified: false,
   gameplayVerified: false, installedDirect3D, launcherApp, pass: false, samples: [] };
-let slot, server, browser, browserServer, logFile;
+let slot, server, browser, browserServer, persistentContext, logFile;
 const logs = [];
 let stopping = false;
 process.on('SIGTERM', () => { stopping = true; });
@@ -90,26 +90,58 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
 `, overlay, JSON.stringify(assets), process.env.MONO32_DIR || '']);
   result.overlaySha256 = createHash('sha256').update(await readFile(overlay)).digest('hex');
   result.gameArchive = { path: gamePath, bytes: (await stat(gamePath)).size };
-  server = await serve(root);
-  browserServer = await chromium.launchServer({ executablePath: process.env.CHROME_PATH || '/usr/local/bin/chromium', headless: true,
+  server = await serve(root, Number(process.env.PROBE_PORT || 0));
+  const browserOptions = { executablePath: process.env.CHROME_PATH || '/usr/local/bin/chromium', headless: true,
+    viewport: { width: 1280, height: 900 },
     args: ['--no-sandbox', '--disable-dev-shm-usage', '--enable-unsafe-webgpu', '--enable-unsafe-swiftshader',
       '--use-angle=vulkan', '--use-vulkan=swiftshader', '--enable-features=Vulkan',
-      ...(process.env.PROBE_CHROME_ARGS ? JSON.parse(process.env.PROBE_CHROME_ARGS) : []),
-      '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0'] });
-  await writeFile(join(dir, '.browser.ws'), browserServer.wsEndpoint(), { mode: 0o600 });
-  const userData = browserServer.process().spawnargs.find(a => a.startsWith('--user-data-dir='))?.split('=').slice(1).join('=');
-  if (userData) {
-    const port = (await readFile(join(userData, 'DevToolsActivePort'), 'utf8')).split('\n')[0];
-    await writeFile(join(dir, '.browser.cdp'), `http://127.0.0.1:${port}`, { mode: 0o600 });
+      ...(process.env.PROBE_CHROME_ARGS ? JSON.parse(process.env.PROBE_CHROME_ARGS) : [])] };
+  let page;
+  if (process.env.PROBE_USER_DATA_DIR) {
+    persistentContext = await chromium.launchPersistentContext(resolve(process.env.PROBE_USER_DATA_DIR), browserOptions);
+    browser = persistentContext.browser();
+    page = persistentContext.pages()[0] || await persistentContext.newPage();
+    result.browserProfile = resolve(process.env.PROBE_USER_DATA_DIR);
+  } else {
+    browserServer = await chromium.launchServer({ ...browserOptions,
+      args: [...browserOptions.args, '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0'] });
+    await writeFile(join(dir, '.browser.ws'), browserServer.wsEndpoint(), { mode: 0o600 });
+    const userData = browserServer.process().spawnargs.find(a => a.startsWith('--user-data-dir='))?.split('=').slice(1).join('=');
+    if (userData) {
+      const port = (await readFile(join(userData, 'DevToolsActivePort'), 'utf8')).split('\n')[0];
+      await writeFile(join(dir, '.browser.cdp'), `http://127.0.0.1:${port}`, { mode: 0o600 });
+    }
+    browser = await chromium.connect(browserServer.wsEndpoint());
+    page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   }
-  browser = await chromium.connect(browserServer.wsEndpoint());
-  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   const launcher = await readFile(resolve(process.env.PROBE_LAUNCHER || join(runtimeRoot, 'runtime/wine64-launcher.js')));
   result.launcherSha256 = createHash('sha256').update(launcher).digest('hex');
   await page.route(url => url.pathname.endsWith('/wine64-launcher.js'), route => route.fulfill({ contentType:'text/javascript', body:launcher }));
   await page.addInitScript(() => {
     let renderer;
     globalThis.__gameFrames = [];
+    globalThis.__gameProbeNavigationAt = performance.now();
+    globalThis.__gameFirstFrameAt = null;
+    globalThis.__gameGlFirstFrameAt = null;
+    globalThis.__gameGlFrames = [];
+    let glDrawCount = 0, sampledDrawCount = 0, previousRaf = performance.now();
+    const glPrototype = globalThis.WebGL2RenderingContext?.prototype;
+    for (const name of ['drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced']) {
+      const original = glPrototype?.[name];
+      if (typeof original !== 'function') continue;
+      glPrototype[name] = function(...args) { glDrawCount++; return original.apply(this, args); };
+    }
+    const sampleGlFrames = now => {
+      if (glDrawCount !== sampledDrawCount) {
+        if (globalThis.__gameGlFirstFrameAt === null) globalThis.__gameGlFirstFrameAt = now;
+        globalThis.__gameGlFrames.push({ start: previousRaf, end: now });
+        if (globalThis.__gameGlFrames.length > 8192) globalThis.__gameGlFrames.shift();
+        sampledDrawCount = glDrawCount;
+      }
+      previousRaf = now;
+      requestAnimationFrame(sampleGlFrames);
+    };
+    requestAnimationFrame(sampleGlFrames);
     Object.defineProperty(globalThis, 'bwVkRenderer2', { configurable: true, get: () => renderer,
       set(value) {
         renderer = value;
@@ -120,10 +152,14 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
           const outcome = await render(frame, options);
           globalThis.__gameLastOutcome = outcome;
           if (outcome?.rendered && options?.present !== false) {
-            await value.device.queue.onSubmittedWorkDone();
+            const end = performance.now();
+            if (globalThis.__gameFirstFrameAt === null) globalThis.__gameFirstFrameAt = end;
             const samples = globalThis.__gameFrames;
-            samples.push({ start, end: performance.now() });
+            samples.push({ start, end });
             if (samples.length > 8192) samples.shift();
+            // The probe measures renderer submission latency. Waiting for the
+            // entire GPU queue here back-pressures rendering and can hide frames.
+            value.device.queue.onSubmittedWorkDone().catch(() => {});
           }
           return outcome;
         };
@@ -135,13 +171,13 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
   page.on('console', m => record(`[${((Date.now() - t0)/1000).toFixed(1)}s] ${m.type()}: ${m.text()}`));
   page.on('pageerror', e => record(`pageerror: ${e.stack || e.message}`));
   page.on('crash', () => record('pagecrash: the page crashed'));
-  browserServer.process().on('exit', (code, signal) => { console.error(`browser-exit: code=${code} signal=${signal}`); record(`browser-exit: code=${code} signal=${signal}`); });
-  browserServer.process().stderr?.on('data', d => record('chrome-stderr: ' + String(d).trimEnd()));
+  browserServer?.process().on('exit', (code, signal) => { console.error(`browser-exit: code=${code} signal=${signal}`); record(`browser-exit: code=${code} signal=${signal}`); });
+  browserServer?.process().stderr?.on('data', d => record('chrome-stderr: ' + String(d).trimEnd()));
   page.on('response', r => { if (r.status() >= 400) record(`http-error: ${r.status()} ${new URL(r.url()).pathname}`); });
   const base = `http://127.0.0.1:${server.address().port}`;
   const params = new URLSearchParams({ gamezip: `${base}/game.zip`, gamezipsize: String(result.gameArchive.bytes),
     arch: profile.arch, exe: process.env.PROBE_EXE || profile.exe, args: process.env.GAME_ARGS || JSON.stringify(profile.args),
-    session: '0', persist: '0', fresh: '1' });
+    session: '0', persist: '0', fresh: '1', installation: process.env.PROBE_INSTALLATION || game });
   if (assets.length || process.env.MONO32_DIR) {
     params.set('overlay', `${base}/evidence/overlay.zip`);
     params.set('overlaysize', String((await stat(overlay)).size));
@@ -176,6 +212,7 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
   const timeoutMs = Number(process.env.TIMEOUT_MS || 600000);
   const measureMs = Number(process.env.MEASURE_MS || 120000);
   let menuStart;
+  let firstFrameMeasureStart;
   let stackDumped = false;
   while (!stopping && Date.now() - t0 < timeoutMs) {
     await page.waitForTimeout(15000);
@@ -198,7 +235,8 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
         '/root/home/username/.wine/drive_c/users/username/AppData/LocalLow/Boneloaf/Gang Beasts/Player.log']) {
         try { guestLogs[path] = fs.readFile(path, {encoding:'utf8'}).slice(-65536); } catch {}
       }
-      return { now:performance.now(), stats:globalThis.bwVkStats?.(), frames:globalThis.__gameFrames,
+      return { now:performance.now(), firstFrameAt:globalThis.__gameFirstFrameAt ?? globalThis.__gameGlFirstFrameAt, navigationAt:globalThis.__gameProbeNavigationAt,
+        stats:globalThis.bwVkStats?.(), metrics:globalThis.bwVkTier?.metrics?.(), frames:globalThis.__gameFrames.length ? globalThis.__gameFrames : globalThis.__gameGlFrames,
         gl:globalThis.bwGlStats, guestLogs, guestDirectories,
         canvas:[...document.querySelectorAll('canvas')].map(c=>({id:c.id, width:c.width, height:c.height})) };
     });
@@ -228,11 +266,14 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
         await writeFile(join(dir, 'menu.png'), shot);
       }
     }
-    result.samples.push({ elapsedSeconds: (Date.now()-t0)/1000, hash, stats:snap.stats, gl:snap.gl, text });
+    result.samples.push({ elapsedSeconds: (Date.now()-t0)/1000, hash, stats:snap.stats, metrics:snap.metrics, gl:snap.gl, text });
+    if (result.timeToFirstFrameSeconds == null && snap.firstFrameAt != null) result.timeToFirstFrameSeconds = (snap.firstFrameAt - snap.navigationAt) / 1000;
+    if (process.env.PROBE_MEASURE_AFTER_FIRST_FRAME === '1' && firstFrameMeasureStart == null && snap.firstFrameAt != null) firstFrameMeasureStart = snap.firstFrameAt;
     result.canvas = snap.canvas;
     result.guestLogs = snap.guestLogs;
     result.guestDirectories = snap.guestDirectories;
-    if (menuStart !== undefined && snap.now > menuStart) result.measurement = summarizeRenderedFrames(snap.frames, menuStart, snap.now);
+    const measurementStart = menuStart ?? firstFrameMeasureStart;
+    if (measurementStart !== undefined && snap.now > measurementStart) result.measurement = summarizeRenderedFrames(snap.frames, measurementStart, snap.now);
     result.errors = logs.filter(l => /pageerror:|Native panic stack|SHADER COMPILE FAIL|device lost|d3d11: failed|http-error:/.test(l)).slice(-12);
     await writeFile(join(dir, 'summary.json'), JSON.stringify(result, null, 2));
     console.log(JSON.stringify({ dir, seconds: Math.round((Date.now()-t0)/1000), menuVerified:result.menuVerified,
@@ -244,6 +285,10 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
       result.pass = result.measurement.renderedFrames > 0;
       if (process.env.HOLD_OPEN !== '1') break;
     }
+    if (firstFrameMeasureStart !== undefined && snap.now - firstFrameMeasureStart >= measureMs) {
+      result.pass = result.timeToFirstFrameSeconds != null;
+      if (process.env.HOLD_OPEN !== '1') break;
+    }
   }
   await page.screenshot({ path: join(dir, 'final.png') });
 } catch (e) { result.error = e.stack || String(e); }
@@ -251,7 +296,8 @@ finally {
   result.finishedAt = new Date().toISOString();
   await writeFile(join(dir, 'summary.json'), JSON.stringify(result, null, 2));
   logFile?.end();
-  await browser?.close().catch(() => {});
+  await persistentContext?.close().catch(() => {});
+  if (!persistentContext) await browser?.close().catch(() => {});
   await browserServer?.close().catch(() => {});
   await rm(join(dir, '.browser.ws'), { force: true });
   await rm(join(dir, '.browser.cdp'), { force: true });
