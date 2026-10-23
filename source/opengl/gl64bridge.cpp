@@ -2676,16 +2676,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             return 0;
         }
         case GL64_fn_glDeleteShader:
-            // DEFER (no-op): wined3d does create→source→compile→attach→glDeleteShader,
-            // but its GL calls reach this bridge slightly reordered across the
-            // trap/main-thread hops, so the delete can land BEFORE the matching
-            // glCompileShader. Emscripten's glDeleteShader nulls GL.shaders[id], which
-            // then makes the deferred glCompileShader(id) throw "parameter 1 is not a
-            // WebGLShader" and the whole program fails to link (the D3D triangle never
-            // renders). A deleted-but-attached shader is retained by GL until the
-            // program links anyway, so skipping the delete is safe; the only cost is a
-            // small, bounded shader leak (wined3d creates few shaders). This is THE fix
-            // that lets wined3d's GLSL programs compile+link under our bridge.
+            if (g_glContext) GL_MT(glDeleteShader((GLuint)ai(args,0)));
             return 0;
         case GL64_fn_glCreateProgram: {
             if (!ensureContext()) return 0;
@@ -2737,11 +2728,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             if (g_glContext) { GLuint p=(GLuint)ai(args,0); GL_MT(glUseProgram(p)); }
             return 0;
         case GL64_fn_glDeleteProgram:
-            // DEFER (no-op), same reasoning as glDeleteShader: the delete can reach
-            // this bridge before a still-pending glUseProgram/glGetUniformLocation on
-            // the same handle (reordered across trap/main-thread hops), which would
-            // then hit a nulled GL.programs[id]. Bounded leak; wined3d makes few
-            // programs. Keeps the program object alive for the whole app.
+            if (g_glContext) GL_MT(glDeleteProgram((GLuint)ai(args,0)));
             return 0;
         case GL64_fn_glGetUniformLocation: {
             if (!g_glContext) return (U64)(S64)-1;

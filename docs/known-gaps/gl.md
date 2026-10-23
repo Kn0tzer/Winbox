@@ -58,7 +58,7 @@ not a disposition.
 | `source/opengl/es/esopengl.c:142-146` | Edge flag calls panic. | Breaks legacy compatibility calls | OPEN |
 | `source/opengl/es/esopengl.c:154-158` | User clip plane set/get panics. | Breaks compatibility clipping | OPEN |
 | `source/opengl/es/esopengl.c:162-166` | `glDrawBuffer` and `glReadBuffer` panic in this shim. | Breaks compatibility callers | OPEN |
-| `source/opengl/gl64bridge.cpp:2676,2737` | Shader deletion paths are explicitly deferred no-ops; guest object lifecycle is not forwarded. | Can leak or alter shader lifecycle | OPEN |
+| `source/opengl/gl64bridge.cpp:2676,2737` | Shader and program deletion now reach the owning GL thread synchronously; attached/in-use objects follow GL's deferred destruction semantics. | Can leak or alter shader lifecycle | IMPLEMENTED (`web/tests/suite/unit/gl-shim-coverage.test.mjs`) |
 | `source/opengl/gl64bridge.cpp:2874` | `glMapBufferRange` returns zero as unsupported; valid mapping users cannot access buffer storage. | Breaks buffer mapping callers | OPEN |
 | `source/opengl/gl64bridge.cpp:3342,1384` | Framebuffer names are generated in the guest namespace and copied to guest memory before lazy host allocation. | Corrupts guest state | IMPLEMENTED (`web/tests/suite/unit/gl-shim-coverage.test.mjs`) |
 | `source/opengl/gl64bridge.cpp:3431` | `framebufferTexture` catches and swallows host exceptions. | Silently drops attachment operation | OPEN |
