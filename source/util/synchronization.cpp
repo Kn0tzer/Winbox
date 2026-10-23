@@ -17,7 +17,78 @@
  */
 
 #include "boxedwine.h"
+#include <cstdlib>
+#include <cstring>
 #ifdef BOXEDWINE_MULTI_THREADED
+
+namespace {
+enum WakeProfileCategory : U8 {
+    WakeProfileOther = 0,
+    WakeProfileSocket = 1,
+    WakeProfilePoll = 2,
+    WakeProfileFutex = 3,
+    WakeProfileCategoryCount = 4
+};
+
+struct WakeProfileStats {
+    std::atomic<U64> count{0};
+    std::atomic<U64> totalMicroseconds{0};
+    std::atomic<U64> maxMicroseconds{0};
+    std::atomic<U64> overOneMillisecond{0};
+    std::atomic<U64> overTenMilliseconds{0};
+};
+
+WakeProfileStats g_wakeProfileStats[WakeProfileCategoryCount];
+std::atomic<U64> g_wakeProfileSamples{0};
+
+bool wakeProfileEnabled() {
+    static const bool enabled = []() {
+        const char* value = std::getenv("BW_WAKE_PROFILE");
+        return value && value[0] == '1';
+    }();
+    return enabled;
+}
+
+U8 wakeProfileCategory(const BString& name) {
+    const char* value = name.c_str();
+    if (std::strcmp(value, "KUnixSocketObject::lockCond") == 0) return WakeProfileSocket;
+    if (std::strcmp(value, "KThread::pollCond") == 0) return WakeProfilePoll;
+    if (std::strcmp(value, "futex") == 0) return WakeProfileFutex;
+    return WakeProfileOther;
+}
+
+void reportWakeProfile() {
+    static const char* names[WakeProfileCategoryCount] = {"other", "socket", "poll", "futex"};
+    for (U8 i = 1; i < WakeProfileCategoryCount; ++i) {
+        const WakeProfileStats& stats = g_wakeProfileStats[i];
+        const U64 count = stats.count.load(std::memory_order_relaxed);
+        if (!count) continue;
+        klog_fmt("WAKEPROFILE category=%s count=%llu mean_us=%llu max_us=%llu over_1ms=%llu over_10ms=%llu",
+                 names[i], (unsigned long long)count,
+                 (unsigned long long)(stats.totalMicroseconds.load(std::memory_order_relaxed) / count),
+                 (unsigned long long)stats.maxMicroseconds.load(std::memory_order_relaxed),
+                 (unsigned long long)stats.overOneMillisecond.load(std::memory_order_relaxed),
+                 (unsigned long long)stats.overTenMilliseconds.load(std::memory_order_relaxed));
+    }
+}
+
+void recordWakeLatency(U8 category, U64 latencyMicroseconds) {
+    if (category == WakeProfileOther || category >= WakeProfileCategoryCount) return;
+    WakeProfileStats& stats = g_wakeProfileStats[category];
+    stats.count.fetch_add(1, std::memory_order_relaxed);
+    stats.totalMicroseconds.fetch_add(latencyMicroseconds, std::memory_order_relaxed);
+    if (latencyMicroseconds >= 1000) stats.overOneMillisecond.fetch_add(1, std::memory_order_relaxed);
+    if (latencyMicroseconds >= 10000) stats.overTenMilliseconds.fetch_add(1, std::memory_order_relaxed);
+    U64 previousMax = stats.maxMicroseconds.load(std::memory_order_relaxed);
+    while (previousMax < latencyMicroseconds &&
+           !stats.maxMicroseconds.compare_exchange_weak(previousMax, latencyMicroseconds,
+                                                        std::memory_order_relaxed)) {
+    }
+    if ((g_wakeProfileSamples.fetch_add(1, std::memory_order_relaxed) + 1) % 256 == 0) {
+        reportWakeProfile();
+    }
+}
+}
 
 BoxedWineCriticalSectionCond::BoxedWineCriticalSectionCond(const std::shared_ptr<BoxedWineCondition>& cond) {
     this->cond = cond;
@@ -27,7 +98,7 @@ BoxedWineCriticalSectionCond::~BoxedWineCriticalSectionCond() {
     this->cond->unlock();
 }
 
-BoxedWineCondition::BoxedWineCondition(BString name) : name(name) {
+BoxedWineCondition::BoxedWineCondition(BString name) : name(name), wakeProfileCategory(::wakeProfileCategory(name)) {
 }
 
 BoxedWineCondition::~BoxedWineCondition() {
@@ -62,6 +133,10 @@ void BoxedWineCondition::signal() {
         parent->signal();
         break;
     }
+    if (wakeProfileEnabled()) {
+        wakeSignalMicroseconds.store(KSystem::getMicroCounter(), std::memory_order_relaxed);
+        wakeSequence.fetch_add(1, std::memory_order_release);
+    }
     this->c.notify_one();
 }
 
@@ -70,15 +145,26 @@ void BoxedWineCondition::signalAll() {
         BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(parent);
         parent->signalAll();
     }
+    if (wakeProfileEnabled()) {
+        wakeSignalMicroseconds.store(KSystem::getMicroCounter(), std::memory_order_relaxed);
+        wakeSequence.fetch_add(1, std::memory_order_release);
+    }
     this->c.notify_all();
 }
 
 void BoxedWineCondition::wait(std::unique_lock<std::mutex>& lock) {
     KThread* thread = KThread::currentThread();
+    const bool profileWake = wakeProfileEnabled();
+    const U64 signalSequence = profileWake ? wakeSequence.load(std::memory_order_acquire) : 0;
     if (thread) {
         thread->waitingCond = shared_from_this();
     }
     this->c.wait(lock);
+    if (profileWake && wakeSequence.load(std::memory_order_acquire) != signalSequence) {
+        const U64 signaledAt = wakeSignalMicroseconds.load(std::memory_order_relaxed);
+        const U64 resumedAt = KSystem::getMicroCounter();
+        if (resumedAt >= signaledAt) recordWakeLatency(wakeProfileCategory, resumedAt - signaledAt);
+    }
     if (thread) {
         thread->waitingCond = nullptr;
     }
@@ -90,10 +176,18 @@ void BoxedWineCondition::wait(std::unique_lock<std::mutex>& lock) {
 
 void BoxedWineCondition::waitWithTimeout(std::unique_lock<std::mutex>& lock, U32 ms) {    
     KThread* thread = KThread::currentThread();
+    const bool profileWake = wakeProfileEnabled();
+    const U64 signalSequence = profileWake ? wakeSequence.load(std::memory_order_acquire) : 0;
     if (thread) {
         thread->waitingCond = shared_from_this();
     }
-    this->c.wait_for(lock, std::chrono::milliseconds(KSystem::emulatedMilliesToHost(ms)));
+    const std::cv_status status = this->c.wait_for(lock, std::chrono::milliseconds(KSystem::emulatedMilliesToHost(ms)));
+    if (profileWake && status == std::cv_status::no_timeout &&
+        wakeSequence.load(std::memory_order_acquire) != signalSequence) {
+        const U64 signaledAt = wakeSignalMicroseconds.load(std::memory_order_relaxed);
+        const U64 resumedAt = KSystem::getMicroCounter();
+        if (resumedAt >= signaledAt) recordWakeLatency(wakeProfileCategory, resumedAt - signaledAt);
+    }
     if (thread) {
         thread->waitingCond = nullptr;
     }    
