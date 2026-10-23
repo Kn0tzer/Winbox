@@ -1010,7 +1010,7 @@ export class WebGPUGL {
   getError() { const error = this._error; this._error = GL.NO_ERROR; return error; }
   isContextLost() { return false; }
   getContextAttributes() { return { alpha: true, depth: true, stencil: true, antialias: false, premultipliedAlpha: true, preserveDrawingBuffer: true }; }
-  getSupportedExtensions() { return ['WEBGL_compressed_texture_s3tc', 'ANGLE_instanced_arrays', 'OES_vertex_array_object', 'EXT_read_format_bgra']; }
+  getSupportedExtensions() { return ['WEBGL_compressed_texture_s3tc', 'ANGLE_instanced_arrays', 'OES_vertex_array_object', 'EXT_read_format_bgra', 'EXT_texture_filter_anisotropic']; }
   getExtension(name) {
     if (name === 'WEBGL_compressed_texture_s3tc' || name === 'WEBKIT_WEBGL_compressed_texture_s3tc') return {
       COMPRESSED_RGB_S3TC_DXT1_EXT: 0x83f0, COMPRESSED_RGBA_S3TC_DXT1_EXT: 0x83f1,
@@ -1026,6 +1026,7 @@ export class WebGPUGL {
       isVertexArrayOES: this.isVertexArray.bind(this), bindVertexArrayOES: this.bindVertexArray.bind(this),
     };
     if (name === 'EXT_read_format_bgra') return { BGRA_EXT: 0x80e1 };
+    if (name === 'EXT_texture_filter_anisotropic') return { TEXTURE_MAX_ANISOTROPY_EXT: 0x84fe, MAX_TEXTURE_MAX_ANISOTROPY_EXT: 16 };
     return null;
   }
 
@@ -2360,7 +2361,18 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (level === 0) texture.pixels = record.pixels;
     this._enqueue(() => this._ensureTextureGpu(texture));
   }
-  texParameteri(target, parameter, value) { const texture = this._boundTexture(target); if (texture) texture.params.set(parameter, value); }
+  texParameteri(target, parameter, value) {
+    const texture = this._boundTexture(target);
+    if (!texture) return;
+    if (parameter === 0x84fe) {
+      if (!Number.isFinite(value) || value < 1 || value > 16) { this._recordError(GL.INVALID_VALUE); return; }
+      texture.params.set(parameter, Math.floor(value));
+      texture.samplerCache?.clear();
+      return;
+    }
+    texture.params.set(parameter, value);
+    texture.samplerCache?.clear();
+  }
   texParameterf(target, parameter, value) { this.texParameteri(target, parameter, value); }
   _samplerFor(texture) {
     texture.samplerCache ||= new Map();
@@ -2369,9 +2381,11 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     const address = value => value === 0x2901 ? 'repeat' : value === 0x8370 ? 'mirror-repeat' : 'clamp-to-edge';
     const filter = value => value === 0x2600 ? 'nearest' : 'linear';
     const min = texture.params.get(0x2801) ?? 0x2703, mag = texture.params.get(0x2800) ?? 0x2601;
+    const maxAnisotropy = Math.max(1, Math.min(16, texture.params.get(0x84fe) || 1));
     const sampler = this._device.createSampler({ addressModeU: address(texture.params.get(0x2802)), addressModeV: address(texture.params.get(0x2803)),
       magFilter: filter(mag), minFilter: filter(min === 0x2600 || min === 0x2601 ? min : min === 0x2700 || min === 0x2701 || min === 0x2702 ? 0x2600 : 0x2601),
-      mipmapFilter: min === 0x2700 || min === 0x2702 || min === 0x2704 ? 'nearest' : 'linear', lodMinClamp: 0, lodMaxClamp: min === 0x2600 || min === 0x2601 ? 0 : 32 });
+      mipmapFilter: min === 0x2700 || min === 0x2702 || min === 0x2704 ? 'nearest' : 'linear', lodMinClamp: 0, lodMaxClamp: min === 0x2600 || min === 0x2601 ? 0 : 32,
+      maxAnisotropy: mag === 0x2601 && ![0x2600, 0x2700, 0x2702, 0x2704].includes(min) ? maxAnisotropy : 1 });
     texture.samplerCache.set(cacheKey, sampler);
     return sampler;
   }

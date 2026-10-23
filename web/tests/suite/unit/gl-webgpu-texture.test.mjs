@@ -3,6 +3,24 @@ import assert from 'node:assert/strict';
 import { WebGPUGL } from '../../../gl-webgpu.mjs';
 import { createValidationDevice } from '../fixtures/webgpu-validation-device.mjs';
 
+test('anisotropic filtering extension maps texture state to WebGPU samplers', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    assert.ok(gl.getSupportedExtensions().includes('EXT_texture_filter_anisotropic'));
+    assert.equal(gl.getExtension('EXT_texture_filter_anisotropic').TEXTURE_MAX_ANISOTROPY_EXT, 0x84fe);
+    const texture = gl.createTexture();
+    gl.bindTexture(0x0de1, texture);
+    gl.texParameterf(0x0de1, 0x84fe, 8);
+    assert.equal(gl.getError(), 0);
+    assert.equal(gl._samplerFor(texture).maxAnisotropy, 8);
+    gl.texParameterf(0x0de1, 0x84fe, 0);
+    assert.equal(gl.getError(), 0x0501);
+    assert.equal(gl._samplerFor(texture).maxAnisotropy, 8, 'invalid values do not replace existing sampler state');
+  } finally { gpu.restore(); }
+});
+
 test('legacy alpha, luminance, luminance-alpha, red, and RG textures expand channels correctly', async () => {
   const gpu = createValidationDevice();
   try {
@@ -101,6 +119,6 @@ test('compressed texture subimages update decoded pixels and unsupported formats
     assert.equal(gl.getExtension('WEBGL_compressed_texture_s3tc').COMPRESSED_RGBA_S3TC_DXT5_EXT, 0x83f3);
     assert.equal(gl.getExtension('EXT_read_format_bgra').BGRA_EXT, 0x80e1);
     assert.ok(gl.getSupportedExtensions().includes('EXT_read_format_bgra'));
-    assert.equal(gl.getExtension('EXT_texture_filter_anisotropic'), null, 'unimplemented extensions stay unadvertised');
+    assert.equal(gl.getExtension('EXT_texture_filter_anisotropic').TEXTURE_MAX_ANISOTROPY_EXT, 0x84fe);
   } finally { gpu.restore(); }
 });
