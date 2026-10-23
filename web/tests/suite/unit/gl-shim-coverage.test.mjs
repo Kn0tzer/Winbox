@@ -71,6 +71,12 @@ test('empty WebGPUGL methods stay in the audited no-op inventory', () => {
   ].sort(), 'any new empty WebGPUGL method needs an explicit audit disposition');
 });
 
+test('native query bridge tracks completion and never reports fabricated nonzero samples', () => {
+  assert.match(bridgeSrc, /g_glActiveQueries\[target\]\s*=\s*id/);
+  assert.match(bridgeSrc, /query->second\.available\s*\?\s*1\s*:\s*0/);
+  assert.doesNotMatch(bridgeSrc, /GL_QUERY_RESULT\s*\*\/\)\s*v\s*=\s*1/);
+});
+
 test('core GL 2.1 immediate-mode functions are shim-registered', () => {
   // These are the functions the verified GL triangle uses
   const core = [

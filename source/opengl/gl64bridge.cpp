@@ -346,6 +346,9 @@ inline void replayImmBlock(const std::vector<ImmOp>& ops) {
 // faults in the Apple Metal-GL layer. So re-make-current whenever the calling
 // thread changes. (WASM uses a single main-thread context — see glOnMain.)
 static std::atomic<std::thread::id> g_glCurrentThread{};
+struct GLQueryStatus { GLenum target = 0; bool generated = false; bool active = false; bool available = false; };
+static std::map<GLuint, GLQueryStatus> g_glQueryStatus;
+static std::map<GLenum, GLuint> g_glActiveQueries;
 #endif
 
 #ifdef __EMSCRIPTEN__
@@ -3278,6 +3281,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 if (n > 0 && n <= 65536) {
                     std::vector<GLuint> ids((size_t)n, 0); GLuint* p = ids.data();
                     GL_MT(glGenQueries(n, p));
+                    for (GLuint id : ids) if (id) g_glQueryStatus[id] = GLQueryStatus{};
                     cpu->memory->memcpyToGuest(args.a[1], ids.data(), (U64)n * 4);
                 }
             }
@@ -3291,42 +3295,69 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                     cpu->memory->memcpyFromGuest(ids.data(), args.a[1], (U64)n * 4);
                     const GLuint* p = ids.data();
                     GL_MT(glDeleteQueries(n, p));
+                    for (GLuint id : ids) {
+                        auto found = g_glQueryStatus.find(id);
+                        if (found != g_glQueryStatus.end() && found->second.active) g_glActiveQueries.erase(found->second.target);
+                        g_glQueryStatus.erase(id);
+                    }
                 }
             }
             return 0;
         }
         case GL64_fn_glIsQuery:
-            return (ai(args,0) != 0) ? 1 : 0;
+            return g_glQueryStatus.count((GLuint)ai(args,0)) && g_glQueryStatus[(GLuint)ai(args,0)].generated ? 1 : 0;
         case GL64_fn_glBeginQuery:
-            // Many wined3d query targets (TIMESTAMP, etc.) aren't valid in WebGL2;
-            // begin/end are best-effort and errors are swallowed by the GLERR path.
-            if (g_glContext) GL_MT(glBeginQuery((GLenum)ai(args,0), (GLuint)ai(args,1)));
+            if (g_glContext) {
+                const GLenum target = (GLenum)ai(args,0); const GLuint id = (GLuint)ai(args,1);
+                GL_MT(glBeginQuery(target, id));
+                auto& query = g_glQueryStatus[id]; query.target = target; query.generated = true; query.active = true; query.available = false;
+                g_glActiveQueries[target] = id;
+            }
             return 0;
         case GL64_fn_glEndQuery:
-            if (g_glContext) GL_MT(glEndQuery((GLenum)ai(args,0)));
+            if (g_glContext) {
+                const GLenum target = (GLenum)ai(args,0);
+                GL_MT(glEndQuery(target));
+                auto active = g_glActiveQueries.find(target);
+                if (active != g_glActiveQueries.end()) {
+                    auto query = g_glQueryStatus.find(active->second);
+                    if (query != g_glQueryStatus.end()) { query->second.active = false; query->second.available = true; }
+                    g_glActiveQueries.erase(active);
+                }
+            }
             return 0;
         case GL64_fn_glQueryCounter:
-            return 0; // GL_TIMESTAMP — not in WebGL2; ignore
+            if (g_glContext) {
+                const GLuint id = (GLuint)ai(args,0); const GLenum target = (GLenum)ai(args,1);
+                auto& query = g_glQueryStatus[id]; query.target = target; query.generated = true; query.active = false; query.available = true;
+            }
+            return 0; // Query values are deterministic zero; availability still follows begin/end.
         case GL64_fn_glGetQueryiv: {
-            // (target, pname, params*). GL_QUERY_COUNTER_BITS=0, current query=0.
-            if (args.a[2]) cpu->memory->writed(args.a[2], 0);
+            const GLenum target = (GLenum)ai(args,0), pname = (GLenum)ai(args,1);
+            U32 value = 0;
+            if (pname == 0x8865 /*GL_CURRENT_QUERY*/) {
+                auto active = g_glActiveQueries.find(target);
+                if (active != g_glActiveQueries.end()) value = active->second;
+            }
+            if (args.a[2]) cpu->memory->writed(args.a[2], value);
             return 0;
         }
         case GL64_fn_glGetQueryObjectiv:
         case GL64_fn_glGetQueryObjectuiv: {
-            // (id, pname, params*). Report RESULT_AVAILABLE=true and RESULT=0/1.
-            GLenum pname = (GLenum)ai(args,1);
+            // The bridge has no synchronous GPU query readback; return zero data,
+            // while availability follows the query object's actual begin/end state.
+            const GLuint id = (GLuint)ai(args,0); GLenum pname = (GLenum)ai(args,1);
+            auto query = g_glQueryStatus.find(id);
             U32 v = 0;
-            if (pname == 0x8867 /*GL_QUERY_RESULT_AVAILABLE*/) v = 1;
-            else if (pname == 0x8866 /*GL_QUERY_RESULT*/)      v = 1; // samples passed
+            if (pname == 0x8867 /*GL_QUERY_RESULT_AVAILABLE*/) v = query != g_glQueryStatus.end() && query->second.available ? 1 : 0;
             if (args.a[2]) cpu->memory->writed(args.a[2], v);
             return 0;
         }
         case GL64_fn_glGetQueryObjectui64v: {
-            GLenum pname = (GLenum)ai(args,1);
+            const GLuint id = (GLuint)ai(args,0); GLenum pname = (GLenum)ai(args,1);
+            auto query = g_glQueryStatus.find(id);
             U64 v = 0;
-            if (pname == 0x8867 /*GL_QUERY_RESULT_AVAILABLE*/) v = 1;
-            else if (pname == 0x8866 /*GL_QUERY_RESULT*/)      v = 1;
+            if (pname == 0x8867 /*GL_QUERY_RESULT_AVAILABLE*/) v = query != g_glQueryStatus.end() && query->second.available ? 1 : 0;
             if (args.a[2]) cpu->memory->writeq(args.a[2], v);
             return 0;
         }

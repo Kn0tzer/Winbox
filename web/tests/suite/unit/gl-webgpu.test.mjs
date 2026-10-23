@@ -41,6 +41,36 @@ test('validateProgram exposes linked validation status through getProgramParamet
   } finally { gpu.restore(); }
 });
 
+test('GL query objects return zero results and become available only after end', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    const query = gl.createQuery();
+    gl.beginQuery(0x8c2f, query);
+    assert.equal(gl.getQuery(0x8c2f, 0x8865), query);
+    assert.equal(gl.getQueryParameter(query, 0x8867), false);
+    gl.endQuery(0x8c2f);
+    assert.equal(gl.getQueryParameter(query, 0x8867), true);
+    assert.equal(gl.getQueryParameter(query, 0x8866), 0);
+    assert.equal(gl.getQuery(0x8c2f, 0x8865), null);
+
+    const primitives = gl.createQuery();
+    gl.beginQuery(0x8c87, primitives);
+    assert.equal(gl.getQueryParameter(primitives, 0x8867), false);
+    gl.endQuery(0x8c87);
+    assert.equal(gl.getQueryParameter(primitives, 0x8867), true);
+    assert.equal(gl.getQueryParameter(primitives, 0x8866), 0);
+
+    const timestamp = gl.createQuery();
+    gl.queryCounter(timestamp, 0x8e28);
+    assert.equal(gl.getQueryParameter(timestamp, 0x8867), true);
+    assert.equal(gl.getQueryParameter(timestamp, 0x8866), 0);
+    gl.deleteQuery(timestamp);
+    assert.equal(gl.isQuery(timestamp), false);
+  } finally { gpu.restore(); }
+});
+
 test('uint8 indices widen for WebGPU and wider index types preserve values', () => {
   assert.deepEqual([...convertIndices(new Uint8Array([0, 2, 255]), 0x1401)], [0, 2, 255]);
   assert.ok(convertIndices(new Uint8Array([1]), 0x1401) instanceof Uint16Array);

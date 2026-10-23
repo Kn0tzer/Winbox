@@ -449,6 +449,8 @@ export class WebGPUGL {
     this._buffers = new Set();
     this._shaders = new Set();
     this._programs = new Set();
+    this._queries = new Set();
+    this._activeQueries = new Map();
     this._textures = new Set();
     this._textureRecords = new WeakMap();
     this._framebufferObjects = new Set();
@@ -1293,6 +1295,43 @@ export class WebGPUGL {
     return 0;
   }
   getProgramInfoLog(program) { return program?.infoLog || ''; }
+  createQuery() { const query = { id: this._nextId++, target: 0, active: false, available: false, result: 0 }; this._queries.add(query); return query; }
+  deleteQuery(query) {
+    if (!query || !this._queries.has(query)) return;
+    if (query.active) this._activeQueries.delete(query.target);
+    query.active = false;
+    this._queries.delete(query);
+  }
+  isQuery(query) { return this._queries.has(query); }
+  beginQuery(target, query) {
+    if (![0x8914, 0x8c2f, 0x8d6a, 0x8c87, 0x8c88, 0x88bf].includes(target)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (!this._queries.has(query) || query.active || this._activeQueries.has(target) || query.target && query.target !== target) { this._recordError(GL.INVALID_OPERATION); return; }
+    query.target = target; query.active = true; query.available = false; query.result = 0;
+    this._activeQueries.set(target, query);
+  }
+  endQuery(target) {
+    if (![0x8914, 0x8c2f, 0x8d6a, 0x8c87, 0x8c88, 0x88bf].includes(target)) { this._recordError(GL.INVALID_ENUM); return; }
+    const query = this._activeQueries.get(target);
+    if (!query) { this._recordError(GL.INVALID_OPERATION); return; }
+    query.active = false; query.available = true; this._activeQueries.delete(target);
+  }
+  queryCounter(query, target) {
+    if (target !== 0x8e28) { this._recordError(GL.INVALID_ENUM); return; }
+    if (!this._queries.has(query) || query.active) { this._recordError(GL.INVALID_OPERATION); return; }
+    query.target = target; query.result = 0; query.available = true;
+  }
+  getQuery(target, parameter) {
+    if (![0x8914, 0x8c2f, 0x8d6a, 0x8c87, 0x8c88, 0x88bf].includes(target)) { this._recordError(GL.INVALID_ENUM); return null; }
+    if (parameter === 0x8864) return 0;
+    if (parameter !== 0x8865) { this._recordError(GL.INVALID_ENUM); return null; }
+    return this._activeQueries.get(target) || null;
+  }
+  getQueryParameter(query, parameter) {
+    if (!this._queries.has(query)) { this._recordError(GL.INVALID_OPERATION); return null; }
+    if (parameter === 0x8867) return query.available;
+    if (parameter === 0x8866) return query.result;
+    this._recordError(GL.INVALID_ENUM); return null;
+  }
   getAttachedShaders(program) { return program?.shaders?.slice() || []; }
   getAttribLocation(program, name) {
     if (!program) return -1;
