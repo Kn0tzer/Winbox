@@ -61,7 +61,7 @@ export const V2_REC = Object.freeze({
   VIEWPORT: 0x0D, SCISSOR: 0x0E, VERTEX_BIND: 0x0F, INDEX_BIND: 0x10,
   DRAW: 0x11, INLINE_BYTES: 0x12, READBACK: 0x13, IMAGE_COPY: 0x14,
   STENCIL_STATE: 0x15, BLEND_CONSTANTS: 0x16, CLEAR_ATTACHMENTS: 0x17, DEPTH_BIAS: 0x18,
-  IMAGE_BLIT: 0x19,
+  IMAGE_BLIT: 0x19, RASTER_STATE: 0x1A, IMAGE_CLEAR_DS: 0x1B,
 });
 
 // Vulkan descriptor types (numeric, as the bridge records them).
@@ -117,7 +117,7 @@ export function parseV2Chunk(bytes) {
     if (p + V2_REC_HEADER_LEN > bytes.length) throw new Error('vk64: v2 chunk truncated record header');
     const type = dv.getUint16(p, true);
     const len = dv.getUint32(p + 4, true);
-    if (type < V2_REC.FRAME_BEGIN || type > V2_REC.IMAGE_BLIT)
+    if (type < V2_REC.FRAME_BEGIN || type > V2_REC.IMAGE_CLEAR_DS)
       throw new Error('vk64: v2 unknown record type 0x' + type.toString(16));
     if (len > V2_MAX_RECORD_BYTES || p + V2_REC_HEADER_LEN + len > bytes.length)
       throw new Error('vk64: v2 record 0x' + type.toString(16) + ' truncated (len ' + len + ')');
@@ -630,7 +630,7 @@ export function decodeV2Frame(records, counters = {}) {
           fsSpec = readSpec();
         }
         let colorBlend, blendConstants, stencil, blendConstantsDynamic, depthBias;
-        let primitiveRestartEnable = false;
+        let primitiveRestartEnable = false, cullDynamic = false, frontDynamic = false;
         while (r.left) {
           const tag = r.u32();
           if (tag === 0x314e5453) {
@@ -657,6 +657,12 @@ export function decodeV2Frame(records, counters = {}) {
             primitiveRestartEnable = !!restart;
             continue;
           }
+          if (tag === 0x31545352) {
+            const cd = r.u32(), fd = r.u32();
+            if (cd > 1 || fd > 1) throw new Error('vk64: v2 PIPELINE invalid raster dynamic flags');
+            cullDynamic = !!cd; frontDynamic = !!fd;
+            continue;
+          }
           if (tag !== 0x31444e42) throw new Error('vk64: v2 PIPELINE unknown extension tail');
           const count = r.u32();
           if (count > 4) throw new Error('vk64: v2 PIPELINE blend count out of range');
@@ -668,7 +674,7 @@ export function decodeV2Frame(records, counters = {}) {
           blendConstants = [r.f32(), r.f32(), r.f32(), r.f32()];
         }
         r.done('PIPELINE');
-        const pipe = { pipeId, vsHash, fsHash, topology, cull, front, depthTest, depthWrite, depthOp, blend, vb, va, vsSpec, fsSpec, primitiveRestartEnable, ...(colorBlend ? { colorBlend, blendConstants } : {}), ...(stencil ? {stencil, blendConstantsDynamic} : {}), ...(depthBias || {}) };
+        const pipe = { pipeId, vsHash, fsHash, topology, cull, front, depthTest, depthWrite, depthOp, blend, vb, va, vsSpec, fsSpec, primitiveRestartEnable, ...(cullDynamic || frontDynamic ? { cullDynamic, frontDynamic } : {}), ...(colorBlend ? { colorBlend, blendConstants } : {}), ...(stencil ? {stencil, blendConstantsDynamic} : {}), ...(depthBias || {}) };
         frame.pipelines.set(pipeId, pipe);
         needPass().ops.push({ op: 'bindPipe', pipe });
         break;
@@ -826,6 +832,20 @@ export function decodeV2Frame(records, counters = {}) {
         const constantFactor = r.f32(), clamp = r.f32(), slopeFactor = r.f32(); r.done('DEPTH_BIAS');
         if (![constantFactor, clamp, slopeFactor].every(Number.isFinite)) throw new Error('vk64: v2 invalid depth bias');
         needPass().ops.push({op:'depthBias',constantFactor,clamp,slopeFactor}); break;
+      }
+      case V2_REC.RASTER_STATE: {
+        const which = r.u32(), value = r.u32(); r.done('RASTER_STATE');
+        if (which > 1 || value > 3) throw new Error('vk64: v2 invalid raster state');
+        needPass().ops.push({ op: 'rasterState', which: which ? 'front' : 'cull', value }); break;
+      }
+      case V2_REC.IMAGE_CLEAR_DS: {
+        const image = v2Hex64(r.u64()), depth = r.f32(), stencil = r.u32(), count = r.u32();
+        if (count > 64 || !Number.isFinite(depth)) throw new Error('vk64: v2 invalid depth/stencil clear');
+        const ranges = [];
+        for (let i = 0; i < count; ++i) ranges.push({ aspectMask: r.u32(), baseMip: r.u32(), levelCount: r.u32(), baseLayer: r.u32(), layerCount: r.u32() });
+        r.done('IMAGE_CLEAR_DS');
+        if (image === V2_UNKNOWN_IMAGE || pass?.attachments.length) throw new Error('vk64: v2 invalid depth/stencil clear');
+        needPass().ops.push({ op: 'imageClearDS', image, depth, stencil, ranges }); break;
       }
       case V2_REC.VIEWPORT: {
         const v = [r.f32(), r.f32(), r.f32(), r.f32(), r.f32(), r.f32()]; r.done('VIEWPORT');
