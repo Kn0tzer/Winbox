@@ -268,7 +268,7 @@ function lowerMatrixStageInterfacesForNaga(source) {
   return result;
 }
 
-export function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(), interfaceLocations = new Map()) {
+export function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(), interfaceLocations = new Map(), clipControl = [0x8ca1, 0x935e]) {
   // ES precision hints do not change WGSL behavior; strip them before parsing
   // declarations because Naga's GLSL 450 frontend rejects variable precision qualifiers.
   let code = stripPrecisionCompatibilityGuards(String(source || '').replace(/\r\n?/g, '\n').replace(/\\[ \t]*\n[ \t]*/g, ''))
@@ -338,8 +338,8 @@ export function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(
   }
 
   if (stage === 'vertex') {
-    // GLSL uses clip-space z in [-w,+w], while WebGPU clips z in [0,w].
-    // Insert the remap at the end of main so later shader assignments cannot overwrite it.
+    // GLSL negative-one-to-one clip depth needs conversion to WebGPU's [0,w]
+    // range. Upper-left clip origin also reverses the vertex y coordinate.
     const main = /void\s+main\s*\([^)]*\)\s*\{/m.exec(code);
     if (main) {
       let depth = 1, cursor = main.index + main[0].length;
@@ -347,7 +347,13 @@ export function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(
         if (code[cursor] === '{') depth++;
         else if (code[cursor] === '}') depth--;
       }
-      if (!depth) code = code.slice(0, cursor - 1) + '\n  gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5;\n' + code.slice(cursor - 1);
+      if (!depth) {
+        const remap = [
+          ...(clipControl[0] === 0x8ca2 ? ['gl_Position.y = -gl_Position.y;'] : []),
+          ...(clipControl[1] === 0x935e ? ['gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5;'] : []),
+        ];
+        if (remap.length) code = code.slice(0, cursor - 1) + `\n  ${remap.join('\n  ')}\n` + code.slice(cursor - 1);
+      }
     }
   }
   // WGSL entry-point interfaces cannot carry matrices. Lower matrix stage IO
@@ -436,6 +442,7 @@ export class WebGPUGL {
     this._stencilFront = { func: 0x0207, ref: 0, readMask: 0xffffffff, writeMask: 0xffffffff, fail: 0x1e00, depthFail: 0x1e00, pass: 0x1e00 };
     this._stencilBack = { ...this._stencilFront };
     this._polygonOffset = [0, 0];
+    this._clipControl = [0x8ca1, 0x935e];
     this._polygonMode = 0x1b02;
     this._lineWidth = 1;
     this._pointSize = 1;
@@ -819,6 +826,8 @@ export class WebGPUGL {
       case GL.SHADING_LANGUAGE_VERSION: return 'WebGL GLSL ES 3.00';
       case GL.VIEWPORT: return new Int32Array(this._viewport);
       case GL.DEPTH_RANGE: return new Float32Array(this._depthRange);
+      case 0x935c: return this._clipControl[0];
+      case 0x935d: return this._clipControl[1];
       case 0x0b21: return this._lineWidth;
       case 0x0b11: return this._pointSize;
       case GL.SCISSOR_BOX: return new Int32Array(this._scissor);
@@ -1260,7 +1269,7 @@ export class WebGPUGL {
         failingShader = shader;
         failingStage = stage;
         failingPreparedCode = '';
-        const prepared = rewriteGlslForWebGPU(shader.source, stage, program.attributes, locationRegistry);
+        const prepared = rewriteGlslForWebGPU(shader.source, stage, program.attributes, locationRegistry, this._clipControl);
         failingPreparedCode = prepared.code;
         const wgsl = await toWGSL('glsl', prepared.code, stage);
         if (!wgsl) throw new Error(`${stage} shader translated to empty WGSL`);
@@ -1405,7 +1414,7 @@ export class WebGPUGL {
 
   _fixedFunctionProgram(textureUnits, colorArray, alphaEnabled, alphaFunc, texEnv) {
     const key = stateKey([textureUnits, colorArray, alphaEnabled ? alphaFunc : 0x0207,
-      textureUnits.map(unit => texEnv[unit])]);
+      textureUnits.map(unit => texEnv[unit]), this._clipControl]);
     if (this._fixedFunctionProgramCache.has(key)) return this._fixedFunctionProgramCache.get(key);
     const vertexLayout = uniformLayout([{ name: 'u_mvp', type: 'mat4' },
       ...textureUnits.map(unit => ({ name: `u_texMatrix${unit}`, type: 'mat4' }))]);
@@ -1414,11 +1423,13 @@ export class WebGPUGL {
     const vertexOutputs = textureUnits.map((unit, index) => `, @location(${index + 1}) texCoord${unit}: vec2<f32>`).join('');
     const vertexMatrices = textureUnits.map(unit => `, u_texMatrix${unit}: mat4x4<f32>`).join('');
     const vertexTransforms = textureUnits.map(unit => `let uv${unit} = globals.u_texMatrix${unit} * vec4<f32>(input.texCoord${unit}.xy, 0.0, 1.0); output.texCoord${unit} = uv${unit}.xy / uv${unit}.w;`).join(' ');
+    const clipY = this._clipControl[0] === 0x8ca2 ? '-clip.y' : 'clip.y';
+    const clipZ = this._clipControl[1] === 0x935e ? '(clip.z + clip.w) * 0.5' : 'clip.z';
     const vertex = `struct VertexGlobals { u_mvp: mat4x4<f32>${vertexMatrices} };
 @group(0) @binding(0) var<uniform> globals: VertexGlobals;
 struct VertexInput { @location(0) position: vec4<f32>, @location(1) color: vec4<f32>${vertexInputs} };
 struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color: vec4<f32>${vertexOutputs} };
-@vertex fn main(input: VertexInput) -> VertexOutput { var output: VertexOutput; let clip = globals.u_mvp * input.position; output.position = vec4<f32>(clip.x, clip.y, (clip.z + clip.w) * 0.5, clip.w); output.color = input.color; ${vertexTransforms} return output; }`;
+@vertex fn main(input: VertexInput) -> VertexOutput { var output: VertexOutput; let clip = globals.u_mvp * input.position; output.position = vec4<f32>(clip.x, ${clipY}, ${clipZ}, clip.w); output.color = input.color; ${vertexTransforms} return output; }`;
     const fragmentInput = `struct FragmentInput { @location(0) color: vec4<f32>${vertexOutputs} };`;
     const fragmentGlobals = alphaEnabled
       ? 'struct FragmentGlobals { u_alphaRef: f32 };\n@group(0) @binding(1) var<uniform> fragmentGlobals: FragmentGlobals;'
@@ -2107,6 +2118,15 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
   depthMask(enabled) { this._depthMask = !!enabled; }
   depthFunc(func) { this._depthFunc = func | 0; }
   depthRange(near, far) { this._depthRange = [clamp01(near), clamp01(far)]; }
+  clipControl(origin, depth) {
+    if (![0x8ca1, 0x8ca2].includes(origin) || ![0x935e, 0x935f].includes(depth)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (origin === this._clipControl[0] && depth === this._clipControl[1]) return;
+    this._clipControl = [origin, depth];
+    this._pipelineCache.clear();
+    this._fixedFunctionProgramCache.clear();
+    for (const program of this._programs) if (program.shaders?.length) this.linkProgram(program);
+  }
+  getClipControl() { return [...this._clipControl]; }
   cullFace(mode) { this._cullFace = mode | 0; }
   frontFace(mode) { this._frontFace = mode | 0; }
   scissor(x, y, width, height) {

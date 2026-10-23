@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { blendFactor, convertIndices, packUniforms, stateKey, uniformLayout } from '../../../gl-webgpu-utils.mjs';
-import { WebGPUGL } from '../../../gl-webgpu.mjs';
+import { WebGPUGL, rewriteGlslForWebGPU } from '../../../gl-webgpu.mjs';
 import { createValidationDevice } from '../fixtures/webgpu-validation-device.mjs';
 
 test('uniform layout and packing honor std140 vector, matrix, and array strides', () => {
@@ -81,6 +81,25 @@ test('transform feedback operations reject once with INVALID_OPERATION', async (
     gl.endTransformFeedback();
     assert.equal(gl.getError(), 0x0502);
     assert.equal(logs.filter(line => line.includes('transform feedback')).length, 1);
+  } finally { gpu.restore(); }
+});
+
+test('glClipControl changes upper-left origin and zero-to-one depth rewriting', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    gl.clipControl(0x8ca2, 0x935f);
+    assert.deepEqual(gl.getClipControl(), [0x8ca2, 0x935f]);
+    assert.equal(gl.getParameter(0x935c), 0x8ca2);
+    assert.equal(gl.getParameter(0x935d), 0x935f);
+    const rewritten = rewriteGlslForWebGPU('#version 300 es\nvoid main(){ gl_Position=vec4(0.0); }', 'vertex', new Map(), new Map(), gl.getClipControl());
+    assert.match(rewritten.code, /gl_Position\.y = -gl_Position\.y;/);
+    assert.doesNotMatch(rewritten.code, /gl_Position\.z = \(gl_Position\.z/);
+    const fixed = gl._fixedFunctionProgram([], false, false, 0x0207, []).stages.vertex.wgsl;
+    assert.match(fixed, /vec4<f32>\(clip\.x, -clip\.y, clip\.z, clip\.w\)/, 'fixed-function shaders use the same clip control state');
+    gl.clipControl(0xdead, 0x935f);
+    assert.equal(gl.getError(), 0x0500);
   } finally { gpu.restore(); }
 });
 
