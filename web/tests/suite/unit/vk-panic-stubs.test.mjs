@@ -58,3 +58,25 @@ test('vk_GetDescriptorSetHostMappingVALVE clears the optional output and does no
   assert.match(src, /klog\s*\(/);
   assert.match(src, /writeq\(ARG3,\s*0\)/);
 });
+
+test('unknown Vulkan pNext structures are logged and skipped instead of panicking', () => {
+  for (const name of ['vulkanGetNextPtr', 'vulkanDeleteNextPtr', 'vulkanWriteNextPtr']) {
+    const marker = `${name}(`;
+    const start = host.indexOf(marker);
+    assert.notEqual(start, -1, `missing ${name}`);
+    const open = host.indexOf('{', start);
+    let depth = 0, end = -1;
+    for (let i = open; i < host.length; i++) {
+      if (host[i] === '{') depth++;
+      if (host[i] === '}' && --depth === 0) { end = i; break; }
+    }
+    assert.notEqual(end, -1, `unclosed ${name}`);
+    const src = host.slice(open + 1, end);
+    assert.doesNotMatch(src, /kpanic(?:_fmt)?\s*\(/, `${name} must not panic on unknown pNext`);
+    assert.match(src, /klog(?:_fmt)?\s*\(/, `${name} must report skipped unknown pNext`);
+  }
+});
+
+test('host Vulkan has no not-implemented panic stubs', () => {
+  assert.doesNotMatch(host, /kpanic(?:_fmt)?\s*\([^\n]*not implemented/i);
+});

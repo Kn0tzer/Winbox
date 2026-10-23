@@ -12561,9 +12561,15 @@ VkBaseOutStructure* vulkanGetNextPtr(BoxedVulkanInfo* pBoxedInfo, KMemory* memor
             MarshalVkEventCreateInfo::read(pBoxedInfo, memory, address, p);
             return (VkBaseOutStructure*)p;
         }
-       default:
-            kpanic_fmt("vulkanGetNextPtr not implemented for %d", type);
-            return nullptr;
+       default: {
+            static bool shown;
+            if (!shown) { klog_fmt("vulkanGetNextPtr: unknown guest pNext sType %d; skipping node", type); shown = true; }
+            // VkBaseInStructure in the 32-bit guest ABI is sType followed by
+            // a 32-bit pNext address. Skip only this unknown node and preserve
+            // any following structures the host knows how to marshal.
+            U32 next = memory->readd(address + 4);
+            return vulkanGetNextPtr(pBoxedInfo, memory, next);
+       }
     }
 }
 void vulkanDeleteNextPtr(const void* p) {
@@ -15100,8 +15106,11 @@ void vulkanDeleteNextPtr(const void* p) {
         case VK_STRUCTURE_TYPE_EVENT_CREATE_INFO:
             delete (VkEventCreateInfo*)pNext;
             break;
-       default:
-            kpanic_fmt("vulkanGetNextPtr not implemented for %d", pNext->sType);
+       default: {
+            static bool shown;
+            if (!shown) { klog_fmt("vulkanDeleteNextPtr: unknown host pNext sType %d; node left allocated", pNext->sType); shown = true; }
+            return;
+       }
     }
 }
 void vulkanWriteNextPtr(BoxedVulkanInfo* pBoxedInfo, KMemory* memory, U32 address, const void* p) {
@@ -18482,8 +18491,11 @@ void vulkanWriteNextPtr(BoxedVulkanInfo* pBoxedInfo, KMemory* memory, U32 addres
             MarshalVkEventCreateInfo::write(pBoxedInfo, memory, address, (VkEventCreateInfo*)p);
             break;
         }
-       default:
-            kpanic_fmt("vulkanWriteNextPtr not implemented for %d", type);
+       default: {
+            static bool shown;
+            if (!shown) { klog_fmt("vulkanWriteNextPtr: unknown guest pNext sType %d; output node skipped", type); shown = true; }
+            break;
+       }
     }
 }
 #endif
