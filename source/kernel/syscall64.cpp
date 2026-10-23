@@ -385,16 +385,16 @@ static void crashRingDump(const char* why) {
 // "wined3d.dll+0xNNN". Gated by the optional RIP/guest profilers.
 static void ripSamplerNotePeRead(CPU64* cpu, const KFileDescriptorPtr& fdesc,
                                  U64 dst, U64 len) {
-    const bool ripProfile = ripSamplerEnabled();
+    const bool ripModules = ripSamplerModuleTrackingEnabled();
     const bool guestProfile = bwGuestProfileEnabled();
-    if ((!ripProfile && !guestProfile) || len == 0 || !cpu->thread || !cpu->thread->process) return;
+    if ((!ripModules && !guestProfile) || len == 0 || !cpu->thread || !cpu->thread->process) return;
     std::shared_ptr<KFile> kf = std::dynamic_pointer_cast<KFile>(fdesc->kobject);
     if (!kf || !kf->openFile || !kf->openFile->node) return;
     const BString& path = kf->openFile->node->path;
     // Match PE images by extension (case-insensitive): .dll / .exe.
     if (!path.endsWith(".dll", true) && !path.endsWith(".exe", true)) return;
     if (guestProfile) bwGuestProfileNoteModule((int)cpu->thread->process->id, dst, len, path.c_str());
-    if (ripProfile) ripSamplerNoteModule((int)cpu->thread->process->id, dst, len, path.c_str());
+    if (ripModules) ripSamplerNoteModule((int)cpu->thread->process->id, dst, len, path.c_str());
 }
 
 static U64 sys_write64(CPU64* cpu, U64 fd, U64 buf, U64 count) {
@@ -1602,7 +1602,7 @@ static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
                                             fileBase, seedBuf.data(), (U64)seedBuf.size());
         if ((S64)r < 0) return r;
         if (kfile->openFile->node) {
-            if (ripSamplerEnabled()) {
+            if (ripSamplerModuleTrackingEnabled()) {
                 ripSamplerNoteModule((int)cpu->thread->process->id, aligned, mapLen,
                                      kfile->openFile->node->path.c_str());
             }
@@ -1701,7 +1701,7 @@ static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
     // the C code that busy-loops lives) become known. Use the same aligned/mapLen
     // span the BW64_FMMAP trace prints above.
     if (kfile->openFile->node) {
-        if (ripSamplerEnabled()) {
+        if (ripSamplerModuleTrackingEnabled()) {
             ripSamplerNoteModule((int)cpu->thread->process->id, aligned, mapLen,
                                  kfile->openFile->node->path.c_str());
         }

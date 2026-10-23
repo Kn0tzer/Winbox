@@ -16,6 +16,7 @@
 #include <memory>
 #include "../source/emulation/cpu/common/fpu.h"
 #include <unordered_map>
+#include <vector>
 
 class KThread;
 class KMemory64;
@@ -273,6 +274,14 @@ private:
     bool verifyJitPlanAgainstBlock(U64 rip, const struct Jit64Op* ops, U32 n);
     U32 step(bool trackJitBlockBoundary = false);
     bool m_jitBlockBoundaryAfterStep = false;
+
+    struct ControlBranch { U64 source = 0; U64 target = 0; };
+    ControlBranch controlBranches[16] = {};
+    U8 controlBranchNext = 0;
+    U8 controlBranchCount = 0;
+    std::vector<U64> controlTraceReportedRips;
+    void recordControlBranch(U64 source, U64 target);
+    bool reportControlTrace(const char* reason, U64 faultRip, bool force);
 
     U8  fetchByte(U64 addr);
     U32 fetchDword(U64 addr);

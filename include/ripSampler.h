@@ -35,6 +35,12 @@ class CPU;
 // True iff BW64_RIPSAMPLE is set (env read once, cached). All other entry
 // points early-out on this, so callers can also gate their argument prep.
 bool ripSamplerEnabled();
+// URL-driven CPU control-flow diagnostics are opt-in per runtime session. They
+// also enable module-range bookkeeping without starting the background sampler.
+void ripSamplerSetControlTrace(bool enabled);
+bool ripSamplerControlTraceEnabled();
+bool ripSamplerModuleTrackingEnabled();
+bool ripSamplerResolveModule(int pid, U64 rip, std::string& module, U64& offset);
 
 // Claim a registry slot for the calling guest thread (one host thread per guest
 // thread in the MT build). Returns a slot handle to pass to Publish/Release, or
