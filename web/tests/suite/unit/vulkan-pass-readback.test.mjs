@@ -14,12 +14,19 @@ test('colour summary reports constant colour, average and non-black count', () =
   const stride = 256;
   const rows = new Uint8Array(stride * 2);
   for (let y = 0; y < 2; y++) for (let x = 0; x < 2; x++) rows.set([10, 20, 30, 255], y * stride + x * 4);
-  assert.deepEqual(v2SummarizeColorPixels(rows, 2, 2, stride, false),
-    { avg: [10, 20, 30, 255], constant: true, constantColor: [10, 20, 30, 255], nonBlackPixels: 4, pixels: 4 });
+  assert.deepEqual(v2SummarizeColorPixels(rows, 2, 2, stride, "rgba8unorm"),
+    { avg: [10, 20, 30, 255], constant: true, constantColor: [10, 20, 30, 255], nonBlackPixels: 4, nonFinite: 0, pixels: 4 });
   rows.set([0, 0, 0, 255], stride + 4);
-  const mixed = v2SummarizeColorPixels(rows, 2, 2, stride, true); // bgra: channels swapped in output
+  const mixed = v2SummarizeColorPixels(rows, 2, 2, stride, "bgra8unorm-srgb"); // bgra: channels swapped in output
   assert.equal(mixed.constant, false);
   assert.equal(mixed.constantColor, null);
   assert.equal(mixed.nonBlackPixels, 3);
   assert.deepEqual(mixed.avg, [22.5, 15, 7.5, 255]);
+});
+
+test('colour summary decodes rgba16float texels', () => {
+  const bytes = new Uint8Array(256);
+  const dv = new DataView(bytes.buffer);
+  for (let x = 0; x < 2; x++) [0x3c00, 0x3800, 0, 0x3c00].forEach((h, c) => dv.setUint16(x * 8 + c * 2, h, true)); // 1, 0.5, 0, 1
+  assert.deepEqual(v2SummarizeColorPixels(bytes, 2, 1, 256, 'rgba16float').avg, [1, 0.5, 0, 1]);
 });

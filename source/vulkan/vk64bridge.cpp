@@ -1076,25 +1076,38 @@ void execUpdateBuf(const Cmd& k) {
     writeGuestBytes(m->va + off, k.updBytes.data(), n);
     b->dirtyGen = g_bufDirtyTick++;
 }
+// Build-9 diagnostic: every early return of execCopy used to be silent, so a
+// texture upload that never landed (all-zero sampled textures on the page) left
+// no trace. Log the first few failures per reason and a running tally.
+static void execCopyFail(const char* why, const Copy& r) {
+    static std::unordered_map<std::string, U32> seen;
+    static U32 total = 0;
+    ++total;
+    U32& n = seen[why];
+    if (++n <= 4 || (n & (n - 1)) == 0)
+        klog_fmt("vk64: execCopy B2I skipped (%s) x%u [total %u]: buf=0x%llx img=0x%llx mip=%u off=%d,%d,%d ext=%ux%ux%u rowLen=%u",
+                 why, n, total, (unsigned long long)r.srcBuffer, (unsigned long long)r.dstImage, r.mip,
+                 r.ox, r.oy, r.oz, r.w, r.h, r.depth, r.rowLen);
+}
 void execCopy(const Copy& r) {
     Buffer* src = objOf<Buffer>(r.srcBuffer, K_BUFFER, "copyBufferToImage");
     Image*  dst = objOf<Image>(r.dstImage, K_IMAGE, "copyBufferToImage");
-    if (!src || !dst) return;
+    if (!src || !dst) { execCopyFail(!src ? "stale source buffer" : "stale destination image", r); return; }
     DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "copyBufferToImage");
     DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "copyBufferToImage");
-    if (!smem || !dmem || !smem->va || !dmem->va) return;
-    if (r.mip >= std::max(1U, dst->mips) || r.ox < 0 || r.oy < 0 || r.oz < 0 || !r.w || !r.h) return;
+    if (!smem || !dmem || !smem->va || !dmem->va) { execCopyFail(!smem || !smem->va ? "source memory unmapped" : "destination memory unmapped", r); return; }
+    if (r.mip >= std::max(1U, dst->mips) || r.ox < 0 || r.oy < 0 || r.oz < 0 || !r.w || !r.h) { execCopyFail("bad mip/offset/extent", r); return; }
     const auto block = fmt_block(dst->format);
     const U32 mipW = std::max(1U, dst->w >> r.mip), mipH = std::max(1U, dst->h >> r.mip);
     const U32 mipD = std::max(1U, dst->d >> r.mip);
-    if ((U32)r.ox + r.w > mipW || (U32)r.oy + r.h > mipH || (U32)r.oz + r.depth > mipD) return;
+    if ((U32)r.ox + r.w > mipW || (U32)r.oy + r.h > mipH || (U32)r.oz + r.depth > mipD) { execCopyFail("region outside mip", r); return; }
     const U64 rowBytes = (U64)((r.w + block.w - 1) / block.w) * block.bytes;
     const U64 srcRow = (U64)(((r.rowLen ? r.rowLen : r.w) + block.w - 1) / block.w) * block.bytes;
     const U32 rows = (r.h + block.h - 1) / block.h;
     const U64 srcSlice = srcRow * (((r.imgH ? r.imgH : r.h) + block.h - 1) / block.h);
     const U64 dstRow = (U64)((mipW + block.w - 1) / block.w) * block.bytes;
     const U64 dstSlice = dstRow * ((mipH + block.h - 1) / block.h);
-    if (srcRow < rowBytes || r.baseLayer + r.layerCount > std::max(1U, dst->layers)) return;
+    if (srcRow < rowBytes || r.baseLayer + r.layerCount > std::max(1U, dst->layers)) { execCopyFail("row/layer mismatch", r); return; }
     std::vector<U8> tmp((size_t)rowBytes);
     for (U32 layer = 0; layer < r.layerCount; ++layer) {
         for (U32 z = 0; z < r.depth; ++z) {
@@ -1103,13 +1116,29 @@ void execCopy(const Copy& r) {
                 + ((U64)r.oz + z) * dstSlice + ((U64)r.oy / block.h) * dstRow + ((U64)r.ox / block.w) * block.bytes;
             for (U32 y = 0; y < rows; ++y) {
                 const U64 so = srcBase + (U64)y * srcRow, to = dstBase + (U64)y * dstRow;
-                if (so > smem->size || rowBytes > smem->size - so || to > dmem->size || rowBytes > dmem->size - to) return;
+                if (so > smem->size || rowBytes > smem->size - so || to > dmem->size || rowBytes > dmem->size - to) { execCopyFail("copy out of memory bounds", r); return; }
                 readGuestBytes(tmp.data(), smem->va + so, rowBytes);
                 writeGuestBytes(dmem->va + to, tmp.data(), rowBytes);
             }
         }
     }
     dst->copied = 1;
+    // Tally uploads whose source bytes were entirely zero (first row only, cheap).
+    static U32 okCopies = 0, zeroSrc = 0;
+    ++okCopies;
+    {
+        const U64 so0 = src->memOff + r.bufOff;
+        if (so0 + rowBytes <= smem->size) {
+            std::vector<U8> probe((size_t)rowBytes);
+            readGuestBytes(probe.data(), smem->va + so0, rowBytes);
+            bool nz = false;
+            for (U8 v : probe) if (v) { nz = true; break; }
+            if (!nz) ++zeroSrc;
+        }
+    }
+    if (okCopies <= 8 || (okCopies & (okCopies - 1)) == 0)
+        klog_fmt("vk64: execCopy B2I ok #%u (first-row all-zero sources so far: %u): img=0x%llx fmt=%u %ux%u mip=%u",
+                 okCopies, zeroSrc, (unsigned long long)r.dstImage, (unsigned)dst->format, r.w, r.h, r.mip);
 }
 
 std::vector<U8> readGuestRange(U64 memId, U64 memOff, U64 bytes) {

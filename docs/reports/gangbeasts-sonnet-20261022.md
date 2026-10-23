@@ -186,6 +186,30 @@ still not committed.
   now create buffer SRV/UAVs whose shaders the page ignores; behaviour for Unity compute may change from
   "view creation fails" to "dispatch reads nothing".
 
+### Build-8 pass-readback result (Gang Beasts, JIT=1)
+
+Probes `gb-pr1..pr4` (`?bwPassReadback=N`, dist = integ build 8 + the working-copy `vkwebgpu.mjs`). Unity only
+reaches "GB Started" at ~350 s and creates its swapchain at ~390 s; everything below is the following ~500 s.
+
+- No validation errors, ~290 frames replayed, 0 rejected. The canvas ends black.
+- Frame 0 is a Unity warm-up burst (259 fullscreen-triangle draws, 85 blank placeholders, 6 unsupported).
+  From frame ~30 on, frames alternate between 16 passes / 15 draws and 1 pass / 1 draw.
+- **First black pass = the camera colour pass (pass 2, rgba16float)**: cleared (0,0,0,1) and has 0 draws, i.e.
+  the guest never submits scene geometry. Passes 4-7 are constant fullscreen quads, passes 10-14 (the
+  rgba16float post chain) are all zeros, and pass 15 blits the black camera target plus 5 UI quads: black.
+- **Every sampled texture in every replayed frame is all zero.** Image census per pass (`census` in the report):
+  12 images/frame, 12 with bytes, **0 non-zero** in every frame (including the 4x4 built-in white texture and
+  the font/sprite atlases). UBOs are non-zero. So the page receives real byte buffers, but they hold zeros.
+- Not proven: whether the uploads never happen yet (Unity still loading, no scene) or happen and fail to land in
+  guest image memory. `execCopy` had only silent early returns, so the log cannot tell. The all-zero 4x4 white
+  texture favours "uploads fail to land", but a still-booting Unity is not excluded.
+- The 601 "vkQueueSubmit: bad/stale handle" lines are one-per-distinct-id and come from descriptors that
+  reference already-destroyed buffers (DXVK keeps stale entries); they are not the cause.
+
+Build 9 (C++, not built here): `execCopy` now logs every skip with a reason (first 4 per reason, then powers
+of two) and tallies successful copies whose first source row is all-zero ("execCopy B2I ok #N (... all-zero
+sources so far: M)"). Reading these in the next GB console log decides between the two hypotheses.
+
 ### The extra signal checks
 
 Not added. The traces show Unity running, presenting and creating Vulkan resources; no thread sits in
