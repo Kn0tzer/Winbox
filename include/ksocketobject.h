@@ -57,6 +57,8 @@ public:
     KSockAddress destAddress;
     U32 recvLen = 1048576;
     U32 sendLen = 1048576;
+    U32 priority = 0;
+    U64 socketOptionFlags = 0; // stored integer boolean SOL_SOCKET options
 
     bool inClosed = false;
     bool outClosed = false;

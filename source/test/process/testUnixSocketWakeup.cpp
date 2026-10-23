@@ -168,6 +168,45 @@ bool runEpollWake(TestContext& context, U32 socketType, U32 eventMask, bool modi
 }
 }
 
+void testUnixSocketOptions() {
+    TestContext& context = testContext();
+    KMemory* memory = context.memory;
+    TestUnixSocket socket(K_SOCK_STREAM);
+    memory->writed(kPayloadAddress, 5);
+    if ((S32)socket.setsockopt(context.thread, {}, K_SOL_SOCKET, K_SO_PRIORITY,
+                               kPayloadAddress, 4) != 0) {
+        testFail("Unix SO_PRIORITY(5) set failed");
+        return;
+    }
+    memory->writed(kIovAddress, 4);
+    memory->writed(kResultAddress, 0);
+    if ((S32)socket.getsockopt(context.thread, {}, K_SOL_SOCKET, K_SO_PRIORITY,
+                               kResultAddress, kIovAddress) != 0 ||
+        memory->readd(kResultAddress) != 5 || memory->readd(kIovAddress) != 4) {
+        testFail("Unix SO_PRIORITY get did not round-trip the value and optlen");
+    }
+    memory->writed(kPayloadAddress, 7);
+    if ((S32)socket.setsockopt(context.thread, {}, K_SOL_SOCKET, K_SO_PRIORITY,
+                               kPayloadAddress, 4) != -K_EPERM) {
+        testFail("Unix SO_PRIORITY above the unprivileged range was not rejected with EPERM");
+    }
+    memory->writed(kPayloadAddress, 1);
+    if ((S32)socket.setsockopt(context.thread, {}, K_SOL_SOCKET, K_SO_PASSCRED,
+                               kPayloadAddress, 4) != 0) {
+        testFail("Unix SO_PASSCRED set failed");
+    }
+    memory->writed(kIovAddress, 4);
+    if ((S32)socket.getsockopt(context.thread, {}, K_SOL_SOCKET, K_SO_PASSCRED,
+                               kResultAddress, kIovAddress) != 0 ||
+        memory->readd(kResultAddress) != 1) {
+        testFail("Unix SO_PASSCRED value did not round-trip");
+    }
+    if ((S32)socket.setsockopt(context.thread, {}, K_SOL_SOCKET, K_SO_PRIORITY,
+                               kPayloadAddress, 2) != -K_EINVAL) {
+        testFail("Unix setsockopt accepted a short integer value");
+    }
+}
+
 void testUnixSocketWakeup() {
     TestContext& context = testContext();
     runEpollWake(context, K_SOCK_STREAM, kEpollIn, false, false, "SOCK_STREAM level-triggered");

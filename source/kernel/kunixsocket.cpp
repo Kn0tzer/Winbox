@@ -866,36 +866,46 @@ U32 KUnixSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& fd,
     KMemory* memory = thread->memory;
 
     if (level == K_SOL_SOCKET) {
+        if (len < 4) return -K_EINVAL;
+        const S32 optionValue = (S32)memory->readd(value);
         switch (name) {
             case K_SO_RCVBUFFORCE:
             case K_SO_RCVBUF:
-                if (len!=4)
-                    kpanic("KUnixSocketObject::setsockopt SO_RCVBUF expecting len of 4");
-                this->recvLen = memory->readd(value);
+                if (optionValue <= 0) return -K_EINVAL;
+                if (name == K_SO_RCVBUFFORCE && thread->process->userId != 0) return -K_EPERM;
+                this->recvLen = (U32)std::min<S64>((S64)optionValue * 2, 0x7fffffff);
                 break;
             case K_SO_SNDBUFFORCE:
             case K_SO_SNDBUF:
-                if (len != 4)
-                    kpanic("KUnixSocketObject::setsockopt SO_SNDBUF expecting len of 4");
-                this->sendLen = memory->readd(value);
+                if (optionValue <= 0) return -K_EINVAL;
+                if (name == K_SO_SNDBUFFORCE && thread->process->userId != 0) return -K_EPERM;
+                this->sendLen = (U32)std::min<S64>((S64)optionValue * 2, 0x7fffffff);
                 break;
+            case K_SO_PRIORITY:
+                if (optionValue < 0 || optionValue > 6) return -K_EPERM;
+                this->priority = (U32)optionValue;
+                break;
+            case K_SO_DEBUG:
+            case K_SO_REUSEADDR:
+            case K_SO_DONTROUTE:
+            case K_SO_BROADCAST:
+            case K_SO_KEEPALIVE:
+            case K_SO_OOBINLINE:
+            case K_SO_NO_CHECK:
+            case K_SO_BSDCOMPAT:
+            case K_SO_REUSEPORT:
             case K_SO_PASSCRED:
-                break;
-            case K_SO_ATTACH_FILTER:
+            case K_SO_TIMESTAMP:
+                if (optionValue) this->socketOptionFlags |= 1ULL << name;
+                else this->socketOptionFlags &= ~(1ULL << name);
                 break;
             default:
-                if (bw64RecoverEnabled()) {
-                    bw64RecoverLogOnce("socket.unix.setsockopt", "unsupported Unix socket option; returned EINVAL");
-                    return -K_EINVAL;
-                }
-                kwarn_fmt("KUnixSocketObject::setsockopt name %d not implemented", name);
+                kwarn_fmt("ksocket: Unix SOL_SOCKET option %u is unsupported; returned ENOPROTOOPT", name);
+                return -K_ENOPROTOOPT;
         }
     } else {
-        if (bw64RecoverEnabled()) {
-            bw64RecoverLogOnce("socket.unix.setsockopt.level", "unsupported Unix socket option level; returned EINVAL");
-            return -K_EINVAL;
-        }
-        kwarn_fmt("KUnixSocketObject::setsockopt level %d not implemented", level);
+        kwarn_fmt("ksocket: Unix socket option level %u is unsupported; returned ENOPROTOOPT", level);
+        return -K_ENOPROTOOPT;
     }
     return 0;
 }
@@ -903,24 +913,38 @@ U32 KUnixSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& fd,
 U32 KUnixSocketObject::getsockopt(KThread* thread, const KFileDescriptorPtr& fd, U32 level, U32 name, U32 value, U32 len_address) {
     KMemory* memory = thread->memory;
 
+    if (!len_address || !value) return -K_EFAULT;
     U32 len = memory->readd(len_address);
+    auto writeInt = [&](U32 v) -> U32 {
+        const U32 copied = std::min<U32>(len, 4);
+        for (U32 i = 0; i < copied; ++i) memory->writeb(value + i, (U8)(v >> (i * 8)));
+        memory->writed(len_address, 4);
+        return 0;
+    };
     if (level == K_SOL_SOCKET) {
         if (name == K_SO_RCVBUF) {
-            if (len!=4)
-                kpanic("KUnixSocketObject::getsockopt SO_RCVBUF expecting len of 4");
-            memory->writed(value, this->recvLen);
+            return writeInt(this->recvLen);
         } else if (name == K_SO_SNDBUF) {
-            if (len != 4)
-                kpanic("KUnixSocketObject::getsockopt SO_SNDBUF expecting len of 4");
-            memory->writed(value, this->sendLen);
+            return writeInt(this->sendLen);
         } else if (name == K_SO_ERROR) {
-            if (len != 4)
-                kpanic("KUnixSocketObject::getsockopt SO_ERROR expecting len of 4");
-            memory->writed(value, this->error);
+            U32 result = writeInt(this->error);
+            this->error = 0;
+            return result;
         } else if (name == K_SO_TYPE) { 
-            if (len != 4)
-                kpanic("KUnixSocketObject::getsockopt K_SO_TYPE expecting len of 4");
-            memory->writed(value, this->type);
+            return writeInt(this->type);
+        } else if (name == K_SO_PRIORITY) {
+            return writeInt(this->priority);
+        } else if (name == K_SO_DOMAIN) {
+            return writeInt(this->domain);
+        } else if (name == K_SO_PROTOCOL) {
+            return writeInt(this->protocol);
+        } else if (name == K_SO_ACCEPTCONN) {
+            return writeInt(this->listening ? 1 : 0);
+        } else if (name == K_SO_DEBUG || name == K_SO_REUSEADDR || name == K_SO_DONTROUTE ||
+                   name == K_SO_BROADCAST || name == K_SO_KEEPALIVE || name == K_SO_OOBINLINE ||
+                   name == K_SO_NO_CHECK || name == K_SO_BSDCOMPAT || name == K_SO_REUSEPORT ||
+                   name == K_SO_PASSCRED || name == K_SO_TIMESTAMP) {
+            return writeInt((this->socketOptionFlags & (1ULL << name)) ? 1 : 0);
         } else if (name == K_SO_PEERCRED) {
             if (this->domain!=K_AF_UNIX) {
                 return -K_EINVAL; // :TODO: is this right
@@ -929,20 +953,19 @@ U32 KUnixSocketObject::getsockopt(KThread* thread, const KFileDescriptorPtr& fd,
             if (!con) {
                 return -K_EINVAL; // :TODO: is this right
             }
-            if (len != 12)
-                kpanic("KUnixSocketObject::getsockopt SO_PEERCRED expecting len of 12");
+            if (len < 12) return -K_EINVAL;
             memory->writed(value, con->pid);
             memory->writed(value + 4, thread->process->userId);
             memory->writed(value + 8, thread->process->groupId);
+            memory->writed(len_address, 12);
+            return 0;
         } else {
-            if (bw64RecoverEnabled()) bw64RecoverLogOnce("socket.unix.getsockopt", "unsupported Unix getsockopt option; returned EINVAL");
-            else kwarn_fmt("KUnixSocketObject::getsockopt name %d not implemented", name);
-            return -K_EINVAL;
+            kwarn_fmt("ksocket: Unix SOL_SOCKET getsockopt %u is unsupported; returned ENOPROTOOPT", name);
+            return -K_ENOPROTOOPT;
         }
     } else {
-        if (bw64RecoverEnabled()) bw64RecoverLogOnce("socket.unix.getsockopt.level", "unsupported Unix getsockopt level; returned EINVAL");
-        else kwarn_fmt("KUnixSocketObject::getsockopt level %d not implemented", level);
-        return -K_EINVAL;
+        kwarn_fmt("ksocket: Unix getsockopt level %u is unsupported; returned ENOPROTOOPT", level);
+        return -K_ENOPROTOOPT;
     }
     return 0;
 }
