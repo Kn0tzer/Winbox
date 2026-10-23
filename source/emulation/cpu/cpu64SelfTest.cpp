@@ -339,6 +339,17 @@ void runMemorySyscallValidation(TestResult& r) {
                 [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_ENOMEM; });
     runAndCheck(r, "mincore rejects unmapped output vector", call(27, STACK_PAGE, 1, 0x70000000),
                 [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_EFAULT; });
+    runAndCheck(r, "getrandom accepts GRND_INSECURE and fills requested bytes", call(318, STACK_PAGE + 0x200, 16, 4),
+                [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 16 &&
+            (c.memory->readq(STACK_TOP - 0xE00) || c.memory->readq(STACK_TOP - 0xDF8));
+    });
+    runAndCheck(r, "getrandom rejects unsupported flags", call(318, STACK_PAGE + 0x200, 8, 8),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_EINVAL; });
+    runAndCheck(r, "getrandom accepts zero length with a null pointer", call(318, 0, 0, 0),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == 0; });
+    runAndCheck(r, "getrandom returns EFAULT for unmapped output", call(318, 0x70000000, 8, 0),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_EFAULT; });
 }
 
 void runUnmappedSamePageFetchFault(TestResult& r) {

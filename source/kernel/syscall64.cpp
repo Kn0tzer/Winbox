@@ -923,16 +923,32 @@ static U64 sys_uname64(CPU64* cpu, U64 bufAddr) {
 
 // getrandom — fill buffer with pseudo-random bytes. Good enough for ld.so's
 // stack canary; not cryptographically strong, but glibc only needs entropy.
-static U64 sys_getrandom64(CPU64* cpu, U64 bufAddr, U64 buflen, U64 /*flags*/) {
-    if (!bufAddr || buflen == 0) return 0;
-    if (buflen > 256) buflen = 256;
-    U8 tmp[256];
+static bool sys_rangeMapped64(CPU64* cpu, U64 addr, U64 length);
+static U64 sys_getrandom64(CPU64* cpu, U64 bufAddr, U64 buflen, U64 flags) {
+    constexpr U32 GRND_NONBLOCK = 1;
+    constexpr U32 GRND_RANDOM = 2;
+    constexpr U32 GRND_INSECURE = 4;
+    constexpr U64 MAX_GETRANDOM = 32ULL * 1024 * 1024;
+    if (flags & ~(GRND_NONBLOCK | GRND_RANDOM | GRND_INSECURE)) return (U64)-K_EINVAL;
+    if (buflen == 0) return 0;
+    if (buflen > MAX_GETRANDOM) return (U64)-K_EINVAL;
+    if (!sys_rangeMapped64(cpu, bufAddr, buflen)) return (U64)-K_EFAULT;
+    U8 tmp[4096];
     static U64 seed = 0x9E3779B97F4A7C15ULL;
-    for (U64 i = 0; i < buflen; i++) {
-        seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
-        tmp[i] = (U8)(seed >> 33);
+    static std::mutex randomMutex;
+    U64 offset = 0;
+    while (offset < buflen) {
+        const U64 count = std::min<U64>(sizeof(tmp), buflen - offset);
+        {
+            std::lock_guard<std::mutex> lock(randomMutex);
+            for (U64 i = 0; i < count; ++i) {
+                seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+                tmp[i] = (U8)(seed >> 33);
+            }
+        }
+        cpu->memory->memcpyToGuest(bufAddr + offset, tmp, count);
+        offset += count;
     }
-    cpu->memory->memcpyToGuest(bufAddr, tmp, buflen);
     return buflen;
 }
 
