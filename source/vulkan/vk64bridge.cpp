@@ -5815,8 +5815,13 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             c.copy.imgH = regs[i].bufferImageHeight;
             c.copy.ox = regs[i].ox;
             c.copy.oy = regs[i].oy;
+            c.copy.oz = regs[i].oz;
             c.copy.w = regs[i].w;
             c.copy.h = regs[i].h;
+            c.copy.depth = regs[i].d;
+            c.copy.mip = regs[i].mipLevel;
+            c.copy.baseLayer = regs[i].baseArrayLayer;
+            c.copy.layerCount = regs[i].layerCount;
             pushCmd(cb, c);
         }
         return 0;

@@ -2180,10 +2180,11 @@ typedef struct VkCopyImageInfo2L {
     VkImage srcImage;
     uint32_t srcImageLayout; uint32_t _pad1;
     VkImage dstImage;
-    uint32_t dstImageLayout; uint32_t _pad2;
-    uint32_t regionCount; uint32_t _pad3;
+    uint32_t dstImageLayout;
+    uint32_t regionCount;
     const void* pRegions;
 } VkCopyImageInfo2L;
+_Static_assert(__builtin_offsetof(VkCopyImageInfo2L, regionCount) == 44 && __builtin_offsetof(VkCopyImageInfo2L, pRegions) == 48, "VkCopyImageInfo2 layout");
 
 API void vkCmdCopyImage2(VkCommandBuffer commandBuffer, const void* pInfoIn) {
     const VkCopyImageInfo2L* pInfo = (const VkCopyImageInfo2L*)pInfoIn;
@@ -2206,10 +2207,11 @@ typedef struct VkCopyBufferToImageInfo2L {
     const void* pNext;
     VkBuffer srcBuffer;
     VkImage dstImage;
-    uint32_t dstImageLayout; uint32_t _pad1;
-    uint32_t regionCount; uint32_t _pad2;
+    uint32_t dstImageLayout;
+    uint32_t regionCount;
     const void* pRegions;
 } VkCopyBufferToImageInfo2L;
+_Static_assert(__builtin_offsetof(VkCopyBufferToImageInfo2L, regionCount) == 36 && __builtin_offsetof(VkCopyBufferToImageInfo2L, pRegions) == 40, "VkCopyBufferToImageInfo2 layout");
 
 API void vkCmdCopyBufferToImage2(VkCommandBuffer commandBuffer, const void* pInfoIn) {
     const VkCopyBufferToImageInfo2L* pInfo = (const VkCopyBufferToImageInfo2L*)pInfoIn;
@@ -2241,11 +2243,12 @@ typedef struct VkBlitImageInfo2L {
     VkImage srcImage;
     uint32_t srcImageLayout; uint32_t _pad1;
     VkImage dstImage;
-    uint32_t dstImageLayout; uint32_t _pad2;
-    uint32_t regionCount; uint32_t _pad3;
+    uint32_t dstImageLayout;
+    uint32_t regionCount;
     const void* pRegions;
-    uint32_t filter; uint32_t _pad4;
+    uint32_t filter;
 } VkBlitImageInfo2L;
+_Static_assert(__builtin_offsetof(VkBlitImageInfo2L, regionCount) == 44 && __builtin_offsetof(VkBlitImageInfo2L, pRegions) == 48 && __builtin_offsetof(VkBlitImageInfo2L, filter) == 56, "VkBlitImageInfo2 layout");
 
 API void vkCmdBlitImage2(VkCommandBuffer commandBuffer, const void* pInfoIn) {
     const VkBlitImageInfo2L* pInfo = (const VkBlitImageInfo2L*)pInfoIn;
