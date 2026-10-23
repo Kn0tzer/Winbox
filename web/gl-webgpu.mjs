@@ -740,7 +740,11 @@ export class WebGPUGL {
   readPixels(x, y, width, height, format, type, destination) {
     if (!(destination instanceof Uint8Array) && !(destination instanceof Uint8ClampedArray)) return;
     if (format !== 0x1908 || type !== 0x1401) return;
-    const target = this._targetFor(this._readFramebuffer), pixels = target?.pixels;
+    const target = this._targetFor(this._readFramebuffer);
+    // The default framebuffer is served from the last GPU readback once one
+    // has landed; the CPU shadow only covers frames before the first present.
+    const gpuFrame = target?.default && this._gpuPixels?.length === target.width * target.height * 4;
+    const pixels = gpuFrame ? this._gpuPixels : target?.pixels;
     if (!target || !pixels) return;
     const rowLength = this._pack.rowLength || width;
     const rawStride = rowLength * 4;
@@ -766,6 +770,45 @@ export class WebGPUGL {
     const canvasTexture = this._context.getCurrentTexture();
     encoder.copyTextureToTexture({ texture: this._colorTexture }, { texture: canvasTexture }, [this._width, this._height, 1]);
     this._device.queue.submit([encoder.finish()]);
+    this._startReadback();
+  }
+
+  // The bridge's X11 present reads the default framebuffer with a synchronous
+  // glReadPixels, but WebGPU only exposes queue results asynchronously. Every
+  // present therefore copies the colour target into a staging buffer; when the
+  // map resolves, the bottom-up RGBA frame replaces the CPU shadow that
+  // readPixels serves. Programmable draws (FNA, Mindustry) reach the screen
+  // only this way. The image lags the draw calls by about one swap.
+  _startReadback() {
+    if (this._readbackBusy || !this._colorTexture) return;
+    const width = this._width, height = this._height, format = this._format;
+    const bytesPerRow = Math.ceil(width * 4 / 256) * 256;
+    if (!this._readbackBuffer || this._readbackBuffer.size !== bytesPerRow * height) {
+      this._readbackBuffer?.destroy();
+      this._readbackBuffer = this._device.createBuffer({ size: bytesPerRow * height, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    }
+    const buffer = this._readbackBuffer;
+    const encoder = this._device.createCommandEncoder();
+    encoder.copyTextureToBuffer({ texture: this._colorTexture }, { buffer, bytesPerRow, rowsPerImage: height }, [width, height, 1]);
+    this._device.queue.submit([encoder.finish()]);
+    this._readbackBusy = true;
+    buffer.mapAsync(GPUMapMode.READ).then(() => {
+      const source = new Uint8Array(buffer.getMappedRange());
+      const swap = format === 'bgra8unorm' || format === 'bgra8unorm-srgb';
+      if (width === this._width && height === this._height) {
+        if (this._gpuPixels?.length !== width * height * 4) this._gpuPixels = new Uint8Array(width * height * 4);
+        const out = this._gpuPixels;
+        for (let y = 0; y < height; y++) {
+          const row = (height - 1 - y) * bytesPerRow, dst = y * width * 4;
+          if (swap) for (let x = 0; x < width; x++) {
+            const s = row + x * 4, d = dst + x * 4;
+            out[d] = source[s + 2]; out[d + 1] = source[s + 1]; out[d + 2] = source[s]; out[d + 3] = source[s + 3];
+          } else out.set(source.subarray(row, row + width * 4), dst);
+        }
+        this._gpuFrames = (this._gpuFrames || 0) + 1;
+      }
+      buffer.unmap();
+    }).catch(error => this._reportFailure(error)).finally(() => { this._readbackBusy = false; });
   }
   getError() { return GL.NO_ERROR; }
   isContextLost() { return false; }
