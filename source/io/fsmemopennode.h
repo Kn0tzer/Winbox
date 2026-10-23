@@ -49,6 +49,7 @@ public:
 
     U64 lastModified() {return this->lastModifiedTime;}
     U32 getSeals() {return this->seals;}
+    bool hasSeal(U32 seal) const {return (this->seals & seal) != 0;}
     U32 addSeals(U32 seals);
 private:
     U32 seals;

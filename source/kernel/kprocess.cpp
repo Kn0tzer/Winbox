@@ -1680,6 +1680,13 @@ U32 KProcess::ftruncate64(FD fildes, U64 length) {
     if (!fd->canWrite()) {
         return -K_EINVAL;
     }
+    if (length > 0x7fffffffffffffffULL) return -K_EINVAL;
+    if (openNode->node->type == FsNode::Type::Memory) {
+        FsMemOpenNode* memNode = (FsMemOpenNode*)openNode;
+        const S64 newLength = (S64)length;
+        if ((newLength < openNode->length() && memNode->hasSeal(K_F_SEAL_SHRINK)) ||
+            (newLength > openNode->length() && memNode->hasSeal(K_F_SEAL_GROW))) return -K_EPERM;
+    }
     if (!openNode->setLength(length)) {
         return -K_EIO;
     }
@@ -2451,6 +2458,8 @@ U32 KProcess::writev(KThread* thread, FD handle, U32 iov, S32 iovcnt) {
 }
 
 U32 KProcess::memfd_create(BString name, U32 flags) {
+    constexpr U32 supportedFlags = 1u /*MFD_CLOEXEC*/ | 2u /*MFD_ALLOW_SEALING*/;
+    if (flags & ~supportedFlags) return (U32)-K_EINVAL;
     // Each memfd needs its own inode identity: the 64-bit MAP_SHARED page
     // registry is keyed by (inode, file page), so a constant id would alias
     // unrelated memfds (e.g. wine's server sections vs libpulse's shm pool)

@@ -32,6 +32,8 @@ S64 FsMemOpenNode::length() {
 }
 
 bool FsMemOpenNode::setLength(S64 length) {
+    if (length < 0 || (length < (S64)this->buffer.size() && this->hasSeal(K_F_SEAL_SHRINK)) ||
+        (length > (S64)this->buffer.size() && this->hasSeal(K_F_SEAL_GROW))) return false;
     this->lastModifiedTime = KSystem::getSystemTimeAsMicroSeconds() / 1000l;
     this->buffer.resize((U32)length, 0);
     return true;
@@ -93,6 +95,7 @@ U32 FsMemOpenNode::readNative(U8* buffer, U32 len) {
 }
 
 U32 FsMemOpenNode::writeNative(U8* buffer, U32 len) {
+    if (this->hasSeal(K_F_SEAL_WRIT) || this->hasSeal(K_F_SEAL_FUTURE_WRITE)) return (U32)-K_EPERM;
     if (len==0)
         return 0;
     U32 remaining = len;
@@ -127,8 +130,12 @@ bool FsMemOpenNode::isOpen() {
 }
 
 U32 FsMemOpenNode::addSeals(U32 seals) {
+    constexpr U32 validSeals = K_F_SEAL_SEAL | K_F_SEAL_SHRINK | K_F_SEAL_GROW |
+                               K_F_SEAL_WRIT | K_F_SEAL_FUTURE_WRITE;
+    if (seals & ~validSeals) return (U32)-K_EINVAL;
     if (this->seals & K_F_SEAL_SEAL) {
-        return -K_EPERM;
+        return (U32)-K_EPERM;
     }
+    this->seals |= seals;
     return 0;
 }
