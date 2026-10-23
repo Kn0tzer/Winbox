@@ -99,3 +99,14 @@ test('32-bit and 64-bit Features2 walkers answer from the same fill functions', 
   assert.deepEqual(w32, w64);
   assert.match(bridge, /fillCoreFeatures\(&f\);\s*\/\/ same answer as the 64-bit guest/);
 });
+
+test('Features2 output zeroes unsupported guest input bits before setting implemented bits', () => {
+  const set64Start = bridge.indexOf('#define SET_FEATURES(addr, fn, T)');
+  const set64 = bridge.slice(set64Start, bridge.indexOf('// Every TRUE bit', set64Start));
+  const set32Start = bridge.indexOf('#define SET_FEATURES32(addr, fn, T)');
+  const set32 = bridge.slice(set32Start, bridge.indexOf('// 32-bit field writers', set32Start));
+  assert.match(set64, /memcpyFromGuest\(&f_, \(addr\), 16\)/);
+  assert.doesNotMatch(set64, /memcpyFromGuest\([^\n]*sizeof\(f_\)/);
+  assert.match(set32, /memcpyFromGuest\(&f_, \(addr\), 8\)/);
+  assert.doesNotMatch(set32, /readStruct32\(\(addr\), f_\)/);
+});

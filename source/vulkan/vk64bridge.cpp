@@ -3371,7 +3371,8 @@ void fillCoreFeatures(VkPhysicalDeviceFeatures* f) {
     do {                                                                       \
         if ((addr) && g_mem) {                                                 \
             T f_ = {};                                                         \
-            g_mem->memcpyFromGuest(&f_, (addr), sizeof(f_));                   \
+            /* Feature getters write output fields; never echo guest input bits. */ \
+            g_mem->memcpyFromGuest(&f_, (addr), 16);                           \
             fn(f_);                                                            \
             g_mem->memcpyToGuest((addr), &f_, sizeof(f_));                     \
         }                                                                      \
@@ -6752,7 +6753,8 @@ namespace {
     do {                                                                       \
         if ((addr) && g_mem32) {                                               \
             T f_ = {};                                                         \
-            readStruct32((addr), f_);                                          \
+            /* Keep sType/pNext only; all returned feature bits start false. */ \
+            g_mem32->memcpyFromGuest(&f_, (addr), 8);                          \
             fn(f_);                                                            \
             writeStruct32((addr), f_);                                         \
         }                                                                      \
