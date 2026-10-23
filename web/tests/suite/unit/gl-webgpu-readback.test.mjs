@@ -15,6 +15,58 @@ test('resizing targets preserves the overlapping CPU shadow using the old row st
   } finally { gpu.restore(); }
 });
 
+test('readPixels converts RGB, BGRA, and normalized float output', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: () => {} });
+    await gl.ready;
+    gl._pixels.set([10, 20, 30, 40], 0);
+    const rgb = new Uint8Array(4);
+    gl.readPixels(0, 0, 1, 1, 0x1907, 0x1401, rgb);
+    assert.deepEqual([...rgb], [10, 20, 30, 0], 'RGB output observes PACK_ALIGNMENT padding');
+    const bgra = new Uint8Array(4);
+    gl.readPixels(0, 0, 1, 1, 0x80e1, 0x1401, bgra);
+    assert.deepEqual([...bgra], [30, 20, 10, 40]);
+    const rgbaFloat = new Float32Array(4);
+    gl.readPixels(0, 0, 1, 1, 0x1908, 0x1406, rgbaFloat);
+    assert.deepEqual(rgbaFloat, new Float32Array([10 / 255, 20 / 255, 30 / 255, 40 / 255]));
+  } finally { gpu.restore(); }
+});
+
+test('unsupported depth and pixel-pack-buffer reads log once and latch GL errors', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    gl.readPixels(0, 0, 1, 1, 0x1902, 0x1403, new Uint16Array(1));
+    assert.equal(gl.getError(), 0x0502, 'depth readback reports INVALID_OPERATION');
+    gl.readPixels(0, 0, 1, 1, 0x1908, 0x1401, 0);
+    assert.equal(gl.getError(), 0x0502, 'PBO offsets report INVALID_OPERATION');
+    gl.readPixels(0, 0, 1, 1, 0x1908, 0x1401, 0);
+    assert.equal(logs.filter(line => line.includes('pixel pack buffer destination')).length, 1, 'unsupported warnings are rate-limited by feature');
+  } finally { gpu.restore(); }
+});
+
+test('GPU-written FBO readback fails loudly until asynchronous FBO staging exists', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    const texture = gl.createTexture();
+    gl.bindTexture(0x0de1, texture);
+    gl.texImage2D(0x0de1, 0, 0x1908, 2, 2, 0, 0x1908, 0x1401, new Uint8Array(16));
+    const framebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(0x8d40, framebuffer);
+    gl.framebufferTexture2D(0x8d40, 0x8ce0, 0x0de1, texture, 0);
+    gl._gpuWrittenFramebuffers.add(framebuffer);
+    gl.readBuffer(0x8ce0);
+    const pixel = new Uint8Array(4);
+    gl.readPixels(0, 0, 1, 1, 0x1908, 0x1401, pixel);
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('GPU-backed framebuffer readPixels')));
+  } finally { gpu.restore(); }
+});
+
 // Programmable GL draws (FNA, Mindustry) only reach the X11 present through a
 // GPU readback, so glReadPixels on the default framebuffer must serve the
 // frame copied back at the previous present, not the CPU clear shadow.

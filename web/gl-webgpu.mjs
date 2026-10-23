@@ -333,6 +333,7 @@ export class WebGPUGL {
     this._fallbackContext = fallbackContext;
     this._defaultFramebuffer = defaultFramebuffer;
     this._log = log;
+    this._unsupportedWarnings = new Set();
     this._logError = false;
     this._nextId = 1;
     this._clear = [0, 0, 0, 0];
@@ -345,6 +346,7 @@ export class WebGPUGL {
     this._readFramebuffer = defaultFramebuffer;
     this._defaultBufferSelection = { draw: 0x0405, read: 0x0405 };
     this._bufferSelections = new WeakMap();
+    this._gpuWrittenFramebuffers = new WeakSet();
     this._error = GL.NO_ERROR;
     this._arrayBuffer = null;
     this._elementArrayBuffer = null;
@@ -475,6 +477,14 @@ export class WebGPUGL {
   _reportFailure(error) {
     const first = reportBridgeFailure('gl-webgpu', error, this._log);
     if (first) try { this.onFailure?.(error); } catch {}
+  }
+
+  _rejectUnsupported(feature, error = GL.INVALID_OPERATION) {
+    if (!this._unsupportedWarnings.has(feature)) {
+      this._unsupportedWarnings.add(feature);
+      try { this._log?.(`gl-webgpu: unsupported ${feature}`); } catch {}
+    }
+    this._recordError(error);
   }
 
   _framebufferForTarget(target) {
@@ -753,18 +763,40 @@ export class WebGPUGL {
 
   readPixels(x, y, width, height, format, type, destination) {
     if (this._bufferSelection(this._readFramebuffer).read === GL.NONE) return;
-    if (!(destination instanceof Uint8Array) && !(destination instanceof Uint8ClampedArray)) return;
-    if (format !== 0x1908 || type !== 0x1401) return;
+    const components = format === 0x1907 ? 3 : [0x1908, 0x80e1].includes(format) ? 4 : 0;
+    const byteType = type === 0x1401;
+    const floatType = type === 0x1406;
+    const knownFormats = [0x1903, 0x8227, 0x1907, 0x1908, 0x80e1, 0x1902, 0x84f9];
+    const knownTypes = [0x1401, 0x1403, 0x1405, 0x1406, 0x84fa];
+    const byteDestination = destination instanceof Uint8Array || destination instanceof Uint8ClampedArray;
+    const floatDestination = destination instanceof Float32Array;
+    if (!knownFormats.includes(format)) { this._rejectUnsupported(`readPixels format 0x${Number(format).toString(16)}`, GL.INVALID_ENUM); return; }
+    if (!knownTypes.includes(type)) { this._rejectUnsupported(`readPixels type 0x${Number(type).toString(16)}`, GL.INVALID_ENUM); return; }
+    if (!components) { this._rejectUnsupported(`readPixels format 0x${Number(format).toString(16)}`, GL.INVALID_OPERATION); return; }
+    if (!byteType && !floatType) { this._rejectUnsupported(`readPixels type 0x${Number(type).toString(16)}`, GL.INVALID_OPERATION); return; }
+    if (typeof destination === 'number') {
+      this._rejectUnsupported('pixel pack buffer destination', GL.INVALID_OPERATION); return;
+    }
+    if (byteType && !byteDestination || floatType && !floatDestination) {
+      this._rejectUnsupported('readPixels destination type', GL.INVALID_OPERATION); return;
+    }
+    if (!destination || typeof destination.length !== 'number') {
+      this._rejectUnsupported('pixel pack buffer destination', GL.INVALID_OPERATION); return;
+    }
     const target = this._targetFor(this._readFramebuffer);
+    if (!target?.default && this._gpuWrittenFramebuffers.has(target?.framebuffer)) {
+      this._rejectUnsupported('GPU-backed framebuffer readPixels', GL.INVALID_OPERATION); return;
+    }
     // The default framebuffer is served from the last GPU readback once one
     // has landed; the CPU shadow only covers frames before the first present.
     const gpuFrame = target?.default && this._gpuPixels?.length === target.width * target.height * 4;
     const pixels = gpuFrame ? this._gpuPixels : target?.pixels;
     if (!target || !pixels) return;
     const rowLength = this._pack.rowLength || width;
-    const rawStride = rowLength * 4;
+    const rawStride = rowLength * components * (floatType ? 4 : 1);
     const stride = Math.ceil(rawStride / this._pack.alignment) * this._pack.alignment;
-    const base = this._pack.skipRows * stride + this._pack.skipPixels * 4;
+    const bytesPerComponent = floatType ? 4 : 1;
+    const base = (this._pack.skipRows * stride + this._pack.skipPixels * components * bytesPerComponent) / bytesPerComponent;
     for (let row = 0; row < height; row++) {
       const sourceY = y + row;
       if (sourceY < 0 || sourceY >= target.height) continue;
@@ -772,8 +804,12 @@ export class WebGPUGL {
         const sourceX = x + col;
         if (sourceX < 0 || sourceX >= target.width) continue;
         const src = (sourceY * target.width + sourceX) * 4;
-        const dst = base + row * stride + col * 4;
-        if (dst + 4 <= destination.length) destination.set(pixels.subarray(src, src + 4), dst);
+        const dst = base + row * stride / bytesPerComponent + col * components;
+        if (dst + components > destination.length) continue;
+        const rgba = [pixels[src], pixels[src + 1], pixels[src + 2], pixels[src + 3]];
+        const channels = format === 0x1907 ? rgba.slice(0, 3) : format === 0x80e1 ? [rgba[2], rgba[1], rgba[0], rgba[3]] : rgba;
+        if (floatType) for (let c = 0; c < components; c++) destination[dst + c] = channels[c] / 255;
+        else destination.set(channels, dst);
       }
     }
   }
@@ -1805,6 +1841,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     } else pass.draw(count, instances, first, 0);
     pass.end();
     this._device.queue.submit([encoder.finish()]);
+    if (!target.default) this._gpuWrittenFramebuffers.add(target.framebuffer);
     if (temporaryIndex) this._device.queue.onSubmittedWorkDone().then(() => temporaryIndex.destroy()).catch(() => {});
     if (state.fixedTemporaryBuffers?.length) this._device.queue.onSubmittedWorkDone().then(() => {
       for (const buffer of state.fixedTemporaryBuffers) {
