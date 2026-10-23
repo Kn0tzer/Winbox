@@ -706,13 +706,9 @@ struct QueryPoolCreateInfo32Local {
 };
 static_assert(sizeof(QueryPoolCreateInfo64Local) == 32, "64-bit VkQueryPoolCreateInfo layout");
 static_assert(sizeof(QueryPoolCreateInfo32Local) == 24, "32-bit VkQueryPoolCreateInfo layout");
-// Timeline semaphores (audit P2-NOW item 3). DXVK puts a u64 wait/signal fence
-// on EVERY command-list flush, so the counter is not optional bookkeeping: it is
-// the only thing that makes vkQueueSubmit's VkTimelineSemaphoreSubmitInfo
-// meaningful. Under immediate execution the counter is HONEST — everything a
-// submit waits for has already run, and everything it signals is already done —
-// so signal is a monotone max and a wait either succeeds (value reached) or,
-// with timeout 0 against a value the queue has not reached, returns VK_TIMEOUT.
+// Binary semaphores track swapchain acquire/submit/present ordering. Timeline
+// semaphores are not advertised because WebGPU replay completion is asynchronous
+// and is not yet connected to Vulkan timeline signals.
 struct Semaphore : Obj {
     int signalled = 0;          /* binary semaphores keep the old flag */
     U64  counter = 0;
