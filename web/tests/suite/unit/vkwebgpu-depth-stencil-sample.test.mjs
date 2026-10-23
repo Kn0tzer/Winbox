@@ -29,7 +29,7 @@ test('sampling a depth24plus-stencil8 target binds a depth-only view', async () 
     assert.equal((await r.render(frame)).rendered, true);
     const stencilViews = bound.filter(v => v.texture?.format?.includes('stencil'));
     assert.ok(stencilViews.length > 0, 'a depth/stencil texture was bound');
-    for (const v of stencilViews) assert.equal(v.options.aspect, 'depth-only');
+    for (const v of stencilViews) { assert.equal(v.options.aspect, 'depth-only'); assert.equal(v.options.format, undefined, 'a single-aspect view must not override the format'); }
     r.destroy();
   } finally { restore(); }
 });
