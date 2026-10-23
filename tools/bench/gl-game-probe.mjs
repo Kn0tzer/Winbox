@@ -188,7 +188,6 @@ try {
     arch,
     args: JSON.stringify(args),
     glversion: glVersion,
-    jit,
     session: '0',
     persist: '0',
     fresh: '1',
