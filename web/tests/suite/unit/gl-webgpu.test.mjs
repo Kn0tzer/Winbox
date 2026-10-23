@@ -71,6 +71,19 @@ test('GL query objects return zero results and become available only after end',
   } finally { gpu.restore(); }
 });
 
+test('transform feedback operations reject once with INVALID_OPERATION', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    gl.beginTransformFeedback(0x0004);
+    assert.equal(gl.getError(), 0x0502);
+    gl.endTransformFeedback();
+    assert.equal(gl.getError(), 0x0502);
+    assert.equal(logs.filter(line => line.includes('transform feedback')).length, 1);
+  } finally { gpu.restore(); }
+});
+
 test('uint8 indices widen for WebGPU and wider index types preserve values', () => {
   assert.deepEqual([...convertIndices(new Uint8Array([0, 2, 255]), 0x1401)], [0, 2, 255]);
   assert.ok(convertIndices(new Uint8Array([1]), 0x1401) instanceof Uint16Array);

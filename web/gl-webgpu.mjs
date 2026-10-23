@@ -1332,6 +1332,15 @@ export class WebGPUGL {
     if (parameter === 0x8866) return query.result;
     this._recordError(GL.INVALID_ENUM); return null;
   }
+  createTransformFeedback() { this._rejectUnsupported('transform feedback', GL.INVALID_OPERATION); return null; }
+  deleteTransformFeedback() { this._rejectUnsupported('transform feedback', GL.INVALID_OPERATION); }
+  isTransformFeedback() { this._rejectUnsupported('transform feedback', GL.INVALID_OPERATION); return false; }
+  bindTransformFeedback() { this._rejectUnsupported('transform feedback', GL.INVALID_OPERATION); }
+  beginTransformFeedback() { this._rejectUnsupported('transform feedback', GL.INVALID_OPERATION); }
+  endTransformFeedback() { this._rejectUnsupported('transform feedback', GL.INVALID_OPERATION); }
+  pauseTransformFeedback() { this._rejectUnsupported('transform feedback', GL.INVALID_OPERATION); }
+  resumeTransformFeedback() { this._rejectUnsupported('transform feedback', GL.INVALID_OPERATION); }
+  transformFeedbackVaryings() { this._rejectUnsupported('transform feedback', GL.INVALID_OPERATION); }
   getAttachedShaders(program) { return program?.shaders?.slice() || []; }
   getAttribLocation(program, name) {
     if (!program) return -1;

@@ -77,6 +77,13 @@ test('native query bridge tracks completion and never reports fabricated nonzero
   assert.doesNotMatch(bridgeSrc, /GL_QUERY_RESULT\s*\*\/\)\s*v\s*=\s*1/);
 });
 
+test('native transform-feedback calls are forwarded to the loud WebGPUGL rejection', () => {
+  assert.match(bridgeSrc, /case GL64_fn_glBeginTransformFeedback:\s*if \(g_glContext\) GL_MT\(glBeginTransformFeedback/);
+  assert.match(bridgeSrc, /case GL64_fn_glEndTransformFeedback:\s*if \(g_glContext\) GL_MT\(glEndTransformFeedback/);
+  assert.match(webGpuGlSrc, /beginTransformFeedback\(\) \{ this\._rejectUnsupported\('transform feedback', GL\.INVALID_OPERATION\); \}/);
+  assert.doesNotMatch(bridgeSrc, /case GL64_fn_glBeginTransformFeedback:\s*case GL64_fn_glEndTransformFeedback:/);
+});
+
 test('core GL 2.1 immediate-mode functions are shim-registered', () => {
   // These are the functions the verified GL triangle uses
   const core = [
