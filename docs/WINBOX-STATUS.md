@@ -1,6 +1,6 @@
 # Winbox manager status (keep updated; read this first)
 
-Main branch: `fix/winbox-chromium-20261018` in /home/ubuntu/boxedwine64. Integ build 5 (integ/winbox-20261022b HEAD 76f517d38) is merged here, deployed to /home/ubuntu/kn0tzer/winbox and pushed (see deploy notes in docs/reports/winbox-finish-20261020.md). Earlier final report: docs/reports/winbox-finish-20261020.md.
+Main branch: `fix/winbox-chromium-20261018` in /home/ubuntu/boxedwine64. Integ build 5 (integ/winbox-20261022b HEAD 76f517d38) is merged here, deployed to /home/ubuntu/kn0tzer/winbox (previous site backed up in /home/ubuntu/backups/winbox-20261023-pre) and the branch pushed to origin. master is NOT updated: pushing it would trigger .github/workflows/deploy-pages.yml (stale emsdk 6.0.0 vs pinned 6.0.9, publishes an old wine64.html to Pages). Earlier final report: docs/reports/winbox-finish-20261020.md.
 
 ## Demo matrix on integ build 5 (2026-10-23; seconds click -> mapped, jit0/jit1, probes ran under load ~9 so absolute times are inflated)
 notepad 121/117, snake 66/75, celeste 49/42, portal 46/27, gangbeasts 230/263, doom 75/79 - ALL MAP in both JIT modes. Unit suite 161/0, launcher-ui and browser.mjs pass.
