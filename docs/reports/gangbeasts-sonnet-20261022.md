@@ -108,6 +108,42 @@ Success = the main thread leaves NtGetContextThread (no identical `syscallframe`
 log proceeds past audio init to a swapchain/window. Even then, Gang Beasts may hit further
 independent blockers after the GC stop-the-world; this fix removes the first one found.
 
+## After the map: what Gang Beasts does next (2026-10-23)
+
+With the signal-interrupt fix in the integration build the game maps and Unity runs and presents. The
+remaining blockers were all in the Vulkan/WebGPU path, not the emulator; pure JS (`web/*.mjs`,
+`tools/spirvfix`) except the notes marked C++. All fixes have unit tests (`--unit`: 161 passed).
+
+| Symptom | Fix | Where |
+|---|---|---|
+| "Failed to create GPU event" - Unity aborts device init | shim now exports `vkCreate/Destroy/Set/Reset/GetEventStatus`, `vkCmdSet/Reset/WaitEvents` (fn ids 841-848) | `tools/rootfs64/libvk64/libvk64.c`, rebuilt `libvulkan.so.1` |
+| DXVK probes 300+ unknown instance/device proc names | 512 named stub slots for unknown `vkGet*ProcAddr` names | libvk64.c |
+| naga rejects the DXVK MSAA-resolve pipeline: integer varyings without `Flat`; `BuiltIn Layer` in a fragment shader | spirvfix R10 `flat-integer-varyings`, R11 `fragment-layer-to-zero` | `tools/spirvfix/spirvfix.mjs`, `spirvfix-r10-r11.test.mjs` |
+| Dawn rejects every frame: pipeline vs pass attachment state; scissor outside render target; Float texture bound where Depth expected | reset `st.pipeRec` per pass; `clampScissor`; `depth32float` placeholder for `texture_depth_*` | `web/vkwebgpu.mjs`, `vkwebgpu-pass-state-carryover.test.mjs` |
+| ~30 pipelines: `textureSample must only be called from uniform control flow` | fragment modules start with `diagnostic(off, derivative_uniformity);` | `vkwebgpu.mjs`, `vkwebgpu-derivative-uniformity.test.mjs` |
+| 5 pipelines: VS output vec4 vs FS input vec3/vec2 at the same location | `matchFragmentInputsToVertexOutputs` widens FS input and swizzles the private copy | `web/wgsl-utils.mjs`, `wgsl-varying-match.test.mjs` |
+| 7 pipelines: `texture_multisampled_2d_array` unresolved | `rewriteMultisampledTextures`: binding becomes the resolved `texture_2d_array`, per-sample loads read level 0 | `web/wgsl-utils.mjs`, `wgsl-multisampled-texture.test.mjs` |
+
+### Known remaining gaps
+
+- 1 pipeline: shader declares `texture_2d` but the descriptor set binds a cube view (layout Cube vs shader 2D). Rare, not handled.
+- Typed buffer SRV/UAV (`texel buffer`) bindings are not supported by the page tier.
+- C++ bridge (`source/vulkan/vk64bridge.cpp`) has no cases for `vkCmdClearDepthStencilImage`,
+  `vkCmdWriteTimestamp`, `vkCmdSetDepthBounds`; `vkCmdSetFrontFace`/`vkCmdSetCullMode`
+  (~1900 calls each) and `vkCmdSetEvent2` (~394) hit the extended-dynamic-state path. Command buffers
+  with no `CMD_BEGIN_RP` log "submit(v2): frame N has no framebuffer, skipped".
+- The shim change needs the rebuilt `libvulkan.so.1` packaged into the production rootfs.
+- The integration `dist/` lacks `shader-cache.mjs`; `game-probe.mjs` exits at ~17 s with a 404 against it
+  (probes here symlink it in from `web/`). The JS above must also reach the integration dist
+  (`vkwebgpu.mjs`, `wgsl-utils.mjs`, root-level `spirvfix.mjs`).
+- Probe helper: `PROBE_IGNORE_TERM=1` (another agent's cleanup can SIGTERM a long probe).
+
+### The extra signal checks
+
+Not added. The traces show Unity running, presenting and creating Vulkan resources; no thread sits in
+`connect`/`accept`/`KThread::sleep`/`epoll_wait` waiting for a signal. They remain the same latent
+hang class (below) and should be added only if a trace shows one.
+
 ## Residual / next
 
 - Other blocking sites not covered: `connect`/`accept`, `KThread::sleep`, `epoll_wait`, and any
