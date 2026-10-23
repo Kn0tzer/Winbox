@@ -273,7 +273,9 @@ inline void replayImmOp(const ImmOp& op) {
         case GL64_fn_glColor3f:  glColor3f(op.f[0], op.f[1], op.f[2]); break;
         case GL64_fn_glColor4f:  glColor4f(op.f[0], op.f[1], op.f[2], op.f[3]); break;
         case GL64_fn_glNormal3f: glNormal3f(op.f[0], op.f[1], op.f[2]); break;
+#ifndef __EMSCRIPTEN__
         case GL64_fn_glMultiTexCoord2fARB: glMultiTexCoord2f((GLenum)op.f[0], op.f[1], op.f[2]); break;
+#endif
         case GL64_fn_glVertex2f: glVertex2f(op.f[0], op.f[1]); break;
         case GL64_fn_glVertex3f: glVertex3f(op.f[0], op.f[1], op.f[2]); break;
         default: break;
@@ -2372,8 +2374,10 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 return 0;
             }
 #endif
+#ifndef __EMSCRIPTEN__
             if (g_glContext) RECORD_IMM(GL64_fn_glMultiTexCoord2fARB, (float)texture, s, t, 0,
                                         glMultiTexCoord2f(texture, s, t));
+#endif
             return 0;
         }
 
