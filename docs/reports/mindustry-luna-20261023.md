@@ -25,12 +25,23 @@ node --test web/tests/suite/unit/gl-shader-compat.test.mjs
 11 passed, 0 failed
 ```
 
-## Remaining blocker
+## Restored-runtime reruns
 
-I could not run the requested fresh `jit=0` and `jit=1` probes. The probe's default Mindustry directory and the previous Mindustry zip path no longer exist. A search of `/tmp` and the usual `/home/ubuntu` locations found no `Mindustry.exe` or Mindustry-named archive. The preserved `verify3` artifact is diagnostic evidence only; it is not a substitute for the requested two runs.
+The game was restored at `/tmp/winbox-finish/r2/work-glwgpu/mindustry/Mindustry/Mindustry.exe`. I assembled a temporary probe root under `/tmp/winbox-finish/r4/dist-stage`: top-level web modules are symlinks to this worktree's `web/`; runtime binaries are symlinks to the supplied integration `web/runtime`; the required page entrypoint and support/dependency files come from the integration distribution. The staged WASM SHA-256 matches `BUILD_INFO.json`: `6c2fbf7e32eab884e4b2dea362a1c7aa98ced64f7c0cd94447e3d3b5993cf5ed`. No WASM build was run and the integration worktree was not edited.
 
-Without a current game archive and a fresh shader dump from the black-screen run, the remaining rendering failure is not localized to a GLSL translation rule or a specific WebGPU GL feature. I made no speculative renderer change and added no Mindustry-specific behavior. The menu is not verified; the report therefore records an incomplete result rather than claiming success.
+Both requested runs completed with the same game zip and runtime build:
 
-## Next step
+| JIT | First window | WebGPU GL active | Outcome |
+| --- | ---: | --- | --- |
+| 0 | no, 480 s timeout | no | OpenJDK exits during initialization: `Too small maximum heap` |
+| 1 | no, 480 s timeout | no | OpenJDK exits during initialization: `Too small maximum heap` |
 
-Restore/provide the same Mindustry game directory or archive used for the earlier probe. Then run the existing `tools/bench/gl-game-probe.mjs` against the integration runtime with `WINE_DIST_DIR=/home/ubuntu/boxedwine64-worktrees/winbox-integ-20261022/web`, using the worktree's `web/` sources and `JIT=0` followed by `JIT=1`. Preserve the failing shader source, console, and screenshots before making the next general GL/WebGPU change.
+Evidence:
+
+- JIT=0: `/tmp/winbox-finish/r4/mindustry-jit0/summary.json`, `console.log`, `timeout.png`
+- JIT=1: `/tmp/winbox-finish/r4/mindustry-jit1/summary.json`, `console.log`, `timeout.png`
+- Both logs show the Java VM startup error before any GL context, shader compilation, or `host GL up (WebGPU)` message. There is no shader failure or WebGL2 recovery in these runs.
+
+The likely blocker is the x86-64 guest memory report. `source/kernel/syscall64.cpp`, `X64_SYS_sysinfo` (case 99), returns success after zero-filling all 112 bytes, so `totalram`, `freeram`, and `mem_unit` are zero. In contrast, the 32-bit `KSystem::sysinfo` reports 1 GiB total and 768 MiB free, and `/proc/meminfo` reports 1 GiB total. OpenJDK now aborts with “Too small maximum heap” on the x64 path, consistent with a zero physical-memory report. The current logs do not trace the syscall itself, so this is a strong root-cause candidate rather than direct syscall-level proof.
+
+This C++ fix needs a WASM rebuild, which was explicitly excluded. I did not modify it. The required follow-up is to populate the x86-64 `sysinfo` fields with a nonzero, consistent memory total/free value and `mem_unit`, add focused coverage, rebuild the WASM runtime, then rerun both modes. Until that is done, the GL menu failure cannot be evaluated on the supplied runtime.
