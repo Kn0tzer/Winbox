@@ -32,3 +32,7 @@ Ten lane branches were merged (shaders, cpu32, cpu64, render, ui, jitoff, gamepa
 - User-facing changes: folder mode moved from the home page into Settings as a toggle with a "?" help; JIT setting help is two sentences; WebGPU/WebGL and sharpness settings removed; Performance panel shows fps, frame time, CPU time, GPU time; flowchart renamed "GL subset" to "GL bridge" and dropped the WebGL2 path.
 - Fixes: x86-64 sysinfo reports memory (Mindustry JVM heap check), export now includes shader-cache.mjs, vk-page-lifetime fixture no longer sets the removed #backend setting.
 - Open: Q3 (null qglGenProgramsARB, VBO path), Mindustry black screen after GL init, Gang Beasts shader fixes, startup time dominated by Wine service waits.
+
+## Update 2026-10-23 (later): integ builds 7 and 8
+- Matrix 12/12 mapped on builds 6, 7, 8 (build 8 jit0/jit1 s: notepad 61/104, snake 52/55, celeste 24/24, portal 26/28, gangbeasts 179/214, doom 51/122). Unit suite 172 on build 7, 173 + one stub fix on build 8; launcher-ui and browser.mjs pass. Not deployed (no user-visible change vs build 5).
+- Mindustry (build 7, ctrace=1): no bad control transfer or hs_err; stalls silently after the JVM RAM message with zero presents. Q3: loading screen of Q3DM1. Gang Beasts: dynamic raster state, event2, clear-depth-stencil added; black render targets remain; pass-readback diagnostic in progress. Wake-latency counters added (opt-in) for the Wine startup investigation.
