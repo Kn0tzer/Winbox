@@ -27,7 +27,7 @@ const GL = Object.freeze({
   MAX_DRAW_BUFFERS: 0x8824, DRAW_BUFFER0: 0x8825,
   BACK: 0x0405, NONE: 0,
   NO_ERROR: 0, INVALID_ENUM: 0x0500, INVALID_VALUE: 0x0501,
-  INVALID_OPERATION: 0x0502, OUT_OF_MEMORY: 0x0505,
+  INVALID_OPERATION: 0x0502, OUT_OF_MEMORY: 0x0505, INVALID_FRAMEBUFFER_OPERATION: 0x0506,
   COMPILE_STATUS: 0x8b81, LINK_STATUS: 0x8b82, INFO_LOG_LENGTH: 0x8b84,
   VERTEX_SHADER: 0x8b31, FRAGMENT_SHADER: 0x8b30,
 });
@@ -2442,7 +2442,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (parameter === 0x8cd2) return record.level || 0;
     return 0;
   }
-  async _blitColorFormats(source, destination, sx, sy, width, height, dx, dy, filter) {
+  async _blitColorFormats(source, destination, sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, filter) {
     // RGBA texture attachments and the browser's BGRA surface cannot be copied
     // byte-for-byte. A render pass performs the channel-format conversion.
     let pipeline = this._blitPipelineCache.get(destination.format);
@@ -2468,8 +2468,15 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       this._blitPipelineCache.set(destination.format, pipeline);
     }
     const uniform = this._device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const destinationLeft = Math.min(dx0, dx1), destinationRight = Math.max(dx0, dx1);
+    const destinationBottom = Math.min(dy0, dy1), destinationTop = Math.max(dy0, dy1);
+    const txLeft = (destinationLeft - dx0) / (dx1 - dx0), txRight = (destinationRight - dx0) / (dx1 - dx0);
+    const tyTop = (destinationTop - dy0) / (dy1 - dy0), tyBottom = (destinationBottom - dy0) / (dy1 - dy0);
+    const sourceXLeft = sx0 + txLeft * (sx1 - sx0), sourceXRight = sx0 + txRight * (sx1 - sx0);
+    const sourceYTop = sy0 + tyTop * (sy1 - sy0), sourceYBottom = sy0 + tyBottom * (sy1 - sy0);
     this._device.queue.writeBuffer(uniform, 0, new Float32Array([
-      sx / source.width, (source.height - sy - height) / source.height, width / source.width, height / source.height,
+      sourceXLeft / source.width, 1 - sourceYTop / source.height,
+      (sourceXRight - sourceXLeft) / source.width, (sourceYTop - sourceYBottom) / source.height,
     ]));
     const sampling = filter === 0x2600 ? 'nearest' : 'linear';
     const bindGroup = this._device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [
@@ -2483,31 +2490,50 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       loadOp: 'load', storeOp: 'store',
     }] });
     pass.setPipeline(pipeline); pass.setBindGroup(0, bindGroup);
-    pass.setViewport(dx, destination.height - dy - height, width, height, 0, 1);
+    const width = destinationRight - destinationLeft, height = destinationTop - destinationBottom;
+    pass.setViewport(destinationLeft, destination.height - destinationTop, width, height, 0, 1);
     pass.draw(3); pass.end();
     this._device.queue.submit([encoder.finish()]);
     this._device.queue.onSubmittedWorkDone().then(() => uniform.destroy()).catch(() => {});
   }
 
   blitFramebuffer(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter) {
+    if (mask & ~(GL.COLOR_BUFFER_BIT | GL.DEPTH_BUFFER_BIT | GL.STENCIL_BUFFER_BIT)) { this._recordError(GL.INVALID_VALUE); return; }
+    if ((mask & GL.COLOR_BUFFER_BIT) && ![0x2600, 0x2601].includes(filter)) { this._recordError(GL.INVALID_ENUM); return; }
+    if ((mask & (GL.DEPTH_BUFFER_BIT | GL.STENCIL_BUFFER_BIT)) && filter !== 0x2600) { this._recordError(GL.INVALID_OPERATION); return; }
+    if (mask & (GL.DEPTH_BUFFER_BIT | GL.STENCIL_BUFFER_BIT)) { this._rejectUnsupported('blitFramebuffer depth/stencil', GL.INVALID_OPERATION); return; }
     if (!(mask & GL.COLOR_BUFFER_BIT)) return;
     const source = this._targetFor(this._readFramebuffer), destination = this._targetFor(this._drawFramebuffer);
-    if (!source?.pixels || !destination?.pixels) return;
+    if (!source?.colorTexture || !destination?.colorTexture || !source?.pixels || !destination?.pixels) { this._recordError(GL.INVALID_FRAMEBUFFER_OPERATION); return; }
+    if (srcX0 === srcX1 || srcY0 === srcY1 || dstX0 === dstX1 || dstY0 === dstY1) return;
     if (destination.default) this._frameDirty = true;
-    const sx = Math.min(srcX0, srcX1), sy = Math.min(srcY0, srcY1), sw = Math.abs(srcX1 - srcX0), sh = Math.abs(srcY1 - srcY0);
     const dx = Math.min(dstX0, dstX1), dy = Math.min(dstY0, dstY1), dw = Math.abs(dstX1 - dstX0), dh = Math.abs(dstY1 - dstY0);
+    const linear = filter === 0x2601;
     for (let y = 0; y < dh; y++) for (let x = 0; x < dw; x++) {
-      const srcX = sx + Math.min(sw - 1, Math.floor(x * sw / Math.max(1, dw)));
-      const srcY = sy + Math.min(sh - 1, Math.floor(y * sh / Math.max(1, dh)));
       const destX = dx + x, destY = dy + y;
-      if (srcX < 0 || srcY < 0 || srcX >= source.width || srcY >= source.height || destX < 0 || destY < 0 || destX >= destination.width || destY >= destination.height) continue;
-      const src = (srcY * source.width + srcX) * 4, dst = (destY * destination.width + destX) * 4;
-      destination.pixels.set(source.pixels.subarray(src, src + 4), dst);
+      if (destX < 0 || destY < 0 || destX >= destination.width || destY >= destination.height) continue;
+      const tx = (destX + 0.5 - dstX0) / (dstX1 - dstX0), ty = (destY + 0.5 - dstY0) / (dstY1 - dstY0);
+      const sampleX = srcX0 + tx * (srcX1 - srcX0), sampleY = srcY0 + ty * (srcY1 - srcY0);
+      const dst = (destY * destination.width + destX) * 4;
+      if (!linear) {
+        const srcX = Math.floor(sampleX), srcY = Math.floor(sampleY);
+        if (srcX < 0 || srcY < 0 || srcX >= source.width || srcY >= source.height) continue;
+        const src = (srcY * source.width + srcX) * 4;
+        destination.pixels.set(source.pixels.subarray(src, src + 4), dst);
+      } else {
+        const fx = sampleX - 0.5, fy = sampleY - 0.5, x0 = Math.floor(fx), y0 = Math.floor(fy), wx = fx - x0, wy = fy - y0;
+        for (let c = 0; c < 4; c++) {
+          const at = (px, py) => source.pixels[(Math.max(0, Math.min(source.height - 1, py)) * source.width + Math.max(0, Math.min(source.width - 1, px))) * 4 + c];
+          destination.pixels[dst + c] = Math.round((at(x0, y0) * (1 - wx) + at(x0 + 1, y0) * wx) * (1 - wy) + (at(x0, y0 + 1) * (1 - wx) + at(x0 + 1, y0 + 1) * wx) * wy);
+        }
+      }
     }
     this._enqueue(() => {
-      if (!source.colorTexture || !destination.colorTexture || srcX1 < srcX0 || dstY1 < dstY0 || sw !== dw || sh !== dh) return;
-      if (source.format !== destination.format)
-        return this._blitColorFormats(source, destination, sx, sy, sw, sh, dx, dy, filter);
+      const sameSize = Math.abs(srcX1 - srcX0) === dw && Math.abs(srcY1 - srcY0) === dh;
+      const sameOrientation = (srcX1 - srcX0) * (dstX1 - dstX0) > 0 && (srcY1 - srcY0) * (dstY1 - dstY0) > 0;
+      if (source.format !== destination.format || !sameSize || !sameOrientation || filter === 0x2601)
+        return this._blitColorFormats(source, destination, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, filter);
+      const sx = Math.min(srcX0, srcX1), sy = Math.min(srcY0, srcY1), sw = Math.abs(srcX1 - srcX0), sh = Math.abs(srcY1 - srcY0);
       const encoder = this._device.createCommandEncoder();
       encoder.copyTextureToTexture({ texture: source.colorTexture, mipLevel: source.colorMipLevel || 0, origin: [sx, source.height - sy - sh, 0] },
         { texture: destination.colorTexture, mipLevel: destination.colorMipLevel || 0, origin: [dx, destination.height - dy - dh, 0] }, [sw, sh, 1]);

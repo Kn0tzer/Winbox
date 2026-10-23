@@ -103,6 +103,41 @@ test('glClipControl changes upper-left origin and zero-to-one depth rewriting', 
   } finally { gpu.restore(); }
 });
 
+test('blitFramebuffer scales and flips color rectangles on CPU and GPU paths', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const bufferWrites = [];
+    gpu.device.queue.writeBuffer = (buffer, offset, data) => bufferWrites.push(new Float32Array(data));
+    const createPipeline = gpu.device.createRenderPipeline.bind(gpu.device);
+    gpu.device.createRenderPipeline = descriptor => {
+      const pipeline = createPipeline(descriptor);
+      pipeline.getBindGroupLayout = () => ({ entries: [{ binding: 0, buffer: {} }, { binding: 1, texture: { viewDimension: '2d' } }, { binding: 2, sampler: {} }] });
+      return pipeline;
+    };
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    const source = gl.createTexture(), destination = gl.createTexture();
+    gl.bindTexture(0x0de1, source);
+    gl.texImage2D(0x0de1, 0, 0x1908, 2, 1, 0, 0x1908, 0x1401, new Uint8Array([255, 0, 0, 255, 0, 0, 255, 255]));
+    gl.bindTexture(0x0de1, destination);
+    gl.texImage2D(0x0de1, 0, 0x1908, 4, 1, 0, 0x1908, 0x1401, new Uint8Array(16));
+    await gl._ops;
+    const read = gl.createFramebuffer(), draw = gl.createFramebuffer();
+    gl.bindFramebuffer(0x8d40, read); gl.framebufferTexture2D(0x8d40, 0x8ce0, 0x0de1, source, 0);
+    gl.bindFramebuffer(0x8d40, draw); gl.framebufferTexture2D(0x8d40, 0x8ce0, 0x0de1, destination, 0);
+    gl.bindFramebuffer(0x8ca8, read); gl.bindFramebuffer(0x8ca9, draw);
+    gl.blitFramebuffer(2, 0, 0, 1, 0, 0, 4, 1, 0x4000, 0x2600);
+    assert.deepEqual([...destination.pixels], [0, 0, 255, 255, 0, 0, 255, 255, 255, 0, 0, 255, 255, 0, 0, 255]);
+    await gl._ops;
+    assert.deepEqual([...bufferWrites.at(-1)], [1, 0, -1, 1]);
+    assert.deepEqual(gpu.viewports.at(-1), [0, 0, 4, 1, 0, 1]);
+    assert.equal(gl.getError(), 0);
+    gl.blitFramebuffer(0, 0, 1, 1, 0, 0, 1, 1, 0x0100, 0x2600);
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('blitFramebuffer depth/stencil')));
+  } finally { gpu.restore(); }
+});
+
 test('uint8 indices widen for WebGPU and wider index types preserve values', () => {
   assert.deepEqual([...convertIndices(new Uint8Array([0, 2, 255]), 0x1401)], [0, 2, 255]);
   assert.ok(convertIndices(new Uint8Array([1]), 0x1401) instanceof Uint16Array);
