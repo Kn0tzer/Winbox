@@ -27,6 +27,20 @@ test('uniform layout and packing honor std140 vector, matrix, and array strides'
   assert.equal(view.getFloat32(80, true), 0.875);
 });
 
+test('validateProgram exposes linked validation status through getProgramParameter', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    const program = { linked: true };
+    gl.validateProgram(program);
+    assert.equal(gl.getProgramParameter(program, 0x8b83), true);
+    program.linked = false;
+    gl.validateProgram(program);
+    assert.equal(gl.getProgramParameter(program, 0x8b83), false);
+  } finally { gpu.restore(); }
+});
+
 test('uint8 indices widen for WebGPU and wider index types preserve values', () => {
   assert.deepEqual([...convertIndices(new Uint8Array([0, 2, 255]), 0x1401)], [0, 2, 255]);
   assert.ok(convertIndices(new Uint8Array([1]), 0x1401) instanceof Uint16Array);

@@ -28,7 +28,7 @@ not a disposition.
 | `web/gl-webgpu.mjs:2030-2065,1880-1925` | `polygonOffset` factor/units are applied through WebGPU depth bias when `POLYGON_OFFSET_FILL` is enabled; non-finite parameters raise `INVALID_VALUE`. | Breaks depth-biased renderers | IMPLEMENTED (`web/tests/suite/unit/gl-webgpu.test.mjs`) |
 | `web/gl-webgpu.mjs:1926` | Sample coverage is empty; antialiasing is disabled in context attributes, so it cannot affect current single-sample output. | Harmless with one sample; breaks if MSAA is added without coverage support | NOT-A-GAP (context reports `antialias:false` at `web/gl-webgpu.mjs:832`) |
 | `web/gl-webgpu.mjs:623` | `shadeModel` is empty; GLES 3 removed this setting and smooth shading is the fixed-function default. | Harmless | NOT-A-GAP (default smooth shading is used in `_fixedFunctionProgram`) |
-| `web/gl-webgpu.mjs:1170` | `validateProgram` is empty and does not update `GL_VALIDATE_STATUS`. | Breaks callers checking validation status | OPEN |
+| `web/gl-webgpu.mjs:1285-1291` | `validateProgram` now sets `GL_VALIDATE_STATUS` from the completed link result and `getProgramParameter` exposes it. | Breaks callers checking validation status | IMPLEMENTED (`web/tests/suite/unit/gl-webgpu.test.mjs`) |
 | `web/gl-webgpu.mjs:1656` | Unsupported blend equations throw from asynchronous draw setup rather than setting guest-visible GL errors. | Breaks uncommon blend modes | OPEN |
 | `web/gl-webgpu.mjs:1688` | Unsupported depth comparisons throw from draw setup rather than setting guest-visible GL errors. | Breaks invalid/unsupported state handling | OPEN |
 | `web/gl-webgpu.mjs:1358` | Query objects (occlusion/timer) and transform feedback are absent. | Breaks query/feedback users | OPEN |

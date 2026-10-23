@@ -1282,10 +1282,11 @@ export class WebGPUGL {
       return false;
     });
   }
-  validateProgram() {}
+  validateProgram(program) { if (program) program.validateStatus = !!program.linked; }
   useProgram(program) { this._currentProgram = program || null; }
   getProgramParameter(program, parameter) {
     if (parameter === GL.LINK_STATUS) return !!program?.linked;
+    if (parameter === 0x8b83) return !!program?.validateStatus;
     if (parameter === 0x8b85) return program?.shaders?.length || 0;
     if (parameter === 0x8b86) return program?.uniformInfo?.length || 0;
     if (parameter === 0x8b89) return program?.attributeInfo?.length || 0;

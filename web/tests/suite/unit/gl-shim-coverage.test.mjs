@@ -67,7 +67,7 @@ test('empty WebGPUGL methods stay in the audited no-op inventory', () => {
   const emptyMethods = [...webGpuGlSrc.matchAll(/^  ([A-Za-z_$][\w$]*)\([^\n]*\) \{\s*\}/gm)]
     .map((match) => match[1]).sort();
   assert.deepEqual(emptyMethods, [
-    'sampleCoverage', 'shadeModel', 'validateProgram',
+    'sampleCoverage', 'shadeModel',
   ].sort(), 'any new empty WebGPUGL method needs an explicit audit disposition');
 });
 
