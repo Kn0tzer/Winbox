@@ -349,6 +349,18 @@ export function createMetricsModel({ staleAfterMs = STALE_AFTER_MS } = {}) {
       }
       groups.push({ id: 'layers', title: 'Guest layers (not host-visible)', rows: unavailableRows });
 
+      const gpuMeasured = pagePace?.gpu?.status === STATE.MEASURED;
+      // The four numbers the on-screen panel shows. CPU is the guest wall span per
+      // frame (Vulkan programs only); GPU needs timestamp queries. Anything else is
+      // null and renders as "--".
+      const summary = {
+        fps: headline.fps,
+        frameMs: headline.frameMs,
+        cpuMs: vk?.frames ? vk.guestMs ?? null : null,
+        gpuMs: gpuMeasured ? pagePace.gpu.ms : null,
+        state: wasmState(headline.fps != null),
+      };
+
       return {
         version: wasm?.v ?? null,
         arch: wasm?.arch ?? null,
@@ -359,6 +371,7 @@ export function createMetricsModel({ staleAfterMs = STALE_AFTER_MS } = {}) {
         stale,
         enabled: wasm?.enabled !== false,
         headline,
+        summary,
         groups,
       };
     },
@@ -409,11 +422,17 @@ function describeJit(jit, stale) {
 }
 
 // ---------------------------------------------------------------------------
-// Panel: a compact overlay inside the player, built from the established UI
-// vocabulary (same document, same CSS variables, no new design system).
-// Updates are cheap by construction: row elements are created once and only
-// changed text nodes are written.
+// Panel: four numbers a person can read at a glance (FPS, frame time, CPU time,
+// GPU time). The full per-stage breakdown stays available from model.view() for
+// tests and tooling, but is deliberately not rendered.
 // ---------------------------------------------------------------------------
+const SUMMARY_ROWS = [
+  { id: 'fps', label: 'FPS', format: view => formatFps(view.summary.fps) },
+  { id: 'frameMs', label: 'Frame time', format: view => formatMs(view.summary.frameMs) },
+  { id: 'cpuMs', label: 'CPU time', format: view => formatMs(view.summary.cpuMs) },
+  { id: 'gpuMs', label: 'GPU time', format: view => formatMs(view.summary.gpuMs) },
+];
+
 /**
  * @param {{doc?: Document, onClose?: () => void}} [options]
  */
@@ -426,90 +445,33 @@ export function createMetricsPanel({ doc = globalThis.document, onClose = null }
   };
 
   const root = el('section', 'metrics-panel');
-  root.setAttribute('aria-label', 'Frame metrics');
+  root.setAttribute('aria-label', 'Performance');
   root.hidden = true;
 
   const head = el('div', 'metrics-head');
-  const title = el('h2', 'metrics-title', 'Frame metrics');
+  const title = el('h2', 'metrics-title', 'Performance');
   const status = el('span', 'metrics-status');
   const close = el('button', 'metrics-close', '\u2715');
   close.type = 'button';
-  close.setAttribute('aria-label', 'Hide frame metrics');
+  close.setAttribute('aria-label', 'Hide performance');
   if (onClose) close.onclick = onClose;
   head.append(title, status, close);
 
-  const scroll = el('div', 'metrics-scroll');
-  const summaryRows = el('dl', 'metrics-rows metrics-summary');
-  const more = el('details', 'metrics-more');
-  const moreTitle = el('summary', '', 'More');
-  const moreContent = el('div', 'metrics-more-content');
-  const legend = el('p', 'metrics-legend',
-    'measured / inactive / unavailable / stale \u00b7 a wall span, not OS CPU \u00b7 overlapping stages are never summed');
-  const body = el('div', 'metrics-body');
-  moreContent.append(legend, body);
-  more.append(moreTitle, moreContent);
-  scroll.append(summaryRows, more);
-  root.append(head, scroll);
+  const rows = el('dl', 'metrics-rows metrics-summary');
+  root.append(head, rows);
 
-  /** @type {Map<string, {row: any, label: any, value: any, unit: any, note: any}>} */
-  const rowCache = new Map();
-  /** @type {Map<string, {row: any, label: any, value: any, unit: any, note: any}>} */
-  const summaryCache = new Map();
-  /** @type {Map<string, {section: any, title: any, rows: any}>} */
-  const groupCache = new Map();
-  const setData = (node, key, value) => { (/** @type {any} */ (node)).dataset[key] = value; };
-  function setText(node, value) {
-    if (node.textContent !== value) node.textContent = value;
+  const cache = new Map();
+  for (const row of SUMMARY_ROWS) {
+    const line = el('div', 'metrics-row');
+    const label = el('dt', 'metrics-label', row.label);
+    const valueBox = el('dd', 'metrics-value');
+    const value = el('span', 'metrics-number');
+    valueBox.append(value);
+    line.append(label, valueBox);
+    rows.append(line);
+    cache.set(row.id, { line, value });
   }
-
-  function ensureGroup(group) {
-    let cached = groupCache.get(group.id);
-    if (!cached) {
-      const section = el('section', 'metrics-group');
-      const heading = el('h3', 'metrics-group-title', group.title);
-      const rows = el('dl', 'metrics-rows');
-      section.append(heading, rows);
-      body.append(section);
-      cached = { section, title: heading, rows };
-      groupCache.set(group.id, cached);
-    }
-    return cached;
-  }
-
-  function ensureRow(group, row) {
-    let cached = rowCache.get(row.id);
-    if (!cached) {
-      const line = el('div', 'metrics-row');
-      const label = el('dt', 'metrics-label', row.label);
-      const valueBox = el('dd', 'metrics-value');
-      const value = el('span', 'metrics-number');
-      const unit = el('span', 'metrics-unit');
-      const note = el('p', 'metrics-note');
-      valueBox.append(value, unit);
-      line.append(label, valueBox, note);
-      cached = { row: line, label, value, unit, note };
-      rowCache.set(row.id, cached);
-    }
-    if (cached.label.textContent !== row.label) cached.label.textContent = row.label;
-    return cached;
-  }
-
-  function ensureSummaryRow(row) {
-    let cached = summaryCache.get(row.id);
-    if (!cached) {
-      const line = el('div', 'metrics-row');
-      const label = el('dt', 'metrics-label', row.label);
-      const valueBox = el('dd', 'metrics-value');
-      const value = el('span', 'metrics-number');
-      const unit = el('span', 'metrics-unit');
-      const note = el('p', 'metrics-note');
-      valueBox.append(value, unit);
-      line.append(label, valueBox, note);
-      cached = { row: line, label, value, unit, note };
-      summaryCache.set(row.id, cached);
-    }
-    return cached;
-  }
+  const setText = (node, value) => { if (node.textContent !== value) node.textContent = value; };
 
   return {
     element: root,
@@ -517,62 +479,16 @@ export function createMetricsPanel({ doc = globalThis.document, onClose = null }
     setOpen(open) { root.hidden = !open; },
     /** One cheap refresh; called at ~1 Hz by the app shell. */
     update(view) {
-      setText(status, view.stale
-        ? 'stale ' + formatAge(view.wasmAgeMs)
-        : (view.enabled ? 'live' : 'disabled'));
-      setData(status, 'state', view.stale ? STATE.STALE : (view.enabled ? STATE.MEASURED : STATE.UNAVAILABLE));
-      setData(root, 'stale', view.stale ? '1' : '0');
-
-      const seen = new Set();
-      const seenGroups = new Set();
-      const seenSummary = new Set();
-      for (const group of view.groups || []) {
-        const summary = group.id === 'frames' || group.id === 'jit'
-          ? group.rows || []
-          : group.id === 'gpu' ? (group.rows || []).filter(row => row.id === 'gpuExec') : [];
-        const summaryIds = new Set(summary.map(row => row.id));
-        const detailRows = group.id === 'frames' ? [] : group.rows || [];
-        for (const row of group.rows || []) {
-          const entry = ensureRow(group, row);
-          seen.add(row.id);
-          const value = row.value === null || row.value === undefined ? '--' : String(row.value);
-          if (entry.value.textContent !== value) entry.value.textContent = value;
-          const unit = row.unit ? String(row.unit) : '';
-          const noteText = String(row.note || '');
-          if (detailRows.length) ensureGroup(group).rows.append(entry.row);
-
-          if (summaryIds.has(row.id)) {
-            const summaryEntry = ensureSummaryRow(row);
-            const summaryValue = group.id === 'jit' && value.includes(' \u00b7 ')
-              ? value.slice(0, value.indexOf(' \u00b7 ')) : value;
-            let summaryUnit = unit;
-            if (group.id === 'jit') {
-              const blockEntries = noteText.match(/^([^\u00b7]*?\bblock entries)(?:\s*\u00b7|$)/);
-              if (blockEntries) summaryUnit = blockEntries[1].trim();
-            }
-            setText(summaryEntry.label, row.label);
-            setText(summaryEntry.value, summaryValue);
-            setText(summaryEntry.unit, summaryUnit);
-            setText(summaryEntry.note, '');
-            if ((/** @type {any} */ (summaryEntry.row)).dataset.state !== row.state) setData(summaryEntry.row, 'state', row.state);
-            seenSummary.add(row.id);
-            summaryRows.append(summaryEntry.row);
-          }
-          if (entry.unit.textContent !== unit) entry.unit.textContent = unit;
-          if (entry.note.textContent !== noteText) entry.note.textContent = noteText;
-          if ((/** @type {any} */ (entry.row)).dataset.state !== row.state) setData(entry.row, 'state', row.state);
-        }
-        if (detailRows.length) {
-          const cached = ensureGroup(group);
-          seenGroups.add(group.id);
-          for (const row of detailRows) cached.rows.append(rowCache.get(row.id).row);
-        }
+      setText(status, view.stale ? 'paused' : '');
+      (/** @type {any} */ (root)).dataset.stale = view.stale ? '1' : '0';
+      for (const row of SUMMARY_ROWS) {
+        const entry = cache.get(row.id);
+        const value = row.format(view);
+        setText(entry.value, value);
+        (/** @type {any} */ (entry.line)).dataset.state = value === '--' ? STATE.UNAVAILABLE : (view.stale ? STATE.STALE : STATE.MEASURED);
       }
-      for (const [id, entry] of rowCache) if (!seen.has(id)) { entry.row.remove(); rowCache.delete(id); }
-      for (const [id, entry] of summaryCache) if (!seenSummary.has(id)) { entry.row.remove(); summaryCache.delete(id); }
-      for (const [id, cached] of groupCache) if (!seenGroups.has(id)) { cached.section.remove(); groupCache.delete(id); }
     },
-    destroy() { root.remove(); rowCache.clear(); summaryCache.clear(); groupCache.clear(); },
+    destroy() { root.remove(); cache.clear(); },
   };
 }
 

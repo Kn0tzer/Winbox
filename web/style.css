@@ -693,24 +693,17 @@ h1 {
   z-index: 4;
   top: 12px;
   right: 12px;
-  width: min(300px, calc(100vw - 24px));
-  height: calc(100% - 24px);
-  max-height: calc(100% - 24px);
+  width: min(200px, calc(100vw - 24px));
   pointer-events: none;
 }
 
 .metrics-panel {
-  display: flex;
-  max-height: 100%;
-  min-height: 0;
-  flex-direction: column;
-  overflow: hidden;
-  padding: 10px 12px 12px;
+  padding: 8px 12px 10px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: rgb(0 0 0 / 80%);
   color: #f0f0f0;
-  font: 12px/1.45 'Open Runde', system-ui, sans-serif;
+  font: 13px/1.4 'Open Runde', system-ui, sans-serif;
   font-variant-numeric: tabular-nums;
   pointer-events: none;
 }
@@ -721,7 +714,6 @@ h1 {
 
 .metrics-head {
   display: flex;
-  flex: none;
   align-items: center;
   gap: 8px;
 }
@@ -729,39 +721,28 @@ h1 {
 .metrics-title {
   flex: 1;
   margin: 0;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
 }
 
 .metrics-status {
-  padding: 1px 6px;
-  border: 1px solid #666;
-  border-radius: 999px;
-  color: #ccc;
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-.metrics-status[data-state="measured"] {
-  border-color: #999;
-  color: #fff;
-}
-
-.metrics-status[data-state="stale"],
-.metrics-status[data-state="unavailable"] {
-  border-color: #666;
   color: #aaa;
+  font-size: 12px;
 }
 
 .metrics-close {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  margin-right: -8px;
   pointer-events: auto;
-  padding: 4px 5px;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: #aaa;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1;
 }
 
@@ -770,132 +751,43 @@ h1 {
   color: #fff;
 }
 
-.metrics-scroll {
-  min-height: 0;
-  flex: 1 1 auto;
-  overflow: auto;
-  overscroll-behavior: contain;
-  pointer-events: auto;
-}
-
-.metrics-legend {
-  margin: 10px 0 8px;
-  color: #aaa;
-  font-size: 11px;
-  line-height: 1.45;
-}
-
-.metrics-group + .metrics-group {
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid #444;
-}
-
-.metrics-group-title {
-  margin: 0 0 4px;
-  color: #c0c0c0;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+.metrics-close:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: -2px;
 }
 
 .metrics-rows {
-  margin: 0;
-}
-
-.metrics-summary {
-  padding: 4px 0;
+  margin: 4px 0 0;
 }
 
 .metrics-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0 10px;
-  min-width: 0;
-  padding: 4px 0 4px 7px;
-  border-left: 2px solid transparent;
-}
-
-.metrics-row[data-state="measured"] {
-  border-left-color: #fff;
-}
-
-.metrics-row[data-state="inactive"],
-.metrics-row[data-state="unavailable"],
-.metrics-row[data-state="stale"] {
-  border-left-color: #555;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
 }
 
 .metrics-label {
-  min-width: 0;
   color: #ddd;
-  overflow-wrap: normal;
-  word-break: normal;
-}
-
-.metrics-row[data-state="inactive"] .metrics-label,
-.metrics-row[data-state="unavailable"] .metrics-label,
-.metrics-row[data-state="stale"] .metrics-label {
-  color: #aaa;
 }
 
 .metrics-value {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  align-items: flex-end;
   margin: 0;
   text-align: right;
 }
 
 .metrics-number {
   color: #fff;
-  font-variant-numeric: tabular-nums;
+  font-size: 15px;
+  font-weight: 600;
   white-space: nowrap;
 }
 
 .metrics-row[data-state="unavailable"] .metrics-number,
-.metrics-row[data-state="inactive"] .metrics-number {
+.metrics-row[data-state="stale"] .metrics-number {
   color: #aaa;
-}
-
-.metrics-unit {
-  margin: 0;
-  color: #aaa;
-  font-size: 11px;
-  text-align: right;
-}
-
-.metrics-note {
-  grid-column: 1 / -1;
-  margin: 0;
-  color: #aaa;
-  font-size: 11px;
-  overflow-wrap: anywhere;
-}
-
-.metrics-more {
-  margin-top: 5px;
-  border-top: 1px solid #444;
-  pointer-events: auto;
-}
-
-.metrics-more > summary {
-  min-height: 36px;
-  padding: 7px 0;
-  color: #ddd;
-  cursor: pointer;
-  font-weight: 600;
-  list-style-position: inside;
-}
-
-.metrics-more-content {
-  padding: 0 0 4px;
-}
-
-.metrics-body {
-  min-width: 0;
+  font-weight: 400;
 }
 
 dialog {
@@ -977,7 +869,7 @@ dialog label {
 }
 
 dialog select,
-dialog input:not([type="range"]) {
+dialog input:not([type="range"], [type="checkbox"]) {
   display: block;
   width: 100%;
   min-width: 0;
@@ -997,6 +889,92 @@ dialog input[type="range"] {
   min-height: 44px;
   margin: 0;
   accent-color: var(--accent);
+}
+
+.switch-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 44px;
+}
+
+.switch-row label {
+  margin: 0;
+}
+
+.switch-row .switch {
+  margin-left: auto;
+}
+
+.help-button {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0;
+}
+
+.help-button::before {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 1.5px solid currentcolor;
+  border-radius: 50%;
+  content: "?";
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.help-button:hover,
+.help-button[aria-expanded="true"] {
+  color: var(--text);
+}
+
+dialog .switch {
+  appearance: none;
+  position: relative;
+  flex: none;
+  width: 44px;
+  height: 26px;
+  margin-block: 9px;
+  border: 1px solid var(--line-hover);
+  border-radius: 999px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+dialog .switch::before {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--muted);
+  content: "";
+  transition: transform 150ms cubic-bezier(0.2, 0, 0, 1), background-color 150ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+dialog .switch:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+dialog .switch:checked::before {
+  transform: translateX(18px);
+  background: var(--accent-contrast);
+}
+
+dialog .switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
 }
 
 .setting-help {
