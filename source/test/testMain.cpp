@@ -69,6 +69,7 @@ void testMemfdSeals();
 #ifdef BOXEDWINE_GUEST_X64
 void testTimerfd64Syscalls();
 void testCopyFileRange64Syscall();
+void testProcessVm64Syscalls();
 #endif
 
 namespace {
@@ -694,6 +695,7 @@ const TestEntry TEST_ENTRIES[] = {
 #ifdef BOXEDWINE_GUEST_X64
     {testTimerfd64Syscalls, "Test x64 timerfd syscall ABI"},
     {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},
+    {testProcessVm64Syscalls, "Test x64 process_vm_readv/writev syscalls"},
 #endif
     {testInetDatagramLoopback, "Test AF_INET UDP loopback socket"},
     {testInetStreamLoopback, "Test AF_INET TCP loopback socket"},

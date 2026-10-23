@@ -3101,6 +3101,79 @@ static bool sys_rangeMapped64(CPU64* cpu, U64 addr, U64 length) {
     return true;
 }
 
+static bool sys_rangeHasPermission64(KMemory64* memory, U64 addr, U64 length, U32 permission) {
+    if (!memory || !length || addr > ~0ULL - (length - 1)) return false;
+    const U64 first = addr >> K64_PAGE_SHIFT;
+    const U64 last = (addr + length - 1) >> K64_PAGE_SHIFT;
+    for (U64 page = first;; ++page) {
+        const U32 flags = memory->getPageFlags(page);
+        if (!(flags & K64_PAGE_MAPPED) || !(flags & permission)) return false;
+        if (page == last) break;
+    }
+    return true;
+}
+
+static U64 sys_processVm64(CPU64* cpu, U64 pid, U64 localIov, U64 localCount,
+                           U64 remoteIov, U64 remoteCount, U64 flags, bool writeRemote) {
+    constexpr U64 MAX_IOV = 1024;
+    if (!cpu || !cpu->thread || !cpu->thread->process) return (U64)-K_ESRCH;
+    if (flags || localCount > MAX_IOV || remoteCount > MAX_IOV) return (U64)-K_EINVAL;
+    if (!localCount || !remoteCount) return 0;
+    if (pid > UINT32_MAX) return (U64)-K_ESRCH;
+    if (!sys_rangeHasPermission64(cpu->memory, localIov, localCount * 16, K64_PAGE_READ) ||
+        !sys_rangeHasPermission64(cpu->memory, remoteIov, remoteCount * 16, K64_PAGE_READ)) return (U64)-K_EFAULT;
+    KProcessPtr remoteProcess = pid == cpu->thread->process->id
+        ? cpu->thread->process : KSystem::getProcess((U32)pid);
+    if (!remoteProcess) return (U64)-K_ESRCH;
+    KMemory64* remoteMemory = remoteProcess->memory64;
+    if (!remoteMemory) return (U64)-K_EFAULT;
+
+    struct GuestIov { U64 base; U64 length; };
+    std::vector<GuestIov> local((size_t)localCount), remote((size_t)remoteCount);
+    U64 total = 0;
+    for (U64 i = 0; i < localCount; ++i) {
+        local[i] = {cpu->memory->readq(localIov + i * 16), cpu->memory->readq(localIov + i * 16 + 8)};
+        if (local[i].length > (U64)INT64_MAX - total) return (U64)-K_EINVAL;
+        total += local[i].length;
+        const U32 access = writeRemote ? K64_PAGE_READ : K64_PAGE_WRITE;
+        if (local[i].length && !sys_rangeHasPermission64(cpu->memory, local[i].base, local[i].length, access))
+            return (U64)-K_EFAULT;
+    }
+    total = 0;
+    for (U64 i = 0; i < remoteCount; ++i) {
+        remote[i] = {cpu->memory->readq(remoteIov + i * 16), cpu->memory->readq(remoteIov + i * 16 + 8)};
+        if (remote[i].length > (U64)INT64_MAX - total) return (U64)-K_EINVAL;
+        total += remote[i].length;
+        const U32 access = writeRemote ? K64_PAGE_WRITE : K64_PAGE_READ;
+        if (remote[i].length && !sys_rangeHasPermission64(remoteMemory, remote[i].base, remote[i].length, access))
+            return (U64)-K_EFAULT;
+    }
+
+    U64 copied = 0;
+    U64 li = 0, ri = 0, lo = 0, ro = 0;
+    U8 buffer[4096];
+    while (li < localCount && ri < remoteCount) {
+        const U64 count = std::min<U64>({sizeof(buffer), local[li].length - lo, remote[ri].length - ro});
+        if (count) {
+            const U64 localAddress = local[li].base + lo;
+            const U64 remoteAddress = remote[ri].base + ro;
+            if (writeRemote) {
+                cpu->memory->memcpyFromGuest(buffer, localAddress, count);
+                remoteMemory->memcpyToGuest(remoteAddress, buffer, count);
+            } else {
+                remoteMemory->memcpyFromGuest(buffer, remoteAddress, count);
+                cpu->memory->memcpyToGuest(localAddress, buffer, count);
+            }
+            copied += count;
+            lo += count;
+            ro += count;
+        }
+        if (lo == local[li].length) { ++li; lo = 0; }
+        if (ro == remote[ri].length) { ++ri; ro = 0; }
+    }
+    return copied;
+}
+
 static U64 sys_madvise64(CPU64* cpu, U64 addr, U64 length, U64 advice) {
     // Linux advice values are hints. The emulator does not have a host paging
     // policy to tune, but validates the mapped range and accepts the stable
@@ -4004,6 +4077,12 @@ void ksyscall64(CPU64* cpu) {
             break;
         case X64_SYS_prctl:
             ret = sys_prctl64(cpu, a1, a2, a3, a4, a5);
+            break;
+        case X64_SYS_process_vm_readv:
+            ret = sys_processVm64(cpu, a1, a2, a3, a4, a5, a6, false);
+            break;
+        case X64_SYS_process_vm_writev:
+            ret = sys_processVm64(cpu, a1, a2, a3, a4, a5, a6, true);
             break;
         case X64_SYS_arch_prctl:
             ret = sys_arch_prctl64(cpu, a1, a2);
