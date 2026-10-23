@@ -659,6 +659,7 @@ void dropObj(U64 id) {
 // ---------------------------------------------------------------------------
 const U32 VK64_MAX_SETS = 8, VK64_MAX_BINDINGS = 8, VK64_MAX_ATTACH = 4, VK64_MAX_DRAWS = 64;
 const U32 VK64_MAX_CMDS = 4096;
+const U32 VK64_MAX_INDIRECT_DRAWS = 1024;
 const U32 VK64_MAX_VERT_BINDINGS = 4, VK64_MAX_VERT_ATTRIBS = 16;
 const U32 VK64_MAX_PUSH_BYTES = 256;   // matches limits.maxPushConstantsSize
 
@@ -3255,7 +3256,7 @@ void fillLimits(Limits& L) {
     L.maxComputeWorkGroupInvocations = 128;
     L.maxComputeWorkGroupSize[0] = 128; L.maxComputeWorkGroupSize[1] = 128; L.maxComputeWorkGroupSize[2] = 64;
     L.subPixelPrecisionBits = 8; L.subTexelPrecisionBits = 8; L.mipmapPrecisionBits = 8;
-    L.maxDrawIndexedIndexValue = 0xFFFFFFFFu; L.maxDrawIndirectCount = 0xFFFFFFFFu;
+    L.maxDrawIndexedIndexValue = 0xFFFFFFFFu; L.maxDrawIndirectCount = VK64_MAX_INDIRECT_DRAWS;
     L.maxSamplerLodBias = 2.0f; L.maxSamplerAnisotropy = 16.0f;
     // G2: DXVK D3D9 DecodeMultiSampleType derives sampleCount from
     // framebuffer{Color,Depth}SampleCounts; zero here zeroes the backbuffer
@@ -6198,8 +6199,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         U32 drawCount = (U32)args.a[3];
         U32 stride = (U32)args.a[4];
         if (!stride) stride = sizeof(VkDrawIndirectCommandL);
-        // Cap drawCount to prevent runaway from garbage data
-        if (drawCount > 1024) drawCount = 1024;
+        if (drawCount > VK64_MAX_INDIRECT_DRAWS) {
+            vk64DropLog("drawCount > maxDrawIndirectCount", __LINE__);
+            drawCount = VK64_MAX_INDIRECT_DRAWS;
+        }
         for (U32 i = 0; i < drawCount; i++) {
             VkDrawIndirectCommandL cmd;
             g_mem->memcpyFromGuest(&cmd, baseOff + (U64)i * stride, sizeof(cmd));
@@ -6229,7 +6232,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         U32 drawCount = (U32)args.a[3];
         U32 stride = (U32)args.a[4];
         if (!stride) stride = sizeof(VkDrawIndexedIndirectCommandL);
-        if (drawCount > 1024) drawCount = 1024;
+        if (drawCount > VK64_MAX_INDIRECT_DRAWS) {
+            vk64DropLog("drawCount > maxDrawIndirectCount", __LINE__);
+            drawCount = VK64_MAX_INDIRECT_DRAWS;
+        }
         for (U32 i = 0; i < drawCount; i++) {
             VkDrawIndexedIndirectCommandL cmd;
             g_mem->memcpyFromGuest(&cmd, baseOff + (U64)i * stride, sizeof(cmd));
@@ -6261,7 +6267,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         g_mem->memcpyFromGuest(&actualCount, countMem->va + countBuf->memOff + args.a[4], 4);
         U32 maxDraws = (U32)args.a[5];
         if (actualCount > maxDraws) actualCount = maxDraws;
-        if (actualCount > 1024) actualCount = 1024;
+        if (actualCount > VK64_MAX_INDIRECT_DRAWS) {
+            vk64DropLog("actualCount > maxDrawIndirectCount", __LINE__);
+            actualCount = VK64_MAX_INDIRECT_DRAWS;
+        }
         struct VkDrawIndirectCommandL { U32 vertexCount; U32 instanceCount; U32 firstVertex; U32 firstInstance; };
         U64 baseOff = mem->va + buf->memOff + args.a[2];
         U32 stride = (U32)args.a[6];
@@ -6294,7 +6303,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         g_mem->memcpyFromGuest(&actualCount, countMem->va + countBuf->memOff + args.a[4], 4);
         U32 maxDraws = (U32)args.a[5];
         if (actualCount > maxDraws) actualCount = maxDraws;
-        if (actualCount > 1024) actualCount = 1024;
+        if (actualCount > VK64_MAX_INDIRECT_DRAWS) {
+            vk64DropLog("actualCount > maxDrawIndirectCount", __LINE__);
+            actualCount = VK64_MAX_INDIRECT_DRAWS;
+        }
         struct VkDrawIndexedIndirectCommandL {
             U32 indexCount; U32 instanceCount; U32 firstIndex; int32_t vertexOffset; U32 firstInstance;
         };
@@ -8375,6 +8387,10 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         DeviceMemory* dmem = objOf32<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDrawIndirect");
         VK64_DROP_IF(return 0, !dmem || !dmem->va);
         U32 drawCount = (U32)args.a[3], stride = (U32)args.a[4];
+        if (drawCount > VK64_MAX_INDIRECT_DRAWS) {
+            vk64DropLog("drawCount > maxDrawIndirectCount", __LINE__);
+            drawCount = VK64_MAX_INDIRECT_DRAWS;
+        }
         if (!stride) stride = 16;
         U32 base = (U32)(dmem->va + buf->memOff + args.a[2]);
         for (U32 i = 0; i < drawCount; i++) {
@@ -8394,6 +8410,10 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         DeviceMemory* dmem = objOf32<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDrawIndexedIndirect");
         VK64_DROP_IF(return 0, !dmem || !dmem->va);
         U32 drawCount = (U32)args.a[3], stride = (U32)args.a[4];
+        if (drawCount > VK64_MAX_INDIRECT_DRAWS) {
+            vk64DropLog("drawCount > maxDrawIndirectCount", __LINE__);
+            drawCount = VK64_MAX_INDIRECT_DRAWS;
+        }
         if (!stride) stride = 20;
         U32 base = (U32)(dmem->va + buf->memOff + args.a[2]);
         for (U32 i = 0; i < drawCount; i++) {
@@ -8421,6 +8441,10 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         U32 drawCount = rd32_32((U32)(cmem->va + cbuf->memOff + args.a[4]));
         U32 maxDraws = (U32)args.a[5], stride = (U32)args.a[6];
         if (drawCount > maxDraws) drawCount = maxDraws;
+        if (drawCount > VK64_MAX_INDIRECT_DRAWS) {
+            vk64DropLog("drawCount > maxDrawIndirectCount", __LINE__);
+            drawCount = VK64_MAX_INDIRECT_DRAWS;
+        }
         if (!stride) stride = indexed ? 20 : 16;
         U32 base = (U32)(dmem->va + buf->memOff + args.a[2]);
         for (U32 i = 0; i < drawCount; i++) {
