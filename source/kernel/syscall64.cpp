@@ -29,6 +29,27 @@
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
+
+namespace {
+class KPidFd final : public KEvent {
+public:
+    explicit KPidFd(const KProcessPtr& process, bool nonblock) : target(process) { blocking = !nonblock; }
+    KProcessPtr process() const { return target.lock(); }
+    bool isReadReady() override {
+        KProcessPtr p = target.lock();
+        return !p || p->isTerminated();
+    }
+    bool isWriteReady() override { return false; }
+    void waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) override {
+        KProcessPtr p = target.lock();
+        if (p && (events & K_POLLIN)) BOXEDWINE_CONDITION_ADD_PARENT(p->exitOrExecCond, parentCondition);
+    }
+    U32 readNative(U8*, U32) override { return (U32)-K_EINVAL; }
+    U32 writeNative(U8*, U32) override { return (U32)-K_EINVAL; }
+private:
+    KProcessWeakPtr target;
+};
+}
 #ifdef BOXEDWINE_OPENGL
 #include "../opengl/gl64bridge.h"
 #include "../opengl/gl64bridge_abi.h"
@@ -158,6 +179,8 @@
 #define X64_SYS_getcpu            309
 #define X64_SYS_process_vm_readv  310
 #define X64_SYS_process_vm_writev 311
+#define X64_SYS_pidfd_send_signal 424
+#define X64_SYS_pidfd_open        434
 #define X64_SYS_membarrier        324
 #define X64_SYS_timerfd_create    283
 #define X64_SYS_timerfd_settime   286
@@ -4084,6 +4107,45 @@ void ksyscall64(CPU64* cpu) {
         case X64_SYS_process_vm_writev:
             ret = sys_processVm64(cpu, a1, a2, a3, a4, a5, a6, true);
             break;
+        case X64_SYS_pidfd_send_signal: {
+            constexpr U32 PIDFD_SIGNAL_INFO_SIZE = 128;
+            if (a4 != 0) { ret = (U64)-K_EINVAL; break; }
+            if (a2 > 64) { ret = (U64)-K_EINVAL; break; }
+            if (a3 && !sys_rangeHasPermission64(cpu->memory, a3, PIDFD_SIGNAL_INFO_SIZE, K64_PAGE_READ)) {
+                ret = (U64)-K_EFAULT;
+                break;
+            }
+            KFileDescriptorPtr descriptor = cpu->thread && cpu->thread->process
+                ? cpu->thread->process->getFileDescriptor((FD)(S32)a1) : KFileDescriptorPtr();
+            std::shared_ptr<KPidFd> pidfd = descriptor ? std::dynamic_pointer_cast<KPidFd>(descriptor->kobject) : nullptr;
+            KProcessPtr target = pidfd ? pidfd->process() : KProcessPtr();
+            if (!pidfd) { ret = (U64)-K_EBADF; break; }
+            if (!target) { ret = (U64)-K_ESRCH; break; }
+            if (a3) {
+                static std::atomic<bool> warnedInfo{false};
+                if (!warnedInfo.exchange(true)) klog_fmt("ksyscall64: pidfd_send_signal siginfo delivery unsupported; returned -EOPNOTSUPP");
+                ret = (U64)-K_EOPNOTSUPP;
+            } else if (a2 == 0) {
+                ret = 0;
+            } else {
+                ret = (U64)(S64)(S32)target->signal((U32)a2);
+            }
+            break;
+        }
+        case X64_SYS_pidfd_open: {
+            constexpr U64 PIDFD_NONBLOCK = 0x800;
+            constexpr U64 O_CLOEXEC = 0x80000;
+            if (a2 & ~(PIDFD_NONBLOCK | O_CLOEXEC)) { ret = (U64)-K_EINVAL; break; }
+            if (!cpu->thread || !cpu->thread->process || a1 > UINT32_MAX) { ret = (U64)-K_ESRCH; break; }
+            const U32 pid = a1 ? (U32)a1 : cpu->thread->process->id;
+            KProcessPtr target = pid == cpu->thread->process->id ? cpu->thread->process : KSystem::getProcess(pid);
+            if (!target) { ret = (U64)-K_ESRCH; break; }
+            std::shared_ptr<KPidFd> object = std::make_shared<KPidFd>(target, (a2 & PIDFD_NONBLOCK) != 0);
+            const U32 descriptorFlags = (a2 & O_CLOEXEC) ? FD_CLOEXEC : 0;
+            KFileDescriptorPtr result = cpu->thread->process->allocFileDescriptor(object, K_O_RDWR, descriptorFlags, -1, 0);
+            ret = result ? result->handle : (U64)-K_EMFILE;
+            break;
+        }
         case X64_SYS_arch_prctl:
             ret = sys_arch_prctl64(cpu, a1, a2);
             break;

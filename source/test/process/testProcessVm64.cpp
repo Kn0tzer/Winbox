@@ -75,5 +75,40 @@ void testProcessVm64Syscalls() {
     memory->mprotect(page, K64_PAGE_SIZE, 3);
 }
 
+void testPidfd64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+    constexpr U64 page = 0x72000000ULL;
+    if (!memory->getPageFlags(page >> K64_PAGE_SHIFT)) memory->mmapAnonymousFixed(page, K64_PAGE_SIZE, 3);
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto syscall = [&](U64 number, U64 arg1, U64 arg2, U64 arg3, U64 arg4) {
+        cpu.reg[X64_RAX].setU64(number);
+        cpu.reg[X64_RDI].setU64(arg1);
+        cpu.reg[X64_RSI].setU64(arg2);
+        cpu.reg[X64_RDX].setU64(arg3);
+        cpu.reg[X64_R10].setU64(arg4);
+        ksyscall64(&cpu);
+        return cpu.reg[X64_RAX].u64;
+    };
+    U64 fd = syscall(434, process->id, 0x80000 | 0x800, 0, 0);
+    if ((S64)fd < 0) {
+        testFail("pidfd_open(self) returned %lld", (long long)(S64)fd);
+        return;
+    }
+    KFileDescriptorPtr descriptor = process->getFileDescriptor((FD)fd);
+    if (!descriptor || !(descriptor->descriptorFlags & FD_CLOEXEC) ||
+        (S64)syscall(424, fd, 0, 0, 0) != 0 || (S64)syscall(434, process->id, 4, 0, 0) != -K_EINVAL ||
+        (S64)syscall(424, fd, 65, 0, 0) != -K_EINVAL) {
+        testFail("pidfd flags, signal-zero probe, or signal validation failed");
+    }
+    if ((S64)syscall(424, fd, 0, page, 0) != -K_EOPNOTSUPP) {
+        testFail("pidfd_send_signal accepted unsupported siginfo delivery without a warning errno");
+    }
+    process->close((FD)fd);
+}
+
 #endif
 #endif
