@@ -77,6 +77,7 @@ const GL_TOPOLOGY = new Map([[0x0000, 'point-list'], [0x0001, 'line-list'], [0x0
 const GL_COMPARE = new Map([[0x0200, 'never'], [0x0201, 'less'], [0x0202, 'equal'], [0x0203, 'less-equal'], [0x0204, 'greater'], [0x0205, 'not-equal'], [0x0206, 'greater-equal'], [0x0207, 'always']]);
 const GL_BLEND_OP = new Map([[0x8006, 'add'], [0x800a, 'subtract'], [0x800b, 'reverse-subtract'], [0x8007, 'min'], [0x8008, 'max']]);
 const signedType = type => [0x1400, 0x1402, 0x1404].includes(type);
+const GL_ENABLE_CAPABILITIES = new Set([0x0b44, 0x0b71, 0x0b90, 0x0bc0, 0x0be2, 0x0bd0, 0x0c11, 0x8037, 0x809e, 0x80a0, 0x8c89]);
 function halfToFloat(value) {
   const sign = (value & 0x8000) ? -1 : 1, exponent = (value >> 10) & 0x1f, fraction = value & 0x3ff;
   if (exponent === 0) return sign * 2 ** -14 * (fraction / 1024);
@@ -700,18 +701,24 @@ export class WebGPUGL {
     this._enqueue(() => this._clearGpu(mask, state));
   }
   viewport(x, y, width, height) {
+    if (width < 0 || height < 0) { this._recordError(GL.INVALID_VALUE); return; }
     this._viewport = [x | 0, y | 0, width | 0, height | 0];
     if (this._isDefaultFramebuffer(this._drawFramebuffer) && (x + width > this._width || y + height > this._height))
       this._ensureTargets(Math.max(this._width, x + width), Math.max(this._height, y + height));
   }
-  scissor(x, y, width, height) { this._scissor = [x | 0, y | 0, width | 0, height | 0]; }
+  scissor(x, y, width, height) {
+    if (width < 0 || height < 0) { this._recordError(GL.INVALID_VALUE); return; }
+    this._scissor = [x | 0, y | 0, width | 0, height | 0];
+  }
   enable(capability) {
     if (capability === GL.TEXTURE_2D) this._fixedTextureEnabled[this._activeTextureUnit] = true;
-    else this._enabled.add(capability);
+    else if (GL_ENABLE_CAPABILITIES.has(capability)) this._enabled.add(capability);
+    else this._recordError(GL.INVALID_ENUM);
   }
   disable(capability) {
     if (capability === GL.TEXTURE_2D) this._fixedTextureEnabled[this._activeTextureUnit] = false;
-    else this._enabled.delete(capability);
+    else if (GL_ENABLE_CAPABILITIES.has(capability)) this._enabled.delete(capability);
+    else this._recordError(GL.INVALID_ENUM);
   }
   isEnabled(capability) {
     return capability === GL.TEXTURE_2D
@@ -905,26 +912,40 @@ export class WebGPUGL {
     }
   }
   isBuffer(buffer) { return this._buffers.has(buffer); }
+  _validateBufferTarget(target) {
+    if (target === GL.ARRAY_BUFFER || target === GL.ELEMENT_ARRAY_BUFFER) return true;
+    if ([0x8f36, 0x8f37, 0x88eb, 0x88ec, 0x8a11, 0x8c8e, 0x8f3f].includes(target)) this._rejectUnsupported(`buffer target 0x${target.toString(16)}`);
+    else this._recordError(GL.INVALID_ENUM);
+    return false;
+  }
   bindBuffer(target, buffer) {
     const value = buffer || null;
     if (target === GL.ARRAY_BUFFER) this._arrayBuffer = value;
     else if (target === GL.ELEMENT_ARRAY_BUFFER) { this._elementArrayBuffer = value; this._vao.elementArrayBuffer = value; }
+    else this._validateBufferTarget(target);
   }
   _boundBuffer(target) { return target === GL.ARRAY_BUFFER ? this._arrayBuffer : target === GL.ELEMENT_ARRAY_BUFFER ? this._elementArrayBuffer : null; }
   bufferData(target, data, usage = GL.STATIC_DRAW) {
+    if (!this._validateBufferTarget(target)) return;
     const buffer = this._boundBuffer(target);
-    if (!buffer) return;
-    const length = typeof data === 'number' ? Math.max(0, data | 0) : bytesOf(data).length;
+    if (!buffer) { this._recordError(GL.INVALID_OPERATION); return; }
+    if (typeof data === 'number' && data < 0) { this._recordError(GL.INVALID_VALUE); return; }
+    if (![0x88e0, 0x88e1, 0x88e2, 0x88e4, 0x88e5, 0x88e6, 0x88e8, 0x88e9, 0x88ea].includes(usage)) { this._recordError(GL.INVALID_ENUM); return; }
+    const length = typeof data === 'number' ? data | 0 : bytesOf(data).length;
     buffer.data = typeof data === 'number' ? new Uint8Array(length) : bytesOf(data);
     buffer.usage = usage; buffer.dirty = true; buffer.version++; buffer.vertexCache.clear();
   }
   bufferSubData(target, offset, data) {
+    if (!this._validateBufferTarget(target)) return;
     const buffer = this._boundBuffer(target);
-    if (!buffer) return;
-    const bytes = bytesOf(data), next = new Uint8Array(Math.max(buffer.data.length, offset + bytes.length));
-    next.set(buffer.data); next.set(bytes, offset); buffer.data = next; buffer.dirty = true; buffer.version++; buffer.vertexCache.clear();
+    if (!buffer) { this._recordError(GL.INVALID_OPERATION); return; }
+    if (offset < 0) { this._recordError(GL.INVALID_VALUE); return; }
+    const bytes = bytesOf(data);
+    if (offset + bytes.length > buffer.data.length) { this._recordError(GL.INVALID_VALUE); return; }
+    buffer.data.set(bytes, offset); buffer.dirty = true; buffer.version++; buffer.vertexCache.clear();
   }
   getBufferParameter(target, parameter) {
+    if (!this._validateBufferTarget(target)) return 0;
     const buffer = this._boundBuffer(target);
     if (parameter === 0x8764) return buffer?.data?.length || 0;
     if (parameter === 0x8765) return buffer?.usage || GL.STATIC_DRAW;
@@ -1430,12 +1451,17 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
 
   drawArrays(mode, first, count) {
     if (this._bufferSelection(this._drawFramebuffer).draw === GL.NONE) return;
+    if (![0x0000, 0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007].includes(mode)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (first < 0 || count < 0) { this._recordError(GL.INVALID_VALUE); return; }
     if (count > 0) this._frameDirty = true;
     if (!this._currentProgram && this._fixedFunctionDraw(mode, first, count, null, this._fixedFunctionLegacyArrays || {})) return;
     const state = this._drawSnapshot(); this._mirrorDraw(state, mode, first, count, null); this._enqueue(() => this._draw(state, mode, first, count, null, 1));
   }
   drawElements(mode, count, type, offset) {
     if (this._bufferSelection(this._drawFramebuffer).draw === GL.NONE) return;
+    if (![0x0000, 0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007].includes(mode)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (count < 0 || offset < 0) { this._recordError(GL.INVALID_VALUE); return; }
+    if (![0x1401, 0x1403, 0x1405].includes(type)) { this._recordError(GL.INVALID_ENUM); return; }
     if (count > 0) this._frameDirty = true;
     if (!this._currentProgram && this._fixedFunctionDraw(mode, 0, count, { type, offset }, this._fixedFunctionLegacyArrays || {})) return;
     const element = { type, offset }, state = this._drawSnapshot(); this._mirrorDraw(state, mode, 0, count, element); this._enqueue(() => this._draw(state, mode, 0, count, element, 1));
@@ -1886,7 +1912,10 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
   depthRange(near, far) { this._depthRange = [clamp01(near), clamp01(far)]; }
   cullFace(mode) { this._cullFace = mode | 0; }
   frontFace(mode) { this._frontFace = mode | 0; }
-  scissor(x, y, width, height) { this._scissor = [x | 0, y | 0, width | 0, height | 0]; }
+  scissor(x, y, width, height) {
+    if (width < 0 || height < 0) { this._recordError(GL.INVALID_VALUE); return; }
+    this._scissor = [x | 0, y | 0, width | 0, height | 0];
+  }
   stencilFunc() {}
   stencilFuncSeparate() {}
   stencilOp() {}

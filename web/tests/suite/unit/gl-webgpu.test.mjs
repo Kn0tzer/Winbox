@@ -111,3 +111,41 @@ test('draw and read buffer selection is honored and GL errors latch until read',
     assert.equal(gl.getError(), 0x0500);
   } finally { gpu.restore(); }
 });
+
+test('common invalid GL enums and values latch spec errors without mutating buffers', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    gl.enable(0xdead);
+    gl.drawArrays(0xdead, 0, 3);
+    assert.equal(gl.getError(), 0x0500, 'only the first error remains pending');
+    assert.equal(gl.getError(), 0, 'getError consumes the pending error');
+    gl.viewport(0, 0, -1, 4);
+    assert.equal(gl.getError(), 0x0501);
+
+    const buffer = gl.createBuffer();
+    gl.bindBuffer(0x8892, buffer);
+    gl.bufferData(0x8892, 4);
+    gl.bufferSubData(0x8892, 2, new Uint8Array([1, 2, 3]));
+    assert.equal(gl.getError(), 0x0501, 'out-of-bounds subdata is invalid');
+    assert.equal(buffer.data.length, 4, 'invalid subdata cannot grow the GL buffer');
+    gl.bufferSubData(0x8892, 1, new Uint8Array([7, 8]));
+    assert.deepEqual([...buffer.data], [0, 7, 8, 0]);
+    assert.equal(gl.getError(), 0);
+    assert.deepEqual(logs, [], 'core GL validation errors are queried, not logged as unsupported features');
+    gl.bindBuffer(0xdead, null);
+    assert.equal(gl.getError(), 0x0500, 'unknown buffer targets raise INVALID_ENUM');
+  } finally { gpu.restore(); }
+});
+
+test('valid but unsupported GL buffer targets reject loudly with INVALID_OPERATION', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    gl.bindBuffer(0x8a11, gl.createBuffer());
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('buffer target 0x8a11')));
+  } finally { gpu.restore(); }
+});

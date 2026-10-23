@@ -17,6 +17,7 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..',
 const abiSrc = readFileSync(join(repoRoot, 'source/opengl/gl64bridge_abi.h'), 'utf8');
 const bridgeSrc = readFileSync(join(repoRoot, 'source/opengl/gl64bridge.cpp'), 'utf8');
 const shimSrc = readFileSync(join(repoRoot, 'tools/rootfs64/libgl64/libgl64.c'), 'utf8');
+const webGpuGlSrc = readFileSync(join(repoRoot, 'web/gl-webgpu.mjs'), 'utf8');
 
 function getAbiFunctions(src) {
   const ids = [];
@@ -60,6 +61,16 @@ test('GL ABI count matches bridge handler coverage', () => {
   const coverage = abiFns.filter(f => handlers.has(f)).length;
   assert.equal(coverage, abiFns.length,
     `Bridge covers ${coverage}/${abiFns.length} ABI functions`);
+});
+
+test('empty WebGPUGL methods stay in the audited no-op inventory', () => {
+  const emptyMethods = [...webGpuGlSrc.matchAll(/^  ([A-Za-z_$][\w$]*)\([^\n]*\) \{\s*\}/gm)]
+    .map((match) => match[1]).sort();
+  assert.deepEqual(emptyMethods, [
+    'polygonOffset', 'sampleCoverage', 'shadeModel', 'stencilFunc',
+    'stencilFuncSeparate', 'stencilMask', 'stencilOp', 'stencilOpSeparate',
+    'validateProgram',
+  ].sort(), 'any new empty WebGPUGL method needs an explicit audit disposition');
 });
 
 test('core GL 2.1 immediate-mode functions are shim-registered', () => {
