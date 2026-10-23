@@ -215,6 +215,33 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
   result.browser = await cdp.send('Browser.getVersion');
   result.adapter = await page.evaluate(async () => { const a = await navigator.gpu?.requestAdapter();
     return a?.info && { vendor: a.info.vendor, architecture: a.info.architecture, device: a.info.device, description: a.info.description }; });
+  // PROBE_INPUT='[{"at":420,"key":"Enter","hold":600},{"at":480,"click":[512,384]},{"at":540,"shot":"menu"}]':
+  // keyboard/mouse steps replayed `at` seconds after launch (click = guest pixels, mapped through the canvas box).
+  const inputSteps = JSON.parse(process.env.PROBE_INPUT || '[]');
+  result.input = [];
+  (async () => {
+    for (const step of inputSteps) {
+      try {
+        while (!stopping && (Date.now() - t0) / 1000 < step.at) await page.waitForTimeout(500);
+        if (stopping) return;
+        const canvas = page.locator('#canvas');
+        if (step.key) {
+          await canvas.focus();
+          await page.keyboard.down(step.key);
+          await page.waitForTimeout(step.hold ?? 400);
+          await page.keyboard.up(step.key);
+        } else if (step.click || step.move) {
+          const box = await canvas.boundingBox();
+          const [gx, gy] = step.click || step.move;
+          const x = box.x + gx * box.width / (step.guestWidth || 1024), y = box.y + gy * box.height / (step.guestHeight || 768);
+          await page.mouse.move(x, y, { steps: 4 });
+          if (step.click) { await page.mouse.down(); await page.waitForTimeout(step.hold ?? 300); await page.mouse.up(); }
+        }
+        if (step.shot) await page.screenshot({ path: join(dir, `input-${step.shot}.png`) });
+        result.input.push({ ...step, doneAt: (Date.now() - t0) / 1000 });
+      } catch (e) { result.input.push({ ...step, error: String(e).slice(0, 200) }); if (page.isClosed()) return; }
+    }
+  })().catch(() => {});
   const timeoutMs = Number(process.env.TIMEOUT_MS || 600000);
   const measureMs = Number(process.env.MEASURE_MS || 120000);
   let menuStart;
