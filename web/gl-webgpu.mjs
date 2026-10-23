@@ -1956,7 +1956,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (!data) return rgba;
     const source = data.data && ArrayBuffer.isView(data.data) ? data.data : data;
     if (!ArrayBuffer.isView(source)) return rgba;
-    const componentCount = format === 0x1907 ? 3 : format === 0x1906 || format === 0x1909 ? 1 : format === 0x190a ? 2 : 4;
+    const componentCount = format === 0x1907 ? 3 : [0x1903, 0x1906, 0x1909].includes(format) ? 1 : [0x190a, 0x8227].includes(format) ? 2 : 4;
     const componentBytes = type === 0x1406 ? 4 : type === 0x1403 || type === 0x1402 ? 2 : 1;
     const rowPixels = this._unpack.rowLength || width;
     const rowBytes = Math.ceil(rowPixels * componentCount * componentBytes / this._unpack.alignment) * this._unpack.alignment;
@@ -1969,13 +1969,16 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
         const input = base + inputY * rowBytes + x * componentCount * componentBytes;
         const output = (y * width + x) * 4;
         let values = [0, 0, 0, 255];
+        if (format === 0x1906) values = [255, 255, 255, 0];
+        else if (format === 0x1909) values = [0, 0, 0, 255];
         for (let c = 0; c < componentCount; c++) {
           let value = 0;
           if (input + (c + 1) * componentBytes <= bytes.length) value = componentBytes === 4
             ? Math.round(clamp01(view.getFloat32(input + c * componentBytes, true)) * 255)
             : componentBytes === 2 ? Math.round(view.getUint16(input + c * componentBytes, true) / 257) : view.getUint8(input + c);
-          if (format === 0x1906 || format === 0x1909) values[c === 0 ? 3 : c] = value;
-          else if (format === 0x190a) { values[c === 0 ? 0 : 3] = value; }
+          if (format === 0x1906) values[3] = value;
+          else if (format === 0x1909) values[0] = values[1] = values[2] = value;
+          else if (format === 0x190a) { values[c === 0 ? 0 : 3] = value; if (c === 0) values[1] = values[2] = value; }
           else values[c] = value;
         }
         if (this._unpack.premultiplyAlpha && componentCount === 4) for (let c = 0; c < 3; c++) values[c] = Math.round(values[c] * values[3] / 255);

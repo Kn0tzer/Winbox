@@ -37,7 +37,8 @@ not a disposition.
 | `web/gl-webgpu.mjs:1` | Compressed DXT/ETC2/BC7 formats do not negotiate `texture-compression-bc` or software-decode absent formats. | Breaks compressed-texture games | OPEN |
 | `web/gl-webgpu.mjs:210` | GLSL-to-WGSL translation has explicit rejection paths; unsupported constructs must be inventoried, reported with construct names, and tested. | Breaks affected shaders | OPEN |
 | `web/gl-webgpu.mjs:1547` | Fixed-function alpha comparison and texenv combinations are partial; Quake III lightmap/multitexture paths can render dark or missing. | Breaks Quake III surfaces | OPEN |
-| `web/gl-webgpu.mjs:1560` | Fixed-function texture combine fallback returns a fixed value for unhandled modes; sprite atlas sampling/upload paths can garble Celeste glyphs. | Breaks textured sprite/text rendering | OPEN |
+| `web/gl-webgpu.mjs:1240,1669` | Fixed-function shader and CPU mirror support modulate, replace, decal, and add; uncommon texture environment combine modes remain unimplemented. Dark/absent Q3 surfaces still need a targeted reproduction. | Breaks uncommon fixed-function materials | OPEN |
+| `web/gl-webgpu.mjs:1954-2035` | `texImage2D`/`texSubImage2D` previously expanded legacy `ALPHA`, `LUMINANCE`, `LUMINANCE_ALPHA`, `RED`, and `RG` channels incorrectly; expansion is corrected and covered. Celeste's title screenshot remains unverified. | Breaks glyph/sprite atlases | IMPLEMENTED (`web/tests/suite/unit/gl-webgpu-texture.test.mjs`); Celeste visual confirmation OPEN |
 | `source/opengl/es/esopengl.c:86` | `glIndexMask` panics when called by a compatibility guest. | Breaks real callers | OPEN |
 | `source/opengl/es/esopengl.c:94` | `glAlphaFunc` panics; alpha-tested fixed-function textures disappear. | Breaks compatibility games | OPEN |
 | `source/opengl/es/esopengl.c:102` | `glLogicOp` panics. | Breaks callers using logic ops | OPEN |
