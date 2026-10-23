@@ -254,6 +254,37 @@ The shim reaches the runtime only through `support-<sha256>.zip` (written by
 up `tools/rootfs64/libvk{32,64}/libvulkan.so.1`. `tools/rootfs64/patch-runtime-shim.py <dist/runtime>`
 does the same to an existing export; its output is byte-identical to a fresh stage (same sha256).
 
+## No silent drops, ABI pinning and texture view dimensions (commits 8389c3f75, fe30cce88, a9e657544)
+
+**Guest<->host ABI test** (`web/tests/suite/unit/vk-abi-layout.test.mjs`): the fn-id enum in
+`vk64bridge_abi.h` must match the ids the shims use; every `Vk*L` mirror struct in `libvk32.c`/`libvk64.c`
+is compared member by member (offset, size) against `vulkan_core.h` compiled with the matching cross
+compiler (`i686-linux-gnu-gcc`, `x86_64-linux-gnu-gcc`); and the generated `vk32_guest.h`/`vk64_guest.h`
+are checked the same way. It fails on the original Info2L layout bug (negative control).
+
+**Bridge** (`source/vulkan/vk64bridge.cpp`, needs a wasm rebuild): the 222 guards that returned, skipped
+or broke out of a guest command or struct are now `VK64_DROP_IF(action, cond)`. Each drop is logged as
+`vk64: DROPPED guest command in <fn> (vk64bridge.cpp:<line>, x<n>, <total> drops total): guard \`<cond>\``,
+the first 4 hits per (fn, line) and then every power of two, and counted (`vk64BridgeDropCount()`).
+Legitimate no-ops (zero counts, optional null pointers, destroying `VK_NULL_HANDLE`, de-duplication) stay
+plain `if`s. Verified with `python3 tools/vkd3d/tests/run-native.py` (real bridge compiled with the
+native harness; I also fixed its missing metrics stubs and two stale RP_BEGIN length asserts).
+
+**Page tier** (`web/vkwebgpu.mjs`, JS only): every skipped draw or command goes through
+`noteDrop`/`noteUnsupported`, unknown replay ops are reported instead of ignored, and
+`web/tests/suite/unit/no-silent-drops.test.mjs` pins both shapes.
+
+**Shims**: wrappers for unknown names already trap as `unimplemented` (logged by the host), and the alias
+wrappers only forward. Three deliberate local no-ops remain in `libvk32.c` (`vkResetDescriptorPool`,
+`vkFreeDescriptorSets`, `vkDestroyBufferView`: the host tracks pools/sets as ids and needs no teardown;
+they exist so Wine's unix handler gets `VK_SUCCESS`). They are not logged; changing that needs a shim rebuild.
+
+**Texture view dimension**: `layoutEntryFor` and the bind-group code derived the dimension from the WGSL
+type with two different expressions. `wgslTextureViewDimension()` (`web/wgsl-utils.mjs`) is now the single
+source. Before: `texture_cube_array` got layout `cube`; `texture_depth_cube` and `texture_depth_cube_array`
+got layout `2d`/`2d-array` (the `texture_cube` prefix test missed `texture_depth_cube*`). Cube arrays now
+allocate a multiple of 6 layers. `vkwebgpu-texture-view-dimension.test.mjs` fails on the old code for those three types.
+
 ## Residual / next
 
 - Other blocking sites not covered: `connect`/`accept`, `KThread::sleep`, `epoll_wait`, and any
