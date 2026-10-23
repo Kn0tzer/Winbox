@@ -15,6 +15,7 @@
 #include "knativesocket.h"
 #include "ksocket.h"
 #include "kunixsocket.h"
+#include "kpoll.h"
 #include "../cpu/testCPU.h"
 #include "../../opengl/gl64clientarray.h"
 
@@ -130,6 +131,81 @@ void testInetDatagramLoopback() {
         context.memory->readd(sourceLength) != 16) {
         testFail("AF_INET datagram recvfrom did not return the loopback payload and source address");
     }
+
+    // Quake3's listen server binds INADDR_ANY and may receive traffic addressed
+    // to 127.0.0.1. Exercise that wildcard routing and the same read readiness
+    // predicate used by poll/select.
+    auto wildcardReceiver = std::make_shared<KNativeSocketObject>(K_AF_INET, K_SOCK_DGRAM, 17);
+    auto loopbackSender = std::make_shared<KNativeSocketObject>(K_AF_INET, K_SOCK_DGRAM, 17);
+    if (wildcardReceiver->error || loopbackSender->error) {
+        testFail("AF_INET wildcard UDP loopback socket creation failed");
+        return;
+    }
+    wildcardReceiver->loopbackDatagram = true;
+    loopbackSender->loopbackDatagram = true;
+    wildcardReceiver->setBlocking(false);
+    loopbackSender->setBlocking(false);
+    KFileDescriptorPtr wildcardFd = context.process->allocFileDescriptor(wildcardReceiver, K_O_RDWR, 0, -1, 0);
+    KFileDescriptorPtr senderFd = context.process->allocFileDescriptor(loopbackSender, K_O_RDWR, 0, -1, 0);
+
+    constexpr U32 wildcardAddress = TEST_HEAP_ADDRESS + 0x600;
+    constexpr U32 loopbackAddress = TEST_HEAP_ADDRESS + 0x640;
+    constexpr U32 wildcardMessage = TEST_HEAP_ADDRESS + 0x680;
+    constexpr U32 wildcardReceived = TEST_HEAP_ADDRESS + 0x6A0;
+    constexpr U32 wildcardSource = TEST_HEAP_ADDRESS + 0x6C0;
+    constexpr U32 wildcardSourceLength = TEST_HEAP_ADDRESS + 0x700;
+    constexpr U16 q3Port = 27960;
+
+    context.memory->writew(wildcardAddress, K_AF_INET);
+    context.memory->writew(wildcardAddress + 2, (U16)((q3Port << 8) | (q3Port >> 8)));
+    context.memory->writed(wildcardAddress + 4, 0); // 0.0.0.0
+    result = wildcardReceiver->bind(context.thread, wildcardFd, wildcardAddress, 16);
+    if ((S32)result != 0) {
+        testFail("AF_INET UDP bind(0.0.0.0:27960) returned %d", (S32)result);
+        context.process->close(senderFd->handle);
+        context.process->close(wildcardFd->handle);
+        return;
+    }
+
+    context.memory->writew(loopbackAddress, K_AF_INET);
+    context.memory->writew(loopbackAddress + 2, (U16)((q3Port << 8) | (q3Port >> 8)));
+    context.memory->writeb(loopbackAddress + 4, 127);
+    context.memory->writeb(loopbackAddress + 5, 0);
+    context.memory->writeb(loopbackAddress + 6, 0);
+    context.memory->writeb(loopbackAddress + 7, 1);
+    KPollData pollData = {};
+    pollData.fd = wildcardFd->handle;
+    pollData.events = K_POLLIN;
+    if (internal_poll(context.thread, &pollData, 1, 0) != 0 || (pollData.revents & K_POLLIN)) {
+        testFail("empty wildcard UDP socket unexpectedly reported poll readability");
+    }
+
+    context.memory->writeb(wildcardMessage, 'q');
+    context.memory->writeb(wildcardMessage + 1, '3');
+    result = loopbackSender->sendto(context.thread, senderFd, wildcardMessage, 2, 0, loopbackAddress, 16);
+    if ((S32)result != 2) {
+        testFail("AF_INET UDP sendto(127.0.0.1:27960) returned %d", (S32)result);
+        context.process->close(senderFd->handle);
+        context.process->close(wildcardFd->handle);
+        return;
+    }
+
+    pollData.revents = 0;
+    if (internal_poll(context.thread, &pollData, 1, 0) != 1 || !(pollData.revents & K_POLLIN)) {
+        testFail("wildcard UDP socket did not report poll readability after a loopback datagram");
+    }
+    context.memory->writed(wildcardSourceLength, 16);
+    result = wildcardReceiver->recvfrom(context.thread, wildcardFd, wildcardReceived, 8, 0,
+                                        wildcardSource, wildcardSourceLength);
+    if ((S32)result != 2 || context.memory->readb(wildcardReceived) != 'q' ||
+        context.memory->readb(wildcardReceived + 1) != '3' ||
+        context.memory->readd(wildcardSourceLength) != 16 ||
+        context.memory->readb(wildcardSource + 4) != 127 ||
+        context.memory->readb(wildcardSource + 7) != 1) {
+        testFail("wildcard UDP recvfrom did not return the 127.0.0.1 loopback datagram");
+    }
+    context.process->close(senderFd->handle);
+    context.process->close(wildcardFd->handle);
 }
 
 void testInetStreamLoopback() {
