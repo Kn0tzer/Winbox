@@ -23,6 +23,7 @@
 #include "kunixsocket.h"
 #include "kepoll.h"
 #include "kpoll.h"
+#include "ksignal.h"
 #include "ripSampler.h"
 #include "guestprofiler.h"
 #include "bw64metrics.h"   // live frame-stage metrics (BW64_METRICS, default on)
@@ -1228,6 +1229,33 @@ static U64 sys_read64(CPU64* cpu, U64 fd, U64 buf, U64 count) {
                  (unsigned long long)count, (int)got, hex);
     }
     return (U64)got;
+}
+
+static bool sys_rangeHasPermission64(KMemory64* memory, U64 addr, U64 length, U32 permission);
+
+static U64 sys_signalfd64(CPU64* cpu, S32 fdNumber, U64 maskAddress, U64 maskSize, U32 flags) {
+    if (!cpu || !cpu->thread || !cpu->thread->process) return (U64)-K_EBADF;
+    if (maskSize != 8) return (U64)-K_EINVAL;
+    if (flags & ~(K_O_CLOEXEC | K_O_NONBLOCK)) return (U64)-K_EINVAL;
+    if (!sys_rangeHasPermission64(cpu->memory, maskAddress, 8, K64_PAGE_READ)) return (U64)-K_EFAULT;
+    KProcessPtr process = cpu->thread->process;
+    KFileDescriptorPtr descriptor;
+    if (fdNumber >= 0) {
+        descriptor = process->getFileDescriptor((FD)fdNumber);
+        if (!descriptor) return (U64)-K_EBADF;
+        if (descriptor->kobject->type != KTYPE_SIGNAL) return (U64)-K_EINVAL;
+    } else {
+        auto signal = std::make_shared<KSignal>();
+        descriptor = process->allocFileDescriptor(signal, K_O_RDONLY, 0, -1, 0);
+    }
+    if (flags & K_O_CLOEXEC) descriptor->descriptorFlags |= FD_CLOEXEC;
+    else if (fdNumber >= 0) descriptor->descriptorFlags &= ~FD_CLOEXEC;
+    if (flags & K_O_NONBLOCK) descriptor->accessFlags |= K_O_NONBLOCK;
+    else descriptor->accessFlags &= ~K_O_NONBLOCK;
+    std::shared_ptr<KSignal> signal = std::dynamic_pointer_cast<KSignal>(descriptor->kobject);
+    signal->mask = cpu->memory->readq(maskAddress) & ~((1ULL << (K_SIGKILL - 1)) | (1ULL << (K_SIGSTOP - 1)));
+    signal->blocking = (descriptor->accessFlags & K_O_NONBLOCK) == 0;
+    return descriptor->handle;
 }
 
 // openat(dirfd, path, flags, mode). For dirfd we honour AT_FDCWD (-100) and
@@ -5464,6 +5492,12 @@ void ksyscall64(CPU64* cpu) {
             } else {
                 ret = unimplementedSyscall64(nr);
             }
+            break;
+        case 282: // signalfd(fd, sigmask, sigsetsize)
+            ret = sys_signalfd64(cpu, (S32)a1, a2, a3, 0);
+            break;
+        case 289: // signalfd4(fd, sigmask, sigsetsize, flags)
+            ret = sys_signalfd64(cpu, (S32)a1, a2, a3, (U32)a4);
             break;
         case X64_SYS_eventfd2:
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
