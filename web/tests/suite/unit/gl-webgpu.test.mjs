@@ -129,6 +129,30 @@ test('stencil state configures the default attachment, render pipeline, and clea
   } finally { gpu.restore(); }
 });
 
+test('polygon offset is passed to WebGPU only when POLYGON_OFFSET_FILL is enabled', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    gl.polygonOffset(1.5, 4);
+    gl._currentProgram = {
+      id: 1, linkPromise: Promise.resolve(true), attributeLocations: new Map(), attributeInfo: [], uniformInfo: [], uniformValues: new Map(),
+      stages: {
+        vertex: { wgsl: '@vertex fn main() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0); }', layout: { fields: [] }, samplers: [] },
+        fragment: { wgsl: '@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }', layout: { fields: [] }, samplers: [] },
+      },
+    };
+    await gl._draw(gl._drawSnapshot(), 0x0004, 0, 3, null, 1);
+    assert.equal('depthBias' in gpu.pipelines.at(-1).primitive, false);
+    gl.enable(0x8037);
+    await gl._draw(gl._drawSnapshot(), 0x0004, 0, 3, null, 1);
+    assert.equal(gpu.pipelines.at(-1).primitive.depthBias, 4);
+    assert.equal(gpu.pipelines.at(-1).primitive.depthBiasSlopeScale, 1.5);
+    gl.polygonOffset(Infinity, 0);
+    assert.equal(gl.getError(), 0x0501);
+  } finally { gpu.restore(); }
+});
+
 test('draw and read buffer selection is honored and GL errors latch until read', async () => {
   const gpu = createValidationDevice(), logs = [];
   try {

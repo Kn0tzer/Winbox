@@ -435,6 +435,7 @@ export class WebGPUGL {
     this._depthRange = [0, 1];
     this._stencilFront = { func: 0x0207, ref: 0, readMask: 0xffffffff, writeMask: 0xffffffff, fail: 0x1e00, depthFail: 0x1e00, pass: 0x1e00 };
     this._stencilBack = { ...this._stencilFront };
+    this._polygonOffset = [0, 0];
     this._cullFace = 0x0405;
     this._frontFace = 0x0901;
     this._colorMask = [true, true, true, true];
@@ -1339,6 +1340,7 @@ export class WebGPUGL {
       enabled: new Set(this._enabled), blend: { ...this._blend }, blendColor: [...this._blendColor],
       depthFunc: this._depthFunc, depthMask: this._depthMask, cullFace: this._cullFace,
       stencilFront: { ...this._stencilFront }, stencilBack: { ...this._stencilBack },
+      polygonOffset: [...this._polygonOffset],
       frontFace: this._frontFace, colorMask: [...this._colorMask],
       drawFramebuffer: this._drawFramebuffer, drawBuffer: this._bufferSelection(this._drawFramebuffer).draw,
       textureUnits: this._textureUnits.map(unit => ({ ...unit })),
@@ -1883,6 +1885,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     const key = stateKey({
       program: program.id, vertex: vertex.layouts, topology, blend, depth: [depthEnabled, depthCompare, state.depthMask],
       stencil: [state.enabled.has(0x0b90), state.stencilFront, state.stencilBack],
+      polygonOffset: state.enabled.has(0x8037) ? state.polygonOffset : null,
       cull, frontFace: state.frontFace, colorMask: writeMask, targetFormat, depthFormat,
     });
     if (this._pipelineCache.has(key)) return this._pipelineCache.get(key);
@@ -1902,7 +1905,8 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
         layout: 'auto',
         vertex: { module: vertexModule, entryPoint: 'main', buffers: vertex.layouts },
         fragment: { module: fragmentModule, entryPoint: 'main', targets: [{ format: targetFormat, writeMask, ...(blend ? { blend } : {}) }] },
-        primitive: { topology, frontFace: state.frontFace === 0x0900 ? 'cw' : 'ccw', cullMode: cull === 'front-and-back' ? 'front' : cull },
+        primitive: { topology, frontFace: state.frontFace === 0x0900 ? 'cw' : 'ccw', cullMode: cull === 'front-and-back' ? 'front' : cull,
+          ...(state.enabled.has(0x8037) ? { depthBias: Math.trunc(state.polygonOffset[1]), depthBiasSlopeScale: state.polygonOffset[0], depthBiasClamp: 0 } : {}) },
         ...(depthFormat ? { depthStencil: { format: depthFormat, depthWriteEnabled: depthEnabled && state.depthMask, depthCompare, ...stencilState } } : {}),
       };
       const pipeline = this._device.createRenderPipeline(descriptor);
@@ -2060,7 +2064,10 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     for (const state of this._stencilFaces(face)) state.writeMask = mask >>> 0;
   }
   _stencilFaces(face) { return face === 0x0404 ? [this._stencilFront] : face === 0x0405 ? [this._stencilBack] : [this._stencilFront, this._stencilBack]; }
-  polygonOffset() { this._rejectUnsupported('polygon offset', GL.INVALID_OPERATION); }
+  polygonOffset(factor, units) {
+    if (!Number.isFinite(factor) || !Number.isFinite(units)) { this._recordError(GL.INVALID_VALUE); return; }
+    this._polygonOffset = [factor, units];
+  }
   sampleCoverage() {}
 
   _newTextureRecord(handle = null) {
