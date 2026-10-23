@@ -331,6 +331,14 @@ void runMemorySyscallValidation(TestResult& r) {
                 [](CPU64& c) { return c.reg[X64_R15].u64 == 0; });
     runAndCheck(r, "madvise rejects unknown advice", call(28, STACK_PAGE, 0x1000, 999),
                 [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_EINVAL; });
+    runAndCheck(r, "mincore reports mapped resident page", call(27, STACK_PAGE, 1, STACK_PAGE + 0x100),
+                [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0 && c.memory->readb(STACK_TOP - 0xF00) == 1;
+    }, [](CPU64& c) { c.memory->writeb(STACK_TOP - 0xF00, 0x5A); });
+    runAndCheck(r, "mincore rejects unmapped guest range", call(27, 0x70000000, 1, STACK_PAGE + 0x100),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_ENOMEM; });
+    runAndCheck(r, "mincore rejects unmapped output vector", call(27, STACK_PAGE, 1, 0x70000000),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_EFAULT; });
 }
 
 void runUnmappedSamePageFetchFault(TestResult& r) {
