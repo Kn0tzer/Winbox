@@ -60,7 +60,7 @@ not a disposition.
 | `source/opengl/es/esopengl.c:162-166` | `glDrawBuffer` and `glReadBuffer` panic in this shim. | Breaks compatibility callers | OPEN |
 | `source/opengl/gl64bridge.cpp:2676,2737` | Shader deletion paths are explicitly deferred no-ops; guest object lifecycle is not forwarded. | Can leak or alter shader lifecycle | OPEN |
 | `source/opengl/gl64bridge.cpp:2874` | `glMapBufferRange` returns zero as unsupported; valid mapping users cannot access buffer storage. | Breaks buffer mapping callers | OPEN |
-| `source/opengl/gl64bridge.cpp:3342` | Unsupported framebuffer generation path leaves caller IDs unwritten. | Corrupts guest state | OPEN |
+| `source/opengl/gl64bridge.cpp:3342,1384` | Framebuffer names are generated in the guest namespace and copied to guest memory before lazy host allocation. | Corrupts guest state | IMPLEMENTED (`web/tests/suite/unit/gl-shim-coverage.test.mjs`) |
 | `source/opengl/gl64bridge.cpp:3431` | `framebufferTexture` catches and swallows host exceptions. | Silently drops attachment operation | OPEN |
 | `source/opengl/gl64bridge.cpp:3742-3747,3867,3941` | Several GL state/texture bridge operations swallow JS exceptions. | Silently drops valid operations/errors | OPEN |
 | `source/opengl/gl64bridge.cpp:4520-4689` | Multiple blend/draw wrappers catch and discard JS exceptions. | Silently drops valid operations/errors | OPEN |
