@@ -3,6 +3,18 @@ import assert from 'node:assert/strict';
 import { WebGPUGL } from '../../../gl-webgpu.mjs';
 import { createValidationDevice } from '../fixtures/webgpu-validation-device.mjs';
 
+test('resizing targets preserves the overlapping CPU shadow using the old row stride', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: () => {} });
+    await gl.ready;
+    gl._pixels.set([1, 2, 3, 4], (1 * 4 + 2) * 4);
+    gl._ensureTargets(6, 5);
+    assert.deepEqual([...gl._pixels.slice((1 * 6 + 2) * 4, (1 * 6 + 2) * 4 + 4)], [1, 2, 3, 4]);
+    assert.deepEqual([...gl._pixels.slice(4, 8)], [0, 0, 0, 0], 'the first row remains at the beginning');
+  } finally { gpu.restore(); }
+});
+
 // Programmable GL draws (FNA, Mindustry) only reach the X11 present through a
 // GPU readback, so glReadPixels on the default framebuffer must serve the
 // frame copied back at the previous present, not the CPU clear shadow.

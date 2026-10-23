@@ -435,6 +435,9 @@ export class WebGPUGL {
     width = Math.max(1, Math.min(8192, width | 0));
     height = Math.max(1, Math.min(8192, height | 0));
     if (this._colorTexture && width === this._width && height === this._height) return;
+    const old = this._pixels;
+    const oldWidth = this._width;
+    const oldHeight = this._height;
     this._colorTexture?.destroy();
     this._depthTexture?.destroy();
     this._width = width;
@@ -450,9 +453,6 @@ export class WebGPUGL {
       size: [width, height, 1], format: 'depth24plus',
       usage: GPUTextureUsage.RENDER_ATTACHMENT,
     });
-    const old = this._pixels;
-    const oldWidth = this._width;
-    const oldHeight = this._height;
     this._pixels = new Uint8Array(width * height * 4);
     for (let y = 0; y < Math.min(height, oldHeight); y++) {
       const copyWidth = Math.min(width, oldWidth);
