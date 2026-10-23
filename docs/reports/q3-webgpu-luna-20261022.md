@@ -310,3 +310,57 @@ the initial run reported 2.0 FPS / 502.92 ms, while the later capture had no
 usable presentation sample.
 
 Evidence: [Build 6 +120s capture](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-4f603f50f/mapped-plus-120s.png), [Build 6 +240s capture](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-4f603f50f/mapped-plus-240s.png), [Build 6 +360s capture](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-4f603f50f-360/mapped-plus-360s.png), [initial run summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-4f603f50f/summary.json), [extended run summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-4f603f50f-360/summary.json), and [extended run console](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-4f603f50f-360/console.log).
+
+## Q3 local connection and UDP loopback diagnosis (Luna, 2026-10-23)
+
+Quake3e's `+map q3dm1` path starts a listen server in the same process. `SV_Map_f`
+calls `SV_SpawnServer`; that calls `CL_MapLoading`, which sets the client's
+server name to the literal `localhost` and immediately calls
+`CL_CheckForResend`. `NET_StringToAdr` special-cases that exact string to
+`NA_LOOPBACK` before its `getaddrinfo` path. `NET_SendPacket` routes
+`NA_LOOPBACK` through Quake3e's in-process `NET_SendLoopPacket` queue. The main
+frame drains those queues with `NET_GetLoopPacket` and dispatches them to
+`CL_PacketEvent` / `SV_PacketEvent`. Therefore the built-in localhost handshake
+does not use Wine name resolution or the guest UDP sockets.
+
+The browser rootfs also has a working localhost mapping: the virtual
+`/etc/hosts` contains `127.0.0.1 localhost`, and the packaged rootfs
+`/etc/nsswitch.conf` says `hosts: files`. Wine's earlier `getaddrinfo Failed to
+resolve your host name IP` message is not evidence that the Quake3e literal
+`localhost` failed to resolve; that warning concerns a separate hostname path.
+
+The prior AF_INET6 UDP `EAFNOSUPPORT` / errno 97 is expected for this runtime.
+With `USE_IPV6`, Quake3e defaults `net_enabled` to 3 (IPv4 and IPv6). Its
+`NET_OpenIP` tries the IPv6 socket, stops that address-family retry on
+`EAFNOSUPPORT`, then independently enters the IPv4 bind block because bit 1
+remains enabled. `+set net_enabled 1` disables the IPv6 attempt while preserving
+IPv4. The emulator's `ksocket` currently accepts AF_INET UDP for the browser
+loopback transport and rejects AF_INET6 with `-K_EAFNOSUPPORT`.
+
+The browser UDP loopback implementation itself routes the requested wildcard
+case: it accepts `0.0.0.0` and `127/8` binds, registers by port, matches a
+`127.0.0.1` destination against a wildcard-bound receiver, queues the payload,
+and signals its read condition. `isReadReady` reports queued packets, and
+`internal_poll` uses that predicate for `POLLIN`; `kselect` also delegates
+readiness to `internal_poll`. Expanded the process selftest to bind a receiver
+on `0.0.0.0:27960`, send to `127.0.0.1:27960`, verify empty/ready poll results,
+and receive the payload and source address.
+
+One IPv4-only browser probe against the read-only Build 6 dist used
+`+set net_enabled 1 +map q3dm1`. The first window mapped after 131.3 seconds;
+WebGPU initialized with no bridge failures or page errors. At +180 seconds the
+capture still read `CONNECTING TO LOCALHOST / WAITING CONNECTION... 0`; at
++360 seconds it remained on the Q3DM1 loading screen with `CONNECTING TO
+LOCALHOST`. Disabling IPv6 did not advance the local handshake. The +60-second
+capture showed renderer startup in the Q3 console. No stable gameplay FPS was
+recorded; later captures had no presentation frames in their metrics.
+
+This eliminates DNS, IPv6 fallback, and the kernel UDP wildcard/readiness path
+as established causes of this specific Q3 local connection stall. No runtime
+network code change is justified by this trace. The remaining blocker is in
+Quake3e's own loopback packet/frame processing or the startup state around it;
+the next trace should count the `NA_LOOPBACK` request entering
+`NET_SendLoopPacket`, server-side `NET_GetLoopPacket` draining it, and the
+resulting `SV_PacketEvent` response. This diagnostic was not a build.
+
+Evidence: [IPv4-only +60s console capture](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-netenabled1-20261023/mapped-plus-60s.png), [IPv4-only +180s capture](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-netenabled1-20261023/mapped-plus-180s.png), [IPv4-only +360s capture](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-netenabled1-20261023/mapped-plus-360s.png), and [IPv4-only probe summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-netenabled1-20261023/summary.json).
