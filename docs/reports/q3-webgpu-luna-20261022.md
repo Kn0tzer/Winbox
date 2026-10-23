@@ -364,3 +364,23 @@ the next trace should count the `NA_LOOPBACK` request entering
 resulting `SV_PacketEvent` response. This diagnostic was not a build.
 
 Evidence: [IPv4-only +60s console capture](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-netenabled1-20261023/mapped-plus-60s.png), [IPv4-only +180s capture](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-netenabled1-20261023/mapped-plus-180s.png), [IPv4-only +360s capture](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-netenabled1-20261023/mapped-plus-360s.png), and [IPv4-only probe summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-netenabled1-20261023/summary.json).
+
+
+## Q3 present latency measurement, 2026-10-23
+
+I ran the Q3 probe against the read-only Build 6 export (`4f603f50f71a`, WASM build ID `b0438f56f93a`) with JIT and recovery enabled, `+set net_enabled 1`, and `+map q3dm1`. The first window mapped 117.9 seconds after probe launch. The +90-second composited capture still shows `CONNECTING TO LOCALHOST / AWAITING CONNECTION...0`; it is not the BSP asset-loading screen, so these timings do not measure Q3's per-chunk map loader.
+
+For the 30-second interval ending at mapped+90s, the timestamped metrics stream recorded 22 frames at the XWire SDL sink (0.73 frames/s over the nominal interval). The metric stream covered 19.55 seconds of that interval; it had a 12.5-second gap and its last record was 8.15 seconds before the screenshot. Because metrics emit only after GL/audio/present activity, that gap means the presentation counter is a lower bound if a final frame was not followed by another metrics event. One `gl64 PHASE: swap` marker appeared in the interval, but this trace is best-effort on guest worker threads and is not a reliable exact swap count.
+
+The same records show the x64 JIT retired 18,092,937 guest instructions between counters 541,587,716 and 559,680,653 across the covered 19.55 seconds, or about 0.93 million instructions/s. The counter was not refreshed during the final 8.15 seconds, so this is the measured subspan rate rather than an exact 30-second instruction rate. The GL bridge stage accumulated 3,409.02 ms across 122 GL calls in the captured records, averaging 27.94 ms per GL call. That stage includes marshaling and the synchronous main-thread hop; it does not isolate `glXSwapBuffers` latency.
+
+The present path explains why the old 500 ms sample is not evidence of a GPU completion wait:
+
+- `GL64_fn_glXSwapBuffers` calls `glOnMain`, which enqueues a closure through `xwireRunOnMainThread` and blocks on its condition variable until the main loop runs it. The closure calls `glFlush()` and `readbackAndPresent()`.
+- `glReadPixels` in `gl-webgpu.mjs` copies from the CPU shadow pixel array. `readbackAndPresent()` then converts RGBA to BGRX and `submitFrame()` copies the pixels into the sink's pending buffer. The current metrics combine this work with the main-thread wait; they do not time those pieces separately.
+- The sink's SDL composition (`putBitsOnWnd` and `screen->present`) runs later in `tickMainThread`, after the queued GL closure has returned and signaled the guest thread.
+- `gl-webgpu.mjs` queues the canvas copy with `GPUQueue.submit()` and does not await GPU completion in `_present()`. There is no `mapAsync` readback in this path. `onSubmittedWorkDone()` appears only in promise callbacks that defer temporary-buffer cleanup.
+
+This source and runtime evidence does not show a per-present GPU round trip. The main-thread bridge hop is synchronous, but the SDL compositor runs after the hop signals the guest, and current telemetry cannot attribute its time per swap. I made no async-swap change and ran no build. There is no post-change timing to compare; the 27.94 ms figure is an average over all GL bridge calls, not a per-present result.
+
+Evidence: [mapped+90s screenshot](/tmp/winbox-finish/r3/work-luna-q3/evidence/present-metric-window-jit1-20261023/mapped-plus-90s.png), [full probe summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/present-metric-window-jit1-20261023/summary.json), and [console log](/tmp/winbox-finish/r3/work-luna-q3/evidence/present-metric-window-jit1-20261023/console.log). The temporary probe instrumentation used to retain the 30-second event window was reverted after capture.
