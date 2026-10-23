@@ -15,7 +15,7 @@ const GL = Object.freeze({
   RENDERBUFFER: 0x8d41, RENDERBUFFER_BINDING: 0x8ca7,
   TEXTURE_2D: 0x0de1, TEXTURE_BINDING_2D: 0x8069,
   COLOR_BUFFER_BIT: 0x4000, DEPTH_BUFFER_BIT: 0x0100, STENCIL_BUFFER_BIT: 0x0400,
-  VIEWPORT: 0x0ba2, SCISSOR_BOX: 0x0c10, SCISSOR_TEST: 0x0c11,
+  VIEWPORT: 0x0ba2, DEPTH_RANGE: 0x0b70, SCISSOR_BOX: 0x0c10, SCISSOR_TEST: 0x0c11,
   PACK_ALIGNMENT: 0x0d05, PACK_ROW_LENGTH: 0x0d02,
   PACK_SKIP_ROWS: 0x0d03, PACK_SKIP_PIXELS: 0x0d04,
   PIXEL_PACK_BUFFER_BINDING: 0x88ed, PIXEL_UNPACK_BUFFER_BINDING: 0x88ef,
@@ -361,6 +361,7 @@ export class WebGPUGL {
     this._blendColor = [0, 0, 0, 0];
     this._depthFunc = 0x0201;
     this._depthMask = true;
+    this._depthRange = [0, 1];
     this._cullFace = 0x0405;
     this._frontFace = 0x0901;
     this._colorMask = [true, true, true, true];
@@ -699,6 +700,7 @@ export class WebGPUGL {
       case GL.RENDERER: return 'WebGPU GL translation';
       case GL.SHADING_LANGUAGE_VERSION: return 'WebGL GLSL ES 3.00';
       case GL.VIEWPORT: return new Int32Array(this._viewport);
+      case GL.DEPTH_RANGE: return new Float32Array(this._depthRange);
       case GL.SCISSOR_BOX: return new Int32Array(this._scissor);
       case GL.DRAW_FRAMEBUFFER_BINDING: case GL.FRAMEBUFFER_BINDING: return this._drawFramebuffer;
       case GL.READ_FRAMEBUFFER_BINDING: return this._readFramebuffer;
@@ -1088,7 +1090,7 @@ export class WebGPUGL {
     return {
       program, uniformValues: new Map([...(program?.uniformValues || [])].map(([name, value]) => [name, ArrayBuffer.isView(value) ? value.slice() : Array.isArray(value) ? value.slice() : value])),
       attributes, elementArrayBuffer: this._vao.elementArrayBuffer,
-      viewport: [...this._viewport], scissor: [...this._scissor],
+      viewport: [...this._viewport], scissor: [...this._scissor], depthRange: [...this._depthRange],
       enabled: new Set(this._enabled), blend: { ...this._blend }, blendColor: [...this._blendColor],
       depthFunc: this._depthFunc, depthMask: this._depthMask, cullFace: this._cullFace,
       frontFace: this._frontFace, colorMask: [...this._colorMask],
@@ -1664,7 +1666,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     const bindGroup = await this._uniformBindGroup(program, pipeline, state.uniformValues, state.textureUnits);
     if (bindGroup) pass.setBindGroup(0, bindGroup);
     const x = Math.max(0, viewport[0]), y = Math.max(0, target.height - viewport[1] - viewport[3]);
-    pass.setViewport(x, y, Math.max(0, viewport[2]), Math.max(0, viewport[3]), 0, 1);
+    pass.setViewport(x, y, Math.max(0, viewport[2]), Math.max(0, viewport[3]), ...state.depthRange);
     if (state.enabled.has(0x0c11)) {
       const [sx, sy, sw, sh] = state.scissor;
       const left = Math.max(0, sx), top = Math.max(0, target.height - sy - sh);
@@ -1702,6 +1704,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
   colorMask(r, g, b, a) { this._colorMask = [!!r, !!g, !!b, !!a]; }
   depthMask(enabled) { this._depthMask = !!enabled; }
   depthFunc(func) { this._depthFunc = func | 0; }
+  depthRange(near, far) { this._depthRange = [clamp01(near), clamp01(far)]; }
   cullFace(mode) { this._cullFace = mode | 0; }
   frontFace(mode) { this._frontFace = mode | 0; }
   scissor(x, y, width, height) { this._scissor = [x | 0, y | 0, width | 0, height | 0]; }

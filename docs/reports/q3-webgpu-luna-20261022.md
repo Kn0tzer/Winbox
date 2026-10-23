@@ -451,3 +451,48 @@ Neither the high-load run nor its sparse per-window telemetry justifies making
 the SwapBuffers path asynchronous yet. No source change or build was made.
 
 Evidence: [mapped+120s](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-q3-quiet-12min-20261023/mapped-plus-120s.png), [mapped+240s](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-q3-quiet-12min-20261023/mapped-plus-240s.png), [mapped+360s](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-q3-quiet-12min-20261023/mapped-plus-360s.png), [mapped+480s](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-q3-quiet-12min-20261023/mapped-plus-480s.png), [mapped+600s](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-q3-quiet-12min-20261023/mapped-plus-600s.png), [mapped+720s](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-q3-quiet-12min-20261023/mapped-plus-720s.png), [summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-q3-quiet-12min-20261023/summary.json), and [full metrics/console log](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-q3-quiet-12min-20261023/console.log).
+
+
+## Build 8 Q3 extended probe and depth-range fix (2026-10-23)
+
+I ran the quiet-host helper once; it returned `load 4.68 < 5: go`. The first,
+trace-enabled probe started with load `4.55 6.76 6.28` (1-, 5-, and 15-minute
+averages). It closed after the +360s screenshot, before it could answer the
+full progression question. The no-trace retry started at `7.25 7.93 7.21`, so
+its rate measurements are load-contaminated. The page closed at 10:41:03,
+19m25s after launch and before the scheduled +1200s through +1500s captures. I
+recorded one post-run load sample at 10:46:07 (`5.24 5.98 6.79`); it is not an
+exact page-close reading.
+
+The retry used the read-only Build 8 dist (`integ 72315a6d5`, WASM build ID
+`ba9aa2ed6a32`), JIT and recovery enabled, and `+map q3dm1`. It mapped 113.9s
+after launch, with WebGPU active and no WebGPU bridge failures. The captures
+show `AWAITING CONNECTION` at +120s and +240s; a correctly textured Q3DM1 arena
+at +360s with `LOADING... MAPS/Q3DM1.BSP`; `GAME MEDIA` at +480s; `ROCKET
+LAUNCHER` at +600s; and `AWAITING SNAPSHOT...` at +720s, +840s, and +960s.
+The +960s screenshot confirms the textured 3D scene is being rendered through
+the WebGPU path. It does not prove that the local client/server handshake
+completed, because the visible frame may be stale after the runtime error
+below.
+
+The metrics stream covered mapped+1.5s through mapped+686.6s. It recorded
+1,628,269,262 retired guest instructions (2.38 million/s) and 91 XWire SDL sink
+presents (0.133 presents/s). Metrics stopped at the failure point; later
+screenshots did not produce more activity. Treat these as raw rates under the
+load increase above, not as a clean throughput estimate.
+
+At 10:34:59.374, about mapped+686.5s, the runtime logged an uncaught
+`TypeError: GLctx.depthRange is not a function`, from Emscripten's
+`_emscripten_glDepthRangef`. The error interrupts the emulated main loop during
+late map startup, before I could establish whether Q3 would receive its first
+server snapshot. The missing method was a real GL/WebGPU bridge gap, not
+continued BSP or ZIP loading. I added `depthRange()` state, `GL_DEPTH_RANGE`
+query support, and passed the range to WebGPU's per-draw viewport. A focused
+unit test exercises the method and verifies the submitted viewport bounds.
+
+All 18 `gl-webgpu*.test.mjs` unit tests pass. No build or post-fix browser run
+was performed, per the no-build instruction. The next run should include this
+commit in a new integration dist; it will show whether this exception was the
+last blocker or whether the client remains at `AWAITING SNAPSHOT`.
+
+Evidence: [+360s BSP / textured arena](/tmp/winbox-finish/r3/work-luna-q3/evidence/build8-q3-25min-nodiag-20261023/mapped-plus-360s.png), [+720s awaiting snapshot](/tmp/winbox-finish/r3/work-luna-q3/evidence/build8-q3-25min-nodiag-20261023/mapped-plus-720s.png), [+960s final capture](/tmp/winbox-finish/r3/work-luna-q3/evidence/build8-q3-25min-nodiag-20261023/mapped-plus-960s.png), [probe summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/build8-q3-25min-nodiag-20261023/summary.json), and [metrics and error log](/tmp/winbox-finish/r3/work-luna-q3/evidence/build8-q3-25min-nodiag-20261023/console.log).
