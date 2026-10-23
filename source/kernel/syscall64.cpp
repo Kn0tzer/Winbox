@@ -3029,6 +3029,69 @@ static U64 sys_madvise64(CPU64* cpu, U64 addr, U64 length, U64 advice) {
     return sys_rangeMapped64(cpu, addr, length) ? 0 : (U64)-K_ENOMEM;
 }
 
+static bool sys_numaModeValid(U64 mode) {
+    return mode <= 4; // DEFAULT, PREFERRED, BIND, INTERLEAVE, LOCAL
+}
+
+static U64 sys_numaReadMask64(CPU64* cpu, U64 mode, U64 maskPtr, U64 maxnode, U64& mask) {
+    mask = 1; // only node 0 is present
+    if (!sys_numaModeValid(mode)) return (U64)-K_EINVAL;
+    if (!maxnode) return (U64)-K_EINVAL;
+    if (!maskPtr) {
+        if (mode == 0 || mode == 1 || mode == 4) return 0;
+        return (U64)-K_EFAULT;
+    }
+    const U64 bytes = std::min<U64>(((maxnode + 63) / 64) * 8, 512);
+    if (!bytes || !sys_rangeMapped64(cpu, maskPtr, bytes)) return (U64)-K_EFAULT;
+    const U64 requested = cpu->memory->readq(maskPtr);
+    if (!(requested & 1) && mode != 0 && mode != 4) return (U64)-K_EINVAL;
+    return 0;
+}
+
+static U64 sys_setMempolicy64(CPU64* cpu, U64 mode, U64 maskPtr, U64 maxnode) {
+    U64 mask = 1;
+    U64 rc = sys_numaReadMask64(cpu, mode, maskPtr, maxnode, mask);
+    if (rc) return rc;
+    cpu->numaPolicyMode = (U32)mode;
+    cpu->numaNodeMask = mask;
+    return 0;
+}
+
+static U64 sys_mbind64(CPU64* cpu, U64 addr, U64 length, U64 mode,
+                       U64 maskPtr, U64 maxnode, U64 flags) {
+    constexpr U64 MPOL_MF_MOVE = 1, MPOL_MF_MOVE_ALL = 2, MPOL_MF_STRICT = 4;
+    if ((addr & K64_PAGE_MASK) || !length || (flags & ~(MPOL_MF_MOVE | MPOL_MF_MOVE_ALL | MPOL_MF_STRICT)))
+        return (U64)-K_EINVAL;
+    if (!sys_rangeMapped64(cpu, addr, length)) return (U64)-K_ENOMEM;
+    U64 mask = 1;
+    U64 rc = sys_numaReadMask64(cpu, mode, maskPtr, maxnode, mask);
+    if (rc) return rc;
+    // All mappings share the single node 0 policy in this virtual machine.
+    cpu->numaPolicyMode = (U32)mode;
+    cpu->numaNodeMask = mask;
+    return 0;
+}
+
+static U64 sys_getMempolicy64(CPU64* cpu, U64 modePtr, U64 maskPtr,
+                              U64 maxnode, U64 addr, U64 flags) {
+    constexpr U64 MPOL_F_NODE = 1, MPOL_F_ADDR = 2, MPOL_F_MEMS_ALLOWED = 4;
+    if (flags & ~(MPOL_F_NODE | MPOL_F_ADDR | MPOL_F_MEMS_ALLOWED)) return (U64)-K_EINVAL;
+    if ((flags & MPOL_F_ADDR) && (!addr || !sys_rangeMapped64(cpu, addr, 1))) return (U64)-K_EFAULT;
+    if (!modePtr && !maskPtr) return (U64)-K_EFAULT;
+    if (modePtr) {
+        if (!sys_rangeMapped64(cpu, modePtr, 4)) return (U64)-K_EFAULT;
+        cpu->memory->writed(modePtr, (flags & MPOL_F_NODE) ? 0 : cpu->numaPolicyMode);
+    }
+    if (maskPtr && !(flags & MPOL_F_NODE)) {
+        if (!maxnode || maxnode > 4096) return (U64)-K_EINVAL;
+        const U64 bytes = (maxnode + 7) / 8;
+        if (!sys_rangeMapped64(cpu, maskPtr, bytes)) return (U64)-K_EFAULT;
+        cpu->memory->memsetGuest(maskPtr, 0, bytes);
+        if (cpu->numaNodeMask) cpu->memory->writeb(maskPtr, 1);
+    }
+    return 0;
+}
+
 // Linux v6.12 arch/x86/entry/syscalls/syscall_64.tbl (common + 64 ABI).
 // Keep the ABI names here complete through syscall 450 so every unknown
 // dispatch logs the meaningful Linux name, including newly encountered gaps.
@@ -5361,6 +5424,15 @@ void ksyscall64(CPU64* cpu) {
             ret = 0;
             break;
         }
+        case 237: // mbind(addr, len, mode, nodemask, maxnode, flags)
+            ret = sys_mbind64(cpu, a1, a2, a3, a4, a5, a6);
+            break;
+        case 238: // set_mempolicy(mode, nodemask, maxnode)
+            ret = sys_setMempolicy64(cpu, a1, a2, a3);
+            break;
+        case 239: // get_mempolicy(mode*, nodemask*, maxnode, addr, flags)
+            ret = sys_getMempolicy64(cpu, a1, a2, a3, a4, a5);
+            break;
         case X64_SYS_rseq:
             // No rseq implementation: report through the common ENOSYS path.
             ret = unimplementedSyscall64(nr);

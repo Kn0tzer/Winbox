@@ -61,6 +61,8 @@ public:
     U64   fsbase = 0;     // x86-64: set via arch_prctl(ARCH_SET_FS)
     U64   gsbase = 0;
     U64   affinityMask = 1; // the virtual machine exposes one schedulable CPU
+    U32   numaPolicyMode = 0; // the virtual machine exposes one NUMA node (0)
+    U64   numaNodeMask = 1;
     U64   currentInstructionRip = 0;
     bool  memoryFaultPending = false;
     U64   memoryFaultAddress = 0;

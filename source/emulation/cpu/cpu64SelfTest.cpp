@@ -359,6 +359,33 @@ void runMemorySyscallValidation(TestResult& r) {
                 [](CPU64& c) {
         return c.reg[X64_R15].u64 == 8 && c.memory->readq(STACK_TOP - 0xD00) == 1;
     }, [](CPU64& c) { c.memory->writeq(STACK_TOP - 0xD00, ~0ULL); });
+    runAndCheck(r, "set_mempolicy rejects an unavailable node mask", call(238, 2, STACK_PAGE + 0x300, 1),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_EINVAL; },
+                [](CPU64& c) { c.memory->writeq(STACK_TOP - 0xD00, 0); });
+    auto appendImm = [](std::vector<U8>& code, U8 rex, U8 opcode, U64 value) {
+        code.push_back(rex); code.push_back(opcode);
+        for (U32 i = 0; i < 8; ++i) code.push_back((U8)(value >> (i * 8)));
+    };
+    std::vector<U8> numa = {0xB8, 237, 0, 0, 0}; // mbind
+    appendImm(numa, 0x48, 0xBF, STACK_PAGE);
+    appendImm(numa, 0x48, 0xBE, 0x1000);
+    appendImm(numa, 0x48, 0xBA, 2); // MPOL_BIND
+    appendImm(numa, 0x49, 0xBA, STACK_PAGE + 0x300);
+    appendImm(numa, 0x49, 0xB8, 1); // maxnode
+    appendImm(numa, 0x49, 0xB9, 0); // flags
+    numa.insert(numa.end(), {0x0F, 0x05});
+    numa.insert(numa.end(), {0xB8, 239, 0, 0, 0}); // get_mempolicy
+    appendImm(numa, 0x48, 0xBF, STACK_PAGE + 0x400);
+    appendImm(numa, 0x48, 0xBE, STACK_PAGE + 0x408);
+    appendImm(numa, 0x48, 0xBA, 1);
+    appendImm(numa, 0x49, 0xBA, 0);
+    appendImm(numa, 0x49, 0xB8, 0);
+    numa.insert(numa.end(), {0x0F, 0x05, 0x49, 0x89, 0xC7});
+    runAndCheck(r, "mbind and get_mempolicy record the supported node policy", withExit(numa),
+                [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0 && c.memory->readd(STACK_TOP - 0xC00) == 2 &&
+            c.memory->readq(STACK_TOP - 0xBF8) == 1;
+    }, [](CPU64& c) { c.memory->writeq(STACK_TOP - 0xD00, 1); });
 }
 
 void runUnmappedSamePageFetchFault(TestResult& r) {

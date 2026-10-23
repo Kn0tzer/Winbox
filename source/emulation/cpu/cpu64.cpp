@@ -292,6 +292,8 @@ void CPU64::cloneRegistersFrom(const CPU64* from) {
     fsbase = from->fsbase;
     gsbase = from->gsbase;
     affinityMask = from->affinityMask;
+    numaPolicyMode = from->numaPolicyMode;
+    numaNodeMask = from->numaNodeMask;
     mxcsr = from->mxcsr;
     for (int i = 0; i < 16; i++) {
         xmm[i] = from->xmm[i];
