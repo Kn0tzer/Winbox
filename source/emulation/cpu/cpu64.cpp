@@ -7571,7 +7571,7 @@ unhandled:
     }
     // Unimplemented. Print enough leading bytes to identify the opcode
     // in the Intel SDM tables and bail out so we don't silently loop.
-    klog_fmt("CPU64: unimpl opcode at RIP=0x%llx bytes=%02x %02x %02x %02x %02x %02x %02x (rex=0x%02x osz=%d asz=%d seg=%02x rep=%02x)",
+    klog_fmt("CPU64: unimpl opcode at RIP=0x%llx bytes=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x (rex=0x%02x osz=%d asz=%d seg=%02x rep=%02x)",
              (unsigned long long)ipStart,
              fetchByte(ipStart),
              fetchByte(ipStart + 1),
@@ -7580,6 +7580,15 @@ unhandled:
              fetchByte(ipStart + 4),
              fetchByte(ipStart + 5),
              fetchByte(ipStart + 6),
+             fetchByte(ipStart + 7),
+             fetchByte(ipStart + 8),
+             fetchByte(ipStart + 9),
+             fetchByte(ipStart + 10),
+             fetchByte(ipStart + 11),
+             fetchByte(ipStart + 12),
+             fetchByte(ipStart + 13),
+             fetchByte(ipStart + 14),
+             fetchByte(ipStart + 15),
              p.rex, (int)p.osize16, (int)p.asize32, p.seg, p.rep);
     // BW64_UNIMPLDUMP: when a thread decodes a bogus opcode it has almost always
     // jumped to a garbage address (corruption / bad control transfer). Dump the
