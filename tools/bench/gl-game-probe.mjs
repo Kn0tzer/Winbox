@@ -50,6 +50,8 @@ const probeJit = process.env.PROBE_JIT ?? process.env.JIT ?? '0';
 const probeRecover = process.env.PROBE_RECOVER ?? '1';
 const wildJump = process.env.WILDJUMP === '1';
 const unimplDump = process.env.UNIMPLDUMP === '1';
+const guestDiagnostics = process.env.GUEST_DIAGNOSTICS === '1';
+const guestTraceExe = process.env.GUEST_TRACE_EXE || exe;
 if (!['x86', 'x64'].includes(arch) || !Array.isArray(args) || args.some(arg => typeof arg !== 'string'))
   throw new Error('Invalid GAME_ARCH or GAME_ARGS');
 if (!['0', '1'].includes(probeJit) || !['0', '1'].includes(probeRecover))
@@ -109,6 +111,8 @@ const result = {
   backend: 'WebGPU default',
   jit: probeJit,
   recover: probeRecover,
+  guestDiagnostics,
+  guestTraceExe: guestDiagnostics ? guestTraceExe : null,
   wildJump,
   unimplDump,
   gameRoot,
@@ -121,7 +125,7 @@ const result = {
 const record = line => {
   lines.push(line);
   if (line.includes('wine: failed to open') && line.includes(exe)) appLaunchFailure = line;
-  if (/pageerror|http-error|first window mapped|gl-webgpu|gl64: host GL|TODO:|Unhandled exception|failed to open|BW64_WILDJUMP|CPU64:.*(?:unimpl|#GP)/.test(line))
+  if (/pageerror|http-error|first window mapped|gl-webgpu|gl64: host GL|BW_THREAD_DUMP|RIPSAMPLE|SYSTRACE|MEMSTATS|TODO:|Unhandled exception|failed to open|BW64_WILDJUMP|CPU64:.*(?:unimpl|#GP)/.test(line))
     process.stdout.write(line.split('\n')[0].slice(0, 500) + '\n');
 };
 
@@ -149,6 +153,26 @@ try {
     ],
   });
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  if (guestDiagnostics) {
+    await page.route('**/wine64-launcher.js*', async route => {
+      const response = await route.fetch();
+      const body = await response.text();
+      const marker = 'if (param("unimpldump") === "1") ENV["BW64_UNIMPLDUMP"] = "1";';
+      if (!body.includes(marker)) throw new Error('Could not install guest diagnostic environment flags');
+      const diagnosticFlags = [
+        'if (param("bw64diag") === "threads") {',
+        '  ENV["BW_THREAD_DUMP"] = "1";',
+        '  ENV["BW64_CRASHRING"] = "1";',
+        '  ENV["BW64_WSREAD"] = "1";',
+        `  ENV["BW64_TRACE_EXE"] = ${JSON.stringify(guestTraceExe)};`,
+        '  ENV["BW64_MEMSTATS"] = "1";',
+        '}',
+        marker,
+      ].join('\n');
+      await route.fulfill({ response, body: body.replace(marker, diagnosticFlags) });
+      result.diagnosticLauncherPatched = true;
+    });
+  }
   await page.addInitScript(() => {
     globalThis.__bwGlGameProbe = { mappedAt: 0, messages: [] };
     addEventListener('message', event => {
@@ -196,6 +220,10 @@ try {
   });
   if (wildJump) query.set('wildjump', '1');
   if (unimplDump) query.set('unimpldump', '1');
+  if (guestDiagnostics) {
+    query.set('bw64diag', 'threads');
+    query.set('ripsample', '1');
+  }
   if (process.env.GL_TRACE) query.set('gltrace', process.env.GL_TRACE);
   const launchAt = Date.now();
   result.launchUrl = `${base}/dist/runtime/index.html?${query}`;
@@ -220,13 +248,34 @@ try {
     for (const seconds of captureSeconds) {
       const due = mappedAt + seconds * 1000;
       while (Date.now() < due) await page.waitForTimeout(Math.min(1000, due - Date.now()));
-      const sample = await page.evaluate(() => ({
-        at: Date.now(),
-        canvas: [...document.querySelectorAll('canvas')].map(canvas => ({ id: canvas.id, width: canvas.width, height: canvas.height })),
-        gl: globalThis.bwGlStats || null,
-        runtimeReady: Boolean(globalThis.bwRuntime?.ready?.()),
-        messages: globalThis.__bwGlGameProbe?.messages.slice(-12) || [],
-      }));
+      if (guestDiagnostics) {
+        const invoked = await page.evaluate(() => {
+          const module = globalThis.Module;
+          if (typeof module?._bw64_dump_guest_threads === 'function') {
+            module._bw64_dump_guest_threads();
+            return 'export';
+          }
+          if (typeof module?.ccall === 'function') {
+            module.ccall('bw64_dump_guest_threads', null, [], []);
+            return 'ccall';
+          }
+          return 'unavailable';
+        });
+        record(`BW_THREAD_DUMP_DRIVER invoked via ${invoked}`);
+        await page.waitForTimeout(250);
+      }
+      const sample = await page.evaluate(() => {
+        const messages = globalThis.__bwGlGameProbe?.messages || [];
+        return {
+          at: Date.now(),
+          canvas: [...document.querySelectorAll('canvas')].map(canvas => ({ id: canvas.id, width: canvas.width, height: canvas.height })),
+          gl: globalThis.bwGlStats || null,
+          runtimeReady: Boolean(globalThis.bwRuntime?.ready?.()),
+          messages: messages.slice(-12),
+          progress: messages.filter(message => /\[(?:I|W|E)\]/.test(message.line)),
+          metrics: messages.filter(message => message.line.startsWith('bw64: METRICS ')).slice(-4),
+        };
+      });
       const label = `mapped-plus-${seconds}s`;
       const path = join(outputDir, `${label}.png`);
       await page.screenshot({ path, fullPage: true });
