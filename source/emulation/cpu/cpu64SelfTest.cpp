@@ -148,6 +148,87 @@ void runFaultAtRIP(TestResult& r, const char* name,
     fflush(stdout);
 }
 
+void runNullIndirectCallFault(TestResult& r) {
+    KMemory64 mem(nullptr);
+    mem.mmapAnonymousFixed(CODE_BASE, 0x1000, 7);
+    mem.mmapAnonymousFixed(STACK_TOP - 0x1000, 0x1000, 3);
+    // call qword ptr [rip+0x7a] loads its target from CODE_BASE+0x80.
+    loadCode(mem, CODE_BASE, {0xFF, 0x15, 0x7A, 0x00, 0x00, 0x00});
+    mem.writeq(CODE_BASE + 0x80, 0);
+
+    CPU64 cpu(&mem);
+    cpu.rip = CODE_BASE;
+    cpu.reg[X64_RSP].setU64(STACK_TOP - 16);
+    cpu.runBounded(8);
+    const bool ok = cpu.yield && cpu.rip == 0 &&
+                    cpu.instructionCount == 1 &&
+                    cpu.reg[X64_RSP].u64 == STACK_TOP - 24 &&
+                    !mem.isPageMapped(0);
+    if (ok) {
+        printf("  PASS: null indirect call faults at the first unmapped fetch\n");
+        r.passed++;
+    } else {
+        printf("  FAIL: null indirect call fetch guard (yield=%d RIP=0x%llx instructions=%llu RSP=0x%llx)\n",
+               (int)cpu.yield, (unsigned long long)cpu.rip,
+               (unsigned long long)cpu.instructionCount,
+               (unsigned long long)cpu.reg[X64_RSP].u64);
+        r.failed++;
+    }
+    fflush(stdout);
+}
+
+void runNonExecutableFetchFault(TestResult& r) {
+    KMemory64 mem(nullptr);
+    mem.mmapAnonymousFixed(CODE_BASE, 0x1000, 3); // RW, deliberately not executable
+    mem.mmapAnonymousFixed(STACK_TOP - 0x1000, 0x1000, 3);
+    mem.writeb(CODE_BASE, 0x90); // nop
+
+    CPU64 cpu(&mem);
+    cpu.rip = CODE_BASE;
+    cpu.reg[X64_RSP].setU64(STACK_TOP - 16);
+    cpu.runBounded(1);
+    const bool ok = cpu.yield && cpu.rip == CODE_BASE &&
+                    cpu.instructionCount == 0;
+    if (ok) {
+        printf("  PASS: instruction fetch from a non-executable page raises #PF\n");
+        r.passed++;
+    } else {
+        printf("  FAIL: non-executable fetch guard (yield=%d RIP=0x%llx instructions=%llu)\n",
+               (int)cpu.yield, (unsigned long long)cpu.rip,
+               (unsigned long long)cpu.instructionCount);
+        r.failed++;
+    }
+    fflush(stdout);
+}
+
+void runUnmappedSamePageFetchFault(TestResult& r) {
+    KMemory64 mem(nullptr);
+    mem.mmapAnonymousFixed(CODE_BASE, 0x1000, 7);
+    mem.mmapAnonymousFixed(STACK_TOP - 0x1000, 0x1000, 3);
+    loadCode(mem, CODE_BASE, {0x90, 0x90}); // two nops
+
+    CPU64 cpu(&mem);
+    cpu.rip = CODE_BASE;
+    cpu.reg[X64_RSP].setU64(STACK_TOP - 16);
+    cpu.runBounded(1); // cache CODE_BASE's executable page
+    mem.munmap(CODE_BASE, 0x1000);
+    cpu.runBounded(1);
+
+    const bool ok = cpu.yield && cpu.rip == CODE_BASE + 1 &&
+                    cpu.instructionCount == 1 &&
+                    !mem.isPageMapped(CODE_BASE >> K64_PAGE_SHIFT);
+    if (ok) {
+        printf("  PASS: munmap invalidates the cached instruction-fetch mapping\n");
+        r.passed++;
+    } else {
+        printf("  FAIL: unmapped fetch cache invalidation (yield=%d RIP=0x%llx instructions=%llu)\n",
+               (int)cpu.yield, (unsigned long long)cpu.rip,
+               (unsigned long long)cpu.instructionCount);
+        r.failed++;
+    }
+    fflush(stdout);
+}
+
 void setRecoverPolicyForTest(bool enabled) {
 #ifdef BOXEDWINE_MSVC
     _putenv_s("BW64_RECOVER", enabled ? "1" : "0");
@@ -8658,31 +8739,12 @@ int runX64SelfTest() {
     }), [](CPU64& c) {
         return c.reg[X64_R15].u64 == 0x12345678ULL;
     });
-    const U64 recoverInsdDst = CODE_BASE + 0x800;
-    runAndCheck(r, "recover emulates INSD from an absent port as zero", withExit({
-        0x6D,                                     // insd [rdi], dx
-        0x48, 0x89, 0xF8                          // mov rax,rdi (save updated destination)
-    }), [=](CPU64& c) {
-        return c.memory->readd(recoverInsdDst) == 0 &&
-               c.reg[X64_R15].u64 == recoverInsdDst + 4;
-    }, [=](CPU64& c) {
-        c.memory->writed(recoverInsdDst, 0xDEADBEEF);
-        c.reg[X64_RDI].setU64(recoverInsdDst);
-        c.reg[X64_RDX].setU64(0x80);
-    });
-    const U64 recoverInswDst = CODE_BASE + 0x810;
-    runAndCheck(r, "recover emulates operand-size-prefixed INSW", withExit({
-        0x66, 0x6D,                               // insw [rdi], dx
-        0x48, 0x89, 0xF8                          // mov rax,rdi (save updated destination)
-    }), [=](CPU64& c) {
-        return c.memory->readw(recoverInswDst) == 0 &&
-               c.memory->readw(recoverInswDst + 2) == 0xBEEF &&
-               c.reg[X64_R15].u64 == recoverInswDst + 2;
-    }, [=](CPU64& c) {
-        c.memory->writed(recoverInswDst, 0xBEEFCAFE);
-        c.reg[X64_RDI].setU64(recoverInswDst);
-        c.reg[X64_RDX].setU64(0x80);
-    });
+    runNullIndirectCallFault(r);
+    runNonExecutableFetchFault(r);
+    runUnmappedSamePageFetchFault(r);
+    runFaultAtRIP(r, "recover preserves #GP for INSD", {0x6D});
+    runFaultAtRIP(r, "recover preserves #GP for operand-size-prefixed INSW", {0x66, 0x6D});
+    runFaultAtRIP(r, "recover preserves #GP for HLT", {0xF4});
     runFaultAtRIP(r, "recover never skips UD2", {0x0F, 0x0B});
     setRecoverPolicyForTest(false);
     runFaultAtRIP(r, "INT imm8 raises #GP", {0xCD, 0x29});

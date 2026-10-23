@@ -333,6 +333,50 @@ U32 CPU64::fetchDword(U64 addr) {
     return memory ? memory->readd(addr) : 0;
 }
 
+bool CPU64::validateInstructionFetch() {
+    if (!memory) return true;
+
+    const U64 pageNum = rip >> K64_PAGE_SHIFT;
+    const U64 generation = memory->pageMapGeneration();
+    if (pageNum == fetchPermissionCachePage &&
+        generation == fetchPermissionCacheGeneration) {
+        return true;
+    }
+
+    U64 before, after;
+    U32 flags;
+    do {
+        before = memory->pageMapGeneration();
+        flags = memory->getPageFlags(pageNum);
+        after = memory->pageMapGeneration();
+    } while (before != after);
+
+    const bool mapped = (flags & K64_PAGE_MAPPED) != 0;
+    const bool executable = (flags & K64_PAGE_EXEC) != 0;
+    if (!mapped || !executable) {
+        invalidateFetchCache();
+        // #PF error bits: U/S=1, I/D=1; P=0 for an unmapped page and P=1
+        // for a mapped page whose permissions forbid instruction fetch.
+        constexpr U32 PF_USER_INSTRUCTION_NOT_PRESENT = 0x14;
+        constexpr U32 PF_USER_INSTRUCTION_PROTECTION = 0x15;
+        constexpr S32 SEGV_MAPERR = 1;
+        constexpr S32 SEGV_ACCERR = 2;
+        const U32 errorCode = mapped ? PF_USER_INSTRUCTION_PROTECTION
+                                     : PF_USER_INSTRUCTION_NOT_PRESENT;
+        const S32 siCode = mapped ? SEGV_ACCERR : SEGV_MAPERR;
+        if (raiseSyncFault(K_SIGSEGV, /*trapNo #PF*/14, siCode, rip, errorCode)) {
+            return true;
+        }
+        if (thread && thread->process) thread->process->signalProcess(K_SIGSEGV);
+        yield = true;
+        return false;
+    }
+
+    fetchPermissionCachePage = pageNum;
+    fetchPermissionCacheGeneration = after;
+    return true;
+}
+
 U64 CPU64::fetchQword(U64 addr) {
     return memory ? memory->readq(addr) : 0;
 }
@@ -1025,21 +1069,6 @@ U32 CPU64::step(bool trackJitBlockBoundary) {
     if (op == 0x0F && fetchByte(rip + opOff + 1) == 0x0B) { // UD2: #UD
         if (bw64RecoverEnabled()) bw64RecoverNoteSigillFallback();
         return faultAtInstruction(K_SIGILL, 6);
-    }
-    // Browser recovery treats an absent I/O port as returning zero. Support
-    // the single non-REP INSD form used by the Q3 startup probe; strict mode
-    // still raises the architectural user-mode #GP below.
-    if (op == 0x6D && p.rep == 0 && bw64RecoverEnabled()) {
-        const U32 size = p.osize16 ? 2 : 4;
-        const U64 dst = p.asize32 ? (U64)reg[X64_RDI].u32 : reg[X64_RDI].u64;
-        if (size == 2) memory->writew(dst, 0);
-        else memory->writed(dst, 0);
-        const S64 step = (rflags & X64_DF) ? -(S64)size : (S64)size;
-        if (p.asize32) reg[X64_RDI].setU32(reg[X64_RDI].u32 + (U32)step);
-        else reg[X64_RDI].setU64(reg[X64_RDI].u64 + (U64)step);
-        U32 used = opOff + 1;
-        rip += used;
-        return used;
     }
     if (op == 0xCD || op == 0xF1 || op == 0xF4 || op == 0xFA || op == 0xFB ||
         (op >= 0x6C && op <= 0x6F) || (op >= 0xE4 && op <= 0xE7) ||
@@ -7626,6 +7655,7 @@ void CPU64::run() {
     bool wildFired = false;
 
     while (!yield) {
+        if (!validateInstructionFetch()) break;
         if (guestProfile) bwGuestProfileTick64(this);
         if (tracing && instructionCount >= traceFrom && instructionCount <= traceTo) {
             U64 r = rip;
@@ -8447,6 +8477,7 @@ U64 CPU64::runBounded(U64 maxInsn) {
 
     U64 ran = 0;
     while (!yield && ran < maxInsn) {
+        if (!validateInstructionFetch()) break;
         if (tracing && instructionCount >= traceFrom && instructionCount <= traceTo) {
             U64 r = rip;
             klog_fmt("TRACE #%llu RIP=0x%llx %02x %02x %02x %02x  "

@@ -1,8 +1,13 @@
-# Q3 `INSD` diagnosis, 2026-10-22
+# Q3 WebGPU and CPU fault report, 2026-10-22/23
 
 Worktree: `/home/ubuntu/boxedwine64-worktrees/winbox-solq3-20261021`.
 Prior rendering findings: [q3-webgpu-sol-20261021.md](q3-webgpu-sol-20261021.md).
 Probe evidence: `/tmp/winbox-finish/r3/work-luna-q3/evidence/`.
+
+> **Correction (2026-10-23):** The initial reading of RIP `0x10270` as a
+> legitimate Q3 CPU-detection probe was wrong. The Build 5 wild-jump trace
+> shows a null indirect call from Q3 followed by unintended low-memory
+> execution. See “Root-cause correction and CPU64 fix” below.
 
 ## Result
 
@@ -117,3 +122,27 @@ The shared-load waiter returned \`load 4.67 < 5\`. Evidence is under
 [\`+480 s\`](/tmp/winbox-finish/r3/work-luna-q3/evidence/build5-map-recover-valid/mapped-plus-480s.png),
 [summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/build5-map-recover-valid/summary.json),
 [console log](/tmp/winbox-finish/r3/work-luna-q3/evidence/build5-map-recover-valid/console.log).
+
+## Root-cause correction and CPU64 fix, 2026-10-23
+
+The focused Build 5 wild-jump trace supersedes the earlier guess that `0x10270` was a Q3 CPU-detection probe. The new trace does not itself record `0x10270`; it does show the chain into the low-address region that preceded the later #GP:
+
+```text
+RIP=0x14009ff2e  ff 15 6c 6b fa 00    call qword ptr [rip+0xfa6b6c]
+RIP=0x0          00 00 00 00
+RIP=0x2          00 00 00 00
+recover skipped RIP=0x1029e len=2 bytes=c5 03
+recover skipped RIP=0x1031c len=1 bytes=1f
+recover skipped RIP=0x1032a len=1 bytes=2f
+#GP at RIP=0x10396 bytes=f4 ... (HLT)
+```
+
+The call site is in `quake3e.x64.exe`: PE ImageBase `0x140000000`, RVA `0x9ff2e`, inside `.text`. Its RIP-relative operand resolves to VA `0x141046aa0`, RVA `0x1046aa0`, inside the zero-filled virtual tail of the Q3 image's `.data` section. It is outside the PE import directory. The next RIP of zero proves that this callback slot held a null pointer at call time. The reason Q3 reached this internal null callback remains unknown.
+
+The recovery skips and HLT are at `0x103xx`, far outside the Q3 PE image. The trace does not identify that low memory as a Wine/DLL image, and the bytes are not a verified instruction stream from a module. They were executed after the null call, while absent memory reads were being zero-filled and decoded. The earlier `INSD` observation at `0x10270` should likewise be treated as untrusted low-memory execution; this trace does not prove its exact position in the same run. HLT is genuinely privileged in user mode. CPU64 already raises #GP for it and routes the synchronous SIGSEGV through Wine's exception handler. The trace then shows Wine rejecting an invalid SEH frame; whether the runaway itself caused that frame corruption is not proven.
+
+CPU64 now checks each instruction page before interpreter or JIT execution. An unmapped fetch raises #PF/SIGSEGV with `si_addr=RIP`, `CR2=RIP`, and the user instruction-fetch error bits; a mapped non-executable page raises the protection form. The page-permission cache follows mapping generations. `munmap` marks pages unmapped while retaining backing buffers, so the existing Wine-compatible stale data reads remain intact. Recovery no longer turns `INSD`/`INSW` into zero input; both remain #GP faults.
+
+The CPU64 self-tests now cover the null indirect call stopping at its first unmapped fetch, non-executable fetches, permission-cache invalidation after `munmap`, and preservation of #GP for `INSD`, `INSW`, and `HLT` in recovery mode. I did not compile or run these tests because you are scheduling builds. No post-fix browser probe has run; this commit needs to be included in the next scheduled build to verify the Wine SEH path and Q3 progress.
+
+Evidence: [wild-jump console log](/tmp/winbox-finish/r3/work-luna-q3/evidence/build5-map-wildjump-trace/console.log), [wild-jump summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/build5-map-wildjump-trace/summary.json), [Build 5 Q3 executable in the copied probe archive](/tmp/winbox-finish/r3/work-luna-q3/q3-probe.zip).

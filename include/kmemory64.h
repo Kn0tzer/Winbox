@@ -152,8 +152,9 @@ public:
     // data. Used by the loader to honor PT_GNU_RELRO after relocations.
     U64 mprotect(U64 addr, U64 len, U32 prot);
 
-    // Unmap [addr, addr+len): drop the backing pages so the address range is
-    // genuinely free for reuse. A no-op munmap (the old behaviour) breaks wine:
+    // Unmap [addr, addr+len): remove the reservation and clear the mapped/
+    // permission flags while retaining page buffers for Wine's stale lazy reads.
+    // A no-op munmap (the old behaviour) breaks wine:
     // wine munmaps a view, removes it from its own views_tree, then maps a fresh
     // view at the SAME address — but if the pages are still mapped, wine's
     // create_view finds an overlapping NON-system view and aborts
@@ -164,6 +165,9 @@ public:
     // Permission query / page state.
     bool isPageMapped(U64 pageNum) const;
     U32  getPageFlags(U64 pageNum) const;
+    U64  pageMapGeneration() const {
+        return pageMapGenerationValue.load(std::memory_order_acquire);
+    }
 
     // Return the committed backing buffer for `pageNum`, or nullptr if the page
     // is absent/uncommitted. Used by the CPU64 instruction-fetch cache to grab a
@@ -254,6 +258,9 @@ public:
 private:
     KProcess* process;
     std::unordered_map<U64, std::unique_ptr<K64Page>> pages;
+    // Lets CPU64 cheaply notice mapping changes without a locked page-table
+    // lookup on every guest instruction.
+    std::atomic<U64> pageMapGenerationValue{0};
     // Guards every mutation/lookup of `pages`. In the multi-threaded build all
     // guest threads share one KMemory64 and fault in pages concurrently; an
     // unordered_map rehash on emplace racing a find from another thread is UB
