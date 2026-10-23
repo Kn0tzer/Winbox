@@ -1959,8 +1959,72 @@ static U64 sys_futex64(CPU64* cpu, U64 uaddr, U32 op, U32 val, U64 timeoutAddr, 
             return (U64)-K_EAGAIN;
         }
         case X64_FUTEX_REQUEUE:
-        case X64_FUTEX_CMP_REQUEUE:
-        case X64_FUTEX_WAKE_OP:
+        case X64_FUTEX_CMP_REQUEUE: {
+            if (!cpu->memory) return (U64)-K_EFAULT;
+            if (!uaddr2) return (U64)-K_EFAULT;
+            if (uaddr2 & 3) return (U64)-K_EINVAL;
+            if ((S32)timeoutAddr < 0) return (U64)-K_EINVAL;
+            if (baseOp == X64_FUTEX_CMP_REQUEUE && cpu->memory->readd(uaddr) != val3)
+                return (U64)-K_EAGAIN;
+            auto source = cpu->futexWaiters.find(uaddr);
+            if (source == cpu->futexWaiters.end()) return 0;
+            const U32 woken = source->second < val ? source->second : val;
+            const U32 remaining = source->second - woken;
+            const U32 moved = remaining < (U32)timeoutAddr ? remaining : (U32)timeoutAddr;
+            source->second -= woken + moved;
+            if (!source->second) cpu->futexWaiters.erase(source);
+            if (moved) cpu->futexWaiters[uaddr2] += moved;
+            return baseOp == X64_FUTEX_REQUEUE ? woken : woken + moved;
+        }
+        case X64_FUTEX_WAKE_OP: {
+            if (!cpu->memory) return (U64)-K_EFAULT;
+            if (!uaddr2) return (U64)-K_EFAULT;
+            if (uaddr2 & 3) return (U64)-K_EINVAL;
+            const U32 encoded = val3;
+            const U32 opCode = (encoded >> 28) & 0xf;
+            const U32 cmpCode = (encoded >> 24) & 0xf;
+            const bool shiftArg = (opCode & 8) != 0;
+            const U32 operation = opCode & 7;
+            auto signExtend12 = [](U32 value) -> S32 { return (S32)(value << 20) >> 20; };
+            S32 opArg = signExtend12((encoded >> 12) & 0xfff);
+            const S32 cmpArg = signExtend12(encoded & 0xfff);
+            if (shiftArg) {
+                if (opArg < 0 || opArg > 31) return (U64)-K_EINVAL;
+                opArg = 1 << opArg;
+            }
+            if (operation > 4 || cmpCode > 5) return (U64)-K_EINVAL;
+            const U32 oldValue = cpu->memory->readd(uaddr2);
+            U32 newValue = oldValue;
+            switch (operation) {
+                case 0: newValue = (U32)opArg; break; // SET
+                case 1: newValue += (U32)opArg; break; // ADD
+                case 2: newValue |= (U32)opArg; break; // OR
+                case 3: newValue &= ~(U32)opArg; break; // ANDN
+                case 4: newValue ^= (U32)opArg; break; // XOR
+            }
+            cpu->memory->writed(uaddr2, newValue);
+            const S32 signedOld = (S32)oldValue;
+            bool compare = false;
+            switch (cmpCode) {
+                case 0: compare = signedOld == cmpArg; break;
+                case 1: compare = signedOld != cmpArg; break;
+                case 2: compare = signedOld < cmpArg; break;
+                case 3: compare = signedOld <= cmpArg; break;
+                case 4: compare = signedOld > cmpArg; break;
+                case 5: compare = signedOld >= cmpArg; break;
+            }
+            auto wake = [&](U64 address, U32 maximum) -> U32 {
+                auto it = cpu->futexWaiters.find(address);
+                if (it == cpu->futexWaiters.end()) return 0;
+                const U32 count = it->second < maximum ? it->second : maximum;
+                it->second -= count;
+                if (!it->second) cpu->futexWaiters.erase(it);
+                return count;
+            };
+            const U32 first = wake(uaddr, val);
+            const U32 second = compare ? wake(uaddr2, (U32)timeoutAddr) : 0;
+            return first + second;
+        }
         case 6: // FUTEX_LOCK_PI
         case 7: // FUTEX_UNLOCK_PI
         case 8: // FUTEX_TRYLOCK_PI

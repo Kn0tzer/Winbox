@@ -4882,10 +4882,56 @@ int runX64SelfTest() {
                 (U8)(dst >> 32), (U8)(dst >> 40), (U8)(dst >> 48), (U8)(dst >> 56),
             0x48, 0xC7, 0xC6, 0x03, 0x00, 0x00, 0x00,                     // mov rsi, 3 (REQUEUE)
             0x48, 0xC7, 0xC2, 0x00, 0x00, 0x00, 0x00,                     // mov rdx, 0
+            0x41, 0xB8, (U8)(dst + 4), (U8)((dst + 4) >> 8),
+                (U8)((dst + 4) >> 16), (U8)((dst + 4) >> 24),            // mapped uaddr2 in R8D
             0x0F, 0x05,
         };
         runAndCheck(r, "futex FUTEX_REQUEUE → 0", withExit(code), [](CPU64& c) {
             return c.reg[X64_R15].u64 == 0;
+        });
+    }
+
+    // CMP_REQUEUE validates the source value before touching waiter queues.
+    {
+        const U64 src = STACK_TOP - 0x780;
+        const U64 dst = STACK_TOP - 0x77C;
+        std::vector<U8> code = {
+            0x48, 0xC7, 0xC0, 0xCA, 0x00, 0x00, 0x00,
+            0x48, 0xBF, (U8)src, (U8)(src >> 8), (U8)(src >> 16), (U8)(src >> 24),
+                (U8)(src >> 32), (U8)(src >> 40), (U8)(src >> 48), (U8)(src >> 56),
+            0x48, 0xC7, 0xC6, 0x04, 0x00, 0x00, 0x00, // FUTEX_CMP_REQUEUE
+            0x48, 0xC7, 0xC2, 0x00, 0x00, 0x00, 0x00, // wake zero waiters
+            0x49, 0xC7, 0xC2, 0x00, 0x00, 0x00, 0x00, // requeue zero waiters
+            0x49, 0xB8, (U8)dst, (U8)(dst >> 8), (U8)(dst >> 16), (U8)(dst >> 24),
+                (U8)(dst >> 32), (U8)(dst >> 40), (U8)(dst >> 48), (U8)(dst >> 56),
+            0x49, 0xC7, 0xC1, 0x01, 0x00, 0x00, 0x00, // wrong expected source value
+            0x0F, 0x05,
+            0x49, 0x89, 0xC7,
+        };
+        runAndCheck(r, "futex CMP_REQUEUE mismatch returns EAGAIN", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == (U64)-11;
+        });
+    }
+
+    // WAKE_OP applies its atomic operation even when both wake counts are zero.
+    {
+        const U64 src = STACK_TOP - 0x760;
+        const U64 dst = STACK_TOP - 0x75C;
+        std::vector<U8> code = {
+            0x48, 0xC7, 0xC0, 0xCA, 0x00, 0x00, 0x00,
+            0x48, 0xBF, (U8)src, (U8)(src >> 8), (U8)(src >> 16), (U8)(src >> 24),
+                (U8)(src >> 32), (U8)(src >> 40), (U8)(src >> 48), (U8)(src >> 56),
+            0x48, 0xC7, 0xC6, 0x05, 0x00, 0x00, 0x00, // FUTEX_WAKE_OP
+            0x48, 0xC7, 0xC2, 0x00, 0x00, 0x00, 0x00,
+            0x49, 0xC7, 0xC2, 0x00, 0x00, 0x00, 0x00,
+            0x49, 0xB8, (U8)dst, (U8)(dst >> 8), (U8)(dst >> 16), (U8)(dst >> 24),
+                (U8)(dst >> 32), (U8)(dst >> 40), (U8)(dst >> 48), (U8)(dst >> 56),
+            0x49, 0xC7, 0xC1, 0x00, 0x70, 0x00, 0x00, // SET 7 if old value == 0
+            0x0F, 0x05,
+            0x49, 0x89, 0xC7,
+        };
+        runAndCheck(r, "futex WAKE_OP applies SET operation", withExit(code), [dst](CPU64& c) {
+            return c.reg[X64_R15].u64 == 0 && c.memory->readd(dst) == 7;
         });
     }
 
