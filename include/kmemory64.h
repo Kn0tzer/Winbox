@@ -23,6 +23,12 @@
 class KProcess;
 class KThread;
 class KMemory64;
+class CPU64;
+
+// Set only while CPU64 executes one interpreter instruction. Kernel copies
+// run with this context cleared so invalid syscall buffers remain EFAULT paths.
+void k64SetGuestAccessCPU(CPU64* cpu);
+bool k64CheckGuestAccess(const KMemory64* memory, U64 addr, U64 len, bool write);
 
 // Sparse 64-bit guest memory with lazy page backing, mmap reservations,
 // shared file mappings, pinned futex buffers and a per-thread data cache.
@@ -390,11 +396,13 @@ bool bw64PageHoldsBlocks(U64 pageNum);
 
 inline __attribute__((always_inline)) U8 KMemory64::readb(U64 addr) {
     U8 value;
+    if (!k64CheckGuestAccess(this, addr, sizeof(value), false)) return 0;
     if (g_k64JitVerifyOverlayActive && jitVerifyRead(addr, &value, sizeof(value))) return value;
     return K64DTlb::tryRead<U8, false>(this, addr, value) ? value : readbSlow(addr);
 }
 inline __attribute__((always_inline)) U16 KMemory64::readw(U64 addr) {
     U16 value;
+    if (!k64CheckGuestAccess(this, addr, sizeof(value), false)) return 0;
     if (g_k64JitVerifyOverlayActive && jitVerifyRead(addr, &value, sizeof(value))) return value;
     if (K64DTlb::tryRead(this, addr, value)) return value;
     memcpyFromGuest(&value, addr, sizeof(value));
@@ -402,6 +410,7 @@ inline __attribute__((always_inline)) U16 KMemory64::readw(U64 addr) {
 }
 inline __attribute__((always_inline)) U32 KMemory64::readd(U64 addr) {
     U32 value;
+    if (!k64CheckGuestAccess(this, addr, sizeof(value), false)) return 0;
     if (g_k64JitVerifyOverlayActive && jitVerifyRead(addr, &value, sizeof(value))) return value;
     if (K64DTlb::tryRead(this, addr, value)) return value;
     memcpyFromGuest(&value, addr, sizeof(value));
@@ -409,27 +418,32 @@ inline __attribute__((always_inline)) U32 KMemory64::readd(U64 addr) {
 }
 inline __attribute__((always_inline)) U64 KMemory64::readq(U64 addr) {
     U64 value;
+    if (!k64CheckGuestAccess(this, addr, sizeof(value), false)) return 0;
     if (g_k64JitVerifyOverlayActive && jitVerifyRead(addr, &value, sizeof(value))) return value;
     if (K64DTlb::tryRead(this, addr, value)) return value;
     memcpyFromGuest(&value, addr, sizeof(value));
     return value;
 }
 inline __attribute__((always_inline)) void KMemory64::writeb(U64 addr, U8 value) {
+    if (!k64CheckGuestAccess(this, addr, sizeof(value), true)) return;
     if (g_k64JitVerifyOverlayActive && jitVerifyWrite(addr, &value, sizeof(value))) return;
     if (K64DTlb::tryWrite(this, addr, value)) return;
     writebSlow(addr, value);
 }
 inline __attribute__((always_inline)) void KMemory64::writew(U64 addr, U16 value) {
+    if (!k64CheckGuestAccess(this, addr, sizeof(value), true)) return;
     if (g_k64JitVerifyOverlayActive && jitVerifyWrite(addr, &value, sizeof(value))) return;
     if (K64DTlb::tryWrite(this, addr, value)) return;
     memcpyToGuest(addr, &value, sizeof(value));
 }
 inline __attribute__((always_inline)) void KMemory64::writed(U64 addr, U32 value) {
+    if (!k64CheckGuestAccess(this, addr, sizeof(value), true)) return;
     if (g_k64JitVerifyOverlayActive && jitVerifyWrite(addr, &value, sizeof(value))) return;
     if (K64DTlb::tryWrite(this, addr, value)) return;
     memcpyToGuest(addr, &value, sizeof(value));
 }
 inline __attribute__((always_inline)) void KMemory64::writeq(U64 addr, U64 value) {
+    if (!k64CheckGuestAccess(this, addr, sizeof(value), true)) return;
     if (g_k64JitVerifyOverlayActive && jitVerifyWrite(addr, &value, sizeof(value))) return;
     if (K64DTlb::tryWrite(this, addr, value)) return;
     memcpyToGuest(addr, &value, sizeof(value));

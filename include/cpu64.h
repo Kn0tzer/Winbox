@@ -60,6 +60,16 @@ public:
     U32   rflags = 0x202; // IF | reserved bit 1
     U64   fsbase = 0;     // x86-64: set via arch_prctl(ARCH_SET_FS)
     U64   gsbase = 0;
+    U64   currentInstructionRip = 0;
+    bool  memoryFaultPending = false;
+    U64   memoryFaultAddress = 0;
+    U64   memoryFaultRip = 0;
+    U32   memoryFaultError = 0;
+
+    // KMemory64 calls this only during an interpreted guest instruction. The
+    // run loop delivers the saved #PF after the instruction helper returns.
+    void recordGuestMemoryFault(U64 address, bool write, bool mapped);
+    bool deliverGuestMemoryFault();
 
     // XMM register state. 16 × 128-bit slots, accessed as two U64 halves.
     // SSE2 is the minimum baseline for x86-64; glibc memcpy/memset, the

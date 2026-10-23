@@ -388,6 +388,38 @@ U32 CPU64::fetchDword(U64 addr) {
     return memory ? memory->readd(addr) : 0;
 }
 
+void CPU64::recordGuestMemoryFault(U64 address, bool write, bool mapped) {
+    if (!memoryFaultPending) {
+        memoryFaultPending = true;
+        memoryFaultAddress = address;
+        memoryFaultRip = currentInstructionRip;
+        // x86 page-fault error: P=present/protection, W/R=write, U/S=user.
+        memoryFaultError = (mapped ? 1u : 0u) | (write ? 2u : 0u) | 4u;
+    }
+    yield = true;
+}
+
+bool CPU64::deliverGuestMemoryFault() {
+    if (!memoryFaultPending) return false;
+    const U64 address = memoryFaultAddress;
+    const U64 faultRip = memoryFaultRip;
+    const U32 error = memoryFaultError;
+    memoryFaultPending = false;
+    memoryFaultAddress = memoryFaultRip = 0;
+    memoryFaultError = 0;
+
+    // Memory helpers may have advanced RIP and partially completed an
+    // instruction. Linux restarts the faulting instruction after sigreturn.
+    rip = faultRip;
+    yield = false;
+    const S32 siCode = (error & 1) ? 2 /*SEGV_ACCERR*/ : 1 /*SEGV_MAPERR*/;
+    if (raiseSyncFault(K_SIGSEGV, /*trapNo #PF*/14, siCode, address, error))
+        return true;
+    if (thread && thread->process) thread->process->signalProcess(K_SIGSEGV);
+    yield = true;
+    return false;
+}
+
 bool CPU64::validateInstructionFetch() {
     if (!memory) return true;
 
@@ -976,6 +1008,7 @@ static void refWatchInit() {
 
 U32 CPU64::step(bool trackJitBlockBoundary) {
     U64 ipStart = rip;
+    currentInstructionRip = ipStart;
     if (ipStart != recoverLastRip) {
         recoverLastRip = ipStart;
         recoverFaultsAtRip = 0;
@@ -1877,7 +1910,9 @@ dsp_23:
         reg[X64_R11].setU64((U64)rflags);
         rip = nextRip;
         syscallRip = syscallStartRip;
+        k64SetGuestAccessCPU(nullptr); // syscall buffer access is kernel-mediated
         ksyscall64(this);
+        k64SetGuestAccessCPU(this);
         // Single-threaded cooperative park: a futex WAIT that had to block set
         // reExecuteSyscall and parked this thread. Rewind RIP to the SYSCALL so
         // it re-runs when the thread is rescheduled (RAX was not written). yield
@@ -7789,7 +7824,13 @@ void CPU64::run() {
         }
 #endif
         const U64 stepRip = rip;
+        k64SetGuestAccessCPU(this);
         U32 n = step(jitReady && fastJitDispatch);
+        k64SetGuestAccessCPU(nullptr);
+        if (memoryFaultPending) {
+            if (deliverGuestMemoryFault()) continue;
+            break;
+        }
         if (n == 0) break;
         if (controlTrace && !(jitReady && fastJitDispatch) && rip != stepRip + n)
             recordControlBranch(stepRip, rip);
@@ -8687,7 +8728,13 @@ U64 CPU64::runBounded(U64 maxInsn) {
         }
 #endif
         const U64 stepRip = rip;
+        k64SetGuestAccessCPU(this);
         U32 n = step(jitReady && fastJitDispatch);
+        k64SetGuestAccessCPU(nullptr);
+        if (memoryFaultPending) {
+            if (deliverGuestMemoryFault()) continue;
+            break;
+        }
         if (n == 0) break;
         if (controlTrace && !(jitReady && fastJitDispatch) && rip != stepRip + n)
             recordControlBranch(stepRip, rip);

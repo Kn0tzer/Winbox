@@ -14,6 +14,7 @@
 #include "cpu64.h"
 #include "jit64.h"
 #include "kmemory64.h"
+#include "ksignal.h"
 #include "../../kernel/loader/loader64.h"
 
 #include <cstdio>
@@ -186,24 +187,115 @@ void runNullIndirectCallFault(TestResult& r) {
 }
 
 void runNonExecutableFetchFault(TestResult& r) {
+    constexpr U64 HANDLER = CODE_BASE + 0x1000;
     KMemory64 mem(nullptr);
     mem.mmapAnonymousFixed(CODE_BASE, 0x1000, 3); // RW, deliberately not executable
+    mem.mmapAnonymousFixed(HANDLER, 0x1000, 7);
     mem.mmapAnonymousFixed(STACK_TOP - 0x1000, 0x1000, 3);
     mem.writeb(CODE_BASE, 0x90); // nop
+    loadCode(mem, HANDLER, {0x49, 0x89, 0xF7, 0xCC}); // save siginfo*, stop
 
     CPU64 cpu(&mem);
     cpu.rip = CODE_BASE;
     cpu.reg[X64_RSP].setU64(STACK_TOP - 16);
-    cpu.runBounded(1);
-    const bool ok = cpu.yield && cpu.rip == CODE_BASE &&
-                    cpu.instructionCount == 0;
+    cpu.sigActions[K_SIGSEGV].installed = true;
+    cpu.sigActions[K_SIGSEGV].handler = HANDLER;
+    cpu.runBounded(8);
+    const U64 sigInfo = cpu.reg[X64_R15].u64;
+    const bool ok = cpu.yield && sigInfo &&
+                    mem.readd(sigInfo + 8) == 2 /*SEGV_ACCERR*/ &&
+                    mem.readq(sigInfo + 16) == CODE_BASE;
     if (ok) {
-        printf("  PASS: instruction fetch from a non-executable page raises #PF\n");
+        printf("  PASS: instruction fetch fault reports SEGV_ACCERR and fault address\n");
         r.passed++;
     } else {
         printf("  FAIL: non-executable fetch guard (yield=%d RIP=0x%llx instructions=%llu)\n",
                (int)cpu.yield, (unsigned long long)cpu.rip,
                (unsigned long long)cpu.instructionCount);
+        r.failed++;
+    }
+    fflush(stdout);
+}
+
+void runDataProtectionFaults(TestResult& r) {
+    constexpr U64 DATA = CODE_BASE + 0x2000;
+    constexpr U64 HANDLER = CODE_BASE + 0x100;
+    constexpr U64 SENTINEL = 0x1122334455667788ULL;
+    KMemory64 mem(nullptr);
+    mem.mmapAnonymousFixed(CODE_BASE, 0x1000, 7);
+    mem.mmapAnonymousFixed(STACK_TOP - 0x1000, 0x1000, 3);
+    mem.mmapAnonymousFixed(DATA, 0x1000, 3);
+    mem.writeq(DATA, SENTINEL);
+    // Handler saves siginfo* in R15 and traps to stop the interpreter.
+    loadCode(mem, HANDLER, {0x49, 0x89, 0xF7, 0xCC});
+
+    auto initHandler = [](CPU64& cpu) {
+        cpu.sigActions[K_SIGSEGV].installed = true;
+        cpu.sigActions[K_SIGSEGV].handler = HANDLER;
+    };
+
+    const S32 readDisp = (S32)(DATA - (CODE_BASE + 7));
+    std::vector<U8> readCode = {
+        0x48, 0x8B, 0x05,
+        (U8)readDisp, (U8)(readDisp >> 8), (U8)(readDisp >> 16), (U8)(readDisp >> 24),
+    };
+    loadCode(mem, CODE_BASE, readCode);
+    mem.mprotect(DATA, 0x1000, 0); // PROT_NONE
+    CPU64 reader(&mem);
+    reader.rip = CODE_BASE;
+    reader.reg[X64_RSP].setU64(STACK_TOP - 16);
+    initHandler(reader);
+    reader.runBounded(8);
+    const U64 readInfo = reader.reg[X64_R15].u64;
+    const bool readFault = reader.yield && readInfo &&
+        mem.readd(readInfo + 8) == 2 /*SEGV_ACCERR*/ &&
+        mem.readq(readInfo + 16) == DATA;
+
+    // Switching PROT_NONE back to RW lets the same cached instruction read
+    // the mapped contents. Switching back to PROT_NONE faults again.
+    mem.mprotect(DATA, 0x1000, 3);
+    reader.yield = false;
+    reader.rip = CODE_BASE;
+    reader.reg[X64_RSP].setU64(STACK_TOP - 16);
+    reader.runBounded(1);
+    const bool readRestored = reader.reg[X64_RAX].u64 == SENTINEL;
+    mem.mprotect(DATA, 0x1000, 0);
+    reader.yield = false;
+    reader.rip = CODE_BASE;
+    reader.reg[X64_RSP].setU64(STACK_TOP - 16);
+    reader.reg[X64_R15].setU64(0);
+    reader.runBounded(8);
+    const U64 secondReadInfo = reader.reg[X64_R15].u64;
+    const bool readRevoked = reader.yield && secondReadInfo &&
+        mem.readd(secondReadInfo + 8) == 2 && mem.readq(secondReadInfo + 16) == DATA;
+
+    // A store into read-only memory must take the same ACCERR path and leave
+    // the backing word unchanged.
+    mem.mprotect(DATA, 0x1000, 3);
+    const S32 writeDisp = (S32)(DATA - (CODE_BASE + 7));
+    loadCode(mem, CODE_BASE, {
+        0x48, 0x89, 0x05,
+        (U8)writeDisp, (U8)(writeDisp >> 8), (U8)(writeDisp >> 16), (U8)(writeDisp >> 24),
+    });
+    mem.writeq(DATA, SENTINEL);
+    mem.mprotect(DATA, 0x1000, 1); // read-only
+    CPU64 writer(&mem);
+    writer.rip = CODE_BASE;
+    writer.reg[X64_RSP].setU64(STACK_TOP - 16);
+    writer.reg[X64_RAX].setU64(0xAABBCCDDEEFF0011ULL);
+    initHandler(writer);
+    writer.runBounded(8);
+    const U64 writeInfo = writer.reg[X64_R15].u64;
+    const bool writeFault = writer.yield && writeInfo &&
+        mem.readd(writeInfo + 8) == 2 && mem.readq(writeInfo + 16) == DATA &&
+        mem.readq(DATA) == SENTINEL;
+
+    if (readFault && readRestored && readRevoked && writeFault) {
+        printf("  PASS: PROT_NONE/read-only access faults, siginfo, and mprotect transitions\n");
+        r.passed++;
+    } else {
+        printf("  FAIL: data protection faults (read=%d restored=%d revoked=%d write=%d)\n",
+               (int)readFault, (int)readRestored, (int)readRevoked, (int)writeFault);
         r.failed++;
     }
     fflush(stdout);
@@ -6049,7 +6141,7 @@ int runX64SelfTest() {
             0x48, 0x83, 0xC4, 0x80,                                     // add rsp, 128
         };
         runAndCheck(r, "rt_sigaction install + readback SIGUSR1 handler", withExit(code), [](CPU64& c) {
-            return c.reg[X64_R15].u64 == 0xCAFE1234DEADBEEFULL;
+            return c.reg[X64_RAX].u64 == 0xCAFE1234DEADBEEFULL;
         });
     }
 
@@ -8891,6 +8983,7 @@ int runX64SelfTest() {
     });
     runNullIndirectCallFault(r);
     runNonExecutableFetchFault(r);
+    runDataProtectionFaults(r);
     runUnmappedSamePageFetchFault(r);
     runFaultAtRIP(r, "recover preserves #GP for INSD", {0x6D});
     runFaultAtRIP(r, "recover preserves #GP for operand-size-prefixed INSW", {0x66, 0x6D});

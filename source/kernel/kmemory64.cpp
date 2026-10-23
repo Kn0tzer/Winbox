@@ -22,6 +22,37 @@
 #include <atomic>
 
 thread_local bool g_k64JitVerifyOverlayActive = false;
+thread_local CPU64* g_k64GuestAccessCPU = nullptr;
+
+void k64SetGuestAccessCPU(CPU64* cpu) {
+    g_k64GuestAccessCPU = cpu;
+}
+
+bool k64CheckGuestAccess(const KMemory64* memory, U64 addr, U64 len, bool write) {
+    CPU64* cpu = g_k64GuestAccessCPU;
+    if (!cpu || cpu->memory != memory || len == 0) return true;
+    U64 current = addr;
+    U64 remaining = len;
+    while (remaining) {
+        const U64 pageNum = current >> K64_PAGE_SHIFT;
+        const U64 pageOffset = current & K64_PAGE_MASK;
+        const U64 chunk = std::min<U64>(remaining, K64_PAGE_SIZE - pageOffset);
+        U32 flags = 0;
+        if (K64DTlb::Entry* entry = K64DTlb::lookup(memory, pageNum))
+            flags = entry->flags;
+        else
+            flags = memory->getPageFlags(pageNum);
+        const bool mapped = (flags & K64_PAGE_MAPPED) != 0;
+        const U32 required = write ? K64_PAGE_WRITE : K64_PAGE_READ;
+        if (!mapped || (flags & required) == 0) {
+            cpu->recordGuestMemoryFault(current, write, mapped);
+            return false;
+        }
+        current += chunk;
+        remaining -= chunk;
+    }
+    return true;
+}
 
 // ---------------------------------------------------------------------------
 // Process-shared file mappings (MAP_SHARED). A single host buffer per
@@ -776,6 +807,7 @@ void kmemory64DumpMemRing(U64 nearAddr) {
 }
 
 void KMemory64::memcpyToGuest(U64 dstGuest, const void* src, U64 len) {
+    if (!k64CheckGuestAccess(this, dstGuest, len, true)) return;
     if (g_k64JitVerifyOverlayActive && jitVerifyWrite(dstGuest, src, len)) return;
     // Data-TLB fast path. Only when every gated write diagnostic (straywrite /
     // memring / watch) is confirmed OFF — the slow path is what initializes
@@ -853,6 +885,10 @@ void KMemory64::memcpyToGuest(U64 dstGuest, const void* src, U64 len) {
 }
 
 void KMemory64::memcpyFromGuest(void* dst, U64 srcGuest, U64 len) {
+    if (!k64CheckGuestAccess(this, srcGuest, len, false)) {
+        ::memset(dst, 0, (size_t)len);
+        return;
+    }
     if (g_k64JitVerifyOverlayActive && jitVerifyRead(srcGuest, dst, len)) return;
     memcpyFromGuestRaw(dst, srcGuest, len);
 }
@@ -926,6 +962,7 @@ void KMemory64::memcpyFromGuestRaw(void* dst, U64 srcGuest, U64 len) {
 }
 
 void KMemory64::memsetGuest(U64 dstGuest, U8 value, U64 len) {
+    if (!k64CheckGuestAccess(this, dstGuest, len, true)) return;
     if (g_k64JitVerifyOverlayActive && jitVerifyFill(dstGuest, value, len)) return;
     noteGuestWriteRange(dstGuest, len);
     strayWriteCheck(dstGuest, len);
