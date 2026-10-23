@@ -53,6 +53,7 @@ not a disposition.
 | `source/opengl/es/esopengl.c:102` | `glLogicOp` panics. | Breaks callers using logic ops | OPEN |
 | `source/opengl/es/esopengl.c:114` | `glPointSize` panics; point sprites/points cannot be sized. | Breaks point rendering | OPEN |
 | `source/opengl/es/esopengl.c:126` | `glPolygonMode` panics; wireframe requests terminate instead of rendering/rejecting. | Breaks debug/render modes | OPEN |
+| `source/opengl/gl64bridge.cpp:3062` | The 64-bit guest bridge previously discarded polygon mode without changing WebGPUGL state; line/point polygon conversion was unreachable from guests. | Breaks wireframe and point-mode rendering | IMPLEMENTED (`web/tests/suite/unit/gl-shim-coverage.test.mjs`) |
 | `source/opengl/es/esopengl.c:134-138` | Polygon stipple queries/calls panic. | Breaks legacy compatibility calls | OPEN |
 | `source/opengl/es/esopengl.c:142-146` | Edge flag calls panic. | Breaks legacy compatibility calls | OPEN |
 | `source/opengl/es/esopengl.c:154-158` | User clip plane set/get panics. | Breaks compatibility clipping | OPEN |

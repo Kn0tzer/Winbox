@@ -3060,7 +3060,11 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             if (g_glContext) GL_MT(glPolygonOffset(af(args,0), af(args,1)));
             return 0;
         case GL64_fn_glPolygonMode:
-            return 0; // no glPolygonMode in GLES — wireframe not supported, ignore
+            if (g_glContext) {
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("polygonMode", ai(args,0), ai(args,1), 0, 0, 0, 2));
+                else GL_MT(glPolygonMode((GLenum)ai(args,0), (GLenum)ai(args,1)));
+            }
+            return 0;
         case GL64_fn_glDepthRange:
             if (g_glContext) { float n=(float)ad(args,0), f=(float)ad(args,1); GL_MT(glDepthRangef(n, f)); }
             return 0;

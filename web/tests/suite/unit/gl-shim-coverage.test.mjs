@@ -86,6 +86,11 @@ test('native transform-feedback calls are forwarded to the loud WebGPUGL rejecti
   assert.doesNotMatch(bridgeSrc, /case GL64_fn_glBeginTransformFeedback:\s*case GL64_fn_glEndTransformFeedback:/);
 });
 
+test('polygon mode reaches WebGPUGL conversion instead of being dropped by the bridge', () => {
+  assert.match(bridgeSrc, /case GL64_fn_glPolygonMode:\s*if \(g_glContext\) \{\s*if \(g_emWebGpu\) GL_MT\(webGpuFixedCall\("polygonMode", ai\(args,0\), ai\(args,1\)/);
+  assert.match(webGpuGlSrc, /polygonMode\(face, mode\) \{/);
+});
+
 test('RGBA-only ES visuals do not panic on color-index operations with no RGBA effect', () => {
   assert.match(glCommonSrc, /case GLX_RENDER_TYPE:[\s\S]{0,220}GLX_RGBA_BIT/);
   for (const name of ['es_glClearIndex', 'es_glIndexMask']) {
