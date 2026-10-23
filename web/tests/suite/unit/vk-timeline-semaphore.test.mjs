@@ -22,4 +22,6 @@ test('timeline waits never invent a signal value to satisfy a future wait', () =
   assert.doesNotMatch(wait32, /counter\s*=\s*.*pValues/);
   assert.match(wait64, /wi\.semaphoreCount && \(!wi\.pSemaphores \|\| !wi\.pValues\)/);
   assert.match(wait32, /wi\.semaphoreCount && \(!wi\.pSemaphores \|\| !wi\.pValues\)/);
+  assert.doesNotMatch(bridge, /counter\s*<\s*(?:want|w\.value)\)\s*\w+->counter\s*=/,
+    'queue wait handling must not fabricate a semaphore signal');
 });

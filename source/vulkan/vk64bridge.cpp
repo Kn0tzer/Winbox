@@ -6422,12 +6422,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 if (g_mem->readd(cur) == VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO) {
                     VkTimelineSemaphoreSubmitInfo ti = {};
                     g_mem->memcpyFromGuest(&ti, cur, sizeof(ti));
-                    for (U32 w = 0; w < ti.waitSemaphoreValueCount; w++) {
-                        U64 semId = rd64(sis[i].pWaitSemaphores + (U64)w * 8);
-                        U64 want  = rd64(ti.pWaitSemaphoreValues + (U64)w * 8);
-                        Semaphore* s = objOf<Semaphore>(semId, K_SEMAPHORE, "vkQueueSubmit");
-                        if (s && s->counter < want) s->counter = want;
-                    }
+                    // Queue waits are ordered by the browser's single WebGPU
+                    // queue. Never fabricate a host-visible timeline signal here.
                     for (U32 sg = 0; sg < ti.signalSemaphoreValueCount; sg++) {
                         U64 semId = rd64(sis[i].pSignalSemaphores + (U64)sg * 8);
                         U64 val   = rd64(ti.pSignalSemaphoreValues + (U64)sg * 8);
@@ -6496,10 +6492,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             std::vector<VkSemaphoreSubmitInfo> waits, signals;
             readArray(sis[i].pWaitSemaphoreInfos, sis[i].waitSemaphoreInfoCount, waits);
             readArray(sis[i].pSignalSemaphoreInfos, sis[i].signalSemaphoreInfoCount, signals);
-            for (auto& w : waits) {
-                Semaphore* s = objOf<Semaphore>((U64)w.semaphore, K_SEMAPHORE, "vkQueueSubmit2");
-                if (s && s->counter < w.value) s->counter = w.value;
-            }
+            // The page queue preserves command submission order; waits must not
+            // mutate the host-observable timeline counter.
             for (auto& sg : signals) {
                 Semaphore* s = objOf<Semaphore>((U64)sg.semaphore, K_SEMAPHORE, "vkQueueSubmit2");
                 if (s && sg.value > s->counter) s->counter = sg.value;
