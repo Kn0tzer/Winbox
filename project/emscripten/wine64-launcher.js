@@ -372,6 +372,11 @@
             // quit when the app exits) by spawning `wineserver64 -p` right after
             // boot to pin the running server persistent (see maybeStartSessionApp),
             // and switch apps via bw64_spawn with no reload.
+            // This direct wine64 <program> command also avoids an explicit
+            // wineboot --init for the already initialized prefix. Wine still
+            // starts its required service stack on the first server instance;
+            // wineboot -u means update, not skip, and a bare persistent server
+            // leaves GUI apps without those services.
             prefixEnv().forEach(function (kv) { args.push("-env", kv); });
             wineProgArgv(PROG).forEach(function (tok) { args.push(tok); });
         } else if (USE_PREFIX) {
