@@ -11,7 +11,7 @@ import { bwLogRl } from './vk-log.mjs';
 import { bridgeRecoveryStats, reportBridgeFailure } from './bridge-recovery.mjs';
 import {
   parseMinBindingSize, rewritePushConstantsWGSL, rewriteResolvedDxvkPresent,
-  scanWgslResources, stripNagaFragmentDepth, stripNagaYNegation, wgslUniformSizes,
+  matchFragmentInputsToVertexOutputs, scanWgslResources, stripNagaFragmentDepth, stripNagaYNegation, wgslUniformSizes,
 } from './wgsl-utils.mjs';
 // web/vkwebgpu.mjs — the BROWSER PAGE TIER for the vk64 trap boundary: the
 // consumer for the FRAME-JSON manifest that source/vulkan/vk64bridge.cpp hops
@@ -1441,6 +1441,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     fsWgsl = rewriteResolvedDxvkPresent(pipe.fsHash, fsWgsl);
     if (!passHasDepth) fsWgsl = stripNagaFragmentDepth(fsWgsl);
     if (!vsWgsl || !fsWgsl) return { skip: 'shader-translation' };
+    fsWgsl = matchFragmentInputsToVertexOutputs(vsWgsl, fsWgsl);
     const vsR = rewritePushConstantsWGSL(vsWgsl), fsR = rewritePushConstantsWGSL(fsWgsl);
     const pushBlocks = vsR.pushBlocks + fsR.pushBlocks;
     if (vsR.pushBlocks > 1 || fsR.pushBlocks > 1) { stats.unsupported++; return { skip: 'multi-push-block' }; }
@@ -1557,7 +1558,10 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         buffers: buffers.length ? buffers : undefined,
       },
       fragment: {
-        module: device.createShaderModule({ code: fsR.code }), entryPoint: 'main',
+        // DXVK/Vulkan allow implicit-derivative sampling in non-uniform control
+        // flow; WGSL's uniformity analysis rejects it. Dawn honours the
+        // derivative_uniformity diagnostic switch (the hardware result is the same).
+        module: device.createShaderModule({ code: 'diagnostic(off, derivative_uniformity);\n' + fsR.code }), entryPoint: 'main',
         targets: colorTargets,
       },
       primitive: v2PrimitiveState(pipe, device.features?.has('depth-clip-control') === true, indexType),

@@ -73,6 +73,40 @@ export function stripNagaFragmentDepth(wgsl) {
   return wgsl;
 }
 
+// WebGPU requires a fragment input and the vertex output at the same location
+// to have the same component count. D3D/DXVK pairs routinely declare a wider
+// output (vec4) than the pixel shader consumes (vec3/vec2), which Vulkan
+// permits. Widen the fragment input to the vertex output's type and swizzle it
+// back where naga copies it into the shader's private global.
+const WGSL_VARYING = /@location\((\d+)\)((?:\s*@\w+(?:\([^)]*\))?)*)\s*(\w+)\s*:\s*(?:vec([234])<f32>|(f32))/g;
+const varyings = text => [...String(text).matchAll(WGSL_VARYING)].map(m => ({
+  whole: m[0], location: +m[1], attrs: m[2], name: m[3], n: m[4] ? +m[4] : 1,
+}));
+const structBody = (wgsl, name) => new RegExp('struct\\s+' + name + '\\s*\\{([^}]*)\\}').exec(wgsl)?.[1];
+export function matchFragmentInputsToVertexOutputs(vsWgsl, fsWgsl) {
+  const vs = String(vsWgsl), fs = String(fsWgsl);
+  const vsEntry = /@vertex\s*fn\s+main\s*\((?:[^()]|\([^()]*\))*\)\s*->\s*(\w+)/.exec(vs);
+  const fsEntry = /@fragment\s*fn\s+main\s*\(((?:[^()]|\([^()]*\))*)\)/.exec(fs);
+  const vsBody = vsEntry && structBody(vs, vsEntry[1]);
+  if (!vsBody || !fsEntry) return fsWgsl;
+  const outputs = new Map(varyings(vsBody).map(v => [v.location, v.n]));
+  const sites = varyings(fsEntry[1]).map(v => ({ ...v, expr: v.name, where: fsEntry[1] }));
+  const param = /(\w+)\s*:\s*([A-Z]\w*)\s*(?:,|$)/.exec(fsEntry[1].replace(/@location[^,]*/g, ''));
+  const inBody = param && structBody(fs, param[2]);
+  if (inBody) sites.push(...varyings(inBody).map(v => ({ ...v, expr: param[1] + '.' + v.name, where: inBody })));
+  let code = fs;
+  for (const site of sites) {
+    const outN = outputs.get(site.location);
+    if (!outN || outN <= site.n || outN > 4) continue;
+    const use = new RegExp('=\\s*' + site.expr.replace('.', '\\.') + '\\s*;', 'g');
+    if (!use.test(code)) continue;
+    const swizzle = '.' + 'xyzw'.slice(0, site.n);
+    code = code.replace(use, m => m.replace(/\s*;$/, '') + swizzle + ';')
+      .replace(site.whole, site.whole.replace(/:\s*(?:vec\d<f32>|f32)$/, ': vec' + outN + '<f32>'));
+  }
+  return code;
+}
+
 export function scanWgslResources(wgsl) {
   /** @type {Array<{group:number, binding:number, addr:string, name:string, type:string, arrayCount:number, sourceBinding?:number}>} */
   const out = [];
