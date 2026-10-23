@@ -845,7 +845,9 @@ DecodedOp* NormalCPU::getOp(U32 startIp, U32 jumpTargetFlags) {
                 case VERRR16: case VERWR16: case SGDT: case SIDT: case LGDT: case LIDT:
                 case SMSWRreg: case SMSW: case LMSWRreg: case LMSW: case INVLPG:
                     nextOp->flags |= OP_FLAG_NO_JIT;
+#ifdef BOXEDWINE_WASM_JIT
                     nextOp->runCount = (U8)wasmJit32DecidedRunCount();
+#endif
                     break;
                 default:
                     break;
@@ -854,7 +856,9 @@ DecodedOp* NormalCPU::getOp(U32 startIp, U32 jumpTargetFlags) {
                 if (memory->isAddressDynamic(address, nextOp->len)) {
                     nextOp->flags |= OP_FLAG_NO_JIT;
 #ifdef BOXEDWINE_JIT
+#ifdef BOXEDWINE_WASM_JIT
                     nextOp->runCount = (U8)wasmJit32DecidedRunCount();
+#endif
 #endif
                 }
                 address += nextOp->len;
