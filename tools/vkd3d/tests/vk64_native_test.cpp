@@ -24,6 +24,7 @@ using S32 = int32_t; using S64 = int64_t;
 #define EMSCRIPTEN_KEEPALIVE
 void klog(const char*) {}
 void klog_fmt(const char*, ...) {}
+// Metrics are an optional diagnostic boundary; keep them off under test.
 // Profiling is an optional diagnostic boundary, not a Vulkan semantic under
 // test. Keep it disabled while compiling the current shared 32/64 bridge.
 bool ripSamplerProfileEnabled() { return false; }
@@ -69,6 +70,9 @@ public:
 class CPU64 { public: KMemory64* memory; KThread* thread = nullptr; };
 class CPU { public: KMemory* memory; KThread* thread = nullptr; };
 #include "../../../source/vulkan/vk64bridge.cpp"
+// Metrics are an optional diagnostic boundary; keep them off under test.
+extern "C" int bw64_metrics_enabled(void) { return 0; }
+extern "C" void bw64_metrics_vk_frame(const Bw64VkFrame*) {}
 
 static KMemory64 memory;
 static CPU64 cpu{&memory};
@@ -226,7 +230,7 @@ int main() {
             assert(at + 8 + len <= chunk.size());
             if (type == V2_RP_BEGIN) {
                 ++rpBegins;
-                assert(len == 88); // Existing fields plus one view/image identity pair.
+                assert(len == 108); // Existing fields, one view/image identity pair, and the STP1 stencil tail.
                 U32 count, format, load, store, samples;
                 memcpy(&count, chunk.data() + at + 8 + 24, 4);
                 memcpy(&format, chunk.data() + at + 8 + 28, 4);
@@ -414,7 +418,7 @@ int main() {
             U32 type, len; memcpy(&type, chunk.data() + at, 4); memcpy(&len, chunk.data() + at + 4, 4);
             if (type == V2_RP_BEGIN) {
                 ++depthPasses;
-                assert(len == 124); // 28 + 2*20 + 24 + 2*16.
+                assert(len == 156); // 28 + 2*20 + 24 + 2*16 + STP1 (8 + 2*12).
                 const U8* tail = chunk.data() + at + 8 + 92;
                 U64 ids[4]; memcpy(ids, tail, sizeof(ids));
                 assert(ids[0] == viewId && ids[1] == imageId && ids[2] == depthViewId && ids[3] == depthImageId);

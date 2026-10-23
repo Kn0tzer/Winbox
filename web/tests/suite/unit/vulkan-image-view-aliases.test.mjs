@@ -14,6 +14,7 @@ test('descriptor aliases retain every image view even when views share image pix
   writeFileSync(join(dir,'check.cpp'),`
 #include <cassert>
 #include <cstdint>
+#define VK64_DROP_IF(action, ...) do { if (__VA_ARGS__) { action; } } while (0) // bridge macro minus logging
 #include <set>
 #include <map>
 #include <vector>

@@ -382,6 +382,29 @@ inline void writeGuestBytes(U64 va, const void* in, size_t count) {
 static U64 g_bufDirtyTick = 1;      // buffer dirtiness generation counter
 
 // ---------------------------------------------------------------------------
+// "No silent drops". Every guard that discards a guest command, struct or array
+// goes through VK64_DROP_IF, which records the drop before it takes its action:
+// it logs the first 4 hits per (trap fn, source line), then the 8th, 16th, 32nd...
+// and keeps a running total. Legitimate no-ops (zero counts or sizes, optional
+// null pointers, destroying VK_NULL_HANDLE, de-duplication) stay plain `if`s on
+// purpose. vk64BridgeDropCount() exposes the total to tests and diagnostics.
+// ---------------------------------------------------------------------------
+static thread_local U64 g_dropFn = 0;
+static U64 g_dropTotal = 0;
+U64 vk64BridgeDropCount() { return g_dropTotal; }
+static void vk64DropLog(const char* cond, int line) {
+    static std::mutex lock;
+    static std::unordered_map<U64, U32> seen;
+    std::lock_guard<std::mutex> guard(lock);
+    ++g_dropTotal;
+    U32& n = seen[((U64)g_dropFn << 32) | (U32)line];
+    if (++n <= 4 || (n & (n - 1)) == 0)
+        klog_fmt("vk64: DROPPED guest command in %s (vk64bridge.cpp:%d, x%u, %llu drops total): guard `%s`",
+                 fnName(g_dropFn), line, n, (unsigned long long)g_dropTotal, cond);
+}
+#define VK64_DROP_IF(action, ...) do { if (__VA_ARGS__) { vk64DropLog(#__VA_ARGS__, __LINE__); action; } } while (0)
+
+// ---------------------------------------------------------------------------
 // Guest memory helpers. EVERY guest pointer arrives here as a VA and is only
 // ever read/written through these.
 // ---------------------------------------------------------------------------
@@ -474,7 +497,7 @@ template <class T> T* objOf(U64 id, U32 kind, const char* who) {
 }
 void dropObj(U64 id) {
     auto it = g_objs.find(id);
-    if (it == g_objs.end()) return;
+    VK64_DROP_IF(return, it == g_objs.end());
     delete it->second;
     g_objs.erase(it);
 }
@@ -587,18 +610,18 @@ struct Vk64SpecInfo { U32 mapEntryCount; U32 _pad; U64 pMapEntries; U64 dataSize
 static void captureStageSpec(U64 specVa, StageSpec& out) {
     if (!specVa) return;
     Vk64SpecInfo si = {};
-    if (!readStruct(specVa, si)) return;
-    if (!si.mapEntryCount || si.mapEntryCount > 16) return;
-    if (!si.pMapEntries || !si.pData || !si.dataSize || si.dataSize > 256) return;
+    VK64_DROP_IF(return, !readStruct(specVa, si));
+    VK64_DROP_IF(return, !si.mapEntryCount || si.mapEntryCount > 16);
+    VK64_DROP_IF(return, !si.pMapEntries || !si.pData || !si.dataSize || si.dataSize > 256);
     std::vector<Vk64SpecMapEntry> mes;
     readArray(si.pMapEntries, si.mapEntryCount, mes);
     std::vector<U8> data((size_t)si.dataSize);
     g_mem->memcpyFromGuest(data.data(), si.pData, (size_t)si.dataSize);
     for (auto& me : mes) {
-        if (out.n >= 16) break;
-        if (me.offset + me.size > si.dataSize || me.size > 8 || me.size == 0) continue;
+        VK64_DROP_IF(break, out.n >= 16);
+        VK64_DROP_IF(continue, me.offset + me.size > si.dataSize || me.size > 8 || me.size == 0);
         // size must be 1, 2, 4, or 8 for scalar spec constants
-        if (me.size != 1 && me.size != 2 && me.size != 4 && me.size != 8) continue;
+        VK64_DROP_IF(continue, me.size != 1 && me.size != 2 && me.size != 4 && me.size != 8);
         SpecEntry& e = out.entries[out.n++];
         e.constantID = me.constantID;
         e.size = (U32)me.size;
@@ -752,7 +775,7 @@ struct Cmd {
 };
 template <class T>
 static void captureRenderPassClears(Cmd& command, const RenderPass* pass, const std::vector<T>& values) {
-    if (!pass) return;
+    VK64_DROP_IF(return, !pass);
     for (U32 i = 0; i < std::min<U32>(pass->natt, (U32)values.size()); ++i) {
         if (pass->formats[i] >= 124 && pass->formats[i] <= 130) {
             command.clearDepth = values[i].depthStencil.depth;
@@ -800,7 +823,7 @@ void resetCmdBuf(CmdBuf* cb) {
 // pushCmd can flag overflow.
 bool g_frameOverflow = false;
 void pushCmd(CmdBuf* st, const Cmd& c) {
-    if (!st) return;
+    VK64_DROP_IF(return, !st);
     if (st->cmds.size() >= VK64_MAX_CMDS) { g_frameOverflow = true; return; }
     st->cmds.push_back(c);
 }
@@ -810,7 +833,7 @@ void pushCmd(CmdBuf* st, const Cmd& c) {
 void recordImageCopy(CmdBuf* cb, U64 src, U64 dst, U32 srcMip, U32 srcLayer, U32 dstMip, U32 dstLayer,
                      int32_t sx, int32_t sy, int32_t sz, int32_t dx, int32_t dy, int32_t dz,
                      U32 w, U32 h, U32 d, U32 layers) {
-    if (!cb || !w || !h || !d || sx < 0 || sy < 0 || sz < 0 || dx < 0 || dy < 0 || dz < 0) return;
+    VK64_DROP_IF(return, !cb || !w || !h || !d || sx < 0 || sy < 0 || sz < 0 || dx < 0 || dy < 0 || dz < 0);
     for (U32 layer = 0; layer < layers && layer < VK64_MAX_CMDS; ++layer) {
         Cmd c; c.kind = CMD_COPY_IMAGE;
         c.imageCopy = { src, dst, srcMip, srcLayer + layer, dstMip, dstLayer + layer,
@@ -820,7 +843,7 @@ void recordImageCopy(CmdBuf* cb, U64 src, U64 dst, U32 srcMip, U32 srcLayer, U32
 }
 void recordImageBlit(CmdBuf* cb, U64 src, U64 dst, U32 srcMip, U32 srcLayer, U32 dstMip, U32 dstLayer,
                      U32 filter, const int32_t srcOffsets[2][3], const int32_t dstOffsets[2][3], U32 layers) {
-    if (!cb || !srcOffsets || !dstOffsets) return;
+    VK64_DROP_IF(return, !cb || !srcOffsets || !dstOffsets);
     for (U32 layer = 0; layer < layers && layer < VK64_MAX_CMDS; ++layer) {
         Cmd c; c.kind = CMD_BLIT_IMAGE;
         c.imageBlit.src = src; c.imageBlit.dst = dst;
@@ -1048,15 +1071,15 @@ static void execCopyQueryResults(const Cmd& command) {
         buffer = objOf<Buffer>(copy.dstBuffer, K_BUFFER, "vkCmdCopyQueryPoolResults");
         if (buffer) memory = objOf<DeviceMemory>(buffer->mem, K_MEMORY, "vkCmdCopyQueryPoolResults");
     }
-    if (!pool || !buffer || !memory || !memory->va || copy.dstOffset > buffer->size) return;
+    VK64_DROP_IF(return, !pool || !buffer || !memory || !memory->va || copy.dstOffset > buffer->size);
     const U64 memoryOffset = buffer->memOff + copy.dstOffset;
-    if (memoryOffset > memory->size) return;
+    VK64_DROP_IF(return, memoryOffset > memory->size);
     const U64 available = std::min<U64>(buffer->size - copy.dstOffset, memory->size - memoryOffset);
     const U64 size = std::min<U64>(available, 1ULL << 20);
     vkquery::EncodedResults encoded = vkquery::encodeResults(
         pool->type, copy.firstQuery, copy.queryCount, pool->count, (size_t)size,
         copy.stride, copy.flags, 1.0, queryHostNanoseconds());
-    if (!encoded.valid) return;
+    VK64_DROP_IF(return, !encoded.valid);
     writeEncodedQueryResults(memory->va + memoryOffset, encoded);
     buffer->dirtyGen = g_bufDirtyTick++;
 }
@@ -1068,10 +1091,10 @@ void execUpdateBuf(const Cmd& k) {
     Buffer* b = objOf<Buffer>(k.updBuf, K_BUFFER, "vkCmdUpdateBuffer");
     if (!b || !b->mem || k.updBytes.empty()) return;
     DeviceMemory* m = objOf<DeviceMemory>(b->mem, K_MEMORY, "vkCmdUpdateBuffer");
-    if (!m || !m->va) return;
+    VK64_DROP_IF(return, !m || !m->va);
     U64 off = b->memOff + k.updOff;
     U64 n = (U64)k.updBytes.size();
-    if (off >= m->size) return;
+    VK64_DROP_IF(return, off >= m->size);
     if (off + n > m->size) n = m->size - off;
     writeGuestBytes(m->va + off, k.updBytes.data(), n);
     b->dirtyGen = g_bufDirtyTick++;
@@ -1576,7 +1599,7 @@ void fillImageFormatProps(VkImageFormatProperties* p) {
 void resolveFrame(CmdBuf* st, U64* uboOut, U64* uboSize, U64* viewOut, U64* sampOut) {
     *uboOut = 0; *uboSize = 0; *viewOut = 0; *sampOut = 0;
     DescSet* s0 = st->sets[0] ? objOf<DescSet>(st->sets[0], K_SET, "resolveFrame") : nullptr;
-    if (!s0) return;
+    VK64_DROP_IF(return, !s0);
     for (U32 i = 0; i < s0->nbind; i++) {
         if (s0->binds[i].binding == 0 && s0->binds[i].obj) { *uboOut = s0->binds[i].obj; *uboSize = s0->binds[i].range; }
         if (s0->binds[i].binding == 1 && s0->binds[i].obj) { *viewOut = s0->binds[i].obj; *sampOut = s0->binds[i].range; }
@@ -2354,14 +2377,14 @@ static bool setupReadbacks(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
     g_readbackPending.clear();
     for (const auto& fr : frames) {
         CmdBuf* cb = fr.first;
-        if (!cb) continue;
+        VK64_DROP_IF(continue, !cb);
         for (const Cmd& k : cb->cmds) {
             if (k.kind != CMD_COPY_I2B) continue;
             const CopyI2B& rb = k.copyI2B;
-            if (!rb.w || !rb.h || rb.w > 4096 || rb.h > 4096) continue;
+            VK64_DROP_IF(continue, !rb.w || !rb.h || rb.w > 4096 || rb.h > 4096);
             size_t pxBytes = (size_t)rb.w * rb.h * 4;
             U8* heap = (U8*)malloc(pxBytes + 4);
-            if (!heap) continue;
+            VK64_DROP_IF(continue, !heap);
             memset(heap, 0, pxBytes + 4);
             ReadbackPending pend;
             pend.srcImage = rb.srcImage; pend.dstBuffer = rb.dstBuffer;
@@ -2378,15 +2401,15 @@ static void completeReadbacks() {
     if (g_readbackPending.empty()) return;
     hopV2LastToPage();
     for (auto& pend : g_readbackPending) {
-        if (!waitForReadbackFlag(pend.flagPtr, 10000)) continue;
+        VK64_DROP_IF(continue, !waitForReadbackFlag(pend.flagPtr, 10000));
         Buffer* buf = objOf<Buffer>(pend.dstBuffer, K_BUFFER, "readback");
-        if (!buf || !buf->mem) continue;
+        VK64_DROP_IF(continue, !buf || !buf->mem);
         DeviceMemory* mem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "readback");
-        if (!mem || !mem->va) continue;
+        VK64_DROP_IF(continue, !mem || !mem->va);
         size_t pxBytes = (size_t)pend.w * pend.h * 4;
         U64 dstVa = mem->va + buf->memOff + pend.dstBufOff;
         if (buf->memOff + pend.dstBufOff + pxBytes > mem->size) {
-            if (buf->memOff + pend.dstBufOff >= mem->size) continue;
+            VK64_DROP_IF(continue, buf->memOff + pend.dstBufOff >= mem->size);
             pxBytes = (size_t)(mem->size - buf->memOff - pend.dstBufOff);
         }
         writeGuestBytes(dstVa, (U8*)(uintptr_t)pend.heapPtr, pxBytes);
@@ -2439,7 +2462,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             if (!bufId || !len) return;
             if (!bufDone.insert(std::make_tuple(bufId, memOff, len)).second) return;
             Buffer* b = objOf<Buffer>(bufId, K_BUFFER, "vkQueueSubmit");
-            if (!b || !b->mem) return;
+            VK64_DROP_IF(return, !b || !b->mem);
             auto key = std::make_tuple(bufId, memOff, len);
             auto it = g_bufferContentHash.find(key);
             // Huge buffers: vkd3d-proton backs small resources with heap-sized
@@ -2498,19 +2521,19 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         auto emitSampler = [&](U64 id) {
             if (!id || !samplerDone.insert(id).second) return;
             Sampler* s = objOf<Sampler>(id, K_SAMPLER, "vkQueueSubmit");
-            if (!s) return;
+            VK64_DROP_IF(return, !s);
             emit(V2_SAMPLER, [&](ChunkWriter& p) {
                 writeSamplerRecordPayload(p, id, *s);
             });
         };
         auto emitImageDataInner = [&](U64 viewId) {
             ImageView* view = objOf<ImageView>(viewId, K_IMAGEVIEW, "vkQueueSubmit");
-            if (!view || !view->image) return;
+            VK64_DROP_IF(return, !view || !view->image);
             // Descriptor bindings name views. Deduplicating by image drops
             // the view->image link for every other view of the same image.
             if (!imageDone.insert(viewId).second) return;
             Image* tex = objOf<Image>(view->image, K_IMAGE, "vkQueueSubmit");
-            if (!tex) return;
+            VK64_DROP_IF(return, !tex);
             std::vector<U8> bytes;
             if (tex->mem && tex->pixBytes) bytes = readGuestRange(tex->mem, tex->memOff, tex->pixBytes);
             // Cross-frame dedup: resend pixel bytes only when content changed.
@@ -2551,7 +2574,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         };
         auto emitDescSet = [&](U32 setIndex, U64 setId) {
             DescSet* s = objOf<DescSet>(setId, K_SET, "vkQueueSubmit");
-            if (!s) return;
+            VK64_DROP_IF(return, !s);
             emit(V2_DESC_SET, [&](ChunkWriter& p) {
                 p.u8(setIndex); p.u8(s->nbind); p.u16(0); p.u64(s->layout);
                 for (U32 i = 0; i < s->nbind; i++) {
@@ -2610,7 +2633,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         bool vertexHasStride[VK64_MAX_VERT_BINDINGS] = {false};
         auto emitPipeline = [&](U64 pipeId) {
             Pipeline* pipe = objOf<Pipeline>(pipeId, K_PIPELINE, "vkQueueSubmit");
-            if (!pipe) return;
+            VK64_DROP_IF(return, !pipe);
             ShaderModule* vs = pipe->vs ? objOf<ShaderModule>(pipe->vs, K_SHADER, "vkQueueSubmit") : nullptr;
             ShaderModule* fs = pipe->fs ? objOf<ShaderModule>(pipe->fs, K_SHADER, "vkQueueSubmit") : nullptr;
             // Schema v2 replays the guest pipeline. The legacy procedural
@@ -2689,7 +2712,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         auto emitRpBegin = [&](const Cmd& k) {
             Framebuffer* rfb = objOf<Framebuffer>(k.b, K_FRAMEBUFFER, "vkQueueSubmit");
             RenderPass* rrp = rfb ? objOf<RenderPass>(rfb->rp, K_RENDERPASS, "vkQueueSubmit") : nullptr;
-            if (!rfb || !rrp) return;
+            VK64_DROP_IF(return, !rfb || !rrp);
             emit(V2_RP_BEGIN, [&](ChunkWriter& p) {
                 p.u64(k.a); p.u64(k.b); p.u32(rfb->w); p.u32(rfb->h); p.u32(rfb->natt);
                 for (U32 i = 0; i < rfb->natt; i++) {
@@ -2774,7 +2797,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     if (pipe) {
                         for (U32 i = 0; i < pipe->nva && i < VK64_MAX_VERT_ATTRIBS; i++) {
                             U32 slot = pipe->vaBinding[i];
-                            if (slot >= VK64_MAX_VERT_BINDINGS) continue;
+                            VK64_DROP_IF(continue, slot >= VK64_MAX_VERT_BINDINGS);
                             U32 stride = pipe->dynamicVertexStride && curHasStride[slot] && curStride[slot]
                                 ? curStride[slot] : pipe->vbStride[slot];
                             if (!stride) continue;
@@ -2794,7 +2817,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 case CMD_BIND_PIPE: activePipe = k.a; emitPipeline(k.a); break;
                 case CMD_BIND_SETS: {
                     U32 first = (U32)k.a, count = (U32)k.b;
-                    if (first >= VK64_MAX_SETS) break;
+                    VK64_DROP_IF(break, first >= VK64_MAX_SETS);
                     if (first + count > VK64_MAX_SETS) count = VK64_MAX_SETS - first;
                     emit(V2_BIND_SETS, [&](ChunkWriter& p) {
                         p.u8(first); p.u8(count); p.u16(0);
@@ -2881,7 +2904,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     memcpy(vertexHasStride, k.vbHasStride, sizeof(vertexHasStride));
                     for (U32 i = 0; i < k.vbCount; i++) {
                         Buffer* vb = objOf<Buffer>(k.vbBuffers[i], K_BUFFER, "vkQueueSubmit");
-                        if (!vb || k.vbOffsets[i] >= vb->size) continue;
+                        VK64_DROP_IF(continue, !vb || k.vbOffsets[i] >= vb->size);
                         // Clamp to what the frame's draws touch when the pre-pass
                         // resolved it: DXVK binds whole 16MB staging heaps whose
                         // live vertex data is a small prefix.
@@ -3605,6 +3628,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     // NB: constructed AFTER the lock so the destructor (which touches the
     // profiler accumulators) also runs under g_vkMutex. BW64_VKPROF, no-op when unset.
     VkProfTrapTimer vkprofTrap(fnId);
+    g_dropFn = fnId;
     g_mem32 = nullptr;
     g_mem = cpu ? cpu->memory : nullptr;
 
@@ -3790,10 +3814,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkGetPhysicalDeviceFormatProperties2: {
         // (physDev, format, out VkFormatProperties2) + FormatProperties3 pNext.
-        if (!args.a[2]) return 0;
+        VK64_DROP_IF(return 0, !args.a[2]);
         const U32 format = (U32)args.a[1];
         VkFormatProperties2 p2 = {};
-        if (!readStruct(args.a[2], p2)) return 0;
+        VK64_DROP_IF(return 0, !readStruct(args.a[2], p2));
         const VkFormatFeatureFlags img = v2FormatFeatureFlags(format);
         p2.formatProperties.linearTilingFeatures = img;
         p2.formatProperties.optimalTilingFeatures = img;
@@ -4145,7 +4169,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         return VK_SUCCESS;
     case VK64_fn_vkCmdCopyQueryPoolResults: {
         CmdBuf* cb = cbOf(args.a[0], "vkCmdCopyQueryPoolResults");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_COPY_QUERY_RESULTS;
         c.queryCopy = { args.a[1], args.a[4], args.a[5], args.a[6],
                         (U32)args.a[2], (U32)args.a[3], (U32)args.a[7] };
@@ -4181,7 +4205,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkFreeCommandBuffers: {
         U32 n = (U32)args.a[2];
         CmdPool* pool = objOf<CmdPool>(args.a[1], K_CMDPOOL, "vkFreeCommandBuffers");
-        if (!pool || pool->device != args.a[0]) return 0;
+        VK64_DROP_IF(return 0, !pool || pool->device != args.a[0]);
         for (U32 i = 0; i < n; i++) {
             U64 id = rd64(args.a[3] + (U64)i * 8);
             CmdBuf* cb = cbOf(id, "vkFreeCommandBuffers");
@@ -4311,10 +4335,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // per buffer. 256MB stride guarantees VA ranges never overlap, so
         // vkd3d's va_map range lookups (va + offset) stay unambiguous.
         struct { U64 sType; U64 pNext; U64 buffer; } info = {};
-        if (!args.a[1] || !g_mem) return 0;
+        VK64_DROP_IF(return 0, !args.a[1] || !g_mem);
         g_mem->memcpyFromGuest(&info, args.a[1], sizeof(info));
         Buffer* b = objOf<Buffer>(info.buffer, K_BUFFER, "vkGetBufferDeviceAddress");
-        if (!b) return 0;
+        VK64_DROP_IF(return 0, !b);
         if (!b->devVa) {
             b->devVa = g_nextDevVa;
             g_nextDevVa += 0x10000000ULL;
@@ -4774,12 +4798,12 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         for (U32 i = 0; i < nw; i++) {
             const VkWriteDescriptorSet& w = writes[i];
             DescSet* s = objOf<DescSet>(w.dstSet, K_SET, "vkUpdateDescriptorSets");
-            if (!s || w.dstBinding >= VK64_MAX_BINDINGS) continue;
+            VK64_DROP_IF(continue, !s || w.dstBinding >= VK64_MAX_BINDINGS);
             Binding* b = nullptr;
             for (U32 k = 0; k < s->nbind; k++)
                 if (s->binds[k].binding == w.dstBinding) { b = &s->binds[k]; break; }
             if (!b) {
-                if (s->nbind >= VK64_MAX_BINDINGS) continue;
+                VK64_DROP_IF(continue, s->nbind >= VK64_MAX_BINDINGS);
                 b = &s->binds[s->nbind++];
                 b->binding = w.dstBinding;
             }
@@ -4846,7 +4870,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         std::vector<VkDescriptorUpdateTemplateEntry> entries;
         readArray(ci.pDescriptorUpdateEntries, ci.descriptorUpdateEntryCount, entries);
         for (auto& e : entries) {
-            if (t->nentry >= VK64_MAX_BINDINGS) break;
+            VK64_DROP_IF(break, t->nentry >= VK64_MAX_BINDINGS);
             TmplEntry& te = t->entries[t->nentry++];
             te.binding = e.dstBinding; te.arrayElement = e.dstArrayElement;
             te.count = e.descriptorCount; te.type = e.descriptorType;
@@ -4876,12 +4900,12 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 U64 dAddr = dataBase + te.offset + (U64)i * te.stride;
                 U32 binding = te.binding;
                 U32 elem = te.arrayElement + i;
-                if (binding >= VK64_MAX_BINDINGS) continue;
+                VK64_DROP_IF(continue, binding >= VK64_MAX_BINDINGS);
                 Binding* b = nullptr;
                 for (U32 k = 0; k < s->nbind; k++)
                     if (s->binds[k].binding == binding) { b = &s->binds[k]; break; }
                 if (!b) {
-                    if (s->nbind >= VK64_MAX_BINDINGS) continue;
+                    VK64_DROP_IF(continue, s->nbind >= VK64_MAX_BINDINGS);
                     b = &s->binds[s->nbind++];
                     b->binding = binding;
                 }
@@ -4975,7 +4999,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkDestroyCommandPool: {
         if (!args.a[1]) return 0;
         CmdPool* pool = objOf<CmdPool>(args.a[1], K_CMDPOOL, "vkDestroyCommandPool");
-        if (!pool || pool->device != args.a[0]) return 0;
+        VK64_DROP_IF(return 0, !pool || pool->device != args.a[0]);
         // Collect first: dropObj erases the shared object map.
         std::vector<U64> children;
         for (const auto& kv : g_objs)
@@ -5071,7 +5095,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         klog_fmt("vk64: BEGIN_RP2_CALLED cb=0x%llx", (unsigned long long)args.a[0]);
         CmdBuf* cb = cbOf(args.a[0], "vkCmdBeginRenderPass2");
         VkRenderPassBeginInfo bi = {};
-        if (!cb || !readStruct(args.a[1], bi)) return 0;
+        VK64_DROP_IF(return 0, !cb || !readStruct(args.a[1], bi));
         Cmd c;
         c.kind = CMD_BEGIN_RP;
         c.a = bi.renderPass;
@@ -5086,7 +5110,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdEndRenderPass2KHR: {
         // (cmdBuf, pSubpassEndInfo*)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdEndRenderPass2");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c;
         c.kind = CMD_END_RP;
         pushCmd(cb, c);
@@ -5098,7 +5122,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // are no-ops (we execute synchronously), but we record the call so the
         // command buffer is not empty and DXVK's state tracking works.
         CmdBuf* cb = cbOf(args.a[0], "vkCmdPipelineBarrier2");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c;
         c.kind = CMD_BARRIER;
         pushCmd(cb, c);
@@ -5109,7 +5133,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // (cmdBuf, pPushConstantsInfo*) — VkPushConstantsInfo has layout,
         // stageFlags, offset, size, pValues. We extract and record like v1.
         CmdBuf* cb = cbOf(args.a[0], "vkCmdPushConstants2");
-        if (!cb || !args.a[1]) return 0;
+        VK64_DROP_IF(return 0, !cb || !args.a[1]);
         // VkPushConstantsInfo: sType(0), pNext(8), layout(16), stageFlags(24),
         // offset(28), size(32), pValues(40)
         U64 layout = rd64(args.a[1] + 16);
@@ -5132,7 +5156,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // (cmdBuf, buffer, offset, size, indexType) — v2 adds size param.
         // For our purposes, size is informational; we bind like v1.
         CmdBuf* cb = cbOf(args.a[0], "vkCmdBindIndexBuffer2");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         cb->ib = args.a[1];
         cb->ibOff = args.a[2];
         // args.a[3] is size (ignored), args.a[4] is indexType
@@ -5149,7 +5173,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdBeginRenderingKHR: {
         CmdBuf* cb = cbOf(args.a[0], "vkCmdBeginRendering");
         VkRenderingInfo ri = {};
-        if (!cb || !readStruct(args.a[1], ri)) return 0;
+        VK64_DROP_IF(return 0, !cb || !readStruct(args.a[1], ri));
         U64 rpId = 0, fbId = 0;
         auto* rp = createObj<RenderPass>(K_RENDERPASS, rpId);
         auto* fb = createObj<Framebuffer>(K_FRAMEBUFFER, fbId);
@@ -5159,9 +5183,9 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         Cmd c; c.kind = CMD_BEGIN_RP; c.a = rpId; c.b = fbId;
         auto attachment = [&](U64 address, bool depth) {
             VkRenderingAttachmentInfo att = {};
-            if (!address || fb->natt >= VK64_MAX_ATTACH || !readStruct(address, att)) return;
+            VK64_DROP_IF(return, !address || fb->natt >= VK64_MAX_ATTACH || !readStruct(address, att));
             auto* view = objOf<ImageView>(att.imageView, K_IMAGEVIEW, "vkCmdBeginRendering");
-            if (!view) return;
+            VK64_DROP_IF(return, !view);
             auto* image = objOf<Image>(view->image, K_IMAGE, "vkCmdBeginRendering");
             U32 i = fb->natt++;
             fb->views[i] = att.imageView;
@@ -5195,7 +5219,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdEndRenderingKHR: {
         // (cmdBuf)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdEndRendering");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c;
         c.kind = CMD_END_RP;
         pushCmd(cb, c);
@@ -5204,7 +5228,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdBindPipeline: {
         // (cmdBuf, bindPoint, pipeline)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdBindPipeline");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c;
         c.kind = CMD_BIND_PIPE;
         c.a = args.a[2];
@@ -5215,7 +5239,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdBindDescriptorSets: {
         // (cmdBuf, bindPoint, layout, firstSet, setCount, pSets*, nDyn, pDynOffsets*)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdBindDescriptorSets");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         U32 firstSet = (U32)args.a[3];
         U32 setCount = (U32)args.a[4];
         if (setCount > VK64_MAX_SETS) setCount = VK64_MAX_SETS;
@@ -5235,7 +5259,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdSetStencilWriteMask:
     case VK64_fn_vkCmdSetStencilReference: {
         CmdBuf* cb = cbOf(args.a[0], "dynamic raster state");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_STENCIL_STATE;
         c.a = fnId == VK64_fn_vkCmdSetStencilCompareMask ? 0 : fnId == VK64_fn_vkCmdSetStencilWriteMask ? 1 : 2;
         c.b = (U32)args.a[1]; c.c = (U32)args.a[2];
@@ -5243,7 +5267,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkCmdSetBlendConstants: {
         CmdBuf* cb = cbOf(args.a[0], "dynamic raster state");
-        if (!cb || !args.a[1]) return 0;
+        VK64_DROP_IF(return 0, !cb || !args.a[1]);
         Cmd c; c.kind = CMD_BLEND_CONSTANTS;
         g_mem->memcpyFromGuest(c.f, args.a[1], 16);
         pushCmd(cb, c); return 0;
@@ -5251,7 +5275,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdSetCullMode:
     case VK64_fn_vkCmdSetFrontFace: {
         CmdBuf* cb = cbOf(args.a[0], "dynamic raster state");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_RASTER_STATE;
         c.a = fnId == VK64_fn_vkCmdSetCullMode ? 0 : 1; c.b = (U32)args.a[1];
         pushCmd(cb, c); return 0;
@@ -5266,7 +5290,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // (cmdBuf, image, layout, pDepthStencil*, rangeCount, pRanges*): replayed on the
         // page as a render-pass clear of the matching GPU texture subresources.
         CmdBuf* cb = cbOf(args.a[0], "vkCmdClearDepthStencilImage");
-        if (!cb || !objOf<Image>(args.a[1], K_IMAGE, "vkCmdClearDepthStencilImage")) return 0;
+        VK64_DROP_IF(return 0, !cb || !objOf<Image>(args.a[1], K_IMAGE, "vkCmdClearDepthStencilImage"));
         if (args.a[4] > 64) { g_frameOverflow = true; return 0; }
         struct { float depth; U32 stencil; } value = {1.0f, 0};
         if (args.a[3]) g_mem->memcpyFromGuest(&value, args.a[3], sizeof(value));
@@ -5278,7 +5302,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkCmdSetDepthBias: {
         CmdBuf* cb = cbOf(args.a[0], "vkCmdSetDepthBias");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_DEPTH_BIAS;
         for (U32 i = 0; i < 3; ++i) { U32 bits = (U32)args.a[i + 1]; memcpy(&c.f[i], &bits, sizeof(bits)); }
         pushCmd(cb, c); return 0;
@@ -5316,7 +5340,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdDraw: {
         // (cmdBuf, vertexCount, instanceCount, firstVertex, firstInstance)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdDraw");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c;
         c.kind = CMD_DRAW;
         c.a = args.a[1];   // vertexCount
@@ -5331,7 +5355,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdBindVertexBuffers2: {
         // (cmdBuf, firstBinding, bindingCount, pBuffers*, pOffsets*)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdBindVertexBuffers");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         U32 first = (U32)args.a[1], count = (U32)args.a[2];
         if (!args.a[3] || !args.a[4] || !count || first >= VK64_MAX_VERT_BINDINGS) return 0;
         if (first + count > VK64_MAX_VERT_BINDINGS) count = VK64_MAX_VERT_BINDINGS - first;
@@ -5359,7 +5383,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdBindIndexBuffer: {
         // (cmdBuf, buffer, offset, indexType)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdBindIndexBuffer");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         cb->ib = args.a[1]; cb->ibOff = args.a[2]; cb->ibType = (U32)args.a[3];
         Cmd c;
         c.kind = CMD_BIND_IB;
@@ -5370,7 +5394,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdDrawIndexed: {
         // (cmdBuf, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdDrawIndexed");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c;
         c.kind = CMD_DRAW_INDEXED;
         c.a = args.a[1];   // indexCount
@@ -5391,7 +5415,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
          * with the byte OFFSET kept, because a push is an overlay into a
          * push-constant range rather than a replacement of it. */
         CmdBuf* cb = cbOf(args.a[0], "vkCmdPushConstants");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         U32 off = (U32)args.a[3], size = (U32)args.a[4];
         if (!args.a[5] || !size) return 0;
         if (size > VK64_MAX_PUSH_BYTES) {
@@ -5417,7 +5441,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
          * memory at record time and written back at submit (transfer
          * semantics), before serialization reads the buffer. */
         CmdBuf* cb = cbOf(args.a[0], "vkCmdUpdateBuffer");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         U64 size = args.a[3];
         if (!args.a[4] || !size) return 0;
         if (size > 65536) {
@@ -5449,10 +5473,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         CmdBuf* cb = cbOf(args.a[0], "vkCmdCopyBufferToImage");
         U32 nreg = (U32)args.a[4];
         // Defensive: garbage regionCount would cause over-allocation in readArray.
-        if (nreg > 1024) return 0;
+        VK64_DROP_IF(return 0, nreg > 1024);
         std::vector<VkBufferImageCopy> regs;
         readArray(args.a[5], nreg, regs);
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         for (U32 i = 0; i < regs.size(); i++) {
             Cmd c;
             c.kind = CMD_COPY_B2I;
@@ -5480,7 +5504,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         U32 nreg = (U32)args.a[4];
         std::vector<VkBufferImageCopy> regs;
         readArray(args.a[5], nreg, regs);
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         for (U32 i = 0; i < regs.size(); i++) {
             Cmd c; c.kind = CMD_COPY_I2B;
             c.copyI2B.srcImage = args.a[1]; c.copyI2B.dstBuffer = args.a[3];
@@ -5508,10 +5532,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         CmdBuf* cb = cbOf(args.a[0], "vkCmdCopyImageToBuffer2");
         U32 nreg = (U32)args.a[4];
         // Defensive: garbage regionCount would cause std::length_error in readArray.
-        if (nreg > 1024) return 0;
+        VK64_DROP_IF(return 0, nreg > 1024);
         std::vector<VkBufferImageCopy2L> regs;
         readArray(args.a[5], nreg, regs);
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         for (U32 i = 0; i < regs.size(); i++) {
             Cmd c; c.kind = CMD_COPY_I2B;
             c.copyI2B.srcImage = args.a[1]; c.copyI2B.dstBuffer = args.a[3];
@@ -5535,16 +5559,16 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         readArray(args.a[4], nreg, regs);
         Buffer* src = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdCopyBuffer");
         Buffer* dst = objOf<Buffer>(args.a[2], K_BUFFER, "vkCmdCopyBuffer");
-        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);
         DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdCopyBuffer");
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyBuffer");
-        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         bool anyCopy = false;
         for (const auto& r : regs) {
             U64 sOff = smem->va + src->memOff + r.srcOffset;
             U64 dOff = dmem->va + dst->memOff + r.dstOffset;
             U64 n = r.size;
-            if (r.srcOffset >= smem->size || r.dstOffset >= dmem->size) continue;
+            VK64_DROP_IF(continue, r.srcOffset >= smem->size || r.dstOffset >= dmem->size);
             if (sOff + n > smem->va + smem->size) n = smem->va + smem->size - sOff;
             if (dOff + n > dmem->va + dmem->size) n = dmem->va + dmem->size - dOff;
             if (!n) continue;
@@ -5568,15 +5592,15 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // Defensive: a garbage regionCount (e.g. 1447756043 observed from
         // mismatched shim args) would cause std::length_error in readArray.
         // No legitimate call needs more than 1024 regions.
-        if (nreg > 1024) return 0;
+        VK64_DROP_IF(return 0, nreg > 1024);
         std::vector<VkBufferCopy2L> regs;
         readArray(args.a[4], nreg, regs);
         Buffer* src = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdCopyBuffer2");
         Buffer* dst = objOf<Buffer>(args.a[2], K_BUFFER, "vkCmdCopyBuffer2");
-        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);
         DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdCopyBuffer2");
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyBuffer2");
-        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         for (const auto& r : regs) {
             // Validate the bind-relative offset (including the buffer's bind
             // offset) BEFORE computing absolute addresses. The old check
@@ -5586,8 +5610,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             // The wraparound checks also guard U64 addition overflow.
             U64 sRel = src->memOff + r.srcOffset;
             U64 dRel = dst->memOff + r.dstOffset;
-            if (sRel < src->memOff || sRel >= smem->size) continue;
-            if (dRel < dst->memOff || dRel >= dmem->size) continue;
+            VK64_DROP_IF(continue, sRel < src->memOff || sRel >= smem->size);
+            VK64_DROP_IF(continue, dRel < dst->memOff || dRel >= dmem->size);
             U64 sOff = smem->va + sRel;
             U64 dOff = dmem->va + dRel;
             U64 n = r.size;
@@ -5613,13 +5637,13 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // (cmdBuf, dstBuffer, dstOffset, size, data)
         // Fill buffer range with 32-bit pattern repeated.
         Buffer* dst = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdFillBuffer");
-        if (!dst || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !dst || !dst->mem);
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdFillBuffer");
-        if (!dmem || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !dmem || !dmem->va);
         U64 offset = dst->memOff + args.a[2];
         U64 size = args.a[3];
         U32 data = (U32)args.a[4];
-        if (offset >= dmem->size) return 0;
+        VK64_DROP_IF(return 0, offset >= dmem->size);
         if (offset + size > dmem->size) size = dmem->size - offset;
         if (!size) return 0;
         U64 va = dmem->va + offset;
@@ -5638,15 +5662,15 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // (cmdBuf, image, layout, pColor*, rangeCount, pRanges*)
         // Fill image with color. pColor is VkClearColorValue (16 bytes).
         Image* img = objOf<Image>(args.a[1], K_IMAGE, "vkCmdClearColorImage");
-        if (!img || !img->mem) return 0;
+        VK64_DROP_IF(return 0, !img || !img->mem);
         DeviceMemory* dmem = objOf<DeviceMemory>(img->mem, K_MEMORY, "vkCmdClearColorImage");
-        if (!dmem || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !dmem || !dmem->va);
         U8 color[16] = {0};
         if (args.a[3]) g_mem->memcpyFromGuest(color, args.a[3], 16);
         // Calculate image size; fall back to full memory if unknown
         U64 imgSize = img->pixBytes * (U64)img->w * (U64)img->h;
         if (!imgSize) imgSize = dmem->size - img->memOff;
-        if (!imgSize) return 0;
+        VK64_DROP_IF(return 0, !imgSize);
         U64 va = dmem->va + img->memOff;
         if (va + imgSize > dmem->va + dmem->size) {
             imgSize = dmem->va + dmem->size - va;
@@ -5669,7 +5693,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdClearAttachments:
     case VK64_fn_vkCmdClearAttachmentsKHR: {
         CmdBuf* cb = cbOf(args.a[0], "vkCmdClearAttachments");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         if (args.a[1] > 8 || args.a[3] > 4096) { g_frameOverflow = true; return 0; }
         Cmd c; c.kind = CMD_CLEAR_ATTACHMENTS;
         readArray(args.a[2], (U32)args.a[1], c.clearAttachments);
@@ -5689,10 +5713,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         };
         Image* src = objOf<Image>(args.a[1], K_IMAGE, "vkCmdCopyImage");
         Image* dst = objOf<Image>(args.a[3], K_IMAGE, "vkCmdCopyImage");
-        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);
         DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdCopyImage");
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyImage");
-        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         U32 nreg = (U32)args.a[5];
         std::vector<VkImageCopyL> regs;
         readArray(args.a[6], nreg, regs);
@@ -5711,14 +5735,14 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             for (U32 y = 0; y < copyH; y++) {
                 U32 sy = (U32)r.srcY + y;
                 U32 dy = (U32)r.dstY + y;
-                if (sy >= src->h || dy >= dst->h) continue;
+                VK64_DROP_IF(continue, sy >= src->h || dy >= dst->h);
                 U64 sOff = smem->va + src->memOff + (U64)sy * srcRowPitch + (U64)r.srcX * pxBytes;
                 U64 dOff = dmem->va + dst->memOff + (U64)dy * dstRowPitch + (U64)r.dstX * pxBytes;
                 U64 sEnd = smem->va + smem->size;
                 U64 dEnd = dmem->va + dmem->size;
                 // If start is already out of bounds, skip: prevents U64
                 // underflow in the clamp below (sEnd - sOff wraps if sOff>=sEnd).
-                if (sOff >= sEnd || dOff >= dEnd) continue;
+                VK64_DROP_IF(continue, sOff >= sEnd || dOff >= dEnd);
                 U64 n = (U64)copyW * pxBytes;
                 if (sOff + n > sEnd) n = sEnd - sOff;
                 if (dOff + n > dEnd) n = dEnd - dOff;
@@ -5745,10 +5769,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         };
         Image* src = objOf<Image>(args.a[1], K_IMAGE, "vkCmdCopyImage2");
         Image* dst = objOf<Image>(args.a[2], K_IMAGE, "vkCmdCopyImage2");
-        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);
         DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdCopyImage2");
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyImage2");
-        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         U32 nreg = (U32)args.a[3];
         std::vector<VkImageCopy2L> regs;
         readArray(args.a[4], nreg, regs);
@@ -5765,14 +5789,14 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             for (U32 y = 0; y < copyH; y++) {
                 U32 sy = (U32)r.srcY + y;
                 U32 dy = (U32)r.dstY + y;
-                if (sy >= src->h || dy >= dst->h) continue;
+                VK64_DROP_IF(continue, sy >= src->h || dy >= dst->h);
                 U64 sOff = smem->va + src->memOff + (U64)sy * srcRowPitch + (U64)r.srcX * pxBytes;
                 U64 dOff = dmem->va + dst->memOff + (U64)dy * dstRowPitch + (U64)r.dstX * pxBytes;
                 U64 sEnd = smem->va + smem->size;
                 U64 dEnd = dmem->va + dmem->size;
                 // If start is already out of bounds, skip: prevents U64
                 // underflow in the clamp below (sEnd - sOff wraps if sOff>=sEnd).
-                if (sOff >= sEnd || dOff >= dEnd) continue;
+                VK64_DROP_IF(continue, sOff >= sEnd || dOff >= dEnd);
                 U64 n = (U64)copyW * pxBytes;
                 if (sOff + n > sEnd) n = sEnd - sOff;
                 if (dOff + n > dEnd) n = dEnd - dOff;
@@ -5800,10 +5824,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         U32 nreg = (U32)args.a[3];
         // Defensive: garbage regionCount (PE shim arg shift) would cause
         // massive over-allocation in readArray and millions of no-op copies.
-        if (nreg > 1024) return 0;
+        VK64_DROP_IF(return 0, nreg > 1024);
         std::vector<VkBufferImageCopy2L> regs;
         readArray(args.a[4], nreg, regs);
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         // Record as CMD_COPY_B2I like the v1 version; page handles the copy
         for (U32 i = 0; i < regs.size(); i++) {
             Cmd c;
@@ -5839,9 +5863,9 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         };
         Image* src = objOf<Image>(args.a[1], K_IMAGE, "vkCmdBlitImage");
         Image* dst = objOf<Image>(args.a[3], K_IMAGE, "vkCmdBlitImage");
-        if (!src || !dst) return 0;
+        VK64_DROP_IF(return 0, !src || !dst);
         U32 nreg = (U32)args.a[5];
-        if (nreg > 1024) return 0;
+        VK64_DROP_IF(return 0, nreg > 1024);
         std::vector<VkImageBlitL> regs;
         readArray(args.a[6], nreg, regs);
         for (const auto& r : regs) {
@@ -5851,10 +5875,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 r.srcMip, r.srcBaseLayer, r.dstMip, r.dstBaseLayer, (U32)args.a[7],
                 srcOffsets, dstOffsets, r.srcLayerCount);
         }
-        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);
         DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdBlitImage");
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdBlitImage");
-        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         // U32 filter = (U32)args.a[7]; // 0=NEAREST, 1=LINEAR (currently unused, NEAREST assumed)
         U32 pxBytes = (U32)src->pixBytes;
         if (!pxBytes) pxBytes = 4;
@@ -5865,25 +5889,25 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             int32_t srcH = r.srcY1 - r.srcY0;
             int32_t dstW = r.dstX1 - r.dstX0;
             int32_t dstH = r.dstY1 - r.dstY0;
-            if (srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) continue;
+            VK64_DROP_IF(continue, srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0);
             // Nearest-neighbor scaled copy
             for (int32_t dy = 0; dy < dstH; dy++) {
                 int32_t sy = r.srcY0 + (dy * srcH) / dstH;
-                if (sy < 0 || (U32)sy >= src->h) continue;
+                VK64_DROP_IF(continue, sy < 0 || (U32)sy >= src->h);
                 U32 dyAbs = (U32)(r.dstY0 + dy);
-                if (dyAbs >= dst->h) continue;
+                VK64_DROP_IF(continue, dyAbs >= dst->h);
                 for (int32_t dx = 0; dx < dstW; dx++) {
                     int32_t sx = r.srcX0 + (dx * srcW) / dstW;
-                    if (sx < 0 || (U32)sx >= src->w) continue;
+                    VK64_DROP_IF(continue, sx < 0 || (U32)sx >= src->w);
                     U32 dxAbs = (U32)(r.dstX0 + dx);
-                    if (dxAbs >= dst->w) continue;
+                    VK64_DROP_IF(continue, dxAbs >= dst->w);
                     U64 sOff = smem->va + src->memOff + (U64)sy * srcRowPitch + (U64)sx * pxBytes;
                     U64 dOff = dmem->va + dst->memOff + (U64)dyAbs * dstRowPitch + (U64)dxAbs * pxBytes;
                     U64 sEndB = smem->va + smem->size;
                     U64 dEndB = dmem->va + dmem->size;
-                    if (sOff >= sEndB || dOff >= dEndB) continue;
-                    if (sOff + pxBytes > sEndB) continue;
-                    if (dOff + pxBytes > dEndB) continue;
+                    VK64_DROP_IF(continue, sOff >= sEndB || dOff >= dEndB);
+                    VK64_DROP_IF(continue, sOff + pxBytes > sEndB);
+                    VK64_DROP_IF(continue, dOff + pxBytes > dEndB);
                     U8 pixel[16];
                     g_mem->memcpyFromGuest(pixel, sOff, pxBytes);
                     g_mem->memcpyToGuest(dOff, pixel, pxBytes);
@@ -5908,9 +5932,9 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         };
         Image* src = objOf<Image>(args.a[1], K_IMAGE, "vkCmdBlitImage2");
         Image* dst = objOf<Image>(args.a[2], K_IMAGE, "vkCmdBlitImage2");
-        if (!src || !dst) return 0;
+        VK64_DROP_IF(return 0, !src || !dst);
         U32 nreg = (U32)args.a[3];
-        if (nreg > 1024) return 0;
+        VK64_DROP_IF(return 0, nreg > 1024);
         std::vector<VkImageBlit2L> regs;
         readArray(args.a[4], nreg, regs);
         for (const auto& r : regs) {
@@ -5920,10 +5944,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 r.srcMip, r.srcBaseLayer, r.dstMip, r.dstBaseLayer, (U32)args.a[5],
                 srcOffsets, dstOffsets, r.srcLayerCount);
         }
-        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);
         DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdBlitImage2");
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdBlitImage2");
-        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         U32 pxBytes = (U32)src->pixBytes;
         if (!pxBytes) pxBytes = 4;
         U32 srcRowPitch = src->w * pxBytes;
@@ -5933,24 +5957,24 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             int32_t srcH = r.srcY1 - r.srcY0;
             int32_t dstW = r.dstX1 - r.dstX0;
             int32_t dstH = r.dstY1 - r.dstY0;
-            if (srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) continue;
+            VK64_DROP_IF(continue, srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0);
             for (int32_t dy = 0; dy < dstH; dy++) {
                 int32_t sy = r.srcY0 + (dy * srcH) / dstH;
-                if (sy < 0 || (U32)sy >= src->h) continue;
+                VK64_DROP_IF(continue, sy < 0 || (U32)sy >= src->h);
                 U32 dyAbs = (U32)(r.dstY0 + dy);
-                if (dyAbs >= dst->h) continue;
+                VK64_DROP_IF(continue, dyAbs >= dst->h);
                 for (int32_t dx = 0; dx < dstW; dx++) {
                     int32_t sx = r.srcX0 + (dx * srcW) / dstW;
-                    if (sx < 0 || (U32)sx >= src->w) continue;
+                    VK64_DROP_IF(continue, sx < 0 || (U32)sx >= src->w);
                     U32 dxAbs = (U32)(r.dstX0 + dx);
-                    if (dxAbs >= dst->w) continue;
+                    VK64_DROP_IF(continue, dxAbs >= dst->w);
                     U64 sOff = smem->va + src->memOff + (U64)sy * srcRowPitch + (U64)sx * pxBytes;
                     U64 dOff = dmem->va + dst->memOff + (U64)dyAbs * dstRowPitch + (U64)dxAbs * pxBytes;
                     U64 sEndB = smem->va + smem->size;
                     U64 dEndB = dmem->va + dmem->size;
-                    if (sOff >= sEndB || dOff >= dEndB) continue;
-                    if (sOff + pxBytes > sEndB) continue;
-                    if (dOff + pxBytes > dEndB) continue;
+                    VK64_DROP_IF(continue, sOff >= sEndB || dOff >= dEndB);
+                    VK64_DROP_IF(continue, sOff + pxBytes > sEndB);
+                    VK64_DROP_IF(continue, dOff + pxBytes > dEndB);
                     U8 pixel[16];
                     g_mem->memcpyFromGuest(pixel, sOff, pxBytes);
                     g_mem->memcpyToGuest(dOff, pixel, pxBytes);
@@ -5974,10 +5998,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         };
         Image* src = objOf<Image>(args.a[1], K_IMAGE, "vkCmdResolveImage");
         Image* dst = objOf<Image>(args.a[3], K_IMAGE, "vkCmdResolveImage");
-        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);
         DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdResolveImage");
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdResolveImage");
-        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         U32 nreg = (U32)args.a[5];
         std::vector<VkImageResolveL> regs;
         readArray(args.a[6], nreg, regs);
@@ -5994,14 +6018,14 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             for (U32 y = 0; y < copyH; y++) {
                 U32 sy = (U32)r.srcY + y;
                 U32 dy = (U32)r.dstY + y;
-                if (sy >= src->h || dy >= dst->h) continue;
+                VK64_DROP_IF(continue, sy >= src->h || dy >= dst->h);
                 U64 sOff = smem->va + src->memOff + (U64)sy * srcRowPitch + (U64)r.srcX * pxBytes;
                 U64 dOff = dmem->va + dst->memOff + (U64)dy * dstRowPitch + (U64)r.dstX * pxBytes;
                 U64 sEnd = smem->va + smem->size;
                 U64 dEnd = dmem->va + dmem->size;
                 // If start is already out of bounds, skip: prevents U64
                 // underflow in the clamp below (sEnd - sOff wraps if sOff>=sEnd).
-                if (sOff >= sEnd || dOff >= dEnd) continue;
+                VK64_DROP_IF(continue, sOff >= sEnd || dOff >= dEnd);
                 U64 n = (U64)copyW * pxBytes;
                 if (sOff + n > sEnd) n = sEnd - sOff;
                 if (dOff + n > dEnd) n = dEnd - dOff;
@@ -6019,11 +6043,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // Read VkDrawIndirectCommand structs and emit direct CMD_DRAW for each.
         struct VkDrawIndirectCommandL { U32 vertexCount; U32 instanceCount; U32 firstVertex; U32 firstInstance; };
         CmdBuf* cb = cbOf(args.a[0], "vkCmdDrawIndirect");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Buffer* buf = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdDrawIndirect");
-        if (!buf || !buf->mem) return 0;
+        VK64_DROP_IF(return 0, !buf || !buf->mem);
         DeviceMemory* mem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDrawIndirect");
-        if (!mem || !mem->va) return 0;
+        VK64_DROP_IF(return 0, !mem || !mem->va);
         U64 baseOff = mem->va + buf->memOff + args.a[2];
         U32 drawCount = (U32)args.a[3];
         U32 stride = (U32)args.a[4];
@@ -6050,11 +6074,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             U32 indexCount; U32 instanceCount; U32 firstIndex; int32_t vertexOffset; U32 firstInstance;
         };
         CmdBuf* cb = cbOf(args.a[0], "vkCmdDrawIndexedIndirect");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Buffer* buf = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdDrawIndexedIndirect");
-        if (!buf || !buf->mem) return 0;
+        VK64_DROP_IF(return 0, !buf || !buf->mem);
         DeviceMemory* mem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDrawIndexedIndirect");
-        if (!mem || !mem->va) return 0;
+        VK64_DROP_IF(return 0, !mem || !mem->va);
         U64 baseOff = mem->va + buf->memOff + args.a[2];
         U32 drawCount = (U32)args.a[3];
         U32 stride = (U32)args.a[4];
@@ -6079,13 +6103,13 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdDrawIndirectCountKHR: {
         // (cmdBuf, buffer, offset, countBuffer, countOffset, maxDrawCount, stride)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdDrawIndirectCount");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Buffer* buf = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdDrawIndirectCount");
         Buffer* countBuf = objOf<Buffer>(args.a[3], K_BUFFER, "vkCmdDrawIndirectCount");
-        if (!buf || !buf->mem || !countBuf || !countBuf->mem) return 0;
+        VK64_DROP_IF(return 0, !buf || !buf->mem || !countBuf || !countBuf->mem);
         DeviceMemory* mem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDrawIndirectCount");
         DeviceMemory* countMem = objOf<DeviceMemory>(countBuf->mem, K_MEMORY, "vkCmdDrawIndirectCount");
-        if (!mem || !mem->va || !countMem || !countMem->va) return 0;
+        VK64_DROP_IF(return 0, !mem || !mem->va || !countMem || !countMem->va);
         // Read actual draw count from count buffer
         U32 actualCount = 0;
         g_mem->memcpyFromGuest(&actualCount, countMem->va + countBuf->memOff + args.a[4], 4);
@@ -6113,13 +6137,13 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdDrawIndexedIndirectCount: {
         // (cmdBuf, buffer, offset, countBuffer, countOffset, maxDrawCount, stride)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdDrawIndexedIndirectCount");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Buffer* buf = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdDrawIndexedIndirectCount");
         Buffer* countBuf = objOf<Buffer>(args.a[3], K_BUFFER, "vkCmdDrawIndexedIndirectCount");
-        if (!buf || !buf->mem || !countBuf || !countBuf->mem) return 0;
+        VK64_DROP_IF(return 0, !buf || !buf->mem || !countBuf || !countBuf->mem);
         DeviceMemory* mem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDrawIndexedIndirectCount");
         DeviceMemory* countMem = objOf<DeviceMemory>(countBuf->mem, K_MEMORY, "vkCmdDrawIndexedIndirectCount");
-        if (!mem || !mem->va || !countMem || !countMem->va) return 0;
+        VK64_DROP_IF(return 0, !mem || !mem->va || !countMem || !countMem->va);
         U32 actualCount = 0;
         g_mem->memcpyFromGuest(&actualCount, countMem->va + countBuf->memOff + args.a[4], 4);
         U32 maxDraws = (U32)args.a[5];
@@ -6150,13 +6174,13 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // (cmdBuf, commandBufferCount, pCommandBuffers*)
         // Merge secondary command buffer commands into primary.
         CmdBuf* primary = cbOf(args.a[0], "vkCmdExecuteCommands");
-        if (!primary) return 0;
+        VK64_DROP_IF(return 0, !primary);
         U32 count = (U32)args.a[1];
         if (!count || count > 16) return 0;
         for (U32 i = 0; i < count; i++) {
             U64 secId = rd64(args.a[2] + (U64)i * 8);
             CmdBuf* sec = cbOf(secId, "vkCmdExecuteCommands");
-            if (!sec) continue;
+            VK64_DROP_IF(continue, !sec);
             // Copy all commands from secondary into primary
             for (const auto& c : sec->cmds) {
                 pushCmd(primary, c);
@@ -6180,7 +6204,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // (cmdBuf, groupCountX, groupCountY, groupCountZ)
         // Compute dispatch. Record for page-side handling.
         CmdBuf* cb = cbOf(args.a[0], "vkCmdDispatch");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c;
         c.kind = CMD_DISPATCH;
         c.a = args.a[1];
@@ -6192,7 +6216,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdDispatchBase: {
         // (cmdBuf, baseGroupX, baseGroupY, baseGroupZ, groupCountX, groupCountY, groupCountZ)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdDispatchBase");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c;
         c.kind = CMD_DISPATCH;
         c.a = args.a[4];
@@ -6206,11 +6230,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // (cmdBuf, buffer, offset)
         // Read VkDispatchIndirectCommand {x, y, z} from buffer.
         CmdBuf* cb = cbOf(args.a[0], "vkCmdDispatchIndirect");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Buffer* buf = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdDispatchIndirect");
-        if (!buf || !buf->mem) return 0;
+        VK64_DROP_IF(return 0, !buf || !buf->mem);
         DeviceMemory* mem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDispatchIndirect");
-        if (!mem || !mem->va) return 0;
+        VK64_DROP_IF(return 0, !mem || !mem->va);
         U32 xyz[3] = {0, 0, 0};
         g_mem->memcpyFromGuest(xyz, mem->va + buf->memOff + args.a[2], 12);
         Cmd c;
@@ -6259,7 +6283,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             for (U32 c = 0; c < sis[i].commandBufferCount; c++) {
                 U64 cbId = rd64(sis[i].pCommandBuffers + (U64)c * 8);
                 CmdBuf* cb = cbOf(cbId, "vkQueueSubmit");
-                if (!cb) continue;
+                VK64_DROP_IF(continue, !cb);
                 // Eager copy execution, against the guest memory both sides of
                 // the copy live in (P1 ran these first at submit too).
                 for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
@@ -6277,7 +6301,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         if (!hasWork) {
             for (auto& kv : g_objs) {
                 Obj* o = kv.second;
-                if (!o || o->kind != K_CMDBUF) continue;
+                VK64_DROP_IF(continue, !o || o->kind != K_CMDBUF);
                 CmdBuf* cb = (CmdBuf*)o;
                 if (!cb->cmds.empty()) {
                     frames.push_back({cb, kv.first});
@@ -6323,7 +6347,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             readArray(sis[i].pCommandBufferInfos, sis[i].commandBufferInfoCount, cbis);
             for (auto& cbi : cbis) {
                 CmdBuf* cb = cbOf((U64)cbi.commandBuffer, "vkQueueSubmit2");
-                if (!cb) continue;
+                VK64_DROP_IF(continue, !cb);
                 for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
                 for (const Cmd& k : cb->cmds) if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
                 for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_QUERY_RESULTS) execCopyQueryResults(k);
@@ -6342,7 +6366,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         if (!hasWork) {
             for (auto& kv : g_objs) {
                 Obj* o = kv.second;
-                if (!o || o->kind != K_CMDBUF) continue;
+                VK64_DROP_IF(continue, !o || o->kind != K_CMDBUF);
                 CmdBuf* cb = (CmdBuf*)o;
                 if (!cb->cmds.empty()) {
                     frames.push_back({cb, kv.first});
@@ -6421,7 +6445,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                     TE top[3] = {};
                     for (U64 i = 0; i < 256; i++) {
                         double w = pa.trapWall[i]; U64 c = pa.trapCnt[i];
-                        if (w <= 0) continue;
+                        VK64_DROP_IF(continue, w <= 0);
                         for (int k = 0; k < 3; k++) if (w > top[k].w) {
                             for (int m = 2; m > k; m--) top[m] = top[m-1];
                             top[k] = {i, w, c};
@@ -6713,9 +6737,9 @@ static void captureStageSpec32(U32 va, StageSpec& out) {
     std::vector<U8> data(si.dataSize);
     g_mem32->memcpyFromGuest(data.data(), si.pData, si.dataSize);
     for (const auto& me : entries) {
-        if (out.n >= 16) break;
-        if (me.offset > si.dataSize || me.size > si.dataSize - me.offset) continue;
-        if (me.size != 1 && me.size != 2 && me.size != 4 && me.size != 8) continue;
+        VK64_DROP_IF(break, out.n >= 16);
+        VK64_DROP_IF(continue, me.offset > si.dataSize || me.size > si.dataSize - me.offset);
+        VK64_DROP_IF(continue, me.size != 1 && me.size != 2 && me.size != 4 && me.size != 8);
         auto& e = out.entries[out.n++]; e.constantID = me.constantID; e.size = me.size;
         memcpy(e.value, data.data() + me.offset, me.size);
     }
@@ -6723,6 +6747,7 @@ static void captureStageSpec32(U32 va, StageSpec& out) {
 
 U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     std::lock_guard<std::recursive_mutex> lk(g_vkMutex);    g_mem = nullptr;
+    g_dropFn = fnId;
     g_mem32 = cpu ? cpu->memory : nullptr;
     g_thread32 = cpu ? cpu->thread : nullptr;
 
@@ -6806,7 +6831,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     }
     case VK64_fn_vkGetPhysicalDeviceProperties: {
         PhysDev* pd = objOf32<PhysDev>(args.a[0], K_PHYSDEV, "vkGetPhysicalDeviceProperties");
-        if (!pd || !args.a[1]) return 0;
+        VK64_DROP_IF(return 0, !pd || !args.a[1]);
         U32 dst = (U32)args.a[1];
         wr32_32(dst + 0, g_icd_api_version);
         wr32_32(dst + 4, 1);
@@ -6820,14 +6845,14 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         return 0;
     }
     case VK64_fn_vkGetPhysicalDeviceFeatures: {
-        if (!args.a[1]) return 0;
+        VK64_DROP_IF(return 0, !args.a[1]);
         U32 dst = (U32)args.a[1];
         for (U32 i = 0; i < 220; i += 4) wr32_32(dst + i, 0);
         wr32_32(dst + 0, 1);
         return 0;
     }
     case VK64_fn_vkGetPhysicalDeviceMemoryProperties: {
-        if (!args.a[1]) return 0;
+        VK64_DROP_IF(return 0, !args.a[1]);
         U32 dst = (U32)args.a[1];
         wr32_32(dst + 0, 1);
         wr32_32(dst + 4 + 0, 0x0007);
@@ -7010,13 +7035,13 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     }
     case VK64_fn_vkGetDeviceQueue: {
         Device* dev = objOf32<Device>(args.a[0], K_DEVICE, "vkGetDeviceQueue");
-        if (!dev || !args.a[3]) return 0;
+        VK64_DROP_IF(return 0, !dev || !args.a[3]);
         wr32_32((U32)args.a[3], (U32)dev->queue);
         return 0;
     }
     case VK64_fn_vkGetBufferMemoryRequirements: {
         Buffer* b = objOf32<Buffer>(args.a[1], K_BUFFER, "vkGetBufferMemoryRequirements");
-        if (!b || !args.a[2]) return 0;
+        VK64_DROP_IF(return 0, !b || !args.a[2]);
         U32 dst = (U32)args.a[2];
         wr64_32(dst + 0, b->size);
         wr64_32(dst + 8, 256);
@@ -7025,7 +7050,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     }
     case VK64_fn_vkGetImageMemoryRequirements: {
         Image* im = objOf32<Image>(args.a[1], K_IMAGE, "vkGetImageMemoryRequirements");
-        if (!im || !args.a[2]) return 0;
+        VK64_DROP_IF(return 0, !im || !args.a[2]);
         U32 dst = (U32)args.a[2];
         wr64_32(dst + 0, imageDataBytes(*im));
         wr64_32(dst + 8, 256);
@@ -7132,7 +7157,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         return VK_SUCCESS;
     case VK64_fn_vkCmdCopyQueryPoolResults: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdCopyQueryPoolResults");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_COPY_QUERY_RESULTS;
         c.queryCopy = { args.a[1], args.a[4], args.a[5], args.a[6],
                         (U32)args.a[2], (U32)args.a[3], (U32)args.a[7] };
@@ -7665,7 +7690,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdEndRendering:
     case VK64_fn_vkCmdEndRenderingKHR: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdEndRenderPass");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_END_RP;
         pushCmd(cb, c);
         return 0;
@@ -7673,7 +7698,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdBindPipeline: {
         // (cmdBuf, bindPoint, pipeline)
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdBindPipeline");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c;
         c.kind = CMD_BIND_PIPE;
         c.a = args.a[2];
@@ -7683,7 +7708,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     }
     case VK64_fn_vkCmdBindDescriptorSets: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdBindDescriptorSets");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         U32 first = (U32)args.a[3], count = (U32)args.a[4];
         for (U32 i = 0; i < count && first + i < VK64_MAX_SETS && args.a[5]; i++)
             cb->sets[first + i] = rd64_32((U32)args.a[5] + i * 8);
@@ -7696,7 +7721,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdSetStencilWriteMask:
     case VK64_fn_vkCmdSetStencilReference: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "dynamic raster state");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_STENCIL_STATE;
         c.a = fnId == VK64_fn_vkCmdSetStencilCompareMask ? 0 : fnId == VK64_fn_vkCmdSetStencilWriteMask ? 1 : 2;
         c.b = (U32)args.a[1]; c.c = (U32)args.a[2];
@@ -7704,7 +7729,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     }
     case VK64_fn_vkCmdSetBlendConstants: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "dynamic raster state");
-        if (!cb || !args.a[1]) return 0;
+        VK64_DROP_IF(return 0, !cb || !args.a[1]);
         Cmd c; c.kind = CMD_BLEND_CONSTANTS;
         g_mem32->memcpyFromGuest(c.f, (U32)args.a[1], 16);
         pushCmd(cb, c); return 0;
@@ -7712,7 +7737,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdSetCullMode:
     case VK64_fn_vkCmdSetFrontFace: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "dynamic raster state");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_RASTER_STATE;
         c.a = fnId == VK64_fn_vkCmdSetCullMode ? 0 : 1; c.b = (U32)args.a[1];
         pushCmd(cb, c); return 0;
@@ -7725,7 +7750,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         return 0;
     case VK64_fn_vkCmdSetDepthBias: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdSetDepthBias");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_DEPTH_BIAS;
         for (U32 i = 0; i < 3; ++i) { U32 bits = (U32)args.a[i + 1]; memcpy(&c.f[i], &bits, sizeof(bits)); }
         pushCmd(cb, c); return 0;
@@ -7762,7 +7787,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     }
     case VK64_fn_vkCmdDraw: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdDraw");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_DRAW;
         c.a = args.a[1]; c.b = args.a[2]; c.c = args.a[3]; c.d = args.a[4];
         if (!vkSchemaV2()) captureDraw(cb, c);
@@ -7772,7 +7797,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdDrawIndexed: {
         // (cmdBuf, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance)
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdDrawIndexed");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c;
         c.kind = CMD_DRAW_INDEXED;
         c.a = args.a[1];   // indexCount
@@ -7789,7 +7814,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdBindVertexBuffers2: {
         // (cmdBuf, firstBinding, bindingCount, pBuffers*, pOffsets*)
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdBindVertexBuffers");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         U32 first = (U32)args.a[1], count = (U32)args.a[2];
         if (!args.a[3] || !args.a[4] || !count || first >= VK64_MAX_VERT_BINDINGS) return 0;
         if (first + count > VK64_MAX_VERT_BINDINGS) count = VK64_MAX_VERT_BINDINGS - first;
@@ -7818,7 +7843,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdBindIndexBuffer2:
     case VK64_fn_vkCmdBindIndexBuffer2KHR: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdBindIndexBuffer");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         cb->ib = args.a[1]; cb->ibOff = args.a[2];
         cb->ibType = (U32)args.a[fnId == VK64_fn_vkCmdBindIndexBuffer ? 3 : 4];
         Cmd c; c.kind = CMD_BIND_IB; c.a = cb->ib; c.b = cb->ibOff; c.c = cb->ibType;
@@ -7829,7 +7854,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdPipelineBarrier2:
     case VK64_fn_vkCmdPipelineBarrier2KHR: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdPipelineBarrier");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_BARRIER;
         pushCmd(cb, c);
         return 0;
@@ -7838,7 +7863,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdPushConstants2:
     case VK64_fn_vkCmdPushConstants2KHR: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdPushConstants");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_PUSH_CONST;
         if (fnId == VK64_fn_vkCmdPushConstants) {
             c.pcOffset = (U32)args.a[3];
@@ -7853,13 +7878,13 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     // ---- 23 game-breaking functions ----
     case VK64_fn_vkCmdFillBuffer: {
         Buffer* dst = objOf32<Buffer>(args.a[1], K_BUFFER, "vkCmdFillBuffer");
-        if (!dst || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !dst || !dst->mem);
         DeviceMemory* dmem = objOf32<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdFillBuffer");
-        if (!dmem || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !dmem || !dmem->va);
         U64 offset = dst->memOff + args.a[2];
         U64 size = args.a[3];
         U32 data = (U32)args.a[4];
-        if (offset >= dmem->size) return 0;
+        VK64_DROP_IF(return 0, offset >= dmem->size);
         if (offset + size > dmem->size) size = dmem->size - offset;
         if (!size) return 0;
         U32 va = (U32)(dmem->va + offset);
@@ -7871,15 +7896,15 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     }
     case VK64_fn_vkCmdClearColorImage: {
         Image* im = objOf32<Image>(args.a[1], K_IMAGE, "vkCmdClearColorImage");
-        if (!im || !im->mem) return 0;
+        VK64_DROP_IF(return 0, !im || !im->mem);
         DeviceMemory* dmem = objOf32<DeviceMemory>(im->mem, K_MEMORY, "vkCmdClearColorImage");
-        if (!dmem || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !dmem || !dmem->va);
         vk32abi::VkClearColorValue col = {};
         readStruct32((U32)args.a[3], col);
         U32 pxBytes = fmt_bpp(im->format);
         U32 pixel; memcpy(&pixel, col.float32, 4);
         U64 total = (U64)im->w * im->h * im->d * im->layers * pxBytes;
-        if (im->memOff >= dmem->size) return 0;
+        VK64_DROP_IF(return 0, im->memOff >= dmem->size);
         total = std::min(total, dmem->size - im->memOff);
         U32 va = (U32)(dmem->va + im->memOff);
         for (U64 off = 0; off < total; off += 4)
@@ -7889,7 +7914,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdClearAttachments:
     case VK64_fn_vkCmdClearAttachmentsKHR: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdClearAttachments");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         if (args.a[1] > 8 || args.a[3] > 4096) { g_frameOverflow = true; return 0; }
         Cmd c; c.kind = CMD_CLEAR_ATTACHMENTS;
         readArray32(args.a[2], (U32)args.a[1], c.clearAttachments);
@@ -7900,10 +7925,10 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdCopyBuffer: {
         Buffer* src = objOf32<Buffer>(args.a[1], K_BUFFER, "vkCmdCopyBuffer");
         Buffer* dst = objOf32<Buffer>(args.a[2], K_BUFFER, "vkCmdCopyBuffer");
-        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);
         DeviceMemory* smem = objOf32<DeviceMemory>(src->mem, K_MEMORY, "vkCmdCopyBuffer");
         DeviceMemory* dmem = objOf32<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyBuffer");
-        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         U32 nreg = (U32)args.a[3];
         U8 tmp[65536];
         for (U32 i = 0; i < nreg && args.a[4]; i++) {
@@ -7924,7 +7949,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     }
     case VK64_fn_vkCmdCopyBuffer2:
     case VK64_fn_vkCmdCopyBuffer2KHR: {
-        if (!args.a[1]) return 0;
+        VK64_DROP_IF(return 0, !args.a[1]);
         U32 info = (U32)args.a[1];
         U64 src = rd64_32(info + 8);
         U64 dst = rd64_32(info + 16);
@@ -7932,10 +7957,10 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         U32 pReg = rd32_32(info + 28);
         Buffer* srcB = objOf32<Buffer>(src, K_BUFFER, "vkCmdCopyBuffer2");
         Buffer* dstB = objOf32<Buffer>(dst, K_BUFFER, "vkCmdCopyBuffer2");
-        if (!srcB || !dstB || !srcB->mem || !dstB->mem) return 0;
+        VK64_DROP_IF(return 0, !srcB || !dstB || !srcB->mem || !dstB->mem);
         DeviceMemory* smem = objOf32<DeviceMemory>(srcB->mem, K_MEMORY, "vkCmdCopyBuffer2");
         DeviceMemory* dmem = objOf32<DeviceMemory>(dstB->mem, K_MEMORY, "vkCmdCopyBuffer2");
-        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         U8 tmp[65536];
         for (U32 i = 0; i < nreg && pReg; i++) {
             U32 r = pReg + i * 32;
@@ -7967,10 +7992,10 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             dst = objOf32<Image>(args.a[2], K_IMAGE, "vkCmdCopyImage2");
             nreg = (U32)args.a[3]; pReg = (U32)args.a[4];
         }
-        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);
         DeviceMemory* smem = objOf32<DeviceMemory>(src->mem, K_MEMORY, "vkCmdCopyImage");
         DeviceMemory* dmem = objOf32<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyImage");
-        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         U32 pxBytes = fmt_bpp(src->format);
         U8 tmp[65536];
         for (U32 i = 0; i < nreg && pReg; i++) {
@@ -7986,7 +8011,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             U32 srcRow = src->w * pxBytes, dstRow = dst->w * pxBytes;
             for (U32 y = 0; y < h; y++) {
                 U32 sy = (U32)r.srcOffset.y + y, dy = (U32)r.dstOffset.y + y;
-                if (sy >= src->h || dy >= dst->h) continue;
+                VK64_DROP_IF(continue, sy >= src->h || dy >= dst->h);
                 U64 srcVa = smem->va + src->memOff + (U64)sy * srcRow + (U64)(U32)r.srcOffset.x * pxBytes;
                 U64 dstVa = dmem->va + dst->memOff + (U64)dy * dstRow + (U64)(U32)r.dstOffset.x * pxBytes;
                 U32 rowBytes = w * pxBytes, done = 0;
@@ -8004,17 +8029,17 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdCopyBufferToImage2:
     case VK64_fn_vkCmdCopyBufferToImage2KHR: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdCopyBufferToImage");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         U64 src = args.a[1], dst = args.a[2];
         U32 count = args.a[4], regions = args.a[5];
         const bool copy2 = fnId != VK64_fn_vkCmdCopyBufferToImage;
         if (copy2) {
             vk32abi::VkCopyBufferToImageInfo2 info = {};
-            if (!readStruct32(args.a[1], info)) return 0;
+            VK64_DROP_IF(return 0, !readStruct32(args.a[1], info));
             src = info.srcBuffer; dst = info.dstImage;
             count = info.regionCount; regions = info.pRegions;
         }
-        if (count > 1024 || !regions) return 0;
+        VK64_DROP_IF(return 0, count > 1024 || !regions);
         auto record = [&](const auto& r) {
             Cmd c; c.kind = CMD_COPY_B2I; c.a = src; c.b = dst;
             c.copy.srcBuffer = src; c.copy.dstImage = dst;
@@ -8042,7 +8067,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdCopyImageToBuffer2:
     case VK64_fn_vkCmdCopyImageToBuffer2KHR: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdCopyImageToBuffer");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_COPY_I2B;
         c.a = args.a[1]; c.b = args.a[3];
         pushCmd(cb, c);
@@ -8061,10 +8086,10 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             dst = objOf32<Image>(args.a[2], K_IMAGE, "vkCmdBlitImage2");
             nreg = (U32)args.a[3]; pReg = (U32)args.a[4];
         }
-        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);
         DeviceMemory* smem = objOf32<DeviceMemory>(src->mem, K_MEMORY, "vkCmdBlitImage");
         DeviceMemory* dmem = objOf32<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdBlitImage");
-        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         U32 pxBytes = fmt_bpp(src->format);
         U32 srcRowPitch = src->w * pxBytes, dstRowPitch = dst->w * pxBytes;
         for (U32 i = 0; i < nreg && pReg; i++) {
@@ -8088,17 +8113,17 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             int32_t srcH = r.srcOffsets[1].y - r.srcOffsets[0].y;
             int32_t dstW = r.dstOffsets[1].x - r.dstOffsets[0].x;
             int32_t dstH = r.dstOffsets[1].y - r.dstOffsets[0].y;
-            if (srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) continue;
+            VK64_DROP_IF(continue, srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0);
             for (int32_t dy = 0; dy < dstH; dy++) {
                 int32_t sy = r.srcOffsets[0].y + (dy * srcH) / dstH;
-                if (sy < 0 || (U32)sy >= src->h) continue;
+                VK64_DROP_IF(continue, sy < 0 || (U32)sy >= src->h);
                 U32 dyAbs = (U32)(r.dstOffsets[0].y + dy);
-                if (dyAbs >= dst->h) continue;
+                VK64_DROP_IF(continue, dyAbs >= dst->h);
                 for (int32_t dx = 0; dx < dstW; dx++) {
                     int32_t sx = r.srcOffsets[0].x + (dx * srcW) / dstW;
-                    if (sx < 0 || (U32)sx >= src->w) continue;
+                    VK64_DROP_IF(continue, sx < 0 || (U32)sx >= src->w);
                     U32 dxAbs = (U32)(r.dstOffsets[0].x + dx);
-                    if (dxAbs >= dst->w) continue;
+                    VK64_DROP_IF(continue, dxAbs >= dst->w);
                     U32 spx = 0;
                     g_mem32->memcpyFromGuest(&spx, (U32)(smem->va + src->memOff + (U64)sy * srcRowPitch + (U64)sx * pxBytes), pxBytes);
                     g_mem32->memcpyToGuest((U32)(dmem->va + dst->memOff + (U64)dyAbs * dstRowPitch + (U64)dxAbs * pxBytes), &spx, pxBytes);
@@ -8119,10 +8144,10 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 r.srcOffset.x, r.srcOffset.y, r.srcOffset.z, r.dstOffset.x, r.dstOffset.y, r.dstOffset.z,
                 r.extent.width, r.extent.height, r.extent.depth, std::min(r.srcSubresource.layerCount, r.dstSubresource.layerCount));
         }
-        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);
         DeviceMemory* smem = objOf32<DeviceMemory>(src->mem, K_MEMORY, "vkCmdResolveImage");
         DeviceMemory* dmem = objOf32<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdResolveImage");
-        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         U32 pxBytes = fmt_bpp(src->format);
         U64 total = (U64)src->w * src->h * pxBytes;
         U64 sva = smem->va + src->memOff, dva = dmem->va + dst->memOff;
@@ -8138,9 +8163,9 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdDrawIndirect: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdDrawIndirect");
         Buffer* buf = objOf32<Buffer>(args.a[1], K_BUFFER, "vkCmdDrawIndirect");
-        if (!cb || !buf || !buf->mem) return 0;
+        VK64_DROP_IF(return 0, !cb || !buf || !buf->mem);
         DeviceMemory* dmem = objOf32<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDrawIndirect");
-        if (!dmem || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !dmem || !dmem->va);
         U32 drawCount = (U32)args.a[3], stride = (U32)args.a[4];
         if (!stride) stride = 16;
         U32 base = (U32)(dmem->va + buf->memOff + args.a[2]);
@@ -8157,9 +8182,9 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdDrawIndexedIndirect: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdDrawIndexedIndirect");
         Buffer* buf = objOf32<Buffer>(args.a[1], K_BUFFER, "vkCmdDrawIndexedIndirect");
-        if (!cb || !buf || !buf->mem) return 0;
+        VK64_DROP_IF(return 0, !cb || !buf || !buf->mem);
         DeviceMemory* dmem = objOf32<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDrawIndexedIndirect");
-        if (!dmem || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !dmem || !dmem->va);
         U32 drawCount = (U32)args.a[3], stride = (U32)args.a[4];
         if (!stride) stride = 20;
         U32 base = (U32)(dmem->va + buf->memOff + args.a[2]);
@@ -8181,10 +8206,10 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdDraw*IndirectCount");
         Buffer* buf = objOf32<Buffer>(args.a[1], K_BUFFER, "vkCmdDraw*IndirectCount");
         Buffer* cbuf = objOf32<Buffer>(args.a[3], K_BUFFER, "vkCmdDraw*IndirectCount");
-        if (!cb || !buf || !cbuf || !buf->mem || !cbuf->mem) return 0;
+        VK64_DROP_IF(return 0, !cb || !buf || !cbuf || !buf->mem || !cbuf->mem);
         DeviceMemory* dmem = objOf32<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDraw*IndirectCount");
         DeviceMemory* cmem = objOf32<DeviceMemory>(cbuf->mem, K_MEMORY, "vkCmdDraw*IndirectCount");
-        if (!dmem || !cmem || !dmem->va || !cmem->va) return 0;
+        VK64_DROP_IF(return 0, !dmem || !cmem || !dmem->va || !cmem->va);
         U32 drawCount = rd32_32((U32)(cmem->va + cbuf->memOff + args.a[4]));
         U32 maxDraws = (U32)args.a[5], stride = (U32)args.a[6];
         if (drawCount > maxDraws) drawCount = maxDraws;
@@ -8212,11 +8237,11 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     }
     case VK64_fn_vkCmdExecuteCommands: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdExecuteCommands");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         U32 n = (U32)args.a[1];
         for (U32 i = 0; i < n && args.a[2]; i++) {
             CmdBuf* secondary = objOf32<CmdBuf>(rd32_32((U32)args.a[2] + i * 4), K_CMDBUF, "vkCmdExecuteCommands");
-            if (!secondary) continue;
+            VK64_DROP_IF(continue, !secondary);
             for (const auto& c : secondary->cmds) pushCmd(cb, c);
         }
         return 0;
@@ -8225,7 +8250,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdDispatchBase:
     case VK64_fn_vkCmdDispatchIndirect: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdDispatch");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_DISPATCH;
         if (fnId == VK64_fn_vkCmdDispatch) {
             c.a = args.a[1]; c.b = args.a[2]; c.c = args.a[3];
@@ -8253,7 +8278,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
          * memory at record time and written back at submit (transfer
          * semantics), before serialization reads the buffer. */
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdUpdateBuffer");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         U64 size = args.a[3];
         if (!args.a[4] || !size) return 0;
         if (size > 65536) {
@@ -8276,7 +8301,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdBeginRenderingKHR: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdBeginRendering");
         vk32abi::VkRenderingInfo ri = {};
-        if (!cb || !readStruct32(args.a[1], ri)) return 0;
+        VK64_DROP_IF(return 0, !cb || !readStruct32(args.a[1], ri));
         U64 rpId = 0, fbId = 0;
         auto* rp = createObj32<RenderPass>(K_RENDERPASS, rpId);
         auto* fb = createObj32<Framebuffer>(K_FRAMEBUFFER, fbId);
@@ -8286,9 +8311,9 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         Cmd c; c.kind = CMD_BEGIN_RP; c.a = rpId; c.b = fbId;
         auto attachment = [&](U64 address, bool depth) {
             vk32abi::VkRenderingAttachmentInfo att = {};
-            if (!address || fb->natt >= VK64_MAX_ATTACH || !readStruct32(address, att)) return;
+            VK64_DROP_IF(return, !address || fb->natt >= VK64_MAX_ATTACH || !readStruct32(address, att));
             auto* view = objOf32<ImageView>(att.imageView, K_IMAGEVIEW, "vkCmdBeginRendering");
-            if (!view) return;
+            VK64_DROP_IF(return, !view);
             auto* image = objOf32<Image>(view->image, K_IMAGE, "vkCmdBeginRendering");
             U32 i = fb->natt++;
             fb->views[i] = att.imageView;
@@ -8364,7 +8389,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                     cbId = ci.commandBuffer;
                 } else cbId = rd32_32(pCmd + i * 4);
                 CmdBuf* cb = objOf32<CmdBuf>(cbId, K_CMDBUF, "vkQueueSubmit");
-                if (!cb) continue;
+                VK64_DROP_IF(continue, !cb);
                 for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
                 for (const Cmd& k : cb->cmds) if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
                 for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_QUERY_RESULTS) execCopyQueryResults(k);
@@ -8516,12 +8541,12 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         for (U32 i = 0; i < nw; i++) {
             const vk32abi::VkWriteDescriptorSet& w = writes[i];
             DescSet* s = objOf32<DescSet>(w.dstSet, K_SET, "vkUpdateDescriptorSets");
-            if (!s || w.dstBinding >= VK64_MAX_BINDINGS) continue;
+            VK64_DROP_IF(continue, !s || w.dstBinding >= VK64_MAX_BINDINGS);
             Binding* b = nullptr;
             for (U32 k = 0; k < s->nbind; k++)
                 if (s->binds[k].binding == w.dstBinding) { b = &s->binds[k]; break; }
             if (!b) {
-                if (s->nbind >= VK64_MAX_BINDINGS) continue;
+                VK64_DROP_IF(continue, s->nbind >= VK64_MAX_BINDINGS);
                 b = &s->binds[s->nbind++];
                 b->binding = w.dstBinding;
             }
@@ -8588,7 +8613,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         std::vector<vk32abi::VkDescriptorUpdateTemplateEntry> entries;
         readArray32(ci.pDescriptorUpdateEntries, ci.descriptorUpdateEntryCount, entries);
         for (auto& e : entries) {
-            if (t->nentry >= VK64_MAX_BINDINGS) break;
+            VK64_DROP_IF(break, t->nentry >= VK64_MAX_BINDINGS);
             TmplEntry& te = t->entries[t->nentry++];
             te.binding = e.dstBinding; te.arrayElement = e.dstArrayElement;
             te.count = e.descriptorCount; te.type = e.descriptorType;
@@ -8613,12 +8638,12 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 U64 dAddr = dataBase + te.offset + (U64)i * te.stride;
                 U32 binding = te.binding;
                 U32 elem = te.arrayElement + i;
-                if (binding >= VK64_MAX_BINDINGS) continue;
+                VK64_DROP_IF(continue, binding >= VK64_MAX_BINDINGS);
                 Binding* b = nullptr;
                 for (U32 k = 0; k < s->nbind; k++)
                     if (s->binds[k].binding == binding) { b = &s->binds[k]; break; }
                 if (!b) {
-                    if (s->nbind >= VK64_MAX_BINDINGS) continue;
+                    VK64_DROP_IF(continue, s->nbind >= VK64_MAX_BINDINGS);
                     b = &s->binds[s->nbind++];
                     b->binding = binding;
                 }
@@ -8698,11 +8723,11 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         return VK_SUCCESS;
     }
     case VK64_fn_vkGetBufferDeviceAddress: {
-        if (!args.a[1]) return 0;
+        VK64_DROP_IF(return 0, !args.a[1]);
         U32 infoAddr = (U32)args.a[1];
         U32 bufHandle = (U32)rd64_32(infoAddr + 8);
         Buffer* b = objOf32<Buffer>(bufHandle, K_BUFFER, "vkGetBufferDeviceAddress");
-        if (!b) return 0;
+        VK64_DROP_IF(return 0, !b);
         if (!b->devVa) {
             b->devVa = g_nextDevVa;
             g_nextDevVa += 0x10000000ULL;

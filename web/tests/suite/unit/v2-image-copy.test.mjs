@@ -15,6 +15,7 @@ test('native transfer recording preserves subresources and rejects empty or nega
   try {
     writeFileSync(join(directory, 'check.cpp'), `
 #include <cstdint>
+#define VK64_DROP_IF(action, ...) do { if (__VA_ARGS__) { action; } } while (0) // bridge macro minus logging
 #include <vector>
 #include <cassert>
 using U32=uint32_t;using U64=uint64_t;
