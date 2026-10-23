@@ -74,6 +74,7 @@ void testProcessVm64Syscalls();
 void testPidfd64Syscalls();
 void testInotify64LoudRejection();
 void testSignalfd64Syscalls();
+void testFutex64Operations();
 #endif
 
 namespace {
@@ -84,6 +85,7 @@ int totalFails = 0;
 const TestEntry TEST_ENTRIES[] = {
     {testSyscall64DispatchGuard, "Test x64 syscall fallback guard"},
     {testFutex64DispatchGuard, "Test x64 futex dispatch guard"},
+    {testFutex64Operations, "Test x64 futex operations and multithread wake race"},
     {testTimerfdCore, "Test timerfd descriptor and expiration semantics"},
     {testUnixSocketOptions, "Test Unix socket SOL_SOCKET options"},
     {testEpollOneShotAndFlags, "Test epoll one-shot and exclusive flags"},

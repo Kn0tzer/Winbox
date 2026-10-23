@@ -14,6 +14,12 @@
 #include <fstream>
 #include <string>
 #include <iterator>
+#include <atomic>
+#include <thread>
+#include <chrono>
+#include "cpu64.h"
+#include "kmemory64.h"
+#include "syscall64.h"
 
 #include "../cpu/testCPU.h"
 
@@ -69,6 +75,152 @@ void testFutex64DispatchGuard() {
             testFail("threadless futex operations must not silently claim unsupported work succeeded");
         }
     }
+}
+
+void testFutex64Operations() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+    constexpr U64 page = 0x76000000ULL;
+    if (!memory->getPageFlags(page >> K64_PAGE_SHIFT)) memory->mmapAnonymousFixed(page, K64_PAGE_SIZE, 3);
+    const U64 word = page + 0x100;
+    const U64 other = page + 0x104;
+    const U64 timeout = page + 0x180;
+    CPU64 caller(memory);
+    caller.thread = context.thread;
+    auto call = [](CPU64& cpu, U64 addr, U64 op, U64 value, U64 arg4 = 0, U64 addr2 = 0, U64 val3 = 0) {
+        cpu.reg[X64_RAX].setU64(202);
+        cpu.reg[X64_RDI].setU64(addr);
+        cpu.reg[X64_RSI].setU64(op);
+        cpu.reg[X64_RDX].setU64(value);
+        cpu.reg[X64_R10].setU64(arg4);
+        cpu.reg[X64_R8].setU64(addr2);
+        cpu.reg[X64_R9].setU64(val3);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    constexpr U64 PRIVATE = 128;
+    memory->writed(word, 0);
+    if (call(caller, word, 6 | PRIVATE, 0) != 0 || memory->readd(word) != (context.thread->id & 0x3fffffff)) {
+        testFail("FUTEX_LOCK_PI did not claim an unlocked word");
+    }
+    if (call(caller, word, 8 | PRIVATE, 0) != -35) testFail("same-owner FUTEX_TRYLOCK_PI did not return EDEADLK");
+    KThread* worker = process->createThread();
+    CPU64 workerCpu(memory);
+    workerCpu.thread = worker;
+    if (call(workerCpu, word, 8 | PRIVATE, 0) != -K_EAGAIN ||
+        call(workerCpu, word, 7 | PRIVATE, 0) != -K_EPERM) {
+        testFail("contended TRYLOCK_PI or non-owner UNLOCK_PI errno was incorrect");
+    }
+    if (call(caller, word, 7 | PRIVATE, 0) != 0 || memory->readd(word) != 0) {
+        testFail("owner FUTEX_UNLOCK_PI did not release the word");
+    }
+
+    // Exercise owner handoff while the contending guest thread is blocked in
+    // the actual syscall dispatcher on a native host thread.
+    if (call(caller, word, 6 | PRIVATE, 0) != 0) testFail("FUTEX_LOCK_PI setup for handoff failed");
+    std::atomic<bool> piStarted{false};
+    S64 piResult = -999;
+    worker->cpu64 = &workerCpu;
+    std::thread piWaiter([&]() {
+        KThread::setCurrentThread(worker);
+        piStarted.store(true, std::memory_order_release);
+        piResult = call(workerCpu, word, 6 | PRIVATE, 0);
+    });
+    while (!piStarted.load(std::memory_order_acquire)) std::this_thread::yield();
+    for (int i = 0; i < 100 && !(memory->readd(word) & 0x80000000u); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    const S64 unlockResult = call(caller, word, 7 | PRIVATE, 0);
+    piWaiter.join();
+    if (unlockResult != 0 || piResult != 0 || call(workerCpu, word, 7 | PRIVATE, 0) != 0) {
+        testFail("contended PI lock did not hand ownership to its waiter");
+    }
+    worker->cpu64 = nullptr;
+
+    memory->writed(word, 9);
+    memory->writed(other, 0);
+    if (call(caller, word, 4 | PRIVATE, 0, 0, other, 8) != -K_EAGAIN ||
+        call(caller, word, 4 | PRIVATE, 0, 0, other, 9) != 0 ||
+        call(caller, word, 3 | PRIVATE, 0, 0, other) != 0) {
+        testFail("CMP_REQUEUE comparison or REQUEUE return semantics failed");
+    }
+    const U32 wakeOpSetOne = 1U << 12; // FUTEX_OP_SET(1), FUTEX_OP_CMP_EQ(0)
+    if (call(caller, word, 5 | PRIVATE, 1, 1, other, wakeOpSetOne) != 0 || memory->readd(other) != 1) {
+        testFail("FUTEX_WAKE_OP did not apply its atomic SET operation");
+    }
+    memory->writed(word, 7);
+    memory->writeq(timeout, 0);
+    memory->writeq(timeout + 8, 0);
+    if (call(caller, word, 9 | PRIVATE, 7, timeout, 0, 0xffffffff) != -K_ETIMEDOUT ||
+        call(caller, word, 10 | PRIVATE, 1, 0, 0, 0) != -K_EINVAL ||
+        call(caller, word, 10 | PRIVATE, 1, 0, 0, 0xffffffff) != 0) {
+        testFail("WAIT_BITSET timeout or WAKE_BITSET mask validation failed");
+    }
+    memory->writed(word, 3);
+    if (call(caller, word, 11 | PRIVATE, 3, timeout, other, 0xffffffff) != -K_ETIMEDOUT ||
+        call(caller, word, 12 | PRIVATE, 1, 0, other, 2) != -K_EAGAIN ||
+        call(caller, word, 12 | PRIVATE, 1, 0, other, 3) != 0 ||
+        call(caller, word, 12 | PRIVATE, 2, 0, other, 3) != -K_EINVAL) {
+        testFail("WAIT_REQUEUE_PI/CMP_REQUEUE_PI timeout, compare, or count semantics failed");
+    }
+
+    // Race a real host thread entering FUTEX_WAIT against a wake issued from
+    // this thread. The implementation must either wake the registered waiter
+    // or preserve the early wake so the waiter returns EWOULDBLOCK.
+    memory->writed(word, 11);
+    std::atomic<bool> started{false};
+    std::atomic<bool> done{false};
+    S64 waitResult = -999;
+    std::thread hostWaiter([&]() {
+        KThread::setCurrentThread(worker);
+        worker->cpu64 = &workerCpu;
+        started.store(true, std::memory_order_release);
+        waitResult = call(workerCpu, word, 0 | PRIVATE, 11);
+        done.store(true, std::memory_order_release);
+    });
+    while (!started.load(std::memory_order_acquire)) std::this_thread::yield();
+    S64 wakeResult = 0;
+    for (int i = 0; i < 100 && !done.load(std::memory_order_acquire); ++i) {
+        wakeResult = call(caller, word, 1 | PRIVATE, 1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    hostWaiter.join();
+    worker->cpu64 = nullptr;
+    if (!done.load() || !((wakeResult == 1 && waitResult == 0) || (waitResult == -K_EWOULDBLOCK))) {
+        testFail("FUTEX_WAIT/WAKE race lost a wake or returned an unexpected result (wake=%lld wait=%lld)",
+                 (long long)wakeResult, (long long)waitResult);
+    }
+    auto requeueWaiter = [&](bool compare) {
+        memory->writed(word, 23);
+        memory->writed(other, 0);
+        std::atomic<bool> waitStarted{false};
+        S64 result = -999;
+        std::thread waiter([&]() {
+            KThread::setCurrentThread(worker);
+            worker->cpu64 = &workerCpu;
+            waitStarted.store(true, std::memory_order_release);
+            result = call(workerCpu, word, PRIVATE, 23);
+        });
+        while (!waitStarted.load(std::memory_order_acquire)) std::this_thread::yield();
+        S64 requeued = 0;
+        for (int i = 0; i < 100 && requeued == 0; ++i) {
+            requeued = call(caller, word, (compare ? 4 : 3) | PRIVATE, 0, 1, other, 23);
+            if (!requeued) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        const S64 woke = call(caller, other, 1 | PRIVATE, 1);
+        waiter.join();
+        worker->cpu64 = nullptr;
+        if (requeued != 1 || woke != 1 || result != 0) {
+            testFail("%s did not move and wake one blocked waiter (requeued=%lld wake=%lld wait=%lld)",
+                     compare ? "CMP_REQUEUE" : "REQUEUE", (long long)requeued, (long long)woke,
+                     (long long)result);
+        }
+    };
+    requeueWaiter(false);
+    requeueWaiter(true);
+    process->removeThread(worker);
+    delete worker;
 }
 
 #endif

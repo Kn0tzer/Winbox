@@ -1050,7 +1050,9 @@ S64 KThread::futex64(U64 addr, U32 op, U32 value, U64 arg4, U64 addr2, U32 val3)
                 moved++;
             }
         }
-        return cmd == FUTEX_REQUEUE ? woke : woke + moved;
+        // Linux returns the total number of waiters woken plus requeued for
+        // both REQUEUE and CMP_REQUEUE.
+        return woke + moved;
     } else if (cmd == FUTEX_CMP_REQUEUE_PI) {
         const U64 secondKey = hostAddress(addr2);
         if (!secondKey) return -K_EFAULT;
