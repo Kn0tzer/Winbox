@@ -952,6 +952,95 @@ static U64 sys_getrandom64(CPU64* cpu, U64 bufAddr, U64 buflen, U64 flags) {
     return buflen;
 }
 
+static U64 sys_prctl64(CPU64* cpu, U64 option, U64 arg2, U64 arg3, U64, U64) {
+    KProcessPtr process = cpu->thread ? cpu->thread->process : KProcessPtr();
+    switch (option) {
+        case 1: // PR_SET_PDEATHSIG
+            if (arg2 > 64 || arg2 == 9 /*SIGKILL*/ || arg2 == 19 /*SIGSTOP*/) return (U64)-K_EINVAL;
+            if (!process) return (U64)-K_ESRCH;
+            process->parentDeathSignal = (U32)arg2;
+            return 0;
+        case 2: // PR_GET_PDEATHSIG
+            if (!arg2) return (U64)-K_EFAULT;
+            if (!process) return (U64)-K_ESRCH;
+            cpu->memory->writed(arg2, process->parentDeathSignal);
+            return 0;
+        case 3: // PR_GET_DUMPABLE
+            return process ? process->dumpable : 1;
+        case 4: // PR_SET_DUMPABLE
+            if (arg2 > 1) return (U64)-K_EINVAL;
+            if (!process) return (U64)-K_ESRCH;
+            process->dumpable = (U32)arg2;
+            return 0;
+        case 15: // PR_SET_NAME
+            if (!cpu->thread) return (U64)-K_ESRCH;
+            if (!arg2 || !sys_rangeMapped64(cpu, arg2, 16)) return (U64)-K_EFAULT;
+            {
+                char name[17] = {};
+                cpu->memory->memcpyFromGuest(name, arg2, 16);
+                name[16] = 0;
+                cpu->thread->name = BString::copy(name);
+            }
+            return 0;
+        case 16: // PR_GET_NAME
+            if (!cpu->thread) return (U64)-K_ESRCH;
+            if (!arg2 || !sys_rangeMapped64(cpu, arg2, 16)) return (U64)-K_EFAULT;
+            {
+                char name[16] = {};
+                const size_t count = std::min<size_t>(cpu->thread->name.length(), sizeof(name) - 1);
+                if (count) std::memcpy(name, cpu->thread->name.c_str(), count);
+                cpu->memory->memcpyToGuest(arg2, name, sizeof(name));
+            }
+            return 0;
+        case 23: // PR_CAPBSET_READ — this virtual user has no capabilities
+            return arg2 <= 40 ? 0 : (U64)-K_EINVAL;
+        case 36: // PR_SET_CHILD_SUBREAPER
+            if (arg2 > 1) return (U64)-K_EINVAL;
+            if (!process) return (U64)-K_ESRCH;
+            process->childSubreaper = (U32)arg2;
+            return 0;
+        case 37: // PR_GET_CHILD_SUBREAPER
+            if (!arg2) return (U64)-K_EFAULT;
+            if (!process) return (U64)-K_ESRCH;
+            cpu->memory->writed(arg2, process->childSubreaper);
+            return 0;
+        case 38: // PR_SET_NO_NEW_PRIVS (one way)
+            if (arg2 != 1) return (U64)-K_EINVAL;
+            if (!process) return (U64)-K_ESRCH;
+            process->noNewPrivs = 1;
+            return 0;
+        case 39: // PR_GET_NO_NEW_PRIVS
+            return process ? process->noNewPrivs : 0;
+        case 41: // PR_SET_THP_DISABLE
+            if (arg2 > 1) return (U64)-K_EINVAL;
+            if (!process) return (U64)-K_ESRCH;
+            process->thpDisable = (U32)arg2;
+            return 0;
+        case 42: // PR_GET_THP_DISABLE
+            return process ? process->thpDisable : 0;
+        case 29: // PR_SET_TIMERSLACK
+            if (!process) return (U64)-K_ESRCH;
+            process->timerSlackNs = arg2 ? arg2 : 50000;
+            return 0;
+        case 30: // PR_GET_TIMERSLACK
+            return process ? process->timerSlackNs : 50000;
+        case 21: // PR_GET_SECCOMP (disabled)
+            return 0;
+        default: {
+            static std::mutex logMutex;
+            static std::unordered_set<U64> warnedOptions;
+            bool shouldLog = false;
+            {
+                std::lock_guard<std::mutex> lock(logMutex);
+                shouldLog = warnedOptions.insert(option).second;
+            }
+            if (shouldLog) klog_fmt("ksyscall64: unsupported prctl option %llu; returned -EINVAL",
+                                    (unsigned long long)option);
+            return (U64)-K_EINVAL;
+        }
+    }
+}
+
 // prlimit64(pid, resource, new_limit*, old_limit*) — for v1 we always pretend
 // "no limit" by writing RLIM64_INFINITY to old_limit if requested.
 static U64 sys_prlimit64_64(CPU64* cpu, U64 /*pid*/, U64 /*res*/, U64 newLim, U64 oldLim) {
@@ -3914,14 +4003,7 @@ void ksyscall64(CPU64* cpu) {
             ret = sys_writev64(cpu, a1, a2, a3);
             break;
         case X64_SYS_prctl:
-            // prctl(option, ...). We don't model process control state
-            // (thread name, dumpable flag, seccomp, etc.). Return success for
-            // the common set-style options glibc/busybox issue at startup
-            // (PR_SET_NAME=15, PR_SET_DUMPABLE=4, PR_SET_PDEATHSIG=1,
-            // PR_SET_VMA=0x53564d41) so callers don't treat it as fatal;
-            // PR_CAPBSET_READ(23)/PR_GET_*(even) return 0. A blanket 0 is the
-            // pragmatic choice for a single-process interpreter.
-            ret = 0;
+            ret = sys_prctl64(cpu, a1, a2, a3, a4, a5);
             break;
         case X64_SYS_arch_prctl:
             ret = sys_arch_prctl64(cpu, a1, a2);

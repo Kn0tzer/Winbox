@@ -425,6 +425,12 @@ public:
     std::shared_ptr<FsNode> taskNode; // in /proc/<pid>/task
     std::shared_ptr<FsNode> fdNode; // in /proc/<pid>/fd
     U32 membarrierRegistrations = 0; // per-process MEMBARRIER_CMD_REGISTER_* mask
+    U32 dumpable = 1;
+    U32 noNewPrivs = 0;
+    U32 childSubreaper = 0;
+    U32 thpDisable = 0;
+    U32 parentDeathSignal = 0;
+    U64 timerSlackNs = 50000;
 };
 
 #endif

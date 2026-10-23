@@ -388,6 +388,26 @@ void runMemorySyscallValidation(TestResult& r) {
     }, [](CPU64& c) { c.memory->writeq(STACK_TOP - 0xD00, 1); });
 }
 
+void runPrctlSyscallValidation(TestResult& r) {
+    auto call = [](U32 option, U32 arg2) {
+        std::vector<U8> code = {
+            0xB8, 157, 0, 0, 0,                 // mov eax, __NR_prctl
+            0xBF, (U8)option, (U8)(option >> 8), (U8)(option >> 16), (U8)(option >> 24),
+            0xBE, (U8)arg2, (U8)(arg2 >> 8), (U8)(arg2 >> 16), (U8)(arg2 >> 24),
+            0x0F, 0x05, 0x49, 0x89, 0xC7,      // syscall; mov r15, rax
+        };
+        return withExit(code);
+    };
+    runAndCheck(r, "prctl PR_GET_DUMPABLE returns process state", call(3, 0),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == 1; });
+    runAndCheck(r, "prctl PR_CAPBSET_READ reports empty capability set", call(23, 0),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == 0; });
+    runAndCheck(r, "prctl rejects out-of-range capability", call(23, 41),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_EINVAL; });
+    runAndCheck(r, "prctl unknown option returns EINVAL", call(0x7fffffff, 0),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_EINVAL; });
+}
+
 void runUnmappedSamePageFetchFault(TestResult& r) {
     KMemory64 mem(nullptr);
     mem.mmapAnonymousFixed(CODE_BASE, 0x1000, 7);
@@ -9072,6 +9092,7 @@ int runX64SelfTest() {
     runNonExecutableFetchFault(r);
     runDataProtectionFaults(r);
     runMemorySyscallValidation(r);
+    runPrctlSyscallValidation(r);
     runUnmappedSamePageFetchFault(r);
     // io_uring and pidfd_getfd are deliberately rejected by the central
     // once-per-number syscall logger. Keep syscall-layer errno coverage for
