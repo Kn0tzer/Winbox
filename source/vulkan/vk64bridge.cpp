@@ -4825,14 +4825,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             U64 want  = rd64(wi.pValues + (U64)i * 8);
             Semaphore* s = objOf<Semaphore>(semId, K_SEMAPHORE, "vkWaitSemaphores");
             if (!s) return VK_ERROR_INITIALIZATION_FAILED;
-            if (s->counter < want) {
-                // A value the queue has not reached yet. timeout == 0 means
-                // "don't block", and the spec answer there is VK_TIMEOUT, not a
-                // lie; any other timeout blocks, and since execution is immediate
-                // the value is as good as reached — bump it forward, monotonically.
-                if (!args.a[2]) return VK_TIMEOUT;
-                s->counter = want;
-            }
+            if (s->counter < want) return VK_TIMEOUT;
         }
         return VK_SUCCESS;
     }
