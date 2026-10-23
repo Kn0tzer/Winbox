@@ -37,9 +37,10 @@ function applyMetricsVisibility() {
   $('stats').setAttribute('aria-label', $('stats').title);
   if (metrics) metrics.setOpen(open);
 }
-const settings = { appearance: 'dark', graphics: 'auto', jit: 'off', internet: 'off', enhancement: 'off', sharpness: 0.5, folderMode: 'copy', metrics: 'off' };
+const settings = { appearance: 'dark', graphics: 'auto', jit: 'off', internet: 'off', enhancement: 'off', sharpness: 0.5, folderMode: 'copy', metrics: 'off', shadercache: 'off' };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('wine.launcher.settings.v1') || '{}')); } catch {}
 settings.jit = settings.jit === 'on' ? 'on' : 'off';
+settings.shadercache = settings.shadercache === 'on' ? 'on' : 'off';
 function appearance(value) {
   document.documentElement.dataset.theme = ['light', 'dark'].includes(value) ? value : 'system';
   $('appearance').value = value;
@@ -59,6 +60,8 @@ for (const name of ['jit', 'internet', 'enhancement', 'sharpness']) {
 $('sharpnessField').hidden = settings.enhancement === 'off';
 $('appearance').onchange = () => { settings.appearance = $('appearance').value; appearance(settings.appearance); persistSettings(); };
 $('backend').onchange = () => { settings.graphics = $('backend').value; persistSettings(); };
+$('shadercache').value = settings.shadercache;
+$('shadercache').onchange = () => { settings.shadercache = $('shadercache').value; persistSettings(); };
 function persistSettings() { try { localStorage.setItem('wine.launcher.settings.v1', JSON.stringify(settings)); } catch {} }
 function folderMode() {
   if (!window.showDirectoryPicker && settings.folderMode === 'direct') {
@@ -160,6 +163,7 @@ async function stop() {
 }
 async function launchFrame(query, title, archive = null) {
   query.set('jit', settings.jit === 'on' ? '1' : '0');
+  query.set('shadercache', settings.shadercache === 'on' ? '1' : '0');
   if (settings.internet === 'on') { query.set('network', '1'); query.set('wisp', '1'); }
   if (settings.enhancement !== 'off') query.set('enhance', '1');
   const frame = document.createElement('iframe'); frame.title = title + ' runtime';
@@ -489,6 +493,10 @@ $('captureMouse').onclick = () => {
 };
 $('fullscreen').onclick = () => $('display').requestFullscreen().catch(error => message(errorText(error), true));
 $('settingsButton').onclick = () => $('settingsDialog').showModal();
+$('clearShaderCache').onclick = async () => {
+  try { const { persistentShaderCache } = await import('./shader-cache.mjs'); await persistentShaderCache.clear(); message('Shader cache cleared.'); }
+  catch { message('Unable to clear the shader cache.', true); }
+};
 for (const dialog of document.querySelectorAll('dialog')) dialog.addEventListener('click', event => { if (event.target === dialog) { const box = dialog.getBoundingClientRect(); if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) dialog.close(); } });
 $('start').onclick = () => action(async signal => {
   selected = await openDirectPackage(selected, { signal });

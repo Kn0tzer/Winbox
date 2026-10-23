@@ -96,6 +96,7 @@
     </section>
     <section class="settings-group" aria-labelledby="performanceSettingsTitle">
       <h3 id="performanceSettingsTitle" class="settings-group-title">Performance</h3>
+      <div class="setting-field"><label for="shadercache">Persistent shader cache</label><div class="select-wrap"><select id="shadercache"><option value="off">Off</option><option value="on">On (experimental)</option></select></div><p class="setting-help">Stores translated shaders for this browser profile and warms them while a program starts.</p><button id="clearShaderCache" type="button">Clear shader cache</button></div>
       <div class="setting-field"><label for="jit">CPU JIT</label><div class="select-wrap"><select id="jit" aria-describedby="jitHelp"><option value="off">Off</option><option value="on">On (experimental)</option></select></div><p id="jitHelp" class="setting-help">Applies when you next start or restart a program. May be slower, especially for 32-bit programs.</p></div>
     </section>
     <section class="settings-group" aria-labelledby="programSettingsTitle">
