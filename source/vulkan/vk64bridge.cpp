@@ -4820,14 +4820,17 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // (device, pWaitInfo*, timeout)
         VkSemaphoreWaitInfo wi = {};
         if (!readStruct(args.a[1], wi)) return VK_ERROR_INITIALIZATION_FAILED;
+        if (wi.semaphoreCount && (!wi.pSemaphores || !wi.pValues)) return VK_ERROR_INITIALIZATION_FAILED;
+        bool any = false, all = true;
         for (U32 i = 0; i < wi.semaphoreCount; i++) {
             U64 semId = rd64(wi.pSemaphores + (U64)i * 8);
             U64 want  = rd64(wi.pValues + (U64)i * 8);
             Semaphore* s = objOf<Semaphore>(semId, K_SEMAPHORE, "vkWaitSemaphores");
             if (!s) return VK_ERROR_INITIALIZATION_FAILED;
-            if (s->counter < want) return VK_TIMEOUT;
+            const bool reached = s->counter >= want;
+            any |= reached; all &= reached;
         }
-        return VK_SUCCESS;
+        return ((wi.flags & VK_SEMAPHORE_WAIT_ANY_BIT) ? any : all) ? VK_SUCCESS : VK_TIMEOUT;
     }
     case VK64_fn_vkSignalSemaphore: {
         // (device, pSignalInfo*)
@@ -7747,6 +7750,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkWaitSemaphores: {
         vk32abi::VkSemaphoreWaitInfo wi = {};
         if (!readStruct32(args.a[1], wi)) return VK_ERROR_INITIALIZATION_FAILED;
+        if (wi.semaphoreCount && (!wi.pSemaphores || !wi.pValues)) return VK_ERROR_INITIALIZATION_FAILED;
         bool any = false, all = true;
         for (U32 i = 0; i < wi.semaphoreCount; ++i) {
             auto* s = objOf32<Semaphore>(rd64_32(wi.pSemaphores + i * 8), K_SEMAPHORE, "vkWaitSemaphores");
