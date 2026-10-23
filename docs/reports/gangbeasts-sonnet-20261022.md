@@ -236,6 +236,24 @@ with non-zero sampled textures (census 7 of 9 non-zero). The canvas is still bla
 160+ the camera pass has 0 draws and only post/UI passes run, which looks like Unity not yet submitting
 a scene at that point rather than a bridge fault. Frame 0 also reports 6 unsupported draws.
 
+### Build-10 result: Gang Beasts renders (gb-pr8/pr9, build 10 wasm 9320e5a85 + new shim)
+
+With build 10 (bridge B2I2 mip/layer fix) and the patched support archive, the Gang Beasts title
+screen renders (characters, truck, logo; `test-results/gb-pr9/final.png`). The earlier black
+canvas in gb-pr7 (build-9 wasm + shim only) was the missing mip/layer forwarding: both fixes are needed.
+
+- The camera pass (pass 2, rgba16float) has `rawDraws: 0` on every frame: that is Unity, not our
+  culling. The title is a full-screen 2D image drawn by the last pass (6 draws, 786k non-black px).
+- The six unsupported draws in the first frame-0 pass are `pipeline-rejected`: WebGPU says the shader
+  declares `@group(0) @binding(11)` as `texture_2d` while the bind group layout derived from the same
+  WGSL says `cube`. It occurs once at startup and never in later sampled frames (0 skips). Open: the
+  shader hashes were cut off by the 100-char reason limit; they are now logged first.
+
+The shim reaches the runtime only through `support-<sha256>.zip` (written by
+`tools/browser/stage-dependencies.py`, which `tools/browser/build.mjs` runs). A fresh export always picks
+up `tools/rootfs64/libvk{32,64}/libvulkan.so.1`. `tools/rootfs64/patch-runtime-shim.py <dist/runtime>`
+does the same to an existing export; its output is byte-identical to a fresh stage (same sha256).
+
 ## Residual / next
 
 - Other blocking sites not covered: `connect`/`accept`, `KThread::sleep`, `epoll_wait`, and any
