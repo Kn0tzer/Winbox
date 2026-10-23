@@ -130,6 +130,28 @@ test('RGBA-only ES visuals do not panic on color-index operations with no RGBA e
   }
 });
 
+test('ES compatibility stubs reject loudly and preserve sticky GL error semantics', () => {
+  const rejected = ['es_glAlphaFunc', 'es_glLogicOp', 'es_glPointSize', 'es_glPolygonStipple',
+    'es_glGetPolygonStipple', 'es_glClipPlane', 'es_glGetClipPlane', 'es_glDrawBuffer', 'es_glReadBuffer'];
+  assert.match(esOpenGlSrc, /static GLenum esShimError = GL_NO_ERROR/);
+  assert.match(esOpenGlSrc, /if \(esShimError == GL_NO_ERROR\) esShimError = error/);
+  assert.match(esOpenGlSrc, /OpenGL ES compatibility: %s is unsupported \(GL_INVALID_OPERATION\)/);
+  assert.match(esOpenGlSrc, /strcmp\(warnedFunctions\[i\], functionName\) == 0/);
+  assert.match(esOpenGlSrc, /GLenum es_glGetError\( void \)[\s\S]*?return glGetError\(\)/);
+  for (const name of rejected) {
+    const body = new RegExp(`void ${name}\\s*\\([^)]*\\)\\s*\\{([^}]*)\\}`).exec(esOpenGlSrc)?.[1] || '';
+    assert.ok(body.includes('esRejectCompatCall') || (name === 'es_glPointSize' && /es_glPointSize[\s\S]*?esRejectCompatCall/.test(esOpenGlSrc)), `${name} must report unsupported behavior`);
+    assert.doesNotMatch(body, /kpanic/);
+  }
+  for (const name of ['es_glLogicOp', 'es_glPolygonStipple', 'es_glGetPolygonStipple', 'es_glClipPlane', 'es_glGetClipPlane'])
+    assert.match(esOpenGlSrc, new RegExp(`${name}[\\s\\S]{0,140}esRejectCompatCall`));
+  assert.match(esOpenGlSrc, /void es_glPolygonMode[\s\S]*?if \(mode != GL_FILL\) esRejectCompatCall/);
+  for (const name of ['es_glEdgeFlag', 'es_glEdgeFlagv']) {
+    const body = new RegExp(`void ${name}\\s*\\([^)]*\\)\\s*\\{([^}]*)\\}`).exec(esOpenGlSrc)?.[1] || '';
+    assert.doesNotMatch(body, /kpanic|esRejectCompatCall/);
+  }
+});
+
 test('GLX pixmap/window attributes reject once and return None instead of panicking', () => {
   for (const [name, warning] of [['gl_common_XCreatePixmap', 'glXCreatePixmap: unsupported attrib_list'], ['gl_common_XCreateWindow', 'glXCreateWindow: unsupported attrib_list']]) {
     const body = new RegExp(`void ${name}\\s*\\([^)]*\\)\\s*\\{([\\s\\S]*?)\\n\\}`).exec(glCommonSrc)?.[1] || '';
