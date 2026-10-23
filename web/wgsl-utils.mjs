@@ -107,6 +107,36 @@ export function matchFragmentInputsToVertexOutputs(vsWgsl, fsWgsl) {
   return code;
 }
 
+// WebGPU has no multisampled 2d-array texture, and the page tier already
+// resolves every multisampled attachment into the single-sample texture it
+// binds for sampling. A shader that loads individual samples therefore reads
+// the resolved texel: retype the binding, make every per-sample load read
+// level 0, and report one sample. (DXVK's resolve/present shaders average
+// c_samples loads, which the single resolved texel reproduces.)
+export function rewriteMultisampledTextures(wgsl) {
+  let code = String(wgsl);
+  const names = [...code.matchAll(/var\s+(\w+)\s*:\s*texture_multisampled_2d(_array)?<(\w+)>\s*;/g)].map(m => m[1]);
+  if (!names.length) return wgsl;
+  code = code.replace(/texture_multisampled_2d(_array)?</g, 'texture_2d$1<');
+  for (const name of names) {
+    code = code.replace(new RegExp('\\btextureNumSamples\\(\\s*' + name + '\\s*\\)', 'g'), '1u');
+    const call = new RegExp('\\btextureLoad\\(\\s*' + name + '\\s*,', 'g');
+    let m, out = '', last = 0;
+    while ((m = call.exec(code))) {
+      let depth = 1, i = call.lastIndex, lastComma = -1;
+      for (; i < code.length && depth; i++) {
+        const c = code[i];
+        if (c === '(') depth++; else if (c === ')') depth--; else if (c === ',' && depth === 1) lastComma = i;
+      }
+      if (depth || lastComma < 0) return wgsl;
+      out += code.slice(last, lastComma + 1) + ' 0i)';
+      last = i; call.lastIndex = i;
+    }
+    code = out + code.slice(last);
+  }
+  return code;
+}
+
 export function scanWgslResources(wgsl) {
   /** @type {Array<{group:number, binding:number, addr:string, name:string, type:string, arrayCount:number, sourceBinding?:number}>} */
   const out = [];

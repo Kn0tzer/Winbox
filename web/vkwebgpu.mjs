@@ -11,7 +11,7 @@ import { bwLogRl } from './vk-log.mjs';
 import { bridgeRecoveryStats, reportBridgeFailure } from './bridge-recovery.mjs';
 import {
   parseMinBindingSize, rewritePushConstantsWGSL, rewriteResolvedDxvkPresent,
-  matchFragmentInputsToVertexOutputs, scanWgslResources, stripNagaFragmentDepth, stripNagaYNegation, wgslUniformSizes,
+  matchFragmentInputsToVertexOutputs, rewriteMultisampledTextures, scanWgslResources, stripNagaFragmentDepth, stripNagaYNegation, wgslUniformSizes,
 } from './wgsl-utils.mjs';
 // web/vkwebgpu.mjs — the BROWSER PAGE TIER for the vk64 trap boundary: the
 // consumer for the FRAME-JSON manifest that source/vulkan/vk64bridge.cpp hops
@@ -1439,6 +1439,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     if (unnegated) vsWgsl = stripNagaYNegation(vsWgsl);
     let fsWgsl = await shaders.get('fragment', { hash: pipe.fsHash, size: fsm.code.length, code: fsm.code }, { rasterTopology: pipe.topology, specOverrides: pipe.fsSpec });
     fsWgsl = rewriteResolvedDxvkPresent(pipe.fsHash, fsWgsl);
+    fsWgsl = rewriteMultisampledTextures(fsWgsl);
     if (!passHasDepth) fsWgsl = stripNagaFragmentDepth(fsWgsl);
     if (!vsWgsl || !fsWgsl) return { skip: 'shader-translation' };
     fsWgsl = matchFragmentInputsToVertexOutputs(vsWgsl, fsWgsl);
