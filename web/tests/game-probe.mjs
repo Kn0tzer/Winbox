@@ -1,4 +1,5 @@
 // Repeatable isolated game probe. GAME=portal|celeste|gangbeasts node ...
+// PROBE_EXTRA="k=v&k2=v2" appends runtime URL params (e.g. bwPassReadback=60).
 // Evidence records the exact runtime and overlays; a mapped window never passes.
 import { chromium } from '@playwright/test';
 import { mkdir, readFile, writeFile, mkdtemp, symlink, rm, stat } from 'node:fs/promises';
@@ -195,6 +196,7 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
   if (profile.renderer === 'd3d11') params.set('dlloverrides', 'd3d11=n;dxgi=n');
   if (process.env.GLTRACE) params.set('gltrace', process.env.GLTRACE);
   if (process.env.XWIRE === '1') params.set('xwire', '1');
+  for (const [k, v] of new URLSearchParams(process.env.PROBE_EXTRA || '')) params.set(k, v);
   if (process.env.RIPSAMPLE) params.set('ripsample', '1');
   if (launcherApp) {
     await page.goto(`${base}/dist/`, { timeout: 60000 });

@@ -186,11 +186,73 @@ still not committed.
   now create buffer SRV/UAVs whose shaders the page ignores; behaviour for Unity compute may change from
   "view creation fails" to "dispatch reads nothing".
 
+### Build-8 pass-readback result (Gang Beasts, JIT=1)
+
+Probes `gb-pr1..pr4` (`?bwPassReadback=N`, dist = integ build 8 + the working-copy `vkwebgpu.mjs`). Unity only
+reaches "GB Started" at ~350 s and creates its swapchain at ~390 s; everything below is the following ~500 s.
+
+- No validation errors, ~290 frames replayed, 0 rejected. The canvas ends black.
+- Frame 0 is a Unity warm-up burst (259 fullscreen-triangle draws, 85 blank placeholders, 6 unsupported).
+  From frame ~30 on, frames alternate between 16 passes / 15 draws and 1 pass / 1 draw.
+- **First black pass = the camera colour pass (pass 2, rgba16float)**: cleared (0,0,0,1) and has 0 draws, i.e.
+  the guest never submits scene geometry. Passes 4-7 are constant fullscreen quads, passes 10-14 (the
+  rgba16float post chain) are all zeros, and pass 15 blits the black camera target plus 5 UI quads: black.
+- **Every sampled texture in every replayed frame is all zero.** Image census per pass (`census` in the report):
+  12 images/frame, 12 with bytes, **0 non-zero** in every frame (including the 4x4 built-in white texture and
+  the font/sprite atlases). UBOs are non-zero. So the page receives real byte buffers, but they hold zeros.
+- Not proven: whether the uploads never happen yet (Unity still loading, no scene) or happen and fail to land in
+  guest image memory. `execCopy` had only silent early returns, so the log cannot tell. The all-zero 4x4 white
+  texture favours "uploads fail to land", but a still-booting Unity is not excluded.
+- The 601 "vkQueueSubmit: bad/stale handle" lines are one-per-distinct-id and come from descriptors that
+  reference already-destroyed buffers (DXVK keeps stale entries); they are not the cause.
+
+Build 9 (C++, not built here): `execCopy` now logs every skip with a reason (first 4 per reason, then powers
+of two) and tallies successful copies whose first source row is all-zero ("execCopy B2I ok #N (... all-zero
+sources so far: M)"). Reading these in the next GB console log decides between the two hypotheses.
+
 ### The extra signal checks
 
 Not added. The traces show Unity running, presenting and creating Vulkan resources; no thread sits in
 `connect`/`accept`/`KThread::sleep`/`epoll_wait` waiting for a signal. They remain the same latent
 hang class (below) and should be added only if a trace shows one.
+
+### Build-9 result: texture uploads were dropped by a shim layout bug (fixed)
+
+Build 9's `execCopy` diagnostics never fired, while a guest trace showed 151 `vkCmdCopyBufferToImage2`
+traps. Cause: `tools/rootfs64/libvk64/libvk64.c` unpacked `VkCopyBufferToImageInfo2`,
+`VkCopyImageInfo2` and `VkBlitImageInfo2` with a spurious pad after `dstImageLayout`. `regionCount` was
+read from the wrong offset (garbage > 1024) and the bridge's `nreg > 1024` guard returned silently. So
+no DXVK texture upload, image-to-image copy or blit ever executed, and every sampled texture was
+all-zero (pass-readback census `nonZero: 0`).
+
+Fix: remove the pads (`regionCount@36/pRegions@40` for B2I, `@44/@48` for image copy/blit, `filter@56`)
+and add `offsetof` static asserts. The bridge's 64-bit B2I2 handler now also forwards
+mip/layer/depth/oz. The shim is a guest rootfs artifact: the fix needs a rootfs repackage, not a wasm
+rebuild; the bridge mip/layer part needs the next wasm build.
+
+Verification (gb-pr7: build-9 wasm + rebuilt shim via `PROBE_VULKAN_SHIM`, JIT=1): `execCopy B2I ok`
+logs appear (#1..#128, 24 first-row all-zero sources of 128), the frame-0 scene pass now has 259 draws
+with non-zero sampled textures (census 7 of 9 non-zero). The canvas is still black afterwards: at frames
+160+ the camera pass has 0 draws and only post/UI passes run, which looks like Unity not yet submitting
+a scene at that point rather than a bridge fault. Frame 0 also reports 6 unsupported draws.
+
+### Build-10 result: Gang Beasts renders (gb-pr8/pr9, build 10 wasm 9320e5a85 + new shim)
+
+With build 10 (bridge B2I2 mip/layer fix) and the patched support archive, the Gang Beasts title
+screen renders (characters, truck, logo; `test-results/gb-pr9/final.png`). The earlier black
+canvas in gb-pr7 (build-9 wasm + shim only) was the missing mip/layer forwarding: both fixes are needed.
+
+- The camera pass (pass 2, rgba16float) has `rawDraws: 0` on every frame: that is Unity, not our
+  culling. The title is a full-screen 2D image drawn by the last pass (6 draws, 786k non-black px).
+- The six unsupported draws in the first frame-0 pass are `pipeline-rejected`: WebGPU says the shader
+  declares `@group(0) @binding(11)` as `texture_2d` while the bind group layout derived from the same
+  WGSL says `cube`. It occurs once at startup and never in later sampled frames (0 skips). Open: the
+  shader hashes were cut off by the 100-char reason limit; they are now logged first.
+
+The shim reaches the runtime only through `support-<sha256>.zip` (written by
+`tools/browser/stage-dependencies.py`, which `tools/browser/build.mjs` runs). A fresh export always picks
+up `tools/rootfs64/libvk{32,64}/libvulkan.so.1`. `tools/rootfs64/patch-runtime-shim.py <dist/runtime>`
+does the same to an existing export; its output is byte-identical to a fresh stage (same sha256).
 
 ## Residual / next
 

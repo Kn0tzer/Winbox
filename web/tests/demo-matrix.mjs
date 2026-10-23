@@ -77,7 +77,7 @@ try {
   await waitForBuildIdle();
   slot = await acquireProbeSlot();
   build = JSON.parse(await readFile(join(repo, 'dist/runtime/BUILD_INFO.json'), 'utf8'));
-  if (!process.env.BW_TEST_BASE_URL) server = await serve('dist');
+  if (!process.env.BW_TEST_BASE_URL) server = await serve(process.env.BW_TEST_DIST || 'dist');
   browser = await chromium.launch({
     executablePath: process.env.CHROME_PATH || '/usr/local/bin/chromium',
     headless: true,
@@ -421,7 +421,16 @@ try {
   await samplerPromise;
   await sampleMetrics();
   await saveLogs(page);
+  // "mapped" only proves Wine opened a window. A user also needs the launcher's
+  // first-frame overlay to clear, otherwise the program looks stuck forever.
+  const overlayCleared = await page.evaluate(() => {
+    const loading = document.getElementById('loading');
+    const progress = document.getElementById('launchProgress');
+    return Boolean(loading?.hidden) && (!progress || progress.hidden);
+  }).catch(() => false);
+  if (!overlayCleared) { process.exitCode = 1; console.error('FAIL: launcher still shows the first-frame overlay after the program mapped'); }
   const summary = {
+    overlayCleared,
     demo, jit: Number(jit), build, tClick, tMapped,
     clickToMappedSeconds: Number((tMapped - tClick).toFixed(3)),
     screenshots, pageErrorCount: pageErrors.length, consoleErrorCount: countConsoleErrors(),
@@ -433,7 +442,7 @@ try {
     threadDumpAttempts, threadDumpInvocations,
   };
   await writeFile(join(outDir, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
-  console.log(JSON.stringify({ demo, jit: Number(jit), stage: 'mapped', clickToMappedSeconds: summary.clickToMappedSeconds,
+  console.log(JSON.stringify({ demo, jit: Number(jit), stage: 'mapped', overlayCleared, clickToMappedSeconds: summary.clickToMappedSeconds,
     finalScreenshot: screenshots.at(-1), pageErrors: summary.pageErrorCount, consoleErrors: summary.consoleErrorCount,
     outDir: relative(repo, outDir) }));
 } finally {

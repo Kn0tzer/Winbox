@@ -208,7 +208,7 @@ function updateStartup(run, sample = false) {
       run.probe ||= Object.assign(document.createElement('canvas'), { width: 32, height: 20 });
       const tierStats = metricsTier?.stats?.();
       run.hasFrame = Boolean(run.renderer?.frames || tierStats?.v2?.rendered > 0)
-        || visibleFrame($('vkCanvas') || run.canvas, run.probe);
+        || visibleFrame($('vkCanvas') || run.canvas || run.frame.contentWindow?.document.getElementById('canvas'), run.probe);
     } catch { /* The runtime document may still be navigating. */ }
   }
   if (run.hasFrame) {
