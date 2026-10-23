@@ -79,6 +79,56 @@ test('GL depthRange is stored and applied to WebGPU draw viewports', async () =>
   }
 });
 
+test('stencil state configures the default attachment, render pipeline, and clear operation', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    assert.equal(gl.getContextAttributes().stencil, true);
+    assert.equal(gl._depthTexture.format, 'depth24plus-stencil8');
+    gl.stencilFunc(0x0202, 7, 0x0f);
+    gl.stencilOp(0x1e00, 0x1e01, 0x8507);
+    gl.stencilMask(0xff);
+    gl.enable(0x0b90);
+    gl.clearStencil(19);
+    gl.clear(0x0400);
+    await gl._ops;
+    assert.ok(gpu.passes.length, `clear pass should be submitted: ${logs.join('; ')}`);
+    assert.equal(gpu.passes.at(-1).depthStencilAttachment.stencilLoadOp, 'clear');
+    assert.equal(gpu.passes.at(-1).depthStencilAttachment.stencilClearValue, 19);
+
+    gl._currentProgram = {
+      id: 1, linkPromise: Promise.resolve(true), attributeLocations: new Map(), attributeInfo: [], uniformInfo: [], uniformValues: new Map(),
+      stages: {
+        vertex: { wgsl: '@vertex fn main() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0); }', layout: { fields: [] }, samplers: [] },
+        fragment: { wgsl: '@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }', layout: { fields: [] }, samplers: [] },
+      },
+    };
+    await gl._draw(gl._drawSnapshot(), 0x0004, 0, 3, null, 1);
+    const stencil = gpu.pipelines.at(-1).depthStencil;
+    assert.equal(stencil.format, 'depth24plus-stencil8');
+    assert.deepEqual(stencil.stencilFront, { compare: 'equal', failOp: 'keep', depthFailOp: 'replace', passOp: 'increment-wrap' });
+    assert.equal(stencil.stencilReadMask, 0x0f);
+    assert.equal(stencil.stencilWriteMask, 0xff);
+    assert.equal(gpu.stencilReferences.at(-1), 7);
+
+    gl.stencilMaskSeparate(0x0404, 1);
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('separate front/back stencil write masks')));
+    gl.stencilFuncSeparate(0x0404, 0x0202, 7, 1);
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('separate front/back stencil read masks')));
+    gl.stencilMask(0x0f);
+    gl.clear(0x0400);
+    await gl._ops;
+    assert.equal(gpu.passes.at(-1).depthStencilAttachment.stencilLoadOp, 'load', 'masked stencil clear uses a draw pass to preserve untouched bits');
+    assert.equal(gpu.pipelines.at(-1).depthStencil.stencilWriteMask, 0x0f);
+    assert.equal(gpu.stencilReferences.at(-1), 19);
+    gl.stencilFunc(0xdead, 0, 0xff);
+    assert.equal(gl.getError(), 0x0500);
+  } finally { gpu.restore(); }
+});
+
 test('draw and read buffer selection is honored and GL errors latch until read', async () => {
   const gpu = createValidationDevice(), logs = [];
   try {

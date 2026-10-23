@@ -75,6 +75,7 @@ function mulMat4(matrix, vector) {
 
 const GL_TOPOLOGY = new Map([[0x0000, 'point-list'], [0x0001, 'line-list'], [0x0002, 'line-strip'], [0x0004, 'triangle-list'], [0x0005, 'triangle-strip']]);
 const GL_COMPARE = new Map([[0x0200, 'never'], [0x0201, 'less'], [0x0202, 'equal'], [0x0203, 'less-equal'], [0x0204, 'greater'], [0x0205, 'not-equal'], [0x0206, 'greater-equal'], [0x0207, 'always']]);
+const GL_STENCIL_OP = new Map([[0x1e00, 'keep'], [0, 'zero'], [0x1e01, 'replace'], [0x1e02, 'invert'], [0x1e03, 'increment-clamp'], [0x1e04, 'decrement-clamp'], [0x8507, 'increment-wrap'], [0x8508, 'decrement-wrap']]);
 const GL_BLEND_OP = new Map([[0x8006, 'add'], [0x800a, 'subtract'], [0x800b, 'reverse-subtract'], [0x8007, 'min'], [0x8008, 'max']]);
 const signedType = type => [0x1400, 0x1402, 0x1404].includes(type);
 const GL_ENABLE_CAPABILITIES = new Set([0x0b44, 0x0b71, 0x0b90, 0x0bc0, 0x0be2, 0x0bd0, 0x0c11, 0x8037, 0x809e, 0x80a0, 0x8c89]);
@@ -396,6 +397,7 @@ export class WebGPUGL {
     this._nextId = 1;
     this._clear = [0, 0, 0, 0];
     this._clearDepth = 1;
+    this._clearStencil = 0;
     this._viewport = [0, 0, canvas.width || 1, canvas.height || 1];
     this._scissor = [...this._viewport];
     this._pack = { alignment: 4, rowLength: 0, skipRows: 0, skipPixels: 0 };
@@ -431,6 +433,8 @@ export class WebGPUGL {
     this._depthFunc = 0x0201;
     this._depthMask = true;
     this._depthRange = [0, 1];
+    this._stencilFront = { func: 0x0207, ref: 0, readMask: 0xffffffff, writeMask: 0xffffffff, fail: 0x1e00, depthFail: 0x1e00, pass: 0x1e00 };
+    this._stencilBack = { ...this._stencilFront };
     this._cullFace = 0x0405;
     this._frontFace = 0x0901;
     this._colorMask = [true, true, true, true];
@@ -519,7 +523,7 @@ export class WebGPUGL {
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
     });
     this._depthTexture = this._device.createTexture({
-      size: [width, height, 1], format: 'depth24plus',
+      size: [width, height, 1], format: 'depth24plus-stencil8',
       usage: GPUTextureUsage.RENDER_ATTACHMENT,
     });
     this._pixels = new Uint8Array(width * height * 4);
@@ -562,7 +566,7 @@ export class WebGPUGL {
   _targetFor(framebuffer = this._drawFramebuffer) {
     if (this._isDefaultFramebuffer(framebuffer)) return {
       default: true, framebuffer, colorTexture: this._colorTexture, depthTexture: this._depthTexture,
-      pixels: this._pixels, width: this._width, height: this._height, format: this._format, depthFormat: 'depth24plus',
+      pixels: this._pixels, width: this._width, height: this._height, format: this._format, depthFormat: 'depth24plus-stencil8',
     };
     const object = framebuffer;
     const colorAttachment = object?.attachments?.get(0x8ce0);
@@ -590,9 +594,12 @@ export class WebGPUGL {
     const scissor = state.enabled.has(0x0c11);
     const fullColor = (mask & GL.COLOR_BUFFER_BIT) && state.colorMask.every(Boolean) && !scissor;
     const fullDepth = target.depthTexture && (mask & GL.DEPTH_BUFFER_BIT) && state.depthMask && !scissor;
+    const hasStencil = target.depthTexture && target.depthFormat?.includes('stencil');
+    const fullStencil = hasStencil && (mask & GL.STENCIL_BUFFER_BIT) && !scissor && (state.stencilFront.writeMask & 0xff) === 0xff && (state.stencilBack.writeMask & 0xff) === 0xff;
+    const partialStencil = hasStencil && (mask & GL.STENCIL_BUFFER_BIT) && !fullStencil && ((state.stencilFront.writeMask | state.stencilBack.writeMask) & 0xff) !== 0;
     const partialColor = (mask & GL.COLOR_BUFFER_BIT) && !fullColor && state.colorMask.some(Boolean);
     const partialDepth = target.depthTexture && (mask & GL.DEPTH_BUFFER_BIT) && !fullDepth && state.depthMask;
-    if (!fullColor && !fullDepth && !partialColor && !partialDepth) return;
+    if (!fullColor && !fullDepth && !fullStencil && !partialColor && !partialDepth && !partialStencil) return;
     const encoder = this._device.createCommandEncoder();
     const descriptor = {
       colorAttachments: [{
@@ -606,25 +613,32 @@ export class WebGPUGL {
         depthClearValue: state.depth,
         depthLoadOp: fullDepth ? 'clear' : 'load',
         depthStoreOp: 'store',
+        ...(target.depthFormat?.includes('stencil') ? {
+          stencilClearValue: state.stencil & 0xff,
+          stencilLoadOp: fullStencil ? 'clear' : 'load',
+          stencilStoreOp: 'store',
+        } : {}),
       };
     const pass = encoder.beginRenderPass(descriptor);
-    if (partialColor || partialDepth) await this._drawClearRect(pass, state, partialColor, partialDepth, target);
+    if (partialColor || partialDepth || partialStencil) await this._drawClearRect(pass, state, partialColor, partialDepth, partialStencil, target);
     pass.end();
     this._device.queue.submit([encoder.finish()]);
   }
 
-  async _drawClearRect(pass, state, clearColor, clearDepth, target) {
+  async _drawClearRect(pass, state, clearColor, clearDepth, clearStencil, target) {
     const color = state.color.map(value => Number(value).toPrecision(8)).join(',');
     const depth = Number(state.depth).toPrecision(8);
     const mask = state.colorMask.reduce((bits, enabled, index) => enabled && clearColor ? bits | (1 << index) : bits, 0);
-    const key = stateKey([color, depth, mask, clearColor, clearDepth, target.format, target.depthFormat]);
+    const stencilMask = state.stencilFront.writeMask & state.stencilBack.writeMask & 0xff;
+    const key = stateKey([color, depth, mask, clearColor, clearDepth, clearStencil, stencilMask, state.stencil & 0xff, target.format, target.depthFormat]);
     let pipeline = this._clearPipelineCache.get(key);
     if (!this._clearPipelineCache.has(key)) {
       const fields = [];
       if (clearColor) fields.push('@location(0) color: vec4<f32>,');
       if (clearDepth) fields.push('@builtin(frag_depth) depth: f32,');
       const value = [clearColor ? `vec4<f32>(${color})` : null, clearDepth ? depth : null].filter(value => value !== null).join(',');
-      const code = `struct Out { ${fields.join(' ')} };\n@vertex fn vs(@builtin(vertex_index) i:u32)->@builtin(position) vec4<f32>{var p=array<vec2<f32>,3>(vec2<f32>(-1.0,-1.0),vec2<f32>(3.0,-1.0),vec2<f32>(-1.0,3.0));return vec4<f32>(p[i],0.0,1.0);}\n@fragment fn fs()->Out{return Out(${value});}`;
+      const fragment = fields.length ? `struct Out { ${fields.join(' ')} };\n@fragment fn fs()->Out{return Out(${value});}` : '@fragment fn fs() {}';
+      const code = `@vertex fn vs(@builtin(vertex_index) i:u32)->@builtin(position) vec4<f32>{var p=array<vec2<f32>,3>(vec2<f32>(-1.0,-1.0),vec2<f32>(3.0,-1.0),vec2<f32>(-1.0,3.0));return vec4<f32>(p[i],0.0,1.0);}\n${fragment}`;
       let scopeOpen = false;
       try {
         this._device.pushErrorScope('validation');
@@ -633,7 +647,10 @@ export class WebGPUGL {
           layout: 'auto', vertex: { module: this._device.createShaderModule({ code }), entryPoint: 'vs' },
           fragment: { module: this._device.createShaderModule({ code }), entryPoint: 'fs', targets: [{ format: target.format, writeMask: mask }] },
           primitive: { topology: 'triangle-list' },
-          ...(target.depthTexture ? { depthStencil: { format: target.depthFormat || 'depth24plus', depthWriteEnabled: Boolean(clearDepth), depthCompare: 'always' } } : {}),
+          ...(target.depthTexture ? { depthStencil: {
+            format: target.depthFormat || 'depth24plus', depthWriteEnabled: Boolean(clearDepth), depthCompare: 'always',
+            ...(clearStencil ? { stencilFront: { compare: 'always', failOp: 'keep', depthFailOp: 'keep', passOp: 'replace' }, stencilBack: { compare: 'always', failOp: 'keep', depthFailOp: 'keep', passOp: 'replace' }, stencilReadMask: 0xff, stencilWriteMask: stencilMask } : {}),
+          } } : {}),
         });
         const validationError = await this._device.popErrorScope();
         scopeOpen = false;
@@ -648,6 +665,7 @@ export class WebGPUGL {
     }
     if (!pipeline) return;
     pass.setPipeline(pipeline);
+    if (clearStencil) pass.setStencilReference(state.stencil & 0xff);
     pass.setViewport(0, 0, target.width, target.height, 0, 1);
     if (state.enabled.has(0x0c11)) {
       const [sx, sy, sw, sh] = state.scissor;
@@ -676,6 +694,7 @@ export class WebGPUGL {
 
   clearColor(r, g, b, a) { this._clear = [clamp01(r), clamp01(g), clamp01(b), clamp01(a)]; }
   clearDepth(value) { this._clearDepth = clamp01(value); }
+  clearStencil(value) { this._clearStencil = value | 0; }
   // WebGL2 removed glShadeModel; its surviving smooth interpolation matches
   // the default GL_SMOOTH behavior used by the fixed-function bridge.
   shadeModel(_mode) {}
@@ -753,7 +772,7 @@ export class WebGPUGL {
     });
   }
   clear(mask) {
-    const state = { color: [...this._clear], depth: this._clearDepth, enabled: new Set(this._enabled), colorMask: [...this._colorMask], depthMask: this._depthMask, scissor: [...this._scissor], framebuffer: this._drawFramebuffer };
+    const state = { color: [...this._clear], depth: this._clearDepth, stencil: this._clearStencil, stencilFront: { ...this._stencilFront }, stencilBack: { ...this._stencilBack }, enabled: new Set(this._enabled), colorMask: [...this._colorMask], depthMask: this._depthMask, scissor: [...this._scissor], framebuffer: this._drawFramebuffer };
     if ((mask & GL.COLOR_BUFFER_BIT) && this._bufferSelection(state.framebuffer).draw !== GL.NONE) this._frameDirty = true;
     this._clearPixels(mask, state);
     this._enqueue(() => this._clearGpu(mask, state));
@@ -963,7 +982,7 @@ export class WebGPUGL {
   _recordError(error) { if (this._error === GL.NO_ERROR) this._error = error; }
   getError() { const error = this._error; this._error = GL.NO_ERROR; return error; }
   isContextLost() { return false; }
-  getContextAttributes() { return { alpha: true, depth: true, stencil: false, antialias: false, premultipliedAlpha: true, preserveDrawingBuffer: true }; }
+  getContextAttributes() { return { alpha: true, depth: true, stencil: true, antialias: false, premultipliedAlpha: true, preserveDrawingBuffer: true }; }
   getSupportedExtensions() { return ['WEBGL_compressed_texture_s3tc', 'ANGLE_instanced_arrays', 'OES_vertex_array_object', 'EXT_read_format_bgra']; }
   getExtension(name) {
     if (name === 'WEBGL_compressed_texture_s3tc' || name === 'WEBKIT_WEBGL_compressed_texture_s3tc') return {
@@ -1319,6 +1338,7 @@ export class WebGPUGL {
       viewport: [...this._viewport], scissor: [...this._scissor], depthRange: [...this._depthRange],
       enabled: new Set(this._enabled), blend: { ...this._blend }, blendColor: [...this._blendColor],
       depthFunc: this._depthFunc, depthMask: this._depthMask, cullFace: this._cullFace,
+      stencilFront: { ...this._stencilFront }, stencilBack: { ...this._stencilBack },
       frontFace: this._frontFace, colorMask: [...this._colorMask],
       drawFramebuffer: this._drawFramebuffer, drawBuffer: this._bufferSelection(this._drawFramebuffer).draw,
       textureUnits: this._textureUnits.map(unit => ({ ...unit })),
@@ -1862,6 +1882,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (!depthCompare) throw new Error('unsupported GL depth comparison');
     const key = stateKey({
       program: program.id, vertex: vertex.layouts, topology, blend, depth: [depthEnabled, depthCompare, state.depthMask],
+      stencil: [state.enabled.has(0x0b90), state.stencilFront, state.stencilBack],
       cull, frontFace: state.frontFace, colorMask: writeMask, targetFormat, depthFormat,
     });
     if (this._pipelineCache.has(key)) return this._pipelineCache.get(key);
@@ -1871,12 +1892,18 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       scopeOpen = true;
       const vertexModule = this._device.createShaderModule({ code: program.stages.vertex.wgsl });
       const fragmentModule = this._device.createShaderModule({ code: program.stages.fragment.wgsl });
+      const stencilState = depthFormat?.includes('stencil') ? {
+        stencilFront: { compare: GL_COMPARE.get(state.stencilFront.func), failOp: GL_STENCIL_OP.get(state.stencilFront.fail), depthFailOp: GL_STENCIL_OP.get(state.stencilFront.depthFail), passOp: GL_STENCIL_OP.get(state.stencilFront.pass) },
+        stencilBack: { compare: GL_COMPARE.get(state.stencilBack.func), failOp: GL_STENCIL_OP.get(state.stencilBack.fail), depthFailOp: GL_STENCIL_OP.get(state.stencilBack.depthFail), passOp: GL_STENCIL_OP.get(state.stencilBack.pass) },
+        stencilReadMask: state.stencilFront.readMask & state.stencilBack.readMask,
+        stencilWriteMask: state.stencilFront.writeMask & state.stencilBack.writeMask,
+      } : {};
       const descriptor = {
         layout: 'auto',
         vertex: { module: vertexModule, entryPoint: 'main', buffers: vertex.layouts },
         fragment: { module: fragmentModule, entryPoint: 'main', targets: [{ format: targetFormat, writeMask, ...(blend ? { blend } : {}) }] },
         primitive: { topology, frontFace: state.frontFace === 0x0900 ? 'cw' : 'ccw', cullMode: cull === 'front-and-back' ? 'front' : cull },
-        ...(depthFormat ? { depthStencil: { format: depthFormat, depthWriteEnabled: depthEnabled && state.depthMask, depthCompare } } : {}),
+        ...(depthFormat ? { depthStencil: { format: depthFormat, depthWriteEnabled: depthEnabled && state.depthMask, depthCompare, ...stencilState } } : {}),
       };
       const pipeline = this._device.createRenderPipeline(descriptor);
       const validationError = await this._device.popErrorScope();
@@ -1951,9 +1978,10 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     const encoder = this._device.createCommandEncoder();
     const pass = encoder.beginRenderPass({
       colorAttachments: [{ view: target.colorTexture.createView({ baseMipLevel: target.colorMipLevel || 0, mipLevelCount: 1 }), loadOp: 'load', storeOp: 'store' }],
-      ...(target.depthTexture ? { depthStencilAttachment: { view: target.depthTexture.createView({ baseMipLevel: target.depthMipLevel || 0, mipLevelCount: 1 }), depthLoadOp: 'load', depthStoreOp: 'store' } } : {}),
+      ...(target.depthTexture ? { depthStencilAttachment: { view: target.depthTexture.createView({ baseMipLevel: target.depthMipLevel || 0, mipLevelCount: 1 }), depthLoadOp: 'load', depthStoreOp: 'store', ...(target.depthFormat?.includes('stencil') ? { stencilLoadOp: 'load', stencilStoreOp: 'store' } : {}) } } : {}),
     });
     pass.setPipeline(pipeline);
+    if (state.enabled.has(0x0b90)) pass.setStencilReference(state.stencilFront.ref);
     for (const item of vertex.buffers) pass.setVertexBuffer(item.slot, item.buffer, item.offset);
     const bindGroup = await this._uniformBindGroup(program, pipeline, state.uniformValues, state.textureUnits);
     if (bindGroup) pass.setBindGroup(0, bindGroup);
@@ -2004,12 +2032,35 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (width < 0 || height < 0) { this._recordError(GL.INVALID_VALUE); return; }
     this._scissor = [x | 0, y | 0, width | 0, height | 0];
   }
-  stencilFunc() {}
-  stencilFuncSeparate() {}
-  stencilOp() {}
-  stencilOpSeparate() {}
-  stencilMask() {}
-  polygonOffset() {}
+  stencilFunc(func, ref, mask) { this.stencilFuncSeparate(0x0408, func, ref, mask); }
+  stencilFuncSeparate(face, func, ref, mask) {
+    if (![0x0404, 0x0405, 0x0408].includes(face)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (!GL_COMPARE.has(func)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (!Number.isFinite(ref) || !Number.isFinite(mask)) { this._recordError(GL.INVALID_VALUE); return; }
+    if (face !== 0x0408) {
+      const other = face === 0x0404 ? this._stencilBack : this._stencilFront;
+      if ((mask >>> 0) !== other.readMask) { this._rejectUnsupported('separate front/back stencil read masks', GL.INVALID_OPERATION); return; }
+    }
+    for (const state of this._stencilFaces(face)) Object.assign(state, { func, ref: ref | 0, readMask: mask >>> 0 });
+  }
+  stencilOp(fail, depthFail, pass) { this.stencilOpSeparate(0x0408, fail, depthFail, pass); }
+  stencilOpSeparate(face, fail, depthFail, pass) {
+    if (![0x0404, 0x0405, 0x0408].includes(face)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (![fail, depthFail, pass].every(op => GL_STENCIL_OP.has(op))) { this._recordError(GL.INVALID_ENUM); return; }
+    for (const state of this._stencilFaces(face)) Object.assign(state, { fail, depthFail, pass });
+  }
+  stencilMask(mask) { this.stencilMaskSeparate(0x0408, mask); }
+  stencilMaskSeparate(face, mask) {
+    if (![0x0404, 0x0405, 0x0408].includes(face)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (!Number.isFinite(mask)) { this._recordError(GL.INVALID_VALUE); return; }
+    if (face !== 0x0408) {
+      const other = face === 0x0404 ? this._stencilBack : this._stencilFront;
+      if ((mask >>> 0 & 0xff) !== (other.writeMask & 0xff)) { this._rejectUnsupported('separate front/back stencil write masks', GL.INVALID_OPERATION); return; }
+    }
+    for (const state of this._stencilFaces(face)) state.writeMask = mask >>> 0;
+  }
+  _stencilFaces(face) { return face === 0x0404 ? [this._stencilFront] : face === 0x0405 ? [this._stencilBack] : [this._stencilFront, this._stencilBack]; }
+  polygonOffset() { this._rejectUnsupported('polygon offset', GL.INVALID_OPERATION); }
   sampleCoverage() {}
 
   _newTextureRecord(handle = null) {
