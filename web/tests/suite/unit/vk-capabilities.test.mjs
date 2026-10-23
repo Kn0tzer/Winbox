@@ -56,6 +56,13 @@ test('every advertised extension has a manifest row and every row is advertised'
   }
 });
 
+test('known unsupported Vulkan extensions stay out of device extension enumeration', () => {
+  const deviceExtensions = advertisedExtensions('g_dev_exts');
+  for (const name of manifest.notAdvertisedExtensions) {
+    assert.ok(!deviceExtensions.has(name), `${name} must remain absent until implemented`);
+  }
+});
+
 test('no advertised feature or extension may use an exception status', () => {
   for (const [name, row] of Object.entries(manifest.features)) {
     assert.equal(row.status, 'implemented', `${name} must be implemented before advertisement`);

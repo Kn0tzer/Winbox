@@ -2,7 +2,7 @@
 
 Initial source audit register for lane P2-V. It includes every requested grep match, every source-level `default:` arm, empty `catch` arm, explicit replay skip/drop counter, and identified SPIR-V/WGSL rejection site. Original audit rows are followed by disposition updates as fixes land; unresolved rows remain OPEN. Many original hits are repeated scanner matches within the same function and still need consolidation into one behavior-level row.
 
-Rows: 338, including 10 follow-up entries. Static audit only. The unit suite baseline on 2026-10-23 was 183/183; latest run was 185 passed, 2 failed outside this lane (`d3d11-contract`, `d3d9-contract`).
+Rows: 339, including net follow-up dispositions. Static audit only. The unit suite baseline on 2026-10-23 was 183/183; latest completed run was 185 passed, 2 failed outside this lane (`d3d11-contract`, `d3d9-contract`).
 
 | File:line | Guest behavior / audit evidence | Severity | Disposition |
 |---|---|---|---|

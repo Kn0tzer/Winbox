@@ -160,5 +160,16 @@
     "fillVulkan12Features.shaderStorageTexelBufferArrayNonUniformIndexing",
     "fillVulkan12Features.shaderUniformBufferArrayNonUniformIndexing",
     "fillVulkan12Features.shaderUniformTexelBufferArrayDynamicIndexing"
+  ],
+  "notAdvertisedExtensions": [
+    "VK_KHR_push_descriptor",
+    "VK_KHR_dynamic_rendering",
+    "VK_EXT_descriptor_indexing",
+    "VK_KHR_multiview",
+    "VK_EXT_transform_feedback",
+    "VK_EXT_vertex_attribute_divisor",
+    "VK_KHR_acceleration_structure",
+    "VK_KHR_ray_tracing_pipeline",
+    "VK_KHR_synchronization2"
   ]
 }
