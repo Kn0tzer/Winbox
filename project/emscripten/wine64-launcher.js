@@ -1060,6 +1060,18 @@
                     ENV["BW64_RIPSAMPLE"] = "1";
                     ENV["BW64_RIPSAMPLE_HB"] = "1";
                 }
+                // ?guestdiag=N takes a periodic thread snapshot plus interval
+                // RIP/module and top-syscall summaries. Disabled unless the
+                // interval is explicitly supplied (1..300 seconds).
+                var guestDiagSeconds = Number(param("guestdiag"));
+                if (Number.isInteger(guestDiagSeconds) && guestDiagSeconds >= 1 && guestDiagSeconds <= 300) {
+                    ENV["BW_THREAD_DUMP"] = "1";
+                    ENV["BW64_MEMSTATS"] = "1";
+                    ENV["BW64_MEMSTATS_INTERVAL_MS"] = String(guestDiagSeconds * 1000);
+                    ENV["BW64_RIPSAMPLE"] = "1";
+                    ENV["BW64_RIPSAMPLE_HB"] = "1";
+                    ENV["BW_GUEST_PROFILE"] = "1";
+                }
                 if (param("wildjump") === "1") ENV["BW64_WILDJUMP"] = "1";                if (param("dlltrace") === "1") ENV["BW64_DLLTRACE"] = "1";                if (param("filemap") === "1") ENV["BW64_FMMAP"] = "1";
                 if (param("pathcachestats") === "1") ENV["BW64_PATHCACHE_STATS"] = "1";
                 if (param("nopathcache") === "1") ENV["BW64_NOPATHCACHE"] = "1";
@@ -1204,6 +1216,24 @@
                     if (MC && typeof MC.ccall === "function") {
                         try { MC.ccall("bw64_set_control_trace", null, ["number"], [1]); }
                         catch (e) { console.warn("bw64_set_control_trace failed: " + e); }
+                    }
+                }
+                var guestDiagSeconds = Number(param("guestdiag"));
+                if (Number.isInteger(guestDiagSeconds) && guestDiagSeconds >= 1 && guestDiagSeconds <= 300) {
+                    var guestDiagModule = liveModule || window.Module;
+                    if (guestDiagModule && typeof guestDiagModule.ccall === "function") {
+                        var guestDiagDump = function () {
+                            try {
+                                guestDiagModule.ccall("bw64_dump_guest_threads", null, [], []);
+                                var profile = guestDiagModule.ccall("bw64_guest_profile_json", "string", [], []);
+                                console.log("BW_GUEST_PROFILE_INTERVAL " + profile);
+                                guestDiagModule.ccall("bw64_guest_profile_reset", null, [], []);
+                            } catch (e) {
+                                console.warn("guestdiag snapshot failed: " + e);
+                            }
+                        };
+                        window.setInterval(guestDiagDump, guestDiagSeconds * 1000);
+                        console.log("guestdiag enabled interval=" + guestDiagSeconds + "s");
                     }
                 }
                 // BW64_VKPROF (?vkprof=1): the vk64 bridge runs on a Web Worker
