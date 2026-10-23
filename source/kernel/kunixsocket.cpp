@@ -866,6 +866,29 @@ U32 KUnixSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& fd,
     KMemory* memory = thread->memory;
 
     if (level == K_SOL_SOCKET) {
+        if (name == K_SO_LINGER) {
+            if (len < 8) return -K_EINVAL;
+            const S32 enabled = (S32)memory->readd(value);
+            const S32 seconds = (S32)memory->readd(value + 4);
+            if ((enabled != 0 && enabled != 1) || seconds < 0) return -K_EINVAL;
+            this->lingerEnabled = (U32)enabled;
+            this->lingerSeconds = (U32)seconds;
+            return 0;
+        }
+        if (name == K_SO_RCVTIMEO || name == K_SO_SNDTIMEO) {
+            if (len < 8) return -K_EINVAL;
+            const U32 seconds = memory->readd(value);
+            const U32 microseconds = memory->readd(value + 4);
+            if (microseconds >= 1000000) return -K_EINVAL;
+            if (name == K_SO_RCVTIMEO) {
+                this->recvTimeoutSeconds = seconds;
+                this->recvTimeoutMicroseconds = microseconds;
+            } else {
+                this->sendTimeoutSeconds = seconds;
+                this->sendTimeoutMicroseconds = microseconds;
+            }
+            return 0;
+        }
         if (len < 4) return -K_EINVAL;
         const S32 optionValue = (S32)memory->readd(value);
         switch (name) {
@@ -885,6 +908,12 @@ U32 KUnixSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& fd,
                 if (optionValue < 0 || optionValue > 6) return -K_EPERM;
                 this->priority = (U32)optionValue;
                 break;
+            case K_SO_RCVLOWAT:
+                this->recvLowWater = (U32)std::max<S32>(1, optionValue);
+                break;
+            case K_SO_SNDLOWAT:
+                kwarn_fmt("ksocket: Unix SOL_SOCKET option %u is unsupported; returned ENOPROTOOPT", name);
+                return -K_ENOPROTOOPT;
             case K_SO_DEBUG:
             case K_SO_REUSEADDR:
             case K_SO_DONTROUTE:
@@ -922,6 +951,16 @@ U32 KUnixSocketObject::getsockopt(KThread* thread, const KFileDescriptorPtr& fd,
         return 0;
     };
     if (level == K_SOL_SOCKET) {
+        auto writePair = [&](U32 first, U32 second) -> U32 {
+            const U32 copied = std::min<U32>(len, 8);
+            if (copied) memory->writed(value, first);
+            if (copied > 4) memory->writed(value + 4, second);
+            memory->writed(len_address, 8);
+            return 0;
+        };
+        if (name == K_SO_LINGER) return writePair(this->lingerEnabled, this->lingerSeconds);
+        if (name == K_SO_RCVTIMEO) return writePair(this->recvTimeoutSeconds, this->recvTimeoutMicroseconds);
+        if (name == K_SO_SNDTIMEO) return writePair(this->sendTimeoutSeconds, this->sendTimeoutMicroseconds);
         if (name == K_SO_RCVBUF) {
             return writeInt(this->recvLen);
         } else if (name == K_SO_SNDBUF) {
@@ -934,6 +973,8 @@ U32 KUnixSocketObject::getsockopt(KThread* thread, const KFileDescriptorPtr& fd,
             return writeInt(this->type);
         } else if (name == K_SO_PRIORITY) {
             return writeInt(this->priority);
+        } else if (name == K_SO_RCVLOWAT) {
+            return writeInt(this->recvLowWater);
         } else if (name == K_SO_DOMAIN) {
             return writeInt(this->domain);
         } else if (name == K_SO_PROTOCOL) {

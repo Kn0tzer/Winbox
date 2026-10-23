@@ -206,6 +206,37 @@ void testUnixSocketOptions() {
                                kPayloadAddress, 2) != -K_EINVAL) {
         testFail("Unix setsockopt accepted a short integer value");
     }
+    memory->writed(kPayloadAddress, 1);
+    memory->writed(kPayloadAddress + 4, 37);
+    if ((S32)socket.setsockopt(context.thread, {}, K_SOL_SOCKET, K_SO_LINGER, kPayloadAddress, 8) != 0) {
+        testFail("Unix SO_LINGER set failed");
+    }
+    memory->writed(kIovAddress, 8);
+    if ((S32)socket.getsockopt(context.thread, {}, K_SOL_SOCKET, K_SO_LINGER, kResultAddress, kIovAddress) != 0 ||
+        memory->readd(kResultAddress) != 1 || memory->readd(kResultAddress + 4) != 37 ||
+        memory->readd(kIovAddress) != 8) {
+        testFail("Unix SO_LINGER did not round-trip its pair and optlen");
+    }
+    memory->writed(kPayloadAddress, 3);
+    memory->writed(kPayloadAddress + 4, 1000000);
+    if ((S32)socket.setsockopt(context.thread, {}, K_SOL_SOCKET, K_SO_RCVTIMEO, kPayloadAddress, 8) != -K_EINVAL) {
+        testFail("Unix SO_RCVTIMEO accepted an invalid timeval");
+    }
+    memory->writed(kPayloadAddress + 4, 7);
+    if ((S32)socket.setsockopt(context.thread, {}, K_SOL_SOCKET, K_SO_RCVTIMEO, kPayloadAddress, 8) != 0 ||
+        (S32)socket.getsockopt(context.thread, {}, K_SOL_SOCKET, K_SO_RCVTIMEO, kResultAddress, kIovAddress) != 0 ||
+        memory->readd(kResultAddress) != 3 || memory->readd(kResultAddress + 4) != 7) {
+        testFail("Unix SO_RCVTIMEO did not validate/store timeval fields");
+    }
+    memory->writed(kPayloadAddress, 0);
+    if ((S32)socket.setsockopt(context.thread, {}, K_SOL_SOCKET, K_SO_RCVLOWAT, kPayloadAddress, 4) != 0 ||
+        (S32)socket.getsockopt(context.thread, {}, K_SOL_SOCKET, K_SO_RCVLOWAT, kResultAddress, kIovAddress) != 0 ||
+        memory->readd(kResultAddress) != 1) {
+        testFail("Unix SO_RCVLOWAT did not clamp to the Linux minimum");
+    }
+    if ((S32)socket.setsockopt(context.thread, {}, K_SOL_SOCKET, K_SO_SNDLOWAT, kPayloadAddress, 4) != -K_ENOPROTOOPT) {
+        testFail("Unix SO_SNDLOWAT should be rejected as unsupported");
+    }
 }
 
 void testEpollOneShotAndFlags() {

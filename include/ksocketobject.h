@@ -59,6 +59,13 @@ public:
     U32 sendLen = 1048576;
     U32 priority = 0;
     U64 socketOptionFlags = 0; // stored integer boolean SOL_SOCKET options
+    U32 recvLowWater = 1;
+    U32 lingerEnabled = 0;
+    U32 lingerSeconds = 0;
+    U32 recvTimeoutSeconds = 0;
+    U32 recvTimeoutMicroseconds = 0;
+    U32 sendTimeoutSeconds = 0;
+    U32 sendTimeoutMicroseconds = 0;
 
     bool inClosed = false;
     bool outClosed = false;
