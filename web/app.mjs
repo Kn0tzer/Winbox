@@ -37,8 +37,10 @@ function applyMetricsVisibility() {
   $('stats').setAttribute('aria-label', $('stats').title);
   if (metrics) metrics.setOpen(open);
 }
-const settings = { appearance: 'dark', graphics: 'auto', jit: 'off', internet: 'off', enhancement: 'off', sharpness: 0.5, folderMode: 'copy', metrics: 'off', shadercache: 'off' };
+const settings = { appearance: 'dark', jit: 'off', internet: 'off', enhancement: 'off', folderMode: 'copy', metrics: 'off', shadercache: 'off' };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('wine.launcher.settings.v1') || '{}')); } catch {}
+// Graphics backend and sharpness are no longer user settings; drop values saved by older versions.
+delete settings.graphics; delete settings.sharpness;
 settings.jit = settings.jit === 'on' ? 'on' : 'off';
 settings.shadercache = settings.shadercache === 'on' ? 'on' : 'off';
 function appearance(value) {
@@ -48,18 +50,11 @@ function appearance(value) {
   document.querySelector('meta[name="theme-color"]').setAttribute('content', dark ? '#000000' : '#ffffff');
 }
 appearance(settings.appearance);
-$('backend').value = settings.graphics;
-for (const name of ['jit', 'internet', 'enhancement', 'sharpness']) {
+for (const name of ['jit', 'internet', 'enhancement']) {
   $(name).value = settings[name];
-  $(name).onchange = () => {
-    settings[name] = name === 'sharpness' ? Number($(name).value) : $(name).value;
-    if (name === 'enhancement') $('sharpnessField').hidden = settings.enhancement === 'off';
-    persistSettings();
-  };
+  $(name).onchange = () => { settings[name] = $(name).value; persistSettings(); };
 }
-$('sharpnessField').hidden = settings.enhancement === 'off';
 $('appearance').onchange = () => { settings.appearance = $('appearance').value; appearance(settings.appearance); persistSettings(); };
-$('backend').onchange = () => { settings.graphics = $('backend').value; persistSettings(); };
 $('shadercache').value = settings.shadercache;
 $('shadercache').onchange = () => { settings.shadercache = $('shadercache').value; persistSettings(); };
 function persistSettings() { try { localStorage.setItem('wine.launcher.settings.v1', JSON.stringify(settings)); } catch {} }
@@ -68,14 +63,18 @@ function folderMode() {
     settings.folderMode = 'copy';
     persistSettings();
   }
-  $('directMode').disabled = !window.showDirectoryPicker;
-  $('folderModeSelect').value = settings.folderMode;
+  $('folderMode').disabled = !window.showDirectoryPicker;
+  $('folderMode').checked = settings.folderMode === 'direct';
 }
 folderMode();
-$('folderModeSelect').onchange = () => {
-  settings.folderMode = $('folderModeSelect').value;
+$('folderMode').onchange = () => {
+  settings.folderMode = $('folderMode').checked ? 'direct' : 'copy';
   persistSettings();
-  folderMode();
+};
+$('folderModeHelpButton').onclick = () => {
+  const open = $('folderModeHelp').hidden;
+  $('folderModeHelp').hidden = !open;
+  $('folderModeHelpButton').setAttribute('aria-expanded', String(open));
 };
 function message(value, error = false) {
   $('notice').hidden = !value; $('noticeText').textContent = value; $('notice').classList.toggle('error', error);
@@ -220,7 +219,7 @@ function updateStartup(run, sample = false) {
       import('./enhancement.mjs').then(({ createEnhancer }) => {
         if (current !== run) return;
         run.enhancer = createEnhancer($('display'), () => $('vkCanvas') || run.canvas || run.frame.contentWindow?.document.getElementById('canvas'),
-          { mode: settings.enhancement, sharpness: settings.sharpness, onError: error => { log('Image enhancement disabled: ' + errorText(error)); } });
+          { mode: settings.enhancement, onError: error => { log('Image enhancement disabled: ' + errorText(error)); } });
       }).catch(error => log('Image enhancement unavailable: ' + errorText(error)));
     }
     return;
@@ -259,8 +258,7 @@ async function runPackage(pkg, signal, prepared = null) {
     }
     if (pkg.mode === 'direct') await savePackage(pkg);
     signal?.throwIfAborted();
-    const query = runtimeParameters(program, { installation: pkg.id, archive: archive?.url, archiveBytes: archive?.bytes,
-      graphics: settings.graphics === 'auto' ? program.graphics : settings.graphics });
+    const query = runtimeParameters(program, { installation: pkg.id, archive: archive?.url, archiveBytes: archive?.bytes });
     await launchFrame(query, pkg.name, archive);
   } catch (error) { archive?.release(); throw error; }
 }
@@ -308,7 +306,6 @@ async function startDemo(demo, signal) {
   }
   await closeRuntime(); signal.throwIfAborted(); preparing(demo.title); status('Opening ' + demo.title + '…');
   const query = await demoParameters(demo); signal.throwIfAborted();
-  if (settings.graphics !== 'auto') query.set('gpu', settings.graphics === 'webgpu' ? '1' : '0');
   launcherWindow.bwLauncherGesturePending = true;
   await launchFrame(query, demo.title);
 }
@@ -463,7 +460,7 @@ window.addEventListener('drop', event => {
   if (!event.dataTransfer || busy) return;
   const items = Array.from(event.dataTransfer.items), files = Array.from(event.dataTransfer.files);
   const singleProgramFile = files.length === 1 && /\.(zip|exe)$/i.test(files[0].name);
-  if (settings.folderMode === 'direct' && !singleProgramFile) { message('To open a dropped folder, select Copy into browser storage in Settings.'); return; }
+  if (settings.folderMode === 'direct' && !singleProgramFile) { message('To open a dropped folder, turn off Read folders in place in Settings.'); return; }
   action(async signal => {
     const name = files[0]?.name || 'Your folder';
     preparing(name); status('Reading the package…');

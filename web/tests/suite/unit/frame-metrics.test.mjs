@@ -364,7 +364,7 @@ test('formatters never turn a missing measurement into a number', () => {
 // ---------------------------------------------------------------------------
 // Panel behaviour
 // ---------------------------------------------------------------------------
-test('panel renders every group and updates values without duplicating rows', () => {
+test('panel shows only FPS, frame time, CPU time and GPU time', () => {
   const doc = makeDom();
   const panel = createMetricsPanel({ doc });
   const model = createMetricsModel();
@@ -376,24 +376,36 @@ test('panel renders every group and updates values without duplicating rows', ()
   assert.equal(panel.hidden, false);
   panel.update(model.view(at(10)));
   const first = rowsByLabel(panel.element);
-  assert.equal(first.get('GPU execution').value, '4.25 ms');
-  assert.equal(first.get('GPU execution').state, 'measured');
-  assert.match(textOf(panel.element), /Frame metrics/);
+  assert.deepEqual([...first.keys()], ['FPS', 'Frame time', 'CPU time', 'GPU time']);
+  assert.equal(first.get('GPU time').value, '4.25 ms');
+  assert.equal(first.get('CPU time').value, '483 ms');
+  assert.equal(first.get('FPS').state, 'measured');
 
-  // Refresh 50 times: row count is stable (elements are reused, not rebuilt).
-  const rowCount = walk(panel.element).filter(n => n.className === 'metrics-row').length;
-  assert.ok(rowCount >= 18, 'all stage rows are present, got ' + rowCount);
+  // Refresh 50 times: the four rows are reused, not rebuilt, and the last value wins.
   for (let i = 0; i < 50; i++) {
-    model.applyWasm({ ...WASM_FULL, vk: { ...WASM_FULL.vk, submitMs: 9.3 + i * 0.01 } }, at(20 + i));
+    model.applyWasm({ ...WASM_FULL, vk: { ...WASM_FULL.vk, guestMs: 5 + i * 0.01 } }, at(20 + i));
     panel.update(model.view(at(30 + i)));
   }
   const panelRows = walk(panel.element).filter(n => n.className === 'metrics-row');
-  assert.equal(panelRows.length, rowCount, 'no row duplication across 50 refreshes');
-  const after = rowsByLabel(panel.element);
-  assert.equal(after.get('Vulkan submit').value, '9.79 ms', 'the last value wins');
+  assert.equal(panelRows.length, 4, 'no row duplication across 50 refreshes');
+  assert.equal(rowsByLabel(panel.element).get('CPU time').value, '5.49 ms');
 });
 
-test('panel marks the header stale and keeps the last numbers', () => {
+test('panel shows -- for numbers the runtime cannot measure, never 0', () => {
+  const doc = makeDom();
+  const panel = createMetricsPanel({ doc });
+  const model = createMetricsModel();
+  model.setRunState('running');
+  panel.setOpen(true);
+  panel.update(model.view(at(0)));
+  const rows = rowsByLabel(panel.element);
+  for (const label of ['FPS', 'Frame time', 'CPU time', 'GPU time']) {
+    assert.equal(rows.get(label).value, '--', label);
+    assert.equal(rows.get(label).state, 'unavailable', label);
+  }
+});
+
+test('panel greys the last numbers when the runtime stops reporting', () => {
   const doc = makeDom();
   const panel = createMetricsPanel({ doc });
   const model = createMetricsModel({ staleAfterMs: 3000 });
@@ -401,13 +413,12 @@ test('panel marks the header stale and keeps the last numbers', () => {
   model.applyWasm(WASM_FULL, at(0));
   panel.setOpen(true);
   panel.update(model.view(at(100)));
-  const fresh = textOf(panel.element);
-  assert.match(fresh, /live/);
+  assert.equal(panel.element.dataset.stale, '0');
   panel.update(model.view(at(9000)));
-  const stale = textOf(panel.element);
-  assert.match(stale, /stale 9.0 s/, 'the stale banner reports the snapshot age');
   assert.equal(panel.element.dataset.stale, '1');
-  assert.match(stale, /9.30 ms/, 'stale panel still shows the last measured submit span');
+  assert.match(textOf(panel.element), /paused/);
+  assert.equal(rowsByLabel(panel.element).get('FPS').state, 'stale');
+  assert.equal(rowsByLabel(panel.element).get('FPS').value, '59.6', 'stale panel still shows the last measured value');
 });
 
 test('installFrameMetrics feeds runtime lines, polls the tier and closes cheaply', async () => {

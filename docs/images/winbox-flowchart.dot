@@ -49,9 +49,8 @@ digraph Winbox {
   vkd3d [label="vkd3d", fillcolor="#f4effa", color="#9a7bc4"];
   bridge [label="Vulkan bridge", fillcolor="#edf4ff", color="#7096ce"];
   shader [label="SPIR-V → WGSL", fillcolor="#f0f4fb", color="#9aafc8"];
-  glbridge [label="GL-on-WebGPU translation", fillcolor="#f4effa", color="#9a7bc4"];
+  glbridge [label="GL bridge", fillcolor="#f4effa", color="#9a7bc4"];
   webgpu [label="WebGPU", fillcolor="#e9f6fb", color="#58a0bd"];
-  webgl [label="WebGL2 fallback", fillcolor="#e9f6fb", color="#58a0bd"];
   player [label="Browser canvas\ninput and audio processing", fillcolor="#eaf7f1", color="#62a889", penwidth=2];
 
   x86 -> wine;
@@ -65,9 +64,7 @@ digraph Winbox {
   vulkan -> bridge;
   bridge -> shader -> webgpu;
   gl -> glbridge -> webgpu;
-  glbridge -> webgl [style=dashed, color="#8a68b4", fontcolor="#76579f", xlabel="device unavailable"];
   webgpu -> player;
-  webgl -> player;
 
   { rank=same; folder; demo; }
   { rank=same; x86; x64; }
@@ -75,5 +72,4 @@ digraph Winbox {
   { rank=same; dxvk; vkd3d; glbridge; }
   { rank=same; bridge; glbridge; }
   { rank=same; shader; }
-  { rank=same; webgpu; webgl; }
 }
