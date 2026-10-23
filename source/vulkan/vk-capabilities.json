@@ -46,9 +46,6 @@
     "fillDepthClipEnable.depthClipEnable": {
       "status": "implemented"
     },
-    "fillVulkan12Features.timelineSemaphore": {
-      "status": "implemented"
-    },
     "fillVulkan11Features.shaderDrawParameters": {
       "status": "implemented"
     },
@@ -146,6 +143,7 @@
     "fillVulkan11Features.storageBuffer16BitAccess",
     "fillVulkan11Features.variablePointers",
     "fillVulkan12Features.bufferDeviceAddress",
+    "fillVulkan12Features.timelineSemaphore",
     "fillVulkan12Features.descriptorBindingPartiallyBound",
     "fillVulkan12Features.descriptorBindingUpdateUnusedWhilePending",
     "fillVulkan12Features.descriptorBindingVariableDescriptorCount",
