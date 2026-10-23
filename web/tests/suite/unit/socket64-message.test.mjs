@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 test('x64 socket messages retain addresses and flags and bound truncated packet copies', () => {
   const source = readFileSync('source/kernel/syscall64.cpp', 'utf8');
   const start = source.indexOf('static U64 sys_sendmsg64(');
-  const end = source.indexOf('// Map an x86-64 Linux syscall number', start);
+  const end = source.indexOf('// mincore(addr', start);
   const dir = mkdtempSync(join(tmpdir(), 'bw-socket64-msg-'));
   try {
     writeFileSync(join(dir, 'check.cpp'), `

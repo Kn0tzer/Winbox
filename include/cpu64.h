@@ -16,6 +16,7 @@
 #include <memory>
 #include "../source/emulation/cpu/common/fpu.h"
 #include <unordered_map>
+#include <vector>
 
 class KThread;
 class KMemory64;
@@ -135,7 +136,14 @@ public:
     // backing store is ever decommitted under us. -1 page = empty.
     U64 fetchCachePage = (U64)-1;
     U8* fetchCacheData = nullptr;
-    void invalidateFetchCache() { fetchCachePage = (U64)-1; fetchCacheData = nullptr; }
+    U64 fetchPermissionCachePage = (U64)-1;
+    U64 fetchPermissionCacheGeneration = (U64)-1;
+    void invalidateFetchCache() {
+        fetchCachePage = (U64)-1;
+        fetchCacheData = nullptr;
+        fetchPermissionCachePage = (U64)-1;
+        fetchPermissionCacheGeneration = (U64)-1;
+    }
 
     // Standalone-runner heap pointer. The full kernel tracks the program
     // break on KProcess::brkEnd64; the --x64-run-elf path has no KProcess,
@@ -199,7 +207,8 @@ public:
     // the caller then falls back to its previous behaviour. Defined alongside
     // the signal-frame helpers in syscall64.cpp. `siCode` is the si_code (e.g.
     // FPE_INTDIV=1), `trapNo` the x86 vector (0 = #DE), `faultAddr` -> si_addr.
-    bool raiseSyncFault(U32 sig, U32 trapNo, S32 siCode, U64 faultAddr);
+    bool raiseSyncFault(U32 sig, U32 trapNo, S32 siCode, U64 faultAddr,
+                        U32 errorCode = 0);
 
     // Deliver any pending, unmasked async signals queued on this thread by
     // another thread (cross-thread tkill/tgkill — e.g. wineserver's SIGUSR1
@@ -250,6 +259,11 @@ public:
     struct Jit64State* m_jit = nullptr;
 
 private:
+    // Stop before decoding bytes from an unmapped or non-executable page.
+    // KMemory64 data reads intentionally zero-fill holes for Wine compatibility,
+    // but x86 instruction fetches must raise #PF instead of executing the zeros.
+    bool validateInstructionFetch();
+
     // Call one cached emitted module and commit its guest state. Returns the
     // instructions the emitted code reports having retired (0 = did not run).
     U32 execWasmBlock(const struct Jit64Block& block, U64 maxInsn);
@@ -260,6 +274,14 @@ private:
     bool verifyJitPlanAgainstBlock(U64 rip, const struct Jit64Op* ops, U32 n);
     U32 step(bool trackJitBlockBoundary = false);
     bool m_jitBlockBoundaryAfterStep = false;
+
+    struct ControlBranch { U64 source = 0; U64 target = 0; };
+    ControlBranch controlBranches[16] = {};
+    U8 controlBranchNext = 0;
+    U8 controlBranchCount = 0;
+    std::vector<U64> controlTraceReportedRips;
+    void recordControlBranch(U64 source, U64 target);
+    bool reportControlTrace(const char* reason, U64 faultRip, bool force);
 
     U8  fetchByte(U64 addr);
     U32 fetchDword(U64 addr);

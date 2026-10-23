@@ -492,6 +492,8 @@ enum {
     GL64_fn_glLoadMatrixf,             // (matrix*)
     GL64_fn_glLoadMatrixd,             // (matrix*)
     GL64_fn_glMultMatrixd,             // (matrix*)
+    GL64_fn_glMultiTexCoord2fARB = 884, // (texture, s:float, t:float)
+    GL64_fn_glClientActiveTextureARB,   // (texture)
 
     GL64_fn__MAX
 };

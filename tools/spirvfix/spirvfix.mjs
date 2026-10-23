@@ -1357,6 +1357,105 @@ function pruneSpecializedAliases(mod, log) {
   return true;
 }
 
+// R10 "flat-integer-varyings": naga rejects a Vertex output / Fragment input
+// whose Location carries an integer type without the Flat decoration
+// ("Entry point main at Vertex is invalid"). DXVK's D3D11 MSAA-resolve meta
+// VS writes `int o_instance` plain. Integer varyings can only ever be flat,
+// so adding the decoration is semantics-preserving.
+function flatIntegerVaryings(mod, log) {
+  const models = new Set(mod.insns.filter(i => i.op === Op.EntryPoint).map(i => i.words[0]));
+  const byId = new Map(mod.insns.filter(i => i.resultId != null).map(i => [i.resultId, i]));
+  const isInt = (typeId, depth = 0) => {
+    const t = byId.get(typeId);
+    if (!t || depth > 4) return false;
+    if (t.op === Op.TypeInt) return true;
+    if (t.op === Op.TypeVector || t.op === Op.TypeArray) return isInt(t.words[1], depth + 1);
+    return false;
+  };
+  const decos = new Map();
+  for (const i of mod.insns) if (i.op === Op.Decorate) {
+    if (!decos.has(i.words[0])) decos.set(i.words[0], new Set());
+    decos.get(i.words[0]).add(i.words[1]);
+  }
+  const add = [];
+  for (const v of mod.insns) {
+    if (v.op !== Op.Variable) continue;
+    const sc = v.words[2];
+    if (!((sc === 3 && models.has(0)) || (sc === 1 && models.has(4)))) continue; // VS Output / FS Input
+    const d = decos.get(v.resultId);
+    if (!d || !d.has(30) /* Location */ || d.has(14) /* Flat */ || d.has(11) /* BuiltIn */) continue;
+    const ptr = byId.get(v.words[0]);
+    if (!ptr || ptr.op !== Op.TypePointer || !isInt(ptr.words[2])) continue;
+    add.push({ op: Op.Decorate, words: [v.resultId, 14] });
+  }
+  if (!add.length) return false;
+  const { lastDebug, lastAnnot } = sections(mod);
+  const at = lastAnnot >= 0 ? lastAnnot : lastDebug;
+  mod.insns.splice(at + 1, 0, ...add);
+  log.push(`spirvfix: added Flat to ${add.length} integer varying(s)`);
+  return true;
+}
+
+// R11 "fragment-layer-to-zero": WebGPU has no Layer fragment input. DXVK's
+// resolve meta pass reads gl_Layer in the FS (fed by its geometry shader,
+// which the WebGPU backend does not run). Substitute constant 0 — correct for
+// non-array targets — and drop the interface variable. OpCapability Geometry
+// is left untouched: naga ignores it once no Geometry-only builtin remains.
+function fragmentLayerToZero(mod, log) {
+  if (!mod.insns.some(i => i.op === Op.EntryPoint && i.words[0] === 4)) return false;
+  const ids = new Set(mod.insns.filter(i => i.op === Op.Decorate && i.words[1] === 11 && i.words[2] === 9).map(i => i.words[0]));
+  if (!ids.size) return false;
+  const byId = new Map(mod.insns.filter(i => i.resultId != null).map(i => [i.resultId, i]));
+  const loads = [];
+  for (const id of ids) {
+    const v = byId.get(id), ptr = v && byId.get(v.words[0]);
+    if (!v || v.op !== Op.Variable || v.words[2] !== 1 || !ptr || ptr.op !== Op.TypePointer) {
+      log.push(`spirvfix: left Layer builtin %${id} unchanged (unsupported interface shape)`);
+      return false;
+    }
+    for (const ins of mod.insns) {
+      if (ins === v || ins.op === Op.Decorate || ins.op === Op.Name || ins.op === Op.EntryPoint) continue;
+      if (ins.op === Op.Load && ins.words[2] === id) loads.push(ins);
+      else if (ins.words.includes(id) && ins.op !== Op.Variable) {
+        log.push(`spirvfix: left Layer builtin %${id} unchanged (pointer used outside OpLoad)`);
+        return false;
+      }
+    }
+  }
+  const newId = makeIdSource(mod);
+  const zeroByType = new Map(), constants = [];
+  for (const ld of loads) {
+    let z = zeroByType.get(ld.resultType);
+    if (z == null) {
+      const t = byId.get(ld.resultType);
+      if (!t || t.op !== Op.TypeInt || t.words[1] !== 32) {
+        log.push('spirvfix: left Layer builtin unchanged (expected a 32-bit integer load)');
+        return false;
+      }
+      z = newId(); zeroByType.set(ld.resultType, z);
+      constants.push({ op: Op.Constant, words: [ld.resultType, z, 0], resultType: ld.resultType, resultId: z });
+    }
+  }
+  for (const ld of loads) {
+    ld.op = Op.CopyObject;
+    ld.words = [ld.resultType, ld.resultId, zeroByType.get(ld.resultType)];
+  }
+  mod.insns = mod.insns.filter(i => !((i.op === Op.Variable && ids.has(i.resultId)) ||
+    ((i.op === Op.Decorate || i.op === Op.Name) && ids.has(i.words[0]))));
+  for (const entry of mod.insns.filter(i => i.op === Op.EntryPoint)) {
+    let start = 2;
+    while (start < entry.words.length) {
+      const word = entry.words[start++];
+      if ([0, 8, 16, 24].some(shift => ((word >>> shift) & 255) === 0)) break;
+    }
+    entry.words = entry.words.slice(0, start).concat(entry.words.slice(start).filter(id => !ids.has(id)));
+  }
+  const firstVariable = mod.insns.findIndex(i => i.op === Op.Variable);
+  mod.insns.splice(firstVariable < 0 ? sections(mod).firstFunc : firstVariable, 0, ...constants);
+  log.push(`spirvfix: replaced ${loads.length} fragment Layer load(s) with zero`);
+  return true;
+}
+
 // --- entry point -------------------------------------------------------------
 /** @param {Uint8Array} bytes @param {{rasterTopology?: number, specOverrides?: {constantID: number, value: Uint8Array}[]}} [options] */
 export function applySpirvFix(bytes, { specOverrides } = {}) {
@@ -1422,6 +1521,12 @@ export function applySpirvFix(bytes, { specOverrides } = {}) {
   try {
     if (pruneSpecializedAliases(mod, log)) applied.push('prune-specialized-aliases');
   } catch (e) { log.push('R9 failed: ' + (e.message || e)); }
+  try {
+    if (flatIntegerVaryings(mod, log)) applied.push('flat-integer-varyings');
+  } catch (e) { log.push('R10 failed: ' + (e.message || e)); }
+  try {
+    if (fragmentLayerToZero(mod, log)) applied.push('fragment-layer-to-zero');
+  } catch (e) { log.push('R11 failed: ' + (e.message || e)); }
   if (!applied.length) return { bytes: u8, applied, log };
   try {
     return { bytes: serializeSpirv(mod), applied, log };
@@ -1430,4 +1535,4 @@ export function applySpirvFix(bytes, { specOverrides } = {}) {
   }
 }
 
-export const REWRITES = ['split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-signed-zero-inf-nan-preserve', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases'];
+export const REWRITES = ['split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-signed-zero-inf-nan-preserve', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero'];

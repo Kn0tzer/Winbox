@@ -11,7 +11,7 @@ import { bwLogRl } from './vk-log.mjs';
 import { bridgeRecoveryStats, reportBridgeFailure } from './bridge-recovery.mjs';
 import {
   parseMinBindingSize, rewritePushConstantsWGSL, rewriteResolvedDxvkPresent,
-  scanWgslResources, stripNagaFragmentDepth, stripNagaYNegation, wgslUniformSizes,
+  matchFragmentInputsToVertexOutputs, rewriteMultisampledTextures, scanWgslResources, stripNagaFragmentDepth, stripNagaYNegation, wgslUniformSizes,
 } from './wgsl-utils.mjs';
 // web/vkwebgpu.mjs — the BROWSER PAGE TIER for the vk64 trap boundary: the
 // consumer for the FRAME-JSON manifest that source/vulkan/vk64bridge.cpp hops
@@ -79,6 +79,34 @@ export const REQUIRED_LIMIT_KEYS = Object.freeze([
   'maxUniformBufferBindingSize', 'maxStorageBufferBindingSize', 'maxBufferSize',
   'maxVertexBuffers', 'maxVertexAttributes', 'maxColorAttachments', 'maxInterStageShaderVariables',
 ]);
+// Opt-in per-pass colour readback diagnostic (URL `?bwPassReadback=N`): every Nth
+// frame, copy each render pass's single-sample colour targets back and report
+// average / constant colour plus the vs/fs hashes drawn, to localise which pass
+// produces the black frame. Never enabled by default (adds a copy + map per pass).
+export function v2PassReadbackConfig(search) {
+  const q = new URLSearchParams(search || '');
+  const every = Number.parseInt(q.get('bwPassReadback') ?? '', 10);
+  if (!Number.isFinite(every) || every < 1) return null;
+  const maxPasses = Number.parseInt(q.get('bwPassReadbackMax') ?? '', 10);
+  return { every, maxPasses: Number.isFinite(maxPasses) && maxPasses > 0 ? maxPasses : 64, maxPixels: 4 * 1024 * 1024 };
+}
+export function v2SummarizeColorPixels(rows, w, h, bytesPerRow, bgra) {
+  const sum = [0, 0, 0, 0];
+  let first = null, constant = true, nonZero = 0;
+  for (let y = 0; y < h; y++) {
+    const row = y * bytesPerRow;
+    for (let x = 0; x < w; x++) {
+      const i = row + x * 4;
+      const px = bgra ? [rows[i + 2], rows[i + 1], rows[i], rows[i + 3]] : [rows[i], rows[i + 1], rows[i + 2], rows[i + 3]];
+      if (!first) first = px;
+      else if (constant && (px[0] !== first[0] || px[1] !== first[1] || px[2] !== first[2] || px[3] !== first[3])) constant = false;
+      if (px[0] || px[1] || px[2]) nonZero++;
+      for (let c = 0; c < 4; c++) sum[c] += px[c];
+    }
+  }
+  const n = Math.max(1, w * h);
+  return { avg: sum.map(v => Math.round(v / n * 10) / 10), constant, constantColor: constant ? first : null, nonBlackPixels: nonZero, pixels: w * h };
+}
 export function v2DepthBiasState(pipe) {
   return pipe.depthBiasEnable ? {
     depthBias: Math.round(pipe.depthBiasConstantFactor || 0),
@@ -1035,6 +1063,14 @@ function v2StencilPipeline(pipe, dynamic) {
   }
   return {...pipe,stencil};
 }
+// Intersect a Vulkan scissor with the pass extent (WebGPU requires containment).
+// Returns null when nothing remains.
+function clampScissor(sc, width, height) {
+  const x0 = Math.max(0, sc[0] | 0), y0 = Math.max(0, sc[1] | 0);
+  const x1 = Math.min(width, (sc[0] | 0) + (sc[2] | 0)), y1 = Math.min(height, (sc[1] | 0) + (sc[3] | 0));
+  return x1 > x0 && y1 > y0 ? [x0, y0, x1 - x0, y1 - y0] : null;
+}
+
 function v2StencilState(pipe, depthFormat) {
   if (!pipe.stencil?.enabled) return {state:{},reference:null};
   if (!depthFormat.includes('stencil')) throw new Error('stencil pipeline requires a stencil attachment');
@@ -1409,16 +1445,20 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
   }
 
   /** @param {boolean} [cube] @param {string} [dimension] */
-  const blankTex = (cube = false, dimension = '2d') => {
-    const key = cube ? '\0blank-cube' : dimension !== '2d' ? '\0blank-' + dimension : '\0blank';
+  const blankTex = (cube = false, dimension = '2d', depth = false) => {
+    const key = (cube ? '\0blank-cube' : dimension !== '2d' ? '\0blank-' + dimension : '\0blank') + (depth ? '-depth' : '');
     // Persistent bind groups retain this view between frames. Its texture
     // must live as long as the renderer, like ordinary cached image textures.
     let entry = persistTexCache.get(key);
     if (!entry) {
       const layers = cube ? 6 : 1;
       const textureDimension = dimension === '3d' ? '3d' : dimension === '1d' ? '1d' : '2d';
-      const t = device.createTexture({ size: [1, 1, layers], dimension: textureDimension, format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
-      device.queue.writeTexture({ texture: t }, new Uint8Array(4 * layers), { bytesPerRow: 4, rowsPerImage: 1 }, [1, 1, layers]);
+      // A shader sampling texture_depth_* only accepts a depth-format view
+      // (WebGPU sample type 'depth'); a colour placeholder invalidates the
+      // whole bind group. Depth textures start zeroed and cannot be written
+      // with writeTexture, so the zero fill is the placeholder value.
+      const t = device.createTexture({ size: [1, 1, layers], dimension: textureDimension, format: depth ? 'depth32float' : 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | (depth ? 0 : GPUTextureUsage.COPY_DST) });
+      if (!depth) device.queue.writeTexture({ texture: t }, new Uint8Array(4 * layers), { bytesPerRow: 4, rowsPerImage: 1 }, [1, 1, layers]);
       entry = { tex: t }; persistTexCache.set(key, entry);
     }
     return entry.tex;
@@ -1454,7 +1494,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     // pass depth state and always emit a (possibly disabled) depthStencil
     // when the pass has depth.
     const stripIndexType = pipe.topology === 2 || pipe.topology === 4 ? indexType : undefined;
-    const key = pipe.pipeId + ':ms' + sampleCount + ':topology:' + pipe.topology + ':vb:' + JSON.stringify(pipe.vb) + ':yny' + (unnegated ? '1' : '0') + ':pd' + (passHasDepth ? '1' : '0') + ':dt' + (pipe.depthTest ? '1' : '0') + ':si' + (stripIndexType ?? 'none') + ':colors' + colorFormats.join(',') + ':blend:' + JSON.stringify(pipe.colorBlend ?? pipe.blend) + ':depth:' + depthFormat + ':stencil:' + JSON.stringify(pipe.stencil) + ':db:' + JSON.stringify([pipe.depthBiasEnable,pipe.depthBiasConstantFactor,pipe.depthBiasClamp,pipe.depthBiasSlopeFactor,pipe.depthClampEnable]) + ':aspects:' + depthAspects;
+    const key = pipe.pipeId + ':ms' + sampleCount + ':topology:' + pipe.topology + ':vb:' + JSON.stringify(pipe.vb) + ':yny' + (unnegated ? '1' : '0') + ':pd' + (passHasDepth ? '1' : '0') + ':dt' + (pipe.depthTest ? '1' : '0') + ':si' + (stripIndexType ?? 'none') + ':colors' + colorFormats.join(',') + ':blend:' + JSON.stringify(pipe.colorBlend ?? pipe.blend) + ':cf:' + pipe.cull + '/' + pipe.front + ':depth:' + depthFormat + ':stencil:' + JSON.stringify(pipe.stencil) + ':db:' + JSON.stringify([pipe.depthBiasEnable,pipe.depthBiasConstantFactor,pipe.depthBiasClamp,pipe.depthBiasSlopeFactor,pipe.depthClampEnable]) + ':aspects:' + depthAspects;
     if (pipelines.has(key)) return pipelines.get(key);
     const vsm = F.shaders.get(pipe.vsHash), fsm = F.shaders.get(pipe.fsHash);
     if (!vsm || !fsm) return { skip: 'missing-shader' };
@@ -1462,8 +1502,10 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     if (unnegated) vsWgsl = stripNagaYNegation(vsWgsl);
     let fsWgsl = await shaders.get('fragment', { hash: pipe.fsHash, size: fsm.code.length, code: fsm.code }, { rasterTopology: pipe.topology, specOverrides: pipe.fsSpec });
     fsWgsl = rewriteResolvedDxvkPresent(pipe.fsHash, fsWgsl);
+    fsWgsl = rewriteMultisampledTextures(fsWgsl);
     if (!passHasDepth) fsWgsl = stripNagaFragmentDepth(fsWgsl);
     if (!vsWgsl || !fsWgsl) return { skip: 'shader-translation' };
+    fsWgsl = matchFragmentInputsToVertexOutputs(vsWgsl, fsWgsl);
     const vsR = rewritePushConstantsWGSL(vsWgsl), fsR = rewritePushConstantsWGSL(fsWgsl);
     const pushBlocks = vsR.pushBlocks + fsR.pushBlocks;
     if (vsR.pushBlocks > 1 || fsR.pushBlocks > 1) { stats.unsupported++; return { skip: 'multi-push-block' }; }
@@ -1574,7 +1616,10 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     device.pushErrorScope('validation');
     const bwModuleT0 = metricsNow();
     const vertexModule = device.createShaderModule({ code: vsR.code });
-    const fragmentModule = device.createShaderModule({ code: fsR.code });
+    // DXVK/Vulkan allow implicit-derivative sampling in non-uniform control
+    // flow; WGSL's uniformity analysis rejects it. Dawn honours the
+    // derivative_uniformity diagnostic switch (the hardware result is the same).
+    const fragmentModule = device.createShaderModule({ code: 'diagnostic(off, derivative_uniformity);\n' + fsR.code });
     timing.shaderModuleMs += metricsNow() - bwModuleT0; timing.shaderModuleCount += 2;
     const bwPipeT0 = metricsNow();
     const pipeline = device.createRenderPipeline({
@@ -1748,16 +1793,32 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           // its IMAGE_DATA record carries the view->image link but no pixels.
           const cube = t.startsWith('texture_cube');
           const dimension = t.startsWith('texture_1d') ? '1d' : t.startsWith('texture_3d') ? '3d' : t.includes('_array') ? '2d-array' : cube ? 'cube' : '2d';
-          const aliasTex = !cube && dimension === '2d' && v2ImageKnown(imgHex)
+          let aliasTex = !cube && dimension === '2d' && v2ImageKnown(imgHex)
             ? (targets.get(v2ImageTargetKey(imgHex, false)) || targets.get(v2ImageTargetKey(imgHex, true)))
             : null;
           if (aliasTex) stats.aliased++;
           const img = imgHex && imageForView(b?.obj, imgHex);
           const imgFormat = img ? v2TextureFormat(img.format, stats, device.features) : null;
           if (img && !imgFormat) return null;
-          const texture = aliasTex || (img ? gpuTextureFor(imgHex, img, cube, dimension) : blankTex(cube, dimension));
+          let texture = aliasTex || (img ? gpuTextureFor(imgHex, img, cube, dimension) : blankTex(cube, dimension, t.startsWith('texture_depth')));
           if (!texture) return null;
-          views.push(aliasTex ? aliasTex.createView(imgFormat ? { format: imgFormat } : {}) : texture.createView({ dimension: cube ? 'cube' : dimension }));
+          // WebGPU ties the shader's sample type to the texture format: a
+          // depth texture cannot satisfy texture_2d<f32> (D3D11 shaders sample
+          // depth targets as plain floats) and a colour texture cannot satisfy
+          // texture_depth_2d. One mismatch invalidates the whole bind group
+          // and with it the frame, so bind a blank placeholder of the type the
+          // shader asks for and count it.
+          const wantsDepth = t.startsWith('texture_depth'), isDepthFormat = /^depth/.test(String(texture.format));
+          if (isDepthFormat !== wantsDepth && !(isDepthFormat && /<[ui]32>/.test(t) && String(texture.format).includes('stencil'))) {
+            texture = blankTex(cube, dimension, wantsDepth);
+            aliasTex = null;
+            stats.sampleTypePlaceholders = (stats.sampleTypePlaceholders || 0) + 1;
+          }
+          // A combined depth/stencil texture can only be bound one aspect at a
+          // time (and then takes no format override): integer element types read
+          // the stencil, the rest the depth.
+          const aspect = String(texture.format || '').includes('stencil') ? (/<[ui]32>/.test(t) ? 'stencil-only' : 'depth-only') : undefined;
+          views.push(aliasTex ? aliasTex.createView(aspect ? { aspect } : imgFormat ? { format: imgFormat } : {}) : texture.createView({ dimension: cube ? 'cube' : dimension, ...(aspect ? { aspect } : {}) }));
         }
         entries.push({ binding: d.binding, resource: d.arrayCount > 1 ? views : views[0] });
       } else if (t === 'sampler' || t === 'sampler_comparison') {
@@ -1910,17 +1971,26 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       pipeRec: null, pipeDesc: null, pipeNeg: false, sets: new Map(), setVer: new Map(), inlineMap: new Map(),
       pushBlock: new Uint8Array(V2_PUSH_SIZE), pushDirty: false,
       vbinds: [], ibind: null, viewport: null, scissor: null,
-      pipeBad: false, badPipes: new Map(), dynamicStencil:[[undefined,undefined],[undefined,undefined],[undefined,undefined]], blendConstants:[0,0,0,0], depthBias:null,
+      pipeBad: false, badPipes: new Map(), dynamicStencil:[[undefined,undefined],[undefined,undefined],[undefined,undefined]], blendConstants:[0,0,0,0], depthBias:null, cull:undefined, front:undefined,
     };
     const bump = si => st.setVer.set(si, (st.setVer.get(si) || 0) + 1);
+    const diagCfg = v2PassReadbackConfig(globalThis.location?.search);
+    const diagOn = !!diagCfg && (stats.frames % diagCfg.every) === 0;
+    const diagPasses = [];
 
     for (const p of frame.passes) {
+      // The selected pipeline is specific to one pass's attachment state (formats,
+      // sample count, depth). The bound pipeline *description* carries over; the
+      // WebGPU pipeline is re-resolved at the next draw. A stale rec here made
+      // clearAttachments re-set an incompatible pipeline in a later pass.
+      st.pipeRec = null;
       // --- targets for this pass (MSAA-aware) ---
       let passSamples = 1;
       for (const a of p.attachments) passSamples = Math.max(passSamples, v2PickSampleCount(a.samples || 1));
       /** @type {GPURenderPassColorAttachment[]} */
       const colorAttachments = [];
       const passColorFormats = [];
+      const passDiagTargets = [], passDiagDraws = { draws: 0, vs: new Set(), fs: new Set() };
       let depthView = null, depthAttachment = null, passDepthFormat = 'depth24plus', passDepthAspects = 6;
       let unsupportedAttachment = false;
       for (const a of p.attachments) {
@@ -1964,6 +2034,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
             loadOp: a.loadOp === 1 ? 'clear' : 'load',
             storeOp: a.storeOp === 1 ? 'discard' : 'store',
           });
+          if (diagOn) passDiagTargets.push({ tex: single, format: viewFormat, slot, discard: a.storeOp === 1 });
           presentTex = single; presentW = p.w; presentH = p.h; lastClear = p.clearColor;
         }
       }
@@ -2096,8 +2167,8 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
             if(st.pipeRec) passEnc.setPipeline(st.pipeRec.pipeline);
             const v=st.viewport||[0,0,p.w,p.h,0,1];
             passEnc.setViewport(v[0],v[3]<0?v[1]+v[3]:v[1],v[2],Math.abs(v[3]),v[4],v[5]);
-            const sc=st.scissor||[0,0,p.w,p.h];
-            passEnc.setScissorRect(sc[0],sc[1],sc[2],sc[3]);
+            const sc=clampScissor(st.scissor||[0,0,p.w,p.h],p.w,p.h);
+            if(sc) passEnc.setScissorRect(sc[0],sc[1],sc[2],sc[3]);
             break;
           }
           case 'bindPipe': {
@@ -2110,6 +2181,37 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           }
           case 'blendConstants': st.blendConstants=op.values; break;
           case 'depthBias': st.depthBias=op; break;
+          case 'rasterState': st[op.which]=op.value; break;
+          case 'imageClearDS': {
+            // vkCmdClearDepthStencilImage: one clearing render pass per cleared mip/layer.
+            if (passEnc) { stats.unsupported++; break; }
+            const img = F.images.get(op.image);
+            let tex = targets.get(v2ImageTargetKey(op.image, true));
+            if (!tex && img) {
+              const fmt = v2TextureFormat(img.format, stats, device.features);
+              if (fmt && fmt.startsWith('depth')) tex = target(v2ImageTargetKey(op.image, true), {
+                size: [img.w, img.h], format: fmt, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
+              });
+            }
+            if (!tex || !tex.format.startsWith('depth')) { stats.unsupported++; break; }
+            const hasStencil = tex.format.includes('stencil');
+            for (const rg of op.ranges) {
+              const levels = rg.levelCount === 0xffffffff ? tex.mipLevelCount - rg.baseMip : rg.levelCount;
+              const layers = rg.layerCount === 0xffffffff ? tex.depthOrArrayLayers - rg.baseLayer : rg.layerCount;
+              for (let m = rg.baseMip; m < rg.baseMip + levels && m < tex.mipLevelCount; m++) for (let l = rg.baseLayer; l < rg.baseLayer + layers && l < tex.depthOrArrayLayers; l++) {
+                const attachment = { view: tex.createView({ dimension: '2d', baseMipLevel: m, mipLevelCount: 1, baseArrayLayer: l, arrayLayerCount: 1 }) };
+                // Aspects outside aspectMask are preserved ('load'); depth-only formats take no stencil ops.
+                if (rg.aspectMask & 2) { attachment.depthLoadOp = 'clear'; attachment.depthClearValue = Math.min(1, Math.max(0, op.depth)); attachment.depthStoreOp = 'store'; }
+                else { attachment.depthLoadOp = 'load'; attachment.depthStoreOp = 'store'; }
+                if (hasStencil) {
+                  if (rg.aspectMask & 4) { attachment.stencilLoadOp = 'clear'; attachment.stencilClearValue = op.stencil & 255; attachment.stencilStoreOp = 'store'; }
+                  else { attachment.stencilLoadOp = 'load'; attachment.stencilStoreOp = 'store'; }
+                }
+                encoder.beginRenderPass({ colorAttachments: [], depthStencilAttachment: attachment }).end();
+              }
+            }
+            break;
+          }
           case 'bindSets': break; // sets resolve from DESC_SET records; ids kept for debugging
           case 'descSet': st.sets.set(op.setIndex, { bindings: op.bindings }); bump(op.setIndex); break;
           case 'inline': st.inlineMap.set(op.setIndex + ':' + op.binding, op.bytes); bump(op.setIndex); break;
@@ -2121,9 +2223,12 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           case 'draw': {
             if (skipped) break;
             if (!passEnc || !st.pipeDesc) break;
+            if (diagOn) { passDiagDraws.draws++; passDiagDraws.vs.add(st.pipeDesc.vsHash); passDiagDraws.fs.add(st.pipeDesc.fsHash); }
             let drawPipe;
             try {drawPipe=v2StencilPipeline(st.pipeDesc,st.dynamicStencil);}
             catch(error) {stats.unsupported++;stats.skippedDraws=(stats.skippedDraws||0)+1;break;}
+            if ((drawPipe.cullDynamic && st.cull !== undefined) || (drawPipe.frontDynamic && st.front !== undefined))
+              drawPipe = {...drawPipe, ...(drawPipe.cullDynamic && st.cull !== undefined ? {cull:st.cull} : {}), ...(drawPipe.frontDynamic && st.front !== undefined ? {front:st.front} : {})};
             if (drawPipe.depthBiasDynamic && st.depthBias)
               drawPipe = {...drawPipe,depthBiasConstantFactor:st.depthBias.constantFactor,depthBiasClamp:st.depthBias.clamp,depthBiasSlopeFactor:st.depthBias.slopeFactor};
             const selected=await getPipelineFor(drawPipe,passSamples,st.pipeNeg,!!depthView,st.ibind?.indexType||0,passColorFormats,passDepthFormat,passDepthAspects);
@@ -2147,8 +2252,10 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
               }
             }
             if (st.scissor) {
-              const [x, y, w, h] = st.scissor;
-              if (w > 0 && h > 0) passEnc.setScissorRect(x | 0, y | 0, w | 0, h | 0);
+              // The scissor persists across passes and may come from a larger
+              // framebuffer; Vulkan clips it, WebGPU rejects the whole frame.
+              const sc = clampScissor(st.scissor, p.w, p.h);
+              if (sc) passEnc.setScissorRect(sc[0], sc[1], sc[2], sc[3]);
             }
             if (st.pipeRec.stripIndexType !== undefined && st.pipeRec.stripIndexType !== (st.ibind?.indexType || 0)) {
               const rec = await getPipelineFor(drawPipe, passSamples, st.pipeNeg, !!depthView, st.ibind?.indexType || 0, passColorFormats, passDepthFormat, passDepthAspects);
@@ -2278,6 +2385,22 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         if (skipped) break;
       }
       if (passEnc) passEnc.end();
+      if (diagOn && passEnc && diagPasses.length < diagCfg.maxPasses) {
+        const entry = { pass: diagPasses.length, w: p.w, h: p.h, loadClear: p.attachments.map(a => a.loadOp === 1), draws: passDiagDraws.draws,
+          vs: [...passDiagDraws.vs].slice(0, 8), fs: [...passDiagDraws.fs].slice(0, 8), targets: [] };
+        for (const t of passDiagTargets) {
+          const bytes4 = /^(rgba|bgra)8unorm(-srgb)?$/.test(t.format);
+          if (!bytes4 || t.discard || p.w * p.h > diagCfg.maxPixels) {
+            entry.targets.push({ slot: t.slot, format: t.format, skipped: !bytes4 ? 'format' : t.discard ? 'discarded' : 'size' });
+            continue;
+          }
+          const bytesPerRow = Math.ceil(p.w * 4 / 256) * 256;
+          const buffer = device.createBuffer({ size: bytesPerRow * p.h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+          encoder.copyTextureToBuffer({ texture: t.tex }, { buffer, bytesPerRow }, [p.w, p.h]);
+          entry.targets.push({ slot: t.slot, format: t.format, buffer, bytesPerRow, bgra: t.format.startsWith('bgra') });
+        }
+        diagPasses.push(entry);
+      }
       if (skipped) { stats.skips++; return { rendered: false, reason: skipped }; }
     }
 
@@ -2371,7 +2494,22 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     timing.submitCount++;
     gpuTimer.resolve(bwGpuSlot);
     const invalid = await device.popErrorScope();
-    if (invalid) { if (readback) readback.destroy(); throw new Error('v2 frame encoding rejected: ' + invalid.message); }
+    if (invalid) { if (readback) readback.destroy(); for (const e of diagPasses) for (const t of e.targets) t.buffer?.destroy(); throw new Error('v2 frame encoding rejected: ' + invalid.message); }
+    if (diagPasses.length) {
+      for (const e of diagPasses) for (const t of e.targets) {
+        if (!t.buffer) continue;
+        try {
+          await t.buffer.mapAsync(GPUMapMode.READ);
+          Object.assign(t, v2SummarizeColorPixels(new Uint8Array(t.buffer.getMappedRange()), e.w, e.h, t.bytesPerRow, t.bgra));
+          t.buffer.unmap();
+        } catch (err) { t.error = String(err?.message || err); }
+        t.buffer.destroy(); delete t.buffer;
+      }
+      const report = { frame: stats.frames, passes: diagPasses };
+      (globalThis.bwPassReadbackLog ||= []).push(report);
+      if (globalThis.bwPassReadbackLog.length > 8) globalThis.bwPassReadbackLog.shift();
+      console.info('[bwPassReadback]', JSON.stringify(report));
+    }
 
     if (doStats) {
       await readback.mapAsync(GPUMapMode.READ);

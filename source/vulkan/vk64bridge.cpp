@@ -263,6 +263,12 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkCmdSetStencilWriteMask, "vkCmdSetStencilWriteMask") \
     X(VK64_fn_vkCmdSetStencilReference, "vkCmdSetStencilReference") \
     X(VK64_fn_vkCmdSetDepthBias, "vkCmdSetDepthBias") \
+    X(VK64_fn_vkCmdSetCullMode, "vkCmdSetCullMode") \
+    X(VK64_fn_vkCmdSetFrontFace, "vkCmdSetFrontFace") \
+    X(VK64_fn_vkCmdSetEvent2, "vkCmdSetEvent2") \
+    X(VK64_fn_vkCmdClearDepthStencilImage, "vkCmdClearDepthStencilImage") \
+    X(VK64_fn_vkCmdWriteTimestamp, "vkCmdWriteTimestamp") \
+    X(VK64_fn_vkCmdSetDepthBounds, "vkCmdSetDepthBounds") \
     X(VK64_fn_vkCmdCopyQueryPoolResults, "vkCmdCopyQueryPoolResults") \
     X(VK64_fn_vkCmdDraw,                            "vkCmdDraw")           \
     X(VK64_fn_vkCmdPipelineBarrier,                 "vkCmdPipelineBarrier")\
@@ -616,6 +622,7 @@ struct Pipeline : Obj {
     U32 primitiveRestartEnable = 0;
     U32 depthBiasEnable = 0, depthClampEnable = 0;
     bool depthBiasDynamic = false;
+    bool cullDynamic = false, frontDynamic = false;   // VK_DYNAMIC_STATE_CULL_MODE / FRONT_FACE (DXVK declares both on every non-discard pipeline)
     float depthBiasConstantFactor = 0.0f, depthBiasClamp = 0.0f, depthBiasSlopeFactor = 0.0f;
     U32 colorBlendCount = 0; ColorBlend colorBlend[VK64_MAX_ATTACH];
     float blendConstants[4] = {};
@@ -674,7 +681,8 @@ enum CmdKind : U32 {
     CMD_BEGIN_RP, CMD_END_RP, CMD_BIND_PIPE, CMD_BIND_SETS, CMD_VIEWPORT,
     CMD_SCISSOR, CMD_DRAW, CMD_DRAW_INDEXED, CMD_BARRIER, CMD_COPY_B2I, CMD_PUSH_CONST,
     CMD_BIND_VB, CMD_BIND_IB, CMD_UPDATE_BUF, CMD_COPY_I2B, CMD_DISPATCH, CMD_COPY_IMAGE,
-    CMD_STENCIL_STATE, CMD_BLEND_CONSTANTS, CMD_CLEAR_ATTACHMENTS, CMD_COPY_QUERY_RESULTS, CMD_DEPTH_BIAS, CMD_BLIT_IMAGE
+    CMD_STENCIL_STATE, CMD_BLEND_CONSTANTS, CMD_CLEAR_ATTACHMENTS, CMD_COPY_QUERY_RESULTS, CMD_DEPTH_BIAS, CMD_BLIT_IMAGE,
+    CMD_RASTER_STATE, CMD_CLEAR_DS_IMAGE
 };
 struct Copy {
     U64 srcBuffer = 0, dstImage = 0, bufOff = 0;
@@ -702,6 +710,8 @@ struct QueryCopy {
 struct ClearAttachmentArg { U32 aspectMask = 0, colorAttachment = 0, value[4] = {}; };
 struct ClearRectArg { int32_t x = 0, y = 0; U32 w = 0, h = 0, baseLayer = 0, layers = 1; };
 static_assert(sizeof(ClearAttachmentArg) == 24 && sizeof(ClearRectArg) == 24, "clear ABI layout");
+struct ClearRangeArg { U32 aspectMask = 0, baseMip = 0, levelCount = 0, baseLayer = 0, layerCount = 0; };  // VkImageSubresourceRange
+static_assert(sizeof(ClearRangeArg) == 20, "VkImageSubresourceRange layout");
 struct Cmd {
     U32 kind = 0;
     U64 a = 0, b = 0, c = 0, d = 0;
@@ -710,6 +720,7 @@ struct Cmd {
     U32 clearStencil = 0;
     std::vector<ClearAttachmentArg> clearAttachments;
     std::vector<ClearRectArg> clearRects;
+    std::vector<ClearRangeArg> clearRanges;   // CMD_CLEAR_DS_IMAGE: a = image, f[0] = depth, clearStencil
     U32 vbCount = 0;
     U64 vbBuffers[VK64_MAX_VERT_BINDINGS] = {0}, vbOffsets[VK64_MAX_VERT_BINDINGS] = {0};
     U64 sets[VK64_MAX_SETS] = {0};
@@ -1807,6 +1818,7 @@ enum V2Rec : U32 {
     V2_INLINE_BYTES = 0x12, V2_READBACK = 0x13, V2_IMAGE_COPY = 0x14,
     V2_STENCIL_STATE = 0x15, V2_BLEND_CONSTANTS = 0x16, V2_CLEAR_ATTACHMENTS = 0x17,
     V2_DEPTH_BIAS = 0x18, V2_IMAGE_BLIT = 0x19,
+    V2_RASTER_STATE = 0x1A, V2_IMAGE_CLEAR_DS = 0x1B,
 };
 const U32 V2_CHUNK_MAGIC = 0x46324B56u;   // 'VK2F' little-endian: bytes 56 4B 32 46
 const U32 V2_CHUNK_VERSION = 2;
@@ -2186,8 +2198,31 @@ static VkFormatFeatureFlags v2FormatFeatureFlags(U32 format) {
     if (v2FormatIsDepthStencil(format)) flags |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
     return flags;
 }
+// Texel-buffer views (D3D11 buffer SRV/UAV: DXVK maps raw and structured buffers to
+// R32_UINT and typed ones to the DXGI format's Vulkan twin). DXVK refuses to create the
+// view ("Cannot create shader resource/unordered access view") unless the view format
+// advertises UNIFORM_/STORAGE_TEXEL_BUFFER, so an unadvertised format reads as zeros in
+// every Unity compute/instancing buffer. The page tier consumes these as storage buffers
+// (see docs/vulkan-protocol.md, "Texel buffers").
+static const U32 kV2TexelBufferFormats[] = {
+    9, 13, 14,                  // R8 UNORM/UINT/SINT
+    16, 20, 21,                 // R8G8 UNORM/UINT/SINT
+    37, 41, 42, 44,             // R8G8B8A8 UNORM/UINT/SINT, B8G8R8A8 UNORM
+    64, 74, 75, 76,             // A2B10G10R10 UNORM, R16 UINT/SINT/SFLOAT
+    77, 81, 82, 83,             // R16G16 UNORM/UINT/SINT/SFLOAT
+    91, 95, 96, 97,             // R16G16B16A16 UNORM/UINT/SINT/SFLOAT
+    98, 99, 100,                // R32 UINT/SINT/SFLOAT
+    101, 102, 103,              // R32G32 UINT/SINT/SFLOAT
+    107, 108, 109,              // R32G32B32A32 UINT/SINT/SFLOAT
+    122,                        // B10G11R11 UFLOAT
+};
 static VkFormatFeatureFlags v2FormatBufferFeatureFlags(U32 format) {
-    return v2FormatIn(format, kV2SupportedVertexFormats) ? VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT : 0;
+    VkFormatFeatureFlags flags = v2FormatIn(format, kV2SupportedVertexFormats) ? VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT : 0;
+    if (v2FormatIn(format, kV2TexelBufferFormats))
+        flags |= VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT | VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT;
+    if (format == 98 || format == 99)   // R32 UINT/SINT: the only atomic-capable texel formats in D3D11
+        flags |= VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_ATOMIC_BIT;
+    return flags;
 }
 static VkFormatFeatureFlags2 v2FormatFeatureFlags2(U32 format) {
     if (!v2FormatIn(format, kV2SupportedTextureFormats)) return 0;
@@ -2200,7 +2235,7 @@ static VkFormatFeatureFlags2 v2FormatFeatureFlags2(U32 format) {
     return flags;
 }
 static VkFormatFeatureFlags2 v2FormatBufferFeatureFlags2(U32 format) {
-    return v2FormatIn(format, kV2SupportedVertexFormats) ? VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT : 0;
+    return (VkFormatFeatureFlags2)v2FormatBufferFeatureFlags(format);   // the low 32 bits share their values
 }
 // Byte size of one vertex of a VkFormat the v2 emitter may see. Only the
 // formats DXVK/D3D9 and the probes produce are listed; an unknown format falls
@@ -2618,6 +2653,8 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                               pipe->depthBiasConstantFactor, pipe->depthBiasClamp, pipe->depthBiasSlopeFactor);
                 p.u32(0x314e4146u); // FAN1: indexed triangle-fan primitive-restart state
                 p.u32(pipe->primitiveRestartEnable);
+                p.u32(0x31545352u); // RST1: which rasterizer state is dynamic (cull mode, front face)
+                p.u32(pipe->cullDynamic ? 1 : 0); p.u32(pipe->frontDynamic ? 1 : 0);
             });
         };
         auto emitRpBegin = [&](const Cmd& k) {
@@ -2746,6 +2783,18 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     break;
                 case CMD_DEPTH_BIAS:
                     emit(V2_DEPTH_BIAS, [&](ChunkWriter& p) { p.f32(k.f[0]); p.f32(k.f[1]); p.f32(k.f[2]); });
+                    break;
+                case CMD_RASTER_STATE:
+                    emit(V2_RASTER_STATE, [&](ChunkWriter& p) { p.u32((U32)k.a); p.u32((U32)k.b); });
+                    break;
+                case CMD_CLEAR_DS_IMAGE:
+                    emit(V2_IMAGE_CLEAR_DS, [&](ChunkWriter& p) {
+                        p.u64(k.a); p.f32(k.f[0]); p.u32(k.clearStencil);
+                        p.u32((U32)k.clearRanges.size());
+                        for (const auto& r : k.clearRanges) {
+                            p.u32(r.aspectMask); p.u32(r.baseMip); p.u32(r.levelCount); p.u32(r.baseLayer); p.u32(r.layerCount);
+                        }
+                    });
                     break;
                 case CMD_CLEAR_ATTACHMENTS:
                     emit(V2_CLEAR_ATTACHMENTS, [&](ChunkWriter& p) {
@@ -4035,6 +4084,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         if (!e) return VK_ERROR_INITIALIZATION_FAILED;
         return e->signalled ? VK_EVENT_SET : VK_EVENT_RESET;
     }
+    case VK64_fn_vkCmdSetEvent2:
     case VK64_fn_vkCmdSetEvent: {
         Event* e = objOf<Event>(args.a[1], K_EVENT, "vkCmdSetEvent");
         if (!e) return VK_ERROR_INITIALIZATION_FAILED;
@@ -4393,6 +4443,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                     const U32 value = (U32)state;
                     if (value == (U32)VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE) p->dynamicVertexStride = true;
                     if (value == (U32)VK_DYNAMIC_STATE_DEPTH_BIAS) p->depthBiasDynamic = true;
+                    if (value == 1000267000u) p->cullDynamic = true;    // VK_DYNAMIC_STATE_CULL_MODE(_EXT)
+                    if (value == 1000267001u) p->frontDynamic = true;   // VK_DYNAMIC_STATE_FRONT_FACE(_EXT)
                     if (value >= 6 && value <= 8) p->stencil.dynamicMask |= 1u << (value - 6);
                     if (value == 4) p->blendConstantsDynamic = true;
                 }
@@ -5166,6 +5218,34 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         Cmd c; c.kind = CMD_BLEND_CONSTANTS;
         g_mem->memcpyFromGuest(c.f, args.a[1], 16);
         pushCmd(cb, c); return 0;
+    }
+    case VK64_fn_vkCmdSetCullMode:
+    case VK64_fn_vkCmdSetFrontFace: {
+        CmdBuf* cb = cbOf(args.a[0], "dynamic raster state");
+        if (!cb) return 0;
+        Cmd c; c.kind = CMD_RASTER_STATE;
+        c.a = fnId == VK64_fn_vkCmdSetCullMode ? 0 : 1; c.b = (U32)args.a[1];
+        pushCmd(cb, c); return 0;
+    }
+    // Timestamp query results are synthesized from the host clock at read time and
+    // WebGPU has no depth-bounds test (the feature is not advertised), so both are
+    // accepted without a record.
+    case VK64_fn_vkCmdWriteTimestamp:
+    case VK64_fn_vkCmdSetDepthBounds:
+        return 0;
+    case VK64_fn_vkCmdClearDepthStencilImage: {
+        // (cmdBuf, image, layout, pDepthStencil*, rangeCount, pRanges*): replayed on the
+        // page as a render-pass clear of the matching GPU texture subresources.
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdClearDepthStencilImage");
+        if (!cb || !objOf<Image>(args.a[1], K_IMAGE, "vkCmdClearDepthStencilImage")) return 0;
+        if (args.a[4] > 64) { g_frameOverflow = true; return 0; }
+        struct { float depth; U32 stencil; } value = {1.0f, 0};
+        if (args.a[3]) g_mem->memcpyFromGuest(&value, args.a[3], sizeof(value));
+        Cmd c; c.kind = CMD_CLEAR_DS_IMAGE; c.a = args.a[1];
+        c.f[0] = value.depth; c.clearStencil = value.stencil;
+        readArray(args.a[5], (U32)args.a[4], c.clearRanges);
+        if (!c.clearRanges.empty()) pushCmd(cb, c);
+        return 0;
     }
     case VK64_fn_vkCmdSetDepthBias: {
         CmdBuf* cb = cbOf(args.a[0], "vkCmdSetDepthBias");
@@ -6987,6 +7067,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         if (!e) return VK_ERROR_INITIALIZATION_FAILED;
         return e->signalled ? VK_EVENT_SET : VK_EVENT_RESET;
     }
+    case VK64_fn_vkCmdSetEvent2:
     case VK64_fn_vkCmdSetEvent: {
         Event* e = objOf32<Event>(args.a[1], K_EVENT, "vkCmdSetEvent");
         if (!e) return VK_ERROR_INITIALIZATION_FAILED;
@@ -7258,6 +7339,8 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                     const U32 value = (U32)state;
                     if (value == (U32)VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE) p->dynamicVertexStride = true;
                     if (value == (U32)VK_DYNAMIC_STATE_DEPTH_BIAS) p->depthBiasDynamic = true;
+                    if (value == 1000267000u) p->cullDynamic = true;    // VK_DYNAMIC_STATE_CULL_MODE(_EXT)
+                    if (value == 1000267001u) p->frontDynamic = true;   // VK_DYNAMIC_STATE_FRONT_FACE(_EXT)
                     if (value >= 6 && value <= 8) p->stencil.dynamicMask |= 1u << (value - 6);
                     if (value == 4) p->blendConstantsDynamic = true;
                 }
@@ -7592,6 +7675,20 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         g_mem32->memcpyFromGuest(c.f, (U32)args.a[1], 16);
         pushCmd(cb, c); return 0;
     }
+    case VK64_fn_vkCmdSetCullMode:
+    case VK64_fn_vkCmdSetFrontFace: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "dynamic raster state");
+        if (!cb) return 0;
+        Cmd c; c.kind = CMD_RASTER_STATE;
+        c.a = fnId == VK64_fn_vkCmdSetCullMode ? 0 : 1; c.b = (U32)args.a[1];
+        pushCmd(cb, c); return 0;
+    }
+    // Timestamp query results are synthesized from the host clock at read time and
+    // WebGPU has no depth-bounds test (the feature is not advertised), so both are
+    // accepted without a record.
+    case VK64_fn_vkCmdWriteTimestamp:
+    case VK64_fn_vkCmdSetDepthBounds:
+        return 0;
     case VK64_fn_vkCmdSetDepthBias: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdSetDepthBias");
         if (!cb) return 0;

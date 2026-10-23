@@ -396,7 +396,9 @@ enum {
     GL64_fn_glColor4ub = 880,
     GL64_fn_glLoadMatrixf,
     GL64_fn_glLoadMatrixd,
-    GL64_fn_glMultMatrixd
+    GL64_fn_glMultMatrixd,
+    GL64_fn_glMultiTexCoord2fARB = 884,
+    GL64_fn_glClientActiveTextureARB
 };
 
 // ---- the trap ---------------------------------------------------------------
@@ -1304,11 +1306,20 @@ typedef void (*GLproc)(void);
 static void gl64_noop(void) { /* unimplemented GL entry — ignore for first light */ }
 // ARB spelling of the core multitexture selector uses the same ABI.
 API void glActiveTextureARB(GLenum texture) { glActiveTexture(texture); }
+API void glMultiTexCoord2fARB(GLenum texture, GLfloat s, GLfloat t) {
+    GL64Args a={{0}}; a.a[0]=texture; a.a[1]=F2U(s); a.a[2]=F2U(t);
+    (void)gl64_trap(GL64_fn_glMultiTexCoord2fARB,&a);
+}
+API void glMultiTexCoord2f(GLenum texture, GLfloat s, GLfloat t) { glMultiTexCoord2fARB(texture, s, t); }
+API void glClientActiveTextureARB(GLenum texture) {
+    GL64Args a={{0}}; a.a[0]=texture; (void)gl64_trap(GL64_fn_glClientActiveTextureARB,&a);
+}
+API void glClientActiveTexture(GLenum texture) { glClientActiveTextureARB(texture); }
 
 struct procEntry { const char* name; GLproc fn; };
 #define E(n) { #n, (GLproc)n }
 static const struct procEntry g_procs[] = {
-    E(glActiveTextureARB),
+    E(glActiveTextureARB), E(glMultiTexCoord2fARB), E(glClientActiveTextureARB),
     E(glXQueryVersion), E(glXQueryExtension), E(glXQueryExtensionsString),
     E(glXQueryServerString), E(glXGetClientString), E(glXChooseVisual),
     E(glXCreateContext), E(glXCreateContextAttribsARB), E(glXCreateNewContext),

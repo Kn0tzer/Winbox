@@ -464,13 +464,21 @@ static void testMiscFast() {
 
 static void testFallbackRules() {
     // LOCK prefix forces fallback even on a fast opcode.
-    Jit64Op a;
+    Jit64Op a, b;
     const U8 lockAdd[] = {0xF0, 0x48, 0x01, 0xC8};
     CHECK(jit64DecodeOne(0x400000, lockAdd, 4, a) && a.kind == J64_ALU_RM_R, "F0-decode kind=%d", a.kind);
     jit64Classify(a, true, false);
     CHECK(a.plan == JIT64_FALLBACK, "LOCK add must be fallback");
+    // HotSpot/glibc reference-count and mutex updates must stay on the CPU64
+    // interpreter path: the JIT has no atomic RMW emission or shared-memory
+    // host atomic lowering for these instructions.
+    CHECK(!decodeOne({0xF0, 0x48, 0x0F, 0xB1, 0x08}, b),
+          "LOCK CMPXCHG must stay interpreter-only");
+    CHECK(!decodeOne({0xF0, 0x48, 0x0F, 0xC1, 0x08}, b),
+          "LOCK XADD must stay interpreter-only");
+    CHECK(!decodeOne({0x48, 0x87, 0x08}, b),
+          "memory XCHG must stay interpreter-only (implicit LOCK)");
     // 66h operand size forces fallback.
-    Jit64Op b;
     const U8 op16[] = {0x66, 0x89, 0xC8};
     CHECK(jit64DecodeOne(0x400000, op16, 3, b), "66-decode failed");
     jit64Classify(b, false, true);

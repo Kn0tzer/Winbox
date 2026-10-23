@@ -20,7 +20,8 @@ const profiles = {
     root: join(workRoot, 'q3/game/app'),
     exe: 'quake3e.x64.exe',
     arch: 'x64',
-    args: ['+set', 'r_fullscreen', '0', '+set', 'cl_renderer', 'opengl1'],
+    args: ['+set', 'r_fullscreen', '0', '+set', 'cl_renderer', 'opengl1',
+      '+set', 'r_vbo', '0', '+map', 'q3dm1'],
     skip: new Set([
       'spearmint-1.0.3-windows.zip',
       'baseq3/pak9hqq37.pk3',
@@ -50,6 +51,8 @@ const probeJit = process.env.PROBE_JIT ?? process.env.JIT ?? '0';
 const probeRecover = process.env.PROBE_RECOVER ?? '1';
 const wildJump = process.env.WILDJUMP === '1';
 const unimplDump = process.env.UNIMPLDUMP === '1';
+const guestDiagnostics = process.env.GUEST_DIAGNOSTICS === '1';
+const guestTraceExe = process.env.GUEST_TRACE_EXE || exe;
 if (!['x86', 'x64'].includes(arch) || !Array.isArray(args) || args.some(arg => typeof arg !== 'string'))
   throw new Error('Invalid GAME_ARCH or GAME_ARGS');
 if (!['0', '1'].includes(probeJit) || !['0', '1'].includes(probeRecover))
@@ -109,6 +112,8 @@ const result = {
   backend: 'WebGPU default',
   jit: probeJit,
   recover: probeRecover,
+  guestDiagnostics,
+  guestTraceExe: guestDiagnostics ? guestTraceExe : null,
   wildJump,
   unimplDump,
   gameRoot,
@@ -121,9 +126,48 @@ const result = {
 const record = line => {
   lines.push(line);
   if (line.includes('wine: failed to open') && line.includes(exe)) appLaunchFailure = line;
-  if (/pageerror|http-error|first window mapped|gl-webgpu|gl64: host GL|TODO:|Unhandled exception|failed to open|BW64_WILDJUMP|CPU64:.*(?:unimpl|#GP)/.test(line))
+  if (/pageerror|http-error|first window mapped|gl-webgpu|gl64: host GL|BW_THREAD_DUMP|RIPSAMPLE|SYSTRACE|MEMSTATS|TODO:|Unhandled exception|failed to open|BW64_WILDJUMP|CPU64:.*(?:unimpl|#GP)/.test(line))
     process.stdout.write(line.split('\n')[0].slice(0, 500) + '\n');
 };
+
+async function collectGuestCrashReports(page, label) {
+  const reports = await page.evaluate(() => {
+    const fs = globalThis.bwRuntime?.fs?.();
+    if (!fs) return { error: 'bwRuntime.fs unavailable', files: [] };
+    const roots = ['/root/home/username/apps', '/root/home/username', '/root/tmp',
+      '/home/username/apps', '/home/username', '/tmp'];
+    const files = [];
+    const seen = new Set();
+    for (const root of roots) {
+      let entries;
+      try { entries = fs.readdir(root); } catch { continue; }
+      for (const name of entries) {
+        if (!/^hs_err_pid\d+\.log$/.test(name)) continue;
+        const path = root + '/' + name;
+        if (seen.has(path)) continue;
+        seen.add(path);
+        try {
+          files.push({ path, content: fs.readFile(path, { encoding: 'utf8' }) });
+        } catch {}
+      }
+    }
+    return { files };
+  });
+  result.guestCrashReports ||= [];
+  const captured = [];
+  for (let i = 0; i < (reports.files || []).length; i++) {
+    const report = reports.files[i];
+    const path = join(outputDir, label + '-hs_err-' + (i + 1) + '.log');
+    await writeFile(path, report.content);
+    captured.push({ guestPath: report.path, path });
+  }
+  result.guestCrashReports.push({ label, files: captured, error: reports.error || null });
+  if (captured.length) {
+    const paths = captured.map(file => file.guestPath).join(', ');
+    record('captured guest JVM crash reports: ' + paths);
+  }
+  return captured;
+}
 
 try {
   await waitForBuildIdle();
@@ -149,6 +193,26 @@ try {
     ],
   });
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  if (guestDiagnostics) {
+    await page.route('**/wine64-launcher.js*', async route => {
+      const response = await route.fetch();
+      const body = await response.text();
+      const marker = 'if (param("unimpldump") === "1") ENV["BW64_UNIMPLDUMP"] = "1";';
+      if (!body.includes(marker)) throw new Error('Could not install guest diagnostic environment flags');
+      const diagnosticFlags = [
+        'if (param("bw64diag") === "threads") {',
+        '  ENV["BW_THREAD_DUMP"] = "1";',
+        '  ENV["BW64_CRASHRING"] = "1";',
+        '  ENV["BW64_WSREAD"] = "1";',
+        `  ENV["BW64_TRACE_EXE"] = ${JSON.stringify(guestTraceExe)};`,
+        '  ENV["BW64_MEMSTATS"] = "1";',
+        '}',
+        marker,
+      ].join('\n');
+      await route.fulfill({ response, body: body.replace(marker, diagnosticFlags) });
+      result.diagnosticLauncherPatched = true;
+    });
+  }
   await page.addInitScript(() => {
     globalThis.__bwGlGameProbe = { mappedAt: 0, messages: [] };
     addEventListener('message', event => {
@@ -196,6 +260,10 @@ try {
   });
   if (wildJump) query.set('wildjump', '1');
   if (unimplDump) query.set('unimpldump', '1');
+  if (guestDiagnostics) {
+    query.set('bw64diag', 'threads');
+    query.set('ripsample', '1');
+  }
   if (process.env.GL_TRACE) query.set('gltrace', process.env.GL_TRACE);
   const launchAt = Date.now();
   result.launchUrl = `${base}/dist/runtime/index.html?${query}`;
@@ -215,21 +283,44 @@ try {
   if (!mappedAt) {
     const path = join(outputDir, 'timeout.png');
     await page.screenshot({ path, fullPage: true });
+    await collectGuestCrashReports(page, 'timeout');
     result.captures.push({ label: 'timeout', secondsAfterLaunch: Number(((Date.now() - launchAt) / 1000).toFixed(1)), path });
   } else {
     for (const seconds of captureSeconds) {
       const due = mappedAt + seconds * 1000;
       while (Date.now() < due) await page.waitForTimeout(Math.min(1000, due - Date.now()));
-      const sample = await page.evaluate(() => ({
-        at: Date.now(),
-        canvas: [...document.querySelectorAll('canvas')].map(canvas => ({ id: canvas.id, width: canvas.width, height: canvas.height })),
-        gl: globalThis.bwGlStats || null,
-        runtimeReady: Boolean(globalThis.bwRuntime?.ready?.()),
-        messages: globalThis.__bwGlGameProbe?.messages.slice(-12) || [],
-      }));
+      if (guestDiagnostics) {
+        const invoked = await page.evaluate(() => {
+          const module = globalThis.Module;
+          if (typeof module?._bw64_dump_guest_threads === 'function') {
+            module._bw64_dump_guest_threads();
+            return 'export';
+          }
+          if (typeof module?.ccall === 'function') {
+            module.ccall('bw64_dump_guest_threads', null, [], []);
+            return 'ccall';
+          }
+          return 'unavailable';
+        });
+        record(`BW_THREAD_DUMP_DRIVER invoked via ${invoked}`);
+        await page.waitForTimeout(250);
+      }
+      const sample = await page.evaluate(() => {
+        const messages = globalThis.__bwGlGameProbe?.messages || [];
+        return {
+          at: Date.now(),
+          canvas: [...document.querySelectorAll('canvas')].map(canvas => ({ id: canvas.id, width: canvas.width, height: canvas.height })),
+          gl: globalThis.bwGlStats || null,
+          runtimeReady: Boolean(globalThis.bwRuntime?.ready?.()),
+          messages: messages.slice(-12),
+          progress: messages.filter(message => /\[(?:I|W|E)\]/.test(message.line)),
+          metrics: messages.filter(message => message.line.startsWith('bw64: METRICS ')).slice(-4),
+        };
+      });
       const label = `mapped-plus-${seconds}s`;
       const path = join(outputDir, `${label}.png`);
       await page.screenshot({ path, fullPage: true });
+      await collectGuestCrashReports(page, label);
       result.captures.push({ label, secondsAfterMapped: seconds, path, sample });
       record(`${label}: ${path}`);
       await writeFile(join(outputDir, 'summary.json'), JSON.stringify(result, null, 2));

@@ -256,6 +256,14 @@ enum {
     VK64_fn_vkCmdDispatchBase,
     VK64_fn_vkCmdDispatchIndirect,
     VK64_fn_vkGetBufferDeviceAddress,
+    VK64_fn_vkCreateEvent = 841,
+    VK64_fn_vkDestroyEvent = 842,
+    VK64_fn_vkSetEvent = 843,
+    VK64_fn_vkResetEvent = 844,
+    VK64_fn_vkGetEventStatus = 845,
+    VK64_fn_vkCmdSetEvent = 846,
+    VK64_fn_vkCmdResetEvent = 847,
+    VK64_fn_vkCmdWaitEvents = 848,
     VK64_fn_vkCreateQueryPool = 849,
     VK64_fn_vkDestroyQueryPool = 850,
     VK64_fn_vkResetQueryPool = 851,
@@ -270,6 +278,12 @@ enum {
     VK64_fn_vkCmdSetStencilReference,
     VK64_fn_vkCmdCopyQueryPoolResults = 904,
     VK64_fn_vkCmdSetDepthBias = 905,
+    VK64_fn_vkCmdSetCullMode = 906,
+    VK64_fn_vkCmdSetFrontFace = 907,
+    VK64_fn_vkCmdSetEvent2 = 908,
+    VK64_fn_vkCmdClearDepthStencilImage = 909,
+    VK64_fn_vkCmdWriteTimestamp = 910,
+    VK64_fn_vkCmdSetDepthBounds = 911,
     VK64_fn__MAX
 };
 
@@ -342,6 +356,7 @@ typedef VkHandle VkFramebuffer;
 typedef VkHandle VkPipelineCache;
 typedef VkHandle VkFence;
 typedef VkHandle VkQueryPool;
+typedef VkHandle VkEvent;
 typedef VkHandle VkSemaphore;
 typedef VkHandle VkSurfaceKHR;
 typedef VkHandle VkSwapchainKHR;
@@ -923,6 +938,52 @@ API void vkCmdSetDepthBias(VkCommandBuffer cb, float constantFactor, float clamp
     VK64Args a = {{0}}; a.a[0]=cb; a.a[1]=c.u; a.a[2]=k.u; a.a[3]=s.u;
     (void)vk64_trap(VK64_fn_vkCmdSetDepthBias, &a);
 }
+API void vkCmdSetCullMode(VkCommandBuffer cb, uint32_t mode) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = mode;
+    (void)vk64_trap(VK64_fn_vkCmdSetCullMode, &a);
+}
+API void vkCmdSetCullModeEXT(VkCommandBuffer cb, uint32_t mode) { vkCmdSetCullMode(cb, mode); }
+API void vkCmdSetFrontFace(VkCommandBuffer cb, uint32_t face) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = face;
+    (void)vk64_trap(VK64_fn_vkCmdSetFrontFace, &a);
+}
+API void vkCmdSetFrontFaceEXT(VkCommandBuffer cb, uint32_t face) { vkCmdSetFrontFace(cb, face); }
+API void vkCmdSetDepthBounds(VkCommandBuffer cb, float lo, float hi) {
+    union { float f; uint32_t u; } l, h; l.f = lo; h.f = hi;
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = l.u; a.a[2] = h.u;
+    (void)vk64_trap(VK64_fn_vkCmdSetDepthBounds, &a);
+}
+API void vkCmdSetEvent2(VkCommandBuffer cb, VkEvent e, const void* dependencyInfo) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = e; a.a[2] = P(dependencyInfo);
+    (void)vk64_trap(VK64_fn_vkCmdSetEvent2, &a);
+}
+API void vkCmdSetEvent2KHR(VkCommandBuffer cb, VkEvent e, const void* dependencyInfo) { vkCmdSetEvent2(cb, e, dependencyInfo); }
+// Immediate execution: reset/wait collapse to the same bookkeeping as the v1 entry points.
+API void vkCmdResetEvent2(VkCommandBuffer cb, VkEvent e, uint64_t stages) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = e; a.a[2] = (uint32_t)stages;
+    (void)vk64_trap(VK64_fn_vkCmdResetEvent, &a);
+}
+API void vkCmdResetEvent2KHR(VkCommandBuffer cb, VkEvent e, uint64_t stages) { vkCmdResetEvent2(cb, e, stages); }
+API void vkCmdWaitEvents2(VkCommandBuffer cb, uint32_t n, const VkEvent* events, const void* dependencyInfos) {
+    (void)events; (void)dependencyInfos;
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = n;
+    (void)vk64_trap(VK64_fn_vkCmdWaitEvents, &a);
+}
+API void vkCmdWaitEvents2KHR(VkCommandBuffer cb, uint32_t n, const VkEvent* events, const void* dependencyInfos) { vkCmdWaitEvents2(cb, n, events, dependencyInfos); }
+API void vkCmdWriteTimestamp(VkCommandBuffer cb, uint32_t stage, VkQueryPool pool, uint32_t query) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = stage; a.a[2] = pool; a.a[3] = query;
+    (void)vk64_trap(VK64_fn_vkCmdWriteTimestamp, &a);
+}
+API void vkCmdWriteTimestamp2(VkCommandBuffer cb, uint64_t stage, VkQueryPool pool, uint32_t query) {
+    vkCmdWriteTimestamp(cb, (uint32_t)stage, pool, query);
+}
+API void vkCmdWriteTimestamp2KHR(VkCommandBuffer cb, uint64_t stage, VkQueryPool pool, uint32_t query) {
+    vkCmdWriteTimestamp(cb, (uint32_t)stage, pool, query);
+}
+API void vkCmdClearDepthStencilImage(VkCommandBuffer cb, VkImage image, uint32_t layout, const void* value, uint32_t n, const void* ranges) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = image; a.a[2] = layout; a.a[3] = P(value); a.a[4] = n; a.a[5] = P(ranges);
+    (void)vk64_trap(VK64_fn_vkCmdClearDepthStencilImage, &a);
+}
 API void vkCmdSetStencilCompareMask(VkCommandBuffer cb, uint32_t faces, uint32_t value) {
     VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = faces; a.a[2] = value;
     (void)vk64_trap(VK64_fn_vkCmdSetStencilCompareMask, &a);
@@ -1163,6 +1224,14 @@ API void vkCmdExecuteCommands(VkCommandBuffer, uint32_t, const VkCommandBuffer*)
 API void vkCmdDispatch(VkCommandBuffer, uint32_t, uint32_t, uint32_t);
 API void vkCmdDispatchBase(VkCommandBuffer, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
 API void vkCmdDispatchIndirect(VkCommandBuffer, VkBuffer, uint64_t);
+API VkResult vkCreateEvent(VkDevice, const void*, const void*, VkEvent*);
+API void vkDestroyEvent(VkDevice, VkEvent, const void*);
+API VkResult vkSetEvent(VkDevice, VkEvent);
+API VkResult vkResetEvent(VkDevice, VkEvent);
+API VkResult vkGetEventStatus(VkDevice, VkEvent);
+API void vkCmdSetEvent(VkCommandBuffer, VkEvent, uint32_t);
+API void vkCmdResetEvent(VkCommandBuffer, VkEvent, uint32_t);
+API void vkCmdWaitEvents(VkCommandBuffer, uint32_t, const VkEvent*, uint32_t, uint32_t, uint32_t, const void*, uint32_t, const void*, uint32_t, const void*);
 API VkResult vkCreateQueryPool(VkDevice, const void*, const void*, VkQueryPool*);
 API void vkDestroyQueryPool(VkDevice, VkQueryPool, const void*);
 API VkResult vkGetQueryPoolResults(VkDevice, VkQueryPool, uint32_t, uint32_t, unsigned long, void*, uint64_t, uint32_t);
@@ -1175,6 +1244,14 @@ static const struct procEntry g_procs[] = {
     E(vkCmdResolveImage2, VK64_fn_vkCmdResolveImage),
     E(vkCmdResolveImage2KHR, VK64_fn_vkCmdResolveImage),
     E(vkResetQueryPool, VK64_fn_vkResetQueryPool),
+    E(vkCreateEvent, VK64_fn_vkCreateEvent),
+    E(vkDestroyEvent, VK64_fn_vkDestroyEvent),
+    E(vkSetEvent, VK64_fn_vkSetEvent),
+    E(vkResetEvent, VK64_fn_vkResetEvent),
+    E(vkGetEventStatus, VK64_fn_vkGetEventStatus),
+    E(vkCmdSetEvent, VK64_fn_vkCmdSetEvent),
+    E(vkCmdResetEvent, VK64_fn_vkCmdResetEvent),
+    E(vkCmdWaitEvents, VK64_fn_vkCmdWaitEvents),
     E(vkCreateQueryPool, VK64_fn_vkCreateQueryPool),
     E(vkDestroyQueryPool, VK64_fn_vkDestroyQueryPool),
     E(vkGetQueryPoolResults, VK64_fn_vkGetQueryPoolResults),
@@ -1315,6 +1392,21 @@ static const struct procEntry g_procs[] = {
     E(vkCmdSetStencilWriteMask, VK64_fn_vkCmdSetStencilWriteMask),
     E(vkCmdSetStencilReference, VK64_fn_vkCmdSetStencilReference),
     E(vkCmdSetDepthBias, VK64_fn_vkCmdSetDepthBias),
+    E(vkCmdSetCullMode, VK64_fn_vkCmdSetCullMode),
+    E(vkCmdSetCullModeEXT, VK64_fn_vkCmdSetCullMode),
+    E(vkCmdSetFrontFace, VK64_fn_vkCmdSetFrontFace),
+    E(vkCmdSetFrontFaceEXT, VK64_fn_vkCmdSetFrontFace),
+    E(vkCmdSetDepthBounds, VK64_fn_vkCmdSetDepthBounds),
+    E(vkCmdSetEvent2, VK64_fn_vkCmdSetEvent2),
+    E(vkCmdSetEvent2KHR, VK64_fn_vkCmdSetEvent2),
+    E(vkCmdResetEvent2, VK64_fn_vkCmdResetEvent),
+    E(vkCmdResetEvent2KHR, VK64_fn_vkCmdResetEvent),
+    E(vkCmdWaitEvents2, VK64_fn_vkCmdWaitEvents),
+    E(vkCmdWaitEvents2KHR, VK64_fn_vkCmdWaitEvents),
+    E(vkCmdWriteTimestamp, VK64_fn_vkCmdWriteTimestamp),
+    E(vkCmdWriteTimestamp2, VK64_fn_vkCmdWriteTimestamp),
+    E(vkCmdWriteTimestamp2KHR, VK64_fn_vkCmdWriteTimestamp),
+    E(vkCmdClearDepthStencilImage, VK64_fn_vkCmdClearDepthStencilImage),
 
     E(vkCmdDraw, VK64_fn_vkCmdDraw),
     E(vkCmdDrawIndexed, VK64_fn_vkCmdDrawIndexed),
@@ -1407,6 +1499,538 @@ static PFN_vkVoidFunction vk64_resolve(const char* name) {
 // resolves regardless of the instance handle.
 API PFN_vkVoidFunction vkGetDeviceProcAddr(VkDevice dev, const char* name);
 
+// Per-name benign stubs. A name we do not implement hands back one of these
+// slots instead of the shared vk64_benign, so a later call logs WHICH function
+// the app actually called (the shared stub only sees the caller's first argument).
+#define VK64_NSLOTS 512
+static char g_missName[VK64_NSLOTS][72];
+static int g_missCount;
+static void* slot_hit(int i) { return vk64_benign(g_missName[i]); }
+#define SLOT(i) static void* slot##i(void) { return slot_hit(i); }
+SLOT(0)
+SLOT(1)
+SLOT(2)
+SLOT(3)
+SLOT(4)
+SLOT(5)
+SLOT(6)
+SLOT(7)
+SLOT(8)
+SLOT(9)
+SLOT(10)
+SLOT(11)
+SLOT(12)
+SLOT(13)
+SLOT(14)
+SLOT(15)
+SLOT(16)
+SLOT(17)
+SLOT(18)
+SLOT(19)
+SLOT(20)
+SLOT(21)
+SLOT(22)
+SLOT(23)
+SLOT(24)
+SLOT(25)
+SLOT(26)
+SLOT(27)
+SLOT(28)
+SLOT(29)
+SLOT(30)
+SLOT(31)
+SLOT(32)
+SLOT(33)
+SLOT(34)
+SLOT(35)
+SLOT(36)
+SLOT(37)
+SLOT(38)
+SLOT(39)
+SLOT(40)
+SLOT(41)
+SLOT(42)
+SLOT(43)
+SLOT(44)
+SLOT(45)
+SLOT(46)
+SLOT(47)
+SLOT(48)
+SLOT(49)
+SLOT(50)
+SLOT(51)
+SLOT(52)
+SLOT(53)
+SLOT(54)
+SLOT(55)
+SLOT(56)
+SLOT(57)
+SLOT(58)
+SLOT(59)
+SLOT(60)
+SLOT(61)
+SLOT(62)
+SLOT(63)
+SLOT(64)
+SLOT(65)
+SLOT(66)
+SLOT(67)
+SLOT(68)
+SLOT(69)
+SLOT(70)
+SLOT(71)
+SLOT(72)
+SLOT(73)
+SLOT(74)
+SLOT(75)
+SLOT(76)
+SLOT(77)
+SLOT(78)
+SLOT(79)
+SLOT(80)
+SLOT(81)
+SLOT(82)
+SLOT(83)
+SLOT(84)
+SLOT(85)
+SLOT(86)
+SLOT(87)
+SLOT(88)
+SLOT(89)
+SLOT(90)
+SLOT(91)
+SLOT(92)
+SLOT(93)
+SLOT(94)
+SLOT(95)
+SLOT(96)
+SLOT(97)
+SLOT(98)
+SLOT(99)
+SLOT(100)
+SLOT(101)
+SLOT(102)
+SLOT(103)
+SLOT(104)
+SLOT(105)
+SLOT(106)
+SLOT(107)
+SLOT(108)
+SLOT(109)
+SLOT(110)
+SLOT(111)
+SLOT(112)
+SLOT(113)
+SLOT(114)
+SLOT(115)
+SLOT(116)
+SLOT(117)
+SLOT(118)
+SLOT(119)
+SLOT(120)
+SLOT(121)
+SLOT(122)
+SLOT(123)
+SLOT(124)
+SLOT(125)
+SLOT(126)
+SLOT(127)
+SLOT(128)
+SLOT(129)
+SLOT(130)
+SLOT(131)
+SLOT(132)
+SLOT(133)
+SLOT(134)
+SLOT(135)
+SLOT(136)
+SLOT(137)
+SLOT(138)
+SLOT(139)
+SLOT(140)
+SLOT(141)
+SLOT(142)
+SLOT(143)
+SLOT(144)
+SLOT(145)
+SLOT(146)
+SLOT(147)
+SLOT(148)
+SLOT(149)
+SLOT(150)
+SLOT(151)
+SLOT(152)
+SLOT(153)
+SLOT(154)
+SLOT(155)
+SLOT(156)
+SLOT(157)
+SLOT(158)
+SLOT(159)
+SLOT(160)
+SLOT(161)
+SLOT(162)
+SLOT(163)
+SLOT(164)
+SLOT(165)
+SLOT(166)
+SLOT(167)
+SLOT(168)
+SLOT(169)
+SLOT(170)
+SLOT(171)
+SLOT(172)
+SLOT(173)
+SLOT(174)
+SLOT(175)
+SLOT(176)
+SLOT(177)
+SLOT(178)
+SLOT(179)
+SLOT(180)
+SLOT(181)
+SLOT(182)
+SLOT(183)
+SLOT(184)
+SLOT(185)
+SLOT(186)
+SLOT(187)
+SLOT(188)
+SLOT(189)
+SLOT(190)
+SLOT(191)
+SLOT(192)
+SLOT(193)
+SLOT(194)
+SLOT(195)
+SLOT(196)
+SLOT(197)
+SLOT(198)
+SLOT(199)
+SLOT(200)
+SLOT(201)
+SLOT(202)
+SLOT(203)
+SLOT(204)
+SLOT(205)
+SLOT(206)
+SLOT(207)
+SLOT(208)
+SLOT(209)
+SLOT(210)
+SLOT(211)
+SLOT(212)
+SLOT(213)
+SLOT(214)
+SLOT(215)
+SLOT(216)
+SLOT(217)
+SLOT(218)
+SLOT(219)
+SLOT(220)
+SLOT(221)
+SLOT(222)
+SLOT(223)
+SLOT(224)
+SLOT(225)
+SLOT(226)
+SLOT(227)
+SLOT(228)
+SLOT(229)
+SLOT(230)
+SLOT(231)
+SLOT(232)
+SLOT(233)
+SLOT(234)
+SLOT(235)
+SLOT(236)
+SLOT(237)
+SLOT(238)
+SLOT(239)
+SLOT(240)
+SLOT(241)
+SLOT(242)
+SLOT(243)
+SLOT(244)
+SLOT(245)
+SLOT(246)
+SLOT(247)
+SLOT(248)
+SLOT(249)
+SLOT(250)
+SLOT(251)
+SLOT(252)
+SLOT(253)
+SLOT(254)
+SLOT(255)
+SLOT(256)
+SLOT(257)
+SLOT(258)
+SLOT(259)
+SLOT(260)
+SLOT(261)
+SLOT(262)
+SLOT(263)
+SLOT(264)
+SLOT(265)
+SLOT(266)
+SLOT(267)
+SLOT(268)
+SLOT(269)
+SLOT(270)
+SLOT(271)
+SLOT(272)
+SLOT(273)
+SLOT(274)
+SLOT(275)
+SLOT(276)
+SLOT(277)
+SLOT(278)
+SLOT(279)
+SLOT(280)
+SLOT(281)
+SLOT(282)
+SLOT(283)
+SLOT(284)
+SLOT(285)
+SLOT(286)
+SLOT(287)
+SLOT(288)
+SLOT(289)
+SLOT(290)
+SLOT(291)
+SLOT(292)
+SLOT(293)
+SLOT(294)
+SLOT(295)
+SLOT(296)
+SLOT(297)
+SLOT(298)
+SLOT(299)
+SLOT(300)
+SLOT(301)
+SLOT(302)
+SLOT(303)
+SLOT(304)
+SLOT(305)
+SLOT(306)
+SLOT(307)
+SLOT(308)
+SLOT(309)
+SLOT(310)
+SLOT(311)
+SLOT(312)
+SLOT(313)
+SLOT(314)
+SLOT(315)
+SLOT(316)
+SLOT(317)
+SLOT(318)
+SLOT(319)
+SLOT(320)
+SLOT(321)
+SLOT(322)
+SLOT(323)
+SLOT(324)
+SLOT(325)
+SLOT(326)
+SLOT(327)
+SLOT(328)
+SLOT(329)
+SLOT(330)
+SLOT(331)
+SLOT(332)
+SLOT(333)
+SLOT(334)
+SLOT(335)
+SLOT(336)
+SLOT(337)
+SLOT(338)
+SLOT(339)
+SLOT(340)
+SLOT(341)
+SLOT(342)
+SLOT(343)
+SLOT(344)
+SLOT(345)
+SLOT(346)
+SLOT(347)
+SLOT(348)
+SLOT(349)
+SLOT(350)
+SLOT(351)
+SLOT(352)
+SLOT(353)
+SLOT(354)
+SLOT(355)
+SLOT(356)
+SLOT(357)
+SLOT(358)
+SLOT(359)
+SLOT(360)
+SLOT(361)
+SLOT(362)
+SLOT(363)
+SLOT(364)
+SLOT(365)
+SLOT(366)
+SLOT(367)
+SLOT(368)
+SLOT(369)
+SLOT(370)
+SLOT(371)
+SLOT(372)
+SLOT(373)
+SLOT(374)
+SLOT(375)
+SLOT(376)
+SLOT(377)
+SLOT(378)
+SLOT(379)
+SLOT(380)
+SLOT(381)
+SLOT(382)
+SLOT(383)
+SLOT(384)
+SLOT(385)
+SLOT(386)
+SLOT(387)
+SLOT(388)
+SLOT(389)
+SLOT(390)
+SLOT(391)
+SLOT(392)
+SLOT(393)
+SLOT(394)
+SLOT(395)
+SLOT(396)
+SLOT(397)
+SLOT(398)
+SLOT(399)
+SLOT(400)
+SLOT(401)
+SLOT(402)
+SLOT(403)
+SLOT(404)
+SLOT(405)
+SLOT(406)
+SLOT(407)
+SLOT(408)
+SLOT(409)
+SLOT(410)
+SLOT(411)
+SLOT(412)
+SLOT(413)
+SLOT(414)
+SLOT(415)
+SLOT(416)
+SLOT(417)
+SLOT(418)
+SLOT(419)
+SLOT(420)
+SLOT(421)
+SLOT(422)
+SLOT(423)
+SLOT(424)
+SLOT(425)
+SLOT(426)
+SLOT(427)
+SLOT(428)
+SLOT(429)
+SLOT(430)
+SLOT(431)
+SLOT(432)
+SLOT(433)
+SLOT(434)
+SLOT(435)
+SLOT(436)
+SLOT(437)
+SLOT(438)
+SLOT(439)
+SLOT(440)
+SLOT(441)
+SLOT(442)
+SLOT(443)
+SLOT(444)
+SLOT(445)
+SLOT(446)
+SLOT(447)
+SLOT(448)
+SLOT(449)
+SLOT(450)
+SLOT(451)
+SLOT(452)
+SLOT(453)
+SLOT(454)
+SLOT(455)
+SLOT(456)
+SLOT(457)
+SLOT(458)
+SLOT(459)
+SLOT(460)
+SLOT(461)
+SLOT(462)
+SLOT(463)
+SLOT(464)
+SLOT(465)
+SLOT(466)
+SLOT(467)
+SLOT(468)
+SLOT(469)
+SLOT(470)
+SLOT(471)
+SLOT(472)
+SLOT(473)
+SLOT(474)
+SLOT(475)
+SLOT(476)
+SLOT(477)
+SLOT(478)
+SLOT(479)
+SLOT(480)
+SLOT(481)
+SLOT(482)
+SLOT(483)
+SLOT(484)
+SLOT(485)
+SLOT(486)
+SLOT(487)
+SLOT(488)
+SLOT(489)
+SLOT(490)
+SLOT(491)
+SLOT(492)
+SLOT(493)
+SLOT(494)
+SLOT(495)
+SLOT(496)
+SLOT(497)
+SLOT(498)
+SLOT(499)
+SLOT(500)
+SLOT(501)
+SLOT(502)
+SLOT(503)
+SLOT(504)
+SLOT(505)
+SLOT(506)
+SLOT(507)
+SLOT(508)
+SLOT(509)
+SLOT(510)
+SLOT(511)
+static void* (*const g_slots[VK64_NSLOTS])(void) = { slot0, slot1, slot2, slot3, slot4, slot5, slot6, slot7, slot8, slot9, slot10, slot11, slot12, slot13, slot14, slot15, slot16, slot17, slot18, slot19, slot20, slot21, slot22, slot23, slot24, slot25, slot26, slot27, slot28, slot29, slot30, slot31, slot32, slot33, slot34, slot35, slot36, slot37, slot38, slot39, slot40, slot41, slot42, slot43, slot44, slot45, slot46, slot47, slot48, slot49, slot50, slot51, slot52, slot53, slot54, slot55, slot56, slot57, slot58, slot59, slot60, slot61, slot62, slot63, slot64, slot65, slot66, slot67, slot68, slot69, slot70, slot71, slot72, slot73, slot74, slot75, slot76, slot77, slot78, slot79, slot80, slot81, slot82, slot83, slot84, slot85, slot86, slot87, slot88, slot89, slot90, slot91, slot92, slot93, slot94, slot95, slot96, slot97, slot98, slot99, slot100, slot101, slot102, slot103, slot104, slot105, slot106, slot107, slot108, slot109, slot110, slot111, slot112, slot113, slot114, slot115, slot116, slot117, slot118, slot119, slot120, slot121, slot122, slot123, slot124, slot125, slot126, slot127, slot128, slot129, slot130, slot131, slot132, slot133, slot134, slot135, slot136, slot137, slot138, slot139, slot140, slot141, slot142, slot143, slot144, slot145, slot146, slot147, slot148, slot149, slot150, slot151, slot152, slot153, slot154, slot155, slot156, slot157, slot158, slot159, slot160, slot161, slot162, slot163, slot164, slot165, slot166, slot167, slot168, slot169, slot170, slot171, slot172, slot173, slot174, slot175, slot176, slot177, slot178, slot179, slot180, slot181, slot182, slot183, slot184, slot185, slot186, slot187, slot188, slot189, slot190, slot191, slot192, slot193, slot194, slot195, slot196, slot197, slot198, slot199, slot200, slot201, slot202, slot203, slot204, slot205, slot206, slot207, slot208, slot209, slot210, slot211, slot212, slot213, slot214, slot215, slot216, slot217, slot218, slot219, slot220, slot221, slot222, slot223, slot224, slot225, slot226, slot227, slot228, slot229, slot230, slot231, slot232, slot233, slot234, slot235, slot236, slot237, slot238, slot239, slot240, slot241, slot242, slot243, slot244, slot245, slot246, slot247, slot248, slot249, slot250, slot251, slot252, slot253, slot254, slot255, slot256, slot257, slot258, slot259, slot260, slot261, slot262, slot263, slot264, slot265, slot266, slot267, slot268, slot269, slot270, slot271, slot272, slot273, slot274, slot275, slot276, slot277, slot278, slot279, slot280, slot281, slot282, slot283, slot284, slot285, slot286, slot287, slot288, slot289, slot290, slot291, slot292, slot293, slot294, slot295, slot296, slot297, slot298, slot299, slot300, slot301, slot302, slot303, slot304, slot305, slot306, slot307, slot308, slot309, slot310, slot311, slot312, slot313, slot314, slot315, slot316, slot317, slot318, slot319, slot320, slot321, slot322, slot323, slot324, slot325, slot326, slot327, slot328, slot329, slot330, slot331, slot332, slot333, slot334, slot335, slot336, slot337, slot338, slot339, slot340, slot341, slot342, slot343, slot344, slot345, slot346, slot347, slot348, slot349, slot350, slot351, slot352, slot353, slot354, slot355, slot356, slot357, slot358, slot359, slot360, slot361, slot362, slot363, slot364, slot365, slot366, slot367, slot368, slot369, slot370, slot371, slot372, slot373, slot374, slot375, slot376, slot377, slot378, slot379, slot380, slot381, slot382, slot383, slot384, slot385, slot386, slot387, slot388, slot389, slot390, slot391, slot392, slot393, slot394, slot395, slot396, slot397, slot398, slot399, slot400, slot401, slot402, slot403, slot404, slot405, slot406, slot407, slot408, slot409, slot410, slot411, slot412, slot413, slot414, slot415, slot416, slot417, slot418, slot419, slot420, slot421, slot422, slot423, slot424, slot425, slot426, slot427, slot428, slot429, slot430, slot431, slot432, slot433, slot434, slot435, slot436, slot437, slot438, slot439, slot440, slot441, slot442, slot443, slot444, slot445, slot446, slot447, slot448, slot449, slot450, slot451, slot452, slot453, slot454, slot455, slot456, slot457, slot458, slot459, slot460, slot461, slot462, slot463, slot464, slot465, slot466, slot467, slot468, slot469, slot470, slot471, slot472, slot473, slot474, slot475, slot476, slot477, slot478, slot479, slot480, slot481, slot482, slot483, slot484, slot485, slot486, slot487, slot488, slot489, slot490, slot491, slot492, slot493, slot494, slot495, slot496, slot497, slot498, slot499, slot500, slot501, slot502, slot503, slot504, slot505, slot506, slot507, slot508, slot509, slot510, slot511 };
+static PFN_vkVoidFunction vk64_missing_stub(const char* name) {
+    int n = __atomic_load_n(&g_missCount, __ATOMIC_ACQUIRE);
+    for (int i = 0; i < n; i++) if (strcmp(g_missName[i], name) == 0) return (PFN_vkVoidFunction)g_slots[i];
+    int idx = __atomic_fetch_add(&g_missCount, 1, __ATOMIC_ACQ_REL);
+    if (idx >= VK64_NSLOTS) return (PFN_vkVoidFunction)vk64_benign;
+    int k = 0;
+    for (; name[k] && k < 71; k++) g_missName[idx][k] = name[k];
+    g_missName[idx][k] = 0;
+    return (PFN_vkVoidFunction)g_slots[idx];
+}
+
 API PFN_vkVoidFunction vkGetInstanceProcAddr(VkInstance inst, const char* name) {
     (void)inst;   /* no loader: the instance handle gates nothing */
     PFN_vkVoidFunction f = vk64_resolve(name);
@@ -1427,7 +2051,7 @@ API PFN_vkVoidFunction vkGetInstanceProcAddr(VkInstance inst, const char* name) 
         a.a[1] = 0;
         (void)vk64_trap(VK64_fn_traceProc, &a);
     }
-    return (PFN_vkVoidFunction)vk64_benign;
+    return vk64_missing_stub(name);
 }
 
 API PFN_vkVoidFunction vkGetDeviceProcAddr(VkDevice dev, const char* name) {
@@ -1482,7 +2106,6 @@ TAIL(vkGetDeviceQueue2)
 TAIL(vkGetDeviceGroupPeerMemoryFeatures)
 TAIL(vkGetDeviceGroupPresentCapabilitiesKHR)
 TAIL(vkGetDeviceGroupSurfacePresentModesKHR)
-TAIL(vkGetEventStatus)
 TAIL(vkGetFenceStatus2)
 TAIL(vkGetFenceStatus2KHR)
 TAIL(vkGetImageMemoryRequirements2KHR)
@@ -1512,10 +2135,6 @@ TAIL(vkSetDebugUtilsObjectTagEXT)
 TAIL(vkCreateDebugUtilsMessengerEXT)
 TAIL(vkDestroyDebugUtilsMessengerEXT)
 TAIL(vkSubmitDebugUtilsMessageEXT)
-TAIL(vkCreateEvent)
-TAIL(vkDestroyEvent)
-TAIL(vkSetEvent)
-TAIL(vkResetEvent)
 // =====================================================================
 // Game-breaking stub implementations (replacing TAIL)
 // =====================================================================
@@ -1751,6 +2370,42 @@ API void vkCmdDispatchIndirect(VkCommandBuffer commandBuffer, VkBuffer buffer, u
     (void)vk64_trap(VK64_fn_vkCmdDispatchIndirect, &a);
 }
 
+API VkResult vkCreateEvent(VkDevice dev, const void* ci, const void* alloc, VkEvent* out) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
+    return (VkResult)vk64_trap(VK64_fn_vkCreateEvent, &a);
+}
+API void vkDestroyEvent(VkDevice dev, VkEvent ev, const void* alloc) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = ev; a.a[2] = P(alloc);
+    (void)vk64_trap(VK64_fn_vkDestroyEvent, &a);
+}
+API VkResult vkSetEvent(VkDevice dev, VkEvent ev) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = ev;
+    return (VkResult)vk64_trap(VK64_fn_vkSetEvent, &a);
+}
+API VkResult vkResetEvent(VkDevice dev, VkEvent ev) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = ev;
+    return (VkResult)vk64_trap(VK64_fn_vkResetEvent, &a);
+}
+API VkResult vkGetEventStatus(VkDevice dev, VkEvent ev) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = ev;
+    return (VkResult)vk64_trap(VK64_fn_vkGetEventStatus, &a);
+}
+API void vkCmdSetEvent(VkCommandBuffer cb, VkEvent ev, uint32_t stage) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = ev; a.a[2] = stage;
+    (void)vk64_trap(VK64_fn_vkCmdSetEvent, &a);
+}
+API void vkCmdResetEvent(VkCommandBuffer cb, VkEvent ev, uint32_t stage) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = ev; a.a[2] = stage;
+    (void)vk64_trap(VK64_fn_vkCmdResetEvent, &a);
+}
+// Immediate execution: every earlier command already ran, so there is nothing to wait for.
+API void vkCmdWaitEvents(VkCommandBuffer cb, uint32_t n, const VkEvent* evs, uint32_t srcStage, uint32_t dstStage,
+                         uint32_t memN, const void* mem, uint32_t bufN, const void* buf, uint32_t imgN, const void* img) {
+    (void)evs; (void)srcStage; (void)dstStage; (void)memN; (void)mem; (void)bufN; (void)buf; (void)imgN; (void)img;
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = n;
+    (void)vk64_trap(VK64_fn_vkCmdWaitEvents, &a);
+}
+
 API VkResult vkCreateQueryPool(VkDevice dev, const void* ci, const void* alloc, VkQueryPool* out) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
     return (VkResult)vk64_trap(VK64_fn_vkCreateQueryPool, &a);
@@ -1787,22 +2442,13 @@ API void vkCmdCopyQueryPoolResults(VkCommandBuffer cb, VkQueryPool pool, uint32_
 TAIL(vkGetPipelineLayoutSupport)
 TAIL(vkQueueBindSparse)
 TAIL(vkCmdSetBlendConstant)
-TAIL(vkCmdSetDepthBounds)
 TAIL(vkCmdPushDescriptorSet)
 TAIL(vkCmdNextSubpass)
 TAIL(vkCmdNextSubpassKHR)
-TAIL(vkCmdWriteTimestamp)
-TAIL(vkCmdWriteTimestamp2)
-TAIL(vkCmdWriteTimestamp2KHR)
-TAIL(vkCmdSetEvent)
-TAIL(vkCmdResetEvent)
-TAIL(vkCmdWaitEvents)
 TAIL(vkCmdSetDeviceMask)
 TAIL(vkCmdSetDepthBiasEnableEXT)
 TAIL(vkCmdSetLineWidth)
 TAIL(vkCmdSetDepthBiasNV)
-TAIL(vkCmdSetCullModeEXT)
-TAIL(vkCmdSetFrontFaceEXT)
 TAIL(vkCmdSetPrimitiveTopologyEXT)
 TAIL(vkCmdSetVertexInputEXT)
 

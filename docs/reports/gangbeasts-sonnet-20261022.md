@@ -108,6 +108,90 @@ Success = the main thread leaves NtGetContextThread (no identical `syscallframe`
 log proceeds past audio init to a swapchain/window. Even then, Gang Beasts may hit further
 independent blockers after the GC stop-the-world; this fix removes the first one found.
 
+## After the map: what Gang Beasts does next (2026-10-23)
+
+With the signal-interrupt fix in the integration build the game maps and Unity runs and presents. The
+remaining blockers were all in the Vulkan/WebGPU path, not the emulator; pure JS (`web/*.mjs`,
+`tools/spirvfix`) except the notes marked C++. All fixes have unit tests (`--unit`: 161 passed).
+
+| Symptom | Fix | Where |
+|---|---|---|
+| "Failed to create GPU event" - Unity aborts device init | shim now exports `vkCreate/Destroy/Set/Reset/GetEventStatus`, `vkCmdSet/Reset/WaitEvents` (fn ids 841-848) | `tools/rootfs64/libvk64/libvk64.c`, rebuilt `libvulkan.so.1` |
+| DXVK probes 300+ unknown instance/device proc names | 512 named stub slots for unknown `vkGet*ProcAddr` names | libvk64.c |
+| naga rejects the DXVK MSAA-resolve pipeline: integer varyings without `Flat`; `BuiltIn Layer` in a fragment shader | spirvfix R10 `flat-integer-varyings`, R11 `fragment-layer-to-zero` | `tools/spirvfix/spirvfix.mjs`, `spirvfix-r10-r11.test.mjs` |
+| Dawn rejects every frame: pipeline vs pass attachment state; scissor outside render target; Float texture bound where Depth expected | reset `st.pipeRec` per pass; `clampScissor`; `depth32float` placeholder for `texture_depth_*` | `web/vkwebgpu.mjs`, `vkwebgpu-pass-state-carryover.test.mjs` |
+| ~30 pipelines: `textureSample must only be called from uniform control flow` | fragment modules start with `diagnostic(off, derivative_uniformity);` | `vkwebgpu.mjs`, `vkwebgpu-derivative-uniformity.test.mjs` |
+| 5 pipelines: VS output vec4 vs FS input vec3/vec2 at the same location | `matchFragmentInputsToVertexOutputs` widens FS input and swizzles the private copy | `web/wgsl-utils.mjs`, `wgsl-varying-match.test.mjs` |
+| 7 pipelines: `texture_multisampled_2d_array` unresolved | `rewriteMultisampledTextures`: binding becomes the resolved `texture_2d_array`, per-sample loads read level 0 | `web/wgsl-utils.mjs`, `wgsl-multisampled-texture.test.mjs` |
+
+### Known remaining gaps
+
+- 1 pipeline: shader declares `texture_2d` but the descriptor set binds a cube view (layout Cube vs shader 2D). Rare, not handled.
+- Typed buffer SRV/UAV (`texel buffer`) bindings are not supported by the page tier.
+- C++ bridge (`source/vulkan/vk64bridge.cpp`) has no cases for `vkCmdClearDepthStencilImage`,
+  `vkCmdWriteTimestamp`, `vkCmdSetDepthBounds`; `vkCmdSetFrontFace`/`vkCmdSetCullMode`
+  (~1900 calls each) and `vkCmdSetEvent2` (~394) hit the extended-dynamic-state path. Command buffers
+  with no `CMD_BEGIN_RP` log "submit(v2): frame N has no framebuffer, skipped".
+- The shim change needs the rebuilt `libvulkan.so.1` packaged into the production rootfs.
+- The integration `dist/` lacks `shader-cache.mjs`; `game-probe.mjs` exits at ~17 s with a 404 against it
+  (probes here symlink it in from `web/`). The JS above must also reach the integration dist
+  (`vkwebgpu.mjs`, `wgsl-utils.mjs`, root-level `spirvfix.mjs`).
+- Probe helper: `PROBE_IGNORE_TERM=1` (another agent's cleanup can SIGTERM a long probe).
+
+### State at the end of this pass (build 6 wasm `4f603f50f` + JS above, JIT=1, ~900 s)
+
+Gang Beasts now runs Unity continuously through the page tier: ~1000 frames presented, ~8200 draw calls
+issued, 0 rejected frames, 0 Dawn validation errors, 1 skipped pipeline (Cube/2D mismatch). The canvas is
+**still black** and no menu is visible, so the next blocker is *content*, not validation:
+
+- Sampled every 50th full frame (16 passes; 1024x768 colour+depth passes with 10-33 draws):
+  the bgra8 presented targets stay all-black, while three rgba8 targets (two 1024x768, one 512x384) are
+  constant `avg=85.3` (one channel at 255, others 0) on every sampled frame. A target that never changes
+  while the game renders is wrong-valued output, not scene content. Candidate causes, most likely first:
+  1. A shader writes a constant (translation/spirvfix issue in a Unity shader, or a texel-buffer/raw
+     buffer read returning zero because the SRV/UAV could not be created - see below).
+  2. Dynamic cull mode/front face (`vkCmdSetCullMode`/`SetFrontFace`, ~4200 calls each, unimplemented in
+     the bridge) leave the pipeline's static state; if DXVK relies on dynamic state every draw may be
+     culled.
+  3. Reversed-Z / depth state: the passes carry one `clearDepth` per pass.
+- DXVK logs `D3D11: Cannot create shader resource view` / `unordered access view` (view format 39 on a
+  buffer resource, usage 137) 8 times: typed/raw buffer SRV/UAV need texel-buffer formats advertised by
+  `vkGetPhysicalDeviceFormatProperties` and a page-tier storage-buffer path. Unity compute (skinning,
+  post effects) depends on them.
+- `vkQueueSubmit: bad/stale handle` (one log per id) and 359 `submit(v2): frame N has no framebuffer` are
+  the older descriptor/command-buffer patterns, present from the start; not a regression.
+- Probe flakiness: `page.screenshot` 30 s timeouts end long probes on a loaded host (gb-next22/23 died
+  at ~410 s); rerun.
+
+Per-pass readback: now committed as an opt-in diagnostic. Launch with `?bwPassReadback=N` (and optionally
+`&bwPassReadbackMax=M`, default 64 passes) and every Nth frame each render pass's single-sample
+rgba8/bgra8 colour targets are copied back and reported as
+`[bwPassReadback] {"frame":…,"passes":[{"pass","w","h","draws","vs":[hash],"fs":[hash],"targets":[{"avg":[r,g,b,a],"constant":bool,"constantColor","nonBlackPixels","pixels"}]}]}`
+on the console and in `globalThis.bwPassReadbackLog` (last 8 reports). The first pass whose target goes
+constant, together with its vs/fs hashes, localises the black frame. Off by default (adds a copy plus a
+map per pass). The earlier scratch diagnostics (`BW_FRAME`, `BW_TARGET`, `BW_SKIP`, `BW_UNCAPTURED`) are
+still not committed.
+
+### Build-8 C++ items (gb2 branch)
+
+- `vkCmdSetCullMode` / `vkCmdSetFrontFace` (+EXT): new `RASTER_STATE` (0x1A) record and an `RST1`
+  pipeline tail; the page applies them only to pipelines that declare the state dynamic (DXVK always does).
+- `vkCmdSetEvent2`/`ResetEvent2`/`WaitEvents2` map onto the existing event path; `vkCmdWriteTimestamp(2)`
+  and `vkCmdSetDepthBounds` are accepted as no-ops (timestamps are synthesised at read time; WebGPU has
+  no depth-bounds test).
+- `vkCmdClearDepthStencilImage` (64-bit guest only): `IMAGE_CLEAR_DS` (0x1B), replayed as clearing render
+  passes per mip/layer.
+- `vkGetPhysicalDeviceFormatProperties` now advertises UNIFORM/STORAGE_TEXEL_BUFFER for the usual
+  texel-buffer formats. Caveat: the page tier cannot yet consume texel-buffer descriptors, so DXVK will
+  now create buffer SRV/UAVs whose shaders the page ignores; behaviour for Unity compute may change from
+  "view creation fails" to "dispatch reads nothing".
+
+### The extra signal checks
+
+Not added. The traces show Unity running, presenting and creating Vulkan resources; no thread sits in
+`connect`/`accept`/`KThread::sleep`/`epoll_wait` waiting for a signal. They remain the same latent
+hang class (below) and should be added only if a trace shows one.
+
 ## Residual / next
 
 - Other blocking sites not covered: `connect`/`accept`, `KThread::sleep`, `epoll_wait`, and any

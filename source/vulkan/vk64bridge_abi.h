@@ -351,6 +351,13 @@ enum {
     VK64_fn_vkCmdSetStencilReference,
     VK64_fn_vkCmdCopyQueryPoolResults = 904, // (cmdBuf, pool, first, count, dstBuffer, offset, stride, flags)
     VK64_fn_vkCmdSetDepthBias = 905,          // (cmdBuf, constantFactor bits, clamp bits, slopeFactor bits)
+    // Extended dynamic state / events / timestamps (2026-10-23). Append-only.
+    VK64_fn_vkCmdSetCullMode = 906,           // (cmdBuf, VkCullModeFlags) -> replayed for pipelines that declare VK_DYNAMIC_STATE_CULL_MODE
+    VK64_fn_vkCmdSetFrontFace = 907,          // (cmdBuf, VkFrontFace) -> replayed for pipelines that declare VK_DYNAMIC_STATE_FRONT_FACE
+    VK64_fn_vkCmdSetEvent2 = 908,             // (cmdBuf, event, pDependencyInfo*) -> signalled (same as vkCmdSetEvent)
+    VK64_fn_vkCmdClearDepthStencilImage = 909, // (cmdBuf, image, layout, pDepthStencil*, rangeCount, pRanges*) -> GPU clear (64-bit shim only)
+    VK64_fn_vkCmdWriteTimestamp = 910,        // (cmdBuf, stage, pool, query) -> accepted; timestamp results are synthesized from the host clock
+    VK64_fn_vkCmdSetDepthBounds = 911,        // (cmdBuf, min bits, max bits) -> accepted; WebGPU has no depth-bounds test
     VK64_fn__MAX
 };
 
