@@ -152,6 +152,18 @@ test('ES compatibility stubs reject loudly and preserve sticky GL error semantic
   }
 });
 
+test('glshim TODO fields are dead scaffolding and do not gate active shim behavior', () => {
+  const shimSrc = readFileSync(join(repoRoot, 'source/opengl/es/glshim.c'), 'utf8');
+  assert.match(shimSrc, /\/\/ TODO: dynamic type support\?[\s\S]{0,150}\/\*[\s\S]*?\*\//);
+  assert.equal([...shimSrc.matchAll(/\bblock_t\b/g)].length, 3,
+    'block_t should remain declaration-only until an immediate-mode block path is enabled');
+  assert.equal([...shimSrc.matchAll(/\brect_arb\b/g)].length, 1,
+    'rect_arb is only a declaration, not active target selection');
+  assert.match(shimSrc, /void shim_glEnable\(GLenum cap\)[\s\S]*?case GL_TEXTURE_2D:/);
+  assert.match(shimSrc, /void shim_glDisable\(GLenum cap\)[\s\S]*?case GL_TEXTURE_2D:/);
+  assert.match(shimSrc, /void glLineStipple\(GLint factor, GLushort pattern\)/);
+});
+
 test('GLX pixmap/window attributes reject once and return None instead of panicking', () => {
   for (const [name, warning] of [['gl_common_XCreatePixmap', 'glXCreatePixmap: unsupported attrib_list'], ['gl_common_XCreateWindow', 'glXCreateWindow: unsupported attrib_list']]) {
     const body = new RegExp(`void ${name}\\s*\\([^)]*\\)\\s*\\{([\\s\\S]*?)\\n\\}`).exec(glCommonSrc)?.[1] || '';
