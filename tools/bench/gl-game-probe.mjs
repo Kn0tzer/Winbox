@@ -46,8 +46,10 @@ const exe = process.env.GAME_EXE || profile.exe;
 const arch = process.env.GAME_ARCH || profile.arch;
 const args = process.env.GAME_ARGS ? JSON.parse(process.env.GAME_ARGS) : profile.args;
 const glVersion = process.env.GL_VERSION || '3.2';
+const jit = process.env.JIT || '0';
 if (!['x86', 'x64'].includes(arch) || !Array.isArray(args) || args.some(arg => typeof arg !== 'string'))
   throw new Error('Invalid GAME_ARCH or GAME_ARGS');
+if (!['0', '1'].includes(jit)) throw new Error('JIT must be 0 or 1');
 
 const outputDir = resolve(process.env.OUT || join(workRoot, 'evidence', game));
 const gameZip = resolve(process.env.GAME_ZIP || join(workRoot, `${game}-probe.zip`));
@@ -100,6 +102,7 @@ const result = {
   arch,
   args,
   glVersion,
+  jit,
   backend: 'WebGPU default',
   gameRoot,
   gameZip,
@@ -178,6 +181,7 @@ try {
     arch,
     args: JSON.stringify(args),
     glversion: glVersion,
+    jit,
     session: '0',
     persist: '0',
     fresh: '1',
