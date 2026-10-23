@@ -1,20 +1,22 @@
 # Winbox manager status (keep updated; read this first)
 
-Main branch: `fix/winbox-chromium-20261018` in /home/ubuntu/boxedwine64 (local only, unpushed, undeployed).
-Last merged: glsh, recover, gb, loopback sockets, WebGPU GL (HEAD 723b3a056 builds and maps notepad jit=0 in 43 s). Earlier final report: docs/reports/winbox-finish-20261020.md.
+Main branch: `fix/winbox-chromium-20261018` in /home/ubuntu/boxedwine64. Integ build 5 (integ/winbox-20261022b HEAD 76f517d38) is merged here, deployed to /home/ubuntu/kn0tzer/winbox and pushed (see deploy notes in docs/reports/winbox-finish-20261020.md). Earlier final report: docs/reports/winbox-finish-20261020.md.
 
-## Demo matrix on integ build 2026-10-22/23 (main + solhang + solq3 + jitpar + gb2 + cpu32b; seconds click -> mapped, jit0/jit1)
-notepad 78/122, snake 79/82, celeste 27/31, portal 30/38, doom 53/85, gangbeasts 207/204 - ALL MAP (first time for Gang Beasts: wine suspend-thread signals now interrupt blocked 64-bit syscalls). Notepad/snake times were measured under load ~10. Unit suite 159/159.
-Next integ build (in progress) adds: Portal BC textures + menu (lane portal), Q3 INSD recover, shader cache (optional, default off).
-Unmerged/abandoned: mem2 (abandoned). CPU32 JIT (cpu32b) lane stopped on the free-tier limit (resets 27 Oct); its 4 commits are merged.
+## Demo matrix on integ build 5 (2026-10-23; seconds click -> mapped, jit0/jit1, probes ran under load ~9 so absolute times are inflated)
+notepad 121/117, snake 66/75, celeste 49/42, portal 46/27, gangbeasts 230/263, doom 75/79 - ALL MAP in both JIT modes. Unit suite 161/0, launcher-ui and browser.mjs pass.
+Build 5 contents: Portal BC textures + menu + 2 MiB fszipurl blocks/read-ahead, Q3 INSD recover, optional shader cache (default off), x86-64 sysinfo fix (Mindustry JVM now starts), new Settings UI (folder toggle + "?" help, brief JIT note, shader cache, no WebGL/sharpness settings), simple Performance panel (fps, frame time, CPU time, GPU time), flowchart with "GL bridge" straight to WebGPU. Export fix: shader-cache.mjs was not copied to dist (now in tools/browser/build.mjs, guarded by unit test export-module-closure).
+
+## Lane state after build 5
+- Q3: reaches Q3DM1 scene via WebGPU (2 FPS first present, guest then dies). Root cause of the crash chain: Quake3e VBO path calls null qglGenProgramsARB (no ARB vertex/fragment program advertised). Pending: `r_vbo 0` launch arg + real glMultiTexCoord2fARB/glClientActiveTextureARB; CPU64 instruction-fetch fault commit 5fb4f1ad1 (lane solq3) not yet built.
+- Mindustry: JVM starts, GL init reached, then black screen; main thread runs inside jvm.dll (slow vs stuck being measured).
+- Gang Beasts: reaches window; lane sonnet is fixing shader/format issues for the next blocker (commits 6bdb50261, a40814158 + depth/stencil format fix).
+- Boot time: no kernel wake latency found in source; opt-in wakeprofile counters 12ecdbe6e (needs a build) and fontconfig-cache ab9edc591 (no measurable win, unmerged).
+- CPU32 JIT lane blocked until 27 Oct (free-tier limit).
 
 ## Open problems
-1. mem2 branch `lane/winbox-mem2-20261021` (KMemory64 open-addressed page table): ABANDONED. After a hash-mixer fix (b74b64436) native random reads are -13.6% and 8 MiB stride -2.7% vs main, notepad unverified (build-lock timeouts), snake took 225 s. Not worth more effort; main stays without it.
-2. Q3 draws nothing (client arrays), Mindustry stuck at 82% (errno 5 loop), Gang Beasts no swapchain: Luna takeover lanes in flight.
-3. jitpar lane (JIT correctness/startup, snake jit=1 root cause): round 4 pending.
-4. Portal blank screenshot; CPU32 JIT slower than interpreter; CPU32 recovery test LabelAlreadyBound (test reordered last).
-5. Unit suite: 150/151 pass. Only `native-socket-safety` fails (3 subtests): its extracted-source stubs lack the new loopback members (loopbackStream, loopbackDatagram, ensureLoopbackBound, ...). Hand to solhang after its socket work lands, since it is editing the same functions. Fixed here: build-lock, browser-network, cpu64-opcode-coverage, xwire-focus (stale tests, not product bugs).
-6. Codex is back (Luna only; Sol access gone). Sol lanes stopped; Luna lanes thr_km7i552v9i (Q3) and thr_aeh57tei89 (Mindustry/Gang Beasts hangs + native-socket-safety stubs) took over their worktrees. jitpar (thr_5annabscvc) and mem2 (thr_2y9kiyujhs) resumed.
+1. mem2 (KMemory64 page table) ABANDONED.
+2. Notepad/Snake startup 65-120 s under load: dominated by Wine service/socket startup, not kernel wake latency.
+3. CPU32 JIT slower than interpreter; notepad JIT startup ~1.26-1.29x interpreter (accepted).
 
 ## Workflow speedups
 - New worktree: `/home/ubuntu/scripts/winbox-wt-prep.sh <worktree>` (offline assets; local manifest is assume-unchanged, never commit it).

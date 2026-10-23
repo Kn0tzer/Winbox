@@ -26,3 +26,9 @@ Ten lane branches were merged (shaders, cpu32, cpu64, render, ui, jitoff, gamepa
 - Unit suite: 7 failures from the integration run, mostly dist-artifact checks, not triaged.
 - Local builds need the main repo's runtime-assets manifest and ignored DXVK/vkd3d outputs; the pinned release download returns 404.
 - Profiling covers Doom with JIT on only.
+
+## Update 2026-10-23: integ build 5 shipped
+- Matrix (click to mapped, jit0/jit1, s): notepad 121/117, snake 66/75, celeste 49/42, portal 46/27, gangbeasts 230/263, doom 75/79. All map in both modes. Unit 161/0; launcher-ui and browser.mjs pass. Times were taken under shared load (~9).
+- User-facing changes: folder mode moved from the home page into Settings as a toggle with a "?" help; JIT setting help is two sentences; WebGPU/WebGL and sharpness settings removed; Performance panel shows fps, frame time, CPU time, GPU time; flowchart renamed "GL subset" to "GL bridge" and dropped the WebGL2 path.
+- Fixes: x86-64 sysinfo reports memory (Mindustry JVM heap check), export now includes shader-cache.mjs, vk-page-lifetime fixture no longer sets the removed #backend setting.
+- Open: Q3 (null qglGenProgramsARB, VBO path), Mindustry black screen after GL init, Gang Beasts shader fixes, startup time dominated by Wine service waits.
