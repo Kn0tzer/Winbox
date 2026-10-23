@@ -36,3 +36,48 @@ test('texSubImage2D applies the same legacy single-channel expansion as texImage
     assert.deepEqual([...texture.pixels], [96, 96, 96, 255]);
   } finally { gpu.restore(); }
 });
+
+test('the S3TC extension decodes DXT1, DXT3, and DXT5 blocks without GPU features', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: () => {} });
+    await gl.ready;
+    const extension = gl.getExtension('WEBGL_compressed_texture_s3tc');
+    assert.ok(extension);
+    assert.ok(gl.getSupportedExtensions().includes('WEBGL_compressed_texture_s3tc'));
+    const cases = [
+      [extension.COMPRESSED_RGB_S3TC_DXT1_EXT, new Uint8Array([0x00, 0xf8, 0x00, 0xf8, 0, 0, 0, 0])],
+      [extension.COMPRESSED_RGBA_S3TC_DXT3_EXT, new Uint8Array([255, 255, 255, 255, 255, 255, 255, 255, 0x00, 0xf8, 0x00, 0xf8, 0, 0, 0, 0])],
+      [extension.COMPRESSED_RGBA_S3TC_DXT5_EXT, new Uint8Array([255, 255, 0, 0, 0, 0, 0, 0, 0x00, 0xf8, 0x00, 0xf8, 0, 0, 0, 0])],
+    ];
+    for (const [format, block] of cases) {
+      const texture = gl.createTexture();
+      gl.bindTexture(0x0de1, texture);
+      gl.compressedTexImage2D(0x0de1, 0, format, 4, 4, 0, block.length, block);
+      assert.deepEqual([...texture.pixels.subarray(0, 4)], [255, 0, 0, 255]);
+      assert.deepEqual([...texture.pixels.subarray(60, 64)], [255, 0, 0, 255]);
+    }
+    assert.equal(gl.getError(), 0);
+  } finally { gpu.restore(); }
+});
+
+test('compressed texture subimages update decoded pixels and unsupported formats reject loudly', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    const texture = gl.createTexture(), block = new Uint8Array([0x00, 0xf8, 0x00, 0xf8, 0, 0, 0, 0]);
+    gl.bindTexture(0x0de1, texture);
+    gl.compressedTexImage2D(0x0de1, 0, 0x83f0, 8, 4, 0, 16, new Uint8Array([...block, ...block]));
+    gl.compressedTexSubImage2D(0x0de1, 0, 4, 0, 4, 4, 0x83f0, 8, block);
+    assert.deepEqual([...texture.pixels.slice(16, 20)], [255, 0, 0, 255]);
+    gl.compressedTexImage2D(0x0de1, 0, 0x8e8c, 4, 4, 0, 16, new Uint8Array(16));
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('compressed texture format 0x8e8c')));
+    gl.compressedTexImage2D(0x0de1, 0, 0x9274, 4, 4, 0, 8, block);
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('compressed texture format 0x9274')));
+    assert.equal(gl.getExtension('WEBGL_compressed_texture_s3tc').COMPRESSED_RGBA_S3TC_DXT5_EXT, 0x83f3);
+    assert.equal(gl.getExtension('EXT_texture_filter_anisotropic'), null, 'unimplemented extensions stay unadvertised');
+  } finally { gpu.restore(); }
+});

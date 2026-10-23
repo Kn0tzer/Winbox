@@ -78,6 +78,63 @@ const GL_COMPARE = new Map([[0x0200, 'never'], [0x0201, 'less'], [0x0202, 'equal
 const GL_BLEND_OP = new Map([[0x8006, 'add'], [0x800a, 'subtract'], [0x800b, 'reverse-subtract'], [0x8007, 'min'], [0x8008, 'max']]);
 const signedType = type => [0x1400, 0x1402, 0x1404].includes(type);
 const GL_ENABLE_CAPABILITIES = new Set([0x0b44, 0x0b71, 0x0b90, 0x0bc0, 0x0be2, 0x0bd0, 0x0c11, 0x8037, 0x809e, 0x80a0, 0x8c89]);
+const S3TC_BLOCK_BYTES = new Map([[0x83f0, 8], [0x83f1, 8], [0x83f2, 16], [0x83f3, 16], [0x8c4c, 8], [0x8c4d, 8], [0x8c4e, 16], [0x8c4f, 16]]);
+
+function rgb565(value) {
+  return [((value >> 11) & 31) * 255 / 31, ((value >> 5) & 63) * 255 / 63, (value & 31) * 255 / 31].map(Math.round);
+}
+
+function decodeS3tc(format, width, height, data) {
+  const blockBytes = S3TC_BLOCK_BYTES.get(format);
+  if (!blockBytes) return null;
+  const bytes = bytesOf(data), blocksWide = Math.ceil(width / 4), blocksHigh = Math.ceil(height / 4);
+  if (bytes.length !== blocksWide * blocksHigh * blockBytes) return null;
+  const output = new Uint8Array(width * height * 4);
+  for (let by = 0; by < blocksHigh; by++) for (let bx = 0; bx < blocksWide; bx++) {
+    const offset = (by * blocksWide + bx) * blockBytes;
+    const dxt1 = blockBytes === 8, alphaMode = format === 0x83f2 || format === 0x8c4e;
+    const alpha = new Uint8Array(16).fill(255);
+    let colorOffset = offset;
+    if (!dxt1 && alphaMode) {
+      for (let i = 0; i < 8; i++) {
+        const packed = bytes[offset + i];
+        alpha[i * 2] = (packed & 15) * 17;
+        alpha[i * 2 + 1] = (packed >> 4) * 17;
+      }
+      colorOffset += 8;
+    } else if (!dxt1) {
+      const a0 = bytes[offset], a1 = bytes[offset + 1];
+      const table = new Uint8Array(8); table[0] = a0; table[1] = a1;
+      if (a0 > a1) for (let i = 1; i <= 6; i++) table[i + 1] = Math.round(((7 - i) * a0 + i * a1) / 7);
+      else {
+        for (let i = 1; i <= 4; i++) table[i + 1] = Math.round(((5 - i) * a0 + i * a1) / 5);
+        table[6] = 0; table[7] = 255;
+      }
+      let indices = 0n;
+      for (let i = 0; i < 6; i++) indices |= BigInt(bytes[offset + 2 + i]) << BigInt(i * 8);
+      for (let i = 0; i < 16; i++) alpha[i] = table[Number((indices >> BigInt(i * 3)) & 7n)];
+      colorOffset += 8;
+    }
+    const c0 = bytes[colorOffset] | (bytes[colorOffset + 1] << 8);
+    const c1 = bytes[colorOffset + 2] | (bytes[colorOffset + 3] << 8);
+    const palette = [rgb565(c0), rgb565(c1), [0, 0, 0], [0, 0, 0]];
+    const supportsDxt1Alpha = format === 0x83f1 || format === 0x8c4d;
+    const fourColor = !dxt1 || c0 > c1 || !supportsDxt1Alpha;
+    for (let c = 0; c < 3; c++) {
+      palette[2][c] = fourColor ? Math.round((2 * palette[0][c] + palette[1][c]) / 3) : Math.round((palette[0][c] + palette[1][c]) / 2);
+      palette[3][c] = fourColor ? Math.round((palette[0][c] + 2 * palette[1][c]) / 3) : 0;
+    }
+    let colorIndices = (bytes[colorOffset + 4] | (bytes[colorOffset + 5] << 8) | (bytes[colorOffset + 6] << 16) | (bytes[colorOffset + 7] << 24)) >>> 0;
+    for (let py = 0; py < 4; py++) for (let px = 0; px < 4; px++) {
+      const local = py * 4 + px, x = bx * 4 + px, y = by * 4 + py;
+      if (x >= width || y >= height) continue;
+      const colorIndex = (colorIndices >>> (local * 2)) & 3, dest = (y * width + x) * 4;
+      output[dest] = palette[colorIndex][0]; output[dest + 1] = palette[colorIndex][1]; output[dest + 2] = palette[colorIndex][2];
+      output[dest + 3] = dxt1 && !fourColor && colorIndex === 3 ? 0 : alpha[local];
+    }
+  }
+  return output;
+}
 function halfToFloat(value) {
   const sign = (value & 0x8000) ? -1 : 1, exponent = (value >> 10) & 0x1f, fraction = value & 0x3ff;
   if (exponent === 0) return sign * 2 ** -14 * (fraction / 1024);
@@ -894,8 +951,23 @@ export class WebGPUGL {
   getError() { const error = this._error; this._error = GL.NO_ERROR; return error; }
   isContextLost() { return false; }
   getContextAttributes() { return { alpha: true, depth: true, stencil: false, antialias: false, premultipliedAlpha: true, preserveDrawingBuffer: true }; }
-  getSupportedExtensions() { return []; }
-  getExtension() { return null; }
+  getSupportedExtensions() { return ['WEBGL_compressed_texture_s3tc', 'ANGLE_instanced_arrays', 'OES_vertex_array_object']; }
+  getExtension(name) {
+    if (name === 'WEBGL_compressed_texture_s3tc' || name === 'WEBKIT_WEBGL_compressed_texture_s3tc') return {
+      COMPRESSED_RGB_S3TC_DXT1_EXT: 0x83f0, COMPRESSED_RGBA_S3TC_DXT1_EXT: 0x83f1,
+      COMPRESSED_RGBA_S3TC_DXT3_EXT: 0x83f2, COMPRESSED_RGBA_S3TC_DXT5_EXT: 0x83f3,
+    };
+    if (name === 'ANGLE_instanced_arrays') return {
+      vertexAttribDivisorANGLE: this.vertexAttribDivisor.bind(this),
+      drawArraysInstancedANGLE: this.drawArraysInstanced.bind(this),
+      drawElementsInstancedANGLE: this.drawElementsInstanced.bind(this),
+    };
+    if (name === 'OES_vertex_array_object') return {
+      createVertexArrayOES: this.createVertexArray.bind(this), deleteVertexArrayOES: this.deleteVertexArray.bind(this),
+      isVertexArrayOES: this.isVertexArray.bind(this), bindVertexArrayOES: this.bindVertexArray.bind(this),
+    };
+    return null;
+  }
 
   // S2a keeps the original client bytes because WebGPU buffers cannot be read
   // synchronously. GPU copies are created lazily with every buffer role the GL
@@ -2047,6 +2119,44 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       this._device.queue.writeTexture({ texture: gpu, mipLevel: level, origin: [xoffset, record.height - yoffset - height, 0] }, gpuRows,
         { bytesPerRow: width * 4, rowsPerImage: height }, [width, height, 1]);
     });
+  }
+  compressedTexImage2D(target, level, format, width, height, border, imageSize, data) {
+    if (target !== GL.TEXTURE_2D) { this._rejectUnsupported(`compressed texture target 0x${Number(target).toString(16)}`, GL.INVALID_OPERATION); return; }
+    if (width < 0 || height < 0 || border !== 0 || imageSize < 0) { this._recordError(GL.INVALID_VALUE); return; }
+    const blockBytes = S3TC_BLOCK_BYTES.get(format);
+    if (!blockBytes) {
+      const known = [0x9270, 0x9271, 0x9272, 0x9273, 0x9274, 0x9275, 0x9276, 0x9277, 0x9278, 0x9279, 0x8e8c, 0x8e8d].includes(format);
+      this._rejectUnsupported(`compressed texture format 0x${Number(format).toString(16)}`, known ? GL.INVALID_OPERATION : GL.INVALID_ENUM);
+      return;
+    }
+    const expectedSize = Math.ceil(width / 4) * Math.ceil(height / 4) * blockBytes;
+    if (imageSize !== expectedSize) { this._recordError(GL.INVALID_VALUE); return; }
+    const pixels = decodeS3tc(format, width, height, data);
+    if (!pixels) { this._recordError(GL.INVALID_VALUE); return; }
+    const texture = this._boundTexture(target);
+    if (!texture) { this._recordError(GL.INVALID_OPERATION); return; }
+    texture.width = width; texture.height = height; texture.internalFormat = format;
+    texture.levels.set(level, { width, height, pixels });
+    if (level === 0) texture.pixels = pixels;
+    this._enqueue(() => this._ensureTextureGpu(texture));
+  }
+  compressedTexSubImage2D(target, level, xoffset, yoffset, width, height, format, imageSize, data) {
+    const texture = this._boundTexture(target), record = texture?.levels.get(level);
+    if (target !== GL.TEXTURE_2D) { this._rejectUnsupported(`compressed texture target 0x${Number(target).toString(16)}`, GL.INVALID_OPERATION); return; }
+    if (!record || texture.internalFormat !== format) { this._recordError(GL.INVALID_OPERATION); return; }
+    if (xoffset < 0 || yoffset < 0 || width < 0 || height < 0 || xoffset + width > record.width || yoffset + height > record.height) { this._recordError(GL.INVALID_VALUE); return; }
+    const blockBytes = S3TC_BLOCK_BYTES.get(format);
+    if (!blockBytes) { this._rejectUnsupported(`compressed texture format 0x${Number(format).toString(16)}`, GL.INVALID_OPERATION); return; }
+    if ((xoffset % 4) || (yoffset % 4) || (width % 4 && xoffset + width !== record.width) || (height % 4 && yoffset + height !== record.height)) { this._recordError(GL.INVALID_OPERATION); return; }
+    const expectedSize = Math.ceil(width / 4) * Math.ceil(height / 4) * blockBytes;
+    const pixels = imageSize === expectedSize ? decodeS3tc(format, width, height, data) : null;
+    if (!pixels) { this._recordError(GL.INVALID_VALUE); return; }
+    for (let y = 0; y < height; y++) {
+      const dst = ((yoffset + y) * record.width + xoffset) * 4;
+      record.pixels.set(pixels.subarray(y * width * 4, (y + 1) * width * 4), dst);
+    }
+    if (level === 0) texture.pixels = record.pixels;
+    this._enqueue(() => this._ensureTextureGpu(texture));
   }
   texParameteri(target, parameter, value) { const texture = this._boundTexture(target); if (texture) texture.params.set(parameter, value); }
   texParameterf(target, parameter, value) { this.texParameteri(target, parameter, value); }
