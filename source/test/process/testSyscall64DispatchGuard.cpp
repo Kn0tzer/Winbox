@@ -16,6 +16,11 @@
 #include <iterator>
 
 #include "../cpu/testCPU.h"
+#ifdef BOXEDWINE_GUEST_X64
+#include "cpu64.h"
+#include "kmemory64.h"
+#include "syscall64.h"
+#endif
 
 // Keep a source-level guard around the x64 ABI dispatcher. The ordinary native
 // test build does not enable BOXEDWINE_GUEST_X64, so it cannot call that
@@ -81,5 +86,24 @@ void testSyscall64DispatchGuard() {
         testFail("unsupported pidfd siginfo delivery must log its feature and errno");
     }
 }
+
+#ifdef BOXEDWINE_GUEST_X64
+void testInotify64LoudRejection() {
+    TestContext& context = testContext();
+    if (!context.process->memory64) context.process->memory64 = new KMemory64(context.process.get());
+    CPU64 cpu(context.process->memory64);
+    cpu.thread = context.thread;
+    for (U64 number : {253ULL, 254ULL, 255ULL, 294ULL}) {
+        cpu.reg[X64_RAX].setU64(number);
+        cpu.reg[X64_RDI].setU64(0);
+        cpu.reg[X64_RSI].setU64(0);
+        cpu.reg[X64_RDX].setU64(0);
+        ksyscall64(&cpu);
+        if ((S64)cpu.reg[X64_RAX].u64 != -K_ENOSYS) {
+            testFail("inotify syscall %llu did not return -ENOSYS", (unsigned long long)number);
+        }
+    }
+}
+#endif
 
 #endif

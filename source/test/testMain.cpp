@@ -72,6 +72,7 @@ void testTimerfd64Syscalls();
 void testCopyFileRange64Syscall();
 void testProcessVm64Syscalls();
 void testPidfd64Syscalls();
+void testInotify64LoudRejection();
 #endif
 
 namespace {
@@ -91,6 +92,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},
     {testProcessVm64Syscalls, "Test x64 process_vm_readv/writev syscalls"},
     {testPidfd64Syscalls, "Test x64 pidfd_open/send_signal syscalls"},
+    {testInotify64LoudRejection, "Test loud x64 inotify rejection"},
 };
 #else
 const TestEntry TEST_ENTRIES[] = {
