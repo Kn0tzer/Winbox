@@ -78,6 +78,8 @@ test('compressed texture subimages update decoded pixels and unsupported formats
     assert.equal(gl.getError(), 0x0502);
     assert.ok(logs.some(line => line.includes('compressed texture format 0x9274')));
     assert.equal(gl.getExtension('WEBGL_compressed_texture_s3tc').COMPRESSED_RGBA_S3TC_DXT5_EXT, 0x83f3);
+    assert.equal(gl.getExtension('EXT_read_format_bgra').BGRA_EXT, 0x80e1);
+    assert.ok(gl.getSupportedExtensions().includes('EXT_read_format_bgra'));
     assert.equal(gl.getExtension('EXT_texture_filter_anisotropic'), null, 'unimplemented extensions stay unadvertised');
   } finally { gpu.restore(); }
 });

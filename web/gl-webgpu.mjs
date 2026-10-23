@@ -951,7 +951,7 @@ export class WebGPUGL {
   getError() { const error = this._error; this._error = GL.NO_ERROR; return error; }
   isContextLost() { return false; }
   getContextAttributes() { return { alpha: true, depth: true, stencil: false, antialias: false, premultipliedAlpha: true, preserveDrawingBuffer: true }; }
-  getSupportedExtensions() { return ['WEBGL_compressed_texture_s3tc', 'ANGLE_instanced_arrays', 'OES_vertex_array_object']; }
+  getSupportedExtensions() { return ['WEBGL_compressed_texture_s3tc', 'ANGLE_instanced_arrays', 'OES_vertex_array_object', 'EXT_read_format_bgra']; }
   getExtension(name) {
     if (name === 'WEBGL_compressed_texture_s3tc' || name === 'WEBKIT_WEBGL_compressed_texture_s3tc') return {
       COMPRESSED_RGB_S3TC_DXT1_EXT: 0x83f0, COMPRESSED_RGBA_S3TC_DXT1_EXT: 0x83f1,
@@ -966,6 +966,7 @@ export class WebGPUGL {
       createVertexArrayOES: this.createVertexArray.bind(this), deleteVertexArrayOES: this.deleteVertexArray.bind(this),
       isVertexArrayOES: this.isVertexArray.bind(this), bindVertexArrayOES: this.bindVertexArray.bind(this),
     };
+    if (name === 'EXT_read_format_bgra') return { BGRA_EXT: 0x80e1 };
     return null;
   }
 
@@ -2330,7 +2331,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
   drawBuffers(buffers) {
     const values = Array.from(buffers || []);
     if (!values.length) { this._bufferSelection(this._drawFramebuffer).draw = GL.NONE; return; }
-    if (values.length > 1) { this._recordError(GL.INVALID_OPERATION); return; }
+    if (values.length > 1) { this._rejectUnsupported('multiple draw buffers (MRT)', GL.INVALID_OPERATION); return; }
     const defaultFramebuffer = this._isDefaultFramebuffer(this._drawFramebuffer);
     const expected = defaultFramebuffer ? GL.BACK : 0x8ce0;
     if (values[0] !== GL.NONE && values[0] !== GL.BACK && !(values[0] >= 0x8ce0 && values[0] <= 0x8cff)) { this._recordError(GL.INVALID_ENUM); return; }

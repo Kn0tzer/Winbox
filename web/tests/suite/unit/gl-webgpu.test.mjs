@@ -80,9 +80,9 @@ test('GL depthRange is stored and applied to WebGPU draw viewports', async () =>
 });
 
 test('draw and read buffer selection is honored and GL errors latch until read', async () => {
-  const gpu = createValidationDevice();
+  const gpu = createValidationDevice(), logs = [];
   try {
-    const gl = new WebGPUGL(gpu.canvas, { log: () => {} });
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
     await gl.ready;
     assert.equal(gl.getParameter(0x8824), 1, 'the WebGPU backend exposes one supported draw buffer');
     gl.drawBuffers([0x0405]);
@@ -102,6 +102,9 @@ test('draw and read buffer selection is honored and GL errors latch until read',
     gl.drawBuffers([]);
     assert.equal(gl.getParameter(0x8825), 0, 'an empty draw-buffer list disables color output');
     gl.drawBuffers([0x0405]);
+    gl.drawBuffers([0x8ce0, 0x8ce1]);
+    assert.equal(gl.getError(), 0x0502, 'MRT exceeds this backend’s reported draw buffer limit');
+    assert.ok(logs.some(line => line.includes('multiple draw buffers (MRT)')));
 
     const pixel = new Uint8Array([9, 8, 7, 6]);
     gl.readBuffer(0);
