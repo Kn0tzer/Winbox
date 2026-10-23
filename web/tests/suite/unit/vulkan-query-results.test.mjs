@@ -112,13 +112,12 @@ int main(void) { return check_query_copy(); }
 });
 
 
-test('bridge records timestamp writes and executes timestamp/reset/copy commands in order', () => {
+test('bridge rejects query pools loudly until query sets are integrated with WebGPU replay', () => {
   const bridge = readFileSync(join(root, 'source/vulkan/vk64bridge.cpp'), 'utf8');
-  assert.equal((bridge.match(/c\.kind=CMD_WRITE_TIMESTAMP/g) || []).length, 2, 'both guest ABIs record timestamp pool and index');
-  assert.equal((bridge.match(/c\.kind=CMD_RESET_QUERY/g) || []).length, 2, 'both guest ABIs record command-buffer query resets');
-  assert.equal((bridge.match(/else if \(k\.kind == CMD_RESET_QUERY \|\| k\.kind == CMD_WRITE_TIMESTAMP\) execQueryCommand\(k\);/g) || []).length, 3,
-    'legacy submit, submit2, and 32-bit submit execute query operations before following copies');
-  assert.match(bridge, /pool->results\.resize\(pool->count\); pool->available\.resize\(pool->count\)/);
-  assert.match(bridge, /ci\.queryType != vkquery::VKQUERY_TIMESTAMP/);
-  assert.match(bridge, /pool->results, pool->available/);
+  assert.equal((bridge.match(/"query results are not integrated with WebGPU replay; VK_ERROR_FEATURE_NOT_PRESENT"/g) || []).length, 2,
+    'both guest ABIs reject query pool creation with a feature-specific warning');
+  assert.equal((bridge.match(/"timestamp queries are not integrated with WebGPU replay; device queue timestampValidBits is zero"/g) || []).length, 2,
+    'both guest ABIs warn when a timestamp command is incorrectly issued');
+  assert.match(bridge, /q\.timestampValidBits = 0/);
+  assert.doesNotMatch(bridge, /ci\.queryType != vkquery::VKQUERY_TIMESTAMP/);
 });

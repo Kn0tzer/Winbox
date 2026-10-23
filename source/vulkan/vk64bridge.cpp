@@ -3908,7 +3908,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         VkQueueFamilyProperties q = {};
         q.queueFlags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT;
         q.queueCount = 1;
-        q.timestampValidBits = 64;
+        q.timestampValidBits = 0;
         q.minImageTransferGranularity = VkExtent3D{1, 1, 1};
         if (v2) {
             VkQueueFamilyProperties2 q2 = {};
@@ -4275,17 +4275,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCreateQueryPool: {
         QueryPoolCreateInfo64Local ci = {};
         if (!args.a[3] || !readStruct(args.a[1], ci)) return VK_ERROR_INITIALIZATION_FAILED;
-        if (ci.queryType != vkquery::VKQUERY_TIMESTAMP) {
-            vk64Unsupported(ci.queryType == vkquery::VKQUERY_OCCLUSION ? "occlusion-query" : "pipeline-statistics-query",
-                            "query type is not implemented; VK_ERROR_FEATURE_NOT_PRESENT");
-            return VK_ERROR_FEATURE_NOT_PRESENT;
-        }
-        U64 id = 0;
-        QueryPool* pool = createObj<QueryPool>(K_QUERYPOOL, id);
-        pool->type = ci.queryType; pool->count = ci.queryCount; pool->flags = ci.flags;
-        pool->results.resize(pool->count); pool->available.resize(pool->count);
-        wr64(args.a[3], id);
-        return VK_SUCCESS;
+        const char* feature = ci.queryType == vkquery::VKQUERY_OCCLUSION ? "occlusion-query"
+            : ci.queryType == vkquery::VKQUERY_TIMESTAMP ? "timestamp-query" : "pipeline-statistics-query";
+        vk64Unsupported(feature, "query results are not integrated with WebGPU replay; VK_ERROR_FEATURE_NOT_PRESENT");
+        wr64(args.a[3], 0);
+        return VK_ERROR_FEATURE_NOT_PRESENT;
     }
     case VK64_fn_vkDestroyQueryPool:          dropObj(args.a[1]); return 0;
     case VK64_fn_vkResetQueryPool: {
@@ -5442,13 +5436,9 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         c.a = fnId == VK64_fn_vkCmdSetCullMode ? 0 : 1; c.b = (U32)args.a[1];
         pushCmd(cb, c); return 0;
     }
-    // Timestamp query results are synthesized from the host clock at read time and
-    // WebGPU has no depth-bounds test (the feature is not advertised), so both are
-    // accepted without a record.
     case VK64_fn_vkCmdWriteTimestamp: {
-        CmdBuf* cb=cbOf(args.a[0],"vkCmdWriteTimestamp");QueryPool* pool=objOf<QueryPool>(args.a[2],K_QUERYPOOL,"vkCmdWriteTimestamp");
-        VK64_DROP_IF(return 0,!cb||!pool||pool->type!=vkquery::VKQUERY_TIMESTAMP||args.a[3]>=pool->count);
-        Cmd c;c.kind=CMD_WRITE_TIMESTAMP;c.a=args.a[2];c.b=args.a[3];pushCmd(cb,c);return 0;
+        vk64Unsupported("timestamp-query", "timestamp queries are not integrated with WebGPU replay; device queue timestampValidBits is zero");
+        return 0;
     }
     case VK64_fn_vkCmdSetDepthBounds:
         return 0;
@@ -7323,17 +7313,11 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCreateQueryPool: {
         QueryPoolCreateInfo32Local ci = {};
         if (!args.a[3] || !readStruct32((U32)args.a[1], ci)) return VK_ERROR_INITIALIZATION_FAILED;
-        if (ci.queryType != vkquery::VKQUERY_TIMESTAMP) {
-            vk64Unsupported(ci.queryType == vkquery::VKQUERY_OCCLUSION ? "occlusion-query" : "pipeline-statistics-query",
-                            "query type is not implemented; VK_ERROR_FEATURE_NOT_PRESENT");
-            return VK_ERROR_FEATURE_NOT_PRESENT;
-        }
-        U64 id = 0;
-        QueryPool* pool = createObj32<QueryPool>(K_QUERYPOOL, id);
-        pool->type = ci.queryType; pool->count = ci.queryCount; pool->flags = ci.flags;
-        pool->results.resize(pool->count); pool->available.resize(pool->count);
-        wr64_32((U32)args.a[3], id);
-        return VK_SUCCESS;
+        const char* feature = ci.queryType == vkquery::VKQUERY_OCCLUSION ? "occlusion-query"
+            : ci.queryType == vkquery::VKQUERY_TIMESTAMP ? "timestamp-query" : "pipeline-statistics-query";
+        vk64Unsupported(feature, "query results are not integrated with WebGPU replay; VK_ERROR_FEATURE_NOT_PRESENT");
+        wr64_32((U32)args.a[3], 0);
+        return VK_ERROR_FEATURE_NOT_PRESENT;
     }
     case VK64_fn_vkResetQueryPool: {
         auto* pool=objOf32<QueryPool>(args.a[1],K_QUERYPOOL,"vkResetQueryPool");
@@ -7977,13 +7961,9 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         c.a = fnId == VK64_fn_vkCmdSetCullMode ? 0 : 1; c.b = (U32)args.a[1];
         pushCmd(cb, c); return 0;
     }
-    // Timestamp query results are synthesized from the host clock at read time and
-    // WebGPU has no depth-bounds test (the feature is not advertised), so both are
-    // accepted without a record.
     case VK64_fn_vkCmdWriteTimestamp: {
-        auto* cb=objOf32<CmdBuf>(args.a[0],K_CMDBUF,"vkCmdWriteTimestamp");auto* pool=objOf32<QueryPool>(args.a[2],K_QUERYPOOL,"vkCmdWriteTimestamp");
-        VK64_DROP_IF(return 0,!cb||!pool||pool->type!=vkquery::VKQUERY_TIMESTAMP||args.a[3]>=pool->count);
-        Cmd c;c.kind=CMD_WRITE_TIMESTAMP;c.a=args.a[2];c.b=args.a[3];pushCmd(cb,c);return 0;
+        vk64Unsupported("timestamp-query", "timestamp queries are not integrated with WebGPU replay; device queue timestampValidBits is zero");
+        return 0;
     }
     case VK64_fn_vkCmdSetDepthBounds:
         return 0;
