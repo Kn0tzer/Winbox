@@ -23,7 +23,8 @@ void testProcessVm64Syscalls() {
     if (!process->memory64) process->memory64 = new KMemory64(process.get());
     KMemory64* memory = process->memory64;
     constexpr U64 page = 0x71000000ULL;
-    if (!memory->getPageFlags(page >> K64_PAGE_SHIFT) && memory->mmapAnonymousFixed(page, K64_PAGE_SIZE, 3) != 0) {
+    if (!memory->getPageFlags(page >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(page, K64_PAGE_SIZE, 3) != page) {
         testFail("process_vm test could not map guest buffer");
         return;
     }

@@ -113,10 +113,13 @@ void testTimerfd64Syscalls() {
     }
 
     // x86-64 itimerspec: two {s64 sec, s64 nsec} values.
-    const U64 nowSec = timer->getClockNowMicroseconds() / 1000000;
+    // CLOCK_MONOTONIC absolute deadlines use the monotonic epoch, not realtime.
+    // KSystem's monotonic clock starts with the test process, so give it time
+    // to pass the one-second absolute deadline before asking for readiness.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
     memory->writeq(testPage, 0);
     memory->writeq(testPage + 8, 0);
-    memory->writeq(testPage + 16, nowSec ? nowSec - 1 : 0);
+    memory->writeq(testPage + 16, 1);
     memory->writeq(testPage + 24, 0);
     result = syscall(286, fd, 1 /*TFD_TIMER_ABSTIME*/, testPage, testPage + 0x40);
     if (result != 0 || !timer->isReadReady()) {
@@ -169,6 +172,7 @@ void testCopyFileRange64Syscall() {
         process->close(inFd); process->close(outFd);
         return;
     }
+    input->seek(0);
 
     CPU64 cpu(memory);
     cpu.thread = context.thread;

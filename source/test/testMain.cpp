@@ -78,6 +78,21 @@ namespace {
 
 int totalFails = 0;
 
+#ifdef BOXEDWINE_GUEST_X64
+const TestEntry TEST_ENTRIES[] = {
+    {testSyscall64DispatchGuard, "Test x64 syscall fallback guard"},
+    {testFutex64DispatchGuard, "Test x64 futex dispatch guard"},
+    {testTimerfdCore, "Test timerfd descriptor and expiration semantics"},
+    {testUnixSocketOptions, "Test Unix socket SOL_SOCKET options"},
+    {testEpollOneShotAndFlags, "Test epoll one-shot and exclusive flags"},
+    {testMemfdSeals, "Test memfd seal enforcement"},
+    {testEventfdFlags, "Test eventfd2 flag validation"},
+    {testTimerfd64Syscalls, "Test x64 timerfd syscall ABI"},
+    {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},
+    {testProcessVm64Syscalls, "Test x64 process_vm_readv/writev syscalls"},
+    {testPidfd64Syscalls, "Test x64 pidfd_open/send_signal syscalls"},
+};
+#else
 const TestEntry TEST_ENTRIES[] = {
     {testCpuSystemInstructions, "CPU32 system instruction fault and store behavior"},
     {testCpuCpuidAndCpuInfo, "CPU32 CPUID and proc cpuinfo architecture"},
@@ -714,6 +729,7 @@ const TestEntry TEST_ENTRIES[] = {
     // Last: known to abort with asmjit LabelAlreadyBound (exit 134) so it must not hide other tests.
     {testRecoverUnknownInstruction, "CPU32 unknown opcode recovery and UD2 fault"},
 };
+#endif
 
 } // namespace
 
