@@ -84,6 +84,113 @@
 (function () {
     "use strict";
 
+    (function installLazyZipPrefetch() {
+        if (typeof fetch !== "function" || globalThis.__bwLazyZipPrefetch) return;
+        globalThis.__bwLazyZipPrefetch = true;
+        var nativeFetch = fetch.bind(globalThis);
+        var BLOCK_512K = 512 * 1024;
+        var BLOCK_2M = 2 * 1024 * 1024;
+        var MAX_CACHE_BYTES = 192 * 1024 * 1024;
+        var cache = new Map();
+        var cacheBytes = 0;
+        var pending = new Map();
+        var totals = new Map();
+
+        function rangeOf(init) {
+            try {
+                var headers = init && init.headers;
+                if (!headers) return null;
+                if (typeof headers.get === "function") return headers.get("Range");
+                var keys = Object.keys(headers);
+                for (var i = 0; i < keys.length; i++) {
+                    if (keys[i].toLowerCase() === "range") return headers[keys[i]];
+                }
+            } catch (e) {}
+            return null;
+        }
+
+        function put(key, buffer) {
+            if (cache.has(key)) {
+                cacheBytes -= cache.get(key).byteLength;
+                cache.delete(key);
+            }
+            cache.set(key, buffer);
+            cacheBytes += buffer.byteLength;
+            while (cacheBytes > MAX_CACHE_BYTES) {
+                var oldest = cache.keys().next().value;
+                cacheBytes -= cache.get(oldest).byteLength;
+                cache.delete(oldest);
+            }
+        }
+
+        function block(url, start, end) {
+            var key = url + "|" + start + "|" + end;
+            var hit = cache.get(key);
+            if (hit) {
+                cache.delete(key);
+                cache.set(key, hit);
+                return Promise.resolve(hit);
+            }
+            var inflight = pending.get(key);
+            if (inflight) return inflight;
+            var job = nativeFetch(url, { headers: { Range: "bytes=" + start + "-" + end }, cache: "no-store" })
+                .then(function (response) {
+                    if (response.status !== 206) throw new Error("range " + response.status);
+                    var contentRange = response.headers.get("Content-Range") || "";
+                    var total = /\/(\d+)$/.exec(contentRange);
+                    if (total) totals.set(url, Number(total[1]));
+                    return response.arrayBuffer();
+                })
+                .then(function (buffer) {
+                    pending.delete(key);
+                    put(key, buffer);
+                    return buffer;
+                }, function (error) {
+                    pending.delete(key);
+                    throw error;
+                });
+            pending.set(key, job);
+            return job;
+        }
+
+        function prefetch(url, start, end) {
+            if (/\/wine(?:32|64)\.zip|\/support-[^/]+\.zip/.test(url)) return;
+            var span = end - start + 1;
+            var ahead = span === BLOCK_2M ? 2 : 4;
+            var total = totals.get(url);
+            for (var i = 1; i <= ahead; i++) {
+                var nextStart = start + i * span;
+                var nextEnd = nextStart + span - 1;
+                if (total && nextEnd >= total) break;
+                if (cache.has(url + "|" + nextStart + "|" + nextEnd) || pending.has(url + "|" + nextStart + "|" + nextEnd)) continue;
+                block(url, nextStart, nextEnd).catch(function () {});
+            }
+        }
+
+        globalThis.fetch = function (input, init) {
+            var url = typeof input === "string" ? input : input && input.url;
+            var range = rangeOf(init);
+            if (!url || !range) return nativeFetch(input, init);
+            var match = /^bytes=(\d+)-(\d+)$/.exec(range);
+            if (!match) return nativeFetch(input, init);
+            var start = Number(match[1]);
+            var end = Number(match[2]);
+            var span = end - start + 1;
+            if (end < start || (span !== BLOCK_512K && span !== BLOCK_2M)) return nativeFetch(input, init);
+            var key = url + "|" + start + "|" + end;
+            if (cache.has(key)) {
+                var hit = cache.get(key);
+                cache.delete(key);
+                cache.set(key, hit);
+                return Promise.resolve(new Response(hit, { status: 206, headers: { "Content-Range": "bytes " + start + "-" + end + "/*" } }));
+            }
+            return block(url, start, end).then(function (buffer) {
+                prefetch(url, start, end);
+                return new Response(buffer, { status: 206, headers: { "Content-Range": "bytes " + start + "-" + end + "/*" } });
+            });
+        };
+    })();
+
     // 32-bit guest support (step 4+5): ?arch=x86 selects the 32-bit runtime
     // (glibc-rootfs32.zip + wine32.zip + prefix32.zip, /usr/lib/wine/wine).
     // Default (absent/anything else) is the 64-bit path, unchanged.
@@ -111,7 +218,7 @@
     var CHUNKED = param("chunked") === "1"; // fetch zips as <zip>.partNNN via manifest
     // Lazy rootfs (M7): don't
     // download wine64.zip (~196MB) up front — mount it FROM ITS URL. The C++
-    // side (source/io/fszipurl.cpp) fetches 512KB block ranges on demand with
+    // side (source/io/fszipurl.cpp) fetches 2MB block ranges on demand with
     // sync XHR on the guest worker threads (~55MB actually read for a boot =
     // 65% less transfer, measured). glibc+prefix (~28MB) stay eager: they're
     // small and hold the boot-critical loader bits. Validated: 13/13 local

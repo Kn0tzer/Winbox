@@ -4684,10 +4684,17 @@ void ksyscall64(CPU64* cpu) {
             break;
         }
         case X64_SYS_sysinfo:
-            // struct sysinfo — zero-fill the standard 64-byte layout.
-            // ld-linux doesn't actually read these; some binaries call it
-            // anyway as part of /proc startup probes.
-            if (a1) cpu->memory->memsetGuest(a1, 0, 112);
+            // struct sysinfo, 64-bit layout (112 bytes). The JVM and other
+            // runtimes size their heaps from totalram, so it must be nonzero.
+            if (a1) {
+                auto* memory = cpu->memory;
+                memory->memsetGuest(a1, 0, 112);
+                memory->writeq(a1, KSystem::getMilliesSinceStart() / 1000);      // uptime
+                memory->writeq(a1 + 32, 1024ULL * 1024 * 1024);                  // totalram
+                memory->writeq(a1 + 40, 768ULL * 1024 * 1024);                   // freeram
+                memory->writew(a1 + 80, 1);                                      // procs
+                memory->writed(a1 + 104, 1);                                     // mem_unit
+            }
             ret = 0;
             break;
         case X64_SYS_getppid:

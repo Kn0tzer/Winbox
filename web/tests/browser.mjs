@@ -26,12 +26,6 @@ try{
   console.log('PASS real Windows Notepad window mapped');
   await page.click('#stop');await page.waitForFunction(()=>!document.getElementById('folderButton').disabled);
   }
-  await page.click('#settingsButton');await page.selectOption('#backend','webgpu');await page.keyboard.press('Escape');await page.click('[data-game="cube"]');
-  await page.waitForFunction(()=>window.wineGpu?.frames>=5,{},{timeout:90000});
-  const frames=await page.evaluate(()=>window.wineGpu.frames);await page.waitForTimeout(1500);assert.ok(await page.evaluate(()=>window.wineGpu.frames)>frames);
-  assert.deepEqual(await page.evaluate(()=>window.wineGpu.errors),[]);
-  await page.screenshot({path:'test-results/webgpu-cube.png',fullPage:true});
-  console.log('PASS real guest OpenGL WebGPU frames: '+await page.evaluate(()=>window.wineGpu.frames));
   assert.deepEqual(errors,[]);
 }catch(error){
   console.log('DIAGNOSTICS',await page.evaluate(()=>({status:document.getElementById('status').textContent,frames:window.wineGpu?.frames,gpuErrors:window.wineGpu?.errors,runtime:document.getElementById('runtimeStatus').textContent,fallback:document.getElementById('log').textContent.match(/WebGPU fallback:[^\n]*/)})));

@@ -57,7 +57,7 @@
           </div>
           <div class="player-actions">
             <button id="captureMouse" class="icon-button" type="button" aria-label="Capture mouse" title="Capture mouse" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#pointer"></use></svg></button>
-            <button id="stats" class="icon-button" type="button" aria-label="Show frame metrics" title="Show frame metrics" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#chart-line"></use></svg></button>
+            <button id="stats" class="icon-button" type="button" aria-label="Show performance" title="Show performance" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#chart-line"></use></svg></button>
             <button id="restart" class="icon-button" type="button" aria-label="Restart" title="Restart"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#refresh"></use></svg></button>
             <button id="fullscreen" class="icon-button" type="button" aria-label="Fullscreen" title="Fullscreen"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#arrows-maximize"></use></svg></button>
             <button id="stop" class="toolbar-stop" type="button">Stop</button>
@@ -90,18 +90,24 @@
     <section class="settings-group" aria-labelledby="displaySettingsTitle">
       <h3 id="displaySettingsTitle" class="settings-group-title">Display</h3>
       <div class="setting-field"><label for="appearance">Appearance</label><div class="select-wrap"><select id="appearance"><option value="system">Match device</option><option value="light">Light</option><option value="dark">Dark</option></select></div></div>
-      <div class="setting-field"><label for="backend">Graphics</label><div class="select-wrap"><select id="backend"><option value="auto">Automatic</option><option value="webgl">WebGL compatibility</option><option value="webgpu">WebGPU experimental</option></select></div></div>
       <div class="setting-field"><label for="enhancement">Image enhancement</label><div class="select-wrap"><select id="enhancement"><option value="off">Off</option><option value="fsr1">FSR1</option><option value="sgsr1">SGSRv1</option><option value="sharpen">Sharpen only</option></select></div></div>
-      <div id="sharpnessField" class="setting-field" hidden><label for="sharpness">Sharpness</label><input id="sharpness" type="range" min="0" max="1" step="0.05" value="0.5"></div>
     </section>
     <section class="settings-group" aria-labelledby="performanceSettingsTitle">
       <h3 id="performanceSettingsTitle" class="settings-group-title">Performance</h3>
-      <div class="setting-field"><label for="jit">CPU JIT</label><div class="select-wrap"><select id="jit" aria-describedby="jitHelp"><option value="off">Off</option><option value="on">On (experimental)</option></select></div><p id="jitHelp" class="setting-help">Applies when you next start or restart a program. May be slower, especially for 32-bit programs.</p></div>
+      <div class="setting-field"><label for="jit">CPU JIT</label><div class="select-wrap"><select id="jit" aria-describedby="jitHelp"><option value="off">Off</option><option value="on">On</option></select></div><p id="jitHelp" class="setting-help">About 2x faster, but about 2x slower to start. May not work with some programs.</p></div>
+      <div class="setting-field"><label for="shadercache">Shader cache</label><div class="select-wrap"><select id="shadercache" aria-describedby="shaderCacheHelp"><option value="off">Off</option><option value="on">On</option></select></div><p id="shaderCacheHelp" class="setting-help">Keeps translated shaders for faster later starts. <button id="clearShaderCache" class="text-button" type="button">Clear</button></p></div>
     </section>
     <section class="settings-group" aria-labelledby="programSettingsTitle">
       <h3 id="programSettingsTitle" class="settings-group-title">Programs</h3>
-      <div class="setting-field"><label for="folderModeSelect">Opening folders</label><div class="select-wrap"><select id="folderModeSelect" aria-describedby="folderModeHelp"><option value="copy">Copy into browser storage</option><option id="directMode" value="direct">Read in place (Chrome and Edge)</option></select></div><p id="folderModeHelp" class="setting-help">Copy works everywhere and survives moving the folder. Read in place skips the copy but the folder must stay where it is.</p></div>
-      <div class="setting-field"><label for="internet">Program internet access</label><div class="select-wrap"><select id="internet"><option value="off">Off</option><option value="on">On (via Wisp)</option></select></div><p class="setting-help">Applies when you next start a program. Connections go through kn0tzer.work.gd.</p></div>
+      <div class="setting-field">
+        <div class="switch-row">
+          <label for="folderMode">Read folders in place</label>
+          <button id="folderModeHelpButton" class="help-button" type="button" aria-label="About reading folders in place" aria-expanded="false" aria-controls="folderModeHelp">?</button>
+          <input id="folderMode" class="switch" type="checkbox" role="switch">
+        </div>
+        <p id="folderModeHelp" class="setting-help" hidden>Off copies a folder into browser storage. It works in every browser and keeps working if the folder moves. On reads the folder directly with no copy, but it must stay where it is. On needs Chrome or Edge.</p>
+      </div>
+      <div class="setting-field"><label for="internet">Internet access</label><div class="select-wrap"><select id="internet"><option value="off">Off</option><option value="on">On</option></select></div></div>
     </section>
   </dialog>
 

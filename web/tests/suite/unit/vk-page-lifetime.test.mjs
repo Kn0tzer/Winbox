@@ -67,7 +67,6 @@ async function appEnvironment(gpu) {
   for (const [, id] of source.matchAll(/\$\('([^']+)'\)/g)) elements.set(id, element());
   const markup = await readFile(new URL('../../../index.html', import.meta.url), 'utf8');
   for (const [, id] of markup.matchAll(/\bid="([^"]+)"/g)) if (!elements.has(id)) elements.set(id, element());
-  elements.get('backend').value = 'webgl';
   const demo = { onclick: () => globalThis.wineGames.install('doom') };
   const document = {
     createElement: element, createElementNS: (namespaceURI, tag) => Object.assign(element(tag), { namespaceURI }), createDocumentFragment: () => element('fragment'), documentElement: element('html'), querySelector: () => element('meta'), getElementById: id => elements.get(id) || null,
