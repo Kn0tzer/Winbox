@@ -436,6 +436,9 @@ export class WebGPUGL {
     this._stencilFront = { func: 0x0207, ref: 0, readMask: 0xffffffff, writeMask: 0xffffffff, fail: 0x1e00, depthFail: 0x1e00, pass: 0x1e00 };
     this._stencilBack = { ...this._stencilFront };
     this._polygonOffset = [0, 0];
+    this._polygonMode = 0x1b02;
+    this._lineWidth = 1;
+    this._pointSize = 1;
     this._cullFace = 0x0405;
     this._frontFace = 0x0901;
     this._colorMask = [true, true, true, true];
@@ -790,11 +793,13 @@ export class WebGPUGL {
   }
   enable(capability) {
     if (capability === GL.TEXTURE_2D) this._fixedTextureEnabled[this._activeTextureUnit] = true;
+    else if (capability === 0x8861) this._rejectUnsupported('point sprites', GL.INVALID_OPERATION);
     else if (GL_ENABLE_CAPABILITIES.has(capability)) this._enabled.add(capability);
     else this._recordError(GL.INVALID_ENUM);
   }
   disable(capability) {
     if (capability === GL.TEXTURE_2D) this._fixedTextureEnabled[this._activeTextureUnit] = false;
+    else if (capability === 0x8861) this._rejectUnsupported('point sprites', GL.INVALID_OPERATION);
     else if (GL_ENABLE_CAPABILITIES.has(capability)) this._enabled.delete(capability);
     else this._recordError(GL.INVALID_ENUM);
   }
@@ -812,6 +817,8 @@ export class WebGPUGL {
       case GL.SHADING_LANGUAGE_VERSION: return 'WebGL GLSL ES 3.00';
       case GL.VIEWPORT: return new Int32Array(this._viewport);
       case GL.DEPTH_RANGE: return new Float32Array(this._depthRange);
+      case 0x0b21: return this._lineWidth;
+      case 0x0b11: return this._pointSize;
       case GL.SCISSOR_BOX: return new Int32Array(this._scissor);
       case GL.DRAW_FRAMEBUFFER_BINDING: case GL.FRAMEBUFFER_BINDING: return this._drawFramebuffer;
       case GL.READ_FRAMEBUFFER_BINDING: return this._readFramebuffer;
@@ -1834,16 +1841,34 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
   }
 
   _rewriteTopology(mode, first, count, indices) {
+    const source = indices || Uint32Array.from({ length: count }, (_, i) => first + i);
     if (mode === 0x0006) {
-      const source = indices || Uint32Array.from({ length: count }, (_, i) => first + i), out = [];
+      const out = [];
       for (let i = 1; i + 1 < source.length; i++) out.push(source[0], source[i], source[i + 1]);
-      return { topology: 'triangle-list', indices: Uint32Array.from(out) };
+      indices = Uint32Array.from(out);
     }
     if (mode === 0x0002) {
-      const source = indices || Uint32Array.from({ length: count }, (_, i) => first + i), out = [];
+      const out = [];
       for (let i = 0; i < source.length; i++) out.push(source[i], source[(i + 1) % source.length]);
       return { topology: 'line-list', indices: Uint32Array.from(out) };
     }
+    if ([0x0004, 0x0005, 0x0006].includes(mode) && this._polygonMode === 0x1b01) {
+      const triangles = [];
+      if (mode === 0x0004) for (let i = 0; i + 2 < source.length; i += 3) triangles.push(source[i], source[i + 1], source[i + 2]);
+      else if (mode === 0x0005) for (let i = 0; i + 2 < source.length; i++) triangles.push(...(i & 1 ? [source[i + 1], source[i], source[i + 2]] : [source[i], source[i + 1], source[i + 2]]));
+      else for (let i = 1; i + 1 < source.length; i++) triangles.push(source[0], source[i], source[i + 1]);
+      const edges = [];
+      for (let i = 0; i + 2 < triangles.length; i += 3) edges.push(triangles[i], triangles[i + 1], triangles[i + 1], triangles[i + 2], triangles[i + 2], triangles[i]);
+      return { topology: 'line-list', indices: Uint32Array.from(edges) };
+    }
+    if ([0x0004, 0x0005, 0x0006].includes(mode) && this._polygonMode === 0x1b00) {
+      const points = [];
+      if (mode === 0x0004) points.push(...source);
+      else if (mode === 0x0005) for (let i = 0; i + 2 < source.length; i++) points.push(source[i], source[i + 1], source[i + 2]);
+      else for (let i = 1; i + 1 < source.length; i++) points.push(source[0], source[i], source[i + 1]);
+      return { topology: 'point-list', indices: Uint32Array.from(points) };
+    }
+    if (mode === 0x0006) return { topology: 'triangle-list', indices };
     return { topology: GL_TOPOLOGY.get(mode), indices };
   }
 
@@ -2067,6 +2092,21 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
   polygonOffset(factor, units) {
     if (!Number.isFinite(factor) || !Number.isFinite(units)) { this._recordError(GL.INVALID_VALUE); return; }
     this._polygonOffset = [factor, units];
+  }
+  polygonMode(face, mode) {
+    if (![0x0404, 0x0405, 0x0408].includes(face) || ![0x1b00, 0x1b01, 0x1b02].includes(mode)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (face !== 0x0408) { this._rejectUnsupported('polygon mode for a single face', GL.INVALID_OPERATION); return; }
+    this._polygonMode = mode;
+  }
+  lineWidth(width) {
+    if (!Number.isFinite(width) || width <= 0) { this._recordError(GL.INVALID_VALUE); return; }
+    if (width !== 1) { this._rejectUnsupported('line width other than 1', GL.INVALID_OPERATION); return; }
+    this._lineWidth = width;
+  }
+  pointSize(size) {
+    if (!Number.isFinite(size) || size <= 0) { this._recordError(GL.INVALID_VALUE); return; }
+    if (size !== 1) { this._rejectUnsupported('point size other than 1', GL.INVALID_OPERATION); return; }
+    this._pointSize = size;
   }
   sampleCoverage() {}
 

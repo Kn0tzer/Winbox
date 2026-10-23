@@ -153,6 +153,37 @@ test('polygon offset is passed to WebGPU only when POLYGON_OFFSET_FILL is enable
   } finally { gpu.restore(); }
 });
 
+test('polygon line mode expands triangles to edges and line width rejects non-unit values loudly', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    gl.polygonMode(0x0408, 0x1b01);
+    const expanded = gl._rewriteTopology(0x0004, 0, 3, Uint32Array.from([2, 4, 6]));
+    assert.equal(expanded.topology, 'line-list');
+    assert.deepEqual([...expanded.indices], [2, 4, 4, 6, 6, 2]);
+    gl.polygonMode(0x0408, 0x1b02);
+    assert.equal(gl._rewriteTopology(0x0004, 0, 3, Uint32Array.from([0, 1, 2])).topology, 'triangle-list');
+    gl.polygonMode(0x0408, 0x1b00);
+    assert.equal(gl._rewriteTopology(0x0004, 0, 3, Uint32Array.from([0, 1, 2])).topology, 'point-list');
+    gl.polygonMode(0x0408, 0x1b02);
+    gl.lineWidth(1);
+    gl.lineWidth(2);
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('line width other than 1')));
+    gl.pointSize(1);
+    gl.pointSize(2);
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('point size other than 1')));
+    gl.enable(0x8861);
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('point sprites')));
+    gl.polygonMode(0x0404, 0x1b01);
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('polygon mode for a single face')));
+  } finally { gpu.restore(); }
+});
+
 test('draw and read buffer selection is honored and GL errors latch until read', async () => {
   const gpu = createValidationDevice(), logs = [];
   try {

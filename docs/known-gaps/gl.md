@@ -35,7 +35,9 @@ not a disposition.
 | `web/gl-webgpu.mjs:933` | Buffers exist but uniform buffer binding/range and std140 block binding are not implemented. | Breaks UBO shaders | OPEN |
 | `web/gl-webgpu.mjs:28` | Texture binding is limited to `TEXTURE_2D`; arrays, 3D, and cube sampling are not fully represented. | Breaks modern texture users | OPEN |
 | `web/gl-webgpu.mjs:2010` | Renderbuffer multisample storage/resolve and integer/float render targets are incomplete. | Breaks MSAA/HDR renderers | OPEN |
-| `web/gl-webgpu.mjs:1` | Polygon line modes, point sprites/size, line width, clip control, and sRGB framebuffer behavior are incomplete. | Breaks compatibility renderers | OPEN |
+| `web/gl-webgpu.mjs:1850-1885,2075-2110` | `glPolygonMode` fill/line/point selection is implemented for `FRONT_AND_BACK`; line and point modes expand triangles into WebGPU-supported topologies. | Breaks wireframe and point-rendered compatibility paths | IMPLEMENTED (`web/tests/suite/unit/gl-webgpu.test.mjs`) |
+| `web/gl-webgpu.mjs:2075-2110` | WebGPU supports one-pixel lines/points only; wider line/point sizes and `GL_POINT_SPRITE` are logged and return `INVALID_OPERATION`. | Breaks wide-line and point-sprite games | REJECTED-LOUDLY (`web/tests/suite/unit/gl-webgpu.test.mjs`) |
+| `web/gl-webgpu.mjs:1` | Clip control and sRGB framebuffer behavior remain incomplete. | Breaks modern depth-range and color-space paths | OPEN |
 | `web/gl-webgpu.mjs:2123-2160` | DXT1/3/5 including sRGB S3TC variants decode in software and S3TC is advertised. | Breaks compressed-texture games | IMPLEMENTED (`web/tests/suite/unit/gl-webgpu-texture.test.mjs`) |
 | `web/gl-webgpu.mjs:2123-2160` | ETC2/EAC and BC7/BPTC compressed uploads return rate-limited warnings and `INVALID_OPERATION`. | Breaks compressed-texture games | REJECTED-LOUDLY (`web/tests/suite/unit/gl-webgpu-texture.test.mjs`) |
 | `web/gl-webgpu.mjs:210` | GLSL-to-WGSL translation has explicit rejection paths; unsupported constructs must be inventoried, reported with construct names, and tested. | Breaks affected shaders | OPEN |
