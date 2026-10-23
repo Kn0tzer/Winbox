@@ -79,9 +79,9 @@ export const REQUIRED_LIMIT_KEYS = Object.freeze([
   'maxUniformBufferBindingSize', 'maxStorageBufferBindingSize', 'maxBufferSize',
   'maxVertexBuffers', 'maxVertexAttributes', 'maxColorAttachments', 'maxInterStageShaderVariables',
 ]);
-/** Count a skipped-draw reason (first 100 characters) in a per-pass diagnostic map. */
+/** Count a skipped-draw reason (first 400 characters) in a per-pass diagnostic map. */
 function v2DiagNoteSkip(map, reason) {
-  const key = String(reason).slice(0, 100);
+  const key = String(reason).replace(/\s+/g, ' ').slice(0, 400);
   map[key] = (map[key] || 0) + 1;
 }
 
@@ -2304,7 +2304,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
             if (drawPipe.depthBiasDynamic && st.depthBias)
               drawPipe = {...drawPipe,depthBiasConstantFactor:st.depthBias.constantFactor,depthBiasClamp:st.depthBias.clamp,depthBiasSlopeFactor:st.depthBias.slopeFactor};
             const selected=await getPipelineFor(drawPipe,passSamples,st.pipeNeg,!!depthView,st.ibind?.indexType||0,passColorFormats,passDepthFormat,passDepthAspects);
-            if(selected.skip) {stats.skippedDraws=(stats.skippedDraws||0)+1;if (diagOn) v2DiagNoteSkip(passDiagDraws.skips, selected.skip);break;}
+            if(selected.skip) {stats.skippedDraws=(stats.skippedDraws||0)+1;if (diagOn) v2DiagNoteSkip(passDiagDraws.skips, selected.skip + ' vs=' + st.pipeDesc.vsHash + ' fs=' + st.pipeDesc.fsHash);break;}
             st.pipeRec=selected;
             passEnc.setPipeline(selected.pipeline);
             if (st.viewport) {
