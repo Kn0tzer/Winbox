@@ -17,6 +17,7 @@
 #include "cpu64.h"
 #include "kmemory64.h"
 #include "syscall64.h"
+void runTimers();
 #endif
 
 void testTimerfdCore() {
@@ -136,7 +137,29 @@ void testTimerfd64Syscalls() {
     if (timer->readNative((U8*)&expirations, 8) != 8 || expirations != 1 || timer->isReadReady()) {
         testFail("x64 timerfd expiration read did not consume exactly one expiration");
     }
+    // Verify periodic expiration counts through the actual x64 syscall ABI.
+    // Allow for the native timer scheduler's coarse host tick while checking
+    // that several callbacks have accumulated.
+    memory->writeq(testPage, 0);
+    memory->writeq(testPage + 8, 10000000); // 10 ms interval
     memory->writeq(testPage + 16, 0);
+    memory->writeq(testPage + 24, 5000000); // 5 ms initial deadline
+    result = syscall(286, fd, 0, testPage, 0);
+    for (int i = 0; i < 40; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        runTimers(); // same timer pump used by the native guest main loop
+    }
+    expirations = 0;
+    if (result != 0 || !timer->isReadReady() || timer->readNative((U8*)&expirations, 8) != 8 || expirations < 2) {
+        testFail("x64 periodic timerfd did not accumulate and return multiple expirations (set=%lld count=%llu)",
+                 (long long)(S64)result, (unsigned long long)expirations);
+    }
+    result = syscall(287, fd, testPage + 0x80);
+    if (result != 0 || memory->readq(testPage + 0x80) != 0 || memory->readq(testPage + 0x88) != 10000000) {
+        testFail("x64 timerfd_gettime did not report the periodic interval");
+    }
+    memory->writeq(testPage + 16, 0);
+    memory->writeq(testPage + 24, 0);
     result = syscall(286, fd, 0, testPage, 0);
     if (result != 0 || timer->isReadReady()) {
         testFail("x64 timerfd disarm created a spurious expiration");
