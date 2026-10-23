@@ -338,3 +338,12 @@ Rows: 328. Static audit only. The unit suite baseline on 2026-10-23 was 183/183.
 ## Audit limits
 
 Silent returns not covered by an explicit marker/counter still require call-site tracing. Each OPEN row needs implementation with a regression test, an honest rejection with correct result/capability advertisement and test, or a code-backed NOT-A-GAP disposition.
+
+## Query behavior follow-up
+
+| File:line | Guest behavior | Severity | Disposition |
+|---|---|---|---|
+| `source/vulkan/vk64bridge.cpp:4307` | DXVK/vkd3d creating timestamp or pipeline-statistics query pools | High | IMPLEMENTED for timestamp pools/results; pipeline-statistics and occlusion pool creation return `VK_ERROR_FEATURE_NOT_PRESENT` with a rate-limited feature warning. Regression: `vulkan-query-results.test.mjs`. |
+| `source/vulkan/vk64bridge.cpp:5490` | DXVK/vkd3d recording `vkCmdWriteTimestamp` in 64-bit or 32-bit command buffers | High | IMPLEMENTED; record and submit-order timestamp values are stored, availability is honored, and results are encoded according to flags. Regression: `vulkan-query-results.test.mjs`. |
+| `source/vulkan/vk64bridge.cpp:4334` | Occlusion queries around render work | High | REJECTED-LOUDLY; WebGPU replay has no sample-count query integration. `occlusionQuery` and `occlusionQueryPrecise` feature bits are false; pool creation returns `VK_ERROR_FEATURE_NOT_PRESENT`; void begin/end calls warn. Regression: `vk-capabilities.test.mjs`. |
+| `source/vulkan/vk64bridge.cpp:4307` | Pipeline-statistics queries | Medium | REJECTED-LOUDLY; query type returns `VK_ERROR_FEATURE_NOT_PRESENT` with rate-limited warning and `pipelineStatisticsQuery` is false. Regression: `vulkan-query-results.test.mjs`. |

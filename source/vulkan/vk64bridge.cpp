@@ -696,7 +696,7 @@ struct DescPool  : Obj {};
 struct Surface   : Obj {};
 struct Fence     : Obj { int signalled = 0; };
 struct Event     : Obj { int signalled = 0; };
-struct QueryPool : Obj { U32 type = 0, count = 0, flags = 0; };
+struct QueryPool : Obj { U32 type = 0, count = 0, flags = 0; std::vector<U64> results; std::vector<U8> available; };
 struct QueryPoolCreateInfo64Local {
     U32 sType, _pad0; U64 pNext; U32 flags, queryType, queryCount, pipelineStatistics;
 };
@@ -894,7 +894,7 @@ enum CmdKind : U32 {
     CMD_SCISSOR, CMD_DRAW, CMD_DRAW_INDEXED, CMD_BARRIER, CMD_COPY_B2I, CMD_PUSH_CONST,
     CMD_BIND_VB, CMD_BIND_IB, CMD_UPDATE_BUF, CMD_COPY_I2B, CMD_DISPATCH, CMD_COPY_IMAGE,
     CMD_STENCIL_STATE, CMD_BLEND_CONSTANTS, CMD_CLEAR_ATTACHMENTS, CMD_COPY_QUERY_RESULTS, CMD_DEPTH_BIAS, CMD_BLIT_IMAGE,
-    CMD_RASTER_STATE, CMD_CLEAR_DS_IMAGE
+    CMD_RASTER_STATE, CMD_CLEAR_DS_IMAGE, CMD_RESET_QUERY, CMD_WRITE_TIMESTAMP
 };
 struct Copy {
     U64 srcBuffer = 0, dstImage = 0, bufOff = 0;
@@ -1236,11 +1236,15 @@ static void writeEncodedQueryResults(U64 dst, const vkquery::EncodedResults& enc
 static VkResult writeQueryResults(QueryPool* pool, U32 first, U32 count,
                                   U64 dataSize, U64 dst, U64 stride, U32 flags) {
     if (!pool || !dst || (!g_mem && !g_mem32)) return VK_ERROR_INITIALIZATION_FAILED;
+    if (first <= pool->count && count <= pool->count - first && !(flags & vkquery::VKQUERY_PARTIAL)) {
+        for (U32 i = 0; i < count; ++i)
+            if (first + i >= pool->available.size() || !pool->available[first + i]) return VK_NOT_READY;
+    }
     constexpr U64 kMaxQueryResultBytes = 1ULL << 20;
     const U64 writeSize = std::min<U64>(dataSize, kMaxQueryResultBytes);
     vkquery::EncodedResults encoded = vkquery::encodeResults(
         pool->type, first, count, pool->count, (size_t)writeSize, stride, flags,
-        1.0, queryHostNanoseconds());
+        1.0, queryHostNanoseconds(), pool->results, pool->available);
     if (!encoded.valid) return VK_ERROR_INITIALIZATION_FAILED;
     writeEncodedQueryResults(dst, encoded);
     return encoded.complete && writeSize == dataSize ? VK_SUCCESS : VK_INCOMPLETE;
@@ -1267,10 +1271,24 @@ static void execCopyQueryResults(const Cmd& command) {
     const U64 size = std::min<U64>(available, 1ULL << 20);
     vkquery::EncodedResults encoded = vkquery::encodeResults(
         pool->type, copy.firstQuery, copy.queryCount, pool->count, (size_t)size,
-        copy.stride, copy.flags, 1.0, queryHostNanoseconds());
+        copy.stride, copy.flags, 1.0, queryHostNanoseconds(), pool->results, pool->available);
     VK64_DROP_IF(return, !encoded.valid);
     writeEncodedQueryResults(memory->va + memoryOffset, encoded);
     buffer->dirtyGen = g_bufDirtyTick++;
+}
+
+static void execQueryCommand(const Cmd& command) {
+    if (command.kind == CMD_RESET_QUERY) {
+        QueryPool* pool = objOf<QueryPool>(command.a, K_QUERYPOOL, "vkCmdResetQueryPool");
+        VK64_DROP_IF(return, !pool || command.b > pool->count);
+        const U32 count = std::min<U64>(command.c, pool->count - command.b);
+        for (U32 i = 0; i < count; ++i) { pool->results[command.b + i] = 0; pool->available[command.b + i] = 0; }
+    } else if (command.kind == CMD_WRITE_TIMESTAMP) {
+        QueryPool* pool = objOf<QueryPool>(command.a, K_QUERYPOOL, "vkCmdWriteTimestamp");
+        VK64_DROP_IF(return, !pool || pool->type != vkquery::VKQUERY_TIMESTAMP || command.b >= pool->count);
+        pool->results[command.b] = vkquery::timestampTicks(queryHostNanoseconds(), 1.0);
+        pool->available[command.b] = 1;
+    }
 }
 
 // vkCmdUpdateBuffer execution: the transfer write lands in guest memory at
@@ -3182,12 +3200,14 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     break;
                 }
                 // Executed eagerly at record/submit time (see the CMD_* handlers
-                // for COPY_B2I / UPDATE_BUF / COPY_QUERY_RESULTS) or no-ops in
-                // snapshot replay (BARRIER): nothing to put on the wire.
+                // for copies, updates, query results and timestamps, or no-ops
+                // in snapshot replay (BARRIER): nothing to put on the wire.
                 case CMD_BARRIER:
                 case CMD_COPY_B2I:
                 case CMD_UPDATE_BUF:
                 case CMD_COPY_QUERY_RESULTS:
+                case CMD_RESET_QUERY:
+                case CMD_WRITE_TIMESTAMP:
                     break;
                 case CMD_DISPATCH:
                     // The V2 protocol is render-only: no compute pipeline or
@@ -4277,18 +4297,36 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCreateQueryPool: {
         QueryPoolCreateInfo64Local ci = {};
         if (!args.a[3] || !readStruct(args.a[1], ci)) return VK_ERROR_INITIALIZATION_FAILED;
+        if (ci.queryType != vkquery::VKQUERY_TIMESTAMP) {
+            vk64Unsupported(ci.queryType == vkquery::VKQUERY_OCCLUSION ? "occlusion-query" : "pipeline-statistics-query",
+                            "query type is not implemented; VK_ERROR_FEATURE_NOT_PRESENT");
+            return VK_ERROR_FEATURE_NOT_PRESENT;
+        }
         U64 id = 0;
         QueryPool* pool = createObj<QueryPool>(K_QUERYPOOL, id);
         pool->type = ci.queryType; pool->count = ci.queryCount; pool->flags = ci.flags;
+        pool->results.resize(pool->count); pool->available.resize(pool->count);
         wr64(args.a[3], id);
         return VK_SUCCESS;
     }
     case VK64_fn_vkDestroyQueryPool:          dropObj(args.a[1]); return 0;
-    case VK64_fn_vkResetQueryPool:
-    case VK64_fn_vkCmdResetQueryPool:
-    case VK64_fn_vkCmdBeginQuery:
-    case VK64_fn_vkCmdEndQuery:
+    case VK64_fn_vkResetQueryPool: {
+        QueryPool* pool = objOf<QueryPool>(args.a[1], K_QUERYPOOL, "vkResetQueryPool");
+        if (!pool || args.a[2] > pool->count || args.a[3] > pool->count - args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 n = (U32)args.a[3];
+        for (U32 i=0;i<n;i++) { pool->results[args.a[2]+i]=0; pool->available[args.a[2]+i]=0; }
         return VK_SUCCESS;
+    }
+    case VK64_fn_vkCmdResetQueryPool: {
+        CmdBuf* cb=cbOf(args.a[0],"vkCmdResetQueryPool"); QueryPool* pool=objOf<QueryPool>(args.a[1],K_QUERYPOOL,"vkCmdResetQueryPool");
+        VK64_DROP_IF(return 0,!cb||!pool||args.a[2]>pool->count||args.a[3]>pool->count-args.a[2]);
+        Cmd c;c.kind=CMD_RESET_QUERY;c.a=args.a[1];c.b=args.a[2];c.c=args.a[3];pushCmd(cb,c);return 0;
+    }
+    case VK64_fn_vkCmdBeginQuery:
+    case VK64_fn_vkCmdEndQuery: {
+        vk64Unsupported("occlusion-query", "occlusion queries are not implemented; device feature bit is false");
+        return 0;
+    }
     case VK64_fn_vkCmdCopyQueryPoolResults: {
         CmdBuf* cb = cbOf(args.a[0], "vkCmdCopyQueryPoolResults");
         VK64_DROP_IF(return 0, !cb);
@@ -5439,7 +5477,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     // Timestamp query results are synthesized from the host clock at read time and
     // WebGPU has no depth-bounds test (the feature is not advertised), so both are
     // accepted without a record.
-    case VK64_fn_vkCmdWriteTimestamp:
+    case VK64_fn_vkCmdWriteTimestamp: {
+        CmdBuf* cb=cbOf(args.a[0],"vkCmdWriteTimestamp");QueryPool* pool=objOf<QueryPool>(args.a[2],K_QUERYPOOL,"vkCmdWriteTimestamp");
+        VK64_DROP_IF(return 0,!cb||!pool||pool->type!=vkquery::VKQUERY_TIMESTAMP||args.a[3]>=pool->count);
+        Cmd c;c.kind=CMD_WRITE_TIMESTAMP;c.a=args.a[2];c.b=args.a[3];pushCmd(cb,c);return 0;
+    }
     case VK64_fn_vkCmdSetDepthBounds:
         return 0;
     case VK64_fn_vkCmdClearDepthStencilImage: {
@@ -6442,9 +6484,12 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 VK64_DROP_IF(continue, !cb);
                 // Eager copy execution, against the guest memory both sides of
                 // the copy live in (P1 ran these first at submit too).
-                for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
-                for (const Cmd& k : cb->cmds) if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
-                for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_QUERY_RESULTS) execCopyQueryResults(k);
+                for (const Cmd& k : cb->cmds) {
+                    if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
+                    else if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
+                    else if (k.kind == CMD_RESET_QUERY || k.kind == CMD_WRITE_TIMESTAMP) execQueryCommand(k);
+                    else if (k.kind == CMD_COPY_QUERY_RESULTS) execCopyQueryResults(k);
+                }
                 frames.push_back({cb, cbId});
             }
         }
@@ -6504,9 +6549,12 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             for (auto& cbi : cbis) {
                 CmdBuf* cb = cbOf((U64)cbi.commandBuffer, "vkQueueSubmit2");
                 VK64_DROP_IF(continue, !cb);
-                for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
-                for (const Cmd& k : cb->cmds) if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
-                for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_QUERY_RESULTS) execCopyQueryResults(k);
+                for (const Cmd& k : cb->cmds) {
+                    if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
+                    else if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
+                    else if (k.kind == CMD_RESET_QUERY || k.kind == CMD_WRITE_TIMESTAMP) execQueryCommand(k);
+                    else if (k.kind == CMD_COPY_QUERY_RESULTS) execCopyQueryResults(k);
+                }
                 frames.push_back({cb, (U64)cbi.commandBuffer});
             }
         }
@@ -7306,17 +7354,35 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCreateQueryPool: {
         QueryPoolCreateInfo32Local ci = {};
         if (!args.a[3] || !readStruct32((U32)args.a[1], ci)) return VK_ERROR_INITIALIZATION_FAILED;
+        if (ci.queryType != vkquery::VKQUERY_TIMESTAMP) {
+            vk64Unsupported(ci.queryType == vkquery::VKQUERY_OCCLUSION ? "occlusion-query" : "pipeline-statistics-query",
+                            "query type is not implemented; VK_ERROR_FEATURE_NOT_PRESENT");
+            return VK_ERROR_FEATURE_NOT_PRESENT;
+        }
         U64 id = 0;
         QueryPool* pool = createObj32<QueryPool>(K_QUERYPOOL, id);
         pool->type = ci.queryType; pool->count = ci.queryCount; pool->flags = ci.flags;
+        pool->results.resize(pool->count); pool->available.resize(pool->count);
         wr64_32((U32)args.a[3], id);
         return VK_SUCCESS;
     }
-    case VK64_fn_vkResetQueryPool:
-    case VK64_fn_vkCmdResetQueryPool:
-    case VK64_fn_vkCmdBeginQuery:
-    case VK64_fn_vkCmdEndQuery:
+    case VK64_fn_vkResetQueryPool: {
+        auto* pool=objOf32<QueryPool>(args.a[1],K_QUERYPOOL,"vkResetQueryPool");
+        if(!pool||args.a[2]>pool->count||args.a[3]>pool->count-args.a[2])return VK_ERROR_INITIALIZATION_FAILED;
+        U32 n=(U32)args.a[3];
+        for(U32 i=0;i<n;i++){pool->results[args.a[2]+i]=0;pool->available[args.a[2]+i]=0;}
         return VK_SUCCESS;
+    }
+    case VK64_fn_vkCmdResetQueryPool: {
+        auto* cb=objOf32<CmdBuf>(args.a[0],K_CMDBUF,"vkCmdResetQueryPool");auto* pool=objOf32<QueryPool>(args.a[1],K_QUERYPOOL,"vkCmdResetQueryPool");
+        VK64_DROP_IF(return 0,!cb||!pool||args.a[2]>pool->count||args.a[3]>pool->count-args.a[2]);
+        Cmd c;c.kind=CMD_RESET_QUERY;c.a=args.a[1];c.b=args.a[2];c.c=args.a[3];pushCmd(cb,c);return 0;
+    }
+    case VK64_fn_vkCmdBeginQuery:
+    case VK64_fn_vkCmdEndQuery: {
+        vk64Unsupported("occlusion-query", "occlusion queries are not implemented; device feature bit is false");
+        return 0;
+    }
     case VK64_fn_vkCmdCopyQueryPoolResults: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdCopyQueryPoolResults");
         VK64_DROP_IF(return 0, !cb);
@@ -7944,7 +8010,11 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     // Timestamp query results are synthesized from the host clock at read time and
     // WebGPU has no depth-bounds test (the feature is not advertised), so both are
     // accepted without a record.
-    case VK64_fn_vkCmdWriteTimestamp:
+    case VK64_fn_vkCmdWriteTimestamp: {
+        auto* cb=objOf32<CmdBuf>(args.a[0],K_CMDBUF,"vkCmdWriteTimestamp");auto* pool=objOf32<QueryPool>(args.a[2],K_QUERYPOOL,"vkCmdWriteTimestamp");
+        VK64_DROP_IF(return 0,!cb||!pool||pool->type!=vkquery::VKQUERY_TIMESTAMP||args.a[3]>=pool->count);
+        Cmd c;c.kind=CMD_WRITE_TIMESTAMP;c.a=args.a[2];c.b=args.a[3];pushCmd(cb,c);return 0;
+    }
     case VK64_fn_vkCmdSetDepthBounds:
         return 0;
     case VK64_fn_vkCmdSetDepthBias: {
@@ -8589,9 +8659,12 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 } else cbId = rd32_32(pCmd + i * 4);
                 CmdBuf* cb = objOf32<CmdBuf>(cbId, K_CMDBUF, "vkQueueSubmit");
                 VK64_DROP_IF(continue, !cb);
-                for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
-                for (const Cmd& k : cb->cmds) if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
-                for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_QUERY_RESULTS) execCopyQueryResults(k);
+                for (const Cmd& k : cb->cmds) {
+                    if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
+                    else if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
+                    else if (k.kind == CMD_RESET_QUERY || k.kind == CMD_WRITE_TIMESTAMP) execQueryCommand(k);
+                    else if (k.kind == CMD_COPY_QUERY_RESULTS) execCopyQueryResults(k);
+                }
                 frames.push_back({cb, cbId});
             }
         }

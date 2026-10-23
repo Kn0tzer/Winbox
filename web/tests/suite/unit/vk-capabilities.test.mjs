@@ -67,9 +67,12 @@ test('no advertised feature or extension may use an exception status', () => {
   }
 });
 
-test('precise occlusion queries remain disabled while the bridge reports synthetic counts', () => {
+test('occlusion queries remain disabled because render sample counting is unavailable', () => {
   assert.ok(manifest.notAdvertised.includes('fillCoreFeatures.occlusionQueryPrecise'));
+  assert.ok(manifest.notAdvertised.includes('fillCoreFeatures.occlusionQuery'));
   assert.doesNotMatch(bridge, /f->occlusionQueryPrecise\s*=\s*VK_TRUE/);
+  assert.doesNotMatch(bridge, /f->occlusionQuery\s*=\s*VK_TRUE/);
+  assert.match(bridge, /"occlusion queries are not implemented; device feature bit is false"/);
 });
 
 test('features that are not implemented are not advertised', () => {

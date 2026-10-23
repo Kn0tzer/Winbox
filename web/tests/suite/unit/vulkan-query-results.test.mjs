@@ -49,6 +49,19 @@ int main() {
   assert(vkquery::readUnsigned(timestamps.bytes, 8, 8) == 1);
   assert(vkquery::readUnsigned(timestamps.bytes, 16, 8) > vkquery::readUnsigned(timestamps.bytes, 0, 8));
   assert(vkquery::readUnsigned(timestamps.bytes, 24, 8) == 1);
+
+  const std::vector<uint64_t> values ={1234, 5678};
+  const std::vector<uint8_t> availability ={1, 0};
+  const auto pending = encodeResults(VKQUERY_TIMESTAMP, 0, 2, 2, 32, 16,
+      VKQUERY_64_BIT | VKQUERY_WITH_AVAILABILITY, 1.0, 9999, values, availability);
+  assert(!pending.complete && pending.countWritten == 1);
+  assert(readUnsigned(pending.bytes, 0, 8) == 1234);
+  assert(readUnsigned(pending.bytes, 8, 8) == 1);
+  const auto partial = encodeResults(VKQUERY_TIMESTAMP, 0, 2, 2, 32, 16,
+      VKQUERY_64_BIT | VKQUERY_WITH_AVAILABILITY | VKQUERY_PARTIAL, 1.0, 9999, values, availability);
+  assert(partial.complete && partial.countWritten == 2);
+  assert(readUnsigned(partial.bytes, 16, 8) == 0);
+  assert(readUnsigned(partial.bytes, 24, 8) == 0);
 }
 `);
     execFileSync('g++', ['-std=c++17', '-Wall', '-Wextra', '-Werror', '-I', join(root, 'source/vulkan'), source, '-o', binary]);
@@ -96,4 +109,16 @@ int main(void) { return check_query_copy(); }
       rmSync(dir, { recursive: true, force: true });
     }
   }
+});
+
+
+test('bridge records timestamp writes and executes timestamp/reset/copy commands in order', () => {
+  const bridge = readFileSync(join(root, 'source/vulkan/vk64bridge.cpp'), 'utf8');
+  assert.equal((bridge.match(/c\.kind=CMD_WRITE_TIMESTAMP/g) || []).length, 2, 'both guest ABIs record timestamp pool and index');
+  assert.equal((bridge.match(/c\.kind=CMD_RESET_QUERY/g) || []).length, 2, 'both guest ABIs record command-buffer query resets');
+  assert.equal((bridge.match(/else if \(k\.kind == CMD_RESET_QUERY \|\| k\.kind == CMD_WRITE_TIMESTAMP\) execQueryCommand\(k\);/g) || []).length, 3,
+    'legacy submit, submit2, and 32-bit submit execute query operations before following copies');
+  assert.match(bridge, /pool->results\.resize\(pool->count\); pool->available\.resize\(pool->count\)/);
+  assert.match(bridge, /ci\.queryType != vkquery::VKQUERY_TIMESTAMP/);
+  assert.match(bridge, /pool->results, pool->available/);
 });

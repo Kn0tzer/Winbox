@@ -54,7 +54,9 @@ inline uint64_t readUnsigned(const std::vector<uint8_t>& bytes, size_t offset, s
 inline EncodedResults encodeResults(uint32_t queryType, uint32_t firstQuery,
                                     uint32_t queryCount, uint32_t poolCount,
                                     size_t dataSize, uint64_t stride, uint32_t flags,
-                                    double timestampPeriod, uint64_t hostNanoseconds) {
+                                    double timestampPeriod, uint64_t hostNanoseconds,
+                                    const std::vector<uint64_t>& values = {},
+                                    const std::vector<uint8_t>& availability = {}) {
     EncodedResults out;
     if ((queryType != VKQUERY_OCCLUSION && queryType != VKQUERY_TIMESTAMP) ||
         firstQuery > poolCount || queryCount > poolCount - firstQuery) return out;
@@ -78,11 +80,17 @@ inline EncodedResults encodeResults(uint32_t queryType, uint32_t firstQuery,
         const size_t offset = static_cast<size_t>(offset64);
         // Occlusion is a nonzero placeholder; precise mode still reports an
         // approximate sample count because this bridge does not rasterize queries.
-        const uint64_t value = queryType == VKQUERY_OCCLUSION
-            ? 1 : timestampTicks(hostNanoseconds, timestampPeriod);
-        writeUnsigned(out.bytes, offset, value, width);
+        const uint32_t index = firstQuery + i;
+        const bool available = availability.empty() || (index < availability.size() && availability[index] != 0);
+        if (!available && !(flags & VKQUERY_PARTIAL)) {
+            out.complete = false;
+            break;
+        }
+        const uint64_t value = !values.empty() && index < values.size() ? values[index]
+            : queryType == VKQUERY_OCCLUSION ? 1 : timestampTicks(hostNanoseconds, timestampPeriod);
+        writeUnsigned(out.bytes, offset, available ? value : 0, width);
         if (flags & VKQUERY_WITH_AVAILABILITY)
-            writeUnsigned(out.bytes, offset + width, 1, width);
+            writeUnsigned(out.bytes, offset + width, available ? 1 : 0, width);
         out.countWritten++;
     }
     return out;
