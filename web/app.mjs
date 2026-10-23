@@ -33,7 +33,7 @@ function applyMetricsVisibility() {
   const open = metricsOpen() && !$('player').hidden;
   $('metricsHost').hidden = !open;
   $('stats').setAttribute('aria-pressed', String(open));
-  $('stats').title = open ? 'Hide frame metrics' : 'Show frame metrics';
+  $('stats').title = open ? 'Hide performance' : 'Show performance';
   $('stats').setAttribute('aria-label', $('stats').title);
   if (metrics) metrics.setOpen(open);
 }
