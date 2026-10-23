@@ -3334,17 +3334,36 @@ void ksyscall64(CPU64* cpu) {
             // busy-poll storm shows one pid spinning the SAME syscall thousands of
             // times between ticks while no real progress is logged. pids stay
             // small during boot; cap the table and fold the rest into slot 0.
-            static std::atomic<U32> sysCount[256];
-            static std::atomic<U32> lastNr[256];
+            // Exact per-PID syscall histogram for opt-in interval reports.
+            // Linux x86-64 syscall IDs occupy 0..511 here; retain the private
+            // GL/Vulkan trap IDs separately and fold any other high ID to 512.
+            static std::atomic<U32> syscallCounts[256][515];
             int mypid = (int)cpu->thread->process->id;
             U32 slot = (mypid >= 0 && mypid < 256) ? (U32)mypid : 0;
-            sysCount[slot].fetch_add(1, std::memory_order_relaxed);
-            lastNr[slot].store((U32)nr, std::memory_order_relaxed);
+            U32 syscallBucket = nr < 512 ? (U32)nr : 512;
+#ifdef BOXEDWINE_OPENGL
+            if (nr == GL64_SYSCALL_NR) syscallBucket = 513;
+#endif
+#ifdef BOXEDWINE_VULKAN64
+            if (nr == VK64_SYSCALL_NR) syscallBucket = 514;
+#endif
+            syscallCounts[slot][syscallBucket].fetch_add(1, std::memory_order_relaxed);
+
+            static const U32 memStatsIntervalMs = []() {
+                const char* value = getenv("BW64_MEMSTATS_INTERVAL_MS");
+                if (!value || !value[0]) return 2000U;
+                char* end = nullptr;
+                unsigned long parsed = strtoul(value, &end, 10);
+                return end != value && *end == '\0' && parsed >= 1000 && parsed <= 300000
+                    ? (U32)parsed : 2000U;
+            }();
 
             static std::atomic<U64> lastUs{0};
             U64 nowUs = KSystem::getSystemTimeAsMicroSeconds();
             U64 prev = lastUs.load(std::memory_order_relaxed);
-            if (nowUs - prev >= 2000000ULL &&
+            if (prev == 0) {
+                lastUs.compare_exchange_strong(prev, nowUs, std::memory_order_relaxed);
+            } else if (nowUs - prev >= (U64)memStatsIntervalMs * 1000ULL &&
                 lastUs.compare_exchange_strong(prev, nowUs, std::memory_order_relaxed)) {
                 KMemory64* mem = cpu->memory;
                 U64 mapped = mem->mappedPageCount();
@@ -3352,18 +3371,49 @@ void ksyscall64(CPU64* cpu) {
                 U64 rss = KSystem::getHostResidentBytes();
                 // Find the busiest pid this interval (the livelock suspect) and
                 // reset all counters for the next window.
-                U32 topPid = 0, topCount = 0, topNr = 0;
+                U32 topPid = 0, topCount = 0;
+                auto syscallNameForBucket = [](U32 syscallNr) {
+                    if (syscallNr == 512) return "other";
+                    if (syscallNr == 513) return "gl64_trap";
+                    if (syscallNr == 514) return "vk64_trap";
+                    return x64SyscallName(syscallNr);
+                };
                 for (U32 i = 0; i < 256; i++) {
-                    U32 c = sysCount[i].exchange(0, std::memory_order_relaxed);
-                    if (c > topCount) { topCount = c; topPid = i; topNr = lastNr[i].load(std::memory_order_relaxed); }
+                    U32 topNr[3] = {}, topCalls[3] = {};
+                    U32 pidCalls = 0;
+                    for (U32 syscallNr = 0; syscallNr < 515; syscallNr++) {
+                        U32 calls = syscallCounts[i][syscallNr].exchange(0, std::memory_order_relaxed);
+                        pidCalls += calls;
+                        if (calls > topCalls[0]) {
+                            topCalls[2] = topCalls[1]; topNr[2] = topNr[1];
+                            topCalls[1] = topCalls[0]; topNr[1] = topNr[0];
+                            topCalls[0] = calls; topNr[0] = syscallNr;
+                        } else if (calls > topCalls[1]) {
+                            topCalls[2] = topCalls[1]; topNr[2] = topNr[1];
+                            topCalls[1] = calls; topNr[1] = syscallNr;
+                        } else if (calls > topCalls[2]) {
+                            topCalls[2] = calls; topNr[2] = syscallNr;
+                        }
+                    }
+                    if (pidCalls > topCount) { topCount = pidCalls; topPid = i; }
+                    if (pidCalls) {
+                        const char* name0 = syscallNameForBucket(topNr[0]);
+                        const char* name1 = topCalls[1] ? syscallNameForBucket(topNr[1]) : "-";
+                        const char* name2 = topCalls[2] ? syscallNameForBucket(topNr[2]) : "-";
+                        klog_fmt("MEMSTATS_SYSCALLS pid=%u calls=%u intervalMs=%u top1=%s(#%u):%u top2=%s(#%u):%u top3=%s(#%u):%u",
+                                 i, pidCalls, memStatsIntervalMs,
+                                 name0, topNr[0], topCalls[0],
+                                 name1, topNr[1], topCalls[1],
+                                 name2, topNr[2], topCalls[2]);
+                    }
                 }
                 klog_fmt("MEMSTATS pid=%d pages=%llu committedKB=%llu rssKB=%llu "
-                         "busiest=pid%u/%usc/last=%s",
+                         "busiest=pid%u/%usc intervalMs=%u",
                          (int)cpu->thread->process->id,
                          (unsigned long long)mapped,
                          (unsigned long long)(committed * 4),
                          (unsigned long long)(rss / 1024),
-                         topPid, topCount, x64SyscallName(topNr));
+                         topPid, topCount, memStatsIntervalMs);
             }
         }
     }

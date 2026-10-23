@@ -330,3 +330,39 @@ test('immediate multi-texture coordinates are captured per unit at each vertex',
       [0.8, 0.7, 0.6, 0.9, 0.6, 0.9]);
   } finally { gpu.restore(); }
 });
+
+test('fixed-function CPU compositor clips triangles that cross behind the eye plane', async () => {
+  const gpu = createValidationDevice();
+  try {
+    gpu.device.queue.writeBuffer = () => {};
+    gpu.device.createBindGroup = descriptor => descriptor;
+    const createPipeline = gpu.device.createRenderPipeline;
+    gpu.device.createRenderPipeline = descriptor => {
+      descriptor.getBindGroupLayout = () => ({});
+      return createPipeline(descriptor);
+    };
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+
+    // Make clip.w = -z and clip.z = 0. The first vertex is behind the eye;
+    // the other two lie on the near-facing bottom edge. Homogeneous clipping
+    // reduces this triangle to a zero-area edge. Dividing first incorrectly
+    // places its behind-eye vertex at the viewport center and fills pixels.
+    const projection = new Float32Array(16);
+    projection[0] = 1; projection[5] = 1; projection[11] = -1;
+    gl.matrixMode(0x1701);
+    gl.loadMatrixf(projection);
+    gl.matrixMode(0x1700);
+    gl.loadIdentity();
+    const arrays = {
+      vertex: { enabled: true, configured: true, size: 3, type: 0x1406, stride: 0 },
+      color: { enabled: false },
+      vertexData: new Float32Array([0, 0, 1, -0.75, -0.75, -1, 0.75, -0.75, -1]),
+    };
+    assert.equal(gl.fixedFunctionDrawArrays(0x0004, 0, 3, arrays), true);
+    const centerBottom = (1 * gpu.canvas.width + 2) * 4;
+    assert.equal(gl._pixels[centerBottom + 3], 0,
+      'a triangle with only a behind-eye apex must not paint the synchronous GL mirror');
+    await gl._ops;
+  } finally { gpu.restore(); }
+});
