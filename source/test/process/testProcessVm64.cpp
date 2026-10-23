@@ -15,7 +15,64 @@
 #include "cpu64.h"
 #include "kmemory64.h"
 #include "syscall64.h"
+#include "kepoll.h"
+#include "kevent.h"
+#include "../../io/fsfilenode.h"
 #include "../cpu/testCPU.h"
+
+void testEpollPwait2Syscall() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    if (!process->fdNode) {
+        process->fdNode = std::make_shared<FsFileNode>(0x3FFFFFFF, 0, B("/proc/test/fd"), B(""), B(""), true, false, nullptr);
+    }
+    KMemory64* memory = process->memory64;
+    constexpr U64 page = 0x74000000ULL;
+    if (!memory->getPageFlags(page >> K64_PAGE_SHIFT) && memory->mmapAnonymousFixed(page, K64_PAGE_SIZE, 3) != page) {
+        testFail("epoll_pwait2 test could not map x64 buffers");
+        return;
+    }
+    auto event = std::make_shared<KEvent>();
+    event->counter = 1;
+    KFileDescriptorPtr eventFd = process->allocFileDescriptor(event, K_O_RDWR, 0, -1, 0);
+    auto epoll = std::make_shared<KEPoll>();
+    KFileDescriptorPtr epollFd = process->allocFileDescriptor(epoll, K_O_RDWR, 0, -1, 0);
+    constexpr U32 registration = TEST_HEAP_ADDRESS + 0x100;
+    context.memory->writed(registration, 1);
+    context.memory->writeq(registration + 4, 0xCAFEBABE12345678ULL);
+    if ((S32)epoll->ctl(context.memory, 1, (FD)eventFd->handle, registration) != 0) {
+        testFail("epoll_pwait2 test registration failed");
+        process->close(epollFd->handle); process->close(eventFd->handle);
+        return;
+    }
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto syscall = [&](U64 timeout, U64 mask, U64 maskSize) {
+        cpu.reg[X64_RAX].setU64(441);
+        cpu.reg[X64_RDI].setU64(epollFd->handle);
+        cpu.reg[X64_RSI].setU64(page + 0x100);
+        cpu.reg[X64_RDX].setU64(1);
+        cpu.reg[X64_R10].setU64(timeout);
+        cpu.reg[X64_R8].setU64(mask);
+        cpu.reg[X64_R9].setU64(maskSize);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    memory->writeq(page, 0);
+    memory->writeq(page + 8, 0);
+    if (syscall(page, 0, 0) != 1 || memory->readd(page + 0x100) != 1 ||
+        memory->readq(page + 0x104) != 0xCAFEBABE12345678ULL) {
+        testFail("epoll_pwait2 did not return its ready event and 64-bit payload");
+    }
+    memory->writeq(page + 0x20, 0);
+    memory->writeq(page + 0x28, 1000000000);
+    if (syscall(page + 0x20, 0, 0) != -K_EINVAL || syscall(page, page + 0x40, 4) != -K_EINVAL) {
+        testFail("epoll_pwait2 did not reject invalid timespec or sigset size");
+    }
+    process->close(epollFd->handle);
+    process->close(eventFd->handle);
+}
 
 void testProcessVm64Syscalls() {
     TestContext& context = testContext();

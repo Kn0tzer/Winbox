@@ -171,7 +171,8 @@ void testFutex64Operations() {
     // Race a real host thread entering FUTEX_WAIT against a wake issued from
     // this thread. The implementation must either wake the registered waiter
     // or preserve the early wake so the waiter returns EWOULDBLOCK.
-    memory->writed(word, 11);
+    const U64 raceWord = word + 0x20;
+    memory->writed(raceWord, 11);
     std::atomic<bool> started{false};
     std::atomic<bool> done{false};
     S64 waitResult = -999;
@@ -179,13 +180,13 @@ void testFutex64Operations() {
         KThread::setCurrentThread(worker);
         worker->cpu64 = &workerCpu;
         started.store(true, std::memory_order_release);
-        waitResult = call(workerCpu, word, 0 | PRIVATE, 11);
+        waitResult = call(workerCpu, raceWord, 0 | PRIVATE, 11);
         done.store(true, std::memory_order_release);
     });
     while (!started.load(std::memory_order_acquire)) std::this_thread::yield();
     S64 wakeResult = 0;
     for (int i = 0; i < 100 && !done.load(std::memory_order_acquire); ++i) {
-        wakeResult = call(caller, word, 1 | PRIVATE, 1);
+        wakeResult = call(caller, raceWord, 1 | PRIVATE, 1);
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     hostWaiter.join();
@@ -194,24 +195,26 @@ void testFutex64Operations() {
         testFail("FUTEX_WAIT/WAKE race lost a wake or returned an unexpected result (wake=%lld wait=%lld)",
                  (long long)wakeResult, (long long)waitResult);
     }
+    const U64 requeueWord = word + 0x40;
+    const U64 requeueOther = word + 0x44;
     auto requeueWaiter = [&](bool compare) {
-        memory->writed(word, 23);
-        memory->writed(other, 0);
+        memory->writed(requeueWord, 23);
+        memory->writed(requeueOther, 0);
         std::atomic<bool> waitStarted{false};
         S64 result = -999;
         std::thread waiter([&]() {
             KThread::setCurrentThread(worker);
             worker->cpu64 = &workerCpu;
             waitStarted.store(true, std::memory_order_release);
-            result = call(workerCpu, word, PRIVATE, 23);
+            result = call(workerCpu, requeueWord, PRIVATE, 23);
         });
         while (!waitStarted.load(std::memory_order_acquire)) std::this_thread::yield();
         S64 requeued = 0;
         for (int i = 0; i < 100 && requeued == 0; ++i) {
-            requeued = call(caller, word, (compare ? 4 : 3) | PRIVATE, 0, 1, other, 23);
+            requeued = call(caller, requeueWord, (compare ? 4 : 3) | PRIVATE, 0, 1, requeueOther, 23);
             if (!requeued) std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
-        const S64 woke = call(caller, other, 1 | PRIVATE, 1);
+        const S64 woke = call(caller, requeueOther, 1 | PRIVATE, 1);
         waiter.join();
         worker->cpu64 = nullptr;
         if (requeued != 1 || woke != 1 || result != 0) {

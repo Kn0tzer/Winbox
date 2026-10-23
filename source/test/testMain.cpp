@@ -71,6 +71,7 @@ void testEventfdFlags();
 void testTimerfd64Syscalls();
 void testCopyFileRange64Syscall();
 void testProcessVm64Syscalls();
+void testEpollPwait2Syscall();
 void testPidfd64Syscalls();
 void testInotify64LoudRejection();
 void testSignalfd64Syscalls();
@@ -94,6 +95,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testTimerfd64Syscalls, "Test x64 timerfd syscall ABI"},
     {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},
     {testProcessVm64Syscalls, "Test x64 process_vm_readv/writev syscalls"},
+    {testEpollPwait2Syscall, "Test x64 epoll_pwait2 syscall"},
     {testPidfd64Syscalls, "Test x64 pidfd_open/send_signal syscalls"},
     {testInotify64LoudRejection, "Test loud x64 inotify rejection"},
     {testSignalfd64Syscalls, "Test x64 signalfd create and update"},
