@@ -2457,30 +2457,8 @@ static VkFormatFeatureFlags v2FormatFeatureFlags(U32 format) {
     if (v2FormatIsDepthStencil(format)) flags |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
     return flags;
 }
-// Texel-buffer views (D3D11 buffer SRV/UAV: DXVK maps raw and structured buffers to
-// R32_UINT and typed ones to the DXGI format's Vulkan twin). DXVK refuses to create the
-// view ("Cannot create shader resource/unordered access view") unless the view format
-// advertises UNIFORM_/STORAGE_TEXEL_BUFFER, so an unadvertised format reads as zeros in
-// every Unity compute/instancing buffer. The page tier consumes these as storage buffers
-// (see docs/vulkan-protocol.md, "Texel buffers").
-static const U32 kV2TexelBufferFormats[] = {
-    9, 13, 14,                  // R8 UNORM/UINT/SINT
-    16, 20, 21,                 // R8G8 UNORM/UINT/SINT
-    37, 41, 42, 44,             // R8G8B8A8 UNORM/UINT/SINT, B8G8R8A8 UNORM
-    64, 74, 75, 76,             // A2B10G10R10 UNORM, R16 UINT/SINT/SFLOAT
-    77, 81, 82, 83,             // R16G16 UNORM/UINT/SINT/SFLOAT
-    91, 95, 96, 97,             // R16G16B16A16 UNORM/UINT/SINT/SFLOAT
-    98, 99, 100,                // R32 UINT/SINT/SFLOAT
-    101, 102, 103,              // R32G32 UINT/SINT/SFLOAT
-    107, 108, 109,              // R32G32B32A32 UINT/SINT/SFLOAT
-    122,                        // B10G11R11 UFLOAT
-};
 static VkFormatFeatureFlags v2FormatBufferFeatureFlags(U32 format) {
     VkFormatFeatureFlags flags = v2FormatIn(format, kV2SupportedVertexFormats) ? VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT : 0;
-    if (v2FormatIn(format, kV2TexelBufferFormats))
-        flags |= VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT | VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT;
-    if (format == 98 || format == 99)   // R32 UINT/SINT: the only atomic-capable texel formats in D3D11
-        flags |= VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_ATOMIC_BIT;
     return flags;
 }
 static VkFormatFeatureFlags2 v2FormatFeatureFlags2(U32 format) {
@@ -4534,15 +4512,9 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCreateBufferView: {
         VkBufferViewCreateInfo ci = {};
         if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
-        // Buffer may be from outside our bridge; don't fail if unknown.
-        U64 id = 0;
-        BufferView* v = createObj<BufferView>(K_BUFFERVIEW, id);
-        v->buffer = ci.buffer;
-        v->format = ci.format;
-        v->offset = ci.offset;
-        v->range = ci.range;
-        wr64(args.a[3], id);
-        return VK_SUCCESS;
+        vk64Unsupported("texel-buffer-view", "formatted texel-buffer descriptors are not implemented; format properties omit texel-buffer features");
+        wr64(args.a[3], 0);
+        return VK_ERROR_FORMAT_NOT_SUPPORTED;
     }
     case VK64_fn_vkCreateSampler: {
         VkSamplerCreateInfo ci = {};
@@ -8989,10 +8961,9 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     }
     case VK64_fn_vkCreateBufferView: {
         if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
-        U64 id = 0;
-        createObj32<BufferView>(K_BUFFERVIEW, id);
-        wr64_32((U32)args.a[3], id);
-        return VK_SUCCESS;
+        vk64Unsupported("texel-buffer-view", "formatted texel-buffer descriptors are not implemented; format properties omit texel-buffer features");
+        wr64_32((U32)args.a[3], 0);
+        return VK_ERROR_FORMAT_NOT_SUPPORTED;
     }
     case VK64_fn_vkGetBufferDeviceAddress: {
         VK64_DROP_IF(return 0, !args.a[1]);
