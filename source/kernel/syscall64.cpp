@@ -19,6 +19,7 @@
 #include <thread>   // std::this_thread::yield() for sched_yield
 #include <mutex>    // std::recursive_mutex for BW64_SERIAL_TEARDOWN
 #include <unordered_map>
+#include <unordered_set>
 #include "kunixsocket.h"
 #include "kepoll.h"
 #include "kpoll.h"
@@ -2906,12 +2907,9 @@ static U64 sys_mincore64(CPU64* cpu, U64 addr, U64 length, U64 vec) {
     return 0;
 }
 
-// Map an x86-64 Linux syscall number to a human-readable name. Used only by
-// the unimplemented-syscall log path — when running real glibc binaries, the
-// first thing you want to see is "which syscall is missing", not "#291".
-// Covers both syscalls we already handle (useful for trace) and the obvious
-// gaps that are most likely to surface during early Wine/glibc bring-up.
-// Returns "?" for unknown numbers; the caller still logs the raw #N.
+// Linux v6.12 arch/x86/entry/syscalls/syscall_64.tbl (common + 64 ABI).
+// Keep the ABI names here complete through syscall 450 so every unknown
+// dispatch logs the meaningful Linux name, including newly encountered gaps.
 static const char* x64SyscallName(U64 nr) {
 #ifdef BOXEDWINE_OPENGL
     if (nr == GL64_SYSCALL_NR) return "gl64_trap";
@@ -2943,27 +2941,21 @@ static const char* x64SyscallName(U64 nr) {
         case 23: return "select";
         case 24: return "sched_yield";
         case 25: return "mremap";
+        case 26: return "msync";
         case 27: return "mincore";
         case 28: return "madvise";
-        case X64_SYS_mbind: return "mbind";
-        case X64_SYS_get_mempolicy: return "get_mempolicy";
-        case 221: return "fadvise64";
-        case X64_SYS_sync_file_range: return "sync_file_range";
-        case X64_SYS_timerfd_create: return "timerfd_create";
-        case X64_SYS_timerfd_settime: return "timerfd_settime";
-        case X64_SYS_timerfd_gettime: return "timerfd_gettime";
-        case 280: return "utimensat";
-        case 309: return "getcpu";
-        case X64_SYS_process_vm_readv: return "process_vm_readv";
-        case X64_SYS_process_vm_writev: return "process_vm_writev";
-        case X64_SYS_membarrier: return "membarrier";
+        case 29: return "shmget";
+        case 30: return "shmat";
+        case 31: return "shmctl";
         case 32: return "dup";
         case 33: return "dup2";
         case 34: return "pause";
         case 35: return "nanosleep";
         case 36: return "getitimer";
+        case 37: return "alarm";
         case 38: return "setitimer";
         case 39: return "getpid";
+        case 40: return "sendfile";
         case 41: return "socket";
         case 42: return "connect";
         case 43: return "accept";
@@ -2971,7 +2963,14 @@ static const char* x64SyscallName(U64 nr) {
         case 45: return "recvfrom";
         case 46: return "sendmsg";
         case 47: return "recvmsg";
+        case 48: return "shutdown";
+        case 49: return "bind";
+        case 50: return "listen";
+        case 51: return "getsockname";
+        case 52: return "getpeername";
         case 53: return "socketpair";
+        case 54: return "setsockopt";
+        case 55: return "getsockopt";
         case 56: return "clone";
         case 57: return "fork";
         case 58: return "vfork";
@@ -2980,78 +2979,325 @@ static const char* x64SyscallName(U64 nr) {
         case 61: return "wait4";
         case 62: return "kill";
         case 63: return "uname";
+        case 64: return "semget";
+        case 65: return "semop";
+        case 66: return "semctl";
+        case 67: return "shmdt";
+        case 68: return "msgget";
+        case 69: return "msgsnd";
+        case 70: return "msgrcv";
+        case 71: return "msgctl";
         case 72: return "fcntl";
+        case 73: return "flock";
+        case 74: return "fsync";
+        case 75: return "fdatasync";
+        case 76: return "truncate";
+        case 77: return "ftruncate";
+        case 78: return "getdents";
         case 79: return "getcwd";
         case 80: return "chdir";
+        case 81: return "fchdir";
         case 82: return "rename";
+        case 83: return "mkdir";
+        case 84: return "rmdir";
+        case 85: return "creat";
         case 86: return "link";
+        case 87: return "unlink";
         case 88: return "symlink";
         case 89: return "readlink";
         case 90: return "chmod";
         case 91: return "fchmod";
+        case 92: return "chown";
+        case 93: return "fchown";
+        case 94: return "lchown";
+        case 95: return "umask";
         case 96: return "gettimeofday";
+        case 97: return "getrlimit";
         case 98: return "getrusage";
         case 99: return "sysinfo";
         case 100: return "times";
-        case X64_SYS_ptrace: return "ptrace";
+        case 101: return "ptrace";
         case 102: return "getuid";
+        case 103: return "syslog";
+        case 104: return "getgid";
         case 105: return "setuid";
         case 106: return "setgid";
-        case 201: return "time";
-        case 264: return "renameat";
-        case 316: return "renameat2";
-        case 104: return "getgid";
         case 107: return "geteuid";
         case 108: return "getegid";
+        case 109: return "setpgid";
         case 110: return "getppid";
         case 111: return "getpgrp";
+        case 112: return "setsid";
+        case 113: return "setreuid";
+        case 114: return "setregid";
+        case 115: return "getgroups";
+        case 116: return "setgroups";
         case 117: return "setresuid";
         case 118: return "getresuid";
         case 119: return "setresgid";
         case 120: return "getresgid";
         case 121: return "getpgid";
+        case 122: return "setfsuid";
+        case 123: return "setfsgid";
         case 124: return "getsid";
+        case 125: return "capget";
+        case 126: return "capset";
         case 127: return "rt_sigpending";
         case 128: return "rt_sigtimedwait";
         case 129: return "rt_sigqueueinfo";
         case 130: return "rt_sigsuspend";
         case 131: return "sigaltstack";
-        case 29:  return "shmget";
-        case 30:  return "shmat";
-        case 31:  return "shmctl";
-        case 67:  return "shmdt";
+        case 132: return "utime";
+        case 133: return "mknod";
+        case 134: return "uselib";
+        case 135: return "personality";
+        case 136: return "ustat";
         case 137: return "statfs";
         case 138: return "fstatfs";
+        case 139: return "sysfs";
+        case 140: return "getpriority";
+        case 141: return "setpriority";
+        case 142: return "sched_setparam";
+        case 143: return "sched_getparam";
+        case 144: return "sched_setscheduler";
+        case 145: return "sched_getscheduler";
+        case 146: return "sched_get_priority_max";
+        case 147: return "sched_get_priority_min";
+        case 148: return "sched_rr_get_interval";
+        case 149: return "mlock";
+        case 150: return "munlock";
+        case 151: return "mlockall";
+        case 152: return "munlockall";
+        case 153: return "vhangup";
+        case 154: return "modify_ldt";
+        case 155: return "pivot_root";
+        case 156: return "_sysctl";
         case 157: return "prctl";
         case 158: return "arch_prctl";
+        case 159: return "adjtimex";
+        case 160: return "setrlimit";
+        case 161: return "chroot";
+        case 162: return "sync";
+        case 163: return "acct";
+        case 164: return "settimeofday";
+        case 165: return "mount";
+        case 166: return "umount2";
+        case 167: return "swapon";
+        case 168: return "swapoff";
+        case 169: return "reboot";
+        case 170: return "sethostname";
+        case 171: return "setdomainname";
+        case 172: return "iopl";
+        case 173: return "ioperm";
+        case 174: return "create_module";
+        case 175: return "init_module";
+        case 176: return "delete_module";
+        case 177: return "get_kernel_syms";
+        case 178: return "query_module";
+        case 179: return "quotactl";
+        case 180: return "nfsservctl";
+        case 181: return "getpmsg";
+        case 182: return "putpmsg";
+        case 183: return "afs_syscall";
+        case 184: return "tuxcall";
+        case 185: return "security";
         case 186: return "gettid";
+        case 187: return "readahead";
+        case 188: return "setxattr";
+        case 189: return "lsetxattr";
+        case 190: return "fsetxattr";
+        case 191: return "getxattr";
+        case 192: return "lgetxattr";
+        case 193: return "fgetxattr";
+        case 194: return "listxattr";
+        case 195: return "llistxattr";
+        case 196: return "flistxattr";
+        case 197: return "removexattr";
+        case 198: return "lremovexattr";
+        case 199: return "fremovexattr";
+        case 200: return "tkill";
+        case 201: return "time";
         case 202: return "futex";
         case 203: return "sched_setaffinity";
         case 204: return "sched_getaffinity";
+        case 205: return "set_thread_area";
+        case 206: return "io_setup";
+        case 207: return "io_destroy";
+        case 208: return "io_getevents";
+        case 209: return "io_submit";
+        case 210: return "io_cancel";
+        case 211: return "get_thread_area";
+        case 212: return "lookup_dcookie";
+        case 213: return "epoll_create";
+        case 214: return "epoll_ctl_old";
+        case 215: return "epoll_wait_old";
+        case 216: return "remap_file_pages";
         case 217: return "getdents64";
         case 218: return "set_tid_address";
+        case 219: return "restart_syscall";
+        case 220: return "semtimedop";
+        case 221: return "fadvise64";
+        case 222: return "timer_create";
+        case 223: return "timer_settime";
+        case 224: return "timer_gettime";
+        case 225: return "timer_getoverrun";
+        case 226: return "timer_delete";
+        case 227: return "clock_settime";
         case 228: return "clock_gettime";
         case 229: return "clock_getres";
         case 230: return "clock_nanosleep";
         case 231: return "exit_group";
         case 232: return "epoll_wait";
         case 233: return "epoll_ctl";
-        case 200: return "tkill";
         case 234: return "tgkill";
+        case 235: return "utimes";
+        case 236: return "vserver";
+        case 237: return "mbind";
+        case 238: return "set_mempolicy";
+        case 239: return "get_mempolicy";
+        case 240: return "mq_open";
+        case 241: return "mq_unlink";
+        case 242: return "mq_timedsend";
+        case 243: return "mq_timedreceive";
+        case 244: return "mq_notify";
+        case 245: return "mq_getsetattr";
+        case 246: return "kexec_load";
+        case 247: return "waitid";
+        case 248: return "add_key";
+        case 249: return "request_key";
+        case 250: return "keyctl";
+        case 251: return "ioprio_set";
+        case 252: return "ioprio_get";
+        case 253: return "inotify_init";
+        case 254: return "inotify_add_watch";
+        case 255: return "inotify_rm_watch";
+        case 256: return "migrate_pages";
         case 257: return "openat";
+        case 258: return "mkdirat";
+        case 259: return "mknodat";
+        case 260: return "fchownat";
+        case 261: return "futimesat";
         case 262: return "newfstatat";
+        case 263: return "unlinkat";
+        case 264: return "renameat";
+        case 265: return "linkat";
+        case 266: return "symlinkat";
+        case 267: return "readlinkat";
+        case 268: return "fchmodat";
+        case 269: return "faccessat";
         case 270: return "pselect6";
+        case 271: return "ppoll";
+        case 272: return "unshare";
         case 273: return "set_robust_list";
+        case 274: return "get_robust_list";
+        case 275: return "splice";
+        case 276: return "tee";
+        case 277: return "sync_file_range";
+        case 278: return "vmsplice";
+        case 279: return "move_pages";
+        case 280: return "utimensat";
+        case 281: return "epoll_pwait";
+        case 282: return "signalfd";
+        case 283: return "timerfd_create";
+        case 284: return "eventfd";
+        case 285: return "fallocate";
+        case 286: return "timerfd_settime";
+        case 287: return "timerfd_gettime";
+        case 288: return "accept4";
+        case 289: return "signalfd4";
         case 290: return "eventfd2";
         case 291: return "epoll_create1";
+        case 292: return "dup3";
         case 293: return "pipe2";
+        case 294: return "inotify_init1";
+        case 295: return "preadv";
+        case 296: return "pwritev";
+        case 297: return "rt_tgsigqueueinfo";
+        case 298: return "perf_event_open";
+        case 299: return "recvmmsg";
+        case 300: return "fanotify_init";
+        case 301: return "fanotify_mark";
         case 302: return "prlimit64";
+        case 303: return "name_to_handle_at";
+        case 304: return "open_by_handle_at";
+        case 305: return "clock_adjtime";
+        case 306: return "syncfs";
+        case 307: return "sendmmsg";
+        case 308: return "setns";
+        case 309: return "getcpu";
+        case 310: return "process_vm_readv";
+        case 311: return "process_vm_writev";
+        case 312: return "kcmp";
+        case 313: return "finit_module";
+        case 314: return "sched_setattr";
+        case 315: return "sched_getattr";
+        case 316: return "renameat2";
+        case 317: return "seccomp";
         case 318: return "getrandom";
         case 319: return "memfd_create";
+        case 320: return "kexec_file_load";
+        case 321: return "bpf";
+        case 322: return "execveat";
+        case 323: return "userfaultfd";
+        case 324: return "membarrier";
+        case 325: return "mlock2";
+        case 326: return "copy_file_range";
+        case 327: return "preadv2";
+        case 328: return "pwritev2";
+        case 329: return "pkey_mprotect";
+        case 330: return "pkey_alloc";
+        case 331: return "pkey_free";
+        case 332: return "statx";
+        case 333: return "io_pgetevents";
         case 334: return "rseq";
+        case 335: return "uretprobe";
+        case 424: return "pidfd_send_signal";
+        case 425: return "io_uring_setup";
+        case 426: return "io_uring_enter";
+        case 427: return "io_uring_register";
+        case 428: return "open_tree";
+        case 429: return "move_mount";
+        case 430: return "fsopen";
+        case 431: return "fsconfig";
+        case 432: return "fsmount";
+        case 433: return "fspick";
+        case 434: return "pidfd_open";
         case 435: return "clone3";
-        default:  return "?";
+        case 436: return "close_range";
+        case 437: return "openat2";
+        case 438: return "pidfd_getfd";
+        case 439: return "faccessat2";
+        case 440: return "process_madvise";
+        case 441: return "epoll_pwait2";
+        case 442: return "mount_setattr";
+        case 443: return "quotactl_fd";
+        case 444: return "landlock_create_ruleset";
+        case 445: return "landlock_add_rule";
+        case 446: return "landlock_restrict_self";
+        case 447: return "memfd_secret";
+        case 448: return "process_mrelease";
+        case 449: return "futex_waitv";
+        case 450: return "set_mempolicy_home_node";
+        default: return "unknown";
     }
+}
+
+// Every x86-64 syscall number without an implementation flows through here.
+// Report once per ABI number (rather than once per process) so unsupported
+// features remain visible without flooding logs in multi-threaded guests.
+static U64 unimplementedSyscall64(U64 nr) {
+    static std::mutex logMutex;
+    static std::unordered_set<U32> reportedNumbers;
+    bool firstReport;
+    {
+        std::lock_guard<std::mutex> lock(logMutex);
+        firstReport = reportedNumbers.insert((U32)nr).second;
+    }
+    if (firstReport) {
+        klog_fmt("ksyscall64: unimplemented syscall #%llu (%s)",
+                 (unsigned long long)nr, x64SyscallName(nr));
+    }
+    return (U64)-K_ENOSYS;
 }
 
 #ifdef __EMSCRIPTEN__
@@ -4645,9 +4891,7 @@ void ksyscall64(CPU64* cpu) {
             if (cpu->thread && cpu->thread->process && cpu->thread->process->memory64) {
                 ret = cpu->thread->process->clone64(cpu->thread, a1, a2, a3, a5, a4);
             } else {
-                klog_fmt("ksyscall64: clone(flags=0x%llx) with no process/memory64",
-                         (unsigned long long)a1);
-                ret = (U64)-K_ENOSYS;
+                ret = unimplementedSyscall64(nr);
             }
             break;
         case X64_SYS_execve:
@@ -4658,9 +4902,7 @@ void ksyscall64(CPU64* cpu) {
             break;
         case X64_SYS_getitimer:
         case X64_SYS_setitimer:
-            // Interval timers are rarely used by modern glibc (timer_create
-            // is preferred); explicit ENOSYS keeps callers honest.
-            ret = (U64)-K_ENOSYS;
+            ret = unimplementedSyscall64(nr);
             break;
         case X64_SYS_clone3:
             // glibc 2.34+ prefers clone3. Implement it directly (its ENOSYS
@@ -4668,7 +4910,7 @@ void ksyscall64(CPU64* cpu) {
             if (cpu->thread && cpu->thread->process && cpu->thread->process->memory64) {
                 ret = cpu->thread->process->clone364(cpu->thread, a1, a2);
             } else {
-                ret = (U64)-K_ENOSYS;
+                ret = unimplementedSyscall64(nr);
             }
             break;
         case X64_SYS_eventfd2:
@@ -4786,9 +5028,7 @@ void ksyscall64(CPU64* cpu) {
             ret = sys_readv64(cpu, a1, a2, a3);
             break;
         case X64_SYS_select:
-            // select(nfds, readfds, writefds, exceptfds, timeout). Without
-            // real fd polling we cannot honor it; ENOSYS surfaces cleanly.
-            ret = (U64)-K_ENOSYS;
+            ret = unimplementedSyscall64(nr);
             break;
         case X64_SYS_chmod:
         case X64_SYS_fchmod:
@@ -4865,10 +5105,8 @@ void ksyscall64(CPU64* cpu) {
             ret = sys_nanosleep64(cpu, a3, true, a1, a2);
             break;
         case X64_SYS_rseq:
-            // restartable-sequences registration. glibc 2.35+ calls this on
-            // every thread start. Pretend it's not supported so glibc falls
-            // back to plain mutexes.
-            ret = (U64)-K_ENOSYS;
+            // No rseq implementation: report through the common ENOSYS path.
+            ret = unimplementedSyscall64(nr);
             break;
         case X64_SYS_ptrace:
             ret = (U64)-K_EPERM;
@@ -4891,54 +5129,7 @@ void ksyscall64(CPU64* cpu) {
             ret = 0;
             break;
         default:
-            {
-                static std::mutex unimplementedLogMutex;
-                static std::unordered_map<U64, U32> unimplementedLogCounts;
-                const U32 pid = cpu->thread && cpu->thread->process
-                    ? cpu->thread->process->id : 0;
-                const U64 key = ((U64)pid << 32) | (U32)nr;
-                U32 reportCount;
-                {
-                    std::lock_guard<std::mutex> lock(unimplementedLogMutex);
-                    reportCount = ++unimplementedLogCounts[key];
-                }
-                if (reportCount <= 5) {
-                    klog_fmt("ksyscall64: unimplemented syscall #%llu (%s) at RIP=0x%llx — RDI=0x%llx RSI=0x%llx RDX=0x%llx R10=0x%llx R8=0x%llx R9=0x%llx",
-                             (unsigned long long)nr,
-                             x64SyscallName(nr),
-                             (unsigned long long)cpu->rip,
-                             (unsigned long long)a1,
-                             (unsigned long long)a2,
-                             (unsigned long long)a3,
-                             (unsigned long long)a4,
-                             (unsigned long long)a5,
-                             (unsigned long long)a6);
-                } else if (reportCount == 6) {
-                    klog_fmt("ksyscall64: unimplemented syscall #%llu (%s) (further reports suppressed)",
-                             (unsigned long long)nr, x64SyscallName(nr));
-                }
-            }
-            // TEMP DIAGNOSTIC: dump the bytes around the syscall RIP and the
-            // full register set so we can tell a real Linux syscall from a
-            // wine __wine_unix_call / NT thunk landing here. syscallRip points
-            // at the 0F 05 instruction.
-            if (getenv("BW64_SCDUMP")) {
-                U64 r = cpu->syscallRip;
-                U8 b[16];
-                for (int i = 0; i < 16; i++) b[i] = cpu->memory->readb(r - 6 + i);
-                klog_fmt("  SCDUMP bytes@RIP-6: %02x %02x %02x %02x %02x %02x [%02x %02x] %02x %02x %02x %02x %02x %02x %02x %02x",
-                         b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7],b[8],b[9],b[10],b[11],b[12],b[13],b[14],b[15]);
-                klog_fmt("  SCDUMP RAX=%llx RBX=%llx RCX=%llx RBP=%llx RSP=%llx R12=%llx fsbase=%llx gsbase=%llx",
-                         (unsigned long long)cpu->reg[X64_RAX].u64,
-                         (unsigned long long)cpu->reg[X64_RBX].u64,
-                         (unsigned long long)cpu->reg[X64_RCX].u64,
-                         (unsigned long long)cpu->reg[X64_RBP].u64,
-                         (unsigned long long)cpu->reg[X64_RSP].u64,
-                         (unsigned long long)cpu->reg[X64_R12].u64,
-                         (unsigned long long)cpu->fsbase,
-                         (unsigned long long)cpu->gsbase);
-            }
-            ret = (U64)-K_ENOSYS;
+            ret = unimplementedSyscall64(nr);
             break;
     }
 
