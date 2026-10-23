@@ -164,6 +164,33 @@ test('glshim TODO fields are dead scaffolding and do not gate active shim behavi
   assert.match(shimSrc, /void glLineStipple\(GLint factor, GLushort pattern\)/);
 });
 
+test('GL bridge host exceptions are rate-limited, logged by GL name, and become INVALID_OPERATION', () => {
+  assert.match(bridgeSrc, /__bw64glReportBridgeException = function \(name, error\)/);
+  assert.match(bridgeSrc, /console\.warn\('gl64 ' \+ name \+ ' failed:'/);
+  assert.match(bridgeSrc, /GLctx\._recordError\(0x0502\)/);
+  assert.match(bridgeSrc, /GL\.recordError\(0x0502\)/);
+  assert.doesNotMatch(bridgeSrc, /catch \(e\) \{\s*\}/);
+  const catchLines = bridgeSrc.split('\n');
+  for (let i = 0; i < catchLines.length; i++) {
+    if (!/catch \(e\)/.test(catchLines[i])) continue;
+    const context = catchLines.slice(i, i + 9).join('\n');
+    assert.ok(context.includes('__bw64glReportBridgeException') ||
+      (context.includes("has('glFramebufferTexture')") && context.includes('console.warn')),
+      `exception path lacks GL function logging: ${catchLines[i].trim()}`);
+  }
+});
+
+test('GL bridge unsupported dispatches report GL_INVALID_OPERATION instead of silently returning', () => {
+  assert.match(bridgeSrc, /void rejectBridgeEntry\(const char\* functionName\)[\s\S]*?recordBridgeError\(GL_INVALID_OPERATION\)/);
+  for (const name of ['glMapBufferRange direct bridge call', 'glDebugMessageCallback', 'glPointParameteri',
+    'glTexBuffer', 'glTextureBarrierNV', 'glFinalCombinerInputNV', 'glDrawArraysInstancedBaseInstance',
+    'glDrawRangeElementsBaseVertex', 'glTextureBarrier'])
+    assert.ok(bridgeSrc.includes(name), `${name} requires an explicit dispatch disposition`);
+  assert.match(bridgeSrc, /case GL64_fn_glVertexAttrib1d:[\s\S]*?glVertexAttrib1f\(index,v\[0\]\)/,
+    'double-valued generic attributes must convert to GLES float attributes');
+  assert.match(bridgeSrc, /unknown ABI function id %llu[\s\S]*?rejectBridgeEntry\(name\)/);
+});
+
 test('GLX pixmap/window attributes reject once and return None instead of panicking', () => {
   for (const [name, warning] of [['gl_common_XCreatePixmap', 'glXCreatePixmap: unsupported attrib_list'], ['gl_common_XCreateWindow', 'glXCreateWindow: unsupported attrib_list']]) {
     const body = new RegExp(`void ${name}\\s*\\([^)]*\\)\\s*\\{([\\s\\S]*?)\\n\\}`).exec(glCommonSrc)?.[1] || '';
