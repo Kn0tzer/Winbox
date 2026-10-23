@@ -39,8 +39,12 @@ const result = { game, profile, tag, startedAt: new Date().toISOString(), menuVe
 let slot, server, browser, browserServer, persistentContext, logFile;
 const logs = [];
 let stopping = false;
-process.on('SIGTERM', () => { stopping = true; });
-process.on('SIGINT', () => { stopping = true; });
+// PROBE_IGNORE_TERM=1: shared machine, other agents' cleanup can SIGTERM a long probe; log and keep going.
+const ignoreTerm = process.env.PROBE_IGNORE_TERM === '1';
+for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => {
+  console.error(`probe: received ${sig}${ignoreTerm ? ' (ignored: PROBE_IGNORE_TERM=1)' : ''}`);
+  if (!ignoreTerm) stopping = true;
+});
 try {
   slot = await acquireProbeSlot();
   await waitForBuildIdle();
