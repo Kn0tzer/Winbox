@@ -78,7 +78,7 @@ const GL_COMPARE = new Map([[0x0200, 'never'], [0x0201, 'less'], [0x0202, 'equal
 const GL_STENCIL_OP = new Map([[0x1e00, 'keep'], [0, 'zero'], [0x1e01, 'replace'], [0x1e02, 'invert'], [0x1e03, 'increment-clamp'], [0x1e04, 'decrement-clamp'], [0x8507, 'increment-wrap'], [0x8508, 'decrement-wrap']]);
 const GL_BLEND_OP = new Map([[0x8006, 'add'], [0x800a, 'subtract'], [0x800b, 'reverse-subtract'], [0x8007, 'min'], [0x8008, 'max']]);
 const signedType = type => [0x1400, 0x1402, 0x1404].includes(type);
-const GL_ENABLE_CAPABILITIES = new Set([0x0b44, 0x0b71, 0x0b90, 0x0bc0, 0x0be2, 0x0bd0, 0x0c11, 0x8037, 0x809e, 0x80a0, 0x8c89]);
+const GL_ENABLE_CAPABILITIES = new Set([0x0b44, 0x0b71, 0x0b90, 0x0bc0, 0x0be2, 0x0bd0, 0x0c11, 0x8037, 0x809e, 0x80a0, 0x8c89, 0x8db9]);
 const S3TC_BLOCK_BYTES = new Map([[0x83f0, 8], [0x83f1, 8], [0x83f2, 16], [0x83f3, 16], [0x8c4c, 8], [0x8c4d, 8], [0x8c4e, 16], [0x8c4f, 16]]);
 
 function rgb565(value) {
@@ -512,6 +512,7 @@ export class WebGPUGL {
     this._context.configure({
       device: this._device,
       format: this._format,
+      viewFormats: [`${this._format}-srgb`],
       alphaMode: 'opaque',
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
     });
@@ -532,7 +533,7 @@ export class WebGPUGL {
     this.canvas.height = height;
     this._configureCanvas();
     this._colorTexture = this._device.createTexture({
-      size: [width, height, 1], format: this._format,
+      size: [width, height, 1], format: this._format, viewFormats: [`${this._format}-srgb`],
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
     });
     this._depthTexture = this._device.createTexture({
@@ -576,10 +577,11 @@ export class WebGPUGL {
       : this._defaultBufferSelection;
   }
 
-  _targetFor(framebuffer = this._drawFramebuffer) {
+  _targetFor(framebuffer = this._drawFramebuffer, srgbEnabled = this._enabled.has(0x8db9)) {
     if (this._isDefaultFramebuffer(framebuffer)) return {
       default: true, framebuffer, colorTexture: this._colorTexture, depthTexture: this._depthTexture,
-      pixels: this._pixels, width: this._width, height: this._height, format: this._format, depthFormat: 'depth24plus-stencil8',
+      pixels: this._pixels, width: this._width, height: this._height,
+      format: srgbEnabled ? `${this._format}-srgb` : this._format, depthFormat: 'depth24plus-stencil8',
     };
     const object = framebuffer;
     const colorAttachment = object?.attachments?.get(0x8ce0);
@@ -596,12 +598,13 @@ export class WebGPUGL {
       colorTexture, depthTexture, colorMipLevel, depthMipLevel: depthAttachment?.level || 0,
       pixels: level?.pixels || color?.pixels || null,
       width: level?.width || color?.width || 0, height: level?.height || color?.height || 0,
-      format: color?.format || 'rgba8unorm', depthFormat: depth?.format || null,
+      format: color?.format?.endsWith('-srgb') && !srgbEnabled ? color.format.slice(0, -5) : color?.format || 'rgba8unorm',
+      depthFormat: depth?.format || null,
     };
   }
 
   async _clearGpu(mask, state) {
-    const target = this._targetFor(state.framebuffer);
+    const target = this._targetFor(state.framebuffer, state.enabled.has(0x8db9));
     if (!target?.colorTexture || !target.width || !target.height) return;
     if ((state.drawBuffer ?? this._bufferSelection(state.framebuffer).draw) === GL.NONE) mask &= ~GL.COLOR_BUFFER_BIT;
     const scissor = state.enabled.has(0x0c11);
@@ -616,7 +619,7 @@ export class WebGPUGL {
     const encoder = this._device.createCommandEncoder();
     const descriptor = {
       colorAttachments: [{
-        view: target.colorTexture.createView({ baseMipLevel: target.colorMipLevel || 0, mipLevelCount: 1 }),
+        view: target.colorTexture.createView({ format: target.format, baseMipLevel: target.colorMipLevel || 0, mipLevelCount: 1 }),
         clearValue: { r: state.color[0], g: state.color[1], b: state.color[2], a: state.color[3] },
         loadOp: fullColor ? 'clear' : 'load', storeOp: 'store',
       }],
@@ -690,9 +693,14 @@ export class WebGPUGL {
 
   _clearPixels(mask, state) {
     if (!(mask & GL.COLOR_BUFFER_BIT) || (state.drawBuffer ?? this._bufferSelection(state.framebuffer).draw) === GL.NONE) return;
-    const rgba = state.color.map(value => Math.round(clamp01(value) * 255));
-    const target = this._targetFor(state.framebuffer), pixels = target?.pixels;
+    const target = this._targetFor(state.framebuffer, state.enabled.has(0x8db9)), pixels = target?.pixels;
     if (!target || !pixels) return;
+    const srgb = target.format?.endsWith('-srgb');
+    const rgba = state.color.map((value, channel) => {
+      const linear = clamp01(value);
+      const encoded = srgb && channel < 3 ? (linear <= 0.0031308 ? linear * 12.92 : 1.055 * linear ** (1 / 2.4) - 0.055) : linear;
+      return Math.round(encoded * 255);
+    });
     let left = 0, right = target.width, top = 0, bottom = target.height;
     if (state.enabled.has(0x0c11)) {
       const [x, y, width, height] = state.scissor;
@@ -1018,7 +1026,7 @@ export class WebGPUGL {
   getError() { const error = this._error; this._error = GL.NO_ERROR; return error; }
   isContextLost() { return false; }
   getContextAttributes() { return { alpha: true, depth: true, stencil: true, antialias: false, premultipliedAlpha: true, preserveDrawingBuffer: true }; }
-  getSupportedExtensions() { return ['WEBGL_compressed_texture_s3tc', 'ANGLE_instanced_arrays', 'OES_vertex_array_object', 'EXT_read_format_bgra', 'EXT_texture_filter_anisotropic']; }
+  getSupportedExtensions() { return ['WEBGL_compressed_texture_s3tc', 'ANGLE_instanced_arrays', 'OES_vertex_array_object', 'EXT_read_format_bgra', 'EXT_texture_filter_anisotropic', 'EXT_sRGB']; }
   getExtension(name) {
     if (name === 'WEBGL_compressed_texture_s3tc' || name === 'WEBKIT_WEBGL_compressed_texture_s3tc') return {
       COMPRESSED_RGB_S3TC_DXT1_EXT: 0x83f0, COMPRESSED_RGBA_S3TC_DXT1_EXT: 0x83f1,
@@ -1035,6 +1043,7 @@ export class WebGPUGL {
     };
     if (name === 'EXT_read_format_bgra') return { BGRA_EXT: 0x80e1 };
     if (name === 'EXT_texture_filter_anisotropic') return { TEXTURE_MAX_ANISOTROPY_EXT: 0x84fe, MAX_TEXTURE_MAX_ANISOTROPY_EXT: 16 };
+    if (name === 'EXT_sRGB') return { SRGB_EXT: 0x8c40, SRGB_ALPHA_EXT: 0x8c42, SRGB8_ALPHA8_EXT: 0x8c43, FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING_EXT: 0x8210, LINEAR_EXT: 0x2601 };
     return null;
   }
 
@@ -2086,7 +2095,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (!pipeline) return; // A failed shader/pipeline is a skipped draw.
     const encoder = this._device.createCommandEncoder();
     const pass = encoder.beginRenderPass({
-      colorAttachments: [{ view: target.colorTexture.createView({ baseMipLevel: target.colorMipLevel || 0, mipLevelCount: 1 }), loadOp: 'load', storeOp: 'store' }],
+      colorAttachments: [{ view: target.colorTexture.createView({ format: target.format, baseMipLevel: target.colorMipLevel || 0, mipLevelCount: 1 }), loadOp: 'load', storeOp: 'store' }],
       ...(target.depthTexture ? { depthStencilAttachment: { view: target.depthTexture.createView({ baseMipLevel: target.depthMipLevel || 0, mipLevelCount: 1 }), depthLoadOp: 'load', depthStoreOp: 'store', ...(target.depthFormat?.includes('stencil') ? { stencilLoadOp: 'load', stencilStoreOp: 'store' } : {}) } } : {}),
     });
     pass.setPipeline(pipeline);
@@ -2290,6 +2299,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (!texture.gpu || texture.gpuMipCount !== levels) {
       texture.gpu?.destroy();
       texture.gpu = this._device.createTexture({ size: [texture.width, texture.height, 1], mipLevelCount: levels, format: texture.format,
+        viewFormats: [texture.format === 'rgba8unorm-srgb' ? 'rgba8unorm' : 'rgba8unorm-srgb'],
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC | GPUTextureUsage.RENDER_ATTACHMENT });
       texture.gpuMipCount = levels;
     }
@@ -2507,6 +2517,8 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (parameter === 0x8cd0) return record.type === 'texture' ? 0x1702 : 0x8d41;
     if (parameter === 0x8cd1) return record.type === 'texture' ? record.object.handle : 0;
     if (parameter === 0x8cd2) return record.level || 0;
+    if (parameter === 0x8210) return record.object?.format?.endsWith('-srgb') ? 0x8c40 : 0x2601;
+    this._recordError(GL.INVALID_ENUM);
     return 0;
   }
   async _blitColorFormats(source, destination, sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, filter) {

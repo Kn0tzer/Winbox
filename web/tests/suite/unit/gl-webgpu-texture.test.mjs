@@ -76,6 +76,38 @@ test('sRGB texture formats retain sRGB GPU sampling formats for regular and S3TC
   } finally { gpu.restore(); }
 });
 
+test('EXT_sRGB enables sRGB framebuffer views and linear/sRGB clear conversion', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    const extension = gl.getExtension('EXT_sRGB');
+    assert.ok(extension);
+    assert.ok(gl.getSupportedExtensions().includes('EXT_sRGB'));
+    assert.equal(extension.SRGB8_ALPHA8_EXT, 0x8c43);
+    assert.equal(gl._targetFor(0).format, 'rgba8unorm');
+    gl.enable(0x8db9);
+    assert.equal(gl.getError(), 0);
+    assert.equal(gl._targetFor(0).format, 'rgba8unorm-srgb');
+    gl.clearColor(0.5, 0.25, 1, 1);
+    gl._clearPixels(0x4000, { framebuffer: 0, enabled: new Set([0x8db9]), color: [0.5, 0.25, 1, 1], colorMask: [true, true, true, true] });
+    assert.deepEqual([...gl._pixels.slice(0, 4)], [188, 137, 255, 255]);
+
+    const texture = gl.createTexture();
+    gl.bindTexture(0x0de1, texture);
+    gl.texImage2D(0x0de1, 0, extension.SRGB8_ALPHA8_EXT, 1, 1, 0, 0x1908, 0x1401, new Uint8Array([128, 128, 128, 255]));
+    const framebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(0x8d40, framebuffer);
+    gl.framebufferTexture2D(0x8d40, 0x8ce0, 0x0de1, texture, 0);
+    assert.equal(gl.getFramebufferAttachmentParameter(0x8d40, 0x8ce0, 0x8210), 0x8c40);
+    assert.equal(gl._targetFor(framebuffer).format, 'rgba8unorm-srgb');
+    gl.disable(0x8db9);
+    assert.equal(gl._targetFor(framebuffer).format, 'rgba8unorm');
+    await gl._ops;
+    assert.ok(texture.gpu.viewFormats.includes('rgba8unorm'));
+  } finally { gpu.restore(); }
+});
+
 test('the S3TC extension decodes DXT1, DXT3, and DXT5 blocks without GPU features', async () => {
   const gpu = createValidationDevice();
   try {
