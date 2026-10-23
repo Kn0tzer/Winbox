@@ -47,6 +47,24 @@ test('unsupported depth and pixel-pack-buffer reads log once and latch GL errors
   } finally { gpu.restore(); }
 });
 
+test('pixel-pack buffers accept readPixels offsets and enforce buffer bounds', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: () => {} });
+    await gl.ready;
+    gl._pixels.set([11, 22, 33, 44], 0);
+    const pbo = gl.createBuffer();
+    gl.bindBuffer(0x88eb, pbo);
+    gl.bufferData(0x88eb, 8);
+    assert.equal(gl.getParameter(0x88ed), pbo);
+    gl.readPixels(0, 0, 1, 1, 0x1908, 0x1401, 2);
+    assert.deepEqual([...pbo.data], [0, 0, 11, 22, 33, 44, 0, 0]);
+    assert.equal(gl.getError(), 0);
+    gl.readPixels(0, 0, 1, 1, 0x1908, 0x1401, 6);
+    assert.equal(gl.getError(), 0x0502, 'a pack offset beyond the buffer raises INVALID_OPERATION');
+  } finally { gpu.restore(); }
+});
+
 test('GPU-written FBO readback fails loudly until asynchronous FBO staging exists', async () => {
   const gpu = createValidationDevice(), logs = [];
   try {

@@ -411,6 +411,7 @@ export class WebGPUGL {
     this._error = GL.NO_ERROR;
     this._arrayBuffer = null;
     this._elementArrayBuffer = null;
+    this._pixelPackBuffer = null;
     this._currentProgram = null;
     this._fixedFunctionProgramCache = new Map();
     this._fixedFunctionPointers = new Map();
@@ -797,6 +798,7 @@ export class WebGPUGL {
       case GL.DRAW_BUFFER0: return this._bufferSelection(this._drawFramebuffer).draw;
       case GL.ARRAY_BUFFER_BINDING: return this._arrayBuffer;
       case GL.ELEMENT_ARRAY_BUFFER_BINDING: return this._elementArrayBuffer;
+      case GL.PIXEL_PACK_BUFFER_BINDING: return this._pixelPackBuffer;
       case GL.TEXTURE_BINDING_2D: return this._textureUnits[this._activeTextureUnit]?.[GL.TEXTURE_2D]?.handle || null;
       case GL.RENDERBUFFER_BINDING: return this._boundRenderbuffer;
       case 0x84e0: return 0x84c0 + this._activeTextureUnit;
@@ -831,24 +833,33 @@ export class WebGPUGL {
 
   readPixels(x, y, width, height, format, type, destination) {
     if (this._bufferSelection(this._readFramebuffer).read === GL.NONE) return;
+    if (width < 0 || height < 0) { this._recordError(GL.INVALID_VALUE); return; }
     const components = format === 0x1907 ? 3 : [0x1908, 0x80e1].includes(format) ? 4 : 0;
     const byteType = type === 0x1401;
     const floatType = type === 0x1406;
     const knownFormats = [0x1903, 0x8227, 0x1907, 0x1908, 0x80e1, 0x1902, 0x84f9];
     const knownTypes = [0x1401, 0x1403, 0x1405, 0x1406, 0x84fa];
-    const byteDestination = destination instanceof Uint8Array || destination instanceof Uint8ClampedArray;
-    const floatDestination = destination instanceof Float32Array;
+    let targetDestination = destination;
     if (!knownFormats.includes(format)) { this._rejectUnsupported(`readPixels format 0x${Number(format).toString(16)}`, GL.INVALID_ENUM); return; }
     if (!knownTypes.includes(type)) { this._rejectUnsupported(`readPixels type 0x${Number(type).toString(16)}`, GL.INVALID_ENUM); return; }
     if (!components) { this._rejectUnsupported(`readPixels format 0x${Number(format).toString(16)}`, GL.INVALID_OPERATION); return; }
     if (!byteType && !floatType) { this._rejectUnsupported(`readPixels type 0x${Number(type).toString(16)}`, GL.INVALID_OPERATION); return; }
-    if (typeof destination === 'number') {
-      this._rejectUnsupported('pixel pack buffer destination', GL.INVALID_OPERATION); return;
+    const pboOffset = typeof destination === 'number' ? destination : null;
+    if (pboOffset !== null) {
+      if (!this._pixelPackBuffer) { this._rejectUnsupported('pixel pack buffer destination without PIXEL_PACK_BUFFER', GL.INVALID_OPERATION); return; }
+      if (!Number.isSafeInteger(pboOffset) || pboOffset < 0) { this._recordError(GL.INVALID_VALUE); return; }
+      const data = this._pixelPackBuffer.data;
+      if (pboOffset > data.byteLength || (floatType && pboOffset % 4)) { this._recordError(GL.INVALID_OPERATION); return; }
+      targetDestination = floatType
+        ? new Float32Array(data.buffer, data.byteOffset + pboOffset, Math.floor((data.byteLength - pboOffset) / 4))
+        : new Uint8Array(data.buffer, data.byteOffset + pboOffset, data.byteLength - pboOffset);
     }
+    const byteDestination = targetDestination instanceof Uint8Array || targetDestination instanceof Uint8ClampedArray;
+    const floatDestination = targetDestination instanceof Float32Array;
     if (byteType && !byteDestination || floatType && !floatDestination) {
       this._rejectUnsupported('readPixels destination type', GL.INVALID_OPERATION); return;
     }
-    if (!destination || typeof destination.length !== 'number') {
+    if (!targetDestination || typeof targetDestination.length !== 'number') {
       this._rejectUnsupported('pixel pack buffer destination', GL.INVALID_OPERATION); return;
     }
     const target = this._targetFor(this._readFramebuffer);
@@ -865,6 +876,8 @@ export class WebGPUGL {
     const stride = Math.ceil(rawStride / this._pack.alignment) * this._pack.alignment;
     const bytesPerComponent = floatType ? 4 : 1;
     const base = (this._pack.skipRows * stride + this._pack.skipPixels * components * bytesPerComponent) / bytesPerComponent;
+    const required = base + Math.max(0, height - 1) * stride / bytesPerComponent + width * components;
+    if (pboOffset !== null && required > targetDestination.length) { this._recordError(GL.INVALID_OPERATION); return; }
     for (let row = 0; row < height; row++) {
       const sourceY = y + row;
       if (sourceY < 0 || sourceY >= target.height) continue;
@@ -873,11 +886,11 @@ export class WebGPUGL {
         if (sourceX < 0 || sourceX >= target.width) continue;
         const src = (sourceY * target.width + sourceX) * 4;
         const dst = base + row * stride / bytesPerComponent + col * components;
-        if (dst + components > destination.length) continue;
+        if (dst + components > targetDestination.length) continue;
         const rgba = [pixels[src], pixels[src + 1], pixels[src + 2], pixels[src + 3]];
         const channels = format === 0x1907 ? rgba.slice(0, 3) : format === 0x80e1 ? [rgba[2], rgba[1], rgba[0], rgba[3]] : rgba;
-        if (floatType) for (let c = 0; c < components; c++) destination[dst + c] = channels[c] / 255;
-        else destination.set(channels, dst);
+        if (floatType) for (let c = 0; c < components; c++) targetDestination[dst + c] = channels[c] / 255;
+        else targetDestination.set(channels, dst);
       }
     }
   }
@@ -979,6 +992,7 @@ export class WebGPUGL {
     buffer.gpu?.destroy(); buffer.gpu = null; this._buffers.delete(buffer);
     if (this._arrayBuffer === buffer) this._arrayBuffer = null;
     if (this._elementArrayBuffer === buffer) this._elementArrayBuffer = null;
+    if (this._pixelPackBuffer === buffer) this._pixelPackBuffer = null;
     for (const vao of [this._defaultVao, ...this._vaos]) {
       if (vao.elementArrayBuffer === buffer) vao.elementArrayBuffer = null;
       for (const attribute of vao.attributes.values()) if (attribute.buffer === buffer) attribute.buffer = null;
@@ -986,7 +1000,7 @@ export class WebGPUGL {
   }
   isBuffer(buffer) { return this._buffers.has(buffer); }
   _validateBufferTarget(target) {
-    if (target === GL.ARRAY_BUFFER || target === GL.ELEMENT_ARRAY_BUFFER) return true;
+    if (target === GL.ARRAY_BUFFER || target === GL.ELEMENT_ARRAY_BUFFER || target === 0x88eb) return true;
     if ([0x8f36, 0x8f37, 0x88eb, 0x88ec, 0x8a11, 0x8c8e, 0x8f3f].includes(target)) this._rejectUnsupported(`buffer target 0x${target.toString(16)}`);
     else this._recordError(GL.INVALID_ENUM);
     return false;
@@ -995,9 +1009,10 @@ export class WebGPUGL {
     const value = buffer || null;
     if (target === GL.ARRAY_BUFFER) this._arrayBuffer = value;
     else if (target === GL.ELEMENT_ARRAY_BUFFER) { this._elementArrayBuffer = value; this._vao.elementArrayBuffer = value; }
+    else if (target === 0x88eb) this._pixelPackBuffer = value;
     else this._validateBufferTarget(target);
   }
-  _boundBuffer(target) { return target === GL.ARRAY_BUFFER ? this._arrayBuffer : target === GL.ELEMENT_ARRAY_BUFFER ? this._elementArrayBuffer : null; }
+  _boundBuffer(target) { return target === GL.ARRAY_BUFFER ? this._arrayBuffer : target === GL.ELEMENT_ARRAY_BUFFER ? this._elementArrayBuffer : target === 0x88eb ? this._pixelPackBuffer : null; }
   bufferData(target, data, usage = GL.STATIC_DRAW) {
     if (!this._validateBufferTarget(target)) return;
     const buffer = this._boundBuffer(target);
