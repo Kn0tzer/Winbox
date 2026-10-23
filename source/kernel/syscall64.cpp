@@ -3148,6 +3148,22 @@ static U64 sys_processVm64(CPU64* cpu, U64 pid, U64 localIov, U64 localCount,
     KProcessPtr remoteProcess = pid == cpu->thread->process->id
         ? cpu->thread->process : KSystem::getProcess((U32)pid);
     if (!remoteProcess) return (U64)-K_ESRCH;
+    // The emulator has no independent UID/effective-UID credential set or
+    // ptrace attach state. Match Linux's common same-user process-tree case:
+    // permit self and descendants with the same guest uid when dumpable.
+    if (remoteProcess.get() != cpu->thread->process.get()) {
+        if (remoteProcess->userId != cpu->thread->process->userId || !remoteProcess->dumpable)
+            return (U64)-K_EPERM;
+        U32 ancestor = remoteProcess->parentId;
+        bool descendant = false;
+        while (ancestor) {
+            if (ancestor == cpu->thread->process->id) { descendant = true; break; }
+            KProcessPtr parent = KSystem::getProcess(ancestor);
+            if (!parent || parent->parentId == ancestor) break;
+            ancestor = parent->parentId;
+        }
+        if (!descendant) return (U64)-K_EPERM;
+    }
     KMemory64* remoteMemory = remoteProcess->memory64;
     if (!remoteMemory) return (U64)-K_EFAULT;
 
@@ -3158,18 +3174,12 @@ static U64 sys_processVm64(CPU64* cpu, U64 pid, U64 localIov, U64 localCount,
         local[i] = {cpu->memory->readq(localIov + i * 16), cpu->memory->readq(localIov + i * 16 + 8)};
         if (local[i].length > (U64)INT64_MAX - total) return (U64)-K_EINVAL;
         total += local[i].length;
-        const U32 access = writeRemote ? K64_PAGE_READ : K64_PAGE_WRITE;
-        if (local[i].length && !sys_rangeHasPermission64(cpu->memory, local[i].base, local[i].length, access))
-            return (U64)-K_EFAULT;
     }
     total = 0;
     for (U64 i = 0; i < remoteCount; ++i) {
         remote[i] = {cpu->memory->readq(remoteIov + i * 16), cpu->memory->readq(remoteIov + i * 16 + 8)};
         if (remote[i].length > (U64)INT64_MAX - total) return (U64)-K_EINVAL;
         total += remote[i].length;
-        const U32 access = writeRemote ? K64_PAGE_WRITE : K64_PAGE_READ;
-        if (remote[i].length && !sys_rangeHasPermission64(remoteMemory, remote[i].base, remote[i].length, access))
-            return (U64)-K_EFAULT;
     }
 
     U64 copied = 0;
@@ -3180,6 +3190,11 @@ static U64 sys_processVm64(CPU64* cpu, U64 pid, U64 localIov, U64 localCount,
         if (count) {
             const U64 localAddress = local[li].base + lo;
             const U64 remoteAddress = remote[ri].base + ro;
+            const U32 localAccess = writeRemote ? K64_PAGE_READ : K64_PAGE_WRITE;
+            const U32 remoteAccess = writeRemote ? K64_PAGE_WRITE : K64_PAGE_READ;
+            if (!sys_rangeHasPermission64(cpu->memory, localAddress, count, localAccess) ||
+                !sys_rangeHasPermission64(remoteMemory, remoteAddress, count, remoteAccess))
+                return copied ? copied : (U64)-K_EFAULT;
             if (writeRemote) {
                 cpu->memory->memcpyFromGuest(buffer, localAddress, count);
                 remoteMemory->memcpyToGuest(remoteAddress, buffer, count);

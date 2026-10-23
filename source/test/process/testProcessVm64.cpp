@@ -41,13 +41,13 @@ void testProcessVm64Syscalls() {
 
     CPU64 cpu(memory);
     cpu.thread = context.thread;
-    auto syscall = [&](U64 number, U64 localCount, U64 flags) {
+    auto syscall = [&](U64 number, U64 localCount, U64 flags, U64 remoteCount = 1) {
         cpu.reg[X64_RAX].setU64(number);
         cpu.reg[X64_RDI].setU64(pid);
         cpu.reg[X64_RSI].setU64(localIov);
         cpu.reg[X64_RDX].setU64(localCount);
         cpu.reg[X64_R10].setU64(remoteIov);
-        cpu.reg[X64_R8].setU64(1);
+        cpu.reg[X64_R8].setU64(remoteCount);
         cpu.reg[X64_R9].setU64(flags);
         ksyscall64(&cpu);
         return cpu.reg[X64_RAX].u64;
@@ -68,6 +68,15 @@ void testProcessVm64Syscalls() {
     }
     if ((S64)syscall(310, 1, 1) != -K_EINVAL || (S64)syscall(310, 1025, 0) != -K_EINVAL) {
         testFail("process_vm_readv did not validate flags/iovec count");
+    }
+    // Linux returns the bytes completed before a later iovec faults. The first
+    // pair is valid and the second pair points into an unmapped page.
+    memory->writeq(localIov + 16, 0x73000000ULL);
+    memory->writeq(localIov + 24, 1);
+    memory->writeq(remoteIov + 16, 0x73001000ULL);
+    memory->writeq(remoteIov + 24, 1);
+    if (syscall(310, 2, 0, 2) != 11) {
+        testFail("process_vm_readv did not return the valid partial-copy byte count");
     }
     memory->mprotect(page, K64_PAGE_SIZE, 1);
     if ((S64)syscall(310, 1, 0) != -K_EFAULT) {
