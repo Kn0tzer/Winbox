@@ -19,6 +19,8 @@ const bridgeSrc = readFileSync(join(repoRoot, 'source/opengl/gl64bridge.cpp'), '
 const glCommonSrc = readFileSync(join(repoRoot, 'source/opengl/glcommon.cpp'), 'utf8');
 const shimSrc = readFileSync(join(repoRoot, 'tools/rootfs64/libgl64/libgl64.c'), 'utf8');
 const esOpenGlSrc = readFileSync(join(repoRoot, 'source/opengl/es/esopengl.c'), 'utf8');
+const glMarshalSrc = readFileSync(join(repoRoot, 'source/opengl/glMarshal.cpp'), 'utf8');
+const glMarshalSizeSrc = readFileSync(join(repoRoot, 'source/opengl/glMarshalSize.cpp'), 'utf8');
 const webGpuGlSrc = readFileSync(join(repoRoot, 'web/gl-webgpu.mjs'), 'utf8');
 
 function getAbiFunctions(src) {
@@ -82,6 +84,15 @@ test('framebufferTexture host exceptions log once and latch GL_INVALID_OPERATION
   assert.match(body, /gl64 glFramebufferTexture failed:/);
   assert.match(body, /GLctx\._recordError\(0x0502\)/);
   assert.doesNotMatch(body, /catch \(e\) \{\s*\}/);
+});
+
+test('invalid pixel formats return to GL validation instead of panicking', () => {
+  assert.match(glMarshalSrc, /glPixelMarshal: invalid format\/type combination/);
+  assert.match(glMarshalSrc, /invalidPixelMarshalWarning\.test_and_set\(\)/);
+  assert.doesNotMatch(glMarshalSrc, /kpanic_fmt\("getPixelsLen unsupported format\/type/);
+  assert.match(glMarshalSizeSrc, /glPixelMarshal: invalid pixel format/);
+  assert.match(glMarshalSizeSrc, /invalidPixelFormatWarning\.test_and_set\(\)/);
+  assert.doesNotMatch(glMarshalSizeSrc, /kpanic_fmt\("Opengl components_in_format/);
 });
 
 test('empty WebGPUGL methods stay in the audited no-op inventory', () => {

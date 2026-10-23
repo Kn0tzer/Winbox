@@ -17,12 +17,14 @@
  */
 
 #include "boxedwine.h"
+#include <atomic>
 
 // gl64bridge.cpp replaces this legacy 32-bit GL marshaling for the x64 guest,
 // and these files include the native GL header (GLH) which the WASM/WebGL2 build
 // does not provide -- so compile them out when building the 64-bit guest.
 #if defined(BOXEDWINE_OPENGL) && !defined(BOXEDWINE_GUEST_X64)
 #include GLH
+static std::atomic_flag invalidPixelFormatWarning = ATOMIC_FLAG_INIT;
 #include "glcommon.h"
 #include "glMarshal.h"
 
@@ -735,7 +737,8 @@ GLint components_in_format(GLenum format )
       case GL_DU8DV8_ATI:
          return 2;
       default:
-          kpanic_fmt("Opengl components_in_format %d", format);
+          if (!invalidPixelFormatWarning.test_and_set())
+             klog_fmt("glPixelMarshal: invalid pixel format 0x%x", format);
          return -1;
    }
 }

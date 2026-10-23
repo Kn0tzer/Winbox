@@ -25,6 +25,9 @@
 #include GLH
 #include "glcommon.h"
 #include "glMarshal.h"
+#include <atomic>
+
+static std::atomic_flag invalidPixelMarshalWarning = ATOMIC_FLAG_INIT;
 
 #define MARSHAL_TYPE(type, p, m, s) type* buffer##p; U32 buffer##p##_len; type* marshal##p(CPU* cpu, U32 address, U32 count) {if (!address) return nullptr; if (!count) return (type*)address; if (buffer##p && buffer##p##_len<count) { delete[] buffer##p; buffer##p=nullptr;} if (!buffer##p) {buffer##p = new type[count]; buffer##p##_len = count;}for (U32 i=0;i<count;i++) {buffer##p[i] = cpu->memory->read##m(address);address+=s;} return buffer##p;}
 
@@ -234,7 +237,8 @@ U32 getPixelsLen(bool read, U32 dimensions, GLsizei width, GLsizei height, GLsiz
     } else {
         bytes_per_pixel = get_bytes_per_pixel(format, type);
         if (bytes_per_pixel <= 0) {
-            kpanic_fmt("getPixelsLen unsupported format/type combination: format=0x%x type=0x%x", format, type);
+            if (!invalidPixelMarshalWarning.test_and_set())
+                klog_fmt("glPixelMarshal: invalid format/type combination format=0x%x type=0x%x", format, type);
             return 0;
         }
         bytes_per_pixel_for_skip = bytes_per_pixel;
