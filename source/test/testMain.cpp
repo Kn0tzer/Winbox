@@ -66,6 +66,7 @@ void testTimerfdCore();
 void testUnixSocketOptions();
 #ifdef BOXEDWINE_GUEST_X64
 void testTimerfd64Syscalls();
+void testCopyFileRange64Syscall();
 #endif
 
 namespace {
@@ -688,6 +689,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testUnixSocketOptions, "Test Unix socket SOL_SOCKET options"},
 #ifdef BOXEDWINE_GUEST_X64
     {testTimerfd64Syscalls, "Test x64 timerfd syscall ABI"},
+    {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},
 #endif
     {testInetDatagramLoopback, "Test AF_INET UDP loopback socket"},
     {testInetStreamLoopback, "Test AF_INET TCP loopback socket"},

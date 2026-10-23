@@ -142,6 +142,65 @@ void testTimerfd64Syscalls() {
     if (result != (U64)-K_EINVAL) testFail("x64 timerfd_settime accepted invalid flags");
     process->close(fd);
 }
+
+void testCopyFileRange64Syscall() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    if (!process->fdNode) {
+        process->fdNode = std::make_shared<FsFileNode>(0x3FFFFFFF, 0, B("/proc/test/fd"), B(""), B(""), true, false, nullptr);
+    }
+    KMemory64* memory = process->memory64;
+    constexpr U64 testPage = 0x70000000ULL;
+    if (!memory->getPageFlags(testPage >> K_PAGE_SHIFT)) memory->mmapAnonymousFixed(testPage, 0x1000, 3);
+    const U32 inFd = process->memfd_create(B("copy-range-in"), 0);
+    const U32 outFd = process->memfd_create(B("copy-range-out"), 0);
+    if ((S32)inFd < 0 || (S32)outFd < 0) {
+        testFail("copy_file_range test memfd setup failed");
+        return;
+    }
+    KFileDescriptorPtr inDescriptor = process->getFileDescriptor(inFd);
+    KFileDescriptorPtr outDescriptor = process->getFileDescriptor(outFd);
+    auto input = std::dynamic_pointer_cast<KFile>(inDescriptor->kobject);
+    auto output = std::dynamic_pointer_cast<KFile>(outDescriptor->kobject);
+    const U8 source[] = {'c', 'o', 'p', 'y', '!'};
+    if (!input || !output || input->writeNative((U8*)source, sizeof(source)) != sizeof(source)) {
+        testFail("copy_file_range test input setup failed");
+        process->close(inFd); process->close(outFd);
+        return;
+    }
+
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto syscall = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1); cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3); cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5); cpu.reg[X64_R9].setU64(a6);
+        ksyscall64(&cpu);
+        return cpu.reg[X64_RAX].u64;
+    };
+    memory->writeq(testPage, 0);
+    memory->writeq(testPage + 8, 0);
+    U64 result = syscall(326, inFd, testPage, outFd, testPage + 8, sizeof(source), 0);
+    U8 copied[sizeof(source)] = {};
+    U32 read = output->preadNative(copied, 0, sizeof(copied));
+    if (result != sizeof(source) || read != sizeof(source) || std::memcmp(source, copied, sizeof(source)) ||
+        memory->readq(testPage) != sizeof(source) || memory->readq(testPage + 8) != sizeof(source)) {
+        testFail("copy_file_range explicit-offset copy or offset update failed");
+    }
+    if (syscall(326, inFd, testPage, outFd, testPage + 8, 1, 1) != (U64)-K_EINVAL) {
+        testFail("copy_file_range accepted unsupported flags");
+    }
+    if (syscall(326, 9999, 0, outFd, 0, 1, 0) != (U64)-K_EBADF) {
+        testFail("copy_file_range invalid fd did not return EBADF");
+    }
+    result = syscall(326, inFd, 0, outFd, 0, 2, 0);
+    if (result != 2 || input->getPos() != 2 || output->getPos() != 2) {
+        testFail("copy_file_range current-offset copy did not advance file positions");
+    }
+    process->close(inFd); process->close(outFd);
+}
 #endif
 
 #endif

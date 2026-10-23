@@ -3092,6 +3092,49 @@ static U64 sys_getMempolicy64(CPU64* cpu, U64 modePtr, U64 maskPtr,
     return 0;
 }
 
+static U64 sys_copyFileRange64(CPU64* cpu, U64 fdIn, U64 offInPtr, U64 fdOut,
+                               U64 offOutPtr, U64 length, U64 flags) {
+    if (!cpu || !cpu->memory || !cpu->thread || !cpu->thread->process) return (U64)-K_ENOSYS;
+    if (flags != 0) return (U64)-K_EINVAL;
+    if (length == 0) return 0;
+    KProcessPtr process = cpu->thread->process;
+    KFileDescriptorPtr inFd = process->getFileDescriptor((FD)fdIn);
+    KFileDescriptorPtr outFd = process->getFileDescriptor((FD)fdOut);
+    if (!inFd || !outFd) return (U64)-K_EBADF;
+    if (!inFd->canRead() || !outFd->canWrite()) return (U64)-K_EBADF;
+    std::shared_ptr<KFile> input = std::dynamic_pointer_cast<KFile>(inFd->kobject);
+    std::shared_ptr<KFile> output = std::dynamic_pointer_cast<KFile>(outFd->kobject);
+    if (!input || !output) return (U64)-K_EINVAL;
+    if ((offInPtr && !sys_rangeMapped64(cpu, offInPtr, 8)) ||
+        (offOutPtr && !sys_rangeMapped64(cpu, offOutPtr, 8))) return (U64)-K_EFAULT;
+    S64 inOffset = offInPtr ? (S64)cpu->memory->readq(offInPtr) : input->getPos();
+    S64 outOffset = offOutPtr ? (S64)cpu->memory->readq(offOutPtr) : output->getPos();
+    if (inOffset < 0 || outOffset < 0) return (U64)-K_EINVAL;
+
+    U64 copied = 0;
+    auto finish = [&](U64 error) {
+        if (offInPtr) cpu->memory->writeq(offInPtr, (U64)inOffset);
+        if (offOutPtr) cpu->memory->writeq(offOutPtr, (U64)outOffset);
+        return copied ? copied : error;
+    };
+    U8 buffer[65536];
+    while (copied < length) {
+        const U32 want = (U32)std::min<U64>(sizeof(buffer), length - copied);
+        U32 n = offInPtr ? input->preadNative(buffer, inOffset, want)
+                         : input->readNative(buffer, want);
+        if ((S32)n < 0) return finish((U64)(S64)(S32)n);
+        if (!n) break;
+        U32 written = offOutPtr ? output->pwriteNative(buffer, outOffset, n)
+                                : output->writeNative(buffer, n);
+        if ((S32)written < 0) return finish((U64)(S64)(S32)written);
+        copied += written;
+        inOffset += written;
+        outOffset += written;
+        if (written < n) break;
+    }
+    return finish(0);
+}
+
 // Linux v6.12 arch/x86/entry/syscalls/syscall_64.tbl (common + 64 ABI).
 // Keep the ABI names here complete through syscall 450 so every unknown
 // dispatch logs the meaningful Linux name, including newly encountered gaps.
@@ -5432,6 +5475,9 @@ void ksyscall64(CPU64* cpu) {
             break;
         case 239: // get_mempolicy(mode*, nodemask*, maxnode, addr, flags)
             ret = sys_getMempolicy64(cpu, a1, a2, a3, a4, a5);
+            break;
+        case 326: // copy_file_range(fd_in, off_in, fd_out, off_out, len, flags)
+            ret = sys_copyFileRange64(cpu, a1, a2, a3, a4, a5, a6);
             break;
         case X64_SYS_rseq:
             // No rseq implementation: report through the common ENOSYS path.
