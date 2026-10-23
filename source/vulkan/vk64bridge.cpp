@@ -4990,18 +4990,18 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 readStruct(w.pImageInfo, ii);
                 b->obj = ii.imageView;
                 b->range = ii.sampler;
+            } else if (w.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+                VkDescriptorImageInfo ii = {};
+                readStruct(w.pImageInfo, ii);
+                b->obj = ii.imageView;
+                b->range = ii.sampler;
+            } else if (w.descriptorType == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) {
+                vk64Unsupported("subpass-input-descriptor", "input attachments are not bound by the WebGPU replay tier");
+            } else if (w.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER ||
+                       w.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER) {
+                vk64Unsupported("texel-buffer-view", "texel-buffer descriptors are not supported");
             } else {
-                // combined image sampler (and texel buffers, which share the
-                // VkDescriptorBufferInfo shape)
-                // FIX (2026-10-09): For COMBINED_IMAGE_SAMPLER, w.pBufferInfo is
-                // non-null garbage (same as w.pImageInfo). Trust descriptorType,
-                // always read VkDescriptorImageInfo.
-                {
-                    VkDescriptorImageInfo ii = {};
-                    readStruct(w.pImageInfo, ii);
-                    b->obj = ii.imageView;
-                    b->range = ii.sampler;
-                }
+                vk64Unsupported("descriptor-type", ("vkUpdateDescriptorSets type=" + std::to_string(w.descriptorType)).c_str());
             }
         }
         return VK_SUCCESS;
@@ -5075,13 +5075,16 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                     U64 samp = rd64(dAddr);
                     U64 view = rd64(dAddr + 8);
                     b->obj = view; b->range = samp;
+                } else if (te.type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) {
+                    vk64Unsupported("subpass-input-descriptor", "input attachments are not bound by the WebGPU replay tier");
                 } else if (te.type == VK_DESCRIPTOR_TYPE_SAMPLER) {
                     U64 samp = rd64(dAddr);
                     b->obj = samp; b->range = 0;
                 } else if (te.type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER ||
                            te.type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER) {
-                    U64 bv = rd64(dAddr);
-                    b->obj = bv; b->range = 0;
+                    vk64Unsupported("texel-buffer-view", "texel-buffer descriptors are not supported");
+                } else {
+                    vk64Unsupported("descriptor-type", ("vkUpdateDescriptorSetWithTemplate type=" + std::to_string(te.type)).c_str());
                 }
             }
         }
@@ -8804,18 +8807,18 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 readStruct32(w.pImageInfo, ii);
                 b->obj = ii.imageView;
                 b->range = ii.sampler;
+            } else if ((U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+                vk32abi::VkDescriptorImageInfo ii = {};
+                readStruct32(w.pImageInfo, ii);
+                b->obj = ii.imageView;
+                b->range = ii.sampler;
+            } else if ((U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) {
+                vk64Unsupported("subpass-input-descriptor", "input attachments are not bound by the WebGPU replay tier");
+            } else if ((U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER ||
+                       (U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER) {
+                vk64Unsupported("texel-buffer-view", "texel-buffer descriptors are not supported");
             } else {
-                // combined image sampler (and texel buffers, which share the
-                // vk32abi::VkDescriptorBufferInfo shape)
-                // FIX (2026-10-09): For COMBINED_IMAGE_SAMPLER, w.pBufferInfo is
-                // non-null garbage (same as w.pImageInfo). Trust descriptorType,
-                // always read vk32abi::VkDescriptorImageInfo.
-                {
-                    vk32abi::VkDescriptorImageInfo ii = {};
-                    readStruct32(w.pImageInfo, ii);
-                    b->obj = ii.imageView;
-                    b->range = ii.sampler;
-                }
+                vk64Unsupported("descriptor-type", ("vkUpdateDescriptorSets type=" + std::to_string((U32)w.descriptorType)).c_str());
             }
         }
         return VK_SUCCESS;
@@ -8884,13 +8887,16 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                     U64 samp = rd64_32(dAddr);
                     U64 view = rd64_32(dAddr + 8);
                     b->obj = view; b->range = samp;
+                } else if (te.type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) {
+                    vk64Unsupported("subpass-input-descriptor", "input attachments are not bound by the WebGPU replay tier");
                 } else if (te.type == VK_DESCRIPTOR_TYPE_SAMPLER) {
                     U64 samp = rd64_32(dAddr);
                     b->obj = samp; b->range = 0;
                 } else if (te.type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER ||
                            te.type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER) {
-                    U64 bv = rd64_32(dAddr);
-                    b->obj = bv; b->range = 0;
+                    vk64Unsupported("texel-buffer-view", "texel-buffer descriptors are not supported");
+                } else {
+                    vk64Unsupported("descriptor-type", ("vkUpdateDescriptorSetWithTemplate type=" + std::to_string(te.type)).c_str());
                 }
             }
         }
