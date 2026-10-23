@@ -163,10 +163,28 @@ issued, 0 rejected frames, 0 Dawn validation errors, 1 skipped pipeline (Cube/2D
 - Probe flakiness: `page.screenshot` 30 s timeouts end long probes on a loaded host (gb-next22/23 died
   at ~410 s); rerun.
 
-Next step (not done): add a per-pass readback of the colour target after each pass in a sampled frame to
-find the first pass whose output goes constant, then dump that pass's pipelines (vs/fs hashes) for
-inspection. The probe diagnostics used here (draw counter, `BW_FRAME`, `BW_TARGET`, `BW_SKIP`,
-`BW_UNCAPTURED`) were injected into a scratch copy of `vkwebgpu.mjs` and are not committed.
+Per-pass readback: now committed as an opt-in diagnostic. Launch with `?bwPassReadback=N` (and optionally
+`&bwPassReadbackMax=M`, default 64 passes) and every Nth frame each render pass's single-sample
+rgba8/bgra8 colour targets are copied back and reported as
+`[bwPassReadback] {"frame":…,"passes":[{"pass","w","h","draws","vs":[hash],"fs":[hash],"targets":[{"avg":[r,g,b,a],"constant":bool,"constantColor","nonBlackPixels","pixels"}]}]}`
+on the console and in `globalThis.bwPassReadbackLog` (last 8 reports). The first pass whose target goes
+constant, together with its vs/fs hashes, localises the black frame. Off by default (adds a copy plus a
+map per pass). The earlier scratch diagnostics (`BW_FRAME`, `BW_TARGET`, `BW_SKIP`, `BW_UNCAPTURED`) are
+still not committed.
+
+### Build-8 C++ items (gb2 branch)
+
+- `vkCmdSetCullMode` / `vkCmdSetFrontFace` (+EXT): new `RASTER_STATE` (0x1A) record and an `RST1`
+  pipeline tail; the page applies them only to pipelines that declare the state dynamic (DXVK always does).
+- `vkCmdSetEvent2`/`ResetEvent2`/`WaitEvents2` map onto the existing event path; `vkCmdWriteTimestamp(2)`
+  and `vkCmdSetDepthBounds` are accepted as no-ops (timestamps are synthesised at read time; WebGPU has
+  no depth-bounds test).
+- `vkCmdClearDepthStencilImage` (64-bit guest only): `IMAGE_CLEAR_DS` (0x1B), replayed as clearing render
+  passes per mip/layer.
+- `vkGetPhysicalDeviceFormatProperties` now advertises UNIFORM/STORAGE_TEXEL_BUFFER for the usual
+  texel-buffer formats. Caveat: the page tier cannot yet consume texel-buffer descriptors, so DXVK will
+  now create buffer SRV/UAVs whose shaders the page ignores; behaviour for Unity compute may change from
+  "view creation fails" to "dispatch reads nothing".
 
 ### The extra signal checks
 

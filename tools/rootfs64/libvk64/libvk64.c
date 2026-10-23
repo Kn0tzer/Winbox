@@ -278,6 +278,12 @@ enum {
     VK64_fn_vkCmdSetStencilReference,
     VK64_fn_vkCmdCopyQueryPoolResults = 904,
     VK64_fn_vkCmdSetDepthBias = 905,
+    VK64_fn_vkCmdSetCullMode = 906,
+    VK64_fn_vkCmdSetFrontFace = 907,
+    VK64_fn_vkCmdSetEvent2 = 908,
+    VK64_fn_vkCmdClearDepthStencilImage = 909,
+    VK64_fn_vkCmdWriteTimestamp = 910,
+    VK64_fn_vkCmdSetDepthBounds = 911,
     VK64_fn__MAX
 };
 
@@ -932,6 +938,52 @@ API void vkCmdSetDepthBias(VkCommandBuffer cb, float constantFactor, float clamp
     VK64Args a = {{0}}; a.a[0]=cb; a.a[1]=c.u; a.a[2]=k.u; a.a[3]=s.u;
     (void)vk64_trap(VK64_fn_vkCmdSetDepthBias, &a);
 }
+API void vkCmdSetCullMode(VkCommandBuffer cb, uint32_t mode) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = mode;
+    (void)vk64_trap(VK64_fn_vkCmdSetCullMode, &a);
+}
+API void vkCmdSetCullModeEXT(VkCommandBuffer cb, uint32_t mode) { vkCmdSetCullMode(cb, mode); }
+API void vkCmdSetFrontFace(VkCommandBuffer cb, uint32_t face) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = face;
+    (void)vk64_trap(VK64_fn_vkCmdSetFrontFace, &a);
+}
+API void vkCmdSetFrontFaceEXT(VkCommandBuffer cb, uint32_t face) { vkCmdSetFrontFace(cb, face); }
+API void vkCmdSetDepthBounds(VkCommandBuffer cb, float lo, float hi) {
+    union { float f; uint32_t u; } l, h; l.f = lo; h.f = hi;
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = l.u; a.a[2] = h.u;
+    (void)vk64_trap(VK64_fn_vkCmdSetDepthBounds, &a);
+}
+API void vkCmdSetEvent2(VkCommandBuffer cb, VkEvent e, const void* dependencyInfo) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = e; a.a[2] = P(dependencyInfo);
+    (void)vk64_trap(VK64_fn_vkCmdSetEvent2, &a);
+}
+API void vkCmdSetEvent2KHR(VkCommandBuffer cb, VkEvent e, const void* dependencyInfo) { vkCmdSetEvent2(cb, e, dependencyInfo); }
+// Immediate execution: reset/wait collapse to the same bookkeeping as the v1 entry points.
+API void vkCmdResetEvent2(VkCommandBuffer cb, VkEvent e, uint64_t stages) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = e; a.a[2] = (uint32_t)stages;
+    (void)vk64_trap(VK64_fn_vkCmdResetEvent, &a);
+}
+API void vkCmdResetEvent2KHR(VkCommandBuffer cb, VkEvent e, uint64_t stages) { vkCmdResetEvent2(cb, e, stages); }
+API void vkCmdWaitEvents2(VkCommandBuffer cb, uint32_t n, const VkEvent* events, const void* dependencyInfos) {
+    (void)events; (void)dependencyInfos;
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = n;
+    (void)vk64_trap(VK64_fn_vkCmdWaitEvents, &a);
+}
+API void vkCmdWaitEvents2KHR(VkCommandBuffer cb, uint32_t n, const VkEvent* events, const void* dependencyInfos) { vkCmdWaitEvents2(cb, n, events, dependencyInfos); }
+API void vkCmdWriteTimestamp(VkCommandBuffer cb, uint32_t stage, VkQueryPool pool, uint32_t query) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = stage; a.a[2] = pool; a.a[3] = query;
+    (void)vk64_trap(VK64_fn_vkCmdWriteTimestamp, &a);
+}
+API void vkCmdWriteTimestamp2(VkCommandBuffer cb, uint64_t stage, VkQueryPool pool, uint32_t query) {
+    vkCmdWriteTimestamp(cb, (uint32_t)stage, pool, query);
+}
+API void vkCmdWriteTimestamp2KHR(VkCommandBuffer cb, uint64_t stage, VkQueryPool pool, uint32_t query) {
+    vkCmdWriteTimestamp(cb, (uint32_t)stage, pool, query);
+}
+API void vkCmdClearDepthStencilImage(VkCommandBuffer cb, VkImage image, uint32_t layout, const void* value, uint32_t n, const void* ranges) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = image; a.a[2] = layout; a.a[3] = P(value); a.a[4] = n; a.a[5] = P(ranges);
+    (void)vk64_trap(VK64_fn_vkCmdClearDepthStencilImage, &a);
+}
 API void vkCmdSetStencilCompareMask(VkCommandBuffer cb, uint32_t faces, uint32_t value) {
     VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = faces; a.a[2] = value;
     (void)vk64_trap(VK64_fn_vkCmdSetStencilCompareMask, &a);
@@ -1340,6 +1392,21 @@ static const struct procEntry g_procs[] = {
     E(vkCmdSetStencilWriteMask, VK64_fn_vkCmdSetStencilWriteMask),
     E(vkCmdSetStencilReference, VK64_fn_vkCmdSetStencilReference),
     E(vkCmdSetDepthBias, VK64_fn_vkCmdSetDepthBias),
+    E(vkCmdSetCullMode, VK64_fn_vkCmdSetCullMode),
+    E(vkCmdSetCullModeEXT, VK64_fn_vkCmdSetCullMode),
+    E(vkCmdSetFrontFace, VK64_fn_vkCmdSetFrontFace),
+    E(vkCmdSetFrontFaceEXT, VK64_fn_vkCmdSetFrontFace),
+    E(vkCmdSetDepthBounds, VK64_fn_vkCmdSetDepthBounds),
+    E(vkCmdSetEvent2, VK64_fn_vkCmdSetEvent2),
+    E(vkCmdSetEvent2KHR, VK64_fn_vkCmdSetEvent2),
+    E(vkCmdResetEvent2, VK64_fn_vkCmdResetEvent),
+    E(vkCmdResetEvent2KHR, VK64_fn_vkCmdResetEvent),
+    E(vkCmdWaitEvents2, VK64_fn_vkCmdWaitEvents),
+    E(vkCmdWaitEvents2KHR, VK64_fn_vkCmdWaitEvents),
+    E(vkCmdWriteTimestamp, VK64_fn_vkCmdWriteTimestamp),
+    E(vkCmdWriteTimestamp2, VK64_fn_vkCmdWriteTimestamp),
+    E(vkCmdWriteTimestamp2KHR, VK64_fn_vkCmdWriteTimestamp),
+    E(vkCmdClearDepthStencilImage, VK64_fn_vkCmdClearDepthStencilImage),
 
     E(vkCmdDraw, VK64_fn_vkCmdDraw),
     E(vkCmdDrawIndexed, VK64_fn_vkCmdDrawIndexed),
@@ -2375,19 +2442,13 @@ API void vkCmdCopyQueryPoolResults(VkCommandBuffer cb, VkQueryPool pool, uint32_
 TAIL(vkGetPipelineLayoutSupport)
 TAIL(vkQueueBindSparse)
 TAIL(vkCmdSetBlendConstant)
-TAIL(vkCmdSetDepthBounds)
 TAIL(vkCmdPushDescriptorSet)
 TAIL(vkCmdNextSubpass)
 TAIL(vkCmdNextSubpassKHR)
-TAIL(vkCmdWriteTimestamp)
-TAIL(vkCmdWriteTimestamp2)
-TAIL(vkCmdWriteTimestamp2KHR)
 TAIL(vkCmdSetDeviceMask)
 TAIL(vkCmdSetDepthBiasEnableEXT)
 TAIL(vkCmdSetLineWidth)
 TAIL(vkCmdSetDepthBiasNV)
-TAIL(vkCmdSetCullModeEXT)
-TAIL(vkCmdSetFrontFaceEXT)
 TAIL(vkCmdSetPrimitiveTopologyEXT)
 TAIL(vkCmdSetVertexInputEXT)
 

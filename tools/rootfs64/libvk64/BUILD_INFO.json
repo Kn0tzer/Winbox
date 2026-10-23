@@ -1,7 +1,7 @@
 {
   "arch": "64",
-  "sourceSha256": "1d046e481481fa744d6d67a7e399429c989125efbfe6202f241905b57ceba669",
-  "binarySha256": "5eba21a9c1b187b73168dd08bf6bddc578b992e2153dcb0eb013756c891e722a",
+  "sourceSha256": "ee23512f08958e8c7db4ffeb39256ad07261b1af4a26973c22a6f41613a1bf0d",
+  "binarySha256": "982bbb0681c0be272a53065bc1506434b222ba3e0ec9dadd65d2f9ece67827b8",
   "flags": [
     "-shared",
     "-fPIC",
