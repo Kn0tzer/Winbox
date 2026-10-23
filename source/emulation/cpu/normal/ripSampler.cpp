@@ -8,6 +8,27 @@
  */
 
 #include "boxedwine.h"
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+#endif
+#include <atomic>
+
+static std::atomic<bool> g_cpu64ControlTrace{false};
+
+void ripSamplerSetControlTrace(bool enabled) {
+    g_cpu64ControlTrace.store(enabled, std::memory_order_relaxed);
+}
+
+bool ripSamplerControlTraceEnabled() {
+    return g_cpu64ControlTrace.load(std::memory_order_relaxed);
+}
+
+#ifndef EMSCRIPTEN_KEEPALIVE
+#define EMSCRIPTEN_KEEPALIVE
+#endif
+extern "C" EMSCRIPTEN_KEEPALIVE void bw64_set_control_trace(int enabled) {
+    ripSamplerSetControlTrace(enabled != 0);
+}
 
 // The sampler only exists in the multi-threaded x86-64 guest build — it relies
 // on each guest thread driving its own CPU64 on its own host thread (so a
@@ -70,6 +91,10 @@ bool ripSamplerEnabled() {
     return on;
 }
 
+bool ripSamplerModuleTrackingEnabled() {
+    return ripSamplerEnabled() || ripSamplerControlTraceEnabled();
+}
+
 // ---------------------------------------------------------------------------
 // Live-CPU64 registry. One slot per guest host-thread. The sampler reads
 // slot.cpu (an atomic pointer, so it never tears) and then reads cpu->rip /
@@ -108,13 +133,13 @@ static std::map<int, std::vector<ModRange>> g_modRanges;
 static std::mutex g_modMutex;
 
 void ripSamplerNoteModule(int pid, U64 lo, U64 len, const std::string& path) {
-    if (!ripSamplerEnabled() || len == 0) return;
+    if (!ripSamplerModuleTrackingEnabled() || len == 0) return;
     std::lock_guard<std::mutex> lk(g_modMutex);
     g_modRanges[pid].push_back({lo, lo + len, path});
 }
 
 void ripSamplerClearPid(int pid) {
-    if (!ripSamplerEnabled()) return;
+    if (!ripSamplerModuleTrackingEnabled()) return;
     std::lock_guard<std::mutex> lk(g_modMutex);
     g_modRanges.erase(pid);
 }
@@ -175,6 +200,10 @@ static bool ripSamplerResolve(int pid, U64 rip, std::string& outBase, U64& outOf
         }
     }
     return false;
+}
+
+bool ripSamplerResolveModule(int pid, U64 rip, std::string& module, U64& offset) {
+    return ripSamplerResolve(pid, rip, module, offset);
 }
 
 // ---------------------------------------------------------------------------
@@ -353,6 +382,8 @@ void ripSamplerReleaseSlot(int slot) {
 #include "ripSampler.h"
 class CPU64;
 bool ripSamplerEnabled() { return false; }
+bool ripSamplerModuleTrackingEnabled() { return ripSamplerControlTraceEnabled(); }
+bool ripSamplerResolveModule(int, U64, std::string&, U64&) { return false; }
 int  ripSamplerAcquireSlot(int, int) { return -1; }
 void ripSamplerPublish(int, CPU64*) {}
 void ripSamplerPublish32(int, CPU*) {}

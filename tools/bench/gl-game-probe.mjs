@@ -130,6 +130,45 @@ const record = line => {
     process.stdout.write(line.split('\n')[0].slice(0, 500) + '\n');
 };
 
+async function collectGuestCrashReports(page, label) {
+  const reports = await page.evaluate(() => {
+    const fs = globalThis.bwRuntime?.fs?.();
+    if (!fs) return { error: 'bwRuntime.fs unavailable', files: [] };
+    const roots = ['/root/home/username/apps', '/root/home/username', '/root/tmp',
+      '/home/username/apps', '/home/username', '/tmp'];
+    const files = [];
+    const seen = new Set();
+    for (const root of roots) {
+      let entries;
+      try { entries = fs.readdir(root); } catch { continue; }
+      for (const name of entries) {
+        if (!/^hs_err_pid\d+\.log$/.test(name)) continue;
+        const path = root + '/' + name;
+        if (seen.has(path)) continue;
+        seen.add(path);
+        try {
+          files.push({ path, content: fs.readFile(path, { encoding: 'utf8' }) });
+        } catch {}
+      }
+    }
+    return { files };
+  });
+  result.guestCrashReports ||= [];
+  const captured = [];
+  for (let i = 0; i < (reports.files || []).length; i++) {
+    const report = reports.files[i];
+    const path = join(outputDir, label + '-hs_err-' + (i + 1) + '.log');
+    await writeFile(path, report.content);
+    captured.push({ guestPath: report.path, path });
+  }
+  result.guestCrashReports.push({ label, files: captured, error: reports.error || null });
+  if (captured.length) {
+    const paths = captured.map(file => file.guestPath).join(', ');
+    record('captured guest JVM crash reports: ' + paths);
+  }
+  return captured;
+}
+
 try {
   await waitForBuildIdle();
   const build = JSON.parse(await readFile(join(dist, 'runtime/BUILD_INFO.json'), 'utf8'));
@@ -244,6 +283,7 @@ try {
   if (!mappedAt) {
     const path = join(outputDir, 'timeout.png');
     await page.screenshot({ path, fullPage: true });
+    await collectGuestCrashReports(page, 'timeout');
     result.captures.push({ label: 'timeout', secondsAfterLaunch: Number(((Date.now() - launchAt) / 1000).toFixed(1)), path });
   } else {
     for (const seconds of captureSeconds) {
@@ -280,6 +320,7 @@ try {
       const label = `mapped-plus-${seconds}s`;
       const path = join(outputDir, `${label}.png`);
       await page.screenshot({ path, fullPage: true });
+      await collectGuestCrashReports(page, label);
       result.captures.push({ label, secondsAfterMapped: seconds, path, sample });
       record(`${label}: ${path}`);
       await writeFile(join(outputDir, 'summary.json'), JSON.stringify(result, null, 2));

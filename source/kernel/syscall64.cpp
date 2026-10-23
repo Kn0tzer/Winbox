@@ -14,6 +14,7 @@
 #include "syscall64.h"
 #include "cpu64.h"
 #include "kmemory64.h"
+#include "kevent.h"
 #include "ksocket.h"
 #include <thread>   // std::this_thread::yield() for sched_yield
 #include <mutex>    // std::recursive_mutex for BW64_SERIAL_TEARDOWN
@@ -54,6 +55,9 @@
 #define X64_SYS_mprotect          10
 #define X64_SYS_munmap            11
 #define X64_SYS_mincore           27
+#define X64_SYS_sync_file_range   277
+#define X64_SYS_mbind             237
+#define X64_SYS_get_mempolicy     239
 #define X64_SYS_brk               12
 #define X64_SYS_shmget            29
 #define X64_SYS_shmat             30
@@ -150,6 +154,13 @@
 #define X64_SYS_munlock           150
 #define X64_SYS_getrandom         318
 #define X64_SYS_memfd_create      319
+#define X64_SYS_getcpu            309
+#define X64_SYS_process_vm_readv  310
+#define X64_SYS_process_vm_writev 311
+#define X64_SYS_membarrier        324
+#define X64_SYS_timerfd_create    283
+#define X64_SYS_timerfd_settime   286
+#define X64_SYS_timerfd_gettime   287
 #define X64_SYS_sched_yield       24
 #define X64_SYS_sched_setaffinity 203
 #define X64_SYS_sched_getaffinity 204
@@ -374,16 +385,16 @@ static void crashRingDump(const char* why) {
 // "wined3d.dll+0xNNN". Gated by the optional RIP/guest profilers.
 static void ripSamplerNotePeRead(CPU64* cpu, const KFileDescriptorPtr& fdesc,
                                  U64 dst, U64 len) {
-    const bool ripProfile = ripSamplerEnabled();
+    const bool ripModules = ripSamplerModuleTrackingEnabled();
     const bool guestProfile = bwGuestProfileEnabled();
-    if ((!ripProfile && !guestProfile) || len == 0 || !cpu->thread || !cpu->thread->process) return;
+    if ((!ripModules && !guestProfile) || len == 0 || !cpu->thread || !cpu->thread->process) return;
     std::shared_ptr<KFile> kf = std::dynamic_pointer_cast<KFile>(fdesc->kobject);
     if (!kf || !kf->openFile || !kf->openFile->node) return;
     const BString& path = kf->openFile->node->path;
     // Match PE images by extension (case-insensitive): .dll / .exe.
     if (!path.endsWith(".dll", true) && !path.endsWith(".exe", true)) return;
     if (guestProfile) bwGuestProfileNoteModule((int)cpu->thread->process->id, dst, len, path.c_str());
-    if (ripProfile) ripSamplerNoteModule((int)cpu->thread->process->id, dst, len, path.c_str());
+    if (ripModules) ripSamplerNoteModule((int)cpu->thread->process->id, dst, len, path.c_str());
 }
 
 static U64 sys_write64(CPU64* cpu, U64 fd, U64 buf, U64 count) {
@@ -933,6 +944,45 @@ static U64 sys_prlimit64_64(CPU64* cpu, U64 /*pid*/, U64 /*res*/, U64 newLim, U6
         cpu->memory->writeq(oldLim + 8, ~0ULL);
     }
     (void)newLim;
+    return 0;
+}
+
+// nanosleep(req) and clock_nanosleep(clock, flags, req, rem) share the x86-64
+// timespec layout. Route real relative waits through KThread so long sleeps
+// yield to other guest threads; absolute waits are converted using the selected
+// clock before entering the same path.
+static U64 sys_nanosleep64(CPU64* cpu, U64 requestAddr, bool clockSleep,
+                           U64 clockId, U64 flags) {
+    if (!cpu || !cpu->memory || !cpu->thread || !requestAddr)
+        return (U64)(S64)-K_EFAULT;
+    if ((!clockSleep && (clockId || flags)) ||
+        (clockSleep && ((flags & ~1ULL) ||
+         (clockId != 0 && clockId != 1 && clockId != 7 && clockId != 11))))
+        return (U64)(S64)-K_EINVAL;
+
+    const U64 seconds = cpu->memory->readq(requestAddr);
+    const U64 nanoseconds = cpu->memory->readq(requestAddr + 8);
+    if (nanoseconds >= 1000000000ULL || seconds > (~0ULL - nanoseconds) / 1000000000ULL)
+        return (U64)(S64)-K_EINVAL;
+    U64 duration = seconds * 1000000000ULL + nanoseconds;
+    if (clockSleep && (flags & 1)) { // TIMER_ABSTIME
+        U64 now = 0;
+        if (clockId == 0 || clockId == 11) {
+            now = KSystem::getSystemTimeAsMicroSeconds() * 1000ULL;
+        } else {
+            now = (U64)KSystem::getMilliesSinceStart() * 1000000ULL;
+        }
+        duration = duration > now ? duration - now : 0;
+    }
+    const U32 result = cpu->thread->nanoSleep(duration);
+    return (U64)(S64)(S32)result;
+}
+
+// The emulator exposes one virtual processor and one NUMA node.
+static U64 sys_getcpu64(CPU64* cpu, U64 cpuPtr, U64 nodePtr, U64 /*cachePtr*/) {
+    if (!cpu || !cpu->memory) return (U64)(S64)-K_EFAULT;
+    if (cpuPtr) cpu->memory->writed(cpuPtr, 0);
+    if (nodePtr) cpu->memory->writed(nodePtr, 0);
     return 0;
 }
 
@@ -1552,7 +1602,7 @@ static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
                                             fileBase, seedBuf.data(), (U64)seedBuf.size());
         if ((S64)r < 0) return r;
         if (kfile->openFile->node) {
-            if (ripSamplerEnabled()) {
+            if (ripSamplerModuleTrackingEnabled()) {
                 ripSamplerNoteModule((int)cpu->thread->process->id, aligned, mapLen,
                                      kfile->openFile->node->path.c_str());
             }
@@ -1651,7 +1701,7 @@ static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
     // the C code that busy-loops lives) become known. Use the same aligned/mapLen
     // span the BW64_FMMAP trace prints above.
     if (kfile->openFile->node) {
-        if (ripSamplerEnabled()) {
+        if (ripSamplerModuleTrackingEnabled()) {
             ripSamplerNoteModule((int)cpu->thread->process->id, aligned, mapLen,
                                  kfile->openFile->node->path.c_str());
         }
@@ -2895,8 +2945,18 @@ static const char* x64SyscallName(U64 nr) {
         case 25: return "mremap";
         case 27: return "mincore";
         case 28: return "madvise";
+        case X64_SYS_mbind: return "mbind";
+        case X64_SYS_get_mempolicy: return "get_mempolicy";
         case 221: return "fadvise64";
+        case X64_SYS_sync_file_range: return "sync_file_range";
+        case X64_SYS_timerfd_create: return "timerfd_create";
+        case X64_SYS_timerfd_settime: return "timerfd_settime";
+        case X64_SYS_timerfd_gettime: return "timerfd_gettime";
         case 280: return "utimensat";
+        case 309: return "getcpu";
+        case X64_SYS_process_vm_readv: return "process_vm_readv";
+        case X64_SYS_process_vm_writev: return "process_vm_writev";
+        case X64_SYS_membarrier: return "membarrier";
         case 32: return "dup";
         case 33: return "dup2";
         case 34: return "pause";
@@ -4184,6 +4244,9 @@ void ksyscall64(CPU64* cpu) {
         case X64_SYS_getrandom:
             ret = sys_getrandom64(cpu, a1, a2, a3);
             break;
+        case X64_SYS_getcpu:
+            ret = sys_getcpu64(cpu, a1, a2, a3);
+            break;
         case X64_SYS_memfd_create: {
             // memfd_create(name, flags). wine's ntdll uses this for its
             // cross-process shared sections (and libpulse for its shm pool);
@@ -4559,9 +4622,9 @@ void ksyscall64(CPU64* cpu) {
             }
             break;
         case X64_SYS_eventfd2:
-            // Used by glibc for thread-pool wakeups, by GLib mainloop, etc.
-            // Real impl needs an FD allocator that can wire poll/read.
-            ret = (U64)-K_ENOSYS;
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            if (a2 & ~(K_O_CLOEXEC | K_O_NONBLOCK)) { ret = (U64)-K_EINVAL; break; }
+            ret = (U64)(S64)(S32)syscall_eventfd2(cpu->thread, (U32)a1, (U32)a2);
             break;
         case X64_SYS_epoll_create:
         case X64_SYS_epoll_create1:
@@ -4746,10 +4809,10 @@ void ksyscall64(CPU64* cpu) {
             ret = 0;
             break;
         case X64_SYS_nanosleep:
+            ret = sys_nanosleep64(cpu, a1, false, 0, 0);
+            break;
         case X64_SYS_clock_nanosleep:
-            // No-op sleep. Real Wine workloads will need pacing here, but
-            // for ld.so startup it's fine to return immediately.
-            ret = 0;
+            ret = sys_nanosleep64(cpu, a3, true, a1, a2);
             break;
         case X64_SYS_rseq:
             // restartable-sequences registration. glibc 2.35+ calls this on
@@ -4769,6 +4832,7 @@ void ksyscall64(CPU64* cpu) {
         case 74:  // fsync(fd)
         case 75:  // fdatasync(fd)
         case 26:  // msync(addr,len,flags)
+        case X64_SYS_sync_file_range:
             // Our VFS writes are effectively synchronous (no host page cache to
             // flush for the guest's purposes), so a flush is a successful no-op.
             // Previously these fell to the default -ENOSYS, which some callers

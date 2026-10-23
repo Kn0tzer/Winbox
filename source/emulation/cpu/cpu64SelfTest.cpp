@@ -676,6 +676,23 @@ int runX64SelfTest() {
             return c.reg[X64_RBX].u64 == 99 && c.reg[X64_R15].u64 == 5;
         });
     }
+    // A failed LOCK CMPXCHG must leave memory untouched, load the observed
+    // value into EAX, and clear ZF.
+    {
+        std::vector<U8> code = {
+            0xB8, 0x05, 0x00, 0x00, 0x00,                         // mov eax, 5
+            0xB9, 0x63, 0x00, 0x00, 0x00,                         // mov ecx, 99
+            0xF0, 0x0F, 0xB1, 0x4C, 0x24, 0x01,                  // lock cmpxchg [rsp+1], ecx
+            0x48, 0x89, 0xC6,                                     // mov rsi, rax (observed 6)
+            0x9C, 0x58,                                           // pushfq; pop rax
+        };
+        runAndCheck(r, "cmpxchg (mismatch loads accumulator, clears ZF)", withExit(code), [](CPU64& c) {
+            return c.memory->readd(STACK_TOP - 16 + 1) == 6 && c.reg[X64_RSI].u32 == 6 &&
+                   (c.reg[X64_R15].u64 & X64_ZF) == 0;
+        }, [](CPU64& c) {
+            c.memory->writed(STACK_TOP - 16 + 1, 6);
+        });
+    }
 
     // Test 17: XADD. After: RBX = old(RBX) + old(RAX) = 13; RAX = old(RBX) = 10.
     {

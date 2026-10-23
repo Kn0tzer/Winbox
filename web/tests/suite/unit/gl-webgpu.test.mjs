@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { blendFactor, convertIndices, packUniforms, stateKey, uniformLayout } from '../../../gl-webgpu-utils.mjs';
+import { WebGPUGL } from '../../../gl-webgpu.mjs';
+import { createValidationDevice } from '../fixtures/webgpu-validation-device.mjs';
 
 test('uniform layout and packing honor std140 vector, matrix, and array strides', () => {
   const layout = uniformLayout([
@@ -47,4 +49,32 @@ test('OpenGL blend factors map to WebGPU blend component names', () => {
 test('state hashing is stable across object key order and changes with state', () => {
   assert.equal(stateKey({ depth: true, blend: { src: 1, dst: 0 } }), stateKey({ blend: { dst: 0, src: 1 }, depth: true }));
   assert.notEqual(stateKey({ depth: true }), stateKey({ depth: false }));
+});
+
+test('GL depthRange is stored and applied to WebGPU draw viewports', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    assert.equal(typeof gl.depthRange, 'function', 'Emscripten GLctx.depthRange calls must be implemented');
+    gl.depthRange(0.25, 0.75);
+    assert.deepEqual(gl.getParameter(0x0b70), new Float32Array([0.25, 0.75]));
+
+    gl._currentProgram = {
+      id: 1,
+      linkPromise: Promise.resolve(true),
+      attributeLocations: new Map(),
+      attributeInfo: [],
+      uniformInfo: [],
+      uniformValues: new Map(),
+      stages: {
+        vertex: { wgsl: '@vertex fn main() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0); }', layout: { fields: [] }, samplers: [] },
+        fragment: { wgsl: '@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }', layout: { fields: [] }, samplers: [] },
+      },
+    };
+    await gl._draw(gl._drawSnapshot(), 0x0004, 0, 3, null, 1);
+    assert.deepEqual(gpu.viewports.at(-1), [0, 0, 4, 4, 0.25, 0.75]);
+  } finally {
+    gpu.restore();
+  }
 });

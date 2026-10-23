@@ -19,11 +19,14 @@
 #include "ksignal.h"   // K_SIGFPE
 #include "common/splitLock.h"
 #include "../../kernel/guestprofiler.h"
+#include "ripSampler.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <mutex>
 #include <chrono>
+#include <string>
 
 // Sharded locks for CPU64 atomic read-modify-write memory ops (XCHG with
 // memory, CMPXCHG, XADD, LOCK-prefixed ALU). In the multi-threaded build each
@@ -303,6 +306,58 @@ void CPU64::cloneRegistersFrom(const CPU64* from) {
     sigAltStack = from->sigAltStack;
 }
 
+void CPU64::recordControlBranch(U64 source, U64 target) {
+    controlBranches[controlBranchNext] = {source, target};
+    controlBranchNext = (U8)((controlBranchNext + 1) & 15);
+    if (controlBranchCount < 16) controlBranchCount++;
+}
+
+bool CPU64::reportControlTrace(const char* reason, U64 faultRip, bool force) {
+    if (!force && !ripSamplerControlTraceEnabled()) return false;
+    if (std::find(controlTraceReportedRips.begin(), controlTraceReportedRips.end(), faultRip) !=
+        controlTraceReportedRips.end()) return false;
+    controlTraceReportedRips.push_back(faultRip);
+
+    const int pid = (thread && thread->process) ? (int)thread->process->id : -1;
+    std::string module;
+    U64 moduleOffset = 0;
+    const bool resolved = pid >= 0 && ripSamplerResolveModule(pid, faultRip, module, moduleOffset);
+    if (resolved) {
+        klog_fmt("CPU64_CTRACE: %s pid=%d rip=0x%llx module=%s+0x%llx rsp=0x%llx",
+                 reason, pid, (unsigned long long)faultRip, module.c_str(),
+                 (unsigned long long)moduleOffset,
+                 (unsigned long long)reg[X64_RSP].u64);
+    } else {
+        klog_fmt("CPU64_CTRACE: %s pid=%d rip=0x%llx module=(unresolved) rsp=0x%llx",
+                 reason, pid, (unsigned long long)faultRip,
+                 (unsigned long long)reg[X64_RSP].u64);
+    }
+
+    static const char* names[X64_REG_COUNT] = {
+        "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
+        "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"
+    };
+    for (U32 i = 0; i < X64_REG_COUNT; i++)
+        klog_fmt("CPU64_CTRACE: gpr %s=0x%llx", names[i],
+                 (unsigned long long)reg[i].u64);
+
+    const U64 rsp = reg[X64_RSP].u64;
+    for (U32 i = 0; i < 16; i++) {
+        const U64 addr = rsp + (U64)i * 8;
+        const U64 value = memory ? memory->readq(addr) : 0;
+        klog_fmt("CPU64_CTRACE: stack rsp+0x%02x [0x%llx]=0x%llx", i * 8,
+                 (unsigned long long)addr, (unsigned long long)value);
+    }
+    for (U32 i = 0; i < controlBranchCount; i++) {
+        const U32 idx = (controlBranchNext + 16 - 1 - i) & 15;
+        const ControlBranch& branch = controlBranches[idx];
+        klog_fmt("CPU64_CTRACE: branch[%u] 0x%llx -> 0x%llx", i,
+                 (unsigned long long)branch.source,
+                 (unsigned long long)branch.target);
+    }
+    return true;
+}
+
 // Hot enough to appear as its own frame in native profiles (i.e. the compiler
 // chose not to inline it into step()'s huge body) — force it: the fast path is
 // a compare + two array indexes and call overhead dominates it.
@@ -355,6 +410,7 @@ bool CPU64::validateInstructionFetch() {
     const bool executable = (flags & K64_PAGE_EXEC) != 0;
     if (!mapped || !executable) {
         invalidateFetchCache();
+        reportControlTrace("instruction-fetch-fault", rip, false);
         // #PF error bits: U/S=1, I/D=1; P=0 for an unmapped page and P=1
         // for a mapped page whose permissions forbid instruction fetch.
         constexpr U32 PF_USER_INSTRUCTION_NOT_PRESENT = 0x14;
@@ -7571,7 +7627,10 @@ unhandled:
     }
     // Unimplemented. Print enough leading bytes to identify the opcode
     // in the Intel SDM tables and bail out so we don't silently loop.
-    klog_fmt("CPU64: unimpl opcode at RIP=0x%llx bytes=%02x %02x %02x %02x %02x %02x %02x (rex=0x%02x osz=%d asz=%d seg=%02x rep=%02x)",
+    const bool controlTrace = ripSamplerControlTraceEnabled();
+    const bool traceDumped = reportControlTrace(
+        "unimplemented-opcode", ipStart, std::getenv("BW64_UNIMPLDUMP") != nullptr);
+    if (!controlTrace || traceDumped) klog_fmt("CPU64: unimpl opcode at RIP=0x%llx bytes=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x (rex=0x%02x osz=%d asz=%d seg=%02x rep=%02x)",
              (unsigned long long)ipStart,
              fetchByte(ipStart),
              fetchByte(ipStart + 1),
@@ -7580,51 +7639,35 @@ unhandled:
              fetchByte(ipStart + 4),
              fetchByte(ipStart + 5),
              fetchByte(ipStart + 6),
+             fetchByte(ipStart + 7),
+             fetchByte(ipStart + 8),
+             fetchByte(ipStart + 9),
+             fetchByte(ipStart + 10),
+             fetchByte(ipStart + 11),
+             fetchByte(ipStart + 12),
+             fetchByte(ipStart + 13),
+             fetchByte(ipStart + 14),
+             fetchByte(ipStart + 15),
              p.rex, (int)p.osize16, (int)p.asize32, p.seg, p.rep);
-    // BW64_UNIMPLDUMP: when a thread decodes a bogus opcode it has almost always
-    // jumped to a garbage address (corruption / bad control transfer). Dump the
-    // pid + GPRs + the top of the stack so we can see WHO called into here and
-    // whether RIP/RSP are sane. Env-gated; off by default.
-    if (std::getenv("BW64_UNIMPLDUMP")) {
-        int pid = (thread && thread->process) ? (int)thread->process->id : -1;
-        U64 rsp = reg[X64_RSP].u64;
-        klog_fmt("  UNIMPLDUMP pid=%d rip=0x%llx rsp=0x%llx rax=0x%llx rbx=0x%llx rcx=0x%llx rdx=0x%llx rsi=0x%llx rdi=0x%llx rbp=0x%llx",
-                 pid, (unsigned long long)ipStart, (unsigned long long)rsp,
-                 (unsigned long long)reg[X64_RAX].u64, (unsigned long long)reg[X64_RBX].u64,
-                 (unsigned long long)reg[X64_RCX].u64, (unsigned long long)reg[X64_RDX].u64,
-                 (unsigned long long)reg[X64_RSI].u64, (unsigned long long)reg[X64_RDI].u64,
-                 (unsigned long long)reg[X64_RBP].u64);
-        if (thread && thread->process) {
-            klog_fmt("  UNIMPLDUMP exe='%s'", thread->process->exe.c_str());
-        }
-        // Top 8 stack qwords — the most recent one is usually the return address
-        // of whoever CALLed into the bogus RIP.
-        for (int i = 0; i < 8; i++) {
-            U64 v = 0;
-            if (memory) v = memory->readq(rsp + (U64)i * 8);
-            klog_fmt("  UNIMPLDUMP   [rsp+0x%02x] = 0x%llx", i * 8, (unsigned long long)v);
-        }
-        // 32 bytes at RIP, and at the suspicious pointer registers, so we can see
-        // whether RIP lands in real module code or a pattern-filled buffer.
-        auto dumpMem = [&](const char* tag, U64 a) {
-            if (!memory) return;
+    if (!controlTrace && std::getenv("BW64_UNIMPLDUMP")) {
+        // Preserve the old RIP-neighborhood dump for existing one-off probes.
+        const char* tags[] = {"RIP ", "RIP-", "RBX ", "RBP "};
+        const U64 addrs[] = {ipStart, ipStart - 16, reg[X64_RBX].u64, reg[X64_RBP].u64};
+        for (U32 item = 0; item < 4; item++) {
             U8 b[32];
-            for (int i = 0; i < 32; i++) b[i] = memory->readb(a + (U64)i);
+            for (int i = 0; i < 32; i++) b[i] = memory ? memory->readb(addrs[item] + (U64)i) : 0;
             klog_fmt("  UNIMPLDUMP %s @0x%llx: %02x %02x %02x %02x %02x %02x %02x %02x  %02x %02x %02x %02x %02x %02x %02x %02x  %02x %02x %02x %02x %02x %02x %02x %02x  %02x %02x %02x %02x %02x %02x %02x %02x",
-                     tag, (unsigned long long)a,
+                     tags[item], (unsigned long long)addrs[item],
                      b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7], b[8],b[9],b[10],b[11],b[12],b[13],b[14],b[15],
                      b[16],b[17],b[18],b[19],b[20],b[21],b[22],b[23], b[24],b[25],b[26],b[27],b[28],b[29],b[30],b[31]);
-        };
-        dumpMem("RIP ", ipStart);
-        dumpMem("RIP-", ipStart - 16);
-        dumpMem("RBX ", reg[X64_RBX].u64);
-        dumpMem("RBP ", reg[X64_RBP].u64);
+        }
     }
     return faultAtInstruction(K_SIGILL, 6);
 }
 
 void CPU64::run() {
     const bool guestProfile = bwGuestProfileEnabled();
+    const bool controlTrace = ripSamplerControlTraceEnabled();
     bool fastJitDispatch = false;
     bool jitBlockEntry = true;
     bool jitActive = false;
@@ -7745,8 +7788,11 @@ void CPU64::run() {
             }
         }
 #endif
+        const U64 stepRip = rip;
         U32 n = step(jitReady && fastJitDispatch);
         if (n == 0) break;
+        if (controlTrace && !(jitReady && fastJitDispatch) && rip != stepRip + n)
+            recordControlBranch(stepRip, rip);
         if (jitReady && fastJitDispatch) jitBlockEntry = m_jitBlockBoundaryAfterStep;
         instructionCount++;
 #ifdef BOXEDWINE_BLOCK_EXEC
@@ -8589,6 +8635,7 @@ U32 CPU64::tryBlockStep(U64 maxInsn) {
 #endif // BOXEDWINE_BLOCK_EXEC
 
 U64 CPU64::runBounded(U64 maxInsn) {
+    const bool controlTrace = ripSamplerControlTraceEnabled();
     bool fastJitDispatch = false;
     bool jitBlockEntry = true;
     bool jitActive = false;
@@ -8639,8 +8686,11 @@ U64 CPU64::runBounded(U64 maxInsn) {
             }
         }
 #endif
+        const U64 stepRip = rip;
         U32 n = step(jitReady && fastJitDispatch);
         if (n == 0) break;
+        if (controlTrace && !(jitReady && fastJitDispatch) && rip != stepRip + n)
+            recordControlBranch(stepRip, rip);
         if (jitReady && fastJitDispatch) jitBlockEntry = m_jitBlockBoundaryAfterStep;
         instructionCount++;
         ran++;

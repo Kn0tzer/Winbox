@@ -260,7 +260,7 @@ static bool mapSegments(KMemory64* mem, FsOpenNode* openNode,
         // BW64_RIPSAMPLE: the initial wine64/ld.so/glibc images are mapped here
         // (not through sys_mmap64_file), so record them too for RIP resolution.
         if (modPath) {
-            if (ripSamplerEnabled()) ripSamplerNoteModule(pid, alignedAddr, mapLen, modPath);
+            if (ripSamplerModuleTrackingEnabled()) ripSamplerNoteModule(pid, alignedAddr, mapLen, modPath);
             if (bwGuestProfileEnabled()) bwGuestProfileNoteModule(pid, alignedAddr, mapLen, modPath);
         }
         if (seg.filesz > 0) {

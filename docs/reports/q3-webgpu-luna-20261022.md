@@ -243,9 +243,8 @@ in CPU-backed window presentation/readback.
 The focused GL/Q3 unit run passed 35 tests, including Naga validation of the
 two-texture WGSL, separate unit-0/unit-1 UV buffers, immediate-mode coordinates,
 ABI/handler/proc registration, and the Q3 `r_vbo`/map arguments. Node syntax
-checks and `git diff --check` also passed. I did not build or run the browser
-probe: this source is awaiting the scheduled Build 6 export, so visual map
-rendering and first-frame timing remain unverified for these changes.
+checks and `git diff --check` also passed. At the time of this entry the source
+was awaiting Build 6; the browser verification is recorded below.
 
 ## Q3 extension advertisement audit (Luna, 2026-10-23)
 
@@ -279,5 +278,221 @@ paths have registered, non-fallback wrappers and that the unsupported Q3
 feature tokens stay absent in both string forms. This audit found no remaining
 Q3 extension-gate/proc mismatch after the multitexture implementation; it
 needed regression coverage and report correction, not another bridge behavior
-change. The focused GL/Q3 unit command passed 39 tests, with 0 failures. No
-build or browser probe was run; Build 6 verification remains pending.
+change. The focused GL/Q3 unit command passed 39 tests, with 0 failures. That
+static audit did not build or probe; Build 6 browser results follow.
+
+## Build 6 Q3 browser verification (Luna, 2026-10-23)
+
+I ran the existing Q3 archive against the read-only Build 6 dist from
+`integ/winbox-20261022b`, Git SHA `4f603f50f71a9e4dd6d2c0c3b32fca53acbb31af`
+(`wasm_sha256` prefix `b0438f56f93a`). Both probes used JIT and recovery,
+`+set r_vbo 0`, and `+map q3dm1`; no build was run.
+
+The initial run mapped the first SDL window 126.8 seconds after launch. Its
+60-second capture showed Q3's renderer initialization console. At +120 and +240
+seconds the screen showed the Quake logo and `CONNECTING TO LOCALHOST / AWAITING
+CONNECTION...0`. An extended run mapped the first window in 76.4 seconds and
+captured at +360 seconds. That screenshot showed the richly textured Q3DM1
+arena view, distinct from the packaged 128x128 `levelshots/Q3DM1.jpg`, with
+`LOADING Q3DM1`, `CONNECTING TO LOCALHOST`, and `LOADING... MAPS/Q3DM1.BSP`
+overlaid. This confirms that a Q3DM1 view is drawn through the WebGPU GL path,
+but the map load has not completed and gameplay/control is not confirmed.
+
+Both runs reported `gl64: host GL up (WebGPU)`, no WebGPU bridge failures, no
+page errors, and no probe exception. The trace logged the first indexed GL draw
+(`mode=0x4`, 12 indices). The next visible blocker is the local-host connection
+and BSP load remaining in progress. Wine also logged `getaddrinfo Failed to
+resolve your host name IP` and a guest UDP socket failure for domain 10
+(AF_INET6), errno 97. Those network diagnostics may be related to the local
+connect wait, but their causal link is not established; trace the Q3 local
+server/client handshake next. FPS is not established: one SDL metrics sample in
+the initial run reported 2.0 FPS / 502.92 ms, while the later capture had no
+usable presentation sample.
+
+Evidence: [Build 6 +120s capture](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-4f603f50f/mapped-plus-120s.png), [Build 6 +240s capture](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-4f603f50f/mapped-plus-240s.png), [Build 6 +360s capture](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-4f603f50f-360/mapped-plus-360s.png), [initial run summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-4f603f50f/summary.json), [extended run summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-4f603f50f-360/summary.json), and [extended run console](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-4f603f50f-360/console.log).
+
+## Q3 local connection and UDP loopback diagnosis (Luna, 2026-10-23)
+
+Quake3e's `+map q3dm1` path starts a listen server in the same process. `SV_Map_f`
+calls `SV_SpawnServer`; that calls `CL_MapLoading`, which sets the client's
+server name to the literal `localhost` and immediately calls
+`CL_CheckForResend`. `NET_StringToAdr` special-cases that exact string to
+`NA_LOOPBACK` before its `getaddrinfo` path. `NET_SendPacket` routes
+`NA_LOOPBACK` through Quake3e's in-process `NET_SendLoopPacket` queue. The main
+frame drains those queues with `NET_GetLoopPacket` and dispatches them to
+`CL_PacketEvent` / `SV_PacketEvent`. Therefore the built-in localhost handshake
+does not use Wine name resolution or the guest UDP sockets.
+
+The browser rootfs also has a working localhost mapping: the virtual
+`/etc/hosts` contains `127.0.0.1 localhost`, and the packaged rootfs
+`/etc/nsswitch.conf` says `hosts: files`. Wine's earlier `getaddrinfo Failed to
+resolve your host name IP` message is not evidence that the Quake3e literal
+`localhost` failed to resolve; that warning concerns a separate hostname path.
+
+The prior AF_INET6 UDP `EAFNOSUPPORT` / errno 97 is expected for this runtime.
+With `USE_IPV6`, Quake3e defaults `net_enabled` to 3 (IPv4 and IPv6). Its
+`NET_OpenIP` tries the IPv6 socket, stops that address-family retry on
+`EAFNOSUPPORT`, then independently enters the IPv4 bind block because bit 1
+remains enabled. `+set net_enabled 1` disables the IPv6 attempt while preserving
+IPv4. The emulator's `ksocket` currently accepts AF_INET UDP for the browser
+loopback transport and rejects AF_INET6 with `-K_EAFNOSUPPORT`.
+
+The browser UDP loopback implementation itself routes the requested wildcard
+case: it accepts `0.0.0.0` and `127/8` binds, registers by port, matches a
+`127.0.0.1` destination against a wildcard-bound receiver, queues the payload,
+and signals its read condition. `isReadReady` reports queued packets, and
+`internal_poll` uses that predicate for `POLLIN`; `kselect` also delegates
+readiness to `internal_poll`. Expanded the process selftest to bind a receiver
+on `0.0.0.0:27960`, send to `127.0.0.1:27960`, verify empty/ready poll results,
+and receive the payload and source address.
+
+One IPv4-only browser probe against the read-only Build 6 dist used
+`+set net_enabled 1 +map q3dm1`. The first window mapped after 131.3 seconds;
+WebGPU initialized with no bridge failures or page errors. At +180 seconds the
+capture still read `CONNECTING TO LOCALHOST / WAITING CONNECTION... 0`; at
++360 seconds it remained on the Q3DM1 loading screen with `CONNECTING TO
+LOCALHOST`. Disabling IPv6 did not advance the local handshake. The +60-second
+capture showed renderer startup in the Q3 console. No stable gameplay FPS was
+recorded; later captures had no presentation frames in their metrics.
+
+This eliminates DNS, IPv6 fallback, and the kernel UDP wildcard/readiness path
+as established causes of this specific Q3 local connection stall. No runtime
+network code change is justified by this trace. The remaining blocker is in
+Quake3e's own loopback packet/frame processing or the startup state around it;
+the next trace should count the `NA_LOOPBACK` request entering
+`NET_SendLoopPacket`, server-side `NET_GetLoopPacket` draining it, and the
+resulting `SV_PacketEvent` response. This diagnostic was not a build.
+
+Evidence: [IPv4-only +60s console capture](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-netenabled1-20261023/mapped-plus-60s.png), [IPv4-only +180s capture](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-netenabled1-20261023/mapped-plus-180s.png), [IPv4-only +360s capture](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-netenabled1-20261023/mapped-plus-360s.png), and [IPv4-only probe summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-netenabled1-20261023/summary.json).
+
+
+## Q3 present latency measurement, 2026-10-23
+
+**Retrospective correction:** this measurement ran at roughly 9 load average on
+a four-core host. Treat the rates below as contaminated raw history only; they
+do not support a performance or present-bound conclusion. The later Build 6
+rerun below also did not reach the requested quiet-host threshold.
+
+I ran the Q3 probe against the read-only Build 6 export (`4f603f50f71a`, WASM build ID `b0438f56f93a`) with JIT and recovery enabled, `+set net_enabled 1`, and `+map q3dm1`. The first window mapped 117.9 seconds after probe launch. The +90-second composited capture still shows `CONNECTING TO LOCALHOST / AWAITING CONNECTION...0`; it is not the BSP asset-loading screen, so these timings do not measure Q3's per-chunk map loader.
+
+For the 30-second interval ending at mapped+90s, the timestamped metrics stream recorded 22 frames at the XWire SDL sink (0.73 frames/s over the nominal interval). The metric stream covered 19.55 seconds of that interval; it had a 12.5-second gap and its last record was 8.15 seconds before the screenshot. Because metrics emit only after GL/audio/present activity, that gap means the presentation counter is a lower bound if a final frame was not followed by another metrics event. One `gl64 PHASE: swap` marker appeared in the interval, but this trace is best-effort on guest worker threads and is not a reliable exact swap count.
+
+The same records show the x64 JIT retired 18,092,937 guest instructions between counters 541,587,716 and 559,680,653 across the covered 19.55 seconds, or about 0.93 million instructions/s. The counter was not refreshed during the final 8.15 seconds, so this is the measured subspan rate rather than an exact 30-second instruction rate. The GL bridge stage accumulated 3,409.02 ms across 122 GL calls in the captured records, averaging 27.94 ms per GL call. That stage includes marshaling and the synchronous main-thread hop; it does not isolate `glXSwapBuffers` latency.
+
+The present path explains why the old 500 ms sample is not evidence of a GPU completion wait:
+
+- `GL64_fn_glXSwapBuffers` calls `glOnMain`, which enqueues a closure through `xwireRunOnMainThread` and blocks on its condition variable until the main loop runs it. The closure calls `glFlush()` and `readbackAndPresent()`.
+- `glReadPixels` in `gl-webgpu.mjs` copies from the CPU shadow pixel array. `readbackAndPresent()` then converts RGBA to BGRX and `submitFrame()` copies the pixels into the sink's pending buffer. The current metrics combine this work with the main-thread wait; they do not time those pieces separately.
+- The sink's SDL composition (`putBitsOnWnd` and `screen->present`) runs later in `tickMainThread`, after the queued GL closure has returned and signaled the guest thread.
+- `gl-webgpu.mjs` queues the canvas copy with `GPUQueue.submit()` and does not await GPU completion in `_present()`. There is no `mapAsync` readback in this path. `onSubmittedWorkDone()` appears only in promise callbacks that defer temporary-buffer cleanup.
+
+This source and runtime evidence does not show a per-present GPU round trip. The main-thread bridge hop is synchronous, but the SDL compositor runs after the hop signals the guest, and current telemetry cannot attribute its time per swap. I made no async-swap change and ran no build. There is no post-change timing to compare; the 27.94 ms figure is an average over all GL bridge calls, not a per-present result.
+
+Evidence: [mapped+90s screenshot](/tmp/winbox-finish/r3/work-luna-q3/evidence/present-metric-window-jit1-20261023/mapped-plus-90s.png), [full probe summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/present-metric-window-jit1-20261023/summary.json), and [console log](/tmp/winbox-finish/r3/work-luna-q3/evidence/present-metric-window-jit1-20261023/console.log). The temporary probe instrumentation used to retain the 30-second event window was reverted after capture.
+
+## Build 6 Q3 12-minute progression and metrics run (2026-10-23)
+
+I waited once with `/home/ubuntu/scripts/winbox-wait-load.sh 3 15`. It timed out
+after 15 minutes with load 8.51 (threshold 3), so I proceeded and recorded the
+actual load. `/proc/loadavg` at probe start was `7.90 7.46 7.97`; at probe end
+it was `6.89 7.87 8.06` (1-, 5-, and 15-minute averages). This was not a
+quiet-host measurement and its throughput must not be compared as an
+uncontended performance result.
+
+The single probe used the read-only Build 6 dist (`4f603f50f71a9e4dd6d2c0c3b32fca53acbb31af`, WASM build ID `b0438f56f93a`), JIT and recovery enabled, and
+`+set net_enabled 1 +set developer 1 +set com_printf 1 +map q3dm1` (along with
+the existing windowed OpenGL1 and `r_vbo 0` settings). The first window mapped
+92.2 seconds after launch. I captured at mapped+120, +240, +360, +480, +600,
+and +720 seconds.
+
+The +120s and +240s screenshots still show `CONNECTING TO LOCALHOST / AWAITING
+CONNECTION...0`. By +360s that specific wait has cleared and Q3 is presenting
+the Q3DM1 loading screen with `LOADING... MAPS/Q3DM1.BSP`. Later captures show
+asset progress (`SHOTGUN`, then `CELLS`) over the textured 3D arena background.
+At +720s it is still on the `CELLS` loading screen; no playable gameplay frame
+was captured. The `CONNECTING TO LOCALHOST` heading remains during map/asset
+loading, so this run proves transition into the BSP/asset loader, not completion
+of the client/server handshake. Since it left `AWAITING CONNECTION`, I did not
+start the proposed NA_LOOPBACK trace. `developer 1` and `com_printf 1` were
+passed, but the guest log contained no useful Q3 network diagnostics.
+
+Across the mapped 12-minute stream, the first metrics record was at mapped+1.5s
+and the last at mapped+719.8s. The JIT counter advanced by 1,586,687,603 retired
+instructions over 718.35 measured seconds: **2.21 million instructions/s**.
+The SDL sink recorded 92 presented frames over the same span: **0.128
+presents/s**. These are observed aggregate rates under the high host load above,
+not a clean estimate of Q3's unconstrained CPU throughput or GPU presentation
+latency. The metric stream is activity-triggered and can omit a trailing frame
+that is not followed by another metrics event; the SDL count is therefore a
+lower bound.
+
+The activity-triggered 30-second SDL present counts were:
+
+| Mapped interval | SDL presents | Mapped interval | SDL presents |
+| --- | ---: | --- | ---: |
+| 0–30s | 43 | 30–60s | 0 |
+| 60–90s | 32 | 90–120s | 0 |
+| 120–150s | 0 | 150–180s | 0 |
+| 180–210s | 0 | 210–240s | 0 |
+| 240–270s | 0 | 270–300s | 1 |
+| 300–330s | 2 | 330–360s | 1 |
+| 360–390s | 0 | 390–420s | 0 |
+| 420–450s | 0 | 450–480s | 0 |
+| 480–510s | 1 | 510–540s | 0 |
+| 540–570s | 5 | 570–600s | 1 |
+| 600–630s | 1 | 630–660s | 1 |
+| 660–690s | 1 | 690–720s | 3 |
+
+The counters are XWire SDL sink presents, not direct `SwapBuffers` calls. A
+missing metrics record means there was no GL/audio/present activity to trigger
+an emission in that interval; instruction-rate coverage is consequently
+aggregated between the first and last available cumulative JIT snapshots.
+Neither the high-load run nor its sparse per-window telemetry justifies making
+the SwapBuffers path asynchronous yet. No source change or build was made.
+
+Evidence: [mapped+120s](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-q3-quiet-12min-20261023/mapped-plus-120s.png), [mapped+240s](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-q3-quiet-12min-20261023/mapped-plus-240s.png), [mapped+360s](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-q3-quiet-12min-20261023/mapped-plus-360s.png), [mapped+480s](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-q3-quiet-12min-20261023/mapped-plus-480s.png), [mapped+600s](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-q3-quiet-12min-20261023/mapped-plus-600s.png), [mapped+720s](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-q3-quiet-12min-20261023/mapped-plus-720s.png), [summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-q3-quiet-12min-20261023/summary.json), and [full metrics/console log](/tmp/winbox-finish/r3/work-luna-q3/evidence/build6-q3-quiet-12min-20261023/console.log).
+
+
+## Build 8 Q3 extended probe and depth-range fix (2026-10-23)
+
+I ran the quiet-host helper once; it returned `load 4.68 < 5: go`. The first,
+trace-enabled probe started with load `4.55 6.76 6.28` (1-, 5-, and 15-minute
+averages). It closed after the +360s screenshot, before it could answer the
+full progression question. The no-trace retry started at `7.25 7.93 7.21`, so
+its rate measurements are load-contaminated. The page closed at 10:41:03,
+19m25s after launch and before the scheduled +1200s through +1500s captures. I
+recorded one post-run load sample at 10:46:07 (`5.24 5.98 6.79`); it is not an
+exact page-close reading.
+
+The retry used the read-only Build 8 dist (`integ 72315a6d5`, WASM build ID
+`ba9aa2ed6a32`), JIT and recovery enabled, and `+map q3dm1`. It mapped 113.9s
+after launch, with WebGPU active and no WebGPU bridge failures. The captures
+show `AWAITING CONNECTION` at +120s and +240s; a correctly textured Q3DM1 arena
+at +360s with `LOADING... MAPS/Q3DM1.BSP`; `GAME MEDIA` at +480s; `ROCKET
+LAUNCHER` at +600s; and `AWAITING SNAPSHOT...` at +720s, +840s, and +960s.
+The +960s screenshot confirms the textured 3D scene is being rendered through
+the WebGPU path. It does not prove that the local client/server handshake
+completed, because the visible frame may be stale after the runtime error
+below.
+
+The metrics stream covered mapped+1.5s through mapped+686.6s. It recorded
+1,628,269,262 retired guest instructions (2.38 million/s) and 91 XWire SDL sink
+presents (0.133 presents/s). Metrics stopped at the failure point; later
+screenshots did not produce more activity. Treat these as raw rates under the
+load increase above, not as a clean throughput estimate.
+
+At 10:34:59.374, about mapped+686.5s, the runtime logged an uncaught
+`TypeError: GLctx.depthRange is not a function`, from Emscripten's
+`_emscripten_glDepthRangef`. The error interrupts the emulated main loop during
+late map startup, before I could establish whether Q3 would receive its first
+server snapshot. The missing method was a real GL/WebGPU bridge gap, not
+continued BSP or ZIP loading. I added `depthRange()` state, `GL_DEPTH_RANGE`
+query support, and passed the range to WebGPU's per-draw viewport. A focused
+unit test exercises the method and verifies the submitted viewport bounds.
+
+All 18 `gl-webgpu*.test.mjs` unit tests pass. No build or post-fix browser run
+was performed, per the no-build instruction. The next run should include this
+commit in a new integration dist; it will show whether this exception was the
+last blocker or whether the client remains at `AWAITING SNAPSHOT`.
+
+Evidence: [+360s BSP / textured arena](/tmp/winbox-finish/r3/work-luna-q3/evidence/build8-q3-25min-nodiag-20261023/mapped-plus-360s.png), [+720s awaiting snapshot](/tmp/winbox-finish/r3/work-luna-q3/evidence/build8-q3-25min-nodiag-20261023/mapped-plus-720s.png), [+960s final capture](/tmp/winbox-finish/r3/work-luna-q3/evidence/build8-q3-25min-nodiag-20261023/mapped-plus-960s.png), [probe summary](/tmp/winbox-finish/r3/work-luna-q3/evidence/build8-q3-25min-nodiag-20261023/summary.json), and [metrics and error log](/tmp/winbox-finish/r3/work-luna-q3/evidence/build8-q3-25min-nodiag-20261023/console.log).

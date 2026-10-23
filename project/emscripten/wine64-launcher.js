@@ -1098,6 +1098,9 @@
                 // RIP attribution for the host profiler runs.
                 if (param("guestprof") === "1") ENV["BW_GUEST_PROFILE"] = "1";
                 else { try { if (new URLSearchParams(window.parent.location.search).get("guestprof") === "1") ENV["BW_GUEST_PROFILE"] = "1"; } catch (e) {} }
+                // ?wakeprofile=1 records notify-to-resume latency for blocked
+                // Unix socket, epoll, and futex condition waits.
+                if (param("wakeprofile") === "1") ENV["BW_WAKE_PROFILE"] = "1";
                 // Public JIT switches: ?jit=0 disables both guest engines;
                 // ?jit=1 enables CPU64 only; ?jit32=1 also enables CPU32, or
                 // enables CPU32 by itself when jit is absent. ?jit32=0 forces
@@ -1197,6 +1200,15 @@
             onExit: function (code) { if (window.bwRuntimeLog) window.bwRuntimeLog('The runtime exited with code ' + code + '.'); },
             onRuntimeInitialized: function () {
                 runtimeInitialized = true;
+                // ?ctrace=1 arms CPU64's per-thread bad-RIP diagnostics before
+                // run dependencies release and any guest code can execute.
+                if (param("ctrace") === "1") {
+                    var MC = liveModule || window.Module;
+                    if (MC && typeof MC.ccall === "function") {
+                        try { MC.ccall("bw64_set_control_trace", null, ["number"], [1]); }
+                        catch (e) { console.warn("bw64_set_control_trace failed: " + e); }
+                    }
+                }
                 // BW64_VKPROF (?vkprof=1): the vk64 bridge runs on a Web Worker
                 // where window does not exist, so it cannot read the URL param
                 // itself. Enable it from the main thread before the guest boots.

@@ -140,3 +140,80 @@ Evidence:
 - JIT=1 25-minute run: `/tmp/winbox-finish/r7/mindustry-jit1-25min/summary.json`, `console.log`, and `mapped-plus-*.png`.
 - WebGPU-only run after matrix varying lowering: `/tmp/winbox-finish/r8/mindustry-jit1-matrixfix/summary.json`, `console.log`, and `mapped-plus-{420,600,900}s.png`.
 - Existing runtime build ID: `3a6bd71f8778`; no WASM build was run and the integration worktree was not modified.
+
+
+## Build 6 JVM crash and signal audit (2026-10-23)
+
+Worktree: `/home/ubuntu/boxedwine64-worktrees/winbox-mindustry-build5-20261023`
+
+Branch base: `fccddb067` (includes the x86-64 JVM/Wine syscall audit). Both runs used the integration build-6 runtime at `/home/ubuntu/boxedwine64-worktrees/winbox-integ-20261022/dist`, build ID `b0438f56f93a`. No WASM build was run.
+
+I added guest crash-report collection to `tools/bench/gl-game-probe.mjs`. At each capture and on map timeout, it checks the guest app and temp directories for `hs_err_pid*.log` and copies found reports into the probe artifact directory. The JIT=1 run verified the guest path is `/root/home/username/apps/hs_err_pid32.log`; the report was copied successfully.
+
+### JIT=0 result
+
+The first window mapped after 296.4 seconds. The WebGPU GL context initialized, and Mindustry logged OpenGL 3.2, Java 25.0.1, and 259.5 MiB available RAM. Captures through +540 seconds stayed black, with zero GL calls and zero presents. No JVM crash report was written.
+
+The console contains 2,855 unimplemented-opcode messages at stable guest RIP `0x17005541e`, fetching bytes `4b 65 79 42 69 6e 64` (ASCII “KeyBind”). This interpreter-only run is stuck decoding data as instructions; it did not reach rendering.
+
+### JIT=1 result and HotSpot report
+
+The first window mapped after 384.5 seconds. The WebGPU backend stayed active, with no WebGPU failures or page errors. At +300 seconds, the probe counted 29 host GL calls but no presents. By +360 seconds, the guest JVM had aborted and the sample showed zero GL calls/presents. Screenshots remain black; no menu or gameplay appeared.
+
+The guest report says:
+
+```text
+Internal Error (symbol.cpp:335)
+fatal error: refcount underflow
+```
+
+The JVM had been running 619.715 seconds. The current thread was Java thread `main` in `_thread_in_vm`; its Java stack was:
+
+```text
+arc.graphics.gl.IndexBufferObject.bind()V+42
+arc.graphics.Mesh.bind(...)V+26
+arc.graphics.Mesh.render(...)V+13
+arc.graphics.Mesh.render(...)V+10
+arc.graphics.g2d.SpriteBatch.flush()V+129
+arc.graphics.g2d.Draw.flush()V+3
+mindustry.graphics.LoadRenderer.draw()V+2918
+mindustry.ClientLauncher.update()V+129
+arc.backend.sdl.SdlApplication.loop()V+255
+mindustry.desktop.DesktopLauncher.main(...)V+63
+```
+
+This is a HotSpot internal assertion, not the suspected implicit-exception signal path. The report contains no `SIGSEGV`/`SIGFPE`, `si_code`, or `si_addr`; the native frame is `0x1ce8379` with no source information, and HotSpot's symbol engine could not initialize. Therefore there is no faulting instruction or signal metadata in this report to compare. The failure occurs while Mindustry enters its render path, before any frame is presented.
+
+### CPU64 signal-path audit
+
+Static inspection found the synchronous paths currently construct these fields:
+
+- x86 #DE becomes `SIGFPE/FPE_INTDIV`, with `si_addr` set to the faulting RIP and `TRAPNO=0`.
+- CPU64 instruction-fetch #PF sets `si_addr=RIP`, `TRAPNO=14`, and `ERR=0x14` for an unmapped page or `0x15` for a mapped non-executable page. `si_code` is `SEGV_MAPERR` or `SEGV_ACCERR` respectively.
+- The signal frame saves guest RIP, RSP, and EFLAGS, and hardware-fault delivery overwrites TRAPNO/ERR/CR2 with the provided fault data. It currently sets the ucontext `fpregs` pointer to null and does not save x87/SSE state.
+- `KMemory64::mprotect` updates page flags, but normal data reads/writes intentionally ignore those protections. Thus HotSpot stack-bang or safepoint polling-page accesses may not fault. This is a separate compatibility gap; the captured JVM failure did not raise a signal, so I have not changed this broad memory behavior without a reproducing signal case.
+
+The JIT=0 and JIT=1 outcomes differ: JIT=0 loops in invalid instruction decoding, while JIT=1 advances into Mindustry rendering and then hits the HotSpot symbol refcount assertion. This rules out the earlier assumption that this fatal came from malformed Linux `siginfo_t` or `ucontext_t`, but does not yet identify why HotSpot's symbol reference count underflows. No C++ fix is justified by the current evidence.
+
+Evidence:
+
+- JIT=0, build ID `b0438f56f93a`: `/tmp/winbox-finish/r11/mindustry-build6-jit0/` (`summary.json`, `console.log`, and +180/+360/+540 screenshots).
+- JIT=1 extended capture: `/tmp/winbox-finish/r13/mindustry-build6-jit1-extended-hserr/` (`summary.json`, `console.log`, +300/+360 screenshots, and copied `mapped-plus-360s-hs_err-1.log`).
+- JIT=1 early captures without a fatal: `/tmp/winbox-finish/r12/mindustry-build6-jit1-hserr/`.
+- The probe change passed `node --check tools/bench/gl-game-probe.mjs`; the report was collected from the actual guest filesystem. No build was run.
+
+## Build 6 CPU follow-up
+
+The JIT=0 log's repeated `unimpl opcode` at `0x17005541e` is not an unsupported CPU instruction. The bytes are `4b 65 79 42 69 6e 64 62 69 6e 64 56 61 6c ...`, which are ASCII `KeyBindbindVal...`; objdump decodes the first 16 bytes as a REX prefix, `gs jns`, `imul`, `push`, invalid opcode, and `insb`. The adjacent one-off addresses likewise contain ASCII `bindVal` and `alue`. This indicates control flow reached data, so clearing AVX/BMI/etc. CPUID bits or implementing a guessed vector opcode would not address the observed failure. CPUID leaf 1 currently advertises the supported SSE3/SSSE3/SSE4.1/SSE4.2/POPCNT/CX16 set, and leaf 7 advertises no extensions; the existing CPU64 self-tests assert those values.
+
+The unimplemented-opcode diagnostic previously printed only seven bytes. It now prints 16 to help identify the instruction stream and prefix state on the next instrumented run. The current JIT=0 artifact does not include a guest register/stack dump or memory map at the repeated RIP, so the preceding bad control transfer remains unresolved; no opcode implementation or CPUID change is justified yet.
+
+JIT64's classification explicitly keeps LOCK-prefixed instructions on the CPU64 interpreter path. The interpreter serializes memory RMW operations with host `std::recursive_mutex` shards shared across guest threads. CMPXCHG updates the accumulator only on comparison failure, performs no memory write on failure, and calculates SUB flags; XADD returns the old memory value in its source register and calculates ADD flags; XCHG with memory is implicitly locked; INC/DEC preserve CF. `jit64.cpp` emits none of these locked operations as fast code. The CPU64 tests cover XCHG, matching and failed CMPXCHG, XADD, and LOCK INC/DEC flags. The JIT tests now assert that LOCK CMPXCHG, LOCK XADD, and memory XCHG remain interpreter-only. The suite does not include a true concurrent guest-thread stress case. Such a test would require the emulator's full shared-memory/thread harness; a single-CPU instruction test cannot validate host-thread visibility.
+
+Build 6 JIT=0 evidence: `/tmp/winbox-finish/r11/mindustry-build6-jit0/console.log` (repeated data bytes and zero GL calls/presents). JIT=1's later failure is a HotSpot `symbol.cpp:335` refcount assertion, not a signal fault: `/tmp/winbox-finish/r13/mindustry-build6-jit1-extended-hserr/mapped-plus-360s-hs_err-1.log`. The artifacts establish correlation but do not establish that either issue shares a CPU64 atomic cause.
+
+## Opt-in CPU64 control-flow trace and PROT_NONE assessment
+
+The `ctrace=1` runtime query now arms CPU64 tracing from the launcher's `onRuntimeInitialized` callback, before Emscripten releases the filesystem run dependency and starts guest code. The probe convention `BW_TEST_URL_PARAMS=ctrace=1` forwards this query parameter. When enabled, the CPU64 interpreter keeps the latest 16 non-fallthrough source/target pairs. On the first unimplemented opcode or execute-permission fault at each RIP, it logs all 16 GPRs, 16 qwords from RSP, the branch history, and a module plus offset when the registered module table can resolve the address. The JIT itself does not update this ring; a fault after JIT execution still gets a fault snapshot, with history from the interpreter path. With tracing off, the branch loop does not update the ring.
+
+`KMemory64` does silently bypass data permissions today. Its TLB fast helpers check `K64_PAGE_READ`/`K64_PAGE_WRITE`, but a denied fast access falls through to slow paths that read the backing page or commit and write it without checking those bits. `mprotect(PROT_NONE)` therefore does not currently produce a guest data-access fault. Enforcing this inside the generic memory accessors is unsafe: those same accessors serve kernel copies, signal-frame construction, and graphics marshalling, where an inaccessible guest pointer must be handled as a syscall/kernel error rather than injected as a CPU fault. Precise CPU faults also need to stop the current instruction before it partially changes registers or memory. This change does not alter that behavior; safe enforcement needs a CPU-scoped access path with fault propagation and focused tests, not just changing the TLB predicate.
