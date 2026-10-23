@@ -8985,6 +8985,21 @@ int runX64SelfTest() {
     runNonExecutableFetchFault(r);
     runDataProtectionFaults(r);
     runUnmappedSamePageFetchFault(r);
+    // io_uring and pidfd_getfd are deliberately rejected by the central
+    // once-per-number syscall logger. Keep syscall-layer errno coverage for
+    // every operation so they cannot drift into silent success.
+    for (U32 syscallNumber : {425u, 426u, 427u, 438u}) {
+        std::vector<U8> code = {
+            0xB8, (U8)syscallNumber, (U8)(syscallNumber >> 8),
+            (U8)(syscallNumber >> 16), (U8)(syscallNumber >> 24), // mov eax, nr
+            0x0F, 0x05,                                           // syscall
+            0x49, 0x89, 0xC7,                                     // mov r15, rax
+        };
+        runAndCheck(r, "unsupported io_uring/pidfd_getfd syscall returns ENOSYS",
+                    withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == (U64)-K_ENOSYS;
+        });
+    }
     runFaultAtRIP(r, "recover preserves #GP for INSD", {0x6D});
     runFaultAtRIP(r, "recover preserves #GP for operand-size-prefixed INSW", {0x66, 0x6D});
     runFaultAtRIP(r, "recover preserves #GP for HLT", {0xF4});
