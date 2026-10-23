@@ -1099,12 +1099,10 @@ export function v2TargetKey(imageId, w, h, samples, isDepth) {
 const V2_STENCIL_OPS = /** @type {Record<number,GPUStencilOperation>} */ ({0:'keep',1:'zero',2:'replace',3:'increment-clamp',4:'decrement-clamp',5:'invert',6:'increment-wrap',7:'decrement-wrap'});
 // VkFormats the bridge advertises, including formats represented through CPU
 // conversion (packed 16-bit colours, R16 UNORM and D32/S8 fallbacks). BC is
-// included because the bridge enables textureCompressionBC; v2TextureFormat
-// still rejects it when the WebGPU adapter lacks texture-compression-bc.
+// omitted until adapter capability negotiation can reach Vulkan guests.
 export const V2_SUPPORTED_TEXTURE_FORMATS = Object.freeze([
   2, 3, 5, 7, 8, 9, 16, 37, 38, 41, 43, 44, 50, 64, 70, 76, 77, 83,
   91, 97, 98, 99, 100, 103, 109, 122, 124, 125, 126, 129, 130,
-  131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146,
 ]);
 export const V2_SUPPORTED_VERTEX_FORMATS = Object.freeze([
   16, 17, 18, 19, 20, 21, 23, 24, 25, 26, 27, 28, 37, 38, 39, 40, 41, 42,

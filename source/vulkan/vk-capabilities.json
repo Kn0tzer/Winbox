@@ -31,9 +31,6 @@
     "fillCoreFeatures.depthClamp": {
       "status": "implemented"
     },
-    "fillCoreFeatures.textureCompressionBC": {
-      "status": "implemented"
-    },
     "fillRobustness2.robustBufferAccess2": {
       "status": "implemented"
     },
@@ -111,6 +108,7 @@
     "fillCoreFeatures.sparseResidencyBuffer",
     "fillCoreFeatures.sparseResidencyImage2D",
     "fillCoreFeatures.tessellationShader",
+    "fillCoreFeatures.textureCompressionBC",
     "fillCoreFeatures.vertexPipelineStoresAndAtomics",
     "fillCoreFeatures.wideLines",
     "fillDescriptorIndexing.descriptorBindingPartiallyBound",
