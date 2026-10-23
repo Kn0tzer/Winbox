@@ -4,6 +4,24 @@ import { WebGPUGL } from '../../../gl-webgpu.mjs';
 import { createValidationDevice } from '../fixtures/webgpu-validation-device.mjs';
 import * as naga from '../../../vendor/naga/node.js';
 
+test('alphaFunc and texEnvi reject invalid enums and values through getError', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    gl.alphaFunc(0xdead, 0.25);
+    assert.equal(gl.getError(), 0x0500);
+    assert.equal(gl._fixedFunction.alphaFunc, 0x0207, 'invalid comparison leaves previous state intact');
+    gl.alphaFunc(0x0201, Number.NaN);
+    assert.equal(gl.getError(), 0x0501);
+    gl.texEnvi(0x2300, 0x2200, 0x8570);
+    assert.equal(gl.getError(), 0x0500);
+    assert.equal(gl._fixedFunction.texEnv[0], 0x2100, 'unsupported combine mode is not silently treated as modulate');
+  } finally {
+    gpu.restore();
+  }
+});
+
 test('program-zero fixed-function indexed draws build a textured alpha-test pipeline', async () => {
   const gpu = createValidationDevice();
   const logs = [];

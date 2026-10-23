@@ -765,9 +765,17 @@ export class WebGPUGL {
   color3f(r, g, b) { this._fixedFunction.color = [r, g, b, 1].map(clamp01); }
   color4f(r, g, b, a) { this._fixedFunction.color = [r, g, b, a].map(clamp01); }
   color4ub(r, g, b, a) { this.color4f(r / 255, g / 255, b / 255, a / 255); }
-  alphaFunc(func, reference) { this._fixedFunction.alphaFunc = func | 0; this._fixedFunction.alphaRef = clamp01(reference); }
+  alphaFunc(func, reference) {
+    if (![0x0200, 0x0201, 0x0202, 0x0203, 0x0204, 0x0205, 0x0206, 0x0207].includes(func)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (!Number.isFinite(reference)) { this._recordError(GL.INVALID_VALUE); return; }
+    this._fixedFunction.alphaFunc = func | 0;
+    this._fixedFunction.alphaRef = clamp01(reference);
+  }
   texEnvi(target, pname, value) {
-    if (target === 0x2300 && pname === 0x2200) this._fixedFunction.texEnv[this._activeTextureUnit] = value | 0;
+    if (target !== 0x2300) { this._recordError(GL.INVALID_ENUM); return; }
+    if (pname !== 0x2200) { this._recordError(GL.INVALID_ENUM); return; }
+    if (![0x2100, 0x1e01, 0x2101, 0x0104].includes(value)) { this._recordError(GL.INVALID_ENUM); return; }
+    this._fixedFunction.texEnv[this._activeTextureUnit] = value | 0;
   }
   texEnvf(target, pname, value) { this.texEnvi(target, pname, value); }
   texEnvfv(target, pname, values) { if (pname === 0x2201) this._fixedFunction.texEnvColor = Array.from(values || []); }
