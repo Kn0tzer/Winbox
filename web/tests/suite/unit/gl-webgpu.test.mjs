@@ -415,6 +415,19 @@ test('getError retains each distinct pending GL error until individually read', 
   } finally { gpu.restore(); }
 });
 
+test('fixed-function GL_COMBINE defaults to modulating the previous color by each texture', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    gl.texEnvi(0x2300, 0x2200, 0x8570);
+    assert.equal(gl.getError(), 0);
+    const program = gl._fixedFunctionProgram([0, 1], true, false, 0x0207, gl._fixedFunction.texEnv);
+    assert.match(program.stages.fragment.wgsl, /color = color \* texel0/);
+    assert.match(program.stages.fragment.wgsl, /color = color \* texel1/);
+  } finally { gpu.restore(); }
+});
+
 test('state and texture entry points report invalid enums, values, and operations', async () => {
   const gpu = createValidationDevice(), logs = [];
   try {

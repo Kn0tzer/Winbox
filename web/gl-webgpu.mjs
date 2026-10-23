@@ -785,7 +785,7 @@ export class WebGPUGL {
   texEnvi(target, pname, value) {
     if (target !== 0x2300) { this._recordError(GL.INVALID_ENUM); return; }
     if (pname !== 0x2200) { this._recordError(GL.INVALID_ENUM); return; }
-    if (![0x2100, 0x1e01, 0x2101, 0x0104].includes(value)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (![0x2100, 0x1e01, 0x2101, 0x0104, 0x8570].includes(value)) { this._recordError(GL.INVALID_ENUM); return; }
     this._fixedFunction.texEnv[this._activeTextureUnit] = value | 0;
   }
   texEnvf(target, pname, value) { this.texEnvi(target, pname, value); }
