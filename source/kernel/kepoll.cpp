@@ -43,6 +43,7 @@ struct KEPollWaiter {
 std::mutex g_epollDataMutex;
 std::mutex g_epollWaitersMutex;
 std::unordered_map<const KEPoll*, std::vector<std::shared_ptr<KEPollWaiter>>> g_epollWaiters;
+std::unordered_map<const KEPoll*, std::unordered_map<FD, bool>> g_epollEdgeReady;
 
 std::shared_ptr<KEPollWaiter> registerEpollWaiter(const KEPoll* epoll, KThread* thread) {
     std::shared_ptr<KEPollWaiter> waiter = std::make_shared<KEPollWaiter>(thread);
@@ -89,6 +90,7 @@ KEPoll::KEPoll() : KObject(KTYPE_EPOLL) {
 
 KEPoll::~KEPoll() {
     std::lock_guard<std::mutex> lock(g_epollDataMutex);
+    g_epollEdgeReady.erase(this);
      for( const auto& n : this->data ) {
          delete n.value;
     }
@@ -233,12 +235,14 @@ U32 KEPoll::ctl(KMemory* memory, U32 op, FD fd, U32 address) {
                 existing->events = requestedEvents;
                 existing->data = requestedData;
                 this->data.set(fd, existing);
+                if (requestedEvents & 0x80000000u) g_epollEdgeReady[this][fd] = false;
                 break;
             case K_EPOLL_CTL_DEL:
                 if (!existing)
                     return -K_ENOENT;
                 this->data.remove(fd);
                 delete existing;
+                g_epollEdgeReady[this].erase(fd);
                 break;
             case K_EPOLL_CTL_MOD:
                 if (!existing)
@@ -246,6 +250,7 @@ U32 KEPoll::ctl(KMemory* memory, U32 op, FD fd, U32 address) {
                 existing->events = requestedEvents;
                 existing->data = requestedData;
                 existing->enabled = true; // EPOLL_CTL_MOD rearms EPOLLONESHOT
+                g_epollEdgeReady[this][fd] = false;
                 break;
             default:
                 return -K_EINVAL;
@@ -292,6 +297,23 @@ U32 KEPoll::wait(KThread* thread, U32 events, U32 maxevents, U32 timeout) {
         break;
     }
     if (result >= 0) {
+        // EPOLLET reports only a not-ready -> ready transition. Keep this
+        // state beside the registrations because Data's public layout is
+        // shared by the 32-bit and 64-bit kernel APIs.
+        {
+            std::lock_guard<std::mutex> lock(g_epollDataMutex);
+            for (KPollData& data : thread->pollData) {
+                Data* registration = this->data[(U32)data.fd];
+                if (!registration || !(registration->events & 0x80000000u)) continue;
+                bool& wasReady = g_epollEdgeReady[this][(FD)data.fd];
+                if (data.revents) {
+                    if (wasReady) data.revents = 0;
+                    else wasReady = true;
+                } else {
+                    wasReady = false;
+                }
+            }
+        }
         result = 0;
         for (KPollData& data : thread->pollData) {
             if (data.revents!=0) {

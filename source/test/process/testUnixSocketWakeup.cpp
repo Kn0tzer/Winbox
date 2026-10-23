@@ -284,6 +284,35 @@ void testEpollOneShotAndFlags() {
         testFail("EPOLL_CTL_MOD accepted EPOLLEXCLUSIVE");
     }
     process->close(exclusiveFd->handle);
+
+    U64 eventValue = 0;
+    if (event->readNative((U8*)&eventValue, sizeof(eventValue)) != 8 || eventValue != 1) {
+        testFail("EPOLLET eventfd fixture could not clear its initial readable state");
+    }
+    auto edge = std::make_shared<KEPoll>();
+    KFileDescriptorPtr edgeFd = process->allocFileDescriptor(edge, K_O_RDWR, 0, -1, 0);
+    context.memory->writed(kEventAddress, kEpollIn | kEpollEt);
+    context.memory->writeq(kEventAddress + 4, 0x1122334455667788ULL);
+    if ((S32)edge->ctl(context.memory, kEpollCtlAdd, (FD)eventFd->handle, kEventAddress) != 0 ||
+        edge->wait(context.thread, kResultAddress, 1, 0) != 0) {
+        testFail("EPOLLET reported an event before the descriptor became ready");
+    }
+    eventValue = 1;
+    event->writeNative((U8*)&eventValue, sizeof(eventValue));
+    if (edge->wait(context.thread, kResultAddress, 1, 0) != 1 ||
+        edge->wait(context.thread, kResultAddress, 1, 0) != 0) {
+        testFail("EPOLLET did not suppress repeated delivery while readiness remained asserted");
+    }
+    event->readNative((U8*)&eventValue, sizeof(eventValue));
+    if (edge->wait(context.thread, kResultAddress, 1, 0) != 0) {
+        testFail("EPOLLET reported an event after readiness was cleared");
+    }
+    eventValue = 1;
+    event->writeNative((U8*)&eventValue, sizeof(eventValue));
+    if (edge->wait(context.thread, kResultAddress, 1, 0) != 1) {
+        testFail("EPOLLET failed to report a new ready transition");
+    }
+    process->close(edgeFd->handle);
     process->close(eventFd->handle);
 }
 
