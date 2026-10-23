@@ -308,7 +308,6 @@ U32 KEPoll::wait(KThread* thread, U32 events, U32 maxevents, U32 timeout) {
                 bool& wasReady = g_epollEdgeReady[this][(FD)data.fd];
                 if (data.revents) {
                     if (wasReady) data.revents = 0;
-                    else wasReady = true;
                 } else {
                     wasReady = false;
                 }
@@ -346,8 +345,11 @@ U32 KEPoll::wait(KThread* thread, U32 events, U32 maxevents, U32 timeout) {
                 {
                     std::lock_guard<std::mutex> lock(g_epollDataMutex);
                     Data* registration = this->data[data.fd];
-                    if (registration && (registration->events & 0x40000000u))
-                        registration->enabled = false;
+                    if (registration) {
+                        if (registration->events & 0x40000000u) registration->enabled = false;
+                        if (registration->events & 0x80000000u)
+                            g_epollEdgeReady[this][(FD)data.fd] = true;
+                    }
                 }
                 result++;
                 if (result>=(S32)maxevents) {

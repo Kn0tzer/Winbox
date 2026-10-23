@@ -313,6 +313,33 @@ void testEpollOneShotAndFlags() {
         testFail("EPOLLET failed to report a new ready transition");
     }
     process->close(edgeFd->handle);
+
+    auto event2 = std::make_shared<KEvent>();
+    event2->counter = 1;
+    KFileDescriptorPtr eventFd2 = process->allocFileDescriptor(event2, K_O_RDWR, 0, -1, 0);
+    auto limited = std::make_shared<KEPoll>();
+    KFileDescriptorPtr limitedFd = process->allocFileDescriptor(limited, K_O_RDWR, 0, -1, 0);
+    context.memory->writed(kEventAddress, kEpollIn | kEpollEt);
+    context.memory->writeq(kEventAddress + 4, 0x1111);
+    context.memory->writed(kEventAddress + 0x10, kEpollIn | kEpollEt);
+    context.memory->writeq(kEventAddress + 0x14, 0x2222);
+    if ((S32)limited->ctl(context.memory, kEpollCtlAdd, (FD)eventFd->handle, kEventAddress) != 0 ||
+        (S32)limited->ctl(context.memory, kEpollCtlAdd, (FD)eventFd2->handle, kEventAddress + 0x10) != 0) {
+        testFail("EPOLLET maxevents fixture registration failed");
+    } else {
+        const U32 firstCount = limited->wait(context.thread, kResultAddress, 1, 0);
+        const U64 firstPayload = context.memory->readq(kResultAddress + 4);
+        const U32 secondCount = limited->wait(context.thread, kResultAddress, 1, 0);
+        const U64 secondPayload = context.memory->readq(kResultAddress + 4);
+        if (firstCount != 1 || secondCount != 1 || firstPayload == secondPayload ||
+            (firstPayload != 0x1111 && firstPayload != 0x2222) ||
+            (secondPayload != 0x1111 && secondPayload != 0x2222) ||
+            limited->wait(context.thread, kResultAddress, 1, 0) != 0) {
+            testFail("EPOLLET consumed an edge for a ready descriptor omitted by maxevents");
+        }
+    }
+    process->close(limitedFd->handle);
+    process->close(eventFd2->handle);
     process->close(eventFd->handle);
 }
 
