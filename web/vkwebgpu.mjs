@@ -1731,9 +1731,10 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     if (err) {
       noteUnsupported('pipeline-rejected', err.message.split(' - ')[0]);
       // Surface the offending declarations: Dawn's message names only group/binding.
+      // naga puts the attributes and the `var` on separate lines, so match the whole declaration.
       const where = /@group\((\d+)\) @binding\((\d+)\)/.exec(err.message);
       const decl = where ? [['vs', vsR.code], ['fs', fsR.code]].flatMap(([stage, code]) =>
-        code.split('\n').filter(l => l.includes(`@group(${where[1]}) @binding(${where[2]})`)).map(l => stage + ': ' + l.trim())).join(' | ') : '';
+        [...code.matchAll(new RegExp(`@group\\(${where[1]}\\)\\s*@binding\\(${where[2]}\\)\\s*var[^;]*;`, 'g'))].map(m => stage + ': ' + m[0].replace(/\s+/g, ' '))).join(' | ') : '';
       return { skip: 'pipeline-rejected:' + err.message.split(' - ')[0] + (decl ? ' [' + decl + ']' : '') };
     }
     const rec = { key, pipeline, layouts, decls, hasPush, slotOf, maxGroup, vbWalk, stripIndexType, blendConstantMode, stencilReference:stencil.reference };
