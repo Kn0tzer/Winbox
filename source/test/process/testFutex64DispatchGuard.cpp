@@ -14,12 +14,14 @@
 #include <fstream>
 #include <string>
 #include <iterator>
+#ifdef BOXEDWINE_GUEST_X64
 #include <atomic>
 #include <thread>
 #include <chrono>
 #include "cpu64.h"
 #include "kmemory64.h"
 #include "syscall64.h"
+#endif
 
 #include "../cpu/testCPU.h"
 
@@ -77,6 +79,7 @@ void testFutex64DispatchGuard() {
     }
 }
 
+#ifdef BOXEDWINE_GUEST_X64
 void testFutex64Operations() {
     TestContext& context = testContext();
     KProcessPtr process = context.process;
@@ -222,5 +225,6 @@ void testFutex64Operations() {
     process->removeThread(worker);
     delete worker;
 }
+#endif
 
 #endif
