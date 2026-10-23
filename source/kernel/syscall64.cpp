@@ -53,6 +53,7 @@
 #define X64_SYS_mmap              9
 #define X64_SYS_mprotect          10
 #define X64_SYS_munmap            11
+#define X64_SYS_mincore           27
 #define X64_SYS_brk               12
 #define X64_SYS_shmget            29
 #define X64_SYS_shmat             30
@@ -2438,7 +2439,8 @@ bool CPU64::interruptSyscallWithSignal(bool allowRestart) {
 // SIGFPE + si_code → EXCEPTION_INT_DIVIDE_BY_ZERO etc, and uses the ucontext
 // RIP as the exception address. cpu->rip must still point at the faulting
 // instruction when this is called (so the captured RIP is the fault site).
-bool CPU64::raiseSyncFault(U32 sig, U32 trapNo, S32 siCode, U64 faultAddr) {
+bool CPU64::raiseSyncFault(U32 sig, U32 trapNo, S32 siCode, U64 faultAddr,
+                           U32 errorCode) {
     if (sig < 1 || sig > 64) return false;
     SigAction& sa = this->sigActions[sig];
     if (!sa.installed) return false;
@@ -2458,7 +2460,7 @@ bool CPU64::raiseSyncFault(U32 sig, U32 trapNo, S32 siCode, U64 faultAddr) {
     // Fill the fault-specific mcontext slots the generic builder leaves zero.
     U64 gregsPtr = uctxPtr + X64_MCONTEXT_OFF_IN_UCTX;
     this->memory->writeq(gregsPtr + 8 * X64_GREG_TRAPNO, (U64)trapNo);
-    this->memory->writeq(gregsPtr + 8 * X64_GREG_ERR, 0);
+    this->memory->writeq(gregsPtr + 8 * X64_GREG_ERR, errorCode);
     this->memory->writeq(gregsPtr + 8 * X64_GREG_CR2, faultAddr);
 
     // Synthesize a siginfo_t at the start of the frame (the siginfo region sits
@@ -2829,6 +2831,31 @@ static U64 sys_recvmsg64(CPU64* cpu, U64 fd, U64 msg64, U64 flags) {
     return (U64)(S64)(S32)rc;
 }
 
+// mincore(addr, length, vec): report which mapped pages have backing storage.
+// Validate the complete queried range and output vector before writing any
+// bytes, so an invalid range does not leave a partially-filled vector.
+static U64 sys_mincore64(CPU64* cpu, U64 addr, U64 length, U64 vec) {
+    if (!cpu || !cpu->memory || length == 0 || (addr & K64_PAGE_MASK))
+        return (U64)-K_EINVAL;
+    if (addr > ~0ULL - (length - 1)) return (U64)-K_ENOMEM;
+
+    const U64 pageCount = ((length - 1) >> 12) + 1;
+    const U64 firstPage = addr >> 12;
+    const U64 vecEnd = vec + pageCount;
+    if (vecEnd < vec) return (U64)-K_EFAULT;
+
+    for (U64 i = 0; i < pageCount; ++i) {
+        if (!cpu->memory->isPageMapped(firstPage + i)) return (U64)-K_ENOMEM;
+        const U64 outAddr = vec + i;
+        if (!cpu->memory->isPageMapped(outAddr >> 12)) return (U64)-K_EFAULT;
+    }
+    for (U64 i = 0; i < pageCount; ++i) {
+        cpu->memory->writeb(vec + i,
+            cpu->memory->getCommittedPagePtr(firstPage + i) ? 1 : 0);
+    }
+    return 0;
+}
+
 // Map an x86-64 Linux syscall number to a human-readable name. Used only by
 // the unimplemented-syscall log path — when running real glibc binaries, the
 // first thing you want to see is "which syscall is missing", not "#291".
@@ -2866,6 +2893,7 @@ static const char* x64SyscallName(U64 nr) {
         case 23: return "select";
         case 24: return "sched_yield";
         case 25: return "mremap";
+        case 27: return "mincore";
         case 28: return "madvise";
         case 221: return "fadvise64";
         case 280: return "utimensat";
@@ -3347,6 +3375,9 @@ void ksyscall64(CPU64* cpu) {
             // zero-filled reads trip asserts), so the backing store is kept; the
             // memory is already bounded by lazy commit on the mmap side.
             ret = cpu->memory->munmap(a1, a2);
+            break;
+        case X64_SYS_mincore:
+            ret = sys_mincore64(cpu, a1, a2, a3);
             break;
         case X64_SYS_shmget:
             ret = sys_shmget64(cpu, a1, a2, a3);
@@ -4684,10 +4715,17 @@ void ksyscall64(CPU64* cpu) {
             break;
         }
         case X64_SYS_sysinfo:
-            // struct sysinfo — zero-fill the standard 64-byte layout.
-            // ld-linux doesn't actually read these; some binaries call it
-            // anyway as part of /proc startup probes.
-            if (a1) cpu->memory->memsetGuest(a1, 0, 112);
+            // struct sysinfo, 64-bit layout (112 bytes). The JVM and other
+            // runtimes size their heaps from totalram, so it must be nonzero.
+            if (a1) {
+                auto* memory = cpu->memory;
+                memory->memsetGuest(a1, 0, 112);
+                memory->writeq(a1, KSystem::getMilliesSinceStart() / 1000);      // uptime
+                memory->writeq(a1 + 32, 1024ULL * 1024 * 1024);                  // totalram
+                memory->writeq(a1 + 40, 768ULL * 1024 * 1024);                   // freeram
+                memory->writew(a1 + 80, 1);                                      // procs
+                memory->writed(a1 + 104, 1);                                     // mem_unit
+            }
             ret = 0;
             break;
         case X64_SYS_getppid:

@@ -43,7 +43,7 @@ void internal_kpanic(BString msg) { std::fprintf(stderr, "KPANIC: %s\n", msg.str
 void kpanic(const char* msg) { std::fprintf(stderr, "KPANIC: %s\n", msg); std::abort(); }
 void klog(const char* msg) { std::fprintf(stderr, "klog: %s\n", msg); }
 void ksyscall64(CPU64*) { std::fprintf(stderr, "STUB: ksyscall64 reached\n"); std::abort(); }
-bool CPU64::raiseSyncFault(U32, U32, S32, U64) { std::abort(); return false; }
+bool CPU64::raiseSyncFault(U32, U32, S32, U64, U32) { std::abort(); return false; }
 void KProcess::signalProcess(U32) {}
 bool KSystem::useF64 = true;
 U64 KSystem::getSystemTimeAsMicroSeconds() { return 0; }

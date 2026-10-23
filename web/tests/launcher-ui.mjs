@@ -21,7 +21,7 @@ try {
   // UI routing is exercised independently of game compatibility. Real runtime
   // acceptance is a separate check; this fixture never claims gameplay.
   await page.route(url => url.pathname.endsWith('/runtime/index.html'), route => route.fulfill({ contentType: 'text/html', headers: { 'cross-origin-embedder-policy':'require-corp', 'cross-origin-opener-policy':'same-origin' }, body: `<!doctype html><title>Runtime fixture</title><canvas id="canvas" width="64" height="48"></canvas><script>
-  window.bwRuntime={fs:()=>null};window.finishPaint=()=>{const c=document.getElementById('canvas').getContext('2d');c.fillStyle='white';c.fillRect(0,0,64,48);};
+  window.bwRuntime={fs:()=>null};window.finishPaint=()=>{const c=document.getElementById('canvas').getContext('2d');c.fillStyle='white';c.fillRect(0,0,64,48);const v=parent.document.getElementById('vkCanvas')||Object.assign(parent.document.createElement('canvas'),{id:'vkCanvas',width:64,height:48});const x=v.getContext('2d');x.fillStyle='white';x.fillRect(0,0,64,48);parent.document.getElementById('display').append(v);addEventListener('pagehide',()=>v.remove());};
   ${holdFirstPaint ? '' : 'finishPaint();'}
   parent.postMessage({wine:true,type:"status",data:"Running..."},location.origin);
   parent.postMessage({wine:true,type:"log",data:"first window mapped"},location.origin);</script>` }));
@@ -31,19 +31,23 @@ try {
   assert.equal(await page.locator('[data-game]').count(), 8);
   assert.equal(await page.locator('#jit').inputValue(), 'off');
   {
-    const modes = await page.evaluate(() => ({
-      selected: document.getElementById('folderModeSelect').value,
-      options: [...document.querySelectorAll('#folderModeSelect option')].map(option => option.textContent),
-      disabled: document.getElementById('directMode').disabled,
-      help: document.getElementById('folderModeHelp').textContent,
+    const mode = await page.evaluate(() => ({
+      checked: document.getElementById('folderMode').checked,
+      disabled: document.getElementById('folderMode').disabled,
+      helpHidden: document.getElementById('folderModeHelp').hidden,
       picker: typeof window.showDirectoryPicker,
+      removed: ['backend', 'sharpness', 'sharpnessField'].filter(id => document.getElementById(id)),
     }));
-    assert.equal(modes.selected, 'copy');
-    assert.deepEqual(modes.options, ['Copy into browser storage', 'Read in place (Chrome and Edge)']);
-    assert.match(modes.help, /Copy works everywhere and survives moving the folder/);
-    assert.match(modes.help, /Read in place skips the copy but the folder must stay where it is/);
-    if (modes.picker !== 'function') assert.equal(modes.disabled, true);
-    checks.push('Folder opening select defaults to copy and disables direct access without the picker');
+    assert.equal(mode.checked, false);
+    assert.equal(mode.helpHidden, true);
+    assert.deepEqual(mode.removed, []);
+    if (mode.picker !== 'function') assert.equal(mode.disabled, true);
+    await page.click('#settingsButton');
+    await page.click('#folderModeHelpButton');
+    assert.equal(await page.locator('#folderModeHelp').isVisible(), true);
+    assert.equal(await page.locator('#folderModeHelpButton').getAttribute('aria-expanded'), 'true');
+    await page.keyboard.press('Escape');
+    checks.push('Read-folders-in-place toggle defaults off, has a help popover, and is disabled without the picker');
   }
   await page.screenshot({ path: dir + '/desktop-light.png', fullPage: true, animations: 'disabled' });
   checks.push('Fresh library renders without console errors');

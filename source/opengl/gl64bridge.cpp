@@ -273,6 +273,9 @@ inline void replayImmOp(const ImmOp& op) {
         case GL64_fn_glColor3f:  glColor3f(op.f[0], op.f[1], op.f[2]); break;
         case GL64_fn_glColor4f:  glColor4f(op.f[0], op.f[1], op.f[2], op.f[3]); break;
         case GL64_fn_glNormal3f: glNormal3f(op.f[0], op.f[1], op.f[2]); break;
+#ifndef __EMSCRIPTEN__
+        case GL64_fn_glMultiTexCoord2fARB: glMultiTexCoord2f((GLenum)op.f[0], op.f[1], op.f[2]); break;
+#endif
         case GL64_fn_glVertex2f: glVertex2f(op.f[0], op.f[1]); break;
         case GL64_fn_glVertex3f: glVertex3f(op.f[0], op.f[1], op.f[2]); break;
         default: break;
@@ -789,7 +792,11 @@ struct LegacyClientArray {
 };
 LegacyClientArray g_legacyVertexArray{3, GL_FLOAT, 0, 0, false, false, false};
 LegacyClientArray g_legacyColorArray{4, GL_FLOAT, 0, 0, false, false, false};
-LegacyClientArray g_legacyTexCoordArray{4, GL_FLOAT, 0, 0, false, false, false};
+LegacyClientArray g_legacyTexCoordArrays[2] = {
+    {4, GL_FLOAT, 0, 0, false, false, false},
+    {4, GL_FLOAT, 0, 0, false, false, false},
+};
+U32 g_legacyClientActiveTextureUnit = 0;
 GLuint g_legacyArrayBuffer = 0;
 GLuint g_legacyElementArrayBuffer = 0;
 
@@ -820,6 +827,19 @@ bool copyLegacyArray(GLGuestCPU* cpu, const LegacyClientArray& array,
     copy.resize(bytes);
     cpu->memory->memcpyFromGuest(copy.data(), array.pointer + startOffset, bytes);
     return true;
+}
+
+void bindCopiedLegacyTexCoords(const std::vector<U8>& texCoord0,
+                               const std::vector<U8>& texCoord1) {
+    const std::vector<U8>* data[2] = {&texCoord0, &texCoord1};
+    const U32 restoreUnit = g_legacyClientActiveTextureUnit;
+    for (U32 unit = 0; unit < 2; ++unit) {
+        const LegacyClientArray& array = g_legacyTexCoordArrays[unit];
+        if (!array.enabled || data[unit]->empty()) continue;
+        glClientActiveTexture(0x84c0 + unit);
+        glTexCoordPointer(array.size, array.type, array.stride, data[unit]->data());
+    }
+    glClientActiveTexture(0x84c0 + restoreUnit);
 }
 
 bool copyLegacyIndices(GLGuestCPU* cpu, GLenum type, GLsizei count, U64 pointer,
@@ -975,10 +995,11 @@ void webGpuFixedTexEnvArrayCall(const char* method, GLenum target, GLenum pname,
 int webGpuFixedDraw(GLenum mode, GLint first, GLsizei count, bool indexed, GLenum type,
                     U64 offset, U32 baseVertex, const std::vector<U8>& indexData,
                     const LegacyClientArray& vertexArray, const LegacyClientArray& colorArray,
-                    const LegacyClientArray& texCoordArray, const std::vector<U8>& vertex,
-                    const std::vector<U8>& color, const std::vector<U8>& texCoord) {
+                    const LegacyClientArray& texCoordArray, const LegacyClientArray& texCoordArray1,
+                    const std::vector<U8>& vertex, const std::vector<U8>& color,
+                    const std::vector<U8>& texCoord, const std::vector<U8>& texCoord1) {
     if (!g_emWebGpu) return 0;
-    U32 packet[36] = {
+    U32 packet[45] = {
         mode, (U32)first, (U32)count, indexed ? 1u : 0u, type, (U32)offset,
     };
     auto writeArray = [&](size_t base, const LegacyClientArray& array, const std::vector<U8>& data) {
@@ -995,9 +1016,10 @@ int webGpuFixedDraw(GLenum mode, GLint first, GLsizei count, bool indexed, GLenu
     writeArray(6, vertexArray, vertex);
     writeArray(15, colorArray, color);
     writeArray(24, texCoordArray, texCoord);
-    packet[33] = (U32)(uintptr_t)(indexData.empty() ? nullptr : indexData.data());
-    packet[34] = (U32)indexData.size();
-    packet[35] = baseVertex;
+    writeArray(33, texCoordArray1, texCoord1);
+    packet[42] = (U32)(uintptr_t)(indexData.empty() ? nullptr : indexData.data());
+    packet[43] = (U32)indexData.size();
+    packet[44] = baseVertex;
     return EM_ASM_INT({ return (() => {
         try {
             var p = $0 >>> 2;
@@ -1009,15 +1031,15 @@ int webGpuFixedDraw(GLenum mode, GLint first, GLsizei count, bool indexed, GLenu
                 type: word(base + 3), stride: signed(base + 4), bufferBacked: !!word(base + 5), pointer: word(base + 6),
             });
             var arrays = {
-                vertex: readArray(6), color: readArray(15), texCoord: readArray(24),
+                vertex: readArray(6), color: readArray(15), texCoord: readArray(24), texCoord1: readArray(33),
                 vertexData: bytes(word(13), word(14)), colorData: bytes(word(22), word(23)),
-                texCoordData: bytes(word(31), word(32)), baseVertex: word(35),
+                texCoordData: bytes(word(31), word(32)), texCoordData1: bytes(word(40), word(41)), baseVertex: word(44),
             };
             if (!GLctx || typeof GLctx.fixedFunctionDrawArrays !== 'function') return 0;
             var mode = word(0), first = signed(1), count = signed(2), indexed = !!word(3);
             if (indexed) {
                 if (typeof GLctx.fixedFunctionDrawElements !== 'function') return 0;
-                return GLctx.fixedFunctionDrawElements(mode, count, word(4), word(5), bytes(word(33), word(34)), arrays) ? 1 : 0;
+                return GLctx.fixedFunctionDrawElements(mode, count, word(4), word(5), bytes(word(42), word(43)), arrays) ? 1 : 0;
             }
             return GLctx.fixedFunctionDrawArrays(mode, first, count, arrays) ? 1 : 0;
         } catch (error) { console.error('gl64 fixed-function draw failed', error); return 0; }
@@ -1934,6 +1956,21 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glShadeModel:
             if (g_glContext) GL_MT(glShadeModel((GLenum)ai(args,0)));
             return 0;
+        case GL64_fn_glClientActiveTextureARB: {
+            GLenum texture = (GLenum)ai(args,0);
+#ifdef __EMSCRIPTEN__
+            g_legacyClientActiveTextureUnit = texture >= 0x84c0 ? (U32)(texture - 0x84c0) : 0;
+            g_legacyClientActiveTextureUnit = std::min<U32>(g_legacyClientActiveTextureUnit, 1);
+            texture = 0x84c0 + g_legacyClientActiveTextureUnit;
+            if (g_glContext) {
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("clientActiveTexture", texture, 0, 0, 0, 0, 1));
+                else GL_MT(glClientActiveTexture(texture));
+            }
+#else
+            if (g_glContext) GL_MT(glClientActiveTexture(texture));
+#endif
+            return 0;
+        }
 #ifdef __EMSCRIPTEN__
         case GL64_fn_glEnableClientState:
         case GL64_fn_glDisableClientState: {
@@ -1941,7 +1978,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             bool enabled = fnId == GL64_fn_glEnableClientState;
             if (array == GL_VERTEX_ARRAY) g_legacyVertexArray.enabled = enabled;
             else if (array == GL_COLOR_ARRAY) g_legacyColorArray.enabled = enabled;
-            else if (array == GL_TEXTURE_COORD_ARRAY) g_legacyTexCoordArray.enabled = enabled;
+            else if (array == GL_TEXTURE_COORD_ARRAY) g_legacyTexCoordArrays[g_legacyClientActiveTextureUnit].enabled = enabled;
             if (g_glContext && !g_emWebGpu) GL_MT(enabled ? glEnableClientState(array) : glDisableClientState(array));
             return 0;
         }
@@ -1949,7 +1986,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glColorPointer:
         case GL64_fn_glTexCoordPointer: {
             LegacyClientArray* array = fnId == GL64_fn_glVertexPointer ? &g_legacyVertexArray :
-                                       fnId == GL64_fn_glColorPointer ? &g_legacyColorArray : &g_legacyTexCoordArray;
+                                       fnId == GL64_fn_glColorPointer ? &g_legacyColorArray : &g_legacyTexCoordArrays[g_legacyClientActiveTextureUnit];
             array->size = (GLint)ai(args,0);
             array->type = (GLenum)ai(args,1);
             array->stride = (GLsizei)ai(args,2);
@@ -1958,7 +1995,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             array->bufferBacked = g_legacyArrayBuffer != 0;
             if (array->bufferBacked && g_glContext && g_emWebGpu) {
                 const int index = fnId == GL64_fn_glVertexPointer ? 0 :
-                                  fnId == GL64_fn_glColorPointer ? 1 : 2;
+                                  fnId == GL64_fn_glColorPointer ? 1 : 2 + (int)g_legacyClientActiveTextureUnit;
                 glOnMain([&] { webGpuFixedCall("fixedFunctionPointer", index, array->size,
                     array->type, array->stride, (double)array->pointer, 5); });
             } else if (array->bufferBacked && g_glContext) {
@@ -1969,7 +2006,10 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 glOnMain([&] {
                     if (fnId == GL64_fn_glVertexPointer) glVertexPointer(size, type, stride, offset);
                     else if (fnId == GL64_fn_glColorPointer) glColorPointer(size, type, stride, offset);
-                    else glTexCoordPointer(size, type, stride, offset);
+                    else {
+                        glClientActiveTexture(0x84c0 + g_legacyClientActiveTextureUnit);
+                        glTexCoordPointer(size, type, stride, offset);
+                    }
                 });
             }
             return 0;
@@ -2324,6 +2364,22 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             if (g_glContext) RECORD_IMM(GL64_fn_glNormal3f, af(args,0), af(args,1), af(args,2), 0,
                                         glNormal3f(af(args,0), af(args,1), af(args,2)));
             return 0;
+        case GL64_fn_glMultiTexCoord2fARB: {
+            GLenum texture = (GLenum)ai(args,0);
+            GLfloat s = af(args,1), t = af(args,2);
+#ifdef __EMSCRIPTEN__
+            if (g_glContext && g_emWebGpu) {
+                if (g_inImmediate) g_immOps.push_back(ImmOp{(U16)fnId, {(float)texture, s, t, 0}});
+                else GL_MT(webGpuFixedCall("multiTexCoord2f", texture, s, t, 0, 0, 3));
+                return 0;
+            }
+#endif
+#ifndef __EMSCRIPTEN__
+            if (g_glContext) RECORD_IMM(GL64_fn_glMultiTexCoord2fARB, (float)texture, s, t, 0,
+                                        glMultiTexCoord2f(texture, s, t));
+#endif
+            return 0;
+        }
 
         // === core GL: immediate-mode geometry ============================
         // On WASM, glBegin..glEnd is recorded host-side and replayed in ONE
@@ -2354,6 +2410,8 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                         } else if (op.fn == GL64_fn_glVertex2f || op.fn == GL64_fn_glVertex3f) {
                             commands.insert(commands.end(), {1, op.f[0], op.f[1],
                                 op.fn == GL64_fn_glVertex2f ? 0.0f : op.f[2], 1});
+                        } else if (op.fn == GL64_fn_glMultiTexCoord2fARB) {
+                            commands.insert(commands.end(), {2, op.f[0], op.f[1], op.f[2], 0});
                         }
                     }
                     glOnMain([&] {
@@ -2849,22 +2907,24 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glDrawArrays:
             if (g_glContext) {
                 GLenum mode=(GLenum)ai(args,0); GLint first=(GLint)ai(args,1); GLsizei count=(GLsizei)ai(args,2);
-                std::vector<U8> vertex, color, texCoord;
+                std::vector<U8> vertex, color, texCoord, texCoord1;
                 GL64ClientArrayRange range;
                 bool rangeKnown = gl64ComputeDrawArrayRange(first, count, range);
                 bool copied = rangeKnown &&
                     copyLegacyArray(cpu, g_legacyVertexArray, range.first, range.last, vertex) &&
                     copyLegacyArray(cpu, g_legacyColorArray, range.first, range.last, color) &&
-                    copyLegacyArray(cpu, g_legacyTexCoordArray, range.first, range.last, texCoord);
+                    copyLegacyArray(cpu, g_legacyTexCoordArrays[0], range.first, range.last, texCoord) &&
+                    copyLegacyArray(cpu, g_legacyTexCoordArrays[1], range.first, range.last, texCoord1);
                 traceLegacyClientDraw(mode, count, 0, g_legacyVertexArray, g_legacyColorArray,
-                    g_legacyTexCoordArray, range.first, range.last, rangeKnown, vertex, {}, 0);
+                    g_legacyTexCoordArrays[0], range.first, range.last, rangeKnown, vertex, {}, 0);
                 glOnMain([&]{
                     bindDrawTarget();
                     if (copied && webGpuFixedDraw(mode, 0, count, false, 0, 0, range.first, {},
-                        g_legacyVertexArray, g_legacyColorArray, g_legacyTexCoordArray, vertex, color, texCoord)) return;
+                        g_legacyVertexArray, g_legacyColorArray, g_legacyTexCoordArrays[0], g_legacyTexCoordArrays[1],
+                        vertex, color, texCoord, texCoord1)) return;
                     if (copied && !vertex.empty()) glVertexPointer(g_legacyVertexArray.size, g_legacyVertexArray.type, g_legacyVertexArray.stride, vertex.data());
                     if (copied && !color.empty()) glColorPointer(g_legacyColorArray.size, g_legacyColorArray.type, g_legacyColorArray.stride, color.data());
-                    if (copied && !texCoord.empty()) glTexCoordPointer(g_legacyTexCoordArray.size, g_legacyTexCoordArray.type, g_legacyTexCoordArray.stride, texCoord.data());
+                    if (copied) bindCopiedLegacyTexCoords(texCoord, texCoord1);
                     traceLegacyDrawState(mode, count, 0);
                     glDrawArrays(mode, vertex.empty() ? first : 0, count);
                 });
@@ -2875,7 +2935,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             if (g_glContext) {
                 GLenum mode=(GLenum)ai(args,0); GLsizei count=(GLsizei)ai(args,1); GLenum type=(GLenum)ai(args,2);
                 const void* indices = (const void*)(uintptr_t)args.a[3];
-                std::vector<U8> indexData, vertex, color, texCoord;
+                std::vector<U8> indexData, vertex, color, texCoord, texCoord1;
                 U32 firstIndex = 0, lastIndex = 0;
                 const size_t indexBytes = type == GL_UNSIGNED_BYTE ? 1 : type == GL_UNSIGNED_SHORT ? 2 : type == GL_UNSIGNED_INT ? 4 : 0;
                 const bool indexBufferBacked = g_legacyElementArrayBuffer != 0;
@@ -2885,10 +2945,11 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 if (copied && rangeKnown) {
                     copied = copyLegacyArray(cpu, g_legacyVertexArray, firstIndex, lastIndex, vertex) &&
                         copyLegacyArray(cpu, g_legacyColorArray, firstIndex, lastIndex, color) &&
-                        copyLegacyArray(cpu, g_legacyTexCoordArray, firstIndex, lastIndex, texCoord);
+                        copyLegacyArray(cpu, g_legacyTexCoordArrays[0], firstIndex, lastIndex, texCoord) &&
+                        copyLegacyArray(cpu, g_legacyTexCoordArrays[1], firstIndex, lastIndex, texCoord1);
                 }
                 traceLegacyClientDraw(mode, count, type, g_legacyVertexArray, g_legacyColorArray,
-                    g_legacyTexCoordArray, firstIndex, lastIndex, rangeKnown, vertex, indexData, indexBytes);
+                    g_legacyTexCoordArrays[0], firstIndex, lastIndex, rangeKnown, vertex, indexData, indexBytes);
                 if (rangeKnown && !gl64RebaseIndexData(indexData.data(), indexData.size(),
                     (size_t)count, indexBytes, firstIndex)) copied = false;
                 if (!g_legacyElementArrayBuffer && copied) indices = indexData.data();
@@ -2898,10 +2959,11 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                     bindDrawTarget();
                     if (copied && webGpuFixedDraw(mode, 0, count, true, type, (U64)(uintptr_t)args.a[3],
                         rangeKnown ? firstIndex : 0, indexData,
-                        g_legacyVertexArray, g_legacyColorArray, g_legacyTexCoordArray, vertex, color, texCoord)) return;
+                        g_legacyVertexArray, g_legacyColorArray, g_legacyTexCoordArrays[0], g_legacyTexCoordArrays[1],
+                        vertex, color, texCoord, texCoord1)) return;
                     if (copied && !vertex.empty()) glVertexPointer(g_legacyVertexArray.size, g_legacyVertexArray.type, g_legacyVertexArray.stride, vertex.data());
                     if (copied && !color.empty()) glColorPointer(g_legacyColorArray.size, g_legacyColorArray.type, g_legacyColorArray.stride, color.data());
-                    if (copied && !texCoord.empty()) glTexCoordPointer(g_legacyTexCoordArray.size, g_legacyTexCoordArray.type, g_legacyTexCoordArray.stride, texCoord.data());
+                    if (copied) bindCopiedLegacyTexCoords(texCoord, texCoord1);
                     traceLegacyDrawState(mode, count, type);
                     glDrawElements(mode, count, type, indices);
                 });
@@ -2913,7 +2975,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 GLenum mode=(GLenum)ai(args,0); GLuint start=(GLuint)ai(args,1); GLuint end=(GLuint)ai(args,2);
                 GLsizei count=(GLsizei)ai(args,3); GLenum type=(GLenum)ai(args,4);
                 const void* indices = (const void*)(uintptr_t)args.a[5];
-                std::vector<U8> indexData, vertex, color, texCoord;
+                std::vector<U8> indexData, vertex, color, texCoord, texCoord1;
                 U32 firstIndex = 0, lastIndex = 0;
                 const size_t indexBytes = type == GL_UNSIGNED_BYTE ? 1 : type == GL_UNSIGNED_SHORT ? 2 : type == GL_UNSIGNED_INT ? 4 : 0;
                 const bool indexBufferBacked = g_legacyElementArrayBuffer != 0;
@@ -2923,10 +2985,11 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 if (copied && rangeKnown) {
                     copied = copyLegacyArray(cpu, g_legacyVertexArray, firstIndex, lastIndex, vertex) &&
                         copyLegacyArray(cpu, g_legacyColorArray, firstIndex, lastIndex, color) &&
-                        copyLegacyArray(cpu, g_legacyTexCoordArray, firstIndex, lastIndex, texCoord);
+                        copyLegacyArray(cpu, g_legacyTexCoordArrays[0], firstIndex, lastIndex, texCoord) &&
+                        copyLegacyArray(cpu, g_legacyTexCoordArrays[1], firstIndex, lastIndex, texCoord1);
                 }
                 traceLegacyClientDraw(mode, count, type, g_legacyVertexArray, g_legacyColorArray,
-                    g_legacyTexCoordArray, firstIndex, lastIndex, rangeKnown, vertex, indexData, indexBytes);
+                    g_legacyTexCoordArrays[0], firstIndex, lastIndex, rangeKnown, vertex, indexData, indexBytes);
                 if (rangeKnown && !gl64RebaseIndexData(indexData.data(), indexData.size(),
                     (size_t)count, indexBytes, firstIndex)) copied = false;
                 if (!g_legacyElementArrayBuffer && copied) indices = indexData.data();
@@ -2934,10 +2997,11 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                     bindDrawTarget();
                     if (copied && webGpuFixedDraw(mode, 0, count, true, type, (U64)(uintptr_t)args.a[5],
                         rangeKnown ? firstIndex : 0, indexData,
-                        g_legacyVertexArray, g_legacyColorArray, g_legacyTexCoordArray, vertex, color, texCoord)) return;
+                        g_legacyVertexArray, g_legacyColorArray, g_legacyTexCoordArrays[0], g_legacyTexCoordArrays[1],
+                        vertex, color, texCoord, texCoord1)) return;
                     if (copied && !vertex.empty()) glVertexPointer(g_legacyVertexArray.size, g_legacyVertexArray.type, g_legacyVertexArray.stride, vertex.data());
                     if (copied && !color.empty()) glColorPointer(g_legacyColorArray.size, g_legacyColorArray.type, g_legacyColorArray.stride, color.data());
-                    if (copied && !texCoord.empty()) glTexCoordPointer(g_legacyTexCoordArray.size, g_legacyTexCoordArray.type, g_legacyTexCoordArray.stride, texCoord.data());
+                    if (copied) bindCopiedLegacyTexCoords(texCoord, texCoord1);
                     traceLegacyDrawState(mode, count, type);
                     glDrawRangeElements(mode, rangeKnown ? 0 : start,
                         rangeKnown ? lastIndex - firstIndex : end, count, type, indices);
@@ -3009,7 +3073,13 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
 
         // --- textures (modern) ---
         case GL64_fn_glActiveTexture:
-            if (g_glContext) GL_MT(glActiveTexture((GLenum)ai(args,0)));
+            if (g_glContext) {
+#ifdef __EMSCRIPTEN__
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("activeTexture", ai(args,0), 0, 0, 0, 0, 1));
+                else
+#endif
+                    GL_MT(glActiveTexture((GLenum)ai(args,0)));
+            }
             return 0;
         case GL64_fn_glGenTextures:
             if (g_glContext && args.a[1]) genObjects(cpu, args, GenKind::Texture);

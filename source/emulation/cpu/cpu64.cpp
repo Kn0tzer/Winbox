@@ -333,6 +333,50 @@ U32 CPU64::fetchDword(U64 addr) {
     return memory ? memory->readd(addr) : 0;
 }
 
+bool CPU64::validateInstructionFetch() {
+    if (!memory) return true;
+
+    const U64 pageNum = rip >> K64_PAGE_SHIFT;
+    const U64 generation = memory->pageMapGeneration();
+    if (pageNum == fetchPermissionCachePage &&
+        generation == fetchPermissionCacheGeneration) {
+        return true;
+    }
+
+    U64 before, after;
+    U32 flags;
+    do {
+        before = memory->pageMapGeneration();
+        flags = memory->getPageFlags(pageNum);
+        after = memory->pageMapGeneration();
+    } while (before != after);
+
+    const bool mapped = (flags & K64_PAGE_MAPPED) != 0;
+    const bool executable = (flags & K64_PAGE_EXEC) != 0;
+    if (!mapped || !executable) {
+        invalidateFetchCache();
+        // #PF error bits: U/S=1, I/D=1; P=0 for an unmapped page and P=1
+        // for a mapped page whose permissions forbid instruction fetch.
+        constexpr U32 PF_USER_INSTRUCTION_NOT_PRESENT = 0x14;
+        constexpr U32 PF_USER_INSTRUCTION_PROTECTION = 0x15;
+        constexpr S32 SEGV_MAPERR = 1;
+        constexpr S32 SEGV_ACCERR = 2;
+        const U32 errorCode = mapped ? PF_USER_INSTRUCTION_PROTECTION
+                                     : PF_USER_INSTRUCTION_NOT_PRESENT;
+        const S32 siCode = mapped ? SEGV_ACCERR : SEGV_MAPERR;
+        if (raiseSyncFault(K_SIGSEGV, /*trapNo #PF*/14, siCode, rip, errorCode)) {
+            return true;
+        }
+        if (thread && thread->process) thread->process->signalProcess(K_SIGSEGV);
+        yield = true;
+        return false;
+    }
+
+    fetchPermissionCachePage = pageNum;
+    fetchPermissionCacheGeneration = after;
+    return true;
+}
+
 U64 CPU64::fetchQword(U64 addr) {
     return memory ? memory->readq(addr) : 0;
 }
@@ -995,6 +1039,15 @@ U32 CPU64::step(bool trackJitBlockBoundary) {
     // has no attached thread or signal handlers, so an unhandled fault yields
     // at the faulting RIP; a guest handler instead receives the saved context.
     auto faultAtInstruction = [&](U32 sig, U32 trapNo) -> U32 {
+        if (trapNo == 13 && std::getenv("BW64_UNIMPLDUMP")) {
+            klog_fmt("CPU64: #GP at RIP=0x%llx bytes=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+                     (unsigned long long)ipStart,
+                     fetchByte(ipStart), fetchByte(ipStart + 1), fetchByte(ipStart + 2),
+                     fetchByte(ipStart + 3), fetchByte(ipStart + 4), fetchByte(ipStart + 5),
+                     fetchByte(ipStart + 6), fetchByte(ipStart + 7), fetchByte(ipStart + 8),
+                     fetchByte(ipStart + 9), fetchByte(ipStart + 10), fetchByte(ipStart + 11),
+                     fetchByte(ipStart + 12), fetchByte(ipStart + 13), fetchByte(ipStart + 14));
+        }
         if (raiseSyncFault(sig, trapNo, 0, ipStart)) return 0;
         if (thread && thread->process) thread->process->signalProcess(sig);
         yield = true;
@@ -7606,6 +7659,7 @@ void CPU64::run() {
     bool jitWarmupLogged = false;
 
     while (!yield) {
+        if (!validateInstructionFetch()) break;
         if (guestProfile) bwGuestProfileTick64(this);
         const bool jitReady = jitActive && jitWarmupCount >= jitWarmup;
         if (jitReady && jitWarmup && !jitWarmupLogged) {
@@ -8550,6 +8604,7 @@ U64 CPU64::runBounded(U64 maxInsn) {
 
     U64 ran = 0;
     while (!yield && ran < maxInsn) {
+        if (!validateInstructionFetch()) break;
         const bool jitReady = jitActive;
         if (tracing && instructionCount >= traceFrom && instructionCount <= traceTo) {
             U64 r = rip;

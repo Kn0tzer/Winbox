@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process';
 
-export async function portalMenuText(imagePath, { timeoutMs = 3000, executable = 'tesseract', prefixArgs = [] } = {}) {
+export async function portalMenuText(imagePath, { timeoutMs = 3000, executable = 'tesseract', prefixArgs = [], psm = 11 } = {}) {
   return new Promise((resolve, reject) => {
-    const child = execFile(executable, [...prefixArgs, imagePath, 'stdout', '--psm', '11'],
+    const child = execFile(executable, [...prefixArgs, imagePath, 'stdout', '--psm', String(psm)],
       { encoding: 'utf8', timeout: timeoutMs, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024,
         env: { ...process.env, OMP_THREAD_LIMIT: '1' } }, (error, stdout) => {
         if (!error) resolve({ text: stdout, timedOut: false });

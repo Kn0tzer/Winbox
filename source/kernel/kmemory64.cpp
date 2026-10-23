@@ -386,6 +386,7 @@ K64Page* KMemory64::getOrAllocPage(U64 pageNum, U32 flagsIfNew) {
     page->flags = flagsIfNew;
     K64Page* raw = page.get();
     pages.emplace(pageNum, std::move(page));
+    pageMapGenerationValue.fetch_add(1, std::memory_order_release);
     return raw;
 }
 
@@ -489,6 +490,7 @@ U64 KMemory64::mmapAnonymousFixed(U64 addr, U64 len, U32 prot) {
         rangeInsertLocked(pageStart, pageCount, prot,
                           prot ? (U8)MMAP_ANON : (U8)MMAP_RESERVED);
     }
+    pageMapGenerationValue.fetch_add(1, std::memory_order_release);
     return addr;
 }
 
@@ -544,6 +546,7 @@ U64 KMemory64::mmapSharedFile(U64 addr, U64 len, U32 prot, U64 fileIdentity, con
         BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(mmapMutex);
         rangeInsertLocked(pageStart, pageCount, prot, (U8)MMAP_ANON);
     }
+    pageMapGenerationValue.fetch_add(1, std::memory_order_release);
     return addr;
 }
 
@@ -637,11 +640,12 @@ U64 KMemory64::mprotect(U64 addr, U64 len, U32 prot) {
         // Preserve SHARED bit if it was set; everything else is replaced
         // wholesale. Holes (no page) are skipped — see header comment.
         auto it = pages.find(pageStart + i);
-        if (it == pages.end()) continue;
+        if (it == pages.end() || !(it->second->flags & K64_PAGE_MAPPED)) continue;
         U32 preserved = it->second->flags & (K64_PAGE_SHARED | K64_PAGE_PINNED);
         it->second->flags = newFlags | preserved;
     }
     k64DTlbInvalidateAll(); // refresh cached permission bits on the next access
+    pageMapGenerationValue.fetch_add(1, std::memory_order_release);
     return addr;
 }
 
@@ -667,6 +671,17 @@ U64 KMemory64::munmap(U64 addr, U64 len) {
     // keeps essentially all the benefit with none of the breakage.
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(mmapMutex);
     rangeRemoveLocked(pageStart, pageCount);
+    {
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
+        for (U64 i = 0; i < pageCount; i++) {
+            auto it = pages.find(pageStart + i);
+            if (it == pages.end()) continue;
+            it->second->flags &= ~(K64_PAGE_MAPPED | K64_PAGE_READ |
+                                   K64_PAGE_WRITE | K64_PAGE_EXEC);
+        }
+    }
+    k64DTlbInvalidateAll();
+    pageMapGenerationValue.fetch_add(1, std::memory_order_release);
     return 0;
 }
 

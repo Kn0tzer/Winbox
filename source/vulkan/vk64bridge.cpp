@@ -1816,7 +1816,12 @@ const U32 V2_CHUNK_VERSION = 2;
 // (heap-sized VkBuffers of 16MB, bound ranges of 5-8MB) to 1MB and starved the
 // page of vertex/texture data.
 const size_t V2_CHUNK_CAP = 12 * 1024 * 1024;  // seal before a record that would overflow
-const U32 V2_PRODUCER_CHUNK_RING = 8;     // drop oldest COMPLETE frame past this
+// Soft warning threshold for one presentation's pending chunks. Complete
+// submissions are never discarded: a dropped submission may carry the only
+// copy of a buffer/image payload that later frames reference byte-less (the
+// page has no upstream resend channel), which blacked out Portal's menu
+// background. The queue is drained by the present hop.
+const U32 V2_PRODUCER_CHUNK_RING = 8;
 // Byte-payload cap for a single V2_BUFFER_DATA record. The page rejects any
 // chunk over 16MB (V2_MAX_CHUNK_BYTES), so one record must stay well under it;
 // 8MB leaves room for the rest of the frame's small records in the same chunk.
@@ -1911,7 +1916,7 @@ struct V2FrameAsm {
 struct V2DoneFrame { std::vector<std::vector<U8>> chunks; };
 std::deque<V2DoneFrame> g_v2Pending;   // complete frames awaiting the present hop
 U32 g_v2ChunkSeq = 0;
-U64 g_v2DroppedProducer = 0;
+U64 g_v2OversizeFrames = 0;
 
 void v2QueueFrame(V2FrameAsm& fa) {
     fa.sealChunk();
@@ -1920,12 +1925,14 @@ void v2QueueFrame(V2FrameAsm& fa) {
     for (size_t i = 0; i + 1 < fa.sealed.size(); i++) fa.sealed[i][6] |= 1;
     size_t chunks = 0;
     for (const auto& f : g_v2Pending) chunks += f.chunks.size();
-    while (chunks + fa.sealed.size() > V2_PRODUCER_CHUNK_RING && !g_v2Pending.empty()) {
-        chunks -= g_v2Pending.front().chunks.size();
-        g_v2Pending.pop_front();
-        g_v2DroppedProducer++;
-        klog_fmt("vk64: v2 producer ring full, dropped oldest frame (total dropped=%llu)",
-                 (unsigned long long)g_v2DroppedProducer);
+    if (chunks + fa.sealed.size() > V2_PRODUCER_CHUNK_RING) {
+        // Retain every submission: the present hop drains the queue, and
+        // dropping one here loses payload deltas the page cannot request again.
+        if (g_v2OversizeFrames < 3 || (g_v2OversizeFrames % 256) == 0)
+            klog_fmt("vk64: v2 producer holds %zu chunks (soft cap %u); keeping all payloads (oversize=%llu)",
+                     chunks + fa.sealed.size(), (unsigned)V2_PRODUCER_CHUNK_RING,
+                     (unsigned long long)g_v2OversizeFrames);
+        g_v2OversizeFrames++;
     }
     V2DoneFrame done;
     done.chunks = std::move(fa.sealed);
@@ -2135,11 +2142,13 @@ static U64 bufferSliceId(U64 buffer, U64 offset) {
 // the expensive readGuestRange+hash for static buffers.
 
 // Keep the WebGPU replay format support mirrored in web/vkwebgpu.mjs. These
-// lists include Vulkan formats that the page converts to core WebGPU formats;
-// BC formats are omitted because texture-compression-bc is optional.
+// lists include Vulkan formats that the page converts to core WebGPU formats.
+// BC formats are advertised because textureCompressionBC is enabled below;
+// the page maps them only when its adapter exposes texture-compression-bc.
 static const U32 kV2SupportedTextureFormats[] = {
     2, 3, 5, 7, 8, 9, 16, 37, 38, 41, 43, 44, 50, 64, 70, 76, 77, 83,
-    91, 97, 98, 99, 100, 103, 109, 122, 124, 125, 126, 129, 130
+    91, 97, 98, 99, 100, 103, 109, 122, 124, 125, 126, 129, 130,
+    131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146
 };
 static const U32 kV2SupportedVertexFormats[] = {
     16, 17, 18, 19, 20, 21, 23, 24, 25, 26, 27, 28, 37, 38, 39, 40, 41, 42,
