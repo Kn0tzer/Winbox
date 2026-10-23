@@ -90,22 +90,85 @@ export function v2PassReadbackConfig(search) {
   const maxPasses = Number.parseInt(q.get('bwPassReadbackMax') ?? '', 10);
   return { every, maxPasses: Number.isFinite(maxPasses) && maxPasses > 0 ? maxPasses : 64, maxPixels: 4 * 1024 * 1024 };
 }
-export function v2SummarizeColorPixels(rows, w, h, bytesPerRow, bgra) {
-  const sum = [0, 0, 0, 0];
-  let first = null, constant = true, nonZero = 0;
-  for (let y = 0; y < h; y++) {
-    const row = y * bytesPerRow;
-    for (let x = 0; x < w; x++) {
-      const i = row + x * 4;
-      const px = bgra ? [rows[i + 2], rows[i + 1], rows[i], rows[i + 3]] : [rows[i], rows[i + 1], rows[i + 2], rows[i + 3]];
-      if (!first) first = px;
-      else if (constant && (px[0] !== first[0] || px[1] !== first[1] || px[2] !== first[2] || px[3] !== first[3])) constant = false;
-      if (px[0] || px[1] || px[2]) nonZero++;
-      for (let c = 0; c < 4; c++) sum[c] += px[c];
-    }
+function halfToFloat(h) {
+  const e = (h >> 10) & 31, m = h & 1023, sgn = h & 0x8000 ? -1 : 1;
+  return e === 0 ? sgn * m * 2 ** -24 : e === 31 ? (m ? NaN : sgn * Infinity) : sgn * (1 + m / 1024) * 2 ** (e - 15);
+}
+// Texel decoders for the diagnostic: bytes per texel and a reader returning
+// [r, g, b, a] in native units (0..255 for unorm, raw value for float).
+const DIAG_FORMATS = {
+  rgba8: { bpt: 4, read: (v, o) => [v.getUint8(o), v.getUint8(o + 1), v.getUint8(o + 2), v.getUint8(o + 3)] },
+  bgra8: { bpt: 4, read: (v, o) => [v.getUint8(o + 2), v.getUint8(o + 1), v.getUint8(o), v.getUint8(o + 3)] },
+  r8: { bpt: 1, read: (v, o) => [v.getUint8(o), 0, 0, 255] },
+  rg8: { bpt: 2, read: (v, o) => [v.getUint8(o), v.getUint8(o + 1), 0, 255] },
+  r16f: { bpt: 2, read: (v, o) => [halfToFloat(v.getUint16(o, true)), 0, 0, 1] },
+  rg16f: { bpt: 4, read: (v, o) => [halfToFloat(v.getUint16(o, true)), halfToFloat(v.getUint16(o + 2, true)), 0, 1] },
+  rgba16f: { bpt: 8, read: (v, o) => [0, 2, 4, 6].map(k => halfToFloat(v.getUint16(o + k, true))) },
+  r32f: { bpt: 4, read: (v, o) => [v.getFloat32(o, true), 0, 0, 1] },
+  rgba32f: { bpt: 16, read: (v, o) => [0, 4, 8, 12].map(k => v.getFloat32(o + k, true)) },
+};
+export function v2DiagFormatKind(format) {
+  const f = String(format).replace(/-srgb$/, '');
+  return { rgba8unorm: 'rgba8', bgra8unorm: 'bgra8', r8unorm: 'r8', rg8unorm: 'rg8', r16float: 'r16f', rg16float: 'rg16f',
+    rgba16float: 'rgba16f', r32float: 'r32f', rgba32float: 'rgba32f' }[f] || null;
+}
+export function v2DiagBytesPerTexel(format) { return DIAG_FORMATS[v2DiagFormatKind(format)]?.bpt || 0; }
+// `format` is a WebGPU format name (or, for backward compatibility, a boolean: bgra8 vs rgba8).
+export function v2SummarizeColorPixels(rows, w, h, bytesPerRow, format) {
+  const kind = typeof format === 'boolean' ? (format ? 'bgra8' : 'rgba8') : v2DiagFormatKind(format);
+  const fmt = DIAG_FORMATS[kind];
+  if (!fmt) throw new Error('unsupported diagnostic format ' + format);
+  const view = new DataView(rows.buffer, rows.byteOffset, rows.byteLength);
+  const sum = [0, 0, 0, 0], round = v => Math.round(v * 1000) / 1000;
+  let first = null, constant = true, nonZero = 0, nonFinite = 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const px = fmt.read(view, y * bytesPerRow + x * fmt.bpt);
+    if (!first) first = px;
+    else if (constant && (px[0] !== first[0] || px[1] !== first[1] || px[2] !== first[2] || px[3] !== first[3])) constant = false;
+    if (px[0] || px[1] || px[2]) nonZero++;
+    for (let c = 0; c < 4; c++) { if (Number.isFinite(px[c])) sum[c] += px[c]; else nonFinite++; }
   }
   const n = Math.max(1, w * h);
-  return { avg: sum.map(v => Math.round(v / n * 10) / 10), constant, constantColor: constant ? first : null, nonBlackPixels: nonZero, pixels: w * h };
+  return { avg: sum.map(v => round(v / n)), constant, constantColor: constant ? first.map(round) : null, nonBlackPixels: nonZero, nonFinite, pixels: w * h };
+}
+// Diagnostic: one-line description of what each bound descriptor resolves to
+// (image size/format/non-zero byte share, rendered target, buffer size/non-zero share).
+export function v2DiagDescribeBindings(sets, F, targets) {
+  const out = [];
+  const share = bytes => { if (!bytes?.length) return 0; const n = Math.min(bytes.length, 65536); let nz = 0; for (let i = 0; i < n; i++) if (bytes[i]) nz++; return Math.round(nz / n * 1000) / 1000; };
+  for (const [setIndex, set] of sets) for (const b of set.bindings || []) {
+    if (out.length >= 16) return out;
+    const d = { s: setIndex, b: b.binding, t: b.type, k: b.kind };
+    const imgHex = b.kind === 2 ? F.views?.get(b.obj) : b.obj;
+    const img = F.images?.get(imgHex);
+    if (img) Object.assign(d, { img: imgHex, hash: img.hash, w: img.w, h: img.h, fmt: img.format, px: img.pixels?.length || 0, nz: share(img.pixels),
+      rt: !!(targets.get('img:' + imgHex) || targets.get('imgd:' + imgHex)) });
+    else {
+      const buf = F.buffers?.get(b.obj + ':' + b.bufOff) ?? F.buffers?.get(b.obj);
+      if (buf !== undefined) Object.assign(d, { buf: b.obj, len: buf?.length ?? 0, nz: share(buf) });
+      else if (b.obj && b.obj !== '0000000000000000') d.missing = b.obj;
+    }
+    out.push(d);
+  }
+  return out;
+}
+// Diagnostic: how many of this frame's images carry bytes, and how many of those are non-zero
+// (sampled prefix). All-zero everywhere means uploads never reached guest image memory.
+export function v2DiagImageCensus(F) {
+  const out = { images: 0, withPixels: 0, nonZero: 0, byFormat: {} };
+  for (const img of F.images?.values?.() || []) {
+    out.images++;
+    const px = img?.pixels;
+    if (!px?.length) continue;
+    out.withPixels++;
+    const n = Math.min(px.length, 65536);
+    let nz = false;
+    for (let i = 0; i < n && !nz; i++) if (px[i]) nz = true;
+    if (nz) out.nonZero++;
+    const f = out.byFormat[img.format] ||= [0, 0];
+    f[0]++; if (nz) f[1]++;
+  }
+  return out;
 }
 export function v2DepthBiasState(pipe) {
   return pipe.depthBiasEnable ? {
@@ -1445,7 +1508,9 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
   }
 
   /** @param {boolean} [cube] @param {string} [dimension] */
+  let blankUses = 0; // diagnostic: placeholder textures handed out instead of a real image
   const blankTex = (cube = false, dimension = '2d', depth = false) => {
+    blankUses++;
     const key = (cube ? '\0blank-cube' : dimension !== '2d' ? '\0blank-' + dimension : '\0blank') + (depth ? '-depth' : '');
     // Persistent bind groups retain this view between frames. Its texture
     // must live as long as the renderer, like ordinary cached image textures.
@@ -1990,7 +2055,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       /** @type {GPURenderPassColorAttachment[]} */
       const colorAttachments = [];
       const passColorFormats = [];
-      const passDiagTargets = [], passDiagDraws = { draws: 0, vs: new Set(), fs: new Set() };
+      const passDiagTargets = [], passDiagDraws = { draws: 0, vs: new Set(), fs: new Set(), list: [] }, passDiagStart = { unsupported: stats.unsupported, blank: blankUses };
       let depthView = null, depthAttachment = null, passDepthFormat = 'depth24plus', passDepthAspects = 6;
       let unsupportedAttachment = false;
       for (const a of p.attachments) {
@@ -2223,7 +2288,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           case 'draw': {
             if (skipped) break;
             if (!passEnc || !st.pipeDesc) break;
-            if (diagOn) { passDiagDraws.draws++; passDiagDraws.vs.add(st.pipeDesc.vsHash); passDiagDraws.fs.add(st.pipeDesc.fsHash); }
+            if (diagOn) { passDiagDraws.draws++; passDiagDraws.vs.add(st.pipeDesc.vsHash); passDiagDraws.fs.add(st.pipeDesc.fsHash); if (passDiagDraws.list.length < 24) passDiagDraws.list.push([st.pipeDesc.vsHash, st.pipeDesc.fsHash, op.indexed ? op.indexCount : op.vertexCount, op.instanceCount, v2DiagDescribeBindings(st.sets, F, targets)]); }
             let drawPipe;
             try {drawPipe=v2StencilPipeline(st.pipeDesc,st.dynamicStencil);}
             catch(error) {stats.unsupported++;stats.skippedDraws=(stats.skippedDraws||0)+1;break;}
@@ -2387,17 +2452,18 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       if (passEnc) passEnc.end();
       if (diagOn && passEnc && diagPasses.length < diagCfg.maxPasses) {
         const entry = { pass: diagPasses.length, w: p.w, h: p.h, loadClear: p.attachments.map(a => a.loadOp === 1), draws: passDiagDraws.draws,
-          vs: [...passDiagDraws.vs].slice(0, 8), fs: [...passDiagDraws.fs].slice(0, 8), targets: [] };
+          vs: [...passDiagDraws.vs].slice(0, 8), fs: [...passDiagDraws.fs].slice(0, 8), list: passDiagDraws.list,
+          unsupported: stats.unsupported - passDiagStart.unsupported, blank: blankUses - passDiagStart.blank, census: v2DiagImageCensus(F), targets: [] };
         for (const t of passDiagTargets) {
-          const bytes4 = /^(rgba|bgra)8unorm(-srgb)?$/.test(t.format);
-          if (!bytes4 || t.discard || p.w * p.h > diagCfg.maxPixels) {
-            entry.targets.push({ slot: t.slot, format: t.format, skipped: !bytes4 ? 'format' : t.discard ? 'discarded' : 'size' });
+          const bpt = v2DiagBytesPerTexel(t.format);
+          if (!bpt || t.discard || p.w * p.h > diagCfg.maxPixels) {
+            entry.targets.push({ slot: t.slot, format: t.format, skipped: !bpt ? 'format' : t.discard ? 'discarded' : 'size' });
             continue;
           }
-          const bytesPerRow = Math.ceil(p.w * 4 / 256) * 256;
+          const bytesPerRow = Math.ceil(p.w * bpt / 256) * 256;
           const buffer = device.createBuffer({ size: bytesPerRow * p.h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
           encoder.copyTextureToBuffer({ texture: t.tex }, { buffer, bytesPerRow }, [p.w, p.h]);
-          entry.targets.push({ slot: t.slot, format: t.format, buffer, bytesPerRow, bgra: t.format.startsWith('bgra') });
+          entry.targets.push({ slot: t.slot, format: t.format, buffer, bytesPerRow });
         }
         diagPasses.push(entry);
       }
@@ -2500,7 +2566,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         if (!t.buffer) continue;
         try {
           await t.buffer.mapAsync(GPUMapMode.READ);
-          Object.assign(t, v2SummarizeColorPixels(new Uint8Array(t.buffer.getMappedRange()), e.w, e.h, t.bytesPerRow, t.bgra));
+          Object.assign(t, v2SummarizeColorPixels(new Uint8Array(t.buffer.getMappedRange()), e.w, e.h, t.bytesPerRow, t.format));
           t.buffer.unmap();
         } catch (err) { t.error = String(err?.message || err); }
         t.buffer.destroy(); delete t.buffer;
