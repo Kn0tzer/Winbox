@@ -207,9 +207,22 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED) as z:
     const hash = createHash('sha256').update(shot).digest('hex');
     let text = '';
     if (game === 'portal') {
-      const ocr = await portalMenuText(join(dir, 'current.png'));
+      // The live menu background is detailed enough that full-page sparse OCR
+      // drops the lower menu entries. The Portal menu is left-aligned; OCR the
+      // left 60% where the text lives, which keeps the same word gate while
+      // removing the room on the right.
+      const vp = page.viewportSize();
+      const ocrShot = await page.screenshot({ clip: { x: 0, y: 0, width: Math.floor(vp.width * 0.6), height: vp.height } });
+      await writeFile(join(dir, 'current-ocr.png'), ocrShot);
+      const ocrPath = join(dir, 'current-ocr.png');
+      const ocr = await portalMenuText(ocrPath, { psm: 6 });
       text = ocr.text;
       if (ocr.timedOut) result.ocrTimeouts = (result.ocrTimeouts || 0) + 1;
+      if (!hasPortalMenu(text)) {
+        const sparse = await portalMenuText(ocrPath);
+        text += '\n' + sparse.text;
+        if (sparse.timedOut) result.ocrTimeouts = (result.ocrTimeouts || 0) + 1;
+      }
       if (hasPortalMenu(text) && menuStart === undefined) {
         menuStart = snap.now; result.menuVerified = true; result.bootToMenuSeconds = snap.now/1000;
         await writeFile(join(dir, 'menu.png'), shot);

@@ -42,7 +42,10 @@ export const V2_VERSION = 2;
 export const V2_FLAG_MORE = 0x1;
 export const V2_CHUNK_HEADER_LEN = 16;
 export const V2_REC_HEADER_LEN = 8;
-export const V2_MAX_CHUNK_BYTES = 16 * 1024 * 1024; // ingest sanity cap (bridge may emit single large records >1MiB)
+// Ingest sanity cap. Records never span chunks, and IMAGE_DATA carries a
+// whole mip chain: a 4096x4096 RGBA image with mips is ~89MiB. 128MiB keeps
+// one such image in a single chunk while still bounding the allocation.
+export const V2_MAX_CHUNK_BYTES = 128 * 1024 * 1024;
 export const V2_MAX_RECORD_BYTES = 256 * 1024 * 1024;
 export const V2_MAX_FRAME_RECORDS = 1 << 20;
 export const V2_PUSH_GROUP = 3;      // reserved group for the push-constant UBO

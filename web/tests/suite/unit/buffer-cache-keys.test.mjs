@@ -79,3 +79,30 @@ test('gpuBufferFor passes preHash through to bufferKey', () => {
     'gpuBufferFor must use preHash (bridge hash) when calling bufferKey'
   );
 });
+
+test('gpuBufferFor recovers byte-less records by bridge content hash', () => {
+  // A deduped record names content the page may have uploaded under another
+  // VkBuffer id. Recovering by hash keeps the real bytes instead of returning
+  // null, which used to make createBindGroup reject the entire frame.
+  const m = src.match(/function gpuBufferFor\(bufHex, bytes, usage, preHash\) \{([\s\S]*?)\n  \}/);
+  assert.ok(m, 'Could not find gpuBufferFor function');
+  const body = m[1];
+  assert.ok(body.includes('persistBufByHash.get'), 'byte-less lookups must consult the content-hash index');
+  assert.ok(
+    body.indexOf('persistBufByHash.get') < body.indexOf('return null'),
+    'hash recovery must run before the null fallback'
+  );
+});
+
+test('bind-group creation never passes a null GPUBuffer', () => {
+  // gpuBufferFor can still miss when a payload was lost upstream. Falling back
+  // to a zero buffer keeps the rest of the frame (Portal menu text) rendering.
+  const m = src.match(/const mk = k => \{([\s\S]*?)\n        \};/);
+  assert.ok(m, 'Could not find bindGroupEntries mk helper');
+  const body = m[1];
+  assert.ok(body.includes(':unresolved'), 'missing payloads must fall back to an unresolved zero buffer');
+  assert.ok(
+    /if \(gpu\) return \{ buffer: gpu \}/.test(body),
+    'mk must check gpuBufferFor before using its result'
+  );
+});
