@@ -261,10 +261,15 @@ export class WebGPUGL {
     this._currentProgram = null;
     this._fixedFunctionProgramCache = new Map();
     this._fixedFunctionPointers = new Map();
+    this._fixedTextureEnabled = Array(16).fill(false);
+    this._clientActiveTextureUnit = 0;
     this._fixedFunction = {
       matrixMode: 0x1700,
-      modelview: [identityMatrix()], projection: [identityMatrix()], texture: [identityMatrix()],
-      color: [1, 1, 1, 1], alphaFunc: 0x0207, alphaRef: 0, texEnv: 0x2100,
+      modelview: [identityMatrix()], projection: [identityMatrix()],
+      texture: Array.from({ length: 16 }, () => [identityMatrix()]),
+      currentTexCoords: Array.from({ length: 16 }, () => [0, 0, 0, 1]),
+      texEnv: Array(16).fill(0x2100),
+      color: [1, 1, 1, 1], alphaFunc: 0x0207, alphaRef: 0,
     };
     this._enabled = new Set();
     this._blend = { srcRGB: 1, dstRGB: 0, srcAlpha: 1, dstAlpha: 0, equationRGB: 0x8006, equationAlpha: 0x8006 };
@@ -507,7 +512,7 @@ export class WebGPUGL {
   _fixedMatrixStack() {
     const mode = this._fixedFunction.matrixMode;
     return mode === 0x1701 ? this._fixedFunction.projection
-      : mode === 0x1702 ? this._fixedFunction.texture : this._fixedFunction.modelview;
+      : mode === 0x1702 ? this._fixedFunction.texture[this._activeTextureUnit] : this._fixedFunction.modelview;
   }
   matrixMode(mode) { this._fixedFunction.matrixMode = mode | 0; }
   loadIdentity() { this._fixedMatrixStack()[this._fixedMatrixStack().length - 1] = identityMatrix(); }
@@ -560,11 +565,18 @@ export class WebGPUGL {
   color4ub(r, g, b, a) { this.color4f(r / 255, g / 255, b / 255, a / 255); }
   alphaFunc(func, reference) { this._fixedFunction.alphaFunc = func | 0; this._fixedFunction.alphaRef = clamp01(reference); }
   texEnvi(target, pname, value) {
-    if (target === 0x2300 && pname === 0x2200) this._fixedFunction.texEnv = value | 0;
+    if (target === 0x2300 && pname === 0x2200) this._fixedFunction.texEnv[this._activeTextureUnit] = value | 0;
   }
   texEnvf(target, pname, value) { this.texEnvi(target, pname, value); }
   texEnvfv(target, pname, values) { if (pname === 0x2201) this._fixedFunction.texEnvColor = Array.from(values || []); }
   texEnviv(target, pname, values) { this.texEnvfv(target, pname, values); }
+  clientActiveTexture(texture) {
+    this._clientActiveTextureUnit = Math.max(0, Math.min(1, (texture | 0) - 0x84c0));
+  }
+  multiTexCoord2f(texture, s, t) {
+    const unit = Math.max(0, Math.min(1, (texture | 0) - 0x84c0));
+    this._fixedFunction.currentTexCoords[unit] = [Number(s), Number(t), 0, 1];
+  }
   fixedFunctionPointer(index, size, type, stride, offset) {
     this._fixedFunctionPointers.set(index | 0, {
       buffer: this._arrayBuffer, size: size | 0, type: type | 0, stride: stride | 0, offset: offset | 0,
@@ -581,9 +593,19 @@ export class WebGPUGL {
       this._ensureTargets(Math.max(this._width, x + width), Math.max(this._height, y + height));
   }
   scissor(x, y, width, height) { this._scissor = [x | 0, y | 0, width | 0, height | 0]; }
-  enable(capability) { this._enabled.add(capability); }
-  disable(capability) { this._enabled.delete(capability); }
-  isEnabled(capability) { return this._enabled.has(capability); }
+  enable(capability) {
+    if (capability === GL.TEXTURE_2D) this._fixedTextureEnabled[this._activeTextureUnit] = true;
+    else this._enabled.add(capability);
+  }
+  disable(capability) {
+    if (capability === GL.TEXTURE_2D) this._fixedTextureEnabled[this._activeTextureUnit] = false;
+    else this._enabled.delete(capability);
+  }
+  isEnabled(capability) {
+    return capability === GL.TEXTURE_2D
+      ? !!this._fixedTextureEnabled[this._activeTextureUnit]
+      : this._enabled.has(capability);
+  }
 
   getParameter(parameter) {
     switch (parameter) {
@@ -989,28 +1011,38 @@ export class WebGPUGL {
     };
   }
 
-  _fixedFunctionProgram(texture, colorArray, alphaEnabled, alphaFunc, texEnv) {
-    const key = stateKey([texture, colorArray, alphaEnabled ? alphaFunc : 0x0207, texture ? texEnv : 0]);
+  _fixedFunctionProgram(textureUnits, colorArray, alphaEnabled, alphaFunc, texEnv) {
+    const key = stateKey([textureUnits, colorArray, alphaEnabled ? alphaFunc : 0x0207,
+      textureUnits.map(unit => texEnv[unit])]);
     if (this._fixedFunctionProgramCache.has(key)) return this._fixedFunctionProgramCache.get(key);
-    const vertexLayout = uniformLayout([{ name: 'u_mvp', type: 'mat4' }, { name: 'u_texMatrix', type: 'mat4' }]);
+    const vertexLayout = uniformLayout([{ name: 'u_mvp', type: 'mat4' },
+      ...textureUnits.map(unit => ({ name: `u_texMatrix${unit}`, type: 'mat4' }))]);
     const fragmentLayout = alphaEnabled ? uniformLayout([{ name: 'u_alphaRef', type: 'float' }]) : { fields: [], size: 0 };
-    const vertex = `struct VertexGlobals { u_mvp: mat4x4<f32>, u_texMatrix: mat4x4<f32> };
+    const vertexInputs = textureUnits.map((unit, index) => `, @location(${index + 2}) texCoord${unit}: vec4<f32>`).join('');
+    const vertexOutputs = textureUnits.map((unit, index) => `, @location(${index + 1}) texCoord${unit}: vec2<f32>`).join('');
+    const vertexMatrices = textureUnits.map(unit => `, u_texMatrix${unit}: mat4x4<f32>`).join('');
+    const vertexTransforms = textureUnits.map(unit => `let uv${unit} = globals.u_texMatrix${unit} * vec4<f32>(input.texCoord${unit}.xy, 0.0, 1.0); output.texCoord${unit} = uv${unit}.xy / uv${unit}.w;`).join(' ');
+    const vertex = `struct VertexGlobals { u_mvp: mat4x4<f32>${vertexMatrices} };
 @group(0) @binding(0) var<uniform> globals: VertexGlobals;
-struct VertexInput { @location(0) position: vec4<f32>, @location(1) color: vec4<f32>${texture ? ', @location(2) texCoord: vec4<f32>' : ''} };
-struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color: vec4<f32>${texture ? ', @location(1) texCoord: vec2<f32>' : ''} };
-@vertex fn main(input: VertexInput) -> VertexOutput { var output: VertexOutput; let clip = globals.u_mvp * input.position; output.position = vec4<f32>(clip.x, clip.y, (clip.z + clip.w) * 0.5, clip.w); output.color = input.color; ${texture ? 'output.texCoord = (globals.u_texMatrix * vec4<f32>(input.texCoord.xy, 0.0, 1.0)).xy;' : ''} return output; }`;
-    const fragmentInput = `struct FragmentInput { @location(0) color: vec4<f32>${texture ? ', @location(1) texCoord: vec2<f32>' : ''} };`;
+struct VertexInput { @location(0) position: vec4<f32>, @location(1) color: vec4<f32>${vertexInputs} };
+struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color: vec4<f32>${vertexOutputs} };
+@vertex fn main(input: VertexInput) -> VertexOutput { var output: VertexOutput; let clip = globals.u_mvp * input.position; output.position = vec4<f32>(clip.x, clip.y, (clip.z + clip.w) * 0.5, clip.w); output.color = input.color; ${vertexTransforms} return output; }`;
+    const fragmentInput = `struct FragmentInput { @location(0) color: vec4<f32>${vertexOutputs} };`;
     const fragmentGlobals = alphaEnabled
       ? 'struct FragmentGlobals { u_alphaRef: f32 };\n@group(0) @binding(1) var<uniform> fragmentGlobals: FragmentGlobals;'
       : '';
-    const sampler = texture
-      ? '@group(0) @binding(2) var fixedTexture: texture_2d<f32>;\n@group(0) @binding(3) var fixedSampler: sampler;'
-      : '';
-    let colorExpression = 'input.color';
-    let texExpression = texture ? 'textureSample(fixedTexture, fixedSampler, input.texCoord)' : '';
-    if (texture && texEnv === 0x1e01) colorExpression = texExpression;
-    else if (texture && texEnv === 0x2101) colorExpression = `vec4<f32>(mix(input.color.rgb, ${texExpression}.rgb, ${texExpression}.a), input.color.a)`;
-    else if (texture) colorExpression = `input.color * ${texExpression}`;
+    const sampler = textureUnits.map(unit => `@group(0) @binding(${2 + unit * 2}) var fixedTexture${unit}: texture_2d<f32>;\n@group(0) @binding(${3 + unit * 2}) var fixedSampler${unit}: sampler;`).join('\n');
+    const textureCombines = [];
+    for (const unit of textureUnits) {
+      const texel = `texel${unit}`;
+      const sample = `let ${texel} = textureSample(fixedTexture${unit}, fixedSampler${unit}, input.texCoord${unit});`;
+      const mode = texEnv[unit];
+      const combine = mode === 0x1e01 ? `color = ${texel};`
+        : mode === 0x2101 ? `color = vec4<f32>(mix(color.rgb, ${texel}.rgb, ${texel}.a), color.a);`
+          : mode === 0x0104 ? `color = min(color + ${texel}, vec4<f32>(1.0));`
+            : `color = color * ${texel};`;
+      textureCombines.push(`${sample} ${combine}`);
+    }
     const alphaCompare = new Map([
       [0x0200, 'false'], [0x0201, 'color.a < fragmentGlobals.u_alphaRef'],
       [0x0202, 'color.a == fragmentGlobals.u_alphaRef'], [0x0203, 'color.a <= fragmentGlobals.u_alphaRef'],
@@ -1018,16 +1050,20 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       [0x0206, 'color.a >= fragmentGlobals.u_alphaRef'], [0x0207, 'true'],
     ]).get(alphaFunc) || 'true';
     const alphaCheck = alphaEnabled ? `if (!(${alphaCompare})) { discard; }` : '';
-    const fragment = `${fragmentInput}\n${fragmentGlobals}\n${sampler}\n@fragment fn main(input: FragmentInput) -> @location(0) vec4<f32> { let color = ${colorExpression}; ${alphaCheck} return color; }`;
+    const fragment = `${fragmentInput}\n${fragmentGlobals}\n${sampler}\n@fragment fn main(input: FragmentInput) -> @location(0) vec4<f32> { var color = input.color; ${textureCombines.join(' ')} ${alphaCheck} return color; }`;
+    const textureAttributes = textureUnits.map((unit, index) => [unit === 0 ? 'a_texCoord' : `a_texCoord${unit}`, index + 2]);
     const program = {
       id: this._nextId++, linked: true, linkPromise: Promise.resolve(true), infoLog: '',
-      attributes: new Map(), attributeLocations: new Map([['a_position', 0], ['a_color', 1], ...(texture ? [['a_texCoord', 2]] : [])]),
-      attributeInfo: [{ name: 'a_position', size: 1, type: 0x8b52 }, { name: 'a_color', size: 1, type: 0x8b52 }, ...(texture ? [{ name: 'a_texCoord', size: 1, type: 0x8b52 }] : [])],
+      attributes: new Map(), attributeLocations: new Map([['a_position', 0], ['a_color', 1], ...textureAttributes]),
+      attributeInfo: [{ name: 'a_position', size: 1, type: 0x8b52 }, { name: 'a_color', size: 1, type: 0x8b52 }, ...textureAttributes.map(([name]) => ({ name, size: 1, type: 0x8b52 }))],
       uniformInfo: [], uniformLocations: new Map(), uniformValues: new Map(),
-      fixedFunction: { texture, colorArray, alphaEnabled, alphaFunc, alphaRef: this._fixedFunction.alphaRef, texEnv },
+      fixedFunction: { texture: textureUnits.length > 0, textureUnits: [...textureUnits], colorArray, alphaEnabled,
+        alphaFunc, alphaRef: this._fixedFunction.alphaRef, texEnv: [...texEnv] },
       stages: {
         vertex: { wgsl: vertex, layout: vertexLayout, activeUniforms: [], samplers: [] },
-        fragment: { wgsl: fragment, layout: fragmentLayout, activeUniforms: [], samplers: texture ? [{ name: 'u_fixedTexture', textureBinding: 2, samplerBinding: 3, arrayLength: 1 }] : [] },
+        fragment: { wgsl: fragment, layout: fragmentLayout, activeUniforms: [],
+          samplers: textureUnits.map(unit => ({ name: `u_fixedTexture${unit}`, textureBinding: 2 + unit * 2,
+            samplerBinding: 3 + unit * 2, arrayLength: 1 })) },
       },
     };
     this._fixedFunctionProgramCache.set(key, program);
@@ -1068,12 +1104,12 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     return result;
   }
 
-  _fixedArrayAttribute(index, spec, data, color, temporaryBuffers, baseVertex = 0) {
+  _fixedArrayAttribute(index, spec, data, color, temporaryBuffers, baseVertex = 0, current = null, pointerIndex = index) {
     const attribute = { index, enabled: !!spec?.enabled, buffer: null, size: spec?.size || (color ? 4 : 4),
       type: spec?.type || 0x1406, normalized: false, stride: spec?.stride || 0, offset: 0, integer: false, divisor: 0,
-      current: new Float32Array(color ? this._fixedFunction.color : [0, 0, 0, 1]) };
+      current: new Float32Array(current || (color ? this._fixedFunction.color : [0, 0, 0, 1])) };
     if (!attribute.enabled) return attribute;
-    const pointer = this._fixedFunctionPointers.get(index);
+    const pointer = this._fixedFunctionPointers.get(pointerIndex);
     const values = this._fixedArrayFloatData(data, spec, color);
     if (values) {
       const buffer = this.createBuffer();
@@ -1093,29 +1129,37 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
 
   _fixedFunctionDraw(mode, first, count, indexed, arrays) {
     if (this._currentProgram || count <= 0) return false;
-    const textureEnabled = this._enabled.has(GL.TEXTURE_2D);
+    const textureUnits = [0, 1].filter(unit => this._fixedTextureEnabled[unit]);
     const colorArray = !!arrays.color?.enabled;
     const alphaTestEnabled = this._enabled.has(0x0bc0);
     const fixed = this._fixedFunction;
-    const program = this._fixedFunctionProgram(textureEnabled, colorArray, alphaTestEnabled, fixed.alphaFunc, fixed.texEnv);
+    const program = this._fixedFunctionProgram(textureUnits, colorArray, alphaTestEnabled, fixed.alphaFunc, fixed.texEnv);
     program.fixedFunction.alphaRef = fixed.alphaRef;
     const stackTop = stack => stack[stack.length - 1];
     const mvp = multiplyMatrix4(stackTop(fixed.projection), stackTop(fixed.modelview));
     program.uniformValues.set('u_mvp', mvp);
-    program.uniformValues.set('u_texMatrix', stackTop(fixed.texture));
+    for (const unit of textureUnits) {
+      program.uniformValues.set(`u_texMatrix${unit}`, stackTop(fixed.texture[unit]));
+      program.uniformValues.set(`u_fixedTexture${unit}`, unit);
+    }
+    if (textureUnits.includes(0)) program.uniformValues.set('u_fixedTexture', 0);
     if (fixed.alphaFunc !== 0x0207) program.uniformValues.set('u_alphaRef', fixed.alphaRef);
-    if (textureEnabled) program.uniformValues.set('u_fixedTexture', this._activeTextureUnit);
 
     const temporaryBuffers = [];
     const attributes = new Map();
     const baseVertex = arrays.baseVertex | 0;
     const position = this._fixedArrayAttribute(0, arrays.vertex, arrays.vertexData, false, temporaryBuffers, baseVertex);
     const color = this._fixedArrayAttribute(1, arrays.color, arrays.colorData, true, temporaryBuffers, baseVertex);
-    const texCoord = textureEnabled
-      ? this._fixedArrayAttribute(2, arrays.texCoord, arrays.texCoordData, false, temporaryBuffers, baseVertex)
-      : { index: 2, enabled: false, buffer: null, size: 4, type: 0x1406, normalized: false, stride: 0, offset: 0, integer: false, divisor: 0, current: new Float32Array([0, 0, 0, 1]) };
+    const texCoordSpecs = [
+      [arrays.texCoord || arrays.texCoord0, arrays.texCoordData || arrays.texCoordData0],
+      [arrays.texCoord1, arrays.texCoordData1],
+    ];
+    const texCoords = textureUnits.map((unit, index) => this._fixedArrayAttribute(2 + index,
+      texCoordSpecs[unit][0], texCoordSpecs[unit][1], false, temporaryBuffers, baseVertex,
+      fixed.currentTexCoords[unit], 2 + unit));
     if (!position.enabled || (!position.buffer && !this._fixedFunctionPointers.get(0)?.buffer)) return false;
-    attributes.set(0, position); attributes.set(1, color); if (textureEnabled) attributes.set(2, texCoord);
+    attributes.set(0, position); attributes.set(1, color);
+    texCoords.forEach((attribute, index) => attributes.set(2 + index, attribute));
 
     let elementBuffer = this._elementArrayBuffer;
     let elementOffset = 0;
@@ -1139,18 +1183,30 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
   }
 
   fixedFunctionImmediateDraw(mode, commands) {
-    const vertices = [], colors = [];
+    const vertices = [], colors = [], texCoords = [[], []];
+    const current = this._fixedFunction.currentTexCoords.map(value => [...value]);
     for (let i = 0; i + 4 < commands.length; i += 5) {
       const values = Array.from(commands.subarray(i + 1, i + 5));
       if (commands[i] === 0) this.color4f(...values);
-      else if (commands[i] === 1) { vertices.push(...values); colors.push(...this._fixedFunction.color); }
+      else if (commands[i] === 2) {
+        const rawUnit = values[0] >= 0x84c0 ? values[0] - 0x84c0 : values[0];
+        const unit = Math.max(0, Math.min(1, rawUnit | 0));
+        current[unit] = [values[1], values[2], 0, 1];
+        this._fixedFunction.currentTexCoords[unit] = [...current[unit]];
+      } else if (commands[i] === 1) {
+        vertices.push(...values); colors.push(...this._fixedFunction.color);
+        for (let unit = 0; unit < 2; unit++) texCoords[unit].push(current[unit][0], current[unit][1]);
+      }
     }
     const count = vertices.length / 4;
     if (!count) return true;
     const arrays = {
       vertex: { enabled: true, size: 4, type: 0x1406, stride: 0 },
-      color: { enabled: true, size: 4, type: 0x1406, stride: 0 }, texCoord: { enabled: false },
+      color: { enabled: true, size: 4, type: 0x1406, stride: 0 },
+      texCoord: { enabled: this._fixedTextureEnabled[0], size: 2, type: 0x1406, stride: 0 },
+      texCoord1: { enabled: this._fixedTextureEnabled[1], size: 2, type: 0x1406, stride: 0 },
       vertexData: new Float32Array(vertices), colorData: new Float32Array(colors),
+      texCoordData: new Float32Array(texCoords[0]), texCoordData1: new Float32Array(texCoords[1]),
     };
     if (mode === 0x0007) {
       const indices = [];
@@ -1230,9 +1286,15 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (mode !== 0x0004 && mode !== 0x0005 && mode !== 0x0006) return;
     const posAttr = state.attributes.get(program.attributeLocations.get(position.name));
     const colorAttr = state.attributes.get(program.attributeLocations.get(color.name));
-    const texCoordAttr = fixed?.texture ? state.attributes.get(program.attributeLocations.get('a_texCoord')) : null;
+    const textureCoordinates = (fixed?.textureUnits || []).map(unit => {
+      const name = unit === 0 ? 'a_texCoord' : `a_texCoord${unit}`;
+      return {
+        unit,
+        attribute: state.attributes.get(program.attributeLocations.get(name)),
+        matrix: program.uniformValues.get(`u_texMatrix${unit}`) || identityMatrix(),
+      };
+    });
     const fixedMvp = fixed ? program.uniformValues.get('u_mvp') || identityMatrix() : null;
-    const fixedTexMatrix = fixed ? program.uniformValues.get('u_texMatrix') || identityMatrix() : null;
     const model = program.uniformValues.get('u_modelView') || identityMatrix();
     const projection = program.uniformValues.get('u_projection') || identityMatrix();
     const viewport = state.viewport;
@@ -1247,9 +1309,12 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
         y: viewport[1] + (ny + 1) * viewport[3] * 0.5,
         z: clamp01((clip[2] / w + 1) * 0.5), color: this._mirrorAttribute(colorAttr, index) };
       if (fixed?.texture) {
-        const coordinates = this._mirrorAttribute(texCoordAttr, index);
-        const transformed = mulMat4(fixedTexMatrix, [coordinates[0], coordinates[1], 0, 1]);
-        vertex.texCoord = [transformed[0] / (transformed[3] || 1), transformed[1] / (transformed[3] || 1)];
+        vertex.texCoords = new Map();
+        for (const { unit, attribute, matrix } of textureCoordinates) {
+          const coordinates = this._mirrorAttribute(attribute, index);
+          const transformed = mulMat4(matrix, [coordinates[0], coordinates[1], 0, 1]);
+          vertex.texCoords.set(unit, [transformed[0] / (transformed[3] || 1), transformed[1] / (transformed[3] || 1)]);
+        }
       }
       return vertex;
     };
@@ -1276,9 +1341,10 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     const left = Math.max(minX, scissor[0]), right = Math.min(maxX, scissor[0] + scissor[2]);
     const bottom = Math.max(minY, scissor[1]), top = Math.min(maxY, scissor[1] + scissor[3]);
     const fixed = state.program?.fixedFunction;
-    const textureUnit = Number(state.program?.uniformValues.get('u_fixedTexture') ?? 0) | 0;
-    const texture = fixed?.texture ? this._textureUnits[textureUnit]?.[GL.TEXTURE_2D] || this._whiteTexture() : null;
-    const sampleTexture = (u, v) => {
+    const textureUnits = fixed?.textureUnits || [];
+    const textures = new Map(textureUnits.map(unit => [unit,
+      this._textureUnits[unit]?.[GL.TEXTURE_2D] || this._whiteTexture()]));
+    const sampleTexture = (texture, u, v) => {
       if (!texture?.pixels || !texture.width || !texture.height) return [1, 1, 1, 1];
       const wrap = (value, mode) => {
         if (mode === 0x2901) return value - Math.floor(value);
@@ -1329,13 +1395,18 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       const offset = (y * this._width + x) * 4;
       const source = [0, 1, 2, 3].map(channel =>
         a * vertices[0].color[channel] + b * vertices[1].color[channel] + c * vertices[2].color[channel]);
-      if (fixed?.texture && texture) {
-        const u = a * vertices[0].texCoord[0] + b * vertices[1].texCoord[0] + c * vertices[2].texCoord[0];
-        const v = a * vertices[0].texCoord[1] + b * vertices[1].texCoord[1] + c * vertices[2].texCoord[1];
-        const texel = sampleTexture(u, v);
-        if (fixed.texEnv === 0x1e01) source.splice(0, 4, ...texel);
-        else if (fixed.texEnv === 0x2101) for (let channel = 0; channel < 3; channel++) source[channel] = source[channel] * (1 - texel[3]) + texel[channel] * texel[3];
-        else for (let channel = 0; channel < 4; channel++) source[channel] *= texel[channel];
+      if (fixed?.texture) {
+        for (const unit of textureUnits) {
+          const coordinates = vertices.map(vertex => vertex.texCoords?.get(unit) || [0, 0]);
+          const u = a * coordinates[0][0] + b * coordinates[1][0] + c * coordinates[2][0];
+          const v = a * coordinates[0][1] + b * coordinates[1][1] + c * coordinates[2][1];
+          const texel = sampleTexture(textures.get(unit), u, v);
+          const texEnv = fixed.texEnv[unit];
+          if (texEnv === 0x1e01) source.splice(0, 4, ...texel);
+          else if (texEnv === 0x2101) for (let channel = 0; channel < 3; channel++) source[channel] = source[channel] * (1 - texel[3]) + texel[channel] * texel[3];
+          else if (texEnv === 0x0104) for (let channel = 0; channel < 4; channel++) source[channel] = Math.min(1, source[channel] + texel[channel]);
+          else for (let channel = 0; channel < 4; channel++) source[channel] *= texel[channel];
+        }
       }
       if (fixed?.alphaEnabled && !compareAlpha(fixed.alphaFunc, source[3], fixed.alphaRef)) continue;
       const destination = Array.from(this._pixels.subarray(offset, offset + 4), value => value / 255);

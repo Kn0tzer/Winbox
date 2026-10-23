@@ -214,3 +214,35 @@ the same Q3 map/recovery settings. It stayed queued behind other heavy probes
 for 18 minutes and never launched; I stopped it before browser startup. The
 proc-name evidence above is therefore explicitly from `q3-map-r3/r4`, not the
 Build 5 wild-jump run. No build was run.
+
+## Build 6 multitexture and map-start changes (Luna, 2026-10-23)
+
+Quake3e's checked-in `tr_init.c` sets `r_vbo`'s default to `0`. Its
+`R_BuildWorldVBO` path returns unless `qglBindBufferARB` exists and `r_vbo` is
+nonzero; it then returns if `qglGenProgramsARB` is null or fewer than three
+texture units are reported. The only `CompileVertexProgram` calls in this
+source are below that path through `isStaticShader`. The probe did not set
+`r_vbo`, so its launch now explicitly uses `+set r_vbo 0` before `+map q3dm1`.
+This overrides any archived or persisted cvar value and drives the probe into
+the ordinary client-array renderer. The checked source guard and old saved
+runtime call still do not prove which cvar value or binary path produced the
+earlier fault; the Build 6 run must confirm that.
+
+The GL bridge now has dedicated ABI IDs 884 and 885 and guest wrappers for
+`glMultiTexCoord2fARB` and `glClientActiveTextureARB`; both names resolve through
+the proc table instead of the no-op fallback. `glClientActiveTextureARB`
+selects a separate client texture-coordinate array for units 0 and 1, and
+`glMultiTexCoord2fARB` updates fixed-function current coordinates, including
+inside recorded immediate-mode blocks. The fixed-function WebGPU path snapshots
+both client arrays, tracks texture enable/environment/matrix state per server
+unit, and emits a two-sampler shader with separate UV inputs. It supports Q3's
+modulate, replace, decal, and add texture environment modes. The synchronous
+compositor mirror now applies both texture units too, so lightmaps are retained
+in CPU-backed window presentation/readback.
+
+The focused GL/Q3 unit run passed 35 tests, including Naga validation of the
+two-texture WGSL, separate unit-0/unit-1 UV buffers, immediate-mode coordinates,
+ABI/handler/proc registration, and the Q3 `r_vbo`/map arguments. Node syntax
+checks and `git diff --check` also passed. I did not build or run the browser
+probe: this source is awaiting the scheduled Build 6 export, so visual map
+rendering and first-frame timing remain unverified for these changes.
