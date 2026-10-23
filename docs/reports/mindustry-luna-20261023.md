@@ -45,3 +45,38 @@ Evidence:
 The likely blocker is the x86-64 guest memory report. `source/kernel/syscall64.cpp`, `X64_SYS_sysinfo` (case 99), returns success after zero-filling all 112 bytes, so `totalram`, `freeram`, and `mem_unit` are zero. In contrast, the 32-bit `KSystem::sysinfo` reports 1 GiB total and 768 MiB free, and `/proc/meminfo` reports 1 GiB total. OpenJDK now aborts with “Too small maximum heap” on the x64 path, consistent with a zero physical-memory report. The current logs do not trace the syscall itself, so this is a strong root-cause candidate rather than direct syscall-level proof.
 
 This C++ fix needs a WASM rebuild, which was explicitly excluded. I did not modify it. The required follow-up is to populate the x86-64 `sysinfo` fields with a nonzero, consistent memory total/free value and `mem_unit`, add focused coverage, rebuild the WASM runtime, then rerun both modes. Until that is done, the GL menu failure cannot be evaluated on the supplied runtime.
+
+## Build 5 reruns (2026-10-23)
+
+Worktree: `/home/ubuntu/boxedwine64-worktrees/winbox-mindustry-build5-20261023`
+
+Branch: `lane/winbox-mindustry-build5-20261023`, based on integration HEAD `336572461556d787b9ad997d36f88ccfa0430a41`.
+
+The supplied build-5 `web/runtime` and `dist/runtime` agree on WASM SHA-256 `3a6bd71f8778c0e1e266844363d8078ce5333fc1f4d6de9a761ad1ec4bb2a5d0`, and both BUILD_INFO files identify HEAD `336572461`. No WASM build was run and the integration worktree was not modified. The earlier zero-memory sysinfo startup blocker is resolved: Mindustry starts Java 25.0.1 and reaches its OpenGL initialization logs.
+
+### Probe staging correction
+
+The first build-5 JIT=0 and JIT=1 runs mapped the window but initialized WebGL2. Those runs were not valid WebGPU checks: `winbox-wt-prep.sh` had left an old `web/runtime/wine64-launcher.js` in the new worktree, and the initial temporary stage preferred that copy. It does not set `BW64_GL_BACKEND`. Build 5's fresh `dist/runtime/wine64-launcher.js` does set the WebGPU default. I corrected only the temporary stage under `/tmp/winbox-finish/r5/dist-stage` to use that build artifact; the stage still serves this branch's current `web/` modules, including `gl-webgpu.mjs`.
+
+### Corrected WebGPU results
+
+| JIT | First window | WebGPU active | Captures | Result |
+| --- | ---: | --- | --- | --- |
+| 0 | 319.7 s | yes | +60 s | Black; no page errors, bridge recovery, shader link failure, or WebGPU failure |
+| 1 | 371.4 s | yes | +60, +120, +240 s | All black; no page errors, bridge recovery, shader link failure, or WebGPU failure |
+| 0, `GL_TRACE=400` | 252.4 s | yes | +60 s | Black; sample reports zero GL calls and zero presents |
+
+The JIT=1 console reaches `[I] [GL] Version: OpenGL 3.2.0`, `[I] [GL] Using OpenGL 3 API`, `[I] [JAVA] Version: 25.0.1`, and `[I] [RAM] Available: 259.5 MB`. Its +120 and +240 second samples continue reporting CPU64 instructions and syscalls, but zero GL calls and zero presents. No shader is submitted to the WebGPU translator in these captures. The guest-reported GL version string includes `WebGL2`, but the host bridge independently confirms `host GL up (WebGPU)` and the probe summary remains `webgpuActive: true`; there was no fallback.
+
+The bounded `GL_TRACE=400` run emitted no `gl64: call fnId` trace. `gl64bridge.cpp` documents that `getenv` can be unavailable on guest worker threads in this pthread build, so the silence is not evidence that no calls happened before the sampled interval. The bridge stage counters provide the interval-specific evidence: zero GL calls/presents at the JIT=0 trace capture and at JIT=1 +120/+240.
+
+### Current blocker and evidence
+
+The precision macro, conditional, and interface-location fixes from `c5bad39fe` and `1e9f3c653` are present in this branch. The build-5 black frame is not currently attributable to GLSL-to-WGSL translation: after Java reports OpenGL initialization, the captured later samples contain no GL traffic, and the WebGPU failure list is empty. The next blocker is a guest-side stall after Java/GL initialization and before the first rendered frame. The available probe output does not identify the guest thread or call site responsible. Resolving that will require a guest-thread/CPU diagnostic (likely C++ instrumentation and a rebuilt WASM), which was outside the no-rebuild runtime verification requested here. No C++ change or renderer workaround was made without evidence.
+
+Evidence:
+
+- Initial mis-staged JIT=0/JIT=1 runs: `/tmp/winbox-finish/r5/mindustry-jit0/` and `/tmp/winbox-finish/r5/mindustry-jit1/` (WebGL2; not used to assess the WebGPU path).
+- Corrected JIT=0: `/tmp/winbox-finish/r5/mindustry-jit0-corrected/summary.json`, `console.log`, `mapped-plus-60s.png`.
+- Corrected JIT=1: `/tmp/winbox-finish/r5/mindustry-jit1-corrected/summary.json`, `console.log`, and `mapped-plus-{60,120,240}s.png`.
+- Bounded GL trace: `/tmp/winbox-finish/r5/mindustry-jit0-gltrace/summary.json`, `console.log`, `mapped-plus-60s.png`.
