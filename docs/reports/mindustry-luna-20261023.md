@@ -140,3 +140,64 @@ Evidence:
 - JIT=1 25-minute run: `/tmp/winbox-finish/r7/mindustry-jit1-25min/summary.json`, `console.log`, and `mapped-plus-*.png`.
 - WebGPU-only run after matrix varying lowering: `/tmp/winbox-finish/r8/mindustry-jit1-matrixfix/summary.json`, `console.log`, and `mapped-plus-{420,600,900}s.png`.
 - Existing runtime build ID: `3a6bd71f8778`; no WASM build was run and the integration worktree was not modified.
+
+
+## Build 6 JVM crash and signal audit (2026-10-23)
+
+Worktree: `/home/ubuntu/boxedwine64-worktrees/winbox-mindustry-build5-20261023`
+
+Branch base: `fccddb067` (includes the x86-64 JVM/Wine syscall audit). Both runs used the integration build-6 runtime at `/home/ubuntu/boxedwine64-worktrees/winbox-integ-20261022/dist`, build ID `b0438f56f93a`. No WASM build was run.
+
+I added guest crash-report collection to `tools/bench/gl-game-probe.mjs`. At each capture and on map timeout, it checks the guest app and temp directories for `hs_err_pid*.log` and copies found reports into the probe artifact directory. The JIT=1 run verified the guest path is `/root/home/username/apps/hs_err_pid32.log`; the report was copied successfully.
+
+### JIT=0 result
+
+The first window mapped after 296.4 seconds. The WebGPU GL context initialized, and Mindustry logged OpenGL 3.2, Java 25.0.1, and 259.5 MiB available RAM. Captures through +540 seconds stayed black, with zero GL calls and zero presents. No JVM crash report was written.
+
+The console contains 2,855 unimplemented-opcode messages at stable guest RIP `0x17005541e`, fetching bytes `4b 65 79 42 69 6e 64` (ASCII “KeyBind”). This interpreter-only run is stuck decoding data as instructions; it did not reach rendering.
+
+### JIT=1 result and HotSpot report
+
+The first window mapped after 384.5 seconds. The WebGPU backend stayed active, with no WebGPU failures or page errors. At +300 seconds, the probe counted 29 host GL calls but no presents. By +360 seconds, the guest JVM had aborted and the sample showed zero GL calls/presents. Screenshots remain black; no menu or gameplay appeared.
+
+The guest report says:
+
+```text
+Internal Error (symbol.cpp:335)
+fatal error: refcount underflow
+```
+
+The JVM had been running 619.715 seconds. The current thread was Java thread `main` in `_thread_in_vm`; its Java stack was:
+
+```text
+arc.graphics.gl.IndexBufferObject.bind()V+42
+arc.graphics.Mesh.bind(...)V+26
+arc.graphics.Mesh.render(...)V+13
+arc.graphics.Mesh.render(...)V+10
+arc.graphics.g2d.SpriteBatch.flush()V+129
+arc.graphics.g2d.Draw.flush()V+3
+mindustry.graphics.LoadRenderer.draw()V+2918
+mindustry.ClientLauncher.update()V+129
+arc.backend.sdl.SdlApplication.loop()V+255
+mindustry.desktop.DesktopLauncher.main(...)V+63
+```
+
+This is a HotSpot internal assertion, not the suspected implicit-exception signal path. The report contains no `SIGSEGV`/`SIGFPE`, `si_code`, or `si_addr`; the native frame is `0x1ce8379` with no source information, and HotSpot's symbol engine could not initialize. Therefore there is no faulting instruction or signal metadata in this report to compare. The failure occurs while Mindustry enters its render path, before any frame is presented.
+
+### CPU64 signal-path audit
+
+Static inspection found the synchronous paths currently construct these fields:
+
+- x86 #DE becomes `SIGFPE/FPE_INTDIV`, with `si_addr` set to the faulting RIP and `TRAPNO=0`.
+- CPU64 instruction-fetch #PF sets `si_addr=RIP`, `TRAPNO=14`, and `ERR=0x14` for an unmapped page or `0x15` for a mapped non-executable page. `si_code` is `SEGV_MAPERR` or `SEGV_ACCERR` respectively.
+- The signal frame saves guest RIP, RSP, and EFLAGS, and hardware-fault delivery overwrites TRAPNO/ERR/CR2 with the provided fault data. It currently sets the ucontext `fpregs` pointer to null and does not save x87/SSE state.
+- `KMemory64::mprotect` updates page flags, but normal data reads/writes intentionally ignore those protections. Thus HotSpot stack-bang or safepoint polling-page accesses may not fault. This is a separate compatibility gap; the captured JVM failure did not raise a signal, so I have not changed this broad memory behavior without a reproducing signal case.
+
+The JIT=0 and JIT=1 outcomes differ: JIT=0 loops in invalid instruction decoding, while JIT=1 advances into Mindustry rendering and then hits the HotSpot symbol refcount assertion. This rules out the earlier assumption that this fatal came from malformed Linux `siginfo_t` or `ucontext_t`, but does not yet identify why HotSpot's symbol reference count underflows. No C++ fix is justified by the current evidence.
+
+Evidence:
+
+- JIT=0, build ID `b0438f56f93a`: `/tmp/winbox-finish/r11/mindustry-build6-jit0/` (`summary.json`, `console.log`, and +180/+360/+540 screenshots).
+- JIT=1 extended capture: `/tmp/winbox-finish/r13/mindustry-build6-jit1-extended-hserr/` (`summary.json`, `console.log`, +300/+360 screenshots, and copied `mapped-plus-360s-hs_err-1.log`).
+- JIT=1 early captures without a fatal: `/tmp/winbox-finish/r12/mindustry-build6-jit1-hserr/`.
+- The probe change passed `node --check tools/bench/gl-game-probe.mjs`; the report was collected from the actual guest filesystem. No build was run.
