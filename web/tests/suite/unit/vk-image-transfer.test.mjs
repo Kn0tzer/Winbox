@@ -7,7 +7,8 @@ import { execFileSync } from 'node:child_process';
 
 test('image uploads preserve BC mip/layer offsets, row padding, and allocation bounds', () => {
   const source = readFileSync(new URL('../../../../source/vulkan/vk64bridge.cpp', import.meta.url), 'utf8');
-  const helpers = source.slice(source.indexOf('struct FormatBlock'), source.indexOf('const char* fmt_name'));
+  const helpers = source.slice(source.indexOf('struct FormatBlock'), source.indexOf('// Fills a guest VkMemoryRequirements2')) +
+    source.slice(source.indexOf('U64 imageSubresourceOffset('), source.indexOf('const char* fmt_name'));
   const copy = source.slice(source.indexOf('static void execCopyFail('), source.indexOf('std::vector<U8> readGuestRange'));
   const dir = mkdtempSync(join(tmpdir(), 'vk-image-transfer-'));
   try {

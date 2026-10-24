@@ -1785,6 +1785,35 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     return image && viewFormat && viewFormat !== image.format ? { ...image, format: viewFormat } : image;
   }
 
+  // The subresource range a sampled VkImageView was created with, as GPUTextureViewDescriptor
+  // fields (undefined when the record predates the range tail or the view covers the whole image).
+  function sampledViewRange(viewHex) {
+    return viewHex ? F.viewRanges?.get(viewHex) : undefined;
+  }
+  function viewRangeKey(range) {
+    return range ? '@' + range.baseMip + '+' + range.levelCount + ',' + range.baseLayer + '+' + range.layerCount : '';
+  }
+  function viewRangeDescriptor(range, texture, dimension) {
+    if (!range) return {};
+    const out = {};
+    const mips = texture.mipLevelCount || 1;
+    if (dimension !== '3d') {
+      const baseMip = Math.min(range.baseMip, mips - 1);
+      const levels = Math.max(1, Math.min(range.levelCount, mips - baseMip));
+      if (baseMip || levels !== mips) { out.baseMipLevel = baseMip; out.mipLevelCount = levels; }
+    }
+    if (dimension === '3d' || dimension === '1d') return out;
+    const layers = texture.depthOrArrayLayers || 1;
+    const base = Math.min(range.baseLayer, layers - 1);
+    let count = Math.max(1, Math.min(range.layerCount, layers - base));
+    if (dimension === '2d') count = 1;
+    else if (dimension === 'cube') count = 6;
+    else if (dimension === 'cube-array') count = Math.floor(count / 6) * 6;
+    if (count < 1 || base + count > layers || (dimension.startsWith('cube') && count % 6)) return out;   // not representable: whole-image view
+    if (base || count !== layers) { out.baseArrayLayer = base; out.arrayLayerCount = count; }
+    return out;
+  }
+
   // Content fingerprint for one descriptor set: deterministic function of
   // the descriptor contents (resource ids + content hashes). Used as the key
   // for the persistent bind-group cache. Must change whenever the resolved
@@ -1811,9 +1840,9 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
             ? (targets.has(v2ImageTargetKey(imgHex, false)) ? v2ImageTargetKey(imgHex, false)
               : targets.has(v2ImageTargetKey(imgHex, true)) ? v2ImageTargetKey(imgHex, true) : null)
             : null;
-          if (ak) parts.push('a' + d.binding + ':' + k + ':' + ak + ':format' + (img?.format || 0));
+          if (ak) parts.push('a' + d.binding + ':' + k + ':' + ak + ':format' + (img?.format || 0) + viewRangeKey(sampledViewRange(b?.obj)));
           else {
-            parts.push('t' + d.binding + ':' + k + ':' + (img ? textureKey(imgHex, img, null, cube, dimension).ck : 'blank'));
+            parts.push('t' + d.binding + ':' + k + ':' + (img ? textureKey(imgHex, img, null, cube, dimension).ck + viewRangeKey(sampledViewRange(b?.obj)) : 'blank'));
           }
         }
       } else if (t === 'sampler' || t === 'sampler_comparison') {
@@ -1912,7 +1941,12 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           // time (and then takes no format override): integer element types read
           // the stencil, the rest the depth.
           const aspect = String(texture.format || '').includes('stencil') ? (/<[ui]32>/.test(t) ? 'stencil-only' : 'depth-only') : undefined;
-          views.push(aliasTex ? aliasTex.createView(aspect ? { aspect } : imgFormat ? { format: imgFormat } : {}) : texture.createView({ dimension, ...(aspect ? { aspect } : {}) }));
+          const viewRange = sampledViewRange(imgHex && b?.obj);
+          if (aliasTex && viewRange && (viewRange.baseMip || viewRange.baseLayer)) {
+            noteUnsupported('sampled-render-target-subresource', 'mip ' + viewRange.baseMip + ' layer ' + viewRange.baseLayer + ' of a rendered image; whole level 0 is sampled');
+          }
+          views.push(aliasTex ? aliasTex.createView(aspect ? { aspect } : imgFormat ? { format: imgFormat } : {})
+            : texture.createView({ dimension, ...(aspect ? { aspect } : {}), ...viewRangeDescriptor(viewRange, texture, dimension) }));
         }
         entries.push({ binding: d.binding, resource: d.arrayCount > 1 ? views : views[0] });
       } else if (t === 'sampler' || t === 'sampler_comparison') {

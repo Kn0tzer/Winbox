@@ -561,7 +561,7 @@ export function decodeV2Frame(records, counters = {}) {
   const frame = {
     frameNo, width, height, passes: [],
     shaders: new Map(), pipelines: new Map(), buffers: new Map(),
-    images: new Map(), views: new Map(), viewFormats: new Map(), samplers: new Map(),
+    images: new Map(), views: new Map(), viewRanges: new Map(), viewFormats: new Map(), samplers: new Map(),
     bufHashes: new Map(), readbacks: [],
   };
   const implicitPass = () => ({
@@ -769,8 +769,11 @@ export function decodeV2Frame(records, counters = {}) {
         const d = r.left ? r.u32() : 1, layers = r.left ? r.u32() : 1, mips = r.left ? r.u32() : 1;
         if (d < 1 || d > MAX_DIMENSION || layers < 1 || layers > MAX_DIMENSION || mips < 1 || mips > 32)
           throw new Error('vk64: v2 IMAGE_DATA depth/layers/mips out of range');
+        // Optional view-range tail: the subresource range and type the view was created with.
+        const viewRange = r.left >= 20 ? { baseMip: r.u32(), levelCount: r.u32(), baseLayer: r.u32(), layerCount: r.u32(), viewType: r.left ? r.u32() : 1 } : null;
         r.done('IMAGE_DATA');
         frame.views.set(viewId, imageId);
+        if (viewRange) frame.viewRanges.set(viewId, viewRange);
         frame.viewFormats.set(viewId, format);
         // Pixel-less record (pixLen 0): wasm-side dedup, content unchanged
         // since the last full record. The view->image link is still recorded;

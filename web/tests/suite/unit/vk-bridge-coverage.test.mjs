@@ -36,7 +36,10 @@ function getBridgeHandlers(src) {
 function getShimRegistered(src) {
   const m = src.match(/static const struct procEntry g_procs\[\] = \{([\s\S]*?)\n\};/);
   if (!m) throw new Error('g_procs[] not found');
-  return new Set([...m[1].matchAll(/E\((vk\w+),/g)].map(x => 'VK64_fn_' + x[1]));
+  // E(name, id): the shim traps with `id`, which may be shared by aliases (EXT/KHR/promoted names).
+  const ids = new Set();
+  for (const x of m[1].matchAll(/E\((vk\w+),\s*(VK64_fn_\w+)\)/g)) { ids.add('VK64_fn_' + x[1]); ids.add(x[2]); }
+  return ids;
 }
 
 function getShimStubs(src) {

@@ -35,7 +35,7 @@ test('unsupported graphics pipeline state is warned and rejected in the shared a
     'unknown-graphics-stage', 'patch-list-topology', 'adjacency-topology',
   ]) assert.match(body, new RegExp(`vk64Unsupported\\("${feature}"[^\\n]*reject = true`), feature);
   assert.match(body, /return reject;/);
-  assert.match(bridge, /if \(vk64AuditGraphicsPipeline\(audit\)\) \{[\s\S]{0,180}VK_ERROR_FEATURE_NOT_PRESENT/);
+  assert.match(bridge, /if \(vk64AuditGraphicsPipeline\(audit\)(?: \|\| dynamicRejected)?\) \{[\s\S]{0,180}VK_ERROR_FEATURE_NOT_PRESENT/);
   for (const capability of [
     'fillCoreFeatures.fillModeNonSolid', 'fillCoreFeatures.logicOp', 'fillCoreFeatures.depthBounds',
     'fillCoreFeatures.sampleRateShading', 'fillCoreFeatures.alphaToOne', 'fillCoreFeatures.multiViewport',

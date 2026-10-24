@@ -759,7 +759,28 @@ struct Image  : Obj {
     U64 mem = 0, memOff = 0, pixBytes = 0;
     int copied = 0;                 // a staging copyBufferToImage landed here
 };
-struct ImageView : Obj { U64 image = 0; U32 format = 0, aspect = 0; };
+struct ImageView : Obj {
+    U64 image = 0; U32 format = 0, aspect = 0;
+    // Subresource range and type as created; VK_REMAINING_* already resolved against the image.
+    U32 viewType = 1, baseMip = 0, levelCount = 1, baseLayer = 0, layerCount = 1;
+};
+// Fills the view's range/type and reports the parts the WebGPU replay cannot honour: a component
+// swizzle (WebGPU texture views cannot swizzle) and a render-target view of a non-zero mip/layer
+// (render-target textures are keyed per pass and carry one level and one layer).
+static void vk64InitImageView(ImageView* v, const Image* img, U32 viewType, const U32 swizzle[4],
+                              U32 baseMip, U32 levelCount, U32 baseLayer, U32 layerCount) {
+    v->viewType = viewType;
+    v->baseMip = baseMip;
+    v->levelCount = (levelCount == 0xFFFFFFFFu) ? (img->mips > baseMip ? img->mips - baseMip : 1) : levelCount;
+    v->baseLayer = baseLayer;
+    v->layerCount = (layerCount == 0xFFFFFFFFu) ? (img->layers > baseLayer ? img->layers - baseLayer : 1) : layerCount;
+    for (U32 c = 0; c < 4; c++) {
+        if (swizzle[c] != 0 && swizzle[c] != 3 + c) {
+            vk64Unsupported("image-view-swizzle", "non-identity VkComponentMapping is not applied; sampled channels are unswizzled");
+            break;
+        }
+    }
+}
 struct BufferView : Obj { U64 buffer = 0; U32 format = 0; U64 offset = 0, range = 0; };
 struct Sampler : Obj {
     U32 mag = 0, min = 0, mipmap = 0, addrU = 0, addrV = 0, addrW = 0;
@@ -1155,6 +1176,16 @@ struct RenderPass : Obj {
     U32 samples[VK64_MAX_ATTACH] = {0};   // v2: per-attachment MSAA sample count
 };
 struct Framebuffer : Obj { U64 rp = 0; U32 natt = 0; U64 views[VK64_MAX_ATTACH] = {0}; U32 w = 0, h = 0; };
+// Render-target textures in the replay carry one mip level and one layer, so an attachment view of
+// anything else cannot be honoured; say so instead of silently rendering to level 0 layer 0.
+static void vk64AuditAttachmentView(const ImageView* v) {
+    if (v && (v->baseMip || v->baseLayer))
+        vk64Unsupported("render-target-subresource", "rendering to a non-zero mip level or array layer renders to mip 0 layer 0 instead");
+}
+static void vk64AuditFramebufferViews(const Framebuffer* fb) {
+    if (!fb) return;
+    for (U32 i = 0; i < fb->natt; i++) vk64AuditAttachmentView(objOf<ImageView>(fb->views[i], K_IMAGEVIEW, "vkCmdBeginRenderPass"));
+}
 struct Swapchain : Obj { U32 w = 0, h = 0, format = 0, nimg = 0, cur = 0; U64 imgs[8] = {0}; };
 
 // --- command recording (P1's P1_Cmd / P1_CbState, with the copy record moved
@@ -3151,6 +3182,8 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 p.u32(std::max(1U, tex->d));
                 p.u32(std::max(1U, tex->layers));
                 p.u32(std::max(1U, tex->mips));
+                // View range tail (append-only; absent in older producers).
+                p.u32(view->baseMip); p.u32(view->levelCount); p.u32(view->baseLayer); p.u32(view->layerCount); p.u32(view->viewType);
             });
             if (vkTimingEnabled()) { vkprofImgHashed += bytes.size(); if (sendPixels) vkprofImgSent += bytes.size(); }
         };
@@ -4947,6 +4980,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         v->image = ci.image;
         v->format = ci.format ? ci.format : src->format;
         v->aspect = ci.subresourceRange.aspectMask;
+        {
+            const U32 sw[4] = {ci.components.r, ci.components.g, ci.components.b, ci.components.a};
+            vk64InitImageView(v, src, ci.viewType, sw, ci.subresourceRange.baseMipLevel, ci.subresourceRange.levelCount,
+                              ci.subresourceRange.baseArrayLayer, ci.subresourceRange.layerCount);
+        }
         wr64(args.a[3], id);
         return VK_SUCCESS;
     }
@@ -5608,6 +5646,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         std::vector<VkClearValue> clears;
         readArray(bi.pClearValues, vk64CapCount("clear-values", bi.clearValueCount, VK64_MAX_ATTACH), clears);
         captureRenderPassClears(c, objOf<RenderPass>(bi.renderPass, K_RENDERPASS, "vkCmdBeginRenderPass"), clears);
+        vk64AuditFramebufferViews(objOf<Framebuffer>(bi.framebuffer, K_FRAMEBUFFER, "vkCmdBeginRenderPass"));
         pushCmd(cb, c);
         return 0;
     }
@@ -5633,6 +5672,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         std::vector<VkClearValue> clears;
         readArray(bi.pClearValues, vk64CapCount("clear-values", bi.clearValueCount, VK64_MAX_ATTACH), clears);
         captureRenderPassClears(c, objOf<RenderPass>(bi.renderPass, K_RENDERPASS, "vkCmdBeginRenderPass"), clears);
+        vk64AuditFramebufferViews(objOf<Framebuffer>(bi.framebuffer, K_FRAMEBUFFER, "vkCmdBeginRenderPass"));
         pushCmd(cb, c);
         return 0;
     }
@@ -5716,6 +5756,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             VK64_DROP_IF(return, !address || fb->natt >= VK64_MAX_ATTACH || !readStruct(address, att));
             auto* view = objOf<ImageView>(att.imageView, K_IMAGEVIEW, "vkCmdBeginRendering");
             VK64_DROP_IF(return, !view);
+            vk64AuditAttachmentView(view);
             auto* image = objOf<Image>(view->image, K_IMAGE, "vkCmdBeginRendering");
             U32 i = fb->natt++;
             fb->views[i] = att.imageView;
@@ -8050,6 +8091,11 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         v->image = ci.image;
         v->format = ci.format;
         v->aspect = ci.subresourceRange.aspectMask;
+        {
+            const U32 sw[4] = {ci.components.r, ci.components.g, ci.components.b, ci.components.a};
+            vk64InitImageView(v, src, ci.viewType, sw, ci.subresourceRange.baseMipLevel, ci.subresourceRange.levelCount,
+                              ci.subresourceRange.baseArrayLayer, ci.subresourceRange.layerCount);
+        }
         wr64_32((U32)args.a[3], id);
         return VK_SUCCESS;
     }
@@ -8471,6 +8517,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         std::vector<vk32abi::VkClearValue> clears;
         readArray32(bi.pClearValues, vk64CapCount("clear-values", bi.clearValueCount, VK64_MAX_ATTACH), clears);
         captureRenderPassClears(c, objOf32<RenderPass>(bi.renderPass, K_RENDERPASS, "vkCmdBeginRenderPass"), clears);
+        vk64AuditFramebufferViews(objOf32<Framebuffer>(bi.framebuffer, K_FRAMEBUFFER, "vkCmdBeginRenderPass"));
         pushCmd(cb, c);
         return 0;
     }
@@ -9145,6 +9192,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             VK64_DROP_IF(return, !address || fb->natt >= VK64_MAX_ATTACH || !readStruct32(address, att));
             auto* view = objOf32<ImageView>(att.imageView, K_IMAGEVIEW, "vkCmdBeginRendering");
             VK64_DROP_IF(return, !view);
+            vk64AuditAttachmentView(view);
             auto* image = objOf32<Image>(view->image, K_IMAGE, "vkCmdBeginRendering");
             U32 i = fb->natt++;
             fb->views[i] = att.imageView;

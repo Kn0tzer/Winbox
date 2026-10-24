@@ -1271,6 +1271,30 @@ int main() {
             vk32Bridge(&cpu32, VK64_fn_vkGetPhysicalDeviceProperties2, 128);
             assert(vk64BridgeUnsupportedCount("properties2-struct") == before + 2);
         }
+    {
+        // Image views keep their real subresource range and type; non-identity swizzle and
+        // render-target mip/layer selection are reported loudly instead of silently dropped.
+        Image img; img.mips = 5; img.layers = 6;
+        ImageView v;
+        const U32 ident[4] = {0, 0, 0, 0}, explicitIdent[4] = {3, 4, 5, 6}, swapped[4] = {5, 4, 3, 6};
+        const U64 swBefore = vk64BridgeUnsupportedCount("image-view-swizzle");
+        vk64InitImageView(&v, &img, 5, ident, 1, 0xFFFFFFFFu, 2, 0xFFFFFFFFu);
+        assert(v.viewType == 5 && v.baseMip == 1 && v.levelCount == 4 && v.baseLayer == 2 && v.layerCount == 4);
+        vk64InitImageView(&v, &img, 1, explicitIdent, 0, 1, 0, 1);
+        assert(v.levelCount == 1 && v.layerCount == 1);
+        assert(vk64BridgeUnsupportedCount("image-view-swizzle") == swBefore);
+        vk64InitImageView(&v, &img, 1, swapped, 0, 1, 0, 1);
+        assert(vk64BridgeUnsupportedCount("image-view-swizzle") == swBefore + 1);
+        const U64 rtBefore = vk64BridgeUnsupportedCount("render-target-subresource");
+        vk64AuditAttachmentView(&v);
+        assert(vk64BridgeUnsupportedCount("render-target-subresource") == rtBefore);
+        v.baseMip = 2;
+        vk64AuditAttachmentView(&v);
+        v.baseMip = 0; v.baseLayer = 1;
+        vk64AuditAttachmentView(&v);
+        assert(vk64BridgeUnsupportedCount("render-target-subresource") == rtBefore + 2);
+        puts("PASS: image view ranges are kept; swizzle and render-target subresources are loud");
+    }
         puts("PASS: GUARD advertised features are truthful and identical for 32-bit and 64-bit guests");
 
         // GUARD (silent capability use): SPIR-V that declares capabilities or
