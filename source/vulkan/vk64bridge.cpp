@@ -1087,6 +1087,7 @@ struct PipelineAudit {
     bool rasterizerDiscard = false;
     U32 dynMask = 0;              // states supplied by commands, not by the create info
     bool vertexDivisor = false;   // VkVertexInputBindingDivisorDescriptionEXT.divisor != 1
+    bool unsupportedVertexFormat = false;
 };
 static const U32 kV2SupportedStageMask = 0x1u | 0x10u;     // VERTEX | FRAGMENT
 // Returns true when the pipeline must be rejected with VK_ERROR_FEATURE_NOT_PRESENT.
@@ -1109,6 +1110,7 @@ static bool vk64AuditGraphicsPipeline(const PipelineAudit& a) {
     if (a.alphaToOne) { vk64Unsupported("alpha-to-one", "pipeline rejected"); reject = true; }
     if (a.viewportCount > 1) { vk64Unsupported("multi-viewport", "pipeline rejected"); reject = true; }
     if (a.vertexDivisor) { vk64Unsupported("vertex-attribute-divisor", "pipeline rejected"); reject = true; }
+    if (a.unsupportedVertexFormat) { vk64Unsupported("vertex-format", "pipeline rejected"); reject = true; }
     if (a.sampleCount != 1 && a.sampleCount != 4) { vk64Unsupported("sample-count", "pipeline rejected"); reject = true; }
     return reject;
 }
@@ -2934,6 +2936,9 @@ static bool v2FormatIsBlendable(U32 format) {
 static bool v2FormatIsDepthStencil(U32 format) {
     return v2FormatIn(format, kV2DepthStencilFormats);
 }
+static bool v2FormatIsSupportedVertex(U32 format) {
+    return v2FormatIn(format, kV2SupportedVertexFormats);
+}
 static bool v2FormatIsBC(U32 format) { return format >= 131 && format <= 146; }
 static bool v2WebGpuBcSupported() {
 #ifdef __EMSCRIPTEN__
@@ -2965,7 +2970,7 @@ static VkFormatFeatureFlags v2FormatFeatureFlags(U32 format) {
     return flags;
 }
 static VkFormatFeatureFlags v2FormatBufferFeatureFlags(U32 format) {
-    VkFormatFeatureFlags flags = v2FormatIn(format, kV2SupportedVertexFormats) ? VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT : 0;
+    VkFormatFeatureFlags flags = v2FormatIsSupportedVertex(format) ? VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT : 0;
     return flags;
 }
 static VkFormatFeatureFlags2 v2FormatFeatureFlags2(U32 format) {
@@ -5354,6 +5359,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 p->rasterizerDiscard = rs.rasterizerDiscardEnable ? 1 : 0;
                 audit.logicOp = cbs.logicOpEnable;
                 audit.depthBounds = ds.depthBoundsTestEnable;
+                for (U32 a = 0; a < p->nva; ++a)
+                    if (!v2FormatIsSupportedVertex(p->vaFormat[a])) audit.unsupportedVertexFormat = true;
                 if (readStruct(ci.pVertexInputState, vi))
                     for (U64 cur = vi.pNext; cur && g_mem; cur = g_mem->readq(cur + 8)) {
                         if (g_mem->readd(cur) != 1000190001u) continue;   // VkPipelineVertexInputDivisorStateCreateInfoEXT
@@ -8511,6 +8518,8 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 p->rasterizerDiscard = rs.rasterizerDiscardEnable ? 1 : 0;
                 audit.logicOp = cbs.logicOpEnable;
                 audit.depthBounds = ds.depthBoundsTestEnable;
+                for (U32 a = 0; a < p->nva; ++a)
+                    if (!v2FormatIsSupportedVertex(p->vaFormat[a])) audit.unsupportedVertexFormat = true;
                 {
                     vk32abi::VkPipelineVertexInputStateCreateInfo vi32 = {};
                     if (readStruct32(ci.pVertexInputState, vi32))

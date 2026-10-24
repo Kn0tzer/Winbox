@@ -42,3 +42,13 @@ test('unsupported graphics pipeline state is warned and rejected in the shared a
   ]) assert.ok(manifest.notAdvertised.includes(capability), `${capability} must remain disabled`);
   for (const extension of ['VK_EXT_mesh_shader']) assert.ok(manifest.notAdvertisedExtensions.includes(extension), `${extension} must remain absent`);
 });
+
+test('unsupported vertex formats fail pipeline creation in both guest ABIs', () => {
+  const body = functionBody(bridge, 'static bool vk64AuditGraphicsPipeline(');
+  assert.match(body, /if \(a\.unsupportedVertexFormat\) \{ vk64Unsupported\("vertex-format", "pipeline rejected"\); reject = true; \}/);
+  assert.equal((bridge.match(/audit\.unsupportedVertexFormat = true/g) || []).length, 2,
+    '64-bit and 32-bit pipeline creation must reject vertex formats outside VkFormatFeatureFlags');
+  assert.equal((bridge.match(/v2FormatIsSupportedVertex\(p->vaFormat\[a\]\)/g) || []).length, 2);
+  assert.match(bridge, /static bool v2FormatIsSupportedVertex\(U32 format\)[\s\S]*?return v2FormatIn\(format, kV2SupportedVertexFormats\);/);
+  assert.match(bridge, /v2FormatBufferFeatureFlags\(U32 format\)\s*\{\s*VkFormatFeatureFlags flags = v2FormatIsSupportedVertex\(format\)/);
+});
