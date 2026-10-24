@@ -36,3 +36,13 @@ test('fullscreen EWMH transitions restore window geometry and advertise supporte
   assert.match(window, /isFullScreen = false;[\s\S]*?moveResize\(restoreRect\.x, restoreRect\.y, restoreRect\.width, restoreRect\.height\)/);
   assert.match(server, /const U32 supported\[\] = \{_NET_WM_STATE, _NET_WM_STATE_FULLSCREEN, _NET_WM_STATE_ABOVE,[\s\S]*?_NET_ACTIVE_WINDOW, _NET_WM_NAME, _NET_WM_ICON\}/);
 });
+
+test('XConfigureWindow sibling requests reorder children and reject invalid sibling windows', () => {
+  const src = readFileSync(new URL('../../../../source/x11/xwindow.cpp', import.meta.url), 'utf8');
+  const configure = src.match(/int XWindow::configure\(U32 mask, XWindowChanges\* changes\) \{[\s\S]*?\n}/)?.[0];
+  assert.ok(configure);
+  assert.doesNotMatch(configure, /CWSibling[\s\S]*?kpanic/);
+  assert.match(configure, /if \(changes->sibling && !sibling\) return BadWindow/);
+  assert.match(configure, /sibling->parent != parent/);
+  assert.match(configure, /zchildren\.insert\(parent->zchildren\.begin\(\) \+ position, self\)/);
+});

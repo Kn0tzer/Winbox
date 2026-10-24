@@ -580,6 +580,8 @@ int XWindow::handleNetWmStatePropertyEvent(const XEvent& event) {
 	else setProperty(event.xclient.message_type, XA_ATOM, 32, (U32)(states.size() * 4), (const U8*)states.data());
 
 	const bool fullscreen = std::find(states.begin(), states.end(), _NET_WM_STATE_FULLSCREEN) != states.end();
+	const bool wasAbove = std::find(existing.begin(), existing.end(), _NET_WM_STATE_ABOVE) != existing.end();
+	const bool isAbove = std::find(states.begin(), states.end(), _NET_WM_STATE_ABOVE) != states.end();
 	if (fullscreen != isFullScreen && !attributes.override_redirect) {
 		if (fullscreen) {
 			restoreRect.x = left; restoreRect.y = top; restoreRect.width = (U16)width(); restoreRect.height = (U16)height();
@@ -590,6 +592,11 @@ int XWindow::handleNetWmStatePropertyEvent(const XEvent& event) {
 			isFullScreen = false;
 			moveResize(restoreRect.x, restoreRect.y, restoreRect.width, restoreRect.height);
 		}
+	}
+	if (isAbove != wasAbove) {
+		XWindowChanges changes = {};
+		changes.stack_mode = isAbove ? 0 /* Above */ : 1 /* Below */;
+		configure(CWStackMode, &changes);
 	}
 	return Success;
 }
@@ -1032,17 +1039,37 @@ int XWindow::configure(U32 mask, XWindowChanges* changes) {
 	if (mask & CWBorderWidth) {
 		border_width = changes->border_width;
 	}
-	if (mask & CWSibling) {
-		kpanic("XReconfigureWMWindow CWSibling not handled");
-	}
-	if (mask & CWStackMode) {
-		if (parent) {
-			BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(parent->childrenMutex);
-			int index = vectorIndexOf(parent->zchildren, shared_from_this());
-			if (index >= 0 && index < (int)parent->zchildren.size() - 1) {
-				parent->zchildren.erase(parent->zchildren.begin() + index);
-				parent->zchildren.push_back(shared_from_this());
+	if ((mask & CWSibling) && (mask & CWStackMode)) {
+		XWindowPtr sibling = XServer::getServer()->getWindow(changes->sibling);
+		if (changes->sibling && !sibling) return BadWindow;
+		if (!parent || (sibling && sibling->parent != parent) || sibling.get() == this) return BadMatch;
+		BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(parent->childrenMutex);
+		int current = vectorIndexOf(parent->zchildren, shared_from_this());
+		if (current >= 0) {
+			XWindowPtr self = parent->zchildren[current];
+			parent->zchildren.erase(parent->zchildren.begin() + current);
+			int siblingIndex = sibling ? vectorIndexOf(parent->zchildren, sibling) : -1;
+			int position = 0;
+			switch (changes->stack_mode) {
+				case 0: position = sibling ? siblingIndex + 1 : (int)parent->zchildren.size(); break; // Above
+				case 1: position = sibling ? siblingIndex : 0; break; // Below
+				case 2: position = sibling ? siblingIndex + 1 : (int)parent->zchildren.size(); break; // TopIf
+				case 3: position = sibling ? siblingIndex : 0; break; // BottomIf
+				case 4: position = sibling ? siblingIndex + 1 : (int)parent->zchildren.size(); break; // Opposite
+				default: return BadValue;
 			}
+			position = std::max(0, std::min(position, (int)parent->zchildren.size()));
+			parent->zchildren.insert(parent->zchildren.begin() + position, self);
+		}
+	} else if ((mask & CWStackMode) && parent) {
+		if (changes->stack_mode < 0 || changes->stack_mode > 4) return BadValue;
+		BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(parent->childrenMutex);
+		int index = vectorIndexOf(parent->zchildren, shared_from_this());
+		if (index >= 0) {
+			XWindowPtr self = parent->zchildren[index];
+			parent->zchildren.erase(parent->zchildren.begin() + index);
+			const int position = changes->stack_mode == 1 || changes->stack_mode == 3 ? 0 : (int)parent->zchildren.size();
+			parent->zchildren.insert(parent->zchildren.begin() + position, self);
 		}
 	}
 	if (sizeChanged) {
