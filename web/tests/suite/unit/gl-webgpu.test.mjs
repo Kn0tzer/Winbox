@@ -640,7 +640,8 @@ test('fixed-function GL_COMBINE defaults to modulating the previous color by eac
     gl.texEnvi(0x2300, 0x2200, 0x8570);
     assert.equal(gl.getError(), 0);
     const program = gl._fixedFunctionProgram([0, 1], true, false, 0x0207, gl._fixedFunction.texEnv);
-    assert.match(program.stages.fragment.wgsl, /color = color \* texel0/);
+    assert.match(program.stages.fragment.wgsl, /color\.rgb \* texel0\.rgb/);
+    assert.match(program.stages.fragment.wgsl, /color\.a \* texel0\.a/);
     assert.match(program.stages.fragment.wgsl, /color = color \* texel1/);
   } finally { gpu.restore(); }
 });

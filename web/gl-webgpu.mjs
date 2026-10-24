@@ -1756,7 +1756,8 @@ export class WebGPUGL {
     };
   }
 
-  _fixedFunctionProgram(textureUnits, colorArray, alphaEnabled, alphaFunc, texEnv, texEnvCombine, texEnvColor) {
+  _fixedFunctionProgram(textureUnits, colorArray, alphaEnabled, alphaFunc, texEnv,
+    texEnvCombine=this._fixedFunction.texEnvCombine, texEnvColor=this._fixedFunction.texEnvColor) {
     const key = stateKey([textureUnits, colorArray, alphaEnabled ? alphaFunc : 0x0207,
       textureUnits.map(unit => [texEnv[unit],texEnvCombine[unit]]), this._clipControl]);
     if (this._fixedFunctionProgramCache.has(key)) return this._fixedFunctionProgramCache.get(key);
@@ -1828,7 +1829,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
         vertex: { wgsl: vertex, layout: vertexLayout, activeUniforms: [], samplers: [] },
         fragment: { wgsl: fragment, layout: fragmentLayout, activeUniforms: [],
           samplers: textureUnits.map(unit => ({ name: `u_fixedTexture${unit}`, textureBinding: 2 + unit * 2,
-            samplerBinding: 3 + unit * 2, arrayLength: 1 })) },
+            samplerBinding: 3 + unit * 2, target: GL.TEXTURE_2D, type: 'sampler2D', arrayLength: 1 })) },
       },
     };
     this._fixedFunctionProgramCache.set(key, program);
