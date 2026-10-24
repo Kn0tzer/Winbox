@@ -1177,13 +1177,45 @@ static U32 syscall_mincore(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_madvise(CPU* cpu, U32 eipCount) {    
-    if (bw64RecoverEnabled() && ARG3 > 16) {
-        bw64RecoverLogOnce("syscall.madvise.unknown", "unsupported madvise advice; returned EINVAL");
-        return -K_EINVAL;
+    const U32 addr = ARG1;
+    const U32 length = ARG2;
+    const U32 advice = ARG3;
+    switch (advice) {
+        case 0: case 1: case 2: case 3: case 4: case 8: case 9: case 10: case 11:
+        case 12: case 13: case 14: case 15: case 16: case 17: case 18: case 19:
+        case 20: case 21: case 22: case 23: case 24: case 25: case 100: case 101: case 102: case 103:
+            break;
+        default:
+            return -K_EINVAL;
     }
-    U32 result = 0;
-    SYS_LOG1(SYSCALL_MEMORY, cpu, "madvise: address=%X len=%d advise=%d result=%d(0x%X) IGNORED\n", ARG1, ARG2, ARG3, result, result);
-    return result;
+    if (advice == 100 || advice == 101) {
+        static std::atomic<U32> warned{0};
+        const U32 bit = 1u << (advice - 100);
+        if (!(warned.fetch_or(bit, std::memory_order_relaxed) & bit)) {
+            kwarn_fmt("madvise advice %u (page poison/offline) unsupported; returned EPERM", advice);
+        }
+        return -K_EPERM;
+    }
+    if (!length || (addr & K_PAGE_MASK) || (U64)addr + length > 0x100000000ULL) return -K_EINVAL;
+    const U32 firstPage = addr >> K_PAGE_SHIFT;
+    const U32 lastPage = (addr + length - 1) >> K_PAGE_SHIFT;
+    for (U32 page = firstPage;; ++page) {
+        if (!cpu->memory->isPageMapped(page)) return -K_ENOMEM;
+        if (page == lastPage) break;
+    }
+    if (advice == 4 || advice == 24) { // MADV_DONTNEED[_LOCKED] discards private anonymous contents.
+        for (U32 page = firstPage;; ++page) {
+            if (!cpu->memory->mapShared(page)) cpu->memory->memset(page << K_PAGE_SHIFT, 0, K_PAGE_SIZE);
+            if (page == lastPage) break;
+        }
+    } else if (advice == 3 || advice == 22 || advice == 23) { // WILLNEED / POPULATE_*.
+        for (U32 page = firstPage;; ++page) {
+            cpu->memory->getRamPtr(page << K_PAGE_SHIFT, 1, false, true);
+            if (page == lastPage) break;
+        }
+    }
+    SYS_LOG1(SYSCALL_MEMORY, cpu, "madvise: address=%X len=%d advise=%d result=0\n", addr, length, advice);
+    return 0;
 }
 
 static U32 syscall_getdents64(CPU* cpu, U32 eipCount) {

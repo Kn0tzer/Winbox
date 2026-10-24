@@ -59,6 +59,9 @@
 void testWaitPid();
 void testSyscall64DispatchGuard();
 void testFutex64DispatchGuard();
+#ifndef BOXEDWINE_GUEST_X64
+void testMadvise32Syscall();
+#endif
 void testInetDatagramLoopback();
 void testInetStreamLoopback();
 void testGl64ClientArrayIndexRange();
@@ -72,6 +75,7 @@ void testTimerfd64Syscalls();
 void testCopyFileRange64Syscall();
 void testProcessVm64Syscalls();
 void testEpollPwait2Syscall();
+void testMadvise64Effects();
 void testPidfd64Syscalls();
 void testInotify64LoudRejection();
 void testSignalfd64Syscalls();
@@ -96,6 +100,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},
     {testProcessVm64Syscalls, "Test x64 process_vm_readv/writev syscalls"},
     {testEpollPwait2Syscall, "Test x64 epoll_pwait2 syscall"},
+    {testMadvise64Effects, "Test x64 madvise side effects"},
     {testPidfd64Syscalls, "Test x64 pidfd_open/send_signal syscalls"},
     {testInotify64LoudRejection, "Test loud x64 inotify rejection"},
     {testSignalfd64Syscalls, "Test x64 signalfd create and update"},
@@ -711,6 +716,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testLockedInc, "Test Multi-threaded locked inc"},
 #endif
     {testWaitPid, "Test waitpid child selection"},
+    {testMadvise32Syscall, "Test 32-bit madvise syscall effects"},
     {testSyscall64DispatchGuard, "Test x64 syscall fallback guard"},
     {testFutex64DispatchGuard, "Test x64 futex dispatch guard"},
     {testTimerfdCore, "Test timerfd descriptor and expiration semantics"},

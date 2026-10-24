@@ -74,6 +74,43 @@ void testEpollPwait2Syscall() {
     process->close(eventFd->handle);
 }
 
+void testMadvise64Effects() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+    constexpr U64 page = 0x75000000ULL;
+    if (!memory->getPageFlags(page >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(page, 2 * K64_PAGE_SIZE, 3) != page) {
+        testFail("madvise test could not map x64 buffers");
+        return;
+    }
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto syscall = [&](U64 address, U64 length, U64 advice) {
+        cpu.reg[X64_RAX].setU64(28);
+        cpu.reg[X64_RDI].setU64(address);
+        cpu.reg[X64_RSI].setU64(length);
+        cpu.reg[X64_RDX].setU64(advice);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    memory->writeq(page, 0x1122334455667788ULL);
+    if (syscall(page, K64_PAGE_SIZE, 4) != 0 || memory->readq(page) != 0) {
+        testFail("MADV_DONTNEED did not zero private anonymous contents");
+    }
+    if (memory->getCommittedPagePtr((page >> K64_PAGE_SHIFT) + 1) || syscall(page + K64_PAGE_SIZE, 1, 3) != 0 ||
+        !memory->getCommittedPagePtr((page >> K64_PAGE_SHIFT) + 1)) {
+        testFail("MADV_WILLNEED did not populate the mapped page");
+    }
+    memory->writeq(page, 0x8877665544332211ULL);
+    if (syscall(page, K64_PAGE_SIZE, 8) != 0 || memory->readq(page) != 0x8877665544332211ULL ||
+        syscall(page, K64_PAGE_SIZE, 999) != -K_EINVAL ||
+        syscall(page, K64_PAGE_SIZE, 100) != -K_EPERM || syscall(page, K64_PAGE_SIZE, 101) != -K_EPERM) {
+        testFail("MADV_FREE hint or invalid advice handling was incorrect");
+    }
+}
+
 void testProcessVm64Syscalls() {
     TestContext& context = testContext();
     KProcessPtr process = context.process;

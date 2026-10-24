@@ -3247,14 +3247,42 @@ static U64 sys_madvise64(CPU64* cpu, U64 addr, U64 length, U64 advice) {
     switch (advice) {
         case 0: case 1: case 2: case 3: case 4: case 8: case 9:
         case 10: case 11: case 12: case 13: case 14: case 15: case 16:
-        case 17: case 18: case 19: case 20: case 21: case 22: case 23:
-        case 25: case 102: case 103:
+        case 17: case 18: case 19: case 20: case 21: case 22: case 23: case 24:
+        case 25: case 100: case 101: case 102: case 103:
             break;
         default:
             return (U64)-K_EINVAL;
     }
+    if (advice == 100 || advice == 101) { // page poisoning requires host privileges and page-state support.
+        static std::atomic<U32> warned{0};
+        const U32 bit = 1u << (advice - 100);
+        if (!(warned.fetch_or(bit, std::memory_order_relaxed) & bit)) {
+            klog_fmt("ksyscall64: madvise advice %llu (page poison/offline) unsupported; returned -EPERM",
+                     (unsigned long long)advice);
+        }
+        return (U64)-K_EPERM;
+    }
     if (!length || addr > ~0ULL - (length - 1)) return (U64)-K_EINVAL;
-    return sys_rangeMapped64(cpu, addr, length) ? 0 : (U64)-K_ENOMEM;
+    if (!sys_rangeMapped64(cpu, addr, length)) return (U64)-K_ENOMEM;
+    if (advice == 4 || advice == 24) { // MADV_DONTNEED[_LOCKED]: private anonymous pages read as zero again.
+        const U64 firstPage = addr >> K64_PAGE_SHIFT;
+        const U64 lastPage = (addr + length - 1) >> K64_PAGE_SHIFT;
+        for (U64 page = firstPage;; ++page) {
+            const U32 flags = cpu->memory->getPageFlags(page);
+            if (!(flags & K64_PAGE_SHARED) && cpu->memory->getCommittedPagePtr(page)) {
+                cpu->memory->memsetGuest(page << K64_PAGE_SHIFT, 0, K64_PAGE_SIZE);
+            }
+            if (page == lastPage) break;
+        }
+    } else if (advice == 3 || advice == 22 || advice == 23) { // WILLNEED / POPULATE_READ / POPULATE_WRITE
+        const U64 firstPage = addr >> K64_PAGE_SHIFT;
+        const U64 lastPage = (addr + length - 1) >> K64_PAGE_SHIFT;
+        for (U64 page = firstPage;; ++page) {
+            cpu->memory->getRamPtr(page << K64_PAGE_SHIFT, 1);
+            if (page == lastPage) break;
+        }
+    }
+    return 0;
 }
 
 static bool sys_numaModeValid(U64 mode) {
