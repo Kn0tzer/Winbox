@@ -25,6 +25,7 @@
 #include "kepoll.h"
 #include "kpoll.h"
 #include "ksignal.h"
+#include "kstat.h"
 #include "ripSampler.h"
 #include "guestprofiler.h"
 #include "bw64metrics.h"   // live frame-stage metrics (BW64_METRICS, default on)
@@ -3419,6 +3420,15 @@ static U64 sys_copyFileRange64(CPU64* cpu, U64 fdIn, U64 offInPtr, U64 fdOut,
     std::shared_ptr<KFile> input = std::dynamic_pointer_cast<KFile>(inFd->kobject);
     std::shared_ptr<KFile> output = std::dynamic_pointer_cast<KFile>(outFd->kobject);
     if (!input || !output) return (U64)-K_EINVAL;
+    const std::shared_ptr<FsNode> inputNode = input->openFile ? input->openFile->node : nullptr;
+    const std::shared_ptr<FsNode> outputNode = output->openFile ? output->openFile->node : nullptr;
+    if (!inputNode || !outputNode ||
+        (inputNode->getMode() & 0xF000) != K__S_IFREG ||
+        (outputNode->getMode() & 0xF000) != K__S_IFREG) return (U64)-K_EINVAL;
+    // The current VFS exposes independent backing stores by node type (host
+    // files, zip entries, virtual filesystems, and memfd memory files). Linux
+    // cannot perform copy_file_range across filesystem boundaries.
+    if (inputNode->type != outputNode->type) return (U64)-K_EXDEV;
     if ((offInPtr && !sys_rangeMapped64(cpu, offInPtr, 8)) ||
         (offOutPtr && !sys_rangeMapped64(cpu, offOutPtr, 8))) return (U64)-K_EFAULT;
     S64 inOffset = offInPtr ? (S64)cpu->memory->readq(offInPtr) : input->getPos();

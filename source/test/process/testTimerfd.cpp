@@ -12,6 +12,11 @@
 #ifdef __TEST
 
 #include "../../io/fsfilenode.h"
+#include "../../io/fsfileopennode.h"
+#include "../../io/fsvirtualnode.h"
+#include "../../io/fs.h"
+#include "kevent.h"
+#include "kstat.h"
 #include "../cpu/testCPU.h"
 #ifdef BOXEDWINE_GUEST_X64
 #include "cpu64.h"
@@ -226,6 +231,24 @@ void testCopyFileRange64Syscall() {
     if (result != 2 || input->getPos() != 2 || output->getPos() != 2) {
         testFail("copy_file_range current-offset copy did not advance file positions");
     }
+
+    auto event = std::make_shared<KEvent>();
+    KFileDescriptorPtr eventFd = process->allocFileDescriptor(event, K_O_RDWR, 0, -1, 0);
+    if (syscall(326, eventFd->handle, 0, outFd, 0, 1, 0) != (U64)-K_EINVAL) {
+        testFail("copy_file_range accepted a special eventfd as a regular file");
+    }
+
+    // The x64 fixture does not mount a guest root. Construct a file-backed
+    // descriptor directly to exercise the VFS type mismatch with a memfd.
+    auto fileNode = std::make_shared<FsFileNode>(0x3FFFFFFE, 0, B("/copy-file-range-source"), B(""),
+                                                 B("/tmp"), false, false, nullptr);
+    auto fileObject = std::make_shared<KFile>(new FsFileOpenNode(fileNode, K_O_RDONLY, 0));
+    KFileDescriptorPtr fileFd = process->allocFileDescriptor(fileObject, K_O_RDONLY, 0, -1, 0);
+    if (syscall(326, fileFd->handle, 0, outFd, 0, 1, 0) != (U64)-K_EXDEV) {
+        testFail("copy_file_range did not return EXDEV across file-node and memfd backing");
+    }
+    process->close(fileFd->handle);
+    process->close(eventFd->handle);
     process->close(inFd); process->close(outFd);
 }
 #endif
