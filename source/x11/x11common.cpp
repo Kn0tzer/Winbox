@@ -1681,13 +1681,38 @@ static void x11_GetPixel(CPU* cpu) {
     kpanic("x11_GetPixel");
 }
 
+// int XPutPixel(XImage* ximage, int x, int y, unsigned long pixel)
+//
+// XPutPixel edits the image in client memory; the server is not involved. A pixel outside the image is ignored.
+// Only byte-aligned depths with xoffset 0 are written; the others are logged once and not written.
 static void x11_PutPixel(CPU* cpu) {
-    // Not implemented: XPutPixel drops the pixel. Log once so the drop is visible without flooding the log.
-    static bool loggedDrop = false;
-    if (!loggedDrop) {
-        loggedDrop = true;
-        klog("x11_PutPixel not implemented: XPutPixel pixels are dropped");
+    KMemory* memory = cpu->memory;
+    XImage image;
+    XImage::read(memory, ARG1, &image);
+    S32 x = (S32)ARG2;
+    S32 y = (S32)ARG3;
+    U32 pixel = ARG4;
+    if (x < 0 || y < 0 || x >= image.width || y >= image.height) {
+        EAX = 0;
+        return;
     }
+    if (image.bits_per_pixel <= 0 || image.bits_per_pixel % 8 || image.xoffset) {
+        static bool loggedUnhandled = false;
+        if (!loggedUnhandled) {
+            loggedUnhandled = true;
+            klog("x11_PutPixel not handled: XPutPixel with bits per pixel or xoffset not supported");
+        }
+        EAX = 0;
+        return;
+    }
+    S32 bytes = image.bits_per_pixel / 8;
+    U32 address = image.data + (U32)image.bytes_per_line * y + (U32)x * bytes;
+    for (S32 i = 0; i < bytes; i++) {
+        // the least significant byte goes first unless the image is MSBFirst
+        S32 shift = image.byte_order == MSBFirst ? bytes - 1 - i : i;
+        memory->writeb(address + i, (U8)(pixel >> (8 * shift)));
+    }
+    EAX = 1;
 }
 
 static void x11_SubImage(CPU* cpu) {

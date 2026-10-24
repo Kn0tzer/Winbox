@@ -73,6 +73,7 @@ struct XGCValues {
     S32 function = GXcopy; U32 foreground = 0; S32 fill_style = FillSolid; U32 tile = 0;
     S32 ts_x_origin = 0, ts_y_origin = 0, clip_x_origin = 0, clip_y_origin = 0;
     S32 fill_rule = EvenOddRule;
+    U32 clip_mask = 0;
 };
 class XDrawable;
 using XDrawablePtr = std::shared_ptr<XDrawable>;

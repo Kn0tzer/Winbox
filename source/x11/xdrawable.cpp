@@ -83,57 +83,49 @@ void XDrawable::setSize(U32 width, U32 height) {
 }
 
 int XDrawable::putImage(KThread* thread, const std::shared_ptr<XGC>& gc, XImage* image, S32 src_x, S32 src_y, S32 dest_x, S32 dest_y, U32 width, U32 height) {
-	if (gc->values.function != GXcopy) {
-		kwarn_fmt("XPixmap::putImage function not supported %d", gc->values.function);
-	}
 	return copyImageData(thread, gc, image->data, image->bytes_per_line, image->bits_per_pixel, src_x, src_y, dest_x, dest_y, width, height);
 }
+
+static void logClipMaskOnce(const XGC* gc);
 
 int XDrawable::copyImageData(KThread* thread, const std::shared_ptr<XGC>& gc, U32 data, U32 bytes_per_line, S32 bits_per_pixel, S32 src_x, S32 src_y, S32 dst_x, S32 dst_y, U32 width, U32 height) {
 	if (bits_per_pixel != this->visual->bits_per_rgb) {
 		return BadMatch;
 	}
-	if (gc && (gc->clip_rects.size() || gc->values.clip_mask || gc->values.clip_x_origin || gc->values.clip_y_origin)) {
-		//klog("XDrawable::copyImageData clipping not implemented");
+	logClipMaskOnce(gc.get());
+	if (bits_per_pixel % 8) {
+		kwarn_fmt("XDrawable::copyImageData %d-bit images not handled", bits_per_pixel);
+		return Success;
+	}
+	// only the part of the image that lands inside the drawable is copied; a negative destination is cut off, not written
+	const S32 x0 = std::max(dst_x, 0);
+	const S32 y0 = std::max(dst_y, 0);
+	const S32 x1 = std::min(dst_x + (S32)width, (S32)w);
+	const S32 y1 = std::min(dst_y + (S32)height, (S32)h);
+	if (x1 <= x0 || y1 <= y0) {
+		return Success;
+	}
+	const bool fast = !gc || (gc->values.function == GXcopy && gc->clip_rects.empty());
+	if (!fast && bits_per_pixel != 32) {
+		kwarn_fmt("XDrawable::copyImageData function or clip with %d-bit images not handled", bits_per_pixel);
+		return Success;
 	}
 	BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(mutex);
-	U32 src = data + bytes_per_line * src_y + (bits_per_pixel * src_x + 7) / 8;
-	U8* dst = this->data + this->bytes_per_line * dst_y + (bits_per_pixel * dst_x + 7) / 8;
 	KMemory* memory = thread->memory;
-	if (dst_x + width > w) {
-		if ((S32)w < dst_x) {
-			return Success;
+	const U32 bytesPerPixel = bits_per_pixel / 8;
+	const U32 count = (U32)(x1 - x0);
+	for (S32 y = y0; y < y1; y++) {
+		const U32 src = data + bytes_per_line * (U32)(src_y + y - dst_y) + bytesPerPixel * (U32)(src_x + x0 - dst_x);
+		U8* dst = this->data + this->bytes_per_line * y + bytesPerPixel * x0;
+		if (!memory->canRead(src, count * bytesPerPixel)) {
+			return BadValue;
 		}
-		width = w - dst_x;
-	}
-	if (dst_y + (S32)height > (S32)h) {
-		if ((S32)h < dst_y) {
-			return Success;
-		}
-		height = h - dst_y;
-	}
-	U32 copyPerLine = (bits_per_pixel * width + 7) / 8;
-
-	if (!gc || gc->values.function == GXcopy) {
-		for (U32 y = 0; y < height; y++) {
-			if (!memory->canRead(src, copyPerLine)) {
-				return BadValue;
+		if (fast) {
+			memory->memcpy(dst, src, count * bytesPerPixel);
+		} else {
+			for (U32 x = 0; x < count; x++) {
+				plotPixel(gc, x0 + (S32)x, y, memory->readd(src + x * 4));
 			}
-			memory->memcpy(dst, src, copyPerLine);
-			src += bytes_per_line;
-			dst += this->bytes_per_line;
-		}
-	} else if (gc->values.function == GXxor && bits_per_pixel == 32) {
-		for (U32 y = 0; y < height; y++) {
-			if (!memory->canRead(src, copyPerLine)) {
-				return BadValue;
-			}
-			U32* dstPixel = (U32*)dst;
-			for (U32 x = 0; x < width; x++) {
-				dstPixel[x] ^= memory->readd(src + x * 4);
-			}			
-			src += bytes_per_line;
-			dst += this->bytes_per_line;
 		}
 	}
 	setDirty();
@@ -144,30 +136,44 @@ int XDrawable::copy(KThread* thread, const std::shared_ptr<XGC>& gc, const std::
 	if (srcDrawable->visual->bits_per_rgb != this->visual->bits_per_rgb) {
 		return BadMatch;
 	}
-	if (gc && (gc->clip_rects.size() || gc->values.clip_mask || gc->values.clip_x_origin || gc->values.clip_y_origin)) {
-		//klog("XDrawable::copyImageData clipping not implemented");
+	logClipMaskOnce(gc.get());
+	const S32 bits = this->visual->bits_per_rgb;
+	if (bits % 8) {
+		kwarn_fmt("XDrawable::copy %d-bit drawables not handled", bits);
+		return Success;
 	}
-	U8* src = srcDrawable->data + srcDrawable->bytes_per_line * srcY + (srcDrawable->visual->bits_per_rgb * srcX + 7) / 8;
-	U8* dst = this->data + this->bytes_per_line * dstY + (this->visual->bits_per_rgb * dstX + 7) / 8;
-
-	if (dstX + width > w) {
-		if ((S32)w < dstX) {
-			return Success;
+	// the destination pixels that have a source pixel inside the source drawable and a place inside this drawable
+	const S32 x0 = std::max({dstX, 0, dstX - srcX});
+	const S32 x1 = std::min({dstX + (S32)width, (S32)w, dstX - srcX + (S32)srcDrawable->w});
+	const S32 y0 = std::max({dstY, 0, dstY - srcY});
+	const S32 y1 = std::min({dstY + (S32)height, (S32)h, dstY - srcY + (S32)srcDrawable->h});
+	if (x1 <= x0 || y1 <= y0) {
+		return Success;
+	}
+	const bool fast = !gc || (gc->values.function == GXcopy && gc->clip_rects.empty());
+	if (!fast && bits != 32) {
+		kwarn_fmt("XDrawable::copy function or clip with %d-bit drawables not handled", bits);
+		return Success;
+	}
+	const U32 bytesPerPixel = bits / 8;
+	const S32 count = x1 - x0;
+	std::vector<U32> run(count);
+	// with one drawable as source and destination, a copy moved down must start from the bottom row so no row is read after it is written
+	const bool backwards = srcDrawable.get() == this && dstY > srcY;
+	for (S32 i = 0; i < y1 - y0; i++) {
+		const S32 y = backwards ? y1 - 1 - i : y0 + i;
+		const U8* srcRow = srcDrawable->data + srcDrawable->bytes_per_line * (y - dstY + srcY) + bytesPerPixel * (x0 - dstX + srcX);
+		if (fast) {
+			memmove(this->data + this->bytes_per_line * y + bytesPerPixel * x0, srcRow, bytesPerPixel * count);
+			continue;
 		}
-		width = w - dstX;
-	}
-	if (dstY + (S32)height > (S32)h) {
-		if ((S32)h < dstY) {
-			return Success;
+		// the whole source run is read before any of it is written, so an overlapping copy in one drawable is correct
+		for (S32 x = 0; x < count; x++) {
+			run[x] = *(const U32*)(srcRow + x * 4);
 		}
-		height = h - dstY;
-	}
-	U32 copyPerLine = (this->visual->bits_per_rgb * width + 7) / 8;
-
-	for (U32 y = 0; y < height; y++) {
-		memcpy(dst, src, copyPerLine);
-		src += srcDrawable->bytes_per_line;
-		dst += this->bytes_per_line;
+		for (S32 x = 0; x < count; x++) {
+			plotPixel(gc, x0 + x, y, run[x]);
+		}
 	}
 	setDirty();
 	return Success;
@@ -196,9 +202,18 @@ static U32 combinePixel(S32 function, U32 src, U32 dst) {
 	}
 }
 
+// A clip_mask pixmap is not applied. Logged once, so a game that sets one shows in the log without a line per pixel.
+static void logClipMaskOnce(const XGC* gc) {
+	static bool logged = false;
+	if (gc && gc->values.clip_mask && !logged) {
+		logged = true;
+		kwarn_fmt("XDrawable clip_mask pixmap not handled, the clip is ignored");
+	}
+}
+
 // With clip rectangles set, a pixel is drawn only when one rectangle contains it, offset by the clip origin.
-// A clip_mask bitmap is not applied here.
 static bool clipAllows(const XGC* gc, S32 x, S32 y) {
+	logClipMaskOnce(gc);
 	if (gc->clip_rects.empty()) {
 		return true;
 	}
