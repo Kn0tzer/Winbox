@@ -2913,7 +2913,15 @@ static void hopV2LastToPage() {
                 try {
                     const bytes = new Uint8Array(HEAPU8.buffer, $0 >>> 0, $1 >>> 0).slice();
                     window.bwVkChunk(bytes, $2);
-                } catch (e) {}
+                } catch (e) {
+                    globalThis.__bwVkChunkErrors = (globalThis.__bwVkChunkErrors || 0) + 1;
+                    const n = globalThis.__bwVkChunkErrors;
+                    if (n <= 4 || (n & (n - 1)) === 0) console.warn('vk64: UNSUPPORTED v2-chunk-handler-threw x' + n + ': ' + (e && e.message || e));
+                }
+            } else {
+                globalThis.__bwVkChunkNoPage = (globalThis.__bwVkChunkNoPage || 0) + 1;
+                const n = globalThis.__bwVkChunkNoPage;
+                if (n <= 4 || (n & (n - 1)) === 0) console.warn('vk64: UNSUPPORTED v2-no-page-consumer x' + n + ' (frame chunk dropped: window.bwVkChunk is not installed)');
             }
         }, ptr, len, (U32)0);
     }
@@ -5103,23 +5111,16 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkCreateComputePipelines: {
         // (device, cache, n, pCreateInfos*, pAllocator, out VkPipeline*)
-        // vkd3d-proton builds internal compute pipelines (clear-UAV ops) during
-        // device creation; without this the benign stub returns -2 and
-        // D3D12CreateDevice fails E_OUTOFMEMORY. Capture is minimal: the
-        // compute shader module + layout, enough for the page tier to key on.
+        // Compute shader modules are refused at vkCreateShaderModule (spirv-compute-entry) because the
+        // V2 protocol has no dispatch record and the WGSL translator has no compute path, so a compute
+        // pipeline can never be valid. Say so now instead of handing out a pipeline whose dispatches
+        // vanish at submit: null handles, VK_ERROR_FEATURE_NOT_PRESENT (shared with graphics rejection).
         U32 n = (U32)args.a[2];
         if (!objOf<Device>(args.a[0], K_DEVICE, "vkCreateComputePipelines") || !n || !args.a[3] || !args.a[5])
             return VK_ERROR_INITIALIZATION_FAILED;
-        for (U32 i = 0; i < n; i++) {
-            VkComputePipelineCreateInfo ci = {};
-            g_mem->memcpyFromGuest(&ci, args.a[3] + (U64)i * sizeof(ci), sizeof(ci));
-            U64 id = 0;
-            Pipeline* pl = createObj<Pipeline>(K_PIPELINE, id);
-            pl->cs = ci.stage.module;
-            pl->layout = ci.layout;
-            wr64(args.a[5] + (U64)i * 8, id);
-        }
-        return VK_SUCCESS;
+        for (U32 i = 0; i < n; i++) wr64(args.a[5] + (U64)i * 8, 0);
+        vk64Unsupported("compute-pipeline", "compute pipelines are not supported (no V2 dispatch record); VK_ERROR_FEATURE_NOT_PRESENT");
+        return VK_ERROR_FEATURE_NOT_PRESENT;
     }
     case VK64_fn_vkCreatePipelineLayout: {
         VkPipelineLayoutCreateInfo ci = {};
@@ -9526,12 +9527,9 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         if (!args.a[4]) return VK_ERROR_INITIALIZATION_FAILED;
         U32 count = (U32)args.a[2];
         U32 outAddr = (U32)args.a[4];
-        for (U32 i = 0; i < count; i++) {
-            U64 id = 0;
-            createObj32<Pipeline>(K_PIPELINE, id);
-            wr64_32(outAddr + i * 8, id);
-        }
-        return VK_SUCCESS;
+        for (U32 i = 0; i < count; i++) wr64_32(outAddr + i * 8, 0);
+        vk64Unsupported("compute-pipeline", "compute pipelines are not supported (no V2 dispatch record); VK_ERROR_FEATURE_NOT_PRESENT");
+        return VK_ERROR_FEATURE_NOT_PRESENT;
     }
     case VK64_fn_vkCreateBufferView: {
         if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;

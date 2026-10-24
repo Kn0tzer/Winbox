@@ -614,6 +614,13 @@ int main() {
     allocation32.allocationSize = 4096;
     memory32.memcpyToGuest(512, &allocation32, sizeof(allocation32));
     VK32Args args32{}; args32.a[1] = 512; args32.a[3] = 640;
+    {
+        const U64 before = vk64BridgeUnsupportedCount("compute-pipeline");
+        memory32.writeq(704, 0xdeadbeefull);
+        VK32Args cp{}; cp.a[2] = 1; cp.a[3] = 512; cp.a[4] = 704;
+        assert((S64)call32(VK64_fn_vkCreateComputePipelines, cp) == VK_ERROR_FEATURE_NOT_PRESENT);
+        assert(memory32.readq(704) == 0 && vk64BridgeUnsupportedCount("compute-pipeline") == before + 1);
+    }
     assert(call32(VK64_fn_vkAllocateMemory, args32) == VK_SUCCESS);
     U64 allocationId32 = memory32.readq(640);
     auto* allocation = objOf32<DeviceMemory>(allocationId32, K_MEMORY, "test");
@@ -1070,6 +1077,18 @@ int main() {
         memory.memcpyToGuest(128, &unimpl, sizeof(unimpl));
         assert((S64)vk64Bridge(&cpu, VK64_fn_unimplemented, 128) == VK_ERROR_FEATURE_NOT_PRESENT);
         assert(vk64BridgeUnsupportedCount("fn:vkFooBar") == 1);
+        // Compute pipelines can never be valid (compute modules are refused), so creation fails
+        // loudly with null handles rather than yielding a pipeline whose dispatches vanish.
+        {
+            const U64 before = vk64BridgeUnsupportedCount("compute-pipeline");
+            memory.writeq(3960, 0xdeadbeefull);
+            VK64Args cp{}; cp.a[0] = devId; cp.a[2] = 1; cp.a[3] = 3456; cp.a[5] = 3960;
+            memory.memcpyToGuest(128, &cp, sizeof(cp));
+            const size_t objsBefore = g_objs.size();
+            assert((S64)vk64Bridge(&cpu, VK64_fn_vkCreateComputePipelines, 128) == VK_ERROR_FEATURE_NOT_PRESENT);
+            assert(memory.readq(3960) == 0 && g_objs.size() == objsBefore);
+            assert(vk64BridgeUnsupportedCount("compute-pipeline") == before + 1);
+        }
         // Compute dispatch has no V2 record: submitting one is reported, never dropped quietly.
         U64 cbDispatchId; auto* cbDispatch = createObj<CmdBuf>(K_CMDBUF, cbDispatchId);
         vkCmdDispatch(cbDispatchId, 1, 1, 1);
