@@ -13,7 +13,7 @@ test('requested Vulkan texture formats map to WebGPU formats', () => {
   const formats = new Map([
     [76, 'r16float'], [83, 'rg16float'], [103, 'rg32float'],
     [98, 'r32uint'], [99, 'r32sint'], [124, 'depth16unorm'],
-    [125, 'depth24plus'], [126, 'depth32float'], [129, 'depth24plus-stencil8'],
+    [125, 'depth32float'], [126, 'depth32float'], [129, 'depth24plus-stencil8'],
   ]);
   for (const [vkFormat, expected] of formats)
     assert.equal(v2TextureFormat(vkFormat), expected, `VkFormat ${vkFormat}`);
@@ -37,7 +37,7 @@ test('D32 float-stencil uses depth24plus-stencil8 unless its optional format fea
   assert.equal(v2TextureFormat(130, null, new Set(['depth32float-stencil8'])), 'depth32float-stencil8');
 });
 
-test('depth and stencil uploads use separate WebGPU aspects and preserve stencil bytes', () => {
+test('depth and stencil uploads use separate WebGPU aspects and preserve depth/stencil values', () => {
   const d16 = Uint8Array.from([1, 2, 3, 4]);
   assert.deepEqual(v2DepthStencilUploads(124, d16).uploads.map(x => [x.aspect, [...x.pixels]]), [['depth-only', [1, 2, 3, 4]]]);
   const d24s8 = Uint8Array.from([1, 2, 3, 0xa5, 4, 5, 6, 0x5a]);
@@ -50,7 +50,12 @@ test('depth and stencil uploads use separate WebGPU aspects and preserve stencil
   assert.deepEqual(direct.uploads.map(x => [x.aspect, x.bytesPerTexel, [...x.pixels]]), [
     ['depth-only', 4, [1, 2, 3, 4]], ['stencil-only', 1, [0x81]],
   ]);
-  assert.deepEqual(v2DepthStencilUploads(125, Uint8Array.from([1, 2, 3, 4])), { uploads: [], skippedDepth: true });
+  const d24 = v2DepthStencilUploads(125, Uint8Array.from([0, 0, 0x80, 0, 0xff, 0xff, 0xff, 0]));
+  assert.equal(d24.skippedDepth, false);
+  assert.deepEqual(d24.uploads.map(x => [x.aspect, x.bytesPerTexel]), [['depth-only', 4]]);
+  const expandedDepth = new DataView(d24.uploads[0].pixels.buffer);
+  assert.ok(Math.abs(expandedDepth.getFloat32(0, true) - 0x800000 / 0xffffff) < 1e-7);
+  assert.equal(expandedDepth.getFloat32(4, true), 1);
 });
 
 test('legacy packed 16-bit color formats expand to RGBA8 in Vulkan component order', () => {

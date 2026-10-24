@@ -333,7 +333,7 @@ const V2_TEX_FORMAT = {
   137: 'bc3-rgba-unorm', 138: 'bc3-rgba-unorm-srgb',
   139: 'bc4-r-unorm', 140: 'bc4-r-snorm', 141: 'bc5-rg-unorm', 142: 'bc5-rg-snorm',
   143: 'bc6h-rgb-ufloat', 144: 'bc6h-rgb-float', 145: 'bc7-rgba-unorm', 146: 'bc7-rgba-unorm-srgb',
-  124: 'depth16unorm', 125: 'depth24plus', 126: 'depth32float', 129: 'depth24plus-stencil8', 130: 'depth24plus-stencil8',
+  124: 'depth16unorm', 125: 'depth32float', 126: 'depth32float', 129: 'depth24plus-stencil8', 130: 'depth24plus-stencil8',
 };
 const V2_NORM16_FORMATS = new Set([70, 77]);
 const V2_PACKED_RGBA8_FORMATS = new Set([2, 3, 5, 7, 8]);
@@ -483,7 +483,16 @@ export function v2DepthStencilUploads(vkFormat, bytes, features) {
     const bytesPerTexel = vkFormat === 124 ? 2 : 4;
     return { uploads: [{ aspect: /** @type {GPUTextureAspect} */ ('depth-only'), bytesPerTexel, pixels: new Uint8Array(bytes.subarray(0, texels * bytesPerTexel)) }], skippedDepth: false };
   }
-  if (vkFormat === 125) return { uploads: [], skippedDepth: texels > 0 };
+  if (vkFormat === 125) {
+    const source = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const pixels = new Uint8Array(texels * 4);
+    const output = new DataView(pixels.buffer);
+    for (let texel = 0; texel < texels; texel++) {
+      const normalized = (source.getUint32(texel * 4, true) & 0x00ffffff) / 0x00ffffff;
+      output.setFloat32(texel * 4, normalized, true);
+    }
+    return { uploads: [{ aspect: /** @type {GPUTextureAspect} */ ('depth-only'), bytesPerTexel: 4, pixels }], skippedDepth: false };
+  }
   if (vkFormat === 129 || vkFormat === 130) {
     const sourceStride = vkFormat === 129 ? 4 : 8;
     const stencil = new Uint8Array(texels);
