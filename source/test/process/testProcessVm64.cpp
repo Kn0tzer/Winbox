@@ -135,9 +135,9 @@ void testProcessVm64Syscalls() {
 
     CPU64 cpu(memory);
     cpu.thread = context.thread;
-    auto syscall = [&](U64 number, U64 localCount, U64 flags, U64 remoteCount = 1) {
+    auto syscall = [&](U64 number, U64 localCount, U64 flags, U64 remoteCount = 1, U64 targetPid = 0) {
         cpu.reg[X64_RAX].setU64(number);
-        cpu.reg[X64_RDI].setU64(pid);
+        cpu.reg[X64_RDI].setU64(targetPid ? targetPid : pid);
         cpu.reg[X64_RSI].setU64(localIov);
         cpu.reg[X64_RDX].setU64(localCount);
         cpu.reg[X64_R10].setU64(remoteIov);
@@ -160,6 +160,41 @@ void testProcessVm64Syscalls() {
     if (result != 11 || std::memcmp(copied, "local-write", 11) != 0) {
         testFail("process_vm_writev returned %lld or copied incorrect bytes", (long long)(S64)result);
     }
+
+    KProcessPtr descendant = KProcess::create();
+    descendant->parentId = process->id;
+    descendant->userId = process->userId;
+    descendant->is64Bit = true;
+    descendant->memory64 = new KMemory64(descendant.get());
+    constexpr U64 descendantPage = 0x72000000ULL;
+    descendant->memory64->mmapAnonymousFixed(descendantPage, K64_PAGE_SIZE, 3);
+    descendant->memory64->memcpyToGuest(descendantPage + 0x300, "child-data!", 11);
+    memory->writeq(remoteIov, descendantPage + 0x300);
+    memory->writeq(remoteIov + 8, 11);
+    result = syscall(310, 1, 0, 1, descendant->id);
+    std::memset(copied, 0, sizeof(copied));
+    memory->memcpyFromGuest(copied, localBuffer, sizeof(copied));
+    if (result != 11 || std::memcmp(copied, "child-data!", 11) != 0) {
+        testFail("process_vm_readv did not authorize and copy from a same-UID descendant");
+    }
+    descendant->dumpable = 0;
+    if ((S64)syscall(310, 1, 0, 1, descendant->id) != -K_EPERM) {
+        testFail("process_vm_readv did not reject a non-dumpable descendant");
+    }
+    KProcessPtr unrelated = KProcess::create();
+    unrelated->parentId = 1;
+    unrelated->userId = process->userId;
+    unrelated->is64Bit = true;
+    unrelated->memory64 = new KMemory64(unrelated.get());
+    if ((S64)syscall(310, 1, 0, 1, unrelated->id) != -K_EPERM) {
+        testFail("process_vm_readv authorized an unrelated same-UID process");
+    }
+    KSystem::eraseProcess(unrelated->id);
+    KSystem::eraseProcess(descendant->id);
+    unrelated.reset();
+    descendant.reset();
+    memory->writeq(remoteIov, remoteBuffer);
+
     if ((S64)syscall(310, 1, 1) != -K_EINVAL || (S64)syscall(310, 1025, 0) != -K_EINVAL) {
         testFail("process_vm_readv did not validate flags/iovec count");
     }
