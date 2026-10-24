@@ -3013,7 +3013,7 @@ static void x11_XRRQueryExtension(CPU* cpu) {
 static void x11_XRRQueryVersion(CPU* cpu) {
     EAX = 1;
     cpu->memory->writed(ARG2, 1);
-    cpu->memory->writed(ARG3, 1); // :TODO: maybe figure out 1.4?
+    cpu->memory->writed(ARG3, 2); // XRandR 1.2 resources and CRTC/output APIs are implemented.
 }
 
 // short* XRRRates(Display* dpy, int screen, int size_index, int* nrates)
@@ -3027,8 +3027,22 @@ static void x11_XRRRates(CPU* cpu) {
 
 // Status XRRSetScreenConfig(Display* dpy, XRRScreenConfiguration* config, Drawable draw, int size_index, Rotation rotation, Time timestamp)
 static void x11_XRRSetScreenConfig(CPU* cpu) {
-    //kpanic("x11_XRRSetScreenConfig");
-    EAX = RRSetConfigSuccess;  // emscripten gets here
+    KThread* thread = cpu->thread;
+    KMemory* memory = thread->memory;
+    XServer* server = XServer::getServer();
+    DisplayDataPtr data = server->getDisplayDataByAddressOfDisplay(memory, ARG1);
+    if (!data || ARG5 != RR_Rotate_0) {
+        EAX = RRSetConfigFailed;
+        return;
+    }
+    U32 cx = 0;
+    U32 cy = 0;
+    if (!XrrGetSize(thread, data, ARG4, cx, cy)) {
+        EAX = RRSetConfigFailed;
+        return;
+    }
+    server->changeScreen(cx, cy);
+    EAX = RRSetConfigSuccess;
 }
 
 // Status XRRSetScreenConfigAndRate(Display* dpy, XRRScreenConfiguration* config, Drawable draw, int size_index, Rotation rotation, short rate, Time timestamp)
@@ -3040,7 +3054,7 @@ static void x11_XRRSetScreenConfigAndRate(CPU* cpu) {
     U32 cx = 0;
     U32 cy = 0;
 
-    if (!XrrGetSize(thread, data, ARG4, cx, cy)) {
+    if (ARG5 != RR_Rotate_0 || !XrrGetSize(thread, data, ARG4, cx, cy)) {
         EAX = RRSetConfigFailed;
         return;        
     }
@@ -3059,87 +3073,270 @@ static void x11_XRRSizes(CPU* cpu) {
 
 // void XRRFreeCrtcInfo(XRRCrtcInfo* crtcInfo)
 static void x11_XRRFreeCrtcInfo(CPU* cpu) {
-    kpanic("x11_XRRFreeCrtcInfo");
+    KThread* thread = cpu->thread;
+    if (!ARG1) return;
+    KMemory* memory = thread->memory;
+    XRRCrtcInfo* info = (XRRCrtcInfo*)memory->getRamPtr(ARG1, sizeof(XRRCrtcInfo), true);
+    if (info->outputs) thread->process->free(info->outputs);
+    if (info->possible) thread->process->free(info->possible);
+    thread->process->free(ARG1);
 }
 
 // void XRRFreeOutputInfo(XRROutputInfo* outputInfo)
 static void x11_XRRFreeOutputInfo(CPU* cpu) {
-    kpanic("x11_XRRFreeOutputInfo");
+    KThread* thread = cpu->thread;
+    if (!ARG1) return;
+    KMemory* memory = thread->memory;
+    XRROutputInfo* info = (XRROutputInfo*)memory->getRamPtr(ARG1, sizeof(XRROutputInfo), true);
+    if (info->name) thread->process->free(info->name);
+    if (info->crtcs) thread->process->free(info->crtcs);
+    if (info->clones) thread->process->free(info->clones);
+    if (info->modes) thread->process->free(info->modes);
+    thread->process->free(ARG1);
 }
 
 // void XRRFreeScreenResources(XRRScreenResources* resources)
 static void x11_XRRFreeScreenResources(CPU* cpu) {
-    kpanic("x11_XRRFreeScreenResources");
+    KThread* thread = cpu->thread;
+    if (!ARG1) return;
+    KMemory* memory = thread->memory;
+    XRRScreenResources* resources = (XRRScreenResources*)memory->getRamPtr(ARG1, sizeof(XRRScreenResources), true);
+    if (resources->modes) {
+        XRRModeInfo* modes = (XRRModeInfo*)memory->getRamPtr(resources->modes, sizeof(XRRModeInfo) * resources->nmode, true);
+        for (S32 i = 0; i < resources->nmode; i++) {
+            if (modes[i].name) thread->process->free(modes[i].name);
+        }
+        thread->process->free(resources->modes);
+    }
+    if (resources->crtcs) thread->process->free(resources->crtcs);
+    if (resources->outputs) thread->process->free(resources->outputs);
+    thread->process->free(ARG1);
 }
 
 // XRRCrtcInfo* XRRGetCrtcInfo(Display* dpy, XRRScreenResources* resources, RRCrtc crtc)
 static void x11_XRRGetCrtcInfo(CPU* cpu) {
-    kpanic("x11_XRRGetCrtcInfo");
+    KThread* thread = cpu->thread;
+    KMemory* memory = thread->memory;
+    if (!ARG2 || ARG3 != 1) { EAX = 0; return; }
+    XRRScreenResources* resources = (XRRScreenResources*)memory->getRamPtr(ARG2, sizeof(XRRScreenResources), true);
+    if (resources->ncrtc < 1) { EAX = 0; return; }
+    KNativeScreenPtr screen = KNativeSystem::getScreen();
+    U32 address = thread->process->alloc(thread, sizeof(XRRCrtcInfo));
+    U32 outputsAddress = thread->process->alloc(thread, sizeof(RROutput));
+    U32 possibleAddress = thread->process->alloc(thread, sizeof(RROutput));
+    memory->writed(outputsAddress, 1);
+    memory->writed(possibleAddress, 1);
+    XRRCrtcInfo* info = (XRRCrtcInfo*)memory->getRamPtr(address, sizeof(XRRCrtcInfo), true);
+    info->timestamp = resources->timestamp;
+    info->x = 0; info->y = 0; info->width = screen->screenWidth(); info->height = screen->screenHeight();
+    info->mode = 0;
+    XRRModeInfo* modes = (XRRModeInfo*)memory->getRamPtr(resources->modes, sizeof(XRRModeInfo) * resources->nmode, true);
+    for (S32 i = 0; i < resources->nmode; i++) {
+        if (modes[i].width == info->width && modes[i].height == info->height) { info->mode = modes[i].id; break; }
+    }
+    info->rotation = RR_Rotate_0; info->noutput = 1;
+    info->outputs = outputsAddress; info->rotations = RR_Rotate_0;
+    info->npossible = 1; info->possible = possibleAddress;
+    EAX = address;
 }
 
 // XRROutputInfo* XRRGetOutputInfo(Display* dpy, XRRScreenResources* resources, RROutput output)
 static void x11_XRRGetOutputInfo(CPU* cpu) {
-    kpanic("x11_XRRGetOutputInfo");
+    KThread* thread = cpu->thread;
+    KMemory* memory = thread->memory;
+    if (!ARG2 || ARG3 != 1) { EAX = 0; return; }
+    XRRScreenResources* resources = (XRRScreenResources*)memory->getRamPtr(ARG2, sizeof(XRRScreenResources), true);
+    if (resources->noutput < 1) { EAX = 0; return; }
+    static const char name[] = "Boxedwine-0";
+    U32 address = thread->process->alloc(thread, sizeof(XRROutputInfo));
+    U32 nameAddress = thread->process->alloc(thread, sizeof(name));
+    U32 crtcAddress = thread->process->alloc(thread, sizeof(RRCrtc));
+    U32 modesAddress = thread->process->alloc(thread, sizeof(RRMode) * resources->nmode);
+    memory->memcpy(nameAddress, name, sizeof(name));
+    memory->writed(crtcAddress, 1);
+    for (S32 i = 0; i < resources->nmode; i++) memory->writed(modesAddress + i * sizeof(RRMode), i + 1);
+    XRROutputInfo* info = (XRROutputInfo*)memory->getRamPtr(address, sizeof(XRROutputInfo), true);
+    info->timestamp = resources->timestamp; info->crtc = 1;
+    info->name = nameAddress; info->nameLen = sizeof(name) - 1;
+    info->mm_width = 0; info->mm_height = 0;
+    info->connection = 0; info->subpixel_order = 0;
+    info->ncrtc = 1; info->crtcs = crtcAddress;
+    info->nclone = 0; info->clones = 0;
+    info->nmode = resources->nmode; info->npreferred = resources->nmode ? 1 : 0; info->modes = modesAddress;
+    EAX = address;
 }
 
 // int XRRGetOutputProperty(Display* dpy, RROutput output, Atom property, long offset, long length, Bool _delete, Bool pending, Atom req_type, Atom* actual_type, int* actual_format, unsigned long* nitems, unsigned long* bytes_after, unsigned char** prop)
 static void x11_XRRGetOutputProperty(CPU* cpu) {
-    kpanic("x11_XRRGetOutputProperty");
+    KMemory* memory = cpu->memory;
+    memory->writed(ARG9, 0);  // None: this virtual output has no properties.
+    memory->writed(ARG10, 0);
+    memory->writed(ARG11, 0);
+    memory->writed(ARG12, 0);
+    memory->writed(cpu->peek32(13), 0);
+    EAX = Success;
 }
 
 // XRRScreenResources* XRRGetScreenResources(Display* dpy, Window window)
 static void x11_XRRGetScreenResources(CPU* cpu) {
-    kpanic("x11_XRRGetScreenResources");
+    KThread* thread = cpu->thread;
+    KMemory* memory = thread->memory;
+    XServer* server = XServer::getServer();
+    DisplayDataPtr data = server->getDisplayDataByAddressOfDisplay(memory, ARG1);
+    if (!data || !server->getWindow(ARG2)) { EAX = 0; return; }
+    U32 count = 0;
+    U32 countAddress = thread->process->alloc(thread, sizeof(U32));
+    U32 sizesAddress = XrrGetSizes(thread, data, 0, countAddress);
+    count = memory->readd(countAddress);
+    thread->process->free(countAddress);
+    if (!count) { EAX = 0; return; }
+    U32 address = thread->process->alloc(thread, sizeof(XRRScreenResources));
+    U32 crtcsAddress = thread->process->alloc(thread, sizeof(RRCrtc));
+    U32 outputsAddress = thread->process->alloc(thread, sizeof(RROutput));
+    U32 modesAddress = thread->process->alloc(thread, sizeof(XRRModeInfo) * count);
+    memory->writed(crtcsAddress, 1); memory->writed(outputsAddress, 1);
+    XRRModeInfo* modes = (XRRModeInfo*)memory->getRamPtr(modesAddress, sizeof(XRRModeInfo) * count, true);
+    for (U32 i = 0; i < count; i++) {
+        U32 width = memory->readd(sizesAddress + i * sizeof(XRRScreenSize));
+        U32 height = memory->readd(sizesAddress + i * sizeof(XRRScreenSize) + 4);
+        char modeName[32];
+        snprintf(modeName, sizeof(modeName), "%ux%u", width, height);
+        U32 nameAddress = thread->process->alloc(thread, (U32)strlen(modeName) + 1);
+        memory->memcpy(nameAddress, modeName, (U32)strlen(modeName) + 1);
+        modes[i].id = i + 1; modes[i].width = width; modes[i].height = height;
+        modes[i].dotClock = 0; modes[i].hSyncStart = width; modes[i].hSyncEnd = width;
+        modes[i].hTotal = width; modes[i].hSkew = 0; modes[i].vSyncStart = height;
+        modes[i].vSyncEnd = height; modes[i].vTotal = height; modes[i].name = nameAddress;
+        modes[i].nameLength = (U32)strlen(modeName); modes[i].modeFlags = 0;
+    }
+    XRRScreenResources* resources = (XRRScreenResources*)memory->getRamPtr(address, sizeof(XRRScreenResources), true);
+    resources->timestamp = KSystem::getMilliesSinceStart(); resources->configTimestamp = resources->timestamp;
+    resources->ncrtc = 1; resources->crtcs = crtcsAddress;
+    resources->noutput = 1; resources->outputs = outputsAddress;
+    resources->nmode = count; resources->modes = modesAddress;
+    EAX = address;
 }
 
 // XRRScreenResources* XRRGetScreenResourcesCurrent(Display* dpy, Window window)
 static void x11_XRRGetScreenResourcesCurrent(CPU* cpu) {
-    kpanic("x11_XRRGetScreenResourcesCurrent");
+    x11_XRRGetScreenResources(cpu);
 }
 
 // Status XRRGetScreenSizeRange(Display* dpy, Window window, int* minWidth, int* minHeight, int* maxWidth, int* maxHeight)
 static void x11_XRRGetScreenSizeRange(CPU* cpu) {
-    kpanic("x11_XRRGetScreenSizeRange");
+    KThread* thread = cpu->thread;
+    KMemory* memory = thread->memory;
+    XServer* server = XServer::getServer();
+    DisplayDataPtr data = server->getDisplayDataByAddressOfDisplay(memory, ARG1);
+    if (!data || !server->getWindow(ARG2)) { EAX = False; return; }
+    U32 countAddress = thread->process->alloc(thread, sizeof(U32));
+    U32 sizes = XrrGetSizes(thread, data, 0, countAddress);
+    U32 count = memory->readd(countAddress);
+    thread->process->free(countAddress);
+    if (!sizes || !count) { EAX = False; return; }
+    U32 minWidth = 0xFFFFFFFF, minHeight = 0xFFFFFFFF, maxWidth = 0, maxHeight = 0;
+    for (U32 i = 0; i < count; i++) {
+        U32 width = memory->readd(sizes + i * sizeof(XRRScreenSize));
+        U32 height = memory->readd(sizes + i * sizeof(XRRScreenSize) + 4);
+        minWidth = std::min(minWidth, width); minHeight = std::min(minHeight, height);
+        maxWidth = std::max(maxWidth, width); maxHeight = std::max(maxHeight, height);
+    }
+    memory->writed(ARG3, minWidth); memory->writed(ARG4, minHeight);
+    memory->writed(ARG5, maxWidth); memory->writed(ARG6, maxHeight);
+    EAX = True;
 }
 
 // Status XRRSetCrtcConfig(Display* dpy, XRRScreenResources* resources, RRCrtc crtc, Time timestamp, int x, int y, RRMode mode, Rotation rotation, RROutput* outputs, int noutputs)
 static void x11_XRRSetCrtcConfig(CPU* cpu) {
-    kpanic("x11_XRRSetCrtcConfig");
+    KThread* thread = cpu->thread;
+    KMemory* memory = thread->memory;
+    if (!ARG2 || ARG3 != 1 || (S32)ARG5 != 0 || (S32)ARG6 != 0 || ARG8 != RR_Rotate_0 || ARG10 != 1 || !ARG9 || memory->readd(ARG9) != 1) {
+        EAX = RRSetConfigFailed;
+        return;
+    }
+    XRRScreenResources* resources = (XRRScreenResources*)memory->getRamPtr(ARG2, sizeof(XRRScreenResources), true);
+    U32 modeId = ARG7;
+    if (!modeId || modeId > (U32)resources->nmode || resources->ncrtc < 1 || resources->noutput < 1) {
+        EAX = RRSetConfigFailed;
+        return;
+    }
+    XRRModeInfo* modes = (XRRModeInfo*)memory->getRamPtr(resources->modes, sizeof(XRRModeInfo) * resources->nmode, true);
+    XServer* server = XServer::getServer();
+    server->changeScreen(modes[modeId - 1].width, modes[modeId - 1].height);
+    EAX = RRSetConfigSuccess;
 }
 
 // void XRRSetScreenSize(Display* dpy, Window window, int width, int height, int mmWidth, int mmHeight)
 static void x11_XRRSetScreenSize(CPU* cpu) {
-    kpanic("x11_XRRSetScreenSize");
+    KThread* thread = cpu->thread;
+    KMemory* memory = thread->memory;
+    XServer* server = XServer::getServer();
+    DisplayDataPtr data = server->getDisplayDataByAddressOfDisplay(memory, ARG1);
+    if (!data || !server->getWindow(ARG2)) { EAX = 0; return; }
+    U32 countAddress = thread->process->alloc(thread, sizeof(U32));
+    U32 sizes = XrrGetSizes(thread, data, 0, countAddress);
+    U32 count = memory->readd(countAddress);
+    thread->process->free(countAddress);
+    for (U32 i = 0; sizes && i < count; i++) {
+        if (memory->readd(sizes + i * sizeof(XRRScreenSize)) == ARG3 && memory->readd(sizes + i * sizeof(XRRScreenSize) + 4) == ARG4) {
+            server->changeScreen(ARG3, ARG4);
+            return;
+        }
+    }
+    static bool logged = false;
+    if (!logged) { logged = true; klog("XRRSetScreenSize requested a size not present in the emulated mode list"); }
 }
 
 // void XRRSelectInput(Display* dpy, Window window, int mask)
 static void x11_XRRSelectInput(CPU* cpu) {
-    kpanic("x11_XRRSelectInput");
+    KThread* thread = cpu->thread;
+    KMemory* memory = thread->memory;
+    XServer* server = XServer::getServer();
+    DisplayDataPtr display = server->getDisplayDataByAddressOfDisplay(memory, ARG1);
+    XWindowPtr window = server->getWindow(ARG2);
+    if (!display || !window) {
+        static bool logged = false;
+        if (!logged) { logged = true; klog("XRRSelectInput ignored an invalid display or window"); }
+        return;
+    }
+    if (!display->xrrData) display->xrrData = new XrrData();
+    display->xrrData->eventWindow = ARG2;
+    display->xrrData->eventMask = ARG3 & (RRScreenChangeNotifyMask | RRCrtcChangeNotifyMask | RROutputChangeNotifyMask);
 }
 
 // RROutput XRRGetOutputPrimary(Display* dpy, Window window)
 static void x11_XRRGetOutputPrimary(CPU* cpu) {
-    kpanic("x11_XRRGetOutputPrimary");
+    EAX = 1; // the emulated desktop has one connected primary output
 }
 
 // XRRProviderResources* XRRGetProviderResources(Display* dpy, Window window)
 static void x11_XRRGetProviderResources(CPU* cpu) {
-    kpanic("x11_XRRGetProviderResources");
+    KThread* thread = cpu->thread;
+    U32 address = thread->process->alloc(thread, sizeof(XRRProviderResources));
+    XRRProviderResources* resources = (XRRProviderResources*)thread->memory->getRamPtr(address, sizeof(XRRProviderResources), true);
+    resources->timestamp = KSystem::getMilliesSinceStart();
+    resources->nproviders = 0;
+    resources->providers = 0;
+    EAX = address;
 }
 
 // void XRRFreeProviderResources(XRRProviderResources* resources)
 static void x11_XRRFreeProviderResources(CPU* cpu) {
-    kpanic("x11_XRRFreeProviderResources");
+    KThread* thread = cpu->thread;
+    if (!ARG1) return;
+    XRRProviderResources* resources = (XRRProviderResources*)thread->memory->getRamPtr(ARG1, sizeof(XRRProviderResources), true);
+    if (resources->providers) thread->process->free(resources->providers);
+    thread->process->free(ARG1);
 }
 
 // XRRProviderInfo* XRRGetProviderInfo(Display* dpy, XRRScreenResources* resources, RRProvider provider)
 static void x11_XRRGetProviderInfo(CPU* cpu) {
-    kpanic("x11_XRRGetProviderInfo");
+    EAX = 0; // There are no provider XIDs in this single-output implementation.
 }
 
 // void XRRFreeProviderInfo(XRRProviderInfo* provider)
 static void x11_XRRFreeProviderInfo(CPU* cpu) {
-    kpanic("x11_XRRFreeProviderInfo");
+    if (ARG1) cpu->thread->process->free(ARG1);
 }
 
 // Bool XIGetClientPointer(Display* dpy, Window win, int* deviceid)

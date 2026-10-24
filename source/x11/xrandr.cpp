@@ -66,7 +66,7 @@ U32 XrrConfigCurrentConfiguration(KThread* thread, const DisplayDataPtr& display
     U32 cx = screen->screenWidth();
     U32 cy = screen->screenHeight();
 
-    memory->writed(rotationAddress, 0);
+    memory->writed(rotationAddress, RR_Rotate_0);
     for (U32 i = 0; i < data->sizesCount; i++) {
         if (memory->readd(data->sizesAddress + i * 16) == cx && memory->readd(data->sizesAddress + i * 16 + 4) == cy) {
             return i;
@@ -89,52 +89,35 @@ U32 XrrGetSizes(KThread* thread, const DisplayDataPtr& data, U32 screen, U32 cou
     }
     U32 desktopCx = 0;
     U32 desktopCy = 0;
-    U32 count = 3;
     KNativeSystem::getScreenDimensions(&desktopCx, &desktopCy);
+    std::vector<std::pair<U32, U32>> modes;
+    auto addMode = [&modes](U32 width, U32 height) {
+        if (!width || !height) return;
+        for (const auto& mode : modes) {
+            if (mode.first == width && mode.second == height) return;
+        }
+        modes.push_back({width, height});
+    };
 
-    if (desktopCx > 1600) {
-        count++;
-    }
-    if (desktopCx && desktopCx > 1600 && desktopCy > 1200) {
-        count++;
-    }
-    if (desktopCx && desktopCx > 1280 && desktopCy > 1024) {
-        count++;
-    }
+    // Always include the active host size, including nonstandard displays under 1600px.
+    addMode(desktopCx, desktopCy);
+    if (desktopCx > 1600 && desktopCy > 1200) addMode(1600, 1200);
+    if (desktopCx > 1280 && desktopCy > 1024) addMode(1280, 1024);
+    addMode(1024, 768);
+    addMode(800, 600);
+    addMode(640, 480);
+
+    U32 count = (U32)modes.size();
     U32 sizes = thread->process->alloc(thread, sizeof(XRRScreenSize) * count);
-    
     data->xrrData->sizesAddress = sizes;
     data->xrrData->sizesCount = count;
-    if (desktopCx > 1600) {
-        memory->writed(sizes, desktopCx); sizes += 4;
-        memory->writed(sizes, desktopCy); sizes += 4;
-        memory->writed(sizes, 0); sizes += 4;
-        memory->writed(sizes, 0); sizes += 4;
+    for (U32 i = 0; i < count; i++) {
+        U32 address = sizes + sizeof(XRRScreenSize) * i;
+        memory->writed(address, modes[i].first);
+        memory->writed(address + 4, modes[i].second);
+        memory->writed(address + 8, 0);
+        memory->writed(address + 12, 0);
     }
-    if (desktopCx && desktopCx > 1600 && desktopCy > 1200) {
-        memory->writed(sizes, 1600); sizes += 4;
-        memory->writed(sizes, 1200); sizes += 4;
-        memory->writed(sizes, 0); sizes += 4;
-        memory->writed(sizes, 0); sizes += 4;
-    }
-    if (desktopCx && desktopCx > 1280 && desktopCy > 1024) {
-        memory->writed(sizes, 1280); sizes += 4;
-        memory->writed(sizes, 1024); sizes += 4;
-        memory->writed(sizes, 0); sizes += 4;
-        memory->writed(sizes, 0); sizes += 4;
-    }
-    memory->writed(sizes, 1024); sizes += 4;
-    memory->writed(sizes, 768); sizes += 4;
-    memory->writed(sizes, 0); sizes += 4;
-    memory->writed(sizes, 0); sizes += 4;
-    memory->writed(sizes, 800); sizes += 4;
-    memory->writed(sizes, 600); sizes += 4;
-    memory->writed(sizes, 0); sizes += 4;
-    memory->writed(sizes, 0); sizes += 4;
-    memory->writed(sizes, 640); sizes += 4;
-    memory->writed(sizes, 480); sizes += 4;
-    memory->writed(sizes, 0); sizes += 4;
-    memory->writed(sizes, 0);
     if (countAddress) {
         memory->writed(countAddress, data->xrrData->sizesCount);
     }

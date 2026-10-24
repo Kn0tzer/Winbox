@@ -680,6 +680,59 @@ void XServer::changeScreen(U32 width, U32 height) {
 	U32 rect[] = { 0, 0, width, height };
 	U32 atom = server->internAtom(B("_GTK_WORKAREAS_D0"), false);
 	root->setProperty(atom, XA_CARDINAL, 32, sizeof(U32) * 4, (U8*)&rect, false);
+
+	const U32 eventTime = KSystem::getMilliesSinceStart();
+	for (auto& entry : displays) {
+		DisplayDataPtr display = entry.value;
+		XrrData* randr = display->xrrData;
+		if (!randr || !randr->eventMask) continue;
+		U32 sizeIndex = 0;
+		KProcessPtr process = display->process.lock();
+		if (process && process->memory && randr->sizesAddress) {
+			for (U32 i = 0; i < randr->sizesCount; i++) {
+				if (process->memory->readd(randr->sizesAddress + i * sizeof(XRRScreenSize)) == width &&
+					process->memory->readd(randr->sizesAddress + i * sizeof(XRRScreenSize) + 4) == height) {
+					sizeIndex = i;
+					break;
+				}
+			}
+		}
+		auto makeEvent = [&](U32 type, U32 subtype) {
+			XEvent event{};
+			U32* words = (U32*)&event;
+			words[0] = type;
+			words[1] = display->getNextEventSerial();
+			words[2] = False;
+			words[3] = display->displayAddress;
+			words[4] = randr->eventWindow;
+			words[5] = subtype;
+			return event;
+		};
+		if (randr->eventMask & RRScreenChangeNotifyMask) {
+			XEvent event = makeEvent(XRAND_Base + RRScreenChangeNotify, 0);
+			U32* words = (U32*)&event;
+			words[5] = root->id;
+			words[6] = eventTime; words[7] = eventTime; words[8] = sizeIndex;
+			words[9] = 0; words[10] = RR_Rotate_0;
+			words[11] = width; words[12] = height;
+			words[13] = (U32)(width * 0.2646); words[14] = (U32)(height * 0.2646);
+			display->putEvent(event);
+		}
+		if (randr->eventMask & RRCrtcChangeNotifyMask) {
+			XEvent event = makeEvent(XRAND_Base + RRNotify, RRNotify_CrtcChange);
+			U32* words = (U32*)&event;
+			words[6] = 1; words[7] = sizeIndex + 1; words[8] = RR_Rotate_0;
+			words[9] = 0; words[10] = 0; words[11] = width; words[12] = height;
+			display->putEvent(event);
+		}
+		if (randr->eventMask & RROutputChangeNotifyMask) {
+			XEvent event = makeEvent(XRAND_Base + RRNotify, RRNotify_OutputChange);
+			U32* words = (U32*)&event;
+			words[6] = 1; words[7] = 1; words[8] = sizeIndex + 1;
+			words[9] = RR_Rotate_0; words[10] = 0; words[11] = 0;
+			display->putEvent(event);
+		}
+	}
 }
 
 void XServer::processExit(U32 pid) {

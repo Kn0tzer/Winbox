@@ -30,7 +30,7 @@ Ranked by severity if reached. "Reached" means the guest calls the path. This sc
 
 | Category | Where | Severity | What a real game sees | Disposition |
 | --- | --- | --- | --- | --- |
-| Mode switch (XRandR) | `source/x11/x11common.cpp:2709-2789` (17 kpanics on `x11_XRR*`) | high | Any call to one of these aborts the emulator. Games that read or change the display mode through XRandR stop. | OPEN (work item 1) |
+| Mode switch (XRandR) | `source/x11/x11common.cpp:3029-3246`, `source/x11/xserver.cpp:676` | high | The emulator exposes the host display size list as XRandR 1.2 modes on one connected primary output, applies valid mode changes, supports rotation 0, reports ranges/resources/CRTC/output data, and queues selected screen/CRTC/output change events. Other rotations fail with `RRSetConfigFailed`. | IMPLEMENTED — `x11-xrandr-set-screen-config.test.mjs`, `x11-xrandr-resources.test.mjs`, `x11-xrandr-events.test.mjs` |
 | Pointer grab options | `x11common.cpp:506,510,514` (kpanic on `owner_events`, `GrabModeSync`, `cursor`); `source/x11/xserver.cpp:1052` (ungrab with no active grab returns `GrabSuccess`; TODO says no spec use case was found) | high | A grab with those arguments aborts. An ungrab with no grab reports success, which hides a client error. | OPEN (work item 2) |
 | Relative mouse / pointer lock | `source/x11/xserver.cpp:937` (TODO: "trial and error with vkQuake") | high | Mouse-look in FPS games depends on relative motion. The code has no spec basis for it. Whether real games hit it is not verified. | OPEN (work item 2) |
 | Core drawing entry points | `x11common.cpp` (`QueryTree`, `GetPixel`, `SubImage`, `AddPixel`, `CopyPlane`, `CreateGC` valuemask, `SetDashes`, `SetArcMode`, `FillArc`, `DrawArc`, `SetFillStyle` were kpanics) | high if reached | Each of these Xlib calls aborted the emulator. Now none of them does. `SetDashes` stores the list, but dashed lines are still drawn solid; this is logged once. `XDrawString` is not in this list: text runs on the 64-bit wire path (`source/x11wire/xwireconnection.cpp`), not the legacy hostcall path. | FIXED (see Fixes; dashed lines are a caveat) |
@@ -80,7 +80,7 @@ The scan's pattern is also narrow. It misses a plain `not supported` outside `kp
 
 Ranked by severity if reached, then by how likely a real game is to reach the path. Each is OPEN and has an implementation approach. None is started in this lane.
 
-1. **XRandR family (`x11common.cpp:2709-2789`).** Impact: high (mode-switch games abort). Approach: report the single host output with its current mode from the SDL display list. `XRRGetScreenResources`, `XRRGetCrtcInfo` and `XRRGetOutputInfo` return it. `XRRSetCrtcConfig` and `XRRSetScreenSize` succeed only for the current mode, and any other mode returns `BadValue` through a logged error. Test: a native harness that calls each entry point through the X wire and checks the replies.
+1. **XRandR family (`x11common.cpp:3029-3246`, `xserver.cpp:676`).** DONE. XRandR 1.2 exposes the host size list, current one-output topology, CRTC/output info, size range, primary output, mode changes and screen/CRTC/output notifications. The emulated output supports only rotation 0 and rejects unsupported rotations/modes. Regression probes: `x11-xrandr-set-screen-config.test.mjs`, `x11-xrandr-resources.test.mjs`, and `x11-xrandr-events.test.mjs`.
 2. **Pointer grab and relative mouse (`x11common.cpp:506,510,514`, `xserver.cpp:937,1052`).** Impact: high (FPS mouse look, drag-and-hold). Approach: implement `owner_events` as redirection in event delivery, `GrabModeSync` as an async grab with replay rejected loudly, and a per-grab cursor. Ungrab with no active grab returns Success per the spec, now with a log line. For relative mouse, call `SDL_SetRelativeMouseMode` while a grab is active. Test: the grab state machine on a fixture server, plus the event deltas.
 3. **Core drawing entry points (the list in the table).** DONE: every listed kpanic is implemented, and the tests are listed in Fixes. Open follow-up: dashed lines are drawn solid, so `XSetDashes` needs a dash pattern in the line drawing code.
 4. **`XPutPixel` write (`x11common.cpp:1688`).** DONE: the pixel is written into the guest XImage for 8, 16, 24 and 32 bpp in either byte order. Sub-byte depths and a non-zero xoffset are logged once and not written. See Fixes.
@@ -138,7 +138,7 @@ Machine-readable. `tools/known-gaps-audit.mjs --check` reads this block. Counts 
   "source/ui/mainui.cpp": { "count": 2, "severity": "low", "area": "ui", "gap": "TODO: quit does not check a failed save" },
   "source/ui/utils/readIcons.cpp": { "count": 1, "severity": "low", "area": "ui", "gap": "one icon format not shown" },
   "source/util/bstring.cpp": { "count": 2, "severity": "low", "area": "util", "gap": "TODO: copy on substring (performance); BString::BString invariant" },
-  "source/x11/x11common.cpp": { "count": 65, "severity": "high", "area": "x11", "gap": "XRandR, XIM/IC, XShm, XSendEvent and keyboard text abort; XSetDashes is stored but dashed lines are drawn solid; XGrabPointer owner_events and GrabModeSync logged, not honoured" },
+  "source/x11/x11common.cpp": { "count": 46, "severity": "high", "area": "x11", "gap": "XIM/IC, XShm, XSendEvent and keyboard text abort; XSetDashes is stored but dashed lines are drawn solid" },
   "source/x11/xdrawable.cpp": { "count": 1, "severity": "medium", "area": "x11", "gap": "clip_mask pixmap logged once, not applied; sub-byte and 8-bit drawing and copies logged, not drawn" },
   "source/x11/xserver.cpp": { "count": 1, "severity": "high", "area": "x11", "gap": "relative mouse for the legacy path is not driven (wire path does it)" },
   "source/x11/xwindow.cpp": { "count": 4, "severity": "high", "area": "x11", "gap": "_NET_WM_STATE toggle and CWSibling abort; two TODOs" },
@@ -400,7 +400,7 @@ _Generated by `node tools/known-gaps-audit.mjs --write-hits`; do not edit by han
 | --- | --- | --- |
 | 259 | `kpanic(` | kpanic("shouldn't signal a thread that is not waiting"); |
 
-### `source/x11/x11common.cpp` (65)
+### `source/x11/x11common.cpp` (46)
 
 | Line | Match | Text |
 | --- | --- | --- |
@@ -446,29 +446,10 @@ _Generated by `node tools/known-gaps-audit.mjs --write-hits`; do not edit by han
 | 2924 | `kpanic(` | kpanic("x11_ShmDetach"); |
 | 2928 | `kpanic(` | kpanic("x11_ShmPutImage"); |
 | 2932 | `kpanic(` | kpanic("x11_WindowEvent"); |
-| 3016 | `TODO` | cpu->memory->writed(ARG3, 1); // :TODO: maybe figure out 1.4? |
-| 3030 | `kpanic(` | //kpanic("x11_XRRSetScreenConfig"); |
-| 3062 | `kpanic(` | kpanic("x11_XRRFreeCrtcInfo"); |
-| 3067 | `kpanic(` | kpanic("x11_XRRFreeOutputInfo"); |
-| 3072 | `kpanic(` | kpanic("x11_XRRFreeScreenResources"); |
-| 3077 | `kpanic(` | kpanic("x11_XRRGetCrtcInfo"); |
-| 3082 | `kpanic(` | kpanic("x11_XRRGetOutputInfo"); |
-| 3087 | `kpanic(` | kpanic("x11_XRRGetOutputProperty"); |
-| 3092 | `kpanic(` | kpanic("x11_XRRGetScreenResources"); |
-| 3097 | `kpanic(` | kpanic("x11_XRRGetScreenResourcesCurrent"); |
-| 3102 | `kpanic(` | kpanic("x11_XRRGetScreenSizeRange"); |
-| 3107 | `kpanic(` | kpanic("x11_XRRSetCrtcConfig"); |
-| 3112 | `kpanic(` | kpanic("x11_XRRSetScreenSize"); |
-| 3117 | `kpanic(` | kpanic("x11_XRRSelectInput"); |
-| 3122 | `kpanic(` | kpanic("x11_XRRGetOutputPrimary"); |
-| 3127 | `kpanic(` | kpanic("x11_XRRGetProviderResources"); |
-| 3132 | `kpanic(` | kpanic("x11_XRRFreeProviderResources"); |
-| 3137 | `kpanic(` | kpanic("x11_XRRGetProviderInfo"); |
-| 3142 | `kpanic(` | kpanic("x11_XRRFreeProviderInfo"); |
-| 3202 | `kpanic(` | kpanic("x11_XISelectEvents num_masks was expected to be 1"); |
-| 3207 | `kpanic(` | kpanic("x11_XISelectEvents currently expecting masks in the first 32-bits"); |
-| 3297 | `kpanic(` | kpanic("x11_CursorImageLoadCursor"); |
-| 3339 | `not supported` | klog("x11_CursorImagesLoadCursor animated cursors not supported, will use first frame"); |
+| 3401 | `kpanic(` | kpanic("x11_XISelectEvents num_masks was expected to be 1"); |
+| 3406 | `kpanic(` | kpanic("x11_XISelectEvents currently expecting masks in the first 32-bits"); |
+| 3496 | `kpanic(` | kpanic("x11_CursorImageLoadCursor"); |
+| 3538 | `not supported` | klog("x11_CursorImagesLoadCursor animated cursors not supported, will use first frame"); |
 
 ### `source/x11/xdrawable.cpp` (1)
 
@@ -480,7 +461,7 @@ _Generated by `node tools/known-gaps-audit.mjs --write-hits`; do not edit by han
 
 | Line | Match | Text |
 | --- | --- | --- |
-| 947 | `TODO` | // :TODO: I'm not really sure how realitive mouse is supposed to work, it was just trial and error with vkQuake |
+| 1000 | `TODO` | // :TODO: I'm not really sure how realitive mouse is supposed to work, it was just trial and error with vkQuake |
 
 ### `source/x11/xwindow.cpp` (4)
 
