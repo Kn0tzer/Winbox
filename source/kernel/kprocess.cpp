@@ -2333,14 +2333,24 @@ U32 KProcess::getdents(FD fildes, U32 dirp, U32 count, bool is64) {
 }
 
 U32 KProcess::msync(KThread* thread, U32 addr, U32 len, U32 flags) {
+    const U64 end = (U64)addr + len;
+    if (!len || end > 0x100000000ULL) return -K_EINVAL;
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(mappedFilesMutex);
     for (auto& n : this->mappedFiles) {
         std::shared_ptr<MappedFile> m = n.value;
-        if (m->address<=addr && addr+len<m->address+m->len) {
+        const U64 mappingEnd = (U64)m->address + m->len;
+        if (m->address <= addr && end <= mappingEnd) {
             return m->file->pwrite(thread, addr, addr - m->address + m->offset, len);
         }
     }
-    return -K_ENOMEM;
+    const U32 firstPage = addr >> K_PAGE_SHIFT;
+    const U32 lastPage = (U32)((end - 1) >> K_PAGE_SHIFT);
+    for (U32 page = firstPage;; ++page) {
+        if (!this->memory->isPageMapped(page)) return -K_ENOMEM;
+        if (page == lastPage) break;
+    }
+    // Anonymous and already-backed shared mappings have no host page cache to flush.
+    return 0;
 }
 
 // Wine server protocol REQ id for create_event (from Wine 8.0 server/protocol.def)

@@ -59,6 +59,24 @@ void testMadvise32Syscall() {
         invokeMlock(unmapped, K_PAGE_SIZE) != -K_ENOMEM) {
         testFail("32-bit mlock syscall did not reject an unmapped range");
     }
+
+    auto invokeMsync = [&](U32 syncAddress, U32 length, U32 flags) -> S32 {
+        testNewInstruction(0);
+        testPushCode8(0xB8); testPushCode32(144); // __NR_msync
+        testPushCode8(0xCD); testPushCode8(0x80);
+        context.cpu->reg[3].u32 = syncAddress;
+        context.cpu->reg[1].u32 = length;
+        context.cpu->reg[2].u32 = flags;
+        testRunCPU();
+        return (S32)context.cpu->reg[0].u32;
+    };
+    if (invokeMsync(address, K_PAGE_SIZE, 4) != 0 ||
+        invokeMsync(address + 1, K_PAGE_SIZE, 4) != -K_EINVAL ||
+        invokeMsync(address, K_PAGE_SIZE, 0) != -K_EINVAL ||
+        invokeMsync(address, K_PAGE_SIZE, 5) != -K_EINVAL ||
+        invokeMsync(unmapped, K_PAGE_SIZE, 4) != -K_ENOMEM) {
+        testFail("32-bit msync syscall did not validate mapping and sync flags");
+    }
 }
 
 #endif

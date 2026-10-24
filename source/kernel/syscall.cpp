@@ -822,7 +822,15 @@ static U32 syscall_flock(CPU* cpu, U32 eipCount) {
 
 static U32 syscall_msync(CPU* cpu, U32 eipCount) {
     SYS_LOG1(SYSCALL_MEMORY, cpu, "msync addr=%X length=%d flags=%X", ARG1, ARG2, ARG3);
-    U32 result = cpu->thread->process->msync(cpu->thread, ARG1, ARG2, ARG3);
+    constexpr U32 MS_ASYNC = 1, MS_INVALIDATE = 2, MS_SYNC = 4;
+    U32 flags = ARG3;
+    U32 result;
+    if ((ARG1 & K_PAGE_MASK) || !ARG2 || (flags & ~(MS_ASYNC | MS_INVALIDATE | MS_SYNC)) ||
+        ((flags & MS_ASYNC) && (flags & MS_SYNC)) || !(flags & (MS_ASYNC | MS_SYNC))) {
+        result = -K_EINVAL;
+    } else {
+        result = cpu->thread->process->msync(cpu->thread, ARG1, ARG2, flags);
+    }
     SYS_LOG(SYSCALL_MEMORY, cpu, " result=%d(0x%X)\n", result, result);
     return result;
 }
