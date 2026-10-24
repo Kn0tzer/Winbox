@@ -76,6 +76,39 @@ test('browser export includes every local import from app, runtime, workers, and
   }
 });
 
+test('every top-level web module imported by an exported module is exported', async () => {
+  const copied = exportedFiles(build);
+  assert.ok(copied.names.has('vk-dynstate.mjs'), 'Vulkan dynamic-state helper must be copied to the browser export');
+  const queue = [];
+  for (const name of copied.names) {
+    if (!name.endsWith('.mjs')) continue;
+    try { await stat(resolve(web, name)); queue.push(resolve(web, name)); }
+    catch { /* A peer-lane module may arrive in the integration merge. */ }
+  }
+  const visited = new Set();
+  const failures = [];
+  while (queue.length) {
+    const file = queue.shift();
+    if (visited.has(file)) continue;
+    visited.add(file);
+    let source;
+    try { source = await readFile(file, 'utf8'); }
+    catch { failures.push(`${relative(repo, file)} is listed for export but missing from web/`); continue; }
+    for (const specifier of relativeImports(source)) {
+      const target = outputPathForSource(file, specifier);
+      if (target.startsWith('../')) continue;
+      const sourceTarget = target === 'spirvfix.mjs'
+        ? resolve(repo, 'tools/spirvfix/spirvfix.mjs')
+        : resolve(web, target);
+      try { await stat(sourceTarget); }
+      catch { failures.push(`${relative(repo, file)} -> missing source ${specifier}`); continue; }
+      if (!isExported(target, copied)) failures.push(`${relative(repo, file)} -> ${specifier} => dist/${target}`);
+      if (sourceTarget.startsWith(web + '/') && /\.mjs$/.test(sourceTarget)) queue.push(sourceTarget);
+    }
+  }
+  assert.deepEqual(failures, [], `exported module closure is incomplete:\n${failures.join('\n')}`);
+});
+
 test('Caddy isolation header requirements are documented for static hosts', async () => {
   const docs = await readFile(resolve(repo, 'tools/browser/README.md'), 'utf8');
   assert.match(docs, /Caddyfile/);
