@@ -232,18 +232,21 @@ static U32 combinePixel(S32 function, U32 src, U32 dst) {
 	}
 }
 
-// A clip_mask pixmap is not applied. Logged once, so a game that sets one shows in the log without a line per pixel.
-static void logClipMaskOnce(const XGC* gc) {
-	static bool logged = false;
-	if (gc && gc->values.clip_mask && !logged) {
-		logged = true;
-		kwarn_fmt("XDrawable clip_mask pixmap not handled, the clip is ignored");
-	}
+static bool clipMaskAllows(const XDrawable* mask, S32 x, S32 y, S32 originX, S32 originY) {
+	if (!mask) return true;
+	const S32 mx = x - originX, my = y - originY;
+	if (mx < 0 || my < 0 || mx >= (S32)mask->width() || my >= (S32)mask->height()) return false;
+	const U32* pixels = (const U32*)mask->getData();
+	return (pixels[(U32)my * (mask->getBytesPerLine() / 4) + (U32)mx] & 1) != 0;
 }
 
 // With clip rectangles set, a pixel is drawn only when one rectangle contains it, offset by the clip origin.
 static bool clipAllows(const XGC* gc, S32 x, S32 y) {
-	logClipMaskOnce(gc);
+	if (gc && gc->values.clip_mask) {
+		XPixmapPtr mask = XServer::getServer()->getPixmap(gc->values.clip_mask);
+		if (!mask || mask->getDepth() != 1 || !clipMaskAllows(mask.get(), x, y,
+				gc->values.clip_x_origin, gc->values.clip_y_origin)) return false;
+	}
 	if (gc->clip_rects.empty()) {
 		return true;
 	}

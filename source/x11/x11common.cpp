@@ -2511,7 +2511,13 @@ static void x11_SetClipMask(CPU* cpu) {
         EAX = BadGC;
         return;
     }
+    if (ARG3) {
+        XPixmapPtr mask = server->getPixmap(ARG3);
+        if (!mask) { EAX = BadPixmap; return; }
+        if (mask->getDepth() != 1) { EAX = BadMatch; return; }
+    }
     gc->values.clip_mask = ARG3;
+    gc->clip_rects.clear();
     EAX = Success;
 }
 
@@ -2527,6 +2533,7 @@ static void x11_SetClipRectangles(CPU* cpu) {
     }
     gc->values.clip_x_origin = (S32)ARG3;
     gc->values.clip_y_origin = (S32)ARG4;
+    gc->values.clip_mask = 0;
     gc->clip_rects.clear();
 
     U32 count = ARG6;

@@ -24,6 +24,15 @@ test('the drawing block has no abort and no hard-coded colour', () => {
   assert.doesNotMatch(block, /0xff00/);
 });
 
+test('XSetClipMask validates a depth-one pixmap and replaces clip rectangles', () => {
+  const source = readFileSync(new URL('../../../../source/x11/x11common.cpp', import.meta.url), 'utf8');
+  const handler = source.match(/static void x11_SetClipMask\(CPU\* cpu\) \{[\s\S]*?\n}/)?.[0];
+  assert.ok(handler);
+  assert.match(handler, /getPixmap\(ARG3\)/);
+  assert.match(handler, /mask->getDepth\(\) != 1\) \{ EAX = BadMatch; return; \}/);
+  assert.match(handler, /gc->clip_rects\.clear\(\)/);
+});
+
 test('drawable draws lines, fills and tiles with the GC', () => {
   const dir = mkdtempSync(join(tmpdir(), 'x11-drawable-raster-'));
   try {
@@ -88,7 +97,7 @@ public:
 using XGCPtr = std::shared_ptr<XGC>;
 class XDrawable {
 public:
-    XDrawable(U32 width, U32 height, const VisualPtr& v) : visual(v), w(width), h(height) {
+    XDrawable(U32 width, U32 height, const VisualPtr& v, U32 d=32) : visual(v), w(width), h(height), depth(d) {
         bytes_per_line = w * 4;
         data = new U8[bytes_per_line * h]();
     }
@@ -106,15 +115,21 @@ public:
     void setDirty() {}
     U32 pixel(U32 x, U32 y) const { U32 v; std::memcpy(&v, data + bytes_per_line * y + x * 4, 4); return v; }
     void setPixel(U32 x, U32 y, U32 v) { std::memcpy(data + bytes_per_line * y + x * 4, &v, 4); }
+    U32 width() const { return w; } U32 height() const { return h; }
+    U32 getDepth() const { return depth; } U32 getBytesPerLine() const { return bytes_per_line; }
+    U8* getData() const { return data; }
     VisualPtr visual;
     U8* data;
     U32 bytes_per_line;
-    U32 w, h;
+    U32 w, h, depth;
 };
+using XPixmapPtr = std::shared_ptr<XDrawable>;
 struct XServer {
     XDrawablePtr tile;
+    XPixmapPtr mask;
     static XServer* getServer(bool = false) { static XServer s; return &s; }
     XDrawablePtr getDrawable(U32) { return tile; }
+    XPixmapPtr getPixmap(U32) { return mask; }
 };
 ${block}
 static VisualPtr v32 = std::make_shared<XVisual>(XVisual{32});
@@ -129,6 +144,21 @@ int main() {
         d.drawLine(&t, gc, 0, 0, 3, 3);
         for (U32 i = 0; i < 4; i++) assert(d.pixel(i, i) == 0x12345678);
         assert(d.pixel(1, 0) == 0 && d.pixel(3, 0) == 0);
+    }
+    // clip-mask pixmaps test one bit per drawable pixel, offset by clip origin;
+    // unset bits and coordinates outside the mask leave destination pixels unchanged.
+    {
+        auto mask = std::make_shared<XDrawable>(2, 2, v32, 1);
+        mask->setPixel(0, 0, 1); mask->setPixel(1, 0, 0);
+        mask->setPixel(0, 1, 0); mask->setPixel(1, 1, 1);
+        XServer::getServer()->mask = mask;
+        XDrawable d(4, 4, v32);
+        auto gc = std::make_shared<XGC>(); gc->values.foreground = 11;
+        gc->values.clip_mask = 9; gc->values.clip_x_origin = 1;
+        d.fillRectangle(&t, gc, 0, 0, 4, 4);
+        assert(d.pixel(1,0)==11 && d.pixel(2,0)==0 && d.pixel(1,1)==0 && d.pixel(2,1)==11);
+        assert(d.pixel(0,0)==0 && d.pixel(3,3)==0);
+        XServer::getServer()->mask = nullptr;
     }
     // horizontal line uses the GC foreground, not a fixed colour; endpoints inclusive
     {
