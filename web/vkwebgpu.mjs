@@ -8,6 +8,7 @@ import {
   v2IndexedTriangleFanIndices, v2TriangleFanIndices,
 } from './vk-protocol.mjs';
 import { bwLog, bwLogRl } from './vk-log.mjs';
+import { applyDynamicState } from './vk-dynstate.mjs';
 import { bridgeRecoveryStats, reportBridgeFailure } from './bridge-recovery.mjs';
 import {
   parseMinBindingSize, rewritePushConstantsWGSL, rewriteResolvedDxvkPresent,
@@ -1577,7 +1578,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     // pass depth state and always emit a (possibly disabled) depthStencil
     // when the pass has depth.
     const stripIndexType = pipe.topology === 2 || pipe.topology === 4 ? indexType : undefined;
-    const key = pipe.pipeId + ':ms' + sampleCount + ':topology:' + pipe.topology + ':vb:' + JSON.stringify(pipe.vb) + ':yny' + (unnegated ? '1' : '0') + ':pd' + (passHasDepth ? '1' : '0') + ':dt' + (pipe.depthTest ? '1' : '0') + ':si' + (stripIndexType ?? 'none') + ':colors' + colorFormats.join(',') + ':blend:' + JSON.stringify(pipe.colorBlend ?? pipe.blend) + ':cf:' + pipe.cull + '/' + pipe.front + ':depth:' + depthFormat + ':stencil:' + JSON.stringify(pipe.stencil) + ':db:' + JSON.stringify([pipe.depthBiasEnable,pipe.depthBiasConstantFactor,pipe.depthBiasClamp,pipe.depthBiasSlopeFactor,pipe.depthClampEnable]) + ':aspects:' + depthAspects;
+    const key = pipe.pipeId + ':ms' + sampleCount + ':topology:' + pipe.topology + ':vb:' + JSON.stringify(pipe.vb) + ':yny' + (unnegated ? '1' : '0') + ':pd' + (passHasDepth ? '1' : '0') + ':dt' + (pipe.depthTest ? '1' : '0') + ':dw' + (pipe.depthWrite ? '1' : '0') + ':do' + (pipe.depthOp | 0) + ':si' + (stripIndexType ?? 'none') + ':colors' + colorFormats.join(',') + ':blend:' + JSON.stringify(pipe.colorBlend ?? pipe.blend) + ':cf:' + pipe.cull + '/' + pipe.front + ':depth:' + depthFormat + ':stencil:' + JSON.stringify(pipe.stencil) + ':db:' + JSON.stringify([pipe.depthBiasEnable,pipe.depthBiasConstantFactor,pipe.depthBiasClamp,pipe.depthBiasSlopeFactor,pipe.depthClampEnable]) + ':aspects:' + depthAspects;
     if (pipelines.has(key)) return pipelines.get(key);
     const vsm = F.shaders.get(pipe.vsHash), fsm = F.shaders.get(pipe.fsHash);
     if (!vsm || !fsm) return { skip: 'missing-shader' };
@@ -2068,7 +2069,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       pipeRec: null, pipeDesc: null, pipeNeg: false, sets: new Map(), setVer: new Map(), inlineMap: new Map(),
       pushBlock: new Uint8Array(V2_PUSH_SIZE), pushDirty: false,
       vbinds: [], ibind: null, viewport: null, scissor: null,
-      pipeBad: false, badPipes: new Map(), dynamicStencil:[[undefined,undefined],[undefined,undefined],[undefined,undefined]], blendConstants:[0,0,0,0], depthBias:null, cull:undefined, front:undefined,
+      pipeBad: false, badPipes: new Map(), dynamicStencil:[[undefined,undefined],[undefined,undefined],[undefined,undefined]], blendConstants:[0,0,0,0], depthBias:null, cull:undefined, front:undefined, dyn:{},
     };
     const bump = si => st.setVer.set(si, (st.setVer.get(si) || 0) + 1);
     const diagCfg = v2PassReadbackConfig(globalThis.location?.search);
@@ -2278,7 +2279,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           }
           case 'blendConstants': st.blendConstants=op.values; break;
           case 'depthBias': st.depthBias=op; break;
-          case 'rasterState': st[op.which]=op.value; break;
+          case 'rasterState': if (op.which === 'cull' || op.which === 'front') st[op.which]=op.value; else st.dyn[op.which]=op.value; break;
           case 'imageClearDS': {
             // vkCmdClearDepthStencilImage: one clearing render pass per cleared mip/layer.
             if (passEnc) { noteUnsupported('clear-ds-inside-pass'); break; }
@@ -2323,10 +2324,11 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
             if (!passEnc || !st.pipeDesc) { noteSkippedDraw(!passEnc ? 'draw-no-encoder' : 'draw-no-pipeline-bound'); if (diagOn) v2DiagNoteSkip(passDiagDraws.skips, !passEnc ? 'no-encoder' : 'no-pipeline-bound'); break; }
             if (diagOn) { passDiagDraws.draws++; passDiagDraws.vs.add(st.pipeDesc.vsHash); passDiagDraws.fs.add(st.pipeDesc.fsHash); if (passDiagDraws.list.length < 24) passDiagDraws.list.push([st.pipeDesc.vsHash, st.pipeDesc.fsHash, op.indexed ? op.indexCount : op.vertexCount, op.instanceCount, v2DiagDescribeBindings(st.sets, F, targets)]); }
             let drawPipe;
-            try {drawPipe=v2StencilPipeline(st.pipeDesc,st.dynamicStencil);}
+            try {drawPipe=v2StencilPipeline(applyDynamicState(st.pipeDesc,st.dyn),st.dynamicStencil);}
             catch(error) {noteUnsupported('draw-stencil-pipeline', error.message);noteSkippedDraw('draw-stencil-pipeline');if (diagOn) v2DiagNoteSkip(passDiagDraws.skips, 'stencil:' + error.message);break;}
             if ((drawPipe.cullDynamic && st.cull !== undefined) || (drawPipe.frontDynamic && st.front !== undefined))
               drawPipe = {...drawPipe, ...(drawPipe.cullDynamic && st.cull !== undefined ? {cull:st.cull} : {}), ...(drawPipe.frontDynamic && st.front !== undefined ? {front:st.front} : {})};
+            if (drawPipe.rasterizerDiscard) { stats.discardedDraws = (stats.discardedDraws || 0) + 1; break; }   // RASTERIZER_DISCARD: no fragments, VS has no other visible effect here
             if (drawPipe.depthBiasDynamic && st.depthBias)
               drawPipe = {...drawPipe,depthBiasConstantFactor:st.depthBias.constantFactor,depthBiasClamp:st.depthBias.clamp,depthBiasSlopeFactor:st.depthBias.slopeFactor};
             const selected=await getPipelineFor(drawPipe,passSamples,st.pipeNeg,!!depthView,st.ibind?.indexType||0,passColorFormats,passDepthFormat,passDepthAspects);
@@ -2439,7 +2441,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
             for (const {slot} of [...st.pipeRec.slotOf.values()].flat()) {
               if (!vbSet.has(slot)) passEnc.setVertexBuffer(slot, dummyVb, 0);
             }
-            const triangleFan = st.pipeDesc?.topology === 5;
+            const triangleFan = drawPipe.topology === 5;
             if (triangleFan) {
               let indices, cacheKey;
               if (op.indexed && st.ibind) {
@@ -2448,8 +2450,8 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
                 const hash = F.bufHashes?.get(st.ibind.buf) || fnv1a(bytes);
                 const indexByteOffset = Math.min(Math.max(0, st.ibind.offset), bytes.byteLength);
                 indices = v2IndexedTriangleFanIndices(bytes.subarray(indexByteOffset), st.ibind.indexType, op.firstIndex, op.indexCount,
-                  !!st.pipeDesc.primitiveRestartEnable);
-                cacheKey = `fan-indexed:${st.ibind.buf}:${hash}:${indexByteOffset}:${op.firstIndex}:${op.indexCount}:${st.ibind.indexType}:${st.pipeDesc.primitiveRestartEnable ? 1 : 0}`;
+                  !!drawPipe.primitiveRestartEnable);
+                cacheKey = `fan-indexed:${st.ibind.buf}:${hash}:${indexByteOffset}:${op.firstIndex}:${op.indexCount}:${st.ibind.indexType}:${drawPipe.primitiveRestartEnable ? 1 : 0}`;
               } else if (!op.indexed) {
                 indices = v2TriangleFanIndices(op.vertexCount, op.firstVertex);
                 cacheKey = `fan-vertices:${op.firstVertex}:${op.vertexCount}`;

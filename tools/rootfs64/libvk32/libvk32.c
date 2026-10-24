@@ -295,6 +295,7 @@ enum {
     VK64_fn_vkCmdPushDescriptorSetWithTemplateKHR = 915,
     VK64_fn_vkGetDescriptorSetLayoutSupport = 916,
     VK64_fn_vkGetDeviceImageMemoryRequirements = 917,
+    VK64_fn_vkCmdSetExtendedDynamicState = 918,
     VK64_fn__MAX
 };
 
@@ -1024,6 +1025,34 @@ API void vkCmdSetFrontFace(VkCommandBuffer cb, uint32_t face) {
     (void)vk64_trap(VK64_fn_vkCmdSetFrontFace, &a);
 }
 API void vkCmdSetFrontFaceEXT(VkCommandBuffer cb, uint32_t face) { vkCmdSetFrontFace(cb, face); }
+static void vk64_setDyn(VkCommandBuffer cb, uint32_t which, uint32_t value) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = which; a.a[2] = value;
+    (void)vk64_trap(VK64_fn_vkCmdSetExtendedDynamicState, &a);
+}
+API void vkCmdSetPrimitiveTopology(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 2, v); }
+API void vkCmdSetPrimitiveTopologyEXT(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 2, v); }
+API void vkCmdSetDepthTestEnable(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 3, v); }
+API void vkCmdSetDepthTestEnableEXT(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 3, v); }
+API void vkCmdSetDepthWriteEnable(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 4, v); }
+API void vkCmdSetDepthWriteEnableEXT(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 4, v); }
+API void vkCmdSetDepthCompareOp(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 5, v); }
+API void vkCmdSetDepthCompareOpEXT(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 5, v); }
+API void vkCmdSetStencilTestEnable(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 6, v); }
+API void vkCmdSetStencilTestEnableEXT(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 6, v); }
+API void vkCmdSetDepthBiasEnable(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 7, v); }
+API void vkCmdSetDepthBiasEnableEXT(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 7, v); }
+API void vkCmdSetRasterizerDiscardEnable(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 8, v); }
+API void vkCmdSetRasterizerDiscardEnableEXT(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 8, v); }
+API void vkCmdSetPrimitiveRestartEnable(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 9, v); }
+API void vkCmdSetPrimitiveRestartEnableEXT(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 9, v); }
+API void vkCmdSetDepthBoundsTestEnable(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 11, v); }
+API void vkCmdSetDepthBoundsTestEnableEXT(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 11, v); }
+API void vkCmdSetStencilOp(VkCommandBuffer cb, uint32_t faceMask, uint32_t failOp, uint32_t passOp, uint32_t depthFailOp, uint32_t compareOp) {
+    vk64_setDyn(cb, 10, (faceMask & 3u) | ((failOp & 7u) << 4) | ((passOp & 7u) << 8) | ((depthFailOp & 7u) << 12) | ((compareOp & 7u) << 16));
+}
+API void vkCmdSetStencilOpEXT(VkCommandBuffer cb, uint32_t faceMask, uint32_t failOp, uint32_t passOp, uint32_t depthFailOp, uint32_t compareOp) {
+    vkCmdSetStencilOp(cb, faceMask, failOp, passOp, depthFailOp, compareOp);
+}
 API void vkCmdSetDepthBounds(VkCommandBuffer cb, float lo, float hi) {
     union { float f; uint32_t u; } l, h; l.f = lo; h.f = hi;
     VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = l.u; a.a[2] = h.u;
@@ -1545,6 +1574,26 @@ static const struct procEntry g_procs[] = {
     S(vkGetPipelineCacheData),
     S(vkMergePipelineCaches),
     E(vkGetDeviceImageMemoryRequirements, VK64_fn_vkGetDeviceImageMemoryRequirements),
+    E(vkCmdSetPrimitiveTopology, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetPrimitiveTopologyEXT, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetDepthTestEnable, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetDepthTestEnableEXT, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetDepthWriteEnable, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetDepthWriteEnableEXT, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetDepthCompareOp, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetDepthCompareOpEXT, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetStencilTestEnable, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetStencilTestEnableEXT, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetDepthBiasEnable, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetDepthBiasEnableEXT, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetRasterizerDiscardEnable, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetRasterizerDiscardEnableEXT, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetPrimitiveRestartEnable, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetPrimitiveRestartEnableEXT, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetDepthBoundsTestEnable, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetDepthBoundsTestEnableEXT, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetStencilOp, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetStencilOpEXT, VK64_fn_vkCmdSetExtendedDynamicState),
     E(vkCmdBlitImage, VK64_fn_vkCmdBlitImage),
     E(vkCmdBlitImage2, VK64_fn_vkCmdBlitImage2),
     E(vkCmdBlitImage2KHR, VK64_fn_vkCmdBlitImage2KHR),
@@ -1903,9 +1952,7 @@ TAIL(vkQueueBindSparse)
 TAIL(vkCmdSetBlendConstant)
 TAIL(vkCmdNextSubpass)
 TAIL(vkCmdNextSubpassKHR)
-TAIL(vkCmdSetDepthBiasEnableEXT)
 TAIL(vkCmdSetDepthBiasNV)
-TAIL(vkCmdSetPrimitiveTopologyEXT)
 TAIL(vkCmdSetVertexInputEXT)
 TAIL(vkCmdBeginConditionalRenderingEXT)
 TAIL(vkCmdEndConditionalRenderingEXT)

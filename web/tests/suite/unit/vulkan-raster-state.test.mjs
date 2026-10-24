@@ -44,7 +44,7 @@ test('RST1 pipeline tail and RASTER_STATE records decode', () => {
 test('static pipelines carry no dynamic raster flags and bad raster state is rejected', () => {
   const frame = decodeV2Frame(records([], 0, 0));
   assert.equal(frame.pipelines.get('0000000000000001').cullDynamic, undefined);
-  assert.throws(() => decodeV2Frame(records([{ type: V2_REC.RASTER_STATE, payload: new W().u32(2).u32(0).buf() }])), /invalid raster state/);
+  assert.throws(() => decodeV2Frame(records([{ type: V2_REC.RASTER_STATE, payload: new W().u32(12).u32(0).buf() }])), /invalid raster state/);
 });
 
 test('IMAGE_CLEAR_DS decodes depth, stencil and ranges', () => {

@@ -1,5 +1,6 @@
 // Vulkan v2 wire parsing, frame assembly, and format conversion.
 import { bwLog } from './vk-log.mjs';
+import { DYN_ID, DYN_MASK_LIMIT, decodeDynState } from './vk-dynstate.mjs';
 export const MAX_DIMENSION = 8192;
 export const MAX_DRAWS = 4096;
 
@@ -618,7 +619,7 @@ export function decodeV2Frame(records, counters = {}) {
       case V2_REC.PIPELINE: {
         const pipeId = v2Hex64(r.u64());
         const vsHash = v2Hex64(r.u64()), fsHash = v2Hex64(r.u64());
-        const topology = r.u32(), cull = r.u32(), front = r.u32();
+        let topology = r.u32(); const cull = r.u32(), front = r.u32();
         const depthTest = r.u32(), depthWrite = r.u32(), depthOp = r.u32(), blend = r.u32();
         const nVb = r.u32(), nVa = r.u32();
         if (nVb > 4 || nVa > 16) throw new Error('vk64: v2 PIPELINE vertex layout out of range');
@@ -646,7 +647,7 @@ export function decodeV2Frame(records, counters = {}) {
           fsSpec = readSpec();
         }
         let colorBlend, blendConstants, stencil, blendConstantsDynamic, depthBias;
-        let primitiveRestartEnable = false, cullDynamic = false, frontDynamic = false;
+        let primitiveRestartEnable = false, cullDynamic = false, frontDynamic = false, dynMask = 0, rasterizerDiscard = 0;
         while (r.left) {
           const tag = r.u32();
           if (tag === 0x314e5453) {
@@ -679,6 +680,12 @@ export function decodeV2Frame(records, counters = {}) {
             cullDynamic = !!cd; frontDynamic = !!fd;
             continue;
           }
+          if (tag === 0x314e5944) {
+            const mask = r.u32(), discard = r.u32();
+            if (mask >= DYN_MASK_LIMIT || discard > 1) throw new Error('vk64: v2 PIPELINE invalid extended dynamic state');
+            dynMask = mask; rasterizerDiscard = discard;
+            continue;
+          }
           if (tag !== 0x31444e42) throw new Error('vk64: v2 PIPELINE unknown extension tail');
           const count = r.u32();
           if (count > 4) throw new Error('vk64: v2 PIPELINE blend count out of range');
@@ -690,7 +697,13 @@ export function decodeV2Frame(records, counters = {}) {
           blendConstants = [r.f32(), r.f32(), r.f32(), r.f32()];
         }
         r.done('PIPELINE');
-        const pipe = { pipeId, vsHash, fsHash, topology, cull, front, depthTest, depthWrite, depthOp, blend, vb, va, vsSpec, fsSpec, primitiveRestartEnable, ...(cullDynamic || frontDynamic ? { cullDynamic, frontDynamic } : {}), ...(colorBlend ? { colorBlend, blendConstants } : {}), ...(stencil ? {stencil, blendConstantsDynamic} : {}), ...(depthBias || {}) };
+        // A topology WebGPU cannot draw is never replayed as triangle-list: the bridge rejects
+        // such pipelines. A dynamic-topology pipeline may carry any static value (ignored).
+        if (!(topology in V2_TOPOLOGY)) {
+          if (!(dynMask & (1 << DYN_ID.topology))) throw new Error('vk64: v2 PIPELINE unsupported topology ' + topology);
+          topology = 3;
+        }
+        const pipe = { pipeId, vsHash, fsHash, topology, cull, front, depthTest, depthWrite, depthOp, blend, vb, va, vsSpec, fsSpec, primitiveRestartEnable, ...(cullDynamic || frontDynamic ? { cullDynamic, frontDynamic } : {}), ...(dynMask ? { dynMask } : {}), ...(rasterizerDiscard ? { rasterizerDiscard: 1 } : {}), ...(colorBlend ? { colorBlend, blendConstants } : {}), ...(stencil ? {stencil, blendConstantsDynamic} : {}), ...(depthBias || {}) };
         frame.pipelines.set(pipeId, pipe);
         needPass().ops.push({ op: 'bindPipe', pipe });
         break;
@@ -854,8 +867,7 @@ export function decodeV2Frame(records, counters = {}) {
       }
       case V2_REC.RASTER_STATE: {
         const which = r.u32(), value = r.u32(); r.done('RASTER_STATE');
-        if (which > 1 || value > 3) throw new Error('vk64: v2 invalid raster state');
-        needPass().ops.push({ op: 'rasterState', which: which ? 'front' : 'cull', value }); break;
+        needPass().ops.push({ op: 'rasterState', ...decodeDynState(which, value) }); break;
       }
       case V2_REC.IMAGE_CLEAR_DS: {
         const image = v2Hex64(r.u64()), depth = r.f32(), stencil = r.u32(), count = r.u32();

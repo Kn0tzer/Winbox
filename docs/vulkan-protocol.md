@@ -141,7 +141,7 @@ is emitted at the first submit-with-draw after a present, `FRAME_END` seals at
 | 0x12 | `INLINE_BYTES` | `u8 setIndex, u8 pad, u16 pad, u32 binding, u32 dstArrayElement, u32 len, u8 bytes[len]`. Payload for `kind=4` (`INLINE_UNIFORM_BLOCK`) bindings, whose bytes live in guest memory at write time. |
 | 0x18 | `DEPTH_BIAS` | `f32 constantFactor, clamp, slopeFactor`, dynamic `vkCmdSetDepthBias` state in command order. |
 | 0x19 | `IMAGE_BLIT` | `u64 srcImage, u64 dstImage, u32 srcMip, srcLayer, dstMip, dstLayer, filter, i32 srcOffset[2][3], i32 dstOffset[2][3]`; linear/nearest GPU blit, including mip generation. |
-| 0x1A | `RASTER_STATE` | `u32 which (0 = cull mode, 1 = front face), u32 value` (Vulkan enum values), dynamic `vkCmdSetCullMode` / `vkCmdSetFrontFace` state in command order. Applied only to pipelines whose `RST1` tail flags that state dynamic. |
+| 0x1A | `RASTER_STATE` | `u32 which, u32 value`, dynamic state in command order (`web/vk-dynstate.mjs`). `which`: 0 cull mode, 1 front face (Vulkan enum values), 2 primitive topology (0-5), 3 depth test, 4 depth write, 6 stencil test, 7 depth-bias enable, 8 rasterizer discard, 9 primitive restart, 11 depth-bounds test (booleans 0/1; 11 is always 0, TRUE is rejected by the bridge), 5 depth compare op (0-7), 10 stencil op packed `faceMask(2b) \| fail<<4 \| pass<<8 \| depthFail<<12 \| compare<<16`. Applied only to pipelines whose `RST1` tail (ids 0/1) or `DYN1` tail (ids 2-11, bit n = id n) flags that state dynamic. |
 | 0x1B | `IMAGE_CLEAR_DS` | `u64 image, f32 depth, u32 stencil, u32 rangeCount (at most 64), then rangeCount x {u32 aspectMask, baseMip, levelCount, baseLayer, layerCount}`. `vkCmdClearDepthStencilImage` (64-bit guest only). |
 
 Deliberately **not** in v2: secondary command buffers (DXVK doesn't use them
@@ -253,6 +253,14 @@ The `PIPELINE` record may append an `RST1` tail (`u32 0x31545352`, `u32 cullDyna
 DXVK always declares `VK_DYNAMIC_STATE_CULL_MODE` / `FRONT_FACE`; the page tier uses the
 latest `RASTER_STATE` value for a flagged pipeline and the static pipeline value otherwise
 (the value is part of the pipeline cache key).
+
+The `PIPELINE` record may append a `DYN1` tail (`u32 0x314e5944`, `u32 dynMask`, `u32 rasterizerDiscard`):
+`dynMask` bit n is set when the pipeline lists extended-dynamic-state id n (see `RASTER_STATE`) in
+`pDynamicStates`; `rasterizerDiscard` is the static `rasterizerDiscardEnable`. A discarded draw is
+counted in `discardedDraws`, not dropped. A pipeline whose `pDynamicStates` names a state with no V2
+representation is rejected at create (`VK_ERROR_FEATURE_NOT_PRESENT`, `UNSUPPORTED dynamic-state-<n>`).
+A topology WebGPU cannot draw (adjacency/patch) is never replayed as `triangle-list`: the decoder
+throws unless the pipeline's topology is dynamic.
 
 The `PIPELINE` record may append a `BND1` tail after its two specialization
 lists: `u32 0x31444e42`, `u32 attachmentCount` (at most four), then one block of

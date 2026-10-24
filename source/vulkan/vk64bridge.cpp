@@ -274,6 +274,7 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkCmdPushDescriptorSetKHR, "vkCmdPushDescriptorSetKHR") \
     X(VK64_fn_vkCmdPushDescriptorSetWithTemplateKHR, "vkCmdPushDescriptorSetWithTemplateKHR") \
     X(VK64_fn_vkGetDeviceImageMemoryRequirements,   "vkGetDeviceImageMemoryRequirements") \
+    X(VK64_fn_vkCmdSetExtendedDynamicState, "vkCmdSetExtendedDynamicState") \
     X(VK64_fn_vkGetDescriptorSetLayoutSupport, "vkGetDescriptorSetLayoutSupport") \
     X(VK64_fn_vkCmdCopyQueryPoolResults, "vkCmdCopyQueryPoolResults") \
     X(VK64_fn_vkCmdDraw,                            "vkCmdDraw")           \
@@ -993,6 +994,8 @@ struct Pipeline : Obj {
     U32 depthBiasEnable = 0, depthClampEnable = 0;
     bool depthBiasDynamic = false;
     bool cullDynamic = false, frontDynamic = false;   // VK_DYNAMIC_STATE_CULL_MODE / FRONT_FACE (DXVK declares both on every non-discard pipeline)
+    U32 dynMask = 0;                // bit n set = state n (vkCmdSetExtendedDynamicState 'which', plus 0 cull / 1 front) is dynamic
+    U32 rasterizerDiscard = 0;      // static rasterizerDiscardEnable (dynamic: bit 8 + CMD_RASTER_STATE)
     float depthBiasConstantFactor = 0.0f, depthBiasClamp = 0.0f, depthBiasSlopeFactor = 0.0f;
     U32 colorBlendCount = 0; ColorBlend colorBlend[VK64_MAX_ATTACH];
     float blendConstants[4] = {};
@@ -1035,6 +1038,12 @@ static void captureStencil(Pipeline& pipe, const T& state) {
     pipe.stencil.back = face(state.back);
 }
 
+// vkCmdSetExtendedDynamicState 'which' ids (also the bit index in Pipeline::dynMask;
+// 0/1 are the older vkCmdSetCullMode / vkCmdSetFrontFace RASTER_STATE ids).
+enum { VK64_DYN_CULL = 0, VK64_DYN_FRONT = 1, VK64_DYN_TOPOLOGY = 2, VK64_DYN_DEPTH_TEST = 3,
+       VK64_DYN_DEPTH_WRITE = 4, VK64_DYN_DEPTH_OP = 5, VK64_DYN_STENCIL_TEST = 6,
+       VK64_DYN_DEPTH_BIAS_ENABLE = 7, VK64_DYN_RASTERIZER_DISCARD = 8, VK64_DYN_PRIMITIVE_RESTART = 9,
+       VK64_DYN_STENCIL_OP = 10, VK64_DYN_DEPTH_BOUNDS_TEST = 11 };
 // Everything vkCreateGraphicsPipelines does not model is reported here, once
 // per feature (rate-limited, greppable "vk64: UNSUPPORTED <feature>"). Stages
 // with no V2 representation cannot be approximated, so they fail the pipeline
@@ -1048,6 +1057,7 @@ struct PipelineAudit {
     U32 sampleCount = 1;
     bool logicOp = false, depthBounds = false, sampleShading = false, alphaToOne = false;
     bool rasterizerDiscard = false;
+    U32 dynMask = 0;              // states supplied by commands, not by the create info
     bool vertexDivisor = false;   // VkVertexInputBindingDivisorDescriptionEXT.divisor != 1
 };
 static const U32 kV2SupportedStageMask = 0x1u | 0x10u;     // VERTEX | FRAGMENT
@@ -1061,17 +1071,75 @@ static bool vk64AuditGraphicsPipeline(const PipelineAudit& a) {
     if (extra & 0x40u) { vk64Unsupported("task-stage", "pipeline rejected"); reject = true; }
     if (extra & 0x80u) { vk64Unsupported("mesh-stage", "pipeline rejected"); reject = true; }
     if (extra & ~(0x2u | 0x4u | 0x8u | 0x40u | 0x80u)) { vk64Unsupported("unknown-graphics-stage", "pipeline rejected"); reject = true; }
-    if (a.topology == 10) { vk64Unsupported("patch-list-topology", "pipeline rejected"); reject = true; }
+    if (a.dynMask & (1u << VK64_DYN_TOPOLOGY)) {}   // the static topology is ignored; vkCmdSetPrimitiveTopology validates its own value
+    else if (a.topology == 10) { vk64Unsupported("patch-list-topology", "pipeline rejected"); reject = true; }
     else if (a.topology >= 6) { vk64Unsupported("adjacency-topology", "pipeline rejected"); reject = true; }
     if (a.polygonMode != 0) { vk64Unsupported(a.polygonMode == 1 ? "polygon-mode-line" : "polygon-mode-point", "pipeline rejected"); reject = true; }
     if (a.logicOp) { vk64Unsupported("logic-op", "pipeline rejected"); reject = true; }
-    if (a.depthBounds) { vk64Unsupported("depth-bounds-test", "pipeline rejected"); reject = true; }
+    if (a.depthBounds && !(a.dynMask & (1u << VK64_DYN_DEPTH_BOUNDS_TEST))) { vk64Unsupported("depth-bounds-test", "pipeline rejected"); reject = true; }
     if (a.sampleShading) { vk64Unsupported("sample-shading", "pipeline rejected"); reject = true; }
     if (a.alphaToOne) { vk64Unsupported("alpha-to-one", "pipeline rejected"); reject = true; }
     if (a.viewportCount > 1) { vk64Unsupported("multi-viewport", "pipeline rejected"); reject = true; }
     if (a.vertexDivisor) { vk64Unsupported("vertex-attribute-divisor", "pipeline rejected"); reject = true; }
     if (a.sampleCount != 1 && a.sampleCount != 4) { vk64Unsupported("sample-count", "pipeline rejected"); reject = true; }
     return reject;
+}
+// Applies VkPipelineDynamicStateCreateInfo to the pipeline. Returns false (after a
+// greppable "UNSUPPORTED dynamic-state-<n>") for a state with no representation in
+// V2: the caller fails the pipeline with VK_ERROR_FEATURE_NOT_PRESENT instead of
+// replaying it with the wrong static value.
+static bool vk64ApplyDynamicStates(Pipeline& p, const std::vector<U32>& states) {
+    bool ok = true;
+    for (const U32 value : states) {
+        switch (value) {
+        case 0: case 1: case 2: break;                 // viewport, scissor, line width (wideLines off: always 1.0)
+        case 3: p.depthBiasDynamic = true; break;
+        case 4: p.blendConstantsDynamic = true; break;
+        case 5: break;                                 // depth bounds: depthBoundsTestEnable cannot be turned on (vkCmdSetExtendedDynamicState rejects it)
+        case 6: case 7: case 8: p.stencil.dynamicMask |= 1u << (value - 6); break;
+        case 1000267000u: p.cullDynamic = true;  p.dynMask |= 1u << VK64_DYN_CULL; break;
+        case 1000267001u: p.frontDynamic = true; p.dynMask |= 1u << VK64_DYN_FRONT; break;
+        case 1000267002u: p.dynMask |= 1u << VK64_DYN_TOPOLOGY; break;
+        case 1000267003u: case 1000267004u: break;      // viewport/scissor with count: count is 1 (multi-viewport is rejected)
+        case 1000267005u: p.dynamicVertexStride = true; break;
+        case 1000267006u: p.dynMask |= 1u << VK64_DYN_DEPTH_TEST; break;
+        case 1000267007u: p.dynMask |= 1u << VK64_DYN_DEPTH_WRITE; break;
+        case 1000267008u: p.dynMask |= 1u << VK64_DYN_DEPTH_OP; break;
+        case 1000267009u: p.dynMask |= 1u << VK64_DYN_DEPTH_BOUNDS_TEST; break;
+        case 1000267010u: p.dynMask |= 1u << VK64_DYN_STENCIL_TEST; break;
+        case 1000267011u: p.dynMask |= 1u << VK64_DYN_STENCIL_OP; break;
+        case 1000377000u: break;                        // patch control points: no tessellation stage exists
+        case 1000377001u: p.dynMask |= 1u << VK64_DYN_RASTERIZER_DISCARD; break;
+        case 1000377002u: p.dynMask |= 1u << VK64_DYN_DEPTH_BIAS_ENABLE; break;
+        case 1000377003u: break;                        // logic op: logicOp feature is off, no vkCmdSetLogicOp entry exists
+        case 1000377004u: p.dynMask |= 1u << VK64_DYN_PRIMITIVE_RESTART; break;
+        default: {
+            char name[40]; snprintf(name, sizeof(name), "dynamic-state-%u", value);
+            vk64Unsupported(name, "pipeline rejected (no V2 representation)");
+            ok = false;
+        }
+        }
+    }
+    return ok;
+}
+// Validates one vkCmdSet* extended-dynamic-state command. Values the replay cannot honour
+// are reported and dropped (never forwarded as a different state).
+static bool vk64ExtendedDynamicStateOk(U32 which, U32 value) {
+    switch (which) {
+    case VK64_DYN_TOPOLOGY:
+        if (value >= 6) { vk64Unsupported(value == 10 ? "patch-list-topology" : "adjacency-topology", "vkCmdSetPrimitiveTopology ignored"); return false; }
+        return true;
+    case VK64_DYN_DEPTH_TEST: case VK64_DYN_DEPTH_WRITE: case VK64_DYN_STENCIL_TEST:
+    case VK64_DYN_DEPTH_BIAS_ENABLE: case VK64_DYN_RASTERIZER_DISCARD: case VK64_DYN_PRIMITIVE_RESTART:
+    case VK64_DYN_DEPTH_OP: case VK64_DYN_STENCIL_OP:
+        return true;
+    case VK64_DYN_DEPTH_BOUNDS_TEST:
+        if (value) { vk64Unsupported("depth-bounds-test", "vkCmdSetDepthBoundsTestEnable(TRUE) ignored; depthBounds feature is off"); return false; }
+        return true;
+    default:
+        vk64Unsupported("dynamic-state-command", "unknown vkCmdSetExtendedDynamicState id ignored");
+        return false;
+    }
 }
 struct RenderPass : Obj {
     U32 natt = 0, formats[VK64_MAX_ATTACH] = {0}, loadOps[VK64_MAX_ATTACH] = {0},
@@ -3235,6 +3303,8 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 p.u32(pipe->primitiveRestartEnable);
                 p.u32(0x31545352u); // RST1: which rasterizer state is dynamic (cull mode, front face)
                 p.u32(pipe->cullDynamic ? 1 : 0); p.u32(pipe->frontDynamic ? 1 : 0);
+                p.u32(0x314e5944u); // DYN1: which extended state is dynamic (Pipeline::dynMask) + static rasterizerDiscardEnable
+                p.u32(pipe->dynMask); p.u32(pipe->rasterizerDiscard);
             });
         };
         auto emitRpBegin = [&](const Cmd& k) {
@@ -4955,18 +5025,13 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 }
             }
             VkPipelineDynamicStateCreateInfo dynamic = {};
+            bool dynamicRejected = false;
             if (readStruct(ci.pDynamicState, dynamic)) {
                 std::vector<VkDynamicState> states;
                 readArray(dynamic.pDynamicStates, dynamic.dynamicStateCount, states);
-                for (auto state : states) {
-                    const U32 value = (U32)state;
-                    if (value == (U32)VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE) p->dynamicVertexStride = true;
-                    if (value == (U32)VK_DYNAMIC_STATE_DEPTH_BIAS) p->depthBiasDynamic = true;
-                    if (value == 1000267000u) p->cullDynamic = true;    // VK_DYNAMIC_STATE_CULL_MODE(_EXT)
-                    if (value == 1000267001u) p->frontDynamic = true;   // VK_DYNAMIC_STATE_FRONT_FACE(_EXT)
-                    if (value >= 6 && value <= 8) p->stencil.dynamicMask |= 1u << (value - 6);
-                    if (value == 4) p->blendConstantsDynamic = true;
-                }
+                std::vector<U32> dynValues;
+                for (auto state : states) dynValues.push_back((U32)state);
+                if (!vk64ApplyDynamicStates(*p, dynValues)) dynamicRejected = true;
             }
             std::vector<VkPipelineColorBlendAttachmentState> blends;
             readArray(cbs.pAttachments, std::min<U32>(cbs.attachmentCount, VK64_MAX_ATTACH), blends);
@@ -4980,6 +5045,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 audit.topology = ia.topology;
                 audit.polygonMode = rs.polygonMode;
                 audit.rasterizerDiscard = rs.rasterizerDiscardEnable;
+                audit.dynMask = p->dynMask;
+                p->rasterizerDiscard = rs.rasterizerDiscardEnable ? 1 : 0;
                 audit.logicOp = cbs.logicOpEnable;
                 audit.depthBounds = ds.depthBoundsTestEnable;
                 if (readStruct(ci.pVertexInputState, vi))
@@ -4998,7 +5065,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                     audit.sampleShading = ms.sampleShadingEnable;
                     audit.alphaToOne = ms.alphaToOneEnable;
                 }
-                if (vk64AuditGraphicsPipeline(audit)) {
+                if (vk64AuditGraphicsPipeline(audit) || dynamicRejected) {
                     dropObj(id);
                     wr64(args.a[5] + (U64)i * 8, 0);
                     result = VK_ERROR_FEATURE_NOT_PRESENT;
@@ -5698,6 +5765,13 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         g_mem->memcpyFromGuest(c.f, args.a[1], 16);
         pushCmd(cb, c); return 0;
     }
+    case VK64_fn_vkCmdSetExtendedDynamicState: {
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdSetExtendedDynamicState");
+        VK64_DROP_IF(return 0, !cb);
+        if (!vk64ExtendedDynamicStateOk((U32)args.a[1], (U32)args.a[2])) return 0;
+        Cmd c; c.kind = CMD_RASTER_STATE; c.a = (U32)args.a[1]; c.b = (U32)args.a[2];
+        pushCmd(cb, c); return 0;
+    }
     case VK64_fn_vkCmdSetCullMode:
     case VK64_fn_vkCmdSetFrontFace: {
         CmdBuf* cb = cbOf(args.a[0], "dynamic raster state");
@@ -5752,8 +5826,13 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         }
         return 0;
     }
-    case VK64_fn_vkCmdSetDepthBounds:
+    case VK64_fn_vkCmdSetDepthBounds: {
+        // depthBounds is not a feature we advertise: the only valid range is [0,1], which is a no-op.
+        const U32 loBits = (U32)args.a[1], hiBits = (U32)args.a[2];
+        float lo, hi; memcpy(&lo, &loBits, 4); memcpy(&hi, &hiBits, 4);
+        if (lo != 0.0f || hi != 1.0f) vk64Unsupported("depth-bounds-range", "vkCmdSetDepthBounds outside [0,1] ignored; depthBounds feature is off");
         return 0;
+    }
     case VK64_fn_vkCmdClearDepthStencilImage: {
         // (cmdBuf, image, layout, pDepthStencil*, rangeCount, pRanges*): replayed on the
         // page as a render-pass clear of the matching GPU texture subresources.
@@ -8035,18 +8114,13 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 }
             }
             vk32abi::VkPipelineDynamicStateCreateInfo dynamic = {};
+            bool dynamicRejected = false;
             if (readStruct32(ci.pDynamicState, dynamic)) {
                 std::vector<vk32abi::VkDynamicState> states;
                 readArray32(dynamic.pDynamicStates, dynamic.dynamicStateCount, states);
-                for (auto state : states) {
-                    const U32 value = (U32)state;
-                    if (value == (U32)VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE) p->dynamicVertexStride = true;
-                    if (value == (U32)VK_DYNAMIC_STATE_DEPTH_BIAS) p->depthBiasDynamic = true;
-                    if (value == 1000267000u) p->cullDynamic = true;    // VK_DYNAMIC_STATE_CULL_MODE(_EXT)
-                    if (value == 1000267001u) p->frontDynamic = true;   // VK_DYNAMIC_STATE_FRONT_FACE(_EXT)
-                    if (value >= 6 && value <= 8) p->stencil.dynamicMask |= 1u << (value - 6);
-                    if (value == 4) p->blendConstantsDynamic = true;
-                }
+                std::vector<U32> dynValues;
+                for (auto state : states) dynValues.push_back((U32)state);
+                if (!vk64ApplyDynamicStates(*p, dynValues)) dynamicRejected = true;
             }
             std::vector<vk32abi::VkPipelineColorBlendAttachmentState> blends;
             readArray32(cbs.pAttachments, std::min<U32>(cbs.attachmentCount, VK64_MAX_ATTACH), blends);
@@ -8060,6 +8134,8 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 audit.topology = ia.topology;
                 audit.polygonMode = rs.polygonMode;
                 audit.rasterizerDiscard = rs.rasterizerDiscardEnable;
+                audit.dynMask = p->dynMask;
+                p->rasterizerDiscard = rs.rasterizerDiscardEnable ? 1 : 0;
                 audit.logicOp = cbs.logicOpEnable;
                 audit.depthBounds = ds.depthBoundsTestEnable;
                 {
@@ -8081,7 +8157,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                     audit.sampleShading = ms.sampleShadingEnable;
                     audit.alphaToOne = ms.alphaToOneEnable;
                 }
-                if (vk64AuditGraphicsPipeline(audit)) {
+                if (vk64AuditGraphicsPipeline(audit) || dynamicRejected) {
                     dropObj(id);
                     wr64_32(args.a[5] + (U64)i * 8, 0);
                     result = VK_ERROR_FEATURE_NOT_PRESENT;
@@ -8419,6 +8495,13 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         g_mem32->memcpyFromGuest(c.f, (U32)args.a[1], 16);
         pushCmd(cb, c); return 0;
     }
+    case VK64_fn_vkCmdSetExtendedDynamicState: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdSetExtendedDynamicState");
+        VK64_DROP_IF(return 0, !cb);
+        if (!vk64ExtendedDynamicStateOk((U32)args.a[1], (U32)args.a[2])) return 0;
+        Cmd c; c.kind = CMD_RASTER_STATE; c.a = (U32)args.a[1]; c.b = (U32)args.a[2];
+        pushCmd(cb, c); return 0;
+    }
     case VK64_fn_vkCmdSetCullMode:
     case VK64_fn_vkCmdSetFrontFace: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "dynamic raster state");
@@ -8431,8 +8514,13 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         vk64Unsupported("timestamp-query", "timestamp queries are not integrated with WebGPU replay; device queue timestampValidBits is zero");
         return 0;
     }
-    case VK64_fn_vkCmdSetDepthBounds:
+    case VK64_fn_vkCmdSetDepthBounds: {
+        // depthBounds is not a feature we advertise: the only valid range is [0,1], which is a no-op.
+        const U32 loBits = (U32)args.a[1], hiBits = (U32)args.a[2];
+        float lo, hi; memcpy(&lo, &loBits, 4); memcpy(&hi, &hiBits, 4);
+        if (lo != 0.0f || hi != 1.0f) vk64Unsupported("depth-bounds-range", "vkCmdSetDepthBounds outside [0,1] ignored; depthBounds feature is off");
         return 0;
+    }
     case VK64_fn_vkCmdSetDepthBias: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdSetDepthBias");
         VK64_DROP_IF(return 0, !cb);

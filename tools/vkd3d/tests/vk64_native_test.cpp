@@ -85,6 +85,12 @@ extern "C" U64 vk64_test_trap(U64 fn, VK64Args* args) {
     return vk64Bridge(&cpu, fn, 128);
 }
 extern "C" {
+void vkCmdSetDepthTestEnable(U64, U32);
+void vkCmdSetStencilOp(U64, U32, U32, U32, U32, U32);
+void vkCmdSetPrimitiveTopology(U64, U32);
+void vkCmdSetRasterizerDiscardEnable(U64, U32);
+void vkCmdSetDepthBoundsTestEnable(U64, U32);
+void vkCmdSetDepthBounds(U64, float, float);
 void vkCmdSetViewportWithCount(U64, U32, const void*);
 void vkCmdSetViewportWithCountEXT(U64, U32, const void*);
 void vkCmdSetScissorWithCount(U64, U32, const void*);
@@ -403,6 +409,79 @@ int main() {
     resetCmdBuf(dynamicCb);
     assert(!dynamicCb->vbHasStride[0] && !dynamicCb->vbStride[0]);
     g_v2Pending.clear();
+    // ---- Extended dynamic state (core 1.3 / EXT_extended_dynamic_state{,2}): the pipeline
+    // declares which states come from commands (DYN1 tail), each command becomes a
+    // RASTER_STATE record in order, and values the replay cannot honour are loud.
+    {
+        const U32 states[4] = {1000267006u, 1000267011u, 1000267002u, 1000377001u};   // depth test, stencil op, topology, discard
+        memory.memcpyToGuest(7000, states, sizeof(states));
+        VkPipelineDynamicStateCreateInfo di{}; di.dynamicStateCount = 4; di.pDynamicStates = 7000;
+        memory.memcpyToGuest(7040, &di, sizeof(di));
+        VkPipelineInputAssemblyStateCreateInfo iaDyn{}; iaDyn.topology = (VkPrimitiveTopology)10;   // static value is ignored: topology is dynamic
+        memory.memcpyToGuest(7168, &iaDyn, sizeof(iaDyn));
+        VkGraphicsPipelineCreateInfo gpDyn{}; gpDyn.pDynamicState = 7040; gpDyn.pInputAssemblyState = 7168;
+        memory.memcpyToGuest(7296, &gpDyn, sizeof(gpDyn));
+        memory.writeq(7424, 0);
+        assert(vkCreateGraphicsPipelines(deviceId, 0, 1, (void*)7296, nullptr, (void*)7424) == VK_SUCCESS);
+        U64 dynPipeId = memory.readq(7424);
+        auto* dynPipe = objOf<Pipeline>(dynPipeId, K_PIPELINE, "test");
+        assert(dynPipe->dynMask == ((1u << VK64_DYN_DEPTH_TEST) | (1u << VK64_DYN_STENCIL_OP) | (1u << VK64_DYN_TOPOLOGY) | (1u << VK64_DYN_RASTERIZER_DISCARD)));
+        assert(!dynPipe->rasterizerDiscard);
+        // A state with no V2 representation fails the pipeline, loudly, with no leak.
+        const size_t objectsBeforeReject = g_objs.size();
+        const U32 badStates[2] = {1000267002u, 1000381000u};   // topology (keeps the static patch-list quiet), VK_DYNAMIC_STATE_COLOR_WRITE_ENABLE_EXT
+        memory.memcpyToGuest(7000, badStates, sizeof(badStates));
+        di.dynamicStateCount = 2; memory.memcpyToGuest(7040, &di, sizeof(di));
+        memory.writeq(7424, 0xdeadbeefULL);
+        assert(vk64BridgeUnsupportedCount("dynamic-state-1000381000") == 0);
+        assert((S64)vkCreateGraphicsPipelines(deviceId, 0, 1, (void*)7296, nullptr, (void*)7424) == VK_ERROR_FEATURE_NOT_PRESENT);
+        assert(memory.readq(7424) == 0 && vk64BridgeUnsupportedCount("dynamic-state-1000381000") == 1);
+        assert(g_objs.size() == objectsBeforeReject);
+        // Commands: recorded in order; adjacency topology and depth-bounds-enable are reported and dropped.
+        const U64 adjBefore = vk64BridgeUnsupportedCount("adjacency-topology");
+        const U64 boundsBefore = vk64BridgeUnsupportedCount("depth-bounds-test");
+        const U64 rangeBefore = vk64BridgeUnsupportedCount("depth-bounds-range");
+        resetCmdBuf(dynamicCb);
+        vkCmdBeginRendering(dynamicCbId, (void*)1664);
+        vkCmdBindPipeline(dynamicCbId, 0, dynPipeId);
+        vkCmdSetDepthTestEnable(dynamicCbId, 1);
+        vkCmdSetStencilOp(dynamicCbId, 3, 1, 2, 3, 5);
+        vkCmdSetPrimitiveTopology(dynamicCbId, 1);
+        vkCmdSetPrimitiveTopology(dynamicCbId, 6);          // adjacency: dropped, loud
+        vkCmdSetRasterizerDiscardEnable(dynamicCbId, 0);
+        vkCmdSetDepthBoundsTestEnable(dynamicCbId, 1);      // depthBounds feature is off: dropped, loud
+        vkCmdSetDepthBoundsTestEnable(dynamicCbId, 0);
+        vkCmdSetDepthBounds(dynamicCbId, 0.0f, 1.0f);       // the only valid range: quiet
+        vkCmdSetDepthBounds(dynamicCbId, 0.25f, 0.75f);     // out of range: loud
+        vkCmdDraw(dynamicCbId, 3, 1, 0, 0); vkCmdEndRendering(dynamicCbId);
+        assert(vk64BridgeUnsupportedCount("adjacency-topology") == adjBefore + 1);
+        assert(vk64BridgeUnsupportedCount("depth-bounds-test") == boundsBefore + 1);
+        assert(vk64BridgeUnsupportedCount("depth-bounds-range") == rangeBefore + 1);
+        std::vector<std::pair<U64, U64>> recorded;
+        for (const auto& c : dynamicCb->cmds) if (c.kind == CMD_RASTER_STATE) recorded.push_back({c.a, c.b});
+        const U64 packedOp = 3u | (1u << 4) | (2u << 8) | (3u << 12) | (5u << 16);
+        assert((recorded == std::vector<std::pair<U64, U64>>{{3, 1}, {10, packedOp}, {2, 1}, {8, 0}, {11, 0}}));
+        serializeSubmitV2({{dynamicCb, dynamicCbId}});
+        std::vector<std::pair<U32, U32>> wire;
+        bool sawDyn1 = false;
+        for (const auto& chunk : g_v2Pending.back().chunks) {
+            for (size_t at = 16; at < chunk.size();) {
+                U32 type, len; memcpy(&type, chunk.data() + at, 4); memcpy(&len, chunk.data() + at + 4, 4);
+                const U8* p = chunk.data() + at + 8;
+                if (type == V2_RASTER_STATE) { U32 w, v; memcpy(&w, p, 4); memcpy(&v, p + 4, 4); wire.push_back({w, v}); }
+                if (type == V2_PIPELINE && len >= 12) {
+                    U32 tag, mask, discard; memcpy(&tag, p + len - 12, 4); memcpy(&mask, p + len - 8, 4); memcpy(&discard, p + len - 4, 4);
+                    if (tag == 0x314e5944u) { sawDyn1 = true; assert(mask == dynPipe->dynMask && discard == 0); }
+                }
+                at += 8 + len;
+            }
+        }
+        assert(sawDyn1);
+        assert((wire == std::vector<std::pair<U32, U32>>{{3, 1}, {10, (U32)packedOp}, {2, 1}, {8, 0}, {11, 0}}));
+        resetCmdBuf(dynamicCb);
+        g_v2Pending.clear();
+        puts("PASS: extended dynamic state (DYN1 tail, ordered RASTER_STATE records, unknown dynamic state and adjacency/depth-bounds rejected loudly)");
+    }
     // Depth attachment has its own load/store and clear value, rather than
     // borrowing color metadata. It must occupy an explicit depth entry.
     U64 depthImageId; auto* depthImage = createObj<Image>(K_IMAGE, depthImageId);
@@ -662,6 +741,35 @@ int main() {
         VK32Args dr{}; dr.a[1] = 2100; dr.a[2] = 2400;
         assert(vk32Bridge(&cpu32, VK64_fn_vkGetDeviceImageMemoryRequirements, (memory32.memcpyToGuest(128, &dr, sizeof(dr)), 128)) == VK_SUCCESS);
         assert(memory32.readq(2408) == 8 * 8 * 4);
+        // 32-bit extended dynamic state: command records and the pipeline-create dynamic list.
+        {
+            U64 cb32Id; auto* cb32 = createObj32<CmdBuf>(K_CMDBUF, cb32Id);
+            VK32Args ed{}; ed.a[0] = cb32Id; ed.a[1] = 3; ed.a[2] = 1;               // depth test enable
+            assert(vk32Bridge(&cpu32, VK64_fn_vkCmdSetExtendedDynamicState, (memory32.memcpyToGuest(128, &ed, sizeof(ed)), 128)) == 0);
+            ed.a[1] = 2; ed.a[2] = 6;                                                // adjacency topology: dropped, loud
+            const U64 adj32 = vk64BridgeUnsupportedCount("adjacency-topology");
+            assert(vk32Bridge(&cpu32, VK64_fn_vkCmdSetExtendedDynamicState, (memory32.memcpyToGuest(128, &ed, sizeof(ed)), 128)) == 0);
+            assert(vk64BridgeUnsupportedCount("adjacency-topology") == adj32 + 1);
+            ed.a[1] = 99; ed.a[2] = 0;                                                // unknown id: dropped, loud
+            assert(vk32Bridge(&cpu32, VK64_fn_vkCmdSetExtendedDynamicState, (memory32.memcpyToGuest(128, &ed, sizeof(ed)), 128)) == 0);
+            assert(vk64BridgeUnsupportedCount("dynamic-state-command") >= 1);
+            assert(cb32->cmds.size() == 1 && cb32->cmds[0].kind == CMD_RASTER_STATE && cb32->cmds[0].a == 3 && cb32->cmds[0].b == 1);
+            U64 dev32Id; createObj32<Device>(K_DEVICE, dev32Id);
+            U32 st32[2] = {1000267008u, 1000377004u};                                 // depth compare op, primitive restart enable
+            memory32.memcpyToGuest(3000, st32, sizeof(st32));
+            vk32abi::VkPipelineDynamicStateCreateInfo di32{}; di32.dynamicStateCount = 2; di32.pDynamicStates = 3000;
+            memory32.memcpyToGuest(3040, &di32, sizeof(di32));
+            vk32abi::VkGraphicsPipelineCreateInfo gp32{}; gp32.pDynamicState = 3040;
+            memory32.memcpyToGuest(3200, &gp32, sizeof(gp32));
+            VK32Args cp{}; cp.a[0] = dev32Id; cp.a[2] = 1; cp.a[3] = 3200; cp.a[5] = 3400;
+            assert(vk32Bridge(&cpu32, VK64_fn_vkCreateGraphicsPipelines, (memory32.memcpyToGuest(128, &cp, sizeof(cp)), 128)) == VK_SUCCESS);
+            auto* p32 = objOf32<Pipeline>(memory32.readq(3400), K_PIPELINE, "test");
+            assert(p32 && p32->dynMask == ((1u << VK64_DYN_DEPTH_OP) | (1u << VK64_DYN_PRIMITIVE_RESTART)));
+            st32[1] = 1000377003u + 100;                                              // unknown state: rejected
+            memory32.memcpyToGuest(3000, st32, sizeof(st32));
+            assert((S64)(S32)vk32Bridge(&cpu32, VK64_fn_vkCreateGraphicsPipelines, (memory32.memcpyToGuest(128, &cp, sizeof(cp)), 128)) == VK_ERROR_FEATURE_NOT_PRESENT);
+            assert(memory32.readq(3400) == 0);
+        }
         g_mem32 = nullptr; g_mem = &memory;
         puts("PASS: former stubs (device image sizing, queue2, granularity, sparse, pipeline cache, buffer-view destroy)");
     }
@@ -886,10 +994,10 @@ int main() {
             assert(s32->els.size() == 3);
             for (U32 i = 0; i < 3; i++) assert(s32->els.at(DescKey(20, i)).obj == v[i] && s32->els.at(DescKey(20, i)).range == smpId);
         }
-        for (auto it = g_objs.begin(); it != g_objs.end();) {
-            auto cur = it++;
-            if (!idsBefore.count(cur->first)) dropObj(cur->first);
-        }
+        // dropObj cascades (pool -> sets, command buffer -> dynamic objects), so snapshot the ids first.
+        std::vector<U64> toDrop;
+        for (auto& kv : g_objs) if (!idsBefore.count(kv.first)) toDrop.push_back(kv.first);
+        for (U64 id : toDrop) if (g_objs.count(id)) dropObj(id);
         g_v2Pending.clear();
         puts("PASS: descriptor strides differ between i386 and x86-64");
     }
