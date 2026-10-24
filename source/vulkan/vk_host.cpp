@@ -10,7 +10,7 @@
 #include "vk_host.h"
 #include "vk_host_marshal.h"
 
-void initVulkan();
+bool initVulkan();
 BoxedVulkanInfo* getInfoFromHandle(KMemory* memory, U32 address);
 void freeVulkanPtr(KMemory* memory, U32 p);
 void registerVkMemoryAllocation(VkDeviceMemory memory, VkDeviceSize size);
@@ -1167,7 +1167,7 @@ void vk_DestroyDevice(CPU* cpu) {
 }
 // return type: VkResult(4 bytes)
 void vk_EnumerateInstanceVersion(CPU* cpu) {
-    initVulkan();
+    if (!initVulkan()) { EAX = (U32)VK_ERROR_INITIALIZATION_FAILED; return; }
     uint32_t tmp_pApiVersion = (uint32_t) cpu->memory->readd(ARG1);
     uint32_t* pApiVersion = &tmp_pApiVersion;
     EAX = (U32)pvkEnumerateInstanceVersion(pApiVersion);
@@ -1175,7 +1175,7 @@ void vk_EnumerateInstanceVersion(CPU* cpu) {
 }
 // return type: VkResult(4 bytes)
 void vk_EnumerateInstanceLayerProperties(CPU* cpu) {
-    initVulkan();
+    if (!initVulkan()) { EAX = (U32)VK_ERROR_INITIALIZATION_FAILED; return; }
     uint32_t tmp_pPropertyCount = (uint32_t) cpu->memory->readd(ARG1);
     uint32_t* pPropertyCount = &tmp_pPropertyCount;
     VkLayerProperties* pProperties = NULL;
@@ -1321,7 +1321,9 @@ void vk_MapMemory(CPU* cpu) {
     void *pData = NULL;
     EAX = (U32)pBoxedInfo->pvkMapMemory(device, memory, offset, size, flags, &pData);
     if (EAX == 0) {
-        cpu->memory->writed(ARG6, mapVkMemory(memory, pData, offset, size));
+        U32 mapped = mapVkMemory(memory, pData, offset, size);
+        if (!mapped) { pBoxedInfo->pvkUnmapMemory(device, memory); EAX = (U32)VK_ERROR_MEMORY_MAP_FAILED; return; }
+        cpu->memory->writed(ARG6, mapped);
     }
 }
 void vk_UnmapMemory(CPU* cpu) {
@@ -8047,7 +8049,9 @@ void vk_MapMemory2(CPU* cpu) {
     void *pData = NULL;
     EAX = (U32)pBoxedInfo->pvkMapMemory2(device, pMemoryMapInfo, &pData);
     if (EAX == 0) {
-        cpu->memory->writed(ARG3, mapVkMemory(pMemoryMapInfo->memory, pData, pMemoryMapInfo->offset, pMemoryMapInfo->size));
+        U32 mapped = mapVkMemory(pMemoryMapInfo->memory, pData, pMemoryMapInfo->offset, pMemoryMapInfo->size);
+        if (!mapped) { EAX = (U32)VK_ERROR_MEMORY_MAP_FAILED; return; }
+        cpu->memory->writed(ARG3, mapped);
     }
 }
 // return type: VkResult(4 bytes)
@@ -8059,7 +8063,9 @@ void vk_MapMemory2KHR(CPU* cpu) {
     void *pData = NULL;
     EAX = (U32)pBoxedInfo->pvkMapMemory2KHR(device, pMemoryMapInfo, &pData);
     if (EAX == 0) {
-        cpu->memory->writed(ARG3, mapVkMemory(pMemoryMapInfo->memory, pData, pMemoryMapInfo->offset, pMemoryMapInfo->size));
+        U32 mapped = mapVkMemory(pMemoryMapInfo->memory, pData, pMemoryMapInfo->offset, pMemoryMapInfo->size);
+        if (!mapped) { EAX = (U32)VK_ERROR_MEMORY_MAP_FAILED; return; }
+        cpu->memory->writed(ARG3, mapped);
     }
 }
 // return type: VkResult(4 bytes)

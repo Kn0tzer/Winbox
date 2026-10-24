@@ -24,6 +24,7 @@
 #include "vkdef.h"
 #include "kvulkan.h"
 #include <SDL_vulkan.h>
+#include <set>
 
 static PFN_vkGetInstanceProcAddr pvkGetInstanceProcAddr = nullptr;
 
@@ -175,23 +176,30 @@ void unregisterVkMemoryAllocation(VkDeviceMemory memory) {
     }
 }
 
+// Returns the guest address of the mapping, or 0 when the request cannot be
+// honoured (the caller then reports VK_ERROR_MEMORY_MAP_FAILED).
 U32 mapVkMemory(VkDeviceMemory memory, void* pData, VkDeviceSize offset, VkDeviceSize len) {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(vmemoryMutex);
     std::shared_ptr<VMemory> m = getVMemory(memory);
+    const char* why = nullptr;
     if (!m) {
-        kpanic("Wasn't expecting mapVkMemory before registerVkMemoryAllocation");
+        why = "memory was not registered by vkAllocateMemory";
+    } else if (m->mappedAddress) {
+        why = "memory is already mapped (Vulkan forbids a double map)";
+    } else if (offset > m->size) {
+        why = "offset exceeds allocation size";
+    } else {
+        if (len == VK_WHOLE_SIZE) {
+            len = m->size - offset;
+        }
+        if (len > m->size - offset) {
+            why = "range exceeds allocation size";
+        }
     }
-    if (m->mappedAddress) {
-        kpanic("Wasn't expecting mapVkMemory to be called twice on the same memory");
-    }
-    if (offset > m->size) {
-        kpanic("mapVkMemory offset exceeds allocation size");
-    }
-    if (len == VK_WHOLE_SIZE) {
-        len = m->size - offset;
-    }
-    if (len > m->size - offset) {
-        kpanic("mapVkMemory range exceeds allocation size");
+    if (why) {
+        static bool shown;
+        if (!shown) { klog_fmt("vk: UNSUPPORTED mapVkMemory: %s, returning VK_ERROR_MEMORY_MAP_FAILED", why); shown = true; }
+        return 0;
     }
     m->mappedLen = len;
     m->mappedAddress = KThread::currentThread()->memory->mapNativeMemory(pData, (U32)len);
@@ -202,10 +210,13 @@ void unmapVkMemory(VkDeviceMemory memory) {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(vmemoryMutex);
     std::shared_ptr<VMemory> m = getVMemory(memory);
     if (!m) {
-        kpanic("Wasn't expecting mapVkMemory before registerVkMemoryAllocation");
+        static bool shown;
+        if (!shown) { klog("vk: UNSUPPORTED unmapVkMemory: memory was not registered by vkAllocateMemory (ignored)"); shown = true; }
+        return;
     }
     if (!m->mappedAddress) {
         klog("unmapVkMemory called, but no record of being mapped");
+        return;
     }
     KThread::currentThread()->memory->unmapNativeMemory(m->mappedAddress, (U32)m->mappedLen);
     m->mappedAddress = 0;
@@ -253,9 +264,9 @@ static void BOXED_vkCreateXlibSurfaceKHR(CPU* cpu) {
 
 #include "vk_host_marshal.h"
 
-void initVulkan();
+bool initVulkan();
 void vk_CreateInstance(CPU* cpu) {
-    initVulkan();
+    if (!initVulkan()) { EAX = (U32)VK_ERROR_INITIALIZATION_FAILED; return; }
     MarshalVkInstanceCreateInfo local_pCreateInfo(nullptr, cpu->memory, ARG1);
     VkInstanceCreateInfo* pCreateInfo = &local_pCreateInfo.s;
     static bool shown; if (!shown && ARG2) { klog("vkCreateInstance:VkAllocationCallbacks not implemented"); shown = true; }
@@ -326,7 +337,7 @@ void vk_DestroyInstance2(CPU* cpu) {
 }
 
 void vk_EnumerateInstanceExtensionProperties(CPU* cpu) {
-    initVulkan();
+    if (!initVulkan()) { EAX = (U32)VK_ERROR_INITIALIZATION_FAILED; return; }
     U32 len = 0;
     char* pLayerName = nullptr;
     if (ARG1) {
@@ -375,67 +386,58 @@ VkBool32 VKAPI_PTR boxed_vkDebugUtilsMessengerCallbackEXT(VkDebugUtilsMessageSev
 
 // ported/inspired by https://github.com/KhronosGroup/Vulkan-ValidationLayers/blob/main/layers/core_checks/cc_descriptor.cpp
 U32 calculateUpdateDescriptorSetWithTemplateDataSize(BoxedVulkanInfo* pBoxedInfo, VkDescriptorUpdateTemplate descriptorUpdateTemplate) {
-    std::shared_ptr<MarshalVkDescriptorUpdateTemplateCreateInfo> pCreateInfo = pBoxedInfo->descriptorUpdateTemplateCreateInfo.at((U64)descriptorUpdateTemplate);
-    if (!pCreateInfo) {
-        kpanic("calculateUpdateDescriptorSetWithTemplateDataSize missing cached pCreateInfo");
+    auto found = pBoxedInfo->descriptorUpdateTemplateCreateInfo.find((U64)descriptorUpdateTemplate);
+    if (found == pBoxedInfo->descriptorUpdateTemplateCreateInfo.end() || !found->second) {
+        static bool shown;
+        if (!shown) { klog("vk: UNSUPPORTED descriptor-update-template: no cached create info, update data size 0"); shown = true; }
+        return 0;
     }
+    std::shared_ptr<MarshalVkDescriptorUpdateTemplateCreateInfo> pCreateInfo = found->second;
 
+    // The data blob must cover, for every entry, the last element's offset plus
+    // that element's payload. The payload is at least the descriptor struct
+    // even when the application passes a smaller stride.
     size_t size = 0;
     for (uint32_t i = 0; i < pCreateInfo->s.descriptorUpdateEntryCount; i++) {
-        uint32_t count = pCreateInfo->s.pDescriptorUpdateEntries[i].descriptorCount;
-        // find the fartherest offset + count * stride
-        size = std::max(size, pCreateInfo->s.pDescriptorUpdateEntries[i].offset + count * pCreateInfo->s.pDescriptorUpdateEntries[i].stride);
-    }
-
-    for (uint32_t i = 0; i < pCreateInfo->s.descriptorUpdateEntryCount; i++) {
-        for (uint32_t j = 0; j < pCreateInfo->s.pDescriptorUpdateEntries[i].descriptorCount; j++) {
-            switch (pCreateInfo->s.pDescriptorUpdateEntries[i].descriptorType) {
-            case VK_DESCRIPTOR_TYPE_SAMPLER:
-            case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
-            case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
-            case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-            case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
-                if (sizeof(VkDescriptorImageInfo) > pCreateInfo->s.pDescriptorUpdateEntries[i].stride) {
-                    // because of padding, this can be 20 or 24
-                    kpanic_fmt("calculateUpdateDescriptorSetWithTemplateDataSize sizeof(VkDescriptorBufferInfo) %d > stride", sizeof(VkDescriptorImageInfo), pCreateInfo->s.pDescriptorUpdateEntries[i].stride);
-                }
-                break;
-
-            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
-            case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
-            case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
-                if (sizeof(VkDescriptorBufferInfo) != 24) {
-                    kpanic_fmt("calculateUpdateDescriptorSetWithTemplateDataSize unexpected sizeof(VkDescriptorBufferInfo) %d", sizeof(VkDescriptorBufferInfo));
-                }
-                break;
-
-            case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
-            case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-                // VkBufferView - VK_DEFINE_NON_DISPATCHABLE_HANDLE
-                break;
-            case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK:
-                // size = pCreateInfo->s.pDescriptorUpdateEntries[i].descriptorCount
-                // 
-                // skip the rest of the array, they just represent bytes in the update
-                j = pCreateInfo->s.pDescriptorUpdateEntries[i].descriptorCount;
-                break;
-            case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
-                // VkAccelerationStructureKHR - VK_DEFINE_NON_DISPATCHABLE_HANDLE
-                break;
-            case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV:
-                // VkAccelerationStructureNV - VK_DEFINE_NON_DISPATCHABLE_HANDLE
-                break;
-            default:
-            {
-                static bool showOnce;
-                if (!showOnce) {
-                    kwarn_fmt("calculateUpdateDescriptorSetWithTemplateDataSize unexpected descriptorType %x", pCreateInfo->s.pDescriptorUpdateEntries[i].descriptorType);
-                    showOnce = true;
-                }
+        const VkDescriptorUpdateTemplateEntry& e = pCreateInfo->s.pDescriptorUpdateEntries[i];
+        size_t payload = 0;
+        switch (e.descriptorType) {
+        case VK_DESCRIPTOR_TYPE_SAMPLER:
+        case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+        case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+        case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+        case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+            payload = sizeof(VkDescriptorImageInfo);
+            break;
+        case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+        case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+        case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+        case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+            payload = sizeof(VkDescriptorBufferInfo);
+            break;
+        case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+        case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+        case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
+        case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV:
+            payload = sizeof(uint64_t); // non-dispatchable handle
+            break;
+        case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK:
+            // descriptorCount is a byte count and the data is contiguous
+            size = std::max(size, (size_t)e.offset + e.descriptorCount);
+            continue;
+        default:
+        {
+            static bool showOnce;
+            if (!showOnce) {
+                kwarn_fmt("calculateUpdateDescriptorSetWithTemplateDataSize unexpected descriptorType %x", e.descriptorType);
+                showOnce = true;
             }
-                break;
-            }
+        }
+            payload = e.stride;
+            break;
+        }
+        if (e.descriptorCount) {
+            size = std::max(size, (size_t)e.offset + (size_t)(e.descriptorCount - 1) * e.stride + payload);
         }
     }
     return (U32)size;
@@ -444,16 +446,23 @@ U32 calculateUpdateDescriptorSetWithTemplateDataSize(BoxedVulkanInfo* pBoxedInfo
 #include "../vulkan/vk_host.h"
 
 static bool vulkanInitialized;
+static bool vulkanLoadFailed;
 
-void initVulkan() {
+bool initVulkan() {
     if (!vulkanInitialized) {
         BOXEDWINE_CRITICAL_SECTION;
         if (vulkanInitialized) {
-            return;
-        }        
+            return true;
+        }
 
         if (SDL_Vulkan_LoadLibrary(NULL)) {
-            kpanic_fmt("Failed to load vulkan: %s\n", SDL_GetError());
+            // Leave every pvk* null: vk_CreateInstance and the proc-address
+            // paths check pvkCreateInstance and return VK_ERROR_INITIALIZATION_FAILED.
+            if (!vulkanLoadFailed) {
+                klog_fmt("vk: UNSUPPORTED host Vulkan loader: %s (instance creation will fail with VK_ERROR_INITIALIZATION_FAILED)", SDL_GetError());
+                vulkanLoadFailed = true;
+            }
+            return false;
         }
         pvkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr();
         pvkCreateInstance = (PFN_vkCreateInstance)pvkGetInstanceProcAddr(VK_NULL_HANDLE, "vkCreateInstance");
@@ -466,6 +475,7 @@ void initVulkan() {
 #undef LOAD_FUNCPTR
         vulkanInitialized = true;
     }
+    return true;
 }
 
 Int99Callback int9ACallback[VK_LAST_VALUE+1];
@@ -490,17 +500,27 @@ void vulkan_init() {
 
 #endif
 
+// A guest call into a function the host cannot serve returns
+// VK_ERROR_FEATURE_NOT_PRESENT and logs once per function id.
+static void reportMissingVulkanFunction(CPU* cpu, U32 index, const char* why) {
+    static std::set<U32> reported;
+    if (reported.insert(index).second) {
+        klog_fmt("vk: UNSUPPORTED function id %d: %s, returning VK_ERROR_FEATURE_NOT_PRESENT", index, why);
+    }
+    EAX = (U32)-8; /* VK_ERROR_FEATURE_NOT_PRESENT; the Vulkan headers are absent when BOXEDWINE_VULKAN is off */
+}
+
 void callVulkan(CPU* cpu, U32 index) {
 #ifdef BOXEDWINE_VULKAN
     if (index < int9ACallbackSize) {
         if (int9ACallback[index]) {
             int9ACallback[index](cpu);
         } else {
-            kpanic_fmt("Vulkan tried to call missing function: %d", index);
+            reportMissingVulkanFunction(cpu, index, "no handler for this entry point");
         }
     } else 
 #endif
     {
-        kpanic_fmt("Vulkan not compiled into Boxedwine: %d", index);
+        reportMissingVulkanFunction(cpu, index, "Vulkan not compiled into Boxedwine");
     }
 }
