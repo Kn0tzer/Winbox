@@ -287,6 +287,18 @@ fail, pass, depth-fail, compare, compare mask, write mask, reference.
 `RP_BEGIN` appends `STP1` (`0x31505453`), attachment count, and three u32 per
 attachment: stencil load, stencil store, aspect mask. Older frames omit these tails.
 
+`RP_BEGIN` then appends `CLR1` (`0x31524c43`), attachment count, and four f32 per
+attachment: that attachment's colour clear value (zero for depth attachments). It gives
+multiple render targets their own clears; the single `clearColor` field stays attachment 0's value.
+Integer formats carry the integer value converted to f32 (exact to 2^24). Frames
+without `CLR1` clear every colour attachment with `clearColor`.
+
+`IMAGE_DATA` may end with a view-range tail after `d, layers, mips`: u32 baseMip, levelCount,
+baseLayer, layerCount (VK_REMAINING_* already resolved) and viewType (VkImageViewType). The replay
+creates sampled views with exactly that range. Frames without the tail sample the whole image.
+Non-identity component swizzles and rendering into a non-zero mip/layer are not applied and are
+reported (`image-view-swizzle`, `render-target-subresource` in the bridge).
+
 Records `0x15` (stencil state) carry kind (compare/write/reference = 0/1/2),
 face bits (front 1, back 2), and value, all u32. `0x16` carries four f32 blend
 constants. `0x17` carries a bounded u32 attachment count (max 8), then aspect,

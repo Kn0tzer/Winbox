@@ -248,7 +248,9 @@ int main() {
             assert(at + 8 + len <= chunk.size());
             if (type == V2_RP_BEGIN) {
                 ++rpBegins;
-                assert(len == 108); // Existing fields, one view/image identity pair, and the STP1 stencil tail.
+                assert(len == 132); // Existing fields, one view/image identity pair, the STP1 stencil tail, and the CLR1 per-attachment clears.
+                { U32 tag; memcpy(&tag, chunk.data() + at + 8 + 108, 4); assert(tag == 0x31524c43u);
+                  assert(memcmp(chunk.data() + at + 8 + 116, clear, 16) == 0); }
                 U32 count, format, load, store, samples;
                 memcpy(&count, chunk.data() + at + 8 + 24, 4);
                 memcpy(&format, chunk.data() + at + 8 + 28, 4);
@@ -576,7 +578,7 @@ int main() {
             U32 type, len; memcpy(&type, chunk.data() + at, 4); memcpy(&len, chunk.data() + at + 4, 4);
             if (type == V2_RP_BEGIN) {
                 ++depthPasses;
-                assert(len == 156); // 28 + 2*20 + 24 + 2*16 + STP1 (8 + 2*12).
+                assert(len == 156 + 8 + 2 * 16); // 28 + 2*20 + 24 + 2*16 + STP1 (8 + 2*12) + CLR1 (8 + 2*16).
                 const U8* tail = chunk.data() + at + 8 + 92;
                 U64 ids[4]; memcpy(ids, tail, sizeof(ids));
                 assert(ids[0] == viewId && ids[1] == imageId && ids[2] == depthViewId && ids[3] == depthImageId);
@@ -1294,6 +1296,20 @@ int main() {
         vk64AuditAttachmentView(&v);
         assert(vk64BridgeUnsupportedCount("render-target-subresource") == rtBefore + 2);
         puts("PASS: image view ranges are kept; swizzle and render-target subresources are loud");
+    }
+    {
+        // Multiple render targets keep their own clear colours; integer formats clear with integer values.
+        RenderPass rp; rp.natt = 3; rp.formats[0] = 37; rp.formats[1] = 130; rp.formats[2] = 99;
+        std::vector<VkClearValue> values(3);
+        values[0].color.float32[0] = 0.25f; values[0].color.float32[3] = 1.0f;
+        values[1].depthStencil.depth = 0.5f; values[1].depthStencil.stencil = 7;
+        values[2].color.int32[0] = -5; values[2].color.int32[1] = 9;
+        Cmd c; captureRenderPassClears(c, &rp, values);
+        assert(c.attClear.size() == 12);
+        assert(c.attClear[0] == 0.25f && c.attClear[3] == 1.0f && c.f[0] == 0.25f);
+        assert(c.clearDepth == 0.5 && c.clearStencil == 7);
+        assert(c.attClear[8] == -5.0f && c.attClear[9] == 9.0f);
+        puts("PASS: per-attachment colour clears (MRT, integer formats) are captured");
     }
         puts("PASS: GUARD advertised features are truthful and identical for 32-bit and 64-bit guests");
 

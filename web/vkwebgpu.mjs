@@ -1375,7 +1375,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
 
   // Frame-local resource caches, reset by render().
   const F = {
-    shaders: new Map(), images: new Map(), views: new Map(), viewFormats: new Map(), samplers: new Map(), buffers: new Map(),
+    shaders: new Map(), images: new Map(), views: new Map(), viewFormats: new Map(), viewRanges: new Map(), samplers: new Map(), buffers: new Map(),
     texCache: new Map(), bufCache: new Map(), sampCache: new Map(), live: [],
   };
 
@@ -1803,7 +1803,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       if (baseMip || levels !== mips) { out.baseMipLevel = baseMip; out.mipLevelCount = levels; }
     }
     if (dimension === '3d' || dimension === '1d') return out;
-    const layers = texture.depthOrArrayLayers || 1;
+    const layers = texture.depthOrArrayLayers || texture.size?.[2] || 1;
     const base = Math.min(range.baseLayer, layers - 1);
     let count = Math.max(1, Math.min(range.layerCount, layers - base));
     if (dimension === '2d') count = 1;
@@ -2043,6 +2043,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     F.shaders = frame.shaders; F.images = frame.images;
     F.views = frame.views; F.samplers = frame.samplers; F.buffers = frame.buffers;
     F.viewFormats = frame.viewFormats || new Map();
+    F.viewRanges = frame.viewRanges || new Map();
     F.bufHashes = frame.bufHashes;
     F.texCache.clear(); F.bufCache.clear(); F.sampCache.clear(); F.live.length = 0;
     // NOTE: persistTexCache/persistBufCache/persistSampCache are NOT cleared —
@@ -2162,7 +2163,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           }
           colorAttachments.push({
             view, resolveTarget,
-            clearValue: { r: p.clearColor[0], g: p.clearColor[1], b: p.clearColor[2], a: p.clearColor[3] },
+            clearValue: ((c) => ({ r: c[0], g: c[1], b: c[2], a: c[3] }))(a.clearColor || p.clearColor),
             loadOp: a.loadOp === 1 ? 'clear' : 'load',
             storeOp: a.storeOp === 1 ? 'discard' : 'store',
           });

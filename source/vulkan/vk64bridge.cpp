@@ -1233,6 +1233,7 @@ struct Cmd {
     float f[8] = {0};
     double clearDepth = 1.0;
     U32 clearStencil = 0;
+    std::vector<float> attClear;              // CMD_BEGIN_RP: 4 floats per attachment (colour clears)
     std::vector<ClearAttachmentArg> clearAttachments;
     std::vector<ClearRectArg> clearRects;
     std::vector<ClearRangeArg> clearRanges;   // CMD_CLEAR_DS_IMAGE: a = image, f[0] = depth, clearStencil
@@ -1266,6 +1267,31 @@ struct Cmd {
     U32 capCount = 0;
     std::vector<float> capPos, capCol;
 };
+// Integer colour formats clear with the raw uint/int bits; the protocol carries floats, which
+// are exact up to 2^24 (the replay passes them straight to WebGPU's numeric clearValue).
+static bool vk64IsIntColorFormat(U32 f) {
+    switch (f) {
+        case 13: case 14: case 20: case 21: case 41: case 42: case 74: case 75: case 81: case 82:
+        case 95: case 96: case 98: case 99: case 101: case 102: case 107: case 108: return true;
+        default: return false;
+    }
+}
+static bool vk64IsSintColorFormat(U32 f) {
+    switch (f) { case 14: case 21: case 42: case 75: case 82: case 96: case 99: case 102: case 108: return true; default: return false; }
+}
+// Stores the colour clear for attachment `index` (per-attachment, so multiple render targets keep
+// their own values) and mirrors attachment 0 into Cmd::f for older decoders.
+static void vk64SetAttachmentClear(Cmd& command, U32 index, U32 format, const U32 raw[4]) {
+    if (command.attClear.size() < (size_t)(index + 1) * 4) command.attClear.resize((size_t)(index + 1) * 4, 0.0f);
+    for (U32 k = 0; k < 4; ++k) {
+        float v;
+        if (vk64IsSintColorFormat(format)) v = (float)(int32_t)raw[k];
+        else if (vk64IsIntColorFormat(format)) v = (float)raw[k];
+        else memcpy(&v, &raw[k], 4);
+        command.attClear[(size_t)index * 4 + k] = v;
+        if (index == 0) command.f[k] = v;
+    }
+}
 template <class T>
 static void captureRenderPassClears(Cmd& command, const RenderPass* pass, const std::vector<T>& values) {
     VK64_DROP_IF(return, !pass);
@@ -1273,7 +1299,7 @@ static void captureRenderPassClears(Cmd& command, const RenderPass* pass, const 
         if (pass->formats[i] >= 124 && pass->formats[i] <= 130) {
             command.clearDepth = values[i].depthStencil.depth;
             command.clearStencil = values[i].depthStencil.stencil;
-        } else if (i == 0) memcpy(command.f, values[i].color.float32, 16);
+        } else vk64SetAttachmentClear(command, i, pass->formats[i], reinterpret_cast<const U32*>(values[i].color.float32));
     }
 }
 struct CmdBuf : Obj {
@@ -3406,6 +3432,10 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     auto* view = objOf<ImageView>(rfb->views[i], K_IMAGEVIEW, "vkQueueSubmit");
                     p.u32(rrp->stencilLoadOps[i]); p.u32(rrp->stencilStoreOps[i]); p.u32(view ? view->aspect : 0);
                 }
+                // CLR1: per-attachment colour clear values (multiple render targets).
+                p.u32(0x31524c43u); p.u32(rfb->natt);
+                for (U32 i = 0; i < rfb->natt; ++i)
+                    for (U32 c4 = 0; c4 < 4; ++c4) p.f32(i * 4 + c4 < k.attClear.size() ? k.attClear[i * 4 + c4] : 0.0f);
             });
         };
 
@@ -5766,7 +5796,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             if (depth) {
                 float value; memcpy(&value, att.clearValue, 4); c.clearDepth = value;
                 rp->depthFmt = rp->formats[i];
-            } else if (i == 0) memcpy(c.f, att.clearValue, 16);
+            } else vk64SetAttachmentClear(c, i, rp->formats[i], att.clearValue);
         };
         U32 colors = vk64CapCount("rendering-attachments", ri.colorAttachmentCount, VK64_MAX_ATTACH);
         for (U32 i = 0; i < colors && ri.pColorAttachments; ++i)
@@ -9202,7 +9232,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             if (depth) {
                 float value; memcpy(&value, &att.clearValue, 4); c.clearDepth = value;
                 rp->depthFmt = rp->formats[i];
-            } else if (i == 0) memcpy(c.f, &att.clearValue, 16);
+            } else vk64SetAttachmentClear(c, i, rp->formats[i], reinterpret_cast<const U32*>(&att.clearValue));
         };
         U32 colors = vk64CapCount("rendering-attachments", ri.colorAttachmentCount, VK64_MAX_ATTACH);
         for (U32 i = 0; i < colors && ri.pColorAttachments; ++i)

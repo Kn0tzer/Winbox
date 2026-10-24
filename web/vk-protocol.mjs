@@ -601,6 +601,11 @@ export function decodeV2Frame(records, counters = {}) {
             attachment.stencilLoadOp = r.u32(); attachment.stencilStoreOp = r.u32(); attachment.aspectMask = r.u32();
           }
         }
+        // CLR1 tail: per-attachment colour clear values (multiple render targets).
+        if (r.left) {
+          if (r.u32() !== 0x31524c43 || r.u32() !== natt) throw new Error('vk64: v2 RP_BEGIN invalid clear tail');
+          for (const attachment of attachments) attachment.clearColor = [r.f32(), r.f32(), r.f32(), r.f32()];
+        }
         r.done('RP_BEGIN');
         pass = { rpId, fbId, w, h, attachments, clearColor, clearDepth, clearStencil, ops: [] };
         frame.passes.push(pass);
