@@ -1019,13 +1019,13 @@ export class WebGPUGL {
     this._enqueue(() => this._clearGpu(mask, state));
   }
   viewport(x, y, width, height) {
-    if (width < 0 || height < 0) { this._recordError(GL.INVALID_VALUE); return; }
+    if (![x, y, width, height].every(Number.isInteger) || [x, y, width, height].some(value => value < -0x80000000 || value > 0x7fffffff) || width < 0 || height < 0) { this._recordError(GL.INVALID_VALUE); return; }
     this._viewport = [x | 0, y | 0, width | 0, height | 0];
     if (this._isDefaultFramebuffer(this._drawFramebuffer) && (x + width > this._width || y + height > this._height))
       this._ensureTargets(Math.max(this._width, x + width), Math.max(this._height, y + height));
   }
   scissor(x, y, width, height) {
-    if (width < 0 || height < 0) { this._recordError(GL.INVALID_VALUE); return; }
+    if (![x, y, width, height].every(Number.isInteger) || [x, y, width, height].some(value => value < -0x80000000 || value > 0x7fffffff) || width < 0 || height < 0) { this._recordError(GL.INVALID_VALUE); return; }
     this._scissor = [x | 0, y | 0, width | 0, height | 0];
   }
   enable(capability) {
@@ -1096,8 +1096,10 @@ export class WebGPUGL {
   }
 
   pixelStorei(parameter, value) {
-    if (![GL.PACK_ALIGNMENT, GL.PACK_ROW_LENGTH, GL.PACK_SKIP_ROWS, GL.PACK_SKIP_PIXELS, 0x0cf5, 0x0cf2, 0x0cf3, 0x0cf4].includes(parameter)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (![GL.PACK_ALIGNMENT, GL.PACK_ROW_LENGTH, GL.PACK_SKIP_ROWS, GL.PACK_SKIP_PIXELS, 0x0cf5, 0x0cf2, 0x0cf3, 0x0cf4, 0x9240, 0x9241].includes(parameter)) { this._recordError(GL.INVALID_ENUM); return; }
     if (!Number.isInteger(value) || value < 0 || (parameter === GL.PACK_ALIGNMENT || parameter === 0x0cf5) && ![1, 2, 4, 8].includes(value)) { this._recordError(GL.INVALID_VALUE); return; }
+    if (parameter === 0x9240) { this._unpack.flipY = Boolean(value); return; }
+    if (parameter === 0x9241) { this._unpack.premultiplyAlpha = Boolean(value); return; }
     if (parameter === GL.PACK_ALIGNMENT) this._pack.alignment = value;
     else if (parameter === GL.PACK_ROW_LENGTH) this._pack.rowLength = value;
     else if (parameter === GL.PACK_SKIP_ROWS) this._pack.skipRows = value;
@@ -1111,16 +1113,16 @@ export class WebGPUGL {
   }
 
   readPixels(x, y, width, height, format, type, destination) {
+    if (![x, y, width, height].every(Number.isInteger) || [x, y, width, height].some(value => value < -0x80000000 || value > 0x7fffffff) || width < 0 || height < 0) { this._recordError(GL.INVALID_VALUE); return; }
     if (this._bufferSelection(this._readFramebuffer).read === GL.NONE) return;
-    if (width < 0 || height < 0) { this._recordError(GL.INVALID_VALUE); return; }
     const components = format === 0x1907 ? 3 : [0x1908, 0x80e1].includes(format) ? 4 : 0;
     const byteType = type === 0x1401;
     const floatType = type === 0x1406;
     const knownFormats = [0x1903, 0x8227, 0x1907, 0x1908, 0x80e1, 0x1902, 0x84f9];
     const knownTypes = [0x1401, 0x1403, 0x1405, 0x1406, 0x84fa];
     let targetDestination = destination;
-    if (!knownFormats.includes(format)) { this._rejectUnsupported(`readPixels format 0x${Number(format).toString(16)}`, GL.INVALID_ENUM); return; }
-    if (!knownTypes.includes(type)) { this._rejectUnsupported(`readPixels type 0x${Number(type).toString(16)}`, GL.INVALID_ENUM); return; }
+    if (!knownFormats.includes(format)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (!knownTypes.includes(type)) { this._recordError(GL.INVALID_ENUM); return; }
     if (!components) { this._rejectUnsupported(`readPixels format 0x${Number(format).toString(16)}`, GL.INVALID_OPERATION); return; }
     if (!byteType && !floatType) { this._rejectUnsupported(`readPixels type 0x${Number(type).toString(16)}`, GL.INVALID_OPERATION); return; }
     const pboOffset = typeof destination === 'number' ? destination : null;
@@ -1993,25 +1995,31 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     return this._fixedFunctionDraw(mode, 0, count, { type, offset, bytes: indexBytes }, arrays);
   }
 
+  _validateDrawModeAndCounts(mode, count, instances = 1) {
+    if (![0x0000, 0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006].includes(mode)) { this._recordError(GL.INVALID_ENUM); return false; }
+    if (![count, instances].every(Number.isInteger) || count < 0 || instances < 0 || count > 0x7fffffff || instances > 0x7fffffff) { this._recordError(GL.INVALID_VALUE); return false; }
+    return true;
+  }
   drawArrays(mode, first, count) {
+    if (!this._validateDrawModeAndCounts(mode, count)) return;
+    if (!Number.isInteger(first) || first < 0 || first > 0x7fffffff) { this._recordError(GL.INVALID_VALUE); return; }
     if (this._bufferSelection(this._drawFramebuffer).draw === GL.NONE) return;
-    if (![0x0000, 0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007].includes(mode)) { this._recordError(GL.INVALID_ENUM); return; }
-    if (first < 0 || count < 0) { this._recordError(GL.INVALID_VALUE); return; }
     if (count > 0) this._frameDirty = true;
     if (!this._currentProgram && this._fixedFunctionDraw(mode, first, count, null, this._fixedFunctionLegacyArrays || {})) return;
     const state = this._drawSnapshot(); this._mirrorDraw(state, mode, first, count, null); this._enqueue(() => this._draw(state, mode, first, count, null, 1));
   }
   drawElements(mode, count, type, offset) {
-    if (this._bufferSelection(this._drawFramebuffer).draw === GL.NONE) return;
-    if (![0x0000, 0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007].includes(mode)) { this._recordError(GL.INVALID_ENUM); return; }
-    if (count < 0 || offset < 0) { this._recordError(GL.INVALID_VALUE); return; }
+    if (!this._validateDrawModeAndCounts(mode, count)) return;
     if (![0x1401, 0x1403, 0x1405].includes(type)) { this._recordError(GL.INVALID_ENUM); return; }
+    const indexBytes = type === 0x1401 ? 1 : type === 0x1403 ? 2 : 4;
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset % indexBytes !== 0) { this._recordError(GL.INVALID_VALUE); return; }
+    if (this._bufferSelection(this._drawFramebuffer).draw === GL.NONE) return;
     if (count > 0) this._frameDirty = true;
     if (!this._currentProgram && this._fixedFunctionDraw(mode, 0, count, { type, offset }, this._fixedFunctionLegacyArrays || {})) return;
     const element = { type, offset }, state = this._drawSnapshot(); this._mirrorDraw(state, mode, 0, count, element); this._enqueue(() => this._draw(state, mode, 0, count, element, 1));
   }
-  drawArraysInstanced(mode, first, count, instances) { const state = this._drawSnapshot(); if (state.drawBuffer === GL.NONE) return; if (count > 0 && instances > 0) this._frameDirty = true; this._mirrorDraw(state, mode, first, count, null); this._enqueue(() => this._draw(state, mode, first, count, null, instances)); }
-  drawElementsInstanced(mode, count, type, offset, instances) { const element = { type, offset }, state = this._drawSnapshot(); if (state.drawBuffer === GL.NONE) return; if (count > 0 && instances > 0) this._frameDirty = true; this._mirrorDraw(state, mode, 0, count, element); this._enqueue(() => this._draw(state, mode, 0, count, element, instances)); }
+  drawArraysInstanced(mode, first, count, instances) { if (!this._validateDrawModeAndCounts(mode, count, instances)) return; if (!Number.isInteger(first) || first < 0 || first > 0x7fffffff) { this._recordError(GL.INVALID_VALUE); return; } const state = this._drawSnapshot(); if (state.drawBuffer === GL.NONE) return; if (count > 0 && instances > 0) this._frameDirty = true; this._mirrorDraw(state, mode, first, count, null); this._enqueue(() => this._draw(state, mode, first, count, null, instances)); }
+  drawElementsInstanced(mode, count, type, offset, instances) { if (!this._validateDrawModeAndCounts(mode, count, instances)) return; if (![0x1401, 0x1403, 0x1405].includes(type)) { this._recordError(GL.INVALID_ENUM); return; } const indexBytes = type === 0x1401 ? 1 : type === 0x1403 ? 2 : 4; if (!Number.isSafeInteger(offset) || offset < 0 || offset % indexBytes !== 0) { this._recordError(GL.INVALID_VALUE); return; } const element = { type, offset }, state = this._drawSnapshot(); if (state.drawBuffer === GL.NONE) return; if (count > 0 && instances > 0) this._frameDirty = true; this._mirrorDraw(state, mode, 0, count, element); this._enqueue(() => this._draw(state, mode, 0, count, element, instances)); }
 
   _mirrorAttribute(attribute, vertex) {
     const result = [0, 0, 0, 1];
@@ -2527,7 +2535,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
   cullFace(mode) { if (![0x0404, 0x0405, 0x0408].includes(mode)) { this._recordError(GL.INVALID_ENUM); return; } this._cullFace = mode | 0; }
   frontFace(mode) { if (![0x0900, 0x0901].includes(mode)) { this._recordError(GL.INVALID_ENUM); return; } this._frontFace = mode | 0; }
   scissor(x, y, width, height) {
-    if (width < 0 || height < 0) { this._recordError(GL.INVALID_VALUE); return; }
+    if (![x, y, width, height].every(Number.isInteger) || [x, y, width, height].some(value => value < -0x80000000 || value > 0x7fffffff) || width < 0 || height < 0) { this._recordError(GL.INVALID_VALUE); return; }
     this._scissor = [x | 0, y | 0, width | 0, height | 0];
   }
   stencilFunc(func, ref, mask) { this.stencilFuncSeparate(0x0408, func, ref, mask); }
@@ -2937,7 +2945,8 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (!this._validateTextureTarget(textarget)) return;
     if (!Number.isInteger(level) || level < 0) { this._recordError(GL.INVALID_VALUE); return; }
     const framebuffer = this._boundFramebuffer(target);
-    if (!framebuffer?.attachments) return;
+    if (!framebuffer?.attachments) { this._recordError(GL.INVALID_OPERATION); return; }
+    if (texture && !this._textures.has(texture)) { this._recordError(GL.INVALID_OPERATION); return; }
     if (!texture) framebuffer.attachments.delete(attachment);
     else framebuffer.attachments.set(attachment, { type: 'texture', object: this._textureRecord(texture), target: textarget, level });
   }
@@ -2946,7 +2955,8 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (![0x8ce0, 0x8d00, 0x8d20, 0x821a].includes(attachment) && !(attachment >= 0x8ce1 && attachment <= 0x8cff)) { this._recordError(GL.INVALID_ENUM); return; }
     if (renderbufferTarget !== 0x8d41) { this._recordError(GL.INVALID_ENUM); return; }
     const framebuffer = this._boundFramebuffer(target);
-    if (!framebuffer?.attachments) return;
+    if (!framebuffer?.attachments) { this._recordError(GL.INVALID_OPERATION); return; }
+    if (renderbuffer && !this._renderbuffers.has(renderbuffer)) { this._recordError(GL.INVALID_OPERATION); return; }
     if (!renderbuffer) framebuffer.attachments.delete(attachment);
     else framebuffer.attachments.set(attachment, { type: 'renderbuffer', object: renderbuffer });
   }

@@ -447,6 +447,42 @@ void main(){ gl_Position = camera.view * vec4(camera.eye * camera.exposure, 1.0)
   } finally { gpu.restore(); }
 });
 
+test('table-driven GLES validation reports the error for each touched entry point', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    const texture = gl.createTexture();
+    const renderbuffer = gl.createRenderbuffer();
+    const invalidCalls = [
+      ['viewport rejects fractional dimensions', () => gl.viewport(0, 0, 1.5, 4), 0x0501],
+      ['scissor rejects fractional coordinates', () => gl.scissor(0.5, 0, 4, 4), 0x0501],
+      ['drawArrays rejects removed desktop QUADS mode', () => gl.drawArrays(0x0007, 0, 3), 0x0500],
+      ['drawArrays rejects fractional vertex counts', () => gl.drawArrays(0x0004, 0, 1.5), 0x0501],
+      ['drawElements rejects invalid index types', () => gl.drawElements(0x0004, 3, 0x1406, 0), 0x0500],
+      ['drawElements rejects misaligned index offsets', () => gl.drawElements(0x0004, 3, 0x1403, 1), 0x0501],
+      ['drawArraysInstanced validates its mode', () => gl.drawArraysInstanced(0x0007, 0, 3, 1), 0x0500],
+      ['drawArraysInstanced validates instance count', () => gl.drawArraysInstanced(0x0004, 0, 3, -1), 0x0501],
+      ['drawElementsInstanced validates index type', () => gl.drawElementsInstanced(0x0004, 3, 0x1406, 0, 1), 0x0500],
+      ['pixelStorei rejects unknown pnames', () => gl.pixelStorei(0xdead, 0), 0x0500],
+      ['pixelStorei rejects invalid alignments', () => gl.pixelStorei(0x0cf5, 3), 0x0501],
+      ['readPixels rejects fractional coordinates', () => gl.readPixels(0.5, 0, 1, 1, 0x1908, 0x1401, new Uint8Array(4)), 0x0501],
+      ['readPixels rejects unknown formats as INVALID_ENUM', () => gl.readPixels(0, 0, 1, 1, 0xdead, 0x1401, new Uint8Array(4)), 0x0500],
+      ['framebufferTexture2D rejects attachment to the default framebuffer', () => gl.framebufferTexture2D(0x8d40, 0x8ce0, 0x0de1, texture, 0), 0x0502],
+      ['framebufferRenderbuffer rejects attachment to the default framebuffer', () => gl.framebufferRenderbuffer(0x8d40, 0x8ce0, 0x8d41, renderbuffer), 0x0502],
+    ];
+    for (const [name, call, expected] of invalidCalls) {
+      call();
+      assert.equal(gl.getError(), expected, name);
+    }
+    gl.pixelStorei(0x9240, 1);
+    gl.pixelStorei(0x9241, 1);
+    assert.equal(gl.getError(), 0, 'WebGL unpack flags are accepted');
+    assert.equal(gl._unpack.flipY, true);
+    assert.equal(gl._unpack.premultiplyAlpha, true);
+  } finally { gpu.restore(); }
+});
+
 test('valid but unsupported GL buffer targets still reject loudly', async () => {
   const gpu = createValidationDevice(), logs = [];
   try {
