@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { WebGPUGL } from '../../../gl-webgpu.mjs';
+import { WebGPUGL, rewriteGlslForWebGPU } from '../../../gl-webgpu.mjs';
 import { createValidationDevice } from '../fixtures/webgpu-validation-device.mjs';
 
 test('anisotropic filtering extension maps texture state to WebGPU samplers', async () => {
@@ -172,4 +172,76 @@ test('compressed texture subimages update decoded pixels and unsupported formats
     assert.ok(gl.getSupportedExtensions().includes('EXT_read_format_bgra'));
     assert.equal(gl.getExtension('EXT_texture_filter_anisotropic').TEXTURE_MAX_ANISOTROPY_EXT, 0x84fe);
   } finally { gpu.restore(); }
+});
+
+
+test('cube maps upload all face targets, generate face mipmaps, and create cube views', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    const texture = gl.createTexture();
+    gl.bindTexture(0x8513, texture);
+    for (let face=0x8515;face<=0x851a;face++) gl.texImage2D(face,0,0x1908,2,2,0,0x1908,0x1401,new Uint8Array(16).fill(face-0x8514));
+    assert.equal(gl.getError(),0);
+    gl.generateMipmap(0x8513);
+    assert.equal(texture.faceLevels.get(0x8515).get(1).width,1);
+    const gpuTexture=gl._ensureTextureGpu(texture);
+    assert.deepEqual(gpuTexture.size,[2,2,6]);
+    assert.equal(gpu.writes.filter(write=>write.d.texture===gpuTexture).length,12);
+    assert.equal(gpu.writes.find(write=>write.d.texture===gpuTexture&&write.d.origin[2]===5).d.origin[2],5);
+    assert.equal(gpuTexture.createView({dimension:'cube'}).dimension,'cube');
+  } finally { gpu.restore(); }
+});
+
+test('3D and 2D-array storage upload layers and generate dimension-correct mipmaps', async () => {
+  const gpu=createValidationDevice();
+  try {
+    const gl=new WebGPUGL(gpu.canvas);await gl.ready;
+    const volume=gl.createTexture();gl.bindTexture(0x806f,volume);
+    gl.texImage3D(0x806f,0,0x8058,2,2,2,0,0x1908,0x1401,new Uint8Array(32).map((_,i)=>i));
+    gl.generateMipmap(0x806f);
+    const volumeGpu=gl._ensureTextureGpu(volume);
+    assert.equal(volumeGpu.dimension,'3d');assert.deepEqual(volumeGpu.size,[2,2,2]);
+    assert.equal(volume.levels.get(1).layers.length,1);
+    const array=gl.createTexture();gl.bindTexture(0x8c1a,array);
+    gl.texStorage3D(0x8c1a,2,0x8058,2,2,3);
+    gl.texSubImage3D(0x8c1a,0,0,0,1,2,2,1,0x1908,0x1401,new Uint8Array(16).fill(99));
+    gl.generateMipmap(0x8c1a);
+    assert.equal(array.levels.get(1).layers.length,3);
+    const arrayGpu=gl._ensureTextureGpu(array);
+    assert.equal(arrayGpu.dimension,'2d');assert.deepEqual(arrayGpu.size,[2,2,3]);
+    assert.deepEqual([...array.levels.get(0).layers[1].slice(0,4)],[99,99,99,99]);
+    assert.equal(arrayGpu.createView({dimension:'2d-array'}).dimension,'2d-array');
+    assert.equal(gl.getParameter(0x8c1d),array.handle);
+    assert.equal(gl.getError(),0);
+  } finally {gpu.restore();}
+});
+
+test('cube, 3D, and array GLSL samplers lower to matching separate texture types', () => {
+  for (const [type,target,textureType] of [['samplerCube',0x8513,'textureCube'],['sampler3D',0x806f,'texture3D'],['sampler2DArray',0x8c1a,'texture2DArray']]) {
+    const source=`#version 300 es\nuniform ${type} image;\nout vec4 color;\nvoid main(){ color=texture(image, vec3(0.0)); }`;
+    const result=rewriteGlslForWebGPU(source,'fragment');
+    assert.equal(result.samplers[0].target,target);
+    assert.match(result.code,new RegExp(`uniform ${textureType} image_bw_t`));
+  }
+});
+
+test('dimensional samplers create matching WebGPU texture views in draw bind groups', async () => {
+  const gpu=createValidationDevice();
+  try {
+    const gl=new WebGPUGL(gpu.canvas);await gl.ready;
+    for(const [target,type,dimension] of [[0x8513,'samplerCube','cube'],[0x806f,'sampler3D','3d'],[0x8c1a,'sampler2DArray','2d-array']]){
+      const texture=gl.createTexture();gl.bindTexture(target,texture);
+      if(target===0x8513){for(let face=0x8515;face<=0x851a;face++)gl.texImage2D(face,0,0x1908,1,1,0,0x1908,0x1401,new Uint8Array(4));}
+      else gl.texImage3D(target,0,0x8058,1,1,1,0,0x1908,0x1401,new Uint8Array(4));
+      const sampler={name:'image',type,target,textureBinding:0,samplerBinding:1};
+      const program={uniformBlocks:[],stages:{vertex:{},fragment:{layout:{fields:[],size:0},samplers:[sampler]}}};
+      const textureUnits=Array.from({length:8},()=>({}));textureUnits[0][target]=texture;
+      const state={uniformValues:new Map([['image',0]]),textureUnits};
+      const layout={entries:[{binding:0,texture:{viewDimension:dimension}},{binding:1,sampler:{}}]};
+      const group=await gl._uniformBindGroup(program,{getBindGroupLayout:()=>layout},state);
+      assert.equal(group.entries[0].resource.dimension,dimension);
+    }
+  } finally {gpu.restore();}
 });

@@ -674,9 +674,10 @@ test('state and texture entry points report invalid enums, values, and operation
     assert.equal(gl.getError(), 0x0500);
     gl.bindTexture(0xdead, gl.createTexture());
     assert.equal(gl.getError(), 0x0500);
-    gl.bindTexture(0x8513, gl.createTexture());
-    assert.equal(gl.getError(), 0x0502, 'valid cube-map targets are explicitly rejected');
-    assert.ok(logs.some(line => line.includes('texture target 0x8513')));
+    const cube = gl.createTexture();
+    gl.bindTexture(0x8513, cube);
+    assert.equal(gl.getError(), 0, 'cube-map binding is supported');
+    assert.equal(gl.getParameter(0x8514), cube.handle);
     gl.texImage2D(0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, new Uint8Array(4));
     assert.equal(gl.getError(), 0x0502, 'allocating storage without a bound texture is invalid');
     const texture = gl.createTexture();

@@ -15,6 +15,7 @@ const GL = Object.freeze({
   READ_FRAMEBUFFER_BINDING: 0x8caa, FRAMEBUFFER_COMPLETE: 0x8cd5,
   RENDERBUFFER: 0x8d41, RENDERBUFFER_BINDING: 0x8ca7,
   TEXTURE_2D: 0x0de1, TEXTURE_BINDING_2D: 0x8069,
+  TEXTURE_3D: 0x806f, TEXTURE_2D_ARRAY: 0x8c1a, TEXTURE_CUBE_MAP: 0x8513,
   COLOR_BUFFER_BIT: 0x4000, DEPTH_BUFFER_BIT: 0x0100, STENCIL_BUFFER_BIT: 0x0400,
   VIEWPORT: 0x0ba2, DEPTH_RANGE: 0x0b70, SCISSOR_BOX: 0x0c10, SCISSOR_TEST: 0x0c11,
   PACK_ALIGNMENT: 0x0d05, PACK_ROW_LENGTH: 0x0d02,
@@ -44,7 +45,7 @@ const TYPE_ENUM = new Map([
   ['mat2', 0x8b5a], ['mat3', 0x8b5b], ['mat4', 0x8b5c],
   ['mat2x3', 0x8b65], ['mat2x4', 0x8b66], ['mat3x2', 0x8b67],
   ['mat3x4', 0x8b68], ['mat4x2', 0x8b69], ['mat4x3', 0x8b6a],
-  ['sampler2D', 0x8b5e],
+  ['sampler2D', 0x8b5e], ['samplerCube', 0x8b60], ['sampler2DArray', 0x8dc1], ['sampler3D', 0x8b5f],
 ]);
 
 const SAMPLER_VERTEX_BASE = 2;
@@ -335,9 +336,9 @@ export function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(
   const samplers = [];
   const activeUniforms = [];
   for (const uniform of uniforms) {
-    if (uniform.type === 'sampler2D') {
+    if (uniform.type.startsWith('sampler')) {
       const base = (stage === 'vertex' ? SAMPLER_VERTEX_BASE : SAMPLER_FRAGMENT_BASE) + samplers.length * 2;
-      samplers.push({ name: uniform.name, textureBinding: base, samplerBinding: base + 1, arrayLength: uniform.arrayLength });
+      samplers.push({ name: uniform.name, type: uniform.type, target: uniform.type === 'samplerCube' ? GL.TEXTURE_CUBE_MAP : uniform.type === 'sampler3D' ? GL.TEXTURE_3D : uniform.type === 'sampler2DArray' ? GL.TEXTURE_2D_ARRAY : GL.TEXTURE_2D, textureBinding: base, samplerBinding: base + 1, arrayLength: uniform.arrayLength });
       activeUniforms.push({ name: uniform.name, type: uniform.type, arrayLength: uniform.arrayLength, sampler: true });
     } else {
       fields.push({ name: uniform.name, type: uniform.type, arrayLength: uniform.arrayLength });
@@ -365,9 +366,9 @@ export function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(
 
   for (const sampler of samplers) {
     const escaped = sampler.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    code = code.replace(new RegExp(`\\btexture(?:2D)?\\s*\\(\\s*${escaped}\\s*,`, 'g'), `texture(sampler2D(${sampler.name}_bw_t, ${sampler.name}_bw_s),`);
+    code = code.replace(new RegExp(`\\btexture(?:2D|Cube|3D)?\\s*\\(\\s*${escaped}\\s*,`, 'g'), `texture(${sampler.type}(${sampler.name}_bw_t, ${sampler.name}_bw_s),`);
     const array = sampler.arrayLength > 1 ? `[${sampler.arrayLength}]` : '';
-    code = `layout(binding = ${sampler.textureBinding}) uniform texture2D ${sampler.name}_bw_t${array};\nlayout(binding = ${sampler.samplerBinding}) uniform sampler ${sampler.name}_bw_s${array};\n${code}`;
+    code = `layout(binding = ${sampler.textureBinding}) uniform ${sampler.type === 'samplerCube' ? 'textureCube' : sampler.type === 'sampler3D' ? 'texture3D' : sampler.type === 'sampler2DArray' ? 'texture2DArray' : 'texture2D'} ${sampler.name}_bw_t${array};\nlayout(binding = ${sampler.samplerBinding}) uniform sampler ${sampler.name}_bw_s${array};\n${code}`;
   }
 
   if (stage === 'vertex' && attributeBindings.size) {
@@ -504,7 +505,7 @@ export class WebGPUGL {
     this._textureRecords = new WeakMap();
     this._framebufferObjects = new Set();
     this._renderbuffers = new Set();
-    this._textureUnits = Array.from({ length: 16 }, () => ({ [GL.TEXTURE_2D]: null }));
+    this._textureUnits = Array.from({ length: 16 }, () => ({ [GL.TEXTURE_2D]: null, [GL.TEXTURE_CUBE_MAP]: null, [GL.TEXTURE_3D]: null, [GL.TEXTURE_2D_ARRAY]: null }));
     this._activeTextureUnit = 0;
     this._boundRenderbuffer = null;
     this._defaultWhiteTexture = null;
@@ -922,6 +923,9 @@ export class WebGPUGL {
       case 0x8a34: return 1; // CPU-packed UBO ranges do not require GPU dynamic-offset alignment
       case GL.PIXEL_PACK_BUFFER_BINDING: return this._pixelPackBuffer;
       case GL.TEXTURE_BINDING_2D: return this._textureUnits[this._activeTextureUnit]?.[GL.TEXTURE_2D]?.handle || null;
+      case 0x8514: return this._textureUnits[this._activeTextureUnit]?.[GL.TEXTURE_CUBE_MAP]?.handle || null;
+      case 0x806a: return this._textureUnits[this._activeTextureUnit]?.[GL.TEXTURE_3D]?.handle || null;
+      case 0x8c1d: return this._textureUnits[this._activeTextureUnit]?.[GL.TEXTURE_2D_ARRAY]?.handle || null;
       case GL.RENDERBUFFER_BINDING: return this._boundRenderbuffer;
       case 0x84e0: return 0x84c0 + this._activeTextureUnit;
       case GL.CURRENT_PROGRAM: return this._currentProgram;
@@ -1375,7 +1379,7 @@ export class WebGPUGL {
         const location = { program, name: declaration.name, id: this._uniformLocations.size };
         this._uniformLocations.set(`${program.id}:${declaration.name}`, location);
         program.uniformLocations.set(declaration.name, location);
-        program.uniformValues.set(declaration.name, declaration.type === 'sampler2D' ? 0 : new Float32Array(Math.max(1, declaration.arrayLength) * componentCount(declaration.type)));
+        program.uniformValues.set(declaration.name, declaration.type.startsWith('sampler') ? 0 : new Float32Array(Math.max(1, declaration.arrayLength) * componentCount(declaration.type)));
       }
     }
     for (const block of program.uniformBlocks) {
@@ -2219,10 +2223,10 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       for (const sampler of record?.samplers || []) {
         const unitValue = uniformValues.get(sampler.name);
         const unit = Number(ArrayBuffer.isView(unitValue) ? unitValue[0] : unitValue ?? 0) | 0;
-        const texture = textureUnits[unit]?.[GL.TEXTURE_2D] || this._whiteTexture();
+        const texture = textureUnits[unit]?.[sampler.target] || this._whiteTexture();
         const gpu = this._ensureTextureGpu(texture);
         if (!gpu) continue;
-        entries.push({ binding: sampler.textureBinding, resource: gpu.createView() });
+        entries.push({ binding: sampler.textureBinding, resource: gpu.createView({ dimension: sampler.type === 'samplerCube' ? 'cube' : sampler.type === 'sampler3D' ? '3d' : sampler.type === 'sampler2DArray' ? '2d-array' : '2d' }) });
         entries.push({ binding: sampler.samplerBinding, resource: this._samplerFor(texture) });
       }
     }
@@ -2376,7 +2380,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
   sampleCoverage() {}
 
   _newTextureRecord(handle = null) {
-    const texture = { id: this._nextId++, target: GL.TEXTURE_2D, width: 0, height: 0, format: 'rgba8unorm', levels: new Map(), params: new Map([[0x2800, 0x2601], [0x2801, 0x2703], [0x2802, 0x812f], [0x2803, 0x812f]]), gpu: null, gpuMipCount: 0 };
+    const texture = { id: this._nextId++, target: 0, width: 0, height: 0, depth: 1, format: 'rgba8unorm', levels: new Map(), faceLevels: new Map(), params: new Map([[0x2800, 0x2601], [0x2801, 0x2703], [0x2802, 0x812f], [0x2803, 0x812f], [0x8072, 0x812f]]), gpu: null, gpuMipCount: 0 };
     texture.handle = handle || texture;
     if (handle && (typeof handle === 'object' || typeof handle === 'function')) this._textureRecords.set(handle, texture);
     if (texture.handle === texture) this._textureRecords.set(texture, texture);
@@ -2393,24 +2397,24 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     texture = this._textureRecord(texture);
     if (!texture) return;
     texture.gpu?.destroy(); texture.gpu = null; this._textures.delete(texture);
-    for (const unit of this._textureUnits) if (unit[GL.TEXTURE_2D] === texture) unit[GL.TEXTURE_2D] = null;
+    for (const unit of this._textureUnits) for (const target of [GL.TEXTURE_2D, GL.TEXTURE_CUBE_MAP, GL.TEXTURE_3D, GL.TEXTURE_2D_ARRAY]) if (unit[target] === texture) unit[target] = null;
     for (const framebuffer of this._framebufferObjects) for (const [attachment, record] of framebuffer.attachments)
       if (record.type === 'texture' && record.object === texture) framebuffer.attachments.delete(attachment);
   }
   isTexture(texture) { return !!texture && (this._textures.has(texture) || ((typeof texture === 'object' || typeof texture === 'function') && this._textureRecords.has(texture))); }
-  _boundTexture(target = GL.TEXTURE_2D) { return this._textureUnits[this._activeTextureUnit]?.[target] || null; }
+  _textureBindingTarget(target) { return target >= 0x8515 && target <= 0x851a ? GL.TEXTURE_CUBE_MAP : target; }
+  _boundTexture(target = GL.TEXTURE_2D) { return this._textureUnits[this._activeTextureUnit]?.[this._textureBindingTarget(target)] || null; }
   _validateTextureTarget(target) {
-    if (target === GL.TEXTURE_2D) return true;
-    if ([0x8513, 0x8515, 0x8516, 0x8517, 0x8518, 0x8519, 0x851a, 0x806f, 0x8c1a].includes(target)) {
-      this._rejectUnsupported(`texture target 0x${Number(target).toString(16)}`, GL.INVALID_OPERATION);
-      return false;
-    }
+    if ([GL.TEXTURE_2D, GL.TEXTURE_CUBE_MAP, GL.TEXTURE_3D, GL.TEXTURE_2D_ARRAY].includes(target) || (target >= 0x8515 && target <= 0x851a)) return true;
     this._recordError(GL.INVALID_ENUM);
     return false;
   }
   bindTexture(target, texture) {
-    if (!this._validateTextureTarget(target)) return;
-    this._textureUnits[this._activeTextureUnit][target] = this._textureRecord(texture);
+    if (![GL.TEXTURE_2D, GL.TEXTURE_CUBE_MAP, GL.TEXTURE_3D, GL.TEXTURE_2D_ARRAY].includes(target)) { this._recordError(GL.INVALID_ENUM); return; }
+    const object = texture ? this._textureRecord(texture) : null;
+    if (object?.target && object.target !== target) { this._recordError(GL.INVALID_OPERATION); return; }
+    if (object) object.target = target;
+    this._textureUnits[this._activeTextureUnit][target] = object;
   }
   _rgbaPixels(width, height, format, type, data) {
     const rgba = new Uint8Array(width * height * 4);
@@ -2455,48 +2459,83 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
   }
   _ensureTextureGpu(texture) {
     if (!texture?.width || !texture?.height) return null;
-    const levels = Math.floor(Math.log2(Math.max(texture.width, texture.height))) + 1;
-    if (!texture.gpu || texture.gpuMipCount !== levels) {
+    const depth = texture.target === GL.TEXTURE_CUBE_MAP ? 6 : texture.target === GL.TEXTURE_3D || texture.target === GL.TEXTURE_2D_ARRAY ? texture.depth : 1;
+    const largest = Math.max(texture.width, texture.height, texture.target === GL.TEXTURE_3D ? depth : 1);
+    const levels = texture.storageLevels || Math.floor(Math.log2(largest)) + 1;
+    const dimension = texture.target === GL.TEXTURE_3D ? '3d' : '2d';
+    if (!texture.gpu || texture.gpuMipCount !== levels || texture.gpuDepth !== depth) {
       texture.gpu?.destroy();
-      texture.gpu = this._device.createTexture({ size: [texture.width, texture.height, 1], mipLevelCount: levels, format: texture.format,
+      texture.gpu = this._device.createTexture({ size: [texture.width, texture.height, depth], dimension, mipLevelCount: levels, format: texture.format,
         viewFormats: [texture.format === 'rgba8unorm-srgb' ? 'rgba8unorm' : 'rgba8unorm-srgb'],
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC | GPUTextureUsage.RENDER_ATTACHMENT });
-      texture.gpuMipCount = levels;
+      texture.gpuMipCount = levels; texture.gpuDepth = depth;
     }
-    for (const [level, record] of texture.levels) {
+    if (texture.target === GL.TEXTURE_CUBE_MAP) {
+      for (const [face, records] of texture.faceLevels) for (const [level, record] of records) {
+        if (level >= levels) continue;
+        this._device.queue.writeTexture({ texture: texture.gpu, mipLevel: level, origin: [0, 0, face - 0x8515] }, this._uploadRows(record.pixels, record.width, record.height),
+          { bytesPerRow: record.width * 4, rowsPerImage: record.height }, [record.width, record.height, 1]);
+      }
+    } else for (const [level, record] of texture.levels) {
       if (level >= levels) continue;
-      this._device.queue.writeTexture({ texture: texture.gpu, mipLevel: level }, this._uploadRows(record.pixels, record.width, record.height),
+      if (record.layers) for (let layer = 0; layer < record.layers.length; layer++)
+        this._device.queue.writeTexture({ texture: texture.gpu, mipLevel: level, origin: [0, 0, layer] }, this._uploadRows(record.layers[layer], record.width, record.height),
+          { bytesPerRow: record.width * 4, rowsPerImage: record.height }, [record.width, record.height, 1]);
+      else this._device.queue.writeTexture({ texture: texture.gpu, mipLevel: level }, this._uploadRows(record.pixels, record.width, record.height),
         { bytesPerRow: record.width * 4, rowsPerImage: record.height }, [record.width, record.height, 1]);
     }
     return texture.gpu;
+  }
+  texStorage2D(target, levels, internalFormat, width, height) {
+    if (![GL.TEXTURE_2D, GL.TEXTURE_CUBE_MAP].includes(target)) { this._recordError(GL.INVALID_ENUM); return; }
+    const texture = this._boundTexture(target);
+    if (!texture) { this._recordError(GL.INVALID_OPERATION); return; }
+    const maxLevels = Math.floor(Math.log2(Math.max(width, height))) + 1;
+    if (!Number.isInteger(levels) || levels < 1 || levels > maxLevels || width < 1 || height < 1) { this._recordError(GL.INVALID_VALUE); return; }
+    if (texture.immutable) { this._recordError(GL.INVALID_OPERATION); return; }
+    texture.width=width; texture.height=height; texture.depth=target===GL.TEXTURE_CUBE_MAP?6:1; texture.immutable=true; texture.storageLevels=levels;
+    texture.format=[0x8c41,0x8c43,0x8c40,0x8c42].includes(internalFormat)?'rgba8unorm-srgb':'rgba8unorm';
+    for (let level=0;level<levels;level++) {
+      const w=Math.max(1,width>>level),h=Math.max(1,height>>level), empty=()=>new Uint8Array(w*h*4);
+      if (target===GL.TEXTURE_CUBE_MAP) for(let face=0x8515;face<=0x851a;face++){let records=texture.faceLevels.get(face);if(!records)texture.faceLevels.set(face,records=new Map());records.set(level,{width:w,height:h,pixels:empty()});}
+      else texture.levels.set(level,{width:w,height:h,pixels:empty()});
+    }
+    this._enqueue(()=>this._ensureTextureGpu(texture));
   }
   texImage2D(...args) {
     const [target, level, internalFormat] = args;
     let width, height, border = 0, format, type, data;
     if (args.length >= 9) [, , , width, height, border, format, type, data] = args;
-    else if (args.length >= 6) {
-      [, , , format, type, data] = args;
-      width = data?.width || 0; height = data?.height || 0;
-    } else { this._recordError(GL.INVALID_VALUE); return; }
+    else if (args.length >= 6) { [, , , format, type, data] = args; width = data?.width || 0; height = data?.height || 0; }
+    else { this._recordError(GL.INVALID_VALUE); return; }
     if (!this._validateTextureTarget(target)) return;
     const texture = this._boundTexture(target);
     if (!texture) { this._recordError(GL.INVALID_OPERATION); return; }
+    if (texture.immutable) { this._recordError(GL.INVALID_OPERATION); return; }
     if (width < 0 || height < 0 || level < 0 || border !== 0) { this._recordError(GL.INVALID_VALUE); return; }
     if (![0x1903, 0x1906, 0x1909, 0x190a, 0x8227, 0x1907, 0x1908, 0x80e1, 0x8d94, 0x8228].includes(format)) { this._recordError(GL.INVALID_ENUM); return; }
     width |= 0; height |= 0;
+    if (target >= 0x8515 && target <= 0x851a && (width !== height || (texture.width && (texture.width !== width || texture.height !== height)))) { this._recordError(GL.INVALID_VALUE); return; }
     if (level === 0) {
       texture.width = width; texture.height = height;
       texture.format = [0x8c41, 0x8c43, 0x8c40, 0x8c42].includes(internalFormat) ? 'rgba8unorm-srgb' : 'rgba8unorm';
     }
     const levelWidth = Math.max(1, texture.width >> level), levelHeight = Math.max(1, texture.height >> level);
-    texture.levels.set(level, { width: levelWidth, height: levelHeight, pixels: this._rgbaPixels(levelWidth, levelHeight, format, type, data) });
-    if (level === 0) texture.pixels = texture.levels.get(0).pixels;
+    const record = { width: levelWidth, height: levelHeight, pixels: this._rgbaPixels(levelWidth, levelHeight, format, type, data) };
+    if (target >= 0x8515 && target <= 0x851a) {
+      texture.depth = 6;
+      let face = texture.faceLevels.get(target);
+      if (!face) texture.faceLevels.set(target, face = new Map());
+      face.set(level, record);
+    } else texture.levels.set(level, record);
+    if (level === 0 && target === GL.TEXTURE_2D) texture.pixels = record.pixels;
     this._enqueue(() => this._ensureTextureGpu(texture));
   }
   texSubImage2D(...args) {
     const [target, level, xoffset, yoffset, width, height, format, type, data] = args;
     if (!this._validateTextureTarget(target)) return;
-    const texture = this._boundTexture(target), record = texture?.levels.get(level);
+    const texture = this._boundTexture(target);
+    const record = target >= 0x8515 && target <= 0x851a ? texture?.faceLevels.get(target)?.get(level) : texture?.levels.get(level);
     if (!texture) { this._recordError(GL.INVALID_OPERATION); return; }
     if (!record) { this._recordError(GL.INVALID_OPERATION); return; }
     if ([xoffset, yoffset, width, height, level].some(value => !Number.isInteger(value) || value < 0) ||
@@ -2508,14 +2547,45 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       const left = Math.max(0, xoffset), right = Math.min(record.width, xoffset + width);
       if (right > left) record.pixels.set(patch.subarray((y * width + left - xoffset) * 4, (y * width + right - xoffset) * 4), (dstY * record.width + left) * 4);
     }
-    if (level === 0) texture.pixels = record.pixels;
+    if (level === 0 && target === GL.TEXTURE_2D) texture.pixels = record.pixels;
     this._enqueue(() => {
       const gpu = this._ensureTextureGpu(texture);
       if (!gpu) return;
       const gpuRows = this._uploadRows(patch, width, height);
-      this._device.queue.writeTexture({ texture: gpu, mipLevel: level, origin: [xoffset, record.height - yoffset - height, 0] }, gpuRows,
+      this._device.queue.writeTexture({ texture: gpu, mipLevel: level, origin: [xoffset, record.height - yoffset - height, target >= 0x8515 && target <= 0x851a ? target - 0x8515 : 0] }, gpuRows,
         { bytesPerRow: width * 4, rowsPerImage: height }, [width, height, 1]);
     });
+  }
+  texStorage3D(target, levels, internalFormat, width, height, depth) {
+    if (![GL.TEXTURE_3D, GL.TEXTURE_2D_ARRAY].includes(target)) { this._recordError(GL.INVALID_ENUM); return; }
+    const texture=this._boundTexture(target); if(!texture){this._recordError(GL.INVALID_OPERATION);return;}
+    const maxLevels=Math.floor(Math.log2(Math.max(width,height,target===GL.TEXTURE_3D?depth:1)))+1;
+    if(!Number.isInteger(levels)||levels<1||levels>maxLevels||width<1||height<1||depth<1){this._recordError(GL.INVALID_VALUE);return;}
+    if(texture.immutable){this._recordError(GL.INVALID_OPERATION);return;}
+    texture.width=width;texture.height=height;texture.depth=depth;texture.immutable=true;texture.storageLevels=levels;
+    texture.format=[0x8c41,0x8c43,0x8c40,0x8c42].includes(internalFormat)?'rgba8unorm-srgb':'rgba8unorm';
+    for(let level=0;level<levels;level++){const w=Math.max(1,width>>level),h=Math.max(1,height>>level),d=target===GL.TEXTURE_3D?Math.max(1,depth>>level):depth;texture.levels.set(level,{width:w,height:h,layers:Array.from({length:d},()=>new Uint8Array(w*h*4))});}
+    this._enqueue(()=>this._ensureTextureGpu(texture));
+  }
+  texImage3D(target, level, internalFormat, width, height, depth, border, format, type, data) {
+    if(![GL.TEXTURE_3D,GL.TEXTURE_2D_ARRAY].includes(target)){this._recordError(GL.INVALID_ENUM);return;}
+    const texture=this._boundTexture(target);if(!texture){this._recordError(GL.INVALID_OPERATION);return;}
+    if(texture.immutable){this._recordError(GL.INVALID_OPERATION);return;}
+    if(!Number.isInteger(level)||level<0||!Number.isInteger(width)||!Number.isInteger(height)||!Number.isInteger(depth)||width<0||height<0||depth<0||border!==0){this._recordError(GL.INVALID_VALUE);return;}
+    if(![0x1903,0x1906,0x1909,0x190a,0x8227,0x1907,0x1908,0x80e1,0x8d94,0x8228].includes(format)){this._recordError(GL.INVALID_ENUM);return;}
+    const w=level===0?width:Math.max(1,texture.width>>level),h=level===0?height:Math.max(1,texture.height>>level),d=level===0?depth:(target===GL.TEXTURE_3D?Math.max(1,texture.depth>>level):texture.depth);
+    if(level===0){texture.width=w;texture.height=h;texture.depth=d;texture.format=[0x8c41,0x8c43,0x8c40,0x8c42].includes(internalFormat)?'rgba8unorm-srgb':'rgba8unorm';}
+    const flip=this._unpack.flipY;this._unpack.flipY=false;const pixels=this._rgbaPixels(w,h*d,format,type,data);this._unpack.flipY=flip;
+    const layers=Array.from({length:d},(_,z)=>{const layer=pixels.slice(z*w*h*4,(z+1)*w*h*4);if(flip)for(let y=0;y<h/2;y++)for(let x=0;x<w*4;x++){const a=y*w*4+x,b=(h-1-y)*w*4+x;[layer[a],layer[b]]=[layer[b],layer[a]];}return layer;});
+    texture.levels.set(level,{width:w,height:h,layers});this._enqueue(()=>this._ensureTextureGpu(texture));
+  }
+  texSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, type, data) {
+    if(![GL.TEXTURE_3D,GL.TEXTURE_2D_ARRAY].includes(target)){this._recordError(GL.INVALID_ENUM);return;}
+    const texture=this._boundTexture(target),record=texture?.levels.get(level);if(!texture||!record?.layers){this._recordError(GL.INVALID_OPERATION);return;}
+    if([level,xoffset,yoffset,zoffset,width,height,depth].some(value=>!Number.isInteger(value)||value<0)||xoffset+width>record.width||yoffset+height>record.height||zoffset+depth>record.layers.length){this._recordError(GL.INVALID_VALUE);return;}
+    const flip=this._unpack.flipY;this._unpack.flipY=false;const pixels=this._rgbaPixels(width,height*depth,format,type,data);this._unpack.flipY=flip;
+    for(let z=0;z<depth;z++)for(let y=0;y<height;y++){const sourceY=flip?height-1-y:y,src=(z*height+sourceY)*width*4,dst=((yoffset+y)*record.width+xoffset)*4;record.layers[zoffset+z].set(pixels.subarray(src,src+width*4),dst);}
+    this._enqueue(()=>this._ensureTextureGpu(texture));
   }
   compressedTexImage2D(target, level, format, width, height, border, imageSize, data) {
     if (!this._validateTextureTarget(target)) return;
@@ -2567,7 +2637,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       texture.samplerCache?.clear();
       return;
     }
-    const values = parameter === 0x2802 || parameter === 0x2803 ? [0x812f, 0x2901, 0x8370]
+    const values = parameter === 0x2802 || parameter === 0x2803 || parameter === 0x8072 ? [0x812f, 0x2901, 0x8370]
       : parameter === 0x2800 ? [0x2600, 0x2601]
         : parameter === 0x2801 ? [0x2600, 0x2601, 0x2700, 0x2701, 0x2702, 0x2703, 0x2704, 0x2705]
           : parameter === 0x813c || parameter === 0x813d ? null : undefined;
@@ -2586,7 +2656,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     const filter = value => value === 0x2600 ? 'nearest' : 'linear';
     const min = texture.params.get(0x2801) ?? 0x2703, mag = texture.params.get(0x2800) ?? 0x2601;
     const maxAnisotropy = Math.max(1, Math.min(16, texture.params.get(0x84fe) || 1));
-    const sampler = this._device.createSampler({ addressModeU: address(texture.params.get(0x2802)), addressModeV: address(texture.params.get(0x2803)),
+    const sampler = this._device.createSampler({ addressModeU: address(texture.params.get(0x2802)), addressModeV: address(texture.params.get(0x2803)), addressModeW: address(texture.params.get(0x8072)),
       magFilter: filter(mag), minFilter: filter(min === 0x2600 || min === 0x2601 ? min : min === 0x2700 || min === 0x2701 || min === 0x2702 ? 0x2600 : 0x2601),
       mipmapFilter: min === 0x2700 || min === 0x2702 || min === 0x2704 ? 'nearest' : 'linear', lodMinClamp: 0, lodMaxClamp: min === 0x2600 || min === 0x2601 ? 0 : 32,
       maxAnisotropy: mag === 0x2601 && ![0x2600, 0x2700, 0x2702, 0x2704].includes(min) ? maxAnisotropy : 1 });
@@ -2594,24 +2664,38 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     return sampler;
   }
   generateMipmap(target) {
-    if (!this._validateTextureTarget(target)) return;
-    const texture = this._boundTexture(target), base = texture?.levels.get(0);
-    if (!texture || !base) { this._recordError(GL.INVALID_OPERATION); return; }
-    let prior = base, level = 1;
-    while (prior.width > 1 || prior.height > 1) {
-      const width = Math.max(1, prior.width >> 1), height = Math.max(1, prior.height >> 1), pixels = new Uint8Array(width * height * 4);
-      for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) for (let c = 0; c < 4; c++) {
-        let total = 0, count = 0;
-        for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) {
-          const sx = Math.min(prior.width - 1, x * 2 + dx), sy = Math.min(prior.height - 1, y * 2 + dy);
-          total += prior.pixels[(sy * prior.width + sx) * 4 + c]; count++;
-        }
-        pixels[(y * width + x) * 4 + c] = Math.round(total / count);
+    if (![GL.TEXTURE_2D, GL.TEXTURE_CUBE_MAP, GL.TEXTURE_3D, GL.TEXTURE_2D_ARRAY].includes(target)) { this._recordError(GL.INVALID_ENUM); return; }
+    const texture=this._boundTexture(target);if(!texture){this._recordError(GL.INVALID_OPERATION);return;}
+    const generate=(levels,shrinkDepth)=>{
+      const base=levels.get(0);if(!base)return false;
+      let prior=base,level=1;
+      while(prior.width>1||prior.height>1||(shrinkDepth&&prior.layers?.length>1)){
+        const width=Math.max(1,prior.width>>1),height=Math.max(1,prior.height>>1),sourceLayers=prior.layers||[prior.pixels];
+        const depth=shrinkDepth?Math.max(1,sourceLayers.length>>1):sourceLayers.length;
+        const layers=Array.from({length:depth},(_,z)=>{
+          const pixels=new Uint8Array(width*height*4);
+          for(let y=0;y<height;y++)for(let x=0;x<width;x++)for(let c=0;c<4;c++){
+            let total=0,count=0;
+            for(let dz=0;dz<(shrinkDepth?2:1);dz++)for(let dy=0;dy<2;dy++)for(let dx=0;dx<2;dx++){
+              const sourceLayer=Math.min(sourceLayers.length-1,z*2+dz),sx=Math.min(prior.width-1,x*2+dx),sy=Math.min(prior.height-1,y*2+dy);
+              total+=sourceLayers[sourceLayer][(sy*prior.width+sx)*4+c];count++;
+            }
+            pixels[(y*width+x)*4+c]=Math.round(total/count);
+          }
+          return pixels;
+        });
+        prior=sourceLayers.length===1&&!shrinkDepth?{width,height,pixels:layers[0]}:{width,height,layers};levels.set(level++,prior);
       }
-      const record = { width, height, pixels };
-      texture.levels.set(level++, record); prior = record;
+      return true;
+    };
+    if(target===GL.TEXTURE_CUBE_MAP){
+      if(texture.width!==texture.height||[0x8515,0x8516,0x8517,0x8518,0x8519,0x851a].some(face=>!texture.faceLevels.get(face)?.has(0))){this._recordError(GL.INVALID_OPERATION);return;}
+      for(const levels of texture.faceLevels.values())generate(levels,false);
+    }else{
+      if(!texture.levels.has(0)){this._recordError(GL.INVALID_OPERATION);return;}
+      generate(texture.levels,target===GL.TEXTURE_3D);
     }
-    this._enqueue(() => this._ensureTextureGpu(texture));
+    this._enqueue(()=>this._ensureTextureGpu(texture));
   }
   activeTexture(texture) {
     if (!Number.isInteger(texture) || texture < 0x84c0 || texture >= 0x84c8) { this._recordError(GL.INVALID_ENUM); return; }
