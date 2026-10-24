@@ -38,6 +38,8 @@ public:
     U32 setTimes(U64 lastAccessTime, U32 lastAccessTimeNano, U64 lastModifiedTime, U32 lastModifiedTimeNano) override;
 
     BString data;
+    U64 accessTimeMs = 0;
+    U64 modifiedTimeMs = 0;
 private:
     const U32 mode;
     const U32 openData;

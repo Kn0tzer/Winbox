@@ -26,7 +26,7 @@ bool FsVirtualNode::remove() {
 }
 
 U64 FsVirtualNode::lastModified() {
-    return 0;
+    return modifiedTimeMs;
 }
 
 U64 FsVirtualNode::length() {
@@ -90,6 +90,8 @@ U32 FsVirtualNode::removeDir() {
 }
 
 U32 FsVirtualNode::setTimes(U64 lastAccessTime, U32 lastAccessTimeNano, U64 lastModifiedTime, U32 lastModifiedTimeNano) {
-    klog("FsVirtualNode::setTimes not implemented");
+    constexpr U32 utimeOmit = 0x3ffffffe;
+    if (lastAccessTimeNano != utimeOmit) accessTimeMs = lastAccessTime * 1000 + lastAccessTimeNano / 1000000;
+    if (lastModifiedTimeNano != utimeOmit) modifiedTimeMs = lastModifiedTime * 1000 + lastModifiedTimeNano / 1000000;
     return 0;
 }
