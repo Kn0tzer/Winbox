@@ -5,6 +5,7 @@ import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { serve } from '../../tools/browser/serve.mjs';
+import { screenshotPixels } from './suite/lib/pixels.mjs';
 import { acquireProbeSlot } from './probe-slots.mjs';
 import { waitForBuildIdle } from './build-lock.mjs';
 
@@ -34,7 +35,10 @@ if (mappedOnly && process.env.AUDIO_AUTOPLAY_ONLY !== '1') {
   throw new Error('MAPPED_ONLY requires AUDIO_AUTOPLAY_ONLY=1');
 }
 const bootOffsets = mappedOnly ? [] : (longBoot ? [5, 30, 60, 120, 240, 360] : [5, 30, 60, 120]);
-const pixelMethod = 'in-page';
+const screenshotPixelMethod = 'chromium-screenshot-png-display';
+const blankScreenGraceMs = 15_000;
+const blankScreenSampleIntervalMs = 5_000;
+const blankScreenFailureSamples = 6;
 
 const metricsPath = join(outDir, 'metrics.jsonl');
 
@@ -61,6 +65,7 @@ let lastMetricsSnapshot = null;
 let lastJitStats = null;
 let inputIndex = 0;
 const consoleLines = [];
+const wasmMetricsLines = [];
 const pageErrors = [];
 const httpErrors = [];
 const screenshots = [];
@@ -205,7 +210,11 @@ try {
     const text = message.text();
     consoleLines.push(`[${elapsedSeconds().toFixed(1)}s] ${message.type()}: ${text}`);
     if (message.type() === 'error') consoleErrorCount++;
-    if (text.includes('bw64: METRICS ')) lastWasmMetricLine = text;
+    if (text.includes('bw64: METRICS ')) {
+      lastWasmMetricLine = text;
+      const snapshot = parseWasmMetricLine(text);
+      if (snapshot) wasmMetricsLines.push({ atSeconds: elapsedSeconds(), snapshot });
+    }
   });
   page.on('pageerror', error => {
     const line = `[${elapsedSeconds().toFixed(1)}s] pageerror: ${error.stack || error.message}`;
@@ -308,7 +317,8 @@ try {
     await writeFile(join(outDir, 'summary.json'), JSON.stringify({
       demo, jit: Number(jit), build, tClick, tMapped: null, clickToMappedSeconds: null,
       screenshots, pageErrorCount: pageErrors.length, consoleErrorCount: countConsoleErrors(),
-      lastMetricsSnapshot, lastJitStats, stage: 'not-mapped', pixelMethod, httpErrorCount: httpErrors.length,
+      framesPresented: framesPresentedTotal(), wasmMetricsLines, screenshotPixelMethod,
+      lastMetricsSnapshot, lastJitStats, stage: 'not-mapped', httpErrorCount: httpErrors.length,
       audioAfterNoInput, audioMetricEvents: audioOutputMetrics.length, nonzeroOutputFrames, autoplayPassed,
       threadDumpEnabled, threadDumpLauncherPatched, threadDumpRuntimeUrl,
       threadDumpAttempts, threadDumpInvocations,
@@ -322,6 +332,7 @@ try {
   tMapped = elapsedSeconds();
   mappedAt = Date.now();
   startMetricsSampler();
+  const visiblePixels = await waitForVisibleScreenshotPixels();
   for (const seconds of bootOffsets) {
     const due = mappedAt + seconds * 1000;
     if (due > Date.now()) await page.waitForTimeout(due - Date.now());
@@ -401,8 +412,10 @@ try {
     const summary = {
       demo, jit: Number(jit), build, tClick, tMapped,
       clickToMappedSeconds: Number((tMapped - tClick).toFixed(3)),
-      screenshots, pageErrorCount: pageErrors.length, consoleErrorCount: countConsoleErrors(),
-      lastMetricsSnapshot, lastJitStats, stage: 'mapped-no-input', pixelMethod, httpErrorCount: httpErrors.length,
+      screenshots, visiblePixels, screenshotPixelMethod,
+      framesPresented: framesPresentedTotal(), wasmMetricsLines,
+      pageErrorCount: pageErrors.length, consoleErrorCount: countConsoleErrors(),
+      lastMetricsSnapshot, lastJitStats, stage: 'mapped-no-input', httpErrorCount: httpErrors.length,
       demoClickAtMs, audioStartBeforePlayerClick, audioAfterNoInput, observeMs,
       audioTimeline, audioMetricEvents: audioOutputMetrics.length, nonzeroOutputFrames, autoplayPassed,
       threadDumpEnabled, threadDumpLauncherPatched, threadDumpRuntimeUrl,
@@ -431,10 +444,12 @@ try {
   if (!overlayCleared) { process.exitCode = 1; console.error('FAIL: launcher still shows the first-frame overlay after the program mapped'); }
   const summary = {
     overlayCleared,
+    visiblePixels, screenshotPixelMethod,
+    framesPresented: framesPresentedTotal(), wasmMetricsLines,
     demo, jit: Number(jit), build, tClick, tMapped,
     clickToMappedSeconds: Number((tMapped - tClick).toFixed(3)),
     screenshots, pageErrorCount: pageErrors.length, consoleErrorCount: countConsoleErrors(),
-    lastMetricsSnapshot, lastJitStats, stage: 'mapped', pixelMethod, httpErrorCount: httpErrors.length,
+    lastMetricsSnapshot, lastJitStats, stage: 'mapped', httpErrorCount: httpErrors.length,
     gameplayStartedAtMs: gameplayStartedAt,
     demoClickAtMs,
     audioStartBeforePlayerClick,
@@ -442,7 +457,8 @@ try {
     threadDumpAttempts, threadDumpInvocations,
   };
   await writeFile(join(outDir, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
-  console.log(JSON.stringify({ demo, jit: Number(jit), stage: 'mapped', overlayCleared, clickToMappedSeconds: summary.clickToMappedSeconds,
+  console.log(JSON.stringify({ demo, jit: Number(jit), stage: 'mapped', overlayCleared, visiblePixels,
+    framesPresented: summary.framesPresented, clickToMappedSeconds: summary.clickToMappedSeconds,
     finalScreenshot: screenshots.at(-1), pageErrors: summary.pageErrorCount, consoleErrors: summary.consoleErrorCount,
     outDir: relative(repo, outDir) }));
 } finally {
@@ -486,43 +502,44 @@ async function takeScreenshot(name) {
 }
 
 async function measurePlayerPixels(currentPage) {
-  return currentPage.evaluate(() => {
-    const display = document.querySelector('#display');
-    const frame = display?.querySelector('iframe');
-    const canvas = document.querySelector('#vkCanvas') || document.querySelector('#gpuCanvas')
-      || frame?.contentDocument?.querySelector('#canvas');
-    const rect = display?.getBoundingClientRect();
-    const region = rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null;
-    if (!canvas || !canvas.width || !canvas.height) {
-      return { nonblankFraction: null, uniqueColors: null, pixelRegion: region, pixelSource: null };
-    }
-    try {
-      const copy = document.createElement('canvas');
-      copy.width = canvas.width;
-      copy.height = canvas.height;
-      const context = copy.getContext('2d', { willReadFrequently: true });
-      context.drawImage(canvas, 0, 0, copy.width, copy.height);
-      const rgba = context.getImageData(0, 0, copy.width, copy.height).data;
-      let nonblank = 0;
-      const colors = new Set();
-      for (let at = 0; at < rgba.length; at += 4) {
-        const r = rgba[at], g = rgba[at + 1], b = rgba[at + 2];
-        if (Math.max(r, g, b) > 16) nonblank++;
-        if (colors.size < 10000) colors.add((r << 16) | (g << 8) | b);
-      }
-      return {
-        nonblankFraction: nonblank / (copy.width * copy.height),
-        uniqueColors: Math.min(10000, colors.size),
-        pixelRegion: region,
-        pixelSource: canvas.id ? `#${canvas.id}` : 'canvas',
-        pixelWidth: copy.width,
-        pixelHeight: copy.height,
-      };
-    } catch (error) {
-      return { nonblankFraction: null, uniqueColors: null, pixelRegion: region,
-        pixelSource: canvas.id ? `#${canvas.id}` : 'canvas', pixelError: error.message };
-    }
-  });
+  const box = await currentPage.locator('#display').boundingBox();
+  if (!box) return { nonDarkPixelFraction: null, distinctColorCount: null, pixelError: '#display has no bounding box' };
+  const clip = {
+    x: Math.max(0, Math.floor(box.x)), y: Math.max(0, Math.floor(box.y)),
+    width: Math.max(1, Math.ceil(box.width)), height: Math.max(1, Math.ceil(box.height)),
+  };
+  try {
+    const metrics = screenshotPixels(await currentPage.screenshot({ type: 'png', clip }));
+    return { ...metrics, pixelMethod: screenshotPixelMethod, pixelRegion: clip };
+  } catch (error) {
+    return { nonDarkPixelFraction: null, distinctColorCount: null, pixelMethod: screenshotPixelMethod,
+      pixelRegion: clip, pixelError: error.message || String(error) };
+  }
+}
+
+async function waitForVisibleScreenshotPixels() {
+  await page.waitForTimeout(blankScreenGraceMs);
+  let consecutiveBlankSamples = 0;
+  let lastSample = null;
+  for (let sample = 1; sample <= blankScreenFailureSamples; sample++) {
+    lastSample = await measurePlayerPixels(page);
+    lastSample.sample = sample;
+    lastSample.atSeconds = elapsedSeconds();
+    screenshots.push({ name: `visible-pixels-${sample}.png`, ...lastSample });
+    const visible = Number(lastSample.nonDarkPixelFraction) >= 0.005
+      && Number(lastSample.distinctColorCount) >= 8;
+    if (visible) return { ...lastSample, visible: true, consecutiveBlankSamples: 0 };
+    consecutiveBlankSamples++;
+    if (sample < blankScreenFailureSamples) await page.waitForTimeout(blankScreenSampleIntervalMs);
+  }
+  const message = `FAIL: program mapped but display screenshot stayed blank for ${consecutiveBlankSamples} consecutive samples after ${blankScreenGraceMs / 1000}s grace (non-dark fraction ${lastSample?.nonDarkPixelFraction ?? 'unavailable'}, distinct colors ${lastSample?.distinctColorCount ?? 'unavailable'})`;
+  process.exitCode = 1;
+  console.error(message);
+  return { ...lastSample, visible: false, consecutiveBlankSamples, error: message };
+}
+
+function framesPresentedTotal() {
+  return wasmMetricsLines.reduce((total, row) => total + Number(row.snapshot?.present?.count || 0), 0);
 }
 
 function startMetricsSampler() {

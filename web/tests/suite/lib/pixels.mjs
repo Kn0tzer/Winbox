@@ -30,11 +30,17 @@ export function screenshotPixels(png) {
     rgb[y * stride + x] = (raw[y * (stride + 1) + x + 1] + predictor) & 255;
   }
   let lit = 0, varied = 0, redDominant = 0;
+  const distinctColors = new Set();
   for (let i = 0; i < rgb.length; i += channels) {
     const [r, g, b] = rgb.subarray(i, i + 3);
     if (r + g + b > 30) lit++;
     if (Math.max(r, g, b) - Math.min(r, g, b) > 40) varied++;
     if (r > g + 20 && r > b + 20) redDominant++;
+    distinctColors.add((r << 16) | (g << 8) | b);
   }
-  return { width, height, lit, varied, redDominant };
+  return {
+    width, height, lit, varied, redDominant,
+    nonDarkPixelFraction: lit / (width * height),
+    distinctColorCount: distinctColors.size,
+  };
 }
