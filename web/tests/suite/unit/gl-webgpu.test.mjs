@@ -469,10 +469,14 @@ test('renderbuffer storage validates target, binding, dimensions, and formats', 
     assert.equal(gl.getError(), 0x0502, 'RGBA32F remains explicitly rejected until its WebGPU feature requirements are available');
     assert.ok(logs.some(line => line.includes('renderbuffer internal format 0x8814')));
     gl.renderbufferStorage(0x8d41, 0x8d7c, 4, 4);
-    assert.equal(gl.getError(), 0x0502, 'valid RGBA8UI storage is explicitly rejected until integer color targets are implemented');
-    assert.ok(logs.some(line => line.includes('renderbuffer internal format 0x8d7c')));
+    assert.equal(gl.getError(), 0, 'RGBA8UI uses a WebGPU integer attachment format');
+    assert.equal(renderbuffer.format, 'rgba8uint');
+    assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8d50), 8);
+    gl.renderbufferStorage(0x8d41, 0x8d82, 4, 4);
+    assert.equal(gl.getError(), 0x0502, 'valid RGBA32I remains explicitly rejected until wide integer targets are implemented');
+    assert.ok(logs.some(line => line.includes('renderbuffer internal format 0x8d82')));
     await gl._ops;
-    assert.equal(renderbuffer.gpu.format, 'rgba16float');
+    assert.equal(renderbuffer.gpu.format, 'rgba8uint');
     assert.equal(renderbuffer.width, 4, 'invalid storage requests preserve the prior allocation');
   } finally { gpu.restore(); }
 });
@@ -525,6 +529,35 @@ test('RGBA8 multisample renderbuffers allocate four samples and resolve on frame
     gl.renderbufferStorageMultisample(0x8d41, 8, 0x8058, 8, 8);
     assert.equal(gl.getError(), 0x0502);
     assert.equal(logs.filter(line => line.includes('renderbuffer sample count 8')).length, 1);
+  } finally { gpu.restore(); }
+});
+
+test('RGBA8UI renderbuffers select integer attachment pipelines without blending', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    const renderbuffer = gl.createRenderbuffer();
+    gl.bindRenderbuffer(0x8d41, renderbuffer);
+    gl.renderbufferStorage(0x8d41, 0x8d7c, 2, 2);
+    await gl._ops;
+    assert.equal(renderbuffer.gpu.format, 'rgba8uint');
+    const framebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(0x8d40, framebuffer);
+    gl.framebufferRenderbuffer(0x8d40, 0x8ce0, 0x8d41, renderbuffer);
+    assert.equal(gl._targetFor(framebuffer).format, 'rgba8uint');
+    const state = {
+      enabled: new Set([0x0be2]), blend: gl._blend, depthFunc: 0x0201, depthMask: true,
+      colorMask: [true, true, true, true], stencilFront: gl._stencilFront, stencilBack: gl._stencilBack,
+      polygonOffset: [0, 0], cullFace: 0x0405, frontFace: 0x0901,
+    };
+    await gl._pipelineFor({ id: -2, stages: { vertex: { wgsl: '' }, fragment: { wgsl: '' } } }, state,
+      { layouts: [] }, 'triangle-list', 'rgba8uint', null, 1);
+    assert.equal(gpu.pipelines.at(-1).fragment.targets[0].format, 'rgba8uint');
+    assert.equal('blend' in gpu.pipelines.at(-1).fragment.targets[0], false);
+    await gl._blitColorFormats(gl._targetFor(framebuffer), gl._targetFor(0), 0, 0, 2, 2, 0, 0, 2, 2, 0x2600);
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('integer framebuffer blit')));
   } finally { gpu.restore(); }
 });
 
