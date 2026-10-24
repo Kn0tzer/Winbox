@@ -1662,7 +1662,12 @@ static void x11_GetPixel(CPU* cpu) {
 }
 
 static void x11_PutPixel(CPU* cpu) {
-    //kpanic("x11_PutPixel");
+    // Not implemented: XPutPixel drops the pixel. Log once so the drop is visible without flooding the log.
+    static bool loggedDrop = false;
+    if (!loggedDrop) {
+        loggedDrop = true;
+        klog("x11_PutPixel not implemented: XPutPixel pixels are dropped");
+    }
 }
 
 static void x11_SubImage(CPU* cpu) {
