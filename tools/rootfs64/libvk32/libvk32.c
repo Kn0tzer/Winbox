@@ -296,6 +296,8 @@ enum {
     VK64_fn_vkGetDescriptorSetLayoutSupport = 916,
     VK64_fn_vkGetDeviceImageMemoryRequirements = 917,
     VK64_fn_vkCmdSetExtendedDynamicState = 918,
+    VK64_fn_vkCreateRenderPass2 = 919,
+    VK64_fn_vkCmdNextSubpass = 920,
     VK64_fn__MAX
 };
 
@@ -682,6 +684,14 @@ API VkResult vkCreateRenderPass(VkDevice dev, const void* ci, const void* alloc,
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
     return (VkResult)vk64_trap(VK64_fn_vkCreateRenderPass, &a);
 }
+API VkResult vkCreateRenderPass2(VkDevice dev, const void* ci, const void* alloc, VkRenderPass* out) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
+    return (VkResult)vk64_trap(VK64_fn_vkCreateRenderPass2, &a);
+}
+API VkResult vkCreateRenderPass2KHR(VkDevice dev, const void* ci, const void* alloc, VkRenderPass* out) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
+    return (VkResult)vk64_trap(VK64_fn_vkCreateRenderPass2, &a);
+}
 API VkResult vkCreateFramebuffer(VkDevice dev, const void* ci, const void* alloc, VkFramebuffer* out) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
     return (VkResult)vk64_trap(VK64_fn_vkCreateFramebuffer, &a);
@@ -950,6 +960,15 @@ API void vkCmdEndRenderPass2(VkCommandBuffer cb, const void* di) {
     VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = P(di);
     (void)vk64_trap(VK64_fn_vkCmdEndRenderPass2, &a);
 }
+API void vkCmdNextSubpass(VkCommandBuffer cb, uint32_t contents) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = contents;
+    (void)vk64_trap(VK64_fn_vkCmdNextSubpass, &a);
+}
+API void vkCmdNextSubpassKHR(VkCommandBuffer cb, uint32_t contents) { vkCmdNextSubpass(cb, contents); }
+API void vkCmdNextSubpass2(VkCommandBuffer cb, const void* bi, const void* ei) {
+    (void)ei; vkCmdNextSubpass(cb, 0); (void)bi;
+}
+API void vkCmdNextSubpass2KHR(VkCommandBuffer cb, const void* bi, const void* ei) { vkCmdNextSubpass2(cb, bi, ei); }
 API void vkCmdEndRenderPass2KHR(VkCommandBuffer cb, const void* di) {
     VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = P(di);
     (void)vk64_trap(VK64_fn_vkCmdEndRenderPass2KHR, &a);
@@ -1694,6 +1713,12 @@ static const struct procEntry g_procs[] = {
     E(vkCreateBufferView, VK64_fn_vkCreateBufferView),
     E(vkCreateSampler, VK64_fn_vkCreateSampler),
     E(vkCreateRenderPass, VK64_fn_vkCreateRenderPass),
+    E(vkCreateRenderPass2, VK64_fn_vkCreateRenderPass2),
+    E(vkCreateRenderPass2KHR, VK64_fn_vkCreateRenderPass2),
+    E(vkCmdNextSubpass, VK64_fn_vkCmdNextSubpass),
+    E(vkCmdNextSubpassKHR, VK64_fn_vkCmdNextSubpass),
+    E(vkCmdNextSubpass2, VK64_fn_vkCmdNextSubpass),
+    E(vkCmdNextSubpass2KHR, VK64_fn_vkCmdNextSubpass),
     E(vkCreateFramebuffer, VK64_fn_vkCreateFramebuffer),
     E(vkCreateGraphicsPipelines, VK64_fn_vkCreateGraphicsPipelines),
     E(vkCreateComputePipelines, VK64_fn_vkCreateComputePipelines),
@@ -1950,14 +1975,10 @@ TAIL(vkSubmitDebugUtilsMessageEXT)
 TAIL(vkGetPipelineLayoutSupport)
 TAIL(vkQueueBindSparse)
 TAIL(vkCmdSetBlendConstant)
-TAIL(vkCmdNextSubpass)
-TAIL(vkCmdNextSubpassKHR)
 TAIL(vkCmdSetDepthBiasNV)
 TAIL(vkCmdSetVertexInputEXT)
 TAIL(vkCmdBeginConditionalRenderingEXT)
 TAIL(vkCmdEndConditionalRenderingEXT)
-TAIL(vkCmdNextSubpass2KHR)
-TAIL(vkCmdNextSubpass2)
 TAIL(vkCmdDrawIndirectByteCountEXT)
 
 TAIL(vkCreateFramebuffer2KHR)

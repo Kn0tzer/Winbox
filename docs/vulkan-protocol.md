@@ -299,6 +299,17 @@ creates sampled views with exactly that range. Frames without the tail sample th
 Non-identity component swizzles and rendering into a non-zero mip/layer are not applied and are
 reported (`image-view-swizzle`, `render-target-subresource` in the bridge).
 
+Subpasses (ABI ids 919 `vkCreateRenderPass2`, 920 `vkCmdNextSubpass`, both also reached through the
+`KHR` and `...2` aliases): the bridge keeps each subpass's colour, resolve and depth references and
+emits one `RP_BEGIN`/`RP_END` pair per subpass. An `RP_BEGIN` lists only that subpass's attachments
+(colour slots in order, then depth); load ops apply on an attachment's first subpass, store ops on its
+last, and in between it is LOADed and STOREd. A colour attachment's resolve target is not a pass
+attachment: after the subpass `RP_END` the bridge emits an `IMAGE_COPY` from the multisampled image's
+replay texture (already its resolved single-sample texture) to the resolve image. Input attachments,
+multiview and depth/stencil resolve are reported loudly (`subpass-input-attachment`,
+`multiview-render-pass`, `compute-subpass`, `depth-stencil-resolve`); `vkCmdNextSubpass` past the last subpass is
+`next-subpass-overflow`.
+
 Records `0x15` (stencil state) carry kind (compare/write/reference = 0/1/2),
 face bits (front 1, back 2), and value, all u32. `0x16` carries four f32 blend
 constants. `0x17` carries a bounded u32 attachment count (max 8), then aspect,

@@ -1169,12 +1169,50 @@ static bool vk64ExtendedDynamicStateOk(U32 which, U32 value) {
         return false;
     }
 }
+// Which render-pass attachments one subpass draws to. A pass created by vkCmdBeginRendering (or by an
+// older caller without subpass data) has nsub == 0 and uses every framebuffer attachment in order.
+const U32 VK64_MAX_SUBPASSES = 8;
+struct SubpassMap {
+    U32 nColor = 0, color[VK64_MAX_ATTACH], resolve[VK64_MAX_ATTACH], depth = VK_ATTACHMENT_UNUSED;
+    SubpassMap() { for (U32 i = 0; i < VK64_MAX_ATTACH; ++i) color[i] = resolve[i] = VK_ATTACHMENT_UNUSED; }
+};
 struct RenderPass : Obj {
     U32 natt = 0, formats[VK64_MAX_ATTACH] = {0}, loadOps[VK64_MAX_ATTACH] = {0},
         storeOps[VK64_MAX_ATTACH] = {0}, depthFmt = 0;
     U32 stencilLoadOps[VK64_MAX_ATTACH] = {0}, stencilStoreOps[VK64_MAX_ATTACH] = {0};
     U32 samples[VK64_MAX_ATTACH] = {0};   // v2: per-attachment MSAA sample count
+    U32 nsub = 0;
+    SubpassMap sub[VK64_MAX_SUBPASSES];
 };
+// One subpass as read from either guest ABI and either create call (v1 or RenderPass2).
+struct SubpassIn {
+    U32 bindPoint = 0, viewMask = 0, nInput = 0, depth = VK_ATTACHMENT_UNUSED;
+    std::vector<U32> color, resolve;
+    bool depthStencilResolve = false;
+};
+static void vk64SetupSubpasses(RenderPass* rp, const std::vector<SubpassIn>& subs) {
+    rp->nsub = vk64CapCount("renderpass-subpasses", (U32)subs.size(), VK64_MAX_SUBPASSES);
+    auto valid = [&](U32 index, const char* what) {
+        if (index == VK_ATTACHMENT_UNUSED) return false;
+        if (index < rp->natt) return true;
+        vk64Unsupported("renderpass-attachment-ref", (std::string(what) + " names attachment " + std::to_string(index) + " of " + std::to_string(rp->natt) + "; treated as unused").c_str());
+        return false;
+    };
+    for (U32 si = 0; si < rp->nsub; ++si) {
+        const SubpassIn& in = subs[si];
+        SubpassMap& m = rp->sub[si];
+        if (in.bindPoint != 0) vk64Unsupported("compute-subpass", "only graphics subpasses are replayed");
+        if (in.nInput) vk64Unsupported("subpass-input-attachment", "input attachments are not readable by later subpasses");
+        if (in.viewMask) vk64Unsupported("multiview-render-pass", "view masks are ignored; the subpass renders once");
+        if (in.depthStencilResolve) vk64Unsupported("depth-stencil-resolve", "depth/stencil resolve attachments are not resolved");
+        m.nColor = vk64CapCount("subpass-color-attachments", (U32)in.color.size(), VK64_MAX_ATTACH);
+        for (U32 c = 0; c < m.nColor; ++c) {
+            m.color[c] = valid(in.color[c], "colour reference") ? in.color[c] : VK_ATTACHMENT_UNUSED;
+            if (c < in.resolve.size()) m.resolve[c] = valid(in.resolve[c], "resolve reference") ? in.resolve[c] : VK_ATTACHMENT_UNUSED;
+        }
+        if (valid(in.depth, "depth/stencil reference")) { m.depth = in.depth; rp->depthFmt = rp->formats[in.depth]; }
+    }
+}
 struct Framebuffer : Obj { U64 rp = 0; U32 natt = 0; U64 views[VK64_MAX_ATTACH] = {0}; U32 w = 0, h = 0; };
 // Render-target textures in the replay carry one mip level and one layer, so an attachment view of
 // anything else cannot be honoured; say so instead of silently rendering to level 0 layer 0.
@@ -1197,7 +1235,7 @@ enum CmdKind : U32 {
     CMD_SCISSOR, CMD_DRAW, CMD_DRAW_INDEXED, CMD_BARRIER, CMD_COPY_B2I, CMD_PUSH_CONST,
     CMD_BIND_VB, CMD_BIND_IB, CMD_UPDATE_BUF, CMD_COPY_I2B, CMD_DISPATCH, CMD_COPY_IMAGE,
     CMD_STENCIL_STATE, CMD_BLEND_CONSTANTS, CMD_CLEAR_ATTACHMENTS, CMD_COPY_QUERY_RESULTS, CMD_DEPTH_BIAS, CMD_BLIT_IMAGE,
-    CMD_RASTER_STATE, CMD_CLEAR_DS_IMAGE, CMD_RESET_QUERY
+    CMD_RASTER_STATE, CMD_CLEAR_DS_IMAGE, CMD_RESET_QUERY, CMD_NEXT_SUBPASS
 };
 struct Copy {
     U64 srcBuffer = 0, dstImage = 0, bufOff = 0;
@@ -3407,36 +3445,91 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 p.u32(pipe->dynMask); p.u32(pipe->rasterizerDiscard);
             });
         };
-        auto emitRpBegin = [&](const Cmd& k) {
+        // Render pass replay. A WebGPU pass has one attachment set, so each subpass becomes its own
+        // RP_BEGIN/RP_END pair; later subpasses load what earlier ones stored. Attachments that only
+        // appear as resolve targets are not attachments of the pass: the colour attachment's resolve
+        // is copied into them (IMAGE_COPY) when its subpass ends.
+        Framebuffer* activeFb = nullptr;
+        RenderPass* activeRp = nullptr;
+        const Cmd* activeBegin = nullptr;
+        U32 activeSub = 0;
+        auto subpassAttachments = [&](const RenderPass* rrp, U32 sub) {
+            std::vector<U32> idx;
+            if (!rrp->nsub) { for (U32 i = 0; i < rrp->natt; ++i) idx.push_back(i); return idx; }
+            const SubpassMap& m = rrp->sub[std::min(sub, rrp->nsub - 1)];
+            for (U32 c = 0; c < m.nColor; ++c) {
+                if (m.color[c] == VK_ATTACHMENT_UNUSED) { vk64Unsupported("subpass-unused-color-slot", "a colour slot without an attachment is skipped, shifting later colour slots"); continue; }
+                idx.push_back(m.color[c]);
+            }
+            if (m.depth != VK_ATTACHMENT_UNUSED) idx.push_back(m.depth);
+            return idx;
+        };
+        auto usesAttachment = [&](const RenderPass* rrp, U32 sub, U32 a) {
+            if (!rrp->nsub) return true;
+            const SubpassMap& m = rrp->sub[sub];
+            if (m.depth == a) return true;
+            for (U32 c = 0; c < m.nColor; ++c) if (m.color[c] == a) return true;
+            return false;
+        };
+        auto emitRpBegin = [&](const Cmd& k, U32 sub) {
             Framebuffer* rfb = objOf<Framebuffer>(k.b, K_FRAMEBUFFER, "vkQueueSubmit");
             RenderPass* rrp = rfb ? objOf<RenderPass>(rfb->rp, K_RENDERPASS, "vkQueueSubmit") : nullptr;
             VK64_DROP_IF(return, !rfb || !rrp);
+            activeFb = rfb; activeRp = rrp; activeBegin = &k; activeSub = sub;
+            const std::vector<U32> idx = subpassAttachments(rrp, sub);
+            const U32 nsub = rrp->nsub ? rrp->nsub : 1;
+            // Load/store ops apply on the first/last subpass that touches the attachment.
+            auto firstUse = [&](U32 a) { for (U32 s2 = 0; s2 < sub; ++s2) if (usesAttachment(rrp, s2, a)) return false; return true; };
+            auto lastUse = [&](U32 a) { for (U32 s2 = sub + 1; s2 < nsub; ++s2) if (usesAttachment(rrp, s2, a)) return false; return true; };
             emit(V2_RP_BEGIN, [&](ChunkWriter& p) {
-                p.u64(k.a); p.u64(k.b); p.u32(rfb->w); p.u32(rfb->h); p.u32(rfb->natt);
-                for (U32 i = 0; i < rfb->natt; i++) {
-                    ImageView* v = objOf<ImageView>(rfb->views[i], K_IMAGEVIEW, "vkQueueSubmit");
-                    p.u32(rrp->formats[i]); p.u32(rrp->loadOps[i]); p.u32(rrp->storeOps[i]);
-                    p.u32(rrp->samples[i] ? rrp->samples[i] : 1);
+                p.u64(k.a); p.u64(k.b); p.u32(rfb->w); p.u32(rfb->h); p.u32((U32)idx.size());
+                for (U32 a : idx) {
+                    ImageView* v = objOf<ImageView>(rfb->views[a], K_IMAGEVIEW, "vkQueueSubmit");
+                    p.u32(rrp->formats[a]); p.u32(firstUse(a) ? rrp->loadOps[a] : 0); p.u32(lastUse(a) ? rrp->storeOps[a] : 0);
+                    p.u32(rrp->samples[a] ? rrp->samples[a] : 1);
                     p.u32(v && (v->aspect & 0x6u) ? 1 : 0);
                 }
-                p.f32(k.f[0]); p.f32(k.f[1]); p.f32(k.f[2]); p.f32(k.f[3]);
+                auto clearOf = [&](U32 a, U32 c4) { return a * 4 + c4 < k.attClear.size() ? k.attClear[a * 4 + c4] : 0.0f; };
+                U32 firstColor = idx.empty() ? 0 : idx[0];
+                for (U32 c4 = 0; c4 < 4; ++c4) p.f32(idx.empty() ? k.f[c4] : clearOf(firstColor, c4));
                 p.f32((float)k.clearDepth); p.u32(k.clearStencil);
                 // Optional attachment identity tail, paired with the updated
                 // decoder. Image identity links render and sampled view aliases.
-                for (U32 i = 0; i < rfb->natt; ++i) {
-                    auto* view = objOf<ImageView>(rfb->views[i], K_IMAGEVIEW, "vkQueueSubmit");
-                    p.u64(rfb->views[i]); p.u64(view ? view->image : 0);
+                for (U32 a : idx) {
+                    auto* view = objOf<ImageView>(rfb->views[a], K_IMAGEVIEW, "vkQueueSubmit");
+                    p.u64(rfb->views[a]); p.u64(view ? view->image : 0);
                 }
-                p.u32(0x31505453u); p.u32(rfb->natt); // STP1
-                for (U32 i = 0; i < rfb->natt; ++i) {
-                    auto* view = objOf<ImageView>(rfb->views[i], K_IMAGEVIEW, "vkQueueSubmit");
-                    p.u32(rrp->stencilLoadOps[i]); p.u32(rrp->stencilStoreOps[i]); p.u32(view ? view->aspect : 0);
+                p.u32(0x31505453u); p.u32((U32)idx.size()); // STP1
+                for (U32 a : idx) {
+                    auto* view = objOf<ImageView>(rfb->views[a], K_IMAGEVIEW, "vkQueueSubmit");
+                    p.u32(firstUse(a) ? rrp->stencilLoadOps[a] : 0); p.u32(lastUse(a) ? rrp->stencilStoreOps[a] : 0); p.u32(view ? view->aspect : 0);
                 }
                 // CLR1: per-attachment colour clear values (multiple render targets).
-                p.u32(0x31524c43u); p.u32(rfb->natt);
-                for (U32 i = 0; i < rfb->natt; ++i)
-                    for (U32 c4 = 0; c4 < 4; ++c4) p.f32(i * 4 + c4 < k.attClear.size() ? k.attClear[i * 4 + c4] : 0.0f);
+                p.u32(0x31524c43u); p.u32((U32)idx.size());
+                for (U32 a : idx)
+                    for (U32 c4 = 0; c4 < 4; ++c4) p.f32(clearOf(a, c4));
             });
+        };
+        // Ends the open subpass: RP_END, then the colour resolves it owns as image copies.
+        auto emitRpEnd = [&]() {
+            emit(V2_RP_END, [](ChunkWriter&) {});
+            if (!activeFb || !activeRp || !activeRp->nsub) return;
+            const SubpassMap& m = activeRp->sub[std::min(activeSub, activeRp->nsub - 1)];
+            for (U32 c = 0; c < m.nColor; ++c) {
+                if (m.color[c] == VK_ATTACHMENT_UNUSED || m.resolve[c] == VK_ATTACHMENT_UNUSED) continue;
+                auto* sv = objOf<ImageView>(activeFb->views[m.color[c]], K_IMAGEVIEW, "vkQueueSubmit");
+                auto* dv = objOf<ImageView>(activeFb->views[m.resolve[c]], K_IMAGEVIEW, "vkQueueSubmit");
+                auto* si = sv ? objOf<Image>(sv->image, K_IMAGE, "vkQueueSubmit") : nullptr;
+                auto* di = dv ? objOf<Image>(dv->image, K_IMAGE, "vkQueueSubmit") : nullptr;
+                VK64_DROP_IF(continue, !si || !di);
+                const U32 w = std::min({activeFb->w, si->w, di->w}), h = std::min({activeFb->h, si->h, di->h});
+                emit(V2_IMAGE_COPY, [&](ChunkWriter& p) {
+                    p.u64(sv->image); p.u64(dv->image);
+                    p.u32(0); p.u32(0); p.u32(0); p.u32(0);
+                    for (U32 i = 0; i < 6; ++i) p.u32(0);
+                    p.u32(w); p.u32(h); p.u32(1);
+                });
+            }
         };
 
         // FRAME_BEGIN. The overflow flag is consumed here, like v1.
@@ -3514,8 +3607,12 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         }
         for (const Cmd& k : st->cmds) {
             switch (k.kind) {
-                case CMD_BEGIN_RP: emitRpBegin(k); break;
-                case CMD_END_RP:   emit(V2_RP_END, [](ChunkWriter&) {}); break;
+                case CMD_BEGIN_RP: emitRpBegin(k, 0); break;
+                case CMD_NEXT_SUBPASS:
+                    if (activeBegin && activeRp && activeSub + 1 < std::max(1U, activeRp->nsub)) { emitRpEnd(); emitRpBegin(*activeBegin, activeSub + 1); }
+                    else vk64Unsupported("next-subpass-overflow", "vkCmdNextSubpass past the last subpass of the render pass");
+                    break;
+                case CMD_END_RP:   emitRpEnd(); activeFb = nullptr; activeRp = nullptr; activeBegin = nullptr; break;
                 case CMD_BIND_PIPE: activePipe = k.a; emitPipeline(k.a); break;
                 case CMD_BIND_SETS: {
                     U32 first = (U32)k.a, count = (U32)k.b;
@@ -4260,6 +4357,56 @@ static void logAskedFor(const char* abi, const std::string& name) {
 // ---------------------------------------------------------------------------
 // Entry point from ksyscall64.
 // ---------------------------------------------------------------------------
+// --- render pass subpass parsing (64-bit guest) ---
+struct RpAttachmentDesc2_64 { U32 sType; U64 pNext; U32 flags, format, samples, loadOp, storeOp, stencilLoadOp, stencilStoreOp, initialLayout, finalLayout; };
+struct RpAttachmentRef2_64 { U32 sType; U64 pNext; U32 attachment, layout, aspectMask; };
+struct RpSubpassDesc2_64 { U32 sType; U64 pNext; U32 flags, pipelineBindPoint, viewMask, inputAttachmentCount; U64 pInputAttachments;
+    U32 colorAttachmentCount; U64 pColorAttachments, pResolveAttachments, pDepthStencilAttachment; U32 preserveAttachmentCount; U64 pPreserveAttachments; };
+static const U32 VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE_ID = 1000199000;
+static bool vk64HasDepthStencilResolve(U64 pNext) {
+    for (U32 hop = 0; pNext && hop < 16; ++hop) {
+        U32 sType = 0; U64 next = 0;
+        g_mem->memcpyFromGuest(&sType, pNext, 4);
+        if (sType == VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE_ID) return true;
+        g_mem->memcpyFromGuest(&next, pNext + 8, 8);
+        pNext = next;
+    }
+    return false;
+}
+static void vk64ParseSubpasses(RenderPass* rp, U64 pSubpasses, U32 count, bool v2) {
+    count = vk64CapCount("renderpass-subpasses", count, VK64_MAX_SUBPASSES);
+    std::vector<SubpassIn> subs(count);
+    auto refs = [&](U64 address, U32 n, std::vector<U32>& out) {
+        n = vk64CapCount("subpass-color-attachments", n, VK64_MAX_ATTACH);
+        out.clear();
+        if (!address) return;
+        if (v2) { std::vector<RpAttachmentRef2_64> r; readArray(address, n, r); for (const auto& x : r) out.push_back(x.attachment); }
+        else { std::vector<VkAttachmentReference> r; readArray(address, n, r); for (const auto& x : r) out.push_back(x.attachment); }
+    };
+    auto oneRef = [&](U64 address) -> U32 {
+        if (!address) return VK_ATTACHMENT_UNUSED;
+        if (v2) { RpAttachmentRef2_64 r = {}; return readStruct(address, r) ? r.attachment : VK_ATTACHMENT_UNUSED; }
+        VkAttachmentReference r = {}; return readStruct(address, r) ? r.attachment : VK_ATTACHMENT_UNUSED;
+    };
+    for (U32 i = 0; i < count; ++i) {
+        U32 nColor, nInput, bindPoint, viewMask = 0; U64 pColor, pResolve, pDepth, pNext = 0;
+        if (v2) {
+            RpSubpassDesc2_64 d = {}; if (!readStruct(pSubpasses + (U64)i * sizeof(d), d)) continue;
+            nColor = d.colorAttachmentCount; nInput = d.inputAttachmentCount; bindPoint = d.pipelineBindPoint; viewMask = d.viewMask;
+            pColor = d.pColorAttachments; pResolve = d.pResolveAttachments; pDepth = d.pDepthStencilAttachment; pNext = d.pNext;
+        } else {
+            VkSubpassDescription d = {}; if (!readStruct(pSubpasses + (U64)i * sizeof(d), d)) continue;
+            nColor = d.colorAttachmentCount; nInput = d.inputAttachmentCount; bindPoint = d.pipelineBindPoint;
+            pColor = d.pColorAttachments; pResolve = d.pResolveAttachments; pDepth = d.pDepthStencilAttachment;
+        }
+        subs[i].bindPoint = bindPoint; subs[i].viewMask = viewMask; subs[i].nInput = nInput;
+        refs(pColor, nColor, subs[i].color);
+        refs(pResolve, nColor, subs[i].resolve);
+        subs[i].depth = oneRef(pDepth);
+        subs[i].depthStencilResolve = v2 && pNext && vk64HasDepthStencilResolve(pNext);
+    }
+    vk64SetupSubpasses(rp, subs);
+}
 U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     std::lock_guard<std::recursive_mutex> lk(g_vkMutex);
     // NB: constructed AFTER the lock so the destructor (which touches the
@@ -5058,7 +5205,27 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             rp->stencilStoreOps[i] = atts[i].stencilStoreOp;
             rp->samples[i] = atts[i].samples;
         }
-        if (atts.size() > 1) rp->depthFmt = atts[1].format;
+        vk64ParseSubpasses(rp, ci.pSubpasses, ci.subpassCount, false);
+        wr64(args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateRenderPass2: {
+        VkRenderPassCreateInfo2 ci = {};
+        if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        RenderPass* rp = createObj<RenderPass>(K_RENDERPASS, id);
+        rp->natt = vk64CapCount("renderpass-attachments", ci.attachmentCount, VK64_MAX_ATTACH);
+        std::vector<RpAttachmentDesc2_64> atts;
+        readArray(ci.pAttachments, rp->natt, atts);
+        for (U32 i = 0; i < atts.size(); i++) {
+            rp->formats[i] = atts[i].format;
+            rp->loadOps[i] = atts[i].loadOp;
+            rp->storeOps[i] = atts[i].storeOp;
+            rp->stencilLoadOps[i] = atts[i].stencilLoadOp;
+            rp->stencilStoreOps[i] = atts[i].stencilStoreOp;
+            rp->samples[i] = atts[i].samples;
+        }
+        vk64ParseSubpasses(rp, ci.pSubpasses, ci.subpassCount, true);
         wr64(args.a[3], id);
         return VK_SUCCESS;
     }
@@ -5677,6 +5844,14 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         readArray(bi.pClearValues, vk64CapCount("clear-values", bi.clearValueCount, VK64_MAX_ATTACH), clears);
         captureRenderPassClears(c, objOf<RenderPass>(bi.renderPass, K_RENDERPASS, "vkCmdBeginRenderPass"), clears);
         vk64AuditFramebufferViews(objOf<Framebuffer>(bi.framebuffer, K_FRAMEBUFFER, "vkCmdBeginRenderPass"));
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdNextSubpass: {
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdNextSubpass");
+        VK64_DROP_IF(return 0, !cb);
+        Cmd c;
+        c.kind = CMD_NEXT_SUBPASS;
         pushCmd(cb, c);
         return 0;
     }
@@ -7458,6 +7633,55 @@ static void captureStageSpec32(U32 va, StageSpec& out) {
     }
 }
 
+// --- render pass subpass parsing (32-bit guest) ---
+struct RpAttachmentDesc2_32 { U32 sType, pNext, flags, format, samples, loadOp, storeOp, stencilLoadOp, stencilStoreOp, initialLayout, finalLayout; };
+struct RpAttachmentRef2_32 { U32 sType, pNext, attachment, layout, aspectMask; };
+struct RpSubpassDesc2_32 { U32 sType, pNext, flags, pipelineBindPoint, viewMask, inputAttachmentCount, pInputAttachments,
+    colorAttachmentCount, pColorAttachments, pResolveAttachments, pDepthStencilAttachment, preserveAttachmentCount, pPreserveAttachments; };
+static bool vk32HasDepthStencilResolve(U32 pNext) {
+    for (U32 hop = 0; pNext && hop < 16; ++hop) {
+        U32 sType = 0, next = 0;
+        g_mem32->memcpyFromGuest(&sType, pNext, 4);
+        if (sType == VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE_ID) return true;
+        g_mem32->memcpyFromGuest(&next, pNext + 4, 4);
+        pNext = next;
+    }
+    return false;
+}
+static void vk32ParseSubpasses(RenderPass* rp, U32 pSubpasses, U32 count, bool v2) {
+    count = vk64CapCount("renderpass-subpasses", count, VK64_MAX_SUBPASSES);
+    std::vector<SubpassIn> subs(count);
+    auto refs = [&](U32 address, U32 n, std::vector<U32>& out) {
+        n = vk64CapCount("subpass-color-attachments", n, VK64_MAX_ATTACH);
+        out.clear();
+        if (!address) return;
+        if (v2) { std::vector<RpAttachmentRef2_32> r; readArray32(address, n, r); for (const auto& x : r) out.push_back(x.attachment); }
+        else { std::vector<vk32abi::VkAttachmentReference> r; readArray32(address, n, r); for (const auto& x : r) out.push_back(x.attachment); }
+    };
+    auto oneRef = [&](U32 address) -> U32 {
+        if (!address) return VK_ATTACHMENT_UNUSED;
+        if (v2) { RpAttachmentRef2_32 r = {}; return readStruct32(address, r) ? r.attachment : VK_ATTACHMENT_UNUSED; }
+        vk32abi::VkAttachmentReference r = {}; return readStruct32(address, r) ? r.attachment : VK_ATTACHMENT_UNUSED;
+    };
+    for (U32 i = 0; i < count; ++i) {
+        U32 nColor, nInput, bindPoint, viewMask = 0, pColor, pResolve, pDepth, pNext = 0;
+        if (v2) {
+            RpSubpassDesc2_32 d = {}; if (!readStruct32(pSubpasses + i * (U32)sizeof(d), d)) continue;
+            nColor = d.colorAttachmentCount; nInput = d.inputAttachmentCount; bindPoint = d.pipelineBindPoint; viewMask = d.viewMask;
+            pColor = d.pColorAttachments; pResolve = d.pResolveAttachments; pDepth = d.pDepthStencilAttachment; pNext = d.pNext;
+        } else {
+            vk32abi::VkSubpassDescription d = {}; if (!readStruct32(pSubpasses + i * (U32)sizeof(d), d)) continue;
+            nColor = d.colorAttachmentCount; nInput = d.inputAttachmentCount; bindPoint = d.pipelineBindPoint;
+            pColor = d.pColorAttachments; pResolve = d.pResolveAttachments; pDepth = d.pDepthStencilAttachment;
+        }
+        subs[i].bindPoint = bindPoint; subs[i].viewMask = viewMask; subs[i].nInput = nInput;
+        refs(pColor, nColor, subs[i].color);
+        refs(pResolve, nColor, subs[i].resolve);
+        subs[i].depth = oneRef(pDepth);
+        subs[i].depthStencilResolve = v2 && pNext && vk32HasDepthStencilResolve(pNext);
+    }
+    vk64SetupSubpasses(rp, subs);
+}
 U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     std::lock_guard<std::recursive_mutex> lk(g_vkMutex);    g_mem = nullptr;
     g_dropFn = fnId;
@@ -8316,7 +8540,27 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             rp->stencilStoreOps[i] = atts[i].stencilStoreOp;
             rp->samples[i] = atts[i].samples;
         }
-        if (atts.size() > 1) rp->depthFmt = atts[1].format;
+        vk32ParseSubpasses(rp, ci.pSubpasses, ci.subpassCount, false);
+        wr64_32(args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateRenderPass2: {
+        vk32abi::VkRenderPassCreateInfo2 ci = {};
+        if (!readStruct32(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        RenderPass* rp = createObj32<RenderPass>(K_RENDERPASS, id);
+        rp->natt = vk64CapCount("renderpass-attachments", ci.attachmentCount, VK64_MAX_ATTACH);
+        std::vector<RpAttachmentDesc2_32> atts;
+        readArray32(ci.pAttachments, rp->natt, atts);
+        for (U32 i = 0; i < atts.size(); i++) {
+            rp->formats[i] = atts[i].format;
+            rp->loadOps[i] = atts[i].loadOp;
+            rp->storeOps[i] = atts[i].storeOp;
+            rp->stencilLoadOps[i] = atts[i].stencilLoadOp;
+            rp->stencilStoreOps[i] = atts[i].stencilStoreOp;
+            rp->samples[i] = atts[i].samples;
+        }
+        vk32ParseSubpasses(rp, ci.pSubpasses, ci.subpassCount, true);
         wr64_32(args.a[3], id);
         return VK_SUCCESS;
     }
@@ -8548,6 +8792,13 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         readArray32(bi.pClearValues, vk64CapCount("clear-values", bi.clearValueCount, VK64_MAX_ATTACH), clears);
         captureRenderPassClears(c, objOf32<RenderPass>(bi.renderPass, K_RENDERPASS, "vkCmdBeginRenderPass"), clears);
         vk64AuditFramebufferViews(objOf32<Framebuffer>(bi.framebuffer, K_FRAMEBUFFER, "vkCmdBeginRenderPass"));
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdNextSubpass: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdNextSubpass");
+        VK64_DROP_IF(return 0, !cb);
+        Cmd c; c.kind = CMD_NEXT_SUBPASS;
         pushCmd(cb, c);
         return 0;
     }

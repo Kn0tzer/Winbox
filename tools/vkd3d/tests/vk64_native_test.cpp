@@ -1311,6 +1311,55 @@ int main() {
         assert(c.attClear[8] == -5.0f && c.attClear[9] == 9.0f);
         puts("PASS: per-attachment colour clears (MRT, integer formats) are captured");
     }
+    {
+        // Subpasses: each one is its own RP_BEGIN/RP_END with only its own attachments; load/store ops
+        // apply on first/last use; a colour resolve target is not an attachment but an IMAGE_COPY.
+        U64 imgIds[4], viewIds[4];
+        for (U32 i = 0; i < 4; ++i) {
+            auto* im = createObj<Image>(K_IMAGE, imgIds[i]); im->format = 37; im->w = 64; im->h = 32; im->samples = i == 0 ? 4 : 1;
+            auto* vw = createObj<ImageView>(K_IMAGEVIEW, viewIds[i]); vw->image = imgIds[i]; vw->format = 37; vw->aspect = 1;
+        }
+        U64 rpId, fbId, cbId;
+        auto* srp = createObj<RenderPass>(K_RENDERPASS, rpId);
+        srp->natt = 4; for (U32 i = 0; i < 4; ++i) { srp->formats[i] = 37; srp->loadOps[i] = 1; srp->storeOps[i] = (i == 0 || i == 2) ? 1 : 0; srp->samples[i] = i == 0 ? 4 : 1; }
+        srp->nsub = 2;
+        srp->sub[0].nColor = 1; srp->sub[0].color[0] = 0; srp->sub[0].resolve[0] = 1;     // MSAA 0 -> resolve 1
+        srp->sub[1].nColor = 2; srp->sub[1].color[0] = 2; srp->sub[1].color[1] = 0;        // reuses attachment 0
+        auto* sfb = createObj<Framebuffer>(K_FRAMEBUFFER, fbId);
+        sfb->rp = rpId; sfb->natt = 4; sfb->w = 64; sfb->h = 32; for (U32 i = 0; i < 4; ++i) sfb->views[i] = viewIds[i];
+        auto* scb = createObj<CmdBuf>(K_CMDBUF, cbId);
+        Cmd b; b.kind = CMD_BEGIN_RP; b.a = rpId; b.b = fbId; pushCmd(scb, b);
+        Cmd n; n.kind = CMD_NEXT_SUBPASS; pushCmd(scb, n);
+        Cmd e; e.kind = CMD_END_RP; pushCmd(scb, e);
+        const U64 overflowBefore = vk64BridgeUnsupportedCount("next-subpass-overflow");
+        pushCmd(scb, n);   // past the last subpass: loud, not silently ignored
+        serializeSubmitV2({{scb, cbId}});
+        struct Rec { U32 type, len; std::vector<U8> body; };
+        std::vector<Rec> recs;
+        for (const auto& chunk : g_v2Pending.back().chunks)
+            for (size_t at = 16; at < chunk.size();) {
+                Rec r; memcpy(&r.type, chunk.data() + at, 4); memcpy(&r.len, chunk.data() + at + 4, 4);
+                r.body.assign(chunk.data() + at + 8, chunk.data() + at + 8 + r.len); recs.push_back(r); at += 8 + r.len;
+            }
+        std::vector<U32> seq; for (const auto& r : recs) if (r.type == V2_RP_BEGIN || r.type == V2_RP_END || r.type == V2_IMAGE_COPY) seq.push_back(r.type);
+        // sub0: begin, end, resolve copy (0 -> 1); sub1: begin, end (no resolves)
+        assert((seq == std::vector<U32>{V2_RP_BEGIN, V2_RP_END, V2_IMAGE_COPY, V2_RP_BEGIN, V2_RP_END}));
+        std::vector<const Rec*> begins, copies;
+        for (const auto& r : recs) { if (r.type == V2_RP_BEGIN) begins.push_back(&r); if (r.type == V2_IMAGE_COPY) copies.push_back(&r); }
+        auto u32at = [](const Rec* r, size_t off) { U32 v; memcpy(&v, r->body.data() + off, 4); return v; };
+        auto u64at = [](const Rec* r, size_t off) { U64 v; memcpy(&v, r->body.data() + off, 8); return v; };
+        assert(u32at(begins[0], 24) == 1 && u32at(begins[1], 24) == 2);                  // attachment counts
+        // Attachment 0 is shared: it clears on its first use, is forced to STORE while a later subpass
+        // still needs it, loads (never clears) on re-use, and takes its real store op on the last use.
+        assert(u32at(begins[0], 28) == 37 && u32at(begins[0], 32) == 1 && u32at(begins[0], 36) == 0);
+        assert(u32at(begins[1], 28 + 0 * 20) == 37 && u32at(begins[1], 32 + 0 * 20) == 1 && u32at(begins[1], 36 + 0 * 20) == 1);   // attachment 2: clear, DONT_CARE
+        assert(u32at(begins[1], 32 + 1 * 20) == 0 && u32at(begins[1], 36 + 1 * 20) == 1);                                       // attachment 0: LOAD, real store op
+        assert(u64at(copies[0], 0) == imgIds[0] && u64at(copies[0], 8) == imgIds[1]);
+        assert(u32at(copies[0], 56) == 64 && u32at(copies[0], 60) == 32 && u32at(copies[0], 64) == 1);
+        assert(vk64BridgeUnsupportedCount("next-subpass-overflow") == overflowBefore + 1);
+        g_v2Pending.clear();
+        puts("PASS: render pass subpasses split into passes with resolve copies; extra NextSubpass is loud");
+    }
         puts("PASS: GUARD advertised features are truthful and identical for 32-bit and 64-bit guests");
 
         // GUARD (silent capability use): SPIR-V that declares capabilities or

@@ -366,6 +366,8 @@ enum {
     VK64_fn_vkGetDescriptorSetLayoutSupport = 916, // (device, pCreateInfo*, pSupport*) -> supported, variable count limit
     VK64_fn_vkGetDeviceImageMemoryRequirements = 917, // (device, VkDeviceImageMemoryRequirements*, VkMemoryRequirements2*) -> size from the create info
     VK64_fn_vkCmdSetExtendedDynamicState = 918, // (cmdBuf, which, value) -> core-1.3 / EDS2 dynamic state; which: 2 topology 3 depthTest 4 depthWrite 5 depthOp 6 stencilTest 7 depthBias 8 rasterizerDiscard 9 primitiveRestart 10 stencilOp(packed face|fail<<4|pass<<8|depthFail<<12|cmp<<16) 11 depthBoundsTest
+    VK64_fn_vkCreateRenderPass2 = 919,        // (device, VkRenderPassCreateInfo2*, pAllocator, out VkRenderPass*) -> core 1.2 / KHR_create_renderpass2; the shim maps the KHR alias to the same id
+    VK64_fn_vkCmdNextSubpass = 920,           // (cmdBuf, contents) -> advances the recorded render pass to the next subpass (also the NextSubpass2 aliases)
     VK64_fn__MAX
 };
 
