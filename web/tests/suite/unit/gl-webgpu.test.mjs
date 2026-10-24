@@ -415,6 +415,29 @@ test('getError retains each distinct pending GL error until individually read', 
   } finally { gpu.restore(); }
 });
 
+test('framebuffer attachment APIs reject invalid targets and attachment enums', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    const framebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(0x8d40, framebuffer);
+    const texture = gl.createTexture();
+    gl.bindTexture(0x0de1, texture);
+    gl.texImage2D(0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, new Uint8Array([1, 2, 3, 4]));
+    gl.framebufferTexture2D(0xdead, 0x8ce0, 0x0de1, texture, 0);
+    assert.equal(gl.getError(), 0x0500);
+    assert.equal(framebuffer.attachments.size, 0);
+    gl.framebufferTexture2D(0x8d40, 0xdead, 0x0de1, texture, 0);
+    assert.equal(gl.getError(), 0x0500);
+    assert.equal(framebuffer.attachments.size, 0);
+    gl.framebufferRenderbuffer(0xdead, 0x8ce0, 0x8d41, gl.createRenderbuffer());
+    assert.equal(gl.getError(), 0x0500);
+    assert.equal(framebuffer.attachments.size, 0);
+    await gl._ops;
+  } finally { gpu.restore(); }
+});
+
 test('fixed-function GL_COMBINE defaults to modulating the previous color by each texture', async () => {
   const gpu = createValidationDevice();
   try {

@@ -2478,12 +2478,19 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
   }
   _boundFramebuffer(target) { return this._framebufferForTarget(target); }
   framebufferTexture2D(target, attachment, textarget, texture, level = 0) {
+    if (![GL.FRAMEBUFFER, GL.DRAW_FRAMEBUFFER].includes(target)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (![0x8ce0, 0x8d00, 0x8d20, 0x821a].includes(attachment) && !(attachment >= 0x8ce1 && attachment <= 0x8cff)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (!this._validateTextureTarget(textarget)) return;
+    if (!Number.isInteger(level) || level < 0) { this._recordError(GL.INVALID_VALUE); return; }
     const framebuffer = this._boundFramebuffer(target);
     if (!framebuffer?.attachments) return;
     if (!texture) framebuffer.attachments.delete(attachment);
     else framebuffer.attachments.set(attachment, { type: 'texture', object: this._textureRecord(texture), target: textarget, level });
   }
   framebufferRenderbuffer(target, attachment, renderbufferTarget, renderbuffer) {
+    if (![GL.FRAMEBUFFER, GL.DRAW_FRAMEBUFFER].includes(target)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (![0x8ce0, 0x8d00, 0x8d20, 0x821a].includes(attachment) && !(attachment >= 0x8ce1 && attachment <= 0x8cff)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (renderbufferTarget !== 0x8d41) { this._recordError(GL.INVALID_ENUM); return; }
     const framebuffer = this._boundFramebuffer(target);
     if (!framebuffer?.attachments) return;
     if (!renderbuffer) framebuffer.attachments.delete(attachment);
