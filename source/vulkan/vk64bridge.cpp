@@ -1377,18 +1377,28 @@ U32 fmt_bpp(U32 f) {
         case VK_FORMAT_R8_UNORM: case VK_FORMAT_R8_SNORM: case VK_FORMAT_R8_UINT:
         case VK_FORMAT_R8_SINT: case VK_FORMAT_S8_UINT: return 1;
         case VK_FORMAT_R8G8_UNORM: case VK_FORMAT_R16_UNORM: case VK_FORMAT_R16_SFLOAT:
-        case VK_FORMAT_R5G6B5_UNORM_PACK16: case VK_FORMAT_B5G5R5A1_UNORM_PACK16:
-        case VK_FORMAT_R4G4B4A4_UNORM_PACK16: case VK_FORMAT_D16_UNORM: return 2;
-        case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_SRGB:
+        case VK_FORMAT_R5G6B5_UNORM_PACK16: case VK_FORMAT_B5G6R5_UNORM_PACK16:
+        case VK_FORMAT_B5G5R5A1_UNORM_PACK16: case VK_FORMAT_A1R5G5B5_UNORM_PACK16:
+        case VK_FORMAT_R4G4B4A4_UNORM_PACK16: case VK_FORMAT_B4G4R4A4_UNORM_PACK16:
+        case VK_FORMAT_D16_UNORM: return 2;
+        case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_SNORM: case VK_FORMAT_R8G8B8A8_UINT:
+        case VK_FORMAT_R8G8B8A8_SINT: case VK_FORMAT_R8G8B8A8_SRGB:
         case VK_FORMAT_B8G8R8A8_UNORM: case VK_FORMAT_B8G8R8A8_SRGB:
+        case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
+        case VK_FORMAT_R16G16_UNORM: case VK_FORMAT_R16G16_SFLOAT:
         case VK_FORMAT_R32_SFLOAT: case VK_FORMAT_R32_UINT: case VK_FORMAT_R32_SINT:
+        case VK_FORMAT_X8_D24_UNORM_PACK32:
         case VK_FORMAT_D24_UNORM_S8_UINT: case VK_FORMAT_D32_SFLOAT:
         case VK_FORMAT_B10G11R11_UFLOAT_PACK32: return 4;
-        case VK_FORMAT_R16G16_SFLOAT: return 4;
         case VK_FORMAT_R16G16B16A16_UNORM: case VK_FORMAT_R16G16B16A16_SFLOAT: return 8;
         case VK_FORMAT_R32G32_SFLOAT: return 8;
+        case VK_FORMAT_D32_SFLOAT_S8_UINT: return 8;   // 4 depth + 1 stencil, padded as hosts store it
         case VK_FORMAT_R32G32B32A32_SFLOAT: return 16;
-        default: return 4;
+        default:
+            // Every format v2FormatIsSupportedImage() accepts is listed above (guarded by the native
+            // test); anything else reaching here is a new format added without a size.
+            vk64Unsupported("format-bpp", "no byte size for format; assuming 4 bytes per texel");
+            return 4;
     }
 }
 struct FormatBlock { U32 w, h, bytes; };
@@ -2827,8 +2837,8 @@ static VkFormatFeatureFlags2 v2FormatBufferFeatureFlags2(U32 format) {
     return (VkFormatFeatureFlags2)v2FormatBufferFeatureFlags(format);   // the low 32 bits share their values
 }
 // Byte size of one vertex of a VkFormat the v2 emitter may see. Only the
-// formats DXVK/D3D9 and the probes produce are listed; an unknown format falls
-// back to 16 (conservative: keeps the clamp above the real value).
+// formats in kV2SupportedVertexFormats are listed; any other format is rejected at
+// pipeline creation, and reaching the fallback is loud ("vertex-format-size").
 U32 v2VertexFormatBytes(U32 fmt) {
     switch (fmt) {
         case VK_FORMAT_R32_SFLOAT: case VK_FORMAT_R32_UINT: case VK_FORMAT_R32_SINT: return 4;
@@ -2856,7 +2866,10 @@ U32 v2VertexFormatBytes(U32 fmt) {
         case VK_FORMAT_R8G8B8A8_SRGB: case VK_FORMAT_B8G8R8A8_SRGB:
         case VK_FORMAT_A2B10G10R10_UNORM_PACK32: return 4;
         case VK_FORMAT_R8_UNORM: return 1;
-        default: return 16;
+        default:
+            // kV2SupportedVertexFormats is fully covered above (native test); pipeline creation rejects the rest.
+            vk64Unsupported("vertex-format-size", "no byte size for vertex format; assuming 16 bytes");
+            return 16;
     }
 }
 

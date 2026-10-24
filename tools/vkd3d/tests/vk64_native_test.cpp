@@ -482,6 +482,31 @@ int main() {
         g_v2Pending.clear();
         puts("PASS: extended dynamic state (DYN1 tail, ordered RASTER_STATE records, unknown dynamic state and adjacency/depth-bounds rejected loudly)");
     }
+    {
+        // Every format the bridge accepts for images must have a true texel size: fmt_bpp used to
+        // fall back silently to 4 bytes (wrong for B4G4R4A4, B5G6R5, A1R5G5B5 and D32S8).
+        // Expected sizes come from the Vulkan spec, independent of fmt_bpp's own table.
+        const std::map<U32, U32> spec = {
+            {2, 2}, {3, 2}, {5, 2}, {7, 2}, {8, 2}, {9, 1}, {16, 2}, {37, 4}, {38, 4}, {41, 4}, {43, 4},
+            {44, 4}, {50, 4}, {64, 4}, {70, 2}, {76, 2}, {77, 4}, {83, 4}, {91, 8}, {97, 8}, {98, 4},
+            {99, 4}, {100, 4}, {103, 8}, {109, 16}, {122, 4}, {124, 2}, {125, 4}, {126, 4}, {129, 4}, {130, 8}};
+        const U64 before = vk64BridgeUnsupportedCount("format-bpp");
+        for (U32 f : kV2SupportedTextureFormats) {
+            if (v2FormatIsBC(f)) continue;     // block-compressed sizes come from fmt_block
+            auto it = spec.find(f);
+            assert(it != spec.end());
+            assert(fmt_bpp(f) == it->second);
+        }
+        assert(vk64BridgeUnsupportedCount("format-bpp") == before);
+        assert(fmt_block(131).bytes == 8 && fmt_block(133).bytes == 8 && fmt_block(135).bytes == 16);
+        assert(fmt_bpp(0x7ffffff0u) == 4 && vk64BridgeUnsupportedCount("format-bpp") == before + 1);   // unknown -> loud
+        for (U32 f : kV2SupportedVertexFormats) {
+            const U64 vb = vk64BridgeUnsupportedCount("vertex-format-size");
+            assert(v2VertexFormatBytes(f) > 0 && v2VertexFormatBytes(f) <= 16);
+            assert(vk64BridgeUnsupportedCount("vertex-format-size") == vb);
+        }
+        puts("PASS: every accepted image/vertex format has a real size; unknown formats are loud");
+    }
     // Depth attachment has its own load/store and clear value, rather than
     // borrowing color metadata. It must occupy an explicit depth entry.
     U64 depthImageId; auto* depthImage = createObj<Image>(K_IMAGE, depthImageId);
