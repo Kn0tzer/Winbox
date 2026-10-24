@@ -13,7 +13,7 @@ async function walk(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = resolve(directory, entry.name);
     if (entry.isDirectory()) files.push(...await walk(path));
-    else if (entry.isFile()) files.push(path);
+    else if (entry.isFile() || (entry.isSymbolicLink() && entry.name.endsWith('.mjs'))) files.push(path);
     // Symlinked optional game archives and external files are not source modules.
   }
   return files;
@@ -29,6 +29,11 @@ for (const module of modules) {
     const details = error.stderr?.toString() || error.stdout?.toString() || error.message;
     fail(`syntax error in ${relative(dist, module)}\n${details}`);
   }
+}
+
+for (const path of files.filter(path => /\.(?:mjs|js|html)$/.test(path))) {
+  if ((await readFile(path, 'utf8')).includes('__RUNTIME_VERSION__'))
+    fail(`unsubstituted __RUNTIME_VERSION__ in ${relative(dist, path)}`);
 }
 
 for (const path of [resolve(dist, 'app.mjs'), resolve(dist, 'runtime/index.html')]) {

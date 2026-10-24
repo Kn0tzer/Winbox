@@ -8,19 +8,24 @@ const web = resolve(repo, 'web');
 const build = await readFile(resolve(repo, 'tools/browser/build.mjs'), 'utf8');
 
 function exportedFiles(source) {
-  const names = new Set(['direct-folder.mjs', 'frame-metrics.mjs']);
+  const names = new Set();
   const list = /for\s*\(const name of \[([\s\S]*?)\]\) await copyFile\(resolve\(root, 'web', name\)/.exec(source)?.[1];
   assert.ok(list, 'build.mjs web export file list marker not found');
   for (const [, name] of list.matchAll(/'([^']+)'/g)) names.add(name);
-  names.add('spirvfix.mjs'); // Copied from tools/spirvfix/spirvfix.mjs.
-  return names;
+  for (const match of source.matchAll(/copyFile\(resolve\(root, '[^']+'\), resolve\(out, '([^']+)'(?:, '([^']+)')?\)\)/g))
+    names.add([match[1], match[2]].filter(Boolean).join('/'));
+  const directories = [];
+  for (const match of source.matchAll(/cp\(resolve\(root, 'web\/[^']+'\), resolve\(out, '([^']+)'\), \{ recursive: true \}\)/g))
+    directories.push(match[1] + '/');
+  if (/await stageVendors\(resolve\(out, 'vendor'\)\)/.test(source)) directories.push('vendor/');
+  return { names, directories };
 }
 
 function relativeImports(source) {
   const specifiers = [];
-  const pattern = /(?:\bfrom\s*|\bimport\s*\(|\bimport\s+)['"]([^'"]+)['"]|new\s+URL\(\s*['"]([^'"]+)['"]/g;
+  const pattern = /(?:\bfrom\s*|\bimport\s*\(|\bimport\s+)['"]([^'"]+)['"]|new\s+URL\(\s*['"]([^'"]+)['"]|<script\b[^>]*\bsrc=['"]([^'"]+)['"]/g;
   for (const match of source.matchAll(pattern)) {
-    const specifier = match[1] || match[2];
+    const specifier = match[1] || match[2] || match[3];
     if (specifier.startsWith('.')) specifiers.push(specifier);
   }
   return specifiers;
@@ -29,14 +34,13 @@ function relativeImports(source) {
 function outputPathForSource(sourceFile, specifier) {
   const sourceRelative = relative(web, sourceFile);
   const sourceBase = sourceRelative === 'runtime.html' ? 'runtime/index.html' : sourceRelative;
-  const target = posix.normalize(posix.join(posix.dirname(sourceBase), specifier));
+  const target = posix.normalize(posix.join(posix.dirname(sourceBase), specifier.split(/[?#]/)[0]));
   if (target === '../tools/spirvfix/spirvfix.mjs') return 'spirvfix.mjs';
   return target.replace(/^\.\//, '');
 }
 
-function isExported(path, names) {
-  if (names.has(path)) return true;
-  return ['assets/', 'vendor/', 'runtime/'].some(prefix => path.startsWith(prefix));
+function isExported(path, { names, directories }) {
+  return names.has(path) || directories.some(prefix => path.startsWith(prefix));
 }
 
 test('browser export includes every local import from app, runtime, workers, and web modules', async () => {
@@ -62,8 +66,7 @@ test('browser export includes every local import from app, runtime, workers, and
       try { await stat(sourceTarget); }
       catch { failures.push(`${relative(repo, file)} -> missing source ${specifier}`); continue; }
       if (!isExported(target, copied)) failures.push(`${relative(repo, file)} -> ${specifier} => dist/${target}`);
-      if (sourceTarget.startsWith(web + '/') && /\.(?:mjs|js|html)$/.test(sourceTarget)
-        && !target.startsWith('vendor/')) queue.push(sourceTarget);
+      if (sourceTarget.startsWith(web + '/') && /\.(?:mjs|js|html)$/.test(sourceTarget)) queue.push(sourceTarget);
     }
   }
   assert.deepEqual(failures, [], `local modules omitted from browser export:\n${failures.join('\n')}`);
@@ -79,4 +82,13 @@ test('Caddy isolation header requirements are documented for static hosts', asyn
   assert.match(docs, /Cross-Origin-Opener-Policy.*same-origin/i);
   assert.match(docs, /Cross-Origin-Embedder-Policy.*require-corp/i);
   assert.match(docs, /_headers/);
+});
+
+
+test('export inventory follows copy operations instead of assuming files and directories exist', () => {
+  for (const file of ['direct-folder.mjs', 'frame-metrics.mjs', 'spirvfix.mjs']) {
+    const withoutCopy = build.split('\n').filter(line => !line.includes(`resolve(out, '${file}')`)).join('\n');
+    assert.equal(isExported(file, exportedFiles(withoutCopy)), false, `${file} must require a copy operation`);
+  }
+  assert.equal(isExported('assets/audio-output-worklet.js', exportedFiles(build.replace("await cp(resolve(root, 'web/assets')", "removed(resolve(root, 'web/assets')"))), false);
 });
