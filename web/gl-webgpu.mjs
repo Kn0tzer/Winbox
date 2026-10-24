@@ -2540,13 +2540,13 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       0x8231, 0x8232, 0x8233, 0x8234, 0x8235, 0x8236, 0x8237, 0x8238, 0x8239, 0x823a, 0x823b, 0x823c,
       0x8d8e, 0x8d7c, 0x8d88, 0x8d76, 0x8d82, 0x8d70, 0x906f];
     if (![...depthFormats, ...colorFormats].includes(internalFormat)) { this._recordError(GL.INVALID_ENUM); return false; }
-    if (![0x81a5, 0x81a6, 0x81a7, 0x8cac, 0x8058].includes(internalFormat)) {
+    if (![0x81a5, 0x81a6, 0x81a7, 0x8cac, 0x8058, 0x881a].includes(internalFormat)) {
       this._rejectUnsupported(`renderbuffer internal format 0x${Number(internalFormat).toString(16)}`, GL.INVALID_OPERATION);
       return false;
     }
     buffer.gpu?.destroy(); buffer.resolveTexture?.destroy(); buffer.resolveTexture = null;
     buffer.width = width | 0; buffer.height = height | 0; buffer.internalFormat = internalFormat; buffer.samples = 0; buffer.sampleCount = 1;
-    buffer.format = depthFormats.includes(internalFormat) ? (internalFormat === 0x8cac ? 'depth32float' : 'depth24plus') : 'rgba8unorm';
+    buffer.format = depthFormats.includes(internalFormat) ? (internalFormat === 0x8cac ? 'depth32float' : 'depth24plus') : internalFormat === 0x881a ? 'rgba16float' : 'rgba8unorm';
     buffer.pixels = new Uint8Array(Math.max(0, buffer.width * buffer.height * 4));
     this._enqueue(() => {
       if (!buffer.width || !buffer.height) return;
@@ -2576,7 +2576,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (parameter === 0x8cab) return this._boundRenderbuffer.samples || 0;
     const format = this._boundRenderbuffer.internalFormat;
     const depthBits = format === 0x81a5 ? 16 : format === 0x81a6 ? 24 : format === 0x81a7 ? 32 : format === 0x8cac ? 32 : 0;
-    const channelBits = [0x8058, 0x8056, 0x8057].includes(format) ? 8 : 0;
+    const channelBits = format === 0x881a ? 16 : [0x8058, 0x8056, 0x8057].includes(format) ? 8 : 0;
     if (parameter === 0x8d50 || parameter === 0x8d51 || parameter === 0x8d52) return channelBits;
     if (parameter === 0x8d53) return channelBits;
     if (parameter === 0x8d54) return depthBits;
