@@ -1435,22 +1435,27 @@ static U32 syscall_futex_time64(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_sched_setaffinity(CPU* cpu, U32 eipCount) {    
-    U32 result = 0;
-    SYS_LOG1(SYSCALL_SYSTEM, cpu, "sched_setaffinity: pid=%d cpusetsize=d cpu_set_t=%X result=%d(0x%X) IGNORED\n", ARG1, ARG2, ARG3, result, result);
-    return result;
+    U32 pid = ARG1, size = ARG2, mask = ARG3;
+    if (!cpu->thread || !cpu->thread->process) return -K_ESRCH;
+    if (pid && pid != cpu->thread->id && pid != cpu->thread->process->id) return -K_ESRCH;
+    if (size < 4 || size > 1024) return -K_EINVAL;
+    if (!mask || !cpu->memory->canRead(mask, 4)) return -K_EFAULT;
+    // One virtual CPU is online. Offline bits are ignored like the kernel does;
+    // at least one online CPU must remain selected.
+    if (!(cpu->memory->readd(mask) & 1)) return -K_EINVAL;
+    SYS_LOG1(SYSCALL_SYSTEM, cpu, "sched_setaffinity: pid=%d cpusetsize=%u mask=%X result=0\n", pid, size, mask);
+    return 0;
 }
 
 static U32 syscall_sched_getaffinity(CPU* cpu, U32 eipCount) {    
-    if (bw64RecoverEnabled()) {
-        bw64RecoverLogOnce("syscall.sched_getaffinity", "sched_getaffinity is unsupported; returned ENOSYS");
-        return -K_ENOSYS;
-    }
-#ifdef _DEBUG
-     kwarn("__NR_sched_getaffinity not implemented");
-#endif
-    U32 result = -K_EPERM;
-    SYS_LOG1(SYSCALL_SYSTEM, cpu, "sched_getaffinity: pid=%d cpusetsize=%d mask=%X result=%d(0x%X) IGNORED\n", ARG1, ARG2, ARG3, result, result);
-    return result;
+    U32 pid = ARG1, size = ARG2, mask = ARG3;
+    if (!cpu->thread || !cpu->thread->process) return -K_ESRCH;
+    if (pid && pid != cpu->thread->id && pid != cpu->thread->process->id) return -K_ESRCH;
+    if (size < 4 || size > 1024) return -K_EINVAL;
+    if (!mask || !cpu->memory->canWrite(mask, 4)) return -K_EFAULT;
+    cpu->memory->writed(mask, 1);
+    SYS_LOG1(SYSCALL_SYSTEM, cpu, "sched_getaffinity: pid=%d cpusetsize=%u mask=%X result=4\n", pid, size, mask);
+    return 4;
 }
 
 static U32 syscall_set_thread_area(CPU* cpu, U32 eipCount) {

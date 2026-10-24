@@ -63,6 +63,7 @@ void testFutex64DispatchGuard();
 void testMadvise32Syscall();
 void testGetrandom32Syscall();
 void testMlock32Syscalls();
+void testSchedAffinity32Syscalls();
 #endif
 void testInetDatagramLoopback();
 void testInetStreamLoopback();
@@ -733,6 +734,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testMadvise32Syscall, "Test 32-bit madvise syscall effects"},
     {testGetrandom32Syscall, "Test 32-bit getrandom entropy and validation"},
     {testMlock32Syscalls, "Test 32-bit memory lock syscall ABI"},
+    {testSchedAffinity32Syscalls, "Test 32-bit scheduler affinity ABI"},
     {testSyscall64DispatchGuard, "Test x64 syscall fallback guard"},
     {testFutex64DispatchGuard, "Test x64 futex dispatch guard"},
     {testTimerfdCore, "Test timerfd descriptor and expiration semantics"},
