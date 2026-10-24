@@ -169,6 +169,8 @@ public:
 	void setTextProperty(KThread* thread, XTextProperty* name, Atom property, bool trace = false);
 	int configure(U32 mask, XWindowChanges* changes);
 	int moveResize(S32 x, S32 y, U32 width, U32 height);
+	// position is relative to the parent, as XGetGeometry reports it
+	void getPlacement(S32& x, S32& y, U32& borderWidth) { x = left; y = top; borderWidth = border_width; }
 	// XClearArea: a zero width or height runs to the edge of the window; exposures sends Expose for the cleared area
 	int clearArea(KThread* thread, S32 x, S32 y, U32 width, U32 height, bool exposures);
 

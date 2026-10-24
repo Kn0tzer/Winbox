@@ -33,7 +33,7 @@ Ranked by severity if reached. "Reached" means the guest calls the path. This sc
 | Mode switch (XRandR) | `source/x11/x11common.cpp:2709-2789` (17 kpanics on `x11_XRR*`) | high | Any call to one of these aborts the emulator. Games that read or change the display mode through XRandR stop. | OPEN (work item 1) |
 | Pointer grab options | `x11common.cpp:506,510,514` (kpanic on `owner_events`, `GrabModeSync`, `cursor`); `source/x11/xserver.cpp:1052` (ungrab with no active grab returns `GrabSuccess`; TODO says no spec use case was found) | high | A grab with those arguments aborts. An ungrab with no grab reports success, which hides a client error. | OPEN (work item 2) |
 | Relative mouse / pointer lock | `source/x11/xserver.cpp:937` (TODO: "trial and error with vkQuake") | high | Mouse-look in FPS games depends on relative motion. The code has no spec basis for it. Whether real games hit it is not verified. | OPEN (work item 2) |
-| Core drawing entry points | `x11common.cpp:246,452,1205,1681,1719,1723,1846,1878,1958,1962,1966,2260` (kpanic on `QueryTree`, `FreeFont`, `GetGeometry`, `GetPixel`, `SubImage`, `AddPixel`, `CopyPlane`, `SetDashes`, `SetArcMode`, `FillArc`, `DrawArc`, `SetFillStyle`) | high if reached | Each of these Xlib calls aborts the emulator. Arcs and dashed lines are common in game UIs. Whether the guest calls them is not verified. `ClearArea`, `DrawLines`, `FillRectangles`, `DrawPoint` and `FillPolygon` now draw (see the drawing-core and handler commits). | OPEN (work item 3) |
+| Core drawing entry points | `x11common.cpp:246,1707,1745,1749,1872,1882,1904,1984,1988,1992,2286` (kpanic on `QueryTree`, `GetPixel`, `SubImage`, `AddPixel`, `CopyPlane`, `CreateGC` with a valuemask, `SetDashes`, `SetArcMode`, `FillArc`, `DrawArc`, `SetFillStyle`) | high if reached | Each of these Xlib calls aborts the emulator. Arcs and dashed lines are common in game UIs. Whether the guest calls them is not verified. `ClearArea`, `DrawLines`, `FillRectangles`, `DrawPoint` and `FillPolygon` now draw (see the drawing-core and handler commits). `FreeFont` and `GetGeometry` now succeed (see Fixes). `XDrawString` is not in this list: text runs on the 64-bit wire path (`source/x11wire/xwireconnection.cpp`), not the legacy hostcall path. | OPEN (work item 3) |
 | Dropped pixel write | `x11common.cpp:1688` (`x11_PutPixel`) | high | `XPutPixel` now writes the pixel into the guest XImage for 8, 16, 24 and 32 bpp. Sub-byte depths and a non-zero xoffset are logged once and not written. | FIXED (test `x11-putpixel-writes.test.mjs`) |
 | Fullscreen and window state (EWMH) | `source/x11/xwindow.cpp:610` (`_NET_WM_STATE` toggle kpanic); `:1032` (`CWSibling` kpanic) | high | A `_NET_WM_STATE` toggle or a sibling stacking request aborts the emulator. | OPEN (work item 5) |
 | Clipping | `source/x11/xdrawable.cpp` (`copyImageData`, `copy`, `plotPixel`, `clipAllows`) | high | Clip rectangles are honoured by fills, lines, image puts and copies. A `clip_mask` pixmap is not applied; it is logged once, not silent. | PARTLY FIXED: rectangles FIXED (tests `x11-copy-paths.test.mjs`, `x11-drawable-raster.test.mjs`); `clip_mask` OPEN (work item 6) |
@@ -109,6 +109,7 @@ Ranked by severity if reached, then by how likely a real game is to reach the pa
 
 - **`source/io/fsvirtualnode.cpp:86-89`** (`FsVirtualNode::removeDir`): a guest `rmdir` of a virtual directory aborted the emulator. It now logs the attempt and returns `-K_EPERM`. Virtual directories are generated, so the guest cannot remove one, and `EPERM` is the errno for an operation the node does not permit. This is a choice, not a copy of a host result; the host was not probed. Regression: `web/tests/suite/unit/fs-virtual-removedir.test.mjs`, which compiles the real function body against stub `kpanic` and `klog` and checks the return value, the log count, and that no panic is reached. The test fails on the original code and passes with the fix. The register entry drops from 2 (medium) to 1 (low, `setTimes`).
 - **`source/x11/x11common.cpp:1688`** (`x11_PutPixel`): `XPutPixel` edits the image in client memory, so the handler reads the guest XImage header and writes the pixel bytes at `data + bytes_per_line * y + x * bytes`. It writes 8, 16, 24 and 32 bpp, most significant byte first for `MSBFirst`. A pixel outside the image is ignored and the call returns 0. Sub-byte depths and a non-zero `xoffset` are logged once per process and not written. The return value of 1 for a written pixel is taken from libX11's convention as remembered, not checked against a host libX11 here. Regression: `web/tests/suite/unit/x11-putpixel-writes.test.mjs`, which compiles the real body against a stub guest memory and checks the bytes for each depth and byte order. It replaces `x11-putpixel-logged.test.mjs`, which asserted the drop. The test fails on the original code.
+- **`source/x11/x11common.cpp` `x11_GetGeometry` and `x11_FreeFont`**: `XGetGeometry` aborted the emulator. It now writes the root, the position in the parent, the border, the size and the depth to the guest pointers, and returns 1. A pixmap reports position and border as 0. An unknown drawable returns `BadDrawable` and writes nothing. `XFreeFont` aborted too; the legacy path never loads a font, so it now returns `Success`. Regression: `web/tests/suite/unit/x11-getgeometry.test.mjs` and `web/tests/suite/unit/x11-freefont.test.mjs`, which compile the real bodies against stubs and check the results. Both fail on the original code.
 - **`source/x11/xdrawable.cpp` copy paths** (`copyImageData`, `copy`): both ignored the GC clip, applied only GXcopy and, for 32-bit, GXxor, and wrote a negative destination before the buffer. `copy` also corrupted a copy inside one drawable when the destination was below the source. Both now cut the copy to the drawable, honour the clip rectangles and every GX function for 32-bit, and read each source row before a later row overwrites it. `putImage` no longer logs a function it honours. A `clip_mask` pixmap is logged once. Regression: `web/tests/suite/unit/x11-copy-paths.test.mjs`, which compiles the real functions against a stub guest memory and checks each case. It fails on the original code. Its clip-mask case fails at load there because its slice marker is new, so that case is not checked on the original code by its own assertion.
 
 ## Register
@@ -136,7 +137,7 @@ Machine-readable. `tools/known-gaps-audit.mjs --check` reads this block. Counts 
   "source/ui/mainui.cpp": { "count": 2, "severity": "low", "area": "ui", "gap": "TODO: quit does not check a failed save" },
   "source/ui/utils/readIcons.cpp": { "count": 1, "severity": "low", "area": "ui", "gap": "one icon format not shown" },
   "source/util/bstring.cpp": { "count": 2, "severity": "low", "area": "util", "gap": "TODO: copy on substring (performance); BString::BString invariant" },
-  "source/x11/x11common.cpp": { "count": 78, "severity": "high", "area": "x11", "gap": "XRandR, XIM/IC, XShm, remaining drawing calls (arcs, dashes, GetPixel, SubImage, CopyPlane, SetFillStyle), XSendEvent and keyboard text abort; XGrabPointer owner_events and GrabModeSync logged, not honoured" },
+  "source/x11/x11common.cpp": { "count": 76, "severity": "high", "area": "x11", "gap": "XRandR, XIM/IC, XShm, remaining drawing calls (arcs, dashes, GetPixel, SubImage, CopyPlane, SetFillStyle), XSendEvent and keyboard text abort; XGrabPointer owner_events and GrabModeSync logged, not honoured" },
   "source/x11/xdrawable.cpp": { "count": 1, "severity": "medium", "area": "x11", "gap": "clip_mask pixmap logged once, not applied; sub-byte and 8-bit drawing and copies logged, not drawn" },
   "source/x11/xserver.cpp": { "count": 1, "severity": "high", "area": "x11", "gap": "relative mouse for the legacy path is not driven (wire path does it)" },
   "source/x11/xwindow.cpp": { "count": 4, "severity": "high", "area": "x11", "gap": "_NET_WM_STATE toggle and CWSibling abort; two TODOs" },
@@ -398,88 +399,86 @@ _Generated by `node tools/known-gaps-audit.mjs --write-hits`; do not edit by han
 | --- | --- | --- |
 | 259 | `kpanic(` | kpanic("shouldn't signal a thread that is not waiting"); |
 
-### `source/x11/x11common.cpp` (78)
+### `source/x11/x11common.cpp` (76)
 
 | Line | Match | Text |
 | --- | --- | --- |
 | 246 | `kpanic(` | kpanic("x11_QueryTree"); |
-| 452 | `kpanic(` | kpanic("x11_FreeFont"); |
-| 713 | `TODO` | // :TODO: properly marshal |
-| 737 | `kpanic(` | kpanic("XSendEvent w=PointerWindow not implemented"); |
-| 740 | `kpanic(` | kpanic("XSendEvent w=InputFocus not implemented"); |
-| 748 | `TODO` | // :TODO: properly marshal |
-| 775 | `kpanic(` | kpanic("XSendEvent propagate not implemented"); |
-| 797 | `kpanic(` | kpanic("x11_LookupString status_in_out was not null"); |
-| 826 | `kpanic(` | kpanic("x11_MbLookupString"); |
-| 867 | `kpanic(` | kpanic("x11_KbTranslateKeysym extra_rtrn not implemented"); |
-| 960 | `kpanic(` | kpanic("x11_RefreshKeyboardMapping"); |
-| 1205 | `kpanic(` | kpanic("x11_GetGeometry"); |
-| 1301 | `kpanic(` | //kpanic("x11_FreeColorMap"); |
-| 1454 | `not implemented` | kwarn("x11_AllocColor COLOR_WRITE not implemented"); |
-| 1681 | `kpanic(` | kpanic("x11_GetPixel"); |
-| 1703 | `not supported` | klog("x11_PutPixel not handled: XPutPixel with bits per pixel or xoffset not supported"); |
-| 1719 | `kpanic(` | kpanic("x11_SubImage"); |
-| 1723 | `kpanic(` | kpanic("x11_AddPixel"); |
-| 1846 | `kpanic(` | kpanic("x11_CopyPlane"); |
-| 1856 | `kpanic(` | kpanic("x11_CreateGC valuemask not implemented"); // winex11 doesn't use this |
-| 1878 | `kpanic(` | kpanic("x11_SetDashes"); |
-| 1958 | `kpanic(` | kpanic("x11_SetArcMode"); |
-| 1962 | `kpanic(` | kpanic("x11_FillArc"); |
-| 1966 | `kpanic(` | kpanic("x11_DrawArc"); |
-| 2260 | `kpanic(` | kpanic("x11_SetFillStyle"); |
-| 2506 | `kpanic(` | kpanic("x11_SetWMProperties not implemented"); |
-| 2512 | `kpanic(` | kpanic("x11_VaCreateNestedList"); |
-| 2516 | `kpanic(` | kpanic("x11_UnsetICFocus"); |
-| 2520 | `kpanic(` | kpanic("x11_SetICFocus"); |
-| 2524 | `kpanic(` | kpanic("x11_DestroyIC"); |
-| 2528 | `kpanic(` | kpanic("x11_SetICValues"); |
-| 2532 | `kpanic(` | kpanic("x11_MbResetIC"); |
-| 2537 | `TODO` | // :TODO: |
-| 2547 | `kpanic(` | kpanic("x11_CloseIM"); |
-| 2552 | `kpanic(` | kpanic("x11_SetIMValues"); |
-| 2556 | `kpanic(` | kpanic("x11_GetIMValues"); |
-| 2560 | `kpanic(` | kpanic("x11_DisplayOfIM"); |
-| 2564 | `kpanic(` | kpanic("x11_UnregisterIMInstantiateCallback"); |
-| 2573 | `kpanic(` | kpanic("x11_FreeStringList"); |
-| 2594 | `kpanic(` | kpanic("x11_CreateIC"); |
-| 2638 | `kpanic(` | kpanic("x11_DisplayName"); |
-| 2642 | `kpanic(` | kpanic("x11_GetDefault"); |
-| 2646 | `kpanic(` | kpanic("x11_GetWindowAttributes"); |
-| 2650 | `kpanic(` | //kpanic("x11_IconifyWindow"); |
-| 2654 | `kpanic(` | kpanic("x11_InternAtom"); |
-| 2659 | `kpanic(` | kpanic("x11_LocaleOfIM"); |
-| 2663 | `kpanic(` | kpanic("x11_MatchVisualInfo"); |
-| 2684 | `kpanic(` | kpanic("x11_ShapeCombineMask"); |
-| 2688 | `kpanic(` | kpanic("x11_ShapeCombineRectangles"); |
-| 2692 | `kpanic(` | kpanic("x11_ShapeOffsetShape"); |
-| 2696 | `kpanic(` | kpanic("x11_ShmAttach"); |
-| 2701 | `kpanic(` | kpanic("x11_ShmCreateImage"); |
-| 2705 | `kpanic(` | kpanic("x11_ShmDetach"); |
-| 2709 | `kpanic(` | kpanic("x11_ShmPutImage"); |
-| 2713 | `kpanic(` | kpanic("x11_WindowEvent"); |
-| 2797 | `TODO` | cpu->memory->writed(ARG3, 1); // :TODO: maybe figure out 1.4? |
-| 2811 | `kpanic(` | //kpanic("x11_XRRSetScreenConfig"); |
-| 2843 | `kpanic(` | kpanic("x11_XRRFreeCrtcInfo"); |
-| 2848 | `kpanic(` | kpanic("x11_XRRFreeOutputInfo"); |
-| 2853 | `kpanic(` | kpanic("x11_XRRFreeScreenResources"); |
-| 2858 | `kpanic(` | kpanic("x11_XRRGetCrtcInfo"); |
-| 2863 | `kpanic(` | kpanic("x11_XRRGetOutputInfo"); |
-| 2868 | `kpanic(` | kpanic("x11_XRRGetOutputProperty"); |
-| 2873 | `kpanic(` | kpanic("x11_XRRGetScreenResources"); |
-| 2878 | `kpanic(` | kpanic("x11_XRRGetScreenResourcesCurrent"); |
-| 2883 | `kpanic(` | kpanic("x11_XRRGetScreenSizeRange"); |
-| 2888 | `kpanic(` | kpanic("x11_XRRSetCrtcConfig"); |
-| 2893 | `kpanic(` | kpanic("x11_XRRSetScreenSize"); |
-| 2898 | `kpanic(` | kpanic("x11_XRRSelectInput"); |
-| 2903 | `kpanic(` | kpanic("x11_XRRGetOutputPrimary"); |
-| 2908 | `kpanic(` | kpanic("x11_XRRGetProviderResources"); |
-| 2913 | `kpanic(` | kpanic("x11_XRRFreeProviderResources"); |
-| 2918 | `kpanic(` | kpanic("x11_XRRGetProviderInfo"); |
-| 2923 | `kpanic(` | kpanic("x11_XRRFreeProviderInfo"); |
-| 2983 | `kpanic(` | kpanic("x11_XISelectEvents num_masks was expected to be 1"); |
-| 2988 | `kpanic(` | kpanic("x11_XISelectEvents currently expecting masks in the first 32-bits"); |
-| 3078 | `kpanic(` | kpanic("x11_CursorImageLoadCursor"); |
-| 3120 | `not supported` | klog("x11_CursorImagesLoadCursor animated cursors not supported, will use first frame"); |
+| 716 | `TODO` | // :TODO: properly marshal |
+| 740 | `kpanic(` | kpanic("XSendEvent w=PointerWindow not implemented"); |
+| 743 | `kpanic(` | kpanic("XSendEvent w=InputFocus not implemented"); |
+| 751 | `TODO` | // :TODO: properly marshal |
+| 778 | `kpanic(` | kpanic("XSendEvent propagate not implemented"); |
+| 800 | `kpanic(` | kpanic("x11_LookupString status_in_out was not null"); |
+| 829 | `kpanic(` | kpanic("x11_MbLookupString"); |
+| 870 | `kpanic(` | kpanic("x11_KbTranslateKeysym extra_rtrn not implemented"); |
+| 963 | `kpanic(` | kpanic("x11_RefreshKeyboardMapping"); |
+| 1327 | `kpanic(` | //kpanic("x11_FreeColorMap"); |
+| 1480 | `not implemented` | kwarn("x11_AllocColor COLOR_WRITE not implemented"); |
+| 1707 | `kpanic(` | kpanic("x11_GetPixel"); |
+| 1729 | `not supported` | klog("x11_PutPixel not handled: XPutPixel with bits per pixel or xoffset not supported"); |
+| 1745 | `kpanic(` | kpanic("x11_SubImage"); |
+| 1749 | `kpanic(` | kpanic("x11_AddPixel"); |
+| 1872 | `kpanic(` | kpanic("x11_CopyPlane"); |
+| 1882 | `kpanic(` | kpanic("x11_CreateGC valuemask not implemented"); // winex11 doesn't use this |
+| 1904 | `kpanic(` | kpanic("x11_SetDashes"); |
+| 1984 | `kpanic(` | kpanic("x11_SetArcMode"); |
+| 1988 | `kpanic(` | kpanic("x11_FillArc"); |
+| 1992 | `kpanic(` | kpanic("x11_DrawArc"); |
+| 2286 | `kpanic(` | kpanic("x11_SetFillStyle"); |
+| 2532 | `kpanic(` | kpanic("x11_SetWMProperties not implemented"); |
+| 2538 | `kpanic(` | kpanic("x11_VaCreateNestedList"); |
+| 2542 | `kpanic(` | kpanic("x11_UnsetICFocus"); |
+| 2546 | `kpanic(` | kpanic("x11_SetICFocus"); |
+| 2550 | `kpanic(` | kpanic("x11_DestroyIC"); |
+| 2554 | `kpanic(` | kpanic("x11_SetICValues"); |
+| 2558 | `kpanic(` | kpanic("x11_MbResetIC"); |
+| 2563 | `TODO` | // :TODO: |
+| 2573 | `kpanic(` | kpanic("x11_CloseIM"); |
+| 2578 | `kpanic(` | kpanic("x11_SetIMValues"); |
+| 2582 | `kpanic(` | kpanic("x11_GetIMValues"); |
+| 2586 | `kpanic(` | kpanic("x11_DisplayOfIM"); |
+| 2590 | `kpanic(` | kpanic("x11_UnregisterIMInstantiateCallback"); |
+| 2599 | `kpanic(` | kpanic("x11_FreeStringList"); |
+| 2620 | `kpanic(` | kpanic("x11_CreateIC"); |
+| 2664 | `kpanic(` | kpanic("x11_DisplayName"); |
+| 2668 | `kpanic(` | kpanic("x11_GetDefault"); |
+| 2672 | `kpanic(` | kpanic("x11_GetWindowAttributes"); |
+| 2676 | `kpanic(` | //kpanic("x11_IconifyWindow"); |
+| 2680 | `kpanic(` | kpanic("x11_InternAtom"); |
+| 2685 | `kpanic(` | kpanic("x11_LocaleOfIM"); |
+| 2689 | `kpanic(` | kpanic("x11_MatchVisualInfo"); |
+| 2710 | `kpanic(` | kpanic("x11_ShapeCombineMask"); |
+| 2714 | `kpanic(` | kpanic("x11_ShapeCombineRectangles"); |
+| 2718 | `kpanic(` | kpanic("x11_ShapeOffsetShape"); |
+| 2722 | `kpanic(` | kpanic("x11_ShmAttach"); |
+| 2727 | `kpanic(` | kpanic("x11_ShmCreateImage"); |
+| 2731 | `kpanic(` | kpanic("x11_ShmDetach"); |
+| 2735 | `kpanic(` | kpanic("x11_ShmPutImage"); |
+| 2739 | `kpanic(` | kpanic("x11_WindowEvent"); |
+| 2823 | `TODO` | cpu->memory->writed(ARG3, 1); // :TODO: maybe figure out 1.4? |
+| 2837 | `kpanic(` | //kpanic("x11_XRRSetScreenConfig"); |
+| 2869 | `kpanic(` | kpanic("x11_XRRFreeCrtcInfo"); |
+| 2874 | `kpanic(` | kpanic("x11_XRRFreeOutputInfo"); |
+| 2879 | `kpanic(` | kpanic("x11_XRRFreeScreenResources"); |
+| 2884 | `kpanic(` | kpanic("x11_XRRGetCrtcInfo"); |
+| 2889 | `kpanic(` | kpanic("x11_XRRGetOutputInfo"); |
+| 2894 | `kpanic(` | kpanic("x11_XRRGetOutputProperty"); |
+| 2899 | `kpanic(` | kpanic("x11_XRRGetScreenResources"); |
+| 2904 | `kpanic(` | kpanic("x11_XRRGetScreenResourcesCurrent"); |
+| 2909 | `kpanic(` | kpanic("x11_XRRGetScreenSizeRange"); |
+| 2914 | `kpanic(` | kpanic("x11_XRRSetCrtcConfig"); |
+| 2919 | `kpanic(` | kpanic("x11_XRRSetScreenSize"); |
+| 2924 | `kpanic(` | kpanic("x11_XRRSelectInput"); |
+| 2929 | `kpanic(` | kpanic("x11_XRRGetOutputPrimary"); |
+| 2934 | `kpanic(` | kpanic("x11_XRRGetProviderResources"); |
+| 2939 | `kpanic(` | kpanic("x11_XRRFreeProviderResources"); |
+| 2944 | `kpanic(` | kpanic("x11_XRRGetProviderInfo"); |
+| 2949 | `kpanic(` | kpanic("x11_XRRFreeProviderInfo"); |
+| 3009 | `kpanic(` | kpanic("x11_XISelectEvents num_masks was expected to be 1"); |
+| 3014 | `kpanic(` | kpanic("x11_XISelectEvents currently expecting masks in the first 32-bits"); |
+| 3104 | `kpanic(` | kpanic("x11_CursorImageLoadCursor"); |
+| 3146 | `not supported` | klog("x11_CursorImagesLoadCursor animated cursors not supported, will use first frame"); |
 
 ### `source/x11/xdrawable.cpp` (1)
 

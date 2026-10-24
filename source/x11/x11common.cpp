@@ -448,8 +448,11 @@ static void x11_GetInputFocus(CPU* cpu) {
     }
 }
 
+// int XFreeFont(Display* display, XFontStruct* font_struct)
+//
+// The legacy path never loads a font, so there is no server font to close. The font struct belongs to the caller's Xlib and is not freed here.
 static void x11_FreeFont(CPU* cpu) {
-    kpanic("x11_FreeFont");
+    EAX = Success;
 }
 
 // int XMoveResizeWindow(Display* display, Window w, int x, int y, unsigned int width, unsigned int height)
@@ -1201,8 +1204,31 @@ static void x11_CheckTypedWindowEvent(CPU* cpu) {
     }
 }
 
+// Status XGetGeometry(Display* display, Drawable d, Window* root_return, int* x_return, int* y_return, unsigned int* width_return, unsigned int* height_return, unsigned int* border_width_return, unsigned int* depth_return)
+//
+// A pixmap has no position or border, so both are reported as 0. A window reports its position in its parent.
 static void x11_GetGeometry(CPU* cpu) {
-    kpanic("x11_GetGeometry");
+    KMemory* memory = cpu->memory;
+    XServer* server = XServer::getServer();
+    XDrawablePtr d = server->getDrawable(ARG2);
+    if (!d) {
+        EAX = BadDrawable;
+        return;
+    }
+    S32 x = 0;
+    S32 y = 0;
+    U32 border = 0;
+    if (d->isWindow) {
+        std::static_pointer_cast<XWindow>(d)->getPlacement(x, y, border);
+    }
+    memory->writed(ARG3, server->getRoot()->id);
+    memory->writed(ARG4, x);
+    memory->writed(ARG5, y);
+    memory->writed(ARG6, d->width());
+    memory->writed(ARG7, d->height());
+    memory->writed(ARG8, border);
+    memory->writed(ARG9, d->getDepth());
+    EAX = 1;
 }
 
 // Status XInternAtoms(Display* dpy, char** names, int count, Bool onlyIfExists, Atom* atoms_return)
