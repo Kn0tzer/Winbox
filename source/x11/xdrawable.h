@@ -33,6 +33,11 @@ public:
 	int fillRectangle(KThread* thread, const std::shared_ptr<XGC>& gc, S32 x, S32 y, U32 width, U32 height);
 	int drawRectangle(KThread* thread, const std::shared_ptr<XGC>& gc, S32 x, S32 y, U32 width, U32 height);
 	int drawLine(KThread* thread, const std::shared_ptr<XGC>& gc, S32 x1, S32 y1, S32 x2, S32 y2);
+	// points are flat x,y pairs; relative makes each point after the first an offset from the previous one
+	int drawLines(KThread* thread, const std::shared_ptr<XGC>& gc, const std::vector<S32>& points, bool relative);
+	// rects are flat x,y,width,height quadruples
+	int fillRectangles(KThread* thread, const std::shared_ptr<XGC>& gc, const std::vector<S32>& rects);
+	int fillPolygon(KThread* thread, const std::shared_ptr<XGC>& gc, const std::vector<S32>& points, bool relative);
 	int copy(KThread* thread, const std::shared_ptr<XGC>& gc, const std::shared_ptr<XDrawable>& src, S32 srcX, S32 srcY, U32 width, U32 height, S32 dstX, S32 dstY);
 
 	int copyImageData(KThread* thread, const std::shared_ptr<XGC>& gc, U32 data, U32 bytes_per_line, S32 bits_per_pixel, S32 src_x, S32 src_y, S32 dst_x, S32 dst_y, U32 width, U32 height);

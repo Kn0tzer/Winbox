@@ -314,6 +314,12 @@ int XWindow::setAttributes(const DisplayDataPtr& data, XSetWindowAttributes* att
 	if (valueMask & CWColormap) {
 		colorMap = XServer::getServer()->getColorMap(attributes->colormap);
 	}
+	if (valueMask & CWBackPixmap) {
+		hasBackgroundPixel = false;
+	}
+	if (valueMask & CWBackPixel) {
+		hasBackgroundPixel = true;
+	}
 	this->attributes.copyWithMask(attributes, valueMask);
 	return Success;
 }
@@ -615,7 +621,7 @@ int XWindow::handleNetWmStatePropertyEvent(const XEvent& event) {
 	return Success;
 }
 
-void XWindow::exposeNofity(const DisplayDataPtr& data, S32 x, S32 y, S32 width, S32 height, S32 count) {
+void XWindow::sendExpose(const DisplayDataPtr& data, S32 x, S32 y, S32 width, S32 height, S32 count) {
 	XEvent event = {};
 	event.xexpose.type = Expose;
 	event.xexpose.display = data->displayAddress;
@@ -646,6 +652,31 @@ void XWindow::exposeNofity(const DisplayDataPtr& data, S32 x, S32 y, S32 width, 
 		log += height;
 		klog(log.c_str());
 	}
+}
+
+// XClearArea paints the background pixel over the area. A window with no pixel background keeps its contents, as in X.
+int XWindow::clearArea(KThread* thread, S32 x, S32 y, U32 width, U32 height, bool exposures) {
+	const S32 clearWidth = width ? (S32)width : (S32)this->width() - x;
+	const S32 clearHeight = height ? (S32)height : (S32)this->height() - y;
+	if (clearWidth > 0 && clearHeight > 0) {
+		if (hasBackgroundPixel) {
+			XGCPtr gc = std::make_shared<XGC>(shared_from_this());
+			gc->values.foreground = attributes.background_pixel;
+			fillRectangle(thread, gc, x, y, (U32)clearWidth, (U32)clearHeight);
+		} else if (attributes.background_pixmap != None) {
+			kwarn_fmt("XWindow::clearArea background pixmap not handled");
+		}
+	}
+	if (exposures && isMapped) {
+		XServer::getServer()->iterateEventMask(id, ExposureMask, [this, x, y, clearWidth, clearHeight](const DisplayDataPtr& data) {
+			sendExpose(data, x, y, clearWidth, clearHeight, 0);
+			});
+	}
+	return Success;
+}
+
+void XWindow::exposeNofity(const DisplayDataPtr& data, S32 x, S32 y, S32 width, S32 height, S32 count) {
+	sendExpose(data, x, y, width, height, count);
 	iterateMappedChildrenBackToFront([](const XWindowPtr& child) {
 		if (child->c_class == InputOutput) {
 			XServer::getServer()->iterateEventMask(child->id, ExposureMask, [=](const DisplayDataPtr& data) {

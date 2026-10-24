@@ -89,8 +89,16 @@ static void x11_InitThread(CPU* cpu) {
     EAX = 1;
 }
 
+// int XClearArea(Display* display, Window w, int x, int y, unsigned int width, unsigned int height, Bool exposures)
 static void x11_ClearArea(CPU* cpu) {
-    kpanic("x11_ClearArea");
+    KThread* thread = cpu->thread;
+    XServer* server = XServer::getServer();
+    XWindowPtr window = server->getWindow(ARG2);
+    if (!window) {
+        EAX = BadWindow;
+        return;
+    }
+    EAX = window->clearArea(thread, (S32)ARG3, (S32)ARG4, ARG5, ARG6, ARG7 != 0);
 }
 
 // int XSync(Display* display, Bool discard)
@@ -1881,8 +1889,44 @@ static void x11_DrawLine(CPU* cpu) {
     EAX = drawable->drawLine(thread, gc, ARG4, ARG5, ARG6, ARG7);
 }
 
+// Reads count XPoint records (x, y as signed 16-bit values) from guest memory
+static std::vector<S32> readPoints(KMemory* memory, U32 address, U32 count) {
+    std::vector<S32> values;
+    for (U32 i = 0; i < count * 2; i++) {
+        values.push_back((S16)memory->readw(address + i * 2));
+    }
+    return values;
+}
+
+// Reads count XRectangle records (x, y signed; width, height unsigned) from guest memory
+static std::vector<S32> readRectangles(KMemory* memory, U32 address, U32 count) {
+    std::vector<S32> values;
+    for (U32 i = 0; i < count * 4; i++) {
+        U16 field = memory->readw(address + i * 2);
+        values.push_back(i % 4 >= 2 ? (S32)field : (S32)(S16)field);
+    }
+    return values;
+}
+
+// int XDrawLines(Display* display, Drawable d, GC gc, XPoint* points, int npoints, int mode)
 static void x11_DrawLines(CPU* cpu) {
-    //kpanic("x11_DrawLines");
+    KThread* thread = cpu->thread;
+    XServer* server = XServer::getServer();
+    XDrawablePtr drawable = server->getDrawable(ARG2);
+    if (!drawable) {
+        EAX = BadDrawable;
+        return;
+    }
+    XGCPtr gc = server->getGC(ARG3);
+    if (!gc) {
+        EAX = BadGC;
+        return;
+    }
+    if ((S32)ARG5 < 0) {
+        EAX = BadValue;
+        return;
+    }
+    EAX = drawable->drawLines(thread, gc, readPoints(cpu->memory, ARG4, ARG5), ARG6 == CoordModePrevious);
 }
 
 static void x11_SetArcMode(CPU* cpu) {
@@ -1969,16 +2013,64 @@ static void x11_FillRectangle(CPU* cpu) {
     EAX = drawable->fillRectangle(thread, gc, ARG4, ARG5, ARG6, ARG7);
 }
 
+// int XFillRectangles(Display* display, Drawable d, GC gc, XRectangle* rectangles, int nrectangles)
 static void x11_FillRectangles(CPU* cpu) {
-    kpanic("x11_FillRectangles");
+    KThread* thread = cpu->thread;
+    XServer* server = XServer::getServer();
+    XDrawablePtr drawable = server->getDrawable(ARG2);
+    if (!drawable) {
+        EAX = BadDrawable;
+        return;
+    }
+    XGCPtr gc = server->getGC(ARG3);
+    if (!gc) {
+        EAX = BadGC;
+        return;
+    }
+    if ((S32)ARG5 < 0) {
+        EAX = BadValue;
+        return;
+    }
+    EAX = drawable->fillRectangles(thread, gc, readRectangles(cpu->memory, ARG4, ARG5));
 }
 
+// int XDrawPoint(Display* display, Drawable d, GC gc, int x, int y)
 static void x11_DrawPoint(CPU* cpu) {
-    kpanic("x11_DrawPoint");
+    KThread* thread = cpu->thread;
+    XServer* server = XServer::getServer();
+    XDrawablePtr drawable = server->getDrawable(ARG2);
+    if (!drawable) {
+        EAX = BadDrawable;
+        return;
+    }
+    XGCPtr gc = server->getGC(ARG3);
+    if (!gc) {
+        EAX = BadGC;
+        return;
+    }
+    EAX = drawable->drawLine(thread, gc, (S32)ARG4, (S32)ARG5, (S32)ARG4, (S32)ARG5);
 }
 
+// int XFillPolygon(Display* display, Drawable d, GC gc, XPoint* points, int npoints, int shape, int mode)
+// shape is not read: the scan conversion handles convex, non-convex and complex polygons alike
 static void x11_FillPolygon(CPU* cpu) {
-    kpanic("x11_FillPolygon");
+    KThread* thread = cpu->thread;
+    XServer* server = XServer::getServer();
+    XDrawablePtr drawable = server->getDrawable(ARG2);
+    if (!drawable) {
+        EAX = BadDrawable;
+        return;
+    }
+    XGCPtr gc = server->getGC(ARG3);
+    if (!gc) {
+        EAX = BadGC;
+        return;
+    }
+    if ((S32)ARG5 < 0) {
+        EAX = BadValue;
+        return;
+    }
+    EAX = drawable->fillPolygon(thread, gc, readPoints(cpu->memory, ARG4, ARG5), ARG7 == CoordModePrevious);
 }
 
 // int XChangeGC(Display* display, GC gc, unsigned long valuemask, XGCValues* values)

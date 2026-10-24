@@ -19,6 +19,8 @@
 #include "boxedwine.h"
 #include "x11.h"
 #include "xserver.h"
+#include <algorithm>
+#include <cmath>
 
 XDrawable::XDrawable(U32 width, U32 height, U32 depth, const VisualPtr& visual, bool isWindow) : id(XServer::getNextId()), isWindow(isWindow), depth(depth), visual(visual), w(width), h(height) {
 	data = nullptr;
@@ -281,6 +283,94 @@ int XDrawable::fillRectangle(KThread* thread, const std::shared_ptr<XGC>& gc, S3
 		}
 	}
 	setDirty();
+	return Success;
+}
+
+// Points are flat x,y pairs. With relative set, every point after the first is an offset from the point before it
+static void toAbsolute(std::vector<S32>& xy, bool relative) {
+	if (!relative) {
+		return;
+	}
+	for (size_t i = 2; i + 1 < xy.size(); i += 2) {
+		xy[i] += xy[i - 2];
+		xy[i + 1] += xy[i - 1];
+	}
+}
+
+int XDrawable::drawLines(KThread* thread, const std::shared_ptr<XGC>& gc, const std::vector<S32>& points, bool relative) {
+	std::vector<S32> xy = points;
+	toAbsolute(xy, relative);
+	for (size_t i = 0; i + 3 < xy.size(); i += 2) {
+		drawLine(thread, gc, xy[i], xy[i + 1], xy[i + 2], xy[i + 3]);
+	}
+	return Success;
+}
+
+// Rectangles are flat x,y,width,height quadruples
+int XDrawable::fillRectangles(KThread* thread, const std::shared_ptr<XGC>& gc, const std::vector<S32>& rects) {
+	for (size_t i = 0; i + 3 < rects.size(); i += 4) {
+		fillRectangle(thread, gc, rects[i], rects[i + 1], (U32)rects[i + 2], (U32)rects[i + 3]);
+	}
+	return Success;
+}
+
+// Scan-converts the polygon one pixel row at a time. A pixel is inside when its centre is between two edge crossings
+// that the GC fill rule (EvenOddRule or WindingRule) puts inside. Each inside run is a one-pixel-high fillRectangle, so the
+// GC function, clip and tile apply the same way as for rectangles.
+int XDrawable::fillPolygon(KThread* thread, const std::shared_ptr<XGC>& gc, const std::vector<S32>& points, bool relative) {
+	if (visual->bits_per_rgb != 32) {
+		kwarn_fmt("XDrawable::fillPolygon only %d-bit not handled", visual->bits_per_rgb);
+		return Success;
+	}
+	std::vector<S32> xy = points;
+	toAbsolute(xy, relative);
+	const size_t vertices = xy.size() / 2;
+	if (vertices < 3) {
+		return Success; // fewer than three vertices enclose no area
+	}
+	S32 minY = xy[1];
+	S32 maxY = xy[1];
+	for (size_t k = 1; k < vertices; k++) {
+		minY = std::min(minY, xy[2 * k + 1]);
+		maxY = std::max(maxY, xy[2 * k + 1]);
+	}
+	minY = std::max(minY, 0);
+	maxY = std::min(maxY, (S32)h - 1);
+	const bool winding = gc->values.fill_rule == WindingRule;
+
+	struct Crossing {
+		double x;
+		S32 dir;
+	};
+	std::vector<Crossing> crossings;
+	for (S32 y = minY; y <= maxY; y++) {
+		crossings.clear();
+		const double sampleY = y + 0.5;
+		for (size_t k = 0; k < vertices; k++) {
+			const size_t j = (k + 1) % vertices;
+			const S32 x0 = xy[2 * k], y0 = xy[2 * k + 1], x1 = xy[2 * j], y1 = xy[2 * j + 1];
+			// an edge covers scan line y when y is in [min, max); horizontal edges never cross a scan line
+			if (y0 == y1 || y < std::min(y0, y1) || y >= std::max(y0, y1)) {
+				continue;
+			}
+			crossings.push_back({x0 + (sampleY - y0) * double(x1 - x0) / double(y1 - y0), y1 > y0 ? 1 : -1});
+		}
+		std::sort(crossings.begin(), crossings.end(), [](const Crossing& a, const Crossing& b) { return a.x < b.x; });
+		S32 wind = 0;
+		for (size_t c = 0; c + 1 < crossings.size(); c++) {
+			wind += crossings[c].dir;
+			// after crossing c there are c+1 crossings: even-odd is inside for an odd count, winding for a non-zero sum
+			const bool inside = winding ? wind != 0 : (c % 2) == 0;
+			if (!inside) {
+				continue;
+			}
+			const S32 start = (S32)std::ceil(crossings[c].x - 0.5);
+			const S32 end = (S32)std::ceil(crossings[c + 1].x - 0.5);
+			if (end > start) {
+				fillRectangle(thread, gc, start, y, (U32)(end - start), 1);
+			}
+		}
+	}
 	return Success;
 }
 

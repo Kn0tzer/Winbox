@@ -169,6 +169,8 @@ public:
 	void setTextProperty(KThread* thread, XTextProperty* name, Atom property, bool trace = false);
 	int configure(U32 mask, XWindowChanges* changes);
 	int moveResize(S32 x, S32 y, U32 width, U32 height);
+	// XClearArea: a zero width or height runs to the edge of the window; exposures sends Expose for the cleared area
+	int clearArea(KThread* thread, S32 x, S32 y, U32 width, U32 height, bool exposures);
 
 	XPropertyPtr getProperty(U32 atom);
 	void setProperty(U32 atom, U32 type, U32 format, U32 length, const U8* value, bool trace = false);
@@ -225,6 +227,7 @@ private:
 	S32 top;	
 	U32 border_width;
 	XSetWindowAttributes attributes;
+	bool hasBackgroundPixel = false; // CWBackPixel was given; a window with no pixel background keeps its contents on ClearArea
 	bool isMapped = false;	
 	bool isFullScreen = false;
 	std::weak_ptr<XWindow> transientCached;
@@ -238,6 +241,7 @@ private:
 	std::vector<XWindowPtr> zchildren;
 	std::vector<XWindowPtr> transientChildren;
 
+	void sendExpose(const DisplayDataPtr& data, S32 x, S32 y, S32 width, S32 height, S32 count);
 	void exposeNofity(const DisplayDataPtr& data, S32 x, S32 y, S32 width, S32 height, S32 count);
 	void configureNotify();
 	void focusNotify(const DisplayDataPtr& data, bool isIn, S32 mode, S32 detail);

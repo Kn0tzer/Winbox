@@ -34,6 +34,8 @@ test('drawable draws lines, fills and tiles with the GC', () => {
 #include <cstring>
 #include <memory>
 #include <vector>
+#include <algorithm>
+#include <cmath>
 typedef int32_t S32;
 typedef uint32_t U32;
 typedef uint8_t U8;
@@ -58,6 +60,8 @@ enum { Success = 0, BadMatch = 8 };
 #define GXset 0xf
 #define FillSolid 0
 #define FillTiled 1
+#define EvenOddRule 0
+#define WindingRule 1
 static int warnings = 0;
 #define kwarn_fmt(...) (++warnings, 0)
 #define BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(m) (void)0
@@ -68,6 +72,7 @@ using VisualPtr = std::shared_ptr<XVisual>;
 struct XGCValues {
     S32 function = GXcopy; U32 foreground = 0; S32 fill_style = FillSolid; U32 tile = 0;
     S32 ts_x_origin = 0, ts_y_origin = 0, clip_x_origin = 0, clip_y_origin = 0;
+    S32 fill_rule = EvenOddRule;
 };
 class XDrawable;
 using XDrawablePtr = std::shared_ptr<XDrawable>;
@@ -86,6 +91,9 @@ public:
     ~XDrawable() { delete[] data; }
     void plotPixel(const std::shared_ptr<XGC>& gc, S32 x, S32 y, U32 color);
     int drawLine(KThread* thread, const std::shared_ptr<XGC>& gc, S32 x1, S32 y1, S32 x2, S32 y2);
+    int drawLines(KThread* thread, const std::shared_ptr<XGC>& gc, const std::vector<S32>& points, bool relative);
+    int fillRectangles(KThread* thread, const std::shared_ptr<XGC>& gc, const std::vector<S32>& rects);
+    int fillPolygon(KThread* thread, const std::shared_ptr<XGC>& gc, const std::vector<S32>& points, bool relative);
     int fillRectangle(KThread* thread, const std::shared_ptr<XGC>& gc, S32 x, S32 y, U32 width, U32 height);
     void setDirty() {}
     U32 pixel(U32 x, U32 y) const { U32 v; std::memcpy(&v, data + bytes_per_line * y + x * 4, 4); return v; }
@@ -185,6 +193,77 @@ int main() {
         auto gc = std::make_shared<XGC>();
         d.drawLine(&t, gc, 0, 0, 3, 3);
         assert(warnings >= 1);
+    }
+    // relative line list: each point is an offset from the one before, so (0,0) (+3,0) (+0,+3) is an L to (3,3)
+    {
+        XDrawable d(8, 8, v32);
+        auto gc = std::make_shared<XGC>();
+        gc->values.foreground = 5;
+        d.drawLines(&t, gc, {0, 0, 3, 0, 0, 3}, true);
+        assert(d.pixel(0, 0) == 5 && d.pixel(3, 0) == 5 && d.pixel(3, 3) == 5);
+        assert(d.pixel(2, 3) == 0 && d.pixel(3, 4) == 0);
+    }
+    // absolute line list draws the same L
+    {
+        XDrawable d(8, 8, v32);
+        auto gc = std::make_shared<XGC>();
+        gc->values.foreground = 5;
+        d.drawLines(&t, gc, {0, 0, 3, 0, 3, 3}, false);
+        assert(d.pixel(3, 0) == 5 && d.pixel(3, 3) == 5 && d.pixel(2, 3) == 0);
+    }
+    // rectangle list fills each rectangle and nothing between them
+    {
+        XDrawable d(8, 8, v32);
+        auto gc = std::make_shared<XGC>();
+        gc->values.foreground = 3;
+        d.fillRectangles(&t, gc, {1, 1, 2, 2, 5, 5, 1, 1});
+        assert(d.pixel(1, 1) == 3 && d.pixel(2, 2) == 3 && d.pixel(5, 5) == 3);
+        assert(d.pixel(3, 3) == 0 && d.pixel(4, 4) == 0 && d.pixel(6, 6) == 0);
+    }
+    // a triangle fills the pixels whose centres are inside it: x + y <= 4 for vertices (0,0) (6,0) (0,6)
+    {
+        XDrawable d(8, 8, v32);
+        auto gc = std::make_shared<XGC>();
+        gc->values.foreground = 4;
+        d.fillPolygon(&t, gc, {0, 0, 6, 0, 0, 6}, false);
+        for (U32 y = 0; y < 8; y++)
+            for (U32 x = 0; x < 8; x++)
+                assert(d.pixel(x, y) == (x + y <= 4 ? 4u : 0u));
+    }
+    // the same triangle written relative to the previous point
+    {
+        XDrawable d(8, 8, v32);
+        auto gc = std::make_shared<XGC>();
+        gc->values.foreground = 4;
+        d.fillPolygon(&t, gc, {0, 0, 6, 0, -6, 6}, true);
+        for (U32 y = 0; y < 8; y++)
+            for (U32 x = 0; x < 8; x++)
+                assert(d.pixel(x, y) == (x + y <= 4 ? 4u : 0u));
+    }
+    // a contour that goes round the square twice: winding fills it, even-odd leaves it empty
+    {
+        const std::vector<S32> twice = {0, 0, 6, 0, 6, 6, 0, 6, 0, 0, 6, 0, 6, 6, 0, 6};
+        XDrawable winding(8, 8, v32);
+        auto gcW = std::make_shared<XGC>();
+        gcW->values.foreground = 6;
+        gcW->values.fill_rule = WindingRule;
+        winding.fillPolygon(&t, gcW, twice, false);
+        assert(winding.pixel(0, 0) == 6 && winding.pixel(3, 3) == 6 && winding.pixel(5, 5) == 6);
+        assert(winding.pixel(6, 0) == 0 && winding.pixel(3, 6) == 0);
+
+        XDrawable evenOdd(8, 8, v32);
+        auto gcE = std::make_shared<XGC>();
+        gcE->values.foreground = 6;
+        evenOdd.fillPolygon(&t, gcE, twice, false);
+        assert(evenOdd.pixel(3, 3) == 0 && evenOdd.pixel(0, 0) == 0);
+    }
+    // a polygon with fewer than three vertices encloses nothing
+    {
+        XDrawable d(8, 8, v32);
+        auto gc = std::make_shared<XGC>();
+        gc->values.foreground = 9;
+        d.fillPolygon(&t, gc, {0, 0, 6, 6}, false);
+        assert(d.pixel(3, 3) == 0);
     }
     return 0;
 }
