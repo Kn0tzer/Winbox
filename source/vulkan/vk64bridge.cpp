@@ -4046,7 +4046,14 @@ U64 createSurface() {
     return id;
 }
 
-
+// The unimplemented-entry-point log: once per name (a guest that polls an absent
+// function every frame must not flood the log). vk64Unsupported() still counts
+// every call. Callers hold g_vkMutex.
+static void logAskedFor(const char* abi, const std::string& name) {
+    static std::set<std::string> seen;
+    if (!seen.insert(std::string(abi) + ":" + name).second) return;
+    klog_fmt("%s: asked-for (unimplemented): %s", abi, name.c_str());
+}
 
 } // namespace
 
@@ -4074,7 +4081,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // actually asks for.
         VK64Args a0 = {};
         if (argsAddr && g_mem) g_mem->memcpyFromGuest(&a0, argsAddr, sizeof(a0));
-        klog_fmt("vk64: asked-for (unimplemented): %s", guestStr(a0.a[0]).c_str());
+        logAskedFor("vk64", guestStr(a0.a[0]));
         vk64Unsupported(("fn:" + guestStr(a0.a[0])).c_str(), "entry point not implemented; returned VK_ERROR_FEATURE_NOT_PRESENT");
         return (U64)(int64_t)VK_ERROR_FEATURE_NOT_PRESENT;
     }
@@ -7282,7 +7289,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     if (fnId == VK64_fn_unimplemented) {
         VK32Args a0 = {};
         if (argsAddr && g_mem32) g_mem32->memcpyFromGuest(&a0, argsAddr, sizeof(a0));
-        klog_fmt("vk32: asked-for (unimplemented): %s", guestStr32((U32)a0.a[0]).c_str());
+        logAskedFor("vk32", guestStr32((U32)a0.a[0]));
         vk64Unsupported(("fn32:" + guestStr32((U32)a0.a[0])).c_str(), "entry point not implemented; returned VK_ERROR_FEATURE_NOT_PRESENT");
         return (U64)(int64_t)VK_ERROR_FEATURE_NOT_PRESENT;
     }
