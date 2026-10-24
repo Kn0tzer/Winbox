@@ -2405,6 +2405,7 @@ static U64 bufferSliceId(U64 buffer, U64 offset) {
 static const U32 kV2SupportedTextureFormats[] = {
     2, 3, 5, 7, 8, 9, 16, 37, 38, 41, 43, 44, 50, 64, 70, 76, 77, 83,
     91, 97, 98, 99, 100, 103, 109, 122, 124, 125, 126, 129, 130,
+    131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146
 };
 static const U32 kV2SupportedVertexFormats[] = {
     16, 17, 18, 19, 20, 21, 23, 24, 25, 26, 27, 28, 37, 38, 39, 40, 41, 42,
@@ -3329,8 +3330,7 @@ void fillCoreFeatures(VkPhysicalDeviceFeatures* f) {
     f->drawIndirectFirstInstance = VK_TRUE; /* preserved in each expanded draw */
     f->depthBiasClamp = VK_TRUE;        /* replayed with WebGPU depthBiasClamp */
     f->depthClamp = VK_TRUE;            /* page requests depth-clip-control when available */
-    /* BC requires adapter negotiation before the guest capability can be true.
-     * The bridge currently has no page-to-guest feature negotiation. */
+    f->textureCompressionBC = VK_TRUE;  /* needs browser texture-compression-bc */
 }
 
 // ---------------------------------------------------------------------------
@@ -4464,11 +4464,6 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCreateImage: {
         VkImageCreateInfo ci = {};
         if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
-        if (!v2FormatIn(ci.format, kV2SupportedTextureFormats)) {
-            vk64Unsupported("image-format", "format is not supported by the WebGPU replay tier");
-            wr64(args.a[3], 0);
-            return VK_ERROR_FORMAT_NOT_SUPPORTED;
-        }
         U64 id = 0;
         Image* im = createObj<Image>(K_IMAGE, id);
         im->w = ci.extent.width; im->h = ci.extent.height; im->d = ci.extent.depth;
@@ -7484,11 +7479,6 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCreateImage: {
         vk32abi::VkImageCreateInfo ci = {};
         if (!readStruct32((U32)args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
-        if (!v2FormatIn(ci.format, kV2SupportedTextureFormats)) {
-            vk64Unsupported("image-format", "format is not supported by the WebGPU replay tier");
-            wr64_32((U32)args.a[3], 0);
-            return VK_ERROR_FORMAT_NOT_SUPPORTED;
-        }
         U64 id = 0;
         Image* im = createObj32<Image>(K_IMAGE, id);
         im->w = ci.extent.width; im->h = ci.extent.height; im->d = ci.extent.depth;
