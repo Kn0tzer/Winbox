@@ -16,3 +16,8 @@ test('Q3 probe disables the ARB vertex-program VBO path and starts q3dm1', () =>
   assert.ok(args.some((arg, index) => arg === '+map' && args[index + 1] === 'q3dm1'),
     'Q3 probe must start the in-game scene');
 });
+
+test('GL game probe launches the checked-in dist entry page', () => {
+  assert.match(probe, /result\.launchUrl = `\$\{base\}\/dist\/index\.html\?\$\{query\}`/);
+  assert.doesNotMatch(probe, /\/dist\/runtime\/index\.html/);
+});
