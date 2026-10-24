@@ -3438,6 +3438,17 @@ static void x11_XIQueryVersion(CPU* cpu) {
     EAX = Success;
 }
 
+static bool x11DecodeXIEventMask(const U8* bytes, U32 byteCount, U64& value) {
+    value = 0;
+    if (byteCount > sizeof(value)) {
+        for (U32 i = sizeof(value); i < byteCount; i++) if (bytes[i]) return false;
+        byteCount = sizeof(value);
+    }
+    for (U32 i = 0; i < byteCount; i++) value |= U64(bytes[i]) << (i * 8);
+    const U64 supportedBits = (U64(1) << (XI_LASTEVENT + 1)) - 1;
+    return (value & ~supportedBits) == 0;
+}
+
 // int XISelectEvents(Display* dpy, Window win, XIEventMask* masks, int num_masks)
 static void x11_XISelectEvents(CPU* cpu) {
     KMemory* memory = cpu->memory;
@@ -3450,19 +3461,28 @@ static void x11_XISelectEvents(CPU* cpu) {
         return;
     }
     if (ARG4 != 1) {
-        // wine only passes 1
-        kpanic("x11_XISelectEvents num_masks was expected to be 1");
+        kwarn_fmt("XISelectEvents expected one event mask, received %u", ARG4);
+        EAX = BadValue;
+        return;
     }
     XIEventMask mask;
     mask.read(memory, ARG3);
-    if (mask.mask_len > 4 && memory->readb(mask.maskAddress + 4)) {
-        kpanic("x11_XISelectEvents currently expecting masks in the first 32-bits");
+    if (mask.mask_len < 0 || mask.mask_len > 64) {
+        kwarn_fmt("XISelectEvents invalid mask length %d", mask.mask_len);
+        EAX = BadValue;
+        return;
     }
-    U32 value = 0;
+    U64 value = 0;
     if (mask.mask_len == 0) {
         EAX = data->setInput2Mask(ARG2, 0);
     } else {
-        value = memory->readd(mask.maskAddress);
+        std::vector<U8> bytes((U32)mask.mask_len);
+        for (U32 i = 0; i < bytes.size(); i++) bytes[i] = memory->readb(mask.maskAddress + i);
+        if (!x11DecodeXIEventMask(bytes.data(), bytes.size(), value)) {
+            kwarn_fmt("XISelectEvents mask contains bits outside the XI2 event range");
+            EAX = BadValue;
+            return;
+        }
         EAX = data->setInput2Mask(ARG2, value);
     }
     if (server->trace) {
@@ -3545,8 +3565,17 @@ void x11_CursorImageDestroy(CPU* cpu) {
 
 // Cursor XcursorImageLoadCursor(Display* dpy, const XcursorImage* image)
 void x11_CursorImageLoadCursor(CPU* cpu) {
-    // not actually used in wine even though it gets the function pointer
-    kpanic("x11_CursorImageLoadCursor");
+    KThread* thread = cpu->thread;
+    KMemory* memory = cpu->memory;
+    XServer* server = XServer::getServer();
+    XcursorImage image;
+    image.read(memory, ARG2);
+    if (!image.width || !image.height || !image.pixelsAddress) { EAX = 0; return; }
+    XCursorPtr cursor = std::make_shared<XCursor>(0);
+    server->addCursor(cursor);
+    KNativeSystem::getScreen()->buildCursor(thread, cursor, image.pixelsAddress,
+        image.width, image.height, image.xhot, image.yhot);
+    EAX = cursor->id;
 }
 
 // XcursorImages* XcursorImagesCreate(int size) 
