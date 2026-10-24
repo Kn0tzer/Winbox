@@ -508,12 +508,12 @@ static const char* vk64SpirvCapabilityName(U32 cap) {
         default: return nullptr;
     }
 }
-static void vk64AuditSpirv(const std::vector<U8>& code) {
-    if (code.size() < 20 || (code.size() & 3)) { vk64Unsupported("spirv-malformed", "size not a multiple of 4 or no header"); return; }
+static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
+    if (code.size() < 20 || (code.size() & 3)) { vk64Unsupported("spirv-malformed", "invalid shader module; VK_ERROR_INVALID_SHADER_NV"); return VK_ERROR_INVALID_SHADER_NV; }
     const size_t nw = code.size() / 4;
     std::vector<U32> w(nw);
     memcpy(w.data(), code.data(), code.size());
-    if (w[0] != 0x07230203u) { vk64Unsupported("spirv-malformed", "bad magic"); return; }
+    if (w[0] != 0x07230203u) { vk64Unsupported("spirv-malformed", "invalid shader module; VK_ERROR_INVALID_SHADER_NV"); return VK_ERROR_INVALID_SHADER_NV; }
     struct Ptr { U32 sc, pointee; };
     std::unordered_map<U32, Ptr> ptrs;
     std::unordered_map<U32, U32> arrays;             // array / runtime-array id -> element type
@@ -523,10 +523,11 @@ static void vk64AuditSpirv(const std::vector<U8>& code) {
     struct Var { U32 id, type, sc; };
     std::vector<Var> vars;
     bool storageImage = false, compute = false;
+    bool unsupported = false;
     std::set<U32> caps;
     for (size_t i = 5; i < nw;) {
         const U32 op = w[i] & 0xFFFF, len = w[i] >> 16;
-        if (!len || i + len > nw) { vk64Unsupported("spirv-malformed", "truncated instruction"); return; }
+        if (!len || i + len > nw) { vk64Unsupported("spirv-malformed", "invalid shader module; VK_ERROR_INVALID_SHADER_NV"); return VK_ERROR_INVALID_SHADER_NV; }
         switch (op) {
             case 17: if (len >= 2) caps.insert(w[i + 1]); break;                       // OpCapability
             case 15: if (len >= 2 && w[i + 1] == 5) compute = true; break;             // OpEntryPoint GLCompute
@@ -546,10 +547,16 @@ static void vk64AuditSpirv(const std::vector<U8>& code) {
     }
     for (U32 c : caps) {
         const char* name = vk64SpirvCapabilityName(c);
-        if (name) vk64Unsupported(("spirv-capability:" + std::string(name)).c_str(), "shader declares a capability the WebGPU tier lacks");
+        if (name) {
+            vk64Unsupported(("spirv-capability:" + std::string(name)).c_str(), "shader declares a capability the WebGPU tier lacks; VK_ERROR_FEATURE_NOT_PRESENT");
+            unsupported = true;
+        } else if (c != 0 && c != 1 && c != 5301) { // Matrix, Shader, and standalone ShaderNonUniform are harmless here.
+            vk64Unsupported(("spirv-capability-unknown:" + std::to_string(c)).c_str(), "unknown capability; VK_ERROR_FEATURE_NOT_PRESENT");
+            unsupported = true;
+        }
     }
-    if (compute) vk64Unsupported("spirv-compute-entry", "compute entry point; no compute path in the V2 protocol");
-    if (storageImage) vk64Unsupported("spirv-storage-image", "storage images are bound blank by the page tier");
+    if (compute) { vk64Unsupported("spirv-compute-entry", "compute entry point; no compute path in the V2 protocol; VK_ERROR_FEATURE_NOT_PRESENT"); unsupported = true; }
+    if (storageImage) { vk64Unsupported("spirv-storage-image", "storage images are not implemented; VK_ERROR_FEATURE_NOT_PRESENT"); unsupported = true; }
     for (const Var& v : vars) {
         auto pt = ptrs.find(v.type);
         if (pt == ptrs.end()) continue;
@@ -562,8 +569,10 @@ static void vk64AuditSpirv(const std::vector<U8>& code) {
         auto n = structMembers.find(t);
         if (m != memberNonWritable.end() && n != structMembers.end() && m->second.size() >= n->second) continue;
         vk64Unsupported("spirv-storage-buffer-write", "shader may store to a storage buffer; the page tier has no GPU->guest readback");
+        unsupported = true;
         break;
     }
+    return unsupported ? VK_ERROR_FEATURE_NOT_PRESENT : VK_SUCCESS;
 }
 
 // ---------------------------------------------------------------------------
@@ -4754,7 +4763,12 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         m->code.resize((size_t)ci.codeSize);
         g_mem->memcpyFromGuest(m->code.data(), ci.pCode, ci.codeSize);
         m->hash = blob_hash(m->code.data(), m->code.size());
-        vk64AuditSpirv(m->code);
+        VkResult auditResult = vk64AuditSpirv(m->code);
+        if (auditResult != VK_SUCCESS) {
+            dropObj(id);
+            wr64(args.a[3], 0);
+            return auditResult;
+        }
         wr64(args.a[3], id);
         klog_fmt("vk64: vkCreateShaderModule %llu bytes (hash %016llx)",
                  (unsigned long long)ci.codeSize, (unsigned long long)m->hash);
@@ -7541,13 +7555,19 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCreateShaderModule: {
         vk32abi::VkShaderModuleCreateInfo ci = {};
         if (!readStruct32((U32)args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (!ci.codeSize || !ci.pCode) return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
         ShaderModule* m = createObj32<ShaderModule>(K_SHADER, id);
         if (ci.codeSize && ci.pCode) {
             m->code.resize(ci.codeSize);
             g_mem32->memcpyFromGuest(m->code.data(), ci.pCode, ci.codeSize);
             m->hash = blob_hash(m->code.data(), m->code.size());
-            vk64AuditSpirv(m->code);
+            VkResult auditResult = vk64AuditSpirv(m->code);
+            if (auditResult != VK_SUCCESS) {
+                dropObj(id);
+                wr64_32((U32)args.a[3], 0);
+                return auditResult;
+            }
         }
         wr64_32((U32)args.a[3], id);
         return VK_SUCCESS;
