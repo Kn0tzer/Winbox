@@ -273,6 +273,7 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkFreeDescriptorSets, "vkFreeDescriptorSets") \
     X(VK64_fn_vkCmdPushDescriptorSetKHR, "vkCmdPushDescriptorSetKHR") \
     X(VK64_fn_vkCmdPushDescriptorSetWithTemplateKHR, "vkCmdPushDescriptorSetWithTemplateKHR") \
+    X(VK64_fn_vkGetDeviceImageMemoryRequirements,   "vkGetDeviceImageMemoryRequirements") \
     X(VK64_fn_vkGetDescriptorSetLayoutSupport, "vkGetDescriptorSetLayoutSupport") \
     X(VK64_fn_vkCmdCopyQueryPoolResults, "vkCmdCopyQueryPoolResults") \
     X(VK64_fn_vkCmdDraw,                            "vkCmdDraw")           \
@@ -1340,6 +1341,30 @@ U64 imageLayerBytes(const Image& im) {
     return bytes;
 }
 U64 imageDataBytes(const Image& im) { return imageLayerBytes(im) * std::max(1U, im.layers); }
+// Fills a guest VkMemoryRequirements2 (64-bit layout) and every chained
+// VkMemoryDedicatedRequirements so allocator decisions never read stale bytes.
+void writeRequirements64(U64 out, U64 size) {
+    VkMemoryRequirements2 out2 = {};
+    g_mem->memcpyFromGuest(&out2, out, sizeof(out2));
+    out2.memoryRequirements.size = (size + 255) & ~(U64)255;
+    out2.memoryRequirements.alignment = 256;
+    out2.memoryRequirements.memoryTypeBits = 0xF;
+    g_mem->memcpyToGuest(out, &out2, sizeof(out2));
+    for (U64 pn = out2.pNext, n = 0; pn && n < 64; ++n) {
+        U32 st = 0;
+        g_mem->memcpyFromGuest(&st, pn, sizeof(st));
+        if (st == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS) {
+            VkMemoryDedicatedRequirements dr = {};
+            g_mem->memcpyFromGuest(&dr, pn, sizeof(dr));
+            dr.prefersDedicatedAllocation = 0;
+            dr.requiresDedicatedAllocation = 0;
+            g_mem->memcpyToGuest(pn, &dr, sizeof(dr));
+        }
+        U64 nxt = 0;
+        g_mem->memcpyFromGuest(&nxt, pn + 8, sizeof(nxt));
+        pn = nxt;
+    }
+}
 U64 imageSubresourceOffset(const Image& im, U32 mip, U32 layer) {
     U64 off = (U64)layer * imageLayerBytes(im);
     for (U32 m = 0; m < mip; ++m) off += imageMipBytes(im, m);
@@ -4381,30 +4406,23 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // bridge (e.g., via winevulkan paths that bypass our vkCreateBuffer).
         // Return sensible defaults rather than failing, so the allocator
         // can proceed. The size is advisory; DXVK validates it.
-        U64 bufSize = (b && b->size) ? b->size : 65536;
-        VkMemoryRequirements2 out2 = {};
-        g_mem->memcpyFromGuest(&out2, args.a[2], sizeof(out2));
-        out2.memoryRequirements.size = (bufSize + 255) & ~(U64)255;
-        out2.memoryRequirements.alignment = 256;
-        out2.memoryRequirements.memoryTypeBits = 0xF;
-        g_mem->memcpyToGuest(args.a[2], &out2, sizeof(out2));
-        // Fill chained VkMemoryDedicatedRequirements in place.
-        U64 pn = out2.pNext;
-        while (pn) {
-            U32 st = 0;
-            g_mem->memcpyFromGuest(&st, pn, sizeof(st));
-            if (st == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS) {
-                VkMemoryDedicatedRequirements dr = {};
-                g_mem->memcpyFromGuest(&dr, pn, sizeof(dr));
-                dr.prefersDedicatedAllocation = 0;
-                dr.requiresDedicatedAllocation = 0;
-                g_mem->memcpyToGuest(pn, &dr, sizeof(dr));
-                break;
-            }
-            U64 nxt = 0;
-            g_mem->memcpyFromGuest(&nxt, pn + 8, sizeof(nxt));
-            pn = nxt;
-        }
+        writeRequirements64(args.a[2], (b && b->size) ? b->size : 65536);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetDeviceImageMemoryRequirements: {
+        // (dev, VkDeviceImageMemoryRequirements*, VkMemoryRequirements2*) - core 1.3.
+        // sType@0 pNext@8 pCreateInfo@16; no image object exists, so size it from the create info.
+        if (!args.a[1] || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        VkImageCreateInfo ci = {};
+        const U64 pCreateInfo = rd64(args.a[1] + 16);
+        if (!pCreateInfo) return VK_ERROR_INITIALIZATION_FAILED;
+        g_mem->memcpyFromGuest(&ci, pCreateInfo, sizeof(ci));
+        Image tmp;
+        tmp.w = ci.extent.width; tmp.h = ci.extent.height; tmp.d = ci.extent.depth;
+        tmp.layers = ci.arrayLayers ? ci.arrayLayers : 1;
+        tmp.mips = ci.mipLevels ? ci.mipLevels : 1;
+        tmp.format = ci.format;
+        writeRequirements64(args.a[2], imageDataBytes(tmp));
         return VK_SUCCESS;
     }
     case VK64_fn_vkGetDeviceBufferMemoryRequirements: {
@@ -4420,28 +4438,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             g_mem->memcpyFromGuest(&ci, devInfo.pCreateInfo, sizeof(ci));
             createInfoSize = ci.size;
         }
-        VkMemoryRequirements2 out2 = {};
-        g_mem->memcpyFromGuest(&out2, args.a[2], sizeof(out2));
-        out2.memoryRequirements.size = createInfoSize ? ((createInfoSize + 255) & ~(U64)255) : 256;
-        out2.memoryRequirements.alignment = 256;
-        out2.memoryRequirements.memoryTypeBits = 0xF;
-        g_mem->memcpyToGuest(args.a[2], &out2, sizeof(out2));
-        U64 pn = out2.pNext;
-        while (pn) {
-            U32 st = 0;
-            g_mem->memcpyFromGuest(&st, pn, sizeof(st));
-            if (st == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS) {
-                VkMemoryDedicatedRequirements dr = {};
-                g_mem->memcpyFromGuest(&dr, pn, sizeof(dr));
-                dr.prefersDedicatedAllocation = 0;
-                dr.requiresDedicatedAllocation = 0;
-                g_mem->memcpyToGuest(pn, &dr, sizeof(dr));
-                break;
-            }
-            U64 nxt = 0;
-            g_mem->memcpyFromGuest(&nxt, pn + 8, sizeof(nxt));
-            pn = nxt;
-        }
+        writeRequirements64(args.a[2], createInfoSize ? createInfoSize : 256);
         return VK_SUCCESS;
     }
     case VK64_fn_vkGetImageMemoryRequirements: {
@@ -7615,6 +7612,20 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         if (pCreateInfo) createSize = rd64_32(pCreateInfo + 12); // VkBufferCreateInfo.size@12 (i386 guest, u64 4-aligned)
         U64 size = createSize ? ((createSize + 255) & ~(U64)255) : 256;
         vk32_writeRequirements((U32)args.a[2], size);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetDeviceImageMemoryRequirements: {
+        // 32-bit: VkDeviceImageMemoryRequirements (sType@0,pNext@4,pCreateInfo@8,planeAspect@12).
+        if (!args.a[1] || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 pCreateInfo = rd32_32((U32)args.a[1] + 8);
+        vk32abi::VkImageCreateInfo ci = {};
+        if (!pCreateInfo || !readStruct32(pCreateInfo, ci)) return VK_ERROR_INITIALIZATION_FAILED;
+        Image tmp;
+        tmp.w = ci.extent.width; tmp.h = ci.extent.height; tmp.d = ci.extent.depth;
+        tmp.layers = ci.arrayLayers ? ci.arrayLayers : 1;
+        tmp.mips = ci.mipLevels ? ci.mipLevels : 1;
+        tmp.format = ci.format;
+        vk32_writeRequirements((U32)args.a[2], imageDataBytes(tmp));
         return VK_SUCCESS;
     }
     case VK64_fn_vkGetPhysicalDeviceQueueFamilyProperties: {

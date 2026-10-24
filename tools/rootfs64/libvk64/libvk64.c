@@ -289,6 +289,7 @@ enum {
     VK64_fn_vkCmdPushDescriptorSetKHR = 914,
     VK64_fn_vkCmdPushDescriptorSetWithTemplateKHR = 915,
     VK64_fn_vkGetDescriptorSetLayoutSupport = 916,
+    VK64_fn_vkGetDeviceImageMemoryRequirements = 917,
     VK64_fn__MAX
 };
 
@@ -444,6 +445,10 @@ API void vkGetDeviceQueue(VkDevice dev, uint32_t family, uint32_t index, VkQueue
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = family; a.a[2] = index; a.a[3] = P(out);
     (void)vk64_trap(VK64_fn_vkGetDeviceQueue, &a);
 }
+API void vkDestroyBufferView(VkDevice dev, uint64_t view, const void* alloc) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = view; a.a[2] = P(alloc);
+    (void)vk64_trap(VK64_fn_vkDestroyBuffer, &a);    /* views and buffers share the bridge handle table */
+}
 API void vkGetBufferMemoryRequirements(VkDevice dev, VkBuffer buf, void* r) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = buf; a.a[2] = P(r);
     (void)vk64_trap(VK64_fn_vkGetBufferMemoryRequirements, &a);
@@ -451,6 +456,10 @@ API void vkGetBufferMemoryRequirements(VkDevice dev, VkBuffer buf, void* r) {
 API void vkGetBufferMemoryRequirements2(VkDevice dev, const void* info, void* r) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(info); a.a[2] = P(r);
     (void)vk64_trap(VK64_fn_vkGetBufferMemoryRequirements2, &a);
+}
+API void vkGetDeviceImageMemoryRequirements(VkDevice dev, const void* info, void* r) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(info); a.a[2] = P(r);
+    (void)vk64_trap(VK64_fn_vkGetDeviceImageMemoryRequirements, &a);
 }
 API void vkGetDeviceBufferMemoryRequirements(VkDevice dev, const void* info, void* r) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(info); a.a[2] = P(r);
@@ -1219,6 +1228,69 @@ API VkResult vkEnumerateInstanceVersion(uint32_t* pVersion) {
 }
 
 // ===========================================================================
+// H. Shim-local entry points. These have a fixed, spec-exact answer on this
+// implementation (one device, one queue family, no sparse, no wide lines, no
+// lazily allocated memory), so they are answered here instead of trapping.
+// Each is listed with S() in the proc table below and covered by
+// vk-shim-bridge-parity.test.mjs.
+// ===========================================================================
+enum { VKS_INFO2_HDR = sizeof(void*) * 2 };   /* sType + pNext of a Vk*Info2 */
+API void vkGetBufferMemoryRequirements2KHR(VkDevice dev, const void* info, void* r) {
+    vkGetBufferMemoryRequirements2(dev, info, r);
+}
+API void vkGetImageMemoryRequirements2KHR(VkDevice dev, const void* info, void* r) {
+    vkGetImageMemoryRequirements2(dev, info, r);
+}
+/* VkDeviceQueueInfo2 {sType,pNext,flags,queueFamilyIndex,queueIndex}. Only
+ * flags == 0 queues exist (protectedMemory is off), so a flagged query yields NULL. */
+API void vkGetDeviceQueue2(VkDevice dev, const void* info, VkQueue* out) {
+    const uint32_t* w = (const uint32_t*)((const char*)info + VKS_INFO2_HDR);
+    if (w[0]) { *out = 0; return; }
+    vkGetDeviceQueue(dev, w[1], w[2], out);
+}
+API void vkGetRenderAreaGranularity(VkDevice dev, uint64_t renderPass, uint32_t* granularity) {
+    (void)dev; (void)renderPass;
+    granularity[0] = 1; granularity[1] = 1;   /* WebGPU render passes have no tile alignment */
+}
+/* Sparse resources are not supported (sparseBinding and sparseResidency* are off): zero formats. */
+API void vkGetImageSparseMemoryRequirements(VkDevice dev, uint64_t img, uint32_t* count, void* reqs) {
+    (void)dev; (void)img; (void)reqs;
+    *count = 0;
+}
+API void vkGetDeviceImageSparseMemoryRequirements(VkDevice dev, const void* info, uint32_t* count, void* reqs) {
+    (void)dev; (void)info; (void)reqs;
+    *count = 0;
+}
+/* Only lazily allocated memory has a commitment; no such memory type is advertised. */
+API void vkGetDeviceMemoryCommitment(VkDevice dev, uint64_t mem, uint64_t* committed) {
+    (void)dev; (void)mem;
+    *committed = 0;
+}
+/* One physical device: no peer exists, and peer indices are required to differ. */
+API void vkGetDeviceGroupPeerMemoryFeatures(VkDevice dev, uint32_t heap, uint32_t local, uint32_t remote, uint32_t* features) {
+    (void)dev; (void)heap; (void)local; (void)remote;
+    *features = 0;
+}
+/* Device masks other than 1 are invalid with a single physical device. */
+API void vkCmdSetDeviceMask(VkCommandBuffer cb, uint32_t mask) { (void)cb; (void)mask; }
+/* wideLines is not advertised, so the only valid width is 1.0, which is what the rasterizer draws. */
+API void vkCmdSetLineWidth(VkCommandBuffer cb, float width) { (void)cb; (void)width; }
+/* A hint to return pool memory to the system; command pools here hold no recyclable memory. */
+API void vkTrimCommandPool(VkDevice dev, uint64_t pool, uint32_t flags) { (void)dev; (void)pool; (void)flags; }
+API void vkTrimCommandPoolKHR(VkDevice dev, uint64_t pool, uint32_t flags) { (void)dev; (void)pool; (void)flags; }
+/* Pipeline caches are accepted and empty: pipelines are rebuilt by the WebGPU layer, so there is
+ * no driver blob to export. A zero-size blob is a valid answer; creating a cache from it is a no-op. */
+API VkResult vkGetPipelineCacheData(VkDevice dev, uint64_t cache, uintptr_t* size, void* data) {
+    (void)dev; (void)cache; (void)data;
+    *size = 0;
+    return 0;     /* VK_SUCCESS */
+}
+API VkResult vkMergePipelineCaches(VkDevice dev, uint64_t dst, uint32_t count, const uint64_t* src) {
+    (void)dev; (void)dst; (void)count; (void)src;
+    return 0;     /* VK_SUCCESS */
+}
+
+// ===========================================================================
 // vkGetInstanceProcAddr / vkGetDeviceProcAddr — resolved GUEST-side, never trap
 // for the lookup itself. Every name we implement maps to its own wrapper; every
 // other name maps to vk64_benign, which reports the name to the host and returns
@@ -1230,6 +1302,7 @@ typedef void (*PFN_vkVoidFunction)(void);
 
 struct procEntry { const char* name; uint64_t fnId; PFN_vkVoidFunction fn; };
 #define E(n, id) { #n, (uint64_t)(id), (PFN_vkVoidFunction)n }
+#define S(n) { #n, 0, (PFN_vkVoidFunction)n }   /* shim-local: no bridge id */
 // Forward declarations for game-breaking stub implementations
 API uint64_t vkGetBufferDeviceAddress(VkDevice, const void*);
 API uint64_t vkGetBufferDeviceAddressKHR(VkDevice, const void*);
@@ -1275,6 +1348,21 @@ API void vkCmdEndQuery(VkCommandBuffer, VkQueryPool, uint32_t);
 API void vkCmdCopyQueryPoolResults(VkCommandBuffer, VkQueryPool, uint32_t, uint32_t, VkBuffer, uint64_t, uint64_t, uint32_t);
 
 static const struct procEntry g_procs[] = {
+    S(vkGetBufferMemoryRequirements2KHR),
+    S(vkGetImageMemoryRequirements2KHR),
+    S(vkGetDeviceQueue2),
+    S(vkGetRenderAreaGranularity),
+    S(vkGetImageSparseMemoryRequirements),
+    S(vkGetDeviceImageSparseMemoryRequirements),
+    S(vkGetDeviceMemoryCommitment),
+    S(vkGetDeviceGroupPeerMemoryFeatures),
+    S(vkCmdSetDeviceMask),
+    S(vkCmdSetLineWidth),
+    S(vkTrimCommandPool),
+    S(vkTrimCommandPoolKHR),
+    S(vkGetPipelineCacheData),
+    S(vkMergePipelineCaches),
+    E(vkGetDeviceImageMemoryRequirements, VK64_fn_vkGetDeviceImageMemoryRequirements),
     E(vkCmdResolveImage2, VK64_fn_vkCmdResolveImage),
     E(vkCmdResolveImage2KHR, VK64_fn_vkCmdResolveImage),
     E(vkResetQueryPool, VK64_fn_vkResetQueryPool),
@@ -1392,6 +1480,7 @@ static const struct procEntry g_procs[] = {
     E(vkDestroySwapchainKHR, VK64_fn_vkDestroySwapchainKHR),
     E(vkDestroyCommandPool, VK64_fn_vkDestroyCommandPool),
     E(vkDestroyBuffer, VK64_fn_vkDestroyBuffer),
+    E(vkDestroyBufferView, VK64_fn_vkDestroyBuffer),
     E(vkDestroyImage, VK64_fn_vkDestroyImage),
     E(vkDestroyImageView, VK64_fn_vkDestroyImageView),
     E(vkDestroySampler, VK64_fn_vkDestroySampler),
@@ -2139,38 +2228,26 @@ API uint64_t vkGetBufferDeviceAddress(VkDevice dev, const void* info) {
 API uint64_t vkGetBufferDeviceAddressKHR(VkDevice dev, const void* info) {
     return vkGetBufferDeviceAddress(dev, info);
 }
-TAIL(vkGetBufferMemoryRequirements2KHR)
 TAIL(vkGetBufferOpaqueCaptureAddressKHR)
-TAIL(vkGetDeviceImageMemoryRequirements)
-TAIL(vkGetDeviceImageSparseMemoryRequirements)
 TAIL(vkGetDeviceImageSubresourceLayout)
-TAIL(vkGetDeviceQueue2)
-TAIL(vkGetDeviceGroupPeerMemoryFeatures)
 TAIL(vkGetDeviceGroupPresentCapabilitiesKHR)
 TAIL(vkGetDeviceGroupSurfacePresentModesKHR)
 TAIL(vkGetFenceStatus2)
 TAIL(vkGetFenceStatus2KHR)
-TAIL(vkGetImageMemoryRequirements2KHR)
-TAIL(vkGetImageSparseMemoryRequirements)
 TAIL(vkGetImageSubresourceLayout2)
 TAIL(vkGetImageSubresourceLayout2EXT)
 TAIL(vkGetPhysicalDevicePresentRectanglesKHR)
 TAIL(vkGetPhysicalDeviceSurfaceCapabilities2EXT)
 TAIL(vkGetPhysicalDeviceSurfaceFormats2EXT)
 TAIL(vkGetPhysicalDeviceSurfacePresentModes2EXT)
-TAIL(vkGetPipelineCacheData)
 TAIL(vkGetQueryPoolResults64)
 TAIL(vkGetQueryPoolResults64KHR)
 TAIL(vkGetRenderingAreaGranularity)
-TAIL(vkGetRenderAreaGranularity)
 TAIL(vkSwapchainImagesKHR2)
 TAIL(vkCreateSwapchainKHR2)
 TAIL(vkDestroyDeviceKHR)
 TAIL(vkDestroySwapchainKHR2)
-TAIL(vkMergePipelineCaches)
 TAIL(vkResetPipelineCache)
-TAIL(vkGetDeviceMemoryCommitment)
-TAIL(vkDestroyBufferView)
 TAIL(vkSetDebugUtilsObjectNameEXT)
 TAIL(vkSetDebugUtilsObjectTagEXT)
 TAIL(vkCreateDebugUtilsMessengerEXT)
@@ -2488,9 +2565,7 @@ TAIL(vkQueueBindSparse)
 TAIL(vkCmdSetBlendConstant)
 TAIL(vkCmdNextSubpass)
 TAIL(vkCmdNextSubpassKHR)
-TAIL(vkCmdSetDeviceMask)
 TAIL(vkCmdSetDepthBiasEnableEXT)
-TAIL(vkCmdSetLineWidth)
 TAIL(vkCmdSetDepthBiasNV)
 TAIL(vkCmdSetPrimitiveTopologyEXT)
 TAIL(vkCmdSetVertexInputEXT)
@@ -2501,8 +2576,6 @@ TAIL(vkCmdNextSubpass2KHR)
 TAIL(vkCmdNextSubpass2)
 TAIL(vkCmdDrawIndirectByteCountEXT)
 
-TAIL(vkTrimCommandPoolKHR)
-TAIL(vkTrimCommandPool)
 TAIL(vkCreateFramebuffer2KHR)
 TAIL(vkCreateSamplerYcbcrConversion)
 TAIL(vkDestroySamplerYcbcrConversion)

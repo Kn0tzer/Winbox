@@ -109,6 +109,17 @@ void vkCmdUpdateBuffer(U64, U64, U64, U64, const void*);
 void vkUpdateDescriptorSets(U64, U32, const void*, U32, const void*);
 void vkCmdBindVertexBuffers2EXT(U64, U32, U32, const U64*, const U64*, const U64*, const U64*);
 void vkCmdDispatch(U64, U32, U32, U32);
+void vkGetDeviceImageMemoryRequirements(U64, const void*, void*);
+void vkGetDeviceQueue2(U64, const void*, U64*);
+void vkGetRenderAreaGranularity(U64, U64, U32*);
+void vkGetImageSparseMemoryRequirements(U64, U64, U32*, void*);
+void vkGetDeviceImageSparseMemoryRequirements(U64, const void*, U32*, void*);
+void vkGetDeviceMemoryCommitment(U64, U64, U64*);
+void vkGetDeviceGroupPeerMemoryFeatures(U64, U32, U32, U32, U32*);
+int vkGetPipelineCacheData(U64, U64, size_t*, void*);
+int vkMergePipelineCaches(U64, U64, U32, const U64*);
+void vkDestroyBufferView(U64, U64, const void*);
+void vkGetBufferMemoryRequirements2KHR(U64, const void*, void*);
 }
 int main() {
     g_mem = &memory;
@@ -577,6 +588,82 @@ int main() {
         assert(call32b(VK64_fn_vkFreeMemory, fr) == VK_SUCCESS);
         g_mem32 = nullptr; g_mem = &memory;
         puts("PASS: Vulkan32 bridge parity (fill, 64-bit device address, destroy, subresource layout)");
+    }
+    // ---- Entry points that used to be loud stubs: sizing from a create info,
+    // shim-local answers (queue2, granularity, sparse, pipeline cache) and the
+    // 64-bit vkDestroyBufferView.
+    {
+        // vkGetDeviceImageMemoryRequirements: size comes from the create info, and the
+        // chained VkMemoryDedicatedRequirements is written (not left as stale bytes).
+        VkImageCreateInfo ici{};
+        ici.imageType = VK_IMAGE_TYPE_2D; ici.format = (VkFormat)37; // R8G8B8A8_UNORM
+        ici.extent = {16, 16, 1}; ici.mipLevels = 1; ici.arrayLayers = 1;
+        memory.memcpyToGuest(5100, &ici, sizeof(ici));
+        U64 devImgInfo[4] = {0, 0, 5100, 0};       // sType,pNext | pCreateInfo@16
+        memory.memcpyToGuest(5000, devImgInfo, sizeof(devImgInfo));
+        VkMemoryDedicatedRequirements ded{};
+        ded.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS;
+        ded.prefersDedicatedAllocation = 0xFFFFFFFFu; ded.requiresDedicatedAllocation = 0xFFFFFFFFu;
+        memory.memcpyToGuest(5500, &ded, sizeof(ded));
+        VkMemoryRequirements2 mr{};
+        mr.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2; mr.pNext = 5500;
+        memory.memcpyToGuest(5400, &mr, sizeof(mr));
+        vkGetDeviceImageMemoryRequirements(deviceId, (void*)5000, (void*)5400);
+        assert(lastTrap == VK64_fn_vkGetDeviceImageMemoryRequirements);
+        memory.memcpyFromGuest(&mr, 5400, sizeof(mr));
+        assert(mr.memoryRequirements.size == 16 * 16 * 4 && mr.memoryRequirements.alignment == 256 &&
+               mr.memoryRequirements.memoryTypeBits != 0);
+        memory.memcpyFromGuest(&ded, 5500, sizeof(ded));
+        assert(ded.prefersDedicatedAllocation == 0 && ded.requiresDedicatedAllocation == 0);
+        // A buffer query chained to a dedicated struct is also written back.
+        U64 bufId2; auto* buf2 = createObj<Buffer>(K_BUFFER, bufId2); buf2->size = 1000;
+        U64 bufInfo[3] = {0, 0, bufId2};
+        memory.memcpyToGuest(5200, bufInfo, sizeof(bufInfo));
+        ded.prefersDedicatedAllocation = 0xFFFFFFFFu; ded.requiresDedicatedAllocation = 0xFFFFFFFFu;
+        memory.memcpyToGuest(5500, &ded, sizeof(ded));
+        vkGetBufferMemoryRequirements2KHR(deviceId, (void*)5200, (void*)5400);
+        memory.memcpyFromGuest(&mr, 5400, sizeof(mr));
+        memory.memcpyFromGuest(&ded, 5500, sizeof(ded));
+        assert(mr.memoryRequirements.size == 1024 && ded.prefersDedicatedAllocation == 0 && ded.requiresDedicatedAllocation == 0);
+        // vkGetDeviceQueue2: flags == 0 maps to vkGetDeviceQueue, a protected queue does not exist.
+        U32 qinfo[8] = {0, 0, 0, 0, /*flags*/ 0, /*family*/ 0, /*index*/ 0, 0};
+        objOf<Device>(deviceId, K_DEVICE, "test")->queue = 0x1234;
+        memory.writeq(2048, 0xDEADull);
+        vkGetDeviceQueue2(deviceId, qinfo, (U64*)2048);
+        assert(memory.readq(2048) == 0x1234);
+        qinfo[4] = 1;                                   // VK_DEVICE_QUEUE_CREATE_PROTECTED_BIT
+        U64 protectedQueue = 0xDEADull;
+        vkGetDeviceQueue2(deviceId, qinfo, &protectedQueue);
+        assert(protectedQueue == 0);
+        U32 gran[2] = {7, 7}; vkGetRenderAreaGranularity(deviceId, 1, gran);
+        assert(gran[0] == 1 && gran[1] == 1);
+        U32 sparse = 9; vkGetImageSparseMemoryRequirements(deviceId, 1, &sparse, nullptr);
+        assert(sparse == 0);
+        sparse = 9; vkGetDeviceImageSparseMemoryRequirements(deviceId, nullptr, &sparse, nullptr);
+        assert(sparse == 0);
+        U64 committed = 9; vkGetDeviceMemoryCommitment(deviceId, 1, &committed);
+        assert(committed == 0);
+        U32 peer = 9; vkGetDeviceGroupPeerMemoryFeatures(deviceId, 0, 0, 1, &peer);
+        assert(peer == 0);
+        size_t cacheSize = 77;
+        assert(vkGetPipelineCacheData(deviceId, 1, &cacheSize, nullptr) == VK_SUCCESS && cacheSize == 0);
+        assert(vkMergePipelineCaches(deviceId, 1, 0, nullptr) == VK_SUCCESS);
+        // 64-bit vkDestroyBufferView drops the view handle (was a -8 stub that leaked it).
+        U64 viewId; createObj<BufferView>(K_BUFFERVIEW, viewId);
+        assert(findObj(viewId, K_BUFFERVIEW));
+        vkDestroyBufferView(deviceId, viewId, nullptr);
+        assert(lastTrap == VK64_fn_vkDestroyBuffer && !findObj(viewId, K_BUFFERVIEW));
+        // 32-bit twin of the device-image sizing query.
+        vk32abi::VkImageCreateInfo ici32{}; ici32.imageType = vk32abi::VK_IMAGE_TYPE_2D;
+        ici32.format = (vk32abi::VkFormat)37; ici32.extent = {8, 8, 1}; ici32.mipLevels = 1; ici32.arrayLayers = 1;
+        memory32.memcpyToGuest(2200, &ici32, sizeof(ici32));
+        U32 info32b[4] = {0, 0, 2200, 0};
+        memory32.memcpyToGuest(2100, info32b, sizeof(info32b));
+        VK32Args dr{}; dr.a[1] = 2100; dr.a[2] = 2400;
+        assert(vk32Bridge(&cpu32, VK64_fn_vkGetDeviceImageMemoryRequirements, (memory32.memcpyToGuest(128, &dr, sizeof(dr)), 128)) == VK_SUCCESS);
+        assert(memory32.readq(2408) == 8 * 8 * 4);
+        g_mem32 = nullptr; g_mem = &memory;
+        puts("PASS: former stubs (device image sizing, queue2, granularity, sparse, pipeline cache, buffer-view destroy)");
     }
     // ---- Descriptor model: arrays, dynamic offsets, immutable samplers, copies,
     // pools, push descriptors, 32-bit strides. Each assertion fails if the

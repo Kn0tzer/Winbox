@@ -364,6 +364,7 @@ enum {
     VK64_fn_vkCmdPushDescriptorSetKHR = 914,  // (cmdBuf, bindPoint, layout, set, writeCount, pWrites*) -> binds a synthetic set
     VK64_fn_vkCmdPushDescriptorSetWithTemplateKHR = 915, // (cmdBuf, template, layout, set, pData*)
     VK64_fn_vkGetDescriptorSetLayoutSupport = 916, // (device, pCreateInfo*, pSupport*) -> supported, variable count limit
+    VK64_fn_vkGetDeviceImageMemoryRequirements = 917, // (device, VkDeviceImageMemoryRequirements*, VkMemoryRequirements2*) -> size from the create info
     VK64_fn__MAX
 };
 

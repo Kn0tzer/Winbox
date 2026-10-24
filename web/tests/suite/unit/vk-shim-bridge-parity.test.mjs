@@ -74,4 +74,21 @@ for (const arch of [64, 32]) {
     }
     assert.deepEqual(missing, [], `wrapper exists and bridge handles it, but vkGet*ProcAddr would return the benign stub: ${missing.join(', ')}`);
   });
+
+  test(`libvk${arch}: shim-local S() entries are real wrappers the bridge does not already own`, () => {
+    const local = [...code.matchAll(/^\s*S\((\w+)\),/gm)].map((m) => m[1]);
+    assert.ok(local.length >= 14, 'S() entries parsed');
+    const defined = new Set([...code.matchAll(/^API [^\n(]*?\b(vk\w+)\(/gm)].map((m) => m[1]));
+    assert.deepEqual(local.filter((n) => !defined.has(n)), [], 'S() entry without a wrapper');
+    assert.deepEqual(local.filter((n) => tails.includes(n)), [], 'S() entry also declared TAIL');
+    assert.deepEqual(local.filter((n) => cases[arch].has(n)), [], 'bridge handles it: the wrapper should trap, not answer locally');
+  });
+
+  test(`libvk${arch}: every vk* wrapper is reachable through vkGet*ProcAddr or is a loader entry`, () => {
+    const inTable = new Set([...code.matchAll(/^\s*[ES]\((\w+)[,)]/gm)].map((m) => m[1]));
+    const loader = new Set(['vkGetInstanceProcAddr', 'vkGetDeviceProcAddr']);
+    const orphans = [...code.matchAll(/^API [^\n(]*?\b(vk\w+)\(/gm)].map((m) => m[1])
+      .filter((n) => !inTable.has(n) && !tails.includes(n) && !loader.has(n) && !n.startsWith('vk_icd'));
+    assert.deepEqual(orphans, [], `exported wrapper missing from the proc table: ${orphans.join(', ')}`);
+  });
 }
