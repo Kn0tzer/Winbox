@@ -259,6 +259,7 @@ S32 queueSiginfo64(KThread* target, U32 signal, const U8 info[128]) {
 #define X64_SYS_clone             56
 #define X64_SYS_fork              57
 #define X64_SYS_vfork             58
+#define X64_CLONE_VFORK            0x00004000ULL
 #define X64_SYS_execve            59
 #define X64_SYS_wait4             61
 #define X64_SYS_pause             34
@@ -5793,11 +5794,12 @@ void ksyscall64(CPU64* cpu) {
             break;
         case X64_SYS_fork:
         case X64_SYS_vfork:
-            // Both syscalls currently get a private process snapshot. The
-            // vfork parent-suspension semantics remain tracked in the gap
-            // register and are covered by follow-up work.
+            // Both syscalls currently get a private process snapshot. vfork
+            // suspends the parent through child exec/exit; sharing the original
+            // address space until that point remains tracked in the gap register.
             if (cpu->thread && cpu->thread->process && cpu->thread->process->memory64) {
-                ret = cpu->thread->process->forkProcess64(cpu->thread, 0, 0, 0);
+                const U64 cloneFlags = nr == X64_SYS_vfork ? X64_CLONE_VFORK : 0;
+                ret = cpu->thread->process->forkProcess64(cpu->thread, cloneFlags, 0, 0);
             } else {
                 ret = unimplementedSyscall64(nr);
             }

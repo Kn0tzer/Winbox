@@ -271,6 +271,7 @@ public:
     U32 exitCode = 0;
     U32 umaskValue = 0;
     bool terminated = false;
+    bool vforkReleased = false;
     KMemory* memory = nullptr;
 
     BString currentDirectory;

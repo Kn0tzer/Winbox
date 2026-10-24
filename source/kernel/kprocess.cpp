@@ -1132,6 +1132,7 @@ U32 KProcess::execve(KThread* thread, BString path, std::vector<BString>& args, 
     delete openNode;
 
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->exitOrExecCond);
+    this->vforkReleased = true;
     BOXEDWINE_CONDITION_SIGNAL_ALL(this->exitOrExecCond);
 
     //klog("%d/%d exec %s (cwd=%s)", KThread::currentThread()->id, this->id, this->commandLine.c_str(), this->currentDirectory.c_str());
@@ -2153,6 +2154,15 @@ U32 KProcess::forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid) {
     }
 
     scheduleThread(newThread);
+    if (flags & K_CLONE_VFORK) {
+        BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(newProcess->exitOrExecCond);
+        while (!newProcess->vforkReleased) {
+            BOXEDWINE_CONDITION_WAIT(newProcess->exitOrExecCond);
+        }
+#ifdef BOXEDWINE_MULTI_THREADED
+        if (thread->terminating) return (U32)-K_EINTR;
+#endif
+    }
     return newProcess->id;   // parent sees the child pid
 }
 #endif
@@ -2201,6 +2211,7 @@ U32 KProcess::exitgroup(KThread* thread, U32 code) {
 
     {
         BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->exitOrExecCond);
+        this->vforkReleased = true;
         BOXEDWINE_CONDITION_SIGNAL_ALL(this->exitOrExecCond);
     }
     if (KSystem::getProcessCount()==1) {        

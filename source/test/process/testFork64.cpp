@@ -56,8 +56,20 @@ static void runForkCase(TestContext& context, U64 nr, const char* name) {
     memory->writed(page, 0x11223344);
     memory->writed(page + 4, 0xAABBCCDD);
     const U64 childCode = page + K64_PAGE_SIZE + 0x10;
-    memory->writeb(childCode, 0xEB);     // jmp $: keep the child alive until
-    memory->writeb(childCode + 1, 0xFE); // the test explicitly stops it.
+    if (nr == 58 /*vfork*/) {
+        const U8 exitAfterDelay[] = {
+            0xB9, 0xA0, 0x86, 0x01, 0x00, // mov ecx, 100000
+            0xFF, 0xC9,                 // dec ecx
+            0x75, 0xFC,                 // jnz dec
+            0xB8, 0x3C, 0x00, 0x00, 0x00, // mov eax, SYS_exit
+            0x31, 0xFF,                 // xor edi, edi
+            0x0F, 0x05                  // syscall
+        };
+        memory->memcpyToGuest(childCode, exitAfterDelay, sizeof(exitAfterDelay));
+    } else {
+        memory->writeb(childCode, 0xEB);     // jmp $: keep fork child alive
+        memory->writeb(childCode + 1, 0xFE); // until test cleanup stops it.
+    }
 
     constexpr U32 testFdHandle = 197;
     if (process->getFileDescriptor(testFdHandle)) {
@@ -97,17 +109,19 @@ static void runForkCase(TestContext& context, U64 nr, const char* name) {
     if (!child->memory64 || child->memory64 == memory) testFail("%s child did not get its own address space", name);
     if (!child->cpu64) {
         testFail("%s child has no CPU64", name);
-    } else {
+    } else if (nr != 58 /*vfork child exits before parent resumes*/) {
         if (child->cpu64->reg[X64_RAX].u64 != 0) testFail("%s child does not return 0", name);
         if (child->cpu64->rip != childCode) testFail("%s child did not inherit RIP", name);
     }
-    KFileDescriptorPtr childFd = child->getFileDescriptor(testFdHandle);
-    if (!childFd || childFd->kobject != sharedObject) {
-        testFail("%s child did not inherit its descriptor/open-file description", name);
-    }
-    if (child->sigActions[K_SIGUSR1].handlerAndSigAction != parentAction.handlerAndSigAction ||
-        child->sigActions[K_SIGUSR1].flags != parentAction.flags) {
-        testFail("%s child did not inherit its signal disposition", name);
+    if (nr != 58 /*vfork child has already exited and closed its FDs*/) {
+        KFileDescriptorPtr childFd = child->getFileDescriptor(testFdHandle);
+        if (!childFd || childFd->kobject != sharedObject) {
+            testFail("%s child did not inherit its descriptor/open-file description", name);
+        }
+        if (child->sigActions[K_SIGUSR1].handlerAndSigAction != parentAction.handlerAndSigAction ||
+            child->sigActions[K_SIGUSR1].flags != parentAction.flags) {
+            testFail("%s child did not inherit its signal disposition", name);
+        }
     }
     if (child->memory64) {
         if (child->memory64->readd(page) != 0x11223344 || child->memory64->readd(page + 4) != 0xAABBCCDD) {
@@ -123,27 +137,34 @@ static void runForkCase(TestContext& context, U64 nr, const char* name) {
     waitCpu.reg[X64_RAX].setU64(61); // wait4
     waitCpu.reg[X64_RDI].setU64((U32)forkResult);
     waitCpu.reg[X64_RSI].setU64(page + 8);
-    waitCpu.reg[X64_RDX].setU64(1); // WNOHANG
     memory->writed(page + 8, 0xDEADBEEF);
-    ksyscall64(&waitCpu);
-    if ((S64)waitCpu.reg[X64_RAX].u64 != 0) {
-        testFail("%s wait4(WNOHANG) should report a running child", name);
-    }
-    if (memory->readd(page + 8) != 0xDEADBEEF) {
-        testFail("%s wait4(WNOHANG) overwrote status for a running child", name);
+    if (nr == 57 /*fork*/) {
+        waitCpu.reg[X64_RDX].setU64(1); // WNOHANG
+        ksyscall64(&waitCpu);
+        if ((S64)waitCpu.reg[X64_RAX].u64 != 0) {
+            testFail("%s wait4(WNOHANG) should report a running child", name);
+        }
+        if (memory->readd(page + 8) != 0xDEADBEEF) {
+            testFail("%s wait4(WNOHANG) overwrote status for a running child", name);
+        }
+    } else if (!child->vforkReleased || !child->terminated) {
+        testFail("vfork returned before the child exited or execed");
     }
     // Fork queues a real guest thread; stop and join it before dropping the
     // process table entry or the test fixture can race its CPU teardown.
     child->killAllThreads(nullptr);
-    child->exitCode = 37;
-    child->terminated = true;
+    if (nr == 57 /*fork*/) {
+        child->exitCode = 37;
+        child->terminated = true;
+    }
     waitCpu.reg[X64_RAX].setU64(61); // wait4 the now-exited child
     waitCpu.reg[X64_RDX].setU64(0);
     ksyscall64(&waitCpu);
     if ((S64)waitCpu.reg[X64_RAX].u64 != forkResult) {
         testFail("%s wait4 did not reap its terminated child", name);
     }
-    if (memory->readd(page + 8) != (37u << 8)) {
+    const U32 expectedStatus = nr == 57 ? (37u << 8) : (child->exitCode << 8);
+    if (memory->readd(page + 8) != expectedStatus) {
         testFail("%s wait4 returned the wrong exit status", name);
     }
     if (KSystem::getProcess((U32)forkResult)) {
