@@ -84,8 +84,9 @@ void testSyscall64DispatchGuard() {
         helperBody.find("ksyscall64: unimplemented syscall #%llu (%s)") == std::string::npos) {
         testFail("x64 syscall fallback must log once per number and return -ENOSYS");
     }
-    if (source.find("ksyscall64: pidfd_send_signal siginfo delivery unsupported; returned -EOPNOTSUPP") == std::string::npos) {
-        testFail("unsupported pidfd siginfo delivery must log its feature and errno");
+    if (source.find("queueSiginfo64(targetThread") == std::string::npos ||
+        source.find("cpu->reg[X64_RSI].setU64((sa.flags & 0x4 /*SA_SIGINFO*/) ? frameBase : 0)") == std::string::npos) {
+        testFail("pidfd and queued signal paths must deliver siginfo to SA_SIGINFO handlers");
     }
 }
 

@@ -223,6 +223,9 @@ void testPidfd64Syscalls() {
     if (!memory->getPageFlags(page >> K64_PAGE_SHIFT)) memory->mmapAnonymousFixed(page, K64_PAGE_SIZE, 3);
     CPU64 cpu(memory);
     cpu.thread = context.thread;
+    CPU64* savedCpu64 = context.thread->cpu64;
+    context.thread->cpu64 = &cpu;
+    cpu.reg[X64_RSP].setU64(page + 0xF00);
     auto syscall = [&](U64 number, U64 arg1, U64 arg2, U64 arg3, U64 arg4) {
         cpu.reg[X64_RAX].setU64(number);
         cpu.reg[X64_RDI].setU64(arg1);
@@ -243,9 +246,45 @@ void testPidfd64Syscalls() {
         (S64)syscall(424, fd, 65, 0, 0) != -K_EINVAL) {
         testFail("pidfd flags, signal-zero probe, or signal validation failed");
     }
-    if ((S64)syscall(424, fd, 0, page, 0) != -K_EOPNOTSUPP) {
-        testFail("pidfd_send_signal accepted unsupported siginfo delivery without a warning errno");
+    constexpr U64 pidfdInfo = page + 0x100;
+    memory->writed(pidfdInfo, 10);
+    memory->writed(pidfdInfo + 4, 0);
+    memory->writed(pidfdInfo + 8, (U32)-1); // SI_QUEUE
+    memory->writeq(pidfdInfo + 16, 0x123400005678ULL); // si_value
+    cpu.sigActions[10].handler = 0x12345678;
+    cpu.sigActions[10].flags = 0x4; // SA_SIGINFO
+    cpu.sigActions[10].installed = true;
+    if ((S64)syscall(424, fd, 10, pidfdInfo, 0) != 0 || !cpu.deliverPendingSignals() ||
+        cpu.reg[X64_RSI].u64 == 0 || memory->readq(cpu.reg[X64_RSI].u64 + 16) != 0x123400005678ULL) {
+        testFail("pidfd_send_signal did not deliver queued siginfo to an SA_SIGINFO handler");
     }
+    memory->writed(pidfdInfo, 11);
+    if ((S64)syscall(424, fd, 10, pidfdInfo, 0) != -K_EINVAL) {
+        testFail("pidfd_send_signal did not reject mismatched siginfo signo");
+    }
+    memory->writed(pidfdInfo, 10);
+    memory->writed(pidfdInfo + 8, 1); // positive si_code is reserved for the kernel
+    if ((S64)syscall(424, fd, 10, pidfdInfo, 0) != -K_EPERM) {
+        testFail("pidfd_send_signal did not reject a forged positive si_code");
+    }
+    memory->writed(pidfdInfo + 8, (U32)-1);
+
+    constexpr U64 threadInfo = page + 0x180;
+    memory->writed(threadInfo, 12);
+    memory->writed(threadInfo + 8, (U32)-1);
+    memory->writeq(threadInfo + 16, 0xAABBCCDDEEFF0011ULL);
+    cpu.sigActions[12].handler = 0x12345678;
+    cpu.sigActions[12].flags = 0x4;
+    cpu.sigActions[12].installed = true;
+    if ((S64)syscall(297, process->id, context.thread->id, 12, threadInfo) != 0 ||
+        !cpu.deliverPendingSignals() || cpu.reg[X64_RSI].u64 == 0 ||
+        memory->readq(cpu.reg[X64_RSI].u64 + 16) != 0xAABBCCDDEEFF0011ULL) {
+        testFail("rt_tgsigqueueinfo did not target the requested TID with its siginfo payload");
+    }
+    if ((S64)syscall(297, process->id, 0xFFFFFFFFULL, 12, threadInfo) != -K_ESRCH) {
+        testFail("rt_tgsigqueueinfo did not reject a TID outside the target thread group");
+    }
+    context.thread->cpu64 = savedCpu64;
     process->close((FD)fd);
 }
 

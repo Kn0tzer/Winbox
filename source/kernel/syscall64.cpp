@@ -20,6 +20,7 @@
 #include <mutex>    // std::recursive_mutex for BW64_SERIAL_TEARDOWN
 #include <unordered_map>
 #include <unordered_set>
+#include <array>
 #include "kunixsocket.h"
 #include "kepoll.h"
 #include "kpoll.h"
@@ -50,6 +51,45 @@ public:
 private:
     KProcessWeakPtr target;
 };
+
+std::mutex g_queuedSiginfoMutex;
+std::unordered_map<U64, std::array<U8, 128>> g_queuedSiginfo;
+
+U64 queuedSiginfoKey(U32 tid, U32 signal) {
+    return ((U64)tid << 6) | signal;
+}
+
+void eraseQueuedSiginfo(U32 tid, U32 signal) {
+    std::lock_guard<std::mutex> lock(g_queuedSiginfoMutex);
+    g_queuedSiginfo.erase(queuedSiginfoKey(tid, signal));
+}
+
+bool copyQueuedSiginfo(U32 tid, U32 signal, U8 info[128]) {
+    std::lock_guard<std::mutex> lock(g_queuedSiginfoMutex);
+    auto it = g_queuedSiginfo.find(queuedSiginfoKey(tid, signal));
+    if (it == g_queuedSiginfo.end()) return false;
+    std::memcpy(info, it->second.data(), 128);
+    return true;
+}
+
+S32 queueSiginfo64(KThread* target, U32 signal, const U8 info[128]) {
+    if (!target || !target->cpu64 || signal < 1 || signal > 64 || signal == 9 || signal == 19)
+        return -K_EINVAL;
+    {
+        std::lock_guard<std::mutex> lock(g_queuedSiginfoMutex);
+        std::array<U8, 128>& stored = g_queuedSiginfo[queuedSiginfoKey(target->id, signal)];
+        std::memcpy(stored.data(), info, stored.size());
+    }
+    // Queue on the x64 path. The generic KThread::signal helper otherwise
+    // builds a legacy CPU32 frame when the target is the current host thread.
+    const U64 bit = 1ULL << (signal - 1);
+    const U64 savedMask = target->sigMask;
+    target->sigMask |= bit;
+    const U32 result = target->signal(signal, false);
+    target->sigMask = savedMask;
+    if ((S32)result < 0) eraseQueuedSiginfo(target->id, signal);
+    return (S32)result;
+}
 }
 #ifdef BOXEDWINE_OPENGL
 #include "../opengl/gl64bridge.h"
@@ -2620,6 +2660,22 @@ static bool deliverSignalSync(CPU64* cpu, U32 sig) {
 
     U64 uctxPtr = buildSignalFrame(cpu, frameBase);
 
+    // Linux x86-64 places a 128-byte siginfo_t at the start of the signal
+    // frame and passes its address in RSI for SA_SIGINFO handlers.
+    U8 sigInfo[128] = {};
+    if (!cpu->thread || !copyQueuedSiginfo(cpu->thread->id, sig, sigInfo)) {
+        sigInfo[0] = (U8)sig;
+        const S32 code = K_SI_USER;
+        std::memcpy(sigInfo + 8, &code, sizeof(code));
+        if (cpu->thread && cpu->thread->process) {
+            const U32 pid = cpu->thread->process->id;
+            const U32 uid = cpu->thread->process->userId;
+            std::memcpy(sigInfo + 16, &pid, sizeof(pid));
+            std::memcpy(sigInfo + 20, &uid, sizeof(uid));
+        }
+    }
+    cpu->memory->memcpyToGuest(frameBase, sigInfo, sizeof(sigInfo));
+
     // x86-64 signal-frame ABI: the kernel pushes the restorer address *below*
     // the ucontext so the handler's terminating `ret` pops it and jumps to
     // the restorer. The restorer then issues `syscall rt_sigreturn` with RSP
@@ -2638,7 +2694,7 @@ static bool deliverSignalSync(CPU64* cpu, U32 sig) {
     // and leaves RSP = uctxPtr, which is what rt_sigreturn expects.
     cpu->reg[X64_RSP].setU64(retSlot);
     cpu->reg[X64_RDI].setU64(sig);      // arg1: signal number
-    cpu->reg[X64_RSI].setU64(0);        // arg2: siginfo (we don't synth one)
+    cpu->reg[X64_RSI].setU64((sa.flags & 0x4 /*SA_SIGINFO*/) ? frameBase : 0);
     cpu->reg[X64_RDX].setU64(uctxPtr);  // arg3: ucontext pointer
     cpu->rip = sa.handler;
 
@@ -2670,6 +2726,7 @@ bool CPU64::deliverPendingSignals() {
         if (deliverSignalSync(this, sig)) {
             BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->thread->pendingSignalsMutex);
             this->thread->pendingSignals &= ~bit;
+            eraseQueuedSiginfo(this->thread->id, sig);
             return true;
         }
     }
@@ -2708,6 +2765,7 @@ bool CPU64::interruptSyscallWithSignal(bool allowRestart) {
         if (deliverSignalSync(this, sig)) {
             BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->thread->pendingSignalsMutex);
             this->thread->pendingSignals &= ~bit;
+            eraseQueuedSiginfo(this->thread->id, sig);
             return true;
         }
         this->rip = savedRip;
@@ -4192,10 +4250,19 @@ void ksyscall64(CPU64* cpu) {
             KProcessPtr target = pidfd ? pidfd->process() : KProcessPtr();
             if (!pidfd) { ret = (U64)-K_EBADF; break; }
             if (!target) { ret = (U64)-K_ESRCH; break; }
+            if (a3 && a2 == 0) { ret = (U64)-K_EINVAL; break; }
             if (a3) {
-                static std::atomic<bool> warnedInfo{false};
-                if (!warnedInfo.exchange(true)) klog_fmt("ksyscall64: pidfd_send_signal siginfo delivery unsupported; returned -EOPNOTSUPP");
-                ret = (U64)-K_EOPNOTSUPP;
+                if (target->userId != cpu->thread->process->userId) { ret = (U64)-K_EPERM; break; }
+                U8 info[PIDFD_SIGNAL_INFO_SIZE] = {};
+                cpu->memory->memcpyFromGuest(info, a3, sizeof(info));
+                S32 infoSignal = 0, infoCode = 0;
+                std::memcpy(&infoSignal, info, sizeof(infoSignal));
+                std::memcpy(&infoCode, info + 8, sizeof(infoCode));
+                if (infoSignal != (S32)a2) { ret = (U64)-K_EINVAL; break; }
+                if (infoCode >= 0) { ret = (U64)-K_EPERM; break; }
+                KThread* targetThread = target->getThread();
+                if (!targetThread) { ret = (U64)-K_ESRCH; break; }
+                ret = (U64)(S64)queueSiginfo64(targetThread, (U32)a2, info);
             } else if (a2 == 0) {
                 ret = 0;
             } else {
@@ -5469,10 +5536,38 @@ void ksyscall64(CPU64* cpu) {
             ret = sys_rt_sigpending64(cpu, a1, a2);
             break;
         case X64_SYS_rt_sigqueueinfo:
-            // rt_sigqueueinfo(tgid, sig, info) — like kill but with siginfo.
-            // We don't deliver, so report success the same way kill does.
-            ret = 0;
+        case 297: { // rt_tgsigqueueinfo(tgid, tid, sig, info)
+            const bool threadDirected = nr == 297;
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ESRCH; break; }
+            const U64 tgid = a1;
+            const U64 tid = threadDirected ? a2 : 0;
+            const U64 sig = threadDirected ? a3 : a2;
+            const U64 infoAddress = threadDirected ? a4 : a3;
+            if (tgid > UINT32_MAX || sig < 1 || sig > 64 ||
+                (threadDirected && tid > UINT32_MAX) || !infoAddress) {
+                ret = (U64)-K_EINVAL;
+                break;
+            }
+            KProcessPtr target = tgid == cpu->thread->process->id
+                ? cpu->thread->process : KSystem::getProcess((U32)tgid);
+            if (!target) { ret = (U64)-K_ESRCH; break; }
+            if (target->userId != cpu->thread->process->userId) { ret = (U64)-K_EPERM; break; }
+            KThread* targetThread = threadDirected ? target->getThreadById((U32)tid) : target->getThread();
+            if (!targetThread) { ret = (U64)-K_ESRCH; break; }
+            if (!sys_rangeHasPermission64(cpu->memory, infoAddress, 128, K64_PAGE_READ)) {
+                ret = (U64)-K_EFAULT;
+                break;
+            }
+            U8 info[128] = {};
+            cpu->memory->memcpyFromGuest(info, infoAddress, sizeof(info));
+            S32 infoSignal = 0, infoCode = 0;
+            std::memcpy(&infoSignal, info, sizeof(infoSignal));
+            std::memcpy(&infoCode, info + 8, sizeof(infoCode));
+            if (infoSignal != (S32)sig) { ret = (U64)-K_EINVAL; break; }
+            if (infoCode >= 0) { ret = (U64)-K_EPERM; break; }
+            ret = (U64)(S64)queueSiginfo64(targetThread, (U32)sig, info);
             break;
+        }
         case X64_SYS_pause:
             // pause() blocks till any signal; we never deliver, so the
             // glibc-compatible answer is -EINTR (caller's loop retries).
