@@ -837,8 +837,8 @@ static void captureStencil(Pipeline& pipe, const T& state) {
 // Everything vkCreateGraphicsPipelines does not model is reported here, once
 // per feature (rate-limited, greppable "vk64: UNSUPPORTED <feature>"). Stages
 // with no V2 representation cannot be approximated, so they fail the pipeline
-// with VK_ERROR_FEATURE_NOT_PRESENT; state the page tier cannot honour only
-// degrades rendering, so those are reported and the pipeline is still built.
+// with VK_ERROR_FEATURE_NOT_PRESENT. No unsupported state is approximated:
+// DXVK/vkd3d must choose a path compatible with the advertised feature bits.
 struct PipelineAudit {
     U32 stageMask = 0;            // OR of VkShaderStageFlagBits
     U32 topology = 0;
@@ -862,14 +862,14 @@ static bool vk64AuditGraphicsPipeline(const PipelineAudit& a) {
     if (extra & ~(0x2u | 0x4u | 0x8u | 0x40u | 0x80u)) { vk64Unsupported("unknown-graphics-stage", "pipeline rejected"); reject = true; }
     if (a.topology == 10) { vk64Unsupported("patch-list-topology", "pipeline rejected"); reject = true; }
     else if (a.topology >= 6) { vk64Unsupported("adjacency-topology", "pipeline rejected"); reject = true; }
-    if (a.polygonMode != 0) vk64Unsupported(a.polygonMode == 1 ? "polygon-mode-line" : "polygon-mode-point", "rendered filled");
-    if (a.logicOp) vk64Unsupported("logic-op", "ignored; blending state used instead");
-    if (a.depthBounds) vk64Unsupported("depth-bounds-test", "ignored");
-    if (a.sampleShading) vk64Unsupported("sample-shading", "ignored; per-fragment shading");
-    if (a.alphaToOne) vk64Unsupported("alpha-to-one", "ignored");
-    if (a.viewportCount > 1) vk64Unsupported("multi-viewport", "only viewport 0 is used");
-    if (a.vertexDivisor) vk64Unsupported("vertex-attribute-divisor", "divisor != 1 rendered as per-instance step");
-    if (a.sampleCount != 1 && a.sampleCount != 4) vk64Unsupported("sample-count", "WebGPU supports 1x and 4x only");
+    if (a.polygonMode != 0) { vk64Unsupported(a.polygonMode == 1 ? "polygon-mode-line" : "polygon-mode-point", "pipeline rejected"); reject = true; }
+    if (a.logicOp) { vk64Unsupported("logic-op", "pipeline rejected"); reject = true; }
+    if (a.depthBounds) { vk64Unsupported("depth-bounds-test", "pipeline rejected"); reject = true; }
+    if (a.sampleShading) { vk64Unsupported("sample-shading", "pipeline rejected"); reject = true; }
+    if (a.alphaToOne) { vk64Unsupported("alpha-to-one", "pipeline rejected"); reject = true; }
+    if (a.viewportCount > 1) { vk64Unsupported("multi-viewport", "pipeline rejected"); reject = true; }
+    if (a.vertexDivisor) { vk64Unsupported("vertex-attribute-divisor", "pipeline rejected"); reject = true; }
+    if (a.sampleCount != 1 && a.sampleCount != 4) { vk64Unsupported("sample-count", "pipeline rejected"); reject = true; }
     return reject;
 }
 struct RenderPass : Obj {
