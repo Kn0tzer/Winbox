@@ -2936,6 +2936,10 @@ static void x11_QueryExtension(CPU* cpu) {
         cpu->memory->writed(ARG3, XServer::getServer()->getExtensionGLX());
         cpu->memory->writed(ARG4, 0);
         cpu->memory->writed(ARG5, 0);
+    } else if (name == "MIT-SHM") {
+        static bool logged = false;
+        if (!logged) { logged = true; kwarn_fmt("X11 MIT-SHM unavailable; clients must use XPutImage"); }
+        EAX = False;
     }  else {
         EAX = False;
     }
@@ -2953,21 +2957,30 @@ static void x11_ShapeOffsetShape(CPU* cpu) {
     kpanic("x11_ShapeOffsetShape");
 }
 
+static void x11LogShmUnavailable() {
+    static bool logged = false;
+    if (!logged) { logged = true; kwarn_fmt("X11 MIT-SHM unavailable: shared mappings are unavailable; use XPutImage"); }
+}
+
 static void x11_ShmAttach(CPU* cpu) {
-    kpanic("x11_ShmAttach");
+    x11LogShmUnavailable();
+    EAX = False;
 }
 
 // XImage* XShmCreateImage(Display* dpy, Visual* visual, unsigned int depth, int format, char* data, XShmSegmentInfo* shminfo, unsigned int width, unsigned int height)
 static void x11_ShmCreateImage(CPU* cpu) {
-    kpanic("x11_ShmCreateImage");
+    x11LogShmUnavailable();
+    EAX = 0;
 }
 
 static void x11_ShmDetach(CPU* cpu) {
-    kpanic("x11_ShmDetach");
+    x11LogShmUnavailable();
+    EAX = False;
 }
 
 static void x11_ShmPutImage(CPU* cpu) {
-    kpanic("x11_ShmPutImage");
+    x11LogShmUnavailable();
+    EAX = False;
 }
 
 static void x11_WindowEvent(CPU* cpu) {
