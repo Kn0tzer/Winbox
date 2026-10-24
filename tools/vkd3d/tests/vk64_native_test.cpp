@@ -1360,6 +1360,43 @@ int main() {
         g_v2Pending.clear();
         puts("PASS: render pass subpasses split into passes with resolve copies; extra NextSubpass is loud");
     }
+    {
+        // Dynamic rendering: the colour resolve target becomes a post-pass IMAGE_COPY, not a second
+        // attachment; depth resolve, viewMask and a render-area offset are reported instead of ignored.
+        U64 msaaImg, resImg, msaaView, resView, cbId;
+        auto* mi = createObj<Image>(K_IMAGE, msaaImg); mi->format = 37; mi->w = 16; mi->h = 8; mi->samples = 4;
+        auto* ri2 = createObj<Image>(K_IMAGE, resImg); ri2->format = 37; ri2->w = 16; ri2->h = 8; ri2->samples = 1;
+        auto* mv = createObj<ImageView>(K_IMAGEVIEW, msaaView); mv->image = msaaImg; mv->format = 37; mv->aspect = 1;
+        auto* rv = createObj<ImageView>(K_IMAGEVIEW, resView); rv->image = resImg; rv->format = 37; rv->aspect = 1;
+        auto* dcb = createObj<CmdBuf>(K_CMDBUF, cbId);
+        U8 att[72] = {}, info[72] = {};
+        auto p32 = [](U8* b, size_t at, U32 v) { memcpy(b + at, &v, 4); };
+        auto p64 = [](U8* b, size_t at, U64 v) { memcpy(b + at, &v, 8); };
+        p64(att, 16, msaaView); p32(att, 28, 2); p64(att, 32, resView); p32(att, 44, 1); p32(att, 48, 0);
+        p32(info, 28, 16); p32(info, 32, 8); p32(info, 36, 1); p32(info, 44, 1); p64(info, 48, 7168);
+        p32(info, 20, 3);        // renderArea.offset.x != 0
+        p32(info, 40, 0x3);      // viewMask
+        memory.memcpyToGuest(7168, att, sizeof(att));
+        memory.memcpyToGuest(7296, info, sizeof(info));
+        const U64 mvBefore = vk64BridgeUnsupportedCount("multiview-render-pass"), offBefore = vk64BridgeUnsupportedCount("render-area-offset");
+        vkCmdBeginRendering(cbId, (void*)7296);
+        vkCmdEndRendering(cbId);
+        assert(vk64BridgeUnsupportedCount("multiview-render-pass") == mvBefore + 1 && vk64BridgeUnsupportedCount("render-area-offset") == offBefore + 1);
+        auto* drp = objOf<RenderPass>(dcb->cmds[0].a, K_RENDERPASS, "test");
+        assert(drp->nsub == 1 && drp->sub[0].nColor == 1 && drp->sub[0].color[0] == 0 && drp->sub[0].resolve[0] == 1);
+        serializeSubmitV2({{dcb, cbId}});
+        unsigned begins = 0, copies = 0; U32 attCount = 0; U64 copySrc = 0, copyDst = 0;
+        for (const auto& chunk : g_v2Pending.back().chunks)
+            for (size_t at = 16; at < chunk.size();) {
+                U32 type, len; memcpy(&type, chunk.data() + at, 4); memcpy(&len, chunk.data() + at + 4, 4);
+                if (type == V2_RP_BEGIN) { ++begins; memcpy(&attCount, chunk.data() + at + 8 + 24, 4); }
+                if (type == V2_IMAGE_COPY) { ++copies; memcpy(&copySrc, chunk.data() + at + 8, 8); memcpy(&copyDst, chunk.data() + at + 16, 8); }
+                at += 8 + len;
+            }
+        assert(begins == 1 && attCount == 1 && copies == 1 && copySrc == msaaImg && copyDst == resImg);
+        g_v2Pending.clear();
+        puts("PASS: dynamic rendering colour resolve is an image copy; viewMask and render-area offset are loud");
+    }
         puts("PASS: GUARD advertised features are truthful and identical for 32-bit and 64-bit guests");
 
         // GUARD (silent capability use): SPIR-V that declares capabilities or

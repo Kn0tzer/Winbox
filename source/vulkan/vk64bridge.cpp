@@ -1214,6 +1214,26 @@ static void vk64SetupSubpasses(RenderPass* rp, const std::vector<SubpassIn>& sub
     }
 }
 struct Framebuffer : Obj { U64 rp = 0; U32 natt = 0; U64 views[VK64_MAX_ATTACH] = {0}; U32 w = 0, h = 0; };
+// Dynamic rendering is one implicit subpass. Colour resolve targets become extra framebuffer slots that
+// are not pass attachments; the emitter copies the colour attachment into them when the pass ends.
+static U32 vk64DynamicResolveSlot(RenderPass* rp, Framebuffer* fb, U64 resolveView, U32 resolveMode, const ImageView* resolveInfo) {
+    if (!resolveMode || !resolveView) return VK_ATTACHMENT_UNUSED;
+    if (resolveMode != 2)   // anything but AVERAGE: the replay resolves by averaging
+        vk64Unsupported("resolve-mode", "only the AVERAGE colour resolve mode is performed; SAMPLE_ZERO/MIN/MAX are approximated by it");
+    if (!resolveInfo || fb->natt >= VK64_MAX_ATTACH) {
+        vk64Unsupported("rendering-attachments", "no framebuffer slot left for a resolve target; the resolve is skipped");
+        return VK_ATTACHMENT_UNUSED;
+    }
+    U32 slot = fb->natt++;
+    fb->views[slot] = resolveView;
+    rp->formats[slot] = resolveInfo->format; rp->samples[slot] = 1;
+    return slot;
+}
+static void vk64DynamicAudit(U32 viewMask, U32 offsetX, U32 offsetY, U32 layers) {
+    if (viewMask) vk64Unsupported("multiview-render-pass", "vkCmdBeginRendering viewMask is ignored; rendering happens once");
+    if (offsetX || offsetY) vk64Unsupported("render-area-offset", "a non-zero renderArea offset is ignored; the pass covers the whole target");
+    if (layers > 1 && !viewMask) vk64Unsupported("layered-rendering", "layerCount > 1 renders to layer 0 only");
+}
 // Render-target textures in the replay carry one mip level and one layer, so an attachment view of
 // anything else cannot be honoured; say so instead of silently rendering to level 0 layer 0.
 static void vk64AuditAttachmentView(const ImageView* v) {
@@ -5955,6 +5975,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         cb->dynamicObjects.push_back(rpId);
         cb->dynamicObjects.push_back(fbId);
         fb->rp = rpId; fb->w = ri.renderAreaWidth; fb->h = ri.renderAreaHeight;
+        rp->nsub = 1;
+        vk64DynamicAudit(ri.viewMask, ri.renderAreaOffsetX, ri.renderAreaOffsetY, ri.layerCount);
         Cmd c; c.kind = CMD_BEGIN_RP; c.a = rpId; c.b = fbId;
         auto attachment = [&](U64 address, bool depth) {
             VkRenderingAttachmentInfo att = {};
@@ -5972,6 +5994,14 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 float value; memcpy(&value, att.clearValue, 4); c.clearDepth = value;
                 rp->depthFmt = rp->formats[i];
             } else vk64SetAttachmentClear(c, i, rp->formats[i], att.clearValue);
+            SubpassMap& sm = rp->sub[0];
+            if (depth) {
+                sm.depth = i;
+                if (att.resolveMode) vk64Unsupported("depth-stencil-resolve", "depth/stencil resolve in dynamic rendering is not performed");
+            } else if (sm.nColor < VK64_MAX_ATTACH) {
+                U32 slot = vk64DynamicResolveSlot(rp, fb, att.resolveImageView, att.resolveMode, objOf<ImageView>(att.resolveImageView, K_IMAGEVIEW, "vkCmdBeginRendering"));
+                sm.color[sm.nColor] = i; sm.resolve[sm.nColor++] = slot;
+            }
         };
         U32 colors = vk64CapCount("rendering-attachments", ri.colorAttachmentCount, VK64_MAX_ATTACH);
         for (U32 i = 0; i < colors && ri.pColorAttachments; ++i)
@@ -9467,6 +9497,8 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         cb->dynamicObjects.push_back(rpId);
         cb->dynamicObjects.push_back(fbId);
         fb->rp = rpId; fb->w = ri.renderArea.extent.width; fb->h = ri.renderArea.extent.height;
+        rp->nsub = 1;
+        vk64DynamicAudit(ri.viewMask, ri.renderArea.offset.x, ri.renderArea.offset.y, ri.layerCount);
         Cmd c; c.kind = CMD_BEGIN_RP; c.a = rpId; c.b = fbId;
         auto attachment = [&](U64 address, bool depth) {
             vk32abi::VkRenderingAttachmentInfo att = {};
@@ -9484,6 +9516,14 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 float value; memcpy(&value, &att.clearValue, 4); c.clearDepth = value;
                 rp->depthFmt = rp->formats[i];
             } else vk64SetAttachmentClear(c, i, rp->formats[i], reinterpret_cast<const U32*>(&att.clearValue));
+            SubpassMap& sm = rp->sub[0];
+            if (depth) {
+                sm.depth = i;
+                if (att.resolveMode) vk64Unsupported("depth-stencil-resolve", "depth/stencil resolve in dynamic rendering is not performed");
+            } else if (sm.nColor < VK64_MAX_ATTACH) {
+                U32 slot = vk64DynamicResolveSlot(rp, fb, att.resolveImageView, att.resolveMode, objOf32<ImageView>(att.resolveImageView, K_IMAGEVIEW, "vkCmdBeginRendering"));
+                sm.color[sm.nColor] = i; sm.resolve[sm.nColor++] = slot;
+            }
         };
         U32 colors = vk64CapCount("rendering-attachments", ri.colorAttachmentCount, VK64_MAX_ATTACH);
         for (U32 i = 0; i < colors && ri.pColorAttachments; ++i)
