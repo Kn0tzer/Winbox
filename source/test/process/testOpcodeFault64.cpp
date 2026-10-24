@@ -89,5 +89,40 @@ void testOpcodeFault64Delivery() {
     }
 }
 
+void testCpu64AvxCpuidMask() {
+    TestContext& context = testContext();
+    if (!context.process->memory64) context.process->memory64 = new KMemory64(context.process.get());
+    KMemory64* memory = context.process->memory64;
+    constexpr U64 codePage = 0x60040000ULL;
+    if (!memory->getPageFlags(codePage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(codePage, K64_PAGE_SIZE, 7) != codePage) {
+        testFail("AVX CPUID test could not map executable page");
+        return;
+    }
+    const U8 cpuid[] = { 0x0F, 0xA2 };
+    memory->memcpyToGuest(codePage, cpuid, sizeof(cpuid));
+
+    CPU64 cpu(memory);
+    cpu.thread = nullptr;
+    cpu.memory = memory;
+    cpu.rip = codePage;
+    cpu.yield = false;
+    cpu.reg[X64_RAX].setU64(1);
+    cpu.reg[X64_RCX].setU64(0);
+    cpu.runBounded(1);
+    const U32 leaf1Ecx = cpu.reg[X64_RCX].u32;
+    if (leaf1Ecx & (1u << 28)) testFail("CPUID advertises AVX without AVX execution support");
+    if (leaf1Ecx & (1u << 27)) testFail("CPUID advertises OSXSAVE without AVX execution support");
+
+    cpu.rip = codePage;
+    cpu.yield = false;
+    cpu.reg[X64_RAX].setU64(7);
+    cpu.reg[X64_RCX].setU64(0);
+    cpu.runBounded(1);
+    if (cpu.reg[X64_RBX].u32 & (1u << 5)) {
+        testFail("CPUID advertises AVX2 while AVX and OSXSAVE are hidden");
+    }
+}
+
 #endif
 #endif
