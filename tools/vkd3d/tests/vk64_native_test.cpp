@@ -507,6 +507,39 @@ int main() {
         }
         puts("PASS: every accepted image/vertex format has a real size; unknown formats are loud");
     }
+    {
+        // Fixed-size bridge tables never truncate quietly: 8 attachments / 16 vertex bindings fit
+        // (the wire limit and the advertised maxVertexInputBindings); anything past that is reported.
+        VkAttachmentDescription ad[9] = {};
+        memory.memcpyToGuest(6144, ad, sizeof(ad));
+        VkRenderPassCreateInfo rpci = {};
+        rpci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO; rpci.pAttachments = 6144;
+        for (U32 count : {8u, 9u}) {
+            const U64 before = vk64BridgeUnsupportedCount("renderpass-attachments");
+            rpci.attachmentCount = count;
+            memory.memcpyToGuest(6000, &rpci, sizeof(rpci));
+            VK64Args rpa{}; rpa.a[1] = 6000; rpa.a[3] = 6100;
+            memory.memcpyToGuest(128, &rpa, sizeof(rpa));
+            assert(vk64Bridge(&cpu, VK64_fn_vkCreateRenderPass, 128) == VK_SUCCESS);
+            auto* rp = objOf<RenderPass>(memory.readq(6100), K_RENDERPASS, "test");
+            assert(rp && rp->natt == 8);
+            assert(vk64BridgeUnsupportedCount("renderpass-attachments") == before + (count > 8 ? 1 : 0));
+        }
+        U64 vbCbId; createObj<CmdBuf>(K_CMDBUF, vbCbId);
+        { U8 zeros[64] = {}; memory.memcpyToGuest(6400, zeros, sizeof(zeros)); }
+        const U64 vbBefore = vk64BridgeUnsupportedCount("vertex-bindings");
+        VK64Args vba{}; vba.a[0] = vbCbId; vba.a[1] = 12; vba.a[2] = 4; vba.a[3] = 6400; vba.a[4] = 6432;
+        memory.memcpyToGuest(128, &vba, sizeof(vba));
+        vk64Bridge(&cpu, VK64_fn_vkCmdBindVertexBuffers, 128);
+        assert(vk64BridgeUnsupportedCount("vertex-bindings") == vbBefore);        // 12..15 fits
+        vba.a[1] = 14; memory.memcpyToGuest(128, &vba, sizeof(vba));
+        vk64Bridge(&cpu, VK64_fn_vkCmdBindVertexBuffers, 128);
+        assert(vk64BridgeUnsupportedCount("vertex-bindings") == vbBefore + 1);    // 14..17 overflows
+        vba.a[1] = 16; memory.memcpyToGuest(128, &vba, sizeof(vba));
+        vk64Bridge(&cpu, VK64_fn_vkCmdBindVertexBuffers, 128);
+        assert(vk64BridgeUnsupportedCount("vertex-bindings") == vbBefore + 2);    // first past the end
+        puts("PASS: attachment and vertex-binding overflow is reported, 8 attachments / 16 bindings fit");
+    }
     // Depth attachment has its own load/store and clear value, rather than
     // borrowing color metadata. It must occupy an explicit depth entry.
     U64 depthImageId; auto* depthImage = createObj<Image>(K_IMAGE, depthImageId);

@@ -686,11 +686,18 @@ void dropObj(U64 id) {
 // recorded are the same fields P2 records — that is what lets submit rebuild a
 // complete frame manifest without the app re-stating anything).
 // ---------------------------------------------------------------------------
-const U32 VK64_MAX_SETS = 8, VK64_MAX_BINDINGS = 8, VK64_MAX_ATTACH = 4, VK64_MAX_DRAWS = 64;
+const U32 VK64_MAX_SETS = 8, VK64_MAX_BINDINGS = 8, VK64_MAX_ATTACH = 8, VK64_MAX_DRAWS = 64;   // MAX_ATTACH matches the RP_BEGIN wire limit (web/vk-protocol.mjs)
 const U32 VK64_MAX_CMDS = 4096;
 const U32 VK64_MAX_INDIRECT_DRAWS = 1024;
-const U32 VK64_MAX_VERT_BINDINGS = 4, VK64_MAX_VERT_ATTRIBS = 16;
+const U32 VK64_MAX_VERT_BINDINGS = 16, VK64_MAX_VERT_ATTRIBS = 16;   // = advertised maxVertexInputBindings/Attributes
 const U32 VK64_MAX_PUSH_BYTES = 256;   // matches limits.maxPushConstantsSize
+// A fixed-size internal table cannot hold more entries than `cap`. Never truncate quietly: the first
+// overflow of each `feature` is reported (rate-limited, greppable) and the clamped count returned.
+static U32 vk64CapCount(const char* feature, U32 n, U32 cap) {
+    if (n <= cap) return n;
+    vk64Unsupported(feature, ("count " + std::to_string(n) + " exceeds the bridge limit " + std::to_string(cap) + "; extra entries are dropped").c_str());
+    return cap;
+}
 
 // dstArrayElement + count, so a descriptor ARRAY write is not silently collapsed
 // to its first element (audit §f: DXVK writes texture arrays for descriptor
@@ -4045,15 +4052,17 @@ void walkProperties2(U64 pNextAddr) {
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT: {
                 VkPhysicalDeviceTransformFeedbackPropertiesEXT p = {};
                 g_mem->memcpyFromGuest(&p, cur, sizeof(p));
-                p.maxTransformFeedbackStreams = 4;
-                p.maxTransformFeedbackBuffers = 4;
-                p.maxTransformFeedbackBufferSize = 1ull << 27;
-                p.maxTransformFeedbackStreamDataSize = 4096;
-                p.maxTransformFeedbackBufferDataSize = 4096;
-                p.maxTransformFeedbackBufferDataStride = 256;
-                p.transformFeedbackQueries = VK_TRUE;
-                p.transformFeedbackStreamsLinesTriangles = VK_TRUE;
-                p.transformFeedbackDraw = VK_TRUE;
+                // VK_EXT_transform_feedback is not advertised and transformFeedback is FALSE, so every
+                // limit is reported as zero rather than as capabilities no command can use.
+                p.maxTransformFeedbackStreams = 0;
+                p.maxTransformFeedbackBuffers = 0;
+                p.maxTransformFeedbackBufferSize = 0;
+                p.maxTransformFeedbackStreamDataSize = 0;
+                p.maxTransformFeedbackBufferDataSize = 0;
+                p.maxTransformFeedbackBufferDataStride = 0;
+                p.transformFeedbackQueries = VK_FALSE;
+                p.transformFeedbackStreamsLinesTriangles = VK_FALSE;
+                p.transformFeedbackDraw = VK_FALSE;
                 g_mem->memcpyToGuest(cur, &p, sizeof(p));
                 break;
             }
@@ -4958,7 +4967,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
         RenderPass* rp = createObj<RenderPass>(K_RENDERPASS, id);
-        rp->natt = ci.attachmentCount > VK64_MAX_ATTACH ? VK64_MAX_ATTACH : ci.attachmentCount;
+        rp->natt = vk64CapCount("renderpass-attachments", ci.attachmentCount, VK64_MAX_ATTACH);
         std::vector<VkAttachmentDescription> atts;
         readArray(ci.pAttachments, rp->natt, atts);
         for (U32 i = 0; i < atts.size(); i++) {
@@ -4979,7 +4988,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         U64 id = 0;
         Framebuffer* fb = createObj<Framebuffer>(K_FRAMEBUFFER, id);
         fb->rp = ci.renderPass;
-        fb->natt = ci.attachmentCount > VK64_MAX_ATTACH ? VK64_MAX_ATTACH : ci.attachmentCount;
+        fb->natt = vk64CapCount("framebuffer-attachments", ci.attachmentCount, VK64_MAX_ATTACH);
         std::vector<VkImageView> views;
         readArray(ci.pAttachments, fb->natt, views);
         for (U32 i = 0; i < views.size(); i++) fb->views[i] = views[i];
@@ -5026,10 +5035,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             // vertex layout to build and nothing rasterizes.
             VkPipelineVertexInputStateCreateInfo vi = {};
             if (readStruct(ci.pVertexInputState, vi)) {
-                p->nvb = vi.vertexBindingDescriptionCount > VK64_MAX_VERT_BINDINGS
-                             ? VK64_MAX_VERT_BINDINGS : vi.vertexBindingDescriptionCount;
-                p->nva = vi.vertexAttributeDescriptionCount > VK64_MAX_VERT_ATTRIBS
-                             ? VK64_MAX_VERT_ATTRIBS : vi.vertexAttributeDescriptionCount;
+                p->nvb = vk64CapCount("vertex-bindings", vi.vertexBindingDescriptionCount, VK64_MAX_VERT_BINDINGS);
+                p->nva = vk64CapCount("vertex-attributes", vi.vertexAttributeDescriptionCount, VK64_MAX_VERT_ATTRIBS);
                 std::vector<VkVertexInputBindingDescription> vbs;
                 readArray(vi.pVertexBindingDescriptions, p->nvb, vbs);
                 for (U32 b = 0; b < vbs.size(); b++) {
@@ -5055,7 +5062,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 if (!vk64ApplyDynamicStates(*p, dynValues)) dynamicRejected = true;
             }
             std::vector<VkPipelineColorBlendAttachmentState> blends;
-            readArray(cbs.pAttachments, std::min<U32>(cbs.attachmentCount, VK64_MAX_ATTACH), blends);
+            readArray(cbs.pAttachments, vk64CapCount("blend-attachments", cbs.attachmentCount, VK64_MAX_ATTACH), blends);
             captureColorBlend(*p, blends);
             memcpy(p->blendConstants, cbs.blendConstants, sizeof(p->blendConstants));
             std::vector<VkPipelineShaderStageCreateInfo> stages;
@@ -5587,7 +5594,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // pClearValues is a guest VA: colour first, then depth/stencil (P1 read
         // index 0 as colour and index 1 as depth).
         std::vector<VkClearValue> clears;
-        readArray(bi.pClearValues, std::min<U32>(bi.clearValueCount, VK64_MAX_ATTACH), clears);
+        readArray(bi.pClearValues, vk64CapCount("clear-values", bi.clearValueCount, VK64_MAX_ATTACH), clears);
         captureRenderPassClears(c, objOf<RenderPass>(bi.renderPass, K_RENDERPASS, "vkCmdBeginRenderPass"), clears);
         pushCmd(cb, c);
         return 0;
@@ -5612,7 +5619,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         c.a = bi.renderPass;
         c.b = bi.framebuffer;
         std::vector<VkClearValue> clears;
-        readArray(bi.pClearValues, std::min<U32>(bi.clearValueCount, VK64_MAX_ATTACH), clears);
+        readArray(bi.pClearValues, vk64CapCount("clear-values", bi.clearValueCount, VK64_MAX_ATTACH), clears);
         captureRenderPassClears(c, objOf<RenderPass>(bi.renderPass, K_RENDERPASS, "vkCmdBeginRenderPass"), clears);
         pushCmd(cb, c);
         return 0;
@@ -5708,7 +5715,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 rp->depthFmt = rp->formats[i];
             } else if (i == 0) memcpy(c.f, att.clearValue, 16);
         };
-        U32 colors = std::min(ri.colorAttachmentCount, (U32)VK64_MAX_ATTACH);
+        U32 colors = vk64CapCount("rendering-attachments", ri.colorAttachmentCount, VK64_MAX_ATTACH);
         for (U32 i = 0; i < colors && ri.pColorAttachments; ++i)
             attachment(ri.pColorAttachments + (U64)i * sizeof(VkRenderingAttachmentInfo), false);
         attachment(ri.pDepthAttachment, true);
@@ -5918,8 +5925,9 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         CmdBuf* cb = cbOf(args.a[0], "vkCmdBindVertexBuffers");
         VK64_DROP_IF(return 0, !cb);
         U32 first = (U32)args.a[1], count = (U32)args.a[2];
-        if (!args.a[3] || !args.a[4] || !count || first >= VK64_MAX_VERT_BINDINGS) return 0;
-        if (first + count > VK64_MAX_VERT_BINDINGS) count = VK64_MAX_VERT_BINDINGS - first;
+        if (!args.a[3] || !args.a[4] || !count) return 0;
+        if (first >= VK64_MAX_VERT_BINDINGS) { vk64Unsupported("vertex-bindings", "vkCmdBindVertexBuffers firstBinding is beyond the bridge limit; buffers are dropped"); return 0; }
+        if (first + count > VK64_MAX_VERT_BINDINGS) { vk64Unsupported("vertex-bindings", "vkCmdBindVertexBuffers range exceeds the bridge limit; extra buffers are dropped"); count = VK64_MAX_VERT_BINDINGS - first; }
         for (U32 i = 0; i < count; i++) {
             cb->vbs[first + i] = rd64(args.a[3] + (U64)i * 8);
             cb->vbOff[first + i] = rd64(args.a[4] + (U64)i * 8);
@@ -8108,10 +8116,8 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             // vertex layout to build and nothing rasterizes.
             vk32abi::VkPipelineVertexInputStateCreateInfo vi = {};
             if (readStruct32(ci.pVertexInputState, vi)) {
-                p->nvb = vi.vertexBindingDescriptionCount > VK64_MAX_VERT_BINDINGS
-                             ? VK64_MAX_VERT_BINDINGS : vi.vertexBindingDescriptionCount;
-                p->nva = vi.vertexAttributeDescriptionCount > VK64_MAX_VERT_ATTRIBS
-                             ? VK64_MAX_VERT_ATTRIBS : vi.vertexAttributeDescriptionCount;
+                p->nvb = vk64CapCount("vertex-bindings", vi.vertexBindingDescriptionCount, VK64_MAX_VERT_BINDINGS);
+                p->nva = vk64CapCount("vertex-attributes", vi.vertexAttributeDescriptionCount, VK64_MAX_VERT_ATTRIBS);
                 std::vector<vk32abi::VkVertexInputBindingDescription> vbs;
                 readArray32(vi.pVertexBindingDescriptions, p->nvb, vbs);
                 for (U32 b = 0; b < vbs.size(); b++) {
@@ -8137,7 +8143,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 if (!vk64ApplyDynamicStates(*p, dynValues)) dynamicRejected = true;
             }
             std::vector<vk32abi::VkPipelineColorBlendAttachmentState> blends;
-            readArray32(cbs.pAttachments, std::min<U32>(cbs.attachmentCount, VK64_MAX_ATTACH), blends);
+            readArray32(cbs.pAttachments, vk64CapCount("blend-attachments", cbs.attachmentCount, VK64_MAX_ATTACH), blends);
             captureColorBlend(*p, blends);
             memcpy(p->blendConstants, cbs.blendConstants, sizeof(p->blendConstants));
             std::vector<vk32abi::VkPipelineShaderStageCreateInfo> stages;
@@ -8210,7 +8216,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         if (!readStruct32(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
         RenderPass* rp = createObj32<RenderPass>(K_RENDERPASS, id);
-        rp->natt = ci.attachmentCount > VK64_MAX_ATTACH ? VK64_MAX_ATTACH : ci.attachmentCount;
+        rp->natt = vk64CapCount("renderpass-attachments", ci.attachmentCount, VK64_MAX_ATTACH);
         std::vector<vk32abi::VkAttachmentDescription> atts;
         readArray32(ci.pAttachments, rp->natt, atts);
         for (U32 i = 0; i < atts.size(); i++) {
@@ -8231,7 +8237,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         U64 id = 0;
         Framebuffer* fb = createObj32<Framebuffer>(K_FRAMEBUFFER, id);
         fb->rp = ci.renderPass;
-        fb->natt = ci.attachmentCount > VK64_MAX_ATTACH ? VK64_MAX_ATTACH : ci.attachmentCount;
+        fb->natt = vk64CapCount("framebuffer-attachments", ci.attachmentCount, VK64_MAX_ATTACH);
         std::vector<vk32abi::VkImageView> views;
         readArray32(ci.pAttachments, fb->natt, views);
         for (U32 i = 0; i < views.size(); i++) fb->views[i] = views[i];
@@ -8450,7 +8456,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         // pClearValues is a guest VA: colour first, then depth/stencil (P1 read
         // index 0 as colour and index 1 as depth).
         std::vector<vk32abi::VkClearValue> clears;
-        readArray32(bi.pClearValues, std::min<U32>(bi.clearValueCount, VK64_MAX_ATTACH), clears);
+        readArray32(bi.pClearValues, vk64CapCount("clear-values", bi.clearValueCount, VK64_MAX_ATTACH), clears);
         captureRenderPassClears(c, objOf32<RenderPass>(bi.renderPass, K_RENDERPASS, "vkCmdBeginRenderPass"), clears);
         pushCmd(cb, c);
         return 0;
@@ -8603,8 +8609,9 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdBindVertexBuffers");
         VK64_DROP_IF(return 0, !cb);
         U32 first = (U32)args.a[1], count = (U32)args.a[2];
-        if (!args.a[3] || !args.a[4] || !count || first >= VK64_MAX_VERT_BINDINGS) return 0;
-        if (first + count > VK64_MAX_VERT_BINDINGS) count = VK64_MAX_VERT_BINDINGS - first;
+        if (!args.a[3] || !args.a[4] || !count) return 0;
+        if (first >= VK64_MAX_VERT_BINDINGS) { vk64Unsupported("vertex-bindings", "vkCmdBindVertexBuffers firstBinding is beyond the bridge limit; buffers are dropped"); return 0; }
+        if (first + count > VK64_MAX_VERT_BINDINGS) { vk64Unsupported("vertex-bindings", "vkCmdBindVertexBuffers range exceeds the bridge limit; extra buffers are dropped"); count = VK64_MAX_VERT_BINDINGS - first; }
         for (U32 i = 0; i < count; i++) {
             cb->vbs[first + i] = rd64_32(args.a[3] + (U64)i * 8);
             cb->vbOff[first + i] = rd64_32(args.a[4] + (U64)i * 8);
@@ -9136,7 +9143,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 rp->depthFmt = rp->formats[i];
             } else if (i == 0) memcpy(c.f, &att.clearValue, 16);
         };
-        U32 colors = std::min(ri.colorAttachmentCount, (U32)VK64_MAX_ATTACH);
+        U32 colors = vk64CapCount("rendering-attachments", ri.colorAttachmentCount, VK64_MAX_ATTACH);
         for (U32 i = 0; i < colors && ri.pColorAttachments; ++i)
             attachment(ri.pColorAttachments + (U64)i * sizeof(vk32abi::VkRenderingAttachmentInfo), false);
         attachment(ri.pDepthAttachment, true);
