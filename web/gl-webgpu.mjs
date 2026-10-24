@@ -2530,7 +2530,9 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (!buffer) { this._recordError(GL.INVALID_OPERATION); return; }
     if (!Number.isInteger(width) || !Number.isInteger(height) || width < 0 || height < 0) { this._recordError(GL.INVALID_VALUE); return; }
     const depthFormats = [0x81a5, 0x81a6, 0x81a7, 0x8cac];
-    const colorFormats = [0x8056, 0x8057, 0x8058, 0x8051, 0x8059, 0x8d62, 0x881a, 0x8814];
+    const colorFormats = [0x8056, 0x8057, 0x8058, 0x8051, 0x8059, 0x8d62, 0x881a, 0x8814,
+      0x8231, 0x8232, 0x8233, 0x8234, 0x8235, 0x8236, 0x8237, 0x8238, 0x8239, 0x823a, 0x823b, 0x823c,
+      0x8d8e, 0x8d7c, 0x8d88, 0x8d76, 0x8d82, 0x8d70, 0x906f];
     if (![...depthFormats, ...colorFormats].includes(internalFormat)) { this._recordError(GL.INVALID_ENUM); return; }
     if (![0x81a5, 0x81a6, 0x81a7, 0x8cac, 0x8058].includes(internalFormat)) {
       this._rejectUnsupported(`renderbuffer internal format 0x${Number(internalFormat).toString(16)}`, GL.INVALID_OPERATION);

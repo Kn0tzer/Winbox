@@ -456,6 +456,9 @@ test('renderbuffer storage validates target, binding, dimensions, and formats', 
     gl.renderbufferStorage(0x8d41, 0x881a, 4, 4);
     assert.equal(gl.getError(), 0x0502, 'valid RGBA16F storage is explicitly rejected until floating color targets are implemented');
     assert.ok(logs.some(line => line.includes('renderbuffer internal format 0x881a')));
+    gl.renderbufferStorage(0x8d41, 0x8d7c, 4, 4);
+    assert.equal(gl.getError(), 0x0502, 'valid RGBA8UI storage is explicitly rejected until integer color targets are implemented');
+    assert.ok(logs.some(line => line.includes('renderbuffer internal format 0x8d7c')));
     assert.equal(renderbuffer.width, 0, 'invalid storage requests preserve prior allocation');
   } finally { gpu.restore(); }
 });
