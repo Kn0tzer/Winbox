@@ -368,7 +368,7 @@ export function v2TextureFormat(vkFormat, counters, features) {
   if (V2_NORM16_FORMATS.has(vkFormat)) {
     const norm16 = hasTextureFeature(features, 'texture-formats-tier1') || hasTextureFeature(features, 'norm16');
     f = vkFormat === 70 ? (norm16 ? 'r16unorm' : 'r16float') : (norm16 ? 'rg16unorm' : 'rg16float');
-  } else if (vkFormat === 130 && hasTextureFeature(features, 'depth32float-stencil8')) {
+  } else if ((vkFormat === 129 || vkFormat === 130) && hasTextureFeature(features, 'depth32float-stencil8')) {
     f = 'depth32float-stencil8';
   }
   if (!f) {
@@ -500,10 +500,18 @@ export function v2DepthStencilUploads(vkFormat, bytes, features) {
     for (let texel = 0; texel < texels; texel++) stencil[texel] = source.getUint8(texel * sourceStride + (vkFormat === 129 ? 3 : 4));
     const uploads = [{ aspect: /** @type {GPUTextureAspect} */ ('stencil-only'), bytesPerTexel: 1, pixels: stencil }];
     const supportsDepth32Stencil8 = hasTextureFeature(features, 'depth32float-stencil8');
-    if (vkFormat === 130 && supportsDepth32Stencil8) {
+    if ((vkFormat === 129 || vkFormat === 130) && supportsDepth32Stencil8) {
       const depth = new Uint8Array(texels * 4);
-      for (let texel = 0; texel < texels; texel++)
-        depth.set(bytes.subarray(texel * sourceStride, texel * sourceStride + 4), texel * 4);
+      if (vkFormat === 129) {
+        const output = new DataView(depth.buffer);
+        for (let texel = 0; texel < texels; texel++) {
+          const packed = source.getUint32(texel * sourceStride, true) & 0x00ffffff;
+          output.setFloat32(texel * 4, packed / 0x00ffffff, true);
+        }
+      } else {
+        for (let texel = 0; texel < texels; texel++)
+          depth.set(bytes.subarray(texel * sourceStride, texel * sourceStride + 4), texel * 4);
+      }
       uploads.unshift({ aspect: /** @type {GPUTextureAspect} */ ('depth-only'), bytesPerTexel: 4, pixels: depth });
       return { uploads, skippedDepth: false };
     }

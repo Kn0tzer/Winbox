@@ -2996,8 +2996,18 @@ static bool v2WebGpuBcSupported() {
     return false;
 #endif
 }
+static bool v2WebGpuDepth32FloatStencil8Supported() {
+#ifdef __EMSCRIPTEN__
+    return MAIN_THREAD_EM_ASM_INT({ return globalThis.bwVkDepth32FloatStencil8 === true ? 1 : 0; }) != 0;
+#else
+    return false;
+#endif
+}
 static bool v2FormatIsSupportedImage(U32 format) {
     return v2FormatIsBC(format) ? v2WebGpuBcSupported() : v2FormatIn(format, kV2SupportedTextureFormats);
+}
+static bool v2FormatTransferDstSupported(U32 format) {
+    return (format != 129 && format != 130) || v2WebGpuDepth32FloatStencil8Supported();
 }
 static VkSampleCountFlags v2FormatSampleCounts(U32 format) {
     if (!v2FormatIsSupportedImage(format)) return 0;
@@ -3008,8 +3018,9 @@ static VkSampleCountFlags v2FormatSampleCounts(U32 format) {
 }
 static VkFormatFeatureFlags v2FormatFeatureFlags(U32 format) {
     if (!v2FormatIsSupportedImage(format)) return 0;
-    VkFormatFeatureFlags flags = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
-        VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    VkFormatFeatureFlags flags = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
+    if (v2FormatTransferDstSupported(format))
+        flags |= VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
     if (v2FormatIsColorAttachment(format)) flags |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
     if (v2FormatIsBlendable(format)) flags |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
     if (v2FormatIsDepthStencil(format)) flags |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
@@ -3022,8 +3033,9 @@ static VkFormatFeatureFlags v2FormatBufferFeatureFlags(U32 format) {
 static VkFormatFeatureFlags2 v2FormatFeatureFlags2(U32 format) {
     if (!v2FormatIsSupportedImage(format)) return 0;
     // These legacy aliases use the same bit values as VkFormatFeatureFlags2.
-    VkFormatFeatureFlags2 flags = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
-        VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    VkFormatFeatureFlags2 flags = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
+    if (v2FormatTransferDstSupported(format))
+        flags |= VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
     if (v2FormatIsColorAttachment(format)) flags |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
     if (v2FormatIsBlendable(format)) flags |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
     if (v2FormatIsDepthStencil(format)) flags |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
@@ -5214,6 +5226,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
         if (!v2FormatIsSupportedImage(ci.format)) {
             vk64Unsupported("image-format", "format is not supported by the WebGPU replay tier");
+            wr64(args.a[3], 0);
+            return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        }
+        if ((ci.usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) && !v2FormatTransferDstSupported(ci.format)) {
+            vk64Unsupported("depth-stencil-transfer-dst", "D24S8/D32S8 uploads need WebGPU depth32float-stencil8; image rejected");
             wr64(args.a[3], 0);
             return VK_ERROR_FORMAT_NOT_SUPPORTED;
         }
@@ -8416,6 +8433,11 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         if (!readStruct32((U32)args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
         if (!v2FormatIsSupportedImage(ci.format)) {
             vk64Unsupported("image-format", "format is not supported by the WebGPU replay tier");
+            wr64_32((U32)args.a[3], 0);
+            return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        }
+        if ((ci.usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) && !v2FormatTransferDstSupported(ci.format)) {
+            vk64Unsupported("depth-stencil-transfer-dst", "D24S8/D32S8 uploads need WebGPU depth32float-stencil8; image rejected");
             wr64_32((U32)args.a[3], 0);
             return VK_ERROR_FORMAT_NOT_SUPPORTED;
         }
