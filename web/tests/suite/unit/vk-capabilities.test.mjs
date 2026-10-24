@@ -96,6 +96,19 @@ test('occlusion queries remain disabled because render sample counting is unavai
   assert.match(bridge, /"occlusion queries are not implemented; device feature bit is false"/);
 });
 
+test('descriptor-set limit matches the three WebGPU groups left after push constants', () => {
+  assert.match(bridge, /L\.maxBoundDescriptorSets\s*=\s*3/);
+  const marker = 'case VK64_fn_vkCreatePipelineLayout: {';
+  const first = bridge.indexOf(marker), second = bridge.indexOf(marker, first + marker.length);
+  assert.ok(first >= 0 && second > first, 'both guest ABIs have a pipeline-layout handler');
+  const layouts = [functionBody(bridge.slice(first), marker), functionBody(bridge.slice(second), marker)];
+  for (const body of layouts) {
+    assert.match(body, /ci\.setLayoutCount > 3/);
+    assert.match(body, /vk64Unsupported\("descriptor-set-count"/);
+    assert.match(body, /return VK_ERROR_FEATURE_NOT_PRESENT/);
+  }
+});
+
 test('features that are not implemented are not advertised', () => {
   const adv = advertisedFeatures();
   for (const k of manifest.notAdvertised) assert.ok(!adv.has(k), `${k} must stay FALSE`);

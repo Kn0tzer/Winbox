@@ -3908,7 +3908,9 @@ void fillLimits(Limits& L) {
     L.maxStorageBufferRange = 1 << 30; L.maxPushConstantsSize = 256;
     L.maxMemoryAllocationCount = 4096; L.maxSamplerAllocationCount = 4000;
     L.bufferImageGranularity = 1; L.sparseAddressSpaceSize = 0;
-    L.maxBoundDescriptorSets = 8; L.maxPerStageDescriptorSamplers = 16;
+    // WebGPU reserves one of its four bind groups for the push-constant UBO;
+    // Vulkan sets 0..2 are the largest contiguous guest set range we can map.
+    L.maxBoundDescriptorSets = 3; L.maxPerStageDescriptorSamplers = 16;
     L.maxPerStageDescriptorUniformBuffers = 16; L.maxPerStageDescriptorStorageBuffers = 4;
     L.maxPerStageDescriptorSampledImages = 16; L.maxPerStageDescriptorStorageImages = 4;
     L.maxPerStageDescriptorInputAttachments = 4;
@@ -5446,6 +5448,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             klog_fmt("vk64: vkCreatePipelineLayout FAILED: readOk=%d outNull=%d",
                      (int)(readStruct(args.a[1], ci)), (int)(!args.a[3]));
             return VK_ERROR_INITIALIZATION_FAILED;
+        }
+        if (ci.setLayoutCount > 3) {
+            vk64Unsupported("descriptor-set-count", "WebGPU replay supports three guest sets because group 3 is reserved for push constants");
+            return VK_ERROR_FEATURE_NOT_PRESENT;
         }
         U64 id = 0;
         PipelineLayout* l = createObj<PipelineLayout>(K_PIPELAYOUT, id);
@@ -8592,6 +8598,10 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCreatePipelineLayout: {
         vk32abi::VkPipelineLayoutCreateInfo ci = {};
         if (!readStruct32((U32)args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (ci.setLayoutCount > 3) {
+            vk64Unsupported("descriptor-set-count", "WebGPU replay supports three guest sets because group 3 is reserved for push constants");
+            return VK_ERROR_FEATURE_NOT_PRESENT;
+        }
         U64 id = 0;
         PipelineLayout* pl = createObj32<PipelineLayout>(K_PIPELAYOUT, id);
         pl->nsets = ci.setLayoutCount;
