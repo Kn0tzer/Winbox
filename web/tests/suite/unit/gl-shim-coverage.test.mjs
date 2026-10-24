@@ -67,6 +67,15 @@ test('GL ABI count matches bridge handler coverage', () => {
     `Bridge covers ${coverage}/${abiFns.length} ABI functions`);
 });
 
+test('query bookkeeping declarations are available in both native and WASM GL builds', () => {
+  const nativeGuard = bridgeSrc.indexOf('#ifndef __EMSCRIPTEN__');
+  const queryState = bridgeSrc.indexOf('struct GLQueryStatus');
+  assert.ok(queryState >= 0 && queryState < nativeGuard,
+    'query state used by shared GL dispatch must be declared before the native-only guard');
+  assert.match(bridgeSrc, /g_glQueryStatus\[id\] = GLQueryStatus\{\}/);
+  assert.match(bridgeSrc, /g_glQueryStatus\.find\(id\)/);
+});
+
 test('framebuffer generation writes guest-visible names', () => {
   assert.match(bridgeSrc, /case GL64_fn_glGenFramebuffers:\s*if \(g_glContext && args\.a\[1\]\) genObjects\(cpu, args, GenKind::Framebuffer\)/);
   assert.match(bridgeSrc, /kind == GenKind::Texture \|\| kind == GenKind::Framebuffer \|\|\s*kind == GenKind::Renderbuffer[\s\S]{0,220}memcpyToGuest\(args\.a\[1\], ids\.data\(\), \(U64\)n \* 4\)/);
