@@ -823,12 +823,13 @@ static void x11_LookupString(CPU* cpu) {
     U32 keysym_return = ARG4;
     U32 status_in_out = ARG5;
     char buffer[16];
+    const U32 capacity = ARG3 > 0 ? std::min<U32>((U32)ARG3, sizeof(buffer)) : 0;
 
-    if (status_in_out) {
-        // winex11 always passes null for this
-        kpanic("x11_LookupString status_in_out was not null");
-    }
+    // XComposeStatus is optional composition state. This server has no compose
+    // table, so accepting and preserving it is equivalent to no compose match.
+    (void)status_in_out;
     U32 keysym = 0;
+    if (keysym_return) memory->writed(keysym_return, 0);
     
     if (event.state & NumMask) {
         keysym = XKeyboard::keycodeToKeysym(event.keycode, 5);
@@ -842,9 +843,10 @@ static void x11_LookupString(CPU* cpu) {
     if (!keysym) {
         return;
     }
-    U32 result = XKeyboard::translate(keysym, event.state, buffer, 16);    
+    U32 result = XKeyboard::translate(keysym, event.state, buffer, capacity);
+    result = std::min(result, capacity);
     if (result) {
-        if (buffer[0] != 0) {
+        if (buffer_return && buffer[0] != 0) {
             memory->memcpy(buffer_return, buffer, result);
             EAX = result;
         }        
@@ -855,7 +857,22 @@ static void x11_LookupString(CPU* cpu) {
 }
 
 static void x11_MbLookupString(CPU* cpu) {
-    kpanic("x11_MbLookupString");
+    KMemory* memory = cpu->memory;
+    XKeyEvent event;
+    event.read(memory, ARG2);
+    U32 keysym = XKeyboard::keycodeToKeysym(event.keycode,
+        (event.state & NumMask) ? 5 : ((event.state & ShiftMask) ? 1 : 0));
+    char buffer[16] = {};
+    U32 count = keysym ? XKeyboard::translate(keysym, event.state, buffer, sizeof(buffer)) : 0;
+    U32 capacity = ARG4 > 0 ? (U32)ARG4 : 0;
+    if (ARG5) memory->writed(ARG5, keysym);
+    if (ARG6) memory->writed(ARG6, count ? (ARG5 && keysym ? 4 /* XLookupBoth */ : 2 /* XLookupChars */) : (keysym ? 3 /* XLookupKeySym */ : 1 /* XLookupNone */));
+    if (count > capacity) {
+        EAX = 0xffffffff; // XBufferOverflow; caller can retry with a larger buffer
+        return;
+    }
+    if (count && ARG3) memory->memcpy(ARG3, buffer, count);
+    EAX = count;
 }
 
 // char* XKeysymToString(KeySym keysym)
@@ -895,14 +912,13 @@ static void x11_KbTranslateKeysym(CPU* cpu) {
 
     U32 result = XKeyboard::translate(keysym, modifiers, buffer, 16);
     if (result) {
-        if (result > nbytes && extra_rtrn) {
-            kpanic("x11_KbTranslateKeysym extra_rtrn not implemented");
-        }
-        memory->memcpy(bufferAddress, buffer, result);
-        memory->writeb(bufferAddress + result, 0);
+        const U32 copied = std::min(result, nbytes);
+        if (copied) memory->memcpy(bufferAddress, buffer, copied);
+        if (bufferAddress && copied < nbytes) memory->writeb(bufferAddress + copied, 0);
+        if (extra_rtrn) memory->writed(extra_rtrn, result - copied);
         memory->writed(sys_return, keysym);
     }
-    EAX = result;
+    EAX = std::min(result, nbytes);
 }
 
 // KeySym XLookupKeysym(XKeyEvent* key_event, int index) {
@@ -989,7 +1005,10 @@ static void x11_FreeModifierMap(CPU* cpu) {
 }
 
 static void x11_RefreshKeyboardMapping(CPU* cpu) {
-    kpanic("x11_RefreshKeyboardMapping");
+    // The browser keyboard map is fixed for the life of this connection. There
+    // is no server-side mapping to reload, but a MappingNotify must not abort a
+    // client; MappingSuccess tells it to retry using the active keymap.
+    EAX = 1;
 }
 
 // int XBell(Display* display, int percent)
@@ -2747,27 +2766,27 @@ static void x11_SetWMProperties(CPU* cpu) {
 }
 
 static void x11_VaCreateNestedList(CPU* cpu) {
-    kpanic("x11_VaCreateNestedList");
+    EAX = 0; // No XIM is available; callers should not create nested IC attrs.
 }
 
 static void x11_UnsetICFocus(CPU* cpu) {
-    kpanic("x11_UnsetICFocus");
+    EAX = Success;
 }
 
 static void x11_SetICFocus(CPU* cpu) {
-    kpanic("x11_SetICFocus");
+    EAX = Success;
 }
 
 static void x11_DestroyIC(CPU* cpu) {
-    kpanic("x11_DestroyIC");
+    EAX = Success;
 }
 
 static void x11_SetICValues(CPU* cpu) {
-    kpanic("x11_SetICValues");
+    EAX = 0; // XSetICValues returns the first unsupported attribute; none exist.
 }
 
 static void x11_MbResetIC(CPU* cpu) {
-    kpanic("x11_MbResetIC");
+    EAX = 0; // No composition state to reset.
 }
 
 // char* XSetLocaleModifiers(const char* modifier_list)
@@ -2782,24 +2801,24 @@ static void x11_OpenIM(CPU* cpu) {
 }
 
 static void x11_CloseIM(CPU* cpu) {
-    kpanic("x11_CloseIM");
+    EAX = Success;
 }
 
 // char* XSetIMValues(XIM im, ...) 
 static void x11_SetIMValues(CPU* cpu) {
-    kpanic("x11_SetIMValues");
+    EAX = 0;
 }
 
 static void x11_GetIMValues(CPU* cpu) {
-    kpanic("x11_GetIMValues");
+    EAX = 0;
 }
 
 static void x11_DisplayOfIM(CPU* cpu) {
-    kpanic("x11_DisplayOfIM");
+    EAX = 0;
 }
 
 static void x11_UnregisterIMInstantiateCallback(CPU* cpu) {
-    kpanic("x11_UnregisterIMInstantiateCallback");
+    EAX = False;
 }
 
 // Bool XRegisterIMInstantiateCallback(Display* dpy, struct _XrmHashBucketRec* rdb, char* res_name, char* res_class, XIDProc callback, XPointer client_data)
@@ -2808,7 +2827,16 @@ static void x11_RegisterIMInstantiateCallback(CPU* cpu) {
 }
 
 static void x11_FreeStringList(CPU* cpu) {
-    kpanic("x11_FreeStringList");
+    if (ARG1) {
+        KMemory* memory = cpu->memory;
+        KProcessPtr process = cpu->thread->process;
+        for (U32 i = 0; i < 1024; i++) {
+            U32 entry = memory->readd(ARG1 + i * 4);
+            if (!entry) break;
+            process->free(entry);
+        }
+        process->free(ARG1);
+    }
 }
 
 // XFontSet XCreateFontSet(Display* display, _Xconst char* base_font_name_list, char*** missing_charset_list, int* missing_charset_count, char** def_string) {
@@ -2829,7 +2857,7 @@ static void x11_FreeFontSet(CPU* cpu) {
 }
 
 static void x11_CreateIC(CPU* cpu) {
-    kpanic("x11_CreateIC");
+    EAX = 0; // XOpenIM reports no configured method, so no XIC can be created.
 }
 
 
