@@ -135,7 +135,7 @@ test('blitFramebuffer scales and flips color rectangles on CPU and GPU paths', a
     assert.equal(gl.getError(), 0);
     gl.blitFramebuffer(0, 0, 1, 1, 0, 0, 1, 1, 0x0100, 0x2600);
     assert.equal(gl.getError(), 0x0502);
-    assert.ok(logs.some(line => line.includes('blitFramebuffer depth/stencil')));
+    assert.ok(logs.some(line => line.includes('blitFramebuffer depth/stencil resolve') && line.includes('resolveTarget')));
   } finally { gpu.restore(); }
 });
 
@@ -570,11 +570,21 @@ test('renderbuffer storage validates target, binding, dimensions, and formats', 
     assert.equal(gl.getError(), 0x0500);
     gl.renderbufferStorage(0x8d41, 0x881a, 4, 4);
     assert.equal(gl.getError(), 0, 'RGBA16F is backed by a renderable rgba16float texture');
+    assert.ok(gl.getSupportedExtensions().includes('EXT_color_buffer_float'));
+    assert.ok(gl.getExtension('EXT_color_buffer_float'));
     assert.equal(renderbuffer.format, 'rgba16float');
     assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8d50), 16);
     gl.renderbufferStorage(0x8d41, 0x8814, 4, 4);
-    assert.equal(gl.getError(), 0x0502, 'RGBA32F remains explicitly rejected until its WebGPU feature requirements are available');
-    assert.ok(logs.some(line => line.includes('renderbuffer internal format 0x8814')));
+    assert.equal(gl.getError(), 0, 'RGBA32F uses WebGPU rgba32float color attachments');
+    assert.equal(renderbuffer.format, 'rgba32float');
+    assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8d50), 32);
+    gl.renderbufferStorage(0x8d41, 0x81a6, 4, 4);
+    assert.equal(gl.getError(), 0, 'DEPTH_COMPONENT24 maps to depth24plus');
+    assert.equal(renderbuffer.format, 'depth24plus');
+    gl.renderbufferStorage(0x8d41, 0x8cac, 4, 4);
+    assert.equal(gl.getError(), 0, 'DEPTH_COMPONENT32F maps to depth32float');
+    assert.equal(renderbuffer.format, 'depth32float');
+    gl.renderbufferStorage(0x8d41, 0x8814, 4, 4);
     gl.renderbufferStorage(0x8d41, 0x8d7c, 4, 4);
     assert.equal(gl.getError(), 0, 'RGBA8UI uses a WebGPU integer attachment format');
     assert.equal(renderbuffer.format, 'rgba8uint');

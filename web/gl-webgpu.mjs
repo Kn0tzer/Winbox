@@ -1249,7 +1249,7 @@ export class WebGPUGL {
   }
   isContextLost() { return false; }
   getContextAttributes() { return { alpha: true, depth: true, stencil: true, antialias: false, premultipliedAlpha: true, preserveDrawingBuffer: true }; }
-  getSupportedExtensions() { return ['WEBGL_compressed_texture_s3tc', 'ANGLE_instanced_arrays', 'OES_vertex_array_object', 'EXT_read_format_bgra', 'EXT_texture_filter_anisotropic', 'EXT_sRGB', 'EXT_texture_rg']; }
+  getSupportedExtensions() { return ['WEBGL_compressed_texture_s3tc', 'ANGLE_instanced_arrays', 'OES_vertex_array_object', 'EXT_read_format_bgra', 'EXT_texture_filter_anisotropic', 'EXT_sRGB', 'EXT_texture_rg', 'EXT_color_buffer_float']; }
   getExtension(name) {
     if (name === 'WEBGL_compressed_texture_s3tc' || name === 'WEBKIT_WEBGL_compressed_texture_s3tc') return {
       COMPRESSED_RGB_S3TC_DXT1_EXT: 0x83f0, COMPRESSED_RGBA_S3TC_DXT1_EXT: 0x83f1,
@@ -1268,6 +1268,7 @@ export class WebGPUGL {
     if (name === 'EXT_texture_filter_anisotropic') return { TEXTURE_MAX_ANISOTROPY_EXT: 0x84fe, MAX_TEXTURE_MAX_ANISOTROPY_EXT: 16 };
     if (name === 'EXT_sRGB') return { SRGB_EXT: 0x8c40, SRGB_ALPHA_EXT: 0x8c42, SRGB8_ALPHA8_EXT: 0x8c43, FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING_EXT: 0x8210, LINEAR_EXT: 0x2601 };
     if (name === 'EXT_texture_rg') return { RED_EXT: 0x1903, RG_EXT: 0x8227, R8_EXT: 0x8229, RG8_EXT: 0x822b };
+    if (name === 'EXT_color_buffer_float') return {};
     return null;
   }
 
@@ -2347,6 +2348,10 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     const cullEnabled = state.enabled.has(0x0b44);
     const cull = cullEnabled ? (state.cullFace === 0x0404 ? 'front' : state.cullFace === 0x0408 ? 'front-and-back' : 'back') : 'none';
     const integerTarget = targetFormat.endsWith('uint') || targetFormat.endsWith('sint');
+    if (blendEnabled && targetFormat === 'rgba32float' && !this._device.features?.has?.('float32-blendable')) {
+      this._rejectUnsupported('blending on rgba32float without WebGPU float32-blendable', GL.INVALID_OPERATION);
+      return null;
+    }
     const blend = blendEnabled && !integerTarget ? this._blendDescriptor(state) : undefined;
     const writeMask = state.colorMask.reduce((mask, enabled, index) => enabled ? mask | (1 << index) : mask, 0);
     const depthCompare = depthEnabled ? GL_COMPARE.get(state.depthFunc) : 'always';
@@ -2987,14 +2992,14 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       0x8231, 0x8232, 0x8233, 0x8234, 0x8235, 0x8236, 0x8237, 0x8238, 0x8239, 0x823a, 0x823b, 0x823c,
       0x8d8e, 0x8d7c, 0x8d88, 0x8d76, 0x8d82, 0x8d70, 0x906f];
     if (![...depthFormats, ...colorFormats].includes(internalFormat)) { this._recordError(GL.INVALID_ENUM); return false; }
-    if (![0x81a5, 0x81a6, 0x81a7, 0x8cac, 0x8058, 0x881a, 0x8d8e, 0x8d7c].includes(internalFormat)) {
+    if (![0x81a5, 0x81a6, 0x81a7, 0x8cac, 0x8058, 0x881a, 0x8814, 0x8d8e, 0x8d7c].includes(internalFormat)) {
       this._rejectUnsupported(`renderbuffer internal format 0x${Number(internalFormat).toString(16)}`, GL.INVALID_OPERATION);
       return false;
     }
     buffer.gpu?.destroy(); buffer.resolveTexture?.destroy(); buffer.resolveTexture = null;
     buffer.width = width | 0; buffer.height = height | 0; buffer.internalFormat = internalFormat; buffer.samples = 0; buffer.sampleCount = 1;
     buffer.format = depthFormats.includes(internalFormat) ? (internalFormat === 0x8cac ? 'depth32float' : 'depth24plus')
-      : internalFormat === 0x881a ? 'rgba16float' : internalFormat === 0x8d7c ? 'rgba8uint' : internalFormat === 0x8d8e ? 'rgba8sint' : 'rgba8unorm';
+      : internalFormat === 0x881a ? 'rgba16float' : internalFormat === 0x8814 ? 'rgba32float' : internalFormat === 0x8d7c ? 'rgba8uint' : internalFormat === 0x8d8e ? 'rgba8sint' : 'rgba8unorm';
     buffer.pixels = new Uint8Array(Math.max(0, buffer.width * buffer.height * 4));
     this._enqueue(() => {
       if (!buffer.width || !buffer.height) return;
@@ -3024,7 +3029,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (parameter === 0x8cab) return this._boundRenderbuffer.samples || 0;
     const format = this._boundRenderbuffer.internalFormat;
     const depthBits = format === 0x81a5 ? 16 : format === 0x81a6 ? 24 : format === 0x81a7 ? 32 : format === 0x8cac ? 32 : 0;
-    const channelBits = format === 0x881a ? 16 : [0x8058, 0x8056, 0x8057, 0x8d7c, 0x8d8e].includes(format) ? 8 : 0;
+    const channelBits = format === 0x881a ? 16 : format === 0x8814 ? 32 : [0x8058, 0x8056, 0x8057, 0x8d7c, 0x8d8e].includes(format) ? 8 : 0;
     if (parameter === 0x8d50 || parameter === 0x8d51 || parameter === 0x8d52) return channelBits;
     if (parameter === 0x8d53) return channelBits;
     if (parameter === 0x8d54) return depthBits;
@@ -3105,7 +3110,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     if (mask & ~(GL.COLOR_BUFFER_BIT | GL.DEPTH_BUFFER_BIT | GL.STENCIL_BUFFER_BIT)) { this._recordError(GL.INVALID_VALUE); return; }
     if ((mask & GL.COLOR_BUFFER_BIT) && ![0x2600, 0x2601].includes(filter)) { this._recordError(GL.INVALID_ENUM); return; }
     if ((mask & (GL.DEPTH_BUFFER_BIT | GL.STENCIL_BUFFER_BIT)) && filter !== 0x2600) { this._recordError(GL.INVALID_OPERATION); return; }
-    if (mask & (GL.DEPTH_BUFFER_BIT | GL.STENCIL_BUFFER_BIT)) { this._rejectUnsupported('blitFramebuffer depth/stencil', GL.INVALID_OPERATION); return; }
+    if (mask & (GL.DEPTH_BUFFER_BIT | GL.STENCIL_BUFFER_BIT)) { this._rejectUnsupported('blitFramebuffer depth/stencil resolve (WebGPU depth attachments have no resolveTarget)', GL.INVALID_OPERATION); return; }
     if (!(mask & GL.COLOR_BUFFER_BIT)) return;
     const source = this._targetFor(this._readFramebuffer), destination = this._targetFor(this._drawFramebuffer);
     if (!source?.colorTexture || !destination?.colorTexture || !source?.pixels || !destination?.pixels) { this._recordError(GL.INVALID_FRAMEBUFFER_OPERATION); return; }
