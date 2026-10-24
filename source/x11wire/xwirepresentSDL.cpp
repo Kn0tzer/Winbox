@@ -866,6 +866,40 @@ static void syncXWirePointerCapture() {
     }
 }
 
+static void syncXWireGrabCursor() {
+    static bool hadGrab = false;
+    static uint32_t previousGrabWindow = 0;
+    static int lastShape = -1;
+    int shape = -1;
+    {
+        auto& server = XWireServer::instance();
+        std::unique_lock<std::mutex> lock(server.regMutex, std::try_to_lock);
+        if (!lock.owns_lock()) return;
+        const bool grabbed = server.pointerGrabClient != 0;
+        const uint32_t cursorId = grabbed ? server.pointerGrabCursor : 0;
+        const uint32_t windowId = grabbed ? server.pointerGrabWindow : (hadGrab ? previousGrabWindow : 0);
+        if (grabbed) previousGrabWindow = server.pointerGrabWindow;
+        if (grabbed || hadGrab) {
+            auto cursor = server.cursorShapes.find(cursorId);
+            if (cursorId && cursor != server.cursorShapes.end()) shape = (int)cursor->second;
+            else {
+                auto window = server.windows.find(windowId);
+                if (window != server.windows.end()) {
+                    auto windowCursor = server.cursorShapes.find(window->second.cursor);
+                    if (window->second.cursor && windowCursor != server.cursorShapes.end()) shape = (int)windowCursor->second;
+                }
+                if (shape < 0) shape = 68; // XC_left_ptr
+            }
+        }
+        hadGrab = grabbed;
+    }
+    if (shape >= 0 && shape != lastShape) {
+        KNativeScreenPtr screen = KNativeSystem::getScreen();
+        if (screen) screen->setCursorByX11Shape(shape);
+        lastShape = shape;
+    }
+}
+
 // Drive present + input from the main loop (main thread). Safe to call when no
 // sink is installed.
 void tickXWirePresent() {
@@ -876,6 +910,7 @@ void tickXWirePresent() {
     // with no sink) so a headless-but-GL path still drains.
     drainMainThreadWork();
     syncXWirePointerCapture();
+    syncXWireGrabCursor();
     xwireRecordInputPhase(2);
     if (g_xwirePresentSink) {
         // Coalesced present: the wire server's draw handlers (PutImage bands,

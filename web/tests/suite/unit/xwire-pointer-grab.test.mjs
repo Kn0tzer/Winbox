@@ -233,3 +233,13 @@ int main(){auto& s=XWireServer::instance();s.windows[1]={0,0,0,true};s.windows[2
     execFileSync(join(dir,'check'));
   } finally {rmSync(dir,{recursive:true,force:true});}
 });
+
+test('a pointer grab applies its cursor on the SDL main thread and restores the window cursor on ungrab', () => {
+  const src = readFileSync(new URL('../../../../source/x11wire/xwirepresentSDL.cpp', import.meta.url), 'utf8');
+  const sync = src.match(/static void syncXWireGrabCursor\(\) \{[\s\S]*?\n}/)?.[0];
+  assert.ok(sync);
+  assert.match(sync, /server\.pointerGrabCursor/);
+  assert.match(sync, /previousGrabWindow/);
+  assert.match(sync, /cursorShapes\.find/);
+  assert.match(sync, /setCursorByX11Shape\(shape\)/);
+});
