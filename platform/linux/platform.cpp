@@ -21,6 +21,9 @@
 #include <sys/time.h>
 #include <dirent.h>
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <limits.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <SDL.h>
@@ -126,16 +129,66 @@ int Platform::nativeSocketPair(S32 socks[2]) {
     return socketpair(AF_LOCAL, SOCK_STREAM, 0, socks);
 }
 
+static U32 readCpuFrequencyMHz(const char* path) {
+    FILE* file = fopen(path, "r");
+    if (!file) return 0;
+    char text[64] = {};
+    const bool read = fgets(text, sizeof(text), file) != nullptr;
+    fclose(file);
+    if (!read) return 0;
+    char* end = nullptr;
+    const unsigned long long khz = strtoull(text, &end, 10);
+    if (end == text || khz == 0) return 0;
+    const unsigned long long mhz = khz / 1000;
+    return mhz > UINT_MAX ? 0 : (U32)mhz;
+}
+
+static U32 readProcCpuFrequencyMHz() {
+    FILE* file = fopen("/proc/cpuinfo", "r");
+    if (!file) return 0;
+    char line[256];
+    U32 result = 0;
+    while (fgets(line, sizeof(line), file)) {
+        if (strncmp(line, "cpu MHz", 7) != 0) continue;
+        char* colon = strchr(line, ':');
+        if (!colon) continue;
+        double mhz = strtod(colon + 1, nullptr);
+        if (mhz > 0 && mhz < UINT_MAX) result = (U32)(mhz + 0.5);
+        if (result) break;
+    }
+    fclose(file);
+    return result;
+}
+
+static U32 cpuFrequencyFromSysfs(U32 cpuIndex, const char* name) {
+    char path[128];
+    snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%u/cpufreq/%s", cpuIndex, name);
+    return readCpuFrequencyMHz(path);
+}
+
 U32 Platform::getCpuFreqMHz() {
-    return 0; // :TODO:
+    U32 mhz = cpuFrequencyFromSysfs(0, "cpuinfo_max_freq");
+    if (!mhz) mhz = readProcCpuFrequencyMHz();
+#ifdef __EMSCRIPTEN__
+    // Browser sandboxes do not expose host procfs/sysfs. Report the virtual
+    // guest's nominal 1GHz clock so /proc and cpufreq interfaces stay usable.
+    if (!mhz) mhz = 1000;
+#endif
+    return mhz;
 }
 
 U32 Platform::getCpuCurScalingFreqMHz(U32 cpuIndex) {
-    return 0; // :TODO:
+    U32 mhz = cpuFrequencyFromSysfs(cpuIndex, "scaling_cur_freq");
+    if (!mhz) mhz = cpuFrequencyFromSysfs(cpuIndex, "cpuinfo_max_freq");
+    if (!mhz) mhz = getCpuFreqMHz();
+    return mhz;
 }
 
 U32 Platform::getCpuMaxScalingFreqMHz(U32 cpuIndex) {
-    return 0; // :TODO:
+    U32 mhz = cpuFrequencyFromSysfs(cpuIndex, "scaling_max_freq");
+    if (!mhz) mhz = cpuFrequencyFromSysfs(cpuIndex, "cpuinfo_max_freq");
+    if (!mhz) mhz = getCpuFreqMHz();
+    return mhz;
 }
 
 
