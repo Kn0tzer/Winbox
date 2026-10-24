@@ -34,6 +34,24 @@ const layerOnOutput = () => buildModule([
   { op: 15, words: [4, 1, 0x6E69616D, 0] }, // OpEntryPoint Fragment %1 "main"
 ]);
 
+// BaseVertex (BuiltIn 4424) on an Output-storage variable. The DrawParameters
+// rewrite reads its base values from Input storage, so the shape is unsupported.
+const baseVertexOnOutput = () => buildModule([
+  { op: 22, words: [10, 32] },            // OpTypeFloat 32
+  { op: 32, words: [11, 3, 10] },         // OpTypePointer Output float
+  { op: 59, words: [11, 12, 3] },         // OpVariable %12 Output
+  { op: 71, words: [12, 11, 4424] },      // OpDecorate %12 BuiltIn BaseVertex
+]);
+
+test('DrawParameters rewrite logs the unsupported interface shape and leaves the builtin', () => {
+  const r = applySpirvFix(serializeSpirv(baseVertexOnOutput()));
+  assert.ok(
+    r.log.includes('spirvfix: left DrawParameters builtin %12 unchanged (unsupported interface shape)'),
+    `expected the DrawParameters unsupported-shape warning, got: ${JSON.stringify(r.log)}`,
+  );
+  assert.ok(!r.applied.includes('replace-draw-parameters'), 'the DrawParameters rewrite must not report itself as applied');
+});
+
 test('fragment Layer rewrite logs the unsupported interface shape and leaves the builtin', () => {
   const r = applySpirvFix(serializeSpirv(layerOnOutput()));
   assert.ok(
