@@ -18,3 +18,11 @@ test('unsupported texel-buffer, input-attachment and unknown descriptors warn in
   assert.equal((bridge.match(/applyDescWrite\(/g) || []).length, 4, 'definition + applyWrite64/32 + template; no private write loops');
   assert.equal((bridge.match(/applyDescTemplate\(\*s/g) || []).length, 4, 'update + push template, both ABIs');
 });
+
+test('V2 descriptor wire rejects an unmodelled kind loudly before writing kind zero', () => {
+  const start = bridge.indexOf('auto emitDescSet =');
+  const end = bridge.indexOf('U64 activePipe = 0;', start);
+  const emit = bridge.slice(start, end);
+  assert.match(emit, /default:\s*vk64Unsupported\("descriptor-wire-kind"/);
+  assert.match(emit, /unsupported descriptor type=.*has no V2 binding kind/);
+});

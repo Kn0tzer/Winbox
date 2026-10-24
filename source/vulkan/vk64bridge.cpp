@@ -3357,7 +3357,10 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                         case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: kind = 2; break;
                         case VK_DESCRIPTOR_TYPE_SAMPLER: kind = 3; break;
                         case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK: kind = 4; break;
-                        default: break;
+                        default:
+                            vk64Unsupported("descriptor-wire-kind",
+                                ("unsupported descriptor type=" + std::to_string(b.type) + " has no V2 binding kind").c_str());
+                            break;
                     }
                     // Absolute byte offset of this binding's range, matching
                     // V2_BUFFER_DATA's memOff. One VkBuffer may back several
