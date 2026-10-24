@@ -490,6 +490,38 @@ test('framebuffer and renderbuffer queries report invalid targets, pnames, and m
   } finally { gpu.restore(); }
 });
 
+test('RGBA8 multisample renderbuffers allocate four samples and resolve on framebuffer writes', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    const renderbuffer = gl.createRenderbuffer();
+    gl.bindRenderbuffer(0x8d41, renderbuffer);
+    gl.renderbufferStorageMultisample(0x8d41, 4, 0x8058, 8, 8);
+    await gl._ops;
+    assert.equal(renderbuffer.gpu.sampleCount, 4);
+    assert.equal(renderbuffer.resolveTexture.format, 'rgba8unorm');
+    assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8cab), 4);
+    const framebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(0x8d40, framebuffer);
+    gl.framebufferRenderbuffer(0x8d40, 0x8ce0, 0x8d41, renderbuffer);
+    assert.equal(gl.checkFramebufferStatus(0x8d40), 0x8cd5);
+    gl.clearColor(0.25, 0.5, 0.75, 1);
+    gl.clear(0x4000);
+    await gl._ops;
+    const color = gpu.passes.at(-1).colorAttachments[0];
+    assert.ok(color.resolveTarget, 'the multisample color pass resolves into a single-sample texture');
+    await gl._pipelineFor({ id: -1, stages: { vertex: { wgsl: '' }, fragment: { wgsl: '' } } }, {
+      enabled: new Set(), blend: {}, depthFunc: 0x0201, depthMask: true, colorMask: [true, true, true, true],
+      stencilFront: gl._stencilFront, stencilBack: gl._stencilBack, polygonOffset: [0, 0], cullFace: 0x0405, frontFace: 0x0901,
+    }, { layouts: [] }, 'triangle-list', 'rgba8unorm', null, 4);
+    assert.equal(gpu.pipelines.at(-1).multisample.count, 4, 'the pipeline uses the attachment sample count');
+    gl.renderbufferStorageMultisample(0x8d41, 8, 0x8058, 8, 8);
+    assert.equal(gl.getError(), 0x0502);
+    assert.equal(logs.filter(line => line.includes('renderbuffer sample count 8')).length, 1);
+  } finally { gpu.restore(); }
+});
+
 test('fixed-function GL_COMBINE defaults to modulating the previous color by each texture', async () => {
   const gpu = createValidationDevice();
   try {

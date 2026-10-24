@@ -583,7 +583,7 @@ export class WebGPUGL {
     if (this._isDefaultFramebuffer(framebuffer)) return {
       default: true, framebuffer, colorTexture: this._colorTexture, depthTexture: this._depthTexture,
       pixels: this._pixels, width: this._width, height: this._height,
-      format: srgbEnabled ? `${this._format}-srgb` : this._format, depthFormat: 'depth24plus-stencil8',
+      format: srgbEnabled ? `${this._format}-srgb` : this._format, depthFormat: 'depth24plus-stencil8', sampleCount: 1,
     };
     const object = framebuffer;
     const colorAttachment = object?.attachments?.get(0x8ce0);
@@ -591,13 +591,14 @@ export class WebGPUGL {
     const color = colorAttachment.type === 'texture' ? colorAttachment.object : colorAttachment.object;
     const depthAttachment = object.attachments.get(0x8d00) || object.attachments.get(0x821a);
     const depth = depthAttachment?.object || null;
-    const colorTexture = colorAttachment.type === 'texture' ? color?.gpu : color?.gpu;
+    const colorTexture = color?.gpu;
     const depthTexture = depth ? depth.gpu : null;
     const colorMipLevel = colorAttachment.level || 0;
     const level = color?.levels?.get(colorMipLevel);
     return {
       default: false, framebuffer: object, colorObject: color, depthObject: depth,
-      colorTexture, depthTexture, colorMipLevel, depthMipLevel: depthAttachment?.level || 0,
+      colorTexture, resolveTexture: color?.resolveTexture || null, sampleCount: color?.sampleCount || depth?.sampleCount || 1,
+      depthTexture, colorMipLevel, depthMipLevel: depthAttachment?.level || 0,
       pixels: level?.pixels || color?.pixels || null,
       width: level?.width || color?.width || 0, height: level?.height || color?.height || 0,
       format: color?.format?.endsWith('-srgb') && !srgbEnabled ? color.format.slice(0, -5) : color?.format || 'rgba8unorm',
@@ -622,6 +623,7 @@ export class WebGPUGL {
     const descriptor = {
       colorAttachments: [{
         view: target.colorTexture.createView({ format: target.format, baseMipLevel: target.colorMipLevel || 0, mipLevelCount: 1 }),
+        ...(target.resolveTexture ? { resolveTarget: target.resolveTexture.createView({ format: target.format, baseMipLevel: target.colorMipLevel || 0, mipLevelCount: 1 }) } : {}),
         clearValue: { r: state.color[0], g: state.color[1], b: state.color[2], a: state.color[3] },
         loadOp: fullColor ? 'clear' : 'load', storeOp: 'store',
       }],
@@ -2006,7 +2008,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     return { layouts, buffers };
   }
 
-  async _pipelineFor(program, state, vertex, topology, targetFormat = this._format, depthFormat = 'depth24plus') {
+  async _pipelineFor(program, state, vertex, topology, targetFormat = this._format, depthFormat = 'depth24plus', sampleCount = 1) {
     const blendEnabled = state.enabled.has(0x0be2), depthEnabled = state.enabled.has(0x0b71);
     const cullEnabled = state.enabled.has(0x0b44);
     const cull = cullEnabled ? (state.cullFace === 0x0404 ? 'front' : state.cullFace === 0x0408 ? 'front-and-back' : 'back') : 'none';
@@ -2018,7 +2020,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       program: program.id, vertex: vertex.layouts, topology, blend, depth: [depthEnabled, depthCompare, state.depthMask],
       stencil: [state.enabled.has(0x0b90), state.stencilFront, state.stencilBack],
       polygonOffset: state.enabled.has(0x8037) ? state.polygonOffset : null,
-      cull, frontFace: state.frontFace, colorMask: writeMask, targetFormat, depthFormat,
+      cull, frontFace: state.frontFace, colorMask: writeMask, targetFormat, depthFormat, sampleCount,
     });
     if (this._pipelineCache.has(key)) return this._pipelineCache.get(key);
     let scopeOpen = false;
@@ -2039,6 +2041,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
         fragment: { module: fragmentModule, entryPoint: 'main', targets: [{ format: targetFormat, writeMask, ...(blend ? { blend } : {}) }] },
         primitive: { topology, frontFace: state.frontFace === 0x0900 ? 'cw' : 'ccw', cullMode: cull === 'front-and-back' ? 'front' : cull,
           ...(state.enabled.has(0x8037) ? { depthBias: Math.trunc(state.polygonOffset[1]), depthBiasSlopeScale: state.polygonOffset[0], depthBiasClamp: 0 } : {}) },
+        multisample: { count: sampleCount },
         ...(depthFormat ? { depthStencil: { format: depthFormat, depthWriteEnabled: depthEnabled && state.depthMask, depthCompare, ...stencilState } } : {}),
       };
       const pipeline = this._device.createRenderPipeline(descriptor);
@@ -2109,11 +2112,11 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (!target?.colorTexture) return;
     const vertex = this._vertexLayouts(program, state.attributes);
     const viewport = state.viewport;
-    const pipeline = await this._pipelineFor(program, state, vertex, topology, target.format, target.depthTexture ? target.depthFormat || 'depth24plus' : null);
+    const pipeline = await this._pipelineFor(program, state, vertex, topology, target.format, target.depthTexture ? target.depthFormat || 'depth24plus' : null, target.sampleCount || 1);
     if (!pipeline) return; // A failed shader/pipeline is a skipped draw.
     const encoder = this._device.createCommandEncoder();
     const pass = encoder.beginRenderPass({
-      colorAttachments: [{ view: target.colorTexture.createView({ format: target.format, baseMipLevel: target.colorMipLevel || 0, mipLevelCount: 1 }), loadOp: 'load', storeOp: 'store' }],
+      colorAttachments: [{ view: target.colorTexture.createView({ format: target.format, baseMipLevel: target.colorMipLevel || 0, mipLevelCount: 1 }), ...(target.resolveTexture ? { resolveTarget: target.resolveTexture.createView({ format: target.format, baseMipLevel: target.colorMipLevel || 0, mipLevelCount: 1 }) } : {}), loadOp: 'load', storeOp: 'store' }],
       ...(target.depthTexture ? { depthStencilAttachment: { view: target.depthTexture.createView({ baseMipLevel: target.depthMipLevel || 0, mipLevelCount: 1 }), depthLoadOp: 'load', depthStoreOp: 'store', ...(target.depthFormat?.includes('stencil') ? { stencilLoadOp: 'load', stencilStoreOp: 'store' } : {}) } } : {}),
     });
     pass.setPipeline(pipeline);
@@ -2516,37 +2519,53 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (this._isDefaultFramebuffer(framebuffer)) return GL.FRAMEBUFFER_COMPLETE;
     const color = framebuffer?.attachments?.get(0x8ce0), depth = framebuffer?.attachments?.get(0x8d00) || framebuffer?.attachments?.get(0x821a);
     const valid = attachment => attachment?.object && attachment.object.width > 0 && attachment.object.height > 0;
+    const attachments = [color, depth].filter(Boolean);
+    if (attachments.length > 1 && attachments.some(item => item.object.width !== attachments[0].object.width || item.object.height !== attachments[0].object.height || (item.object.sampleCount || 1) !== (attachments[0].object.sampleCount || 1))) return 0x8d56;
     return valid(color) || valid(depth) ? GL.FRAMEBUFFER_COMPLETE : 0x8cd7;
   }
   createRenderbuffer() { const object = { id: this._nextId++, width: 0, height: 0, format: 'depth24plus', internalFormat: 0, gpu: null, pixels: null }; this._renderbuffers.add(object); return object; }
-  deleteRenderbuffer(object) { if (!object) return; object.gpu?.destroy(); this._renderbuffers.delete(object); for (const framebuffer of this._framebufferObjects) for (const [key, record] of framebuffer.attachments) if (record.object === object) framebuffer.attachments.delete(key); }
+  deleteRenderbuffer(object) { if (!object) return; object.gpu?.destroy(); object.resolveTexture?.destroy(); object.resolveTexture = null; this._renderbuffers.delete(object); for (const framebuffer of this._framebufferObjects) for (const [key, record] of framebuffer.attachments) if (record.object === object) framebuffer.attachments.delete(key); }
   isRenderbuffer(object) { return this._renderbuffers.has(object); }
   bindRenderbuffer(target, object) {
     if (target !== 0x8d41) { this._recordError(GL.INVALID_ENUM); return; }
     this._boundRenderbuffer = object || null;
   }
   renderbufferStorage(target, internalFormat, width, height) {
-    if (target !== 0x8d41) { this._recordError(GL.INVALID_ENUM); return; }
+    if (target !== 0x8d41) { this._recordError(GL.INVALID_ENUM); return false; }
     const buffer = this._boundRenderbuffer;
-    if (!buffer) { this._recordError(GL.INVALID_OPERATION); return; }
-    if (!Number.isInteger(width) || !Number.isInteger(height) || width < 0 || height < 0) { this._recordError(GL.INVALID_VALUE); return; }
+    if (!buffer) { this._recordError(GL.INVALID_OPERATION); return false; }
+    if (!Number.isInteger(width) || !Number.isInteger(height) || width < 0 || height < 0) { this._recordError(GL.INVALID_VALUE); return false; }
     const depthFormats = [0x81a5, 0x81a6, 0x81a7, 0x8cac];
     const colorFormats = [0x8056, 0x8057, 0x8058, 0x8051, 0x8059, 0x8d62, 0x881a, 0x8814,
       0x8231, 0x8232, 0x8233, 0x8234, 0x8235, 0x8236, 0x8237, 0x8238, 0x8239, 0x823a, 0x823b, 0x823c,
       0x8d8e, 0x8d7c, 0x8d88, 0x8d76, 0x8d82, 0x8d70, 0x906f];
-    if (![...depthFormats, ...colorFormats].includes(internalFormat)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (![...depthFormats, ...colorFormats].includes(internalFormat)) { this._recordError(GL.INVALID_ENUM); return false; }
     if (![0x81a5, 0x81a6, 0x81a7, 0x8cac, 0x8058].includes(internalFormat)) {
       this._rejectUnsupported(`renderbuffer internal format 0x${Number(internalFormat).toString(16)}`, GL.INVALID_OPERATION);
-      return;
+      return false;
     }
-    buffer.gpu?.destroy(); buffer.width = width | 0; buffer.height = height | 0; buffer.internalFormat = internalFormat;
+    buffer.gpu?.destroy(); buffer.resolveTexture?.destroy(); buffer.resolveTexture = null;
+    buffer.width = width | 0; buffer.height = height | 0; buffer.internalFormat = internalFormat; buffer.samples = 0; buffer.sampleCount = 1;
     buffer.format = depthFormats.includes(internalFormat) ? (internalFormat === 0x8cac ? 'depth32float' : 'depth24plus') : 'rgba8unorm';
     buffer.pixels = new Uint8Array(Math.max(0, buffer.width * buffer.height * 4));
     this._enqueue(() => {
       if (!buffer.width || !buffer.height) return;
-      buffer.gpu = this._device.createTexture({ size: [buffer.width, buffer.height, 1], format: buffer.format,
+      const samples = buffer.sampleCount || 1;
+      buffer.gpu = this._device.createTexture({ size: [buffer.width, buffer.height, 1], format: buffer.format, sampleCount: samples,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | (samples === 1 ? GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING : 0) });
+      if (samples > 1 && !buffer.format.startsWith('depth')) buffer.resolveTexture = this._device.createTexture({ size: [buffer.width, buffer.height, 1], format: buffer.format,
         usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING });
     });
+    return true;
+  }
+  renderbufferStorageMultisample(target, samples, internalFormat, width, height) {
+    if (target !== 0x8d41) { this._recordError(GL.INVALID_ENUM); return; }
+    if (!this._boundRenderbuffer) { this._recordError(GL.INVALID_OPERATION); return; }
+    if (!Number.isInteger(samples) || samples < 0) { this._recordError(GL.INVALID_VALUE); return; }
+    if (![0, 1, 4].includes(samples)) { this._rejectUnsupported(`renderbuffer sample count ${samples}`, GL.INVALID_OPERATION); return; }
+    if (this.renderbufferStorage(target, internalFormat, width, height)) {
+      this._boundRenderbuffer.samples = samples; this._boundRenderbuffer.sampleCount = Math.max(1, samples);
+    }
   }
   getRenderbufferParameter(target, parameter) {
     if (target !== 0x8d41) { this._recordError(GL.INVALID_ENUM); return 0; }
@@ -2615,7 +2634,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     const sampling = filter === 0x2600 ? 'nearest' : 'linear';
     const bindGroup = this._device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniform } },
-      { binding: 1, resource: source.colorTexture.createView({ baseMipLevel: source.colorMipLevel || 0, mipLevelCount: 1 }) },
+      { binding: 1, resource: (source.resolveTexture || source.colorTexture).createView({ baseMipLevel: source.colorMipLevel || 0, mipLevelCount: 1 }) },
       { binding: 2, resource: this._device.createSampler({ minFilter: sampling, magFilter: sampling }) },
     ] });
     const encoder = this._device.createCommandEncoder();
