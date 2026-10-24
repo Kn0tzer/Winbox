@@ -2513,7 +2513,12 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (size !== 1) { this._rejectUnsupported('point size other than 1', GL.INVALID_OPERATION); return; }
     this._pointSize = size;
   }
-  sampleCoverage() {}
+  sampleCoverage(value, invert = false) {
+    if (!Number.isFinite(value) || value < 0 || value > 1) { this._recordError(GL.INVALID_VALUE); return; }
+    // WebGPU exposes alpha-to-coverage, not GL's programmable sample mask.
+    // The default tuple has no effect and remains a valid no-op.
+    if (value !== 1 || invert) this._rejectUnsupported('sample coverage mask', GL.INVALID_OPERATION);
+  }
 
   _newTextureRecord(handle = null) {
     const texture = { id: this._nextId++, target: 0, width: 0, height: 0, depth: 1, format: 'rgba8unorm', levels: new Map(), faceLevels: new Map(), params: new Map([[0x2800, 0x2601], [0x2801, 0x2703], [0x2802, 0x812f], [0x2803, 0x812f], [0x8072, 0x812f]]), gpu: null, gpuMipCount: 0 };

@@ -296,6 +296,17 @@ test('polygon line mode expands triangles to edges and line width rejects non-un
   } finally { gpu.restore(); }
 });
 
+test('non-default sample coverage masks reject loudly while invalid coverage reports INVALID_VALUE', async () => {
+  const gpu=createValidationDevice(),logs=[];
+  try {
+    const gl=new WebGPUGL(gpu.canvas,{log:message=>logs.push(message)});await gl.ready;
+    gl.sampleCoverage(1,false);assert.equal(gl.getError(),0);
+    gl.sampleCoverage(0.5,false);assert.equal(gl.getError(),0x0502);
+    assert.ok(logs.some(line=>line.includes('sample coverage mask')));
+    gl.sampleCoverage(-0.1,false);assert.equal(gl.getError(),0x0501);
+  } finally {gpu.restore();}
+});
+
 test('draw and read buffer selection is honored and GL errors latch until read', async () => {
   const gpu = createValidationDevice(), logs = [];
   try {
