@@ -12,13 +12,13 @@ const att = (format = 37) => ({format, isDepth: 0, samples: 1, loadOp: 1, storeO
 const pass = (ops, attachments = [att()]) => ({w: 4, h: 4, clearColor: [0, 0, 0, 1], clearDepth: 1, attachments, ops});
 const draw = {op: 'draw', vertexCount: 3, instanceCount: 1, firstVertex: 0, firstInstance: 0};
 
-async function replay(passes) {
+async function replay(passes, extra = {}) {
   const gpu = createValidationDevice();
   const warns = [];
   const warn = console.warn; console.warn = (...a) => warns.push(a.join(' '));
   try {
     const r = await createVkRenderer2(gpu.canvas, {translate: async () => 'fn main() {}'});
-    await r.render(frame(passes));
+    await r.render({...frame(passes), ...extra});
     const snap = r.snapshot();
     r.destroy();
     return {snap, warns};
@@ -53,4 +53,12 @@ test('drop log is rate limited to powers of two after the first four', async () 
   assert.equal(snap.dropReasons['unknown-replay-op'], 20);
   const logged = warns.filter(w => /v2 dropped unknown-replay-op/.test(w)).map(w => +/x(\d+)/.exec(w)[1]);
   assert.deepEqual(logged, [1, 2, 3, 4, 8, 16]);
+});
+
+test('a readback of an image the replay does not hold is loud, not a silent unfilled buffer', async () => {
+  const readbacks = [{srcImage: 'missing-image', w: 4, h: 4, heapPtr: 0, flagPtr: 0}];
+  const {snap, warns} = await replay([pass([])], {readbacks});
+  assert.equal(snap.dropReasons['readback-unavailable'], 1);
+  assert.ok(snap.unsupported >= 1);
+  assert.ok(warns.some(w => /v2 dropped readback-unavailable x1/.test(w)), warns.join('\n'));
 });

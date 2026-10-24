@@ -2639,6 +2639,9 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       const { rb, buffer, bytesPerRow: rbBpr, ok } = vrb;
       try {
         const heapBuf = globalThis.bwVkHeapBuffer;
+        if (!(ok && buffer && heapBuf)) {
+          noteUnsupported('readback-unavailable', 'ok=' + !!ok + ' buffer=' + !!buffer + ' heap=' + !!heapBuf + '; guest receives unfilled pixels');
+        }
         if (ok && buffer && heapBuf) {
           await buffer.mapAsync(GPUMapMode.READ);
           const src = new Uint8Array(buffer.getMappedRange());
@@ -2649,14 +2652,14 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           }
           buffer.unmap();
         }
-      } catch (e) { /* fall through to notify */ }
+      } catch (e) { noteUnsupported('readback-failed', e && e.message); /* still notify so the guest does not hang */ }
       try {
         if (buffer) buffer.destroy();
       } catch (e) {}
       try {
         const heapBuf = globalThis.bwVkHeapBuffer;
         if (heapBuf) Atomics.notify(new Int32Array(heapBuf, rb.flagPtr, 1), 0, 1);
-      } catch (e) {}
+      } catch (e) { noteUnsupported('readback-notify-failed', e && e.message); }
     }
 
     const ownedResources = F.live.splice(0);
