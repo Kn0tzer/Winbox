@@ -2229,6 +2229,8 @@ void serializeSubmit(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                             for (float f : k.capCol) allCapCol.push_back(f);
                         }
                         draws.push_back({(U32)k.a, vtxOff});
+                    } else {
+                        vk64Unsupported("v1-draw-cap", "BW64_VKSCHEMA v1 debug emitter keeps at most 64 draws per submit; extra draws are not serialised (the V2 path has no such cap)");
                     }
                     break;
                 case CMD_DRAW_INDEXED:
@@ -2243,6 +2245,8 @@ void serializeSubmit(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                             for (float f : k.capCol) allCapCol.push_back(f);
                         }
                         draws.push_back({(U32)k.a, vtxOff});
+                    } else {
+                        vk64Unsupported("v1-draw-cap", "BW64_VKSCHEMA v1 debug emitter keeps at most 64 draws per submit; extra draws are not serialised (the V2 path has no such cap)");
                     }
                     break;
                 default: break;
@@ -4145,8 +4149,7 @@ void walkProperties2(U64 pNextAddr) {
                 break;
             }
             default:
-                klog_fmt("vk64: Properties2 pNext sType=%u not modeled, left as the guest set it",
-                         (unsigned)sType);
+                vk64Unsupported("properties2-struct", ("sType=" + std::to_string(sType) + " not modeled, left as-is").c_str());
                 break;
         }
         cur = g_mem->readq(cur + 8);
@@ -7344,7 +7347,8 @@ void vk32_walkProperties2(U32 pNextAddr) {
                 break;
             }
             default:
-                break; // unknown: leave as the guest set it
+                vk64Unsupported("properties2-struct", ("sType=" + std::to_string(sType) + " not modeled, left as-is (32-bit)").c_str());
+                break;
         }
         cur = rd32_32(cur + 4); // pNext at +4 in 32-bit layout
     }

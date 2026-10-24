@@ -1248,6 +1248,29 @@ int main() {
             assert(memory.readd(24576 + 16) == 0xAAAAAAAAu && memory.readd(24576 + 28) == 0xAAAAAAAAu);
             assert(vk64BridgeUnsupportedCount("features2-struct") == before + 1);
         }
+        // Same for Properties2 chains: unknown sTypes are counted, not silently skipped.
+        {
+            U32 unknown[8] = {0x7fff0001u, 0, 0, 0, 0xAAAAAAAAu, 0xAAAAAAAAu, 0xAAAAAAAAu, 0xAAAAAAAAu};
+            memory.memcpyToGuest(24576, unknown, sizeof(unknown));
+            VkPhysicalDeviceProperties2 p2{}; p2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2; p2.pNext = 24576;
+            memory.memcpyToGuest(10240, &p2, sizeof(p2));
+            const U32 before = vk64BridgeUnsupportedCount("properties2-struct");
+            U64 pdId; createObj<PhysDev>(K_PHYSDEV, pdId);
+            assert(call64(VK64_fn_vkGetPhysicalDeviceProperties2, pdId, 10240) == 0);
+            assert(memory.readd(24576 + 16) == 0xAAAAAAAAu);
+            assert(vk64BridgeUnsupportedCount("properties2-struct") == before + 1);
+            // 32-bit layout: sType u32 @0, pNext u32 @4.
+            U32 unknown32[4] = {0x7fff0001u, 0, 0xAAAAAAAAu, 0xAAAAAAAAu};
+            memory32.memcpyToGuest(24576, unknown32, sizeof(unknown32));
+            U8 q2[8 + 800] = {}; U32 qst = vk32abi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2; memcpy(q2, &qst, 4);
+            U32 qnext = 24576; memcpy(q2 + 4, &qnext, 4);
+            memory32.memcpyToGuest(10240, q2, sizeof(q2));
+            U64 pdId32; createObj32<PhysDev>(K_PHYSDEV, pdId32);
+            VK32Args c32{}; c32.a[0] = pdId32; c32.a[1] = 10240;
+            memory32.memcpyToGuest(128, &c32, sizeof(c32));
+            vk32Bridge(&cpu32, VK64_fn_vkGetPhysicalDeviceProperties2, 128);
+            assert(vk64BridgeUnsupportedCount("properties2-struct") == before + 2);
+        }
         puts("PASS: GUARD advertised features are truthful and identical for 32-bit and 64-bit guests");
 
         // GUARD (silent capability use): SPIR-V that declares capabilities or
