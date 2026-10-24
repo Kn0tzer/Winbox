@@ -86,6 +86,7 @@ void testOpcodeFault64Delivery();
 void testCpu64AvxCpuidMask();
 void testForkVfork64();
 void testGetrandom64Syscalls();
+void testStatx64Syscall();
 #endif
 
 namespace {
@@ -114,6 +115,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testOpcodeFault64Delivery, "Test x64 undefined/VEX opcode SIGILL delivery"},
     {testCpu64AvxCpuidMask, "Test x64 AVX CPUID bits stay consistently hidden"},
     {testGetrandom64Syscalls, "Test x64 getrandom entropy and validation"},
+    {testStatx64Syscall, "Test x64 statx ABI and metadata"},
     {testForkVfork64, "Test x64 fork and vfork create real processes"},
 };
 #else

@@ -88,6 +88,12 @@ void testSyscall64DispatchGuard() {
         source.find("cpu->reg[X64_RSI].setU64((sa.flags & 0x4 /*SA_SIGINFO*/) ? frameBase : 0)") == std::string::npos) {
         testFail("pidfd and queued signal paths must deliver siginfo to SA_SIGINFO handlers");
     }
+    if (source.find("case 332: // statx") == std::string::npos ||
+        source.find("ret = sys_statx64(cpu, a1, a2, a3, a4, a5);") == std::string::npos ||
+        source.find("cpu->memory->writeq(statbuf + 112, seconds)") == std::string::npos ||
+        source.find("cpu->memory->writeq(statbuf + 144, 1)") == std::string::npos) {
+        testFail("statx syscall dispatch or x86-64 structure offsets changed unexpectedly");
+    }
 
     const std::string root = testPath.substr(0, markerAt);
     std::ifstream randomFile(root + "/source/kernel/krandom.cpp");

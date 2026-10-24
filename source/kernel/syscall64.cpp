@@ -17,6 +17,7 @@
 #include "kevent.h"
 #include "krandom.h"
 #include "ksocket.h"
+#include "kfile.h"
 #include <thread>   // std::this_thread::yield() for sched_yield
 #include <mutex>    // std::recursive_mutex for BW64_SERIAL_TEARDOWN
 #include <unordered_map>
@@ -1828,6 +1829,104 @@ static void writeStatBuf64(KMemory64* mem, U64 addr, U64 size, U32 mode,
 
 // Forward decl — sys_newfstatat64 may delegate to sys_fstat64 for AT_EMPTY_PATH.
 static U64 sys_fstat64(CPU64* cpu, U64 fd, U64 statbuf);
+
+// x86-64 statx layout (256 bytes). The VFS currently exposes inode, mode,
+// ownership, link count, size, block count and mtime. Keep stx_mask limited to
+// those fields plus the stable virtual mount ID; zeroed fields stay unclaimed.
+static U64 sys_statx64(CPU64* cpu, U64 dirfd, U64 pathAddr, U64 flags, U64 mask, U64 statbuf) {
+    constexpr U64 AT_SYMLINK_NOFOLLOW = 0x100;
+    constexpr U64 AT_NO_AUTOMOUNT = 0x800;
+    constexpr U64 AT_EMPTY_PATH = 0x1000;
+    constexpr U64 AT_STATX_SYNC_TYPE = 0x6000;
+    constexpr U32 STATX_TYPE = 0x0001;
+    constexpr U32 STATX_MODE = 0x0002;
+    constexpr U32 STATX_NLINK = 0x0004;
+    constexpr U32 STATX_UID = 0x0008;
+    constexpr U32 STATX_GID = 0x0010;
+    constexpr U32 STATX_INO = 0x0100;
+    constexpr U32 STATX_SIZE = 0x0200;
+    constexpr U32 STATX_BLOCKS = 0x0400;
+    constexpr U32 STATX_MTIME = 0x0040;
+    constexpr U32 STATX_MNT_ID = 0x1000;
+    constexpr U32 STATX_BASIC_STATS = 0x07ff;
+    constexpr U32 SUPPORTED = STATX_TYPE | STATX_MODE | STATX_NLINK | STATX_UID | STATX_GID |
+                              STATX_INO | STATX_SIZE | STATX_BLOCKS | STATX_MTIME | STATX_MNT_ID;
+    if (!cpu->thread || !cpu->thread->process) return (U64)-K_ESRCH;
+    if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH | AT_STATX_SYNC_TYPE)) return (U64)-K_EINVAL;
+    if (!sys_rangeHasPermission64(cpu->memory, statbuf, 256, K64_PAGE_WRITE)) return (U64)-K_EFAULT;
+
+    KProcessPtr process = cpu->thread->process;
+    std::shared_ptr<FsNode> node;
+    bool emptyPath = false;
+    if (flags & AT_EMPTY_PATH) {
+        if (!pathAddr) emptyPath = true;
+        else {
+            if (!sys_rangeHasPermission64(cpu->memory, pathAddr, 1, K64_PAGE_READ)) return (U64)-K_EFAULT;
+            emptyPath = cpu->memory->readb(pathAddr) == 0;
+        }
+    }
+    if (emptyPath) {
+        if ((S32)dirfd == -100) {
+            node = Fs::getNodeFromLocalPath(process->currentDirectory, process->currentDirectory, true);
+        } else {
+            KFileDescriptorPtr descriptor = process->getFileDescriptor((FD)dirfd);
+            if (!descriptor) return (U64)-K_EBADF;
+            std::shared_ptr<KFile> file = descriptor->kobject ? std::dynamic_pointer_cast<KFile>(descriptor->kobject) : nullptr;
+            node = file && file->openFile ? file->openFile->node : nullptr;
+        }
+        if (!node) return (U64)-K_ENOENT;
+    } else {
+        if (!pathAddr) return (U64)-K_EFAULT;
+        char path[4096] = {};
+        size_t pathLength = 0;
+        for (; pathLength < sizeof(path); ++pathLength) {
+            if (!sys_rangeHasPermission64(cpu->memory, pathAddr + pathLength, 1, K64_PAGE_READ)) return (U64)-K_EFAULT;
+            path[pathLength] = (char)cpu->memory->readb(pathAddr + pathLength);
+            if (!path[pathLength]) break;
+        }
+        if (pathLength == sizeof(path)) return (U64)-K_ENAMETOOLONG;
+        BString base = process->currentDirectory;
+        if ((S32)dirfd != -100 && path[0] != '/') {
+            KFileDescriptorPtr directory = process->getFileDescriptor((FD)dirfd);
+            std::shared_ptr<KFile> directoryFile = directory && directory->kobject
+                ? std::dynamic_pointer_cast<KFile>(directory->kobject) : nullptr;
+            if (!directory) return (U64)-K_EBADF;
+            if (!directoryFile || !directoryFile->openFile || !directoryFile->openFile->node ||
+                !directoryFile->openFile->node->isDirectory()) return (U64)-K_ENOTDIR;
+            base = directoryFile->openFile->node->path;
+        }
+        bool isLink = false;
+        node = Fs::getNodeFromLocalPath(base, BString::copy(path), !(flags & AT_SYMLINK_NOFOLLOW), &isLink);
+        if (!node) return (U64)-K_ENOENT;
+        if (node->isLink() || isLink) flags |= AT_SYMLINK_NOFOLLOW;
+    }
+
+    if (!mask) mask = STATX_BASIC_STATS;
+    U32 returnedMask = (U32)mask & SUPPORTED;
+    U32 mode = node->getMode();
+    if (node->isLink()) mode |= K__S_IFLNK;
+    U64 size = node->length();
+    U64 modified = node->lastModified();
+    U64 seconds = modified / 1000;
+    U32 nanos = (U32)(modified % 1000) * 1000000;
+    U8 zero[256] = {};
+    cpu->memory->memcpyToGuest(statbuf, zero, sizeof(zero));
+    cpu->memory->writed(statbuf + 0, returnedMask);
+    cpu->memory->writed(statbuf + 4, 4096);
+    cpu->memory->writed(statbuf + 16, node->getHardLinkCount());
+    cpu->memory->writed(statbuf + 20, process->userId);
+    cpu->memory->writed(statbuf + 24, process->groupId);
+    cpu->memory->writew(statbuf + 28, (U16)mode);
+    cpu->memory->writeq(statbuf + 32, node->id);
+    cpu->memory->writeq(statbuf + 40, size);
+    cpu->memory->writeq(statbuf + 48, (size + 511) / 512);
+    cpu->memory->writeq(statbuf + 112, seconds);
+    cpu->memory->writed(statbuf + 120, nanos);
+    cpu->memory->writed(statbuf + 128, node->rdev);
+    cpu->memory->writed(statbuf + 136, 1); // single virtual filesystem device
+    cpu->memory->writeq(statbuf + 144, 1); // stable virtual mount ID
+    return 0;
+}
 
 // Path-based stat shared by stat/lstat/newfstatat. followSymlink controls
 // the lstat vs stat distinction (Fs::getNodeFromLocalPath's third arg).
@@ -4851,6 +4950,9 @@ void ksyscall64(CPU64* cpu) {
             break;
         case X64_SYS_newfstatat:
             ret = sys_newfstatat64(cpu, a1, a2, a3, a4);
+            break;
+        case 332: // statx(dirfd, path, flags, mask, statxbuf)
+            ret = sys_statx64(cpu, a1, a2, a3, a4, a5);
             break;
         case X64_SYS_statfs:
             // a1 = path (ignored — same lie for every fs), a2 = struct statfs*
