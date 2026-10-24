@@ -67,6 +67,15 @@ test('GL ABI count matches bridge handler coverage', () => {
     `Bridge covers ${coverage}/${abiFns.length} ABI functions`);
 });
 
+test('fixed-function fog calls are exported by the 64-bit guest GL shim and reach WebGPU state', () => {
+  for (const name of ['glFogf', 'glFogi', 'glFogfv', 'glFogiv']) {
+    assert.match(shimSrc, new RegExp(`GL64_fn_${name}`), `${name} has a trap wrapper`);
+    assert.match(shimSrc, new RegExp(`E\\(${name}\\)`), `${name} is exported for proc lookup`);
+    assert.ok(handlers.has(`GL64_fn_${name}`), `${name} has a native bridge handler`);
+  }
+  assert.match(bridgeSrc, /\? "fogf" : "fogi"/);
+});
+
 test('query bookkeeping declarations are available in both native and WASM GL builds', () => {
   const nativeGuard = bridgeSrc.indexOf('#ifndef __EMSCRIPTEN__');
   const queryState = bridgeSrc.indexOf('struct GLQueryStatus');

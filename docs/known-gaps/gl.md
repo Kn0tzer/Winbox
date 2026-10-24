@@ -46,7 +46,7 @@ not a disposition.
 | `web/gl-webgpu.mjs:2123-2160` | ETC2/EAC and BC7/BPTC compressed uploads return rate-limited warnings and `INVALID_OPERATION`. | Breaks compressed-texture games | REJECTED-LOUDLY (`web/tests/suite/unit/gl-webgpu-texture.test.mjs`) |
 | `web/gl-webgpu.mjs:210` | Desktop core GLSL versions normalize to the frontend dialect. Arrays of structs, switch/bitwise expressions, uniform arrays, stage interface arrays, flat/noperspective interpolation, texture sampling/LOD/grad/offset/gather/fetch, derivatives, discard, `gl_FragCoord`, `gl_FrontFacing`, and one-pixel `gl_PointCoord` have translator regressions. Dynamic `gl_PointSize` and sampler arrays are now rejected at link time with feature-specific warnings and `INVALID_OPERATION` (`gl-webgpu.test.mjs`). Other Naga frontend rejects (for example unsupported builtin types, malformed stage `main`, and unsupported uniform-block shapes) still need a complete inventory and tested disposition. | Breaks affected shaders | OPEN (`gl-webgpu.test.mjs` covers the implemented construct set) |
 | `web/gl-webgpu.mjs:1547` | Fixed-function alpha comparison and MODULATE/REPLACE/DECAL/ADD texture environment modes are implemented; invalid alpha/env enums now report GL errors. | Breaks Quake III surfaces | IMPLEMENTED (`web/tests/suite/unit/gl-webgpu-fixed-function.test.mjs`) |
-| `web/gl-webgpu.mjs:1240,1669` | Fixed-function shader and CPU mirror support modulate, replace, decal, add, and COMBINE sources/operands with RGB/alpha operations and scales across two texture units. Quake III lightmap/fog reproduction still needs end-to-end verification and missing legacy fog bridge calls remain open. | Breaks fixed-function materials and Quake III surfaces | OPEN (`gl-webgpu.test.mjs` covers COMBINE parameter state and generated DOT3 shader) |
+| `web/gl-webgpu.mjs:1240,1669` | Fixed-function shader and CPU mirror support texture combine and linear/exp/exp2 fog; guest `glFog*` ABI calls route through the bridge. Quake III lightmap/fog appearance still needs end-to-end verification. | Breaks fixed-function materials and Quake III surfaces | OPEN (`gl-webgpu-fixed-function.test.mjs`, `gl-shim-coverage.test.mjs`; end-to-end Q3 probe outstanding) |
 | `web/gl-webgpu.mjs:1954-2035` | `texImage2D`/`texSubImage2D` now expand legacy `ALPHA`, `LUMINANCE`, `LUMINANCE_ALPHA`, `RED`, and `RG` channels as expected. | Breaks glyph/sprite atlases | IMPLEMENTED (`web/tests/suite/unit/gl-webgpu-texture.test.mjs`) |
 | Celeste visual probe (`web/tests/demo-matrix.mjs`) | Probe was run against existing runtime SHA `cad22b2` (built Oct 23): it timed out at 600 seconds in `not-mapped`, with zero runtime logs and one HTTP 404. `timeout.png` is the black “Starting the Windows environment” screen, so the title atlas was never reached. Previous worker already used both allowed builds (export-only without runtime, then full build failed before link); the build cap prevents producing a fresh artifact. | Breaks title-screen text if atlas rendering is still wrong | OPEN |
 | `source/opengl/es/esopengl.c:31` | `glClearIndex` has no effect because the bridge exposes only RGBA visuals (`glcommon.cpp:1140-1142`). It now returns without panicking. | Harmless in RGBA mode | NOT-A-GAP (color-index buffers are not exposed by this bridge) |
@@ -78,9 +78,11 @@ not a disposition.
 
 ## Audit notes
 
-This is an initial register, not a completed audit. Grep hits in enum conversion
-helpers (`gl-webgpu-utils.mjs`) throw synchronously for bad internal inputs;
-their callers and GL error conversion remain to be audited. The bridge's many
-`default:` branches and `catch {}` sites still require line-by-line disposition.
-Every `OPEN` row needs implementation or a tested, rate-limited loud rejection
-before this register can be considered complete.
+The audit covers explicit rejection markers, empty bodies, catch paths, return
+defaults, and dispatch defaults in the scoped GL files. Enum conversion helpers
+in `gl-webgpu-utils.mjs` throw synchronously only for invalid internal values;
+the public GL entry points validate guest enum/value inputs before calling
+them. Bridge catch paths that preserve an earlier error are listed above;
+dispatch defaults are listed with the owning bridge section. The rows marked
+`OPEN` identify specific guest-visible paths that still lack full behavior or
+regression evidence and remain unresolved.

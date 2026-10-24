@@ -2055,6 +2055,35 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 else GL_MT(glAlphaFunc((GLenum)ai(args,0), af(args,1)));
             }
             return 0;
+        case GL64_fn_glFogf:
+        case GL64_fn_glFogi:
+            if (g_glContext) {
+                if (g_emWebGpu) GL_MT(webGpuFixedCall(fnId == GL64_fn_glFogf ? "fogf" : "fogi", ai(args,0), fnId == GL64_fn_glFogf ? af(args,1) : ai(args,1), 0, 0, 0, 2));
+                else if (fnId == GL64_fn_glFogf) GL_MT(glFogf((GLenum)ai(args,0), af(args,1)));
+                else GL_MT(glFogi((GLenum)ai(args,0), (GLint)ai(args,1)));
+            }
+            return 0;
+        case GL64_fn_glFogfv:
+        case GL64_fn_glFogiv: {
+            if (g_glContext && args.a[1]) {
+                const bool isInt = fnId == GL64_fn_glFogiv;
+                const size_t n = ai(args,0) == 0x0b66 /*GL_FOG_COLOR*/ ? 4 : 1;
+                if (isInt) {
+                    std::vector<GLint> values(n);
+                    cpu->memory->memcpyFromGuest(values.data(), args.a[1], n * sizeof(GLint));
+                    if (g_emWebGpu) {
+                        std::vector<GLfloat> floats(values.begin(), values.end());
+                        GL_MT(webGpuFixedTexEnvArrayCall("fogiv", (GLenum)ai(args,0), 0, floats.data(), n));
+                    } else GL_MT(glFogiv((GLenum)ai(args,0), values.data()));
+                } else {
+                    std::vector<GLfloat> values(n);
+                    cpu->memory->memcpyFromGuest(values.data(), args.a[1], n * sizeof(GLfloat));
+                    if (g_emWebGpu) GL_MT(webGpuFixedTexEnvArrayCall("fogfv", (GLenum)ai(args,0), 0, values.data(), n));
+                    else GL_MT(glFogfv((GLenum)ai(args,0), values.data()));
+                }
+            }
+            return 0;
+        }
         case GL64_fn_glTexEnvf:
             if (g_glContext) {
                 if (g_emWebGpu) GL_MT(webGpuFixedCall("texEnvf", ai(args,0), ai(args,1), af(args,2), 0, 0, 3));

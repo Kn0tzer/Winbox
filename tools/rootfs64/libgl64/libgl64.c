@@ -401,7 +401,11 @@ enum {
     GL64_fn_glLoadMatrixd,
     GL64_fn_glMultMatrixd,
     GL64_fn_glMultiTexCoord2fARB = 884,
-    GL64_fn_glClientActiveTextureARB
+    GL64_fn_glClientActiveTextureARB,
+    GL64_fn_glFogf = 886,
+    GL64_fn_glFogi,
+    GL64_fn_glFogfv,
+    GL64_fn_glFogiv
 };
 
 // ---- the trap ---------------------------------------------------------------
@@ -612,6 +616,10 @@ API void glVertexPointer(GLint size, GLenum type, GLsizei stride, const void* po
 API void glColorPointer(GLint size, GLenum type, GLsizei stride, const void* pointer) { GL64Args a={{0}}; a.a[0]=(uint64_t)(uint32_t)size; a.a[1]=type; a.a[2]=(uint64_t)(uint32_t)stride; a.a[3]=(uint64_t)(uintptr_t)pointer; (void)gl64_trap(GL64_fn_glColorPointer,&a); }
 API void glTexCoordPointer(GLint size, GLenum type, GLsizei stride, const void* pointer) { GL64Args a={{0}}; a.a[0]=(uint64_t)(uint32_t)size; a.a[1]=type; a.a[2]=(uint64_t)(uint32_t)stride; a.a[3]=(uint64_t)(uintptr_t)pointer; (void)gl64_trap(GL64_fn_glTexCoordPointer,&a); }
 API void glAlphaFunc(GLenum func, GLfloat ref) { GL64Args a={{0}}; a.a[0]=func; a.a[1]=F2U(ref); (void)gl64_trap(GL64_fn_glAlphaFunc,&a); }
+API void glFogf(GLenum pname, GLfloat param) { GL64Args a={{0}}; a.a[0]=pname; a.a[1]=F2U(param); (void)gl64_trap(GL64_fn_glFogf,&a); }
+API void glFogi(GLenum pname, GLint param) { GL64Args a={{0}}; a.a[0]=pname; a.a[1]=(uint64_t)(uint32_t)param; (void)gl64_trap(GL64_fn_glFogi,&a); }
+API void glFogfv(GLenum pname, const GLfloat* params) { GL64Args a={{0}}; a.a[0]=pname; a.a[1]=(uint64_t)(uintptr_t)params; (void)gl64_trap(GL64_fn_glFogfv,&a); }
+API void glFogiv(GLenum pname, const GLint* params) { GL64Args a={{0}}; a.a[0]=pname; a.a[1]=(uint64_t)(uintptr_t)params; (void)gl64_trap(GL64_fn_glFogiv,&a); }
 API void glTexEnvf(GLenum target, GLenum pname, GLfloat param) { GL64Args a={{0}}; a.a[0]=target; a.a[1]=pname; a.a[2]=F2U(param); (void)gl64_trap(GL64_fn_glTexEnvf,&a); }
 API void glTexEnvi(GLenum target, GLenum pname, GLint param) { GL64Args a={{0}}; a.a[0]=target; a.a[1]=pname; a.a[2]=(uint64_t)(uint32_t)param; (void)gl64_trap(GL64_fn_glTexEnvi,&a); }
 API void glTexEnvfv(GLenum target, GLenum pname, const GLfloat* params) { GL64Args a={{0}}; a.a[0]=target; a.a[1]=pname; a.a[2]=(uint64_t)(uintptr_t)params; (void)gl64_trap(GL64_fn_glTexEnvfv,&a); }
@@ -1348,6 +1356,7 @@ static const struct procEntry g_procs[] = {
     E(glLockArraysEXT), E(glUnlockArraysEXT),
     E(glVertexPointer), E(glColorPointer), E(glTexCoordPointer), E(glAlphaFunc),
     E(glTexEnvf), E(glTexEnvi), E(glTexEnvfv), E(glTexEnviv),
+    E(glFogf), E(glFogi), E(glFogfv), E(glFogiv),
     E(glDepthFunc), E(glCullFace), E(glFrontFace),
     E(glHint), E(glFlush), E(glFinish), E(glGetError), E(glGetString),
     E(glGetIntegerv), E(glGetFloatv), E(glColor3f), E(glColor4f),

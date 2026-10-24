@@ -124,7 +124,7 @@ function evaluateTexEnvCombine(previous, primary, textures, unit, config, consta
   return [0,1,2].map(index=>clamp01((dot?rgb:rgb[index])*config.rgbScale)).concat([clamp01((config.rgb===0x86af?rgb:operation(config.alpha,alphaArgs))*config.alphaScale)]);
 }
 const signedType = type => [0x1400, 0x1402, 0x1404].includes(type);
-const GL_ENABLE_CAPABILITIES = new Set([0x0b44, 0x0b71, 0x0b90, 0x0bc0, 0x0be2, 0x0bd0, 0x0c11, 0x8037, 0x809e, 0x80a0, 0x8c89, 0x8db9]);
+const GL_ENABLE_CAPABILITIES = new Set([0x0b60, 0x0b44, 0x0b71, 0x0b90, 0x0bc0, 0x0be2, 0x0bd0, 0x0c11, 0x8037, 0x809e, 0x80a0, 0x8c89, 0x8db9]);
 const S3TC_BLOCK_BYTES = new Map([[0x83f0, 8], [0x83f1, 8], [0x83f2, 16], [0x83f3, 16], [0x8c4c, 8], [0x8c4d, 8], [0x8c4e, 16], [0x8c4f, 16]]);
 
 function rgb565(value) {
@@ -633,6 +633,7 @@ export class WebGPUGL {
       texEnv: Array(16).fill(0x2100),
       texEnvCombine: Array.from({ length: 16 }, defaultTexEnvCombine), texEnvColor: [0, 0, 0, 0],
       color: [1, 1, 1, 1], alphaFunc: 0x0207, alphaRef: 0,
+      fog: { mode: 0x0800, density: 1, start: 0, end: 1, color: [0, 0, 0, 0] },
     };
     this._enabled = new Set();
     this._blend = { srcRGB: 1, dstRGB: 0, srcAlpha: 1, dstAlpha: 0, equationRGB: 0x8006, equationAlpha: 0x8006 };
@@ -985,6 +986,30 @@ export class WebGPUGL {
     if (!Number.isFinite(reference)) { this._recordError(GL.INVALID_VALUE); return; }
     this._fixedFunction.alphaFunc = func | 0;
     this._fixedFunction.alphaRef = clamp01(reference);
+  }
+  fogf(pname, value) {
+    if (![0x0b62, 0x0b63, 0x0b64, 0x0b65].includes(pname)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (!Number.isFinite(value) || pname === 0x0b62 && value < 0) { this._recordError(GL.INVALID_VALUE); return; }
+    if (pname === 0x0b65) { this.fogi(pname, value); return; }
+    this._fixedFunction.fog[pname === 0x0b62 ? 'density' : pname === 0x0b63 ? 'start' : 'end'] = value;
+  }
+  fogi(pname, value) {
+    if (pname !== 0x0b65) { this.fogf(pname, value); return; }
+    if (![0x0800, 0x0801, 0x2601].includes(value)) { this._recordError(GL.INVALID_ENUM); return; }
+    this._fixedFunction.fog.mode = value;
+    this._fixedFunctionProgramCache.clear();
+  }
+  fogfv(pname, values) {
+    if (pname !== 0x0b66) { const data = Array.from(values || []); if (!data.length) { this._recordError(GL.INVALID_VALUE); return; } this.fogf(pname, data[0]); return; }
+    const color = Array.from(values || []).slice(0, 4).map(Number);
+    if (color.length !== 4 || color.some(value => !Number.isFinite(value) || value < 0 || value > 1)) { this._recordError(GL.INVALID_VALUE); return; }
+    this._fixedFunction.fog.color = color;
+  }
+  fogiv(pname, values) {
+    const data = Array.from(values || [], Number);
+    if (pname === 0x0b66) { this.fogfv(pname, data.map(value => value / 0x7fffffff)); return; }
+    if (!data.length) { this._recordError(GL.INVALID_VALUE); return; }
+    this.fogi(pname, data[0]);
   }
   texEnvi(target, pname, value) {
     if (target !== 0x2300) { this._recordError(GL.INVALID_ENUM); return; }
@@ -1786,29 +1811,34 @@ export class WebGPUGL {
   }
 
   _fixedFunctionProgram(textureUnits, colorArray, alphaEnabled, alphaFunc, texEnv,
-    texEnvCombine=this._fixedFunction.texEnvCombine, texEnvColor=this._fixedFunction.texEnvColor) {
+    texEnvCombine=this._fixedFunction.texEnvCombine, texEnvColor=this._fixedFunction.texEnvColor,
+    fog=this._fixedFunction.fog, fogEnabled=this._enabled.has(0x0b60)) {
     const key = stateKey([textureUnits, colorArray, alphaEnabled ? alphaFunc : 0x0207,
-      textureUnits.map(unit => [texEnv[unit],texEnvCombine[unit]]), this._clipControl]);
+      textureUnits.map(unit => [texEnv[unit],texEnvCombine[unit]]), fogEnabled ? fog.mode : null, this._clipControl]);
     if (this._fixedFunctionProgramCache.has(key)) return this._fixedFunctionProgramCache.get(key);
     const vertexLayout = uniformLayout([{ name: 'u_mvp', type: 'mat4' },
+      ...(fogEnabled ? [{ name: 'u_modelView', type: 'mat4' }] : []),
       ...textureUnits.map(unit => ({ name: `u_texMatrix${unit}`, type: 'mat4' }))]);
     const combineEnabled=textureUnits.some(unit=>texEnv[unit]===0x8570);
-    const fragmentFields=[...(alphaEnabled?[{name:'u_alphaRef',type:'float'}]:[]),...(combineEnabled?[{name:'u_texEnvColor',type:'vec4'}]:[])];
+    const fragmentFields=[...(alphaEnabled?[{name:'u_alphaRef',type:'float'}]:[]),...(combineEnabled?[{name:'u_texEnvColor',type:'vec4'}]:[]),
+      ...(fogEnabled?[{name:'u_fogColor',type:'vec4'},{name:'u_fogDensity',type:'float'},{name:'u_fogStart',type:'float'},{name:'u_fogEnd',type:'float'}]:[])];
     const fragmentLayout = fragmentFields.length ? uniformLayout(fragmentFields) : { fields: [], size: 0 };
     const vertexInputs = textureUnits.map((unit, index) => `, @location(${index + 2}) texCoord${unit}: vec4<f32>`).join('');
-    const vertexOutputs = textureUnits.map((unit, index) => `, @location(${index + 1}) texCoord${unit}: vec2<f32>`).join('');
-    const vertexMatrices = textureUnits.map(unit => `, u_texMatrix${unit}: mat4x4<f32>`).join('');
+    const vertexOutputs = textureUnits.map((unit, index) => `, @location(${index + 1}) texCoord${unit}: vec2<f32>`).join('') +
+      (fogEnabled ? `, @location(${textureUnits.length + 1}) fogCoord: f32` : '');
+    const vertexMatrices = (fogEnabled ? ', u_modelView: mat4x4<f32>' : '') + textureUnits.map(unit => `, u_texMatrix${unit}: mat4x4<f32>`).join('');
     const vertexTransforms = textureUnits.map(unit => `let uv${unit} = globals.u_texMatrix${unit} * vec4<f32>(input.texCoord${unit}.xy, 0.0, 1.0); output.texCoord${unit} = uv${unit}.xy / uv${unit}.w;`).join(' ');
     const clipY = this._clipControl[0] === 0x8ca2 ? '-clip.y' : 'clip.y';
     const clipZ = this._clipControl[1] === 0x935e ? '(clip.z + clip.w) * 0.5' : 'clip.z';
+    const vertexFog = fogEnabled ? 'output.fogCoord = abs((globals.u_modelView * input.position).z);' : '';
     const vertex = `struct VertexGlobals { u_mvp: mat4x4<f32>${vertexMatrices} };
 @group(0) @binding(0) var<uniform> globals: VertexGlobals;
 struct VertexInput { @location(0) position: vec4<f32>, @location(1) color: vec4<f32>${vertexInputs} };
 struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color: vec4<f32>${vertexOutputs} };
-@vertex fn main(input: VertexInput) -> VertexOutput { var output: VertexOutput; let clip = globals.u_mvp * input.position; output.position = vec4<f32>(clip.x, ${clipY}, ${clipZ}, clip.w); output.color = input.color; ${vertexTransforms} return output; }`;
+@vertex fn main(input: VertexInput) -> VertexOutput { var output: VertexOutput; let clip = globals.u_mvp * input.position; output.position = vec4<f32>(clip.x, ${clipY}, ${clipZ}, clip.w); output.color = input.color; ${vertexTransforms} ${vertexFog} return output; }`;
     const fragmentInput = `struct FragmentInput { @location(0) color: vec4<f32>${vertexOutputs} };`;
     const fragmentGlobals = fragmentFields.length
-      ? `struct FragmentGlobals { ${fragmentFields.map(field=>`${field.name}: ${field.type==='vec4'?'vec4<f32>':'f32'}`).join(', ')} };\n@group(0) @binding(1) var<uniform> fragmentGlobals: FragmentGlobals;`
+      ? `struct FragmentGlobals { ${fragmentFields.map(field=>`${field.name}: ${field.type==='vec4'?'vec4<f32>':field.type==='int'?'i32':'f32'}`).join(', ')} };\n@group(0) @binding(1) var<uniform> fragmentGlobals: FragmentGlobals;`
       : '';
     const sampler = textureUnits.map(unit => `@group(0) @binding(${2 + unit * 2}) var fixedTexture${unit}: texture_2d<f32>;\n@group(0) @binding(${3 + unit * 2}) var fixedSampler${unit}: sampler;`).join('\n');
     const textureCombines = [];
@@ -1845,7 +1875,13 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       [0x0206, 'color.a >= fragmentGlobals.u_alphaRef'], [0x0207, 'true'],
     ]).get(alphaFunc) || 'true';
     const alphaCheck = alphaEnabled ? `if (!(${alphaCompare})) { discard; }` : '';
-    const fragment = `${fragmentInput}\n${fragmentGlobals}\n${sampler}\n@fragment fn main(input: FragmentInput) -> @location(0) vec4<f32> { var color = input.color; ${textureCombines.join(' ')} ${alphaCheck} return color; }`;
+    const fogFactor = fog.mode === 0x2601
+      ? 'select(1.0, clamp((fragmentGlobals.u_fogEnd - input.fogCoord) / (fragmentGlobals.u_fogEnd - fragmentGlobals.u_fogStart), 0.0, 1.0), fragmentGlobals.u_fogEnd > fragmentGlobals.u_fogStart)'
+      : fog.mode === 0x0801
+        ? 'exp(-pow(fragmentGlobals.u_fogDensity * input.fogCoord, 2.0))'
+        : 'exp(-fragmentGlobals.u_fogDensity * input.fogCoord)';
+    const fogMix = fogEnabled ? `let fogFactor = ${fogFactor}; color = vec4<f32>(mix(fragmentGlobals.u_fogColor.rgb, color.rgb, fogFactor), color.a);` : '';
+    const fragment = `${fragmentInput}\n${fragmentGlobals}\n${sampler}\n@fragment fn main(input: FragmentInput) -> @location(0) vec4<f32> { var color = input.color; ${textureCombines.join(' ')} ${fogMix} ${alphaCheck} return color; }`;
     const textureAttributes = textureUnits.map((unit, index) => [unit === 0 ? 'a_texCoord' : `a_texCoord${unit}`, index + 2]);
     const program = {
       id: this._nextId++, linked: true, linkPromise: Promise.resolve(true), infoLog: '',
@@ -1853,7 +1889,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       attributeInfo: [{ name: 'a_position', size: 1, type: 0x8b52 }, { name: 'a_color', size: 1, type: 0x8b52 }, ...textureAttributes.map(([name]) => ({ name, size: 1, type: 0x8b52 }))],
       uniformInfo: [], uniformLocations: new Map(), uniformValues: new Map(),
       fixedFunction: { texture: textureUnits.length > 0, textureUnits: [...textureUnits], colorArray, alphaEnabled,
-        alphaFunc, alphaRef: this._fixedFunction.alphaRef, texEnv: [...texEnv], texEnvCombine, texEnvColor },
+        alphaFunc, alphaRef: this._fixedFunction.alphaRef, texEnv: [...texEnv], texEnvCombine, texEnvColor, fogEnabled, fog: { ...fog, color: [...fog.color] }, modelView: null },
       stages: {
         vertex: { wgsl: vertex, layout: vertexLayout, activeUniforms: [], samplers: [] },
         fragment: { wgsl: fragment, layout: fragmentLayout, activeUniforms: [],
@@ -1928,11 +1964,21 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     const colorArray = !!arrays.color?.enabled;
     const alphaTestEnabled = this._enabled.has(0x0bc0);
     const fixed = this._fixedFunction;
-    const program = this._fixedFunctionProgram(textureUnits, colorArray, alphaTestEnabled, fixed.alphaFunc, fixed.texEnv, fixed.texEnvCombine, fixed.texEnvColor);
+    const program = this._fixedFunctionProgram(textureUnits, colorArray, alphaTestEnabled, fixed.alphaFunc, fixed.texEnv, fixed.texEnvCombine, fixed.texEnvColor, fixed.fog, this._enabled.has(0x0b60));
     program.fixedFunction.alphaRef = fixed.alphaRef;
     const stackTop = stack => stack[stack.length - 1];
-    const mvp = multiplyMatrix4(stackTop(fixed.projection), stackTop(fixed.modelview));
+    const modelView = stackTop(fixed.modelview);
+    const mvp = multiplyMatrix4(stackTop(fixed.projection), modelView);
     program.uniformValues.set('u_mvp', mvp);
+    if (program.fixedFunction.fogEnabled) {
+      program.fixedFunction.fog = { ...fixed.fog, color: [...fixed.fog.color] };
+      program.uniformValues.set('u_modelView', modelView);
+      program.uniformValues.set('u_fogColor', fixed.fog.color);
+      program.uniformValues.set('u_fogDensity', fixed.fog.density);
+      program.uniformValues.set('u_fogStart', fixed.fog.start);
+      program.uniformValues.set('u_fogEnd', fixed.fog.end);
+      program.fixedFunction.modelView = modelView;
+    }
     for (const unit of textureUnits) {
       program.uniformValues.set(`u_texMatrix${unit}`, stackTop(fixed.texture[unit]));
       program.uniformValues.set(`u_fixedTexture${unit}`, unit);
@@ -2111,10 +2157,10 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     const viewport = state.viewport;
     const transform = index => {
       const p = this._mirrorAttribute(posAttr, index);
-      const viewPosition = fixed ? null : mulMat4(model, p);
+      const viewPosition = fixed ? (fixed.fogEnabled ? mulMat4(fixed.modelView || identityMatrix(), p) : null) : mulMat4(model, p);
       const clip = fixed ? mulMat4(fixedMvp, p) : mulMat4(projection, viewPosition);
       if (clip.some(value => !Number.isFinite(value))) return null;
-      const vertex = { clip, color: this._mirrorAttribute(colorAttr, index) };
+      const vertex = { clip, color: this._mirrorAttribute(colorAttr, index), ...(fixed?.fogEnabled ? { fogCoord: Math.abs(viewPosition[2]) } : {}) };
       if (fixed?.texture) {
         vertex.texCoords = new Map();
         for (const { unit, attribute, matrix } of textureCoordinates) {
@@ -2134,6 +2180,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       const vertex = {
         clip: a.clip.map((value, i) => value + (b.clip[i] - value) * t),
         color: a.color.map((value, i) => value + (b.color[i] - value) * t),
+        ...(a.fogCoord === undefined ? {} : { fogCoord: a.fogCoord + (b.fogCoord - a.fogCoord) * t }),
       };
       if (a.texCoords || b.texCoords) {
         vertex.texCoords = new Map();
@@ -2173,7 +2220,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
           x: viewport[0] + (nx + 1) * viewport[2] * 0.5,
           y: viewport[1] + (ny + 1) * viewport[3] * 0.5,
           z: clamp01((vertex.clip[2] * invW + 1) * 0.5), invW,
-          color: vertex.color, texCoords: vertex.texCoords,
+          color: vertex.color, texCoords: vertex.texCoords, fogCoord: vertex.fogCoord,
         };
       });
     };
@@ -2282,6 +2329,13 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
           else if(texEnv===0x8570)source.splice(0,4,...evaluateTexEnvCombine(source,primary,stageTexels,unit,fixed.texEnvCombine[unit],fixed.texEnvColor));
           else for (let channel = 0; channel < 4; channel++) source[channel] *= texel[channel];
         }
+      }
+      if (fixed?.fogEnabled) {
+        const fogCoord = wa * vertices[0].fogCoord + wb * vertices[1].fogCoord + wc * vertices[2].fogCoord;
+        const fog = fixed.fog;
+        const factor = fog.mode === 0x2601 ? (fog.end > fog.start ? clamp01((fog.end - fogCoord) / (fog.end - fog.start)) : 1)
+          : fog.mode === 0x0801 ? Math.exp(-Math.pow(fog.density * fogCoord, 2)) : Math.exp(-fog.density * fogCoord);
+        for (let channel = 0; channel < 3; channel++) source[channel] = fog.color[channel] * (1 - factor) + source[channel] * factor;
       }
       if (fixed?.alphaEnabled && !compareAlpha(fixed.alphaFunc, source[3], fixed.alphaRef)) continue;
       const destination = Array.from(this._pixels.subarray(offset, offset + 4), value => value / 255);
