@@ -36,13 +36,13 @@ Ranked by severity if reached. "Reached" means the guest calls the path. This sc
 | Core drawing entry points | `x11common.cpp:93,238,444,1185,1661,1669,1673,1796,1828,1872,1876,1880,1956,1960,1964,2126` (kpanic on `ClearArea`, `QueryTree`, `FreeFont`, `GetGeometry`, `GetPixel`, `SubImage`, `AddPixel`, `CopyPlane`, `SetDashes`, `SetArcMode`, `FillArc`, `DrawArc`, `FillRectangles`, `DrawPoint`, `FillPolygon`, `SetFillStyle`) | high if reached | Each of these Xlib calls aborts the emulator. Filled rectangles and polygons are common in game UIs. Whether the guest calls them is not verified. | OPEN (work item 3) |
 | Dropped pixel write | `x11common.cpp:1664-1671` (`x11_PutPixel`; registered at `:3119`) | high | `XPutPixel` does nothing. Before this commit it left no trace. Now it logs once per process, so the drop shows in the log. The pixel is still not written. | PARTLY FIXED (log added); the write is work item 4 |
 | Fullscreen and window state (EWMH) | `source/x11/xwindow.cpp:610` (`_NET_WM_STATE` toggle kpanic); `:1032` (`CWSibling` kpanic) | high | A `_NET_WM_STATE` toggle or a sibling stacking request aborts the emulator. | OPEN (work item 5) |
-| Clipping (partly silent) | `source/x11/xdrawable.cpp:94,145,213` (clip not implemented; the klog is commented out, so silent); `:244` (drawRectangle logs it) | high | Copies and fills ignore the clip region. In the three silent sites, pixels land outside the clip with no log line. | OPEN (work item 6) |
+| Clipping (partly silent) | `source/x11/xdrawable.cpp:95,146` (`copyImageData` clip not implemented; the klog is commented out, so silent) | high | Image copies ignore the clip region, and pixels land outside it with no log line. Fills and lines already honour the GC clip (drawing core, commit pending). | OPEN (work item 6) |
 | GLX over the X wire | `source/x11wire/xwireconnection.cpp:1739` (`GLX minor=%d (stub-reply)`) | high, if the path is used | A GLX request gets a stub reply with no real GL behind it. Logged with `klog_fmt`, so not silent, but wrong. | NEEDS_OTHER_LANE (gl), work item 7 |
 | Keyboard text entry | `x11common.cpp:777` (`XLookupString` with non-null `status_in_out`), `:806` (`XmbLookupString`), `:847` (`XkbTranslateKeysym` with `extra_rtrn`), `:940` (`RefreshKeyboardMapping`) | medium | Xlib calls that turn key events into text abort. Text entry in a game that uses them stops the emulator. | OPEN (work item 8) |
 | IME / XIM | `x11common.cpp:2372-2460` (14 kpanics on `x11_*IC` / `x11_*IM`); `:2403` TODO | medium (high for CJK input) | Any input-method call aborts the emulator. Composed text never arrives. | OPEN (work item 9) |
 | Synthetic events | `x11common.cpp:717,720,755` (kpanic on `PointerWindow`, `InputFocus`, and `propagate`) | medium | `XSendEvent` with those targets or with `propagate` aborts. | OPEN (work item 10) |
 | MIT-SHM | `x11common.cpp:2562-2575` (kpanic on `ShmAttach`, `ShmCreateImage`, `ShmDetach`, `ShmPutImage`) | medium | Clients that use shared-memory images abort. Whether this build advertises MIT-SHM is not verified here. | OPEN (work item 11) |
-| Tiled fill | `source/x11/xdrawable.cpp:216` (kpanic) | medium | A fill with a tile pattern aborts the emulator. | OPEN (work item 12) |
+| Tiled fill | `source/x11/xdrawable.cpp` `fillRectangle` | medium | A fill with a tile pattern aborts the emulator. | FIXED (tile repeated from the tile origin; test `x11-drawable-raster.test.mjs`) |
 | Other X11 kpanics | `x11common.cpp:2849,2854` (`XISelectEvents` shape checks); `:2944` (`CursorImageLoadCursor`); `:2663` TODO | low | Unusual XInput2 selections and Xcursor loads abort. | OPEN, registered |
 | Shader versions routed to ANGLE | `web/naga-rt.mjs:70,283-286` | medium | Sources naga cannot lift are classed `unsupported-version` and left to ANGLE. Whether every routed shader then compiles is not verified here. | NEEDS_OTHER_LANE (gl), work item 13 |
 | Thread exception sync (host) | `platform/linux/platformThreads-x64.cpp:146,187` (`syncFromException` kpanics) | medium | An unexpected host thread state aborts the emulator. | OPEN (work item 14) |
@@ -136,7 +136,7 @@ Machine-readable. `tools/known-gaps-audit.mjs --check` reads this block. Counts 
   "source/ui/utils/readIcons.cpp": { "count": 1, "severity": "low", "area": "ui", "gap": "one icon format not shown" },
   "source/util/bstring.cpp": { "count": 2, "severity": "low", "area": "util", "gap": "TODO: copy on substring (performance); BString::BString invariant" },
   "source/x11/x11common.cpp": { "count": 84, "severity": "high", "area": "x11", "gap": "XRandR, XIM/IC, XShm, core drawing, XSendEvent, keyboard text and PutPixel abort or drop data; XGrabPointer owner_events and GrabModeSync logged, not honoured" },
-  "source/x11/xdrawable.cpp": { "count": 9, "severity": "high", "area": "x11", "gap": "clip regions ignored (silent in four places, logged in one); tile fill aborts; drawLine depth kpanic; putImage function logged, not honoured" },
+  "source/x11/xdrawable.cpp": { "count": 4, "severity": "high", "area": "x11", "gap": "copyImageData ignores clip regions (two silent sites); putImage function logged, not honoured; 8-bit drawLine logged, not drawn" },
   "source/x11/xserver.cpp": { "count": 1, "severity": "high", "area": "x11", "gap": "relative mouse for the legacy path is not driven (wire path does it)" },
   "source/x11/xwindow.cpp": { "count": 4, "severity": "high", "area": "x11", "gap": "_NET_WM_STATE toggle and CWSibling abort; two TODOs" },
   "source/x11wire/xwireconnection.cpp": { "count": 1, "severity": "high", "area": "x11", "gap": "GLX minor answered with a stub reply" },
@@ -486,19 +486,14 @@ _Generated by `node tools/known-gaps-audit.mjs --write-hits`; do not edit by han
 | 2961 | `kpanic(` | kpanic("x11_CursorImageLoadCursor"); |
 | 3003 | `not supported` | klog("x11_CursorImagesLoadCursor animated cursors not supported, will use first frame"); |
 
-### `source/x11/xdrawable.cpp` (9)
+### `source/x11/xdrawable.cpp` (4)
 
 | Line | Match | Text |
 | --- | --- | --- |
-| 84 | `not supported` | kwarn_fmt("XPixmap::putImage function not supported %d", gc->values.function); |
-| 94 | `not implemented` | //klog("XDrawable::copyImageData clipping not implemented"); |
-| 145 | `not implemented` | //klog("XDrawable::copyImageData clipping not implemented"); |
-| 188 | `not supported` | kpanic_fmt("XDrawable::drawLine depth %d not supported", visual->bits_per_rgb); |
-| 203 | `not supported` | kwarn_fmt("XDrawable::drawLine depth %d not supported", visual->bits_per_rgb); |
-| 206 | `not supported` | klog("XDrawable::drawLine diag line not supported"); |
-| 213 | `not implemented` | //klog("XDrawable::fillRectangle clipping not implemented"); |
-| 216 | `kpanic(` | kpanic("XDrawable::fillRectangle tile not supported"); |
-| 244 | `not implemented` | klog("XDrawable::drawRectangle clipping not implemented"); |
+| 85 | `not supported` | kwarn_fmt("XPixmap::putImage function not supported %d", gc->values.function); |
+| 95 | `not implemented` | //klog("XDrawable::copyImageData clipping not implemented"); |
+| 146 | `not implemented` | //klog("XDrawable::copyImageData clipping not implemented"); |
+| 223 | `not supported` | kwarn_fmt("XDrawable::drawLine depth %d not supported", visual->bits_per_rgb); |
 
 ### `source/x11/xserver.cpp` (1)
 

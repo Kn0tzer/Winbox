@@ -18,6 +18,7 @@
 
 #include "boxedwine.h"
 #include "x11.h"
+#include "xserver.h"
 
 XDrawable::XDrawable(U32 width, U32 height, U32 depth, const VisualPtr& visual, bool isWindow) : id(XServer::getNextId()), isWindow(isWindow), depth(depth), visual(visual), w(width), h(height) {
 	data = nullptr;
@@ -170,79 +171,120 @@ int XDrawable::copy(KThread* thread, const std::shared_ptr<XGC>& gc, const std::
 	return Success;
 }
 
-int XDrawable::drawLine(KThread* thread, const std::shared_ptr<XGC>& gc, S32 x1, S32 y1, S32 x2, S32 y2) {
-	if (x1 == x2) {
-		if (x1 >= (S32)w) {
-			return Success;
-		}
-		if (visual->bits_per_rgb == 32) {
-			U32* p = (U32*)data;
-			U32 color = gc->values.foreground;
-			p += bytes_per_line / 4 * y1;
-			p += x1;
-			for (S32 y = y1; y < y2 && y < (S32)h; y++) {
-				*p = color;
-				p += bytes_per_line / 4;
-			}
-		} else {
-			kpanic_fmt("XDrawable::drawLine depth %d not supported", visual->bits_per_rgb);
-		}
-	} else if (y1 == y2) {
-		if (y1 >= (S32)h) {
-			return Success;
-		}
-		if (visual->bits_per_rgb == 32) {
-			U32* p = (U32*)data;
-			U32 color = 0xff00;
-			p += bytes_per_line / 4 * y1;
-			for (S32 x = x1; x < x2 && x < (S32)w; x++) {
-				*p = color;
-				p++;
-			}
-		} else {
-			kwarn_fmt("XDrawable::drawLine depth %d not supported", visual->bits_per_rgb);
-		}
-	} else {
-		klog("XDrawable::drawLine diag line not supported");
+// The 16 X11 GC logical operations on one 32-bit pixel: src is the GC foreground or tile pixel, dst is the drawable pixel.
+static U32 combinePixel(S32 function, U32 src, U32 dst) {
+	switch (function) {
+	case GXclear: return 0;
+	case GXand: return src & dst;
+	case GXandReverse: return src & ~dst;
+	case GXcopy: return src;
+	case GXandInverted: return ~src & dst;
+	case GXnoop: return dst;
+	case GXxor: return src ^ dst;
+	case GXor: return src | dst;
+	case GXnor: return ~(src | dst);
+	case GXequiv: return ~(src ^ dst);
+	case GXinvert: return ~dst;
+	case GXorReverse: return src | ~dst;
+	case GXcopyInverted: return ~src;
+	case GXorInverted: return ~src | dst;
+	case GXnand: return ~(src & dst);
+	case GXset: return 0xffffffff;
+	default: return src;
 	}
+}
+
+// With clip rectangles set, a pixel is drawn only when one rectangle contains it, offset by the clip origin.
+// A clip_mask bitmap is not applied here.
+static bool clipAllows(const XGC* gc, S32 x, S32 y) {
+	if (gc->clip_rects.empty()) {
+		return true;
+	}
+	for (const XRectangle& r : gc->clip_rects) {
+		S32 left = r.x + gc->values.clip_x_origin;
+		S32 top = r.y + gc->values.clip_y_origin;
+		if (x >= left && x < left + (S32)r.width && y >= top && y < top + (S32)r.height) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void XDrawable::plotPixel(const std::shared_ptr<XGC>& gc, S32 x, S32 y, U32 color) {
+	if (x < 0 || y < 0 || x >= (S32)w || y >= (S32)h || !clipAllows(gc.get(), x, y)) {
+		return;
+	}
+	U32* p = (U32*)(data + bytes_per_line * y + x * 4);
+	*p = combinePixel(gc->values.function, color, *p);
+}
+
+int XDrawable::drawLine(KThread* thread, const std::shared_ptr<XGC>& gc, S32 x1, S32 y1, S32 x2, S32 y2) {
+	if (visual->bits_per_rgb != 32) {
+		kwarn_fmt("XDrawable::drawLine depth %d not supported", visual->bits_per_rgb);
+		return Success;
+	}
+	// Bresenham's line algorithm. Both endpoints are drawn, so a zero-length segment draws one pixel.
+	const S32 dx = x2 > x1 ? x2 - x1 : x1 - x2;
+	const S32 dy = y2 > y1 ? y1 - y2 : y2 - y1; // negated height
+	const S32 sx = x1 < x2 ? 1 : -1;
+	const S32 sy = y1 < y2 ? 1 : -1;
+	S32 err = dx + dy;
+	for (;;) {
+		plotPixel(gc, x1, y1, gc->values.foreground);
+		if (x1 == x2 && y1 == y2) {
+			break;
+		}
+		const S32 e2 = 2 * err;
+		if (e2 >= dy) {
+			err += dy;
+			x1 += sx;
+		}
+		if (e2 <= dx) {
+			err += dx;
+			y1 += sy;
+		}
+	}
+	setDirty();
 	return Success;
 }
 
 int XDrawable::fillRectangle(KThread* thread, const std::shared_ptr<XGC>& gc, S32 x, S32 y, U32 width, U32 height) {
-	if (gc->clip_rects.size() || gc->values.clip_mask || gc->values.clip_x_origin || gc->values.clip_y_origin) {
-		//klog("XDrawable::fillRectangle clipping not implemented");
+	if (visual->bits_per_rgb != 32) {
+		kwarn_fmt("XDrawable::fillRectangle only %d-bit not handled", visual->bits_per_rgb);
+		return Success;
 	}
-	if (gc->values.tile) {
-		kpanic("XDrawable::fillRectangle tile not supported");
-	}
-	if (width > w - x) {
-		width = w - x;
-	}
-	if (height > h - y) {
-		height = h - y;
-	}
-
-	if (visual->bits_per_rgb == 32) {
-		U32* p = (U32*)data;
-		U32 color = gc->values.foreground;
-		p += bytes_per_line / 4 * y;
-		for (U32 dstY = 0; dstY < height; dstY++) {
-			for (U32 dstX = 0; dstX < width; dstX++) {
-				p[x + dstX] = color;
-			}
-			p += bytes_per_line/4;
+	// FillTiled repeats the tile pixmap in both directions, anchored at the tile origin.
+	XDrawablePtr tile;
+	if (gc->values.fill_style == FillTiled && gc->values.tile) {
+		tile = XServer::getServer()->getDrawable(gc->values.tile);
+		if (tile && (tile->visual->bits_per_rgb != 32 || !tile->w || !tile->h)) {
+			tile = nullptr;
 		}
-	} else {
-        kwarn_fmt("XDrawable::fillRectangle only %d-bit not handled", visual->bits_per_rgb);
+	}
+	const S32 right = x + (S32)width;
+	const S32 bottom = y + (S32)height;
+	for (S32 dstY = y < 0 ? 0 : y; dstY < bottom && dstY < (S32)h; dstY++) {
+		for (S32 dstX = x < 0 ? 0 : x; dstX < right && dstX < (S32)w; dstX++) {
+			U32 color = gc->values.foreground;
+			if (tile) {
+				S32 tx = (dstX - gc->values.ts_x_origin) % (S32)tile->w;
+				S32 ty = (dstY - gc->values.ts_y_origin) % (S32)tile->h;
+				if (tx < 0) {
+					tx += (S32)tile->w;
+				}
+				if (ty < 0) {
+					ty += (S32)tile->h;
+				}
+				color = *(U32*)(tile->data + tile->bytes_per_line * ty + tx * 4);
+			}
+			plotPixel(gc, dstX, dstY, color);
+		}
 	}
 	setDirty();
 	return Success;
 }
 
 int XDrawable::drawRectangle(KThread* thread, const std::shared_ptr<XGC>& gc, S32 x, S32 y, U32 width, U32 height) {
-	if (gc->clip_rects.size() || gc->values.clip_mask || gc->values.clip_x_origin || gc->values.clip_y_origin) {
-		klog("XDrawable::drawRectangle clipping not implemented");
-	}
 	// draw rectangle with no overlapping pixels
 	drawLine(thread, gc, x, y, x + width, y); // top (includes left and right)
 	drawLine(thread, gc, x + width, y + 1, x + width, y + height); // right	( includes bottom but not top)
