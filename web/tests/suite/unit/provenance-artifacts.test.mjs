@@ -14,12 +14,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { provenanceDistRoot, missingExportMessage } from '../lib/provenance-hint.mjs';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
-const distRoot = resolve(repoRoot, process.env.BW_TEST_DIST || 'dist');
+const distRoot = provenanceDistRoot(repoRoot);
 const artifactPath = (path, ...rest) => path.startsWith('dist/')
   ? join(distRoot, path.slice(5), ...rest) : join(repoRoot, path, ...rest);
 const sha256File = (p) => createHash('sha256').update(readFileSync(p)).digest('hex');
@@ -27,7 +28,11 @@ const sha256File = (p) => createHash('sha256').update(readFileSync(p)).digest('h
 test('BUILD_INFO.json exists in both dist/runtime and web/runtime', () => {
   for (const d of ['dist/runtime/BUILD_INFO.json', 'web/runtime/BUILD_INFO.json']) {
     const p = artifactPath(d);
-    assert.ok(existsSync(p), `${d} must exist (bw64-build.sh writes provenance)`);
+    // Absent dist/ is a FAIL by design; the message carries the fix.
+    const msg = d.startsWith('dist/')
+      ? missingExportMessage(distRoot)
+      : `${d} must exist (bw64-build.sh writes provenance)`;
+    assert.ok(existsSync(p), msg);
     const j = JSON.parse(readFileSync(p, 'utf8'));
     assert.ok(j.git_sha && j.git_sha.length >= 7, `${d}: git_sha must be recorded`);
     assert.ok(j.wasm_sha256 && j.wasm_sha256.length === 64, `${d}: wasm_sha256 must be recorded`);

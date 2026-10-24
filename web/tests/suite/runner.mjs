@@ -23,10 +23,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 import { withTimeout } from './lib/probe-base.mjs';
 import { gamePrerequisites, prerequisiteSelection, prerequisiteEvidence } from './lib/game-prerequisites.mjs';
+import { provenanceHint } from './lib/provenance-hint.mjs';
 
 const suiteDir = dirname(fileURLToPath(import.meta.url));
 const unitDir = join(suiteDir, "unit");
 const browserDir = join(suiteDir, "browser");
+const repoRoot = join(suiteDir, "..", "..", "..");
 
 const args = process.argv.slice(2);
 const onlyUnit = args.includes("--unit");
@@ -130,6 +132,9 @@ async function main() {
   const runBrowser = !onlyUnit;
 
   if (runUnit) {
+    // Print the fix before any result: provenance-artifacts fails without an export.
+    const hint = provenanceHint(repoRoot);
+    if (hint) log(`NOTE: ${hint}`);
     log("Unit tests (fast, no browser):");
     let files = [];
     try { files = readdirSync(unitDir).filter(f => f.endsWith(".test.mjs")).sort(); } catch {}

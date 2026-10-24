@@ -61,7 +61,7 @@ Scope: first-party files under `tools/`. Vendored or generated trees are exclude
 ## Verification limits
 
 - Last full runs (2026-10-24, `BW_TEST_DIST=<winbox-integ-20261022>/dist`, export `9320e5a8`): `node web/tests/suite/runner.mjs --unit` 189 passed, 0 failed; `node web/tests/launcher-ui.mjs` passed all 13 checks; `node tools/browser/verify-dist.mjs` verified 31 `.mjs` files.
-- Without `BW_TEST_DIST`, this worktree (no `dist/`) fails `provenance-artifacts` ("must exist"), and the unit runner reports 187/188. This is deliberate under the absent-artifact rule; it is an open policy question (skip versus fail when no export was requested) for the owner.
+- Policy (owner decision): without an export, `provenance-artifacts` keeps FAILING. Its failure message names both fixes (`run tools/bw64-build.sh --export-only`, or set `BW_TEST_DIST=<dist>`), and `runner.mjs --unit` prints the same hint as a `NOTE:` line before any result. The message is pinned by `suite/unit/provenance-hint.test.mjs`, which also runs the real provenance file and the runner against an empty export. In a worktree without `dist/`, the unit runner therefore reports one failure, and the hint says how to clear it.
 - The gitignored `web/runtime/` mirror (`boxedwine64.wasm`, `boxedwine64.js`, `BUILD_INFO.json`) was refreshed from the integration export so the dist-versus-mirror sync check compares the same build. Previous copies are kept outside the repo. `web/runtime` is never committed.
 - No WASM build was run.
 - There are no `.todo()` or unconditional browser-test skips. Conditional skips are the optional Celeste archive, optional cross-compilers, and absent export artifacts above.
