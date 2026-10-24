@@ -5791,6 +5791,17 @@ void ksyscall64(CPU64* cpu) {
                 ret = unimplementedSyscall64(nr);
             }
             break;
+        case X64_SYS_fork:
+        case X64_SYS_vfork:
+            // Both syscalls currently get a private process snapshot. The
+            // vfork parent-suspension semantics remain tracked in the gap
+            // register and are covered by follow-up work.
+            if (cpu->thread && cpu->thread->process && cpu->thread->process->memory64) {
+                ret = cpu->thread->process->forkProcess64(cpu->thread, 0, 0, 0);
+            } else {
+                ret = unimplementedSyscall64(nr);
+            }
+            break;
         case X64_SYS_execve:
             // Replaces the process image. On success returns -K_CONTINUE (the
             // new program's RAX is already set by loadProgram64); the dispatcher

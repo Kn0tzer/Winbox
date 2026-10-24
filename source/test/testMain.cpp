@@ -82,6 +82,7 @@ void testSignalfd64Syscalls();
 void testFutex64Operations();
 void testPrctl64Options();
 void testOpcodeFault64Delivery();
+void testForkVfork64();
 #endif
 
 namespace {
@@ -108,6 +109,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testSignalfd64Syscalls, "Test x64 signalfd create and update"},
     {testPrctl64Options, "Test x64 prctl option surface"},
     {testOpcodeFault64Delivery, "Test x64 undefined/VEX opcode SIGILL delivery"},
+    {testForkVfork64, "Test x64 fork and vfork create real processes"},
 };
 #else
 const TestEntry TEST_ENTRIES[] = {

@@ -1,0 +1,135 @@
+/*
+ *  Copyright (C) 2012-2026  The BoxedWine Team
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) any later version.
+ */
+
+#include "boxedwine.h"
+
+#ifdef __TEST
+#ifdef BOXEDWINE_GUEST_X64
+
+#include "cpu64.h"
+#include "kmemory64.h"
+#include "ksystem.h"
+#include "syscall64.h"
+#include "../cpu/testCPU.h"
+#include "../../io/fsfilenode.h"
+
+namespace {
+struct RestoreProcessCpu64 {
+    KProcess& process;
+    CPU64* saved;
+    ~RestoreProcessCpu64() { process.cpu64 = saved; }
+};
+}
+
+// fork(2)=57 and vfork(2)=58 must create a real process with its own address
+// space even though glibc normally reaches clone/clone3. The test drives the
+// dispatcher directly and verifies parent/child return values, wait4 behavior,
+// and memory isolation. The child runs a short self-loop until cleanup stops it.
+static void runForkCase(TestContext& context, U64 nr, const char* name) {
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+    constexpr U64 page = 0x61000000ULL;
+    if (!memory->getPageFlags(page >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(page, K64_PAGE_SIZE * 2, 3) != page) {
+        testFail("%s test could not map x64 page", name);
+        return;
+    }
+    if (!memory->getPageFlags((page + K64_PAGE_SIZE) >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(page + K64_PAGE_SIZE, K64_PAGE_SIZE, 3) != page + K64_PAGE_SIZE) {
+        testFail("%s test could not map child code page", name);
+        return;
+    }
+    memory->writed(page, 0x11223344);
+    memory->writed(page + 4, 0xAABBCCDD);
+    const U64 childCode = page + K64_PAGE_SIZE + 0x10;
+    memory->writeb(childCode, 0xEB);     // jmp $: keep the child alive until
+    memory->writeb(childCode + 1, 0xFE); // the test explicitly stops it.
+
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    RestoreProcessCpu64 restoreCpu{*process, process->cpu64};
+    process->cpu64 = &cpu;
+    cpu.rip = childCode;
+    cpu.reg[X64_RAX].setU64(nr);
+    ksyscall64(&cpu);
+    const S64 forkResult = (S64)cpu.reg[X64_RAX].u64;
+    if (forkResult <= 0) {
+        testFail("%s did not return a child pid (ret=%lld)", name, (long long)forkResult);
+        return;
+    }
+    KProcessPtr child = KSystem::getProcess((U32)forkResult);
+    if (!child) {
+        testFail("%s returned pid %lld but no child process exists", name, (long long)forkResult);
+        return;
+    }
+    if (child->parentId != process->id) testFail("%s child has the wrong parent", name);
+    if (!child->is64Bit) testFail("%s child is not a 64-bit process", name);
+    if (!child->memory64 || child->memory64 == memory) testFail("%s child did not get its own address space", name);
+    if (!child->cpu64) {
+        testFail("%s child has no CPU64", name);
+    } else {
+        if (child->cpu64->reg[X64_RAX].u64 != 0) testFail("%s child does not return 0", name);
+        if (child->cpu64->rip != childCode) testFail("%s child did not inherit RIP", name);
+    }
+    if (child->memory64) {
+        if (child->memory64->readd(page) != 0x11223344 || child->memory64->readd(page + 4) != 0xAABBCCDD) {
+            testFail("%s child did not inherit the parent memory contents", name);
+        }
+        memory->writed(page, 0x55667788);
+        if (child->memory64->readd(page) != 0x11223344) {
+            testFail("%s child memory is not isolated from later parent writes", name);
+        }
+    }
+    CPU64 waitCpu(memory);
+    waitCpu.thread = context.thread;
+    waitCpu.reg[X64_RAX].setU64(61); // wait4
+    waitCpu.reg[X64_RDI].setU64((U32)forkResult);
+    waitCpu.reg[X64_RSI].setU64(page + 8);
+    waitCpu.reg[X64_RDX].setU64(1); // WNOHANG
+    memory->writed(page + 8, 0xDEADBEEF);
+    ksyscall64(&waitCpu);
+    if ((S64)waitCpu.reg[X64_RAX].u64 != 0) {
+        testFail("%s wait4(WNOHANG) should report a running child", name);
+    }
+    if (memory->readd(page + 8) != 0xDEADBEEF) {
+        testFail("%s wait4(WNOHANG) overwrote status for a running child", name);
+    }
+    // Fork queues a real guest thread; stop and join it before dropping the
+    // process table entry or the test fixture can race its CPU teardown.
+    child->killAllThreads(nullptr);
+    child->exitCode = 37;
+    child->terminated = true;
+    waitCpu.reg[X64_RAX].setU64(61); // wait4 the now-exited child
+    waitCpu.reg[X64_RDX].setU64(0);
+    ksyscall64(&waitCpu);
+    if ((S64)waitCpu.reg[X64_RAX].u64 != forkResult) {
+        testFail("%s wait4 did not reap its terminated child", name);
+    }
+    if (memory->readd(page + 8) != (37u << 8)) {
+        testFail("%s wait4 returned the wrong exit status", name);
+    }
+    if (KSystem::getProcess((U32)forkResult)) {
+        KSystem::eraseProcess((U32)forkResult);
+    }
+}
+
+void testForkVfork64() {
+    TestContext& context = testContext();
+    std::shared_ptr<FsNode> oldProcNode = KSystem::procNode;
+    if (!KSystem::procNode) {
+        KSystem::procNode = std::make_shared<FsFileNode>(0, 0, B("/proc"), B(""), B(""), true, false, nullptr);
+    }
+    runForkCase(context, 57 /*fork*/, "fork");
+    runForkCase(context, 58 /*vfork*/, "vfork");
+    KSystem::procNode = oldProcNode;
+}
+
+#endif
+#endif
