@@ -3,21 +3,28 @@ import { inflateSync } from 'node:zlib';
 // Read the composited screenshot. WebGPU's current canvas texture expires
 // after presentation, so drawImage/getImageData can read an empty next buffer.
 export function screenshotPixels(png) {
-  let width, height, channels, position = 8;
+  if (!Buffer.isBuffer(png) || !png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])))
+    throw new Error('Invalid screenshot PNG signature');
+  let width, height, channels, position = 8, ended = false;
   const chunks = [];
   while (position + 12 <= png.length) {
     const size = png.readUInt32BE(position);
+    if (position + 12 + size > png.length) throw new Error('Truncated screenshot PNG chunk');
     const type = png.toString('ascii', position + 4, position + 8);
     const bytes = png.subarray(position + 8, position + 8 + size);
     if (type === 'IHDR') {
+      if (position !== 8 || size !== 13) throw new Error('Invalid screenshot PNG header');
       width = bytes.readUInt32BE(0); height = bytes.readUInt32BE(4);
       channels = ({2: 3, 6: 4})[bytes[9]];
-      if (bytes[8] !== 8 || !channels) throw new Error('Unsupported screenshot PNG encoding');
+      if (!width || !height || bytes[8] !== 8 || !channels || bytes[10] || bytes[11] || bytes[12]) throw new Error('Unsupported screenshot PNG encoding');
     } else if (type === 'IDAT') chunks.push(bytes);
+    else if (type === 'IEND') { ended = true; break; }
     position += size + 12;
   }
+  if (!width || !height || !chunks.length || !ended) throw new Error('Incomplete screenshot PNG');
   const stride = width * channels;
   const raw = inflateSync(Buffer.concat(chunks));
+  if (raw.length !== height * (stride + 1)) throw new Error('Invalid screenshot PNG scanline length');
   const rgb = Buffer.alloc(stride * height);
   for (let y = 0; y < height; y++) for (let x = 0; x < stride; x++) {
     const left = x >= channels ? rgb[y * stride + x - channels] : 0;
