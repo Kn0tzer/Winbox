@@ -1397,6 +1397,48 @@ int main() {
         g_v2Pending.clear();
         puts("PASS: dynamic rendering colour resolve is an image copy; viewMask and render-area offset are loud");
     }
+    {
+        // vkCreateRenderPass2 (API 1.2 core; DXVK 2.x and vkd3d use it): subpass colour/resolve/depth
+        // references are read through both guest ABIs, and the unsupported parts are counted.
+        const U64 inBefore = vk64BridgeUnsupportedCount("subpass-input-attachment");
+        // ---- 64-bit
+        RpAttachmentDesc2_64 ad[3] = {}; for (auto& a : ad) a.sType = 1000109000;
+        ad[0].format = 37; ad[0].samples = 4; ad[1].format = 37; ad[1].samples = 1; ad[2].format = 126; ad[2].samples = 4;
+        RpAttachmentRef2_64 colorRef = {}, resolveRef = {}, depthRef = {}, inputRef = {};
+        colorRef.attachment = 0; resolveRef.attachment = 1; depthRef.attachment = 2; inputRef.attachment = 1;
+        memory.memcpyToGuest(8192, ad, sizeof(ad));
+        memory.memcpyToGuest(8448, &colorRef, sizeof(colorRef)); memory.memcpyToGuest(8512, &resolveRef, sizeof(resolveRef));
+        memory.memcpyToGuest(8576, &depthRef, sizeof(depthRef)); memory.memcpyToGuest(8640, &inputRef, sizeof(inputRef));
+        RpSubpassDesc2_64 sd = {}; sd.colorAttachmentCount = 1; sd.pColorAttachments = 8448; sd.pResolveAttachments = 8512; sd.pDepthStencilAttachment = 8576;
+        sd.inputAttachmentCount = 1; sd.pInputAttachments = 8640;
+        memory.memcpyToGuest(8704, &sd, sizeof(sd));
+        VkRenderPassCreateInfo2 ci2 = {}; ci2.attachmentCount = 3; ci2.pAttachments = 8192; ci2.subpassCount = 1; ci2.pSubpasses = 8704;
+        memory.memcpyToGuest(8832, &ci2, sizeof(ci2));
+        VK64Args a{}; a.a[1] = 8832; a.a[3] = 9000;
+        memory.memcpyToGuest(128, &a, sizeof(a));
+        assert(vk64Bridge(&cpu, VK64_fn_vkCreateRenderPass2, 128) == VK_SUCCESS);
+        auto* rp2 = objOf<RenderPass>(memory.readq(9000), K_RENDERPASS, "test");
+        assert(rp2 && rp2->natt == 3 && rp2->samples[0] == 4 && rp2->nsub == 1);
+        assert(rp2->sub[0].nColor == 1 && rp2->sub[0].color[0] == 0 && rp2->sub[0].resolve[0] == 1 && rp2->sub[0].depth == 2);
+        assert(vk64BridgeUnsupportedCount("subpass-input-attachment") == inBefore + 1);
+        // ---- 32-bit
+        RpAttachmentDesc2_32 ad32[3] = {}; for (auto& x : ad32) x.sType = 1000109000;
+        ad32[0].format = 37; ad32[0].samples = 4; ad32[1].format = 37; ad32[1].samples = 1; ad32[2].format = 126; ad32[2].samples = 4;
+        RpAttachmentRef2_32 c32 = {}, r32 = {}, d32 = {}; c32.attachment = 0; r32.attachment = 1; d32.attachment = 2;
+        memory32.memcpyToGuest(8192, ad32, sizeof(ad32));
+        memory32.memcpyToGuest(8448, &c32, sizeof(c32)); memory32.memcpyToGuest(8512, &r32, sizeof(r32)); memory32.memcpyToGuest(8576, &d32, sizeof(d32));
+        RpSubpassDesc2_32 sd32 = {}; sd32.colorAttachmentCount = 1; sd32.pColorAttachments = 8448; sd32.pResolveAttachments = 8512; sd32.pDepthStencilAttachment = 8576;
+        memory32.memcpyToGuest(8704, &sd32, sizeof(sd32));
+        vk32abi::VkRenderPassCreateInfo2 ci32 = {}; ci32.attachmentCount = 3; ci32.pAttachments = 8192; ci32.subpassCount = 1; ci32.pSubpasses = 8704;
+        memory32.memcpyToGuest(8832, &ci32, sizeof(ci32));
+        VK32Args b{}; b.a[1] = 8832; b.a[3] = 9000;
+        memory32.memcpyToGuest(128, &b, sizeof(b));
+        assert(vk32Bridge(&cpu32, VK64_fn_vkCreateRenderPass2, 128) == VK_SUCCESS);
+        auto* rp32 = objOf32<RenderPass>(memory32.readd(9000), K_RENDERPASS, "test");
+        assert(rp32 && rp32->natt == 3 && rp32->nsub == 1);
+        assert(rp32->sub[0].nColor == 1 && rp32->sub[0].resolve[0] == 1 && rp32->sub[0].depth == 2);
+        puts("PASS: vkCreateRenderPass2 subpass references parse in 64-bit and 32-bit guests");
+    }
         puts("PASS: GUARD advertised features are truthful and identical for 32-bit and 64-bit guests");
 
         // GUARD (silent capability use): SPIR-V that declares capabilities or
