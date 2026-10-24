@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
@@ -9,10 +10,10 @@ test('32-bit RDTSC advances across threaded CPUs without instruction counting', 
   const root = new URL('../../../../', import.meta.url);
   const common = readFileSync(new URL('source/emulation/cpu/common/cpu.cpp', root), 'utf8');
   const normal = readFileSync(new URL('source/emulation/cpu/normal/normal_other.h', root), 'utf8');
-  const extract = (s, name) => s.slice(s.indexOf(`void ${name}(`), s.indexOf('\n}', s.indexOf(`void ${name}(`)) + 2);
+  const extract = (s, name) => extractSourceRange(s, s.indexOf(`void ${name}(`), s.indexOf('\n}', s.indexOf(`void ${name}(`)) + 2);
   const commonFn = extract(common, 'common_rdtsc');
   // Choose the non-MSVC implementation, which contains the portable clock.
-  const normalFn = extract(normal.slice(normal.indexOf('#else', normal.indexOf('#include <intrin.h>'))), 'OPCALL normal_rdtsc');
+  const normalFn = extract(extractSourceRange(normal, normal.indexOf('#else', normal.indexOf('#include <intrin.h>'))), 'OPCALL normal_rdtsc');
   assert.ok(commonFn.includes('EDX') && normalFn.includes('EDX'));
   const dir = mkdtempSync(join(tmpdir(), 'rdtsc-threaded-'));
   try {

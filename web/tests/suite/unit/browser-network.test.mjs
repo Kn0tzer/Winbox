@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
@@ -32,7 +33,7 @@ struct Descriptor {U32 handle;};
 using KFileDescriptorPtr=std::shared_ptr<Descriptor>;
 struct Process {U32 next=3;KFileDescriptorPtr allocFileDescriptor(std::shared_ptr<Object>,U32,U32,int,U32){return std::make_shared<Descriptor>(Descriptor{next++});}};
 struct KThread {std::shared_ptr<Process> process=std::make_shared<Process>();static KThread* currentThread(){static KThread thread;return &thread;}};
-${source.slice(start,end)}
+${extractSourceRange(source, start,end)}
 int main(int argc,char** argv){
  assert(argc==2);
  const bool enabled=!strcmp(argv[1],"1");
@@ -68,7 +69,7 @@ test('relay initialization uses one credential-free same-origin endpoint', () =>
   const start = source.indexOf('    function configureNetworkRelay(');
   const end = source.indexOf('    // Resolve the FS object', start);
   assert.ok(start >= 0 && end > start);
-  const configure = runInNewContext(source.slice(start, end) + '\nconfigureNetworkRelay', { URL });
+  const configure = runInNewContext(extractSourceRange(source, start, end) + '\nconfigureNetworkRelay', { URL });
   for (const [href, expected] of [
     ['http://127.0.0.1:8000/runtime/index.html?network=1', 'ws://127.0.0.1:8000/runtime/__bw64_tcp'],
     ['https://user:password@example.test/nested/runtime/index.html?relay=bad#fragment', 'wss://example.test/nested/runtime/__bw64_tcp'],

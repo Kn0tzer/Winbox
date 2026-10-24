@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
@@ -65,7 +66,7 @@ struct KProcess {
   void onExec(KThread* t) { killAllThreads(t); }
   void replaceImage(KThread* thread) {
     std::vector<int> args, envs;
-${source.slice(start, end)}
+${extractSourceRange(source, start, end)}
   }
 };
 int main() {

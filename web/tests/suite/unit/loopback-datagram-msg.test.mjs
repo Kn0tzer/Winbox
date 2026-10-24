@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
@@ -11,7 +12,7 @@ test('Wine message I/O preserves UDP packets and receives the TCP pipe secret wi
   const end = source.indexOf('U32 KNativeSocketObject::sendto(', start);
   const takeStart = source.indexOf('U32 KNativeSocketObject::takeLoopbackPacket(');
   const takeEnd = source.indexOf('U32 KNativeSocketObject::recvLoopbackFrom(', takeStart);
-  const take = takeStart >= 0 ? source.slice(takeStart, takeEnd) : '';
+  const take = takeStart >= 0 ? extractSourceRange(source, takeStart, takeEnd) : '';
   const streamStart = source.indexOf('U32 KNativeSocketObject::recvLoopbackStream(');
   const streamEnd = source.indexOf('void KNativeSocketObject::closeLoopbackStream(', streamStart);
   const dir = mkdtempSync(join(tmpdir(), 'bw-udp-msg-'));
@@ -61,8 +62,8 @@ struct KNativeSocketObject:std::enable_shared_from_this<KNativeSocketObject>{
 };
 U32 handleNativeSocketError(const std::shared_ptr<KNativeSocketObject>&,bool){return U32(-5);}
 ${take}
-${source.slice(streamStart, streamEnd)}
-${source.slice(start, end)}
+${extractSourceRange(source, streamStart, streamEnd)}
+${extractSourceRange(source, start, end)}
 int main(){KMemory m;KThread t{&m};auto s=std::make_shared<KNativeSocketObject>();
  auto header=[&](U32 name=0){MsgHdr h{name,name?16u:0u,128,2,0,0,0};m.memcpy(0,&h,sizeof(h));m.writed(128,512);m.writed(132,2);m.writed(136,528);m.writed(140,3);};
  header();assert(s->recvmsg(&t,0,0,0)==U32(-K_EWOULDBLOCK));

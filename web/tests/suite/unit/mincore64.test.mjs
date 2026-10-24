@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
@@ -31,7 +32,7 @@ struct Memory {
  void writeb(U64 a,U8 v){assert(a<sizeof(out));out[a]=v;}
 };
 struct CPU64{Memory* memory;};
-${source.slice(start, end)}
+${extractSourceRange(source, start, end)}
 int main(){Memory m;CPU64 c{&m};
  m.mapped[4]=m.mapped[5]=m.mapped[0]=true;m.committed[4]=true;
  assert(sys_mincore64(&c,0x4000,4097,0)==0);assert(m.out[0]==1&&m.out[1]==0);

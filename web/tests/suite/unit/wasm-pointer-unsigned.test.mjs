@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import { test } from 'node:test';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
@@ -43,7 +44,7 @@ function emJsPointerIssues(file, source) {
       else if (ch === '{') depth++;
       else if (ch === '}') depth--;
     }
-    const body = source.slice(openBrace + 1, end - 1);
+    const body = extractSourceRange(source, openBrace + 1, end - 1);
     const leadingStatements = body.match(/^\s*(?:(?:[A-Za-z_]\w*\s*>>>=\s*0;|[A-Za-z_]\w*\s*=\s*[A-Za-z_]\w*\s*>>>\s*0;)\s*)*/)?.[0] ?? '';
     const params = match[2].split(',').map(param => param.trim()).filter(Boolean);
     const protectedParams = params.filter(param => {

@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync,writeFileSync,mkdtempSync,rmSync} from 'node:fs';
@@ -65,7 +66,7 @@ int main(){
  return 0;
 }
 `;
- writeFileSync(join(dir,'check.cpp'),setup+src.slice(start,end)+main);
+ writeFileSync(join(dir,'check.cpp'),setup+extractSourceRange(src, start,end)+main);
  execFileSync('c++',['-std=c++17','-pthread',join(dir,'check.cpp'),'-o',join(dir,'check')],{stdio:'pipe'});
  execFileSync(join(dir,'check'),[],{timeout:2000,stdio:'pipe'});
  }finally{rmSync(dir,{recursive:true,force:true});}

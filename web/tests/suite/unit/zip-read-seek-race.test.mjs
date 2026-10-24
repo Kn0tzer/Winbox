@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync, mkdtempSync, writeFileSync, rmSync} from 'node:fs';
@@ -15,7 +16,7 @@ test('ZIP read and seek cannot change a copy length midway through a read', () =
       if (source[end] === '{') depth++;
       if (source[end] === '}') depth--;
     }
-    return source.slice(start, end);
+    return extractSourceRange(source, start, end);
   }
   const dir = mkdtempSync(join(tmpdir(), 'bw-zip-read-seek-'));
   try {

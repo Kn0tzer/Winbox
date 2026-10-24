@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync, mkdtempSync, writeFileSync, rmSync} from 'node:fs';
@@ -14,7 +15,7 @@ test('main-thread input pump defers busy guest connections and flushes under one
     if (header[end] === '{') depth++;
     if (header[end] === '}') depth--;
   }
-  const method = header.slice(start, end);
+  const method = extractSourceRange(header, start, end);
   const dir = mkdtempSync(join(tmpdir(), 'bw-input-pump-'));
   try {
     writeFileSync(join(dir, 'test.cpp'), `

@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
@@ -23,7 +24,7 @@ struct Memory {std::unordered_map<U64,U64> q;U64 readq(U64 a){return q[a];}void 
 struct KThread {U64 slept=0;U32 nanoSleep(U64 n){slept=n;return 0;}};
 struct CPU64 {Memory* memory;KThread* thread;};
 struct KSystem {static U64 getSystemTimeAsMicroSeconds(){return 10'000'000;}static U32 getMilliesSinceStart(){return 20000;}};
-${source.slice(start,end)}
+${extractSourceRange(source, start,end)}
 int main(){Memory m;KThread t;CPU64 c{&m,&t};
  m.q[16]=2;m.q[24]=500000000;assert(sys_nanosleep64(&c,16,0,0,0)==0&&t.slept==2500000000ULL);
  m.q[16]=1;m.q[24]=1000000000;assert((S64)sys_nanosleep64(&c,16,0,0,0)==-K_EINVAL);
@@ -57,7 +58,7 @@ test('x64 getcpu reports the single emulated CPU and NUMA node', () => {
 using U64=uint64_t;using S64=int64_t;using U32=uint32_t;using U8=uint8_t;constexpr U32 K_EFAULT=14;
 struct Memory {U32 cpu=99,node=99;void writed(U64 a,U32 v){if(a==4)cpu=v;else if(a==8)node=v;}};
 struct CPU64 {Memory* memory;};
-${source.slice(start,end)}
+${extractSourceRange(source, start,end)}
 int main(){Memory m;CPU64 c{&m};assert(sys_getcpu64(&c,4,8,1234)==0);assert(m.cpu==0&&m.node==0);assert(sys_getcpu64(&c,4,0,0)==0&&m.cpu==0);assert(sys_getcpu64(&c,0,0,0)==0);}
 `);
     const build = spawnSync('c++', ['-std=c++20', join(dir, 'check.cpp'), '-o', join(dir, 'check')], { encoding: 'utf8' });

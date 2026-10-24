@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
@@ -11,7 +12,7 @@ test('Wine loopback ioctls use guest queues and nonblocking state without a host
   const readEnd = source.indexOf('} else if (request == K_SIOCGIFCONF)', start);
   const nonblockStart = source.indexOf('} else if (request == 0x5421)', readEnd);
   const nonblockEnd = source.indexOf('} else if (request == K_SIOCGIFHWADDR)', nonblockStart);
-  const method = source.slice(start, readEnd) + source.slice(nonblockStart, nonblockEnd) + '} return -25; }';
+  const method = extractSourceRange(source, start, readEnd) + extractSourceRange(source, nonblockStart, nonblockEnd) + '} return -25; }';
   const dir = mkdtempSync(join(tmpdir(), 'bw-loopback-ioctl-'));
   try {
     writeFileSync(join(dir, 'check.cpp'), `

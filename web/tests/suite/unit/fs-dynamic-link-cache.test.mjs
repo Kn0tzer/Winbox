@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
@@ -15,7 +16,7 @@ test('dynamic fd link removal stays coherent without scanning unrelated cached p
     const start = source.indexOf(begin);
     const finish = source.indexOf(end, start);
     assert.ok(start >= 0 && finish > start, `missing source section ${begin}`);
-    return source.slice(start, finish);
+    return extractSourceRange(source, start, finish);
   };
   const dir = mkdtempSync(join(tmpdir(), 'bw64-dynamic-cache-'));
   try {

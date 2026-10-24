@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
@@ -75,7 +76,7 @@ struct KProcess{
  KFileDescriptorPtr allocFileDescriptor(std::shared_ptr<KObject> o,U32,U32,S32,U32){return std::make_shared<Descriptor>(Descriptor{o});}
  U32 openFileDescriptor(BString,BString,U32,U32,S32,U32,KFileDescriptorPtr&);
 };
-${source.slice(start,end)}
+${extractSourceRange(source, start,end)}
 int main(){
  KProcess first{1},second{2};KFileDescriptorPtr a,b;
  std::thread one([&]{assert(first.openFileDescriptor("/tmp","lock",K_O_CREAT|K_O_RDWR,0,-1,0,a)==0);});

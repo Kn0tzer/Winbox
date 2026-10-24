@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
@@ -7,7 +8,7 @@ import { tmpdir } from 'node:os';
 
 test('browser native socket monitor uses a working local wakeup pipe', () => {
   const source = readFileSync('source/kernel/knativesocket.cpp', 'utf8');
-  const functions = source.slice(source.indexOf('void startNativeSocketsThread()'), source.indexOf('void addWaitingNativeSocket('));
+  const functions = extractSourceRange(source, source.indexOf('void startNativeSocketsThread()'), source.indexOf('void addWaitingNativeSocket('));
   assert.ok(functions.startsWith('void startNativeSocketsThread()'));
   const dir = mkdtempSync(join(tmpdir(), 'bw64-socket-wakeup-'));
   try {

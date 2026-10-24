@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
@@ -88,15 +89,15 @@ void KThread::cleanup() {
   // models the blocking wakeups and filesystem work in real thread cleanup.
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
 }
-${source.slice(start, end)}
-${source.slice(ordinaryStart, ordinaryEnd)}
+${extractSourceRange(source, start, end)}
+${extractSourceRange(source, ordinaryStart, ordinaryEnd)}
 void KProcess::exitGroupCleanup(KThread* thread) {
-${source.slice(groupCleanup, groupEnd)}
+${extractSourceRange(source, groupCleanup, groupEnd)}
 }
 struct CPU { KThread* thread; };
 void finishThread(CPU* cpu, KProcessPtr process) {
   int ripSlot = 0;
-${platform.slice(exitStart, exitEnd)}
+${extractSourceRange(platform, exitStart, exitEnd)}
 }
 int main() {
   auto process = std::make_shared<KProcess>();

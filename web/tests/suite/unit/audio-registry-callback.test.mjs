@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
@@ -14,7 +15,7 @@ test('audio enable callbacks can create and release voices without locking the r
     if (source[end] === '{') depth++;
     if (source[end] === '}') depth--;
   }
-  const implementation = source.slice(start, end);
+  const implementation = extractSourceRange(source, start, end);
   const dir = mkdtempSync(join(tmpdir(), 'bw-audio-registry-'));
   try {
     writeFileSync(join(dir, 'test.cpp'), `

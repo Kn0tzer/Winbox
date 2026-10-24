@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync,mkdtempSync,writeFileSync,rmSync} from 'node:fs';
@@ -14,7 +15,7 @@ for(const multi of [true,false])test(`condition parents grow, deduplicate, expir
  const sourceName='source/util/synchronization.cpp';
  const branch=multi
   ?extractSourceSlice(source,'BoxedWineCriticalSectionCond::','bool BoxedWineConditionTimer::run()', {sourceName})
-  :source.slice(source.indexOf('bool BoxedWineConditionTimer::run()'));
+  :extractSourceRange(source, source.indexOf('bool BoxedWineConditionTimer::run()'));
  if (!multi && !source.includes('bool BoxedWineConditionTimer::run()')) throw new Error(`source slice marker not found in ${sourceName}: bool BoxedWineConditionTimer::run()`);
  const methods=['addParentCondition','removeParentCondition','parentsCount','parentSnapshot','signalAll'].map(name=>branch.match(new RegExp('(?:void|U32|std::vector<std::shared_ptr<BoxedWineCondition>>) BoxedWineCondition::'+name+'\\([^]*?\\n\\}'))?.[0]);
  assert.ok(methods.every(Boolean));

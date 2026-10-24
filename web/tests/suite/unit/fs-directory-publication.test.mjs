@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
@@ -63,7 +64,7 @@ struct Fs {
  static U32 readNativeFile(const BString&,U8*,U32){return 0;}
  static void addFileNode(const BString& path,const BString&,const BString&,bool,std::shared_ptr<FsNode> parent){parent->children.push_back(path);}
 };
-${source.slice(start, end)}
+${extractSourceRange(source, start, end)}
 int main(){
  auto node=std::make_shared<FsNode>();
  std::thread loader([&]{node->loadChildren();});
