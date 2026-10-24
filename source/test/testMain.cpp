@@ -62,6 +62,7 @@ void testFutex64DispatchGuard();
 #ifndef BOXEDWINE_GUEST_X64
 void testMadvise32Syscall();
 void testGetrandom32Syscall();
+void testMlock32Syscalls();
 #endif
 void testInetDatagramLoopback();
 void testInetStreamLoopback();
@@ -731,6 +732,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testWaitPid, "Test waitpid child selection"},
     {testMadvise32Syscall, "Test 32-bit madvise syscall effects"},
     {testGetrandom32Syscall, "Test 32-bit getrandom entropy and validation"},
+    {testMlock32Syscalls, "Test 32-bit memory lock syscall ABI"},
     {testSyscall64DispatchGuard, "Test x64 syscall fallback guard"},
     {testFutex64DispatchGuard, "Test x64 futex dispatch guard"},
     {testTimerfdCore, "Test timerfd descriptor and expiration semantics"},

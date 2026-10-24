@@ -855,6 +855,31 @@ static U32 syscall_mlock(CPU* cpu, U32 eipCount) {
     return result;
 }
 
+static U32 syscall_munlock(CPU* cpu, U32 eipCount) {
+    SYS_LOG1(SYSCALL_MEMORY, cpu, "munlock: address=0x%X len=%d", ARG1, ARG2);
+    U32 result = cpu->memory->mlock(ARG1, ARG2);
+    SYS_LOG(SYSCALL_MEMORY, cpu, " result=%d(0x%X)\n", result, result);
+    return result;
+}
+
+static U32 syscall_mlockall(CPU* cpu, U32 eipCount) {
+    constexpr U32 MCL_CURRENT = 1, MCL_FUTURE = 2, MCL_ONFAULT = 4;
+    U32 flags = ARG1;
+    if ((flags & ~(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT)) ||
+        ((flags & MCL_ONFAULT) && !(flags & (MCL_CURRENT | MCL_FUTURE)))) {
+        return -K_EINVAL;
+    }
+    // Guest pages remain resident in this emulator, so valid lock requests do
+    // not need host pinning. MCL_FUTURE is accepted with the same resident-page
+    // guarantee; RLIMIT_MEMLOCK accounting is handled by the process resource
+    // limit path when that limit is implemented.
+    return 0;
+}
+
+static U32 syscall_munlockall(CPU* cpu, U32 eipCount) {
+    return 0;
+}
+
 static U32 syscall_sched_getparam(CPU* cpu, U32 eipCount) {    
     U32 result = -K_EPERM;
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "sched_getparam: pid=%d params=%X result=%d(0x%X) IGNORED\n", ARG1, ARG2, result, result);
@@ -2179,9 +2204,9 @@ static const SyscallFunc syscallFunc[] = {
     syscall_fdatasync,  // 148 __NR_fdatasync
     nullptr,                  // 149
     syscall_mlock,      // 150 __NR_mlock
-    nullptr,                  // 151
-    nullptr,                  // 152
-    nullptr,                  // 153
+    syscall_munlock,    // 151 __NR_munlock
+    syscall_mlockall,   // 152 __NR_mlockall
+    syscall_munlockall, // 153 __NR_munlockall
     nullptr,                  // 154
     syscall_sched_getparam, // 155 __NR_sched_getparam
     nullptr,                  // 156
