@@ -747,7 +747,7 @@ void main(){
   vec4 gatheredOffset=textureGatherOffset(image,uv,ivec2(1),1);
   vec4 fetched=texelFetch(image,ivec2(0),0);
   float derivative=fwidth(uv.x);
-  color=ordinary+lod+grad+offset+gathered+gatheredOffset+fetched+vec4(float(bits)+derivative+gl_FragCoord.x+gl_FragCoord.y);
+  color=ordinary+lod+grad+offset+gathered+gatheredOffset+fetched+vec4(float(bits)+derivative+gl_FragCoord.x+gl_PointCoord.x);
   if(gl_FrontFacing && bits==0) discard;
 }`;
   const prepared=rewriteGlslForWebGPU(source,'fragment');
@@ -755,6 +755,7 @@ void main(){
   assert.match(String(wgsl),/textureSampleLevel|textureSample/);
   assert.match(String(wgsl),/textureGather\(2,/);
   assert.match(String(wgsl),/textureGather\(1,[^\n]*vec2\(1i\)/);
+  assert.match(prepared.code,/vec2\(0\.5, 0\.5\)\.x/);
   assert.match(String(wgsl),/discard/);
 });
 

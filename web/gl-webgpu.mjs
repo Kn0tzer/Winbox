@@ -427,6 +427,9 @@ export function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(
     .replace(/^[ \t]*#define[ \t]+(?:lowp|mediump|highp)(?:[ \t]+[^\n]*)?[ \t]*$/gm, '')
     .replace(/^[ \t]*precision[ \t]+(?:lowp|mediump|highp)[ \t]+(?:float|int)[ \t]*;[ \t]*$/gm, '')
     .replace(/\b(?:lowp|mediump|highp)\b/g, '');
+  // WebGPU point-list rasterization is one pixel and has no point_coord
+  // builtin; the matching GL point center is therefore exactly (0.5, 0.5).
+  if(stage==='fragment')code=code.replace(/\bgl_PointCoord\b/g,'vec2(0.5, 0.5)');
   if (/\bgl_ModelViewProjectionMatrix\b/.test(code)) {
     code = code.replace(/\bgl_ModelViewProjectionMatrix\b/g, 'bw_ModelViewProjectionMatrix');
     if (!/\buniform\s+mat4\s+bw_ModelViewProjectionMatrix\b/.test(code)) {
