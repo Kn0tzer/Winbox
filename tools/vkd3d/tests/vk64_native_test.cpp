@@ -523,6 +523,61 @@ int main() {
     assert(!findObj(allocationId32, K_MEMORY));
     g_mem32 = nullptr; g_mem = &memory;
     puts("PASS: Vulkan32 allocation layout, four-byte map output and failure cleanup");
+    // ---- 32-bit bridge parity with the 64-bit one: functions the i386 shim used
+    // to stub (vkCmdFillBuffer, vkGetBufferDeviceAddress, ...) and cases the 32-bit
+    // switch lacked (vkDestroyEvent, vkGetImageSubresourceLayout, ...).
+    {
+        auto call32b = [&](U32 fn, const VK32Args& args) {
+            memory32.memcpyToGuest(128, &args, sizeof(args));
+            return vk32Bridge(&cpu32, fn, 128);
+        };
+        VK32Args am{}; am.a[1] = 512; am.a[3] = 640;
+        allocation32.allocationSize = 4096;
+        memory32.memcpyToGuest(512, &allocation32, sizeof(allocation32));
+        assert(call32b(VK64_fn_vkAllocateMemory, am) == VK_SUCCESS);
+        U64 memId = memory32.readq(640);
+        auto* dm = objOf32<DeviceMemory>(memId, K_MEMORY, "test");
+        assert(dm && dm->va);
+        U64 bufId; auto* buf = createObj32<Buffer>(K_BUFFER, bufId);
+        buf->size = 4096; buf->mem = memId; buf->memOff = 0;
+        // vkCmdFillBuffer: the pattern lands in guest memory, a 64-bit size is honored.
+        VK32Args fill{}; fill.a[1] = bufId; fill.a[2] = 16; fill.a[3] = 32; fill.a[4] = 0xDEADBEEFu;
+        assert(call32b(VK64_fn_vkCmdFillBuffer, fill) == 0);
+        for (U32 i = 0; i < 8; ++i) assert(memory32.readd((U32)dm->va + 16 + 4 * i) == 0xDEADBEEFu);
+        assert(memory32.readd((U32)dm->va + 12) != 0xDEADBEEFu && memory32.readd((U32)dm->va + 48) != 0xDEADBEEFu);
+        // vkGetBufferDeviceAddress: the i386 trap returns only EAX, so the full
+        // 64-bit address must come back through the out slot in arg 2.
+        U64 info32[2] = {0, bufId};                 // sType,pNext | buffer @8
+        memory32.memcpyToGuest(1024, info32, sizeof(info32));
+        memory32.writeq(1088, 0);
+        VK32Args bda{}; bda.a[1] = 1024; bda.a[2] = 1088;
+        U64 lowOnly = call32b(VK64_fn_vkGetBufferDeviceAddress, bda);
+        U64 full = memory32.readq(1088);
+        assert(full == buf->devVa && (full >> 32) != 0 && (U32)lowOnly == (U32)full);
+        // vkDestroyEvent / vkDestroyQueryPool drop the object.
+        VK32Args ev{}; ev.a[3] = 1152;
+        assert(call32b(VK64_fn_vkCreateEvent, ev) == VK_SUCCESS);
+        U64 evId = memory32.readq(1152);
+        assert(findObj(evId, K_EVENT));
+        VK32Args dev{}; dev.a[1] = evId;
+        assert(call32b(VK64_fn_vkDestroyEvent, dev) == 0);
+        assert(!findObj(evId, K_EVENT));
+        // vkGetImageSubresourceLayout: five 8-byte VkDeviceSize fields, guest VA offset.
+        U64 imgId; auto* img = createObj32<Image>(K_IMAGE, imgId);
+        img->w = 8; img->h = 4; img->format = 37 /* R8G8B8A8_UNORM */; img->mem = memId; img->memOff = 64;
+        VK32Args sl{}; sl.a[1] = imgId; sl.a[3] = 1216;
+        assert(call32b(VK64_fn_vkGetImageSubresourceLayout, sl) == VK_SUCCESS);
+        assert(memory32.readq(1216) == dm->va + 64 && memory32.readq(1224) == 8ULL * 4 * 4 &&
+               memory32.readq(1232) == 8ULL * 4);
+        // The presentation-support queries are answered, not -8.
+        VK32Args ps{};
+        assert(call32b(VK64_fn_vkGetPhysicalDeviceWin32PresentationSupportKHR, ps) == VK_TRUE);
+        assert(call32b(VK64_fn_vkGetPhysicalDeviceXlibPresentationSupportKHR, ps) == VK_TRUE);
+        VK32Args fr{}; fr.a[1] = memId;
+        assert(call32b(VK64_fn_vkFreeMemory, fr) == VK_SUCCESS);
+        g_mem32 = nullptr; g_mem = &memory;
+        puts("PASS: Vulkan32 bridge parity (fill, 64-bit device address, destroy, subresource layout)");
+    }
     // ---- Descriptor model: arrays, dynamic offsets, immutable samplers, copies,
     // pools, push descriptors, 32-bit strides. Each assertion fails if the
     // corresponding behaviour regresses to the old 8-binding / element-0 model.

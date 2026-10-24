@@ -7483,6 +7483,55 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkGetPhysicalDeviceSurfaceSupportKHR:
         wr32_32((U32)args.a[3], 1); // VK_TRUE
         return VK_SUCCESS;
+    case VK64_fn_vkGetPhysicalDeviceXlibPresentationSupportKHR:
+    case VK64_fn_vkGetPhysicalDeviceWin32PresentationSupportKHR:
+        // Same answer as the 64-bit bridge: every frame presents through the
+        // canvas, so there is no non-presentable device behind this shim.
+        return VK_TRUE;
+    case VK64_fn_vkGetPastPresentationTimingGOOGLE:
+        if (args.a[2]) wr32_32((U32)args.a[2], 0);   /* no timestamps */
+        return VK_SUCCESS;
+    case VK64_fn_vkGetImageSubresourceLayout: {
+        // Reports the GUEST address, as the 64-bit bridge does, so the guest
+        // addresses the mapped range directly.
+        Image* im = objOf32<Image>(args.a[1], K_IMAGE, "vkGetImageSubresourceLayout");
+        if (!im || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        DeviceMemory* m = im->mem ? objOf32<DeviceMemory>(im->mem, K_MEMORY, "vkGetImageSubresourceLayout") : nullptr;
+        U32 bpp = fmt_bpp(im->format);
+        vk32abi::VkSubresourceLayout l = {};
+        l.offset = m ? (m->va + im->memOff) : 0;
+        l.size = (U64)im->w * im->h * bpp;
+        l.rowPitch = (U64)im->w * bpp;
+        l.arrayPitch = l.size;
+        l.depthPitch = l.size;
+        writeStruct32((U32)args.a[3], l);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkDestroyEvent:
+    case VK64_fn_vkDestroyQueryPool:
+        dropObj(args.a[1]);
+        return 0;
+    case VK64_fn_vkCreatePipelineCache: {
+        if (!objOf32<Device>(args.a[0], K_DEVICE, "vkCreatePipelineCache") || !args.a[3])
+            return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        createObj32<PipelineCache>(K_PIPECACHE, id);
+        wr64_32((U32)args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCmdClearDepthStencilImage: {
+        // (cmdBuf, image, layout, pDepthStencil*, rangeCount, pRanges*)
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdClearDepthStencilImage");
+        VK64_DROP_IF(return 0, !cb || !objOf32<Image>(args.a[1], K_IMAGE, "vkCmdClearDepthStencilImage"));
+        if (args.a[4] > 64) { g_frameOverflow = true; return 0; }
+        struct { float depth; U32 stencil; } value = {1.0f, 0};
+        if (args.a[3]) g_mem32->memcpyFromGuest(&value, (U32)args.a[3], sizeof(value));
+        Cmd c; c.kind = CMD_CLEAR_DS_IMAGE; c.a = args.a[1];
+        c.f[0] = value.depth; c.clearStencil = value.stencil;
+        readArray32((U32)args.a[5], (U32)args.a[4], c.clearRanges);
+        if (!c.clearRanges.empty()) pushCmd(cb, c);
+        return 0;
+    }
     case VK64_fn_vkGetPhysicalDeviceFormatProperties: {
         // 32-bit VkFormatProperties: 3x u32 (linear@0, optimal@4, buffer@8).
         if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
@@ -8719,7 +8768,9 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         U32 srcRowPitch = src->w * pxBytes, dstRowPitch = dst->w * pxBytes;
         for (U32 i = 0; i < nreg && pReg; i++) {
             vk32abi::VkImageBlit r = {};
-            readStruct32(pReg + i * (U32)sizeof(r), r);
+            // VkImageBlit2 carries an 8-byte sType+pNext header on i386.
+            const U32 header = fnId == VK64_fn_vkCmdBlitImage ? 0 : 8;
+            readStruct32(pReg + i * ((U32)sizeof(r) + header) + header, r);
             const int32_t srcOffsets[2][3] = {
                 {r.srcOffsets[0].x, r.srcOffsets[0].y, r.srcOffsets[0].z},
                 {r.srcOffsets[1].x, r.srcOffsets[1].y, r.srcOffsets[1].z},
@@ -9385,6 +9436,13 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         if (!b->devVa) {
             b->devVa = g_nextDevVa;
             g_nextDevVa += 0x10000000ULL;
+        }
+        // The i386 trap returns only EAX, which would truncate the 64-bit address
+        // to its low half (0 for the first buffer). The shim passes a u64 out slot
+        // in arg 2 and reads the full address from there.
+        if (args.a[2]) {
+            U64 va = b->devVa;
+            g_mem32->memcpyToGuest((U32)args.a[2], &va, 8);
         }
         return b->devVa;
     }

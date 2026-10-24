@@ -233,6 +233,30 @@ enum {
     VK64_fn_vkCmdCopyBufferToImage2 = 821,
     VK64_fn_vkCmdCopyBufferToImage2KHR = 822,
     VK64_fn_vkCmdResolveImage = 826,
+    VK64_fn_vkCmdCopyImageToBuffer = 808,
+    VK64_fn_vkCmdCopyImage = 809,
+    VK64_fn_vkCmdCopyImageToBuffer2 = 810,
+    VK64_fn_vkCmdCopyImageToBuffer2KHR = 811,
+    VK64_fn_vkCmdFillBuffer = 815,
+    VK64_fn_vkCmdClearColorImage = 816,
+    VK64_fn_vkCmdClearAttachments = 817,
+    VK64_fn_vkCmdClearAttachmentsKHR = 818,
+    VK64_fn_vkCmdCopyImage2 = 819,
+    VK64_fn_vkCmdCopyImage2KHR = 820,
+    VK64_fn_vkCmdBlitImage = 823,
+    VK64_fn_vkCmdBlitImage2 = 824,
+    VK64_fn_vkCmdBlitImage2KHR = 825,
+    VK64_fn_vkCmdResolveImageKHR = 827,
+    VK64_fn_vkCmdDrawIndirect = 828,
+    VK64_fn_vkCmdDrawIndexedIndirect = 829,
+    VK64_fn_vkCmdDrawIndirectCount = 830,
+    VK64_fn_vkCmdDrawIndirectCountKHR = 831,
+    VK64_fn_vkCmdDrawIndexedIndirectCount = 832,
+    VK64_fn_vkCmdExecuteCommands = 833,
+    VK64_fn_vkCmdDispatch = 834,
+    VK64_fn_vkCmdDispatchBase = 835,
+    VK64_fn_vkCmdDispatchIndirect = 836,
+    VK64_fn_vkGetBufferDeviceAddress = 837,
     VK64_fn_vkGetPhysicalDeviceProperties2KHR = 838,
     VK64_fn_vkGetPhysicalDeviceFeatures2KHR = 839,
     VK64_fn_vkGetPhysicalDeviceMemoryProperties2KHR = 840,
@@ -1223,6 +1247,167 @@ API void vkCmdResolveImage2KHR(VkCommandBuffer commandBuffer, const void* info) 
     vkCmdResolveImage2(commandBuffer, info);
 }
 
+// ---- commands the 32-bit bridge implements (they used to be TAIL stubs that
+// silently returned -8 to a 32-bit guest). Argument slots mirror libvk64.c; the
+// *2 info structs are unpacked here with the i386 layout (4-byte uint64 alignment
+// inside structs, 4-byte pointers).
+API void vkCmdFillBuffer(VkCommandBuffer cb, VkBuffer dst, VkDeviceSize offset, VkDeviceSize size, uint32_t data) {
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = dst; a.a[2] = offset; a.a[3] = size; a.a[4] = data;
+    (void)vk64_trap(VK64_fn_vkCmdFillBuffer, &a);
+}
+API void vkCmdClearColorImage(VkCommandBuffer cb, VkImage image, uint32_t layout, const void* color, uint32_t n, const void* ranges) {
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = image; a.a[2] = layout; a.a[3] = P(color); a.a[4] = n; a.a[5] = P(ranges);
+    (void)vk64_trap(VK64_fn_vkCmdClearColorImage, &a);
+}
+API void vkCmdClearDepthStencilImage(VkCommandBuffer cb, VkImage image, uint32_t layout, const void* value, uint32_t n, const void* ranges) {
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = image; a.a[2] = layout; a.a[3] = P(value); a.a[4] = n; a.a[5] = P(ranges);
+    (void)vk64_trap(VK64_fn_vkCmdClearDepthStencilImage, &a);
+}
+API void vkCmdClearAttachments(VkCommandBuffer cb, uint32_t nAtt, const void* atts, uint32_t nRects, const void* rects) {
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = nAtt; a.a[2] = P(atts); a.a[3] = nRects; a.a[4] = P(rects);
+    (void)vk64_trap(VK64_fn_vkCmdClearAttachments, &a);
+}
+API void vkCmdClearAttachmentsKHR(VkCommandBuffer cb, uint32_t nAtt, const void* atts, uint32_t nRects, const void* rects) {
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = nAtt; a.a[2] = P(atts); a.a[3] = nRects; a.a[4] = P(rects);
+    (void)vk64_trap(VK64_fn_vkCmdClearAttachmentsKHR, &a);
+}
+API void vkCmdCopyImage(VkCommandBuffer cb, VkImage src, uint32_t srcLayout, VkImage dst, uint32_t dstLayout, uint32_t n, const void* regions) {
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = src; a.a[2] = srcLayout; a.a[3] = dst; a.a[4] = dstLayout; a.a[5] = n; a.a[6] = P(regions);
+    (void)vk64_trap(VK64_fn_vkCmdCopyImage, &a);
+}
+typedef struct VkCopyImageInfo2L {
+    uint32_t sType; const void* pNext;
+    VkImage srcImage; uint32_t srcImageLayout;
+    VkImage dstImage; uint32_t dstImageLayout;
+    uint32_t regionCount; const void* pRegions;
+} VkCopyImageInfo2L;
+#ifdef __i386__
+_Static_assert(__builtin_offsetof(VkCopyImageInfo2L, regionCount) == 32 && __builtin_offsetof(VkCopyImageInfo2L, pRegions) == 36, "VkCopyImageInfo2 i386 layout");
+#endif
+static void vk32_copyImage2(uint64_t fn, VkCommandBuffer cb, const void* infoIn) {
+    const VkCopyImageInfo2L* i = (const VkCopyImageInfo2L*)infoIn;
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = i->srcImage; a.a[2] = i->dstImage; a.a[3] = i->regionCount; a.a[4] = P(i->pRegions);
+    (void)vk64_trap(fn, &a);
+}
+API void vkCmdCopyImage2(VkCommandBuffer cb, const void* info) { vk32_copyImage2(VK64_fn_vkCmdCopyImage2, cb, info); }
+API void vkCmdCopyImage2KHR(VkCommandBuffer cb, const void* info) { vk32_copyImage2(VK64_fn_vkCmdCopyImage2KHR, cb, info); }
+API void vkCmdBlitImage(VkCommandBuffer cb, VkImage src, uint32_t srcLayout, VkImage dst, uint32_t dstLayout, uint32_t n, const void* regions, uint32_t filter) {
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = src; a.a[2] = srcLayout; a.a[3] = dst; a.a[4] = dstLayout; a.a[5] = n;
+    a.a[6] = P(regions); a.a[7] = filter;
+    (void)vk64_trap(VK64_fn_vkCmdBlitImage, &a);
+}
+typedef struct VkBlitImageInfo2L {
+    uint32_t sType; const void* pNext;
+    VkImage srcImage; uint32_t srcImageLayout;
+    VkImage dstImage; uint32_t dstImageLayout;
+    uint32_t regionCount; const void* pRegions; uint32_t filter;
+} VkBlitImageInfo2L;
+#ifdef __i386__
+_Static_assert(__builtin_offsetof(VkBlitImageInfo2L, regionCount) == 32 && __builtin_offsetof(VkBlitImageInfo2L, filter) == 40, "VkBlitImageInfo2 i386 layout");
+#endif
+static void vk32_blitImage2(uint64_t fn, VkCommandBuffer cb, const void* infoIn) {
+    const VkBlitImageInfo2L* i = (const VkBlitImageInfo2L*)infoIn;
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = i->srcImage; a.a[2] = i->dstImage; a.a[3] = i->regionCount; a.a[4] = P(i->pRegions); a.a[5] = i->filter;
+    (void)vk64_trap(fn, &a);
+}
+API void vkCmdBlitImage2(VkCommandBuffer cb, const void* info) { vk32_blitImage2(VK64_fn_vkCmdBlitImage2, cb, info); }
+API void vkCmdBlitImage2KHR(VkCommandBuffer cb, const void* info) { vk32_blitImage2(VK64_fn_vkCmdBlitImage2KHR, cb, info); }
+API void vkCmdCopyImageToBuffer(VkCommandBuffer cb, VkImage src, uint32_t srcLayout, VkBuffer dst, uint32_t n, const void* regions) {
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = src; a.a[2] = srcLayout; a.a[3] = dst; a.a[4] = n; a.a[5] = P(regions);
+    (void)vk64_trap(VK64_fn_vkCmdCopyImageToBuffer, &a);
+}
+typedef struct VkCopyImageToBufferInfo2L {
+    uint32_t sType; const void* pNext;
+    VkImage srcImage; uint32_t srcImageLayout;
+    VkBuffer dstBuffer; uint32_t regionCount; const void* pRegions;
+} VkCopyImageToBufferInfo2L;
+#ifdef __i386__
+_Static_assert(__builtin_offsetof(VkCopyImageToBufferInfo2L, dstBuffer) == 20 && __builtin_offsetof(VkCopyImageToBufferInfo2L, pRegions) == 32, "VkCopyImageToBufferInfo2 i386 layout");
+#endif
+static void vk32_copyImageToBuffer2(uint64_t fn, VkCommandBuffer cb, const void* infoIn) {
+    const VkCopyImageToBufferInfo2L* i = (const VkCopyImageToBufferInfo2L*)infoIn;
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = i->srcImage; a.a[2] = i->srcImageLayout; a.a[3] = i->dstBuffer; a.a[4] = i->regionCount; a.a[5] = P(i->pRegions);
+    (void)vk64_trap(fn, &a);
+}
+API void vkCmdCopyImageToBuffer2(VkCommandBuffer cb, const void* info) { vk32_copyImageToBuffer2(VK64_fn_vkCmdCopyImageToBuffer2, cb, info); }
+API void vkCmdCopyImageToBuffer2KHR(VkCommandBuffer cb, const void* info) { vk32_copyImageToBuffer2(VK64_fn_vkCmdCopyImageToBuffer2KHR, cb, info); }
+API void vkCmdResolveImage(VkCommandBuffer cb, VkImage src, uint32_t srcLayout, VkImage dst, uint32_t dstLayout, uint32_t n, const void* regions) {
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = src; a.a[2] = srcLayout; a.a[3] = dst; a.a[4] = dstLayout; a.a[5] = n; a.a[6] = P(regions);
+    (void)vk64_trap(VK64_fn_vkCmdResolveImage, &a);
+}
+API void vkCmdResolveImageKHR(VkCommandBuffer cb, VkImage src, uint32_t srcLayout, VkImage dst, uint32_t dstLayout, uint32_t n, const void* regions) {
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = src; a.a[2] = srcLayout; a.a[3] = dst; a.a[4] = dstLayout; a.a[5] = n; a.a[6] = P(regions);
+    (void)vk64_trap(VK64_fn_vkCmdResolveImageKHR, &a);
+}
+API void vkCmdDrawIndirect(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize offset, uint32_t drawCount, uint32_t stride) {
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = buf; a.a[2] = offset; a.a[3] = drawCount; a.a[4] = stride;
+    (void)vk64_trap(VK64_fn_vkCmdDrawIndirect, &a);
+}
+API void vkCmdDrawIndexedIndirect(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize offset, uint32_t drawCount, uint32_t stride) {
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = buf; a.a[2] = offset; a.a[3] = drawCount; a.a[4] = stride;
+    (void)vk64_trap(VK64_fn_vkCmdDrawIndexedIndirect, &a);
+}
+static void vk32_drawIndirectCount(uint64_t fn, VkCommandBuffer cb, VkBuffer buf, VkDeviceSize offset, VkBuffer countBuf, VkDeviceSize countOffset, uint32_t maxDraws, uint32_t stride) {
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = buf; a.a[2] = offset; a.a[3] = countBuf; a.a[4] = countOffset; a.a[5] = maxDraws; a.a[6] = stride;
+    (void)vk64_trap(fn, &a);
+}
+API void vkCmdDrawIndirectCount(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize offset, VkBuffer countBuf, VkDeviceSize countOffset, uint32_t maxDraws, uint32_t stride) {
+    vk32_drawIndirectCount(VK64_fn_vkCmdDrawIndirectCount, cb, buf, offset, countBuf, countOffset, maxDraws, stride);
+}
+API void vkCmdDrawIndirectCountKHR(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize offset, VkBuffer countBuf, VkDeviceSize countOffset, uint32_t maxDraws, uint32_t stride) {
+    vk32_drawIndirectCount(VK64_fn_vkCmdDrawIndirectCountKHR, cb, buf, offset, countBuf, countOffset, maxDraws, stride);
+}
+API void vkCmdDrawIndexedIndirectCount(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize offset, VkBuffer countBuf, VkDeviceSize countOffset, uint32_t maxDraws, uint32_t stride) {
+    vk32_drawIndirectCount(VK64_fn_vkCmdDrawIndexedIndirectCount, cb, buf, offset, countBuf, countOffset, maxDraws, stride);
+}
+API void vkCmdExecuteCommands(VkCommandBuffer cb, uint32_t n, const VkCommandBuffer* cbs) {
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = n; a.a[2] = P(cbs);
+    (void)vk64_trap(VK64_fn_vkCmdExecuteCommands, &a);
+}
+API void vkCmdDispatch(VkCommandBuffer cb, uint32_t x, uint32_t y, uint32_t z) {
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = x; a.a[2] = y; a.a[3] = z;
+    (void)vk64_trap(VK64_fn_vkCmdDispatch, &a);
+}
+API void vkCmdDispatchBase(VkCommandBuffer cb, uint32_t bx, uint32_t by, uint32_t bz, uint32_t x, uint32_t y, uint32_t z) {
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = bx; a.a[2] = by; a.a[3] = bz; a.a[4] = x; a.a[5] = y; a.a[6] = z;
+    (void)vk64_trap(VK64_fn_vkCmdDispatchBase, &a);
+}
+API void vkCmdDispatchIndirect(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize offset) {
+    VK64Args a = {{0}};
+    a.a[0] = cb; a.a[1] = buf; a.a[2] = offset;
+    (void)vk64_trap(VK64_fn_vkCmdDispatchIndirect, &a);
+}
+// The i386 trap hands back only EAX, so the 64-bit address would lose its high
+// half. The bridge also stores the full address through the out slot in arg 2.
+API uint64_t vkGetBufferDeviceAddress(VkDevice dev, const void* info) {
+    uint64_t va = 0;
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(info); a.a[2] = P(&va);
+    (void)vk64_trap(VK64_fn_vkGetBufferDeviceAddress, &a);
+    return va;
+}
+API uint64_t vkGetBufferDeviceAddressKHR(VkDevice dev, const void* info) {
+    return vkGetBufferDeviceAddress(dev, info);
+}
+
 // ===========================================================================
 // F. Frame boundary (2 of the 85)
 // ===========================================================================
@@ -1276,6 +1461,33 @@ typedef void (*PFN_vkVoidFunction)(void);
 struct procEntry { const char* name; uint64_t fnId; PFN_vkVoidFunction fn; };
 #define E(n, id) { #n, (uint64_t)(id), (PFN_vkVoidFunction)n }
 static const struct procEntry g_procs[] = {
+    E(vkCmdBlitImage, VK64_fn_vkCmdBlitImage),
+    E(vkCmdBlitImage2, VK64_fn_vkCmdBlitImage2),
+    E(vkCmdBlitImage2KHR, VK64_fn_vkCmdBlitImage2KHR),
+    E(vkCmdClearAttachments, VK64_fn_vkCmdClearAttachments),
+    E(vkCmdClearAttachmentsKHR, VK64_fn_vkCmdClearAttachmentsKHR),
+    E(vkCmdClearColorImage, VK64_fn_vkCmdClearColorImage),
+    E(vkCmdClearDepthStencilImage, VK64_fn_vkCmdClearDepthStencilImage),
+    E(vkCmdCopyImage, VK64_fn_vkCmdCopyImage),
+    E(vkCmdCopyImage2, VK64_fn_vkCmdCopyImage2),
+    E(vkCmdCopyImage2KHR, VK64_fn_vkCmdCopyImage2KHR),
+    E(vkCmdCopyImageToBuffer, VK64_fn_vkCmdCopyImageToBuffer),
+    E(vkCmdCopyImageToBuffer2, VK64_fn_vkCmdCopyImageToBuffer2),
+    E(vkCmdCopyImageToBuffer2KHR, VK64_fn_vkCmdCopyImageToBuffer2KHR),
+    E(vkCmdDispatch, VK64_fn_vkCmdDispatch),
+    E(vkCmdDispatchBase, VK64_fn_vkCmdDispatchBase),
+    E(vkCmdDispatchIndirect, VK64_fn_vkCmdDispatchIndirect),
+    E(vkCmdDrawIndexedIndirect, VK64_fn_vkCmdDrawIndexedIndirect),
+    E(vkCmdDrawIndexedIndirectCount, VK64_fn_vkCmdDrawIndexedIndirectCount),
+    E(vkCmdDrawIndirect, VK64_fn_vkCmdDrawIndirect),
+    E(vkCmdDrawIndirectCount, VK64_fn_vkCmdDrawIndirectCount),
+    E(vkCmdDrawIndirectCountKHR, VK64_fn_vkCmdDrawIndirectCountKHR),
+    E(vkCmdExecuteCommands, VK64_fn_vkCmdExecuteCommands),
+    E(vkCmdFillBuffer, VK64_fn_vkCmdFillBuffer),
+    E(vkCmdResolveImageKHR, VK64_fn_vkCmdResolveImageKHR),
+    E(vkGetBufferDeviceAddress, VK64_fn_vkGetBufferDeviceAddress),
+    E(vkGetBufferDeviceAddressKHR, VK64_fn_vkGetBufferDeviceAddress),
+    E(vkCmdResolveImage, VK64_fn_vkCmdResolveImage),
     E(vkCmdResolveImage2, VK64_fn_vkCmdResolveImage),
     E(vkCmdResolveImage2KHR, VK64_fn_vkCmdResolveImage),
     // --- global ---
@@ -1577,8 +1789,6 @@ API unsigned vk_icdNegotiateLoaderICDInterfaceVersion(unsigned* pVersion) {
 // PFN_vkVoidFunction only reads RAX, and the arguments are ignored either way.
 // ===========================================================================
 #define TAIL(n) API void* n(void) { return vk64_benign(#n); }
-TAIL(vkGetBufferDeviceAddress)
-TAIL(vkGetBufferDeviceAddressKHR)
 TAIL(vkGetBufferMemoryRequirements2KHR)
 TAIL(vkGetBufferOpaqueCaptureAddressKHR)
 TAIL(vkGetDeviceImageMemoryRequirements)
@@ -1617,37 +1827,15 @@ TAIL(vkDestroyDebugUtilsMessengerEXT)
 TAIL(vkSubmitDebugUtilsMessageEXT)
 TAIL(vkGetPipelineLayoutSupport)
 TAIL(vkQueueBindSparse)
-TAIL(vkCmdDrawIndexedIndirect)
-TAIL(vkCmdDrawIndirect)
-TAIL(vkCmdDrawIndirectCount)
-TAIL(vkCmdDrawIndexedIndirectCount)
-TAIL(vkCmdDispatch)
-TAIL(vkCmdDispatchBase)
-TAIL(vkCmdDispatchIndirect)
-TAIL(vkCmdCopyImage)
-TAIL(vkCmdCopyImage2)
-TAIL(vkCmdCopyImage2KHR)
-TAIL(vkCmdBlitImage)
-TAIL(vkCmdBlitImage2)
-TAIL(vkCmdBlitImage2KHR)
-TAIL(vkCmdCopyImageToBuffer)
-TAIL(vkCmdFillBuffer)
-TAIL(vkCmdClearColorImage)
-TAIL(vkCmdClearAttachments)
-TAIL(vkCmdClearAttachmentsKHR)
-TAIL(vkCmdResolveImage)
-TAIL(vkCmdResolveImageKHR)
 TAIL(vkCmdSetBlendConstant)
 TAIL(vkCmdNextSubpass)
 TAIL(vkCmdNextSubpassKHR)
-TAIL(vkCmdExecuteCommands)
 TAIL(vkCmdSetDeviceMask)
 TAIL(vkCmdSetDepthBiasEnableEXT)
 TAIL(vkCmdSetLineWidth)
 TAIL(vkCmdSetDepthBiasNV)
 TAIL(vkCmdSetPrimitiveTopologyEXT)
 TAIL(vkCmdSetVertexInputEXT)
-TAIL(vkCmdDrawIndirectCountKHR)
 TAIL(vkCmdBeginConditionalRenderingEXT)
 TAIL(vkCmdEndConditionalRenderingEXT)
 TAIL(vkCmdNextSubpass2KHR)
