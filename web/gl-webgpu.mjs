@@ -96,6 +96,7 @@ const GL_COMPARE = new Map([[0x0200, 'never'], [0x0201, 'less'], [0x0202, 'equal
 const GL_STENCIL_OP = new Map([[0x1e00, 'keep'], [0, 'zero'], [0x1e01, 'replace'], [0x1e02, 'invert'], [0x1e03, 'increment-clamp'], [0x1e04, 'decrement-clamp'], [0x8507, 'increment-wrap'], [0x8508, 'decrement-wrap']]);
 const GL_BLEND_OP = new Map([[0x8006, 'add'], [0x800a, 'subtract'], [0x800b, 'reverse-subtract'], [0x8007, 'min'], [0x8008, 'max']]);
 const GL_TEX_ENV_COMBINE_PARAMETERS = new Set([0x8571, 0x8572, 0x8573, 0x0d1c, 0x8580, 0x8581, 0x8582, 0x8588, 0x8589, 0x858a, 0x8590, 0x8591, 0x8592, 0x8598, 0x8599, 0x859a]);
+const TEXTURE_TRANSFER_TYPES = new Set([0x1400, 0x1401, 0x1402, 0x1403, 0x1406, 0x140b]);
 function defaultTexEnvCombine() { return { rgb: 0x2100, alpha: 0x2100, rgbScale: 1, alphaScale: 1,
   srcRgb: [0x8578, 0x1702, 0x8576], srcAlpha: [0x8578, 0x1702, 0x8576],
   opRgb: [0x0300, 0x0300, 0x0300], opAlpha: [0x0302, 0x0302, 0x0302] }; }
@@ -2622,7 +2623,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     const source = data.data && ArrayBuffer.isView(data.data) ? data.data : data;
     if (!ArrayBuffer.isView(source)) return rgba;
     const componentCount = format === 0x1907 ? 3 : [0x1903, 0x1906, 0x1909].includes(format) ? 1 : [0x190a, 0x8227].includes(format) ? 2 : 4;
-    const componentBytes = type === 0x1406 ? 4 : type === 0x1403 || type === 0x1402 ? 2 : 1;
+    const componentBytes = type === 0x1406 ? 4 : type === 0x1403 || type === 0x1402 || type === 0x140b ? 2 : 1;
     const rowPixels = this._unpack.rowLength || width;
     const rowBytes = Math.ceil(rowPixels * componentCount * componentBytes / this._unpack.alignment) * this._unpack.alignment;
     const base = this._unpack.skipRows * rowBytes + this._unpack.skipPixels * componentCount * componentBytes;
@@ -2638,9 +2639,12 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
         else if (format === 0x1909) values = [0, 0, 0, 255];
         for (let c = 0; c < componentCount; c++) {
           let value = 0;
-          if (input + (c + 1) * componentBytes <= bytes.length) value = componentBytes === 4
+          if (input + (c + 1) * componentBytes <= bytes.length) value = type===0x1406
             ? Math.round(clamp01(view.getFloat32(input + c * componentBytes, true)) * 255)
-            : componentBytes === 2 ? Math.round(view.getUint16(input + c * componentBytes, true) / 257) : view.getUint8(input + c);
+            : type===0x140b ? Math.round(clamp01(halfToFloat(view.getUint16(input+c*componentBytes,true)))*255)
+              : type===0x1402 ? Math.round(clamp01(Math.max(-1,view.getInt16(input+c*componentBytes,true)/32767))*255)
+                : type===0x1400 ? Math.round(clamp01(Math.max(-1,view.getInt8(input+c*componentBytes)/127))*255)
+                  : type===0x1403 ? Math.round(view.getUint16(input+c*componentBytes,true)/257) : view.getUint8(input+c);
           if (format === 0x1906) values[3] = value;
           else if (format === 0x1909) values[0] = values[1] = values[2] = value;
           else if (format === 0x190a) { values[c === 0 ? 0 : 3] = value; if (c === 0) values[1] = values[2] = value; }
@@ -2713,6 +2717,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (!texture) { this._recordError(GL.INVALID_OPERATION); return; }
     if (texture.immutable) { this._recordError(GL.INVALID_OPERATION); return; }
     if (width < 0 || height < 0 || level < 0 || border !== 0) { this._recordError(GL.INVALID_VALUE); return; }
+    if (!TEXTURE_TRANSFER_TYPES.has(type)) { this._recordError(GL.INVALID_ENUM); return; }
     if (![0x1903, 0x1906, 0x1909, 0x190a, 0x8227, 0x1907, 0x1908, 0x80e1, 0x8d94, 0x8228].includes(format)) { this._recordError(GL.INVALID_ENUM); return; }
     width |= 0; height |= 0;
     if (target >= 0x8515 && target <= 0x851a && (width !== height || (texture.width && (texture.width !== width || texture.height !== height)))) { this._recordError(GL.INVALID_VALUE); return; }
@@ -2738,6 +2743,8 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     const record = target >= 0x8515 && target <= 0x851a ? texture?.faceLevels.get(target)?.get(level) : texture?.levels.get(level);
     if (!texture) { this._recordError(GL.INVALID_OPERATION); return; }
     if (!record) { this._recordError(GL.INVALID_OPERATION); return; }
+    if (!TEXTURE_TRANSFER_TYPES.has(type)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (![0x1903,0x1906,0x1909,0x190a,0x8227,0x1907,0x1908,0x80e1,0x8d94,0x8228].includes(format)) { this._recordError(GL.INVALID_ENUM); return; }
     if ([xoffset, yoffset, width, height, level].some(value => !Number.isInteger(value) || value < 0) ||
         xoffset + width > record.width || yoffset + height > record.height) { this._recordError(GL.INVALID_VALUE); return; }
     const patch = this._rgbaPixels(width, height, format, type, data);
@@ -2772,6 +2779,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     const texture=this._boundTexture(target);if(!texture){this._recordError(GL.INVALID_OPERATION);return;}
     if(texture.immutable){this._recordError(GL.INVALID_OPERATION);return;}
     if(!Number.isInteger(level)||level<0||!Number.isInteger(width)||!Number.isInteger(height)||!Number.isInteger(depth)||width<0||height<0||depth<0||border!==0){this._recordError(GL.INVALID_VALUE);return;}
+    if(!TEXTURE_TRANSFER_TYPES.has(type)){this._recordError(GL.INVALID_ENUM);return;}
     if(![0x1903,0x1906,0x1909,0x190a,0x8227,0x1907,0x1908,0x80e1,0x8d94,0x8228].includes(format)){this._recordError(GL.INVALID_ENUM);return;}
     const w=level===0?width:Math.max(1,texture.width>>level),h=level===0?height:Math.max(1,texture.height>>level),d=level===0?depth:(target===GL.TEXTURE_3D?Math.max(1,texture.depth>>level):texture.depth);
     if(level===0){texture.width=w;texture.height=h;texture.depth=d;texture.format=[0x8c41,0x8c43,0x8c40,0x8c42].includes(internalFormat)?'rgba8unorm-srgb':'rgba8unorm';}
@@ -2782,6 +2790,8 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
   texSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, type, data) {
     if(![GL.TEXTURE_3D,GL.TEXTURE_2D_ARRAY].includes(target)){this._recordError(GL.INVALID_ENUM);return;}
     const texture=this._boundTexture(target),record=texture?.levels.get(level);if(!texture||!record?.layers){this._recordError(GL.INVALID_OPERATION);return;}
+    if(!TEXTURE_TRANSFER_TYPES.has(type)){this._recordError(GL.INVALID_ENUM);return;}
+    if(![0x1903,0x1906,0x1909,0x190a,0x8227,0x1907,0x1908,0x80e1,0x8d94,0x8228].includes(format)){this._recordError(GL.INVALID_ENUM);return;}
     if([level,xoffset,yoffset,zoffset,width,height,depth].some(value=>!Number.isInteger(value)||value<0)||xoffset+width>record.width||yoffset+height>record.height||zoffset+depth>record.layers.length){this._recordError(GL.INVALID_VALUE);return;}
     const flip=this._unpack.flipY;this._unpack.flipY=false;const pixels=this._rgbaPixels(width,height*depth,format,type,data);this._unpack.flipY=flip;
     for(let z=0;z<depth;z++)for(let y=0;y<height;y++){const sourceY=flip?height-1-y:y,src=(z*height+sourceY)*width*4,dst=((yoffset+y)*record.width+xoffset)*4;record.layers[zoffset+z].set(pixels.subarray(src,src+width*4),dst);}

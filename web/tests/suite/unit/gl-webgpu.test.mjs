@@ -713,6 +713,22 @@ test('state and texture entry points report invalid enums, values, and operation
   } finally { gpu.restore(); }
 });
 
+test('2D and layered texture transfers reject unknown pixel types and formats before storage changes', async () => {
+  const gpu=createValidationDevice();
+  try {
+    const gl=new WebGPUGL(gpu.canvas);await gl.ready;
+    const texture=gl.createTexture();gl.bindTexture(0x0de1,texture);
+    gl.texImage2D(0x0de1,0,0x8058,1,1,0,0x1908,0xdead,new Uint8Array(4));
+    assert.equal(gl.getError(),0x0500);assert.equal(texture.width,0);
+    gl.texImage2D(0x0de1,0,0x8058,1,1,0,0x1908,0x1401,new Uint8Array(4));
+    gl.texSubImage2D(0x0de1,0,0,0,1,1,0xdead,0x1401,new Uint8Array(4));
+    assert.equal(gl.getError(),0x0500);
+    const volume=gl.createTexture();gl.bindTexture(0x806f,volume);
+    gl.texImage3D(0x806f,0,0x8058,1,1,1,0,0x1908,0xdead,new Uint8Array(4));
+    assert.equal(gl.getError(),0x0500);assert.equal(volume.width,0);
+  } finally {gpu.restore();}
+});
+
 
 test('GLSL switch, bitwise operators, texture operations, derivatives, discard and fragment builtins translate with Naga', () => {
   const source=`#version 300 es
