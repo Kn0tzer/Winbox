@@ -3460,31 +3460,33 @@ static void x11_XISelectEvents(CPU* cpu) {
         EAX = BadWindow;
         return;
     }
-    if (ARG4 != 1) {
-        kwarn_fmt("XISelectEvents expected one event mask, received %u", ARG4);
-        EAX = BadValue;
-        return;
-    }
-    XIEventMask mask;
-    mask.read(memory, ARG3);
-    if (mask.mask_len < 0 || mask.mask_len > 64) {
-        kwarn_fmt("XISelectEvents invalid mask length %d", mask.mask_len);
+    if (ARG4 > 64) {
+        kwarn_fmt("XISelectEvents has too many device masks: %u", ARG4);
         EAX = BadValue;
         return;
     }
     U64 value = 0;
-    if (mask.mask_len == 0) {
-        EAX = data->setInput2Mask(ARG2, 0);
-    } else {
+    for (U32 i = 0; i < ARG4; i++) {
+        XIEventMask mask;
+        mask.read(memory, ARG3 + i * sizeof(XIEventMask));
+        if (mask.mask_len < 0 || mask.mask_len > 64) {
+            kwarn_fmt("XISelectEvents invalid mask length %d", mask.mask_len);
+            EAX = BadValue;
+            return;
+        }
         std::vector<U8> bytes((U32)mask.mask_len);
-        for (U32 i = 0; i < bytes.size(); i++) bytes[i] = memory->readb(mask.maskAddress + i);
-        if (!x11DecodeXIEventMask(bytes.data(), bytes.size(), value)) {
+        for (U32 j = 0; j < bytes.size(); j++) bytes[j] = memory->readb(mask.maskAddress + j);
+        U64 selected = 0;
+        if (!x11DecodeXIEventMask(bytes.data(), bytes.size(), selected)) {
             kwarn_fmt("XISelectEvents mask contains bits outside the XI2 event range");
             EAX = BadValue;
             return;
         }
-        EAX = data->setInput2Mask(ARG2, value);
+        value |= selected;
     }
+    // This server has one virtual pointer. Device-specific masks are folded
+    // together because the host input source has no separate XI device streams.
+    EAX = data->setInput2Mask(ARG2, value);
     if (server->trace) {
         BString log;
 

@@ -34,5 +34,7 @@ test('Xcursor image loading builds a host cursor and XI masks no longer abort on
   assert.ok(load); assert.ok(select);
   assert.doesNotMatch(load + select, /kpanic/);
   assert.match(load, /buildCursor\(thread, cursor, image\.pixelsAddress/);
-  assert.match(select, /x11DecodeXIEventMask\(bytes\.data\(\), bytes\.size\(\), value\)/);
+  assert.match(select, /for \(U32 i = 0; i < ARG4; i\+\+\)/);
+  assert.match(select, /x11DecodeXIEventMask\(bytes\.data\(\), bytes\.size\(\), selected\)/);
+  assert.match(select, /value \|= selected/);
 });
