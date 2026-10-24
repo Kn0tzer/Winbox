@@ -1,8 +1,8 @@
 # Vulkan known-gap audit
 
-Initial source audit register for lane P2-V. It includes every requested grep match, every source-level `default:` arm, empty `catch` arm, explicit replay skip/drop counter, and identified SPIR-V/WGSL rejection site. Original audit rows are followed by disposition updates as fixes land; unresolved rows remain OPEN. Many original hits are repeated scanner matches within the same function and still need consolidation into one behavior-level row.
+Initial source audit register for lane P2-V. It includes requested grep hits, source-level `default:` arms, empty `catch` arms, replay skip/drop counters, and identified SPIR-V/WGSL rejection sites. Original audit rows are followed by disposition updates as fixes land; unresolved rows remain OPEN. Some grep matches are scanner duplicates within one behavior and still need consolidation into behavior-level rows.
 
-Rows: 339, including net follow-up dispositions. Static audit only. The unit suite baseline on 2026-10-23 was 183/183; latest completed run was 185 passed, 2 failed outside this lane (`d3d11-contract`, `d3d9-contract`).
+Rows: 329 source and follow-up rows. Static audit only. Latest full unit run was 189 passed, 2 failed outside this lane (`d3d11-contract`, `d3d9-contract`); the subsequent pipeline regression passed focused testing.
 
 | File:line | Guest behavior / audit evidence | Severity | Disposition |
 |---|---|---|---|

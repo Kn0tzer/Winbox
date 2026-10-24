@@ -3443,7 +3443,7 @@ struct Vk32VertexAttributeDivisorFeaturesEXT {
 static_assert(sizeof(Vk32VertexAttributeDivisorFeaturesEXT) == 16, "32-bit divisor features mirror layout");
 // vkd3d-proton device-creation gate (device.c:2495): requires BOTH divisor
 // features. Exception: a pipeline with a divisor other than 1 is reported by
-// vk64AuditGraphicsPipeline ("vertex-attribute-divisor") and rendered with 1.
+// vk64AuditGraphicsPipeline ("vertex-attribute-divisor") and reject the pipeline.
 template <class T> inline void fillVertexAttributeDivisor(T& f) {
 }
 // Exception group: descriptor-indexing bits are vkd3d-proton hard gates
