@@ -603,7 +603,7 @@ export async function createVkRenderer(canvas, { translate, log = defaultLog } =
   const requiredFeatures = /** @type {GPUFeatureName[]} */ (['texture-compression-bc', 'depth32float-stencil8', 'float32-filterable', 'clip-distances', 'timestamp-query', 'depth-clip-control'])
     .filter(feature => adapter.features.has(feature));
   const device = await adapter.requestDevice({ requiredFeatures });
-  globalThis.bwVkTextureCompressionBC = device.features.has('texture-compression-bc');
+  globalThis.bwVkTextureCompressionBC = device.features?.has('texture-compression-bc') === true;
   const errors = [];
   device.addEventListener('uncapturederror', e => {
     const message = 'WebGPU validation error: ' + (e.error?.message || e.error);
@@ -1218,7 +1218,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   const requiredLimits = {};
   if (adapter.limits) for (const key of REQUIRED_LIMIT_KEYS) requiredLimits[key] = adapter.limits[key];
   const device = await adapter.requestDevice({ requiredFeatures, requiredLimits });
-  globalThis.bwVkTextureCompressionBC = device.features.has('texture-compression-bc');
+  globalThis.bwVkTextureCompressionBC = device.features?.has('texture-compression-bc') === true;
   const errors = [];
   device.addEventListener('uncapturederror', e => {
     const message = 'WebGPU validation error: ' + (e.error?.message || e.error);
