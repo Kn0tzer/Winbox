@@ -1662,10 +1662,11 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       // Attribute offsets may extend beyond a vertex's stride. They do not
       // change the distance between vertices (zero also means constant data).
       const stride = vb.stride;
-      if ((!scaled.length && stride % 4) || (scaled.length && !stride)) {
+      if (scaled.length && !stride) {
         noteUnsupported('vertex-stride', stride); return {skip:'vertex-stride:' + stride};
       }
-      let arrayStride = scaled.length ? Math.ceil(Math.max(stride, minStride, 4) / 4) * 4 : stride;
+      const paddedStride = stride > 0 && stride % 4 !== 0;
+      let arrayStride = scaled.length || paddedStride ? Math.ceil(Math.max(stride, minStride, 4) / 4) * 4 : stride;
       for (const a of scaled) { a.dstOffset = arrayStride; a.attribute.offset = arrayStride; arrayStride += a.components * 4; }
       const slots = [];
       const addStream = (streamAttributes, offset = 0) => {
@@ -1689,7 +1690,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       slotOf.set(vb.binding,slots);
       const attrs44 = [];
       for (const va of pipe.va) if (va.binding === vb.binding && va.format === 44) attrs44.push(va.offset);
-      vbWalk.push({ binding: vb.binding, stride, attrs44, scaled, outputStride: arrayStride });
+      vbWalk.push({ binding: vb.binding, stride, attrs44, scaled, paddedStride, outputStride: arrayStride });
     }
 
     let colorTargets, blendConstantMode, stencil;
@@ -2459,7 +2460,9 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
               const swizzled = walk && walk.attrs44.length;
               if (swizzled) vkey += '|swz44:' + st.pipeRec.key;
               const scaled = walk?.scaled.length > 0;
+              const repacked = scaled || walk?.paddedStride;
               if (scaled) vkey += '|scaled:' + st.pipeRec.key + ':' + vb.offset;
+              else if (walk?.paddedStride) vkey += '|padded-stride:' + walk.outputStride + ':' + vb.offset;
               const usage = GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST;
               // Converted buffers already carry the source content hash and
               // vertex layout in their cache key. Check before converting:
@@ -2468,12 +2471,12 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
               if (gpu) persistStats.bufHits++;
               else {
                 if (swizzled) vbytes = swizzleBgraVb(bytes, walk.stride, walk.attrs44);
-                if (scaled && vbytes) vbytes = repackScaledVb(vbytes.subarray(vb.offset), walk.stride, walk.outputStride, walk.scaled);
+                if (repacked && vbytes) vbytes = repackScaledVb(vbytes.subarray(vb.offset), walk.stride, walk.outputStride, walk.scaled);
                 gpu = gpuBufferFor(vkey, vbytes, usage, preHash);
               }
               if (!gpu) { noteDrop('draw-vertex-buffer-gpu-failed', 'buf=' + vb.buf + ' binding=' + vb.binding); continue; }
               for (const {slot,offset} of slots) {
-                passEnc.setVertexBuffer(slot, gpu, scaled ? offset : Math.min(vb.offset + offset, gpu.size));
+                passEnc.setVertexBuffer(slot, gpu, repacked ? offset : Math.min(vb.offset + offset, gpu.size));
                 vbSet.add(slot);
               }
             }

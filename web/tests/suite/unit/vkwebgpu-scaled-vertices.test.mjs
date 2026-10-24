@@ -9,3 +9,14 @@ test('Vulkan scaled vertex attributes become exact float values with source stri
  for(let i=0;i<2;i++){assert.deepEqual(out.slice(i*36,i*36+12),bytes.slice(i*12,i*12+12));assert.deepEqual([0,1,2,3].map(j=>f.getFloat32(i*36+12+4*j,true)),[0,1,128,255]);assert.equal(f.getFloat32(i*36+28,true),i?-1:-32768);assert.equal(f.getFloat32(i*36+32,true),32767);}
  assert.equal(repackScaledVb(bytes.subarray(0,23),12,36,[]).length,36);
 });
+
+test('Vulkan vertex strides without four-byte alignment are padded for WebGPU', async()=>{
+ const bytes=Uint8Array.from([1,2,3,4,5,6]);
+ const out=repackScaledVb(bytes,3,4,[]);
+ assert.deepEqual([...out],[1,2,3,0,4,5,6,0]);
+ const {readFile}=await import('node:fs/promises');
+ const source=await readFile(new URL('../../../vkwebgpu.mjs',import.meta.url),'utf8');
+ assert.match(source,/const paddedStride = stride > 0 && stride % 4 !== 0/);
+ assert.match(source,/const repacked = scaled \|\| walk\?\.paddedStride/);
+ assert.match(source,/repackScaledVb\(vbytes\.subarray\(vb\.offset\), walk\.stride, walk\.outputStride, walk\.scaled\)/);
+});
