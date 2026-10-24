@@ -43,3 +43,10 @@ test('Vulkan transport hook installation does not swallow assignment failures', 
   assert.doesNotMatch(bridge, /try\s*\{\s*globalThis\.bwVkHeapBuffer[\s\S]{0,120}?catch\s*\([^)]*\)\s*\{\s*\}/);
   assert.doesNotMatch(replay, /try\s*\{\s*globalThis\.bwVkChunk[\s\S]{0,120}?catch\s*\([^)]*\)\s*\{\s*\}/);
 });
+
+test('chunk-handler and readback failures keep rate-limited diagnostics', () => {
+  assert.match(bridge, /catch \(e\) \{\s*globalThis\.__bwVkChunkErrors = \(globalThis\.__bwVkChunkErrors \|\| 0\) \+ 1;[\s\S]*?console\.warn\('vk64: UNSUPPORTED v2-chunk-handler-threw x'/);
+  assert.match(replay, /catch \(e\) \{ noteUnsupported\('readback-failed'/);
+  assert.match(replay, /catch \(e\) \{ noteUnsupported\('readback-notify-failed'/);
+  assert.match(replay, /if \(buffer\) buffer\.destroy\(\);\s*\}\s*catch \(e\) \{\}/);
+});
