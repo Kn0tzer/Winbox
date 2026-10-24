@@ -24,6 +24,8 @@ Audit scope: `web/tests/**` except `suite/unit/gl-*.test.mjs` and `suite/unit/vk
 | `suite/lib/guest-fixtures.mjs:72-78` | Fixture cache/provenance read errors fall through to recompilation. | **NOT-A-GAP** — rebuild is the intended cache-miss fallback; compiler failures propagate. |
 | `suite/unit/probe-slots.test.mjs:70-82` | Child-process errors are caught by negative lock tests. | **NOT-A-GAP** — expected control flow; assertions check the child exit and resulting lock state. |
 
+| `suite/lib/silent-failure-scan.mjs` comment/literal handling | A commented-out log or a string containing `klog(` could exempt an unlogged default/errno path; a URL literal could hide a following empty catch. Would conceal guest failures. | **IMPLEMENTED** — masks literals and comments while preserving offsets and only accepts executable log calls. Regression: `silent-failure-scanner.test.mjs`; restoring the old log check makes the regression fail. This remains a lexical count guard, not control-flow proof that every return is preceded by logging. |
+
 ## Explicit external ownership blocker
 
 `web/tests/suite/unit/vk32-dispatch.test.mjs:39-52` still has a pointer-width assertion containing `|| true` and catches missing shim reads. It matches the excluded `vk*.test.mjs` pattern, so this lane did not edit it. Required owning-lane change: read `tools/rootfs64/libvk32/libvk32.c` and assert `P(x)` zero-extends guest pointers to 64-bit trap slots, including the `VkSubmitInfo` pointer. This leaves that test weak until its owning lane makes the change.

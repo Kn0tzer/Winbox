@@ -10,14 +10,15 @@ const silentBranchFiles = [
 ];
 const logCall = /\b(?:klog(?:_fmt)?|vk64DropLog|bwLog(?:Rl)?|noteUnsupported|log(?:ger)?|warn(?:ing)?|printf|fprintf)\s*\(/i;
 
-function maskComments(source) {
-  return source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, match => match.replace(/[^\n]/g, ' '));
+// Match literals before comments so URLs and comment-looking text in strings
+// cannot hide following code. Preserve offsets for branch slicing.
+function mask(source, strings) {
+  return source.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g,
+    token => strings || token.startsWith('//') || token.startsWith('/*')
+      ? token.replace(/[^\n]/g, ' ') : token);
 }
-
-function maskCommentsAndStrings(source) {
-  return maskComments(source).replace(/("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g,
-    match => match.replace(/[^\n]/g, ' '));
-}
+const maskComments = source => mask(source, false);
+const maskCommentsAndStrings = source => mask(source, true);
 
 function matching(source, opening, openChar, closeChar) {
   let depth = 0;
@@ -54,7 +55,7 @@ function unloggedDefaultBranches(source) {
       if (!label.isDefault) continue;
       const branchEnd = labels[i + 1]?.at ?? body.length;
       const branch = source.slice(openBrace + 1 + label.at + label.length, openBrace + 1 + branchEnd);
-      if (/\b(?:return|break)\b/.test(maskCommentsAndStrings(branch)) && !logCall.test(branch)) count++;
+      if (/\b(?:return|break)\b/.test(maskCommentsAndStrings(branch)) && !logCall.test(maskCommentsAndStrings(branch))) count++;
     }
   }
   return count;
@@ -63,10 +64,10 @@ function unloggedDefaultBranches(source) {
 function unloggedErrnoReturns(source) {
   let count = 0;
   const pattern = /\breturn\s+(?:\([^)]+\)\s*){0,2}-\s*K?_?E(?:NOSYS|INVAL)\b[^;]*;/g;
-  for (const match of source.matchAll(pattern)) {
+  for (const match of maskCommentsAndStrings(source).matchAll(pattern)) {
     const line = source.slice(0, match.index).split('\n').length - 1;
     const prior = source.split('\n').slice(Math.max(0, line - 4), line + 1).join('\n');
-    if (!logCall.test(prior)) count++;
+    if (!logCall.test(maskCommentsAndStrings(prior))) count++;
   }
   return count;
 }
@@ -81,6 +82,14 @@ async function sourceFiles(directory, extensions, current = directory) {
   return files;
 }
 
+export function scanSilentSource(source, file) {
+  return {
+    emptyCatch: [...maskCommentsAndStrings(source).matchAll(/\bcatch\s*(?:\([^)]*\))?\s*\{\s*\}/g)].length,
+    unloggedDefault: silentBranchFiles.includes(file) ? unloggedDefaultBranches(source) : 0,
+    unloggedErrno: file === 'source/kernel/syscall64.cpp' ? unloggedErrnoReturns(source) : 0,
+  };
+}
+
 export async function scanSilentFailures() {
   const sourceDir = resolve(repo, 'source');
   const webDir = resolve(repo, 'web');
@@ -91,12 +100,8 @@ export async function scanSilentFailures() {
   const result = {};
   for (const file of [...cppFiles, ...webFiles]) {
     const text = await readFile(file, 'utf8');
-    const noComments = maskComments(text);
-    const emptyCatch = [...noComments.matchAll(/\bcatch\s*(?:\([^)]*\))?\s*\{\s*\}/g)].length;
-    const unloggedDefault = silentBranchFiles.includes(relative(repo, file)) ? unloggedDefaultBranches(text) : 0;
-    const unloggedErrno = relative(repo, file) === 'source/kernel/syscall64.cpp' ? unloggedErrnoReturns(text) : 0;
-    if (emptyCatch || unloggedDefault || unloggedErrno)
-      result[relative(repo, file)] = { emptyCatch, unloggedDefault, unloggedErrno };
+    const counts = scanSilentSource(text, relative(repo, file));
+    if (Object.values(counts).some(Boolean)) result[relative(repo, file)] = counts;
   }
   return result;
 }
