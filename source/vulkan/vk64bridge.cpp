@@ -530,7 +530,7 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
     std::set<U32> nonWritable, bufferBlock;
     struct Var { U32 id, type, sc; };
     std::vector<Var> vars;
-    bool storageImage = false, compute = false;
+    bool storageImage = false, inputAttachment = false, compute = false;
     bool unsupported = false;
     std::set<U32> caps;
     for (size_t i = 5; i < nw;) {
@@ -542,7 +542,10 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
             case 30: if (len >= 2) structMembers[w[i + 1]] = len - 2; break;           // OpTypeStruct
             case 28: case 29: if (len >= 3) arrays[w[i + 1]] = w[i + 2]; break;        // OpTypeArray/RuntimeArray
             case 32: if (len >= 4) ptrs[w[i + 1]] = {w[i + 2], w[i + 3]}; break;       // OpTypePointer
-            case 25: if (len >= 9 && w[i + 7] == 2) storageImage = true; break;        // OpTypeImage, Sampled==2
+            case 25:
+                if (len >= 9 && w[i + 3] == 6) inputAttachment = true;                // OpTypeImage, DimSubpassData
+                if (len >= 9 && w[i + 7] == 2) storageImage = true;                   // OpTypeImage, Sampled==2
+                break;
             case 59: if (len >= 4) vars.push_back({w[i + 2], w[i + 1], w[i + 3]}); break; // OpVariable
             case 71: if (len >= 3) {                                                   // OpDecorate
                 if (w[i + 2] == 24) nonWritable.insert(w[i + 1]);
@@ -565,6 +568,7 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
     }
     if (compute) { vk64Unsupported("spirv-compute-entry", "compute entry point; no compute path in the V2 protocol; VK_ERROR_FEATURE_NOT_PRESENT"); unsupported = true; }
     if (storageImage) { vk64Unsupported("spirv-storage-image", "storage images are not implemented; VK_ERROR_FEATURE_NOT_PRESENT"); unsupported = true; }
+    if (inputAttachment) { vk64Unsupported("spirv-input-attachment", "input attachments have no WebGPU subpass-input mapping; VK_ERROR_FEATURE_NOT_PRESENT"); unsupported = true; }
     for (const Var& v : vars) {
         auto pt = ptrs.find(v.type);
         if (pt == ptrs.end()) continue;

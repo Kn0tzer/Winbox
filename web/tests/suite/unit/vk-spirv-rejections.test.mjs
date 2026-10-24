@@ -20,11 +20,13 @@ function body(source, header) {
 
 test('unsupported and unknown SPIR-V capabilities reject before publishing a shader module', () => {
   const audit = body(bridge, 'static VkResult vk64AuditSpirv(');
-  for (const token of ['spirv-malformed', 'spirv-capability:', 'spirv-capability-unknown:', 'spirv-compute-entry', 'spirv-storage-image', 'spirv-storage-buffer-write']) {
+  for (const token of ['spirv-malformed', 'spirv-capability:', 'spirv-capability-unknown:', 'spirv-compute-entry', 'spirv-storage-image', 'spirv-input-attachment', 'spirv-storage-buffer-write']) {
     assert.ok(audit.includes(token), `${token} must be logged`);
   }
   assert.match(audit, /vk64Unsupported\(\("spirv-capability:"/);
   assert.match(audit, /VK_ERROR_INVALID_SHADER_NV/);
+  assert.match(audit, /w\[i \+ 3\] == 6\) inputAttachment = true/);
+  assert.match(audit, /input attachments have no WebGPU subpass-input mapping; VK_ERROR_FEATURE_NOT_PRESENT/);
   assert.match(audit, /return unsupported \? VK_ERROR_FEATURE_NOT_PRESENT : VK_SUCCESS/);
   const handlers = [...bridge.matchAll(/case VK64_fn_vkCreateShaderModule: \{([\s\S]*?)\n    \}/g)].map((m) => m[1]);
   assert.equal(handlers.length, 2);
