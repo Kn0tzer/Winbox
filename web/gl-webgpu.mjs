@@ -2512,10 +2512,19 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     this._boundRenderbuffer = object || null;
   }
   renderbufferStorage(target, internalFormat, width, height) {
+    if (target !== 0x8d41) { this._recordError(GL.INVALID_ENUM); return; }
     const buffer = this._boundRenderbuffer;
-    if (!buffer || target !== 0x8d41) return;
+    if (!buffer) { this._recordError(GL.INVALID_OPERATION); return; }
+    if (!Number.isInteger(width) || !Number.isInteger(height) || width < 0 || height < 0) { this._recordError(GL.INVALID_VALUE); return; }
+    const depthFormats = [0x81a5, 0x81a6, 0x81a7, 0x8cac];
+    const colorFormats = [0x8056, 0x8057, 0x8058, 0x8051, 0x8059, 0x8d62, 0x881a, 0x8814];
+    if (![...depthFormats, ...colorFormats].includes(internalFormat)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (![0x81a5, 0x81a6, 0x81a7, 0x8cac, 0x8058].includes(internalFormat)) {
+      this._rejectUnsupported(`renderbuffer internal format 0x${Number(internalFormat).toString(16)}`, GL.INVALID_OPERATION);
+      return;
+    }
     buffer.gpu?.destroy(); buffer.width = width | 0; buffer.height = height | 0; buffer.internalFormat = internalFormat;
-    buffer.format = [0x81a5, 0x81a6, 0x81a7, 0x8cac].includes(internalFormat) ? (internalFormat === 0x8cac ? 'depth32float' : 'depth24plus') : 'rgba8unorm';
+    buffer.format = depthFormats.includes(internalFormat) ? (internalFormat === 0x8cac ? 'depth32float' : 'depth24plus') : 'rgba8unorm';
     buffer.pixels = new Uint8Array(Math.max(0, buffer.width * buffer.height * 4));
     this._enqueue(() => {
       if (!buffer.width || !buffer.height) return;

@@ -438,6 +438,28 @@ test('framebuffer attachment APIs reject invalid targets and attachment enums', 
   } finally { gpu.restore(); }
 });
 
+test('renderbuffer storage validates target, binding, dimensions, and formats', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    gl.renderbufferStorage(0x8d41, 0x8058, 4, 4);
+    assert.equal(gl.getError(), 0x0502, 'storage without a bound renderbuffer is INVALID_OPERATION');
+    const renderbuffer = gl.createRenderbuffer();
+    gl.bindRenderbuffer(0x8d41, renderbuffer);
+    gl.renderbufferStorage(0xdead, 0x8058, 4, 4);
+    assert.equal(gl.getError(), 0x0500);
+    gl.renderbufferStorage(0x8d41, 0x8058, -1, 4);
+    assert.equal(gl.getError(), 0x0501);
+    gl.renderbufferStorage(0x8d41, 0xdead, 4, 4);
+    assert.equal(gl.getError(), 0x0500);
+    gl.renderbufferStorage(0x8d41, 0x881a, 4, 4);
+    assert.equal(gl.getError(), 0x0502, 'valid RGBA16F storage is explicitly rejected until floating color targets are implemented');
+    assert.ok(logs.some(line => line.includes('renderbuffer internal format 0x881a')));
+    assert.equal(renderbuffer.width, 0, 'invalid storage requests preserve prior allocation');
+  } finally { gpu.restore(); }
+});
+
 test('fixed-function GL_COMBINE defaults to modulating the previous color by each texture', async () => {
   const gpu = createValidationDevice();
   try {
