@@ -5,12 +5,17 @@ import {execFileSync} from 'node:child_process';
 import {join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {fileURLToPath} from 'node:url';
+import { extractSourceSlice } from '../lib/source-slice.mjs';
 const root=resolve(fileURLToPath(new URL('../../../../',import.meta.url)));
 for(const multi of [true,false])test(`condition parents grow, deduplicate, expire and notify (${multi?'threaded':'cooperative'})`,()=>{
  const header=readFileSync(join(root,'source/util/synchronization.h'),'utf8');
  const source=readFileSync(join(root,'source/util/synchronization.cpp'),'utf8');
  assert.ok(!header.includes('MAX_PARENTS'),'parent waiters must not have a fixed two-slot cap');
- const branch=multi?source.slice(source.indexOf('BoxedWineCriticalSectionCond::')):source.slice(source.indexOf('bool BoxedWineConditionTimer::run()'));
+ const sourceName='source/util/synchronization.cpp';
+ const branch=multi
+  ?extractSourceSlice(source,'BoxedWineCriticalSectionCond::','bool BoxedWineConditionTimer::run()', {sourceName})
+  :source.slice(source.indexOf('bool BoxedWineConditionTimer::run()'));
+ if (!multi && !source.includes('bool BoxedWineConditionTimer::run()')) throw new Error(`source slice marker not found in ${sourceName}: bool BoxedWineConditionTimer::run()`);
  const methods=['addParentCondition','removeParentCondition','parentsCount','parentSnapshot','signalAll'].map(name=>branch.match(new RegExp('(?:void|U32|std::vector<std::shared_ptr<BoxedWineCondition>>) BoxedWineCondition::'+name+'\\([^]*?\\n\\}'))?.[0]);
  assert.ok(methods.every(Boolean));
  const dir=mkdtempSync(join(tmpdir(),'condition-parents-'));
