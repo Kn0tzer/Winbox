@@ -1052,7 +1052,7 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
     bwLogRl(4, 'vulkan', 100, 'v2 chunk received: ' + bytes.length + ' bytes flags=' + flags);
     tier.chunk(bytes, flags);
   };
-  try { globalThis.bwVkChunk = acceptChunk; } catch (e) {}
+  globalThis.bwVkChunk = acceptChunk;
   return tier;
 }
 

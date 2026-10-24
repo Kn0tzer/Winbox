@@ -36,3 +36,10 @@ test('page replay counts and logs unsupported operations and skipped draws', () 
   assert.match(replay, /const noteSkippedDraw = \(reason, detail\) => \{ stats\.skippedDraws[\s\S]*?return noteDrop\(reason, detail\); \}/);
   assert.match(replay, /default: noteUnsupported\('unknown-replay-op'/);
 });
+
+test('Vulkan transport hook installation does not swallow assignment failures', () => {
+  assert.match(bridge, /MAIN_THREAD_EM_ASM\(\{\s*globalThis\.bwVkHeapBuffer = HEAPU8\.buffer;\s*\}\)/);
+  assert.match(replay, /globalThis\.bwVkChunk = acceptChunk;/);
+  assert.doesNotMatch(bridge, /try\s*\{\s*globalThis\.bwVkHeapBuffer[\s\S]{0,120}?catch\s*\([^)]*\)\s*\{\s*\}/);
+  assert.doesNotMatch(replay, /try\s*\{\s*globalThis\.bwVkChunk[\s\S]{0,120}?catch\s*\([^)]*\)\s*\{\s*\}/);
+});

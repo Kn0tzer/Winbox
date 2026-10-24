@@ -3038,7 +3038,7 @@ static bool waitForReadbackFlag(U32 flagPtr, int timeoutMs) {
 static void hopV2LastToPage() {
 #ifdef __EMSCRIPTEN__
     if (g_v2Pending.empty()) return;
-    MAIN_THREAD_EM_ASM({ try { globalThis.bwVkHeapBuffer = HEAPU8.buffer; } catch (e) {} });
+    MAIN_THREAD_EM_ASM({ globalThis.bwVkHeapBuffer = HEAPU8.buffer; });
     const auto& f = g_v2Pending.back();
     for (const auto& chunk : f.chunks) {
         const U8* ptr = chunk.data();
