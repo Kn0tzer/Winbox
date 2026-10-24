@@ -60,6 +60,8 @@ enum { Success = 0, BadMatch = 8 };
 #define GXset 0xf
 #define FillSolid 0
 #define FillTiled 1
+#define ArcChord 0
+#define ArcPieSlice 1
 #define EvenOddRule 0
 #define WindingRule 1
 static int warnings = 0;
@@ -74,6 +76,7 @@ struct XGCValues {
     S32 ts_x_origin = 0, ts_y_origin = 0, clip_x_origin = 0, clip_y_origin = 0;
     S32 fill_rule = EvenOddRule;
     U32 clip_mask = 0;
+    S32 arc_mode = ArcPieSlice;
 };
 class XDrawable;
 using XDrawablePtr = std::shared_ptr<XDrawable>;
@@ -96,6 +99,10 @@ public:
     int fillRectangles(KThread* thread, const std::shared_ptr<XGC>& gc, const std::vector<S32>& rects);
     int fillPolygon(KThread* thread, const std::shared_ptr<XGC>& gc, const std::vector<S32>& points, bool relative);
     int fillRectangle(KThread* thread, const std::shared_ptr<XGC>& gc, S32 x, S32 y, U32 width, U32 height);
+    int fillArc(KThread* thread, const std::shared_ptr<XGC>& gc, S32 x, S32 y, U32 width, U32 height, S32 angle1, S32 angle2);
+    int drawArc(KThread* thread, const std::shared_ptr<XGC>& gc, S32 x, S32 y, U32 width, U32 height, S32 angle1, S32 angle2);
+    static XDrawablePtr fillTile(const std::shared_ptr<XGC>& gc);
+    static U32 fillColor(const std::shared_ptr<XGC>& gc, const XDrawablePtr& tile, S32 x, S32 y);
     void setDirty() {}
     U32 pixel(U32 x, U32 y) const { U32 v; std::memcpy(&v, data + bytes_per_line * y + x * 4, 4); return v; }
     void setPixel(U32 x, U32 y, U32 v) { std::memcpy(data + bytes_per_line * y + x * 4, &v, 4); }

@@ -17,7 +17,8 @@ import { extractSourceSlice } from '../lib/source-slice.mjs';
 
 const sourceName = 'source/x11/x11common.cpp';
 const source = readFileSync(new URL('../../../../source/x11/x11common.cpp', import.meta.url), 'utf8');
-const putPixel = extractSourceSlice(source, 'static void x11_PutPixel(CPU* cpu) {', 'static void x11_SubImage(CPU* cpu) {', { sourceName });
+// the slice starts at the image helpers that x11_GetPixel and x11_PutPixel share
+const putPixel = extractSourceSlice(source, 'static bool imagePixelsSupported(', 'static void x11_SubImage(CPU* cpu) {', { sourceName });
 
 test('x11_PutPixel writes the pixel and does not drop it', () => {
   assert.doesNotMatch(putPixel, /kpanic\(/);
@@ -41,6 +42,7 @@ static void klog(const char*) {}
 static U8 guest[1024];
 struct KMemory {
     U32 readd(U32 a) { U32 v; std::memcpy(&v, guest + a, 4); return v; }
+    U8 readb(U32 a) { return guest[a]; }
     void writeb(U32 a, U8 v) { guest[a] = v; }
 };
 struct CPU {
@@ -137,6 +139,23 @@ int main() {
         put(100, 0, 0, 0xffffffff, &cpu);
         assert(cpu.eax == 0);
         assert(guest[200] == 0);
+    }
+    // XGetPixel reads back what XPutPixel wrote, in both byte orders, and reads 0 outside the image
+    {
+        std::memset(guest, 0, sizeof(guest));
+        header(100, 4, 2, 0, 200, LSBFirst, 16, 32);
+        put(100, 3, 1, 0x11223344, &cpu);
+        cpu.args[1] = 100; cpu.args[2] = 3; cpu.args[3] = 1;
+        x11_GetPixel(&cpu);
+        assert(cpu.eax == 0x11223344);
+        cpu.args[2] = 4;
+        x11_GetPixel(&cpu);
+        assert(cpu.eax == 0);
+        header(500, 2, 1, 0, 600, MSBFirst, 4, 16);
+        put(500, 1, 0, 0x1234, &cpu);
+        cpu.args[1] = 500; cpu.args[2] = 1; cpu.args[3] = 0;
+        x11_GetPixel(&cpu);
+        assert(cpu.eax == 0x1234);
     }
     return 0;
 }

@@ -79,7 +79,7 @@ struct KThread { KMemory* memory; };
 struct XVisual { int bits_per_rgb; };
 using VisualPtr = std::shared_ptr<XVisual>;
 struct XGCValues {
-    S32 function = GXcopy; U32 foreground = 0; S32 fill_style = FillSolid; U32 tile = 0;
+    S32 function = GXcopy; U32 foreground = 0; U32 background = 0; S32 fill_style = FillSolid; U32 tile = 0;
     S32 ts_x_origin = 0, ts_y_origin = 0, clip_x_origin = 0, clip_y_origin = 0;
     S32 fill_rule = EvenOddRule;
     U32 clip_mask = 0;
@@ -100,6 +100,7 @@ public:
     void plotPixel(const std::shared_ptr<XGC>& gc, S32 x, S32 y, U32 color);
     int copyImageData(KThread* thread, const std::shared_ptr<XGC>& gc, U32 data, U32 bytes_per_line, S32 bits_per_pixel, S32 src_x, S32 src_y, S32 dst_x, S32 dst_y, U32 width, U32 height);
     int copy(KThread* thread, const std::shared_ptr<XGC>& gc, const std::shared_ptr<XDrawable>& srcDrawable, S32 srcX, S32 srcY, U32 width, U32 height, S32 dstX, S32 dstY);
+    int copyPlane(KThread* thread, const std::shared_ptr<XGC>& gc, const std::shared_ptr<XDrawable>& srcDrawable, S32 srcX, S32 srcY, U32 width, U32 height, S32 dstX, S32 dstY, U32 bitPlane);
     void setDirty() {}
     U32 pixel(U32 x, U32 y) const { U32 v; std::memcpy(&v, data + bytes_per_line * y + x * 4, 4); return v; }
     void setPixel(U32 x, U32 y, U32 v) { std::memcpy(data + bytes_per_line * y + x * 4, &v, 4); }

@@ -1267,6 +1267,11 @@ XCursorPtr XWindow::getCursor() {
 	return parent->getCursor();
 }
 
+std::vector<XWindowPtr> XWindow::getChildrenBottomToTop() {
+	BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(childrenMutex);
+	return zchildren;
+}
+
 XWindowPtr XWindow::getTopMappedChild() {
 	XWindowPtr result;
 

@@ -197,6 +197,8 @@ public:
 	void input2Notify(const DisplayDataPtr& data, S32 x, S32 y, U32 type);
 
 	XWindowPtr getParent() {return parent;}
+	// every child, mapped or not, in stacking order with the bottom-most first, as XQueryTree reports them
+	std::vector<XWindowPtr> getChildrenBottomToTop();
 	bool mapped() {return this->isMapped;}
 	bool isThisAndAncestorsMapped();
 	XWindowPtr getTopMappedChild();

@@ -38,7 +38,12 @@ public:
 	// rects are flat x,y,width,height quadruples
 	int fillRectangles(KThread* thread, const std::shared_ptr<XGC>& gc, const std::vector<S32>& rects);
 	int fillPolygon(KThread* thread, const std::shared_ptr<XGC>& gc, const std::vector<S32>& points, bool relative);
+	// angles are in 1/64 degree; the ellipse is inscribed in the box (x, y, width, height)
+	int fillArc(KThread* thread, const std::shared_ptr<XGC>& gc, S32 x, S32 y, U32 width, U32 height, S32 angle1, S32 angle2);
+	int drawArc(KThread* thread, const std::shared_ptr<XGC>& gc, S32 x, S32 y, U32 width, U32 height, S32 angle1, S32 angle2);
 	int copy(KThread* thread, const std::shared_ptr<XGC>& gc, const std::shared_ptr<XDrawable>& src, S32 srcX, S32 srcY, U32 width, U32 height, S32 dstX, S32 dstY);
+	// bit bitPlane of each source pixel picks the GC foreground (set) or background (clear)
+	int copyPlane(KThread* thread, const std::shared_ptr<XGC>& gc, const std::shared_ptr<XDrawable>& src, S32 srcX, S32 srcY, U32 width, U32 height, S32 dstX, S32 dstY, U32 bitPlane);
 
 	int copyImageData(KThread* thread, const std::shared_ptr<XGC>& gc, U32 data, U32 bytes_per_line, S32 bits_per_pixel, S32 src_x, S32 src_y, S32 dst_x, S32 dst_y, U32 width, U32 height);
 		// Writes one 32-bit pixel with the GC logical function, skipping pixels outside the drawable or the GC clip rectangles
@@ -75,6 +80,9 @@ protected:
 	U32 bytes_per_line;
 
 private:
+	static XDrawablePtr fillTile(const std::shared_ptr<XGC>& gc);
+	static U32 fillColor(const std::shared_ptr<XGC>& gc, const XDrawablePtr& tile, S32 x, S32 y);
+
 	BOXEDWINE_MUTEX mutex;
 	U32 w;
 	U32 h;

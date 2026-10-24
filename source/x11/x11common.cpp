@@ -242,8 +242,32 @@ static void x11_ReparentWindow(CPU* cpu) {
     
 }
 
+// Status XQueryTree(Display* display, Window w, Window* root_return, Window* parent_return, Window** children_return, unsigned int* nchildren_return)
+//
+// Children are listed bottom-most first, mapped or not. The children array is guest memory that the caller releases with XFree.
 static void x11_QueryTree(CPU* cpu) {
-    kpanic("x11_QueryTree");
+    KThread* thread = cpu->thread;
+    KMemory* memory = cpu->memory;
+    XServer* server = XServer::getServer();
+    XWindowPtr w = server->getWindow(ARG2);
+    if (!w) {
+        EAX = 0;
+        return;
+    }
+    std::vector<XWindowPtr> children = w->getChildrenBottomToTop();
+    XWindowPtr parent = w->getParent();
+    U32 childrenAddress = 0;
+    if (!children.empty()) {
+        childrenAddress = thread->process->alloc(thread, (U32)(sizeof(U32) * children.size()));
+        for (U32 i = 0; i < children.size(); i++) {
+            memory->writed(childrenAddress + i * sizeof(U32), children[i]->id);
+        }
+    }
+    memory->writed(ARG3, server->getRoot()->id);
+    memory->writed(ARG4, parent ? parent->id : 0);
+    memory->writed(ARG5, childrenAddress);
+    memory->writed(ARG6, (U32)children.size());
+    EAX = 1;
 }
 
 //int XChangeWindowAttributes(Display* display, Window w, unsigned long valuemask, XSetWindowAttributes* attributes)
@@ -1703,8 +1727,69 @@ static void x11_DestroyImage(CPU* cpu) {
     EAX = Success;
 }
 
+static U32 roundUp(U32 numToRound, U32 multiple)
+{
+    if (!multiple) {
+        return numToRound;
+    }
+    return ((numToRound + multiple - 1) / multiple) * multiple;
+}
+
+// XImage pixels are read and written in client memory; the server is not involved. Only byte-aligned depths up to 32 bits with
+// xoffset 0 are handled. Other images are logged once and left alone.
+static bool imagePixelsSupported(const XImage& image) {
+    if (image.bits_per_pixel > 0 && image.bits_per_pixel <= 32 && image.bits_per_pixel % 8 == 0 && image.xoffset == 0) {
+        return true;
+    }
+    static bool loggedUnhandled = false;
+    if (!loggedUnhandled) {
+        loggedUnhandled = true;
+        klog("x11 image not handled: bits per pixel or xoffset not supported by XPutPixel, XGetPixel, XSubImage or XAddPixel");
+    }
+    return false;
+}
+
+static bool imagePixelIsInside(const XImage& image, S32 x, S32 y) {
+    return x >= 0 && y >= 0 && x < image.width && y < image.height;
+}
+
+static U32 imagePixelAddress(const XImage& image, S32 x, S32 y) {
+    return image.data + (U32)image.bytes_per_line * y + (U32)x * (image.bits_per_pixel / 8);
+}
+
+// the least significant byte goes first unless the image is MSBFirst
+static U32 readImagePixel(KMemory* memory, const XImage& image, U32 address) {
+    const S32 bytes = image.bits_per_pixel / 8;
+    U32 pixel = 0;
+    for (S32 i = 0; i < bytes; i++) {
+        S32 shift = image.byte_order == MSBFirst ? bytes - 1 - i : i;
+        pixel |= (U32)memory->readb(address + i) << (8 * shift);
+    }
+    return pixel;
+}
+
+static void writeImagePixel(KMemory* memory, const XImage& image, U32 address, U32 pixel) {
+    const S32 bytes = image.bits_per_pixel / 8;
+    for (S32 i = 0; i < bytes; i++) {
+        S32 shift = image.byte_order == MSBFirst ? bytes - 1 - i : i;
+        memory->writeb(address + i, (U8)(pixel >> (8 * shift)));
+    }
+}
+
+// unsigned long XGetPixel(XImage* ximage, int x, int y)
+//
+// A pixel outside the image reads as 0.
 static void x11_GetPixel(CPU* cpu) {
-    kpanic("x11_GetPixel");
+    KMemory* memory = cpu->memory;
+    XImage image;
+    XImage::read(memory, ARG1, &image);
+    S32 x = (S32)ARG2;
+    S32 y = (S32)ARG3;
+    if (!imagePixelIsInside(image, x, y) || !imagePixelsSupported(image)) {
+        EAX = 0;
+        return;
+    }
+    EAX = readImagePixel(memory, image, imagePixelAddress(image, x, y));
 }
 
 // int XPutPixel(XImage* ximage, int x, int y, unsigned long pixel)
@@ -1718,35 +1803,70 @@ static void x11_PutPixel(CPU* cpu) {
     S32 x = (S32)ARG2;
     S32 y = (S32)ARG3;
     U32 pixel = ARG4;
-    if (x < 0 || y < 0 || x >= image.width || y >= image.height) {
+    if (!imagePixelIsInside(image, x, y) || !imagePixelsSupported(image)) {
         EAX = 0;
         return;
     }
-    if (image.bits_per_pixel <= 0 || image.bits_per_pixel % 8 || image.xoffset) {
-        static bool loggedUnhandled = false;
-        if (!loggedUnhandled) {
-            loggedUnhandled = true;
-            klog("x11_PutPixel not handled: XPutPixel with bits per pixel or xoffset not supported");
-        }
-        EAX = 0;
-        return;
-    }
-    S32 bytes = image.bits_per_pixel / 8;
-    U32 address = image.data + (U32)image.bytes_per_line * y + (U32)x * bytes;
-    for (S32 i = 0; i < bytes; i++) {
-        // the least significant byte goes first unless the image is MSBFirst
-        S32 shift = image.byte_order == MSBFirst ? bytes - 1 - i : i;
-        memory->writeb(address + i, (U8)(pixel >> (8 * shift)));
-    }
+    writeImagePixel(memory, image, imagePixelAddress(image, x, y), pixel);
     EAX = 1;
 }
 
+// XImage* XSubImage(XImage* ximage, int x, int y, unsigned int width, unsigned int height)
+//
+// The result is a new image in guest memory with the same depth, format and byte order. Pixels of the requested area that lie
+// outside the source are 0. XDestroyImage releases the result.
 static void x11_SubImage(CPU* cpu) {
-    kpanic("x11_SubImage");
+    KThread* thread = cpu->thread;
+    KMemory* memory = cpu->memory;
+    XImage source;
+    XImage::read(memory, ARG1, &source);
+    S32 x = (S32)ARG2;
+    S32 y = (S32)ARG3;
+    S32 width = (S32)ARG4;
+    S32 height = (S32)ARG5;
+    if (width <= 0 || height <= 0 || !imagePixelsSupported(source)) {
+        EAX = 0;
+        return;
+    }
+    U32 bytesPerLine = roundUp((U32)width * (source.bits_per_pixel / 8), (U32)source.bitmap_pad);
+    U32 image = thread->process->alloc(thread, sizeof(XImage));
+    U32 data = thread->process->alloc(thread, bytesPerLine * height);
+    XImage::set(memory, image, width, height, 0, source.format, data, source.bitmap_pad, source.depth, bytesPerLine, source.bits_per_pixel, source.red_mask, source.green_mask, source.blue_mask);
+    X11_WRITED(XImage, image, byte_order, source.byte_order);
+    XImage result;
+    XImage::read(memory, image, &result);
+    for (S32 dy = 0; dy < height; dy++) {
+        for (S32 dx = 0; dx < width; dx++) {
+            if (!imagePixelIsInside(source, x + dx, y + dy)) {
+                continue;
+            }
+            U32 pixel = readImagePixel(memory, source, imagePixelAddress(source, x + dx, y + dy));
+            writeImagePixel(memory, result, imagePixelAddress(result, dx, dy), pixel);
+        }
+    }
+    EAX = image;
 }
 
+// int XAddPixel(XImage* ximage, long value)
+//
+// Adds value to every pixel of the image in place. Each sum wraps at the depth of the pixel.
 static void x11_AddPixel(CPU* cpu) {
-    kpanic("x11_AddPixel");
+    KMemory* memory = cpu->memory;
+    XImage image;
+    XImage::read(memory, ARG1, &image);
+    U32 value = ARG2;
+    if (!imagePixelsSupported(image)) {
+        EAX = 0;
+        return;
+    }
+    U32 mask = image.bits_per_pixel == 32 ? 0xffffffff : (1U << image.bits_per_pixel) - 1;
+    for (S32 y = 0; y < image.height; y++) {
+        for (S32 x = 0; x < image.width; x++) {
+            U32 address = imagePixelAddress(image, x, y);
+            writeImagePixel(memory, image, address, (readImagePixel(memory, image, address) + value) & mask);
+        }
+    }
+    EAX = 1;
 }
 
 // Pixmap XCreatePixmap(Display* display, Drawable d, unsigned int width, unsigned int height, unsigned int depth)
@@ -1868,8 +1988,22 @@ static void x11_SetForeground(CPU* cpu) {
     EAX = Success;
 }
 
+// int XCopyPlane(Display* display, Drawable src, Drawable dest, GC gc, int src_x, int src_y, unsigned int width, unsigned int height, int dest_x, int dest_y, unsigned long plane)
 static void x11_CopyPlane(CPU* cpu) {
-    kpanic("x11_CopyPlane");
+    KThread* thread = cpu->thread;
+    XServer* server = XServer::getServer();
+    XDrawablePtr src = server->getDrawable(ARG2);
+    XDrawablePtr dest = server->getDrawable(ARG3);
+    if (!src || !dest) {
+        EAX = BadDrawable;
+        return;
+    }
+    XGCPtr gc = server->getGC(ARG4);
+    if (!gc) {
+        EAX = BadGC;
+        return;
+    }
+    EAX = dest->copyPlane(thread, gc, src, (S32)ARG5, (S32)ARG6, ARG7, ARG8, (S32)ARG9, (S32)ARG10, ARG11);
 }
 
 // GC XCreateGC(Display* display, Drawable d, unsigned long valuemask, XGCValues* values) {
@@ -1878,14 +2012,17 @@ static void x11_CreateGC(CPU* cpu) {
     // Display* display = X11::getDisplay(thread, ARG1);
     XDrawablePtr drawable = server->getDrawable(ARG2);
     U32 valuemask = ARG3;
-    if (valuemask) {
-        kpanic("x11_CreateGC valuemask not implemented"); // winex11 doesn't use this
-    }
     if (!drawable) {
         EAX = BadDrawable;
         return;
     }
     XGCPtr gc = server->createGC(drawable);
+    if (valuemask) {
+        // only the fields named in the valuemask are set, the same as XChangeGC
+        XGCValues values;
+        values.read(cpu->memory, ARG4);
+        gc->updateValues(valuemask, &values);
+    }
     if (server->traceGC) {
         BString log;
         DisplayDataPtr data = server->getDisplayDataByAddressOfDisplay(cpu->memory, ARG1);
@@ -1900,8 +2037,29 @@ static void x11_CreateGC(CPU* cpu) {
     EAX = gc->id;
 }
 
+// int XSetDashes(Display* display, GC gc, int dash_offset, char* dash_list, int n)
+//
+// The offset and the first dash length are stored in the GC. Line drawing does not use dashes yet, so dashed lines are drawn solid; that is logged once.
 static void x11_SetDashes(CPU* cpu) {
-    kpanic("x11_SetDashes");
+    XServer* server = XServer::getServer();
+    XGCPtr gc = server->getGC(ARG2);
+    if (!gc) {
+        EAX = BadGC;
+        return;
+    }
+    S32 n = (S32)ARG5;
+    if (n <= 0) {
+        EAX = BadValue;
+        return;
+    }
+    static bool loggedDashes = false;
+    if (!loggedDashes) {
+        loggedDashes = true;
+        kwarn("x11_SetDashes: the dash pattern is stored, but lines are still drawn solid");
+    }
+    gc->values.dash_offset = (S32)ARG3;
+    gc->values.dashes = (S8)cpu->memory->readb(ARG4);
+    EAX = Success;
 }
 
 // int XDrawLine(Display* display, Drawable d, GC gc, int x1, int y1, int x2, int y2)
@@ -1980,16 +2138,50 @@ static void x11_DrawLines(CPU* cpu) {
     EAX = drawable->drawLines(thread, gc, readPoints(cpu->memory, ARG4, ARG5), ARG6 == CoordModePrevious);
 }
 
+// int XSetArcMode(Display* display, GC gc, int arc_mode)
 static void x11_SetArcMode(CPU* cpu) {
-    kpanic("x11_SetArcMode");
+    XServer* server = XServer::getServer();
+    XGCPtr gc = server->getGC(ARG2);
+    if (!gc) {
+        EAX = BadGC;
+        return;
+    }
+    gc->values.arc_mode = ARG3;
+    EAX = Success;
 }
 
+// int XFillArc(Display* display, Drawable d, GC gc, int x, int y, unsigned int width, unsigned int height, int angle1, int angle2)
 static void x11_FillArc(CPU* cpu) {
-    kpanic("x11_FillArc");
+    KThread* thread = cpu->thread;
+    XServer* server = XServer::getServer();
+    XDrawablePtr drawable = server->getDrawable(ARG2);
+    if (!drawable) {
+        EAX = BadDrawable;
+        return;
+    }
+    XGCPtr gc = server->getGC(ARG3);
+    if (!gc) {
+        EAX = BadGC;
+        return;
+    }
+    EAX = drawable->fillArc(thread, gc, (S32)ARG4, (S32)ARG5, ARG6, ARG7, (S32)ARG8, (S32)ARG9);
 }
 
+// int XDrawArc(Display* display, Drawable d, GC gc, int x, int y, unsigned int width, unsigned int height, int angle1, int angle2)
 static void x11_DrawArc(CPU* cpu) {
-    kpanic("x11_DrawArc");
+    KThread* thread = cpu->thread;
+    XServer* server = XServer::getServer();
+    XDrawablePtr drawable = server->getDrawable(ARG2);
+    if (!drawable) {
+        EAX = BadDrawable;
+        return;
+    }
+    XGCPtr gc = server->getGC(ARG3);
+    if (!gc) {
+        EAX = BadGC;
+        return;
+    }
+    EAX = drawable->drawArc(thread, gc, (S32)ARG4, (S32)ARG5, ARG6, ARG7, (S32)ARG8, (S32)ARG9);
 }
 
 // int XDrawRectangle(Display* display, Drawable d, GC gc, int x, int y, unsigned int width, unsigned int height)
@@ -2282,8 +2474,16 @@ static void x11_SetGraphicsExposures(CPU* cpu) {
     EAX = Success;
 }
 
+// int XSetFillStyle(Display* display, GC gc, int fill_style)
 static void x11_SetFillStyle(CPU* cpu) {
-    kpanic("x11_SetFillStyle");
+    XServer* server = XServer::getServer();
+    XGCPtr gc = server->getGC(ARG2);
+    if (!gc) {
+        EAX = BadGC;
+        return;
+    }
+    gc->values.fill_style = ARG3;
+    EAX = Success;
 }
 
 // int XFree(void* data)
@@ -2620,13 +2820,6 @@ static void x11_CreateIC(CPU* cpu) {
     kpanic("x11_CreateIC");
 }
 
-static U32 roundUp(U32 numToRound, U32 multiple)
-{
-    if (!multiple) {
-        return numToRound;
-    }
-    return ((numToRound + multiple - 1) / multiple) * multiple;
-}
 
 // XImage* XCreateImage(Display* display, Visual* visual, unsigned int depth, int format, int offset, char* data, unsigned int width, unsigned int height, int bitmap_pad, int bytes_per_line)
 static void x11_CreateImage(CPU* cpu) {
