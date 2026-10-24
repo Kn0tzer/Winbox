@@ -440,12 +440,11 @@ static void vk64Unsupported(const char* feature, const char* detail = "") {
 
 // ---------------------------------------------------------------------------
 // SPIR-V audit. vkCreateShaderModule scans each module once for the capabilities
-// and resource shapes the WebGPU tier cannot honour and reports every one as
-// "vk64: UNSUPPORTED spirv-<what>" (never rejects: the module may still be
-// harmless, and the page tier decides whether translation fails). This is what
-// backs the "exception" rows of source/vulkan/vk-capabilities.json for features
-// that have no pipeline-state representation (cull distance, 64-bit types,
-// storage-buffer stores, storage images, ...).
+// and resource shapes the WebGPU tier cannot honour, reports each one as
+// "vk64: UNSUPPORTED spirv-<what>", and returns VK_ERROR_FEATURE_NOT_PRESENT
+// before publishing an unusable module. Malformed modules return
+// VK_ERROR_INVALID_SHADER_NV. This covers features with no pipeline-state
+// representation (cull distance, 64-bit types, storage-buffer stores, images).
 // ---------------------------------------------------------------------------
 // Sampler state the WebGPU tier cannot honour. Reported once per sampler, not per draw.
 static bool vk64AuditSampler(U32 addrU, U32 addrV, U32 addrW, float mipLodBias, U32 borderColor) {
