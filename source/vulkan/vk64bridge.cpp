@@ -1088,6 +1088,8 @@ struct PipelineAudit {
     U32 dynMask = 0;              // states supplied by commands, not by the create info
     bool vertexDivisor = false;   // VkVertexInputBindingDivisorDescriptionEXT.divisor != 1
     bool unsupportedVertexFormat = false;
+    bool unsupportedBlendEnum = false;
+    bool mixedBlendConstants = false;
 };
 static const U32 kV2SupportedStageMask = 0x1u | 0x10u;     // VERTEX | FRAGMENT
 // Returns true when the pipeline must be rejected with VK_ERROR_FEATURE_NOT_PRESENT.
@@ -1111,8 +1113,28 @@ static bool vk64AuditGraphicsPipeline(const PipelineAudit& a) {
     if (a.viewportCount > 1) { vk64Unsupported("multi-viewport", "pipeline rejected"); reject = true; }
     if (a.vertexDivisor) { vk64Unsupported("vertex-attribute-divisor", "pipeline rejected"); reject = true; }
     if (a.unsupportedVertexFormat) { vk64Unsupported("vertex-format", "pipeline rejected"); reject = true; }
+    if (a.unsupportedBlendEnum) { vk64Unsupported("blend-enum", "blend factor or operation has no WebGPU mapping; pipeline rejected"); reject = true; }
+    if (a.mixedBlendConstants) { vk64Unsupported("mixed-blend-constants", "WebGPU cannot use separate Vulkan constant-color and constant-alpha values in one pipeline; pipeline rejected"); reject = true; }
     if (a.sampleCount != 1 && a.sampleCount != 4) { vk64Unsupported("sample-count", "pipeline rejected"); reject = true; }
     return reject;
+}
+static void vk64AuditBlend(const Pipeline& p, PipelineAudit& a) {
+    bool colorConstant = false, alphaConstant = false;
+    for (U32 i = 0; i < p.colorBlendCount; ++i) {
+        const ColorBlend& b = p.colorBlend[i];
+        if (!b.enable) continue;
+        if (b.colorOp > 4 || b.alphaOp > 4 || b.srcColor > 14 || b.dstColor > 14 || b.srcAlpha > 14 || b.dstAlpha > 14)
+            a.unsupportedBlendEnum = true;
+        if (b.colorOp < 3) {
+            colorConstant |= b.srcColor == 10 || b.srcColor == 11 || b.dstColor == 10 || b.dstColor == 11;
+            alphaConstant |= b.srcColor == 12 || b.srcColor == 13 || b.dstColor == 12 || b.dstColor == 13;
+        }
+        if (b.alphaOp < 3) {
+            colorConstant |= b.srcAlpha == 10 || b.srcAlpha == 11 || b.dstAlpha == 10 || b.dstAlpha == 11;
+            alphaConstant |= b.srcAlpha == 12 || b.srcAlpha == 13 || b.dstAlpha == 12 || b.dstAlpha == 13;
+        }
+    }
+    a.mixedBlendConstants = colorConstant && alphaConstant;
 }
 // Applies VkPipelineDynamicStateCreateInfo to the pipeline. Returns false (after a
 // greppable "UNSUPPORTED dynamic-state-<n>") for a state with no representation in
@@ -5362,6 +5384,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 p->rasterizerDiscard = rs.rasterizerDiscardEnable ? 1 : 0;
                 audit.logicOp = cbs.logicOpEnable;
                 audit.depthBounds = ds.depthBoundsTestEnable;
+                vk64AuditBlend(*p, audit);
                 for (U32 a = 0; a < p->nva; ++a)
                     if (!v2FormatIsSupportedVertex(p->vaFormat[a])) audit.unsupportedVertexFormat = true;
                 if (readStruct(ci.pVertexInputState, vi))
@@ -8521,6 +8544,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 p->rasterizerDiscard = rs.rasterizerDiscardEnable ? 1 : 0;
                 audit.logicOp = cbs.logicOpEnable;
                 audit.depthBounds = ds.depthBoundsTestEnable;
+                vk64AuditBlend(*p, audit);
                 for (U32 a = 0; a < p->nva; ++a)
                     if (!v2FormatIsSupportedVertex(p->vaFormat[a])) audit.unsupportedVertexFormat = true;
                 {

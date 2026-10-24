@@ -52,3 +52,15 @@ test('unsupported vertex formats fail pipeline creation in both guest ABIs', () 
   assert.match(bridge, /static bool v2FormatIsSupportedVertex\(U32 format\)[\s\S]*?return v2FormatIn\(format, kV2SupportedVertexFormats\);/);
   assert.match(bridge, /v2FormatBufferFeatureFlags\(U32 format\)\s*\{\s*VkFormatFeatureFlags flags = v2FormatIsSupportedVertex\(format\)/);
 });
+
+test('unsupported blend enums and mixed constants fail pipeline creation in both guest ABIs', () => {
+  const audit = functionBody(bridge, 'static bool vk64AuditGraphicsPipeline(');
+  assert.match(audit, /a\.unsupportedBlendEnum[^\n]*vk64Unsupported\("blend-enum"[^\n]*reject = true/);
+  assert.match(audit, /a\.mixedBlendConstants[^\n]*vk64Unsupported\("mixed-blend-constants"[^\n]*reject = true/);
+  const blendAudit = functionBody(bridge, 'static void vk64AuditBlend(');
+  assert.match(blendAudit, /b\.colorOp > 4 \|\| b\.alphaOp > 4[\s\S]*?a\.unsupportedBlendEnum = true/);
+  assert.match(blendAudit, /a\.mixedBlendConstants = colorConstant && alphaConstant/);
+  assert.equal((bridge.match(/vk64AuditBlend\(\*p, audit\)/g) || []).length, 2,
+    'both guest ABIs must reject unsupported blend state before emitting a pipeline');
+  assert.match(bridge, /result = VK_ERROR_FEATURE_NOT_PRESENT;[\s\S]{0,120}continue;/);
+});
