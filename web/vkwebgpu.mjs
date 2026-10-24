@@ -3,12 +3,11 @@ import {
   V2FrameAssembler, V2FrameQueue, V2PresentAssembler,
   V2_PUSH_BINDING, V2_PUSH_GROUP, V2_PUSH_SIZE, V2_QUEUE_CAP,
   V2_SCALED_VERTEX, V2_TOPOLOGY, v2HasColourPass, v2PresentIndex, V2_UNKNOWN_IMAGE, V2_VERT_FORMAT_SIZE,
-  decodeV2Frame, parseV2Chunk, repackScaledVb,
+  applyDynamicState, decodeV2Frame, parseV2Chunk, repackScaledVb,
   swizzleBgraVb, v2DepthStencilUploads, v2ImageBlitRegion, v2TextureFormat, v2TextureMipUploadPlan, v2TexturePixels, v2VertexFormat,
   v2IndexedTriangleFanIndices, v2TriangleFanIndices,
 } from './vk-protocol.mjs';
 import { bwLog, bwLogRl } from './vk-log.mjs';
-import { applyDynamicState } from './vk-dynstate.mjs';
 import { bridgeRecoveryStats, reportBridgeFailure } from './bridge-recovery.mjs';
 import {
   parseMinBindingSize, rewritePushConstantsWGSL, rewriteResolvedDxvkPresent,
