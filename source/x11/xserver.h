@@ -75,8 +75,10 @@ public:
 	const XWindowPtr& getRoot();
 	U32 getEventTime();
 	U32 getInputModifiers();
-	U32 grabPointer(const DisplayDataPtr& display, const XWindowPtr& grabbed, XWindowPtr confined, U32 mask, U32 time);
+	U32 grabPointer(const DisplayDataPtr& display, const XWindowPtr& grabbed, XWindowPtr confined, XCursorPtr cursor, U32 mask, U32 time);
 	U32 ungrabPointer(U32 time);
+	// The cursor the screen shows for wnd: the grab's cursor while a pointer grab has one, otherwise wnd's own cursor.
+	XCursorPtr activeCursor(const XWindowPtr& wnd);
 	U32 setInputFocus(const DisplayDataPtr& data, U32 window, U32 revertTo, U32 time, bool trace = false);
 	int mapWindow(const DisplayDataPtr& data, const XWindowPtr& window);
 	int unmapWindow(const DisplayDataPtr& data, const XWindowPtr& window);
@@ -128,6 +130,7 @@ private:
 	bool isGrabbed = false;
 	U32 grabbedMask;
 	U32 grabbedTime;
+	XCursorPtr grabbedCursor;
 
 	U32 extensionXinput2;
 	U32 extensionGLX;

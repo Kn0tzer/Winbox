@@ -464,8 +464,18 @@ XCursorPtr XServer::getCursor(U32 id) {
 
 void XServer::updateCursor(const XWindowPtr& wnd) {
 	if (pointerWindow == wnd) {
-		KNativeSystem::getScreen()->setCursor(wnd->getCursor());
+		KNativeSystem::getScreen()->setCursor(activeCursor(wnd));
 	}
+}
+
+XCursorPtr XServer::activeCursor(const XWindowPtr& wnd) {
+	{
+		BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(grabbedMutex);
+		if (isGrabbed && grabbedCursor) {
+			return grabbedCursor;
+		}
+	}
+	return wnd->getCursor();
 }
 
 XGCPtr XServer::createGC(XDrawablePtr drawable) {
@@ -1013,11 +1023,10 @@ void XServer::key(U32 key, bool pressed) {
 	}
 }
 
-U32 XServer::grabPointer(const DisplayDataPtr& display, const XWindowPtr& grabbed, XWindowPtr confined, U32 mask, U32 time) {
+U32 XServer::grabPointer(const DisplayDataPtr& display, const XWindowPtr& grabbed, XWindowPtr confined, XCursorPtr cursor, U32 mask, U32 time) {
 	if (!time) {
 		time = KSystem::getMilliesSinceStart();
 	}
-	bool updateCursor = false;
 	{
 		BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(grabbedMutex);
 
@@ -1028,6 +1037,7 @@ U32 XServer::grabPointer(const DisplayDataPtr& display, const XWindowPtr& grabbe
 		this->grabbedMask = mask;
 		this->grabbedTime = time;
 		this->grabbedDisplayId = display->displayId;
+		this->grabbedCursor = cursor;
 		this->isGrabbed = true;
 
 		if (pointerWindow->id != grabbed->id) {
@@ -1036,20 +1046,19 @@ U32 XServer::grabPointer(const DisplayDataPtr& display, const XWindowPtr& grabbe
 			KNativeSystem::getCurrentInput()->getMousePos(&x, &y);
 			pointerMoved(pointerWindow, grabbed, x, y, NotifyGrab);
 			pointerWindow = grabbed;
-			updateCursor = true;
 		}
 	}
-	if (updateCursor) {
-		// don't call this with grabbedMutex locked
-		KNativeSystem::getScreen()->setCursor(pointerWindow->getCursor());
-	}
+	// the grab's cursor applies even when the pointer was already on the grab window
+	// don't call this with grabbedMutex locked
+	KNativeSystem::getScreen()->setCursor(activeCursor(pointerWindow));
 	return GrabSuccess;
 }
 
 // https://www.x.org/releases/X11R7.6/doc/xproto/x11protocol.html#requests:UngrabPointer
 U32 XServer::ungrabPointer(U32 time) {
 	if (!grabbedId) {
-		return GrabSuccess; // :TODO: couldn't find this use case in the x11 spec
+		// X11: UngrabPointer with no active pointer grab has no effect
+		return GrabSuccess;
 	}
 	XWindowPtr prev = getWindow(grabbedId);
 	{
@@ -1057,6 +1066,7 @@ U32 XServer::ungrabPointer(U32 time) {
 		this->grabbedId = 0;
 		this->grabbedDisplayId = 0;
 		this->grabbedConfinedId = 0;
+		this->grabbedCursor = nullptr;
 		this->isGrabbed = false;
 	}
 	S32 x = 0;

@@ -502,16 +502,28 @@ static void x11_GrabPointer(CPU* cpu) {
         return;
     }
     if (ARG3) {
-        // not used by winex11
-        kpanic("XGrabPointer owner_events not implemented");
+        // owner_events is accepted but not honoured: every pointer event goes to the grab window
+        static bool loggedOwnerEvents = false;
+        if (!loggedOwnerEvents) {
+            loggedOwnerEvents = true;
+            klog("XGrabPointer owner_events=True is treated as False: pointer events go to the grab window only");
+        }
     }
-    if (ARG4 == GrabModeSync || ARG5 == GrabModeSync) {
-        // not used by winex11
-        kpanic("XGrabPointer GrabModeSync not implemented");
+    if (ARG5 == GrabModeSync) {
+        // pointer_mode is ARG5 (ARG4 is the event mask). Accepted, but events are not frozen until XAllowEvents
+        static bool loggedSyncMode = false;
+        if (!loggedSyncMode) {
+            loggedSyncMode = true;
+            klog("XGrabPointer GrabModeSync is treated as GrabModeAsync: pointer events are not frozen until XAllowEvents");
+        }
     }
+    XCursorPtr grabCursor;
     if (ARG8) {
-        // not used by winex11
-        kpanic("XGrabPointer cursor not implemented");
+        grabCursor = server->getCursor(ARG8);
+        if (!grabCursor) {
+            EAX = BadCursor;
+            return;
+        }
     }
     XWindowPtr confined;
 
@@ -537,7 +549,7 @@ static void x11_GrabPointer(CPU* cpu) {
         klog(log.c_str());
     }
 
-    EAX = server->grabPointer(data, window, confined, ARG4, ARG9);
+    EAX = server->grabPointer(data, window, confined, grabCursor, ARG4, ARG9);
 }
 
 // int XUngrabPointer(Display* display, Time time)
