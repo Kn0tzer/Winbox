@@ -47,6 +47,18 @@ test('every advertised feature bit has a manifest row and every row is advertise
   assert.deepEqual([...rows].filter((k) => !adv.has(k)).sort(), [], 'manifest row for a bit that is not advertised');
 });
 
+test('every Vulkan 1.0 core feature bit is explicitly implemented or not advertised', () => {
+  const header = read('source/vulkan/vk64_guest.h');
+  const core = header.match(/typedef struct VkPhysicalDeviceFeatures \{([\s\S]*?)\} VkPhysicalDeviceFeatures;/)?.[1];
+  assert.ok(core, 'VkPhysicalDeviceFeatures ABI definition exists');
+  const members = [...core.matchAll(/VkBool32\s+(\w+)\s*;/g)].map((m) => m[1]);
+  const classified = new Set([
+    ...Object.keys(manifest.features),
+    ...manifest.notAdvertised,
+  ].filter((name) => name.startsWith('fillCoreFeatures.')).map((name) => name.slice('fillCoreFeatures.'.length)));
+  assert.deepEqual(members.filter((name) => !classified.has(name)), [], 'unclassified VkPhysicalDeviceFeatures members');
+});
+
 test('every advertised extension has a manifest row and every row is advertised', () => {
   for (const [array, key] of [['g_inst_exts', 'instance'], ['g_dev_exts', 'device']]) {
     const adv = advertisedExtensions(array);
