@@ -451,6 +451,13 @@ test('fixed-function GL_COMBINE defaults to modulating the previous color by eac
   } finally { gpu.restore(); }
 });
 
+test('desktop GLSL core versions 330 through 460 normalize into the WebGPU frontend dialect', () => {
+  for (const version of [330, 400, 410, 420, 430, 440, 450, 460]) {
+    const rewritten = rewriteGlslForWebGPU(`#version ${version} core\nvoid main() { gl_Position = vec4(0.0); }`, 'vertex');
+    assert.match(rewritten.code, /^#version 450\n/);
+  }
+});
+
 test('state and texture entry points report invalid enums, values, and operations', async () => {
   const gpu = createValidationDevice(), logs = [];
   try {

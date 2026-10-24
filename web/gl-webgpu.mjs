@@ -271,7 +271,8 @@ function lowerMatrixStageInterfacesForNaga(source) {
 export function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(), interfaceLocations = new Map(), clipControl = [0x8ca1, 0x935e]) {
   // ES precision hints do not change WGSL behavior; strip them before parsing
   // declarations because Naga's GLSL 450 frontend rejects variable precision qualifiers.
-  let code = stripPrecisionCompatibilityGuards(String(source || '').replace(/\r\n?/g, '\n').replace(/\\[ \t]*\n[ \t]*/g, ''))
+  let code = String(source || '').replace(/^[ \t]*#version[ \t]+(330|400|410|420|430|440|450|460)(?:[ \t]+core)?[ \t]*$/gm, '#version 150');
+  code = stripPrecisionCompatibilityGuards(code.replace(/\r\n?/g, '\n').replace(/\\[ \t]*\n[ \t]*/g, ''))
     .replace(/^[ \t]*#define[ \t]+(?:lowp|mediump|highp)(?:[ \t]+[^\n]*)?[ \t]*$/gm, '')
     .replace(/^[ \t]*precision[ \t]+(?:lowp|mediump|highp)[ \t]+(?:float|int)[ \t]*;[ \t]*$/gm, '')
     .replace(/\b(?:lowp|mediump|highp)\b/g, '');
