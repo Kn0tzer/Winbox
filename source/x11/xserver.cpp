@@ -501,8 +501,9 @@ void XServer::removeGC(U32 gc) {
 	gcs.remove(gc);
 }
 
-void XServer::iterateEventMask(U32 wndId, U32 mask, std::function<void(const DisplayDataPtr& display)> callback) {
+bool XServer::iterateEventMask(U32 wndId, U32 mask, std::function<void(const DisplayDataPtr& display)> callback) {
 	std::vector<U32> ids;
+	bool matched = false;
 
 	{
 		BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(displayMutex);
@@ -520,10 +521,12 @@ void XServer::iterateEventMask(U32 wndId, U32 mask, std::function<void(const Dis
 		if (data) {
 			// don't hold displayMutext when calling this, since the callback will likely lock events
 			if (data->getEventMask(wndId) & mask) {
+				matched = true;
 				callback(data);
 			}
 		}
 	}
+	return matched;
 }
 
 void XServer::iterateInput2Mask(U32 wndId, U32 mask, std::function<void(const DisplayDataPtr& display)> callback) {

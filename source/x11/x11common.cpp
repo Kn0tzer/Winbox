@@ -759,13 +759,7 @@ static void x11_SendEvent(CPU* cpu) {
         EAX = Success;
         return;
     }
-    if (windowId == PointerWindow) {
-        // not used in winex11
-        kpanic("XSendEvent w=PointerWindow not implemented");
-    } else if (windowId == InputFocus) {
-        // not used in winex11
-        kpanic("XSendEvent w=InputFocus not implemented");
-    } else if (!window) {
+    if (windowId != PointerWindow && windowId != InputFocus && !window) {
         EAX = BadWindow;
         return;
     }
@@ -777,6 +771,9 @@ static void x11_SendEvent(CPU* cpu) {
 #else
     memory->memcpy(&event, ARG5, sizeof(XEvent));
 #endif
+    if (windowId == PointerWindow) window = server->pointerWindow;
+    else if (windowId == InputFocus) window = server->inputFocus ? server->inputFocus : server->getRoot();
+    if (!window) { EAX = Success; return; }
     if (event.type == ClientMessage && event.xclient.message_type == _NET_WM_STATE) {
         EAX = window->handleNetWmStatePropertyEvent(event);
         return;
@@ -803,8 +800,13 @@ static void x11_SendEvent(CPU* cpu) {
             dst->putEvent(event);
             });
     } else {
-        // not used in winex11
-        kpanic("XSendEvent propagate not implemented");
+        for (XWindowPtr recipient = window; recipient; recipient = recipient->getParent()) {
+            if (server->iterateEventMask(recipient->id, event_mask, [&event](const DisplayDataPtr dst) {
+                    event.xany.serial = dst->getNextEventSerial();
+                    event.xany.display = dst->displayAddress;
+                    dst->putEvent(event);
+                })) break;
+        }
     }
 }
 
