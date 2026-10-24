@@ -26,8 +26,8 @@
 #include "../opengl/gl64bridge.h"
 #include "../vulkan/vk64bridge.h"
 #include "kevent.h"
+#include "krandom.h"
 
-#include <random>
 #include <thread>
 
 U64 sysCallTime;
@@ -1749,18 +1749,29 @@ static U32 syscall_renameat(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_getrandom(CPU* cpu, U32 eipCount) {
-    static std::mt19937 gen{ std::random_device{}() };
-    static std::uniform_int_distribution<size_t> dist{ 0, 255 };
-
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "getrandom buf=%X buflen=%d flags=%X", ARG1, ARG2, ARG3);
-    if (bw64RecoverEnabled() && (ARG3 & ~7u)) {
-        bw64RecoverLogOnce("syscall.getrandom.flags", "unsupported getrandom flags; returned EINVAL");
+    constexpr U32 GRND_NONBLOCK = 1;
+    constexpr U32 GRND_RANDOM = 2;
+    constexpr U32 GRND_INSECURE = 4;
+    constexpr U32 MAX_GETRANDOM = 32u * 1024 * 1024;
+    if (ARG3 & ~(GRND_NONBLOCK | GRND_RANDOM | GRND_INSECURE)) {
         return -K_EINVAL;
     }
     U32 buf = ARG1;
     U32 count = ARG2;
-    for (U32 i=0;i<count;i++) {
-        cpu->memory->writeb(buf+i, (U8)dist(gen));
+    if (count == 0) return 0;
+    if (count > MAX_GETRANDOM) return -K_EINVAL;
+    if (!cpu->memory->canWrite(buf, count)) return -K_EFAULT;
+
+    U8 bytes[4096];
+    U32 offset = 0;
+    while (offset < count) {
+        U32 chunk = std::min<U32>(sizeof(bytes), count - offset);
+        if (!kernelGetRandomBytes(bytes, chunk)) {
+            return offset ? offset : -K_EIO;
+        }
+        cpu->memory->memcpy(buf + offset, bytes, chunk);
+        offset += chunk;
     }
     SYS_LOG(SYSCALL_SYSTEM, cpu, " result=%d\n", count);
     return count;

@@ -61,6 +61,7 @@ void testSyscall64DispatchGuard();
 void testFutex64DispatchGuard();
 #ifndef BOXEDWINE_GUEST_X64
 void testMadvise32Syscall();
+void testGetrandom32Syscall();
 #endif
 void testInetDatagramLoopback();
 void testInetStreamLoopback();
@@ -84,6 +85,7 @@ void testPrctl64Options();
 void testOpcodeFault64Delivery();
 void testCpu64AvxCpuidMask();
 void testForkVfork64();
+void testGetrandom64Syscalls();
 #endif
 
 namespace {
@@ -111,6 +113,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testPrctl64Options, "Test x64 prctl option surface"},
     {testOpcodeFault64Delivery, "Test x64 undefined/VEX opcode SIGILL delivery"},
     {testCpu64AvxCpuidMask, "Test x64 AVX CPUID bits stay consistently hidden"},
+    {testGetrandom64Syscalls, "Test x64 getrandom entropy and validation"},
     {testForkVfork64, "Test x64 fork and vfork create real processes"},
 };
 #else
@@ -725,6 +728,7 @@ const TestEntry TEST_ENTRIES[] = {
 #endif
     {testWaitPid, "Test waitpid child selection"},
     {testMadvise32Syscall, "Test 32-bit madvise syscall effects"},
+    {testGetrandom32Syscall, "Test 32-bit getrandom entropy and validation"},
     {testSyscall64DispatchGuard, "Test x64 syscall fallback guard"},
     {testFutex64DispatchGuard, "Test x64 futex dispatch guard"},
     {testTimerfdCore, "Test timerfd descriptor and expiration semantics"},

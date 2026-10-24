@@ -88,6 +88,22 @@ void testSyscall64DispatchGuard() {
         source.find("cpu->reg[X64_RSI].setU64((sa.flags & 0x4 /*SA_SIGINFO*/) ? frameBase : 0)") == std::string::npos) {
         testFail("pidfd and queued signal paths must deliver siginfo to SA_SIGINFO handlers");
     }
+
+    const std::string root = testPath.substr(0, markerAt);
+    std::ifstream randomFile(root + "/source/kernel/krandom.cpp");
+    std::ifstream syscall32File(root + "/source/kernel/syscall.cpp");
+    const std::string randomSource((std::istreambuf_iterator<char>(randomFile)), std::istreambuf_iterator<char>());
+    const std::string syscall32((std::istreambuf_iterator<char>(syscall32File)), std::istreambuf_iterator<char>());
+    if (!randomFile || !syscall32File || randomSource.find("std::random_device") == std::string::npos ||
+        source.find("6364136223846793005") != std::string::npos ||
+        syscall32.find("std::mt19937") != std::string::npos) {
+        testFail("getrandom must use the shared nondeterministic source, not a deterministic PRNG");
+    }
+    if (source.find("sys_rangeHasPermission64(cpu->memory, bufAddr, buflen, K64_PAGE_WRITE)") == std::string::npos ||
+        syscall32.find("cpu->memory->canWrite(buf, count)") == std::string::npos ||
+        syscall32.find("if (bw64RecoverEnabled() && (ARG3 & ~7u))") != std::string::npos) {
+        testFail("32-bit getrandom must validate flags and the full writable range on every build");
+    }
 }
 
 #ifdef BOXEDWINE_GUEST_X64
