@@ -6,7 +6,7 @@ Rows: 329 source and follow-up rows. Static audit only. Latest full unit run was
 
 | File:line | Guest behavior / audit evidence | Severity | Disposition |
 |---|---|---|---|
-| `source/vulkan/vk64bridge.cpp:159` (marker) | marker: `X(VK64_fn_unimplemented, "unimplemented") \`. Guest behavior and impact require the listed handler/replay path to be exercised. | High: may reject, omit, or alter guest Vulkan work | OPEN |
+| `source/vulkan/vk64bridge.cpp:159,3744,6941` | DXVK/vkd3d or a native Vulkan app calls an entry point that has no bridge handler | High | REJECTED-LOUDLY; generated unimplemented dispatch IDs identify the requested function, log it through `vk64Unsupported`, and return `VK_ERROR_FEATURE_NOT_PRESENT` in both ABIs. Regression: `vk-unimplemented-dispatch.test.mjs`. |
 | `source/vulkan/vk64bridge.cpp:411` (marker) | marker: `// point has one, and ALWAYS calls vk64Unsupported() so the request is greppable:`. Guest behavior and impact require the listed handler/replay path to be exercised. | Informational: comment/reference only | NOT-A-GAP (comment only; no runtime path) |
 | `source/vulkan/vk64bridge.cpp:412` (marker) | marker: `// vk64: UNSUPPORTED <feature> (<detail>) in <fn> x<n> (<total> total)`. Guest behavior and impact require the listed handler/replay path to be exercised. | Informational: comment/reference only | NOT-A-GAP (comment only; no runtime path) |
 | `source/vulkan/vk64bridge.cpp:414` (marker) | marker: `// are queryable per feature (vk64BridgeUnsupportedCount) for tests and metrics.`. Guest behavior and impact require the listed handler/replay path to be exercised. | Informational: comment/reference only | NOT-A-GAP (comment only; no runtime path) |
