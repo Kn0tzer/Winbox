@@ -243,6 +243,14 @@ test('GL shim registration count is substantial', () => {
     `GL shim registers only ${registered.size} functions; expected 100+ for real GL apps`);
 });
 
+test('unknown GL procedure names never resolve to the silent no-op fallback', () => {
+  assert.doesNotMatch(shimSrc, /static\s+void\s+gl64_noop\s*\(/);
+  const lookup=shimSrc.match(/API GLproc glXGetProcAddressARB\([\s\S]*?\n\}/)?.[0]??'';
+  assert.match(lookup,/GL64_fn_traceProc/);
+  assert.match(lookup,/return 0;/);
+  assert.match(bridgeSrc,/gl64 PROC unsupported %s: glXGetProcAddressARB returned NULL/);
+});
+
 // Source coverage alone missed a shipped libGL whose client-array exports were
 // still one-byte return instructions. Inspect ELF64 dynamic symbols as well.
 function elf64FunctionSizes(bytes) {

@@ -1314,12 +1314,10 @@ API void glUniform4uiv(GLint location, GLsizei count, const GLuint* value){ GL64
 API void glGetUniformuiv(GLuint program, const GLint* locs, GLuint* params){ GL64Args a={{0}}; a.a[0]=program; a.a[1]=(uint64_t)(uintptr_t)locs; a.a[2]=(uint64_t)(uintptr_t)params; (void)gl64_trap(GL64_fn_glGetUniformuiv,&a); }
 
 // glXGetProcAddressARB — opengl32/winex11 resolve every gl*/glX* through here.
-// Return our own wrapper for names we implement, or a harmless no-op stub for
-// the rest (so an unimplemented call is silently ignored rather than crashing).
+// Return our own wrapper for names we implement. Unknown names are traced and
+// return NULL, matching GLX lookup semantics instead of installing a silent stub.
 // ===========================================================================
 typedef void (*GLproc)(void);
-
-static void gl64_noop(void) { /* unimplemented GL entry — ignore for first light */ }
 // ARB spelling of the core multitexture selector uses the same ABI.
 API void glActiveTextureARB(GLenum texture) { glActiveTexture(texture); }
 API void glMultiTexCoord2fARB(GLenum texture, GLfloat s, GLfloat t) {
@@ -1476,14 +1474,12 @@ API GLproc glXGetProcAddressARB(const GLubyte* name) {
             return g_procs[i].fn;
         }
     }
-    // Unknown gl* function: trace it (hit=0) so the host log names exactly which
-    // modern-GL entry point wined3d wanted that we don't implement yet — the
-    // worklist for D3D. Then hand back a no-op so opengl32's dispatch fills its
-    // table with a callable pointer (returning 0 would make wine think the
-    // driver is broken and disable OpenGL).
+    // Unknown GL function: trace it (hit=0) so the host reports the exact name.
+    // GLX specifies NULL for an unresolved function; the caller can use its
+    // extension fallback or report the missing entry point.
     GL64Args a = {{0}}; a.a[0] = (uint64_t)(uintptr_t)name; a.a[1] = 0;
     (void)gl64_trap(GL64_fn_traceProc, &a);
-    return gl64_noop;
+    return 0;
 }
 API GLproc glXGetProcAddress(const GLubyte* name) { return glXGetProcAddressARB(name); }
 

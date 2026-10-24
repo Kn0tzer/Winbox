@@ -39,6 +39,7 @@
 #include "../x11wire/xwireserver.h"
 
 #include <SDL.h>
+#include <unordered_set>
 #ifdef __EMSCRIPTEN__
 // WASM backend: the host GL context is WebGL2 (GLES3) with NO fixed-function
 // pipeline of its own — Emscripten's -sLEGACY_GL_EMULATION glemu layer
@@ -2609,6 +2610,13 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                     klog_fmt("gl64 PROC %s %s args=%llx,%llx,%llx,%llx", args.a[1] == 2 ? "STUB" : hit ? "HIT " : "MISS", name,
                         (unsigned long long)args.a[2], (unsigned long long)args.a[3],
                         (unsigned long long)args.a[4], (unsigned long long)args.a[5]);
+            }
+            if (args.a[1] == 0) {
+                char name[128] = {0};
+                if (args.a[0]) cpu->memory->memcpyFromGuest(name, args.a[0], sizeof(name)-1);
+                static std::unordered_set<std::string> warned;
+                if (name[0] && warned.emplace(name).second)
+                    klog_fmt("gl64 PROC unsupported %s: glXGetProcAddressARB returned NULL", name);
             }
             return 0;
         }
