@@ -358,6 +358,12 @@ enum {
     VK64_fn_vkCmdClearDepthStencilImage = 909, // (cmdBuf, image, layout, pDepthStencil*, rangeCount, pRanges*) -> GPU clear (64-bit shim only)
     VK64_fn_vkCmdWriteTimestamp = 910,        // (cmdBuf, stage, pool, query) -> accepted; timestamp results are synthesized from the host clock
     VK64_fn_vkCmdSetDepthBounds = 911,        // (cmdBuf, min bits, max bits) -> accepted; WebGPU has no depth-bounds test
+    // Descriptor pools, push descriptors, layout support (2026-10-24). Append-only.
+    VK64_fn_vkResetDescriptorPool = 912,      // (device, pool, flags) -> frees every set allocated from the pool
+    VK64_fn_vkFreeDescriptorSets = 913,       // (device, pool, count, pSets*) -> frees the named sets
+    VK64_fn_vkCmdPushDescriptorSetKHR = 914,  // (cmdBuf, bindPoint, layout, set, writeCount, pWrites*) -> binds a synthetic set
+    VK64_fn_vkCmdPushDescriptorSetWithTemplateKHR = 915, // (cmdBuf, template, layout, set, pData*)
+    VK64_fn_vkGetDescriptorSetLayoutSupport = 916, // (device, pCreateInfo*, pSupport*) -> supported, variable count limit
     VK64_fn__MAX
 };
 

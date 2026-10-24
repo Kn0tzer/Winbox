@@ -206,8 +206,8 @@ int main() {
     U64 sampledViewId; auto* sampledView = createObj<ImageView>(K_IMAGEVIEW, sampledViewId);
     sampledView->image = imageId; sampledView->format = 44; sampledView->aspect = 1;
     U64 sampledSetId; auto* sampledSet = createObj<DescSet>(K_SET, sampledSetId);
-    sampledSet->nbind = 1; sampledSet->binds[0].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    sampledSet->binds[0].obj = sampledViewId; sampledSet->binds[0].count = 1;
+    { Binding& sb = sampledSet->els[DescKey(0, 0)]; sb.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+      sb.obj = sampledViewId; sb.count = 1; }
     U8 attachment[72] = {}, rendering[72] = {};
     auto put32 = [](U8* bytes, size_t at, U32 value) { memcpy(bytes + at, &value, 4); };
     auto put64 = [](U8* bytes, size_t at, U64 value) { memcpy(bytes + at, &value, 8); };
@@ -479,8 +479,8 @@ int main() {
     wds.pBufferInfo = 3072;
     memory.memcpyToGuest(3136, &wds, sizeof(wds));
     vkUpdateDescriptorSets(deviceId, 1, (void*)3136, 0, nullptr);
-    assert(offSet->nbind == 1);
-    const Binding& ob = offSet->binds[0];
+    assert(offSet->els.size() == 1);
+    const Binding& ob = offSet->els.at(DescKey(0, 0));
     assert(ob.obj == offBufId && ob.range == 32 && ob.bufOff == 64);
     // The serialize path reads buf->memOff + b.bufOff: verify those bytes.
     auto ob2 = readGuestRange(offMemId, offBuf->memOff + ob.bufOff, ob.range);
@@ -523,6 +523,234 @@ int main() {
     assert(!findObj(allocationId32, K_MEMORY));
     g_mem32 = nullptr; g_mem = &memory;
     puts("PASS: Vulkan32 allocation layout, four-byte map output and failure cleanup");
+    // ---- Descriptor model: arrays, dynamic offsets, immutable samplers, copies,
+    // pools, push descriptors, 32-bit strides. Each assertion fails if the
+    // corresponding behaviour regresses to the old 8-binding / element-0 model.
+    {
+        std::set<U64> idsBefore; for (auto& kv : g_objs) idsBefore.insert(kv.first);
+        struct WireEl { U32 binding, type, elem, count; U8 kind; U64 obj, len, off; };
+        struct WireSet { U32 setIndex, nWire; U64 layout; std::vector<WireEl> els; };
+        auto runCb = [&](CmdBuf* cb, U64 cbId) {
+            g_v2Pending.clear();
+            serializeSubmitV2({{cb, cbId}});
+            std::vector<WireSet> out;
+            assert(!g_v2Pending.empty());
+            for (const auto& chunk : g_v2Pending.back().chunks) {
+                for (size_t at = 16; at < chunk.size();) {
+                    U32 type, len; memcpy(&type, chunk.data() + at, 4); memcpy(&len, chunk.data() + at + 4, 4);
+                    if (type == V2_DESC_SET) {
+                        const U8* p = chunk.data() + at + 8;
+                        WireSet ws; ws.setIndex = p[0]; uint16_t n; memcpy(&n, p + 2, 2); ws.nWire = n;
+                        memcpy(&ws.layout, p + 4, 8);
+                        p += 12;
+                        for (U32 i = 0; i < n; i++, p += 44) {
+                            WireEl e; memcpy(&e.binding, p, 4); memcpy(&e.type, p + 4, 4);
+                            memcpy(&e.elem, p + 8, 4); memcpy(&e.count, p + 12, 4); e.kind = p[16];
+                            memcpy(&e.obj, p + 20, 8); memcpy(&e.len, p + 28, 8); memcpy(&e.off, p + 36, 8);
+                            ws.els.push_back(e);
+                        }
+                        out.push_back(ws);
+                    }
+                    at += 8 + len;
+                }
+            }
+            return out;
+        };
+        auto drawWith = [&](U64 cbId, U64 setId, U32 ndyn, const U32* dyn) {
+            memory.memcpyToGuest(1664, rendering, sizeof(rendering));
+            vkCmdBeginRendering(cbId, (void*)1664);
+            memory.writeq(1792, setId);
+            if (ndyn) memory.memcpyToGuest(1824, dyn, ndyn * 4);
+            vkCmdBindDescriptorSets(cbId, 0, 0, 0, 1, (U64*)1792, ndyn, ndyn ? (const U32*)1824 : nullptr);
+            vkCmdDraw(cbId, 3, 1, 0, 0); vkCmdEndRendering(cbId);
+        };
+        auto mkLayout = [&](std::initializer_list<std::pair<U32, LayoutBinding>> bs, U64& id) {
+            auto* l = createObj<DescSetLayout>(K_SETLAYOUT, id);
+            for (auto& b : bs) l->binds[b.first] = b.second;
+            finishDescLayout(*l);
+            return l;
+        };
+        auto lb = [](U32 type, U32 count) { LayoutBinding b; b.type = type; b.count = count; return b; };
+
+        // 1. A 16-binding layout is not truncated, and an array write lands on its own elements.
+        U64 lay16Id; auto* lay16 = mkLayout({}, lay16Id);
+        for (U32 i = 0; i < 16; i++) lay16->binds[i] = lb(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1);
+        lay16->binds[20] = lb(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4);
+        finishDescLayout(*lay16);
+        U64 setId; auto* set = createObj<DescSet>(K_SET, setId); set->layout = lay16Id;
+        U64 smpId; createObj<Sampler>(K_SAMPLER, smpId);
+        U64 v[4];
+        for (int i = 0; i < 4; i++) { createObj<ImageView>(K_IMAGEVIEW, v[i]); }
+        VkDescriptorImageInfo ii[3] = {};
+        for (int i = 0; i < 3; i++) { ii[i].sampler = smpId; ii[i].imageView = v[i + 1]; ii[i].imageLayout = (VkImageLayout)5; }
+        memory.memcpyToGuest(4096, ii, sizeof(ii));
+        VkWriteDescriptorSet w{}; w.dstSet = setId; w.dstBinding = 20; w.dstArrayElement = 1; w.descriptorCount = 3;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = 4096;
+        memory.memcpyToGuest(4224, &w, sizeof(w));
+        vkUpdateDescriptorSets(deviceId, 1, (void*)4224, 0, nullptr);
+        assert(set->els.size() == 3);
+        assert(!set->els.count(DescKey(20, 0)));
+        for (U32 i = 0; i < 3; i++) {
+            const Binding& e = set->els.at(DescKey(20, 1 + i));
+            assert(e.obj == v[i + 1] && e.range == smpId && e.dstArrayElement == 1 + i && e.count == 1);
+        }
+        U64 cbId; auto* cb = createObj<CmdBuf>(K_CMDBUF, cbId);
+        drawWith(cbId, setId, 0, nullptr);
+        auto ws = runCb(cb, cbId);
+        assert(ws.size() == 1 && ws[0].nWire == 3 && ws[0].layout == lay16Id);
+        for (U32 i = 0; i < 3; i++) {
+            assert(ws[0].els[i].binding == 20 && ws[0].els[i].elem == 1 + i && ws[0].els[i].kind == 2 &&
+                   ws[0].els[i].obj == v[i + 1] && ws[0].els[i].type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+        }
+        puts("PASS: descriptor arrays keep per-element bindings and >8-binding layouts");
+
+        // 2. Dynamic offsets: consumed in binding order then element order; added to the buffer offset.
+        U64 dynLayId; mkLayout({{0, lb(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1)},
+                                {1, lb(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1)},
+                                {2, lb(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 2)}}, dynLayId);
+        assert(objOf<DescSetLayout>(dynLayId, K_SETLAYOUT, "t")->dynCount == 3);
+        assert(objOf<DescSetLayout>(dynLayId, K_SETLAYOUT, "t")->binds.at(2).dynBase == 1);
+        U64 dsId; auto* ds = createObj<DescSet>(K_SET, dsId); ds->layout = dynLayId;
+        VkDescriptorBufferInfo bi[2] = {}; bi[0].buffer = offBufId; bi[0].offset = 16; bi[0].range = 8;
+        bi[1].buffer = offBufId; bi[1].offset = 0; bi[1].range = VK_WHOLE_SIZE;
+        memory.memcpyToGuest(4352, bi, sizeof(bi));
+        VkWriteDescriptorSet dw{}; dw.dstSet = dsId; dw.dstBinding = 0; dw.descriptorCount = 1;
+        dw.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC; dw.pBufferInfo = 4352;
+        VkWriteDescriptorSet dw2 = dw; dw2.dstBinding = 2; dw2.descriptorCount = 2;
+        dw2.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+        VkWriteDescriptorSet dws[2] = {dw, dw2};
+        memory.memcpyToGuest(4480, dws, sizeof(dws));
+        vkUpdateDescriptorSets(deviceId, 2, (void*)4480, 0, nullptr);
+        U64 cb2Id; auto* cb2 = createObj<CmdBuf>(K_CMDBUF, cb2Id);
+        const U32 dyn[3] = {32, 64, 128};
+        drawWith(cb2Id, dsId, 3, dyn);
+        assert(cb2->cmds.size() >= 2);
+        ws = runCb(cb2, cb2Id);
+        assert(ws.size() == 1 && ws[0].els.size() == 3);
+        const U64 base = offBuf->memOff;
+        assert(ws[0].els[0].binding == 0 && ws[0].els[0].type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER &&
+               ws[0].els[0].kind == 1 && ws[0].els[0].off == base + 16 + 32 && ws[0].els[0].len == 8);
+        assert(ws[0].els[1].binding == 2 && ws[0].els[1].elem == 0 && ws[0].els[1].type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER &&
+               ws[0].els[1].off == base + 16 + 64);        // dynBase 1 -> second offset
+        assert(ws[0].els[2].elem == 1 && ws[0].els[2].off == base + 0 + 128 && ws[0].els[2].len == 256 - 128); // WHOLE_SIZE from dyn offset
+        // Fewer offsets than dynamic descriptors is reported, not silently zeroed.
+        const U32 missing0 = vk64BridgeUnsupportedCount("dynamic-offset-missing");
+        U64 cb3Id; auto* cb3 = createObj<CmdBuf>(K_CMDBUF, cb3Id);
+        drawWith(cb3Id, dsId, 1, dyn);
+        runCb(cb3, cb3Id);
+        assert(vk64BridgeUnsupportedCount("dynamic-offset-missing") > missing0);
+        puts("PASS: dynamic offsets are applied in layout order (UBO/SSBO dynamic, WHOLE_SIZE)");
+
+        // 3. Immutable samplers are the descriptor, even when the app writes no sampler.
+        U64 immSmp; createObj<Sampler>(K_SAMPLER, immSmp);
+        U64 immLayId; auto* immLay = mkLayout({{0, lb(VK_DESCRIPTOR_TYPE_SAMPLER, 2)}}, immLayId);
+        immLay->binds[0].immutable = {immSmp, immSmp + 0};
+        U64 immSetId; auto* immSet = createObj<DescSet>(K_SET, immSetId); immSet->layout = immLayId;
+        U64 cb4Id; auto* cb4 = createObj<CmdBuf>(K_CMDBUF, cb4Id);
+        drawWith(cb4Id, immSetId, 0, nullptr);
+        ws = runCb(cb4, cb4Id);
+        assert(ws.size() == 1 && ws[0].els.size() == 2 && ws[0].els[0].kind == 3 && ws[0].els[0].obj == immSmp &&
+               ws[0].els[1].elem == 1);
+        puts("PASS: immutable samplers populate the set without app writes");
+
+        // 4. Sampler-only writes keep the sampler where the emitter reads it.
+        U64 sOnlyLay; mkLayout({{0, lb(VK_DESCRIPTOR_TYPE_SAMPLER, 1)}}, sOnlyLay);
+        U64 sOnlyId; auto* sOnly = createObj<DescSet>(K_SET, sOnlyId); sOnly->layout = sOnlyLay;
+        VkDescriptorImageInfo si{}; si.sampler = smpId;
+        memory.memcpyToGuest(4608, &si, sizeof(si));
+        VkWriteDescriptorSet sw{}; sw.dstSet = sOnlyId; sw.descriptorCount = 1;
+        sw.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER; sw.pImageInfo = 4608;
+        memory.memcpyToGuest(4736, &sw, sizeof(sw));
+        vkUpdateDescriptorSets(deviceId, 1, (void*)4736, 0, nullptr);
+        assert(sOnly->els.at(DescKey(0, 0)).obj == smpId);
+        puts("PASS: sampler-only descriptor writes are emitted with the sampler");
+
+        // 5. Copies move elements (and holes) between sets and within a set.
+        U64 dstSetId; auto* dstSet = createObj<DescSet>(K_SET, dstSetId); dstSet->layout = lay16Id;
+        dstSet->els[DescKey(20, 0)].binding = 20;            // a stale element that the copy must clear
+        VkCopyDescriptorSet cp{}; cp.srcSet = setId; cp.srcBinding = 20; cp.srcArrayElement = 0;
+        cp.dstSet = dstSetId; cp.dstBinding = 20; cp.dstArrayElement = 0; cp.descriptorCount = 4;
+        memory.memcpyToGuest(4864, &cp, sizeof(cp));
+        vkUpdateDescriptorSets(deviceId, 0, nullptr, 1, (void*)4864);
+        assert(!dstSet->els.count(DescKey(20, 0)));       // src element 0 was never written
+        for (U32 i = 1; i < 4; i++) assert(dstSet->els.at(DescKey(20, i)).obj == v[i]);
+        assert(!dstSet->els.count(DescKey(20, 4)));
+        puts("PASS: vkUpdateDescriptorSets copies are applied");
+
+        // 6. Pools: maxSets, free, reset.
+        auto call64d = [&](U32 fn, U64 a0, U64 a1, U64 a2, U64 a3) -> U64 {
+            VK64Args a{}; a.a[0] = a0; a.a[1] = a1; a.a[2] = a2; a.a[3] = a3;
+            memory.memcpyToGuest(128, &a, sizeof(a));
+            return vk64Bridge(&cpu, fn, 128);
+        };
+        U64 poolId; auto* pool = createObj<DescPool>(K_DESCPOOL, poolId); pool->maxSets = 2;
+        VkDescriptorSetAllocateInfo ai{}; ai.descriptorPool = poolId; ai.descriptorSetCount = 2; ai.pSetLayouts = 5120;
+        memory.writeq(5120, lay16Id); memory.writeq(5128, lay16Id);
+        memory.memcpyToGuest(5200, &ai, sizeof(ai));
+        assert(call64d(VK64_fn_vkAllocateDescriptorSets, deviceId, 5200, 5300, 0) == VK_SUCCESS);
+        const U64 s0 = memory.readq(5300), s1 = memory.readq(5308);
+        assert(s0 && s1 && s0 != s1 && pool->sets.size() == 2);
+        ai.descriptorSetCount = 1; memory.memcpyToGuest(5200, &ai, sizeof(ai));
+        assert((S64)call64d(VK64_fn_vkAllocateDescriptorSets, deviceId, 5200, 5400, 0) == VK_ERROR_OUT_OF_POOL_MEMORY);
+        assert(memory.readq(5400) == 0);
+        assert(call64d(VK64_fn_vkFreeDescriptorSets, deviceId, poolId, 1, 5300) == VK_SUCCESS);
+        assert(pool->sets.size() == 1 && !g_objs.count(s0) && g_objs.count(s1));
+        assert(call64d(VK64_fn_vkAllocateDescriptorSets, deviceId, 5200, 5400, 0) == VK_SUCCESS);
+        assert(call64d(VK64_fn_vkResetDescriptorPool, deviceId, poolId, 0, 0) == VK_SUCCESS);
+        assert(pool->sets.empty() && !g_objs.count(s1) && !g_objs.count(memory.readq(5400)));
+        puts("PASS: descriptor pools enforce maxSets and free/reset release sets");
+
+        // 7. Push descriptors write a command-buffer-owned set that overlays the previous push.
+        U64 plId; auto* pl = createObj<PipelineLayout>(K_PIPELAYOUT, plId);
+        pl->nsets = 1; pl->sets[0] = lay16Id;
+        U64 cb5Id; auto* cb5 = createObj<CmdBuf>(K_CMDBUF, cb5Id);
+        memory.memcpyToGuest(1664, rendering, sizeof(rendering));
+        vkCmdBeginRendering(cb5Id, (void*)1664);
+        VkWriteDescriptorSet pw{}; pw.dstBinding = 20; pw.dstArrayElement = 2; pw.descriptorCount = 1;
+        pw.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; pw.pImageInfo = 4096;
+        memory.memcpyToGuest(5504, &pw, sizeof(pw));
+        {
+            VK64Args a{}; a.a[0] = cb5Id; a.a[1] = 0; a.a[2] = plId; a.a[3] = 0; a.a[4] = 1; a.a[5] = 5504;
+            memory.memcpyToGuest(128, &a, sizeof(a));
+            vk64Bridge(&cpu, VK64_fn_vkCmdPushDescriptorSetKHR, 128);
+        }
+        vkCmdDraw(cb5Id, 3, 1, 0, 0); vkCmdEndRendering(cb5Id);
+        ws = runCb(cb5, cb5Id);
+        bool sawPush = false;
+        for (auto& s : ws) for (auto& e : s.els) if (e.binding == 20 && e.elem == 2 && e.obj == v[1]) sawPush = true;
+        assert(sawPush);
+        puts("PASS: vkCmdPushDescriptorSetKHR records a bound descriptor set");
+
+        // 8. 32-bit guests: VkDescriptorImageInfo is 20 bytes (u64 aligned to 4).
+        assert(descWriteStride(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, true) == 20);
+        assert(descWriteStride(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, false) == 24);
+        assert(descWriteStride(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, true) == 24);
+        {
+            // Real i386 call: three 20-byte image infos must each land on their own element.
+            U64 s32Id; auto* s32 = createObj32<DescSet>(K_SET, s32Id); s32->layout = lay16Id;
+            U8 infos[60] = {};
+            for (int i = 0; i < 3; i++) {
+                U64 smp = smpId, view = v[i];
+                memcpy(infos + i * 20, &smp, 8); memcpy(infos + i * 20 + 8, &view, 8);
+            }
+            memory32.memcpyToGuest(2048, infos, sizeof(infos));
+            vk32abi::VkWriteDescriptorSet w32{}; w32.dstSet = s32Id; w32.dstBinding = 20; w32.descriptorCount = 3;
+            w32.descriptorType = (vk32abi::VkDescriptorType)VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w32.pImageInfo = 2048;
+            memory32.memcpyToGuest(2176, &w32, sizeof(w32));
+            VK32Args u32{}; u32.a[1] = 1; u32.a[2] = 2176;
+            memory32.memcpyToGuest(128, &u32, sizeof(u32));
+            vk32Bridge(&cpu32, VK64_fn_vkUpdateDescriptorSets, 128);
+            g_mem32 = nullptr; g_mem = &memory;
+            assert(s32->els.size() == 3);
+            for (U32 i = 0; i < 3; i++) assert(s32->els.at(DescKey(20, i)).obj == v[i] && s32->els.at(DescKey(20, i)).range == smpId);
+        }
+        for (auto it = g_objs.begin(); it != g_objs.end();) {
+            auto cur = it++;
+            if (!idsBefore.count(cur->first)) dropObj(cur->first);
+        }
+        g_v2Pending.clear();
+        puts("PASS: descriptor strides differ between i386 and x86-64");
+    }
     auto cleanupIds = dynamicCb->dynamicObjects;
     dropObj(dynamicCbId);
     for (auto id : cleanupIds) assert(!g_objs.count(id));

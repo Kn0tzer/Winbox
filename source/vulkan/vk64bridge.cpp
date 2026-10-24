@@ -269,6 +269,11 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkCmdClearDepthStencilImage, "vkCmdClearDepthStencilImage") \
     X(VK64_fn_vkCmdWriteTimestamp, "vkCmdWriteTimestamp") \
     X(VK64_fn_vkCmdSetDepthBounds, "vkCmdSetDepthBounds") \
+    X(VK64_fn_vkResetDescriptorPool, "vkResetDescriptorPool") \
+    X(VK64_fn_vkFreeDescriptorSets, "vkFreeDescriptorSets") \
+    X(VK64_fn_vkCmdPushDescriptorSetKHR, "vkCmdPushDescriptorSetKHR") \
+    X(VK64_fn_vkCmdPushDescriptorSetWithTemplateKHR, "vkCmdPushDescriptorSetWithTemplateKHR") \
+    X(VK64_fn_vkGetDescriptorSetLayoutSupport, "vkGetDescriptorSetLayoutSupport") \
     X(VK64_fn_vkCmdCopyQueryPoolResults, "vkCmdCopyQueryPoolResults") \
     X(VK64_fn_vkCmdDraw,                            "vkCmdDraw")           \
     X(VK64_fn_vkCmdPipelineBarrier,                 "vkCmdPipelineBarrier")\
@@ -715,7 +720,7 @@ struct Device   : Obj { U64 physDev = 0, queue = 0; };
 struct Queue    : Obj { U64 device = 0; };
 struct CmdPool  : Obj { U64 device = 0; U32 queueFamily = 0; };
 struct PipelineCache : Obj {};
-struct DescPool  : Obj {};
+struct DescPool  : Obj { U32 maxSets = 0, flags = 0; std::set<U64> sets; };
 struct Surface   : Obj {};
 struct Fence     : Obj { int signalled = 0; };
 struct Event     : Obj { int signalled = 0; };
@@ -760,10 +765,180 @@ struct ShaderModule : Obj {
                                    // is a refcount drop (P1 section 1.2).
     int destroyed = 0;
 };
-struct DescSetLayout : Obj { U32 nbind = 0; Binding binds[VK64_MAX_BINDINGS]; };
-struct DescSet : Obj { U64 layout = 0; U32 nbind = 0; Binding binds[VK64_MAX_BINDINGS]; };
+// Descriptor model. A layout keeps EVERY binding it declares (binding numbers
+// are sparse and unbounded: vkd3d-proton uses binding numbers in the thousands),
+// with the immutable samplers and the dynamic-offset base the binding owns. A
+// set keeps one Binding per written (binding, arrayElement), so descriptor arrays,
+// partial array writes, copies and template updates all land on the element they
+// name instead of collapsing onto element 0.
+struct LayoutBinding {
+    U32 type = 0, count = 0;
+    U32 dynBase = 0;                 // dynamic-offset index of element 0 (binding order)
+    std::vector<U64> immutable;      // VkSampler ids (SAMPLER / COMBINED_IMAGE_SAMPLER)
+};
+struct DescSetLayout : Obj { std::map<U32, LayoutBinding> binds; U32 dynCount = 0; };
+typedef std::pair<U32, U32> DescKey;     // (binding, arrayElement)
+struct DescSet : Obj { U64 layout = 0, pool = 0; std::map<DescKey, Binding> els; };
 struct TmplEntry { U32 binding = 0, arrayElement = 0, count = 0, type = 0; U64 offset = 0, stride = 0; };
-struct DescTemplate : Obj { U32 nentry = 0; TmplEntry entries[VK64_MAX_BINDINGS]; };
+struct DescTemplate : Obj { std::vector<TmplEntry> entries; };
+static bool descIsDynamic(U32 t) {
+    return t == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC || t == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+}
+static U32 descBaseType(U32 t) {
+    return t == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ? (U32)VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+         : t == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC ? (U32)VK_DESCRIPTOR_TYPE_STORAGE_BUFFER : t;
+}
+// Called once per layout binding in ascending binding order, after all
+// bindings are known: dynamic offsets are consumed in binding order, then array
+// element order (VkDescriptorSetLayout dynamic offset rule).
+static void finishDescLayout(DescSetLayout& l) {
+    U32 dyn = 0;
+    for (auto& kv : l.binds) {
+        kv.second.dynBase = dyn;
+        if (descIsDynamic(kv.second.type)) dyn += kv.second.count;
+    }
+    l.dynCount = dyn;
+}
+
+// ABI-neutral description of one descriptor write (VkWriteDescriptorSet or one
+// VkDescriptorUpdateTemplateEntry). Guest memory is read through `rdq`, which is
+// rd64 for the 64-bit shim and rd64_32 for the 32-bit one; the pointed-to
+// VkDescriptorImageInfo / VkDescriptorBufferInfo layouts (u64 handles) are the
+// same size and offsets in both ABIs.
+typedef U64 (*DescRdQ)(U64);
+struct DescWriteReq {
+    U32 binding = 0, elem = 0, count = 0, type = 0;
+    U64 pImage = 0, pBuffer = 0, pTexel = 0;   // base addresses of element 0
+    U64 stride = 0;                            // bytes between elements
+    U64 inlData = 0; U32 inlSize = 0;          // INLINE_UNIFORM_BLOCK payload
+};
+// Bytes between consecutive VkDescriptorImageInfo / VkDescriptorBufferInfo /
+// VkBufferView entries of a VkWriteDescriptorSet array. The 32-bit image info is
+// 20 bytes: i386 aligns u64 to 4, so imageLayout sits at 16 with no tail pad.
+static U64 descWriteStride(U32 type, bool guest32) {
+    if (type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER || type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER) return 8;
+    if (type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ||
+        descIsDynamic(type)) return 24;
+    return guest32 ? 20 : 24;
+}
+static const U32 VK64_MAX_DESC_ARRAY = 1u << 22;   // sanity cap for one write/copy
+static void applyDescWrite(DescSet& s, const DescWriteReq& w, DescRdQ rdq) {
+    if (w.type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
+        Binding& b = s.els[DescKey(w.binding, 0)];
+        b.binding = w.binding; b.type = w.type;
+        updateInlineUniform(b, w.elem, w.inlData, w.inlSize);
+        return;
+    }
+    U32 n = w.count;
+    if (n > VK64_MAX_DESC_ARRAY) {
+        vk64Unsupported("descriptor-array-size", "descriptor write count exceeds 4M elements");
+        n = VK64_MAX_DESC_ARRAY;
+    }
+    for (U32 i = 0; i < n; i++) {
+        Binding& b = s.els[DescKey(w.binding, w.elem + i)];
+        b = Binding();
+        b.binding = w.binding; b.type = w.type; b.dstArrayElement = w.elem + i; b.count = 1;
+        const U64 at = (U64)i * w.stride;
+        switch (w.type) {
+            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+            case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+            case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+                if (!w.pBuffer) break;
+                b.obj = rdq(w.pBuffer + at); b.bufOff = rdq(w.pBuffer + at + 8); b.range = rdq(w.pBuffer + at + 16);
+                break;
+            case VK_DESCRIPTOR_TYPE_SAMPLER:
+                // sampler-only: the VkSampler is the descriptor
+                if (w.pImage) b.obj = rdq(w.pImage + at);
+                break;
+            case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+            case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+            case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+            case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+                // VkDescriptorImageInfo: sampler @0, imageView @8. obj = view, range = sampler
+                if (!w.pImage) break;
+                b.range = rdq(w.pImage + at); b.obj = rdq(w.pImage + at + 8);
+                if (w.type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) b.range = 0;
+                if (w.type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT)
+                    vk64Unsupported("subpass-input-descriptor", "input attachments are not bound by the WebGPU replay tier");
+                break;
+            case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+            case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+                if (w.pTexel) b.obj = rdq(w.pTexel + at);     // VkBufferView id
+                vk64Unsupported("texel-buffer-view", "texel-buffer descriptors are not supported");
+                break;
+            default:
+                vk64Unsupported("descriptor-type", ("descriptor write type=" + std::to_string(w.type)).c_str());
+                break;
+        }
+    }
+}
+// vkUpdateDescriptorSets copy: elements move whole (including unwritten holes),
+// through a temporary so overlapping ranges within one set behave as a memmove.
+static void applyDescCopy(DescSet& src, U32 srcBinding, U32 srcElem, DescSet& dst, U32 dstBinding, U32 dstElem, U32 count) {
+    auto inl = src.els.find(DescKey(srcBinding, 0));
+    if (inl != src.els.end() && inl->second.type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
+        // INLINE_UNIFORM_BLOCK: elements are bytes
+        std::vector<U8> bytes(count, 0);
+        for (U32 i = 0; i < count && srcElem + i < inl->second.inlineBytes.size(); i++)
+            bytes[i] = inl->second.inlineBytes[srcElem + i];
+        Binding& d = dst.els[DescKey(dstBinding, 0)];
+        d.binding = dstBinding; d.type = VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK;
+        if (d.inlineBytes.size() < (size_t)dstElem + count) d.inlineBytes.resize((size_t)dstElem + count);
+        std::copy(bytes.begin(), bytes.end(), d.inlineBytes.begin() + dstElem);
+        d.obj = 0; d.bufOff = 0; d.dstArrayElement = 0; d.count = (U32)d.inlineBytes.size(); d.range = d.inlineBytes.size();
+        return;
+    }
+    if (count > VK64_MAX_DESC_ARRAY) {
+        vk64Unsupported("descriptor-array-size", "descriptor copy count exceeds 4M elements");
+        count = VK64_MAX_DESC_ARRAY;
+    }
+    std::vector<std::pair<bool, Binding>> tmp(count);
+    for (U32 i = 0; i < count; i++) {
+        auto it = src.els.find(DescKey(srcBinding, srcElem + i));
+        if (it != src.els.end()) { tmp[i].first = true; tmp[i].second = it->second; }
+    }
+    for (U32 i = 0; i < count; i++) {
+        const DescKey k(dstBinding, dstElem + i);
+        if (!tmp[i].first) { dst.els.erase(k); continue; }
+        Binding& d = dst.els[k];
+        d = tmp[i].second;
+        d.binding = dstBinding; d.dstArrayElement = dstElem + i; d.count = 1;
+    }
+}
+// vkUpdateDescriptorSetWithTemplate / vkCmdPushDescriptorSetWithTemplate: every
+// template entry is one DescWriteReq whose data pointer is pData + entry.offset
+// and whose element stride is the entry's own stride (the app's struct layout).
+static void applyDescTemplate(DescSet& s, const DescTemplate& t, U64 data, DescRdQ rdq) {
+    for (const TmplEntry& te : t.entries) {
+        DescWriteReq r;
+        r.binding = te.binding; r.elem = te.arrayElement; r.count = te.count; r.type = te.type;
+        const U64 at = data + te.offset;
+        r.pImage = r.pBuffer = r.pTexel = at;
+        r.stride = te.stride;
+        r.inlData = at; r.inlSize = te.count;
+        applyDescWrite(s, r, rdq);
+    }
+}
+// Pool bookkeeping shared by both ABIs.
+static void freeDescSet(U64 setId) {
+    auto it = g_objs.find(setId);
+    if (it == g_objs.end() || it->second->kind != K_SET) return;
+    DescSet* s = (DescSet*)it->second;
+    auto pit = g_objs.find(s->pool);
+    if (pit != g_objs.end() && pit->second->kind == K_DESCPOOL) ((DescPool*)pit->second)->sets.erase(setId);
+    dropObj(setId);
+}
+static void resetDescPool(DescPool& p) {
+    std::set<U64> ids; ids.swap(p.sets);
+    for (U64 id : ids) { if (g_objs.count(id)) dropObj(id); }
+}
+static void destroyDescPool(U64 poolId) {
+    auto it = g_objs.find(poolId);
+    if (it == g_objs.end() || it->second->kind != K_DESCPOOL) return;
+    resetDescPool(*(DescPool*)it->second);
+    dropObj(poolId);
+}
 struct PipelineLayout : Obj { U32 nsets = 0; U64 sets[VK64_MAX_SETS]; };
 // The vertex input layout, recorded at pipeline creation (audit P2-NOW item 5).
 // This is the one dropped-at-creation field that is not merely informative: with
@@ -957,6 +1132,7 @@ struct Cmd {
     U32 vbCount = 0;
     U64 vbBuffers[VK64_MAX_VERT_BINDINGS] = {0}, vbOffsets[VK64_MAX_VERT_BINDINGS] = {0};
     U64 sets[VK64_MAX_SETS] = {0};
+    std::vector<std::vector<U32>> dyn;      // CMD_BIND_SETS: dynamic offsets for sets first..first+count-1
     U32 vbStrides[VK64_MAX_VERT_BINDINGS] = {0};
     bool vbHasStride[VK64_MAX_VERT_BINDINGS] = {false};
     Copy  copy;
@@ -998,6 +1174,7 @@ struct CmdBuf : Obj {
     std::vector<Cmd> cmds;
     U64  pipe = 0;
     U64  sets[VK64_MAX_SETS] = {0};
+    U64  pushSets[VK64_MAX_SETS] = {0};   // synthetic DescSets built by vkCmdPushDescriptorSet*
     float vp[6] = {0}, sci[4] = {0};
     bool haveVp = false, haveSci = false;
     // v2: vertex/index buffer tables (DXVK draws indexed almost exclusively).
@@ -1019,6 +1196,7 @@ void resetCmdBuf(CmdBuf* cb) {
     cb->pipe = 0;
     cb->haveVp = cb->haveSci = false;
     memset(cb->sets, 0, sizeof(cb->sets));
+    memset(cb->pushSets, 0, sizeof(cb->pushSets));
     memset(cb->vp, 0, sizeof(cb->vp));
     memset(cb->sci, 0, sizeof(cb->sci));
     memset(cb->vbs, 0, sizeof(cb->vbs));
@@ -1036,6 +1214,62 @@ void pushCmd(CmdBuf* st, const Cmd& c) {
     VK64_DROP_IF(return, !st);
     if (st->cmds.size() >= VK64_MAX_CMDS) { g_frameOverflow = true; return; }
     st->cmds.push_back(c);
+}
+// vkCmdBindDescriptorSets and push descriptors both end here. `dynFlat` is the
+// guest's pDynamicOffsets array: it is consumed set by set, each set taking as
+// many offsets as its layout has dynamic descriptors.
+static void recordBindSets(CmdBuf* cb, U32 first, std::vector<U64> ids, const std::vector<U32>& dynFlat) {
+    VK64_DROP_IF(return, first >= VK64_MAX_SETS);
+    if (first + ids.size() > VK64_MAX_SETS) ids.resize(VK64_MAX_SETS - first);
+    Cmd c;
+    c.kind = CMD_BIND_SETS;
+    c.dyn.resize(ids.size());
+    size_t di = 0;
+    for (size_t i = 0; i < ids.size(); i++) {
+        cb->sets[first + i] = ids[i];
+        DescSet* s = ids[i] ? objOf<DescSet>(ids[i], K_SET, "vkCmdBindDescriptorSets") : nullptr;
+        DescSetLayout* l = s && s->layout ? objOf<DescSetLayout>(s->layout, K_SETLAYOUT, "vkCmdBindDescriptorSets") : nullptr;
+        for (U32 k = 0; l && k < l->dynCount && di < dynFlat.size(); k++) c.dyn[i].push_back(dynFlat[di++]);
+    }
+    memcpy(c.sets, cb->sets, sizeof(c.sets));
+    c.a = first;
+    c.b = (U64)ids.size();
+    pushCmd(cb, c);
+}
+static void applyWrite64(DescSet& s, const VkWriteDescriptorSet& w) {
+    DescWriteReq r;
+    r.binding = w.dstBinding; r.elem = w.dstArrayElement; r.count = w.descriptorCount; r.type = w.descriptorType;
+    r.pImage = w.pImageInfo; r.pBuffer = w.pBufferInfo; r.pTexel = w.pTexelBufferView;
+    r.stride = descWriteStride(w.descriptorType, false);
+    if (w.descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
+        // The caller's inline data must be consumed before this update returns.
+        for (U64 cur = w.pNext; cur && g_mem;) {
+            if (g_mem->readd(cur) == VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK) {
+                VkWriteDescriptorSetInlineUniformBlock ib = {};
+                g_mem->memcpyFromGuest(&ib, cur, sizeof(ib));
+                r.inlData = ib.pData; r.inlSize = ib.dataSize;
+                break;
+            }
+            cur = g_mem->readq(cur + 8);
+        }
+    }
+    applyDescWrite(s, r, rd64);
+}
+// vkCmdPushDescriptorSet*: the pushed descriptors live in a synthetic set owned by
+// the command buffer. Descriptors pushed earlier at the same set index carry over
+// (a partial push leaves the other bindings as they were), so the new set starts
+// as a copy of the previous push set.
+static DescSet* newPushSet(CmdBuf* cb, U64 pipelineLayout, U32 set, U64& idOut, const char* who) {
+    idOut = 0;
+    PipelineLayout* pl = objOf<PipelineLayout>(pipelineLayout, K_PIPELAYOUT, who);
+    VK64_DROP_IF(return nullptr, !pl || set >= pl->nsets || set >= VK64_MAX_SETS);
+    DescSet* prev = cb->pushSets[set] ? objOf<DescSet>(cb->pushSets[set], K_SET, who) : nullptr;
+    DescSet* s = createObj<DescSet>(K_SET, idOut);
+    s->layout = pl->sets[set];
+    if (prev) s->els = prev->els;
+    cb->dynamicObjects.push_back(idOut);
+    cb->pushSets[set] = idOut;
+    return s;
 }
 
 // GPU render targets have no current pixels in guest backing memory. Preserve
@@ -1820,9 +2054,10 @@ void resolveFrame(CmdBuf* st, U64* uboOut, U64* uboSize, U64* viewOut, U64* samp
     *uboOut = 0; *uboSize = 0; *viewOut = 0; *sampOut = 0;
     DescSet* s0 = st->sets[0] ? objOf<DescSet>(st->sets[0], K_SET, "resolveFrame") : nullptr;
     VK64_DROP_IF(return, !s0);
-    for (U32 i = 0; i < s0->nbind; i++) {
-        if (s0->binds[i].binding == 0 && s0->binds[i].obj) { *uboOut = s0->binds[i].obj; *uboSize = s0->binds[i].range; }
-        if (s0->binds[i].binding == 1 && s0->binds[i].obj) { *viewOut = s0->binds[i].obj; *sampOut = s0->binds[i].range; }
+    for (const auto& kv : s0->els) {
+        const Binding& b = kv.second;
+        if (b.binding == 0 && b.obj) { *uboOut = b.obj; *uboSize = b.range; }
+        if (b.binding == 1 && b.obj) { *viewOut = b.obj; *sampOut = b.range; }
     }
 }
 
@@ -2792,17 +3027,65 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             emitImageDataInner(viewId);
             vkprofImgT += vkProfNow() - t0;
         };
-        auto emitDescSet = [&](U32 setIndex, U64 setId) {
+        auto emitDescSet = [&](U32 setIndex, U64 setId, const std::vector<U32>* dyn) {
             DescSet* s = objOf<DescSet>(setId, K_SET, "vkQueueSubmit");
             VK64_DROP_IF(return, !s);
+            DescSetLayout* lay = s->layout ? objOf<DescSetLayout>(s->layout, K_SETLAYOUT, "vkQueueSubmit") : nullptr;
+            // Effective elements: everything written, plus immutable samplers
+            // (they ARE the descriptor even if the app never wrote the binding,
+            // and they override whatever sampler a combined write named).
+            std::map<DescKey, Binding> eff = s->els;
+            if (lay) {
+                for (const auto& lb : lay->binds) {
+                    if (lb.second.immutable.empty()) continue;
+                    for (U32 e = 0; e < lb.second.immutable.size(); e++) {
+                        auto it = eff.find(DescKey(lb.first, e));
+                        if (lb.second.type == VK_DESCRIPTOR_TYPE_SAMPLER) {
+                            Binding& b = eff[DescKey(lb.first, e)];
+                            b.binding = lb.first; b.type = VK_DESCRIPTOR_TYPE_SAMPLER; b.dstArrayElement = e; b.count = 1;
+                            b.obj = lb.second.immutable[e];
+                        } else if (it != eff.end() && lb.second.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+                            it->second.range = lb.second.immutable[e];
+                        }
+                    }
+                }
+            }
+            if (eff.size() > 0xFFFFu) {
+                vk64Unsupported("descriptor-set-size", "more than 65535 written descriptors in one set; extra elements dropped");
+            }
+            // Absolute buffer range of one element, dynamic offset included.
+            auto bufRange = [&](const Binding& b, U32 dynOff, U64& absOff, U64& len, Buffer*& buf) {
+                buf = objOf<Buffer>(b.obj, K_BUFFER, "vkQueueSubmit");
+                absOff = 0; len = 0;
+                if (!buf) return;
+                const U64 off = b.bufOff + dynOff;
+                absOff = buf->memOff + off;
+                len = (b.range == 0 || b.range == ~0ULL) ? (off < buf->size ? buf->size - off : 0) : b.range;
+            };
+            auto dynOffFor = [&](const Binding& b) -> U32 {
+                if (!descIsDynamic(b.type) || !lay) return 0;
+                auto lb = lay->binds.find(b.binding);
+                if (lb == lay->binds.end()) return 0;
+                const U32 idx = lb->second.dynBase + b.dstArrayElement;
+                if (!dyn || idx >= dyn->size()) {
+                    vk64Unsupported("dynamic-offset-missing", "vkCmdBindDescriptorSets supplied fewer dynamic offsets than the layout has dynamic descriptors");
+                    return 0;
+                }
+                return (*dyn)[idx];
+            };
+            U32 nWire = (U32)std::min<size_t>(eff.size(), 0xFFFFu);
             emit(V2_DESC_SET, [&](ChunkWriter& p) {
-                p.u8(setIndex); p.u8(s->nbind); p.u16(0); p.u64(s->layout);
-                for (U32 i = 0; i < s->nbind; i++) {
-                    const Binding& b = s->binds[i];
+                p.u8(setIndex); p.u8(0); p.u16(nWire); p.u64(s->layout);
+                U32 written = 0;
+                for (const auto& kv : eff) {
+                    if (written++ >= nWire) break;
+                    const Binding& b = kv.second;
                     U32 kind = 0;
                     switch (b.type) {
                         case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
-                        case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER: kind = 1; break;
+                        case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+                        case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+                        case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC: kind = 1; break;
                         case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
                         case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
                         case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: kind = 2; break;
@@ -2814,26 +3097,26 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     // V2_BUFFER_DATA's memOff. One VkBuffer may back several
                     // uniform bindings at different offsets (DXVK sub-allocates
                     // D3D9 constants); the page keys captures by (id, offset).
-                    U64 absOff = 0;
-                    if (kind == 1) {
-                        Buffer* bbuf = objOf<Buffer>(b.obj, K_BUFFER, "vkQueueSubmit");
-                        if (bbuf) absOff = bbuf->memOff + b.bufOff;
-                    }
-                    p.u32(b.binding); p.u32(b.type); p.u32(b.dstArrayElement); p.u32(b.count);
+                    U64 absOff = 0, len = b.range; Buffer* buf = nullptr;
+                    if (kind == 1) bufRange(b, dynOffFor(b), absOff, len, buf);
+                    p.u32(b.binding); p.u32(descBaseType(b.type)); p.u32(b.dstArrayElement); p.u32(b.count);
                     p.u8(kind); p.u8(0); p.u16(0);
-                    p.u64(b.obj); p.u64(b.range); p.u64(absOff);
+                    p.u64(b.obj); p.u64(len); p.u64(absOff);
                 }
             });
-            for (U32 i = 0; i < s->nbind; i++) {
-                const Binding& b = s->binds[i];
-                if (b.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
-                    b.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
-                    Buffer* buf = objOf<Buffer>(b.obj, K_BUFFER, "vkQueueSubmit");
-                    if (buf) emitBufferData(b.obj, buf->memOff + b.bufOff, b.range ? b.range : buf->size);
+            U32 emitted = 0;
+            for (const auto& kv : eff) {
+                if (emitted++ >= nWire) break;
+                const Binding& b = kv.second;
+                if (b.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || b.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ||
+                    descIsDynamic(b.type)) {
+                    U64 absOff, len; Buffer* buf;
+                    bufRange(b, dynOffFor(b), absOff, len, buf);
+                    if (buf) emitBufferData(b.obj, absOff, len);
                 } else if (b.type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
                            b.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ||
                            b.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
-                    emitImageData(b.obj);    // b.obj = image view id (see vkUpdateDescriptorSets)
+                    emitImageData(b.obj);    // b.obj = image view id (see applyDescWrite)
                     emitSampler(b.range);    // b.range = sampler id
                 } else if (b.type == VK_DESCRIPTOR_TYPE_SAMPLER) {
                     emitSampler(b.obj);
@@ -3044,7 +3327,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                         for (U32 i = 0; i < count; i++) p.u64(k.sets[first + i]);
                     });
                     for (U32 i = 0; i < count; i++)
-                        if (k.sets[first + i]) emitDescSet(first + i, k.sets[first + i]);
+                        if (k.sets[first + i]) emitDescSet(first + i, k.sets[first + i], i < k.dyn.size() ? &k.dyn[i] : nullptr);
                     break;
                 }
                 case CMD_STENCIL_STATE:
@@ -4523,7 +4806,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             return VK_ERROR_FORMAT_NOT_SUPPORTED;
         }
         if (!v2FormatSampleCounts(ci.format) || !(v2FormatSampleCounts(ci.format) & (U32)ci.samples) ||
-            ((U32)ci.samples > 1 && ci.imageType != VK_IMAGE_TYPE_2D)) {
+            ((U32)ci.samples > 1 && (U32)ci.imageType != (U32)VK_IMAGE_TYPE_2D)) {
             vk64Unsupported("image-sample-count", "sample count is not supported for this image format");
             wr64(args.a[3], 0);
             return VK_ERROR_FORMAT_NOT_SUPPORTED;
@@ -4775,21 +5058,28 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
         DescSetLayout* l = createObj<DescSetLayout>(K_SETLAYOUT, id);
-        l->nbind = ci.bindingCount > VK64_MAX_BINDINGS ? VK64_MAX_BINDINGS : ci.bindingCount;
         std::vector<VkDescriptorSetLayoutBinding> binds;
-        readArray(ci.pBindings, l->nbind, binds);
-        for (U32 i = 0; i < binds.size(); i++) {
-            l->binds[i].binding = binds[i].binding;
-            l->binds[i].type = binds[i].descriptorType;
+        readArray(ci.pBindings, ci.bindingCount, binds);
+        for (const auto& b : binds) {
+            LayoutBinding& lb = l->binds[b.binding];
+            lb.type = b.descriptorType; lb.count = b.descriptorCount;
+            if (b.pImmutableSamplers && (b.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER ||
+                                         b.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)) {
+                const U32 n = std::min<U32>(b.descriptorCount, VK64_MAX_DESC_ARRAY);
+                for (U32 i = 0; i < n; i++) lb.immutable.push_back(rd64(b.pImmutableSamplers + (U64)i * 8));
+            }
         }
+        finishDescLayout(*l);
         wr64(args.a[3], id);
         return VK_SUCCESS;
     }
     case VK64_fn_vkCreateDescriptorPool: {
-        if (!objOf<Device>(args.a[0], K_DEVICE, "vkCreateDescriptorPool") || !args.a[3])
+        VkDescriptorPoolCreateInfo ci = {};
+        if (!objOf<Device>(args.a[0], K_DEVICE, "vkCreateDescriptorPool") || !args.a[3] || !readStruct(args.a[1], ci))
             return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
-        createObj<DescPool>(K_DESCPOOL, id);
+        DescPool* pool = createObj<DescPool>(K_DESCPOOL, id);
+        pool->maxSets = ci.maxSets; pool->flags = ci.flags;
         wr64(args.a[3], id);
         return VK_SUCCESS;
     }
@@ -4931,12 +5221,32 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkAllocateDescriptorSets: {
         VkDescriptorSetAllocateInfo ai = {};
         if (!readStruct(args.a[1], ai) || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        DescPool* pool = objOf<DescPool>(ai.descriptorPool, K_DESCPOOL, "vkAllocateDescriptorSets");
+        if (!pool) return VK_ERROR_INITIALIZATION_FAILED;
+        for (U32 i = 0; i < ai.descriptorSetCount; i++) wr64(args.a[2] + (U64)i * 8, 0);
+        if (pool->maxSets && pool->sets.size() + ai.descriptorSetCount > pool->maxSets) return VK_ERROR_OUT_OF_POOL_MEMORY;
         for (U32 i = 0; i < ai.descriptorSetCount; i++) {
             U64 id = 0;
             DescSet* s = createObj<DescSet>(K_SET, id);
             s->layout = rd64(ai.pSetLayouts + (U64)i * 8);
+            s->pool = ai.descriptorPool;
+            pool->sets.insert(id);
             wr64(args.a[2] + (U64)i * 8, id);
         }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkResetDescriptorPool: {
+        // (device, pool, flags)
+        DescPool* pool = objOf<DescPool>(args.a[1], K_DESCPOOL, "vkResetDescriptorPool");
+        if (!pool) return VK_ERROR_INITIALIZATION_FAILED;
+        resetDescPool(*pool);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkFreeDescriptorSets: {
+        // (device, pool, count, pSets*)
+        DescPool* pool = objOf<DescPool>(args.a[1], K_DESCPOOL, "vkFreeDescriptorSets");
+        if (!pool) return VK_ERROR_INITIALIZATION_FAILED;
+        for (U32 i = 0; i < (U32)args.a[2]; i++) freeDescSet(rd64(args.a[3] + (U64)i * 8));
         return VK_SUCCESS;
     }
     // VkBindBufferMemoryInfo / VkBindImageMemoryInfo share this x86-64 layout.
@@ -5004,71 +5314,22 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkUpdateDescriptorSets: {
         // (device, nWrite, pWrites*, nCopy, pCopies*)
-        U32 nw = (U32)args.a[1];
+        U32 nw = (U32)args.a[1], nc = (U32)args.a[3];
         std::vector<VkWriteDescriptorSet> writes;
         readArray(args.a[2], nw, writes);
-        for (U32 i = 0; i < nw; i++) {
+        for (U32 i = 0; i < nw && i < writes.size(); i++) {
             const VkWriteDescriptorSet& w = writes[i];
             DescSet* s = objOf<DescSet>(w.dstSet, K_SET, "vkUpdateDescriptorSets");
-            VK64_DROP_IF(continue, !s || w.dstBinding >= VK64_MAX_BINDINGS);
-            Binding* b = nullptr;
-            for (U32 k = 0; k < s->nbind; k++)
-                if (s->binds[k].binding == w.dstBinding) { b = &s->binds[k]; break; }
-            if (!b) {
-                VK64_DROP_IF(continue, s->nbind >= VK64_MAX_BINDINGS);
-                b = &s->binds[s->nbind++];
-                b->binding = w.dstBinding;
-            }
-            // Fidelity: the write's own descriptorType (not the set layout's) and
-            // its ARRAY GEOMETRY. A DXVK caller writes descriptor arrays and
-            // partial-overlap ranges (dstArrayElement/count), and collapsing those
-            // to "element 0 of binding N" makes the recorded set a different set
-            // from the one the app declared. The element payloads stay in the flat
-            // Binding table for now (schema v2 is P3); index and count are honest
-            // today so that table can grow without re-reading the guest.
-            b->type = w.descriptorType;
-            b->dstArrayElement = w.dstArrayElement;
-            b->count = w.descriptorCount ? w.descriptorCount : 1;
-            if (w.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
-                w.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
-                VkDescriptorBufferInfo bi = {};
-                readStruct(w.pBufferInfo, bi);
-                b->obj = bi.buffer;
-                b->range = bi.range;
-                b->bufOff = bi.offset;
-            } else if (w.descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
-                // The caller's inline data must be consumed before this update returns.
-                for (U64 cur = w.pNext; cur && g_mem;) {
-                    if (g_mem->readd(cur) == VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK) {
-                        VkWriteDescriptorSetInlineUniformBlock ib = {};
-                        g_mem->memcpyFromGuest(&ib, cur, sizeof(ib));
-                        updateInlineUniform(*b, w.dstArrayElement, ib.pData, ib.dataSize);
-                        break;
-                    }
-                    cur = g_mem->readq(cur + 8);
-                }
-            } else if (w.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
-                       w.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ||
-                       w.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER) {
-                // image-only / sampler-only: keep the one handle each names, so a
-                // storage image is not misreported as a sampled image
-                VkDescriptorImageInfo ii = {};
-                readStruct(w.pImageInfo, ii);
-                b->obj = ii.imageView;
-                b->range = ii.sampler;
-            } else if (w.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
-                VkDescriptorImageInfo ii = {};
-                readStruct(w.pImageInfo, ii);
-                b->obj = ii.imageView;
-                b->range = ii.sampler;
-            } else if (w.descriptorType == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) {
-                vk64Unsupported("subpass-input-descriptor", "input attachments are not bound by the WebGPU replay tier");
-            } else if (w.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER ||
-                       w.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER) {
-                vk64Unsupported("texel-buffer-view", "texel-buffer descriptors are not supported");
-            } else {
-                vk64Unsupported("descriptor-type", ("vkUpdateDescriptorSets type=" + std::to_string(w.descriptorType)).c_str());
-            }
+            VK64_DROP_IF(continue, !s);
+            applyWrite64(*s, w);
+        }
+        std::vector<VkCopyDescriptorSet> copies;
+        readArray(args.a[4], nc, copies);
+        for (const VkCopyDescriptorSet& c : copies) {
+            DescSet* src = objOf<DescSet>(c.srcSet, K_SET, "vkUpdateDescriptorSets");
+            DescSet* dst = objOf<DescSet>(c.dstSet, K_SET, "vkUpdateDescriptorSets");
+            VK64_DROP_IF(continue, !src || !dst);
+            applyDescCopy(*src, c.srcBinding, c.srcArrayElement, *dst, c.dstBinding, c.dstArrayElement, c.descriptorCount);
         }
         return VK_SUCCESS;
     }
@@ -5082,15 +5343,15 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         std::vector<VkDescriptorUpdateTemplateEntry> entries;
         readArray(ci.pDescriptorUpdateEntries, ci.descriptorUpdateEntryCount, entries);
         for (auto& e : entries) {
-            VK64_DROP_IF(break, t->nentry >= VK64_MAX_BINDINGS);
-            TmplEntry& te = t->entries[t->nentry++];
+            TmplEntry te;
             te.binding = e.dstBinding; te.arrayElement = e.dstArrayElement;
             te.count = e.descriptorCount; te.type = e.descriptorType;
             te.offset = e.offset; te.stride = e.stride;
+            t->entries.push_back(te);
         }
         wr64(args.a[3], id);
         klog_fmt("vk64: vkCreateDescriptorUpdateTemplate -> 0x%llx (%u entries)",
-                 (unsigned long long)id, (unsigned)t->nentry);
+                 (unsigned long long)id, (unsigned)t->entries.size());
         return VK_SUCCESS;
     }
     case VK64_fn_vkDestroyDescriptorUpdateTemplate: {
@@ -5103,57 +5364,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         DescSet* s = objOf<DescSet>(args.a[1], K_SET, "vkUpdateDescriptorSetWithTemplate");
         DescTemplate* t = objOf<DescTemplate>(args.a[2], K_TEMPLATE, "vkUpdateDescriptorSetWithTemplate");
         if (!s || !t || !args.a[3]) return VK_SUCCESS;
-        U64 dataBase = args.a[3];
-        for (U32 ei = 0; ei < t->nentry; ei++) {
-            const TmplEntry& te = t->entries[ei];
-            // Inline descriptorCount is a byte count; stride is ignored.
-            const U32 elements = te.type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK ? 1 : te.count;
-            for (U32 i = 0; i < elements; i++) {
-                U64 dAddr = dataBase + te.offset + (U64)i * te.stride;
-                U32 binding = te.binding;
-                U32 elem = te.arrayElement + i;
-                VK64_DROP_IF(continue, binding >= VK64_MAX_BINDINGS);
-                Binding* b = nullptr;
-                for (U32 k = 0; k < s->nbind; k++)
-                    if (s->binds[k].binding == binding) { b = &s->binds[k]; break; }
-                if (!b) {
-                    VK64_DROP_IF(continue, s->nbind >= VK64_MAX_BINDINGS);
-                    b = &s->binds[s->nbind++];
-                    b->binding = binding;
-                }
-                b->type = te.type;
-                b->dstArrayElement = elem;
-                b->count = 1;
-                if (te.type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
-                    updateInlineUniform(*b, te.arrayElement, dAddr, te.count);
-                } else if (te.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
-                    te.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
-                    U64 buf = rd64(dAddr); U64 off = rd64(dAddr + 8); U64 range = rd64(dAddr + 16);
-                    b->obj = buf; b->range = range; b->bufOff = off;
-                } else if (te.type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
-                           te.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
-                    U64 view = rd64(dAddr + 8);
-                    b->obj = view; b->range = 0;
-                } else if (te.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
-                    // VkDescriptorImageInfo: sampler @0, imageView @8.
-                    // (2026-10-09: D3D9 textured draw was black — template path
-                    // dropped the image view, so no IMAGE_DATA was emitted.)
-                    U64 samp = rd64(dAddr);
-                    U64 view = rd64(dAddr + 8);
-                    b->obj = view; b->range = samp;
-                } else if (te.type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) {
-                    vk64Unsupported("subpass-input-descriptor", "input attachments are not bound by the WebGPU replay tier");
-                } else if (te.type == VK_DESCRIPTOR_TYPE_SAMPLER) {
-                    U64 samp = rd64(dAddr);
-                    b->obj = samp; b->range = 0;
-                } else if (te.type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER ||
-                           te.type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER) {
-                    vk64Unsupported("texel-buffer-view", "texel-buffer descriptors are not supported");
-                } else {
-                    vk64Unsupported("descriptor-type", ("vkUpdateDescriptorSetWithTemplate type=" + std::to_string(te.type)).c_str());
-                }
-            }
-        }
+        applyDescTemplate(*s, *t, args.a[3], rd64);
         return VK_SUCCESS;
     }
     case VK64_fn_vkMapMemory: {
@@ -5233,7 +5444,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkDestroyPipeline:        dropObj(args.a[1]); return 0;
     case VK64_fn_vkDestroyPipelineLayout:  dropObj(args.a[1]); return 0;
     case VK64_fn_vkDestroyDescriptorSetLayout: dropObj(args.a[1]); return 0;
-    case VK64_fn_vkDestroyDescriptorPool:  dropObj(args.a[1]); return 0;
+    case VK64_fn_vkDestroyDescriptorPool:  destroyDescPool(args.a[1]); return 0;
     case VK64_fn_vkDestroyPipelineCache:   dropObj(args.a[1]); return 0;
     case VK64_fn_vkDestroyFence:           dropObj(args.a[1]); return 0;
     case VK64_fn_vkDestroySemaphore:       dropObj(args.a[1]); return 0;
@@ -5455,19 +5666,15 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // (cmdBuf, bindPoint, layout, firstSet, setCount, pSets*, nDyn, pDynOffsets*)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdBindDescriptorSets");
         VK64_DROP_IF(return 0, !cb);
-        U32 firstSet = (U32)args.a[3];
-        U32 setCount = (U32)args.a[4];
-        if (setCount > VK64_MAX_SETS) setCount = VK64_MAX_SETS;
-        for (U32 i = 0; i < setCount; i++) {
-            U64 set = rd64(args.a[5] + (U64)i * 8);
-            if (firstSet + i < VK64_MAX_SETS) cb->sets[firstSet + i] = set;
+        if (args.a[1] != VK_PIPELINE_BIND_POINT_GRAPHICS) {
+            vk64Unsupported("compute-descriptor-sets", "descriptor sets bound at a non-graphics bind point are ignored (no compute path)");
+            return 0;
         }
-        Cmd c;
-        c.kind = CMD_BIND_SETS;
-        memcpy(c.sets, cb->sets, sizeof(c.sets));
-        c.a = firstSet;
-        c.b = setCount;
-        pushCmd(cb, c);
+        std::vector<U64> ids;
+        for (U32 i = 0; i < (U32)args.a[4] && i < VK64_MAX_SETS && args.a[5]; i++) ids.push_back(rd64(args.a[5] + (U64)i * 8));
+        std::vector<U32> dyn;
+        readArray(args.a[7], (U32)args.a[6], dyn);
+        recordBindSets(cb, (U32)args.a[3], ids, dyn);
         return 0;
     }
     case VK64_fn_vkCmdSetStencilCompareMask:
@@ -5497,6 +5704,48 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkCmdWriteTimestamp: {
         vk64Unsupported("timestamp-query", "timestamp queries are not integrated with WebGPU replay; device queue timestampValidBits is zero");
+        return 0;
+    }
+    case VK64_fn_vkCmdPushDescriptorSetKHR: {
+        // (cmdBuf, bindPoint, layout, set, writeCount, pWrites*)
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdPushDescriptorSet");
+        VK64_DROP_IF(return 0, !cb);
+        if (args.a[1] != VK_PIPELINE_BIND_POINT_GRAPHICS) {
+            vk64Unsupported("compute-descriptor-sets", "descriptors pushed at a non-graphics bind point are ignored (no compute path)");
+            return 0;
+        }
+        U64 id = 0;
+        DescSet* s = newPushSet(cb, args.a[2], (U32)args.a[3], id, "vkCmdPushDescriptorSet");
+        VK64_DROP_IF(return 0, !s);
+        std::vector<VkWriteDescriptorSet> writes;
+        readArray(args.a[5], (U32)args.a[4], writes);
+        for (const VkWriteDescriptorSet& w : writes) applyWrite64(*s, w);
+        recordBindSets(cb, (U32)args.a[3], {id}, {});
+        return 0;
+    }
+    case VK64_fn_vkCmdPushDescriptorSetWithTemplateKHR: {
+        // (cmdBuf, template, layout, set, pData*)
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdPushDescriptorSetWithTemplate");
+        DescTemplate* t = objOf<DescTemplate>(args.a[1], K_TEMPLATE, "vkCmdPushDescriptorSetWithTemplate");
+        VK64_DROP_IF(return 0, !cb || !t || !args.a[4]);
+        U64 id = 0;
+        DescSet* s = newPushSet(cb, args.a[2], (U32)args.a[3], id, "vkCmdPushDescriptorSetWithTemplate");
+        VK64_DROP_IF(return 0, !s);
+        applyDescTemplate(*s, *t, args.a[4], rd64);
+        recordBindSets(cb, (U32)args.a[3], {id}, {});
+        return 0;
+    }
+    case VK64_fn_vkGetDescriptorSetLayoutSupport: {
+        // (device, pCreateInfo*, pSupport*): every layout this bridge can record is
+        // supported (bindings are an unbounded map; arrays are sparse). A variable
+        // descriptor count query gets the same 4M cap the writes use.
+        for (U64 cur = args.a[2]; cur && g_mem;) {
+            const U32 st = g_mem->readd(cur);
+            if (st == VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_SUPPORT) wr32(cur + 16, 1);
+            else if (st == VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_LAYOUT_SUPPORT)
+                wr32(cur + 16, VK64_MAX_DESC_ARRAY);
+            cur = g_mem->readq(cur + 8);
+        }
         return 0;
     }
     case VK64_fn_vkCmdSetDepthBounds:
@@ -6788,6 +7037,25 @@ inline void wr64_32(U32 a, U64 v) {
     g_mem32->writed(a, (U32)v);
     g_mem32->writed(a + 4, (U32)(v >> 32));
 }
+static U64 rdq32(U64 a) { return rd64_32((U32)a); }
+static void applyWrite32(DescSet& s, const vk32abi::VkWriteDescriptorSet& w) {
+    DescWriteReq r;
+    r.binding = w.dstBinding; r.elem = w.dstArrayElement; r.count = w.descriptorCount; r.type = (U32)w.descriptorType;
+    r.pImage = w.pImageInfo; r.pBuffer = w.pBufferInfo; r.pTexel = w.pTexelBufferView;
+    r.stride = descWriteStride((U32)w.descriptorType, true);
+    if ((U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
+        for (U64 cur = w.pNext; cur && g_mem32;) {
+            if (g_mem32->readd(cur) == VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK) {
+                vk32abi::VkWriteDescriptorSetInlineUniformBlock ib = {};
+                g_mem32->memcpyFromGuest(&ib, cur, sizeof(ib));
+                r.inlData = ib.pData; r.inlSize = ib.dataSize;
+                break;
+            }
+            cur = g_mem32->readd((U32)cur + 4);
+        }
+    }
+    applyDescWrite(s, r, rdq32);
+}
 inline std::string guestStr32(U32 addr, size_t maxLen = 512) {
     std::string s;
     if (!addr || !g_mem32) return s;
@@ -7572,7 +7840,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             return VK_ERROR_FORMAT_NOT_SUPPORTED;
         }
         if (!v2FormatSampleCounts(ci.format) || !(v2FormatSampleCounts(ci.format) & (U32)ci.samples) ||
-            ((U32)ci.samples > 1 && ci.imageType != VK_IMAGE_TYPE_2D)) {
+            ((U32)ci.samples > 1 && (U32)ci.imageType != (U32)VK_IMAGE_TYPE_2D)) {
             vk64Unsupported("image-sample-count", "sample count is not supported for this image format");
             wr64_32((U32)args.a[3], 0);
             return VK_ERROR_FORMAT_NOT_SUPPORTED;
@@ -7981,7 +8249,6 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkDestroyPipeline:
     case VK64_fn_vkDestroyPipelineLayout:
     case VK64_fn_vkDestroyDescriptorSetLayout:
-    case VK64_fn_vkDestroyDescriptorPool:
     case VK64_fn_vkDestroyPipelineCache:
     case VK64_fn_vkDestroyFence:
     case VK64_fn_vkDestroySemaphore:
@@ -7989,6 +8256,9 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         dropObj(args.a[1] & 0xFFFFFFFFULL);
         return 0;
 
+    case VK64_fn_vkDestroyDescriptorPool:
+        destroyDescPool(args.a[1] & 0xFFFFFFFFULL);
+        return 0;
     case VK64_fn_vkDestroyShaderModule: {
         auto* module = objOf32<ShaderModule>(args.a[1], K_SHADER, "vkDestroyShaderModule");
         if (module) module->destroyed = 1;
@@ -8051,14 +8321,18 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         return 0;
     }
     case VK64_fn_vkCmdBindDescriptorSets: {
+        // (cmdBuf, bindPoint, layout, firstSet, setCount, pSets*, nDyn, pDynOffsets*)
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdBindDescriptorSets");
         VK64_DROP_IF(return 0, !cb);
-        U32 first = (U32)args.a[3], count = (U32)args.a[4];
-        for (U32 i = 0; i < count && first + i < VK64_MAX_SETS && args.a[5]; i++)
-            cb->sets[first + i] = rd64_32((U32)args.a[5] + i * 8);
-        Cmd c; c.kind = CMD_BIND_SETS;
-        memcpy(c.sets, cb->sets, sizeof(c.sets)); c.a = args.a[3]; c.b = args.a[4];
-        pushCmd(cb, c);
+        if (args.a[1] != VK_PIPELINE_BIND_POINT_GRAPHICS) {
+            vk64Unsupported("compute-descriptor-sets", "descriptor sets bound at a non-graphics bind point are ignored (no compute path)");
+            return 0;
+        }
+        std::vector<U64> ids;
+        for (U32 i = 0; i < (U32)args.a[4] && i < VK64_MAX_SETS && args.a[5]; i++) ids.push_back(rd64_32((U32)args.a[5] + i * 8));
+        std::vector<U32> dyn;
+        readArray32(args.a[7], (U32)args.a[6], dyn);
+        recordBindSets(cb, (U32)args.a[3], ids, dyn);
         return 0;
     }
     case VK64_fn_vkCmdSetStencilCompareMask:
@@ -8911,102 +9185,77 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         if (!readStruct32(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
         DescSetLayout* l = createObj32<DescSetLayout>(K_SETLAYOUT, id);
-        l->nbind = ci.bindingCount > VK64_MAX_BINDINGS ? VK64_MAX_BINDINGS : ci.bindingCount;
         std::vector<vk32abi::VkDescriptorSetLayoutBinding> binds;
-        readArray32(ci.pBindings, l->nbind, binds);
-        for (U32 i = 0; i < binds.size(); i++) {
-            l->binds[i].binding = binds[i].binding;
-            l->binds[i].type = binds[i].descriptorType;
+        readArray32(ci.pBindings, ci.bindingCount, binds);
+        for (const auto& b : binds) {
+            LayoutBinding& lb = l->binds[b.binding];
+            lb.type = (U32)b.descriptorType; lb.count = b.descriptorCount;
+            if (b.pImmutableSamplers && ((U32)b.descriptorType == (U32)VK_DESCRIPTOR_TYPE_SAMPLER ||
+                                         (U32)b.descriptorType == (U32)VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)) {
+                const U32 n = std::min<U32>(b.descriptorCount, VK64_MAX_DESC_ARRAY);
+                for (U32 i = 0; i < n; i++) lb.immutable.push_back(rd64_32(b.pImmutableSamplers + i * 8));
+            }
         }
+        finishDescLayout(*l);
         wr64_32(args.a[3], id);
         return VK_SUCCESS;
     }
     case VK64_fn_vkCreateDescriptorPool: {
-        if (!objOf32<Device>((U32)args.a[0], K_DEVICE, "vkCreateDescriptorPool") || !args.a[3])
+        vk32abi::VkDescriptorPoolCreateInfo ci = {};
+        if (!objOf32<Device>((U32)args.a[0], K_DEVICE, "vkCreateDescriptorPool") || !args.a[3] || !readStruct32(args.a[1], ci))
             return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
-        createObj32<DescPool>(K_DESCPOOL, id);
+        DescPool* pool = createObj32<DescPool>(K_DESCPOOL, id);
+        pool->maxSets = ci.maxSets; pool->flags = ci.flags;
         wr64_32((U32)args.a[3], id);
         return VK_SUCCESS;
     }
     case VK64_fn_vkAllocateDescriptorSets: {
         vk32abi::VkDescriptorSetAllocateInfo ai = {};
         if (!readStruct32(args.a[1], ai) || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        DescPool* pool = objOf32<DescPool>(ai.descriptorPool, K_DESCPOOL, "vkAllocateDescriptorSets");
+        if (!pool) return VK_ERROR_INITIALIZATION_FAILED;
+        for (U32 i = 0; i < ai.descriptorSetCount; i++) wr64_32(args.a[2] + (U64)i * 8, 0);
+        if (pool->maxSets && pool->sets.size() + ai.descriptorSetCount > pool->maxSets) return VK_ERROR_OUT_OF_POOL_MEMORY;
         for (U32 i = 0; i < ai.descriptorSetCount; i++) {
             U64 id = 0;
             DescSet* s = createObj32<DescSet>(K_SET, id);
             s->layout = rd64_32(ai.pSetLayouts + (U64)i * 8);
+            s->pool = ai.descriptorPool;
+            pool->sets.insert(id);
             wr64_32(args.a[2] + (U64)i * 8, id);
         }
         return VK_SUCCESS;
     }
+    case VK64_fn_vkResetDescriptorPool: {
+        DescPool* pool = objOf32<DescPool>(args.a[1], K_DESCPOOL, "vkResetDescriptorPool");
+        if (!pool) return VK_ERROR_INITIALIZATION_FAILED;
+        resetDescPool(*pool);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkFreeDescriptorSets: {
+        DescPool* pool = objOf32<DescPool>(args.a[1], K_DESCPOOL, "vkFreeDescriptorSets");
+        if (!pool) return VK_ERROR_INITIALIZATION_FAILED;
+        for (U32 i = 0; i < (U32)args.a[2]; i++) freeDescSet(rd64_32((U32)args.a[3] + i * 8));
+        return VK_SUCCESS;
+    }
     case VK64_fn_vkUpdateDescriptorSets: {
         // (device, nWrite, pWrites*, nCopy, pCopies*)
-        U32 nw = (U32)args.a[1];
+        U32 nw = (U32)args.a[1], nc = (U32)args.a[3];
         std::vector<vk32abi::VkWriteDescriptorSet> writes;
         readArray32(args.a[2], nw, writes);
-        for (U32 i = 0; i < nw; i++) {
-            const vk32abi::VkWriteDescriptorSet& w = writes[i];
+        for (const auto& w : writes) {
             DescSet* s = objOf32<DescSet>(w.dstSet, K_SET, "vkUpdateDescriptorSets");
-            VK64_DROP_IF(continue, !s || w.dstBinding >= VK64_MAX_BINDINGS);
-            Binding* b = nullptr;
-            for (U32 k = 0; k < s->nbind; k++)
-                if (s->binds[k].binding == w.dstBinding) { b = &s->binds[k]; break; }
-            if (!b) {
-                VK64_DROP_IF(continue, s->nbind >= VK64_MAX_BINDINGS);
-                b = &s->binds[s->nbind++];
-                b->binding = w.dstBinding;
-            }
-            // Fidelity: the write's own descriptorType (not the set layout's) and
-            // its ARRAY GEOMETRY. A DXVK caller writes descriptor arrays and
-            // partial-overlap ranges (dstArrayElement/count), and collapsing those
-            // to "element 0 of binding N" makes the recorded set a different set
-            // from the one the app declared. The element payloads stay in the flat
-            // Binding table for now (schema v2 is P3); index and count are honest
-            // today so that table can grow without re-reading the guest.
-            b->type = w.descriptorType;
-            b->dstArrayElement = w.dstArrayElement;
-            b->count = w.descriptorCount ? w.descriptorCount : 1;
-            if ((U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
-                (U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
-                vk32abi::VkDescriptorBufferInfo bi = {};
-                readStruct32(w.pBufferInfo, bi);
-                b->obj = bi.buffer;
-                b->range = bi.range;
-                b->bufOff = bi.offset;
-            } else if ((U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
-                // The caller's inline data must be consumed before this update returns.
-                for (U64 cur = w.pNext; cur && g_mem32;) {
-                    if (g_mem32->readd(cur) == VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK) {
-                        vk32abi::VkWriteDescriptorSetInlineUniformBlock ib = {};
-                        g_mem32->memcpyFromGuest(&ib, cur, sizeof(ib));
-                        updateInlineUniform(*b, w.dstArrayElement, ib.pData, ib.dataSize);
-                        break;
-                    }
-                    cur = g_mem32->readd((U32)cur + 4);
-                }
-            } else if ((U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
-                       (U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ||
-                       (U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_SAMPLER) {
-                // image-only / sampler-only: keep the one handle each names, so a
-                // storage image is not misreported as a sampled image
-                vk32abi::VkDescriptorImageInfo ii = {};
-                readStruct32(w.pImageInfo, ii);
-                b->obj = ii.imageView;
-                b->range = ii.sampler;
-            } else if ((U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
-                vk32abi::VkDescriptorImageInfo ii = {};
-                readStruct32(w.pImageInfo, ii);
-                b->obj = ii.imageView;
-                b->range = ii.sampler;
-            } else if ((U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) {
-                vk64Unsupported("subpass-input-descriptor", "input attachments are not bound by the WebGPU replay tier");
-            } else if ((U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER ||
-                       (U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER) {
-                vk64Unsupported("texel-buffer-view", "texel-buffer descriptors are not supported");
-            } else {
-                vk64Unsupported("descriptor-type", ("vkUpdateDescriptorSets type=" + std::to_string((U32)w.descriptorType)).c_str());
-            }
+            VK64_DROP_IF(continue, !s);
+            applyWrite32(*s, w);
+        }
+        std::vector<vk32abi::VkCopyDescriptorSet> copies;
+        readArray32(args.a[4], nc, copies);
+        for (const auto& c : copies) {
+            DescSet* src = objOf32<DescSet>(c.srcSet, K_SET, "vkUpdateDescriptorSets");
+            DescSet* dst = objOf32<DescSet>(c.dstSet, K_SET, "vkUpdateDescriptorSets");
+            VK64_DROP_IF(continue, !src || !dst);
+            applyDescCopy(*src, c.srcBinding, c.srcArrayElement, *dst, c.dstBinding, c.dstArrayElement, c.descriptorCount);
         }
         return VK_SUCCESS;
     }
@@ -9020,15 +9269,15 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         std::vector<vk32abi::VkDescriptorUpdateTemplateEntry> entries;
         readArray32(ci.pDescriptorUpdateEntries, ci.descriptorUpdateEntryCount, entries);
         for (auto& e : entries) {
-            VK64_DROP_IF(break, t->nentry >= VK64_MAX_BINDINGS);
-            TmplEntry& te = t->entries[t->nentry++];
+            TmplEntry te;
             te.binding = e.dstBinding; te.arrayElement = e.dstArrayElement;
-            te.count = e.descriptorCount; te.type = e.descriptorType;
+            te.count = e.descriptorCount; te.type = (U32)e.descriptorType;
             te.offset = e.offset; te.stride = e.stride;
+            t->entries.push_back(te);
         }
         wr64_32(args.a[3], id);
         klog_fmt("vk32: vkCreateDescriptorUpdateTemplate -> 0x%llx (%u entries)",
-                 (unsigned long long)id, (unsigned)t->nentry);
+                 (unsigned long long)id, (unsigned)t->entries.size());
         return VK_SUCCESS;
     }
     case VK64_fn_vkUpdateDescriptorSetWithTemplate: {
@@ -9036,58 +9285,47 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         DescSet* s = objOf32<DescSet>(args.a[1], K_SET, "vkUpdateDescriptorSetWithTemplate");
         DescTemplate* t = objOf32<DescTemplate>(args.a[2], K_TEMPLATE, "vkUpdateDescriptorSetWithTemplate");
         if (!s || !t || !args.a[3]) return VK_SUCCESS;
-        U64 dataBase = args.a[3];
-        for (U32 ei = 0; ei < t->nentry; ei++) {
-            const TmplEntry& te = t->entries[ei];
-            // Inline descriptorCount is a byte count; stride is ignored.
-            const U32 elements = te.type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK ? 1 : te.count;
-            for (U32 i = 0; i < elements; i++) {
-                U64 dAddr = dataBase + te.offset + (U64)i * te.stride;
-                U32 binding = te.binding;
-                U32 elem = te.arrayElement + i;
-                VK64_DROP_IF(continue, binding >= VK64_MAX_BINDINGS);
-                Binding* b = nullptr;
-                for (U32 k = 0; k < s->nbind; k++)
-                    if (s->binds[k].binding == binding) { b = &s->binds[k]; break; }
-                if (!b) {
-                    VK64_DROP_IF(continue, s->nbind >= VK64_MAX_BINDINGS);
-                    b = &s->binds[s->nbind++];
-                    b->binding = binding;
-                }
-                b->type = te.type;
-                b->dstArrayElement = elem;
-                b->count = 1;
-                if (te.type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
-                    updateInlineUniform(*b, te.arrayElement, dAddr, te.count);
-                } else if (te.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
-                    te.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
-                    U64 buf = rd64_32(dAddr); U64 off = rd64_32(dAddr + 8); U64 range = rd64_32(dAddr + 16);
-                    b->obj = buf; b->range = range; b->bufOff = off;
-                } else if (te.type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
-                           te.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
-                    U64 view = rd64_32(dAddr + 8);
-                    b->obj = view; b->range = 0;
-                } else if (te.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
-                    // vk32abi::VkDescriptorImageInfo: sampler @0, imageView @8.
-                    // (2026-10-09: D3D9 textured draw was black — template path
-                    // dropped the image view, so no IMAGE_DATA was emitted.)
-                    U64 samp = rd64_32(dAddr);
-                    U64 view = rd64_32(dAddr + 8);
-                    b->obj = view; b->range = samp;
-                } else if (te.type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) {
-                    vk64Unsupported("subpass-input-descriptor", "input attachments are not bound by the WebGPU replay tier");
-                } else if (te.type == VK_DESCRIPTOR_TYPE_SAMPLER) {
-                    U64 samp = rd64_32(dAddr);
-                    b->obj = samp; b->range = 0;
-                } else if (te.type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER ||
-                           te.type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER) {
-                    vk64Unsupported("texel-buffer-view", "texel-buffer descriptors are not supported");
-                } else {
-                    vk64Unsupported("descriptor-type", ("vkUpdateDescriptorSetWithTemplate type=" + std::to_string(te.type)).c_str());
-                }
-            }
-        }
+        applyDescTemplate(*s, *t, args.a[3], rdq32);
         return VK_SUCCESS;
+    }
+    case VK64_fn_vkCmdPushDescriptorSetKHR: {
+        // (cmdBuf, bindPoint, layout, set, writeCount, pWrites*)
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdPushDescriptorSet");
+        VK64_DROP_IF(return 0, !cb);
+        if (args.a[1] != VK_PIPELINE_BIND_POINT_GRAPHICS) {
+            vk64Unsupported("compute-descriptor-sets", "descriptors pushed at a non-graphics bind point are ignored (no compute path)");
+            return 0;
+        }
+        U64 id = 0;
+        DescSet* s = newPushSet(cb, args.a[2], (U32)args.a[3], id, "vkCmdPushDescriptorSet");
+        VK64_DROP_IF(return 0, !s);
+        std::vector<vk32abi::VkWriteDescriptorSet> writes;
+        readArray32(args.a[5], (U32)args.a[4], writes);
+        for (const auto& w : writes) applyWrite32(*s, w);
+        recordBindSets(cb, (U32)args.a[3], {id}, {});
+        return 0;
+    }
+    case VK64_fn_vkCmdPushDescriptorSetWithTemplateKHR: {
+        // (cmdBuf, template, layout, set, pData*)
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdPushDescriptorSetWithTemplate");
+        DescTemplate* t = objOf32<DescTemplate>(args.a[1], K_TEMPLATE, "vkCmdPushDescriptorSetWithTemplate");
+        VK64_DROP_IF(return 0, !cb || !t || !args.a[4]);
+        U64 id = 0;
+        DescSet* s = newPushSet(cb, args.a[2], (U32)args.a[3], id, "vkCmdPushDescriptorSetWithTemplate");
+        VK64_DROP_IF(return 0, !s);
+        applyDescTemplate(*s, *t, args.a[4], rdq32);
+        recordBindSets(cb, (U32)args.a[3], {id}, {});
+        return 0;
+    }
+    case VK64_fn_vkGetDescriptorSetLayoutSupport: {
+        for (U32 cur = (U32)args.a[2]; cur && g_mem32;) {
+            const U32 st = g_mem32->readd(cur);
+            if (st == VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_SUPPORT) wr32_32(cur + 8, 1);
+            else if (st == VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_LAYOUT_SUPPORT)
+                wr32_32(cur + 8, VK64_MAX_DESC_ARRAY);
+            cur = g_mem32->readd(cur + 4);
+        }
+        return 0;
     }
     case VK64_fn_vkBindBufferMemory2:
     case VK64_fn_vkBindBufferMemory2KHR: {

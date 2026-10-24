@@ -705,9 +705,12 @@ export function decodeV2Frame(records, counters = {}) {
         break;
       }
       case V2_REC.DESC_SET: {
-        const setIndex = r.u8(), nBind = r.u8(); r.skip(2);
+        // setIndex u8, reserved u8, nBind u16: one wire entry per written
+        // (binding, arrayElement); descriptor arrays and >8-binding layouts are
+        // legal (DXVK/vkd3d use both).
+        const setIndex = r.u8(); r.skip(1); const nBind = r.u16();
         const layoutId = v2Hex64(r.u64());
-        if (setIndex >= V2_MAX_SETS || nBind > 8) throw new Error('vk64: v2 DESC_SET out of range');
+        if (setIndex >= V2_MAX_SETS) throw new Error('vk64: v2 DESC_SET out of range');
         const bindings = [];
         for (let k = 0; k < nBind; k++) {
           bindings.push({

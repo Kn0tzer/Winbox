@@ -265,6 +265,11 @@ enum {
     VK64_fn_vkCmdClearDepthStencilImage = 909,
     VK64_fn_vkCmdWriteTimestamp = 910,
     VK64_fn_vkCmdSetDepthBounds = 911,
+    VK64_fn_vkResetDescriptorPool = 912,
+    VK64_fn_vkFreeDescriptorSets = 913,
+    VK64_fn_vkCmdPushDescriptorSetKHR = 914,
+    VK64_fn_vkCmdPushDescriptorSetWithTemplateKHR = 915,
+    VK64_fn_vkGetDescriptorSetLayoutSupport = 916,
     VK64_fn__MAX
 };
 
@@ -673,17 +678,34 @@ API VkResult vkCreateDescriptorPool(VkDevice dev, const void* ci, const void* al
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
     return (VkResult)vk64_trap(VK64_fn_vkCreateDescriptorPool, &a);
 }
-// No-op lifecycle helpers: the bridge tracks pools/sets as IDs and never
-// needs host-side teardown for reset/free (short-run leak is harmless).
-// Implemented locally (no trap) so Wine's Unix handler gets VK_SUCCESS
-// instead of calling the benign stub with a fake handle as string (fault).
 API VkResult vkResetDescriptorPool(VkDevice dev, VkDescriptorPool pool, VkFlags flags) {
-    (void)dev; (void)pool; (void)flags;
-    return 0;
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = pool; a.a[2] = flags;
+    return (VkResult)vk64_trap(VK64_fn_vkResetDescriptorPool, &a);
 }
 API VkResult vkFreeDescriptorSets(VkDevice dev, VkDescriptorPool pool, uint32_t count, const void* sets) {
-    (void)dev; (void)pool; (void)count; (void)sets;
-    return 0;
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = pool; a.a[2] = count; a.a[3] = P(sets);
+    return (VkResult)vk64_trap(VK64_fn_vkFreeDescriptorSets, &a);
+}
+API void vkCmdPushDescriptorSetKHR(VkCommandBuffer cb, uint32_t bindPoint, VkPipelineLayout layout, uint32_t set, uint32_t writeCount, const void* writes) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = bindPoint; a.a[2] = layout; a.a[3] = set; a.a[4] = writeCount; a.a[5] = P(writes);
+    (void)vk64_trap(VK64_fn_vkCmdPushDescriptorSetKHR, &a);
+}
+API void vkCmdPushDescriptorSet(VkCommandBuffer cb, uint32_t bindPoint, VkPipelineLayout layout, uint32_t set, uint32_t writeCount, const void* writes) {
+    vkCmdPushDescriptorSetKHR(cb, bindPoint, layout, set, writeCount, writes);
+}
+API void vkCmdPushDescriptorSetWithTemplateKHR(VkCommandBuffer cb, VkNonDispatchableHandle tmpl, VkPipelineLayout layout, uint32_t set, const void* data) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = tmpl; a.a[2] = layout; a.a[3] = set; a.a[4] = P(data);
+    (void)vk64_trap(VK64_fn_vkCmdPushDescriptorSetWithTemplateKHR, &a);
+}
+API void vkCmdPushDescriptorSetWithTemplate(VkCommandBuffer cb, VkNonDispatchableHandle tmpl, VkPipelineLayout layout, uint32_t set, const void* data) {
+    vkCmdPushDescriptorSetWithTemplateKHR(cb, tmpl, layout, set, data);
+}
+API void vkGetDescriptorSetLayoutSupport(VkDevice dev, const void* ci, void* support) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(support);
+    (void)vk64_trap(VK64_fn_vkGetDescriptorSetLayoutSupport, &a);
+}
+API void vkGetDescriptorSetLayoutSupportKHR(VkDevice dev, const void* ci, void* support) {
+    vkGetDescriptorSetLayoutSupport(dev, ci, support);
 }
 API VkResult vkCreateShaderModule(VkDevice dev, const void* ci, const void* alloc, VkShaderModule* out) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
@@ -1333,8 +1355,14 @@ static const struct procEntry g_procs[] = {
     E(vkCreatePipelineLayout, VK64_fn_vkCreatePipelineLayout),
     E(vkCreateDescriptorSetLayout, VK64_fn_vkCreateDescriptorSetLayout),
     E(vkCreateDescriptorPool, VK64_fn_vkCreateDescriptorPool),
-    E(vkResetDescriptorPool, VK64_fn_vkResetCommandPool),
-    E(vkFreeDescriptorSets, VK64_fn_vkResetCommandPool),
+    E(vkResetDescriptorPool, VK64_fn_vkResetDescriptorPool),
+    E(vkFreeDescriptorSets, VK64_fn_vkFreeDescriptorSets),
+    E(vkCmdPushDescriptorSetKHR, VK64_fn_vkCmdPushDescriptorSetKHR),
+    E(vkCmdPushDescriptorSet, VK64_fn_vkCmdPushDescriptorSetKHR),
+    E(vkCmdPushDescriptorSetWithTemplateKHR, VK64_fn_vkCmdPushDescriptorSetWithTemplateKHR),
+    E(vkCmdPushDescriptorSetWithTemplate, VK64_fn_vkCmdPushDescriptorSetWithTemplateKHR),
+    E(vkGetDescriptorSetLayoutSupport, VK64_fn_vkGetDescriptorSetLayoutSupport),
+    E(vkGetDescriptorSetLayoutSupportKHR, VK64_fn_vkGetDescriptorSetLayoutSupport),
     E(vkCreateShaderModule, VK64_fn_vkCreateShaderModule),
     E(vkCreatePipelineCache, VK64_fn_vkCreatePipelineCache),
     E(vkCreateFence, VK64_fn_vkCreateFence),
@@ -1610,7 +1638,6 @@ TAIL(vkCmdClearAttachmentsKHR)
 TAIL(vkCmdResolveImage)
 TAIL(vkCmdResolveImageKHR)
 TAIL(vkCmdSetBlendConstant)
-TAIL(vkCmdPushDescriptorSet)
 TAIL(vkCmdNextSubpass)
 TAIL(vkCmdNextSubpassKHR)
 TAIL(vkCmdExecuteCommands)
@@ -1632,6 +1659,4 @@ TAIL(vkTrimCommandPool)
 TAIL(vkCreateFramebuffer2KHR)
 TAIL(vkCreateSamplerYcbcrConversion)
 TAIL(vkDestroySamplerYcbcrConversion)
-TAIL(vkGetDescriptorSetLayoutSupport)
-TAIL(vkGetDescriptorSetLayoutSupportKHR)
 #undef TAIL

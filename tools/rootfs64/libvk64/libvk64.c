@@ -284,6 +284,11 @@ enum {
     VK64_fn_vkCmdClearDepthStencilImage = 909,
     VK64_fn_vkCmdWriteTimestamp = 910,
     VK64_fn_vkCmdSetDepthBounds = 911,
+    VK64_fn_vkResetDescriptorPool = 912,
+    VK64_fn_vkFreeDescriptorSets = 913,
+    VK64_fn_vkCmdPushDescriptorSetKHR = 914,
+    VK64_fn_vkCmdPushDescriptorSetWithTemplateKHR = 915,
+    VK64_fn_vkGetDescriptorSetLayoutSupport = 916,
     VK64_fn__MAX
 };
 
@@ -816,6 +821,35 @@ API void vkDestroyPipelineLayout(VkDevice dev, VkPipelineLayout l, const void* a
 API void vkDestroyDescriptorSetLayout(VkDevice dev, VkDescriptorSetLayout l, const void* alloc) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = l; a.a[2] = P(alloc);
     (void)vk64_trap(VK64_fn_vkDestroyDescriptorSetLayout, &a);
+}
+API VkResult vkResetDescriptorPool(VkDevice dev, VkDescriptorPool pool, VkFlags flags) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = pool; a.a[2] = flags;
+    return (VkResult)vk64_trap(VK64_fn_vkResetDescriptorPool, &a);
+}
+API VkResult vkFreeDescriptorSets(VkDevice dev, VkDescriptorPool pool, uint32_t count, const void* sets) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = pool; a.a[2] = count; a.a[3] = P(sets);
+    return (VkResult)vk64_trap(VK64_fn_vkFreeDescriptorSets, &a);
+}
+API void vkCmdPushDescriptorSetKHR(VkCommandBuffer cb, uint32_t bindPoint, VkPipelineLayout layout, uint32_t set, uint32_t writeCount, const void* writes) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = bindPoint; a.a[2] = layout; a.a[3] = set; a.a[4] = writeCount; a.a[5] = P(writes);
+    (void)vk64_trap(VK64_fn_vkCmdPushDescriptorSetKHR, &a);
+}
+API void vkCmdPushDescriptorSet(VkCommandBuffer cb, uint32_t bindPoint, VkPipelineLayout layout, uint32_t set, uint32_t writeCount, const void* writes) {
+    vkCmdPushDescriptorSetKHR(cb, bindPoint, layout, set, writeCount, writes);
+}
+API void vkCmdPushDescriptorSetWithTemplateKHR(VkCommandBuffer cb, VkHandle tmpl, VkPipelineLayout layout, uint32_t set, const void* data) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = tmpl; a.a[2] = layout; a.a[3] = set; a.a[4] = P(data);
+    (void)vk64_trap(VK64_fn_vkCmdPushDescriptorSetWithTemplateKHR, &a);
+}
+API void vkCmdPushDescriptorSetWithTemplate(VkCommandBuffer cb, VkHandle tmpl, VkPipelineLayout layout, uint32_t set, const void* data) {
+    vkCmdPushDescriptorSetWithTemplateKHR(cb, tmpl, layout, set, data);
+}
+API void vkGetDescriptorSetLayoutSupport(VkDevice dev, const void* ci, void* support) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(support);
+    (void)vk64_trap(VK64_fn_vkGetDescriptorSetLayoutSupport, &a);
+}
+API void vkGetDescriptorSetLayoutSupportKHR(VkDevice dev, const void* ci, void* support) {
+    vkGetDescriptorSetLayoutSupport(dev, ci, support);
 }
 API void vkDestroyDescriptorPool(VkDevice dev, VkDescriptorPool p, const void* alloc) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = p; a.a[2] = P(alloc);
@@ -1367,6 +1401,14 @@ static const struct procEntry g_procs[] = {
     E(vkDestroyPipelineLayout, VK64_fn_vkDestroyPipelineLayout),
     E(vkDestroyDescriptorSetLayout, VK64_fn_vkDestroyDescriptorSetLayout),
     E(vkDestroyDescriptorPool, VK64_fn_vkDestroyDescriptorPool),
+    E(vkResetDescriptorPool, VK64_fn_vkResetDescriptorPool),
+    E(vkFreeDescriptorSets, VK64_fn_vkFreeDescriptorSets),
+    E(vkCmdPushDescriptorSetKHR, VK64_fn_vkCmdPushDescriptorSetKHR),
+    E(vkCmdPushDescriptorSet, VK64_fn_vkCmdPushDescriptorSetKHR),
+    E(vkCmdPushDescriptorSetWithTemplateKHR, VK64_fn_vkCmdPushDescriptorSetWithTemplateKHR),
+    E(vkCmdPushDescriptorSetWithTemplate, VK64_fn_vkCmdPushDescriptorSetWithTemplateKHR),
+    E(vkGetDescriptorSetLayoutSupport, VK64_fn_vkGetDescriptorSetLayoutSupport),
+    E(vkGetDescriptorSetLayoutSupportKHR, VK64_fn_vkGetDescriptorSetLayoutSupport),
     E(vkDestroyShaderModule, VK64_fn_vkDestroyShaderModule),
     E(vkDestroyPipelineCache, VK64_fn_vkDestroyPipelineCache),
     E(vkDestroyFence, VK64_fn_vkDestroyFence),
@@ -2128,7 +2170,6 @@ TAIL(vkDestroySwapchainKHR2)
 TAIL(vkMergePipelineCaches)
 TAIL(vkResetPipelineCache)
 TAIL(vkGetDeviceMemoryCommitment)
-TAIL(vkFreeDescriptorSets)
 TAIL(vkDestroyBufferView)
 TAIL(vkSetDebugUtilsObjectNameEXT)
 TAIL(vkSetDebugUtilsObjectTagEXT)
@@ -2445,7 +2486,6 @@ API void vkCmdCopyQueryPoolResults(VkCommandBuffer cb, VkQueryPool pool, uint32_
 TAIL(vkGetPipelineLayoutSupport)
 TAIL(vkQueueBindSparse)
 TAIL(vkCmdSetBlendConstant)
-TAIL(vkCmdPushDescriptorSet)
 TAIL(vkCmdNextSubpass)
 TAIL(vkCmdNextSubpassKHR)
 TAIL(vkCmdSetDeviceMask)
@@ -2466,6 +2506,4 @@ TAIL(vkTrimCommandPool)
 TAIL(vkCreateFramebuffer2KHR)
 TAIL(vkCreateSamplerYcbcrConversion)
 TAIL(vkDestroySamplerYcbcrConversion)
-TAIL(vkGetDescriptorSetLayoutSupport)
-TAIL(vkGetDescriptorSetLayoutSupportKHR)
 #undef TAIL
