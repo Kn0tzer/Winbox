@@ -376,6 +376,9 @@ void KProcess::deleteThread(KThread* thread) {
 }
 
 void KProcess::setupCommandlineNode() {
+    if (!this->processNode) {
+        return;
+    }
     // Capture THIS process: the old static open fn returned the CURRENT
     // thread's command line, so any process reading another pid's
     // /proc/<pid>/cmdline (taskmgr's command-line column, ps-alikes) saw its
@@ -609,9 +612,11 @@ KFileDescriptorPtr KProcess::allocFileDescriptor(const std::shared_ptr<KObject>&
     KFileDescriptorPtr result = std::make_shared<KFileDescriptor>(shared_from_this(), kobject, accessFlags, descriptorFlags, handle);
     
     this->fds.set(handle, result);
-    Fs::addDynamicLinkFile(fdNode->path+"/"+BString::valueOf(handle), k_mdev(0, 0), fdNode, false, [kobject] {
-        return kobject->selfFd();
-    });
+    if (fdNode) {
+        Fs::addDynamicLinkFile(fdNode->path+"/"+BString::valueOf(handle), k_mdev(0, 0), fdNode, false, [kobject] {
+            return kobject->selfFd();
+        });
+    }
     return result;
 }
 
@@ -834,7 +839,9 @@ KFileDescriptor* KProcess::getFileDescriptor_nolock(FD handle) {
 void KProcess::clearFdHandle(FD handle) {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex);
     this->fds.remove(handle);
-    fdNode->removeChildByName(BString::valueOf(handle));
+    if (fdNode) {
+        fdNode->removeChildByName(BString::valueOf(handle));
+    }
 }
 
 bool KProcess::isStopped() {

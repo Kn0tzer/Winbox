@@ -15,7 +15,9 @@
 #include "cpu64.h"
 #include "kmemory64.h"
 #include "ksystem.h"
+#include "ksignal.h"
 #include "syscall64.h"
+#include "kevent.h"
 #include "../cpu/testCPU.h"
 #include "../../io/fsfilenode.h"
 
@@ -24,6 +26,11 @@ struct RestoreProcessCpu64 {
     KProcess& process;
     CPU64* saved;
     ~RestoreProcessCpu64() { process.cpu64 = saved; }
+};
+struct RestoreSignalAction {
+    KSigAction& target;
+    KSigAction saved;
+    ~RestoreSignalAction() { target = saved; }
 };
 }
 
@@ -52,6 +59,22 @@ static void runForkCase(TestContext& context, U64 nr, const char* name) {
     memory->writeb(childCode, 0xEB);     // jmp $: keep the child alive until
     memory->writeb(childCode + 1, 0xFE); // the test explicitly stops it.
 
+    constexpr U32 testFdHandle = 197;
+    if (process->getFileDescriptor(testFdHandle)) {
+        testFail("%s test FD handle is unexpectedly occupied", name);
+        return;
+    }
+    auto sharedObject = std::make_shared<KEvent>();
+    KFileDescriptorPtr parentFd = process->allocFileDescriptor(sharedObject, K_O_RDWR, 0, testFdHandle, 0);
+    if (!parentFd) {
+        testFail("%s test could not allocate descriptor", name);
+        return;
+    }
+    KSigAction& parentAction = process->sigActions[K_SIGUSR1];
+    RestoreSignalAction restoreAction{parentAction, parentAction};
+    parentAction.handlerAndSigAction = 0x12345000;
+    parentAction.flags = K_SA_SIGINFO;
+
     CPU64 cpu(memory);
     cpu.thread = context.thread;
     RestoreProcessCpu64 restoreCpu{*process, process->cpu64};
@@ -77,6 +100,14 @@ static void runForkCase(TestContext& context, U64 nr, const char* name) {
     } else {
         if (child->cpu64->reg[X64_RAX].u64 != 0) testFail("%s child does not return 0", name);
         if (child->cpu64->rip != childCode) testFail("%s child did not inherit RIP", name);
+    }
+    KFileDescriptorPtr childFd = child->getFileDescriptor(testFdHandle);
+    if (!childFd || childFd->kobject != sharedObject) {
+        testFail("%s child did not inherit its descriptor/open-file description", name);
+    }
+    if (child->sigActions[K_SIGUSR1].handlerAndSigAction != parentAction.handlerAndSigAction ||
+        child->sigActions[K_SIGUSR1].flags != parentAction.flags) {
+        testFail("%s child did not inherit its signal disposition", name);
     }
     if (child->memory64) {
         if (child->memory64->readd(page) != 0x11223344 || child->memory64->readd(page + 4) != 0xAABBCCDD) {
@@ -118,6 +149,7 @@ static void runForkCase(TestContext& context, U64 nr, const char* name) {
     if (KSystem::getProcess((U32)forkResult)) {
         KSystem::eraseProcess((U32)forkResult);
     }
+    process->clearFdHandle(testFdHandle);
 }
 
 void testForkVfork64() {
