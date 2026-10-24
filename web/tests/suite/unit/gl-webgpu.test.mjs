@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { blendFactor, convertIndices, packUniforms, stateKey, uniformLayout } from '../../../gl-webgpu-utils.mjs';
-import { WebGPUGL, rewriteGlslForWebGPU } from '../../../gl-webgpu.mjs';
+import { WebGPUGL, rewriteGlslForWebGPU, applyNoperspectiveInterpolation, patchTextureGatherWGSL } from '../../../gl-webgpu.mjs';
 import { createValidationDevice } from '../fixtures/webgpu-validation-device.mjs';
+import * as naga from '../../../vendor/naga/node.js';
 
 test('uniform layout and packing honor std140 vector, matrix, and array strides', () => {
   const layout = uniformLayout([
@@ -689,4 +690,75 @@ test('state and texture entry points report invalid enums, values, and operation
     gl.texSubImage2D(0x0de1, 0, 1, 0, 1, 1, 0x1908, 0x1401, new Uint8Array(4));
     assert.equal(gl.getError(), 0x0501, 'texture subimage bounds are validated');
   } finally { gpu.restore(); }
+});
+
+
+test('GLSL switch, bitwise operators, texture operations, derivatives, discard and fragment builtins translate with Naga', () => {
+  const source=`#version 300 es
+uniform sampler2D image;
+in vec2 uv;
+out vec4 color;
+void main(){
+  int mode=3; int bits=0;
+  switch(mode){case 1: bits=1; break; case 3: bits=(7 & 3) << 1; break; default: bits=0;}
+  vec4 ordinary=texture(image,uv);
+  vec4 lod=textureLod(image,uv,0.0);
+  vec4 grad=textureGrad(image,uv,dFdx(uv),dFdy(uv));
+  vec4 offset=textureOffset(image,uv,ivec2(1));
+  vec4 gathered=textureGather(image,uv,2);
+  vec4 gatheredOffset=textureGatherOffset(image,uv,ivec2(1),1);
+  vec4 fetched=texelFetch(image,ivec2(0),0);
+  float derivative=fwidth(uv.x);
+  color=ordinary+lod+grad+offset+gathered+gatheredOffset+fetched+vec4(float(bits)+derivative+gl_FragCoord.x+gl_FragCoord.y);
+  if(gl_FrontFacing && bits==0) discard;
+}`;
+  const prepared=rewriteGlslForWebGPU(source,'fragment');
+  const wgsl=patchTextureGatherWGSL(naga.translate({from:'glsl',to:'wgsl',source:prepared.code,parse:{stage:'fragment'}}),prepared.gathers);
+  assert.match(String(wgsl),/textureSampleLevel|textureSample/);
+  assert.match(String(wgsl),/textureGather\(2,/);
+  assert.match(String(wgsl),/textureGather\(1,[^\n]*vec2\(1i\)/);
+  assert.match(String(wgsl),/discard/);
+});
+
+test('uniform arrays of structs flatten to fields and preserve element locations', async () => {
+  const source=`#version 300 es
+struct Light { vec4 color; float intensity; };
+uniform Light lights[2];
+out vec4 color;
+void main(){color=lights[1].color*lights[0].intensity;}`;
+  const prepared=rewriteGlslForWebGPU(source,'fragment');
+  assert.match(prepared.code,/vec4 lights_color\[2\]/);
+  assert.match(prepared.code,/bw_globals\.lights_color\[1\]/);
+  assert.doesNotThrow(()=>naga.translate({from:'glsl',to:'wgsl',source:prepared.code,parse:{stage:'fragment'}}));
+
+  const gpu=createValidationDevice();
+  try {
+    const gl=new WebGPUGL(gpu.canvas);await gl.ready;
+    const program=gl.createProgram(),vertex=gl.createShader(0x8b31),fragment=gl.createShader(0x8b30);
+    gl.shaderSource(vertex,'#version 300 es\nin vec4 position; void main(){gl_Position=position;}');
+    gl.shaderSource(fragment,source);gl.compileShader(vertex);gl.compileShader(fragment);gl.attachShader(program,vertex);gl.attachShader(program,fragment);gl.linkProgram(program);await program.linkPromise;
+    assert.equal(program.linked,true);
+    assert.ok(program.uniformLocations.has('lights[1].color'),[...program.uniformLocations.keys()].join(','));
+    const location=gl.getUniformLocation(program,'lights[1].color');assert.ok(location);gl.useProgram(program);gl.uniform4fv(location,[0.2,0.4,0.6,0.8]);
+    assert.ok(program.uniformValues.get('lights_color'));
+    assert.deepEqual([...gl.getUniform(program,location)],Array.from(new Float32Array([0.2,0.4,0.6,0.8])));
+    assert.equal(gl.getActiveUniform(program,0).name,'lights[0].color');
+  } finally {gpu.restore();}
+});
+
+test('GLSL flat/noperspective varying arrays and uniform arrays translate with Naga', () => {
+  const vertex=`#version 300 es
+in vec4 position;\nflat out vec4 flags[2];\nnoperspective out vec2 screenUv;
+uniform vec4 weights[2];
+void main(){ flags[0]=weights[0]; flags[1]=weights[1]; screenUv=position.xy; gl_Position=position; }`;
+  const fragment=`#version 300 es
+flat in vec4 flags[2];\nnoperspective in vec2 screenUv;\nout vec4 color;
+void main(){color=flags[0]+flags[1]+vec4(screenUv,0.0,0.0);}`;
+  const locations=new Map();
+  const vs=rewriteGlslForWebGPU(vertex,'vertex',new Map(),locations).code;
+  const fs=rewriteGlslForWebGPU(fragment,'fragment',new Map(),locations).code;
+  const vertexWgsl=String(naga.translate({from:'glsl',to:'wgsl',source:vs,parse:{stage:'vertex'}}));
+  const fragmentWgsl=String(naga.translate({from:'glsl',to:'wgsl',source:fs,parse:{stage:'fragment'}}));
+  assert.match(applyNoperspectiveInterpolation(vertexWgsl,rewriteGlslForWebGPU(vertex,'vertex',new Map(),new Map()).noperspectiveLocations),/@location\(2\) @interpolate\(linear\) screenUv/);
+  assert.ok(fragmentWgsl.includes('screenUv'));
 });

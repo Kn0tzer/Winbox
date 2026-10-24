@@ -203,6 +203,97 @@ function lowerUniformBlocks(source) {
   return { code: rewritten, blocks };
 }
 
+function lowerStructUniformArrays(source) {
+  let code=source;const uniforms=[];
+  const structs=new Map();
+  for(const match of code.matchAll(/\bstruct\s+([A-Za-z_]\w*)\s*\{([^}]*)\}\s*;/g)){
+    const fields=[...match[2].matchAll(/\b((?:(?:lowp|mediump|highp)\s+)?[A-Za-z_]\w*)\s+([A-Za-z_]\w*)\s*;/g)].map(field=>({type:field[1].trim().replace(/^(?:lowp|mediump|highp)\s+/,''),name:field[2]}));
+    if(fields.length)structs.set(match[1],fields);
+  }
+  for(const [type,fields] of structs){
+    const re=new RegExp(`^[ \\t]*uniform[ \\t]+${type}[ \\t]+([A-Za-z_]\\w*)[ \\t]*\\[[ \\t]*(\\d+)[ \\t]*\\][ \\t]*;[ \\t]*$`,'gm');let match;
+    while((match=re.exec(code))){
+      const [,name,countText]=match,count=Number(countText),declarations=[];
+      if(!Number.isSafeInteger(count)||count<1)continue;
+      for(const field of fields){
+        const internalName=`${name}_${field.name}`;
+        declarations.push(`uniform ${field.type} ${internalName}[${count}];`);
+        uniforms.push({name:`${name}[0].${field.name}`,baseName:`${name}.${field.name}`,internalName,size:count,type:field.type});
+        code=code.replace(new RegExp(`\\b${name}\\s*\\[\\s*([^\\]]+)\\s*\\]\\s*\\.\\s*${field.name}\\b`,'g'),`${internalName}[$1]`);
+      }
+      code=code.slice(0,match.index)+declarations.join('\n')+code.slice(match.index+match[0].length);
+      re.lastIndex=match.index+declarations.join('\n').length;
+    }
+  }
+  return {code,uniforms};
+}
+
+function lowerStageInterfaceArrays(source) {
+  const interpolations = new Set();
+  const replacements = [];
+  let code = source.replace(/^([ \t]*)(?:layout\s*\(([^)]*)\)\s*)?((?:(?:centroid|sample|patch|flat|smooth|noperspective|invariant|precise)[ \t]+)*)(in|out)[ \t]+([A-Za-z_]\w*)[ \t]+([A-Za-z_]\w*)[ \t]*\[\s*(\d+)\s*\][ \t]*;[ \t]*$/gm,
+    (whole, indent, layoutText, qualifiers, direction, type, name, sizeText) => {
+      const size=Number(sizeText), flat=qualifiers.includes('flat'), noPerspective=qualifiers.includes('noperspective');
+      if (!Number.isInteger(size)||size<1) return whole;
+      const declarations=[];
+      for(let index=0;index<size;index++){
+        const flattened=`${name}_bw64_${index}`;
+        if(noPerspective)interpolations.add(flattened);
+        let layout='';
+        if(layoutText!==undefined){const explicit=/\blocation\s*=\s*(\d+)/.exec(layoutText);const next=explicit?layoutText.replace(/\blocation\s*=\s*\d+/,`location = ${Number(explicit[1])+index}`):layoutText;layout=`layout(${next}) `;}
+        declarations.push(`${indent}${layout}${flat?'flat ':''}${direction} ${type} ${flattened};`);
+        replacements.push([name,index,flattened]);
+      }
+      return declarations.join('\n');
+    });
+  for(const [name,index,flattened] of replacements) code=code.replace(new RegExp(`\\b${name}\\s*\\[\\s*${index}\\s*\\]`,'g'),flattened);
+  for(const match of code.matchAll(/^[ \t]*(?:layout\s*\([^)]*\)\s*)?(?:(?:centroid|sample|patch|flat|smooth|noperspective|invariant|precise)[ \t]+)*(?:in|out)[ \t]+[A-Za-z_]\w*[ \t]+([A-Za-z_]\w*)[ \t]*;/gm)){
+    const line=match[0];if(/\bnoperspective\b/.test(line))interpolations.add(match[1]);
+  }
+  return { code, noperspective: interpolations };
+}
+
+function splitCallArguments(source, open) {
+  const args=[];let start=open+1,depth=0;
+  for(let i=open+1;i<source.length;i++){
+    const c=source[i];if(c==='('||c==='[')depth++;else if(c===')'||c===']'){if(c===')'&&depth===0){args.push(source.slice(start,i).trim());return {args,end:i+1};}depth--;}
+    else if(c===','&&depth===0){args.push(source.slice(start,i).trim());start=i+1;}
+  }
+  return null;
+}
+
+function lowerTextureGather(source) {
+  const gathers=[];let code=source;
+  const re=/\b(textureGather(?:Offset)?)\s*\(/g;let match;
+  while((match=re.exec(code))){
+    const parsed=splitCallArguments(code,code.indexOf('(',match.index));if(!parsed)continue;
+    const {args}=parsed;if(args.length<2||args.length>4)continue;
+    const offsetForm=match[1]==='textureGatherOffset';
+    const componentArg=args[offsetForm?3:2]??'0';
+    const component=Number(componentArg);
+    if(!Number.isInteger(component)||component<0||component>3)continue;
+    const id=gathers.length,sentinel=-10000-id,coord=args[1],offset=offsetForm?args[2]:null;
+    const replacement=offsetForm?`textureLodOffset(${args[0]}, ${coord}, ${sentinel}.0, ${offset})`:`textureLod(${args[0]}, ${coord}, ${sentinel}.0)`;
+    gathers.push({sentinel,component,offset:Boolean(offset)});
+    code=code.slice(0,match.index)+replacement+code.slice(parsed.end);re.lastIndex=match.index+replacement.length;
+  }
+  return {code,gathers};
+}
+
+export function patchTextureGatherWGSL(wgsl, gathers=[]) {
+  let output=String(wgsl);
+  for(const {sentinel,component} of gathers){
+    const re=/textureSampleLevel\s*\(/g;let match;
+    while((match=re.exec(output))){
+      const open=output.indexOf('(',match.index),parsed=splitCallArguments(output,open);if(!parsed)continue;
+      if(parsed.args.length<4||Number(parsed.args[3].replace(/f$/,''))!==sentinel)continue;
+      const args=parsed.args,replacement=`textureGather(${component}, ${args[0]}, ${args[1]}, ${args[2]}${args[4]?`, ${args[4]}`:''})`;
+      output=output.slice(0,match.index)+replacement+output.slice(parsed.end);re.lastIndex=match.index+replacement.length;
+    }
+  }
+  return output;
+}
+
 function glslDeclarations(source, qualifier) {
   const result = [];
   const re = new RegExp(`^[ \\t]*(?:layout\\s*\\(([^)]*)\\)\\s*)?${qualifier}[ \\t]+([A-Za-z_]\\w*)[ \\t]+([A-Za-z_]\\w*)(?:[ \\t]*\\[[ \\t]*(\\d+)[ \\t]*\\])?[ \\t]*;[ \\t]*$`, 'gm');
@@ -329,8 +420,12 @@ export function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(
   );
   if (integerDefines.size) code = code.replace(/\[[ \t]*([A-Za-z_]\w*)[ \t]*\]/g,
     (match, name) => integerDefines.has(name) ? `[${integerDefines.get(name)}]` : match);
+  const loweredStructs=lowerStructUniformArrays(code);
+  code=loweredStructs.code;
   const loweredBlocks = lowerUniformBlocks(code);
   code = loweredBlocks.code;
+  const loweredGathers=lowerTextureGather(code);
+  code=loweredGathers.code;
   const uniforms = glslDeclarations(code, 'uniform');
   const fields = [];
   const samplers = [];
@@ -366,7 +461,7 @@ export function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(
 
   for (const sampler of samplers) {
     const escaped = sampler.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    code = code.replace(new RegExp(`\\btexture(?:2D|Cube|3D)?\\s*\\(\\s*${escaped}\\s*,`, 'g'), `texture(${sampler.type}(${sampler.name}_bw_t, ${sampler.name}_bw_s),`);
+    code = code.replace(new RegExp(`\\b(texture|texture(?:2D|Cube|3D|Lod|Grad|Offset|LodOffset|GradOffset|Proj|ProjLod|ProjOffset|Gather|GatherOffset)|texelFetch|textureSize)\\s*\\(\\s*${escaped}\\s*,`, 'g'), (_match, operation) => `${operation}(${sampler.type}(${sampler.name}_bw_t, ${sampler.name}_bw_s),`);
     const array = sampler.arrayLength > 1 ? `[${sampler.arrayLength}]` : '';
     code = `layout(binding = ${sampler.textureBinding}) uniform ${sampler.type === 'samplerCube' ? 'textureCube' : sampler.type === 'sampler3D' ? 'texture3D' : sampler.type === 'sampler2DArray' ? 'texture2DArray' : 'texture2D'} ${sampler.name}_bw_t${array};\nlayout(binding = ${sampler.samplerBinding}) uniform sampler ${sampler.name}_bw_s${array};\n${code}`;
   }
@@ -398,12 +493,29 @@ export function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(
       }
     }
   }
+  const loweredArrays=lowerStageInterfaceArrays(code);
+  code=loweredArrays.code;
   // WGSL entry-point interfaces cannot carry matrices. Lower matrix stage IO
   // into one vec per column and reconstruct the GLSL matrix inside main().
   code = lowerMatrixStageInterfacesForNaga(code);
   const lifted = liftForNaga(code, stage, interfaceLocations);
   if (!lifted.ok) throw new Error(`GLSL lift failed (${lifted.reason}): ${lifted.detail || ''}`);
-  return { code: lifted.code, layout, activeUniforms, samplers, uniformBlocks: loweredBlocks.blocks };
+  const noperspectiveLocations=[];
+  for(const name of loweredArrays.noperspective){
+    const escaped=name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+    const declaration=new RegExp(`layout\\s*\\([^)]*\\blocation\\s*=\\s*(\\d+)[^)]*\\)\\s*(?:flat\\s*)?(?:in|out)\\s+[A-Za-z_]\\w*\\s+${escaped}\\s*;`);
+    const match=declaration.exec(lifted.code);if(match)noperspectiveLocations.push(Number(match[1]));
+  }
+  return { code: lifted.code, layout, activeUniforms, samplers, uniformBlocks: loweredBlocks.blocks, noperspectiveLocations, gathers: loweredGathers.gathers, structUniforms: loweredStructs.uniforms };
+}
+
+export function applyNoperspectiveInterpolation(wgsl, locations = []) {
+  let output=String(wgsl);
+  for(const location of new Set(locations)){
+    const attribute=new RegExp(`(@location\\(${Number(location)}\\)(?:\\s+@interpolate\\(flat\\))?)(?!\\s+@interpolate\\()`, 'g');
+    output=output.replace(attribute,'$1 @interpolate(linear)');
+  }
+  return output;
 }
 
 function parseStageInputs(source, stage) {
@@ -891,8 +1003,8 @@ export class WebGPUGL {
   }
   isEnabled(capability) {
     if (capability === GL.TEXTURE_2D) return !!this._fixedTextureEnabled[this._activeTextureUnit];
-    if (!GL_ENABLE_CAPABILITIES.has(capability) && capability !== 0x8861) { this._recordError(GL.INVALID_ENUM); return false; }
     if (capability === 0x8861) { this._rejectUnsupported('point sprites', GL.INVALID_OPERATION); return false; }
+    if (!GL_ENABLE_CAPABILITIES.has(capability)) { this._recordError(GL.INVALID_ENUM); return false; }
     return this._enabled.has(capability);
   }
 
@@ -1371,7 +1483,9 @@ export class WebGPUGL {
       program.attributeInfo.push({ name: declaration.name, size: declaration.arrayLength, type: TYPE_ENUM.get(declaration.type) || 0x1406 });
     }
     for (const shader of [vertex, fragment]) {
+      const structTypes=new Set([...shader.source.matchAll(/\bstruct\s+([A-Za-z_]\w*)\s*\{/g)].map(match=>match[1]));
       for (const declaration of glslDeclarations(shader.source, 'uniform')) {
+        if(structTypes.has(declaration.type))continue;
         if (program.uniformInfo.some(info => info.name.replace(/\[0\]$/, '') === declaration.name)) continue;
         const name = declaration.arrayLength > 1 ? `${declaration.name}[0]` : declaration.name;
         const info = { name, baseName: declaration.name, size: declaration.arrayLength, type: TYPE_ENUM.get(declaration.type) || 0x1406 };
@@ -1380,6 +1494,18 @@ export class WebGPUGL {
         this._uniformLocations.set(`${program.id}:${declaration.name}`, location);
         program.uniformLocations.set(declaration.name, location);
         program.uniformValues.set(declaration.name, declaration.type.startsWith('sampler') ? 0 : new Float32Array(Math.max(1, declaration.arrayLength) * componentCount(declaration.type)));
+      }
+      for(const member of lowerStructUniformArrays(shader.source).uniforms){
+        if(program.uniformInfo.some(info=>info.baseName===member.baseName))continue;
+        program.uniformInfo.push({name:member.name,baseName:member.baseName,size:member.size,type:TYPE_ENUM.get(member.type)||0x1406});
+        const values=new Float32Array(member.size*componentCount(member.type));
+        program.uniformValues.set(member.internalName,values);
+        const width=componentCount(member.type);
+        for(let element=0;element<member.size;element++){
+          const alias=`${member.baseName.replace('.',`[${element}].`)}`;
+          const location={program,name:member.internalName,id:this._uniformLocations.size,offset:element*width,componentWidth:width,structArray:true};
+          this._uniformLocations.set(`${program.id}:${alias}`,location);program.uniformLocations.set(alias,location);
+        }
       }
     }
     for (const block of program.uniformBlocks) {
@@ -1403,7 +1529,9 @@ export class WebGPUGL {
         failingPreparedCode = '';
         const prepared = rewriteGlslForWebGPU(shader.source, stage, program.attributes, locationRegistry, this._clipControl);
         failingPreparedCode = prepared.code;
-        const wgsl = await toWGSL('glsl', prepared.code, stage);
+        let wgsl = await toWGSL('glsl', prepared.code, stage);
+        wgsl = applyNoperspectiveInterpolation(wgsl, prepared.noperspectiveLocations);
+        wgsl = patchTextureGatherWGSL(wgsl, prepared.gathers);
         if (!wgsl) throw new Error(`${stage} shader translated to empty WGSL`);
         const activeInputs = stage === 'vertex'
           ? [...prepared.code.matchAll(/layout\s*\([^)]*location\s*=\s*(\d+)[^)]*\)\s*in\s+([A-Za-z_]\w*)\s+([A-Za-z_]\w*)/g)]
@@ -1541,9 +1669,17 @@ export class WebGPUGL {
   getActiveUniform(program, index) { const item = program?.uniformInfo?.[index]; return item ? { name: item.name, size: item.size, type: item.type } : null; }
   _setUniform(location, value) {
     if (!location?.program || location.program !== this._currentProgram) return;
+    if(location.structArray&&ArrayBuffer.isView(location.program.uniformValues.get(location.name))){
+      const current=location.program.uniformValues.get(location.name),incoming=ArrayBuffer.isView(value)||Array.isArray(value)?value:[value];
+      current.set(incoming,location.offset);return;
+    }
     location.program.uniformValues.set(location.name, ArrayBuffer.isView(value) ? value.slice() : Array.isArray(value) ? value.slice() : value);
   }
-  getUniform(program, location) { return program?.uniformValues.get(location?.name) ?? 0; }
+  getUniform(program, location) {
+    const value=program?.uniformValues.get(location?.name);
+    if(location?.structArray&&ArrayBuffer.isView(value))return value.slice(location.offset,location.offset+location.componentWidth);
+    return value ?? 0;
+  }
   uniform1f(location, x) { this._setUniform(location, Number(x)); }
   uniform1fv(location, value) { this._setUniform(location, value); }
   uniform1i(location, x) { this._setUniform(location, Number(x) | 0); }

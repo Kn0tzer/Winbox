@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { WebGPUGL, rewriteGlslForWebGPU } from '../../../gl-webgpu.mjs';
 import { createValidationDevice } from '../fixtures/webgpu-validation-device.mjs';
+import * as naga from '../../../vendor/naga/node.js';
 
 test('anisotropic filtering extension maps texture state to WebGPU samplers', async () => {
   const gpu = createValidationDevice();
@@ -224,6 +225,8 @@ test('cube, 3D, and array GLSL samplers lower to matching separate texture types
     const result=rewriteGlslForWebGPU(source,'fragment');
     assert.equal(result.samplers[0].target,target);
     assert.match(result.code,new RegExp(`uniform ${textureType} image_bw_t`));
+    const wgsl=naga.translate({from:'glsl',to:'wgsl',source:result.code,parse:{stage:'fragment'}});
+    assert.match(String(wgsl),/textureSample/);
   }
 });
 
