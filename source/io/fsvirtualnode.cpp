@@ -84,8 +84,9 @@ U32 FsVirtualNode::rename(BString path) {
 }
 
 U32 FsVirtualNode::removeDir() {
-    kpanic("FsVirtualNode::removeDir not implemented");
-    return 0;
+    // Virtual directories are generated, so the guest cannot remove one. Reject it with EPERM and log the attempt, rather than aborting the emulator.
+    klog("FsVirtualNode::removeDir: virtual directories cannot be removed");
+    return -K_EPERM;
 }
 
 U32 FsVirtualNode::setTimes(U64 lastAccessTime, U32 lastAccessTimeNano, U64 lastModifiedTime, U32 lastModifiedTimeNano) {

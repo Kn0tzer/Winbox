@@ -12,7 +12,7 @@ This register is a marker scan. It finds `unsupported`, `not implemented`, `TODO
 | --- | --- | --- | --- |
 | X11 host (`source/x11/`) | 4 | 96 | High. Aborts on many Xlib entry points, plus silent clipping and pixel writes. |
 | X11 wire GLX (`source/x11wire/`) | 1 | 1 | High, if the GLX-over-wire path is used by a target build. |
-| io / fs nodes (`source/io/`) | 8 | 20 | Mostly low. One guest-reachable abort (`FsVirtualNode::removeDir`). |
+| io / fs nodes (`source/io/`) | 8 | 19 | Low. The one guest-reachable abort (`FsVirtualNode::removeDir`) is fixed. |
 | UI (`source/ui/`) | 8 | 11 | Low. Save-on-exit and error-message TODOs. |
 | Platform host (`platform/`) | 5 | 11 | Medium for thread exception sync; low for cursor, audio device and CPU frequency. |
 | softmmu (`source/emulation/softmmu/`) | 4 | 7 | Invariants only, see allowlist. |
@@ -20,7 +20,7 @@ This register is a marker scan. It finds `unsupported`, `not implemented`, `TODO
 | `web/naga-rt.mjs`, `web/frame-metrics.mjs` | 2 | 5 | Medium for shader versions routed to ANGLE. The other hit is a UI label. |
 | `include/`, `source/sdl/main.cpp` | 3 | 5 | Invariants and comments, see allowlist. |
 
-Total: 41 files, 169 hits. 24 files are in the register below (counts may only go down). 17 are in `allowlist.json` with reasons. `--check` fails on any UNOWNED hit that is neither.
+Total: 41 files, 168 hits. 24 files are in the register below (counts may only go down). 17 are in `allowlist.json` with reasons. `--check` fails on any UNOWNED hit that is neither.
 
 Severity: **high** = likely to crash or visibly break a real game, or to drop data silently. **medium** = breaks a feature or a subset of games. **low** = debug-only, cosmetic, or rarely used.
 
@@ -46,7 +46,7 @@ Ranked by severity if reached. "Reached" means the guest calls the path. This sc
 | Other X11 kpanics | `x11common.cpp:2849,2854` (`XISelectEvents` shape checks); `:2944` (`CursorImageLoadCursor`); `:2663` TODO | low | Unusual XInput2 selections and Xcursor loads abort. | OPEN, registered |
 | Shader versions routed to ANGLE | `web/naga-rt.mjs:70,283-286` | medium | Sources naga cannot lift are classed `unsupported-version` and left to ANGLE. Whether every routed shader then compiles is not verified here. | NEEDS_OTHER_LANE (gl), work item 13 |
 | Thread exception sync (host) | `platform/linux/platformThreads-x64.cpp:146,187` (`syncFromException` kpanics) | medium | An unexpected host thread state aborts the emulator. | OPEN (work item 14) |
-| Directory rmdir on virtual nodes | `source/io/fsvirtualnode.cpp:87` (kpanic `removeDir not implemented`) | medium | Guest `rmdir` of a virtual directory aborts the emulator (`kprocess.cpp:1204-1211` calls `node->removeDir()`). | OPEN (fix in the next commit) |
+| Directory rmdir on virtual nodes | `source/io/fsvirtualnode.cpp:86-89` (was kpanic `removeDir not implemented`) | medium (before the fix) | Guest `rmdir` of a virtual directory aborted the emulator (`kprocess.cpp:1204-1211` calls `node->removeDir()`). | FIXED: logs and returns `-EPERM`. Test: `web/tests/suite/unit/fs-virtual-removedir.test.mjs`. |
 | Virtual `setTimes` | `source/io/fsvirtualnode.cpp:92` (klog, then success) | low | `utimensat` on a virtual node reports success without storing the time, and logs it. | OPEN, registered |
 | memfd nodes | `source/io/fsmemnode.cpp:28,33,46,59,64` (kpanic on rename, remove, open, removeDir, setTimes) | none for now | Unreachable: memfd nodes never enter the path namespace (see allowlist). Becomes reachable if `/proc/self/fd` is added. | ALLOWLISTED (work item 15) |
 | Zip-backed write and truncate | `source/io/fszipopennode.cpp:43,236` (kpanic) | low | Unreachable from guest code: writable fds are rejected before `setLength` and `writeNative` (`kprocess.cpp:1680`), and write-open moves the file first (`fsfilenode.cpp:192`). | NOT_A_GAP for the write path; invariant kept |
@@ -107,7 +107,7 @@ Ranked by severity if reached, then by how likely a real game is to reach the pa
 
 ## Fixes applied
 
-None in this commit. The `FsVirtualNode::removeDir` fix is the next commit, with its test.
+- **`source/io/fsvirtualnode.cpp:86-89`** (`FsVirtualNode::removeDir`): a guest `rmdir` of a virtual directory aborted the emulator. It now logs the attempt and returns `-K_EPERM`. Virtual directories are generated, so the guest cannot remove one, and `EPERM` is the errno for an operation the node does not permit. This is a choice, not a copy of a host result; the host was not probed. Regression: `web/tests/suite/unit/fs-virtual-removedir.test.mjs`, which compiles the real function body against stub `kpanic` and `klog` and checks the return value, the log count, and that no panic is reached. The test fails on the original code and passes with the fix. The register entry drops from 2 (medium) to 1 (low, `setTimes`).
 
 ## Register
 
@@ -123,7 +123,7 @@ Machine-readable. `tools/known-gaps-audit.mjs --check` reads this block. Counts 
   "source/io/fsdiropennode.cpp": { "count": 2, "severity": "low", "area": "fs", "gap": "setAsync and waitForEvents are no-ops" },
   "source/io/fsfileopennode.cpp": { "count": 2, "severity": "low", "area": "fs", "gap": "setAsync and waitForEvents are no-ops" },
   "source/io/fsmemopennode.cpp": { "count": 2, "severity": "low", "area": "fs", "gap": "setAsync and waitForEvents are no-ops" },
-  "source/io/fsvirtualnode.cpp": { "count": 2, "severity": "medium", "area": "fs", "gap": "removeDir kpanic (guest-reachable); setTimes logs and succeeds" },
+  "source/io/fsvirtualnode.cpp": { "count": 1, "severity": "low", "area": "fs", "gap": "setTimes logs and succeeds" },
   "source/io/fsvirtualopennode.h": { "count": 2, "severity": "low", "area": "fs", "gap": "setAsync and waitForEvents are no-ops" },
   "source/io/fszipopennode.cpp": { "count": 4, "severity": "low", "area": "fs", "gap": "write and truncate kpanics unreachable; async no-ops" },
   "source/ui/controls/downloadDlg.cpp": { "count": 1, "severity": "low", "area": "ui", "gap": "TODO: stuck download socket not handled" },
@@ -270,12 +270,11 @@ _Generated by `node tools/known-gaps-audit.mjs --write-hits`; do not edit by han
 | 63 | `not implemented` | kdebug("FsMemOpenNode::setAsync not implemented"); |
 | 71 | `not implemented` | kdebug("FsMemOpenNode::::waitForEvents not implemented"); |
 
-### `source/io/fsvirtualnode.cpp` (2)
+### `source/io/fsvirtualnode.cpp` (1)
 
 | Line | Match | Text |
 | --- | --- | --- |
-| 87 | `kpanic(` | kpanic("FsVirtualNode::removeDir not implemented"); |
-| 92 | `not implemented` | klog("FsVirtualNode::setTimes not implemented"); |
+| 93 | `not implemented` | klog("FsVirtualNode::setTimes not implemented"); |
 
 ### `source/io/fsvirtualopennode.h` (2)
 
