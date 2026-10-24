@@ -186,6 +186,9 @@ void XServer::initAtoms() {
 	}
 	setAtom(B("_NET_WM_STATE"), _NET_WM_STATE);
 	setAtom(B("_NET_WM_STATE_FULLSCREEN"), _NET_WM_STATE_FULLSCREEN);
+	setAtom(B("_NET_WM_STATE_ABOVE"), _NET_WM_STATE_ABOVE);
+	setAtom(B("_NET_ACTIVE_WINDOW"), _NET_ACTIVE_WINDOW);
+	setAtom(B("_NET_SUPPORTED"), _NET_SUPPORTED);
 	setAtom(B("_NET_WM_WINDOW_TYPE"), _NET_WM_WINDOW_TYPE);
 	setAtom(B("_NET_WM_WINDOW_TYPE_NORMAL"), _NET_WM_WINDOW_TYPE_NORMAL);
 	setAtom(B("_NET_WM_WINDOW_TYPE_DIALOG"), _NET_WM_WINDOW_TYPE_DIALOG);
@@ -278,6 +281,9 @@ const XWindowPtr& XServer::getRoot() {
 		U32 rect[] = { 0, 0, (U32)screen->screenWidth(), (U32)screen->screenHeight() };
 		U32 atom = server->internAtom(B("_GTK_WORKAREAS_D0"), false);
 		root->setProperty(atom, XA_CARDINAL, 32, sizeof(U32) * 4, (U8*)&rect, false);
+		const U32 supported[] = {_NET_WM_STATE, _NET_WM_STATE_FULLSCREEN, _NET_WM_STATE_ABOVE,
+			_NET_ACTIVE_WINDOW, _NET_WM_NAME, _NET_WM_ICON};
+		root->setProperty(_NET_SUPPORTED, XA_ATOM, 32, sizeof(supported), (const U8*)supported, false);
 		root->isMapped = true; // so that grab works
 		root->colorMap = getDefaultColorMap();
 		root->attributes.colormap = root->colorMap->id;

@@ -20,6 +20,25 @@
 #include "x11.h"
 #include "knativesystem.h"
 
+static std::vector<U32> x11ApplyNetWmState(const std::vector<U32>& existing, U32 action,
+		const U32* requested, U32 requestedCount) {
+	std::vector<U32> result = existing;
+	for (U32 i = 0; i < requestedCount; i++) {
+		const U32 atom = requested[i];
+		if (!atom) continue;
+		auto it = std::find(result.begin(), result.end(), atom);
+		if (action == 0) {
+			if (it != result.end()) result.erase(std::remove(result.begin(), result.end(), atom), result.end());
+		} else if (action == 1) {
+			if (it == result.end()) result.push_back(atom);
+		} else if (action == 2) {
+			if (it == result.end()) result.push_back(atom);
+			else result.erase(std::remove(result.begin(), result.end(), atom), result.end());
+		}
+	}
+	return result;
+}
+
 void XWindowChanges::read(KMemory* memory, U32 address) {
 	x = memory->readd(address);
 	y = memory->readd(address + 4);
@@ -547,75 +566,29 @@ void XWindow::deleteProperty(U32 atom, bool trace) {
 }
 
 int XWindow::handleNetWmStatePropertyEvent(const XEvent& event) {
-	U32 count = 0;
-	for (U32 i = 1; i < 5; i++) {
-		if (event.xclient.data.l[i] <= 1) {
-			break;
-		}
-		count++;
-	}
+	const U32 action = (U32)event.xclient.data.l[0];
+	if (action > 2) return BadValue;
+	U32 requested[2] = {(U32)event.xclient.data.l[1], (U32)event.xclient.data.l[2]};
 	XPropertyPtr prop = getProperty(event.xclient.message_type);
-	if (!prop) {
-		if (event.xclient.data.l[0] == 1) {
-			setProperty((U32)event.xclient.message_type, XA_ATOM, 32, count * 4, (U8*)&event.xclient.data.l[1]);
-		}
-	} else {
-		U32* values = (U32*)prop->value;
-		U32 existingCount = prop->length / 4;
-		U32 removedCount = 0;
-		if (event.xclient.data.l[0] == 0) {
-			for (U32 i = 0; i < count; i++) {
-				for (U32 j = 0; j < existingCount; j++) {
-					if (event.xclient.data.l[i + 1] == (S32)values[j]) {
-						values[j] = 0;
-						removedCount++;
-					}
-				}
-			}
-			if (removedCount) {
-				U32 newCount = existingCount - removedCount;
-				if (!newCount) {
-					deleteProperty(event.xclient.message_type);
-				} else {
-					U32* newValues = new U32[newCount];
-					U32 index = 0;
+	std::vector<U32> existing;
+	if (prop && prop->format == 32 && prop->length % 4 == 0) {
+		const U32* values = (const U32*)prop->value;
+		existing.assign(values, values + prop->length / 4);
+	}
+	const auto states = x11ApplyNetWmState(existing, action, requested, 2);
+	if (states.empty()) deleteProperty(event.xclient.message_type);
+	else setProperty(event.xclient.message_type, XA_ATOM, 32, (U32)(states.size() * 4), (const U8*)states.data());
 
-					for (U32 i = 0; i < existingCount; i++) {
-						if (values[i]) {
-							newValues[index] = values[i];
-							index++;
-						}
-					}
-					setProperty((U32)event.xclient.message_type, XA_ATOM, 32, newCount * 4, (U8*)newValues);
-					delete[] newValues;
-				}
-			}
-		} else if (event.xclient.data.l[0] == 1) {
-			U32* newValues = new U32[existingCount + count];
-			U32 addIndex = existingCount;
-
-			memcpy(newValues, values, sizeof(U32) * existingCount);
-			for (U32 i = 0; i < count; i++) {
-				bool found = false;
-				for (U32 j = 0; j < existingCount; j++) {
-					if (event.xclient.data.l[i + 1] == (S32)values[j]) {
-						found = true;
-						break;
-					}
-				}				
-				if (!found) {
-					newValues[addIndex] = event.xclient.data.l[i + 1];
-					addIndex++;
-				}
-			}
-			if (addIndex != existingCount) {
-				setProperty((U32)event.xclient.message_type, XA_ATOM, 32, addIndex * 4, (U8*)newValues);
-			}
-			delete[] newValues;
-		} else if (event.xclient.data.l[0] == 1) {
-			kpanic("XWindow::handleNetWmStatePropertyEvent toggle not handled");
+	const bool fullscreen = std::find(states.begin(), states.end(), _NET_WM_STATE_FULLSCREEN) != states.end();
+	if (fullscreen != isFullScreen && !attributes.override_redirect) {
+		if (fullscreen) {
+			restoreRect.x = left; restoreRect.y = top; restoreRect.width = (U16)width(); restoreRect.height = (U16)height();
+			XWindowPtr root = XServer::getServer()->getRoot();
+			isFullScreen = true;
+			moveResize(0, 0, root->width(), root->height());
 		} else {
-			return BadValue;
+			isFullScreen = false;
+			moveResize(restoreRect.x, restoreRect.y, restoreRect.width, restoreRect.height);
 		}
 	}
 	return Success;

@@ -781,6 +781,11 @@ static void x11_SendEvent(CPU* cpu) {
         EAX = window->handleNetWmStatePropertyEvent(event);
         return;
     }
+    if (event.type == ClientMessage && event.xclient.message_type == _NET_ACTIVE_WINDOW) {
+        DisplayDataPtr dst = server->getDisplayDataById(window->displayId);
+        EAX = dst ? server->setInputFocus(dst, windowId, 2 /* RevertToParent */, 0 /* CurrentTime */) : BadValue;
+        return;
+    }
     event.xany.send_event = True;    
     if (!event_mask) {
         DisplayDataPtr dst = server->getDisplayDataById(window->displayId);
