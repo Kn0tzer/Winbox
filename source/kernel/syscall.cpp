@@ -933,7 +933,7 @@ static U32 syscall_poll(CPU* cpu, U32 eipCount) {
 
 static U32 syscall_prctl(CPU* cpu, U32 eipCount) {
     SYS_LOG1(SYSCALL_PROCESS, cpu, "prctl: options=%d", ARG1);
-    U32 result = cpu->thread->process->prctl(ARG1, ARG2);
+    U32 result = cpu->thread->process->prctl(ARG1, ARG2, ARG3, ARG4, ARG5);
     SYS_LOG(SYSCALL_PROCESS, cpu, " result=%d(0x%X)\n", result, result);
     return result;
 }

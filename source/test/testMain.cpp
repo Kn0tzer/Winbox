@@ -80,6 +80,8 @@ void testPidfd64Syscalls();
 void testInotify64LoudRejection();
 void testSignalfd64Syscalls();
 void testFutex64Operations();
+void testPrctl64Options();
+void testOpcodeFault64Delivery();
 #endif
 
 namespace {
@@ -104,6 +106,8 @@ const TestEntry TEST_ENTRIES[] = {
     {testPidfd64Syscalls, "Test x64 pidfd_open/send_signal syscalls"},
     {testInotify64LoudRejection, "Test loud x64 inotify rejection"},
     {testSignalfd64Syscalls, "Test x64 signalfd create and update"},
+    {testPrctl64Options, "Test x64 prctl option surface"},
+    {testOpcodeFault64Delivery, "Test x64 undefined/VEX opcode SIGILL delivery"},
 };
 #else
 const TestEntry TEST_ENTRIES[] = {

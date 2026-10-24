@@ -219,7 +219,7 @@ public:
     U32 msync(KThread* thread, U32 addr, U32 len, U32 flags);
     U32 open(BString path, U32 flags);
     U32 openat(FD dirfd, BString path, U32 flags);
-    U32 prctl(U32 option, U32 arg2);
+    U32 prctl(U32 option, U32 arg2, U32 arg3 = 0, U32 arg4 = 0, U32 arg5 = 0);
     U32 pread64(KThread* thread, FD fildes, U32 address, U32 len, U64 offset);
     U32 pwrite64(KThread* thread, FD fildes, U32 address, U32 len, U64 offset);
     U32 read(KThread* thread, FD fildes, U32 bufferAddress, U32 bufferLen);
@@ -431,6 +431,25 @@ public:
     U32 thpDisable = 0;
     U32 parentDeathSignal = 0;
     U64 timerSlackNs = 50000;
+    // Modelled prctl(2) state. The guest kernel ABI exposes these knobs even
+    // when the emulator has no host page pool to apply them to; keeping the
+    // state makes GET/SET round-trip exactly like Linux (see sys_prctl64).
+    U32 unalignValue = 0;
+    U32 keepCaps = 0;
+    U32 fpEmu = 0;
+    U32 fpExc = 0;
+    U32 endian = 1;              // PR_ENDIAN_LITTLE
+    U32 tscEnabled = 1;
+    U32 secureBits = 0;
+    U32 mceKillPolicy = 0;
+    U32 mceKillSignal = 0;
+    U32 perfEventsEnabled = 0;
+    U32 fpMode = 0;
+    U32 mdweFlags = 0;
+    U32 ioFlusher = 0;
+    U64 ptracerPid = 0;
+    U32 speculationCtrl[3] = { 0, 0, 0 };
+    std::vector<BString> environment;
 };
 
 #endif

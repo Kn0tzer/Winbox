@@ -64,11 +64,11 @@ bool bw64RecoverEnabled() {
     const char* value = std::getenv("BW64_RECOVER");
     if (value && value[0] == '0') return false;
     if (value && value[0] == '1') return true;
-#ifdef __EMSCRIPTEN__
-    return true;
-#else
+    // Instruction-recovery (skip the undecoded opcode and continue) must never
+    // be the default on ANY build, including Emscripten. Silently stepping over
+    // an unhandled opcode turns a hard fault into a wrong-result run. Skipping
+    // stays available only as an explicit opt-in debugging aid (BW64_RECOVER=1).
     return false;
-#endif
 }
 
 #ifdef __TEST

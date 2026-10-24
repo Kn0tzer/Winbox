@@ -36,6 +36,7 @@
 #endif
 
 #include <stdlib.h>
+#include <unordered_set>
 #include <string.h>
 #include <stdio.h>
 #include <time.h> 
@@ -2493,20 +2494,209 @@ U32 KProcess::memfd_create(BString name, U32 flags) {
     return this->allocFileDescriptor(kobject, K_O_RDWR, descriptorFlags, -1, 0)->handle;
 }
 
-U32 KProcess::prctl(U32 option, U32 arg2) {
-    if (option == 15) { // PR_SET_NAME
-        this->name = memory->readString(arg2);
-        return 0;
-    } else if (option == 38) { // PR_SET_NO_NEW_PRIVS
-        return 0;
-    } else {
-        if (bw64RecoverEnabled()) {
-            bw64RecoverLogOnce("syscall.prctl.option", "unsupported prctl option; returned EINVAL");
-        } else {
-            kwarn_fmt("prctl not implemented for option: %d", option);
-        }
+// Rate-limited "valid Linux request that this emulator cannot model" logger.
+// Every rejected prctl option goes through this so the register's rule holds:
+// no silent drops, and the warning names the exact option once per process.
+static void prctlRejectLog(U32 option, const char* feature) {
+    static std::mutex m;
+    static std::unordered_set<U32> seen;
+    bool log = false;
+    {
+        std::lock_guard<std::mutex> lock(m);
+        log = seen.insert(option).second;
     }
-    return -K_EINVAL;
+    if (log) {
+        klog_fmt("kprctl: option %u (%s) is not supported on this virtual x86 kernel; returned -EINVAL",
+                 option, feature);
+    }
+}
+
+// 32-bit prctl. Mirrors sys_prctl64; pointer arguments are 32-bit guest
+// addresses. Options that need per-CPU or capability hardware this kernel does
+// not expose return the error Linux documents for an unsupported operation on
+// this architecture (EINVAL) or for a missing capability (EPERM/ENOSYS) and are
+// logged once through prctlRejectLog.
+U32 KProcess::prctl(U32 option, U32 arg2, U32 arg3, U32 arg4, U32 arg5) {
+    (void)arg4; (void)arg5;
+    switch (option) {
+        case 1: // PR_SET_PDEATHSIG
+            if (arg2 > 64 || arg2 == 9 || arg2 == 19) return -K_EINVAL;
+            this->parentDeathSignal = arg2;
+            return 0;
+        case 2: // PR_GET_PDEATHSIG
+            if (!arg2) return -K_EFAULT;
+            memory->writed(arg2, this->parentDeathSignal);
+            return 0;
+        case 3: return this->dumpable;
+        case 4:
+            if (arg2 > 1) return -K_EINVAL;
+            this->dumpable = arg2;
+            return 0;
+        case 5: // PR_GET_UNALIGN
+            if (!arg2) return -K_EFAULT;
+            memory->writed(arg2, this->unalignValue);
+            return 0;
+        case 6:
+            if (arg2 & ~3u) return -K_EINVAL;
+            this->unalignValue = arg2;
+            return 0;
+        case 7: return this->keepCaps;
+        case 8:
+            if (arg2 > 1) return -K_EINVAL;
+            this->keepCaps = arg2;
+            return 0;
+        case 9:
+            if (!arg2) return -K_EFAULT;
+            memory->writed(arg2, this->fpEmu);
+            return 0;
+        case 10:
+            if (arg2 > 3) return -K_EINVAL;
+            this->fpEmu = arg2;
+            return 0;
+        case 11:
+            if (!arg2) return -K_EFAULT;
+            memory->writed(arg2, this->fpExc);
+            return 0;
+        case 12:
+            if (arg2 > 0x7) return -K_EINVAL;
+            this->fpExc = arg2;
+            return 0;
+        case 13: return 0; // PR_GET_TIMING: PR_TIMING_STATISTICAL
+        case 14: return arg2 == 0 ? 0 : -K_EINVAL;
+        case 15: // PR_SET_NAME
+            this->name = memory->readString(arg2);
+            return 0;
+        case 16: { // PR_GET_NAME
+            if (!arg2) return -K_EFAULT;
+            char buf[16] = {};
+            size_t n = std::min<size_t>(this->name.length(), 15);
+            if (n) memcpy(buf, this->name.c_str(), n);
+            memory->memcpyToGuest(arg2, buf, sizeof(buf));
+            return 0;
+        }
+        case 19: // PR_GET_ENDIAN
+            if (!arg2) return -K_EFAULT;
+            memory->writed(arg2, this->endian);
+            return 0;
+        case 20:
+            if (arg2 != 1) return -K_EINVAL;
+            this->endian = 1;
+            return 0;
+        case 21: return 0; // PR_GET_SECCOMP: disabled
+        case 22: prctlRejectLog(option, "PR_SET_SECCOMP filter"); return -K_EINVAL;
+        case 23: return arg2 <= 40 ? 0 : -K_EINVAL; // PR_CAPBSET_READ
+        case 24: return arg2 <= 40 ? -K_EPERM : -K_EINVAL; // PR_CAPBSET_DROP needs CAP_SETPCAP
+        case 25:
+            if (!arg2) return -K_EFAULT;
+            memory->writed(arg2, this->tscEnabled);
+            return 0;
+        case 26:
+            if (arg2 == 1) { this->tscEnabled = 1; return 0; }
+            prctlRejectLog(option, "PR_SET_TSC SIGSEGV enforcement");
+            return -K_EINVAL;
+        case 27: return (S32)this->secureBits;
+        case 28:
+            if (arg2 & ~0x3fu) return -K_EINVAL;
+            if (arg2 == this->secureBits) return 0;
+            return -K_EPERM;
+        case 29:
+            this->timerSlackNs = arg2 ? arg2 : 50000;
+            return 0;
+        case 30: return (S32)this->timerSlackNs;
+        case 31: this->perfEventsEnabled = 0; return 0;
+        case 32: this->perfEventsEnabled = 1; return 0;
+        case 33: // PR_MCE_KILL: arg2 = policy, arg3 = signal
+            if (arg2 == 0) { this->mceKillPolicy = 0; this->mceKillSignal = 0; return 0; }
+            if (arg2 == 1) {
+                if (arg3 > 64 || arg3 == 9 || arg3 == 19) return -K_EINVAL;
+                this->mceKillPolicy = 1;
+                this->mceKillSignal = arg3;
+                return 0;
+            }
+            return -K_EINVAL;
+        case 34: return this->mceKillPolicy;
+        case 35: prctlRejectLog(option, "PR_SET_MM address map rewrite"); return -K_EPERM;
+        case 36:
+            if (arg2 > 1) return -K_EINVAL;
+            this->childSubreaper = arg2;
+            return 0;
+        case 37:
+            if (!arg2) return -K_EFAULT;
+            memory->writed(arg2, this->childSubreaper);
+            return 0;
+        case 38:
+            if (arg2 != 1) return -K_EINVAL;
+            this->noNewPrivs = 1;
+            return 0;
+        case 39: return this->noNewPrivs;
+        case 40: { // PR_GET_TID_ADDRESS
+            if (!arg2) return -K_EFAULT;
+            KThread* t = KThread::currentThread();
+            U32 value = (t && t->process.get() == this) ? t->clear_child_tid : 0;
+            memory->writed(arg2, value);
+            return 0;
+        }
+        case 41:
+            if (arg2 > 1) return -K_EINVAL;
+            this->thpDisable = arg2;
+            return 0;
+        case 42: return this->thpDisable;
+        case 43: case 44: prctlRejectLog(option, "MPX management"); return -K_EINVAL;
+        case 45: return arg2 == 0 ? 0 : -K_EINVAL; // PR_SET_FP_MODE: only FP_MODE_NONE
+        case 46: return this->fpMode;
+        case 47: { // PR_CAP_AMBIENT: arg2 = subcommand, arg3 = capability
+            if (arg2 == 0) return 0;       // GET -> empty ambient set
+            if (arg2 == 4) return 0;       // CLEAR_ALL
+            if (arg3 > 40) return -K_EINVAL;
+            if (arg2 == 1) return 0;       // IS_SET -> never set
+            if (arg2 == 2) return -K_EPERM; // RAISE needs CAP_SETPCAP
+            if (arg2 == 3) return 0;       // LOWER of a non-set cap
+            return -K_EINVAL;
+        }
+        case 50: case 51: prctlRejectLog(option, "SVE vector length"); return -K_EINVAL;
+        case 52: { // PR_GET_SPECULATION_CTRL: arg2 = which
+            if (arg2 > 2) return -K_EINVAL;
+            return (S32)this->speculationCtrl[arg2];
+        }
+        case 53: { // PR_SET_SPECULATION_CTRL: arg2 = which, arg3 = control
+            if (arg2 > 2) return -K_EINVAL;
+            const U32 allowed = (1u << 0) | (1u << 2) | (1u << 3);
+            if (arg3 & ~allowed) return -K_EINVAL;
+            this->speculationCtrl[arg2] = arg3;
+            return 0;
+        }
+        case 54: prctlRejectLog(option, "PAC key reset"); return -K_EINVAL;
+        case 55: case 56: prctlRejectLog(option, "tagged address control"); return -K_EINVAL;
+        case 57: return this->ioFlusher;
+        case 58:
+            if (arg2 > 1) return -K_EINVAL;
+            if (arg2 == 1) return -K_EPERM;
+            this->ioFlusher = 0;
+            return 0;
+        case 59: prctlRejectLog(option, "syscall user dispatch"); return -K_EINVAL;
+        case 60: case 61: prctlRejectLog(option, "PAC enabled keys"); return -K_EINVAL;
+        case 62: prctlRejectLog(option, "PR_SCHED_CORE"); return -K_EINVAL;
+        case 63: case 64: prctlRejectLog(option, "SME vector length"); return -K_EINVAL;
+        case 65: // PR_SET_MDWE
+            if (arg2 & ~3u) return -K_EINVAL;
+            if ((arg2 & 1) && (this->mdweFlags & 1)) return -K_EPERM;
+            this->mdweFlags = arg2;
+            return 0;
+        case 66: return this->mdweFlags;
+        case 67: // PR_SET_MEMORY_MERGE
+            if (arg2 > 1) return -K_EINVAL;
+            if (arg2) prctlRejectLog(option, "KSM memory merging");
+            return arg2 ? -K_EINVAL : 0;
+        case 68: return 0; // PR_GET_MEMORY_MERGE
+        case 69: case 70: prctlRejectLog(option, "RISC-V vector control"); return -K_EINVAL;
+        case 0x59616d61: // PR_SET_PTRACER
+            this->ptracerPid = arg2;
+            return 0;
+        case 0x53564d41: prctlRejectLog(option, "PR_SET_VMA anon name"); return -K_EPERM;
+        default:
+            prctlRejectLog(option, "unknown prctl option");
+            return -K_EINVAL;
+    }
 }
 
 U32 KProcess::sigaction(U32 sig, U32 act, U32 oact, U32 sigsetSize) {

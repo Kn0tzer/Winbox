@@ -707,7 +707,16 @@ static U64 sys_brk64(CPU64* cpu, U64 newBrk) {
 static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
                            U64 flags, U64 fd, U64 offset);
 
+static bool sys_mdweBlocks64(CPU64* cpu, U64 prot) {
+    if (!cpu->thread || !cpu->thread->process) return false;
+    const U32 flags = cpu->thread->process->mdweFlags;
+    if (!(flags & 1 /*PR_MDWE_REFUSE_EXEC_GAIN*/)) return false;
+    if (!(prot & 0x4 /*PROT_EXEC*/)) return false;
+    return (prot & 0x2 /*PROT_WRITE*/) != 0;
+}
+
 static U64 sys_mmap64(CPU64* cpu, U64 addr, U64 length, U64 prot, U64 flags, U64 fd, U64 offset) {
+    if (sys_mdweBlocks64(cpu, prot)) return (U64)-K_EACCES;
     if (!(flags & K_MAP_ANONYMOUS)) {
         return sys_mmap64_file(cpu, addr, length, prot, flags, fd, offset);
     }
@@ -1017,8 +1026,27 @@ static U64 sys_getrandom64(CPU64* cpu, U64 bufAddr, U64 buflen, U64 flags) {
     return buflen;
 }
 
-static U64 sys_prctl64(CPU64* cpu, U64 option, U64 arg2, U64 arg3, U64, U64) {
+static void prctl64RejectLog(U64 option, const char* feature) {
+    static std::mutex m;
+    static std::unordered_set<U64> seen;
+    bool log = false;
+    {
+        std::lock_guard<std::mutex> lock(m);
+        log = seen.insert(option).second;
+    }
+    if (log) {
+        klog_fmt("ksyscall64: prctl option %llu (%s) is not supported on this virtual x86 kernel; returned -EINVAL",
+                 (unsigned long long)option, feature);
+    }
+}
+
+static U64 sys_prctl64(CPU64* cpu, U64 option, U64 arg2, U64 arg3, U64 /*arg4*/, U64 /*arg5*/) {
     KProcessPtr process = cpu->thread ? cpu->thread->process : KProcessPtr();
+    auto readInt = [&](U64 addr, U32* out) -> bool {
+        if (!addr || !sys_rangeMapped64(cpu, addr, 4)) return false;
+        *out = cpu->memory->readd(addr);
+        return true;
+    };
     switch (option) {
         case 1: // PR_SET_PDEATHSIG
             if (arg2 > 64 || arg2 == 9 /*SIGKILL*/ || arg2 == 19 /*SIGSTOP*/) return (U64)-K_EINVAL;
@@ -1026,7 +1054,7 @@ static U64 sys_prctl64(CPU64* cpu, U64 option, U64 arg2, U64 arg3, U64, U64) {
             process->parentDeathSignal = (U32)arg2;
             return 0;
         case 2: // PR_GET_PDEATHSIG
-            if (!arg2) return (U64)-K_EFAULT;
+            if (!arg2 || !sys_rangeMapped64(cpu, arg2, 4)) return (U64)-K_EFAULT;
             if (!process) return (U64)-K_ESRCH;
             cpu->memory->writed(arg2, process->parentDeathSignal);
             return 0;
@@ -1037,6 +1065,44 @@ static U64 sys_prctl64(CPU64* cpu, U64 option, U64 arg2, U64 arg3, U64, U64) {
             if (!process) return (U64)-K_ESRCH;
             process->dumpable = (U32)arg2;
             return 0;
+        case 5: // PR_GET_UNALIGN
+            if (!arg2 || !sys_rangeMapped64(cpu, arg2, 4)) return (U64)-K_EFAULT;
+            if (!process) return (U64)-K_ESRCH;
+            cpu->memory->writed(arg2, process->unalignValue);
+            return 0;
+        case 6: // PR_SET_UNALIGN
+            if (!process) return (U64)-K_ESRCH;
+            if (arg2 & ~3ULL) return (U64)-K_EINVAL;
+            process->unalignValue = (U32)arg2;
+            return 0;
+        case 7: return process ? process->keepCaps : 0;
+        case 8:
+            if (arg2 > 1) return (U64)-K_EINVAL;
+            if (!process) return (U64)-K_ESRCH;
+            process->keepCaps = (U32)arg2;
+            return 0;
+        case 9:
+            if (!arg2 || !sys_rangeMapped64(cpu, arg2, 4)) return (U64)-K_EFAULT;
+            if (!process) return (U64)-K_ESRCH;
+            cpu->memory->writed(arg2, process->fpEmu);
+            return 0;
+        case 10:
+            if (arg2 > 3) return (U64)-K_EINVAL;
+            if (!process) return (U64)-K_ESRCH;
+            process->fpEmu = (U32)arg2;
+            return 0;
+        case 11:
+            if (!arg2 || !sys_rangeMapped64(cpu, arg2, 4)) return (U64)-K_EFAULT;
+            if (!process) return (U64)-K_ESRCH;
+            cpu->memory->writed(arg2, process->fpExc);
+            return 0;
+        case 12:
+            if (arg2 > 7) return (U64)-K_EINVAL;
+            if (!process) return (U64)-K_ESRCH;
+            process->fpExc = (U32)arg2;
+            return 0;
+        case 13: return 0; // PR_GET_TIMING: PR_TIMING_STATISTICAL
+        case 14: return arg2 == 0 ? 0 : (U64)-K_EINVAL;
         case 15: // PR_SET_NAME
             if (!cpu->thread) return (U64)-K_ESRCH;
             if (!arg2 || !sys_rangeMapped64(cpu, arg2, 16)) return (U64)-K_EFAULT;
@@ -1057,52 +1123,169 @@ static U64 sys_prctl64(CPU64* cpu, U64 option, U64 arg2, U64 arg3, U64, U64) {
                 cpu->memory->memcpyToGuest(arg2, name, sizeof(name));
             }
             return 0;
-        case 23: // PR_CAPBSET_READ — this virtual user has no capabilities
-            return arg2 <= 40 ? 0 : (U64)-K_EINVAL;
-        case 36: // PR_SET_CHILD_SUBREAPER
-            if (arg2 > 1) return (U64)-K_EINVAL;
+        case 19: // PR_GET_ENDIAN
+            if (!arg2 || !sys_rangeMapped64(cpu, arg2, 4)) return (U64)-K_EFAULT;
             if (!process) return (U64)-K_ESRCH;
-            process->childSubreaper = (U32)arg2;
+            cpu->memory->writed(arg2, process->endian);
             return 0;
-        case 37: // PR_GET_CHILD_SUBREAPER
-            if (!arg2) return (U64)-K_EFAULT;
-            if (!process) return (U64)-K_ESRCH;
-            cpu->memory->writed(arg2, process->childSubreaper);
-            return 0;
-        case 38: // PR_SET_NO_NEW_PRIVS (one way)
+        case 20:
             if (arg2 != 1) return (U64)-K_EINVAL;
             if (!process) return (U64)-K_ESRCH;
-            process->noNewPrivs = 1;
+            process->endian = 1;
             return 0;
-        case 39: // PR_GET_NO_NEW_PRIVS
-            return process ? process->noNewPrivs : 0;
-        case 41: // PR_SET_THP_DISABLE
-            if (arg2 > 1) return (U64)-K_EINVAL;
+        case 21: return 0; // PR_GET_SECCOMP: disabled
+        case 22: prctl64RejectLog(option, "PR_SET_SECCOMP filter"); return (U64)-K_EINVAL;
+        case 23: return arg2 <= 40 ? 0 : (U64)-K_EINVAL; // PR_CAPBSET_READ
+        case 24: return arg2 <= 40 ? (U64)-K_EPERM : (U64)-K_EINVAL; // PR_CAPBSET_DROP needs CAP_SETPCAP
+        case 25:
+            if (!arg2 || !sys_rangeMapped64(cpu, arg2, 4)) return (U64)-K_EFAULT;
             if (!process) return (U64)-K_ESRCH;
-            process->thpDisable = (U32)arg2;
+            cpu->memory->writed(arg2, process->tscEnabled);
             return 0;
-        case 42: // PR_GET_THP_DISABLE
-            return process ? process->thpDisable : 0;
+        case 26:
+            if (!process) return (U64)-K_ESRCH;
+            if (arg2 == 1) { process->tscEnabled = 1; return 0; }
+            prctl64RejectLog(option, "PR_SET_TSC SIGSEGV enforcement");
+            return (U64)-K_EINVAL;
+        case 27: return process ? process->secureBits : 0;
+        case 28:
+            if (arg2 & ~0x3fULL) return (U64)-K_EINVAL;
+            if (!process) return (U64)-K_ESRCH;
+            if (arg2 == process->secureBits) return 0;
+            return (U64)-K_EPERM;
         case 29: // PR_SET_TIMERSLACK
             if (!process) return (U64)-K_ESRCH;
             process->timerSlackNs = arg2 ? arg2 : 50000;
             return 0;
-        case 30: // PR_GET_TIMERSLACK
-            return process ? process->timerSlackNs : 50000;
-        case 21: // PR_GET_SECCOMP (disabled)
-            return 0;
-        default: {
-            static std::mutex logMutex;
-            static std::unordered_set<U64> warnedOptions;
-            bool shouldLog = false;
-            {
-                std::lock_guard<std::mutex> lock(logMutex);
-                shouldLog = warnedOptions.insert(option).second;
+        case 30: return process ? process->timerSlackNs : 50000;
+        case 31: if (process) process->perfEventsEnabled = 0; return 0;
+        case 32: if (process) process->perfEventsEnabled = 1; return 0;
+        case 33: // PR_MCE_KILL: arg2 = policy, arg3 = signal
+            if (!process) return (U64)-K_ESRCH;
+            if (arg2 == 0) { process->mceKillPolicy = 0; process->mceKillSignal = 0; return 0; }
+            if (arg2 == 1) {
+                if (arg3 > 64 || arg3 == 9 || arg3 == 19) return (U64)-K_EINVAL;
+                process->mceKillPolicy = 1;
+                process->mceKillSignal = (U32)arg3;
+                return 0;
             }
-            if (shouldLog) klog_fmt("ksyscall64: unsupported prctl option %llu; returned -EINVAL",
-                                    (unsigned long long)option);
+            return (U64)-K_EINVAL;
+        case 34: return process ? process->mceKillPolicy : 0;
+        case 35: prctl64RejectLog(option, "PR_SET_MM address map rewrite"); return (U64)-K_EPERM;
+        case 36:
+            if (arg2 > 1) return (U64)-K_EINVAL;
+            if (!process) return (U64)-K_ESRCH;
+            process->childSubreaper = (U32)arg2;
+            return 0;
+        case 37:
+            if (!arg2 || !sys_rangeMapped64(cpu, arg2, 4)) return (U64)-K_EFAULT;
+            if (!process) return (U64)-K_ESRCH;
+            cpu->memory->writed(arg2, process->childSubreaper);
+            return 0;
+        case 38:
+            if (arg2 != 1) return (U64)-K_EINVAL;
+            if (!process) return (U64)-K_ESRCH;
+            process->noNewPrivs = 1;
+            return 0;
+        case 39: return process ? process->noNewPrivs : 0;
+        case 40: // PR_GET_TID_ADDRESS
+            if (!arg2 || !sys_rangeMapped64(cpu, arg2, 8)) return (U64)-K_EFAULT;
+            if (!cpu->thread) return (U64)-K_ESRCH;
+            cpu->memory->writeq(arg2, cpu->thread->clear_child_tid64);
+            return 0;
+        case 41:
+            if (arg2 > 1) return (U64)-K_EINVAL;
+            if (!process) return (U64)-K_ESRCH;
+            process->thpDisable = (U32)arg2;
+            return 0;
+        case 42: return process ? process->thpDisable : 0;
+        case 43: case 44: prctl64RejectLog(option, "MPX management"); return (U64)-K_EINVAL;
+        case 45: return arg2 == 0 ? 0 : (U64)-K_EINVAL; // PR_SET_FP_MODE: only FP_MODE_NONE
+        case 46: return process ? process->fpMode : 0;
+        case 47: { // PR_CAP_AMBIENT: arg2 = subcommand, arg3 = capability
+            if (!process) return (U64)-K_ESRCH;
+            if (arg2 == 0) return 0;
+            if (arg2 == 4) return 0;
+            if (arg3 > 40) return (U64)-K_EINVAL;
+            if (arg2 == 1) return 0;
+            if (arg2 == 2) return (U64)-K_EPERM;
+            if (arg2 == 3) return 0;
             return (U64)-K_EINVAL;
         }
+        case 50: case 51: prctl64RejectLog(option, "SVE vector length"); return (U64)-K_EINVAL;
+        case 52: { // PR_GET_SPECULATION_CTRL: arg2 = which
+            if (!process) return (U64)-K_ESRCH;
+            if (arg2 > 2) return (U64)-K_EINVAL;
+            return process->speculationCtrl[arg2];
+        }
+        case 53: { // PR_SET_SPECULATION_CTRL: arg2 = which, arg3 = control
+            if (!process) return (U64)-K_ESRCH;
+            if (arg2 > 2) return (U64)-K_EINVAL;
+            const U64 allowed = (1ULL << 0) | (1ULL << 2) | (1ULL << 3);
+            if (arg3 & ~allowed) return (U64)-K_EINVAL;
+            process->speculationCtrl[arg2] = (U32)arg3;
+            return 0;
+        }
+        case 54: prctl64RejectLog(option, "PAC key reset"); return (U64)-K_EINVAL;
+        case 55: case 56: prctl64RejectLog(option, "tagged address control"); return (U64)-K_EINVAL;
+        case 57: return process ? process->ioFlusher : 0;
+        case 58:
+            if (arg2 > 1) return (U64)-K_EINVAL;
+            if (arg2 == 1) return (U64)-K_EPERM;
+            if (process) process->ioFlusher = 0;
+            return 0;
+        case 59: prctl64RejectLog(option, "syscall user dispatch"); return (U64)-K_EINVAL;
+        case 60: case 61: prctl64RejectLog(option, "PAC enabled keys"); return (U64)-K_EINVAL;
+        case 62: prctl64RejectLog(option, "PR_SCHED_CORE"); return (U64)-K_EINVAL;
+        case 63: case 64: prctl64RejectLog(option, "SME vector length"); return (U64)-K_EINVAL;
+        case 65: // PR_SET_MDWE: arg2 = flags
+            if (!process) return (U64)-K_ESRCH;
+            if (arg2 & ~3ULL) return (U64)-K_EINVAL;
+            if ((arg2 & 1) && (process->mdweFlags & 1)) return (U64)-K_EPERM;
+            process->mdweFlags = (U32)arg2;
+            return 0;
+        case 66: return process ? process->mdweFlags : 0;
+        case 67:
+            if (arg2 > 1) return (U64)-K_EINVAL;
+            if (arg2) { prctl64RejectLog(option, "KSM memory merging"); return (U64)-K_EINVAL; }
+            return 0;
+        case 68: return 0;
+        case 69: case 70: prctl64RejectLog(option, "RISC-V vector control"); return (U64)-K_EINVAL;
+        case 0x59616d61ULL: // PR_SET_PTRACER
+            if (!process) return (U64)-K_ESRCH;
+            process->ptracerPid = arg2;
+            return 0;
+        case 0x53564d41ULL: prctl64RejectLog(option, "PR_SET_VMA anon name"); return (U64)-K_EPERM;
+        case 0x41555856ULL: { // PR_GET_AUXV
+            if (!arg2 || !sys_rangeMapped64(cpu, arg2, 8)) return (U64)-K_EFAULT;
+            if (!process) return (U64)-K_ESRCH;
+            const U64 pairs[][2] = {
+                { 3 /*AT_PHDR*/, process->phdr64 },
+                { 4 /*AT_PHENT*/, process->phentsize64 },
+                { 5 /*AT_PHNUM*/, process->phnum64 },
+                { 6 /*AT_PAGESZ*/, 4096 },
+                { 9 /*AT_ENTRY*/, process->entry64 },
+                { 11 /*AT_UID*/, 1000 },
+                { 12 /*AT_EUID*/, 1000 },
+                { 13 /*AT_GID*/, 1000 },
+                { 14 /*AT_EGID*/, 1000 },
+                { 23 /*AT_SECURE*/, 0 },
+                { 16 /*AT_HWCAP*/, 0 },
+                { 26 /*AT_HWCAP2*/, 0 },
+                { 17 /*AT_CLKTCK*/, 100 },
+                { 0 /*AT_NULL*/, 0 },
+            };
+            const U64 total = sizeof(pairs);
+            const U64 copy = std::min<U64>(arg3, total);
+            for (U64 i = 0; i < copy / 16; ++i) {
+                cpu->memory->writeq(arg2 + i * 16, pairs[i][0]);
+                cpu->memory->writeq(arg2 + i * 16 + 8, pairs[i][1]);
+            }
+            return copy;
+        }
+        default:
+            prctl64RejectLog(option, "unknown prctl option");
+            return (U64)-K_EINVAL;
     }
 }
 
@@ -4317,6 +4500,7 @@ void ksyscall64(CPU64* cpu) {
             // as -errno -> "cannot apply additional memory protection after
             // relocation" -> exit 127.)
             {
+                if (sys_mdweBlocks64(cpu, a3)) { ret = (U64)-K_EACCES; break; }
                 U64 r = cpu->memory->mprotect(a1, a2, a3);
                 ret = ((S64)r < 0) ? r : 0;
             }
