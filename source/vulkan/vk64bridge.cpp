@@ -2455,6 +2455,7 @@ static bool v2FormatIsBlendable(U32 format) {
 static bool v2FormatIsDepthStencil(U32 format) {
     return v2FormatIn(format, kV2DepthStencilFormats);
 }
+static bool v2FormatIsBC(U32 format) { return format >= 131 && format <= 146; }
 static VkFormatFeatureFlags v2FormatFeatureFlags(U32 format) {
     if (!v2FormatIn(format, kV2SupportedTextureFormats)) return 0;
     VkFormatFeatureFlags flags = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
@@ -4485,6 +4486,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCreateImage: {
         VkImageCreateInfo ci = {};
         if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (!v2FormatIn(ci.format, kV2SupportedTextureFormats) && !v2FormatIsBC(ci.format)) {
+            vk64Unsupported("image-format", "format is not supported by the WebGPU replay tier");
+            wr64(args.a[3], 0);
+            return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        }
         U64 id = 0;
         Image* im = createObj<Image>(K_IMAGE, id);
         im->w = ci.extent.width; im->h = ci.extent.height; im->d = ci.extent.depth;
@@ -7508,6 +7514,11 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCreateImage: {
         vk32abi::VkImageCreateInfo ci = {};
         if (!readStruct32((U32)args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (!v2FormatIn(ci.format, kV2SupportedTextureFormats) && !v2FormatIsBC(ci.format)) {
+            vk64Unsupported("image-format", "format is not supported by the WebGPU replay tier");
+            wr64_32((U32)args.a[3], 0);
+            return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        }
         U64 id = 0;
         Image* im = createObj32<Image>(K_IMAGE, id);
         im->w = ci.extent.width; im->h = ci.extent.height; im->d = ci.extent.depth;
