@@ -96,6 +96,26 @@ const GL_COMPARE = new Map([[0x0200, 'never'], [0x0201, 'less'], [0x0202, 'equal
 const GL_STENCIL_OP = new Map([[0x1e00, 'keep'], [0, 'zero'], [0x1e01, 'replace'], [0x1e02, 'invert'], [0x1e03, 'increment-clamp'], [0x1e04, 'decrement-clamp'], [0x8507, 'increment-wrap'], [0x8508, 'decrement-wrap']]);
 const GL_BLEND_OP = new Map([[0x8006, 'add'], [0x800a, 'subtract'], [0x800b, 'reverse-subtract'], [0x8007, 'min'], [0x8008, 'max']]);
 const GL_TEX_ENV_COMBINE_PARAMETERS = new Set([0x8571, 0x8572, 0x8573, 0x0d1c, 0x8580, 0x8581, 0x8582, 0x8588, 0x8589, 0x858a, 0x8590, 0x8591, 0x8592, 0x8598, 0x8599, 0x859a]);
+function defaultTexEnvCombine() { return { rgb: 0x2100, alpha: 0x2100, rgbScale: 1, alphaScale: 1,
+  srcRgb: [0x8578, 0x1702, 0x8576], srcAlpha: [0x8578, 0x1702, 0x8576],
+  opRgb: [0x0300, 0x0300, 0x0300], opAlpha: [0x0302, 0x0302, 0x0302] }; }
+function evaluateTexEnvCombine(previous, primary, textures, unit, config, constant) {
+  const source=value=>value===0x8576?constant:value===0x8577?primary:value===0x8578?previous:value===0x1702?(textures.get(unit)||[1,1,1,1]):(textures.get(value-0x84c0)||[1,1,1,1]);
+  const rgbArgs=config.srcRgb.map((enumValue,index)=>{const value=source(enumValue),operand=config.opRgb[index];return operand===0x0302?[value[3],value[3],value[3]]:operand===0x0303?[1-value[3],1-value[3],1-value[3]]:operand===0x0301?value.slice(0,3).map(channel=>1-channel):value.slice(0,3);});
+  const alphaArgs=config.srcAlpha.map((enumValue,index)=>{const value=source(enumValue),operand=config.opAlpha[index];return operand===0x0303?1-value[3]:value[3];});
+  const operation=(fn,args)=>{
+    if(fn===0x1e01)return args[0];
+    const binary=(fnc)=>Array.isArray(args[0])?args[0].map((value,index)=>fnc(value,args[1][index])):fnc(args[0],args[1]);
+    if(fn===0x2100)return binary((a,b)=>a*b);
+    if(fn===0x0104)return binary((a,b)=>a+b);
+    if(fn===0x8574)return binary((a,b)=>a+b-0.5);
+    if(fn===0x8575)return Array.isArray(args[0])?args[0].map((value,index)=>value*args[2][index]+args[1][index]*(1-args[2][index])):args[0]*args[2]+args[1]*(1-args[2]);
+    if(fn===0x84e7)return binary((a,b)=>a-b);
+    return 4*args[0].reduce((sum,value,index)=>sum+(value-0.5)*(args[1][index]-0.5),0);
+  };
+  const rgb=operation(config.rgb,rgbArgs),dot=typeof rgb==='number';
+  return [0,1,2].map(index=>clamp01((dot?rgb:rgb[index])*config.rgbScale)).concat([clamp01((config.rgb===0x86af?rgb:operation(config.alpha,alphaArgs))*config.alphaScale)]);
+}
 const signedType = type => [0x1400, 0x1402, 0x1404].includes(type);
 const GL_ENABLE_CAPABILITIES = new Set([0x0b44, 0x0b71, 0x0b90, 0x0bc0, 0x0be2, 0x0bd0, 0x0c11, 0x8037, 0x809e, 0x80a0, 0x8c89, 0x8db9]);
 const S3TC_BLOCK_BYTES = new Map([[0x83f0, 8], [0x83f1, 8], [0x83f2, 16], [0x83f3, 16], [0x8c4c, 8], [0x8c4d, 8], [0x8c4e, 16], [0x8c4f, 16]]);
@@ -585,6 +605,7 @@ export class WebGPUGL {
       texture: Array.from({ length: 16 }, () => [identityMatrix()]),
       currentTexCoords: Array.from({ length: 16 }, () => [0, 0, 0, 1]),
       texEnv: Array(16).fill(0x2100),
+      texEnvCombine: Array.from({ length: 16 }, defaultTexEnvCombine), texEnvColor: [0, 0, 0, 0],
       color: [1, 1, 1, 1], alphaFunc: 0x0207, alphaRef: 0,
     };
     this._enabled = new Set();
@@ -941,22 +962,36 @@ export class WebGPUGL {
   }
   texEnvi(target, pname, value) {
     if (target !== 0x2300) { this._recordError(GL.INVALID_ENUM); return; }
-    if (pname !== 0x2200) {
-      if (GL_TEX_ENV_COMBINE_PARAMETERS.has(pname)) this._rejectUnsupported(`texture environment combine parameter 0x${pname.toString(16)}`, GL.INVALID_OPERATION);
-      else this._recordError(GL.INVALID_ENUM);
-      return;
+    if (pname === 0x2200) {
+      if (![0x2100, 0x1e01, 0x2101, 0x0104, 0x8570].includes(value)) { this._recordError(GL.INVALID_ENUM); return; }
+      this._fixedFunction.texEnv[this._activeTextureUnit] = value | 0;
+      this._fixedFunctionProgramCache.clear();return;
     }
-    if (![0x2100, 0x1e01, 0x2101, 0x0104, 0x8570].includes(value)) { this._recordError(GL.INVALID_ENUM); return; }
-    this._fixedFunction.texEnv[this._activeTextureUnit] = value | 0;
+    if (!GL_TEX_ENV_COMBINE_PARAMETERS.has(pname)) { this._recordError(GL.INVALID_ENUM); return; }
+    const config=this._fixedFunction.texEnvCombine[this._activeTextureUnit];
+    if(pname===0x8571||pname===0x8572){
+      const validRgb=[0x2100,0x1e01,0x0104,0x8574,0x8575,0x84e7,0x86ae,0x86af],validAlpha=validRgb.slice(0,-2);
+      if(!(pname===0x8571?validRgb:validAlpha).includes(value)){this._recordError(GL.INVALID_ENUM);return;}
+      config[pname===0x8571?'rgb':'alpha']=value;
+    } else if(pname===0x8573||pname===0x0d1c){
+      if(![1,2,4].includes(value)){this._recordError(GL.INVALID_VALUE);return;}
+      config[pname===0x8573?'rgbScale':'alphaScale']=value;
+    } else {
+      const source=pname>=0x8580&&pname<=0x8582||pname>=0x8588&&pname<=0x858a;
+      const alpha=pname>=0x8588&&pname<=0x858a||pname>=0x8598&&pname<=0x859a;
+      const index=pname<=0x8582?pname-(source?0x8580:0x8590):pname<=0x858a?pname-(source?0x8588:0x8598):pname-(alpha?0x8598:0x8590);
+      if(source){if(![0x1702,0x8576,0x8577,0x8578,...Array.from({length:16},(_,i)=>0x84c0+i)].includes(value)){this._recordError(GL.INVALID_ENUM);return;}config[alpha?'srcAlpha':'srcRgb'][index]=value;}
+      else {const values=alpha?[0x0302,0x0303]:[0x0300,0x0301,0x0302,0x0303];if(!values.includes(value)){this._recordError(GL.INVALID_ENUM);return;}config[alpha?'opAlpha':'opRgb'][index]=value;}
+    }
+    this._fixedFunctionProgramCache.clear();
   }
   texEnvf(target, pname, value) { this.texEnvi(target, pname, value); }
   texEnvfv(target, pname, values) {
     if (target !== 0x2300) { this._recordError(GL.INVALID_ENUM); return; }
     const data = Array.from(values || []);
-    if (pname === 0x2200) { if (!data.length) { this._recordError(GL.INVALID_VALUE); return; } this.texEnvi(target, pname, data[0] | 0); return; }
+    if (pname === 0x2200 || GL_TEX_ENV_COMBINE_PARAMETERS.has(pname)) { if (!data.length) { this._recordError(GL.INVALID_VALUE); return; } this.texEnvi(target, pname, data[0] | 0); return; }
     if (pname === 0x2201) { if (data.length < 4) { this._recordError(GL.INVALID_VALUE); return; } this._fixedFunction.texEnvColor = data.slice(0, 4).map(clamp01); return; }
-    if (GL_TEX_ENV_COMBINE_PARAMETERS.has(pname)) this._rejectUnsupported(`texture environment combine parameter 0x${pname.toString(16)}`, GL.INVALID_OPERATION);
-    else this._recordError(GL.INVALID_ENUM);
+    this._recordError(GL.INVALID_ENUM);
   }
   texEnviv(target, pname, values) { this.texEnvfv(target, pname, values); }
   clientActiveTexture(texture) {
@@ -1720,13 +1755,15 @@ export class WebGPUGL {
     };
   }
 
-  _fixedFunctionProgram(textureUnits, colorArray, alphaEnabled, alphaFunc, texEnv) {
+  _fixedFunctionProgram(textureUnits, colorArray, alphaEnabled, alphaFunc, texEnv, texEnvCombine, texEnvColor) {
     const key = stateKey([textureUnits, colorArray, alphaEnabled ? alphaFunc : 0x0207,
-      textureUnits.map(unit => texEnv[unit]), this._clipControl]);
+      textureUnits.map(unit => [texEnv[unit],texEnvCombine[unit]]), this._clipControl]);
     if (this._fixedFunctionProgramCache.has(key)) return this._fixedFunctionProgramCache.get(key);
     const vertexLayout = uniformLayout([{ name: 'u_mvp', type: 'mat4' },
       ...textureUnits.map(unit => ({ name: `u_texMatrix${unit}`, type: 'mat4' }))]);
-    const fragmentLayout = alphaEnabled ? uniformLayout([{ name: 'u_alphaRef', type: 'float' }]) : { fields: [], size: 0 };
+    const combineEnabled=textureUnits.some(unit=>texEnv[unit]===0x8570);
+    const fragmentFields=[...(alphaEnabled?[{name:'u_alphaRef',type:'float'}]:[]),...(combineEnabled?[{name:'u_texEnvColor',type:'vec4'}]:[])];
+    const fragmentLayout = fragmentFields.length ? uniformLayout(fragmentFields) : { fields: [], size: 0 };
     const vertexInputs = textureUnits.map((unit, index) => `, @location(${index + 2}) texCoord${unit}: vec4<f32>`).join('');
     const vertexOutputs = textureUnits.map((unit, index) => `, @location(${index + 1}) texCoord${unit}: vec2<f32>`).join('');
     const vertexMatrices = textureUnits.map(unit => `, u_texMatrix${unit}: mat4x4<f32>`).join('');
@@ -1739,8 +1776,8 @@ struct VertexInput { @location(0) position: vec4<f32>, @location(1) color: vec4<
 struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color: vec4<f32>${vertexOutputs} };
 @vertex fn main(input: VertexInput) -> VertexOutput { var output: VertexOutput; let clip = globals.u_mvp * input.position; output.position = vec4<f32>(clip.x, ${clipY}, ${clipZ}, clip.w); output.color = input.color; ${vertexTransforms} return output; }`;
     const fragmentInput = `struct FragmentInput { @location(0) color: vec4<f32>${vertexOutputs} };`;
-    const fragmentGlobals = alphaEnabled
-      ? 'struct FragmentGlobals { u_alphaRef: f32 };\n@group(0) @binding(1) var<uniform> fragmentGlobals: FragmentGlobals;'
+    const fragmentGlobals = fragmentFields.length
+      ? `struct FragmentGlobals { ${fragmentFields.map(field=>`${field.name}: ${field.type==='vec4'?'vec4<f32>':'f32'}`).join(', ')} };\n@group(0) @binding(1) var<uniform> fragmentGlobals: FragmentGlobals;`
       : '';
     const sampler = textureUnits.map(unit => `@group(0) @binding(${2 + unit * 2}) var fixedTexture${unit}: texture_2d<f32>;\n@group(0) @binding(${3 + unit * 2}) var fixedSampler${unit}: sampler;`).join('\n');
     const textureCombines = [];
@@ -1748,10 +1785,26 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       const texel = `texel${unit}`;
       const sample = `let ${texel} = textureSample(fixedTexture${unit}, fixedSampler${unit}, input.texCoord${unit});`;
       const mode = texEnv[unit];
-      const combine = mode === 0x1e01 ? `color = ${texel};`
+      let combine = mode === 0x1e01 ? `color = ${texel};`
         : mode === 0x2101 ? `color = vec4<f32>(mix(color.rgb, ${texel}.rgb, ${texel}.a), color.a);`
           : mode === 0x0104 ? `color = min(color + ${texel}, vec4<f32>(1.0));`
             : `color = color * ${texel};`;
+      if(mode===0x8570){
+        const config=texEnvCombine[unit];
+        const sourceExpr=source=>source===0x8576?'fragmentGlobals.u_texEnvColor':source===0x8577?'input.color':source===0x8578?'color':source===0x1702?texel:(source>=0x84c0&&source<=0x84cf?(textureUnits.includes(source-0x84c0)?`texel${source-0x84c0}`:'vec4<f32>(1.0)'):texel);
+        const rgbArgs=config.srcRgb.map((source,index)=>{const value=sourceExpr(source),op=config.opRgb[index];return op===0x0302?`vec3<f32>(${value}.a)`:op===0x0303?`vec3<f32>(1.0 - ${value}.a)`:op===0x0301?`vec3<f32>(1.0) - ${value}.rgb`:`${value}.rgb`;});
+        const alphaArgs=config.srcAlpha.map((source,index)=>{const value=sourceExpr(source),op=config.opAlpha[index];return op===0x0303?`1.0 - ${value}.a`:`${value}.a`;});
+        const operation=(fn,args,alpha)=>{
+          if(fn===0x1e01)return args[0];if(fn===0x2100)return `${args[0]} * ${args[1]}`;if(fn===0x0104)return `${args[0]} + ${args[1]}`;
+          if(fn===0x8574)return `${args[0]} + ${args[1]} - ${alpha?'0.5':'vec3<f32>(0.5)'}`;
+          if(fn===0x8575)return `${args[0]} * ${args[2]} + ${args[1]} * (${alpha?'1.0':'vec3<f32>(1.0)'} - ${args[2]})`;
+          if(fn===0x84e7)return `${args[0]} - ${args[1]}`;
+          const dot=`4.0 * dot(${args[0]} - vec3<f32>(0.5), ${args[1]} - vec3<f32>(0.5))`;
+          return alpha?dot:`vec3<f32>(${dot})`;
+        };
+        const rgb=operation(config.rgb,rgbArgs,false),alpha=config.rgb===0x86af?rgb.replace(/^vec3<f32>\((.*)\)$/,'$1'):operation(config.alpha,alphaArgs,true);
+        combine=`color = vec4<f32>(clamp((${rgb}) * ${config.rgbScale}.0, vec3<f32>(0.0), vec3<f32>(1.0)), clamp((${alpha}) * ${config.alphaScale}.0, 0.0, 1.0));`;
+      }
       textureCombines.push(`${sample} ${combine}`);
     }
     const alphaCompare = new Map([
@@ -1769,7 +1822,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       attributeInfo: [{ name: 'a_position', size: 1, type: 0x8b52 }, { name: 'a_color', size: 1, type: 0x8b52 }, ...textureAttributes.map(([name]) => ({ name, size: 1, type: 0x8b52 }))],
       uniformInfo: [], uniformLocations: new Map(), uniformValues: new Map(),
       fixedFunction: { texture: textureUnits.length > 0, textureUnits: [...textureUnits], colorArray, alphaEnabled,
-        alphaFunc, alphaRef: this._fixedFunction.alphaRef, texEnv: [...texEnv] },
+        alphaFunc, alphaRef: this._fixedFunction.alphaRef, texEnv: [...texEnv], texEnvCombine, texEnvColor },
       stages: {
         vertex: { wgsl: vertex, layout: vertexLayout, activeUniforms: [], samplers: [] },
         fragment: { wgsl: fragment, layout: fragmentLayout, activeUniforms: [],
@@ -1844,7 +1897,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     const colorArray = !!arrays.color?.enabled;
     const alphaTestEnabled = this._enabled.has(0x0bc0);
     const fixed = this._fixedFunction;
-    const program = this._fixedFunctionProgram(textureUnits, colorArray, alphaTestEnabled, fixed.alphaFunc, fixed.texEnv);
+    const program = this._fixedFunctionProgram(textureUnits, colorArray, alphaTestEnabled, fixed.alphaFunc, fixed.texEnv, fixed.texEnvCombine, fixed.texEnvColor);
     program.fixedFunction.alphaRef = fixed.alphaRef;
     const stackTop = stack => stack[stack.length - 1];
     const mvp = multiplyMatrix4(stackTop(fixed.projection), stackTop(fixed.modelview));
@@ -1855,6 +1908,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     }
     if (textureUnits.includes(0)) program.uniformValues.set('u_fixedTexture', 0);
     if (fixed.alphaFunc !== 0x0207) program.uniformValues.set('u_alphaRef', fixed.alphaRef);
+    if(textureUnits.some(unit=>fixed.texEnv[unit]===0x8570))program.uniformValues.set('u_texEnvColor',fixed.texEnvColor);
 
     const temporaryBuffers = [];
     const attributes = new Map();
@@ -2175,15 +2229,20 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       const source = [0, 1, 2, 3].map(channel =>
         wa * vertices[0].color[channel] + wb * vertices[1].color[channel] + wc * vertices[2].color[channel]);
       if (fixed?.texture) {
+        const primary=[...source],stageTexels=new Map();
         for (const unit of textureUnits) {
           const coordinates = vertices.map(vertex => vertex.texCoords?.get(unit) || [0, 0]);
           const u = wa * coordinates[0][0] + wb * coordinates[1][0] + wc * coordinates[2][0];
           const v = wa * coordinates[0][1] + wb * coordinates[1][1] + wc * coordinates[2][1];
-          const texel = sampleTexture(textures.get(unit), u, v);
+          stageTexels.set(unit,sampleTexture(textures.get(unit),u,v));
+        }
+        for(const unit of textureUnits){
+          const texel=stageTexels.get(unit);
           const texEnv = fixed.texEnv[unit];
           if (texEnv === 0x1e01) source.splice(0, 4, ...texel);
           else if (texEnv === 0x2101) for (let channel = 0; channel < 3; channel++) source[channel] = source[channel] * (1 - texel[3]) + texel[channel] * texel[3];
           else if (texEnv === 0x0104) for (let channel = 0; channel < 4; channel++) source[channel] = Math.min(1, source[channel] + texel[channel]);
+          else if(texEnv===0x8570)source.splice(0,4,...evaluateTexEnvCombine(source,primary,stageTexels,unit,fixed.texEnvCombine[unit],fixed.texEnvColor));
           else for (let channel = 0; channel < 4; channel++) source[channel] *= texel[channel];
         }
       }

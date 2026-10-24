@@ -652,16 +652,26 @@ test('desktop GLSL core versions 330 through 460 normalize into the WebGPU front
   }
 });
 
-test('unimplemented texenv combine parameters reject once with GL_INVALID_OPERATION', async () => {
-  const gpu = createValidationDevice(), logs = [];
+test('texture environment COMBINE accepts operation, source, operand, and scale state', async () => {
+  const gpu = createValidationDevice();
   try {
-    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    const gl = new WebGPUGL(gpu.canvas);
     await gl.ready;
-    gl.texEnvi(0x2300, 0x8571, 0x2100);
-    gl.texEnvi(0x2300, 0x8571, 0x2100);
-    assert.equal(gl.getError(), 0x0502);
-    assert.equal(gl.getError(), 0, 'duplicate rejection leaves one error flag');
-    assert.equal(logs.filter(line => line.includes('texture environment combine parameter 0x8571')).length, 1);
+    gl.texEnvi(0x2300,0x2200,0x8570);
+    gl.texEnvi(0x2300,0x8571,0x86ae);
+    gl.texEnvi(0x2300,0x8572,0x8575);
+    gl.texEnvi(0x2300,0x8580,0x8577);
+    gl.texEnvi(0x2300,0x8581,0x1702);
+    gl.texEnvi(0x2300,0x8590,0x0301);
+    gl.texEnvi(0x2300,0x8591,0x0300);
+    gl.texEnvi(0x2300,0x8573,2);
+    gl.texEnvfv(0x2300,0x2201,[0.25,0.5,0.75,1]);
+    assert.equal(gl.getError(),0);
+    assert.deepEqual(gl._fixedFunction.texEnvCombine[0],{rgb:0x86ae,alpha:0x8575,rgbScale:2,alphaScale:1,
+      srcRgb:[0x8577,0x1702,0x8576],srcAlpha:[0x8578,0x1702,0x8576],opRgb:[0x0301,0x0300,0x0300],opAlpha:[0x0302,0x0302,0x0302]});
+    const program=gl._fixedFunctionProgram([0],true,false,0x0207,gl._fixedFunction.texEnv,gl._fixedFunction.texEnvCombine,gl._fixedFunction.texEnvColor);
+    assert.match(program.stages.fragment.wgsl,/dot\(/);
+    assert.match(program.stages.fragment.wgsl,/fragmentGlobals\.u_texEnvColor/);
     gl.texEnvi(0x2300, 0xdead, 0x2100);
     assert.equal(gl.getError(), 0x0500, 'unknown pname remains INVALID_ENUM');
   } finally { gpu.restore(); }
