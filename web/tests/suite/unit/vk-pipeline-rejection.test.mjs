@@ -64,3 +64,15 @@ test('unsupported blend enums and mixed constants fail pipeline creation in both
     'both guest ABIs must reject unsupported blend state before emitting a pipeline');
   assert.match(bridge, /result = VK_ERROR_FEATURE_NOT_PRESENT;[\s\S]{0,120}continue;/);
 });
+
+test('unsupported stencil enums and two-sided static masks fail both guest pipeline creates', () => {
+  const audit = functionBody(bridge, 'static bool vk64AuditGraphicsPipeline(');
+  assert.match(audit, /a\.unsupportedStencilEnum[^\n]*vk64Unsupported\("stencil-enum"[^\n]*reject = true/);
+  assert.match(audit, /a\.incompatibleStencilFaces[^\n]*vk64Unsupported\("stencil-face-state"[^\n]*reject = true/);
+  const stencil = functionBody(bridge, 'static void vk64AuditStencil(');
+  assert.match(stencil, /s\.failOp <= 7 && s\.passOp <= 7 && s\.depthFailOp <= 7 && s\.compareOp <= 7/);
+  assert.match(stencil, /f\.compareMask != b\.compareMask/);
+  assert.match(stencil, /f\.writeMask != b\.writeMask/);
+  assert.match(stencil, /f\.reference != b\.reference/);
+  assert.equal((bridge.match(/vk64AuditStencil\(\*p, audit\)/g) || []).length, 2);
+});

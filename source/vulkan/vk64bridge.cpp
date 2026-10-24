@@ -1090,6 +1090,8 @@ struct PipelineAudit {
     bool unsupportedVertexFormat = false;
     bool unsupportedBlendEnum = false;
     bool mixedBlendConstants = false;
+    bool unsupportedStencilEnum = false;
+    bool incompatibleStencilFaces = false;
 };
 static const U32 kV2SupportedStageMask = 0x1u | 0x10u;     // VERTEX | FRAGMENT
 // Returns true when the pipeline must be rejected with VK_ERROR_FEATURE_NOT_PRESENT.
@@ -1115,6 +1117,8 @@ static bool vk64AuditGraphicsPipeline(const PipelineAudit& a) {
     if (a.unsupportedVertexFormat) { vk64Unsupported("vertex-format", "pipeline rejected"); reject = true; }
     if (a.unsupportedBlendEnum) { vk64Unsupported("blend-enum", "blend factor or operation has no WebGPU mapping; pipeline rejected"); reject = true; }
     if (a.mixedBlendConstants) { vk64Unsupported("mixed-blend-constants", "WebGPU cannot use separate Vulkan constant-color and constant-alpha values in one pipeline; pipeline rejected"); reject = true; }
+    if (a.unsupportedStencilEnum) { vk64Unsupported("stencil-enum", "stencil operation or compare op has no WebGPU mapping; pipeline rejected"); reject = true; }
+    if (a.incompatibleStencilFaces) { vk64Unsupported("stencil-face-state", "active front/back stencil masks or references differ; pipeline rejected"); reject = true; }
     if (a.sampleCount != 1 && a.sampleCount != 4) { vk64Unsupported("sample-count", "pipeline rejected"); reject = true; }
     return reject;
 }
@@ -1135,6 +1139,20 @@ static void vk64AuditBlend(const Pipeline& p, PipelineAudit& a) {
         }
     }
     a.mixedBlendConstants = colorConstant && alphaConstant;
+}
+static void vk64AuditStencil(const Pipeline& p, PipelineAudit& a) {
+    if (!p.stencil.enabled) return;
+    const StencilFace& f = p.stencil.front;
+    const StencilFace& b = p.stencil.back;
+    auto valid = [](const StencilFace& s) {
+        return s.failOp <= 7 && s.passOp <= 7 && s.depthFailOp <= 7 && s.compareOp <= 7;
+    };
+    if (!valid(f) || !valid(b)) a.unsupportedStencilEnum = true;
+    const bool bothActive = p.cullDynamic || (p.cull != 1 && p.cull != 2);
+    if (!bothActive) return;
+    if (!(p.stencil.dynamicMask & 1u) && f.compareMask != b.compareMask) a.incompatibleStencilFaces = true;
+    if (!(p.stencil.dynamicMask & 2u) && f.writeMask != b.writeMask) a.incompatibleStencilFaces = true;
+    if (!(p.stencil.dynamicMask & 4u) && f.reference != b.reference) a.incompatibleStencilFaces = true;
 }
 // Applies VkPipelineDynamicStateCreateInfo to the pipeline. Returns false (after a
 // greppable "UNSUPPORTED dynamic-state-<n>") for a state with no representation in
@@ -5387,6 +5405,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 audit.logicOp = cbs.logicOpEnable;
                 audit.depthBounds = ds.depthBoundsTestEnable;
                 vk64AuditBlend(*p, audit);
+                vk64AuditStencil(*p, audit);
                 for (U32 a = 0; a < p->nva; ++a)
                     if (!v2FormatIsSupportedVertex(p->vaFormat[a])) audit.unsupportedVertexFormat = true;
                 if (readStruct(ci.pVertexInputState, vi))
@@ -8551,6 +8570,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 audit.logicOp = cbs.logicOpEnable;
                 audit.depthBounds = ds.depthBoundsTestEnable;
                 vk64AuditBlend(*p, audit);
+                vk64AuditStencil(*p, audit);
                 for (U32 a = 0; a < p->nva; ++a)
                     if (!v2FormatIsSupportedVertex(p->vaFormat[a])) audit.unsupportedVertexFormat = true;
                 {
