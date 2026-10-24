@@ -44,12 +44,14 @@ AF/CF/OF must be computed from the full `lhs + rhs + cIn` (or `lhs - rhs - cIn`)
 **Fix shape:** Rework runAlu cases 2/3 to use `unsigned __int128` for the full
 operation and derive CF/AF/OF from it. Non-trivial; not attempted.
 
-### 4. FLDPI (D9 EB) / FLDL2E (D9 EC) — unimplemented
+### 4. FLDPI (D9 EB) / FLDL2E (D9 EC) — dispatch present (historical report)
 **Bytes:** `D9 EB`, `D9 EC`
 **Expected:** Push pi / log2(e) onto FPU stack
-**Actual:** Emulator stops (unhandled opcode); does not reach INT3 terminator
-**Note:** FPU::FLDPI and FPU::FLDL2E methods may exist; only the cpu64.cpp
-dispatch is missing.
+**Original actual:** Emulator stopped (unhandled opcode); did not reach INT3 terminator
+**Status (source review, 2026-10-24):** the cpu64.cpp dispatch exists
+(`source/emulation/cpu/cpu64.cpp:7226-7230`: `FLDL2E` and `FLDPI` call
+`fpu.FLDL2E()` / `fpu.FLDPI()`). The cpu-diff vector for these bytes has not been
+re-run since, so the pass/fail status here is unverified until the harness is run.
 
 ### 5. FXCH (D9 C9) — was blocked, now passes
 **Bytes:** `D9 C9`
