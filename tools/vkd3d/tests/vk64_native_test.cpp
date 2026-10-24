@@ -538,6 +538,15 @@ int main() {
         vba.a[1] = 16; memory.memcpyToGuest(128, &vba, sizeof(vba));
         vk64Bridge(&cpu, VK64_fn_vkCmdBindVertexBuffers, 128);
         assert(vk64BridgeUnsupportedCount("vertex-bindings") == vbBefore + 2);    // first past the end
+        // A command buffer past VK64_MAX_CMDS flags the frame and says so, once per feature.
+        U64 ovId; auto* ovCb = createObj<CmdBuf>(K_CMDBUF, ovId);
+        g_frameOverflow = false;
+        Cmd filler; filler.kind = CMD_DRAW;
+        for (U32 i = 0; i < VK64_MAX_CMDS; ++i) pushCmd(ovCb, filler);
+        assert(!g_frameOverflow && vk64BridgeUnsupportedCount("frame-overflow") == 0);
+        pushCmd(ovCb, filler);
+        assert(g_frameOverflow && ovCb->cmds.size() == VK64_MAX_CMDS && vk64BridgeUnsupportedCount("frame-overflow") == 1);
+        g_frameOverflow = false;
         puts("PASS: attachment and vertex-binding overflow is reported, 8 attachments / 16 bindings fit");
     }
     // Depth attachment has its own load/store and clear value, rather than

@@ -687,7 +687,7 @@ void dropObj(U64 id) {
 // complete frame manifest without the app re-stating anything).
 // ---------------------------------------------------------------------------
 const U32 VK64_MAX_SETS = 8, VK64_MAX_BINDINGS = 8, VK64_MAX_ATTACH = 8, VK64_MAX_DRAWS = 64;   // MAX_ATTACH matches the RP_BEGIN wire limit (web/vk-protocol.mjs)
-const U32 VK64_MAX_CMDS = 4096;
+const U32 VK64_MAX_CMDS = 16384;   // recorded commands per command buffer; the page tier rejects an overflowed frame
 const U32 VK64_MAX_INDIRECT_DRAWS = 1024;
 const U32 VK64_MAX_VERT_BINDINGS = 16, VK64_MAX_VERT_ATTRIBS = 16;   // = advertised maxVertexInputBindings/Attributes
 const U32 VK64_MAX_PUSH_BYTES = 256;   // matches limits.maxPushConstantsSize
@@ -1286,9 +1286,15 @@ void resetCmdBuf(CmdBuf* cb) {
 // The frame serializer is defined above the switch; forward declaration so
 // pushCmd can flag overflow.
 bool g_frameOverflow = false;
+// The recorded frame cannot be replayed faithfully: flag it (the page rejects the whole frame, loudly)
+// and report which limit was hit.
+static void vk64FrameOverflow(const char* what) {
+    g_frameOverflow = true;
+    vk64Unsupported("frame-overflow", what);
+}
 void pushCmd(CmdBuf* st, const Cmd& c) {
     VK64_DROP_IF(return, !st);
-    if (st->cmds.size() >= VK64_MAX_CMDS) { g_frameOverflow = true; return; }
+    if (st->cmds.size() >= VK64_MAX_CMDS) { vk64FrameOverflow("command buffer holds more than VK64_MAX_CMDS commands"); return; }
     st->cmds.push_back(c);
 }
 // vkCmdBindDescriptorSets and push descriptors both end here. `dynFlat` is the
@@ -1296,7 +1302,10 @@ void pushCmd(CmdBuf* st, const Cmd& c) {
 // many offsets as its layout has dynamic descriptors.
 static void recordBindSets(CmdBuf* cb, U32 first, std::vector<U64> ids, const std::vector<U32>& dynFlat) {
     VK64_DROP_IF(return, first >= VK64_MAX_SETS);
-    if (first + ids.size() > VK64_MAX_SETS) ids.resize(VK64_MAX_SETS - first);
+    if (first + ids.size() > VK64_MAX_SETS) {
+        vk64Unsupported("descriptor-set-slots", "vkCmdBindDescriptorSets range exceeds maxBoundDescriptorSets; extra sets are dropped");
+        ids.resize(VK64_MAX_SETS - first);
+    }
     Cmd c;
     c.kind = CMD_BIND_SETS;
     c.dyn.resize(ids.size());
@@ -5859,7 +5868,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // page as a render-pass clear of the matching GPU texture subresources.
         CmdBuf* cb = cbOf(args.a[0], "vkCmdClearDepthStencilImage");
         VK64_DROP_IF(return 0, !cb || !objOf<Image>(args.a[1], K_IMAGE, "vkCmdClearDepthStencilImage"));
-        if (args.a[4] > 64) { g_frameOverflow = true; return 0; }
+        if (args.a[4] > 64) { vk64FrameOverflow("vkCmdClearDepthStencilImage with more than 64 ranges"); return 0; }
         struct { float depth; U32 stencil; } value = {1.0f, 0};
         if (args.a[3]) g_mem->memcpyFromGuest(&value, args.a[3], sizeof(value));
         Cmd c; c.kind = CMD_CLEAR_DS_IMAGE; c.a = args.a[1];
@@ -6263,7 +6272,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdClearAttachmentsKHR: {
         CmdBuf* cb = cbOf(args.a[0], "vkCmdClearAttachments");
         VK64_DROP_IF(return 0, !cb);
-        if (args.a[1] > 8 || args.a[3] > 4096) { g_frameOverflow = true; return 0; }
+        if (args.a[1] > 8 || args.a[3] > 4096) { vk64FrameOverflow("vkCmdClearAttachments with more than 8 attachments or 4096 rects"); return 0; }
         Cmd c; c.kind = CMD_CLEAR_ATTACHMENTS;
         readArray(args.a[2], (U32)args.a[1], c.clearAttachments);
         readArray(args.a[4], (U32)args.a[3], c.clearRects);
@@ -7621,7 +7630,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         // (cmdBuf, image, layout, pDepthStencil*, rangeCount, pRanges*)
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdClearDepthStencilImage");
         VK64_DROP_IF(return 0, !cb || !objOf32<Image>(args.a[1], K_IMAGE, "vkCmdClearDepthStencilImage"));
-        if (args.a[4] > 64) { g_frameOverflow = true; return 0; }
+        if (args.a[4] > 64) { vk64FrameOverflow("vkCmdClearDepthStencilImage with more than 64 ranges"); return 0; }
         struct { float depth; U32 stencil; } value = {1.0f, 0};
         if (args.a[3]) g_mem32->memcpyFromGuest(&value, (U32)args.a[3], sizeof(value));
         Cmd c; c.kind = CMD_CLEAR_DS_IMAGE; c.a = args.a[1];
@@ -8709,7 +8718,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdClearAttachmentsKHR: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdClearAttachments");
         VK64_DROP_IF(return 0, !cb);
-        if (args.a[1] > 8 || args.a[3] > 4096) { g_frameOverflow = true; return 0; }
+        if (args.a[1] > 8 || args.a[3] > 4096) { vk64FrameOverflow("vkCmdClearAttachments with more than 8 attachments or 4096 rects"); return 0; }
         Cmd c; c.kind = CMD_CLEAR_ATTACHMENTS;
         readArray32(args.a[2], (U32)args.a[1], c.clearAttachments);
         readArray32(args.a[4], (U32)args.a[3], c.clearRects);
