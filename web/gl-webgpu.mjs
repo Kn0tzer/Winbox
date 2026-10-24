@@ -2555,6 +2555,13 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (parameter === 0x8d43) return this._boundRenderbuffer.height;
     if (parameter === 0x8d44) return this._boundRenderbuffer.internalFormat;
     if (parameter === 0x8cab) return this._boundRenderbuffer.samples || 0;
+    const format = this._boundRenderbuffer.internalFormat;
+    const depthBits = format === 0x81a5 ? 16 : format === 0x81a6 ? 24 : format === 0x81a7 ? 32 : format === 0x8cac ? 32 : 0;
+    const channelBits = [0x8058, 0x8056, 0x8057].includes(format) ? 8 : 0;
+    if (parameter === 0x8d50 || parameter === 0x8d51 || parameter === 0x8d52) return channelBits;
+    if (parameter === 0x8d53) return channelBits;
+    if (parameter === 0x8d54) return depthBits;
+    if (parameter === 0x8d55) return 0;
     this._recordError(GL.INVALID_ENUM); return 0;
   }
   getFramebufferAttachmentParameter(target, attachment, parameter) {

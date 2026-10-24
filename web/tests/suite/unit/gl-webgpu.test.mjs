@@ -451,6 +451,9 @@ test('renderbuffer storage validates target, binding, dimensions, and formats', 
     assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8d42), 4);
     assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8d43), 3);
     assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8d44), 0x8058);
+    assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8d50), 8);
+    assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8d54), 0);
+    assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8d55), 0);
     assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8cab), 0);
     gl.renderbufferStorage(0xdead, 0x8058, 4, 4);
     assert.equal(gl.getError(), 0x0500);
