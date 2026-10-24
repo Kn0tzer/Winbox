@@ -14,9 +14,9 @@ test('alphaFunc and texEnvi reject invalid enums and values through getError', a
     assert.equal(gl._fixedFunction.alphaFunc, 0x0207, 'invalid comparison leaves previous state intact');
     gl.alphaFunc(0x0201, Number.NaN);
     assert.equal(gl.getError(), 0x0501);
-    gl.texEnvi(0x2300, 0x2200, 0x8570);
+    gl.texEnvi(0x2300, 0xdead, 0x8570);
     assert.equal(gl.getError(), 0x0500);
-    assert.equal(gl._fixedFunction.texEnv[0], 0x2100, 'unsupported combine mode is not silently treated as modulate');
+    assert.equal(gl._fixedFunction.texEnv[0], 0x2100, 'invalid pname leaves the active texture environment unchanged');
   } finally {
     gpu.restore();
   }
