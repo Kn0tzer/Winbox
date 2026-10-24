@@ -448,12 +448,24 @@ static void vk64Unsupported(const char* feature, const char* detail = "") {
 // storage-buffer stores, storage images, ...).
 // ---------------------------------------------------------------------------
 // Sampler state the WebGPU tier cannot honour. Reported once per sampler, not per draw.
-static void vk64AuditSampler(U32 addrU, U32 addrV, U32 addrW, float mipLodBias, U32 borderColor) {
-    if (addrU == 4 || addrV == 4 || addrW == 4)   // VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE
-        vk64Unsupported("mirror-clamp-to-edge", "WebGPU has no mirror-clamp; sampler uses mirror-repeat/clamp");
-    if (addrU == 3 || addrV == 3 || addrW == 3)    // CLAMP_TO_BORDER
-        vk64Unsupported("sampler-border-colour", ("WebGPU has no border addressing; clamp-to-edge used, borderColor=" + std::to_string(borderColor)).c_str());
-    if (mipLodBias != 0.0f) vk64Unsupported("sampler-mip-lod-bias", "WebGPU samplers have no LOD bias; ignored");
+static bool vk64AuditSampler(U32 addrU, U32 addrV, U32 addrW, float mipLodBias, U32 borderColor) {
+    bool reject = false;
+    const U32 addressModes[] = {addrU, addrV, addrW};
+    for (U32 mode : addressModes) {
+        if (mode == 4) { // VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE
+            vk64Unsupported("mirror-clamp-to-edge", "sampler creation rejected");
+            reject = true;
+        }
+        if (mode == 3) { // CLAMP_TO_BORDER
+            vk64Unsupported("sampler-border-colour", ("sampler creation rejected; borderColor=" + std::to_string(borderColor)).c_str());
+            reject = true;
+        }
+    }
+    if (mipLodBias != 0.0f) {
+        vk64Unsupported("sampler-mip-lod-bias", "sampler creation rejected");
+        reject = true;
+    }
+    return reject;
 }
 
 static const char* vk64SpirvCapabilityName(U32 cap) {
@@ -4497,6 +4509,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCreateSampler: {
         VkSamplerCreateInfo ci = {};
         if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (vk64AuditSampler(ci.addressModeU, ci.addressModeV, ci.addressModeW, ci.mipLodBias, ci.borderColor)) {
+            wr64(args.a[3], 0);
+            return VK_ERROR_FEATURE_NOT_PRESENT;
+        }
         U64 id = 0;
         Sampler* s = createObj<Sampler>(K_SAMPLER, id);
         s->mag = ci.magFilter; s->min = ci.minFilter; s->mipmap = ci.mipmapMode;
@@ -4504,7 +4520,6 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         s->mipLodBias = ci.mipLodBias; s->anisotropyEnable = ci.anisotropyEnable;
         s->maxAniso = ci.maxAnisotropy; s->compareEnable = ci.compareEnable; s->compareOp = ci.compareOp;
         s->minLod = ci.minLod; s->maxLod = ci.maxLod; s->borderColor = ci.borderColor;
-        vk64AuditSampler(ci.addressModeU, ci.addressModeV, ci.addressModeW, ci.mipLodBias, ci.borderColor);
         wr64(args.a[3], id);
         return VK_SUCCESS;
     }
@@ -7509,6 +7524,10 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCreateSampler: {
         vk32abi::VkSamplerCreateInfo ci = {};
         if (!readStruct32(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (vk64AuditSampler(ci.addressModeU, ci.addressModeV, ci.addressModeW, ci.mipLodBias, ci.borderColor)) {
+            wr64_32((U32)args.a[3], 0);
+            return VK_ERROR_FEATURE_NOT_PRESENT;
+        }
         U64 id = 0;
         Sampler* s = createObj32<Sampler>(K_SAMPLER, id);
         s->mag = ci.magFilter; s->min = ci.minFilter; s->mipmap = ci.mipmapMode;
@@ -7516,7 +7535,6 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         s->mipLodBias = ci.mipLodBias; s->anisotropyEnable = ci.anisotropyEnable;
         s->maxAniso = ci.maxAnisotropy; s->compareEnable = ci.compareEnable; s->compareOp = ci.compareOp;
         s->minLod = ci.minLod; s->maxLod = ci.maxLod; s->borderColor = ci.borderColor;
-        vk64AuditSampler(ci.addressModeU, ci.addressModeV, ci.addressModeW, ci.mipLodBias, ci.borderColor);
         wr64_32(args.a[3], id);
         return VK_SUCCESS;
     }
