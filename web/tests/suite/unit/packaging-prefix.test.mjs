@@ -18,15 +18,13 @@ import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
 function zipList(zipPath) {
-  try {
-    const out = execSync(`python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]); print('\\n'.join(z.namelist()[:5000]))" "${zipPath}"`, { encoding: 'utf8', timeout: 30000 });
-    return out.split('\n');
-  } catch { return []; }
+  const out = execFileSync('python3', ['-c', 'import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]); print("\\n".join(z.namelist()))', zipPath], { encoding: 'utf8', timeout: 30000 });
+  return out.trim().split('\n').filter(Boolean);
 }
 
 test('wineVersion.txt or version gate does not misfire allocator', () => {
@@ -35,7 +33,7 @@ test('wineVersion.txt or version gate does not misfire allocator', () => {
     'allocator must not depend solely on wineVersion.txt (both zips lacked it → version 0 → kernel-space maps)');
 });
 
-test('wine32 user32 zlib1.dll dependency is staged (user32 load guard)', () => {
+test('wine32 user32 zlib1.dll dependency is staged (user32 load guard)', (t) => {
   // Wine64 ships zlib1.dll in-zip; Wine32 omits it but user32 imports it.
   // tools/build-prefix32.sh stages it (lines 35-50). The zip itself may lag
   // the staging script, so assert the PIPELINE knows, and flag a stale zip
@@ -43,8 +41,9 @@ test('wine32 user32 zlib1.dll dependency is staged (user32 load guard)', () => {
   const staging = readFileSync(join(repoRoot, 'tools/build-prefix32.sh'), 'utf8');
   assert.ok(staging.includes('zlib1.dll'),
     'tools/build-prefix32.sh must stage zlib1.dll for wine32 (Debian omits it, user32 imports it)');
-  const names = zipList(join(repoRoot, 'dist/runtime/wine32.zip'));
-  if (names.length === 0) return;
+  const wine32 = join(repoRoot, 'dist/runtime/wine32.zip');
+  if (!existsSync(wine32)) { t.skip('dist/runtime/wine32.zip absent; artifact contents require an export/build'); return; }
+  const names = zipList(wine32);
   const hasInZip = names.some(n => n.toLowerCase().includes('zlib1.dll'));
   const hasInWine64 = zipList(join(repoRoot, 'dist/runtime/wine64.zip')).some(n => n.toLowerCase().includes('zlib1.dll'));
   assert.ok(hasInWine64, 'wine64.zip must contain zlib1.dll (reference: packaging works for 64-bit)');
@@ -52,32 +51,27 @@ test('wine32 user32 zlib1.dll dependency is staged (user32 load guard)', () => {
     'wine32.zip should contain zlib1.dll OR staging must cover it (currently staged by script; re-run build-prefix32.sh + rebuild zip to close)');
 });
 
-test('wineserver in rootfs is ELF, not shell script (382B #!/bin/sh + no /bin/sh)', () => {
-  const names = zipList(join(repoRoot, 'dist/runtime/wine32.zip'));
-  if (names.length === 0) return;
-  const bad = names.filter(n => n.endsWith('/wineserver') && n.includes('usr/lib/wine'));
-  assert.ok(true, `wineserver entries checked (${bad.length} found); packaging must replace shell-script with ELF`);
+test('wineserver packaging pipeline stages the real executable (382B #!/bin/sh + no /bin/sh)', () => {
+  const script = readFileSync(join(repoRoot, 'tools/rootfs64/build-wine64-zip.sh'), 'utf8');
+  assert.match(script, /copy \/usr\/lib\/wine\/wineserver64/);
+  assert.match(script, /copy \/usr\/lib\/wine\/wineserver\s*$/m);
+  assert.match(script, /ln -sf \/usr\/lib\/wine\/wineserver64 "\$STAGE\/usr\/bin\/wineserver"/);
   const launcher = readFileSync(join(repoRoot, 'project/emscripten/wine64-launcher.js'), 'utf8');
-  assert.ok(!launcher.includes('#!/bin/sh') || true, 'launcher must not depend on /bin/sh for wineserver');
+  assert.match(launcher, /WINESERVER64 = ARCH32 \? "\/usr\/lib\/wine\/wineserver32" : "\/usr\/lib\/wine\/wineserver64"/);
 });
 
-test('wineboot.exe is not a fake 91B ELF (ENOEXEC c00000e5)', () => {
-  const startup = readFileSync(join(repoRoot, 'source/sdl/startupArgs.cpp'), 'utf8');
-  assert.ok(startup.length > 10000, 'startupArgs must handle wineboot path (fake-ELF vs 93B exit-0 ELF policy)');
+test('prefix boot invokes Wine wineboot explicitly (ENOEXEC c00000e5)', () => {
+  const launcher = readFileSync(join(repoRoot, 'project/emscripten/wine64-launcher.js'), 'utf8');
+  assert.match(launcher, /args\.push\(WINE64, "wineboot", "--init"\)/);
 });
 
 test('WINEDLLOVERRIDES uses semicolons (commas silently fall back to wined3d + hang)', () => {
   const startup = readFileSync(join(repoRoot, 'source/sdl/startupArgs.cpp'), 'utf8');
   assert.ok(startup.includes('WINEDLLOVERRIDES'), 'WINEDLLOVERRIDES handling must exist');
-  const m = startup.match(/WINEDLLOVERRIDES=([^"']+)/g) || [];
-  for (const entry of m) {
-    if (entry.includes(',')) {
-      assert.ok(entry.includes(';') || entry.includes(',n') || true,
-        `WINEDLLOVERRIDES entry must use semicolons: ${entry.slice(0, 120)}`);
-    }
-  }
-  assert.ok(startup.includes('vulkan-1=n') || startup.includes('winevulkan=n') || startup.includes('WINEDLLOVERRIDES'),
-    'D3D12 bad-jump fix (vulkan-1=n;winevulkan=n) must be present — DXVK dxgi loading builtin winevulkan → NULL dispatch → locale wander');
+  assert.match(startup, /value \+= B\(";"\) \+ overrideVal/,
+    'new DLL override groups must be joined with Wine’s semicolon separator');
+  assert.match(startup, /if \(value\.startsWith\(B\("WINEDLLOVERRIDES="\)\)\)/,
+    'existing override groups must be merged rather than replaced');
 });
 
 test('launcher derives program from bwProgramArgv[0] (?exe= ignored unless ?p= → 1d473769)', () => {
@@ -89,12 +83,14 @@ test('launcher derives program from bwProgramArgv[0] (?exe= ignored unless ?p= �
 });
 
 test('gamezip layer fail-fasts on 404/403 (not infinite stall) + CORS', () => {
-  const candidates = ['web/runtime.html', 'project/emscripten/wine64-launcher.js', 'source/io/fszipurl.cpp'];
-  const combined = candidates.map(f => { try { return readFileSync(join(repoRoot, f), 'utf8'); } catch { return ''; } }).join('\n');
-  assert.ok(combined.includes('404') || combined.includes('fail-fast') || combined.includes('failFast') || combined.includes('Caddyfile') || true,
-    'gamezip fetch must fail-fast on permanent 404/403 (1h stall guard)');
+  const source = readFileSync(join(repoRoot, 'source/io/fszipurl.cpp'), 'utf8');
+  assert.match(source, /got == -404 \|\| got == -403\).*permanentError\.store\(true/);
+  assert.match(source, /if \(permanentError\.load\(std::memory_order_relaxed\)\) return nullptr;/);
 });
 
-test('no shell-script binaries in shipped Wine zips (spot check)', () => {
-  assert.ok(existsSync(join(repoRoot, 'dist/runtime/wine32.zip')), 'dist wine32.zip must exist for packaging checks');
+test('shipped Wine archive entries contain executable ELF files', (t) => {
+  const wine32 = join(repoRoot, 'dist/runtime/wine32.zip');
+  if (!existsSync(wine32)) { t.skip('dist/runtime/wine32.zip absent; archive bytes require an export/build'); return; }
+  const python = 'import sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); ns=[n for n in z.namelist() if n.endswith("/wineserver") and "usr/lib/wine" in n]; assert ns, "no /usr/lib/wine/wineserver entry"; [(lambda d,n: (None if d[:4] == b"\\x7fELF" else (_ for _ in ()).throw(AssertionError(n + " is not ELF"))))(z.read(n),n) for n in ns]';
+  execFileSync('python3', ['-c', python, wine32], { stdio: 'pipe', timeout: 30000 });
 });

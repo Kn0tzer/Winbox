@@ -52,15 +52,15 @@ test('decoder sets out.size for 0x50-0x5F (PUSH/POP fuzz bug)', () => {
 });
 
 test('jit block-store tracking includes POP r/m (stale-execution hazard)', () => {
-  const jitFiles = ['source/emulation/cpu/jit/jitCodeGen.cpp', 'source/emulation/cpu/jit64.cpp'];
-  let combined = '';
-  for (const f of jitFiles) { try { combined += R(f); } catch {} }
-  assert.ok(combined.includes('MayStore') || combined.includes('mayStore') || combined.includes('POP') || combined.length > 10000,
+  const jit = R('source/emulation/cpu/jit/jitCodeGen.cpp');
+  const jit64 = R('source/emulation/cpu/jit64.cpp');
+  const combined = jit + jit64;
+  assert.ok(combined.includes('MayStore') || combined.includes('mayStore') || combined.includes('POP'),
     'jit64BlockMayStore must account POP r/m stores (stale-execution hazard guard)');
 });
 
 test('rotate OF and shift-by-CL flag paths exist (copy-paste/merge guards)', () => {
-  const shift = (() => { try { return R('source/emulation/cpu/normal/normal_shift.h'); } catch { return R('source/emulation/cpu/shift.h'); } })();
+  const shift = R('source/emulation/cpu/normal/normal_shift.h');
   assert.ok(shift.includes('OF') || shift.includes('of') || shift.includes('rotate') || shift.includes('ROL') || shift.includes('ROR'),
     'rotate OF + shift-by-CL mem flag-merge paths must exist');
 });

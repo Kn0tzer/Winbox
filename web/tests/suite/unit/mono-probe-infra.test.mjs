@@ -28,8 +28,7 @@ test('probe serve uses absolute repo root + fail-fast (404 poll guard)', () => {
   assert.ok(build.includes('probe') || build.includes('slot'), 'build must refuse during probe activity (shared-dist poison guard)');
 });
 test('OCR menu evidence gate exists (lit counter is not proof)', () => {
-  const candidates = ['web/tests/portal-evidence.mjs', 'web/tests/portal-capture-evidence.mjs'];
-  let found = false;
-  for (const c of candidates) { try { if (readFileSync(join(repoRoot, c), 'utf8').includes('hasPortalMenu') || readFileSync(join(repoRoot, c), 'utf8').includes('NEW GAME')) found = true; } catch {} }
-  assert.ok(found || existsSync(join(repoRoot, 'web/tests/portal-evidence.mjs')), 'portal-evidence OCR gate (NEW GAME/OPTIONS/Quit, not litPixels) must exist');
+  const evidence = readFileSync(join(repoRoot, 'web/tests/portal-evidence.mjs'), 'utf8');
+  assert.match(evidence, /hasPortalMenu|NEW GAME/,
+    'Portal evidence must recognize menu text, not treat lit pixels as proof');
 });

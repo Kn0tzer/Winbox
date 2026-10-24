@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 const devdsp = readFileSync(join(repoRoot, 'source/kernel/devs/devdsp.cpp'), 'utf8');
 const kdspSource = readFileSync(join(repoRoot, 'platform/sdl/kdspaudio.cpp'), 'utf8');
-const kdsp = (() => { try { return readFileSync(join(repoRoot, 'include/kdspaudio.h'), 'utf8'); } catch { return ''; } })();
+const kdsp = readFileSync(join(repoRoot, 'include/kdspaudio.h'), 'utf8');
 
 test('bwPump bypass exists (drain-timer-never-fired → all zeros guard)', () => {
   assert.ok(devdsp.includes('bwPump') || kdsp.includes('bwPump'),
@@ -38,15 +38,10 @@ test('WHDR_DONE / waveOut hang is tracked (OPEN, not claimed fixed)', () => {
 });
 
 test('441Hz sine verification path exists (10e1b456 ground truth)', () => {
-  const probes = ['web/tests/audio-tone-probe.mjs', 'web/tests/audio-dsptone.mjs', 'web/tests/audio-direct-p.mjs'];
-  let found = false;
-  for (const p of probes) {
-    try {
-      const src = readFileSync(join(repoRoot, p), 'utf8');
-      if (src.includes('441') || src.includes('sine') || src.includes('tone')) found = true;
-    } catch {}
-  }
-  assert.ok(found, '441Hz sine direct-/dev/dsp verification probe must exist (SDL_QueueAudio calls ≠ audible)');
+  const probe = readFileSync(join(repoRoot, 'web/tests/audio-dsptone.mjs'), 'utf8');
+  assert.match(probe, /440/);
+  assert.match(probe, /sine|tone/i);
+  assert.match(probe, /\/dev\/dsp/);
 });
 
 test('DSP output bridge adopts the launch gesture AudioContext when SDL has none', () => {

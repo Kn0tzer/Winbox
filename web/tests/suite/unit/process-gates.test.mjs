@@ -36,15 +36,19 @@ test('build wrapper refuses while probe slot held (P3 quarantine)', () => {
 
 test('instrumentation is gated, not baked into shared builds (P4)', () => {
   const cpu = readFileSync(join(repoRoot, 'source/emulation/cpu/normal/normalCPU.cpp'), 'utf8');
-  assert.ok(!cpu.includes('INSTTRACE') || cpu.includes('#ifdef') || cpu.includes('#ifndef') || cpu.includes('TRACE') === false || true,
-    'INSTTRACE-style heavy logging must be compile-gated, never unconditional in NEXT()');
+  assert.match(cpu, /#ifdef\s+BW64_INST_TRACE[\s\S]*?INSTTRACE[\s\S]*?#endif/,
+    'INSTTRACE implementation must be gated by BW64_INST_TRACE');
   const kthread = readFileSync(join(repoRoot, 'source/kernel/kthread.cpp'), 'utf8');
   assert.ok(kthread.length > 1000, 'kthread signal path must exist without fprintf+getNextOp inside illegal-instruction handler');
 });
 
 test('parallel-probe documentation exists (P11 batching)', () => {
   const p = join(repoRoot, 'web/tests/parallel-probe-README.md');
-  assert.ok(existsSync(p) || true, 'parallel-probe guidance should exist (batch independent hypotheses, distinct markers, single run)');
+  assert.ok(existsSync(p), 'parallel-probe guidance should exist (batch independent hypotheses, distinct markers, single run)');
+  const src = readFileSync(p, 'utf8');
+  assert.match(src, /batch|parallel/i);
+  assert.match(src, /FIFO queue/i);
+  assert.match(src, /distinct|independent/i);
 });
 
 test('suite refuses dirty-tree runs or records diff (P12)', () => {
@@ -59,10 +63,15 @@ test('no INSTTRACE/GUEST_MMAP unconditional logging in hot paths', () => {
     'source/kernel/kmemory.cpp',
   ];
   for (const f of files) {
-    try {
-      const src = readFileSync(join(repoRoot, f), 'utf8');
-      const hasUnconditionalTrace = src.includes('INSTTRACE') && !src.includes('#ifdef INSTTRACE') && !src.includes('#ifndef');
-      assert.ok(!hasUnconditionalTrace || true, `${f}: unconditional INSTTRACE would poison shared rebuilds`);
-    } catch {}
+    const src = readFileSync(join(repoRoot, f), 'utf8');
+    const lines = src.split(/\r?\n/);
+    let gated = false;
+    for (const [index, line] of lines.entries()) {
+      if (/^\s*#\s*ifdef\s+BW64_INST_TRACE\b/.test(line)) gated = true;
+      if (/\bINSTTRACE\b/.test(line) && !line.trimStart().startsWith('//') && !gated) {
+        assert.fail(`${f}:${index + 1}: INSTTRACE call is outside #ifdef BW64_INST_TRACE`);
+      }
+      if (/^\s*#\s*endif\b/.test(line)) gated = false;
+    }
   }
 });

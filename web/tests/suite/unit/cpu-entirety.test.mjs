@@ -44,7 +44,7 @@ test('string ops exist in 32-bit backend (MOVS/STOS/LODS/SCAS/CMPS)', () => {
     'source/emulation/cpu/normal/normal_strings_op.h',
     'source/emulation/cpu/x32/jitX86CodeGen.cpp',
   ];
-  const combined = files.map(f => { try { return readFileSync(join(repoRoot, f), 'utf8'); } catch { return ''; } }).join('\n').toUpperCase();
+  const combined = files.map(f => readFileSync(join(repoRoot, f), 'utf8')).join('\n').toUpperCase();
   assert.ok(combined.length > 1000, '32-bit string sources must be substantial');
   for (const op of ['MOVS', 'STOS', 'LODS', 'SCAS', 'CMPS']) {
     assert.ok(combined.includes(op), `32-bit backend must implement ${op}`);

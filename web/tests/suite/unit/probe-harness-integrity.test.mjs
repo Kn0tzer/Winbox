@@ -11,9 +11,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { terminalText } from '../lib/probe-base.mjs';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
@@ -23,16 +24,10 @@ test('probe-base has strict ^log: vkboot$ counting (not argv-echo match)', () =>
     'ProbeTest must expose countConsole(regex) for strict ^log: vkboot$ checks (sawVkboot:true argv-echo false positive guard)');
 });
 
-test('parsers handle Emscripten stdout prefix truncation', () => {
-  const probes = ['web/tests/tri9pong-probe.mjs', 'web/tests/input3-probe.mjs'];
-  let foundPrefixHandling = false;
-  for (const p of probes) {
-    try {
-      const src = readFileSync(join(repoRoot, p), 'utf8');
-      if (src.includes('prefix') || src.includes('truncat') || src.includes('includes(') || src.includes('match')) foundPrefixHandling = true;
-    } catch {}
-  }
-  assert.ok(foundPrefixHandling || true, 'input/pong probes must tolerate stdout prefix truncation (strict-regex DOWN-lost guard)');
+test('probe console normalization strips terminal controls before parsing', () => {
+  const normalized = terminalText('\u001b[32mlog: vkboot\u001b[0m');
+  assert.equal(normalized, 'log: vkboot');
+  assert.match(normalized, /^log: vkboot$/);
 });
 
 test('pgrep-style self-match guard exists in probe scripts', () => {
@@ -42,8 +37,8 @@ test('pgrep-style self-match guard exists in probe scripts', () => {
 });
 
 test('frame-time harness measures ms, not frame count (1.88x fallacy)', () => {
-  const ft = (() => { try { return readFileSync(join(repoRoot, 'web/tests/frametime-harness.mjs'), 'utf8'); } catch { return ''; } })();
-  assert.ok(ft.includes('ms') || ft.includes('frameTime') || ft.includes('performance') || ft.length === 0 || true,
+  const ft = readFileSync(join(repoRoot, 'web/tests/frametime-harness.mjs'), 'utf8');
+  assert.match(ft, /frameMs|frameTime|ms\/frame|performance\.now/i,
     'frametime harness must report ms/frame (frame-count-in-window is not speedup)');
   const vkprof = readFileSync(join(repoRoot, 'source/vulkan/vk64bridge.cpp'), 'utf8');
   assert.ok(vkprof.includes('vkProf') || vkprof.includes('BW64_VKPROF'),
