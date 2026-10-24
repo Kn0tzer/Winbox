@@ -447,6 +447,11 @@ test('renderbuffer storage validates target, binding, dimensions, and formats', 
     assert.equal(gl.getError(), 0x0502, 'storage without a bound renderbuffer is INVALID_OPERATION');
     const renderbuffer = gl.createRenderbuffer();
     gl.bindRenderbuffer(0x8d41, renderbuffer);
+    gl.renderbufferStorage(0x8d41, 0x8058, 4, 3);
+    assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8d42), 4);
+    assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8d43), 3);
+    assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8d44), 0x8058);
+    assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8cab), 0);
     gl.renderbufferStorage(0xdead, 0x8058, 4, 4);
     assert.equal(gl.getError(), 0x0500);
     gl.renderbufferStorage(0x8d41, 0x8058, -1, 4);
@@ -459,7 +464,26 @@ test('renderbuffer storage validates target, binding, dimensions, and formats', 
     gl.renderbufferStorage(0x8d41, 0x8d7c, 4, 4);
     assert.equal(gl.getError(), 0x0502, 'valid RGBA8UI storage is explicitly rejected until integer color targets are implemented');
     assert.ok(logs.some(line => line.includes('renderbuffer internal format 0x8d7c')));
-    assert.equal(renderbuffer.width, 0, 'invalid storage requests preserve prior allocation');
+    assert.equal(renderbuffer.width, 4, 'invalid storage requests preserve the prior allocation');
+  } finally { gpu.restore(); }
+});
+
+test('framebuffer and renderbuffer queries report invalid targets, pnames, and missing attachments', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    assert.equal(gl.checkFramebufferStatus(0xdead), 0);
+    assert.equal(gl.getError(), 0x0500);
+    gl.getRenderbufferParameter(0x8d41, 0x8d42);
+    assert.equal(gl.getError(), 0x0502, 'query without bound renderbuffer is INVALID_OPERATION');
+    gl.bindRenderbuffer(0x8d41, gl.createRenderbuffer());
+    gl.getRenderbufferParameter(0x8d41, 0xdead);
+    assert.equal(gl.getError(), 0x0500);
+    const framebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(0x8d40, framebuffer);
+    gl.getFramebufferAttachmentParameter(0x8d40, 0x8ce0, 0x8cd0);
+    assert.equal(gl.getError(), 0x0502, 'querying a missing attachment is INVALID_OPERATION');
   } finally { gpu.restore(); }
 });
 

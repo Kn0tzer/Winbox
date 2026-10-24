@@ -2511,6 +2511,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     else framebuffer.attachments.set(attachment, { type: 'renderbuffer', object: renderbuffer });
   }
   checkFramebufferStatus(target) {
+    if (![GL.FRAMEBUFFER, GL.READ_FRAMEBUFFER, GL.DRAW_FRAMEBUFFER].includes(target)) { this._recordError(GL.INVALID_ENUM); return 0; }
     const framebuffer = this._boundFramebuffer(target);
     if (this._isDefaultFramebuffer(framebuffer)) return GL.FRAMEBUFFER_COMPLETE;
     const color = framebuffer?.attachments?.get(0x8ce0), depth = framebuffer?.attachments?.get(0x8d00) || framebuffer?.attachments?.get(0x821a);
@@ -2548,12 +2549,19 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     });
   }
   getRenderbufferParameter(target, parameter) {
-    if (!this._boundRenderbuffer) return 0;
-    return parameter === 0x8d42 ? this._boundRenderbuffer.internalFormat : parameter === 0x8d43 ? this._boundRenderbuffer.width : parameter === 0x8d44 ? this._boundRenderbuffer.height : 0;
+    if (target !== 0x8d41) { this._recordError(GL.INVALID_ENUM); return 0; }
+    if (!this._boundRenderbuffer) { this._recordError(GL.INVALID_OPERATION); return 0; }
+    if (parameter === 0x8d42) return this._boundRenderbuffer.width;
+    if (parameter === 0x8d43) return this._boundRenderbuffer.height;
+    if (parameter === 0x8d44) return this._boundRenderbuffer.internalFormat;
+    if (parameter === 0x8cab) return this._boundRenderbuffer.samples || 0;
+    this._recordError(GL.INVALID_ENUM); return 0;
   }
   getFramebufferAttachmentParameter(target, attachment, parameter) {
+    if (![GL.FRAMEBUFFER, GL.READ_FRAMEBUFFER, GL.DRAW_FRAMEBUFFER].includes(target)) { this._recordError(GL.INVALID_ENUM); return 0; }
+    if (![0x8ce0, 0x8d00, 0x8d20, 0x821a].includes(attachment) && !(attachment >= 0x8ce1 && attachment <= 0x8cff)) { this._recordError(GL.INVALID_ENUM); return 0; }
     const record = this._boundFramebuffer(target)?.attachments?.get(attachment);
-    if (!record) return 0;
+    if (!record) { this._recordError(GL.INVALID_OPERATION); return 0; }
     if (parameter === 0x8cd0) return record.type === 'texture' ? 0x1702 : 0x8d41;
     if (parameter === 0x8cd1) return record.type === 'texture' ? record.object.handle : 0;
     if (parameter === 0x8cd2) return record.level || 0;
