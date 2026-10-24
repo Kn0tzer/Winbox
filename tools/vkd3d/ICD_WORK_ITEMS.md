@@ -17,6 +17,23 @@ render path was checked against the 85 + extras fn-ids. What follows is the
 complete delta, ordered so device creation passes before command recording
 matters.
 
+## Status reconciliation, 2026-10-24 (V lane; the register is `docs/known-gaps/vulkan.md`)
+
+Everything below this section is the 2026-10-05 sketch, kept for the vkd3d source
+references. Where it disagrees with this section, this section is right.
+
+| Item | 2026-10-24 reality |
+|---|---|
+| A1 push_descriptor "HARD gate" | `vkCmdPushDescriptorSetKHR` and `...WithTemplateKHR` are implemented (graphics bind point; a compute bind point is reported as `compute-descriptor-sets`). `VK_KHR_push_descriptor` is deliberately **not advertised** (`notAdvertisedExtensions` in `source/vulkan/vk-capabilities.json`; `vk-capabilities.test.mjs` pins it), so vkd3d-proton's device-init gate (`device.c:2661`) still fails by design until the compute path exists. Do not apply the advertisement sketch. |
+| A2 vertex attribute divisor | Not advertised (`VK_EXT_vertex_attribute_divisor` is in `notAdvertisedExtensions`); a pipeline with divisor != 1 is rejected loudly (`vertex-attribute-divisor`). |
+| A3 `samplerMirrorClampToEdge` | FALSE; `MIRROR_CLAMP_TO_EDGE` sampler creation is rejected loudly (`mirror-clamp-to-edge`). |
+| A4 `shaderDrawParameters` | TRUE (`fillVulkan11Features`, an explicit exception noted in the source). |
+| A5 Vulkan 1.3 texel-buffer alignment properties | Modelled in `walkProperties2` (single-texel alignment TRUE). |
+| B1 `vkQueueSubmit2`, B2 dynamic rendering, B3 push descriptors, B4 vertex/index/indexed draw, B5 `*WithCount` (count 1; multi-viewport rejected), B6 `vkCmdPipelineBarrier2`, `vkCmdCopyBuffer(2)`, `vkCmdClearColorImage`, `vkCmdClearAttachments` | Implemented in both ABIs (`E()` entries in `libvk{64,32}.c`; bridge cases in `vk64bridge.cpp`). |
+| B7 queries/objects | Implemented: `vkGetPhysicalDeviceImageFormatProperties`, `...FormatProperties2`, `vkCreateBufferView`/`vkDestroyBufferView` (64-bit destroy leaked until 2026-10-24), `vkFlushMappedMemoryRanges`, `vkResetDescriptorPool`, `vkFreeDescriptorSets`, `vkGetDescriptorSetLayoutSupport`, query-pool create/destroy/get/begin/end/reset, `vkMergePipelineCaches`/`vkGetPipelineCacheData` (shim-local, empty cache). Not implemented: `vkGetPhysicalDeviceSurfaceCapabilities2KHR` - `VK_KHR_get_surface_capabilities2` is not advertised, so a conforming application cannot call it. Timestamp queries are reported (`timestamp-query`). |
+| Part C (ray tracing, mesh shaders, descriptor buffer, cooperative matrix, ...) | Out of scope and not advertised; their entry points are loud `TAIL` stubs. |
+| Delta count | The "36 work items" figure is obsolete: 0 of B1-B7 remain except the unadvertised surface-capabilities2 entry. The open work is whatever the register lists as OPEN. |
+
 ## Part A — device-creation gates (5 items)
 
 vkd3d-proton fails `d3d12_device_init` with `E_INVALIDARG` unless ALL of these
