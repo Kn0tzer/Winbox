@@ -277,3 +277,20 @@ test('bundled 64-bit GL client-array entry points contain real trap wrappers', (
     assert.ok(sizes.get(name) > 8, `${name} is missing or a no-op in the bundled guest binary; rebuild tools/rootfs64/libgl64/libGL.so.1`);
   }
 });
+
+
+test('guest GL buffer maps preserve read contents and mapped-range offsets without a fixed size cap', () => {
+  const mapRange = shimSrc.match(/API void\* glMapBufferRange\([\s\S]*?\n\}/)?.[0] ?? '';
+  const prepareMap = shimSrc.match(/static unsigned char\* gl64_prepare_map\([\s\S]*?\n\}/)?.[0] ?? '';
+  const flush = shimSrc.match(/API void glFlushMappedBufferRange\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert.match(mapRange, /MAP_READ/);
+  assert.match(mapRange, /explicitFlush/)
+  assert.match(prepareMap, /malloc\(/);
+  assert.match(prepareMap, /glGetBufferSubData\(target,offset,length,\*storage\)/);
+  assert.doesNotMatch(shimSrc, /GL64_MAP_SCRATCH|8u?\s*\*\s*1024u?\s*\*\s*1024u?/);
+  assert.match(flush, /base\s*\+\s*offset/);
+  assert.match(flush, /\*storage\s*\+\s*offset/);
+  assert.match(flush, /explicitFlush/);
+  const unmap = shimSrc.match(/API GLboolean glUnmapBuffer\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert.match(unmap, /writable && !g_map(?:Elem|Array)\.explicitFlush/);
+});
