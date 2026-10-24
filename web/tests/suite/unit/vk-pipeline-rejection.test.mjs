@@ -58,7 +58,8 @@ test('unsupported blend enums and mixed constants fail pipeline creation in both
   assert.match(audit, /a\.unsupportedBlendEnum[^\n]*vk64Unsupported\("blend-enum"[^\n]*reject = true/);
   assert.match(audit, /a\.mixedBlendConstants[^\n]*vk64Unsupported\("mixed-blend-constants"[^\n]*reject = true/);
   const blendAudit = functionBody(bridge, 'static void vk64AuditBlend(');
-  assert.match(blendAudit, /b\.colorOp > 4 \|\| b\.alphaOp > 4[\s\S]*?a\.unsupportedBlendEnum = true/);
+  assert.match(blendAudit, /b\.colorOp > 4 \|\| b\.alphaOp > 4[\s\S]*?b\.colorOp < 3 && \(b\.srcColor > 14 \|\| b\.dstColor > 14\)[\s\S]*?b\.alphaOp < 3 && \(b\.srcAlpha > 14 \|\| b\.dstAlpha > 14\)[\s\S]*?a\.unsupportedBlendEnum = true/,
+    'factor validation must follow the Vulkan rule that MIN/MAX ignore factors');
   assert.match(blendAudit, /a\.mixedBlendConstants = colorConstant && alphaConstant/);
   assert.equal((bridge.match(/vk64AuditBlend\(\*p, audit\)/g) || []).length, 2,
     'both guest ABIs must reject unsupported blend state before emitting a pipeline');

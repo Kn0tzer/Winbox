@@ -1131,7 +1131,9 @@ static void vk64AuditBlend(const Pipeline& p, PipelineAudit& a) {
     for (U32 i = 0; i < p.colorBlendCount; ++i) {
         const ColorBlend& b = p.colorBlend[i];
         if (!b.enable) continue;
-        if (b.colorOp > 4 || b.alphaOp > 4 || b.srcColor > 14 || b.dstColor > 14 || b.srcAlpha > 14 || b.dstAlpha > 14)
+        if (b.colorOp > 4 || b.alphaOp > 4 ||
+            (b.colorOp < 3 && (b.srcColor > 14 || b.dstColor > 14)) ||
+            (b.alphaOp < 3 && (b.srcAlpha > 14 || b.dstAlpha > 14)))
             a.unsupportedBlendEnum = true;
         if (b.colorOp < 3) {
             colorConstant |= b.srcColor == 10 || b.srcColor == 11 || b.dstColor == 10 || b.dstColor == 11;
