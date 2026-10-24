@@ -8,10 +8,9 @@ const root = resolve(fileURLToPath(new URL('../../../../', import.meta.url)));
 const bridge = readFileSync(resolve(root, 'source/vulkan/vk64bridge.cpp'), 'utf8');
 
 test('timeline waits never invent a signal value to satisfy a future wait', () => {
-  assert.match(bridge, /f\.timelineSemaphore = VK_FALSE/);
-  assert.equal((bridge.match(/vk64Unsupported\("timeline-semaphore", "timeline signal completion is not connected to WebGPU replay; VK_ERROR_FEATURE_NOT_PRESENT"\)/g) || []).length, 2,
-    'both guest ABIs reject timeline semaphore creation loudly until submit completion is wired');
-  assert.doesNotMatch(bridge, /f\.timelineSemaphore\s*=\s*VK_TRUE/);
+  // vkd3d-proton requires timelineSemaphore and DXVK uses it on every flush; the counter is
+  // honest under immediate execution (see fillVulkan12Features), so it stays advertised.
+  assert.match(bridge, /f\.timelineSemaphore = VK_TRUE/);
   const begin = bridge.indexOf('case VK64_fn_vkWaitSemaphores:');
   const end = bridge.indexOf('case VK64_fn_vkSignalSemaphore:', begin);
   const wait64 = bridge.slice(begin, end);

@@ -3485,9 +3485,11 @@ template <class T> inline void fillDepthClipEnable(T& f) {
     f.depthClipEnable = VK_TRUE;        // page requests depth-clip-control when the browser has it
 }
 template <class T> inline void fillVulkan12Features(T& f) {
-    // Timeline semaphore creation is rejected until WebGPU replay completion can
-    // be linked to signals. bufferDeviceAddress stays FALSE: no addresses escape.
-    f.timelineSemaphore = VK_FALSE;
+    // timelineSemaphore is emulated honestly under immediate execution (u64
+    // counter per semaphore; a wait for a value the queue already ran past
+    // returns SUCCESS, and a wait for a FUTURE value with timeout 0 returns
+    // VK_TIMEOUT). bufferDeviceAddress stays FALSE: nothing hands out addresses.
+    f.timelineSemaphore = VK_TRUE;
     f.bufferDeviceAddress = VK_FALSE;
 }
 template <class T> inline void fillVulkan11Features(T& f) {
@@ -4801,23 +4803,24 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         if (!objOf<Device>(args.a[0], K_DEVICE, "vkCreateSemaphore") ||
             !readStruct(args.a[1], ci) || !args.a[3])
             return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        Semaphore* s = createObj<Semaphore>(K_SEMAPHORE, id);
+        // Timeline detection: VkSemaphoreTypeCreateInfo hangs off
+        // VkSemaphoreCreateInfo::pNext, and the walker must not stop at the first
+        // unknown sType (a guest may chain something else first).
         for (U64 cur = ci.pNext; cur && g_mem;) {
             if (g_mem->readd(cur) == VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO) {
                 VkSemaphoreTypeCreateInfo ti = {};
                 g_mem->memcpyFromGuest(&ti, cur, sizeof(ti));
-                if (ti.semaphoreType == VK_SEMAPHORE_TYPE_TIMELINE) {
-                    vk64Unsupported("timeline-semaphore", "timeline signal completion is not connected to WebGPU replay; VK_ERROR_FEATURE_NOT_PRESENT");
-                    wr64(args.a[3], 0);
-                    return VK_ERROR_FEATURE_NOT_PRESENT;
-                }
+                s->isTimeline = (ti.semaphoreType == VK_SEMAPHORE_TYPE_TIMELINE) ? 1 : 0;
+                s->counter = ti.initialValue;
                 break;
             }
             cur = g_mem->readq(cur + 8);
         }
-        U64 id = 0;
-        Semaphore* s = createObj<Semaphore>(K_SEMAPHORE, id);
         wr64(args.a[3], id);
-        klog("vk64: vkCreateSemaphore");
+        klog_fmt("vk64: vkCreateSemaphore%s%s",
+                 s->isTimeline ? " (timeline" : "", s->isTimeline ? ")" : "");
         return VK_SUCCESS;
     }
     case VK64_fn_vkGetSemaphoreCounterValue: {
@@ -7769,21 +7772,17 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         vk32abi::VkSemaphoreCreateInfo ci = {};
         if (!objOf32<Device>(args.a[0], K_DEVICE, "vkCreateSemaphore") ||
             !readStruct32(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        auto* semaphore = createObj32<Semaphore>(K_SEMAPHORE, id);
         for (U32 cur = ci.pNext, n = 0; cur && n < 64; ++n) {
             if (rd32_32(cur) == VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO) {
                 vk32abi::VkSemaphoreTypeCreateInfo ti = {};
                 readStruct32(cur, ti);
-                if (ti.semaphoreType == (U32)VK_SEMAPHORE_TYPE_TIMELINE) {
-                    vk64Unsupported("timeline-semaphore", "timeline signal completion is not connected to WebGPU replay; VK_ERROR_FEATURE_NOT_PRESENT");
-                    wr64_32((U32)args.a[3], 0);
-                    return VK_ERROR_FEATURE_NOT_PRESENT;
-                }
-                break;
+                semaphore->isTimeline = ti.semaphoreType == (U32)VK_SEMAPHORE_TYPE_TIMELINE;
+                semaphore->counter = ti.initialValue;
             }
             cur = rd32_32(cur + 4);
         }
-        U64 id = 0;
-        createObj32<Semaphore>(K_SEMAPHORE, id);
         wr64_32((U32)args.a[3], id);
         return VK_SUCCESS;
     }
