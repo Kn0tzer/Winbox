@@ -376,14 +376,73 @@ test('blend/depth/cull enums fail synchronously with INVALID_ENUM before async p
   } finally { gpu.restore(); }
 });
 
-test('valid but unsupported GL buffer targets reject loudly with INVALID_OPERATION', async () => {
+test('uniform buffers bind base and ranges and GLSL blocks lower with std140 layout', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: () => {} });
+    await gl.ready;
+    const pendingLink = gl.createProgram();
+    const pendingVertex = gl.createShader(0x8b31), pendingFragment = gl.createShader(0x8b30);
+    gl.shaderSource(pendingVertex, `#version 300 es\nlayout(std140, binding = 3) uniform Camera { mat4 view; } camera; void main(){ gl_Position = camera.view * vec4(0.0); }`);
+    gl.shaderSource(pendingFragment, `#version 300 es\nout vec4 color; void main(){ color = vec4(1.0); }`);
+    gl.compileShader(pendingVertex); gl.compileShader(pendingFragment); gl.attachShader(pendingLink, pendingVertex); gl.attachShader(pendingLink, pendingFragment);
+    gl.linkProgram(pendingLink);
+    assert.equal(gl.getUniformBlockIndex(pendingLink, 'Camera'), 0, 'block index is available synchronously after link');
+
+    const buffer = gl.createBuffer();
+    gl.bindBuffer(0x8a11, buffer);
+    gl.bufferData(0x8a11, new Uint8Array(128), 0x88e8);
+    gl.bindBufferRange(0x8a11, 3, buffer, 16, 112);
+    assert.equal(gl.getError(), 0);
+    assert.deepEqual(gl._uniformBufferBindings.get(3), { buffer, offset: 16, size: 112, base: false });
+    assert.equal(gl.getIndexedParameter(0x8a11, 3), buffer);
+    assert.equal(gl.getParameter(0x8a28), buffer);
+    assert.equal(gl.getParameter(0x8a2f), 24);
+    gl.bindBufferBase(0x8a11, 2, buffer);
+    assert.deepEqual(gl._uniformBufferBindings.get(2), { buffer, offset: 0, size: 128, base: true });
+
+    const lowered = rewriteGlslForWebGPU(`#version 300 es
+layout(std140, binding = 3) uniform Camera { mat4 view; vec3 eye; float exposure; } camera;
+void main(){ gl_Position = camera.view * vec4(camera.eye * camera.exposure, 1.0); }`, 'vertex');
+    assert.equal(lowered.uniformBlocks[0].name, 'Camera');
+    assert.equal(lowered.uniformBlocks[0].binding, 3);
+    assert.deepEqual(lowered.uniformBlocks[0].layout.fields.map(field => field.offset), [0, 64, 76]);
+    assert.match(lowered.code, /bw_globals\.view/);
+    assert.match(lowered.code, /bw_globals\.eye/);
+    const program = { uniformBlocks: [{ ...lowered.uniformBlocks[0], index: 0, activeUniformIndices: [0, 1, 2], stages: new Set(['vertex']) }], uniformBlockBindings: new Map([[0, 3]]), stages: { vertex: { layout: lowered.layout, samplers: [] }, fragment: { layout: { fields: [], size: 0 }, samplers: [] } } };
+    const bytes = new Uint8Array(128);
+    const source = new DataView(bytes.buffer);
+    source.setFloat32(16, 2, true); source.setFloat32(80, 5, true); source.setFloat32(84, 7, true); source.setFloat32(92, 3, true);
+    gl.bufferSubData(0x8a11, 0, bytes);
+    const writes = [];
+    gl._device.queue.writeBuffer = (...args) => writes.push(args);
+    const state = { uniformValues: new Map(), textureUnits: [], uniformBlockBindings: program.uniformBlockBindings, uniformBufferBindings: gl._uniformBufferBindings };
+    const bindGroup = await gl._uniformBindGroup(program, { getBindGroupLayout: () => ({ entries: [{ binding: 0, buffer: {} }] }) }, state);
+    assert.ok(bindGroup);
+    const uploaded = new DataView(writes[0][2].buffer, writes[0][2].byteOffset, writes[0][2].byteLength);
+    assert.equal(uploaded.getFloat32(0, true), 2);
+    assert.equal(uploaded.getFloat32(64, true), 5);
+    assert.equal(uploaded.getFloat32(68, true), 7);
+    assert.equal(uploaded.getFloat32(76, true), 3);
+    assert.equal(gl.getUniformBlockIndex(program, 'Camera'), 0);
+    assert.equal(gl.getActiveUniformBlockParameter(program, 0, 0x8a40), 80);
+    assert.equal(gl.getActiveUniformBlockParameter(program, 0, 0x8a42), 3);
+    assert.deepEqual(gl.getActiveUniformBlockParameter(program, 0, 0x8a43), [0, 1, 2]);
+    gl.uniformBlockBinding(program, 0, 5);
+    assert.equal(gl.getActiveUniformBlockParameter(program, 0, 0x8a3f), 5);
+    assert.equal(gl.getActiveUniformBlockName(program, 0), 'Camera');
+    assert.equal(gl.getError(), 0);
+  } finally { gpu.restore(); }
+});
+
+test('valid but unsupported GL buffer targets still reject loudly', async () => {
   const gpu = createValidationDevice(), logs = [];
   try {
     const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
     await gl.ready;
-    gl.bindBuffer(0x8a11, gl.createBuffer());
+    gl.bindBuffer(0x8f36, gl.createBuffer());
     assert.equal(gl.getError(), 0x0502);
-    assert.ok(logs.some(line => line.includes('buffer target 0x8a11')));
+    assert.ok(logs.some(line => line.includes('buffer target 0x8f36')));
   } finally { gpu.restore(); }
 });
 

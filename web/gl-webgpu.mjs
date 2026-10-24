@@ -8,6 +8,7 @@ import { createRecoveringBridge, reportBridgeFailure } from './bridge-recovery.m
 const GL = Object.freeze({
   ARRAY_BUFFER: 0x8892, ARRAY_BUFFER_BINDING: 0x8894,
   ELEMENT_ARRAY_BUFFER: 0x8893, ELEMENT_ARRAY_BUFFER_BINDING: 0x8895,
+  UNIFORM_BUFFER: 0x8a11, UNIFORM_BUFFER_BINDING: 0x8a28,
   STATIC_DRAW: 0x88e4, DYNAMIC_DRAW: 0x88e8, STREAM_DRAW: 0x88e0,
   FRAMEBUFFER: 0x8d40, READ_FRAMEBUFFER: 0x8ca8, DRAW_FRAMEBUFFER: 0x8ca9,
   FRAMEBUFFER_BINDING: 0x8ca6, DRAW_FRAMEBUFFER_BINDING: 0x8ca6,
@@ -71,6 +72,22 @@ function mulMat4(matrix, vector) {
   const out = new Array(4);
   for (let row = 0; row < 4; row++) out[row] = matrix[row] * vector[0] + matrix[4 + row] * vector[1] + matrix[8 + row] * vector[2] + matrix[12 + row] * vector[3];
   return out;
+}
+
+function unpackStd140Field(view, field, base) {
+  const values = [];
+  const kind = /^(?:i|ivec)/.test(field.type) ? 'int' : /^(?:u|uvec)/.test(field.type) ? 'uint' : /^(?:b|bvec)/.test(field.type) ? 'bool' : 'float';
+  for (let element = 0; element < field.arrayLength; element++) {
+    const elementBase = base + field.offset + (field.arrayLength > 1 ? element * field.arrayStride : 0);
+    const components = [];
+    for (let column = 0; column < field.columns; column++) for (let row = 0; row < field.rows; row++) {
+      const offset = elementBase + (field.columns > 1 ? column * field.columnStride : 0) + row * 4;
+      if (offset + 4 > view.byteLength) return null;
+      components.push(kind === 'float' ? view.getFloat32(offset, true) : kind === 'uint' ? view.getUint32(offset, true) : view.getInt32(offset, true));
+    }
+    values.push(components.length === 1 ? components[0] : components);
+  }
+  return field.arrayLength === 1 ? values[0] : values;
 }
 
 const GL_TOPOLOGY = new Map([[0x0000, 'point-list'], [0x0001, 'line-list'], [0x0002, 'line-strip'], [0x0004, 'triangle-list'], [0x0005, 'triangle-strip']]);
@@ -163,6 +180,26 @@ function nativeVertexFormat(attribute) {
   if (type === 0x8363) return null;
   if (!integer && !normalized && [0x1400, 0x1401, 0x1402, 0x1403].includes(type)) return null;
   return format;
+}
+
+function lowerUniformBlocks(source) {
+  const blocks = [];
+  const code = source.replace(/(?:layout\s*\(([^)]*)\)\s*)?uniform\s+([A-Za-z_]\w*)\s*\{([^}]*)\}\s*([A-Za-z_]\w*)?\s*;/g,
+    (whole, layoutText = '', name, body, instance = '') => {
+      const members = [];
+      const declaration = /(?:layout\s*\([^)]*\)\s*)?(?:lowp|mediump|highp)?\s*([A-Za-z_]\w*)\s+([A-Za-z_]\w*)(?:\s*\[\s*(\d+)\s*\])?\s*;/g;
+      for (const match of body.matchAll(declaration)) members.push({ type: match[1], name: match[2], arrayLength: Number(match[3] || 1) });
+      if (!members.length || body.replace(declaration, '').trim()) throw new Error(`Unsupported uniform block declaration: ${name}`);
+      if (!/\bstd140\b/.test(layoutText)) throw new Error(`Unsupported uniform block layout for ${name}; expected std140`);
+      const binding = /\bbinding\s*=\s*(\d+)/.exec(layoutText);
+      blocks.push({ name, binding: binding ? Number(binding[1]) : 0, instance, members, layout: uniformLayout(members) });
+      return members.map(member => `uniform ${member.type} ${member.name}${member.arrayLength > 1 ? `[${member.arrayLength}]` : ''};`).join('\n');
+    });
+  let rewritten = code;
+  for (const block of blocks) if (block.instance) {
+    rewritten = rewritten.replace(new RegExp(`\\b${block.instance.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\.\\s*`, 'g'), '');
+  }
+  return { code: rewritten, blocks };
 }
 
 function glslDeclarations(source, qualifier) {
@@ -291,6 +328,8 @@ export function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(
   );
   if (integerDefines.size) code = code.replace(/\[[ \t]*([A-Za-z_]\w*)[ \t]*\]/g,
     (match, name) => integerDefines.has(name) ? `[${integerDefines.get(name)}]` : match);
+  const loweredBlocks = lowerUniformBlocks(code);
+  code = loweredBlocks.code;
   const uniforms = glslDeclarations(code, 'uniform');
   const fields = [];
   const samplers = [];
@@ -363,7 +402,7 @@ export function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(
   code = lowerMatrixStageInterfacesForNaga(code);
   const lifted = liftForNaga(code, stage, interfaceLocations);
   if (!lifted.ok) throw new Error(`GLSL lift failed (${lifted.reason}): ${lifted.detail || ''}`);
-  return { code: lifted.code, layout, activeUniforms, samplers };
+  return { code: lifted.code, layout, activeUniforms, samplers, uniformBlocks: loweredBlocks.blocks };
 }
 
 function parseStageInputs(source, stage) {
@@ -456,6 +495,7 @@ export class WebGPUGL {
     this._blitPipelineCache = new Map();
     this._constantBuffers = new Map();
     this._buffers = new Set();
+    this._uniformBufferBindings = new Map();
     this._shaders = new Set();
     this._programs = new Set();
     this._queries = new Set();
@@ -855,6 +895,10 @@ export class WebGPUGL {
     return this._enabled.has(capability);
   }
 
+  getIndexedParameter(target, index) {
+    if (target !== GL.UNIFORM_BUFFER || !Number.isInteger(index) || index < 0 || index >= 24) { this._recordError(target === GL.UNIFORM_BUFFER ? GL.INVALID_VALUE : GL.INVALID_ENUM); return null; }
+    return this._uniformBufferBindings.get(index)?.buffer || null;
+  }
   getParameter(parameter) {
     switch (parameter) {
       case GL.VERSION: return 'OpenGL ES 3.0 WebGPUGL';
@@ -873,6 +917,9 @@ export class WebGPUGL {
       case GL.DRAW_BUFFER0: return this._bufferSelection(this._drawFramebuffer).draw;
       case GL.ARRAY_BUFFER_BINDING: return this._arrayBuffer;
       case GL.ELEMENT_ARRAY_BUFFER_BINDING: return this._elementArrayBuffer;
+      case GL.UNIFORM_BUFFER_BINDING: return this._uniformBufferBindings.get(-1) || null;
+      case 0x8a2f: return 24; // GL_MAX_UNIFORM_BUFFER_BINDINGS
+      case 0x8a34: return 1; // CPU-packed UBO ranges do not require GPU dynamic-offset alignment
       case GL.PIXEL_PACK_BUFFER_BINDING: return this._pixelPackBuffer;
       case GL.TEXTURE_BINDING_2D: return this._textureUnits[this._activeTextureUnit]?.[GL.TEXTURE_2D]?.handle || null;
       case GL.RENDERBUFFER_BINDING: return this._boundRenderbuffer;
@@ -1077,6 +1124,7 @@ export class WebGPUGL {
     if (this._arrayBuffer === buffer) this._arrayBuffer = null;
     if (this._elementArrayBuffer === buffer) this._elementArrayBuffer = null;
     if (this._pixelPackBuffer === buffer) this._pixelPackBuffer = null;
+    for (const [index, binding] of this._uniformBufferBindings) if (binding === buffer || binding?.buffer === buffer) this._uniformBufferBindings.set(index, null);
     for (const vao of [this._defaultVao, ...this._vaos]) {
       if (vao.elementArrayBuffer === buffer) vao.elementArrayBuffer = null;
       for (const attribute of vao.attributes.values()) if (attribute.buffer === buffer) attribute.buffer = null;
@@ -1084,8 +1132,8 @@ export class WebGPUGL {
   }
   isBuffer(buffer) { return this._buffers.has(buffer); }
   _validateBufferTarget(target) {
-    if (target === GL.ARRAY_BUFFER || target === GL.ELEMENT_ARRAY_BUFFER || target === 0x88eb) return true;
-    if ([0x8f36, 0x8f37, 0x88eb, 0x88ec, 0x8a11, 0x8c8e, 0x8f3f].includes(target)) this._rejectUnsupported(`buffer target 0x${target.toString(16)}`);
+    if (target === GL.ARRAY_BUFFER || target === GL.ELEMENT_ARRAY_BUFFER || target === 0x88eb || target === GL.UNIFORM_BUFFER) return true;
+    if ([0x8f36, 0x8f37, 0x88eb, 0x88ec, 0x8c8e, 0x8f3f].includes(target)) this._rejectUnsupported(`buffer target 0x${target.toString(16)}`);
     else this._recordError(GL.INVALID_ENUM);
     return false;
   }
@@ -1094,9 +1142,24 @@ export class WebGPUGL {
     if (target === GL.ARRAY_BUFFER) this._arrayBuffer = value;
     else if (target === GL.ELEMENT_ARRAY_BUFFER) { this._elementArrayBuffer = value; this._vao.elementArrayBuffer = value; }
     else if (target === 0x88eb) this._pixelPackBuffer = value;
+    else if (target === GL.UNIFORM_BUFFER) this._uniformBufferBindings.set(-1, value);
     else this._validateBufferTarget(target);
   }
-  _boundBuffer(target) { return target === GL.ARRAY_BUFFER ? this._arrayBuffer : target === GL.ELEMENT_ARRAY_BUFFER ? this._elementArrayBuffer : target === 0x88eb ? this._pixelPackBuffer : null; }
+  _boundBuffer(target) { return target === GL.ARRAY_BUFFER ? this._arrayBuffer : target === GL.ELEMENT_ARRAY_BUFFER ? this._elementArrayBuffer : target === 0x88eb ? this._pixelPackBuffer : target === GL.UNIFORM_BUFFER ? this._uniformBufferBindings.get(-1) || null : null; }
+  bindBufferBase(target, index, buffer) {
+    if (target !== GL.UNIFORM_BUFFER) { this._validateBufferTarget(target); return; }
+    if (!Number.isInteger(index) || index < 0 || index >= 24) { this._recordError(GL.INVALID_VALUE); return; }
+    if (buffer && !this._buffers.has(buffer)) { this._recordError(GL.INVALID_OPERATION); return; }
+    this._uniformBufferBindings.set(index, buffer ? { buffer, offset: 0, size: buffer.data.byteLength, base: true } : null);
+    this._uniformBufferBindings.set(-1, buffer || null);
+  }
+  bindBufferRange(target, index, buffer, offset, size) {
+    if (target !== GL.UNIFORM_BUFFER) { this._validateBufferTarget(target); return; }
+    if (!Number.isInteger(index) || index < 0 || index >= 24 || !Number.isInteger(offset) || !Number.isInteger(size) || offset < 0 || size <= 0) { this._recordError(GL.INVALID_VALUE); return; }
+    if (!buffer || !this._buffers.has(buffer) || offset + size > buffer.data.byteLength) { this._recordError(GL.INVALID_OPERATION); return; }
+    this._uniformBufferBindings.set(index, { buffer, offset, size, base: false });
+    this._uniformBufferBindings.set(-1, buffer);
+  }
   bufferData(target, data, usage = GL.STATIC_DRAW) {
     if (!this._validateBufferTarget(target)) return;
     const buffer = this._boundBuffer(target);
@@ -1106,6 +1169,7 @@ export class WebGPUGL {
     const length = typeof data === 'number' ? data | 0 : bytesOf(data).length;
     buffer.data = typeof data === 'number' ? new Uint8Array(length) : bytesOf(data);
     buffer.usage = usage; buffer.dirty = true; buffer.version++; buffer.vertexCache.clear();
+    for (const binding of this._uniformBufferBindings.values()) if (binding?.buffer === buffer && binding.base) binding.size = buffer.data.byteLength;
   }
   bufferSubData(target, offset, data) {
     if (!this._validateBufferTarget(target)) return;
@@ -1271,7 +1335,7 @@ export class WebGPUGL {
   getShaderInfoLog(shader) { return shader?.infoLog || ''; }
   getShaderSource(shader) { return shader?.source || ''; }
   getShaderPrecisionFormat() { return { rangeMin: 0, rangeMax: 0, precision: 0 }; }
-  createProgram() { const program = { id: this._nextId++, shaders: [], attributes: new Map(), attributeLocations: new Map(), attributeInfo: [], uniformInfo: [], uniformValues: new Map(), uniformLocations: new Map(), stages: {}, infoLog: '' }; this._programs.add(program); return program; }
+  createProgram() { const program = { id: this._nextId++, shaders: [], attributes: new Map(), attributeLocations: new Map(), attributeInfo: [], uniformInfo: [], uniformValues: new Map(), uniformLocations: new Map(), uniformBlocks: [], uniformBlockBindings: new Map(), stages: {}, infoLog: '' }; this._programs.add(program); return program; }
   deleteProgram(program) { this._programs.delete(program); if (this._currentProgram === program) this._currentProgram = null; }
   isProgram(program) { return this._programs.has(program); }
   attachShader(program, shader) { if (program && shader) program.shaders.push(shader); }
@@ -1283,6 +1347,14 @@ export class WebGPUGL {
     const vertex = shaders.find(shader => shader.type === GL.VERTEX_SHADER);
     const fragment = shaders.find(shader => shader.type === GL.FRAGMENT_SHADER);
     program.linked = Boolean(vertex && fragment);
+    const initialBlocks = new Map();
+    if (program.linked) for (const shader of [vertex, fragment]) for (const block of lowerUniformBlocks(shader.source).blocks) {
+      if (!initialBlocks.has(block.name)) initialBlocks.set(block.name, { ...block, index: initialBlocks.size, stages: new Set() });
+      initialBlocks.get(block.name).stages.add(shader.type === GL.VERTEX_SHADER ? 'vertex' : 'fragment');
+    }
+    const previousBlockBindings = program.uniformBlockBindings;
+    program.uniformBlocks = [...initialBlocks.values()];
+    program.uniformBlockBindings = new Map(program.uniformBlocks.map(block => [block.index, previousBlockBindings.get(block.index) ?? block.binding]));
     program.infoLog = program.linked ? '' : 'A vertex and fragment shader are required';
     program.attributeLocations.clear(); program.attributeInfo = [];
     program.uniformInfo = []; program.uniformLocations.clear(); program.uniformValues.clear();
@@ -1306,6 +1378,16 @@ export class WebGPUGL {
         program.uniformValues.set(declaration.name, declaration.type === 'sampler2D' ? 0 : new Float32Array(Math.max(1, declaration.arrayLength) * componentCount(declaration.type)));
       }
     }
+    for (const block of program.uniformBlocks) {
+      block.activeUniformIndices = [];
+      for (const member of block.members) {
+        const qualifiedName = block.instance ? `${block.instance}.${member.name}` : member.name;
+        const name = member.arrayLength > 1 ? `${qualifiedName}[0]` : qualifiedName;
+        const index = program.uniformInfo.length;
+        program.uniformInfo.push({ name, baseName: qualifiedName, size: member.arrayLength, type: TYPE_ENUM.get(member.type) || 0x1406, blockIndex: block.index });
+        block.activeUniformIndices.push(index);
+      }
+    }
     const locationRegistry = new Map();
     let failingShader = null;
     let failingStage = 'unknown';
@@ -1323,8 +1405,19 @@ export class WebGPUGL {
           ? [...prepared.code.matchAll(/layout\s*\([^)]*location\s*=\s*(\d+)[^)]*\)\s*in\s+([A-Za-z_]\w*)\s+([A-Za-z_]\w*)/g)]
           : [];
         for (const match of activeInputs) program.attributeLocations.set(match[3], Number(match[1]));
-        program.stages[stage] = { wgsl, layout: prepared.layout, activeUniforms: prepared.activeUniforms, samplers: prepared.samplers };
+        program.stages[stage] = { wgsl, layout: prepared.layout, activeUniforms: prepared.activeUniforms, samplers: prepared.samplers, uniformBlocks: prepared.uniformBlocks };
       }
+      const blocks = new Map();
+      for (const stage of ['vertex', 'fragment']) for (const block of program.stages[stage]?.uniformBlocks || []) {
+        let item = blocks.get(block.name);
+        if (!item) { item = { ...block, index: blocks.size, stages: new Set() }; blocks.set(block.name, item); }
+        item.stages.add(stage);
+      }
+      const previousBindings = program.uniformBlockBindings;
+      program.uniformBlocks = [...blocks.values()];
+      program.uniformBlockBindings = new Map(program.uniformBlocks.map(block => [block.index, previousBindings.get(block.index) ?? block.binding]));
+      for (const block of program.uniformBlocks) block.activeUniformIndices = program.uniformInfo
+        .map((info, index) => info.blockIndex === block.index ? index : -1).filter(index => index >= 0);
       program.linked = true;
       return true;
     }).catch(error => {
@@ -1338,6 +1431,33 @@ export class WebGPUGL {
       this._reportFailure(new Error(`program ${program.id} link failed: ${program.infoLog}`));
       return false;
     });
+  }
+  getUniformBlockIndex(program, name) {
+    const block = program?.uniformBlocks?.find(item => item.name === String(name));
+    return block ? block.index : 0xffffffff;
+  }
+  uniformBlockBinding(program, index, binding) {
+    if (!program?.uniformBlocks?.some(block => block.index === index)) { this._recordError(GL.INVALID_VALUE); return; }
+    if (!Number.isInteger(binding) || binding < 0 || binding >= 24) { this._recordError(GL.INVALID_VALUE); return; }
+    program.uniformBlockBindings.set(index, binding);
+  }
+  getActiveUniformBlockParameter(program, index, pname) {
+    const block = program?.uniformBlocks?.find(item => item.index === index);
+    if (!block) { this._recordError(GL.INVALID_VALUE); return 0; }
+    const binding = program.uniformBlockBindings.get(index) ?? block.binding;
+    if (pname === 0x8a3f) return binding;
+    if (pname === 0x8a40) return block.layout.size;
+    if (pname === 0x8a41) return block.name.length + 1;
+    if (pname === 0x8a42) return block.members.length;
+    if (pname === 0x8a43) return [...(block.activeUniformIndices || [])];
+    if (pname === 0x8a44) return block.stages.has('vertex');
+    if (pname === 0x8a46) return block.stages.has('fragment');
+    this._recordError(GL.INVALID_ENUM); return 0;
+  }
+  getActiveUniformBlockName(program, index) {
+    const block = program?.uniformBlocks?.find(item => item.index === index);
+    if (!block) { this._recordError(GL.INVALID_VALUE); return ''; }
+    return block.name;
   }
   validateProgram(program) { if (program) program.validateStatus = !!program.linked; }
   useProgram(program) { this._currentProgram = program || null; }
@@ -1455,6 +1575,8 @@ export class WebGPUGL {
       frontFace: this._frontFace, colorMask: [...this._colorMask],
       drawFramebuffer: this._drawFramebuffer, drawBuffer: this._bufferSelection(this._drawFramebuffer).draw,
       textureUnits: this._textureUnits.map(unit => ({ ...unit })),
+      uniformBufferBindings: new Map(this._uniformBufferBindings),
+      uniformBlockBindings: new Map(program?.uniformBlockBindings || []),
     };
   }
 
@@ -2059,7 +2181,23 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     }
   }
 
-  async _uniformBindGroup(program, pipeline, uniformValues, textureUnits = this._textureUnits) {
+  async _uniformBindGroup(program, pipeline, state) {
+    const uniformValues = new Map(state.uniformValues);
+    const textureUnits = state.textureUnits || this._textureUnits;
+    for (const block of program.uniformBlocks || []) {
+      const point = state.uniformBlockBindings?.get(block.index) ?? block.binding;
+      const bound = state.uniformBufferBindings?.get(point);
+      if (!bound) continue;
+      const buffer = bound.buffer || bound;
+      const base = bound.buffer ? bound.offset : 0;
+      const limit = bound.buffer ? bound.size : buffer.data.byteLength;
+      if (limit < block.layout.size || base + block.layout.size > buffer.data.byteLength) { this._recordError(GL.INVALID_OPERATION); continue; }
+      const view = new DataView(buffer.data.buffer, buffer.data.byteOffset, buffer.data.byteLength);
+      for (const field of block.layout.fields) {
+        const value = unpackStd140Field(view, field, base);
+        if (value !== null) uniformValues.set(field.name, value);
+      }
+    }
     const entries = [];
     for (const [stage, binding] of [['vertex', 0], ['fragment', 1]]) {
       const record = program.stages[stage];
@@ -2123,7 +2261,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     pass.setPipeline(pipeline);
     if (state.enabled.has(0x0b90)) pass.setStencilReference(state.stencilFront.ref);
     for (const item of vertex.buffers) pass.setVertexBuffer(item.slot, item.buffer, item.offset);
-    const bindGroup = await this._uniformBindGroup(program, pipeline, state.uniformValues, state.textureUnits);
+    const bindGroup = await this._uniformBindGroup(program, pipeline, state);
     if (bindGroup) pass.setBindGroup(0, bindGroup);
     const x = Math.max(0, viewport[0]), y = Math.max(0, target.height - viewport[1] - viewport[3]);
     pass.setViewport(x, y, Math.max(0, viewport[2]), Math.max(0, viewport[3]), ...state.depthRange);
