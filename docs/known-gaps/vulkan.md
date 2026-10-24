@@ -2,7 +2,7 @@
 
 Initial source audit register for lane P2-V. It includes requested grep hits, source-level `default:` arms, empty `catch` arms, replay skip/drop counters, and identified SPIR-V/WGSL rejection sites. Original audit rows are followed by disposition updates as fixes land; unresolved rows remain OPEN. Some grep matches are scanner duplicates within one behavior and still need consolidation into behavior-level rows.
 
-Rows: 329 source and follow-up rows. Static audit only. Latest full unit run was 189 passed, 2 failed outside this lane (`d3d11-contract`, `d3d9-contract`); the subsequent pipeline regression passed focused testing.
+Rows: 341 source and follow-up rows (29 IMPLEMENTED, 41 REJECTED-LOUDLY, 131 NOT-A-GAP, 140 OPEN). The initial source-scan rows still include duplicate hits and stale line references that require reconciliation; OPEN is not a completion claim. Latest full unit run: 203 passed, 1 failed outside this lane (`export-module-closure`; `tools/browser/build.mjs` omits the imported `vk-dynstate.mjs`). Focused Vulkan tests and the lane WASM build pass. Native suite reached 613/614; the final `CPU32 unknown opcode recovery and UD2 fault` test hangs after its recovery diagnostic (owned by `source/test/`, outside this lane).
 
 | File:line | Guest behavior / audit evidence | Severity | Disposition |
 |---|---|---|---|
