@@ -185,6 +185,7 @@
     "VK_KHR_multiview",
     "VK_EXT_transform_feedback",
     "VK_EXT_vertex_attribute_divisor",
+    "VK_EXT_mesh_shader",
     "VK_KHR_acceleration_structure",
     "VK_KHR_ray_tracing_pipeline",
     "VK_KHR_synchronization2"

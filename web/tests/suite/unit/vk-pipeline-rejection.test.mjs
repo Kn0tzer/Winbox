@@ -30,10 +30,15 @@ test('unsupported graphics pipeline state is warned and rejected in the shared a
   for (const [field, feature] of unsupported) {
     assert.match(body, new RegExp(`a\\.${field}[^\\n]*vk64Unsupported\\([^\\n]*"${feature}"[^\\n]*reject = true`), feature);
   }
+  for (const feature of [
+    'tessellation-control-stage', 'tessellation-evaluation-stage', 'geometry-stage', 'task-stage', 'mesh-stage',
+    'unknown-graphics-stage', 'patch-list-topology', 'adjacency-topology',
+  ]) assert.match(body, new RegExp(`vk64Unsupported\\("${feature}"[^\\n]*reject = true`), feature);
   assert.match(body, /return reject;/);
   assert.match(bridge, /if \(vk64AuditGraphicsPipeline\(audit\)\) \{[\s\S]{0,180}VK_ERROR_FEATURE_NOT_PRESENT/);
   for (const capability of [
     'fillCoreFeatures.fillModeNonSolid', 'fillCoreFeatures.logicOp', 'fillCoreFeatures.depthBounds',
     'fillCoreFeatures.sampleRateShading', 'fillCoreFeatures.alphaToOne', 'fillCoreFeatures.multiViewport',
   ]) assert.ok(manifest.notAdvertised.includes(capability), `${capability} must remain disabled`);
+  for (const extension of ['VK_EXT_mesh_shader']) assert.ok(manifest.notAdvertisedExtensions.includes(extension), `${extension} must remain absent`);
 });
