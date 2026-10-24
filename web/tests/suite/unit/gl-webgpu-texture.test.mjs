@@ -42,6 +42,25 @@ test('legacy alpha, luminance, luminance-alpha, red, and RG textures expand chan
   } finally { gpu.restore(); }
 });
 
+test('EXT_texture_rg is advertised and R8/RG8 sampling formats preserve red and green channels', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    const extension = gl.getExtension('EXT_texture_rg');
+    assert.ok(extension);
+    assert.ok(gl.getSupportedExtensions().includes('EXT_texture_rg'));
+    assert.equal(extension.RED_EXT, 0x1903);
+    assert.equal(extension.RG_EXT, 0x8227);
+    const texture = gl.createTexture();
+    gl.bindTexture(0x0de1, texture);
+    gl.texImage2D(0x0de1, 0, extension.R8_EXT, 1, 1, 0, extension.RED_EXT, 0x1401, new Uint8Array([71]));
+    assert.deepEqual([...texture.pixels], [71, 0, 0, 255]);
+    gl.texImage2D(0x0de1, 0, extension.RG8_EXT, 1, 1, 0, extension.RG_EXT, 0x1401, new Uint8Array([71, 143]));
+    assert.deepEqual([...texture.pixels], [71, 143, 0, 255]);
+  } finally { gpu.restore(); }
+});
+
 test('texSubImage2D applies the same legacy single-channel expansion as texImage2D', async () => {
   const gpu = createValidationDevice();
   try {

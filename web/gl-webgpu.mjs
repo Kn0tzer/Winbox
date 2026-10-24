@@ -1043,7 +1043,7 @@ export class WebGPUGL {
   }
   isContextLost() { return false; }
   getContextAttributes() { return { alpha: true, depth: true, stencil: true, antialias: false, premultipliedAlpha: true, preserveDrawingBuffer: true }; }
-  getSupportedExtensions() { return ['WEBGL_compressed_texture_s3tc', 'ANGLE_instanced_arrays', 'OES_vertex_array_object', 'EXT_read_format_bgra', 'EXT_texture_filter_anisotropic', 'EXT_sRGB']; }
+  getSupportedExtensions() { return ['WEBGL_compressed_texture_s3tc', 'ANGLE_instanced_arrays', 'OES_vertex_array_object', 'EXT_read_format_bgra', 'EXT_texture_filter_anisotropic', 'EXT_sRGB', 'EXT_texture_rg']; }
   getExtension(name) {
     if (name === 'WEBGL_compressed_texture_s3tc' || name === 'WEBKIT_WEBGL_compressed_texture_s3tc') return {
       COMPRESSED_RGB_S3TC_DXT1_EXT: 0x83f0, COMPRESSED_RGBA_S3TC_DXT1_EXT: 0x83f1,
@@ -1061,6 +1061,7 @@ export class WebGPUGL {
     if (name === 'EXT_read_format_bgra') return { BGRA_EXT: 0x80e1 };
     if (name === 'EXT_texture_filter_anisotropic') return { TEXTURE_MAX_ANISOTROPY_EXT: 0x84fe, MAX_TEXTURE_MAX_ANISOTROPY_EXT: 16 };
     if (name === 'EXT_sRGB') return { SRGB_EXT: 0x8c40, SRGB_ALPHA_EXT: 0x8c42, SRGB8_ALPHA8_EXT: 0x8c43, FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING_EXT: 0x8210, LINEAR_EXT: 0x2601 };
+    if (name === 'EXT_texture_rg') return { RED_EXT: 0x1903, RG_EXT: 0x8227, R8_EXT: 0x8229, RG8_EXT: 0x822b };
     return null;
   }
 
