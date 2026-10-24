@@ -273,7 +273,7 @@ try {
   }
   if (process.env.GL_TRACE) query.set('gltrace', process.env.GL_TRACE);
   const launchAt = Date.now();
-  result.launchUrl = `${base}/dist/index.html?${query}`;
+  result.launchUrl = `${base}/dist/runtime/index.html?${query}`;
   await page.goto(result.launchUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
   record(`launched ${game} through gamezip import: ${exe}`);
 
