@@ -14,8 +14,20 @@ import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
-  checkUnowned, ownerOf, parseAllowlist, parseRegister, renderHits, scan, writeHitsSection, UNOWNED,
+  checkUnowned, isGapLine, ownerOf, parseAllowlist, parseRegister, renderHits, scan, writeHitsSection, UNOWNED,
 } from '../../../../tools/known-gaps-audit.mjs';
+
+test('isGapLine: a silent or unimplemented line is a gap; a thrown or logged-ENOSYS line is not', () => {
+  assert.equal(isGapLine('    return -K_ENOSYS;'), true, 'silent ENOSYS return');
+  assert.equal(isGapLine('    klog("x"); return -K_ENOSYS;'), false, 'ENOSYS with a log is not silent');
+  assert.equal(isGapLine("    if (bad) throw new Error('Unsupported matrix mode');"), false, 'thrown error is loud');
+  assert.equal(isGapLine('#error Unsupported platform'), false, '#error is loud at compile time');
+  assert.equal(isGapLine('    // Not implemented: pixel is dropped'), true, 'capitalised Not implemented');
+  assert.equal(isGapLine('    klog_fmt("XDraw depth %d not supported", d);'), true, 'logged but unsupported is still a gap');
+  assert.equal(isGapLine('    kpanic("XGrabPointer GrabModeSync");'), true, 'kpanic always counts');
+  assert.equal(isGapLine('    // TODO: thread it'), true, 'TODO always counts');
+  assert.equal(isGapLine('    int x = 1;'), false, 'no pattern');
+});
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const scriptPath = join(repoRoot, 'tools/known-gaps-audit.mjs');

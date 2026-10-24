@@ -15,7 +15,23 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const PATTERN = /unsupported|not implemented|unimplemented|TODO|FIXME|XXX|ENOSYS|kpanic\(|klog_fmt\(.*not (supported|implemented)|stub/;
+// Case variants matter: "Not implemented" and "Not supported" are how most of the tree writes it.
+// ENOSYS also matches K_ENOSYS, so a silent `return -K_ENOSYS;` with no log is still a hit.
+export const PATTERN = /[Uu]nsupported|[Nn]ot [Ii]mplemented|[Uu]nimplemented|[Nn]ot [Ss]upported|TODO|FIXME|XXX|ENOSYS|kpanic\(|stub/;
+
+// A line is a gap when PATTERN matches it, except for the loud forms that do not hide a gap:
+// a `throw` or `#error` fails at the call site, and an ENOSYS return that logs is not silent.
+// TODO, FIXME, XXX and kpanic( always count.
+const ALWAYS_GAP = /TODO|FIXME|XXX|kpanic\(/;
+const LOUD_THROW = /\bthrow\b|#error\b/;
+const LOG_CALL = /\bklog(_fmt)?\(|\bkdebug\(|\bkwarn\(/;
+export function isGapLine(text) {
+	if (!PATTERN.test(text)) return false;
+	if (ALWAYS_GAP.test(text)) return true;
+	if (LOUD_THROW.test(text)) return false;
+	if (/ENOSYS/.test(text) && LOG_CALL.test(text)) return false;
+	return true;
+}
 
 // Top-level directories scanned. `docs`, `.github`, `test-results` and `node_modules` are not code.
 export const SCAN_ROOTS = ['source', 'web', 'project', 'tools', 'platform', 'include', 'scripts', 'lib', 'tasks', 'testdata'];
@@ -99,8 +115,8 @@ function walk(root, rel, out) {
       out.files++;
       const lines = readFileSync(join(root, childRel), 'utf8').split('\n');
       lines.forEach((text, i) => {
-        const m = PATTERN.exec(text);
-        if (m) out.hits.push({ file: childRel, line: i + 1, term: termOf(m), text: text.trim().slice(0, 160) });
+        if (!isGapLine(text)) return;
+        out.hits.push({ file: childRel, line: i + 1, term: termOf(PATTERN.exec(text)), text: text.trim().slice(0, 160) });
       });
     }
   }
