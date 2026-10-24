@@ -2900,8 +2900,8 @@ static U64 bufferSliceId(U64 buffer, U64 offset) {
 
 // Keep the WebGPU replay format support mirrored in web/vkwebgpu.mjs. These
 // lists include Vulkan formats that the page converts to core WebGPU formats.
-// BC formats are advertised because textureCompressionBC is enabled below;
-// the page maps them only when its adapter exposes texture-compression-bc.
+// BC format support and the Vulkan textureCompressionBC feature bit are gated
+// by the active WebGPU device's optional texture-compression-bc feature.
 static const U32 kV2SupportedTextureFormats[] = {
     2, 3, 5, 7, 8, 9, 16, 37, 38, 41, 43, 44, 50, 64, 70, 76, 77, 83,
     91, 97, 98, 99, 100, 103, 109, 122, 124, 125, 126, 129, 130,
@@ -2935,8 +2935,18 @@ static bool v2FormatIsDepthStencil(U32 format) {
     return v2FormatIn(format, kV2DepthStencilFormats);
 }
 static bool v2FormatIsBC(U32 format) { return format >= 131 && format <= 146; }
+static bool v2WebGpuBcSupported() {
+#ifdef __EMSCRIPTEN__
+    // The page tier publishes this after requesting the WebGPU device. If the
+    // renderer has not initialized yet, report no BC support; advertising a
+    // format before the replay device can consume it is worse than a fallback.
+    return MAIN_THREAD_EM_ASM_INT({ return globalThis.bwVkTextureCompressionBC === true ? 1 : 0; }) != 0;
+#else
+    return false;
+#endif
+}
 static bool v2FormatIsSupportedImage(U32 format) {
-    return v2FormatIsBC(format) || v2FormatIn(format, kV2SupportedTextureFormats);
+    return v2FormatIsBC(format) ? v2WebGpuBcSupported() : v2FormatIn(format, kV2SupportedTextureFormats);
 }
 static VkSampleCountFlags v2FormatSampleCounts(U32 format) {
     if (!v2FormatIsSupportedImage(format)) return 0;
@@ -2946,7 +2956,7 @@ static VkSampleCountFlags v2FormatSampleCounts(U32 format) {
     return samples;
 }
 static VkFormatFeatureFlags v2FormatFeatureFlags(U32 format) {
-    if (!v2FormatIn(format, kV2SupportedTextureFormats)) return 0;
+    if (!v2FormatIsSupportedImage(format)) return 0;
     VkFormatFeatureFlags flags = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
         VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
     if (v2FormatIsColorAttachment(format)) flags |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
@@ -2959,7 +2969,7 @@ static VkFormatFeatureFlags v2FormatBufferFeatureFlags(U32 format) {
     return flags;
 }
 static VkFormatFeatureFlags2 v2FormatFeatureFlags2(U32 format) {
-    if (!v2FormatIn(format, kV2SupportedTextureFormats)) return 0;
+    if (!v2FormatIsSupportedImage(format)) return 0;
     // These legacy aliases use the same bit values as VkFormatFeatureFlags2.
     VkFormatFeatureFlags2 flags = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
         VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
@@ -3971,7 +3981,7 @@ void fillCoreFeatures(VkPhysicalDeviceFeatures* f) {
     f->drawIndirectFirstInstance = VK_TRUE; /* preserved in each expanded draw */
     f->depthBiasClamp = VK_TRUE;        /* replayed with WebGPU depthBiasClamp */
     f->depthClamp = VK_TRUE;            /* page requests depth-clip-control when available */
-    f->textureCompressionBC = VK_TRUE;  /* needs browser texture-compression-bc */
+    f->textureCompressionBC = v2WebGpuBcSupported() ? VK_TRUE : VK_FALSE;
 }
 
 // ---------------------------------------------------------------------------

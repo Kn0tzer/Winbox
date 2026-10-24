@@ -32,6 +32,8 @@ function advertisedFeatures() {
     const hdr = name === 'fillCoreFeatures' ? 'void fillCoreFeatures(' : `inline void ${name}(T&`;
     const body = stripComments(functionBody(bridge, hdr));
     for (const m of body.matchAll(/\bf(?:->|\.)(\w+)\s*=\s*VK_TRUE/g)) out.add(`${name}.${m[1]}`);
+    if (name === 'fillCoreFeatures' && /textureCompressionBC\s*=\s*v2WebGpuBcSupported\(\)/.test(body))
+      out.add('fillCoreFeatures.textureCompressionBC');
   }
   return out;
 }
