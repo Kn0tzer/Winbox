@@ -52,6 +52,12 @@ const SAMPLER_VERTEX_BASE = 2;
 const SAMPLER_FRAGMENT_BASE = 18;
 let shaderFailureDumped = false;
 
+function unsupportedShaderError(feature, message) {
+  const error = new Error(message);
+  error.glUnsupportedFeature = feature;
+  return error;
+}
+
 function componentCount(type) {
   const vector = /^(?:b|i|u)?vec([234])$/.exec(type);
   if (vector) return Number(vector[1]);
@@ -427,6 +433,18 @@ export function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(
     .replace(/^[ \t]*#define[ \t]+(?:lowp|mediump|highp)(?:[ \t]+[^\n]*)?[ \t]*$/gm, '')
     .replace(/^[ \t]*precision[ \t]+(?:lowp|mediump|highp)[ \t]+(?:float|int)[ \t]*;[ \t]*$/gm, '')
     .replace(/\b(?:lowp|mediump|highp)\b/g, '');
+  const samplerArray = /\buniform\s+(?:sampler[A-Za-z0-9_]*)\s+([A-Za-z_]\w*)\s*\[\s*(\d+)\s*\]/.exec(code);
+  if (samplerArray) throw unsupportedShaderError(
+    `GLSL sampler array '${samplerArray[1]}' (WebGPU texture binding arrays are not enabled)`,
+    `unsupported GLSL sampler array '${samplerArray[1]}': WebGPU texture binding arrays are not enabled`,
+  );
+  if (stage === 'vertex' && /\bgl_PointSize\b/.test(code)) {
+    code = code.replace(/\bgl_PointSize\s*=\s*1(?:\.0*)?(?:[fF])?\s*;/g, '');
+    if (/\bgl_PointSize\b/.test(code)) throw unsupportedShaderError(
+      'GLSL gl_PointSize dynamic values (WebGPU point primitives are fixed at one pixel)',
+      'unsupported GLSL gl_PointSize: dynamic point sizes cannot be expressed by WebGPU point primitives',
+    );
+  }
   // WebGPU point-list rasterization is one pixel and has no point_coord
   // builtin; the matching GL point center is therefore exactly (0.5, 0.5).
   if(stage==='fragment')code=code.replace(/\bgl_PointCoord\b/g,'vec2(0.5, 0.5)');
@@ -484,6 +502,10 @@ export function rewriteGlslForWebGPU(source, stage, attributeBindings = new Map(
   }
 
   for (const sampler of samplers) {
+    if (sampler.arrayLength > 1) throw unsupportedShaderError(
+      `GLSL sampler array '${sampler.name}' (WebGPU texture binding arrays are not enabled)`,
+      `unsupported GLSL sampler array '${sampler.name}': WebGPU texture binding arrays are not enabled`,
+    );
     const escaped = sampler.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     code = code.replace(new RegExp(`\\b(texture|texture(?:2D|Cube|3D|Lod|Grad|Offset|LodOffset|GradOffset|Proj|ProjLod|ProjOffset|Gather|GatherOffset)|texelFetch|textureSize)\\s*\\(\\s*${escaped}\\s*,`, 'g'), (_match, operation) => `${operation}(${sampler.type}(${sampler.name}_bw_t, ${sampler.name}_bw_s),`);
     const array = sampler.arrayLength > 1 ? `[${sampler.arrayLength}]` : '';
@@ -1597,6 +1619,7 @@ export class WebGPUGL {
     }).catch(error => {
       program.linked = false;
       program.infoLog = String(error?.message || error);
+      if (error?.glUnsupportedFeature) this._rejectUnsupported(error.glUnsupportedFeature, GL.INVALID_OPERATION);
       if (failingShader && !shaderFailureDumped) {
         shaderFailureDumped = true;
         this._log(`gl-webgpu: ${failingStage} shader preparation/translation failed: ${program.infoLog}` +

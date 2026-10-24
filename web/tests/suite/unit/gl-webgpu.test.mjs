@@ -805,6 +805,39 @@ void main(){
   assert.match(String(wgsl),/discard/);
 });
 
+test('remaining dynamic point-size and sampler-array GLSL paths reject with named warnings', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    const link = async (vertexSource, fragmentSource) => {
+      const program = gl.createProgram();
+      const vertex = gl.createShader(0x8b31), fragment = gl.createShader(0x8b30);
+      gl.shaderSource(vertex, vertexSource); gl.shaderSource(fragment, fragmentSource);
+      gl.compileShader(vertex); gl.compileShader(fragment);
+      gl.attachShader(program, vertex); gl.attachShader(program, fragment);
+      gl.linkProgram(program);
+      return [program, await program.linkPromise];
+    };
+    const basicFragment = '#version 300 es\nout vec4 color; void main(){color=vec4(1.0);}';
+    const [pointProgram, pointLinked] = await link(
+      '#version 300 es\nvoid main(){gl_Position=vec4(0.0);gl_PointSize=gl_Position.x+2.0;}', basicFragment,
+    );
+    assert.equal(pointLinked, false);
+    assert.match(pointProgram.infoLog, /unsupported GLSL gl_PointSize: dynamic point sizes/);
+    assert.equal(gl.getError(), 0x0502);
+    const [samplerProgram, samplerLinked] = await link(
+      '#version 300 es\nvoid main(){gl_Position=vec4(0.0);}',
+      '#version 300 es\nuniform sampler2D images[2]; out vec4 color; void main(){color=texture(images[1],vec2(0.5));}',
+    );
+    assert.equal(samplerLinked, false);
+    assert.match(samplerProgram.infoLog, /unsupported GLSL sampler array 'images'/);
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('GLSL gl_PointSize dynamic values')));
+    assert.ok(logs.some(line => line.includes("GLSL sampler array 'images'")));
+  } finally { gpu.restore(); }
+});
+
 test('uniform arrays of structs flatten to fields and preserve element locations', async () => {
   const source=`#version 300 es
 struct Light { vec4 color; float intensity; };
