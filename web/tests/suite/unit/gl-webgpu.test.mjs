@@ -480,6 +480,21 @@ test('desktop GLSL core versions 330 through 460 normalize into the WebGPU front
   }
 });
 
+test('unimplemented texenv combine parameters reject once with GL_INVALID_OPERATION', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    gl.texEnvi(0x2300, 0x8571, 0x2100);
+    gl.texEnvi(0x2300, 0x8571, 0x2100);
+    assert.equal(gl.getError(), 0x0502);
+    assert.equal(gl.getError(), 0, 'duplicate rejection leaves one error flag');
+    assert.equal(logs.filter(line => line.includes('texture environment combine parameter 0x8571')).length, 1);
+    gl.texEnvi(0x2300, 0xdead, 0x2100);
+    assert.equal(gl.getError(), 0x0500, 'unknown pname remains INVALID_ENUM');
+  } finally { gpu.restore(); }
+});
+
 test('state and texture entry points report invalid enums, values, and operations', async () => {
   const gpu = createValidationDevice(), logs = [];
   try {

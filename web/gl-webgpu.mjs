@@ -77,6 +77,7 @@ const GL_TOPOLOGY = new Map([[0x0000, 'point-list'], [0x0001, 'line-list'], [0x0
 const GL_COMPARE = new Map([[0x0200, 'never'], [0x0201, 'less'], [0x0202, 'equal'], [0x0203, 'less-equal'], [0x0204, 'greater'], [0x0205, 'not-equal'], [0x0206, 'greater-equal'], [0x0207, 'always']]);
 const GL_STENCIL_OP = new Map([[0x1e00, 'keep'], [0, 'zero'], [0x1e01, 'replace'], [0x1e02, 'invert'], [0x1e03, 'increment-clamp'], [0x1e04, 'decrement-clamp'], [0x8507, 'increment-wrap'], [0x8508, 'decrement-wrap']]);
 const GL_BLEND_OP = new Map([[0x8006, 'add'], [0x800a, 'subtract'], [0x800b, 'reverse-subtract'], [0x8007, 'min'], [0x8008, 'max']]);
+const GL_TEX_ENV_COMBINE_PARAMETERS = new Set([0x8571, 0x8572, 0x8573, 0x0d1c, 0x8580, 0x8581, 0x8582, 0x8588, 0x8589, 0x858a, 0x8590, 0x8591, 0x8592, 0x8598, 0x8599, 0x859a]);
 const signedType = type => [0x1400, 0x1402, 0x1404].includes(type);
 const GL_ENABLE_CAPABILITIES = new Set([0x0b44, 0x0b71, 0x0b90, 0x0bc0, 0x0be2, 0x0bd0, 0x0c11, 0x8037, 0x809e, 0x80a0, 0x8c89, 0x8db9]);
 const S3TC_BLOCK_BYTES = new Map([[0x83f0, 8], [0x83f1, 8], [0x83f2, 16], [0x83f3, 16], [0x8c4c, 8], [0x8c4d, 8], [0x8c4e, 16], [0x8c4f, 16]]);
@@ -785,12 +786,23 @@ export class WebGPUGL {
   }
   texEnvi(target, pname, value) {
     if (target !== 0x2300) { this._recordError(GL.INVALID_ENUM); return; }
-    if (pname !== 0x2200) { this._recordError(GL.INVALID_ENUM); return; }
+    if (pname !== 0x2200) {
+      if (GL_TEX_ENV_COMBINE_PARAMETERS.has(pname)) this._rejectUnsupported(`texture environment combine parameter 0x${pname.toString(16)}`, GL.INVALID_OPERATION);
+      else this._recordError(GL.INVALID_ENUM);
+      return;
+    }
     if (![0x2100, 0x1e01, 0x2101, 0x0104, 0x8570].includes(value)) { this._recordError(GL.INVALID_ENUM); return; }
     this._fixedFunction.texEnv[this._activeTextureUnit] = value | 0;
   }
   texEnvf(target, pname, value) { this.texEnvi(target, pname, value); }
-  texEnvfv(target, pname, values) { if (pname === 0x2201) this._fixedFunction.texEnvColor = Array.from(values || []); }
+  texEnvfv(target, pname, values) {
+    if (target !== 0x2300) { this._recordError(GL.INVALID_ENUM); return; }
+    const data = Array.from(values || []);
+    if (pname === 0x2200) { if (!data.length) { this._recordError(GL.INVALID_VALUE); return; } this.texEnvi(target, pname, data[0] | 0); return; }
+    if (pname === 0x2201) { if (data.length < 4) { this._recordError(GL.INVALID_VALUE); return; } this._fixedFunction.texEnvColor = data.slice(0, 4).map(clamp01); return; }
+    if (GL_TEX_ENV_COMBINE_PARAMETERS.has(pname)) this._rejectUnsupported(`texture environment combine parameter 0x${pname.toString(16)}`, GL.INVALID_OPERATION);
+    else this._recordError(GL.INVALID_ENUM);
+  }
   texEnviv(target, pname, values) { this.texEnvfv(target, pname, values); }
   clientActiveTexture(texture) {
     if (!Number.isInteger(texture) || texture < 0x84c0 || texture >= 0x84c8) { this._recordError(GL.INVALID_ENUM); return; }
