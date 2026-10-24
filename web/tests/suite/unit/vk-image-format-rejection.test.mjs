@@ -18,7 +18,7 @@ test('unsupported ETC2, ASTC, and unknown images fail creation while BC remains 
   const handlers = [...bridge.matchAll(/case VK64_fn_vkCreateImage: \{([\s\S]*?)\n    \}/g)].map((m) => m[1]);
   assert.equal(handlers.length, 2);
   for (const handler of handlers) {
-    assert.match(handler, /!v2FormatIn\(ci\.format, kV2SupportedTextureFormats\) && !v2FormatIsBC\(ci\.format\)/);
+    assert.match(handler, /!v2FormatIsSupportedImage\(ci\.format\)/);
     assert.match(handler, /vk64Unsupported\("image-format"/);
     assert.match(handler, /VK_ERROR_FORMAT_NOT_SUPPORTED/);
   }

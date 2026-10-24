@@ -18,12 +18,15 @@ function body(source, header) {
   throw new Error(`unbalanced function ${header}`);
 }
 
-test('mirror clamp, border addressing, and mip LOD bias reject sampler creation for both ABIs', () => {
+test('mirror clamp rejects sampler creation; border and LOD bias are reported approximations, for both ABIs', () => {
   const audit = body(bridge, 'static bool vk64AuditSampler(');
   for (const token of ['mirror-clamp-to-edge', 'sampler-border-colour', 'sampler-mip-lod-bias']) {
     assert.ok(audit.includes(`vk64Unsupported("${token}"`), `${token} has a greppable diagnostic`);
   }
   assert.match(audit, /return reject;/);
+  // Only the feature-gated mode rejects; core border/bias must not make DXVK throw from sampler creation.
+  assert.equal((audit.match(/reject = true/g) || []).length, 1);
+  assert.match(audit.slice(audit.indexOf('mode == 4'), audit.indexOf('mode == 3')), /reject = true/);
   const cases = [...bridge.matchAll(/case VK64_fn_vkCreateSampler: \{([\s\S]*?)\n    \}/g)].map((m) => m[1]);
   assert.equal(cases.length, 2);
   for (const handler of cases) {

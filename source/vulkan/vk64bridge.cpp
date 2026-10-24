@@ -447,23 +447,25 @@ static void vk64Unsupported(const char* feature, const char* detail = "") {
 // representation (cull distance, 64-bit types, storage-buffer stores, images).
 // ---------------------------------------------------------------------------
 // Sampler state the WebGPU tier cannot honour. Reported once per sampler, not per draw.
+//  - MIRROR_CLAMP_TO_EDGE is gated by the samplerMirrorClampToEdge feature (FALSE here),
+//    so a guest that uses it anyway is violating the spec: creation is rejected.
+//  - CLAMP_TO_BORDER and a nonzero mipLodBias are CORE Vulkan with no feature bit (D3D9/D3D11
+//    shadow-map PCF and texture sharpening use them), so rejecting would make DXVK throw from
+//    sampler creation. The sampler is created, the decoder maps border to clamp-to-edge,
+//    WebGPU ignores the bias, and the approximation is reported loudly.
 static bool vk64AuditSampler(U32 addrU, U32 addrV, U32 addrW, float mipLodBias, U32 borderColor) {
     bool reject = false;
     const U32 addressModes[] = {addrU, addrV, addrW};
     for (U32 mode : addressModes) {
         if (mode == 4) { // VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE
-            vk64Unsupported("mirror-clamp-to-edge", "sampler creation rejected");
+            vk64Unsupported("mirror-clamp-to-edge", "sampler creation rejected; samplerMirrorClampToEdge is not advertised");
             reject = true;
         }
         if (mode == 3) { // CLAMP_TO_BORDER
-            vk64Unsupported("sampler-border-colour", ("sampler creation rejected; borderColor=" + std::to_string(borderColor)).c_str());
-            reject = true;
+            vk64Unsupported("sampler-border-colour", ("approximated by clamp-to-edge; borderColor=" + std::to_string(borderColor)).c_str());
         }
     }
-    if (mipLodBias != 0.0f) {
-        vk64Unsupported("sampler-mip-lod-bias", "sampler creation rejected");
-        reject = true;
-    }
+    if (mipLodBias != 0.0f) vk64Unsupported("sampler-mip-lod-bias", "approximated: WebGPU samplers have no LOD bias, bias ignored");
     return reject;
 }
 
@@ -727,10 +729,13 @@ struct QueryPoolCreateInfo32Local {
 static_assert(sizeof(QueryPoolCreateInfo64Local) == 32, "64-bit VkQueryPoolCreateInfo layout");
 static_assert(sizeof(QueryPoolCreateInfo32Local) == 24, "32-bit VkQueryPoolCreateInfo layout");
 // Binary semaphores track swapchain acquire/submit/present ordering. Timeline
-// semaphores are not advertised because WebGPU replay completion is asynchronous
-// and is not yet connected to Vulkan timeline signals.
+// semaphores keep an honest u64 counter: under immediate execution everything a
+// submit waits on has already run on the bridge side. The counter says "the
+// bridge processed the submit", NOT "WebGPU finished the frame" (there is no
+// GPU->CPU readback path that could observe the difference).
 struct Semaphore : Obj {
     int signalled = 0;          /* binary semaphores keep the old flag */
+    int isTimeline = 0;
     U64  counter = 0;
 };
 struct DeviceMemory : Obj { U64 size = 0, va = 0; U32 memIndex = 0; bool wasMapped = false; };
@@ -1797,13 +1802,15 @@ std::vector<U8> synthReplayFs() {
     return s.bytes();
 }
 
-void fillImageFormatProps(VkImageFormatProperties* p) {
-    p->maxExtent = VkExtent3D{16384, 16384, 2048};
+static bool v2FormatIsSupportedImage(U32 format);
+static VkSampleCountFlags v2FormatSampleCounts(U32 format);
+// imageType: VK_IMAGE_TYPE_1D/2D/3D. WebGPU can only multisample 2D textures.
+void fillImageFormatProps(VkImageFormatProperties* p, U32 format, U32 imageType = VK_IMAGE_TYPE_2D) {
+    p->maxExtent = VkExtent3D{8192, 8192, 2048};
     p->maxMipLevels = 14;
-    p->maxArrayLayers = 2048;
-    p->sampleCounts = (VkSampleCountFlags)(VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT |
-                                           VK_SAMPLE_COUNT_4_BIT | VK_SAMPLE_COUNT_8_BIT);
-    p->maxResourceSize = 2ull * 1024 * 1024 * 1024;
+    p->maxArrayLayers = 256;
+    p->sampleCounts = imageType == VK_IMAGE_TYPE_2D ? v2FormatSampleCounts(format) : (v2FormatSampleCounts(format) ? VK_SAMPLE_COUNT_1_BIT : 0);
+    p->maxResourceSize = 256ull * 1024 * 1024;
 }
 
 // Submit-time frame reconstruction (P1's vkQueueSubmit body, file I/O replaced
@@ -2455,6 +2462,16 @@ static bool v2FormatIsDepthStencil(U32 format) {
     return v2FormatIn(format, kV2DepthStencilFormats);
 }
 static bool v2FormatIsBC(U32 format) { return format >= 131 && format <= 146; }
+static bool v2FormatIsSupportedImage(U32 format) {
+    return v2FormatIsBC(format) || v2FormatIn(format, kV2SupportedTextureFormats);
+}
+static VkSampleCountFlags v2FormatSampleCounts(U32 format) {
+    if (!v2FormatIsSupportedImage(format)) return 0;
+    VkSampleCountFlags samples = VK_SAMPLE_COUNT_1_BIT;
+    if (!v2FormatIsBC(format) && (v2FormatIsColorAttachment(format) || v2FormatIsDepthStencil(format)))
+        samples |= VK_SAMPLE_COUNT_4_BIT;
+    return samples;
+}
 static VkFormatFeatureFlags v2FormatFeatureFlags(U32 format) {
     if (!v2FormatIn(format, kV2SupportedTextureFormats)) return 0;
     VkFormatFeatureFlags flags = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
@@ -3347,6 +3364,10 @@ void fillCoreFeatures(VkPhysicalDeviceFeatures* f) {
      * alphaToOne, depthBounds, logicOp, pipelineStatisticsQuery. */
     /* Only end-to-end implemented features are reported true. Unsupported
      * features remain false so DXVK/vkd3d cannot select an invalid path. */
+    /* geometryShader/tessellationShader are false (WebGPU has neither stage), so
+     * DXVK caps D3D11 at the feature levels that need neither. FL 9_3 targets
+     * (D3D9 via d3d9.dll, Portal; tri11 9_3) have no geometry/tessellation
+     * stages and are the safe path; FL 10_0+ device creation falls back to it. */
     f->multiDrawIndirect = VK_TRUE;     /* vk64bridge expands draws into CMD_DRAW */
     f->drawIndirectFirstInstance = VK_TRUE; /* preserved in each expanded draw */
     f->depthBiasClamp = VK_TRUE;        /* replayed with WebGPU depthBiasClamp */
@@ -3967,8 +3988,13 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkGetPhysicalDeviceImageFormatProperties: {
         // (physDev, format, type, tiling, usage, flags, out VkImageFormatProperties)
         if (!args.a[6]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 format = (U32)args.a[1];
+        if (!v2FormatIsSupportedImage(format)) {
+            vk64Unsupported("image-format", "format properties queried for unsupported image format");
+            return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        }
         VkImageFormatProperties pr = {};
-        fillImageFormatProps(&pr);
+        fillImageFormatProps(&pr, format, (U32)args.a[2]);
         writeStruct(args.a[6], pr);
         return VK_SUCCESS;
     }
@@ -3979,7 +4005,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         g_mem->memcpyFromGuest(&p2, args.a[2], sizeof(p2));
         VkPhysicalDeviceImageFormatInfo2 info = {};
         g_mem->memcpyFromGuest(&info, args.a[1], sizeof(info));
-        fillImageFormatProps(&p2.imageFormatProperties);
+        if (!v2FormatIsSupportedImage(info.format)) {
+            vk64Unsupported("image-format", "image format properties2 queried for unsupported image format");
+            return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        }
+        fillImageFormatProps(&p2.imageFormatProperties, info.format, info.type);
         g_mem->memcpyToGuest(args.a[2], &p2, sizeof(p2));
         return VK_SUCCESS;
     }
@@ -4487,8 +4517,14 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCreateImage: {
         VkImageCreateInfo ci = {};
         if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
-        if (!v2FormatIn(ci.format, kV2SupportedTextureFormats) && !v2FormatIsBC(ci.format)) {
+        if (!v2FormatIsSupportedImage(ci.format)) {
             vk64Unsupported("image-format", "format is not supported by the WebGPU replay tier");
+            wr64(args.a[3], 0);
+            return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        }
+        if (!v2FormatSampleCounts(ci.format) || !(v2FormatSampleCounts(ci.format) & (U32)ci.samples) ||
+            ((U32)ci.samples > 1 && ci.imageType != VK_IMAGE_TYPE_2D)) {
+            vk64Unsupported("image-sample-count", "sample count is not supported for this image format");
             wr64(args.a[3], 0);
             return VK_ERROR_FORMAT_NOT_SUPPORTED;
         }
@@ -7187,12 +7223,19 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         // 32-bit VkImageFormatProperties: maxExtent@0(12), maxMipLevels@12,
         // maxArrayLayers@16, sampleCounts@20, maxResourceSize@24(8).
         if (!args.a[6]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 format = (U32)args.a[1];
+        if (!v2FormatIsSupportedImage(format)) {
+            vk64Unsupported("image-format", "format properties queried for unsupported image format");
+            return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        }
+        VkImageFormatProperties props = {};
+        fillImageFormatProps(&props, format, (U32)args.a[2]);
         U32 dst = (U32)args.a[6];
-        wr32_32(dst + 0, 16384); wr32_32(dst + 4, 16384); wr32_32(dst + 8, 2048);
-        wr32_32(dst + 12, 14);
-        wr32_32(dst + 16, 2048);
-        wr32_32(dst + 20, 0x0F);
-        wr64_32(dst + 24, 2ull * 1024 * 1024 * 1024);
+        wr32_32(dst + 0, props.maxExtent.width); wr32_32(dst + 4, props.maxExtent.height); wr32_32(dst + 8, props.maxExtent.depth);
+        wr32_32(dst + 12, props.maxMipLevels);
+        wr32_32(dst + 16, props.maxArrayLayers);
+        wr32_32(dst + 20, props.sampleCounts);
+        wr64_32(dst + 24, props.maxResourceSize);
         return VK_SUCCESS;
     }
 
@@ -7221,15 +7264,22 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     }
     case VK64_fn_vkGetPhysicalDeviceImageFormatProperties2: {
         // 32-bit VkImageFormatProperties2: sType@0, pNext@4, imageFormatProperties@8.
-        if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        vk32abi::VkPhysicalDeviceImageFormatInfo2 info = {};
+        if (!readStruct32((U32)args.a[1], info) || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (!v2FormatIsSupportedImage(info.format)) {
+            vk64Unsupported("image-format", "image format properties2 queried for unsupported image format");
+            return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        }
+        VkImageFormatProperties props = {};
+        fillImageFormatProps(&props, info.format, info.type);
         U32 dst = (U32)args.a[2] + 8;
-        wr32_32(dst + 0, 16384); // maxExtent.width
-        wr32_32(dst + 4, 16384); // maxExtent.height
-        wr32_32(dst + 8, 2048);  // maxExtent.depth
-        wr32_32(dst + 12, 14);   // maxMipLevels
-        wr32_32(dst + 16, 2048); // maxArrayLayers
-        wr32_32(dst + 20, 0x0F); // sampleCounts (1|2|4|8)
-        wr64_32(dst + 24, 2ull * 1024 * 1024 * 1024); // maxResourceSize
+        wr32_32(dst + 0, props.maxExtent.width);
+        wr32_32(dst + 4, props.maxExtent.height);
+        wr32_32(dst + 8, props.maxExtent.depth);
+        wr32_32(dst + 12, props.maxMipLevels);
+        wr32_32(dst + 16, props.maxArrayLayers);
+        wr32_32(dst + 20, props.sampleCounts);
+        wr64_32(dst + 24, props.maxResourceSize);
         return VK_SUCCESS;
     }
     case VK64_fn_vkGetDeviceBufferMemoryRequirements: {
@@ -7516,8 +7566,14 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCreateImage: {
         vk32abi::VkImageCreateInfo ci = {};
         if (!readStruct32((U32)args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
-        if (!v2FormatIn(ci.format, kV2SupportedTextureFormats) && !v2FormatIsBC(ci.format)) {
+        if (!v2FormatIsSupportedImage(ci.format)) {
             vk64Unsupported("image-format", "format is not supported by the WebGPU replay tier");
+            wr64_32((U32)args.a[3], 0);
+            return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        }
+        if (!v2FormatSampleCounts(ci.format) || !(v2FormatSampleCounts(ci.format) & (U32)ci.samples) ||
+            ((U32)ci.samples > 1 && ci.imageType != VK_IMAGE_TYPE_2D)) {
+            vk64Unsupported("image-sample-count", "sample count is not supported for this image format");
             wr64_32((U32)args.a[3], 0);
             return VK_ERROR_FORMAT_NOT_SUPPORTED;
         }

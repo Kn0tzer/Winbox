@@ -619,7 +619,7 @@ int main() {
         VkPhysicalDeviceFeatures f64{};
         assert(call64(VK64_fn_vkGetPhysicalDeviceFeatures, 0, 8192) == VK_SUCCESS);
         memory.memcpyFromGuest(&f64, 8192, sizeof(f64));
-        assert(f64.geometryShader && f64.imageCubeArray && f64.textureCompressionBC);
+        assert(!f64.geometryShader && !f64.tessellationShader && f64.imageCubeArray && f64.textureCompressionBC);
         assert(!f64.shaderInt64 && !f64.shaderFloat64 && !f64.shaderStorageImageExtendedFormats);
         assert(!f64.shaderStorageImageReadWithoutFormat && !f64.shaderStorageImageWriteWithoutFormat);
         assert(!f64.sparseBinding && !f64.wideLines && !f64.logicOp);
@@ -645,7 +645,7 @@ int main() {
             memory.memcpyFromGuest(&v12, 12288, sizeof(v12));
             memory.memcpyFromGuest(&v11, 16384, sizeof(v11));
             memory.memcpyFromGuest(&fp, 20480, sizeof(fp));
-            assert(v12.timelineSemaphore && !v12.bufferDeviceAddress && v12.samplerMirrorClampToEdge);
+            assert(v12.timelineSemaphore && !v12.bufferDeviceAddress && !v12.samplerMirrorClampToEdge);
             assert(v11.shaderDrawParameters && !v11.multiview && !v11.variablePointers && !v11.storageBuffer16BitAccess);
             assert(!fp.shaderFloat16 && !fp.shaderInt8);
         };
@@ -667,7 +667,7 @@ int main() {
             memory32.memcpyFromGuest(&v12, 12288, sizeof(v12));
             memory32.memcpyFromGuest(&v11, 16384, sizeof(v11));
             memory32.memcpyFromGuest(&fp, 20480, sizeof(fp));
-            assert(v12.timelineSemaphore && !v12.bufferDeviceAddress && v12.samplerMirrorClampToEdge);
+            assert(v12.timelineSemaphore && !v12.bufferDeviceAddress && !v12.samplerMirrorClampToEdge);
             assert(v11.shaderDrawParameters && !v11.multiview && !v11.variablePointers && !v11.storageBuffer16BitAccess);
             assert(!fp.shaderFloat16 && !fp.shaderInt8);
         }
@@ -700,19 +700,19 @@ int main() {
         };
         const U32 f64Before = vk64BridgeUnsupportedCount("spirv-capability:Float64");
         const U32 cullBefore = vk64BridgeUnsupportedCount("spirv-capability:CullDistance");
-        assert(module({(2u << 16) | 17u, 10u, (2u << 16) | 17u, 33u, (2u << 16) | 17u, 1u}) == VK_SUCCESS);
+        assert(module({(2u << 16) | 17u, 10u, (2u << 16) | 17u, 33u, (2u << 16) | 17u, 1u}) == VK_ERROR_FEATURE_NOT_PRESENT);
         assert(vk64BridgeUnsupportedCount("spirv-capability:Float64") == f64Before + 1);
         assert(vk64BridgeUnsupportedCount("spirv-capability:CullDistance") == cullBefore + 1);
         // %1 = OpTypeStruct; %2 = OpTypePointer StorageBuffer %1; %3 = OpVariable %2 StorageBuffer
         const U32 sbBefore = vk64BridgeUnsupportedCount("spirv-storage-buffer-write");
-        assert(module({(2u << 16) | 30u, 1u, (4u << 16) | 32u, 2u, 12u, 1u, (4u << 16) | 59u, 2u, 3u, 12u}) == VK_SUCCESS);
+        assert(module({(2u << 16) | 30u, 1u, (4u << 16) | 32u, 2u, 12u, 1u, (4u << 16) | 59u, 2u, 3u, 12u}) == VK_ERROR_FEATURE_NOT_PRESENT);
         assert(vk64BridgeUnsupportedCount("spirv-storage-buffer-write") == sbBefore + 1);
         // ... the same variable decorated NonWritable is read-only and is not reported.
         assert(module({(3u << 16) | 71u, 3u, 24u, (2u << 16) | 30u, 1u, (4u << 16) | 32u, 2u, 12u, 1u,
                        (4u << 16) | 59u, 2u, 3u, 12u}) == VK_SUCCESS);
         assert(vk64BridgeUnsupportedCount("spirv-storage-buffer-write") == sbBefore + 1);
         const U32 badBefore = vk64BridgeUnsupportedCount("spirv-malformed");
-        assert(module({(0u << 16) | 17u}) == VK_SUCCESS);
+        assert(module({(0u << 16) | 17u}) == VK_ERROR_INVALID_SHADER_NV);
         assert(vk64BridgeUnsupportedCount("spirv-malformed") == badBefore + 1);
         puts("PASS: GUARD SPIR-V capabilities and storage-buffer stores are reported at vkCreateShaderModule");
 
@@ -726,10 +726,16 @@ int main() {
             const U32 m0 = vk64BridgeUnsupportedCount("mirror-clamp-to-edge");
             const U32 b0 = vk64BridgeUnsupportedCount("sampler-border-colour");
             const U32 l0 = vk64BridgeUnsupportedCount("sampler-mip-lod-bias");
-            assert(call64(VK64_fn_vkCreateSampler, dev2, 30720, 0, 31744) == VK_SUCCESS);
+            // mirror-clamp is gated by a FALSE feature bit: creation is rejected, border/bias are not.
+            assert(call64(VK64_fn_vkCreateSampler, dev2, 30720, 0, 31744) == VK_ERROR_FEATURE_NOT_PRESENT);
             assert(vk64BridgeUnsupportedCount("mirror-clamp-to-edge") == m0 + 1);
             assert(vk64BridgeUnsupportedCount("sampler-border-colour") == b0 + 1);
             assert(vk64BridgeUnsupportedCount("sampler-mip-lod-bias") == l0 + 1);
+            sc.addressModeU = (VkSamplerAddressMode)0; sc.addressModeV = (VkSamplerAddressMode)3; sc.mipLodBias = 0.5f;
+            memory.memcpyToGuest(30720, &sc, sizeof(sc));
+            assert(call64(VK64_fn_vkCreateSampler, dev2, 30720, 0, 31744) == VK_SUCCESS);   // core border + bias still create
+            assert(vk64BridgeUnsupportedCount("sampler-border-colour") == b0 + 2);
+            assert(vk64BridgeUnsupportedCount("sampler-mip-lod-bias") == l0 + 2);
             sc.addressModeU = sc.addressModeV = (VkSamplerAddressMode)0; sc.mipLodBias = 0;
             memory.memcpyToGuest(30720, &sc, sizeof(sc));
             assert(call64(VK64_fn_vkCreateSampler, dev2, 30720, 0, 31744) == VK_SUCCESS);
