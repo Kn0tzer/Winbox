@@ -25,6 +25,7 @@
 #include <vector>
 #include <mutex>
 #include <array>
+#include <deque>
 #include <string>
 #include <utility>
 
@@ -252,6 +253,7 @@ private:
     // motion during a drag and the press/release sequence report the correct
     // logical button state, like the 32-bit XServer path.
     uint32_t buttonState = 0;
+    std::deque<XWireInputEvent> frozenPointerEvents;
 
     // Virtual absolute pointer position for relative-motion (EvMotionRel)
     // accumulation. Initialized lazily from the sink's last pointer pos.

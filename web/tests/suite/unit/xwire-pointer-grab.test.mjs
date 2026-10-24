@@ -4,6 +4,52 @@ import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+test('owner_events routes normally selected owner events and otherwise uses the grab window mask', () => {
+  const src = readFileSync(new URL('../../../../source/x11wire/xwireconnection.cpp', import.meta.url), 'utf8');
+  const helper = src.match(/static bool xwireRoutePointerGrab\([\s\S]*?\n}/)?.[0];
+  assert.ok(helper);
+  const dir = mkdtempSync(join(tmpdir(), 'bw64-pointer-owner-events-'));
+  try {
+    writeFileSync(join(dir, 'check.cpp'), `
+#include <cassert>
+#include <cstdint>
+${helper}
+int main(){uint32_t target=0x400010,mask=0x40;
+ assert(xwireRoutePointerGrab(true,0x400000,0x400001,0x4C,true,0x400000,0x400000,0x40,0x40,target,mask));assert(target==0x400010&&mask==0x40);
+ target=0x600010;mask=0x40;assert(xwireRoutePointerGrab(true,0x400000,0x400001,0x4C,true,0x400000,0x600000,0x40,0x40,target,mask));assert(target==0x400001&&mask==0x4C);
+ target=0x400010;mask=0x4;assert(xwireRoutePointerGrab(true,0x400000,0x400001,0x40,true,0x400000,0x400000,0x4,0x40,target,mask));assert(target==0x400001&&mask==0x40);
+ target=0x400010;mask=0x40;assert(xwireRoutePointerGrab(true,0x400000,0x400001,0x40,false,0x400000,0x400000,0x40,0x40,target,mask));assert(target==0x400001);
+ target=0x400010;mask=0x40;assert(!xwireRoutePointerGrab(true,0x600000,0x600001,0x40,false,0x400000,0x400000,0x40,0x40,target,mask));
+ target=0x400010;mask=0x4;assert(!xwireRoutePointerGrab(true,0x400000,0x400001,0x4,false,0x400000,0x400000,0x40,0x40,target,mask));}
+`);
+    execFileSync('c++', ['-std=c++17', '-Wall', '-Werror', join(dir, 'check.cpp'), '-o', join(dir, 'check')]);
+    execFileSync(join(dir, 'check'));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('XAllowEvents async releases the queue and sync releases one event at a time', () => {
+  const src = readFileSync(new URL('../../../../source/x11wire/xwireconnection.cpp', import.meta.url), 'utf8');
+  const helper = src.match(/static bool xwireApplyPointerAllow\([\s\S]*?\n}/)?.[0];
+  assert.ok(helper);
+  const dir = mkdtempSync(join(tmpdir(), 'bw64-pointer-allow-'));
+  try {
+    writeFileSync(join(dir, 'check.cpp'), `
+#include <cassert>
+#include <cstdint>
+${helper}
+int main(){bool frozen=true;uint8_t mode=1;
+ assert(xwireApplyPointerAllow(1,frozen,mode)&&!frozen&&mode==1);
+ frozen=true;assert(xwireApplyPointerAllow(0,frozen,mode)&&!frozen&&mode==0);
+ frozen=true;mode=1;assert(xwireApplyPointerAllow(7,frozen,mode)&&!frozen&&mode==1);
+ frozen=true;assert(xwireApplyPointerAllow(6,frozen,mode)&&!frozen&&mode==0);
+ frozen=true;mode=1;assert(xwireApplyPointerAllow(2,frozen,mode)&&frozen&&mode==1);
+ assert(!xwireApplyPointerAllow(99,frozen,mode)&&frozen);}
+`);
+    execFileSync('c++', ['-std=c++17', '-Wall', '-Werror', join(dir, 'check.cpp'), '-o', join(dir, 'check')]);
+    execFileSync(join(dir, 'check'));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('real X11 pointer handlers preserve exclusive ownership and release on unmap/destroy', () => {
   const src = readFileSync(new URL('../../../../source/x11wire/xwireconnection.cpp', import.meta.url), 'utf8');
   const handlers = ['X_GrabPointer','X_UngrabPointer','X_UnmapWindow','X_DestroyWindow'].map(name => {
@@ -20,21 +66,21 @@ test('real X11 pointer handlers preserve exclusive ownership and release on unma
 #include <map>
 enum{X_GrabPointer=26,X_UngrabPointer=27,X_UnmapWindow=10,X_DestroyWindow=4};
 struct Window{bool mapped=false,isRoot=false;};
-struct XWireServer{std::mutex regMutex;std::map<uint32_t,Window> windows;uint32_t presentWindow=0,focusWindow=0,pointerGrabClient=0,pointerGrabWindow=0,pointerConfineWindow=0;void schedulePresent(){}static XWireServer& instance(){static XWireServer s;return s;}};
+struct XWireServer{std::mutex regMutex;std::map<uint32_t,Window> windows;uint32_t presentWindow=0,focusWindow=0,pointerGrabClient=0,pointerGrabWindow=0,pointerConfineWindow=0,pointerGrabEventMask=0,pointerGrabCursor=0;bool pointerGrabOwnerEvents=false,pointerFrozen=false;uint8_t pointerGrabPointerMode=0,pointerGrabKeyboardMode=0;void clearPointerGrab(){pointerGrabClient=pointerGrabWindow=pointerConfineWindow=pointerGrabEventMask=pointerGrabCursor=0;pointerGrabOwnerEvents=false;pointerGrabPointerMode=pointerGrabKeyboardMode=0;pointerFrozen=false;}void schedulePresent(){}static XWireServer& instance(){static XWireServer s;return s;}};
 uint8_t reply[32];void writeToClient(const uint8_t* p,size_t n){assert(n==32);memcpy(reply,p,n);}
-uint32_t rd32(const uint8_t* p){uint32_t v;memcpy(&v,p,4);return v;}
+uint32_t rd32(const uint8_t* p){uint32_t v;memcpy(&v,p,4);return v;}uint16_t rd16(const uint8_t*p){uint16_t v;memcpy(&v,p,2);return v;}
 void updateWmState(uint32_t,uint32_t){}void ensureWindow(){}
-void dispatch(int op,uint32_t clientIdBase,uint32_t window,uint32_t confine=0){uint8_t bytes[24]={};memcpy(bytes+4,&window,4);memcpy(bytes+12,&confine,4);const uint8_t* req=bytes;uint16_t sequence=0x1234;switch(op){${handlers}}}
+void dispatch(int op,uint32_t clientIdBase,uint32_t window,uint32_t confine=0,bool ownerEvents=false,uint16_t eventMask=0,uint8_t pointerMode=0,uint8_t keyboardMode=0,uint32_t cursor=0){uint8_t bytes[24]={};bytes[1]=ownerEvents;memcpy(bytes+4,&window,4);memcpy(bytes+8,&eventMask,2);bytes[10]=pointerMode;bytes[11]=keyboardMode;memcpy(bytes+12,&confine,4);memcpy(bytes+16,&cursor,4);const uint8_t* req=bytes;uint16_t sequence=0x1234;switch(op){${handlers}}}
 int main(){
  auto& s=XWireServer::instance();s.windows[0x260]={true,true};s.windows[0x400001]={true,false};s.windows[0x600001]={false,false};
  dispatch(X_GrabPointer,0x400000,0x600001);assert(reply[1]==3 && s.pointerGrabClient==0);
  dispatch(X_GrabPointer,0x400000,0x400001);assert(reply[0]==1 && reply[1]==0 && reply[2]==0x34 && reply[3]==0x12 && s.pointerGrabClient==0x400000);
  assert(s.pointerConfineWindow==0);
- dispatch(X_GrabPointer,0x400000,0x400001,0x400001);assert(reply[1]==0 && s.pointerConfineWindow==0x400001);
+ dispatch(X_GrabPointer,0x400000,0x400001,0x400001,true,0x0048,1,0,0x400010);assert(reply[1]==0 && s.pointerConfineWindow==0x400001);assert(s.pointerGrabOwnerEvents&&s.pointerGrabEventMask==0x0048&&s.pointerGrabPointerMode==1&&s.pointerGrabCursor==0x400010&&s.pointerFrozen);
  dispatch(X_GrabPointer,0x600000,0x260);assert(reply[1]==1 && s.pointerGrabClient==0x400000);
  dispatch(X_UngrabPointer,0x600000,0);assert(s.pointerGrabClient==0x400000);
  dispatch(X_GrabPointer,0x400000,0x260);assert(reply[1]==0 && s.pointerGrabWindow==0x260);
- dispatch(X_UngrabPointer,0x400000,0);assert(s.pointerGrabClient==0 && s.pointerGrabWindow==0 && s.pointerConfineWindow==0);
+ dispatch(X_UngrabPointer,0x400000,0);assert(s.pointerGrabClient==0 && s.pointerGrabWindow==0 && s.pointerConfineWindow==0 && !s.pointerGrabOwnerEvents && s.pointerGrabEventMask==0 && s.pointerGrabCursor==0);
  dispatch(X_GrabPointer,0x400000,0x400001,0x400001);dispatch(X_UnmapWindow,0x400000,0x400001);assert(s.pointerGrabClient==0 && s.pointerConfineWindow==0);
  s.windows[0x400001].mapped=true;dispatch(X_GrabPointer,0x400000,0x400001,0x400001);dispatch(X_DestroyWindow,0x400000,0x400001);assert(s.pointerGrabClient==0 && s.pointerConfineWindow==0 && !s.windows.count(0x400001));
 }

@@ -42,6 +42,43 @@ static std::pair<int, int> xwireWindowOrigin(const XWireServer& server, uint32_t
     return {x, y};
 }
 
+// Resolve core pointer events under an active XGrabPointer. owner_events lets
+// the grab owner receive normally selected events on the window under the
+// pointer; every other event uses grab_window and the grab's event mask.
+static bool xwireRoutePointerGrab(bool active, uint32_t grabClient, uint32_t grabWindow,
+                                  uint32_t grabMask, bool ownerEvents, uint32_t clientIdBase,
+                                  uint32_t normalWindowOwner, uint32_t normalMask, uint32_t wantMask,
+                                  uint32_t& target, uint32_t& mask) {
+    if (!active) return (normalMask & wantMask) != 0;
+    if (grabClient != clientIdBase) return false;
+    if (!ownerEvents || normalWindowOwner != clientIdBase || !(normalMask & wantMask)) {
+        target = grabWindow;
+        mask = grabMask;
+    }
+    return (mask & wantMask) != 0;
+}
+
+// XAllowEvents pointer modes: AsyncPointer drains queued pointer input; the
+// synchronous modes release one queued event and freeze again after delivery.
+static bool xwireApplyPointerAllow(uint8_t mode, bool& frozen, uint8_t& pointerMode) {
+    switch (mode) {
+        case 0: // AsyncPointer
+        case 6: // AsyncBoth
+            pointerMode = 0;
+            frozen = false;
+            return true;
+        case 1: // SyncPointer
+        case 7: // SyncBoth
+            pointerMode = 1;
+            frozen = false; // deliver one event; the input loop freezes again
+            return true;
+        case 2: // ReplayPointer applies only to passive grabs; none are installed.
+            return true;
+        default:
+            return false;
+    }
+}
+
 // The active presentation sink (platform/sdl sets it during window init). null
 // when headless / -novideo, in which case all PutImage/Map presentation is a
 // no-op and the wire server runs exactly as before.
@@ -748,7 +785,7 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
                     it->second.mapped = false;
                     wasOverlay = (wid != srv.presentWindow && !it->second.isRoot);
                 }
-                if (srv.pointerGrabWindow == wid || srv.pointerConfineWindow == wid) srv.pointerGrabClient = srv.pointerGrabWindow = srv.pointerConfineWindow = 0;
+                if (srv.pointerGrabWindow == wid || srv.pointerConfineWindow == wid) srv.clearPointerGrab();
                 if (srv.focusWindow == wid) srv.focusWindow = 0;
             }
             updateWmState(wid, 0); // WithdrawnState
@@ -763,7 +800,7 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
             srv.windows.erase(wid);
             // A destroyed temporary focus must not strand the host input queue.
             if (srv.focusWindow == wid) srv.focusWindow = 0;
-            if (srv.pointerGrabWindow == wid || srv.pointerConfineWindow == wid) srv.pointerGrabClient = srv.pointerGrabWindow = srv.pointerConfineWindow = 0;
+            if (srv.pointerGrabWindow == wid || srv.pointerConfineWindow == wid) srv.clearPointerGrab();
             break;
         }
         case X_PutImage: {
@@ -1452,7 +1489,17 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
                 auto it = srv.windows.find(window);
                 if (srv.pointerGrabClient && srv.pointerGrabClient != clientIdBase) status = 1; // AlreadyGrabbed
                 else if (it == srv.windows.end() || !it->second.mapped) status = 3; // GrabNotViewable
-                else { srv.pointerGrabClient = clientIdBase; srv.pointerGrabWindow = window; srv.pointerConfineWindow = rd32(req + 12); }
+                else {
+                    srv.pointerGrabClient = clientIdBase;
+                    srv.pointerGrabWindow = window;
+                    srv.pointerConfineWindow = rd32(req + 12);
+                    srv.pointerGrabEventMask = rd16(req + 8);
+                    srv.pointerGrabOwnerEvents = req[1] != 0;
+                    srv.pointerGrabPointerMode = req[10];
+                    srv.pointerGrabKeyboardMode = req[11];
+                    srv.pointerGrabCursor = rd32(req + 16);
+                    srv.pointerFrozen = req[10] == 1; // GrabModeSync
+                }
             }
             uint8_t r[32] = {0}; r[0] = 1; r[1] = status;
             r[2] = uint8_t(sequence); r[3] = uint8_t(sequence >> 8);
@@ -1566,10 +1613,19 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
         case X_SendEvent:
         case X_ChangeActivePointerGrab:
         case X_UngrabKeyboard:
-        case X_AllowEvents:
         case X_GrabServer:
         case X_UngrabServer:
             break;
+        case X_AllowEvents: {
+            auto& srv = XWireServer::instance();
+            std::lock_guard<std::mutex> lk(srv.regMutex);
+            if (srv.pointerGrabClient == clientIdBase) {
+                if (!xwireApplyPointerAllow(req[1], srv.pointerFrozen, srv.pointerGrabPointerMode)) {
+                    klog_fmt("XWire: unsupported XAllowEvents mode %u", unsigned(req[1]));
+                }
+            }
+            break;
+        }
         case X_WarpPointer: {
             if (!g_xwirePresentSink) break;
             int px = 0, py = 0; uint32_t state = 0;
@@ -1609,7 +1665,7 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
         case X_UngrabPointer: {
             auto& srv = XWireServer::instance();
             std::lock_guard<std::mutex> lk(srv.regMutex);
-            if (srv.pointerGrabClient == clientIdBase) srv.pointerGrabClient = srv.pointerGrabWindow = srv.pointerConfineWindow = 0;
+            if (srv.pointerGrabClient == clientIdBase) srv.clearPointerGrab();
             break;
         }
         case X_QueryExtension: {
@@ -2101,7 +2157,17 @@ void XWireConnection::deliverInputEvents() {
     uint32_t presentWindow = pw;
 
     XWireInputEvent ev;
-    while (g_xwirePresentSink->nextInputEvent(ev)) {
+    for (;;) {
+        bool fromFrozenQueue = false;
+        {
+            std::lock_guard<std::mutex> registryLock(srv.regMutex);
+            if (!srv.pointerFrozen && !frozenPointerEvents.empty()) {
+                ev = frozenPointerEvents.front();
+                frozenPointerEvents.pop_front();
+                fromFrozenQueue = true;
+            }
+        }
+        if (!fromFrozenQueue && !g_xwirePresentSink->nextInputEvent(ev)) break;
         uint8_t code;
         uint32_t wantMask;
         switch (ev.type) {
@@ -2126,6 +2192,13 @@ void XWireConnection::deliverInputEvents() {
         // focus, which is exactly what we now honor for keys.)
         const bool isKey = (ev.type == XWireInputEvent::EvKeyDown ||
                             ev.type == XWireInputEvent::EvKeyUp);
+        if (!isKey) {
+            std::lock_guard<std::mutex> registryLock(srv.regMutex);
+            if (srv.pointerFrozen) {
+                frozenPointerEvents.push_back(ev);
+                continue;
+            }
+        }
         // For EvMotionRel, x/y are deltas: accumulate into a virtual absolute
         // position BEFORE the pointer hit-test, so routing uses the cursor
         // position the guest can difference (FPS mouse-look). Hit-testing on
@@ -2194,6 +2267,21 @@ void XWireConnection::deliverInputEvents() {
             }
             auto it = srv.windows.find(target);
             if (it != srv.windows.end()) mask = it->second.eventMask;
+            if (!isKey && srv.pointerGrabClient) {
+                const uint32_t normalTarget = target;
+                const uint32_t normalOwner = it != srv.windows.end() ? it->second.ownerClientBase : 0;
+                if (!xwireRoutePointerGrab(true, srv.pointerGrabClient, srv.pointerGrabWindow,
+                        srv.pointerGrabEventMask, srv.pointerGrabOwnerEvents, clientIdBase,
+                        normalOwner, mask, wantMask, target, mask)) {
+                    target = 0;
+                } else if (target != normalTarget) {
+                    auto grabIt = srv.windows.find(target);
+                    if (grabIt != srv.windows.end()) {
+                        const auto origin = xwireWindowOrigin(srv, target);
+                        tgtX = origin.first; tgtY = origin.second;
+                    }
+                }
+            }
         }
         // Only this connection's own windows can be delivered to from here (each
         // connection writes events to its own client socket). If the topmost hit
@@ -2210,7 +2298,7 @@ void XWireConnection::deliverInputEvents() {
         local.x = eff.x - ((int)tgtX - (int)baseX);
         local.y = eff.y - ((int)tgtY - (int)baseY);
 
-        if ((ev.type == XWireInputEvent::EvMotion || ev.type == XWireInputEvent::EvMotionRel) && !(mask & wantMask)) continue;
+        if (!isKey && !(mask & wantMask)) continue;
         // Announce EnterNotify when the pointer crosses into a new target window;
         // winex11 tracks the pointer window via crossing events (a click without
         // it defocuses the control / menus don't track).
@@ -2224,6 +2312,12 @@ void XWireConnection::deliverInputEvents() {
                      (int)local.x, (int)local.y, (unsigned)target, (unsigned)mask);
         }
         sendInputEvent(code, target, local, tgtX, tgtY);
+        if (!isKey) {
+            std::lock_guard<std::mutex> registryLock(srv.regMutex);
+            if (srv.pointerGrabClient == clientIdBase && srv.pointerGrabPointerMode == 1) {
+                srv.pointerFrozen = true;
+            }
+        }
     }
 }
 
