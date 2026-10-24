@@ -79,6 +79,19 @@ KMemory* KMemory::create(KProcess* process) {
 }
 
 U32 KMemory::mlock(U32 addr, U32 len) {
+    if (!len || (U64)addr + len > 0x100000000ULL) {
+        return -K_EINVAL;
+    }
+    const U32 firstPage = addr >> K_PAGE_SHIFT;
+    const U32 lastPage = (U32)(((U64)addr + len - 1) >> K_PAGE_SHIFT);
+    for (U32 page = firstPage;; ++page) {
+        if (!isPageMapped(page)) {
+            return -K_ENOMEM;
+        }
+        if (page == lastPage) break;
+    }
+    // Guest RAM is permanently resident in this emulator; validating the
+    // complete range is the observable mlock behavior the guest relies on.
     return 0;
 }
 

@@ -40,6 +40,25 @@ void testMadvise32Syscall() {
     if ((S32)context.cpu->reg[0].u32 != -K_EINVAL) {
         testFail("32-bit madvise syscall did not reject unknown advice");
     }
+
+    auto invokeMlock = [&](U32 address, U32 length) -> S32 {
+        testNewInstruction(0);
+        testPushCode8(0xB8); testPushCode32(150); // __NR_mlock
+        testPushCode8(0xCD); testPushCode8(0x80);
+        context.cpu->reg[3].u32 = address;
+        context.cpu->reg[1].u32 = length;
+        testRunCPU();
+        return (S32)context.cpu->reg[0].u32;
+    };
+    if (invokeMlock(address, K_PAGE_SIZE) != 0 || invokeMlock(address, 0) != -K_EINVAL ||
+        invokeMlock(0xFFFFFFF0u, 0x40u) != -K_EINVAL) {
+        testFail("32-bit mlock syscall did not validate mapped, empty, and overflowing ranges");
+    }
+    const U32 unmapped = 0x60000000u;
+    if (!context.memory->isPageMapped(unmapped >> K_PAGE_SHIFT) &&
+        invokeMlock(unmapped, K_PAGE_SIZE) != -K_ENOMEM) {
+        testFail("32-bit mlock syscall did not reject an unmapped range");
+    }
 }
 
 #endif
