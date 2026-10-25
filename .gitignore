@@ -30,6 +30,9 @@
 /tools/rootfs64/work/extract/
 /tools/rootfs64/work/lsbundle/
 /tools/rootfs64/mono32/
+/tools/rootfs64/gstreamer64/
+/tools/rootfs64/gstreamer32/
+/tools/rootfs64/.gstreamer-debs/
 /tools/rootfs64/gecko/
 /tools/rootfs64/openal/
 /tools/BoxedWineRunner/out/
