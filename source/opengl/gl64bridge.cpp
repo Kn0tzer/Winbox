@@ -3379,11 +3379,29 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             }
             return 0;
         }
-        case GL64_fn_glIsQuery:
-            return g_glQueryStatus.count((GLuint)ai(args,0)) && g_glQueryStatus[(GLuint)ai(args,0)].generated ? 1 : 0;
+        case GL64_fn_glIsQuery: {
+            // find(), not operator[]: probing an unknown id must not create a
+            // bookkeeping entry (a created entry would make a later
+            // glGetQueryObject on that garbage id look legitimate).
+            auto foundQuery = g_glQueryStatus.find((GLuint)ai(args,0));
+            return foundQuery != g_glQueryStatus.end() && foundQuery->second.generated ? 1 : 0;
+        }
         case GL64_fn_glBeginQuery:
             if (g_glContext) {
                 const GLenum target = (GLenum)ai(args,0); const GLuint id = (GLuint)ai(args,1);
+                // Validate against our own bookkeeping first. Forwarding a
+                // begin the host must reject (busy target, id 0, an id that is
+                // already active, or an object already typed for another
+                // target) and then recording it anyway would displace the
+                // really-active query in g_glActiveQueries and corrupt every
+                // later CURRENT_QUERY / availability answer.
+                auto existingQuery = g_glQueryStatus.find(id);
+                if (!id || g_glActiveQueries.count(target)
+                    || (existingQuery != g_glQueryStatus.end() && existingQuery->second.active)
+                    || (existingQuery != g_glQueryStatus.end() && existingQuery->second.target && existingQuery->second.target != target)) {
+                    recordBridgeError(GL_INVALID_OPERATION);
+                    return 0;
+                }
                 GL_MT(glBeginQuery(target, id));
                 auto& query = g_glQueryStatus[id]; query.target = target; query.generated = true; query.active = true; query.available = false;
                 g_glActiveQueries[target] = id;
@@ -3404,6 +3422,17 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glQueryCounter:
             if (g_glContext) {
                 const GLuint id = (GLuint)ai(args,0); const GLenum target = (GLenum)ai(args,1);
+                if (target != 0x8E28 /*GL_TIMESTAMP*/) { recordBridgeError(GL_INVALID_ENUM); return 0; }
+                // A counter stamp must not clobber an in-flight begin/end
+                // query (it would report the result available mid-query) nor
+                // silently retype an object created for another target.
+                auto existingQuery = g_glQueryStatus.find(id);
+                if (!id
+                    || (existingQuery != g_glQueryStatus.end() && existingQuery->second.active)
+                    || (existingQuery != g_glQueryStatus.end() && existingQuery->second.target && existingQuery->second.target != target)) {
+                    recordBridgeError(GL_INVALID_OPERATION);
+                    return 0;
+                }
                 auto& query = g_glQueryStatus[id]; query.target = target; query.generated = true; query.active = false; query.available = true;
             }
             return 0; // Query values are deterministic zero; availability still follows begin/end.
@@ -3423,6 +3452,10 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             // while availability follows the query object's actual begin/end state.
             const GLuint id = (GLuint)ai(args,0); GLenum pname = (GLenum)ai(args,1);
             auto query = g_glQueryStatus.find(id);
+            // An id with no bookkeeping entry never existed or was deleted:
+            // GL_INVALID_OPERATION per spec, not a silent benign zero. (A
+            // generated-but-unused id HAS an entry and stays benign.)
+            if (query == g_glQueryStatus.end()) recordBridgeError(GL_INVALID_OPERATION);
             U32 v = 0;
             if (pname == 0x8867 /*GL_QUERY_RESULT_AVAILABLE*/) v = query != g_glQueryStatus.end() && query->second.available ? 1 : 0;
             if (args.a[2]) cpu->memory->writed(args.a[2], v);
@@ -3431,6 +3464,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glGetQueryObjectui64v: {
             const GLuint id = (GLuint)ai(args,0); GLenum pname = (GLenum)ai(args,1);
             auto query = g_glQueryStatus.find(id);
+            if (query == g_glQueryStatus.end()) recordBridgeError(GL_INVALID_OPERATION);
             U64 v = 0;
             if (pname == 0x8867 /*GL_QUERY_RESULT_AVAILABLE*/) v = query != g_glQueryStatus.end() && query->second.available ? 1 : 0;
             if (args.a[2]) cpu->memory->writeq(args.a[2], v);
