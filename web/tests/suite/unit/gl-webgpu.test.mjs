@@ -471,6 +471,10 @@ test('table-driven GLES validation reports the error for each touched entry poin
       ['bindTexture rejects an ungenerated object', () => gl.bindTexture(0x0de1, {}), 0x0502],
       ['bindBuffer accepts a generated object', () => gl.bindBuffer(0x8892, buffer), 0],
       ['bindTexture accepts a generated object', () => gl.bindTexture(0x0de1, texture), 0],
+      ['beginQuery rejects an ungenerated query name', () => gl.beginQuery(0x8914, {}), 0x0502],
+      ['getQueryParameter rejects an ungenerated query name', () => gl.getQueryParameter({}, 0x8867), 0x0502],
+      ['texImage2D rejects mismatched RGBA8 and RGB transfers', () => { gl.bindTexture(0x0de1, texture); gl.texImage2D(0x0de1, 0, 0x8058, 1, 1, 0, 0x1907, 0x1401, new Uint8Array(3)); }, 0x0502],
+      ['texImage3D rejects mismatched RGBA8 and RGB transfers', () => { const layered = gl.createTexture(); gl.bindTexture(0x806f, layered); gl.texImage3D(0x806f, 0, 0x8058, 1, 1, 1, 0, 0x1907, 0x1401, new Uint8Array(3)); }, 0x0502],
       ['readPixels rejects fractional coordinates', () => gl.readPixels(0.5, 0, 1, 1, 0x1908, 0x1401, new Uint8Array(4)), 0x0501],
       ['readPixels rejects unknown formats as INVALID_ENUM', () => gl.readPixels(0, 0, 1, 1, 0xdead, 0x1401, new Uint8Array(4)), 0x0500],
       ['framebufferTexture2D rejects attachment to the default framebuffer', () => gl.framebufferTexture2D(0x8d40, 0x8ce0, 0x0de1, texture, 0), 0x0502],
@@ -619,6 +623,27 @@ test('framebuffer and renderbuffer queries report invalid targets, pnames, and m
     gl.bindFramebuffer(0x8d40, framebuffer);
     gl.getFramebufferAttachmentParameter(0x8d40, 0x8ce0, 0x8cd0);
     assert.equal(gl.getError(), 0x0502, 'querying a missing attachment is INVALID_OPERATION');
+  } finally { gpu.restore(); }
+});
+
+test('framebuffer completeness rejects undefined mip levels and color/depth attachment mismatches', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    const framebuffer = gl.createFramebuffer(), color = gl.createTexture(), depth = gl.createRenderbuffer();
+    gl.bindTexture(0x0de1, color);
+    gl.texImage2D(0x0de1, 0, 0x8058, 4, 4, 0, 0x1908, 0x1401, new Uint8Array(64));
+    gl.bindFramebuffer(0x8d40, framebuffer);
+    gl.framebufferTexture2D(0x8d40, 0x8ce0, 0x0de1, color, 2);
+    assert.equal(gl.checkFramebufferStatus(0x8d40), 0x8cd6, 'undefined attached mip level is incomplete');
+    gl.framebufferTexture2D(0x8d40, 0x8ce0, 0x0de1, color, 0);
+    gl.bindRenderbuffer(0x8d41, depth);
+    gl.renderbufferStorage(0x8d41, 0x81a6, 4, 4);
+    gl.framebufferRenderbuffer(0x8d40, 0x8d00, 0x8d41, depth);
+    assert.equal(gl.checkFramebufferStatus(0x8d40), 0x8cd5);
+    gl.framebufferRenderbuffer(0x8d40, 0x8ce0, 0x8d41, depth);
+    assert.equal(gl.checkFramebufferStatus(0x8d40), 0x8cd6, 'depth format cannot occupy a color attachment');
   } finally { gpu.restore(); }
 });
 

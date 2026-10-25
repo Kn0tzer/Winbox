@@ -128,6 +128,34 @@ test('EXT_sRGB enables sRGB framebuffer views and linear/sRGB clear conversion',
   } finally { gpu.restore(); }
 });
 
+test('float color and depth textures allocate WebGPU attachment formats for framebuffer use', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    assert.ok(gl.getSupportedExtensions().includes('EXT_color_buffer_float'));
+    const framebuffer = gl.createFramebuffer(), color = gl.createTexture(), depth = gl.createTexture();
+    gl.bindTexture(0x0de1, color);
+    gl.texStorage2D(0x0de1, 1, 0x881a, 8, 8);
+    gl.bindTexture(0x0de1, depth);
+    gl.texStorage2D(0x0de1, 1, 0x8cac, 8, 8);
+    gl.bindFramebuffer(0x8d40, framebuffer);
+    gl.framebufferTexture2D(0x8d40, 0x8ce0, 0x0de1, color, 0);
+    gl.framebufferTexture2D(0x8d40, 0x8d00, 0x0de1, depth, 0);
+    await gl._ops;
+    assert.equal(gl.getError(), 0);
+    assert.equal(color.gpu.format, 'rgba16float');
+    assert.equal(depth.gpu.format, 'depth32float');
+    assert.equal(gl.checkFramebufferStatus(0x8d40), 0x8cd5);
+    assert.equal(gl._targetFor(framebuffer).format, 'rgba16float');
+    assert.equal(gl._targetFor(framebuffer).depthFormat, 'depth32float');
+    gl.bindTexture(0x0de1, color);
+    gl.texSubImage2D(0x0de1, 0, 0, 0, 1, 1, 0x1908, 0x1406, new Float32Array([1, 0, 0, 1]));
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('rgba16float texture subimage upload')));
+  } finally { gpu.restore(); }
+});
+
 test('the S3TC extension decodes DXT1, DXT3, and DXT5 blocks without GPU features', async () => {
   const gpu = createValidationDevice();
   try {
