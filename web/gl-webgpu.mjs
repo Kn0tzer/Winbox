@@ -1344,6 +1344,7 @@ export class WebGPUGL {
   }
   bindBuffer(target, buffer) {
     const value = buffer || null;
+    if (value && !this._buffers.has(value)) { this._recordError(GL.INVALID_OPERATION); return; }
     if (target === GL.ARRAY_BUFFER) this._arrayBuffer = value;
     else if (target === GL.ELEMENT_ARRAY_BUFFER) { this._elementArrayBuffer = value; this._vao.elementArrayBuffer = value; }
     else if (target === 0x88eb) this._pixelPackBuffer = value;
@@ -2706,6 +2707,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
   }
   bindTexture(target, texture) {
     if (![GL.TEXTURE_2D, GL.TEXTURE_CUBE_MAP, GL.TEXTURE_3D, GL.TEXTURE_2D_ARRAY].includes(target)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (texture && !this._textures.has(texture)) { this._recordError(GL.INVALID_OPERATION); return; }
     const object = texture ? this._textureRecord(texture) : null;
     if (object?.target && object.target !== target) { this._recordError(GL.INVALID_OPERATION); return; }
     if (object) object.target = target;

@@ -453,6 +453,7 @@ test('table-driven GLES validation reports the error for each touched entry poin
     const gl = new WebGPUGL(gpu.canvas);
     await gl.ready;
     const texture = gl.createTexture();
+    const buffer = gl.createBuffer();
     const renderbuffer = gl.createRenderbuffer();
     const invalidCalls = [
       ['viewport rejects fractional dimensions', () => gl.viewport(0, 0, 1.5, 4), 0x0501],
@@ -466,6 +467,10 @@ test('table-driven GLES validation reports the error for each touched entry poin
       ['drawElementsInstanced validates index type', () => gl.drawElementsInstanced(0x0004, 3, 0x1406, 0, 1), 0x0500],
       ['pixelStorei rejects unknown pnames', () => gl.pixelStorei(0xdead, 0), 0x0500],
       ['pixelStorei rejects invalid alignments', () => gl.pixelStorei(0x0cf5, 3), 0x0501],
+      ['bindBuffer rejects an ungenerated object', () => gl.bindBuffer(0x8892, {}), 0x0502],
+      ['bindTexture rejects an ungenerated object', () => gl.bindTexture(0x0de1, {}), 0x0502],
+      ['bindBuffer accepts a generated object', () => gl.bindBuffer(0x8892, buffer), 0],
+      ['bindTexture accepts a generated object', () => gl.bindTexture(0x0de1, texture), 0],
       ['readPixels rejects fractional coordinates', () => gl.readPixels(0.5, 0, 1, 1, 0x1908, 0x1401, new Uint8Array(4)), 0x0501],
       ['readPixels rejects unknown formats as INVALID_ENUM', () => gl.readPixels(0, 0, 1, 1, 0xdead, 0x1401, new Uint8Array(4)), 0x0500],
       ['framebufferTexture2D rejects attachment to the default framebuffer', () => gl.framebufferTexture2D(0x8d40, 0x8ce0, 0x0de1, texture, 0), 0x0502],
