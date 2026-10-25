@@ -5915,7 +5915,7 @@ void ksyscall64(CPU64* cpu) {
             // child_tid=r10, tls=r8). Create a real thread sharing this
             // process + memory64. Falls back to -ENOSYS for non-thread clones.
             if (cpu->thread && cpu->thread->process && cpu->thread->process->memory64) {
-                ret = cpu->thread->process->clone64(cpu->thread, a1, a2, a3, a5, a4);
+                ret = cpu->thread->process->clone64(cpu->thread, a1, a2, a3, a5, a4, a1 & 0xff);
             } else {
                 ret = unimplementedSyscall64(nr);
             }
@@ -5927,7 +5927,7 @@ void ksyscall64(CPU64* cpu) {
             // address space until that point remains tracked in the gap register.
             if (cpu->thread && cpu->thread->process && cpu->thread->process->memory64) {
                 const U64 cloneFlags = nr == X64_SYS_vfork ? X64_CLONE_VFORK : 0;
-                ret = cpu->thread->process->forkProcess64(cpu->thread, cloneFlags, 0, 0);
+                ret = cpu->thread->process->forkProcess64(cpu->thread, cloneFlags, 0, 0, K_SIGCHLD);
             } else {
                 ret = unimplementedSyscall64(nr);
             }

@@ -92,7 +92,16 @@ static void runForkCase(TestContext& context, U64 nr, const char* name) {
     RestoreProcessCpu64 restoreCpu{*process, process->cpu64};
     process->cpu64 = &cpu;
     cpu.rip = childCode;
-    cpu.reg[X64_RAX].setU64(nr);
+    if (nr == 435 /*clone3*/) {
+        constexpr U64 cloneArgs = page + 0x200;
+        memory->memsetGuest(cloneArgs, 0, 88);
+        memory->writed(cloneArgs + 32, K_SIGUSR1); // clone_args.exit_signal
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(cloneArgs);
+        cpu.reg[X64_RSI].setU64(88);
+    } else {
+        cpu.reg[X64_RAX].setU64(nr);
+    }
     ksyscall64(&cpu);
     const S64 forkResult = (S64)cpu.reg[X64_RAX].u64;
     if (forkResult <= 0) {
@@ -106,6 +115,8 @@ static void runForkCase(TestContext& context, U64 nr, const char* name) {
     }
     if (child->parentId != process->id) testFail("%s child has the wrong parent", name);
     if (!child->is64Bit) testFail("%s child is not a 64-bit process", name);
+    if (child->childExitSignal64 != (nr == 435 ? K_SIGUSR1 : K_SIGCHLD))
+        testFail("%s child did not retain the requested exit signal", name);
     if (!child->memory64 || child->memory64 == memory) testFail("%s child did not get its own address space", name);
     if (!child->cpu64) {
         testFail("%s child has no CPU64", name);
@@ -138,7 +149,7 @@ static void runForkCase(TestContext& context, U64 nr, const char* name) {
     waitCpu.reg[X64_RDI].setU64((U32)forkResult);
     waitCpu.reg[X64_RSI].setU64(page + 8);
     memory->writed(page + 8, 0xDEADBEEF);
-    if (nr == 57 /*fork*/) {
+    if (nr != 58 /*fork and clone3 children stay alive*/) {
         waitCpu.reg[X64_RDX].setU64(1); // WNOHANG
         ksyscall64(&waitCpu);
         if ((S64)waitCpu.reg[X64_RAX].u64 != 0) {
@@ -153,7 +164,7 @@ static void runForkCase(TestContext& context, U64 nr, const char* name) {
     // Fork queues a real guest thread; stop and join it before dropping the
     // process table entry or the test fixture can race its CPU teardown.
     child->killAllThreads(nullptr);
-    if (nr == 57 /*fork*/) {
+    if (nr != 58 /*fork and clone3 children stay alive*/) {
         child->exitCode = 37;
         child->terminated = true;
     }
@@ -163,7 +174,7 @@ static void runForkCase(TestContext& context, U64 nr, const char* name) {
     if ((S64)waitCpu.reg[X64_RAX].u64 != forkResult) {
         testFail("%s wait4 did not reap its terminated child", name);
     }
-    const U32 expectedStatus = nr == 57 ? (37u << 8) : (child->exitCode << 8);
+    const U32 expectedStatus = nr != 58 ? (37u << 8) : (child->exitCode << 8);
     if (memory->readd(page + 8) != expectedStatus) {
         testFail("%s wait4 returned the wrong exit status", name);
     }
@@ -181,6 +192,7 @@ void testForkVfork64() {
     }
     runForkCase(context, 57 /*fork*/, "fork");
     runForkCase(context, 58 /*vfork*/, "vfork");
+    runForkCase(context, 435 /*clone3*/, "clone3");
     KSystem::procNode = oldProcNode;
 }
 

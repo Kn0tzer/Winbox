@@ -2021,7 +2021,7 @@ U32 KProcess::clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 t
 }
 
 #ifdef BOXEDWINE_GUEST_X64
-U32 KProcess::clone64(KThread* thread, U64 flags, U64 child_stack, U64 ptid, U64 tls, U64 ctid) {
+U32 KProcess::clone64(KThread* thread, U64 flags, U64 child_stack, U64 ptid, U64 tls, U64 ctid, U64 exitSignal) {
     // pthread_create issues clone with the thread-group flag set. We only
     // support the thread case (shared VM/FS/files/sighand); a real fork() in
     // 64-bit is a separate, larger effort. Anything else: log + ENOSYS so
@@ -2033,7 +2033,7 @@ U32 KProcess::clone64(KThread* thread, U64 flags, U64 child_stack, U64 ptid, U64
         // fork: a new KProcess with its own memory64 (a deep copy of ours) and a
         // child CPU64 that returns 0. child_stack==0 here (fork keeps the same
         // stack pointer), unlike thread-clone, so don't require it.
-        return this->forkProcess64(thread, flags, ctid, ptid);
+        return this->forkProcess64(thread, flags, ctid, ptid, exitSignal);
     }
     if (child_stack == 0) {
         return (U32)-K_EINVAL;
@@ -2127,10 +2127,10 @@ U64 KProcess::clone364(KThread* thread, U64 argsAddr, U64 size) {
         return (U64)-K_EINVAL;
     }
     // clone3 passes the stack base + size; the child's RSP is the top.
-    return clone64(thread, flags, stack + stack_size, parent_tid, tls, child_tid);
+    return clone64(thread, flags, stack + stack_size, parent_tid, tls, child_tid, exit_signal);
 }
 
-U32 KProcess::forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid) {
+U32 KProcess::forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid, U64 exitSignal) {
     if (!this->memory64) {
         return (U32)-K_ENOSYS;
     }
@@ -2144,6 +2144,7 @@ U32 KProcess::forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid) {
     newProcess->clone(shared_from_this());                   // FDs, cwd, exe, sig...
 
     newProcess->is64Bit = true;
+    newProcess->childExitSignal64 = (U32)exitSignal;
     newProcess->brkEnd64 = this->brkEnd64;
     newProcess->entry64 = this->entry64;
     newProcess->phdr64 = this->phdr64;
@@ -2205,10 +2206,12 @@ void KProcess::killAllThreads(KThread* exceptThisThread) {
 
 U32 KProcess::exitgroup(KThread* thread, U32 code) {
     KProcessPtr parent = KSystem::getProcess(this->parentId);
-    if (parent && parent->sigActions[K_SIGCHLD].handlerAndSigAction!=K_SIG_DFL) {
-        if (parent->sigActions[K_SIGCHLD].handlerAndSigAction!=K_SIG_IGN) {
-            parent->signalCHLD(K_CLD_EXITED, this->id, this->userId, code);
-        }
+    if (parent && this->childExitSignal64 == K_SIGCHLD &&
+        parent->sigActions[K_SIGCHLD].handlerAndSigAction != K_SIG_DFL &&
+        parent->sigActions[K_SIGCHLD].handlerAndSigAction != K_SIG_IGN) {
+        parent->signalCHLD(K_CLD_EXITED, this->id, this->userId, code);
+    } else if (parent && this->childExitSignal64 != 0 && this->childExitSignal64 != K_SIGCHLD) {
+        parent->signal(this->childExitSignal64);
     }
 
     killAllThreads(thread);

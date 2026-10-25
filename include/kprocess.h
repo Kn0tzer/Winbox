@@ -178,7 +178,7 @@ public:
     // RSP=child_stack, fsbase=tls, RIP=parent's next insn), honors
     // PARENT/CHILD_SETTID + CHILD_CLEARTID, and schedules it. Returns the new
     // thread id, or (U32)-errno.
-    U32 clone64(KThread* thread, U64 flags, U64 child_stack, U64 ptid, U64 tls, U64 ctid);
+    U32 clone64(KThread* thread, U64 flags, U64 child_stack, U64 ptid, U64 tls, U64 ctid, U64 exitSignal);
     // 64-bit clone3: reads the clone_args struct at argsAddr and routes to
     // clone64. glibc 2.34+ prefers clone3, so implementing it avoids the
     // fragile clone3->clone ENOSYS fallback path.
@@ -186,7 +186,7 @@ public:
     // Real fork(2) for 64-bit (non-thread clone64): new KProcess with its own
     // deep-copied memory64 and a child CPU64 that returns 0. Returns the child
     // pid to the parent.
-    U32 forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid);
+    U32 forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid, U64 exitSignal);
 #endif
     U32 close(FD fildes);
     U32 dup(U32 fildes);    
@@ -426,6 +426,7 @@ public:
     std::shared_ptr<FsNode> taskNode; // in /proc/<pid>/task
     std::shared_ptr<FsNode> fdNode; // in /proc/<pid>/fd
     U32 membarrierRegistrations = 0; // per-process MEMBARRIER_CMD_REGISTER_* mask
+    U32 childExitSignal64 = 17; // Linux SIGCHLD default for fork-like children
     U32 dumpable = 1;
     U32 noNewPrivs = 0;
     U32 childSubreaper = 0;
