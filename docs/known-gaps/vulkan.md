@@ -2,7 +2,7 @@
 
 Initial source audit register for lane P2-V. It includes requested grep hits, source-level `default:` arms, empty `catch` arms, replay skip/drop counters, and identified SPIR-V/WGSL rejection sites. Original audit rows are followed by disposition updates as fixes land; unresolved rows remain OPEN. Some grep matches are scanner duplicates within one behavior and still need consolidation into behavior-level rows.
 
-Rows: 343 source and follow-up rows (35 IMPLEMENTED, 71 REJECTED-LOUDLY, 232 NOT-A-GAP, 4 OPEN).
+Rows: 343 source and follow-up rows (36 IMPLEMENTED, 71 REJECTED-LOUDLY, 232 NOT-A-GAP, 4 OPEN).
 
 | File:line | Guest behavior / audit evidence | Severity | Disposition |
 |---|---|---|---|
