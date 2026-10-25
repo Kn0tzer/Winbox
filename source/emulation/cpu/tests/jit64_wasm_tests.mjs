@@ -4066,3 +4066,51 @@ test('K-M3: REP CMPSQ fault on the second read keeps first-element flags', async
   assert.equal(out.regs[7], DST + 8n);
   assert.ok(out.rflags & 0x40, 'flags are from the last completed (equal) comparison: ZF=1');
 });
+
+test('K-M3: RMW store fault restores the op-start flags', async () => {
+  const A = 0x2000n;
+  const regs = baseRegs();
+  regs[3] = A; // RBX
+  regs[0] = 1n; // RAX: adding it to all-ones memory would set CF/ZF
+  const out = await runFault([0x48, 0x01, 0x03], // add [rbx], rax
+    { regs, rflags: 0x202, memInit: qwords(A, [0xFFFFFFFFFFFFFFFFn]),
+      denied: (addr, write) => write });
+  assert.equal(out.fault, 1);
+  assert.equal(out.calls, 2, 'read happened, store was denied');
+  assert.equal(out.execCount, 0);
+  assert.equal(out.ripOut, 0x1000n);
+  assert.equal(out.rflags, 0x202, 'faulting RMW must not publish its result flags');
+  assert.equal(out.guestMem.read(A, 8), 0xFFFFFFFFFFFFFFFFn, 'memory unchanged');
+});
+
+test('K-M3: shift store fault restores the op-start flags', async () => {
+  const A = 0x2000n;
+  const regs = baseRegs();
+  regs[3] = A; // RBX
+  // D1/C1 immediate shifts are the reachable shift-memory forms (the
+  // by-CL memory forms are classifier-declined, interpreter-only).
+  const out = await runFault([0x48, 0xC1, 0x23, 0x03], // shl qword [rbx], 3
+    { regs, rflags: 0x202, memInit: qwords(A, [0x8000000000000000n]),
+      denied: (addr, write) => write });
+  assert.equal(out.fault, 1);
+  assert.equal(out.calls, 2, 'read happened, store was denied');
+  assert.equal(out.execCount, 0);
+  assert.equal(out.ripOut, 0x1000n);
+  assert.equal(out.rflags, 0x202, 'faulting shift must not publish its result flags');
+  assert.equal(out.guestMem.read(A, 8), 0x8000000000000000n, 'memory unchanged');
+});
+
+test('K-M3: BTS store fault restores CF', async () => {
+  const A = 0x2000n;
+  const regs = baseRegs();
+  regs[3] = A; // RBX
+  regs[0] = 0n; // RAX: bit index 0; the stored bit is 0, so BTS would clear CF
+  const out = await runFault([0x48, 0x0F, 0xAB, 0x03], // bts [rbx], rax
+    { regs, rflags: 0x203, memInit: qwords(A, [0n]),
+      denied: (addr, write) => write });
+  assert.equal(out.fault, 1);
+  assert.equal(out.calls, 2, 'read happened, store was denied');
+  assert.equal(out.execCount, 0);
+  assert.equal(out.rflags, 0x203, 'faulting BTS must not publish the tested bit into CF');
+  assert.equal(out.guestMem.read(A, 8), 0n, 'memory unchanged');
+});
