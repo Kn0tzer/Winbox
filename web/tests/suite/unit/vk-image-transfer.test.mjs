@@ -8,7 +8,8 @@ import { extractSourceSlice } from '../lib/source-slice.mjs';
 
 test('image uploads preserve BC mip/layer offsets, row padding, and allocation bounds', () => {
   const source = readFileSync(new URL('../../../../source/vulkan/vk64bridge.cpp', import.meta.url), 'utf8');
-  const helpers = extractSourceSlice(source, 'struct FormatBlock', 'const char* fmt_name', { sourceName: 'source/vulkan/vk64bridge.cpp' });
+  const helpers = extractSourceSlice(source, 'struct FormatBlock', '// Fills a guest VkMemoryRequirements2', { sourceName: 'source/vulkan/vk64bridge.cpp' })
+    + extractSourceSlice(source, 'U64 imageSubresourceOffset(', 'const char* fmt_name', { sourceName: 'source/vulkan/vk64bridge.cpp' });
   const copy = extractSourceSlice(source, 'static void execCopyFail(', 'std::vector<U8> readGuestRange', { sourceName: 'source/vulkan/vk64bridge.cpp' });
   const dir = mkdtempSync(join(tmpdir(), 'vk-image-transfer-'));
   try {
