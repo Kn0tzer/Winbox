@@ -99,11 +99,12 @@ test('shipped Wine archive entries contain executable ELF files', (t) => {
   // require: at least one server entry per archive; every non-script server
   // file is a real ELF; symlinks resolve inside the archive. One script is
   // tolerated as a ratcheted exception: Debian's /bin/sh dispatch wrapper at
-  // usr/lib/wine/wineserver in wine64.zip, which is a registered
-  // NEEDS_OTHER_LANE defect for the runtime lane (build-wine64-zip.sh copies
-  // it at :142 while its :167 intends usr/bin/wineserver to point at the ELF
-  // wineserver64; the guest rootfs has no /bin/sh). Any second script, or a
-  // script whose dispatch targets are not ELF, fails here.
+  // usr/lib/wine/wineserver in wine64.zip. That defect is FIXED in the runtime
+  // lane (491919b04: the name is now staged as a symlink to the ELF
+  // wineserver64, pinned by check_runtime_completeness.py); the tolerance
+  // remains only because the pre-merge integration archive still contains
+  // the script form, and it covers exactly that one entry. Any second script,
+  // or a script whose dispatch targets are not ELF, fails here.
   const python = [
     'import sys,zipfile,stat,json',
     'z=zipfile.ZipFile(sys.argv[1]); out=[]',
