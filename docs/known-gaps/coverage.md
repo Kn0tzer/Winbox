@@ -10,7 +10,7 @@ This register is a marker scan. It finds `unsupported`, `not implemented`, `TODO
 
 | Area | Files | Hits | Disposition |
 | --- | --- | --- | --- |
-| X11 host (`source/x11/`) | 2 | 17 | High. Remaining marker hits include Shape handlers, legacy Xlib stubs, and loud format limitations. |
+| X11 host (`source/x11/`) | 2 | 16 | High. Remaining marker hits include Shape handlers, legacy Xlib stubs, and loud format limitations. |
 | X11 wire GLX (`source/x11wire/`) | 1 | 1 | High, if the GLX-over-wire path is used by a target build. |
 | io / fs nodes (`source/io/`) | 8 | 19 | Low. The one guest-reachable abort (`FsVirtualNode::removeDir`) is fixed. |
 | UI (`source/ui/`) | 8 | 11 | Low. Save-on-exit and error-message TODOs. |
@@ -37,9 +37,11 @@ Ranked by severity if reached. "Reached" means the guest calls the path. The tab
 | XMatchVisualInfo | `source/x11/x11common.cpp` | medium, especially for GLX applications | Searches the display's visual/depth list for the requested screen, depth and visual class; writes the XVisualInfo guest structure on a match and returns False otherwise. | IMPLEMENTED: `x11-match-visual-info.test.mjs` |
 | XGetWindowAttributes | `source/x11/x11common.cpp` | medium | Returns the 32-bit guest ABI fields for geometry, visual, root, class, gravity/backing, colormap, map state, per-client and all-client event masks, override-redirect and screen; a missing window returns BadWindow. | IMPLEMENTED: `x11-get-window-attributes.test.mjs` |
 | XInternAtom | `source/x11/x11common.cpp` | medium | Interns one atom and honors only-if-exists without aborting. | IMPLEMENTED: `x11-intern-atom.test.mjs` |
+| XDisplayName | `source/x11/x11common.cpp` | low | Returns an explicit display string unchanged; null returns the configured virtual default `:0`. | IMPLEMENTED: `x11-display-name.test.mjs` |
 | XSetWMProperties command | `source/x11/x11common.cpp` | low | Encodes argv strings as the NUL-separated `WM_COMMAND` property and deletes it for argc zero. | IMPLEMENTED: `x11-wm-command.test.mjs` |
 | XGetWindowAttributes | `source/x11/x11common.cpp` | medium | Returns the guest 32-bit ABI fields for geometry, visual, root, class, gravity/backing, colormap, map state, this-client and all-client event masks, override-redirect and screen; a missing window returns BadWindow. | IMPLEMENTED: `x11-get-window-attributes.test.mjs` |
 | XInternAtom | `source/x11/x11common.cpp` | medium | Interns one atom and honors only-if-exists without aborting. | IMPLEMENTED: `x11-intern-atom.test.mjs` |
+| XDisplayName | `source/x11/x11common.cpp` | low | Returns an explicit display string unchanged; null returns the configured virtual default `:0`. | IMPLEMENTED: `x11-display-name.test.mjs` |
 | XSetWMProperties command | `source/x11/x11common.cpp` | low | Encodes argv strings as the NUL-separated `WM_COMMAND` property and deletes it for argc zero. | IMPLEMENTED: `x11-wm-command.test.mjs` |
 | Dropped pixel write | `x11common.cpp:1688` (`x11_PutPixel`) | high | `XPutPixel` now writes the pixel into the guest XImage for 8, 16, 24 and 32 bpp. Sub-byte depths and a non-zero xoffset are logged once and not written. | FIXED (test `x11-putpixel-writes.test.mjs`) |
 | Fullscreen and window state (EWMH) | `source/x11/xwindow.cpp` state handler; `_NET_ACTIVE_WINDOW` dispatch in `x11common.cpp` | high | Fullscreen add/remove/toggle updates/restores window geometry; above state raises/lowers windows; active-window messages set X input focus; root advertises supported atoms; CWSibling/stack modes reorder sibling windows. `_NET_WM_NAME` and `_NET_WM_ICON` use property storage. | IMPLEMENTED: `x11-ewmh-state.test.mjs` |
@@ -118,6 +120,7 @@ Ranked by severity if reached, then by how likely a real game is to reach the pa
 - **`source/x11/x11common.cpp` `x11_GetGeometry` and `x11_FreeFont`**: `XGetGeometry` aborted the emulator. It now writes the root, the position in the parent, the border, the size and the depth to the guest pointers, and returns 1. A pixmap reports position and border as 0. An unknown drawable returns `BadDrawable` and writes nothing. `XFreeFont` aborted too; the legacy path never loads a font, so it now returns `Success`. Regression: `web/tests/suite/unit/x11-getgeometry.test.mjs` and `web/tests/suite/unit/x11-freefont.test.mjs`, which compile the real bodies against stubs and check the results. Both fail on the original code.
 - **Core drawing calls in `source/x11/x11common.cpp` and `source/x11/xdrawable.cpp`** (were kpanics): `XQueryTree` lists the root, the parent and every child, bottom-most first, from `XWindow::getChildrenBottomToTop`. `XGetPixel` reads a pixel from the guest XImage, and `XSubImage` returns a new guest XImage holding a region, with 0 where the region is outside the source. `XAddPixel` adds to each pixel and wraps at the depth. Images are handled only for byte-aligned depths up to 32 bits and a zero xoffset; others are logged once. `XCopyPlane` paints the GC foreground for set bits of the plane and the background for clear bits, through the GC function and clip. `XCreateGC` honours the valuemask. `XSetFillStyle` and `XSetArcMode` store their values, and `XFillArc` and `XDrawArc` draw pie, chord and full ellipses, with the tile honoured for fills. `XSetDashes` stores and draws the validated pattern, phase, and DoubleDash background pixels. Regression: `x11-querytree`, `x11-image-pixels`, `x11-copyplane`, `x11-gc-setters`, `x11-drawable-raster` and `x11-arc-drawing` unit tests, plus `x11-putpixel-writes` which now also covers `XGetPixel`.
 - **`source/x11/xdrawable.cpp` copy paths** (`copyImageData`, `copy`): both now cut copies to the drawable, honour clip rectangles and depth-one pixmap masks, apply every GX function for 32-bit, and read each source row before a later row overwrites it. The direct memcpy fast path is disabled when a GC clip is active. Regression: `web/tests/suite/unit/x11-copy-paths.test.mjs` runs both XCopyArea and XPutImage with mask pixels set and clear.
+- **`source/x11/x11common.cpp` `x11_DisplayName`**: returns a caller-supplied display name unchanged and allocates the virtual display name `:0` for null, matching `XOpenDisplay` in this build. Regression: `web/tests/suite/unit/x11-display-name.test.mjs`.
 - **`source/x11/x11common.cpp` `x11_SetWMProperties`**: argv is serialized as NUL-separated `WM_COMMAND` bytes using STRING/8 format; a zero argc deletes the property, and a null argv leaves it unchanged. Regression: `web/tests/suite/unit/x11-wm-command.test.mjs`.
 - **`source/x11/x11common.cpp` `x11_GetWindowAttributes` / `XInternAtom`**: `XGetWindowAttributes` now returns the documented 32-bit ABI fields, including per-client and aggregate event masks; `XInternAtom` shares the atom table and honors `only_if_exists`. Regressions: `web/tests/suite/unit/x11-get-window-attributes.test.mjs` (including direct execution of the aggregate-mask implementation) and `x11-intern-atom.test.mjs`.
 - **`source/x11/x11common.cpp` `x11_MatchVisualInfo`**: XMatchVisualInfo now searches the guest display visuals for a matching screen/depth/class, writes the matching XVisualInfo and returns False if no match exists. Regression: `web/tests/suite/unit/x11-match-visual-info.test.mjs` compiles and calls the real handler for both cases.
@@ -145,7 +148,7 @@ Machine-readable. `tools/known-gaps-audit.mjs --check` reads this block. Counts 
   "source/ui/mainui.cpp": { "count": 2, "severity": "low", "area": "ui", "gap": "TODO: quit does not check a failed save" },
   "source/ui/utils/readIcons.cpp": { "count": 1, "severity": "low", "area": "ui", "gap": "one icon format not shown" },
   "source/util/bstring.cpp": { "count": 2, "severity": "low", "area": "util", "gap": "TODO: copy on substring (performance); BString::BString invariant" },
-  "source/x11/x11common.cpp": { "count": 16, "severity": "high", "area": "x11", "gap": "Shape handlers abort; several legacy Xlib/XIM calls remain unimplemented; unsupported image layouts are loud" },
+  "source/x11/x11common.cpp": { "count": 15, "severity": "high", "area": "x11", "gap": "Shape handlers abort; several legacy Xlib/XIM calls remain unimplemented; unsupported image layouts are loud" },
   "source/x11/xdrawable.cpp": { "count": 1, "severity": "medium", "area": "x11", "gap": "non-32-bit legacy line drawing is logged and skipped" },
   "source/x11wire/xwireconnection.cpp": { "count": 1, "severity": "high", "area": "x11", "gap": "unknown GLX requests return BadRequest and log a warning" },
   "web/naga-rt.mjs": { "count": 5, "severity": "medium", "area": "shader", "gap": "shader versions routed to ANGLE; fallback not verified; naga 'Not implemented' probe note" }
@@ -391,7 +394,7 @@ _Generated by `node tools/known-gaps-audit.mjs --write-hits`; do not edit by han
 | --- | --- | --- |
 | 259 | `kpanic(` | kpanic("shouldn't signal a thread that is not waiting"); |
 
-### `source/x11/x11common.cpp` (16)
+### `source/x11/x11common.cpp` (15)
 
 | Line | Match | Text |
 | --- | --- | --- |
@@ -402,15 +405,14 @@ _Generated by `node tools/known-gaps-audit.mjs --write-hits`; do not edit by han
 | 1773 | `not supported` | klog("x11 image not handled: bits per pixel or xoffset not supported by XPutPixel, XGetPixel, XSubImage or XAddPixel"); |
 | 2803 | `unsupported` | EAX = 0; // XSetICValues returns the first unsupported attribute; none exist. |
 | 2812 | `TODO` | // :TODO: |
-| 2915 | `kpanic(` | kpanic("x11_DisplayName"); |
-| 2919 | `kpanic(` | kpanic("x11_GetDefault"); |
-| 2983 | `kpanic(` | //kpanic("x11_IconifyWindow"); |
-| 2994 | `kpanic(` | kpanic("x11_LocaleOfIM"); |
-| 3039 | `kpanic(` | kpanic("x11_ShapeCombineMask"); |
-| 3043 | `kpanic(` | kpanic("x11_ShapeCombineRectangles"); |
-| 3047 | `kpanic(` | kpanic("x11_ShapeOffsetShape"); |
-| 3077 | `kpanic(` | kpanic("x11_WindowEvent"); |
-| 3712 | `not supported` | klog("x11_CursorImagesLoadCursor animated cursors not supported, will use first frame"); |
+| 2923 | `kpanic(` | kpanic("x11_GetDefault"); |
+| 2987 | `kpanic(` | //kpanic("x11_IconifyWindow"); |
+| 2998 | `kpanic(` | kpanic("x11_LocaleOfIM"); |
+| 3043 | `kpanic(` | kpanic("x11_ShapeCombineMask"); |
+| 3047 | `kpanic(` | kpanic("x11_ShapeCombineRectangles"); |
+| 3051 | `kpanic(` | kpanic("x11_ShapeOffsetShape"); |
+| 3081 | `kpanic(` | kpanic("x11_WindowEvent"); |
+| 3716 | `not supported` | klog("x11_CursorImagesLoadCursor animated cursors not supported, will use first frame"); |
 
 ### `source/x11/xdrawable.cpp` (1)
 

@@ -2912,7 +2912,11 @@ static void x11_CreateImage(CPU* cpu) {
 }
 
 static void x11_DisplayName(CPU* cpu) {
-    kpanic("x11_DisplayName");
+    if (ARG1) {
+        EAX = ARG1;
+    } else {
+        EAX = cpu->thread->process->createString(cpu->thread, B(":0"));
+    }
 }
 
 static void x11_GetDefault(CPU* cpu) {
