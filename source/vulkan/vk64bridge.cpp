@@ -898,9 +898,11 @@ static void applyDescWrite(DescSet& s, const DescWriteReq& w, DescRdQ rdq) {
                     vk64Unsupported("subpass-input-descriptor", "input attachments are not bound by the WebGPU replay tier");
                 break;
             case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+                if (w.pTexel) b.obj = rdq(w.pTexel + at);     // VkBufferView id; served via wire kind 5
+                break;
             case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
                 if (w.pTexel) b.obj = rdq(w.pTexel + at);     // VkBufferView id
-                vk64Unsupported("texel-buffer-view", "texel-buffer descriptors are not supported");
+                vk64Unsupported("texel-buffer-storage", "storage texel buffers are not supported: shader writes to a texture copy could never reach guest memory");
                 break;
             default:
                 vk64Unsupported("descriptor-type", ("descriptor write type=" + std::to_string(w.type)).c_str());
@@ -2614,7 +2616,7 @@ enum V2Rec : U32 {
     V2_INLINE_BYTES = 0x12, V2_READBACK = 0x13, V2_IMAGE_COPY = 0x14,
     V2_STENCIL_STATE = 0x15, V2_BLEND_CONSTANTS = 0x16, V2_CLEAR_ATTACHMENTS = 0x17,
     V2_DEPTH_BIAS = 0x18, V2_IMAGE_BLIT = 0x19,
-    V2_RASTER_STATE = 0x1A, V2_IMAGE_CLEAR_DS = 0x1B,
+    V2_RASTER_STATE = 0x1A, V2_IMAGE_CLEAR_DS = 0x1B, V2_BUFFER_VIEW = 0x1C,
 };
 const U32 V2_CHUNK_MAGIC = 0x46324B56u;   // 'VK2F' little-endian: bytes 56 4B 32 46
 const U32 V2_CHUNK_VERSION = 2;
@@ -3062,8 +3064,87 @@ static VkFormatFeatureFlags v2FormatFeatureFlags(U32 format) {
     if (v2FormatIsDepthStencil(format)) flags |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
     return flags;
 }
+// UNIFORM texel buffer views: WebGPU has no texel buffers, so the page tier
+// materialises the view as a 2D texture (spirvfix R12 rewrites the shader's
+// texel fetch to a wrapped textureLoad). A format is servable exactly when
+// the page can build that texture with identical texel semantics -- this list
+// mirrors V2_TEXEL_FORMAT in web/vk-protocol.mjs and is pinned against it by
+// vk-texel-format-mirror.test.mjs. SRGB formats are excluded (textureLoad
+// would sRGB-decode; texelFetch must not), block-compressed and depth/stencil
+// formats have no per-texel texture equivalent, and 3-component formats have
+// no WebGPU texture format at all. Storage texel buffers stay unsupported:
+// shader writes to a texture copy could never reach guest memory.
+static bool v2TexelBufferServable(U32 format) {
+    switch (format) {
+        case VK_FORMAT_R4G4B4A4_UNORM_PACK16:
+        case VK_FORMAT_B4G4R4A4_UNORM_PACK16:
+        case VK_FORMAT_B5G6R5_UNORM_PACK16:
+        case VK_FORMAT_B5G5R5A1_UNORM_PACK16:
+        case VK_FORMAT_A1R5G5B5_UNORM_PACK16:
+        case VK_FORMAT_R8_UNORM:
+        case VK_FORMAT_R8_SNORM:
+        case VK_FORMAT_R8_UINT:
+        case VK_FORMAT_R8_SINT:
+        case VK_FORMAT_R8G8_UNORM:
+        case VK_FORMAT_R8G8_SNORM:
+        case VK_FORMAT_R8G8_UINT:
+        case VK_FORMAT_R8G8_SINT:
+        case VK_FORMAT_R8G8B8A8_UNORM:
+        case VK_FORMAT_R8G8B8A8_SNORM:
+        case VK_FORMAT_R8G8B8A8_UINT:
+        case VK_FORMAT_R8G8B8A8_SINT:
+        case VK_FORMAT_B8G8R8A8_UNORM:
+        case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
+        case VK_FORMAT_A2B10G10R10_UINT_PACK32:
+        case VK_FORMAT_R16_UNORM:
+        case VK_FORMAT_R16_UINT:
+        case VK_FORMAT_R16_SINT:
+        case VK_FORMAT_R16_SFLOAT:
+        case VK_FORMAT_R16G16_UNORM:
+        case VK_FORMAT_R16G16_UINT:
+        case VK_FORMAT_R16G16_SINT:
+        case VK_FORMAT_R16G16_SFLOAT:
+        case VK_FORMAT_R16G16B16A16_UINT:
+        case VK_FORMAT_R16G16B16A16_SINT:
+        case VK_FORMAT_R16G16B16A16_SFLOAT:
+        case VK_FORMAT_R32_UINT:
+        case VK_FORMAT_R32_SINT:
+        case VK_FORMAT_R32_SFLOAT:
+        case VK_FORMAT_R32G32_UINT:
+        case VK_FORMAT_R32G32_SINT:
+        case VK_FORMAT_R32G32_SFLOAT:
+        case VK_FORMAT_R32G32B32A32_UINT:
+        case VK_FORMAT_R32G32B32A32_SINT:
+        case VK_FORMAT_R32G32B32A32_SFLOAT:
+        case VK_FORMAT_B10G11R11_UFLOAT_PACK32:
+        return true;
+    }
+    return false;
+}
+// Validate a texel buffer view against its buffer and floor offset/range to
+// texel multiples and the buffer end (loudly -- VUID violations are undefined
+// behaviour for the guest, never a silent reshape). VK_WHOLE_SIZE expands to
+// the buffer remainder, per spec.
+static VkResult vk64BufferViewRange(U64 bufSize, U32 format, U64 offset, U64 range, U64& effOffset, U64& effRange) {
+    if (!v2TexelBufferServable(format)) {
+        vk64Unsupported("texel-buffer-view-format", ("format " + std::to_string(format) + " has no WebGPU texture equivalent for texel-buffer emulation").c_str());
+        return VK_ERROR_FORMAT_NOT_SUPPORTED;
+    }
+    const U32 bpp = fmt_bpp(format);
+    effRange = range == VK_WHOLE_SIZE ? (offset < bufSize ? bufSize - offset : 0) : range;
+    if (offset >= bufSize) effRange = 0;
+    else if (effRange > bufSize - offset) effRange = bufSize - offset;
+    effOffset = offset;
+    if (bpp && ((offset % bpp) || (effRange % bpp))) {
+        vk64Unsupported("texel-buffer-view-range", "texel buffer view offset/range floored to the texel size and buffer end");
+        effOffset = offset - (offset % bpp);
+        effRange -= effRange % bpp;
+    }
+    return VK_SUCCESS;
+}
 static VkFormatFeatureFlags v2FormatBufferFeatureFlags(U32 format) {
     VkFormatFeatureFlags flags = v2FormatIsSupportedVertex(format) ? VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT : 0;
+    if (v2TexelBufferServable(format)) flags |= VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT;
     return flags;
 }
 static VkFormatFeatureFlags2 v2FormatFeatureFlags2(U32 format) {
@@ -3148,7 +3229,11 @@ static void hopV2LastToPage() {
 #ifdef __EMSCRIPTEN__
     if (g_v2Pending.empty()) return;
     MAIN_THREAD_EM_ASM({ globalThis.bwVkHeapBuffer = HEAPU8.buffer; });
-    const auto& f = g_v2Pending.back();
+    // Drain every queued frame in submission order, not only the last: a
+    // synchronous readback (vkMapMemory on a readback buffer) depends on all
+    // preceding submissions having reached the page, and dropping the prefix
+    // silently discarded rendering work the guest already submitted.
+    for (const auto& f : g_v2Pending) {
     for (const auto& chunk : f.chunks) {
         const U8* ptr = chunk.data();
         U32 len = (U32)chunk.size();
@@ -3168,6 +3253,7 @@ static void hopV2LastToPage() {
                 if (n <= 4 || (n & (n - 1)) === 0) console.warn('vk64: UNSUPPORTED v2-no-page-consumer x' + n + ' (frame chunk dropped: window.bwVkChunk is not installed)');
             }
         }, ptr, len, (U32)0);
+    }
     }
     g_v2Pending.clear();
 #else
@@ -3452,6 +3538,20 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 }
                 return (*dyn)[idx];
             };
+            for (const auto& kv : eff) {
+                const Binding& b = kv.second;
+                if (b.type != VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER) continue;
+                BufferView* bv = objOf<BufferView>(b.obj, K_BUFFERVIEW, "vkQueueSubmit");
+                Buffer* vbuf = bv ? objOf<Buffer>(bv->buffer, K_BUFFER, "vkQueueSubmit") : nullptr;
+                if (!bv || !vbuf) {
+                    vk64Unsupported("texel-buffer-view-missing", "uniform texel buffer binding names no live buffer view; binding dropped");
+                    continue;
+                }
+                emit(V2_BUFFER_VIEW, [&](ChunkWriter& p) {
+                    p.u64(b.obj); p.u64(bv->buffer); p.u32(bv->format); p.u32(0);
+                    p.u64(vbuf->memOff + bv->offset); p.u64(bv->range);
+                });
+            }
             U32 nWire = (U32)std::min<size_t>(eff.size(), 0xFFFFu);
             emit(V2_DESC_SET, [&](ChunkWriter& p) {
                 p.u8(setIndex); p.u8(0); p.u16(nWire); p.u64(s->layout);
@@ -3470,6 +3570,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                         case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: kind = 2; break;
                         case VK_DESCRIPTOR_TYPE_SAMPLER: kind = 3; break;
                         case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK: kind = 4; break;
+                        case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER: kind = 5; break;
                         default:
                             vk64Unsupported("descriptor-wire-kind",
                                 ("unsupported descriptor type=" + std::to_string(b.type) + " has no V2 binding kind").c_str());
@@ -3481,6 +3582,12 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     // D3D9 constants); the page keys captures by (id, offset).
                     U64 absOff = 0, len = b.range; Buffer* buf = nullptr;
                     if (kind == 1) bufRange(b, dynOffFor(b), absOff, len, buf);
+                    else if (kind == 5) {
+                        BufferView* bv = objOf<BufferView>(b.obj, K_BUFFERVIEW, "vkQueueSubmit");
+                        Buffer* vbuf = bv ? objOf<Buffer>(bv->buffer, K_BUFFER, "vkQueueSubmit") : nullptr;
+                        if (bv && vbuf) { absOff = vbuf->memOff + bv->offset; len = bv->range; }
+                        else len = 0;
+                    }
                     p.u32(b.binding); p.u32(descBaseType(b.type)); p.u32(b.dstArrayElement); p.u32(b.count);
                     p.u8(kind); p.u8(0); p.u16(0);
                     p.u64(b.obj); p.u64(len); p.u64(absOff);
@@ -3500,6 +3607,10 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                            b.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
                     emitImageData(b.obj);    // b.obj = image view id (see applyDescWrite)
                     emitSampler(b.range);    // b.range = sampler id
+                } else if (b.type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER) {
+                    BufferView* bv = objOf<BufferView>(b.obj, K_BUFFERVIEW, "vkQueueSubmit");
+                    Buffer* vbuf = bv ? objOf<Buffer>(bv->buffer, K_BUFFER, "vkQueueSubmit") : nullptr;
+                    if (bv && vbuf) emitBufferData(bv->buffer, vbuf->memOff + bv->offset, bv->range);
                 } else if (b.type == VK_DESCRIPTOR_TYPE_SAMPLER) {
                     emitSampler(b.obj);
                 } else if (b.type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
@@ -5336,9 +5447,17 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCreateBufferView: {
         VkBufferViewCreateInfo ci = {};
         if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
-        vk64Unsupported("texel-buffer-view", "formatted texel-buffer descriptors are not implemented; format properties omit texel-buffer features");
-        wr64(args.a[3], 0);
-        return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        Buffer* buf = objOf<Buffer>(ci.buffer, K_BUFFER, "vkCreateBufferView");
+        if (!buf) { wr64(args.a[3], 0); return VK_ERROR_INITIALIZATION_FAILED; }
+        U64 effOffset = 0, effRange = 0;
+        VkResult res = vk64BufferViewRange(buf->size, ci.format, ci.offset, ci.range, effOffset, effRange);
+        if (res != VK_SUCCESS) { wr64(args.a[3], 0); return res; }
+        U64 id = 0;
+        BufferView* v = createObj<BufferView>(K_BUFFERVIEW, id);
+        if (!v) { wr64(args.a[3], 0); return VK_ERROR_INITIALIZATION_FAILED; }
+        v->buffer = ci.buffer; v->format = ci.format; v->offset = effOffset; v->range = effRange;
+        wr64(args.a[3], id);
+        return VK_SUCCESS;
     }
     case VK64_fn_vkCreateSampler: {
         VkSamplerCreateInfo ci = {};
@@ -10123,10 +10242,19 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         return VK_ERROR_FEATURE_NOT_PRESENT;
     }
     case VK64_fn_vkCreateBufferView: {
-        if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
-        vk64Unsupported("texel-buffer-view", "formatted texel-buffer descriptors are not implemented; format properties omit texel-buffer features");
-        wr64_32((U32)args.a[3], 0);
-        return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        vk32abi::VkBufferViewCreateInfo ci = {};
+        if (!readStruct32((U32)args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        Buffer* buf = objOf32<Buffer>((U32)ci.buffer, K_BUFFER, "vkCreateBufferView");
+        if (!buf) { wr64_32((U32)args.a[3], 0); return VK_ERROR_INITIALIZATION_FAILED; }
+        U64 effOffset = 0, effRange = 0;
+        VkResult res = vk64BufferViewRange(buf->size, ci.format, ci.offset, ci.range, effOffset, effRange);
+        if (res != VK_SUCCESS) { wr64_32((U32)args.a[3], 0); return res; }
+        U64 id = 0;
+        BufferView* v = createObj32<BufferView>(K_BUFFERVIEW, id);
+        if (!v) { wr64_32((U32)args.a[3], 0); return VK_ERROR_INITIALIZATION_FAILED; }
+        v->buffer = (U64)(U32)ci.buffer; v->format = ci.format; v->offset = effOffset; v->range = effRange;
+        wr64_32((U32)args.a[3], (U32)id);
+        return VK_SUCCESS;
     }
     case VK64_fn_vkGetBufferDeviceAddress: {
         VK64_DROP_IF(return 0, !args.a[1]);

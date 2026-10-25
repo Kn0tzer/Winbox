@@ -2,9 +2,9 @@ import {
   ADDR, FILTER, MAX_DIMENSION, MAX_DRAWS,
   V2FrameAssembler, V2FrameQueue, V2PresentAssembler,
   V2_PUSH_BINDING, V2_PUSH_GROUP, V2_PUSH_SIZE, V2_QUEUE_CAP,
-  V2_SCALED_VERTEX, V2_TOPOLOGY, v2HasColourPass, v2PresentIndex, V2_UNKNOWN_IMAGE, V2_VERT_FORMAT_SIZE,
+  V2_SCALED_VERTEX, V2_TOPOLOGY, v2HasColourPass, v2PresentIndex, v2PresentIndexForImage, V2_UNKNOWN_IMAGE, V2_VERT_FORMAT_SIZE, v2Hex64,
   applyDynamicState, decodeV2Frame, parseV2Chunk, repackScaledVb,
-  swizzleBgraVb, v2DepthStencilUploads, v2ImageBlitRegion, v2TextureFormat, v2TextureMipUploadPlan, v2TexturePixels, v2VertexFormat,
+  swizzleBgraVb, v2DepthStencilUploads, v2ImageBlitRegion, v2TextureFormat, v2TextureMipUploadPlan, v2TexturePixels, v2TexelTextureFormat, V2_TEXEL_WRAP, v2TextureUploadBpp, v2VertexFormat,
   v2IndexedTriangleFanIndices, v2TriangleFanIndices,
 } from './vk-protocol.mjs';
 import { createVkFrameCapture } from './vk-frame-capture.mjs';
@@ -1019,6 +1019,12 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
     if (guestPresent?.readback) capture.fail('Guest synchronous readback preceded this present; earlier GPU snapshots are unavailable');
     const presented = v2present.push(decoded, flags);
     if (!presented) return Promise.resolve({ rendered: false, reason: 'assembling-present' });
+    const gpImage = guestPresent?.swapchains?.[0]?.image;
+    if (gpImage != null && gpImage !== '') {
+      // The bridge sends the image id as a decimal string; wire attachment
+      // identities are padded hex (v2Hex64). Normalise once, here.
+      try { presented.presentImageId = v2Hex64(BigInt(gpImage)); } catch { /* keep the replay heuristic */ }
+    }
     v2state.framesReceived++;
     v2queue.push(presented); // resolve resource deltas before taking the snapshot
     if (capture.batch(presented, guestPresent)) capturePending = presented;
@@ -1407,7 +1413,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
 
   // Frame-local resource caches, reset by render().
   const F = {
-    shaders: new Map(), images: new Map(), views: new Map(), viewFormats: new Map(), viewRanges: new Map(), samplers: new Map(), buffers: new Map(),
+    shaders: new Map(), images: new Map(), views: new Map(), viewFormats: new Map(), viewRanges: new Map(), samplers: new Map(), buffers: new Map(), bufferViews: new Map(),
     texCache: new Map(), bufCache: new Map(), sampCache: new Map(), live: [],
   };
 
@@ -1511,6 +1517,45 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     persistTexCache.set(ck, { tex: t, w, h, format: fmt });
     // Also populate frame-local cache for within-frame dedup
     F.texCache.set(imgHex, t);
+    return t;
+  }
+
+  // Identity of a texel texture's content (shared with the bind-group
+  // fingerprint): the view id plus the bridge content hash of its bytes.
+  function texelTextureKey(viewHex) {
+    const view = F.bufferViews?.get(viewHex);
+    if (!view) return 'texel:' + viewHex + ':missing';
+    const fmt = v2TexelTextureFormat(view.format, device.features);
+    const qkey = view.bufferId + ':' + view.absOff;
+    const hash = (F.bufHashes && (F.bufHashes.get(qkey) || F.bufHashes.get(view.bufferId))) || 'nohash';
+    return 'texel:' + viewHex + ':' + fmt + ':' + hash;
+  }
+
+  // Materialise a UNIFORM texel buffer view (wire kind 5) as a 2D texture in
+  // the spirvfix R12 layout: element i at (i mod V2_TEXEL_WRAP, i div
+  // V2_TEXEL_WRAP); the converted shader textureLoads exactly those texels.
+  function texelTextureFor(viewHex) {
+    const view = F.bufferViews?.get(viewHex);
+    if (!view) return null;
+    const fmt = v2TexelTextureFormat(view.format, device.features);
+    if (!fmt) { noteUnsupported('texel-buffer-format-page', view.format); return null; }
+    const ck = texelTextureKey(viewHex);
+    const hit = persistTexCache.get(ck);
+    if (hit) return hit.tex;
+    const qkey = view.bufferId + ':' + view.absOff;
+    const bytes = F.buffers.get(qkey);
+    if (!bytes) return null; // byte-less record and content never seen: nothing honest to bind
+    const pixels = v2TexturePixels(view.format, bytes, device.features);
+    const bpp = v2TextureUploadBpp(fmt);
+    if (!bpp) return null;
+    const count = Math.floor(pixels.length / bpp);
+    const w = V2_TEXEL_WRAP, h = Math.max(1, Math.ceil(count / w));
+    const t = device.createTexture({ size: [w, h, 1], format: fmt, dimension: '2d', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    const rowBytes = w * bpp;
+    const padded = new Uint8Array(rowBytes * h);
+    padded.set(pixels.subarray(0, count * bpp));
+    device.queue.writeTexture({ texture: t }, padded, { bytesPerRow: rowBytes, rowsPerImage: h }, [w, h, 1]);
+    persistTexCache.set(ck, { tex: t, w, h, format: fmt });
     return t;
   }
 
@@ -1938,6 +1983,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         const cube = dimension === 'cube' || dimension === 'cube-array';
         for (let k = 0; k < n; k++) {
           const b = bindingForElement(bindings, d.binding, k);
+          if (b && b.kind === 5) { parts.push('v' + d.binding + ':' + k + ':' + texelTextureKey(b.obj)); continue; }
           const imgHex = b && b.kind === 2 ? F.views.get(b.obj) : null;
           const img = imgHex && imageForView(b?.obj, imgHex);
           const ak = imgHex && v2ImageKnown(imgHex)
@@ -2011,6 +2057,12 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         const views = [];
         for (let k = 0; k < d.arrayCount; k++) {
           const b = bindingForElement(bindings, d.binding, k);
+          if (b && b.kind === 5) {
+            const texelTex = texelTextureFor(b.obj);
+            if (!texelTex) { noteDrop('bind-group-texel-unavailable', b.obj); return null; }
+            views.push(texelTex.createView());
+            continue;
+          }
           const imgHex = b && b.kind === 2 ? F.views.get(b.obj) : null;
           // Sampled-image alias replay: when this VkImage was a render target
           // earlier in the frame, sample the texture actually rendered into —
@@ -2123,16 +2175,17 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     return entries;
   }
 
-  async function render(frame, { present = true } = {}) {
+  async function render(frame, { present = true, presentImageId = null } = {}) {
     const bwRenderT0 = metricsNow();
     if (destroyed) throw new Error('page tier destroyed');
     // A submission with no colour attachment (copy/blit/clear-only command
     // buffers) must still execute, but it cannot be the one that presents.
     if (frame.submissions) {
       let result;
-      const presentAt = v2PresentIndex(frame.submissions);
+      const byImage = frame.presentImageId != null ? v2PresentIndexForImage(frame.submissions, frame.presentImageId) : -1;
+      const presentAt = byImage >= 0 ? byImage : v2PresentIndex(frame.submissions);
       for (let i = 0; i < frame.submissions.length; i++) {
-        result = await render(frame.submissions[i], { present: present && i === presentAt });
+        result = await render(frame.submissions[i], { present: present && i === presentAt, presentImageId: i === presentAt ? (frame.presentImageId ?? null) : null });
         if (!result?.rendered) return result;
       }
       return result;
@@ -2143,6 +2196,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     try {
     F.shaders = frame.shaders; F.images = frame.images;
     F.views = frame.views; F.samplers = frame.samplers; F.buffers = frame.buffers;
+    F.bufferViews = frame.bufferViews || new Map();
     F.viewFormats = frame.viewFormats || new Map();
     F.viewRanges = frame.viewRanges || new Map();
     F.bufHashes = frame.bufHashes;
@@ -2152,7 +2206,8 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     if (typeof window !== 'undefined' && window.__bwDbgRender)
       console.log('bwDbg render f' + frame.frameNo + ' ' + frame.width + 'x' + frame.height +
         ' canvas ' + canvas.width + 'x' + canvas.height);
-    const displayPass = frame.passes.findLast(p => p.attachments.some(a => !a.isDepth));
+    const displayPass = (presentImageId ? frame.passes.findLast(p => p.attachments.some(a => !a.isDepth && String(a.imageId) === presentImageId)) : null)
+      || frame.passes.findLast(p => p.attachments.some(a => !a.isDepth));
     const displayWidth = displayPass?.w || frame.width, displayHeight = displayPass?.h || frame.height;
     if (present && (canvas.width !== displayWidth || canvas.height !== displayHeight)) {
       canvas.width = displayWidth; canvas.height = displayHeight;
@@ -2187,6 +2242,8 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       }
     }
     let presentTex = null, presentW = frame.width, presentH = frame.height, lastClear = [0, 0, 0, 1];
+    let fallbackPresent = null; // last colour attachment, used when presentImageId matches nothing
+    let presentImageSel = null; // imageId of the attachment presentTex came from
     const encoder = device.createCommandEncoder();
     // GPU timestamp 0: the beginning of this frame's submitted GPU work.
     const bwGpuSlot = gpuTimer.begin(encoder);
@@ -2274,7 +2331,8 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
             storeOp: a.storeOp === 1 ? 'discard' : 'store',
           });
           if (diagOn) passDiagTargets.push({ tex: single, imageId: a.imageId, format: viewFormat, slot, discard: a.storeOp === 1 && samples === 1 });
-          presentTex = single; presentW = p.w; presentH = p.h; lastClear = p.clearColor;
+          fallbackPresent = { tex: single, w: p.w, h: p.h, clear: p.clearColor, imageId: a.imageId };
+          if (!presentImageId || String(a.imageId) === presentImageId) { presentTex = single; presentW = p.w; presentH = p.h; lastClear = p.clearColor; presentImageSel = a.imageId; }
         }
       }
       if (unsupportedAttachment) {
@@ -2657,6 +2715,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       if (skipped) { stats.skips++; return { rendered: false, reason: skipped }; }
     }
 
+    if (!presentTex && present && fallbackPresent) { presentTex = fallbackPresent.tex; presentW = fallbackPresent.w; presentH = fallbackPresent.h; lastClear = fallbackPresent.clear; presentImageSel = fallbackPresent.imageId; }
     if (!presentTex && present) { stats.skips++; return { rendered: false, reason: 'no-colour-target' }; }
 
     // V2_READBACK records (guest vkCmdCopyImageToBuffer): copy the source
@@ -2708,21 +2767,21 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       context.configure({ device, format, alphaMode: 'opaque', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC });
     }
     const captureCopies = [];
-    const captureTexture = (texture, stage) => {
+    const captureTexture = (texture, stage, extraMeta = {}) => {
       if (!capturing) return;
       const bpt = v2DiagBytesPerTexel(texture.format || format);
       const w = texture.width, h = texture.height;
-      if (!bpt || w * h > diagCfg.maxPixels) { capture.image(frame, { stage, format: texture.format || format, w, h, skipped: !bpt ? 'format' : 'size' }); return; }
+      if (!bpt || w * h > diagCfg.maxPixels) { capture.image(frame, { stage, ...extraMeta, format: texture.format || format, w, h, skipped: !bpt ? 'format' : 'size' }); return; }
       const bytesPerRow = Math.ceil(w * bpt / 256) * 256;
-      if (!capture.reserve(frame, bytesPerRow * h)) { capture.image(frame, { stage, format: texture.format || format, w, h, skipped: 'byte-budget' }); return; }
+      if (!capture.reserve(frame, bytesPerRow * h)) { capture.image(frame, { stage, ...extraMeta, format: texture.format || format, w, h, skipped: 'byte-budget' }); return; }
       const buffer = device.createBuffer({ size: bytesPerRow * h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
       captureBuffers.add(buffer);
       encoder.copyTextureToBuffer({ texture }, { buffer, bytesPerRow }, [w, h]);
-      captureCopies.push({ buffer, bytesPerRow, w, h, format: texture.format || format, stage });
+      captureCopies.push({ buffer, bytesPerRow, w, h, format: texture.format || format, stage, ...extraMeta });
     };
     if (present) {
       const presentDest = context.getCurrentTexture();
-      captureTexture(presentTex, 'present-source');
+      captureTexture(presentTex, 'present-source', { imageId: presentImageSel });
       if (presentDest.width < presentW || presentDest.height < presentH)
         throw new Error(`canvas texture is ${presentDest.width}x${presentDest.height}, present copy is ${presentW}x${presentH}`);
       if ((presentTex.format || format).replace(/-srgb$/, '') === format.replace(/-srgb$/, '')) {
@@ -2766,7 +2825,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     for (const t of captureCopies) {
       try {
         await t.buffer.mapAsync(GPUMapMode.READ);
-        capture.image(frame, { stage: t.stage, w: t.w, h: t.h, format: t.format, bytesPerRow: t.bytesPerRow }, new Uint8Array(t.buffer.getMappedRange()), true);
+        capture.image(frame, { stage: t.stage, imageId: t.imageId, w: t.w, h: t.h, format: t.format, bytesPerRow: t.bytesPerRow }, new Uint8Array(t.buffer.getMappedRange()), true);
         t.buffer.unmap();
       } catch (error) { capture.image(frame, { stage: t.stage, error: String(error) }); }
       finally { t.buffer.destroy(); }

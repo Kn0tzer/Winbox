@@ -142,7 +142,7 @@ export const V2_REC = Object.freeze({
   VIEWPORT: 0x0D, SCISSOR: 0x0E, VERTEX_BIND: 0x0F, INDEX_BIND: 0x10,
   DRAW: 0x11, INLINE_BYTES: 0x12, READBACK: 0x13, IMAGE_COPY: 0x14,
   STENCIL_STATE: 0x15, BLEND_CONSTANTS: 0x16, CLEAR_ATTACHMENTS: 0x17, DEPTH_BIAS: 0x18,
-  IMAGE_BLIT: 0x19, RASTER_STATE: 0x1A, IMAGE_CLEAR_DS: 0x1B,
+  IMAGE_BLIT: 0x19, RASTER_STATE: 0x1A, IMAGE_CLEAR_DS: 0x1B, BUFFER_VIEW: 0x1C,
 });
 
 // Vulkan descriptor types (numeric, as the bridge records them).
@@ -198,7 +198,7 @@ export function parseV2Chunk(bytes) {
     if (p + V2_REC_HEADER_LEN > bytes.length) throw new Error('vk64: v2 chunk truncated record header');
     const type = dv.getUint16(p, true);
     const len = dv.getUint32(p + 4, true);
-    if (type < V2_REC.FRAME_BEGIN || type > V2_REC.IMAGE_CLEAR_DS)
+    if (type < V2_REC.FRAME_BEGIN || type > V2_REC.BUFFER_VIEW)
       throw new Error('vk64: v2 unknown record type 0x' + type.toString(16));
     if (len > V2_MAX_RECORD_BYTES || p + V2_REC_HEADER_LEN + len > bytes.length)
       throw new Error('vk64: v2 record 0x' + type.toString(16) + ' truncated (len ' + len + ')');
@@ -262,6 +262,24 @@ export function v2PresentIndex(submissions) {
   let at = submissions.length - 1;
   while (at > 0 && !v2HasColourPass(submissions[at])) at--;
   return at;
+}
+/** Index of the submission that rendered into the swapchain image the guest
+ * actually presented (guestPresent metadata from vkQueuePresentKHR carries
+ * the VkImage id), or -1 when no submission in this batch drew to that
+ * image. Callers fall back to v2PresentIndex when this returns -1 or no
+ * present metadata exists. */
+export function v2PresentIndexForImage(submissions, imageId) {
+  if (imageId == null) return -1;
+  const want = String(imageId);
+  for (let i = submissions.length - 1; i >= 0; i--) {
+    const s = submissions[i];
+    if (!s || !s.passes) continue;
+    for (const p of s.passes) {
+      if (!p || !p.attachments) continue;
+      for (const a of p.attachments) if (a && !a.isDepth && String(a.imageId) === want) return i;
+    }
+  }
+  return -1;
 }
 
 export class V2PresentAssembler {
@@ -335,6 +353,57 @@ const V2_TEX_FORMAT = {
   143: 'bc6h-rgb-ufloat', 144: 'bc6h-rgb-float', 145: 'bc7-rgba-unorm', 146: 'bc7-rgba-unorm-srgb',
   124: 'depth16unorm', 125: 'depth32float', 126: 'depth32float', 129: 'depth24plus-stencil8', 130: 'depth24plus-stencil8',
 };
+// UNIFORM texel buffer views the page tier can materialise as a 2D texture
+// (spirvfix R12 layout: element i at (i mod V2_TEXEL_WRAP, i div V2_TEXEL_WRAP)).
+// Mirrors v2TexelBufferServable() in vk64bridge.cpp exactly — pinned by
+// vk-texel-format-mirror.test.mjs. SRGB formats are excluded (textureLoad
+// would sRGB-decode; texelFetch must not), block-compressed and depth/stencil
+// formats have no per-texel texture equivalent, 3-component formats have no
+// WebGPU texture format at all.
+export const V2_TEXEL_FORMAT = {
+  2: 'rgba8unorm', // VK_FORMAT_R4G4B4A4_UNORM_PACK16
+  3: 'rgba8unorm', // VK_FORMAT_B4G4R4A4_UNORM_PACK16
+  5: 'rgba8unorm', // VK_FORMAT_B5G6R5_UNORM_PACK16
+  7: 'rgba8unorm', // VK_FORMAT_B5G5R5A1_UNORM_PACK16
+  8: 'rgba8unorm', // VK_FORMAT_A1R5G5B5_UNORM_PACK16
+  9: 'r8unorm', // VK_FORMAT_R8_UNORM
+  10: 'r8snorm', // VK_FORMAT_R8_SNORM
+  13: 'r8uint', // VK_FORMAT_R8_UINT
+  14: 'r8sint', // VK_FORMAT_R8_SINT
+  16: 'rg8unorm', // VK_FORMAT_R8G8_UNORM
+  17: 'rg8snorm', // VK_FORMAT_R8G8_SNORM
+  20: 'rg8uint', // VK_FORMAT_R8G8_UINT
+  21: 'rg8sint', // VK_FORMAT_R8G8_SINT
+  37: 'rgba8unorm', // VK_FORMAT_R8G8B8A8_UNORM
+  38: 'rgba8snorm', // VK_FORMAT_R8G8B8A8_SNORM
+  41: 'rgba8uint', // VK_FORMAT_R8G8B8A8_UINT
+  42: 'rgba8sint', // VK_FORMAT_R8G8B8A8_SINT
+  44: 'bgra8unorm', // VK_FORMAT_B8G8R8A8_UNORM
+  64: 'rgb10a2unorm', // VK_FORMAT_A2B10G10R10_UNORM_PACK32
+  68: 'rgb10a2uint', // VK_FORMAT_A2B10G10R10_UINT_PACK32
+  70: 'r16unorm', // VK_FORMAT_R16_UNORM
+  74: 'r16uint', // VK_FORMAT_R16_UINT
+  75: 'r16sint', // VK_FORMAT_R16_SINT
+  76: 'r16float', // VK_FORMAT_R16_SFLOAT
+  77: 'rg16unorm', // VK_FORMAT_R16G16_UNORM
+  81: 'rg16uint', // VK_FORMAT_R16G16_UINT
+  82: 'rg16sint', // VK_FORMAT_R16G16_SINT
+  83: 'rg16float', // VK_FORMAT_R16G16_SFLOAT
+  95: 'rgba16uint', // VK_FORMAT_R16G16B16A16_UINT
+  96: 'rgba16sint', // VK_FORMAT_R16G16B16A16_SINT
+  97: 'rgba16float', // VK_FORMAT_R16G16B16A16_SFLOAT
+  98: 'r32uint', // VK_FORMAT_R32_UINT
+  99: 'r32sint', // VK_FORMAT_R32_SINT
+  100: 'r32float', // VK_FORMAT_R32_SFLOAT
+  101: 'rg32uint', // VK_FORMAT_R32G32_UINT
+  102: 'rg32sint', // VK_FORMAT_R32G32_SINT
+  103: 'rg32float', // VK_FORMAT_R32G32_SFLOAT
+  107: 'rgba32uint', // VK_FORMAT_R32G32B32A32_UINT
+  108: 'rgba32sint', // VK_FORMAT_R32G32B32A32_SINT
+  109: 'rgba32float', // VK_FORMAT_R32G32B32A32_SFLOAT
+  122: 'rg11b10ufloat', // VK_FORMAT_B10G11R11_UFLOAT_PACK32
+};
+export const V2_TEXEL_WRAP = 8192;
 const V2_NORM16_FORMATS = new Set([70, 77]);
 const V2_PACKED_RGBA8_FORMATS = new Set([2, 3, 5, 7, 8]);
 const V2_UNKNOWN_FORMATS_REPORTED = new Set();
@@ -381,6 +450,16 @@ export function v2TextureFormat(vkFormat, counters, features) {
   }
   return f;
 }
+/** GPU texture format for a UNIFORM texel buffer view of vkFormat, or null
+ * when the format is not servable as a texel texture. Norm16 formats resolve
+ * through v2TextureFormat (tier1 direct, else the half-float fallback whose
+ * bytes v2TexturePixels converts). */
+export function v2TexelTextureFormat(vkFormat, features) {
+  const f = V2_TEXEL_FORMAT[vkFormat];
+  if (!f) return null;
+  if (V2_NORM16_FORMATS.has(vkFormat)) return v2TextureFormat(vkFormat, null, features);
+  return f;
+}
 function scalePacked(value, bits) { return Math.round(value * 255 / (2 ** bits - 1)); }
 export function packedUnormToRgba8(vkFormat, bytes) {
   if (!V2_PACKED_RGBA8_FORMATS.has(vkFormat)) return bytes;
@@ -424,8 +503,12 @@ const V2_TEXTURE_UPLOAD_BPP = Object.freeze({
   bgra8unorm:4, 'bgra8unorm-srgb':4, 'rgb10a2unorm':4,
   r16unorm:2, r16float:2, rg16unorm:4, rg16float:4, rgba16float:8,
   rg32float:8, rgba32float:16, r32float:4, r32uint:4, r32sint:4,
+  r16uint:2, r16sint:2, rg16uint:4, rg16sint:4, rgba16uint:8, rgba16sint:8,
+  'rgb10a2uint':4, rg32uint:8, rg32sint:8, rgba32uint:16, rgba32sint:16,
   depth16unorm:2, depth24plus:4, depth32float:4, 'depth24plus-stencil8':4, 'depth32float-stencil8':8,
 });
+/** Bytes per texel of a GPU texture format in V2_TEXTURE_UPLOAD_BPP, or 0. */
+export function v2TextureUploadBpp(format) { return V2_TEXTURE_UPLOAD_BPP[format] || 0; }
 /** Return byte offsets and writeTexture extents for the bridge's layer-major mip-chain image layout. */
 export function v2TextureMipUploadPlan(img, format, dimension = '2d') {
   const w = Math.max(1, img.w || 1), h = dimension === '1d' ? 1 : Math.max(1, img.h || 1);
@@ -662,7 +745,7 @@ export function decodeV2Frame(records, counters = {}) {
   const frame = {
     frameNo, width, height, passes: [],
     shaders: new Map(), pipelines: new Map(), buffers: new Map(),
-    images: new Map(), views: new Map(), viewRanges: new Map(), viewFormats: new Map(), samplers: new Map(),
+    images: new Map(), views: new Map(), bufferViews: new Map(), viewRanges: new Map(), viewFormats: new Map(), samplers: new Map(),
     bufHashes: new Map(), readbacks: [],
   };
   const implicitPass = () => ({
@@ -886,6 +969,15 @@ export function decodeV2Frame(records, counters = {}) {
         // the texture resolves from the persistent cache via the content hash.
         if (!frame.images.has(imageId))
           frame.images.set(imageId, { w, h, d, layers, mips, format, hash, pixels: pixLen ? pixels.slice() : null });
+        break;
+      }
+      case V2_REC.BUFFER_VIEW: {
+        const viewId = v2Hex64(r.u64());
+        const bufferId = v2Hex64(r.u64());
+        const format = r.u32(); r.u32();
+        const absOff = r.u64().toString();
+        const len = r.u64().toString(); r.done('BUFFER_VIEW');
+        frame.bufferViews.set(viewId, { bufferId, format, absOff, len });
         break;
       }
       case V2_REC.SAMPLER: {
