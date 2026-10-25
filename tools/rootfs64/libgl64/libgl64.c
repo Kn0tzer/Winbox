@@ -858,26 +858,44 @@ static unsigned char* gl64_map_scratch_for(GLenum target){
     if (target == GL_ELEMENT_ARRAY_BUFFER_) return g_mapScratchElem;
     return g_mapScratchArray; /* default: array buffer */
 }
+/* The map state slot for a target. NOTE: every non-ELEMENT target shares the
+ * array slot — targets outside ARRAY/ELEMENT (PIXEL_PACK/UNPACK, UNIFORM,
+ * COPY_*, ...) are not used with maps by wined3d, and the active-check in the
+ * map entry points below makes a second simultaneous map on the same slot
+ * fail (NULL) instead of silently clobbering the first map's state. */
+static struct { GLsizeiptr bufSize; GLintptr off; GLsizeiptr len; int active; }*
+gl64_map_state_for(GLenum target){
+    if (target == GL_ELEMENT_ARRAY_BUFFER_) return &g_mapElem;
+    return &g_mapArray;
+}
+/* Defined further down (bridged entry point); used to populate the scratch
+ * for read maps — the host buffer is never really mapped, so this is a
+ * legal host-side read. */
+API void glGetBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, void* data);
+#define GL_MAP_READ_BIT_ 0x0001
+#define GL_READ_ONLY_    0x88B8
+#define GL_READ_WRITE_   0x88BA
 API void glBindBuffer(GLenum target, GLuint buffer){ GL64Args a={{0}}; a.a[0]=target; a.a[1]=buffer; (void)gl64_trap(GL64_fn_glBindBuffer,&a); }
 API void* glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access){
-    (void)access;
     if (length <= 0 || (uint64_t)length > GL64_MAP_SCRATCH) return 0;
     unsigned char* p = gl64_map_scratch_for(target);
-    if (target == GL_ELEMENT_ARRAY_BUFFER_) { g_mapElem.off=offset; g_mapElem.len=length; g_mapElem.active=1; }
-    else                                    { g_mapArray.off=offset; g_mapArray.len=length; g_mapArray.active=1; }
+    __typeof__(&g_mapArray) st = gl64_map_state_for(target);
+    if (st->active) return 0; /* nested map on this slot would corrupt the first */
+    st->off=offset; st->len=length; st->active=1;
+    /* Read maps must see the buffer's current contents: without this the
+     * guest read back stale scratch (zeros on first use). */
+    if (access & GL_MAP_READ_BIT_) glGetBufferSubData(target, offset, length, p);
     return p; /* wined3d writes its vertices/indices here; flushed on glUnmapBuffer */
 }
 API void* glMapBuffer(GLenum target, GLenum access){
     /* Whole-buffer map: flush the WHOLE bound buffer (its glBufferData size) on unmap. */
-    (void)access;
     unsigned char* p = gl64_map_scratch_for(target);
-    if (target == GL_ELEMENT_ARRAY_BUFFER_) {
-        GLsizeiptr s = g_mapElem.bufSize; if (s<=0||(uint64_t)s>GL64_MAP_SCRATCH) return 0;
-        g_mapElem.off=0; g_mapElem.len=s; g_mapElem.active=1;
-    } else {
-        GLsizeiptr s = g_mapArray.bufSize; if (s<=0||(uint64_t)s>GL64_MAP_SCRATCH) return 0;
-        g_mapArray.off=0; g_mapArray.len=s; g_mapArray.active=1;
-    }
+    __typeof__(&g_mapArray) st = gl64_map_state_for(target);
+    if (st->active) return 0;
+    GLsizeiptr s = st->bufSize; if (s<=0||(uint64_t)s>GL64_MAP_SCRATCH) return 0;
+    st->off=0; st->len=s; st->active=1;
+    if (access == GL_READ_ONLY_ || access == GL_READ_WRITE_)
+        glGetBufferSubData(target, 0, s, p);
     return p;
 }
 API GLboolean glUnmapBuffer(GLenum target){
@@ -893,10 +911,16 @@ API GLboolean glUnmapBuffer(GLenum target){
     return 1; /* GL_TRUE */
 }
 API void glFlushMappedBufferRange(GLenum target, GLintptr offset, GLsizeiptr length){
-    /* Explicit-flush maps (GL_MAP_FLUSH_EXPLICIT_BIT): push just this sub-range now. */
+    /* Explicit-flush maps (GL_MAP_FLUSH_EXPLICIT_BIT): push just this sub-range
+     * now. offset/length are relative to the START OF THE MAPPING (GL spec),
+     * so the destination in the buffer is the map's own offset + offset —
+     * the old code wrote to `offset`, corrupting the buffer head whenever a
+     * ranged map did not start at 0. */
     unsigned char* p = gl64_map_scratch_for(target);
-    if (length > 0 && (uint64_t)(offset+length) <= GL64_MAP_SCRATCH)
-        glBufferSubData(target, offset, length, p + offset);
+    __typeof__(&g_mapArray) st = gl64_map_state_for(target);
+    if (!st->active || length <= 0) return;
+    if ((uint64_t)(offset+length) > (uint64_t)st->len) return;
+    glBufferSubData(target, st->off + offset, length, p + offset);
 }
 
 // ARB_vertex_buffer_object entry points. We advertise GL_ARB_vertex_buffer_object,
