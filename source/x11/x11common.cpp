@@ -815,6 +815,35 @@ static void x11_FilterEvent(CPU* cpu) {
     EAX = False;
 }
 
+static bool x11IsDeadKey(U32 keysym) {
+    return keysym >= 0xfe50 && keysym <= 0xfe5c;
+}
+
+// The XComposeStatus storage is per caller. Keep the pending dead keysym in
+// compose_ptr and chars_matched, and emit UTF-8 for the common Latin compose
+// pairs used by XLookupString when no XIM is present.
+static U32 x11ComposeLatin(U32 dead, U32 base, char* out) {
+    struct ComposePair { U32 dead, base, composed; };
+    static const ComposePair pairs[] = {
+        {0xfe50,'a',0x00e0},{0xfe50,'e',0x00e8},{0xfe50,'i',0x00ec},{0xfe50,'o',0x00f2},{0xfe50,'u',0x00f9},
+        {0xfe50,'A',0x00c0},{0xfe50,'E',0x00c8},{0xfe50,'I',0x00cc},{0xfe50,'O',0x00d2},{0xfe50,'U',0x00d9},
+        {0xfe51,'a',0x00e1},{0xfe51,'e',0x00e9},{0xfe51,'i',0x00ed},{0xfe51,'o',0x00f3},{0xfe51,'u',0x00fa},{0xfe51,'y',0x00fd},{0xfe51,'c',0x0107},{0xfe51,'n',0x0144},
+        {0xfe51,'A',0x00c1},{0xfe51,'E',0x00c9},{0xfe51,'I',0x00cd},{0xfe51,'O',0x00d3},{0xfe51,'U',0x00da},{0xfe51,'Y',0x00dd},{0xfe51,'C',0x0106},{0xfe51,'N',0x0143},
+        {0xfe52,'a',0x00e2},{0xfe52,'e',0x00ea},{0xfe52,'i',0x00ee},{0xfe52,'o',0x00f4},{0xfe52,'u',0x00fb},
+        {0xfe52,'A',0x00c2},{0xfe52,'E',0x00ca},{0xfe52,'I',0x00ce},{0xfe52,'O',0x00d4},{0xfe52,'U',0x00db},
+        {0xfe57,'a',0x00e4},{0xfe57,'e',0x00eb},{0xfe57,'i',0x00ef},{0xfe57,'o',0x00f6},{0xfe57,'u',0x00fc},{0xfe57,'y',0x00ff},
+        {0xfe57,'A',0x00c4},{0xfe57,'E',0x00cb},{0xfe57,'I',0x00cf},{0xfe57,'O',0x00d6},{0xfe57,'U',0x00dc}
+    };
+    U32 codepoint = 0;
+    for (const ComposePair& pair : pairs) {
+        if (pair.dead == dead && pair.base == base) { codepoint = pair.composed; break; }
+    }
+    if (!codepoint) return 0;
+    out[0] = (char)(0xc0 | (codepoint >> 6));
+    out[1] = (char)(0x80 | (codepoint & 0x3f));
+    return 2;
+}
+
 // int XLookupString(XKeyEvent* event_struct, char* buffer_return, int bytes_buffer, KeySym* keysym_return, XComposeStatus* status_in_out) 
 static void x11_LookupString(CPU* cpu) {
     KMemory* memory = cpu->memory;
@@ -827,9 +856,6 @@ static void x11_LookupString(CPU* cpu) {
     char buffer[16];
     const U32 capacity = ARG3 > 0 ? std::min<U32>((U32)ARG3, sizeof(buffer)) : 0;
 
-    // XComposeStatus is optional composition state. This server has no compose
-    // table, so accepting and preserving it is equivalent to no compose match.
-    (void)status_in_out;
     U32 keysym = 0;
     if (keysym_return) memory->writed(keysym_return, 0);
     
@@ -846,6 +872,20 @@ static void x11_LookupString(CPU* cpu) {
         return;
     }
     U32 result = XKeyboard::translate(keysym, event.state, buffer, capacity);
+    if (status_in_out) {
+        U32 pending = memory->readd(status_in_out + 4) == 1 ? memory->readd(status_in_out) : 0;
+        if (x11IsDeadKey(keysym)) {
+            memory->writed(status_in_out, keysym);
+            memory->writed(status_in_out + 4, 1);
+            return;
+        }
+        if (x11IsDeadKey(pending)) {
+            memory->writed(status_in_out, 0);
+            memory->writed(status_in_out + 4, 0);
+            U32 composed = x11ComposeLatin(pending, keysym, buffer);
+            if (composed) result = composed;
+        }
+    }
     result = std::min(result, capacity);
     if (result) {
         if (buffer_return && buffer[0] != 0) {
