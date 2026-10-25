@@ -45,6 +45,7 @@ silent. Run directly or via web/tests/suite/unit/runtime-completeness.test.mjs.
 """
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import zipfile
@@ -108,18 +109,40 @@ def t_winehq_source_and_zip():
         assert sha(members[hits[0]]) == pin, f'{name} in wine64.zip != pinned bytes'
 
 
+def support_dir():
+    # The export that built the support pack: build.mjs points this at its
+    # own output runtime dir; the default is the canonical dist/ export.
+    return Path(os.environ.get('BW64_SUPPORT_DIR', ROOT / 'dist/runtime'))
+
+
+def support_pack_ready():
+    return (support_dir() / 'dependencies.json').is_file()
+
+
 def support_zip_path():
-    deps = json.loads((ROOT / 'dist/runtime/dependencies.json').read_text())
-    return ROOT / 'dist/runtime' / deps['archive']
+    deps = json.loads((support_dir() / 'dependencies.json').read_text())
+    return support_dir() / deps['archive']
 
 
 def t_service_runtime():
+    if not support_pack_ready():
+        skip('validate_service_runtime (shipped pairs)',
+             'no support pack built yet (dependencies.json absent); '
+             'the build.mjs / apply-runtime-poststeps gates run this '
+             'check against the freshly built pack')
+        return
     support = support_zip_path()
     prefixes.validate_service_runtime(RUNTIME / 'prefix64.zip', RUNTIME / 'wine64.zip', support)
     prefixes.validate_service_runtime(RUNTIME / 'prefix32.zip', RUNTIME / 'wine32.zip', support)
 
 
 def t_gstreamer_split():
+    if not support_pack_ready():
+        skip('gstreamer closure rides the support pack',
+             'no support pack built yet (dependencies.json absent); '
+             'the build.mjs / apply-runtime-poststeps gates run this '
+             'check against the freshly built pack')
+        return
     import importlib.util
     spec = importlib.util.spec_from_file_location(
         'sd', ROOT / 'tools/browser/stage-dependencies.py')
@@ -128,7 +151,7 @@ def t_gstreamer_split():
     support = support_zip_path()
     with zipfile.ZipFile(support) as z:
         support_names = set(z.namelist())
-    deps = json.loads((ROOT / 'dist/runtime/dependencies.json').read_text())
+    deps = json.loads((support_dir() / 'dependencies.json').read_text())
     gst = deps.get('gstreamer')
     assert gst, 'dependencies.json lacks the gstreamer provenance section'
     for arch, stage_name, boot in (('x86_64', 'gstreamer64', 'wine64.zip'),

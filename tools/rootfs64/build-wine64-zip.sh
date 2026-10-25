@@ -232,8 +232,13 @@ for dll in d3d12core.dll msmpeg2vdec.dll msvcp140_codecvt_ids.dll; do
             "$STAGEHOST/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/$dll"
         echo "--- staging $dll (winehq10 backport) ---"
     else
-        echo "WARNING: $WINEHQ64/$dll missing — run the refresh recipe in $WINEHQ64/README.md;" \
-             "64-bit guests will lack the module." >&2
+        # Hard failure, not a warning: check_runtime_completeness.py
+        # requires these members in the shipped wine64.zip, so a zip built
+        # without them is unshippable. Fail here, naming the cause,
+        # instead of producing a silently incomplete artifact.
+        echo "ERROR: $WINEHQ64/$dll missing — run the refresh recipe in $WINEHQ64/README.md;" \
+             "refusing to build a wine64.zip that lacks the module." >&2
+        exit 1
     fi
 done
 
@@ -287,7 +292,13 @@ if [ -d "$ALSA_PREBUILT/usr/share/alsa" ]; then
     cp -R "$ALSA_PREBUILT/usr/share/alsa" "$STAGEHOST/usr/share/"
     printf 'pcm.!default {\n    type plug\n    slave.pcm {\n        type oss\n        device /dev/dsp\n    }\n}\nctl.!default {\n    type oss\n    device /dev/mixer\n}\n' > "$STAGEHOST/etc/asound.conf"
 else
-    echo "WARNING: $ALSA_PREBUILT missing — audio bridge not staged." >&2
+    # Hard failure, not a warning: without this tree the zips also lose
+    # /etc/asound.conf (generated in the block above), and
+    # check_runtime_completeness.py requires the full bridge member set
+    # in the shipped artifacts. A silently bridgeless build is exactly
+    # the 2026-10-25 32-bit defect, one arch over.
+    echo "ERROR: $ALSA_PREBUILT missing — refusing to build rootfs zips without the ALSA->OSS bridge." >&2
+    exit 1
 fi
 
 # GStreamer demux/decode plugins + DT_NEEDED closure are NOT staged into

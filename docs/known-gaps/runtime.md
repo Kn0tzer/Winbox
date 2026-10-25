@@ -231,6 +231,79 @@ against the census + checker pins:
   generated caches (`var/cache/fontconfig/*.cache-8`, `etc/ld.so.cache`
   — regenerated from the fonts/config they cache).
 
+## Post-step elimination (2026-10-25, post-step elimination lane)
+
+The census extension above caught the 32-bit ALSA bridge omission *after
+the fact*. This pass eliminates the defect class at build time: the
+silent-incomplete state — a shipped zip missing a staged member class,
+afterwards blessed by a re-pin — is now unreachable through every path
+that produces, exports, or verifies the runtime set.
+
+The manual steps a human previously had to remember, and their
+disposition now:
+
+| Manual step | Artifact(s) | Disposition |
+| --- | --- | --- |
+| `tools/rootfs32/stage-fonts.py` (fontconfig/expat/DejaVuSans into the 32-bit glibc rootfs) | `glibc-rootfs32.zip` (web + dist) | Run by `apply-runtime-poststeps.sh`; presence pinned by the checker (fonts32 faces + manifest census) |
+| `tools/rootfs64/stage-fonts32.sh` (DejaVu Bold/Mono faces) | `glibc-rootfs32.zip` (web + dist) | Run by `apply-runtime-poststeps.sh`; pinned by checker test `fonts32 faces` |
+| `tools/rootfs64/stage-alsa32.sh` (OSS plugins + ALSA config) — **the step whose omission caused the 32-bit bridge defect** | `wine32.zip`, `glibc-rootfs32.zip` | Run by `apply-runtime-poststeps.sh` (web + dist); pinned both directions by checker test `ALSA-to-OSS bridge members` and `validate_service_runtime` |
+| `tools/rootfs64/stage-wine64-payloads.sh` (winehq10 backports, merge-script path used when the container build is unavailable) | `wine64.zip` (web + dist) | Run by `apply-runtime-poststeps.sh`; pinned by checker test `winehq backports (source + shipped zip)` |
+| Copying `tools/rootfs64/dist/*.zip` (from `build-wine64-zip.sh`) into `web/runtime` | `wine64.zip`, `glibc-rootfs64.zip` | Still a manual copy, but no longer blessable incomplete: `bootstrap.py --check` and the `build.mjs` gate (below) both refuse an incomplete set, and `build-wine64-zip.sh` now hard-fails (was: warn-and-continue) when the ALSA tree or a winehq10 backport DLL is missing, since the checker requires those members in its output |
+| Regenerating `docs/known-gaps/runtime-artifact-manifest.md` after any zip change | the manifest | Run by `apply-runtime-poststeps.sh` from the final zip bytes; drift fails checker test `manifest matches shipped zips` |
+| Re-pinning `tools/browser/runtime-assets.json` + rebuilding the retained archive after zip changes | the pins | Still manual (it is the act of publishing new canonical bytes), but `bootstrap.py --check` now runs the completeness checker after the pin comparison, so re-pinning an incomplete set fails verification instead of blessing it |
+| `tools/browser/stage-wine32-fonts.py` (prefix font aliases) | exported `dist/runtime` prefixes only | Already automated: `build.mjs` runs it on every export; it never touches the canonical set, so it is deliberately not part of the finisher |
+
+Mechanisms, smallest change per choke point:
+
+- **`tools/rootfs64/apply-runtime-poststeps.sh`** (new) is the single
+  automated finisher for the assemble-by-hand path. If the current set
+  already verifies complete it changes nothing (pinned bytes untouched);
+  otherwise it applies every post-step above, regenerates the manifest
+  from the final zips, and exits nonzero unless
+  `check_runtime_completeness.py` passes. After a byte-changing run it
+  prints the re-pin instruction.
+- **`tools/browser/build.mjs`** runs `check_runtime_completeness.py` as
+  a hard gate at the end of staging (after the copies, prefix sanitize,
+  font staging and desktop pin), pointed at the export's own freshly
+  built support pack via `BW64_SUPPORT_DIR`; a failure aborts the
+  export, so `tools/bw64-build.sh` cannot produce a deployable tree from
+  an incomplete canonical set.
+- **`tools/browser/bootstrap.py --check`** runs the completeness checker
+  after the pins verify, closing the re-pin hole directly: pins matching
+  incomplete bytes no longer verify clean.
+- **`tools/rootfs64/build-wine64-zip.sh`** hard-fails on a missing ALSA
+  tree or winehq10 backport DLL (the members the checker requires in its
+  output zips) instead of warn-and-continue. The libGL/libvulkan
+  prebuilt warnings are unchanged: those shims are not post-steps onto
+  finished zips, and libvulkan already self-verifies via
+  `build_vulkan_shims.py --check` when present.
+- **`check_runtime_completeness.py`** resolves the support pack through
+  `BW64_SUPPORT_DIR` (default: the canonical `dist/runtime`), and the two
+  pack-dependent checks (`validate_service_runtime`,
+  `gstreamer closure rides the support pack`) skip — loudly, printed —
+  only when no support pack has been built yet; at both gates above the
+  pack has just been built (or staged by a prior export), so they run
+  for real. No check was weakened: the zip/source checks are unchanged
+  and run in every context.
+
+Negative proof (scratch tree, 2026-10-25): the original failure was
+reproduced exactly — the two OSS plugins removed from `wine32.zip`
+(doctored copy came out at 236,638,528 bytes, the pre-fix shipped size)
+and `etc/asound.conf` + the `usr/share/alsa` tree removed from
+`glibc-rootfs32.zip`, with `runtime-assets.json` re-pinned to the
+doctored bytes. `bootstrap.py --check` then exited 1 naming the missing
+members (`missing ALSA->OSS bridge plugins: ...libasound_module_pcm_oss.so,
+...libasound_module_ctl_oss.so`), despite the pins matching; the
+`build.mjs` gate invocation failed identically. Running
+`apply-runtime-poststeps.sh` healed the set (healed `wine32.zip`:
+236,650,075 bytes, the fixed shipped size), regenerated the manifest,
+and gated green; after re-pinning the healed bytes,
+`bootstrap.py --check` passed fully (checker 11/11, 13 assets
+verified). On the real tree the finisher is a no-op ("already
+complete"), `bootstrap.py --check` passes with the gate in the path, a
+full `build.mjs` export with the gate in the path exits 0, and no
+shipped artifact bytes or pins changed in this pass.
+
 ## Wave-2 evidence sweep (2026-10-25, runtime evidence lane)
 
 Audit wave 2 sampled the register's NOT-A-GAP rows and found the VC++
