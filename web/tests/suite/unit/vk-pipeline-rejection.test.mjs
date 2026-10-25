@@ -87,3 +87,16 @@ test('unsupported stencil enums and two-sided static masks fail both guest pipel
   assert.match(stencil, /f\.reference != b\.reference/);
   assert.equal((bridge.match(/vk64AuditStencil\(\*p, audit\)/g) || []).length, 2);
 });
+
+test('resource declarations cover Vulkan descriptor kinds and reject incompatible pipeline interfaces', () => {
+  const layout = functionBody(page, 'function layoutEntryFor(decl) {');
+  assert.match(layout, /t\.startsWith\('texture_'\)/);
+  assert.match(layout, /v2SamplerLayoutType\(t\)/);
+  assert.match(layout, /decl\.addr === 'uniform'/);
+  assert.match(layout, /decl\.addr\.startsWith\('storage'\)/);
+  assert.match(layout, /texture_storage_/);
+  const pipeline = functionBody(page, 'async function getPipelineFor(');
+  assert.match(pipeline, /prior && JSON\.stringify\(layoutEntryFor\(prior\)\) !== JSON\.stringify\(layoutEntryFor\(decl\)\)/);
+  assert.match(pipeline, /noteUnsupported\('incompatible-shared-binding'/);
+  assert.match(pipeline, /return \{ skip: 'incompatible-shared-binding:/);
+});

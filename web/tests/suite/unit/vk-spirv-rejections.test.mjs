@@ -3,6 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { rewritePushConstantsWGSL } from '../../../vkwebgpu.mjs';
 
 const bridge = readFileSync(new URL('../../../../source/vulkan/vk64bridge.cpp', import.meta.url), 'utf8');
 
@@ -35,4 +36,14 @@ test('unsupported and unknown SPIR-V capabilities reject before publishing a sha
     assert.match(handler, /dropObj\(id\);[\s\S]{0,80}return auditResult;/);
     assert.match(handler, /wr64(?:_32)?\([^\n]+, 0\)/);
   }
+});
+
+test('multiple push-constant blocks in one stage are invalid Vulkan SPIR-V', () => {
+  const one = rewritePushConstantsWGSL('var<immediate> constants: vec4<f32>;');
+  const two = rewritePushConstantsWGSL('var<immediate> first: vec4<f32>; var<immediate> second: vec4<f32>;');
+  assert.equal(one.pushBlocks, 1);
+  assert.equal(two.pushBlocks, 2);
+  const page = readFileSync(new URL('../../../../web/vkwebgpu.mjs', import.meta.url), 'utf8');
+  assert.match(page, /if \(vsR\.pushBlocks > 1 \|\| fsR\.pushBlocks > 1\)/,
+    'the guard is per shader stage, as required by Vulkan push-constant interface rules');
 });

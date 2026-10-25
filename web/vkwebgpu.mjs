@@ -1690,11 +1690,13 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     try {
       colorTargets = colorFormats.map((format, index) => v2BlendTarget(pipe, index, format));
       blendConstantMode = v2BlendConstantMode(pipe);
-      stencil = v2StencilState(pipe, passHasDepth ? depthFormat : '');
-      if (!(depthAspects & 4)) {
-        if (pipe.stencil?.enabled) throw new Error('stencil testing without a stencil aspect');
-        stencil.state.stencilWriteMask = 0;
-      }
+      // Vulkan permits a graphics pipeline with stencil testing enabled in a
+      // subpass without a stencil attachment; the stencil test has no effect.
+      // WebGPU rejects stencil state unless the attachment format has stencil,
+      // so omit that state while preserving all color/depth behavior.
+      stencil = passHasDepth && (depthAspects & 4)
+        ? v2StencilState(pipe, depthFormat)
+        : {state:{},reference:null};
     } catch (error) { noteUnsupported('pipeline-build-threw', error.message); return { skip: error.message }; }
     device.pushErrorScope('validation');
     const bwModuleT0 = metricsNow();

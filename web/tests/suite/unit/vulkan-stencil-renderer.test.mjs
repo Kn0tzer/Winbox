@@ -19,6 +19,10 @@ test('dynamic stencil state is applied at draw time and culled face values are i
 test('incompatible active face masks are reported instead of silently dropping stencil',()=>check(async(g,r)=>{
  const p=pipe({stencil:{enabled:1,dynamicMask:0,front:face,back:{...face,writeMask:0}}});await r.render(frame([{op:'bindPipe',pipe:p},draw]));assert.equal(g.draws.length,0);assert.ok(r.snapshot().unsupported>0);
 }));
+test('stencil-enabled Vulkan pipelines still draw in a subpass without a stencil aspect',()=>check(async(g,r)=>{
+ const f=frame([{op:'bindPipe',pipe:pipe()},draw]);f.passes[0].attachments=f.passes[0].attachments.filter(a=>!a.isDepth);await r.render(f);
+ assert.equal(g.draws.length,1);assert.equal(g.pipelines[0].depthStencil,undefined);
+}));
 test('dynamic blend constants use the most recent command',()=>check(async(g,r)=>{
  const p=pipe({stencil:{enabled:0},colorBlend:[{enable:1,srcColor:10,dstColor:11,colorOp:0,srcAlpha:1,dstAlpha:0,alphaOp:0,writeMask:15}],blendConstantsDynamic:true});await r.render(frame([{op:'bindPipe',pipe:p},{op:'blendConstants',values:[.25,.5,.75,1]},draw]));assert.deepEqual(g.blendConstants,[[.25,.5,.75,1]]);
 }));
