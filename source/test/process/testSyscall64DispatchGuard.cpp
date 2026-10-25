@@ -99,10 +99,12 @@ void testSyscall64DispatchGuard() {
     std::ifstream randomFile(root + "/source/kernel/krandom.cpp");
     std::ifstream syscall32File(root + "/source/kernel/syscall.cpp");
     std::ifstream processFile(root + "/source/kernel/kprocess.cpp");
+    std::ifstream unixSocketFile(root + "/source/kernel/kunixsocket.cpp");
     const std::string randomSource((std::istreambuf_iterator<char>(randomFile)), std::istreambuf_iterator<char>());
     const std::string syscall32((std::istreambuf_iterator<char>(syscall32File)), std::istreambuf_iterator<char>());
     const std::string processSource((std::istreambuf_iterator<char>(processFile)), std::istreambuf_iterator<char>());
-    if (!randomFile || !syscall32File || !processFile || randomSource.find("std::random_device") == std::string::npos ||
+    const std::string unixSocketSource((std::istreambuf_iterator<char>(unixSocketFile)), std::istreambuf_iterator<char>());
+    if (!randomFile || !syscall32File || !processFile || !unixSocketFile || randomSource.find("std::random_device") == std::string::npos ||
         source.find("6364136223846793005") != std::string::npos ||
         syscall32.find("std::mt19937") != std::string::npos) {
         testFail("getrandom must use the shared nondeterministic source, not a deterministic PRNG");
@@ -119,6 +121,11 @@ void testSyscall64DispatchGuard() {
         processSource.find("newProcess->childExitSignal64 = (U32)exitSignal;") == std::string::npos ||
         processSource.find("createPidFdForClone64(thread, (U32)result)") == std::string::npos) {
         testFail("clone3 must validate versioned struct size, readable memory, and unknown extension bytes");
+    }
+    if (unixSocketSource.find("if (name == K_SO_ATTACH_FILTER)") == std::string::npos ||
+        unixSocketSource.find("if (name == K_SO_DETACH_FILTER)") == std::string::npos ||
+        unixSocketSource.find("con->applySocketFilter(packet.data()") == std::string::npos) {
+        testFail("Unix socket filters must validate, attach/detach, and run on queued messages");
     }
 }
 

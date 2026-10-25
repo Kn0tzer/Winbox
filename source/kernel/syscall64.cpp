@@ -5326,7 +5326,31 @@ void ksyscall64(CPU64* cpu) {
             // small pointer-free buffer — bounce it into 32-bit scratch.
             if (!cpu->thread) { ret = (U64)-K_ENOSYS; break; }
             U32 optlen = (U32)a5;
-            U32 v32 = (a4 && optlen) ? bounceSockaddrTo32(cpu, a4, optlen, nullptr) : 0;
+            U32 v32 = 0;
+            if ((U32)a2 == K_SOL_SOCKET && (U32)a3 == K_SO_ATTACH_FILTER) {
+                if (!a4) { ret = (U64)-K_EFAULT; break; }
+                if (optlen < 16) { ret = (U64)-K_EINVAL; break; }
+                const U32 instructionCount = cpu->memory->readw(a4);
+                const U64 instructions64 = cpu->memory->readq(a4 + 8);
+                if (!instructionCount || instructionCount > 4096) { ret = (U64)-K_EINVAL; break; }
+                const U64 instructionBytes = (U64)instructionCount * 8;
+                if (!sys_rangeHasPermission64(cpu->memory, instructions64, instructionBytes, K64_PAGE_READ)) {
+                    ret = (U64)-K_EFAULT;
+                    break;
+                }
+                const U32 scratch = msgScratch(cpu->thread);
+                if (!scratch || 1024u + instructionBytes > MSG_SCRATCH_BYTES) { ret = (U64)-K_EFAULT; break; }
+                const U32 instructions32 = scratch + 1024;
+                v32 = scratch + 128;
+                cpu->thread->memory->writew(v32, (U16)instructionCount);
+                cpu->thread->memory->writed(v32 + 4, instructions32);
+                std::vector<U8> program((size_t)instructionBytes);
+                cpu->memory->memcpyFromGuest(program.data(), instructions64, instructionBytes);
+                cpu->thread->memory->memcpy(instructions32, program.data(), (U32)instructionBytes);
+                optlen = 8;
+            } else {
+                v32 = (a4 && optlen) ? bounceSockaddrTo32(cpu, a4, optlen, nullptr) : 0;
+            }
             ret = (U64)(S64)(S32)ksetsockopt(cpu->thread, (U32)a1, (U32)a2, (U32)a3, v32, optlen);
             break;
         }

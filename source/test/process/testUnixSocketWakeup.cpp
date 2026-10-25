@@ -300,6 +300,61 @@ void testUnixSocketOptions() {
         testFail("Unix SO_SNDLOWAT should be rejected as unsupported");
     }
 
+    auto filterSender = std::make_shared<TestUnixSocket>(K_SOCK_DGRAM);
+    auto filterReceiver = std::make_shared<TestUnixSocket>(K_SOCK_DGRAM);
+    filterSender->connectTo(filterReceiver);
+    filterReceiver->connectTo(filterSender);
+    filterReceiver->setBlocking(false);
+    constexpr U32 filterProgram = kPayloadAddress + 0x200;
+    constexpr U32 filterInstruction = filterProgram + 8;
+    constexpr U32 filterMessage = messageAddress + 0x100;
+    constexpr U32 filterIov = kIovAddress + 0x100;
+    constexpr U32 filterPayload = kPayloadAddress + 0x300;
+    memory->writew(filterProgram, 1);
+    memory->writed(filterProgram + 4, filterInstruction);
+    memory->writew(filterInstruction, 0x06); // BPF_RET | BPF_K
+    memory->writeb(filterInstruction + 2, 0);
+    memory->writeb(filterInstruction + 3, 0);
+    memory->writed(filterInstruction + 4, 0); // drop
+    if ((S32)filterReceiver->setsockopt(context.thread, {}, K_SOL_SOCKET, K_SO_ATTACH_FILTER,
+                                        filterProgram, 8) != 0) {
+        testFail("Unix SO_ATTACH_FILTER rejected a valid BPF program");
+    }
+    memory->writeb(filterPayload, 0x41);
+    memory->writeb(filterPayload + 1, 0x42);
+    memory->writeb(filterPayload + 2, 0x43);
+    memory->writed(filterIov, filterPayload);
+    memory->writed(filterIov + 4, 3);
+    memory->writed(filterMessage, 0);
+    memory->writed(filterMessage + 4, 0);
+    memory->writed(filterMessage + 8, filterIov);
+    memory->writed(filterMessage + 12, 1);
+    memory->writed(filterMessage + 16, 0);
+    memory->writed(filterMessage + 20, 0);
+    memory->writed(filterMessage + 24, 0);
+    if ((S32)filterSender->sendmsg(context.thread, {}, filterMessage, 0) != 3 ||
+        (S32)filterReceiver->recvmsg(context.thread, {}, filterMessage, 0) != -K_EWOULDBLOCK) {
+        testFail("Unix socket filter did not drop a packet with BPF_RET 0");
+    }
+    if ((S32)filterReceiver->setsockopt(context.thread, {}, K_SOL_SOCKET, K_SO_DETACH_FILTER, 0, 0) != 0 ||
+        (S32)filterReceiver->setsockopt(context.thread, {}, K_SOL_SOCKET, K_SO_DETACH_FILTER, 0, 0) != -K_EINVAL) {
+        testFail("Unix SO_DETACH_FILTER did not detach once and reject a second detach");
+    }
+    memory->writed(filterInstruction + 4, 1); // accept one byte, truncate the rest
+    if ((S32)filterReceiver->setsockopt(context.thread, {}, K_SOL_SOCKET, K_SO_ATTACH_FILTER,
+                                        filterProgram, 8) != 0 ||
+        (S32)filterSender->sendmsg(context.thread, {}, filterMessage, 0) != 3 ||
+        (S32)filterReceiver->recvmsg(context.thread, {}, filterMessage, 0) != 1 ||
+        memory->readb(filterPayload) != 0x41) {
+        testFail("Unix socket filter did not truncate a packet to the BPF_RET length");
+    }
+    memory->writew(filterInstruction, 0xFFFF); // unsupported opcode rejected at attach time
+    if ((S32)filterReceiver->setsockopt(context.thread, {}, K_SOL_SOCKET, K_SO_ATTACH_FILTER,
+                                        filterProgram, 8) != -K_EINVAL) {
+        testFail("Unix SO_ATTACH_FILTER accepted an invalid BPF opcode");
+    }
+    filterReceiver->setsockopt(context.thread, {}, K_SOL_SOCKET, K_SO_DETACH_FILTER, 0, 0);
+
 #ifdef BOXEDWINE_GUEST_X64
     // The x64 recvmsg adapter must preserve the 64-bit cmsghdr layout when it
     // translates the 32-bit Unix socket object's SCM_CREDENTIALS record.
@@ -328,11 +383,19 @@ void testUnixSocketOptions() {
     constexpr U64 x64Iov = x64Page + 64;
     constexpr U64 x64Control = x64Page + 128;
     constexpr U64 x64Payload = x64Page + 256;
+    constexpr U64 x64FilterProgram = x64Page + 512;
+    constexpr U64 x64FilterInstruction = x64Page + 1024;
     memory64->writeb(x64Payload, 0x5A);
+    memory64->writeb(x64Payload + 1, 0x5B);
+    memory64->writeb(x64Payload + 2, 0x5C);
     memory64->writeq(x64Iov, x64Payload);
-    memory64->writeq(x64Iov + 8, 1);
+    memory64->writeq(x64Iov + 8, 3);
     memory64->writeq(x64Header + 16, x64Iov);
     memory64->writeq(x64Header + 24, 1);
+    memory64->writew(x64FilterProgram, 1);
+    memory64->writeq(x64FilterProgram + 8, x64FilterInstruction);
+    memory64->writew(x64FilterInstruction, 0x06); // BPF_RET | BPF_K
+    memory64->writed(x64FilterInstruction + 4, 1);
     CPU64 cpu64(memory64);
     cpu64.thread = context.thread;
     auto invokeSocketCall = [&](U64 syscallNumber, U32 fd) -> S64 {
@@ -343,13 +406,21 @@ void testUnixSocketOptions() {
         ksyscall64(&cpu64);
         return (S64)cpu64.reg[X64_RAX].u64;
     };
-    if (invokeSocketCall(46, x64SenderFd->handle) != 1) {
+    cpu64.reg[X64_RAX].setU64(54); // __NR_setsockopt
+    cpu64.reg[X64_RDI].setU64(x64ReceiverFd->handle);
+    cpu64.reg[X64_RSI].setU64(K_SOL_SOCKET);
+    cpu64.reg[X64_RDX].setU64(K_SO_ATTACH_FILTER);
+    cpu64.reg[X64_R10].setU64(x64FilterProgram);
+    cpu64.reg[X64_R8].setU64(16);
+    ksyscall64(&cpu64);
+    if ((S64)cpu64.reg[X64_RAX].u64 != 0) testFail("x64 SO_ATTACH_FILTER rejected a valid sock_fprog");
+    if (invokeSocketCall(46, x64SenderFd->handle) != 3) {
         testFail("x64 sendmsg for credential fixture failed");
     }
     memory64->writeq(x64Header + 32, x64Control);
     memory64->writeq(x64Header + 40, 32);
     memory64->writeq(x64Header + 48, 0);
-    if (invokeSocketCall(47, x64ReceiverFd->handle) != 1 ||
+    if (invokeSocketCall(47, x64ReceiverFd->handle) != 1 || memory64->readb(x64Payload) != 0x5A ||
         memory64->readq(x64Header + 40) != 32 || memory64->readd(x64Header + 48) != 0 ||
         memory64->readq(x64Control) != 28 ||
         memory64->readd(x64Control + 8) != K_SOL_SOCKET ||

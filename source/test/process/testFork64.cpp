@@ -27,6 +27,11 @@ struct RestoreProcessCpu64 {
     CPU64* saved;
     ~RestoreProcessCpu64() { process.cpu64 = saved; }
 };
+struct RestoreThreadCpu64 {
+    KThread& thread;
+    CPU64* saved;
+    ~RestoreThreadCpu64() { thread.cpu64 = saved; }
+};
 struct RestoreSignalAction {
     KSigAction& target;
     KSigAction saved;
@@ -90,7 +95,9 @@ static void runForkCase(TestContext& context, U64 nr, const char* name) {
     CPU64 cpu(memory);
     cpu.thread = context.thread;
     RestoreProcessCpu64 restoreCpu{*process, process->cpu64};
+    RestoreThreadCpu64 restoreThreadCpu{*context.thread, context.thread->cpu64};
     process->cpu64 = &cpu;
+    context.thread->cpu64 = &cpu;
     cpu.rip = childCode;
     U64 clone3PidfdAddress = 0;
     if (nr == 435 /*clone3*/) {

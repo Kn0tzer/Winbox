@@ -244,10 +244,10 @@ U32 KUnixSocketObject::internal_write(KThread* thread, const std::shared_ptr<KUn
     }
     //printf("internal_write: %0.8X size=%d capacity=%d writeLen=%d", (int)&this->connection->recvBuffer, (int)this->connection->recvBuffer.size(), (int)this->connection->recvBuffer.capacity(), len);
 
-    memory->performOnMemory(buffer, len, true, [con](U8* ram, U32 len) {
-        con->recvBuffer.put(ram, len);
-        return true;
-        });
+    std::vector<U8> packet(len);
+    memory->memcpy(packet.data(), buffer, len);
+    const U32 kept = con->applySocketFilter(packet.data(), len);
+    if (kept) con->recvBuffer.put(packet.data(), kept);
     return len;
 }
 
@@ -358,9 +358,10 @@ U32 KUnixSocketObject::writeNative(U8* buffer, U32 len) {
         return -K_EPIPE;
     }
 
+    const U32 kept = con->applySocketFilter(buffer, len);
     {
         BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(con->lockCond);
-        con->recvBuffer.put(buffer, len);
+        if (kept) con->recvBuffer.put(buffer, kept);
         BOXEDWINE_CONDITION_SIGNAL_ALL(con->lockCond);
     }
     con->onPeerWrote();
@@ -383,11 +384,12 @@ U32 KUnixSocketObject::unixsocket_write_native_nowait(const std::shared_ptr<KObj
     std::shared_ptr<KUnixSocketObject> con = s->connection.lock();
     if (s->outClosed || !con)
         return -K_EPIPE;
+    const U32 kept = con->applySocketFilter(value, (U32)len);
 
     {
         BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(con->lockCond);
         //printf("SOCKET write len=%d bufferSize=%d pos=%d\n", len, s->connection->recvBufferLen, s->connection->recvBufferWritePos);
-        con->recvBuffer.put(value, len);
+        if (kept) con->recvBuffer.put(value, kept);
         BOXEDWINE_CONDITION_SIGNAL_ALL(con->lockCond);
     }
     con->onPeerWrote();
@@ -866,6 +868,60 @@ U32 KUnixSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& fd,
     KMemory* memory = thread->memory;
 
     if (level == K_SOL_SOCKET) {
+        if (name == K_SO_DETACH_FILTER) {
+            if (this->socketFilter.empty()) return -K_EINVAL;
+            this->socketFilter.clear();
+            return 0;
+        }
+        if (name == K_SO_ATTACH_FILTER) {
+            if (len < 8) return -K_EINVAL;
+            if (!memory->canRead(value, 8)) return -K_EFAULT;
+            const U32 instructionCount = memory->readw(value);
+            const U32 instructionsAddress = memory->readd(value + 4);
+            if (!instructionCount || instructionCount > 4096 ||
+                instructionCount > (UINT32_MAX / sizeof(KClassicBpfInsn))) return -K_EINVAL;
+            const U32 bytes = instructionCount * sizeof(KClassicBpfInsn);
+            if (!memory->canRead(instructionsAddress, bytes)) return -K_EFAULT;
+            std::vector<KClassicBpfInsn> program(instructionCount);
+            for (U32 i = 0; i < instructionCount; ++i) {
+                const U32 at = instructionsAddress + i * sizeof(KClassicBpfInsn);
+                program[i].code = memory->readw(at);
+                program[i].jt = memory->readb(at + 2);
+                program[i].jf = memory->readb(at + 3);
+                program[i].k = memory->readd(at + 4);
+                const U16 code = program[i].code;
+                const U16 cls = code & 0x07;
+                const U16 mode = code & 0xe0;
+                const U16 size = code & 0x18;
+                bool valid = false;
+                if (cls == 0x00) valid =
+                    (mode == 0x00 && size == 0x00) ||
+                    ((mode == 0x20 || mode == 0x40) && (size == 0x00 || size == 0x08 || size == 0x10)) ||
+                    (mode == 0x60 && size == 0x00) || (mode == 0x80 && size == 0x00);
+                else if (cls == 0x01) valid =
+                    (mode == 0x00 && size == 0x00) || (mode == 0x60 && size == 0x00) ||
+                    (mode == 0x80 && size == 0x00) || (mode == 0xa0 && size == 0x10);
+                else if (cls == 0x02 || cls == 0x03) valid = code == cls && program[i].k < 16;
+                else if (cls == 0x04) {
+                    const U16 op = code & 0xf0;
+                    valid = op == 0x00 || op == 0x10 || op == 0x20 || op == 0x30 || op == 0x40 ||
+                            op == 0x50 || op == 0x60 || op == 0x70 || op == 0x80 || op == 0x90 || op == 0xa0;
+                    if (op == 0x80 && (code & 0x08)) valid = false;
+                    if ((op == 0x30 || op == 0x90) && !(code & 0x08) && !program[i].k) valid = false;
+                } else if (cls == 0x05) {
+                    const U16 op = code & 0xf0;
+                    if (op == 0x00) valid = code == 0x05 && !program[i].jt && !program[i].jf &&
+                                             i + 1 + program[i].k < instructionCount;
+                    else if (op == 0x10 || op == 0x20 || op == 0x30 || op == 0x40)
+                        valid = i + 1 + program[i].jt < instructionCount && i + 1 + program[i].jf < instructionCount;
+                } else if (cls == 0x06) valid = code == 0x06 || code == 0x16;
+                else if (cls == 0x07) valid = code == 0x07 || code == 0x87;
+                if (!valid) return -K_EINVAL;
+            }
+            if ((program.back().code & 0x07) != 0x06) return -K_EINVAL;
+            this->socketFilter.swap(program);
+            return 0;
+        }
         if (name == K_SO_LINGER) {
             if (len < 8) return -K_EINVAL;
             const S32 enabled = (S32)memory->readd(value);
@@ -1132,6 +1188,24 @@ U32 KUnixSocketObject::sendmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
             result++;
         }
     }
+    std::vector<U8> packet;
+    packet.reserve(result);
+    for (U32 pos = 0; pos + 4 <= msg->data.size();) {
+        const U32 segment = (U32)msg->data[pos] | ((U32)msg->data[pos + 1] << 8) |
+            ((U32)msg->data[pos + 2] << 16) | ((U32)msg->data[pos + 3] << 24);
+        pos += 4;
+        if (segment > msg->data.size() - pos) return -K_EINVAL;
+        packet.insert(packet.end(), msg->data.begin() + pos, msg->data.begin() + pos + segment);
+        pos += segment;
+    }
+    const U32 kept = con->applySocketFilter(packet.data(), (U32)packet.size());
+    if (!kept) return result; // Linux reports the submitted length for filtered packets.
+    msg->data.clear();
+    msg->data.push_back((U8)kept);
+    msg->data.push_back((U8)(kept >> 8));
+    msg->data.push_back((U8)(kept >> 16));
+    msg->data.push_back((U8)(kept >> 24));
+    msg->data.insert(msg->data.end(), packet.begin(), packet.begin() + kept);
     con->msgs.push(msg);
     BOXEDWINE_CONDITION_SIGNAL_ALL(con->lockCond);
 
