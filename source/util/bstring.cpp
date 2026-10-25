@@ -391,11 +391,19 @@ int BString::lastIndexOf(const BString& s, int fromIndex) const {
     if (s.length() == 1) {
         return lastIndexOf(s.data->str[0]);
     }
+    if (s.length() == 0 || !s.data->str) {
+        // An empty needle finds nothing (same result find_last_of gives
+        // for ""), and a default-constructed BString has a null buffer:
+        // strlen on it in the const char* overload was a crash (this is
+        // how Fs::nativePathSeperator behaves before initFileSystem,
+        // e.g. in the test harness).
+        return -1;
+    }
     return lastIndexOf(s.data->str);
 }
 
 int BString::lastIndexOf(const char* s, int fromIndex) const {
-    if (isEmpty()) {
+    if (isEmpty() || !s) {
         return -1;
     }
     size_t pos = 0;
