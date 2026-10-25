@@ -230,6 +230,7 @@ public:
     U32 rmdir(BString path);        
     U32 set_thread_area(KThread* thread, U32 info);
     U32 setitimer(U32 which, U32 newValue, U32 oldValue);
+    U32 getitimer(U32 which, U32 oldValue);
     U32 shmdt(U32 shmaddr);
     U32 sigaction(U32 sig, U32 act, U32 oact, U32 sigsetSize);    
     U32 stat64(BString path, U32 buffer);

@@ -22,6 +22,8 @@
 #include "kmemory64.h"
 #include "syscall64.h"
 #include "ksignal.h"
+#include "../../io/fs.h"
+#include "../../io/fsfilenode.h"
 #endif
 
 // Keep a source-level guard around the x64 ABI dispatcher. The ordinary native
@@ -130,21 +132,75 @@ void testSyscall64DispatchGuard() {
 }
 
 #ifdef BOXEDWINE_GUEST_X64
-void testInotify64LoudRejection() {
+void testInotify64Syscalls() {
     TestContext& context = testContext();
     if (!context.process->memory64) context.process->memory64 = new KMemory64(context.process.get());
-    CPU64 cpu(context.process->memory64);
-    cpu.thread = context.thread;
-    for (U64 number : {253ULL, 254ULL, 255ULL, 294ULL}) {
-        cpu.reg[X64_RAX].setU64(number);
-        cpu.reg[X64_RDI].setU64(0);
-        cpu.reg[X64_RSI].setU64(0);
-        cpu.reg[X64_RDX].setU64(0);
-        ksyscall64(&cpu);
-        if ((S64)cpu.reg[X64_RAX].u64 != -K_ENOSYS) {
-            testFail("inotify syscall %llu did not return -ENOSYS", (unsigned long long)number);
-        }
+    KMemory64* memory = context.process->memory64;
+    constexpr U64 page = 0x77000000ULL;
+    if (!memory->getPageFlags(page >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(page, K64_PAGE_SIZE, 3) != page) {
+        testFail("x64 inotify test could not map its fixture page");
+        return;
     }
+    constexpr U64 pathAt = page + 0x100;
+    memory->memcpyToGuest(pathAt, "/", 2);
+
+    // The watch target must resolve: install the statx-style root fixture.
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), B("/tmp"), true, true, nullptr);
+    Fs::clearPathCache();
+
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    // __NR_inotify_init1 = 294: unknown flag bits are rejected.
+    if (invoke(294, 0x40000000ULL, 0, 0) != -K_EINVAL) {
+        testFail("x64 inotify_init1 accepted unknown flags");
+    }
+    // IN_NONBLOCK (0x800) | IN_CLOEXEC (0x80000)
+    S64 fd = invoke(294, 0x80800ULL, 0, 0);
+    if (fd < 0) {
+        testFail("x64 inotify_init1 failed: %lld", (long long)fd);
+        return;
+    }
+    // __NR_inotify_init = 253 also works.
+    S64 fd2 = invoke(253, 0, 0, 0);
+    if (fd2 < 0) {
+        testFail("x64 inotify_init failed: %lld", (long long)fd2);
+    }
+    // __NR_inotify_add_watch = 254: bad fd, then a real watch on "/".
+    if (invoke(254, 9999, pathAt, 0xfffULL) != -K_EBADF) {
+        testFail("x64 inotify_add_watch on a bad fd was not -EBADF");
+    }
+    S64 wd = invoke(254, (U64)fd, pathAt, 0xfffULL);
+    if (wd < 1) {
+        testFail("x64 inotify_add_watch(/) failed: %lld", (long long)wd);
+        return;
+    }
+    // Re-adding merges and returns the same wd.
+    if (invoke(254, (U64)fd, pathAt, 0x4ULL) != wd) {
+        testFail("x64 inotify_add_watch did not merge an existing watch");
+    }
+    // __NR_inotify_rm_watch = 255.
+    if (invoke(255, (U64)fd, (U64)wd, 0) != 0) {
+        testFail("x64 inotify_rm_watch failed");
+    }
+    if (invoke(255, (U64)fd, (U64)wd, 0) != -K_EINVAL) {
+        testFail("x64 inotify_rm_watch of a removed watch was not -EINVAL");
+    }
+    invoke(3, (U64)fd, 0, 0);  // close
+    if (fd2 >= 0) invoke(3, (U64)fd2, 0, 0);
 }
 
 void testSignalfd64Syscalls() {

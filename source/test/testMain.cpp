@@ -81,6 +81,12 @@ void testUnixSocketOptions();
 void testEpollOneShotAndFlags();
 void testMemfdSeals();
 void testEventfdFlags();
+void testDevInputJoystick();
+void testTimerfdProcessAbiProbes();
+void testSetitimerProbes();
+void testAsyncSigio();
+void testDnsLoopbackService();
+void testDevDspCapture();
 #ifdef BOXEDWINE_GUEST_X64
 void testTimerfd64Syscalls();
 void testCopyFileRange64Syscall();
@@ -88,7 +94,9 @@ void testProcessVm64Syscalls();
 void testEpollPwait2Syscall();
 void testMadvise64Effects();
 void testPidfd64Syscalls();
-void testInotify64LoudRejection();
+void testInotify64Syscalls();
+void testSetitimer64Syscalls();
+void testInotifyEvents();
 void testSignalfd64Syscalls();
 void testFutex64Operations();
 void testPrctl64Options();
@@ -136,7 +144,15 @@ const TestEntry TEST_ENTRIES[] = {
     {testEpollPwait2Syscall, "Test x64 epoll_pwait2 syscall"},
     {testMadvise64Effects, "Test x64 madvise side effects"},
     {testPidfd64Syscalls, "Test x64 pidfd_open/send_signal syscalls"},
-    {testInotify64LoudRejection, "Test loud x64 inotify rejection"},
+    {testInotify64Syscalls, "Test x64 inotify syscalls and watch management"},
+    {testDevInputJoystick, "Test joystick evdev node capabilities and events"},
+    {testTimerfdProcessAbiProbes, "Test timerfd expiration through the process ABI"},
+    {testSetitimerProbes, "Test setitimer expiration probes"},
+    {testSetitimer64Syscalls, "Test x64 setitimer and getitimer syscalls"},
+    {testAsyncSigio, "Test fcntl async ownership and SIGIO delivery"},
+    {testDnsLoopbackService, "Test loopback DNS service for guest resolvers"},
+    {testDevDspCapture, "Test dsp capture contract and GETISPACE"},
+    {testInotifyEvents, "Test inotify event delivery end to end"},
     {testSignalfd64Syscalls, "Test x64 signalfd create and update"},
     {testPrctl64Options, "Test x64 prctl option surface"},
     {testOpcodeFault64Delivery, "Test x64 undefined/VEX opcode SIGILL delivery"},
@@ -787,6 +803,12 @@ const TestEntry TEST_ENTRIES[] = {
     {testEpollOneShotAndFlags, "Test epoll one-shot and exclusive flags"},
     {testMemfdSeals, "Test memfd seal enforcement"},
     {testEventfdFlags, "Test eventfd2 flag validation"},
+    {testDevInputJoystick, "Test joystick evdev node capabilities and events"},
+    {testTimerfdProcessAbiProbes, "Test timerfd expiration through the process ABI"},
+    {testSetitimerProbes, "Test setitimer expiration probes"},
+    {testAsyncSigio, "Test fcntl async ownership and SIGIO delivery"},
+    {testDnsLoopbackService, "Test loopback DNS service for guest resolvers"},
+    {testDevDspCapture, "Test dsp capture contract and GETISPACE"},
 #ifdef BOXEDWINE_GUEST_X64
     {testTimerfd64Syscalls, "Test x64 timerfd syscall ABI"},
     {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},

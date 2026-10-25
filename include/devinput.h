@@ -22,6 +22,7 @@
 FsOpenNode* openDevInputTouch(const std::shared_ptr<FsNode>& node, U32 flags, U32 data);
 FsOpenNode* openDevInputMouse(const std::shared_ptr<FsNode>& node, U32 flags, U32 data);
 FsOpenNode* openDevInputKeyboard(const std::shared_ptr<FsNode>& node, U32 flags, U32 data);
+FsOpenNode* openDevInputJoystick(const std::shared_ptr<FsNode>& node, U32 flags, U32 data);
 
 void onMouseMove(U32 x, U32 y, bool relative);
 void onMouseButtonDown(U32 button);
@@ -29,6 +30,8 @@ void onMouseButtonUp(U32 button);
 void onMouseWheel(S32 value);
 void onKeyDown(U32 code);
 void onKeyUp(U32 code);
+void onGamepadButton(U32 code, bool down);
+void onGamepadAxis(U32 axis, S32 value);
 
 #define K_EV_SYN                 0x00
 #define K_EV_KEY                 0x01
@@ -51,6 +54,12 @@ void onKeyUp(U32 code);
 
 #define K_ABS_X                  0x00
 #define K_ABS_Y                  0x01
+#define K_ABS_Z                  0x02
+#define K_ABS_RX                 0x03
+#define K_ABS_RY                 0x04
+#define K_ABS_RZ                 0x05
+#define K_ABS_HAT0X              0x10
+#define K_ABS_HAT0Y              0x11
 
 #define K_REL_X                  0x00
 #define K_REL_Y                  0x01
@@ -64,6 +73,20 @@ void onKeyUp(U32 code);
 #define K_BTN_FORWARD             0x115
 #define K_BTN_BACK                0x116
 #define K_BTN_TASK                0x117
+
+#define K_BTN_SOUTH               0x130
+#define K_BTN_EAST                0x131
+#define K_BTN_NORTH               0x133
+#define K_BTN_WEST                0x134
+#define K_BTN_TL                  0x136
+#define K_BTN_TR                  0x137
+#define K_BTN_TL2                 0x138
+#define K_BTN_TR2                 0x139
+#define K_BTN_SELECT              0x13a
+#define K_BTN_START               0x13b
+#define K_BTN_MODE                0x13c
+#define K_BTN_THUMBL              0x13d
+#define K_BTN_THUMBR              0x13e
 
 #define K_BTN_MOUSEWHEEL_UP       0x118  // Probably wrong?
 #define K_BTN_MOUSEWHEEL_DOWN     0x119
