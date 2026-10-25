@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Add the DejaVu Bold/Mono faces to the 32-bit glibc rootfs archives.
-# Mirrors stage-gstreamer.sh. Until now glibc-rootfs32.zip carried exactly
+# Mirrors stage-alsa32.sh. Until now glibc-rootfs32.zip carried exactly
 # one face (DejaVuSans.ttf, staged by tools/rootfs32/stage-fonts.py), so
 # every bold/mono request on the 32-bit guest synthesized or fell back to
 # the regular face. Payload lives in fonts32/ next to this script

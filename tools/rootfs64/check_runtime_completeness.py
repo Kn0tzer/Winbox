@@ -7,8 +7,13 @@ artifacts and the *source* payloads, offline:
      sha256 pins in their README, and are present (with those hashes) in
      web/runtime/wine64.zip.
   2. prepare_prefixes.validate_service_runtime passes for the shipped
-     wine64.zip/prefix64.zip and wine32.zip/prefix32.zip pairs (services,
-     HID, backport DLLs, gstreamer plugin set).
+     wine64.zip/prefix64.zip and wine32.zip/prefix32.zip pairs against
+     the retained support pack (services, HID, backport DLLs, gstreamer
+     plugin set in the pack, not the boot zips).
+  2b. The gstreamer split holds: no staged-closure member is in either
+     boot zip, every member is in the retained support pack with the
+     tree digests dependencies.json records, and prepare-gstreamer.py
+     --check re-verifies the closure against the post-split boot zips.
   3. The DirectX redist sets the register calls complete are complete in
      both wine zips (d3dx9_24..43, d3dx10_33..43, d3dcompiler_33..47,
      xaudio2_0..2_9, xinput1_1..1_4), and the d3dcompiler numbers the
@@ -33,6 +38,8 @@ Exit code 0 = every non-skipped check passed. Skips are printed, never
 silent. Run directly or via web/tests/suite/unit/runtime-completeness.test.mjs.
 """
 import hashlib
+import json
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -95,9 +102,51 @@ def t_winehq_source_and_zip():
         assert sha(members[hits[0]]) == pin, f'{name} in wine64.zip != pinned bytes'
 
 
+def support_zip_path():
+    deps = json.loads((ROOT / 'dist/runtime/dependencies.json').read_text())
+    return ROOT / 'dist/runtime' / deps['archive']
+
+
 def t_service_runtime():
-    prefixes.validate_service_runtime(RUNTIME / 'prefix64.zip', RUNTIME / 'wine64.zip')
-    prefixes.validate_service_runtime(RUNTIME / 'prefix32.zip', RUNTIME / 'wine32.zip')
+    support = support_zip_path()
+    prefixes.validate_service_runtime(RUNTIME / 'prefix64.zip', RUNTIME / 'wine64.zip', support)
+    prefixes.validate_service_runtime(RUNTIME / 'prefix32.zip', RUNTIME / 'wine32.zip', support)
+
+
+def t_gstreamer_split():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'sd', ROOT / 'tools/browser/stage-dependencies.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    support = support_zip_path()
+    with zipfile.ZipFile(support) as z:
+        support_names = set(z.namelist())
+    deps = json.loads((ROOT / 'dist/runtime/dependencies.json').read_text())
+    gst = deps.get('gstreamer')
+    assert gst, 'dependencies.json lacks the gstreamer provenance section'
+    for arch, stage_name, boot in (('x86_64', 'gstreamer64', 'wine64.zip'),
+                                   ('i386', 'gstreamer32', 'wine32.zip')):
+        root = ROOT / 'tools/rootfs64' / stage_name
+        paths = {p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file()}
+        assert paths, f'{stage_name}: staged tree is empty'
+        missing = paths - support_names
+        assert not missing, (f'{stage_name}: {len(missing)} closure members missing '
+                             f'from the support pack, e.g. {sorted(missing)[:3]}')
+        with zipfile.ZipFile(RUNTIME / boot) as z:
+            leaked = paths & set(z.namelist())
+        assert not leaked, (f'{stage_name}: {len(leaked)} closure members back in '
+                            f'{boot}, e.g. {sorted(leaked)[:3]}')
+        recorded = gst['arches'][arch]
+        assert recorded['members'] == len(paths), \
+            f'{stage_name}: dependencies.json records {recorded["members"]} members, staged {len(paths)}'
+        assert recorded['treeSha256'] == module.tree_digest(root), \
+            f'{stage_name}: dependencies.json tree digest drifted from the staged tree'
+    result = subprocess.run(
+        [sys.executable, str(ROOT / 'tools/rootfs64/prepare-gstreamer.py'), '--check'],
+        capture_output=True, text=True)
+    assert result.returncode == 0, \
+        f'prepare-gstreamer.py --check failed: {result.stdout} {result.stderr}'
 
 
 def t_directx_sets():
@@ -208,6 +257,7 @@ def t_prefix64_built():
 if __name__ == '__main__':
     check('winehq backports (source + shipped zip)', t_winehq_source_and_zip)
     check('validate_service_runtime (shipped pairs)', t_service_runtime)
+    check('gstreamer closure rides the support pack (absent from boot zips)', t_gstreamer_split)
     check('DirectX redist sets complete (both zips)', t_directx_sets)
     check('VC++ runtime sets (both zips, asymmetries pinned)', t_vcpp_sets)
     check('wineserver dispatch is ELF (no /bin/sh script)', t_wineserver_dispatch)

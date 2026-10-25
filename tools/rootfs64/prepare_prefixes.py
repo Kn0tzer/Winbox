@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import re
@@ -217,7 +218,16 @@ def validate_prefix_zip(path: Path, architecture: str) -> None:
     _validate_prefix(contents, architecture)
 
 
-def validate_service_runtime(prefix_zip: Path, wine_zip: Path) -> None:
+def default_support_zip() -> Path:
+    """The retained support pack named by dist/runtime/dependencies.json
+    (the same resolution gen_runtime_manifest.py uses)."""
+    deps = json.loads((Path(__file__).resolve().parents[2]
+                       / "dist/runtime/dependencies.json").read_text())
+    return Path(__file__).resolve().parents[2] / "dist/runtime" / deps["archive"]
+
+
+def validate_service_runtime(prefix_zip: Path, wine_zip: Path,
+                             support_zip: Path | None = None) -> None:
     _, prefix = _zip_contents(prefix_zip)
     link = prefix.get(PREFIX + "drive_c/windows/system32.link")
     if link is None:
@@ -250,13 +260,25 @@ def validate_service_runtime(prefix_zip: Path, wine_zip: Path) -> None:
             raise ValueError(f"{wine_zip}: missing linked HID Unix modules: " + ", ".join(missing_unix))
         # winegstreamer links only the GStreamer core; without these plugins
         # (staged by prepare-gstreamer.py) every MF/DShow cutscene path
-        # dead-ends at gst_element_factory_make().
+        # dead-ends at gst_element_factory_make(). Since the 2026-10-25
+        # lazy split the plugin set + DT_NEEDED closure rides the support
+        # pack (mounted at the same guest paths before Wine starts), NOT
+        # the boot zip: a plugin in the wine zip means the split regressed,
+        # and a plugin missing from the support pack means media breaks.
         lib_dir = "usr/lib/x86_64-linux-gnu/" if "x86_64-unix/" in unix_dir else "usr/lib/i386-linux-gnu/"
+        if support_zip is None:
+            raise ValueError("gstreamer plugin check requires the support pack: "
+                             "pass support_zip (see default_support_zip())")
+        with zipfile.ZipFile(support_zip) as archive:
+            support_names = set(archive.namelist())
         for plugin in ("libav", "playback", "typefindfunctions", "avi", "isomp4",
                        "matroska", "ogg", "wavparse", "flac", "vorbis"):
             entry = f"{lib_dir}gstreamer-1.0/libgst{plugin}.so"
-            if entry not in names:
-                raise ValueError(f"{wine_zip}: missing gstreamer plugin {entry}")
+            if entry in names:
+                raise ValueError(f"{wine_zip}: gstreamer plugin {entry} is in the boot zip; "
+                                 "it must ride the lazy support pack instead")
+            if entry not in support_names:
+                raise ValueError(f"{support_zip}: missing gstreamer plugin {entry}")
 
 
 def merge_registry_fragment(registry: str, fragment: str) -> tuple[str, list[str]]:
@@ -440,6 +462,9 @@ def main() -> None:
     check.add_argument("--prefix64", type=Path, required=True)
     check.add_argument("--wine32", type=Path, required=True)
     check.add_argument("--wine64", type=Path, required=True)
+    check.add_argument("--support", type=Path,
+                       help="support pack carrying the gstreamer closure "
+                            "(default: the pack named by dist/runtime/dependencies.json)")
 
     check_one = commands.add_parser("check-one", help="validate one initialized prefix archive")
     check_one.add_argument("--archive", type=Path, required=True)
@@ -462,8 +487,9 @@ def main() -> None:
     elif args.command == "check":
         validate_prefix_zip(args.prefix32, "win32")
         validate_prefix_zip(args.prefix64, "win64")
-        validate_service_runtime(args.prefix32, args.wine32)
-        validate_service_runtime(args.prefix64, args.wine64)
+        support = args.support if args.support is not None else default_support_zip()
+        validate_service_runtime(args.prefix32, args.wine32, support)
+        validate_service_runtime(args.prefix64, args.wine64, support)
         print("Both preinitialized Wine prefixes passed package checks.")
     elif args.command == "check-one":
         validate_prefix_zip(args.archive, args.arch)

@@ -290,18 +290,13 @@ else
     echo "WARNING: $ALSA_PREBUILT missing — audio bridge not staged." >&2
 fi
 
-# GStreamer demux/decode plugins + DT_NEEDED closure (gitignored payload;
-# regenerate with prepare-gstreamer.py — see its docstring). winegstreamer.so
-# links only the gst core; without these plugins every MF/DShow cutscene
-# decode path dead-ends.
-GST64="$HERE/gstreamer64"
-if [ -d "$GST64/usr/lib/x86_64-linux-gnu/gstreamer-1.0" ]; then
-    echo "--- staging GStreamer plugins (winegstreamer decode paths) ---"
-    mkdir -p "$STAGEHOST/usr/lib/x86_64-linux-gnu/gstreamer-1.0"
-    cp -R "$GST64"/usr/lib/x86_64-linux-gnu "$STAGEHOST/usr/lib/"
-else
-    echo "WARNING: $GST64 missing — run prepare-gstreamer.py; gstreamer decode paths will fail!" >&2
-fi
+# GStreamer demux/decode plugins + DT_NEEDED closure are NOT staged into
+# the boot zips: since the 2026-10-25 lazy split they ride the support
+# pack (tools/browser/stage-dependencies.py stages the gstreamer64 tree
+# produced by prepare-gstreamer.py into the lazy archive, mounted at the
+# same guest paths before Wine starts). winegstreamer.so links only the
+# gst core, which ships with the base tree above; the plugin closure must
+# stay out of this zip — check_runtime_completeness.py pins its absence.
 
 echo "=== zipping on host (macOS zip preserves the symlinks) ==="
 rm -f "$DIST/glibc-rootfs64.zip" "$DIST/wine64.zip"

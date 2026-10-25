@@ -112,6 +112,33 @@ def build_manifest():
                 lines.append('- (none)')
             lines.append('')
 
+    def gst_placement(data):
+        # The gstreamer plugin set + DT_NEEDED closure staged by
+        # prepare-gstreamer.py rides the lazy support pack since the
+        # 2026-10-25 split; the boot zips must carry none of it. Expected
+        # guest paths come from the staged source trees; presence is read
+        # from the artifacts themselves, so any drift fails the manifest
+        # check in check_runtime_completeness.py.
+        lines.append('## GStreamer closure placement (lazy support pack)')
+        lines.append('')
+        support = data['support'][1]
+        for stage_dir, boot in (('gstreamer64', 'w64'), ('gstreamer32', 'w32')):
+            root = ROOT / 'tools/rootfs64' / stage_dir
+            paths = sorted(p.relative_to(root).as_posix()
+                           for p in root.rglob('*') if p.is_file())
+            in_boot = [n for n in paths if n in data[boot][1]]
+            in_support = [n for n in paths if n in support]
+            missing = [n for n in paths if n not in support]
+            total = sum(support[n].file_size for n in in_support)
+            lines.append(f'- {stage_dir} closure: {len(paths)} staged members; '
+                         f'in {boot}: {len(in_boot)} (must be 0); '
+                         f'in support: {len(in_support)} ({total} bytes)')
+            for n in in_boot:
+                lines.append(f'  - UNEXPECTED in {boot}: `{n}`')
+            for n in missing:
+                lines.append(f'  - MISSING from support: `{n}`')
+        lines.append('')
+
     def absent(title, names, labels):
         lines.append(f'## {title}')
         lines.append('')
@@ -133,8 +160,9 @@ def build_manifest():
            lambda b, n: bool(XACT_FAMILY.match(b)))
     census('Media Foundation / gstreamer set', ('w64', 'w32'),
            lambda b, n: b.lower() in MEDIA)
-    census('GStreamer plugin members (gstreamer-1.0/)', ('w64', 'w32'),
+    census('GStreamer plugin members (gstreamer-1.0/)', ('w64', 'w32', 'support'),
            lambda b, n: 'gstreamer-1.0/' in n)
+    gst_placement(data)
     census('Audio / graphics / networking / TLS / fonts set', ('w64', 'w32', 'support'),
            lambda b, n: b.lower() in MISC)
     census('Wineserver members', ('w64', 'w32'),

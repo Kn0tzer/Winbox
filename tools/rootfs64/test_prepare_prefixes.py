@@ -206,6 +206,7 @@ class PrefixPackagingTests(unittest.TestCase):
             temp = Path(temp)
             prefix = temp / "prefix.zip"
             runtime = temp / "wine.zip"
+            support = temp / "support.zip"
             linked = "usr/lib/x86_64-linux-gnu/wine/x86_64-windows/"
             entries = {prefixes.PREFIX + "drive_c/windows/system32.link": ("/" + linked).encode()}
             with zipfile.ZipFile(prefix, "w") as archive:
@@ -215,35 +216,53 @@ class PrefixPackagingTests(unittest.TestCase):
                        "winebus.sys", "winehid.sys", "wineusb.sys", "d3d11.dll", "d3d12.dll",
                        "d3d12core.dll", "msmpeg2vdec.dll", "msvcp140_codecvt_ids.dll")
             unix = linked.replace("x86_64-windows/", "x86_64-unix/")
-            with zipfile.ZipFile(runtime, "w") as archive:
-                for name in modules:
-                    archive.writestr(linked + name, b"wine module")
-                archive.writestr(unix + "winebus.so", b"winebus")
-                archive.writestr(unix + "wineusb.so", b"wineusb")
-                for plugin in ("libav", "playback", "typefindfunctions", "avi", "isomp4",
-                               "matroska", "ogg", "wavparse", "flac", "vorbis"):
-                    archive.writestr("usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgst"
-                                     + plugin + ".so", b"gst plugin")
-            prefixes.validate_service_runtime(prefix, runtime)
+            plugins = ("libav", "playback", "typefindfunctions", "avi", "isomp4",
+                       "matroska", "ogg", "wavparse", "flac", "vorbis")
+
+            def write_runtime(path, skip=(), with_plugins=False):
+                with zipfile.ZipFile(path, "w") as archive:
+                    for name in modules:
+                        if name not in skip:
+                            archive.writestr(linked + name, b"wine module")
+                    archive.writestr(unix + "winebus.so", b"winebus")
+                    archive.writestr(unix + "wineusb.so", b"wineusb")
+                    if with_plugins:
+                        for plugin in plugins:
+                            archive.writestr("usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgst"
+                                             + plugin + ".so", b"gst plugin")
+
+            def write_support(path, skip=()):
+                with zipfile.ZipFile(path, "w") as archive:
+                    for plugin in plugins:
+                        if plugin not in skip:
+                            archive.writestr("usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgst"
+                                             + plugin + ".so", b"gst plugin")
+
+            write_runtime(runtime)
+            write_support(support)
+            prefixes.validate_service_runtime(prefix, runtime, support)
             incomplete = temp / "incomplete.zip"
-            with zipfile.ZipFile(incomplete, "w") as archive:
-                for name in modules:
-                    if name != "d3d12.dll":
-                        archive.writestr(linked + name, b"wine module")
-                archive.writestr(unix + "winebus.so", b"winebus")
-                archive.writestr(unix + "wineusb.so", b"wineusb")
+            write_runtime(incomplete, skip=("d3d12.dll",))
             with self.assertRaisesRegex(ValueError, "d3d12.dll"):
-                prefixes.validate_service_runtime(prefix, incomplete)
+                prefixes.validate_service_runtime(prefix, incomplete, support)
 
             without_alsa = temp / "without-alsa.zip"
-            with zipfile.ZipFile(without_alsa, "w") as archive:
-                for name in modules:
-                    if name != "winealsa.drv":
-                        archive.writestr(linked + name, b"wine module")
-                archive.writestr(unix + "winebus.so", b"winebus")
-                archive.writestr(unix + "wineusb.so", b"wineusb")
+            write_runtime(without_alsa, skip=("winealsa.drv",))
             with self.assertRaisesRegex(ValueError, "winealsa.drv"):
-                prefixes.validate_service_runtime(prefix, without_alsa)
+                prefixes.validate_service_runtime(prefix, without_alsa, support)
+
+            # The lazy split, both directions: plugins baked into the boot
+            # zip regress it; plugins missing from the support pack break
+            # media. Neither may pass silently.
+            baked = temp / "baked-plugins.zip"
+            write_runtime(baked, with_plugins=True)
+            with self.assertRaisesRegex(ValueError, "lazy support pack"):
+                prefixes.validate_service_runtime(prefix, baked, support)
+
+            thin_support = temp / "thin-support.zip"
+            write_support(thin_support, skip=("libav",))
+            with self.assertRaisesRegex(ValueError, "missing gstreamer plugin"):
+                prefixes.validate_service_runtime(prefix, runtime, thin_support)
 
 
 if __name__ == "__main__":

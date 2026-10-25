@@ -10,13 +10,13 @@ from the artifacts, so the register rows citing it stay honest.
 
 | Label | Path | Bytes | sha256 | Members |
 | --- | --- | --- | --- | --- |
-| w64 | `web/runtime/wine64.zip` | 298882954 | `345749271af3ca1448e40e726597b5e3cacbc3cb97a6de321dd8a99afa02520f` | 1518 |
-| w32 | `web/runtime/wine32.zip` | 321016564 | `d181831cf628adb2036aa30d5f8a188cb35557851f6331d5077ef00f538742c3` | 2171 |
+| w64 | `web/runtime/wine64.zip` | 210270035 | `67bdbc5dc32655d221583f60bfd4770a67c343413afa443f1d1052d610b96fba` | 1256 |
+| w32 | `web/runtime/wine32.zip` | 236638528 | `adb724a31b4bae4809d3709bc157e45356bc40fbb541f9197df6b87049565963` | 1924 |
 | p64 | `web/runtime/prefix64.zip` | 19066440 | `b34385c655b6aa798978518d51286052b2c267d65596299bad93f536bbaf169c` | 152 |
 | p32 | `web/runtime/prefix32.zip` | 5914534 | `ca99eb6ddbc85dc7c3a000b4c2415457a7e8e6c19e4bcecb8c26d37787f1e959` | 42 |
 | g64 | `web/runtime/glibc-rootfs64.zip` | 9959020 | `d71d48f9a41877f359f60cb4529a0b65ff55f17cedb286a058b2b613ed031c73` | 93 |
 | g32 | `web/runtime/glibc-rootfs32.zip` | 3813320 | `14eca40bc9b951a152d4ae59a25d9469dac867678b750124ff049f9058d7793f` | 58 |
-| support | `dist/runtime/support-e0d733feb54b3a9a30179cee36b1372d90d2bc7f7c9f94b680160e0ad923174e.zip` | 207600063 | `e0d733feb54b3a9a30179cee36b1372d90d2bc7f7c9f94b680160e0ad923174e` | 3035 |
+| support | `dist/runtime/support-e6f74fef784ccf57e4c7174b9124398de4a380126c2b9d6029a3ab5fa608ef06.zip` | 517840753 | `e6f74fef784ccf57e4c7174b9124398de4a380126c2b9d6029a3ab5fa608ef06` | 3543 |
 
 Labels match the register legend in `runtime.md`
 (`w64` = wine64.zip, `w32` = wine32.zip, `p64`/`p32` = prefix zips,
@@ -344,9 +344,34 @@ Labels match the register legend in `runtime.md`
 
 ## GStreamer plugin members (gstreamer-1.0/)
 
-### w64 (19)
+### w64 (1)
 
 - `usr/lib/x86_64-linux-gnu/gstreamer-1.0/` (0 bytes)
+
+### w32 (1)
+
+- `usr/lib/i386-linux-gnu/gstreamer-1.0/` (0 bytes)
+
+### support (36)
+
+- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstapp.so` (13720 bytes)
+- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstaudioconvert.so` (34804 bytes)
+- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstaudioparsers.so` (167028 bytes)
+- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstaudioresample.so` (42996 bytes)
+- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstavi.so` (212020 bytes)
+- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstflac.so` (84756 bytes)
+- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstflv.so` (170932 bytes)
+- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstisomp4.so` (701336 bytes)
+- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstlibav.so` (294820 bytes)
+- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstmatroska.so` (434196 bytes)
+- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstogg.so` (302548 bytes)
+- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstplayback.so` (747188 bytes)
+- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstsubparse.so` (92908 bytes)
+- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgsttypefindfunctions.so` (135228 bytes)
+- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstvideoconvertscale.so` (59432 bytes)
+- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstvolume.so` (42732 bytes)
+- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstvorbis.so` (72116 bytes)
+- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstwavparse.so` (84212 bytes)
 - `usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstapp.so` (14376 bytes)
 - `usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstaudioconvert.so` (35896 bytes)
 - `usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstaudioparsers.so` (147896 bytes)
@@ -366,27 +391,10 @@ Labels match the register legend in `runtime.md`
 - `usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstvorbis.so` (65272 bytes)
 - `usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstwavparse.so` (73304 bytes)
 
-### w32 (19)
+## GStreamer closure placement (lazy support pack)
 
-- `usr/lib/i386-linux-gnu/gstreamer-1.0/` (0 bytes)
-- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstapp.so` (13720 bytes)
-- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstaudioconvert.so` (34804 bytes)
-- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstaudioparsers.so` (167028 bytes)
-- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstaudioresample.so` (42996 bytes)
-- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstavi.so` (212020 bytes)
-- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstflac.so` (84756 bytes)
-- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstflv.so` (170932 bytes)
-- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstisomp4.so` (701336 bytes)
-- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstlibav.so` (294820 bytes)
-- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstmatroska.so` (434196 bytes)
-- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstogg.so` (302548 bytes)
-- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstplayback.so` (747188 bytes)
-- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstsubparse.so` (92908 bytes)
-- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgsttypefindfunctions.so` (135228 bytes)
-- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstvideoconvertscale.so` (59432 bytes)
-- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstvolume.so` (42732 bytes)
-- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstvorbis.so` (72116 bytes)
-- `usr/lib/i386-linux-gnu/gstreamer-1.0/libgstwavparse.so` (84212 bytes)
+- gstreamer64 closure: 262 staged members; in w64: 0 (must be 0); in support: 262 (373443728 bytes)
+- gstreamer32 closure: 247 staged members; in w32: 0 (must be 0); in support: 247 (351488608 bytes)
 
 ## Audio / graphics / networking / TLS / fonts set
 

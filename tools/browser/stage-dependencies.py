@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Build the shared, lazy Windows runtime: Wine Mono, Wine Gecko, OpenAL Soft
-and the graphics bridge. Application files are never included."""
+"""Build the shared, lazy Windows runtime: Wine Mono, Wine Gecko, OpenAL Soft,
+the graphics bridge and the GStreamer media plugin closure.
+Application files are never included."""
 import argparse
 import hashlib
 import io
@@ -154,6 +155,40 @@ def ensure_gecko():
     return result
 
 
+# GStreamer demux/decode plugins + their DT_NEEDED closure, staged by
+# tools/rootfs64/prepare-gstreamer.py from sha256-pinned Debian bookworm
+# debs (gstreamer1.0-plugins-base/-good/-libav + the libav stack). Until
+# the 2026-10-25 lazy split these trees were baked into the wine64/wine32
+# boot zips (+85 MB compressed per arch) although only Media
+# Foundation / DirectShow programs ever load them. They ride this shared
+# archive instead: it is mounted at the guest root before Wine starts and
+# its members are range-fetched on first read, so the plugins appear at
+# the exact guest paths winegstreamer's plugin scan expects
+# (usr/lib/<arch>-linux-gnu/gstreamer-1.0/) while non-media programs never
+# download the bytes. The boot zips must NOT carry them;
+# check_runtime_completeness.py pins both directions.
+GSTREAMER = {
+    'x86_64': 'gstreamer64',
+    'i386': 'gstreamer32',
+}
+
+
+def ensure_gstreamer():
+    result = {}
+    for arch, dirname in GSTREAMER.items():
+        root = ROOT / 'tools/rootfs64' / dirname
+        plugin_dir = root / 'usr/lib' / f'{arch}-linux-gnu' / 'gstreamer-1.0'
+        if not (plugin_dir / 'libgstlibav.so').is_file():
+            raise SystemExit(
+                f'GStreamer payload missing for {arch}: {plugin_dir} — '
+                'run tools/rootfs64/prepare-gstreamer.py first')
+        files = sorted(path for path in root.rglob('*') if path.is_file())
+        result[arch] = {'root': root, 'files': files,
+                        'treeSha256': tree_digest(root),
+                        'bytes': sum(len(path.read_bytes()) for path in files)}
+    return result
+
+
 def ensure_openal():
     cache = ROOT / 'tools/rootfs64/openal'
     archive = cache / Path(OPENAL['url']).name
@@ -193,6 +228,7 @@ def stage(destination):
     gecko = ensure_gecko()
     openal = ensure_openal()
     cjk = ensure_cjk_font()
+    gstreamer = ensure_gstreamer()
     provenance = {
         'wineMono': {'version': mono.VERSION, 'url': mono.URL,
                      'archiveSha256': mono.ARCHIVE_SHA256, 'treeSha256': mono.TREE_SHA256},
@@ -211,6 +247,12 @@ def stage(destination):
                     'url': CJK_FONT['url'], 'debSha256': CJK_FONT['debSha256'],
                     'ttcSha256': CJK_FONT['ttcSha256'], 'license': CJK_FONT['license'],
                     'bytes': len(cjk['ttc'])},
+        'gstreamer': {
+            'source': 'tools/rootfs64/prepare-gstreamer.py (sha256-pinned Debian bookworm debs)',
+            'arches': {arch: {'members': len(entry['files']), 'bytes': entry['bytes'],
+                              'treeSha256': entry['treeSha256']}
+                       for arch, entry in gstreamer.items()},
+        },
         'openGL': {arch: mono.digest(path) for arch, path in graphics.items()},
         'vulkan': {arch: mono.digest(path) for arch, path in vulkan.items()},
         'direct3D': {
@@ -266,7 +308,23 @@ def stage(destination):
             add('usr/share/fonts/truetype/wqy/wqy-microhei.ttc', cjk['ttc'])
             add('etc/fonts/conf.d/65-wqy-microhei.conf', cjk['conf'])
             add('opt/winbox/licenses/wqy-microhei-copyright', cjk['copyright'])
+            # GStreamer media closure (see GSTREAMER above): every staged
+            # file lands at its guest path; symlinks are stored dereferenced
+            # (full ELF bytes under each soname), exactly as the boot zips
+            # carried them before the split, so the guest linker resolves
+            # DT_NEEDED sonames without link support in the lazy mount.
+            gst_names = []
+            for entry in gstreamer.values():
+                for path in entry['files']:
+                    name = path.relative_to(entry['root']).as_posix()
+                    gst_names.append(name)
+                    add(name, path.read_bytes())
             add('winbox-runtime.json', (json.dumps(provenance, indent=2) + '\n').encode())
+        with zipfile.ZipFile(pending) as check_archive:
+            staged_names = set(check_archive.namelist())
+        missing = [name for name in gst_names if name not in staged_names]
+        if missing:
+            raise SystemExit(f'GStreamer closure incomplete in support archive: {missing[:3]}')
         sha256 = mono.digest(pending)
         name = f'support-{sha256}.zip'
         size = pending.stat().st_size
