@@ -45,14 +45,14 @@ static const U32 DSP_DEFAULT_FRAGMENT_COUNT = 8;
 
 class DevDsp : public FsVirtualOpenNode {
 public:
-    DevDsp(const std::shared_ptr<FsNode>& node, U32 flags) : FsVirtualOpenNode(node, flags) {                
+    DevDsp(const std::shared_ptr<FsNode>& node, U32 flags) : FsVirtualOpenNode(node, flags), captureCond(std::make_shared<BoxedWineCondition>(B("DevDsp::captureCond"))) {                
         this->audio = KDspAudio::createDspAudio();
         this->freq = 11025;
         this->channels = 1;
         this->format = AFMT_U8;
         this->audio->setFragmentSize(DSP_DEFAULT_FRAGMENT_SIZE);
     } 
-    virtual ~DevDsp() {this->audio->closeAudio();}
+    virtual ~DevDsp() {this->audio->closeCaptureAudio(); this->audio->captureDataCallback = nullptr; this->audio->closeAudio();}
 
     // From FsOpenNode
     bool setLength(S64 length) override;
@@ -64,6 +64,7 @@ public:
     U32 writeNative(U8* buffer, U32 len) override;
     void waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) override;
     bool isWriteReady() override;
+    bool isReadReady() override;
 
     std::shared_ptr<KDspAudio> audio;
     U32 freq;
@@ -77,6 +78,20 @@ private:
     U32 getEffectiveBufferCapacity();
     U32 getUsedBufferSize();
     U32 getAvailableBufferSize();
+    // Capture state (kernel round 3B). openCaptureIfNeeded returns 1 when
+    // capture is open with the current format/freq/channels, 0 when the
+    // backend cannot capture, -1 when the device was opened write-only.
+    S32 openCaptureIfNeeded();
+    S32 getCaptureInfo(U32& fragments, U32& bytes);
+    BOXEDWINE_CONDITION captureCond;
+    bool captureTried = false;
+    bool captureOpen = false;
+    U32 captureFormat = 0;
+    U32 captureFreq = 0;
+    U32 captureChannels = 0;
+    U32 captureTriedFormat = 0;
+    U32 captureTriedFreq = 0;
+    U32 captureTriedChannels = 0;
 };
 
 
@@ -101,7 +116,76 @@ bool DevDsp::setLength(S64 len) {
 }
 
 U32 DevDsp::readNative(U8* buffer, U32 len){
+    // Capture contract (kernel round 3B): never return 0 (a fake EOF).
+    // Data when capture is live, -EWOULDBLOCK when it is live but empty,
+    // -ENOTSUP when the backend cannot capture at all.
+    S32 state = this->openCaptureIfNeeded();
+    if (state < 0) {
+        return -K_EINVAL; // opened write-only
+    }
+    if (state == 0) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            kwarn("DevDsp: audio capture is not available in this configuration; reads return ENOTSUP");
+        }
+        return -K_ENOTSUP;
+    }
+    U32 got = this->audio->readCapturedAudio(buffer, len);
+    if (got) {
+        return got;
+    }
+    return -K_EWOULDBLOCK;
+}
+
+S32 DevDsp::openCaptureIfNeeded() {
+    if ((this->flags & K_O_ACCMODE) == K_O_WRONLY) {
+        return -1;
+    }
+    if (this->captureOpen && this->captureFormat == this->format && this->captureFreq == this->freq && this->captureChannels == this->channels) {
+        return 1;
+    }
+    if (this->captureTried && this->captureTriedFormat == this->format && this->captureTriedFreq == this->freq && this->captureTriedChannels == this->channels) {
+        return this->captureOpen ? 1 : 0;
+    }
+    this->captureTried = true;
+    this->captureTriedFormat = this->format;
+    this->captureTriedFreq = this->freq;
+    this->captureTriedChannels = this->channels;
+    if (this->captureOpen) {
+        this->audio->closeCaptureAudio();
+        this->captureOpen = false;
+    }
+    if (!this->audio->openCaptureAudio(this->format, this->freq, this->channels)) {
+        return 0;
+    }
+    this->captureOpen = true;
+    this->captureFormat = this->format;
+    this->captureFreq = this->freq;
+    this->captureChannels = this->channels;
+    this->audio->captureDataCallback = [this]() {
+        BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->captureCond);
+        BOXEDWINE_CONDITION_SIGNAL_ALL(this->captureCond);
+    };
+    return 1;
+}
+
+S32 DevDsp::getCaptureInfo(U32& fragments, U32& bytes) {
+    S32 state = this->openCaptureIfNeeded();
+    if (state < 0) {
+        return -K_EINVAL;
+    }
+    if (state == 0) {
+        return -K_ENOTSUP;
+    }
+    bytes = this->audio->getCapturedSize();
+    U32 frag = this->audio->getFragmentSize();
+    fragments = frag ? bytes / frag : 0;
     return 0;
+}
+
+bool DevDsp::isReadReady() {
+    return this->captureOpen && this->audio->getCapturedSize() > 0;
 }
 
 U32 DevDsp::writeNative(U8* buffer, U32 len) {    
@@ -170,6 +254,9 @@ U32 DevDsp::ioctl64(U32 request, U64 argAddr, KMemory64* mem) {
     switch (request & 0xFFFF) {
     case 0x5000: // SNDCTL_DSP_RESET
         this->audio->closeAudio();
+        this->audio->closeCaptureAudio();
+        this->captureOpen = false;
+        this->captureTried = false;
         this->freq = 8000;
         this->channels = 1;
         this->format = AFMT_U8;
@@ -248,12 +335,17 @@ U32 DevDsp::ioctl64(U32 request, U64 argAddr, KMemory64* mem) {
         mem->writed(argAddr + 12, available);                   // bytes
         return 0;
     }
-    case 0x500D: { // SNDCTL_DSP_GETISPACE — no capture; report an empty buffer
-        U32 frag = this->audio->getFragmentSize();
-        mem->writed(argAddr, 0);
+    case 0x500D: { // SNDCTL_DSP_GETISPACE
+        U32 fragments = 0;
+        U32 bytes = 0;
+        S32 state = this->getCaptureInfo(fragments, bytes);
+        if (state) {
+            return (U32)state;
+        }
+        mem->writed(argAddr, fragments);
         mem->writed(argAddr + 4, this->fragmentCount);
-        mem->writed(argAddr + 8, frag);
-        mem->writed(argAddr + 12, 0);
+        mem->writed(argAddr + 8, this->audio->getFragmentSize());
+        mem->writed(argAddr + 12, bytes);
         return 0;
     }
     case 0x500F: // SNDCTL_DSP_GETCAPS
@@ -297,6 +389,9 @@ U32 DevDsp::ioctl(KThread* thread, U32 request) {
     switch (request & 0xFFFF) {
     case 0x5000: // SNDCTL_DSP_RESET
         this->audio->closeAudio();
+        this->audio->closeCaptureAudio();
+        this->captureOpen = false;
+        this->captureTried = false;
         this->freq = 8000;
         this->channels = 1;
         this->format = AFMT_U8;
@@ -434,6 +529,19 @@ U32 DevDsp::ioctl(KThread* thread, U32 request) {
         memory->writed(IOCTL_ARG1 + 12, available);
         return 0;
     }
+    case 0x500D: { // SNDCTL_DSP_GETISPACE
+        U32 fragments = 0;
+        U32 bytes = 0;
+        S32 state = this->getCaptureInfo(fragments, bytes);
+        if (state) {
+            return (U32)state;
+        }
+        memory->writed(IOCTL_ARG1, fragments);
+        memory->writed(IOCTL_ARG1 + 4, this->fragmentCount);
+        memory->writed(IOCTL_ARG1 + 8, this->audio->getFragmentSize());
+        memory->writed(IOCTL_ARG1 + 12, bytes);
+        return 0;
+    }
     case 0x500F: // SNDCTL_DSP_GETCAPS
         memory->writed(IOCTL_ARG1, DSP_CAP_TRIGGER);
         return 0;
@@ -516,6 +624,13 @@ void DevDsp::waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) {
     if (events & K_POLLOUT) {
         if (this->isWriteReady()) {
             BOXEDWINE_CONDITION_SIGNAL_ALL(parentCondition);
+        }
+    }
+    if (events & K_POLLIN) {
+        if (this->isReadReady()) {
+            BOXEDWINE_CONDITION_SIGNAL_ALL(parentCondition);
+        } else if (this->captureOpen) {
+            BOXEDWINE_CONDITION_ADD_PARENT(this->captureCond, parentCondition);
         }
     }
 }
