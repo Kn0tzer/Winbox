@@ -1253,6 +1253,59 @@ static void testPublishedStats() {
     CHECK(std::strstr(buf, "\"blocksEntered\":10,") != nullptr, "retain counts on CPU exit");
 }
 
+// K-M3 fault gate pins: every emitted guest-memory access is followed by a
+// check of Jit64WasmState::faultPending (offset 172): when the host import
+// recorded a denied access there, the module stores the faulting op index
+// to execCount and branches to the epilogue, which publishes only the
+// completed ops. String-loop accesses exit with depth 3 (check-if, loop,
+// done-block, outer block); the epilogue conditional execCount store uses
+// a different byte shape and must not be counted as an access gate.
+static bool emitModule(std::vector<U8> b, std::vector<U8>& module) {
+    Jit64Op ops[24];
+    U32 n = jit64CompileStream(0x400000, b.data(), (U32)b.size(), ops, 24, true);
+    if (!n) return false;
+    U32 consumed = 0;
+    for (U32 i = 0; i < n; i++) consumed += ops[i].len;
+    if (consumed != b.size()) return false;
+    Jit64Block block;
+    block.ops.assign(ops, ops + n);
+    return jit64EmitWasm(block, module) && !module.empty();
+}
+
+static U32 countPattern(const std::vector<U8>& m, const std::vector<U8>& pat) {
+    U32 count = 0;
+    if (m.size() < pat.size()) return 0;
+    for (size_t i = 0; i + pat.size() <= m.size(); i++) {
+        bool eq = true;
+        for (size_t j = 0; j < pat.size(); j++) if (m[i + j] != pat[j]) { eq = false; break; }
+        if (eq) count++;
+    }
+    return count;
+}
+
+static void testWasmFaultGate() {
+    CHECK(offsetof(Jit64WasmState, faultPending) == 172, "faultPending offset");
+    Jit64WasmState st{};
+    U64 gpr[16] = {};
+    jit64WasmStateInit(st, gpr, 0, 0);
+    CHECK(st.faultPending == 0, "state init must clear faultPending");
+    // Full access-gate sequence: i32.load off=172; if; local.get 0;
+    // local.get 33 (current op); i32.store off=164 (execCount); br depth.
+    const std::vector<U8> gate = {0x28, 0x02, 0xAC, 0x01, 0x04, 0x40, 0x20, 0x00,
+                                  0x20, 0x21, 0x36, 0x02, 0xA4, 0x01, 0x0C};
+    std::vector<U8> gateD3 = gate; gateD3.push_back(0x03);
+    std::vector<U8> m;
+    CHECK(emitModule({0x48, 0x8B, 0x03}, m), "emit mov rax,[rbx]");
+    CHECK(countPattern(m, gate) == 1, "load gate count=%u", countPattern(m, gate));
+    CHECK(countPattern(m, gateD3) == 0, "plain load must not use depth 3");
+    CHECK(emitModule({0x48, 0x8B, 0x03, 0x48, 0x89, 0x0B, 0x48, 0x8B, 0x13}, m),
+          "emit 3-access block");
+    CHECK(countPattern(m, gate) == 3, "3-access gate count=%u", countPattern(m, gate));
+    CHECK(emitModule({0xF3, 0x48, 0xA5}, m), "emit rep movsq");
+    CHECK(countPattern(m, gate) == 2, "rep movsq gate count=%u", countPattern(m, gate));
+    CHECK(countPattern(m, gateD3) == 2, "rep movsq depth-3 exits=%u", countPattern(m, gateD3));
+}
+
 int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "--stats-json") == 0) {
         char buf[2048];
@@ -1275,6 +1328,7 @@ int main(int argc, char** argv) {
     testJitFlag();
     testWasmStateBridge();
     testWasmGlue();
+    testWasmFaultGate();
     testShiftEmission();
     testRotateEmission();
     testShiftCLEmission();

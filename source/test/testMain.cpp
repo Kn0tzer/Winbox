@@ -117,6 +117,7 @@ void testSignal64BadFpFrame();
 void testSignal64AsyncFp();
 void testMemoryFault64Registers();
 void testMemoryFault64JitPoll();
+void testMemoryFault64RepPartial();
 void testSigaltstack64Semantics();
 void testSigaltstack64Autodisarm();
 void testClone64AltstackReset();
@@ -177,6 +178,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testSignal64AsyncFp, "Test x64 async signal FP snapshot and null restore"},
     {testMemoryFault64Registers, "Test x64 data faults preserve interrupted state (K-M3)"},
     {testMemoryFault64JitPoll, "Test x64 cached block safepoint poll faults (K-M3)"},
+    {testMemoryFault64RepPartial, "Test x64 REP string faults keep partial progress (K-M3)"},
     {testSigaltstack64Semantics, "Test x64 sigaltstack SS_ONSTACK query and on-stack EPERM"},
     {testSigaltstack64Autodisarm, "Test x64 sigaltstack SS_AUTODISARM disarm and sigreturn restore"},
     {testClone64AltstackReset, "Test x64 clone sigaltstack reset for CLONE_VM children"},

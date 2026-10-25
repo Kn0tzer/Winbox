@@ -106,3 +106,107 @@ void testMemoryFault64JitPoll() {
         testFail("cached block ignored a safepoint poll-page fault or corrupted its inputs");
 }
 #endif
+
+// K-M3: a REP string op that faults midway must deliver the fault with the
+// architectural partial progress in the frame (RCX/RSI/RDI count only the
+// completed elements, flags from the last completed comparison), and a
+// restart from the frame must finish the operation exactly. On the base
+// tree the handlers run to completion on placeholder values and delivery
+// restores the entry checkpoint, so the frame shows zero progress.
+void testMemoryFault64RepPartial() {
+    // REP MOVSQ, destination (write side) faults on element 3 of 4.
+    {
+        FaultFixture f;
+        const U8 code2[] = {0xf3, 0x48, 0xa5}; // rep movsq
+        f.mem.memcpyToGuest(code, code2, sizeof(code2));
+        for (U32 i = 0; i < 4; i++) f.mem.writeq(data + i * 8, 0xa0 + i);
+        f.mem.mprotect(data + 4096, 4096, 0);
+        f.cpu.reg[X64_RCX].setU64(4);
+        f.cpu.reg[X64_RSI].setU64(data);
+        f.cpu.reg[X64_RDI].setU64(data + 4096 - 16);
+        f.cpu.runBounded(1);
+        if (!f.delivered() || f.saved(16) != code || f.saved(14) != 2 ||
+            f.saved(9) != data + 16 || f.saved(8) != data + 4096)
+            testFail("REP MOVSQ write fault lost partial progress (rcx/rsi/rdi/rip)");
+        if (f.mem.readq(data + 4096 - 16) != 0xa0 || f.mem.readq(data + 4096 - 8) != 0xa1)
+            testFail("REP MOVSQ completed elements were not copied before the fault");
+        // Restart from the frame after fixing protection: finishes exactly.
+        f.mem.mprotect(data + 4096, 4096, 3);
+        f.cpu.reg[X64_RCX].setU64(f.saved(14));
+        f.cpu.reg[X64_RSI].setU64(f.saved(9));
+        f.cpu.reg[X64_RDI].setU64(f.saved(8));
+        f.cpu.rip = f.saved(16);
+        f.cpu.yield = false;
+        f.cpu.runBounded(1);
+        if (f.cpu.reg[X64_RCX].u64 != 0 || f.cpu.reg[X64_RSI].u64 != data + 32 ||
+            f.cpu.reg[X64_RDI].u64 != data + 4096 + 16 ||
+            f.mem.readq(data + 4096) != 0xa2 || f.mem.readq(data + 4096 + 8) != 0xa3)
+            testFail("REP MOVSQ restart from the fault frame did not finish the copy");
+    }
+    // REP MOVSQ, source (read side) faults on element 3 of 4.
+    {
+        FaultFixture f;
+        const U8 code2[] = {0xf3, 0x48, 0xa5}; // rep movsq
+        f.mem.memcpyToGuest(code, code2, sizeof(code2));
+        f.mem.writeq(data + 4096 - 16, 0xb0);
+        f.mem.writeq(data + 4096 - 8, 0xb1);
+        f.mem.mprotect(data + 4096, 4096, 0);
+        f.cpu.reg[X64_RCX].setU64(4);
+        f.cpu.reg[X64_RSI].setU64(data + 4096 - 16);
+        f.cpu.reg[X64_RDI].setU64(stack + 1024);
+        f.cpu.runBounded(1);
+        if (!f.delivered() || f.saved(16) != code || f.saved(14) != 2 ||
+            f.saved(9) != data + 4096 || f.saved(8) != stack + 1024 + 16)
+            testFail("REP MOVSQ read fault lost partial progress (rcx/rsi/rdi/rip)");
+        if (f.mem.readq(stack + 1024) != 0xb0 || f.mem.readq(stack + 1024 + 8) != 0xb1)
+            testFail("REP MOVSQ read-side completed elements were not copied");
+    }
+    // REP STOSQ faults on element 3 of 4.
+    {
+        FaultFixture f;
+        const U8 code2[] = {0xf3, 0x48, 0xab}; // rep stosq
+        f.mem.memcpyToGuest(code, code2, sizeof(code2));
+        f.mem.mprotect(data + 4096, 4096, 0);
+        f.cpu.reg[X64_RAX].setU64(0xc5c5c5c5c5c5c5c5ULL);
+        f.cpu.reg[X64_RCX].setU64(4);
+        f.cpu.reg[X64_RDI].setU64(data + 4096 - 16);
+        f.cpu.runBounded(1);
+        if (!f.delivered() || f.saved(16) != code || f.saved(14) != 2 ||
+            f.saved(8) != data + 4096)
+            testFail("REP STOSQ fault lost partial progress (rcx/rdi/rip)");
+        if (f.mem.readq(data + 4096 - 16) != 0xc5c5c5c5c5c5c5c5ULL ||
+            f.mem.readq(data + 4096 - 8) != 0xc5c5c5c5c5c5c5c5ULL)
+            testFail("REP STOSQ completed elements were not stored");
+    }
+    // REPNE SCASB faults on element 7 of 8: flags must be the last
+    // completed comparison (equal -> ZF=1), not the faulting element.
+    {
+        FaultFixture f;
+        const U8 code2[] = {0xf2, 0xae}; // repne scasb
+        f.mem.memcpyToGuest(code, code2, sizeof(code2));
+        for (U32 i = 0; i < 6; i++) f.mem.writeb(data + 4090 + i, 0x41);
+        f.mem.mprotect(data + 4096, 4096, 0);
+        f.cpu.reg[X64_RAX].setU64(0x41);
+        f.cpu.reg[X64_RCX].setU64(8);
+        f.cpu.reg[X64_RDI].setU64(data + 4090);
+        f.cpu.runBounded(1);
+        if (!f.delivered() || f.saved(16) != code || f.saved(14) != 2 ||
+            f.saved(8) != data + 4096 || !(f.saved(17) & 0x40))
+            testFail("REPNE SCASB fault lost partial progress or last-completed flags");
+    }
+    // Non-REP MOVSQ faulting on its only element: no progress, exact
+    // pre-instruction frame (control: passes before and after K-M3).
+    {
+        FaultFixture f;
+        const U8 code2[] = {0x48, 0xa5}; // movsq
+        f.mem.memcpyToGuest(code, code2, sizeof(code2));
+        f.mem.writeq(data, 0xd0);
+        f.mem.mprotect(data + 4096, 4096, 0);
+        f.cpu.reg[X64_RSI].setU64(data);
+        f.cpu.reg[X64_RDI].setU64(data + 4096);
+        f.cpu.runBounded(1);
+        if (!f.delivered() || f.saved(16) != code ||
+            f.saved(9) != data || f.saved(8) != data + 4096)
+            testFail("non-REP MOVSQ fault changed the pre-instruction frame");
+    }
+}
