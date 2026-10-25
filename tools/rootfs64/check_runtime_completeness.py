@@ -26,7 +26,10 @@ artifacts and the *source* payloads, offline:
      and usr/bin/wineserver carry the symlink target text for
      wineserver64 (no /bin/sh script; the guest rootfs has no /bin/sh).
   3d. docs/known-gaps/runtime-artifact-manifest.md matches the shipped
-     zips byte-for-byte (regenerate: gen_runtime_manifest.py).
+     zips byte-for-byte (regenerate: gen_runtime_manifest.py). Skips
+     loudly when no support pack has been built yet: the manifest's
+     support provenance is generated from dist/runtime/dependencies.json,
+     a build product, so pre-build there is nothing to compare against.
   3e. The ALSA-to-OSS bridge member sets match the staged source trees
      (tools/rootfs64/alsa for x86_64, tools/rootfs64/alsa32 for i386) in
      both directions, per member sha256: plugins + /usr/share/alsa config
@@ -229,6 +232,18 @@ def t_wineserver_dispatch():
 
 
 def t_manifest():
+    # The manifest's support-pack provenance row is generated from
+    # dist/runtime/dependencies.json (gen_runtime_manifest.py reads that
+    # exact file), so pre-build the comparison has nothing to compare
+    # against: skip loudly, like the other support-pack checks. The
+    # shipped-zip rows stay guarded in that state by the zip checks
+    # above, which fail on any missing or drifted restored asset; once
+    # dist/ exists this check runs the full byte-for-byte comparison.
+    if not (ROOT / 'dist/runtime/dependencies.json').is_file():
+        skip('manifest matches shipped zips',
+             'no support pack built yet (dist/runtime/dependencies.json '
+             'absent); the comparison runs once a build produces dist/')
+        return
     import importlib.util
     spec = importlib.util.spec_from_file_location(
         'gen_manifest', ROOT / 'tools/rootfs64/gen_runtime_manifest.py')
