@@ -3002,7 +3002,16 @@ static void x11_GetWindowAttributes(CPU* cpu) {
 }
 
 static void x11_IconifyWindow(CPU* cpu) {
-    //kpanic("x11_IconifyWindow");
+    XServer* server = XServer::getServer();
+    XWindowPtr window = server->getWindow(ARG2);
+    if (!window) {
+        EAX = BadWindow;
+        return;
+    }
+    const int result = window->unmapWindow();
+    XWMState state = { IconicState, 0 };
+    window->setProperty(WM_STATE, WM_STATE, 32, sizeof(state), (const U8*)&state, true);
+    EAX = result == Success ? True : False;
 }
 
 static void x11_InternAtom(CPU* cpu) {
