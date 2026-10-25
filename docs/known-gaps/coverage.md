@@ -10,7 +10,7 @@ This register is a marker scan. It finds `unsupported`, `not implemented`, `TODO
 
 | Area | Files | Hits | Disposition |
 | --- | --- | --- | --- |
-| X11 host (`source/x11/`) | 2 | 20 | High. Remaining marker hits include Shape handlers, legacy Xlib stubs, and loud format limitations. |
+| X11 host (`source/x11/`) | 2 | 18 | High. Remaining marker hits include Shape handlers, legacy Xlib stubs, and loud format limitations. |
 | X11 wire GLX (`source/x11wire/`) | 1 | 1 | High, if the GLX-over-wire path is used by a target build. |
 | io / fs nodes (`source/io/`) | 8 | 19 | Low. The one guest-reachable abort (`FsVirtualNode::removeDir`) is fixed. |
 | UI (`source/ui/`) | 8 | 11 | Low. Save-on-exit and error-message TODOs. |
@@ -20,13 +20,13 @@ This register is a marker scan. It finds `unsupported`, `not implemented`, `TODO
 | `web/naga-rt.mjs`, `web/frame-metrics.mjs` | 2 | 5 | Medium for shader versions routed to ANGLE. The other hit is a UI label. |
 | `include/`, `source/sdl/main.cpp` | 3 | 5 | Invariants and comments, see allowlist. |
 
-Current scan: 38 UNOWNED files, 94 hits. 20 files are in the register below and 18 are allowlisted with reasons. `--check` fails on any UNOWNED hit that is neither.
+Current scan: 38 UNOWNED files, 93 hits. 20 files are in the register below and 18 are allowlisted with reasons. `--check` fails on any UNOWNED hit that is neither.
 
 Severity: **high** = likely to crash or visibly break a real game, or to drop data silently. **medium** = breaks a feature or a subset of games. **low** = debug-only, cosmetic, or rarely used.
 
 ## Gap assessment by game impact
 
-Ranked by severity if reached. "Reached" means the guest calls the path. This scan does not show that, and each row says so where it matters. Proposed work items are in "Proposed work items", with the same numbering.
+Ranked by severity if reached. "Reached" means the guest calls the path. The table records current implementation and remaining gaps; the work list below is a progress register.
 
 | Category | Where | Severity | What a real game sees | Disposition |
 | --- | --- | --- | --- | --- |
@@ -35,6 +35,10 @@ Ranked by severity if reached. "Reached" means the guest calls the path. This sc
 | Relative mouse / pointer lock | `source/x11/xserver.cpp`, `platform/sdl/knativeinputSDL.cpp` | high | SDL pointer-lock xrel/yrel deltas pass through scaling without absolute-coordinate offsets; legacy center-warp mode derives deltas and recenters. Wire grabs enable relative mode and restore it on ungrab. | IMPLEMENTED: `x11-legacy-relative-mouse.test.mjs`, `xwire-pointer-grab.test.mjs` |
 | Core drawing entry points | `x11common.cpp` (`QueryTree`, `GetPixel`, `SubImage`, `AddPixel`, `CopyPlane`, `CreateGC` valuemask, `SetDashes`, `SetArcMode`, `FillArc`, `DrawArc`, `SetFillStyle` were kpanics) | high if reached | Each of these Xlib calls aborted the emulator. XSetDashes stores a validated pattern and offset; XDrawable applies OnOffDash and DoubleDash strokes, including background pixels for the latter. `XDrawString` is not in this list: text runs on the 64-bit wire path (`source/x11wire/xwireconnection.cpp`), not the legacy hostcall path. | IMPLEMENTED: `x11-drawable-raster.test.mjs` |
 | XMatchVisualInfo | `source/x11/x11common.cpp` | medium, especially for GLX applications | Searches the display's visual/depth list for the requested screen, depth and visual class; writes the XVisualInfo guest structure on a match and returns False otherwise. | IMPLEMENTED: `x11-match-visual-info.test.mjs` |
+| XGetWindowAttributes | `source/x11/x11common.cpp` | medium | Returns the 32-bit guest ABI fields for geometry, visual, root, class, gravity/backing, colormap, map state, per-client and all-client event masks, override-redirect and screen; a missing window returns BadWindow. | IMPLEMENTED: `x11-get-window-attributes.test.mjs` |
+| XInternAtom | `source/x11/x11common.cpp` | medium | Interns one atom and honors only-if-exists without aborting. | IMPLEMENTED: `x11-intern-atom.test.mjs` |
+| XGetWindowAttributes | `source/x11/x11common.cpp` | medium | Returns the guest 32-bit ABI fields for geometry, visual, root, class, gravity/backing, colormap, map state, this-client and all-client event masks, override-redirect and screen; a missing window returns BadWindow. | IMPLEMENTED: `x11-get-window-attributes.test.mjs` |
+| XInternAtom | `source/x11/x11common.cpp` | medium | Interns one atom and honors only-if-exists without aborting. | IMPLEMENTED: `x11-intern-atom.test.mjs` |
 | Dropped pixel write | `x11common.cpp:1688` (`x11_PutPixel`) | high | `XPutPixel` now writes the pixel into the guest XImage for 8, 16, 24 and 32 bpp. Sub-byte depths and a non-zero xoffset are logged once and not written. | FIXED (test `x11-putpixel-writes.test.mjs`) |
 | Fullscreen and window state (EWMH) | `source/x11/xwindow.cpp` state handler; `_NET_ACTIVE_WINDOW` dispatch in `x11common.cpp` | high | Fullscreen add/remove/toggle updates/restores window geometry; above state raises/lowers windows; active-window messages set X input focus; root advertises supported atoms; CWSibling/stack modes reorder sibling windows. `_NET_WM_NAME` and `_NET_WM_ICON` use property storage. | IMPLEMENTED: `x11-ewmh-state.test.mjs` |
 | Clipping | `source/x11/xdrawable.cpp` (`copyImageData`, `copy`, `plotPixel`, `clipAllows`); `XSetClipMask`/`XSetClipRectangles` in `x11common.cpp` | high | Clip rectangles and depth-one clip-mask pixmaps are applied to pixel writes, XPutImage and XCopyArea; mask origins and unset/out-of-bounds bits suppress drawing. `XSetClipMask` validates drawable/depth and replaces rectangles, and `XSetClipRectangles` replaces the mask. Shape extension remains open. | PARTLY IMPLEMENTED: `x11-drawable-raster.test.mjs`, `x11-copy-paths.test.mjs`; Shape extension basics remain open. |
@@ -79,7 +83,7 @@ The scan's pattern is also narrow. It misses a plain `not supported` outside `kp
 
 ## Proposed work items
 
-Ranked by severity if reached, then by how likely a real game is to reach the path. Each is OPEN and has an implementation approach. None is started in this lane.
+Ranked by severity if reached, then by how likely a real game is to reach the path. Items are updated as the lane implements them; remaining partial items name what still needs work.
 
 1. **XRandR family (`x11common.cpp:3029-3246`, `xserver.cpp:676`).** DONE. XRandR 1.2 exposes the host size list, current one-output topology, CRTC/output info, size range, primary output, mode changes and screen/CRTC/output notifications. The emulated output supports only rotation 0 and rejects unsupported rotations/modes. Regression probes: `x11-xrandr-set-screen-config.test.mjs`, `x11-xrandr-resources.test.mjs`, and `x11-xrandr-events.test.mjs`.
 2. **Pointer grab and relative mouse (`x11common.cpp:506,510,514`, `xserver.cpp`, `knativeinputSDL.cpp`).** IMPLEMENTED: owner_events and event masks route correctly; synchronous pointer grabs freeze and release one event per SyncPointer; async modes drain the pending queue; invalid XAllowEvents values return BadValue; relative SDL deltas feed XI2 raw motion without recentering; confined grabs request browser pointer lock; per-grab cursor switches on the SDL main thread and restores on ungrab. Tests: `xwire-pointer-grab.test.mjs`, `x11-legacy-relative-mouse.test.mjs`.
@@ -94,11 +98,11 @@ Ranked by severity if reached, then by how likely a real game is to reach the pa
 11. **MIT-SHM (`x11common.cpp:2562-2575`).** REJECTED-LOUDLY: extension query reports unavailable, and direct hostcalls return False/NULL with a rate-limited warning because shared mappings are not exposed. Clients fall back to XPutImage. Test: `x11-mitshm-unavailable.test.mjs`.
 12. **XI2 masks and Xcursor images (`x11common.cpp:3442,3547`).** PARTLY IMPLEMENTED: XI2 event mask bytes now preserve bit 32, and malformed bits return BadValue; `XcursorImageLoadCursor` creates a native cursor from guest pixels. Test: `x11-xinput-cursor.test.mjs`. XFixes cursor changes and animated frame scheduling remain open.
 12. **Tiled fill (`xdrawable.cpp:216`).** Impact: medium-low. Approach: repeat the tile pixmap across the fill rectangle, offset by the tile origin. Test: a 2x2 tile over a 5x3 rectangle, against a reference.
-13. **Naga to ANGLE fallback (`web/naga-rt.mjs:70,283-286`).** IMPLEMENTED: a node probe drives an unsupported-version shader through the installed WebGL wrapper, verifies the original ANGLE method receives the identical shader and returns normally, and checks the unsupported observation record without marking the lane broken. Test: `naga-angle-fallback.test.mjs`.
-14. **Host thread exception sync (`platformThreads-x64.cpp:146,187`).** Impact: medium. Approach: record the unexpected thread state as a guest fault and deliver it through the existing signal path. Needs kernel-lane coordination. Test: an injected exception-state fixture.
-15. **memfd `FsMemNode` (`fsmemnode.cpp`).** Allowlisted as unreachable. If `/proc/self/fd` is added, the rename, remove, open, removeDir and setTimes paths become reachable and must be implemented first. Test: the allowlist reason is the guard.
-16. **Async fs events (the io group above).** NEEDS_KERNEL_DEPENDENCY. Kernel inotify is currently ignored (`source/kernel/syscall.cpp:1498`), and add/remove watch syscall slots are null (`:2272-2273`). The kernel lane must expose watch registration, event queue delivery and `O_ASYNC`/SIGIO ownership before FsNode mutations can reliably notify open-node waiters. After that, implement and test the fs node hooks here.
-17. **CPU frequency (`platform.cpp:130,134,138`).** IMPLEMENTED: native Linux reads cpufreq sysfs then `/proc/cpuinfo`; browser builds use a nominal 1000MHz fallback when host files are absent. Per-CPU scaling nodes fall back to base frequency. Test: `platform-cpu-frequency.test.mjs`.
+14. **Naga to ANGLE fallback (`web/naga-rt.mjs:70,283-286`).** IMPLEMENTED: a node probe drives an unsupported-version shader through the installed WebGL wrapper, verifies the original ANGLE method receives the identical shader and returns normally, and checks the unsupported observation record without marking the lane broken. Test: `naga-angle-fallback.test.mjs`.
+15. **Host thread exception sync (`platformThreads-x64.cpp:146,187`).** Impact: medium. Approach: record the unexpected thread state as a guest fault and deliver it through the existing signal path. Needs kernel-lane coordination. Test: an injected exception-state fixture.
+16. **memfd `FsMemNode` (`fsmemnode.cpp`).** Allowlisted as unreachable. If `/proc/self/fd` is added, the rename, remove, open, removeDir and setTimes paths become reachable and must be implemented first. Test: the allowlist reason is the guard.
+17. **Async fs events (the io group above).** NEEDS_KERNEL_DEPENDENCY. Kernel inotify is currently ignored (`source/kernel/syscall.cpp:1498`), and add/remove watch syscall slots are null (`:2272-2273`). The kernel lane must expose watch registration, event queue delivery and `O_ASYNC`/SIGIO ownership before FsNode mutations can reliably notify open-node waiters. After that, implement and test the fs node hooks here.
+18. **CPU frequency (`platform.cpp:130,134,138`).** IMPLEMENTED: native Linux reads cpufreq sysfs then `/proc/cpuinfo`; browser builds use a nominal 1000MHz fallback when host files are absent. Per-CPU scaling nodes fall back to base frequency. Test: `platform-cpu-frequency.test.mjs`.
 
 ## NEEDS_OTHER_LANE
 
@@ -112,6 +116,7 @@ Ranked by severity if reached, then by how likely a real game is to reach the pa
 - **`source/x11/x11common.cpp` `x11_GetGeometry` and `x11_FreeFont`**: `XGetGeometry` aborted the emulator. It now writes the root, the position in the parent, the border, the size and the depth to the guest pointers, and returns 1. A pixmap reports position and border as 0. An unknown drawable returns `BadDrawable` and writes nothing. `XFreeFont` aborted too; the legacy path never loads a font, so it now returns `Success`. Regression: `web/tests/suite/unit/x11-getgeometry.test.mjs` and `web/tests/suite/unit/x11-freefont.test.mjs`, which compile the real bodies against stubs and check the results. Both fail on the original code.
 - **Core drawing calls in `source/x11/x11common.cpp` and `source/x11/xdrawable.cpp`** (were kpanics): `XQueryTree` lists the root, the parent and every child, bottom-most first, from `XWindow::getChildrenBottomToTop`. `XGetPixel` reads a pixel from the guest XImage, and `XSubImage` returns a new guest XImage holding a region, with 0 where the region is outside the source. `XAddPixel` adds to each pixel and wraps at the depth. Images are handled only for byte-aligned depths up to 32 bits and a zero xoffset; others are logged once. `XCopyPlane` paints the GC foreground for set bits of the plane and the background for clear bits, through the GC function and clip. `XCreateGC` honours the valuemask. `XSetFillStyle` and `XSetArcMode` store their values, and `XFillArc` and `XDrawArc` draw pie, chord and full ellipses, with the tile honoured for fills. `XSetDashes` stores and draws the validated pattern, phase, and DoubleDash background pixels. Regression: `x11-querytree`, `x11-image-pixels`, `x11-copyplane`, `x11-gc-setters`, `x11-drawable-raster` and `x11-arc-drawing` unit tests, plus `x11-putpixel-writes` which now also covers `XGetPixel`.
 - **`source/x11/xdrawable.cpp` copy paths** (`copyImageData`, `copy`): both now cut copies to the drawable, honour clip rectangles and depth-one pixmap masks, apply every GX function for 32-bit, and read each source row before a later row overwrites it. The direct memcpy fast path is disabled when a GC clip is active. Regression: `web/tests/suite/unit/x11-copy-paths.test.mjs` runs both XCopyArea and XPutImage with mask pixels set and clear.
+- **`source/x11/x11common.cpp` `x11_GetWindowAttributes` / `XInternAtom`**: `XGetWindowAttributes` now returns the documented 32-bit ABI fields, including per-client and aggregate event masks; `XInternAtom` shares the atom table and honors `only_if_exists`. Regressions: `web/tests/suite/unit/x11-get-window-attributes.test.mjs` (including direct execution of the aggregate-mask implementation) and `x11-intern-atom.test.mjs`.
 - **`source/x11/x11common.cpp` `x11_MatchVisualInfo`**: XMatchVisualInfo now searches the guest display visuals for a matching screen/depth/class, writes the matching XVisualInfo and returns False if no match exists. Regression: `web/tests/suite/unit/x11-match-visual-info.test.mjs` compiles and calls the real handler for both cases.
 
 ## Register
@@ -137,7 +142,7 @@ Machine-readable. `tools/known-gaps-audit.mjs --check` reads this block. Counts 
   "source/ui/mainui.cpp": { "count": 2, "severity": "low", "area": "ui", "gap": "TODO: quit does not check a failed save" },
   "source/ui/utils/readIcons.cpp": { "count": 1, "severity": "low", "area": "ui", "gap": "one icon format not shown" },
   "source/util/bstring.cpp": { "count": 2, "severity": "low", "area": "util", "gap": "TODO: copy on substring (performance); BString::BString invariant" },
-  "source/x11/x11common.cpp": { "count": 19, "severity": "high", "area": "x11", "gap": "Shape handlers abort; several legacy Xlib/XIM calls remain unimplemented; unsupported image layouts are loud" },
+  "source/x11/x11common.cpp": { "count": 17, "severity": "high", "area": "x11", "gap": "Shape handlers abort; several legacy Xlib/XIM calls remain unimplemented; unsupported image layouts are loud" },
   "source/x11/xdrawable.cpp": { "count": 1, "severity": "medium", "area": "x11", "gap": "non-32-bit legacy line drawing is logged and skipped" },
   "source/x11wire/xwireconnection.cpp": { "count": 1, "severity": "high", "area": "x11", "gap": "unknown GLX requests return BadRequest and log a warning" },
   "web/naga-rt.mjs": { "count": 5, "severity": "medium", "area": "shader", "gap": "shader versions routed to ANGLE; fallback not verified; naga 'Not implemented' probe note" }
@@ -383,7 +388,7 @@ _Generated by `node tools/known-gaps-audit.mjs --write-hits`; do not edit by han
 | --- | --- | --- |
 | 259 | `kpanic(` | kpanic("shouldn't signal a thread that is not waiting"); |
 
-### `source/x11/x11common.cpp` (19)
+### `source/x11/x11common.cpp` (17)
 
 | Line | Match | Text |
 | --- | --- | --- |
@@ -397,15 +402,13 @@ _Generated by `node tools/known-gaps-audit.mjs --write-hits`; do not edit by han
 | 2799 | `TODO` | // :TODO: |
 | 2902 | `kpanic(` | kpanic("x11_DisplayName"); |
 | 2906 | `kpanic(` | kpanic("x11_GetDefault"); |
-| 2910 | `kpanic(` | kpanic("x11_GetWindowAttributes"); |
-| 2914 | `kpanic(` | //kpanic("x11_IconifyWindow"); |
-| 2918 | `kpanic(` | kpanic("x11_InternAtom"); |
-| 2923 | `kpanic(` | kpanic("x11_LocaleOfIM"); |
-| 2968 | `kpanic(` | kpanic("x11_ShapeCombineMask"); |
-| 2972 | `kpanic(` | kpanic("x11_ShapeCombineRectangles"); |
-| 2976 | `kpanic(` | kpanic("x11_ShapeOffsetShape"); |
-| 3006 | `kpanic(` | kpanic("x11_WindowEvent"); |
-| 3641 | `not supported` | klog("x11_CursorImagesLoadCursor animated cursors not supported, will use first frame"); |
+| 2970 | `kpanic(` | //kpanic("x11_IconifyWindow"); |
+| 2981 | `kpanic(` | kpanic("x11_LocaleOfIM"); |
+| 3026 | `kpanic(` | kpanic("x11_ShapeCombineMask"); |
+| 3030 | `kpanic(` | kpanic("x11_ShapeCombineRectangles"); |
+| 3034 | `kpanic(` | kpanic("x11_ShapeOffsetShape"); |
+| 3064 | `kpanic(` | kpanic("x11_WindowEvent"); |
+| 3699 | `not supported` | klog("x11_CursorImagesLoadCursor animated cursors not supported, will use first frame"); |
 
 ### `source/x11/xdrawable.cpp` (1)
 

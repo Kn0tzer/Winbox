@@ -501,6 +501,24 @@ void XServer::removeGC(U32 gc) {
 	gcs.remove(gc);
 }
 
+U32 XServer::getAllEventMask(U32 wndId) {
+	std::vector<U32> ids;
+	{
+		BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(displayMutex);
+		for (auto& display : displays) ids.push_back(display.key);
+	}
+	U32 result = 0;
+	for (U32 id : ids) {
+		DisplayDataPtr data;
+		{
+			BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(displayMutex);
+			data = displays.get(id);
+		}
+		if (data) result |= data->getEventMask(wndId);
+	}
+	return result;
+}
+
 bool XServer::iterateEventMask(U32 wndId, U32 mask, std::function<void(const DisplayDataPtr& display)> callback) {
 	std::vector<U32> ids;
 	bool matched = false;

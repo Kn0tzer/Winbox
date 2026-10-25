@@ -2907,7 +2907,63 @@ static void x11_GetDefault(CPU* cpu) {
 }
 
 static void x11_GetWindowAttributes(CPU* cpu) {
-    kpanic("x11_GetWindowAttributes");
+    struct XWindowAttributes32 {
+        S32 x, y, width, height, border_width, depth;
+        U32 visual, root;
+        S32 c_class, bit_gravity, win_gravity, backing_store;
+        U32 backing_planes, backing_pixel;
+        S32 save_under;
+        U32 colormap;
+        S32 map_installed, map_state;
+        U32 all_event_masks, your_event_mask, do_not_propagate_mask;
+        S32 override_redirect;
+        U32 screen;
+    };
+    static_assert(sizeof(XWindowAttributes32) == 92, "emulation expects 32-bit XWindowAttributes layout");
+    constexpr S32 IsUnmapped = 0, IsUnviewable = 1, IsViewable = 2;
+
+    KMemory* memory = cpu->memory;
+    XServer* server = XServer::getServer();
+    XWindowPtr window = server->getWindow(ARG2);
+    if (!window) {
+        EAX = BadWindow;
+        return;
+    }
+    DisplayDataPtr data = server->getDisplayDataByAddressOfDisplay(memory, ARG1);
+    XWindowAttributes32 result = {};
+    U32 border = 0;
+    window->getPlacement(result.x, result.y, border);
+    result.width = window->width();
+    result.height = window->height();
+    result.border_width = border;
+    result.depth = window->getDepth();
+    result.root = data ? data->root : server->getRoot()->id;
+    result.c_class = window->c_class;
+    const XSetWindowAttributes& attributes = window->getAttributes();
+    result.bit_gravity = attributes.bit_gravity;
+    result.win_gravity = attributes.win_gravity;
+    result.backing_store = attributes.backing_store;
+    result.backing_planes = attributes.backing_planes;
+    result.backing_pixel = attributes.backing_pixel;
+    result.save_under = attributes.save_under;
+    result.colormap = window->colorMap ? window->colorMap->id : attributes.colormap;
+    result.map_installed = window->colorMap ? True : False;
+    result.map_state = window->mapped() ? (window->isThisAndAncestorsMapped() ? IsViewable : IsUnviewable) : IsUnmapped;
+    result.your_event_mask = data ? data->getEventMask(window->id) : 0;
+    result.all_event_masks = server->getAllEventMask(window->id);
+    result.do_not_propagate_mask = attributes.do_not_propagate_mask;
+    result.override_redirect = attributes.override_redirect;
+    result.screen = memory->readd(ARG1 + 0x8c);
+    Visual* windowVisual = window->getVisual().get();
+    Display::iterateVisuals(cpu->thread, ARG1, [&result, windowVisual](S32, U32 visualAddress, Depth*, Visual* visual) {
+        if (visual == windowVisual) {
+            result.visual = visualAddress;
+            return false;
+        }
+        return true;
+    });
+    memory->memcpy(ARG3, &result, sizeof(result));
+    EAX = True;
 }
 
 static void x11_IconifyWindow(CPU* cpu) {

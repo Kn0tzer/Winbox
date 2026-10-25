@@ -62,6 +62,7 @@ public:
 	void updateCursor(const XWindowPtr& wnd);
 
 	bool iterateEventMask(U32 wndId, U32 mask, std::function<void(const DisplayDataPtr& data)> callback);
+	U32 getAllEventMask(U32 wndId);
 	void iterateInput2Mask(U32 wndId, U32 mask, std::function<void(const DisplayDataPtr& data)> callback);
 
 	U32 openDisplay(KThread* thread);
