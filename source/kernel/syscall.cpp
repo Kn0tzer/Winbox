@@ -934,8 +934,8 @@ static U32 syscall_nanosleep(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_mremap(CPU* cpu, U32 eipCount) {
-    SYS_LOG1(SYSCALL_MEMORY, cpu, "mremap: oldaddress=%x oldsize=%d newsize=%d flags=%X", ARG1, ARG2, ARG3, ARG4);
-    U32 result = cpu->memory->mremap(cpu->thread, ARG1, ARG2, ARG3, ARG4);
+    SYS_LOG1(SYSCALL_MEMORY, cpu, "mremap: oldaddress=%x oldsize=%d newsize=%d flags=%X newaddress=%X", ARG1, ARG2, ARG3, ARG4, ARG5);
+    U32 result = cpu->memory->mremap(cpu->thread, ARG1, ARG2, ARG3, ARG4, ARG5);
     SYS_LOG(SYSCALL_MEMORY, cpu, " result=%d(0x%X)\n", result, result);
     return result;
 }

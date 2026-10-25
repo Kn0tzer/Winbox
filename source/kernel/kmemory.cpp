@@ -275,61 +275,62 @@ U32 KMemory::mprotect(KThread* thread, U32 address, U32 len, U32 prot) {
     return 0;
 }
 
-U32 KMemory::mremap(KThread* thread, U32 oldaddress, U32 oldsize, U32 newsize, U32 flags) {
-    if (flags > 1) {
-        kpanic_fmt("mremap not implemented: flags=%X", flags);
-    }
-    // is page aligned
-    if (oldaddress & 0xFFF) {
+U32 KMemory::mremap(KThread* thread, U32 oldaddress, U32 oldsize, U32 newsize, U32 flags, U32 newaddress) {
+    constexpr U32 MAYMOVE = 1, FIXED = 2, DONTUNMAP = 4;
+    if ((oldaddress & (K_PAGE_SIZE - 1)) || !oldsize || !newsize ||
+        (flags & ~(MAYMOVE | FIXED | DONTUNMAP)) ||
+        ((flags & FIXED) && (!(flags & MAYMOVE) || !newaddress || (newaddress & (K_PAGE_SIZE - 1)))) ||
+        ((flags & DONTUNMAP) && (!(flags & MAYMOVE) || oldsize != newsize))) {
         return -K_EINVAL;
     }
-    if (newsize == 0) {
+    const U64 oldRounded64 = ((U64)oldsize + K_PAGE_SIZE - 1) & ~(U64)(K_PAGE_SIZE - 1);
+    const U64 newRounded64 = ((U64)newsize + K_PAGE_SIZE - 1) & ~(U64)(K_PAGE_SIZE - 1);
+    if ((U64)oldaddress + oldsize > 0x100000000ULL ||
+        (U64)oldaddress + oldRounded64 > 0x100000000ULL || newRounded64 > 0xFFFFFFFFULL ||
+        ((flags & FIXED) && (U64)newaddress + newRounded64 > 0x100000000ULL)) {
         return -K_EINVAL;
     }
-    if (oldsize == 0) {
-        kpanic("mremap not implemented for oldsize==0");
+    const U32 oldRounded = (U32)oldRounded64;
+    const U32 newRounded = (U32)newRounded64;
+    const U32 oldPageStart = oldaddress >> K_PAGE_SHIFT;
+    const U32 oldPageCount = oldRounded >> K_PAGE_SHIFT;
+    U32 pageFlags = 0;
+    for (U32 i = 0; i < oldPageCount; ++i) {
+        U32 current = getPageFlags(oldPageStart + i);
+        if (!(current & PAGE_MAPPED)) return -K_EFAULT;
+        if (!i) pageFlags = current;
+        else if ((current & (PAGE_READ | PAGE_WRITE | PAGE_EXEC | PAGE_SHARED)) !=
+                 (pageFlags & (PAGE_READ | PAGE_WRITE | PAGE_EXEC | PAGE_SHARED))) return -K_EFAULT;
     }
-    U32 oldPageCount = (oldsize + K_PAGE_SIZE - 1) >> K_PAGE_SHIFT;
-    U32 oldPageStart = oldaddress >> K_PAGE_SHIFT;
-    U32 pageFlags = getPageFlags(oldPageStart);
+    if ((flags & FIXED) && (U64)newaddress < (U64)oldaddress + oldRounded &&
+        (U64)oldaddress < (U64)newaddress + newRounded) return -K_EINVAL;
+    U32 prot = 0, mapFlags = 0;
+    if (pageFlags & PAGE_READ) prot |= K_PROT_READ;
+    if (pageFlags & PAGE_WRITE) prot |= K_PROT_WRITE;
+    if (pageFlags & PAGE_EXEC) prot |= K_PROT_EXEC;
+    mapFlags = (pageFlags & PAGE_SHARED) ? K_MAP_SHARED : K_MAP_PRIVATE;
 
-    for (U32 i = 0; i < oldPageCount; i++) {
-        if (getPageFlags(oldPageStart + i) != pageFlags) {
-            return -K_EFAULT;
-        }
-    }
-    if (newsize < oldsize) {
-        this->unmap(oldaddress + newsize, oldsize - newsize);
+    if (newRounded <= oldRounded && !(flags & DONTUNMAP)) {
+        if (newRounded < oldRounded) unmap(oldaddress + newRounded, oldRounded - newRounded);
         return oldaddress;
-    } else {
-        U32 prot = 0;
-        U32 f = 0;
-        if (pageFlags & PAGE_READ) {
-            prot |= K_PROT_READ;
-        }
-        if (pageFlags & PAGE_WRITE) {
-            prot |= K_PROT_WRITE;
-        }
-        if (pageFlags & PAGE_EXEC) {
-            prot |= K_PROT_EXEC;
-        }
-        if (pageFlags & PAGE_SHARED) {
-            f |= K_MAP_SHARED;
-        } else {
-            f |= K_MAP_PRIVATE;
-        }        
-        U32 result = this->mmap(thread, oldaddress + oldsize, newsize - oldsize, prot, f | K_MAP_FIXED_NOREPLACE, -1, 0, true);
-        if (result == oldaddress + oldsize) {
-            return oldaddress;
-        }
-        if ((flags & 1) != 0) { // MREMAP_MAYMOVE
-            result = this->mmap(thread, 0, newsize, prot, f | K_MAP_ANONYMOUS, -1, 0);
-            this->memcpy(result, oldaddress, oldsize);
-            this->unmap(oldaddress, oldsize);
-            return result;
-        }
-        return -K_ENOMEM;
     }
+    if (!(flags & (MAYMOVE | FIXED)) && newRounded > oldRounded) {
+        U32 result = mmap(thread, oldaddress + oldRounded, newRounded - oldRounded,
+                          prot, mapFlags | K_MAP_FIXED_NOREPLACE, -1, 0, true);
+        return result == oldaddress + oldRounded ? oldaddress : (S32)result == -K_EEXIST ? -K_ENOMEM : result;
+    }
+    if (!(flags & MAYMOVE)) return -K_ENOMEM;
+
+    std::vector<U8> contents(oldsize < newsize ? oldsize : newsize);
+    memcpy(contents.data(), oldaddress, (U32)contents.size());
+    U32 destination = (flags & FIXED)
+        ? mmap(thread, newaddress, newRounded, prot, mapFlags | K_MAP_ANONYMOUS | K_MAP_FIXED, -1, 0)
+        : mmap(thread, 0, newRounded, prot, mapFlags | K_MAP_ANONYMOUS, -1, 0);
+    if ((S32)destination < 0) return destination;
+    memcpy(destination, contents.data(), (U32)contents.size());
+    if (flags & DONTUNMAP) memset(oldaddress, 0, oldsize);
+    else unmap(oldaddress, oldRounded);
+    return destination;
 }
 
 U32 KMemory::unmap(U32 address, U32 len) {
