@@ -211,6 +211,25 @@ else
          "wine64 will run but with OpenGL disabled." >&2
 fi
 
+# Backport two builtin-Wine DLLs that exist in the 32-bit WineHQ-10.0 tree
+# but not in Debian's 8.0 amd64 tree. d3d12core.dll (post-8.0 module) and
+# msmpeg2vdec.dll (Media Foundation H.264/MPEG-2 decoder — the decoder behind
+# virtually every WMV/H.264 game cutscene). Both import only against module
+# sets that wine64 8.0 already ships (msmpeg2vdec needs mfplat's
+# MFTRegister/MFTUnregister, verified present). See winehq10-x86_64/README.md
+# for the pinned source and hashes.
+WINEHQ64="$HERE/winehq10-x86_64"
+for dll in d3d12core.dll msmpeg2vdec.dll; do
+    if [ -f "$WINEHQ64/$dll" ]; then
+        cp "$WINEHQ64/$dll" \
+            "$STAGEHOST/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/$dll"
+        echo "--- staging $dll (winehq10 backport) ---"
+    else
+        echo "WARNING: $WINEHQ64/$dll missing — run the refresh recipe in $WINEHQ64/README.md;" \
+             "64-bit guests will lack the module." >&2
+    fi
+done
+
 # Stage our guest Vulkan shim (tools/rootfs64/libvk64/libvk64.c -> libvulkan.so.1).
 # Same shape as the libGL.so.1 staging above, for the same reason: with no Vulkan
 # loader and no ICD .so in the guest, THIS library is the guest's whole Vulkan API
@@ -262,6 +281,19 @@ if [ -d "$ALSA_PREBUILT/usr/share/alsa" ]; then
     printf 'pcm.!default {\n    type plug\n    slave.pcm {\n        type oss\n        device /dev/dsp\n    }\n}\nctl.!default {\n    type oss\n    device /dev/mixer\n}\n' > "$STAGEHOST/etc/asound.conf"
 else
     echo "WARNING: $ALSA_PREBUILT missing — audio bridge not staged." >&2
+fi
+
+# GStreamer demux/decode plugins + DT_NEEDED closure (gitignored payload;
+# regenerate with prepare-gstreamer.py — see its docstring). winegstreamer.so
+# links only the gst core; without these plugins every MF/DShow cutscene
+# decode path dead-ends.
+GST64="$HERE/gstreamer64"
+if [ -d "$GST64/usr/lib/x86_64-linux-gnu/gstreamer-1.0" ]; then
+    echo "--- staging GStreamer plugins (winegstreamer decode paths) ---"
+    mkdir -p "$STAGEHOST/usr/lib/x86_64-linux-gnu/gstreamer-1.0"
+    cp -R "$GST64"/usr/lib/x86_64-linux-gnu "$STAGEHOST/usr/lib/"
+else
+    echo "WARNING: $GST64 missing — run prepare-gstreamer.py; gstreamer decode paths will fail!" >&2
 fi
 
 echo "=== zipping on host (macOS zip preserves the symlinks) ==="

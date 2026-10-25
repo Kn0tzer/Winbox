@@ -21,6 +21,9 @@ def registry(architecture: str, user: bool = False) -> bytes:
                            ("winebus", "00000003"), ("wineusb", "00000003")):
         lines.extend((f"[System\\\\CurrentControlSet\\\\Services\\\\{service}] 1",
                       f'"Start"=dword:{start}', ""))
+    lines.extend((r"[Software\\Microsoft\\Windows NT\\CurrentVersion] 1",
+                  r'"ProductName"="Microsoft Windows 7"', r'"CurrentBuild"="7601"',
+                  r'"CSDVersion"="Service Pack 1"', ""))
     lines.extend((r"[Software\\Microsoft\\Windows\\CurrentVersion\\RunServices] 1",
                   r'"winemenubuilder"="C:\\windows\\system32\\winemenubuilder.exe -a -r"', ""))
     lines.extend((
@@ -196,13 +199,18 @@ class PrefixPackagingTests(unittest.TestCase):
                 for name, data in entries.items():
                     archive.writestr(name, data)
             modules = ("winealsa.drv", "services.exe", "rpcss.exe", "plugplay.exe", "winedevice.exe",
-                       "winebus.sys", "winehid.sys", "wineusb.sys", "d3d11.dll", "d3d12.dll")
+                       "winebus.sys", "winehid.sys", "wineusb.sys", "d3d11.dll", "d3d12.dll",
+                       "d3d12core.dll", "msmpeg2vdec.dll")
             unix = linked.replace("x86_64-windows/", "x86_64-unix/")
             with zipfile.ZipFile(runtime, "w") as archive:
                 for name in modules:
                     archive.writestr(linked + name, b"wine module")
                 archive.writestr(unix + "winebus.so", b"winebus")
                 archive.writestr(unix + "wineusb.so", b"wineusb")
+                for plugin in ("libav", "playback", "typefindfunctions", "avi", "isomp4",
+                               "matroska", "ogg", "wavparse", "flac", "vorbis"):
+                    archive.writestr("usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgst"
+                                     + plugin + ".so", b"gst plugin")
             prefixes.validate_service_runtime(prefix, runtime)
             incomplete = temp / "incomplete.zip"
             with zipfile.ZipFile(incomplete, "w") as archive:

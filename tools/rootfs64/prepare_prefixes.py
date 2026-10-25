@@ -192,6 +192,16 @@ def _validate_prefix(contents: dict[str, bytes], architecture: str,
             if "home/username/" + filename not in contents:
                 errors.append("missing 32-bit Direct3D/DXVK payload " + filename)
 
+    # HKLM\Software\Microsoft\Windows NT\CurrentVersion is what games and
+    # installers read for ProductName/CurrentBuild/CSDVersion. wine.inf
+    # writes it on every real wineboot (usr/share/wine/wine.inf [Version]
+    # section: ProductName="Microsoft Windows 7", CurrentBuild=7601,
+    # CSDVersion="Service Pack 1"); without it only RtlGetVersion keeps
+    # working (compiled-in defaults, ntdll version_init), while direct
+    # registry readers get nothing.
+    if "[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion]" not in system:
+        errors.append("missing Windows NT CurrentVersion version emulation section")
+
     if architecture == "win64" and require_full_init:
         for filename in ("winebus.inf", "winehid.inf", "wineusb.inf", "winexinput.inf"):
             key = PREFIX + "drive_c/windows/inf/" + filename
@@ -217,6 +227,12 @@ def validate_service_runtime(prefix_zip: Path, wine_zip: Path) -> None:
         names = set(archive.namelist())
     required = ("winealsa.drv", "services.exe", "rpcss.exe", "plugplay.exe", "winedevice.exe",
                 "winebus.sys", "winehid.sys", "wineusb.sys", "d3d11.dll", "d3d12.dll")
+    # d3d12core/msmpeg2vdec: present in the i386 WineHQ-10.0 tree; backported
+    # into the amd64 Debian-8.0 tree by build-wine64-zip.sh (see
+    # tools/rootfs64/winehq10-x86_64/README.md). Games LoadLibrary d3d12core
+    # directly and MF resolves msmpeg2vdec for WMV/H.264 cutscenes.
+    if "x86_64-windows/" in system32:
+        required = required + ("d3d12core.dll", "msmpeg2vdec.dll")
     missing = [system32 + name for name in required if system32 + name not in names]
     if missing:
         raise ValueError(f"{wine_zip}: missing linked audio/service/device/D3D payloads: " + ", ".join(missing))
@@ -231,6 +247,15 @@ def validate_service_runtime(prefix_zip: Path, wine_zip: Path) -> None:
                         if unix_dir + name not in names]
         if missing_unix:
             raise ValueError(f"{wine_zip}: missing linked HID Unix modules: " + ", ".join(missing_unix))
+        # winegstreamer links only the GStreamer core; without these plugins
+        # (staged by prepare-gstreamer.py) every MF/DShow cutscene path
+        # dead-ends at gst_element_factory_make().
+        lib_dir = "usr/lib/x86_64-linux-gnu/" if "x86_64-unix/" in unix_dir else "usr/lib/i386-linux-gnu/"
+        for plugin in ("libav", "playback", "typefindfunctions", "avi", "isomp4",
+                       "matroska", "ogg", "wavparse", "flac", "vorbis"):
+            entry = f"{lib_dir}gstreamer-1.0/libgst{plugin}.so"
+            if entry not in names:
+                raise ValueError(f"{wine_zip}: missing gstreamer plugin {entry}")
 
 
 def patch_audio(path: Path) -> None:
