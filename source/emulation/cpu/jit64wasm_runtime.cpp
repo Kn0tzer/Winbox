@@ -31,6 +31,7 @@
 #include <cstring>
 #include "boxedwine.h"
 #include "kmemory64.h"
+#include "cpu64.h" // full CPU64 for the K-M3 fault flag (memoryFaultPending)
 #include "bwjittable.h"
 #ifdef __EMSCRIPTEN_PTHREADS__
 #include <pthread.h>
@@ -42,13 +43,34 @@
 // import runs.
 namespace {
 thread_local KMemory64* g_jitActiveMem = nullptr;
+// K-M3: the CPU whose guest-access context the accessors enforce, and the
+// staged state the imports flag when an access is denied. The emitted
+// module reads Jit64WasmState::faultPending after every import call and
+// stops at the faulting op; once the flag is set, later imports in the
+// same call are suppressed so the faulting op cannot complete a second
+// access on placeholder values (mirroring the interpreter, whose later
+// accesses in the faulting instruction are dropped by the same gate).
+thread_local CPU64* g_jitActiveCpu = nullptr;
+thread_local Jit64WasmState* g_jitActiveState = nullptr;
+
+void jit64NoteAccessFault() {
+    if (g_jitActiveCpu && g_jitActiveCpu->memoryFaultPending && g_jitActiveState)
+        g_jitActiveState->faultPending = 1;
+}
+bool jit64AccessSuppressed() {
+    return g_jitActiveState && g_jitActiveState->faultPending;
+}
 // 0 = not yet instantiated / unavailable, 1 = wasm table.
 thread_local int g_wasmEngineMode = 0;
 thread_local bool g_memOptionsKnown = false;
 thread_local Jit64EmitOptions g_memOptions;
 } // namespace
 
-void jit64WasmSetActiveMem(KMemory64* mem) { g_jitActiveMem = mem; }
+void jit64WasmSetActive(KMemory64* mem, CPU64* cpu, Jit64WasmState* state) {
+    g_jitActiveMem = mem;
+    g_jitActiveCpu = cpu;
+    g_jitActiveState = state;
+}
 
 // Host memory helpers for the string/push/pop/call/ret imports. All
 // params/results are 32-bit (no BigInt dependence): addresses and values are
@@ -57,19 +79,26 @@ void jit64WasmSetActiveMem(KMemory64* mem) { g_jitActiveMem = mem; }
 extern "C" {
 EMSCRIPTEN_KEEPALIVE void jit64MemRead(U32 addrLo, U32 addrHi, U32 size, U32 retPtr) {
     U64 val = 0;
-    if (KMemory64* mem = g_jitActiveMem) {
-        U64 addr = ((U64)addrHi << 32) | addrLo;
-        switch (size) {
-            case 1: val = mem->readb(addr); break;
-            case 2: val = mem->readw(addr); break;
-            case 4: val = mem->readd(addr); break;
-            default: val = mem->readq(addr); break;
+    if (!jit64AccessSuppressed()) {
+        if (KMemory64* mem = g_jitActiveMem) {
+            U64 addr = ((U64)addrHi << 32) | addrLo;
+            switch (size) {
+                case 1: val = mem->readb(addr); break;
+                case 2: val = mem->readw(addr); break;
+                case 4: val = mem->readd(addr); break;
+                default: val = mem->readq(addr); break;
+            }
+            // The accessors run under the guest-access context the host
+            // armed in execWasmBlock: a denied access has just recorded a
+            // fault on the active CPU. Surface it to the emitted module.
+            jit64NoteAccessFault();
         }
     }
     memcpy(reinterpret_cast<void*>(retPtr), &val, 8);
 }
 
 EMSCRIPTEN_KEEPALIVE void jit64MemWrite(U32 addrLo, U32 addrHi, U32 size, U32 valLo, U32 valHi) {
+    if (jit64AccessSuppressed()) return;
     if (KMemory64* mem = g_jitActiveMem) {
         U64 addr = ((U64)addrHi << 32) | addrLo;
         U64 val = ((U64)valHi << 32) | valLo;
@@ -79,6 +108,7 @@ EMSCRIPTEN_KEEPALIVE void jit64MemWrite(U32 addrLo, U32 addrHi, U32 size, U32 va
             case 4: mem->writed(addr, (U32)val); break;
             default: mem->writeq(addr, val); break;
         }
+        jit64NoteAccessFault();
     }
 }
 } // extern "C"

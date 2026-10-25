@@ -31,7 +31,13 @@ struct Jit64WasmState {
     U32 gen1;          // entry generation of the block's last code page
     U32 execCount;     // out: guest instructions actually executed
     U32 limit;         // in: max guest instructions for this entry
-    U32 reserved3;
+    // out: the host memRead/memWrite imports set this when the active CPU
+    // records a denied guest access (K-M3). The emitted module checks it
+    // after every import call and exits to the epilogue, so a faulting op
+    // publishes nothing and later ops never run -- the same guest-visible
+    // fault the interpreter delivers. Was reserved3 (never read); the
+    // rename keeps the offset (172) and the struct size unchanged.
+    U32 faultPending;
 };
 static_assert(offsetof(Jit64WasmState, rip) == 128, "wasm guest RIP offset");
 static_assert(offsetof(Jit64WasmState, rflags) == 136, "wasm guest flags offset");
@@ -42,6 +48,7 @@ static_assert(offsetof(Jit64WasmState, gen0) == 156, "wasm gen0 offset");
 static_assert(offsetof(Jit64WasmState, gen1) == 160, "wasm gen1 offset");
 static_assert(offsetof(Jit64WasmState, execCount) == 164, "wasm exec count offset");
 static_assert(offsetof(Jit64WasmState, limit) == 168, "wasm limit offset");
+static_assert(offsetof(Jit64WasmState, faultPending) == 172, "wasm fault offset");
 static_assert(sizeof(Jit64WasmState) == 176, "wasm guest state size");
 
 // UNBOUNDED_LIMIT: the `limit` value for an entry that may run the whole block.
@@ -126,9 +133,13 @@ void jit64WasmCall(int tableIndex, Jit64WasmState* state);
 void jit64WasmRelease(int tableIndex);
 U32 jit64WasmOwnerId();
 // Routes the emitted module's memRead/memWrite imports at `mem` for the
-// duration of the next synchronous jit64WasmCall. Thread-local: wasm
-// execution never yields, so the import always observes the setter's thread.
-void jit64WasmSetActiveMem(KMemory64* mem);
+// duration of the next synchronous jit64WasmCall, and binds the active CPU
+// + staged state so a denied access can set Jit64WasmState::faultPending
+// (and later accesses in the same call are suppressed). Pass all-null to
+// clear. Thread-local: wasm execution never yields, so the import always
+// observes the setter's thread.
+class CPU64;
+void jit64WasmSetActive(KMemory64* mem, CPU64* cpu, Jit64WasmState* state);
 bool jit64WasmAvailable();
 bool jit64WasmHostAbiOk();
 // "table" (ALLOW_TABLE_GROWTH call_indirect), or
@@ -141,7 +152,7 @@ inline int jit64WasmInstantiate(const U8*, U32, const Jit64EmitOptions&) { retur
 inline void jit64WasmCall(int, Jit64WasmState*) {}
 inline void jit64WasmRelease(int) {}
 inline U32 jit64WasmOwnerId() { return 0; }
-inline void jit64WasmSetActiveMem(KMemory64*) {}
+inline void jit64WasmSetActive(KMemory64*, CPU64*, Jit64WasmState*) {}
 inline bool jit64WasmAvailable() { return false; }
 inline bool jit64WasmHostAbiOk() { return false; }
 inline const char* jit64WasmEngineMode() { return "unavailable"; }

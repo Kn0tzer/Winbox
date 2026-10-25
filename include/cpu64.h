@@ -65,6 +65,11 @@ public:
     U64   numaNodeMask = 1;
     U64   currentInstructionRip = 0;
     bool  memoryFaultPending = false;
+    // K-M3: set by the REP string handlers when they stop mid-instruction
+    // on a denied access: the live RCX/RSI/RDI (and CMPS/SCAS flags) are
+    // architectural partial progress that deliverGuestMemoryFault must
+    // preserve across the checkpoint restore.
+    bool  faultPartialProgress = false;
     U64   memoryFaultAddress = 0;
     U64   memoryFaultRip = 0;
     U32   memoryFaultError = 0;
@@ -329,7 +334,9 @@ private:
 
     // Call one cached emitted module and commit its guest state. Returns the
     // instructions the emitted code reports having retired (0 = did not run).
-    U32 execWasmBlock(const struct Jit64Block& block, U64 maxInsn);
+    // speculative: a verification comparison run -- unarmed, no fault
+    // path (the block faults precisely on its first real execution).
+    U32 execWasmBlock(const struct Jit64Block& block, U64 maxInsn, bool speculative = false);
     U32 verifyWasmBlock(struct Jit64Block& block, U64 maxInsn);
     // Validate the JIT decode plan against the interpreter's BBlock builder
     // (BW64_JIT_VERIFY=1). Returns false when the two decoders disagree, which

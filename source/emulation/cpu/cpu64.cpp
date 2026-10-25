@@ -419,6 +419,17 @@ bool CPU64::deliverGuestMemoryFault() {
     const U64 faultRip = memoryFaultRip;
     const U32 error = memoryFaultError;
     memoryFaultPending = false;
+    // K-M3: a REP string op that stopped mid-instruction has architectural
+    // partial progress in the live registers (RCX/RSI/RDI, and for
+    // CMPS/SCAS the flags of the last completed element). That progress is
+    // part of the fault frame, not an effect to undo: capture it before
+    // the checkpoint restore below and write it back after.
+    const bool partial = faultPartialProgress;
+    faultPartialProgress = false;
+    const U64 partialRcx = reg[X64_RCX].u64;
+    const U64 partialRsi = reg[X64_RSI].u64;
+    const U64 partialRdi = reg[X64_RDI].u64;
+    const U32 partialFlags = rflags;
     memoryFaultAddress = memoryFaultRip = 0;
     memoryFaultError = 0;
 
@@ -441,6 +452,12 @@ bool CPU64::deliverGuestMemoryFault() {
         faultCheckpointFpValid = false;
     }
     rip = faultRip;
+    if (partial) {
+        reg[X64_RCX].setU64(partialRcx);
+        reg[X64_RSI].setU64(partialRsi);
+        reg[X64_RDI].setU64(partialRdi);
+        rflags = partialFlags;
+    }
     yield = false;
     const S32 siCode = (error & 1) ? 2 /*SEGV_ACCERR*/ : 1 /*SEGV_MAPERR*/;
     if (raiseSyncFault(K_SIGSEGV, /*trapNo #PF*/14, siCode, address, error))
@@ -3223,6 +3240,18 @@ dsp_43:
                 case 4: memory->writed(dst, (U32)val); break;
                 case 8: memory->writeq(dst, val); break;
             }
+            // K-M3: a denied access during this element ends the
+            // instruction here. The element did not complete, so the
+            // pointers stay and RCX keeps the uncompleted count (the
+            // local count was already decremented for this element):
+            // hardware partial progress, preserved across delivery by
+            // faultPartialProgress. rip is not advanced; delivery
+            // overwrites it with the faulting instruction's RIP.
+            if (memoryFaultPending) {
+                if (p.rep != 0) reg[X64_RCX].setU64(count + 1);
+                faultPartialProgress = true;
+                return opOff + 1;
+            }
             if (!isStos) reg[X64_RSI].setU64(reg[X64_RSI].u64 + (U64)step);
             reg[X64_RDI].setU64(reg[X64_RDI].u64 + (U64)step);
         }
@@ -3270,6 +3299,15 @@ dsp_44:
                 case 2: rhs = memory->readw(dst); break;
                 case 4: rhs = memory->readd(dst); break;
                 default: rhs = memory->readq(dst); break;
+            }
+            // K-M3: a denied read ends the instruction BEFORE the flags
+            // update: the frame carries the last completed element's
+            // flags and pointers (hardware partial progress, preserved
+            // across delivery by faultPartialProgress).
+            if (memoryFaultPending) {
+                if (p.rep != 0) reg[X64_RCX].setU64(count + 1);
+                faultPartialProgress = true;
+                return opOff + 1;
             }
             U64 diff = lhs - rhs;
             flagsSub(rflags, lhs, rhs, diff, size);
@@ -8367,8 +8405,11 @@ U32 CPU64::tryJitStep(U64 maxInsn) {
 }
 
 #ifdef BOXEDWINE_BLOCK_CACHE_INFRA
-U32 CPU64::execWasmBlock(const Jit64Block& block, U64 maxInsn) {
+U32 CPU64::execWasmBlock(const Jit64Block& block, U64 maxInsn, bool speculative) {
     if (block.wasmIndex < 0 || block.ops.empty()) return 0;
+    // A fault recorded before entry must be delivered by the caller first;
+    // running the module now would execute past it. Mirrors execBlock.
+    if (!speculative && memoryFaultPending) return 0;
     const U64 LIMIT = JIT64_WASM_UNBOUNDED;
     const U64 limit = maxInsn < LIMIT ? maxInsn : LIMIT;
     U64 gpr[16];
@@ -8377,9 +8418,25 @@ U32 CPU64::execWasmBlock(const Jit64Block& block, U64 maxInsn) {
     jit64WasmStateInit(st, gpr, rip, rflags);
     st.limit = (U32)limit;
     jit64WasmStateSetGens(st, m_jit->genBaseAddr, block.gen0, block.gen1);
-    jit64WasmSetActiveMem(memory);
+    // K-M3: arm the guest-access context for the whole call, exactly as
+    // the run loops arm it around step(). The module's imports then run
+    // the same gated KMemory64 accessors the interpreter uses, and the
+    // module stops at the faulting op (see emitFaultCheck). Speculative
+    // verification runs stay unarmed by design: they compare raw outputs
+    // against an unarmed interpreter clone, and a block that touches a
+    // denied page faults precisely on its first real execution instead.
+    CPU64* prevAccessCpu = nullptr;
+    if (!speculative) {
+        prevAccessCpu = k64GuestAccessCPU();
+        k64SetGuestAccessCPU(this);
+        currentInstructionRip = block.startRip;
+        jit64WasmSetActive(memory, this, &st);
+    } else {
+        jit64WasmSetActive(memory, nullptr, nullptr);
+    }
     jit64WasmCall(block.wasmIndex, &st);
-    jit64WasmSetActiveMem(nullptr);
+    jit64WasmSetActive(nullptr, nullptr, nullptr);
+    if (!speculative) k64SetGuestAccessCPU(prevAccessCpu);
     // From here on the guest state HAS advanced whatever execCount says, so
     // never report 0 (that would make the caller re-run the block on the
     // interpreter). The emitted code zeroes execCount on entry.
@@ -8402,6 +8459,23 @@ U32 CPU64::execWasmBlock(const Jit64Block& block, U64 maxInsn) {
     m_jit->blocksExecuted++;
     m_jit->insnsFast += executed;
     m_jit->cache.recordExec(block.startRip);
+    if (st.faultPending && memoryFaultPending) {
+        // The module stopped at the faulting op and published only the
+        // completed ops (string ops keep architectural partial progress).
+        // The recorded fault still names the block's first instruction
+        // and delivery would restore a stale checkpoint: replace both
+        // with the committed state, so the frame is the exact
+        // pre-instruction state of the faulting op -- the interpreter's
+        // semantics. The run loops deliver the fault from here.
+        memoryFaultRip = st.rip;
+        for (int i = 0; i < X64_REG_COUNT; i++) faultCheckpointRegs[i] = reg[i];
+        faultCheckpointFlags = rflags;
+        faultCheckpointFsBase = fsbase;
+        faultCheckpointGsBase = gsbase;
+        faultCheckpointFpValid = false;
+        faultCheckpointValid = true;
+        return 0;
+    }
     if (executed < decoded) {
         if ((U64)executed == limit) m_jit->wasmLimitExits++;
         else m_jit->wasmEarlyExits++; // a code page was written: stop at that RIP
@@ -8462,7 +8536,7 @@ U32 CPU64::verifyWasmBlock(Jit64Block& block, U64 maxInsn) {
     K64JitVerifyMemory jitMemory;
     jitMemory.initialBytes = std::move(interpMemory.initialBytes);
     memory->beginJitVerifyOverlay(jitMemory);
-    U32 jitDone = execWasmBlock(block, maxInsn);
+    U32 jitDone = execWasmBlock(block, maxInsn, true);
     memory->endJitVerifyOverlay();
     if (jitMemory.wroteRegisteredCodePage)
         return reject("JIT wrote compiled code page", interpDone, jitDone);
@@ -8651,7 +8725,7 @@ U32 CPU64::tryWasmExec(U64 maxInsn) {
     return block->verifyRemaining ? verifyWasmBlock(*block, maxInsn) : execWasmBlock(*block, maxInsn);
 }
 #else // !BOXEDWINE_BLOCK_CACHE_INFRA
-U32 CPU64::execWasmBlock(const Jit64Block&, U64) { return 0; }
+U32 CPU64::execWasmBlock(const Jit64Block&, U64, bool) { return 0; }
 U32 CPU64::tryWasmExec(U64) { return 0; }
 #endif
 
