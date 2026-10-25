@@ -4823,9 +4823,9 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             if (g_glContext && count > 0 && count <= 4096 && args.a[2]) {
                 std::vector<std::string> names((size_t)count);
                 std::vector<const GLchar*> pointers((size_t)count);
+                const std::vector<U64> addresses = cpu->memory->readPointers(args.a[2], (size_t)count);
                 for (GLsizei i = 0; i < count; ++i) {
-                    const U64 address = cpu->memory->readq(args.a[2] + (U64)i * sizeof(U64));
-                    names[(size_t)i] = readGuestCStr(cpu, address, 4096);
+                    names[(size_t)i] = readGuestCStr(cpu, addresses[(size_t)i], 4096);
                     pointers[(size_t)i] = names[(size_t)i].c_str();
                 }
                 GL_MT(glTransformFeedbackVaryings((GLuint)ai(args,0), count, pointers.data(), (GLenum)ai(args,3)));
