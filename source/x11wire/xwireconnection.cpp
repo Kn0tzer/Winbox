@@ -234,6 +234,7 @@ namespace {
         GLX_FIRST_EVENT  = 95,   // first GLX event code (BufferSwapComplete et al.)
         // GLX minor opcodes (the few libX11 might still send synchronously).
         X_GLXQueryVersion        = 7,
+        X_GLXQueryExtensionsString = 18,
         X_GLXQueryServerString   = 19,
         X_GLXClientInfo          = 20,
         // glXCreateWindow: wraps an on-screen GL child window in a GLXWindow
@@ -1761,6 +1762,29 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
                     writeToClient(r, sizeof(r));
                     break;
                 }
+                case X_GLXQueryExtensionsString:
+                case X_GLXQueryServerString: {
+                    const uint32_t name = minor == X_GLXQueryServerString ? rd32(req + 8) : 3 /* GLX_EXTENSIONS */;
+                    std::string value;
+                    if (minor == X_GLXQueryExtensionsString || name == 3) value = "";
+                    else if (name == 1) value = "BoxedWine"; // GLX_VENDOR
+                    else if (name == 2) value = "1.4";       // GLX_VERSION
+                    else {
+                        sendError(BadValue, sequence, name, opcode, minor);
+                        break;
+                    }
+                    const uint32_t padded = (uint32_t)((value.size() + 3) & ~size_t(3));
+                    std::vector<uint8_t> r(32 + padded, 0);
+                    r[0] = 1;
+                    r[2] = (uint8_t)(sequence & 0xff);
+                    r[3] = (uint8_t)(sequence >> 8);
+                    uint32_t replyLen = padded / 4, textLen = (uint32_t)value.size();
+                    memcpy(r.data() + 4, &replyLen, 4);
+                    memcpy(r.data() + 8, &textLen, 4);
+                    if (textLen) memcpy(r.data() + 32, value.data(), textLen);
+                    writeToClient(r.data(), (uint32_t)r.size());
+                    break;
+                }
                 case X_GLXClientInfo:
                     // no reply expected (client->server info)
                     break;
@@ -1787,13 +1811,12 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
                     break;
                 }
                 default: {
-                    // Any other reply-expecting GLX request: send an empty 32-byte
-                    // reply so a synchronous client doesn't hang. (Requests with no
-                    // reply will just see this as the next reply for a later seq;
-                    // winex11's direct path doesn't depend on these.)
-                    if (getenv("BW64_XWIRE")) {
-                        klog_fmt("XWire: GLX minor=%d (stub-reply) seq=%d", (int)minor, (int)sequence);
-                    }
+                    // This direct-rendering implementation does not provide the
+                    // remaining GLX protocol operations. Return a protocol error
+                    // rather than a fabricated reply (which would corrupt the
+                    // client's reply stream) or silently leave it waiting.
+                    kwarn_fmt("XWire: unsupported GLX request minor %u", unsigned(minor));
+                    sendError(BadRequest, sequence, minor, opcode, minor);
                     break;
                 }
             }
