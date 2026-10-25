@@ -1092,6 +1092,7 @@ struct PipelineAudit {
     U32 dynMask = 0;              // states supplied by commands, not by the create info
     bool vertexDivisor = false;   // VkVertexInputBindingDivisorDescriptionEXT.divisor != 1
     bool unsupportedVertexFormat = false;
+    bool unsupportedVertexBindingCount = false;
     bool unsupportedBlendEnum = false;
     bool mixedBlendConstants = false;
     bool unsupportedStencilEnum = false;
@@ -1119,6 +1120,7 @@ static bool vk64AuditGraphicsPipeline(const PipelineAudit& a) {
     if (a.viewportCount > 1) { vk64Unsupported("multi-viewport", "pipeline rejected"); reject = true; }
     if (a.vertexDivisor) { vk64Unsupported("vertex-attribute-divisor", "pipeline rejected"); reject = true; }
     if (a.unsupportedVertexFormat) { vk64Unsupported("vertex-format", "pipeline rejected"); reject = true; }
+    if (a.unsupportedVertexBindingCount) { vk64Unsupported("vertex-binding-limit", "pipeline exceeds the active WebGPU maxVertexBuffers limit"); reject = true; }
     if (a.unsupportedBlendEnum) { vk64Unsupported("blend-enum", "blend factor or operation has no WebGPU mapping; pipeline rejected"); reject = true; }
     if (a.mixedBlendConstants) { vk64Unsupported("mixed-blend-constants", "WebGPU cannot use separate Vulkan constant-color and constant-alpha values in one pipeline; pipeline rejected"); reject = true; }
     if (a.unsupportedStencilEnum) { vk64Unsupported("stencil-enum", "stencil operation or compare op has no WebGPU mapping; pipeline rejected"); reject = true; }
@@ -3003,6 +3005,14 @@ static bool v2WebGpuDepth32FloatStencil8Supported() {
     return false;
 #endif
 }
+static U32 v2WebGpuMaxVertexBuffers() {
+#ifdef __EMSCRIPTEN__
+    const U32 count = (U32)MAIN_THREAD_EM_ASM_INT({ return Number(globalThis.bwVkMaxVertexBuffers) || 8; });
+    return std::min<U32>(count, VK64_MAX_VERT_BINDINGS);
+#else
+    return 8;
+#endif
+}
 static bool v2FormatIsSupportedImage(U32 format) {
     return v2FormatIsBC(format) ? v2WebGpuBcSupported() : v2FormatIn(format, kV2SupportedTextureFormats);
 }
@@ -3955,7 +3965,7 @@ void fillLimits(Limits& L) {
     L.maxDescriptorSetStorageBuffers = 4; L.maxDescriptorSetStorageBuffersDynamic = 4;
     L.maxDescriptorSetSampledImages = 16; L.maxDescriptorSetStorageImages = 4;
     L.maxDescriptorSetInputAttachments = 4;
-    L.maxVertexInputAttributes = 16; L.maxVertexInputBindings = 16;
+    L.maxVertexInputAttributes = 16; L.maxVertexInputBindings = v2WebGpuMaxVertexBuffers();
     L.maxVertexInputAttributeOffset = 2047; L.maxVertexInputBindingStride = 2048;
     L.maxVertexOutputComponents = 64; L.maxTessellationGenerationLevel = 64;
     L.maxTessellationPatchSize = 32;
@@ -5424,6 +5434,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 audit.polygonMode = rs.polygonMode;
                 audit.rasterizerDiscard = rs.rasterizerDiscardEnable;
                 audit.dynMask = p->dynMask;
+                audit.unsupportedVertexBindingCount = p->nvb > v2WebGpuMaxVertexBuffers();
                 p->rasterizerDiscard = rs.rasterizerDiscardEnable ? 1 : 0;
                 audit.logicOp = cbs.logicOpEnable;
                 audit.depthBounds = ds.depthBoundsTestEnable;
@@ -8594,6 +8605,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 audit.polygonMode = rs.polygonMode;
                 audit.rasterizerDiscard = rs.rasterizerDiscardEnable;
                 audit.dynMask = p->dynMask;
+                audit.unsupportedVertexBindingCount = p->nvb > v2WebGpuMaxVertexBuffers();
                 p->rasterizerDiscard = rs.rasterizerDiscardEnable ? 1 : 0;
                 audit.logicOp = cbs.logicOpEnable;
                 audit.depthBounds = ds.depthBoundsTestEnable;

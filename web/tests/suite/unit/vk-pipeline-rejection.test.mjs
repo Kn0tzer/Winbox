@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 
 const root = new URL('../../../../', import.meta.url);
 const bridge = readFileSync(new URL('source/vulkan/vk64bridge.cpp', root), 'utf8');
+const page = readFileSync(new URL('web/vkwebgpu.mjs', root), 'utf8');
 const manifest = JSON.parse(readFileSync(new URL('source/vulkan/vk-capabilities.json', root), 'utf8'));
 
 function functionBody(source, header) {
@@ -51,6 +52,15 @@ test('unsupported vertex formats fail pipeline creation in both guest ABIs', () 
   assert.equal((bridge.match(/v2FormatIsSupportedVertex\(p->vaFormat\[a\]\)/g) || []).length, 2);
   assert.match(bridge, /static bool v2FormatIsSupportedVertex\(U32 format\)[\s\S]*?return v2FormatIn\(format, kV2SupportedVertexFormats\);/);
   assert.match(bridge, /v2FormatBufferFeatureFlags\(U32 format\)\s*\{\s*VkFormatFeatureFlags flags = v2FormatIsSupportedVertex\(format\)/);
+});
+
+test('vertex binding limits follow WebGPU and pipeline creation rejects excess bindings', () => {
+  const audit = functionBody(bridge, 'static bool vk64AuditGraphicsPipeline(');
+  assert.match(audit, /a\.unsupportedVertexBindingCount[^\n]*vk64Unsupported\("vertex-binding-limit"[^\n]*reject = true/);
+  assert.equal((bridge.match(/audit\.unsupportedVertexBindingCount = p->nvb > v2WebGpuMaxVertexBuffers\(\)/g) || []).length, 2);
+  assert.match(bridge, /L\.maxVertexInputBindings = v2WebGpuMaxVertexBuffers\(\)/);
+  assert.match(bridge, /static U32 v2WebGpuMaxVertexBuffers\(\)[\s\S]*?bwVkMaxVertexBuffers[\s\S]*?return 8;/);
+  assert.equal((page.match(/globalThis\.bwVkMaxVertexBuffers = Math\.min\(16, device\.limits\?\.maxVertexBuffers \|\| 8\)/g) || []).length, 2);
 });
 
 test('unsupported blend enums and mixed constants fail pipeline creation in both guest ABIs', () => {
