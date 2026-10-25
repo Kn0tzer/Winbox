@@ -75,14 +75,14 @@ not a disposition.
 | `source/opengl/es/glshim.c:37,145` | The dynamic-type fields are commented code for declaration-only `block_t`; the `rect_arb` member is never read or written. Active shim functions only maintain GLES texture-enable state, array enables, and line-stipple emulation. | Harmless dead scaffolding | NOT-A-GAP (`gl-shim-coverage.test.mjs` proves the TODO fields are unused) |
 | `source/opengl/glcommon.cpp:1318` | GLX pixmap texture attributes are not supported; a non-empty list now logs once and returns `None` instead of panicking. Empty lists remain accepted. | Breaks callers using texture-from-pixmap | REJECTED-LOUDLY (`web/tests/suite/unit/gl-shim-coverage.test.mjs`) |
 | `source/opengl/glcommon.cpp:1346` | GLX window attributes are not supported; a non-empty list now logs once and returns `None` instead of panicking. Empty lists remain accepted. | Breaks callers using window attributes | REJECTED-LOUDLY (`web/tests/suite/unit/gl-shim-coverage.test.mjs`) |
+| `source/opengl/gl64bridge.cpp:290-5050`, `source/opengl/glcommon.cpp:251-1406`, `source/opengl/glMarshal.cpp:46-732` | The source scan enumerated the remaining `default:` and `catch` sites, but this pass did not write a separate behavioral disposition for each enum-conversion, marshalling, and dispatch fallback. The existing grouped bridge exception rows do not prove every default is safe for valid guest calls. | Could silently drop valid GL calls or mask bridge errors | OPEN (per-site disposition and guard coverage still required) |
 
 ## Audit notes
 
-The audit covers explicit rejection markers, empty bodies, catch paths, return
-defaults, and dispatch defaults in the scoped GL files. Enum conversion helpers
-in `gl-webgpu-utils.mjs` throw synchronously only for invalid internal values;
-the public GL entry points validate guest enum/value inputs before calling
-them. Bridge catch paths that preserve an earlier error are listed above;
-dispatch defaults are listed with the owning bridge section. The rows marked
-`OPEN` identify specific guest-visible paths that still lack full behavior or
-regression evidence and remain unresolved.
+The source scan covered explicit rejection markers, empty bodies, catch paths,
+return defaults, and dispatch defaults in the scoped GL files. Most paths are
+listed above, but the grouped default/catch inventory still needs per-site
+disposition and regression guards. Enum conversion helpers in
+`gl-webgpu-utils.mjs` throw synchronously for invalid internal inputs; public GL
+entry points validate guest enums before calling them. The rows marked `OPEN`
+identify specific guest-visible paths or audit evidence that remain unresolved.
