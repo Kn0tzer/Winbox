@@ -20,6 +20,7 @@ const readers = extractSourceSlice(x11common, '// Reads count XPoint records', '
 const drawLinesHandler = extractSourceSlice(x11common, 'static void x11_DrawLines(CPU* cpu) {', 'static void x11_SetArcMode(CPU* cpu) {', { sourceName: 'source/x11/x11common.cpp' });
 const fillHandlers = extractSourceSlice(x11common, '// int XFillRectangles(', '// int XChangeGC(', { sourceName: 'source/x11/x11common.cpp' });
 const clearArea = extractSourceSlice(xwindow, 'int XWindow::clearArea(', 'void XWindow::exposeNofity(', { sourceName: 'source/x11/xwindow.cpp' });
+const moveResize = extractSourceSlice(xwindow, 'int XWindow::moveResize(', 'int XWindow::configure(', { sourceName: 'source/x11/xwindow.cpp' });
 
 test('the drawing handlers do not abort the emulator and call the drawable primitives', () => {
   assert.doesNotMatch(clearAreaHandler, /kpanic\(/);
@@ -179,4 +180,26 @@ int main() {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('XWindow::moveResize exposes resized mapped windows so guests can redraw their new backing store', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'x11-resize-expose-'));
+  try {
+    writeFileSync(join(dir, 'check.cpp'), `
+#include <cassert>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <vector>
+using U32=uint32_t;using S32=int32_t;enum{Success=0,InputOutput=1,ExposureMask=1<<15};
+struct KThread{};struct DisplayData{};using DisplayDataPtr=std::shared_ptr<DisplayData>;
+struct Expose{S32 x,y,w,h;};struct XServer{std::vector<Expose> events;static XServer* getServer(){static XServer s;return &s;}void iterateEventMask(U32,U32 mask,std::function<void(const DisplayDataPtr&)> callback){if(mask&ExposureMask)callback(std::make_shared<DisplayData>());}};
+class XWindow;using XWindowPtr=std::shared_ptr<XWindow>;struct KNativeSystem{static void moveWindow(const XWindowPtr&){};};
+struct XWindow:std::enable_shared_from_this<XWindow>{S32 left=0,top=0;U32 w=50,h=40,id=1,c_class=InputOutput;bool isMapped=true;U32 width(){return w;}U32 height(){return h;}void setSize(U32 a,U32 b){w=a;h=b;}void configureNotify(){}void exposeNofity(const DisplayDataPtr&,S32 x,S32 y,S32 a,S32 b,S32){XServer::getServer()->events.push_back({x,y,a,b});}int moveResize(S32,S32,U32,U32);};
+${moveResize}
+int main(){auto w=std::make_shared<XWindow>();assert(w->moveResize(2,3,80,60)==Success);assert(XServer::getServer()->events.size()==1);auto e=XServer::getServer()->events[0];assert(e.x==0&&e.y==0&&e.w==80&&e.h==60);assert(w->moveResize(4,5,80,60)==Success);assert(XServer::getServer()->events.size()==1);w->isMapped=false;w->moveResize(4,5,90,70);assert(XServer::getServer()->events.size()==1);}
+`);
+    execFileSync('g++', ['-std=c++17', '-Wall', '-Werror', join(dir, 'check.cpp'), '-o', join(dir, 'check')], { stdio: 'pipe' });
+    execFileSync(join(dir, 'check'), [], { stdio: 'pipe' });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

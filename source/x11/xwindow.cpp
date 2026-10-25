@@ -1003,15 +1003,19 @@ int XWindow::moveResize(S32 x, S32 y, U32 width, U32 height) {
 	if (this->left == x && this->top == y && this->width() == width && this->height() == height) {
 		return Success;
 	}
-	if (width != this->width() || height != this->height()) {
+	const bool sizeChanged = width != this->width() || height != this->height();
+	if (sizeChanged) {
 		setSize(width, height);
 	}
 
 	KNativeSystem::moveWindow(shared_from_this());
 	
 	configureNotify();
-	// :TODO:
-	// exposeNofity
+	if (sizeChanged && c_class == InputOutput && isMapped) {
+		XServer::getServer()->iterateEventMask(id, ExposureMask, [this](const DisplayDataPtr& data) {
+			exposeNofity(data, 0, 0, this->width(), this->height(), 0);
+			});
+	}
 	return Success;
 }
 
@@ -1079,7 +1083,6 @@ int XWindow::configure(U32 mask, XWindowChanges* changes) {
 		KNativeSystem::moveWindow(shared_from_this());
 	}
 	configureNotify();
-	// :TODO:
 	if (c_class == InputOutput && isMapped) {
 		XServer::getServer()->iterateEventMask(id, ExposureMask, [this](const DisplayDataPtr& data) {
 			exposeNofity(data, 0, 0, this->width(), this->height(), 0);
