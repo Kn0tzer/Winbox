@@ -25,6 +25,12 @@ template<class T>T* objOf(U64 id,int kind,const char*){if(kind==K_IMAGEVIEW)retu
 std::vector<U8> readGuestRange(U64,U64,U64){return {1,2,3,4};}
 U64 fnv1a64(const U8*,size_t){return 123;}
 bool vkProfEnabled(){return false;}
+// Encode profiler scopes (VkEncodeProfile::Scope in the bridge): inert here,
+// timing is disabled in this harness just as vkProfEnabled() above is false.
+namespace vkencode{enum Stage{ImageView,ImageDedup,ImageLookup,ImageRead,ImageHash,ImageRecord};}
+struct VkEncodeProfileStub{};struct VkEncodeScope{VkEncodeScope(VkEncodeProfileStub&,int,bool){}void stop(){}};
+struct VkProfAccStub{VkEncodeProfileStub encode;};VkProfAccStub& vkProfAcc(){static VkProfAccStub a;return a;}
+bool detailed=false;
 // Live metrics share these timers (see web/tests/suite/unit/frame-metrics.test.mjs).
 bool vkMetricsEnabled(){return false;}bool vkTimingEnabled(){return vkProfEnabled()||vkMetricsEnabled();}
 struct ChunkWriter{std::vector<U64> words;std::vector<U32> integers;void u64(U64 v){words.push_back(v);}void u32(U32 v){integers.push_back(v);}void bytes(const std::vector<U8>&){}};
