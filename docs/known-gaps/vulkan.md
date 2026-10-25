@@ -2,7 +2,7 @@
 
 Initial source audit register for lane P2-V. It includes requested grep hits, source-level `default:` arms, empty `catch` arms, replay skip/drop counters, and identified SPIR-V/WGSL rejection sites. Original audit rows are followed by disposition updates as fixes land; unresolved rows remain OPEN. Some grep matches are scanner duplicates within one behavior and still need consolidation into behavior-level rows.
 
-Rows: 343 source and follow-up rows (36 IMPLEMENTED, 71 REJECTED-LOUDLY, 232 NOT-A-GAP, 4 OPEN).
+Rows: 343 source and follow-up rows (36 IMPLEMENTED, 71 REJECTED-LOUDLY, 233 NOT-A-GAP, 3 OPEN).
 
 | File:line | Guest behavior / audit evidence | Severity | Disposition |
 |---|---|---|---|
@@ -291,7 +291,7 @@ Rows: 343 source and follow-up rows (36 IMPLEMENTED, 71 REJECTED-LOUDLY, 232 NOT
 | `web/vkwebgpu.mjs:2293` (duplicate replay scan) | The replay-drop scanner reports the same missing/non-depth target guard. | Harmless duplicate | NOT-A-GAP: same invalid image/format guard as the row above. Regression context: `vk-view-range-and-clears.test.mjs`. |
 | `web/vkwebgpu.mjs:2322` (replay drop/skip) | A draw encounters the replay pass skip flag. | High | NOT-A-GAP: `skipped` is initialized to null and never assigned anywhere; the branch is unreachable. Guard: `vk-replay-validity-guards.test.mjs`. |
 | `web/vkwebgpu.mjs:2323` (replay drop/skip) | A draw command has no active render pass or bound graphics pipeline. | High | NOT-A-GAP for valid Vulkan command buffers: `vkCmdDraw` requires a render pass instance and a bound graphics pipeline; the replay check guards invalid command sequences. Guard: `vk-replay-validity-guards.test.mjs`. |
-| `web/vkwebgpu.mjs:2327` (marker) | Per-face dynamic stencil values cannot be represented by WebGPU’s one reference/read/write mask. | High | OPEN: Vulkan permits distinct front/back dynamic stencil values, but WebGPU exposes one set-pass value. `vk64AuditStencil` rejects static mismatches only; the renderer currently logs `draw-stencil-pipeline` and skips. |
+| `web/vkwebgpu.mjs:2327` (marker) | A draw reaches dynamic stencil state without the required per-face command value. | High | NOT-A-GAP for valid commands: `v2StencilPipeline` checks that every face not culled by the active cull mode has each declared dynamic stencil value set; Vulkan requires those dynamic states before drawing. Guard: `vk-replay-validity-guards.test.mjs`. |
 | `web/vkwebgpu.mjs:2327` (replay drop/skip) | The same per-face dynamic stencil mismatch is caught and reported. | High | NOT-A-GAP: duplicate scanner hit for the dynamic stencil limitation in the preceding row; same `draw-stencil-pipeline` branch. |
 | `web/vkwebgpu.mjs:2333` (replay drop/skip) | Draw propagation of a failed pipeline translation or creation. | High | NOT-A-GAP as a separate cause: it forwards the `getPipelineFor` failure; the root pipeline translation/build rows at lines 1590 and 1698/1732 remain OPEN. The skip is counted and logged. |
 | `web/vkwebgpu.mjs:2360` (replay drop/skip) | Triangle-strip index-type pipeline fallback fails. | High | NOT-A-GAP: the initial pipeline lookup and retry use the same current `st.ibind.indexType`; no index bind can intervene during this synchronous op replay. Guard: `vk-replay-validity-guards.test.mjs`. |

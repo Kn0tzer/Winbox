@@ -20,6 +20,14 @@ test('render replay skip flag is never set, and draw prerequisites are checked',
   assert.match(frame, /if \(skipped\) \{ noteSkippedDraw\('draw-pass-skipped'/);
 });
 
+test('dynamic stencil values must be set for every face used by the pipeline', () => {
+  const start = page.indexOf('function v2StencilPipeline(');
+  const end = page.indexOf('\n}', start) + 2;
+  const stencil = page.slice(start, end);
+  assert.match(stencil, /if \(\(index === 0 && pipe\.cull === 1\) \|\| \(index === 1 && pipe\.cull === 2\)\) continue/);
+  assert.match(stencil, /if \(dynamic\[kind\]\[index\] === undefined\) throw new Error\('missing dynamic stencil '/);
+});
+
 test('strip-index pipeline retry uses the exact index type already used for selection', () => {
   const start = page.indexOf("case 'draw': {");
   const end = page.indexOf("default: noteUnsupported('unknown-replay-op'", start);
