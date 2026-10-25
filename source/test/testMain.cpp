@@ -65,6 +65,9 @@ void testAtomicStress64();
 void testFutex64DispatchGuard();
 #ifndef BOXEDWINE_GUEST_X64
 void testMadvise32Syscall();
+void testClone32Sharing();
+void testClone32Flags();
+void testClone3Abi32();
 void testGetrandom32Syscall();
 void testMlock32Syscalls();
 void testSchedAffinity32Syscalls();
@@ -107,6 +110,7 @@ void testForkVfork64();
 void testGetrandom64Syscalls();
 void testStatx64Syscall();
 void testClone3Abi64();
+void testCloneSharing64();
 void testSignalFp64Roundtrip();
 void testSignal64NestedAltstack();
 void testSignal64BadFpFrame();
@@ -161,6 +165,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testGetrandom64Syscalls, "Test x64 getrandom entropy and validation"},
     {testStatx64Syscall, "Test x64 statx ABI and metadata"},
     {testClone3Abi64, "Test x64 clone3 argument ABI validation"},
+    {testCloneSharing64, "Test x64 clone sharing flags (CLONE_FS/FILES/SIGHAND/VM)"},
     {testMremap64Syscall, "Test x64 mremap fixed and DONTUNMAP semantics"},
     {testForkVfork64, "Test x64 fork and vfork create real processes"},
     {testSysinfo64Consistency, "Test x64 sysinfo and meminfo consistency"},
@@ -793,6 +798,9 @@ const TestEntry TEST_ENTRIES[] = {
     {testSchedAffinity32Syscalls, "Test 32-bit scheduler affinity ABI"},
     {testMremap32Syscall, "Test 32-bit mremap fixed and DONTUNMAP semantics"},
     {testMadvise32ForkInheritance, "Test 32-bit fork madvise inheritance"},
+    {testClone32Sharing, "Test 32-bit clone sharing flags (CLONE_FS/FILES/SIGHAND/VM)"},
+    {testClone32Flags, "Test 32-bit clone flag dispositions"},
+    {testClone3Abi32, "Test 32-bit clone3 ABI validation"},
     {testMremap32SharedFile, "Test 32-bit mremap shared file identity"},
     {testSyscall64DispatchGuard, "Test x64 syscall fallback guard"},
     {testGuestCpuTopology, "Test guest CPU topology consistency"},
