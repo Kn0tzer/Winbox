@@ -2809,8 +2809,21 @@ static void x11_MbResetIC(CPU* cpu) {
 
 // char* XSetLocaleModifiers(const char* modifier_list)
 static void x11_SetLocaleModifiers(CPU* cpu) {
-    // :TODO:
-    EAX = 1;
+    KThread* thread = cpu->thread;
+    if (!ARG1) {
+        EAX = thread->process->createString(thread, B(""));
+        return;
+    }
+    if (cpu->memory->readString(ARG1).empty()) {
+        EAX = ARG1;
+        return;
+    }
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        kwarn_fmt("X11 XSetLocaleModifiers does not support nonempty input-method modifiers");
+    }
+    EAX = 0;
 }
 
 static void x11LogImeUnavailable() {
