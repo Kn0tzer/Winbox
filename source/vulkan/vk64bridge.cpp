@@ -452,8 +452,11 @@ static void vk64Unsupported(const char* feature, const char* detail = "") {
 // and resource shapes the WebGPU tier cannot honour, reports each one as
 // "vk64: UNSUPPORTED spirv-<what>", and returns VK_ERROR_FEATURE_NOT_PRESENT
 // before publishing an unusable module. Malformed modules return
-// VK_ERROR_INVALID_SHADER_NV. This covers features with no pipeline-state
-// representation (cull distance, 64-bit types, storage-buffer stores, images).
+// VK_ERROR_INVALID_SHADER_NV. Capabilities the page tier verifiably translates
+// are not rejections (the nullptr cases in vk64SpirvCapabilityName), and two
+// capabilities DXVK declares unconditionally whose USED form the tier cannot
+// serve (33 CullDistance, 4427 DrawParameters) reject only when a matching
+// BuiltIn variable is present; their declared-but-unused form passes.
 // ---------------------------------------------------------------------------
 // Sampler state the WebGPU tier cannot honour. Reported once per sampler, not per draw.
 //  - MIRROR_CLAMP_TO_EDGE is gated by the samplerMirrorClampToEdge feature (FALSE here),
@@ -486,11 +489,15 @@ static const char* vk64SpirvCapabilityName(U32 cap) {
         case 22: return "Int16";              case 23: return "TessellationPointSize";
         case 24: return "GeometryPointSize";  case 25: return "ImageGatherExtended";
         case 27: return "StorageImageMultisample";
+        case 32: return nullptr;             // ClipDistance: shaderClipDistance advertised; naga translates it
         case 33: return "CullDistance";       case 35: return "SampleRateShading";
         case 39: return "Int8";               case 41: return "SparseResidency";
-        case 42: return "MinLod";             case 49: return "StorageImageExtendedFormats";
+        case 42: return "MinLod";             case 43: return nullptr; // Sampled1D: core; the page tier serves 1D textures
+        case 49: return "StorageImageExtendedFormats";
+        case 50: return nullptr;             case 51: return nullptr; // ImageQuery, DerivativeControl: core; naga translates both
         case 52: return "InterpolationFunction";
         case 57: return "MultiViewport";
+        case 4427: return "DrawParameters";   // named: the USED form rejects loudly; the unused form is exempted in the loop (spirvfix R5 strips it)
         case 4433: return "StorageBuffer16BitAccess";
         case 4434: return "UniformAndStorageBuffer16BitAccess";
         case 4435: return "StoragePushConstant16";
@@ -501,12 +508,11 @@ static const char* vk64SpirvCapabilityName(U32 cap) {
         case 4448: return "StorageBuffer8BitAccess";
         case 4449: return "UniformAndStorageBuffer8BitAccess";
         case 4450: return "StoragePushConstant8";
-        case 5345: return "ShaderViewportIndexLayerEXT";
+        case 5345: return "ShaderViewportIndexLayerEXT";  case 5379: return nullptr; // DemoteToHelperInvocationEXT: shaderDemoteToHelperInvocation advertised; naga translates it
         case 5301: return nullptr;            // ShaderNonUniform: harmless on its own
-        // Descriptor-indexing capabilities: the descriptor model keeps ONE resource per
-        // binding number, so a shader that indexes an array of resources by a runtime
-        // value cannot be honoured. These are the loud half of the descriptor-indexing
-        // "exception" rows in vk-capabilities.json.
+        // Descriptor-indexing capabilities: the descriptor model keeps ONE resource
+        // per binding number, so runtime indexing into a resource array cannot be
+        // honoured; the loud half of the "exception" rows in vk-capabilities.json.
         case 5302: return "RuntimeDescriptorArray";
         case 5303: return "InputAttachmentArrayDynamicIndexing";
         case 5304: return "UniformTexelBufferArrayDynamicIndexing";
@@ -532,7 +538,7 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
     std::set<U32> nonWritable, bufferBlock;
     struct Var { U32 id, type, sc; };
     std::vector<Var> vars;
-    bool storageImage = false, inputAttachment = false, compute = false;
+    bool storageImage = false, inputAttachment = false, compute = false, cullUsed = false, drawUsed = false;
     bool unsupported = false;
     std::set<U32> caps;
     for (size_t i = 5; i < nw;) {
@@ -552,18 +558,21 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
             case 71: if (len >= 3) {                                                   // OpDecorate
                 if (w[i + 2] == 24) nonWritable.insert(w[i + 1]);
                 if (w[i + 2] == 3) bufferBlock.insert(w[i + 1]);
+                if (w[i + 2] == 11) { if (w[i + 3] == 4) cullUsed = true; if (w[i + 3] >= 4424 && w[i + 3] <= 4426) drawUsed = true; } // BuiltIn CullDistance / BaseVertex,BaseInstance,DrawIndex
             } break;
-            case 72: if (len >= 4 && w[i + 3] == 24) memberNonWritable[w[i + 1]].insert(w[i + 2]); break; // OpMemberDecorate
+            case 72: if (len >= 4) { if (w[i + 3] == 24) memberNonWritable[w[i + 1]].insert(w[i + 2]); if (w[i + 3] == 11) { if (w[i + 4] == 4) cullUsed = true; if (w[i + 4] >= 4424 && w[i + 4] <= 4426) drawUsed = true; } } break; // OpMemberDecorate
             default: break;
         }
         i += len;
     }
     for (U32 c : caps) {
+        if (c == 33 && !cullUsed) continue;   // CullDistance declared but unused (DXVK emits it unconditionally): converts as-is
+        if (c == 4427 && !drawUsed) continue; // DrawParameters likewise; spirvfix R5 strips the unused declaration
         const char* name = vk64SpirvCapabilityName(c);
         if (name) {
             vk64Unsupported(("spirv-capability:" + std::string(name)).c_str(), "shader declares a capability the WebGPU tier lacks; VK_ERROR_FEATURE_NOT_PRESENT");
             unsupported = true;
-        } else if (c != 0 && c != 1 && c != 5301) { // Matrix, Shader, and standalone ShaderNonUniform are harmless here.
+        } else if (c != 0 && c != 1 && c != 5301 && c != 32 && c != 43 && c != 50 && c != 51 && c != 5379) { // Matrix, Shader, ShaderNonUniform, and the page-tier-translated caps (nullptr cases above) are harmless here.
             vk64Unsupported(("spirv-capability-unknown:" + std::to_string(c)).c_str(), "unknown capability; VK_ERROR_FEATURE_NOT_PRESENT");
             unsupported = true;
         }
