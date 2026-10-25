@@ -39,6 +39,7 @@ test('the GC setters store their values and report errors', () => {
 #include <cstring>
 #include <map>
 #include <memory>
+#include <vector>
 typedef int32_t S32;
 typedef int8_t S8;
 typedef uint32_t U32;
@@ -83,6 +84,7 @@ public:
     explicit XGC(U32 i) : id(i) {}
     const U32 id;
     XGCValues values;
+    std::vector<U8> dash_list;
     U32 lastMask = 0;
     S32 lastForeground = 0;
     void updateValues(U32 mask, XGCValues* v) { lastMask = mask; lastForeground = v->foreground; }
@@ -125,18 +127,22 @@ int main() {
         assert(server->getGC(0x77)->lastMask == 0);
     }
 
-    // XSetDashes stores the offset and the first dash; an empty list is BadValue
+    // XSetDashes stores all dash lengths and the offset; zero lengths and empty lists are BadValue
     {
         XGCPtr gc = server->createGC(nullptr);
         cpu.args[2] = 0x77; cpu.args[3] = 2; cpu.args[4] = 100; cpu.args[5] = 0;
         x11_SetDashes(&cpu);
         assert(cpu.eax == BadValue);
         assert(gc->values.dash_offset == 0);
-        mem.mem[100] = 5;
+        mem.mem[100] = 2; mem.mem[101] = 3; mem.mem[102] = 4;
         cpu.args[5] = 3;
         x11_SetDashes(&cpu);
         assert(cpu.eax == Success);
-        assert(gc->values.dash_offset == 2 && gc->values.dashes == 5);
+        assert(gc->values.dash_offset == 2 && gc->values.dashes == 2);
+        assert((gc->dash_list == std::vector<U8>{2, 3, 4}));
+        mem.mem[100] = 0;
+        x11_SetDashes(&cpu);
+        assert(cpu.eax == BadValue && gc->dash_list == std::vector<U8>({2, 3, 4}));
         cpu.args[2] = 0x99;
         x11_SetDashes(&cpu);
         assert(cpu.eax == BadGC);
