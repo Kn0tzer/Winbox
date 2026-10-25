@@ -137,13 +137,16 @@ def t_cjk_pin():
 
 def t_prefix64_built():
     built = ROOT / 'tools/rootfs64/dist/prefix64.zip'
-    if not built.exists():
+    targets = [('web/runtime/prefix64.zip', RUNTIME / 'prefix64.zip')]
+    if built.exists():
+        targets.append(('tools/rootfs64/dist/prefix64.zip', built))
+    else:
         skip('prefix64 built artifact', 'build-prefix64.sh output not present')
-        return
-    with zipfile.ZipFile(built) as z:
-        system = z.read('home/username/.wine/system.reg').decode(errors='replace')
-    assert '[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion]' in system
-    assert '[Software\\\\Microsoft\\\\.NETFramework]' in system
+    for label, path in targets:
+        with zipfile.ZipFile(path) as z:
+            system = z.read('home/username/.wine/system.reg').decode(errors='replace')
+        assert '[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion]' in system, label
+        assert '[Software\\\\Microsoft\\\\.NETFramework]' in system, label
 
 
 if __name__ == '__main__':
