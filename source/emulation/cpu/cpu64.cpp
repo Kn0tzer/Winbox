@@ -57,12 +57,22 @@ public:
     CPU64AtomicLock(KMemory64* memory, U64 effAddr, U32 width, std::defer_lock_t)
         : memory(memory), effAddr(effAddr), width(width),
           alignedLock(cpu64AtomicLockFor(effAddr), std::defer_lock),
+          nextPageLock(cpu64AtomicLockFor(effAddr + K64_PAGE_SIZE), std::defer_lock),
           splitLock(g_splitLockMutex, std::defer_lock) {}
 
     void lock() {
         U8* hostAddress = memory->getRamPtr(effAddr, width);
         if (!hostAddress || (reinterpret_cast<uintptr_t>(hostAddress) & (width - 1))) {
+            // Split path. Also take the page shard of every page this
+            // operand touches, in split-then-shard order: an overlapping
+            // ALIGNED locked op takes only its page shard, so without
+            // this the two classes shared no lock and one RMW could
+            // silently overwrite the other (lock-class divergence).
             splitLock.lock();
+            alignedLock.lock();
+            if ((effAddr & K64_PAGE_MASK) + width > K64_PAGE_SIZE) {
+                nextPageLock.lock();
+            }
         } else {
             alignedLock.lock();
         }
@@ -73,6 +83,7 @@ private:
     U64 effAddr;
     U32 width;
     std::unique_lock<std::recursive_mutex> alignedLock;
+    std::unique_lock<std::recursive_mutex> nextPageLock;
     std::unique_lock<std::mutex> splitLock;
 };
 
