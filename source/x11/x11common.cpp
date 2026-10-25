@@ -2924,7 +2924,23 @@ static void x11_LocaleOfIM(CPU* cpu) {
 }
 
 static void x11_MatchVisualInfo(CPU* cpu) {
-    kpanic("x11_MatchVisualInfo");
+    KThread* thread = cpu->thread;
+    KMemory* memory = cpu->memory;
+    const S32 requestedScreen = (S32)ARG2;
+    const S32 requestedDepth = (S32)ARG3;
+    const S32 requestedClass = (S32)ARG4;
+    const U32 output = ARG5;
+    bool matched = false;
+    Display::iterateVisuals(thread, ARG1, [=, &matched](S32 screenIndex, U32 visualAddress, Depth* depth, Visual* visual) {
+        if (!matched && screenIndex == requestedScreen && depth->depth == (U32)requestedDepth && visual->c_class == requestedClass) {
+            XVisualInfo result;
+            result.set(screenIndex, visualAddress, depth->depth, visual);
+            result.write(memory, output);
+            matched = true;
+        }
+        return !matched;
+    });
+    EAX = matched ? True : False;
 }
 
 // Bool XQueryExtension(Display* display, _Xconst char* name, int* major_opcode_return, int* first_event_return, int* first_error_return) 
