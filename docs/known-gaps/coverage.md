@@ -10,17 +10,17 @@ This register is a marker scan. It finds `unsupported`, `not implemented`, `TODO
 
 | Area | Files | Hits | Disposition |
 | --- | --- | --- | --- |
-| X11 host (`source/x11/`) | 2 | 4 | Medium. The Shape and XWindowEvent aborts are fixed; remaining hits are loud logs and comments. |
+| X11 host (`source/x11/`) | 1 | 2 | Medium. The Shape and XWindowEvent aborts are fixed and the animated-cursor loud log is implemented away; remaining hits are a commented-out kpanic and a comment. |
 | X11 wire GLX (`source/x11wire/`) | 1 | 1 | High, if the GLX-over-wire path is used by a target build. |
 | io / fs nodes (`source/io/`) | 8 | 19 | Low. The one guest-reachable abort (`FsVirtualNode::removeDir`) is fixed. |
-| UI (`source/ui/`) | 8 | 11 | Low. Save-on-exit and error-message TODOs. |
-| Platform host (`platform/`) | 5 | 11 | Medium for thread exception sync; low for cursor, audio device and CPU frequency. |
+| UI (`source/ui/`) | 3 | 3 | Low. The save/quit/error/link-name/stuck-socket TODOs were all dispositioned in round 2; remaining hits are the runOnRestartUI invariant, the rejected-loudly icon format, and an allowlisted layout invariant. |
+| Platform host (`platform/`) | 2 | 3 | Thread exception sync now degrades instead of aborting; cursor shapes/animation and the audio-device TODO are dispositioned. Remaining hits are a logged 8-bit screenshot limit, a recorder invariant, and an allowlisted main-thread invariant. |
 | softmmu (`source/emulation/softmmu/`) | 4 | 7 | Invariants only, see allowlist. |
 | util (`source/util/`) | 6 | 13 | Invariants and vendored code, see allowlist. |
 | `web/naga-rt.mjs`, `web/frame-metrics.mjs` | 2 | 5 | Medium for shader versions routed to ANGLE. The other hit is a UI label. |
 | `include/`, `source/sdl/main.cpp` | 3 | 5 | Invariants and comments, see allowlist. |
 
-Current scan: 38 UNOWNED files, 78 hits. 20 files are in the register below and 18 are allowlisted with reasons. `--check` fails on any UNOWNED hit that is neither.
+Current scan: 30 UNOWNED files, 62 hits. 12 files are in the register below and 18 are allowlisted with reasons. `--check` fails on any UNOWNED hit that is neither.
 
 Severity: **high** = likely to crash or visibly break a real game, or to drop data silently. **medium** = breaks a feature or a subset of games. **low** = debug-only, cosmetic, or rarely used.
 
@@ -52,33 +52,33 @@ Ranked by severity if reached. "Reached" means the guest calls the path. The tab
 | Unaligned event marshalling | `source/x11/x11common.cpp:740,769` | low | Builds using `UNALIGNED_MEMORY` reach an unfinished event marshal path in XPutBackEvent/XSendEvent. | IMPLEMENTED: the UNALIGNED_MEMORY placeholder branches (a literal oops that could not compile) are gone from XPutBackEvent and XSendEvent; both handlers marshal the guest XEvent through KMemory::memcpy, so guest bytes are copied and never cast to a host pointer and host alignment rules do not apply. The same fix corrected XPutBackEvent to read the event from ARG2 and resolve the display by guest address, exactly as its CALL_2_R shim in tools/x11/X11.c passes them (it previously read ARG5 and looked the display up by internal id, so it could only fail). Tests: x11-send-event.test.mjs. |
 | GLX over the X wire | `source/x11wire/xwireconnection.cpp` GLX major opcode handler | high, if the path is used | QueryVersion and query-string requests return protocol-framed values; GLX rendering runs through the direct host bridge. Unknown GLX minors now return BadRequest with a warning instead of corrupting the X reply stream with a fake reply. | PARTLY IMPLEMENTED / REJECTED-LOUDLY for unsupported minors: `xwire-glx-protocol.test.mjs`; full GLX protocol rendering remains outside the wire path. |
 | Keyboard text entry | `x11common.cpp` (`XLookupString`, `XmbLookupString`, `XkbTranslateKeysym`, `RefreshKeyboardMapping`) | medium | Key events translate to bounded bytes and keysyms; multibyte lookup reports overflow/status; extra_rtrn reports uncopied bytes; static keymap refresh succeeds. `XLookupString` composes common Latin grave, acute, circumflex, and diaeresis pairs as UTF-8 using caller-owned compose state. XIM and broader locale compose tables remain unavailable. | PARTLY IMPLEMENTED: `x11-keyboard-text.test.mjs`; broader compose tables and IME remain open. |
-| IME / XIM | `x11common.cpp` (`x11_*IC` / `x11_*IM`) | medium (high for CJK input) | XOpenIM reports the unavailable host method once and returns NULL; XLocaleOfIM does the same and returns NULL. Browser composition remains disconnected from guest text events. | REJECTED-LOUDLY for unavailable host XIM: `x11-ime-unavailable.test.mjs`; browser IME composition remains OPEN. |
+| IME / XIM | `x11common.cpp` (`x11_*IC` / `x11_*IM`) | medium (high for CJK input) | XOpenIM reports the unavailable host method once and returns NULL; XLocaleOfIM does the same and returns NULL. Browser composition remains disconnected from guest text events. | REJECTED-LOUDLY for unavailable host XIM: `x11-ime-unavailable.test.mjs`. Browser IME composition remains OPEN with this exact blocker: keyboard input reaches the guest only through Emscripten SDL DOM listeners inside the WASM build — `web/*.mjs` registers no keydown or composition handlers (grep-verified) and `project/emscripten/boxedwine-shell.js` has no composition handling, and SDL/Emscripten does not surface composition events as guest key/text events, so there is no page-to-guest text channel to wire compositionstart/update/commit data to. Needed from the runtime/build lane: an exported WASM entry that injects committed text as SDL_TEXTINPUT / X key events; this lane then adds the page-side composition capture and a probe. Dead-key composition for common Latin pairs is implemented guest-side in `XLookupString` (`x11-keyboard-text.test.mjs`). |
 | Synthetic events | `x11common.cpp` (`XSendEvent`) and `xserver.cpp` event-mask dispatch | medium | PointerWindow/InputFocus resolve to live targets; propagate walks ancestors and delivers to the first selecting level. | IMPLEMENTED: `x11-send-event.test.mjs` |
 | MIT-SHM | `x11common.cpp` (`XQueryExtension`, `XShmAttach/CreateImage/Detach/PutImage`) | medium | MIT-SHM is explicitly unavailable and unadvertised; direct attach/put calls fail with False or NULL and a rate-limited warning directing clients to XPutImage. | REJECTED-LOUDLY: `x11-mitshm-unavailable.test.mjs` |
 | Tiled fill | `source/x11/xdrawable.cpp` `fillRectangle` | medium | A fill with a tile pattern aborts the emulator. | FIXED (tile repeated from the tile origin; test `x11-drawable-raster.test.mjs`) |
 | AllocColor writable cells | `source/x11/x11common.cpp:1530` | low | A writable colormap cell requested by XAllocColor is warned about and not allocated with correct write permissions. | IMPLEMENTED: an exact RGB match on a read/write cell shares the cell and keeps COLOR_WRITE (the previous code overwrote the flags with COLOR_ALLOCATED alone, silently revoking the owner XStoreColor), and the scan no longer warns on unrelated writable cells. Test: x11-alloccolor-write.test.mjs. |
 | XImage uncommon pixel layouts | `source/x11/x11common.cpp:1773` | low | XPutPixel/XGetPixel/XSubImage/XAddPixel only handle byte-aligned layouts through 32bpp with zero xoffset. | IMPLEMENTED: packed 1/2/4-bit pixels (bitmap_bit_order honored, neighbouring bits preserved) and byte-aligned 8/16/24/32-bit pixels with a non-zero xoffset are read and written by XGetPixel, XPutPixel, XSubImage and XAddPixel. Tests: x11-image-pixels.test.mjs, x11-putpixel-writes.test.mjs. |
-| Non-32bpp X raster | `source/x11/xdrawable.cpp:267,358,406,512,546` | medium | Raster line/fill/polygon/arc methods return success after logging on non-32-bit visuals. | OPEN: use depth-aware pixel reads/writes across supported visual depths. |
+| Non-32bpp X raster | `source/x11/xdrawable.cpp` | medium | Raster line/fill/polygon/arc methods used to return success after logging on non-32-bit visuals, silently dropping the drawing. | IMPLEMENTED: drawable storage is packed at the visual bits per pixel (32 for the 24/32-bit visuals, 16, 8), and `plotPixel`, `fillColor`, `copy`, `copyPlane` and the `copyImageData` slow path now read/write stored pixels at that depth (`readStoredPixel`/`writeStoredPixel`, GC function masked to the pixel width); the five bail-outs are gone and 16-bit tiles repeat. Tests: `x11-drawable-raster.test.mjs` (16/8-bit line, fill, polygon, arc, tile, GXset/GXxor masking), `x11-copy-paths.test.mjs`, `x11-copyplane.test.mjs`, `x11-arc-drawing.test.mjs`. |
 | Other X11 input/cursor gaps | `x11common.cpp` (`XISelectEvents`, `CursorImageLoadCursor`, `CursorLibraryLoadCursor`) | low | XI2 masks support the protocol's 33 event bits and multiple device masks (folded onto the single virtual pointer), rejecting only malformed/out-of-range masks with `BadValue`; custom Xcursor images create host cursors. Unknown library names warn and return a fallback cursor. XFixes cursor updates and animated frame scheduling remain open. | PARTLY IMPLEMENTED: `x11-xinput-cursor.test.mjs`; XFixes/animation remain open. |
 | Audio capture input | `platform/sdl/knativeaudio.cpp` plus guest device support | medium for voice/chat; low for most games | No guest capture endpoint feeds Wine input audio. | NEEDS_KERNEL_DEPENDENCY: add a guest capture device and connect SDL/browser capture to Wine audio input. |
 | Gamepad / XInput | `platform/sdl/knativeinputSDL.cpp`, `source/sdl/`, guest input devices | high for controller-first games | Browser Gamepad API events cannot reach Wine DirectInput/XInput because no joystick device/event path exists. | NEEDS_KERNEL_DEPENDENCY: expose joystick events in `source/kernel/devs/devinput.cpp`, then poll and translate them through SDL. |
 | DNS resolver | kernel guest networking resolver path | high for online games | TCP/UDP loopback and relay transports pass, but host-name resolution lacks deterministic guest coverage. | NEEDS_OTHER_LANE: expose host resolution to the guest resolver and add a DNS probe. |
-| Guest common file dialogs | `source/ui/`, browser import pipeline | medium for games using Save/Open dialogs | Browser folder selection and file import exist, but a guest Windows common dialog is not exercised end-to-end. | OPEN: add an integration probe from guest dialog selection through the browser picker and filesystem publication. |
-| Host-backed case and symlink semantics | `source/io/fsnode.cpp`, `web/files.mjs` | medium | Virtual Wine aliases are tested, but host-backed lookup and imported symlink/case collision behavior has no native cross-platform probe. | OPEN: add native probes for case variants and symlink import/lookup behavior on supported hosts. |
+| Guest common file dialogs | `source/ui/`, browser import pipeline | medium for games using Save/Open dialogs | Browser folder selection and file import exist, but a guest Windows common dialog was not exercised end-to-end. | IMPLEMENTED (probe): `file-dialog-picker-pipeline.test.mjs` drives every emulator-owned step after the picker gesture with a fake FileSystemDirectoryHandle tree — flattened publication, CRC reuse for unchanged files, override precedence, case-collision rejection, vanished-folder error mapping, `openDirectPackage`/`packageRecord` — and pins the `showDirectoryPicker` call in `web/app.mjs` that the pipeline consumes. The picker UI itself is browser-owned and requires a user gesture, so no part of it is emulated or automatable. |
+| Host-backed case and symlink semantics | `source/io/fsnode.cpp`, `web/files.mjs` | medium | Virtual Wine aliases are tested, but host-backed lookup and imported symlink/case collision behavior had no native cross-platform probe. | IMPLEMENTED (probe): `host-case-symlink-probe.test.mjs` records the host facts on the real filesystem (case variants coexist with distinct contents on this host; a symlink reads through to its target) and exercises the import contract — `checkEntries` refuses to publish both case variants into the case-insensitive guest and rejects file/directory prefix collisions, and a picked symlink is published under the link name with the target bytes (what browsers hand the page). Guest-side VFS case folding stays covered by `fs-node-case-symlink.test.mjs`. |
 | Timer expiration | kernel timerfd/setitimer implementation | medium | Syscall entry points exist, but timerfd/setitimer expiration delivery has no deterministic regression probe. | NEEDS_OTHER_LANE: add expiration probes with the kernel timer implementation. |
-| Animated Xcursor frames | `source/x11/x11common.cpp:3726` | low | Animated cursors show only their first frame. | OPEN: schedule frame updates using the image delay values. |
+| Animated Xcursor frames | `source/x11/x11common.cpp` (`x11_CursorImagesLoadCursor`), `platform/sdl/knativescreenSDL.cpp` | low | Animated cursors used to show only their first frame. | IMPLEMENTED: the loader copies every frame (pixels + guest delay) into `XCursor::animFrames` before the guest can free its images, and `KNativeScreenSDL::setCursor` builds one SDL cursor per frame and cycles them on an SDL timer by their delays (10ms floor, SetCursor dispatched to the main thread), stopping when a static cursor or shape takes over. Test: `x11-animated-cursor.test.mjs` (slice-compiled schedule wrap/clamp, loader and setCursor wiring pinned). |
 | Shader versions routed to ANGLE | `web/naga-rt.mjs:70,283-286` | medium | Unsupported GLSL is classified as `unsupported-version`, excluded from Naga failures, and the wrapper always passes the exact original source to ANGLE. Probe: `naga-angle-fallback.test.mjs`. ANGLE remains responsible for syntax validity. | IMPLEMENTED: original call-through is behavior-tested. |
 | Shader cache warm poisoned record | `web/shader.mjs` (warmPersistentShaders), `web/shader-cache.mjs` (remove) | medium | One corrupt cached WGSL record aborted warming of every remaining shader on every launch: a single try/catch wrapped the manifest read and the whole warm loop, failures were swallowed with no log, counter or eviction, and the bad record was retried forever. | IMPLEMENTED: each shader warms in isolation; a throw or an error-level compilation message logs shader warm: evicting cached shader, counts in the returned warmed/failed result, drops the in-memory copy, and evicts the record plus its manifest references via persistentShaderCache.remove, so later launches skip it; records after the poisoned one still warm. Test: shader-cache.test.mjs (poisoned cache entry). |
-| Thread exception sync (host) | `platform/linux/platformThreads-x64.cpp:146,187` (`syncFromException` kpanics) | medium | An unexpected host thread state aborts the emulator. | OPEN (work item 15) |
+| Thread exception sync (host) | `platform/linux/platformThreads-x64.cpp` (`syncFromException`) | medium | An unexpected cached-register value in the host exception sync used to abort the emulator (kpanic). | IMPLEMENTED: both default arms now log via kwarn_fmt and leave the one guest register stale; the caller then delivers the fault to the guest through the existing signal path. The only regCache/xmmCache tables compiled under BOXEDWINE_64 (`jitX86CodeGen.cpp`, the `#if 0` table excluded) hold exactly the handled values {0,1,2,3,10,5,6,7}/{0..7}, and 0xFF (not-cached) slots were already skipped silently. Test: `platform-thread-exception.test.mjs` slice-compiles syncFromException and runs the full tables, an unexpected value in each cache, and the 0xFF skip. |
 | Directory rmdir on virtual nodes | `source/io/fsvirtualnode.cpp:86-89` (was kpanic `removeDir not implemented`) | medium (before the fix) | Guest `rmdir` of a virtual directory aborted the emulator (`kprocess.cpp:1204-1211` calls `node->removeDir()`). | FIXED: logs and returns `-EPERM`. Test: `web/tests/suite/unit/fs-virtual-removedir.test.mjs`. |
 | Virtual `setTimes` | `source/io/fsvirtualnode.cpp` | low | Virtual nodes retain atime/mtime in milliseconds, preserve `UTIME_OMIT`, and expose updated mtime to stat. | IMPLEMENTED: `fs-virtual-settimes.test.mjs` |
 | memfd nodes | `source/io/fsmemnode.cpp:28,33,46,59,64` (kpanic on rename, remove, open, removeDir, setTimes) | none for now | Unreachable: memfd nodes never enter the path namespace (see allowlist). Becomes reachable if `/proc/self/fd` is added. | ALLOWLISTED (work item 16) |
 | Zip-backed write and truncate | `source/io/fszipopennode.cpp:43,236` (kpanic) | low | Unreachable from guest code: writable fds are rejected before `setLength` and `writeNative` (`kprocess.cpp:1680`), and write-open moves the file first (`fsfilenode.cpp:192`). | NOT_A_GAP for the write path; invariant kept |
 | Async and event hooks on fs nodes | `fsdiropennode.cpp:63,71`; `fsfileopennode.cpp:97,105`; `fsmemopennode.cpp:63,71`; `fsvirtualopennode.h:37,39`; `fszipopennode.cpp:75,83`; kernel inotify `syscall.cpp:1498,2272-2273` | medium | File node readiness hooks are empty and log only at debug level; kernel inotify init is ignored and add/remove watch syscalls are absent. Implementing reliable async fs notifications requires the kernel lane to first add inotify/watch lifetime and SIGIO delivery contracts. | NEEDS_OTHER_LANE: `source/kernel/syscall.cpp:1498,2272-2273` implement inotify init/add/remove watch APIs and notify FsNode mutation hooks; then wire `setAsync`/`waitForEvents` across fs node types. |
-| Audio output device | `platform/sdl/knativeaudio.cpp:77` (TODO: device choice) | low | Audio always uses the default device. The scan found no other marker in audio output or input. Their correctness is not assessed here. | OPEN, registered |
+| Audio output device | `platform/sdl/knativeaudio.cpp` (`KNativeAudio::createNativeAudio`) | low | Audio always uses the default device. | NOT-A-GAP: there is no selection to make at this layer. `KNativeAudio::init()` registers exactly one backend per platform (SDL here; CoreAudio under BOXEDWINE_CORE_AUDIO, the Windows driver under BOXEDWINE_MSVC — each platform's init registers its single backend), so `availableAudio` always holds one entry and `createNativeAudio` returning `front()` is the only possible result; its sole caller is the guest MIDI sequencer (`source/kernel/devs/devsequencer.cpp`). Guest-visible device choice happens inside Wine against the single host device the backend exposes. The TODO is removed and the invariant is recorded in the code and pinned by `host-ui-paths.test.mjs`. |
 | CPU frequency reporting | `platform/linux/platform.cpp` | low | Linux reads host cpufreq sysfs in kHz and falls back to `/proc/cpuinfo`; browser builds report a nominal 1000 MHz when host procfs/sysfs are unavailable. Per-CPU current/max nodes use scaling sysfs and API fallback. | IMPLEMENTED: `platform-cpu-frequency.test.mjs` |
-| Cursor shapes | `platform/sdl/knativescreenSDL.cpp:616,626,661` (TODO: approximate shapes) | low | Some X cursor shapes map to the nearest SDL system cursor. | OPEN, registered |
-| UI save and error paths | `source/ui/mainui.cpp:382,664`; `source/ui/controls/optionsView.cpp:106`; `source/ui/data/globalSettings.cpp:674,1072`; `source/ui/data/boxedContainer.cpp:363`; `source/ui/data/appFile.cpp:60`; `source/ui/controls/downloadDlg.cpp:156` | low | Settings not saved on focus loss, quit not checked against a failed save, error messages missing, a link name not parsed, a download socket with no stuck-socket handling. None is game-facing. | OPEN, registered |
+| Cursor shapes | `platform/sdl/knativescreenSDL.cpp` (`setCursor`, `x11ShapeToSdlSystemCursor`) | low | Some X cursor shapes map to the nearest SDL system cursor. | IMPLEMENTED: the three :TODO: approximations are now deliberate, documented closest-shape mappings — XC_center_ptr (22) and XC_question_arrow (92) to SDL ARROW (SDL has no centred-arrow or question-arrow system cursor), XC_icon (64) to SDL WAIT (no boxed-glyph system cursor) — and the shared shape table now covers them plus left_ptr_watch, so `setCursor` and the wire path (`setCursorByX11Shape`) agree. Test: `x11-animated-cursor.test.mjs` slice-compiles the full table and asserts every mapping including the fallback. |
+| UI save and error paths | `source/ui/mainui.cpp`; `source/ui/controls/optionsView.cpp`; `source/ui/data/globalSettings.cpp`; `source/ui/data/boxedContainer.cpp`; `source/ui/data/appFile.cpp`; `source/ui/controls/downloadDlg.cpp`; `source/util/networkutils.cpp` | low | Settings not saved on focus loss, quit not checked against a failed save, error messages missing, a link name not parsed, a download socket with no stuck-socket handling. None is game-facing. | IMPLEMENTED: SDL_QUIT now cancels the quit when `saveChanges()` fails (the gate gotoView always applied), and the save-location field needs no focus-loss tracking because every exit path runs that gate (recorded in optionsView.cpp); the empty file-list branch shows the ERROR_NO_FILE_LIST dialog; the two globalSettings silent paths log via kwarn_fmt; desktop link names strip the `.lnk` extension; runOptions records why no dependency pass is needed (all options apply in one pass before any runner); a stuck download socket is bounded by a curl low-speed limit (1 B/s for 120s) in `downloadFile`, which also makes Cancel effective. Tests: `host-ui-paths.test.mjs`, `bstring-remove.test.mjs`. |
 | Icon format | `source/ui/utils/readIcons.cpp:646` (`Icon 20b not implemented`, logged with `kwarn`) | low | One icon format is not shown. Loud and UI-only. | REJECTED-LOUDLY: PE32+ (0x20b) icon resources warn via kwarn (Icon 20b not implemented, greppable) and the loader returns no icon instead of guessing a format; native-UI only, no guest path reaches it. |
 | bstring copy | `source/util/bstring.cpp:570` (TODO) | low | Performance note only. | NOT-A-GAP: the marker is a performance note only (maybe do not make a copy, just a ref); BString::substr at source/util/bstring.cpp:570-582 clamps an out-of-range begin and length and returns a correct copy on every path, so no behavior is missing. |
 
@@ -89,13 +89,13 @@ These categories were requested for the game-impact review. The scan found no ma
 | Category | Scan result | Status |
 | --- | --- | --- |
 | Audio output and input | Output is implemented by SDL queued audio or the browser Web Audio ring; `audio-audible-output.test.mjs` exercises output conversion and bridge delivery. No capture/microphone input path was found. | Output: tested. Input: NEEDS_KERNEL_DEPENDENCY because no guest capture device exists to feed Wine audio capture. |
-| Gamepad / XInput | No SDL game-controller/joystick event handling or guest joystick device is present; `/dev/input/event3` and `event4` are mouse and keyboard only (`source/sdl/startupArgs.cpp:152-154`, boot lane owned). | OPEN: browser Gamepad API events cannot reach Wine DirectInput/XInput without a guest joystick device/event path. NEEDS_KERNEL_DEPENDENCY for `source/kernel/devs/devinput.cpp` plus SDL polling/translation here. |
+| Gamepad / XInput | No SDL game-controller/joystick event handling or guest joystick device is present; `/dev/input/event3` and `event4` are mouse and keyboard only (`source/sdl/startupArgs.cpp:152-154`, boot lane owned). | OPEN — NEEDS_KERNEL_DEPENDENCY, re-checked 2026-10-25 against the kernel worktree at 7f6156b43 (its handoff wip commit): `source/kernel/devs/devinput.cpp` still exposes only `/dev/input/mice`, `event3` (touch/mouse) and `event4` (keyboard), kernel.md has no joystick row, and no kernel commit has landed since. Exact kernel deliverable this row waits on: (1) a guest joystick device in devinput.cpp (a `/dev/input/js*` and/or event node) with a poll/read event queue carrying buttons and axes that Wine's DirectInput/XInput can enumerate, and (2) a host-feed entry point the SDL layer can push controller state into. On that landing, this lane wires SDL_GameController polling/translation in `platform/sdl/knativeinputSDL.cpp` and adds the probe. Not dispositioned not-a-gap: the dependency is real and still missing. |
 | Window, cursor, fullscreen, pointer lock | Markers in the table above (mode switch, relative mouse, EWMH, grab). | Partly assessed. |
 | Clipboard (X selections) | `source/x11wire/xwireconnection.cpp` selection conversion and `web/clipboard-bridge.mjs` | IMPLEMENTED: browser copy reads the guest selection bridge; paste stages host text for X selection conversion. `clipboard-bridge.test.mjs` covers both directions; `xwireconnection.cpp` applies TARGETS, UTF8_STRING, STRING and TEXT conversions. |
 | IME | See the IME row above. | Partly assessed. |
 | Networking sockets and DNS | Native TCP/UDP and browser TCP relay probes exist (`loopback-tcp-relay`, `loopback-datagram-msg`, `browser-network`). | Socket transport: tested. DNS: NEEDS_OTHER_LANE to expose host resolution through the guest network resolver path and add a deterministic probe. |
-| File dialogs | Browser folder selection uses `showDirectoryPicker`; import accepts file and directory entries through the browser picker/drop pipeline. | Browser picker/import: partly tested at the data layer; DOM picker and guest Windows common dialogs need an integration probe. |
-| Filesystem semantics (case-insensitivity, symlinks) | ZIP import rejects archive symlinks (`web/files.mjs`); VFS decodes Wine `.link` and `(_colon_)` drive aliases (`source/io/fsnode.cpp`, `source/io/fsopennode.cpp`); lookup can ignore case. | VFS case folding and Wine alias lookup: `fs-node-case-symlink.test.mjs`. Import collision checks lowercase names (`web/files.mjs:22`). Host-backed case resolution remains platform-dependent and needs a native probe. |
+| File dialogs | Browser folder selection uses `showDirectoryPicker`; import accepts file and directory entries through the browser picker/drop pipeline. | IMPLEMENTED (probe): `file-dialog-picker-pipeline.test.mjs` — see the Guest common file dialogs row above. |
+| Filesystem semantics (case-insensitivity, symlinks) | ZIP import rejects archive symlinks (`web/files.mjs`); VFS decodes Wine `.link` and `(_colon_)` drive aliases (`source/io/fsnode.cpp`, `source/io/fsopennode.cpp`); lookup can ignore case. | VFS case folding and Wine alias lookup: `fs-node-case-symlink.test.mjs`. Host-backed case/symlink behaviour: `host-case-symlink-probe.test.mjs` — see the Host-backed case and symlink semantics row above. |
 | Timers | Linux timer syscalls include nanosleep, setitimer, timerfd, and clock_gettime; browser and native scheduler use host timer callbacks. | NEEDS_OTHER_LANE: add deterministic timerfd and setitimer expiration probes with the kernel timer implementation. |
 
 The scanner now matches case variants of `not supported` and `not implemented`, and catches silent `ENOSYS` returns. It only treats logging as loud when a log call appears on the same source line; cross-line log/error control flow still needs manual review.
@@ -118,15 +118,15 @@ Ranked by severity if reached, then by how likely a real game is to reach the pa
 12. **XI2 masks and Xcursor images (`x11common.cpp:3442,3547`).** PARTLY IMPLEMENTED: XI2 event mask bytes now preserve bit 32, and malformed bits return BadValue; `XcursorImageLoadCursor` creates a native cursor from guest pixels. Test: `x11-xinput-cursor.test.mjs`. XFixes cursor changes and animated frame scheduling remain open.
 12. **Tiled fill (`xdrawable.cpp:216`).** Impact: medium-low. Approach: repeat the tile pixmap across the fill rectangle, offset by the tile origin. Test: a 2x2 tile over a 5x3 rectangle, against a reference.
 14. **Naga to ANGLE fallback (`web/naga-rt.mjs:70,283-286`).** IMPLEMENTED: a node probe drives an unsupported-version shader through the installed WebGL wrapper, verifies the original ANGLE method receives the identical shader and returns normally, and checks the unsupported observation record without marking the lane broken. Test: `naga-angle-fallback.test.mjs`.
-15. **Host thread exception sync (`platformThreads-x64.cpp:146,187`).** Impact: medium. Approach: record the unexpected thread state as a guest fault and deliver it through the existing signal path. Needs kernel-lane coordination. Test: an injected exception-state fixture.
+15. **Host thread exception sync (`platformThreads-x64.cpp`).** DONE (round 2): the unexpected-state arms log and leave the guest register stale, and the existing signal path delivers the fault; no kernel-lane coordination was needed because the compiled cache tables cannot produce other values (see the register row). Test: `platform-thread-exception.test.mjs` (injected exception-state fixture, as proposed).
 16. **memfd `FsMemNode` (`fsmemnode.cpp`).** Allowlisted as unreachable. If `/proc/self/fd` is added, the rename, remove, open, removeDir and setTimes paths become reachable and must be implemented first. Test: the allowlist reason is the guard.
 17. **Async fs events (the io group above).** NEEDS_KERNEL_DEPENDENCY. Kernel inotify is currently ignored (`source/kernel/syscall.cpp:1498`), and add/remove watch syscall slots are null (`:2272-2273`). The kernel lane must expose watch registration, event queue delivery and `O_ASYNC`/SIGIO ownership before FsNode mutations can reliably notify open-node waiters. After that, implement and test the fs node hooks here.
 18. **CPU frequency (`platform.cpp:130,134,138`).** IMPLEMENTED: native Linux reads cpufreq sysfs then `/proc/cpuinfo`; browser builds use a nominal 1000MHz fallback when host files are absent. Per-CPU scaling nodes fall back to base frequency. Test: `platform-cpu-frequency.test.mjs`.
 
 19. **Legacy Xlib query/property helpers (`x11common.cpp`). IMPLEMENTED: XGetWindowAttributes returns the 92-byte guest structure and all-client masks; XInternAtom honors only-if-exists; XDisplayName returns the explicit name or `:0`; XSetWMProperties serializes WM_COMMAND; XIconifyWindow updates WM_STATE. Tests: `x11-get-window-attributes.test.mjs`, `x11-intern-atom.test.mjs`, `x11-display-name.test.mjs`, `x11-wm-command.test.mjs`, `x11-iconify-window.test.mjs`.
 20. **Locale and X resources (`x11common.cpp`).** XSetLocaleModifiers now returns valid guest pointers for the empty modifier string and loudly rejects unsupported nonempty modifiers. XGetDefault warns and returns NULL because no X resource database is loaded. Tests: `x11-locale-modifiers.test.mjs`, `x11-xgetdefault-unavailable.test.mjs`.
-21. **Shape extension (`x11common.cpp:3053-3061`). OPEN: implement rectangle and bitmap region operations and connect bounding/input regions to hit testing and compositing.
-22. **Blocking XWindowEvent (`x11common.cpp:3091`). OPEN: implement matching event-mask selection and a wait primitive compatible with both single-threaded browser input pumping and native threaded builds.
+21. **Shape extension (`x11common.cpp:3053-3061`).** DISPOSITIONED (round 1): REJECTED-LOUDLY — this server keeps no shape regions (windows are composited and hit-tested as rectangles) and the Xlib calls are void, so the handlers log once and no-op instead of the previous kpanic abort. Test: `x11-shape-window-event.test.mjs`. Implementing real regions would contradict the compositor's rectangle model for no reachable guest benefit.
+22. **Blocking XWindowEvent (`x11common.cpp:3091`).** DISPOSITIONED (round 1): IMPLEMENTED for queued events (mask-matched removal via `DisplayData::findAndRemoveEventByMask`), REJECTED-LOUDLY for the blocking wait — with nothing queued the call logs once and returns False instead of aborting, because a blocking wait cannot run inside a guest callback in the browser event pump. Test: `x11-shape-window-event.test.mjs`.
 
 ## NEEDS_OTHER_LANE
 
@@ -147,6 +147,7 @@ Ranked by severity if reached, then by how likely a real game is to reach the pa
 - **`source/x11/x11common.cpp` `x11_DisplayName`**: returns a caller-supplied display name unchanged and allocates the virtual display name `:0` for null, matching `XOpenDisplay` in this build. Regression: `web/tests/suite/unit/x11-display-name.test.mjs`.
 - **`source/x11/x11common.cpp` `x11_SetWMProperties`**: argv is serialized as NUL-separated `WM_COMMAND` bytes using STRING/8 format; a zero argc deletes the property, and a null argv leaves it unchanged. Regression: `web/tests/suite/unit/x11-wm-command.test.mjs`.
 - **`source/x11/x11common.cpp` `x11_GetWindowAttributes` / `XInternAtom`**: `XGetWindowAttributes` now returns the documented 32-bit ABI fields, including per-client and aggregate event masks; `XInternAtom` shares the atom table and honors `only_if_exists`. Regressions: `web/tests/suite/unit/x11-get-window-attributes.test.mjs` (including direct execution of the aggregate-mask implementation) and `x11-intern-atom.test.mjs`.
+- **`source/util/bstring.cpp` `BString::remove(int, int)`** (round 2, found while wiring the desktop-link name fix): the body only called `makeWritable(0)` and removed nothing, so its one real caller — `FsNode::loadChildren` stripping the 6-char `.mixed` suffix off a host file name before registering it for the guest (`source/io/fsnode.cpp:93`) — silently registered the suffixed name. `remove` now deletes the clamped span (negative len or an overrun removes through the end; a shared string is copied first via makeWritable, as `replace` relies on). Regression: `web/tests/suite/unit/bstring-remove.test.mjs` slice-compiles the allocator, `length`, `makeWritable` and `remove` and covers suffix truncation, a middle span, overrun clamping, out-of-range no-ops and shared-owner isolation. It fails on the original body.
 - **`source/x11/x11common.cpp` `x11_MatchVisualInfo`**: XMatchVisualInfo now searches the guest display visuals for a matching screen/depth/class, writes the matching XVisualInfo and returns False if no match exists. Regression: `web/tests/suite/unit/x11-match-visual-info.test.mjs` compiles and calls the real handler for both cases.
 
 ## Register
@@ -156,24 +157,16 @@ Machine-readable. `tools/known-gaps-audit.mjs --check` reads this block. Counts 
 <!-- known-gaps:register:begin -->
 ```json
 {
-  "platform/linux/platformThreads-x64.cpp": { "count": 2, "severity": "medium", "area": "platform", "gap": "syncFromException kpanics on an unexpected thread state" },
-  "platform/sdl/knativeaudio.cpp": { "count": 1, "severity": "low", "area": "audio", "gap": "TODO: no audio device choice" },
-  "platform/sdl/knativescreenSDL.cpp": { "count": 5, "severity": "low", "area": "cursor", "gap": "approximate X cursor shapes (TODO); 8-bit screenshots not supported (logged); recorder invariant kpanic" },
+  "platform/sdl/knativescreenSDL.cpp": { "count": 2, "severity": "low", "area": "cursor", "gap": "8-bit screenshots not supported (logged); recorder invariant kpanic" },
   "source/io/fsdiropennode.cpp": { "count": 2, "severity": "low", "area": "fs", "gap": "setAsync and waitForEvents are no-ops" },
   "source/io/fsfileopennode.cpp": { "count": 2, "severity": "low", "area": "fs", "gap": "setAsync and waitForEvents are no-ops" },
   "source/io/fsmemopennode.cpp": { "count": 2, "severity": "low", "area": "fs", "gap": "setAsync and waitForEvents are no-ops" },
   "source/io/fsvirtualopennode.h": { "count": 2, "severity": "low", "area": "fs", "gap": "setAsync and waitForEvents are no-ops" },
   "source/io/fszipopennode.cpp": { "count": 4, "severity": "low", "area": "fs", "gap": "write and truncate kpanics unreachable; async no-ops" },
-  "source/ui/controls/downloadDlg.cpp": { "count": 1, "severity": "low", "area": "ui", "gap": "TODO: stuck download socket not handled" },
-  "source/ui/controls/optionsView.cpp": { "count": 1, "severity": "low", "area": "ui", "gap": "TODO: settings not saved on focus loss" },
-  "source/ui/data/appFile.cpp": { "count": 2, "severity": "low", "area": "ui", "gap": "TODO: dependency ordering; runOnRestartUI invariant" },
-  "source/ui/data/boxedContainer.cpp": { "count": 1, "severity": "low", "area": "ui", "gap": "TODO: link name not parsed" },
-  "source/ui/data/globalSettings.cpp": { "count": 2, "severity": "low", "area": "ui", "gap": "TODO: settings error messages missing" },
-  "source/ui/mainui.cpp": { "count": 2, "severity": "low", "area": "ui", "gap": "TODO: quit does not check a failed save" },
+  "source/ui/data/appFile.cpp": { "count": 1, "severity": "low", "area": "ui", "gap": "runOnRestartUI invariant kpanic" },
   "source/ui/utils/readIcons.cpp": { "count": 1, "severity": "low", "area": "ui", "gap": "one icon format not shown" },
   "source/util/bstring.cpp": { "count": 2, "severity": "low", "area": "util", "gap": "TODO: copy on substring (performance); BString::BString invariant" },
-  "source/x11/x11common.cpp": { "count": 3, "severity": "medium", "area": "x11", "gap": "Shape and XWindowEvent aborts fixed; remaining hits are a commented-out kpanic, an XSetICValues comment, and the animated-cursor loud log" },
-  "source/x11/xdrawable.cpp": { "count": 1, "severity": "medium", "area": "x11", "gap": "non-32-bit legacy line drawing is logged and skipped" },
+  "source/x11/x11common.cpp": { "count": 2, "severity": "medium", "area": "x11", "gap": "Shape and XWindowEvent aborts fixed; animated cursors implemented; remaining hits are a commented-out kpanic and an XSetICValues comment" },
   "source/x11wire/xwireconnection.cpp": { "count": 1, "severity": "high", "area": "x11", "gap": "unknown GLX requests return BadRequest and log a warning" },
   "web/naga-rt.mjs": { "count": 5, "severity": "medium", "area": "shader", "gap": "shader versions routed to ANGLE; fallback not verified; naga 'Not implemented' probe note" }
 }
@@ -182,7 +175,7 @@ Machine-readable. `tools/known-gaps-audit.mjs --check` reads this block. Counts 
 
 ## Allowlist
 
-`docs/known-gaps/allowlist.json` holds 17 files that are not gaps: invariants that abort loudly, vendored code, errno tables, comments, and labels. Each entry has a reason and a count. The reasons are in the file.
+`docs/known-gaps/allowlist.json` holds 18 files that are not gaps: invariants that abort loudly, vendored code, errno tables, comments, and labels. Each entry has a reason and a count. The reasons are in the file.
 
 ## Hit lists
 
@@ -206,34 +199,18 @@ _Generated by `node tools/known-gaps-audit.mjs --write-hits`; do not edit by han
 | 25 | `kpanic(` | void kpanic(const char* msg); |
 | 48 | `kpanic(` | internal_kpanic(msg); |
 
-### `platform/linux/platformThreads-x64.cpp` (2)
-
-| Line | Match | Text |
-| --- | --- | --- |
-| 146 | `kpanic(` | kpanic("Linux x64 syncFromException"); |
-| 187 | `kpanic(` | kpanic("Linux x64 syncFromException xmm"); |
-
-### `platform/sdl/knativeaudio.cpp` (1)
-
-| Line | Match | Text |
-| --- | --- | --- |
-| 77 | `TODO` | // :TODO: maybe allow the user to choose in the future |
-
 ### `platform/sdl/knativeinputSDL.cpp` (1)
 
 | Line | Match | Text |
 | --- | --- | --- |
 | 532 | `kpanic(` | kpanic("KNativeInputSDL::processCustomEvents should only be called on main thread"); |
 
-### `platform/sdl/knativescreenSDL.cpp` (5)
+### `platform/sdl/knativescreenSDL.cpp` (2)
 
 | Line | Match | Text |
 | --- | --- | --- |
 | 289 | `kpanic(` | kpanic("script recorder overwrote memory when copying screen"); |
 | 442 | `not supported` | klog("KNativeScreenSDL::internalScreenShot 8 bit screen shots not supported"); |
-| 616 | `TODO` | // :TODO: |
-| 626 | `TODO` | // :TODO: |
-| 661 | `TODO` | // :TODO: |
 
 ### `source/emulation/softmmu/codePageData.cpp` (2)
 
@@ -327,44 +304,11 @@ _Generated by `node tools/known-gaps-audit.mjs --write-hits`; do not edit by han
 | --- | --- | --- |
 | 95 | `kpanic(` | kpanic("Auto layout only supports 1 variable length control in a row"); |
 
-### `source/ui/controls/downloadDlg.cpp` (1)
+### `source/ui/data/appFile.cpp` (1)
 
 | Line | Match | Text |
 | --- | --- | --- |
-| 156 | `TODO` | // :TODO: what if the socket is stuck, this will only work if the socket is just too slow |
-
-### `source/ui/controls/optionsView.cpp` (1)
-
-| Line | Match | Text |
-| --- | --- | --- |
-| 106 | `TODO` | // :TODO: track when we loose focus and save |
-
-### `source/ui/data/appFile.cpp` (2)
-
-| Line | Match | Text |
-| --- | --- | --- |
-| 60 | `TODO` | // :TODO: find dependencies, if there are some then delay the other changes |
-| 143 | `kpanic(` | kpanic("runApps runOnRestartUI should not be set"); |
-
-### `source/ui/data/boxedContainer.cpp` (1)
-
-| Line | Match | Text |
-| --- | --- | --- |
-| 363 | `TODO` | // :TODO: parse link to get name |
-
-### `source/ui/data/globalSettings.cpp` (2)
-
-| Line | Match | Text |
-| --- | --- | --- |
-| 674 | `TODO` | continue; // :TODO: error msg? |
-| 1072 | `TODO` | return B(""); // :TODO: error msg? |
-
-### `source/ui/mainui.cpp` (2)
-
-| Line | Match | Text |
-| --- | --- | --- |
-| 382 | `TODO` | // :TODO: should we stop the quit action if this save fails? |
-| 664 | `TODO` | // :TODO: |
+| 147 | `kpanic(` | kpanic("runApps runOnRestartUI should not be set"); |
 
 ### `source/ui/utils/readIcons.cpp` (1)
 
@@ -377,7 +321,7 @@ _Generated by `node tools/known-gaps-audit.mjs --write-hits`; do not edit by han
 | Line | Match | Text |
 | --- | --- | --- |
 | 115 | `kpanic(` | kpanic("BString::BString oops"); |
-| 570 | `TODO` | // :TODO in the future maybe don't make a copy, just a ref and use offsets into the data |
+| 590 | `TODO` | // :TODO in the future maybe don't make a copy, just a ref and use offsets into the data |
 
 ### `source/util/concurrentqueue.h` (1)
 
@@ -418,19 +362,12 @@ _Generated by `node tools/known-gaps-audit.mjs --write-hits`; do not edit by han
 | --- | --- | --- |
 | 259 | `kpanic(` | kpanic("shouldn't signal a thread that is not waiting"); |
 
-### `source/x11/x11common.cpp` (3)
+### `source/x11/x11common.cpp` (2)
 
 | Line | Match | Text |
 | --- | --- | --- |
 | 1414 | `kpanic(` | //kpanic("x11_FreeColorMap"); |
 | 2859 | `unsupported` | EAX = 0; // XSetICValues returns the first unsupported attribute; none exist. |
-| 3843 | `not supported` | klog("x11_CursorImagesLoadCursor animated cursors not supported, will use first frame"); |
-
-### `source/x11/xdrawable.cpp` (1)
-
-| Line | Match | Text |
-| --- | --- | --- |
-| 268 | `not supported` | kwarn_fmt("XDrawable::drawLine depth %d not supported", visual->bits_per_rgb); |
 
 ### `source/x11wire/xwireconnection.cpp` (1)
 
