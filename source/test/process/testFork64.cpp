@@ -62,6 +62,13 @@ static void runForkCase(TestContext& context, U64 nr, const char* name) {
     memory->writed(page + 4, 0xAABBCCDD);
     const U64 childCode = page + K64_PAGE_SIZE + 0x10;
     if (nr == 58 /*vfork*/) {
+        // Linux vfork shares the address space until exec/exit: the child
+        // writes a magic value into the data page, and the parent must
+        // observe that write in its own page after vfork returns.
+        const U8 writeMagic[] = {
+            0xC7, 0x05, 0xE6, 0xEF, 0xFF, 0xFF, // mov dword ptr [rip-0x101A], imm32
+            0xBE, 0xBA, 0xFE, 0xCA              // 0xCAFEBABE -> page
+        };
         const U8 exitAfterDelay[] = {
             0xB9, 0xA0, 0x86, 0x01, 0x00, // mov ecx, 100000
             0xFF, 0xC9,                 // dec ecx
@@ -70,7 +77,8 @@ static void runForkCase(TestContext& context, U64 nr, const char* name) {
             0x31, 0xFF,                 // xor edi, edi
             0x0F, 0x05                  // syscall
         };
-        memory->memcpyToGuest(childCode, exitAfterDelay, sizeof(exitAfterDelay));
+        memory->memcpyToGuest(childCode, writeMagic, sizeof(writeMagic));
+        memory->memcpyToGuest(childCode + sizeof(writeMagic), exitAfterDelay, sizeof(exitAfterDelay));
     } else {
         memory->writeb(childCode, 0xEB);     // jmp $: keep fork child alive
         memory->writeb(childCode + 1, 0xFE); // until test cleanup stops it.
@@ -136,7 +144,9 @@ static void runForkCase(TestContext& context, U64 nr, const char* name) {
             descriptor->kobject->isReadReady())
             testFail("clone3 CLONE_PIDFD did not return a live process-pollable descriptor (fd=%d)", clone3Pidfd);
     }
-    if (!child->memory64 || child->memory64 == memory) testFail("%s child did not get its own address space", name);
+    if (nr != 58 && (!child->memory64 || child->memory64 == memory)) testFail("%s child did not get its own address space", name);
+    if (nr == 58 && memory->readd(page) != 0xCAFEBABE)
+        testFail("vfork child writes were not visible to the parent (address space was not shared)");
     if (!child->cpu64) {
         testFail("%s child has no CPU64", name);
     } else if (nr != 58 /*vfork child exits before parent resumes*/) {
@@ -153,7 +163,7 @@ static void runForkCase(TestContext& context, U64 nr, const char* name) {
             testFail("%s child did not inherit its signal disposition", name);
         }
     }
-    if (child->memory64) {
+    if (nr != 58 && child->memory64) {
         if (child->memory64->readd(page) != 0x11223344 || child->memory64->readd(page + 4) != 0xAABBCCDD) {
             testFail("%s child did not inherit the parent memory contents", name);
         }

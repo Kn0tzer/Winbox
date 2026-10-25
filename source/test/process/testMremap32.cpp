@@ -13,6 +13,7 @@
 #ifndef BOXEDWINE_GUEST_X64
 
 #include "../cpu/testCPU.h"
+#include "../../io/fsfilenode.h"
 
 void testMremap32Syscall() {
     TestContext& context = testContext();
@@ -56,6 +57,94 @@ void testMremap32Syscall() {
         invoke(dontUnmapSource, K_PAGE_SIZE, K_PAGE_SIZE, 2, fixedDestination) != -K_EINVAL) {
         testFail("32-bit mremap accepted invalid flags or missing MAYMOVE");
     }
+}
+
+void testMremap32SharedFile() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    KThread* thread = context.thread;
+    KMemory* memory = context.memory;
+    constexpr U32 kMayMove = 1;
+    constexpr U32 kFixed = 2;
+    constexpr U32 kDontUnmap = 4;
+    if (!process->fdNode) {
+        process->fdNode = std::make_shared<FsFileNode>(0x3FFFFFFF, 0, B("/proc/test/fd"), B(""), B(""), true, false, nullptr);
+    }
+    U32 fd = process->memfd_create(B("bw-mremap32"), 0);
+    if ((S32)fd < 0 || (S32)process->ftruncate64(fd, K_PAGE_SIZE * 2) < 0) {
+        testFail("32-bit mremap shared test could not create a memfd");
+        if ((S32)fd >= 0) process->close(fd);
+        return;
+    }
+    constexpr U32 source = 0x34000000;
+    constexpr U32 second = 0x34100000;
+    constexpr U32 moved = 0x34300000;
+    if (memory->mmap(thread, source, K_PAGE_SIZE, K_PROT_READ | K_PROT_WRITE, K_MAP_SHARED, fd, 0) != source ||
+        memory->mmap(thread, second, K_PAGE_SIZE * 2, K_PROT_READ | K_PROT_WRITE, K_MAP_SHARED, fd, 0) != second) {
+        testFail("32-bit mremap shared test could not map the memfd");
+        process->close(fd);
+        return;
+    }
+    memory->writed(source, 0x11223344);
+    if (memory->readd(second) != 0x11223344) {
+        testFail("32-bit shared memfd mappings do not alias before mremap");
+        process->close(fd);
+        return;
+    }
+    // old_size == 0 duplicates a shared mapping; the duplicate must alias
+    // the same file pages, not copy them.
+    const S32 duplicate = (S32)memory->mremap(thread, source, 0, K_PAGE_SIZE, kMayMove);
+    if (duplicate < 0) {
+        testFail("32-bit mremap old_size==0 did not duplicate the shared mapping: %d", duplicate);
+    } else {
+        if (memory->readd((U32)duplicate) != 0x11223344) {
+            testFail("32-bit mremap duplicate lost the shared contents");
+        }
+        memory->writed((U32)duplicate, 0x55667788);
+        if (memory->readd(second) != 0x55667788) {
+            testFail("32-bit mremap duplicate does not alias the same file pages");
+        }
+        memory->unmap((U32)duplicate, K_PAGE_SIZE);
+    }
+    U32 duDestAddr = 0;
+    // A move (here with growth) keeps the shared identity: writes through
+    // the new address are visible through the independent mapping, and the
+    // grown tail demand-loads the following file page.
+    if ((S32)memory->mremap(thread, source, K_PAGE_SIZE, K_PAGE_SIZE * 2, kMayMove | kFixed, moved) != (S32)moved) {
+        testFail("32-bit mremap shared move failed");
+    } else {
+        memory->writed(moved, 0x99AABBCC);
+        if (memory->readd(second) != 0x99AABBCC) {
+            testFail("32-bit mremap shared move lost the file identity");
+        }
+        memory->writed(moved + K_PAGE_SIZE, 0xDDEEFF00);
+        if (memory->readd(second + K_PAGE_SIZE) != 0xDDEEFF00) {
+            testFail("32-bit mremap shared grow tail did not reach the following file page");
+        }
+        // DONTUNMAP on a shared mapping: the destination keeps the contents,
+        // the source stays mapped as zero pages, and the shared file pages
+        // themselves are not zeroed.
+        const S32 duDest = (S32)memory->mremap(thread, moved, K_PAGE_SIZE, K_PAGE_SIZE, kMayMove | kDontUnmap);
+        if (duDest >= 0) duDestAddr = (U32)duDest;
+        if (duDest < 0) {
+            testFail("32-bit mremap DONTUNMAP on a shared mapping failed: %d", duDest);
+        } else {
+            if (memory->readd((U32)duDest) != 0x99AABBCC) {
+                testFail("32-bit mremap DONTUNMAP destination lost the contents");
+            }
+            if (memory->readd(moved) != 0) {
+                testFail("32-bit mremap DONTUNMAP source did not become zero pages");
+            }
+            if (memory->readd(second) != 0x99AABBCC) {
+                testFail("32-bit mremap DONTUNMAP zeroed the shared file pages");
+            }
+        }
+    }
+    memory->unmap(second, K_PAGE_SIZE * 2);
+    memory->unmap(source, K_PAGE_SIZE);
+    memory->unmap(moved, K_PAGE_SIZE * 2);
+    if (duDestAddr) memory->unmap(duDestAddr, K_PAGE_SIZE);
+    process->close(fd);
 }
 
 #endif

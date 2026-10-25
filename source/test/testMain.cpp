@@ -69,6 +69,8 @@ void testGetrandom32Syscall();
 void testMlock32Syscalls();
 void testSchedAffinity32Syscalls();
 void testMremap32Syscall();
+void testMadvise32ForkInheritance();
+void testMremap32SharedFile();
 void testProcMaps32();
 #endif
 void testInetDatagramLoopback();
@@ -106,6 +108,9 @@ void testSigaltstack64Semantics();
 void testSigaltstack64Autodisarm();
 void testClone64AltstackReset();
 void testMremap64Syscall();
+void testSysinfo64Consistency();
+void testMadvise64Syscalls();
+void testMlock64Syscalls();
 #endif
 
 namespace {
@@ -141,6 +146,9 @@ const TestEntry TEST_ENTRIES[] = {
     {testClone3Abi64, "Test x64 clone3 argument ABI validation"},
     {testMremap64Syscall, "Test x64 mremap fixed and DONTUNMAP semantics"},
     {testForkVfork64, "Test x64 fork and vfork create real processes"},
+    {testSysinfo64Consistency, "Test x64 sysinfo and meminfo consistency"},
+    {testMadvise64Syscalls, "Test x64 madvise remove and fork advice"},
+    {testMlock64Syscalls, "Test x64 mlock accounting and RLIMIT_MEMLOCK"},
     {testSignalFp64Roundtrip, "Test x64 signal FP/SSE snapshot and edited return (K-M4)"},
     {testSignal64NestedAltstack, "Test x64 nested altstack signal frames"},
     {testSignal64BadFpFrame, "Test x64 invalid signal FP frame faults"},
@@ -767,6 +775,8 @@ const TestEntry TEST_ENTRIES[] = {
     {testMlock32Syscalls, "Test 32-bit memory lock syscall ABI"},
     {testSchedAffinity32Syscalls, "Test 32-bit scheduler affinity ABI"},
     {testMremap32Syscall, "Test 32-bit mremap fixed and DONTUNMAP semantics"},
+    {testMadvise32ForkInheritance, "Test 32-bit fork madvise inheritance"},
+    {testMremap32SharedFile, "Test 32-bit mremap shared file identity"},
     {testSyscall64DispatchGuard, "Test x64 syscall fallback guard"},
     {testGuestCpuTopology, "Test guest CPU topology consistency"},
     {testKObjectLockStubs, "Test KObject lock stub dispositions"},
