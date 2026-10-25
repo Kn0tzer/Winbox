@@ -31,7 +31,7 @@ struct CPU{KMemory* memory;U32 args[8]{};U32 eax=0;};
 #define ARG6 cpu->args[6]
 #define EAX cpu->eax
 struct XKeyEvent{U32 type=2,keycode=8,state=0;void read(KMemory*m,U32 a){m->memcpy(this,a,sizeof(*this));}};
-struct XKeyboard{static U32 keycodeToKeysym(U32 key,U32 level){return key==8?(level==1?'A':'a'):key==9?0xfe51:key==10?'e':0;}static U32 translate(U32& sym,U32 modifiers,char*out,U32 n){if(sym=='a'&&(modifiers&ShiftMask))sym='A';if(!sym)return 0;if(n)out[0]=(char)sym;return 1;}};
+struct XKeyboard{static U32 keycodeToKeysym(U32 key,U32 level){return key==8?(level==1?'A':'a'):key==9?0xfe51:key==10?'e':key==11?0xfe53:key==12?0xfe5b:key==13?0xfe5a:key==14?'n':key==15?'c':key==16?'s':key==17?' ':key==18?0xfe50:0;}static U32 translate(U32& sym,U32 modifiers,char*out,U32 n){if(sym=='a'&&(modifiers&ShiftMask))sym='A';if(!sym)return 0;if(n)out[0]=(char)sym;return 1;}};
 ${compose}
 ${lookup}
 ${mbLookup}
@@ -45,7 +45,7 @@ int main(){KMemory m;CPU c{&m};XKeyEvent e{};m.memcpy(4,&e,sizeof(e));
  x11_LookupString(&c);assert(c.eax==0);m.memcpy(&sym,96,4);assert(sym==0xfe51);
  U32 matched=0;m.memcpy(&matched,100,4);assert(matched==1);
  e.keycode=10;m.memcpy(4,&e,sizeof(e));x11_LookupString(&c);assert(c.eax==2&&m.b[32]==0xc3&&m.b[33]==0xa9);
- m.memcpy(&matched,100,4);assert(matched==0);}
+ m.memcpy(&matched,100,4);\n // Tilde (0xfe53) + n composes to U+00F1 (n with tilde).\n e.keycode=11;m.memcpy(4,&e,sizeof(e));x11_LookupString(&c);assert(c.eax==0);m.memcpy(&sym,96,4);assert(sym==0xfe53);\n e.keycode=14;m.memcpy(4,&e,sizeof(e));x11_LookupString(&c);assert(c.eax==2&&m.b[32]==0xc3&&m.b[33]==0xb1);\n // Cedilla (0xfe5b) + c composes to U+00E7.\n e.keycode=12;m.memcpy(4,&e,sizeof(e));x11_LookupString(&c);assert(c.eax==0);m.memcpy(&sym,96,4);assert(sym==0xfe5b);\n e.keycode=15;m.memcpy(4,&e,sizeof(e));x11_LookupString(&c);assert(c.eax==2&&m.b[32]==0xc3&&m.b[33]==0xa7);\n // Caron (0xfe5a) + s composes to U+0161 (two-byte UTF-8 above U+00FF).\n e.keycode=13;m.memcpy(4,&e,sizeof(e));x11_LookupString(&c);assert(c.eax==0);m.memcpy(&sym,96,4);assert(sym==0xfe5a);\n e.keycode=16;m.memcpy(4,&e,sizeof(e));x11_LookupString(&c);assert(c.eax==2&&m.b[32]==0xc5&&m.b[33]==0xa1);\n // Dead grave (0xfe50) + space yields the accent itself as ONE byte (0x60).\n e.keycode=18;m.memcpy(4,&e,sizeof(e));x11_LookupString(&c);assert(c.eax==0);m.memcpy(&sym,96,4);assert(sym==0xfe50);\n e.keycode=17;m.memcpy(4,&e,sizeof(e));x11_LookupString(&c);assert(c.eax==1&&m.b[32]==0x60);\n // An unlisted pair (tilde + c) falls back to the base key's own text.\n e.keycode=11;m.memcpy(4,&e,sizeof(e));x11_LookupString(&c);assert(c.eax==0);\n e.keycode=15;m.memcpy(4,&e,sizeof(e));x11_LookupString(&c);assert(c.eax==1&&m.b[32]=='c');\n m.memcpy(&matched,100,4);assert(matched==0);}
 `);
     execFileSync('c++', ['-std=c++17', '-Wall', '-Werror', join(dir, 'check.cpp'), '-o', join(dir, 'check')]);
     execFileSync(join(dir, 'check'));
