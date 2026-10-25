@@ -52,6 +52,15 @@ bool k64CheckGuestAccess(const KMemory64* memory, U64 addr, U64 len, bool write)
 // pinned page's buffer, or the held pointer would dangle. Outside the kmemory.h
 // numbering — a 64-bit-only internal bit.
 #define K64_PAGE_PINNED  0x40
+// mlock / madvise fork-advice state (kernel round 3A). LOCKED pages refuse
+// MADV_DONTNEED/MADV_REMOVE with EINVAL and count against RLIMIT_MEMLOCK
+// (KProcess::memLockedBytes is kept in sync by the lock helpers in
+// kmemory64.cpp, the only mutators of this bit). DONTFORK pages are not
+// inherited by fork; WIPEONFORK pages are inherited zeroed. Neither advice
+// bit, nor LOCKED, survives into a fork child.
+#define K64_PAGE_LOCKED     0x80
+#define K64_PAGE_DONTFORK   0x100
+#define K64_PAGE_WIPEONFORK 0x200
 
 // A guest page slot. `data` is allocated lazily: a freshly reserved page (mmap
 // of an address wine may never touch — its huge PROT_NONE reservations) carries
@@ -185,6 +194,25 @@ public:
     // (virtual.c:1578 "assert(view->protect & VPROT_SYSTEM)"). addr must be
     // page-aligned; partial pages at the tail are unmapped whole. Returns 0.
     U64 munmap(U64 addr, U64 len);
+    // mlock accounting (kernel round 3A). lockRange/unlockRange are the
+    // only mutators of K64_PAGE_LOCKED; they validate the range, enforce
+    // RLIMIT_MEMLOCK against KProcess::memLockedBytes, and keep that
+    // counter in sync. lockAllCurrent is all-or-nothing over the limit.
+    S64 lockRange(U64 addr, U64 len);
+    S64 unlockRange(U64 addr, U64 len);
+    S64 lockAllCurrent();
+    void unlockAll();
+    bool rangeHasLocked(U64 addr, U64 len);
+    U64 countLockedInRange(U64 addr, U64 len);
+    // Sets LOCKED on mapped pages in the range (mlockall MCL_FUTURE path
+    // taken by fresh mappings); accounting follows the bits flipped.
+    void applyFutureLock(U64 addr, U64 len);
+    // madvise behaviours that need page-table state: MADV_REMOVE and the
+    // fork advice (DONTFORK/DOFORK/WIPEONFORK/KEEPONFORK), plus the
+    // locked-page rules for DONTNEED/DONTNEED_LOCKED. The syscall wrapper
+    // validates the advice value and range first.
+    S64 madvise(U64 addr, U64 len, U32 advice);
+
 
     // Permission query / page state.
     bool isPageMapped(U64 pageNum) const;

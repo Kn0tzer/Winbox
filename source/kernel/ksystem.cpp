@@ -296,6 +296,10 @@ U32 KSystem::ugetrlimit(KThread * thread, U32 resource, U32 rlim) {
             memory->writed(rlim, MAX_NUMBER_OF_FILES);
             memory->writed(rlim + 4, MAX_NUMBER_OF_FILES);
             break;
+        case 8: // RLIMIT_MEMLOCK (kernel round 3A: tracked per process)
+            memory->writed(rlim, (U32)thread->process->rlimMemlockCur);
+            memory->writed(rlim + 4, (U32)thread->process->rlimMemlockMax);
+            break;
         case 9: // RLIMIT_AS
             memory->writed(rlim, MAX_ADDRESS_SPACE);
             memory->writed(rlim + 4, MAX_ADDRESS_SPACE);
@@ -1035,6 +1039,20 @@ U32 KSystem::prlimit64(KThread* thread, U32 pid, U32 resource, U32 newlimit, U32
                 klog_fmt("prlimit64 RLIMIT_NOFILE set=%d ignored", (U32)memory->readq(newlimit));
             }
 #endif
+            break;
+        case 8: // RLIMIT_MEMLOCK (kernel round 3A: tracked per process)
+            if (newlimit != 0) {
+                const U64 newCur = memory->readq(newlimit);
+                const U64 newMax = memory->readq(newlimit + 8);
+                if (newCur > newMax) return -K_EINVAL;
+                if (newMax > thread->process->rlimMemlockMax) return -K_EPERM;
+                thread->process->rlimMemlockCur = newCur;
+                thread->process->rlimMemlockMax = newMax;
+            }
+            if (oldlimit != 0) {
+                memory->writeq(oldlimit, thread->process->rlimMemlockCur);
+                memory->writeq(oldlimit + 8, thread->process->rlimMemlockMax);
+            }
             break;
         case 9: // RLIMIT_AS
             if (oldlimit!=0) {

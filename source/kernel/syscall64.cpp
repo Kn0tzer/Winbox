@@ -706,6 +706,10 @@ static U64 sys_brk64(CPU64* cpu, U64 newBrk) {
     U64 alignedOld = (oldBrk + 0xFFF) & ~0xFFFULL;
     U64 alignedNew = (newBrk + 0xFFF) & ~0xFFFULL;
     if (alignedNew > alignedOld) {
+        if (hasProcess && cpu->thread->process->memLockAllFuture &&
+            cpu->thread->process->memLockedBytes + (alignedNew - alignedOld) > cpu->thread->process->rlimMemlockCur) {
+            return oldBrk; // growing the heap would exceed RLIMIT_MEMLOCK
+        }
         U64 ret = cpu->memory->mmapAnonymousFixed(alignedOld, alignedNew - alignedOld, 0x3); // PROT_READ|WRITE
         if ((S64)ret < 0) {
             return oldBrk;
@@ -728,8 +732,22 @@ static bool sys_mdweBlocks64(CPU64* cpu, U64 prot) {
     return (prot & 0x2 /*PROT_WRITE*/) != 0;
 }
 
+// mlockall(MCL_FUTURE) gate for fresh mappings (kernel round 3A): when the
+// process locked future mappings, a new mapping counts against
+// RLIMIT_MEMLOCK before it is created; KMemory64::applyFutureLock sets
+// the bits once the mapping exists.
+static bool sys_memlockFutureOk64(CPU64* cpu, U64 addr, U64 length, bool fixed) {
+    KProcess* process = cpu->thread ? cpu->thread->process.get() : nullptr;
+    if (!process || !process->memLockAllFuture || !cpu->memory) return true;
+    const U64 pageCount = (length + K64_PAGE_MASK) >> K64_PAGE_SHIFT;
+    U64 alreadyLocked = 0;
+    if (fixed && addr) alreadyLocked = cpu->memory->countLockedInRange(addr & ~K64_PAGE_MASK, length);
+    return process->memLockedBytes + (pageCount - alreadyLocked) * K64_PAGE_SIZE <= process->rlimMemlockCur;
+}
+
 static U64 sys_mmap64(CPU64* cpu, U64 addr, U64 length, U64 prot, U64 flags, U64 fd, U64 offset) {
     if (sys_mdweBlocks64(cpu, prot)) return (U64)-K_EACCES;
+    if (!sys_memlockFutureOk64(cpu, addr, length, (flags & K_MAP_FIXED) != 0)) return (U64)-K_ENOMEM;
     if (!(flags & K_MAP_ANONYMOUS)) {
         return sys_mmap64_file(cpu, addr, length, prot, flags, fd, offset);
     }
@@ -1296,9 +1314,34 @@ static U64 sys_prctl64(CPU64* cpu, U64 option, U64 arg2, U64 arg3, U64 /*arg4*/,
     }
 }
 
-// prlimit64(pid, resource, new_limit*, old_limit*) — for v1 we always pretend
-// "no limit" by writing RLIM64_INFINITY to old_limit if requested.
-static U64 sys_prlimit64_64(CPU64* cpu, U64 /*pid*/, U64 /*res*/, U64 newLim, U64 oldLim) {
+// prlimit64(pid, resource, new_limit*, old_limit*). RLIMIT_MEMLOCK is
+// tracked per process (kernel round 3A); every other resource reports
+// RLIM64_INFINITY in old_limit and ignores new_limit, as before.
+static U64 sys_prlimit64_64(CPU64* cpu, U64 pid, U64 res, U64 newLim, U64 oldLim) {
+    if (res == 8) { // RLIMIT_MEMLOCK
+        KProcessPtr targetPtr;
+        KProcess* target = nullptr;
+        if (pid) {
+            targetPtr = KSystem::getProcess((U32)pid);
+            target = targetPtr.get();
+        } else if (cpu->thread) {
+            target = cpu->thread->process.get();
+        }
+        if (!target) return (U64)-K_ESRCH;
+        if (oldLim) {
+            cpu->memory->writeq(oldLim, target->rlimMemlockCur);
+            cpu->memory->writeq(oldLim + 8, target->rlimMemlockMax);
+        }
+        if (newLim) {
+            const U64 newCur = cpu->memory->readq(newLim);
+            const U64 newMax = cpu->memory->readq(newLim + 8);
+            if (newCur > newMax) return (U64)-K_EINVAL;
+            if (newMax > target->rlimMemlockMax) return (U64)-K_EPERM;
+            target->rlimMemlockCur = newCur;
+            target->rlimMemlockMax = newMax;
+        }
+        return 0;
+    }
     if (oldLim) {
         // struct rlimit64 { __u64 rlim_cur; __u64 rlim_max; }
         cpu->memory->writeq(oldLim, ~0ULL);
@@ -5629,16 +5672,33 @@ void ksyscall64(CPU64* cpu) {
             break;
         case X64_SYS_getrlimit:
             // getrlimit(resource, struct rlimit* {unsigned long cur,max}).
-            // wine's unix ntdll queries RLIMIT_STACK/NOFILE/AS during thread
-            // setup. Pretend "no limit" (RLIM_INFINITY) like prlimit64 does.
+            // RLIMIT_MEMLOCK (8) is tracked per process (kernel round 3A);
+            // every other resource still reports RLIM_INFINITY, matching
+            // what the ntdll queries in wine (STACK/NOFILE/AS) expect.
             if (a2) {
-                cpu->memory->writeq(a2, ~0ULL);
-                cpu->memory->writeq(a2 + 8, ~0ULL);
+                U64 cur = ~0ULL, max = ~0ULL;
+                if (a1 == 8 && cpu->thread && cpu->thread->process) {
+                    cur = cpu->thread->process->rlimMemlockCur;
+                    max = cpu->thread->process->rlimMemlockMax;
+                }
+                cpu->memory->writeq(a2, cur);
+                cpu->memory->writeq(a2 + 8, max);
             }
             ret = 0;
             break;
         case X64_SYS_setrlimit:
-            ret = 0; // accept and ignore — we don't enforce limits
+            // Only RLIMIT_MEMLOCK (8) is stored (kernel round 3A); other
+            // resources keep the historical accept-and-ignore behaviour.
+            if (a1 == 8 && a2 && cpu->thread && cpu->thread->process) {
+                KProcess* process = cpu->thread->process.get();
+                const U64 newCur = cpu->memory->readq(a2);
+                const U64 newMax = cpu->memory->readq(a2 + 8);
+                if (newCur > newMax) { ret = (U64)-K_EINVAL; break; }
+                if (newMax > process->rlimMemlockMax) { ret = (U64)-K_EPERM; break; }
+                process->rlimMemlockCur = newCur;
+                process->rlimMemlockMax = newMax;
+            }
+            ret = 0;
             break;
         case X64_SYS_sched_getscheduler:
             ret = 0; // SCHED_OTHER
@@ -5653,12 +5713,26 @@ void ksyscall64(CPU64* cpu) {
             break;
         case X64_SYS_mlockall: {
             constexpr U32 MCL_CURRENT = 1, MCL_FUTURE = 2, MCL_ONFAULT = 4;
-            ret = ((a1 & ~(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT)) ||
-                   ((a1 & MCL_ONFAULT) && !(a1 & (MCL_CURRENT | MCL_FUTURE))))
-                ? (U64)-K_EINVAL : 0;
+            if ((a1 & ~(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT)) ||
+                ((a1 & MCL_ONFAULT) && !(a1 & (MCL_CURRENT | MCL_FUTURE)))) {
+                ret = (U64)-K_EINVAL;
+                break;
+            }
+            // Pages are always resident here, so MCL_ONFAULT accounting
+            // matches an immediate lock (kernel round 3A).
+            if ((a1 & MCL_CURRENT) && cpu->memory) {
+                const S64 lockResult = cpu->memory->lockAllCurrent();
+                if (lockResult < 0) { ret = (U64)lockResult; break; }
+            }
+            if ((a1 & MCL_FUTURE) && cpu->thread && cpu->thread->process) {
+                cpu->thread->process->memLockAllFuture = true;
+            }
+            ret = 0;
             break;
         }
         case X64_SYS_munlockall:
+            if (cpu->memory) cpu->memory->unlockAll();
+            if (cpu->thread && cpu->thread->process) cpu->thread->process->memLockAllFuture = false;
             ret = 0;
             break;
         case X64_SYS_mlock:
@@ -5669,7 +5743,22 @@ void ksyscall64(CPU64* cpu) {
             }
             const U64 start = a1 & ~K64_PAGE_MASK;
             const U64 end = (a1 + a2 + K64_PAGE_MASK) & ~K64_PAGE_MASK;
-            ret = sys_rangeMapped64(cpu, start, end - start) ? 0 : (U64)-K_ENOMEM;
+            ret = (nr == X64_SYS_mlock) ? (U64)cpu->memory->lockRange(start, end - start)
+                                        : (U64)cpu->memory->unlockRange(start, end - start);
+            break;
+        }
+        case 325: { // __NR_mlock2: flags must be 0 or MLOCK_ONFAULT (1)
+            if (a3 & ~1ULL) {
+                ret = (U64)-K_EINVAL;
+                break;
+            }
+            if (!a2 || a1 > ~0ULL - a2 || a1 + a2 > ~0ULL - K64_PAGE_MASK) {
+                ret = (U64)-K_EINVAL;
+                break;
+            }
+            const U64 start = a1 & ~K64_PAGE_MASK;
+            const U64 end = (a1 + a2 + K64_PAGE_MASK) & ~K64_PAGE_MASK;
+            ret = (U64)cpu->memory->lockRange(start, end - start);
             break;
         }
         case X64_SYS_clock_gettime:

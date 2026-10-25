@@ -272,6 +272,14 @@ public:
     U32 umaskValue = 0;
     bool terminated = false;
     bool vforkReleased = false;
+    // mlock bookkeeping (kernel round 3A): bytes this process currently has
+    // locked, whether new mappings lock automatically (mlockall MCL_FUTURE),
+    // and RLIMIT_MEMLOCK. The rlimits are inherited by fork and kept across
+    // exec; the locked total and the future flag are reset by both.
+    U64 memLockedBytes = 0;
+    bool memLockAllFuture = false;
+    U64 rlimMemlockCur = ~0ULL; // RLIM_INFINITY until a guest lowers it
+    U64 rlimMemlockMax = ~0ULL;
     KMemory* memory = nullptr;
 
     BString currentDirectory;
@@ -306,6 +314,10 @@ public:
     // KMemory above stays the working path for ELF32 guests; KMemory64 is
     // a strictly parallel subsystem in v1, not a replacement.
     class KMemory64* memory64 = nullptr;
+    // True while this process is a vfork child still sharing the parent
+    // memory64 (until exec/exit). The exec path must not delete a shared
+    // memory64; it drops the reference and installs a fresh one instead.
+    bool memory64Shared = false;
     // 64-bit CPU. Set up by ElfLoader64::loadProgram once segments are
     // mapped and the stack is built. v1 has no 64-bit KThread equivalent;
     // the test harness drives this CPU's run() loop directly. A KThread64

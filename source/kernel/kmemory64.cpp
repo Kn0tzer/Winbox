@@ -379,7 +379,7 @@ void KMemory64::cloneFrom(const KMemory64* from) {
     pages.reserve(from->pages.size());
     for (const auto& kv : from->pages) {
         auto copy = std::make_unique<K64Page>();
-        copy->flags = kv.second->flags;
+        copy->flags = kv.second->flags & ~K64_PAGE_LOCKED; // locks are not inherited
         // Only copy backing store for committed pages; an uncommitted page in
         // the parent (reserved but never touched) stays uncommitted in the child.
         if (kv.second->dataShared) {
@@ -469,6 +469,123 @@ U64 KMemory64::mappedCommittedPageCount() const {
     return n;
 }
 
+// ---- mlock accounting (kernel round 3A) ----
+// Guest RAM is permanently resident here, so locking is bookkeeping: the
+// observable Linux contract is the validation, the RLIMIT_MEMLOCK ceiling,
+// and the madvise interactions of locked pages. K64_PAGE_LOCKED is the
+// record; these helpers are its only mutators and they keep
+// KProcess::memLockedBytes in sync with the bits actually set.
+
+S64 KMemory64::lockRange(U64 addr, U64 len) {
+    const U64 firstPage = addr >> K64_PAGE_SHIFT;
+    const U64 lastPage = (addr + len - 1) >> K64_PAGE_SHIFT;
+    U64 newBytes = 0;
+    for (U64 page = firstPage;; ++page) {
+        const U32 flags = getPageFlags(page);
+        if (!(flags & K64_PAGE_MAPPED)) return -K_ENOMEM;
+        if (!(flags & K64_PAGE_LOCKED)) newBytes += K64_PAGE_SIZE;
+        if (page == lastPage) break;
+    }
+    if (process && process->memLockedBytes + newBytes > process->rlimMemlockCur) return -K_ENOMEM;
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
+    U64 added = 0;
+    for (U64 page = firstPage;; ++page) {
+        K64Page* p = getPage(page);
+        if (p && !(p->flags & K64_PAGE_LOCKED)) {
+            p->flags |= K64_PAGE_LOCKED;
+            added += K64_PAGE_SIZE;
+        }
+        if (page == lastPage) break;
+    }
+    if (process) process->memLockedBytes += added;
+    return 0;
+}
+
+S64 KMemory64::unlockRange(U64 addr, U64 len) {
+    const U64 firstPage = addr >> K64_PAGE_SHIFT;
+    const U64 lastPage = (addr + len - 1) >> K64_PAGE_SHIFT;
+    for (U64 page = firstPage;; ++page) {
+        if (!(getPageFlags(page) & K64_PAGE_MAPPED)) return -K_ENOMEM;
+        if (page == lastPage) break;
+    }
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
+    U64 removed = 0;
+    for (U64 page = firstPage;; ++page) {
+        K64Page* p = getPage(page);
+        if (p && (p->flags & K64_PAGE_LOCKED)) {
+            p->flags &= ~K64_PAGE_LOCKED;
+            removed += K64_PAGE_SIZE;
+        }
+        if (page == lastPage) break;
+    }
+    if (process) process->memLockedBytes -= std::min(process->memLockedBytes, removed);
+    return 0;
+}
+
+S64 KMemory64::lockAllCurrent() {
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
+    U64 newBytes = 0;
+    for (const auto& kv : pages) {
+        if ((kv.second->flags & K64_PAGE_MAPPED) && !(kv.second->flags & K64_PAGE_LOCKED)) newBytes += K64_PAGE_SIZE;
+    }
+    if (process && process->memLockedBytes + newBytes > process->rlimMemlockCur) return -K_ENOMEM;
+    U64 added = 0;
+    for (auto& kv : pages) {
+        if ((kv.second->flags & K64_PAGE_MAPPED) && !(kv.second->flags & K64_PAGE_LOCKED)) {
+            kv.second->flags |= K64_PAGE_LOCKED;
+            added += K64_PAGE_SIZE;
+        }
+    }
+    if (process) process->memLockedBytes += added;
+    return 0;
+}
+
+void KMemory64::unlockAll() {
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
+    for (auto& kv : pages) kv.second->flags &= ~K64_PAGE_LOCKED;
+    if (process) process->memLockedBytes = 0;
+}
+
+bool KMemory64::rangeHasLocked(U64 addr, U64 len) {
+    if (!len) return false;
+    const U64 firstPage = addr >> K64_PAGE_SHIFT;
+    const U64 lastPage = (addr + len - 1) >> K64_PAGE_SHIFT;
+    for (U64 page = firstPage;; ++page) {
+        if (getPageFlags(page) & K64_PAGE_LOCKED) return true;
+        if (page == lastPage) break;
+    }
+    return false;
+}
+
+U64 KMemory64::countLockedInRange(U64 addr, U64 len) {
+    if (!len) return 0;
+    const U64 firstPage = addr >> K64_PAGE_SHIFT;
+    const U64 lastPage = (addr + len - 1) >> K64_PAGE_SHIFT;
+    U64 count = 0;
+    for (U64 page = firstPage;; ++page) {
+        if (getPageFlags(page) & K64_PAGE_LOCKED) count++;
+        if (page == lastPage) break;
+    }
+    return count;
+}
+
+void KMemory64::applyFutureLock(U64 addr, U64 len) {
+    if (!len || !process || !process->memLockAllFuture) return;
+    const U64 firstPage = addr >> K64_PAGE_SHIFT;
+    const U64 lastPage = (addr + len - 1) >> K64_PAGE_SHIFT;
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
+    U64 added = 0;
+    for (U64 page = firstPage;; ++page) {
+        K64Page* p = getPage(page);
+        if (p && (p->flags & K64_PAGE_MAPPED) && !(p->flags & K64_PAGE_LOCKED)) {
+            p->flags |= K64_PAGE_LOCKED;
+            added += K64_PAGE_SIZE;
+        }
+        if (page == lastPage) break;
+    }
+    process->memLockedBytes += added;
+}
+
 BString KMemory64::generateMaps(bool smaps) const {
     // Snapshot under the lock, format after releasing it: a /proc reader
     // must never hold up mapping operations. File-backed pages carry no
@@ -547,9 +664,11 @@ U64 KMemory64::mmapAnonymousFixed(U64 addr, U64 len, U32 prot) {
     if (prot & 0x2) flags |= K64_PAGE_WRITE | K64_PAGE_READ; // x86: write implies read
     if (prot & 0x4) flags |= K64_PAGE_EXEC;
 
+    U64 lockedOverwritten = 0;
     for (U64 i = 0; i < pageCount; i++) {
         BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
         K64Page* page = getOrAllocPage(pageStart + i, flags);
+        if (page->flags & K64_PAGE_LOCKED) lockedOverwritten += K64_PAGE_SIZE;
         page->flags = flags;
         if (page->dataShared) {
             // MAP_FIXED anonymous/private replacement must not zero or keep
@@ -567,6 +686,8 @@ U64 KMemory64::mmapAnonymousFixed(U64 addr, U64 len, U32 prot) {
             ::memset(page->data, 0, K64_PAGE_SIZE);
         }
     }
+    if (process && lockedOverwritten) process->memLockedBytes -= std::min(process->memLockedBytes, lockedOverwritten);
+    applyFutureLock(addr, len);
     k64DTlbInvalidateAll(); // flags may have changed even when the backing pointer did not
     // Keep the reservation map authoritative for the mmap region. A MAP_FIXED
     // landing here (wine remapping inside an earlier reservation, or the
@@ -593,6 +714,7 @@ U64 KMemory64::mmapSharedFile(U64 addr, U64 len, U32 prot, U64 fileIdentity, con
     U64 pageStart = addr >> K64_PAGE_SHIFT;
     U64 pageCount = (len + K64_PAGE_SIZE - 1) >> K64_PAGE_SHIFT;
 
+    U64 lockedOverwritten = 0;
     U32 flags = K64_PAGE_MAPPED | K64_PAGE_SHARED;
     if (prot & 0x1) flags |= K64_PAGE_READ;
     if (prot & 0x2) flags |= K64_PAGE_WRITE | K64_PAGE_READ;
@@ -602,6 +724,7 @@ U64 KMemory64::mmapSharedFile(U64 addr, U64 len, U32 prot, U64 fileIdentity, con
     for (U64 i = 0; i < pageCount; i++) {
         BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
         K64Page* page = getOrAllocPage(pageStart + i, flags);
+        if (page->flags & K64_PAGE_LOCKED) lockedOverwritten += K64_PAGE_SIZE;
         page->flags = flags;
         // Each guest page adopts the one shared buffer for this file page. The
         // FIRST process to map a given file page seeds it from the file bytes we
@@ -630,6 +753,8 @@ U64 KMemory64::mmapSharedFile(U64 addr, U64 len, U32 prot, U64 fileIdentity, con
                      (unsigned long long)((pageStart + i) << K64_PAGE_SHIFT), p.c_str());
         }
     }
+    if (process && lockedOverwritten) process->memLockedBytes -= std::min(process->memLockedBytes, lockedOverwritten);
+    applyFutureLock(addr, len);
     k64DTlbInvalidateAll();
     if (pageStart >= K64_MMAP_BASE_PAGE) {
         BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(mmapMutex);
@@ -730,7 +855,7 @@ U64 KMemory64::mprotect(U64 addr, U64 len, U32 prot) {
         // wholesale. Holes (no page) are skipped — see header comment.
         auto it = pages.find(pageStart + i);
         if (it == pages.end() || !(it->second->flags & K64_PAGE_MAPPED)) continue;
-        U32 preserved = it->second->flags & (K64_PAGE_SHARED | K64_PAGE_PINNED);
+        U32 preserved = it->second->flags & (K64_PAGE_SHARED | K64_PAGE_PINNED | K64_PAGE_LOCKED | K64_PAGE_DONTFORK | K64_PAGE_WIPEONFORK);
         it->second->flags = newFlags | preserved;
     }
     k64DTlbInvalidateAll(); // refresh cached permission bits on the next access
@@ -760,15 +885,19 @@ U64 KMemory64::munmap(U64 addr, U64 len) {
     // keeps essentially all the benefit with none of the breakage.
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(mmapMutex);
     rangeRemoveLocked(pageStart, pageCount);
+    U64 lockedRemoved = 0;
     {
         BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
         for (U64 i = 0; i < pageCount; i++) {
             auto it = pages.find(pageStart + i);
             if (it == pages.end()) continue;
+            if (it->second->flags & K64_PAGE_LOCKED) lockedRemoved += K64_PAGE_SIZE;
             it->second->flags &= ~(K64_PAGE_MAPPED | K64_PAGE_READ |
-                                   K64_PAGE_WRITE | K64_PAGE_EXEC);
+                                   K64_PAGE_WRITE | K64_PAGE_EXEC | K64_PAGE_LOCKED |
+                                   K64_PAGE_DONTFORK | K64_PAGE_WIPEONFORK);
         }
     }
+    if (process && lockedRemoved) process->memLockedBytes -= std::min(process->memLockedBytes, lockedRemoved);
     k64DTlbInvalidateAll();
     pageMapGenerationValue.fetch_add(1, std::memory_order_release);
     return 0;

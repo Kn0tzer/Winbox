@@ -429,6 +429,12 @@ void KProcess::clone(const KProcessPtr& from) {
     this->effectiveGroupId = from->effectiveGroupId;
     this->currentDirectory = from->currentDirectory;
     this->brkEnd = from->brkEnd;
+    // mlock state (kernel round 3A): RLIMIT_MEMLOCK is inherited; the
+    // locked total and MCL_FUTURE are not (the child starts unlocked).
+    this->rlimMemlockCur = from->rlimMemlockCur;
+    this->rlimMemlockMax = from->rlimMemlockMax;
+    this->memLockedBytes = 0;
+    this->memLockAllFuture = false;
     struct ForkFd { U32 handle, accessFlags, descriptorFlags; std::shared_ptr<KObject> object; };
     std::vector<ForkFd> snapshot;
     {
@@ -1076,6 +1082,11 @@ U32 KProcess::execve(KThread* thread, BString path, std::vector<BString>& args, 
     this->heap.freeAll(this->memory);
     this->memory->execvReset(cloneVM);
     cloneVM = false;
+    // mlock state (kernel round 3A): exec drops all locks and MCL_FUTURE.
+    // The 32-bit side already zeroed its counter in execvReset; the 64-bit
+    // page bits die with the replaced memory64 just below.
+    this->memLockedBytes = 0;
+    this->memLockAllFuture = false;
 
 #ifdef BOXEDWINE_GUEST_X64
     // execvReset() just wiped this process's 32-bit KMemory, which holds the

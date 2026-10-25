@@ -419,12 +419,20 @@ static U32 syscall_setsid(CPU* cpu, U32 eipCount) {
     return result;
 }
 
-static U32 syscall_setrlimit(CPU* cpu, U32 eipCount) {	
-#ifdef _DEBUG
-    klog("setrlimit not implemented");
-#endif
+static U32 syscall_setrlimit(CPU* cpu, U32 eipCount) {
     U32 result = 0;
-    SYS_LOG1(SYSCALL_SYSTEM, cpu, "setrlimit: result=%d(0x%X) IGNORED\n", result, result);
+    if (ARG1 == 8 && ARG2) { // RLIMIT_MEMLOCK (kernel round 3A)
+        KProcess* process = cpu->thread->process.get();
+        const U32 newCur = cpu->memory->readd(ARG2);
+        const U32 newMax = cpu->memory->readd(ARG2 + 4);
+        if (newCur > newMax) result = -K_EINVAL;
+        else if ((U64)newMax > process->rlimMemlockMax) result = -K_EPERM;
+        else {
+            process->rlimMemlockCur = newCur;
+            process->rlimMemlockMax = newMax;
+        }
+    }
+    SYS_LOG1(SYSCALL_SYSTEM, cpu, "setrlimit: result=%d(0x%X)\n", result, result);
     return result;
 }
 
@@ -857,7 +865,7 @@ static U32 syscall_mlock(CPU* cpu, U32 eipCount) {
 
 static U32 syscall_munlock(CPU* cpu, U32 eipCount) {
     SYS_LOG1(SYSCALL_MEMORY, cpu, "munlock: address=0x%X len=%d", ARG1, ARG2);
-    U32 result = cpu->memory->mlock(ARG1, ARG2);
+    U32 result = cpu->memory->munlock(ARG1, ARG2);
     SYS_LOG(SYSCALL_MEMORY, cpu, " result=%d(0x%X)\n", result, result);
     return result;
 }
@@ -869,14 +877,21 @@ static U32 syscall_mlockall(CPU* cpu, U32 eipCount) {
         ((flags & MCL_ONFAULT) && !(flags & (MCL_CURRENT | MCL_FUTURE)))) {
         return -K_EINVAL;
     }
-    // Guest pages remain resident in this emulator, so valid lock requests do
-    // not need host pinning. MCL_FUTURE is accepted with the same resident-page
-    // guarantee; RLIMIT_MEMLOCK accounting is handled by the process resource
-    // limit path when that limit is implemented.
+    // Guest pages remain resident in this emulator, so no host pinning is
+    // needed; the bookkeeping is the contract (kernel round 3A): locked
+    // pages are recorded against RLIMIT_MEMLOCK and MCL_FUTURE is stored
+    // on the process for KMemory::mmap to honour.
+    if (flags & MCL_CURRENT) {
+        U32 result = cpu->memory->mlockAll();
+        if ((S32)result < 0) return result;
+    }
+    if (flags & MCL_FUTURE) cpu->thread->process->memLockAllFuture = true;
     return 0;
 }
 
 static U32 syscall_munlockall(CPU* cpu, U32 eipCount) {
+    cpu->memory->munlockAll();
+    cpu->thread->process->memLockAllFuture = false;
     return 0;
 }
 

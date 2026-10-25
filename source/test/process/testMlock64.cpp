@@ -68,6 +68,7 @@ void testMlock64Syscalls() {
         memory->writeq(scratch + 8, max);
         return invoke(160, RLIMIT_MEMLOCK, scratch); // setrlimit
     };
+    invoke(152, 0, 0); // munlockall: start from a known unlocked state
     // Baseline: the limit guests have always observed here is infinity, and
     // plain lock/unlock of mapped ranges works.
     U64 cur = 0, max = 0;

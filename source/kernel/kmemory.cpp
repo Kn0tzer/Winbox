@@ -78,7 +78,60 @@ KMemory* KMemory::create(KProcess* process) {
     return new KMemory(process);
 }
 
+U32 KMemory::getPageState(U32 page) {
+    auto it = pageState.find(page);
+    return it == pageState.end() ? 0 : it->second;
+}
+
+void KMemory::setPageStateBits(U32 page, U32 bits) {
+    const U32 current = getPageState(page);
+    const U32 next = current | bits;
+    if (next == current) return;
+    if ((bits & K_PAGE_STATE_LOCKED) && !(current & K_PAGE_STATE_LOCKED) && process) {
+        process->memLockedBytes += K_PAGE_SIZE;
+    }
+    if (next) pageState[page] = next;
+    else pageState.erase(page);
+}
+
+void KMemory::clearPageStateBits(U32 page, U32 bits) {
+    auto it = pageState.find(page);
+    if (it == pageState.end()) return;
+    if ((bits & K_PAGE_STATE_LOCKED) && (it->second & K_PAGE_STATE_LOCKED) && process) {
+        process->memLockedBytes -= std::min(process->memLockedBytes, (U64)K_PAGE_SIZE);
+    }
+    it->second &= ~bits;
+    if (!it->second) pageState.erase(it);
+}
+
 U32 KMemory::mlock(U32 addr, U32 len) {
+    if (!len || (U64)addr + len > 0x100000000ULL) {
+        return -K_EINVAL;
+    }
+    const U32 firstPage = addr >> K_PAGE_SHIFT;
+    const U32 lastPage = (U32)(((U64)addr + len - 1) >> K_PAGE_SHIFT);
+    U32 newPages = 0;
+    for (U32 page = firstPage;; ++page) {
+        if (!isPageMapped(page)) {
+            return -K_ENOMEM;
+        }
+        if (!(getPageState(page) & K_PAGE_STATE_LOCKED)) newPages++;
+        if (page == lastPage) break;
+    }
+    if (process && process->memLockedBytes + (U64)newPages * K_PAGE_SIZE > process->rlimMemlockCur) {
+        return -K_ENOMEM;
+    }
+    for (U32 page = firstPage;; ++page) {
+        setPageStateBits(page, K_PAGE_STATE_LOCKED);
+        if (page == lastPage) break;
+    }
+    // Guest RAM is permanently resident in this emulator; the bookkeeping
+    // above (validation, the RLIMIT_MEMLOCK ceiling, and the madvise
+    // interactions of locked pages) is the observable mlock behaviour.
+    return 0;
+}
+
+U32 KMemory::munlock(U32 addr, U32 len) {
     if (!len || (U64)addr + len > 0x100000000ULL) {
         return -K_EINVAL;
     }
@@ -90,8 +143,33 @@ U32 KMemory::mlock(U32 addr, U32 len) {
         }
         if (page == lastPage) break;
     }
-    // Guest RAM is permanently resident in this emulator; validating the
-    // complete range is the observable mlock behavior the guest relies on.
+    for (U32 page = firstPage;; ++page) {
+        clearPageStateBits(page, K_PAGE_STATE_LOCKED);
+        if (page == lastPage) break;
+    }
+    return 0;
+}
+
+U32 KMemory::mlockAll() {
+    U64 newBytes = 0;
+    for (U32 page = 0; page < K_NUMBER_OF_PAGES; ++page) {
+        if (isPageMapped(page) && !(getPageState(page) & K_PAGE_STATE_LOCKED)) newBytes += K_PAGE_SIZE;
+    }
+    if (process && process->memLockedBytes + newBytes > process->rlimMemlockCur) {
+        return -K_ENOMEM;
+    }
+    for (U32 page = 0; page < K_NUMBER_OF_PAGES; ++page) {
+        if (isPageMapped(page)) setPageStateBits(page, K_PAGE_STATE_LOCKED);
+    }
+    return 0;
+}
+
+U32 KMemory::munlockAll() {
+    std::vector<U32> locked;
+    for (const auto& kv : pageState) {
+        if (kv.second & K_PAGE_STATE_LOCKED) locked.push_back(kv.first);
+    }
+    for (U32 page : locked) clearPageStateBits(page, K_PAGE_STATE_LOCKED);
     return 0;
 }
 
@@ -130,6 +208,17 @@ U32 KMemory::mmap(KThread* thread, U32 addr, U32 len, S32 prot, S32 flags, FD fi
         }
     }
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(mutex);
+    if (!remap && process && process->memLockAllFuture) {
+        U64 alreadyLocked = 0;
+        if (flags & K_MAP_FIXED) {
+            for (U32 page = pageStart; page < pageStart + pageCount; ++page) {
+                if (getPageState(page) & K_PAGE_STATE_LOCKED) alreadyLocked += K_PAGE_SIZE;
+            }
+        }
+        if (process->memLockedBytes + (U64)pageCount * K_PAGE_SIZE - alreadyLocked > process->rlimMemlockCur) {
+            return -K_ENOMEM;
+        }
+    }
     if (flags & (K_MAP_FIXED | K_MAP_FIXED_NOREPLACE)) {
         if (addr & (K_PAGE_SIZE - 1)) {
             klog_fmt("tried to call mmap with invalid address: %X", addr);
@@ -203,6 +292,16 @@ U32 KMemory::mmap(KThread* thread, U32 addr, U32 len, S32 prot, S32 flags, FD fi
 
     // even if there are no permissions, it is important for MAP_ANONYMOUS|MAP_FIXED existing memory to be 0'd out
     // if (write || read || exec)
+    for (auto it = pageState.begin(); it != pageState.end();) {
+        if (it->first >= pageStart && it->first < pageStart + pageCount) {
+            if ((it->second & K_PAGE_STATE_LOCKED) && process) {
+                process->memLockedBytes -= std::min(process->memLockedBytes, (U64)K_PAGE_SIZE);
+            }
+            it = pageState.erase(it);
+        } else {
+            ++it;
+        }
+    }
     {
         U32 permissions = PAGE_MAPPED;
 
@@ -243,6 +342,11 @@ U32 KMemory::mmap(KThread* thread, U32 addr, U32 len, S32 prot, S32 flags, FD fi
             this->data->allocPages(thread, pageStart, pageCount, permissions, fildes, off, mappedFile);
         } else {
             this->data->allocPages(thread, pageStart, pageCount, permissions, 0, 0, nullptr);
+        }
+    }
+    if (!remap && process && process->memLockAllFuture) {
+        for (U32 page = pageStart; page < pageStart + pageCount; ++page) {
+            setPageStateBits(page, K_PAGE_STATE_LOCKED);
         }
     }
     return addr;
@@ -381,6 +485,16 @@ U32 KMemory::unmap(U32 address, U32 len) {
     U32 pageStart = address >> K_PAGE_SHIFT;
     U32 pageCount = (len + K_PAGE_SIZE - 1) >> K_PAGE_SHIFT;
 
+    for (auto it = pageState.begin(); it != pageState.end();) {
+        if (it->first >= pageStart && it->first < pageStart + pageCount) {
+            if ((it->second & K_PAGE_STATE_LOCKED) && process) {
+                process->memLockedBytes -= std::min(process->memLockedBytes, (U64)K_PAGE_SIZE);
+            }
+            it = pageState.erase(it);
+        } else {
+            ++it;
+        }
+    }
     this->data->setPagesInvalid(pageStart, pageCount);
     return 0;
 }
@@ -445,6 +559,8 @@ void KMemory::preflightWrite(U32 address, U32 len) {
 }
 
 void KMemory::execvReset(bool cloneVM) {
+    pageState.clear();
+    if (process) process->memLockedBytes = 0;
 #ifdef BOXEDWINE_MULTI_THREADED
     if (cloneVM) {
         KThread* thread = KThread::currentThread();
