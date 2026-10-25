@@ -93,7 +93,10 @@ void testCpu64AvxCpuidMask() {
     TestContext& context = testContext();
     if (!context.process->memory64) context.process->memory64 = new KMemory64(context.process.get());
     KMemory64* memory = context.process->memory64;
-    constexpr U64 codePage = 0x60040000ULL;
+    // Private page: 0x60040000 is testAtomicStress64's shared data page,
+    // whose cached blocks and leftover mappings otherwise poison this
+    // test's single-step executions when the full suite runs in-process.
+    constexpr U64 codePage = 0x60080000ULL;
     if (!memory->getPageFlags(codePage >> K64_PAGE_SHIFT) &&
         memory->mmapAnonymousFixed(codePage, K64_PAGE_SIZE, 7) != codePage) {
         testFail("AVX CPUID test could not map executable page");
@@ -121,6 +124,35 @@ void testCpu64AvxCpuidMask() {
     cpu.runBounded(1);
     if (cpu.reg[X64_RBX].u32 & (1u << 5)) {
         testFail("CPUID advertises AVX2 while AVX and OSXSAVE are hidden");
+    }
+
+    // K-M4 completeness pin: the signal frame carries a legacy FXSAVE
+    // image only. That is ABI-complete exactly because no xstate beyond
+    // x87/SSE is advertised or enabled: leaf 1 ECX XSAVE(26) stays clear
+    // (OSXSAVE(27) is asserted above), the XSAVE leaf 0xD enumerates
+    // nothing, and XGETBV(0) reports XCR0 = 0x3 (x87|SSE legacy only).
+    if (leaf1Ecx & (1u << 26)) {
+        testFail("CPUID advertises XSAVE while signal frames carry FXSAVE only");
+    }
+    for (U32 subleaf : {0u, 1u}) {
+        cpu.rip = codePage;
+        cpu.yield = false;
+        cpu.reg[X64_RAX].setU64(0xD);
+        cpu.reg[X64_RCX].setU64(subleaf);
+        cpu.runBounded(1);
+        if (cpu.reg[X64_RAX].u32 || cpu.reg[X64_RBX].u32 ||
+            cpu.reg[X64_RCX].u32 || cpu.reg[X64_RDX].u32) {
+            testFail("CPUID leaf 0xD subleaf %u enumerates xstate features", subleaf);
+        }
+    }
+    const U8 xgetbv[] = { 0x0F, 0x01, 0xD0 };
+    memory->memcpyToGuest(codePage, xgetbv, sizeof(xgetbv));
+    cpu.rip = codePage;
+    cpu.yield = false;
+    cpu.reg[X64_RCX].setU64(0);
+    cpu.runBounded(1);
+    if (cpu.reg[X64_RAX].u32 != 0x3 || cpu.reg[X64_RDX].u32 != 0) {
+        testFail("XGETBV(0) does not report the legacy x87|SSE XCR0 (0x3)");
     }
 }
 
