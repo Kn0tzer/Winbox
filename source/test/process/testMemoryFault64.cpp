@@ -105,7 +105,6 @@ void testMemoryFault64JitPoll() {
     if (!f.delivered() || f.saved(16) != code || f.saved(13) != sentinel)
         testFail("cached block ignored a safepoint poll-page fault or corrupted its inputs");
 }
-#endif
 
 // K-M3: a REP string op that faults midway must deliver the fault with the
 // architectural partial progress in the frame (RCX/RSI/RDI count only the
@@ -212,3 +211,4 @@ void testMemoryFault64RepPartial() {
             testFail("non-REP MOVSQ fault changed the pre-instruction frame");
     }
 }
+#endif
