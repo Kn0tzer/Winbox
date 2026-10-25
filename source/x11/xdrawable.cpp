@@ -86,13 +86,10 @@ int XDrawable::putImage(KThread* thread, const std::shared_ptr<XGC>& gc, XImage*
 	return copyImageData(thread, gc, image->data, image->bytes_per_line, image->bits_per_pixel, src_x, src_y, dest_x, dest_y, width, height);
 }
 
-static void logClipMaskOnce(const XGC* gc);
-
 int XDrawable::copyImageData(KThread* thread, const std::shared_ptr<XGC>& gc, U32 data, U32 bytes_per_line, S32 bits_per_pixel, S32 src_x, S32 src_y, S32 dst_x, S32 dst_y, U32 width, U32 height) {
 	if (bits_per_pixel != this->visual->bits_per_rgb) {
 		return BadMatch;
 	}
-	logClipMaskOnce(gc.get());
 	if (bits_per_pixel % 8) {
 		kwarn_fmt("XDrawable::copyImageData %d-bit images not handled", bits_per_pixel);
 		return Success;
@@ -105,7 +102,7 @@ int XDrawable::copyImageData(KThread* thread, const std::shared_ptr<XGC>& gc, U3
 	if (x1 <= x0 || y1 <= y0) {
 		return Success;
 	}
-	const bool fast = !gc || (gc->values.function == GXcopy && gc->clip_rects.empty());
+	const bool fast = !gc || (gc->values.function == GXcopy && gc->clip_rects.empty() && !gc->values.clip_mask);
 	if (!fast && bits_per_pixel != 32) {
 		kwarn_fmt("XDrawable::copyImageData function or clip with %d-bit images not handled", bits_per_pixel);
 		return Success;
@@ -136,7 +133,6 @@ int XDrawable::copy(KThread* thread, const std::shared_ptr<XGC>& gc, const std::
 	if (srcDrawable->visual->bits_per_rgb != this->visual->bits_per_rgb) {
 		return BadMatch;
 	}
-	logClipMaskOnce(gc.get());
 	const S32 bits = this->visual->bits_per_rgb;
 	if (bits % 8) {
 		kwarn_fmt("XDrawable::copy %d-bit drawables not handled", bits);
@@ -150,7 +146,7 @@ int XDrawable::copy(KThread* thread, const std::shared_ptr<XGC>& gc, const std::
 	if (x1 <= x0 || y1 <= y0) {
 		return Success;
 	}
-	const bool fast = !gc || (gc->values.function == GXcopy && gc->clip_rects.empty());
+	const bool fast = !gc || (gc->values.function == GXcopy && gc->clip_rects.empty() && !gc->values.clip_mask);
 	if (!fast && bits != 32) {
 		kwarn_fmt("XDrawable::copy function or clip with %d-bit drawables not handled", bits);
 		return Success;
@@ -182,7 +178,6 @@ int XDrawable::copy(KThread* thread, const std::shared_ptr<XGC>& gc, const std::
 // A source pixel with bit bitPlane set paints the GC foreground and a clear bit paints the GC background. Both go through the GC
 // function and clip, as plotPixel does. The source bits are read before anything is written, so a copy within one drawable is correct.
 int XDrawable::copyPlane(KThread* thread, const std::shared_ptr<XGC>& gc, const std::shared_ptr<XDrawable>& srcDrawable, S32 srcX, S32 srcY, U32 width, U32 height, S32 dstX, S32 dstY, U32 bitPlane) {
-	logClipMaskOnce(gc.get());
 	const S32 x0 = std::max({dstX, 0, dstX - srcX});
 	const S32 x1 = std::min({dstX + (S32)width, (S32)w, dstX - srcX + (S32)srcDrawable->w});
 	const S32 y0 = std::max({dstY, 0, dstY - srcY});

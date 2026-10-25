@@ -19,7 +19,7 @@ import { extractSourceSlice } from '../lib/source-slice.mjs';
 
 const sourceName = 'source/x11/xdrawable.cpp';
 const source = readFileSync(new URL('../../../../source/x11/xdrawable.cpp', import.meta.url), 'utf8');
-const copyBlock = extractSourceSlice(source, 'static void logClipMaskOnce(const XGC* gc);', 'static U32 combinePixel(', { sourceName });
+const copyBlock = extractSourceSlice(source, 'int XDrawable::copyImageData(', 'static U32 combinePixel(', { sourceName });
 const pixelBlock = extractSourceSlice(source, 'static U32 combinePixel(', 'int XDrawable::drawLine(', { sourceName });
 
 test('the copy block has no abort and no silent clip', () => {
@@ -92,7 +92,7 @@ public:
 };
 class XDrawable {
 public:
-    XDrawable(U32 width, U32 height, const VisualPtr& v) : visual(v), w(width), h(height) {
+    XDrawable(U32 width, U32 height, const VisualPtr& v, U32 depth=32) : visual(v), w(width), h(height), depth(depth) {
         bytes_per_line = w * 4;
         data = new U8[bytes_per_line * h]();
     }
@@ -104,13 +104,17 @@ public:
     void setDirty() {}
     U32 pixel(U32 x, U32 y) const { U32 v; std::memcpy(&v, data + bytes_per_line * y + x * 4, 4); return v; }
     void setPixel(U32 x, U32 y, U32 v) { std::memcpy(data + bytes_per_line * y + x * 4, &v, 4); }
+    U32 width() const { return w; } U32 height() const { return h; } U32 getDepth() const { return depth; }
+    U32 getBytesPerLine() const { return bytes_per_line; } U8* getData() const { return data; }
     VisualPtr visual;
     U8* data;
     U32 bytes_per_line;
-    U32 w, h;
+    U32 w, h, depth;
 };
 using XDrawablePtr = std::shared_ptr<XDrawable>;
+using XPixmapPtr = std::shared_ptr<XDrawable>;
 using XGCPtr = std::shared_ptr<XGC>;
+struct XServer { XPixmapPtr mask; static XServer* getServer() { static XServer s; return &s; } XPixmapPtr getPixmap(U32) { return mask; } };
 ${pixelBlock}
 ${copyBlock}
 static VisualPtr v32 = std::make_shared<XVisual>(XVisual{32});
@@ -188,17 +192,23 @@ int main() {
                 assert(dst.pixel(x, y) == (inside ? img(x, y) : 0u));
             }
     }
-    // a clip_mask pixmap is not applied, and the copy logs that once rather than dropping the clip silently
+    // a depth-one clip mask restricts XCopyArea to set mask pixels
     {
-        auto src = std::make_shared<XDrawable>(4, 4, v32);
-        XDrawable dst(4, 4, v32);
+        auto mask = std::make_shared<XDrawable>(2, 2, v32, 1);
+        mask->setPixel(0, 0, 1); mask->setPixel(1, 0, 0); mask->setPixel(0, 1, 0); mask->setPixel(1, 1, 1);
+        XServer::getServer()->mask = mask;
+        auto src = std::make_shared<XDrawable>(2, 2, v32);
+        for (U32 y = 0; y < 2; y++) for (U32 x = 0; x < 2; x++) src->setPixel(x, y, 17 + y * 2 + x);
+        XDrawable dst(2, 2, v32);
         auto gc = std::make_shared<XGC>();
         gc->values.clip_mask = 1;
-        int before = warnings;
-        dst.copy(&t, gc, src, 0, 0, 4, 4, 0, 0);
-        assert(warnings == before + 1);
-        dst.copy(&t, gc, src, 0, 0, 4, 4, 0, 0);
-        assert(warnings == before + 1);
+        dst.copy(&t, gc, src, 0, 0, 2, 2, 0, 0);
+        assert(dst.pixel(0,0) == 17 && dst.pixel(1,0) == 0 && dst.pixel(0,1) == 0 && dst.pixel(1,1) == 20);
+        putImage4x4();
+        XDrawable imageDst(2, 2, v32);
+        assert(imageDst.copyImageData(&t, gc, 0, 16, 32, 0, 0, 0, 0, 2, 2) == Success);
+        assert(imageDst.pixel(0,0) == img(0,0) && imageDst.pixel(1,0) == 0 && imageDst.pixel(0,1) == 0 && imageDst.pixel(1,1) == img(1,1));
+        XServer::getServer()->mask = nullptr;
     }
     // a copy with no clip and GXcopy moves a sub-rectangle, and a destination past the edge is cut off
     {
