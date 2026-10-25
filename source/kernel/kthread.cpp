@@ -105,6 +105,11 @@ void KThread::internalCleanup() {
 void KThread::reset() {
     memory->threadCleanup(id);
     this->clearFutexes();
+    // execve discards every signal frame of the old image: the thread is
+    // not inside any handler in the new image, so the in-handler mask
+    // must not survive (sigMask, the blocked set, does survive exec).
+    this->inSignal = 0;
+    this->inSigMask = 0;
     this->cpu->reset();
     this->alternateStack = 0;
     this->alternateStackSize = 0;

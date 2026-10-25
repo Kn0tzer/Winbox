@@ -415,6 +415,13 @@ void OPCALL normal_intO(CPU* cpu, DecodedOp* op) {
 
 void OPCALL onTestEnd(CPU* cpu, DecodedOp* op) {
     cpu->nextOp = op;
+    // The test program is over, so any signal frames it was inside are
+    // gone with it (a handler that traps out through TestEnd never runs
+    // its sigreturn). Leaving inSignal/inSigMask set would make later
+    // signal delivery on this thread consult a dead program's handler
+    // mask instead of the thread's real blocked mask.
+    cpu->thread->inSignal = 0;
+    cpu->thread->inSigMask = 0;
 }
 
 // Dispatch the next decoded op by switching on its instruction ID. Using a
