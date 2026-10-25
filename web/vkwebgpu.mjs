@@ -1625,6 +1625,28 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     return entry.tex;
   };
 
+  // Zero-filled stand-in for a VK_NULL_HANDLE uniform texel buffer view
+  // (wire kind 5 with a zero view id): under the bridge-advertised
+  // VK_EXT_robustness2 nullDescriptor feature, texel reads from a null
+  // view are defined to return zero. Shape mirrors texelTextureFor's
+  // spirvfix-R12 materialisation (2D, V2_TEXEL_WRAP wide); the format
+  // follows the shader decl's element type so the texture's sample type
+  // matches the bind-group layout entry. Persistent like blankTex:
+  // cached bind groups retain the view between frames.
+  const zeroTexelTexture = t => {
+    const elem = /texture_\w+<(\w+)>/.exec(t)?.[1] || 'f32';
+    const format = elem === 'u32' ? 'rgba32uint' : elem === 'i32' ? 'rgba32sint' : 'rgba8unorm';
+    const key = '\0zero-texel-' + format;
+    let entry = persistTexCache.get(key);
+    if (!entry) {
+      const bpp = format === 'rgba8unorm' ? 4 : 16;
+      const tex = device.createTexture({ size: [V2_TEXEL_WRAP, 1, 1], dimension: '2d', format, usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+      device.queue.writeTexture({ texture: tex }, new Uint8Array(V2_TEXEL_WRAP * bpp), { bytesPerRow: V2_TEXEL_WRAP * bpp, rowsPerImage: 1 }, [V2_TEXEL_WRAP, 1, 1]);
+      entry = { tex }; persistTexCache.set(key, entry);
+    }
+    return entry.tex;
+  };
+
   /** @returns {GPUBindGroupLayoutEntry | null} */
   function layoutEntryFor(decl) {
     const vis = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT;
@@ -1894,6 +1916,20 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
   // binding carries it in range (kind 2). Shared by bind-group construction,
   // its fingerprint, and the border-emulation plan so all three always agree
   // on which sampler a declaration samples with.
+  // A combined image/sampler wire binding (kind 2, descriptor type
+  // VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER = 1) whose sampler half --
+  // carried in the binding's range field -- is the zero id is a guest
+  // VK_NULL_HANDLE sampler under the bridge-advertised nullDescriptor
+  // feature: sampling through a null descriptor is defined to return
+  // zero, so the paired texture must resolve to the blank texture no
+  // matter what view the image half names. Shared by bind-group
+  // construction and its fingerprint so the two always agree on the
+  // resolved resource (a fingerprint that keyed the real texture here
+  // would collide with the real-sampler group for the same view).
+  function nullSamplerCombined(b) {
+    return !!b && b.kind === 2 && b.type === 1 && b.range === '0000000000000000';
+  }
+
   function samplerIdForDecl(sets, group, d) {
     const set = sets.get(group);
     const bindings = set ? set.bindings : [];
@@ -1984,6 +2020,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         for (let k = 0; k < n; k++) {
           const b = bindingForElement(bindings, d.binding, k);
           if (b && b.kind === 5) { parts.push('v' + d.binding + ':' + k + ':' + texelTextureKey(b.obj)); continue; }
+          if (nullSamplerCombined(b)) { parts.push('t' + d.binding + ':' + k + ':nullsamp'); continue; }
           const imgHex = b && b.kind === 2 ? F.views.get(b.obj) : null;
           const img = imgHex && imageForView(b?.obj, imgHex);
           const ak = imgHex && v2ImageKnown(imgHex)
@@ -2058,6 +2095,14 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         for (let k = 0; k < d.arrayCount; k++) {
           const b = bindingForElement(bindings, d.binding, k);
           if (b && b.kind === 5) {
+            // A zero view id is a guest VK_NULL_HANDLE texel buffer view,
+            // not a lost view: the bridge advertises nullDescriptor and
+            // DXVK writes a null view for every shader texel slot the app
+            // never bound (dxvk_context.cpp, UNIFORM_TEXEL_BUFFER case).
+            // Reads are defined to return zero; serve the zero texel
+            // texture. A NONZERO id whose texture cannot be materialised
+            // is a genuinely lost view and still drops loudly below.
+            if (b.obj === '0000000000000000') { views.push(zeroTexelTexture(t).createView()); continue; }
             const texelTex = texelTextureFor(b.obj);
             if (!texelTex) { noteDrop('bind-group-texel-unavailable', b.obj); return null; }
             views.push(texelTex.createView());
@@ -2076,7 +2121,8 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           const img = imgHex && imageForView(b?.obj, imgHex);
           const imgFormat = img ? v2TextureFormat(img.format, stats, device.features) : null;
           if (img && !imgFormat) { noteDrop('bind-group-image-format-unsupported', img.format); return null; }
-          let texture = aliasTex || (img ? gpuTextureFor(imgHex, img, cube, dimension) : blankTex(cube, dimension, t.startsWith('texture_depth')));
+          let texture = nullSamplerCombined(b) ? blankTex(cube, dimension, t.startsWith('texture_depth'))
+            : aliasTex || (img ? gpuTextureFor(imgHex, img, cube, dimension) : blankTex(cube, dimension, t.startsWith('texture_depth')));
           if (!texture) { noteDrop('bind-group-texture-unavailable', imgHex); return null; }
           // WebGPU ties the shader's sample type to the texture format: a
           // depth texture cannot satisfy texture_2d<f32> (D3D11 shaders sample

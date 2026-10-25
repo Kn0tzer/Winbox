@@ -3559,7 +3559,15 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 BufferView* bv = objOf<BufferView>(b.obj, K_BUFFERVIEW, "vkQueueSubmit");
                 Buffer* vbuf = bv ? objOf<Buffer>(bv->buffer, K_BUFFER, "vkQueueSubmit") : nullptr;
                 if (!bv || !vbuf) {
-                    vk64Unsupported("texel-buffer-view-missing", "uniform texel buffer binding names no live buffer view; binding dropped");
+                    // b.obj == 0 is a guest VK_NULL_HANDLE view under the
+                    // advertised VK_EXT_robustness2 nullDescriptor feature:
+                    // a legal null descriptor (DXVK writes one for every
+                    // shader texel slot the app never bound), which the
+                    // page tier serves as zero reads -- not a lost view,
+                    // and the DESC_SET binding below still goes out with
+                    // kind 5 / id 0. Only a nonzero id can be stale, and
+                    // it stays loud.
+                    if (b.obj) vk64Unsupported("texel-buffer-view-missing", "uniform texel buffer binding names no live buffer view; binding dropped");
                     continue;
                 }
                 emit(V2_BUFFER_VIEW, [&](ChunkWriter& p) {
