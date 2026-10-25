@@ -51,16 +51,17 @@ public:
 
 	U32 getImage(KThread* thread, S32 x, S32 y, U32 width, U32 height, U32 planeMask, U32 format, U32 redMask, U32 greenMask, U32 blueMask);
 
-	U32 width() { return w; }
-	U32 height() { return h; }
-	U32 getDepth() { return depth; }
-	U32 getBytesPerLine() { return bytes_per_line; }
+	U32 width() const { return w; }
+	U32 height() const { return h; }
+	U32 getDepth() const { return depth; }
+	U32 getBytesPerLine() const { return bytes_per_line; }
 	S32 getBitsPerPixel() { return visual->bits_per_rgb; }
 
 	void setSize(U32 width, U32 height);
 	
 	void lockData();
 	U8* getData() {return data;}
+	const U8* getData() const {return data;}
 	U32 getDataSize() {return size;}
 	void unlockData();
 

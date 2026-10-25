@@ -2792,7 +2792,8 @@ static void x11_SetWmCommand(KThread* thread, XWindowPtr window, U32 argv, S32 a
     std::vector<U8> command;
     for (S32 i = 0; i < argc; i++) {
         BString argument = thread->memory->readString(thread->memory->readd(argv + (U32)i * 4));
-        command.insert(command.end(), argument.begin(), argument.end());
+        const char* text = argument.c_str();
+        command.insert(command.end(), text, text + argument.length());
         command.push_back(0);
     }
     window->setProperty(XA_WM_COMMAND, XA_STRING, 8, (U32)command.size(), command.data(), true);
@@ -2870,7 +2871,7 @@ static void x11_SetLocaleModifiers(CPU* cpu) {
         EAX = thread->process->createString(thread, B(""));
         return;
     }
-    if (cpu->memory->readString(ARG1).empty()) {
+    if (cpu->memory->readString(ARG1).isEmpty()) {
         EAX = ARG1;
         return;
     }
@@ -3665,8 +3666,8 @@ static bool x11DecodeXIEventMask(const U8* bytes, U32 byteCount, U64& value) {
         for (U32 i = sizeof(value); i < byteCount; i++) if (bytes[i]) return false;
         byteCount = sizeof(value);
     }
-    for (U32 i = 0; i < byteCount; i++) value |= U64(bytes[i]) << (i * 8);
-    const U64 supportedBits = (U64(1) << (XI_LASTEVENT + 1)) - 1;
+    for (U32 i = 0; i < byteCount; i++) value |= (U64)bytes[i] << (i * 8);
+    const U64 supportedBits = ((U64)1 << (XI_LASTEVENT + 1)) - 1;
     return (value & ~supportedBits) == 0;
 }
 

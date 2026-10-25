@@ -82,6 +82,13 @@ void XDrawable::setSize(U32 width, U32 height) {
 	memset(data, 0, size);
 }
 
+// Defined below with the other raster helpers; declared here because
+// copyImageData, copy and copyPlane already read/write stored pixels.
+static U32
+readStoredPixel(const U8* data, U32 bytesPerLine, S32 bitsPerPixel, S32 x, S32 y);
+static void writeStoredPixel(U8* data, U32 bytesPerLine, S32 bitsPerPixel, S32 x, S32 y, U32 value);
+static U32 storedPixelMask(S32 bitsPerPixel);
+
 int XDrawable::putImage(KThread* thread, const std::shared_ptr<XGC>& gc, XImage* image, S32 src_x, S32 src_y, S32 dest_x, S32 dest_y, U32 width, U32 height) {
 	return copyImageData(thread, gc, image->data, image->bytes_per_line, image->bits_per_pixel, src_x, src_y, dest_x, dest_y, width, height);
 }
@@ -226,6 +233,8 @@ static U32 storedPixelMask(S32 bitsPerPixel) {
 }
 
 // The 16 X11 GC logical operations on one stored pixel: src is the GC foreground or tile pixel, dst is the drawable pixel.
+
+
 static U32 combinePixel(S32 function, U32 src, U32 dst) {
 	switch (function) {
 	case GXclear: return 0;
