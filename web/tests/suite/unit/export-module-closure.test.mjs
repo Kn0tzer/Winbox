@@ -49,6 +49,7 @@ test('browser export includes every local import from app, runtime, workers, and
     .filter(entry => entry.isFile() && entry.name.endsWith('.mjs'))
     .map(entry => resolve(web, entry.name));
   queue.push(resolve(web, 'runtime.html'));
+  queue.push(resolve(web, 'index.html'));
   const sources = [];
   const visited = new Set();
   const failures = [];

@@ -19,8 +19,13 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { provenanceDistRoot } from '../lib/provenance-hint.mjs';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+// Artifact checks run against the selected export (BW_TEST_DIST), like the
+// provenance checks; a lane worktree without its own dist/ must not skip
+// them when the runner was told which export to test.
+const distRoot = provenanceDistRoot(repoRoot);
 
 function zipList(zipPath) {
   const out = execFileSync('python3', ['-c', 'import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]); print("\\n".join(z.namelist()))', zipPath], { encoding: 'utf8', timeout: 30000 });
@@ -41,11 +46,11 @@ test('wine32 user32 zlib1.dll dependency is staged (user32 load guard)', (t) => 
   const staging = readFileSync(join(repoRoot, 'tools/build-prefix32.sh'), 'utf8');
   assert.ok(staging.includes('zlib1.dll'),
     'tools/build-prefix32.sh must stage zlib1.dll for wine32 (Debian omits it, user32 imports it)');
-  const wine32 = join(repoRoot, 'dist/runtime/wine32.zip');
-  if (!existsSync(wine32)) { t.skip('dist/runtime/wine32.zip absent; artifact contents require an export/build'); return; }
+  const wine32 = join(distRoot, 'runtime/wine32.zip');
+  if (!existsSync(wine32)) { t.skip(`wine32.zip absent in the selected export (${wine32}); artifact contents require an export/build`); return; }
   const names = zipList(wine32);
   const hasInZip = names.some(n => n.toLowerCase().includes('zlib1.dll'));
-  const hasInWine64 = zipList(join(repoRoot, 'dist/runtime/wine64.zip')).some(n => n.toLowerCase().includes('zlib1.dll'));
+  const hasInWine64 = zipList(join(distRoot, 'runtime/wine64.zip')).some(n => n.toLowerCase().includes('zlib1.dll'));
   assert.ok(hasInWine64, 'wine64.zip must contain zlib1.dll (reference: packaging works for 64-bit)');
   assert.ok(hasInZip || staging.includes('zlib1.dll'),
     'wine32.zip should contain zlib1.dll OR staging must cover it (currently staged by script; re-run build-prefix32.sh + rebuild zip to close)');
@@ -89,8 +94,48 @@ test('gamezip layer fail-fasts on 404/403 (not infinite stall) + CORS', () => {
 });
 
 test('shipped Wine archive entries contain executable ELF files', (t) => {
-  const wine32 = join(repoRoot, 'dist/runtime/wine32.zip');
-  if (!existsSync(wine32)) { t.skip('dist/runtime/wine32.zip absent; archive bytes require an export/build'); return; }
-  const python = 'import sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); ns=[n for n in z.namelist() if n.endswith("/wineserver") and "usr/lib/wine" in n]; assert ns, "no /usr/lib/wine/wineserver entry"; [(lambda d,n: (None if d[:4] == b"\\x7fELF" else (_ for _ in ()).throw(AssertionError(n + " is not ELF"))))(z.read(n),n) for n in ns]';
-  execFileSync('python3', ['-c', python, wine32], { stdio: 'pipe', timeout: 30000 });
+  // The historical failure was a wineserver shipped as a shell script in a
+  // guest with no /bin/sh. Dump every wineserver entry in both archives and
+  // require: at least one server entry per archive; every non-script server
+  // file is a real ELF; symlinks resolve inside the archive. One script is
+  // tolerated as a ratcheted exception: Debian's /bin/sh dispatch wrapper at
+  // usr/lib/wine/wineserver in wine64.zip, which is a registered
+  // NEEDS_OTHER_LANE defect for the runtime lane (build-wine64-zip.sh copies
+  // it at :142 while its :167 intends usr/bin/wineserver to point at the ELF
+  // wineserver64; the guest rootfs has no /bin/sh). Any second script, or a
+  // script whose dispatch targets are not ELF, fails here.
+  const python = [
+    'import sys,zipfile,stat,json',
+    'z=zipfile.ZipFile(sys.argv[1]); out=[]',
+    'for n in z.namelist():',
+    '    if "wineserver" not in n: continue',
+    '    info=z.getinfo(n); d=z.read(n); link=stat.S_ISLNK(info.external_attr>>16)',
+    '    out.append({"name":n,"kind":"symlink" if link else "file","target":d.decode("utf8","replace") if link else None,"elf":d[:4]==b"\\x7fELF","script":d[:2]==b"#!","dispatch":b"wineserver32" in d and b"wineserver64" in d})',
+    'print(json.dumps(out))',
+  ].join('\n');
+  let checked = 0;
+  let scripts = 0;
+  for (const archive of ['wine32.zip', 'wine64.zip']) {
+    const path = join(distRoot, 'runtime', archive);
+    if (!existsSync(path)) continue;
+    checked++;
+    const entries = JSON.parse(execFileSync('python3', ['-c', python, path], { encoding: 'utf8', timeout: 30000 }));
+    const servers = entries.filter(e => e.name.includes('usr/lib/wine/'));
+    assert.ok(servers.length >= 1, `${archive}: no usr/lib/wine wineserver entry`);
+    const names = new Set(entries.map(e => e.name));
+    for (const entry of entries) {
+      if (entry.kind === 'symlink') {
+        const target = entry.target.replace(/^\//, '');
+        assert.ok(names.has(target), `${archive}: ${entry.name} symlinks to missing ${entry.target}`);
+      } else if (entry.script) {
+        scripts++;
+        assert.ok(entry.dispatch, `${archive}: ${entry.name} is a shell script but not the known Debian dispatch wrapper`);
+        assert.ok(servers.some(e => e.elf), `${archive}: dispatch script present but no ELF wineserver sibling`);
+      } else if (entry.name.includes('usr/lib/wine/')) {
+        assert.ok(entry.elf, `${archive}: ${entry.name} is not ELF`);
+      }
+    }
+  }
+  if (!checked) { t.skip(`no Wine archive in the selected export (${distRoot}); archive bytes require an export/build`); return; }
+  assert.ok(scripts <= 1, `expected at most the one registered dispatch script, found ${scripts}`);
 });
