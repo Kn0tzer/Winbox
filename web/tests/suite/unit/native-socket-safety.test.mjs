@@ -3,9 +3,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
-const source = readFileSync('source/kernel/knativesocket.cpp', 'utf8');
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+const source = readFileSync(join(repoRoot, 'source/kernel/knativesocket.cpp'), 'utf8');
 function run(code, sanitizer = false) {
   const dir = mkdtempSync(join(tmpdir(), 'bw64-native-socket-'));
   try {

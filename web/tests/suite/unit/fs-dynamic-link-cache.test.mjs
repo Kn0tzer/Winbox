@@ -3,15 +3,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
 // Compile the production cache, path walker, and child-removal methods together.
 // The small in-memory directory adapter avoids linking the whole emulator.
 test('dynamic fd link removal stays coherent without scanning unrelated cached paths', () => {
-  const fs = readFileSync('source/io/fs.cpp', 'utf8');
-  const node = readFileSync('source/io/fsnode.cpp', 'utf8');
-  const header = readFileSync('source/io/fs.h', 'utf8');
+  const fs = readFileSync(join(repoRoot, 'source/io/fs.cpp'), 'utf8');
+  const node = readFileSync(join(repoRoot, 'source/io/fsnode.cpp'), 'utf8');
+  const header = readFileSync(join(repoRoot, 'source/io/fs.h'), 'utf8');
   const section = (source, begin, end) => {
     const start = source.indexOf(begin);
     const finish = source.indexOf(end, start);

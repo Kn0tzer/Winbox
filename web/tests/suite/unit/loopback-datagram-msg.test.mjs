@@ -3,11 +3,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
 test('Wine message I/O preserves UDP packets and receives the TCP pipe secret without relocking', () => {
-  const source = readFileSync('source/kernel/knativesocket.cpp', 'utf8');
+  const source = readFileSync(join(repoRoot, 'source/kernel/knativesocket.cpp'), 'utf8');
   const start = source.indexOf('U32 KNativeSocketObject::sendmsg(');
   const end = source.indexOf('U32 KNativeSocketObject::sendto(', start);
   const takeStart = source.indexOf('U32 KNativeSocketObject::takeLoopbackPacket(');

@@ -3,9 +3,12 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const header = resolve('source/opengl/glguestmemory.h');
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+
+const header = resolve(repoRoot, 'source/opengl/glguestmemory.h');
 test('GL bridge preserves 32-bit pointer arrays and writes to the calling guest memory', () => {
   assert.ok(existsSync(header), 'shared GL guest-memory adapter is present');
   const dir = mkdtempSync(join(tmpdir(), 'gl-guest-memory-'));
@@ -45,7 +48,7 @@ int main(){
 });
 
 test('32-bit GL calls use the shared renderer and decode guest pointer arrays', () => {
-  const source = readFileSync('source/opengl/gl64bridge.cpp', 'utf8');
+  const source = readFileSync(join(repoRoot, 'source/opengl/gl64bridge.cpp'), 'utf8');
   const body = source.slice(source.indexOf('U64 gl32Bridge('));
   assert.match(body, /glBridge\(/, '32-bit entry point dispatches instead of returning a no-op');
   assert.match(source, /readPointers\(args\.a\[2\], count\)/, 'shader source pointers follow guest width');

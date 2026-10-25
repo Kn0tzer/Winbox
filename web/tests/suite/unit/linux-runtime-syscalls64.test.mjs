@@ -3,11 +3,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
 test('x64 nanosleep validates timespecs and passes relative duration to the guest thread', () => {
-  const source = readFileSync('source/kernel/syscall64.cpp', 'utf8');
+  const source = readFileSync(join(repoRoot, 'source/kernel/syscall64.cpp'), 'utf8');
   const start = source.indexOf('static U64 sys_nanosleep64(');
   const end = source.indexOf('// clock_gettime(clk, struct timespec*)', start);
   assert.ok(start >= 0 && end > start, 'nanosleep64 helper should be present');
@@ -44,7 +47,7 @@ int main(){Memory m;KThread t;CPU64 c{&m,&t};
 });
 
 test('x64 getcpu reports the single emulated CPU and NUMA node', () => {
-  const source = readFileSync('source/kernel/syscall64.cpp', 'utf8');
+  const source = readFileSync(join(repoRoot, 'source/kernel/syscall64.cpp'), 'utf8');
   const start = source.indexOf('static U64 sys_getcpu64(');
   const end = source.indexOf('// clock_gettime(clk, struct timespec*)', start);
   assert.ok(start >= 0 && end > start, 'getcpu64 helper should be present');
@@ -71,7 +74,7 @@ int main(){Memory m;CPU64 c{&m};assert(sys_getcpu64(&c,4,8,1234)==0);assert(m.cp
 });
 
 test('x64 eventfd2 routes supported flags to the shared eventfd implementation', () => {
-  const source = readFileSync('source/kernel/syscall64.cpp', 'utf8');
+  const source = readFileSync(join(repoRoot, 'source/kernel/syscall64.cpp'), 'utf8');
   assert.match(source, /#define X64_SYS_eventfd2\s+290/);
   assert.match(source, /case X64_SYS_eventfd2:[\s\S]{0,300}syscall_eventfd2\(cpu->thread, \(U32\)a1, \(U32\)a2\)/);
   assert.match(source, /case X64_SYS_sync_file_range:\s*\/\/ Our VFS writes are effectively synchronous/);

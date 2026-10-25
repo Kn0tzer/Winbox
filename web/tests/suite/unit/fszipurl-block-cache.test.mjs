@@ -1,10 +1,14 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
+import {dirname, join} from 'node:path';
+import {fileURLToPath} from 'node:url';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 import vm from 'node:vm';
 
-const cpp = readFileSync('source/io/fszipurl.cpp', 'utf8');
-const launcher = readFileSync('project/emscripten/wine64-launcher.js', 'utf8');
+const cpp = readFileSync(join(repoRoot, 'source/io/fszipurl.cpp'), 'utf8');
+const launcher = readFileSync(join(repoRoot, 'project/emscripten/wine64-launcher.js'), 'utf8');
 
 test('fszipurl uses 2MiB blocks with a 512MiB LRU', () => {
   const block = /constexpr U64 BLOCK_SIZE = (\d+) \* 1024 \* 1024;/.exec(cpp);

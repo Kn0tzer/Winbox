@@ -3,12 +3,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 import { runInNewContext } from 'node:vm';
 
 test('browser TCP is opt-in while guest UDP loopback and local IPC remain available', () => {
-  const source = readFileSync('source/kernel/ksocket.cpp', 'utf8');
+  const source = readFileSync(join(repoRoot, 'source/kernel/ksocket.cpp'), 'utf8');
   const start = source.indexOf('U32 ksocket(');
   const end = source.indexOf('#define IS_NOT_SOCKET', start);
   assert.ok(start >= 0 && end > start);
@@ -65,7 +68,7 @@ int main(int argc,char** argv){
 
 
 test('relay initialization uses one credential-free same-origin endpoint', () => {
-  const source = readFileSync('project/emscripten/wine64-launcher.js', 'utf8');
+  const source = readFileSync(join(repoRoot, 'project/emscripten/wine64-launcher.js'), 'utf8');
   const start = source.indexOf('    function configureNetworkRelay(');
   const end = source.indexOf('    // Resolve the FS object', start);
   assert.ok(start >= 0 && end > start);
@@ -99,7 +102,7 @@ test('relay initialization uses one credential-free same-origin endpoint', () =>
 
 
 test('network query parsing disables malformed and nonexact values', () => {
-  const source = readFileSync('project/emscripten/wine64-launcher.js', 'utf8');
+  const source = readFileSync(join(repoRoot, 'project/emscripten/wine64-launcher.js'), 'utf8');
   const call = source.match(/configureNetworkRelay\(liveModule, ENV, (.*), window.location.href\);/);
   assert.ok(call, 'exercise the actual initialization expression');
   for (const [search, expected] of [

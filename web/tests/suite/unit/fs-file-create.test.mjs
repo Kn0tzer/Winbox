@@ -3,11 +3,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
 test('concurrent O_CREAT opens publish one shared inode', () => {
-  const source = readFileSync('source/kernel/kprocess.cpp', 'utf8');
+  const source = readFileSync(join(repoRoot, 'source/kernel/kprocess.cpp'), 'utf8');
   const start = source.indexOf('U32 KProcess::openFileDescriptor(');
   const end = source.indexOf('U32 KProcess::openFile(', start);
   assert.ok(start >= 0 && end > start);

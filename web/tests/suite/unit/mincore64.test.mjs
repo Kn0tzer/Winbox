@@ -3,11 +3,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
 test('x64 mincore reports committed pages and validates both ranges before writing', () => {
-  const source = readFileSync('source/kernel/syscall64.cpp', 'utf8');
+  const source = readFileSync(join(repoRoot, 'source/kernel/syscall64.cpp'), 'utf8');
   const start = source.indexOf('static U64 sys_mincore64(');
   const end = source.indexOf('// Map an x86-64 Linux syscall number', start);
   assert.ok(start >= 0 && end > start, 'mincore64 helper should be present');

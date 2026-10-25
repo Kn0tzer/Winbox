@@ -3,11 +3,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
 test('Java TCP pipe can set and read TCP_NODELAY on a guest accepted socket', () => {
-  const source = readFileSync('source/kernel/knativesocket.cpp', 'utf8');
+  const source = readFileSync(join(repoRoot, 'source/kernel/knativesocket.cpp'), 'utf8');
   const setStart = source.indexOf('U32 KNativeSocketObject::setsockopt(');
   const setEnd = source.indexOf('    KMemory* memory = thread->memory;', setStart);
   const getStart = source.indexOf('U32 KNativeSocketObject::getsockopt(');

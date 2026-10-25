@@ -2,12 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { defaultBuildLockTimeoutMs } from '../../build-lock.mjs';
 
-const wrapper = resolve('tools/bw64-build.sh');
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+const wrapper = resolve(repoRoot, 'tools/bw64-build.sh');
 
 async function withLock(run) {
   const folder = mkdtempSync(join(tmpdir(), 'bw64-lock-test-'));
@@ -15,7 +16,7 @@ async function withLock(run) {
   const previous = process.env.BUILD_LOCK_DIR;
   process.env.BUILD_LOCK_DIR = lock;
   try {
-    const module = await import(`${pathToFileURL(resolve('web/tests/build-lock.mjs'))}?test=${encodeURIComponent(folder)}`);
+    const module = await import(`${pathToFileURL(resolve(repoRoot, 'web/tests/build-lock.mjs'))}?test=${encodeURIComponent(folder)}`);
     await run({ folder, lock, module });
   } finally {
     if (previous === undefined) delete process.env.BUILD_LOCK_DIR;

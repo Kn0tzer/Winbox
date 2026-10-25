@@ -1,9 +1,12 @@
 import test from 'node:test';
 import { execFileSync } from 'node:child_process';
-import { resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
 test('Wine32 font export preserves input data, is idempotent, and records font hashes', () => {
-  const script = resolve('tools/browser/stage-wine32-fonts.py');
+  const script = resolve(repoRoot, 'tools/browser/stage-wine32-fonts.py');
   execFileSync('python3', ['-c', String.raw`
 import hashlib, importlib.util, json, tempfile, zipfile
 from pathlib import Path
@@ -62,9 +65,10 @@ with tempfile.TemporaryDirectory() as folder:
 
 
 test('Wine32 DirectWrite Arial replacement preserves registry content and is idempotent', () => {
+  const script = resolve(repoRoot, 'tools/browser/stage-wine32-fonts.py');
   execFileSync('python3', ['-c', String.raw`
 import importlib.util
-spec = importlib.util.spec_from_file_location('fonts', 'tools/browser/stage-wine32-fonts.py')
+spec = importlib.util.spec_from_file_location('fonts', ${JSON.stringify(script)})
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 section = r'[Software\\Wine\\Fonts\\Replacements]'
 original = b'WINE REGISTRY Version 2\n\n[Other] 7\n"Arial"="keep"\n'
