@@ -158,7 +158,7 @@ disposition. "x86+x64" means both `w32` and `w64` unless noted.
 
 | Location | What valid guest behaviour hits it | Severity | Disposition |
 | --- | --- | --- | --- |
-| `source/io/fszipurl.cpp:59-104` (`bw64StartFetch` EM_JS + `bw64SyncFetchRange`) | Lazy `bw64url:` block-range fetch has **no timeout anywhere**: the EM_JS `fetch()` is issued with no `AbortController`, `r.arrayBuffer()` on a stalled body never settles, `bw64FetchDone` is then never called, and the guest pthread blocked in `emscripten_proxy_sync_with_ctx` never wakes; threads waiting on the same block wait on `fetchCv` (`fszipurl.cpp:196-199`) with no deadline either. Settled failures are handled loudly (`fetchRaw` logs `range fetch FAILED` and waiters retry as fetchers) — only a *never-settling* fetch hangs, and nothing logs it: the 16 MB-cadence progress line (`:171-175`) only fires after successful fetches. Evidence (GL lane, gl.md Celeste row): Wine launched Celeste, fetched 113 MB of its 2.69 GB archive, then emitted no new logs for 535 s and timed out in `not-mapped`; a separate live-era run mapped and rendered (0.75 nonblank input screenshots), so the failure is intermittent — consistent with a stalled fetch, not a deterministic Celeste incompatibility. The upfront chunk loop in `web/games.mjs` shares the no-timeout shape (secondary; not the Celeste demo path). | would break a real game (any lazily loaded title can hang silently at startup) | OPEN — fix: per-fetch timeout + abort in `bw64StartFetch` (AbortController wired to a deadline), deadline + retry in `bw64SyncFetchRange`/`fetchRaw`, and a stall log naming url+offset when a fetch exceeds the deadline. Verification is the solo Celeste probe at the integ gate; no browser probe was run for this row (coordinator routing). Registered by the runtime evidence lane; the fix itself belongs with the fszipurl owner at the gate. |
+| `source/io/fszipurl.cpp:59-104` (`bw64StartFetch` EM_JS + `bw64SyncFetchRange`) | Lazy `bw64url:` block-range fetch has **no timeout anywhere**: the EM_JS `fetch()` is issued with no `AbortController`, `r.arrayBuffer()` on a stalled body never settles, `bw64FetchDone` is then never called, and the guest pthread blocked in `emscripten_proxy_sync_with_ctx` never wakes; threads waiting on the same block wait on `fetchCv` (`fszipurl.cpp:196-199`) with no deadline either. Settled failures are handled loudly (`fetchRaw` logs `range fetch FAILED` and waiters retry as fetchers) — only a *never-settling* fetch hangs, and nothing logs it: the 16 MB-cadence progress line (`:171-175`) only fires after successful fetches. Evidence (GL lane, gl.md Celeste row): Wine launched Celeste, fetched 113 MB of its 2.69 GB archive, then emitted no new logs for 535 s and timed out in `not-mapped`; a separate live-era run mapped and rendered (0.75 nonblank input screenshots), so the failure is intermittent — consistent with a stalled fetch, not a deterministic Celeste incompatibility. The upfront chunk loop in `web/games.mjs` shares the no-timeout shape (secondary; not the Celeste demo path). | would break a real game (any lazily loaded title can hang silently at startup) | IMPLEMENTED (Celeste fix lane, 2026-10-25) — stall watchdog at every layer. (1) `bw64StartFetch` EM_JS (`source/io/fszipurl.cpp:81`) wires an AbortController to a 60 s STALL deadline: the clock starts at issuance and resets when response headers arrive and on every streamed chunk (body-reader path), so a slow-but-progressing fetch is never aborted; where the launcher prefetch wrapper buffers the body before the promise resolves, no progress is visible and the window acts as a per-2 MB-block deadline. On a stall it logs once — `fszipurl: fetch STALL url=… off=… len=… bytesSoFar=… stallMs=…` — aborts the fetch, and settles the job itself with `BW64_FETCH_STALLED` (-2, `fszipurl.cpp:179`) through a settled-guard, so the guest pthread in `emscripten_proxy_sync_with_ctx` always wakes. (2) `fetchRaw` (`fszipurl.cpp:254,262`) retries a failed or stalled chunk up to 3 attempts (permanent 404/403 still fail fast and latch `permanentError`); exhaustion logs `range fetch STALLED` / `range fetch FAILED` as before. (3) Same-block waiters wait on `fetchCv` with a 240 s deadline (`FETCH_WAIT_DEADLINE{240}`, `fszipurl.cpp:189,315`; 4× the stall window, above the fetcher worst case of 3 stall-bounded attempts ≈ 3 min); past it the read fails loudly (`STALL waiting for in-flight block`) without touching the fetcher-owned `inFlight` entry, so no duplicate fetch and no deadlock. (4) The launcher prefetch wrapper (`project/emscripten/wine64-launcher.js:126`, `block()`) adds a 120 s backstop watchdog (2× the EM_JS window) that aborts the native fetch and rejects the job, so its `pending` map cannot wedge a block forever (`bw64-prefetch: fetch STALL …`). (5) `web/games.mjs:72` (`stallWatchdog`) gives the upfront download the same shape per request: progress resets per chunk, a stall aborts and surfaces as a loud `download stalled` error. Why 60 s: healthy same-origin 2 MB range fetches settle in 50–200 ms (fszipurl design comment); a full minute of zero bytes is a dead connection, not a slow one — and the observed Celeste stall was 535 s of silence, far past the trip point. Retries are per-block, so an aborted transfer loses at most one 2 MB block. Test: `web/tests/suite/unit/fszipurl-fetch-stall.test.mjs` (9 tests, PASS: EM_JS body extracted and run against a never-settling fetch — settles -2, abort fired, exactly one stall log with url+offset; a progressing chunked fetch spanning longer than the window is NOT aborted; settled-failure codes -1/-404 preserved; arrayBuffer fallback; launcher job rejects, pending clears and the retry refetches fresh; games.mjs stall rejects loudly and a progressing download completes; C++ source pins for the watchdog/deadline/retry/log lines). WASM build compile-verified in this lane (see commit). Remaining verification: the solo Celeste browser probe at the integ gate (no browser probe run in this lane, per coordinator routing). |
 
 ### Size budget (runtime-assets.json)
 
@@ -226,10 +226,31 @@ defect class:
 
 ## Lane status (2026-10-25, runtime lane close-out)
 
-Register: **OPEN: 1** after the wave-2 evidence pass (the Celeste
-lazy-fetch stall row above, routed from the GL lane and registered
-OPEN with its fix sketch; it was not in the register at the original
-close-out). The original close-out stood at OPEN: 0; this pass kept
+Disclosure (Celeste fix lane): while compile-verifying this fix, a
+`bootstrap.py --local` restore (the build's pinned-asset step; the
+remote archive 404s) overwrote the four un-pinned `web/runtime` zips
+with the 2026-10-13 pinned copies. They were recovered the same day
+with the lane's own tooling: `prefix64.zip` restored byte-identical
+from `tools/rootfs64/dist/` (sha256 matches the pre-incident
+manifest), `wine64.zip` via `stage-wine64-payloads.sh` + the
+wineserver symlink member replacement, `wine32.zip` via
+`stage-gstreamer.sh`, `glibc-rootfs32.zip` via `stage-fonts32.sh`.
+Member counts are unchanged (1518/2171/58); w64 is within +2 bytes
+of its pre-incident size; w32/g32 sizes are identical (zip hashes
+differ — entries were rewritten). `runtime-artifact-manifest.md`
+was regenerated and `check_runtime_completeness.py` passes 9/9.
+The regenerated manifest also records the fresh support pack built
+by this lane's verification build (69 members, incl. the CJK TTC),
+ superseding the retained pre-CJK pack the wave-2 section cites.
+
+Register: **OPEN: 0** after the Celeste fetch-stall fix lane
+(2026-10-25) closed the last OPEN row: the lazy-fetch stall is
+IMPLEMENTED with `fszipurl-fetch-stall.test.mjs` (unit) + WASM
+compile verification; the solo Celeste browser probe remains owed
+at the integ gate. Prior state: **OPEN: 1** after the wave-2
+evidence pass (the Celeste lazy-fetch stall row above, routed
+from the GL lane and registered OPEN with its fix sketch; it was
+not in the register at the original close-out). The original close-out stood at OPEN: 0; this pass kept
 every prior row at its disposition, corrected one false census claim
 (msvcp140_codecvt_ids, now IMPLEMENTED via backport), fixed the
 wineserver dispatch script defect routed from the tests lane

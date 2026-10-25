@@ -10,13 +10,13 @@ from the artifacts, so the register rows citing it stay honest.
 
 | Label | Path | Bytes | sha256 | Members |
 | --- | --- | --- | --- | --- |
-| w64 | `web/runtime/wine64.zip` | 298882952 | `bf2e9285ab4f957aeef5dfb8b7e1550f24928aab62e10d70fda6f9cf6b51a005` | 1518 |
-| w32 | `web/runtime/wine32.zip` | 321016564 | `ae8347a5e3bd6714d098c89f590e9d51eedb13c92b75f570d31a9336233da501` | 2171 |
+| w64 | `web/runtime/wine64.zip` | 298882954 | `345749271af3ca1448e40e726597b5e3cacbc3cb97a6de321dd8a99afa02520f` | 1518 |
+| w32 | `web/runtime/wine32.zip` | 321016564 | `d181831cf628adb2036aa30d5f8a188cb35557851f6331d5077ef00f538742c3` | 2171 |
 | p64 | `web/runtime/prefix64.zip` | 19066440 | `b34385c655b6aa798978518d51286052b2c267d65596299bad93f536bbaf169c` | 152 |
 | p32 | `web/runtime/prefix32.zip` | 5914534 | `ca99eb6ddbc85dc7c3a000b4c2415457a7e8e6c19e4bcecb8c26d37787f1e959` | 42 |
 | g64 | `web/runtime/glibc-rootfs64.zip` | 9959020 | `d71d48f9a41877f359f60cb4529a0b65ff55f17cedb286a058b2b613ed031c73` | 93 |
-| g32 | `web/runtime/glibc-rootfs32.zip` | 3813320 | `3906d6fa51b422d220202221c2ea0e08a5e88e45a56720e1e058204441cb6298` | 58 |
-| support | `dist/runtime/support-b68aea6c545bc363ed535bc1dc0d0ac26031cfda527f22025b73561aa327d395.zip` | 205268452 | `b68aea6c545bc363ed535bc1dc0d0ac26031cfda527f22025b73561aa327d395` | 3032 |
+| g32 | `web/runtime/glibc-rootfs32.zip` | 3813320 | `14eca40bc9b951a152d4ae59a25d9469dac867678b750124ff049f9058d7793f` | 58 |
+| support | `dist/runtime/support-e0d733feb54b3a9a30179cee36b1372d90d2bc7f7c9f94b680160e0ad923174e.zip` | 207600063 | `e0d733feb54b3a9a30179cee36b1372d90d2bc7f7c9f94b680160e0ad923174e` | 3035 |
 
 Labels match the register legend in `runtime.md`
 (`w64` = wine64.zip, `w32` = wine32.zip, `p64`/`p32` = prefix zips,
@@ -467,12 +467,15 @@ and that `wineserver64` itself is an ELF binary).
 
 ## Support-pack .NET / Gecko / OpenAL members
 
-### support (66)
+### support (69)
 
+- `etc/fonts/conf.d/65-wqy-microhei.conf` (1504 bytes)
+- `opt/winbox/licenses/wqy-microhei-copyright` (4276 bytes)
 - `opt/winbox/mono/mono-2.0/bin/libmono-2.0-x86.dll` (4044288 bytes)
 - `opt/winbox/mono/mono-2.0/bin/libmono-2.0-x86_64.dll` (4447232 bytes)
 - `opt/wine-stable/lib/wine/i386-windows/OpenAL32.dll` (4071950 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/OpenAL32.dll` (3834368 bytes)
+- `usr/share/fonts/truetype/wqy/wqy-microhei.ttc` (5177387 bytes)
 - `usr/share/wine/gecko/wine-gecko-2.47.3-x86_64/AccessibleMarshal.dll` (106496 bytes)
 - `usr/share/wine/gecko/wine-gecko-2.47.3-x86_64/VERSION` (17 bytes)
 - `usr/share/wine/gecko/wine-gecko-2.47.3-x86_64/browser/blocklist.xml` (232312 bytes)
