@@ -294,3 +294,242 @@ int main() {
     assert(calls.length === 3, "plain input must not reach the export");
   });
 });
+
+// ---- EvText press/release pairing: compiled slice of the expansion. ----
+//
+// The test above pins the channel's layers around deliverInputEvents, but
+// the EvText expansion inside it — the block that turns one committed code
+// point into a KeyPress/KeyRelease pair — was only string-pinned there:
+// deleting the KeyRelease enqueue (textKeys.push_back(up)) left the whole
+// suite green, so a regression dropping KeyRelease for every IME-typed
+// character (stuck keys guest-side) would have shipped under a green test.
+// This test compiles the expansion block VERBATIM (brace-sliced out of
+// deliverInputEvents) with the real planner / scratch-binding / keysym
+// functions and drives it against a traced textKeys sink, mirroring the
+// production drain: queued pairs are delivered FIFO before the next input
+// event is read, so each press is translated through the keymap binding
+// in force at its own delivery. sendPendingImeMappingNotify is the one
+// stub: the real one writes to a client socket, so the harness reproduces
+// its generation-stamp semantics (announce once per rebind — the member
+// starts at 0, as does the generation) and records the call. What that
+// pins is the expansion's contract: after a scratch rebind it announces
+// BEFORE enqueueing the pair (the notify's wire bytes themselves are
+// pinned by the layer assertions above: e[0] = 34, first-keycode 248,
+// count 1). Sabotage acceptance for this pin (pinning lane): removing the
+// release enqueue, swapping the pair order, removing the press enqueue,
+// and giving the release a mismatched keycode each turn this test red.
+
+// Slice a brace-balanced block: from the line containing `marker` through
+// the line where the brace depth first returns to zero. `//` comments are
+// ignored for depth (the sliced regions contain no braces inside string
+// or character literals).
+function sliceBlock(src, marker) {
+  const lines = src.split("\n");
+  const start = lines.findIndex((l) => l.includes(marker));
+  assert(start >= 0, "block marker not found: " + marker);
+  let depth = 0, opened = false;
+  for (let i = start; i < lines.length; i++) {
+    const code = lines[i].split("//")[0];
+    for (const ch of code) {
+      if (ch === "{") { depth++; opened = true; }
+      else if (ch === "}") depth--;
+    }
+    if (opened && depth === 0) return lines.slice(start, i + 1).join("\n");
+  }
+  throw new Error("unterminated block slice: " + marker);
+}
+
+test("IME EvText expansion: one press/release pair per code point (compiled slice)", async (t) => {
+  const conn = await read("source/x11wire/xwireconnection.cpp");
+  const presentH = await read("source/x11wire/xwirepresent.h");
+  const keyPair = conn.split("\n").find((l) => l.includes("struct KeyPair { uint32_t lo, hi; };"));
+  assert(keyPair, "KeyPair struct line not found");
+  const eventStruct = sliceBlock(presentH, "struct XWireInputEvent {");
+  const imeState = sliceBetween(conn, "static const int kImeScratchKeycode", "static KeyPair keysymForKeycode");
+  const keysymFn = sliceFn(conn, "static KeyPair keysymForKeycode(int kc) {");
+  const plannerFn = sliceFn(conn, "static int keycodeForCodepoint(uint32_t cp, bool& shift) {");
+  const expandBlock = sliceBlock(conn, "if (ev.type == XWireInputEvent::EvText) {");
+  const cpp = [
+    "#include <cstdint>",
+    "#include <cstddef>",
+    "#include <cstdio>",
+    "#include <cstring>",
+    "#include <atomic>",
+    "#include <deque>",
+    "#include <string>",
+    "#include <vector>",
+    eventStruct,
+    keyPair,
+    imeState,
+    keysymFn,
+    plannerFn,
+    `
+// Harness: an ordered trace of everything the expansion emits, a
+// generation-stamp MappingNotify stub, and a FIFO pair sink that mirrors
+// deliverInputEvents' drain (pairs out before the next sink event).
+static std::vector<std::string> g_trace;
+static uint64_t g_notifyStamp = 0;  // a fresh connection's imeKeymapGenerationSent
+static void sendPendingImeMappingNotify() {
+    uint64_t gen = g_imeKeymapGeneration.load(std::memory_order_acquire);
+    if (gen == g_notifyStamp) return;
+    g_notifyStamp = gen;
+    g_trace.push_back("notify");
+}
+
+struct TextKeys {
+    std::deque<XWireInputEvent> q;
+    void push_back(const XWireInputEvent& e) {
+        q.push_back(e);
+        g_trace.push_back(e.type == XWireInputEvent::EvKeyDown ? "dn"
+                        : e.type == XWireInputEvent::EvKeyUp ? "up" : "other");
+    }
+    bool empty() const { return q.empty(); }
+    XWireInputEvent front() const { return q.front(); }
+    void pop_front() { q.pop_front(); }
+};
+static TextKeys textKeys;
+static std::vector<XWireInputEvent> g_delivered;
+static std::vector<KeyPair> g_pressKeysyms;
+
+// Run the verbatim expansion block over one input event; returns true if
+// the event fell through to the normal input path (non-EvText only — the
+// block consumes every EvText, valid code point or not, via continue).
+static bool expandOne(XWireInputEvent ev) {
+    bool fellThrough = false;
+    for (int once = 0; once < 1; ++once) {
+${expandBlock}
+        fellThrough = true;
+    }
+    return fellThrough;
+}
+
+// Feed one committed code point, then drain the pair queue exactly as
+// deliverInputEvents does before reading the next sink event; a press is
+// keysym-translated with the binding in force at its delivery.
+static int feedText(uint32_t cp) {
+    XWireInputEvent ev;
+    ev.type = XWireInputEvent::EvText;
+    ev.detail = cp;
+    if (expandOne(ev)) return 1;
+    while (!textKeys.empty()) {
+        XWireInputEvent e = textKeys.front();
+        textKeys.pop_front();
+        if (e.type == XWireInputEvent::EvKeyDown)
+            g_pressKeysyms.push_back(keysymForKeycode((int)e.detail));
+        g_delivered.push_back(e);
+    }
+    return 0;
+}
+
+static void reset() {
+    g_trace.clear();
+    g_delivered.clear();
+    g_pressKeysyms.clear();
+    while (!textKeys.empty()) textKeys.pop_front();
+}
+
+// The pair contract: delivered events form adjacent press/release pairs
+// whose halves share keycode (detail) and modifier state.
+static bool pairsWellFormed() {
+    if (g_delivered.size() % 2 != 0) return false;
+    for (size_t i = 0; i < g_delivered.size(); i += 2) {
+        const XWireInputEvent& d = g_delivered[i];
+        const XWireInputEvent& u = g_delivered[i + 1];
+        if (d.type != XWireInputEvent::EvKeyDown) return false;
+        if (u.type != XWireInputEvent::EvKeyUp) return false;
+        if (d.detail != u.detail) return false;
+        if (d.state != u.state) return false;
+    }
+    return true;
+}
+
+int main() {
+    // A. Static unshifted 'a': in-place pair on keycode 38, no announce.
+    reset();
+    if (feedText(0x61)) return 101;
+    if (!pairsWellFormed()) return 102;
+    if (g_delivered.size() != 2) return 103;
+    if (g_delivered[0].detail != 38u || g_delivered[0].state != 0u) return 104;
+    if (g_trace != std::vector<std::string>{"dn", "up"}) return 105;
+    if (g_pressKeysyms.size() != 1 || g_pressKeysyms[0].lo != 0x61u || g_pressKeysyms[0].hi != 0x41u) return 106;
+    // B. Static shifted 'A': same keycode, Shift state on BOTH halves.
+    reset();
+    if (feedText(0x41)) return 111;
+    if (!pairsWellFormed()) return 112;
+    if (g_delivered[0].detail != 38u || g_delivered[0].state != 0x0001u) return 113;
+    if (g_trace != std::vector<std::string>{"dn", "up"}) return 114;
+    if (g_pressKeysyms.size() != 1 || g_pressKeysyms[0].hi != 0x41u) return 115;
+    // C. Scratch U+3042: MappingNotify precedes the pair on keycode 248,
+    // and the binding in force at delivery is the character's keysym.
+    reset();
+    if (feedText(0x3042)) return 121;
+    if (!pairsWellFormed()) return 122;
+    if (g_delivered[0].detail != 248u || g_delivered[0].state != 0u) return 123;
+    if (g_trace != std::vector<std::string>{"notify", "dn", "up"}) return 124;
+    if (g_pressKeysyms.size() != 1 || g_pressKeysyms[0].lo != 0x01003042u) return 125;
+    // D. Astral U+1F600 through the scratch binding.
+    reset();
+    if (feedText(0x1F600)) return 131;
+    if (!pairsWellFormed()) return 132;
+    if (g_trace != std::vector<std::string>{"notify", "dn", "up"}) return 133;
+    if (g_pressKeysyms.size() != 1 || g_pressKeysyms[0].lo != 0x0101F600u) return 134;
+    // E. Latin-1 U+00E9: unmapped on the US layout -> scratch, identity keysym.
+    reset();
+    if (feedText(0xE9)) return 141;
+    if (!pairsWellFormed()) return 142;
+    if (g_trace != std::vector<std::string>{"notify", "dn", "up"}) return 143;
+    if (g_pressKeysyms.size() != 1 || g_pressKeysyms[0].lo != 0xE9u) return 144;
+    // F. One commit, three code points ('a' + U+6587 + U+1F600): pairs
+    // stay adjacent and in commit order; each scratch press is announced
+    // and translated with its own binding.
+    reset();
+    if (feedText(0x61) || feedText(0x6587) || feedText(0x1F600)) return 151;
+    if (!pairsWellFormed()) return 152;
+    if (g_delivered.size() != 6) return 153;
+    if (g_delivered[0].detail != 38u || g_delivered[2].detail != 248u || g_delivered[4].detail != 248u) return 154;
+    if (g_trace != std::vector<std::string>{"dn", "up", "notify", "dn", "up", "notify", "dn", "up"}) return 155;
+    if (g_pressKeysyms.size() != 3 || g_pressKeysyms[0].lo != 0x61u ||
+        g_pressKeysyms[1].lo != 0x01006587u || g_pressKeysyms[2].lo != 0x0101F600u) return 156;
+    // G. Same scratch character twice: every rebind is announced (the
+    // generation stamp must not swallow the second announcement).
+    reset();
+    if (feedText(0x3042) || feedText(0x3042)) return 161;
+    if (!pairsWellFormed()) return 162;
+    if (g_trace != std::vector<std::string>{"notify", "dn", "up", "notify", "dn", "up"}) return 163;
+    // H. Invalid code points are consumed but enqueue nothing.
+    reset();
+    if (feedText(0)) return 171;
+    if (feedText(0xD800)) return 172;
+    if (feedText(0x110000)) return 173;
+    if (!g_delivered.empty() || !g_trace.empty()) return 174;
+    // I. A non-EvText event is not the expansion's business: it falls
+    // through to the normal path and enqueues nothing.
+    reset();
+    {
+        XWireInputEvent key;
+        key.type = XWireInputEvent::EvKeyDown;
+        key.detail = 38;
+        if (!expandOne(key)) return 181;
+    }
+    if (!g_delivered.empty() || !g_trace.empty()) return 182;
+    return 0;
+}
+`,
+  ].join("\n");
+  const dir = await mkdtemp(path.join(os.tmpdir(), "bw64-ime-pair-"));
+  try {
+    const srcPath = path.join(dir, "ime_pair_check.cpp");
+    const binPath = path.join(dir, "ime_pair_check");
+    await writeFile(srcPath, cpp);
+    await run("c++", ["-std=c++17", "-Wall", "-Werror", srcPath, "-o", binPath]);
+    await t.test("compiled EvText expansion pairs press/release per code point", async () => {
+      try {
+        await run(binPath, []);
+      } catch (e) {
+        throw new Error("ime_pair_check exited " + (e.code ?? "?") + " — the code names the failed case in this file's compiled main()");
+      }
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
