@@ -1881,7 +1881,7 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
                     // remaining GLX protocol operations. Return a protocol error
                     // rather than a fabricated reply (which would corrupt the
                     // client's reply stream) or silently leave it waiting.
-                    kwarn_fmt("XWire: unsupported GLX request minor %u", unsigned(minor));
+                    kwarn_fmt("XWire: GLX request minor %u has no handler; returning BadRequest", unsigned(minor));
                     sendError(BadRequest, sequence, minor, opcode, minor);
                     break;
                 }

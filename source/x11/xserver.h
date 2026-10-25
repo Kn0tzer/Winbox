@@ -84,6 +84,7 @@ public:
 	int mapWindow(const DisplayDataPtr& data, const XWindowPtr& window);
 	int unmapWindow(const DisplayDataPtr& data, const XWindowPtr& window);
 	U32 createColorMap(const Visual* visual, int alloc);
+	bool freeColorMap(U32 id);
 	XColorMapPtr getDefaultColorMap();
 	XColorMapPtr getColorMap(U32 id);
 	VisualPtr getVisual(U32 id) {return visuals.get(id);}

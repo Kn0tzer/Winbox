@@ -1411,7 +1411,8 @@ static void x11_CreateColorMap(CPU* cpu) {
 }
 
 static void x11_FreeColorMap(CPU* cpu) {
-    //kpanic("x11_FreeColorMap");
+    XServer* server = XServer::getServer();
+    EAX = server->freeColorMap(ARG2) ? Success : BadColor;
 }
 
 // int XFreeColors(Display* display, Colormap colormap, unsigned long* pixels, int npixels, unsigned long planes)
@@ -2857,7 +2858,7 @@ static void x11_DestroyIC(CPU* cpu) {
 }
 
 static void x11_SetICValues(CPU* cpu) {
-    EAX = 0; // XSetICValues returns the first unsupported attribute; none exist.
+    EAX = 0; // XSetICValues returns the name of the first attribute it cannot set; this implementation has none, so it returns NULL.
 }
 
 static void x11_MbResetIC(CPU* cpu) {

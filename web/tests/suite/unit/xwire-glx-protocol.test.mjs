@@ -9,6 +9,6 @@ test('GLX server-string queries return length-framed strings and unsupported min
   assert.match(glx, /case X_GLXQueryExtensionsString:[\s\S]*?case X_GLXQueryServerString:/);
   assert.match(glx, /memcpy\(r\.data\(\) \+ 8, &textLen, 4\)/);
   assert.match(glx, /memcpy\(r\.data\(\) \+ 32, value\.data\(\), textLen\)/);
-  assert.match(glx, /unsupported GLX request minor[\s\S]*?sendError\(BadRequest, sequence, minor, opcode, minor\)/);
+  assert.match(glx, /GLX request minor[\s\S]*?sendError\(BadRequest, sequence, minor, opcode, minor\)/);
   assert.doesNotMatch(glx, /stub-reply|empty 32-byte/);
 });

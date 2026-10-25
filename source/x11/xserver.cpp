@@ -1184,6 +1184,19 @@ XColorMapPtr XServer::getColorMap(U32 id) {
 	return colorMaps.get(id);
 }
 
+bool XServer::freeColorMap(U32 id) {
+	BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(colorMapMutex);
+	if (defaultColorMap && id == defaultColorMap->id) {
+		// The default colormap outlives every client; freeing it is a no-op.
+		return true;
+	}
+	if (!colorMaps.get(id)) {
+		return false;
+	}
+	colorMaps.remove(id);
+	return true;
+}
+
 void XServer::initVisuals() {	
 	// add these first for each depth as a default
 	VisualPtr vis32 = addVisual(0xFF0000, 0xFF00, 0xFF, 32, 32, 0);

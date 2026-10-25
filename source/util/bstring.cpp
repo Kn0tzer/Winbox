@@ -112,7 +112,10 @@ BString::BString(const char* str, bool literal) {
         data->level = 0;
         data->str = (char*)str;
     } else {
-        kpanic("BString::BString oops");
+        data->len = (int)strlen(str);
+        data->level = powerOf2(data->len + 1);
+        data->str = getNewString(data->level);
+        strcpy(data->str, str);
     }
 }
 
@@ -587,7 +590,8 @@ BString BString::substr(int beginIndex) const {
 }
 
 BString BString::substr(int beginIndex, int len) const {
-    // :TODO in the future maybe don't make a copy, just a ref and use offsets into the data
+    // Future optimisation: reference the source data with offsets instead of
+    // copying. The copy is correct behaviour, just not free.
     if (beginIndex > length()) {
         return empty;
     }

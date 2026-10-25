@@ -625,9 +625,14 @@ std::shared_ptr<U8[]> extractIconFromExe(BString nativeExePath, int size, int* w
         Pe32OptionalHeader* optionalHeader = (Pe32OptionalHeader*)(buffer+nextHeader+sizeof(PeHeader));
         ImageSectionHeader* sectionHeader = (ImageSectionHeader*)(((unsigned char*)optionalHeader)+header->SizeOfOptionalHeader);
 
-        if (optionalHeader->Magic == 0x010b) {
-            U32 resourceRVA = *(U32*)(buffer+nextHeader+sizeof(PeHeader)+sizeof(Pe32OptionalHeader)+16); // 8 bytes per entry, resources is at 3 rd entry
-            U32 resourceSize = *(U32*)(buffer+nextHeader+sizeof(PeHeader)+sizeof(Pe32OptionalHeader)+20);
+        if (optionalHeader->Magic == 0x010b || optionalHeader->Magic == 0x020b) {
+            // Data directories follow the optional header's standard fields:
+            // 96 bytes for PE32, 112 for PE32+ (wider image base and
+            // stack/heap fields, no base-of-data field). 8 bytes per entry,
+            // resources is the 3rd entry.
+            U32 dataDirOffset = optionalHeader->Magic == 0x020b ? 112 : (U32)sizeof(Pe32OptionalHeader);
+            U32 resourceRVA = *(U32*)(buffer+nextHeader+sizeof(PeHeader)+dataDirOffset+16);
+            U32 resourceSize = *(U32*)(buffer+nextHeader+sizeof(PeHeader)+dataDirOffset+20);
             U32 rawOffset = resourceRVA;
             for (int i=0;i<header->NumberOfSections;i++) {
                 ImageSectionHeader* section = sectionHeader+i;
@@ -642,8 +647,6 @@ std::shared_ptr<U8[]> extractIconFromExe(BString nativeExePath, int size, int* w
                 read = f.read(buffer, BUFFER_SIZE);
                 readResourceDirectory(f, resourceRVA, rawOffset, buffer, 0, BUFFER_SIZE, (ImageResourceDirectory*)buffer, 0, false, icons);
             }
-        } else if (optionalHeader->Magic == 0x020b) {
-            kwarn("Icon 20b not implemented");
         } else {
             delete[] buffer;
             return nullptr;
