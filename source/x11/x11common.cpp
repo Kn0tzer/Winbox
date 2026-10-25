@@ -2065,7 +2065,7 @@ static void x11_CreateGC(CPU* cpu) {
 
 // int XSetDashes(Display* display, GC gc, int dash_offset, char* dash_list, int n)
 //
-// The offset and the first dash length are stored in the GC. Line drawing does not use dashes yet, so dashed lines are drawn solid; that is logged once.
+// XSetDashes replaces the GC dash pattern. Zero-length entries are invalid.
 static void x11_SetDashes(CPU* cpu) {
     XServer* server = XServer::getServer();
     XGCPtr gc = server->getGC(ARG2);
@@ -2078,13 +2078,16 @@ static void x11_SetDashes(CPU* cpu) {
         EAX = BadValue;
         return;
     }
-    static bool loggedDashes = false;
-    if (!loggedDashes) {
-        loggedDashes = true;
-        kwarn("x11_SetDashes: the dash pattern is stored, but lines are still drawn solid");
-    }
+	std::vector<U8> pattern;
+	pattern.reserve((size_t)n);
+	for (S32 i = 0; i < n; ++i) {
+		U8 length = cpu->memory->readb(ARG4 + i);
+		if (!length) { EAX = BadValue; return; }
+		pattern.push_back(length);
+	}
     gc->values.dash_offset = (S32)ARG3;
-    gc->values.dashes = (S8)cpu->memory->readb(ARG4);
+	gc->values.dashes = (S8)pattern.front();
+	gc->dash_list = std::move(pattern);
     EAX = Success;
 }
 

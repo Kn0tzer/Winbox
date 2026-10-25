@@ -69,6 +69,9 @@ enum { Success = 0, BadMatch = 8 };
 #define GXset 0xf
 #define FillSolid 0
 #define FillTiled 1
+#define LineSolid 0
+#define LineOnOffDash 1
+#define LineDoubleDash 2
 #define ArcChord 0
 #define ArcPieSlice 1
 #define EvenOddRule 0
@@ -81,7 +84,8 @@ struct KThread {};
 struct XVisual { int bits_per_rgb; };
 using VisualPtr = std::shared_ptr<XVisual>;
 struct XGCValues {
-    S32 function = GXcopy; U32 foreground = 0; S32 fill_style = FillSolid; U32 tile = 0;
+    S32 function = GXcopy; U32 foreground = 0, background = 0; S32 fill_style = FillSolid; U32 tile = 0;
+    S32 line_style = 0, dash_offset = 0; std::vector<U8> dash_list{4};
     S32 ts_x_origin = 0, ts_y_origin = 0, clip_x_origin = 0, clip_y_origin = 0;
     S32 fill_rule = EvenOddRule;
     U32 clip_mask = 0;
@@ -93,6 +97,7 @@ class XGC {
 public:
     XGCValues values;
     std::vector<XRectangle> clip_rects;
+    std::vector<U8> dash_list{4};
 };
 using XGCPtr = std::shared_ptr<XGC>;
 class XDrawable {
@@ -168,6 +173,16 @@ int main() {
         d.drawLine(&t, gc, 1, 2, 4, 2);
         for (U32 x = 1; x <= 4; x++) assert(d.pixel(x, 2) == 0xaabbccdd);
         assert(d.pixel(0, 2) == 0 && d.pixel(5, 2) == 0);
+    }
+    // dashed strokes alternate foreground/background pixels using the GC dash list and offset
+    {
+        XDrawable d(8, 2, v32);
+        auto gc = std::make_shared<XGC>();
+        gc->values.foreground = 5; gc->values.background = 9;
+        gc->values.line_style = 2; gc->dash_list = {2, 1}; gc->values.dash_offset = 1;
+        d.drawLine(&t, gc, 0, 0, 7, 0);
+        const U32 expected[] = {5, 9, 5, 5, 9, 5, 5, 9};
+        for (U32 x = 0; x < 8; ++x) assert(d.pixel(x, 0) == expected[x]);
     }
     // a line that runs off the drawable writes only inside it and does not crash
     {

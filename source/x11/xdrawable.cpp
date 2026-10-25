@@ -279,8 +279,34 @@ int XDrawable::drawLine(KThread* thread, const std::shared_ptr<XGC>& gc, S32 x1,
 	const S32 sx = x1 < x2 ? 1 : -1;
 	const S32 sy = y1 < y2 ? 1 : -1;
 	S32 err = dx + dy;
+	U32 dashIndex = 0;
+	U32 dashRemaining = 0;
+	bool dashOn = true;
+	const bool dashed = gc->values.line_style == LineOnOffDash || gc->values.line_style == LineDoubleDash;
+	if (dashed) {
+		const std::vector<U8>& pattern = gc->dash_list;
+		U32 period = 0;
+		for (U8 length : pattern) period += length;
+		if (!period || pattern.empty()) {
+			kwarn_fmt("XDrawable::drawLine invalid empty dash pattern; drawing solid");
+		} else {
+			U32 phase = ((U32)std::max<S32>(gc->values.dash_offset, 0)) % period;
+			while (phase >= pattern[dashIndex]) {
+				phase -= pattern[dashIndex];
+				dashIndex = (dashIndex + 1) % (U32)pattern.size();
+			}
+			dashRemaining = pattern[dashIndex] - phase;
+			dashOn = (dashIndex % 2) == 0;
+		}
+	}
 	for (;;) {
-		plotPixel(gc, x1, y1, gc->values.foreground);
+		if (!dashed || !dashRemaining) {
+			plotPixel(gc, x1, y1, gc->values.foreground);
+		} else if (dashOn) {
+			plotPixel(gc, x1, y1, gc->values.foreground);
+		} else if (gc->values.line_style == LineDoubleDash) {
+			plotPixel(gc, x1, y1, gc->values.background);
+		}
 		if (x1 == x2 && y1 == y2) {
 			break;
 		}
@@ -292,6 +318,13 @@ int XDrawable::drawLine(KThread* thread, const std::shared_ptr<XGC>& gc, S32 x1,
 		if (e2 <= dx) {
 			err += dx;
 			y1 += sy;
+		}
+		if (dashed && dashRemaining) {
+			if (--dashRemaining == 0) {
+				dashIndex = (dashIndex + 1) % (U32)gc->dash_list.size();
+				dashRemaining = gc->dash_list[dashIndex];
+				dashOn = (dashIndex % 2) == 0;
+			}
 		}
 	}
 	setDirty();

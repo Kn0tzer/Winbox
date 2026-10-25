@@ -43,6 +43,7 @@ XGC::XGC(const std::shared_ptr<XDrawable>& drawable) : id(XServer::getNextId()),
 	values.clip_mask = 0;
 	values.dash_offset = 0;
 	values.dashes = 4;
+	dash_list.push_back(4);
 }
 
 void XGC::updateValues(U32 mask, XGCValues* newValues) {
@@ -112,6 +113,7 @@ void XGC::updateValues(U32 mask, XGCValues* newValues) {
 	}
 	if (mask & GCDashList) {
 		values.dashes = newValues->dashes;
+		dash_list.assign(1, (U8)newValues->dashes);
 	}
 	if (mask & GCArcMode) {
 		values.arc_mode = newValues->arc_mode;
