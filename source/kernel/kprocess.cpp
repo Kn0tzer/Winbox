@@ -2120,11 +2120,10 @@ U64 KProcess::clone364(KThread* thread, U64 argsAddr, U64 size) {
     // implement clone3 directly and route to clone64.
     constexpr U64 CLONE_ARGS_V0_SIZE = 64;
     constexpr U64 CLONE_ARGS_CURRENT_SIZE = 88;
-    constexpr U64 PAGE_SIZE = 4096;
     if (!this->memory64 || size < CLONE_ARGS_V0_SIZE) {
         return (U64)-K_EINVAL;
     }
-    if (size > PAGE_SIZE) return (U64)-K_E2BIG;
+    if (size > K_PAGE_SIZE) return (U64)-K_E2BIG;
     if (argsAddr > ~0ULL - size) return (U64)-K_EFAULT;
     const U64 firstPage = argsAddr >> K64_PAGE_SHIFT;
     const U64 lastPage = (argsAddr + size - 1) >> K64_PAGE_SHIFT;
