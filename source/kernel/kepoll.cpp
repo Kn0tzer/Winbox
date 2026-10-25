@@ -115,18 +115,23 @@ bool KEPoll::isAsync() {
 }
 
 KFileLock* KEPoll::getLock(KFileLock* lock) {
-    kdebug("KEPoll::getLock not implemented yet");
+    // No locks are ever held on this object (supportsLocks()==false),
+    // so F_GETLK semantics are: no conflicting lock exists.
     return nullptr;
 }
 
 U32 KEPoll::setLock(KFileLock* lock, bool wait) {
-    kdebug("KEPoll::setLock not implemented yet");
-    return -1;
+    // Non-lockable object: fcntl lock commands are gated by
+    // supportsLocks()==false in KProcess::fcntl and never reach this,
+    // but a direct caller must get a real errno, not a bare -1.
+    kwarn_fmt("kobject: KEPoll::setLock on a non-lockable object; returned ENOTSUP");
+    return -K_ENOTSUP;
 }
 
 bool KEPoll::isOpen() {
-    kdebug("KEPoll::isOpen not implemented yet");
-    return false;
+    // The object is referenced by an open file descriptor for its whole
+    // lifetime; reporting false made poll() put POLLHUP on live epoll fds.
+    return true;
 }
 
 void KEPoll::waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) {

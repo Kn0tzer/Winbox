@@ -63,13 +63,17 @@ bool KSignal::isAsync() {
 }
 
 KFileLock* KSignal::getLock(KFileLock* lock) {
-    kdebug("KSignal::getLock not implemented yet");
+    // No locks are ever held on this object (supportsLocks()==false),
+    // so F_GETLK semantics are: no conflicting lock exists.
     return nullptr;
 }
 
 U32 KSignal::setLock(KFileLock* lock, bool wait) {
-    kdebug("KSignal::setLock not implemented yet");
-    return -1;
+    // Non-lockable object: fcntl lock commands are gated by
+    // supportsLocks()==false in KProcess::fcntl and never reach this,
+    // but a direct caller must get a real errno, not a bare -1.
+    kwarn_fmt("kobject: KSignal::setLock on a non-lockable object; returned ENOTSUP");
+    return -K_ENOTSUP;
 }
 
 bool KSignal::isOpen() {
