@@ -165,22 +165,25 @@ disposition. "x86+x64" means both `w32` and `w64` unless noted.
 `tools/browser/runtime-assets.json` pins per-file `bytes` + `sha256` for the
 six boot zips plus the slang compiler triple — i.e. any change to a zip's
 *content* is caught by `bootstrap.py --check`. There is no separate
-byte-count cap; the boot download is ~478 MB total
-(glibc-rootfs64 10 MB + wine64 210 MB + prefix64 19 MB + glibc-rootfs32 3 MB +
-wine32 237 MB + prefix32 6 MB), and large optional components (wine-mono 82 MB,
+byte-count cap; the boot download is ~659 MB total
+(glibc-rootfs64 10 MB + wine64 299 MB + prefix64 19 MB + glibc-rootfs32 4 MB +
+wine32 321 MB + prefix32 6 MB), and large optional components (wine-mono 82 MB,
 wine-gecko, OpenAL, DXVK, guest GL/Vulkan shims) are already lazy-loaded via
 the support pack + `dependencies.json` manifest
 (`tools/browser/stage-dependencies.py`). No silent size failure exists:
 every byte count is hash-pinned. Size state after the 2026-10-25 lane
 pass (disk is the binding constraint on the box — /home/ubuntu:
 docker 23G, kn0tzer 21G, worktrees 17G, backups 7.7G, main repo 6.3G):
-wine64.zip grew 201 MB → 285 MB and wine32.zip 237 MB → 307 MB with the
+wine64.zip grew 201 MB → 299 MB and wine32.zip 237 MB → 321 MB with the
 gstreamer closure (+85 MB compressed per arch, DT_NEEDED-complete, see
 the winegstreamer row — accepted because cutscene decode has no smaller
-complete form); the support pack grew ~196 MB → 207,599,381 bytes with
+complete form); the support pack grew ~196 MB → 207,600,063 bytes with
 the 5 MB CJK TTC (lazy-loaded, not boot cost). The shipped zips' new
-hashes require a `runtime-assets.json` re-pin by the release step
-(`bootstrap.py --check` will flag them loudly until then — by design).
+hashes were re-pinned into `runtime-assets.json` on 2026-10-25 (release
+`runtime-assets-20261025`; see the re-pin addendum under Lane status) —
+`bootstrap.py --check` passes against the shipped artifacts again. The
+pins’ remote half (publishing the release asset) remains a release-step
+item, listed in that addendum.
 
 ## Wave-2 evidence sweep (2026-10-25, runtime evidence lane)
 
@@ -289,3 +292,46 @@ prefix sanitizer), `63362bd55`/`fae954a69` (prefix startup differential
 docs, timing-sensitive — do not chase the numbers), `1b8b6b6f2`
 (prefix boot cost + package guards), `507ba5d0f` (gstreamer pin),
 `7ffdc951d` (this register).
+
+### Re-pin addendum (2026-10-25, runtime asset re-pin lane)
+
+`tools/browser/runtime-assets.json` no longer pins the 2026-10-13
+hashes. It now describes release `runtime-assets-20261025`: the four
+changed boot zips (wine64, wine32, prefix64, glibc-rootfs32) carry the
+bytes + sha256 of the shipped `web/runtime/` artifacts exactly as
+recorded in `runtime-artifact-manifest.md` (cross-checked file by
+file before pinning; glibc-rootfs64, prefix32 and the seven Slang
+files are unchanged since 2026-10-13 and keep their pins). A new
+local archive `browser-runtime-20261025.tar` (683,386,880 bytes,
+sha256 `77e3de2abbd41c196569b5f5bddac7a8069b13701b8776462b37fb90954cd4a8`)
+containing exactly the 13 pinned members was built from the shipped
+files and is retained at
+`/home/ubuntu/backups/winbox-runtime-assets-20261025/` on the build
+box (the 2026-10-13 archive under `boxedwine64-maintenance-20261013`
+is untouched). Verified in this lane: `bootstrap.py --check` passes
+in the worktree; `bootstrap.py --local <new tar>` restores and
+verifies all 13 assets into a clean tree and `--check` passes there;
+`test-bootstrap.py` 4/4; `check_runtime_completeness.py` 0 failures;
+`tools/browser/build.mjs` export completes (build.mjs does not read
+the pins — it copies `web/runtime/` into `dist/` and then mutates
+only the dist copies, so the pins describe the `web/runtime/`
+sources, not `dist/`).
+
+Release-step checklist (the only remaining half of the re-pin —
+publishing; nothing here was pushed or published by this lane):
+
+1. Create the GitHub release tagged `runtime-assets-20261025` in
+   `Kn0tzer/Boxedwine64` (the `release` / `repository` fields of
+   `runtime-assets.json`).
+2. Upload one asset named exactly `browser-runtime-20261025.tar`
+   (683,386,880 bytes, sha256
+   `77e3de2abbd41c196569b5f5bddac7a8069b13701b8776462b37fb90954cd4a8`;
+   build-box copy:
+   `/home/ubuntu/backups/winbox-runtime-assets-20261025/browser-runtime-20261025.tar`).
+   `bootstrap.py` constructs the download URL from the manifest, so
+   tag and asset name must match it exactly.
+3. From a clean checkout, run `python3 tools/browser/bootstrap.py`
+   with no `--local` and confirm it downloads, restores and verifies
+   all 13 assets (the 2026-10-13 release URL no longer serves its
+   asset; until this release exists, clean builds restore offline
+   via `--local` with the retained box archive above).
