@@ -15,11 +15,16 @@
 // shims: rebuild through the tree's own build scripts in a scratch copy
 // and require byte-identical output (generated source AND binary), and
 // pin the guest-visible symptom directly on the committed 32-bit binary.
+// The build scripts also carry a --check mode (rebuild into a scratch
+// dir, byte-compare, never modify the worktree) which
+// tools/browser/stage-dependencies.py enforces at ship time alongside
+// the Vulkan check; the last tests below pin that mode itself, so the
+// staging gate cannot silently rot.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -140,4 +145,60 @@ test('shipped libgl32 exports real wrappers, not stubs, for the fixed-function s
   const exports64 = elf64FunctionNames(readFileSync(join(rootfs64, 'libgl64/libGL.so.1')));
   assert.deepEqual([...exports32].sort(), [...exports64].sort(),
     'libgl32 and libgl64 export different symbol sets; the 32-bit shim has drifted from the shared source');
+});
+
+test('build-libgl64.sh --check passes on the committed tree and leaves it untouched', () => {
+  const artifacts = [join(rootfs64, 'libgl64/libGL.so.1'), join(rootfs64, 'libgl64/libgl64.c')];
+  const before = artifacts.map((f) => readFileSync(f));
+  execFileSync('bash', [join(rootfs64, 'build-libgl64.sh'), '--check'], { stdio: 'pipe' });
+  artifacts.forEach((f, i) => assert.ok(readFileSync(f).equals(before[i]),
+    `--check modified the committed ${f}; the check path must build into a scratch dir only`));
+});
+
+test('build-libgl32.sh --check passes on the committed tree and leaves it untouched', () => {
+  const artifacts = [join(rootfs64, 'libgl32/libGL.so.1'), join(rootfs64, 'libgl32/libgl32.c'),
+                     join(rootfs64, 'libgl64/libgl64.c')];
+  const before = artifacts.map((f) => readFileSync(f));
+  execFileSync('bash', [join(rootfs64, 'build-libgl32.sh'), '--check'], { stdio: 'pipe' });
+  artifacts.forEach((f, i) => assert.ok(readFileSync(f).equals(before[i]),
+    `--check modified the committed ${f}; the check path must build into a scratch dir only`));
+});
+
+test('build-libgl64.sh --check rejects a diverged binary copy', () => {
+  const { dir, dest } = scratchRootfs();
+  try {
+    const binary = join(dest, 'libgl64/libGL.so.1');
+    const bytes = readFileSync(binary);
+    bytes[bytes.length - 1] ^= 0xff;
+    writeFileSync(binary, bytes);
+    assert.throws(
+      () => execFileSync('bash', [join(dest, 'build-libgl64.sh'), '--check'], { stdio: 'pipe' }),
+      'a one-byte-diverged libgl64 binary copy must fail --check');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('build-libgl32.sh --check rejects a diverged binary copy', () => {
+  const { dir, dest } = scratchRootfs();
+  try {
+    const binary = join(dest, 'libgl32/libGL.so.1');
+    const bytes = readFileSync(binary);
+    bytes[bytes.length - 1] ^= 0xff;
+    writeFileSync(binary, bytes);
+    assert.throws(
+      () => execFileSync('bash', [join(dest, 'build-libgl32.sh'), '--check'], { stdio: 'pipe' }),
+      'a one-byte-diverged libgl32 binary copy must fail --check');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('build-libgl32.sh --check rejects a stale generated-source copy', () => {
+  const { dir, dest } = scratchRootfs();
+  try {
+    // The fog-disease shape: the committed generated source no longer
+    // matches what the generator produces from libgl64.c.
+    const generated = join(dest, 'libgl32/libgl32.c');
+    writeFileSync(generated, readFileSync(generated).toString('utf8') + '\n/* stale copy */\n');
+    assert.throws(
+      () => execFileSync('bash', [join(dest, 'build-libgl32.sh'), '--check'], { stdio: 'pipe' }),
+      'a libgl32.c copy that is not the generator output must fail --check');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
