@@ -1351,8 +1351,182 @@ U32 KNativeSocketObject::sendLoopbackBytes(KThread* thread, const U8* bytes, U32
     if (delivered) {
         target->notifyAsyncReady(K_POLL_IN);
     }
+    if (!delivered && destinationPort == 53) {
+        // Nothing listens on port 53 in the guest; service the query
+        // here so the guest resolver (resolv.conf: nameserver 127.0.0.1)
+        // gets an answer instead of a silently dropped datagram.
+        this->serveLoopbackDnsQuery(bytes, length, destinationAddress);
+    }
     this->error = 0;
     return length;
+}
+
+// ---------------------------------------------------------------------------
+// Guest DNS service (kernel round 3B). Answers RFC 1035 queries sent to the
+// loopback resolver address. One question per query; A/AAAA answered from
+// the host resolver, PTR for 127.0.0.1 answered locally, other types get a
+// truthful NODATA/NXDOMAIN. Responses are capped at the classic 512 bytes
+// with TC set when answers had to be dropped.
+static bool bw64DnsReadName(const U8* packet, U32 length, U32 offset, std::string& name, U32& endOffset) {
+    name.clear();
+    U32 pos = offset;
+    bool first = true;
+    while (true) {
+        if (pos >= length) {
+            return false;
+        }
+        U8 labelLen = packet[pos++];
+        if (labelLen == 0) {
+            break;
+        }
+        if ((labelLen & 0xc0) != 0 || pos + labelLen > length) {
+            return false; // compression or overrun: not a servable question
+        }
+        if (!first) {
+            name += '.';
+        }
+        name.append((const char*)packet + pos, labelLen);
+        pos += labelLen;
+        first = false;
+    }
+    endOffset = pos;
+    return true;
+}
+
+void KNativeSocketObject::serveLoopbackDnsQuery(const U8* query, U32 length, U32 destinationAddress) {
+    if (length < 12) {
+        return; // not a DNS packet: drop silently, like a real server
+    }
+    U32 queryFlags = ((U32)query[2] << 8) | query[3];
+    U32 qdcount = ((U32)query[4] << 8) | query[5];
+    std::string name;
+    U32 nameEnd = 0;
+    if (qdcount != 1 || !bw64DnsReadName(query, length, 12, name, nameEnd) || nameEnd + 4 > length) {
+        if (qdcount != 1) {
+            // FORMERR with no question echoed.
+            U8 response[12] = {};
+            response[0] = query[0];
+            response[1] = query[1];
+            U32 flags = 0x8000 | (queryFlags & 0x0100) | 0x0080 | 1;
+            response[2] = (U8)(flags >> 8);
+            response[3] = (U8)flags;
+            LoopbackPacket packet;
+            packet.bytes.assign(response, response + 12);
+            packet.sourceAddress = destinationAddress;
+            packet.sourcePort = 53;
+            {
+                std::lock_guard<std::mutex> lock(this->loopbackPacketsMutex);
+                if (this->loopbackPackets.size() < 1024) {
+                    this->loopbackPackets.push_back(std::move(packet));
+                } else {
+                    return;
+                }
+            }
+            BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->readingCond);
+            BOXEDWINE_CONDITION_SIGNAL_ALL(this->readingCond);
+            this->notifyAsyncReady(K_POLL_IN);
+        }
+        return;
+    }
+    U32 qtype = ((U32)query[nameEnd] << 8) | query[nameEnd + 1];
+    U32 qclass = ((U32)query[nameEnd + 2] << 8) | query[nameEnd + 3];
+    U32 questionEnd = nameEnd + 4;
+
+    U32 rcode = 0;
+    std::vector<std::vector<U8>> answers;
+    if (qclass != 1) {
+        rcode = 4; // NOTIMP
+    } else if (qtype == 12 && name == "1.0.0.127.in-addr.arpa") {
+        // PTR for the loopback address: "localhost" as uncompressed labels.
+        std::vector<U8> ptr = {9, 'l', 'o', 'c', 'a', 'l', 'h', 'o', 's', 't', 0};
+        answers.push_back(ptr);
+    } else {
+        struct addrinfo hints = {};
+        hints.ai_family = qtype == 1 ? AF_INET : (qtype == 28 ? AF_INET6 : AF_UNSPEC);
+        hints.ai_socktype = SOCK_DGRAM;
+        struct addrinfo* resultList = nullptr;
+        int gai = getaddrinfo(name.c_str(), nullptr, &hints, &resultList);
+        if (gai == EAI_NONAME) {
+            rcode = 3; // NXDOMAIN
+        } else if (gai != 0) {
+            rcode = 2; // SERVFAIL
+        } else {
+            if (qtype == 1 || qtype == 28) {
+                for (struct addrinfo* ai = resultList; ai; ai = ai->ai_next) {
+                    if (qtype == 1 && ai->ai_family == AF_INET) {
+                        struct sockaddr_in* sin = (struct sockaddr_in*)ai->ai_addr;
+                        const U8* bytes = (const U8*)&sin->sin_addr.s_addr;
+                        answers.push_back(std::vector<U8>(bytes, bytes + 4));
+                    } else if (qtype == 28 && ai->ai_family == AF_INET6) {
+                        struct sockaddr_in6* sin6 = (struct sockaddr_in6*)ai->ai_addr;
+                        const U8* bytes = (const U8*)&sin6->sin6_addr;
+                        answers.push_back(std::vector<U8>(bytes, bytes + 16));
+                    }
+                }
+            }
+            freeaddrinfo(resultList);
+        }
+    }
+
+    std::vector<U8> response;
+    response.reserve(512);
+    response.push_back(query[0]);
+    response.push_back(query[1]);
+    U32 flags = 0x8000 | (queryFlags & 0x0100) | 0x0080 | rcode;
+    response.push_back((U8)(flags >> 8));
+    response.push_back((U8)flags);
+    response.push_back(0);
+    response.push_back(1); // qdcount
+    response.push_back(0);
+    response.push_back(0); // ancount placeholder
+    response.push_back(0);
+    response.push_back(0); // nscount
+    response.push_back(0);
+    response.push_back(0); // arcount
+    response.insert(response.end(), query + 12, query + questionEnd);
+    U32 answered = 0;
+    bool truncated = false;
+    for (auto& rdata : answers) {
+        U32 recordSize = 2 + 2 + 2 + 4 + 2 + (U32)rdata.size();
+        if (response.size() + recordSize > 512) {
+            truncated = true;
+            break;
+        }
+        response.push_back(0xc0);
+        response.push_back(0x0c);
+        response.push_back((U8)(qtype >> 8));
+        response.push_back((U8)qtype);
+        response.push_back(0);
+        response.push_back(1); // class IN
+        response.push_back(0);
+        response.push_back(0);
+        response.push_back(0);
+        response.push_back(30); // TTL 30s
+        response.push_back((U8)(rdata.size() >> 8));
+        response.push_back((U8)rdata.size());
+        response.insert(response.end(), rdata.begin(), rdata.end());
+        answered++;
+    }
+    if (truncated) {
+        response[2] |= 0x02; // TC
+    }
+    response[6] = (U8)(answered >> 8);
+    response[7] = (U8)answered;
+
+    LoopbackPacket packet;
+    packet.bytes = response;
+    packet.sourceAddress = destinationAddress;
+    packet.sourcePort = 53;
+    {
+        std::lock_guard<std::mutex> lock(this->loopbackPacketsMutex);
+        if (this->loopbackPackets.size() >= 1024) {
+            return;
+        }
+        this->loopbackPackets.push_back(std::move(packet));
+    }
+    BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->readingCond);
+    BOXEDWINE_CONDITION_SIGNAL_ALL(this->readingCond);
+    this->notifyAsyncReady(K_POLL_IN);
 }
 
 U32 KNativeSocketObject::sendLoopbackTo(KThread* thread, U32 message, U32 length, U32 flags,
