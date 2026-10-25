@@ -304,6 +304,74 @@ complete"), `bootstrap.py --check` passes with the gate in the path, a
 full `build.mjs` export with the gate in the path exits 0, and no
 shipped artifact bytes or pins changed in this pass.
 
+### Producer hardening follow-on (2026-10-25, wine64-zip producer lane)
+
+Completes the `build-wine64-zip.sh` bullet above: the libGL/libvulkan
+warn-and-continue paths it deliberately left are now closed, the
+script's late-discovered dependencies are preflighted, and a
+pre-existing quoting breakage in its container payload is repaired.
+
+- **Up-front host preflight.** Before any work, the script checks
+  every host tool it uses (`dirname`, `mkdir`, `rm`, `cp`, `docker`,
+  `python3`, `zip`) and exits 1 naming the missing one. Previously
+  `zip` was first invoked at the very end (after all container + host
+  staging) and `python3` mid-run (the `build_vulkan_shims.py --check`
+  call), so a missing tool surfaced as a bare exit 127 with the
+  expensive staging already done. The trailing informational
+  `ls -lh` is guarded so its failure cannot misreport a successful
+  build.
+- **Input preflight.** The docker image and every prebuilt input
+  (the libGL/libvulkan shims, the three winehq10 backport DLLs, the
+  ALSA tree) are verified before the staging run; the staging-point
+  hard-fails remain as backstops.
+- **libGL / libvulkan: hard-fail by default, explicit opt-in.**
+  Caller evidence: nothing in the repo invokes this script
+  programmatically (no `build.mjs` / `bw64-build.sh` caller; it is
+  run by hand as the canonical producer, and
+  `publish-rootfs-release.sh` publishes its output), and no caller
+  depends on the warning path — the merge script
+  `stage-wine64-payloads.sh`, used when the container build is
+  unavailable, does not invoke it. A missing shim therefore exits 1
+  naming the prebuilt and its build script. The only exceptions are
+  the explicit opt-ins `BW64_ALLOW_NO_GL=1` / `BW64_ALLOW_NO_VK=1`
+  (for workflows that deliberately source a shim elsewhere — the
+  browser support pack also carries `libvulkan.so.1`, staged by
+  `tools/browser/stage-dependencies.py`), which print a banner at
+  the preflight, a warning at the staging point, and a closing
+  summary naming exactly what was omitted; the default path never
+  degrades silently. This supersedes the "warnings are unchanged"
+  sentence in the bullet above.
+- **Container-script quoting repair (pre-existing breakage, found
+  by this pass).** The `docker run ... bash -c '<script>'` payload
+  contained apostrophes in nine comment lines (`dlopen'd`,
+  `crypt32's`, ...), which terminated the single-quoted string:
+  docker received a ~1 KB truncated script plus stray words, and
+  the host shell then executed the remaining payload lines itself
+  (`copy: command not found`, exit 127) — the script as committed
+  could not complete a run on any host. The nine comments are
+  reworded without apostrophes (comment text only; the executed
+  payload is otherwise unchanged), and an argv-capture check proves
+  docker now receives the full 8,413-byte payload as a single
+  argument.
+- **Scratch evidence** (stub `docker` fabricating the container's
+  staging output, restricted PATH farms; shipped artifacts
+  untouched): 37/37 assertions — the happy path produces both zips
+  with every staged payload present and the staged shim bytes
+  identical to the prebuilts; missing `zip` / `python3` fail before
+  the dist directory is even created, naming the tool; a missing
+  libGL or libvulkan prebuilt fails before any staging, and with
+  its opt-in the run completes with the three loud notices and
+  exactly that shim absent from both zips. A real-docker run on
+  this ARM64 host passed both preflights and then stopped inside
+  the container staging with the documented binfmt/QEMU SIGSEGV
+  (the environment limit recorded below), so byte-identity with
+  the shipped zips cannot be produced on this host; the container
+  build remains the canonical regeneration path on an x86_64
+  host. No shipped artifact bytes or pins changed in this pass;
+  the runtime gate set re-verified green afterwards (checker
+  11/11, `test_prepare_prefixes.py` 9 OK, `bootstrap.py --check`
+  green, unit suite 184/0 solo). Register stays **OPEN: 0**.
+
 ## Wave-2 evidence sweep (2026-10-25, runtime evidence lane)
 
 Audit wave 2 sampled the register's NOT-A-GAP rows and found the VC++
