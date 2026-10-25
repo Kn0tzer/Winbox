@@ -20,7 +20,7 @@ function body(src, anchor) {
 
 test('bridge drop guards always log before discarding work', () => {
   assert.match(bridge, /static void vk64DropLog\([\s\S]*?\n\}/);
-  assert.match(bridge, /#define VK64_DROP_IF\(action, \.\.\.\) do \{ if \(__VA_ARGS__\) \{ vk64DropLog\(#__VA_ARGS__, __LINE__\); action; \} \} while \(0\)/);
+  assert.match(bridge, /#define VK64_DROP_IF\(action, \.\.\.\) if \(__VA_ARGS__\) \{ vk64DropLog\(#__VA_ARGS__, __LINE__\); action; \} else \{\}/);
   assert.ok((bridge.match(/VK64_DROP_IF\(/g) || []).length > 100, 'bridge drop sites must use the auditable macro');
 });
 

@@ -21,7 +21,7 @@ test('vkwebgpu.mjs counts and logs every unsupported draw through noteUnsupporte
 test('vk64bridge.cpp guards that discard guest data go through VK64_DROP_IF', () => {
   const src = read('source/vulkan/vk64bridge.cpp');
   assert.ok((src.match(/VK64_DROP_IF\(/g) || []).length >= 200);
-  assert.match(src, /#define VK64_DROP_IF\(action, \.\.\.\) do \{ if \(__VA_ARGS__\) \{ vk64DropLog\(#__VA_ARGS__, __LINE__\); action; \} \} while \(0\)/);
+  assert.match(src, /#define VK64_DROP_IF\(action, \.\.\.\) if \(__VA_ARGS__\) \{ vk64DropLog\(#__VA_ARGS__, __LINE__\); action; \} else \{\}/);
   // The pre-existing class of silent guard that hid the Info2L layout bug.
   assert.doesNotMatch(src, /if \([^)]*nreg[^)]*>[^)]*\)\s*return 0;/);
 });
