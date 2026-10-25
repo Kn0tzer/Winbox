@@ -17,6 +17,7 @@ import { extractSourceSlice } from '../lib/source-slice.mjs';
 
 const sourceName = 'source/x11/xdrawable.cpp';
 const source = readFileSync(new URL('../../../../source/x11/xdrawable.cpp', import.meta.url), 'utf8');
+const pixelHelpers = extractSourceSlice(source, 'static U32 readStoredPixel(', '// The 16 X11 GC logical operations', { sourceName });
 const tileHelpers = extractSourceSlice(source, '// The tile pixmap for a FillTiled GC', 'int XDrawable::fillRectangle(', { sourceName });
 const arcBlock = extractSourceSlice(source, 'namespace {\nconst double kPi', 'int XDrawable::drawRectangle(', { sourceName });
 
@@ -44,6 +45,7 @@ test('fill and outline draw the shapes the arc angles describe', () => {
 typedef int32_t S32;
 typedef uint32_t U32;
 typedef uint8_t U8;
+typedef uint16_t U16;
 enum { Success = 0, FillTiled = 1, ArcChord = 0, ArcPieSlice = 1 };
 struct KThread {};
 template <typename... A> static void kwarn_fmt(const char*, A...) {}
@@ -79,6 +81,7 @@ public:
     static XDrawablePtr fillTile(const std::shared_ptr<XGC>& gc);
     static U32 fillColor(const std::shared_ptr<XGC>& gc, const XDrawablePtr& tile, S32 x, S32 y);
 };
+${pixelHelpers}
 ${tileHelpers}
 ${arcBlock}
 static bool drawnAt(const XDrawable& d, S32 x, S32 y) {
@@ -92,6 +95,7 @@ static bool uniquePixels(const XDrawable& d) {
     return true;
 }
 int main() {
+    (void)writeStoredPixel; (void)storedPixelMask; // in the slice for plotPixel; this harness stubs plotPixel
     const S32 full = 360 * 64;
     const S32 quarter = 90 * 64;
     // a filled ellipse in a 10x10 box
@@ -148,7 +152,7 @@ int main() {
         d.drawArc(nullptr, gc, 0, 0, 10, 10, 0, quarter);
         assert(drawnAt(d, 8, 1) && !drawnAt(d, 1, 8) && !drawnAt(d, 1, 1));
     }
-    // an empty box and a depth this path does not draw leave the drawable alone
+    // an empty box leaves the drawable alone; an 8-bit drawable now fills
     {
         XDrawable d(10, 10, 32);
         auto gc = std::make_shared<XGC>();
@@ -156,7 +160,8 @@ int main() {
         d.drawArc(nullptr, gc, 0, 0, 10, 0, 0, full);
         assert(d.drawn.empty());
         XDrawable eight(10, 10, 8);
-        assert(eight.fillArc(nullptr, gc, 0, 0, 10, 10, 0, full) == Success && eight.drawn.empty());
+        assert(eight.fillArc(nullptr, gc, 0, 0, 10, 10, 0, full) == Success && !eight.drawn.empty());
+        assert(drawnAt(eight, 4, 4));
     }
     // a tiled fill takes its colour from the tile, anchored at the tile origin
     {

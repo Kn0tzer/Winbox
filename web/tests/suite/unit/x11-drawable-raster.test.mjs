@@ -17,11 +17,16 @@ import { extractSourceSlice } from '../lib/source-slice.mjs';
 
 const sourceName = 'source/x11/xdrawable.cpp';
 const source = readFileSync(new URL('../../../../source/x11/xdrawable.cpp', import.meta.url), 'utf8');
-const block = extractSourceSlice(source, 'static U32 combinePixel(', 'int XDrawable::drawRectangle(', { sourceName });
+const block = extractSourceSlice(source, 'static U32 readStoredPixel(', 'int XDrawable::drawRectangle(', { sourceName });
 
 test('the drawing block has no abort and no hard-coded colour', () => {
   assert.doesNotMatch(block, /kpanic/);
   assert.doesNotMatch(block, /0xff00/);
+});
+
+test('no raster method bails out on a non-32-bit visual', () => {
+  assert.doesNotMatch(block, /bits_per_rgb != 32/);
+  assert.doesNotMatch(block, /not supported|not handled/);
 });
 
 test('XSetClipMask validates a depth-one pixmap and replaces clip rectangles', () => {
@@ -103,7 +108,8 @@ using XGCPtr = std::shared_ptr<XGC>;
 class XDrawable {
 public:
     XDrawable(U32 width, U32 height, const VisualPtr& v, U32 d=32) : visual(v), w(width), h(height), depth(d) {
-        bytes_per_line = w * 4;
+        // mirrors XDrawable::calculateBytesPerLine for the stub visual
+        bytes_per_line = (w * (U32)v->bits_per_rgb / 8 + 3) / 4 * 4;
         data = new U8[bytes_per_line * h]();
     }
     ~XDrawable() { delete[] data; }
@@ -245,12 +251,62 @@ int main() {
                 assert(d.pixel(x, y) == 1 + (y % 2) * 2 + (x % 2));
         XServer::getServer()->tile = nullptr;
     }
-    // 8-bit drawables are logged, not drawn and not aborted
+    // 16-bit drawables draw with packed 16-bit pixels: a line, a fill and a
+    // GXxor that must stay inside the 16-bit pixel value
     {
-        XDrawable d(4, 4, v8);
+        auto v16 = std::make_shared<XVisual>(XVisual{16});
+        XDrawable d(4, 4, v16);
+        assert(d.getBytesPerLine() == 8); // 4 pixels * 2 bytes, padded to 4
         auto gc = std::make_shared<XGC>();
+        gc->values.foreground = 0xf800;
         d.drawLine(&t, gc, 0, 0, 3, 3);
-        assert(warnings >= 1);
+        for (U32 i = 0; i < 4; i++) assert(readStoredPixel(d.getData(), d.getBytesPerLine(), 16, i, i) == 0xf800);
+        assert(readStoredPixel(d.getData(), d.getBytesPerLine(), 16, 1, 0) == 0);
+        // the packed row holds 2-byte pixels, not the low halves of 4-byte ones
+        assert(d.getData()[2] == 0 && d.getData()[3] == 0);
+        auto gcSet = std::make_shared<XGC>();
+        gcSet->values.function = GXset;
+        d.fillRectangle(&t, gcSet, 0, 0, 4, 1);
+        assert(readStoredPixel(d.getData(), d.getBytesPerLine(), 16, 2, 0) == 0xffff);
+        auto gcXor = std::make_shared<XGC>();
+        gcXor->values.function = GXxor;
+        gcXor->values.foreground = 0xffff0f0f; // bits above bit 15 must not leak in
+        d.fillRectangle(&t, gcXor, 0, 0, 1, 1);
+        assert(readStoredPixel(d.getData(), d.getBytesPerLine(), 16, 0, 0) == 0xf0f0); // 0xffff ^ 0x0f0f, kept inside 16 bits
+    }
+    // 8-bit drawables draw lines, polygons and arcs with 1-byte pixels
+    {
+        XDrawable d(8, 8, v8);
+        const int warningsBefore = warnings;
+        auto gc = std::make_shared<XGC>();
+        gc->values.foreground = 0xab;
+        d.drawLine(&t, gc, 0, 0, 3, 3);
+        for (U32 i = 0; i < 4; i++) assert(readStoredPixel(d.getData(), d.getBytesPerLine(), 8, i, i) == 0xab);
+        d.fillPolygon(&t, gc, {0, 0, 6, 0, 0, 6}, false);
+        assert(readStoredPixel(d.getData(), d.getBytesPerLine(), 8, 0, 0) == 0xab);
+        auto gcArc = std::make_shared<XGC>();
+        gcArc->values.foreground = 0xcd;
+        d.fillArc(&t, gcArc, 0, 0, 8, 8, 0, 360 * 64);
+        assert(readStoredPixel(d.getData(), d.getBytesPerLine(), 8, 4, 4) == 0xcd);
+        d.drawArc(&t, gcArc, 0, 0, 8, 8, 0, 360 * 64);
+        assert(warnings == warningsBefore); // no depth bail-out logged
+    }
+    // a 16-bit tile repeats across a 16-bit fill
+    {
+        auto v16 = std::make_shared<XVisual>(XVisual{16});
+        auto tile = std::make_shared<XDrawable>(2, 1, v16);
+        writeStoredPixel(tile->getData(), tile->getBytesPerLine(), 16, 0, 0, 0x1111);
+        writeStoredPixel(tile->getData(), tile->getBytesPerLine(), 16, 1, 0, 0x2222);
+        XServer::getServer()->tile = tile;
+        XDrawable d(4, 1, v16);
+        auto gc = std::make_shared<XGC>();
+        gc->values.fill_style = FillTiled;
+        gc->values.tile = 7;
+        d.fillRectangle(&t, gc, 0, 0, 4, 1);
+        assert(readStoredPixel(d.getData(), d.getBytesPerLine(), 16, 0, 0) == 0x1111);
+        assert(readStoredPixel(d.getData(), d.getBytesPerLine(), 16, 1, 0) == 0x2222);
+        assert(readStoredPixel(d.getData(), d.getBytesPerLine(), 16, 2, 0) == 0x1111);
+        XServer::getServer()->tile = nullptr;
     }
     // relative line list: each point is an offset from the one before, so (0,0) (+3,0) (+0,+3) is an L to (3,3)
     {

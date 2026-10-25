@@ -15,7 +15,8 @@ import { execFileSync } from 'node:child_process';
 import { extractSourceSlice } from '../lib/source-slice.mjs';
 
 const drawableSource = readFileSync(new URL('../../../../source/x11/xdrawable.cpp', import.meta.url), 'utf8');
-const copyPlane = extractSourceSlice(drawableSource, 'int XDrawable::copyPlane(', '// The 16 X11 GC logical operations', { sourceName: 'source/x11/xdrawable.cpp' });
+const copyPlane = extractSourceSlice(drawableSource, 'int XDrawable::copyPlane(', 'static U32 readStoredPixel(', { sourceName: 'source/x11/xdrawable.cpp' });
+const pixelHelpers = extractSourceSlice(drawableSource, 'static U32 readStoredPixel(', '// The 16 X11 GC logical operations', { sourceName: 'source/x11/xdrawable.cpp' });
 const x11Source = readFileSync(new URL('../../../../source/x11/x11common.cpp', import.meta.url), 'utf8');
 const copyPlaneHandler = extractSourceSlice(x11Source, 'static void x11_CopyPlane(CPU* cpu) {', '// GC XCreateGC(', { sourceName: 'source/x11/x11common.cpp' });
 
@@ -38,6 +39,9 @@ test('XCopyPlane paints the foreground for set bits and the background for clear
 typedef int32_t S32;
 typedef uint32_t U32;
 typedef uint8_t U8;
+typedef uint16_t U16;
+struct XVisual { int bits_per_rgb = 32; };
+using VisualPtr = std::shared_ptr<XVisual>;
 enum { Success = 0 };
 struct KThread {};
 struct XGCValues { U32 foreground = 0; U32 background = 0; };
@@ -45,7 +49,7 @@ struct XGC { XGCValues values; };
 class XDrawable;
 class XDrawable {
 public:
-    XDrawable(U32 width, U32 height) : w(width), h(height), bytes_per_line(width * 4), data(new U8[bytes_per_line * height]()) {}
+    XDrawable(U32 width, U32 height) : w(width), h(height), bytes_per_line(width * 4), data(new U8[bytes_per_line * height]()), visual(std::make_shared<XVisual>()) {}
     ~XDrawable() { delete[] data; }
     XDrawable(const XDrawable&) = delete;
     int copyPlane(KThread* thread, const std::shared_ptr<XGC>& gc, const std::shared_ptr<XDrawable>& srcDrawable, S32 srcX, S32 srcY, U32 width, U32 height, S32 dstX, S32 dstY, U32 bitPlane);
@@ -60,7 +64,9 @@ public:
     U32 w, h;
     U32 bytes_per_line;
     U8* data;
+    VisualPtr visual;
 };
+${pixelHelpers}
 ${copyPlane}
 static const U32 FG = 0xaaaaaaaa, BG = 0x55555555;
 static std::shared_ptr<XGC> gcWithColours() {
@@ -70,6 +76,7 @@ static std::shared_ptr<XGC> gcWithColours() {
     return gc;
 }
 int main() {
+    (void)writeStoredPixel; (void)storedPixelMask; // in the slice for plotPixel; this harness stubs plotPixel
     KThread t;
     // bit 0 of each source pixel picks the colour: even columns are set, odd columns are clear
     {

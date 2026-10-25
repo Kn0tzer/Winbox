@@ -103,10 +103,6 @@ int XDrawable::copyImageData(KThread* thread, const std::shared_ptr<XGC>& gc, U3
 		return Success;
 	}
 	const bool fast = !gc || (gc->values.function == GXcopy && gc->clip_rects.empty() && !gc->values.clip_mask);
-	if (!fast && bits_per_pixel != 32) {
-		kwarn_fmt("XDrawable::copyImageData function or clip with %d-bit images not handled", bits_per_pixel);
-		return Success;
-	}
 	BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(mutex);
 	KMemory* memory = thread->memory;
 	const U32 bytesPerPixel = bits_per_pixel / 8;
@@ -121,7 +117,9 @@ int XDrawable::copyImageData(KThread* thread, const std::shared_ptr<XGC>& gc, U3
 			memory->memcpy(dst, src, count * bytesPerPixel);
 		} else {
 			for (U32 x = 0; x < count; x++) {
-				plotPixel(gc, x0 + (S32)x, y, memory->readd(src + x * 4));
+				const U32 guest = src + x * bytesPerPixel;
+				const U32 pixel = bits_per_pixel == 8 ? memory->readb(guest) : bits_per_pixel == 16 ? memory->readw(guest) : memory->readd(guest);
+				plotPixel(gc, x0 + (S32)x, y, pixel);
 			}
 		}
 	}
@@ -147,10 +145,6 @@ int XDrawable::copy(KThread* thread, const std::shared_ptr<XGC>& gc, const std::
 		return Success;
 	}
 	const bool fast = !gc || (gc->values.function == GXcopy && gc->clip_rects.empty() && !gc->values.clip_mask);
-	if (!fast && bits != 32) {
-		kwarn_fmt("XDrawable::copy function or clip with %d-bit drawables not handled", bits);
-		return Success;
-	}
 	const U32 bytesPerPixel = bits / 8;
 	const S32 count = x1 - x0;
 	std::vector<U32> run(count);
@@ -165,7 +159,7 @@ int XDrawable::copy(KThread* thread, const std::shared_ptr<XGC>& gc, const std::
 		}
 		// the whole source run is read before any of it is written, so an overlapping copy in one drawable is correct
 		for (S32 x = 0; x < count; x++) {
-			run[x] = *(const U32*)(srcRow + x * 4);
+			run[x] = readStoredPixel(srcRow, srcDrawable->bytes_per_line, bits, x, 0);
 		}
 		for (S32 x = 0; x < count; x++) {
 			plotPixel(gc, x0 + x, y, run[x]);
@@ -191,7 +185,7 @@ int XDrawable::copyPlane(KThread* thread, const std::shared_ptr<XGC>& gc, const 
 	for (S32 y = y0; y < y1; y++) {
 		const U8* srcRow = srcDrawable->data + srcDrawable->bytes_per_line * (y - dstY + srcY);
 		for (S32 x = x0; x < x1; x++) {
-			const U32 pixel = *(const U32*)(srcRow + 4 * (x - dstX + srcX));
+			const U32 pixel = readStoredPixel(srcRow, srcDrawable->bytes_per_line, srcDrawable->visual->bits_per_rgb, x - dstX + srcX, 0);
 			set.push_back(bitPlane < 32 && ((pixel >> bitPlane) & 1));
 		}
 	}
@@ -204,7 +198,34 @@ int XDrawable::copyPlane(KThread* thread, const std::shared_ptr<XGC>& gc, const 
 	return Success;
 }
 
-// The 16 X11 GC logical operations on one 32-bit pixel: src is the GC foreground or tile pixel, dst is the drawable pixel.
+
+// Stored pixels are packed at the visual bits per pixel: 32 for the 24- and
+// 32-bit visuals, 16 for the 16-bit visual and 8 for the 8-bit visual (see
+// XServer::initVisuals and XDrawable::setSize, which sizes rows from the same
+// value). Only byte-aligned formats are ever stored.
+static U32 readStoredPixel(const U8* data, U32 bytesPerLine, S32 bitsPerPixel, S32 x, S32 y) {
+	const U8* p = data + bytesPerLine * (U32)y + (U32)(bitsPerPixel / 8) * (U32)x;
+	switch (bitsPerPixel) {
+	case 8: return *p;
+	case 16: { U16 v; memcpy(&v, p, sizeof(v)); return v; }
+	default: { U32 v; memcpy(&v, p, sizeof(v)); return v; }
+	}
+}
+
+static void writeStoredPixel(U8* data, U32 bytesPerLine, S32 bitsPerPixel, S32 x, S32 y, U32 value) {
+	U8* p = data + bytesPerLine * (U32)y + (U32)(bitsPerPixel / 8) * (U32)x;
+	switch (bitsPerPixel) {
+	case 8: *p = (U8)value; break;
+	case 16: { U16 v = (U16)value; memcpy(p, &v, sizeof(v)); break; }
+	default: memcpy(p, &value, sizeof(value)); break;
+	}
+}
+
+static U32 storedPixelMask(S32 bitsPerPixel) {
+	return bitsPerPixel >= 32 ? 0xffffffffu : ((1u << (U32)bitsPerPixel) - 1u);
+}
+
+// The 16 X11 GC logical operations on one stored pixel: src is the GC foreground or tile pixel, dst is the drawable pixel.
 static U32 combinePixel(S32 function, U32 src, U32 dst) {
 	switch (function) {
 	case GXclear: return 0;
@@ -259,15 +280,12 @@ void XDrawable::plotPixel(const std::shared_ptr<XGC>& gc, S32 x, S32 y, U32 colo
 	if (x < 0 || y < 0 || x >= (S32)w || y >= (S32)h || !clipAllows(gc.get(), x, y)) {
 		return;
 	}
-	U32* p = (U32*)(data + bytes_per_line * y + x * 4);
-	*p = combinePixel(gc->values.function, color, *p);
+	const S32 bits = visual->bits_per_rgb;
+	const U32 dst = readStoredPixel(data, bytes_per_line, bits, x, y);
+	writeStoredPixel(data, bytes_per_line, bits, x, y, combinePixel(gc->values.function, color, dst) & storedPixelMask(bits));
 }
 
 int XDrawable::drawLine(KThread* thread, const std::shared_ptr<XGC>& gc, S32 x1, S32 y1, S32 x2, S32 y2) {
-	if (visual->bits_per_rgb != 32) {
-		kwarn_fmt("XDrawable::drawLine depth %d not supported", visual->bits_per_rgb);
-		return Success;
-	}
 	// Bresenham's line algorithm. Both endpoints are drawn, so a zero-length segment draws one pixel.
 	const S32 dx = x2 > x1 ? x2 - x1 : x1 - x2;
 	const S32 dy = y2 > y1 ? y1 - y2 : y2 - y1; // negated height
@@ -332,7 +350,7 @@ XDrawablePtr XDrawable::fillTile(const std::shared_ptr<XGC>& gc) {
 		return nullptr;
 	}
 	XDrawablePtr tile = XServer::getServer()->getDrawable(gc->values.tile);
-	if (tile && (tile->visual->bits_per_rgb != 32 || !tile->w || !tile->h)) {
+	if (tile && (!tile->w || !tile->h)) {
 		return nullptr;
 	}
 	return tile;
@@ -351,14 +369,10 @@ U32 XDrawable::fillColor(const std::shared_ptr<XGC>& gc, const XDrawablePtr& til
 	if (ty < 0) {
 		ty += (S32)tile->h;
 	}
-	return *(U32*)(tile->data + tile->bytes_per_line * ty + tx * 4);
+	return readStoredPixel(tile->data, tile->bytes_per_line, tile->visual->bits_per_rgb, tx, ty);
 }
 
 int XDrawable::fillRectangle(KThread* thread, const std::shared_ptr<XGC>& gc, S32 x, S32 y, U32 width, U32 height) {
-	if (visual->bits_per_rgb != 32) {
-		kwarn_fmt("XDrawable::fillRectangle only %d-bit not handled", visual->bits_per_rgb);
-		return Success;
-	}
 	const XDrawablePtr tile = fillTile(gc);
 	const S32 right = x + (S32)width;
 	const S32 bottom = y + (S32)height;
@@ -403,10 +417,6 @@ int XDrawable::fillRectangles(KThread* thread, const std::shared_ptr<XGC>& gc, c
 // that the GC fill rule (EvenOddRule or WindingRule) puts inside. Each inside run is a one-pixel-high fillRectangle, so the
 // GC function, clip and tile apply the same way as for rectangles.
 int XDrawable::fillPolygon(KThread* thread, const std::shared_ptr<XGC>& gc, const std::vector<S32>& points, bool relative) {
-	if (visual->bits_per_rgb != 32) {
-		kwarn_fmt("XDrawable::fillPolygon only %d-bit not handled", visual->bits_per_rgb);
-		return Success;
-	}
 	std::vector<S32> xy = points;
 	toAbsolute(xy, relative);
 	const size_t vertices = xy.size() / 2;
@@ -509,10 +519,6 @@ struct ArcShape {
 
 // Fills the ellipse, a pie slice or a chord. The pixel centre decides, so a pixel is drawn when its centre is inside the shape.
 int XDrawable::fillArc(KThread* thread, const std::shared_ptr<XGC>& gc, S32 x, S32 y, U32 width, U32 height, S32 angle1, S32 angle2) {
-	if (visual->bits_per_rgb != 32) {
-		kwarn_fmt("XDrawable::fillArc only %d-bit not handled", visual->bits_per_rgb);
-		return Success;
-	}
 	if (!width || !height) {
 		return Success;
 	}
@@ -543,10 +549,6 @@ int XDrawable::fillArc(KThread* thread, const std::shared_ptr<XGC>& gc, S32 x, S
 // Draws the outline of the ellipse or of the arc. The outline is always one pixel wide, so the GC line width is not used yet.
 // Each column and each row contributes the pixel that the curve crosses there. Pixels are drawn once, so an XOR function does not cancel itself.
 int XDrawable::drawArc(KThread* thread, const std::shared_ptr<XGC>& gc, S32 x, S32 y, U32 width, U32 height, S32 angle1, S32 angle2) {
-	if (visual->bits_per_rgb != 32) {
-		kwarn_fmt("XDrawable::drawArc only %d-bit not handled", visual->bits_per_rgb);
-		return Success;
-	}
 	if (!width || !height) {
 		return Success;
 	}

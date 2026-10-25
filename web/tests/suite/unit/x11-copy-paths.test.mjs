@@ -19,8 +19,8 @@ import { extractSourceSlice } from '../lib/source-slice.mjs';
 
 const sourceName = 'source/x11/xdrawable.cpp';
 const source = readFileSync(new URL('../../../../source/x11/xdrawable.cpp', import.meta.url), 'utf8');
-const copyBlock = extractSourceSlice(source, 'int XDrawable::copyImageData(', 'static U32 combinePixel(', { sourceName });
-const pixelBlock = extractSourceSlice(source, 'static U32 combinePixel(', 'int XDrawable::drawLine(', { sourceName });
+const copyBlock = extractSourceSlice(source, 'int XDrawable::copyImageData(', 'static U32 readStoredPixel(', { sourceName });
+const pixelBlock = extractSourceSlice(source, 'static U32 readStoredPixel(', 'int XDrawable::drawLine(', { sourceName });
 
 test('the copy block has no abort and no silent clip', () => {
   assert.doesNotMatch(copyBlock, /kpanic/);
@@ -74,6 +74,8 @@ struct KMemory {
     bool canRead(U32 a, U32 n) { return (size_t)a + n <= sizeof(guest); }
     void memcpy(U8* dst, U32 src, U32 n) { std::memcpy(dst, guest + src, n); }
     U32 readd(U32 a) { U32 v; std::memcpy(&v, guest + a, 4); return v; }
+    U32 readw(U32 a) { U16 v; std::memcpy(&v, guest + a, 2); return v; }
+    U32 readb(U32 a) { return guest[a]; }
 };
 struct KThread { KMemory* memory; };
 struct XVisual { int bits_per_rgb; };
