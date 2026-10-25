@@ -60,6 +60,7 @@ namespace vk32abi {
 #include "vk64bridge_abi.h"
 #include "vk_query_results.h"
 #include "vk_encode_profile.h"
+#include "vk_cb_lifecycle.h" // queue-submit fallback recording lifecycle
 #include "cpu64.h"
 #include "kmemory64.h"
 #include "kprocess.h"
@@ -1431,6 +1432,10 @@ struct CmdBuf : Obj {
     U32  nvb = 0;
     U64  ib = 0, ibOff = 0;
     U32  ibType = 0;   // 0 = uint16, 1 = uint32
+    // Recording lifecycle for the queue-submit fallback (vk_cb_lifecycle.h):
+    // the fallback may only pick this buffer up once it has ended and until
+    // it is next submitted.
+    vkcb::CbLifecycle lifecycle;
 };
 CmdBuf* cbOf(U64 id, const char* who) { return objOf<CmdBuf>(id, K_CMDBUF, who); }
 void resetCmdBuf(CmdBuf* cb) {
@@ -1449,6 +1454,7 @@ void resetCmdBuf(CmdBuf* cb) {
     memset(cb->vbHasStride, 0, sizeof(cb->vbHasStride));
     cb->nvb = 0;
     cb->ib = 0; cb->ibOff = 0; cb->ibType = 0;
+    cb->lifecycle.onReset();
 }
 
 // The frame serializer is defined above the switch; forward declaration so
@@ -6121,10 +6127,12 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         CmdBuf* cb = cbOf(args.a[0], "vkBeginCommandBuffer");
         if (!cb) return VK_ERROR_INITIALIZATION_FAILED;
         resetCmdBuf(cb);
+        cb->lifecycle.onBegin();
         return VK_SUCCESS;
     }
     case VK64_fn_vkEndCommandBuffer: {
         CmdBuf* cb = cbOf(args.a[0], "vkEndCommandBuffer");
+        if (cb) cb->lifecycle.onEnd();
         if (vkTrace()) klog_fmt("vk64: vkEndCommandBuffer ncmd=%u", cb ? (unsigned)cb->cmds.size() : 0);
         return VK_SUCCESS;
     }
@@ -7347,6 +7355,9 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 primary->ibType = sec->ibType;
             }
             if (sec->pipe) primary->pipe = sec->pipe;
+            // The secondary's commands now travel with the primary; the
+            // queue-submit fallback must not pick it up standalone.
+            sec->lifecycle.onSubmitted();
         }
         return 0;
     }
@@ -7452,13 +7463,26 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         for (auto& fr : frames) if (fr.first && !fr.first->cmds.empty()) { hasWork = true; break; }
         // Fallback: DXVK sometimes records draws to CBs that are never
         // submitted (e.g., 70 draws to 3 CBs, but submits reference empty CBs).
-        // Scan all CmdBufs for non-empty ones and include them.
+        // Scan all CmdBufs for eligible ones and include them. Eligibility
+        // is lifecycle-gated (vk_cb_lifecycle.h): only a buffer that reached
+        // vkEndCommandBuffer and has not been submitted since may be picked
+        // up. A buffer still being recorded on a DXVK worker thread has a
+        // command vector that mutates under the scan -- the ungated scan read
+        // garbage command counts and trapped the worker (2026-10-25).
         if (!hasWork) {
             for (auto& kv : g_objs) {
                 Obj* o = kv.second;
-                VK64_DROP_IF(continue, !o || o->kind != K_CMDBUF);
+                // Explicit guard -- NOT VK64_DROP_IF(continue, ...): that
+                // macro wraps its action in do{}while(0), and a continue
+                // inside binds to the do-while, not this loop, so the scan
+                // fell through and read CmdBuf fields in EVERY live object
+                // (images/buffers read as command vectors -- the garbage
+                // command counts behind the 2026-10-25 trap). Same explicit
+                // form as the pool-reset loops. Only genuine CmdBufs may be
+                // examined, and of those only lifecycle-eligible ones pass.
+                if (!o || o->kind != K_CMDBUF) continue;
                 CmdBuf* cb = (CmdBuf*)o;
-                if (!cb->cmds.empty()) {
+                if (cb->lifecycle.fallbackEligible(!cb->cmds.empty())) {
                     frames.push_back({cb, kv.first});
                     hasWork = true;
                     if (vkTrace()) klog_fmt("vk64: vkQueueSubmit2 fallback: found non-empty CB 0x%llx (%u cmds)",
@@ -7473,6 +7497,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 if (needRb) completeReadbacks();
             } else serializeSubmit(frames);
         }
+        // Every buffer in this batch (explicit or fallback-picked) has now
+        // been submitted: consume its fallback eligibility so a later empty
+        // submit cannot replay it.
+        for (auto& fr : frames) if (fr.first) fr.first->lifecycle.onSubmitted();
         if (args.a[3]) { Fence* f = objOf<Fence>(args.a[3], K_FENCE, "vkQueueSubmit"); if (f) f->signalled = 1; }
         if (vkTimingEnabled()) vkProfAcc().accSubmit += vkProfNow() - vkprofSubmitT0;
         return VK_SUCCESS;
@@ -7533,13 +7561,26 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         for (auto& fr : frames) if (fr.first && !fr.first->cmds.empty()) { hasWork = true; break; }
         // Fallback: DXVK sometimes records draws to CBs that are never
         // submitted (e.g., 70 draws to 3 CBs, but submits reference empty CBs).
-        // Scan all CmdBufs for non-empty ones and include them.
+        // Scan all CmdBufs for eligible ones and include them. Eligibility
+        // is lifecycle-gated (vk_cb_lifecycle.h): only a buffer that reached
+        // vkEndCommandBuffer and has not been submitted since may be picked
+        // up. A buffer still being recorded on a DXVK worker thread has a
+        // command vector that mutates under the scan -- the ungated scan read
+        // garbage command counts and trapped the worker (2026-10-25).
         if (!hasWork) {
             for (auto& kv : g_objs) {
                 Obj* o = kv.second;
-                VK64_DROP_IF(continue, !o || o->kind != K_CMDBUF);
+                // Explicit guard -- NOT VK64_DROP_IF(continue, ...): that
+                // macro wraps its action in do{}while(0), and a continue
+                // inside binds to the do-while, not this loop, so the scan
+                // fell through and read CmdBuf fields in EVERY live object
+                // (images/buffers read as command vectors -- the garbage
+                // command counts behind the 2026-10-25 trap). Same explicit
+                // form as the pool-reset loops. Only genuine CmdBufs may be
+                // examined, and of those only lifecycle-eligible ones pass.
+                if (!o || o->kind != K_CMDBUF) continue;
                 CmdBuf* cb = (CmdBuf*)o;
-                if (!cb->cmds.empty()) {
+                if (cb->lifecycle.fallbackEligible(!cb->cmds.empty())) {
                     frames.push_back({cb, kv.first});
                     hasWork = true;
                     if (vkTrace()) klog_fmt("vk64: vkQueueSubmit2 fallback: found non-empty CB 0x%llx (%u cmds)",
@@ -7554,6 +7595,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 if (needRb) completeReadbacks();
             } else serializeSubmit(frames);
         }
+        // Every buffer in this batch (explicit or fallback-picked) has now
+        // been submitted: consume its fallback eligibility so a later empty
+        // submit cannot replay it.
+        for (auto& fr : frames) if (fr.first) fr.first->lifecycle.onSubmitted();
         if (args.a[3]) { Fence* f = objOf<Fence>(args.a[3], K_FENCE, "vkQueueSubmit2"); if (f) f->signalled = 1; }
         if (vkTimingEnabled()) vkProfAcc().accSubmit += vkProfNow() - vkprofSubmitT0;
         return VK_SUCCESS;
@@ -9114,11 +9159,13 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkBeginCommandBuffer");
         if (!cb) return VK_ERROR_INITIALIZATION_FAILED;
         resetCmdBuf(cb);
+        cb->lifecycle.onBegin();
         return VK_SUCCESS;
     }
     case VK64_fn_vkEndCommandBuffer: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkEndCommandBuffer");
         if (!cb) return VK_ERROR_INITIALIZATION_FAILED;
+        cb->lifecycle.onEnd();
         return VK_SUCCESS;
     }
     case VK64_fn_vkCmdBeginRenderPass2:
@@ -9750,6 +9797,8 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 cb->ib = secondary->ib; cb->ibOff = secondary->ibOff; cb->ibType = secondary->ibType;
             }
             if (secondary->pipe) cb->pipe = secondary->pipe;
+            // Travels with the primary now; not fallback-eligible standalone.
+            secondary->lifecycle.onSubmitted();
         }
         return 0;
     }
@@ -9954,6 +10003,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 if (needRb) completeReadbacks();
             } else serializeSubmit(frames);
         }
+        for (auto& fr : frames) if (fr.first) fr.first->lifecycle.onSubmitted();
         if (args.a[3]) {
             Fence* f = objOf32<Fence>(args.a[3], K_FENCE, "vkQueueSubmit");
             if (f) f->signalled = 1;
