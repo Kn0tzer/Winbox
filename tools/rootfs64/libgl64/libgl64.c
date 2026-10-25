@@ -885,6 +885,12 @@ static unsigned char* gl64_prepare_map(GLenum target, GLintptr offset, GLsizeipt
 }
 API void glBindBuffer(GLenum target, GLuint buffer){ GL64Args a={{0}}; a.a[0]=target; a.a[1]=buffer; (void)gl64_trap(GL64_fn_glBindBuffer,&a); }
 API void* glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access){
+    /* A second map on a slot that already has an active map would silently
+       overwrite the first map's recorded range and lose its writes on unmap.
+       Real GL fails an already-mapped buffer; return NULL instead (check
+       ported from the runtime lane's parallel fix, 53fa5b05f). The guard runs
+       before gl64_prepare_map so a rejected map has no side effects. */
+    if ((target == GL_ELEMENT_ARRAY_BUFFER_ ? g_mapElem.active : g_mapArray.active)) return 0;
     const GLbitfield MAP_READ=0x0001, MAP_INVALIDATE_RANGE=0x0004, MAP_INVALIDATE_BUFFER=0x0008;
     int readContents=(access&MAP_READ)!=0 && !(access&(MAP_INVALIDATE_RANGE|MAP_INVALIDATE_BUFFER));
     unsigned char* p=gl64_prepare_map(target,offset,length,readContents);
@@ -894,6 +900,7 @@ API void* glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GL
     return p;
 }
 API void* glMapBuffer(GLenum target, GLenum access){
+    if ((target == GL_ELEMENT_ARRAY_BUFFER_ ? g_mapElem.active : g_mapArray.active)) return 0; /* already mapped: see glMapBufferRange */
     GLsizeiptr size=(target==GL_ELEMENT_ARRAY_BUFFER_)?g_mapElem.bufSize:g_mapArray.bufSize;
     if (size<=0) return 0;
     int readContents=(access==0x88BA /* GL_READ_WRITE */ || access==0x88B8 /* GL_READ_ONLY */);

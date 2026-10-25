@@ -18,6 +18,7 @@ const abiSrc = readFileSync(join(repoRoot, 'source/opengl/gl64bridge_abi.h'), 'u
 const bridgeSrc = readFileSync(join(repoRoot, 'source/opengl/gl64bridge.cpp'), 'utf8');
 const glCommonSrc = readFileSync(join(repoRoot, 'source/opengl/glcommon.cpp'), 'utf8');
 const shimSrc = readFileSync(join(repoRoot, 'tools/rootfs64/libgl64/libgl64.c'), 'utf8');
+const stubSrc = readFileSync(join(repoRoot, 'tools/rootfs64/libgl64/libgl64_stubs.h'), 'utf8');
 const esOpenGlSrc = readFileSync(join(repoRoot, 'source/opengl/es/esopengl.c'), 'utf8');
 const glMarshalSrc = readFileSync(join(repoRoot, 'source/opengl/glMarshal.cpp'), 'utf8');
 const glMarshalSizeSrc = readFileSync(join(repoRoot, 'source/opengl/glMarshalSize.cpp'), 'utf8');
@@ -310,6 +311,27 @@ test('guest GL buffer maps preserve read contents and mapped-range offsets witho
   assert.match(flush, /explicitFlush/);
   const unmap = shimSrc.match(/API GLboolean glUnmapBuffer\([\s\S]*?\n\}/)?.[0] ?? '';
   assert.match(unmap, /writable && !g_map(?:Elem|Array)\.explicitFlush/);
+  // A second map on an already-mapped slot must fail with NULL instead of
+  // silently overwriting the first map's recorded range (runtime lane's fix,
+  // ported in the libgl64 adjudication).
+  const mapWhole = shimSrc.match(/API void\* glMapBuffer\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert.match(mapRange, /active\)+ return 0/, 'glMapBufferRange must reject a nested map');
+  assert.match(mapWhole, /active\)+ return 0/, 'glMapBuffer must reject a nested map');
+});
+
+test('no GL entry point is both stubbed in libgl64_stubs.h and implemented in libgl64.c', () => {
+  const stubbed = new Set([...stubSrc.matchAll(/GLSTUB\((gl\w+)\)/g)].map(m => m[1]));
+  const implemented = new Set([...shimSrc.matchAll(/\bAPI [\w\* ]+?\b(gl\w+)\s*\(/g)].map(m => m[1]));
+  const both = [...stubbed].filter(n => implemented.has(n));
+  assert.deepEqual(both, [],
+    `entry points defined twice (stub wins in the binary and silently swallows calls): ${both.join(', ')}`);
+});
+
+test('bundled 64-bit GL fog entry points contain real trap wrappers, not stubs', () => {
+  const sizes = elf64FunctionSizes(readFileSync(process.env.BW64_GL_SHIM_BINARY || join(repoRoot, 'tools/rootfs64/libgl64/libGL.so.1')));
+  for (const name of ['glFogf', 'glFogi', 'glFogfv', 'glFogiv']) {
+    assert.ok(sizes.get(name) > 8, `${name} is missing or a no-op stub in the bundled guest binary; rebuild tools/rootfs64/libgl64/libGL.so.1`);
+  }
 });
 
 test('marshal size helpers and texImageBytes log unknown values once instead of silently falling back', () => {
