@@ -203,8 +203,8 @@ void testDevInputJoystick() {
         testFail("joystick EVIOCGABS(ABS_Z) did not track injected trigger: %d", (S32)memory->readd(buf));
     }
     result = device->readNative(record, sizeof(record));
-    if (result != 48) { // ABS_X, ABS_Z, SYN
-        testFail("joystick axis read returned %d bytes, expected 48", result);
+    if (result != 64) { // (ABS_X + SYN) + (ABS_Z + SYN), one pair per injection
+        testFail("joystick axis read returned %d bytes, expected 64", result);
     }
     onGamepadAxis(K_ABS_X, 0);
     onGamepadAxis(K_ABS_Z, 0);
