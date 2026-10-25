@@ -423,7 +423,23 @@ bool CPU64::deliverGuestMemoryFault() {
     memoryFaultError = 0;
 
     // Memory helpers may have advanced RIP and partially completed an
-    // instruction. Linux restarts the faulting instruction after sigreturn.
+    // instruction: they keep running on placeholder values after the
+    // denied access is recorded. Undo those architectural effects so the
+    // signal frame (and the restart after sigreturn) sees the exact
+    // pre-instruction state, as hardware #PF delivery guarantees.
+    if (faultCheckpointValid) {
+        for (int i = 0; i < X64_REG_COUNT; i++) reg[i] = faultCheckpointRegs[i];
+        rflags = faultCheckpointFlags;
+        fsbase = faultCheckpointFsBase;
+        gsbase = faultCheckpointGsBase;
+        if (faultCheckpointFpValid) {
+            for (int i = 0; i < 16; i++) xmm[i] = faultCheckpointXmm[i];
+            fpu = faultCheckpointFpu;
+            mxcsr = faultCheckpointMxcsr;
+        }
+        faultCheckpointValid = false;
+        faultCheckpointFpValid = false;
+    }
     rip = faultRip;
     yield = false;
     const S32 siCode = (error & 1) ? 2 /*SEGV_ACCERR*/ : 1 /*SEGV_MAPERR*/;
@@ -1086,6 +1102,20 @@ bool CPU64::readFxrstorImage(U64 guestAddr) {
 U32 CPU64::step(bool trackJitBlockBoundary) {
     U64 ipStart = rip;
     currentInstructionRip = ipStart;
+    // Precise-fault checkpoint (K-M3): with the guest-access context armed
+    // for this CPU, a denied access during this instruction must leave no
+    // architectural trace. Snapshot the integer state now; the FP/SSE
+    // state follows once the opcode is decoded (only 0F/x87 instructions
+    // can write it). deliverGuestMemoryFault() performs the restore.
+    faultCheckpointValid = false;
+    faultCheckpointFpValid = false;
+    if (!memoryFaultPending && k64GuestAccessCPU() == this) {
+        for (int i = 0; i < X64_REG_COUNT; i++) faultCheckpointRegs[i] = reg[i];
+        faultCheckpointFlags = rflags;
+        faultCheckpointFsBase = fsbase;
+        faultCheckpointGsBase = gsbase;
+        faultCheckpointValid = true;
+    }
     if (ipStart != recoverLastRip) {
         recoverLastRip = ipStart;
         recoverFaultsAtRip = 0;
@@ -1172,6 +1202,12 @@ U32 CPU64::step(bool trackJitBlockBoundary) {
     U32 opSize = rexW ? 8u : (p.osize16 ? 2u : 4u);
 
     U8 op = fetchByte(rip + opOff);
+    if (faultCheckpointValid && (op == 0x0F || (op >= 0xD8 && op <= 0xDF))) {
+        for (int i = 0; i < 16; i++) faultCheckpointXmm[i] = xmm[i];
+        faultCheckpointFpu = fpu;
+        faultCheckpointMxcsr = mxcsr;
+        faultCheckpointFpValid = true;
+    }
 
     // Fast JIT dispatch needs another probe after control flow, where execution
     // reaches a new basic-block entry. Ordinary fallthrough instructions stay
@@ -7855,6 +7891,13 @@ void CPU64::run() {
             }
         }
 #endif
+        // A block attempt may have recorded a precise fault (its recipes
+        // run under the guest-access context inside execBlock): deliver it
+        // before interpreting anything else.
+        if (memoryFaultPending) {
+            if (deliverGuestMemoryFault()) continue;
+            break;
+        }
         const U64 stepRip = rip;
         k64SetGuestAccessCPU(this);
         U32 n = step(jitReady && fastJitDispatch);
@@ -8123,9 +8166,32 @@ bool CPU64::buildBlock(U64 startRip, BBlock& b) {
 }
 
 U32 CPU64::execBlock(const BBlock& b, U64 maxInsn) {
+    // K-M3: block recipes access guest memory through the same helpers as
+    // step(); arm the guest-access context so a denied access records a
+    // precise fault instead of silently touching a protected page (the run
+    // loops only arm it around step()).
+    CPU64* prevAccessCpu = k64GuestAccessCPU();
+    k64SetGuestAccessCPU(this);
+    if (memoryFaultPending) {
+        // A fault is already awaiting delivery; let the run loop deliver
+        // it rather than executing recipes on placeholder values.
+        k64SetGuestAccessCPU(prevAccessCpu);
+        return 0;
+    }
     U32 executed = 0;
     for (U16 i = 0; i < b.n && executed < maxInsn; i++) {
         const BRec& rec = b.recs[i];
+        // Per-recipe precise-fault checkpoint (K-M3): recipes never write
+        // FP/SSE state (the block builder declines those opcodes), so the
+        // integer checkpoint suffices. deliverGuestMemoryFault() restores
+        // it if this recipe's access is denied.
+        currentInstructionRip = rip;
+        for (int ri = 0; ri < X64_REG_COUNT; ri++) faultCheckpointRegs[ri] = reg[ri];
+        faultCheckpointFlags = rflags;
+        faultCheckpointFsBase = fsbase;
+        faultCheckpointGsBase = gsbase;
+        faultCheckpointValid = true;
+        faultCheckpointFpValid = false;
         bool rexPresent = rec.rexPresent != 0;
         U32 size = rec.size;
         switch (rec.kind) {
@@ -8237,15 +8303,21 @@ U32 CPU64::execBlock(const BBlock& b, U64 maxInsn) {
             rip += rec.len;
             if (evalCC(rec.sub)) rip += (U64)(S64)rec.jccDelta;
             executed++;
+            k64SetGuestAccessCPU(prevAccessCpu);
             return executed;
         }
         }
+        // A denied access during this recipe recorded a fault: stop here.
+        // The recipe is not counted; deliverGuestMemoryFault() restores the
+        // per-recipe checkpoint, undoing its partial effects.
+        if (memoryFaultPending) break;
         executed++;
         // A guest store can rewrite a later instruction in this block. Stop
         // at the next RIP so the runner decodes the updated bytes immediately.
         if (KMemory64::blockSlotGen(b.slot0) != b.gen0 ||
             KMemory64::blockSlotGen(b.slot1) != b.gen1) break;
     }
+    k64SetGuestAccessCPU(prevAccessCpu);
     return executed;
 }
 
@@ -8759,6 +8831,13 @@ U64 CPU64::runBounded(U64 maxInsn) {
             }
         }
 #endif
+        // A block attempt may have recorded a precise fault (its recipes
+        // run under the guest-access context inside execBlock): deliver it
+        // before interpreting anything else.
+        if (memoryFaultPending) {
+            if (deliverGuestMemoryFault()) continue;
+            break;
+        }
         const U64 stepRip = rip;
         k64SetGuestAccessCPU(this);
         U32 n = step(jitReady && fastJitDispatch);

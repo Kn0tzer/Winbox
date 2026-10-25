@@ -28,6 +28,7 @@ class CPU64;
 // Set only while CPU64 executes one interpreter instruction. Kernel copies
 // run with this context cleared so invalid syscall buffers remain EFAULT paths.
 void k64SetGuestAccessCPU(CPU64* cpu);
+CPU64* k64GuestAccessCPU();
 bool k64CheckGuestAccess(const KMemory64* memory, U64 addr, U64 len, bool write);
 
 // Sparse 64-bit guest memory with lazy page backing, mmap reservations,

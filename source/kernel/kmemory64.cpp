@@ -28,6 +28,10 @@ void k64SetGuestAccessCPU(CPU64* cpu) {
     g_k64GuestAccessCPU = cpu;
 }
 
+CPU64* k64GuestAccessCPU() {
+    return g_k64GuestAccessCPU;
+}
+
 bool k64CheckGuestAccess(const KMemory64* memory, U64 addr, U64 len, bool write) {
     CPU64* cpu = g_k64GuestAccessCPU;
     if (!cpu || cpu->memory != memory || len == 0) return true;

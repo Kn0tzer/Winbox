@@ -100,6 +100,24 @@ public:
     // on FPU take a 32-bit CPU* that we can't satisfy.
     FPU fpu;
 
+    // Precise-fault checkpoint (K-M3). While the guest-access context is
+    // armed, step() snapshots the architectural state the current
+    // instruction may mutate; deliverGuestMemoryFault() restores it before
+    // the signal frame is built, so a denied access leaves the interrupted
+    // state exactly as hardware would (the faulting instruction has no
+    // architectural effects and restarts cleanly after sigreturn). The
+    // FP/SSE half is only snapshotted for instructions that can write it
+    // (0F-prefixed or x87 opcodes).
+    Reg64 faultCheckpointRegs[X64_REG_COUNT] = {};
+    U32   faultCheckpointFlags = 0;
+    U64   faultCheckpointFsBase = 0;
+    U64   faultCheckpointGsBase = 0;
+    Xmm   faultCheckpointXmm[16] = {};
+    FPU   faultCheckpointFpu;
+    U32   faultCheckpointMxcsr = 0;
+    bool  faultCheckpointValid = false;
+    bool  faultCheckpointFpValid = false;
+
     // Signal handler table. Mirrors the x86-64 `struct kernel_sigaction`
     // round-tripped through rt_sigaction(2): handler, flags, restorer,
     // sa_mask (64-bit). Indexed by signal number 1..64; slot 0 unused.
