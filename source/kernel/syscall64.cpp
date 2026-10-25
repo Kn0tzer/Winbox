@@ -2650,24 +2650,49 @@ static U64 sys_rt_sigprocmask64(CPU64* cpu, U64 how, U64 setPtr, U64 oldSetPtr,
 //   - If ss != NULL with SS_DISABLE(2): clear the registration.
 //   - If ss != NULL otherwise: ss_flags must be 0 (or SS_AUTODISARM=0x80000000)
 //     and ss_size must be >= MINSIGSTKSZ (~2048). Reject otherwise.
-//   - Cannot change altstack while currently executing on it (SS_ONSTACK
-//     flag set). We don't track that yet, so the check is skipped.
+//   - Cannot change or disable the altstack while currently executing
+//     on it: EPERM (the reported SS_ONSTACK state is derived from the
+//     current stack pointer, never stored).
 #define X64_SS_ONSTACK     1
 #define X64_SS_DISABLE     2
 #define X64_SS_AUTODISARM  0x80000000u
 #define X64_MINSIGSTKSZ    2048
+
+// Linux reports the altstack flags derived from the CURRENT stack
+// pointer (sas_ss_flags in kernel/signal.c): SS_DISABLE when no stack
+// is registered, SS_ONSTACK while the current SP is on the stack, and
+// the stored SS_AUTODISARM bit otherwise/also. The stored flags alone
+// never contain SS_ONSTACK.
+static U32 sigAltStackReportedFlags(CPU64* cpu) {
+    const auto& alt = cpu->sigAltStack;
+    if (!alt.ssSp) return X64_SS_DISABLE;
+    U32 flags = alt.ssFlags & X64_SS_AUTODISARM;
+    const U64 rsp = cpu->reg[X64_RSP].u64;
+    if (rsp >= alt.ssSp && rsp - alt.ssSp < alt.ssSize) flags |= X64_SS_ONSTACK;
+    return flags;
+}
+
+static bool sigAltStackOnStack(CPU64* cpu) {
+    const auto& alt = cpu->sigAltStack;
+    if (!alt.ssSp) return false;
+    const U64 rsp = cpu->reg[X64_RSP].u64;
+    return rsp >= alt.ssSp && rsp - alt.ssSp < alt.ssSize;
+}
 
 static U64 sys_sigaltstack64(CPU64* cpu, U64 ssPtr, U64 oldSsPtr) {
     if (!cpu->memory) return (U64)-K_EFAULT;
 
     if (oldSsPtr) {
         cpu->memory->writeq(oldSsPtr + 0,  cpu->sigAltStack.ssSp);
-        cpu->memory->writed(oldSsPtr + 8,  cpu->sigAltStack.ssFlags);
+        cpu->memory->writed(oldSsPtr + 8,  sigAltStackReportedFlags(cpu));
         cpu->memory->writed(oldSsPtr + 12, 0);
         cpu->memory->writeq(oldSsPtr + 16, cpu->sigAltStack.ssSize);
     }
 
     if (ssPtr) {
+        // The stack cannot be changed or disabled while the thread is
+        // executing on it.
+        if (sigAltStackOnStack(cpu)) return (U64)-K_EPERM;
         U64 sp    = cpu->memory->readq(ssPtr + 0);
         U32 flags = cpu->memory->readd(ssPtr + 8);
         U64 size  = cpu->memory->readq(ssPtr + 16);
@@ -2808,7 +2833,10 @@ static U64 buildSignalFrame(CPU64* cpu, U64 framePtr) {
     U64 gregsPtr  = mctxPtr; // gregs starts at mcontext
     // uc_stack: copy the registered altstack so the handler can re-arm if needed.
     cpu->memory->writeq(uctxPtr + 16, cpu->sigAltStack.ssSp);
-    cpu->memory->writed(uctxPtr + 24, cpu->sigAltStack.ssFlags);
+    // Linux save_altstack reports sas_ss_flags(interrupted SP): SS_DISABLE
+    // when disabled, SS_ONSTACK when the interrupted SP is on the armed
+    // stack, plus the registration's AUTODISARM bit.
+    cpu->memory->writed(uctxPtr + 24, sigAltStackReportedFlags(cpu));
     cpu->memory->writeq(uctxPtr + 32, cpu->sigAltStack.ssSize);
     // gregs[]
     cpu->memory->writeq(gregsPtr + 8 * X64_GREG_R8,  cpu->reg[X64_R8].u64);
@@ -2844,6 +2872,14 @@ static U64 buildSignalFrame(CPU64* cpu, U64 framePtr) {
     cpu->memory->writeq(mctxPtr + 184, framePtr + X64_FPREGS_OFF_IN_FRAME);
     // uc_sigmask
     cpu->memory->writeq(uctxPtr + X64_SIGMASK_OFF_IN_UCTX, cpu->sigMask);
+    // SS_AUTODISARM: the registration disarms while the handler runs, so
+    // a nested delivery cannot reuse it; the uc_stack written above is
+    // what rt_sigreturn restores from.
+    if (cpu->sigAltStack.ssFlags & X64_SS_AUTODISARM) {
+        cpu->sigAltStack.ssSp = 0;
+        cpu->sigAltStack.ssFlags = X64_SS_DISABLE;
+        cpu->sigAltStack.ssSize = 0;
+    }
     return uctxPtr;
 }
 
@@ -2887,6 +2923,22 @@ static bool restoreSignalFrame(CPU64* cpu, U64 uctxPtr, U64& savedRax) {
     // value so the user-visible RAX is the *pre-signal* value, not whatever
     // rt_sigreturn would compute.
     savedRax = cpu->memory->readq(gregsPtr + 8 * X64_GREG_RAX);
+    // Linux restore_altstack: the frame's saved uc_stack becomes the live
+    // registration again. This re-arms an SS_AUTODISARM stack that
+    // delivery disarmed and discards any sigaltstack change the handler
+    // made while running.
+    const U64 savedSsSp = cpu->memory->readq(uctxPtr + 16);
+    const U32 savedSsFlags = cpu->memory->readd(uctxPtr + 24);
+    const U64 savedSsSize = cpu->memory->readq(uctxPtr + 32);
+    if ((savedSsFlags & X64_SS_DISABLE) || savedSsSp == 0) {
+        cpu->sigAltStack.ssSp = 0;
+        cpu->sigAltStack.ssFlags = X64_SS_DISABLE;
+        cpu->sigAltStack.ssSize = 0;
+    } else {
+        cpu->sigAltStack.ssSp = savedSsSp;
+        cpu->sigAltStack.ssFlags = savedSsFlags & X64_SS_AUTODISARM;
+        cpu->sigAltStack.ssSize = savedSsSize;
+    }
     return true;
 }
 

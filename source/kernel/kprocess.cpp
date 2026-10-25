@@ -2072,6 +2072,10 @@ U32 KProcess::clone64(KThread* thread, U64 flags, U64 child_stack, U64 ptid, U64
     CPU64* parentCpu = thread->cpu64 ? thread->cpu64 : this->cpu64;
     CPU64* childCpu = new CPU64(this->memory64);
     childCpu->cloneRegistersFrom(parentCpu);
+    // Linux sas_ss_reset (kernel/fork.c): a CLONE_VM child that is not a
+    // vfork starts with NO alternate signal stack; a thread never
+    // inherits its creator's sigaltstack.
+    childCpu->sigAltStack = {};
     childCpu->thread = newThread;
     newThread->cpu64 = childCpu;
 
@@ -2210,6 +2214,12 @@ U32 KProcess::forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid, U64 
     KThread* newThread = newProcess->createThread();
     CPU64* childCpu = new CPU64(newProcess->memory64);
     childCpu->cloneRegistersFrom(parentCpu);
+    if ((flags & K_CLONE_VM) && !(flags & K_CLONE_VFORK)) {
+        // sas_ss_reset (kernel/fork.c): CLONE_VM children that are not
+        // vfork start with no alternate signal stack. Plain fork and
+        // vfork (no CLONE_VM, or CLONE_VM|CLONE_VFORK) inherit it.
+        childCpu->sigAltStack = {};
+    }
     childCpu->thread = newThread;
     childCpu->memory = newProcess->memory64;
     childCpu->reg[X64_RAX].setU64(0);   // child sees fork() == 0
