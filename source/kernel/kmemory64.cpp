@@ -377,9 +377,21 @@ void KMemory64::cloneFrom(const KMemory64* from) {
     ranges = from->ranges;
     pages.clear();
     pages.reserve(from->pages.size());
+    std::vector<U64> dontForkPages;
     for (const auto& kv : from->pages) {
+        // madvise fork advice (kernel round 3A): DONTFORK pages are not
+        // inherited at all; WIPEONFORK pages are inherited zeroed.
+        if (kv.second->flags & K64_PAGE_DONTFORK) {
+            dontForkPages.push_back(kv.first);
+            continue;
+        }
         auto copy = std::make_unique<K64Page>();
-        copy->flags = kv.second->flags & ~K64_PAGE_LOCKED; // locks are not inherited
+        // Locks are not inherited; the WIPEONFORK bit is consumed by the fork.
+        copy->flags = kv.second->flags & ~(K64_PAGE_LOCKED | K64_PAGE_WIPEONFORK);
+        if (kv.second->flags & K64_PAGE_WIPEONFORK) {
+            pages.emplace(kv.first, std::move(copy));
+            continue;
+        }
         // Only copy backing store for committed pages; an uncommitted page in
         // the parent (reserved but never touched) stays uncommitted in the child.
         if (kv.second->dataShared) {
@@ -388,6 +400,13 @@ void KMemory64::cloneFrom(const KMemory64* from) {
             ::memcpy(copy->commit(), kv.second->data, K64_PAGE_SIZE);
         }
         pages.emplace(kv.first, std::move(copy));
+    }
+    for (U64 page : dontForkPages) {
+        rangeRemoveLocked(page, 1);
+    }
+    if (!dontForkPages.empty()) {
+        k64DTlbInvalidateAll();
+        pageMapGenerationValue.fetch_add(1, std::memory_order_release);
     }
 }
 
@@ -584,6 +603,59 @@ void KMemory64::applyFutureLock(U64 addr, U64 len) {
         if (page == lastPage) break;
     }
     process->memLockedBytes += added;
+}
+
+S64 KMemory64::madvise(U64 addr, U64 len, U32 advice) {
+    const U64 firstPage = addr >> K64_PAGE_SHIFT;
+    const U64 lastPage = (addr + len - 1) >> K64_PAGE_SHIFT;
+    switch (advice) {
+    case 24: // MADV_DONTNEED_LOCKED: discard the contents and drop the lock
+        for (U64 page = firstPage;; ++page) {
+            const U32 flags = getPageFlags(page);
+            if (!(flags & K64_PAGE_SHARED) && getCommittedPagePtr(page)) {
+                memsetGuest(page << K64_PAGE_SHIFT, 0, K64_PAGE_SIZE);
+            }
+            if (page == lastPage) break;
+        }
+        return unlockRange(addr, len);
+    case 9: // MADV_REMOVE: discard contents, the mapping itself stays
+        if (rangeHasLocked(addr, len)) return -K_EINVAL;
+        for (U64 page = firstPage;; ++page) {
+            // Private pages are zeroed in place. For shared pages the zeros
+            // go through the shared backing, which is the tmpfs behaviour
+            // guests observe; no host file is ever written by this layer.
+            if (getCommittedPagePtr(page)) {
+                memsetGuest(page << K64_PAGE_SHIFT, 0, K64_PAGE_SIZE);
+            }
+            if (page == lastPage) break;
+        }
+        return 0;
+    case 10: // MADV_DONTFORK
+    case 11: // MADV_DOFORK
+    case 18: // MADV_WIPEONFORK
+    case 19: { // MADV_KEEPONFORK
+        if (advice == 18) {
+            for (U64 page = firstPage;; ++page) {
+                if (getPageFlags(page) & K64_PAGE_SHARED) return -K_EINVAL;
+                if (page == lastPage) break;
+            }
+        }
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
+        for (U64 page = firstPage;; ++page) {
+            K64Page* p = getPage(page);
+            if (p) {
+                if (advice == 10) p->flags |= K64_PAGE_DONTFORK;
+                else if (advice == 11) p->flags &= ~K64_PAGE_DONTFORK;
+                else if (advice == 18) p->flags |= K64_PAGE_WIPEONFORK;
+                else p->flags &= ~K64_PAGE_WIPEONFORK;
+            }
+            if (page == lastPage) break;
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
 }
 
 BString KMemory64::generateMaps(bool smaps) const {

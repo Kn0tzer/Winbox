@@ -1251,11 +1251,11 @@ static U32 syscall_madvise(CPU* cpu, U32 eipCount) {
         if (!cpu->memory->isPageMapped(page)) return -K_ENOMEM;
         if (page == lastPage) break;
     }
-    if (advice == 4 || advice == 24) { // MADV_DONTNEED[_LOCKED] discards private anonymous contents.
-        for (U32 page = firstPage;; ++page) {
-            if (!cpu->memory->mapShared(page)) cpu->memory->memset(page << K_PAGE_SHIFT, 0, K_PAGE_SIZE);
-            if (page == lastPage) break;
-        }
+    if (advice == 4 || advice == 24 || advice == 9 || advice == 10 || advice == 11 ||
+        advice == 18 || advice == 19) {
+        // DONTNEED[_LOCKED] / REMOVE / fork advice: real state, in KMemory.
+        const S32 result = cpu->memory->madvise(addr, length, advice);
+        if (result < 0) return (U32)result;
     } else if (advice == 3 || advice == 22 || advice == 23) { // WILLNEED / POPULATE_*.
         for (U32 page = firstPage;; ++page) {
             cpu->memory->getRamPtr(page << K_PAGE_SHIFT, 1, false, true);

@@ -173,6 +173,69 @@ U32 KMemory::munlockAll() {
     return 0;
 }
 
+S32 KMemory::madvise(U32 address, U32 len, S32 advice) {
+    const U32 firstPage = address >> K_PAGE_SHIFT;
+    const U32 lastPage = (address + len - 1) >> K_PAGE_SHIFT;
+    switch (advice) {
+    case 4: // MADV_DONTNEED: locked pages make it EINVAL (Linux)
+        for (U32 page = firstPage;; ++page) {
+            if (getPageState(page) & K_PAGE_STATE_LOCKED) return -K_EINVAL;
+            if (page == lastPage) break;
+        }
+        for (U32 page = firstPage;; ++page) {
+            if (!mapShared(page)) memset(page << K_PAGE_SHIFT, 0, K_PAGE_SIZE);
+            if (page == lastPage) break;
+        }
+        return 0;
+    case 24: // MADV_DONTNEED_LOCKED: discard the contents and drop the lock
+        for (U32 page = firstPage;; ++page) {
+            if (!mapShared(page)) memset(page << K_PAGE_SHIFT, 0, K_PAGE_SIZE);
+            if (page == lastPage) break;
+        }
+        for (U32 page = firstPage;; ++page) {
+            clearPageStateBits(page, K_PAGE_STATE_LOCKED);
+            if (page == lastPage) break;
+        }
+        return 0;
+    case 9: // MADV_REMOVE: discard contents, the mapping itself stays
+        for (U32 page = firstPage;; ++page) {
+            if (getPageState(page) & K_PAGE_STATE_LOCKED) return -K_EINVAL;
+            if (page == lastPage) break;
+        }
+        for (U32 page = firstPage;; ++page) {
+            // Shared pages are zeroed through the shared backing (tmpfs
+            // semantics); the host file is never written by this layer.
+            memset(page << K_PAGE_SHIFT, 0, K_PAGE_SIZE);
+            if (page == lastPage) break;
+        }
+        return 0;
+    case 10: // MADV_DONTFORK
+    case 11: // MADV_DOFORK
+    case 18: // MADV_WIPEONFORK
+    case 19: // MADV_KEEPONFORK
+        if (advice == 18) {
+            for (U32 page = firstPage;; ++page) {
+                if (mapShared(page)) return -K_EINVAL;
+                // A not-yet-demanded file page cannot be proven private in
+                // this MMU, so WIPEONFORK refuses it too (documented in the
+                // gap register); shared file pages are the case Linux bans.
+                if (data->mmu[page].getPageType() == PageType::File) return -K_EINVAL;
+                if (page == lastPage) break;
+            }
+        }
+        for (U32 page = firstPage;; ++page) {
+            if (advice == 10) setPageStateBits(page, K_PAGE_STATE_DONTFORK);
+            else if (advice == 11) clearPageStateBits(page, K_PAGE_STATE_DONTFORK);
+            else if (advice == 18) setPageStateBits(page, K_PAGE_STATE_WIPEONFORK);
+            else clearPageStateBits(page, K_PAGE_STATE_WIPEONFORK);
+            if (page == lastPage) break;
+        }
+        return 0;
+    default:
+        return 0;
+    }
+}
+
 U32 KMemory::mmap(KThread* thread, U32 addr, U32 len, S32 prot, S32 flags, FD fildes, U64 off, bool remap) {
     bool shared = (flags & K_MAP_SHARED) != 0;
     bool priv = (flags & K_MAP_PRIVATE) != 0;    
@@ -1222,6 +1285,7 @@ void KMemory::clone(KMemory* from, bool vfork) {
     if (vfork) {
         delete this->data;
         this->data = from->data;
+        this->pageState = from->pageState;
         return;
     }
 
@@ -1256,4 +1320,19 @@ void KMemory::clone(KMemory* from, bool vfork) {
         }
         data->onPageChanged(i);
     }
+    // madvise fork advice (kernel round 3A): the child starts from the
+    // parent page state with locks dropped (lock accounting on the child
+    // process starts at zero), DONTFORK pages unmapped, and WIPEONFORK
+    // pages zeroed (the memset COW-breaks them, parent contents survive).
+    this->pageState = from->pageState;
+    for (auto& kv : this->pageState) kv.second &= ~K_PAGE_STATE_LOCKED;
+    for (const auto& kv : from->pageState) {
+        if (kv.second & K_PAGE_STATE_DONTFORK) {
+            unmap(kv.first << K_PAGE_SHIFT, K_PAGE_SIZE);
+        } else if (kv.second & K_PAGE_STATE_WIPEONFORK) {
+            memset(kv.first << K_PAGE_SHIFT, 0, K_PAGE_SIZE);
+            clearPageStateBits(kv.first, K_PAGE_STATE_WIPEONFORK);
+        }
+    }
+
 }

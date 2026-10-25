@@ -3731,7 +3731,10 @@ static U64 sys_madvise64(CPU64* cpu, U64 addr, U64 length, U64 advice) {
     }
     if (!length || addr > ~0ULL - (length - 1)) return (U64)-K_EINVAL;
     if (!sys_rangeMapped64(cpu, addr, length)) return (U64)-K_ENOMEM;
-    if (advice == 4 || advice == 24) { // MADV_DONTNEED[_LOCKED]: private anonymous pages read as zero again.
+    if (advice == 4) { // MADV_DONTNEED: private anonymous pages read as zero again.
+        // Linux makes DONTNEED on locked (mlock) pages EINVAL; guests use
+        // MADV_DONTNEED_LOCKED for the discarding-and-unlocking variant.
+        if (cpu->memory->rangeHasLocked(addr, length)) return (U64)-K_EINVAL;
         const U64 firstPage = addr >> K64_PAGE_SHIFT;
         const U64 lastPage = (addr + length - 1) >> K64_PAGE_SHIFT;
         for (U64 page = firstPage;; ++page) {
@@ -3741,6 +3744,11 @@ static U64 sys_madvise64(CPU64* cpu, U64 addr, U64 length, U64 advice) {
             }
             if (page == lastPage) break;
         }
+    } else if (advice == 24 || advice == 9 || advice == 10 || advice == 11 ||
+               advice == 18 || advice == 19) {
+        // DONTNEED_LOCKED / REMOVE / fork advice: real state, in KMemory64.
+        const S64 result = cpu->memory->madvise(addr, length, (U32)advice);
+        if (result < 0) return (U64)result;
     } else if (advice == 3 || advice == 22 || advice == 23) { // WILLNEED / POPULATE_READ / POPULATE_WRITE
         const U64 firstPage = addr >> K64_PAGE_SHIFT;
         const U64 lastPage = (addr + length - 1) >> K64_PAGE_SHIFT;
