@@ -1801,10 +1801,11 @@ static U32 roundUp(U32 numToRound, U32 multiple)
     return ((numToRound + multiple - 1) / multiple) * multiple;
 }
 
-// XImage pixels are read and written in client memory; the server is not involved. Only byte-aligned depths up to 32 bits with
-// xoffset 0 are handled. Other images are logged once and left alone.
+// XImage pixels are read and written in client memory; the server is not involved. Packed 1/2/4-bit pixels and byte-aligned
+// 8/16/24/32-bit pixels are supported, including XImage's leading xoffset.
 static bool imagePixelsSupported(const XImage& image) {
-    if (image.bits_per_pixel > 0 && image.bits_per_pixel <= 32 && image.bits_per_pixel % 8 == 0 && image.xoffset == 0) {
+    if ((image.bits_per_pixel == 1 || image.bits_per_pixel == 2 || image.bits_per_pixel == 4 || image.bits_per_pixel == 8 ||
+         image.bits_per_pixel == 16 || image.bits_per_pixel == 24 || image.bits_per_pixel == 32) && image.xoffset >= 0) {
         return true;
     }
     static bool loggedUnhandled = false;
@@ -1820,11 +1821,19 @@ static bool imagePixelIsInside(const XImage& image, S32 x, S32 y) {
 }
 
 static U32 imagePixelAddress(const XImage& image, S32 x, S32 y) {
-    return image.data + (U32)image.bytes_per_line * y + (U32)x * (image.bits_per_pixel / 8);
+    return image.data + (U32)image.bytes_per_line * y + ((U32)image.xoffset + (U32)x) * (image.bits_per_pixel / 8);
 }
 
 // the least significant byte goes first unless the image is MSBFirst
-static U32 readImagePixel(KMemory* memory, const XImage& image, U32 address) {
+static U32 readImagePixelAt(KMemory* memory, const XImage& image, S32 x, S32 y) {
+    if (image.bits_per_pixel < 8) {
+        const U32 bits = (U32)image.bits_per_pixel;
+        const U32 bit = ((U32)image.xoffset + (U32)x) * bits;
+        const U32 address = image.data + (U32)image.bytes_per_line * (U32)y + bit / 8;
+        const U32 shift = image.bitmap_bit_order == MSBFirst ? 8 - bits - (bit & 7) : bit & 7;
+        return (memory->readb(address) >> shift) & ((1u << bits) - 1);
+    }
+    const U32 address = imagePixelAddress(image, x, y);
     const S32 bytes = image.bits_per_pixel / 8;
     U32 pixel = 0;
     for (S32 i = 0; i < bytes; i++) {
@@ -1834,7 +1843,18 @@ static U32 readImagePixel(KMemory* memory, const XImage& image, U32 address) {
     return pixel;
 }
 
-static void writeImagePixel(KMemory* memory, const XImage& image, U32 address, U32 pixel) {
+static void writeImagePixelAt(KMemory* memory, const XImage& image, S32 x, S32 y, U32 pixel) {
+    if (image.bits_per_pixel < 8) {
+        const U32 bits = (U32)image.bits_per_pixel;
+        const U32 bit = ((U32)image.xoffset + (U32)x) * bits;
+        const U32 address = image.data + (U32)image.bytes_per_line * (U32)y + bit / 8;
+        const U32 shift = image.bitmap_bit_order == MSBFirst ? 8 - bits - (bit & 7) : bit & 7;
+        const U8 mask = (U8)(((1u << bits) - 1) << shift);
+        const U8 value = (U8)((pixel << shift) & mask);
+        memory->writeb(address, (U8)((memory->readb(address) & ~mask) | value));
+        return;
+    }
+    const U32 address = imagePixelAddress(image, x, y);
     const S32 bytes = image.bits_per_pixel / 8;
     for (S32 i = 0; i < bytes; i++) {
         S32 shift = image.byte_order == MSBFirst ? bytes - 1 - i : i;
@@ -1855,7 +1875,7 @@ static void x11_GetPixel(CPU* cpu) {
         EAX = 0;
         return;
     }
-    EAX = readImagePixel(memory, image, imagePixelAddress(image, x, y));
+    EAX = readImagePixelAt(memory, image, x, y);
 }
 
 // int XPutPixel(XImage* ximage, int x, int y, unsigned long pixel)
@@ -1873,7 +1893,7 @@ static void x11_PutPixel(CPU* cpu) {
         EAX = 0;
         return;
     }
-    writeImagePixel(memory, image, imagePixelAddress(image, x, y), pixel);
+    writeImagePixelAt(memory, image, x, y, pixel);
     EAX = 1;
 }
 
@@ -1894,7 +1914,8 @@ static void x11_SubImage(CPU* cpu) {
         EAX = 0;
         return;
     }
-    U32 bytesPerLine = roundUp((U32)width * (source.bits_per_pixel / 8), (U32)source.bitmap_pad);
+    U32 packedBytes = ((U32)width * (U32)source.bits_per_pixel + 7) / 8;
+    U32 bytesPerLine = roundUp(packedBytes, (U32)source.bitmap_pad);
     U32 image = thread->process->alloc(thread, sizeof(XImage));
     U32 data = thread->process->alloc(thread, bytesPerLine * height);
     XImage::set(memory, image, width, height, 0, source.format, data, source.bitmap_pad, source.depth, bytesPerLine, source.bits_per_pixel, source.red_mask, source.green_mask, source.blue_mask);
@@ -1906,8 +1927,8 @@ static void x11_SubImage(CPU* cpu) {
             if (!imagePixelIsInside(source, x + dx, y + dy)) {
                 continue;
             }
-            U32 pixel = readImagePixel(memory, source, imagePixelAddress(source, x + dx, y + dy));
-            writeImagePixel(memory, result, imagePixelAddress(result, dx, dy), pixel);
+            U32 pixel = readImagePixelAt(memory, source, x + dx, y + dy);
+            writeImagePixelAt(memory, result, dx, dy, pixel);
         }
     }
     EAX = image;
@@ -1928,8 +1949,7 @@ static void x11_AddPixel(CPU* cpu) {
     U32 mask = image.bits_per_pixel == 32 ? 0xffffffff : (1U << image.bits_per_pixel) - 1;
     for (S32 y = 0; y < image.height; y++) {
         for (S32 x = 0; x < image.width; x++) {
-            U32 address = imagePixelAddress(image, x, y);
-            writeImagePixel(memory, image, address, (readImagePixel(memory, image, address) + value) & mask);
+            writeImagePixelAt(memory, image, x, y, (readImagePixelAt(memory, image, x, y) + value) & mask);
         }
     }
     EAX = 1;

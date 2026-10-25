@@ -89,20 +89,15 @@ static KMemory guest_memory;
 ${roundUpSlice}
 ${helpers}
 ${subImageAndAddPixel}
-static void setImage(U32 image, U32 w, U32 h, U32 data, S32 order, S32 bpl, S32 bpp) {
-    XImage::set(&guest_memory, image, w, h, 0, 0, data, 32, bpp, bpl, bpp, 0, 0, 0);
+static void setImage(U32 image, U32 w, U32 h, U32 data, S32 order, S32 bpl, S32 bpp, S32 xoffset=0, S32 bitOrder=0) {
+    XImage::set(&guest_memory, image, w, h, xoffset, 0, data, 32, bpp, bpl, bpp, 0, 0, 0);
     guest_memory.writed(image + 20, order);
+    guest_memory.writed(image + 28, bitOrder);
 }
 static U32 pixelAt(U32 image, U32 x, U32 y) {
     XImage i;
     XImage::read(&guest_memory, image, &i);
-    if (i.bits_per_pixel == 8) return guest[i.data + i.bytes_per_line * y + x];
-    if (i.bits_per_pixel == 16) return i.byte_order == MSBFirst
-        ? (U32)(guest[i.data + i.bytes_per_line * y + 2 * x] << 8 | guest[i.data + i.bytes_per_line * y + 2 * x + 1])
-        : (U32)(guest[i.data + i.bytes_per_line * y + 2 * x] | guest[i.data + i.bytes_per_line * y + 2 * x + 1] << 8);
-    U32 v;
-    std::memcpy(&v, guest + i.data + i.bytes_per_line * y + 4 * x, 4);
-    return v;
+    return readImagePixelAt(&guest_memory, i, x, y);
 }
 static void putPixel32(U32 data, U32 bpl, U32 x, U32 y, U32 v) { std::memcpy(guest + data + bpl * y + 4 * x, &v, 4); }
 int main() {
@@ -164,16 +159,12 @@ int main() {
         assert(guest[r.data] == 0x1f && guest[r.data + 1] == 0x2e);
         assert(guest[r.data + 2] == 0 && guest[r.data + 3] == 0);
     }
-    // an empty region or an unhandled depth is not copied
+    // an empty region is not copied
     {
         std::memset(guest, 0, sizeof(guest));
         bump = 0x1000;
         setImage(100, 4, 1, 200, LSBFirst, 16, 32);
         cpu.args[1] = 100; cpu.args[2] = 0; cpu.args[3] = 0; cpu.args[4] = 0; cpu.args[5] = 1;
-        x11_SubImage(&cpu);
-        assert(cpu.eax == 0);
-        setImage(400, 8, 1, 500, LSBFirst, 1, 1);
-        cpu.args[1] = 400; cpu.args[2] = 0; cpu.args[3] = 0; cpu.args[4] = 2; cpu.args[5] = 1;
         x11_SubImage(&cpu);
         assert(cpu.eax == 0);
     }
@@ -205,17 +196,44 @@ int main() {
         assert(cpu.eax == 1);
         assert(guest[1000] == 0x00 && guest[1001] == 0x08);
     }
-    // an image with a non-zero xoffset is left alone
+    // byte-aligned pixels honor a non-zero xoffset
     {
         std::memset(guest, 0, sizeof(guest));
         bump = 0x1000;
-        setImage(100, 1, 1, 1100, LSBFirst, 4, 32);
-        guest_memory.writed(100 + 8, 1);
-        putPixel32(1100, 4, 0, 0, 5);
-        cpu.args[1] = 100; cpu.args[2] = 1;
+        setImage(100, 1, 1, 1100, LSBFirst, 8, 32, 1);
+        putPixel32(1100, 8, 0, 0, 0x12345678);
+        putPixel32(1100, 8, 1, 0, 5);
+        cpu.args[1] = 100; cpu.args[2] = 2;
         x11_AddPixel(&cpu);
-        assert(cpu.eax == 0);
-        assert(pixelAt(100, 0, 0) == 5);
+        assert(cpu.eax == 1);
+        assert(pixelAt(100, 0, 0) == 7);
+        U32 before; std::memcpy(&before, guest + 1100, 4); assert(before == 0x12345678);
+    }
+    // packed 1-bit pixels use bitmap bit order, preserve neighbors, and copy through XSubImage
+    {
+        std::memset(guest, 0, sizeof(guest));
+        bump = 0x1000;
+        setImage(100, 3, 1, 1200, LSBFirst, 4, 1, 1);
+        guest[1200] = 0x81; // source pixels begin at bit one
+        cpu.args[1] = 100; cpu.args[2] = 0; cpu.args[3] = 0; cpu.args[4] = 1;
+        x11_PutPixel(&cpu); assert(cpu.eax == 1 && guest[1200] == 0x83);
+        cpu.args[1] = 100; cpu.args[2] = 0; cpu.args[3] = 0;
+        x11_GetPixel(&cpu); assert(cpu.eax == 1);
+        cpu.args[1] = 100; cpu.args[2] = 0; cpu.args[3] = 0; cpu.args[4] = 3; cpu.args[5] = 1;
+        x11_SubImage(&cpu);
+        U32 result = cpu.eax; assert(result != 0 && pixelAt(result, 0, 0) == 1 && pixelAt(result, 1, 0) == 0 && pixelAt(result, 2, 0) == 0);
+        assert(guest[1200] == 0x83); // bits outside the target pixel were preserved
+    }
+    // packed 1-bit pixels in MSBFirst bitmap order put the first pixel in the top bit
+    {
+        std::memset(guest, 0, sizeof(guest));
+        bump = 0x1000;
+        setImage(100, 3, 1, 1300, LSBFirst, 4, 1, 0, MSBFirst);
+        guest[1300] = 0x40; // second pixel set, in MSB-first bit order
+        cpu.args[1] = 100; cpu.args[2] = 1; cpu.args[3] = 0;
+        x11_GetPixel(&cpu); assert(cpu.eax == 1);
+        cpu.args[1] = 100; cpu.args[2] = 0; cpu.args[3] = 0; cpu.args[4] = 1;
+        x11_PutPixel(&cpu); assert(cpu.eax == 1 && guest[1300] == 0xc0);
     }
     return 0;
 }
