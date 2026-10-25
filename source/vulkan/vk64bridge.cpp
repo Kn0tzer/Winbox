@@ -391,12 +391,12 @@ inline void writeGuestBytes(U64 va, const void* in, size_t count) {
 static U64 g_bufDirtyTick = 1;      // buffer dirtiness generation counter
 
 // ---------------------------------------------------------------------------
-// "No silent drops". Every guard that discards a guest command, struct or array
-// goes through VK64_DROP_IF, which records the drop before it takes its action:
-// it logs the first 4 hits per (trap fn, source line), then the 8th, 16th, 32nd...
-// and keeps a running total. Legitimate no-ops (zero counts or sizes, optional
-// null pointers, destroying VK_NULL_HANDLE, de-duplication) stay plain `if`s on
-// purpose. vk64BridgeDropCount() exposes the total to tests and diagnostics.
+// "No silent drops": every guard that discards a guest command/struct/array goes
+// through VK64_DROP_IF, which logs the drop (first 4 hits per trap fn + source line, then powers of two) and keeps a running total (vk64BridgeDropCount()).
+// It is an if/else{} statement, NOT do{}while(0), on purpose: the action may be
+// continue/break, which inside do{}while(0) bind to the macro's own loop -- the
+// guard logged but never guarded (55 live sites; macro-class row, 2026-10-25).
+// The trailing else{} makes unbraced-if-arm use a compile error, not a re-bind.
 // ---------------------------------------------------------------------------
 static thread_local U64 g_dropFn = 0;
 static U64 g_dropTotal = 0;
@@ -411,7 +411,7 @@ static void vk64DropLog(const char* cond, int line) {
         klog_fmt("vk64: DROPPED guest command in %s (vk64bridge.cpp:%d, x%u, %llu drops total): guard `%s`",
                  fnName(g_dropFn), line, n, (unsigned long long)g_dropTotal, cond);
 }
-#define VK64_DROP_IF(action, ...) do { if (__VA_ARGS__) { vk64DropLog(#__VA_ARGS__, __LINE__); action; } } while (0)
+#define VK64_DROP_IF(action, ...) if (__VA_ARGS__) { vk64DropLog(#__VA_ARGS__, __LINE__); action; } else {}
 
 // ---------------------------------------------------------------------------
 // "Rejected loudly". A guest asked for a Vulkan feature the WebGPU page tier
