@@ -27,6 +27,7 @@ IMAGE="boxedwine64/wine64-debian:bookworm"
 # staging, so a stale committed binary cannot ship silently (the libgl32
 # no-op-stub divergence was only caught by a unit test, after the fact).
 if [ "${1:-}" = "--check" ]; then
+    command -v cmp >/dev/null 2>&1 || { echo "error: cmp not found (install diffutils)" >&2; exit 1; }
     SCRATCH="$(mktemp -d)"
     trap 'rm -rf "$SCRATCH"' EXIT
     mkdir -p "$SCRATCH/rootfs64"
@@ -69,6 +70,12 @@ elif command -v clang >/dev/null 2>&1 && [ -n "$LLD" ]; then
         -o "$SRC/libGL.so.1" "$SRC/libgl64.o"
     rm -f "$SRC/libgl64.o"
 else
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "error: no x86_64-linux compiler found and docker is unavailable." >&2
+        echo "       install x86_64-linux-gnu-gcc, or a clang that can target" >&2
+        echo "       x86_64-linux-gnu + ld.lld, or make docker available." >&2
+        exit 1
+    fi
     echo "--- compiling inside $IMAGE ---"
     docker run --rm --platform linux/amd64 -v "$SRC":/src "$IMAGE" bash -c '
         set -euo pipefail

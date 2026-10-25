@@ -31,6 +31,13 @@ DEPLOY="$HERE/../../project/emscripten/Build/Wasm64Mt/prefix64.zip"
 
 [ -f "$ZIP" ] || { echo "ERROR: $ZIP not found (build the base prefix first)" >&2; exit 1; }
 
+# Fail early and by name if a required tool is missing, instead of dying
+# mid-run with exit 127 on a minimal box. (zip in particular is only
+# reached at the very end, after all the unpack/stage work below.)
+command -v unzip >/dev/null || { echo "ERROR: unzip not found (install unzip)" >&2; exit 1; }
+command -v zip >/dev/null || { echo "ERROR: zip not found (install zip)" >&2; exit 1; }
+command -v python3 >/dev/null || { echo "ERROR: python3 not found (install python3)" >&2; exit 1; }
+
 # drive_c is rooted under the .wine prefix dir inside the zip.
 PREFIX_IN_ZIP="home/username/.wine"
 DRIVE_C="$PREFIX_IN_ZIP/drive_c"
@@ -171,7 +178,10 @@ rm -f "$ZIP"
 echo "--- new prefix64.zip ---"
 ls -lh "$ZIP"
 echo "--- profile tree in zip ---"
-unzip -l "$ZIP" | grep -i 'users/' | head -40
+# Informational listing only; || true because head closing the pipe early
+# would otherwise SIGPIPE grep and kill the run under pipefail (exit 141)
+# after the zip was already rebuilt.
+unzip -l "$ZIP" | grep -i 'users/' | head -40 || true
 
 if [ ! -e "$DEPLOY" ] && [ ! -L "$DEPLOY" ]; then
   if [ -d "$(dirname "$DEPLOY")" ]; then

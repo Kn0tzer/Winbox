@@ -24,6 +24,10 @@ TAG="${1:-rootfs-pages}"
 DIST="$HERE/dist"
 PAGES="$DIST/pages"
 
+# gh is the point of this script; fail early and by name if it is missing
+# instead of doing the split work first and dying at the first gh call.
+command -v gh >/dev/null || { echo "ERROR: gh not found (install the GitHub CLI and run 'gh auth login')" >&2; exit 1; }
+
 # Ensure the split assets exist and are current.
 echo "Splitting rootfs zips (<100 MB parts) -> $PAGES ..."
 "$HERE/split-rootfs.sh" "$DIST" "$PAGES"
