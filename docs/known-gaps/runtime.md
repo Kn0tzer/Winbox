@@ -17,7 +17,11 @@ generated from the shipped zips by `tools/rootfs64/gen_runtime_manifest.py`
 and freshness-checked by `check_runtime_completeness.py` (audit wave 2
 found the VC++ and d3dcompiler rows rested on uncited census claims;
 the manifest is the durable fix, same standard as the staged-binary
-proofs that repaired NAG-20/32/36 in wave 1).
+proofs that repaired NAG-20/32/36 in wave 1). A later 2026-10-25
+extension added a staging-tree-anchored census of the ALSA-to-OSS
+bridge members (see the census extension section below); it found
+the 32-bit bridge absent from the shipped zips and restored it
+(see the Audio rows).
 Dispositions are IMPLEMENTED (with test), REJECTED-LOUDLY (with test),
 NOT-A-GAP (with evidence reference), or OPEN (with file:line reason).
 
@@ -105,7 +109,8 @@ disposition. "x86+x64" means both `w32` and `w64` unless noted.
 
 | Item | Present? | Evidence | Severity | Disposition |
 | --- | --- | --- | --- | --- |
-| winealsa.drv + ALSA→OSS bridge | YES both | `w64:x86_64-windows/winealsa.drv` + `tools/rootfs64/alsa` staging; `w32:i386-windows/winealsa.drv` + `tools/rootfs64/alsa32` (see `stage-alsa32.sh`) | – | NOT-A-GAP; guard: `prepare_prefixes.validate_service_runtime` |
+| winealsa.drv + ALSA→OSS bridge | YES both | `w64:x86_64-windows/winealsa.drv` + `tools/rootfs64/alsa` staging; `w32:i386-windows/winealsa.drv` + `tools/rootfs64/alsa32` (see `stage-alsa32.sh`) | – | NOT-A-GAP for winealsa.drv and the 64-bit bridge (byte-identical to the staged tree, census-verified 2026-10-25). The 32-bit bridge members were NOT covered by any census when this row was written and were in fact absent from the shipped zips — see the next row. Guards now: `prepare_prefixes.validate_service_runtime` (requires the OSS plugin pair per arch), manifest §ALSA-to-OSS bridge census, `check_runtime_completeness.py` (`ALSA-to-OSS bridge members`) |
+| ALSA→OSS bridge members (32-bit plugins + config) | Was NO in the shipped artifacts, despite the row above | census extension 2026-10-25: shipped `wine32.zip` contained neither `usr/lib/i386-linux-gnu/alsa-lib/libasound_module_pcm_oss.so` nor `libasound_module_ctl_oss.so`, and shipped `glibc-rootfs32.zip` contained no `etc/asound.conf` and no `usr/share/alsa/` member at all; the manual `stage-alsa32.sh` post-step had not been applied to the current zips (the sibling `stage-fonts32.sh` post-step had), and no check named the members, so the loss was invisible to every guard; the 64-bit bridge was verified byte-identical to `tools/rootfs64/alsa` the same day | would break 32-bit audio: winealsa resolves the default device via libasound, which had neither config nor an OSS module, so `snd_pcm_open` fails | IMPLEMENTED: re-ran `tools/rootfs64/stage-alsa32.sh web/runtime` — `wine32.zip` 236,638,528 → 236,650,075 bytes (+2 members, sha256 `ce9a29ee…`), `glibc-rootfs32.zip` 3,813,320 → 3,875,770 bytes (+91 members, sha256 `84e343ab…`), every added member byte-identical to `tools/rootfs64/alsa32`; both zips re-pinned in `tools/browser/runtime-assets.json` (release id `runtime-assets-20261025` unchanged, still unpublished) and the retained box archive rebuilt at 510,474,240 bytes (sha256 `59448b7d…`; previous archive kept as `browser-runtime-20261025-prealsa.tar`, pre-fix zips in `/home/ubuntu/backups/winbox-alsa-bridge-20261025/`); `bootstrap.py --check` passes and a fake-root `--local` restore from the new archive verifies all 13 assets. Guards: manifest §ALSA-to-OSS bridge census lists every bridge member (name, size, sha256) with expected sets anchored on the staged trees; `check_runtime_completeness.py` (`ALSA-to-OSS bridge members`, 11/11) fails in both directions naming the members — negative proof on doctored scratch copies (one plugin dropped, one config member renamed) fails the checker and drifts the manifest, naming both members; `validate_service_runtime` requires the plugin pair per arch (unit-tested both ways in `test_prepare_prefixes.py`) |
 | openal32 / OpenAL Soft | YES both | `support:opt/wine-stable/lib/wine/i386-windows/OpenAL32.dll`, `support:usr/lib/x86_64-linux-gnu/wine/x86_64-windows/OpenAL32.dll` (openal-soft 1.25.2, sha256-pinned) | – | NOT-A-GAP (correctly lazy-loaded via the support pack) |
 | FAudio | YES (implicit) | statically linked into wined3d/xaudio2 upstream, `xaudio2_0..2_9.dll` present | – | NOT-A-GAP |
 | winmm MIDI | YES | `w64/w32` `winmm.dll` + `winealsa.drv` (Wine routes midiOut through the ALSA unixlib); `mididev` drivers are built into winealsa.drv | – | NOT-A-GAP |
@@ -186,6 +191,45 @@ pins’ remote half (publishing the release asset) remains a release-step
 item, listed in that addendum.
 
 **Split update (2026-10-25):** the gstreamer closure moved from the boot zips to the support pack (see the winegstreamer row), so the boot download is now ~486 MB total (glibc-rootfs64 10 MB + wine64 210 MB + prefix64 19 MB + glibc-rootfs32 4 MB + wine32 237 MB + prefix32 6 MB) and the support pack is 517,840,753 bytes (lazy, range-fetched per member — not a boot cost). The two changed zips were re-pinned into `runtime-assets.json` the same day (release id `runtime-assets-20261025` unchanged, still unpublished); the retained box archive was rebuilt at 510,382,080 bytes (sha256 `8da7911a16d9221734e9253bd1e406b58c24e0f5d86edfaf0711226e49061c32`), with the pre-split archive kept alongside as `browser-runtime-20261025-presplit.tar` and the pre-split zips in `/home/ubuntu/backups/winbox-gstsplit-20261025/`. `bootstrap.py --check` passes and a fake-root `--local` restore from the new archive verifies all 13 assets.
+
+## Census extension (2026-10-25, manifest census lane)
+
+The wave-2 manifest censused the member families the register's rows
+cite, but any zip member class outside those families was invisible to
+the checker: a member could vanish (or a wrong-arch member land) in a
+re-stage and, after the manifest was regenerated, no check would fail —
+the whole-zip sha256 pins only detect drift until the next legitimate
+re-pin. This pass inventoried every shipped zip's member classes
+against the census + checker pins:
+
+- **ALSA-to-OSS bridge (was uncensused; now pinned — and it had in
+  fact silently broken, see the Audio rows):** the OSS plugin modules
+  and `/usr/share/alsa` config trees staged from `tools/rootfs64/alsa`
+  and `tools/rootfs64/alsa32` are censused in manifest §ALSA-to-OSS
+  bridge census (every member by name, size and sha256; expected sets
+  anchored on the staged trees) and asserted in both directions by
+  `check_runtime_completeness.py`. Both arches' `etc/asound.conf` are
+  pinned byte-identical to the canonical config (the 64-bit copy is
+  printf-generated into `glibc-rootfs64.zip` by
+  `build-wine64-zip.sh`). Provenance: x86_64 from Debian bookworm
+  `libasound2` + `libasound2-plugins` (the `alsa/README` refresh record
+  names packages, not versions); i386 plugins from Debian
+  `libasound2-plugins` 1.2.7.1-1 with the config tree from the same
+  i386 extraction (`alsa32/README`).
+- **Deliberately not member-pinned** (whole-zip hashes plus the family
+  censuses remain the evidence; per-member pins would churn on every
+  vendor rebuild without covering a register claim): zip directory
+  entries (structural); the Wine vendor data trees (`usr/share/wine`
+  fonts/nls/inf, the X11 locale tree, Wine locale data); the glibc/libc
+  vendor trees in the rootfs zips (the register's only member claims
+  there are the DejaVu faces, sha-pinned); prefix-zip payloads and
+  skeleton files (build products of the prefix builders — registry
+  content is pinned by the checker and
+  `runtime-completeness.test.mjs`, and the p32 DXVK root DLLs are
+  censused); the support pack's mono/gecko payload beyond the named
+  census (vendor payload; the claimed members are named there);
+  generated caches (`var/cache/fontconfig/*.cache-8`, `etc/ld.so.cache`
+  — regenerated from the fonts/config they cache).
 
 ## Wave-2 evidence sweep (2026-10-25, runtime evidence lane)
 

@@ -258,6 +258,23 @@ def validate_service_runtime(prefix_zip: Path, wine_zip: Path,
                         if unix_dir + name not in names]
         if missing_unix:
             raise ValueError(f"{wine_zip}: missing linked HID Unix modules: " + ", ".join(missing_unix))
+        # The ALSA->OSS bridge plugins (staged from tools/rootfs64/alsa by
+        # build-wine64-zip.sh, resp. tools/rootfs64/alsa32 by
+        # stage-alsa32.sh): winealsa.drv alone is not enough -- without
+        # these, libasound has no OSS PCM/CTL module and snd_pcm_open
+        # dead-ends. Their absence from the shipped 32-bit zips went
+        # unnoticed until the 2026-10-25 census extension because no
+        # check named them; check_runtime_completeness.py now pins the
+        # full bridge member set per arch.
+        alsa_lib_dir = ("usr/lib/x86_64-linux-gnu/alsa-lib/" if "x86_64-unix/" in unix_dir
+                        else "usr/lib/i386-linux-gnu/alsa-lib/")
+        missing_alsa = [alsa_lib_dir + name
+                        for name in ("libasound_module_pcm_oss.so",
+                                     "libasound_module_ctl_oss.so")
+                        if alsa_lib_dir + name not in names]
+        if missing_alsa:
+            raise ValueError(f"{wine_zip}: missing ALSA->OSS bridge plugins: "
+                             + ", ".join(missing_alsa))
         # winegstreamer links only the GStreamer core; without these plugins
         # (staged by prepare-gstreamer.py) every MF/DShow cutscene path
         # dead-ends at gst_element_factory_make(). Since the 2026-10-25

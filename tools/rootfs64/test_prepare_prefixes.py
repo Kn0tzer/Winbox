@@ -219,13 +219,18 @@ class PrefixPackagingTests(unittest.TestCase):
             plugins = ("libav", "playback", "typefindfunctions", "avi", "isomp4",
                        "matroska", "ogg", "wavparse", "flac", "vorbis")
 
-            def write_runtime(path, skip=(), with_plugins=False):
+            def write_runtime(path, skip=(), with_plugins=False, with_alsa=True):
                 with zipfile.ZipFile(path, "w") as archive:
                     for name in modules:
                         if name not in skip:
                             archive.writestr(linked + name, b"wine module")
                     archive.writestr(unix + "winebus.so", b"winebus")
                     archive.writestr(unix + "wineusb.so", b"wineusb")
+                    if with_alsa:
+                        for plugin in ("libasound_module_pcm_oss.so",
+                                       "libasound_module_ctl_oss.so"):
+                            archive.writestr("usr/lib/x86_64-linux-gnu/alsa-lib/"
+                                             + plugin, b"alsa oss plugin")
                     if with_plugins:
                         for plugin in plugins:
                             archive.writestr("usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgst"
@@ -250,6 +255,11 @@ class PrefixPackagingTests(unittest.TestCase):
             write_runtime(without_alsa, skip=("winealsa.drv",))
             with self.assertRaisesRegex(ValueError, "winealsa.drv"):
                 prefixes.validate_service_runtime(prefix, without_alsa, support)
+
+            without_bridge = temp / "without-bridge.zip"
+            write_runtime(without_bridge, with_alsa=False)
+            with self.assertRaisesRegex(ValueError, "libasound_module_pcm_oss.so"):
+                prefixes.validate_service_runtime(prefix, without_bridge, support)
 
             # The lazy split, both directions: plugins baked into the boot
             # zip regress it; plugins missing from the support pack break
