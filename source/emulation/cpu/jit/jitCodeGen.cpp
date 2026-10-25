@@ -117,7 +117,7 @@ static void initDynamicOps() {
     dynamicOps[VERRR16] = 0;
     dynamicOps[VERWR16] = 0;
     dynamicOps[SGDT] = 0;
-    dynamicOps[SIDT] = &Jit::dynamic_sidt;
+    dynamicOps[SIDT] = 0; // no JIT codegen: interpreter fallback, like SGDT (the old dynamic_sidt stub emitted no code at all, silently dropping the store)
     dynamicOps[LGDT] = 0;
     dynamicOps[LIDT] = 0;
     dynamicOps[SMSWRreg] = 0;

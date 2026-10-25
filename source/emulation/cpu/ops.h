@@ -3535,44 +3535,32 @@ void OPCALL smsw_mem32(struct CPU* cpu, struct Op* op) {
 void OPCALL sidt_mem16(struct CPU* cpu, struct Op* op) {
     U32 eaa = eaa16(cpu, op);
     CYCLES(4);
-    writew(cpu->thread, eaa, 0); // limit
+    writew(cpu->thread, eaa, 1023); // limit (matches the live interpreter in normalCPU.cpp)
     writed(cpu->thread, eaa+2, 0); // base
-#ifdef _DEBUG
-    klog("sidt not implemented");
-#endif
     NEXT();
 }
 
 void OPCALL sidt_mem32(struct CPU* cpu, struct Op* op) {
     U32 eaa = eaa32(cpu, op);
     CYCLES(4);
-    writew(cpu->thread, eaa, 0); // limit
+    writew(cpu->thread, eaa, 1023); // limit (matches the live interpreter in normalCPU.cpp)
     writed(cpu->thread, eaa+2, 0); // base
-#ifdef _DEBUG
-    klog("sidt not implemented");
-#endif
     NEXT();
 }
 
 void OPCALL sgdt_mem16(struct CPU* cpu, struct Op* op) {
     U32 eaa = eaa16(cpu, op);
     CYCLES(4);
-    writew(cpu->thread, eaa, 0); // limit
+    writew(cpu->thread, eaa, 0x7f); // limit (matches the live interpreter in normalCPU.cpp)
     writed(cpu->thread, eaa+2, 0); // base
-#ifdef _DEBUG
-    klog("sgdt not implemented");
-#endif
     NEXT();
 }
 
 void OPCALL sgdt_mem32(struct CPU* cpu, struct Op* op) {
     U32 eaa = eaa32(cpu, op);
     CYCLES(4);
-    writew(cpu->thread, eaa, 0); // limit
+    writew(cpu->thread, eaa, 0x7f); // limit (matches the live interpreter in normalCPU.cpp)
     writed(cpu->thread, eaa+2, 0); // base
-#ifdef _DEBUG
-    klog("sgdt not implemented");
-#endif
     NEXT();
 }
 
