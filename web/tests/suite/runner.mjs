@@ -18,7 +18,7 @@
 //                or: FAIL <name> (<duration>ms)\n  <error message>
 
 import { readdirSync, mkdirSync, writeFileSync } from "node:fs";
-import { join, dirname, basename } from "node:path";
+import { join, dirname, basename, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 import { withTimeout } from './lib/probe-base.mjs';
@@ -135,6 +135,16 @@ async function runBrowserFile(file) {
 async function main() {
   const runUnit = !onlyBrowser;
   const runBrowser = !onlyUnit;
+
+  // The suite tests the tree it lives in, wherever it was launched from.
+  // Unit children inherit this process's cwd, browser tests run in-process,
+  // and the --game summary path is cwd-relative: left unanchored, launching
+  // from another worktree's root would silently run this tree's tests
+  // against that tree's sources. Anchor cwd to the runner's own tree.
+  if (resolve(process.cwd()) !== resolve(repoRoot)) {
+    log(`NOTE: launched from ${process.cwd()}; running against the suite tree at ${repoRoot}`);
+    process.chdir(repoRoot);
+  }
 
   if (runUnit) {
     // Print the fix before any result: provenance-artifacts fails without an export.
