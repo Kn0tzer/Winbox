@@ -835,6 +835,17 @@ void main(){
   assert.match(String(wgsl),/discard/);
 });
 
+test('explicit GLSL lowering rejection paths retain feature-specific diagnostics', () => {
+  const rejectedShaders = [
+    ['uniform block member declaration', '#version 300 es\nlayout(std140) uniform Camera { vec4 eye; int ; } camera; void main(){gl_Position=vec4(0.0);}', /Unsupported uniform block declaration: Camera/],
+    ['uniform block layout', '#version 300 es\nlayout(shared) uniform Camera { vec4 eye; } camera; void main(){gl_Position=vec4(0.0);}', /Unsupported uniform block layout for Camera; expected std140/],
+    ['matrix interface without entry point', '#version 300 es\nout mat4 transform;', /matrix stage interface requires void main\(\)/],
+    ['unterminated matrix interface entry point', '#version 300 es\nout mat4 transform;\nvoid main(){gl_Position=vec4(0.0);', /matrix stage interface has an unterminated main\(\)/],
+  ];
+  for (const [name, source, message] of rejectedShaders)
+    assert.throws(() => rewriteGlslForWebGPU(source, 'vertex'), message, name);
+});
+
 test('remaining dynamic point-size and sampler-array GLSL paths reject with named warnings', async () => {
   const gpu = createValidationDevice(), logs = [];
   try {
