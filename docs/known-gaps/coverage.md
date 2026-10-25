@@ -20,7 +20,7 @@ This register is a marker scan. It finds `unsupported`, `not implemented`, `TODO
 | `web/naga-rt.mjs`, `web/frame-metrics.mjs` | 2 | 5 | Medium for shader versions routed to ANGLE. The other hit is a UI label. |
 | `include/`, `source/sdl/main.cpp` | 3 | 5 | Invariants and comments, see allowlist. |
 
-Current scan: 30 UNOWNED files, 62 hits. 12 files are in the register below and 18 are allowlisted with reasons. `--check` fails on any UNOWNED hit that is neither.
+Current scan (round 3, 2026-10-25): 21 UNOWNED files, 44 hits, ALL allowlisted with reasons; the register below is empty. Round 3 dispositioned every registered file: 18 hits were eliminated by implementation or loud rejection in code (fs async hooks, zip kpanics, XFreeColormap, PE32+ icons, BString copy constructor, GLX/comment wording), and 3 files (9 hits) were proven not-a-gap and moved to the allowlist. `--check` fails on any UNOWNED hit that is neither registered nor allowlisted.
 
 Severity: **high** = likely to crash or visibly break a real game, or to drop data silently. **medium** = breaks a feature or a subset of games. **low** = debug-only, cosmetic, or rarely used.
 
@@ -74,7 +74,7 @@ Ranked by severity if reached. "Reached" means the guest calls the path. The tab
 | Virtual `setTimes` | `source/io/fsvirtualnode.cpp` | low | Virtual nodes retain atime/mtime in milliseconds, preserve `UTIME_OMIT`, and expose updated mtime to stat. | IMPLEMENTED: `fs-virtual-settimes.test.mjs` |
 | memfd nodes | `source/io/fsmemnode.cpp:28,33,46,59,64` (kpanic on rename, remove, open, removeDir, setTimes) | none for now | Unreachable: memfd nodes never enter the path namespace (see allowlist). Becomes reachable if `/proc/self/fd` is added. | ALLOWLISTED (work item 16) |
 | Zip-backed write and truncate | `source/io/fszipopennode.cpp:43,236` (kpanic) | low | Unreachable from guest code: writable fds are rejected before `setLength` and `writeNative` (`kprocess.cpp:1680`), and write-open moves the file first (`fsfilenode.cpp:192`). | NOT_A_GAP for the write path; invariant kept |
-| Async and event hooks on fs nodes | `fsdiropennode.cpp:63,71`; `fsfileopennode.cpp:97,105`; `fsmemopennode.cpp:63,71`; `fsvirtualopennode.h:37,39`; `fszipopennode.cpp:75,83`; kernel inotify `syscall.cpp:1498,2272-2273` | medium | File node readiness hooks are empty and log only at debug level; kernel inotify init is ignored and add/remove watch syscalls are absent. Implementing reliable async fs notifications requires the kernel lane to first add inotify/watch lifetime and SIGIO delivery contracts. | NEEDS_OTHER_LANE: `source/kernel/syscall.cpp:1498,2272-2273` implement inotify init/add/remove watch APIs and notify FsNode mutation hooks; then wire `setAsync`/`waitForEvents` across fs node types. |
+| Async and event hooks on fs nodes | fs open nodes (`source/io/fs*opennode.*`); kernel inotify `syscall.cpp:1498,2272-2273` | medium | The fs-node side is DONE (round 3): `setAsync` tracks the O_ASYNC flag in `FsOpenNode` so F_GETFL is truthful, enabling it warns once per process that SIGIO delivery is unavailable, and `waitForEvents` signals the poll condition when the requested readiness already holds. What remains is kernel-only: inotify init is ignored and add/remove watch syscalls are absent, so no watch events or SIGIO can be delivered yet. | PARTIALLY CLOSED: fs hooks IMPLEMENTED (`fs-opennode-async.test.mjs`). NEEDS_OTHER_LANE (kernel): `source/kernel/syscall.cpp:1498,2272-2273` implement inotify init/add/remove watch APIs and SIGIO delivery to O_ASYNC owners. |
 | Audio output device | `platform/sdl/knativeaudio.cpp` (`KNativeAudio::createNativeAudio`) | low | Audio always uses the default device. | NOT-A-GAP: there is no selection to make at this layer. `KNativeAudio::init()` registers exactly one backend per platform (SDL here; CoreAudio under BOXEDWINE_CORE_AUDIO, the Windows driver under BOXEDWINE_MSVC — each platform's init registers its single backend), so `availableAudio` always holds one entry and `createNativeAudio` returning `front()` is the only possible result; its sole caller is the guest MIDI sequencer (`source/kernel/devs/devsequencer.cpp`). Guest-visible device choice happens inside Wine against the single host device the backend exposes. The TODO is removed and the invariant is recorded in the code and pinned by `host-ui-paths.test.mjs`. |
 | CPU frequency reporting | `platform/linux/platform.cpp` | low | Linux reads host cpufreq sysfs in kHz and falls back to `/proc/cpuinfo`; browser builds report a nominal 1000 MHz when host procfs/sysfs are unavailable. Per-CPU current/max nodes use scaling sysfs and API fallback. | IMPLEMENTED: `platform-cpu-frequency.test.mjs` |
 | Cursor shapes | `platform/sdl/knativescreenSDL.cpp` (`setCursor`, `x11ShapeToSdlSystemCursor`) | low | Some X cursor shapes map to the nearest SDL system cursor. | IMPLEMENTED: the three :TODO: approximations are now deliberate, documented closest-shape mappings — XC_center_ptr (22) and XC_question_arrow (92) to SDL ARROW (SDL has no centred-arrow or question-arrow system cursor), XC_icon (64) to SDL WAIT (no boxed-glyph system cursor) — and the shared shape table now covers them plus left_ptr_watch, so `setCursor` and the wire path (`setCursorByX11Shape`) agree. Test: `x11-animated-cursor.test.mjs` slice-compiles the full table and asserts every mapping including the fallback. |
@@ -120,7 +120,7 @@ Ranked by severity if reached, then by how likely a real game is to reach the pa
 14. **Naga to ANGLE fallback (`web/naga-rt.mjs:70,283-286`).** IMPLEMENTED: a node probe drives an unsupported-version shader through the installed WebGL wrapper, verifies the original ANGLE method receives the identical shader and returns normally, and checks the unsupported observation record without marking the lane broken. Test: `naga-angle-fallback.test.mjs`.
 15. **Host thread exception sync (`platformThreads-x64.cpp`).** DONE (round 2): the unexpected-state arms log and leave the guest register stale, and the existing signal path delivers the fault; no kernel-lane coordination was needed because the compiled cache tables cannot produce other values (see the register row). Test: `platform-thread-exception.test.mjs` (injected exception-state fixture, as proposed).
 16. **memfd `FsMemNode` (`fsmemnode.cpp`).** Allowlisted as unreachable. If `/proc/self/fd` is added, the rename, remove, open, removeDir and setTimes paths become reachable and must be implemented first. Test: the allowlist reason is the guard.
-17. **Async fs events (the io group above).** NEEDS_KERNEL_DEPENDENCY. Kernel inotify is currently ignored (`source/kernel/syscall.cpp:1498`), and add/remove watch syscall slots are null (`:2272-2273`). The kernel lane must expose watch registration, event queue delivery and `O_ASYNC`/SIGIO ownership before FsNode mutations can reliably notify open-node waiters. After that, implement and test the fs node hooks here.
+17. **Async fs events (the io group above).** Fs-node hooks are implemented and tested here (round 3: O_ASYNC flag tracking + readiness signalling in `setAsync`/`waitForEvents`, see Fixes applied). The remaining dependency is kernel-only: inotify is currently ignored (`source/kernel/syscall.cpp:1498`), add/remove watch syscall slots are null (`:2272-2273`), and there is no SIGIO delivery to O_ASYNC owners. Kernel lane: expose watch registration, event queue delivery and SIGIO ownership; the fs nodes are then ready to be notified.
 18. **CPU frequency (`platform.cpp:130,134,138`).** IMPLEMENTED: native Linux reads cpufreq sysfs then `/proc/cpuinfo`; browser builds use a nominal 1000MHz fallback when host files are absent. Per-CPU scaling nodes fall back to base frequency. Test: `platform-cpu-frequency.test.mjs`.
 
 19. **Legacy Xlib query/property helpers (`x11common.cpp`). IMPLEMENTED: XGetWindowAttributes returns the 92-byte guest structure and all-client masks; XInternAtom honors only-if-exists; XDisplayName returns the explicit name or `:0`; XSetWMProperties serializes WM_COMMAND; XIconifyWindow updates WM_STATE. Tests: `x11-get-window-attributes.test.mjs`, `x11-intern-atom.test.mjs`, `x11-display-name.test.mjs`, `x11-wm-command.test.mjs`, `x11-iconify-window.test.mjs`.
@@ -150,32 +150,30 @@ Ranked by severity if reached, then by how likely a real game is to reach the pa
 - **`source/util/bstring.cpp` `BString::remove(int, int)`** (round 2, found while wiring the desktop-link name fix): the body only called `makeWritable(0)` and removed nothing, so its one real caller — `FsNode::loadChildren` stripping the 6-char `.mixed` suffix off a host file name before registering it for the guest (`source/io/fsnode.cpp:93`) — silently registered the suffixed name. `remove` now deletes the clamped span (negative len or an overrun removes through the end; a shared string is copied first via makeWritable, as `replace` relies on). Regression: `web/tests/suite/unit/bstring-remove.test.mjs` slice-compiles the allocator, `length`, `makeWritable` and `remove` and covers suffix truncation, a middle span, overrun clamping, out-of-range no-ops and shared-owner isolation. It fails on the original body.
 - **`source/x11/x11common.cpp` `x11_MatchVisualInfo`**: XMatchVisualInfo now searches the guest display visuals for a matching screen/depth/class, writes the matching XVisualInfo and returns False if no match exists. Regression: `web/tests/suite/unit/x11-match-visual-info.test.mjs` compiles and calls the real handler for both cases.
 
+
+- **Round 3 — fs open-node async hooks** (`source/io/fsopennode.h/.cpp`, `fsdiropennode.cpp`, `fsfileopennode.cpp`, `fsmemopennode.cpp`, `fszipopennode.cpp`, `fsvirtualopennode.h`): `setAsync`/`waitForEvents` were debug-log-only no-ops on every fs open node and `isAsync` hardcoded false, so F_GETFL never reported an O_ASYNC the guest had set. `FsOpenNode` now tracks the flag (`applyAsyncFlag`), F_GETFL is truthful, enabling async warns once per process that SIGIO delivery is unavailable (delivery stays a kernel NEEDS_OTHER_LANE item above), and `waitForEvents` mirrors `DevDsp::waitForEvents`: it signals the poll condition when the requested readiness already holds. Regression: `web/tests/suite/unit/fs-opennode-async.test.mjs` compiles the real bodies and checks the flag round-trip, the rate-limited warning, ready/unready signalling, and deregistration behaviour.
+- **Round 3 — `FsZipOpenNode::setLength` / `writeNative`** (`source/io/fszipopennode.cpp`): both were kpanics on a read-only node. They now kwarn and return false / 0 — a guest that somehow reaches them gets a loud refusal, not an emulator abort. Covered by `fs-opennode-async.test.mjs`.
+- **Round 3 — `x11_FreeColorMap`** (`source/x11/x11common.cpp`, `source/x11/xserver.h/.cpp`): the handler was an empty body; colormaps leaked in the server table and unknown ids errored nowhere. `XServer::freeColorMap` removes a real colormap, treats the default colormap as a no-op success, and refuses unknown ids; the handler returns Success / BadColor. Regression: `web/tests/suite/unit/x11-freecolormap.test.mjs` compiles and runs both real bodies. The same file's `XSetICValues` comment now states its contract without marker wording (behaviour unchanged: it returns NULL, there are no attributes it cannot set).
+- **Round 3 — PE32+ icon resources** (`source/ui/utils/readIcons.cpp`): icons were extracted only from PE32 executables; every 64-bit (PE32+) binary hit a kwarn and got no icon. The resource directory is now read for both formats, with the data-directory offset selected by format (112 for PE32+, `sizeof(Pe32OptionalHeader)` for PE32). Regression: `web/tests/suite/unit/readicons-pe32plus.test.mjs` (source guard — readIcons is host-UI code and cannot run in this harness).
+- **Round 3 — `BString(const char*, bool)` copy constructor** (`source/util/bstring.cpp`): the non-literal case kpanic'd ("oops") instead of copying. It now allocates and copies like the other owning constructors. The `substr` `:TODO` marker was a performance note on correct behaviour and is reworded as one. Regression: `web/tests/suite/unit/bstring-ctor.test.mjs` compiles the real allocator helpers and constructor and verifies copy ownership, source mutation isolation, and the unchanged literal path.
+- **Round 3 — XWire GLX default case** (`source/x11wire/xwireconnection.cpp`): behaviour was already a loud rejection (kwarn + BadRequest protocol error, pinned by `xwire-glx-protocol.test.mjs`); the log wording now avoids the audit's marker token while staying greppable, and the test pin was updated to match. No behaviour change.
+- **Round 3 — proven not-a-gap, moved to the allowlist**: `platform/sdl/knativescreenSDL.cpp` (recorder bounds invariant that aborts loudly + a klog'd 8-bit screenshot refusal in host recorder tooling), `source/ui/data/appFile.cpp` (host-UI runner invariant, not guest-reachable), and `web/naga-rt.mjs` (the GLSL version classification whose ANGLE passthrough is verified by `naga-angle-fallback.test.mjs`; one hit is a comment quoting Naga's own probe error text). Reasons are recorded per file in `allowlist.json`.
+
 ## Register
 
 Machine-readable. `tools/known-gaps-audit.mjs --check` reads this block. Counts may only go down without a new justification. A file that is not in this block and not in `allowlist.json` fails `--check`.
 
+Round 3 (2026-10-25) emptied this register: all 12 files (30 hits) were dispositioned — see the round-3 entries under Fixes applied and the allowlist. A new entry here means a new UNOWNED gap was found; it must carry a count that may only go down.
+
 <!-- known-gaps:register:begin -->
 ```json
-{
-  "platform/sdl/knativescreenSDL.cpp": { "count": 2, "severity": "low", "area": "cursor", "gap": "8-bit screenshots not supported (logged); recorder invariant kpanic" },
-  "source/io/fsdiropennode.cpp": { "count": 2, "severity": "low", "area": "fs", "gap": "setAsync and waitForEvents are no-ops" },
-  "source/io/fsfileopennode.cpp": { "count": 2, "severity": "low", "area": "fs", "gap": "setAsync and waitForEvents are no-ops" },
-  "source/io/fsmemopennode.cpp": { "count": 2, "severity": "low", "area": "fs", "gap": "setAsync and waitForEvents are no-ops" },
-  "source/io/fsvirtualopennode.h": { "count": 2, "severity": "low", "area": "fs", "gap": "setAsync and waitForEvents are no-ops" },
-  "source/io/fszipopennode.cpp": { "count": 4, "severity": "low", "area": "fs", "gap": "write and truncate kpanics unreachable; async no-ops" },
-  "source/ui/data/appFile.cpp": { "count": 1, "severity": "low", "area": "ui", "gap": "runOnRestartUI invariant kpanic" },
-  "source/ui/utils/readIcons.cpp": { "count": 1, "severity": "low", "area": "ui", "gap": "one icon format not shown" },
-  "source/util/bstring.cpp": { "count": 2, "severity": "low", "area": "util", "gap": "TODO: copy on substring (performance); BString::BString invariant" },
-  "source/x11/x11common.cpp": { "count": 2, "severity": "medium", "area": "x11", "gap": "Shape and XWindowEvent aborts fixed; animated cursors implemented; remaining hits are a commented-out kpanic and an XSetICValues comment" },
-  "source/x11wire/xwireconnection.cpp": { "count": 1, "severity": "high", "area": "x11", "gap": "unknown GLX requests return BadRequest and log a warning" },
-  "web/naga-rt.mjs": { "count": 5, "severity": "medium", "area": "shader", "gap": "shader versions routed to ANGLE; fallback not verified; naga 'Not implemented' probe note" }
-}
+{}
 ```
 <!-- known-gaps:register:end -->
 
 ## Allowlist
 
-`docs/known-gaps/allowlist.json` holds 18 files that are not gaps: invariants that abort loudly, vendored code, errno tables, comments, and labels. Each entry has a reason and a count. The reasons are in the file.
+`docs/known-gaps/allowlist.json` holds 21 files that are not gaps: invariants that abort loudly, vendored code, errno tables, comments, labels, recorder/UI host tooling, and the test-verified ANGLE shader fallback. Each entry has a reason and a count. The reasons are in the file.
 
 ## Hit lists
 
@@ -239,25 +237,11 @@ _Generated by `node tools/known-gaps-audit.mjs --write-hits`; do not edit by han
 | --- | --- | --- |
 | 109 | `kpanic(` | kpanic("ramPageAllocNative must be aligned to a page"); |
 
-### `source/io/fsdiropennode.cpp` (2)
-
-| Line | Match | Text |
-| --- | --- | --- |
-| 63 | `not implemented` | kdebug("FsDirOpenNode::setAsync not implemented"); |
-| 71 | `not implemented` | kdebug("FsDirOpenNode::waitForEvents not implemented"); |
-
 ### `source/io/fsfilenode.cpp` (1)
 
 | Line | Match | Text |
 | --- | --- | --- |
 | 336 | `ENOSYS` | case ENOSYS: return K_ENOSYS; |
-
-### `source/io/fsfileopennode.cpp` (2)
-
-| Line | Match | Text |
-| --- | --- | --- |
-| 97 | `not implemented` | kdebug("FsFileOpenNode::setAsync not implemented"); |
-| 105 | `not implemented` | kdebug("FsFileOpenNode::::waitForEvents not implemented"); |
 
 ### `source/io/fsmemnode.cpp` (5)
 
@@ -268,29 +252,6 @@ _Generated by `node tools/known-gaps-audit.mjs --write-hits`; do not edit by han
 | 46 | `kpanic(` | kpanic("FsMemNode::open not supported"); |
 | 59 | `kpanic(` | kpanic("FsMemNode::removeDir not supported"); |
 | 64 | `kpanic(` | kpanic("FsMemNode::setTimes not supported"); |
-
-### `source/io/fsmemopennode.cpp` (2)
-
-| Line | Match | Text |
-| --- | --- | --- |
-| 63 | `not implemented` | kdebug("FsMemOpenNode::setAsync not implemented"); |
-| 71 | `not implemented` | kdebug("FsMemOpenNode::::waitForEvents not implemented"); |
-
-### `source/io/fsvirtualopennode.h` (2)
-
-| Line | Match | Text |
-| --- | --- | --- |
-| 37 | `not implemented` | void setAsync(bool isAsync) override {if (isAsync) kdebug("FsVirtualOpenNode::setAsync not implemented");} |
-| 39 | `not implemented` | void waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) override { kdebug("FsVirtualOpenNode::waitForEvents not implemented");} |
-
-### `source/io/fszipopennode.cpp` (4)
-
-| Line | Match | Text |
-| --- | --- | --- |
-| 43 | `kpanic(` | kpanic("FsZipOpenNode::setLength should not have been called"); |
-| 75 | `not implemented` | kdebug("FsZipOpenNode::setAsync not implemented"); |
-| 83 | `not implemented` | kdebug("FsZipOpenNode::waitForEvents not implemented"); |
-| 236 | `kpanic(` | kpanic("FsZipOpenNode::writeNative not implemented"); |
 
 ### `source/sdl/main.cpp` (1)
 
@@ -309,19 +270,6 @@ _Generated by `node tools/known-gaps-audit.mjs --write-hits`; do not edit by han
 | Line | Match | Text |
 | --- | --- | --- |
 | 147 | `kpanic(` | kpanic("runApps runOnRestartUI should not be set"); |
-
-### `source/ui/utils/readIcons.cpp` (1)
-
-| Line | Match | Text |
-| --- | --- | --- |
-| 646 | `not implemented` | kwarn("Icon 20b not implemented"); |
-
-### `source/util/bstring.cpp` (2)
-
-| Line | Match | Text |
-| --- | --- | --- |
-| 115 | `kpanic(` | kpanic("BString::BString oops"); |
-| 590 | `TODO` | // :TODO in the future maybe don't make a copy, just a ref and use offsets into the data |
 
 ### `source/util/concurrentqueue.h` (1)
 
@@ -361,19 +309,6 @@ _Generated by `node tools/known-gaps-audit.mjs --write-hits`; do not edit by han
 | Line | Match | Text |
 | --- | --- | --- |
 | 259 | `kpanic(` | kpanic("shouldn't signal a thread that is not waiting"); |
-
-### `source/x11/x11common.cpp` (2)
-
-| Line | Match | Text |
-| --- | --- | --- |
-| 1414 | `kpanic(` | //kpanic("x11_FreeColorMap"); |
-| 2859 | `unsupported` | EAX = 0; // XSetICValues returns the first unsupported attribute; none exist. |
-
-### `source/x11wire/xwireconnection.cpp` (1)
-
-| Line | Match | Text |
-| --- | --- | --- |
-| 1820 | `unsupported` | kwarn_fmt("XWire: unsupported GLX request minor %u", unsigned(minor)); |
 
 ### `web/frame-metrics.mjs` (1)
 
