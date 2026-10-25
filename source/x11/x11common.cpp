@@ -2915,7 +2915,9 @@ static void x11_IconifyWindow(CPU* cpu) {
 }
 
 static void x11_InternAtom(CPU* cpu) {
-    kpanic("x11_InternAtom");
+    XServer* server = XServer::getServer();
+    BString name = cpu->memory->readString(ARG2);
+    EAX = server->internAtom(name, ARG3 != 0);
 }
 
 
