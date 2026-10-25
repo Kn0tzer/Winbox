@@ -47,3 +47,13 @@ test('multiple push-constant blocks in one stage are invalid Vulkan SPIR-V', () 
   assert.match(page, /if \(vsR\.pushBlocks > 1 \|\| fsR\.pushBlocks > 1\)/,
     'the guard is per shader stage, as required by Vulkan push-constant interface rules');
 });
+
+test('destroyed shader modules remain available through live Vulkan pipelines', () => {
+  const destroys = [...bridge.matchAll(/case VK64_fn_vkDestroyShaderModule: \{([\s\S]*?)\n    \}/g)].map(m => m[1]);
+  assert.equal(destroys.length, 2);
+  assert.match(destroys[0], /if \(m\) m->destroyed\+\+;/);
+  assert.match(destroys[1], /if \(module\) module->destroyed = 1;/);
+  for (const destroy of destroys) assert.doesNotMatch(destroy, /dropObj\(/);
+  assert.match(bridge, /struct ShaderModule : Obj \{[\s\S]*?std::vector<U8> code;[\s\S]*?Retain the SPIR-V words/);
+  assert.match(bridge, /auto emitShader = \[&\]\(ShaderModule\* sm, U32 stage\)[\s\S]*?p\.bytes\(sm->code\)/);
+});
