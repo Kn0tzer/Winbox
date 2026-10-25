@@ -50,6 +50,13 @@ int main(){bool frozen=true;uint8_t mode=1;
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('invalid XAllowEvents modes return BadValue to the requesting client', () => {
+  const src = readFileSync(new URL('../../../../source/x11wire/xwireconnection.cpp', import.meta.url), 'utf8');
+  const handler = src.match(/case X_AllowEvents: \{[\s\S]*?\n        \}/)?.[0];
+  assert.ok(handler);
+  assert.match(handler, /if \(!valid\) sendError\(BadValue, sequence, req\[1\], opcode, 0\)/);
+});
+
 test('real X11 pointer handlers preserve exclusive ownership and release on unmap/destroy', () => {
   const src = readFileSync(new URL('../../../../source/x11wire/xwireconnection.cpp', import.meta.url), 'utf8');
   const handlers = ['X_GrabPointer','X_UngrabPointer','X_UnmapWindow','X_DestroyWindow'].map(name => {

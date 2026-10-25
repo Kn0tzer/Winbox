@@ -1619,12 +1619,14 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
             break;
         case X_AllowEvents: {
             auto& srv = XWireServer::instance();
-            std::lock_guard<std::mutex> lk(srv.regMutex);
-            if (srv.pointerGrabClient == clientIdBase) {
-                if (!xwireApplyPointerAllow(req[1], srv.pointerFrozen, srv.pointerGrabPointerMode)) {
-                    klog_fmt("XWire: unsupported XAllowEvents mode %u", unsigned(req[1]));
+            bool valid = true;
+            {
+                std::lock_guard<std::mutex> lk(srv.regMutex);
+                if (srv.pointerGrabClient == clientIdBase) {
+                    valid = xwireApplyPointerAllow(req[1], srv.pointerFrozen, srv.pointerGrabPointerMode);
                 }
             }
+            if (!valid) sendError(BadValue, sequence, req[1], opcode, 0);
             break;
         }
         case X_WarpPointer: {
