@@ -575,14 +575,18 @@ export const V2_SCALED_VERTEX = {
   89: { components: 3, bits: 16, signed: true, output: 'sint32' }, // R16G16B16_SINT
   90: { components: 3, bits: 16, signed: true, half: true }, // R16G16B16_SFLOAT
 };
-export function repackScaledVb(bytes, inputStride, outputStride, attributes) {
-  const count = Math.floor(bytes.length / inputStride);
+export function repackScaledVb(bytes, inputStride, outputStride, attributes, rawAttributes = []) {
+  const sourceExtent = Math.max(inputStride, ...rawAttributes.map(a => a.srcOffset + a.size),
+    ...attributes.map(a => a.srcOffset + a.components * a.bits / 8));
+  const count = inputStride ? Math.max(0, Math.floor((bytes.length - sourceExtent) / inputStride) + 1) : 1;
   const out = new Uint8Array(count * outputStride);
   const src = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const dst = new DataView(out.buffer);
   for (let vertex = 0; vertex < count; vertex++) {
     const from = vertex * inputStride, to = vertex * outputStride;
     out.set(bytes.subarray(from, from + inputStride), to);
+    for (const a of rawAttributes)
+      out.set(bytes.subarray(from + a.srcOffset, from + a.srcOffset + a.size), to + a.dstOffset);
     for (const a of attributes) for (let component = 0; component < a.components; component++) {
       const offset = from + a.srcOffset + component * a.bits / 8;
       const value = a.half

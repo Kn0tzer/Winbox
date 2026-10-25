@@ -16,7 +16,16 @@ test('Vulkan vertex strides without four-byte alignment are padded for WebGPU', 
  assert.deepEqual([...out],[1,2,3,0,4,5,6,0]);
  const {readFile}=await import('node:fs/promises');
  const source=await readFile(new URL('../../../vkwebgpu.mjs',import.meta.url),'utf8');
- assert.match(source,/const paddedStride = stride > 0 && stride % 4 !== 0/);
+ assert.match(source,/const paddedStride = stride > 0 && \(stride % 4 !== 0 \|\| minStride > stride\)/);
  assert.match(source,/const repacked = scaled \|\| walk\?\.paddedStride/);
- assert.match(source,/repackScaledVb\(vbytes\.subarray\(vb\.offset\), walk\.stride, walk\.outputStride, walk\.scaled\)/);
+ assert.match(source,/repackScaledVb\(vbytes\.subarray\(vb\.offset\), walk\.stride, walk\.outputStride, walk\.scaled, walk\.rawAttributes\)/);
+ assert.doesNotMatch(source,/noteUnsupported\('overlapping-vertex-format'/);
+});
+
+test('Vulkan attributes extending past their binding stride retain overlapping fetch semantics',()=>{
+ const bytes=Uint8Array.from([1,2,3,4,5,6,7,8,9,10]);
+ const out=repackScaledVb(bytes,4,8,[],[{srcOffset:2,dstOffset:2,size:4}]);
+ assert.equal(out.length,16);
+ assert.deepEqual([...out.slice(2,6)],[3,4,5,6]);
+ assert.deepEqual([...out.slice(10,14)],[7,8,9,10]);
 });

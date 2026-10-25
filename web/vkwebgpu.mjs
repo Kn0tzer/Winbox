@@ -1665,32 +1665,23 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       if (scaled.length && !stride) {
         noteUnsupported('vertex-stride', stride); return {skip:'vertex-stride:' + stride};
       }
-      const paddedStride = stride > 0 && stride % 4 !== 0;
+      const paddedStride = stride > 0 && (stride % 4 !== 0 || minStride > stride);
       let arrayStride = scaled.length || paddedStride ? Math.ceil(Math.max(stride, minStride, 4) / 4) * 4 : stride;
+      const rawAttributes = pipe.va.filter(va => va.binding === vb.binding && !V2_SCALED_VERTEX[va.format] &&
+        va.offset + (V2_VERT_FORMAT_SIZE[v2VertexFormat(va.format)] || 4) > stride)
+        .map(va => ({ srcOffset: va.offset, dstOffset: va.offset, size: V2_VERT_FORMAT_SIZE[v2VertexFormat(va.format)] || 4 }));
       for (const a of scaled) { a.dstOffset = arrayStride; a.attribute.offset = arrayStride; arrayStride += a.components * 4; }
       const slots = [];
       const addStream = (streamAttributes, offset = 0) => {
         slots.push({slot:buffers.length,offset});
         buffers.push({arrayStride,stepMode:vb.inputRate?'instance':'vertex',attributes:streamAttributes});
       };
-      const baseAttributes = [];
-      for (const attribute of attributes) {
-        const size = V2_VERT_FORMAT_SIZE[attribute.format];
-        if (!arrayStride || attribute.offset + size <= arrayStride) baseAttributes.push(attribute);
-        else {
-          // Older Dawn versions require an attribute to fit in its stride.
-          // Rebase another stream onto the same buffer; keep vertex spacing.
-          const offset = Math.floor(attribute.offset / 4) * 4;
-          if (attribute.offset - offset + size > arrayStride) {noteUnsupported('overlapping-vertex-format');return {skip:'overlapping-vertex-format'};}
-          addStream([{...attribute,offset:attribute.offset-offset}],offset);
-        }
-      }
-      if (baseAttributes.length || !slots.length) addStream(baseAttributes);
+      addStream(attributes);
       if (buffers.length > (device.limits?.maxVertexBuffers || 8)) {noteUnsupported('vertex-buffer-slot-limit', buffers.length);return {skip:'vertex-buffer-slot-limit'};}
       slotOf.set(vb.binding,slots);
       const attrs44 = [];
       for (const va of pipe.va) if (va.binding === vb.binding && va.format === 44) attrs44.push(va.offset);
-      vbWalk.push({ binding: vb.binding, stride, attrs44, scaled, paddedStride, outputStride: arrayStride });
+      vbWalk.push({ binding: vb.binding, stride, attrs44, scaled, rawAttributes, paddedStride: arrayStride !== stride, outputStride: arrayStride });
     }
 
     let colorTargets, blendConstantMode, stencil;
@@ -2471,7 +2462,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
               if (gpu) persistStats.bufHits++;
               else {
                 if (swizzled) vbytes = swizzleBgraVb(bytes, walk.stride, walk.attrs44);
-                if (repacked && vbytes) vbytes = repackScaledVb(vbytes.subarray(vb.offset), walk.stride, walk.outputStride, walk.scaled);
+                if (repacked && vbytes) vbytes = repackScaledVb(vbytes.subarray(vb.offset), walk.stride, walk.outputStride, walk.scaled, walk.rawAttributes);
                 gpu = gpuBufferFor(vkey, vbytes, usage, preHash);
               }
               if (!gpu) { noteDrop('draw-vertex-buffer-gpu-failed', 'buf=' + vb.buf + ' binding=' + vb.binding); continue; }
