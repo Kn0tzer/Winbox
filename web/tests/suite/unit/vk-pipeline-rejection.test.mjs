@@ -98,5 +98,5 @@ test('resource declarations cover Vulkan descriptor kinds and reject incompatibl
   const pipeline = functionBody(page, 'async function getPipelineFor(');
   assert.match(pipeline, /prior && JSON\.stringify\(layoutEntryFor\(prior\)\) !== JSON\.stringify\(layoutEntryFor\(decl\)\)/);
   assert.match(pipeline, /noteUnsupported\('incompatible-shared-binding'/);
-  assert.match(pipeline, /return \{ skip: 'incompatible-shared-binding:/);
+  assert.match(pipeline, /return fail\('incompatible-shared-binding:/); // routed through fail(): registry + PIPELINE-FAILED log, still returns the named skip
 });
