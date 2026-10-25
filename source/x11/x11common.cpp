@@ -730,18 +730,17 @@ static void x11_UnlockEvents(CPU* cpu) {
 static void x11_PutBackEvent(CPU* cpu) {
     KMemory* memory = cpu->memory;
     XServer* server = XServer::getServer();
-    DisplayDataPtr display = server->getDisplayDataById(ARG1);
+    DisplayDataPtr display = server->getDisplayDataByAddressOfDisplay(memory, ARG1);
     if (!display) {
         EAX = BadValue;
         return;
     }
+    // The guest shim passes the event as the second argument (CALL_2_R in
+    // tools/x11/X11.c). The bytes are copied through KMemory, which is the
+    // marshal: the guest XEvent is never cast to a host pointer, so host
+    // alignment rules do not apply to it.
     XEvent event = {};
-#ifdef UNALIGNED_MEMORY
-    // :TODO: properly marshal
-    oops
-#else
-    memory->memcpy(&event, ARG5, sizeof(XEvent));
-#endif
+    memory->memcpy(&event, ARG2, sizeof(XEvent));
     display->putEvent(event, true);
     EAX = Success;
 }
@@ -764,13 +763,11 @@ static void x11_SendEvent(CPU* cpu) {
         return;
     }
 
+    // The event is the fifth argument of the guest shim (CALL_5_R in
+    // tools/x11/X11.c) and is copied through KMemory for the same reason as
+    // in x11_PutBackEvent: guest bytes are marshalled, never cast.
     XEvent event = {};
-#ifdef UNALIGNED_MEMORY
-    // :TODO: properly marshal
-    oops
-#else
     memory->memcpy(&event, ARG5, sizeof(XEvent));
-#endif
     if (windowId == PointerWindow) window = server->pointerWindow;
     else if (windowId == InputFocus) window = server->inputFocus ? server->inputFocus : server->getRoot();
     if (!window) { EAX = Success; return; }
@@ -1562,12 +1559,11 @@ static void x11_AllocColor(CPU* cpu) {
             EAX = 1;
             memory->writed(colorAddress, i);
             c.uses.set(displayId, 1);
-            c.flags = COLOR_ALLOCATED;
+            // an exact match on a read/write cell (from XAllocColorCells) shares
+            // that cell; COLOR_WRITE is kept so the owner's XStoreColor still works
             return;
         } else if (freeIndex == -1 && !(c.flags & COLOR_ALLOCATED)) {
             freeIndex = i;
-        } else if (c.flags & COLOR_WRITE) {
-            kwarn("x11_AllocColor COLOR_WRITE not implemented");
         }
     }
     if (freeIndex >= 0) {
@@ -1811,7 +1807,7 @@ static bool imagePixelsSupported(const XImage& image) {
     static bool loggedUnhandled = false;
     if (!loggedUnhandled) {
         loggedUnhandled = true;
-        klog("x11 image not handled: bits per pixel or xoffset not supported by XPutPixel, XGetPixel, XSubImage or XAddPixel");
+        klog("x11 image not handled: bits per pixel not handled by XPutPixel, XGetPixel, XSubImage or XAddPixel");
     }
     return false;
 }
@@ -3140,16 +3136,25 @@ static void x11_QueryExtension(CPU* cpu) {
     }
 }
 
+// This server keeps no window shape regions: windows are composited and
+// hit-tested as rectangles, so a SHAPE request cannot take effect. The Xlib
+// shape calls are void and have no error channel, so the rejection is one
+// greppable warning and a no-op instead of the previous abort.
+static void x11LogShapeIgnored() {
+    static bool logged = false;
+    if (!logged) { logged = true; kwarn_fmt("X11 SHAPE: shape requests are ignored; this server keeps windows rectangular"); }
+}
+
 static void x11_ShapeCombineMask(CPU* cpu) {
-    kpanic("x11_ShapeCombineMask");
+    x11LogShapeIgnored();
 }
 
 static void x11_ShapeCombineRectangles(CPU* cpu) {
-    kpanic("x11_ShapeCombineRectangles");
+    x11LogShapeIgnored();
 }
 
 static void x11_ShapeOffsetShape(CPU* cpu) {
-    kpanic("x11_ShapeOffsetShape");
+    x11LogShapeIgnored();
 }
 
 static void x11LogShmUnavailable() {
@@ -3178,8 +3183,29 @@ static void x11_ShmPutImage(CPU* cpu) {
     EAX = False;
 }
 
+// int XWindowEvent(Display* display, Window w, long event_mask, XEvent* event_return)
+// A matching event that is already queued is removed and returned. The
+// blocking wait cannot run inside a guest callback (the event sources are
+// other threads and the browser pump), so with nothing queued the call logs
+// once and returns False instead of the previous abort.
 static void x11_WindowEvent(CPU* cpu) {
-    kpanic("x11_WindowEvent");
+    KMemory* memory = cpu->memory;
+    XServer* server = XServer::getServer();
+    XWindowPtr window = server->getWindow(ARG2);
+    DisplayDataPtr data = server->getDisplayDataByAddressOfDisplay(memory, ARG1);
+    if (!window || !data) {
+        EAX = False;
+        return;
+    }
+    XEvent event = { 0 };
+    if (data->findAndRemoveEventByMask(window->id, ARG3, event)) {
+        memory->memcpy(ARG4, &event, sizeof(XEvent));
+        EAX = True;
+        return;
+    }
+    static bool logged = false;
+    if (!logged) { logged = true; kwarn_fmt("X11 XWindowEvent: no queued event matches the mask; the blocking wait cannot run inside a guest callback, returning False"); }
+    EAX = False;
 }
 
 // Status XWithdrawWindow(Display* display, Window w, int screen_number)

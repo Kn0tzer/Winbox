@@ -52,6 +52,7 @@ public:
 	void close(KThread* thread);
 
 	bool findAndRemoveEvent(U32 window, S32 type, XEvent& event);
+	bool findAndRemoveEventByMask(U32 window, U32 mask, XEvent& event);
 	void putEvent(const XEvent& event, bool inFront = false);
 	U32 lockEvents();
 	XEvent* getEvent(U32 index); // only call between lockEvents/unlockEvents
