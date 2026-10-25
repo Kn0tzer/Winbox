@@ -23,6 +23,7 @@
 #include "bufferaccess.h"
 #include "kstat.h"
 #include "kscheduler.h"
+#include "kmemory64.h"
 #include "../emulation/softmmu/soft_ram.h"
 #include "../emulation/cpu/normal/normalCPU.h"
 #include "knativesystem.h"
@@ -415,15 +416,41 @@ U32 KSystem::tgkill(U32 threadGroupId, U32 threadId, U32 signal) {
 };
 */
 
+U32 KSystem::processCount() {
+    return (U32)KSystem::processes.size();
+}
+
+void KSystem::guestRamInfo(U64& totalBytes, U64& freeBytes) {
+    // The emulated machine RAM size: 1 GiB. Guest address spaces are sparse
+    // and demand-paged, so this figure defines the machine rather than a
+    // host allocation cap; it is the value the earlier hardcoded sysinfo
+    // and /proc/meminfo faces carried (chosen so the JVM and Wine size
+    // their heaps sanely), now kept in exactly one place. Free RAM is what
+    // live processes have not committed, summed over both memory managers.
+    totalBytes = 1024ULL * 1024 * 1024;
+    U64 committed = 0;
+    for (auto& entry : KSystem::processes) {
+        const KProcessPtr& process = entry.value;
+        if (!process) continue;
+#ifdef BOXEDWINE_GUEST_X64
+        if (process->memory64) committed += process->memory64->mappedCommittedPageCount() * K64_PAGE_SIZE;
+#endif
+        if (process->memory) committed += (U64)process->memory->allocatedPageCount() * K_PAGE_SIZE;
+    }
+    freeBytes = committed >= totalBytes ? 0 : totalBytes - committed;
+}
+
 U32 KSystem::sysinfo(KThread* thread, U32 address) {
     KMemory* memory = thread->memory;
+    U64 totalBytes = 0, freeBytes = 0;
+    KSystem::guestRamInfo(totalBytes, freeBytes);
 
     memory->writed(address, KSystem::getMilliesSinceStart()/1000); address+=4;
     memory->writed(address, 0); address+=4;
     memory->writed(address, 0); address+=4;
     memory->writed(address, 0); address+=4;
-    memory->writed(address, 262144); address+=4; // 1 GB
-    memory->writed(address, 196608); address+=4;
+    memory->writed(address, (U32)(totalBytes / K_PAGE_SIZE)); address+=4; // totalram in mem_unit pages
+    memory->writed(address, (U32)(freeBytes / K_PAGE_SIZE)); address+=4;
     memory->writed(address, 0); address+=4;
     memory->writed(address, 0); address+=4;
     memory->writed(address, 0); address+=4;

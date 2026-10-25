@@ -460,6 +460,15 @@ U64 KMemory64::committedPageCount() const {
     return n;
 }
 
+U64 KMemory64::mappedCommittedPageCount() const {
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
+    U64 n = 0;
+    for (const auto& kv : pages) {
+        if ((kv.second->flags & K64_PAGE_MAPPED) && kv.second->committed()) n++;
+    }
+    return n;
+}
+
 BString KMemory64::generateMaps(bool smaps) const {
     // Snapshot under the lock, format after releasing it: a /proc reader
     // must never hold up mapping operations. File-backed pages carry no

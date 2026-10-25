@@ -149,6 +149,11 @@ public:
     static U32 shmdt(KThread* thread, U32 shmaddr);
     static U32 shmctl(KThread* thread, U32 shmid, U32 cmd, U32 buf);
     static U32 sysinfo(KThread* thread, U32 address);
+    // The single source for every guest-visible RAM figure (sysinfo on both
+    // ABIs and /proc/meminfo): the emulated machine total RAM and the part
+    // of it not currently committed by any live process.
+    static void guestRamInfo(U64& totalBytes, U64& freeBytes);
+    static U32 processCount();
     static U32 times(KThread* thread, U32 buf);
     static U32 tgkill(U32 threadGroupId, U32 threadId, U32 signal);
     static U32 ugetrlimit(KThread* thread, U32 resource, U32 rlim);

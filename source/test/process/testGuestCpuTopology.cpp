@@ -87,12 +87,19 @@ void testGuestCpuTopology() {
         testFail("/proc/stat must contain only the aggregate and cpu0 lines");
         return;
     }
-    // sysinfo(2) reports totalram/freeram in pages (262144/196608 pages of
-    // 4 kB); /proc/meminfo must state the same totals in kB.
+    // sysinfo(2) and /proc/meminfo draw from one source
+    // (KSystem::guestRamInfo): 1 GiB total, free = total minus what live
+    // processes have committed.
+    U64 totalBytes = 0, freeBytes = 0;
+    KSystem::guestRamInfo(totalBytes, freeBytes);
+    char expectedTotal[64], expectedFree[64];
+    snprintf(expectedTotal, sizeof(expectedTotal), "MemTotal: %llu kB", (unsigned long long)(totalBytes / 1024));
+    snprintf(expectedFree, sizeof(expectedFree), "MemFree: %llu kB", (unsigned long long)(freeBytes / 1024));
     const std::string meminfo = readAll(openMemInfo(dummyNode, 0, 0));
-    if (meminfo.find("MemTotal: 1048576 kB") == std::string::npos ||
-        meminfo.find("MemFree: 786432 kB") == std::string::npos) {
-        testFail("/proc/meminfo totals must agree with sysinfo(2) (1 GiB total, 768 MiB free), got \"%s\"", meminfo.c_str());
+    if (totalBytes != 1024ULL * 1024 * 1024 ||
+        meminfo.find(expectedTotal) == std::string::npos ||
+        meminfo.find(expectedFree) == std::string::npos) {
+        testFail("/proc/meminfo totals must agree with KSystem::guestRamInfo, got \"%s\"", meminfo.c_str());
         return;
     }
     // Source guard: none of the guest-visible topology files may consult

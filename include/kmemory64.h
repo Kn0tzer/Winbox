@@ -252,6 +252,10 @@ public:
     // every mapped page is committed, so this equals mappedPageCount(); afterward
     // it tracks only pages whose K64Page::data is non-null (i.e. actually touched).
     U64 committedPageCount() const;
+    // Pages that are both mapped and committed: the guest-visible RAM in
+    // use. munmap clears the mapped flag but deliberately retains buffers,
+    // so unlike committedPageCount() this recovers when a range is unmapped.
+    U64 mappedCommittedPageCount() const;
     // Linux /proc/<pid>/maps (smaps=true adds Size/Rss) rendered from the
     // live page table: contiguous runs of equal permission/shared flags.
     BString generateMaps(bool smaps) const;

@@ -6230,9 +6230,11 @@ void ksyscall64(CPU64* cpu) {
                 auto* memory = cpu->memory;
                 memory->memsetGuest(a1, 0, 112);
                 memory->writeq(a1, KSystem::getMilliesSinceStart() / 1000);      // uptime
-                memory->writeq(a1 + 32, 1024ULL * 1024 * 1024);                  // totalram
-                memory->writeq(a1 + 40, 768ULL * 1024 * 1024);                   // freeram
-                memory->writew(a1 + 80, 1);                                      // procs
+                U64 totalBytes = 0, freeBytes = 0;
+                KSystem::guestRamInfo(totalBytes, freeBytes);
+                memory->writeq(a1 + 32, totalBytes);                             // totalram
+                memory->writeq(a1 + 40, freeBytes);                              // freeram
+                memory->writew(a1 + 80, (U16)KSystem::processCount());         // procs
                 memory->writed(a1 + 104, 1);                                     // mem_unit
             }
             ret = 0;

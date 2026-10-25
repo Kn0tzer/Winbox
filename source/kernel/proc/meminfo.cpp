@@ -19,12 +19,16 @@
 #include "boxedwine.h"
 
 #include "bufferaccess.h"
+#include "ksystem.h"
 
 #include <stdio.h>
 #include <string.h>
 
 FsOpenNode* openMemInfo(const std::shared_ptr<FsNode>& node, U32 flags, U32 data) {
+    U64 totalBytes = 0, freeBytes = 0;
+    KSystem::guestRamInfo(totalBytes, freeBytes);
     char meminfo[128];
-    snprintf(meminfo, sizeof(meminfo), "MemTotal: %d kB\nMemFree: %d kB\n", 1024*1024, 768*1024);
+    snprintf(meminfo, sizeof(meminfo), "MemTotal: %llu kB\nMemFree: %llu kB\n",
+             (unsigned long long)(totalBytes / 1024), (unsigned long long)(freeBytes / 1024));
     return new BufferAccess(node, flags, BString::copy(meminfo));
 }
