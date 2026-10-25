@@ -58,6 +58,10 @@
 
 void testWaitPid();
 void testSyscall64DispatchGuard();
+void testGuestCpuTopology();
+void testKObjectLockStubs();
+void testProcMaps64();
+void testAtomicStress64();
 void testFutex64DispatchGuard();
 #ifndef BOXEDWINE_GUEST_X64
 void testMadvise32Syscall();
@@ -65,6 +69,7 @@ void testGetrandom32Syscall();
 void testMlock32Syscalls();
 void testSchedAffinity32Syscalls();
 void testMremap32Syscall();
+void testProcMaps32();
 #endif
 void testInetDatagramLoopback();
 void testInetStreamLoopback();
@@ -101,6 +106,9 @@ int totalFails = 0;
 #ifdef BOXEDWINE_GUEST_X64
 const TestEntry TEST_ENTRIES[] = {
     {testSyscall64DispatchGuard, "Test x64 syscall fallback guard"},
+    {testGuestCpuTopology, "Test guest CPU topology consistency"},
+    {testProcMaps64, "Test x64 /proc maps generation"},
+    {testAtomicStress64, "Test x64 concurrent LOCK atomicity stress (K-M1)"},
     {testFutex64DispatchGuard, "Test x64 futex dispatch guard"},
     {testFutex64Operations, "Test x64 futex operations and multithread wake race"},
     {testTimerfdCore, "Test timerfd descriptor and expiration semantics"},
@@ -742,6 +750,9 @@ const TestEntry TEST_ENTRIES[] = {
     {testSchedAffinity32Syscalls, "Test 32-bit scheduler affinity ABI"},
     {testMremap32Syscall, "Test 32-bit mremap fixed and DONTUNMAP semantics"},
     {testSyscall64DispatchGuard, "Test x64 syscall fallback guard"},
+    {testGuestCpuTopology, "Test guest CPU topology consistency"},
+    {testKObjectLockStubs, "Test KObject lock stub dispositions"},
+    {testProcMaps32, "Test 32-bit /proc maps generation"},
     {testFutex64DispatchGuard, "Test x64 futex dispatch guard"},
     {testTimerfdCore, "Test timerfd descriptor and expiration semantics"},
     {testUnixSocketOptions, "Test Unix socket SOL_SOCKET options"},
@@ -764,8 +775,11 @@ const TestEntry TEST_ENTRIES[] = {
     {testSse3DuplicateMoves, "Test SSE3 duplicate moves"},
     {testSse3Haddpd, "Test SSE3 HADDPD"},
     {testSse3MonitorMwaitNoop, "Test SSE3 MONITOR and MWAIT no-op"},
-    // Last: known to abort with asmjit LabelAlreadyBound (exit 134) so it must not hide other tests.
+    // Full JIT path restored: the LabelAlreadyBound panic was a decoder bug (Invalid ops kept len 0), fixed in decoder.cpp.
     {testRecoverUnknownInstruction, "CPU32 unknown opcode recovery and UD2 fault"},
+    {testSgdtSidtStores, "CPU32 SGDT/SIDT store values on all engines"},
+    {testJitLockedOps, "CPU32 LOCK ops through JIT-compiled blocks"},
+    {testUd2DefaultDisposition, "CPU32 UD2 with SIG_DFL in a subprocess"},
 };
 #endif
 
@@ -820,6 +834,14 @@ int runTestTests(size_t startEntry = 0, size_t requestedCount = 0, U32 workerCou
 }
 
 int runTestTestsFromArgs(int argc, char** argv) {
+    if (getenv("BW64_UD2_DFL_CHILD")) {
+        // Fresh-process child for the UD2 SIG_DFL test: same KSystem init
+        // as the suite, then only the scenario (see testMisc.cpp).
+        KSystem::startMicroCounter();
+        KSystem::init();
+        KSystem::videoOption = VIDEO_NO_WINDOW;
+        return bw64Ud2DflScenario();
+    }
     size_t startEntry = argc > 1 ? (size_t)strtoul(argv[1], nullptr, 0) : 0;
     size_t requestedCount = argc > 2 ? (size_t)strtoul(argv[2], nullptr, 0) : 0;
     U32 workerCount = argc > 3 ? (U32)strtoul(argv[3], nullptr, 0) : 0;
