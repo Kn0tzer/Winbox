@@ -58,7 +58,7 @@ test('vertex binding limits follow WebGPU and pipeline creation rejects excess b
   const audit = functionBody(bridge, 'static bool vk64AuditGraphicsPipeline(');
   assert.match(audit, /a\.unsupportedVertexBindingCount[^\n]*vk64Unsupported\("vertex-binding-limit"[^\n]*reject = true/);
   assert.equal((bridge.match(/audit\.unsupportedVertexBindingCount = p->nvb > v2WebGpuMaxVertexBuffers\(\)/g) || []).length, 2);
-  assert.match(bridge, /L\.maxVertexInputBindings = v2WebGpuMaxVertexBuffers\(\)/);
+  assert.match(bridge, /maxVertexBuffers = \(U32\)MAIN_THREAD_EM_ASM_INT\([\s\S]*?L\.maxVertexInputBindings = maxVertexBuffers > 16 \? 16 : maxVertexBuffers/);
   assert.match(bridge, /static U32 v2WebGpuMaxVertexBuffers\(\)[\s\S]*?bwVkMaxVertexBuffers[\s\S]*?return 8;/);
   assert.equal((page.match(/globalThis\.bwVkMaxVertexBuffers = Math\.min\(16, device\.limits\?\.maxVertexBuffers \|\| 8\)/g) || []).length, 2);
 });

@@ -1667,7 +1667,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       if (scaled.length && !stride) {
         noteUnsupported('vertex-stride', stride); return {skip:'vertex-stride:' + stride};
       }
-      const paddedStride = stride > 0 && (stride % 4 !== 0 || minStride > stride);
+      const paddedStride = stride === 0 || stride % 4 !== 0 || minStride > stride;
       let arrayStride = scaled.length || paddedStride ? Math.ceil(Math.max(stride, minStride, 4) / 4) * 4 : stride;
       const rawAttributes = pipe.va.filter(va => va.binding === vb.binding && !V2_SCALED_VERTEX[va.format] &&
         va.offset + (V2_VERT_FORMAT_SIZE[v2VertexFormat(va.format)] || 4) > stride)
@@ -1676,7 +1676,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       const slots = [];
       const addStream = (streamAttributes, offset = 0) => {
         slots.push({slot:buffers.length,offset});
-        buffers.push({arrayStride,stepMode:vb.inputRate?'instance':'vertex',attributes:streamAttributes});
+        buffers.push({arrayStride,stepMode:vb.inputRate || stride === 0 ? 'instance':'vertex',attributes:streamAttributes});
       };
       addStream(attributes);
       if (buffers.length > (device.limits?.maxVertexBuffers || 8)) {noteUnsupported('vertex-buffer-slot-limit', buffers.length);return {skip:'vertex-buffer-slot-limit'};}
@@ -2456,6 +2456,8 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
               const repacked = scaled || walk?.paddedStride;
               if (scaled) vkey += '|scaled:' + st.pipeRec.key + ':' + vb.offset;
               else if (walk?.paddedStride) vkey += '|padded-stride:' + walk.outputStride + ':' + vb.offset;
+              const repeatCount = walk?.stride === 0 ? (op.firstInstance || 0) + Math.max(1, op.instanceCount || 1) : 1;
+              if (walk?.stride === 0) vkey += '|constant-instance:' + repeatCount;
               const usage = GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST;
               // Converted buffers already carry the source content hash and
               // vertex layout in their cache key. Check before converting:
@@ -2464,7 +2466,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
               if (gpu) persistStats.bufHits++;
               else {
                 if (swizzled) vbytes = swizzleBgraVb(bytes, walk.stride, walk.attrs44);
-                if (repacked && vbytes) vbytes = repackScaledVb(vbytes.subarray(vb.offset), walk.stride, walk.outputStride, walk.scaled, walk.rawAttributes);
+                if (repacked && vbytes) vbytes = repackScaledVb(vbytes.subarray(vb.offset), walk.stride, walk.outputStride, walk.scaled, walk.rawAttributes, repeatCount);
                 gpu = gpuBufferFor(vkey, vbytes, usage, preHash);
               }
               if (!gpu) { noteDrop('draw-vertex-buffer-gpu-failed', 'buf=' + vb.buf + ' binding=' + vb.binding); continue; }

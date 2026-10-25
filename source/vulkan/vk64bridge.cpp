@@ -3965,7 +3965,15 @@ void fillLimits(Limits& L) {
     L.maxDescriptorSetStorageBuffers = 4; L.maxDescriptorSetStorageBuffersDynamic = 4;
     L.maxDescriptorSetSampledImages = 16; L.maxDescriptorSetStorageImages = 4;
     L.maxDescriptorSetInputAttachments = 4;
-    L.maxVertexInputAttributes = 16; L.maxVertexInputBindings = v2WebGpuMaxVertexBuffers();
+    L.maxVertexInputAttributes = 16;
+#ifdef __EMSCRIPTEN__
+    {
+        const U32 maxVertexBuffers = (U32)MAIN_THREAD_EM_ASM_INT({ return Number(globalThis.bwVkMaxVertexBuffers) || 8; });
+        L.maxVertexInputBindings = maxVertexBuffers > 16 ? 16 : maxVertexBuffers;
+    }
+#else
+    L.maxVertexInputBindings = 8;
+#endif
     L.maxVertexInputAttributeOffset = 2047; L.maxVertexInputBindingStride = 2048;
     L.maxVertexOutputComponents = 64; L.maxTessellationGenerationLevel = 64;
     L.maxTessellationPatchSize = 32;
