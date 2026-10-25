@@ -6097,7 +6097,31 @@ void ksyscall64(CPU64* cpu) {
             // child_tid=r10, tls=r8). Create a real thread sharing this
             // process + memory64. Falls back to -ENOSYS for non-thread clones.
             if (cpu->thread && cpu->thread->process && cpu->thread->process->memory64) {
+                constexpr U64 CLONE_PIDFD_BIT = 0x1000ULL;
+                constexpr U64 CLONE_THREAD_BIT = 0x10000ULL;
+                if ((a1 & CLONE_PIDFD_BIT) && (a1 & CLONE_THREAD_BIT)) {
+                    ret = (U64)-K_EINVAL;
+                    break;
+                }
+                if (a1 & CLONE_PIDFD_BIT) {
+                    // Legacy clone reports the pidfd through the parent_tid
+                    // pointer (a3); validate it before creating the child.
+                    KMemory64* mem = cpu->thread->process->memory64;
+                    if (!a3 || a3 > ~0ULL - 3) { ret = (U64)-K_EFAULT; break; }
+                    const U32 pf = mem->getPageFlags(a3 >> K64_PAGE_SHIFT);
+                    const U32 pl = mem->getPageFlags((a3 + 3) >> K64_PAGE_SHIFT);
+                    if (!(pf & K64_PAGE_MAPPED) || !(pf & K64_PAGE_WRITE) ||
+                        !(pl & K64_PAGE_MAPPED) || !(pl & K64_PAGE_WRITE)) {
+                        ret = (U64)-K_EFAULT;
+                        break;
+                    }
+                }
                 ret = cpu->thread->process->clone64(cpu->thread, a1, a2, a3, a5, a4, a1 & 0xff);
+                if ((a1 & CLONE_PIDFD_BIT) && (S64)ret > 0) {
+                    const U32 pidfd = createPidFdForClone64(cpu->thread, (U32)ret);
+                    if ((S32)pidfd < 0) { ret = (U64)(S64)(S32)pidfd; break; }
+                    cpu->thread->process->memory64->writed(a3, pidfd);
+                }
             } else {
                 ret = unimplementedSyscall64(nr);
             }
@@ -6109,7 +6133,7 @@ void ksyscall64(CPU64* cpu) {
             // address space until that point remains tracked in the gap register.
             if (cpu->thread && cpu->thread->process && cpu->thread->process->memory64) {
                 const U64 cloneFlags = nr == X64_SYS_vfork ? X64_CLONE_VFORK : 0;
-                ret = cpu->thread->process->forkProcess64(cpu->thread, cloneFlags, 0, 0, K_SIGCHLD);
+                ret = cpu->thread->process->forkProcess64(cpu->thread, cloneFlags, 0, 0, K_SIGCHLD, 0);
             } else {
                 ret = unimplementedSyscall64(nr);
             }

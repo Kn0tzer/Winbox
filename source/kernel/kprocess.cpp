@@ -1115,7 +1115,10 @@ U32 KProcess::execve(KThread* thread, BString path, std::vector<BString>& args, 
     // iteration, so it picks up the re-seeded state on the next run() entry.
     if (this->is64Bit) {
         KMemory64* freshMem = new KMemory64(this);
-        delete this->memory64;
+        // A vfork child shares the parent address space: drop the reference
+        // without deleting it; the parent keeps using it after we exec.
+        if (!this->memory64Shared) delete this->memory64;
+        this->memory64Shared = false;
         this->memory64 = freshMem;
         if (this->cpu64) {
             this->cpu64->memory = freshMem;
@@ -2065,6 +2068,27 @@ U32 KProcess::clone64(KThread* thread, U64 flags, U64 child_stack, U64 ptid, U64
     // support the thread case (shared VM/FS/files/sighand); a real fork() in
     // 64-bit is a separate, larger effort. Anything else: log + ENOSYS so
     // glibc surfaces a clean failure instead of us kpanic'ing.
+    // Namespace creation is rejected loudly (kernel round 3A): the emulator
+    // has exactly one namespace of each kind, so CLONE_NEW* can never be
+    // honoured. Warn once per flag bit, then EINVAL like an unprivileged
+    // caller without CAP_SYS_ADMIN in the namespace.
+    constexpr U64 K_CLONE_NEWCGROUP_BIT = 0x2000000ULL;
+    constexpr U64 K_CLONE_PIDFD_BIT = 0x1000ULL;
+    constexpr U64 NS_FLAGS = K_CLONE_NEWNS | K_CLONE_NEWUTS | K_CLONE_NEWIPC |
+        K_CLONE_NEWUSER | K_CLONE_NEWPID | K_CLONE_NEWNET | K_CLONE_NEWCGROUP_BIT;
+    if (flags & NS_FLAGS) {
+        static U64 warnedNsFlags = 0;
+        const U64 fresh = (flags & NS_FLAGS) & ~warnedNsFlags;
+        if (fresh) {
+            warnedNsFlags |= flags & NS_FLAGS;
+            klog_fmt("clone64: namespace flags 0x%llx unsupported; returned -EINVAL",
+                     (unsigned long long)fresh);
+        }
+        return (U32)-K_EINVAL;
+    }
+    if ((flags & K_CLONE_PIDFD_BIT) && (flags & K_CLONE_THREAD)) {
+        return (U32)-K_EINVAL;
+    }
     const U64 THREAD_FLAGS = K_CLONE_VM | K_CLONE_THREAD | K_CLONE_SIGHAND;
     if ((flags & THREAD_FLAGS) != THREAD_FLAGS) {
         // Non-thread clone == real fork(2). wine forks to spawn wineserver (and
@@ -2072,7 +2096,7 @@ U32 KProcess::clone64(KThread* thread, U64 flags, U64 child_stack, U64 ptid, U64
         // fork: a new KProcess with its own memory64 (a deep copy of ours) and a
         // child CPU64 that returns 0. child_stack==0 here (fork keeps the same
         // stack pointer), unlike thread-clone, so don't require it.
-        return this->forkProcess64(thread, flags, ctid, ptid, exitSignal);
+        return this->forkProcess64(thread, flags, ctid, ptid, exitSignal, child_stack);
     }
     if (child_stack == 0) {
         return (U32)-K_EINVAL;
@@ -2182,6 +2206,59 @@ U64 KProcess::clone364(KThread* thread, U64 argsAddr, U64 size) {
         return (U64)-K_EINVAL;
     }
     // clone3 passes the stack base + size; the child's RSP is the top.
+    // Round 3A validation, per clone3(2): unknown flag bits, the flag
+    // combinations clone3 forbids, set_tid and CLONE_INTO_CGROUP. Known
+    // flag bits are CSIGNAL (rejected above), bits 0x100..0x80000000,
+    // CLONE_CLEAR_SIGHAND (bit 32) and CLONE_INTO_CGROUP (bit 33).
+    if (flags & ~0x3FFFFFFF00ULL) return (U64)-K_EINVAL;
+    constexpr U64 NS_FLAGS3 = 0x20000ULL | 0x4000000ULL | 0x8000000ULL | 0x10000000ULL |
+        0x20000000ULL | 0x40000000ULL | 0x2000000ULL;
+    if (flags & NS_FLAGS3) {
+        static U64 warnedNs3 = 0;
+        const U64 fresh = (flags & NS_FLAGS3) & ~warnedNs3;
+        if (fresh) {
+            warnedNs3 |= flags & NS_FLAGS3;
+            klog_fmt("clone3: namespace flags 0x%llx unsupported; returned -EINVAL",
+                     (unsigned long long)fresh);
+        }
+        return (U64)-K_EINVAL;
+    }
+    constexpr U64 F_THREAD = 0x10000ULL, F_VM = 0x100ULL, F_SIGHAND = 0x800ULL;
+    if ((flags & F_THREAD) && ((flags & (F_VM | F_SIGHAND)) != (F_VM | F_SIGHAND))) return (U64)-K_EINVAL;
+    if ((flags & F_SIGHAND) && !(flags & F_VM)) return (U64)-K_EINVAL;
+    // set_tid: choosing the child tid requires CAP_SYS_ADMIN in the pid
+    // namespace; guests run as unprivileged uid 1000, so a well-formed
+    // request is EPERM (logged once), malformed ones EINVAL/EFAULT.
+    const U64 setTidAddr = args[8];
+    const U64 setTidSize = args[9];
+    if (setTidSize > 32) return (U64)-K_EINVAL;
+    if (setTidSize > 0) {
+        if (!setTidAddr) return (U64)-K_EFAULT;
+        const U64 first = setTidAddr >> K64_PAGE_SHIFT;
+        const U64 last = (setTidAddr + setTidSize * 4 - 1) >> K64_PAGE_SHIFT;
+        for (U64 page = first;; ++page) {
+            const U32 pageFlags = this->memory64->getPageFlags(page);
+            if (!(pageFlags & K64_PAGE_MAPPED) || !(pageFlags & K64_PAGE_READ)) return (U64)-K_EFAULT;
+            if (page == last) break;
+        }
+        static bool warnedSetTid = false;
+        if (!warnedSetTid) {
+            warnedSetTid = true;
+            klog("clone3: set_tid unsupported for unprivileged guests; returned -EPERM");
+        }
+        return (U64)-K_EPERM;
+    }
+    // cgroup: a nonzero fd is only meaningful with CLONE_INTO_CGROUP, and
+    // there is no cgroupfs here to validate it against.
+    if (args[10] != 0) {
+        if (!(flags & 0x200000000ULL)) return (U64)-K_EINVAL;
+        static bool warnedCgroup = false;
+        if (!warnedCgroup) {
+            warnedCgroup = true;
+            klog("clone3: CLONE_INTO_CGROUP unsupported (no cgroupfs); returned -EBADF");
+        }
+        return (U64)-K_EBADF;
+    }
     U64 result = clone64(thread, flags, stack + stack_size, parent_tid, tls, child_tid, exit_signal);
     if ((S32)result < 0) return (U64)(S64)(S32)result;
     if (!(flags & K_CLONE_PIDFD)) return result;
@@ -2191,7 +2268,7 @@ U64 KProcess::clone364(KThread* thread, U64 argsAddr, U64 size) {
     return result;
 }
 
-U32 KProcess::forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid, U64 exitSignal) {
+U32 KProcess::forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid, U64 exitSignal, U64 childStack) {
     if (!this->memory64) {
         return (U32)-K_ENOSYS;
     }
@@ -2203,6 +2280,10 @@ U32 KProcess::forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid, U64 
     KProcessPtr newProcess = KProcess::create();
     newProcess->memory = KMemory::create(newProcess.get());  // unused 32-bit side
     newProcess->clone(shared_from_this());                   // FDs, cwd, exe, sig...
+    if (flags & K_CLONE_PARENT) {
+        // CLONE_PARENT: the child is a sibling, reparented to our parent.
+        newProcess->parentId = this->parentId;
+    }
 
     newProcess->is64Bit = true;
     newProcess->childExitSignal64 = (U32)exitSignal;
@@ -2214,9 +2295,18 @@ U32 KProcess::forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid, U64 
     newProcess->startupArgs64 = this->startupArgs64;
     newProcess->startupEnv64 = this->startupEnv64;
 
-    // Deep-copy the parent address space into the child's own KMemory64.
-    newProcess->memory64 = new KMemory64(newProcess.get());
-    newProcess->memory64->cloneFrom(this->memory64);
+    // Address space: shared for vfork, a deep copy otherwise.
+    if (flags & K_CLONE_VFORK) {
+        // vfork: the child runs in the SAME address space until it execs or
+        // exits (the parent is suspended below until then). Exec drops the
+        // reference without deleting (see the is64Bit branch of execve) and
+        // exit needs no detach: nothing deletes memory64 at process exit.
+        newProcess->memory64 = this->memory64;
+        newProcess->memory64Shared = true;
+    } else {
+        newProcess->memory64 = new KMemory64(newProcess.get());
+        newProcess->memory64->cloneFrom(this->memory64);
+    }
 
     // The child's main thread + its CPU64 (own register file, shared with no
     // one), seeded from the parent's registers. fork returns 0 in the child;
@@ -2225,6 +2315,17 @@ U32 KProcess::forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid, U64 
     KThread* newThread = newProcess->createThread();
     CPU64* childCpu = new CPU64(newProcess->memory64);
     childCpu->cloneRegistersFrom(parentCpu);
+    if (flags & 0x100000000ULL) { // CLONE_CLEAR_SIGHAND
+        // All dispositions reset to SIG_DFL: both the process table and the
+        // CPU64 table (the one signal delivery consults).
+        for (auto& action : newProcess->sigActions) action.reset();
+        for (auto& action : childCpu->sigActions) action = CPU64::SigAction();
+    }
+    if (childStack) {
+        // clone/clone3 with an explicit stack: the child starts there
+        // (clone3 already converted base+size to the top).
+        childCpu->reg[X64_RSP].setU64(childStack);
+    }
     if ((flags & K_CLONE_VM) && !(flags & K_CLONE_VFORK)) {
         // sas_ss_reset (kernel/fork.c): CLONE_VM children that are not
         // vfork start with no alternate signal stack. Plain fork and

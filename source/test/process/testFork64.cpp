@@ -58,6 +58,12 @@ static void runForkCase(TestContext& context, U64 nr, const char* name) {
         testFail("%s test could not map child code page", name);
         return;
     }
+    // The child runs this code through the real platform loop, whose
+    // instruction-fetch validation requires PROT_EXEC (an RW code page
+    // faults on first fetch and the child exits without executing) — this
+    // also removes the old wait4(WNOHANG) flake, where a fetch-faulted
+    // fork child could look exited before the WNOHANG probe.
+    memory->mprotect(page + K64_PAGE_SIZE, K64_PAGE_SIZE, 7);
     memory->writed(page, 0x11223344);
     memory->writed(page + 4, 0xAABBCCDD);
     const U64 childCode = page + K64_PAGE_SIZE + 0x10;

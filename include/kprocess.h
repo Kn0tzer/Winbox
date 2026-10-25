@@ -186,7 +186,7 @@ public:
     // Real fork(2) for 64-bit (non-thread clone64): new KProcess with its own
     // deep-copied memory64 and a child CPU64 that returns 0. Returns the child
     // pid to the parent.
-    U32 forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid, U64 exitSignal);
+    U32 forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid, U64 exitSignal, U64 childStack);
 #endif
     U32 close(FD fildes);
     U32 dup(U32 fildes);    
