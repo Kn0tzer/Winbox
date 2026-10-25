@@ -17,6 +17,7 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const workRoot = '/tmp/winbox-finish/r2/work-glwgpu';
 const profiles = {
   q3: {
+    glBackend: 'webgpu',
     root: join(workRoot, 'q3/game/app'),
     exe: 'quake3e.x64.exe',
     arch: 'x64',
@@ -200,10 +201,16 @@ try {
     ],
   });
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
-  if (guestDiagnostics) {
+  if (guestDiagnostics || profile.glBackend) {
     await page.route('**/wine64-launcher.js*', async route => {
       const response = await route.fetch();
-      const body = await response.text();
+      let body = await response.text();
+      if (profile.glBackend) {
+        const backendMarker = 'if (param("glversion")) ENV["BW64_GLVERSION"] = param("glversion");';
+        if (!body.includes(backendMarker)) throw new Error('Could not select the GL backend for the game probe');
+        body = body.replace(backendMarker, `${backendMarker}\nif (param("glbackend") === "webgpu") ENV["BW64_GL_BACKEND"] = "webgpu";`);
+      }
+      if (guestDiagnostics) {
       const marker = 'if (param("unimpldump") === "1") ENV["BW64_UNIMPLDUMP"] = "1";';
       if (!body.includes(marker)) throw new Error('Could not install guest diagnostic environment flags');
       const diagnosticFlags = [
@@ -216,8 +223,11 @@ try {
         '}',
         marker,
       ].join('\n');
-      await route.fulfill({ response, body: body.replace(marker, diagnosticFlags) });
-      result.diagnosticLauncherPatched = true;
+        body = body.replace(marker, diagnosticFlags);
+        result.diagnosticLauncherPatched = true;
+      }
+      await route.fulfill({ response, body });
+      result.glBackendLauncherPatched = !!profile.glBackend;
     });
   }
   await page.addInitScript(() => {
@@ -264,6 +274,7 @@ try {
     fresh: '1',
     jit: probeJit,
     recover: probeRecover,
+    ...(profile.glBackend ? { glbackend: profile.glBackend } : {}),
   });
   if (wildJump) query.set('wildjump', '1');
   if (unimplDump) query.set('unimpldump', '1');
