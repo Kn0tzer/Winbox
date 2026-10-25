@@ -3,6 +3,7 @@
 and the graphics bridge. Application files are never included."""
 import argparse
 import hashlib
+import io
 import importlib.util
 import json
 import shutil
@@ -48,6 +49,62 @@ OPENAL = {
         'x86_64': 'usr/lib/x86_64-linux-gnu/wine/x86_64-windows/OpenAL32.dll',
     },
 }
+
+# CJK fallback font. The boot zips ship no CJK-capable face at all (DejaVu
+# has no CJK glyphs; Wine's fixedsys_jp/jvgasys are bitmap stubs), so any
+# CJK-locale game renders tofu. WenQuanYi Micro Hei is a single 5 MB TTC
+# covering CJK Unified Ideographs + kana + hangul, licensed Apache-2.0 or
+# GPL-3+ with the font exception (freely redistributable, unlike Noto CJK
+# at ~120 MB per full package). Pinned from the Debian bookworm pool —
+# the same provenance pattern as the Gecko/OpenAL pins above. It rides
+# the lazy support pack, not the boot zips: fontconfig scans
+# /usr/share/fonts recursively (both rootfs fonts.conf setups do), and
+# the package's own 65-wqy-microhei.conf wires the zh/ja/ko aliases.
+CJK_FONT = {
+    'name': 'WenQuanYi Micro Hei',
+    'version': '0.2.0-beta-3.1',
+    'url': 'https://deb.debian.org/debian/pool/main/f/fonts-wqy-microhei/fonts-wqy-microhei_0.2.0-beta-3.1_all.deb',
+    'debSha256': '239163df984eea5c9da3b551aee374936222cdbd67f1a1be3cdcf3d76143ad66',
+    'ttcSha256': '2420e8078af796b19a3f6ef13de527a1a91c1e7171eea115926c614ced1009b3',
+    'license': 'Apache-2.0 or GPL-3+ with font exception',
+    'members': {
+        'ttc': 'usr/share/fonts/truetype/wqy/wqy-microhei.ttc',
+        'conf': 'etc/fonts/conf.avail/65-wqy-microhei.conf',
+        'copyright': 'usr/share/doc/fonts-wqy-microhei/copyright',
+    },
+}
+
+
+def ensure_cjk_font():
+    """Download the pinned fonts-wqy-microhei .deb and pull the TTC,
+    fontconfig alias and license out of its data.tar (pure-python ar/tar
+    parsing; .deb layout is stable and the hashes are pinned)."""
+    cache = ROOT / 'tools/rootfs64/cjk-font'
+    archive_path = cache / 'archives' / Path(CJK_FONT['url']).name
+    download(CJK_FONT['url'], archive_path, CJK_FONT['debSha256'])
+    data = archive_path.read_bytes()
+    assert data[:7] == b'!<arch>', 'not a .deb (ar archive)'
+    offset = 8
+    payload = None
+    while offset < len(data):
+        header = data[offset:offset + 60]
+        name = header[:16].decode().strip()
+        size = int(header[48:58].decode().strip())
+        body = data[offset + 60:offset + 60 + size]
+        if name.startswith('data.tar'):
+            payload = body
+            break
+        offset += 60 + size + (size % 2)
+    assert payload is not None, 'no data.tar in .deb'
+    result = {}
+    with tarfile.open(fileobj=io.BytesIO(payload)) as tar:
+        for key, member in CJK_FONT['members'].items():
+            extracted = tar.extractfile('./' + member) or tar.extractfile(member)
+            assert extracted is not None, f'{member} missing from .deb'
+            result[key] = extracted.read()
+    if digest(result['ttc']) != CJK_FONT['ttcSha256']:
+        raise SystemExit('wqy-microhei.ttc sha256 mismatch against pin')
+    return result
 
 
 def digest(data):
@@ -135,6 +192,7 @@ def stage(destination):
             direct3d[arch][name] = {'data': data, 'target': f'{target}/{name}.dll'}
     gecko = ensure_gecko()
     openal = ensure_openal()
+    cjk = ensure_cjk_font()
     provenance = {
         'wineMono': {'version': mono.VERSION, 'url': mono.URL,
                      'archiveSha256': mono.ARCHIVE_SHA256, 'treeSha256': mono.TREE_SHA256},
@@ -149,6 +207,10 @@ def stage(destination):
             'files': {name: {'sha256': entry['sha256'], 'bytes': len(entry['bytes'])}
                       for name, entry in openal.items() if name != 'license'},
         },
+        'cjkFont': {'name': CJK_FONT['name'], 'version': CJK_FONT['version'],
+                    'url': CJK_FONT['url'], 'debSha256': CJK_FONT['debSha256'],
+                    'ttcSha256': CJK_FONT['ttcSha256'], 'license': CJK_FONT['license'],
+                    'bytes': len(cjk['ttc'])},
         'openGL': {arch: mono.digest(path) for arch, path in graphics.items()},
         'vulkan': {arch: mono.digest(path) for arch, path in vulkan.items()},
         'direct3D': {
@@ -198,6 +260,12 @@ def stage(destination):
             for name in ('i386', 'x86_64'):
                 add(OPENAL['targets'][name], openal[name]['bytes'])
             add('opt/winbox/licenses/openal-soft-COPYING', openal['license'])
+            # CJK fallback (see CJK_FONT): fontconfig in both rootfs zips
+            # scans /usr/share/fonts recursively; the conf wires the
+            # zh/ja/ko family aliases the upstream package ships.
+            add('usr/share/fonts/truetype/wqy/wqy-microhei.ttc', cjk['ttc'])
+            add('etc/fonts/conf.d/65-wqy-microhei.conf', cjk['conf'])
+            add('opt/winbox/licenses/wqy-microhei-copyright', cjk['copyright'])
             add('winbox-runtime.json', (json.dumps(provenance, indent=2) + '\n').encode())
         sha256 = mono.digest(pending)
         name = f'support-{sha256}.zip'

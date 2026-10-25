@@ -35,6 +35,7 @@
 /tools/rootfs64/.gstreamer-debs/
 /tools/rootfs64/gecko/
 /tools/rootfs64/openal/
+/tools/rootfs64/cjk-font/
 /tools/BoxedWineRunner/out/
 
 # Probe output stays local; curated reports live in docs/reports/.
