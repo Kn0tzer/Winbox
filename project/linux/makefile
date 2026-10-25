@@ -131,6 +131,14 @@ LDFLAGS = -L./linux_build/lib -lcurl -lssl -lcrypto -lpthread -lm -lz $(GRAPHICS
 #$(TEST_BUILD_DIR)/boxedwineTest: $(TEST_OBJS)
 #	$(CC) $(TEST_OBJS) -o $@ $(LDFLAGS)
 
+# Compiler switches can change CPU/FPU layout without touching a header.
+# Never mix objects from different ABIs in one Build directory. Keep only the
+# current configuration stamp, so switching A -> B -> A also invalidates B.
+# Quote each value as shell data (CPPFLAGS contains quotes for GLH).
+native_config_quote = $(subst ','"'"',$(1))
+NATIVE_CONFIG_KEY := $(shell printf '%s\n' '$(call native_config_quote,$(CC))' '$(call native_config_quote,$(CXX))' '$(call native_config_quote,$(CPPFLAGS))' '$(call native_config_quote,$(CXXFLAGS))' '$(call native_config_quote,$(CFLAGS))' '$(call native_config_quote,$(ASFLAGS))' '$(call native_config_quote,$(LDFLAGS))' | sha256sum | cut -d' ' -f1)
+NATIVE_CONFIG_STAMP := $(BUILD_DIR)/.build-config-$(NATIVE_CONFIG_KEY)
+
 $(BUILD_DIR)/$(TARGET_EXEC): $(ALL)
 	@$(CC) $(ALL) -o $@ $(LDFLAGS)
 
@@ -153,6 +161,13 @@ $(BUILD_DIR)/%.cpp.o: %.cpp
 
 clean:
 	$(RM) -r $(BUILD_DIR)
+
+$(ALL): $(NATIVE_CONFIG_STAMP)
+
+$(NATIVE_CONFIG_STAMP):
+	@$(MKDIR_P) $(BUILD_DIR)
+	@$(RM) $(BUILD_DIR)/.build-config-*
+	@touch $@
 
 -include $(DEPS)
 
