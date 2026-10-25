@@ -2813,8 +2813,17 @@ static void x11_SetLocaleModifiers(CPU* cpu) {
     EAX = 1;
 }
 
+static void x11LogImeUnavailable() {
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        kwarn_fmt("X11 XIM unavailable: browser text composition is not connected; use key lookup for basic input");
+    }
+}
+
 // XIM XOpenIM(Display* dpy, struct _XrmHashBucketRec* rdb, char* res_name, char* res_class) {
 static void x11_OpenIM(CPU* cpu) {
+    x11LogImeUnavailable();
     EAX = 0;
 }
 
@@ -2995,7 +3004,8 @@ static void x11_InternAtom(CPU* cpu) {
 
 
 static void x11_LocaleOfIM(CPU* cpu) {
-    kpanic("x11_LocaleOfIM");
+    x11LogImeUnavailable();
+    EAX = 0;
 }
 
 static void x11_MatchVisualInfo(CPU* cpu) {
