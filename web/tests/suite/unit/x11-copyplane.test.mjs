@@ -43,7 +43,6 @@ struct KThread {};
 struct XGCValues { U32 foreground = 0; U32 background = 0; };
 struct XGC { XGCValues values; };
 class XDrawable;
-static void logClipMaskOnce(XGC*) {}
 class XDrawable {
 public:
     XDrawable(U32 width, U32 height) : w(width), h(height), bytes_per_line(width * 4), data(new U8[bytes_per_line * height]()) {}
