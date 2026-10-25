@@ -333,6 +333,50 @@ U32 KMemory::mremap(KThread* thread, U32 oldaddress, U32 oldsize, U32 newsize, U
     return destination;
 }
 
+U32 KMemory::allocatedPageCount() {
+    U32 count = 0;
+    for (U32 page = 0; page < 0x100000; page++) {
+        if (isPageAllocated(page)) count++;
+    }
+    return count;
+}
+
+BString KMemory::generateMaps(bool smaps) {
+    // Same contract as KMemory64::generateMaps, rendered from the 32-bit
+    // page flags: contiguous runs of equal permission/shared flags.
+    BString result;
+    const U32 pageCount = 0x100000; // 4 GiB / 4 KiB
+    U32 page = 0;
+    while (page < pageCount) {
+        U32 flags = getPageFlags(page);
+        if (!(flags & PAGE_MAPPED)) {
+            page++;
+            continue;
+        }
+        const U32 key = flags & (PAGE_READ | PAGE_WRITE | PAGE_EXEC | PAGE_SHARED);
+        const U32 start = page;
+        U64 committed = 0;
+        while (page < pageCount) {
+            U32 f = getPageFlags(page);
+            if (!(f & PAGE_MAPPED) || (f & (PAGE_READ | PAGE_WRITE | PAGE_EXEC | PAGE_SHARED)) != key) break;
+            if (isPageAllocated(page)) committed++;
+            page++;
+        }
+        char perms[5] = {(key & PAGE_READ) ? 'r' : '-', (key & PAGE_WRITE) ? 'w' : '-',
+                         (key & PAGE_EXEC) ? 'x' : '-', (key & PAGE_SHARED) ? 's' : 'p', 0};
+        char line[160];
+        snprintf(line, sizeof(line), "%08x-%08x %s 00000000 00:00 0\n",
+                 start << K_PAGE_SHIFT, page << K_PAGE_SHIFT, perms);
+        result += line;
+        if (smaps) {
+            snprintf(line, sizeof(line), "Size: %u kB\nRss: %llu kB\n",
+                     (page - start) * 4, (unsigned long long)(committed * 4));
+            result += line;
+        }
+    }
+    return result;
+}
+
 U32 KMemory::unmap(U32 address, U32 len) {
     U32 pageStart = address >> K_PAGE_SHIFT;
     U32 pageCount = (len + K_PAGE_SIZE - 1) >> K_PAGE_SHIFT;

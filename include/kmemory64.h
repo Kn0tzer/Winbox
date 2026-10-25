@@ -251,6 +251,9 @@ public:
     // every mapped page is committed, so this equals mappedPageCount(); afterward
     // it tracks only pages whose K64Page::data is non-null (i.e. actually touched).
     U64 committedPageCount() const;
+    // Linux /proc/<pid>/maps (smaps=true adds Size/Rss) rendered from the
+    // live page table: contiguous runs of equal permission/shared flags.
+    BString generateMaps(bool smaps) const;
 
 #ifdef BOXEDWINE_BLOCK_CACHE_INFRA
     // Registered code pages own stable, distinct generation slots. Data-page

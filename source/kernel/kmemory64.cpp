@@ -456,6 +456,51 @@ U64 KMemory64::committedPageCount() const {
     return n;
 }
 
+BString KMemory64::generateMaps(bool smaps) const {
+    // Snapshot under the lock, format after releasing it: a /proc reader
+    // must never hold up mapping operations. File-backed pages carry no
+    // per-page path/offset record in K64Page, so entries use the anonymous
+    // form (offset 0, no pathname) -- addresses and permissions are exact.
+    std::vector<std::pair<U64, U64>> snapshot; // (page, flags | committed<<32)
+    {
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
+        snapshot.reserve(pages.size());
+        for (const auto& kv : pages) {
+            if (kv.second->flags & K64_PAGE_MAPPED) {
+                snapshot.emplace_back(kv.first, (U64)kv.second->flags | ((U64)(kv.second->committed() ? 1 : 0) << 32));
+            }
+        }
+    }
+    std::sort(snapshot.begin(), snapshot.end());
+    BString result;
+    size_t i = 0;
+    while (i < snapshot.size()) {
+        const U64 start = snapshot[i].first;
+        const U32 key = (U32)snapshot[i].second & (K64_PAGE_READ | K64_PAGE_WRITE | K64_PAGE_EXEC | K64_PAGE_SHARED);
+        U64 committed = 0;
+        size_t j = i;
+        while (j < snapshot.size() && snapshot[j].first == start + (j - i) &&
+               ((U32)snapshot[j].second & (K64_PAGE_READ | K64_PAGE_WRITE | K64_PAGE_EXEC | K64_PAGE_SHARED)) == key) {
+            committed += (snapshot[j].second >> 32) & 1;
+            j++;
+        }
+        const U64 end = start + (j - i);
+        char perms[5] = {(key & K64_PAGE_READ) ? 'r' : '-', (key & K64_PAGE_WRITE) ? 'w' : '-',
+                         (key & K64_PAGE_EXEC) ? 'x' : '-', (key & K64_PAGE_SHARED) ? 's' : 'p', 0};
+        char line[160];
+        snprintf(line, sizeof(line), "%012llx-%012llx %s 00000000 00:00 0\n",
+                 (unsigned long long)(start << K64_PAGE_SHIFT), (unsigned long long)(end << K64_PAGE_SHIFT), perms);
+        result += line;
+        if (smaps) {
+            snprintf(line, sizeof(line), "Size: %llu kB\nRss: %llu kB\n",
+                     (unsigned long long)((end - start) * 4), (unsigned long long)(committed * 4));
+            result += line;
+        }
+        i = j;
+    }
+    return result;
+}
+
 bool KMemory64::isPageMapped(U64 pageNum) const {
     K64Page* p = getPage(pageNum);
     return p && (p->flags & K64_PAGE_MAPPED);

@@ -95,6 +95,9 @@ KProcessPtr KProcess::create() {
                     rssPages = p->memory64->committedPageCount();
                 }
 #endif
+                if (!rssPages && p->memory) {
+                    rssPages = p->memory->allocatedPageCount();
+                }
                 char buf[512];
                 snprintf(buf, sizeof(buf),
                          "%u (%s) S 1 %u %u 0 -1 4194304 0 0 0 0 %llu %llu 0 0 20 0 %u 0 %llu %llu %llu "
@@ -118,6 +121,9 @@ KProcessPtr KProcess::create() {
                     rssKb = p->memory64->committedPageCount() * 4;
                 }
 #endif
+                if (!rssKb && p->memory) {
+                    rssKb = (U64)p->memory->allocatedPageCount() * 4;
+                }
                 char buf[512];
                 snprintf(buf, sizeof(buf),
                          "Name:\t%s\nUmask:\t0022\nState:\tS (sleeping)\nPid:\t%u\nPPid:\t1\n"
@@ -129,6 +135,26 @@ KProcessPtr KProcess::create() {
                          (U32)p->threads.size());
                 return new BufferAccess(node, flags, BString::copy(buf));
             }, K__S_IREAD, k_mdev(0, 0), process->processNode);
+        // /proc/<pid>/maps + smaps, rendered from the live page tables at
+        // open time (Wine's ntdll and diagnostic tools enumerate these).
+        for (int smaps = 0; smaps < 2; smaps++) {
+            Fs::addVirtualFile(process->processNode->path + (smaps ? "/smaps" : "/maps"),
+                [weak_process, smaps](const std::shared_ptr<FsNode>& node, U32 flags, U32 data) -> FsOpenNode* {
+                    KProcessPtr p = weak_process.lock();
+                    if (!p) {
+                        return new BufferAccess(node, flags, B(""));
+                    }
+#ifdef BOXEDWINE_GUEST_X64
+                    if (p->memory64) {
+                        return new BufferAccess(node, flags, p->memory64->generateMaps(smaps != 0));
+                    }
+#endif
+                    if (p->memory) {
+                        return new BufferAccess(node, flags, p->memory->generateMaps(smaps != 0));
+                    }
+                    return new BufferAccess(node, flags, B(""));
+                }, K__S_IREAD, k_mdev(0, 0), process->processNode);
+        }
         process->fdNode = Fs::addFileNode(process->processNode->path + "/fd", B(""), B(""), true, process->processNode);
         process->taskNode = Fs::addFileNode(process->processNode->path + B("/task"), B(""), B(""), true, process->processNode);
     }
