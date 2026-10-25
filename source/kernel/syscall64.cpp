@@ -15,6 +15,7 @@
 #include "cpu64.h"
 #include "kmemory64.h"
 #include "kevent.h"
+#include "kpidfd.h"
 #include "krandom.h"
 #include "ksocket.h"
 #include "kfile.h"
@@ -36,25 +37,6 @@
 #endif
 
 namespace {
-class KPidFd final : public KEvent {
-public:
-    explicit KPidFd(const KProcessPtr& process, bool nonblock) : target(process) { blocking = !nonblock; }
-    KProcessPtr process() const { return target.lock(); }
-    bool isReadReady() override {
-        KProcessPtr p = target.lock();
-        return !p || p->isTerminated();
-    }
-    bool isWriteReady() override { return false; }
-    void waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) override {
-        KProcessPtr p = target.lock();
-        if (p && (events & K_POLLIN)) BOXEDWINE_CONDITION_ADD_PARENT(p->exitOrExecCond, parentCondition);
-    }
-    U32 readNative(U8*, U32) override { return (U32)-K_EINVAL; }
-    U32 writeNative(U8*, U32) override { return (U32)-K_EINVAL; }
-private:
-    KProcessWeakPtr target;
-};
-
 std::mutex g_queuedSiginfoMutex;
 std::unordered_map<U64, std::array<U8, 128>> g_queuedSiginfo;
 
@@ -96,12 +78,9 @@ S32 queueSiginfo64(KThread* target, U32 signal, const U8 info[128]) {
 }
 
 U32 createPidFdForClone64(KThread* thread, U32 processId) {
-    if (!thread || !thread->process) return (U32)-K_ESRCH;
-    KProcessPtr target = KSystem::getProcess(processId);
-    if (!target) return (U32)-K_ESRCH;
-    std::shared_ptr<KPidFd> object = std::make_shared<KPidFd>(target, false);
-    KFileDescriptorPtr result = thread->process->allocFileDescriptor(object, K_O_RDWR, FD_CLOEXEC, -1, 0);
-    return result ? result->handle : (U32)-K_EMFILE;
+    // KPidFd + the factory live in kpidfd.h since round 3C (the 32-bit
+    // clone paths create pidfds too).
+    return createPidFdForProcess(thread, processId);
 }
 
 #ifdef BOXEDWINE_OPENGL

@@ -34,6 +34,7 @@ struct Heap { void freeAll(Memory*) { requireQuiescent(); } };
 struct KMemory64 {
   explicit KMemory64(void*) { requireQuiescent(); }
   ~KMemory64() { requireQuiescent(); }
+  bool releaseVmRef() { return true; }
 };
 struct Reg { void setU64(int) {} };
 constexpr int X64_REG_COUNT = 16;
@@ -43,7 +44,12 @@ struct CPU64 {
   int rflags=0, fsbase=0, gsbase=0, mmapNext=0, sigMask=0;
   std::vector<int> futexWaiters;
   struct SigAction {};
-  SigAction sigActions[65];
+  struct SigActionTable {
+    SigAction entries[65];
+    SigAction& operator[](int i) { return entries[i]; }
+    void unshareIfShared() {}
+  };
+  SigActionTable sigActions;
   void invalidateFetchCache() {}
 };
 void bw64InvalidateScratchForThread(unsigned) {}

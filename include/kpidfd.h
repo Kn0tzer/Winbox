@@ -3,11 +3,11 @@
 
 #include "kevent.h"
 #include "kerror.h"
-#include "kpoll.h"
 
-// pidfd descriptor object (kernel round 3C: moved out of syscall64.cpp so
-// the 32-bit clone path can create pidfds too). A pidfd is a pollable
-// handle on a process: it becomes readable once the target terminates.
+// A pidfd: an event object that becomes readable when the target
+// process terminates. Moved here from syscall64.cpp (kernel round 3C)
+// so the 32-bit clone/clone3 paths can create pidfds too; the class is
+// unchanged.
 class KPidFd final : public KEvent {
 public:
     explicit KPidFd(const KProcessPtr& process, bool nonblock) : target(process) { blocking = !nonblock; }
@@ -27,9 +27,8 @@ private:
     KProcessWeakPtr target;
 };
 
-// Allocate a pidfd for processId on the calling thread's process
-// (CLONE_PIDFD in clone/clone3, both widths). Returns the fd handle in
-// the caller's table or a negative errno value.
+// Create a pidfd for processId in the calling thread's process fd
+// table. Verbatim body of syscall64.cpp's createPidFdForClone64.
 inline U32 createPidFdForProcess(KThread* thread, U32 processId) {
     if (!thread || !thread->process) return (U32)-K_ESRCH;
     KProcessPtr target = KSystem::getProcess(processId);

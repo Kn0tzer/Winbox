@@ -45,7 +45,8 @@ struct KObject:std::enable_shared_from_this<KObject> {virtual ~KObject()=default
 struct Descriptor {std::shared_ptr<KObject> kobject;U32 handle;U32 descriptorFlags=0;};
 using KFileDescriptorPtr=std::shared_ptr<Descriptor>;
 struct KMemory {char bytes[200]={};U16 readw(U32 a){U16 v;std::memcpy(&v,bytes+a,2);return v;}void memcpy(void* d,U32 s,U32 n){std::memcpy(d,bytes+s,n);}};
-struct Process {U32 id=10;BString currentDirectory="/tmp";std::vector<KFileDescriptorPtr> fds;KFileDescriptorPtr allocFileDescriptor(std::shared_ptr<KObject> o,int,int,int,int){auto f=std::make_shared<Descriptor>();f->kobject=o;f->handle=fds.size()+3;fds.push_back(f);return f;}};
+struct FsContext {BString currentDirectory="/tmp";};
+struct Process {U32 id=10;std::shared_ptr<FsContext> fsContext=std::make_shared<FsContext>();std::vector<KFileDescriptorPtr> fds;KFileDescriptorPtr allocFileDescriptor(std::shared_ptr<KObject> o,int,int,int,int){auto f=std::make_shared<Descriptor>();f->kobject=o;f->handle=fds.size()+3;fds.push_back(f);return f;}};
 struct KThread {KMemory* memory;Process* process;bool terminating=false,startSignal=false;static KThread* currentThread(){return nullptr;}};
 struct FsNode {std::weak_ptr<KObject> kobject;std::weak_ptr<FsNode> parent;BString name;auto getParent(){return parent;}void removeChildByName(const BString&) {}};
 struct Fs {static std::shared_ptr<FsNode> node;static std::shared_ptr<FsNode> getNodeFromLocalPath(const BString&,const BString&,bool){return node;}};

@@ -51,7 +51,9 @@ KMemory::~KMemory() {
 #elif defined(BOXEDWINE_JIT)
         jitMemoryInvalidated(this, {});
 #endif
-        delete data;
+        // A CLONE_VM sibling may still be using this data object: only
+        // the last wrapper frees it.
+        if (data->releaseShareRef()) delete data;
     }
     if (deleteOnNextLoop) {
         delete deleteOnNextLoop;
@@ -68,7 +70,7 @@ void KMemory::cleanup() {
 #elif defined(BOXEDWINE_JIT)
         jitMemoryInvalidated(this, {});
 #endif
-        delete data;
+        if (data->releaseShareRef()) delete data;
         data = nullptr;
     }
     // don't delete dynamic memory yet, we might return to it to finish
@@ -781,7 +783,9 @@ void KMemory::execvReset(bool cloneVM) {
     if (!cloneVM) {
         data->execvReset();
     } else {
-        // data no longer shared with parent
+        // data no longer shared with parent: drop our reference (a parent
+        // still using it keeps it alive) and start fresh.
+        if (data->releaseShareRef()) delete data;
         data = new KMemoryData(this);
     }
 }
@@ -1422,8 +1426,9 @@ void KMemory::clone(KMemory* from, bool vfork) {
     // don't allow changes to the from pages while we are cloning
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(from->mutex);
     if (vfork) {
-        delete this->data;
+        if (this->data->releaseShareRef()) delete this->data;
         this->data = from->data;
+        this->data->retainShareRef();
         this->pageState = from->pageState;
         return;
     }

@@ -247,7 +247,7 @@ public:
     U32 chdir(BString path);
     U32 chmod(BString path, U32 mode);
     U32 clone3(KThread* thread, U32 args, U32 size);
-    U32 clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 tls, U32 ctid);
+    U32 clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 tls, U32 ctid, bool clearSighand = false);
 #ifdef BOXEDWINE_GUEST_X64
     // 64-bit pthread clone. Mirrors the 32-bit thread branch of clone(): makes
     // a new KThread sharing this process + memory64, allocates a CPU64 for it,

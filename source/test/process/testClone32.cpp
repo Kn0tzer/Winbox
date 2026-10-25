@@ -56,7 +56,7 @@ constexpr U32 C_PARENT_SETTID = 0x100000;
 constexpr U32 C_CHILD_CLEARTID = 0x200000;
 constexpr U32 C_DETACHED    = 0x400000;
 constexpr U32 C_CHILD_SETTID = 0x1000000;
-constexpr U32 C_INTO_CGROUP = 0x20000000; // bit 29 in clone_args flags
+constexpr U32 C_NEWPID = 0x20000000; // legacy flags word bit 29 = CLONE_NEWPID (CLONE_INTO_CGROUP exists only in clone3's 64-bit flags, bit 33)
 
 constexpr U32 CODE_PAGE = 0x62000000; // base of the 3-page fixture mapping
 constexpr U32 SPIN_PAGE = 0x62001000; // filled with jmp $ pairs
@@ -322,14 +322,18 @@ void testClone32Flags() {
         stashChild(pid, "clone CLONE_SETTLS");
     }
 
-    // CLONE_INTO_CGROUP via legacy clone carries the cgroup fd in the
-    // child_tid slot; cgroups are not implemented, so it refuses EBADF.
+    // Bit 29 in the LEGACY flags word is CLONE_NEWPID, not
+    // CLONE_INTO_CGROUP (that exists only in clone3's 64-bit flags,
+    // bit 33, pinned EBADF in testClone3Abi32 below). A namespace
+    // request refuses EINVAL like the 64-bit path. (This corrects the
+    // case as originally committed in 7ebb2c612, which mislabeled the
+    // bit; the refusal stays loud, only the errno follows the ABI.)
     {
         aimCpu(context, SPIN_PAGE);
-        S32 result = process->clone(context.thread, C_INTO_CGROUP | 17, 0, 0, 0, 9999);
-        if (result != -K_EBADF)
-            testFail("clone CLONE_INTO_CGROUP returned %d, expected -EBADF", result);
-        if (result > 0) stashChild(result, "clone CLONE_INTO_CGROUP (unexpected child)");
+        S32 result = process->clone(context.thread, C_NEWPID | 17, 0, 0, 0, 9999);
+        if (result != -K_EINVAL)
+            testFail("clone bit 29 (CLONE_NEWPID) returned %d, expected -EINVAL", result);
+        if (result > 0) stashChild(result, "clone CLONE_NEWPID (unexpected child)");
     }
 
     // Thread branch: the full Wine/glibc flag set, including CHILD_SETTID,

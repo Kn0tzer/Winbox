@@ -20,6 +20,7 @@
 #include "kinotify.h"
 
 #include "kscheduler.h"
+#include "kpidfd.h"
 #include "loader.h"
 #include "kstat.h"
 #include "bufferaccess.h"
@@ -1153,9 +1154,10 @@ U32 KProcess::execve(KThread* thread, BString path, std::vector<BString>& args, 
     // iteration, so it picks up the re-seeded state on the next run() entry.
     if (this->is64Bit) {
         KMemory64* freshMem = new KMemory64(this);
-        // A vfork child shares the parent address space: drop the reference
-        // without deleting it; the parent keeps using it after we exec.
-        if (!this->memory64Shared) delete this->memory64;
+        // A vfork/CLONE_VM child shares the parent address space: drop
+        // our reference; the object is deleted only when the last sharer
+        // releases it, so a sibling still running in it is never stranded.
+        if (this->memory64->releaseVmRef()) delete this->memory64;
         this->memory64Shared = false;
         this->memory64 = freshMem;
         if (this->cpu64) {
@@ -1176,6 +1178,7 @@ U32 KProcess::execve(KThread* thread, BString path, std::vector<BString>& args, 
             this->cpu64->mmapNext = 0;
             this->cpu64->sigMask = 0;
             this->cpu64->futexWaiters.clear();
+            this->cpu64->sigActions.unshareIfShared(); // exec unshares handlers (Linux)
             for (int i = 0; i < 65; i++) this->cpu64->sigActions[i] = CPU64::SigAction{};
         }
         // loadProgram64 keys "is this 64-bit?" off the ELF, not this flag, and
@@ -2002,6 +2005,8 @@ U32 KProcess::getitimer(U32 which, U32 oldValue) {
 #define K_CLONE_DETACHED          0x00400000      /* Unused, ignored */
 #define K_CLONE_UNTRACED          0x00800000      /* set if the tracing process can't force K_CLONE_PTRACE on this clone */
 #define K_CLONE_CHILD_SETTID      0x01000000      /* set the TID in the child */
+#define K_CLONE_NEWCGROUP         0x02000000      /* New cgroup namespace */
+#define K_CLONE_NS_MASK   (K_CLONE_NEWNS|K_CLONE_NEWUTS|K_CLONE_NEWIPC|K_CLONE_NEWUSER|K_CLONE_NEWPID|K_CLONE_NEWNET|K_CLONE_NEWCGROUP)
 /* 0x02000000 was previously the unused K_CLONE_STOPPED (Start in stopped state)
 and is now available for re-use. */
 #define K_CLONE_NEWUTS            0x04000000      /* New utsname group? */
@@ -2070,26 +2075,113 @@ struct clone_args {
     __aligned_u64 cgroup;
 };
 */
-// :TODO: leaving in for now, but currently clone3 syscall returns ENOSYS and glibc will fall back to the normal clone, 
-// I'm not sure why this doesn't work, seems like eip might be in a different place
+// CLONE_PIDFD as a file-scope constexpr, not a #define: clone364
+// declares a same-named function-local constexpr, which a macro would
+// break (a local may legally shadow this one).
+static constexpr U32 K_CLONE_PIDFD = 0x00001000;
+
+// 32-bit clone3 (kernel round 3C): validated like the 64-bit path
+// (clone364) instead of the base implementation, which ignored size,
+// dropped exit_signal and CLONE_CLEAR_SIGHAND by truncating the 64-bit
+// flags word to U32, and silently accepted set_tid/cgroup requests.
 U32 KProcess::clone3(KThread* thread, U32 args, U32 size) {
+    constexpr U32 CLONE_ARGS_V0_SIZE = 64;
+    constexpr U32 CLONE_ARGS_CURRENT_SIZE = 88;
+    if (size < CLONE_ARGS_V0_SIZE) {
+        return (U32)-K_EINVAL;
+    }
+    if (size > K_PAGE_SIZE) {
+        return (U32)-K_E2BIG;
+    }
+    // Versioned by size: a larger structure is only accepted when the
+    // extension bytes beyond the known layout are zero.
+    for (U32 offset = CLONE_ARGS_CURRENT_SIZE; offset < size; offset++) {
+        if (memory->readb(args + offset) != 0) {
+            return (U32)-K_E2BIG;
+        }
+    }
     U64 flags = memory->readq(args);
-    //U64 pidfd = memory->readq(args+8);
+    U64 pidfdAddr = memory->readq(args + 8);
     U64 child_tid = memory->readq(args + 16);
     U64 parent_tid = memory->readq(args + 24);
-    //U64 exit_signal = memory->readq(args + 32);
+    U64 exit_signal = memory->readq(args + 32);
     U64 stack = memory->readq(args + 40);
     U64 stack_size = memory->readq(args + 48);
     U64 tls = memory->readq(args + 56);
-    //U64 set_tid = memory->readq(args + 64);
-    //U64 set_tid_size = memory->readq(args + 72);
-    //U64 cgroup = memory->readq(args + 80);
-    return clone(thread, (U32)flags, (U32)(stack + stack_size), (U32)parent_tid, (U32)tls, (U32)child_tid);
+    U64 set_tid = memory->readq(args + 64);
+    U64 set_tid_size = memory->readq(args + 72);
+    U64 cgroup = memory->readq(args + 80);
+
+    if (exit_signal > 64) {
+        return (U32)-K_EINVAL;
+    }
+    if (flags & ~0x3FFFFFFFFULL) { // bits above CLONE_INTO_CGROUP are unknown
+        return (U32)-K_EINVAL;
+    }
+    // CLONE_INTO_CGROUP (bit 33) is unambiguous in clone3's 64-bit flags
+    // word: cgroups are not implemented, so refuse EBADF like clone364.
+    // A nonzero cgroup field without the flag is EINVAL.
+    if (flags & (1ULL << 33)) {
+        static bool warnedCgroup = false;
+        if (!warnedCgroup) {
+            warnedCgroup = true;
+            klog("clone3: CLONE_INTO_CGROUP unsupported; returned -EBADF");
+        }
+        return (U32)-K_EBADF;
+    }
+    if (cgroup != 0) {
+        return (U32)-K_EINVAL;
+    }
+    if (set_tid_size != 0) {
+        if (set_tid_size > 32) {
+            return (U32)-K_EINVAL;
+        }
+        if (!set_tid) {
+            return (U32)-K_EFAULT;
+        }
+        // set_tid (choosing the child's pid) stays REJECTED-LOUDLY,
+        // matching clone364: pids are assigned by the emulator.
+        static bool warnedSetTid = false;
+        if (!warnedSetTid) {
+            warnedSetTid = true;
+            klog("clone3: set_tid unsupported; returned -EPERM");
+        }
+        return (U32)-K_EPERM;
+    }
+    if ((flags & K_CLONE_PIDFD) && !pidfdAddr) {
+        return (U32)-K_EFAULT;
+    }
+    if ((flags & K_CLONE_PIDFD) && (flags & K_CLONE_THREAD)) {
+        return (U32)-K_EINVAL; // matches clone364
+    }
+    // The exit signal travels in clone()'s CSIGNAL byte; bit 32
+    // (CLONE_CLEAR_SIGHAND) is handed down explicitly. CLONE_PIDFD is
+    // stripped: clone() would alias it onto parent_tid, but clone3 has
+    // its own pidfd out-slot, written below. Namespace flags, the
+    // thread requirements and the remaining low-word dispositions are
+    // all enforced by clone() itself.
+    const bool clearSighand = (flags & (1ULL << 32)) != 0;
+    U32 result = clone(thread, (U32)((flags & ~0x1000ULL) | (exit_signal & CSIGNAL)), (U32)(stack + stack_size), (U32)parent_tid, (U32)tls, (U32)child_tid, clearSighand);
+    if ((S32)result > 0 && (flags & K_CLONE_PIDFD)) {
+        // clone3's pidfd has its own out-slot (clone_args.pidfd), unlike
+        // legacy clone where it aliases parent_tid.
+        U32 pidfd = createPidFdForProcess(thread, result);
+        if ((S32)pidfd < 0) {
+            return pidfd;
+        }
+        memory->writed((U32)pidfdAddr, pidfd);
+    }
+    return result;
 }
 
-U32 KProcess::clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 tls, U32 ctid) {    
+U32 KProcess::clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 tls, U32 ctid, bool clearSighand) {    
+    // The exit signal rides in the low byte (CSIGNAL). It is part of the
+    // child contract, not a creation flag: capture it before masking.
+    // The base code masked first and never stored it, so every child of a
+    // legacy clone reported the SIGCHLD default to its parent.
+    const U32 exitSignal = flags & CSIGNAL;
     flags &= ~CSIGNAL;
-    
+
     if (!(flags & K_CLONE_THREAD)) { // new thread group (process)
         bool vFork = false;
         if (flags & K_CLONE_VFORK) {
@@ -2101,9 +2193,42 @@ U32 KProcess::clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 t
             flags &=~K_CLONE_VM;
             vm = true;
         }
-        // Wine uses CLONE_FS|CLONE_FILES|CLONE_SIGHAND for new_process; allow them.
-        if (flags & ~(K_CLONE_CHILD_SETTID|K_CLONE_CHILD_CLEARTID|K_CLONE_PARENT_SETTID|K_CLONE_FS|K_CLONE_FILES|K_CLONE_SIGHAND)) {
-            kpanic_fmt("KProcess::clone - unhandled flag 0x%X", (U32)(flags & ~(K_CLONE_CHILD_SETTID|K_CLONE_CHILD_CLEARTID|K_CLONE_PARENT_SETTID|K_CLONE_FS|K_CLONE_FILES|K_CLONE_SIGHAND)));
+        // Flag dispositions (kernel round 3C). Every bit of the flags word
+        // is accounted for: implemented, accepted because it has no
+        // observable effect in this emulator, or refused loudly with the
+        // errno Linux uses. The base code kpanic'd on anything outside a
+        // small allowlist, letting a guest take the whole emulator down
+        // with one clone call.
+        if (flags & K_CLONE_NS_MASK) {
+            // Namespace creation is not implemented (EINVAL, once-logged
+            // per fresh flag bit, mirroring clone64).
+            static U32 warnedNsFlags = 0;
+            const U32 fresh = (flags & K_CLONE_NS_MASK) & ~warnedNsFlags;
+            if (fresh) {
+                warnedNsFlags |= flags & K_CLONE_NS_MASK;
+                klog_fmt("clone: namespace flags 0x%X unsupported; returned -EINVAL", fresh);
+            }
+            return (U32)-K_EINVAL;
+        }
+        if ((flags & K_CLONE_SIGHAND) && !vm) {
+            // Linux requires CLONE_VM with CLONE_SIGHAND.
+            return (U32)-K_EINVAL;
+        }
+        if ((flags & K_CLONE_PIDFD) && !ptid) {
+            // Legacy clone returns the pidfd through the parent_tid slot.
+            return (U32)-K_EFAULT;
+        }
+        // CLONE_PTRACE / CLONE_UNTRACED / CLONE_DETACHED are accepted:
+        // ptrace is not implemented and there is no detached state to
+        // model, so they have no observable effect. CLONE_SYSVSEM and
+        // CLONE_IO name subsystems whose syscalls are ENOSYS here, so
+        // there is no shared undo/io state to model either.
+        constexpr U32 PROCESS_KNOWN_FLAGS = K_CLONE_CHILD_SETTID|K_CLONE_CHILD_CLEARTID|K_CLONE_PARENT_SETTID|
+            K_CLONE_FS|K_CLONE_FILES|K_CLONE_SIGHAND|K_CLONE_PARENT|K_CLONE_PIDFD|K_CLONE_SETTLS|
+            K_CLONE_PTRACE|K_CLONE_UNTRACED|K_CLONE_DETACHED|K_CLONE_SYSVSEM|K_CLONE_IO;
+        if (flags & ~PROCESS_KNOWN_FLAGS) {
+            kwarn_fmt("clone: unhandled flag bits 0x%X; returned -EINVAL", (U32)(flags & ~PROCESS_KNOWN_FLAGS));
+            return (U32)-K_EINVAL;
         }
         KProcessPtr newProcess = KProcess::create();
         newProcess->memory = KMemory::create(newProcess.get());
@@ -2113,8 +2238,30 @@ U32 KProcess::clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 t
 
         newProcess->parentId = this->id;        
         newProcess->cloneVM = vm;
-        newProcess->clone(shared_from_this());
+        newProcess->clone(shared_from_this(), flags & (K_CLONE_FS|K_CLONE_FILES|K_CLONE_SIGHAND));
+        newProcess->childExitSignal64 = exitSignal;
+        if (flags & K_CLONE_PARENT) {
+            // CLONE_PARENT: the child is our sibling, not our child.
+            newProcess->parentId = this->parentId;
+        }
+        if (clearSighand) {
+            // CLONE_CLEAR_SIGHAND (clone3 only): all dispositions reset.
+            // Runs after the CLONE_SIGHAND adoption inside clone(from),
+            // so a combined SIGHAND|CLEAR_SIGHAND flushes the shared
+            // table, matching the kernel's copy-then-clear order.
+            for (auto& action : newProcess->sigActions) action.reset();
+        }
         newThread->clone(thread);
+        if ((flags & K_CLONE_SETTLS) && tls) {
+            // Mirror the thread path's TLS install for process clones.
+            struct user_desc desc;
+            memory->memcpy(&desc, tls, sizeof(struct user_desc));
+            if (desc.base_addr != 0 && desc.entry_number != 0) {
+                struct user_desc* ldt = newThread->getLDT(desc.entry_number);
+                *ldt = desc;
+                newThread->cpu->setSegment(GS, desc.entry_number << 3);
+            }
+        }
 
         // will only create them if they are missing
         //newProcess->initStdio();
@@ -2138,6 +2285,16 @@ U32 KProcess::clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 t
             // space.
             if (ptid) {                
                 memory->writed(ptid, newThread->id);
+            }
+        }
+        if (flags & K_CLONE_PIDFD) {
+            U32 pidfd = createPidFdForProcess(thread, newProcess->id);
+            if ((S32)pidfd < 0) {
+                // The child already exists; the only failures are ESRCH
+                // (impossible here) or EMFILE in the caller's table.
+                kwarn_fmt("clone: CLONE_PIDFD allocation failed (%d) for child %u", (S32)pidfd, newProcess->id);
+            } else {
+                memory->writed(ptid, pidfd);
             }
         }
         if (child_stack!=0) {
@@ -2174,32 +2331,64 @@ U32 KProcess::clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 t
             scheduleThread(newThread);
         }
         return newProcess->id;
-    } else if ((flags & 0xFFFFFF00) == (K_CLONE_THREAD | K_CLONE_VM | K_CLONE_FS | K_CLONE_FILES | K_CLONE_SIGHAND | K_CLONE_SETTLS | K_CLONE_PARENT_SETTID | K_CLONE_CHILD_CLEARTID | K_CLONE_SYSVSEM)) {
+    } else { // CLONE_THREAD: a new thread in this process
+        // Dispositions (kernel round 3C): the base code required one exact
+        // flag mask and kpanic'd on any deviation — including
+        // CLONE_CHILD_SETTID, which glibc can legitimately present.
+        // Linux requires CLONE_VM|CLONE_SIGHAND with CLONE_THREAD and
+        // forbids CLONE_PARENT / CLONE_PIDFD / CLONE_VFORK there.
+        if ((flags & (K_CLONE_VM | K_CLONE_SIGHAND)) != (K_CLONE_VM | K_CLONE_SIGHAND) ||
+            (flags & (K_CLONE_PARENT | K_CLONE_PIDFD | K_CLONE_VFORK))) {
+            return (U32)-K_EINVAL;
+        }
+        if (flags & K_CLONE_NS_MASK) {
+            static U32 warnedNsFlags = 0;
+            const U32 fresh = (flags & K_CLONE_NS_MASK) & ~warnedNsFlags;
+            if (fresh) {
+                warnedNsFlags |= flags & K_CLONE_NS_MASK;
+                klog_fmt("clone: namespace flags 0x%X unsupported; returned -EINVAL", fresh);
+            }
+            return (U32)-K_EINVAL;
+        }
+        constexpr U32 THREAD_KNOWN_FLAGS = K_CLONE_THREAD|K_CLONE_VM|K_CLONE_FS|K_CLONE_FILES|K_CLONE_SIGHAND|
+            K_CLONE_SETTLS|K_CLONE_PARENT_SETTID|K_CLONE_CHILD_SETTID|K_CLONE_CHILD_CLEARTID|K_CLONE_SYSVSEM|
+            K_CLONE_PTRACE|K_CLONE_UNTRACED|K_CLONE_DETACHED|K_CLONE_IO;
+        if (flags & ~THREAD_KNOWN_FLAGS) {
+            kwarn_fmt("clone: unhandled thread flag bits 0x%X; returned -EINVAL", (U32)(flags & ~THREAD_KNOWN_FLAGS));
+            return (U32)-K_EINVAL;
+        }
         KThread* newThread = this->createThread();
         newThread->clone(thread); // inherit parent CPU (EIP at int 0x80, regs, segs, FPU) - MUST come before TLS setup
-        struct user_desc desc;
-
-        memory->memcpy(&desc, tls, sizeof(struct user_desc));
+        if ((flags & K_CLONE_SETTLS) && tls) {
+            struct user_desc desc;
+            memory->memcpy(&desc, tls, sizeof(struct user_desc));
 #ifdef BW64_INST_TRACE
-        klog_fmt("INSTTRACE CLONE_TLS tid=%u tls_ptr=%08X base=%08X entry=%u", newThread->id, tls, desc.base_addr, desc.entry_number);
+            klog_fmt("INSTTRACE CLONE_TLS tid=%u tls_ptr=%08X base=%08X entry=%u", newThread->id, tls, desc.base_addr, desc.entry_number);
 #endif
-
-        if (desc.base_addr!=0 && desc.entry_number!=0) {
-            struct user_desc* ldt = newThread->getLDT(desc.entry_number);
-            *ldt = desc;
-            newThread->cpu->setSegment(GS, desc.entry_number << 3);
+            if (desc.base_addr!=0 && desc.entry_number!=0) {
+                struct user_desc* ldt = newThread->getLDT(desc.entry_number);
+                *ldt = desc;
+                newThread->cpu->setSegment(GS, desc.entry_number << 3);
+            }
         }
-        newThread->clear_child_tid = ctid;
-        memory->writed(ptid, newThread->id);
-        newThread->cpu->reg[4].u32 = child_stack; // ESP = new thread stack
+        if (flags & K_CLONE_CHILD_CLEARTID) {
+            newThread->clear_child_tid = ctid;
+        }
+        if ((flags & K_CLONE_PARENT_SETTID) && ptid) {
+            memory->writed(ptid, newThread->id);
+        }
+        if (child_stack != 0) {
+            newThread->cpu->reg[4].u32 = child_stack; // ESP = new thread stack
+        }
         newThread->cpu->eip.u32 += 2; // step over clone call in the new thread
         newThread->cpu->reg[0].u32 = 0; // child returns 0 from clone
-        //klog("starting %d/%d", newThread->process->id, newThread->id);
+        if ((flags & K_CLONE_CHILD_SETTID) && ctid) {
+            // The address space is shared (CLONE_VM), so this store lands
+            // in the child's memory too, before the thread can run.
+            memory->writed(ctid, newThread->id);
+        }
         scheduleThread(newThread);
         return newThread->id;
-    } else {
-        kpanic_fmt("sys_clone does not implement flags: %X", flags);
-        return 0;
     }
 }
 
@@ -2422,7 +2611,7 @@ U32 KProcess::forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid, U64 
     // bits (memory64 deep-copy, is64Bit, brk/phdr, CPU64) by hand.
     KProcessPtr newProcess = KProcess::create();
     newProcess->memory = KMemory::create(newProcess.get());  // unused 32-bit side
-    newProcess->clone(shared_from_this());                   // FDs, cwd, exe, sig...
+    newProcess->clone(shared_from_this(), (U32)(flags & (K_CLONE_FS | K_CLONE_FILES | K_CLONE_SIGHAND))); // FDs, cwd, exe, sig (shared when the clone flags ask for it)
     if (flags & K_CLONE_PARENT) {
         // CLONE_PARENT: the child is a sibling, reparented to our parent.
         newProcess->parentId = this->parentId;
@@ -2441,9 +2630,19 @@ U32 KProcess::forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid, U64 
     // Address space: shared for vfork, a deep copy otherwise.
     if (flags & K_CLONE_VFORK) {
         // vfork: the child runs in the SAME address space until it execs or
-        // exits (the parent is suspended below until then). Exec drops the
-        // reference without deleting (see the is64Bit branch of execve) and
-        // exit needs no detach: nothing deletes memory64 at process exit.
+        // exits (the parent is suspended below until then). Exec releases
+        // the child's reference (the object is deleted only when the last
+        // sharer releases it, see the is64Bit branch of execve) and exit
+        // just releases the reference: nothing deletes memory64 at exit.
+        this->memory64->retainVmRef();
+        newProcess->memory64 = this->memory64;
+        newProcess->memory64Shared = true;
+    } else if (flags & K_CLONE_VM) {
+        // CLONE_VM without vfork (kernel round 3C): the child shares the
+        // address space for real, like vfork, but the parent is NOT
+        // suspended and keeps running concurrently with the child. The
+        // exec/exit reference rules are the same as vfork's.
+        this->memory64->retainVmRef();
         newProcess->memory64 = this->memory64;
         newProcess->memory64Shared = true;
     } else {
@@ -2458,6 +2657,14 @@ U32 KProcess::forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid, U64 
     KThread* newThread = newProcess->createThread();
     CPU64* childCpu = new CPU64(newProcess->memory64);
     childCpu->cloneRegistersFrom(parentCpu);
+    if (flags & K_CLONE_SIGHAND) {
+        // Signal delivery consults the CPU64 table, so a CLONE_SIGHAND
+        // child shares it too (the KProcess table was shared inside
+        // KProcess::clone above). This runs before the CLEAR_SIGHAND
+        // reset below, so a combined CLONE_SIGHAND|CLONE_CLEAR_SIGHAND
+        // flushes the shared table, matching the kernel's order.
+        childCpu->sigActions.shareFrom(parentCpu->sigActions);
+    }
     if (flags & 0x100000000ULL) { // CLONE_CLEAR_SIGHAND
         // All dispositions reset to SIG_DFL: both the process table and the
         // CPU64 table (the one signal delivery consults).
@@ -2546,6 +2753,17 @@ U32 KProcess::exitgroup(KThread* thread, U32 code) {
             // make sure the shared memory is unhooked from parent
             this->memory->execvReset(cloneVM);
         }
+#ifdef BOXEDWINE_GUEST_X64
+        if (this->is64Bit && this->memory64 && this->memory64Shared) {
+            // Drop this process's reference to the shared 64-bit address
+            // space. The space is never deleted at exit (the last exec
+            // that releases it frees it, or it leaks with the emulator as
+            // before); unhooking here keeps a surviving sharer's execve
+            // from releasing our reference a second time.
+            this->memory64->releaseVmRef();
+            this->memory64Shared = false;
+        }
+#endif
         this->cleanupProcess(); // release RAM, sockets, etc now, before waitpid
     }
     this->exitCode = code;
