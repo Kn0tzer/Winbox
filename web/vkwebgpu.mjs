@@ -2611,6 +2611,15 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
             for (const vb of st.vbinds) {
               const slots = st.pipeRec.slotOf.get(vb.binding);
               if (!slots) continue;
+              // A zero buffer id is a guest VK_NULL_HANDLE bind, not lost
+              // data: the bridge advertises VK_EXT_robustness2
+              // nullDescriptor (a feature DXVK hard-requires), under which
+              // vkCmdBindVertexBuffers may bind VK_NULL_HANDLE and attribute
+              // reads from that binding are defined to return zero. Serve
+              // the binding from the zero-filled dummy via the unbound-slot
+              // fill below. A NONZERO id with no bytes is a genuinely lost
+              // buffer and still drops loudly further down.
+              if (vb.buf === '0000000000000000') continue;
               const bytes = F.buffers.get(vb.buf);
               const preHash = F.bufHashes ? F.bufHashes.get(vb.buf) : null; // always use bridge hash
               if (!bytes && !preHash) { noteDrop('draw-vertex-buffer-missing', 'buf=' + vb.buf + ' binding=' + vb.binding); invalidVertexBuffer = true; break; }
