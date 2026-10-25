@@ -17,6 +17,7 @@
  */
 
 #include "boxedwine.h"
+#include "kinotify.h"
 
 #include "kscheduler.h"
 #include "loader.h"
@@ -1331,7 +1332,13 @@ U32 KProcess::rename(BString from, BString to) {
     if (!node)
         return -K_ENOENT;
     BString fullPath = Fs::getFullPath(this->currentDirectory, to);
-    return node->rename(fullPath);
+    U32 result = node->rename(fullPath);
+    if (result == 0) {
+        std::shared_ptr<FsNode> fromParent = Fs::getNodeFromLocalPath(this->currentDirectory, Fs::getParentPath(from), false);
+        std::shared_ptr<FsNode> toParent = Fs::getNodeFromLocalPath(this->currentDirectory, Fs::getParentPath(to), false);
+        KInotify::notifyRenamed(fromParent.get(), Fs::getFileNameFromPath(from), toParent.get(), Fs::getFileNameFromPath(to), node.get());
+    }
+    return result;
 }
 
 U32 KProcess::renameat(FD olddirfd, BString from, FD newdirfd, BString to) {
@@ -1343,11 +1350,18 @@ U32 KProcess::renameat(FD olddirfd, BString from, FD newdirfd, BString to) {
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(currentDirectory, from, false);    
     if (!node)
         return -K_ENOENT;
+    BString fromDirectory = currentDirectory;
     result = this->getCurrentDirectoryFromDirFD(newdirfd, currentDirectory);
     if (result)
         return result;
     BString fullPath = Fs::getFullPath(currentDirectory, to);
-    return node->rename(fullPath);
+    result = node->rename(fullPath);
+    if (result == 0) {
+        std::shared_ptr<FsNode> fromParent = Fs::getNodeFromLocalPath(fromDirectory, Fs::getParentPath(from), false);
+        std::shared_ptr<FsNode> toParent = Fs::getNodeFromLocalPath(currentDirectory, Fs::getParentPath(to), false);
+        KInotify::notifyRenamed(fromParent.get(), Fs::getFileNameFromPath(from), toParent.get(), Fs::getFileNameFromPath(to), node.get());
+    }
+    return result;
 }
 
 static S32 internalAccess(std::shared_ptr<FsNode> node, U32 flags) {
@@ -3733,6 +3747,43 @@ U32 KProcess::utimesat64(FD dirfd, BString path, U32 times, U32 flags) {
         }
     }
     return node->setTimes(lastAccessTime, lastAccessTimeNano, lastModifiedTime, lastModifiedTimeNano);
+}
+
+U32 KProcess::inotify_init1(U32 flags) {
+    if (flags & ~(K_O_CLOEXEC | K_O_NONBLOCK)) return -K_EINVAL;
+    std::shared_ptr<KInotify> o = std::make_shared<KInotify>((flags & K_O_NONBLOCK) == 0);
+    KInotify::registerInstance(o);
+    KFileDescriptorPtr fd = allocFileDescriptor(o, K_O_RDONLY, 0, -1, 0);
+    if (flags & K_O_CLOEXEC) {
+        fd->descriptorFlags |= FD_CLOEXEC;
+    }
+    if (flags & K_O_NONBLOCK) {
+        fd->accessFlags |= K_O_NONBLOCK;
+    }
+    return fd->handle;
+}
+
+U32 KProcess::inotify_add_watch(S32 fd, BString path, U32 mask) {
+    KFileDescriptorPtr descriptor = this->getFileDescriptor(fd);
+    if (!descriptor || !descriptor->kobject || descriptor->kobject->type != KTYPE_INOTIFY) {
+        return -K_EBADF;
+    }
+    path = rewriteServerDirPath(path, this->is64Bit);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, true);
+    if (!node) {
+        return -K_ENOENT;
+    }
+    std::shared_ptr<KInotify> inotify = std::dynamic_pointer_cast<KInotify>(descriptor->kobject);
+    return (U32)inotify->addWatch(node, mask);
+}
+
+U32 KProcess::inotify_rm_watch(S32 fd, S32 wd) {
+    KFileDescriptorPtr descriptor = this->getFileDescriptor(fd);
+    if (!descriptor || !descriptor->kobject || descriptor->kobject->type != KTYPE_INOTIFY) {
+        return -K_EBADF;
+    }
+    std::shared_ptr<KInotify> inotify = std::dynamic_pointer_cast<KInotify>(descriptor->kobject);
+    return (U32)inotify->removeWatch((U32)wd);
 }
 
 U32 KProcess::timerfd_create(U32 clockid, U32 flags) {

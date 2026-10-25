@@ -87,6 +87,7 @@ void testSetitimerProbes();
 void testAsyncSigio();
 void testDnsLoopbackService();
 void testDevDspCapture();
+void testInotifyEventsProcessApi();
 #ifdef BOXEDWINE_GUEST_X64
 void testTimerfd64Syscalls();
 void testCopyFileRange64Syscall();
@@ -809,6 +810,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testAsyncSigio, "Test fcntl async ownership and SIGIO delivery"},
     {testDnsLoopbackService, "Test loopback DNS service for guest resolvers"},
     {testDevDspCapture, "Test dsp capture contract and GETISPACE"},
+    {testInotifyEventsProcessApi, "Test inotify event delivery through the KProcess API"},
 #ifdef BOXEDWINE_GUEST_X64
     {testTimerfd64Syscalls, "Test x64 timerfd syscall ABI"},
     {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},

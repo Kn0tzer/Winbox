@@ -17,12 +17,14 @@
  */
 
 #include "boxedwine.h"
+#include "kinotify.h"
 #include "fsfileopennode.h"
 #include UNISTD
 #include <fcntl.h>
 #include "fsfilenode.h"
 
 FsFileOpenNode::FsFileOpenNode(const std::shared_ptr<FsFileNode>& node, U32 flags, U32 handle) : FsOpenNode(node, flags), fileNode(node), handle(handle) {
+    KInotify::notifyOpened(this->node.get());
 }
 
 FsFileOpenNode::~FsFileOpenNode() {
@@ -37,7 +39,11 @@ S64 FsFileOpenNode::length() {
 }
 
 bool FsFileOpenNode::setLength(S64 len) {
-    return ftruncate(this->handle, (S32)len)==0;
+    bool result = ftruncate(this->handle, (S32)len)==0;
+    if (result) {
+        KInotify::notifyAttrib(this->node.get());
+    }
+    return result;
 }
 
 S64 FsFileOpenNode::getFilePointer() {
@@ -59,8 +65,10 @@ S64 FsFileOpenNode::seek(S64 pos) {
 }
 
 void FsFileOpenNode::close() {
-    if (this->handle!=0xFFFFFFFF)
+    if (this->handle!=0xFFFFFFFF) {
         ::close(this->handle);
+        KInotify::notifyClosed(this->node.get(), (this->flags & K_O_ACCMODE) != K_O_RDONLY);
+    }
     this->handle = 0xFFFFFFFF;
 }
 
@@ -129,6 +137,7 @@ U32 FsFileOpenNode::writeNative(U8* buffer, U32 len) {
     U32 result = (U32)::write(this->handle, buffer, len);
     if ((S32)result > 0) {
         this->expectedPos += result;
+        KInotify::notifyModified(this->node.get());
     }
     return result;
 }

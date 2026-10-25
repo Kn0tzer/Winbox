@@ -19,17 +19,19 @@
 #include "boxedwine.h"
 
 #ifdef __TEST
-#ifdef BOXEDWINE_GUEST_X64
 
-#include "cpu64.h"
 #include "kerror.h"
-#include "kmemory64.h"
 #include "../../io/fs.h"
 #include "../../io/fsfilenode.h"
 #include "../cpu/testCPU.h"
 
 #include <stdlib.h>
 #include <unistd.h>
+
+#ifdef BOXEDWINE_GUEST_X64
+
+#include "cpu64.h"
+#include "kmemory64.h"
 
 S32 ksyscall64(CPU64* cpu);
 
@@ -110,6 +112,15 @@ void testInotifyEvents() {
         memory->memcpyToGuest(pathAt, path, strlen(path) + 1);
     };
 
+    // Occupy the lowest free descriptor first: in this harness the
+    // process has no stdio fds, and sys_read64 treats fd 0 as stdin
+    // (returns EOF), which would shadow the inotify fd if it landed on 0.
+    // __NR_timerfd_create = 283; the timerfd stays open for the whole test.
+    S64 fillerFd = invoke(283, 1, 0, 0, 0);
+    if (fillerFd < 0) {
+        testFail("timerfd_create filler failed: %lld", (long long)fillerFd);
+        return;
+    }
     // __NR_inotify_init1 = 294
     S64 fd = invoke(294, IN_NONBLOCK | IN_CLOEXEC, 0, 0, 0);
     if (fd < 0) {
@@ -192,6 +203,12 @@ void testInotifyEvents() {
     context.memory->memcpy(textAt, (const U8*)"hello", 5);
     file->write(context.thread, textAt, 5);
     process->close(fileFd);
+    // The harness holds its own references to the descriptor/object; the
+    // open node's close (and thus IN_CLOSE_WRITE) runs when the last
+    // reference goes away, so drop ours before draining.
+    file.reset();
+    fileDesc.reset();
+    createdDesc.reset();
     if (readEvents(events) <= 0 || !hasEvent(events, IN_MODIFY, "k3bfile.txt") ||
         !hasEvent(events, IN_CLOSE_WRITE, "k3bfile.txt")) {
         testFail("write/close did not deliver IN_MODIFY and IN_CLOSE_WRITE");
@@ -260,10 +277,123 @@ void testInotifyEvents() {
     }
     invoke(3, (U64)fd, 0, 0, 0);  // close
     invoke(3, (U64)fd2, 0, 0, 0); // close
+    invoke(3, (U64)fillerFd, 0, 0, 0);
 
     (void)IN_DELETE_SELF; (void)IN_MOVE_SELF; (void)IN_UNMOUNT; (void)IN_Q_OVERFLOW;
     rmdir(hostDir);
 }
 
 #endif
+
+// Native-suite variant: same event contract driven through the
+// width-agnostic KProcess API (the x64 test above drives the syscall
+// layer; the KProcess methods are what both syscall layers forward to).
+void testInotifyEventsProcessApi() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    char dirTemplate[] = "/tmp/bw64kinotifyXXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("mkdtemp failed for inotify process-api test");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    S32 fd = (S32)process->inotify_init1(0x800 /* K_O_NONBLOCK == IN_NONBLOCK */);
+    if (fd < 0) {
+        testFail("KProcess::inotify_init1 failed: %d", fd);
+        return;
+    }
+    KFileDescriptorPtr descriptor = process->getFileDescriptor(fd);
+    if (!descriptor || !descriptor->kobject) {
+        testFail("inotify_init1 returned an fd with no object");
+        return;
+    }
+    S32 wd = (S32)process->inotify_add_watch(fd, B("/"), 0xfff /* IN_ALL_EVENTS */);
+    if (wd < 1) {
+        testFail("KProcess::inotify_add_watch failed: %d", wd);
+        return;
+    }
+
+    KFileDescriptorPtr created;
+    U32 result = process->openFile(B("/"), B("/k3bfile.txt"), K_O_WRONLY | K_O_CREAT | K_O_TRUNC, created);
+    if ((S32)result < 0 || !created) {
+        testFail("openFile(O_CREAT) failed: %d", (S32)result);
+        return;
+    }
+    const char* text = "hello";
+    U32 textAt = TEST_HEAP_ADDRESS + 0x200;
+    context.thread->memory->memcpy(textAt, (void*)text, 5);
+    std::shared_ptr<KFile> file = std::dynamic_pointer_cast<KFile>(created->kobject);
+    file->write(context.thread, textAt, 5);
+    process->close(created->handle);
+    file.reset();
+    created.reset();
+    if ((S32)process->rename(B("/k3bfile.txt"), B("/k3brenamed.txt")) < 0) {
+        testFail("rename failed");
+        return;
+    }
+    if ((S32)process->unlinkFile(B("/k3brenamed.txt")) < 0) {
+        testFail("unlink failed");
+        return;
+    }
+
+    U8 buffer[4096];
+    S32 total = (S32)descriptor->kobject->readNative(buffer, sizeof(buffer));
+    if (total <= 0) {
+        testFail("no inotify events delivered through the KProcess API: %d", total);
+        return;
+    }
+    bool sawCreate = false, sawModify = false, sawCloseWrite = false, sawDelete = false;
+    bool sawMovedFrom = false, sawMovedTo = false;
+    U32 fromCookie = 0, toCookie = 0;
+    S32 offset = 0;
+    while (offset + 16 <= total) {
+        S32 eventWd;
+        U32 mask, cookie, nameLen;
+        memcpy(&eventWd, buffer + offset, 4);
+        memcpy(&mask, buffer + offset + 4, 4);
+        memcpy(&cookie, buffer + offset + 8, 4);
+        memcpy(&nameLen, buffer + offset + 12, 4);
+        if (eventWd == wd && nameLen >= 12 && memcmp(buffer + offset + 16, "k3bfile.txt", 11) == 0 && mask & 0x100) sawCreate = true;
+        if (eventWd == wd && mask & 0x2) sawModify = true;
+        if (eventWd == wd && mask & 0x8) sawCloseWrite = true;
+        if (eventWd == wd && mask & 0x40) { sawMovedFrom = true; fromCookie = cookie; }
+        if (eventWd == wd && mask & 0x80) { sawMovedTo = true; toCookie = cookie; }
+        if (eventWd == wd && mask & 0x200) sawDelete = true;
+        offset += 16 + (S32)nameLen;
+    }
+    if (!sawCreate) testFail("no IN_CREATE through the KProcess API");
+    if (!sawModify) testFail("no IN_MODIFY through the KProcess API");
+    if (!sawCloseWrite) testFail("no IN_CLOSE_WRITE through the KProcess API");
+    if (!sawMovedFrom || !sawMovedTo || !fromCookie || fromCookie != toCookie) {
+        testFail("rename cookie pair missing through the KProcess API (from=%d to=%d)", fromCookie, toCookie);
+    }
+    if (!sawDelete) testFail("no IN_DELETE through the KProcess API");
+
+    if ((S32)process->inotify_rm_watch(fd, wd) != 0) {
+        testFail("KProcess::inotify_rm_watch failed");
+        return;
+    }
+    total = (S32)descriptor->kobject->readNative(buffer, sizeof(buffer));
+    bool sawIgnored = false;
+    offset = 0;
+    while (total > 0 && offset + 16 <= total) {
+        U32 mask, nameLen;
+        memcpy(&mask, buffer + offset + 4, 4);
+        memcpy(&nameLen, buffer + offset + 12, 4);
+        if (mask & 0x8000) sawIgnored = true;
+        offset += 16 + (S32)nameLen;
+    }
+    if (!sawIgnored) {
+        testFail("rm_watch produced no IN_IGNORED through the KProcess API");
+    }
+    process->close(fd);
+}
 #endif

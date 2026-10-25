@@ -253,6 +253,9 @@ public:
     U32 sendFile(U32 outFd, U32 inFd, U32 offset, U32 count);
     U32 memfd_create(BString name, U32 flags);
     U32 timerfd_create(U32 clockid, U32 flags);
+    U32 inotify_init1(U32 flags);
+    U32 inotify_add_watch(S32 fd, BString path, U32 mask);
+    U32 inotify_rm_watch(S32 fd, S32 wd);
     U32 timerfd_settime(U32 fd, U32 flags, U32 newValue, U32 oldValue);
     U32 timerfd_gettime(U32 fd, U32 value);
 

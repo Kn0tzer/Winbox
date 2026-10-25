@@ -17,6 +17,7 @@
  */
 
 #include "boxedwine.h"
+#include "kinotify.h"
 #include "fsmemopennode.h"
 
 FsMemOpenNode::FsMemOpenNode(U32 flags, std::shared_ptr<FsNode> node) : FsOpenNode(node, flags), seals(0), pos(0), isClosed(false) {
@@ -36,6 +37,7 @@ bool FsMemOpenNode::setLength(S64 length) {
         (length > (S64)this->buffer.size() && this->hasSeal(K_F_SEAL_GROW))) return false;
     this->lastModifiedTime = KSystem::getSystemTimeAsMicroSeconds() / 1000l;
     this->buffer.resize((U32)length, 0);
+    KInotify::notifyAttrib(this->node.get());
     return true;
 }
 
@@ -113,10 +115,14 @@ U32 FsMemOpenNode::writeNative(U8* buffer, U32 len) {
         std::copy(buffer, buffer+remaining, std::back_inserter(this->buffer));
         this->pos = (S64)this->buffer.size();
     }
+    KInotify::notifyModified(this->node.get());
     return len;
 }
 
 void FsMemOpenNode::close() {
+    if (!this->isClosed) {
+        KInotify::notifyClosed(this->node.get(), (this->flags & K_O_ACCMODE) != K_O_RDONLY);
+    }
     this->isClosed = true;
 }
 

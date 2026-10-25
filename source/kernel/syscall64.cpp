@@ -237,6 +237,10 @@ U32 createPidFdForClone64(KThread* thread, U32 processId) {
 #define X64_SYS_pidfd_open        434
 #define X64_SYS_membarrier        324
 #define X64_SYS_timerfd_create    283
+#define X64_SYS_inotify_init      253
+#define X64_SYS_inotify_add_watch 254
+#define X64_SYS_inotify_rm_watch  255
+#define X64_SYS_inotify_init1     294
 #define X64_SYS_timerfd_settime   286
 #define X64_SYS_timerfd_gettime   287
 #define X64_SYS_sched_yield       24
@@ -5641,6 +5645,25 @@ void ksyscall64(CPU64* cpu) {
             ret = (U64)(S64)(S32)cpu->thread->process->memfd_create(BString::copy(name), (U32)a2);
             break;
         }
+        case X64_SYS_inotify_init:
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            ret = (U64)(S64)(S32)cpu->thread->process->inotify_init1(0);
+            break;
+        case X64_SYS_inotify_init1:
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            ret = (U64)(S64)(S32)cpu->thread->process->inotify_init1((U32)a1);
+            break;
+        case X64_SYS_inotify_add_watch: {
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            char path[1024] = {0};
+            if (a2) cpu->memory->memcpyFromGuest(path, a2, sizeof(path) - 1);
+            ret = (U64)(S64)(S32)cpu->thread->process->inotify_add_watch((S32)a1, BString::copy(path), (U32)a3);
+            break;
+        }
+        case X64_SYS_inotify_rm_watch:
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            ret = (U64)(S64)(S32)cpu->thread->process->inotify_rm_watch((S32)a1, (S32)a2);
+            break;
         case X64_SYS_timerfd_create:
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
             ret = (U64)(S64)(S32)cpu->thread->process->timerfd_create((U32)a1, (U32)a2);
