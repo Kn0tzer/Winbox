@@ -1746,6 +1746,67 @@
         })();
     }
 
+    // --- IME composition text channel ---------------------------------------
+    // A <canvas> is not text-editable, so a browser IME has nothing to
+    // compose into: composition events never fire for it, and SDL/Emscripten
+    // has no channel that turns a finished composition into guest key or
+    // text events (the guest input path consumes key events only). The
+    // symptom was that CJK / IME input simply vanished. This installs a
+    // nearly invisible textarea as the page's composition target: a pointer
+    // press on the canvas focuses it, the browser runs its native
+    // composition UI inside it, and each finished composition is forwarded
+    // to the guest as committed text via bw64_inject_text (WASM export ->
+    // XWire EvText -> X KeyPress/KeyRelease; see xwireInjectText in
+    // xwirepresentSDL.cpp). Plain typing is NOT intercepted: key events
+    // from the textarea bubble to the same window-level SDL listeners that
+    // see them today, and the textarea's own content is discarded, never
+    // forwarded (forwarding it would double-deliver whatever the SDL key
+    // path already typed). Disable with ?ime=0 in the page URL.
+    var bw64ImeCaptureInstalled = false;
+    function bw64InstallImeCapture() {
+        if (bw64ImeCaptureInstalled) return;
+        bw64ImeCaptureInstalled = true;
+        if (typeof param === "function" && param("ime") === "0") return;
+        var canvas = document.getElementById("canvas");
+        if (!canvas || typeof document.createElement !== "function") return;
+        var ta = document.createElement("textarea");
+        ta.id = "bw64-ime-input";
+        ta.setAttribute("rows", "1");
+        ta.setAttribute("autocomplete", "off");
+        ta.setAttribute("autocapitalize", "off");
+        ta.setAttribute("spellcheck", "false");
+        ta.setAttribute("aria-hidden", "true");
+        ta.tabIndex = -1;
+        ta.style.position = "absolute";
+        ta.style.left = "0";
+        ta.style.top = "0";
+        ta.style.width = "16px";
+        ta.style.height = "16px";
+        ta.style.opacity = "0.01";
+        ta.style.pointerEvents = "none";
+        ta.style.border = "0";
+        ta.style.padding = "0";
+        ta.style.margin = "0";
+        ta.style.overflow = "hidden";
+        ta.style.resize = "none";
+        ta.style.zIndex = "5";
+        var composing = false;
+        ta.addEventListener("compositionstart", function () { composing = true; });
+        ta.addEventListener("compositionend", function (ev) {
+            composing = false;
+            var text = (ev && typeof ev.data === "string" && ev.data) ? ev.data : ta.value;
+            ta.value = "";
+            if (text) { try { callExport("bw64_inject_text", ["string"], [text]); } catch (e) {} }
+        });
+        ta.addEventListener("input", function () {
+            if (!composing) ta.value = "";
+        });
+        canvas.addEventListener("pointerdown", function () {
+            try { ta.focus({ preventScroll: true }); } catch (e) { try { ta.focus(); } catch (e2) {} }
+        });
+        (canvas.parentNode || document.body).appendChild(ta);
+    }
+
     // --- first boot from the page load --------------------------------------
     setStatusText("Loading wine64 (WASM)...");
     window.onerror = function (msg, file, line, col, error) {
@@ -1764,5 +1825,6 @@
     });
     window.bwRuntime = { fs: getFS, ready: sessionReady, call: callExport };
     if (window.setActiveApp) try { window.setActiveApp(PROG || "--version"); } catch (e) {}
+    bw64InstallImeCapture();
     bootWine();
 })();

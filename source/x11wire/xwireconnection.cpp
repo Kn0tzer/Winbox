@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <vector>
 #include <utility>
+#include <atomic>
 #include "xwirekeyboard.h"
 
 // Caller holds regMutex. Window positions are parent-relative; SDL pointer
@@ -91,7 +92,44 @@ XWirePresentSink* g_xwirePresentSink = nullptr;
 // NoSymbol. Latin-1 letter keysyms == their ASCII codes; X special keys use the
 // 0xFFxx range. Covers the standard typing + editing set.
 struct KeyPair { uint32_t lo, hi; };
+
+// --- IME committed-text delivery -------------------------------------------
+// A character with no key on the static US map below (any CJK character,
+// most symbols) cannot be typed as a key event directly: clients translate
+// keycode -> keysym through the server keymap, and no keycode carries it.
+// The standard workaround (what xdotool does against real X servers) is to
+// temporarily bind an unused keycode to the character's Unicode keysym,
+// announce the change with MappingNotify so clients refresh their cached
+// keymap, then press that keycode. We own both ends, so the binding is
+// server state: g_imeScratchKeysym is what keysymForKeycode reports for
+// kImeScratchKeycode (core GetKeyboardMapping and the XKB GetMap reply
+// both consult it), and g_imeKeymapGeneration lets each connection emit
+// MappingNotify exactly once per rebind, ahead of the press that depends
+// on it (notify and press share the connection's out buffer, so the wire
+// order is preserved). The scratch keycode is never produced by
+// sdlScancodeToX11 and is unmapped in the static table, so physical
+// typing can never collide with it.
+static const int kImeScratchKeycode = 248;
+static std::atomic<uint32_t> g_imeScratchKeysym{0};
+static std::atomic<uint64_t> g_imeKeymapGeneration{0};
+
+static void bindImeScratchKeysym(uint32_t keysym) {
+    g_imeScratchKeysym.store(keysym, std::memory_order_release);
+    g_imeKeymapGeneration.fetch_add(1, std::memory_order_acq_rel);
+}
+
+// X keysym for a Unicode code point: Latin-1 code points are their own
+// keysyms; everything above uses the Unicode keysym range,
+// 0x01000000 | codepoint.
+static uint32_t unicodeKeysymForCodepoint(uint32_t cp) {
+    return cp < 0x100 ? cp : (0x01000000u | cp);
+}
+
 static KeyPair keysymForKeycode(int kc) {
+    if (kc == kImeScratchKeycode) {
+        uint32_t sym = g_imeScratchKeysym.load(std::memory_order_acquire);
+        return {sym, sym};
+    }
     switch (kc) {
         case 9:  return {0xFF1B, 0xFF1B};                 // Escape
         case 10: return {'1','!'};  case 11: return {'2','@'};
@@ -139,6 +177,32 @@ static KeyPair keysymForKeycode(int kc) {
         case 119:return {0xFFFF, 0xFFFF};                 // Delete
         default: return {0, 0};
     }
+}
+
+// Plan how to deliver one committed code point as a key event: find a
+// static keycode whose unshifted (shift=false) or shifted (shift=true)
+// keysym is the character, so the client's own translation produces it.
+// Returns -1 when no static keycode carries the character (the caller
+// falls back to the scratch binding). Control characters an IME commit
+// can contain map to their editing keys instead of a keysym lookup.
+static int keycodeForCodepoint(uint32_t cp, bool& shift) {
+    shift = false;
+    switch (cp) {
+        case '\r': case '\n': return 36;   // Return
+        case '\t': return 23;              // Tab
+        case 0x08: return 22;              // BackSpace
+        case 0x7F: return 119;             // Delete
+        default: break;
+    }
+    uint32_t sym = unicodeKeysymForCodepoint(cp);
+    if (!sym) return -1;
+    for (int kc = 8; kc <= 255; kc++) {
+        if (kc == kImeScratchKeycode) continue;
+        KeyPair kp = keysymForKeycode(kc);
+        if (kp.lo == sym) { shift = false; return kc; }
+        if (kp.hi == sym) { shift = true; return kc; }
+    }
+    return -1;
 }
 
 // ---------------------------------------------------------------------------
@@ -2139,6 +2203,29 @@ void XWireConnection::onData() {
     flushReplies();
 }
 
+// If the IME scratch binding changed since this connection last announced
+// it, emit MappingNotify (event 34, MappingKeyboard) for the scratch
+// keycode so the client refreshes its cached keymap (core + XKB) before
+// any press that relies on the new binding. Called at the top of
+// deliverInputEvents (so a connection that takes over input delivery
+// announces bindings other connections made) and again right after a
+// rebind in the EvText expansion; the per-connection generation stamp
+// makes repeats free. Must be called with ioMutex held (both call sites
+// hold it: deliverInputEvents locks ioMutex for its whole body).
+void XWireConnection::sendPendingImeMappingNotify() {
+    uint64_t gen = g_imeKeymapGeneration.load(std::memory_order_acquire);
+    if (gen == imeKeymapGenerationSent) return;
+    imeKeymapGenerationSent = gen;
+    uint8_t e[32] = {0};
+    e[0] = 34;                                  // MappingNotify
+    e[1] = 1;                                   // request: MappingKeyboard
+    e[2] = (uint8_t)(sequence & 0xff);
+    e[3] = (uint8_t)(sequence >> 8);
+    e[4] = (uint8_t)kImeScratchKeycode;         // first-keycode
+    e[5] = 1;                                   // count
+    writeToClient(e, sizeof(e));
+}
+
 // Drain host input from the sink and emit X11 input events to the focused
 // (presented) window, honoring its event mask. Called on the guest thread from
 // onData(). Only the connection that OWNS the presented window (its id falls in
@@ -2181,18 +2268,67 @@ void XWireConnection::deliverInputEvents() {
     }
     uint32_t presentWindow = pw;
 
+    // Announce any IME scratch-keycode rebind another connection made
+    // since this one last announced: this connection may be about to
+    // deliver a press on the scratch keycode that was bound elsewhere,
+    // and its client must refresh its cached keymap first. (Rebinds made
+    // by THIS connection's EvText expansion below are announced again
+    // right at the rebind; the generation stamp makes that free.)
+    sendPendingImeMappingNotify();
+
     XWireInputEvent ev;
+    // Press/release pairs synthesized from EvText commits. Drained before
+    // any further sink event so a commit's characters stay in order and
+    // together (xwireInjectText queued them as a unit).
+    std::deque<XWireInputEvent> textKeys;
     for (;;) {
         bool fromFrozenQueue = false;
-        {
-            std::lock_guard<std::mutex> registryLock(srv.regMutex);
-            if (!srv.pointerFrozen && !frozenPointerEvents.empty()) {
-                ev = frozenPointerEvents.front();
-                frozenPointerEvents.pop_front();
-                fromFrozenQueue = true;
+        if (!textKeys.empty()) {
+            ev = textKeys.front();
+            textKeys.pop_front();
+        } else {
+            {
+                std::lock_guard<std::mutex> registryLock(srv.regMutex);
+                if (!srv.pointerFrozen && !frozenPointerEvents.empty()) {
+                    ev = frozenPointerEvents.front();
+                    frozenPointerEvents.pop_front();
+                    fromFrozenQueue = true;
+                }
             }
+            if (!fromFrozenQueue && !g_xwirePresentSink->nextInputEvent(ev)) break;
         }
-        if (!fromFrozenQueue && !g_xwirePresentSink->nextInputEvent(ev)) break;
+        if (ev.type == XWireInputEvent::EvText) {
+            // IME commit: expand the code point into a press+release pair
+            // and let the normal key path below deliver it, so focus
+            // routing, event masks, crossing events and state handling are
+            // shared with physical keys instead of duplicated here.
+            uint32_t cp = ev.detail;
+            if (cp && cp <= 0x10FFFF && !(cp >= 0xD800 && cp <= 0xDFFF)) {
+                bool shift = false;
+                int kc = keycodeForCodepoint(cp, shift);
+                if (kc < 0) {
+                    // No static keycode carries this character: rebind
+                    // the scratch keycode to its Unicode keysym and
+                    // announce the keymap change BEFORE the press is
+                    // emitted, so the client's refresh (triggered by the
+                    // MappingNotify) already sees the new binding when it
+                    // translates the press.
+                    bindImeScratchKeysym(unicodeKeysymForCodepoint(cp));
+                    kc = kImeScratchKeycode;
+                    shift = false;
+                    sendPendingImeMappingNotify();
+                }
+                XWireInputEvent dn = ev;
+                dn.type = XWireInputEvent::EvKeyDown;
+                dn.detail = (uint32_t)kc;
+                dn.state = shift ? 0x0001 : 0;   // ShiftMask
+                XWireInputEvent up = dn;
+                up.type = XWireInputEvent::EvKeyUp;
+                textKeys.push_back(dn);
+                textKeys.push_back(up);
+            }
+            continue;
+        }
         uint8_t code;
         uint32_t wantMask;
         switch (ev.type) {
