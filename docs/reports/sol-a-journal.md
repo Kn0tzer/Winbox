@@ -38,3 +38,17 @@ Control: rebuilt ONLY jitCodeGen.cpp.o with debug info; first CPU test then pass
 Added native-build-flags.test.mjs: actual make/g++ tiny CPU-layout fixture, unchanged source; switch ABI_WORDS 8 -> 104 -> 8, require the 96-byte size change and reverse, and require unchanged flags to reuse the object. Pre-fix: 0 passed / 1 failed (observed delta 0, expected 96), native-flags-red.log. Added per-build flag fingerprints whose old stamps are removed on configuration switches. Full clean rebuilds and suite reruns remain required. No register closure yet.
 
 Signal full x64 solo result (before the build-cache fix): 31 OK / 0 FAILED, km4-x64-solo.log. First three signal tests had 3 FAILED before / 3 OK after; async/null case additionally passes. Full native and WASM still pending.
+
+## Consistent native rebuild and next precise-fault probes
+
+After adding the configuration dependency, make rebuilt all 400 existing native objects. A fresh-shell solo `project/linux/Build/Test/boxedwine 0 0 1` completed: **632 OK / 0 FAILED** (native32-config-clean-solo.log), including the SIG_DFL subprocess. No test was removed/weakened. This resolves the formerly unexplained EPERM with build evidence. Raw evidence copied to `/home/ubuntu/backups/winbox-sol-a-20261025/evidence/`.
+
+The signal implementation's earlier solo x64 run was **31 OK / 0 FAILED**. The full JS unit suite is now running against this lane's dist; no result yet. Full WASM and game probes still pending.
+
+Prepared (not yet compiled/run) testMemoryFault64.cpp cases for load destination preservation, RMW flags, PUSH RSP, cross-page XMM state, and cached-block poll-page revocation. The old data-protection self-test only asserts a fault/address and successful permission transitions, not interrupted state. Code proves interpreter helpers continue mutating state after recordGuestMemoryFault; deliverGuestMemoryFault only rewinds RIP. JIT block dispatch occurs before k64SetGuestAccessCPU, and emitted imports have no independent protection gate. These are concrete path gaps, but runtime red results still pending.
+
+Found verification coverage gap: x64-test previously compiled neither BOXEDWINE_BLOCK_EXEC nor BOXEDWINE_BLOCK_CACHE_INFRA; its BW64_JIT=1 runs did not enter block dispatch. Enabled those definitions in the pending makefile change; the new poll test requires nonzero blocksExecuted when JIT is enabled. Earlier 31/31 remains valid signal/interpreter evidence only.
+
+Probe staging: durable Mindustry zip has 109 entries, exe `home/username/apps/Mindustry.exe`; Q3 zip has 37, exe `home/username/apps/quake3e.x64.exe`. Existing tools/bench/gl-game-probe.mjs accepts REUSE_GAME_ZIP=1, GAME_ZIP, WINE_DIST_DIR, CAPTURE_SECONDS and forward-input capture, so no page/demo edits needed. Added CONTROL_TRACE/GUEST_PROFILE controls to it; node --check passes. Set TMPDIR to the lane scratch directory when probing.
+
+Further source findings to test, not fixed: sigaltstack reports stored flags without deriving SS_ONSTACK, allows changing active stack, and accepts AUTODISARM without implementing delivery/return state; clone64 inherits the parent's altstack via cloneRegistersFrom even for CLONE_VM without CLONE_VFORK. Linux v6.12 kernel/fork.c lines 2277-2281 explicitly sas_ss_reset in that combination. These fit the existing clone/signal residuals and require regression tests before implementation. No claim that they caused Mindustry.
