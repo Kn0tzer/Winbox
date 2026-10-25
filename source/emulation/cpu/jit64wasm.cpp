@@ -5,8 +5,8 @@
 // Forward declarations for the global memory helpers, defined after the
 // anonymous namespace below (they wrap the env.memRead/memWrite imports).
 // The anonymous-namespace ALU emitter calls them for memory-operand ALU.
-void emitMemRead(std::vector<U8>& body, U32 addrLocal, U32 size, U32 faultDepth = 1);
-void emitMemWrite(std::vector<U8>& body, U32 addrLocal, U32 valLocal, U32 size, U32 faultDepth = 1);
+void emitMemRead(std::vector<U8>& body, U32 addrLocal, U32 size, U32 faultDepth = 1, bool restoreFlags = true);
+void emitMemWrite(std::vector<U8>& body, U32 addrLocal, U32 valLocal, U32 size, U32 faultDepth = 1, bool restoreFlags = true);
 
 namespace {
 using Bytes = std::vector<U8>;
@@ -94,10 +94,17 @@ constexpr U32 L_ENTRY = 31, L_LIMIT = 32;
 // the executed count when a host import reports a denied access, so the
 // host can rebuild the exact pre-instruction state (fault RIP included).
 constexpr U32 L_OPIDX = 33;
+// K-M3: RFLAGS snapshot taken at each op's start. RMW emitters merge the
+// result flags into the RFLAGS local BEFORE their final store, so the
+// fault gate restores this snapshot when a store faults -- the faulting
+// op must not publish flags either (the interpreter's checkpoint does
+// the equivalent restore). String ops opt out: their in-loop flags ARE
+// the architectural partial progress.
+constexpr U32 L_FLAGS0 = 34;
 // Locals declaration for the emitted module: 6 groups, in order
 // [17 x i64 = GPRs + RIP][1 x i32 = RFLAGS][9 x i64 = scratch]
 // [3 x i32 = page-gen locals][1 x i64 = entry RIP][1 x i32 = limit].
-constexpr U8 LOCALS[] = {6, 17, 0x7E, 1, 0x7F, 9, 0x7E, 3, 0x7F, 1, 0x7E, 2, 0x7F};
+constexpr U8 LOCALS[] = {6, 17, 0x7E, 1, 0x7F, 9, 0x7E, 3, 0x7F, 1, 0x7E, 3, 0x7F};
 constexpr U32 LOCALS_BYTES = (U32)sizeof(LOCALS);
 // Guest GPR indices the emitter addresses directly (x86-64 encoding order).
 constexpr U32 R_AX = 0, R_CX = 1, R_DX = 2, R_BP = 5, R_SP = 4;
@@ -569,11 +576,15 @@ void jit64WasmStateSetGens(Jit64WasmState& state, U32 genBase, U32 gen0, U32 gen
 // block: 1 at op top level, +1 per enclosing emitted block/loop/if at the
 // call site (2 inside the CL-mem count!=0 store guard, 3 in the string
 // loop: check-if, loop, done-block, outer block).
-void emitFaultCheck(Bytes& body, U32 depth) {
+void emitFaultCheck(Bytes& body, U32 depth, bool restoreFlags = true) {
     local(body, 0x20, 0);
     memoryOp(body, 0x28, 2, (U32)offsetof(Jit64WasmState, faultPending)); // i32.load
     body.push_back(0x04); // if (void)
     uleb(body, 0x40);
+    if (restoreFlags) {
+        local(body, 0x20, L_FLAGS0);
+        local(body, 0x21, L_RFLAGS);
+    }
     local(body, 0x20, 0);
     local(body, 0x20, L_OPIDX);
     memoryOp(body, 0x36, 2, (U32)offsetof(Jit64WasmState, execCount)); // i32.store
@@ -585,7 +596,7 @@ void emitFaultCheck(Bytes& body, U32 depth) {
 // Emit a call to env.memRead(addrLocal, size): splits the i64 address to
 // lo/hi i32s, passes the size and the memScratch address, then loads the
 // 64-bit result into L_R. All import params are i32 (no BigInt dependence).
-void emitMemRead(Bytes& body, U32 addrLocal, U32 size, U32 faultDepth) {
+void emitMemRead(Bytes& body, U32 addrLocal, U32 size, U32 faultDepth, bool restoreFlags) {
     local(body, 0x20, addrLocal);
     body.push_back(0xA7); // i32.wrap_i64 (lo)
     local(body, 0x20, addrLocal);
@@ -598,14 +609,14 @@ void emitMemRead(Bytes& body, U32 addrLocal, U32 size, U32 faultDepth) {
     body.push_back(0x6A); // i32.add (retPtr)
     body.push_back(0x10); // call
     uleb(body, F_MEMREAD);
-    emitFaultCheck(body, faultDepth);
+    emitFaultCheck(body, faultDepth, restoreFlags);
     local(body, 0x20, 0);
     memoryOp(body, 0x29, 3, (U32)offsetof(Jit64WasmState, memScratch)); // i64.load
     local(body, 0x21, L_R);
 }
 
 // Emit a call to env.memWrite(addrLocal, valLocal, size).
-void emitMemWrite(Bytes& body, U32 addrLocal, U32 valLocal, U32 size, U32 faultDepth) {
+void emitMemWrite(Bytes& body, U32 addrLocal, U32 valLocal, U32 size, U32 faultDepth, bool restoreFlags) {
     local(body, 0x20, addrLocal);
     body.push_back(0xA7); // lo
     local(body, 0x20, addrLocal);
@@ -621,7 +632,7 @@ void emitMemWrite(Bytes& body, U32 addrLocal, U32 valLocal, U32 size, U32 faultD
     body.push_back(0xA7); // valHi
     body.push_back(0x10); // call
     uleb(body, F_MEMWRITE);
-    emitFaultCheck(body, faultDepth);
+    emitFaultCheck(body, faultDepth, restoreFlags);
 }
 
 // True if this op can write guest memory. The emitter runs the inline
@@ -1135,8 +1146,9 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
 
     // Param local 0 is the wasm32 host pointer. Locals 1..16 are i64 guest
     // GPRs, 17 the i64 guest RIP, 18 the i32 RFLAGS, 19..27 i64 scratch,
-    // 28..30 the i32 page-generation locals, 31 the i64 entry RIP and 32 the
-    // i32 instruction limit. Guest values are never wasm host addresses.
+    // 31 the i64 entry RIP, 32 the i32 instruction
+    // limit, 33 the i32 current-op index and 34 the i32 RFLAGS snapshot
+    // (both for the K-M3 fault gate). Guest values are never wasm host addresses.
     Bytes body(LOCALS, LOCALS + LOCALS_BYTES);
     // Emitted-code bookkeeping: the module itself zeroes execCount and bumps
     // blocksEntered. The host only reads them back, so a non-zero
@@ -1185,9 +1197,12 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
         // Bounded execution: never start an instruction past the entry's
         // budget (runBounded's instruction accounting, not a semantic limit).
         emitLimitCheck(body, index);
-        // K-M3: name the op a denied access in this op will be blamed on.
+        // K-M3: name the op a denied access in this op will be blamed on,
+        // and snapshot the flags the fault gate restores if it faults.
         i32Const(body, index);
         local(body, 0x21, L_OPIDX);
+        local(body, 0x20, L_RFLAGS);
+        local(body, 0x21, L_FLAGS0);
         switch (op.kind) {
         case J64_MOV_R_IMM:
         case J64_MOV_RM_IMM: {

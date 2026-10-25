@@ -1891,7 +1891,7 @@ U32 emitStringGen(Bytes& body, const Jit64Op& op) {
                 body.push_back(0x83);
             }
             local(body, 0x21, L_A);
-            emitMemRead(body, L_A, size, 3); // -> L_R (K-M3: in-loop depth)
+            emitMemRead(body, L_A, size, 3, false); // -> L_R (K-M3: in-loop; flags are progress)
             local(body, 0x20, RDI);
             if (op.asize32) {
                 i64Const(body, 0xFFFFFFFFULL);
@@ -1899,7 +1899,7 @@ U32 emitStringGen(Bytes& body, const Jit64Op& op) {
             }
             local(body, 0x21, L_A);
         }
-        emitMemWrite(body, L_A, L_R, size, 3); // K-M3: in-loop depth
+        emitMemWrite(body, L_A, L_R, size, 3, false); // K-M3: in-loop; flags are progress
         if (!isStos) {
             local(body, 0x20, RSI);
             local(body, 0x20, L_STEP);
@@ -1924,7 +1924,7 @@ U32 emitStringGen(Bytes& body, const Jit64Op& op) {
                 body.push_back(0x83);
             }
             local(body, 0x21, L_P); // temp addr (L_P is emitFlags scratch)
-            emitMemRead(body, L_P, size, 3); // -> L_R (K-M3: in-loop depth)
+            emitMemRead(body, L_P, size, 3, false); // -> L_R (K-M3: in-loop; flags are progress)
             local(body, 0x20, L_R);
             local(body, 0x21, L_A);
         }
@@ -1935,7 +1935,7 @@ U32 emitStringGen(Bytes& body, const Jit64Op& op) {
             body.push_back(0x83);
         }
         local(body, 0x21, L_P); // temp addr
-        emitMemRead(body, L_P, size, 3); // -> L_R (K-M3: in-loop depth)
+        emitMemRead(body, L_P, size, 3, false); // -> L_R (K-M3: in-loop; flags are progress)
         local(body, 0x20, L_R);
         local(body, 0x21, L_B);
         // L_R = (L_A - L_B) & mask; flags through the SUB path.
