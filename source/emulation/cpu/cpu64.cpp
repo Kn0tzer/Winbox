@@ -1020,6 +1020,69 @@ static void refWatchInit() {
         g_refObjAddr = 0x400000000ULL + 0x30170ULL; // PIE base + release_object
 }
 
+
+// FXSAVE/FXRSTOR image transfer, shared by the 0F AE handlers in step()
+// and the signal-frame code in syscall64.cpp (which snapshots the same
+// state addressed by uc_mcontext.fpregs at delivery and restores it at
+// rt_sigreturn). The layout is the legacy 64-bit 512-byte format;
+// FIP/FDP are written as zero because this interpreter does not track
+// those pointers.
+void CPU64::writeFxsaveImage(U64 guestAddr) {
+    memory->writew(guestAddr + 0, (U16)fpu.cw);
+    memory->writew(guestAddr + 2, (U16)fpu.SW());
+    U8 abridgedTag = 0;
+    for (U32 i = 0; i < 8; i++) {
+        if (fpu.isMMXInUse || fpu.tags[i] != TAG_Empty)
+            abridgedTag |= (U8)(1U << i);
+    }
+    memory->writeb(guestAddr + 4, abridgedTag);
+    memory->writeb(guestAddr + 5, 0);
+    memory->writew(guestAddr + 6, (U16)(fpu.envData[1] & 0x7FF));
+    memory->writeq(guestAddr + 8, 0);  // FIP: not tracked
+    memory->writeq(guestAddr + 16, 0); // FDP: not tracked
+    memory->writed(guestAddr + 24, mxcsr);
+    memory->writed(guestAddr + 28, 0xFFFF);
+    for (int i = 0; i < 8; i++) {
+        U64 low, high;
+        fpu.ST80(fpu.STV(i), &low, &high);
+        U64 slot = guestAddr + 32 + i * 16;
+        memory->writeq(slot, low);
+        memory->writew(slot + 8, (U16)high);
+        memory->writew(slot + 10, 0);
+        memory->writed(slot + 12, 0);
+    }
+    for (int i = 0; i < 16; i++) {
+        memory->writeq(guestAddr + 160 + i * 16,     xmm[i].lo);
+        memory->writeq(guestAddr + 160 + i * 16 + 8, xmm[i].hi);
+    }
+    for (U64 offset = 416; offset < 512; offset += 8)
+        memory->writeq(guestAddr + offset, 0);
+}
+
+bool CPU64::readFxrstorImage(U64 guestAddr) {
+    U32 savedMxcsr = memory->readd(guestAddr + 24);
+    if (savedMxcsr & 0xFFFF0000) return false;
+    fpu.SetCW(memory->readw(guestAddr + 0));
+    fpu.SetSW(memory->readw(guestAddr + 2));
+    fpu.SetTagFromAbridged(memory->readb(guestAddr + 4));
+    fpu.isMMXInUse = false;
+    fpu.envData[0] = 0;
+    fpu.envData[1] = memory->readw(guestAddr + 6) & 0x7FF;
+    fpu.envData[2] = 0;
+    fpu.envData[3] = 0;
+    for (int i = 0; i < 8; i++) {
+        U64 slot = guestAddr + 32 + i * 16;
+        fpu.LD80(fpu.STV(i), memory->readq(slot),
+                 (S16)memory->readw(slot + 8));
+    }
+    mxcsr = savedMxcsr;
+    for (int i = 0; i < 16; i++) {
+        xmm[i].lo = memory->readq(guestAddr + 160 + i * 16);
+        xmm[i].hi = memory->readq(guestAddr + 160 + i * 16 + 8);
+    }
+    return true;
+}
+
 U32 CPU64::step(bool trackJitBlockBoundary) {
     U64 ipStart = rip;
     currentInstructionRip = ipStart;
@@ -6772,62 +6835,17 @@ dsp_55:
         U32 used = opOff + 2 + m.length;
         if (aeMod != 3 && aeReg == 0) {
             // FXSAVE m512byte legacy 64-bit layout.
-            memory->writew(m.effAddr + 0, (U16)fpu.cw);
-            memory->writew(m.effAddr + 2, (U16)fpu.SW());
-            U8 abridgedTag = 0;
-            for (U32 i = 0; i < 8; i++) {
-                if (fpu.isMMXInUse || fpu.tags[i] != TAG_Empty)
-                    abridgedTag |= (U8)(1U << i);
-            }
-            memory->writeb(m.effAddr + 4, abridgedTag);
-            memory->writeb(m.effAddr + 5, 0);
-            memory->writew(m.effAddr + 6, (U16)(fpu.envData[1] & 0x7FF));
-            memory->writeq(m.effAddr + 8, 0);  // FIP: not tracked
-            memory->writeq(m.effAddr + 16, 0); // FDP: not tracked
-            memory->writed(m.effAddr + 24, mxcsr);
-            memory->writed(m.effAddr + 28, 0xFFFF);
-            for (int i = 0; i < 8; i++) {
-                U64 low, high;
-                fpu.ST80(fpu.STV(i), &low, &high);
-                U64 slot = m.effAddr + 32 + i * 16;
-                memory->writeq(slot, low);
-                memory->writew(slot + 8, (U16)high);
-                memory->writew(slot + 10, 0);
-                memory->writed(slot + 12, 0);
-            }
-            for (int i = 0; i < 16; i++) {
-                memory->writeq(m.effAddr + 160 + i * 16,     xmm[i].lo);
-                memory->writeq(m.effAddr + 160 + i * 16 + 8, xmm[i].hi);
-            }
-            for (U64 offset = 416; offset < 512; offset += 8)
-                memory->writeq(m.effAddr + offset, 0);
+            writeFxsaveImage(m.effAddr);
         } else if (aeMod != 3 && aeReg == 1) {
             // FXRSTOR m512byte restores MXCSR, x87 stack/control state and
-            // all 16 XMM registers from the legacy 64-bit layout.
-            U32 savedMxcsr = memory->readd(m.effAddr + 24);
-            if (savedMxcsr & 0xFFFF0000) {
+            // all 16 XMM registers from the legacy 64-bit layout. A saved
+            // MXCSR with reserved bits set raises #GP before any state is
+            // touched (readFxrstorImage validates first).
+            if (!readFxrstorImage(m.effAddr)) {
                 if (raiseSyncFault(K_SIGSEGV, /*trapNo #GP*/13, 0, rip)) return 0;
                 if (thread) thread->process->signalProcess(K_SIGSEGV);
                 yield = true;
                 return 0;
-            }
-            fpu.SetCW(memory->readw(m.effAddr + 0));
-            fpu.SetSW(memory->readw(m.effAddr + 2));
-            fpu.SetTagFromAbridged(memory->readb(m.effAddr + 4));
-            fpu.isMMXInUse = false;
-            fpu.envData[0] = 0;
-            fpu.envData[1] = memory->readw(m.effAddr + 6) & 0x7FF;
-            fpu.envData[2] = 0;
-            fpu.envData[3] = 0;
-            for (int i = 0; i < 8; i++) {
-                U64 slot = m.effAddr + 32 + i * 16;
-                fpu.LD80(fpu.STV(i), memory->readq(slot),
-                         (S16)memory->readw(slot + 8));
-            }
-            mxcsr = savedMxcsr;
-            for (int i = 0; i < 16; i++) {
-                xmm[i].lo = memory->readq(m.effAddr + 160 + i * 16);
-                xmm[i].hi = memory->readq(m.effAddr + 160 + i * 16 + 8);
             }
         } else if (aeMod != 3 && aeReg == 2) {
             U32 loadedMxcsr = memory->readd(m.effAddr);

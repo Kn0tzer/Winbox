@@ -74,6 +74,16 @@ public:
     void recordGuestMemoryFault(U64 address, bool write, bool mapped);
     bool deliverGuestMemoryFault();
 
+    // Serialize/deserialize the full legacy x87/SSE state as a 512-byte
+    // FXSAVE image at a guest address. Shared by the 0F AE FXSAVE/FXRSTOR
+    // instruction handlers and the signal-frame builder/restorer (signal
+    // frames expose the saved image through uc_mcontext.fpregs).
+    // readFxrstorImage validates the saved MXCSR before mutating any
+    // state and returns false (nothing restored) when its reserved bits
+    // are set.
+    void writeFxsaveImage(U64 guestAddr);
+    bool readFxrstorImage(U64 guestAddr);
+
     // XMM register state. 16 × 128-bit slots, accessed as two U64 halves.
     // SSE2 is the minimum baseline for x86-64; glibc memcpy/memset, the
     // PIC __x86_get_pc_thunk_bx variants, and TLS init touch these even

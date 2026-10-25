@@ -85,7 +85,7 @@ void testSyscall64DispatchGuard() {
         testFail("x64 syscall fallback must log once per number and return -ENOSYS");
     }
     if (source.find("queueSiginfo64(targetThread") == std::string::npos ||
-        source.find("cpu->reg[X64_RSI].setU64((sa.flags & 0x4 /*SA_SIGINFO*/) ? frameBase : 0)") == std::string::npos) {
+        source.find("cpu->reg[X64_RSI].setU64((sa.flags & 0x4 /*SA_SIGINFO*/) ? frameBase + X64_SIGINFO_OFF_IN_FRAME : 0)") == std::string::npos) {
         testFail("pidfd and queued signal paths must deliver siginfo to SA_SIGINFO handlers");
     }
     if (source.find("case 332: // statx") == std::string::npos ||
@@ -115,7 +115,7 @@ void testSyscall64DispatchGuard() {
         testFail("32-bit getrandom must validate flags and the full writable range on every build");
     }
     if (processSource.find("constexpr U64 CLONE_ARGS_V0_SIZE = 64") == std::string::npos ||
-        processSource.find("if (size > PAGE_SIZE) return (U64)-K_E2BIG;") == std::string::npos ||
+        processSource.find("if (size > K_PAGE_SIZE) return (U64)-K_E2BIG;") == std::string::npos ||
         processSource.find("if (this->memory64->readb(argsAddr + offset) != 0) return (U64)-K_E2BIG;") == std::string::npos ||
         processSource.find("clone64(thread, flags, stack + stack_size, parent_tid, tls, child_tid, exit_signal)") == std::string::npos ||
         processSource.find("newProcess->childExitSignal64 = (U32)exitSignal;") == std::string::npos ||

@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 test('x64 mincore reports committed pages and validates both ranges before writing', () => {
   const source = readFileSync('source/kernel/syscall64.cpp', 'utf8');
   const start = source.indexOf('static U64 sys_mincore64(');
-  const end = source.indexOf('// Map an x86-64 Linux syscall number', start);
+  const end = source.indexOf('\nstatic ', start + 1);
   assert.ok(start >= 0 && end > start, 'mincore64 helper should be present');
   assert.match(source, /#define X64_SYS_mincore\s+27/);
   assert.match(source, /case X64_SYS_mincore:\s*ret = sys_mincore64/);

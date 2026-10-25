@@ -21,7 +21,7 @@ test('x64 socket messages retain addresses and flags and bound truncated packet 
 #include <atomic>
 #include <algorithm>
 using U64=uint64_t;using S64=int64_t;using U32=uint32_t;using S32=int32_t;using U8=uint8_t;
-constexpr U32 K_ENOSYS=38,K_EFAULT=14,K_EINVAL=22,K_SOL_SOCKET=1,K_SCM_RIGHTS=1;
+constexpr U32 K_ENOSYS=38,K_EFAULT=14,K_EINVAL=22,K_SOL_SOCKET=1,K_SCM_RIGHTS=1,K_SCM_CREDENTIALS=2,K_MSG_CTRUNC=8;
 #define klog_fmt(...)
 #define MSG_SCRATCH_BYTES (64*1024)
 #define MSG_SCRATCH_HDR 0

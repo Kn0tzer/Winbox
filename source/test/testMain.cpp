@@ -96,6 +96,12 @@ void testForkVfork64();
 void testGetrandom64Syscalls();
 void testStatx64Syscall();
 void testClone3Abi64();
+void testSignalFp64Roundtrip();
+void testSignal64NestedAltstack();
+void testSignal64BadFpFrame();
+void testSignal64AsyncFp();
+void testMemoryFault64Registers();
+void testMemoryFault64JitPoll();
 void testMremap64Syscall();
 #endif
 
@@ -132,6 +138,12 @@ const TestEntry TEST_ENTRIES[] = {
     {testClone3Abi64, "Test x64 clone3 argument ABI validation"},
     {testMremap64Syscall, "Test x64 mremap fixed and DONTUNMAP semantics"},
     {testForkVfork64, "Test x64 fork and vfork create real processes"},
+    {testSignalFp64Roundtrip, "Test x64 signal FP/SSE snapshot and edited return (K-M4)"},
+    {testSignal64NestedAltstack, "Test x64 nested altstack signal frames"},
+    {testSignal64BadFpFrame, "Test x64 invalid signal FP frame faults"},
+    {testSignal64AsyncFp, "Test x64 async signal FP snapshot and null restore"},
+    {testMemoryFault64Registers, "Test x64 data faults preserve interrupted state (K-M3)"},
+    {testMemoryFault64JitPoll, "Test x64 cached block safepoint poll faults (K-M3)"},
 };
 #else
 const TestEntry TEST_ENTRIES[] = {

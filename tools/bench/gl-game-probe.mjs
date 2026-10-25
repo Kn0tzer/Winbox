@@ -51,6 +51,8 @@ const probeJit = process.env.PROBE_JIT ?? process.env.JIT ?? '0';
 const probeRecover = process.env.PROBE_RECOVER ?? '1';
 const wildJump = process.env.WILDJUMP === '1';
 const unimplDump = process.env.UNIMPLDUMP === '1';
+const controlTrace = process.env.CONTROL_TRACE === '1';
+const guestProfile = process.env.GUEST_PROFILE === '1';
 const guestDiagnostics = process.env.GUEST_DIAGNOSTICS === '1';
 const guestTraceExe = process.env.GUEST_TRACE_EXE || exe;
 if (!['x86', 'x64'].includes(arch) || !Array.isArray(args) || args.some(arg => typeof arg !== 'string'))
@@ -123,6 +125,8 @@ const result = {
   guestTraceExe: guestDiagnostics ? guestTraceExe : null,
   wildJump,
   unimplDump,
+  controlTrace,
+  guestProfile,
   gameRoot,
   gameZip,
   outputDir,
@@ -267,6 +271,8 @@ try {
   });
   if (wildJump) query.set('wildjump', '1');
   if (unimplDump) query.set('unimpldump', '1');
+  if (controlTrace) query.set('ctrace', '1');
+  if (guestProfile) query.set('guestprof', '1');
   if (guestDiagnostics) {
     query.set('bw64diag', 'threads');
     query.set('ripsample', '1');

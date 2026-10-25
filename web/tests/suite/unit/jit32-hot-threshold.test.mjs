@@ -27,7 +27,9 @@ test('the 32-bit interpreter probe gate, chain rule and generator trigger agree'
 
   assert.match(normalCPU, /nextOp->runCount <= wasmJit32HotThreshold\(\) \|\| !calculateCF\[0\]/,
     "run() must probe an op sitting exactly at the threshold: that call is where the generator starts");
-  assert.match(jitCodeGen, /op->runCount == wasmJit32HotThreshold\(\) && op->inst != Done/,
+  assert.match(jitCodeGen, /#ifdef BOXEDWINE_WASM_JIT\s+const U32 hotThreshold = wasmJit32HotThreshold\(\);\s+#else[\s\S]*?const U32 hotThreshold = JIT_RUN_COUNT;\s+#endif/,
+    'WASM uses the latched threshold while native configurations use the compiled threshold');
+  assert.match(jitCodeGen, /op->runCount == hotThreshold && op->inst != Done/,
     'firstDynamicOp must start the generator when the latched threshold is reached');
   assert.match(normalCPU, /op->runCount > wasmJit32HotThreshold\(\)/,
     'the direct-dispatch chain must only skip the probe for an op strictly past the threshold');

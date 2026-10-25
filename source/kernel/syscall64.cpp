@@ -2768,40 +2768,21 @@ static U64 sys_statfs64_common(CPU64* cpu, U64 bufPtr) {
 // rt_sigreturn(15) reverses it: read the saved cpu state out of the frame
 // at the current RSP and restore.
 //
-// We use the Linux-glibc layout so any handler compiled for x86-64 Linux
-// can read it directly. Field offsets and sizes:
-//
-//   off  +0   rt_sigframe header                       (8 bytes pretty + pad)
-//             — actually just the saved restorer addr (8 bytes), kernel
-//               relies on the handler to RET into it; we always set RIP
-//               from the saved RIP in mcontext on sigreturn so the header
-//               is informational only.
-//   off  +8   siginfo_t (128 bytes)
-//   off +136  ucontext_t
-//      +0     uc_flags          (8)
-//      +8     uc_link           (8)
-//      +16    uc_stack          (24: ss_sp, ss_flags+pad, ss_size)
-//      +40    uc_mcontext.gregs[23]  — see gregs index table below
-//                                       (23 * 8 = 184 bytes)
-//      +224   uc_mcontext.fpregs (8 — pointer; we set 0 → no FPU restore)
-//      +232   uc_mcontext.__reserved[8]  (64 bytes — zeroed)
-//      +296   uc_sigmask        (8 — single qword, rest of 128-byte sigset
-//                                    region is zero-padded)
-//      +424   __fpregs_mem      (we don't write this for now)
-//
-// Total frame size we allocate on the stack: 16-aligned, round up to 1024.
-// (Linux's actual frame is ~600 bytes with fpregs_mem; we shrink because
-// we never populate fpregs.)
-//
-// gregs[] index, matching <sys/ucontext.h> REG_* enum:
-//   0:R8   1:R9   2:R10  3:R11  4:R12  5:R13  6:R14  7:R15
-//   8:RDI  9:RSI 10:RBP 11:RBX 12:RDX 13:RAX 14:RCX 15:RSP
-//  16:RIP 17:EFL 18:CSGSFS 19:ERR 20:TRAPNO 21:OLDMASK 22:CR2
-#define X64_SIGFRAME_SIZE          1024
-#define X64_UCONTEXT_OFF_IN_FRAME  136   // after siginfo
-#define X64_MCONTEXT_OFF_IN_UCTX    40
+// Linux x86-64 rt_sigframe: restorer at +0, kernel ucontext at +8
+// (304 bytes including the 8-byte kernel sigset), then siginfo at +312.
+// fpregs is a POINTER at ucontext+224, not an inline-state ABI promise.
+// Place the 512-byte legacy FXSAVE image after siginfo at +440. With
+// handler RSP == frameBase == 8 mod 16, the image is 16-byte aligned.
+// Glibc's larger ucontext_t includes private padding/FP storage; the kernel
+// does not allocate that struct verbatim. No XSAVE features are advertised.
+// Reserve extra trailing padding; every signal-visible object is above RSP.
+#define X64_SIGFRAME_SIZE          1152
+#define X64_UCONTEXT_OFF_IN_FRAME     8
+#define X64_SIGINFO_OFF_IN_FRAME    312
+#define X64_FPREGS_OFF_IN_FRAME     440
+#define X64_MCONTEXT_OFF_IN_UCTX     40
 #define X64_GREGS_OFF_IN_UCTX       X64_MCONTEXT_OFF_IN_UCTX
-#define X64_SIGMASK_OFF_IN_UCTX    296
+#define X64_SIGMASK_OFF_IN_UCTX     296
 
 // Indices into mcontext.gregs[23].
 enum X64Greg {
@@ -2856,26 +2837,32 @@ static U64 buildSignalFrame(CPU64* cpu, U64 framePtr) {
     // delivery overwrites these afterwards via the fault-info it has.
     // OLDMASK = caller's sigmask before this delivery (we set it to current)
     cpu->memory->writeq(gregsPtr + 8 * X64_GREG_OLDMASK, cpu->sigMask);
-    // fpregs pointer = 0 (we don't snapshot XMM/x87 here yet — the next
-    // increment after delivery wiring lands)
-    cpu->memory->writeq(mctxPtr + 184, 0);
+    // Snapshot x87/SSE state and publish its aligned address (K-M4). Handlers
+    // (JVM null-check/safepoint stubs, glibc context manipulation) read
+    // and modify this state; rt_sigreturn restores it from the frame.
+    cpu->writeFxsaveImage(framePtr + X64_FPREGS_OFF_IN_FRAME);
+    cpu->memory->writeq(mctxPtr + 184, framePtr + X64_FPREGS_OFF_IN_FRAME);
     // uc_sigmask
     cpu->memory->writeq(uctxPtr + X64_SIGMASK_OFF_IN_UCTX, cpu->sigMask);
     return uctxPtr;
 }
 
-// Restore cpu state from a signal frame whose ucontext_t lives at the
-// current RSP. The kernel's invariant after rt_sigreturn is that RSP
-// points one byte *past* the saved-rsp slot (i.e. the frame has been
-// popped); we read everything we need, then write cpu->rip and cpu->reg
-// values en masse. mcontext lives at RSP + (X64_MCONTEXT_OFF_IN_UCTX).
-//
-// Returns 0 on success, negative errno otherwise. The kernel actually
-// returns the saved RAX as the syscall result so the user code sees the
-// pre-signal RAX restored; we mirror that by writing RAX last and
-// signalling "skip the normal RAX-as-return-value path" via a special
-// sentinel (the caller checks cpu->yield).
-static U64 restoreSignalFrame(CPU64* cpu, U64 uctxPtr) {
+// The restorer sees RSP == &ucontext after RET pops its address. Validate
+// the entire readable context and FP image before changing live registers.
+// Return the saved RAX separately for the syscall dispatcher to publish.
+static bool restoreSignalFrame(CPU64* cpu, U64 uctxPtr, U64& savedRax) {
+    if (!sys_rangeHasPermission64(cpu->memory, uctxPtr, 304, K64_PAGE_READ)) return false;
+    const U64 fpregsPtr = cpu->memory->readq(uctxPtr + 224);
+    if (fpregsPtr) {
+        if ((fpregsPtr & 15) ||
+            !sys_rangeHasPermission64(cpu->memory, fpregsPtr, 512, K64_PAGE_READ) ||
+            !cpu->readFxrstorImage(fpregsPtr)) return false;
+    } else {
+        // Linux fpu__restore_sig(NULL) initializes the user FP state.
+        cpu->fpu.FINIT();
+        cpu->mxcsr = 0x1f80;
+        for (auto& x : cpu->xmm) x = {};
+    }
     U64 mctxPtr   = uctxPtr + X64_MCONTEXT_OFF_IN_UCTX;
     U64 gregsPtr  = mctxPtr;
     cpu->reg[X64_R8].u64  = cpu->memory->readq(gregsPtr + 8 * X64_GREG_R8);
@@ -2899,13 +2886,34 @@ static U64 restoreSignalFrame(CPU64* cpu, U64 uctxPtr) {
     // RAX is restored last — the kernel returns RAX as the syscall return
     // value so the user-visible RAX is the *pre-signal* value, not whatever
     // rt_sigreturn would compute.
-    U64 savedRax = cpu->memory->readq(gregsPtr + 8 * X64_GREG_RAX);
-    return savedRax;
+    savedRax = cpu->memory->readq(gregsPtr + 8 * X64_GREG_RAX);
+    return true;
 }
 
 // SA_ONSTACK = 0x08000000 in glibc's <bits/sigaction.h>. When set, the
 // handler runs on the registered sigaltstack instead of the user stack.
 #define X64_SA_ONSTACK   0x08000000
+
+// An already active alternate stack grows down from its CURRENT RSP.
+// Resetting it to ss_sp+ss_size on nested delivery overwrites the outer frame.
+static U64 signalFrameBase64(CPU64* cpu, U64 flags) {
+    const U64 rsp = cpu->reg[X64_RSP].u64;
+    const auto& alt = cpu->sigAltStack;
+    const bool onAlt = rsp >= alt.ssSp && rsp - alt.ssSp < alt.ssSize;
+    U64 baseSp = rsp - 128; // SysV red zone, including nested altstack delivery
+    if ((flags & X64_SA_ONSTACK) && alt.ssSp && !(alt.ssFlags & 2) && !onAlt)
+        baseSp = alt.ssSp + alt.ssSize;
+    return ((baseSp - X64_SIGFRAME_SIZE) & ~15ULL) - 8;
+}
+
+static void enterSignalHandler64(CPU64* cpu) {
+    // Linux handle_signal clears DF/RF/TF and initializes FP state for the
+    // handler; the interrupted values already live in the saved context.
+    cpu->rflags &= ~(X64_DF | 0x10000u | 0x100u);
+    cpu->fpu.FINIT();
+    cpu->mxcsr = 0x1f80;
+    for (auto& x : cpu->xmm) x = {};
+}
 
 // Synchronously deliver `sig` to `cpu` (the same thread). Models the
 // kernel's "queue a signal that's pending immediately" path for the
@@ -2918,10 +2926,10 @@ static U64 restoreSignalFrame(CPU64* cpu, U64 uctxPtr) {
 // Mechanics:
 //   1. Pick the frame stack: altstack if SA_ONSTACK set and altstack is
 //      live, otherwise current RSP minus a redzone (128 bytes per SysV).
-//   2. Round down to 16-byte alignment, subtract frame size.
+//   2. Reserve the frame and align handler entry RSP to 8 mod 16.
 //   3. Build the ucontext_t at frame_base via buildSignalFrame.
 //   4. Set cpu->reg[X64_RSP] = frame_base, RIP = handler, RDI = sig,
-//      RSI = 0 (no siginfo), RDX = &uctx, R10 = 0, R8/R9 = 0.
+//      RSI = &siginfo for SA_SIGINFO, RDX = &uctx.
 //   5. Mask the signal in cpu->sigMask for the duration of handler
 //      execution (kernel adds sig to mask unless SA_NODEFER set).
 //   6. The handler ends with `ret`-to-restorer or `syscall(rt_sigreturn)`,
@@ -2936,16 +2944,7 @@ static bool deliverSignalSync(CPU64* cpu, U32 sig) {
     if (!sa.installed) return false;
     if (sa.handler == 0 /*SIG_DFL*/ || sa.handler == 1 /*SIG_IGN*/) return false;
 
-    // Pick stack: SA_ONSTACK requires a non-DISABLED altstack.
-    U64 baseSp;
-    if ((sa.flags & X64_SA_ONSTACK) && cpu->sigAltStack.ssSp != 0 &&
-        (cpu->sigAltStack.ssFlags & 2 /*SS_DISABLE*/) == 0) {
-        baseSp = cpu->sigAltStack.ssSp + cpu->sigAltStack.ssSize;
-    } else {
-        baseSp = cpu->reg[X64_RSP].u64 - 128; // red zone
-    }
-    // 16-align then reserve the frame.
-    U64 frameBase = (baseSp - X64_SIGFRAME_SIZE) & ~(U64)15;
+    U64 frameBase = signalFrameBase64(cpu, sa.flags);
 
     U64 uctxPtr = buildSignalFrame(cpu, frameBase);
 
@@ -2963,7 +2962,7 @@ static bool deliverSignalSync(CPU64* cpu, U32 sig) {
             std::memcpy(sigInfo + 20, &uid, sizeof(uid));
         }
     }
-    cpu->memory->memcpyToGuest(frameBase, sigInfo, sizeof(sigInfo));
+    cpu->memory->memcpyToGuest(frameBase + X64_SIGINFO_OFF_IN_FRAME, sigInfo, sizeof(sigInfo));
 
     // x86-64 signal-frame ABI: the kernel pushes the restorer address *below*
     // the ucontext so the handler's terminating `ret` pops it and jumps to
@@ -2983,9 +2982,10 @@ static bool deliverSignalSync(CPU64* cpu, U32 sig) {
     // and leaves RSP = uctxPtr, which is what rt_sigreturn expects.
     cpu->reg[X64_RSP].setU64(retSlot);
     cpu->reg[X64_RDI].setU64(sig);      // arg1: signal number
-    cpu->reg[X64_RSI].setU64((sa.flags & 0x4 /*SA_SIGINFO*/) ? frameBase : 0);
+    cpu->reg[X64_RSI].setU64((sa.flags & 0x4 /*SA_SIGINFO*/) ? frameBase + X64_SIGINFO_OFF_IN_FRAME : 0);
     cpu->reg[X64_RDX].setU64(uctxPtr);  // arg3: ucontext pointer
     cpu->rip = sa.handler;
+    enterSignalHandler64(cpu);
 
     return true;
 }
@@ -3078,14 +3078,7 @@ bool CPU64::raiseSyncFault(U32 sig, U32 trapNo, S32 siCode, U64 faultAddr,
     if (!sa.installed) return false;
     if (sa.handler == 0 /*SIG_DFL*/ || sa.handler == 1 /*SIG_IGN*/) return false;
 
-    U64 baseSp;
-    if ((sa.flags & X64_SA_ONSTACK) && this->sigAltStack.ssSp != 0 &&
-        (this->sigAltStack.ssFlags & 2 /*SS_DISABLE*/) == 0) {
-        baseSp = this->sigAltStack.ssSp + this->sigAltStack.ssSize;
-    } else {
-        baseSp = this->reg[X64_RSP].u64 - 128; // red zone
-    }
-    U64 frameBase = (baseSp - X64_SIGFRAME_SIZE) & ~(U64)15;
+    U64 frameBase = signalFrameBase64(this, sa.flags);
 
     U64 uctxPtr = buildSignalFrame(this, frameBase);
 
@@ -3095,11 +3088,11 @@ bool CPU64::raiseSyncFault(U32 sig, U32 trapNo, S32 siCode, U64 faultAddr,
     this->memory->writeq(gregsPtr + 8 * X64_GREG_ERR, errorCode);
     this->memory->writeq(gregsPtr + 8 * X64_GREG_CR2, faultAddr);
 
-    // Synthesize a siginfo_t at the start of the frame (the siginfo region sits
-    // before the ucontext at X64_UCONTEXT_OFF_IN_FRAME). Layout (x86-64):
+    // Synthesize siginfo_t above the saved ucontext, outside the handler
+    // stack. Layout (x86-64):
     //   int si_signo @0; int si_errno @4; int si_code @8; then the union,
     //   where the SIGFPE/SIGSEGV variant places void* si_addr @16.
-    U64 siPtr = frameBase;
+    U64 siPtr = frameBase + X64_SIGINFO_OFF_IN_FRAME;
     this->memory->writed(siPtr + 0, sig);
     this->memory->writed(siPtr + 4, 0);
     this->memory->writed(siPtr + 8, (U32)siCode);
@@ -3118,6 +3111,7 @@ bool CPU64::raiseSyncFault(U32 sig, U32 trapNo, S32 siCode, U64 faultAddr,
     this->reg[X64_RSI].setU64(siPtr);      // arg2: siginfo*
     this->reg[X64_RDX].setU64(uctxPtr);    // arg3: ucontext*
     this->rip = sa.handler;
+    enterSignalHandler64(this);
     return true;
 }
 
@@ -4956,7 +4950,16 @@ void ksyscall64(CPU64* cpu) {
             // restores the pre-signal RAX, *not* a sigreturn status).
             if (!cpu->memory) { ret = (U64)-K_EFAULT; break; }
             U64 uctxPtr = cpu->reg[X64_RSP].u64;
-            ret = restoreSignalFrame(cpu, uctxPtr);
+            if (!restoreSignalFrame(cpu, uctxPtr, ret)) {
+                // Linux badframe forces SIGSEGV; never resume with stale FP
+                // state or partially restored general registers.
+                ret = 0;
+                if (!cpu->raiseSyncFault(K_SIGSEGV, 13, 128 /*SI_KERNEL*/, 0)) {
+                    if (cpu->thread && cpu->thread->process)
+                        cpu->thread->process->signalProcess(K_SIGSEGV);
+                    cpu->yield = true;
+                }
+            }
             // restoreSignalFrame wrote rip/rsp/gprs (all except RAX) directly.
             // The dispatcher writes `ret` (savedRax) into RAX after the break,
             // completing the restore. The cpu->rip we just wrote is final —
