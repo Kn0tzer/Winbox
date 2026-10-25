@@ -1237,6 +1237,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
 
   const shaders = createShaderCache({ translate, log, device });
   const pipelines = new Map();   // pipeId:msN -> { pipeline, layouts, decls, hasPush, slotOf, maxGroup, key }
+  const pipelineFailures = new Map();   // full pipeline key -> first skip reason; a failed key never rebuilds
   const blitPipelines = new Map();
   let presentPipeline = null;
   const targets = new Map();     // targetKey -> GPUTexture (invalidated on resize; img:/imgd: keys alias by VkImage)
@@ -1274,6 +1275,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
       submit: { ms: timing.submitMs, count: timing.submitCount },
       render: { ms: timing.renderMs, count: timing.renderCount },
       skipped: stats.skips, unsupported: stats.unsupported,
+      pipelineFailures: pipelineFailures.size,
     };
   };
   let destroyed = false;
@@ -1585,19 +1587,34 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     const stripIndexType = pipe.topology === 2 || pipe.topology === 4 ? indexType : undefined;
     const key = pipe.pipeId + ':ms' + sampleCount + ':topology:' + pipe.topology + ':vb:' + JSON.stringify(pipe.vb) + ':yny' + (unnegated ? '1' : '0') + ':pd' + (passHasDepth ? '1' : '0') + ':dt' + (pipe.depthTest ? '1' : '0') + ':dw' + (pipe.depthWrite ? '1' : '0') + ':do' + (pipe.depthOp | 0) + ':si' + (stripIndexType ?? 'none') + ':colors' + colorFormats.join(',') + ':blend:' + JSON.stringify(pipe.colorBlend ?? pipe.blend) + ':cf:' + pipe.cull + '/' + pipe.front + ':depth:' + depthFormat + ':stencil:' + JSON.stringify(pipe.stencil) + ':db:' + JSON.stringify([pipe.depthBiasEnable,pipe.depthBiasConstantFactor,pipe.depthBiasClamp,pipe.depthBiasSlopeFactor,pipe.depthClampEnable]) + ':aspects:' + depthAspects;
     if (pipelines.has(key)) return pipelines.get(key);
+    if (pipelineFailures.has(key)) return { skip: pipelineFailures.get(key) };
+    // Fail closed and loud. WebGPU pipeline construction is asynchronous page
+    // work that only starts after vkCreateGraphicsPipelines has already
+    // returned VK_SUCCESS to the guest, and no channel exists to deliver a
+    // VkResult back into that completed call. The loudest honest behaviour
+    // the architecture allows is a permanent, counted, unthrottled failure
+    // for this exact pipeline key: the first failure logs PIPELINE-FAILED
+    // once, the key is exposed in frame stats, and every later draw with
+    // this key stays a counted skipped draw (never a silent rebuild retry,
+    // never a substituted pipeline).
+    const fail = (reason) => {
+      pipelineFailures.set(key, reason);
+      console.error('vkwebgpu: PIPELINE-FAILED pipeId=' + pipe.pipeId + ' reason=' + reason);
+      return { skip: reason };
+    };
     const vsm = F.shaders.get(pipe.vsHash), fsm = F.shaders.get(pipe.fsHash);
-    if (!vsm || !fsm) { noteUnsupported('missing-shader', 'pipeline shader module was not captured'); return { skip: 'missing-shader' }; }
+    if (!vsm || !fsm) { noteUnsupported('missing-shader', 'pipeline shader module was not captured'); return fail('missing-shader'); }
     let vsWgsl = await shaders.get('vertex', { hash: pipe.vsHash, size: vsm.code.length, code: vsm.code }, { rasterTopology: pipe.topology, specOverrides: pipe.vsSpec });
     if (unnegated) vsWgsl = stripNagaYNegation(vsWgsl);
     let fsWgsl = await shaders.get('fragment', { hash: pipe.fsHash, size: fsm.code.length, code: fsm.code }, { rasterTopology: pipe.topology, specOverrides: pipe.fsSpec });
     fsWgsl = rewriteResolvedDxvkPresent(pipe.fsHash, fsWgsl);
     fsWgsl = rewriteMultisampledTextures(fsWgsl);
     if (!passHasDepth) fsWgsl = stripNagaFragmentDepth(fsWgsl);
-    if (!vsWgsl || !fsWgsl) { noteUnsupported('shader-translation', 'Naga returned no WGSL for a pipeline stage'); return { skip: 'shader-translation' }; }
+    if (!vsWgsl || !fsWgsl) { noteUnsupported('shader-translation', 'Naga returned no WGSL for a pipeline stage'); return fail('shader-translation'); }
     fsWgsl = matchFragmentInputsToVertexOutputs(vsWgsl, fsWgsl);
     const vsR = rewritePushConstantsWGSL(vsWgsl), fsR = rewritePushConstantsWGSL(fsWgsl);
     const pushBlocks = vsR.pushBlocks + fsR.pushBlocks;
-    if (vsR.pushBlocks > 1 || fsR.pushBlocks > 1) { noteUnsupported('multi-push-block'); return { skip: 'multi-push-block' }; }
+    if (vsR.pushBlocks > 1 || fsR.pushBlocks > 1) { noteUnsupported('multi-push-block'); return fail('multi-push-block'); }
     const hasPush = pushBlocks > 0;
 
     const declarations = scanWgslResources(vsR.code).concat(scanWgslResources(fsR.code));
@@ -1607,7 +1624,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       const prior = uniqueDeclarations.get(key);
       if (prior && JSON.stringify(layoutEntryFor(prior)) !== JSON.stringify(layoutEntryFor(decl))) {
         noteUnsupported('incompatible-shared-binding', key);
-        return { skip: 'incompatible-shared-binding:' + key };
+        return fail('incompatible-shared-binding:' + key);
       }
       if (!prior) uniqueDeclarations.set(key, decl);
     }
@@ -1623,7 +1640,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     const byGroup = new Map();
     for (const d of decls) {
       if (d.group > 2 && !(d.group === V2_PUSH_GROUP && d.binding === V2_PUSH_BINDING && d.addr === 'uniform')) {
-        noteUnsupported('group-out-of-range', d.group); return { skip: 'group-out-of-range' };
+        noteUnsupported('group-out-of-range', d.group); return fail('group-out-of-range');
       }
       if (!byGroup.has(d.group)) byGroup.set(d.group, []);
       byGroup.get(d.group).push(d);
@@ -1635,7 +1652,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       const entries = [];
       for (const d of byGroup.get(g) || []) {
         const e = layoutEntryFor(d);
-        if (!e) { noteUnsupported('decl-kind', d.type); return { skip: 'decl-kind:' + d.type }; }
+        if (!e) { noteUnsupported('decl-kind', d.type); return fail('decl-kind:' + d.type); }
         entries.push(e);
       }
       if (g === V2_PUSH_GROUP && hasPush && !entries.some(e => e.binding === V2_PUSH_BINDING))
@@ -1655,7 +1672,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       for (const va of pipe.va) {
         if (va.binding !== vb.binding) continue;
         const vf = v2VertexFormat(va.format);
-        if (!vf) { noteUnsupported('vertex-format', va.format); return { skip: 'vertex-format:' + va.format }; }
+        if (!vf) { noteUnsupported('vertex-format', va.format); return fail('vertex-format:' + va.format); }
         attributes.push({ shaderLocation: va.location, offset: va.offset, format: vf });
         const scaling = V2_SCALED_VERTEX[va.format];
         if (scaling) scaled.push({ ...scaling, srcOffset: va.offset, attribute: attributes[attributes.length - 1] });
@@ -1665,7 +1682,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       // change the distance between vertices (zero also means constant data).
       const stride = vb.stride;
       if (scaled.length && !stride) {
-        noteUnsupported('vertex-stride', stride); return {skip:'vertex-stride:' + stride};
+        noteUnsupported('vertex-stride', stride); return fail('vertex-stride:' + stride);
       }
       const paddedStride = stride === 0 || stride % 4 !== 0 || minStride > stride;
       let arrayStride = scaled.length || paddedStride ? Math.ceil(Math.max(stride, minStride, 4) / 4) * 4 : stride;
@@ -1679,7 +1696,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         buffers.push({arrayStride,stepMode:vb.inputRate || stride === 0 ? 'instance':'vertex',attributes:streamAttributes});
       };
       addStream(attributes);
-      if (buffers.length > (device.limits?.maxVertexBuffers || 8)) {noteUnsupported('vertex-buffer-slot-limit', buffers.length);return {skip:'vertex-buffer-slot-limit'};}
+      if (buffers.length > (device.limits?.maxVertexBuffers || 8)) {noteUnsupported('vertex-buffer-slot-limit', buffers.length);return fail('vertex-buffer-slot-limit');}
       slotOf.set(vb.binding,slots);
       const attrs44 = [];
       for (const va of pipe.va) if (va.binding === vb.binding && va.format === 44) attrs44.push(va.offset);
@@ -1697,7 +1714,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       stencil = passHasDepth && (depthAspects & 4)
         ? v2StencilState(pipe, depthFormat)
         : {state:{},reference:null};
-    } catch (error) { noteUnsupported('pipeline-build-threw', error.message); return { skip: error.message }; }
+    } catch (error) { noteUnsupported('pipeline-build-threw', error.message); return fail(error.message); }
     device.pushErrorScope('validation');
     const bwModuleT0 = metricsNow();
     const vertexModule = device.createShaderModule({ code: vsR.code });
@@ -1737,7 +1754,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       const where = /@group\((\d+)\) @binding\((\d+)\)/.exec(err.message);
       const decl = where ? [['vs', vsR.code], ['fs', fsR.code]].flatMap(([stage, code]) =>
         [...code.matchAll(new RegExp(`@group\\(${where[1]}\\)\\s*@binding\\(${where[2]}\\)\\s*var[^;]*;`, 'g'))].map(m => stage + ': ' + m[0].replace(/\s+/g, ' '))).join(' | ') : '';
-      return { skip: 'pipeline-rejected:' + err.message.split(' - ')[0] + (decl ? ' [' + decl + ']' : '') };
+      return fail('pipeline-rejected:' + err.message.split(' - ')[0] + (decl ? ' [' + decl + ']' : ''));
     }
     const rec = { key, pipeline, layouts, decls, hasPush, slotOf, maxGroup, vbWalk, stripIndexType, blendConstantMode, stencilReference:stencil.reference };
     pipelines.set(key, rec);
