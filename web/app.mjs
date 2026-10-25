@@ -9,6 +9,7 @@ import { replaceInstallation } from './installation.mjs';
 import { startupProgress, startupFailure, visibleFrame } from './startup.mjs';
 import { readDirectory, openDirectPackage } from './direct-folder.mjs';
 import { installFrameMetrics, METRICS_LINE_PREFIX } from './frame-metrics.mjs';
+import { connectRuntimeClipboard } from './clipboard-bridge.mjs';
 
 const $ = id => /** @type {any} */ (document.getElementById(id));
 const icon = name => {
@@ -172,6 +173,8 @@ async function launchFrame(query, title, archive = null) {
       frame.contentDocument.documentElement.style.backgroundColor = '#000';
       frame.contentDocument.body.style.backgroundColor = '#000';
     } catch { /* Runtime presentation remains isolated if the frame is unavailable. */ }
+    try { connectRuntimeClipboard(frame.contentDocument, () => frame.contentWindow?.Module); }
+    catch (error) { log('Clipboard bridge unavailable: ' + errorText(error)); }
   };
   const run = { frame, archive, generation: ++generation, renderer: null, vkReady: null, canvas: null,
     lastLog: null, firstMapped: false, hasFrame: false, failed: false, status: '', progressTimer: null, probe: null,

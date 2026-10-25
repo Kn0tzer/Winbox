@@ -67,7 +67,7 @@ These categories were requested for the game-impact review. The scan found no ma
 | Audio output and input | One TODO (`knativeaudio.cpp:77`). | Not assessed. |
 | Gamepad / XInput | No marker in `platform/sdl/` input or `source/x11/`. | Not assessed. |
 | Window, cursor, fullscreen, pointer lock | Markers in the table above (mode switch, relative mouse, EWMH, grab). | Partly assessed. |
-| Clipboard (X selections) | No marker. | Not assessed. |
+| Clipboard (X selections) | `source/x11wire/xwireconnection.cpp` selection conversion and `web/clipboard-bridge.mjs` | IMPLEMENTED: browser copy reads the guest selection bridge; paste stages host text for X selection conversion. `clipboard-bridge.test.mjs` covers both directions; `xwireconnection.cpp` applies TARGETS, UTF8_STRING, STRING and TEXT conversions. |
 | IME | See the IME row above. | Partly assessed. |
 | Networking sockets and DNS | No marker in scope. | Not assessed. |
 | File dialogs | No marker in scope. | Not assessed. |
