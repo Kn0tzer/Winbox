@@ -98,7 +98,7 @@ disposition. "x86+x64" means both `w32` and `w64` unless noted.
 | Item | Present? | Evidence | Severity | Disposition |
 | --- | --- | --- | --- | --- |
 | mfplat, mfreadwrite, mf, quartz, wmvcore, evr, amstream | YES both | `x86_64-windows` and `i386-windows` contain `mfplat.dll`, `mfreadwrite.dll`, `mf.dll`, `quartz.dll`, `wmvcore.dll`, `evr.dll`, `amstream.dll` | – | NOT-A-GAP |
-| winegstreamer availability | PARTIAL: PE+unix side present, but gstreamer *plugins* absent → element creation fails → cutscene decode fails | `w64:x86_64-unix/winegstreamer.so`, `w32:i386-unix/winegstreamer.so` both DT_NEED `libgstreamer-1.0.so.0`, `libgstaudio-1.0.so.0`, `libgstvideo-1.0.so.0`, `libgsttag-1.0.so.0`, `libgstbase-1.0.so.0` (present in `glibc-rootfs64.zip`/`wine32.zip`), but neither `wine64.zip` nor `wine32.zip` contained any `gstreamer-1.0/` plugin directory | would break a real game (video cutscenes, Bink-free FMV) | IMPLEMENTED: `tools/rootfs64/prepare-gstreamer.py` pins Debian bookworm `gstreamer1.0-plugins-base`/`-good`/`-libav` (+libav) debs by sha256, stages the plugin `.so` set plus its DT_NEEDED closure into `gstreamer64/`/`gstreamer32/`; `build-wine64-zip.sh` bakes the 64-bit set into wine64.zip and `tools/rootfs64/stage-gstreamer.sh` does the same for wine32.zip (mirroring `stage-alsa32.sh`); `prepare_prefixes.validate_service_runtime` requires the demux/decode plugins; pinned by `runtime-completeness.test.mjs`. Size: +85 MB compressed on the 210 MB wine64.zip / 237 MB wine32.zip boot download (wine32 verified: 236,709,881 → 321,016,564 bytes); the closure is DT_NEEDED-complete, so it cannot be trimmed without dropping demux/decode features. Shipped wine64.zip carries the set via `stage-wine64-payloads.sh` (a2377ce48); shipped wine32.zip via `stage-gstreamer.sh`; `validate_service_runtime` PASS on both shipped pairs (2026-10-25) |
+| winegstreamer availability | PARTIAL: PE+unix side present, but gstreamer *plugins* absent → element creation fails → cutscene decode fails | `w64:x86_64-unix/winegstreamer.so`, `w32:i386-unix/winegstreamer.so` both DT_NEED `libgstreamer-1.0.so.0`, `libgstaudio-1.0.so.0`, `libgstvideo-1.0.so.0`, `libgsttag-1.0.so.0`, `libgstbase-1.0.so.0` (present in `glibc-rootfs64.zip`/`wine32.zip`), but neither `wine64.zip` nor `wine32.zip` contained any `gstreamer-1.0/` plugin directory | would break a real game (video cutscenes, Bink-free FMV) | IMPLEMENTED: `tools/rootfs64/prepare-gstreamer.py` pins Debian bookworm `gstreamer1.0-plugins-base`/`-good`/`-libav` (+libav) debs by sha256, stages the plugin `.so` set plus its DT_NEEDED closure into `gstreamer64/`/`gstreamer32/`; `build-wine64-zip.sh` bakes the 64-bit set into wine64.zip and `tools/rootfs64/stage-gstreamer.sh` does the same for wine32.zip (mirroring `stage-alsa32.sh`); `prepare_prefixes.validate_service_runtime` requires the demux/decode plugins; pinned by `runtime-completeness.test.mjs`. Size: +85 MB compressed on the 210 MB wine64.zip / 237 MB wine32.zip boot download (wine32 verified: 236,709,881 → 321,016,564 bytes); the closure is DT_NEEDED-complete, so it cannot be trimmed without dropping demux/decode features. Shipped wine64.zip carries the set via `stage-wine64-payloads.sh` (a2377ce48); shipped wine32.zip via `stage-gstreamer.sh`; `validate_service_runtime` PASS on both shipped pairs (2026-10-25). **Lazy split (2026-10-25, supersedes the placement sentences above):** the plugin set + DT_NEEDED closure no longer rides the boot zips — `tools/browser/stage-dependencies.py` stages the `gstreamer64/`/`gstreamer32/` trees into the lazy support pack at the same guest paths (symlinks stored dereferenced), `build-wine64-zip.sh`/`stage-wine64-payloads.sh` no longer merge it, and `stage-gstreamer.sh` is deleted. The pack is mounted as a `bw64url:` `-zip` on EVERY launch (`project/emscripten/wine64-launcher.js` `buildArguments`) after `web/runtime.html` HEAD-verifies `dependencies.json` + the archive (exact bytes, accept-ranges) and throws before Wine starts if it is unavailable — so a media program’s plugin reads range-fetch the members on first touch, non-media programs never download those bytes, and a missing pack fails loudly pre-boot, never as a silent missing-DLL hunt. `validate_service_runtime` now requires the support pack and rejects the split in both directions (plugin baked into a boot zip = error; plugin missing from the pack = error; both unit-tested in `test_prepare_prefixes.py`), and checker test `t_gstreamer_split` pins every staged closure member’s presence in the retained pack (provenance member counts + tree digests in `dependencies.json`) and absence from both boot zips, plus `prepare-gstreamer.py --check`. wine64.zip 298,882,954 → 210,270,035 B; wine32.zip 321,016,564 → 236,638,528 B; support pack 207,600,063 → 517,840,753 B (closure stored dereferenced: x86_64 262 members / 373,443,728 B, i386 247 members / 351,488,608 B). `check_runtime_completeness.py` 10/10 PASS. The guest-visible filesystem union is unchanged — only the archive carrying the closure changed |
 | Native DirectShow/MF decoders not gstreamer-backed | N/A | Staged-tree proof (2026-10-25): the full `x86_64-unix/` census of `wine64.zip` (35 modules) contains exactly one media-decoder unixlib, `winegstreamer.so`; the i386 tree likewise ships only `winegstreamer.so` (+ its `winegstreamer.dll.so` PE-side twin). The PE consumers route to it in the shipped binaries themselves: `w64` `mfplat.dll` contains the wide strings `CLSID_GStreamerByteStreamHandler` and `resolver_create_gstreamer_handler`. No second native decoder module exists in either pinned Wine build to stage. | – | NOT-A-GAP (artifact-cited) |
 
 ### Audio
@@ -185,6 +185,8 @@ hashes were re-pinned into `runtime-assets.json` on 2026-10-25 (release
 pins’ remote half (publishing the release asset) remains a release-step
 item, listed in that addendum.
 
+**Split update (2026-10-25):** the gstreamer closure moved from the boot zips to the support pack (see the winegstreamer row), so the boot download is now ~486 MB total (glibc-rootfs64 10 MB + wine64 210 MB + prefix64 19 MB + glibc-rootfs32 4 MB + wine32 237 MB + prefix32 6 MB) and the support pack is 517,840,753 bytes (lazy, range-fetched per member — not a boot cost). The two changed zips were re-pinned into `runtime-assets.json` the same day (release id `runtime-assets-20261025` unchanged, still unpublished); the retained box archive was rebuilt at 510,382,080 bytes (sha256 `8da7911a16d9221734e9253bd1e406b58c24e0f5d86edfaf0711226e49061c32`), with the pre-split archive kept alongside as `browser-runtime-20261025-presplit.tar` and the pre-split zips in `/home/ubuntu/backups/winbox-gstsplit-20261025/`. `bootstrap.py --check` passes and a fake-root `--local` restore from the new archive verifies all 13 assets.
+
 ## Wave-2 evidence sweep (2026-10-25, runtime evidence lane)
 
 Audit wave 2 sampled the register's NOT-A-GAP rows and found the VC++
@@ -220,7 +222,7 @@ defect class:
   CJK font pin), so the row stays IMPLEMENTED, but the retained-artifact
   proof must be re-run when the release step rebuilds/re-pins the
   support pack (the same disclosed re-pin state noted in the size
-  section). No other row depends on the support pack's CJK members.
+  section). No other row depends on the support pack's CJK members. **Resolved (2026-10-25, split-finish lane):** the retained pack is now `support-e6f74fef…` (517,840,753 B), staged by the current `stage-dependencies.py`, and it contains all three CJK members (`usr/share/fonts/truetype/wqy/wqy-microhei.ttc`, `etc/fonts/conf.d/65-wqy-microhei.conf`, `opt/winbox/licenses/wqy-microhei-copyright`) — verified directly against the retained artifact; the manifest’s support-pack census reflects it.
 - Rows whose proof is code/document-based rather than zip-presence
   (registry defaults, `WINEDLLOVERRIDES`, deliberate audio/DPI choices,
   the libgl64 audit) cite in-tree sources and were out of this sweep's
@@ -302,8 +304,8 @@ bytes + sha256 of the shipped `web/runtime/` artifacts exactly as
 recorded in `runtime-artifact-manifest.md` (cross-checked file by
 file before pinning; glibc-rootfs64, prefix32 and the seven Slang
 files are unchanged since 2026-10-13 and keep their pins). A new
-local archive `browser-runtime-20261025.tar` (683,386,880 bytes,
-sha256 `77e3de2abbd41c196569b5f5bddac7a8069b13701b8776462b37fb90954cd4a8`)
+local archive `browser-runtime-20261025.tar` (510,382,080 bytes,
+sha256 `8da7911a16d9221734e9253bd1e406b58c24e0f5d86edfaf0711226e49061c32`)
 containing exactly the 13 pinned members was built from the shipped
 files and is retained at
 `/home/ubuntu/backups/winbox-runtime-assets-20261025/` on the build
@@ -324,8 +326,8 @@ publishing; nothing here was pushed or published by this lane):
    `Kn0tzer/Boxedwine64` (the `release` / `repository` fields of
    `runtime-assets.json`).
 2. Upload one asset named exactly `browser-runtime-20261025.tar`
-   (683,386,880 bytes, sha256
-   `77e3de2abbd41c196569b5f5bddac7a8069b13701b8776462b37fb90954cd4a8`;
+   (510,382,080 bytes, sha256
+   `8da7911a16d9221734e9253bd1e406b58c24e0f5d86edfaf0711226e49061c32`;
    build-box copy:
    `/home/ubuntu/backups/winbox-runtime-assets-20261025/browser-runtime-20261025.tar`).
    `bootstrap.py` constructs the download URL from the manifest, so
@@ -335,3 +337,35 @@ publishing; nothing here was pushed or published by this lane):
    all 13 assets (the 2026-10-13 release URL no longer serves its
    asset; until this release exists, clean builds restore offline
    via `--local` with the retained box archive above).
+
+## GStreamer split finish (2026-10-25, split audit/finish lane)
+
+A cancelled lane had left this split half-landed: staging scripts edited,
+boot zips rebuilt smaller, support pack rebuilt with the closure — but the
+manifest stale, the pins stale (`bootstrap.py --check` failing on both wine
+zips), and nothing committed. Audit verdict: the design was sound and the
+trigger honest (the support pack is an always-mounted, pre-boot-verified
+lazy zip — see the winegstreamer row), so this lane finished it rather than
+reverting. Audit evidence: the partial lane had retained the pre-split zips
+in `/home/ubuntu/backups/winbox-gstsplit-20261025/` (byte sizes match the
+fdf4c66be pins exactly); the rebuilt zips pass full CRC; the re-run of
+`tools/browser/build.mjs` (export) in this lane reproduced the rebuilt
+support pack byte-identically (517,840,753 B, sha256 `e6f74fef…`), proving
+the pack on disk is exactly what the now-committed staging code produces;
+the export also re-stamped `wine32-font-provenance.json` against the new
+wine64.zip, clearing the one unit failure the split had caused
+(`provenance-artifacts`, stale `source_wine64_sha256` — a generated record,
+regenerated by the pipeline, not hand-edited). Verification: manifest
+regenerated; `check_runtime_completeness.py` 10/10 PASS, 0 skips;
+`test_prepare_prefixes.py` 9 OK; `bootstrap.py --check` passes (13 files);
+fake-root `--local` restore from the rebuilt archive verifies all 13
+assets; solo unit suite 184 passed / 0 failed (an earlier 183/1 run
+overlapped another lane's suite and is discarded per the solo rule).
+Commits: `9af7fe783` (split) and the re-pin/register commit carrying this
+note. Register stays **OPEN: 0**; no row changed disposition — the
+winegstreamer row's placement text was updated to the split, the size
+budget was corrected, and the wave-2 CJK retained-artifact flag is resolved
+above. Remaining proof is unchanged in kind: an end-to-end media-playing
+guest program is a gate/browser item, as it was pre-split (the
+guest-visible filesystem union is identical; only the archive carrying the
+closure changed).
