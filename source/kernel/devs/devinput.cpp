@@ -374,6 +374,7 @@ U32 DevInput::ioctl64(U32 request, U64 argAddr, KMemory64* mem) {
 #endif
 
 void DevInput::setAsync(bool isAsync) {
+    FsOpenNode::setAsync(isAsync);
     KProcessPtr process = KThread::currentThread()->process;
     if (isAsync) {
         if (this->asyncProcessId && this->asyncProcessId!=process->id) {
@@ -392,7 +393,7 @@ void DevInput::setAsync(bool isAsync) {
 }
 
 bool DevInput::isAsync() {
-    return this->asyncProcessId == KThread::currentThread()->process->id;
+    return FsOpenNode::isAsync() || this->asyncProcessId == KThread::currentThread()->process->id;
 }
 
 bool DevInput::isWriteReady() {
@@ -848,7 +849,7 @@ void postSendEvent(DevInput* events, U64 time) {
     if (!events)
         return;
     queueEvent(events, K_EV_SYN, K_SYN_REPORT, 0, time);
-    if (events->asyncProcessId) {
+    if (!events->notifyAsyncReady(K_POLL_IN) && events->asyncProcessId) {
         KProcessPtr process = KSystem::getProcess(events->asyncProcessId);
         if (process) {
             process->signalIO(K_POLL_IN, 0, events->asyncProcessFd);		

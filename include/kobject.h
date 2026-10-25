@@ -39,8 +39,19 @@ public:
     virtual S64 getPos()=0;
     virtual void setBlocking(bool blocking)=0;
     virtual bool isBlocking()=0;
-    virtual void setAsync(bool isAsync)=0;
-    virtual bool isAsync()=0;
+    virtual void setAsync(bool isAsync);
+    virtual bool isAsync();
+    virtual void setAsyncOwner(S32 owner);
+    virtual S32 getAsyncOwner();
+    virtual void setAsyncOwnerEx(S32 type, S32 pid);
+    virtual void getAsyncOwnerEx(S32* type, S32* pid);
+    virtual void setAsyncSignal(U32 signo);
+    virtual U32 getAsyncSignal();
+    virtual bool notifyAsyncReady(U32 code);
+    bool asyncEnabled = false;
+    S32 asyncOwner = 0;
+    U32 asyncOwnerType = 1;
+    U32 asyncSignal = 0;
     virtual KFileLock* getLock(KFileLock* lock)=0;
     virtual U32 setLock(KFileLock* lock, bool wait)=0;
     virtual void unlockAll(U32 pid) {}

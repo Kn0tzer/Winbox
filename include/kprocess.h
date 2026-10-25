@@ -64,6 +64,7 @@ public:
     }
 };
 
+class FsOpenNode;
 #define MAX_SIG_ACTIONS 64
 
 #define K_PROT_NONE  0x0
@@ -153,6 +154,7 @@ public:
     KThread* startProcess(BString currentDirectory, const std::vector<BString>& args, const std::vector<BString>& envValues, int userId, int groupId, int effectiveUserId, int effectiveGroupId);
     void signalProcess(U32 signal);
     void signalIO(U32 code, S32 band, FD fd);
+    void signalAsyncEvent(U32 signo, U32 code, const KObject* objectKey, const FsOpenNode* nodeKey);
     void signalCHLD(U32 code, U32 childPid, U32 sendingUID, S32 exitCode);
     void signalALRM();
     void printStack();

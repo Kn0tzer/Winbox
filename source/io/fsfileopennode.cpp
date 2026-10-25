@@ -93,12 +93,11 @@ U32 FsFileOpenNode::ioctl(KThread* thread, U32 request) {
 }
 
 void FsFileOpenNode::setAsync(bool isAsync) {
-    if (isAsync)
-        kdebug("FsFileOpenNode::setAsync not implemented");
+    FsOpenNode::setAsync(isAsync);
 }
 
 bool FsFileOpenNode::isAsync() {
-    return false;
+    return FsOpenNode::isAsync();
 }
 
 void FsFileOpenNode::waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) {

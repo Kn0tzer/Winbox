@@ -1234,6 +1234,40 @@ void KProcess::signalCHLD(U32 code, U32 childPid, U32 sendingUID, S32 exitCode) 
     signalProcess(K_SIGCHLD);
 }
 
+
+// SIGIO-style delivery for fcntl O_ASYNC owners (kernel round 3B). The
+// descriptor number is not carried by most readiness sources, so it is
+// resolved here by scanning this process's descriptor table for the object
+// (or the KFile whose open node) that became ready. siginfo layout matches
+// signalIO: [0]=signo, [2]=si_code (POLL_IN/POLL_OUT), [4]=si_fd.
+void KProcess::signalAsyncEvent(U32 signo, U32 code, const KObject* objectKey, const FsOpenNode* nodeKey) {
+    if (signo == 0) {
+        return;
+    }
+    if (signo < MAX_SIG_ACTIONS) {
+        S32 fd = 0;
+        for (auto& entry : this->fds) {
+            KFileDescriptorPtr descriptor = entry.value;
+            if (!descriptor || !descriptor->kobject) {
+                continue;
+            }
+            bool match = objectKey && descriptor->kobject.get() == objectKey;
+            if (!match && nodeKey && descriptor->kobject->type == KTYPE_FILE) {
+                std::shared_ptr<KFile> file = std::dynamic_pointer_cast<KFile>(descriptor->kobject);
+                match = file && file->openFile == nodeKey;
+            }
+            if (match) {
+                fd = (S32)descriptor->handle;
+                break;
+            }
+        }
+        this->sigActions[signo].sigInfo[0] = signo;
+        this->sigActions[signo].sigInfo[2] = code;
+        this->sigActions[signo].sigInfo[4] = (U32)fd;
+    }
+    this->signalProcess(signo);
+}
+
 void KProcess::signalALRM() {
     memset(this->sigActions[K_SIGALRM].sigInfo, 0, sizeof(this->sigActions[K_SIGALRM].sigInfo));
     this->sigActions[K_SIGALRM].sigInfo[0] = K_SIGALRM;
@@ -3117,10 +3151,27 @@ U32 KProcess::fcntrl(KThread* thread, FD fildes, U32 cmd, U32 arg) {
     }    
     switch (cmd) {
         case K_F_SETOWN:
-            if (this->id != arg) {
-                kdebug("F_SETOWN not implemented: %d",fildes);
-            }
+            fd->kobject->setAsyncOwner((S32)arg);
             return 0;
+        case K_F_GETOWN:
+            return (U32)fd->kobject->getAsyncOwner();
+        case K_F_SETOWN_EX: {
+            S32 type = (S32)memory->readd(arg);
+            S32 pid = (S32)memory->readd(arg + 4);
+            if (type < 0 || type > 2 || pid <= 0) {
+                return -K_EINVAL;
+            }
+            fd->kobject->setAsyncOwnerEx(type, pid);
+            return 0;
+        }
+        case K_F_GETOWN_EX: {
+            S32 type = 0;
+            S32 pid = 0;
+            fd->kobject->getAsyncOwnerEx(&type, &pid);
+            memory->writed(arg, (U32)type);
+            memory->writed(arg + 4, (U32)pid);
+            return 0;
+        }
         case K_F_DUPFD: {
             KFileDescriptorPtr result = this->allocFileDescriptor(fd->kobject, fd->accessFlags, fd->descriptorFlags, -1, arg);        
             return result->handle;
@@ -3180,15 +3231,16 @@ U32 KProcess::fcntrl(KThread* thread, FD fildes, U32 cmd, U32 arg) {
                 return -K_EBADF;
             }
         case K_F_SETSIG: {
-            if (arg != K_SIGIO) {
-                if (bw64RecoverEnabled()) {
-                    bw64RecoverLogOnce("syscall.fcntl.setsig", "unsupported fcntl F_SETSIG value; returned EINVAL");
-                    return -K_EINVAL;
-                }
-                kpanic("fcntl F_SETSIG not implemented");
+            // Any signal 0..64 is storable now (0 resets to SIGIO at
+            // delivery time). This used to kpanic for arg != SIGIO.
+            if (arg > 64) {
+                return -K_EINVAL;
             }
+            fd->kobject->setAsyncSignal(arg);
             return 0;
         }
+        case K_F_GETSIG:
+            return fd->kobject->getAsyncSignal();
         case K_F_ADD_SEALS: {
             if (fd->kobject->type==KTYPE_FILE) {
                 std::shared_ptr<KFile> f = std::dynamic_pointer_cast<KFile>(fd->kobject);

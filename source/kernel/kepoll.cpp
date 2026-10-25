@@ -106,12 +106,11 @@ bool KEPoll::isBlocking() {
 }
 
 void KEPoll::setAsync(bool isAsync) {
-    if (isAsync)
-        kpanic("KEPoll::setAsync not implemented yet");
+    KObject::setAsync(isAsync);
 }
 
 bool KEPoll::isAsync() {
-    return false;
+    return KObject::isAsync();
 }
 
 KFileLock* KEPoll::getLock(KFileLock* lock) {

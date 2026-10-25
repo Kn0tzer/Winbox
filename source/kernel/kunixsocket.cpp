@@ -156,13 +156,12 @@ bool KUnixSocketObject::isBlocking() {
     return this->blocking;
 }
 
-void  KUnixSocketObject::setAsync(bool isAsync) {
-    if (isAsync)
-        kpanic(" UnixSocketObject::setAsync not implemented yet");
+void KUnixSocketObject::setAsync(bool isAsync) {
+    KObject::setAsync(isAsync);
 }
 
-bool  KUnixSocketObject::isAsync() {
-    return false;
+bool KUnixSocketObject::isAsync() {
+    return KObject::isAsync();
 }
 
 KFileLock*  KUnixSocketObject::getLock(KFileLock* lock) {
@@ -251,7 +250,10 @@ U32 KUnixSocketObject::internal_write(KThread* thread, const std::shared_ptr<KUn
     std::vector<U8> packet(len);
     memory->memcpy(packet.data(), buffer, len);
     const U32 kept = con->applySocketFilter(packet.data(), len);
-    if (kept) con->recvBuffer.put(packet.data(), kept);
+    if (kept) {
+        con->recvBuffer.put(packet.data(), kept);
+        con->notifyAsyncReady(K_POLL_IN);
+    }
     return len;
 }
 
@@ -368,6 +370,7 @@ U32 KUnixSocketObject::writeNative(U8* buffer, U32 len) {
         if (kept) con->recvBuffer.put(buffer, kept);
         BOXEDWINE_CONDITION_SIGNAL_ALL(con->lockCond);
     }
+    if (kept) con->notifyAsyncReady(K_POLL_IN);
     con->onPeerWrote();
     return len;
 }
@@ -396,6 +399,7 @@ U32 KUnixSocketObject::unixsocket_write_native_nowait(const std::shared_ptr<KObj
         if (kept) con->recvBuffer.put(value, kept);
         BOXEDWINE_CONDITION_SIGNAL_ALL(con->lockCond);
     }
+    if (kept) con->notifyAsyncReady(K_POLL_IN);
     con->onPeerWrote();
     return len;
 }
@@ -1217,6 +1221,7 @@ U32 KUnixSocketObject::sendmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
         klog_fmt("KUnixSocket::sendmsg datalen=%d to peer (isXWire=%d) via msgs queue",
                  (int)result, (int)(std::dynamic_pointer_cast<XWireServerSocket>(con) != nullptr));
     }
+    con->notifyAsyncReady(K_POLL_IN);
     return result;
 }
 

@@ -17,6 +17,7 @@
  */
 
 #include "boxedwine.h"
+#include "ksignal.h"
 
 #include "knativesocket.h"
 #include "ksocket.h"
@@ -910,12 +911,11 @@ bool KNativeSocketObject::isBlocking() {
 }
 
 void KNativeSocketObject::setAsync(bool isAsync) {
-    if (isAsync)
-        kpanic("KNativeSocketObject::setAsync not implemented yet");
+    KObject::setAsync(isAsync);
 }
 
 bool KNativeSocketObject::isAsync() {
-    return false;
+    return KObject::isAsync();
 }
 
 KFileLock* KNativeSocketObject::getLock(KFileLock* lock) {
@@ -1332,6 +1332,7 @@ U32 KNativeSocketObject::sendLoopbackBytes(KThread* thread, const U8* bytes, U32
             if (!target) g_loopbackUdpSockets.erase(it);
         }
     }
+    bool delivered = false;
     if (target && target->loopbackDatagram &&
         (!target->loopbackAddress || target->loopbackAddress == destinationAddress)) {
         LoopbackPacket packet;
@@ -1345,6 +1346,10 @@ U32 KNativeSocketObject::sendLoopbackBytes(KThread* thread, const U8* bytes, U32
         }
         BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(target->readingCond);
         BOXEDWINE_CONDITION_SIGNAL_ALL(target->readingCond);
+        delivered = true;
+    }
+    if (delivered) {
+        target->notifyAsyncReady(K_POLL_IN);
     }
     this->error = 0;
     return length;

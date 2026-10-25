@@ -28,8 +28,11 @@
 #define K_F_SETLK	 6
 #define K_F_SETLKW   7
 #define K_F_SETOWN   8
+#define K_F_GETOWN   9
 #define K_F_SETSIG   10
 #define K_F_GETSIG   11
+#define K_F_SETOWN_EX   15
+#define K_F_GETOWN_EX   16
 #define K_F_GETLK64  12
 #define K_F_SETLK64  13
 #define K_F_SETLKW64 14

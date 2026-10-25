@@ -34,8 +34,8 @@ public:
     U32 map(KThread* thread, U32 address, U32 len, S32 prot, S32 flags, U64 off) override {return 0;}
     bool canMap() override {return false;}
     U32 ioctl(KThread* thread, U32 request) override {return -K_ENODEV;	}
-    void setAsync(bool isAsync) override {if (isAsync) kdebug("FsVirtualOpenNode::setAsync not implemented");}
-    bool isAsync() override {return false;}
+    void setAsync(bool isAsync) override { FsOpenNode::setAsync(isAsync); }
+    bool isAsync() override { return FsOpenNode::isAsync(); }
     void waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) override { kdebug("FsVirtualOpenNode::waitForEvents not implemented");}
     bool isWriteReady() override {return true;}
     bool isReadReady() override {return true;}

@@ -54,12 +54,11 @@ bool KSignal::isBlocking() {
 }
 
 void KSignal::setAsync(bool isAsync) {
-    if (isAsync)
-        kpanic("KSignal::setAsync not implemented yet");
+    KObject::setAsync(isAsync);
 }
 
 bool KSignal::isAsync() {
-    return false;
+    return KObject::isAsync();
 }
 
 KFileLock* KSignal::getLock(KFileLock* lock) {

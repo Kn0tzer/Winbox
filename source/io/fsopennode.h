@@ -47,8 +47,19 @@ public:
     // this; the default ENOTTY keeps every other node's behavior unchanged
     // (sys_ioctl64 then falls back to its conservative tty handling).
     virtual U32  ioctl64(U32 request, U64 argAddr, class KMemory64* mem) { return (U32)-25; /* -K_ENOTTY (kerror.h not yet included here) */ }
-    virtual void setAsync(bool isAsync)=0;
-    virtual bool isAsync()=0;
+    virtual void setAsync(bool isAsync);
+    virtual bool isAsync();
+    virtual void setAsyncOwner(S32 owner);
+    virtual S32 getAsyncOwner();
+    virtual void setAsyncOwnerEx(S32 type, S32 pid);
+    virtual void getAsyncOwnerEx(S32* type, S32* pid);
+    virtual void setAsyncSignal(U32 signo);
+    virtual U32 getAsyncSignal();
+    virtual bool notifyAsyncReady(U32 code);
+    bool asyncEnabled = false;
+    S32 asyncOwner = 0;
+    U32 asyncOwnerType = 1;
+    U32 asyncSignal = 0;
     virtual void waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events)=0;
     virtual bool isWriteReady()=0;
     virtual bool isReadReady()=0;

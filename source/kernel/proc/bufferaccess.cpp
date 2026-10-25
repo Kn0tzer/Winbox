@@ -78,12 +78,11 @@ U32 BufferAccess::ioctl(KThread* thread, U32 request) {
 }
 
 void BufferAccess::setAsync(bool isAsync) {
-    if (isAsync)
-        kwarn("BufferAccess::setAsync not implemented");
+    FsOpenNode::setAsync(isAsync);
 }
 
 bool BufferAccess::isAsync() {
-    return false;
+    return FsOpenNode::isAsync();
 }
 
 void BufferAccess::waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) {

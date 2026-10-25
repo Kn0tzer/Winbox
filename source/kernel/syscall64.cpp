@@ -4930,6 +4930,27 @@ void ksyscall64(CPU64* cpu) {
             U32 cmd = (U32)a2;
             bool isLock = (cmd == K_F_GETLK || cmd == K_F_SETLK || cmd == K_F_SETLKW ||
                            cmd == K_F_GETLK64 || cmd == K_F_SETLK64 || cmd == K_F_SETLKW64);
+            if (cmd == K_F_SETOWN_EX || cmd == K_F_GETOWN_EX) {
+                // struct f_owner_ex {int type; int pid} lives in 64-bit guest
+                // memory; handle it here like the flock bounce below.
+                KFileDescriptorPtr fd = cpu->thread->process->getFileDescriptor((FD)(S32)a1);
+                if (!fd || !fd->kobject) { ret = (U64)-K_EBADF; break; }
+                if (cmd == K_F_SETOWN_EX) {
+                    S32 type = (S32)cpu->memory->readd(a3);
+                    S32 pid = (S32)cpu->memory->readd(a3 + 4);
+                    if (type < 0 || type > 2 || pid <= 0) { ret = (U64)-K_EINVAL; break; }
+                    fd->kobject->setAsyncOwnerEx(type, pid);
+                    ret = 0;
+                } else {
+                    S32 type = 0;
+                    S32 pid = 0;
+                    fd->kobject->getAsyncOwnerEx(&type, &pid);
+                    cpu->memory->writed(a3, (U32)type);
+                    cpu->memory->writed(a3 + 4, (U32)pid);
+                    ret = 0;
+                }
+                break;
+            }
             if (!isLock) {
                 ret = (U64)(S64)(S32)cpu->thread->process->fcntrl(
                     cpu->thread, (FD)(S32)a1, cmd, (U32)a3);

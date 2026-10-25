@@ -70,10 +70,11 @@ bool KTimer::isBlocking() {
 }
 
 void KTimer::setAsync(bool isAsync) {
+    KObject::setAsync(isAsync);
 }
 
 bool KTimer::isAsync() {
-    return false;
+    return KObject::isAsync();
 }
 
 KFileLock* KTimer::getLock(KFileLock* lock) {

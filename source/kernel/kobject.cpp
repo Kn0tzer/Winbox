@@ -17,6 +17,7 @@
  */
 
 #include "boxedwine.h"
+#include "ksignal.h"
 #include "kobject.h"
 
 KObject::KObject(U32 type) : type(type) {
@@ -73,4 +74,66 @@ U32 KObject::write(KThread* thread, U32 address, U32 len) {
         return written == len;
         });
     return result;
+}
+
+// fcntl O_ASYNC state (kernel round 3B). The enabled flag, the F_SETOWN
+// owner and the F_SETSIG signal live on the file description (this object),
+// matching Linux: F_GETFL reports O_ASYNC from here, and readiness
+// delivery goes to the recorded owner, not to whoever happens to poll.
+void KObject::setAsync(bool isAsync) {
+    this->asyncEnabled = isAsync;
+}
+
+bool KObject::isAsync() {
+    return this->asyncEnabled;
+}
+
+void KObject::setAsyncOwner(S32 owner) {
+    this->asyncOwner = owner;
+    this->asyncOwnerType = owner < 0 ? 2 : 1; // F_OWNER_PGRP / F_OWNER_PID
+}
+
+S32 KObject::getAsyncOwner() {
+    return this->asyncOwner;
+}
+
+void KObject::setAsyncOwnerEx(S32 type, S32 pid) {
+    this->asyncOwnerType = (U32)type;
+    this->asyncOwner = type == 2 ? -pid : pid;
+}
+
+void KObject::getAsyncOwnerEx(S32* type, S32* pid) {
+    *type = (S32)this->asyncOwnerType;
+    *pid = this->asyncOwner < 0 ? -this->asyncOwner : this->asyncOwner;
+}
+
+void KObject::setAsyncSignal(U32 signo) {
+    this->asyncSignal = signo;
+}
+
+U32 KObject::getAsyncSignal() {
+    return this->asyncSignal;
+}
+
+bool KObject::notifyAsyncReady(U32 code) {
+    if (!this->asyncEnabled || this->asyncOwner == 0) {
+        return false;
+    }
+    U32 signo = this->asyncSignal ? this->asyncSignal : K_SIGIO;
+    bool delivered = false;
+    if (this->asyncOwner > 0) {
+        KProcessPtr process = KSystem::getProcess((U32)this->asyncOwner);
+        if (process) {
+            process->signalAsyncEvent(signo, code, this, nullptr);
+            delivered = true;
+        }
+    } else {
+        std::vector<KProcessPtr> processes;
+        KSystem::getProcessesInGroup((U32)(-this->asyncOwner), processes);
+        for (auto& process : processes) {
+            process->signalAsyncEvent(signo, code, this, nullptr);
+            delivered = true;
+        }
+    }
+    return delivered;
 }

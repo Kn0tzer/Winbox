@@ -226,6 +226,16 @@ void KSystem::destroy() {
 #endif
 }
 
+
+void KSystem::getProcessesInGroup(U32 groupId, std::vector<KProcessPtr>& result) {
+    BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(processesCond);
+    for (auto& process : KSystem::processes) {
+        if (process.value && process.value->groupId == groupId) {
+            result.push_back(process.value);
+        }
+    }
+}
+
 U32 KSystem::getProcessCount() {
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(processesCond);
     return (U32)KSystem::processes.size();

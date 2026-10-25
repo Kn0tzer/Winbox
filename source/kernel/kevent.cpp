@@ -28,12 +28,11 @@ bool KEvent::isBlocking() {
 }
 
 void KEvent::setAsync(bool isAsync) {
-    if (isAsync)
-        kpanic("KEvent::setAsync not implemented yet");
+    KObject::setAsync(isAsync);
 }
 
 bool KEvent::isAsync() {
-    return false;
+    return KObject::isAsync();
 }
 
 KFileLock* KEvent::getLock(KFileLock* lock) {

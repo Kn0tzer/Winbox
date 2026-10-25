@@ -61,12 +61,11 @@ U32 FsMemOpenNode::ioctl(KThread* thread, U32 request) {
 }
 
 void FsMemOpenNode::setAsync(bool isAsync) {
-    if (isAsync)
-        kdebug("FsMemOpenNode::setAsync not implemented");
+    FsOpenNode::setAsync(isAsync);
 }
 
 bool FsMemOpenNode::isAsync() {
-    return false;
+    return FsOpenNode::isAsync();
 }
 
 void FsMemOpenNode::waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) {

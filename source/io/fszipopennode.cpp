@@ -71,12 +71,11 @@ U32 FsZipOpenNode::ioctl(KThread* thread, U32 request) {
 }
 
 void FsZipOpenNode::setAsync(bool isAsync) {
-    if (isAsync)
-        kdebug("FsZipOpenNode::setAsync not implemented");
+    FsOpenNode::setAsync(isAsync);
 }
 
 bool FsZipOpenNode::isAsync() {
-    return false;
+    return FsOpenNode::isAsync();
 }
 
 void FsZipOpenNode::waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) {

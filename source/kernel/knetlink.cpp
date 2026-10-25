@@ -67,12 +67,11 @@ bool KNetLinkObject::isBlocking() {
 }
 
 void KNetLinkObject::setAsync(bool isAsync) {
-    if (isAsync)
-        kpanic("KNetLinkObject::setAsync not implemented yet");
+    KObject::setAsync(isAsync);
 }
 
 bool KNetLinkObject::isAsync() {
-    return false;
+    return KObject::isAsync();
 }
 
 KFileLock* KNetLinkObject::getLock(KFileLock* lock) {

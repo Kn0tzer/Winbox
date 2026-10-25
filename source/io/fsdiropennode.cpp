@@ -59,12 +59,11 @@ U32 FsDirOpenNode::ioctl(KThread* thread, U32 request) {
 }
 
 void FsDirOpenNode::setAsync(bool isAsync) {
-    if (isAsync)
-        kdebug("FsDirOpenNode::setAsync not implemented");
+    FsOpenNode::setAsync(isAsync);
 }
 
 bool FsDirOpenNode::isAsync() {
-    return false;
+    return FsOpenNode::isAsync();
 }
 
 void FsDirOpenNode::waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) {

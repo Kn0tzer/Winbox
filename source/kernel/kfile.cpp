@@ -44,6 +44,34 @@ bool KFile::isAsync() {
     return this->openFile->isAsync();
 }
 
+void KFile::setAsyncOwner(S32 owner) {
+    this->openFile->setAsyncOwner(owner);
+}
+
+S32 KFile::getAsyncOwner() {
+    return this->openFile->getAsyncOwner();
+}
+
+void KFile::setAsyncOwnerEx(S32 type, S32 pid) {
+    this->openFile->setAsyncOwnerEx(type, pid);
+}
+
+void KFile::getAsyncOwnerEx(S32* type, S32* pid) {
+    this->openFile->getAsyncOwnerEx(type, pid);
+}
+
+void KFile::setAsyncSignal(U32 signo) {
+    this->openFile->setAsyncSignal(signo);
+}
+
+U32 KFile::getAsyncSignal() {
+    return this->openFile->getAsyncSignal();
+}
+
+bool KFile::notifyAsyncReady(U32 code) {
+    return this->openFile->notifyAsyncReady(code);
+}
+
 void KFile::unlockAll(U32 pid) {
     FsOpenNode* openNode = this->openFile;
     std::shared_ptr<FsNode> node = openNode->node;
