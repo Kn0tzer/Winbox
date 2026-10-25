@@ -165,7 +165,9 @@ void FsNode::addChild(std::shared_ptr<FsNode> node) {
     this->childrenByName.set(node->name, node);
     node->removedFromParent.store(false, std::memory_order_release);
     this->childrenVersion.fetch_add(1, std::memory_order_relaxed);
+#ifdef BW64_HAS_KINOTIFY
     KInotify::notifyChildAdded(this, node.get());
+#endif
 }
 
 void FsNode::removeChildByName(BString name) {

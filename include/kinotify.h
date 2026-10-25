@@ -19,6 +19,14 @@
 #ifndef __KINOTIFY_H__
 #define __KINOTIFY_H__
 
+// Feature marker for the one call site that cannot name KInotify
+// unconditionally: FsNode::addChild lives in the fsnode.cpp region that
+// web/tests/suite/unit/fs-dynamic-link-cache.test.mjs compiles against an
+// in-memory mock with no kernel objects. fsnode.cpp includes this header,
+// so production builds define the macro and make the call; the mock
+// extraction does not include it and compiles the call out.
+#define BW64_HAS_KINOTIFY 1
+
 #include "kobject.h"
 
 class FsNode;
