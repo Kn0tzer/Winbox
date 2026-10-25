@@ -74,10 +74,15 @@ async function runUnitFile(file) {
       const durationMs = Date.now() - t0;
       // Parse TAP: look for "not ok" lines
       const failures = stdout.split("\n").filter(l => l.startsWith("not ok"));
-      if (code === 0 && failures.length === 0) {
+      // A file that registers no tests still exits 0: node --test reports the
+      // file itself as its only subtest. Refuse the vacuous pass — an empty
+      // file proves nothing. Real files list their tests by name.
+      const subtests = stdout.split("\n").filter(l => l.startsWith("# Subtest: "));
+      const zeroTests = subtests.length === 1 && subtests[0] === `# Subtest: ${file}`;
+      if (code === 0 && failures.length === 0 && !zeroTests) {
         finish({ passed: true, durationMs });
       } else {
-        const detail = failures.join("\n") || stderr.slice(0, 1000) || `exit code ${code}`;
+        const detail = failures.join("\n") || (zeroTests ? `FAIL ${name}: file registered 0 tests (vacuous pass refused)` : stderr.slice(0, 1000) || `exit code ${code}`);
         finish({ passed: false, durationMs, error: detail });
       }
     });
