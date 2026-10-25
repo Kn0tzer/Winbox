@@ -979,7 +979,7 @@ void webGpuFixedCall(const char* method, double a = 0, double b = 0, double c = 
             var target = GLctx;
             if (target && typeof target[method] === 'function')
                 target[method].apply(target, [$1, $2, $3, $4, $5].slice(0, $6));
-        } catch (error) { console.error('gl64 fixed-function call failed', error); }
+        } catch (error) { globalThis.__bw64glReportBridgeException('GLctx.' + method, error); }
     })(), method, a, b, c, d, e, count);
 }
 
@@ -990,7 +990,7 @@ void webGpuFixedCall6(const char* method, double a, double b, double c, double d
             var target = GLctx;
             if (target && typeof target[method] === 'function')
                 target[method].call(target, $1, $2, $3, $4, $5, $6);
-        } catch (error) { console.error('gl64 fixed-function call failed', error); }
+        } catch (error) { globalThis.__bw64glReportBridgeException('GLctx.' + method, error); }
     })(), method, a, b, c, d, e, f);
 }
 
@@ -1001,7 +1001,7 @@ void webGpuFixedMatrixCall(const char* method, const GLfloat* matrix) {
             var target = GLctx;
             if (target && typeof target[method] === 'function')
                 target[method].call(target, HEAPF32.slice($1 >>> 2, ($1 >>> 2) + 16));
-        } catch (error) { console.error('gl64 fixed-function matrix failed', error); }
+        } catch (error) { globalThis.__bw64glReportBridgeException('GLctx.' + method, error); }
     })(), method, matrix);
 }
 
@@ -1013,7 +1013,7 @@ void webGpuFixedTexEnvArrayCall(const char* method, GLenum target, GLenum pname,
             var ctx = GLctx;
             if (ctx && typeof ctx[method] === 'function')
                 ctx[method].call(ctx, $1, $2, HEAPF32.slice($3 >>> 2, ($3 >>> 2) + $4));
-        } catch (error) { console.error('gl64 fixed-function texture environment failed', error); }
+        } catch (error) { globalThis.__bw64glReportBridgeException('GLctx.' + method, error); }
     })(), method, target, pname, values, count);
 }
 
@@ -1067,7 +1067,7 @@ int webGpuFixedDraw(GLenum mode, GLint first, GLsizei count, bool indexed, GLenu
                 return GLctx.fixedFunctionDrawElements(mode, count, word(4), word(5), bytes(word(42), word(43)), arrays) ? 1 : 0;
             }
             return GLctx.fixedFunctionDrawArrays(mode, first, count, arrays) ? 1 : 0;
-        } catch (error) { console.error('gl64 fixed-function draw failed', error); return 0; }
+        } catch (error) { globalThis.__bw64glReportBridgeException('GLctx.fixedFunctionDraw', error); return 0; }
     })(); }, packet);
 }
 #endif
