@@ -151,8 +151,8 @@ test('float color and depth textures allocate WebGPU attachment formats for fram
     assert.equal(gl._targetFor(framebuffer).depthFormat, 'depth32float');
     gl.bindTexture(0x0de1, color);
     gl.texSubImage2D(0x0de1, 0, 0, 0, 1, 1, 0x1908, 0x1406, new Float32Array([1, 0, 0, 1]));
-    assert.equal(gl.getError(), 0x0502);
-    assert.ok(logs.some(line => line.includes('rgba16float texture subimage upload')));
+    assert.equal(gl.getError(), 0, 'float subimage upload is implemented');
+    assert.deepEqual([...color.levels.get(0).floatPixels.slice(0, 4)], [1, 0, 0, 1]);
   } finally { gpu.restore(); }
 });
 
@@ -305,13 +305,13 @@ test('texImage numeric type compatibility is table-driven per sized internalform
         assert.equal(texture.width, 0, `${note}: incompatible upload must not allocate`);
       if (expected === 0) assert.equal(texture.width, 1, `${note}: valid upload allocates`);
     }
-    // RGBA16F + HALF_FLOAT is type-compatible; the upload itself is the
-    // separately tracked float-upload rejection and must be loud, not silent.
+    // RGBA16F + HALF_FLOAT is type-compatible and the upload is implemented:
+    // half values decode into the record's float pixels.
     const texture = gl.createTexture();
     gl.bindTexture(0x0de1, texture);
-    gl.texImage2D(0x0de1, 0, 0x881a, 1, 1, 0, 0x1908, HALF, new Uint16Array(4));
-    assert.equal(gl.getError(), 0x0502, 'RGBA16F HALF upload reaches the float-upload rejection');
-    assert.ok(logs.some(line => line.includes('floating-point texture upload data')), 'float-upload rejection is logged');
+    gl.texImage2D(0x0de1, 0, 0x881a, 1, 1, 0, 0x1908, HALF, new Uint16Array([0x3c00, 0, 0, 0x3c00]));
+    assert.equal(gl.getError(), 0, 'RGBA16F HALF upload is type-compatible and implemented');
+    assert.deepEqual([...texture.levels.get(0).floatPixels], [1, 0, 0, 1]);
   } finally { gpu.restore(); }
 });
 
@@ -345,5 +345,58 @@ test('texture level and dimension bounds are enforced for regular and compressed
     gl.bindTexture(0x8513, cube);
     gl.compressedTexImage2D(0x8515, 0, 0x83f0, 8, 4, 0, 16, new Uint8Array(16));
     assert.equal(gl.getError(), 0x0501, 'non-square compressed cube face is INVALID_VALUE');
+  } finally { gpu.restore(); }
+});
+
+test('float texture uploads preserve exact values through GPU writes and subimage patches', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    // RGBA32F + FLOAT: exact passthrough at 16 bytes per texel.
+    const tex32 = gl.createTexture();
+    gl.bindTexture(0x0de1, tex32);
+    gl.texImage2D(0x0de1, 0, 0x8814, 2, 1, 0, 0x1908, 0x1406, new Float32Array([1.5, -0.25, 0, 2, 0.5, 0.25, 1, 1]));
+    assert.equal(gl.getError(), 0);
+    assert.deepEqual([...tex32.levels.get(0).floatPixels], [1.5, -0.25, 0, 2, 0.5, 0.25, 1, 1]);
+    await gl._ops;
+    const write32 = gpu.writes.find(write => write.d.texture === tex32.gpu);
+    assert.ok(write32, 'float32 texture data is written to the GPU texture');
+    assert.equal(write32.layout.bytesPerRow, 32);
+    assert.deepEqual([...new Float32Array(write32.data.buffer, write32.data.byteOffset, 8)], [1.5, -0.25, 0, 2, 0.5, 0.25, 1, 1]);
+    // RGBA16F + HALF_FLOAT: half bits decode exactly and re-encode exactly.
+    const tex16 = gl.createTexture();
+    gl.bindTexture(0x0de1, tex16);
+    gl.texImage2D(0x0de1, 0, 0x881a, 1, 1, 0, 0x1908, 0x140b, new Uint16Array([0x3c00, 0x3800, 0xc000, 0x3555]));
+    assert.equal(gl.getError(), 0);
+    assert.deepEqual([...tex16.levels.get(0).floatPixels], [1, 0.5, -2, 0.333251953125]);
+    await gl._ops;
+    const write16 = gpu.writes.find(write => write.d.texture === tex16.gpu);
+    assert.ok(write16, 'float16 texture data is written to the GPU texture');
+    assert.equal(write16.layout.bytesPerRow, 8);
+    assert.deepEqual([...new Uint16Array(write16.data.buffer, write16.data.byteOffset, 4)], [0x3c00, 0x3800, 0xc000, 0x3555]);
+    // RGBA16F + FLOAT converts through the half encoder.
+    const tex16f = gl.createTexture();
+    gl.bindTexture(0x0de1, tex16f);
+    gl.texImage2D(0x0de1, 0, 0x881a, 1, 1, 0, 0x1908, 0x1406, new Float32Array([0.5, 1.5, -0.5, 1]));
+    assert.equal(gl.getError(), 0);
+    assert.deepEqual([...tex16f.levels.get(0).floatPixels], [0.5, 1.5, -0.5, 1]);
+    await gl._ops;
+    const write16f = gpu.writes.find(write => write.d.texture === tex16f.gpu);
+    assert.deepEqual([...new Uint16Array(write16f.data.buffer, write16f.data.byteOffset, 4)], [0x3800, 0x3e00, 0xb800, 0x3c00]);
+    // Subimage patches land in the float record.
+    gl.bindTexture(0x0de1, tex32);
+    gl.texSubImage2D(0x0de1, 0, 1, 0, 1, 1, 0x1908, 0x1406, new Float32Array([9, 8, 7, 6]));
+    assert.equal(gl.getError(), 0);
+    assert.deepEqual([...tex32.levels.get(0).floatPixels], [1.5, -0.25, 0, 2, 9, 8, 7, 6]);
+    // Depth texture upload data still rejects loudly (WebGPU depth textures are not COPY_DST-writable).
+    const depth = gl.createTexture();
+    gl.bindTexture(0x0de1, depth);
+    gl.texImage2D(0x0de1, 0, 0x81a5, 1, 1, 0, 0x1902, 0x1403, new Uint16Array([7]));
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('depth texture upload data')));
+    // rgba32float cannot be filtered in core WebGPU; its sampler clamps to nearest.
+    assert.equal(gl._samplerFor(tex32).magFilter, 'nearest');
+    assert.equal(gl._samplerFor(tex16).magFilter, 'linear');
   } finally { gpu.restore(); }
 });

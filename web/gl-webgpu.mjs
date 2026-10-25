@@ -201,6 +201,20 @@ function halfToFloat(value) {
   return sign * 2 ** (exponent - 15) * (1 + fraction / 1024);
 }
 
+function floatToHalf(value) {
+  if (Number.isNaN(value)) return 0x7e00;
+  const sign = value < 0 || Object.is(value, -0) ? 0x8000 : 0;
+  const abs = Math.abs(value);
+  if (abs === Infinity) return sign | 0x7c00;
+  if (abs === 0) return sign;
+  if (abs >= 65504) return sign | 0x7bff;
+  if (abs < 2 ** -14) return sign | Math.round(abs / 2 ** -24);
+  const exponent = Math.floor(Math.log2(abs));
+  let bits = Math.round((abs / 2 ** exponent - 1) * 1024), exp = exponent + 15;
+  if (bits === 1024) { bits = 0; exp += 1; if (exp >= 31) return sign | 0x7c00; }
+  return sign | (exp << 10) | bits;
+}
+
 function nativeVertexFormat(attribute) {
   const { type, size, normalized, integer } = attribute;
   const suffix = size === 1 ? '' : `x${size}`;
@@ -2776,6 +2790,60 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     }
     return rgba;
   }
+  _floatPixels(width, height, format, type, data) {
+    // Float analogue of _rgbaPixels: same channel expansion and unpack
+    // layout, but values keep full float precision (no clamp/quantize).
+    const rgba = new Float32Array(width * height * 4);
+    if (!data) return rgba;
+    const source = data.data && ArrayBuffer.isView(data.data) ? data.data : data;
+    if (!ArrayBuffer.isView(source)) return rgba;
+    const componentCount = format === 0x1907 ? 3 : [0x1903, 0x1906, 0x1909].includes(format) ? 1 : [0x190a, 0x8227].includes(format) ? 2 : 4;
+    const componentBytes = type === 0x1406 ? 4 : type === 0x1403 || type === 0x1402 || type === 0x140b ? 2 : 1;
+    const rowPixels = this._unpack.rowLength || width;
+    const rowBytes = Math.ceil(rowPixels * componentCount * componentBytes / this._unpack.alignment) * this._unpack.alignment;
+    const base = this._unpack.skipRows * rowBytes + this._unpack.skipPixels * componentCount * componentBytes;
+    const bytes = new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const read = (input, c) => {
+      const at = input + c * componentBytes;
+      if (at + componentBytes > bytes.length) return 0;
+      return type === 0x1406 ? view.getFloat32(at, true)
+        : type === 0x140b ? halfToFloat(view.getUint16(at, true))
+          : type === 0x1403 ? view.getUint16(at, true) / 65535
+            : type === 0x1402 ? Math.max(-1, view.getInt16(at, true) / 32767)
+              : type === 0x1400 ? Math.max(-1, view.getInt8(at) / 127)
+                : view.getUint8(at) / 255;
+    };
+    for (let y = 0; y < height; y++) {
+      const inputY = this._unpack.flipY ? height - 1 - y : y;
+      for (let x = 0; x < width; x++) {
+        const input = base + inputY * rowBytes + x * componentCount * componentBytes;
+        const output = (y * width + x) * 4;
+        let values = [0, 0, 0, 1];
+        if (format === 0x1906) values = [1, 1, 1, 0];
+        else if (format === 0x1909) values = [0, 0, 0, 1];
+        for (let c = 0; c < componentCount; c++) {
+          const value = read(input, c);
+          if (format === 0x1906) values[3] = value;
+          else if (format === 0x1909) values[0] = values[1] = values[2] = value;
+          else if (format === 0x190a) { values[c === 0 ? 0 : 3] = value; if (c === 0) values[1] = values[2] = value; }
+          else values[c] = value;
+        }
+        if (this._unpack.premultiplyAlpha && componentCount === 4) for (let c = 0; c < 3; c++) values[c] *= values[3];
+        rgba.set(values, output);
+      }
+    }
+    return rgba;
+  }
+  _encodeFloatTextureData(floatPixels, width, height, gpuFormat) {
+    const flipped = new Float32Array(floatPixels.length);
+    for (let y = 0; y < height; y++)
+      flipped.set(floatPixels.subarray(y * width * 4, (y + 1) * width * 4), (height - 1 - y) * width * 4);
+    if (gpuFormat === 'rgba32float') return new Uint8Array(flipped.buffer);
+    const halves = new Uint16Array(flipped.length);
+    for (let i = 0; i < flipped.length; i++) halves[i] = floatToHalf(flipped[i]);
+    return new Uint8Array(halves.buffer);
+  }
   _validateTextureTransfer(internalFormat, format) {
     const internalBase = TEXTURE_FORMAT_BASE.get(internalFormat);
     const transferBase = format === 0x80e1 ? 0x1908 : format;
@@ -2834,12 +2902,31 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (texture.target === GL.TEXTURE_CUBE_MAP) {
       for (const [face, records] of texture.faceLevels) for (const [level, record] of records) {
         if (level >= levels) continue;
+        if (record.floatPixels) {
+          this._device.queue.writeTexture({ texture: texture.gpu, mipLevel: level, origin: [0, 0, face - 0x8515] },
+            this._encodeFloatTextureData(record.floatPixels, record.width, record.height, texture.format),
+            { bytesPerRow: record.width * (texture.format === 'rgba32float' ? 16 : 8), rowsPerImage: record.height }, [record.width, record.height, 1]);
+          continue;
+        }
         if (!texture.format.startsWith('rgba8')) continue;
         this._device.queue.writeTexture({ texture: texture.gpu, mipLevel: level, origin: [0, 0, face - 0x8515] }, this._uploadRows(record.pixels, record.width, record.height),
           { bytesPerRow: record.width * 4, rowsPerImage: record.height }, [record.width, record.height, 1]);
       }
     } else for (const [level, record] of texture.levels) {
       if (level >= levels) continue;
+      if (record.floatLayers) {
+        for (let layer = 0; layer < record.floatLayers.length; layer++)
+          this._device.queue.writeTexture({ texture: texture.gpu, mipLevel: level, origin: [0, 0, layer] },
+            this._encodeFloatTextureData(record.floatLayers[layer], record.width, record.height, texture.format),
+            { bytesPerRow: record.width * (texture.format === 'rgba32float' ? 16 : 8), rowsPerImage: record.height }, [record.width, record.height, 1]);
+        continue;
+      }
+      if (record.floatPixels) {
+        this._device.queue.writeTexture({ texture: texture.gpu, mipLevel: level },
+          this._encodeFloatTextureData(record.floatPixels, record.width, record.height, texture.format),
+          { bytesPerRow: record.width * (texture.format === 'rgba32float' ? 16 : 8), rowsPerImage: record.height }, [record.width, record.height, 1]);
+        continue;
+      }
       if (!texture.format.startsWith('rgba8')) continue;
       if (record.layers) for (let layer = 0; layer < record.layers.length; layer++)
         this._device.queue.writeTexture({ texture: texture.gpu, mipLevel: level, origin: [0, 0, layer] }, this._uploadRows(record.layers[layer], record.width, record.height),
@@ -2893,10 +2980,11 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       texture.width = width; texture.height = height;
       texture.format = TEXTURE_GPU_FORMAT.get(internalFormat) || ([0x8c41, 0x8c43, 0x8c40, 0x8c42].includes(internalFormat) ? 'rgba8unorm-srgb' : 'rgba8unorm');
       if (texture.format.startsWith('depth') && data != null) { this._rejectUnsupported('depth texture upload data'); return; }
-      if ((texture.format === 'rgba16float' || texture.format === 'rgba32float') && data != null) { this._rejectUnsupported('floating-point texture upload data'); return; }
     }
+    if (level > 0 && texture.format.startsWith('depth') && data != null) { this._rejectUnsupported('depth texture upload data'); return; }
     const levelWidth = Math.max(1, texture.width >> level), levelHeight = Math.max(1, texture.height >> level);
-    const record = { width: levelWidth, height: levelHeight, pixels: this._rgbaPixels(levelWidth, levelHeight, format, type, data), storage: texture.format.startsWith('depth') || texture.format === 'rgba16float' || texture.format === 'rgba32float' };
+    const record = { width: levelWidth, height: levelHeight, pixels: this._rgbaPixels(levelWidth, levelHeight, format, type, data), storage: texture.format.startsWith('depth') || texture.format === 'rgba16float' || texture.format === 'rgba32float',
+      ...(data != null && (texture.format === 'rgba16float' || texture.format === 'rgba32float') ? { floatPixels: this._floatPixels(levelWidth, levelHeight, format, type, data) } : {}) };
     if (target >= 0x8515 && target <= 0x851a) {
       texture.depth = 6;
       let face = texture.faceLevels.get(target);
@@ -2913,11 +3001,30 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     const record = target >= 0x8515 && target <= 0x851a ? texture?.faceLevels.get(target)?.get(level) : texture?.levels.get(level);
     if (!texture) { this._recordError(GL.INVALID_OPERATION); return; }
     if (!record) { this._recordError(GL.INVALID_OPERATION); return; }
-    if (texture.format !== 'rgba8unorm' && texture.format !== 'rgba8unorm-srgb') { this._rejectUnsupported(`${texture.format} texture subimage upload`); return; }
+    const floatTexture = texture.format === 'rgba16float' || texture.format === 'rgba32float';
+    if (!floatTexture && texture.format !== 'rgba8unorm' && texture.format !== 'rgba8unorm-srgb') { this._rejectUnsupported(`${texture.format} texture subimage upload`); return; }
     if (!TEXTURE_TRANSFER_TYPES.has(type)) { this._recordError(GL.INVALID_ENUM); return; }
     if (![0x1903,0x1906,0x1909,0x190a,0x8227,0x1907,0x1908,0x80e1,0x8d94,0x8228].includes(format)) { this._recordError(GL.INVALID_ENUM); return; }
     if ([xoffset, yoffset, width, height, level].some(value => !Number.isInteger(value) || value < 0) ||
         xoffset + width > record.width || yoffset + height > record.height) { this._recordError(GL.INVALID_VALUE); return; }
+    if (floatTexture) {
+      if (!record.floatPixels) record.floatPixels = new Float32Array(record.width * record.height * 4);
+      const floatPatch = this._floatPixels(width, height, format, type, data);
+      for (let y = 0; y < height; y++) {
+        const dstY = yoffset + y;
+        if (dstY < 0 || dstY >= record.height) continue;
+        const left = Math.max(0, xoffset), right = Math.min(record.width, xoffset + width);
+        if (right > left) record.floatPixels.set(floatPatch.subarray((y * width + left - xoffset) * 4, (y * width + right - xoffset) * 4), (dstY * record.width + left) * 4);
+      }
+      this._enqueue(() => {
+        const gpu = this._ensureTextureGpu(texture);
+        if (!gpu) return;
+        this._device.queue.writeTexture({ texture: gpu, mipLevel: level, origin: [xoffset, record.height - yoffset - height, target >= 0x8515 && target <= 0x851a ? target - 0x8515 : 0] },
+          this._encodeFloatTextureData(floatPatch, width, height, texture.format),
+          { bytesPerRow: width * (texture.format === 'rgba32float' ? 16 : 8), rowsPerImage: height }, [width, height, 1]);
+      });
+      return;
+    }
     const patch = this._rgbaPixels(width, height, format, type, data);
     for (let y = 0; y < height; y++) {
       const dstY = yoffset + y;
@@ -2958,19 +3065,29 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if(!this._validateTextureTypeCompat(internalFormat,type))return;
     const w=level===0?width:Math.max(1,texture.width>>level),h=level===0?height:Math.max(1,texture.height>>level),d=level===0?depth:(target===GL.TEXTURE_3D?Math.max(1,texture.depth>>level):texture.depth);
     if(level===0){texture.width=w;texture.height=h;texture.depth=d;texture.format=TEXTURE_GPU_FORMAT.get(internalFormat)||([0x8c41,0x8c43,0x8c40,0x8c42].includes(internalFormat)?'rgba8unorm-srgb':'rgba8unorm');
-      if(texture.format.startsWith('depth')&&data!=null){this._rejectUnsupported('depth texture upload data');return;}
-      if((texture.format==='rgba16float'||texture.format==='rgba32float')&&data!=null){this._rejectUnsupported('floating-point texture upload data');return;}}
-    const flip=this._unpack.flipY;this._unpack.flipY=false;const pixels=this._rgbaPixels(w,h*d,format,type,data);this._unpack.flipY=flip;
+      if(texture.format.startsWith('depth')&&data!=null){this._rejectUnsupported('depth texture upload data');return;}}
+    const flip=this._unpack.flipY;this._unpack.flipY=false;const pixels=this._rgbaPixels(w,h*d,format,type,data);
+    const floatPixelsAll=data!=null&&(texture.format==='rgba16float'||texture.format==='rgba32float')?this._floatPixels(w,h*d,format,type,data):null;
+    this._unpack.flipY=flip;
     const layers=Array.from({length:d},(_,z)=>{const layer=pixels.slice(z*w*h*4,(z+1)*w*h*4);if(flip)for(let y=0;y<h/2;y++)for(let x=0;x<w*4;x++){const a=y*w*4+x,b=(h-1-y)*w*4+x;[layer[a],layer[b]]=[layer[b],layer[a]];}return layer;});
-    texture.levels.set(level,{width:w,height:h,layers});this._enqueue(()=>this._ensureTextureGpu(texture));
+    const floatLayers=floatPixelsAll?Array.from({length:d},(_,z)=>{const layer=floatPixelsAll.slice(z*w*h*4,(z+1)*w*h*4);if(flip)for(let y=0;y<h/2;y++)for(let x=0;x<w*4;x++){const a=y*w*4+x,b=(h-1-y)*w*4+x;[layer[a],layer[b]]=[layer[b],layer[a]];}return layer;}):null;
+    texture.levels.set(level,{width:w,height:h,layers,...(floatLayers?{floatLayers}:{})});this._enqueue(()=>this._ensureTextureGpu(texture));
   }
   texSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, type, data) {
     if(![GL.TEXTURE_3D,GL.TEXTURE_2D_ARRAY].includes(target)){this._recordError(GL.INVALID_ENUM);return;}
     const texture=this._boundTexture(target),record=texture?.levels.get(level);if(!texture||!record?.layers){this._recordError(GL.INVALID_OPERATION);return;}
-    if(texture.format!=='rgba8unorm'&&texture.format!=='rgba8unorm-srgb'){this._rejectUnsupported(`${texture.format} texture subimage upload`);return;}
+    const floatTexture=texture.format==='rgba16float'||texture.format==='rgba32float';
+    if(!floatTexture&&texture.format!=='rgba8unorm'&&texture.format!=='rgba8unorm-srgb'){this._rejectUnsupported(`${texture.format} texture subimage upload`);return;}
     if(!TEXTURE_TRANSFER_TYPES.has(type)){this._recordError(GL.INVALID_ENUM);return;}
     if(![0x1903,0x1906,0x1909,0x190a,0x8227,0x1907,0x1908,0x80e1,0x8d94,0x8228].includes(format)){this._recordError(GL.INVALID_ENUM);return;}
     if([level,xoffset,yoffset,zoffset,width,height,depth].some(value=>!Number.isInteger(value)||value<0)||xoffset+width>record.width||yoffset+height>record.height||zoffset+depth>record.layers.length){this._recordError(GL.INVALID_VALUE);return;}
+    if(floatTexture){
+      if(!record.floatLayers)record.floatLayers=record.layers.map(()=>new Float32Array(record.width*record.height*4));
+      const flipF=this._unpack.flipY;this._unpack.flipY=false;const floatPatch=this._floatPixels(width,height*depth,format,type,data);this._unpack.flipY=flipF;
+      for(let z=0;z<depth;z++)for(let y=0;y<height;y++){const sourceY=flipF?height-1-y:y,src=(z*height+sourceY)*width*4,dst=((yoffset+y)*record.width+xoffset)*4;record.floatLayers[zoffset+z].set(floatPatch.subarray(src,src+width*4),dst);}
+      this._enqueue(()=>this._ensureTextureGpu(texture));
+      return;
+    }
     const flip=this._unpack.flipY;this._unpack.flipY=false;const pixels=this._rgbaPixels(width,height*depth,format,type,data);this._unpack.flipY=flip;
     for(let z=0;z<depth;z++)for(let y=0;y<height;y++){const sourceY=flip?height-1-y:y,src=(z*height+sourceY)*width*4,dst=((yoffset+y)*record.width+xoffset)*4;record.layers[zoffset+z].set(pixels.subarray(src,src+width*4),dst);}
     this._enqueue(()=>this._ensureTextureGpu(texture));
@@ -3049,9 +3166,12 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     const filter = value => value === 0x2600 ? 'nearest' : 'linear';
     const min = texture.params.get(0x2801) ?? 0x2703, mag = texture.params.get(0x2800) ?? 0x2601;
     const maxAnisotropy = Math.max(1, Math.min(16, texture.params.get(0x84fe) || 1));
+    // Core WebGPU cannot filter rgba32float textures; sample them with
+    // nearest filtering instead of failing pipeline validation at draw time.
+    const float32Texture = texture.format === 'rgba32float';
     const sampler = this._device.createSampler({ addressModeU: address(texture.params.get(0x2802)), addressModeV: address(texture.params.get(0x2803)), addressModeW: address(texture.params.get(0x8072)),
-      magFilter: filter(mag), minFilter: filter(min === 0x2600 || min === 0x2601 ? min : min === 0x2700 || min === 0x2701 || min === 0x2702 ? 0x2600 : 0x2601),
-      mipmapFilter: min === 0x2700 || min === 0x2702 || min === 0x2704 ? 'nearest' : 'linear', lodMinClamp: 0, lodMaxClamp: min === 0x2600 || min === 0x2601 ? 0 : 32,
+      magFilter: float32Texture ? 'nearest' : filter(mag), minFilter: float32Texture ? 'nearest' : filter(min === 0x2600 || min === 0x2601 ? min : min === 0x2700 || min === 0x2701 || min === 0x2702 ? 0x2600 : 0x2601),
+      mipmapFilter: float32Texture ? 'nearest' : min === 0x2700 || min === 0x2702 || min === 0x2704 ? 'nearest' : 'linear', lodMinClamp: 0, lodMaxClamp: min === 0x2600 || min === 0x2601 ? 0 : 32,
       maxAnisotropy: mag === 0x2601 && ![0x2600, 0x2700, 0x2702, 0x2704].includes(min) ? maxAnisotropy : 1 });
     texture.samplerCache.set(cacheKey, sampler);
     return sampler;
