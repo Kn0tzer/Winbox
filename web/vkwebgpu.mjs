@@ -12,6 +12,7 @@ import { bridgeRecoveryStats, reportBridgeFailure } from './bridge-recovery.mjs'
 import {
   parseMinBindingSize, rewritePushConstantsWGSL, rewriteResolvedDxvkPresent,
   matchFragmentInputsToVertexOutputs, rewriteMultisampledTextures, scanWgslResources, stripNagaFragmentDepth, stripNagaYNegation, wgslTextureViewDimension, wgslUniformSizes,
+  borderPlanForDecls, borderPlanSignature, rewriteBorderSamplersWGSL,
 } from './wgsl-utils.mjs';
 // web/vkwebgpu.mjs — the BROWSER PAGE TIER for the vk64 trap boundary: the
 // consumer for the FRAME-JSON manifest that source/vulkan/vk64bridge.cpp hops
@@ -1578,7 +1579,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     return null;
   }
 
-  async function getPipelineFor(pipe, sampleCount, unnegated = false, passHasDepth = false, indexType = 0, colorFormats = [format], depthFormat = 'depth24plus', depthAspects = 6) {
+  async function getPipelineFor(pipe, sampleCount, unnegated = false, passHasDepth = false, indexType = 0, colorFormats = [format], depthFormat = 'depth24plus', depthAspects = 6, sets = null) {
     // WebGPU requires the pipeline's depthStencil state to match the render
     // pass attachments: a pipeline without depthStencil cannot be set in a
     // pass with a depth attachment (Vulkan allows it). Key the cache on the
@@ -1586,8 +1587,17 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     // when the pass has depth.
     const stripIndexType = pipe.topology === 2 || pipe.topology === 4 ? indexType : undefined;
     const key = pipe.pipeId + ':ms' + sampleCount + ':topology:' + pipe.topology + ':vb:' + JSON.stringify(pipe.vb) + ':yny' + (unnegated ? '1' : '0') + ':pd' + (passHasDepth ? '1' : '0') + ':dt' + (pipe.depthTest ? '1' : '0') + ':dw' + (pipe.depthWrite ? '1' : '0') + ':do' + (pipe.depthOp | 0) + ':si' + (stripIndexType ?? 'none') + ':colors' + colorFormats.join(',') + ':blend:' + JSON.stringify(pipe.colorBlend ?? pipe.blend) + ':cf:' + pipe.cull + '/' + pipe.front + ':depth:' + depthFormat + ':stencil:' + JSON.stringify(pipe.stencil) + ':db:' + JSON.stringify([pipe.depthBiasEnable,pipe.depthBiasConstantFactor,pipe.depthBiasClamp,pipe.depthBiasSlopeFactor,pipe.depthClampEnable]) + ':aspects:' + depthAspects;
-    if (pipelines.has(key)) return pipelines.get(key);
-    if (pipelineFailures.has(key)) return { skip: pipelineFailures.get(key) };
+    // CLAMP_TO_BORDER emulation (wgsl-utils.mjs rewriteBorderSamplersWGSL):
+    // when the current descriptor sets bind a border sampler, the pipeline
+    // becomes a per-draw variant whose shaders wrap sampling on that sampler
+    // with the border select; it is keyed on the resolved plan further down.
+    // With no border sampler bound anywhere, the base path is unchanged.
+    const borderPre = sets ? frameHasBorderSampler(sets) : false;
+    let effKey = key;
+    if (!borderPre) {
+      if (pipelines.has(key)) return pipelines.get(key);
+      if (pipelineFailures.has(key)) return { skip: pipelineFailures.get(key) };
+    }
     // Fail closed and loud. WebGPU pipeline construction is asynchronous page
     // work that only starts after vkCreateGraphicsPipelines has already
     // returned VK_SUCCESS to the guest, and no channel exists to deliver a
@@ -1598,7 +1608,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     // this key stays a counted skipped draw (never a silent rebuild retry,
     // never a substituted pipeline).
     const fail = (reason) => {
-      pipelineFailures.set(key, reason);
+      pipelineFailures.set(effKey, reason);
       console.error('vkwebgpu: PIPELINE-FAILED pipeId=' + pipe.pipeId + ' reason=' + reason);
       return { skip: reason };
     };
@@ -1612,7 +1622,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     if (!passHasDepth) fsWgsl = stripNagaFragmentDepth(fsWgsl);
     if (!vsWgsl || !fsWgsl) { noteUnsupported('shader-translation', 'Naga returned no WGSL for a pipeline stage'); return fail('shader-translation'); }
     fsWgsl = matchFragmentInputsToVertexOutputs(vsWgsl, fsWgsl);
-    const vsR = rewritePushConstantsWGSL(vsWgsl), fsR = rewritePushConstantsWGSL(fsWgsl);
+    let vsR = rewritePushConstantsWGSL(vsWgsl), fsR = rewritePushConstantsWGSL(fsWgsl);
     const pushBlocks = vsR.pushBlocks + fsR.pushBlocks;
     if (vsR.pushBlocks > 1 || fsR.pushBlocks > 1) { noteUnsupported('multi-push-block'); return fail('multi-push-block'); }
     const hasPush = pushBlocks > 0;
@@ -1636,6 +1646,28 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     for (const d of decls) if (d.addr === "uniform") {
       const s = uniformSizes.get(d.group + ":" + d.binding);
       if (s) d.minSize = s;
+    }
+    // Border variant: resolve each sampler declaration against the current
+    // descriptor sets (the same resolution bind groups use) and, when a
+    // bound sampler has a CLAMP_TO_BORDER axis, rewrite both stages' WGSL
+    // and re-key the pipeline on the plan. Layouts and declarations are
+    // unchanged: the border colour is a shader constant, not a binding.
+    if (borderPre) {
+      const plan = borderPlanForDecls(decls, d => {
+        const sHex = samplerIdForDecl(sets, d.group, d);
+        return sHex ? F.samplers.get(sHex) || null : null;
+      });
+      if (plan.size) {
+        effKey = key + '|border:' + borderPlanSignature(plan);
+        if (pipelines.has(effKey)) return pipelines.get(effKey);
+        if (pipelineFailures.has(effKey)) return { skip: pipelineFailures.get(effKey) };
+        vsR = { ...vsR, code: rewriteBorderSamplersWGSL(vsR.code, plan) };
+        fsR = { ...fsR, code: rewriteBorderSamplersWGSL(fsR.code, plan) };
+      } else {
+        // A border sampler is bound, but this shader does not sample with it.
+        if (pipelines.has(key)) return pipelines.get(key);
+        if (pipelineFailures.has(key)) return { skip: pipelineFailures.get(key) };
+      }
     }
     const byGroup = new Map();
     for (const d of decls) {
@@ -1756,8 +1788,8 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         [...code.matchAll(new RegExp(`@group\\(${where[1]}\\)\\s*@binding\\(${where[2]}\\)\\s*var[^;]*;`, 'g'))].map(m => stage + ': ' + m[0].replace(/\s+/g, ' '))).join(' | ') : '';
       return fail('pipeline-rejected:' + err.message.split(' - ')[0] + (decl ? ' [' + decl + ']' : ''));
     }
-    const rec = { key, pipeline, layouts, decls, hasPush, slotOf, maxGroup, vbWalk, stripIndexType, blendConstantMode, stencilReference:stencil.reference };
-    pipelines.set(key, rec);
+    const rec = { key: effKey, pipeline, layouts, decls, hasPush, slotOf, maxGroup, vbWalk, stripIndexType, blendConstantMode, stencilReference:stencil.reference };
+    pipelines.set(effKey, rec);
     return rec;
   }
 
@@ -1788,6 +1820,36 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
 
   // Manifest bindings covering one array element (partial descriptor-array
   // writes each carry their own dstArrayElement/count).
+  // The sampler id a shader sampler declaration resolves to: a plain
+  // sampler binding names it directly (kind 3), a combined image/sampler
+  // binding carries it in range (kind 2). Shared by bind-group construction,
+  // its fingerprint, and the border-emulation plan so all three always agree
+  // on which sampler a declaration samples with.
+  function samplerIdForDecl(sets, group, d) {
+    const set = sets.get(group);
+    const bindings = set ? set.bindings : [];
+    const b = bindingForElement(bindings, d.sourceBinding ?? d.binding, 0);
+    if (b && b.kind === 3) return b.obj;
+    if (b && b.kind === 2) return b.range;
+    return null;
+  }
+
+  // True when any descriptor binding in the current sets resolves to a
+  // sampler with a CLAMP_TO_BORDER axis (raw mode 3, retained by the
+  // protocol decoder). Gates the per-draw border pipeline variant: draws
+  // without a border sampler anywhere keep the exact base-pipeline path.
+  function frameHasBorderSampler(sets) {
+    for (const set of sets.values()) {
+      for (const b of set.bindings || []) {
+        const id = b.kind === 3 ? b.obj : b.kind === 2 ? b.range : null;
+        if (!id) continue;
+        const s = F.samplers.get(id);
+        if (s && (s.addrModeU === 3 || s.addrModeV === 3 || s.addrModeW === 3)) return true;
+      }
+    }
+    return false;
+  }
+
   function bindingForElement(bindings, bindingNum, el) {
     let fallback = null;
     for (const b of bindings) {
@@ -1864,10 +1926,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           }
         }
       } else if (t === 'sampler' || t === 'sampler_comparison') {
-        const b = bindingForElement(bindings, d.sourceBinding ?? d.binding, 0);
-        let sHex = null;
-        if (b && b.kind === 3) sHex = b.obj;
-        else if (b && b.kind === 2) sHex = b.range;
+        const sHex = samplerIdForDecl(sets, group, d);
         const has = sHex && F.samplers.get(sHex);
         parts.push('s' + d.binding + ':' + (has ? sHex : 'default'));
       } else if (d.addr === 'uniform' || d.addr.startsWith('storage')) {
@@ -1968,10 +2027,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         }
         entries.push({ binding: d.binding, resource: d.arrayCount > 1 ? views : views[0] });
       } else if (t === 'sampler' || t === 'sampler_comparison') {
-        const b = bindingForElement(bindings, d.sourceBinding ?? d.binding, 0);
-        let sHex = null;
-        if (b && b.kind === 3) sHex = b.obj;
-        else if (b && b.kind === 2) sHex = b.range; // combined image sampler's sampler
+        const sHex = samplerIdForDecl(sets, group, d);
         const s = sHex && F.samplers.get(sHex);
         entries.push({ binding: d.binding, resource: s ? gpuSamplerFor(sHex, s) : device.createSampler(t === 'sampler_comparison' ? { compare: 'always' } : {}) });
       } else if (d.addr === 'uniform' || d.addr.startsWith('storage')) {
@@ -2384,7 +2440,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
             if (drawPipe.rasterizerDiscard) { stats.discardedDraws = (stats.discardedDraws || 0) + 1; break; }   // RASTERIZER_DISCARD: no fragments, VS has no other visible effect here
             if (drawPipe.depthBiasDynamic && st.depthBias)
               drawPipe = {...drawPipe,depthBiasConstantFactor:st.depthBias.constantFactor,depthBiasClamp:st.depthBias.clamp,depthBiasSlopeFactor:st.depthBias.slopeFactor};
-            const selected=await getPipelineFor(drawPipe,passSamples,st.pipeNeg,!!depthView,st.ibind?.indexType||0,passColorFormats,passDepthFormat,passDepthAspects);
+            const selected=await getPipelineFor(drawPipe,passSamples,st.pipeNeg,!!depthView,st.ibind?.indexType||0,passColorFormats,passDepthFormat,passDepthAspects,st.sets);
             if(selected.skip) {noteSkippedDraw('draw-pipeline-skipped', 'vs=' + st.pipeDesc.vsHash + ' fs=' + st.pipeDesc.fsHash + ' ' + String(selected.skip).slice(0, 160));if (diagOn) v2DiagNoteSkip(passDiagDraws.skips, 'vs=' + st.pipeDesc.vsHash + ' fs=' + st.pipeDesc.fsHash + ' ' + selected.skip);break;}
             st.pipeRec=selected;
             passEnc.setPipeline(selected.pipeline);
@@ -2398,7 +2454,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
                 // framebuffer mapping bit-for-bit.
                 const negH = h < 0;
                 if (negH !== st.pipeNeg && st.pipeDesc) {
-                  const rec = await getPipelineFor(drawPipe, passSamples, negH, !!depthView, st.ibind?.indexType || 0, passColorFormats, passDepthFormat, passDepthAspects);
+                  const rec = await getPipelineFor(drawPipe, passSamples, negH, !!depthView, st.ibind?.indexType || 0, passColorFormats, passDepthFormat, passDepthAspects, st.sets);
                   if (!rec.skip) { st.pipeRec = rec; st.pipeNeg = negH; if (passEnc) passEnc.setPipeline(rec.pipeline); }
                 }
                 passEnc.setViewport(x, negH ? y + h : y, w, Math.abs(h), md, xmd);
@@ -2411,7 +2467,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
               if (sc) passEnc.setScissorRect(sc[0], sc[1], sc[2], sc[3]);
             }
             if (st.pipeRec.stripIndexType !== undefined && st.pipeRec.stripIndexType !== (st.ibind?.indexType || 0)) {
-              const rec = await getPipelineFor(drawPipe, passSamples, st.pipeNeg, !!depthView, st.ibind?.indexType || 0, passColorFormats, passDepthFormat, passDepthAspects);
+              const rec = await getPipelineFor(drawPipe, passSamples, st.pipeNeg, !!depthView, st.ibind?.indexType || 0, passColorFormats, passDepthFormat, passDepthAspects, st.sets);
               if (rec.skip) { noteSkippedDraw('draw-strip-index-pipeline-skipped', rec.skip); break; }
               st.pipeRec = rec;
               passEnc.setPipeline(rec.pipeline);

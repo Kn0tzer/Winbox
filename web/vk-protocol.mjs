@@ -905,6 +905,10 @@ export function decodeV2Frame(records, counters = {}) {
         frame.samplers.set(id, {
           mag: FILTER[mag] || 'nearest', min: FILTER[min] || 'nearest', mipmap: FILTER[mipmap] || 'nearest',
           addrU: ADDR[addrU] || 'clamp-to-edge', addrV: ADDR[addrV] || 'clamp-to-edge', addrW: ADDR[addrW] || 'clamp-to-edge',
+          // Raw VkSamplerAddressMode values, retained because ADDR collapses
+          // CLAMP_TO_BORDER (3) into clamp-to-edge: the page tier emulates
+          // border sampling in the shader and needs the unmapped modes.
+          addrModeU: addrU, addrModeV: addrV, addrModeW: addrW,
           maxAnisotropy: Math.max(1, Math.min(16, Math.round(maxAniso) || 1)),
           anisotropyEnable, compareEnable, compareOp, mipLodBias, minLod, maxLod, borderColor,
         });

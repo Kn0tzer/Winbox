@@ -61,13 +61,13 @@ test('pipeline construction failures are permanent, counted and unthrottled', ()
   const fn = body(replay, 'async function getPipelineFor');
   assert.match(replay, /const pipelineFailures = new Map\(\);/);
   assert.match(fn, /if \(pipelineFailures\.has\(key\)\) return \{ skip: pipelineFailures\.get\(key\) \};/);
-  assert.match(fn, /pipelineFailures\.set\(key, reason\);/);
+  assert.match(fn, /pipelineFailures\.set\(effKey, reason\);/);
   assert.match(fn, /console\.error\('vkwebgpu: PIPELINE-FAILED pipeId='/);
   assert.match(replay, /pipelineFailures: pipelineFailures\.size,/);
   // Every failure exit inside getPipelineFor must go through fail(): no bare
   // skip object may bypass the registry (the cache-hit return above is the
   // single allowed exception and is asserted separately).
-  const bare = fn.split(String.fromCharCode(10)).filter(l => /return \{ ?skip:/.test(l) && !l.includes('pipelineFailures.get(key)') && !l.includes('skip: reason'));
+  const bare = fn.split(String.fromCharCode(10)).filter(l => /return \{ ?skip:/.test(l) && !l.includes('pipelineFailures.get(key)') && !l.includes('pipelineFailures.get(effKey)') && !l.includes('skip: reason'));
   assert.deepEqual(bare, [], 'bare pipeline skip returns bypass the failure registry');
   assert.ok((fn.match(/return fail\(/g) || []).length >= 10, 'expected all pipeline failure exits routed through fail()');
 });

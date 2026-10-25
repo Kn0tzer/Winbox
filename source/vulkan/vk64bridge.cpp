@@ -458,8 +458,8 @@ static void vk64Unsupported(const char* feature, const char* detail = "") {
 //    so a guest that uses it anyway is violating the spec: creation is rejected.
 //  - mipLodBias is governed by maxSamplerLodBias, advertised as 0 (fillLimits) because
 //    WebGPU has no sampler LOD bias: nonzero requests are out of contract, are logged,
-//    and take the spec clamp to +/-0. CLAMP_TO_BORDER is CORE with no feature bit/limit
-//    and no WebGPU border addressing: created, mapped to clamp-to-edge, reported loudly.
+//    and take the spec clamp to +/-0. CLAMP_TO_BORDER is CORE with no feature bit/limit:
+//    created and reported loudly; the page tier emulates the border colour in shader.
 static bool vk64AuditSampler(U32 addrU, U32 addrV, U32 addrW, float mipLodBias, U32 borderColor) {
     bool reject = false;
     const U32 addressModes[] = {addrU, addrV, addrW};
@@ -469,7 +469,7 @@ static bool vk64AuditSampler(U32 addrU, U32 addrV, U32 addrW, float mipLodBias, 
             reject = true;
         }
         if (mode == 3) { // CLAMP_TO_BORDER
-            vk64Unsupported("sampler-border-colour", ("approximated by clamp-to-edge; borderColor=" + std::to_string(borderColor)).c_str());
+            vk64Unsupported("sampler-border-colour", ("border colour emulated in shader by the page tier for sampled-image ops (gather/cube stay clamp-to-edge); borderColor=" + std::to_string(borderColor)).c_str());
         }
     }
     if (mipLodBias != 0.0f) vk64Unsupported("sampler-mip-lod-bias", "outside advertised maxSamplerLodBias=0; effective bias is the spec clamp to 0");
