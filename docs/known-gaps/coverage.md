@@ -1,6 +1,6 @@
 # Unowned known-gap coverage
 
-Scope: every file the audit assigns to `UNOWNED` (see `tools/known-gaps-audit.mjs`, `OWNERS`). Those files belong to no lane: the X11 host and window layer, io/fs nodes, UI, util, platform host, `include/`, and `web/*.mjs` other than gl/vk. The lists below come from `node tools/known-gaps-audit.mjs` run on 2026-10-24. Vendored `lib/` is excluded (imgui, asmjit, glew, zlib, simde, tiny-process).
+Scope: the audit's `UNOWNED` files (see `tools/known-gaps-audit.mjs`, `OWNERS`) are assigned to this lane for remediation and include the X11 host/window layer, io/fs nodes, UI, util, platform host, `include/`, and `web/*.mjs` other than gl/vk. Vendored `lib/` is excluded (imgui, asmjit, glew, zlib, simde, tiny-process).
 
 The scan also reads `platform/`, `include/`, `scripts/`, `tasks/`, `testdata/`, all of `project/`, and the `tools/buildWine/` patches. No upstream Wine tree is present locally, so those patches are scanned, not excluded.
 
@@ -10,7 +10,7 @@ This register is a marker scan. It finds `unsupported`, `not implemented`, `TODO
 
 | Area | Files | Hits | Disposition |
 | --- | --- | --- | --- |
-| X11 host (`source/x11/`) | 4 | 96 | High. Aborts on many Xlib entry points; counts in this historical summary are superseded by the current hit list below. |
+| X11 host (`source/x11/`) | 2 | 20 | High. Remaining marker hits include Shape handlers, legacy Xlib stubs, and loud format limitations. |
 | X11 wire GLX (`source/x11wire/`) | 1 | 1 | High, if the GLX-over-wire path is used by a target build. |
 | io / fs nodes (`source/io/`) | 8 | 19 | Low. The one guest-reachable abort (`FsVirtualNode::removeDir`) is fixed. |
 | UI (`source/ui/`) | 8 | 11 | Low. Save-on-exit and error-message TODOs. |
@@ -20,7 +20,7 @@ This register is a marker scan. It finds `unsupported`, `not implemented`, `TODO
 | `web/naga-rt.mjs`, `web/frame-metrics.mjs` | 2 | 5 | Medium for shader versions routed to ANGLE. The other hit is a UI label. |
 | `include/`, `source/sdl/main.cpp` | 3 | 5 | Invariants and comments, see allowlist. |
 
-Total: 41 files, 168 hits. 24 files are in the register below (counts may only go down). 17 are in `allowlist.json` with reasons. `--check` fails on any UNOWNED hit that is neither.
+Current scan: 38 UNOWNED files, 94 hits. 20 files are in the register below and 18 are allowlisted with reasons. `--check` fails on any UNOWNED hit that is neither.
 
 Severity: **high** = likely to crash or visibly break a real game, or to drop data silently. **medium** = breaks a feature or a subset of games. **low** = debug-only, cosmetic, or rarely used.
 
@@ -32,8 +32,9 @@ Ranked by severity if reached. "Reached" means the guest calls the path. This sc
 | --- | --- | --- | --- | --- |
 | Mode switch (XRandR) | `source/x11/x11common.cpp:3029-3246`, `source/x11/xserver.cpp:676` | high | The emulator exposes the host display size list as XRandR 1.2 modes on one connected primary output, applies valid mode changes, supports rotation 0, reports ranges/resources/CRTC/output data, and queues selected screen/CRTC/output change events. Other rotations fail with `RRSetConfigFailed`. | IMPLEMENTED — `x11-xrandr-set-screen-config.test.mjs`, `x11-xrandr-resources.test.mjs`, `x11-xrandr-events.test.mjs` |
 | Pointer grab options | `x11common.cpp:506,510,514` plus wire grab state | high | owner_events/event masks, sync/async pointer modes, relative mode/pointer lock, and per-grab cursor activation/restoration are implemented. Invalid XAllowEvents modes return a protocol BadValue error. | IMPLEMENTED: `xwire-pointer-grab.test.mjs` |
-| Relative mouse / pointer lock | `source/x11/xserver.cpp:937` (TODO: "trial and error with vkQuake") | high | Mouse-look in FPS games depends on relative motion. | IMPLEMENTED: relative motion positions advance and confined pointer grabs request SDL relative mode/browser pointer lock. Tests: `xwire-pointer-grab.test.mjs`. |
+| Relative mouse / pointer lock | `source/x11/xserver.cpp`, `platform/sdl/knativeinputSDL.cpp` | high | SDL pointer-lock xrel/yrel deltas pass through scaling without absolute-coordinate offsets; legacy center-warp mode derives deltas and recenters. Wire grabs enable relative mode and restore it on ungrab. | IMPLEMENTED: `x11-legacy-relative-mouse.test.mjs`, `xwire-pointer-grab.test.mjs` |
 | Core drawing entry points | `x11common.cpp` (`QueryTree`, `GetPixel`, `SubImage`, `AddPixel`, `CopyPlane`, `CreateGC` valuemask, `SetDashes`, `SetArcMode`, `FillArc`, `DrawArc`, `SetFillStyle` were kpanics) | high if reached | Each of these Xlib calls aborted the emulator. XSetDashes stores a validated pattern and offset; XDrawable applies OnOffDash and DoubleDash strokes, including background pixels for the latter. `XDrawString` is not in this list: text runs on the 64-bit wire path (`source/x11wire/xwireconnection.cpp`), not the legacy hostcall path. | IMPLEMENTED: `x11-drawable-raster.test.mjs` |
+| XMatchVisualInfo | `source/x11/x11common.cpp` | medium, especially for GLX applications | Searches the display's visual/depth list for the requested screen, depth and visual class; writes the XVisualInfo guest structure on a match and returns False otherwise. | IMPLEMENTED: `x11-match-visual-info.test.mjs` |
 | Dropped pixel write | `x11common.cpp:1688` (`x11_PutPixel`) | high | `XPutPixel` now writes the pixel into the guest XImage for 8, 16, 24 and 32 bpp. Sub-byte depths and a non-zero xoffset are logged once and not written. | FIXED (test `x11-putpixel-writes.test.mjs`) |
 | Fullscreen and window state (EWMH) | `source/x11/xwindow.cpp` state handler; `_NET_ACTIVE_WINDOW` dispatch in `x11common.cpp` | high | Fullscreen add/remove/toggle updates/restores window geometry; above state raises/lowers windows; active-window messages set X input focus; root advertises supported atoms; CWSibling/stack modes reorder sibling windows. `_NET_WM_NAME` and `_NET_WM_ICON` use property storage. | IMPLEMENTED: `x11-ewmh-state.test.mjs` |
 | Clipping | `source/x11/xdrawable.cpp` (`copyImageData`, `copy`, `plotPixel`, `clipAllows`); `XSetClipMask`/`XSetClipRectangles` in `x11common.cpp` | high | Clip rectangles and depth-one clip-mask pixmaps are applied to pixel writes, XPutImage and XCopyArea; mask origins and unset/out-of-bounds bits suppress drawing. `XSetClipMask` validates drawable/depth and replaces rectangles, and `XSetClipRectangles` replaces the mask. Shape extension remains open. | PARTLY IMPLEMENTED: `x11-drawable-raster.test.mjs`, `x11-copy-paths.test.mjs`; Shape extension basics remain open. |
@@ -64,15 +65,15 @@ These categories were requested for the game-impact review. The scan found no ma
 
 | Category | Scan result | Status |
 | --- | --- | --- |
-| Audio output and input | One TODO (`knativeaudio.cpp:77`). | Not assessed. |
-| Gamepad / XInput | No marker in `platform/sdl/` input or `source/x11/`. | Not assessed. |
+| Audio output and input | Output is implemented by SDL queued audio or the browser Web Audio ring; `audio-audible-output.test.mjs` exercises output conversion and bridge delivery. No capture/microphone input path was found. | Output: tested. Input: NEEDS_KERNEL_DEPENDENCY because no guest capture device exists to feed Wine audio capture. |
+| Gamepad / XInput | No SDL game-controller/joystick event handling or guest joystick device is present; `/dev/input/event3` and `event4` are mouse and keyboard only (`source/sdl/startupArgs.cpp:152-154`, boot lane owned). | OPEN: browser Gamepad API events cannot reach Wine DirectInput/XInput without a guest joystick device/event path. NEEDS_KERNEL_DEPENDENCY for `source/kernel/devs/devinput.cpp` plus SDL polling/translation here. |
 | Window, cursor, fullscreen, pointer lock | Markers in the table above (mode switch, relative mouse, EWMH, grab). | Partly assessed. |
 | Clipboard (X selections) | `source/x11wire/xwireconnection.cpp` selection conversion and `web/clipboard-bridge.mjs` | IMPLEMENTED: browser copy reads the guest selection bridge; paste stages host text for X selection conversion. `clipboard-bridge.test.mjs` covers both directions; `xwireconnection.cpp` applies TARGETS, UTF8_STRING, STRING and TEXT conversions. |
 | IME | See the IME row above. | Partly assessed. |
-| Networking sockets and DNS | No marker in scope. | Not assessed. |
-| File dialogs | No marker in scope. | Not assessed. |
-| Filesystem semantics (case-insensitivity, symlinks) | Symlinks are reported and not followed (35 in the scan): `web/vendor` (intentional) and fontconfig and `sh` links in `tools/rootfs64`. Case-insensitivity has no marker. | Symlinks: visible, not followed. Case: not assessed. |
-| Timers | No marker. | Not assessed. |
+| Networking sockets and DNS | Native TCP/UDP and browser TCP relay probes exist (`loopback-tcp-relay`, `loopback-datagram-msg`, `browser-network`). | Socket transport: tested. DNS: NEEDS_OTHER_LANE to expose host resolution through the guest network resolver path and add a deterministic probe. |
+| File dialogs | Browser folder selection uses `showDirectoryPicker`; import accepts file and directory entries through the browser picker/drop pipeline. | Browser picker/import: partly tested at the data layer; DOM picker and guest Windows common dialogs need an integration probe. |
+| Filesystem semantics (case-insensitivity, symlinks) | ZIP import rejects archive symlinks (`web/files.mjs`); VFS decodes Wine `.link` and `(_colon_)` drive aliases (`source/io/fsnode.cpp`, `source/io/fsopennode.cpp`); lookup can ignore case. | VFS case folding and Wine alias lookup: `fs-node-case-symlink.test.mjs`. Import collision checks lowercase names (`web/files.mjs:22`). Host-backed case resolution remains platform-dependent and needs a native probe. |
+| Timers | Linux timer syscalls include nanosleep, setitimer, timerfd, and clock_gettime; browser and native scheduler use host timer callbacks. | NEEDS_OTHER_LANE: add deterministic timerfd and setitimer expiration probes with the kernel timer implementation. |
 
 The scan's pattern is also narrow. It misses a plain `not supported` outside `kpanic(` and `klog_fmt`, a capitalised `Not implemented`, and a silent `return -K_ENOSYS` with no text. Those need a separate pass.
 
@@ -81,7 +82,7 @@ The scan's pattern is also narrow. It misses a plain `not supported` outside `kp
 Ranked by severity if reached, then by how likely a real game is to reach the path. Each is OPEN and has an implementation approach. None is started in this lane.
 
 1. **XRandR family (`x11common.cpp:3029-3246`, `xserver.cpp:676`).** DONE. XRandR 1.2 exposes the host size list, current one-output topology, CRTC/output info, size range, primary output, mode changes and screen/CRTC/output notifications. The emulated output supports only rotation 0 and rejects unsupported rotations/modes. Regression probes: `x11-xrandr-set-screen-config.test.mjs`, `x11-xrandr-resources.test.mjs`, and `x11-xrandr-events.test.mjs`.
-2. **Pointer grab and relative mouse (`x11common.cpp:506,510,514`, `xserver.cpp:937,1052`).** IMPLEMENTED: owner_events and event masks route correctly; synchronous pointer grabs freeze and release one event per SyncPointer; async modes drain the pending queue; confined grabs request SDL relative mode/browser pointer lock; per-grab cursor switches on the SDL main thread and restores on ungrab. Tests: `xwire-pointer-grab.test.mjs`.
+2. **Pointer grab and relative mouse (`x11common.cpp:506,510,514`, `xserver.cpp`, `knativeinputSDL.cpp`).** IMPLEMENTED: owner_events and event masks route correctly; synchronous pointer grabs freeze and release one event per SyncPointer; async modes drain the pending queue; invalid XAllowEvents values return BadValue; relative SDL deltas feed XI2 raw motion without recentering; confined grabs request browser pointer lock; per-grab cursor switches on the SDL main thread and restores on ungrab. Tests: `xwire-pointer-grab.test.mjs`, `x11-legacy-relative-mouse.test.mjs`.
 3. **Core drawing entry points (the list in the table).** DONE: every listed kpanic and dashed strokes are implemented. Regression probe `x11-drawable-raster.test.mjs` executes the raster code and verifies OnOffDash/DoubleDash pattern phase, foreground/background pixels, and existing clip/fill behavior.
 4. **`XPutPixel` write (`x11common.cpp:1688`).** DONE: the pixel is written into the guest XImage for 8, 16, 24 and 32 bpp in either byte order. Sub-byte depths and a non-zero xoffset are logged once and not written. See Fixes.
 5. **EWMH state and stacking (`xwindow.cpp:610,1032`).** IMPLEMENTED: state add/remove/toggle deduplicates atoms; fullscreen resizes to the root and restores prior geometry; `_NET_ACTIVE_WINDOW` updates X focus; `_NET_SUPPORTED` advertises fullscreen, above, active, name and icon support; above changes and CWSibling stack requests reorder windows. Test: `x11-ewmh-state.test.mjs`.
@@ -103,16 +104,15 @@ Ranked by severity if reached, then by how likely a real game is to reach the pa
 
 - **Kernel**: `source/emulation/softmmu/kmemory_soft.cpp:157` (kpanic on a mapped-file offset that is not page-aligned). Allowlisted on the premise that `source/kernel/syscall64.cpp:1627` aligns the offset before mapping. Kernel lane: confirm that premise, or make the syscall return `-EINVAL` for an unaligned offset.
 - **Kernel**: `platform/linux/platformThreads-x64.cpp:146,187` may need kernel-lane coordination. See work item 14.
-- **GL**: `source/x11wire/xwireconnection.cpp:1739` (GLX stub reply). See work item 7.
-- **GL**: the Naga observation fallback calls ANGLE with original source (work item 13); GL rendering semantics remain owned by the GL lane.
 
 ## Fixes applied
 
 - **`source/io/fsvirtualnode.cpp:86-89`** (`FsVirtualNode::removeDir`): a guest `rmdir` of a virtual directory aborted the emulator. It now logs the attempt and returns `-K_EPERM`. Virtual directories are generated, so the guest cannot remove one, and `EPERM` is the errno for an operation the node does not permit. This is a choice, not a copy of a host result; the host was not probed. Regression: `web/tests/suite/unit/fs-virtual-removedir.test.mjs`, which compiles the real function body against stub `kpanic` and `klog` and checks the return value, the log count, and that no panic is reached. The test fails on the original code and passes with the fix. The register entry drops from 2 (medium) to 1 (low, `setTimes`).
 - **`source/x11/x11common.cpp:1688`** (`x11_PutPixel`): `XPutPixel` edits the image in client memory, so the handler reads the guest XImage header and writes the pixel bytes at `data + bytes_per_line * y + x * bytes`. It writes 8, 16, 24 and 32 bpp, most significant byte first for `MSBFirst`. A pixel outside the image is ignored and the call returns 0. Sub-byte depths and a non-zero `xoffset` are logged once per process and not written. The return value of 1 for a written pixel is taken from libX11's convention as remembered, not checked against a host libX11 here. Regression: `web/tests/suite/unit/x11-putpixel-writes.test.mjs`, which compiles the real body against a stub guest memory and checks the bytes for each depth and byte order. It replaces `x11-putpixel-logged.test.mjs`, which asserted the drop. The test fails on the original code.
 - **`source/x11/x11common.cpp` `x11_GetGeometry` and `x11_FreeFont`**: `XGetGeometry` aborted the emulator. It now writes the root, the position in the parent, the border, the size and the depth to the guest pointers, and returns 1. A pixmap reports position and border as 0. An unknown drawable returns `BadDrawable` and writes nothing. `XFreeFont` aborted too; the legacy path never loads a font, so it now returns `Success`. Regression: `web/tests/suite/unit/x11-getgeometry.test.mjs` and `web/tests/suite/unit/x11-freefont.test.mjs`, which compile the real bodies against stubs and check the results. Both fail on the original code.
-- **Core drawing calls in `source/x11/x11common.cpp` and `source/x11/xdrawable.cpp`** (were kpanics): `XQueryTree` lists the root, the parent and every child, bottom-most first, from `XWindow::getChildrenBottomToTop`. `XGetPixel` reads a pixel from the guest XImage, and `XSubImage` returns a new guest XImage holding a region, with 0 where the region is outside the source. `XAddPixel` adds to each pixel and wraps at the depth. Images are handled only for byte-aligned depths up to 32 bits and a zero xoffset; others are logged once. `XCopyPlane` paints the GC foreground for set bits of the plane and the background for clear bits, through the GC function and clip. `XCreateGC` honours the valuemask. `XSetFillStyle` and `XSetArcMode` store their values, and `XFillArc` and `XDrawArc` draw pie, chord and full ellipses, with the tile honoured for fills. `XSetDashes` stores the list but dashed lines are still drawn solid, logged once. Regression: `x11-querytree`, `x11-image-pixels`, `x11-copyplane`, `x11-gc-setters` and `x11-arc-drawing` unit tests, each compiling the real body against a stub and failing on the original code, plus the `x11-putpixel-writes` test, which now also covers `XGetPixel`. The C++ build itself was not compiled in this lane; see the report.
-- **`source/x11/xdrawable.cpp` copy paths** (`copyImageData`, `copy`): both ignored the GC clip, applied only GXcopy and, for 32-bit, GXxor, and wrote a negative destination before the buffer. `copy` also corrupted a copy inside one drawable when the destination was below the source. Both now cut the copy to the drawable, honour the clip rectangles and every GX function for 32-bit, and read each source row before a later row overwrites it. `putImage` no longer logs a function it honours. A `clip_mask` pixmap is logged once. Regression: `web/tests/suite/unit/x11-copy-paths.test.mjs`, which compiles the real functions against a stub guest memory and checks each case. It fails on the original code. Its clip-mask case fails at load there because its slice marker is new, so that case is not checked on the original code by its own assertion.
+- **Core drawing calls in `source/x11/x11common.cpp` and `source/x11/xdrawable.cpp`** (were kpanics): `XQueryTree` lists the root, the parent and every child, bottom-most first, from `XWindow::getChildrenBottomToTop`. `XGetPixel` reads a pixel from the guest XImage, and `XSubImage` returns a new guest XImage holding a region, with 0 where the region is outside the source. `XAddPixel` adds to each pixel and wraps at the depth. Images are handled only for byte-aligned depths up to 32 bits and a zero xoffset; others are logged once. `XCopyPlane` paints the GC foreground for set bits of the plane and the background for clear bits, through the GC function and clip. `XCreateGC` honours the valuemask. `XSetFillStyle` and `XSetArcMode` store their values, and `XFillArc` and `XDrawArc` draw pie, chord and full ellipses, with the tile honoured for fills. `XSetDashes` stores and draws the validated pattern, phase, and DoubleDash background pixels. Regression: `x11-querytree`, `x11-image-pixels`, `x11-copyplane`, `x11-gc-setters`, `x11-drawable-raster` and `x11-arc-drawing` unit tests, plus `x11-putpixel-writes` which now also covers `XGetPixel`.
+- **`source/x11/xdrawable.cpp` copy paths** (`copyImageData`, `copy`): both now cut copies to the drawable, honour clip rectangles and depth-one pixmap masks, apply every GX function for 32-bit, and read each source row before a later row overwrites it. The direct memcpy fast path is disabled when a GC clip is active. Regression: `web/tests/suite/unit/x11-copy-paths.test.mjs` runs both XCopyArea and XPutImage with mask pixels set and clear.
+- **`source/x11/x11common.cpp` `x11_MatchVisualInfo`**: XMatchVisualInfo now searches the guest display visuals for a matching screen/depth/class, writes the matching XVisualInfo and returns False if no match exists. Regression: `web/tests/suite/unit/x11-match-visual-info.test.mjs` compiles and calls the real handler for both cases.
 
 ## Register
 
@@ -121,14 +121,12 @@ Machine-readable. `tools/known-gaps-audit.mjs --check` reads this block. Counts 
 <!-- known-gaps:register:begin -->
 ```json
 {
-  "platform/linux/platform.cpp": { "count": 3, "severity": "low", "area": "platform", "gap": "CPU frequency reported as 0 (TODO)" },
   "platform/linux/platformThreads-x64.cpp": { "count": 2, "severity": "medium", "area": "platform", "gap": "syncFromException kpanics on an unexpected thread state" },
   "platform/sdl/knativeaudio.cpp": { "count": 1, "severity": "low", "area": "audio", "gap": "TODO: no audio device choice" },
   "platform/sdl/knativescreenSDL.cpp": { "count": 5, "severity": "low", "area": "cursor", "gap": "approximate X cursor shapes (TODO); 8-bit screenshots not supported (logged); recorder invariant kpanic" },
   "source/io/fsdiropennode.cpp": { "count": 2, "severity": "low", "area": "fs", "gap": "setAsync and waitForEvents are no-ops" },
   "source/io/fsfileopennode.cpp": { "count": 2, "severity": "low", "area": "fs", "gap": "setAsync and waitForEvents are no-ops" },
   "source/io/fsmemopennode.cpp": { "count": 2, "severity": "low", "area": "fs", "gap": "setAsync and waitForEvents are no-ops" },
-  "source/io/fsvirtualnode.cpp": { "count": 1, "severity": "low", "area": "fs", "gap": "setTimes logs and succeeds" },
   "source/io/fsvirtualopennode.h": { "count": 2, "severity": "low", "area": "fs", "gap": "setAsync and waitForEvents are no-ops" },
   "source/io/fszipopennode.cpp": { "count": 4, "severity": "low", "area": "fs", "gap": "write and truncate kpanics unreachable; async no-ops" },
   "source/ui/controls/downloadDlg.cpp": { "count": 1, "severity": "low", "area": "ui", "gap": "TODO: stuck download socket not handled" },
@@ -139,11 +137,9 @@ Machine-readable. `tools/known-gaps-audit.mjs --check` reads this block. Counts 
   "source/ui/mainui.cpp": { "count": 2, "severity": "low", "area": "ui", "gap": "TODO: quit does not check a failed save" },
   "source/ui/utils/readIcons.cpp": { "count": 1, "severity": "low", "area": "ui", "gap": "one icon format not shown" },
   "source/util/bstring.cpp": { "count": 2, "severity": "low", "area": "util", "gap": "TODO: copy on substring (performance); BString::BString invariant" },
-  "source/x11/x11common.cpp": { "count": 46, "severity": "high", "area": "x11", "gap": "XIM/IC, XShm, XSendEvent and keyboard text abort; XSetDashes is stored but dashed lines are drawn solid" },
-  "source/x11/xdrawable.cpp": { "count": 1, "severity": "medium", "area": "x11", "gap": "clip_mask pixmap logged once, not applied; sub-byte and 8-bit drawing and copies logged, not drawn" },
-  "source/x11/xserver.cpp": { "count": 1, "severity": "high", "area": "x11", "gap": "relative mouse for the legacy path is not driven (wire path does it)" },
-  "source/x11/xwindow.cpp": { "count": 4, "severity": "high", "area": "x11", "gap": "_NET_WM_STATE toggle and CWSibling abort; two TODOs" },
-  "source/x11wire/xwireconnection.cpp": { "count": 1, "severity": "high", "area": "x11", "gap": "GLX minor answered with a stub reply" },
+  "source/x11/x11common.cpp": { "count": 19, "severity": "high", "area": "x11", "gap": "Shape handlers abort; several legacy Xlib/XIM calls remain unimplemented; unsupported image layouts are loud" },
+  "source/x11/xdrawable.cpp": { "count": 1, "severity": "medium", "area": "x11", "gap": "non-32-bit legacy line drawing is logged and skipped" },
+  "source/x11wire/xwireconnection.cpp": { "count": 1, "severity": "high", "area": "x11", "gap": "unknown GLX requests return BadRequest and log a warning" },
   "web/naga-rt.mjs": { "count": 5, "severity": "medium", "area": "shader", "gap": "shader versions routed to ANGLE; fallback not verified; naga 'Not implemented' probe note" }
 }
 ```
@@ -175,14 +171,6 @@ _Generated by `node tools/known-gaps-audit.mjs --write-hits`; do not edit by han
 | 25 | `kpanic(` | void kpanic(const char* msg); |
 | 48 | `kpanic(` | internal_kpanic(msg); |
 
-### `platform/linux/platform.cpp` (3)
-
-| Line | Match | Text |
-| --- | --- | --- |
-| 130 | `TODO` | return 0; // :TODO: |
-| 134 | `TODO` | return 0; // :TODO: |
-| 138 | `TODO` | return 0; // :TODO: |
-
 ### `platform/linux/platformThreads-x64.cpp` (2)
 
 | Line | Match | Text |
@@ -200,7 +188,7 @@ _Generated by `node tools/known-gaps-audit.mjs --write-hits`; do not edit by han
 
 | Line | Match | Text |
 | --- | --- | --- |
-| 527 | `kpanic(` | kpanic("KNativeInputSDL::processCustomEvents should only be called on main thread"); |
+| 532 | `kpanic(` | kpanic("KNativeInputSDL::processCustomEvents should only be called on main thread"); |
 
 ### `platform/sdl/knativescreenSDL.cpp` (5)
 
@@ -275,12 +263,6 @@ _Generated by `node tools/known-gaps-audit.mjs --write-hits`; do not edit by han
 | --- | --- | --- |
 | 63 | `not implemented` | kdebug("FsMemOpenNode::setAsync not implemented"); |
 | 71 | `not implemented` | kdebug("FsMemOpenNode::::waitForEvents not implemented"); |
-
-### `source/io/fsvirtualnode.cpp` (1)
-
-| Line | Match | Text |
-| --- | --- | --- |
-| 93 | `not implemented` | klog("FsVirtualNode::setTimes not implemented"); |
 
 ### `source/io/fsvirtualopennode.h` (2)
 
@@ -401,83 +383,41 @@ _Generated by `node tools/known-gaps-audit.mjs --write-hits`; do not edit by han
 | --- | --- | --- |
 | 259 | `kpanic(` | kpanic("shouldn't signal a thread that is not waiting"); |
 
-### `source/x11/x11common.cpp` (46)
+### `source/x11/x11common.cpp` (19)
 
 | Line | Match | Text |
 | --- | --- | --- |
 | 740 | `TODO` | // :TODO: properly marshal |
-| 764 | `kpanic(` | kpanic("XSendEvent w=PointerWindow not implemented"); |
-| 767 | `kpanic(` | kpanic("XSendEvent w=InputFocus not implemented"); |
-| 775 | `TODO` | // :TODO: properly marshal |
-| 802 | `kpanic(` | kpanic("XSendEvent propagate not implemented"); |
-| 824 | `kpanic(` | kpanic("x11_LookupString status_in_out was not null"); |
-| 853 | `kpanic(` | kpanic("x11_MbLookupString"); |
-| 894 | `kpanic(` | kpanic("x11_KbTranslateKeysym extra_rtrn not implemented"); |
-| 987 | `kpanic(` | kpanic("x11_RefreshKeyboardMapping"); |
-| 1351 | `kpanic(` | //kpanic("x11_FreeColorMap"); |
-| 1504 | `not implemented` | kwarn("x11_AllocColor COLOR_WRITE not implemented"); |
-| 1747 | `not supported` | klog("x11 image not handled: bits per pixel or xoffset not supported by XPutPixel, XGetPixel, XSubImage or XAddPixel"); |
-| 2732 | `kpanic(` | kpanic("x11_SetWMProperties not implemented"); |
-| 2738 | `kpanic(` | kpanic("x11_VaCreateNestedList"); |
-| 2742 | `kpanic(` | kpanic("x11_UnsetICFocus"); |
-| 2746 | `kpanic(` | kpanic("x11_SetICFocus"); |
-| 2750 | `kpanic(` | kpanic("x11_DestroyIC"); |
-| 2754 | `kpanic(` | kpanic("x11_SetICValues"); |
-| 2758 | `kpanic(` | kpanic("x11_MbResetIC"); |
-| 2763 | `TODO` | // :TODO: |
-| 2773 | `kpanic(` | kpanic("x11_CloseIM"); |
-| 2778 | `kpanic(` | kpanic("x11_SetIMValues"); |
-| 2782 | `kpanic(` | kpanic("x11_GetIMValues"); |
-| 2786 | `kpanic(` | kpanic("x11_DisplayOfIM"); |
-| 2790 | `kpanic(` | kpanic("x11_UnregisterIMInstantiateCallback"); |
-| 2799 | `kpanic(` | kpanic("x11_FreeStringList"); |
-| 2820 | `kpanic(` | kpanic("x11_CreateIC"); |
-| 2857 | `kpanic(` | kpanic("x11_DisplayName"); |
-| 2861 | `kpanic(` | kpanic("x11_GetDefault"); |
-| 2865 | `kpanic(` | kpanic("x11_GetWindowAttributes"); |
-| 2869 | `kpanic(` | //kpanic("x11_IconifyWindow"); |
-| 2873 | `kpanic(` | kpanic("x11_InternAtom"); |
-| 2878 | `kpanic(` | kpanic("x11_LocaleOfIM"); |
-| 2882 | `kpanic(` | kpanic("x11_MatchVisualInfo"); |
-| 2903 | `kpanic(` | kpanic("x11_ShapeCombineMask"); |
-| 2907 | `kpanic(` | kpanic("x11_ShapeCombineRectangles"); |
-| 2911 | `kpanic(` | kpanic("x11_ShapeOffsetShape"); |
-| 2915 | `kpanic(` | kpanic("x11_ShmAttach"); |
-| 2920 | `kpanic(` | kpanic("x11_ShmCreateImage"); |
-| 2924 | `kpanic(` | kpanic("x11_ShmDetach"); |
-| 2928 | `kpanic(` | kpanic("x11_ShmPutImage"); |
-| 2932 | `kpanic(` | kpanic("x11_WindowEvent"); |
-| 3401 | `kpanic(` | kpanic("x11_XISelectEvents num_masks was expected to be 1"); |
-| 3406 | `kpanic(` | kpanic("x11_XISelectEvents currently expecting masks in the first 32-bits"); |
-| 3496 | `kpanic(` | kpanic("x11_CursorImageLoadCursor"); |
-| 3538 | `not supported` | klog("x11_CursorImagesLoadCursor animated cursors not supported, will use first frame"); |
+| 769 | `TODO` | // :TODO: properly marshal |
+| 1377 | `kpanic(` | //kpanic("x11_FreeColorMap"); |
+| 1530 | `not implemented` | kwarn("x11_AllocColor COLOR_WRITE not implemented"); |
+| 1773 | `not supported` | klog("x11 image not handled: bits per pixel or xoffset not supported by XPutPixel, XGetPixel, XSubImage or XAddPixel"); |
+| 2768 | `kpanic(` | kpanic("x11_SetWMProperties not implemented"); |
+| 2790 | `unsupported` | EAX = 0; // XSetICValues returns the first unsupported attribute; none exist. |
+| 2799 | `TODO` | // :TODO: |
+| 2902 | `kpanic(` | kpanic("x11_DisplayName"); |
+| 2906 | `kpanic(` | kpanic("x11_GetDefault"); |
+| 2910 | `kpanic(` | kpanic("x11_GetWindowAttributes"); |
+| 2914 | `kpanic(` | //kpanic("x11_IconifyWindow"); |
+| 2918 | `kpanic(` | kpanic("x11_InternAtom"); |
+| 2923 | `kpanic(` | kpanic("x11_LocaleOfIM"); |
+| 2968 | `kpanic(` | kpanic("x11_ShapeCombineMask"); |
+| 2972 | `kpanic(` | kpanic("x11_ShapeCombineRectangles"); |
+| 2976 | `kpanic(` | kpanic("x11_ShapeOffsetShape"); |
+| 3006 | `kpanic(` | kpanic("x11_WindowEvent"); |
+| 3641 | `not supported` | klog("x11_CursorImagesLoadCursor animated cursors not supported, will use first frame"); |
 
 ### `source/x11/xdrawable.cpp` (1)
 
 | Line | Match | Text |
 | --- | --- | --- |
-| 270 | `not supported` | kwarn_fmt("XDrawable::drawLine depth %d not supported", visual->bits_per_rgb); |
-
-### `source/x11/xserver.cpp` (1)
-
-| Line | Match | Text |
-| --- | --- | --- |
-| 1000 | `TODO` | // :TODO: I'm not really sure how realitive mouse is supposed to work, it was just trial and error with vkQuake |
-
-### `source/x11/xwindow.cpp` (4)
-
-| Line | Match | Text |
-| --- | --- | --- |
-| 616 | `kpanic(` | kpanic("XWindow::handleNetWmStatePropertyEvent toggle not handled"); |
-| 1033 | `TODO` | // :TODO: |
-| 1063 | `kpanic(` | kpanic("XReconfigureWMWindow CWSibling not handled"); |
-| 1082 | `TODO` | // :TODO: |
+| 268 | `not supported` | kwarn_fmt("XDrawable::drawLine depth %d not supported", visual->bits_per_rgb); |
 
 ### `source/x11wire/xwireconnection.cpp` (1)
 
 | Line | Match | Text |
 | --- | --- | --- |
-| 1739 | `stub` | klog_fmt("XWire: GLX minor=%d (stub-reply) seq=%d", (int)minor, (int)sequence); |
+| 1820 | `unsupported` | kwarn_fmt("XWire: unsupported GLX request minor %u", unsigned(minor)); |
 
 ### `web/frame-metrics.mjs` (1)
 
