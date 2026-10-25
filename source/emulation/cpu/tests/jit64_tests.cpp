@@ -24,6 +24,12 @@ static int g_pass = 0, g_fail = 0;
     else { g_fail++; printf("  FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } \
 } while (0)
 
+// Defined below (with the emission tests); testFallbackRules uses it
+// earlier in the file. The forward declaration was missing, so this
+// harness did not compile at all before K-M3 -- repaired here so the
+// phase-1 gate (scripts/build-jit-wasm.sh step 1) runs again.
+static bool decodeOne(const std::vector<U8>& b, Jit64Op& op);
+
 // Decode one stream and return the op (asserts decode succeeded).
 static Jit64Op dec(U64 base, std::vector<U8> b) {
     Jit64Op op;
