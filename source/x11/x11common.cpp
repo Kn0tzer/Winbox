@@ -2727,6 +2727,21 @@ static void x11_AllocSizeHints(CPU* cpu) {
     EAX = thread->process->alloc(thread, sizeof(XSizeHints));
 }
 
+static void x11_SetWmCommand(KThread* thread, XWindowPtr window, U32 argv, S32 argc) {
+    if (!argv) return;
+    if (argc <= 0) {
+        window->deleteProperty(XA_WM_COMMAND, true);
+        return;
+    }
+    std::vector<U8> command;
+    for (S32 i = 0; i < argc; i++) {
+        BString argument = thread->memory->readString(thread->memory->readd(argv + (U32)i * 4));
+        command.insert(command.end(), argument.begin(), argument.end());
+        command.push_back(0);
+    }
+    window->setProperty(XA_WM_COMMAND, XA_STRING, 8, (U32)command.size(), command.data(), true);
+}
+
 // void XSetWMProperties(Display* display, Window w, XTextProperty* window_name, XTextProperty* icon_name, char** argv, int argc, XSizeHints* normal_hints, XWMHints* wm_hints, XClassHint* class_hints)
 static void x11_SetWMProperties(CPU* cpu) {
     KThread* thread = cpu->thread;
@@ -2764,9 +2779,7 @@ static void x11_SetWMProperties(CPU* cpu) {
     w->setProperty(XA_WM_CLIENT_MACHINE, XA_STRING, 8, 6, (U8*)"debian", true);
     w->setProperty(server->internAtom(B("WM_LOCALE_NAME"), false), XA_STRING, 8, 11, (U8*)"en_US.UTF-8", true);
 
-    if (ARG5 || ARG6) {
-        kpanic("x11_SetWMProperties not implemented");
-    }
+    x11_SetWmCommand(thread, w, ARG5, (S32)ARG6);
     EAX = Success;
 }
 
