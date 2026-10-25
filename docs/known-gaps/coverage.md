@@ -10,7 +10,7 @@ This register is a marker scan. It finds `unsupported`, `not implemented`, `TODO
 
 | Area | Files | Hits | Disposition |
 | --- | --- | --- | --- |
-| X11 host (`source/x11/`) | 2 | 12 | High. Remaining marker hits include Shape handlers, legacy Xlib stubs, and loud format limitations. |
+| X11 host (`source/x11/`) | 2 | 4 | Medium. The Shape and XWindowEvent aborts are fixed; remaining hits are loud logs and comments. |
 | X11 wire GLX (`source/x11wire/`) | 1 | 1 | High, if the GLX-over-wire path is used by a target build. |
 | io / fs nodes (`source/io/`) | 8 | 19 | Low. The one guest-reachable abort (`FsVirtualNode::removeDir`) is fixed. |
 | UI (`source/ui/`) | 8 | 11 | Low. Save-on-exit and error-message TODOs. |
@@ -20,7 +20,7 @@ This register is a marker scan. It finds `unsupported`, `not implemented`, `TODO
 | `web/naga-rt.mjs`, `web/frame-metrics.mjs` | 2 | 5 | Medium for shader versions routed to ANGLE. The other hit is a UI label. |
 | `include/`, `source/sdl/main.cpp` | 3 | 5 | Invariants and comments, see allowlist. |
 
-Current scan: 38 UNOWNED files, 93 hits. 20 files are in the register below and 18 are allowlisted with reasons. `--check` fails on any UNOWNED hit that is neither.
+Current scan: 38 UNOWNED files, 78 hits. 20 files are in the register below and 18 are allowlisted with reasons. `--check` fails on any UNOWNED hit that is neither.
 
 Severity: **high** = likely to crash or visibly break a real game, or to drop data silently. **medium** = breaks a feature or a subset of games. **low** = debug-only, cosmetic, or rarely used.
 
@@ -44,20 +44,20 @@ Ranked by severity if reached. "Reached" means the guest calls the path. The tab
 | XSetWMProperties command | `source/x11/x11common.cpp` | low | Encodes argv strings as the NUL-separated `WM_COMMAND` property and deletes it for argc zero. | IMPLEMENTED: `x11-wm-command.test.mjs` |
 | Dropped pixel write | `x11common.cpp:1688` (`x11_PutPixel`) | high | `XPutPixel` now writes the pixel into the guest XImage for 8, 16, 24 and 32 bpp. Sub-byte depths and a non-zero xoffset are logged once and not written. | FIXED (test `x11-putpixel-writes.test.mjs`) |
 | Fullscreen and window state (EWMH) | `source/x11/xwindow.cpp` state handler; `_NET_ACTIVE_WINDOW` dispatch in `x11common.cpp` | high | Fullscreen add/remove/toggle updates/restores window geometry; above state raises/lowers windows; active-window messages set X input focus; root advertises supported atoms; CWSibling/stack modes reorder sibling windows. `_NET_WM_NAME` and `_NET_WM_ICON` use property storage. | IMPLEMENTED: `x11-ewmh-state.test.mjs` |
-| ShapeCombineMask | `source/x11/x11common.cpp:3053` | medium | A call aborts; bitmap masks are not converted into window bounding/input regions. | OPEN: implement ShapeCombineMask region conversion and integrate it with compositing/hit testing. |
-| ShapeCombineRectangles | `source/x11/x11common.cpp:3057` | medium | A call aborts; rectangle operations do not update bounding/clip/input regions. | OPEN: support ShapeSet/Union/Intersect/Subtract/Invert over window regions. |
-| ShapeOffsetShape | `source/x11/x11common.cpp:3061` | low | A call aborts; existing shape regions cannot be moved. | OPEN: translate region rectangles and recompute hit-test/composite bounds. |
+| ShapeCombineMask | `source/x11/x11common.cpp:3053` | medium | A call aborts; bitmap masks are not converted into window bounding/input regions. | REJECTED-LOUDLY: this server keeps no shape regions (windows are composited and hit-tested as rectangles) and the Xlib call is void, so the handler logs once (X11 SHAPE: shape requests are ignored; this server keeps windows rectangular) and no-ops instead of the previous kpanic abort. Test: x11-shape-window-event.test.mjs. |
+| ShapeCombineRectangles | `source/x11/x11common.cpp:3057` | medium | A call aborts; rectangle operations do not update bounding/clip/input regions. | REJECTED-LOUDLY: same disposition as ShapeCombineMask above; one log-once x11LogShapeIgnored no-op instead of kpanic. Test: x11-shape-window-event.test.mjs. |
+| ShapeOffsetShape | `source/x11/x11common.cpp:3061` | low | A call aborts; existing shape regions cannot be moved. | REJECTED-LOUDLY: same disposition as ShapeCombineMask above; one log-once x11LogShapeIgnored no-op instead of kpanic. Test: x11-shape-window-event.test.mjs. |
 | Clipping | `source/x11/xdrawable.cpp` (`copyImageData`, `copy`, `plotPixel`, `clipAllows`); `XSetClipMask`/`XSetClipRectangles` in `x11common.cpp` | high | Clip rectangles and depth-one clip-mask pixmaps are applied to pixel writes, XPutImage and XCopyArea; mask origins and unset/out-of-bounds bits suppress drawing. `XSetClipMask` validates drawable/depth and replaces rectangles, and `XSetClipRectangles` replaces the mask. Shape extension remains open. | PARTLY IMPLEMENTED: `x11-drawable-raster.test.mjs`, `x11-copy-paths.test.mjs`; Shape extension basics remain open. |
-| XWindowEvent | `source/x11/x11common.cpp:3091` | medium | The blocking event retrieval API aborts instead of waiting for a matching window event. | OPEN: add a queue wait that cooperates with both threaded and browser event pumps. |
-| Unaligned event marshalling | `source/x11/x11common.cpp:740,769` | low | Builds using `UNALIGNED_MEMORY` reach an unfinished event marshal path in XPutBackEvent/XSendEvent. | OPEN: marshal event union fields through guest-memory accessors and add packed-layout probes. |
+| XWindowEvent | `source/x11/x11common.cpp:3091` | medium | The blocking event retrieval API aborts instead of waiting for a matching window event. | IMPLEMENTED for queued events, REJECTED-LOUDLY for the blocking wait: a queued event matching (window, mask) is removed and returned via DisplayData::findAndRemoveEventByMask (the mask table in source/x11/displaydata.cpp is compiled and run by the test); with nothing queued the call logs once and returns False instead of aborting, because the blocking wait cannot run inside a guest callback. Test: x11-shape-window-event.test.mjs. |
+| Unaligned event marshalling | `source/x11/x11common.cpp:740,769` | low | Builds using `UNALIGNED_MEMORY` reach an unfinished event marshal path in XPutBackEvent/XSendEvent. | IMPLEMENTED: the UNALIGNED_MEMORY placeholder branches (a literal oops that could not compile) are gone from XPutBackEvent and XSendEvent; both handlers marshal the guest XEvent through KMemory::memcpy, so guest bytes are copied and never cast to a host pointer and host alignment rules do not apply. The same fix corrected XPutBackEvent to read the event from ARG2 and resolve the display by guest address, exactly as its CALL_2_R shim in tools/x11/X11.c passes them (it previously read ARG5 and looked the display up by internal id, so it could only fail). Tests: x11-send-event.test.mjs. |
 | GLX over the X wire | `source/x11wire/xwireconnection.cpp` GLX major opcode handler | high, if the path is used | QueryVersion and query-string requests return protocol-framed values; GLX rendering runs through the direct host bridge. Unknown GLX minors now return BadRequest with a warning instead of corrupting the X reply stream with a fake reply. | PARTLY IMPLEMENTED / REJECTED-LOUDLY for unsupported minors: `xwire-glx-protocol.test.mjs`; full GLX protocol rendering remains outside the wire path. |
 | Keyboard text entry | `x11common.cpp` (`XLookupString`, `XmbLookupString`, `XkbTranslateKeysym`, `RefreshKeyboardMapping`) | medium | Key events translate to bounded bytes and keysyms; multibyte lookup reports overflow/status; extra_rtrn reports uncopied bytes; static keymap refresh succeeds. `XLookupString` composes common Latin grave, acute, circumflex, and diaeresis pairs as UTF-8 using caller-owned compose state. XIM and broader locale compose tables remain unavailable. | PARTLY IMPLEMENTED: `x11-keyboard-text.test.mjs`; broader compose tables and IME remain open. |
 | IME / XIM | `x11common.cpp` (`x11_*IC` / `x11_*IM`) | medium (high for CJK input) | XOpenIM reports the unavailable host method once and returns NULL; XLocaleOfIM does the same and returns NULL. Browser composition remains disconnected from guest text events. | REJECTED-LOUDLY for unavailable host XIM: `x11-ime-unavailable.test.mjs`; browser IME composition remains OPEN. |
 | Synthetic events | `x11common.cpp` (`XSendEvent`) and `xserver.cpp` event-mask dispatch | medium | PointerWindow/InputFocus resolve to live targets; propagate walks ancestors and delivers to the first selecting level. | IMPLEMENTED: `x11-send-event.test.mjs` |
 | MIT-SHM | `x11common.cpp` (`XQueryExtension`, `XShmAttach/CreateImage/Detach/PutImage`) | medium | MIT-SHM is explicitly unavailable and unadvertised; direct attach/put calls fail with False or NULL and a rate-limited warning directing clients to XPutImage. | REJECTED-LOUDLY: `x11-mitshm-unavailable.test.mjs` |
 | Tiled fill | `source/x11/xdrawable.cpp` `fillRectangle` | medium | A fill with a tile pattern aborts the emulator. | FIXED (tile repeated from the tile origin; test `x11-drawable-raster.test.mjs`) |
-| AllocColor writable cells | `source/x11/x11common.cpp:1530` | low | A writable colormap cell requested by XAllocColor is warned about and not allocated with correct write permissions. | OPEN: implement or explicitly reject writable color cells with a regression. |
-| XImage uncommon pixel layouts | `source/x11/x11common.cpp:1773` | low | XPutPixel/XGetPixel/XSubImage/XAddPixel only handle byte-aligned layouts through 32bpp with zero xoffset. | OPEN: cover sub-byte and nonzero-xoffset layouts or reject each unsupported layout loudly with a tested return. |
+| AllocColor writable cells | `source/x11/x11common.cpp:1530` | low | A writable colormap cell requested by XAllocColor is warned about and not allocated with correct write permissions. | IMPLEMENTED: an exact RGB match on a read/write cell shares the cell and keeps COLOR_WRITE (the previous code overwrote the flags with COLOR_ALLOCATED alone, silently revoking the owner XStoreColor), and the scan no longer warns on unrelated writable cells. Test: x11-alloccolor-write.test.mjs. |
+| XImage uncommon pixel layouts | `source/x11/x11common.cpp:1773` | low | XPutPixel/XGetPixel/XSubImage/XAddPixel only handle byte-aligned layouts through 32bpp with zero xoffset. | IMPLEMENTED: packed 1/2/4-bit pixels (bitmap_bit_order honored, neighbouring bits preserved) and byte-aligned 8/16/24/32-bit pixels with a non-zero xoffset are read and written by XGetPixel, XPutPixel, XSubImage and XAddPixel. Tests: x11-image-pixels.test.mjs, x11-putpixel-writes.test.mjs. |
 | Non-32bpp X raster | `source/x11/xdrawable.cpp:267,358,406,512,546` | medium | Raster line/fill/polygon/arc methods return success after logging on non-32-bit visuals. | OPEN: use depth-aware pixel reads/writes across supported visual depths. |
 | Other X11 input/cursor gaps | `x11common.cpp` (`XISelectEvents`, `CursorImageLoadCursor`, `CursorLibraryLoadCursor`) | low | XI2 masks support the protocol's 33 event bits and multiple device masks (folded onto the single virtual pointer), rejecting only malformed/out-of-range masks with `BadValue`; custom Xcursor images create host cursors. Unknown library names warn and return a fallback cursor. XFixes cursor updates and animated frame scheduling remain open. | PARTLY IMPLEMENTED: `x11-xinput-cursor.test.mjs`; XFixes/animation remain open. |
 | Audio capture input | `platform/sdl/knativeaudio.cpp` plus guest device support | medium for voice/chat; low for most games | No guest capture endpoint feeds Wine input audio. | NEEDS_KERNEL_DEPENDENCY: add a guest capture device and connect SDL/browser capture to Wine audio input. |
@@ -68,6 +68,7 @@ Ranked by severity if reached. "Reached" means the guest calls the path. The tab
 | Timer expiration | kernel timerfd/setitimer implementation | medium | Syscall entry points exist, but timerfd/setitimer expiration delivery has no deterministic regression probe. | NEEDS_OTHER_LANE: add expiration probes with the kernel timer implementation. |
 | Animated Xcursor frames | `source/x11/x11common.cpp:3726` | low | Animated cursors show only their first frame. | OPEN: schedule frame updates using the image delay values. |
 | Shader versions routed to ANGLE | `web/naga-rt.mjs:70,283-286` | medium | Unsupported GLSL is classified as `unsupported-version`, excluded from Naga failures, and the wrapper always passes the exact original source to ANGLE. Probe: `naga-angle-fallback.test.mjs`. ANGLE remains responsible for syntax validity. | IMPLEMENTED: original call-through is behavior-tested. |
+| Shader cache warm poisoned record | `web/shader.mjs` (warmPersistentShaders), `web/shader-cache.mjs` (remove) | medium | One corrupt cached WGSL record aborted warming of every remaining shader on every launch: a single try/catch wrapped the manifest read and the whole warm loop, failures were swallowed with no log, counter or eviction, and the bad record was retried forever. | IMPLEMENTED: each shader warms in isolation; a throw or an error-level compilation message logs shader warm: evicting cached shader, counts in the returned warmed/failed result, drops the in-memory copy, and evicts the record plus its manifest references via persistentShaderCache.remove, so later launches skip it; records after the poisoned one still warm. Test: shader-cache.test.mjs (poisoned cache entry). |
 | Thread exception sync (host) | `platform/linux/platformThreads-x64.cpp:146,187` (`syncFromException` kpanics) | medium | An unexpected host thread state aborts the emulator. | OPEN (work item 15) |
 | Directory rmdir on virtual nodes | `source/io/fsvirtualnode.cpp:86-89` (was kpanic `removeDir not implemented`) | medium (before the fix) | Guest `rmdir` of a virtual directory aborted the emulator (`kprocess.cpp:1204-1211` calls `node->removeDir()`). | FIXED: logs and returns `-EPERM`. Test: `web/tests/suite/unit/fs-virtual-removedir.test.mjs`. |
 | Virtual `setTimes` | `source/io/fsvirtualnode.cpp` | low | Virtual nodes retain atime/mtime in milliseconds, preserve `UTIME_OMIT`, and expose updated mtime to stat. | IMPLEMENTED: `fs-virtual-settimes.test.mjs` |
@@ -78,8 +79,8 @@ Ranked by severity if reached. "Reached" means the guest calls the path. The tab
 | CPU frequency reporting | `platform/linux/platform.cpp` | low | Linux reads host cpufreq sysfs in kHz and falls back to `/proc/cpuinfo`; browser builds report a nominal 1000 MHz when host procfs/sysfs are unavailable. Per-CPU current/max nodes use scaling sysfs and API fallback. | IMPLEMENTED: `platform-cpu-frequency.test.mjs` |
 | Cursor shapes | `platform/sdl/knativescreenSDL.cpp:616,626,661` (TODO: approximate shapes) | low | Some X cursor shapes map to the nearest SDL system cursor. | OPEN, registered |
 | UI save and error paths | `source/ui/mainui.cpp:382,664`; `source/ui/controls/optionsView.cpp:106`; `source/ui/data/globalSettings.cpp:674,1072`; `source/ui/data/boxedContainer.cpp:363`; `source/ui/data/appFile.cpp:60`; `source/ui/controls/downloadDlg.cpp:156` | low | Settings not saved on focus loss, quit not checked against a failed save, error messages missing, a link name not parsed, a download socket with no stuck-socket handling. None is game-facing. | OPEN, registered |
-| Icon format | `source/ui/utils/readIcons.cpp:646` (`Icon 20b not implemented`, logged with `kwarn`) | low | One icon format is not shown. Loud and UI-only. | OPEN, registered |
-| bstring copy | `source/util/bstring.cpp:570` (TODO) | low | Performance note only. | OPEN, registered |
+| Icon format | `source/ui/utils/readIcons.cpp:646` (`Icon 20b not implemented`, logged with `kwarn`) | low | One icon format is not shown. Loud and UI-only. | REJECTED-LOUDLY: PE32+ (0x20b) icon resources warn via kwarn (Icon 20b not implemented, greppable) and the loader returns no icon instead of guessing a format; native-UI only, no guest path reaches it. |
+| bstring copy | `source/util/bstring.cpp:570` (TODO) | low | Performance note only. | NOT-A-GAP: the marker is a performance note only (maybe do not make a copy, just a ref); BString::substr at source/util/bstring.cpp:570-582 clamps an out-of-range begin and length and returns a correct copy on every path, so no behavior is missing. |
 
 ### Not covered by the scan
 
@@ -171,7 +172,7 @@ Machine-readable. `tools/known-gaps-audit.mjs --check` reads this block. Counts 
   "source/ui/mainui.cpp": { "count": 2, "severity": "low", "area": "ui", "gap": "TODO: quit does not check a failed save" },
   "source/ui/utils/readIcons.cpp": { "count": 1, "severity": "low", "area": "ui", "gap": "one icon format not shown" },
   "source/util/bstring.cpp": { "count": 2, "severity": "low", "area": "util", "gap": "TODO: copy on substring (performance); BString::BString invariant" },
-  "source/x11/x11common.cpp": { "count": 11, "severity": "high", "area": "x11", "gap": "Shape handlers abort; several legacy Xlib/XIM calls remain unimplemented; unsupported image layouts are loud" },
+  "source/x11/x11common.cpp": { "count": 3, "severity": "medium", "area": "x11", "gap": "Shape and XWindowEvent aborts fixed; remaining hits are a commented-out kpanic, an XSetICValues comment, and the animated-cursor loud log" },
   "source/x11/xdrawable.cpp": { "count": 1, "severity": "medium", "area": "x11", "gap": "non-32-bit legacy line drawing is logged and skipped" },
   "source/x11wire/xwireconnection.cpp": { "count": 1, "severity": "high", "area": "x11", "gap": "unknown GLX requests return BadRequest and log a warning" },
   "web/naga-rt.mjs": { "count": 5, "severity": "medium", "area": "shader", "gap": "shader versions routed to ANGLE; fallback not verified; naga 'Not implemented' probe note" }
@@ -417,21 +418,13 @@ _Generated by `node tools/known-gaps-audit.mjs --write-hits`; do not edit by han
 | --- | --- | --- |
 | 259 | `kpanic(` | kpanic("shouldn't signal a thread that is not waiting"); |
 
-### `source/x11/x11common.cpp` (11)
+### `source/x11/x11common.cpp` (3)
 
 | Line | Match | Text |
 | --- | --- | --- |
-| 740 | `TODO` | // :TODO: properly marshal |
-| 769 | `TODO` | // :TODO: properly marshal |
-| 1377 | `kpanic(` | //kpanic("x11_FreeColorMap"); |
-| 1530 | `not implemented` | kwarn("x11_AllocColor COLOR_WRITE not implemented"); |
-| 1773 | `not supported` | klog("x11 image not handled: bits per pixel or xoffset not supported by XPutPixel, XGetPixel, XSubImage or XAddPixel"); |
-| 2803 | `unsupported` | EAX = 0; // XSetICValues returns the first unsupported attribute; none exist. |
-| 3084 | `kpanic(` | kpanic("x11_ShapeCombineMask"); |
-| 3088 | `kpanic(` | kpanic("x11_ShapeCombineRectangles"); |
-| 3092 | `kpanic(` | kpanic("x11_ShapeOffsetShape"); |
-| 3122 | `kpanic(` | kpanic("x11_WindowEvent"); |
-| 3757 | `not supported` | klog("x11_CursorImagesLoadCursor animated cursors not supported, will use first frame"); |
+| 1414 | `kpanic(` | //kpanic("x11_FreeColorMap"); |
+| 2859 | `unsupported` | EAX = 0; // XSetICValues returns the first unsupported attribute; none exist. |
+| 3843 | `not supported` | klog("x11_CursorImagesLoadCursor animated cursors not supported, will use first frame"); |
 
 ### `source/x11/xdrawable.cpp` (1)
 
