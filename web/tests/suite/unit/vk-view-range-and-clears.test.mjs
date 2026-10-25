@@ -3,6 +3,7 @@
 //  * RP_BEGIN carries one clear colour per attachment (CLR1), and the replay clears each target with its own value.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {decodeV2Frame, V2_REC} from '../../../vk-protocol.mjs';
 import {createVkRenderer2} from '../../../vkwebgpu.mjs';
 import {createValidationDevice} from '../fixtures/webgpu-validation-device.mjs';
@@ -16,6 +17,13 @@ class W {
 }
 const rec = (type, w) => ({type, payload: w.done()});
 const frameOf = middle => [rec(V2_REC.FRAME_BEGIN, new W().u32(1).u32(8).u32(8).u32(0)), ...middle, rec(V2_REC.FRAME_END, new W().u32(1))];
+
+test('clear replay guards keep Vulkan command preconditions explicit',()=>{
+  const source=readFileSync(new URL('../../../../web/vkwebgpu.mjs',import.meta.url),'utf8');
+  assert.match(source,/case 'clearAttachments': \{\s*if\(!passEnc\) \{noteUnsupported\('clear-attachments-outside-pass'\)/);
+  assert.match(source,/case 'imageClearDS': \{[\s\S]*?if \(passEnc\) \{ noteUnsupported\('clear-ds-inside-pass'\)/);
+  assert.match(source,/if\(\(\(aspect&1\)&&attachment\.colorAttachment>=passColorFormats\.length\)/);
+});
 
 test('IMAGE_DATA view-range tail is decoded; older records without it still decode', () => {
   const image = (tail) => {
