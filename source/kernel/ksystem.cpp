@@ -58,6 +58,18 @@ BString KSystem::title;
 #ifdef BOXEDWINE_MULTI_THREADED
 U32 KSystem::cpuAffinityCountForApp = 0;
 #endif
+
+U32 KSystem::guestCpuCount() {
+    return 1;
+}
+
+BString KSystem::guestCpuList() {
+    U32 count = guestCpuCount();
+    if (count <= 1) {
+        return B("0");
+    }
+    return B("0-") + BString::valueOf(count - 1);
+}
 U32 KSystem::pollRate = DEFAULT_POLL_RATE;
 BWriteFile KSystem::logFile;
 std::function<void(BString line)> KSystem::watchTTY;
@@ -243,7 +255,7 @@ U32 KSystem::uname(KThread* thread, U32 address) {
     memory->strcpy(address + 65, name); // nodename
     memory->strcpy(address + 130, "5.15.10-20-generic"); // release
 #ifdef BOXEDWINE_MULTI_THREADED
-    if (Platform::getCpuCount() > 1 && KSystem::cpuAffinityCountForApp != 1) {
+    if (KSystem::guestCpuCount() > 1) {
         memory->strcpy(address + 105, "SMP Boxedwine"); // version
     } else {
         memory->strcpy(address + 105, "Boxedwine"); // version

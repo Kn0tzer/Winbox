@@ -24,5 +24,28 @@
 #include <string.h>
 
 FsOpenNode* openProcStat(const std::shared_ptr<FsNode>& node, U32 flags, U32 data) {
-    return new BufferAccess(node, flags, Platform::procStat());
+    // The guest topology has exactly one CPU (KSystem::guestCpuCount), so a
+    // host /proc/stat passthrough must not leak cpu1..cpuN lines: keep the
+    // aggregate line, re-emit it as cpu0, and pass the non-cpu lines through.
+    BString raw = Platform::procStat();
+    BString aggregate;
+    std::vector<BString> lines;
+    raw.split('\n', lines);
+    for (const BString& line : lines) {
+        if (line.startsWith("cpu ")) {
+            aggregate = line;
+        }
+    }
+    if (aggregate.length()) {
+        BString result;
+        result += aggregate; result += "\n";
+        result += B("cpu0") + (aggregate.c_str() + 3); result += "\n";
+        for (const BString& line : lines) {
+            if (line.length() && !line.startsWith("cpu")) {
+                result += line; result += "\n";
+            }
+        }
+        return new BufferAccess(node, flags, result);
+    }
+    return new BufferAccess(node, flags, raw);
 }

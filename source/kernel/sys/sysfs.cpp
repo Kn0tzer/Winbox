@@ -48,8 +48,8 @@ void createSysfs(const std::shared_ptr<FsNode> rootNode) {
     std::shared_ptr<FsNode> devicesSystemNode = Fs::addFileNode(B("/sys/devices/system"), B(""), B(""), true, devicesNode);
     std::shared_ptr<FsNode> cpuNode = Fs::addFileNode(B("/sys/devices/system/cpu"), B(""), B(""), true, devicesSystemNode);
 
-    U32 cpuCount = Platform::getCpuCount();
-    Fs::addVirtualFile(B("/sys/devices/system/cpu/present"), K__S_IREAD, k_mdev(0, 0), cpuNode, "0-"+BString::valueOf(cpuCount-1));
+    U32 cpuCount = KSystem::guestCpuCount();
+    Fs::addVirtualFile(B("/sys/devices/system/cpu/present"), K__S_IREAD, k_mdev(0, 0), cpuNode, KSystem::guestCpuList());
     Fs::addVirtualFile(B("/sys/devices/system/cpu/online"), openSysCpuOnline, K__S_IREAD, k_mdev(0, 0), cpuNode);
     if (Platform::getCpuFreqMHz()) {
         for (U32 i = 0; i < cpuCount; i++) {
