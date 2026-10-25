@@ -3424,32 +3424,63 @@ static U64 sys_recvmsg64(CPU64* cpu, U64 fd, U64 msg64, U64 flags) {
     // Translate any received SCM_RIGHTS fds (32-bit object wrote 16-byte cmsg
     // records, fd at +12) into the 64-bit cmsg the guest provided.
     U32 ctllen32 = m32->readd(base + MSG_SCRATCH_HDR + 20);
-    if (control && ctllen >= 16 && ctllen32 >= 16) {
-        U32 nfds = ctllen32 / 16;
-        // NEVER write past the guest's control buffer (ctllen): a 64-bit cmsg
-        // for nfds is 16 (cmsghdr) + nfds*4 bytes. Cap nfds so it fits — an
-        // overflow here scribbles past wine/wineserver's heap-allocated control
-        // buffer and corrupts its malloc arena ("unsorted double linked list").
-        U32 maxFds = (ctllen >= 16) ? (U32)((ctllen - 16) / 4) : 0;
-        if (nfds > maxFds) nfds = maxFds;
-        U64 cmsgLen = 16 + (U64)nfds * 4; // 64-bit cmsghdr header is 16 bytes
-        cpu->memory->writeq(control + 0, cmsgLen);
-        cpu->memory->writed(control + 8, K_SOL_SOCKET);
-        cpu->memory->writed(control + 12, K_SCM_RIGHTS);
-        for (U32 i = 0; i < nfds; i++) {
-            U32 fdv = m32->readd(cmArea + 16 * i + 12);
-            cpu->memory->writed(control + 16 + 4 * i, fdv);
-            if (wsReadEnabled()) {
-                // 'F' witness: which fd was just handed to the guest via
-                // SCM_RIGHTS. The same delivered fd value reappearing (e1) flags
-                // a double-delivered wineserver object handle.
-                crashRingRecordRead('F', (U32)thread->process->id, (U32)fd, nullptr, 0, nfds, fdv);
+    U32 inOffset = 0;
+    U64 outOffset = 0;
+    bool controlTruncated = false;
+    while (control && inOffset + 12 <= ctllen32) {
+        const U32 cmsgLen32 = m32->readd(cmArea + inOffset);
+        const U32 level = m32->readd(cmArea + inOffset + 4);
+        const U32 type = m32->readd(cmArea + inOffset + 8);
+        if (cmsgLen32 < 12 || cmsgLen32 > ctllen32 - inOffset) break;
+        if (level == K_SOL_SOCKET && type == K_SCM_CREDENTIALS && cmsgLen32 >= 24) {
+            // x86-64 cmsghdr is 16 bytes and ucred is 12 bytes; CMSG_SPACE is 32.
+            if (outOffset + 32 > ctllen) {
+                controlTruncated = true;
+                break;
             }
+            cpu->memory->writeq(control + outOffset, 28);
+            cpu->memory->writed(control + outOffset + 8, level);
+            cpu->memory->writed(control + outOffset + 12, type);
+            for (U32 i = 0; i < 3; ++i)
+                cpu->memory->writed(control + outOffset + 16 + i * 4, m32->readd(cmArea + inOffset + 12 + i * 4));
+            outOffset += 32;
+            inOffset += (cmsgLen32 + 3) & ~3u;
+        } else if (level == K_SOL_SOCKET && type == K_SCM_RIGHTS && cmsgLen32 >= 16) {
+            U32 rightsCount = 0;
+            U32 scanOffset = inOffset;
+            while (scanOffset + 16 <= ctllen32 && m32->readd(cmArea + scanOffset + 4) == K_SOL_SOCKET &&
+                   m32->readd(cmArea + scanOffset + 8) == K_SCM_RIGHTS && m32->readd(cmArea + scanOffset) == 16) {
+                ++rightsCount;
+                scanOffset += 16;
+            }
+            // Keep the aligned cmsghdr plus payload wholly inside the guest's
+            // control buffer; a truncated descriptor list is reported via
+            // MSG_CTRUNC rather than writing the final padding past the end.
+            const U64 maxRights = ctllen >= outOffset + 16 ? (ctllen - outOffset - 16) / 8 : 0;
+            const U32 copiedRights = (U32)std::min<U64>(rightsCount, maxRights);
+            if (copiedRights < rightsCount) controlTruncated = true;
+            if (!copiedRights) break;
+            const U64 cmsgLen64 = 16 + (U64)copiedRights * 4;
+            cpu->memory->writeq(control + outOffset, cmsgLen64);
+            cpu->memory->writed(control + outOffset + 8, level);
+            cpu->memory->writed(control + outOffset + 12, type);
+            for (U32 i = 0; i < copiedRights; ++i) {
+                U32 fdv = m32->readd(cmArea + inOffset + 12 + i * 16);
+                cpu->memory->writed(control + outOffset + 16 + i * 4, fdv);
+                if (wsReadEnabled())
+                    crashRingRecordRead('F', (U32)thread->process->id, (U32)fd, nullptr, 0, copiedRights, fdv);
+            }
+            outOffset += (cmsgLen64 + 7) & ~7ULL;
+            inOffset += rightsCount * 16;
+        } else {
+            inOffset += (cmsgLen32 + 3) & ~3u;
         }
-        cpu->memory->writeq(msg64 + 40, cmsgLen); // msg_controllen
-    } else {
-        cpu->memory->writeq(msg64 + 40, 0);
     }
+    if (control && (m32->readd(base + MSG_SCRATCH_HDR + 24) & K_MSG_CTRUNC)) controlTruncated = true;
+    U64 outFlags = m32->readd(base + MSG_SCRATCH_HDR + 24);
+    if (controlTruncated) outFlags |= K_MSG_CTRUNC;
+    cpu->memory->writed(msg64 + 48, (U32)outFlags);
+    cpu->memory->writeq(msg64 + 40, outOffset);
     return (U64)(S64)(S32)rc;
 }
 

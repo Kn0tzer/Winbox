@@ -1044,6 +1044,9 @@ U32 KUnixSocketObject::sendmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
     readMsgHdr(thread, address, &hdr);
 
     std::shared_ptr<KSocketMsg> msg = std::make_shared<KSocketMsg>();
+    msg->senderPid = thread->process->id;
+    msg->senderUid = thread->process->userId;
+    msg->senderGid = thread->process->groupId;
 
     if (hdr.msg_control) {
         CMsgHdr cmsg;			
@@ -1193,9 +1196,21 @@ U32 KUnixSocketObject::recvmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
     this->msgs.pop();
 
     if (hdr.msg_control) {
+        U32 used = 0;
+        U32 msgFlags = 0;
+        if (this->socketOptionFlags & (1ULL << K_SO_PASSCRED)) {
+            if (hdr.msg_controllen >= 24) {
+                writeCMsgHdr(thread, hdr.msg_control, 24, K_SOL_SOCKET, K_SCM_CREDENTIALS);
+                memory->writed(hdr.msg_control + 12, msg->senderPid);
+                memory->writed(hdr.msg_control + 16, msg->senderUid);
+                memory->writed(hdr.msg_control + 20, msg->senderGid);
+                used = 24;
+            } else {
+                msgFlags |= K_MSG_CTRUNC;
+            }
+        }
         U32 i=0;
-
-        for (;i<hdr.msg_controllen/16 && i<msg->objects.size();i++) {
+        for (;used + 16 <= hdr.msg_controllen && i<msg->objects.size();i++) {
             KFileDescriptorPtr recvFd = thread->process->allocFileDescriptor(msg->objects[i].object, msg->objects[i].accessFlags, 0, -1, 0);
             // BW64_SOCKDTOR: witness the RECEIVER installing a passed fd. The
             // object is SHARED (same shared_ptr) with the sender's fd — this is
@@ -1208,10 +1223,16 @@ U32 KUnixSocketObject::recvmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
                          (int)msg->objects[i].object->type,
                          msg->objects[i].object.use_count());
             }
-            writeCMsgHdr(thread, hdr.msg_control + i * 16, 16, K_SOL_SOCKET, K_SCM_RIGHTS);
-            memory->writed(hdr.msg_control + i * 16 + 12, recvFd->handle);
+            writeCMsgHdr(thread, hdr.msg_control + used, 16, K_SOL_SOCKET, K_SCM_RIGHTS);
+            memory->writed(hdr.msg_control + used + 12, recvFd->handle);
+            used += 16;
         }
-		memory->writed(address + 20, i * 16); // msg_controllen
+		if (i < msg->objects.size()) msgFlags |= K_MSG_CTRUNC;
+		memory->writed(address + 20, used); // msg_controllen
+		memory->writed(address + 24, msgFlags);
+    } else if (this->socketOptionFlags & (1ULL << K_SO_PASSCRED)) {
+        memory->writed(address + 20, 0);
+        memory->writed(address + 24, K_MSG_CTRUNC);
     }
     U32 pos = 0;
     for (U32 i=0;i<hdr.msg_iovlen;i++) {

@@ -17,6 +17,11 @@
 #include "kevent.h"
 #include "ksocket.h"
 #include "kunixsocket.h"
+#ifdef BOXEDWINE_GUEST_X64
+#include "cpu64.h"
+#include "kmemory64.h"
+#include "syscall64.h"
+#endif
 
 #include <atomic>
 #include <chrono>
@@ -39,6 +44,10 @@ public:
     explicit TestUnixSocket(U32 type) : KUnixSocketObject(K_AF_UNIX, type, 0) {}
 
     U32 registeredWaiters() const { return lockCond->parentsCount(); }
+    void connectTo(const std::shared_ptr<TestUnixSocket>& peer) {
+        this->connection = peer;
+        this->connected = true;
+    }
 };
 
 using TestUnixSocketPtr = std::shared_ptr<TestUnixSocket>;
@@ -202,6 +211,59 @@ void testUnixSocketOptions() {
         memory->readd(kResultAddress) != 1) {
         testFail("Unix SO_PASSCRED value did not round-trip");
     }
+
+    // SO_PASSCRED attaches the sender's credentials to each received message,
+    // even when the sender did not supply an explicit control message.
+    auto sender = std::make_shared<TestUnixSocket>(K_SOCK_DGRAM);
+    auto receiver = std::make_shared<TestUnixSocket>(K_SOCK_DGRAM);
+    sender->connectTo(receiver);
+    receiver->connectTo(sender);
+    if ((S32)receiver->setsockopt(context.thread, {}, K_SOL_SOCKET, K_SO_PASSCRED,
+                                  kPayloadAddress, 4) != 0) {
+        testFail("Unix credential ancillary fixture could not enable SO_PASSCRED");
+    }
+    constexpr U32 messageAddress = kMessageAddress + 0x100;
+    constexpr U32 controlAddress = messageAddress + 0x40;
+    memory->writeb(kPayloadAddress, 0x5A);
+    memory->writed(kIovAddress, kPayloadAddress);
+    memory->writed(kIovAddress + 4, 1);
+    memory->writed(messageAddress, 0);
+    memory->writed(messageAddress + 4, 0);
+    memory->writed(messageAddress + 8, kIovAddress);
+    memory->writed(messageAddress + 12, 1);
+    memory->writed(messageAddress + 16, 0);
+    memory->writed(messageAddress + 20, 0);
+    memory->writed(messageAddress + 24, 0);
+    if ((S32)sender->sendmsg(context.thread, {}, messageAddress, 0) != 1) {
+        testFail("Unix credential ancillary fixture sendmsg failed");
+    }
+    memory->writed(messageAddress + 16, controlAddress);
+    memory->writed(messageAddress + 20, 24);
+    memory->writed(messageAddress + 24, 0);
+    if ((S32)receiver->recvmsg(context.thread, {}, messageAddress, 0) != 1 ||
+        memory->readd(messageAddress + 20) != 24 ||
+        memory->readd(messageAddress + 24) != 0 ||
+        memory->readd(controlAddress) != 24 ||
+        memory->readd(controlAddress + 4) != K_SOL_SOCKET ||
+        memory->readd(controlAddress + 8) != K_SCM_CREDENTIALS ||
+        memory->readd(controlAddress + 12) != context.process->id ||
+        memory->readd(controlAddress + 16) != context.process->userId ||
+        memory->readd(controlAddress + 20) != context.process->groupId) {
+        testFail("Unix SO_PASSCRED did not deliver the sender's SCM_CREDENTIALS record");
+    }
+    memory->writed(messageAddress + 16, 0);
+    memory->writed(messageAddress + 20, 0);
+    if ((S32)sender->sendmsg(context.thread, {}, messageAddress, 0) != 1) {
+        testFail("Unix credential truncation fixture sendmsg failed");
+    }
+    memory->writed(messageAddress + 16, controlAddress);
+    memory->writed(messageAddress + 20, 16); // less than CMSG_SPACE(sizeof(ucred))
+    memory->writed(messageAddress + 24, 0);
+    if ((S32)receiver->recvmsg(context.thread, {}, messageAddress, 0) != 1 ||
+        memory->readd(messageAddress + 20) != 0 ||
+        memory->readd(messageAddress + 24) != K_MSG_CTRUNC) {
+        testFail("Unix SO_PASSCRED did not report a truncated credentials control buffer");
+    }
     if ((S32)socket.setsockopt(context.thread, {}, K_SOL_SOCKET, K_SO_PRIORITY,
                                kPayloadAddress, 2) != -K_EINVAL) {
         testFail("Unix setsockopt accepted a short integer value");
@@ -237,6 +299,69 @@ void testUnixSocketOptions() {
     if ((S32)socket.setsockopt(context.thread, {}, K_SOL_SOCKET, K_SO_SNDLOWAT, kPayloadAddress, 4) != -K_ENOPROTOOPT) {
         testFail("Unix SO_SNDLOWAT should be rejected as unsupported");
     }
+
+#ifdef BOXEDWINE_GUEST_X64
+    // The x64 recvmsg adapter must preserve the 64-bit cmsghdr layout when it
+    // translates the 32-bit Unix socket object's SCM_CREDENTIALS record.
+    if (!context.process->memory64) context.process->memory64 = new KMemory64(context.process.get());
+    KMemory64* memory64 = context.process->memory64;
+    constexpr U64 x64Page = 0x77400000ULL;
+    if (!memory64->getPageFlags(x64Page >> K64_PAGE_SHIFT) &&
+        memory64->mmapAnonymousFixed(x64Page, K64_PAGE_SIZE, 3) != x64Page) {
+        testFail("x64 SO_PASSCRED test could not map msghdr buffers");
+        return;
+    }
+    memory64->memsetGuest(x64Page, 0, K64_PAGE_SIZE);
+    auto x64Sender = std::make_shared<TestUnixSocket>(K_SOCK_DGRAM);
+    auto x64Receiver = std::make_shared<TestUnixSocket>(K_SOCK_DGRAM);
+    x64Sender->connectTo(x64Receiver);
+    x64Receiver->connectTo(x64Sender);
+    memory->writed(kPayloadAddress, 1);
+    if ((S32)x64Receiver->setsockopt(context.thread, {}, K_SOL_SOCKET, K_SO_PASSCRED,
+                                     kPayloadAddress, 4) != 0) {
+        testFail("x64 SO_PASSCRED test could not enable credentials");
+        return;
+    }
+    KFileDescriptorPtr x64SenderFd = context.process->allocFileDescriptor(x64Sender, K_O_RDWR, 0, -1, 0);
+    KFileDescriptorPtr x64ReceiverFd = context.process->allocFileDescriptor(x64Receiver, K_O_RDWR, 0, -1, 0);
+    constexpr U64 x64Header = x64Page;
+    constexpr U64 x64Iov = x64Page + 64;
+    constexpr U64 x64Control = x64Page + 128;
+    constexpr U64 x64Payload = x64Page + 256;
+    memory64->writeb(x64Payload, 0x5A);
+    memory64->writeq(x64Iov, x64Payload);
+    memory64->writeq(x64Iov + 8, 1);
+    memory64->writeq(x64Header + 16, x64Iov);
+    memory64->writeq(x64Header + 24, 1);
+    CPU64 cpu64(memory64);
+    cpu64.thread = context.thread;
+    auto invokeSocketCall = [&](U64 syscallNumber, U32 fd) -> S64 {
+        cpu64.reg[X64_RAX].setU64(syscallNumber);
+        cpu64.reg[X64_RDI].setU64(fd);
+        cpu64.reg[X64_RSI].setU64(x64Header);
+        cpu64.reg[X64_RDX].setU64(0);
+        ksyscall64(&cpu64);
+        return (S64)cpu64.reg[X64_RAX].u64;
+    };
+    if (invokeSocketCall(46, x64SenderFd->handle) != 1) {
+        testFail("x64 sendmsg for credential fixture failed");
+    }
+    memory64->writeq(x64Header + 32, x64Control);
+    memory64->writeq(x64Header + 40, 32);
+    memory64->writeq(x64Header + 48, 0);
+    if (invokeSocketCall(47, x64ReceiverFd->handle) != 1 ||
+        memory64->readq(x64Header + 40) != 32 || memory64->readd(x64Header + 48) != 0 ||
+        memory64->readq(x64Control) != 28 ||
+        memory64->readd(x64Control + 8) != K_SOL_SOCKET ||
+        memory64->readd(x64Control + 12) != K_SCM_CREDENTIALS ||
+        memory64->readd(x64Control + 16) != context.process->id ||
+        memory64->readd(x64Control + 20) != context.process->userId ||
+        memory64->readd(x64Control + 24) != context.process->groupId) {
+        testFail("x64 recvmsg did not translate SCM_CREDENTIALS into the 64-bit cmsg ABI");
+    }
+    context.process->close(x64SenderFd->handle);
+    context.process->close(x64ReceiverFd->handle);
+#endif
 }
 
 void testEpollOneShotAndFlags() {
