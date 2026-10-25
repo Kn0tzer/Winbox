@@ -25,7 +25,20 @@
 
 #include "boxedwine.h"
 
-#ifdef BOXEDWINE_OPENGL
+// The implementation below is the Emscripten/WebGL2 host backend. It needs
+// all three of: BOXEDWINE_OPENGL (the ksyscall/ksyscall64 trap dispatch is
+// keyed on it), BOXEDWINE_GUEST_X64 (include/kmemory64.h and include/cpu64.h
+// only define KMemory64/CPU64 under it), and __EMSCRIPTEN__ (the guest->host
+// object-management layer and ~25 dispatcher cases call the page-side GL
+// object through EM_ASM/GLctx, and the fixed-function/GLSL-translation
+// helpers are WebGL-only). A BOXEDWINE_OPENGL config without the other two
+// (e.g. the native Linux release desktop build, which sets
+// BOXEDWINE_OPENGL_SDL for the legacy 32-bit GL marshaling) gets the
+// -K_ENOSYS entry-point stubs at the bottom of this file instead -- the same
+// treatment the test build uses (source/test/cpu/test_bridge_stubs.cpp).
+// A native host backend is new work: it must replace the EM_ASM dispatcher
+// cases and the WebGPU helper layer, not just relax this guard.
+#if defined(BOXEDWINE_OPENGL) && defined(BOXEDWINE_GUEST_X64) && defined(__EMSCRIPTEN__)
 
 #include "gl64bridge.h"
 #include "gl64bridge_abi.h"
@@ -5098,4 +5111,24 @@ U64 gl32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     return result;
 }
 
-#endif // BOXEDWINE_OPENGL
+#elif defined(BOXEDWINE_OPENGL)
+
+// Entry-point stubs for BOXEDWINE_OPENGL configs that lack the implementation
+// prerequisites named at the top of this file: the GL trap dispatch in
+// ksyscall/ksyscall64 still recognizes the magic syscall number, and the
+// call fails loudly with -K_ENOSYS -- the same contract as the test build's
+// test_bridge_stubs.cpp and ksyscall's own #else path.
+
+#include "gl64bridge.h"
+
+U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
+    (void)cpu; (void)fnId; (void)argsAddr;
+    return (U64)(U32)-K_ENOSYS;
+}
+
+U64 gl32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
+    (void)cpu; (void)fnId; (void)argsAddr;
+    return (U64)(U32)-K_ENOSYS;
+}
+
+#endif // BOXEDWINE_OPENGL (full implementation also requires BOXEDWINE_GUEST_X64 + __EMSCRIPTEN__)
