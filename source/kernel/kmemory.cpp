@@ -444,6 +444,51 @@ U32 KMemory::mprotect(KThread* thread, U32 address, U32 len, U32 prot) {
 
 U32 KMemory::mremap(KThread* thread, U32 oldaddress, U32 oldsize, U32 newsize, U32 flags, U32 newaddress) {
     constexpr U32 MAYMOVE = 1, FIXED = 2, DONTUNMAP = 4;
+    if (oldsize == 0) {
+        // mremap(old_size=0) duplicates the MAP_SHARED file mapping at
+        // oldaddress (the shmat-style form): the duplicate must alias the
+        // same file pages through the shared cache, never copy contents.
+        if ((oldaddress & (K_PAGE_SIZE - 1)) || !newsize ||
+            !(flags & MAYMOVE) || (flags & (FIXED | DONTUNMAP)) || newaddress ||
+            (flags & ~(MAYMOVE | FIXED | DONTUNMAP))) {
+            return -K_EINVAL;
+        }
+        const U64 dupRounded64 = ((U64)newsize + K_PAGE_SIZE - 1) & ~(U64)(K_PAGE_SIZE - 1);
+        if (dupRounded64 > 0xFFFFFFFFULL) return -K_EINVAL;
+        const U32 dupRounded = (U32)dupRounded64;
+        MappedFilePtr dupSrc = process ? process->getMappedFileForRange(oldaddress, K_PAGE_SIZE) : nullptr;
+        const U32 dupFlags = getPageFlags(oldaddress >> K_PAGE_SHIFT);
+        if (!dupSrc || !(dupFlags & PAGE_MAPPED) || !(dupFlags & PAGE_SHARED)) return -K_EINVAL;
+        const U64 dupOffset = dupSrc->offset + (oldaddress - dupSrc->address);
+        U32 dupProt = 0;
+        if (dupFlags & PAGE_READ) dupProt |= K_PROT_READ;
+        if (dupFlags & PAGE_WRITE) dupProt |= K_PROT_WRITE;
+        if (dupFlags & PAGE_EXEC) dupProt |= K_PROT_EXEC;
+        if (process && process->memLockAllFuture &&
+            process->memLockedBytes + dupRounded > process->rlimMemlockCur) return -K_ENOMEM;
+        U32 dupDest = mmap(thread, 0, dupRounded, dupProt, K_MAP_PRIVATE | K_MAP_ANONYMOUS, -1, 0);
+        if ((S32)dupDest < 0) return dupDest;
+        unmap(dupDest, dupRounded);
+        {
+            BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(process->mappedFilesMutex);
+            std::shared_ptr<MappedFile> mappedFile = std::make_shared<MappedFile>();
+            mappedFile->address = dupDest;
+            mappedFile->len = dupRounded;
+            mappedFile->offset = dupOffset;
+            mappedFile->file = dupSrc->file;
+            mappedFile->key = process->nextMappedFileIndex++;
+            mappedFile->systemCacheEntry = dupSrc->systemCacheEntry;
+            process->mappedFiles.set(mappedFile->key, mappedFile);
+            const U32 perms = (dupFlags & (PAGE_READ | PAGE_WRITE | PAGE_EXEC | PAGE_SHARED)) | PAGE_MAPPED;
+            this->data->allocPages(thread, dupDest >> K_PAGE_SHIFT, dupRounded >> K_PAGE_SHIFT, (U8)perms, 0, dupOffset, mappedFile);
+        }
+        if (process && process->memLockAllFuture) {
+            for (U32 i = 0; i < (dupRounded >> K_PAGE_SHIFT); ++i) {
+                setPageStateBits((dupDest >> K_PAGE_SHIFT) + i, K_PAGE_STATE_LOCKED);
+            }
+        }
+        return dupDest;
+    }
     if ((oldaddress & (K_PAGE_SIZE - 1)) || !oldsize || !newsize ||
         (flags & ~(MAYMOVE | FIXED | DONTUNMAP)) ||
         ((flags & FIXED) && (!(flags & MAYMOVE) || !newaddress || (newaddress & (K_PAGE_SIZE - 1)))) ||
@@ -471,6 +516,20 @@ U32 KMemory::mremap(KThread* thread, U32 oldaddress, U32 oldsize, U32 newsize, U
     }
     if ((flags & FIXED) && (U64)newaddress < (U64)oldaddress + oldRounded &&
         (U64)oldaddress < (U64)newaddress + newRounded) return -K_EINVAL;
+    // madvise/mlock page state travels with the pages on a move (kernel
+    // round 3A); growth pages of a locked range (or under MCL_FUTURE) are
+    // locked too and charged before anything mutates.
+    std::vector<U32> savedBits(oldPageCount, 0);
+    bool anyLocked = false;
+    for (U32 i = 0; i < oldPageCount; ++i) {
+        savedBits[i] = getPageState(oldPageStart + i);
+        if (savedBits[i] & K_PAGE_STATE_LOCKED) anyLocked = true;
+    }
+    const bool futureLock = process && process->memLockAllFuture;
+    if ((anyLocked || futureLock) && newRounded > oldRounded && process &&
+        process->memLockedBytes + (newRounded - oldRounded) > process->rlimMemlockCur) {
+        return -K_ENOMEM;
+    }
     U32 prot = 0, mapFlags = 0;
     if (pageFlags & PAGE_READ) prot |= K_PROT_READ;
     if (pageFlags & PAGE_WRITE) prot |= K_PROT_WRITE;
@@ -481,9 +540,79 @@ U32 KMemory::mremap(KThread* thread, U32 oldaddress, U32 oldsize, U32 newsize, U
         if (newRounded < oldRounded) unmap(oldaddress + newRounded, oldRounded - newRounded);
         return oldaddress;
     }
+    MappedFilePtr srcFile = (pageFlags & PAGE_SHARED) && process
+        ? process->getMappedFileForRange(oldaddress, oldRounded) : nullptr;
+    if (srcFile) {
+        // Moving/growing a MAP_SHARED file mapping keeps the file identity:
+        // the destination is a fresh MappedFile record over the same cache
+        // (writes alias, the tail demand-loads following file offsets)
+        // instead of the anonymous content copy below.
+        const U64 srcOffset = srcFile->offset + (oldaddress - srcFile->address);
+        const U32 perms = (pageFlags & (PAGE_READ | PAGE_WRITE | PAGE_EXEC | PAGE_SHARED)) | PAGE_MAPPED;
+        auto createFileMapping = [&](U32 destAddr, U32 destLen, U64 fileOffset) {
+            BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(process->mappedFilesMutex);
+            std::shared_ptr<MappedFile> mappedFile = std::make_shared<MappedFile>();
+            mappedFile->address = destAddr;
+            mappedFile->len = destLen;
+            mappedFile->offset = fileOffset;
+            mappedFile->file = srcFile->file;
+            mappedFile->key = process->nextMappedFileIndex++;
+            mappedFile->systemCacheEntry = srcFile->systemCacheEntry;
+            process->mappedFiles.set(mappedFile->key, mappedFile);
+            this->data->allocPages(thread, destAddr >> K_PAGE_SHIFT, destLen >> K_PAGE_SHIFT,
+                                   (U8)perms, 0, fileOffset, mappedFile);
+        };
+        auto applyDestBits = [&](U32 destAddr, U32 destPages) {
+            for (U32 i = 0; i < destPages; ++i) {
+                U32 bits = (i < oldPageCount) ? savedBits[i] : 0;
+                if (futureLock || (i >= oldPageCount && anyLocked)) bits |= K_PAGE_STATE_LOCKED;
+                if (bits) setPageStateBits((destAddr >> K_PAGE_SHIFT) + i, bits);
+            }
+        };
+        if (!(flags & MAYMOVE)) {
+            // Grow in place: extend the file mapping over the free tail.
+            const U32 tailStart = oldPageStart + oldPageCount;
+            const U32 tailPages = (newRounded - oldRounded) >> K_PAGE_SHIFT;
+            for (U32 i = 0; i < tailPages; ++i) {
+                if (getPageFlags(tailStart + i) & PAGE_MAPPED) return -K_ENOMEM;
+            }
+            createFileMapping(oldaddress + oldRounded, newRounded - oldRounded, srcOffset + oldRounded);
+            for (U32 i = 0; i < tailPages; ++i) {
+                if (anyLocked || futureLock) setPageStateBits(tailStart + i, K_PAGE_STATE_LOCKED);
+            }
+            return oldaddress;
+        }
+        U32 dest = 0;
+        if (flags & FIXED) {
+            unmap(newaddress, newRounded);
+            dest = newaddress;
+        } else {
+            dest = mmap(thread, 0, newRounded, prot, K_MAP_PRIVATE | K_MAP_ANONYMOUS, -1, 0);
+            if ((S32)dest < 0) return dest;
+            unmap(dest, newRounded);
+        }
+        createFileMapping(dest, newRounded, srcOffset);
+        applyDestBits(dest, newRounded >> K_PAGE_SHIFT);
+        if (flags & DONTUNMAP) {
+            // The source stays mapped as fresh anonymous zero pages; never
+            // write zeroes through the shared file pages.
+            mmap(thread, oldaddress, oldRounded, prot, K_MAP_PRIVATE | K_MAP_ANONYMOUS | K_MAP_FIXED, -1, 0);
+            for (U32 i = 0; i < oldPageCount; ++i) {
+                if (savedBits[i]) setPageStateBits(oldPageStart + i, savedBits[i]);
+            }
+        } else {
+            unmap(oldaddress, oldRounded);
+        }
+        return dest;
+    }
     if (!(flags & (MAYMOVE | FIXED)) && newRounded > oldRounded) {
         U32 result = mmap(thread, oldaddress + oldRounded, newRounded - oldRounded,
                           prot, mapFlags | K_MAP_FIXED_NOREPLACE, -1, 0, true);
+        if (result == oldaddress + oldRounded && anyLocked && !futureLock) {
+            for (U32 i = oldPageCount; i < (newRounded >> K_PAGE_SHIFT); ++i) {
+                setPageStateBits(oldPageStart + i, K_PAGE_STATE_LOCKED);
+            }
+        }
         return result == oldaddress + oldRounded ? oldaddress : (S32)result == -K_EEXIST ? -K_ENOMEM : result;
     }
     if (!(flags & MAYMOVE)) return -K_ENOMEM;
@@ -495,6 +624,16 @@ U32 KMemory::mremap(KThread* thread, U32 oldaddress, U32 oldsize, U32 newsize, U
         : mmap(thread, 0, newRounded, prot, mapFlags | K_MAP_ANONYMOUS, -1, 0);
     if ((S32)destination < 0) return destination;
     memcpy(destination, contents.data(), (U32)contents.size());
+    {
+        const U32 destPageStart = destination >> K_PAGE_SHIFT;
+        const U32 destPages = newRounded >> K_PAGE_SHIFT;
+        for (U32 i = 0; i < destPages; ++i) {
+            U32 bits = (i < oldPageCount) ? savedBits[i] : 0;
+            if (futureLock || (i >= oldPageCount && anyLocked)) bits |= K_PAGE_STATE_LOCKED;
+            // under MCL_FUTURE the mmap above already locked the destination
+            if (bits) setPageStateBits(destPageStart + i, bits);
+        }
+    }
     if (flags & DONTUNMAP) memset(oldaddress, 0, oldsize);
     else unmap(oldaddress, oldRounded);
     return destination;
