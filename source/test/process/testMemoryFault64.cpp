@@ -178,20 +178,22 @@ void testMemoryFault64RepPartial() {
             f.mem.readq(data + 4096 - 8) != 0xc5c5c5c5c5c5c5c5ULL)
             testFail("REP STOSQ completed elements were not stored");
     }
-    // REPNE SCASB faults on element 7 of 8: flags must be the last
-    // completed comparison (equal -> ZF=1), not the faulting element.
+    // REPNE SCASB faults on element 7 of 8 (scanning for 0x42 over 0x41
+    // bytes, so the first six comparisons are unequal and REPNE keeps
+    // going): flags must be the last completed comparison (unequal ->
+    // ZF=0), not flags computed from the faulting element placeholder.
     {
         FaultFixture f;
         const U8 code2[] = {0xf2, 0xae}; // repne scasb
         f.mem.memcpyToGuest(code, code2, sizeof(code2));
         for (U32 i = 0; i < 6; i++) f.mem.writeb(data + 4090 + i, 0x41);
         f.mem.mprotect(data + 4096, 4096, 0);
-        f.cpu.reg[X64_RAX].setU64(0x41);
+        f.cpu.reg[X64_RAX].setU64(0x42);
         f.cpu.reg[X64_RCX].setU64(8);
         f.cpu.reg[X64_RDI].setU64(data + 4090);
         f.cpu.runBounded(1);
         if (!f.delivered() || f.saved(16) != code || f.saved(14) != 2 ||
-            f.saved(8) != data + 4096 || !(f.saved(17) & 0x40))
+            f.saved(8) != data + 4096 || (f.saved(17) & 0x40))
             testFail("REPNE SCASB fault lost partial progress or last-completed flags");
     }
     // Non-REP MOVSQ faulting on its only element: no progress, exact
