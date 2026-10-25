@@ -2506,13 +2506,13 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
               if (indexed && st.ibind) {
                 const bytes = F.buffers.get(st.ibind.buf);
                 const preHash = F.bufHashes ? F.bufHashes.get(st.ibind.buf) : null; // always use bridge hash
-                if (!bytes && !preHash) { noteDrop('draw-index-buffer-missing-as-nonindexed', st.ibind.buf); indexed = false; }
+                if (!bytes && !preHash) { noteDrop('draw-index-buffer-missing', st.ibind.buf); noteSkippedDraw('draw-index-buffer-missing'); break; }
                 else {
                   const gpu = gpuBufferFor(st.ibind.buf, bytes, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST, preHash);
-                  if (!gpu) { noteDrop('draw-index-buffer-gpu-failed-as-nonindexed', st.ibind.buf); indexed = false; }
+                  if (!gpu) { noteDrop('draw-index-buffer-gpu-failed', st.ibind.buf); noteSkippedDraw('draw-index-buffer-gpu-failed'); break; }
                   else passEnc.setIndexBuffer(gpu, st.ibind.indexType ? 'uint32' : 'uint16', Math.min(st.ibind.offset, gpu.size));
                 }
-              } else if (indexed) { noteDrop('draw-indexed-without-index-buffer-as-nonindexed'); indexed = false; }
+              } else if (indexed) { noteDrop('draw-indexed-without-index-buffer'); noteSkippedDraw('draw-indexed-without-index-buffer'); break; }
               if (indexed) passEnc.drawIndexed(op.indexCount, op.instanceCount, op.firstIndex, op.vertexOffset, op.firstInstance);
               else if (op.vertexCount > 0) passEnc.draw(op.vertexCount, op.instanceCount, op.firstVertex, op.firstInstance);
             }
