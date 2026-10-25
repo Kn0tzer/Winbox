@@ -182,7 +182,7 @@ public:
     // 64-bit clone3: reads the clone_args struct at argsAddr and routes to
     // clone64. glibc 2.34+ prefers clone3, so implementing it avoids the
     // fragile clone3->clone ENOSYS fallback path.
-    U32 clone364(KThread* thread, U64 argsAddr, U64 size);
+    U64 clone364(KThread* thread, U64 argsAddr, U64 size);
     // Real fork(2) for 64-bit (non-thread clone64): new KProcess with its own
     // deep-copied memory64 and a child CPU64 that returns 0. Returns the child
     // pid to the parent.

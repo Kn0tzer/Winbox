@@ -2085,20 +2085,47 @@ U32 KProcess::clone64(KThread* thread, U64 flags, U64 child_stack, U64 ptid, U64
     return newThread->id;
 }
 
-U32 KProcess::clone364(KThread* thread, U64 argsAddr, U64 size) {
+U64 KProcess::clone364(KThread* thread, U64 argsAddr, U64 size) {
     // Read the clone_args struct from guest memory64 (see the struct comment
     // above). Modern glibc (2.34+) issues clone3 first and only falls back to
     // clone on ENOSYS — that fallback path is fragile in our interpreter, so
     // implement clone3 directly and route to clone64.
-    if (!this->memory64 || size < 8 * 8) {
-        return (U32)-K_EINVAL;
+    constexpr U64 CLONE_ARGS_V0_SIZE = 64;
+    constexpr U64 CLONE_ARGS_CURRENT_SIZE = 88;
+    constexpr U64 PAGE_SIZE = 4096;
+    if (!this->memory64 || size < CLONE_ARGS_V0_SIZE) {
+        return (U64)-K_EINVAL;
     }
-    U64 flags       = this->memory64->readq(argsAddr);
-    U64 child_tid   = this->memory64->readq(argsAddr + 16);
-    U64 parent_tid  = this->memory64->readq(argsAddr + 24);
-    U64 stack       = this->memory64->readq(argsAddr + 40);
-    U64 stack_size  = this->memory64->readq(argsAddr + 48);
-    U64 tls         = this->memory64->readq(argsAddr + 56);
+    if (size > PAGE_SIZE) return (U64)-K_E2BIG;
+    if (argsAddr > ~0ULL - size) return (U64)-K_EFAULT;
+    const U64 firstPage = argsAddr >> K64_PAGE_SHIFT;
+    const U64 lastPage = (argsAddr + size - 1) >> K64_PAGE_SHIFT;
+    for (U64 page = firstPage;; ++page) {
+        const U32 pageFlags = this->memory64->getPageFlags(page);
+        if (!(pageFlags & K64_PAGE_MAPPED) || !(pageFlags & K64_PAGE_READ)) return (U64)-K_EFAULT;
+        if (page == lastPage) break;
+    }
+    // clone_args is versioned by size. Newer kernels accept a larger structure
+    // only when unknown extension bytes are zero, so callers can probe safely.
+    for (U64 offset = CLONE_ARGS_CURRENT_SIZE; offset < size; ++offset) {
+        if (this->memory64->readb(argsAddr + offset) != 0) return (U64)-K_E2BIG;
+    }
+    U64 args[CLONE_ARGS_CURRENT_SIZE / sizeof(U64)] = {};
+    const U64 copiedSize = size < sizeof(args) ? size : sizeof(args);
+    this->memory64->memcpyFromGuest(args, argsAddr, copiedSize);
+    U64 flags       = args[0];
+    U64 child_tid   = args[2];
+    U64 parent_tid  = args[3];
+    U64 exit_signal = args[4];
+    U64 stack       = args[5];
+    U64 stack_size  = args[6];
+    U64 tls         = args[7];
+    // clone3 carries the exit signal in its own field; the low CSIGNAL bits
+    // are invalid in flags (unlike legacy clone(2)).
+    if ((flags & 0xff) || exit_signal > 64 ||
+        ((stack == 0) != (stack_size == 0)) || stack > ~0ULL - stack_size) {
+        return (U64)-K_EINVAL;
+    }
     // clone3 passes the stack base + size; the child's RSP is the top.
     return clone64(thread, flags, stack + stack_size, parent_tid, tls, child_tid);
 }

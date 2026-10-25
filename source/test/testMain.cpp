@@ -89,6 +89,7 @@ void testCpu64AvxCpuidMask();
 void testForkVfork64();
 void testGetrandom64Syscalls();
 void testStatx64Syscall();
+void testClone3Abi64();
 #endif
 
 namespace {
@@ -118,6 +119,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testCpu64AvxCpuidMask, "Test x64 AVX CPUID bits stay consistently hidden"},
     {testGetrandom64Syscalls, "Test x64 getrandom entropy and validation"},
     {testStatx64Syscall, "Test x64 statx ABI and metadata"},
+    {testClone3Abi64, "Test x64 clone3 argument ABI validation"},
     {testForkVfork64, "Test x64 fork and vfork create real processes"},
 };
 #else
