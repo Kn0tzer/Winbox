@@ -55,6 +55,9 @@ struct KProcess {
   KMemory64* memory64 = nullptr;
   CPU64* cpu64 = nullptr;
   bool cloneVM = false, is64Bit = false;
+  unsigned long long memLockedBytes = 0;
+  bool memLockAllFuture = false;
+  bool memory64Shared = false;
   struct Entry { unsigned key; };
   std::vector<Entry> threads{{1},{2}};
   std::vector<int> startupArgs64, startupEnv64;

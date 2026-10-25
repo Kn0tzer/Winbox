@@ -41,6 +41,7 @@ struct KProcess;using KProcessPtr=std::shared_ptr<KProcess>;
 struct KProcess{
  U32 id=1,parentId=0,groupId=1,userId=0,effectiveUserId=0,effectiveGroupId=0,brkEnd=0,umaskValue=0,loaderBaseAddress=0,phdr=0,phnum=0,entry=0;
  BString currentDirectory,path,commandLine,exe,name;bool hasSetStackMask=false,systemProcess=false;int ldt[LDT_ENTRIES]={};bool hasSetSeg[6]={};int sigActions[MAX_SIG_ACTIONS]={};
+ unsigned long long memLockedBytes=0,rlimMemlockCur=~0ULL,rlimMemlockMax=~0ULL;bool memLockAllFuture=false;
  Table fds;std::mutex fdsMutex,mappedFilesMutex;std::vector<int> mappedFiles,privateShm;Shms attachedShm;
  std::shared_ptr<FsNode> fdNode=std::make_shared<FsNode>();
  KFileDescriptorPtr allocFileDescriptor(std::shared_ptr<KObject> o,U32 a,U32 d,U32 h,U32){auto f=std::make_shared<Descriptor>();f->kobject=o;f->accessFlags=a;f->descriptorFlags=d;fds.set(h,f);return f;}
