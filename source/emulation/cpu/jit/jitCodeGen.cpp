@@ -825,7 +825,16 @@ void OPCALL firstDynamicOp(CPU* cpu, DecodedOp* op) {
         // JIT_RUN_COUNT), so a raised threshold never strands a block that is
         // still counting.
 #ifndef __TEST
-        bool shouldStartJit = op->runCount == wasmJit32HotThreshold() && op->inst != Done && !(op->flags & OP_FLAG_JIT);
+#ifdef BOXEDWINE_WASM_JIT
+        const U32 hotThreshold = wasmJit32HotThreshold();
+#else
+        // Configs without the WASM JIT runtime have no BW32_JIT_HOT latch
+        // (wasmJit32HotThreshold is declared and defined only under
+        // BOXEDWINE_WASM_JIT); their trigger is the compiled-in JIT_RUN_COUNT
+        // the latch itself defaults to when the variable is unset.
+        const U32 hotThreshold = JIT_RUN_COUNT;
+#endif
+        bool shouldStartJit = op->runCount == hotThreshold && op->inst != Done && !(op->flags & OP_FLAG_JIT);
 #else
         bool shouldStartJit = op->runCount == 0;
 #endif
