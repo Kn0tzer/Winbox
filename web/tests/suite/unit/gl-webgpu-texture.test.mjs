@@ -276,3 +276,74 @@ test('dimensional samplers create matching WebGPU texture views in draw bind gro
     }
   } finally {gpu.restore();}
 });
+
+test('texImage numeric type compatibility is table-driven per sized internalformat', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    const UBYTE = 0x1401, USHORT = 0x1403, FLOAT = 0x1406, HALF = 0x140b;
+    const dataFor = type => type === FLOAT ? new Float32Array(4) : type === USHORT || type === HALF ? new Uint16Array(4) : new Uint8Array(4);
+    const cases = [
+      // [internalFormat, format, type, expectedError, note]
+      [0x8058, 0x1908, FLOAT, 0x0502, 'RGBA8 rejects FLOAT'],
+      [0x8058, 0x1908, HALF, 0x0502, 'RGBA8 rejects HALF_FLOAT'],
+      [0x8058, 0x1908, UBYTE, 0, 'RGBA8 accepts UNSIGNED_BYTE'],
+      [0x8058, 0x1908, USHORT, 0, 'RGBA8 accepts UNSIGNED_SHORT conversion'],
+      [0x8229, 0x1903, FLOAT, 0x0502, 'R8 rejects FLOAT'],
+      [0x8229, 0x1903, UBYTE, 0, 'R8 accepts UNSIGNED_BYTE'],
+      [0x8814, 0x1908, UBYTE, 0x0502, 'RGBA32F rejects UNSIGNED_BYTE'],
+      [0x881a, 0x1908, UBYTE, 0x0502, 'RGBA16F rejects UNSIGNED_BYTE'],
+      [0x1908, 0x1908, FLOAT, 0, 'unsized RGBA keeps legacy FLOAT conversion'],
+    ];
+    for (const [internalFormat, format, type, expected, note] of cases) {
+      const texture = gl.createTexture();
+      gl.bindTexture(0x0de1, texture);
+      gl.texImage2D(0x0de1, 0, internalFormat, 1, 1, 0, format, type, dataFor(type));
+      assert.equal(gl.getError(), expected, note);
+      if (expected === 0x0502 && (internalFormat === 0x8814 || internalFormat === 0x881a))
+        assert.equal(texture.width, 0, `${note}: incompatible upload must not allocate`);
+      if (expected === 0) assert.equal(texture.width, 1, `${note}: valid upload allocates`);
+    }
+    // RGBA16F + HALF_FLOAT is type-compatible; the upload itself is the
+    // separately tracked float-upload rejection and must be loud, not silent.
+    const texture = gl.createTexture();
+    gl.bindTexture(0x0de1, texture);
+    gl.texImage2D(0x0de1, 0, 0x881a, 1, 1, 0, 0x1908, HALF, new Uint16Array(4));
+    assert.equal(gl.getError(), 0x0502, 'RGBA16F HALF upload reaches the float-upload rejection');
+    assert.ok(logs.some(line => line.includes('floating-point texture upload data')), 'float-upload rejection is logged');
+  } finally { gpu.restore(); }
+});
+
+test('texture level and dimension bounds are enforced for regular and compressed uploads', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: () => {} });
+    await gl.ready;
+    const texture = gl.createTexture();
+    gl.bindTexture(0x0de1, texture);
+    gl.texImage2D(0x0de1, 0, 0x8058, 4, 4, 0, 0x1908, 0x1401, new Uint8Array(64));
+    assert.equal(gl.getError(), 0);
+    gl.texImage2D(0x0de1, 3, 0x8058, 1, 1, 0, 0x1908, 0x1401, new Uint8Array(4));
+    assert.equal(gl.getError(), 0x0501, 'level beyond the mip chain of a 4x4 texture is INVALID_VALUE');
+    gl.texImage2D(0x0de1, -1, 0x8058, 1, 1, 0, 0x1908, 0x1401, new Uint8Array(4));
+    assert.equal(gl.getError(), 0x0501, 'negative level is INVALID_VALUE');
+    const compressed = gl.createTexture();
+    gl.bindTexture(0x0de1, compressed);
+    gl.compressedTexImage2D(0x0de1, 0, 0x83f0, 8, 8, 0, 32, new Uint8Array(32));
+    assert.equal(gl.getError(), 0);
+    gl.compressedTexImage2D(0x0de1, 1, 0x83f0, 4, 4, 0, 8, new Uint8Array(8));
+    assert.equal(gl.getError(), 0, 'level 1 of an 8x8 compressed texture is in bounds');
+    assert.equal(compressed.width, 8, 'a level>0 compressed upload must not clobber base dimensions');
+    gl.compressedTexImage2D(0x0de1, 4, 0x83f0, 4, 4, 0, 8, new Uint8Array(8));
+    assert.equal(gl.getError(), 0x0501, 'compressed level beyond the mip chain is INVALID_VALUE');
+    gl.compressedTexImage2D(0x0de1, -1, 0x83f0, 4, 4, 0, 8, new Uint8Array(8));
+    assert.equal(gl.getError(), 0x0501, 'negative compressed level is INVALID_VALUE');
+    gl.compressedTexImage2D(0x0de1, 0, 0x83f0, 4, 4, 0, 8, new Uint8Array(4));
+    assert.equal(gl.getError(), 0x0501, 'imageSize larger than the supplied data is INVALID_VALUE');
+    const cube = gl.createTexture();
+    gl.bindTexture(0x8513, cube);
+    gl.compressedTexImage2D(0x8515, 0, 0x83f0, 8, 4, 0, 16, new Uint8Array(16));
+    assert.equal(gl.getError(), 0x0501, 'non-square compressed cube face is INVALID_VALUE');
+  } finally { gpu.restore(); }
+});

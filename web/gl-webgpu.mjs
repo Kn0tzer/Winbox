@@ -112,6 +112,9 @@ const TEXTURE_FORMAT_BASE = new Map([
   [0x81a5, 0x1902], [0x81a6, 0x1902], [0x81a7, 0x1902], [0x8cac, 0x1902],
 ]);
 const TEXTURE_GPU_FORMAT = new Map([[0x8058, 'rgba8unorm'], [0x8c43, 'rgba8unorm-srgb'], [0x881a, 'rgba16float'], [0x8814, 'rgba32float'], [0x81a5, 'depth16unorm'], [0x81a6, 'depth24plus'], [0x81a7, 'depth24plus'], [0x8cac, 'depth32float']]);
+const TEXTURE_FLOAT32_FORMATS = new Set([0x822e, 0x8230, 0x8815, 0x8814, 0x8cac]); // R32F, RG32F, RGB32F, RGBA32F, DEPTH_COMPONENT32F
+const TEXTURE_FLOAT16_FORMATS = new Set([0x822d, 0x822f, 0x881b, 0x881a]); // R16F, RG16F, RGB16F, RGBA16F
+const TEXTURE_SIZED_NORMALIZED_FORMATS = new Set([...TEXTURE_FORMAT_BASE].filter(([format, base]) => format !== base && base !== 0x1902 && !TEXTURE_FLOAT32_FORMATS.has(format) && !TEXTURE_FLOAT16_FORMATS.has(format)).map(([format]) => format));
 function defaultTexEnvCombine() { return { rgb: 0x2100, alpha: 0x2100, rgbScale: 1, alphaScale: 1,
   srcRgb: [0x8578, 0x1702, 0x8576], srcAlpha: [0x8578, 0x1702, 0x8576],
   opRgb: [0x0300, 0x0300, 0x0300], opAlpha: [0x0302, 0x0302, 0x0302] }; }
@@ -2770,6 +2773,33 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (internalBase !== transferBase) { this._recordError(GL.INVALID_OPERATION); return false; }
     return true;
   }
+  _validateTextureTypeCompat(internalFormat, type) {
+    // GLES 3.0 numeric type compatibility for sized internalformats: 32F
+    // formats accept FLOAT only, 16F formats accept FLOAT or HALF_FLOAT, and
+    // sized normalized/integer formats reject float transfer types. Unsized
+    // internalformats keep the legacy any-numeric-type behavior because the
+    // transfer type selects the effective sized format there.
+    if (TEXTURE_FLOAT32_FORMATS.has(internalFormat)) {
+      if (type !== 0x1406) { this._recordError(GL.INVALID_OPERATION); return false; }
+      return true;
+    }
+    if (TEXTURE_FLOAT16_FORMATS.has(internalFormat)) {
+      if (type !== 0x1406 && type !== 0x140b) { this._recordError(GL.INVALID_OPERATION); return false; }
+      return true;
+    }
+    if (TEXTURE_SIZED_NORMALIZED_FORMATS.has(internalFormat) && (type === 0x1406 || type === 0x140b)) {
+      this._recordError(GL.INVALID_OPERATION); return false;
+    }
+    return true;
+  }
+  _validateTextureLevel(texture, level) {
+    if (!Number.isInteger(level) || level < 0) { this._recordError(GL.INVALID_VALUE); return false; }
+    if (texture && texture.width > 0 && texture.height > 0) {
+      const maxLevel = Math.floor(Math.log2(Math.max(texture.width, texture.height)));
+      if (level > maxLevel) { this._recordError(GL.INVALID_VALUE); return false; }
+    }
+    return true;
+  }
   _uploadRows(pixels, width, height) {
     const result = new Uint8Array(pixels.length);
     for (let y = 0; y < height; y++) result.set(pixels.subarray(y * width * 4, (y + 1) * width * 4), (height - 1 - y) * width * 4);
@@ -2840,11 +2870,12 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     const texture = this._boundTexture(target);
     if (!texture) { this._recordError(GL.INVALID_OPERATION); return; }
     if (texture.immutable) { this._recordError(GL.INVALID_OPERATION); return; }
-    if (width < 0 || height < 0 || level < 0 || border !== 0) { this._recordError(GL.INVALID_VALUE); return; }
+    if (!Number.isInteger(width) || !Number.isInteger(height) || width < 0 || height < 0 || border !== 0) { this._recordError(GL.INVALID_VALUE); return; }
+    if (!this._validateTextureLevel(texture, level)) return;
     if (!TEXTURE_TRANSFER_TYPES.has(type)) { this._recordError(GL.INVALID_ENUM); return; }
     if (![0x1903, 0x1906, 0x1909, 0x190a, 0x8227, 0x1907, 0x1908, 0x80e1, 0x8d94, 0x8228].includes(format)) { this._recordError(GL.INVALID_ENUM); return; }
     if (!this._validateTextureTransfer(internalFormat, format)) return;
-    width |= 0; height |= 0;
+    if (!this._validateTextureTypeCompat(internalFormat, type)) return;
     if (target >= 0x8515 && target <= 0x851a && (width !== height || (texture.width && (texture.width !== width || texture.height !== height)))) { this._recordError(GL.INVALID_VALUE); return; }
     if (level === 0) {
       texture.width = width; texture.height = height;
@@ -2912,6 +2943,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if(!TEXTURE_TRANSFER_TYPES.has(type)){this._recordError(GL.INVALID_ENUM);return;}
     if(![0x1903,0x1906,0x1909,0x190a,0x8227,0x1907,0x1908,0x80e1,0x8d94,0x8228].includes(format)){this._recordError(GL.INVALID_ENUM);return;}
     if(!this._validateTextureTransfer(internalFormat,format))return;
+    if(!this._validateTextureTypeCompat(internalFormat,type))return;
     const w=level===0?width:Math.max(1,texture.width>>level),h=level===0?height:Math.max(1,texture.height>>level),d=level===0?depth:(target===GL.TEXTURE_3D?Math.max(1,texture.depth>>level):texture.depth);
     if(level===0){texture.width=w;texture.height=h;texture.depth=d;texture.format=TEXTURE_GPU_FORMAT.get(internalFormat)||([0x8c41,0x8c43,0x8c40,0x8c42].includes(internalFormat)?'rgba8unorm-srgb':'rgba8unorm');
       if(texture.format.startsWith('depth')&&data!=null){this._rejectUnsupported('depth texture upload data');return;}
@@ -2933,7 +2965,11 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
   }
   compressedTexImage2D(target, level, format, width, height, border, imageSize, data) {
     if (!this._validateTextureTarget(target)) return;
-    if (width < 0 || height < 0 || border !== 0 || imageSize < 0) { this._recordError(GL.INVALID_VALUE); return; }
+    const texture = this._boundTexture(target);
+    if (!texture) { this._recordError(GL.INVALID_OPERATION); return; }
+    if (!Number.isInteger(width) || !Number.isInteger(height) || width < 0 || height < 0 || border !== 0 || imageSize < 0) { this._recordError(GL.INVALID_VALUE); return; }
+    if (!this._validateTextureLevel(texture, level)) return;
+    if (target >= 0x8515 && target <= 0x851a && width !== height) { this._recordError(GL.INVALID_VALUE); return; }
     const blockBytes = S3TC_BLOCK_BYTES.get(format);
     if (!blockBytes) {
       const known = [0x9270, 0x9271, 0x9272, 0x9273, 0x9274, 0x9275, 0x9276, 0x9277, 0x9278, 0x9279, 0x8e8c, 0x8e8d].includes(format);
@@ -2942,11 +2978,12 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     }
     const expectedSize = Math.ceil(width / 4) * Math.ceil(height / 4) * blockBytes;
     if (imageSize !== expectedSize) { this._recordError(GL.INVALID_VALUE); return; }
+    const available = data == null ? null : ArrayBuffer.isView(data) ? data.byteLength : data instanceof ArrayBuffer ? data.byteLength : null;
+    if (available !== null && available < imageSize) { this._recordError(GL.INVALID_VALUE); return; }
     const pixels = decodeS3tc(format, width, height, data);
     if (!pixels) { this._recordError(GL.INVALID_VALUE); return; }
-    const texture = this._boundTexture(target);
-    if (!texture) { this._recordError(GL.INVALID_OPERATION); return; }
-    texture.width = width; texture.height = height; texture.internalFormat = format;
+    if (level === 0) { texture.width = width; texture.height = height; }
+    texture.internalFormat = format;
     texture.format = [0x8c4c, 0x8c4d, 0x8c4e, 0x8c4f].includes(format) ? 'rgba8unorm-srgb' : 'rgba8unorm';
     texture.levels.set(level, { width, height, pixels });
     if (level === 0) texture.pixels = pixels;
