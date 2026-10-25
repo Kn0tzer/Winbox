@@ -1803,42 +1803,100 @@ U32 KProcess::fstatfs64(FD fildes, U32 address) {
     return 0;
 }
 
-U32 KProcess::setitimer(U32 which, U32 newValue, U32 oldValue) {
+// ITIMER_REAL is the only itimer this kernel can serve: it runs on the
+// wall/emulator clock like the rest of the timer wheel. ITIMER_VIRTUAL and
+// ITIMER_PROF measure process CPU time, which has no honest meaning across
+// the emulator's host threads, so they are rejected with -EINVAL (logged
+// once) instead of the kpanic this used to hit.
+static S32 itimerCheckWhich(U32 which) {
+    if (which == 0) { // ITIMER_REAL
+        return 0;
+    }
+    if (which == 1 || which == 2) { // ITIMER_VIRTUAL / ITIMER_PROF
+        bw64RecoverLogOnce("syscall.setitimer.which", "unsupported setitimer timer kind; returned EINVAL");
+    }
+    return -K_EINVAL;
+}
 
-    if (which != 0) { // ITIMER_REAL
-        if (bw64RecoverEnabled()) {
-            bw64RecoverLogOnce("syscall.setitimer.which", "unsupported setitimer timer kind; returned EINVAL");
-            return -K_EINVAL;
+S32 KProcess::setitimerValues(U32 which, bool apply, U32 valueMs, U32 intervalMs,
+                              U32* oldRemainingMs, U32* oldIntervalMs) {
+    S32 check = itimerCheckWhich(which);
+    if (check) {
+        return check;
+    }
+    if (oldRemainingMs || oldIntervalMs) {
+        // An armed timer whose deadline passed but whose callback has not
+        // run yet reports 0 remaining, not a wrapped ~49-day value.
+        U32 remaining = 0;
+        if (this->timer.millies) {
+            U32 now = KSystem::getMilliesSinceStart();
+            remaining = this->timer.millies > now ? this->timer.millies - now : 0;
         }
-        kpanic_fmt("setitimer which=%d not supported", which);
+        if (oldRemainingMs) {
+            *oldRemainingMs = remaining;
+        }
+        if (oldIntervalMs) {
+            *oldIntervalMs = this->timer.resetMillies;
+        }
     }
-    if (oldValue) {
-        U32 remaining = this->timer.millies ? this->timer.millies - KSystem::getMilliesSinceStart() : 0;
-
-        memory->writed(oldValue, this->timer.resetMillies / 1000);
-        memory->writed(oldValue + 4, (this->timer.resetMillies % 1000) * 1000);
-        memory->writed(oldValue + 8, remaining / 1000);
-        memory->writed(oldValue + 12, (remaining % 1000) * 1000);
-    }
-    if (newValue) {
-        U32 millies = memory->readd(newValue + 8) * 1000 + memory->readd(newValue + 12) / 1000;
-        U32 resetMillies = memory->readd(newValue) * 1000 + memory->readd(newValue + 4) / 1000;
-
-        if (millies == 0) {
-            if (this->timer.millies!=0) {
+    if (apply) {
+        if (valueMs == 0) {
+            if (this->timer.millies != 0) {
                 removeTimer(&this->timer);
                 this->timer.millies = 0;
             }
+            this->timer.resetMillies = 0;
         } else {
-            this->timer.resetMillies = resetMillies;			
-            if (this->timer.millies!=0) {
-                this->timer.millies = millies + KSystem::getMilliesSinceStart();
-            } else {
-                this->timer.millies = millies + KSystem::getMilliesSinceStart();
+            this->timer.resetMillies = intervalMs;
+            bool wasArmed = this->timer.millies != 0;
+            this->timer.millies = valueMs + KSystem::getMilliesSinceStart();
+            if (!wasArmed) {
                 addTimer(&this->timer);
             }
         }
-    }	
+    }
+    return 0;
+}
+
+U32 KProcess::setitimer(U32 which, U32 newValue, U32 oldValue) {
+    U32 oldRemainingMs = 0;
+    U32 oldIntervalMs = 0;
+    bool apply = newValue != 0;
+    U32 valueMs = 0;
+    U32 intervalMs = 0;
+    if (apply) {
+        valueMs = memory->readd(newValue + 8) * 1000 + memory->readd(newValue + 12) / 1000;
+        intervalMs = memory->readd(newValue) * 1000 + memory->readd(newValue + 4) / 1000;
+    }
+    S32 result = this->setitimerValues(which, apply, valueMs, intervalMs,
+                                       oldValue ? &oldRemainingMs : nullptr,
+                                       oldValue ? &oldIntervalMs : nullptr);
+    if (result) {
+        return (U32)result;
+    }
+    if (oldValue) {
+        memory->writed(oldValue, oldIntervalMs / 1000);
+        memory->writed(oldValue + 4, (oldIntervalMs % 1000) * 1000);
+        memory->writed(oldValue + 8, oldRemainingMs / 1000);
+        memory->writed(oldValue + 12, (oldRemainingMs % 1000) * 1000);
+    }
+    return 0;
+}
+
+U32 KProcess::getitimer(U32 which, U32 oldValue) {
+    if (!oldValue) {
+        return -K_EFAULT;
+    }
+    U32 oldRemainingMs = 0;
+    U32 oldIntervalMs = 0;
+    S32 result = this->setitimerValues(which, false, 0, 0, &oldRemainingMs, &oldIntervalMs);
+    if (result) {
+        return (U32)result;
+    }
+    memory->writed(oldValue, oldIntervalMs / 1000);
+    memory->writed(oldValue + 4, (oldIntervalMs % 1000) * 1000);
+    memory->writed(oldValue + 8, oldRemainingMs / 1000);
+    memory->writed(oldValue + 12, (oldRemainingMs % 1000) * 1000);
     return 0;
 }
 
@@ -3677,9 +3735,14 @@ U32 KProcess::timerfd_settime(U32 fildes, U32 flags, U32 newValue, U32 oldValue)
     }
     U64 interval = memory->readd(newValue) * 1000000 + memory->readd(newValue+4) / 1000;
     U64 next = memory->readd(newValue+8) * 1000000 + memory->readd(newValue + 12) / 1000;
-    // TFD_TIMER_ABSTIME
-    if ((flags & 1) == 0) {
-        next += KSystem::getSystemTimeAsMicroSeconds();
+    // TFD_TIMER_ABSTIME: a relative value is measured in the timer's own
+    // clock domain. This used to add the wall-clock time unconditionally,
+    // so a relative CLOCK_MONOTONIC timerfd got a deadline ~1.7e15 us in
+    // the future and never expired. A zero value disarms in both modes
+    // (the x64 marshalling already guards this; the 32-bit path did not,
+    // which turned a disarm into an immediate expiry).
+    if ((flags & 1) == 0 && next != 0) {
+        next += timer->getClockNowMicroseconds();
     }
     timer->setTimes(interval, next);
     return 0;

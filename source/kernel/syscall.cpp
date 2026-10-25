@@ -626,6 +626,12 @@ static U32 syscall_setitimer(CPU* cpu, U32 eipCount) {
     return result;
 }
 
+static U32 syscall_getitimer(CPU* cpu, U32 eipCount) {
+    U32 result = cpu->thread->process->getitimer(ARG1, ARG2);
+    SYS_LOG(SYSCALL_SIGNAL, cpu, "getitimer: which=%d oldValue=%d result=%d(0x%X)\n", ARG1, ARG2, result, result);
+    return result;
+}
+
 static U32 syscall_iopl(CPU* cpu, U32 eipCount) {    
     U32 result = 0;
     SYS_LOG1(SYSCALL_SIGNAL, cpu, "iopl: level=%1 result=%d(0x%X) IGNORED\n", ARG1, result, result);
@@ -2178,7 +2184,7 @@ static const SyscallFunc syscallFunc[] = {
     syscall_socketcall, // 102 __NR_socketcall
     nullptr,                  // 103
     syscall_setitimer,  // 104 __NR_setitimer 
-    nullptr,                  // 105
+    syscall_getitimer,  // 105 __NR_getitimer
     nullptr,                  // 106
     nullptr,                  // 107
     nullptr,                  // 108

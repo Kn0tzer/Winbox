@@ -6145,9 +6145,44 @@ void ksyscall64(CPU64* cpu) {
             ret = sys_execve64(cpu, a1, a2, a3);
             break;
         case X64_SYS_getitimer:
-        case X64_SYS_setitimer:
-            ret = unimplementedSyscall64(nr);
+        case X64_SYS_setitimer: {
+            // Shared value core with the 32-bit ABI (KProcess::setitimerValues);
+            // ITIMER_VIRTUAL/ITIMER_PROF get -EINVAL there, not ENOSYS.
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            KProcessPtr process = cpu->thread->process;
+            const U32 which = (U32)a1;
+            const U64 oldAddress = (nr == X64_SYS_setitimer) ? a3 : a2;
+            if (nr == X64_SYS_getitimer && !oldAddress) { ret = (U64)-K_EFAULT; break; }
+            bool apply = false;
+            U32 valueMs = 0;
+            U32 intervalMs = 0;
+            if (nr == X64_SYS_setitimer && a2) {
+                U64 intervalSec = cpu->memory->readq(a2);
+                U64 intervalUsec = cpu->memory->readq(a2 + 8);
+                U64 valueSec = cpu->memory->readq(a2 + 16);
+                U64 valueUsec = cpu->memory->readq(a2 + 24);
+                if (intervalUsec >= 1000000 || valueUsec >= 1000000) { ret = (U64)-K_EINVAL; break; }
+                U64 vms = valueSec > 0xffffffffULL / 1000 ? 0xffffffffULL : valueSec * 1000 + valueUsec / 1000;
+                U64 ims = intervalSec > 0xffffffffULL / 1000 ? 0xffffffffULL : intervalSec * 1000 + intervalUsec / 1000;
+                valueMs = (U32)vms;
+                intervalMs = (U32)ims;
+                apply = true;
+            }
+            U32 oldRemainingMs = 0;
+            U32 oldIntervalMs = 0;
+            S32 result = process->setitimerValues(which, apply, valueMs, intervalMs,
+                                                  oldAddress ? &oldRemainingMs : nullptr,
+                                                  oldAddress ? &oldIntervalMs : nullptr);
+            if (result) { ret = (U64)(S64)result; break; }
+            if (oldAddress) {
+                cpu->memory->writeq(oldAddress, oldIntervalMs / 1000);
+                cpu->memory->writeq(oldAddress + 8, (oldIntervalMs % 1000) * 1000);
+                cpu->memory->writeq(oldAddress + 16, oldRemainingMs / 1000);
+                cpu->memory->writeq(oldAddress + 24, (oldRemainingMs % 1000) * 1000);
+            }
+            ret = 0;
             break;
+        }
         case X64_SYS_clone3:
             // glibc 2.34+ prefers clone3. Implement it directly (its ENOSYS
             // fallback to clone is fragile in our interpreter).

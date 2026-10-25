@@ -57,8 +57,16 @@ static void writeItimerval32(KMemory* memory, U32 address, U32 valueSec, U32 val
 }
 
 static void pumpForMs(int ms) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
-    runTimers();
+    // The guest main loop pumps timers continuously; model that with
+    // short slices instead of one pump at the end, so periodic timers
+    // accumulate one expiration per period.
+    int remaining = ms;
+    while (remaining > 0) {
+        int slice = remaining > 5 ? 5 : remaining;
+        std::this_thread::sleep_for(std::chrono::milliseconds(slice));
+        runTimers();
+        remaining -= slice;
+    }
 }
 
 void testTimerfdProcessAbiProbes() {
