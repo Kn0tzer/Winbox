@@ -46,6 +46,18 @@ struct XcursorImage {
 
 static_assert(sizeof(XcursorImage) == 32, "emulation expects sizeof(XcursorImage) to be 32");
 
+// One frame of an animated cursor, copied out of guest memory when the
+// cursor is loaded so the host can cycle frames after the guest frees its
+// XcursorImages. delay is the guest-supplied milliseconds for this frame.
+struct XCursorAnimFrame {
+	U32 width = 0;
+	U32 height = 0;
+	U32 xhot = 0;
+	U32 yhot = 0;
+	U32 delay = 0;
+	std::vector<U32> pixels;
+};
+
 class XCursor {
 public:
 	XCursor(const XPixmapPtr& pixmap, const XPixmapPtr& mask, const XColor& fg, const XColor& bg, U32 x, U32 y);
@@ -59,6 +71,8 @@ public:
 	U32 x = 0;
 	U32 y = 0;
 	U32 shape = 0;
+	// empty for a static cursor; more than one frame means animated
+	std::vector<XCursorAnimFrame> animFrames;
 };
 
 typedef std::shared_ptr<XCursor> XCursorPtr;

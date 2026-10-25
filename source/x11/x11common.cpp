@@ -3839,16 +3839,39 @@ void x11_CursorImagesLoadCursor(CPU* cpu) {
         EAX = 0;
         return;
     }
-    if (images.nimage > 1) {
-        klog("x11_CursorImagesLoadCursor animated cursors not supported, will use first frame");
-    }
     XCursorPtr cursor = std::make_shared<XCursor>(0);
     server->addCursor(cursor);
     EAX = cursor->id;
 
-    XcursorImage frame;
-    frame.read(memory, memory->readd(images.imagesAddress));
-    KNativeSystem::getScreen()->buildCursor(thread, cursor, frame.pixelsAddress, frame.width, frame.height, frame.xhot, frame.yhot);
+    // Copy every frame into the cursor: the guest may free its images as soon
+    // as this call returns, and the host cycles the frames by their delays
+    // (KNativeScreenSDL::setCursor starts the animation for >1 frame).
+    U32 firstPixelsAddress = 0;
+    for (U32 i = 0; i < images.nimage; i++) {
+        XcursorImage frame;
+        frame.read(memory, memory->readd(images.imagesAddress + i * sizeof(U32)));
+        if (!frame.width || !frame.height || !frame.pixelsAddress) {
+            continue;
+        }
+        if (cursor->animFrames.empty()) {
+            firstPixelsAddress = frame.pixelsAddress;
+        }
+        XCursorAnimFrame anim;
+        anim.width = frame.width;
+        anim.height = frame.height;
+        anim.xhot = frame.xhot;
+        anim.yhot = frame.yhot;
+        anim.delay = frame.delay;
+        anim.pixels.resize((size_t)frame.width * frame.height);
+        memory->memcpy(anim.pixels.data(), frame.pixelsAddress, (U32)anim.pixels.size() * 4);
+        cursor->animFrames.push_back(std::move(anim));
+    }
+    if (cursor->animFrames.empty()) {
+        EAX = 0;
+        return;
+    }
+    const XCursorAnimFrame& first = cursor->animFrames.front();
+    KNativeSystem::getScreen()->buildCursor(thread, cursor, firstPixelsAddress, first.width, first.height, first.xhot, first.yhot);
 }
 
 // Cursor XcursorLibraryLoadCursor(Display* dpy, const char* file)
