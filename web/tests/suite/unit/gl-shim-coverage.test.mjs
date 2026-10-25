@@ -311,3 +311,19 @@ test('guest GL buffer maps preserve read contents and mapped-range offsets witho
   const unmap = shimSrc.match(/API GLboolean glUnmapBuffer\([\s\S]*?\n\}/)?.[0] ?? '';
   assert.match(unmap, /writable && !g_map(?:Elem|Array)\.explicitFlush/);
 });
+
+test('marshal size helpers and texImageBytes log unknown values once instead of silently falling back', () => {
+  assert.match(glMarshalSizeSrc, /static void logUnknownMarshalSize\(const char\* what, U32 value\)/);
+  assert.match(glMarshalSizeSrc, /klog_fmt\("glMarshalSize: %s unknown value 0x%x; using fallback size"/);
+  for (const fn of ['glcommon_glLightv_size', 'glcommon_glLightModelv_size', 'glcommon_glMaterialv_size',
+    'floatPerTransformList', 'marshalUniformComponentCount']) {
+    const start = glMarshalSizeSrc.indexOf(fn);
+    assert.ok(start >= 0, `${fn} exists`);
+    const body = glMarshalSizeSrc.slice(start, glMarshalSizeSrc.indexOf('\n}\n', start));
+    const def = body.indexOf('default:');
+    assert.ok(def >= 0 && body.slice(def, def + 200).includes(`logUnknownMarshalSize("${fn}"`),
+      `${fn} default must log once via logUnknownMarshalSize`);
+  }
+  assert.match(bridgeSrc, /gl64 texImageBytes: unknown format 0x%x; assuming 4 components/);
+  assert.match(bridgeSrc, /gl64 texImageBytes: unknown type 0x%x; assuming 1 byte per component/);
+});

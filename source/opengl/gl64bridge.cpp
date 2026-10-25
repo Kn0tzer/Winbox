@@ -1690,7 +1690,7 @@ size_t texImageBytes(GLsizei w, GLsizei h, GLenum format, GLenum type) {
         case 0x1903 /*GL_RED*/: case GL_ALPHA: case GL_LUMINANCE: comps = 1; break;
         case GL_LUMINANCE_ALPHA: case 0x8227 /*GL_RG*/: comps = 2; break;
         case GL_DEPTH_COMPONENT: comps = 1; break;
-        default: comps = 4; break;
+        default: { static std::atomic_flag warned = ATOMIC_FLAG_INIT; if (!warned.test_and_set()) klog_fmt("gl64 texImageBytes: unknown format 0x%x; assuming 4 components", format); comps = 4; break; }
     }
     int bytesPerComp;
     switch (type) {
@@ -1713,7 +1713,7 @@ size_t texImageBytes(GLsizei w, GLsizei h, GLenum format, GLenum type) {
         case 0x8036 /*GL_UNSIGNED_INT_10_10_10_2*/:
             return (size_t)w * h * 4;
         case GL_UNSIGNED_INT: case GL_INT: case GL_FLOAT: bytesPerComp = 4; break;
-        default: bytesPerComp = 1; break;
+        default: { static std::atomic_flag warned = ATOMIC_FLAG_INIT; if (!warned.test_and_set()) klog_fmt("gl64 texImageBytes: unknown type 0x%x; assuming 1 byte per component", type); bytesPerComp = 1; break; }
     }
     return (size_t)w * h * comps * bytesPerComp;
 }

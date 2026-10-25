@@ -26,6 +26,11 @@
 #include GLH
 static std::atomic_flag invalidPixelFormatWarning = ATOMIC_FLAG_INIT;
 #include "glcommon.h"
+static std::atomic_flag unknownMarshalSizeWarning = ATOMIC_FLAG_INIT;
+static void logUnknownMarshalSize(const char* what, U32 value) {
+    if (!unknownMarshalSizeWarning.test_and_set())
+        klog_fmt("glMarshalSize: %s unknown value 0x%x; using fallback size", what, value);
+}
 #include "glMarshal.h"
 
 U32 getDataSize(GLenum type) {
@@ -658,6 +663,7 @@ int glcommon_glLightv_size(GLenum e)
     case GL_POSITION:
         return 4;
     default:
+        logUnknownMarshalSize("glcommon_glLightv_size", e);
         return 0;
     }
 }
@@ -672,6 +678,7 @@ int glcommon_glLightModelv_size(GLenum e)
     case GL_LIGHT_MODEL_AMBIENT:
         return 4;
     default:
+        logUnknownMarshalSize("glcommon_glLightModelv_size", e);
         return 0;
     }
 }
@@ -690,6 +697,7 @@ int glcommon_glMaterialv_size(GLenum e)
     case GL_AMBIENT_AND_DIFFUSE:
         return 4;
     default:
+        logUnknownMarshalSize("glcommon_glMaterialv_size", e);
         return 0;
     }
 }
@@ -1053,6 +1061,7 @@ GLsizei floatPerTransformList(GLenum transformType)
     case 0x9099: // GL_TRANSPOSE_PROJECTIVE_3D_NV:
         return 16;
     default:
+        logUnknownMarshalSize("floatPerTransformList", transformType);
         return 0;
     }
 }
@@ -1210,6 +1219,7 @@ static U32 marshalUniformComponentCount(GLenum type) {
     case GL_DOUBLE_MAT4:
         return 16;
     default:
+        logUnknownMarshalSize("marshalUniformComponentCount", type);
         return 1;
     }
 }
