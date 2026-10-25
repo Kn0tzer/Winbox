@@ -112,6 +112,8 @@ const TEXTURE_FORMAT_BASE = new Map([
   [0x81a5, 0x1902], [0x81a6, 0x1902], [0x81a7, 0x1902], [0x8cac, 0x1902],
 ]);
 const TEXTURE_GPU_FORMAT = new Map([[0x8058, 'rgba8unorm'], [0x8c43, 'rgba8unorm-srgb'], [0x881a, 'rgba16float'], [0x8814, 'rgba32float'], [0x81a5, 'depth16unorm'], [0x81a6, 'depth24plus'], [0x81a7, 'depth24plus'], [0x8cac, 'depth32float']]);
+const TEXTURE_UNMAPPED_FLOAT_FORMATS = new Set([0x822d, 0x822e, 0x822f, 0x8230, 0x881b, 0x8815]); // R16F, R32F, RG16F, RG32F, RGB16F, RGB32F: no WebGPU texture format in this bridge
+const TEXTURE_PACKED_FLOAT_FORMATS = new Set([0x8c3a, 0x8c3d]); // R11F_G11F_B10F, RGB9_E5
 const TEXTURE_FLOAT32_FORMATS = new Set([0x822e, 0x8230, 0x8815, 0x8814, 0x8cac]); // R32F, RG32F, RGB32F, RGBA32F, DEPTH_COMPONENT32F
 const TEXTURE_FLOAT16_FORMATS = new Set([0x822d, 0x822f, 0x881b, 0x881a]); // R16F, RG16F, RGB16F, RGBA16F
 const TEXTURE_SIZED_NORMALIZED_FORMATS = new Set([...TEXTURE_FORMAT_BASE].filter(([format, base]) => format !== base && base !== 0x1902 && !TEXTURE_FLOAT32_FORMATS.has(format) && !TEXTURE_FLOAT16_FORMATS.has(format)).map(([format]) => format));
@@ -2847,7 +2849,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
   _validateTextureTransfer(internalFormat, format) {
     const internalBase = TEXTURE_FORMAT_BASE.get(internalFormat);
     const transferBase = format === 0x80e1 ? 0x1908 : format;
-    const acceptedTransfer = [0x1903, 0x8227, 0x1907, 0x1908, 0x1906, 0x1909, 0x190a].includes(format);
+    const acceptedTransfer = [0x1903, 0x8227, 0x1907, 0x1908, 0x1906, 0x1909, 0x190a, 0x1902].includes(format);
     if (!internalBase) { this._recordError(GL.INVALID_ENUM); return false; }
     if (!acceptedTransfer) { this._recordError(GL.INVALID_ENUM); return false; }
     if (internalBase !== transferBase) { this._recordError(GL.INVALID_OPERATION); return false; }
@@ -2972,9 +2974,11 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if (!Number.isInteger(width) || !Number.isInteger(height) || width < 0 || height < 0 || border !== 0) { this._recordError(GL.INVALID_VALUE); return; }
     if (!this._validateTextureLevel(texture, level)) return;
     if (!TEXTURE_TRANSFER_TYPES.has(type)) { this._recordError(GL.INVALID_ENUM); return; }
-    if (![0x1903, 0x1906, 0x1909, 0x190a, 0x8227, 0x1907, 0x1908, 0x80e1, 0x8d94, 0x8228].includes(format)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (![0x1903, 0x1906, 0x1909, 0x190a, 0x8227, 0x1907, 0x1908, 0x80e1, 0x8d94, 0x8228, 0x1902].includes(format)) { this._recordError(GL.INVALID_ENUM); return; }
+    if (TEXTURE_PACKED_FLOAT_FORMATS.has(internalFormat)) { this._rejectUnsupported(`packed float texture format 0x${Number(internalFormat).toString(16)}`); return; }
     if (!this._validateTextureTransfer(internalFormat, format)) return;
     if (!this._validateTextureTypeCompat(internalFormat, type)) return;
+    if (level === 0 && TEXTURE_UNMAPPED_FLOAT_FORMATS.has(internalFormat)) { this._rejectUnsupported(`texture upload internal format 0x${Number(internalFormat).toString(16)}`); return; }
     if (target >= 0x8515 && target <= 0x851a && (width !== height || (texture.width && (texture.width !== width || texture.height !== height)))) { this._recordError(GL.INVALID_VALUE); return; }
     if (level === 0) {
       texture.width = width; texture.height = height;
@@ -3060,9 +3064,11 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     if(texture.immutable){this._recordError(GL.INVALID_OPERATION);return;}
     if(!Number.isInteger(level)||level<0||!Number.isInteger(width)||!Number.isInteger(height)||!Number.isInteger(depth)||width<0||height<0||depth<0||border!==0){this._recordError(GL.INVALID_VALUE);return;}
     if(!TEXTURE_TRANSFER_TYPES.has(type)){this._recordError(GL.INVALID_ENUM);return;}
-    if(![0x1903,0x1906,0x1909,0x190a,0x8227,0x1907,0x1908,0x80e1,0x8d94,0x8228].includes(format)){this._recordError(GL.INVALID_ENUM);return;}
+    if(![0x1903,0x1906,0x1909,0x190a,0x8227,0x1907,0x1908,0x80e1,0x8d94,0x8228,0x1902].includes(format)){this._recordError(GL.INVALID_ENUM);return;}
+    if(TEXTURE_PACKED_FLOAT_FORMATS.has(internalFormat)){this._rejectUnsupported(`packed float texture format 0x${Number(internalFormat).toString(16)}`);return;}
     if(!this._validateTextureTransfer(internalFormat,format))return;
     if(!this._validateTextureTypeCompat(internalFormat,type))return;
+    if(level===0&&TEXTURE_UNMAPPED_FLOAT_FORMATS.has(internalFormat)){this._rejectUnsupported(`texture upload internal format 0x${Number(internalFormat).toString(16)}`);return;}
     const w=level===0?width:Math.max(1,texture.width>>level),h=level===0?height:Math.max(1,texture.height>>level),d=level===0?depth:(target===GL.TEXTURE_3D?Math.max(1,texture.depth>>level):texture.depth);
     if(level===0){texture.width=w;texture.height=h;texture.depth=d;texture.format=TEXTURE_GPU_FORMAT.get(internalFormat)||([0x8c41,0x8c43,0x8c40,0x8c42].includes(internalFormat)?'rgba8unorm-srgb':'rgba8unorm');
       if(texture.format.startsWith('depth')&&data!=null){this._rejectUnsupported('depth texture upload data');return;}}

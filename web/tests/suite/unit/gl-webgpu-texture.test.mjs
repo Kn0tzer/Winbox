@@ -395,8 +395,56 @@ test('float texture uploads preserve exact values through GPU writes and subimag
     gl.texImage2D(0x0de1, 0, 0x81a5, 1, 1, 0, 0x1902, 0x1403, new Uint16Array([7]));
     assert.equal(gl.getError(), 0x0502);
     assert.ok(logs.some(line => line.includes('depth texture upload data')));
+    // Depth allocation without data is valid and reaches the depth format.
+    gl.texImage2D(0x0de1, 0, 0x81a5, 2, 2, 0, 0x1902, 0x1403, null);
+    assert.equal(gl.getError(), 0, 'depth texture allocation without data is accepted');
+    assert.equal(depth.format, 'depth16unorm');
     // rgba32float cannot be filtered in core WebGPU; its sampler clamps to nearest.
     assert.equal(gl._samplerFor(tex32).magFilter, 'nearest');
     assert.equal(gl._samplerFor(tex16).magFilter, 'linear');
+  } finally { gpu.restore(); }
+});
+
+test('non-RGBA and packed float formats reject loudly; float mip levels and cube faces upload', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    // RGB32F has no WebGPU texture format: reject instead of the old silent
+    // downgrade to clamped rgba8unorm.
+    const rgb32 = gl.createTexture();
+    gl.bindTexture(0x0de1, rgb32);
+    gl.texImage2D(0x0de1, 0, 0x8815, 1, 1, 0, 0x1907, 0x1406, new Float32Array([1, 0, 0]));
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('texture upload internal format 0x8815')));
+    assert.equal(rgb32.levels.size, 0, 'rejected upload stores no level record');
+    await gl._ops;
+    assert.ok(!gpu.writes.some(write => write.d.texture === rgb32.gpu), 'rejected upload writes nothing');
+    // R11F_G11F_B10F is a valid GLES3 format with no WebGPU equivalent:
+    // INVALID_OPERATION via the loud-rejection path, not INVALID_ENUM.
+    const packed = gl.createTexture();
+    gl.bindTexture(0x0de1, packed);
+    gl.texImage2D(0x0de1, 0, 0x8c3a, 1, 1, 0, 0x1908, 0x1406, new Float32Array([1, 0, 0, 1]));
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('packed float texture format 0x8c3a')));
+    // Mip levels upload too (previously float mip data was silently dropped).
+    const mip = gl.createTexture();
+    gl.bindTexture(0x0de1, mip);
+    gl.texImage2D(0x0de1, 0, 0x8814, 4, 4, 0, 0x1908, 0x1406, null);
+    gl.texImage2D(0x0de1, 1, 0x8814, 2, 2, 0, 0x1908, 0x1406, new Float32Array(16).fill(0.5));
+    assert.equal(gl.getError(), 0);
+    await gl._ops;
+    const mipWrite = gpu.writes.find(write => write.d.texture === mip.gpu && write.d.mipLevel === 1);
+    assert.ok(mipWrite, 'float mip level is written to the GPU');
+    assert.equal(mipWrite.layout.bytesPerRow, 32);
+    // Cube faces upload float data per face.
+    const cube = gl.createTexture();
+    gl.bindTexture(0x8513, cube);
+    gl.texImage2D(0x8515, 0, 0x881a, 1, 1, 0, 0x1908, 0x140b, new Uint16Array([0x3c00, 0, 0, 0x3c00]));
+    assert.equal(gl.getError(), 0);
+    await gl._ops;
+    const faceWrite = gpu.writes.find(write => write.d.texture === cube.gpu && write.d.origin?.[2] === 0);
+    assert.ok(faceWrite, 'float cube face is written to the GPU');
+    assert.equal(faceWrite.layout.bytesPerRow, 8);
   } finally { gpu.restore(); }
 });
