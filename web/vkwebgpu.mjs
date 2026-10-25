@@ -2444,12 +2444,13 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
               passEnc.setBindGroup(V2_PUSH_GROUP, pg);
             }
             const vbSet = new Set();
+            let invalidVertexBuffer = false;
             for (const vb of st.vbinds) {
               const slots = st.pipeRec.slotOf.get(vb.binding);
               if (!slots) continue;
               const bytes = F.buffers.get(vb.buf);
               const preHash = F.bufHashes ? F.bufHashes.get(vb.buf) : null; // always use bridge hash
-              if (!bytes && !preHash) { noteDrop('draw-vertex-buffer-missing', 'buf=' + vb.buf + ' binding=' + vb.binding); continue; }
+              if (!bytes && !preHash) { noteDrop('draw-vertex-buffer-missing', 'buf=' + vb.buf + ' binding=' + vb.binding); invalidVertexBuffer = true; break; }
               let vkey = vb.buf, vbytes = bytes;
               const walk = (st.pipeRec.vbWalk || []).find(w => w.binding === vb.binding);
               const swizzled = walk && walk.attrs44.length;
@@ -2471,12 +2472,13 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
                 if (repacked && vbytes) vbytes = repackScaledVb(vbytes.subarray(vb.offset), walk.stride, walk.outputStride, walk.scaled, walk.rawAttributes, repeatCount);
                 gpu = gpuBufferFor(vkey, vbytes, usage, preHash);
               }
-              if (!gpu) { noteDrop('draw-vertex-buffer-gpu-failed', 'buf=' + vb.buf + ' binding=' + vb.binding); continue; }
+              if (!gpu) { noteDrop('draw-vertex-buffer-gpu-failed', 'buf=' + vb.buf + ' binding=' + vb.binding); invalidVertexBuffer = true; break; }
               for (const {slot,offset} of slots) {
                 passEnc.setVertexBuffer(slot, gpu, repacked ? offset : Math.min(vb.offset + offset, gpu.size));
                 vbSet.add(slot);
               }
             }
+            if (invalidVertexBuffer) { noteSkippedDraw('draw-vertex-buffer-unavailable'); break; }
             // Slots the guest left unbound (null buffer) still need a buffer.
             for (const {slot} of [...st.pipeRec.slotOf.values()].flat()) {
               if (!vbSet.has(slot)) passEnc.setVertexBuffer(slot, dummyVb, 0);
