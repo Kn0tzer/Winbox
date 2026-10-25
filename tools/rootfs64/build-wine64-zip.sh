@@ -139,8 +139,15 @@ mkdir -p "$STAGE/etc"; : > "$STAGE/etc/ld.so.cache"
 echo "--- copying wine64 loader + wineserver + module trees ---"
 copy /usr/lib/wine/wine64
 copy /usr/lib/wine/wineserver64
-copy /usr/lib/wine/wineserver
 copy /usr/lib/wine/wineapploader
+# Do NOT copy /usr/lib/wine/wineserver: on Debian that is a /bin/sh dispatch
+# script (selects wineserver32/64 at runtime), and the guest rootfs64 has no
+# /bin/sh, so the shipped script cannot execute. Ship the name as a symlink
+# to the ELF wineserver64 instead, mirroring usr/bin/wineserver below and
+# the 32-bit pipeline's bridge (tools/build-prefix32.sh). The launcher also
+# sets WINESERVER=/usr/lib/wine/wineserver64 for every spawn, so this path
+# is latent insurance for any guest exec of the compiled-in server path.
+ln -sf /usr/lib/wine/wineserver64 "$STAGE/usr/lib/wine/wineserver"
 mkdir -p "$STAGE/usr/lib/x86_64-linux-gnu/wine"
 cp -aL /usr/lib/x86_64-linux-gnu/wine/x86_64-unix    "$STAGE/usr/lib/x86_64-linux-gnu/wine/"
 cp -aL /usr/lib/x86_64-linux-gnu/wine/x86_64-windows "$STAGE/usr/lib/x86_64-linux-gnu/wine/"
@@ -211,7 +218,7 @@ else
          "wine64 will run but with OpenGL disabled." >&2
 fi
 
-# Backport two builtin-Wine DLLs that exist in the 32-bit WineHQ-10.0 tree
+# Backport three builtin-Wine DLLs that exist in the 32-bit WineHQ-10.0 tree
 # but not in Debian's 8.0 amd64 tree. d3d12core.dll (post-8.0 module) and
 # msmpeg2vdec.dll (Media Foundation H.264/MPEG-2 decoder — the decoder behind
 # virtually every WMV/H.264 game cutscene). Both import only against module
@@ -219,7 +226,7 @@ fi
 # MFTRegister/MFTUnregister, verified present). See winehq10-x86_64/README.md
 # for the pinned source and hashes.
 WINEHQ64="$HERE/winehq10-x86_64"
-for dll in d3d12core.dll msmpeg2vdec.dll; do
+for dll in d3d12core.dll msmpeg2vdec.dll msvcp140_codecvt_ids.dll; do
     if [ -f "$WINEHQ64/$dll" ]; then
         cp "$WINEHQ64/$dll" \
             "$STAGEHOST/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/$dll"

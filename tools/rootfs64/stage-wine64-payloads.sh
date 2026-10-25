@@ -13,7 +13,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 WIN64_DIR="usr/lib/x86_64-linux-gnu/wine/x86_64-windows"
-for dll in d3d12core.dll msmpeg2vdec.dll; do
+for dll in d3d12core.dll msmpeg2vdec.dll msvcp140_codecvt_ids.dll; do
     [[ -f "$HERE/winehq10-x86_64/$dll" ]] || { echo "stage-wine64-payloads: missing $HERE/winehq10-x86_64/$dll" >&2; exit 2; }
 done
 [[ -d "$HERE/gstreamer64/usr/lib/x86_64-linux-gnu/gstreamer-1.0" ]] || {
@@ -26,7 +26,8 @@ for runtime in "$REPO/web/runtime" "$REPO/dist/runtime"; do
     archive="$runtime/wine64.zip"
     [[ -f "$archive" ]] || { echo "stage-wine64-payloads: expected $archive" >&2; exit 2; }
     if unzip -Z1 "$archive" | grep -qx 'usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstlibav.so' \
-       && unzip -Z1 "$archive" | grep -qx "$WIN64_DIR/d3d12core.dll"; then
+       && unzip -Z1 "$archive" | grep -qx "$WIN64_DIR/d3d12core.dll" \
+       && unzip -Z1 "$archive" | grep -qx "$WIN64_DIR/msvcp140_codecvt_ids.dll"; then
         echo "stage-wine64-payloads: $archive already carries DLLs + plugins — skipping"
         continue
     fi
@@ -35,7 +36,7 @@ for runtime in "$REPO/web/runtime" "$REPO/dist/runtime"; do
     cp "$archive" "$backup/$(basename "$runtime")-wine64.zip"
     TMP="$(mktemp -d)"
     mkdir -p "$TMP/payload/$WIN64_DIR"
-    cp "$HERE/winehq10-x86_64/d3d12core.dll" "$HERE/winehq10-x86_64/msmpeg2vdec.dll" "$TMP/payload/$WIN64_DIR/"
+    cp "$HERE/winehq10-x86_64/d3d12core.dll" "$HERE/winehq10-x86_64/msmpeg2vdec.dll" "$HERE/winehq10-x86_64/msvcp140_codecvt_ids.dll" "$TMP/payload/$WIN64_DIR/"
     cp -R "$HERE/gstreamer64/usr" "$TMP/payload/"
     ( cd "$TMP/payload" && zip -qry9 "$TMP/payload.zip" usr )
     python3 - "$archive" "$TMP/payload.zip" <<'EOF'
@@ -55,6 +56,8 @@ EOF
     unzip -Z1 "$archive" | grep -qx 'usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstlibav.so' \
         || { echo "stage-wine64-payloads: final verification failed for $archive" >&2; exit 2; }
     unzip -Z1 "$archive" | grep -qx "$WIN64_DIR/msmpeg2vdec.dll" \
+        || { echo "stage-wine64-payloads: final verification failed for $archive" >&2; exit 2; }
+    unzip -Z1 "$archive" | grep -qx "$WIN64_DIR/msvcp140_codecvt_ids.dll" \
         || { echo "stage-wine64-payloads: final verification failed for $archive" >&2; exit 2; }
     echo "stage-wine64-payloads: DLLs + GStreamer plugins staged in $archive (backup in $backup)"
 done

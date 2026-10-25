@@ -227,12 +227,13 @@ def validate_service_runtime(prefix_zip: Path, wine_zip: Path) -> None:
         names = set(archive.namelist())
     required = ("winealsa.drv", "services.exe", "rpcss.exe", "plugplay.exe", "winedevice.exe",
                 "winebus.sys", "winehid.sys", "wineusb.sys", "d3d11.dll", "d3d12.dll")
-    # d3d12core/msmpeg2vdec: present in the i386 WineHQ-10.0 tree; backported
+    # d3d12core/msmpeg2vdec/msvcp140_codecvt_ids: present in the i386
+    # WineHQ-10.0 tree; backported
     # into the amd64 Debian-8.0 tree by build-wine64-zip.sh (see
     # tools/rootfs64/winehq10-x86_64/README.md). Games LoadLibrary d3d12core
     # directly and MF resolves msmpeg2vdec for WMV/H.264 cutscenes.
     if "x86_64-windows/" in system32:
-        required = required + ("d3d12core.dll", "msmpeg2vdec.dll")
+        required = required + ("d3d12core.dll", "msmpeg2vdec.dll", "msvcp140_codecvt_ids.dll")
     missing = [system32 + name for name in required if system32 + name not in names]
     if missing:
         raise ValueError(f"{wine_zip}: missing linked audio/service/device/D3D payloads: " + ", ".join(missing))

@@ -213,7 +213,7 @@ class PrefixPackagingTests(unittest.TestCase):
                     archive.writestr(name, data)
             modules = ("winealsa.drv", "services.exe", "rpcss.exe", "plugplay.exe", "winedevice.exe",
                        "winebus.sys", "winehid.sys", "wineusb.sys", "d3d11.dll", "d3d12.dll",
-                       "d3d12core.dll", "msmpeg2vdec.dll")
+                       "d3d12core.dll", "msmpeg2vdec.dll", "msvcp140_codecvt_ids.dll")
             unix = linked.replace("x86_64-windows/", "x86_64-unix/")
             with zipfile.ZipFile(runtime, "w") as archive:
                 for name in modules:

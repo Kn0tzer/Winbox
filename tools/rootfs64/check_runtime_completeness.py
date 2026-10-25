@@ -11,7 +11,17 @@ artifacts and the *source* payloads, offline:
      HID, backport DLLs, gstreamer plugin set).
   3. The DirectX redist sets the register calls complete are complete in
      both wine zips (d3dx9_24..43, d3dx10_33..43, d3dcompiler_33..47,
-     xaudio2_0..2_9, xinput1_1..1_4).
+     xaudio2_0..2_9, xinput1_1..1_4), and the d3dcompiler numbers the
+     register calls non-existent (24..32, 44, 45) are absent in both.
+  3b. The VC++ runtime sets are as the register states: the legacy
+     msvcp/msvcr 60..120 sets in both zips; the 140 set in both, with
+     vcruntime140_1 x86_64-only (upstream) and msvcp140_codecvt_ids in
+     both (x86_64 side via the winehq10 backport).
+  3c. wine64.zip's wineserver dispatch is the ELF: usr/lib/wine/wineserver
+     and usr/bin/wineserver carry the symlink target text for
+     wineserver64 (no /bin/sh script; the guest rootfs has no /bin/sh).
+  3d. docs/known-gaps/runtime-artifact-manifest.md matches the shipped
+     zips byte-for-byte (regenerate: gen_runtime_manifest.py).
   4. glibc-rootfs32.zip carries the DejaVu Bold/Mono faces from fonts32/
      with the README-pinned hashes.
   5. stage-dependencies.py pins the CJK font (deb + ttc sha256) and, when
@@ -57,6 +67,7 @@ def sha(data):
 WINEHQ_PINS = {
     'd3d12core.dll': 'a00b2ea3454d2569dcebf52bb99d79f18c8153071990601953773e0d9537cd1e',
     'msmpeg2vdec.dll': 'bbf91fc84f2bc66c70802e41e5ff1ee2e18335ef9cf07769957b0fb37484d046',
+    'msvcp140_codecvt_ids.dll': '2215e3312bcc817c628669ec69baff3f050ec0bef91c099e0d12fd66f2c3d9b1',
 }
 FONTS32_PINS = {
     'DejaVuSans-Bold.ttf': '5c1247acef7f2b8522a31742c76d6adcb5569bacc0be7ceaa4dc39dd252ce895',
@@ -70,7 +81,7 @@ RUNTIME = ROOT / 'web/runtime'
 def wine64_members():
     with zipfile.ZipFile(RUNTIME / 'wine64.zip') as z:
         return {n: z.read(n) for n in z.namelist()
-                if n.endswith(('d3d12core.dll', 'msmpeg2vdec.dll'))}
+                if n.endswith(('d3d12core.dll', 'msmpeg2vdec.dll', 'msvcp140_codecvt_ids.dll'))}
 
 
 def t_winehq_source_and_zip():
@@ -103,6 +114,51 @@ def t_directx_sets():
         for pattern, values in ranges:
             for v in values:
                 assert pattern % v in names, f'{archive}: missing {pattern % v}'
+        for v in list(range(24, 33)) + [44, 45]:
+            assert 'd3dcompiler_%d.dll' % v not in names, \
+                f'{archive}: d3dcompiler_{v}.dll appeared; register census says it must not exist'
+
+
+def t_vcpp_sets():
+    legacy = ['msvcp%d.dll' % n for n in (60, 70, 71, 80, 90, 100, 110, 120)] + \
+             ['msvcr%d.dll' % n for n in (70, 71, 80, 90, 100, 110, 120)] + \
+             ['msvcrt.dll', 'msvcrt20.dll', 'msvcrt40.dll']
+    set140 = ['msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll',
+              'msvcp140_atomic_wait.dll', 'msvcp140_codecvt_ids.dll',
+              'vcruntime140.dll', 'ucrtbase.dll', 'concrt140.dll']
+    for archive in ('wine64.zip', 'wine32.zip'):
+        with zipfile.ZipFile(RUNTIME / archive) as z:
+            names = {n.rsplit('/', 1)[-1] for n in z.namelist()}
+        for name in legacy + set140:
+            assert name in names, f'{archive}: missing VC++ runtime {name}'
+    with zipfile.ZipFile(RUNTIME / 'wine32.zip') as z:
+        names32 = {n.rsplit('/', 1)[-1] for n in z.namelist()}
+    with zipfile.ZipFile(RUNTIME / 'wine64.zip') as z:
+        names64 = {n.rsplit('/', 1)[-1] for n in z.namelist()}
+    assert 'vcruntime140_1.dll' in names64 and 'vcruntime140_1.dll' not in names32, \
+        'vcruntime140_1 asymmetry changed (x64/ARM64-only upstream)'
+
+
+def t_wineserver_dispatch():
+    with zipfile.ZipFile(RUNTIME / 'wine64.zip') as z:
+        lib = z.read('usr/lib/wine/wineserver')
+        usr_bin = z.read('usr/bin/wineserver')
+        server64 = z.read('usr/lib/wine/wineserver64')
+    target = b'/usr/lib/wine/wineserver64'
+    assert lib == target, f'usr/lib/wine/wineserver is not the ELF symlink: {lib[:40]!r}'
+    assert usr_bin == target, f'usr/bin/wineserver target drifted: {usr_bin[:40]!r}'
+    assert server64.startswith(b'\x7fELF'), 'wineserver64 is not an ELF binary'
+
+
+def t_manifest():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'gen_manifest', ROOT / 'tools/rootfs64/gen_runtime_manifest.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    current = (ROOT / 'docs/known-gaps/runtime-artifact-manifest.md').read_text()
+    assert current == module.build_manifest(), \
+        'runtime-artifact-manifest.md drifted from shipped zips; regenerate it'
 
 
 def t_fonts32():
@@ -153,6 +209,9 @@ if __name__ == '__main__':
     check('winehq backports (source + shipped zip)', t_winehq_source_and_zip)
     check('validate_service_runtime (shipped pairs)', t_service_runtime)
     check('DirectX redist sets complete (both zips)', t_directx_sets)
+    check('VC++ runtime sets (both zips, asymmetries pinned)', t_vcpp_sets)
+    check('wineserver dispatch is ELF (no /bin/sh script)', t_wineserver_dispatch)
+    check('manifest matches shipped zips', t_manifest)
     check('fonts32 faces (source + shipped zip)', t_fonts32)
     check('CJK font pin', t_cjk_pin)
     check('prefix64 built artifact sections', t_prefix64_built)

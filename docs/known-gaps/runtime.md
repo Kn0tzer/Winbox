@@ -11,6 +11,13 @@ lane's remaining item is externally constrained).
 Method: every checklist item was verified against the *actual shipped
 artifacts* (zip member lists and registry hives extracted from
 `web/runtime/`), not against assumptions. Each row names the evidence path.
+Presence/absence claims about zip members are additionally pinned by
+`docs/known-gaps/runtime-artifact-manifest.md` — a checked-in census
+generated from the shipped zips by `tools/rootfs64/gen_runtime_manifest.py`
+and freshness-checked by `check_runtime_completeness.py` (audit wave 2
+found the VC++ and d3dcompiler rows rested on uncited census claims;
+the manifest is the durable fix, same standard as the staged-binary
+proofs that repaired NAG-20/32/36 in wave 1).
 Dispositions are IMPLEMENTED (with test), REJECTED-LOUDLY (with test),
 NOT-A-GAP (with evidence reference), or OPEN (with file:line reason).
 
@@ -29,6 +36,7 @@ Legend for evidence paths: `w64` = `web/runtime/wine64.zip`,
 | --- | --- | --- | --- |
 | `tools/rootfs64/build-prefix64.sh:101,119,140` (`NOTE ... missing — ENOENT`) | GL demos / games / app packages silently absent from the prefix when the staging source file is missing; app-bar buttons then ENOENT at click time. | would break a launcher demo, harmless for real games | IMPLEMENTED (guard): the zip member checks in `web/tests/suite/unit/runtime-completeness.test.mjs` and `prepare_prefixes.validate_prefix_zip` fail when any staged payload regresses, converting these warn-and-skip paths into test failures. |
 | `tools/build-prefix32.sh:88,99` (`NOTE ... missing`) | 32-bit prefix built without `.NETFramework` keys or without `deskpin32.exe`; managed games then miss framework keys. | would break a real (managed) game | IMPLEMENTED (guard): `prepare_prefixes.validate_prefix_zip` now requires the `.NETFramework`/`CurrentVersion` registry state (see row "Windows version emulation default"); `web/tests/suite/unit/runtime-completeness.test.mjs` pins the hive content. |
+| `tools/rootfs64/build-wine64-zip.sh` (was: `copy /usr/lib/wine/wineserver`) | Debian's `/usr/lib/wine/wineserver` is a `#!/bin/sh` dispatch script, and the guest rootfs64 has no `/bin/sh` (no `bin/sh` member in `glibc-rootfs64.zip`), so a guest exec of the compiled-in server path could not run. Latent in the shipped configuration: the launcher sets `WINESERVER=/usr/lib/wine/wineserver64` for every spawn (`web/runtime/wine64-launcher.js:96,181,248,275`) and execs the ELF directly, which is why prefixes boot. Found by the tests lane (`packaging-prefix.test.mjs` ratchet). | would break any guest flow that execs `/usr/lib/wine/wineserver` without the launcher env | IMPLEMENTED: the build no longer copies the script; it stages `usr/lib/wine/wineserver` as a symlink to the ELF `wineserver64` (mirroring `usr/bin/wineserver` in the same script and the 32-bit bridge in `tools/build-prefix32.sh`); the shipped `wine64.zip` member was replaced with the symlink form; `check_runtime_completeness.py` (`wineserver dispatch is ELF`) pins both entries plus the ELF magic. One correction to the tests-lane row: in the shipped archive `usr/bin/wineserver` already carried the target text `/usr/lib/wine/wineserver64` (correct); the script member at `usr/lib/wine/wineserver` was the sole broken entry. |
 | `tools/rootfs64/build-wine64-zip.sh:210,242,264` (`WARNING ... not staged`) | wine64.zip built without the GL shim / Vulkan shim / ALSA bridge when the prebuilt artifact is absent; apps then lose 3D, Vulkan, or audio. | would break a real game | IMPLEMENTED (guard): `prepare_prefixes.validate_service_runtime` (alsa libs, d3d11/d3d12, winebus/wineusb .so) plus the new `runtime-completeness.test.mjs` zip-member assertions cover each payload; `tools/browser/bootstrap.py --check` pins the zip hashes. |
 | `tools/rootfs64/prepare_prefixes.py:66,78,113,172,263,266` (`continue` loops) | Each `continue` skips an *absent optional input* while packaging (e.g. a missing hive in `strip_browser_menu_runservices` is skipped, not an error); no valid guest request is dropped silently. | harmless | NOT-A-GAP: inputs are prefix-archive internals (hive path/`PREFIX` is fixed), and the same functions' contract is verified end-to-end by `tools/rootfs64/test_prepare_prefixes.py` and `prepare_prefixes.py check`. |
 
@@ -46,8 +54,9 @@ disposition. "x86+x64" means both `w32` and `w64` unless noted.
 
 | DLL set (MSVC version) | Present? | Evidence | Severity | Disposition |
 | --- | --- | --- | --- | --- |
-| msvcp/vcruntime 60/70/80/90/100/110/120, msvcrt20/40, msvcrt.dll | YES both | `opt/wine-stable/lib/wine/i386-windows/msvcp60.dll…msvcp120.dll`, `…/vcruntime` set, `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/msvcp60.dll…msvcp120.dll` | – | NOT-A-GAP; guard: `runtime-completeness.test.mjs` asserts members |
-| msvcp140/vcruntime140 + msvcp140_1/_2/_atomic_wait/_codecvt_ids, ucrtbase, concrt140 | YES x86_64 in `w64`; x86: all EXCEPT `vcruntime140_1.dll` | `w64`: `x86_64-windows/{msvcp140,msvcp140_1,msvcp140_2,msvcp140_atomic_wait,msvcp140_codecvt_ids,vcruntime140,ucrtbase,concrt140}.dll`; `w32`: i386 set minus `vcruntime140_1.dll` | – | Present set matches Wine upstream. `vcruntime140_1` is x64/ARM64-only upstream (`dlls/vcruntime140_1/{Makefile.in,vcruntime140_1.spec}` — `except_x86_64.c`/`__CxxFrameHandler4`), so its absence in i386 is NOT-A-GAP, not a packaging omission. |
+| msvcp/vcruntime 60/70/80/90/100/110/120, msvcrt20/40, msvcrt.dll | YES both | manifest `runtime-artifact-manifest.md` §VC++ runtime census: every set member present at `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/<name>` in `w64` and `opt/wine-stable/lib/wine/i386-windows/<name>` in `w32` (zip census 2026-10-25, wave-2 evidence pass) | – | NOT-A-GAP; guard: `check_runtime_completeness.py` (`VC++ runtime sets`) asserts the members (wave-1 citation of the guard was aspirational — the checker did not assert VC++ sets until this pass). |
+| msvcp140/vcruntime140 + msvcp140_1/_2/_atomic_wait/_codecvt_ids, ucrtbase, concrt140 | YES both zips for the full set (after the codecvt backport row below); the one remaining asymmetry is `vcruntime140_1.dll`: x86_64 only | manifest §VC++ runtime census + per-name lines: `vcruntime140_1.dll` PRESENT in `w64` at `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/vcruntime140_1.dll`, ABSENT in `w32`; all other set members present in both (paths as in the legacy row) | – | `vcruntime140_1` is x64/ARM64-only upstream (`dlls/vcruntime140_1/{Makefile.in,vcruntime140_1.spec}` — `except_x86_64.c`/`__CxxFrameHandler4`), so its absence in i386 is NOT-A-GAP, not a packaging omission. Wave-2 correction: this row's original brace list also claimed `msvcp140_codecvt_ids.dll` for `w64`; the shipped zip did not contain it (Debian wine 8.0 amd64 omits the module; WineHQ 10.0 i386 ships it). That half of the claim was FALSE and is dispositioned in the next row. Guard: `check_runtime_completeness.py` (`VC++ runtime sets`) pins the full set and the asymmetry. |
+| msvcp140_codecvt_ids.dll (x86_64) | Was NO in `w64` (present in `w32`) | zip census 2026-10-25 (wave-2 evidence pass): absent from every member of shipped `wine64.zip`; present in `w32` at `opt/wine-stable/lib/wine/i386-windows/msvcp140_codecvt_ids.dll` | would break 64-bit MSVC 2015-2022 apps importing the codecvt facet DLL | IMPLEMENTED: backported from the same pinned WineHQ wine-stable 10.0 amd64 deb as d3d12core/msmpeg2vdec (`tools/rootfs64/winehq10-x86_64/msvcp140_codecvt_ids.dll`, 66024 bytes, sha256 `2215e331…`, imports only `kernel32.dll`); staged by `build-wine64-zip.sh` + `stage-wine64-payloads.sh`, required by `prepare_prefixes.validate_service_runtime`, pinned by `check_runtime_completeness.py` (source hash + shipped-zip presence + VC++ set check); present in the shipped `wine64.zip` (manifest §VC++ census). |
 | MFC (mfc140, mfc140u, …) | NO (either arch) | not in `w32`/`w64` | would break real MFC-based installers/old games | NOT-IMPLEMENTED — documented external constraint (this register's one non-trichotomy disposition, disclosed in the lane status below): (1) Wine upstream does not implement MFC at all (no `mfc*` in `dlls/`; Wine bug 44856 tracks the resulting mfc140 failures). (2) Extracting Microsoft's MFC DLLs from the VC++ redistributable into our own runtime pack is not license-clean: Microsoft's redistribution terms allow the MFC merge modules/DLLs to be distributed only *as part of the installation package of your own program* and state that distribution of the redistributable package and its individual binaries "is limited to licensed Visual Studio users" (https://learn.microsoft.com/en-us/visualstudio/releases/2026/redistribution); Wine's own HOWTO-winelib calls MFC "distributed under a very restrictive license" (https://www.winehq.org/pipermail/wine-patches/2002-November/004108.html). Winbox is not distributing its own VS-built program. (3) The license-clean route — running Microsoft's official `vc_redist` installer inside the guest, as winetricks `vcrun*` does — requires an installer-execution step the pre-booted browser prefix pipeline does not have; that is a launcher feature, not a staging step. Guest-visible failure is loud, never silent: Wine's loader reports `err:module:import_dll Library MFC140.DLL (which is needed by ...) not found` and process init fails with status c0000135, exactly as on upstream Wine without vcrun. Revisit if a guest-side installer step lands or Microsoft changes the redist terms. |
 
 ### .NET Framework and Mono
@@ -72,7 +81,7 @@ disposition. "x86+x64" means both `w32` and `w64` unless noted.
 | d3dx9_24..43 | YES both | `w32`/`w64`: `d3dx9_24.dll`…`d3dx9_43.dll` complete (20 of 20) | – | NOT-A-GAP; guard: `runtime-completeness.test.mjs` |
 | d3dx10_33..43, d3dx10 (D3DX10) | YES both | `d3dx10_33.dll`…`d3dx10_43.dll` complete; `d3dx10.dll` does not exist upstream (game tools always request `d3dx10_NN`) | – | NOT-A-GAP |
 | d3dx11_42, d3dx11_43 | YES both; d3dx11_24..41 do not exist upstream | `dlls/` upstream provides only d3dx11 42/43 | – | NOT-A-GAP (upstream parity) |
-| d3dcompiler_33..43, _46, _47 | YES both; 24..32 and 44..45 do not exist in either pinned build | `d3dcompiler_33.dll`…`d3dcompiler_43.dll`, `d3dcompiler_46.dll`, `d3dcompiler_47.dll` in both zips (exact member census 2026-10-25; Debian wine 8.0 amd64 and WineHQ 10.0 i386 agree) | – | NOT-A-GAP (upstream parity); guard: `runtime-completeness.test.mjs` pins the exact set |
+| d3dcompiler_33..43, _46, _47 | YES both; 24..32 and 44..45 do not exist in either pinned build | manifest §DirectX numbered families + per-name lines (wave-2 verification against the actual zips): `d3dcompiler_33.dll`…`d3dcompiler_43.dll`, `d3dcompiler_46.dll`, `d3dcompiler_47.dll` present in both zips at the arch windows paths; `d3dcompiler_24.dll`, `_32.dll`, `_44.dll`, `_45.dll` ABSENT in both (full 20..50 scan in the evidence pass found exactly {33..43, 46, 47}); the WineHQ 10.0 amd64 deb's `x86_64-windows` listing independently shows the same set | – | NOT-A-GAP (upstream parity); guard: `check_runtime_completeness.py` (`DirectX redist sets`) pins the exact set including the absences |
 | xinput1_1..1_4, xinput9_1_0, xinputuap | YES both | `xinput1_1.dll`…`xinput1_4.dll`, `xinput9_1_0.dll`, `xinputuap.dll`, `winexinput.sys` | – | NOT-A-GAP |
 | xaudio2_0..2_9 | YES both | `xaudio2_0.dll`…`xaudio2_9.dll` | – | NOT-A-GAP; FAudio is statically linked into Wine's xaudio/wined3d upstream, no separate faudio.dll ships |
 | xactengine2_0/2_4/2_7/2_9, 3_0..3_7 | YES both; 2_1..2_3/2_5/2_6/2_8 do not exist upstream | `xactengine2_0.dll`, `xactengine2_4.dll`, …, `xactengine3_7.dll` | – | NOT-A-GAP (upstream parity) |
@@ -145,6 +154,12 @@ disposition. "x86+x64" means both `w32` and `w64` unless noted.
 | Service/controller/device keys (RpcSs, PlugPlay, winebus, wineusb, Gamepad, RawGameController, HID) | YES | required by `prepare_prefixes.validate_prefix_zip` for both architectures (guarded since commit 1b8b6b6f) | – | NOT-A-GAP |
 | winemenubuilder autostart | ABSENT (deliberate) | removed by `prepare_prefixes.py sanitize` (`docs/reports/wine-boot-cost-20261023.md`) | – | NOT-A-GAP (documented, tested) |
 
+### Lazy archive fetch stall (routed from the GL lane, 2026-10-25)
+
+| Location | What valid guest behaviour hits it | Severity | Disposition |
+| --- | --- | --- | --- |
+| `source/io/fszipurl.cpp:59-104` (`bw64StartFetch` EM_JS + `bw64SyncFetchRange`) | Lazy `bw64url:` block-range fetch has **no timeout anywhere**: the EM_JS `fetch()` is issued with no `AbortController`, `r.arrayBuffer()` on a stalled body never settles, `bw64FetchDone` is then never called, and the guest pthread blocked in `emscripten_proxy_sync_with_ctx` never wakes; threads waiting on the same block wait on `fetchCv` (`fszipurl.cpp:196-199`) with no deadline either. Settled failures are handled loudly (`fetchRaw` logs `range fetch FAILED` and waiters retry as fetchers) — only a *never-settling* fetch hangs, and nothing logs it: the 16 MB-cadence progress line (`:171-175`) only fires after successful fetches. Evidence (GL lane, gl.md Celeste row): Wine launched Celeste, fetched 113 MB of its 2.69 GB archive, then emitted no new logs for 535 s and timed out in `not-mapped`; a separate live-era run mapped and rendered (0.75 nonblank input screenshots), so the failure is intermittent — consistent with a stalled fetch, not a deterministic Celeste incompatibility. The upfront chunk loop in `web/games.mjs` shares the no-timeout shape (secondary; not the Celeste demo path). | would break a real game (any lazily loaded title can hang silently at startup) | OPEN — fix: per-fetch timeout + abort in `bw64StartFetch` (AbortController wired to a deadline), deadline + retry in `bw64SyncFetchRange`/`fetchRaw`, and a stall log naming url+offset when a fetch exceeds the deadline. Verification is the solo Celeste probe at the integ gate; no browser probe was run for this row (coordinator routing). Registered by the runtime evidence lane; the fix itself belongs with the fszipurl owner at the gate. |
+
 ### Size budget (runtime-assets.json)
 
 `tools/browser/runtime-assets.json` pins per-file `bytes` + `sha256` for the
@@ -167,9 +182,59 @@ the 5 MB CJK TTC (lazy-loaded, not boot cost). The shipped zips' new
 hashes require a `runtime-assets.json` re-pin by the release step
 (`bootstrap.py --check` will flag them loudly until then — by design).
 
+## Wave-2 evidence sweep (2026-10-25, runtime evidence lane)
+
+Audit wave 2 sampled the register's NOT-A-GAP rows and found the VC++
+(NAG-2) and d3dcompiler (NAG-10) rows unproven by citation: their census
+claims rested on the lane's word with no in-tree artifact to check
+against. This pass generated `runtime-artifact-manifest.md` from the
+actual shipped zips and swept **every** NOT-A-GAP row for the same
+defect class:
+
+- **Verified TRUE against the zips + manifest** (evidence now checkable
+  in-tree): VC++ legacy set; d3dx9_24..43; d3dx10_33..43 (+ `d3dx10.dll`
+  absent); d3dx11_42/43 only; xinput set; xaudio2_0..2_9; xactengine
+  2_0/2_4/2_7/2_9 + 3_0..3_7 exactly; x3daudio1_0..1_7; dinput/dplay/
+  ddraw/dsound set; d3d8/9/10core/11/12/dxgi; MF set (mfplat,
+  mfreadwrite, mf, quartz, wmvcore, evr, amstream); winealsa.drv;
+  vulkan-1/opengl32; winhttp/wininet/ws2_32/dnsapi; crypt32/bcrypt/
+  secur32 (dll + unix .so); Tahoma faces; mono + gecko + OpenAL members
+  in the retained support pack; prefix32 DXVK root DLLs; steam_api/
+  steamclient absences; MFC absences (now manifest-pinned); FAudio
+  absence (no `faudio.dll` in any shipped zip).
+- **Proved FALSE in one half**: the VC++ 140 row claimed
+  `msvcp140_codecvt_ids.dll` for x86_64; the shipped wine64.zip did not
+  contain it. Fixed as a third winehq10 backport (row above) — the
+  register's NOT-A-GAP verdict on `vcruntime140_1` itself was verified
+  TRUE (present x86_64, absent i386).
+- **Flagged, not re-dispositioned**: the CJK row's "support zip contains
+  all three members" verification cannot be re-checked from retained
+  artifacts — the support pack referenced by
+  `dist/runtime/dependencies.json` on this box (`support-b68aea…`,
+  205 MB) predates CJK staging and contains no `wqy` members (manifest
+  §Support-pack). The staging implementation and its sha256 pins are
+  in-tree and statically checked (`check_runtime_completeness.py`,
+  CJK font pin), so the row stays IMPLEMENTED, but the retained-artifact
+  proof must be re-run when the release step rebuilds/re-pins the
+  support pack (the same disclosed re-pin state noted in the size
+  section). No other row depends on the support pack's CJK members.
+- Rows whose proof is code/document-based rather than zip-presence
+  (registry defaults, `WINEDLLOVERRIDES`, deliberate audio/DPI choices,
+  the libgl64 audit) cite in-tree sources and were out of this sweep's
+  defect class; the staged-binary proofs from wave 1 (gstreamer-only
+  decoder, DirectInput keys, mouse warp) already meet the standard.
+
 ## Lane status (2026-10-25, runtime lane close-out)
 
-Register: **OPEN: 0.** One row (MFC) carries the disclosed
+Register: **OPEN: 1** after the wave-2 evidence pass (the Celeste
+lazy-fetch stall row above, routed from the GL lane and registered
+OPEN with its fix sketch; it was not in the register at the original
+close-out). The original close-out stood at OPEN: 0; this pass kept
+every prior row at its disposition, corrected one false census claim
+(msvcp140_codecvt_ids, now IMPLEMENTED via backport), fixed the
+wineserver dispatch script defect routed from the tests lane
+(IMPLEMENTED), and pinned all zip-presence claims to the generated
+artifact manifest. One row (MFC) carries the disclosed
 NOT-IMPLEMENTED documented-external-constraint disposition above; every
 other row is IMPLEMENTED (with the cited guard) or NOT-A-GAP with an
 artifact/code citation. Rows corrected during this pass after
