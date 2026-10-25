@@ -1576,17 +1576,17 @@ static U64 sys_openat64(CPU64* cpu, U64 dirfd, U64 pathAddr, U64 flags, U64 /*mo
         return (U64)-2;
     }
     KFileDescriptorPtr result;
-    U32 rc = process->openFile(process->currentDirectory, BString::copy(path),
+    U32 rc = process->openFile(process->fsContext->currentDirectory, BString::copy(path),
                                (U32)flags, result);
     if ((S32)rc < 0) {
         if (getenv("BW64_DLLTRACE") && (strstr(path, ".dll") || strstr(path, ".exe") ||
                                         strstr(path, "x86_64-windows") || strstr(path, "kernel32"))) {
             klog_fmt("DLLTRACE pid=%d FAIL open('%s') rc=%d cwd='%s'",
-                     (int)process->id, path, (int)(S32)rc, process->currentDirectory.c_str());
+                     (int)process->id, path, (int)(S32)rc, process->fsContext->currentDirectory.c_str());
         } else if (getenv("BW64_SCDUMP")) {
-            BString full = Fs::getFullPath(process->currentDirectory, BString::copy(path));
+            BString full = Fs::getFullPath(process->fsContext->currentDirectory, BString::copy(path));
             klog_fmt("sys_openat64: open('%s') -> %d  [cwd='%s' full='%s' flags=0x%llx]",
-                     path, (int)(S32)rc, process->currentDirectory.c_str(), full.c_str(),
+                     path, (int)(S32)rc, process->fsContext->currentDirectory.c_str(), full.c_str(),
                      (unsigned long long)flags);
         } else if (strstr(path, ".exe")) {
             // Program-spawn failures stay visible by default (rare, and probes
@@ -1924,7 +1924,7 @@ static U64 sys_statx64(CPU64* cpu, U64 dirfd, U64 pathAddr, U64 flags, U64 mask,
     }
     if (emptyPath) {
         if ((S32)dirfd == -100) {
-            node = Fs::getNodeFromLocalPath(process->currentDirectory, process->currentDirectory, true);
+            node = Fs::getNodeFromLocalPath(process->fsContext->currentDirectory, process->fsContext->currentDirectory, true);
         } else {
             KFileDescriptorPtr descriptor = process->getFileDescriptor((FD)dirfd);
             if (!descriptor) return (U64)-K_EBADF;
@@ -1942,7 +1942,7 @@ static U64 sys_statx64(CPU64* cpu, U64 dirfd, U64 pathAddr, U64 flags, U64 mask,
             if (!path[pathLength]) break;
         }
         if (pathLength == sizeof(path)) return (U64)-K_ENAMETOOLONG;
-        BString base = process->currentDirectory;
+        BString base = process->fsContext->currentDirectory;
         if ((S32)dirfd != -100 && path[0] != '/') {
             KFileDescriptorPtr directory = process->getFileDescriptor((FD)dirfd);
             std::shared_ptr<KFile> directoryFile = directory && directory->kobject
@@ -1994,10 +1994,10 @@ static U64 sys_stat_path64(CPU64* cpu, U64 pathAddr, U64 statbuf, bool followSym
     cpu->memory->memcpyFromGuest(path, pathAddr, sizeof(path) - 1);
     BString bpath = BString::copy(path);
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(
-        cpu->thread->process->currentDirectory, bpath, followSymlink);
+        cpu->thread->process->fsContext->currentDirectory, bpath, followSymlink);
     if (getenv("BW64_SYSTRACE")) {
         klog_fmt("sys_stat_path64: '%s' (cwd='%s') -> %s", path,
-                 cpu->thread->process->currentDirectory.c_str(),
+                 cpu->thread->process->fsContext->currentDirectory.c_str(),
                  node ? "OK" : "ENOENT");
     }
     if (!node) return (U64)-2; // -ENOENT
@@ -2408,7 +2408,7 @@ static U64 sys_readlink64(CPU64* cpu, U64 pathAddr, U64 buf, U64 sz) {
         resolved = proc->exe;
     } else {
         std::shared_ptr<FsNode> n = Fs::getNodeFromLocalPath(
-            proc->currentDirectory, BString::copy(path), false);
+            proc->fsContext->currentDirectory, BString::copy(path), false);
         if (!n || !n->isLink()) return (U64)-22; // -EINVAL on non-symlink
         resolved = n->link;
     }
@@ -4902,7 +4902,7 @@ void ksyscall64(CPU64* cpu) {
             if (!a1 || a2 == 0) { ret = (U64)-K_EFAULT; break; }
             // No-process standalone runner: default cwd to "/".
             BString cwd = (cpu->thread && cpu->thread->process)
-                              ? cpu->thread->process->currentDirectory : B("/");
+                              ? cpu->thread->process->fsContext->currentDirectory : B("/");
             if (!cwd.length()) cwd = B("/");
             U64 need = (U64)cwd.length() + 1;
             if (need > a2) { ret = (U64)-34; /* -ERANGE */ break; }
@@ -5187,7 +5187,7 @@ void ksyscall64(CPU64* cpu) {
             char path[1024] = {0};
             cpu->memory->memcpyFromGuest(path, pathArg, sizeof(path) - 1);
             std::shared_ptr<FsNode> n = Fs::getNodeFromLocalPath(
-                cpu->thread->process->currentDirectory, BString::copy(path), true);
+                cpu->thread->process->fsContext->currentDirectory, BString::copy(path), true);
             ret = n ? 0 : (U64)-2;
             break;
         }
@@ -5202,7 +5202,7 @@ void ksyscall64(CPU64* cpu) {
             U64 pathArg = (nr == X64_SYS_mkdir) ? a1 : a2;
             char path[1024] = {0};
             cpu->memory->memcpyFromGuest(path, pathArg, sizeof(path) - 1);
-            BString full = Fs::getFullPath(cpu->thread->process->currentDirectory,
+            BString full = Fs::getFullPath(cpu->thread->process->fsContext->currentDirectory,
                                            BString::copy(path));
             ret = (U64)(S64)(S32)cpu->thread->process->mkdir(full);
             if (getenv("BW64_SYSTRACE")) {
@@ -5223,14 +5223,14 @@ void ksyscall64(CPU64* cpu) {
             cpu->memory->memcpyFromGuest(target, a1, sizeof(target) - 1);
             U64 linkArg = (nr == X64_SYS_symlink) ? a2 : a3;
             cpu->memory->memcpyFromGuest(linkpath, linkArg, sizeof(linkpath) - 1);
-            BString fullLink = Fs::getFullPath(cpu->thread->process->currentDirectory,
+            BString fullLink = Fs::getFullPath(cpu->thread->process->fsContext->currentDirectory,
                                                BString::copy(linkpath));
             ret = (U64)(S64)(S32)cpu->thread->process->symlink(
                 BString::copy(target), fullLink);
             if (getenv("BW64_SCDUMP")) {
                 klog_fmt("sys_symlink64: target='%s' link='%s' (cwd='%s') -> %d",
                          target, fullLink.c_str(),
-                         cpu->thread->process->currentDirectory.c_str(), (int)(S32)ret);
+                         cpu->thread->process->fsContext->currentDirectory.c_str(), (int)(S32)ret);
             }
             break;
         }
@@ -5251,9 +5251,9 @@ void ksyscall64(CPU64* cpu) {
             char newp[1024] = {0};
             cpu->memory->memcpyFromGuest(oldp, oldArg, sizeof(oldp) - 1);
             cpu->memory->memcpyFromGuest(newp, newArg, sizeof(newp) - 1);
-            BString fullOld = Fs::getFullPath(cpu->thread->process->currentDirectory,
+            BString fullOld = Fs::getFullPath(cpu->thread->process->fsContext->currentDirectory,
                                               BString::copy(oldp));
-            BString fullNew = Fs::getFullPath(cpu->thread->process->currentDirectory,
+            BString fullNew = Fs::getFullPath(cpu->thread->process->fsContext->currentDirectory,
                                               BString::copy(newp));
             ret = (U64)(S64)(S32)cpu->thread->process->link(fullOld, fullNew);
             if (getenv("BW64_SCDUMP")) {
@@ -5599,7 +5599,7 @@ void ksyscall64(CPU64* cpu) {
             char path[1024] = {0};
             cpu->memory->memcpyFromGuest(path, pathArg, sizeof(path) - 1);
             ret = (U64)(S64)(S32)cpu->thread->process->unlinkFile(
-                BString(Fs::getFullPath(cpu->thread->process->currentDirectory,
+                BString(Fs::getFullPath(cpu->thread->process->fsContext->currentDirectory,
                                         BString::copy(path))));
             break;
         }

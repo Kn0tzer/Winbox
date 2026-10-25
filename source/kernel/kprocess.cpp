@@ -200,7 +200,12 @@ KProcess::KProcess(U32 id) : id(id), exitOrExecCond(std::make_shared<BoxedWineCo
 }
 
 void KProcess::onExec(KThread* thread) {
-    BHashTable<U32, KFileDescriptorPtr> fdsToClose = this->fds; // make a copy since we can't remove from it while iterating
+    // Exec unshares the descriptor and handler tables (Linux): the CLOEXEC
+    // pass and the handler reset below must only affect this process, not
+    // the siblings still sharing them. The fs context is NOT unshared.
+    this->fds.unshareIfShared();
+    this->sigActions.unshareIfShared();
+    BHashTable<U32, KFileDescriptorPtr> fdsToClose = this->fds.snapshotTable(); // make a copy since we can't remove from it while iterating
     for( const auto& n : fdsToClose ) {
         KFileDescriptorPtr fd = n.value;
         if (fd->descriptorFlags) {
@@ -281,12 +286,17 @@ KProcess::~KProcess() {
 }
 
 void KProcess::cleanupProcess() {
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex);
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex());
     removeTimer(&this->timer);
 
-    BHashTable<U32, KFileDescriptorPtr> fdsToClose = this->fds; // make a copy since we can't remove from it while iterating
-    for( const auto& n : fdsToClose ) {
-        clearFdHandle(n.value->handle);
+    // A CLONE_FILES-shared table outlives this process: closing its
+    // descriptors here would close them for the surviving sharers too.
+    // Linux drops a shared table only when its last user exits.
+    if (!this->fds.isShared()) {
+        BHashTable<U32, KFileDescriptorPtr> fdsToClose = this->fds.snapshotTable(); // make a copy since we can't remove from it while iterating
+        for( const auto& n : fdsToClose ) {
+            clearFdHandle(n.value->handle);
+        }
     }
     this->attachedShm.clear();
     this->privateShm.clear();
@@ -422,13 +432,19 @@ BString KProcess::getAbsoluteExePath() {
     BString path = Fs::getNodeFromLocalPath(B(""), this->exe, true)->path;
     return Fs::getParentPath(path);
 }
-void KProcess::clone(const KProcessPtr& from) {
+void KProcess::clone(const KProcessPtr& from, U32 shareFlags) {
     this->parentId = from->id;;
     this->groupId = from->groupId;
     this->userId = from->userId;
     this->effectiveUserId = from->effectiveUserId;
     this->effectiveGroupId = from->effectiveGroupId;
-    this->currentDirectory = from->currentDirectory;
+    if (shareFlags & KPROCESS_CLONE_SHARE_FS) {
+        // CLONE_FS: one fs context (cwd + umask) for both processes.
+        this->fsContext = from->fsContext;
+    } else {
+        this->fsContext->currentDirectory = from->fsContext->currentDirectory;
+        this->fsContext->umaskValue = from->fsContext->umaskValue;
+    }
     this->brkEnd = from->brkEnd;
     // mlock state (kernel round 3A): RLIMIT_MEMLOCK is inherited; the
     // locked total and MCL_FUTURE are not (the child starts unlocked).
@@ -436,34 +452,55 @@ void KProcess::clone(const KProcessPtr& from) {
     this->rlimMemlockMax = from->rlimMemlockMax;
     this->memLockedBytes = 0;
     this->memLockAllFuture = false;
-    struct ForkFd { U32 handle, accessFlags, descriptorFlags; std::shared_ptr<KObject> object; };
-    std::vector<ForkFd> snapshot;
-    {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(from->fdsMutex);
-        for (auto& n : from->fds)
-            snapshot.push_back({n.key, n.value->accessFlags, n.value->descriptorFlags, n.value->kobject});
-    }
-    // Release the parent's lock before allocating child descriptors and VFS
-    // links. Sibling threads can change the parent table during fork.
-    for (const auto& entry : snapshot) {
-        KFileDescriptorPtr fd = this->allocFileDescriptor(entry.object, entry.accessFlags, entry.descriptorFlags, entry.handle, 0);
-        this->fds.set(entry.handle, fd);
-        KObject* kobject = fd->kobject.get();
-        Fs::addDynamicLinkFile(fdNode->path + "/" + BString::valueOf(entry.handle), k_mdev(0, 0), fdNode, false, [kobject] {
-            return kobject->selfFd();
-            });
+    if (shareFlags & KPROCESS_CLONE_SHARE_FILES) {
+        // CLONE_FILES: adopt the parent's descriptor table itself, so a
+        // descriptor either process opens or closes is visible to both.
+        // The child's /proc/<pid>/fd links mirror the shared table.
+        this->fds.shareFrom(from->fds);
+        if (fdNode) {
+            BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(from->fdsMutex());
+            for (auto& n : this->fds) {
+                KObject* kobject = n.value->kobject.get();
+                Fs::addDynamicLinkFile(fdNode->path + "/" + BString::valueOf(n.key), k_mdev(0, 0), fdNode, false, [kobject] {
+                    return kobject->selfFd();
+                    });
+            }
+        }
+    } else {
+        struct ForkFd { U32 handle, accessFlags, descriptorFlags; std::shared_ptr<KObject> object; };
+        std::vector<ForkFd> snapshot;
+        {
+            BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(from->fdsMutex());
+            for (auto& n : from->fds)
+                snapshot.push_back({n.key, n.value->accessFlags, n.value->descriptorFlags, n.value->kobject});
+        }
+        // Release the parent's lock before allocating child descriptors and VFS
+        // links. Sibling threads can change the parent table during fork.
+        for (const auto& entry : snapshot) {
+            KFileDescriptorPtr fd = this->allocFileDescriptor(entry.object, entry.accessFlags, entry.descriptorFlags, entry.handle, 0);
+            this->fds.set(entry.handle, fd);
+            KObject* kobject = fd->kobject.get();
+            Fs::addDynamicLinkFile(fdNode->path + "/" + BString::valueOf(entry.handle), k_mdev(0, 0), fdNode, false, [kobject] {
+                return kobject->selfFd();
+                });
+        }
     }
     {
         BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(from->mappedFilesMutex);
         this->mappedFiles = from->mappedFiles;
     }
-    std::copy(from->sigActions, from->sigActions+MAX_SIG_ACTIONS, this->sigActions);
+    if (shareFlags & KPROCESS_CLONE_SHARE_SIGHAND) {
+        // CLONE_SIGHAND: one handler table for both processes.
+        this->sigActions.shareFrom(from->sigActions);
+    } else {
+        std::copy(from->sigActions.begin(), from->sigActions.end(), this->sigActions.begin());
+    }
     this->path = from->path;
     this->commandLine = from->commandLine;
     this->exe = from->exe;
     this->name = from->name;
     this->setupCommandlineNode();
-    this->umaskValue = from->umaskValue;
+    // umask: shared or copied with the fs context above.
 
     this->privateShm = from->privateShm;
 
@@ -624,7 +661,7 @@ static void setupThreadStack(KThread* thread, CPU* cpu, BString programName, con
 }
 
 U32 KProcess::getNextFileDescriptorHandle(int after) {
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex);
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex());
     U32 i=after;
 
     for (;i< MAX_NUMBER_OF_FILES;i++) {
@@ -637,7 +674,7 @@ U32 KProcess::getNextFileDescriptorHandle(int after) {
 }
 
 KFileDescriptorPtr KProcess::allocFileDescriptor(const std::shared_ptr<KObject>& kobject, U32 accessFlags, U32 descriptorFlags, S32 handle, U32 afterHandle) {    
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex);
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex());
 
     if (handle<0) {
         handle = this->getNextFileDescriptorHandle(afterHandle);
@@ -828,7 +865,7 @@ KThread* KProcess::startProcess(BString currentDirectory, const std::vector<BStr
             setupThreadStack(thread, thread->cpu, this->name, args, env);
         }
 
-        this->currentDirectory = currentDirectory;
+        this->fsContext->currentDirectory = currentDirectory;
 
         if (openNode) {
             openNode->close();
@@ -861,7 +898,7 @@ U32 KProcess::exit(KThread* thread, U32 code) {
 }
 
 KFileDescriptorPtr KProcess::getFileDescriptor(FD handle) {
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex);
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex());
     return this->fds[handle];
 }
 
@@ -870,7 +907,7 @@ KFileDescriptor* KProcess::getFileDescriptor_nolock(FD handle) {
 }
 
 void KProcess::clearFdHandle(FD handle) {
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex);
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex());
     this->fds.remove(handle);
     if (fdNode) {
         fdNode->removeChildByName(BString::valueOf(handle));
@@ -990,7 +1027,7 @@ U32 KProcess::alarm(U32 seconds) {
 }
 
 std::shared_ptr<FsNode> KProcess::findInPath(BString path) {
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, true);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
 
     if (!node && !path.startsWith('/')) {
         for( const auto& n : this->path ) {
@@ -1034,7 +1071,7 @@ U32 KProcess::execve(KThread* thread, BString path, std::vector<BString>& args, 
     if (!node) {
         return -K_ENOENT;
     }
-    openNode = ElfLoader::inspectNode(this->currentDirectory, node, loader, interpreter, interpreterArgs);
+    openNode = ElfLoader::inspectNode(this->fsContext->currentDirectory, node, loader, interpreter, interpreterArgs);
     if (!openNode) {
         return -K_ENOEXEC;
     }
@@ -1050,11 +1087,11 @@ U32 KProcess::execve(KThread* thread, BString path, std::vector<BString>& args, 
     } else {        
         if (path != "/proc/self/exe" && path != "/proc/" + BString::valueOf(id) + "/exe") {
             // :TODO: why does this need to be changed, seems like a bug
-            args[0] = BString(Fs::getFullPath(currentDirectory, path)); // if path is a link, we should use the link not the actual path
+            args[0] = BString(Fs::getFullPath(this->fsContext->currentDirectory, path)); // if path is a link, we should use the link not the actual path
             this->exe = path;
         } else {
             // :TODO: why does this need to be changed, seems like a bug
-            args[0] = BString(Fs::getFullPath(currentDirectory, this->exe));
+            args[0] = BString(Fs::getFullPath(this->fsContext->currentDirectory, this->exe));
         }
     }
     if (loader.length()) {
@@ -1176,7 +1213,7 @@ U32 KProcess::execve(KThread* thread, BString path, std::vector<BString>& args, 
     this->vforkReleased = true;
     BOXEDWINE_CONDITION_SIGNAL_ALL(this->exitOrExecCond);
 
-    //klog("%d/%d exec %s (cwd=%s)", KThread::currentThread()->id, this->id, this->commandLine.c_str(), this->currentDirectory.c_str());
+    //klog("%d/%d exec %s (cwd=%s)", KThread::currentThread()->id, this->id, this->commandLine.c_str(), this->fsContext->currentDirectory.c_str());
 
     thread->cpu->restart();
     
@@ -1288,7 +1325,7 @@ U32 KProcess::dup(U32 fildes) {
 }
 
 U32 KProcess::rmdir(BString path) {
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, false);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, false);
 
     if (!node)
         return -K_ENOENT;
@@ -1314,11 +1351,11 @@ static BString rewriteServerDirPath(const BString& path, bool is64Bit) {
 
 U32 KProcess::mkdir(BString path) {
     path = rewriteServerDirPath(path, this->is64Bit);
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, false);   
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, false);   
     if (node) {
         return -K_EEXIST;
     }
-    BString fullpath = Fs::getFullPath(this->currentDirectory, path);
+    BString fullpath = Fs::getFullPath(this->fsContext->currentDirectory, path);
     BString parentPath = Fs::getParentPath(fullpath);
     node = Fs::getNodeFromLocalPath(B(""), parentPath, false); 
     if (!node) {
@@ -1328,14 +1365,14 @@ U32 KProcess::mkdir(BString path) {
 }
 
 U32 KProcess::rename(BString from, BString to) {
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, from, false);    
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, from, false);    
     if (!node)
         return -K_ENOENT;
-    BString fullPath = Fs::getFullPath(this->currentDirectory, to);
+    BString fullPath = Fs::getFullPath(this->fsContext->currentDirectory, to);
     U32 result = node->rename(fullPath);
     if (result == 0) {
-        std::shared_ptr<FsNode> fromParent = Fs::getNodeFromLocalPath(this->currentDirectory, Fs::getParentPath(from), false);
-        std::shared_ptr<FsNode> toParent = Fs::getNodeFromLocalPath(this->currentDirectory, Fs::getParentPath(to), false);
+        std::shared_ptr<FsNode> fromParent = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, Fs::getParentPath(from), false);
+        std::shared_ptr<FsNode> toParent = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, Fs::getParentPath(to), false);
         KInotify::notifyRenamed(fromParent.get(), Fs::getFileNameFromPath(from), toParent.get(), Fs::getFileNameFromPath(to), node.get());
     }
     return result;
@@ -1388,7 +1425,7 @@ static S32 internalAccess(std::shared_ptr<FsNode> node, U32 flags) {
 
 U32 KProcess::access(BString path, U32 mode) {
     path = rewriteServerDirPath(path, this->is64Bit);
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, true);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
     return internalAccess(node, mode); 
 }
 
@@ -1412,7 +1449,7 @@ U32 KProcess::lseek(FD fildes, S32 offset, U32 whence) {
 }
 
 U32 KProcess::chmod(BString path, U32 mode) {
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, true);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
     if (!node)
         return -K_ENOENT;
     return 0;
@@ -1420,7 +1457,7 @@ U32 KProcess::chmod(BString path, U32 mode) {
 
 U32 KProcess::chdir(BString path) {
     path = rewriteServerDirPath(path, this->is64Bit);
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, true);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
     if (!node)
         return -K_ENOENT;
     if (!node->isDirectory())
@@ -1428,16 +1465,16 @@ U32 KProcess::chdir(BString path) {
     // Use the resolved node path, not the unresolved input path, so that
     // symlinks (e.g. dosdevices/z:) don't leak into the cwd and corrupt
     // Wine's Unix->NT path conversion.
-    this->currentDirectory = node->path;
-    if (this->currentDirectory.endsWith('/')) {
-        this->currentDirectory = this->currentDirectory.substr(0, this->currentDirectory.length()-1);
+    this->fsContext->currentDirectory = node->path;
+    if (this->fsContext->currentDirectory.endsWith('/')) {
+        this->fsContext->currentDirectory = this->fsContext->currentDirectory.substr(0, this->fsContext->currentDirectory.length()-1);
     }
     return 0;
 }
 
 U32 KProcess::unlinkFile(BString path) {
     path = rewriteServerDirPath(path, this->is64Bit);
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, false);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, false);
     if (!node) {
         return -K_ENOENT;
     }
@@ -1449,8 +1486,8 @@ U32 KProcess::unlinkFile(BString path) {
 }
 
 U32 KProcess::link(BString from, BString to) {
-    std::shared_ptr<FsNode> fromNode = Fs::getNodeFromLocalPath(this->currentDirectory, from, false);
-    std::shared_ptr<FsNode> toNode = Fs::getNodeFromLocalPath(this->currentDirectory, to, false);
+    std::shared_ptr<FsNode> fromNode = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, from, false);
+    std::shared_ptr<FsNode> toNode = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, to, false);
 
     if (!fromNode) {
         return -K_ENOENT;
@@ -1467,7 +1504,7 @@ U32 KProcess::link(BString from, BString to) {
     if (!fromOpenNode)
         return -K_EIO;
 
-    std::shared_ptr<FsNode> toParentNode = Fs::getNodeFromLocalPath(this->currentDirectory, Fs::getParentPath(to), false);
+    std::shared_ptr<FsNode> toParentNode = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, Fs::getParentPath(to), false);
     if (!toParentNode)
         return -K_ENOENT;
 
@@ -1506,7 +1543,7 @@ U32 KProcess::open(BString path, U32 flags) {
     path = rewriteServerDirPath(path, this->is64Bit);
     KFileDescriptorPtr fd;
         
-    U32 result = this->openFile(this->currentDirectory, path, flags, fd);
+    U32 result = this->openFile(this->fsContext->currentDirectory, path, flags, fd);
     if (result || !fd) {
         return result;
     }
@@ -1528,7 +1565,7 @@ U32 KProcess::read(KThread* thread, FD fildes, U32 bufferAddress, U32 bufferLen)
 }
 
 U32 KProcess::sendFile(U32 outFd, U32 inFd, U32 offset, U32 count) {
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex);
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex());
     KFileDescriptorPtr fdOut = getFileDescriptor(outFd);
     KFileDescriptorPtr fdIn = getFileDescriptor(inFd);
 
@@ -1624,8 +1661,8 @@ U32 KProcess::ioctl(KThread* thread, FD fildes, U32 request) {
 }
 
 U32 KProcess::umask(U32 umask) {	
-    U32 old = this->umaskValue;
-    this->umaskValue = umask;
+    U32 old = this->fsContext->umaskValue;
+    this->fsContext->umaskValue = umask;
     return old;
 }
 
@@ -1733,7 +1770,7 @@ U32 KProcess::symlinkat(BString target, FD dirfd, BString linkpath) {
 }
 
 U32 KProcess::symlink(BString target, BString linkpath) {
-    return symlinkInDirectory(this->currentDirectory, target, linkpath);
+    return symlinkInDirectory(this->fsContext->currentDirectory, target, linkpath);
 }
 
 U32 KProcess::readlinkInDirectory(BString currentDirectory, BString path, U32 buffer, U32 bufSize) {
@@ -1757,7 +1794,7 @@ U32 KProcess::readlinkat(FD dirfd, BString path, U32 buf, U32 bufsiz) {
 }
 
 U32 KProcess::readlink(BString path, U32 buffer, U32 bufSize) {
-    return readlinkInDirectory(this->currentDirectory, path, buffer, bufSize);
+    return readlinkInDirectory(this->fsContext->currentDirectory, path, buffer, bufSize);
 }
 
 U32 KProcess::ftruncate64(FD fildes, U64 length) {
@@ -1794,7 +1831,7 @@ U32 KProcess::ftruncate64(FD fildes, U64 length) {
 #define FS_FREE_SIZE 96636764160l
 
 U32 KProcess::statfs(BString path, U32 address) {
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, true);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
     if (!node) {
         return -K_ENOENT;
     }
@@ -1813,7 +1850,7 @@ U32 KProcess::statfs(BString path, U32 address) {
 }
 
 U32 KProcess::statfs64(BString path, U32 address) {
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, true);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
     if (!node) {
         return -K_ENOENT;
     }
@@ -2548,9 +2585,9 @@ U32 KProcess::fchdir(FD fildes) {
     }
     // Use the resolved node path, not the unresolved openedPath, so that
     // symlinks don't leak into the cwd (see chdir fix above).
-    this->currentDirectory = p->openFile->node->path;
-    if (this->currentDirectory.endsWith("/")) {
-        this->currentDirectory = this->currentDirectory.substr(0, this->currentDirectory.length()-1);
+    this->fsContext->currentDirectory = p->openFile->node->path;
+    if (this->fsContext->currentDirectory.endsWith("/")) {
+        this->fsContext->currentDirectory = this->fsContext->currentDirectory.substr(0, this->fsContext->currentDirectory.length()-1);
     }
     return 0;
 }
@@ -3089,20 +3126,20 @@ U32 KProcess::getcwd(U32 buffer, U32 size) {
     if (!this->memory->canWrite(buffer, size)) {
         return -K_EFAULT;
     }
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(B(""), this->currentDirectory, true);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(B(""), this->fsContext->currentDirectory, true);
     if (!node || !node->isDirectory()) {
         return -K_ENOENT;
     }
-    if ((U32)this->currentDirectory.length()+1>size)
+    if ((U32)this->fsContext->currentDirectory.length()+1>size)
         return -K_ERANGE;
-    memory->strcpy(buffer, this->currentDirectory.c_str());
-    return (U32)this->currentDirectory.length()+1;
+    memory->strcpy(buffer, this->fsContext->currentDirectory.c_str());
+    return (U32)this->fsContext->currentDirectory.length()+1;
 }
 
 U32 KProcess::stat64(BString path, U32 buffer) {
     path = rewriteServerDirPath(path, this->is64Bit);
     bool isLink = false;
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, true, &isLink);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true, &isLink);
     if (!node) {
         return -K_ENOENT;
     }
@@ -3113,7 +3150,7 @@ U32 KProcess::stat64(BString path, U32 buffer) {
 
 U32 KProcess::lstat64(BString path, U32 buffer) {
     path = rewriteServerDirPath(path, this->is64Bit);
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, false);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, false);
     if (!node) {
         return -K_ENOENT;
     }
@@ -3353,7 +3390,7 @@ U32 KProcess::epollwait(KThread* thread, FD epfd, U32 events, U32 maxevents, U32
 }
 
 U32 KProcess::utimes(BString path, U32 times) {
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, true);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
 
     if (!node) {
         return -K_ENOENT;
@@ -3378,7 +3415,7 @@ U32 KProcess::utimes(BString path, U32 times) {
 U32 KProcess::getCurrentDirectoryFromDirFD(FD dirfd, BString& currentDirectory) {
     U32 result = 0;
     if (dirfd==-100) { // AT_FDCWD
-        currentDirectory = this->currentDirectory;
+        currentDirectory = this->fsContext->currentDirectory;
     } else {
         KFileDescriptorPtr fd = this->getFileDescriptor(dirfd);
         if (!fd) {
@@ -3769,7 +3806,7 @@ U32 KProcess::inotify_add_watch(S32 fd, BString path, U32 mask) {
         return -K_EBADF;
     }
     path = rewriteServerDirPath(path, this->is64Bit);
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, true);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
     if (!node) {
         return -K_ENOENT;
     }
@@ -4085,7 +4122,7 @@ void KProcess::signalFd(KThread* thread, U32 signal) {
     if (!signal) {
         return;
 	}
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex);
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex());
     for (auto& n : this->fds) {
         KFileDescriptorPtr fd = n.value;
         if (fd->kobject->type == KTYPE_SIGNAL) {

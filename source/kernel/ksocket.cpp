@@ -361,7 +361,7 @@ S32 ksocketpairFds(KThread* thread, U32 af, U32 type, U32 protocol, U32 flags, F
     std::shared_ptr<KUnixSocketObject> s1;
     std::shared_ptr<KUnixSocketObject> s2;
 
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(thread->process->fdsMutex);
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(thread->process->fdsMutex());
 
     if (af!=K_AF_UNIX) {
         return -K_EAFNOSUPPORT;

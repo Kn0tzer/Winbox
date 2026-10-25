@@ -591,11 +591,11 @@ U32 KUnixSocketObject::bind(KThread* thread, const KFileDescriptorPtr& fd, U32 a
         if (name.length() == 0) {
             return 0; // :TODO: why does XOrg need this
         }
-        std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(thread->process->currentDirectory, name, true);
+        std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(thread->process->fsContext->currentDirectory, name, true);
         if (node) {
             return -K_EADDRINUSE;
         }        
-        BString fullpath = Fs::getFullPath(thread->process->currentDirectory, name);
+        BString fullpath = Fs::getFullPath(thread->process->fsContext->currentDirectory, name);
         this->destAddress.family = family;
         strncpy(this->destAddress.data, fullpath.c_str(), sizeof(this->destAddress.data));
 		this->destAddress.data[sizeof(this->destAddress.data) - 1] = 0;
@@ -653,7 +653,7 @@ U32 KUnixSocketObject::connect(KThread* thread, const KFileDescriptorPtr& fd, U3
                 this->destAddress.family = 0;
                 return -K_ECONNREFUSED;
             }
-            std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(thread->process->currentDirectory, BString::copy(this->destAddress.data), true);
+            std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(thread->process->fsContext->currentDirectory, BString::copy(this->destAddress.data), true);
             std::shared_ptr<KObject> kobject;
             if (node) {
                 kobject = node->kobject.lock();

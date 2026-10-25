@@ -25,7 +25,7 @@
 #include <atomic>
 
 static void clearPollData(KThread* thread, KPollData* data, U32 count) {
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(thread->process->fdsMutex);
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(thread->process->fdsMutex());
     for (U32 i = 0; i < count; i++, data++) {
         KFileDescriptor* pFD = thread->process->getFileDescriptor_nolock(data->fd);
         if (pFD) {
@@ -63,7 +63,7 @@ static S32 internal_poll_impl(KThread* thread, KPollData* data, U32 count, U32 t
         
         data = firstData;
         {
-            BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(thread->process->fdsMutex);
+            BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(thread->process->fdsMutex());
             // gather locks before we check the data so that we don't miss one
             for (U32 i = 0; i < count; i++) {
                 KFileDescriptor* fd;
@@ -135,7 +135,7 @@ static S32 internal_poll_impl(KThread* thread, KPollData* data, U32 count, U32 t
         // recvUsed>0 yet isReadReady()==0 here, that's the epoll-readiness bug;
         // if every fd is genuinely empty, the writer/peer never delivered.
         if (getenv("BW64_POLLDUMP")) {
-            BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(thread->process->fdsMutex);
+            BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(thread->process->fdsMutex());
             char buf[512]; int off = 0;
             KPollData* d = firstData;
             for (U32 i = 0; i < count && off < 460; i++, d++) {

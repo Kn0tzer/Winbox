@@ -1023,7 +1023,7 @@ static U32 syscall_pwrite64(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_getcwd(CPU* cpu, U32 eipCount) {
-    SYS_LOG1(SYSCALL_PROCESS, cpu, "getcwd: buf=%X size=%d (%s)", ARG1, ARG2, cpu->thread->process->currentDirectory.c_str());
+    SYS_LOG1(SYSCALL_PROCESS, cpu, "getcwd: buf=%X size=%d (%s)", ARG1, ARG2, cpu->thread->process->fsContext->currentDirectory.c_str());
     U32 result = cpu->thread->process->getcwd(ARG1, ARG2);
     SYS_LOG(SYSCALL_PROCESS, cpu, " result=%d(0x%X)\n", result, result);
     return result;
@@ -1318,7 +1318,7 @@ static U32 syscall_getxattr(CPU* cpu, U32 eipCount) {
 
     U32 result = -K_ENOTSUP;
     if (name == "user.DOSATTRIB") {
-        std::shared_ptr<FsNode> file = Fs::getNodeFromLocalPath(cpu->thread->process->currentDirectory, path, true);
+        std::shared_ptr<FsNode> file = Fs::getNodeFromLocalPath(cpu->thread->process->fsContext->currentDirectory, path, true);
         if (!file) {
             result = -K_ENOENT;
         } else {
@@ -1342,7 +1342,7 @@ static U32 syscall_lgetxattr(CPU* cpu, U32 eipCount) {
     BString name = cpu->memory->readString(ARG2);
     U32 result = -K_ENOTSUP;
     if (name == "user.DOSATTRIB") {
-        std::shared_ptr<FsNode> file = Fs::getNodeFromLocalPath(cpu->thread->process->currentDirectory, path, false);
+        std::shared_ptr<FsNode> file = Fs::getNodeFromLocalPath(cpu->thread->process->fsContext->currentDirectory, path, false);
         if (!file) {
             result = -K_ENOENT;
         } else {

@@ -141,6 +141,14 @@ public:
     explicit KMemory64(KProcess* process);
     ~KMemory64();
 
+    // Address-space sharing references (kernel round 3C): a CLONE_VM or
+    // vfork child shares this object with its parent instead of owning a
+    // copy. The exec path deletes the object only when the last sharer
+    // releases its reference; process exit never deletes it.
+    std::atomic<U32> vmRefs{1};
+    void retainVmRef() { vmRefs.fetch_add(1); }
+    bool releaseVmRef() { return vmRefs.fetch_sub(1) == 1; }
+
     // mmap subset: anonymous + fixed only in v1. Returns the mapped guest
     // address, or (U64)-errno on failure. addr MUST be page-aligned and
     // non-zero (no address-picking in v1).

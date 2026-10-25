@@ -130,7 +130,29 @@ public:
         U64 mask = 0;
         bool installed = false;
     };
-    SigAction sigActions[65] = {};
+    // The handler table is held through a shared wrapper so a
+    // CLONE_SIGHAND process clone can share it with its parent (kernel
+    // round 3C); element syntax is unchanged for every use site.
+    class SigActionTable {
+        struct Table {
+            SigAction entries[65];
+        };
+        std::shared_ptr<Table> table = std::make_shared<Table>();
+    public:
+        SigAction& operator[](U32 signo) { return table->entries[signo]; }
+        const SigAction& operator[](U32 signo) const { return table->entries[signo]; }
+        SigAction* begin() { return table->entries; }
+        SigAction* end() { return table->entries + 65; }
+        void shareFrom(const SigActionTable& other) { table = other.table; }
+        bool isShared() const { return table.use_count() > 1; }
+        void unshareIfShared() {
+            if (!isShared()) return;
+            auto fresh = std::make_shared<Table>();
+            for (int i = 0; i < 65; i++) fresh->entries[i] = table->entries[i];
+            table = fresh;
+        }
+    };
+    SigActionTable sigActions;
 
     // Signal blocking mask, round-tripped through rt_sigprocmask(2). Bit N
     // (1..64) corresponds to signal N+1. v1 stores only — no enforcement

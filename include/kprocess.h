@@ -92,6 +92,81 @@ class FsOpenNode;
 
 #define K_MADV_DONTNEED 4
 
+
+// ---- clone(2) sharing state (kernel round 3C) ----
+// Linux CLONE_FS / CLONE_FILES / CLONE_SIGHAND make a process clone SHARE
+// the parent's fs context (cwd + umask), descriptor table and
+// signal-handler table instead of copying them: a mutation through one
+// process is visible through the other. Each piece of state lives in a
+// small wrapper around a shared_ptr so that KProcess::clone can either
+// adopt the parent's table (share) or snapshot it (copy), while every
+// existing use site keeps its current syntax. Exec follows Linux: a
+// successful execve unshares the descriptor table and the handler table
+// (private copies before CLOEXEC descriptors are closed and handlers are
+// reset) but does NOT unshare the fs context.
+
+// Bits for the shareFlags argument of KProcess::clone (clone(2) values).
+constexpr U32 KPROCESS_CLONE_SHARE_FS      = 0x200;
+constexpr U32 KPROCESS_CLONE_SHARE_FILES   = 0x400;
+constexpr U32 KPROCESS_CLONE_SHARE_SIGHAND = 0x800;
+
+struct KFsContext {
+    BString currentDirectory;
+    U32 umaskValue = 0;
+};
+
+class KFdTable {
+    struct Table {
+        BHashTable<U32, KFileDescriptorPtr> fds;
+        BOXEDWINE_MUTEX mutex;
+    };
+    std::shared_ptr<Table> table = std::make_shared<Table>();
+public:
+    KFileDescriptorPtr operator[](U32 handle) const { return table->fds[handle]; }
+    void set(U32 handle, const KFileDescriptorPtr& fd) { table->fds.set(handle, fd); }
+    void remove(U32 handle) { table->fds.remove(handle); }
+    void clear() { table->fds.clear(); }
+    bool contains(U32 handle) const { return table->fds.contains(handle); }
+    auto begin() { return table->fds.begin(); }
+    auto end() { return table->fds.end(); }
+    auto begin() const { return table->fds.begin(); }
+    auto end() const { return table->fds.end(); }
+    // Point-in-time copy of the underlying table (cleanup paths iterate
+    // the copy while mutating the live table).
+    BHashTable<U32, KFileDescriptorPtr> snapshotTable() const { return table->fds; }
+    BOXEDWINE_MUTEX& mutex() const { return table->mutex; }
+    void shareFrom(const KFdTable& other) { table = other.table; }
+    bool isShared() const { return table.use_count() > 1; }
+    void unshareIfShared() {
+        if (!isShared()) return;
+        auto fresh = std::make_shared<Table>();
+        fresh->fds = table->fds;
+        table = fresh;
+    }
+};
+
+class KSigActionTable {
+    struct Table {
+        KSigAction entries[MAX_SIG_ACTIONS];
+    };
+    std::shared_ptr<Table> table = std::make_shared<Table>();
+public:
+    KSigAction& operator[](U32 signo) { return table->entries[signo]; }
+    const KSigAction& operator[](U32 signo) const { return table->entries[signo]; }
+    KSigAction* begin() { return table->entries; }
+    KSigAction* end() { return table->entries + MAX_SIG_ACTIONS; }
+    const KSigAction* begin() const { return table->entries; }
+    const KSigAction* end() const { return table->entries + MAX_SIG_ACTIONS; }
+    void shareFrom(const KSigActionTable& other) { table = other.table; }
+    bool isShared() const { return table.use_count() > 1; }
+    void unshareIfShared() {
+        if (!isShared()) return;
+        auto fresh = std::make_shared<Table>();
+        for (int i = 0; i < MAX_SIG_ACTIONS; i++) fresh->entries[i] = table->entries[i];
+        table = fresh;
+    }
+};
+
 class KProcessTimer : public KTimerCallback {
 public:
     bool run() override;
@@ -132,7 +207,7 @@ public:
 	void deleteThread(KThread* thread);
     void killAllThreads(KThread* exceptThisOne = nullptr);
     BString getAbsoluteExePath();
-    void clone(const KProcessPtr& from);
+    void clone(const KProcessPtr& from, U32 shareFlags = 0);
     U32 getNextFileDescriptorHandle(int after);
     U32 alloc(KThread* thread, U32 len);
     void free(U32 address);
@@ -277,7 +352,6 @@ public:
     BOXEDWINE_MUTEX pendingSignalsMutex;
     U32 signaled = 0;
     U32 exitCode = 0;
-    U32 umaskValue = 0;
     bool terminated = false;
     bool vforkReleased = false;
     // mlock bookkeeping (kernel round 3A): bytes this process currently has
@@ -290,9 +364,9 @@ public:
     U64 rlimMemlockMax = ~0ULL;
     KMemory* memory = nullptr;
 
-    BString currentDirectory;
+    std::shared_ptr<KFsContext> fsContext = std::make_shared<KFsContext>();
     U32 brkEnd = 0;    
-    KSigAction sigActions[MAX_SIG_ACTIONS];
+    KSigActionTable sigActions;
     KProcessTimer timer;
     BString commandLine;
     BString exe;
@@ -386,13 +460,13 @@ public:
 #ifdef BOXEDWINE_MULTI_THREADED    
     BOXEDWINE_MUTEX normalBlockMutex;
 #endif
-    BOXEDWINE_MUTEX fdsMutex;
+    BOXEDWINE_MUTEX& fdsMutex() const { return fds.mutex(); }
 
     // x11 stuff
     BOXEDWINE_MUTEX keySymToNameMutex;
     BHashTable<U32, U32> keySymToName;
 private:
-    BHashTable<U32, KFileDescriptorPtr> fds;    
+    KFdTable fds;
 
     user_desc ldt[LDT_ENTRIES];
     BOXEDWINE_MUTEX ldtMutex;
