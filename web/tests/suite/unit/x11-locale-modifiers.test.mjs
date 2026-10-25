@@ -15,7 +15,7 @@ test('XSetLocaleModifiers returns a valid empty string and rejects unsupported m
 #include <cassert>
 #include <cstdint>
 #include <string>
-using U32=uint32_t;using BString=std::string;static U32 warnings=0;
+using U32=uint32_t;struct BString:std::string{using std::string::string;BString(const std::string&s):std::string(s){}bool isEmpty() const{return empty();}};static U32 warnings=0;
 void kwarn_fmt(const char*,...){warnings++;}
 #define ARG1 cpu->args[1]
 #define EAX cpu->eax
