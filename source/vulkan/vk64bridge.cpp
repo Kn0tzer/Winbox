@@ -456,10 +456,10 @@ static void vk64Unsupported(const char* feature, const char* detail = "") {
 // Sampler state the WebGPU tier cannot honour. Reported once per sampler, not per draw.
 //  - MIRROR_CLAMP_TO_EDGE is gated by the samplerMirrorClampToEdge feature (FALSE here),
 //    so a guest that uses it anyway is violating the spec: creation is rejected.
-//  - CLAMP_TO_BORDER and a nonzero mipLodBias are CORE Vulkan with no feature bit (D3D9/D3D11
-//    shadow-map PCF and texture sharpening use them), so rejecting would make DXVK throw from
-//    sampler creation. The sampler is created, the decoder maps border to clamp-to-edge,
-//    WebGPU ignores the bias, and the approximation is reported loudly.
+//  - mipLodBias is governed by maxSamplerLodBias, advertised as 0 (fillLimits) because
+//    WebGPU has no sampler LOD bias: nonzero requests are out of contract, are logged,
+//    and take the spec clamp to +/-0. CLAMP_TO_BORDER is CORE with no feature bit/limit
+//    and no WebGPU border addressing: created, mapped to clamp-to-edge, reported loudly.
 static bool vk64AuditSampler(U32 addrU, U32 addrV, U32 addrW, float mipLodBias, U32 borderColor) {
     bool reject = false;
     const U32 addressModes[] = {addrU, addrV, addrW};
@@ -472,7 +472,7 @@ static bool vk64AuditSampler(U32 addrU, U32 addrV, U32 addrW, float mipLodBias, 
             vk64Unsupported("sampler-border-colour", ("approximated by clamp-to-edge; borderColor=" + std::to_string(borderColor)).c_str());
         }
     }
-    if (mipLodBias != 0.0f) vk64Unsupported("sampler-mip-lod-bias", "approximated: WebGPU samplers have no LOD bias, bias ignored");
+    if (mipLodBias != 0.0f) vk64Unsupported("sampler-mip-lod-bias", "outside advertised maxSamplerLodBias=0; effective bias is the spec clamp to 0");
     return reject;
 }
 
@@ -3985,7 +3985,7 @@ void fillLimits(Limits& L) {
     L.maxComputeWorkGroupSize[0] = 128; L.maxComputeWorkGroupSize[1] = 128; L.maxComputeWorkGroupSize[2] = 64;
     L.subPixelPrecisionBits = 8; L.subTexelPrecisionBits = 8; L.mipmapPrecisionBits = 8;
     L.maxDrawIndexedIndexValue = 0xFFFFFFFFu; L.maxDrawIndirectCount = VK64_MAX_INDIRECT_DRAWS;
-    L.maxSamplerLodBias = 2.0f; L.maxSamplerAnisotropy = 16.0f;
+    L.maxSamplerLodBias = 0.0f; /* WebGPU has no sampler LOD bias; advertise only what is honoured */ L.maxSamplerAnisotropy = 16.0f;
     // G2: DXVK D3D9 DecodeMultiSampleType derives sampleCount from
     // framebuffer{Color,Depth}SampleCounts; zero here zeroes the backbuffer
     // sampleCount and fails CheckImageSupport. Advertise at least 1x.

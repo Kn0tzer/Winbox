@@ -2,7 +2,7 @@
 
 Initial source audit register for lane P2-V. It includes requested grep hits, source-level `default:` arms, empty `catch` arms, replay skip/drop counters, and identified SPIR-V/WGSL rejection sites. Original audit rows are followed by disposition updates as fixes land; unresolved rows remain OPEN. Some grep matches are scanner duplicates within one behavior and still need consolidation into behavior-level rows.
 
-Rows: 343 source and follow-up rows (36 IMPLEMENTED, 72 REJECTED-LOUDLY, 232 NOT-A-GAP, 3 OPEN). Recount and closure verified 2026-10-25: the 3 pipeline-result OPEN rows were closed as REJECTED-LOUDLY (page-tier fail-closed; see those rows and the spot-check appendix at the end of this file). Citation re-pin 2026-10-25 (audit wave-2 fix lane): every line citation was re-verified against the tree and 3 rows were reopened (two sampler rows whose text claimed a rejection the code does not perform; one marker row whose quoted comment no longer exists); see the re-pin appendix at the end of this file.
+Rows: 342 source and follow-up rows (36 IMPLEMENTED, 72 REJECTED-LOUDLY, 233 NOT-A-GAP, 1 APPROXIMATION (documented deviation), 0 OPEN). Recount and closure verified 2026-10-25: the 3 pipeline-result OPEN rows were closed as REJECTED-LOUDLY (page-tier fail-closed; see those rows and the spot-check appendix at the end of this file). Citation re-pin 2026-10-25 (audit wave-2 fix lane): every line citation was re-verified against the tree and 3 rows were reopened (two sampler rows whose text claimed a rejection the code does not perform; one marker row whose quoted comment no longer exists); see the re-pin appendix at the end of this file. Sampler disposition 2026-10-25 (owning lane): the 3 reopened rows are dispositioned — mip LOD bias is NOT-A-GAP via the advertised maxSamplerLodBias limit of 0, clamp-to-border is a documented APPROXIMATION (not one of the three closure states; evidence in the sampler disposition appendix), and the dead marker row was deleted (its referent behaviour is covered by the compute-pipeline rows); see the sampler disposition appendix at the end of this file.
 
 | File:line | Guest behavior / audit evidence | Severity | Disposition |
 |---|---|---|---|
@@ -13,8 +13,8 @@ Rows: 343 source and follow-up rows (36 IMPLEMENTED, 72 REJECTED-LOUDLY, 232 NOT
 | `source/vulkan/vk64bridge.cpp:417-438` (markers) | Per-feature warning counts, locks, total/count accessors, and the `vk64Unsupported` logger | Informational: rejection diagnostics | NOT-A-GAP (these are the required rate-limited, greppable rejection mechanism used by unsupported feature handlers; guard: `vk-silent-drop-guard.test.mjs`) |
 | `source/vulkan/vk64bridge.cpp:451` (marker) | marker: `// "vk64: UNSUPPORTED spirv-<what>", and returns VK_ERROR_FEATURE_NOT_PRESENT`. Guest behavior and impact require the listed handler/replay path to be exercised. | Informational: comment/reference only | NOT-A-GAP (comment only; no runtime path) |
 | `source/vulkan/vk64bridge.cpp:468` | DXVK/vkd3d creates a sampler with mirror-clamp-to-edge addressing | High | REJECTED-LOUDLY; both ABI paths reject creation with `VK_ERROR_FEATURE_NOT_PRESENT` and log `mirror-clamp-to-edge`. Regression: `vk-sampler-rejection.test.mjs`. |
-| `source/vulkan/vk64bridge.cpp:472` | DXVK/vkd3d creates a sampler with clamp-to-border addressing | High | OPEN — NEEDS RE-DISPOSITION (citation re-pin, 2026-10-25): the previous text claimed creation is rejected with `VK_ERROR_FEATURE_NOT_PRESENT`; the code does not reject. `vk64AuditSampler` logs `sampler-border-colour` via `vk64Unsupported` and the sampler is created, with border addressing approximated by clamp-to-edge (code comment `vk64bridge.cpp:459-462`; `vk-sampler-rejection.test.mjs` asserts only mirror-clamp rejects). A loud approximation is none of IMPLEMENTED / REJECTED-LOUDLY / NOT-A-GAP; the owning lane must disposition it. Regression: `vk-sampler-rejection.test.mjs`. |
-| `source/vulkan/vk64bridge.cpp:475` | DXVK/vkd3d creates a sampler with nonzero mip LOD bias | High | OPEN — NEEDS RE-DISPOSITION (citation re-pin, 2026-10-25): the previous text claimed creation is rejected with `VK_ERROR_FEATURE_NOT_PRESENT`; the code does not reject. `vk64AuditSampler` logs `sampler-mip-lod-bias` via `vk64Unsupported` and the sampler is created, with the LOD bias ignored by the page tier (code comment `vk64bridge.cpp:459-462`; `vk-sampler-rejection.test.mjs` asserts only mirror-clamp rejects). A loud approximation is none of IMPLEMENTED / REJECTED-LOUDLY / NOT-A-GAP; the owning lane must disposition it. Regression: `vk-sampler-rejection.test.mjs`. |
+| `source/vulkan/vk64bridge.cpp:472` | DXVK/vkd3d creates a sampler with clamp-to-border addressing | High | APPROXIMATION — DOCUMENTED DEVIATION (sampler disposition, 2026-10-25; not one of the three closure states). What the code does, exactly: `vk64AuditSampler` logs `sampler-border-colour` via `vk64Unsupported` (rate-limited, greppable, with the border colour value) and creation SUCCEEDS; the protocol decoder maps address mode 3 to clamp-to-edge (`web/vk-protocol.mjs:89-90`: "WebGPU has no border addressing or mirror-clamp mode"), and the page tier builds the GPUSampler with no border colour (`web/vkwebgpu.mjs:213-214`). Why not REJECTED-LOUDLY: CLAMP_TO_BORDER is core Vulkan with no feature bit and no limit, so there is no advertisement lever — a conforming guest may always use it (contrast mirror-clamp, rejected because samplerMirrorClampToEdge is advertised FALSE); failing core sampler creation would make DXVK throw from vkCreateSampler for D3D9/D3D11 border addressing (shadow-map PCF, edge fade). Why not IMPLEMENTED: WebGPU offers no border facility (verified in the page-tier code cited above); a true implementation needs shader-level border emulation in the SPIR-V-to-WGSL tier, which does not exist. Workload evidence: a sweep of every retained demo-matrix console log on the box (Portal, Gang Beasts, DOOM, Celeste, Chromium, and the rest) found zero `sampler-border-colour` occurrences — no current demo creates a border sampler, so the approximation is latent, not load-bearing; if a future title does, texels sampled outside [0,1] will be the edge texel instead of the border colour. The behaviour is pinned by `vk-sampler-rejection.test.mjs` so it cannot change silently. Closing this row as IMPLEMENTED requires the shader-emulation feature; closing it as REJECTED-LOUDLY requires accepting a spec-nonconforming failure of a core feature. Regression: `vk-sampler-rejection.test.mjs`. |
+| `source/vulkan/vk64bridge.cpp:475,3988` | DXVK/vkd3d creates a sampler with nonzero mip LOD bias | High | NOT-A-GAP (sampler disposition, 2026-10-25): the bridge advertises `maxSamplerLodBias = 0.0f` in `fillLimits` (`vk64bridge.cpp:3988`, shared by both ABIs via `vk32_writeLimits`), because WebGPU samplers have no LOD bias field (`web/vkwebgpu.mjs:213`). By VUID-VkSamplerCreateInfo-mipLodBias-01069, |mipLodBias| must be <= maxSamplerLodBias, so no conforming guest can request a nonzero bias from this device, and the spec LOD rules clamp the effective bias to +/-maxSamplerLodBias = 0 in any case — applying no bias IS the advertised behaviour, not an approximation of it. (Before this disposition the bridge advertised 2.0f while honouring none of it; that false advertisement is what made the old row a gap.) An out-of-contract nonzero request is logged as `sampler-mip-lod-bias` at `vk64bridge.cpp:475` via `vk64Unsupported` and creation succeeds with effective bias 0; it is not rejected, because creation must not fail for a value a guest stack may set outside the advertised contract. The advertised limit and the log are pinned by `vk-sampler-rejection.test.mjs`. Regression: `vk-sampler-rejection.test.mjs`. |
 | `source/vulkan/vk64bridge.cpp:516` (default) | SPIR-V declares a capability not in the bridge's named capability table | High | NOT-A-GAP (the caller at `vk64bridge.cpp:560-565` logs and rejects unknown non-baseline capability IDs with `VK_ERROR_FEATURE_NOT_PRESENT`; regression: `vk-spirv-rejections.test.mjs`). |
 | `source/vulkan/vk64bridge.cpp:520,524,538` | DXVK/vkd3d submits an empty, malformed, or truncated SPIR-V module | Medium | REJECTED-LOUDLY; both ABI paths log `spirv-malformed`, clear the output handle, and return `VK_ERROR_INVALID_SHADER_NV`. Regression: `vk-spirv-rejections.test.mjs`. |
 | `source/vulkan/vk64bridge.cpp:555` (default) | SPIR-V scanner encounters an opcode outside the metadata subset it inspects | Medium | NOT-A-GAP (the switch only scans metadata; the complete module is retained and passed to `shaders.get` for translation/validation, and failed translation skips the pipeline in `web/vkwebgpu.mjs:1613`). |
@@ -56,7 +56,6 @@ Rows: 343 source and follow-up rows (36 IMPLEMENTED, 72 REJECTED-LOUDLY, 232 NOT
 | `source/vulkan/vk64bridge.cpp:4542` (marker) | marker: `// (name*) — the guest shim's benign stub for a vk* we do not implement.`. Guest behavior and impact require the listed handler/replay path to be exercised. | Informational: comment/reference only | NOT-A-GAP (comment only; no runtime path) |
 | `source/vulkan/vk64bridge.cpp:4465` (once-per-name diagnostic) | Guest loader requests an unavailable Vulkan entry point. | High | NOT-A-GAP: the single log site is deduplicated by ABI and entry-point name in `logAskedFor`; dispatch returns the proper `VK_ERROR_FEATURE_NOT_PRESENT`. Regression: `vk-denylist-extensions.test.mjs`. |
 | `source/vulkan/vk64bridge.cpp:4548` (unsupported entry point) | Guest invokes an unavailable Vulkan entry point. | High | REJECTED-LOUDLY: rate-limited per-name loader diagnostic plus greppable `vk64Unsupported`; returns `VK_ERROR_FEATURE_NOT_PRESENT`. Regression: `vk-unimplemented-dispatch.test.mjs`. |
-| `source/vulkan/vk64bridge.cpp:4776` (marker) | marker: `// device creation; without this the benign stub returns -2 and`. Guest behavior and impact require the listed handler/replay path to be exercised. | Informational: comment/reference only | OPEN — NEEDS RE-DISPOSITION (citation re-pin, 2026-10-25): the quoted comment no longer exists anywhere in the tree (git grep finds the text only in this register), so this scanner row's referent is gone and the NOT-A-GAP (comment only) disposition is unverifiable. The owning lane must delete the row or re-disposition it against current code. |
 | `source/vulkan/vk64bridge.cpp:6605` (marker) | marker: `// Game-breaking stub implementations (immediate CPU emulation)`. Guest behavior and impact require the listed handler/replay path to be exercised. | Informational: comment/reference only | NOT-A-GAP (comment only; no runtime path) |
 | `source/vulkan/vk64bridge.cpp:7497` (default) | Guest calls an unhandled 64-bit Vulkan trap ID. | High | REJECTED-LOUDLY: named function is logged and returns `VK_ERROR_FEATURE_NOT_PRESENT`; same default is the fallback for every ID absent from the dispatch switch. Regression: `vk-unimplemented-dispatch.test.mjs`. |
 | `source/vulkan/vk64bridge.cpp:7501` (unimplemented 64-bit trap) | Guest calls a missing bridge function ID. | High | REJECTED-LOUDLY: the fallback logs function ID/name, calls `vk64Unsupported`, and returns `VK_ERROR_FEATURE_NOT_PRESENT`. Regression: `vk-unimplemented-dispatch.test.mjs`. |
@@ -314,7 +313,7 @@ Rows: 343 source and follow-up rows (36 IMPLEMENTED, 72 REJECTED-LOUDLY, 232 NOT
 
 ## Audit limits
 
-Silent returns not covered by an explicit marker/counter still require call-site tracing. 3 OPEN rows remain, all reopened by the 2026-10-25 citation re-pin and marked NEEDS RE-DISPOSITION in place (see the re-pin appendix). Any future OPEN row needs implementation with a regression test, an honest rejection with correct result/capability advertisement and test, or a code-backed NOT-A-GAP disposition.
+Silent returns not covered by an explicit marker/counter still require call-site tracing. 0 OPEN rows remain: the 3 rows reopened by the 2026-10-25 citation re-pin were dispositioned by the sampler disposition lane the same day (see the sampler disposition appendix; one of them is a documented APPROXIMATION, tracked as a deviation and not counted as a closure state). Any future OPEN row needs implementation with a regression test, an honest rejection with correct result/capability advertisement and test, or a code-backed NOT-A-GAP disposition.
 
 ## Query behavior follow-up
 
@@ -437,3 +436,68 @@ Three rows were **reopened** by this pass (register now reads 3 OPEN):
 A loud approximation is none of IMPLEMENTED / REJECTED-LOUDLY / NOT-A-GAP,
 so lines 16-17 need an owning-lane disposition (implement, reject, or a
 documented accepted-approximation state), not a citation fix.
+
+## Sampler disposition appendix (2026-10-25, owning lane)
+
+The 3 rows reopened by the citation re-pin are dispositioned here. Evidence
+was gathered before deciding: the bridge's feature/limit advertisements
+(`fillCoreFeatures` memsets to 0 and never sets `samplerMirrorClampToEdge`;
+`fillVulkan12Features` likewise leaves it FALSE; `fillLimits` is shared by
+both ABIs), the page tier's sampler capability (`web/vk-protocol.mjs`,
+`web/vkwebgpu.mjs`), the Vulkan valid-usage rules, and a sweep of every
+retained demo-matrix console log on the box for the audit tokens
+(`sampler-border-colour`, `sampler-mip-lod-bias`, `mirror-clamp-to-edge`,
+any `vk64: UNSUPPORTED` line): zero occurrences in any demo run.
+
+**Mip LOD bias (row citing `vk64bridge.cpp:475`) — NOT-A-GAP.** WebGPU
+samplers have no LOD bias, so the honest advertisement is the limit the
+tier can honour: `fillLimits` now reports `maxSamplerLodBias = 0.0f`
+(it previously reported 2.0f while honouring none of it — the false
+advertisement was the gap). Under VUID-VkSamplerCreateInfo-mipLodBias-01069
+no conforming guest can request a nonzero bias from a device advertising
+0, and the spec clamps the effective bias to +/-maxSamplerLodBias
+regardless, so applying no bias is the advertised behaviour. Out-of-contract
+requests stay loudly logged (`sampler-mip-lod-bias`) and creation succeeds.
+Rejection was not chosen: the value is core sampler state that a guest
+stack may set speculatively, and failing creation for it buys nothing once
+the advertisement is truthful. Pinned by `vk-sampler-rejection.test.mjs`
+(limit value, log token, no rejection).
+
+**Clamp-to-border (row citing `vk64bridge.cpp:472`) — APPROXIMATION,
+documented deviation (not a closure state).** Unlike mirror-clamp (feature
+bit, advertised FALSE, rejected) and LOD bias (limit, now advertised 0),
+CLAMP_TO_BORDER is core Vulkan with no feature bit and no limit: there is
+no advertisement lever, and a conforming guest may always create such a
+sampler. WebGPU has no border addressing or border colour (decoder:
+`web/vk-protocol.mjs:89-90`; descriptor: `web/vkwebgpu.mjs:213-214`), and a
+true implementation would need shader-level border emulation in the
+SPIR-V-to-WGSL tier, which does not exist. Rejection was considered and
+rejected itself: failing core sampler creation makes DXVK throw from
+vkCreateSampler wherever D3D9/D3D11 border addressing is used
+(shadow-map PCF, edge fade), converting a latent visual approximation into
+a hard failure of conforming guests. The approximation therefore stays,
+described in the row exactly as the code behaves, logged per sampler as
+`sampler-border-colour` with the colour value, and pinned by
+`vk-sampler-rejection.test.mjs`. The demo-log sweep found no workload
+creating a border sampler today, so the deviation is latent. It remains
+tracked here as a deviation, explicitly NOT counted as IMPLEMENTED,
+REJECTED-LOUDLY, or NOT-A-GAP; closing it requires either the
+shader-emulation feature (IMPLEMENTED) or a project decision to fail a
+core feature loudly (REJECTED-LOUDLY).
+
+**Dead marker row (old row citing `vk64bridge.cpp:4776`) — DELETED.**
+The quoted comment ("// device creation; without this the benign stub
+returns -2 and") was the `vkCreateComputePipelines` comment added in
+86d6286a1: vkd3d-proton builds internal compute pipelines during device
+creation, and the then-benign stub returning -2
+(VK_ERROR_INITIALIZATION_FAILED) failed D3D12CreateDevice with
+E_OUTOFMEMORY. Commit 9fba97f33 replaced both the comment and the
+behaviour: compute pipeline creation is now REJECTED-LOUDLY with
+VK_ERROR_FEATURE_NOT_PRESENT and null output handles
+(`vk64bridge.cpp:5497`; 32-bit mirror `vk64bridge.cpp:10049`), because
+compute shader modules are refused at vkCreateShaderModule. That
+behaviour is already dispositioned by the rows citing
+`vk64bridge.cpp:569` (spirv-compute-entry) and `vk64bridge.cpp:3901` /
+`vk64bridge.cpp:3903-3904` (compute dispatch), so the stale marker row
+carried no unique claim and is deleted rather than re-cited. Row count
+moves 343 -> 342; the deleted row was one of the 3 OPEN, not a NOT-A-GAP.
