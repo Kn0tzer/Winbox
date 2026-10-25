@@ -81,15 +81,33 @@ export async function toWGSL(from, source, stage='vertex', entryPoint='main', op
 }
 
 export async function warmPersistentShaders(appId, device, onShader = () => {}) {
+  let manifest;
   try {
-    const manifest = await persistentShaderCache.getManifest(appId);
-    for (const key of manifest?.shaders || []) {
+    manifest = await persistentShaderCache.getManifest(appId);
+  } catch (error) {
+    console.warn(`shader warm: manifest for ${appId} could not be read; skipping warm`, error);
+    return { warmed: 0, failed: 0 };
+  }
+  let warmed = 0, failed = 0;
+  for (const key of manifest?.shaders || []) {
+    try {
       const record = await persistentShaderCache.get(key);
       if (!record?.wgsl) continue;
+      const module = device.createShaderModule({ code: record.wgsl });
+      const info = await module.getCompilationInfo?.();
+      const errors = (info?.messages || []).filter(message => message.type === 'error');
+      if (errors.length) throw new Error(errors[0].message || 'WGSL compilation failed');
       onShader(key, record.wgsl);
       if (!key.startsWith('spirv:')) persistentMemory.set(key, record.wgsl);
-      const module = device.createShaderModule({ code: record.wgsl });
-      await module.getCompilationInfo?.();
+      warmed++;
+    } catch (error) {
+      // One bad record must not abort warming for the rest, and it must not be
+      // retried on every launch: log it, count it, and evict it.
+      failed++;
+      console.warn(`shader warm: evicting cached shader ${key} after a failed compile`, error);
+      persistentMemory.delete(key);
+      await persistentShaderCache.remove(key);
     }
-  } catch {}
+  }
+  return { warmed, failed };
 }

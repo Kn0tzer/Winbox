@@ -40,7 +40,7 @@ function transact(db, store, mode, action) {
 export function createPersistentShaderCache({ indexedDB = globalThis.indexedDB, now = () => Date.now(), maxBytes = SHADER_CACHE_LIMIT } = {}) {
   let dbPromise;
   let openedDb = null;
-  const stats = { hits: 0, misses: 0, writes: 0, failures: 0 };
+  const stats = { hits: 0, misses: 0, writes: 0, failures: 0, evictions: 0 };
   const db = () => dbPromise ||= openDb(indexedDB).then(database => (openedDb = database));
   const safe = async (fallback, operation) => {
     try { return await operation(); } catch { stats.failures++; return fallback; }
@@ -79,6 +79,20 @@ export function createPersistentShaderCache({ indexedDB = globalThis.indexedDB, 
           tx.oncomplete = resolve; tx.onerror = tx.onabort = () => reject(tx.error || new Error('Shader cache write failed'));
         });
         stats.writes++;
+        return true;
+      });
+    },
+    async remove(key) {
+      return safe(false, async () => {
+        const database = await db(), fullKey = PREFIX + key;
+        await transact(database, STORE, 'readwrite', store => store.delete(fullKey));
+        const manifests = await requestValue(database.transaction(MANIFESTS, 'readonly').objectStore(MANIFESTS).getAll());
+        for (const manifest of manifests || []) {
+          if (!manifest.shaders?.includes(key)) continue;
+          manifest.shaders = manifest.shaders.filter(shader => shader !== key);
+          await transact(database, MANIFESTS, 'readwrite', store => store.put(manifest));
+        }
+        stats.evictions++;
         return true;
       });
     },
