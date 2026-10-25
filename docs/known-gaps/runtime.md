@@ -372,6 +372,63 @@ pre-existing quoting breakage in its container payload is repaired.
   11/11, `test_prepare_prefixes.py` 9 OK, `bootstrap.py --check`
   green, unit suite 184/0 solo). Register stays **OPEN: 0**.
 
+### Checker pre-build skip follow-on (2026-10-25, checker skip-fix lane)
+
+The release bootstrap rehearsal found a state in which the checker
+false-failed: in a pristine checkout (assets restored with
+`bootstrap.py --local`, nothing built yet), checker test `manifest
+matches shipped zips` died with `No such file or directory:
+dist/runtime/dependencies.json`. The manifest's support-pack
+provenance row is generated from that file
+(`gen_runtime_manifest.py` reads exactly it), and a build product's
+absence is not asset drift — yet the check FAILed where its sibling
+support-pack checks SKIP, so `bootstrap.py --check` exited 1 on
+byte-perfect assets and printed its "run apply-runtime-poststeps.sh
+and re-pin" instruction for a state in which nothing was wrong.
+
+Fix (`check_runtime_completeness.py`, `t_manifest`): when
+`dist/runtime/dependencies.json` is absent the check now skips
+loudly — named, with the reason, counted as a skip — and once the
+file exists the full byte-for-byte comparison runs exactly as
+before. This extends the skip paragraph in the Post-step
+elimination section above from the two pack-dependent checks to
+the manifest check, which is gated on the same build product. The
+rest of the checker was audited for the same asymmetry and needed
+no change: `prefix64 built artifact` already skips only its
+`tools/rootfs64/dist` half while always checking the shipped
+prefix, and the CJK cache sub-check already skips loudly. Every
+other check reads restored assets (`web/runtime` zips) or
+checked-in source/staging trees, and still FAILs on absence in
+every state — a missing or drifted restored asset is never
+skipped.
+
+Three-state proof (2026-10-25): (a) pristine clone of this branch
++ `--local` restore from the retained archive — the fixed checker
+reports 0 failures / 5 skips / exit 0 (the three pack-gated skips
+above plus the CJK-cache and prefix64-built sub-skips, all named),
+`bootstrap.py --check` exits 0 printing `Runtime assets verified
+(13 files)` with no incomplete/re-pin message, and the pre-fix
+checker in the identical tree reproduces the original FAIL
+(exit 1); (b) in-tree, dist present — 11 PASS / 0 skips / exit 0,
+byte-identical behaviour to before the fix; (c) negative — dist
+present (plus the untracked gstreamer staging trees a built tree
+carries) with the manifest doctored by one appended row: FAIL
+`manifest matches shipped zips ... drifted`, exit 1; the genuine
+manifest passes. The skip keys strictly on the build product's
+absence, so it opens no hole in the incident class this checker
+exists to catch. Gate numbers: `test_prepare_prefixes.py` 9 OK,
+`test-bootstrap.py` 4 OK, unit suite 184/0 solo.
+
+Gate-rule simplification: `bootstrap.py --check` is now valid
+pre-build — exit 0 means every asset check passed and each
+not-yet-applicable build-product check announced itself as a named
+skip, so the bootstrap procedure no longer needs its "--check is
+only a valid gate after a build has produced dist/" workaround.
+The pack-dependent checks still only run for real once `dist/`
+exists; a pristine-checkout `--check` proves the restored assets,
+not the pack. Register stays **OPEN: 0**; no row changed
+disposition.
+
 ## Wave-2 evidence sweep (2026-10-25, runtime evidence lane)
 
 Audit wave 2 sampled the register's NOT-A-GAP rows and found the VC++
