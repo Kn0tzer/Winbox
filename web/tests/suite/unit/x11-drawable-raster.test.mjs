@@ -183,6 +183,11 @@ int main() {
         d.drawLine(&t, gc, 0, 0, 7, 0);
         const U32 expected[] = {5, 9, 5, 5, 9, 5, 5, 9};
         for (U32 x = 0; x < 8; ++x) assert(d.pixel(x, 0) == expected[x]);
+        XDrawable onOff(8, 1, v32);
+        gc->values.line_style = 1;
+        onOff.drawLine(&t, gc, 0, 0, 7, 0);
+        const U32 onOffExpected[] = {5, 0, 5, 5, 0, 5, 5, 0};
+        for (U32 x = 0; x < 8; ++x) assert(onOff.pixel(x, 0) == onOffExpected[x]);
     }
     // a line that runs off the drawable writes only inside it and does not crash
     {
