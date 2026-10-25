@@ -91,7 +91,7 @@ These categories were requested for the game-impact review. The scan found no ma
 | Filesystem semantics (case-insensitivity, symlinks) | ZIP import rejects archive symlinks (`web/files.mjs`); VFS decodes Wine `.link` and `(_colon_)` drive aliases (`source/io/fsnode.cpp`, `source/io/fsopennode.cpp`); lookup can ignore case. | VFS case folding and Wine alias lookup: `fs-node-case-symlink.test.mjs`. Import collision checks lowercase names (`web/files.mjs:22`). Host-backed case resolution remains platform-dependent and needs a native probe. |
 | Timers | Linux timer syscalls include nanosleep, setitimer, timerfd, and clock_gettime; browser and native scheduler use host timer callbacks. | NEEDS_OTHER_LANE: add deterministic timerfd and setitimer expiration probes with the kernel timer implementation. |
 
-The scan's pattern is also narrow. It misses a plain `not supported` outside `kpanic(` and `klog_fmt`, a capitalised `Not implemented`, and a silent `return -K_ENOSYS` with no text. Those need a separate pass.
+The scanner now matches case variants of `not supported` and `not implemented`, and catches silent `ENOSYS` returns. It only treats logging as loud when a log call appears on the same source line; cross-line log/error control flow still needs manual review.
 
 ## Proposed work items
 
