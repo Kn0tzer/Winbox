@@ -443,6 +443,26 @@ int BString::length() const {
 
 void BString::remove(int index, int len) {
     makeWritable(0);
+    // data->len is materialized by makeWritable (see replace()); a negative
+    // len, or a span running past the end, removes through the end of the
+    // string. This was previously a no-op, which silently broke the one
+    // caller that truncates with it (FsNode::loadChildren stripping the
+    // .mixed suffix from a host file name).
+    if (index < 0) {
+        index = 0;
+    }
+    if (index >= data->len) {
+        return;
+    }
+    if (len < 0 || index + len > data->len) {
+        len = data->len - index;
+    }
+    if (len == 0) {
+        return;
+    }
+    memmove(data->str + index, data->str + index + len, (size_t)(data->len - index - len));
+    data->len -= len;
+    data->str[data->len] = 0;
 }
 
 void BString::removeAll() {

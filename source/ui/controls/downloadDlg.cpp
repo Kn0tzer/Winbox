@@ -153,7 +153,10 @@ void DownloadDlg::run() {
     ImGui::SetCursorPosX(this->width/2-buttonWidth/2);
     ImGui::SetCursorPosY(this->height - ImGui::GetFrameHeightWithSpacing() - ImGui::GetStyle().ItemSpacing.y);
     if (ImGui::Button(c_getTranslation(Msg::GENERIC_DLG_CANCEL))) {
-        // :TODO: what if the socket is stuck, this will only work if the socket is just too slow
+        // Cancellation is observed by downloadFile's progress callback; a
+        // socket that stops moving entirely is bounded by the low-speed
+        // limit set in downloadFile (networkutils.cpp), which aborts the
+        // transfer so this cancel (or the resulting error) takes effect.
         this->cancelled = true;
         this->currentLabel = getTranslation(Msg::DOWNLOADDLG_CANCELLING_LABEL);
     }

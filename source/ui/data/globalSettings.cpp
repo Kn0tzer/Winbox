@@ -671,7 +671,8 @@ void GlobalSettings::updateFileList(BString fileLocation) {
                     if (demo->iconPath.length()) {
                         int pos = demo->iconPath.lastIndexOf('/');
                         if (pos == -1) {
-                            continue; // :TODO: error msg?
+                            kwarn_fmt("GlobalSettings: demo icon path has no directory part, skipping: %s", demo->iconPath.c_str());
+                            continue;
                         }
                         if (!Fs::doesNativePathExist(GlobalSettings::getDemoFolder())) {
                             Fs::makeNativeDirs(GlobalSettings::getDemoFolder());
@@ -1069,7 +1070,8 @@ std::shared_ptr<FileSystemZip> FileSystemZip::getMissingDependency() const {
 BString FileSystemZip::getLocalFilePath() const {
     int pos = this->filePath.lastIndexOf('/');
     if (pos == -1) {
-        return B(""); // :TODO: error msg?
+        kwarn_fmt("FileSystemZip::getLocalFilePath: file path has no directory part: %s", this->filePath.c_str());
+        return B("");
     }
     BString fileName = this->filePath.substr(pos + 1);
     return GlobalSettings::getFileSystemFolder().stringByApppendingPath(fileName);

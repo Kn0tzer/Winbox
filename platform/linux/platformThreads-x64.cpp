@@ -143,7 +143,13 @@ void syncFromException(CPU* cpu, ucontext_t* context) {
             case 6: cpu->reg[i].u32 = (U32)context->CONTEXT_RSI; break;
             case 7: cpu->reg[i].u32 = (U32)context->CONTEXT_RDI; break;
             default:
-                kpanic("Linux x64 syncFromException");
+                // The only regCache table compiled under BOXEDWINE_64
+                // (jitX86CodeGen.cpp) holds exactly the values handled
+                // above, so this is defensive: leave the guest register
+                // stale, log it, and let the caller deliver the fault to
+                // the guest through the signal path instead of aborting
+                // the emulator.
+                kwarn_fmt("Linux x64 syncFromException: unhandled cached host register %d for guest register %d; guest register left stale", regCache[i], i);
             }
         }
     }
@@ -184,7 +190,11 @@ void syncFromException(CPU* cpu, ucontext_t* context) {
                 memcpy(&cpu->xmm[i], &context->CONTEXT_XMM7, 16);
                 break;
             default:
-                kpanic("Linux x64 syncFromException xmm");
+                // Same disposition as the integer cache above: the compiled
+                // xmmCache table holds exactly 0-7, so an unexpected value
+                // logs and leaves the guest register stale rather than
+                // aborting the emulator mid-exception.
+                kwarn_fmt("Linux x64 syncFromException: unhandled cached xmm register %d for guest register %d; guest register left stale", xmmCache[i], i);
             }
         }
     }
