@@ -246,6 +246,13 @@ inline void restoreFramebufferBindings() {
     bindDrawTarget();
 }
 
+// Query bookkeeping is shared by the native and Emscripten bridge paths: the
+// dispatcher below tracks object identity and availability even where the
+// backend reports deterministic zero query results.
+struct GLQueryStatus { GLenum target = 0; bool generated = false; bool active = false; bool available = false; };
+static std::map<GLuint, GLQueryStatus> g_glQueryStatus;
+static std::map<GLenum, GLuint> g_glActiveQueries;
+
 #ifdef __EMSCRIPTEN__
 // --- immediate-mode batching ------------------------------------------------
 // Every gl* call normally hops to the GL-owning thread via glOnMain (a blocking
@@ -275,13 +282,6 @@ inline void replayImmOp(const ImmOp& op) {
         case GL64_fn_glColor3f:  glColor3f(op.f[0], op.f[1], op.f[2]); break;
         case GL64_fn_glColor4f:  glColor4f(op.f[0], op.f[1], op.f[2], op.f[3]); break;
         case GL64_fn_glNormal3f: glNormal3f(op.f[0], op.f[1], op.f[2]); break;
-// Query bookkeeping is shared by the native and Emscripten bridge paths: the
-// dispatcher below tracks object identity and availability even where the
-// backend reports deterministic zero query results.
-struct GLQueryStatus { GLenum target = 0; bool generated = false; bool active = false; bool available = false; };
-static std::map<GLuint, GLQueryStatus> g_glQueryStatus;
-static std::map<GLenum, GLuint> g_glActiveQueries;
-
 #ifndef __EMSCRIPTEN__
         case GL64_fn_glMultiTexCoord2fARB: glMultiTexCoord2f((GLenum)op.f[0], op.f[1], op.f[2]); break;
 #endif
