@@ -90,6 +90,7 @@ void testForkVfork64();
 void testGetrandom64Syscalls();
 void testStatx64Syscall();
 void testClone3Abi64();
+void testMremap64Syscall();
 #endif
 
 namespace {
@@ -120,6 +121,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testGetrandom64Syscalls, "Test x64 getrandom entropy and validation"},
     {testStatx64Syscall, "Test x64 statx ABI and metadata"},
     {testClone3Abi64, "Test x64 clone3 argument ABI validation"},
+    {testMremap64Syscall, "Test x64 mremap fixed and DONTUNMAP semantics"},
     {testForkVfork64, "Test x64 fork and vfork create real processes"},
 };
 #else

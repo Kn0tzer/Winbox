@@ -4776,11 +4776,7 @@ void ksyscall64(CPU64* cpu) {
             break;
         }
         case X64_SYS_mremap:
-            // mremap(old, oldlen, newlen, flags, newaddr). v1: return old
-            // address — glibc malloc only resizes when MREMAP_MAYMOVE is set
-            // and tolerates a noop if no growth happens. This is wrong but
-            // surfaces obvious failures at the malloc level, not later.
-            ret = a1;
+            ret = cpu->memory->mremap(a1, a2, a3, a4, a5);
             break;
         case X64_SYS_dup:
             if (cpu->thread && cpu->thread->process) {

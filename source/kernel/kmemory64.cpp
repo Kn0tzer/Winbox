@@ -716,6 +716,112 @@ U64 KMemory64::munmap(U64 addr, U64 len) {
     return 0;
 }
 
+U64 KMemory64::mremap(U64 oldAddr, U64 oldLen, U64 newLen, U64 flags, U64 newAddr) {
+    constexpr U64 MAYMOVE = 1;
+    constexpr U64 FIXED = 2;
+    constexpr U64 DONTUNMAP = 4;
+    constexpr U64 KNOWN = MAYMOVE | FIXED | DONTUNMAP;
+    if ((oldAddr & K64_PAGE_MASK) || (flags & ~KNOWN) || !newLen ||
+        ((flags & FIXED) && !(flags & MAYMOVE)) ||
+        ((flags & DONTUNMAP) && (!(flags & MAYMOVE) || oldLen != newLen)) ||
+        ((flags & FIXED) && !newAddr) ||
+        ((flags & FIXED) && (newAddr & K64_PAGE_MASK))) {
+        return (U64)-K_EINVAL;
+    }
+    if (oldAddr > UINT64_MAX - oldLen || oldAddr > UINT64_MAX - newLen ||
+        oldLen > UINT64_MAX - K64_PAGE_MASK || newLen > UINT64_MAX - K64_PAGE_MASK) {
+        return (U64)-K_EINVAL;
+    }
+    const U64 oldRounded = (oldLen + K64_PAGE_MASK) & ~K64_PAGE_MASK;
+    const U64 newRounded = (newLen + K64_PAGE_MASK) & ~K64_PAGE_MASK;
+    if (oldAddr > UINT64_MAX - oldRounded) return (U64)-K_EINVAL;
+    if (!oldLen) {
+        if (!(flags & MAYMOVE) || (flags & (FIXED | DONTUNMAP)) || newAddr || oldAddr > UINT64_MAX - newRounded)
+            return (U64)-K_EINVAL;
+        const U64 pageCount = newRounded >> K64_PAGE_SHIFT;
+        std::vector<U8*> sharedPages;
+        U32 prot = 0;
+        {
+            BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
+            sharedPages.reserve((size_t)pageCount);
+            for (U64 i = 0; i < pageCount; ++i) {
+                auto it = pages.find((oldAddr >> K64_PAGE_SHIFT) + i);
+                if (it == pages.end() || !(it->second->flags & K64_PAGE_MAPPED) ||
+                    !(it->second->flags & K64_PAGE_SHARED) || !it->second->dataShared || !it->second->data)
+                    return (U64)-K_EINVAL;
+                if (!i) prot = it->second->flags & (K64_PAGE_READ | K64_PAGE_WRITE | K64_PAGE_EXEC);
+                else if ((it->second->flags & (K64_PAGE_READ | K64_PAGE_WRITE | K64_PAGE_EXEC)) != prot)
+                    return (U64)-K_EINVAL;
+                sharedPages.push_back(it->second->data);
+            }
+        }
+        const U64 destination = mmapReserveAndMap(newRounded, prot);
+        {
+            BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
+            for (U64 i = 0; i < pageCount; ++i) {
+                K64Page* page = getOrAllocPage((destination >> K64_PAGE_SHIFT) + i,
+                                               K64_PAGE_MAPPED | prot | K64_PAGE_SHARED);
+                page->adoptShared(sharedPages[(size_t)i]);
+                page->flags |= K64_PAGE_SHARED;
+                noteGuestWrite((destination >> K64_PAGE_SHIFT) + i);
+            }
+        }
+        k64DTlbInvalidateAll();
+        pageMapGenerationValue.fetch_add(1, std::memory_order_release);
+        return destination;
+    }
+    if ((flags & FIXED) && (newAddr > UINT64_MAX - newRounded ||
+        (newAddr < oldAddr + oldRounded && oldAddr < newAddr + newRounded))) return (U64)-K_EINVAL;
+    const U64 firstPage = oldAddr >> K64_PAGE_SHIFT;
+    const U64 oldPages = oldRounded >> K64_PAGE_SHIFT;
+    U32 prot = 0;
+    U32 commonFlags = 0;
+    for (U64 i = 0; i < oldPages; ++i) {
+        U32 pageFlags = getPageFlags(firstPage + i);
+        if (!(pageFlags & K64_PAGE_MAPPED)) return (U64)-K_EFAULT;
+        if (i == 0) {
+            prot = pageFlags & (K64_PAGE_READ | K64_PAGE_WRITE | K64_PAGE_EXEC);
+            commonFlags = pageFlags & K64_PAGE_SHARED;
+        } else if ((pageFlags & (K64_PAGE_READ | K64_PAGE_WRITE | K64_PAGE_EXEC | K64_PAGE_SHARED)) !=
+                   (prot | commonFlags)) {
+            return (U64)-K_EFAULT;
+        }
+    }
+    if (newRounded <= oldRounded && !(flags & DONTUNMAP)) {
+        if (newRounded < oldRounded) munmap(oldAddr + newRounded, oldRounded - newRounded);
+        return oldAddr;
+    }
+    if (newRounded > oldRounded && !(flags & (MAYMOVE | FIXED))) {
+        bool free = true;
+        for (U64 addr = oldAddr + oldRounded; addr < oldAddr + newRounded; addr += K64_PAGE_SIZE) {
+            if (getPageFlags(addr >> K64_PAGE_SHIFT) & K64_PAGE_MAPPED) { free = false; break; }
+        }
+        if (free && mmapAnonymousFixed(oldAddr + oldRounded, newRounded - oldRounded, prot) == oldAddr + oldRounded)
+            return oldAddr;
+        return (U64)-K_ENOMEM;
+    }
+    if (!(flags & MAYMOVE)) return (U64)-K_ENOMEM;
+
+    const U64 copyLen = oldLen < newLen ? oldLen : newLen;
+    std::vector<U8> contents((size_t)copyLen);
+    memcpyFromGuestRaw(contents.data(), oldAddr, copyLen);
+    U64 destination = (flags & FIXED) ? newAddr : mmapReserveAndMap(newRounded, prot);
+    if (flags & FIXED) {
+        if (mmapAnonymousFixed(destination, newRounded, prot) != destination) return (U64)-K_EINVAL;
+    } else if ((S64)destination < 0) {
+        return destination;
+    }
+    memcpyToGuest(destination, contents.data(), copyLen);
+    if (flags & DONTUNMAP) {
+        // Linux retains the original mapping after move; accesses there fault
+        // into a zero-filled anonymous page unless userfaultfd handles them.
+        memsetGuest(oldAddr, 0, oldLen);
+    } else {
+        munmap(oldAddr, oldRounded);
+    }
+    return destination;
+}
+
 // BW64_WATCH=0xADDR[,len] — log any guest write that overlaps [ADDR, ADDR+len).
 // Used to find who fills (or fails to fill) a runtime callback slot. The host
 // callstack isn't captured, but the value + the fact that a write happened at

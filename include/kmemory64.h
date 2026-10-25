@@ -158,6 +158,10 @@ public:
     // page-aligned base. prot follows K_PROT_* (0x1/0x2/0x4).
     U64 mmapReserveAndMap(U64 length, U32 prot);
 
+    // Resize or move an anonymous mapped region using the Linux mremap flag
+    // subset. Returns the resulting guest address, or -errno.
+    U64 mremap(U64 oldAddr, U64 oldLen, U64 newLen, U64 flags, U64 newAddr);
+
     // Change page permissions on already-mapped pages. addr must be page-
     // aligned. prot bits follow K_PROT_READ/WRITE/EXEC (0x1/0x2/0x4) — same
     // convention as mmapAnonymousFixed. Pages within [addr, addr+len) that
