@@ -2928,8 +2928,17 @@ static void x11_DisplayName(CPU* cpu) {
     }
 }
 
+static void x11LogXrmUnavailable() {
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        kwarn_fmt("X11 XGetDefault has no resource database loaded; returning NULL");
+    }
+}
+
 static void x11_GetDefault(CPU* cpu) {
-    kpanic("x11_GetDefault");
+    x11LogXrmUnavailable();
+    EAX = 0;
 }
 
 static void x11_GetWindowAttributes(CPU* cpu) {
