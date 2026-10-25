@@ -92,9 +92,13 @@ static void runForkCase(TestContext& context, U64 nr, const char* name) {
     RestoreProcessCpu64 restoreCpu{*process, process->cpu64};
     process->cpu64 = &cpu;
     cpu.rip = childCode;
+    U64 clone3PidfdAddress = 0;
     if (nr == 435 /*clone3*/) {
         constexpr U64 cloneArgs = page + 0x200;
+        clone3PidfdAddress = page + 0x300;
         memory->memsetGuest(cloneArgs, 0, 88);
+        memory->writeq(cloneArgs, 0x1000); // CLONE_PIDFD
+        memory->writeq(cloneArgs + 8, clone3PidfdAddress);
         memory->writed(cloneArgs + 32, K_SIGUSR1); // clone_args.exit_signal
         cpu.reg[X64_RAX].setU64(nr);
         cpu.reg[X64_RDI].setU64(cloneArgs);
@@ -117,6 +121,14 @@ static void runForkCase(TestContext& context, U64 nr, const char* name) {
     if (!child->is64Bit) testFail("%s child is not a 64-bit process", name);
     if (child->childExitSignal64 != (nr == 435 ? K_SIGUSR1 : K_SIGCHLD))
         testFail("%s child did not retain the requested exit signal", name);
+    FD clone3Pidfd = -1;
+    if (nr == 435) {
+        clone3Pidfd = (FD)memory->readd(clone3PidfdAddress);
+        KFileDescriptorPtr descriptor = process->getFileDescriptor(clone3Pidfd);
+        if (!descriptor || !descriptor->kobject || descriptor->kobject->type != KTYPE_EVENT ||
+            descriptor->kobject->isReadReady())
+            testFail("clone3 CLONE_PIDFD did not return a live process-pollable descriptor (fd=%d)", clone3Pidfd);
+    }
     if (!child->memory64 || child->memory64 == memory) testFail("%s child did not get its own address space", name);
     if (!child->cpu64) {
         testFail("%s child has no CPU64", name);
@@ -168,6 +180,11 @@ static void runForkCase(TestContext& context, U64 nr, const char* name) {
         child->exitCode = 37;
         child->terminated = true;
     }
+    if (clone3Pidfd >= 0) {
+        KFileDescriptorPtr descriptor = process->getFileDescriptor(clone3Pidfd);
+        if (!descriptor || !descriptor->kobject || !descriptor->kobject->isReadReady())
+            testFail("clone3 pidfd did not become readable after child exit");
+    }
     waitCpu.reg[X64_RAX].setU64(61); // wait4 the now-exited child
     waitCpu.reg[X64_RDX].setU64(0);
     ksyscall64(&waitCpu);
@@ -178,6 +195,7 @@ static void runForkCase(TestContext& context, U64 nr, const char* name) {
     if (memory->readd(page + 8) != expectedStatus) {
         testFail("%s wait4 returned the wrong exit status", name);
     }
+    if (clone3Pidfd >= 0) process->close(clone3Pidfd);
     if (KSystem::getProcess((U32)forkResult)) {
         KSystem::eraseProcess((U32)forkResult);
     }

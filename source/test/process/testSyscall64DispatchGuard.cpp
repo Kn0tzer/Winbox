@@ -116,7 +116,8 @@ void testSyscall64DispatchGuard() {
         processSource.find("if (size > PAGE_SIZE) return (U64)-K_E2BIG;") == std::string::npos ||
         processSource.find("if (this->memory64->readb(argsAddr + offset) != 0) return (U64)-K_E2BIG;") == std::string::npos ||
         processSource.find("clone64(thread, flags, stack + stack_size, parent_tid, tls, child_tid, exit_signal)") == std::string::npos ||
-        processSource.find("newProcess->childExitSignal64 = (U32)exitSignal;") == std::string::npos) {
+        processSource.find("newProcess->childExitSignal64 = (U32)exitSignal;") == std::string::npos ||
+        processSource.find("createPidFdForClone64(thread, (U32)result)") == std::string::npos) {
         testFail("clone3 must validate versioned struct size, readable memory, and unknown extension bytes");
     }
 }

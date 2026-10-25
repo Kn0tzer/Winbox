@@ -94,6 +94,16 @@ S32 queueSiginfo64(KThread* target, U32 signal, const U8 info[128]) {
     return (S32)result;
 }
 }
+
+U32 createPidFdForClone64(KThread* thread, U32 processId) {
+    if (!thread || !thread->process) return (U32)-K_ESRCH;
+    KProcessPtr target = KSystem::getProcess(processId);
+    if (!target) return (U32)-K_ESRCH;
+    std::shared_ptr<KPidFd> object = std::make_shared<KPidFd>(target, false);
+    KFileDescriptorPtr result = thread->process->allocFileDescriptor(object, K_O_RDWR, FD_CLOEXEC, -1, 0);
+    return result ? result->handle : (U32)-K_EMFILE;
+}
+
 #ifdef BOXEDWINE_OPENGL
 #include "../opengl/gl64bridge.h"
 #include "../opengl/gl64bridge_abi.h"

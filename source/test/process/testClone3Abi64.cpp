@@ -55,6 +55,9 @@ void testClone3Abi64() {
     memory->writeq(page, 17); // CSIGNAL is forbidden in clone3.flags
     const S64 flagsResult = invoke(page, 88);
     if (flagsResult != -K_EINVAL) testFail("x64 clone3 flags validation returned %lld", (long long)flagsResult);
+    memory->writeq(page, 0x1000); // CLONE_PIDFD requires a writable pidfd output pointer
+    const S64 pidfdResult = invoke(page, 88);
+    if (pidfdResult != -K_EFAULT) testFail("x64 clone3 accepted a null CLONE_PIDFD output pointer");
 }
 
 #endif

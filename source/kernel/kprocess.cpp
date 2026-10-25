@@ -2021,6 +2021,8 @@ U32 KProcess::clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 t
 }
 
 #ifdef BOXEDWINE_GUEST_X64
+U32 createPidFdForClone64(KThread* thread, U32 processId);
+
 U32 KProcess::clone64(KThread* thread, U64 flags, U64 child_stack, U64 ptid, U64 tls, U64 ctid, U64 exitSignal) {
     // pthread_create issues clone with the thread-group flag set. We only
     // support the thread case (shared VM/FS/files/sighand); a real fork() in
@@ -2114,12 +2116,25 @@ U64 KProcess::clone364(KThread* thread, U64 argsAddr, U64 size) {
     const U64 copiedSize = size < sizeof(args) ? size : sizeof(args);
     this->memory64->memcpyFromGuest(args, argsAddr, copiedSize);
     U64 flags       = args[0];
+    U64 pidfdAddr   = args[1];
     U64 child_tid   = args[2];
     U64 parent_tid  = args[3];
     U64 exit_signal = args[4];
     U64 stack       = args[5];
     U64 stack_size  = args[6];
     U64 tls         = args[7];
+    constexpr U64 K_CLONE_PIDFD = 0x00001000;
+    if ((flags & K_CLONE_PIDFD) && (flags & K_CLONE_THREAD)) return (U64)-K_EINVAL;
+    if (flags & K_CLONE_PIDFD) {
+        if (!pidfdAddr || pidfdAddr > ~0ULL - 3) return (U64)-K_EFAULT;
+        const U64 first = pidfdAddr >> K64_PAGE_SHIFT;
+        const U64 last = (pidfdAddr + 3) >> K64_PAGE_SHIFT;
+        for (U64 page = first;; ++page) {
+            const U32 pageFlags = this->memory64->getPageFlags(page);
+            if (!(pageFlags & K64_PAGE_MAPPED) || !(pageFlags & K64_PAGE_WRITE)) return (U64)-K_EFAULT;
+            if (page == last) break;
+        }
+    }
     // clone3 carries the exit signal in its own field; the low CSIGNAL bits
     // are invalid in flags (unlike legacy clone(2)).
     if ((flags & 0xff) || exit_signal > 64 ||
@@ -2127,7 +2142,13 @@ U64 KProcess::clone364(KThread* thread, U64 argsAddr, U64 size) {
         return (U64)-K_EINVAL;
     }
     // clone3 passes the stack base + size; the child's RSP is the top.
-    return clone64(thread, flags, stack + stack_size, parent_tid, tls, child_tid, exit_signal);
+    U64 result = clone64(thread, flags, stack + stack_size, parent_tid, tls, child_tid, exit_signal);
+    if ((S32)result < 0) return (U64)(S64)(S32)result;
+    if (!(flags & K_CLONE_PIDFD)) return result;
+    U32 pidfd = createPidFdForClone64(thread, (U32)result);
+    if ((S32)pidfd < 0) return (U64)(S64)(S32)pidfd;
+    this->memory64->writed(pidfdAddr, pidfd);
+    return result;
 }
 
 U32 KProcess::forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid, U64 exitSignal) {
