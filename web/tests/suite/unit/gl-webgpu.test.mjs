@@ -921,3 +921,31 @@ void main(){color=flags[0]+flags[1]+vec4(screenUv,0.0,0.0);}`;
   assert.match(applyNoperspectiveInterpolation(vertexWgsl,rewriteGlslForWebGPU(vertex,'vertex',new Map(),new Map()).noperspectiveLocations),/@location\(2\) @interpolate\(linear\) screenUv/);
   assert.ok(fragmentWgsl.includes('screenUv'));
 });
+
+test('lowering and lift failures surface as link failures with info logs, never as thrown exceptions', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    const basicFragment = '#version 300 es\nout vec4 color; void main(){color=vec4(1.0);}';
+    const cases = [
+      ['uniform block member declaration', '#version 300 es\nlayout(std140) uniform Camera { vec4 eye; int ; } camera; void main(){gl_Position=vec4(0.0);}', /Unsupported uniform block declaration: Camera/],
+      ['uniform block layout', '#version 300 es\nlayout(shared) uniform Camera { vec4 eye; } camera; void main(){gl_Position=vec4(0.0);}', /Unsupported uniform block layout for Camera; expected std140/],
+      ['matrix interface without entry point', '#version 300 es\nout mat4 transform;', /matrix stage interface requires void main\(\)/],
+      ['unterminated matrix interface entry point', '#version 300 es\nout mat4 transform;\nvoid main(){gl_Position=vec4(0.0);', /matrix stage interface has an unterminated main\(\)/],
+      ['empty vertex source fails the Naga lift', '', /GLSL lift failed \(empty-source\)/],
+    ];
+    for (const [name, vertexSource, message] of cases) {
+      const program = gl.createProgram();
+      const vertex = gl.createShader(0x8b31), fragment = gl.createShader(0x8b30);
+      gl.shaderSource(vertex, vertexSource); gl.shaderSource(fragment, basicFragment);
+      gl.compileShader(vertex); gl.compileShader(fragment);
+      gl.attachShader(program, vertex); gl.attachShader(program, fragment);
+      gl.linkProgram(program); // must not throw, even for synchronous lowering failures
+      assert.equal(await program.linkPromise, false, name);
+      assert.equal(gl.getProgramParameter(program, 0x8b82), false, `${name}: LINK_STATUS is false`);
+      assert.match(program.infoLog, message, `${name}: info log carries the diagnostic`);
+      assert.equal(gl.getError(), 0, `${name}: a plain translation failure is a link failure, not a GL error`);
+    }
+  } finally { gpu.restore(); }
+});

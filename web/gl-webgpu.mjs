@@ -1565,6 +1565,7 @@ export class WebGPUGL {
     const vertex = shaders.find(shader => shader.type === GL.VERTEX_SHADER);
     const fragment = shaders.find(shader => shader.type === GL.FRAGMENT_SHADER);
     program.linked = Boolean(vertex && fragment);
+    try {
     const initialBlocks = new Map();
     if (program.linked) for (const shader of [vertex, fragment]) for (const block of lowerUniformBlocks(shader.source).blocks) {
       if (!initialBlocks.has(block.name)) initialBlocks.set(block.name, { ...block, index: initialBlocks.size, stages: new Set() });
@@ -1619,6 +1620,17 @@ export class WebGPUGL {
         program.uniformInfo.push({ name, baseName: qualifiedName, size: member.arrayLength, type: TYPE_ENUM.get(member.type) || 0x1406, blockIndex: block.index });
         block.activeUniformIndices.push(index);
       }
+    }
+    } catch (error) {
+      // Synchronous lowering/reflection failures (e.g. an unsupported
+      // uniform block declaration) are link failures, not host exceptions:
+      // report them through LINK_STATUS and the info log, exactly like the
+      // asynchronous translation failures handled below.
+      program.linked = false;
+      program.infoLog = String(error?.message || error);
+      if (error?.glUnsupportedFeature) this._rejectUnsupported(error.glUnsupportedFeature, GL.INVALID_OPERATION);
+      program.linkPromise = Promise.resolve(false);
+      return;
     }
     const locationRegistry = new Map();
     let failingShader = null;
