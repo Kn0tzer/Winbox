@@ -24,7 +24,7 @@ struct FsNode;using FsNodePtr=std::shared_ptr<FsNode>;struct Entry{BString key;F
 #define BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(m) ((void)0)
 struct FsNode:std::enable_shared_from_this<FsNode>{BHashTable childrenByName;int childrenByNameMutex=0;void loadChildren(){}FsNodePtr getChildByName(BString);FsNodePtr getChildByNameIgnoreCase(BString);};
 ${lookup}
-int main(){auto root=std::make_shared<FsNode>(),drive=std::make_shared<FsNode>(),exe=std::make_shared<FsNode>();root->childrenByName[BString("Z(_colon_)")]=drive;root->childrenByName[BString("game.EXE")]=exe;assert(root->getChildByName(BString("Z:"))==drive);assert(root->getChildByNameIgnoreCase(BString("GAME.exe"))==exe);root->childrenByName[BString("C:")]=drive;assert(root->getChildByName(BString("C:.link"))==drive);root->childrenByName[BString("dosdevices/d(_colon_).link")]=drive;assert(root->getChildByName(BString("dosdevices/d:"))==drive);}
+int main(){auto root=std::make_shared<FsNode>(),drive=std::make_shared<FsNode>(),exe=std::make_shared<FsNode>();root->childrenByName[BString("Z(_colon_)")]=drive;root->childrenByName[BString("game.EXE")]=exe;assert(root->getChildByName(BString("Z:"))==drive);assert(root->getChildByNameIgnoreCase(BString("GAME.exe"))==exe);root->childrenByName[BString("C:")]=drive;assert(root->getChildByName(BString("C:.link"))==drive);root->childrenByName[BString("dosdevices/d(_colon_).link")]=drive;assert(root->getChildByName(BString("dosdevices/d:"))==drive);root->childrenByName[BString("plain.link")]=drive;assert(root->getChildByName(BString("plain"))==drive);}
 `);
     execFileSync('c++', ['-std=c++17', '-Wall', '-Werror', join(dir, 'check.cpp'), '-o', join(dir, 'check')]);
     execFileSync(join(dir, 'check'));

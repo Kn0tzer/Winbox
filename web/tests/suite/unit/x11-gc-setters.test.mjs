@@ -151,9 +151,9 @@ int main() {
     // XSetArcMode and XSetFillStyle store their value and report a missing GC
     {
         XGCPtr gc = server->createGC(nullptr);
-        cpu.args[2] = 0x77; cpu.args[3] = 0;
+        cpu.args[2] = 0x77; cpu.args[3] = 1;
         x11_SetArcMode(&cpu);
-        assert(cpu.eax == Success && gc->values.arc_mode == 0);
+        assert(cpu.eax == Success && gc->values.arc_mode == 1);
         cpu.args[3] = 1;
         x11_SetFillStyle(&cpu);
         assert(cpu.eax == Success && gc->values.fill_style == 1);
