@@ -59,6 +59,7 @@ namespace vk32abi {
 #include "vk64bridge.h"
 #include "vk64bridge_abi.h"
 #include "vk_query_results.h"
+#include "vk_encode_profile.h"
 #include "cpu64.h"
 #include "kmemory64.h"
 #include "kprocess.h"
@@ -2759,7 +2760,7 @@ void v2QueueFrame(V2FrameAsm& fa) {
 //   hop       MAIN_THREAD_EM_ASM chunk hops: chunks / bytes (inside present;
 //             a readback hop inside submit is also counted here but its wall
 //             stays inside submit)
-//   guest     wall - submit - trapOther - present  (pure CPU64 interpreter)
+//   guest     wall - submit - trapOther - present  (unattributed residual, including non-Vulkan work and profiler logging)
 // One klog line per presented frame. All state is touched only under g_vkMutex
 // (already held by vk64Bridge), so no extra locking. Behavior unchanged when
 // BW64_VKPROF is unset: a few emscripten_get_now() calls per trap.
@@ -2834,7 +2835,25 @@ inline bool vkMetricsEnabled() {
 }
 // True when either consumer needs the per-trap/per-stage timers accumulated.
 inline bool vkTimingEnabled() { return vkProfEnabled() || vkMetricsEnabled(); }
+struct VkEncodeClock { static double now() { return vkProfNow(); } };
+using VkEncodeProfile = vkencode::Profile<VkEncodeClock>;
+using VkEncodeScope = VkEncodeProfile::Scope;
+static bool vkEncodeDetailEnabled() {
+    if (!vkProfEnabled()) return false;
+    static int enabled = -1;
+    if (enabled < 0) {
+#ifdef __EMSCRIPTEN__
+        enabled = MAIN_THREAD_EM_ASM_INT({
+            return new URLSearchParams(window.location.search).get('vkprofdetail') === '1' ? 1 : 0;
+        });
+#else
+        enabled = std::getenv("BW64_VKPROF_DETAIL") ? 1 : 0;
+#endif
+    }
+    return enabled != 0;
+}
 struct VkProfAcc {
+    VkEncodeProfile encode;
     bool haveFrame = false;
     U64 frameNo = 0;
     double lastPresentT = 0;
@@ -2849,6 +2868,7 @@ struct VkProfAcc {
 };
 inline VkProfAcc& vkProfAcc() { static VkProfAcc a; return a; }
 inline void vkProfReset(VkProfAcc& a) {
+    a.encode.reset();
     a.accSubmit = a.accBufData = a.accImgData = a.accTrapOther = a.accHop = 0;
     a.accSer2 = a.accQueue = 0;
     a.accTrapCalls = a.accHopChunks = a.accHopBytes = 0;
@@ -3156,6 +3176,7 @@ static void hopV2LastToPage() {
 }
 
 static bool setupReadbacks(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
+    VkEncodeScope phase(vkProfAcc().encode, vkencode::ReadbackSetup, vkEncodeDetailEnabled());
     g_readbackPending.clear();
     for (const auto& fr : frames) {
         CmdBuf* cb = fr.first;
@@ -3180,6 +3201,7 @@ static bool setupReadbacks(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
 }
 
 static void completeReadbacks() {
+    VkEncodeScope phase(vkProfAcc().encode, vkencode::ReadbackWait, vkEncodeDetailEnabled());
     if (g_readbackPending.empty()) return;
     hopV2LastToPage();
     for (auto& pend : g_readbackPending) {
@@ -3202,9 +3224,11 @@ static void completeReadbacks() {
 
 
 void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
+    const bool detailed = vkEncodeDetailEnabled();
+    VkEncodeScope encodeScope(vkProfAcc().encode, vkencode::Serialize, detailed);
     double vkprofSer2T0 = vkProfNow(); // BW64_VKPROF (additive)
     // BW64_VKPROF accumulators (additive): time/bytes inside the two hot emit lambdas.
-    double vkprofBufT = 0, vkprofImgT = 0;
+    double vkprofBufT = 0, vkprofImgT = 0, vkprofQueueT = 0;
     U64 vkprofBufHashed = 0, vkprofBufSent = 0, vkprofImgHashed = 0, vkprofImgSent = 0;
     U64 vkprofBufCalls = 0, vkprofImgCalls = 0;
     for (const auto& fr : frames) {
@@ -3235,8 +3259,8 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
 
         auto emit = [&](U32 type, auto&& fill) {
             ChunkWriter p;
-            fill(p);
-            fa.emitRec(type, p.b, g_v2ChunkSeq);
+            { VkEncodeScope phase(vkProfAcc().encode, vkencode::RecordFill, detailed); fill(p); }
+            { VkEncodeScope phase(vkProfAcc().encode, vkencode::RecordAppend, detailed); fa.emitRec(type, p.b, g_v2ChunkSeq); }
         };
 
         // Per-frame dedup: a set bound twice or a buffer referenced by ten
@@ -3245,6 +3269,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         std::set<std::tuple<U64,U64,U64>> bufDone;
 
         auto emitShader = [&](ShaderModule* sm, U32 stage) {
+            VkEncodeScope phase(vkProfAcc().encode, vkencode::Shader, detailed);
             if (!sm || !sm->hash || !shaderDone.insert(sm->hash).second) return;
             emit(V2_SHADER, [&](ChunkWriter& p) {
                 p.u8(stage); p.u8(0); p.u16(0);
@@ -3306,12 +3331,14 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         };
         // BW64_VKPROF wrapper: wall time per emitBufferData call (additive).
         auto emitBufferData = [&](U64 bufId, U64 memOff, U64 len, U64 replayId = 0) {
+            VkEncodeScope phase(vkProfAcc().encode, vkencode::Buffer, detailed);
             double t0 = vkProfNow();
             ++vkprofBufCalls;
             emitBufferDataInner(bufId, memOff, len, replayId ? replayId : bufId);
             vkprofBufT += vkProfNow() - t0;
         };
         auto emitSampler = [&](U64 id) {
+            VkEncodeScope phase(vkProfAcc().encode, vkencode::Sampler, detailed);
             if (!id || !samplerDone.insert(id).second) return;
             Sampler* s = objOf<Sampler>(id, K_SAMPLER, "vkQueueSubmit");
             VK64_DROP_IF(return, !s);
@@ -3320,19 +3347,28 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             });
         };
         auto emitImageDataInner = [&](U64 viewId) {
+            VkEncodeScope viewPhase(vkProfAcc().encode, vkencode::ImageView, detailed);
             ImageView* view = objOf<ImageView>(viewId, K_IMAGEVIEW, "vkQueueSubmit");
             VK64_DROP_IF(return, !view || !view->image);
+            viewPhase.stop();
             // Descriptor bindings name views. Deduplicating by image drops
             // the view->image link for every other view of the same image.
-            if (!imageDone.insert(viewId).second) return;
+            { VkEncodeScope phase(vkProfAcc().encode, vkencode::ImageDedup, detailed);
+              if (!imageDone.insert(viewId).second) return; }
+            VkEncodeScope imagePhase(vkProfAcc().encode, vkencode::ImageLookup, detailed);
             Image* tex = objOf<Image>(view->image, K_IMAGE, "vkQueueSubmit");
             VK64_DROP_IF(return, !tex);
+            imagePhase.stop();
             std::vector<U8> bytes;
-            if (tex->mem && tex->pixBytes) bytes = readGuestRange(tex->mem, tex->memOff, tex->pixBytes);
+            if (tex->mem && tex->pixBytes) {
+                VkEncodeScope phase(vkProfAcc().encode, vkencode::ImageRead, detailed);
+                bytes = readGuestRange(tex->mem, tex->memOff, tex->pixBytes);
+            }
             // Cross-frame dedup: resend pixel bytes only when content changed.
             U64 hash = 0;
             bool sendPixels = true;
             if (!bytes.empty()) {
+                VkEncodeScope phase(vkProfAcc().encode, vkencode::ImageHash, detailed);
                 hash = fnv1a64(bytes.data(), bytes.size());
                 auto it = g_imageContentHash.find(view->image);
                 if (it != g_imageContentHash.end() && it->second == hash &&
@@ -3342,6 +3378,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     g_imageContentHash[view->image] = hash;
                 }
             }
+            VkEncodeScope imageRecord(vkProfAcc().encode, vkencode::ImageRecord, detailed);
             emit(V2_IMAGE_DATA, [&](ChunkWriter& p) {
                 // viewId first: the page's DESC_SET bindings name image VIEWS,
                 // while pixel content is deduped per image, so the record carries
@@ -3362,12 +3399,14 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         };
         // BW64_VKPROF wrapper: wall time per emitImageData call (additive).
         auto emitImageData = [&](U64 viewId) {
+            VkEncodeScope phase(vkProfAcc().encode, vkencode::Image, detailed);
             double t0 = vkProfNow();
             ++vkprofImgCalls;
             emitImageDataInner(viewId);
             vkprofImgT += vkProfNow() - t0;
         };
         auto emitDescSet = [&](U32 setIndex, U64 setId, const std::vector<U32>* dyn) {
+            VkEncodeScope phase(vkProfAcc().encode, vkencode::Descriptors, detailed);
             DescSet* s = objOf<DescSet>(setId, K_SET, "vkQueueSubmit");
             VK64_DROP_IF(return, !s);
             DescSetLayout* lay = s->layout ? objOf<DescSetLayout>(s->layout, K_SETLAYOUT, "vkQueueSubmit") : nullptr;
@@ -3478,6 +3517,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         U32 vertexStrides[VK64_MAX_VERT_BINDINGS] = {0};
         bool vertexHasStride[VK64_MAX_VERT_BINDINGS] = {false};
         auto emitPipeline = [&](U64 pipeId) {
+            VkEncodeScope phase(vkProfAcc().encode, vkencode::Pipeline, detailed);
             Pipeline* pipe = objOf<Pipeline>(pipeId, K_PIPELINE, "vkQueueSubmit");
             VK64_DROP_IF(return, !pipe);
             ShaderModule* vs = pipe->vs ? objOf<ShaderModule>(pipe->vs, K_SHADER, "vkQueueSubmit") : nullptr;
@@ -3914,7 +3954,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
 
         emit(V2_FRAME_END, [&](ChunkWriter& p) { p.u32(g_frameNo); });
         double vkprofQueueT0 = vkProfNow(); // BW64_VKPROF (additive)
-        v2QueueFrame(fa);
+        { VkEncodeScope phase(vkProfAcc().encode, vkencode::Queue, detailed); v2QueueFrame(fa); }
 
         const V2DoneFrame& qd = g_v2Pending.back();
         size_t totalBytes = 0;
@@ -3933,16 +3973,17 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 if (hist[t]) { dump += " "; dump += names[t]; dump += "=" + std::to_string(hist[t]); }
             klog_fmt("%s", dump.c_str());
         }
-        if (vkTimingEnabled()) {
-            VkProfAcc& pa = vkProfAcc();
-            pa.accBufData += vkprofBufT; pa.accImgData += vkprofImgT;
-            pa.accBufHashed += vkprofBufHashed; pa.accBufSent += vkprofBufSent;
-            pa.accImgHashed += vkprofImgHashed; pa.accImgSent += vkprofImgSent;
-            pa.accBufCalls += vkprofBufCalls; pa.accImgCalls += vkprofImgCalls;
-            pa.accQueue += vkProfNow() - vkprofQueueT0;
-            pa.accSer2 += vkProfNow() - vkprofSer2T0;
-        }
+        if (vkTimingEnabled()) vkprofQueueT += vkProfNow() - vkprofQueueT0;
         g_frameNo++;
+    }
+    if (vkTimingEnabled()) {
+        VkProfAcc& pa = vkProfAcc();
+        pa.accBufData += vkprofBufT; pa.accImgData += vkprofImgT;
+        pa.accBufHashed += vkprofBufHashed; pa.accBufSent += vkprofBufSent;
+        pa.accImgHashed += vkprofImgHashed; pa.accImgSent += vkprofImgSent;
+        pa.accBufCalls += vkprofBufCalls; pa.accImgCalls += vkprofImgCalls;
+        pa.accQueue += vkprofQueueT;
+        pa.accSer2 += vkProfNow() - vkprofSer2T0;
     }
 }
 
@@ -7241,6 +7282,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkQueueSubmit: {
         // (queue, nSubmits, pSubmits*)
         double vkprofSubmitT0 = vkProfNow(); // BW64_VKPROF (additive)
+        VkEncodeScope submitProfile(vkProfAcc().encode, vkencode::Submit, vkEncodeDetailEnabled());
         U32 n = (U32)args.a[1];
         std::vector<VkSubmitInfo> sis;
         readArray(args.a[2], n, sis);
@@ -7271,6 +7313,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 VK64_DROP_IF(continue, !cb);
                 // Eager copy execution, against the guest memory both sides of
                 // the copy live in (P1 ran these first at submit too).
+                VkEncodeScope transfer(vkProfAcc().encode, vkencode::Transfer, vkEncodeDetailEnabled());
                 for (const Cmd& k : cb->cmds) {
                     if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
                     else if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
@@ -7319,6 +7362,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkQueueSubmit2KHR: {
         // (queue, nSubmits, pSubmitInfo2*, fence) — Vulkan 1.3 path DXVK uses.
         double vkprofSubmitT0 = vkProfNow(); // BW64_VKPROF (additive)
+        VkEncodeScope submitProfile(vkProfAcc().encode, vkencode::Submit, vkEncodeDetailEnabled());
         // VkSubmitInfo2 carries semaphore values inline (no timeline pNext).
         U32 n = (U32)args.a[1];
         std::vector<VkSubmitInfo2> sis;
@@ -7352,6 +7396,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             for (auto& cbi : cbis) {
                 CmdBuf* cb = cbOf((U64)cbi.commandBuffer, "vkQueueSubmit2");
                 VK64_DROP_IF(continue, !cb);
+                VkEncodeScope transfer(vkProfAcc().encode, vkencode::Transfer, vkEncodeDetailEnabled());
                 for (const Cmd& k : cb->cmds) {
                     if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
                     else if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
@@ -7486,6 +7531,18 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                          (unsigned long long)pa.accHopChunks, (unsigned long long)pa.accHopBytes, guest,
                          (unsigned long long)pa.accBufCalls, (unsigned long long)pa.accImgCalls,
                          pa.accSer2, pa.accQueue, topT);
+                if (vkEncodeDetailEnabled()) {
+                    std::string detail = "{\"rootMs\":" + std::to_string(pa.encode.rootMs) + ",\"stages\":{";
+                    for (unsigned i = 0; i < vkencode::Count; ++i) {
+                        char entry[192];
+                        snprintf(entry, sizeof(entry), "%s\"%s\":{\"exclusiveMs\":%.3f,\"inclusiveMs\":%.3f,\"calls\":%llu}",
+                            i ? "," : "", vkencode::names[i], pa.encode.exclusive[i], pa.encode.inclusive[i],
+                            (unsigned long long)pa.encode.calls[i]);
+                        detail += entry;
+                    }
+                    detail += "}}";
+                    klog_fmt("vk64: VKPROF2 frame=%llu %s", (unsigned long long)pa.frameNo, detail.c_str());
+                }
                 if (ripSamplerProfileEnabled() && cpu && cpu->thread && cpu->thread->process)
                     ripSamplerProfDumpReset((int)cpu->thread->process->id);
                 }
@@ -9759,6 +9816,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 } else cbId = rd32_32(pCmd + i * 4);
                 CmdBuf* cb = objOf32<CmdBuf>(cbId, K_CMDBUF, "vkQueueSubmit");
                 VK64_DROP_IF(continue, !cb);
+                VkEncodeScope transfer(vkProfAcc().encode, vkencode::Transfer, vkEncodeDetailEnabled());
                 for (const Cmd& k : cb->cmds) {
                     if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
                     else if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
