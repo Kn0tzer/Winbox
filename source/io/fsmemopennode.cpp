@@ -59,16 +59,20 @@ U32 FsMemOpenNode::ioctl(KThread* thread, U32 request) {
 }
 
 void FsMemOpenNode::setAsync(bool isAsync) {
-    if (isAsync)
-        kdebug("FsMemOpenNode::setAsync not implemented");
+    this->applyAsyncFlag(isAsync);
 }
 
 bool FsMemOpenNode::isAsync() {
-    return false;
+    return this->asyncEnabled;
 }
 
 void FsMemOpenNode::waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) {
-    kdebug("FsMemOpenNode::::waitForEvents not implemented");
+    // Readiness for fs nodes is static (driven by the open mode), so mirror
+    // DevDsp::waitForEvents: if the requested readiness already holds, wake
+    // the poller instead of leaving it to time out.
+    if (((events & K_POLLIN) && this->isReadReady()) || ((events & K_POLLOUT) && this->isWriteReady())) {
+        BOXEDWINE_CONDITION_SIGNAL_ALL(parentCondition);
+    }
 }
 
 bool FsMemOpenNode::isWriteReady() {
