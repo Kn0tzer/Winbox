@@ -1,0 +1,28 @@
+OpCapability Shader
+OpCapability CullDistance
+OpMemoryModel Logical GLSL450
+OpEntryPoint Vertex %main "main" %pos %cull
+OpName %main "main"
+OpDecorate %pos BuiltIn Position
+OpDecorate %cull BuiltIn CullDistance
+%void = OpTypeVoid
+%fn = OpTypeFunction %void
+%float = OpTypeFloat 32
+%v4 = OpTypeVector %float 4
+%ptr = OpTypePointer Output %v4
+%pos = OpVariable %ptr Output
+%uint = OpTypeInt 32 0
+%len = OpConstant %uint 1
+%arr = OpTypeArray %float %len
+%ptra = OpTypePointer Output %arr
+%cull = OpVariable %ptra Output
+%f0 = OpConstant %float 0
+%f1 = OpConstant %float 1
+%vec = OpConstantComposite %v4 %f0 %f0 %f0 %f1
+%cvec = OpConstantComposite %arr %f0
+%main = OpFunction %void None %fn
+%lbl = OpLabel
+OpStore %pos %vec
+OpStore %cull %cvec
+OpReturn
+OpFunctionEnd
