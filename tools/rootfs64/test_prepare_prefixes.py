@@ -146,6 +146,19 @@ class PrefixPackagingTests(unittest.TestCase):
                 self.assertIn(b"RpcSs", system)
                 self.assertIn(b"PlugPlay", system)
 
+    def test_registry_fragment_merge_is_complete_and_idempotent(self):
+        registry = 'WINE REGISTRY Version 2\n#arch=win64\n\n[Software\\Wine] 1\n'
+        fragment = ('; comment\n[Software\\Microsoft\\Windows NT\\CurrentVersion] 1\n'
+                    '"ProductName"="Microsoft Windows 7"\n\n'
+                    '[Software\\Microsoft\\.NETFramework] 1\n"InstallRoot"="C:\\windows"\n')
+        merged, added = prefixes.merge_registry_fragment(registry, fragment)
+        self.assertEqual(len(added), 2)
+        self.assertIn('"ProductName"="Microsoft Windows 7"', merged)
+        self.assertIn('[Software\\Microsoft\\.NETFramework] 1', merged)
+        again, added_again = prefixes.merge_registry_fragment(merged, fragment)
+        self.assertEqual(added_again, [])
+        self.assertEqual(again, merged)
+
     def test_guard_requires_completed_marker_and_enabled_services(self):
         entries = valid_entries("win32")
         prefixes._validate_prefix(entries, "win32")

@@ -258,6 +258,23 @@ def validate_service_runtime(prefix_zip: Path, wine_zip: Path) -> None:
                 raise ValueError(f"{wine_zip}: missing gstreamer plugin {entry}")
 
 
+def merge_registry_fragment(registry: str, fragment: str) -> tuple[str, list[str]]:
+    """Append every [section] of *fragment* that *registry* still lacks.
+
+    Registry fragments (prefix64-reg.txt, prefix-mono-reg.txt) carry state a
+    real wineboot/wine-mono install writes; the pre-booted browser prefixes
+    must gain it without duplicating sections on rebuild (idempotent).
+    Returns the merged text and the section headers that were added.
+    """
+    added: list[str] = []
+    for section in re.findall(r'(?ms)^(\[.*?^.*?)(?=^\[|\Z)', fragment):
+        header = section.splitlines()[0].strip()
+        if header.split(']')[0] + ']' not in registry:
+            registry = registry.rstrip('\n') + '\n\n' + section.strip() + '\n'
+            added.append(header)
+    return registry, added
+
+
 def patch_audio(path: Path) -> None:
     records, contents = _zip_contents(path)
     registry_path = PREFIX + "user.reg"

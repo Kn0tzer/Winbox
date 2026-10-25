@@ -173,6 +173,30 @@ else
   echo "=== user.reg already has [Software\\Wine\\Direct3D] (or no user.reg) — skipping csmt inject ==="
 fi
 
+# === Version emulation + .NET policy state ==================================
+# A real wineboot writes the Windows NT CurrentVersion section (wine.inf
+# [Version]) and wine-mono writes the .NETFramework policy keys; the
+# pre-booted base prefix64 has NEITHER (the 32-bit builder merges its
+# fragment, this one never did), so installers/DRM/engines reading
+# ProductName/CurrentBuild directly got nothing on the 64-bit prefix.
+# Append every prefix64-reg.txt section system.reg still lacks (idempotent;
+# logic + unit test live in prepare_prefixes.merge_registry_fragment).
+SYSTEM_REG="$STAGE/$PREFIX_IN_ZIP/system.reg"
+if [ -f "$SYSTEM_REG" ] && [ -f "$HERE/prefix64-reg.txt" ]; then
+  echo "=== merging prefix64-reg.txt sections missing from system.reg ==="
+  python3 - "$SYSTEM_REG" "$HERE/prefix64-reg.txt" "$HERE" <<'PYEOF2'
+import sys
+sys.path.insert(0, sys.argv[3])
+import prepare_prefixes
+reg_path, frag_path = sys.argv[1], sys.argv[2]
+merged, added = prepare_prefixes.merge_registry_fragment(
+    open(reg_path, encoding='utf-8', errors='replace').read(),
+    open(frag_path, encoding='utf-8', errors='replace').read())
+open(reg_path, 'w', encoding='utf-8').write(merged)
+print('  + merged sections:', ', '.join(added) if added else '(none missing)')
+PYEOF2
+fi
+
 echo "=== rezipping prefix64.zip ==="
 rm -f "$ZIP"
 ( cd "$STAGE" && zip -qry9 "$ZIP" . )
