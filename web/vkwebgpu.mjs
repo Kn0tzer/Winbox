@@ -7,6 +7,7 @@ import {
   swizzleBgraVb, v2DepthStencilUploads, v2ImageBlitRegion, v2TextureFormat, v2TextureMipUploadPlan, v2TexturePixels, v2VertexFormat,
   v2IndexedTriangleFanIndices, v2TriangleFanIndices,
 } from './vk-protocol.mjs';
+import { createVkFrameCapture } from './vk-frame-capture.mjs';
 import { bwLog, bwLogRl } from './vk-log.mjs';
 import { bridgeRecoveryStats, reportBridgeFailure } from './bridge-recovery.mjs';
 import {
@@ -617,7 +618,7 @@ export async function createVkRenderer(canvas, { translate, log = defaultLog } =
   const context = canvas.getContext('webgpu');
   if (!context) throw new Error('No WebGPU canvas context');
   const format = navigator.gpu.getPreferredCanvasFormat();
-  context.configure({ device, format, alphaMode: 'opaque', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST });
+  context.configure({ device, format, alphaMode: 'opaque', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC });
 
   const shaders = createShaderCache({ translate, log, device });
   const pipelines = new Map();     // pipeline key -> GPURenderPipeline
@@ -856,9 +857,14 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
   let renderer = null, pending = Promise.resolve(), starting = null;
 
   // --- schema v2 (binary framed records): streaming queue + render pump ---
+  const capture = createVkFrameCapture({ isBoundary: () => !v2asm.inFrame && v2present.pending.length === 0 });
+  globalThis.bwVkCapture = capture;
+  const requestedCapture = globalThis.__bwVkCaptureFrame ?? new URLSearchParams(globalThis.location?.search || '').get('bwVkCaptureFrame');
+  let capturePending = null;
   const v2queue = new V2FrameQueue(V2_QUEUE_CAP);
   const v2present = new V2PresentAssembler();
   const v2asm = new V2FrameAssembler();
+  if (requestedCapture !== null && requestedCapture !== undefined) capture.arm(requestedCapture === 'next' ? null : Number(requestedCapture));
   const v2state = { chunksReceived: 0, framesReceived: 0, rendered: 0,
     droppedConsumer: 0, chunkGaps: 0, rejected: 0 };
   let renderer2 = null, starting2 = null, pump2 = Promise.resolve();
@@ -875,7 +881,7 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
     if (pumpTimer) clearTimeout(pumpTimer);
     pumpTimer = setTimeout(() => {
       pumpTimer = null;
-      pump2 = pump2.then(() => pumpChunks());
+      pump2 = pump2.then(() => pumpChunks(), () => pumpChunks());
     }, 8);
   }
 
@@ -921,14 +927,18 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
   async function pumpChunks() {
     if (destroyed) return stopped();
     if (!renderer2) {
-      starting2 ||= createVkRenderer2(canvas || defaultCanvas(), { log, onResize: v2Resize }).then(r => {
+      starting2 ||= createVkRenderer2(canvas || defaultCanvas(), { log, onResize: v2Resize, capture }).then(r => {
         renderer2 = r; globalThis.bwVkRenderer2 = r;
         return r;
       });
-      await starting2;
+      try { await starting2; }
+      catch (error) { capture.fail('Renderer initialization: ' + String(error), true); return { rendered: false, reason: String(error) }; }
     }
     if (destroyed) return stopped();
-    const f = v2queue.takeLatest(); // latest-frame-wins: the guest presenting
+    // Pin the selected presentation across latest-frame-wins queue drops.
+    const f = capturePending || v2queue.takeLatest();
+    if (capturePending) { v2queue.q = v2queue.q.filter(frame => frame !== capturePending); capturePending = null; }
+    // latest-frame-wins: the guest presenting
     if (!f) return { rendered: false, reason: 'empty' }; // faster than the page renders never builds a backlog
     try {
       // An undersized uniform binding is a size the page did not pad: Dawn
@@ -939,7 +949,9 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
       // repeats the failure until the WGSL scan happens to agree with Dawn.
       for (let attempt = 0; ; attempt++) {
         try {
+          capture.beginAttempt(f, attempt);
           const result = await renderer2.render(f);
+          capture.finish(f, result?.rendered ? null : result?.reason || 'frame skipped');
           if (result?.rendered) {
             v2state.rendered++;
             state.last = result;
@@ -953,11 +965,13 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
           const message = String(e.message || e);
           const learned = attempt < 4 && renderer2.learnMinBindingSize(message);
           if (!learned) {
+            capture.finish(f, message);
             v2state.rejected++;
             rememberRecoveryError(state.errors, 'v2: ' + message);
             reportBridgeFailure('vkwebgpu.v2-frame', e, log);
             return { rendered: false, reason: message };
           }
+          capture.failedAttempt(f, message);
           log('vk64: v2 frame ' + (f?.frameNo ?? '?') + ' retry ' + (attempt + 1) +
             ' after learning min binding size \u2014 ' + message.slice(0, 160));
         }
@@ -974,32 +988,40 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
   // The wasm hop's window.bwVkChunk entry point (one call per chunk). Parsing
   // and queueing are synchronous; the render pump is serialised behind pump2.
   // Never throws back at the guest.
-  function chunk(bytes, flags) {
+  function chunk(bytes, flags, guestPresent) {
     if (destroyed) return Promise.resolve(stopped());
     v2state.chunksReceived++;
+    capture.wire(bytes, flags);
+    const discardPartial = error => { capture.fail(error); v2present.pending.length = 0; v2asm.records = []; v2asm.inFrame = false; };
     let parsed;
     try { parsed = parseV2Chunk(bytes); }
     catch (e) {
       v2state.rejected++;
+      discardPartial('Malformed wire chunk: ' + String(e));
       rememberRecoveryError(state.errors, 'v2 chunk: ' + String(e.message || e));
       reportBridgeFailure('vkwebgpu.v2-chunk', e, log);
       return Promise.resolve({ rendered: false, reason: 'bad-chunk' });
     }
+    const gapsBefore = v2asm.gaps, partialsBefore = v2asm.droppedPartials;
     const recs = v2asm.ingest(parsed);
+    if (v2asm.gaps !== gapsBefore || v2asm.droppedPartials !== partialsBefore) { capture.fail('Wire sequence gap before guest presentation'); v2present.pending.length = 0; }
     v2state.chunkGaps = v2asm.gaps;
     if (!recs) return Promise.resolve({ rendered: false, reason: 'assembling' });
     let decoded;
     try { decoded = decodeV2Frame(recs); }
     catch (e) {
       v2state.rejected++;
+      discardPartial('Malformed decoded submission: ' + String(e));
       rememberRecoveryError(state.errors, 'v2 frame: ' + String(e.message || e));
       reportBridgeFailure('vkwebgpu.v2-frame-decode', e, log);
       return Promise.resolve({ rendered: false, reason: String(e.message || e) });
     }
+    if (guestPresent?.readback) capture.fail('Guest synchronous readback preceded this present; earlier GPU snapshots are unavailable');
     const presented = v2present.push(decoded, flags);
     if (!presented) return Promise.resolve({ rendered: false, reason: 'assembling-present' });
     v2state.framesReceived++;
-    v2queue.push(presented); // drop complete presentations, never individual submissions
+    v2queue.push(presented); // resolve resource deltas before taking the snapshot
+    if (capture.batch(presented, guestPresent)) capturePending = presented;
     v2state.droppedConsumer = v2queue.dropped;
     queuePump();
     return pump2;
@@ -1025,10 +1047,12 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
       destroyed = true;
       if (pumpTimer) clearTimeout(pumpTimer);
       pumpTimer = null;
+      capturePending = null;
       v2queue.clear(); v2queue.imageData.clear(); v2queue.bufferData.clear();
       v2present.pending.length = 0; v2asm.records.length = 0;
       if (globalThis.bwVkTier === tier) delete globalThis.bwVkTier;
       if (globalThis.bwVkStats === stats) delete globalThis.bwVkStats;
+      if (globalThis.bwVkCapture === capture) delete globalThis.bwVkCapture;
       if (globalThis.bwVkChunk === acceptChunk) delete globalThis.bwVkChunk;
       // Let a renderer that is initializing or encoding finish before freeing
       // its device. Queued work sees destroyed and never starts another frame.
@@ -1051,9 +1075,9 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
   // The wasm bridge hops v2 chunks via window.bwVkChunk(bytes, flags) (see
   // hopV2LastToPage in vk64bridge.cpp). Wire it here so direct EM_ASM delivery
   // works even when the host page bypasses the app.mjs vk2 message path.
-  const acceptChunk = (bytes, flags) => {
+  const acceptChunk = (bytes, flags, guestPresent) => {
     bwLogRl(4, 'vulkan', 100, 'v2 chunk received: ' + bytes.length + ' bytes flags=' + flags);
-    tier.chunk(bytes, flags);
+    tier.chunk(bytes, flags, guestPresent);
   };
   globalThis.bwVkChunk = acceptChunk;
   return tier;
@@ -1207,7 +1231,7 @@ function v2BlendConstantMode(pipe) {
  * @param {HTMLCanvasElement} canvas
  * @param {{translate?: (from: string, source: Uint8Array, stage: string, entryPoint?: string, options?: {rasterTopology?: number}) => Promise<string>, log?: (msg: string) => void, onResize?: () => void}} [options]
  */
-export async function createVkRenderer2(canvas, { translate, log = defaultLog, onResize } = {}) {
+export async function createVkRenderer2(canvas, { translate, log = defaultLog, onResize, capture } = {}) {
   if (!navigator.gpu) throw new Error('WebGPU is unavailable');
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error('No WebGPU adapter');
@@ -1234,7 +1258,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   const context = canvas.getContext('webgpu');
   if (!context) throw new Error('No WebGPU canvas context');
   const format = navigator.gpu.getPreferredCanvasFormat();
-  context.configure({ device, format, alphaMode: 'opaque', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST });
+  context.configure({ device, format, alphaMode: 'opaque', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC });
 
   const shaders = createShaderCache({ translate, log, device });
   const pipelines = new Map();   // pipeId:msN -> { pipeline, layouts, decls, hasPush, slotOf, maxGroup, key }
@@ -2113,7 +2137,10 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       }
       return result;
     }
+    const requestedPresent = present;
     if (present && !v2HasColourPass(frame)) present = false;
+    const captureBuffers = new Set();
+    try {
     F.shaders = frame.shaders; F.images = frame.images;
     F.views = frame.views; F.samplers = frame.samplers; F.buffers = frame.buffers;
     F.viewFormats = frame.viewFormats || new Map();
@@ -2132,7 +2159,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       obsW = displayWidth; obsH = displayHeight;
       // Reconfigure the WebGPU context for the new canvas size; without
       // this getCurrentTexture() may return a stale-sized texture.
-      context.configure({ device, format, alphaMode: 'opaque', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST });
+      context.configure({ device, format, alphaMode: 'opaque', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC });
     }
 
     // An attachment can be used by several dynamic rendering subrectangles.
@@ -2181,11 +2208,16 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       pipeBad: false, badPipes: new Map(), dynamicStencil:[[undefined,undefined],[undefined,undefined],[undefined,undefined]], blendConstants:[0,0,0,0], depthBias:null, cull:undefined, front:undefined, dyn:{},
     };
     const bump = si => st.setVer.set(si, (st.setVer.get(si) || 0) + 1);
-    const diagCfg = v2PassReadbackConfig(globalThis.location?.search);
+    const capturing = capture?.selected(frame) === true;
+    const diagCfg = capturing ? { every: 1, maxPasses: 64, maxPixels: 4 * 1024 * 1024 } : v2PassReadbackConfig(globalThis.location?.search);
     const diagOn = !!diagCfg && (stats.frames % diagCfg.every) === 0;
     const diagPasses = [];
+    if (capturing && requestedPresent && !present) {
+      capture.image(frame, { stage: 'present-source', skipped: 'no-colour-pass' });
+      capture.image(frame, { stage: 'canvas', skipped: 'no-colour-pass' });
+    }
 
-    for (const p of frame.passes) {
+    for (const [passIndex, p] of frame.passes.entries()) {
       // The selected pipeline is specific to one pass's attachment state (formats,
       // sample count, depth). The bound pipeline *description* carries over; the
       // WebGPU pipeline is re-resolved at the next draw. A stale rec here made
@@ -2241,7 +2273,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
             loadOp: a.loadOp === 1 ? 'clear' : 'load',
             storeOp: a.storeOp === 1 ? 'discard' : 'store',
           });
-          if (diagOn) passDiagTargets.push({ tex: single, format: viewFormat, slot, discard: a.storeOp === 1 });
+          if (diagOn) passDiagTargets.push({ tex: single, imageId: a.imageId, format: viewFormat, slot, discard: a.storeOp === 1 && samples === 1 });
           presentTex = single; presentW = p.w; presentH = p.h; lastClear = p.clearColor;
         }
       }
@@ -2600,23 +2632,28 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         if (skipped) break;
       }
       if (passEnc) passEnc.end();
-      if (diagOn && passEnc && diagPasses.length < diagCfg.maxPasses) {
-        const entry = { pass: diagPasses.length, w: p.w, h: p.h, loadClear: p.attachments.map(a => a.loadOp === 1), draws: passDiagDraws.draws, rawDraws: passDiagDraws.raw, skips: passDiagDraws.skips,
+      if (diagOn && passEnc && passIndex < diagCfg.maxPasses) {
+        const entry = { pass: passIndex, w: p.w, h: p.h, loadClear: p.attachments.map(a => a.loadOp === 1), draws: passDiagDraws.draws, rawDraws: passDiagDraws.raw, skips: passDiagDraws.skips,
           vs: [...passDiagDraws.vs].slice(0, 8), fs: [...passDiagDraws.fs].slice(0, 8), list: passDiagDraws.list,
           unsupported: stats.unsupported - passDiagStart.unsupported, blank: blankUses - passDiagStart.blank, census: v2DiagImageCensus(F), targets: [] };
         for (const t of passDiagTargets) {
           const bpt = v2DiagBytesPerTexel(t.format);
-          if (!bpt || t.discard || p.w * p.h > diagCfg.maxPixels) {
-            entry.targets.push({ slot: t.slot, format: t.format, skipped: !bpt ? 'format' : t.discard ? 'discarded' : 'size' });
+          if (!bpt || t.discard || t.tex.width * t.tex.height > diagCfg.maxPixels) {
+            entry.targets.push({ slot: t.slot, imageId: t.imageId, format: t.format, skipped: !bpt ? 'format' : t.discard ? 'discarded' : 'size' });
             continue;
           }
-          const bytesPerRow = Math.ceil(p.w * bpt / 256) * 256;
-          const buffer = device.createBuffer({ size: bytesPerRow * p.h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-          encoder.copyTextureToBuffer({ texture: t.tex }, { buffer, bytesPerRow }, [p.w, p.h]);
-          entry.targets.push({ slot: t.slot, format: t.format, buffer, bytesPerRow });
+          const w = t.tex.width, h = t.tex.height;
+          const bytesPerRow = Math.ceil(w * bpt / 256) * 256;
+          if (capturing && !capture.reserve(frame, bytesPerRow * h)) { entry.targets.push({ slot: t.slot, imageId: t.imageId, format: t.format, w, h, skipped: 'byte-budget' }); continue; }
+          const buffer = device.createBuffer({ size: bytesPerRow * h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+          if (capturing) captureBuffers.add(buffer);
+          encoder.copyTextureToBuffer({ texture: t.tex }, { buffer, bytesPerRow }, [w, h]);
+          entry.targets.push({ slot: t.slot, imageId: t.imageId, format: t.format, w, h, buffer, bytesPerRow });
         }
         diagPasses.push(entry);
       }
+      if (capturing && unsupportedAttachment) capture.image(frame, { stage: 'pass', pass: passIndex, skipped: 'unsupported-attachment', formats: p.attachments.map(a => a.format) });
+      if (capturing && passEnc && passIndex >= diagCfg.maxPasses) capture.image(frame, { stage: 'pass', pass: passIndex, skipped: 'pass-limit', targets: passDiagTargets.length });
       if (skipped) { stats.skips++; return { rendered: false, reason: skipped }; }
     }
 
@@ -2668,10 +2705,24 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     if (present && (canvas.width < presentW || canvas.height < presentH)) {
       canvas.width = presentW; canvas.height = presentH;
       obsW = canvas.width; obsH = canvas.height;
-      context.configure({ device, format, alphaMode: 'opaque', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST });
+      context.configure({ device, format, alphaMode: 'opaque', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC });
     }
+    const captureCopies = [];
+    const captureTexture = (texture, stage) => {
+      if (!capturing) return;
+      const bpt = v2DiagBytesPerTexel(texture.format || format);
+      const w = texture.width, h = texture.height;
+      if (!bpt || w * h > diagCfg.maxPixels) { capture.image(frame, { stage, format: texture.format || format, w, h, skipped: !bpt ? 'format' : 'size' }); return; }
+      const bytesPerRow = Math.ceil(w * bpt / 256) * 256;
+      if (!capture.reserve(frame, bytesPerRow * h)) { capture.image(frame, { stage, format: texture.format || format, w, h, skipped: 'byte-budget' }); return; }
+      const buffer = device.createBuffer({ size: bytesPerRow * h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+      captureBuffers.add(buffer);
+      encoder.copyTextureToBuffer({ texture }, { buffer, bytesPerRow }, [w, h]);
+      captureCopies.push({ buffer, bytesPerRow, w, h, format: texture.format || format, stage });
+    };
     if (present) {
       const presentDest = context.getCurrentTexture();
+      captureTexture(presentTex, 'present-source');
       if (presentDest.width < presentW || presentDest.height < presentH)
         throw new Error(`canvas texture is ${presentDest.width}x${presentDest.height}, present copy is ${presentW}x${presentH}`);
       if ((presentTex.format || format).replace(/-srgb$/, '') === format.replace(/-srgb$/, '')) {
@@ -2702,6 +2753,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         pass.setViewport(0, 0, presentW, presentH, 0, 1);
         pass.draw(3); pass.end();
       }
+      captureTexture(presentDest, 'canvas');
     }
     gpuTimer.end(encoder, bwGpuSlot);
     const bwSubmitT0 = metricsNow();
@@ -2710,18 +2762,32 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     timing.submitCount++;
     gpuTimer.resolve(bwGpuSlot);
     const invalid = await device.popErrorScope();
-    if (invalid) { if (readback) readback.destroy(); for (const e of diagPasses) for (const t of e.targets) t.buffer?.destroy(); throw new Error('v2 frame encoding rejected: ' + invalid.message); }
+    if (invalid) { if (readback) readback.destroy(); for (const e of diagPasses) for (const t of e.targets) t.buffer?.destroy(); for (const t of captureCopies) t.buffer.destroy(); throw new Error('v2 frame encoding rejected: ' + invalid.message); }
+    for (const t of captureCopies) {
+      try {
+        await t.buffer.mapAsync(GPUMapMode.READ);
+        capture.image(frame, { stage: t.stage, w: t.w, h: t.h, format: t.format, bytesPerRow: t.bytesPerRow }, new Uint8Array(t.buffer.getMappedRange()), true);
+        t.buffer.unmap();
+      } catch (error) { capture.image(frame, { stage: t.stage, error: String(error) }); }
+      finally { t.buffer.destroy(); }
+    }
     if (diagPasses.length) {
       for (const e of diagPasses) for (const t of e.targets) {
         if (!t.buffer) continue;
         try {
           await t.buffer.mapAsync(GPUMapMode.READ);
-          Object.assign(t, v2SummarizeColorPixels(new Uint8Array(t.buffer.getMappedRange()), e.w, e.h, t.bytesPerRow, t.format));
+          const mappedRows = new Uint8Array(t.buffer.getMappedRange());
+          if (capturing) capture.image(frame, { stage: 'pass', pass: e.pass, imageId: t.imageId, slot: t.slot, w: t.w, h: t.h, format: t.format, bytesPerRow: t.bytesPerRow }, mappedRows, true);
+          Object.assign(t, v2SummarizeColorPixels(mappedRows, t.w, t.h, t.bytesPerRow, t.format));
           t.buffer.unmap();
         } catch (err) { t.error = String(err?.message || err); }
         t.buffer.destroy(); delete t.buffer;
       }
-      const report = { frame: stats.frames, passes: diagPasses };
+      if (capturing) {
+        for (const e of diagPasses) for (const t of e.targets) if (t.skipped || t.error) capture.image(frame, { stage: 'pass', pass: e.pass, slot: t.slot, skipped: t.skipped, error: t.error });
+        capture.outcome(frame, { passes: diagPasses });
+      }
+      const report = { frame: stats.frames, guestSubmission: frame.frameNo, passes: diagPasses };
       (globalThis.bwPassReadbackLog ||= []).push(report);
       if (globalThis.bwPassReadbackLog.length > 8) globalThis.bwPassReadbackLog.shift();
       console.info('[bwPassReadback]', JSON.stringify(report));
@@ -2789,6 +2855,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       rendered: true, frame: frame.frameNo, litPixels: stats.litPixels, paintedPixels: stats.paintedPixels,
       totalPixels: presentW * presentH, clear: lastClear,
     };
+    } finally { for (const buffer of captureBuffers) { try { buffer.destroy(); } catch {} } }
   }
 
   return {

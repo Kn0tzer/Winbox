@@ -234,8 +234,8 @@ window.bwVkFrame = recoverBridgeCall('runtime.vk-frame', json => send('vk', json
 // MAIN_THREAD_EM_ASM into window.bwVkChunk. Forwarded to the app shell as a
 // 'vk2' message with the buffer transferred (zero-copy); the top-level
 // self-host path below routes it straight into the tier instead.
-window.bwVkChunk = recoverBridgeCall('runtime.vk-chunk', (bytes, flags) => {
-  const msg = { wine: true, type: 'vk2', data: { bytes, flags } };
+window.bwVkChunk = recoverBridgeCall('runtime.vk-chunk', (bytes, flags, guestPresent) => {
+  const msg = { wine: true, type: 'vk2', data: { bytes, flags, guestPresent } };
   try { parent.postMessage(msg, location.origin, [bytes.buffer]); }
   catch (e) { parent.postMessage(msg, location.origin); }
 }, undefined);
@@ -251,7 +251,7 @@ if (window.parent === window) window.addEventListener('message', e => {
     .then(m => (window.bwVkTier = m.installVkPageTier()))
     .catch(err => { window.bwVkTierReady = null; console.warn('vk64: page tier module load failed', err); window.bwRuntimeLog('vk64: page tier module load failed — ' + (err.message || err)); });
   if (e.data.type === 'vk') window.bwVkTierReady.then(tier => tier.frame(e.data.data)).catch(() => {});
-  else window.bwVkTierReady.then(tier => tier.chunk(e.data.data.bytes, e.data.data.flags)).catch(() => {});
+  else window.bwVkTierReady.then(tier => tier.chunk(e.data.data.bytes, e.data.data.flags, e.data.data.guestPresent)).catch(() => {});
 });
 // C1 naga observation lane (?naga=1, default OFF — contract /tmp/c1-contract.md):
 // wrap WebGL2RenderingContext.prototype.shaderSource to capture the post-bridge

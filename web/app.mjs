@@ -414,7 +414,7 @@ window.addEventListener('message', event => {
     }
     run.vkReady.then(async tier => {
       if (current !== run || !tier) return;
-      await (type === 'vk' ? tier.frame(data) : tier.chunk(data.bytes, data.flags));
+      await (type === 'vk' ? tier.frame(data) : tier.chunk(data.bytes, data.flags, data.guestPresent));
       run.firstMapped = true; updateStartup(run, true);
       const canvas = $('vkCanvas');
       if (canvas?.width && canvas?.height) $('display').style.setProperty('--program-aspect', `${canvas.width} / ${canvas.height}`);

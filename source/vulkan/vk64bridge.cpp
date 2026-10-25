@@ -2874,7 +2874,13 @@ struct VkProfTrapTimer {
         if (fn < 256) { a.trapWall[fn] += dt; a.trapCnt[fn]++; }
     }
 };
-void hopV2ToPage() {
+static void appendPresentCaptureInfo(std::string& json, U64 scId, U32 index, Swapchain* sc) {
+    if (json.back() != '[') json += ',';
+    json += "{\"swapchain\":\"" + std::to_string(scId) + "\",\"index\":" + std::to_string(index);
+    json += ",\"image\":\"" + std::to_string(sc && index < sc->nimg ? sc->imgs[index] : 0) + "\"";
+    json += ",\"w\":" + std::to_string(sc ? sc->w : 0) + ",\"h\":" + std::to_string(sc ? sc->h : 0) + "}";
+}
+void hopV2ToPage(const std::string& presentInfo = std::string()) {
 #ifdef __EMSCRIPTEN__
     double vkprofHopT0 = vkProfNow(); U64 vkprofHopChunks = 0, vkprofHopBytes = 0;
     // A present depends on all preceding submissions: scene rendering,
@@ -2896,10 +2902,10 @@ void hopV2ToPage() {
                             // wasm memory growth detaches every live view.
                             // Use HEAPU8 directly (Module.HEAPU8 may not be in scope).
                             const bytes = new Uint8Array(HEAPU8.buffer, $0 >>> 0, $1 >>> 0).slice();
-                            window.bwVkChunk(bytes, $2);
+                            window.bwVkChunk(bytes, $2, $3 ? JSON.parse(UTF8ToString($3 >>> 0)) : null);
                         } catch (e) { console.warn('vk64: bwVkChunk failed', e); }
                     }
-                }, ptr, len, moreSubmissions);
+                }, ptr, len, moreSubmissions, presentInfo.empty() ? nullptr : presentInfo.c_str());
             }
         }
     }
@@ -3130,7 +3136,7 @@ static void hopV2LastToPage() {
             if (globalThis.window && window.bwVkChunk) {
                 try {
                     const bytes = new Uint8Array(HEAPU8.buffer, $0 >>> 0, $1 >>> 0).slice();
-                    window.bwVkChunk(bytes, $2);
+                    window.bwVkChunk(bytes, $2, { readback: true });
                 } catch (e) {
                     globalThis.__bwVkChunkErrors = (globalThis.__bwVkChunkErrors || 0) + 1;
                     const n = globalThis.__bwVkChunkErrors;
@@ -7402,9 +7408,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             }
             sem->signalled = 0;
         }
+        std::string presentInfo = "{\"swapchains\":[";
         for (U32 i = 0; i < pi.swapchainCount; i++) {
             U64 scId = rd64(pi.pSwapchains + (U64)i * 8);
             Swapchain* sc = objOf<Swapchain>(scId, K_SWAPCHAIN, "vkQueuePresentKHR");
+            appendPresentCaptureInfo(presentInfo, scId, rd32(pi.pImageIndices + (U64)i * 4), sc);
             klog_fmt("vk64: vkQueuePresentKHR swapchain=0x%llx image=%u %ux%u -> presents frame %u",
                      (unsigned long long)scId, (unsigned)rd32(pi.pImageIndices + (U64)i * 4),
                      sc ? sc->w : 0, sc ? sc->h : 0, g_frameNo ? g_frameNo - 1 : 0);
@@ -7419,7 +7427,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // a string. v2: every queued frame's chunks, one MAIN_THREAD_EM_ASM per
         // chunk; the producer ring already dropped the oldest frames past its
         // cap, so this never carries a backlog.
-        if (vkSchemaV2()) hopV2ToPage(); else emitFrameNow();
+        if (vkSchemaV2()) hopV2ToPage(presentInfo + "],\"lastSubmission\":" + std::to_string(g_frameNo ? g_frameNo - 1 : 0) + "}"); else emitFrameNow();
         // ---- BW64_VKPROF / BW64_METRICS frame boundary (additive) ----
         // VKPROF keeps its one-line-per-frame klog (opt-in); the live metrics
         // path consumes the same numbers and is on by default. Both are gated
@@ -9796,16 +9804,18 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             }
             sem->signalled = 0;
         }
+        std::string presentInfo = "{\"swapchains\":[";
         for (U32 i = 0; i < scCount && pSc; i++) {
             U64 scId = rd64_32(pSc + i * 8);
             Swapchain* sc = objOf32<Swapchain>(scId, K_SWAPCHAIN, "vkQueuePresentKHR");
+            appendPresentCaptureInfo(presentInfo, scId, pIdx ? rd32_32(pIdx + i * 4) : 0, sc);
             klog_fmt("vk32: vkQueuePresentKHR swapchain=0x%llx image=%u %ux%u",
                      (unsigned long long)scId,
                      pIdx ? rd32_32(pIdx + i * 4) : 0,
                      sc ? sc->w : 0, sc ? sc->h : 0);
             if (pRes) wr32_32(pRes + i * 4, VK_SUCCESS);
         }
-        if (vkSchemaV2()) hopV2ToPage(); else emitFrameNow();
+        if (vkSchemaV2()) hopV2ToPage(presentInfo + "],\"lastSubmission\":" + std::to_string(g_frameNo ? g_frameNo - 1 : 0) + "}"); else emitFrameNow();
         // Live metrics for the 32-bit guest Vulkan path: present count and the
         // present-to-present wall ONLY. vk32Bridge has no per-trap timers, so
         // submit/trap/hop/guest stay unavailable (never zero) and the panel
