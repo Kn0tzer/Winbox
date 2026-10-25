@@ -5353,6 +5353,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCreateFramebuffer: {
         VkFramebufferCreateInfo ci = {};
         if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (ci.layers > 1) {
+            vk64Unsupported("layered-framebuffer", "WebGPU replay supports one render-target layer; framebuffer rejected");
+            wr64(args.a[3], 0);
+            return VK_ERROR_FEATURE_NOT_PRESENT;
+        }
         U64 id = 0;
         Framebuffer* fb = createObj<Framebuffer>(K_FRAMEBUFFER, id);
         fb->rp = ci.renderPass;
@@ -8721,6 +8726,11 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCreateFramebuffer: {
         vk32abi::VkFramebufferCreateInfo ci = {};
         if (!readStruct32(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (ci.layers > 1) {
+            vk64Unsupported("layered-framebuffer", "WebGPU replay supports one render-target layer; framebuffer rejected");
+            wr64_32((U32)args.a[3], 0);
+            return VK_ERROR_FEATURE_NOT_PRESENT;
+        }
         U64 id = 0;
         Framebuffer* fb = createObj32<Framebuffer>(K_FRAMEBUFFER, id);
         fb->rp = ci.renderPass;

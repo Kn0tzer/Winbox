@@ -20,9 +20,13 @@ const frameOf = middle => [rec(V2_REC.FRAME_BEGIN, new W().u32(1).u32(8).u32(8).
 
 test('clear replay guards keep Vulkan command preconditions explicit',()=>{
   const source=readFileSync(new URL('../../../../web/vkwebgpu.mjs',import.meta.url),'utf8');
+  const bridge=readFileSync(new URL('../../../../source/vulkan/vk64bridge.cpp',import.meta.url),'utf8');
   assert.match(source,/case 'clearAttachments': \{\s*if\(!passEnc\) \{noteUnsupported\('clear-attachments-outside-pass'\)/);
   assert.match(source,/case 'imageClearDS': \{[\s\S]*?if \(passEnc\) \{ noteUnsupported\('clear-ds-inside-pass'\)/);
   assert.match(source,/if\(\(\(aspect&1\)&&attachment\.colorAttachment>=passColorFormats\.length\)/);
+  assert.equal((bridge.match(/vk64Unsupported\("layered-framebuffer"/g)||[]).length,2);
+  assert.equal((bridge.match(/if \(ci\.layers > 1\) \{[\s\S]{0,220}VK_ERROR_FEATURE_NOT_PRESENT;/g)||[]).length,2,
+    'both guest ABIs must reject layered framebuffers before recording clear rectangles');
 });
 
 test('IMAGE_DATA view-range tail is decoded; older records without it still decode', () => {
