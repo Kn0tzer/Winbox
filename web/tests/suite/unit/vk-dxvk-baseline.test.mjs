@@ -97,3 +97,24 @@ test('features the WebGPU ICD cannot implement stay mirrored from reported suppo
     assert.ok(mirrored.has(path), `${path} must be mirrored from supported.* in GetDeviceFeatures`);
   }
 });
+
+test('page-flag-gated DXVK baseline features are published before guest boot', () => {
+  // textureCompressionBC stays hard-required in DXVK (it is genuinely
+  // servable), but the bridge fills it from a page-published flag:
+  // vk64bridge.cpp v2WebGpuBcSupported() reads
+  // globalThis.bwVkTextureCompressionBC. That flag is also written by the
+  // renderer tier (web/vkwebgpu.mjs createVkRenderer*), which is only
+  // constructed at first frame -- AFTER the guest queries device features
+  // at D3D11 device creation. The runtime page must therefore publish the
+  // adapter-derived flags itself, before the guest boots, or DXVK reads
+  // BC as unsupported and every D3D11/D3D10 device fails with feature
+  // level 0 (the second half of the 2026-10-26 defect).
+  const runtime = read('web/runtime.html');
+  assert.match(runtime, /bwVkTextureCompressionBC\s*=\s*adapter\.features\?\.has\('texture-compression-bc'\)/,
+    'runtime.html must publish bwVkTextureCompressionBC from the adapter before guest boot');
+  assert.match(runtime, /bwVkDepth32FloatStencil8\s*=\s*adapter\.features\?\.has\('depth32float-stencil8'\)/,
+    'runtime.html must publish bwVkDepth32FloatStencil8 from the adapter before guest boot');
+  const bridge = read('source/vulkan/vk64bridge.cpp');
+  assert.match(bridge, /textureCompressionBC\s*=\s*v2WebGpuBcSupported\(\)/,
+    'bridge BC fill must stay gated on v2WebGpuBcSupported (chain premise of this guard)');
+});
