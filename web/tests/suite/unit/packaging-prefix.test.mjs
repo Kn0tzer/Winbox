@@ -59,7 +59,8 @@ test('wine32 user32 zlib1.dll dependency is staged (user32 load guard)', (t) => 
 test('wineserver packaging pipeline stages the real executable (382B #!/bin/sh + no /bin/sh)', () => {
   const script = readFileSync(join(repoRoot, 'tools/rootfs64/build-wine64-zip.sh'), 'utf8');
   assert.match(script, /copy \/usr\/lib\/wine\/wineserver64/);
-  assert.match(script, /copy \/usr\/lib\/wine\/wineserver\s*$/m);
+  assert.match(script, /ln -sf \/usr\/lib\/wine\/wineserver64 \"\$STAGE\/usr\/lib\/wine\/wineserver\"/);
+  assert.doesNotMatch(script, /copy \/usr\/lib\/wine\/wineserver\s*$/m);
   assert.match(script, /ln -sf \/usr\/lib\/wine\/wineserver64 "\$STAGE\/usr\/bin\/wineserver"/);
   const launcher = readFileSync(join(repoRoot, 'project/emscripten/wine64-launcher.js'), 'utf8');
   assert.match(launcher, /WINESERVER64 = ARCH32 \? "\/usr\/lib\/wine\/wineserver32" : "\/usr\/lib\/wine\/wineserver64"/);
