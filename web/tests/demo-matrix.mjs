@@ -12,7 +12,7 @@ import { writeVkCapture } from '../../tools/bench/vk-capture-artifact.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 process.chdir(repo);
-const demos = ['notepad', 'explorer', 'snake', 'doom', 'celeste', 'chromium', 'portal', 'gangbeasts'];
+const demos = ['notepad', 'explorer', 'snake', 'tetris', 'doom', 'celeste', 'chromium', 'portal', 'gangbeasts', 'quake3', 'mindustry', 'winmerge', 'alkhaser', 'godot-squash', 'unigine-tropics'];
 const demo = process.env.DEMO;
 if (!demos.includes(demo)) throw new Error(`DEMO is required and must be one of: ${demos.join(' ')}`);
 // JIT=1 selects CPU64; JIT32=1 additionally selects CPU32. JIT=0 disables both.
@@ -23,7 +23,7 @@ if (jit32 !== undefined && jit32 !== '0' && jit32 !== '1') throw new Error('JIT3
 const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/T/, 'T').slice(0, 15);
 const defaultOut = join('test-results/demo-matrix', `${demo}-jit${jit}-${stamp}`);
 const outDir = resolve(repo, process.env.OUT || defaultOut);
-const longBoot = ['portal', 'celeste', 'gangbeasts', 'chromium'].includes(demo);
+const longBoot = ['portal', 'celeste', 'gangbeasts', 'chromium', 'quake3', 'mindustry', 'alkhaser', 'godot-squash', 'unigine-tropics'].includes(demo);
 const mappedTimeout = Number(process.env.MAPPED_TIMEOUT_S || (longBoot ? 900 : 300));
 if (!Number.isFinite(mappedTimeout) || mappedTimeout <= 0) throw new Error('MAPPED_TIMEOUT_S must be a positive number');
 const threadDumpEnabled = process.env.BW_THREAD_DUMP === '1';
@@ -692,6 +692,15 @@ export async function playInputScript(page, demo, { screenshot = null, center = 
       await page.waitForTimeout(1000);
       await inputScreenshot(`state-${i}`);
     }
+  } else if (demo === 'tetris') {
+    await inputAction('left', () => page.keyboard.press('ArrowLeft'));
+    await inputAction('right', () => page.keyboard.press('ArrowRight'));
+    await inputAction('rotate', () => page.keyboard.press('ArrowUp'));
+    await inputAction('drop', () => page.keyboard.press('Space'));
+    for (let i = 1; i <= 5; i++) {
+      await page.waitForTimeout(1000);
+      await inputScreenshot(`state-${i}`);
+    }
   } else if (demo === 'doom') {
     for (let i = 1; i <= 4; i++) await inputAction(`enter-${i}`, () => page.keyboard.press('Enter'));
     await page.waitForTimeout(5000);
@@ -727,6 +736,66 @@ export async function playInputScript(page, demo, { screenshot = null, center = 
     await page.waitForTimeout(8500);
     await inputAction('right', () => holdKey('ArrowRight', 1000));
     await inputAction('space', () => page.keyboard.press('Space'));
+  } else if (demo === 'quake3') {
+    const [x, y] = await displayCenter();
+    await inputAction('click-center', () => page.mouse.click(x, y));
+    await inputAction('forward', () => holdKey('w', 2000));
+    await inputAction('mouse-right', () => page.mouse.move(x + 200, y, { steps: 10 }));
+    await inputAction('strafe-left', () => holdKey('a', 1000));
+  } else if (demo === 'mindustry') {
+    const [x, y] = await displayCenter();
+    await inputAction('click-center', () => page.mouse.click(x, y));
+    await page.waitForTimeout(5000);
+    await inputAction('enter', () => page.keyboard.press('Enter'));
+    await inputAction('mouse-move', () => page.mouse.move(x + 150, y + 80, { steps: 10 }));
+    for (let i = 1; i <= 5; i++) {
+      await page.waitForTimeout(1000);
+      await inputScreenshot(`state-${i}`);
+    }
+  } else if (demo === 'winmerge') {
+    const [x, y] = await displayCenter();
+    await inputAction('click-center', () => page.mouse.click(x, y));
+    await page.waitForTimeout(3000);
+    await inputScreenshot('compare-view');
+    await inputAction('down', () => page.keyboard.press('ArrowDown'));
+    await inputAction('open-diff', () => page.keyboard.press('Enter'));
+    await page.waitForTimeout(3000);
+    await inputScreenshot('file-compare');
+    await inputAction('escape', () => page.keyboard.press('Escape'));
+    for (let i = 1; i <= 3; i++) {
+      await page.waitForTimeout(1000);
+      await inputScreenshot(`state-${i}`);
+    }
+  } else if (demo === 'alkhaser') {
+    for (let i = 1; i <= 3; i++) {
+      await page.waitForTimeout(10000);
+      await inputScreenshot(`state-${i}`);
+    }
+    await inputAction('enter', () => page.keyboard.press('Enter'));
+  } else if (demo === 'godot-squash') {
+    const [x, y] = await displayCenter();
+    await inputAction('click-center', () => page.mouse.click(x, y));
+    await page.waitForTimeout(3000);
+    await inputScreenshot('arena');
+    await inputAction('forward', () => holdKey('ArrowUp', 1000));
+    await inputAction('jump', () => page.keyboard.press('Space'));
+    await page.waitForTimeout(2000);
+    await inputScreenshot('jump');
+    for (let i = 1; i <= 3; i++) {
+      await page.waitForTimeout(1000);
+      await inputScreenshot(`state-${i}`);
+    }
+  } else if (demo === 'unigine-tropics') {
+    const [x, y] = await displayCenter();
+    await inputAction('click-center', () => page.mouse.click(x, y));
+    await page.waitForTimeout(5000);
+    await inputScreenshot('scene-1');
+    await page.waitForTimeout(5000);
+    await inputScreenshot('scene-2');
+    for (let i = 1; i <= 3; i++) {
+      await page.waitForTimeout(1000);
+      await inputScreenshot(`state-${i}`);
+    }
   }
 }
 
