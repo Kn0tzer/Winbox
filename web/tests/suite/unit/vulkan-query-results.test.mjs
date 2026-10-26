@@ -114,12 +114,21 @@ int main(void) { return check_query_copy(); }
 });
 
 
-test('bridge rejects query pools loudly until query sets are integrated with WebGPU replay', () => {
+test('bridge implements query pools as bookkeeping; results are emulated, not WebGPU-integrated', () => {
   const bridge = readFileSync(join(root, 'source/vulkan/vk64bridge.cpp'), 'utf8');
-  assert.equal((bridge.match(/"query results are not integrated with WebGPU replay; VK_ERROR_FEATURE_NOT_PRESENT"/g) || []).length, 2,
-    'both guest ABIs reject query pool creation with a feature-specific warning');
-  assert.equal((bridge.match(/"timestamp queries are not integrated with WebGPU replay; device queue timestampValidBits is zero"/g) || []).length, 2,
-    'both guest ABIs warn when a timestamp command is incorrectly issued');
+  // The old loud rejection must not return: DXVK answers a failed
+  // vkCreateQueryPool with null-allocator query handles, and DxvkGpuQuery
+  // destruction dereferences them -- the Portal map-load crash.
+  assert.equal((bridge.match(/"query results are not integrated with WebGPU replay; VK_ERROR_FEATURE_NOT_PRESENT"/g) || []).length, 0,
+    'query pool creation is no longer rejected in either guest ABI');
+  assert.equal((bridge.match(/"timestamp queries are not integrated with WebGPU replay; device queue timestampValidBits is zero"/g) || []).length, 0,
+    'timestamp commands are no longer warning stubs in either guest ABI');
+  assert.match(bridge, /createObj<QueryPool>\(K_QUERYPOOL, id\)/);
+  assert.match(bridge, /createObj32<QueryPool>\(K_QUERYPOOL, id\)/);
+  assert.equal((bridge.match(/c\.kind = CMD_BEGIN_QUERY/g) || []).length, 2, 'both guest ABIs record begin-query commands');
+  assert.equal((bridge.match(/c\.kind = CMD_END_QUERY/g) || []).length, 2, 'both guest ABIs record end-query commands');
+  assert.equal((bridge.match(/c\.kind = CMD_WRITE_TIMESTAMP/g) || []).length, 2, 'both guest ABIs record timestamp commands');
+  // No hardware timestamp bits are claimed: values are bridge counters.
   assert.match(bridge, /q\.timestampValidBits = 0/);
   assert.doesNotMatch(bridge, /ci\.queryType != vkquery::VKQUERY_TIMESTAMP/);
 });
