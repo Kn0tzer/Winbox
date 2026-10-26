@@ -36,8 +36,8 @@
     },
     {
       "path": "web/runtime/prefix32.zip",
-      "bytes": 5914534,
-      "sha256": "ca99eb6ddbc85dc7c3a000b4c2415457a7e8e6c19e4bcecb8c26d37787f1e959"
+      "bytes": 5916404,
+      "sha256": "8cb1ba643bfc9adbbcae1d56392dc101e48ae2301488608881b9d34372805cba"
     },
     {
       "path": "tools/browser/slang/slang-wasm.js",
