@@ -1036,6 +1036,12 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
   function defaultCanvas() {
     const el = document.createElement('canvas');
     el.id = 'vkCanvas';
+    // Presentation only: this canvas overlays the runtime iframe inside
+    // #display, so it must never take pointer events -- input belongs to
+    // the runtime canvas below it (mirrors the #vkCanvas rule in
+    // runtime.html). Without this, Vulkan-tier games render in the shell
+    // but receive no mouse input at all: every event dies on the overlay.
+    el.style.pointerEvents = 'none';
     (document.getElementById('display') || document.body).append(el);
     ownedCanvases.add(el);
     return el;

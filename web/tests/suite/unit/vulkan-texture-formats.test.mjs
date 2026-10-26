@@ -116,7 +116,37 @@ test('D24S8 and D32S8 transfer destinations are advertised only when uploads are
   assert.match(cpp, /v2FormatTransferDstSupported\(U32 format\)[\s\S]*?v2WebGpuDepth32FloatStencil8Supported\(\)/);
   assert.match(cpp, /v2FormatFeatureFlags\(U32 format\)[\s\S]*?if \(v2FormatTransferDstSupported\(format\)\)[\s\S]*?VK_FORMAT_FEATURE_TRANSFER_DST_BIT/);
   assert.match(cpp, /v2FormatFeatureFlags2\(U32 format\)[\s\S]*?if \(v2FormatTransferDstSupported\(format\)\)[\s\S]*?VK_FORMAT_FEATURE_TRANSFER_DST_BIT/);
-  assert.equal((cpp.match(/vk64Unsupported\("depth-stencil-transfer-dst"/g) || []).length, 2,
-    'both 64-bit and 32-bit image creation reject unsupported transfer-destination use');
-  assert.equal((cpp.match(/VK_ERROR_FORMAT_NOT_SUPPORTED;/g) || []).length >= 2, true);
+});
+
+test('image creation never rejects D24S8/D32S8 transfer destinations', async () => {
+  const cpp = await readFile(new URL('../../../../source/vulkan/vk64bridge.cpp', import.meta.url), 'utf8');
+  // The page capability flag behind v2FormatTransferDstSupported is only
+  // published once the page tier starts (or by runtime.html's adapter probe),
+  // while guests create their device before the first frame. A create-time
+  // gate therefore always fired and DXVK device creation deadlocked
+  // (Portal's D3DERR_NOTAVAILABLE dialog). The formats are servable as
+  // depth-stencil attachments on every adapter; buffer uploads of depth data
+  // degrade per upload in the page tier (v2DepthStencilUploads).
+  assert.equal((cpp.match(/vk64Unsupported\("depth-stencil-transfer-dst"/g) || []).length, 0,
+    'neither 64-bit nor 32-bit image creation rejects D24S8/D32S8 transfer destinations');
+});
+
+test('32-bit vkAcquireNextImageKHR signals the acquire semaphore and fence', async () => {
+  const cpp = await readFile(new URL('../../../../source/vulkan/vk64bridge.cpp', import.meta.url), 'utf8');
+  // DXVK submits the frame waiting on the image-available semaphore. The
+  // 64-bit handler signals it; the 32-bit handler used to return the image
+  // index without signalling, so the first submit2 wait failed with
+  // VK_ERROR_UNKNOWN (-13) and DXVK's submission queue wedged before the
+  // first present (Portal, once D24S8 creation was fixed).
+  const acquire32 = cpp.match(/case VK64_fn_vkAcquireNextImageKHR: \{\n        Swapchain\* sc = objOf32<Swapchain>[\s\S]{0,1600}?return VK_SUCCESS;/);
+  assert.ok(acquire32, '32-bit vkAcquireNextImageKHR case is present');
+  assert.match(acquire32[0], /Semaphore\* s = objOf32<Semaphore>\(args\.a\[3\][\s\S]{0,200}?s->signalled = 1;/);
+  assert.match(acquire32[0], /Fence\* f = objOf32<Fence>\(args\.a\[4\][\s\S]{0,200}?f->signalled = 1;/);
+});
+
+test('runtime page publishes adapter capability flags before the guest boots', async () => {
+  const html = await readFile(new URL('../../../runtime.html', import.meta.url), 'utf8');
+  assert.match(html, /navigator\.gpu\.requestAdapter\(\)[\s\S]*?bwVkDepth32FloatStencil8 = adapter\.features\.has\('depth32float-stencil8'\)/);
+  assert.match(html, /bwVkTextureCompressionBC = adapter\.features\.has\('texture-compression-bc'\)/);
+  assert.match(html, /bwVkMaxVertexBuffers = Math\.min\(16, adapter\.limits/);
 });

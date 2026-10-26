@@ -229,6 +229,26 @@ window.bwGpuFrame = recoverBridgeCall('runtime.gpu-frame', json => send('gpu', J
 // unparsed on purpose: web/vkwebgpu.mjs owns decoding (and the host manifest's
 // missing '}' on its vs/fs wrapper objects is repaired there, not here, so a
 // guest frame can never fault this bridge).
+// Publish the WebGPU adapter's capability flags before the guest can ask.
+// The bridge answers capability questions (vkGetPhysicalDeviceFormatProperties
+// feature bits, the BC image gate) by reading window.bwVkTextureCompressionBC /
+// bwVkDepth32FloatStencil8 / bwVkMaxVertexBuffers (vk64bridge.cpp's v2WebGpu*
+// helpers), but the page tier that used to set them only starts on the first
+// presented frame -- and a guest creates its Vulkan device before any frame
+// exists, so the flags read as absent at exactly the moment they
+// matter. The adapter is the truthful source: both renderers request exactly
+// the adapter-supported subset of their feature list, so a feature the
+// adapter reports is the feature the device will have. Fire-and-forget: on
+// failure the flags stay unset (honestly reporting absence) and the
+// publish device truth when they start.
+if (navigator.gpu) {
+  navigator.gpu.requestAdapter().then(adapter => {
+    if (!adapter) return;
+    window.bwVkTextureCompressionBC = adapter.features.has('texture-compression-bc');
+    window.bwVkDepth32FloatStencil8 = adapter.features.has('depth32float-stencil8');
+    window.bwVkMaxVertexBuffers = Math.min(16, adapter.limits?.maxVertexBuffers || 8);
+  }).catch(() => { /* flags stay unset; the renderers publish on start */ });
+}
 window.bwVkFrame = recoverBridgeCall('runtime.vk-frame', json => send('vk', json), undefined);
 // Schema v2 (tasks/schema-v2.md): the bridge hops binary chunk bytes per
 // MAIN_THREAD_EM_ASM into window.bwVkChunk. Forwarded to the app shell as a
