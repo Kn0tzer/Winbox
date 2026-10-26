@@ -49,15 +49,15 @@ struct Elf64TlsInfo {
     U64 align = 0;
 };
 
-// Captured PT_GNU_RELRO region — the loader marks these pages read-only
-// AFTER relocations have been applied, matching the contract ld.so
-// honors at runtime. Without enforcement a guest write to .got.plt
-// silently succeeds; with it the page flags reflect read-only protection.
-//
-// Note: actual fault delivery on a write to a non-writable page is a
-// separate gap — KMemory64::memcpy* / writeb still bypass flag checks
-// today. RELRO here is recorded correctly so when fault enforcement
-// lands, RELRO will work automatically without re-touching the loader.
+// Captured PT_GNU_RELRO region — recorded for completeness only. The
+// emulator loader must NOT mark these pages read-only: on Linux that
+// transition is the guest dynamic loader's own final step (it
+// mprotects RELRO read-only after ITS relocation pass, via the mprotect
+// syscall). Pre-applying it here was harmless only until guest
+// page-permission enforcement landed; with enforcement, the guest
+// ld.so's own relocation writes into the region faulted and every
+// dynamically linked x64 guest died at startup. The guest's mprotect
+// syscall produces the read-only end state at the correct moment.
 struct Elf64RelroInfo {
     bool present = false;
     U64 vaddr = 0;
