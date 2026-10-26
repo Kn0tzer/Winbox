@@ -13,6 +13,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as naga from '../../../vendor/naga/node.js';
 import { applySpirvFix, parseSpirv } from '../../../../tools/spirvfix/spirvfix.mjs';
+import { readFileSync } from 'node:fs';
 
 const b64 = (s) => new Uint8Array(Buffer.from(s, 'base64'));
 const VS = b64(
@@ -84,5 +85,36 @@ test('R11: fragment BuiltIn Layer load becomes constant 0 and naga accepts the m
   assert.ok(r.applied.includes('fragment-layer-to-zero'), r.log.join('\n'));
   const out = parseSpirv(r.bytes);
   assert.ok(!out.insns.some(i => i.op === 71 && i.words[1] === 11 && i.words[2] === 9), 'Layer decoration gone');
+  assert.doesNotThrow(() => toWgsl(r.bytes));
+});
+
+// The two cases below pin R11 against the REAL DXVK meta copy modules
+// (extracted from the vendored DXVK build headers into the corpus). Both
+// modules defeated the original R11 in the wild:
+//  - copy-color-2d: the Layer variable's id (32) also appears as a literal
+//    operand of unrelated instructions (OpTypeInt 32), and the original
+//    pointer-escape scan matched raw words, so it bailed and left the Layer
+//    read in place - naga then rejected the module the page tier was
+//    supposed to serve (and the bridge audit's cap-2 pass with it).
+//  - copy-color-1d: glslang declares the image variables before the %int
+//    type, and the original rule spliced its zero constant ahead of the
+//    first OpVariable - before the type existed - producing invalid SPIR-V
+//    (naga InvalidId). The splice now lands at the end of the global
+//    section.
+const corpusModule = (rel) => new Uint8Array(readFileSync(new URL(`../../../../${rel}`, import.meta.url)));
+
+test('R11: real meta copy-color-2d module (Layer id collides with a type literal) converts', () => {
+  const mod = corpusModule('testdata/spirv/dxvk-live/dxvk-meta-copy-color-2d.frag.spv');
+  assert.throws(() => toWgsl(mod), /UnsupportedBuiltIn/, 'raw module must still be rejected (guards the premise)');
+  const r = applySpirvFix(mod);
+  assert.ok(r.applied.includes('fragment-layer-to-zero'), r.log.join('\n'));
+  assert.doesNotThrow(() => toWgsl(r.bytes));
+});
+
+test('R11: real meta copy-color-1d module (late type declaration layout) converts', () => {
+  const mod = corpusModule('testdata/spirv/dxvk-live/dxvk-meta-copy-color-1d.frag.spv');
+  assert.throws(() => toWgsl(mod), /UnsupportedBuiltIn/, 'raw module must still be rejected (guards the premise)');
+  const r = applySpirvFix(mod);
+  assert.ok(r.applied.includes('fragment-layer-to-zero'), r.log.join('\n'));
   assert.doesNotThrow(() => toWgsl(r.bytes));
 });
