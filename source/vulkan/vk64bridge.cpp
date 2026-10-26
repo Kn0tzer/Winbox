@@ -5489,11 +5489,20 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             wr64(args.a[3], 0);
             return VK_ERROR_FORMAT_NOT_SUPPORTED;
         }
-        if ((ci.usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) && !v2FormatTransferDstSupported(ci.format)) {
-            vk64Unsupported("depth-stencil-transfer-dst", "D24S8/D32S8 uploads need WebGPU depth32float-stencil8; image rejected");
-            wr64(args.a[3], 0);
-            return VK_ERROR_FORMAT_NOT_SUPPORTED;
-        }
+        // No transfer-dst rejection at creation time for D24S8/D32S8. These
+        // images are servable as depth-stencil attachments on every WebGPU
+        // adapter (v2TextureFormat maps them to core depth24plus-stencil8,
+        // upgraded to depth32float-stencil8 when the device has the feature),
+        // and the one fidelity-sensitive operation -- buffer uploads of depth
+        // data -- is gated per upload by the page tier (v2DepthStencilUploads
+        // skips the depth aspect loudly when it is not representable). The old
+        // create-time gate read the page capability flag, which the page tier
+        // only publishes once rendering starts; a guest creates its device
+        // (and DXVK its D3D9 depth image) before the first frame, so the gate
+        // always fired and device creation deadlocked (Portal's
+        // D3DERR_NOTAVAILABLE dialog). Advertising stays honest:
+        // v2FormatFeatureFlags still sets TRANSFER_DST only when uploads are
+        // representable (v2FormatTransferDstSupported).
         if (!v2FormatSampleCounts(ci.format) || !(v2FormatSampleCounts(ci.format) & (U32)ci.samples) ||
             ((U32)ci.samples > 1 && (U32)ci.imageType != (U32)VK_IMAGE_TYPE_2D)) {
             vk64Unsupported("image-sample-count", "sample count is not supported for this image format");
@@ -8561,6 +8570,14 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         if (!sc || !args.a[5]) return VK_ERROR_INITIALIZATION_FAILED;
         U32 idx = sc->cur % (sc->nimg ? sc->nimg : 1);
         sc->cur++;
+        // Mirror the 64-bit handler: in the synchronous bridge the image is
+        // available immediately, so the acquire semaphore/fence must be
+        // signalled. Without this, DXVK's first frame submit waits on the
+        // image-available semaphore, vkQueueSubmit2 returns VK_ERROR_UNKNOWN
+        // (-13), and its submission queue wedges before the first present
+        // (Portal stalled exactly there once D24S8 creation was fixed).
+        if (args.a[3]) { Semaphore* s = objOf32<Semaphore>(args.a[3], K_SEMAPHORE, "vkAcquireNextImageKHR"); if (s) s->signalled = 1; }
+        if (args.a[4]) { Fence* f = objOf32<Fence>(args.a[4], K_FENCE, "vkAcquireNextImageKHR"); if (f) f->signalled = 1; }
         wr32_32((U32)args.a[5], idx);
         return VK_SUCCESS;
     }
@@ -8783,11 +8800,20 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             wr64_32((U32)args.a[3], 0);
             return VK_ERROR_FORMAT_NOT_SUPPORTED;
         }
-        if ((ci.usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) && !v2FormatTransferDstSupported(ci.format)) {
-            vk64Unsupported("depth-stencil-transfer-dst", "D24S8/D32S8 uploads need WebGPU depth32float-stencil8; image rejected");
-            wr64_32((U32)args.a[3], 0);
-            return VK_ERROR_FORMAT_NOT_SUPPORTED;
-        }
+        // No transfer-dst rejection at creation time for D24S8/D32S8. These
+        // images are servable as depth-stencil attachments on every WebGPU
+        // adapter (v2TextureFormat maps them to core depth24plus-stencil8,
+        // upgraded to depth32float-stencil8 when the device has the feature),
+        // and the one fidelity-sensitive operation -- buffer uploads of depth
+        // data -- is gated per upload by the page tier (v2DepthStencilUploads
+        // skips the depth aspect loudly when it is not representable). The old
+        // create-time gate read the page capability flag, which the page tier
+        // only publishes once rendering starts; a guest creates its device
+        // (and DXVK its D3D9 depth image) before the first frame, so the gate
+        // always fired and device creation deadlocked (Portal's
+        // D3DERR_NOTAVAILABLE dialog). Advertising stays honest:
+        // v2FormatFeatureFlags still sets TRANSFER_DST only when uploads are
+        // representable (v2FormatTransferDstSupported).
         if (!v2FormatSampleCounts(ci.format) || !(v2FormatSampleCounts(ci.format) & (U32)ci.samples) ||
             ((U32)ci.samples > 1 && (U32)ci.imageType != (U32)VK_IMAGE_TYPE_2D)) {
             vk64Unsupported("image-sample-count", "sample count is not supported for this image format");

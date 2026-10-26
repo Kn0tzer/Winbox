@@ -211,7 +211,11 @@ test('vulkan register: citation-check coverage does not shrink', () => {
 });
 
 test('vulkan register: exemptions stay exactly the pinned adjudicated set', () => {
-  assert.equal(by('EXEMPT').length, 8, `exempt rows: ${by('EXEMPT').map(r => r.line).join(', ')}`);
+  // 2026-10-26 (portal-d24 lane): the D24S8/D32S8 transfer-destination row
+  // retired its 'opaque depth upload' exemption -- its disposition is now
+  // IMPLEMENTED with a verbatim marker citation that is checked directly,
+  // so the exempt set shrinks 8 -> 7 (the label still covers the upload row).
+  assert.equal(by('EXEMPT').length, 7, `exempt rows: ${by('EXEMPT').map(r => r.line).join(', ')}`);
   for (const [label] of EXEMPT) {
     assert.ok(rows.some(r => r.label.includes(label)), `pinned exemption label not found in register: ${label}`);
   }
