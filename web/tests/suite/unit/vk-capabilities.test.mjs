@@ -96,14 +96,18 @@ test('occlusion queries remain disabled because render sample counting is unavai
   assert.match(bridge, /"occlusion queries are not implemented; device feature bit is false"/);
 });
 
-test('descriptor-set limit matches the three WebGPU groups left after push constants', () => {
-  assert.match(bridge, /L\.maxBoundDescriptorSets\s*=\s*3/);
+test('descriptor-set limit matches the bridge record capacity; shader groups stay tier-gated', () => {
+  // Since the 2026-10-26 vkd3d disposition the advertised limit is the
+  // bridge's record capacity (VK64_MAX_SETS): vkd3d root signatures require
+  // six sets at layout CREATION. What shaders may use stays gated by the
+  // page tier at pipeline build (groups 0-2 + push; "group-out-of-range").
+  assert.match(bridge, /L\.maxBoundDescriptorSets = VK64_MAX_SETS/);
   const marker = 'case VK64_fn_vkCreatePipelineLayout: {';
   const first = bridge.indexOf(marker), second = bridge.indexOf(marker, first + marker.length);
   assert.ok(first >= 0 && second > first, 'both guest ABIs have a pipeline-layout handler');
   const layouts = [functionBody(bridge.slice(first), marker), functionBody(bridge.slice(second), marker)];
   for (const body of layouts) {
-    assert.match(body, /ci\.setLayoutCount > 3/);
+    assert.match(body, /ci\.setLayoutCount > VK64_MAX_SETS/);
     assert.match(body, /vk64Unsupported\("descriptor-set-count"/);
     assert.match(body, /return VK_ERROR_FEATURE_NOT_PRESENT/);
   }

@@ -87,7 +87,7 @@ export const MAX_DRAWS = 4096;
 // Vulkan enums, mapped once (the numeric tables are P1's, host/p1render.mjs).
 export const FILTER = { 0: 'nearest', 1: 'linear' };
 // WebGPU has no border addressing or mirror-clamp mode; both use clamp-to-edge.
-export const ADDR = { 0: 'repeat', 1: 'mirror-repeat', 2: 'clamp-to-edge', 3: 'clamp-to-edge', 4: 'clamp-to-edge' };
+export const ADDR = { 0: 'repeat', 1: 'mirror-repeat', 2: 'clamp-to-edge', 3: 'clamp-to-edge', 4: 'mirror-repeat' };
 // ===========================================================================
 // Schema v2 — binary framed records (docs/vulkan-protocol.md §2-3). The v1 JSON
 // manifest (parseManifest/createVkRenderer in vkwebgpu.mjs) is vkcube-shaped: one frame

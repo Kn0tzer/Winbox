@@ -68,8 +68,8 @@ test('page-tier-translated capabilities are whitelisted in the audit', () => {
   const table = body(bridge, 'static const char* vk64SpirvCapabilityName(');
   const audit = body(bridge, 'static VkResult vk64AuditSpirv(');
   const exempt = [...audit.matchAll(/c != (\d+)/g)].map((m) => Number(m[1])).sort((a, b) => a - b);
-  assert.deepEqual(exempt, [0, 1, 32, 43, 50, 51, 5301, 5379],
-    'the audit loop exemption set is exactly {Matrix, Shader, ShaderNonUniform, ClipDistance, Sampled1D, ImageQuery, DerivativeControl, DemoteToHelperInvocationEXT}');
+  assert.deepEqual(exempt, [0, 1, 2, 32, 35, 43, 50, 51, 68, 69, 4466, 5301, 5345, 5379],
+    'the audit loop exemption set is exactly {Matrix, Shader, ShaderNonUniform, ClipDistance, Sampled1D, ImageQuery, DerivativeControl, ShaderLayer, ShaderViewportIndex, ShaderNonUniform, ShaderViewportIndexLayerEXT, DemoteToHelperInvocationEXT}');
   for (const cap of [32, 43, 50, 51, 5379]) {
     assert.ok(table.includes(`case ${cap}: return nullptr;`),
       `cap ${cap} must be a nullptr (non-rejecting) case in vk64SpirvCapabilityName`);

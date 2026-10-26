@@ -28,3 +28,17 @@ test('timeline waits never invent a signal value to satisfy a future wait', () =
   assert.doesNotMatch(bridge, /counter\s*<\s*(?:want|w\.value)\)\s*\w+->counter\s*=/,
     'queue wait handling must not fabricate a semaphore signal');
 });
+
+test('queue submits apply timeline signals to the counter and never reject a batch for them', () => {
+  // vkd3d-proton submits EVERY queue batch with a timeline signal for its
+  // D3D12 fence; rejecting those submits (the pre-2026-10-26 behavior)
+  // discarded all guest GPU work while the API surface kept reporting
+  // success. Signals now raise the counter (monotonic, signal paths only);
+  // waits on unreached values log and proceed -- they never reject and never
+  // fabricate (pinned by the doesNotMatch in the test above).
+  assert.doesNotMatch(bridge, /submit2 timeline signal is not supported/);
+  assert.doesNotMatch(bridge, /timeline submit is not connected to WebGPU replay/);
+  assert.match(bridge, /if \(sg\.value > s->counter\) s->counter = sg\.value/);
+  assert.match(bridge, /if \(signal\.value > sem->counter\) sem->counter = signal\.value/);
+  assert.match(bridge, /"timeline-semaphore-wait"/);
+});

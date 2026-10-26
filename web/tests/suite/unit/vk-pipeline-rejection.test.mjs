@@ -32,9 +32,15 @@ test('unsupported graphics pipeline state is warned and rejected in the shared a
     assert.match(body, new RegExp(`a\\.${field}[^\\n]*vk64Unsupported\\([^\\n]*"${feature}"[^\\n]*reject = true`), feature);
   }
   for (const feature of [
-    'tessellation-control-stage', 'tessellation-evaluation-stage', 'geometry-stage', 'task-stage', 'mesh-stage',
+    'tessellation-control-stage', 'tessellation-evaluation-stage', 'task-stage', 'mesh-stage',
     'unknown-graphics-stage', 'patch-list-topology', 'adjacency-topology',
   ]) assert.match(body, new RegExp(`vk64Unsupported\\("${feature}"[^\\n]*reject = true`), feature);
+  // Geometry stage is the deliberate exception (vkd3d campaign, 2026-10-26):
+  // the pipeline is RECORDED (module kept in Pipeline.gs) so vkd3d meta-variant
+  // creation succeeds; draws under it are dropped loudly at submit
+  // (geometry-stage-draw). WebGPU has no geometry stage.
+  assert.match(body, /vk64Unsupported\("geometry-stage", "pipeline recorded;/);
+  assert.doesNotMatch(body, /vk64Unsupported\("geometry-stage"[^\n]*reject = true/);
   assert.match(body, /return reject;/);
   assert.match(bridge, /if \(vk64AuditGraphicsPipeline\(audit\)(?: \|\| dynamicRejected)?\) \{[\s\S]{0,180}VK_ERROR_FEATURE_NOT_PRESENT/);
   for (const capability of [

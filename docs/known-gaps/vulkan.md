@@ -541,3 +541,61 @@ behaviour is already dispositioned by the rows citing
 `vk64bridge.cpp:3926-3927` (compute dispatch), so the stale marker row
 carried no unique claim and is deleted rather than re-cited. Row count
 moves 343 -> 342; the deleted row was one of the 3 OPEN, not a NOT-A-GAP.
+
+## Addendum — DirectX 12 campaign dispositions (2026-10-26, lane-vkd3d)
+
+Full evidence: `docs/reports/d3d12-campaign-state-20261026.md`. The changes
+below were forced by vkd3d-proton 3.1.0's device bring-up and first
+programs; each was probe-verified in the browser (tags d3d12-patch1..7,
+d3d12-draw1..6, d3d12-scene1..3). Summary of re-dispositions:
+
+- **Compute shader modules / compute pipelines** (row for
+  `spirv-compute-entry`, and the CMD_DISPATCH row): module creation no
+  longer rejects compute-only modules, and `vkCreateComputePipelines`
+  creates real pipeline objects in both ABIs. Execution is unchanged:
+  `vkCmdDispatch` still records CMD_DISPATCH and the submit emitter drops
+  it loudly (`compute-dispatch`). Rationale: vkd3d eagerly builds compute
+  pipelines (clear-UAV, execute-indirect, dstorage) during device creation
+  and treats refusal as device-fatal; creation success with loud
+  execution-drop keeps D3D12 devices usable for graphics while compute
+  results remain honestly absent. Tests: `vk-spirv-rejections.test.mjs`,
+  `tools/vkd3d/tests/vk64_native_test.cpp` (both ABIs' compute blocks).
+- **Timeline semaphore submits** (row at `vk64bridge.cpp:5717,8889`): the
+  register previously claimed submit ordering IMPLEMENTED, but the submit
+  paths in fact rejected any batch carrying a timeline signal
+  (`VK_ERROR_FEATURE_NOT_PRESENT`), discarding all of vkd3d's queue work
+  while D3D12 calls kept reporting success. The submit paths (v1/v2, both
+  ABIs) now apply timeline signals to the semaphore counter (monotonic,
+  signal paths only) and let batches proceed; waits on unreached values
+  log `timeline-semaphore-wait` and proceed — they never fabricate a
+  signal (the pre-existing anti-fabrication pin still holds). Tests:
+  `vk-timeline-semaphore.test.mjs`, `vk-binary-semaphore.test.mjs`.
+- **Geometry stage**: SPIR-V capability 2 and pipelines carrying a
+  geometry stage are now RECORDED (`Pipeline.gs`) instead of rejected at
+  creation; draws under such a pipeline are dropped loudly at submit
+  (`geometry-stage-draw`). Tessellation/task/mesh stages still reject at
+  creation. Tests: `vk-pipeline-rejection.test.mjs`, native geometry
+  block.
+- **Descriptor-set counts** (rows citing `maxBoundDescriptorSets = 3`):
+  the advertised limit is now `VK64_MAX_SETS` (8) and both
+  `vkCreatePipelineLayout` handlers record layouts up to 8 sets (vkd3d
+  root signatures require 6). The old NOT-A-GAP reasoning ("layouts above
+  3 sets cannot exist") no longer holds by construction: what a shader
+  may use remains gated by the page tier at pipeline build — groups 0–2
+  plus the push group are served, higher declarations fail loudly
+  (`group-out-of-range` in `web/vkwebgpu.mjs`). Test:
+  `vk-capabilities.test.mjs`.
+- **Newly advertised / modeled for vkd3d device gates**:
+  `VK_KHR_push_descriptor`, `VK_EXT_vertex_attribute_divisor`,
+  `VK_EXT_transform_feedback` (extension advertised, feature bits stay
+  FALSE — stream-out stays unserved), `VK_KHR_maintenance5`,
+  `VK_KHR_maintenance6`; feature bits `samplerMirrorClampToEdge`
+  (mode 4 served as mirror-repeat by the tier), the descriptor-indexing
+  bindless gate bits in `fillVulkan12Features` (indexing *execution* in
+  graphics shaders remains rejected at module creation — see the
+  campaign report §5), `synchronization2`, `dynamicRendering`,
+  `shaderOutputViewportIndex`, `shaderOutputLayer`; SPIR-V capabilities
+  68/69/5345 and 4466 (SignedZeroInfNanPreserve) pass module creation;
+  push-descriptor properties (`maxPushDescriptors = 64`) and
+  transform-feedback properties arms modeled; Vulkan 1.3 properties arm
+  now models `maxBufferSize` (2^30) and subgroup sizes (32/32).

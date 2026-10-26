@@ -459,8 +459,9 @@ static void vk64Unsupported(const char* feature, const char* detail = "") {
 // BuiltIn variable is present; their declared-but-unused form passes.
 // ---------------------------------------------------------------------------
 // Sampler state the WebGPU tier cannot honour. Reported once per sampler, not per draw.
-//  - MIRROR_CLAMP_TO_EDGE is gated by the samplerMirrorClampToEdge feature (FALSE here),
-//    so a guest that uses it anyway is violating the spec: creation is rejected.
+//  - MIRROR_CLAMP_TO_EDGE: samplerMirrorClampToEdge is advertised (a
+//    vkd3d-proton device gate); the page tier maps it to mirror-repeat (see
+//    ADDR in web/vk-protocol.mjs), identical on the [-1, 2] domain.
 //  - mipLodBias is governed by maxSamplerLodBias, advertised as 0 (fillLimits) because
 //    WebGPU has no sampler LOD bias: nonzero requests are out of contract, are logged,
 //    and take the spec clamp to +/-0. CLAMP_TO_BORDER is CORE with no feature bit/limit:
@@ -470,8 +471,7 @@ static bool vk64AuditSampler(U32 addrU, U32 addrV, U32 addrW, float mipLodBias, 
     const U32 addressModes[] = {addrU, addrV, addrW};
     for (U32 mode : addressModes) {
         if (mode == 4) { // VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE
-            vk64Unsupported("mirror-clamp-to-edge", "sampler creation rejected; samplerMirrorClampToEdge is not advertised");
-            reject = true;
+            vk64Unsupported("mirror-clamp-to-edge", "served by the page tier as mirror-repeat (identical on [-1, 2]; beyond that range coordinates keep mirroring instead of pinning the edge texel)");
         }
         if (mode == 3) { // CLAMP_TO_BORDER
             vk64Unsupported("sampler-border-colour", ("border colour emulated in shader by the page tier for sampled-image ops (gather/cube stay clamp-to-edge); borderColor=" + std::to_string(borderColor)).c_str());
@@ -483,14 +483,16 @@ static bool vk64AuditSampler(U32 addrU, U32 addrV, U32 addrW, float mipLodBias, 
 
 static const char* vk64SpirvCapabilityName(U32 cap) {
     switch (cap) {
-        case 2: return "Geometry";            case 3: return "Tessellation";
+        case 2: return nullptr;               // Geometry: module creation passes; the pipeline records the stage (Pipeline.gs) and submit drops its draws loudly ("geometry-stage-draw"). WebGPU has no geometry stage, so a USED geometry shader still never renders.
+        case 3: return "Tessellation";
         case 9: return "Float16";             case 10: return "Float64";
+        case 4466: return nullptr;            // SignedZeroInfNanPreserve: float-preservation execution mode emitted by dxbc-spirv for D3D12 IEEE semantics. The mode requests NaN/Inf/signed-zero propagation; it changes no control flow or memory behavior. Naga decides at translation (ignores or honors); module creation does not gate it.
         case 11: return "Int64";              case 12: return "Int64Atomics";
         case 22: return "Int16";              case 23: return "TessellationPointSize";
         case 24: return "GeometryPointSize";  case 25: return "ImageGatherExtended";
         case 27: return "StorageImageMultisample";
         case 32: return nullptr;             // ClipDistance: shaderClipDistance advertised; naga translates it
-        case 33: return "CullDistance";       case 35: return "SampleRateShading";
+        case 33: return "CullDistance";       case 35: return nullptr; // SampleRateShading: declared by vkd3d MSAA copy/resolve fragment variants; translation is the tier gate (loud there). Fixed-function sampleShadingEnable still rejects in vk64AuditGraphicsPipeline.
         case 39: return "Int8";               case 41: return "SparseResidency";
         case 42: return "MinLod";             case 43: return nullptr; // Sampled1D: core; the page tier serves 1D textures
         case 49: return "StorageImageExtendedFormats";
@@ -508,7 +510,9 @@ static const char* vk64SpirvCapabilityName(U32 cap) {
         case 4448: return "StorageBuffer8BitAccess";
         case 4449: return "UniformAndStorageBuffer8BitAccess";
         case 4450: return "StoragePushConstant8";
-        case 5345: return "ShaderViewportIndexLayerEXT";  case 5379: return nullptr; // DemoteToHelperInvocationEXT: shaderDemoteToHelperInvocation advertised; naga translates it
+        case 68: return nullptr;   // ShaderLayer (core form): same disposition as 5345 below
+        case 69: return nullptr;   // ShaderViewportIndex (core form): same disposition as 5345 below
+        case 5345: return nullptr; // ShaderViewportIndexLayerEXT: advertised (fillVulkan12Features); the vkd3d meta VS path depends on it, single-layer serving is the page tier's, layered use rejects loudly there  case 5379: return nullptr; // DemoteToHelperInvocationEXT: shaderDemoteToHelperInvocation advertised; naga translates it
         case 5301: return nullptr;            // ShaderNonUniform: harmless on its own
         // Descriptor-indexing capabilities: the descriptor model keeps ONE resource
         // per binding number, so runtime indexing into a resource array cannot be
@@ -538,7 +542,7 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
     std::set<U32> nonWritable, bufferBlock;
     struct Var { U32 id, type, sc; };
     std::vector<Var> vars;
-    bool storageImage = false, inputAttachment = false, compute = false, cullUsed = false, drawUsed = false;
+    bool storageImage = false, inputAttachment = false, compute = false, graphicsEntry = false, cullUsed = false, drawUsed = false;
     bool unsupported = false;
     std::set<U32> caps;
     for (size_t i = 5; i < nw;) {
@@ -546,7 +550,8 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
         if (!len || i + len > nw) { vk64Unsupported("spirv-malformed", "invalid shader module; VK_ERROR_INVALID_SHADER_NV"); return VK_ERROR_INVALID_SHADER_NV; }
         switch (op) {
             case 17: if (len >= 2) caps.insert(w[i + 1]); break;                       // OpCapability
-            case 15: if (len >= 2 && w[i + 1] == 5) compute = true; break;             // OpEntryPoint GLCompute
+            case 15: if (len >= 2 && w[i + 1] == 5) compute = true;                    // OpEntryPoint GLCompute
+                     else if (len >= 2 && w[i + 1] <= 4) graphicsEntry = true; break; // OpEntryPoint Vertex/Tessellation/Geometry/Fragment
             case 30: if (len >= 2) structMembers[w[i + 1]] = len - 2; break;           // OpTypeStruct
             case 28: case 29: if (len >= 3) arrays[w[i + 1]] = w[i + 2]; break;        // OpTypeArray/RuntimeArray
             case 32: if (len >= 4) ptrs[w[i + 1]] = {w[i + 2], w[i + 3]}; break;       // OpTypePointer
@@ -565,6 +570,20 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
         }
         i += len;
     }
+    if (compute && !graphicsEntry) {
+        // Compute-only module: the V2 protocol is render-only, so this
+        // module is never translated by the page tier. It is accepted so
+        // vkCreateComputePipelines can hand out a real pipeline object
+        // (vkd3d-proton builds internal compute pipelines during device
+        // creation and treats refusal as device-fatal). Every dispatch of
+        // such a pipeline is dropped loudly at submit (CMD_DISPATCH,
+        // "compute-dispatch"), which is the only failure channel a void
+        // vkCmdDispatch has. The capability/storage/input-attachment and
+        // SSBO-write checks below protect the graphics translation path
+        // and do not apply to a module that never reaches it.
+        vk64Unsupported("spirv-compute-entry", "compute-only shader module accepted for pipeline creation; dispatch results are not produced (no V2 compute record)");
+        return VK_SUCCESS;
+    }
     for (U32 c : caps) {
         if (c == 33 && !cullUsed) continue;   // CullDistance declared but unused (DXVK emits it unconditionally): converts as-is
         if (c == 4427 && !drawUsed) continue; // DrawParameters likewise; spirvfix R5 strips the unused declaration
@@ -572,7 +591,7 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
         if (name) {
             vk64Unsupported(("spirv-capability:" + std::string(name)).c_str(), "shader declares a capability the WebGPU tier lacks; VK_ERROR_FEATURE_NOT_PRESENT");
             unsupported = true;
-        } else if (c != 0 && c != 1 && c != 5301 && c != 32 && c != 43 && c != 50 && c != 51 && c != 5379) { // Matrix, Shader, ShaderNonUniform, and the page-tier-translated caps (nullptr cases above) are harmless here.
+        } else if (c != 0 && c != 1 && c != 5301 && c != 32 && c != 43 && c != 50 && c != 51 && c != 5379 && c != 68 && c != 69 && c != 5345 && c != 2 && c != 35 && c != 4466) { // Matrix, Shader, ShaderNonUniform, and the page-tier-translated caps (nullptr cases above) are harmless here; 68/69/5345 are the shaderOutputLayer/ViewportIndex family advertised in fillVulkan12Features. // (cont.) 2 (Geometry) and 35 (SampleRateShading) are gated at pipeline/submit/translation, not module creation.
             vk64Unsupported(("spirv-capability-unknown:" + std::to_string(c)).c_str(), "unknown capability; VK_ERROR_FEATURE_NOT_PRESENT");
             unsupported = true;
         }
@@ -1067,6 +1086,7 @@ struct Pipeline : Obj {
     U32 vaOffset[VK64_MAX_VERT_ATTRIBS] = {0};
     U32 vaLocation[VK64_MAX_VERT_ATTRIBS] = {0};
     U64 vs = 0, fs = 0, cs = 0, layout = 0, rp = 0;
+    U64 gs = 0; // geometry-stage module, if any: recorded so submit can drop its draws loudly (WebGPU has no geometry stage)
 };
 template <class T>
 static void captureColorBlend(Pipeline& pipe, const std::vector<T>& states) {
@@ -1125,7 +1145,7 @@ static bool vk64AuditGraphicsPipeline(const PipelineAudit& a) {
     const U32 extra = a.stageMask & ~kV2SupportedStageMask;
     if (extra & 0x2u)  { vk64Unsupported("tessellation-control-stage", "pipeline rejected"); reject = true; }
     if (extra & 0x4u)  { vk64Unsupported("tessellation-evaluation-stage", "pipeline rejected"); reject = true; }
-    if (extra & 0x8u)  { vk64Unsupported("geometry-stage", "pipeline rejected"); reject = true; }
+    if (extra & 0x8u)  { vk64Unsupported("geometry-stage", "pipeline recorded; draws under a geometry stage are not produced (WebGPU has no geometry stage)"); }
     if (extra & 0x40u) { vk64Unsupported("task-stage", "pipeline rejected"); reject = true; }
     if (extra & 0x80u) { vk64Unsupported("mesh-stage", "pipeline rejected"); reject = true; }
     if (extra & ~(0x2u | 0x4u | 0x8u | 0x40u | 0x80u)) { vk64Unsupported("unknown-graphics-stage", "pipeline rejected"); reject = true; }
@@ -1493,7 +1513,7 @@ void pushCmd(CmdBuf* st, const Cmd& c) {
 static void recordBindSets(CmdBuf* cb, U32 first, std::vector<U64> ids, const std::vector<U32>& dynFlat) {
     VK64_DROP_IF(return, first >= VK64_MAX_SETS);
     if (first + ids.size() > VK64_MAX_SETS) {
-        vk64Unsupported("descriptor-set-slots", "vkCmdBindDescriptorSets range exceeds maxBoundDescriptorSets; extra sets are dropped");
+        vk64Unsupported("descriptor-set-slots", "vkCmdBindDescriptorSets range exceeds VK64_MAX_SETS; extra sets are dropped");
         ids.resize(VK64_MAX_SETS - first);
     }
     Cmd c;
@@ -4076,7 +4096,9 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     }
                     break;
                 }
-                case CMD_DRAW:
+                case CMD_DRAW: {
+                    Pipeline* ap = objOf<Pipeline>(activePipe, K_PIPELINE, "vkQueueSubmit");
+                    if (ap && ap->gs) { vk64Unsupported("geometry-stage-draw", "draw under a geometry-stage pipeline not produced (WebGPU has no geometry stage)"); break; }
                     nDraw++;
                     emit(V2_DRAW, [&](ChunkWriter& p) {
                         p.u32((U32)k.a); p.u32((U32)k.b); p.u32((U32)k.c); p.u32((U32)k.d);
@@ -4084,7 +4106,10 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                         p.u32(0); p.u32(0); p.u32(0);
                     });
                     break;
-                case CMD_DRAW_INDEXED:
+                }
+                case CMD_DRAW_INDEXED: {
+                    Pipeline* ap = objOf<Pipeline>(activePipe, K_PIPELINE, "vkQueueSubmit");
+                    if (ap && ap->gs) { vk64Unsupported("geometry-stage-draw", "draw under a geometry-stage pipeline not produced (WebGPU has no geometry stage)"); break; }
                     nDraw++;
                     emit(V2_DRAW, [&](ChunkWriter& p) {
                         p.u32(0); p.u32((U32)k.b); p.u32(0); p.u32((U32)k.d);
@@ -4092,6 +4117,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                         p.u32((U32)k.a); p.u32((U32)k.c); p.u32((U32)(int32_t)k.copy.ox);
                     });
                     break;
+                }
                 case CMD_COPY_IMAGE: {
                     const ImageCopy& copy = k.imageCopy;
                     emit(V2_IMAGE_COPY, [&](ChunkWriter& p) {
@@ -4198,7 +4224,7 @@ void fillLimits(Limits& L) {
     L.bufferImageGranularity = 1; L.sparseAddressSpaceSize = 0;
     // WebGPU reserves one of its four bind groups for the push-constant UBO;
     // Vulkan sets 0..2 are the largest contiguous guest set range we can map.
-    L.maxBoundDescriptorSets = 3; L.maxPerStageDescriptorSamplers = 16;
+    L.maxBoundDescriptorSets = VK64_MAX_SETS; L.maxPerStageDescriptorSamplers = 16;   // 8 since the 2026-10-26 vkd3d disposition: layout CREATION capacity; shader-visible groups stay gated by the tier (0-2 + push)
     L.maxPerStageDescriptorUniformBuffers = 16; L.maxPerStageDescriptorStorageBuffers = 4;
     L.maxPerStageDescriptorSampledImages = 16; L.maxPerStageDescriptorStorageImages = 4;
     L.maxPerStageDescriptorInputAttachments = 4;
@@ -4281,6 +4307,11 @@ const char* const g_dev_exts[] = {
     "VK_KHR_load_store_op_none",
     "VK_EXT_robustness2",           // HARD requirement (nullDescriptor + robustBufferAccess2)
     "VK_EXT_depth_clip_enable",
+    "VK_KHR_push_descriptor",        // vkd3d-proton device gate; vkCmdPushDescriptorSet(KHR) + WithTemplate implemented (synthetic push sets)
+    "VK_EXT_vertex_attribute_divisor", // vkd3d-proton device gate; bits in fillVertexAttributeDivisor; divisor != 1 rejected loudly at pipeline audit
+    "VK_EXT_transform_feedback",     // vkd3d-proton device gate reads the transformFeedbackQueries property; stream-out feature bits stay FALSE and its entry points are absent, so use fails at proc lookup
+    "VK_KHR_maintenance5",           // vkd3d-proton only chains the maintenance5 feature struct when this is enumerated; bit + vkCmdBindIndexBuffer2 in fillMaintenance5
+    "VK_KHR_maintenance6",           // same for maintenance6; bit + vkCmdPushConstants2KHR in fillMaintenance6
 };
 
 // Core bits reported to guests. Unsupported paths remain FALSE.
@@ -4348,8 +4379,17 @@ template <class T> inline void fillRobustness2(T& f) {
     f.nullDescriptor = VK_TRUE;
 }
 template <class T> inline void fillMaintenance5(T& f) {
+    // The entry point this feature exists for, vkCmdBindIndexBuffer2(KHR), is
+    // implemented. vkd3d-proton gates device creation on this bit.
+    f.maintenance5 = VK_TRUE;
 }
 template <class T> inline void fillMaintenance6(T& f) {
+    // vkCmdPushConstants2(KHR) is implemented. vkd3d-proton (grep-verified
+    // over libs/vkd3d) never calls the maintenance6 descriptor-set *2 entry
+    // points; they are absent from the fn table, so a caller asking for one
+    // gets a NULL proc address (loud), never a stub. vkd3d-proton gates
+    // device creation on this bit.
+    f.maintenance6 = VK_TRUE;
 }
 template <class T> inline void fillTransformFeedback(T& f) {
 }
@@ -4363,6 +4403,15 @@ struct Vk64VertexAttributeDivisorFeaturesEXT {
     VkBool32        vertexAttributeInstanceRateDivisor;
     VkBool32        vertexAttributeInstanceRateZeroDivisor;
 };
+// vk64_guest.h has no VkPhysicalDevicePushDescriptorPropertiesKHR; mirror it
+// here (the sType enum value IS in the guest header, only the struct is not).
+struct Vk64PushDescriptorPropertiesKHR {
+    VkStructureType sType;
+    U64             pNext; // uint64_t, not void*: matches the 64-bit guest layout (cf. vk64_guest.h)
+    U32             maxPushDescriptors;
+    U32             _pad;
+};
+static_assert(sizeof(Vk64PushDescriptorPropertiesKHR) == 24, "push descriptor properties mirror layout");
 struct Vk64Vulkan13Properties {
     VkStructureType sType;
     U64             pNext; // uint64_t, not void*: matches the 64-bit guest layout (cf. vk64_guest.h)
@@ -4421,9 +4470,13 @@ struct Vk32VertexAttributeDivisorFeaturesEXT {
 };
 static_assert(sizeof(Vk32VertexAttributeDivisorFeaturesEXT) == 16, "32-bit divisor features mirror layout");
 // vkd3d-proton device-creation gate (device.c:2495): requires BOTH divisor
-// features. Exception: a pipeline with a divisor other than 1 is reported by
-// vk64AuditGraphicsPipeline ("vertex-attribute-divisor") and reject the pipeline.
+// features. Divisor 1 is the D3D12 instance step rate and is served by the
+// page tier's per-instance step mode; any other divisor is reported by
+// vk64AuditGraphicsPipeline ("vertex-attribute-divisor") and the pipeline is
+// rejected loudly (VK_ERROR_FEATURE_NOT_PRESENT), never silently mis-stepped.
 template <class T> inline void fillVertexAttributeDivisor(T& f) {
+    f.vertexAttributeInstanceRateDivisor = VK_TRUE;
+    f.vertexAttributeInstanceRateZeroDivisor = VK_TRUE;
 }
 // Exception group: descriptor-indexing bits are vkd3d-proton hard gates
 // (state.c:8352). Descriptor sets are read at submit time so update-after-bind
@@ -4449,6 +4502,33 @@ template <class T> inline void fillVulkan12Features(T& f) {
     // VK_TIMEOUT). bufferDeviceAddress stays FALSE: nothing hands out addresses.
     f.timelineSemaphore = VK_TRUE;
     f.bufferDeviceAddress = VK_FALSE;
+    // vkd3d-proton bindless gate (state.c:8343, vkd3d_bindless_state_init,
+    // called from device creation): without these four bits the device is
+    // refused with E_NOTIMPL before any draw. The descriptor-set side is
+    // real: sets are materialized at submit time, so variable-count heap
+    // sets exist as bridge objects. The shader side is the loud half: a
+    // shader that declares descriptor-array indexing capabilities
+    // (5302-5309 in vk64SpirvCapabilityName) is rejected at
+    // vkCreateShaderModule until the page tier grows binding arrays.
+    f.descriptorIndexing = VK_TRUE;
+    f.shaderStorageTexelBufferArrayNonUniformIndexing = VK_TRUE;
+    f.shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
+    f.descriptorBindingVariableDescriptorCount = VK_TRUE;
+    // vkd3d-proton device gate (vkd3d_init_device_caps). The page tier
+    // serves address mode 4 as mirror-repeat (exact on [-1, 2]); see
+    // vk64AuditSampler and ADDR in web/vk-protocol.mjs.
+    f.samplerMirrorClampToEdge = VK_TRUE;
+    // vkd3d-proton meta ops: with both of these bits the meta layer path
+    // uses a vertex shader that writes gl_Layer (vs_fullscreen_layer);
+    // without them it creates a geometry shader, which WebGPU can never
+    // serve. The bridge therefore advertises them and the module passes
+    // the SPIR-V audit (capability 5345); a pipeline whose VS really
+    // writes Layer/ViewportIndex is translated by the page tier for the
+    // single-layer case and rejected loudly there for layered targets.
+    // (Shadowing note: geometryShader itself stays FALSE and genuine
+    // geometry-stage modules still reject at vkCreateShaderModule.)
+    f.shaderOutputViewportIndex = VK_TRUE;
+    f.shaderOutputLayer = VK_TRUE;
 }
 template <class T> inline void fillVulkan11Features(T& f) {
     // multiview, variablePointers*, 16-bit storage: not advertised (see above).
@@ -4458,6 +4538,12 @@ template <class T> inline void fillVulkan13Features(T& f) {
     // DXVK D3D11 baseline hard-requires shaderDemoteToHelperInvocation
     // (d3d11_device.cpp GetDeviceFeatures). Exception: demote-vs-kill nuances.
     f.shaderDemoteToHelperInvocation = VK_TRUE;
+    // Both entry-point sets are implemented (vkQueueSubmit2;
+    // vkCmdBeginRendering / vkCmdEndRendering) and vkd3d-proton assumes
+    // them from Vulkan 1.3. They previously read FALSE only because the
+    // fill left them at the zero-fill.
+    f.synchronization2 = VK_TRUE;
+    f.dynamicRendering = VK_TRUE;
 }
 
 void walkFeatures2(U64 pNextAddr) {
@@ -4570,6 +4656,16 @@ void walkProperties2(U64 pNextAddr) {
                 g_mem->memcpyToGuest(cur, &p, sizeof(p));
                 break;
             }
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR: {
+                Vk64PushDescriptorPropertiesKHR p = {};
+                g_mem->memcpyFromGuest(&p, cur, sizeof(p));
+                // Pushed sets are materialized synthetically at record
+                // time; 64 comfortably exceeds the root-descriptor pushes
+                // in a D3D12 root signature (vkd3d errors only past this).
+                p.maxPushDescriptors = 64;
+                g_mem->memcpyToGuest(cur, &p, sizeof(p));
+                break;
+            }
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_PROPERTIES_EXT: {
                 VkPhysicalDeviceRobustness2PropertiesEXT p = {};
                 g_mem->memcpyFromGuest(&p, cur, sizeof(p));
@@ -4583,15 +4679,24 @@ void walkProperties2(U64 pNextAddr) {
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT: {
                 VkPhysicalDeviceTransformFeedbackPropertiesEXT p = {};
                 g_mem->memcpyFromGuest(&p, cur, sizeof(p));
-                // VK_EXT_transform_feedback is not advertised and transformFeedback is FALSE, so every
-                // limit is reported as zero rather than as capabilities no command can use.
+                // The stream-out limits stay zero and the transformFeedback
+                // feature bits stay FALSE: no stream-out command can be
+                // served (WebGPU has no stream-out) and the entry points
+                // are absent, so use fails at proc lookup.
+                // transformFeedbackQueries is the one property the
+                // vkd3d-proton device-creation gate reads
+                // (vkd3d_init_device_caps: ERR + E_INVALIDARG when false).
+                // TF queries themselves are not servable (occlusion queries
+                // are off for the same render-counting reason), so a guest
+                // that actually creates a TF query pool hits the loud
+                // query-path failure, not a silent success.
                 p.maxTransformFeedbackStreams = 0;
                 p.maxTransformFeedbackBuffers = 0;
                 p.maxTransformFeedbackBufferSize = 0;
                 p.maxTransformFeedbackStreamDataSize = 0;
                 p.maxTransformFeedbackBufferDataSize = 0;
                 p.maxTransformFeedbackBufferDataStride = 0;
-                p.transformFeedbackQueries = VK_FALSE;
+                p.transformFeedbackQueries = VK_TRUE;
                 p.transformFeedbackStreamsLinesTriangles = VK_FALSE;
                 p.transformFeedbackDraw = VK_FALSE;
                 g_mem->memcpyToGuest(cur, &p, sizeof(p));
@@ -4622,6 +4727,16 @@ void walkProperties2(U64 pNextAddr) {
                 // storageTexelBufferOffsetAlignmentBytes == 1 (same for uniform).
                 p.storageTexelBufferOffsetSingleTexelAlignment = VK_TRUE;
                 p.uniformTexelBufferOffsetSingleTexelAlignment = VK_TRUE;
+                // vkd3d_create_buffer enforces maxBufferSize (a 512-byte
+                // constant buffer was refused with "exceeds maxBufferSize
+                // of 0" in the scene12 probe, 2026-10-26). Matches the
+                // maxStorageBufferRange already advertised in fillLimits;
+                // per-binding size limits still gate in the page tier.
+                p.maxBufferSize = 1ull << 30;
+                // Consistent with VkPhysicalDeviceSubgroupProperties above
+                // (subgroupSize = 32, warp-shaped).
+                p.minSubgroupSize = 32;
+                p.maxSubgroupSize = 32;
                 g_mem->memcpyToGuest(cur, &p, sizeof(p));
                 break;
             }
@@ -5737,6 +5852,12 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                     p->fs = st.module;
                     captureStageSpec(st.pSpecializationInfo, p->fsSpec);
                 }
+                if (st.stage == VK_SHADER_STAGE_GEOMETRY_BIT) {
+                    p->gs = st.module;
+                }
+                if (st.stage == VK_SHADER_STAGE_GEOMETRY_BIT) {
+                    p->gs = st.module;
+                }
             }
             p->layout = ci.layout;
             p->rp = ci.renderPass;
@@ -5746,16 +5867,27 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkCreateComputePipelines: {
         // (device, cache, n, pCreateInfos*, pAllocator, out VkPipeline*)
-        // Compute shader modules are refused at vkCreateShaderModule (spirv-compute-entry) because the
-        // V2 protocol has no dispatch record and the WGSL translator has no compute path, so a compute
-        // pipeline can never be valid. Say so now instead of handing out a pipeline whose dispatches
-        // vanish at submit: null handles, VK_ERROR_FEATURE_NOT_PRESENT (shared with graphics rejection).
+        // Compute pipelines are recorded as real objects (stage module +
+        // layout) even though the V2 protocol has no dispatch execution:
+        // vkd3d-proton creates internal compute pipelines during D3D12
+        // device creation and treats creation failure as device-fatal, so
+        // refusing here (the previous disposition) cost the entire D3D12
+        // stack. Dispatches of these pipelines are dropped loudly at
+        // submit (CMD_DISPATCH, "compute-dispatch") -- never silently --
+        // which is the only failure channel vkCmdDispatch has.
         U32 n = (U32)args.a[2];
         if (!objOf<Device>(args.a[0], K_DEVICE, "vkCreateComputePipelines") || !n || !args.a[3] || !args.a[5])
             return VK_ERROR_INITIALIZATION_FAILED;
-        for (U32 i = 0; i < n; i++) wr64(args.a[5] + (U64)i * 8, 0);
-        vk64Unsupported("compute-pipeline", "compute pipelines are not supported (no V2 dispatch record); VK_ERROR_FEATURE_NOT_PRESENT");
-        return VK_ERROR_FEATURE_NOT_PRESENT;
+        std::vector<VkComputePipelineCreateInfo> cis;
+        readArray(args.a[3], n, cis);
+        for (U32 i = 0; i < n; i++) {
+            U64 id = 0;
+            Pipeline* p = createObj<Pipeline>(K_PIPELINE, id);
+            p->cs = cis[i].stage.module;
+            p->layout = cis[i].layout;
+            wr64(args.a[5] + (U64)i * 8, id);
+        }
+        return VK_SUCCESS;
     }
     case VK64_fn_vkCreatePipelineLayout: {
         VkPipelineLayoutCreateInfo ci = {};
@@ -5765,10 +5897,16 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                      (int)(readStruct(args.a[1], ci)), (int)(!args.a[3]));
             return VK_ERROR_INITIALIZATION_FAILED;
         }
-        if (ci.setLayoutCount > 3) {
-            vk64Unsupported("descriptor-set-count", "WebGPU replay supports three guest sets because group 3 is reserved for push constants");
+        if (ci.setLayoutCount > VK64_MAX_SETS) {
+            vk64Unsupported("descriptor-set-count", "pipeline layout exceeds the bridge's recorded set capacity (VK64_MAX_SETS)");
             return VK_ERROR_FEATURE_NOT_PRESENT;
         }
+        // Layouts with more than three sets are recorded (vkd3d root
+        // signatures need six: heap/sampler/push-UBO bookkeeping sets). What a
+        // shader may actually USE is gated by the page tier at pipeline
+        // build: declarations in groups 0-2 plus the push group are served;
+        // a declaration in a higher group fails that pipeline loudly
+        // ("group-out-of-range" in web/vkwebgpu.mjs).
         U64 id = 0;
         PipelineLayout* l = createObj<PipelineLayout>(K_PIPELAYOUT, id);
         l->nsets = ci.setLayoutCount > VK64_MAX_SETS ? VK64_MAX_SETS : ci.setLayoutCount;
@@ -7515,21 +7653,40 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             std::vector<U64> waitIds, signalIds;
             readArray(sis[i].pWaitSemaphores, sis[i].waitSemaphoreCount, waitIds);
             readArray(sis[i].pSignalSemaphores, sis[i].signalSemaphoreCount, signalIds);
-            for (U64 semId : waitIds) {
-                Semaphore* sem = objOf<Semaphore>(semId, K_SEMAPHORE, "vkQueueSubmit");
-                if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
-                if (!sem->signalled) {
-                    vk64Unsupported("binary-semaphore-wait", "wait was not signalled before the synchronous submit; VK_ERROR_UNKNOWN");
-                    return VK_ERROR_UNKNOWN;
-                }
-                sem->signalled = 0;
-            }
+            // Timeline semaphores under immediate execution (the counter
+            // model vkWaitSemaphores/vkGetSemaphoreCounterValue already
+            // serve): a signal raises the semaphore counter once its batch
+            // is accepted; a wait whose value an earlier submission already
+            // signalled is satisfied. A wait on an unreached value is logged
+            // and the submission PROCEEDS -- waits never fabricate a signal
+            // (the counter only moves in the signal paths), and rejecting
+            // the submission would discard the batch's work entirely (the
+            // failure that blocked all vkd3d submits before 2026-10-26).
+            std::vector<U64> waitVals, signalVals;
             for (U64 cur = sis[i].pNext; cur && g_mem;) {
                 if (g_mem->readd(cur) == VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO) {
-                    vk64Unsupported("timeline-semaphore", "timeline submit is not connected to WebGPU replay; VK_ERROR_FEATURE_NOT_PRESENT");
-                    return VK_ERROR_FEATURE_NOT_PRESENT;
+                    VkTimelineSemaphoreSubmitInfo ti = {};
+                    g_mem->memcpyFromGuest(&ti, cur, sizeof(ti));
+                    readArray(ti.pWaitSemaphoreValues, ti.waitSemaphoreValueCount, waitVals);
+                    readArray(ti.pSignalSemaphoreValues, ti.signalSemaphoreValueCount, signalVals);
+                    break;
                 }
                 cur = g_mem->readq(cur + 8);
+            }
+            for (size_t wi = 0; wi < waitIds.size(); wi++) {
+                Semaphore* sem = objOf<Semaphore>(waitIds[wi], K_SEMAPHORE, "vkQueueSubmit");
+                if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
+                if (sem->isTimeline) {
+                    const U64 want = wi < waitVals.size() ? waitVals[wi] : 0;
+                    if (!(sem->counter >= want))
+                        vk64Unsupported("timeline-semaphore-wait", "submit wait value not yet signalled; proceeding (submissions execute in order)");
+                } else {
+                    if (!sem->signalled) {
+                        vk64Unsupported("binary-semaphore-wait", "wait was not signalled before the synchronous submit; VK_ERROR_UNKNOWN");
+                        return VK_ERROR_UNKNOWN;
+                    }
+                    sem->signalled = 0;
+                }
             }
             for (U32 c = 0; c < sis[i].commandBufferCount; c++) {
                 U64 cbId = rd64(sis[i].pCommandBuffers + (U64)c * 8);
@@ -7546,10 +7703,15 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 }
                 frames.push_back({cb, cbId});
             }
-            for (U64 semId : signalIds) {
-                Semaphore* sem = objOf<Semaphore>(semId, K_SEMAPHORE, "vkQueueSubmit");
+            for (size_t si2 = 0; si2 < signalIds.size(); si2++) {
+                Semaphore* sem = objOf<Semaphore>(signalIds[si2], K_SEMAPHORE, "vkQueueSubmit");
                 if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
-                sem->signalled = 1;
+                if (sem->isTimeline) {
+                    const U64 v = si2 < signalVals.size() ? signalVals[si2] : 0;
+                    if (v > sem->counter) sem->counter = v;   /* timeline signal: monotonic counter */
+                } else {
+                    sem->signalled = 1;
+                }
             }
         }
         if (vkTrace()) klog_fmt("vk64: vkQueueSubmit(%u batches, %u command buffers)", (unsigned)n, (unsigned)frames.size());
@@ -7613,24 +7775,37 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             std::vector<VkSemaphoreSubmitInfo> waits, signals;
             readArray(sis[i].pWaitSemaphoreInfos, sis[i].waitSemaphoreInfoCount, waits);
             readArray(sis[i].pSignalSemaphoreInfos, sis[i].signalSemaphoreInfoCount, signals);
+            // Timeline semaphores under immediate execution (the counter
+            // model vkWaitSemaphores/vkGetSemaphoreCounterValue already
+            // serve): a signal raises the semaphore counter once its batch
+            // is accepted; a wait whose value an earlier submission already
+            // signalled is satisfied. A wait on an unreached value is logged
+            // and the submission PROCEEDS -- waits never fabricate a signal
+            // (the counter only moves in the signal paths), and rejecting
+            // the submission would discard the batch's work entirely (the
+            // failure that blocked all vkd3d submits before 2026-10-26).
             for (auto& w : waits) {
                 Semaphore* sem = objOf<Semaphore>((U64)w.semaphore, K_SEMAPHORE, "vkQueueSubmit2");
                 if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
-                if (w.value || !sem->signalled) {
-                    vk64Unsupported(w.value ? "timeline-semaphore" : "binary-semaphore-wait",
-                                    "submit2 wait cannot be completed by the synchronous bridge; VK_ERROR_UNKNOWN");
-                    return w.value ? VK_ERROR_FEATURE_NOT_PRESENT : VK_ERROR_UNKNOWN;
+                if (w.value) {
+                    if (!(sem->counter >= w.value))
+                        vk64Unsupported("timeline-semaphore-wait", "submit2 wait value not yet signalled; proceeding (submissions execute in order)");
+                } else {
+                    if (!sem->signalled) {
+                        vk64Unsupported("binary-semaphore-wait", "submit2 wait cannot be completed by the synchronous bridge; VK_ERROR_UNKNOWN");
+                        return VK_ERROR_UNKNOWN;
+                    }
+                    sem->signalled = 0;
                 }
-                sem->signalled = 0;
             }
             for (auto& sg : signals) {
                 Semaphore* s = objOf<Semaphore>((U64)sg.semaphore, K_SEMAPHORE, "vkQueueSubmit2");
                 if (!s) return VK_ERROR_INITIALIZATION_FAILED;
                 if (sg.value) {
-                    vk64Unsupported("timeline-semaphore", "submit2 timeline signal is not supported; VK_ERROR_FEATURE_NOT_PRESENT");
-                    return VK_ERROR_FEATURE_NOT_PRESENT;
+                    if (sg.value > s->counter) s->counter = sg.value;   /* timeline signal: monotonic counter */
+                } else {
+                    s->signalled = 1;
                 }
-                s->signalled = 1;
             }
             std::vector<VkCommandBufferSubmitInfo> cbis;
             readArray(sis[i].pCommandBufferInfos, sis[i].commandBufferInfoCount, cbis);
@@ -8014,6 +8189,13 @@ void vk32_walkProperties2(U32 pNextAddr) {
                 vk32_w32f(cur, offsetof(VkPhysicalDeviceSubgroupProperties, supportedStages), 0xffffffffu);
                 vk32_w32f(cur, offsetof(VkPhysicalDeviceSubgroupProperties, supportedOperations), 0xffffffffu);
                 vk32_w32f(cur, offsetof(VkPhysicalDeviceSubgroupProperties, quadOperationsInAllStages), (U32)VK_TRUE);
+                break;
+            }
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR: {
+                // Pushed sets are materialized synthetically at record
+                // time; 64 comfortably exceeds the root-descriptor pushes
+                // in a D3D12 root signature (vkd3d errors only past this).
+                vk32_w32f(cur, offsetof(Vk64PushDescriptorPropertiesKHR, maxPushDescriptors), 64);
                 break;
             }
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_PROPERTIES_EXT: {
@@ -8994,10 +9176,12 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCreatePipelineLayout: {
         vk32abi::VkPipelineLayoutCreateInfo ci = {};
         if (!readStruct32((U32)args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
-        if (ci.setLayoutCount > 3) {
-            vk64Unsupported("descriptor-set-count", "WebGPU replay supports three guest sets because group 3 is reserved for push constants");
+        if (ci.setLayoutCount > VK64_MAX_SETS) {
+            vk64Unsupported("descriptor-set-count", "pipeline layout exceeds the bridge's recorded set capacity (VK64_MAX_SETS)");
             return VK_ERROR_FEATURE_NOT_PRESENT;
         }
+        // See the 64-bit handler: wide layouts are recorded; shader-visible
+        // groups are gated by the page tier at pipeline build.
         U64 id = 0;
         PipelineLayout* pl = createObj32<PipelineLayout>(K_PIPELAYOUT, id);
         pl->nsets = ci.setLayoutCount;
@@ -10040,12 +10224,20 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                     readStruct32(si.pWaitSemaphoreInfos + (U64)i * sizeof(wait), wait);
                     auto* sem = objOf32<Semaphore>(wait.semaphore, K_SEMAPHORE, "vkQueueSubmit2");
                     if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
-                    if (wait.value || !sem->signalled) {
-                        vk64Unsupported(wait.value ? "timeline-semaphore" : "binary-semaphore-wait",
-                                        "submit2 wait cannot be completed by the synchronous bridge");
-                        return wait.value ? VK_ERROR_FEATURE_NOT_PRESENT : VK_ERROR_UNKNOWN;
+                    if (wait.value) {
+                        // Timeline wait (immediate-execution counter model, as
+                        // in the 64-bit handler): satisfied if an earlier
+                        // submission signalled the value; otherwise logged and
+                        // the submission proceeds. Waits never move the counter.
+                        if (!(sem->counter >= wait.value))
+                            vk64Unsupported("timeline-semaphore-wait", "submit2 wait value not yet signalled; proceeding (submissions execute in order)");
+                    } else {
+                        if (!sem->signalled) {
+                            vk64Unsupported("binary-semaphore-wait", "submit2 wait cannot be completed by the synchronous bridge");
+                            return VK_ERROR_UNKNOWN;
+                        }
+                        sem->signalled = 0;
                     }
-                    sem->signalled = 0;
                 }
                 for (U32 i = 0; i < si.signalSemaphoreInfoCount; ++i) {
                     vk32abi::VkSemaphoreSubmitInfo signal = {};
@@ -10053,35 +10245,54 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                     auto* sem = objOf32<Semaphore>(signal.semaphore, K_SEMAPHORE, "vkQueueSubmit2");
                     if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
                     if (signal.value) {
-                        vk64Unsupported("timeline-semaphore", "submit2 timeline signal is not supported");
-                        return VK_ERROR_FEATURE_NOT_PRESENT;
+                        if (signal.value > sem->counter) sem->counter = signal.value;   /* timeline signal: monotonic counter */
+                    } else {
+                        sem->signalled = 1;
                     }
-                    sem->signalled = 1;
                 }
             } else {
                 vk32abi::VkSubmitInfo si = {};
                 readStruct32(args.a[2] + (U64)s * sizeof(si), si);
                 cmdCount = si.commandBufferCount; pCmd = si.pCommandBuffers;
+                // Timeline values chained via VkTimelineSemaphoreSubmitInfo
+                // (32-bit layout: waitCount@+8, pWaitValues@+12, signalCount@+16,
+                // pSignalValues@+20; values are U64 arrays). Same counter model
+                // as the 64-bit handler.
+                std::vector<U64> waitVals, signalVals;
+                for (U32 cur = si.pNext, n = 0; cur && n < 64; ++n) {
+                    if (rd32_32(cur) == VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO) {
+                        const U32 wc = rd32_32(cur + 8), wp = rd32_32(cur + 12);
+                        const U32 sc = rd32_32(cur + 16), sp = rd32_32(cur + 20);
+                        for (U32 i = 0; i < wc && wp; ++i) waitVals.push_back(rd64_32(wp + (U64)i * 8));
+                        for (U32 i = 0; i < sc && sp; ++i) signalVals.push_back(rd64_32(sp + (U64)i * 8));
+                        break;
+                    }
+                    cur = rd32_32(cur + 4);
+                }
                 for (U32 i = 0; i < si.waitSemaphoreCount; ++i) {
                     auto* sem = objOf32<Semaphore>(rd64_32(si.pWaitSemaphores + i * 8), K_SEMAPHORE, "vkQueueSubmit");
                     if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
-                    if (!sem->signalled) {
-                        vk64Unsupported("binary-semaphore-wait", "wait was not signalled before synchronous submit");
-                        return VK_ERROR_UNKNOWN;
+                    if (sem->isTimeline) {
+                        const U64 want = i < waitVals.size() ? waitVals[i] : 0;
+                        if (!(sem->counter >= want))
+                            vk64Unsupported("timeline-semaphore-wait", "submit wait value not yet signalled; proceeding (submissions execute in order)");
+                    } else {
+                        if (!sem->signalled) {
+                            vk64Unsupported("binary-semaphore-wait", "wait was not signalled before synchronous submit");
+                            return VK_ERROR_UNKNOWN;
+                        }
+                        sem->signalled = 0;
                     }
-                    sem->signalled = 0;
-                }
-                for (U32 cur = si.pNext, n = 0; cur && n < 64; ++n) {
-                    if (rd32_32(cur) == VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO) {
-                        vk64Unsupported("timeline-semaphore", "timeline submit is not connected to WebGPU replay");
-                        return VK_ERROR_FEATURE_NOT_PRESENT;
-                    }
-                    cur = rd32_32(cur + 4);
                 }
                 for (U32 i = 0; i < si.signalSemaphoreCount; ++i) {
                     auto* sem = objOf32<Semaphore>(rd64_32(si.pSignalSemaphores + i * 8), K_SEMAPHORE, "vkQueueSubmit");
                     if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
-                    sem->signalled = 1;
+                    if (sem->isTimeline) {
+                        const U64 v = i < signalVals.size() ? signalVals[i] : 0;
+                        if (v > sem->counter) sem->counter = v;   /* timeline signal: monotonic counter */
+                    } else {
+                        sem->signalled = 1;
+                    }
                 }
             }
             for (U32 i = 0; i < cmdCount && pCmd; i++) {
@@ -10393,12 +10604,20 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         return VK_SUCCESS;
     }
     case VK64_fn_vkCreateComputePipelines: {
+        // Same disposition as the 64-bit handler: real pipeline objects so
+        // vkd3d device creation can proceed; dispatches drop loudly at
+        // submit (CMD_DISPATCH, "compute-dispatch"). The stage module is
+        // not recorded on this ABI yet (nothing consumes it: dispatches
+        // are dropped wholesale before any module lookup).
         if (!args.a[4]) return VK_ERROR_INITIALIZATION_FAILED;
         U32 count = (U32)args.a[2];
         U32 outAddr = (U32)args.a[4];
-        for (U32 i = 0; i < count; i++) wr64_32(outAddr + i * 8, 0);
-        vk64Unsupported("compute-pipeline", "compute pipelines are not supported (no V2 dispatch record); VK_ERROR_FEATURE_NOT_PRESENT");
-        return VK_ERROR_FEATURE_NOT_PRESENT;
+        for (U32 i = 0; i < count; i++) {
+            U64 id = 0;
+            createObj32<Pipeline>(K_PIPELINE, id);
+            wr64_32(outAddr + i * 8, id);
+        }
+        return VK_SUCCESS;
     }
     case VK64_fn_vkCreateBufferView: {
         vk32abi::VkBufferViewCreateInfo ci = {};
