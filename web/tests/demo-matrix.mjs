@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { serve } from '../../tools/browser/serve.mjs';
 import { acquireProbeSlot } from './probe-slots.mjs';
 import { waitForBuildIdle } from './build-lock.mjs';
+import { writeVkCapture } from '../../tools/bench/vk-capture-artifact.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 process.chdir(repo);
@@ -87,6 +88,9 @@ try {
     ],
   });
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  if (process.env.BW_VK_CAPTURE_FRAME !== undefined) {
+    await page.addInitScript(frame => { globalThis.__bwVkCaptureFrame = frame; }, process.env.BW_VK_CAPTURE_FRAME);
+  }
   const runtimeParams = new URLSearchParams(process.env.BW_TEST_URL_PARAMS || '');
   if (jit32 !== undefined) runtimeParams.set('jit32', jit32);
   const extraUrlParams = [...runtimeParams];
@@ -449,6 +453,10 @@ try {
   clearInterval(threadDumpTimer);
   sampling = false;
   await samplerPromise?.catch(() => {});
+  if (page && process.env.BW_VK_CAPTURE_FRAME !== undefined) {
+    const capture = await page.evaluate(() => globalThis.bwVkCapture?.report || { status: 'no-capture', error: 'No selected Vulkan presentation reached the page tier' }).catch(error => ({ status: 'error', error: String(error) }));
+    await writeVkCapture(join(outDir, 'vk-capture'), capture).catch(error => { console.error('Capture export failed:', error); process.exitCode = 1; });
+  }
   await browser?.close().catch(() => {});
   if (startedAt) {
     await writeFile(join(outDir, 'console.txt'), consoleLines.join('\n') + (consoleLines.length ? '\n' : '')).catch(() => {});

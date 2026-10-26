@@ -358,6 +358,16 @@ enum {
     VK64_fn_vkCmdClearDepthStencilImage = 909, // (cmdBuf, image, layout, pDepthStencil*, rangeCount, pRanges*) -> GPU clear (64-bit shim only)
     VK64_fn_vkCmdWriteTimestamp = 910,        // (cmdBuf, stage, pool, query) -> accepted; timestamp results are synthesized from the host clock
     VK64_fn_vkCmdSetDepthBounds = 911,        // (cmdBuf, min bits, max bits) -> accepted; WebGPU has no depth-bounds test
+    // Descriptor pools, push descriptors, layout support (2026-10-24). Append-only.
+    VK64_fn_vkResetDescriptorPool = 912,      // (device, pool, flags) -> frees every set allocated from the pool
+    VK64_fn_vkFreeDescriptorSets = 913,       // (device, pool, count, pSets*) -> frees the named sets
+    VK64_fn_vkCmdPushDescriptorSetKHR = 914,  // (cmdBuf, bindPoint, layout, set, writeCount, pWrites*) -> binds a synthetic set
+    VK64_fn_vkCmdPushDescriptorSetWithTemplateKHR = 915, // (cmdBuf, template, layout, set, pData*)
+    VK64_fn_vkGetDescriptorSetLayoutSupport = 916, // (device, pCreateInfo*, pSupport*) -> supported, variable count limit
+    VK64_fn_vkGetDeviceImageMemoryRequirements = 917, // (device, VkDeviceImageMemoryRequirements*, VkMemoryRequirements2*) -> size from the create info
+    VK64_fn_vkCmdSetExtendedDynamicState = 918, // (cmdBuf, which, value) -> core-1.3 / EDS2 dynamic state; which: 2 topology 3 depthTest 4 depthWrite 5 depthOp 6 stencilTest 7 depthBias 8 rasterizerDiscard 9 primitiveRestart 10 stencilOp(packed face|fail<<4|pass<<8|depthFail<<12|cmp<<16) 11 depthBoundsTest
+    VK64_fn_vkCreateRenderPass2 = 919,        // (device, VkRenderPassCreateInfo2*, pAllocator, out VkRenderPass*) -> core 1.2 / KHR_create_renderpass2; the shim maps the KHR alias to the same id
+    VK64_fn_vkCmdNextSubpass = 920,           // (cmdBuf, contents) -> advances the recorded render pass to the next subpass (also the NextSubpass2 aliases)
     VK64_fn__MAX
 };
 

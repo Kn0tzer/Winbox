@@ -8,6 +8,12 @@
 //   p1-vkcube.* — byte-identical extract of vkfix_{vert,frag}_spv from
 //     tools/rootfs64/libvk64/vkfixture_spirv.h (vkcube's own cube.vert /
 //     cube.frag, vulkan-tools 1.3.275, glslangValidator, SPIR-V 1.0).
+//   p9/p10 — hand-assembled capability shapes (testdata/spirv/src/*.spvasm):
+//     CullDistance / DrawParameters declared but unused; the bridge audit
+//     admits exactly this form, spirvfix+naga must convert both.
+//   dxvk-live — real DXVK captures; see testdata/spirv/dxvk-live/README.md.
+//     They carry the capabilities the audit whitelist covers (32/43/50/51/
+//     5379), so this corpus is the translate-side proof for that whitelist.
 //   p2-p8 — rebuilt byte-identical from testdata/spirv/src/*.vert|*.frag via
 //     `glslangValidator -V`; DXVK-typical features: combined samplers,
 //     implicit/explicit LOD, specialization constants, separate image+sampler,
@@ -23,7 +29,10 @@ import { toWGSL } from '../shader.mjs';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const corpusDir = join(repoRoot, 'testdata/spirv');
-const modules = readdirSync(corpusDir).filter(f => f.endsWith('.spv')).sort();
+const modules = [
+  ...readdirSync(corpusDir).filter(f => f.endsWith('.spv')).sort(),
+  ...readdirSync(join(corpusDir, 'dxvk-live')).filter(f => f.endsWith('.spv')).sort().map(f => `dxvk-live/${f}`),
+];
 const bytesOf = f => new Uint8Array(readFileSync(join(corpusDir, f)));
 const stageOf = f => (f.includes('.vert.') ? 'vertex' : 'fragment');
 
@@ -36,6 +45,10 @@ const EXPECTED = {
   'p6-multitex.frag.spv': ['split-combined-sampler'],
   'p7-shadow.frag.spv': ['split-combined-sampler'],
   'p8-lighting.frag.spv': ['split-combined-sampler'],
+  'p10-drawparams-unused.vert.spv': ['strip-draw-parameters'],
+  'dxvk-live/tri9.vert.spv': ['fold-spec-constants', 'strip-point-builtins'],
+  'dxvk-live/tri9.frag.spv': ['fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill'],
+  'dxvk-live/present.frag.spv': ['split-combined-sampler', 'fold-spec-constants'],
 };
 
 // Without the pre-pass, naga rejects the combined-sampler fragment shaders:
@@ -54,7 +67,7 @@ test('raw vkcube fragment fails without the pre-pass (InvalidId root cause)', ()
 });
 
 test('every corpus module converts through toWGSL(spirv) with the pre-pass', async () => {
-  assert.ok(modules.length >= 16, `expected >= 16 corpus modules, got ${modules.length}`);
+  assert.ok(modules.length >= 22, `expected >= 22 corpus modules (incl. dxvk-live), got ${modules.length}`);
   const seen = new Set();
   for (const f of modules) {
     const { applied } = applySpirvFix(bytesOf(f));
@@ -66,11 +79,18 @@ test('every corpus module converts through toWGSL(spirv) with the pre-pass', asy
     const wgsl = await toWGSL('spirv', bytesOf(f), stageOf(f));
     assert.ok(typeof wgsl === 'string' && wgsl.length > 0, `${f}: empty WGSL`);
   }
-  assert.deepEqual([...seen].sort(), ['fold-spec-constants', 'split-combined-sampler']);
+  assert.deepEqual([...seen].sort(), ['fold-spec-constants', 'split-combined-sampler', 'strip-draw-parameters', 'strip-point-builtins', 'tail-demote-to-kill']);
 });
 
 test('pre-pass is idempotent; clean modules pass through byte-identical', () => {
-  for (const f of modules) {
+  // Scope: the p-series corpus. The dxvk-live captures are covered by the
+  // conversion test above but are NOT idempotent under a second pass:
+  // tri9.frag's tail-demote-to-kill output is re-lowered by
+  // lower-mid-shader-discard on every further pass (a spirvfix rule-ordering
+  // interaction; the page applies exactly one pass, so shipped output is
+  // the first-pass result). Recorded in docs/known-gaps/vulkan.md with the
+  // capability-audit row; a spirvfix fixpoint fix is a separate lane.
+  for (const f of modules.filter(f => !f.startsWith('dxvk-live/'))) {
     const raw = bytesOf(f);
     const once = applySpirvFix(raw);
     const twice = applySpirvFix(once.bytes);

@@ -7,7 +7,8 @@ import { execFileSync } from 'node:child_process';
 
 test('image uploads preserve BC mip/layer offsets, row padding, and allocation bounds', () => {
   const source = readFileSync(new URL('../../../../source/vulkan/vk64bridge.cpp', import.meta.url), 'utf8');
-  const helpers = source.slice(source.indexOf('struct FormatBlock'), source.indexOf('const char* fmt_name'));
+  const helpers = source.slice(source.indexOf('struct FormatBlock'), source.indexOf('// Fills a guest VkMemoryRequirements2')) +
+    source.slice(source.indexOf('U64 imageSubresourceOffset('), source.indexOf('const char* fmt_name'));
   const copy = source.slice(source.indexOf('static void execCopyFail('), source.indexOf('std::vector<U8> readGuestRange'));
   const dir = mkdtempSync(join(tmpdir(), 'vk-image-transfer-'));
   try {
@@ -22,9 +23,10 @@ test('image uploads preserve BC mip/layer offsets, row padding, and allocation b
 #define klog_fmt(...) ((void)0)
 using U32 = uint32_t; using U64 = uint64_t; using U8 = uint8_t;
 enum {K_BUFFER, K_IMAGE, K_MEMORY};
-struct Image { U32 w=8,h=8,d=1,mips=3,layers=2,format=133,copied=0; U64 mem=4,memOff=0; } image;
+struct Image { U32 w=8,h=8,d=1,mips=3,layers=2,format=133,copied=0; U64 mem=4,memOff=0,dirtyGen=0; } image;
 struct Buffer { U64 mem=3,memOff=0; } buffer;
-struct DeviceMemory { U64 va=0,size=0; } srcMemory{1024,128}, dstMemory{2048,96};
+struct DeviceMemory { U64 va=0,size=0,writeEpoch=0; } srcMemory{1024,128}, dstMemory{2048,96};
+static U64 g_bufDirtyTick=1; static void vk64TouchMem(DeviceMemory* m){ if(m) m->writeEpoch=g_bufDirtyTick++; }
 struct Copy { U64 srcBuffer=1,dstImage=2,bufOff=0; U32 rowLen=0,imgH=0; int32_t ox=0,oy=0; U32 w=0,h=0,mip=0,baseLayer=0,layerCount=1,depth=1; int32_t oz=0; };
 unsigned char memory[4096];
 template<class T> T* objOf(U64 id,int,const char*) { return reinterpret_cast<T*>(id==1?(void*)&buffer:id==2?(void*)&image:id==3?(void*)&srcMemory:id==4?(void*)&dstMemory:nullptr); }

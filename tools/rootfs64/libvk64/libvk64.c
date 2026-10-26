@@ -284,6 +284,15 @@ enum {
     VK64_fn_vkCmdClearDepthStencilImage = 909,
     VK64_fn_vkCmdWriteTimestamp = 910,
     VK64_fn_vkCmdSetDepthBounds = 911,
+    VK64_fn_vkResetDescriptorPool = 912,
+    VK64_fn_vkFreeDescriptorSets = 913,
+    VK64_fn_vkCmdPushDescriptorSetKHR = 914,
+    VK64_fn_vkCmdPushDescriptorSetWithTemplateKHR = 915,
+    VK64_fn_vkGetDescriptorSetLayoutSupport = 916,
+    VK64_fn_vkGetDeviceImageMemoryRequirements = 917,
+    VK64_fn_vkCmdSetExtendedDynamicState = 918,
+    VK64_fn_vkCreateRenderPass2 = 919,
+    VK64_fn_vkCmdNextSubpass = 920,
     VK64_fn__MAX
 };
 
@@ -439,6 +448,10 @@ API void vkGetDeviceQueue(VkDevice dev, uint32_t family, uint32_t index, VkQueue
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = family; a.a[2] = index; a.a[3] = P(out);
     (void)vk64_trap(VK64_fn_vkGetDeviceQueue, &a);
 }
+API void vkDestroyBufferView(VkDevice dev, uint64_t view, const void* alloc) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = view; a.a[2] = P(alloc);
+    (void)vk64_trap(VK64_fn_vkDestroyBuffer, &a);    /* views and buffers share the bridge handle table */
+}
 API void vkGetBufferMemoryRequirements(VkDevice dev, VkBuffer buf, void* r) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = buf; a.a[2] = P(r);
     (void)vk64_trap(VK64_fn_vkGetBufferMemoryRequirements, &a);
@@ -446,6 +459,10 @@ API void vkGetBufferMemoryRequirements(VkDevice dev, VkBuffer buf, void* r) {
 API void vkGetBufferMemoryRequirements2(VkDevice dev, const void* info, void* r) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(info); a.a[2] = P(r);
     (void)vk64_trap(VK64_fn_vkGetBufferMemoryRequirements2, &a);
+}
+API void vkGetDeviceImageMemoryRequirements(VkDevice dev, const void* info, void* r) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(info); a.a[2] = P(r);
+    (void)vk64_trap(VK64_fn_vkGetDeviceImageMemoryRequirements, &a);
 }
 API void vkGetDeviceBufferMemoryRequirements(VkDevice dev, const void* info, void* r) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(info); a.a[2] = P(r);
@@ -637,6 +654,14 @@ API VkResult vkCreateRenderPass(VkDevice dev, const void* ci, const void* alloc,
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
     return (VkResult)vk64_trap(VK64_fn_vkCreateRenderPass, &a);
 }
+API VkResult vkCreateRenderPass2(VkDevice dev, const void* ci, const void* alloc, VkRenderPass* out) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
+    return (VkResult)vk64_trap(VK64_fn_vkCreateRenderPass2, &a);
+}
+API VkResult vkCreateRenderPass2KHR(VkDevice dev, const void* ci, const void* alloc, VkRenderPass* out) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
+    return (VkResult)vk64_trap(VK64_fn_vkCreateRenderPass2, &a);
+}
 API VkResult vkCreateFramebuffer(VkDevice dev, const void* ci, const void* alloc, VkFramebuffer* out) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
     return (VkResult)vk64_trap(VK64_fn_vkCreateFramebuffer, &a);
@@ -817,6 +842,35 @@ API void vkDestroyDescriptorSetLayout(VkDevice dev, VkDescriptorSetLayout l, con
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = l; a.a[2] = P(alloc);
     (void)vk64_trap(VK64_fn_vkDestroyDescriptorSetLayout, &a);
 }
+API VkResult vkResetDescriptorPool(VkDevice dev, VkDescriptorPool pool, VkFlags flags) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = pool; a.a[2] = flags;
+    return (VkResult)vk64_trap(VK64_fn_vkResetDescriptorPool, &a);
+}
+API VkResult vkFreeDescriptorSets(VkDevice dev, VkDescriptorPool pool, uint32_t count, const void* sets) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = pool; a.a[2] = count; a.a[3] = P(sets);
+    return (VkResult)vk64_trap(VK64_fn_vkFreeDescriptorSets, &a);
+}
+API void vkCmdPushDescriptorSetKHR(VkCommandBuffer cb, uint32_t bindPoint, VkPipelineLayout layout, uint32_t set, uint32_t writeCount, const void* writes) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = bindPoint; a.a[2] = layout; a.a[3] = set; a.a[4] = writeCount; a.a[5] = P(writes);
+    (void)vk64_trap(VK64_fn_vkCmdPushDescriptorSetKHR, &a);
+}
+API void vkCmdPushDescriptorSet(VkCommandBuffer cb, uint32_t bindPoint, VkPipelineLayout layout, uint32_t set, uint32_t writeCount, const void* writes) {
+    vkCmdPushDescriptorSetKHR(cb, bindPoint, layout, set, writeCount, writes);
+}
+API void vkCmdPushDescriptorSetWithTemplateKHR(VkCommandBuffer cb, VkHandle tmpl, VkPipelineLayout layout, uint32_t set, const void* data) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = tmpl; a.a[2] = layout; a.a[3] = set; a.a[4] = P(data);
+    (void)vk64_trap(VK64_fn_vkCmdPushDescriptorSetWithTemplateKHR, &a);
+}
+API void vkCmdPushDescriptorSetWithTemplate(VkCommandBuffer cb, VkHandle tmpl, VkPipelineLayout layout, uint32_t set, const void* data) {
+    vkCmdPushDescriptorSetWithTemplateKHR(cb, tmpl, layout, set, data);
+}
+API void vkGetDescriptorSetLayoutSupport(VkDevice dev, const void* ci, void* support) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(support);
+    (void)vk64_trap(VK64_fn_vkGetDescriptorSetLayoutSupport, &a);
+}
+API void vkGetDescriptorSetLayoutSupportKHR(VkDevice dev, const void* ci, void* support) {
+    vkGetDescriptorSetLayoutSupport(dev, ci, support);
+}
 API void vkDestroyDescriptorPool(VkDevice dev, VkDescriptorPool p, const void* alloc) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = p; a.a[2] = P(alloc);
     (void)vk64_trap(VK64_fn_vkDestroyDescriptorPool, &a);
@@ -873,6 +927,15 @@ API void vkCmdEndRenderPass2(VkCommandBuffer cb, const void* di) {
     VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = P(di);
     (void)vk64_trap(VK64_fn_vkCmdEndRenderPass2, &a);
 }
+API void vkCmdNextSubpass(VkCommandBuffer cb, uint32_t contents) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = contents;
+    (void)vk64_trap(VK64_fn_vkCmdNextSubpass, &a);
+}
+API void vkCmdNextSubpassKHR(VkCommandBuffer cb, uint32_t contents) { vkCmdNextSubpass(cb, contents); }
+API void vkCmdNextSubpass2(VkCommandBuffer cb, const void* bi, const void* ei) {
+    (void)ei; vkCmdNextSubpass(cb, 0); (void)bi;
+}
+API void vkCmdNextSubpass2KHR(VkCommandBuffer cb, const void* bi, const void* ei) { vkCmdNextSubpass2(cb, bi, ei); }
 API void vkCmdEndRenderPass2KHR(VkCommandBuffer cb, const void* di) {
     VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = P(di);
     (void)vk64_trap(VK64_fn_vkCmdEndRenderPass2KHR, &a);
@@ -948,6 +1011,34 @@ API void vkCmdSetFrontFace(VkCommandBuffer cb, uint32_t face) {
     (void)vk64_trap(VK64_fn_vkCmdSetFrontFace, &a);
 }
 API void vkCmdSetFrontFaceEXT(VkCommandBuffer cb, uint32_t face) { vkCmdSetFrontFace(cb, face); }
+static void vk64_setDyn(VkCommandBuffer cb, uint32_t which, uint32_t value) {
+    VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = which; a.a[2] = value;
+    (void)vk64_trap(VK64_fn_vkCmdSetExtendedDynamicState, &a);
+}
+API void vkCmdSetPrimitiveTopology(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 2, v); }
+API void vkCmdSetPrimitiveTopologyEXT(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 2, v); }
+API void vkCmdSetDepthTestEnable(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 3, v); }
+API void vkCmdSetDepthTestEnableEXT(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 3, v); }
+API void vkCmdSetDepthWriteEnable(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 4, v); }
+API void vkCmdSetDepthWriteEnableEXT(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 4, v); }
+API void vkCmdSetDepthCompareOp(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 5, v); }
+API void vkCmdSetDepthCompareOpEXT(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 5, v); }
+API void vkCmdSetStencilTestEnable(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 6, v); }
+API void vkCmdSetStencilTestEnableEXT(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 6, v); }
+API void vkCmdSetDepthBiasEnable(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 7, v); }
+API void vkCmdSetDepthBiasEnableEXT(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 7, v); }
+API void vkCmdSetRasterizerDiscardEnable(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 8, v); }
+API void vkCmdSetRasterizerDiscardEnableEXT(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 8, v); }
+API void vkCmdSetPrimitiveRestartEnable(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 9, v); }
+API void vkCmdSetPrimitiveRestartEnableEXT(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 9, v); }
+API void vkCmdSetDepthBoundsTestEnable(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 11, v); }
+API void vkCmdSetDepthBoundsTestEnableEXT(VkCommandBuffer cb, uint32_t v) { vk64_setDyn(cb, 11, v); }
+API void vkCmdSetStencilOp(VkCommandBuffer cb, uint32_t faceMask, uint32_t failOp, uint32_t passOp, uint32_t depthFailOp, uint32_t compareOp) {
+    vk64_setDyn(cb, 10, (faceMask & 3u) | ((failOp & 7u) << 4) | ((passOp & 7u) << 8) | ((depthFailOp & 7u) << 12) | ((compareOp & 7u) << 16));
+}
+API void vkCmdSetStencilOpEXT(VkCommandBuffer cb, uint32_t faceMask, uint32_t failOp, uint32_t passOp, uint32_t depthFailOp, uint32_t compareOp) {
+    vkCmdSetStencilOp(cb, faceMask, failOp, passOp, depthFailOp, compareOp);
+}
 API void vkCmdSetDepthBounds(VkCommandBuffer cb, float lo, float hi) {
     union { float f; uint32_t u; } l, h; l.f = lo; h.f = hi;
     VK64Args a = {{0}}; a.a[0] = cb; a.a[1] = l.u; a.a[2] = h.u;
@@ -1185,6 +1276,69 @@ API VkResult vkEnumerateInstanceVersion(uint32_t* pVersion) {
 }
 
 // ===========================================================================
+// H. Shim-local entry points. These have a fixed, spec-exact answer on this
+// implementation (one device, one queue family, no sparse, no wide lines, no
+// lazily allocated memory), so they are answered here instead of trapping.
+// Each is listed with S() in the proc table below and covered by
+// vk-shim-bridge-parity.test.mjs.
+// ===========================================================================
+enum { VKS_INFO2_HDR = sizeof(void*) * 2 };   /* sType + pNext of a Vk*Info2 */
+API void vkGetBufferMemoryRequirements2KHR(VkDevice dev, const void* info, void* r) {
+    vkGetBufferMemoryRequirements2(dev, info, r);
+}
+API void vkGetImageMemoryRequirements2KHR(VkDevice dev, const void* info, void* r) {
+    vkGetImageMemoryRequirements2(dev, info, r);
+}
+/* VkDeviceQueueInfo2 {sType,pNext,flags,queueFamilyIndex,queueIndex}. Only
+ * flags == 0 queues exist (protectedMemory is off), so a flagged query yields NULL. */
+API void vkGetDeviceQueue2(VkDevice dev, const void* info, VkQueue* out) {
+    const uint32_t* w = (const uint32_t*)((const char*)info + VKS_INFO2_HDR);
+    if (w[0]) { *out = 0; return; }
+    vkGetDeviceQueue(dev, w[1], w[2], out);
+}
+API void vkGetRenderAreaGranularity(VkDevice dev, uint64_t renderPass, uint32_t* granularity) {
+    (void)dev; (void)renderPass;
+    granularity[0] = 1; granularity[1] = 1;   /* WebGPU render passes have no tile alignment */
+}
+/* Sparse resources are not supported (sparseBinding and sparseResidency* are off): zero formats. */
+API void vkGetImageSparseMemoryRequirements(VkDevice dev, uint64_t img, uint32_t* count, void* reqs) {
+    (void)dev; (void)img; (void)reqs;
+    *count = 0;
+}
+API void vkGetDeviceImageSparseMemoryRequirements(VkDevice dev, const void* info, uint32_t* count, void* reqs) {
+    (void)dev; (void)info; (void)reqs;
+    *count = 0;
+}
+/* Only lazily allocated memory has a commitment; no such memory type is advertised. */
+API void vkGetDeviceMemoryCommitment(VkDevice dev, uint64_t mem, uint64_t* committed) {
+    (void)dev; (void)mem;
+    *committed = 0;
+}
+/* One physical device: no peer exists, and peer indices are required to differ. */
+API void vkGetDeviceGroupPeerMemoryFeatures(VkDevice dev, uint32_t heap, uint32_t local, uint32_t remote, uint32_t* features) {
+    (void)dev; (void)heap; (void)local; (void)remote;
+    *features = 0;
+}
+/* Device masks other than 1 are invalid with a single physical device. */
+API void vkCmdSetDeviceMask(VkCommandBuffer cb, uint32_t mask) { (void)cb; (void)mask; }
+/* wideLines is not advertised, so the only valid width is 1.0, which is what the rasterizer draws. */
+API void vkCmdSetLineWidth(VkCommandBuffer cb, float width) { (void)cb; (void)width; }
+/* A hint to return pool memory to the system; command pools here hold no recyclable memory. */
+API void vkTrimCommandPool(VkDevice dev, uint64_t pool, uint32_t flags) { (void)dev; (void)pool; (void)flags; }
+API void vkTrimCommandPoolKHR(VkDevice dev, uint64_t pool, uint32_t flags) { (void)dev; (void)pool; (void)flags; }
+/* Pipeline caches are accepted and empty: pipelines are rebuilt by the WebGPU layer, so there is
+ * no driver blob to export. A zero-size blob is a valid answer; creating a cache from it is a no-op. */
+API VkResult vkGetPipelineCacheData(VkDevice dev, uint64_t cache, uintptr_t* size, void* data) {
+    (void)dev; (void)cache; (void)data;
+    *size = 0;
+    return 0;     /* VK_SUCCESS */
+}
+API VkResult vkMergePipelineCaches(VkDevice dev, uint64_t dst, uint32_t count, const uint64_t* src) {
+    (void)dev; (void)dst; (void)count; (void)src;
+    return 0;     /* VK_SUCCESS */
+}
+
+// ===========================================================================
 // vkGetInstanceProcAddr / vkGetDeviceProcAddr — resolved GUEST-side, never trap
 // for the lookup itself. Every name we implement maps to its own wrapper; every
 // other name maps to vk64_benign, which reports the name to the host and returns
@@ -1196,6 +1350,7 @@ typedef void (*PFN_vkVoidFunction)(void);
 
 struct procEntry { const char* name; uint64_t fnId; PFN_vkVoidFunction fn; };
 #define E(n, id) { #n, (uint64_t)(id), (PFN_vkVoidFunction)n }
+#define S(n) { #n, 0, (PFN_vkVoidFunction)n }   /* shim-local: no bridge id */
 // Forward declarations for game-breaking stub implementations
 API uint64_t vkGetBufferDeviceAddress(VkDevice, const void*);
 API uint64_t vkGetBufferDeviceAddressKHR(VkDevice, const void*);
@@ -1241,6 +1396,41 @@ API void vkCmdEndQuery(VkCommandBuffer, VkQueryPool, uint32_t);
 API void vkCmdCopyQueryPoolResults(VkCommandBuffer, VkQueryPool, uint32_t, uint32_t, VkBuffer, uint64_t, uint64_t, uint32_t);
 
 static const struct procEntry g_procs[] = {
+    S(vkGetBufferMemoryRequirements2KHR),
+    S(vkGetImageMemoryRequirements2KHR),
+    S(vkGetDeviceQueue2),
+    S(vkGetRenderAreaGranularity),
+    S(vkGetImageSparseMemoryRequirements),
+    S(vkGetDeviceImageSparseMemoryRequirements),
+    S(vkGetDeviceMemoryCommitment),
+    S(vkGetDeviceGroupPeerMemoryFeatures),
+    S(vkCmdSetDeviceMask),
+    S(vkCmdSetLineWidth),
+    S(vkTrimCommandPool),
+    S(vkTrimCommandPoolKHR),
+    S(vkGetPipelineCacheData),
+    S(vkMergePipelineCaches),
+    E(vkGetDeviceImageMemoryRequirements, VK64_fn_vkGetDeviceImageMemoryRequirements),
+    E(vkCmdSetPrimitiveTopology, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetPrimitiveTopologyEXT, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetDepthTestEnable, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetDepthTestEnableEXT, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetDepthWriteEnable, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetDepthWriteEnableEXT, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetDepthCompareOp, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetDepthCompareOpEXT, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetStencilTestEnable, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetStencilTestEnableEXT, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetDepthBiasEnable, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetDepthBiasEnableEXT, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetRasterizerDiscardEnable, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetRasterizerDiscardEnableEXT, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetPrimitiveRestartEnable, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetPrimitiveRestartEnableEXT, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetDepthBoundsTestEnable, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetDepthBoundsTestEnableEXT, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetStencilOp, VK64_fn_vkCmdSetExtendedDynamicState),
+    E(vkCmdSetStencilOpEXT, VK64_fn_vkCmdSetExtendedDynamicState),
     E(vkCmdResolveImage2, VK64_fn_vkCmdResolveImage),
     E(vkCmdResolveImage2KHR, VK64_fn_vkCmdResolveImage),
     E(vkResetQueryPool, VK64_fn_vkResetQueryPool),
@@ -1326,6 +1516,12 @@ static const struct procEntry g_procs[] = {
     E(vkCreateBufferView, VK64_fn_vkCreateBufferView),
     E(vkCreateSampler, VK64_fn_vkCreateSampler),
     E(vkCreateRenderPass, VK64_fn_vkCreateRenderPass),
+    E(vkCreateRenderPass2, VK64_fn_vkCreateRenderPass2),
+    E(vkCreateRenderPass2KHR, VK64_fn_vkCreateRenderPass2),
+    E(vkCmdNextSubpass, VK64_fn_vkCmdNextSubpass),
+    E(vkCmdNextSubpassKHR, VK64_fn_vkCmdNextSubpass),
+    E(vkCmdNextSubpass2, VK64_fn_vkCmdNextSubpass),
+    E(vkCmdNextSubpass2KHR, VK64_fn_vkCmdNextSubpass),
     E(vkCreateFramebuffer, VK64_fn_vkCreateFramebuffer),
     E(vkCreateGraphicsPipelines, VK64_fn_vkCreateGraphicsPipelines),
     E(vkCreateComputePipelines, VK64_fn_vkCreateComputePipelines),
@@ -1358,6 +1554,7 @@ static const struct procEntry g_procs[] = {
     E(vkDestroySwapchainKHR, VK64_fn_vkDestroySwapchainKHR),
     E(vkDestroyCommandPool, VK64_fn_vkDestroyCommandPool),
     E(vkDestroyBuffer, VK64_fn_vkDestroyBuffer),
+    E(vkDestroyBufferView, VK64_fn_vkDestroyBuffer),
     E(vkDestroyImage, VK64_fn_vkDestroyImage),
     E(vkDestroyImageView, VK64_fn_vkDestroyImageView),
     E(vkDestroySampler, VK64_fn_vkDestroySampler),
@@ -1367,6 +1564,14 @@ static const struct procEntry g_procs[] = {
     E(vkDestroyPipelineLayout, VK64_fn_vkDestroyPipelineLayout),
     E(vkDestroyDescriptorSetLayout, VK64_fn_vkDestroyDescriptorSetLayout),
     E(vkDestroyDescriptorPool, VK64_fn_vkDestroyDescriptorPool),
+    E(vkResetDescriptorPool, VK64_fn_vkResetDescriptorPool),
+    E(vkFreeDescriptorSets, VK64_fn_vkFreeDescriptorSets),
+    E(vkCmdPushDescriptorSetKHR, VK64_fn_vkCmdPushDescriptorSetKHR),
+    E(vkCmdPushDescriptorSet, VK64_fn_vkCmdPushDescriptorSetKHR),
+    E(vkCmdPushDescriptorSetWithTemplateKHR, VK64_fn_vkCmdPushDescriptorSetWithTemplateKHR),
+    E(vkCmdPushDescriptorSetWithTemplate, VK64_fn_vkCmdPushDescriptorSetWithTemplateKHR),
+    E(vkGetDescriptorSetLayoutSupport, VK64_fn_vkGetDescriptorSetLayoutSupport),
+    E(vkGetDescriptorSetLayoutSupportKHR, VK64_fn_vkGetDescriptorSetLayoutSupport),
     E(vkDestroyShaderModule, VK64_fn_vkDestroyShaderModule),
     E(vkDestroyPipelineCache, VK64_fn_vkDestroyPipelineCache),
     E(vkDestroyFence, VK64_fn_vkDestroyFence),
@@ -2097,39 +2302,26 @@ API uint64_t vkGetBufferDeviceAddress(VkDevice dev, const void* info) {
 API uint64_t vkGetBufferDeviceAddressKHR(VkDevice dev, const void* info) {
     return vkGetBufferDeviceAddress(dev, info);
 }
-TAIL(vkGetBufferMemoryRequirements2KHR)
 TAIL(vkGetBufferOpaqueCaptureAddressKHR)
-TAIL(vkGetDeviceImageMemoryRequirements)
-TAIL(vkGetDeviceImageSparseMemoryRequirements)
 TAIL(vkGetDeviceImageSubresourceLayout)
-TAIL(vkGetDeviceQueue2)
-TAIL(vkGetDeviceGroupPeerMemoryFeatures)
 TAIL(vkGetDeviceGroupPresentCapabilitiesKHR)
 TAIL(vkGetDeviceGroupSurfacePresentModesKHR)
 TAIL(vkGetFenceStatus2)
 TAIL(vkGetFenceStatus2KHR)
-TAIL(vkGetImageMemoryRequirements2KHR)
-TAIL(vkGetImageSparseMemoryRequirements)
 TAIL(vkGetImageSubresourceLayout2)
 TAIL(vkGetImageSubresourceLayout2EXT)
 TAIL(vkGetPhysicalDevicePresentRectanglesKHR)
 TAIL(vkGetPhysicalDeviceSurfaceCapabilities2EXT)
 TAIL(vkGetPhysicalDeviceSurfaceFormats2EXT)
 TAIL(vkGetPhysicalDeviceSurfacePresentModes2EXT)
-TAIL(vkGetPipelineCacheData)
 TAIL(vkGetQueryPoolResults64)
 TAIL(vkGetQueryPoolResults64KHR)
 TAIL(vkGetRenderingAreaGranularity)
-TAIL(vkGetRenderAreaGranularity)
 TAIL(vkSwapchainImagesKHR2)
 TAIL(vkCreateSwapchainKHR2)
 TAIL(vkDestroyDeviceKHR)
 TAIL(vkDestroySwapchainKHR2)
-TAIL(vkMergePipelineCaches)
 TAIL(vkResetPipelineCache)
-TAIL(vkGetDeviceMemoryCommitment)
-TAIL(vkFreeDescriptorSets)
-TAIL(vkDestroyBufferView)
 TAIL(vkSetDebugUtilsObjectNameEXT)
 TAIL(vkSetDebugUtilsObjectTagEXT)
 TAIL(vkCreateDebugUtilsMessengerEXT)
@@ -2445,27 +2637,14 @@ API void vkCmdCopyQueryPoolResults(VkCommandBuffer cb, VkQueryPool pool, uint32_
 TAIL(vkGetPipelineLayoutSupport)
 TAIL(vkQueueBindSparse)
 TAIL(vkCmdSetBlendConstant)
-TAIL(vkCmdPushDescriptorSet)
-TAIL(vkCmdNextSubpass)
-TAIL(vkCmdNextSubpassKHR)
-TAIL(vkCmdSetDeviceMask)
-TAIL(vkCmdSetDepthBiasEnableEXT)
-TAIL(vkCmdSetLineWidth)
 TAIL(vkCmdSetDepthBiasNV)
-TAIL(vkCmdSetPrimitiveTopologyEXT)
 TAIL(vkCmdSetVertexInputEXT)
 
 TAIL(vkCmdBeginConditionalRenderingEXT)
 TAIL(vkCmdEndConditionalRenderingEXT)
-TAIL(vkCmdNextSubpass2KHR)
-TAIL(vkCmdNextSubpass2)
 TAIL(vkCmdDrawIndirectByteCountEXT)
 
-TAIL(vkTrimCommandPoolKHR)
-TAIL(vkTrimCommandPool)
 TAIL(vkCreateFramebuffer2KHR)
 TAIL(vkCreateSamplerYcbcrConversion)
 TAIL(vkDestroySamplerYcbcrConversion)
-TAIL(vkGetDescriptorSetLayoutSupport)
-TAIL(vkGetDescriptorSetLayoutSupportKHR)
 #undef TAIL

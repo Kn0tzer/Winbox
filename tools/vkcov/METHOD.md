@@ -6,26 +6,29 @@ bridges, call each one in-browser through the PE shims with valid-ish arguments,
 and produce a coverage matrix: working / slow-or-flaky / broken-or-stub, with
 repros for broken handlers. Measurement only — no bridge behavior changes.
 
-## Handler surface (observed 2026-10-08, on the box)
+## Handler surface (re-measured 2026-10-24 from the sources; ABI ids run to 918)
 
 | Set | Source | Count | Note |
 |---|---|---|---|
-| vk64 implemented | `case VK64_fn_*` in `source/vulkan/vk64bridge.cpp` | 170 | All exported by `vulkan-1.dll` |
-| vk64 stub-only | DLL exports without a bridge case (TAIL wrappers) | 99 | Return `VK_ERROR_FEATURE_NOT_PRESENT` (-8) by design |
-| vk64 total exports | `tools/vkd3d/probe/vulkan-1.dll` | 269 | 170 + 99 |
-| vk32 | `source/vulkan/vk32bridge.cpp` | 303 | Trap-only; recorded as unimplemented per task brief |
-| GL64 | `case GL64_fn_*` in `source/opengl/gl64bridge.cpp` | 306 | Via opengl32 → guest libGL shim |
+| vk64 bridge cases | `case VK64_fn_*` before `vk32Bridge` in `source/vulkan/vk64bridge.cpp` | 204 | x86-64 guest ABI |
+| vk32 bridge cases | `case VK64_fn_*` after `vk32Bridge` in the same file | 207 | i386 guest ABI. Not trap-only: it has real handlers for the same ids (see `docs/known-gaps/vulkan.md` for the shim/bridge parity guard) |
+| ICD shim entries | `E()` bridged / `S()` shim-local / `TAIL()` loud stub in `tools/rootfs64/libvk{64,32}/*.c` | 251 / 14 / 40 per arch | Identical per arch (`vk-shim-bridge-parity.test.mjs`); a `TAIL` returns -8 and logs `fn:<name>` |
+| `vulkan-1.dll` exports used by `vkcov.exe` | `tools/vkd3d/probe/exports.txt` | 269 (measured 2026-10-08) | Historic Windows-side list; it contains invented names that no real application can call, which the ICD intentionally leaves as `TAIL` stubs (register: NOT-A-GAP) |
+| GL64 | `case GL64_fn_*` in `source/opengl/gl64bridge.cpp` | 306 | Via opengl32 -> guest libGL shim |
 
-(The task brief's "343 handlers" for vk64 was aspirational; the actual
-implemented surface is 170. The 99 stub-only exports are still tested — they
-must return -8, and any deviation is a bug.)
+There is no `source/vulkan/vk32bridge.cpp`; both ABIs are served by `vk64bridge.cpp`.
+The `TAIL` stubs are still tested: they must return -8 and be loud, and any other
+behaviour is a bug. The original "stub-only 99 / implemented 170" split of the
+Windows export list predates the 32-bit parity work, the shim-local answers
+(`S()`), and the extended-dynamic-state ids; do not use it to size remaining work -
+use the register (`docs/known-gaps/vulkan.md`).
 
 ## Test programs
 
 ### vkcov.exe (Vulkan)
 Win32 C, built with `x86_64-w64-mingw32-gcc`, using Vulkan headers from
 `tools/dxvk/src/include/vulkan/include` with `VK_NO_PROTOTYPES`. Loads
-`vulkan-1.dll` via `LoadLibraryA` + `GetProcAddress` (269 exports).
+`vulkan-1.dll` via `LoadLibraryA` + `GetProcAddress` (269 exports at the time of writing; see Handler surface).
 
 Setup chain (each step is itself a coverage test): `vkCreateInstance` →
 `vkEnumeratePhysicalDevices` → `vkCreateDevice` → `vkGetDeviceQueue` →
@@ -38,7 +41,7 @@ SPIR-V) → `vkCreateRenderPass` → `vkCreateFramebuffer` →
 `vkCreateSemaphore` → `vkCreateEvent` → `vkCreateQueryPool`.
 
 Then per-handler tests: all 58 `vkCmd*` inside a begun command buffer, queue/
-sync ops, pipeline creates, surface/swapchain (headless), the 99 stubs
+sync ops, pipeline creates, surface/swapchain (headless), the stub-only exports
 (generic no-arg call, expect -8), and finally all `vkDestroy*`/`vkFree*`.
 
 ### glcov.exe (OpenGL)

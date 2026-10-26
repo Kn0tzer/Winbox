@@ -52,6 +52,7 @@ int main() {
     assert.deepEqual(frame.samplers.get('0000000000005a5a'), {
       mag: 'linear', min: 'linear', mipmap: 'linear',
       addrU: 'repeat', addrV: 'clamp-to-edge', addrW: 'clamp-to-edge',
+      addrModeU: 0, addrModeV: 3, addrModeW: 4,
       maxAnisotropy: 6, anisotropyEnable: true, compareEnable: true, compareOp: 6,
       mipLodBias: 1.25, minLod: 0.5, maxLod: 17, borderColor: 5,
     });

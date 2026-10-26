@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { installVkPageTier, V2_MAGIC, V2_VERSION, V2_REC } from '../../../vkwebgpu.mjs';
 import { createValidationDevice } from '../fixtures/webgpu-validation-device.mjs';
 
-const tierGlobals = ['bwVkTier', 'bwVkTierReady', 'bwVkStats', 'bwVkChunk', 'bwVkRenderer', 'bwVkRenderer2'];
+const tierGlobals = ['bwVkTier', 'bwVkTierReady', 'bwVkStats', 'bwVkChunk', 'bwVkRenderer', 'bwVkRenderer2', 'bwVkTextureCompressionBC'];
 function preserveGlobals(names) {
   const saved = new Map(names.map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
   return () => { for (const [name, descriptor] of saved) {

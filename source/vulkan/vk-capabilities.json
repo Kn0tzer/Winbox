@@ -1,0 +1,199 @@
+{
+  "_comment": "Truthful capability manifest. Every listed feature and extension is implemented end-to-end. Unsupported capabilities belong in notAdvertised. The unit test diffs this manifest against feature assignments and extension enumeration.",
+  "features": {
+    "fillCoreFeatures.robustBufferAccess": {
+      "status": "implemented"
+    },
+    "fillCoreFeatures.fullDrawIndexUint32": {
+      "status": "implemented"
+    },
+    "fillCoreFeatures.imageCubeArray": {
+      "status": "implemented"
+    },
+    "fillCoreFeatures.independentBlend": {
+      "status": "implemented"
+    },
+    "fillCoreFeatures.shaderClipDistance": {
+      "status": "implemented"
+    },
+    "fillCoreFeatures.samplerAnisotropy": {
+      "status": "implemented"
+    },
+    "fillCoreFeatures.multiDrawIndirect": {
+      "status": "implemented"
+    },
+    "fillCoreFeatures.drawIndirectFirstInstance": {
+      "status": "implemented"
+    },
+    "fillCoreFeatures.depthBiasClamp": {
+      "status": "implemented"
+    },
+    "fillCoreFeatures.depthClamp": {
+      "status": "implemented"
+    },
+    "fillCoreFeatures.textureCompressionBC": {
+      "status": "implemented"
+    },
+    "fillRobustness2.robustBufferAccess2": {
+      "status": "implemented"
+    },
+    "fillRobustness2.robustImageAccess2": {
+      "status": "implemented"
+    },
+    "fillRobustness2.nullDescriptor": {
+      "status": "implemented"
+    },
+    "fillDepthClipEnable.depthClipEnable": {
+      "status": "implemented"
+    },
+    "fillVulkan12Features.timelineSemaphore": {
+      "status": "implemented"
+    },
+    "fillVulkan11Features.shaderDrawParameters": {
+      "status": "implemented"
+    },
+    "fillVulkan13Features.shaderDemoteToHelperInvocation": {
+      "status": "implemented"
+    }
+  },
+  "extensions": {
+    "instance": {
+      "VK_KHR_surface": {
+        "status": "implemented"
+      },
+      "VK_KHR_win32_surface": {
+        "status": "implemented"
+      },
+      "VK_KHR_xcb_surface": {
+        "status": "implemented"
+      },
+      "VK_KHR_xlib_surface": {
+        "status": "implemented"
+      },
+      "VK_EXT_headless_surface": {
+        "status": "implemented"
+      }
+    },
+    "device": {
+      "VK_KHR_swapchain": {
+        "status": "implemented"
+      },
+      "VK_KHR_load_store_op_none": {
+        "status": "implemented"
+      },
+      "VK_EXT_robustness2": {
+        "status": "implemented"
+      },
+      "VK_EXT_depth_clip_enable": {
+        "status": "implemented"
+      }
+    }
+  },
+  "notAdvertised": [
+    "fillCoreFeatures.alphaToOne",
+    "fillCoreFeatures.depthBounds",
+    "fillCoreFeatures.dualSrcBlend",
+    "fillCoreFeatures.fillModeNonSolid",
+    "fillCoreFeatures.fragmentStoresAndAtomics",
+    "fillCoreFeatures.geometryShader",
+    "fillCoreFeatures.largePoints",
+    "fillCoreFeatures.logicOp",
+    "fillCoreFeatures.multiViewport",
+    "fillCoreFeatures.occlusionQueryPrecise",
+    "fillCoreFeatures.occlusionQuery",
+    "fillCoreFeatures.pipelineStatisticsQuery",
+    "fillCoreFeatures.sampleRateShading",
+    "fillCoreFeatures.shaderCullDistance",
+    "fillCoreFeatures.shaderTessellationAndGeometryPointSize",
+    "fillCoreFeatures.shaderFloat64",
+    "fillCoreFeatures.shaderImageGatherExtended",
+    "fillCoreFeatures.shaderInt16",
+    "fillCoreFeatures.shaderInt64",
+    "fillCoreFeatures.shaderResourceMinLod",
+    "fillCoreFeatures.shaderResourceResidency",
+    "fillCoreFeatures.shaderStorageImageExtendedFormats",
+    "fillCoreFeatures.shaderStorageImageMultisample",
+    "fillCoreFeatures.shaderStorageImageReadWithoutFormat",
+    "fillCoreFeatures.shaderStorageImageWriteWithoutFormat",
+    "fillCoreFeatures.shaderUniformBufferArrayDynamicIndexing",
+    "fillCoreFeatures.shaderSampledImageArrayDynamicIndexing",
+    "fillCoreFeatures.shaderStorageBufferArrayDynamicIndexing",
+    "fillCoreFeatures.shaderStorageImageArrayDynamicIndexing",
+    "fillCoreFeatures.textureCompressionETC2",
+    "fillCoreFeatures.textureCompressionASTC_LDR",
+    "fillCoreFeatures.sparseBinding",
+    "fillCoreFeatures.sparseResidencyBuffer",
+    "fillCoreFeatures.sparseResidencyImage2D",
+    "fillCoreFeatures.sparseResidencyImage3D",
+    "fillCoreFeatures.sparseResidency2Samples",
+    "fillCoreFeatures.sparseResidency4Samples",
+    "fillCoreFeatures.sparseResidency8Samples",
+    "fillCoreFeatures.sparseResidency16Samples",
+    "fillCoreFeatures.sparseResidencyAliased",
+    "fillCoreFeatures.variableMultisampleRate",
+    "fillCoreFeatures.inheritedQueries",
+    "fillCoreFeatures.tessellationShader",
+    "fillCoreFeatures.vertexPipelineStoresAndAtomics",
+    "fillCoreFeatures.wideLines",
+    "fillDescriptorIndexing.descriptorBindingPartiallyBound",
+    "fillDescriptorIndexing.descriptorBindingSampledImageUpdateAfterBind",
+    "fillDescriptorIndexing.descriptorBindingStorageBufferUpdateAfterBind",
+    "fillDescriptorIndexing.descriptorBindingStorageImageUpdateAfterBind",
+    "fillDescriptorIndexing.descriptorBindingStorageTexelBufferUpdateAfterBind",
+    "fillDescriptorIndexing.descriptorBindingUniformBufferUpdateAfterBind",
+    "fillDescriptorIndexing.descriptorBindingUniformTexelBufferUpdateAfterBind",
+    "fillDescriptorIndexing.descriptorBindingUpdateUnusedWhilePending",
+    "fillDescriptorIndexing.descriptorBindingVariableDescriptorCount",
+    "fillDescriptorIndexing.runtimeDescriptorArray",
+    "fillDescriptorIndexing.shaderInputAttachmentArrayDynamicIndexing",
+    "fillDescriptorIndexing.shaderInputAttachmentArrayNonUniformIndexing",
+    "fillDescriptorIndexing.shaderSampledImageArrayNonUniformIndexing",
+    "fillDescriptorIndexing.shaderStorageBufferArrayNonUniformIndexing",
+    "fillDescriptorIndexing.shaderStorageImageArrayNonUniformIndexing",
+    "fillDescriptorIndexing.shaderStorageTexelBufferArrayDynamicIndexing",
+    "fillDescriptorIndexing.shaderStorageTexelBufferArrayNonUniformIndexing",
+    "fillDescriptorIndexing.shaderUniformBufferArrayNonUniformIndexing",
+    "fillDescriptorIndexing.shaderUniformTexelBufferArrayDynamicIndexing",
+    "fillDescriptorIndexing.shaderUniformTexelBufferArrayNonUniformIndexing",
+    "fillMaintenance5.maintenance5",
+    "fillMaintenance6.maintenance6",
+    "fillTransformFeedback.geometryStreams",
+    "fillTransformFeedback.transformFeedback",
+    "fillVertexAttributeDivisor.vertexAttributeInstanceRateDivisor",
+    "fillVertexAttributeDivisor.vertexAttributeInstanceRateZeroDivisor",
+    "fillVulkan11Features.multiview",
+    "fillVulkan11Features.storageBuffer16BitAccess",
+    "fillVulkan11Features.variablePointers",
+    "fillVulkan12Features.bufferDeviceAddress",
+    "fillVulkan12Features.descriptorBindingPartiallyBound",
+    "fillVulkan12Features.descriptorBindingUpdateUnusedWhilePending",
+    "fillVulkan12Features.descriptorBindingVariableDescriptorCount",
+    "fillVulkan12Features.descriptorIndexing",
+    "fillVulkan12Features.runtimeDescriptorArray",
+    "fillVulkan12Features.samplerMirrorClampToEdge",
+    "fillVulkan12Features.shaderInputAttachmentArrayDynamicIndexing",
+    "fillVulkan12Features.shaderSampledImageArrayNonUniformIndexing",
+    "fillVulkan12Features.shaderStorageBufferArrayNonUniformIndexing",
+    "fillVulkan12Features.shaderStorageImageArrayNonUniformIndexing",
+    "fillVulkan12Features.shaderStorageTexelBufferArrayDynamicIndexing",
+    "fillVulkan12Features.shaderStorageTexelBufferArrayNonUniformIndexing",
+    "fillVulkan12Features.shaderUniformBufferArrayNonUniformIndexing",
+    "fillVulkan12Features.shaderUniformTexelBufferArrayDynamicIndexing"
+  ],
+  "notAdvertisedExtensions": [
+    "VK_KHR_push_descriptor",
+    "VK_KHR_dynamic_rendering",
+    "VK_EXT_descriptor_indexing",
+    "VK_KHR_multiview",
+    "VK_EXT_transform_feedback",
+    "VK_EXT_vertex_attribute_divisor",
+    "VK_EXT_mesh_shader",
+    "VK_KHR_acceleration_structure",
+    "VK_KHR_ray_tracing_pipeline",
+    "VK_KHR_synchronization2",
+    "VK_EXT_descriptor_buffer",
+    "VK_EXT_descriptor_heap",
+    "VK_KHR_cooperative_matrix",
+    "VK_NV_cooperative_matrix"
+  ]
+}

@@ -20,35 +20,50 @@ test('native Vulkan query result encoding handles widths, availability, flags an
 
 int main() {
   using namespace vkquery;
+  const std::vector<uint64_t> occlusionValues ={9, 4};
+  const std::vector<uint8_t> bothAvailable ={1, 1};
   for (uint32_t flags = 0; flags < 16; ++flags) {
     const size_t width = (flags & VKQUERY_64_BIT) ? 8 : 4;
     const uint64_t stride = width * ((flags & VKQUERY_WITH_AVAILABILITY) ? 2 : 1);
     const auto result = vkquery::encodeResults(VKQUERY_OCCLUSION, 0, 2, 2,
-        stride * 2, stride, flags, 1.0, 0);
+        stride * 2, stride, flags, occlusionValues, bothAvailable);
     assert(result.complete && result.bytes.size() == stride * 2);
     for (size_t i = 0; i < 2; ++i) {
-      assert(vkquery::readUnsigned(result.bytes, i * stride, width) == 1);
+      assert(vkquery::readUnsigned(result.bytes, i * stride, width) == occlusionValues[i]);
       if (flags & VKQUERY_WITH_AVAILABILITY)
         assert(vkquery::readUnsigned(result.bytes, i * stride + width, width) == 1);
     }
   }
 
-  const EncodedResults strided = encodeResults(VKQUERY_OCCLUSION, 0, 2, 2, 16, 8, 0, 1.0, 0);
+  const EncodedResults strided = encodeResults(VKQUERY_OCCLUSION, 0, 2, 2, 16, 8, 0, occlusionValues, bothAvailable);
   assert(strided.complete && strided.countWritten == 2 && strided.bytes.size() == 12);
-  assert(readUnsigned(strided.bytes, 0, 4) == 1);
+  assert(readUnsigned(strided.bytes, 0, 4) == 9);
   assert(readUnsigned(strided.bytes, 4, 4) == 0);
-  assert(readUnsigned(strided.bytes, 8, 4) == 1);
+  assert(readUnsigned(strided.bytes, 8, 4) == 4);
 
-  const auto first = vkquery::timestampTicks(100, 2.0);
-  const auto second = vkquery::timestampTicks(100, 2.0);
-  assert(first == 50 && second > first);
+  const std::vector<uint64_t> timestampValues ={1050, 2100};
   const auto timestamps = vkquery::encodeResults(VKQUERY_TIMESTAMP, 0, 2, 2, 32, 16,
-      VKQUERY_64_BIT | VKQUERY_WITH_AVAILABILITY, 1.0, first);
+      VKQUERY_64_BIT | VKQUERY_WITH_AVAILABILITY, timestampValues, bothAvailable);
   assert(timestamps.complete);
-  assert(vkquery::readUnsigned(timestamps.bytes, 0, 8) > second);
+  assert(vkquery::readUnsigned(timestamps.bytes, 0, 8) == 1050);
   assert(vkquery::readUnsigned(timestamps.bytes, 8, 8) == 1);
-  assert(vkquery::readUnsigned(timestamps.bytes, 16, 8) > vkquery::readUnsigned(timestamps.bytes, 0, 8));
+  assert(vkquery::readUnsigned(timestamps.bytes, 16, 8) == 2100);
   assert(vkquery::readUnsigned(timestamps.bytes, 24, 8) == 1);
+
+  const std::vector<uint64_t> values ={1234, 5678};
+  const std::vector<uint8_t> availability ={1, 0};
+  const auto pending = encodeResults(VKQUERY_TIMESTAMP, 0, 2, 2, 32, 16,
+      VKQUERY_64_BIT | VKQUERY_WITH_AVAILABILITY, values, availability);
+  assert(!pending.complete && pending.countWritten == 1);
+  assert(readUnsigned(pending.bytes, 0, 8) == 1234);
+  assert(readUnsigned(pending.bytes, 8, 8) == 1);
+  const auto partial = encodeResults(VKQUERY_TIMESTAMP, 0, 2, 2, 32, 16,
+      VKQUERY_64_BIT | VKQUERY_WITH_AVAILABILITY | VKQUERY_PARTIAL, values, availability);
+  assert(partial.complete && partial.countWritten == 2);
+  assert(readUnsigned(partial.bytes, 16, 8) == 0);
+  assert(readUnsigned(partial.bytes, 24, 8) == 0);
+  assert(!encodeResults(VKQUERY_TIMESTAMP, 0, 2, 2, 32, 16,
+      VKQUERY_64_BIT, {}, {}).valid);
 }
 `);
     execFileSync('g++', ['-std=c++17', '-Wall', '-Wextra', '-Werror', '-I', join(root, 'source/vulkan'), source, '-o', binary]);
@@ -96,4 +111,15 @@ int main(void) { return check_query_copy(); }
       rmSync(dir, { recursive: true, force: true });
     }
   }
+});
+
+
+test('bridge rejects query pools loudly until query sets are integrated with WebGPU replay', () => {
+  const bridge = readFileSync(join(root, 'source/vulkan/vk64bridge.cpp'), 'utf8');
+  assert.equal((bridge.match(/"query results are not integrated with WebGPU replay; VK_ERROR_FEATURE_NOT_PRESENT"/g) || []).length, 2,
+    'both guest ABIs reject query pool creation with a feature-specific warning');
+  assert.equal((bridge.match(/"timestamp queries are not integrated with WebGPU replay; device queue timestampValidBits is zero"/g) || []).length, 2,
+    'both guest ABIs warn when a timestamp command is incorrectly issued');
+  assert.match(bridge, /q\.timestampValidBits = 0/);
+  assert.doesNotMatch(bridge, /ci\.queryType != vkquery::VKQUERY_TIMESTAMP/);
 });

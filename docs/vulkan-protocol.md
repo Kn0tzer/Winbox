@@ -128,7 +128,7 @@ is emitted at the first submit-with-draw after a present, `FRAME_END` seals at
 | 0x05 | `SHADER` | `u8 stage (0=vs,1=fs), u8 pad, u16 pad, u64 hash, u32 codeLen, u8 code[codeLen]`. Emitted at most once per hash per frame; the page caches translated WGSL per hash (existing `createShaderCache`). |
 | 0x06 | `PIPELINE` | `u64 pipeId, u64 vsHash, u64 fsHash, u32 topology, cull, front, depthTest, depthWrite, depthOp, blend, u32 nVb, u32 nVa`, then vertex input tables and append-only tails. Optional `FAN1` (`0x314e4146`) carries `u32 primitiveRestartEnable` for indexed triangle fans, expanded to triangle-list indices by the page. |
 | 0x07 | `BIND_SETS` | `u8 firstSet, u8 setCount, u16 pad, u64 setIds[setCount]`. Which descriptor sets are live for subsequent draws. |
-| 0x08 | `DESC_SET` | `u8 setIndex, u8 nBind, u16 pad, u64 layoutId`, then per binding `u32 binding, u32 type (VkDescriptorType), u32 dstArrayElement, u32 count, u8 kind, u8 pad[3], u64 obj, u64 range`. `kind`: 0=none, 1=buffer, 2=image, 3=sampler, 4=inline-bytes. **Binding arrays are explicit**: `dstArrayElement`/`count` are recorded, not collapsed to element 0. |
+| 0x08 | `DESC_SET` | `u8 setIndex, u8 pad, u16 nBind, u64 layoutId`, then per written descriptor element `u32 binding, u32 type (VkDescriptorType; *_DYNAMIC types are sent as their base type), u32 dstArrayElement, u32 count (always 1), u8 kind, u8 pad[3], u64 obj, u64 range, u64 bufOff`. `kind`: 0=none, 1=buffer, 2=image, 3=sampler, 4=inline-bytes. **One entry per (binding, element)**: arrays, partial array writes, copies, template updates, push descriptors, immutable samplers and `vkCmdBindDescriptorSets` dynamic offsets are all resolved on the bridge side (`bufOff` is the absolute byte offset including the dynamic offset; `range` is resolved from `VK_WHOLE_SIZE`). No 8-binding cap. |
 | 0x09 | `BUFFER_DATA` | `u64 bufId, u64 offset, u32 len, u8 bytes[len]`. Uniform/storage/vertex/index bytes, at most once per `(bufId,offset,len)` per frame. |
 | 0x0A | `IMAGE_DATA` | `u64 viewId, u64 imageId, u32 w, u32 h, u32 format (VkFormat), u32 pixLen, u8 bytes[pixLen]`. Once per image per frame; `viewId` first because `DESC_SET` bindings name image *views* while this record is deduped per image. |
 | 0x0B | `SAMPLER` | `u64 samplerId, u32 mag, min, mipmap, addrU, addrV, f32 maxAniso`, followed by the optional compatible `SAM1` (`0x314d4153`) tail: `u32 addrW, f32 mipLodBias, u32 anisotropyEnable, compareEnable, compareOp, f32 minLod, maxLod, u32 borderColor`. Older records end after `maxAniso`; the decoder supplies defaults. Vulkan compare/address/border values are mapped by the page. WebGPU has no mip LOD bias or border-color fields; mip bias is ignored and clamp-to-border maps to clamp-to-edge. |
@@ -141,7 +141,7 @@ is emitted at the first submit-with-draw after a present, `FRAME_END` seals at
 | 0x12 | `INLINE_BYTES` | `u8 setIndex, u8 pad, u16 pad, u32 binding, u32 dstArrayElement, u32 len, u8 bytes[len]`. Payload for `kind=4` (`INLINE_UNIFORM_BLOCK`) bindings, whose bytes live in guest memory at write time. |
 | 0x18 | `DEPTH_BIAS` | `f32 constantFactor, clamp, slopeFactor`, dynamic `vkCmdSetDepthBias` state in command order. |
 | 0x19 | `IMAGE_BLIT` | `u64 srcImage, u64 dstImage, u32 srcMip, srcLayer, dstMip, dstLayer, filter, i32 srcOffset[2][3], i32 dstOffset[2][3]`; linear/nearest GPU blit, including mip generation. |
-| 0x1A | `RASTER_STATE` | `u32 which (0 = cull mode, 1 = front face), u32 value` (Vulkan enum values), dynamic `vkCmdSetCullMode` / `vkCmdSetFrontFace` state in command order. Applied only to pipelines whose `RST1` tail flags that state dynamic. |
+| 0x1A | `RASTER_STATE` | `u32 which, u32 value`, dynamic state in command order (`web/vk-dynstate.mjs`). `which`: 0 cull mode, 1 front face (Vulkan enum values), 2 primitive topology (0-5), 3 depth test, 4 depth write, 6 stencil test, 7 depth-bias enable, 8 rasterizer discard, 9 primitive restart, 11 depth-bounds test (booleans 0/1; 11 is always 0, TRUE is rejected by the bridge), 5 depth compare op (0-7), 10 stencil op packed `faceMask(2b) \| fail<<4 \| pass<<8 \| depthFail<<12 \| compare<<16`. Applied only to pipelines whose `RST1` tail (ids 0/1) or `DYN1` tail (ids 2-11, bit n = id n) flags that state dynamic. |
 | 0x1B | `IMAGE_CLEAR_DS` | `u64 image, f32 depth, u32 stencil, u32 rangeCount (at most 64), then rangeCount x {u32 aspectMask, baseMip, levelCount, baseLayer, layerCount}`. `vkCmdClearDepthStencilImage` (64-bit guest only). |
 
 Deliberately **not** in v2: secondary command buffers (DXVK doesn't use them
@@ -254,6 +254,14 @@ DXVK always declares `VK_DYNAMIC_STATE_CULL_MODE` / `FRONT_FACE`; the page tier 
 latest `RASTER_STATE` value for a flagged pipeline and the static pipeline value otherwise
 (the value is part of the pipeline cache key).
 
+The `PIPELINE` record may append a `DYN1` tail (`u32 0x314e5944`, `u32 dynMask`, `u32 rasterizerDiscard`):
+`dynMask` bit n is set when the pipeline lists extended-dynamic-state id n (see `RASTER_STATE`) in
+`pDynamicStates`; `rasterizerDiscard` is the static `rasterizerDiscardEnable`. A discarded draw is
+counted in `discardedDraws`, not dropped. A pipeline whose `pDynamicStates` names a state with no V2
+representation is rejected at create (`VK_ERROR_FEATURE_NOT_PRESENT`, `UNSUPPORTED dynamic-state-<n>`).
+A topology WebGPU cannot draw (adjacency/patch) is never replayed as `triangle-list`: the decoder
+throws unless the pipeline's topology is dynamic.
+
 The `PIPELINE` record may append a `BND1` tail after its two specialization
 lists: `u32 0x31444e42`, `u32 attachmentCount` (at most four), then one block of
 eight `u32` values per attachment: `enable, srcColor, dstColor, colorOp,
@@ -278,6 +286,29 @@ dynamic blend-constant flag, and front/back faces. Each face has seven u32:
 fail, pass, depth-fail, compare, compare mask, write mask, reference.
 `RP_BEGIN` appends `STP1` (`0x31505453`), attachment count, and three u32 per
 attachment: stencil load, stencil store, aspect mask. Older frames omit these tails.
+
+`RP_BEGIN` then appends `CLR1` (`0x31524c43`), attachment count, and four f32 per
+attachment: that attachment's colour clear value (zero for depth attachments). It gives
+multiple render targets their own clears; the single `clearColor` field stays attachment 0's value.
+Integer formats carry the integer value converted to f32 (exact to 2^24). Frames
+without `CLR1` clear every colour attachment with `clearColor`.
+
+`IMAGE_DATA` may end with a view-range tail after `d, layers, mips`: u32 baseMip, levelCount,
+baseLayer, layerCount (VK_REMAINING_* already resolved) and viewType (VkImageViewType). The replay
+creates sampled views with exactly that range. Frames without the tail sample the whole image.
+Non-identity component swizzles and rendering into a non-zero mip/layer are not applied and are
+reported (`image-view-swizzle`, `render-target-subresource` in the bridge).
+
+Subpasses (ABI ids 919 `vkCreateRenderPass2`, 920 `vkCmdNextSubpass`, both also reached through the
+`KHR` and `...2` aliases): the bridge keeps each subpass's colour, resolve and depth references and
+emits one `RP_BEGIN`/`RP_END` pair per subpass. An `RP_BEGIN` lists only that subpass's attachments
+(colour slots in order, then depth); load ops apply on an attachment's first subpass, store ops on its
+last, and in between it is LOADed and STOREd. A colour attachment's resolve target is not a pass
+attachment: after the subpass `RP_END` the bridge emits an `IMAGE_COPY` from the multisampled image's
+replay texture (already its resolved single-sample texture) to the resolve image. Input attachments,
+multiview and depth/stencil resolve are reported loudly (`subpass-input-attachment`,
+`multiview-render-pass`, `compute-subpass`, `depth-stencil-resolve`); `vkCmdNextSubpass` past the last subpass is
+`next-subpass-overflow`.
 
 Records `0x15` (stencil state) carry kind (compare/write/reference = 0/1/2),
 face bits (front 1, back 2), and value, all u32. `0x16` carries four f32 blend
