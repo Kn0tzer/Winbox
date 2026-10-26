@@ -33,12 +33,16 @@
 //      main at Fragment is invalid", on SPIR-V that spirv-val accepts. DXVK
 //      emits Index 0 on single-source outputs where it is meaningless.
 //      Rewrite: drop the decoration. Verified against DXVK D3D11 shaders.
-//   R7 "strip-signed-zero-inf-nan-preserve": naga rejects OpCapability
-//      SignedZeroInfNanPreserve (4466) with UnsupportedCapability.
-//      vkd3d-proton/vkd3d-shader emits it (with OpExecutionMode 4461) for FP
-//      control. Rewrite: drop the capability and any OpExecutionMode
-//      SignedZeroInfNanPreserve instructions. Safe for rendering: it only
-//      governs NaN/inf edge-case preservation.
+//   R7 "strip-float-controls": naga rejects every SPV_KHR_float_controls
+//      capability (4464 DenormPreserve, 4465 DenormFlushToZero, 4466
+//      SignedZeroInfNanPreserve, 4467 RoundingModeRTE, 4468 RoundingModeRTZ)
+//      with UnsupportedCapability. vkd3d-proton emits 4466; DXVK's DXBC
+//      compiler emits 4465 (+ OpExecutionMode 4460) to state D3D FP
+//      semantics (first seen on a real workload in the Tropics D3D11 vertex
+//      shader captured 2026-10-26). Rewrite: drop the capabilities, their
+//      OpExecutionMode instructions (4459-4463), and the extension line.
+//      Safe for rendering: the family only governs denorm / rounding /
+//      NaN-inf edge-case behaviour, none of which WGSL can express anyway.
 //   R8 "strip-unused-physical-storage-buffer": naga rejects OpCapability
 //      PhysicalStorageBufferAddresses (5346/5347) and the
 //      SPV_KHR_physical_storage_buffer extension. vkd3d-proton emits them
@@ -1178,27 +1182,29 @@ function stripIndexDecorations(mod, log) {
   return true;
 }
 
-// R7 "strip-signed-zero-inf-nan-preserve": naga 30.2.0 rejects OpCapability
-// SignedZeroInfNanPreserve (4466) with UnsupportedCapability. vkd3d-proton's
-// vkd3d-shader emits it together with OpExecutionMode SignedZeroInfNanPreserve
-// (4461) for floating-point control. Drop the capability and any such
-// execution-mode instructions; without the capability naga never sees it.
-// Rendering-safe: the mode only governs NaN/inf signed-zero preservation,
-// irrelevant to the pixel values these shaders compute.
-function stripSignedZeroInfNanPreserve(mod, log) {
-  const hasCap = mod.insns.some(i => i.op === 17 && i.words[0] === 4466);
-  const modes = mod.insns.filter(i => i.op === Op.ExecutionMode && i.words[1] === 4461);
+// R7 "strip-float-controls": naga 30.2.0 rejects all five SPV_KHR_float_controls
+// capabilities (4464-4468) with UnsupportedCapability (each verified against
+// the vendored naga). Drop the capabilities, their OpExecutionMode
+// instructions (4459-4463), and the SPV_KHR_float_controls extension line;
+// without them naga never sees the family. Rendering-safe: these declarations
+// only govern denorm flushing/preservation, rounding mode, and NaN/inf
+// signed-zero preservation -- FP edge-case behaviour WGSL does not expose.
+function stripFloatControls(mod, log) {
+  const CAPS = { 4464: 'DenormPreserve', 4465: 'DenormFlushToZero', 4466: 'SignedZeroInfNanPreserve', 4467: 'RoundingModeRTE', 4468: 'RoundingModeRTZ' };
+  const MODES = new Set([4459, 4460, 4461, 4462, 4463]);
+  const foundCaps = [...new Set(mod.insns.filter(i => i.op === 17 && CAPS[i.words[0]]).map(i => CAPS[i.words[0]]))];
+  const modes = mod.insns.filter(i => i.op === Op.ExecutionMode && MODES.has(i.words[1]));
   const exts = mod.insns.filter(i => i.op === Op.ExtInstImport &&
     new TextDecoder().decode(new Uint8Array(strOf(i, 0))) === 'SPV_KHR_float_controls');
-  if (!hasCap && !modes.length && !exts.length) return false;
-  mod.insns = mod.insns.filter(i => !((i.op === 17 && i.words[0] === 4466) ||
-    (i.op === Op.ExecutionMode && i.words[1] === 4461) ||
+  if (!foundCaps.length && !modes.length && !exts.length) return false;
+  mod.insns = mod.insns.filter(i => !((i.op === 17 && CAPS[i.words[0]]) ||
+    (i.op === Op.ExecutionMode && MODES.has(i.words[1])) ||
     (i.op === Op.ExtInstImport &&
       new TextDecoder().decode(new Uint8Array(strOf(i, 0))) === 'SPV_KHR_float_controls')));
-  const what = [hasCap ? 'capability' : null,
+  const what = [foundCaps.length ? 'capabilities ' + foundCaps.join('/') : null,
     modes.length ? modes.length + ' execution mode(s)' : null,
     exts.length ? exts.length + ' OpExtension(s)' : null].filter(Boolean).join(' + ');
-  log.push('spirvfix: stripped SignedZeroInfNanPreserve (' + what + ')');
+  log.push('spirvfix: stripped float-controls declarations (' + what + ')');
   return true;
 }
 
@@ -1771,7 +1777,7 @@ export function applySpirvFix(bytes, { specOverrides } = {}) {
     log.push('R6 failed: ' + (e.message || e));
   }
   try {
-    if (stripSignedZeroInfNanPreserve(mod, log)) applied.push('strip-signed-zero-inf-nan-preserve');
+    if (stripFloatControls(mod, log)) applied.push('strip-float-controls');
   } catch (e) {
     log.push('R7 failed: ' + (e.message || e));
   }
@@ -1797,4 +1803,4 @@ export function applySpirvFix(bytes, { specOverrides } = {}) {
   }
 }
 
-export const REWRITES = ['texel-buffer-to-2d', 'split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-signed-zero-inf-nan-preserve', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero'];
+export const REWRITES = ['texel-buffer-to-2d', 'split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-float-controls', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero'];
