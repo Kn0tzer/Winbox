@@ -335,6 +335,29 @@
         if (overrides) e.push("WINEDLLOVERRIDES=" + overrides);
         var libraryPath = param("ldpath");
         if (libraryPath) e.push("LD_LIBRARY_PATH=" + libraryPath);
+        // Per-program guest environment (?env=<JSON object>, emitted by
+        // launch.mjs runtimeParameters from a demo entry's `env` map): the
+        // generic channel for steering knobs that only exist as env vars
+        // (DXVK_CONFIG / DXVK_HUD, FNA3D_FORCE_DRIVER, SDL hints, JVM
+        // properties). Re-validated here because URL parameters can be
+        // hand-written: names must be identifier-shaped, values control-free,
+        // and the launcher's own variables (set above, or via the dedicated
+        // winedbg / dlloverrides / ldpath parameters) cannot be overridden.
+        var envParam = param("env");
+        if (envParam) {
+            try {
+                var extraEnv = JSON.parse(envParam);
+                var reservedEnv = { HOME: 1, WINEPREFIX: 1, WINESERVER: 1, WINEDLLPATH: 1, WINEDEBUG: 1, WINEDLLOVERRIDES: 1, LD_LIBRARY_PATH: 1, WINE_D3D_CONFIG: 1, WINELOADERNOEXEC: 1, XDG_RUNTIME_DIR: 1, TMPDIR: 1, WINEDATADIR: 1 };
+                for (var envKey of Object.keys(extraEnv)) {
+                    var envValue = extraEnv[envKey];
+                    if (/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(envKey) && !reservedEnv[envKey] &&
+                        typeof envValue === "string" && envValue.length <= 4096 && !/[\x00-\x1f]/.test(envValue))
+                        e.push(envKey + "=" + envValue);
+                }
+            } catch (err) {
+                console.warn("bw64: ignoring invalid env parameter: " + err.message);
+            }
+        }
         if (param("monodebug") === "1") {
             e.push("MONO_LOG_LEVEL=debug", "MONO_LOG_MASK=" + (param("monomask") || "asm"));
         }
