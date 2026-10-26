@@ -37,7 +37,7 @@ test('REWRITES exports every rule', () => {
     'replace-draw-parameters',
     'strip-draw-parameters',
     'strip-index-decorations',
-    'strip-signed-zero-inf-nan-preserve',
+    'strip-float-controls',
     'strip-unused-physical-storage-buffer',
     'prune-specialized-aliases',
     'flat-integer-varyings',

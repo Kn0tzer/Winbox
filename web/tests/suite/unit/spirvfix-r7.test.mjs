@@ -8,6 +8,14 @@
 //     with OpExecutionMode SignedZeroInfNanPreserve (4461) for FP control.
 //     Fix: strip the capability and any such execution-mode instructions.
 //
+// GENERALIZED 2026-10-26 (tropics-shader lane): naga rejects ALL FIVE
+//     SPV_KHR_float_controls capabilities (4464-4468), and DXVK's DXBC
+//     compiler emits DenormFlushToZero (4465) + OpExecutionMode 4460 on
+//     real D3D11 shaders (captured from Unigine Tropics; see
+//     testdata/spirv/dxvk-live/tropics-dxbc.vert.spv). R7 now strips the
+//     whole family (caps 4464-4468, modes 4459-4463) under the rule name
+//     'strip-float-controls'.
+//
 // This test constructs a minimal SPIR-V module exercising the case and
 // verifies that applySpirvFix strips the pattern (byte-level regression
 // guard). Full naga translation is verified by the in-browser D3D12 probe.
@@ -51,7 +59,7 @@ test('R7: SignedZeroInfNanPreserve capability and execution mode are stripped', 
   ]);
   const result = applySpirvFix(serializeSpirv(mod));
   assert.ok(
-    result.applied.includes('strip-signed-zero-inf-nan-preserve'),
+    result.applied.includes('strip-float-controls'),
     'R7 should strip SignedZeroInfNanPreserve'
   );
   const outMod = parseSpirv(result.bytes);
@@ -70,9 +78,30 @@ test('R7: module without the pattern passes through untouched', () => {
   ]);
   const result = applySpirvFix(serializeSpirv(mod));
   assert.ok(
-    !result.applied.includes('strip-signed-zero-inf-nan-preserve'),
+    !result.applied.includes('strip-float-controls'),
     'R7 must not fire on a clean module'
   );
+});
+
+test('R7: DenormFlushToZero capability and execution mode are stripped (DXVK/Tropics pattern)', () => {
+  // Module declares DenormFlushToZero (4465) and its execution mode with the
+  // 32-bit width operand, exactly as DXVK's DXBC compiler emits it.
+  const mod = buildModule([
+    cap(1),                          // Shader
+    cap(4465),                       // DenormFlushToZero
+    entryPoint(0, 1),                // Vertex
+    { op: 16, words: [1, 4460, 32] }, // OpExecutionMode %1 DenormFlushToZero 32
+  ]);
+  const result = applySpirvFix(serializeSpirv(mod));
+  assert.ok(
+    result.applied.includes('strip-float-controls'),
+    'R7 should strip DenormFlushToZero'
+  );
+  const outMod = parseSpirv(result.bytes);
+  assert.ok(!outMod.insns.some(i => i.op === 17 && i.words[0] === 4465),
+    'DenormFlushToZero capability must be removed from output');
+  assert.ok(!outMod.insns.some(i => i.op === 16 && i.words[1] === 4460),
+    'DenormFlushToZero execution mode must be removed from output');
 });
 
 test('R7: rewrite is idempotent', () => {
@@ -83,10 +112,10 @@ test('R7: rewrite is idempotent', () => {
     execMode(1, 4461),
   ]);
   const once = applySpirvFix(serializeSpirv(mod));
-  assert.ok(once.applied.includes('strip-signed-zero-inf-nan-preserve'), 'first run applies R7');
+  assert.ok(once.applied.includes('strip-float-controls'), 'first run applies R7');
   const twice = applySpirvFix(once.bytes);
   assert.ok(
-    !twice.applied.includes('strip-signed-zero-inf-nan-preserve'),
+    !twice.applied.includes('strip-float-controls'),
     'second run must be a passthrough for R7'
   );
 });
