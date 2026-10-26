@@ -1971,6 +1971,62 @@ void KThread::seg_mapper(U32 address, bool readFault, bool writeFault, bool thro
         } else {
             klog_fmt("SEG_MAPPER #%d fault addr=%.8X (no cpu)", segMapperLogCount, address);
         }
+        if (this->cpu) {
+            // Portal load crash (addr=0x10 at ntdll-range EIP): with a SIGSEGV handler
+            // installed (Wine), logPageFault never runs, so capture the full fault
+            // state here: registers, segment bases, EIP module, instruction bytes,
+            // and (first fault only) the module map + stack walk.
+            CPU* cpu = this->cpu;
+            U32 eip = cpu->seg[CS].address + cpu->eip.u32;
+            klog_fmt("SEG_STATE #%d tid=%d pid=%d EAX=%.8X ECX=%.8X EDX=%.8X EBX=%.8X ESP=%.8X EBP=%.8X ESI=%.8X EDI=%.8X",
+                     segMapperLogCount, this->id, this->process->id,
+                     cpu->reg[0].u32, cpu->reg[1].u32, cpu->reg[2].u32, cpu->reg[3].u32,
+                     cpu->reg[4].u32, cpu->reg[5].u32, cpu->reg[6].u32, cpu->reg[7].u32);
+            klog_fmt("SEG_SEGS #%d CS=%.4X:%.8X SS=%.4X:%.8X DS=%.4X:%.8X ES=%.4X:%.8X FS=%.4X:%.8X GS=%.4X:%.8X",
+                     segMapperLogCount,
+                     cpu->seg[CS].value, cpu->seg[CS].address,
+                     cpu->seg[SS].value, cpu->seg[SS].address,
+                     cpu->seg[DS].value, cpu->seg[DS].address,
+                     cpu->seg[ES].value, cpu->seg[ES].address,
+                     cpu->seg[FS].value, cpu->seg[FS].address,
+                     cpu->seg[GS].value, cpu->seg[GS].address);
+            if (this->memory->isPageAllocated(eip >> 12)) {
+                klog_fmt("SEG_MOD #%d module=%s +%.8X bytes=%.8X %.8X %.8X %.8X",
+                         segMapperLogCount,
+                         this->process->getModuleName(eip).c_str(), this->process->getModuleEip(eip),
+                         cpu->memory->readd(eip), cpu->memory->readd(eip + 4),
+                         cpu->memory->readd(eip + 8), cpu->memory->readd(eip + 12));
+            }
+            if (segMapperLogCount == 1) {
+                // Raw stack + TEB dump: the EBP chain proved unreliable across
+                // optimized guest code (bogus return addresses), so capture the
+                // raw stack window for an offline scan against the module map.
+                U32 esp = cpu->reg[4].u32;
+                U32 fsbase = cpu->seg[FS].address;
+                if (fsbase && this->memory->isPageAllocated(fsbase >> 12)) {
+                    klog_fmt("SEG_TEB #%d FS=%.8X exc=%.8X stackBase=%.8X stackLimit=%.8X self=%.8X peb=%.8X",
+                             segMapperLogCount, fsbase,
+                             cpu->memory->readd(fsbase + 0x00), cpu->memory->readd(fsbase + 0x04),
+                             cpu->memory->readd(fsbase + 0x08), cpu->memory->readd(fsbase + 0x18),
+                             cpu->memory->readd(fsbase + 0x30));
+                }
+                if (this->memory->isPageAllocated(esp >> 12)) {
+                    for (U32 row = 0; row < 12; row++) {
+                        U32 a = esp - 0x10 + row * 0x20;
+                        klog_fmt("SEG_STACK #%d %.8X: %.8X %.8X %.8X %.8X %.8X %.8X %.8X %.8X",
+                                 segMapperLogCount, a,
+                                 cpu->memory->readd(a), cpu->memory->readd(a + 4),
+                                 cpu->memory->readd(a + 8), cpu->memory->readd(a + 12),
+                                 cpu->memory->readd(a + 16), cpu->memory->readd(a + 20),
+                                 cpu->memory->readd(a + 24), cpu->memory->readd(a + 28));
+                    }
+                }
+                this->process->printMappedFiles();
+                if (this->memory->isPageAllocated(cpu->reg[5].u32 >> 12)) {
+                    cpu->walkStack(cpu->eip.u32, cpu->reg[5].u32, 2);
+                }
+            }
+        }
     }
     // On-demand mapping for 32-bit Wine syscall_frame
     if (!this->process->is64Bit && address >= 0x76f000 && address < 0x770000) {
